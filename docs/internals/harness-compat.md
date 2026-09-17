@@ -1,5 +1,12 @@
 # Harness compatibility — running himmel under Codex (and beyond)
 
+> **Platform tier (HIMMEL-3125):** this doc's **Windows** content (Git Bash,
+> `.ps1` twins, WSL) describes the **alpha** tier — code paths present, best
+> effort, not CI-gated. Linux and macOS are the **Supported** tier. See the
+> [README support matrix](../../README.md#support-matrix). New scripts target
+> bash (still bash 3.2-safe, for macOS); a `.ps1` twin is optional, added only
+> when someone is actually working the Windows path.
+
 himmel is built end-to-end around **Claude Code's** contract: PreToolUse
 guardrail hooks, a plugin/marketplace system, skills, slash commands, and
 `CLAUDE.md` as the always-loaded rule file. This doc records what carries over

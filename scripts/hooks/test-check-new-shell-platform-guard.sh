@@ -46,12 +46,13 @@ run_case() {
     fi
 }
 
-# A1 RED control -- a staged new scripts/x/foo.sh with no header -> refused.
+# A1 (HIMMEL-3125: advisory, no longer a RED control) -- a staged new
+# scripts/x/foo.sh with no header -> WARNS but does not block (rc=0).
 setup_repo
 mkdir -p "$R/scripts/x"
 printf '#!/usr/bin/env bash\necho hi\n' > "$R/scripts/x/foo.sh"
 git -C "$R" add scripts/x/foo.sh
-run_case "A1 new .sh with no twin/marker -> refused" 1
+run_case "A1 new .sh with no twin/marker -> advisory warn, not refused" 0
 
 # A2 -- the same file, now carrying the marker in its first 60 lines -> passes.
 setup_repo
@@ -68,15 +69,16 @@ printf 'Write-Host "hi"\n' > "$R/scripts/x/foo.ps1"
 git -C "$R" add scripts/x/foo.sh scripts/x/foo.ps1
 run_case "A3 new .sh with .ps1 twin -> passes" 0
 
-# A3b RED control -- an UNTRACKED .ps1 sitting next to a markerless staged
-# .sh must NOT satisfy the twin check (codex-1): the gate validates the
-# STAGED index, not the working tree, so this stays refused.
+# A3b (HIMMEL-3125: advisory) -- an UNTRACKED .ps1 sitting next to a
+# markerless staged .sh must NOT satisfy the twin check (codex-1): the gate
+# validates the STAGED index, not the working tree, so this still WARNS --
+# but warning is not blocking, so rc=0.
 setup_repo
 mkdir -p "$R/scripts/x"
 printf '#!/usr/bin/env bash\necho hi\n' > "$R/scripts/x/foo.sh"
 git -C "$R" add scripts/x/foo.sh
 printf 'Write-Host "hi"\n' > "$R/scripts/x/foo.ps1"
-run_case "A3b untracked .ps1 twin (not staged) -> still refused" 1
+run_case "A3b untracked .ps1 twin (not staged) -> still advisory-warned, not refused" 0
 
 # A4 -- nothing staged under scripts/**/*.sh -> vacuous pass.
 setup_repo

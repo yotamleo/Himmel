@@ -189,15 +189,31 @@ jobs:
   # surface beyond the BSD-vs-GNU `date` fallback in pull-cadence.sh, which the
   # tests bypass by pinning FROM/TO.
   #
+  # HIMMEL-3125: Windows is now the alpha tier — dropped off the per-PR path,
+  # same pattern as shell-unit-shard below. A plain workflow_dispatch (and any
+  # non-schedule event) runs ubuntu only; `schedule` — or a dispatch with
+  # force_all_os=true — adds the windows-latest leg, paid once a night.
+  # continue-on-error scopes non-gating to that leg alone; ubuntu-latest stays
+  # the required check either way.
+  #
   # `shell: bash` because the run lines below chain with `&&` — the default
   # shell on windows-latest is pwsh. `fail-fast: false` so a red Windows leg
   # still reports the Linux result instead of cancelling it.
   bun-suites:
+    # issues:write (beyond the workflow-level contents:read) is needed only by
+    # the windows-nightly-issue.sh steps above/below — scoped to this job
+    # alone rather than raised workflow-wide.
+    permissions:
+      contents: read
+      issues: write
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: ${{ (github.event_name == 'schedule' || inputs.force_all_os)
+               && fromJSON('["ubuntu-latest","windows-latest"]')
+               || fromJSON('["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os != 'ubuntu-latest' }}
     defaults:
       run:
         shell: bash
@@ -219,6 +235,26 @@ jobs:
       # lockfile is never regenerated (HIMMEL-553). HIMMEL-2620 wired the test
       # run for the suite that was always there under tests/.
       - run: cd marketplace/plugins/luna-correlate && bun install --frozen-lockfile && bun test
+      # A red Windows nightly must not fail silently now that it is non-gating
+      # (HIMMEL-3125): upsert one consolidated issue rather than opening a new
+      # one per run (same convention as scripts/ci/fork-drift-issue.sh). Two
+      # steps rather than one because the Actions expression language has no
+      # `steps.*.outcome` wildcard to fold into a single rc — `success()` /
+      # `failure()` already summarize every prior step in this job. Both are
+      # scoped to the windows-latest leg only: the ubuntu-latest leg already
+      # gates the PR/push path and needs no issue.
+      - name: Windows-nightly issue — clear on green
+        if: success() && matrix.os == 'windows-latest'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/ci/windows-nightly-issue.sh 0 "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      - name: Windows-nightly issue — file/refresh on red
+        if: failure() && matrix.os == 'windows-latest'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/ci/windows-nightly-issue.sh 1 "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
   # CLAUDE.md-derived content invariants (HIMMEL-1305). The local pre-commit
   # copies of these gates judge the STAGED source, but they execute the repo's

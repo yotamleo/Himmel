@@ -58,8 +58,9 @@ The payoff of running Claude Code through himmel rather than bare:
 - **Forge-agnostic.** The worktree→PR→merge loop, PR review threads, and
   luna-ingest work the same on GitHub or Bitbucket Cloud — the backend is chosen
   per-repo from the `origin` remote, so nothing in the day-to-day loop changes.
-- **Cross-platform.** Linux, macOS, and Windows Git Bash, with the platform gotchas
-  already handled.
+- **Cross-platform, tiered.** Linux and macOS are CI-gated and adopter-verified;
+  Windows / Git Bash / WSL are alpha — code paths present, best effort, not
+  CI-gated. See [Support matrix](#support-matrix).
 
 ## Quickstart
 
@@ -135,6 +136,22 @@ pre-commit run --all-files                # all hooks green
 Then run one full loop end-to-end — worktree → commit → PR → merge →
 `/clean` → `/handover`, with every hook and gate explained at the point it
 fires: [`docs/daily-loop.md`](docs/daily-loop.md).
+
+## Support matrix
+
+Operator ruling (2026-09-17, HIMMEL-3125): development focus is Linux +
+macOS. Windows drops to **alpha** — the code paths stay in-tree and Windows
+issues are welcome, but Windows is no longer CI-gated on every PR or claimed
+as verified.
+
+| Tier | Platforms | What it promises |
+|---|---|---|
+| **Supported** | Linux, macOS | CI-gated on every PR ([green `bun-suites` run on `main`](https://github.com/yotamleo/Himmel/actions/runs/35175771338)); adopter round trip verified. |
+| **Alpha** | Windows (Git Bash), WSL | Code paths present, best effort, not CI-gated per-PR — a nightly/dispatch run only (see [`ci.yml`](.github/workflows/ci.yml)). Bug reports welcome; no round-trip guarantee. |
+
+New shell scripts target bash (still bash 3.2-safe, for macOS); a `.ps1`
+Windows twin is now optional, added only when someone is actually working the
+Windows path — see [`docs/internals/harness-compat.md`](docs/internals/harness-compat.md).
 
 ## Usage — the core loop
 

@@ -533,9 +533,10 @@ repos:
         stages: [pre-commit]
 
       - id: new-shell-platform-guard
-        name: new scripts/**/*.sh carries a .ps1 twin or platform-guard marker
-        # HIMMEL-2682 -- reads the staged index itself (git diff --cached),
-        # so it always_runs rather than scoping via `files`.
+        name: new scripts/**/*.sh -- .ps1 twin / platform-guard marker (advisory)
+        # HIMMEL-2682, downgraded to advisory by HIMMEL-3125 (Windows -> alpha
+        # tier) -- reads the staged index itself (git diff --cached), so it
+        # always_runs rather than scoping via `files`.
         language: system
         entry: bash scripts/hooks/check-new-shell-platform-guard.sh
         pass_filenames: false

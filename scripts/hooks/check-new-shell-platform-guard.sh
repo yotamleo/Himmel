@@ -1,30 +1,35 @@
 #!/usr/bin/env bash
-# scripts/hooks/check-new-shell-platform-guard.sh -- Guard B (HIMMEL-2682).
+# scripts/hooks/check-new-shell-platform-guard.sh -- Guard B (HIMMEL-2682),
+# downgraded to ADVISORY by HIMMEL-3125 (Windows -> alpha tier).
 #
-# Pre-commit gate for ws5's T15 x-platform invariant
-# (scripts/parity/test-ws5-invariants.sh): three PRs in one night discovered
-# a missing .ps1 twin / platform-guard marker only from a paid after-report
-# or an in-guest VM run, after a paid cross-model gate row had already been
-# spent at a head that then had to move. T15 runs in ~1s and needs no lane,
-# VM or model call -- catching it here, for free, at commit time removes the
-# wasted row entirely.
+# Originally a pre-commit gate for ws5's T15 x-platform invariant
+# (scripts/parity/test-ws5-invariants.sh, which still runs and still gates
+# where it runs today -- HIMMEL-2642's propagation-snapshot rules are
+# untouched by this change). That coupling is HISTORICAL, not the reason
+# this file exists any more: with Windows now alpha (not CI-gated per-PR,
+# best effort), a missing .ps1 twin is no longer a commit-blocking defect --
+# it is a choice most new scripts should make, since nobody develops on
+# Windows here. This gate now WARNS instead, so the signal survives (the
+# comment below still names exactly which scripts are Windows-blind) without
+# taxing every new script with a mandatory twin/marker.
 #
-# Refuses a commit that ADDS any scripts/**/*.sh (staged index vs HEAD)
-# whose first 60 lines carry neither a .ps1 twin nor a documented
-# platform-guard marker. Predicate shared with T15 via
-# scripts/lib/platform-guard.sh so the two cannot drift.
+# Reports (never refuses solely on the predicate) every ADDED scripts/**/*.sh
+# (staged index vs HEAD) whose first 60 lines carry neither a .ps1 twin nor a
+# documented platform-guard marker. Predicate shared with T15 via
+# scripts/lib/platform-guard.sh so the two cannot drift -- T15 keeps its own
+# (unchanged) pass/fail semantics; this hook only reports.
 #
 # Platform guard (gitbash-only): Git Bash on Windows / any POSIX bash 3.2+.
 # Pure git + the shared predicate; no .ps1 twin needed.
 #
-# Fail-closed. A missing twin/marker is exactly the invisible, Windows-blind
-# gap this gate exists to catch before it reaches a paid after-report or VM
-# run, so an infrastructure error here (a repo-root resolution failure)
-# refuses the commit rather than waving it through. Single-run bypass:
-# NEW_SHELL_PLATFORM_GUARD_OK=1.
+# Still fails closed on an INFRASTRUCTURE error (a repo-root resolution
+# failure, an unreadable staged blob, a mktemp failure) -- those mean the
+# gate itself is broken, not that a script lacks a twin, and a broken gate
+# should not silently report "all clear". Single-run bypass (now only
+# relevant to suppress the advisory output): NEW_SHELL_PLATFORM_GUARD_OK=1.
 #
-# Exit codes: 0 = clean (nothing added, or every addition passes), 1 = a new
-# scripts/**/*.sh fails the predicate.
+# Exit codes: 0 = ran (nothing added, every addition passes, or a violation
+# was only WARNED about), 1 = an infrastructure error, not a policy miss.
 set -uo pipefail
 
 if [ "${NEW_SHELL_PLATFORM_GUARD_OK:-0}" = 1 ]; then
@@ -93,17 +98,22 @@ while IFS= read -r sh_path; do
     if platform_guard_ok "$stage_sh"; then
         continue
     fi
-    fail=1
-    echo "⛔ check-new-shell-platform-guard: $sh_path is a NEW shell script with neither a .ps1 twin nor a platform-guard marker." >&2
-    echo "   Remedy: add a .ps1 twin, or mention 'platform guard' (or gitbash/git bash) in its first 60 lines." >&2
-    echo "   Bypass (single run, leaves the script Windows-blind): NEW_SHELL_PLATFORM_GUARD_OK=1 git commit ..." >&2
+    warned=1
+    echo "⚠️  check-new-shell-platform-guard (advisory): $sh_path is a NEW shell script with neither a .ps1 twin nor a platform-guard marker." >&2
+    echo "   Windows is alpha -- this no longer blocks the commit. Add a .ps1 twin (or mention 'platform guard' / gitbash / git bash in its first 60 lines) only if you're actually working the Windows path." >&2
 done < <(printf '%s\n' "$diff_names" | grep -E '\.sh$' || true)
 
+# `fail` here means an INFRASTRUCTURE error (unreadable staged blob) -- that
+# still refuses the commit. A missing twin/marker (`warned`) does not.
 if [ "$fail" -ne 0 ]; then
     exit 1
 fi
 if [ "$n" -eq 0 ]; then
     exit 0
 fi
-echo "OK: check-new-shell-platform-guard: $n new scripts/**/*.sh, all carry a .ps1 twin or platform-guard marker."
+if [ "${warned:-0}" -ne 0 ]; then
+    echo "OK (advisory): check-new-shell-platform-guard: $n new scripts/**/*.sh, some without a .ps1 twin or platform-guard marker -- not blocking (Windows is alpha)."
+else
+    echo "OK: check-new-shell-platform-guard: $n new scripts/**/*.sh, all carry a .ps1 twin or platform-guard marker."
+fi
 exit 0
