@@ -267,6 +267,7 @@ DEDUP_ANY=0
 WORKTREE_BRANCH=""
 WSL_DISTRO=""
 AUTOMERGE=0
+NO_AUTOMERGE=0
 LONG_GAP=0
 LIST_TEMP_ARMS=0
 SAFETY_CHILD=0
@@ -278,7 +279,7 @@ _epoch_hhmm() { py_armor_capture -c 'import sys,datetime; print(datetime.datetim
 
 usage() {
     cat <<'EOF'
-Usage: arm-resume.sh --time <HH:MM> --handover <path> [--wsl-distro <name>] [--force] [--long-gap] [--dedup-any] [--dry-run] [--automerge] [--safety-child] [--model <name>] [--fable-ok <reason>] [--context <1m|standard>] [--tier leg] [--provisional-base-ok]
+Usage: arm-resume.sh --time <HH:MM> --handover <path> [--wsl-distro <name>] [--force] [--long-gap] [--dedup-any] [--dry-run] [--automerge] [--no-automerge] [--safety-child] [--model <name>] [--fable-ok <reason>] [--context <1m|standard>] [--tier leg] [--provisional-base-ok]
 
 Arms the OS scheduler to relaunch claude at the given time with a
 resume prompt referencing the given handover file. Dedup-guarded
@@ -402,10 +403,22 @@ Optional:
                      path, then exit (16 = hits, 0 = clean). Never deletes —
                      disable a hit instead, which is reversible. Needs neither
                      --time nor --handover.
-  --automerge        Set ARMAUTOMERGE=1 and CR_MERGE_GATE_OK=1 in the
+  --automerge        Set ARMAUTOMERGE=1 AND CR_MERGE_GATE_OK=1 in the
                      relaunched session's environment (HIMMEL-1382, feature
-                     lineage HIMMEL-1042 armed auto-merge opt-in). Default
-                     omits both vars.
+                     lineage HIMMEL-1042 armed auto-merge opt-in) -- this
+                     explicit flag is the ONLY path that grants the merge
+                     gate's own bypass. Default omits both vars UNLESS the
+                     primary checkout's `.env` has ARMAUTOMERGE on
+                     (HIMMEL-2147), in which case only ARMAUTOMERGE=1 is set
+                     (HIMMEL-3118 item 4) -- a dotenv default never grants
+                     CR_MERGE_GATE_OK=1. See --no-automerge to override the
+                     dotenv default down. Mutually exclusive with
+                     --no-automerge (refused, exit 2).
+  --no-automerge     Force AUTOMERGE=0 regardless of the on-disk ARMAUTOMERGE
+                     default (HIMMEL-3118) -- for an arm that must park on
+                     every green PR even when this station's `.env` opts
+                     in station-wide. Mutually exclusive with --automerge
+                     (refused, exit 2).
   --safety-child     Set AUTO_ARM_SAFETY_CHILD=1 in the relaunched session's
                      environment (HIMMEL-812): that session is the child of an
                      auto-arm SAFETY escalation, so auto-arm-on-cap.sh's stale
@@ -653,6 +666,7 @@ while [ $# -gt 0 ]; do
         --dedup-any)   DEDUP_ANY=1; shift ;;
         --dry-run)     DRY_RUN=1; shift ;;
         --automerge)   AUTOMERGE=1; shift ;;
+        --no-automerge) NO_AUTOMERGE=1; shift ;;
         --safety-child) SAFETY_CHILD=1; shift ;;
         --list-temp-arms) LIST_TEMP_ARMS=1; shift ;;
         --provisional-base-ok) PROVISIONAL_BASE_OK=1; shift ;;
@@ -663,6 +677,14 @@ done
 
 if [ -n "$WSL_DISTRO" ] && ! [[ "$WSL_DISTRO" =~ ^[A-Za-z0-9._-]+$ ]]; then
     echo "ERR arm-resume: invalid --wsl-distro name: $WSL_DISTRO" >&2
+    exit 2
+fi
+
+# HIMMEL-3118: --automerge and --no-automerge are opposite explicit signals;
+# accepting both silently would leave it ambiguous which one the launch body
+# honors. Refuse instead of picking a winner.
+if [ "$AUTOMERGE" -eq 1 ] && [ "$NO_AUTOMERGE" -eq 1 ]; then
+    echo "ERR arm-resume: --automerge and --no-automerge are mutually exclusive" >&2
     exit 2
 fi
 
@@ -1471,17 +1493,60 @@ _arm_dotenv_root() {
 # whether to WARN below. Same load_dotenv bridge the CR_FLOOR_FALLBACK load
 # right after this uses (process env wins; a load_dotenv READ FAILURE is
 # advisory-only, arming never refuses over it).
-if [ "$AUTOMERGE" -ne 1 ] && [ -f "$SCRIPT_DIR/../lib/load-dotenv.sh" ]; then
+#
+# HIMMEL-3118: --no-automerge forces AUTOMERGE=0 and skips the dotenv default
+# entirely -- the whole point of the flag is to decline the station-wide
+# opt-in for THIS arm, so it must win even when ARMAUTOMERGE=1 on disk.
+#
+# HIMMEL-3118 item 4 (operator ruling): the dotenv-derived grant and the
+# explicit --automerge flag are NOT the same grant. `.env` ARMAUTOMERGE
+# expresses consent to "merge when green" only -- CR_MERGE_GATE_OK=1 is the
+# merge gate's OWN bypass, and an operator who set a dotenv default never
+# consented to that. AUTOMERGE_GRANTS_MERGE_GATE tracks which of the two
+# grants THIS resolution carries; every emit site below must gate
+# CR_MERGE_GATE_OK=1 on it, not on AUTOMERGE alone.
+AUTOMERGE_SOURCE="off (no --automerge, no dotenv opt-in)"
+AUTOMERGE_GRANTS_MERGE_GATE=0
+if [ "$NO_AUTOMERGE" -eq 1 ]; then
+    AUTOMERGE=0
+    AUTOMERGE_SOURCE="--no-automerge flag"
+elif [ "$AUTOMERGE" -eq 1 ]; then
+    AUTOMERGE_SOURCE="--automerge flag"
+    AUTOMERGE_GRANTS_MERGE_GATE=1
+elif [ -f "$SCRIPT_DIR/../lib/load-dotenv.sh" ]; then
     # shellcheck disable=SC1091
     . "$SCRIPT_DIR/../lib/load-dotenv.sh"
+    # HIMMEL-3118 item 4: load_dotenv is non-clobbering -- it skips a key that
+    # already holds a non-empty value (HIMMEL-1922) -- so an ambient
+    # ARMAUTOMERGE exported into THIS shell would win over the .env read
+    # below and get mistaken for the on-disk default, contradicting the (a)
+    # comment above that an ambient value is irrelevant here. Unset it first
+    # so only the file can populate it, then move the result into a
+    # DISTINCTLY NAMED variable immediately -- nothing downstream reads the
+    # bare ARMAUTOMERGE shell variable again, so it can no longer be confused
+    # with a live ambient one.
+    unset ARMAUTOMERGE
     if load_dotenv --root "$(_arm_dotenv_root)" ARMAUTOMERGE; then
-        case "$(printf '%s' "${ARMAUTOMERGE:-}" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')" in
-            1|true|on|yes) AUTOMERGE=1 ;;
+        _ARM_DOTENV_AUTOMERGE="${ARMAUTOMERGE:-}"
+        unset ARMAUTOMERGE
+        case "$(printf '%s' "$_ARM_DOTENV_AUTOMERGE" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')" in
+            1|true|on|yes) AUTOMERGE=1; AUTOMERGE_SOURCE="dotenv default (ARMAUTOMERGE=$_ARM_DOTENV_AUTOMERGE in .env)" ;;
         esac
+        # AUTOMERGE_GRANTS_MERGE_GATE stays 0 -- the dotenv path never grants
+        # the merge-gate bypass, only ARMAUTOMERGE.
     fi
 fi
+# Same stdout-not-stderr, guard-time-not-only-banner reasoning as the
+# HIMMEL-2658 CONTEXT_REASON echo above -- an operator reading the arm log
+# needs the resolved value AND why it resolved that way.
+echo "arm-resume: automerge=$AUTOMERGE merge_gate_bypass=$AUTOMERGE_GRANTS_MERGE_GATE (source: $AUTOMERGE_SOURCE)"
 if [ "$AUTOMERGE" -ne 1 ]; then
     echo "WARN arm-resume: --automerge was not passed -- the armed session will NOT set ARMAUTOMERGE=1, so merge-on-green.sh will not fire and the chain stops at every green PR instead of merging it. Pass --automerge if this arm is meant to ship through green PRs unattended." >&2
+elif [ "$AUTOMERGE_SOURCE" != "--automerge flag" ]; then
+    # HIMMEL-3118: the inherited-ON case used to resolve silently -- the only
+    # one of the three launch parameters (automerge/context/tier) that did.
+    # WARN symmetrically with the OFF case above.
+    echo "WARN arm-resume: automerge is ON via $AUTOMERGE_SOURCE, not an explicit --automerge on THIS invocation -- the armed session WILL set ARMAUTOMERGE=1 (but NOT CR_MERGE_GATE_OK=1 -- that bypass is granted only by an explicit --automerge), so merge-on-green.sh WILL fire and ship through every green PR unattended. Pass --no-automerge if this arm must park on green instead." >&2
 fi
 
 # (b) CR_FLOOR_FALLBACK. When CR_REQUIRE_CROSS_MODEL is on (HIMMEL-1237) and no
@@ -4588,7 +4653,15 @@ fi"
     # stdin, so a printf format string would truncate the entry. `\$(date)`
     # lands literally and evaluates at fire time.
     local q_automerge=""
-    [ "$AUTOMERGE" -eq 1 ] && q_automerge="ARMAUTOMERGE=1 CR_MERGE_GATE_OK=1 "
+    if [ "$AUTOMERGE" -eq 1 ]; then
+        # HIMMEL-3118 item 4: CR_MERGE_GATE_OK=1 is granted only alongside an
+        # explicit --automerge on THIS invocation, never by the dotenv default.
+        if [ "$AUTOMERGE_GRANTS_MERGE_GATE" -eq 1 ]; then
+            q_automerge="ARMAUTOMERGE=1 CR_MERGE_GATE_OK=1 "
+        else
+            q_automerge="ARMAUTOMERGE=1 "
+        fi
+    fi
     # HIMMEL-1382 fix round: unset both vars unconditionally before the
     # (possibly empty) grant prefix — same always-clear contract as the
     # `at`/Windows/WSL launch bodies, so a crontab entry never depends on
@@ -5183,7 +5256,15 @@ schedule_arm() {
                 # by the time this runs.
                 q_autocompact=" --autocompact $(_bash_single_quote "$AUTOCOMPACT")"
                 local q_automerge=""
-                [ "$AUTOMERGE" -eq 1 ] && q_automerge="ARMAUTOMERGE=1 CR_MERGE_GATE_OK=1 "
+                if [ "$AUTOMERGE" -eq 1 ]; then
+                    # HIMMEL-3118 item 4: CR_MERGE_GATE_OK=1 is granted only
+                    # alongside an explicit --automerge, never the dotenv default.
+                    if [ "$AUTOMERGE_GRANTS_MERGE_GATE" -eq 1 ]; then
+                        q_automerge="ARMAUTOMERGE=1 CR_MERGE_GATE_OK=1 "
+                    else
+                        q_automerge="ARMAUTOMERGE=1 "
+                    fi
+                fi
                 # HIMMEL-1382 fix round: unset both vars first (defense against
                 # ambient carryover), THEN conditionally re-grant via the
                 # per-command prefix — same always-clear contract as the
@@ -5412,7 +5493,11 @@ schedule_arm() {
                     printf 'set "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1"\r\n'
                     if [ "$AUTOMERGE" -eq 1 ]; then
                         printf 'set "ARMAUTOMERGE=1"\r\n'
-                        printf 'set "CR_MERGE_GATE_OK=1"\r\n'
+                        # HIMMEL-3118 item 4: CR_MERGE_GATE_OK=1 is granted only
+                        # alongside an explicit --automerge, never the dotenv default.
+                        if [ "$AUTOMERGE_GRANTS_MERGE_GATE" -eq 1 ]; then
+                            printf 'set "CR_MERGE_GATE_OK=1"\r\n'
+                        fi
                     fi
                     # HIMMEL-812: the auto-arm stale escalation's own child.
                     # auto-arm-on-cap.sh reads this out of the relaunched
@@ -5734,7 +5819,15 @@ schedule_arm() {
                 # `\$(date)` is escaped so it lands LITERALLY in the job
                 # body and evaluates at FIRE time, not arm time.
                 local q_automerge=""
-                [ "$AUTOMERGE" -eq 1 ] && q_automerge="ARMAUTOMERGE=1 CR_MERGE_GATE_OK=1 "
+                if [ "$AUTOMERGE" -eq 1 ]; then
+                    # HIMMEL-3118 item 4: CR_MERGE_GATE_OK=1 is granted only
+                    # alongside an explicit --automerge, never the dotenv default.
+                    if [ "$AUTOMERGE_GRANTS_MERGE_GATE" -eq 1 ]; then
+                        q_automerge="ARMAUTOMERGE=1 CR_MERGE_GATE_OK=1 "
+                    else
+                        q_automerge="ARMAUTOMERGE=1 "
+                    fi
+                fi
                 # HIMMEL-1382 fix round: `at` snapshots the submitting shell's
                 # ambient env, so an automerge-armed session's `at -t` job
                 # would otherwise silently RETAIN CR_MERGE_GATE_OK/ARMAUTOMERGE

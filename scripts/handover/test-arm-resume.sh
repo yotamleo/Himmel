@@ -155,7 +155,8 @@ T1287|T1287
 2192|2192 HIMMEL-2192
 2199|2199 HIMMEL-2199
 2177|2177 HIMMEL-2177
-2545|2545 HIMMEL-2545'
+2545|2545 HIMMEL-2545
+3118|3118 HIMMEL-3118'
 
 _section_alias_known() {
     local _candidate="$1" _label _aliases _alias
@@ -4291,6 +4292,102 @@ rc=$?
 assert_rc "2147d --automerge flag wins over a falsy .env value (rc=0)" 0 "$rc"
 assert_not_contains "2147d no WARN when --automerge is explicit" "will NOT set ARMAUTOMERGE" "$out"
 assert_contains "2147d launch carries ARMAUTOMERGE=1 from the explicit flag" "ARMAUTOMERGE=1" "$out"
+
+# Restore the shield dir to its EMPTY default for any later section.
+rm -f "$ARM_RESUME_DOTENV_ROOT/.env"
+fi
+
+# ---------------------------------------------------------------------------
+# HIMMEL-3118 — --no-automerge decline flag + merge-gate/ARMAUTOMERGE grant
+# decoupling. --automerge raises the dotenv-derived ARMAUTOMERGE opt-in above;
+# until now there was no way to lower it back down for a single arm, so a leg
+# armed specifically to park on every green PR silently inherited the
+# station's on-disk default instead. Separately (item 4, operator ruling): the
+# dotenv default used to grant CR_MERGE_GATE_OK=1 alongside ARMAUTOMERGE=1 --
+# the merge gate's OWN bypass, which a bare `.env` setting never had explicit
+# consent to flip. Only an explicit --automerge on THIS invocation may grant
+# CR_MERGE_GATE_OK=1 now.
+# ---------------------------------------------------------------------------
+if _sec_selected "3118" "HIMMEL-3118"; then
+
+# (a) --automerge and --no-automerge together are refused before any arming
+# work happens.
+HO_3118A=$(make_handover "$WORK_REPO")
+out=$(env -u ARMAUTOMERGE SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_3118A" --dry-run --automerge --no-automerge 2>&1)
+rc=$?
+assert_rc "3118a --automerge + --no-automerge refused (rc=2)" 2 "$rc"
+assert_contains "3118a ERR names the conflict" "mutually exclusive" "$out"
+
+# (b) RED control: dotenv opt-in ON, no --no-automerge -> the .env default
+# still applies (ARMAUTOMERGE=1 in the launch text). Proves the shield below
+# is live before (c) proves --no-automerge overrides it.
+printf 'ARMAUTOMERGE=1\n' > "$ARM_RESUME_DOTENV_ROOT/.env"
+HO_3118B=$(make_handover "$WORK_REPO")
+out=$(env -u ARMAUTOMERGE SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_3118B" --dry-run 2>&1)
+rc=$?
+assert_rc "3118b RED control: dotenv default alone still arms (rc=0)" 0 "$rc"
+assert_contains "3118b RED control: dotenv default grants ARMAUTOMERGE=1" "ARMAUTOMERGE=1" "$out"
+
+# (c) --no-automerge forces AUTOMERGE=0 even though the SAME .env opt-in from
+# (b) is still in place -- the flag must win over the on-disk default.
+HO_3118C=$(make_handover "$WORK_REPO")
+out=$(env -u ARMAUTOMERGE SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_3118C" --dry-run --no-automerge 2>&1)
+rc=$?
+assert_rc "3118c --no-automerge still arms (rc=0)" 0 "$rc"
+assert_contains "3118c resolved state shows automerge=0 sourced from the flag" "automerge=0 merge_gate_bypass=0 (source: --no-automerge flag)" "$out"
+assert_not_contains "3118c --no-automerge overrides the dotenv default -- no ARMAUTOMERGE=1 grant" "ARMAUTOMERGE=1 " "$out"
+assert_not_contains "3118c --no-automerge overrides the dotenv default -- no CR_MERGE_GATE_OK=1 grant" "CR_MERGE_GATE_OK=1" "$out"
+
+# (d) item 4, the console's second RED-control arm: the dotenv default (no
+# flags at all) grants ARMAUTOMERGE=1 ONLY -- CR_MERGE_GATE_OK=1 is no longer
+# bundled into a bare .env opt-in. Pre-fix code emits BOTH here (that is
+# exactly what item 4 rules out), so this assertion fails on the pre-fix
+# arm-resume.sh and passes only after the decoupling fix.
+HO_3118D=$(make_handover "$WORK_REPO")
+out=$(env -u ARMAUTOMERGE SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_3118D" --dry-run 2>&1)
+rc=$?
+assert_rc "3118d dotenv default alone still arms (rc=0)" 0 "$rc"
+assert_contains "3118d resolved state: automerge=1, merge_gate_bypass=0, dotenv source" "automerge=1 merge_gate_bypass=0 (source: dotenv default (ARMAUTOMERGE=1 in .env))" "$out"
+assert_contains "3118d launch text carries ARMAUTOMERGE=1 from the dotenv default" "ARMAUTOMERGE=1" "$out"
+assert_not_contains "3118d launch text does NOT carry CR_MERGE_GATE_OK=1 from a bare dotenv default" "ARMAUTOMERGE=1 CR_MERGE_GATE_OK=1" "$out"
+
+# (e) fenced-off unchanged path: an explicit --automerge on THIS invocation
+# still grants BOTH vars, dotenv opt-in or not.
+HO_3118E=$(make_handover "$WORK_REPO")
+out=$(env -u ARMAUTOMERGE SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_3118E" --dry-run --automerge 2>&1)
+rc=$?
+assert_rc "3118e explicit --automerge still arms (rc=0)" 0 "$rc"
+assert_contains "3118e resolved state: automerge=1, merge_gate_bypass=1, flag source" "automerge=1 merge_gate_bypass=1 (source: --automerge flag)" "$out"
+assert_contains "3118e launch text carries BOTH grants from the explicit flag" "ARMAUTOMERGE=1 CR_MERGE_GATE_OK=1" "$out"
+
+# (f) ambient-env-leak fix: an ambient ARMAUTOMERGE exported into THIS shell
+# (e.g. an operator shell, or a parent armed session's own env) must NOT
+# affect resolution -- only the on-disk .env value matters once --automerge
+# was not passed. Ambient ARMAUTOMERGE=0 must not suppress a truthy .env
+# default -- pre-fix, load_dotenv's non-clobber contract let this ambient
+# value win over the file read, contradicting the code's own comment that an
+# ambient value is irrelevant here.
+HO_3118F=$(make_handover "$WORK_REPO")
+out=$(ARMAUTOMERGE=0 SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_3118F" --dry-run 2>&1)
+rc=$?
+assert_rc "3118f ambient ARMAUTOMERGE=0 + dotenv default still arms (rc=0)" 0 "$rc"
+assert_contains "3118f ambient value is ignored -- resolution reads the .env file, not the process env" "automerge=1 merge_gate_bypass=0 (source: dotenv default (ARMAUTOMERGE=1 in .env))" "$out"
+
+# (g) same assertion with the ambient var genuinely unset -- must resolve
+# IDENTICALLY to (f), proving a set-but-ignored ambient and a genuinely unset
+# ambient are no longer distinguishable outcomes.
+HO_3118G=$(make_handover "$WORK_REPO")
+out=$(env -u ARMAUTOMERGE SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_3118G" --dry-run 2>&1)
+rc=$?
+assert_rc "3118g env -u ARMAUTOMERGE + dotenv default still arms (rc=0)" 0 "$rc"
+assert_contains "3118g unset ambient resolves the same as a set-but-ignored ambient (f)" "automerge=1 merge_gate_bypass=0 (source: dotenv default (ARMAUTOMERGE=1 in .env))" "$out"
 
 # Restore the shield dir to its EMPTY default for any later section.
 rm -f "$ARM_RESUME_DOTENV_ROOT/.env"
