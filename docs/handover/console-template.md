@@ -112,7 +112,7 @@ filters to terminal-state changes and emits nothing otherwise.
 
 | Monitor | Cadence | What it is |
 |---|---|---|
-| tick | 60 min | `bash "{{KIT}}/tick.sh" --doc "<this file>" --token <your token> --legs "<leg docs>"` — one batched line: heartbeat, leg locks, leg processes, armed jobs, suite locks, open PRs, bank |
+| tick | 60 min | `bash "{{KIT}}/tick.sh" --doc "<this file>" --token <your token> --legs "N1.md N2.md"` (or `--legs "N1.md,N2.md"` — `--legs` accepts space- **and** comma-separated docs, both spellings produce identical output) — one batched line: heartbeat, leg locks, leg processes, armed jobs, suite locks, open PRs, bank. Per-leg lock status is one of **`FRESH`** (held, heartbeat current), **`STALE`** (held, heartbeat aged), **`MISSING`** ("the lock is gone" — reclaim it), or **`NOTFOUND`** (the leg doc did not resolve — a warning about a typo'd/nonexistent path, *not* a dead lock; never act on it as MISSING) |
 | bank | 300 s | poll `bank-preflight.sh`, emit only when the state word changes (headroom → park → weekly-ceiling) |
 | CI | 600 s | poll `gh run list -R <owner/repo> --limit 20 --json databaseId,status`, emit only newly-completed runs |
 | notes repo | 300 s | if you keep a second repo for handover state, emit only on STALL (dirty files older than the commit cadence) or PUSH-LAG |
@@ -190,6 +190,11 @@ own end-of-session hook still writing — it prunes on the next sweep.
   id>`.** Keep the shift's acked ids on the `acked:` line of `## Live state`
   above. An id already on that line is a duplicate — reply `duplicate <id>`
   and take no action.
+- **Every judge question leaves four fields, whichever grade asked it:**
+  `grade: call|session` · `prior: <one line, written BEFORE asking>` ·
+  `answer: <verdict line>` · `flipped: y|n`. Write `prior:` before you ask —
+  a prior recorded afterwards measures nothing. This makes M3 (judge flip
+  rate) countable by `grep`; keep the field names exactly as written here.
 
 ## Handing over
 
