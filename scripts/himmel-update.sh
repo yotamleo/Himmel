@@ -34,6 +34,23 @@ cd "$ROOT"
 # shellcheck disable=SC1091
 . "$ROOT/scripts/lib/load-dotenv.sh"
 
+# is_dirty_tracked [DIR]
+# HIMMEL-3078: like guardrails/lib.sh's is_dirty(), but untracked files don't
+# count. The three pull/switch gates below only need to know about changes
+# `git pull --ff-only` / `git switch --detach` could actually clobber or
+# refuse to move past — untracked strays are neither; git itself refuses a
+# pull or switch that would overwrite one, so the gate protects nothing by
+# also refusing on them. Deliberately NOT a change to is_dirty() itself —
+# the edit-on-main guard shares that predicate and DOES want untracked files
+# counted (HIMMEL-297's "dirty means the same thing everywhere" applies there,
+# not here).
+is_dirty_tracked() {
+    local dir="${1:-.}"
+    local out
+    out=$(git -C "$dir" status --porcelain --untracked-files=no 2>/dev/null) || return 2
+    [ -n "$out" ]
+}
+
 # ─── plugin install-state gap report (HIMMEL-434) ────────────────────────────
 # Advisory: `marketplace update` only re-syncs plugins that are ALREADY
 # installed — it never tells you a himmel-marketplace plugin is missing, or is
@@ -331,26 +348,27 @@ update_hermes() {
     return 0
 }
 
-# restart_hermes_gateways <old_head> <new_head> — HIMMEL-2822: a running
-# hermes-gateway-*.service keeps stale modules in memory and lazily imports a
-# NEW one on the next agent turn, so a checkout move that leaves the gateway
-# running silently ImportErrors until a manual restart. No-op when the
-# checkout did not actually move; never aborts the update chain on a restart
-# failure (a stale-but-running gateway beats an aborted update).
+# restart_hermes_gateways <old_head> <new_head> — HIMMEL-2822 / HIMMEL-3052: a
+# running hermes-gateway unit keeps stale modules in memory until restarted.
+# Stations run either the per-profile shape (hermes-gateway-<profile>.service)
+# or the multiplexed shape (bare hermes-gateway.service) — list BOTH patterns,
+# since `hermes-gateway-*` alone does not match the bare unit name. No-op when
+# the checkout did not actually move; never aborts the update chain on a
+# restart failure (a stale-but-running gateway beats an aborted update).
 restart_hermes_gateways() {
     local old_head="$1" new_head="$2"
     [ "$old_head" = "$new_head" ] && return 0
     if ! command -v systemctl >/dev/null 2>&1; then
-        echo "    note: hermes-gateway units may be running pre-pull code — systemctl not found; restart by hand: systemctl --user restart hermes-gateway-<profile>.service"
+        echo "    note: hermes-gateway units may be running pre-pull code — systemctl not found; restart by hand: systemctl --user restart hermes-gateway.service (multiplexer) or hermes-gateway-<profile>.service"
         return 0
     fi
     local units unit errfile
     errfile=$(mktemp 2>/dev/null) || errfile=""
-    if ! units=$(systemctl --user list-units 'hermes-gateway-*' --state=running --plain --no-legend 2>"${errfile:-/dev/null}"); then
+    if ! units=$(systemctl --user list-units 'hermes-gateway.service' 'hermes-gateway-*.service' --state=running --plain --no-legend 2>"${errfile:-/dev/null}"); then
         local errline
         errline=$(head -n1 "${errfile:-/dev/null}" 2>/dev/null)
         [ -n "$errfile" ] && rm -f "$errfile"
-        echo "    warn: could not list hermes-gateway units (systemctl --user list-units failed: ${errline:-no error output}) — if a gateway is running it still has pre-pull code; restart by hand: systemctl --user restart hermes-gateway-<profile>.service" >&2
+        echo "    warn: could not list hermes-gateway units (systemctl --user list-units failed: ${errline:-no error output}) — if a gateway is running it still has pre-pull code; restart by hand: systemctl --user restart hermes-gateway.service (multiplexer) or hermes-gateway-<profile>.service" >&2
         return 0
     fi
     [ -n "$errfile" ] && rm -f "$errfile"
@@ -433,10 +451,21 @@ update_codex() {
 # cadence_user_home (emitter parity — USERPROFILE via cygpath before $HOME on
 # Windows Git-Bash, HIMMEL-645/969 — a bare $HOME would probe the MSYS dir).
 report_cadence_stale() {
-    local label bat_dir rearm ver uh
+    local label bat_dir rearm ver uh is_windows=0
     uh="$(cadence_user_home)"
+    case "$(cadence_runner_platform_ext)" in bat) is_windows=1 ;; esac
     while IFS='|' read -r label bat_dir rearm; do
         [ -n "$label" ] || continue
+        # codex-sweep-cadence only ever arms on Windows (its own arm refuses
+        # elsewhere, HIMMEL-2965) — on any other platform a leftover .bat/.sh
+        # twin is n/a, never a recipe that would itself refuse.
+        if [ "$label" = "codex-sweep-cadence" ] && [ "$is_windows" -eq 0 ]; then
+            if [ -f "$bat_dir/codex-sweep.bat" ] || [ -f "$bat_dir/codex-sweep.sh" ]; then
+                echo ""
+                echo "==> codex-sweep-cadence: Windows-only, n/a on this platform"
+            fi
+            continue
+        fi
         ver="$(cadence_runner_stamp "$bat_dir")" || continue
         [ "$ver" -lt "$CADENCE_RUNNER_FORMAT_VERSION" ] || continue
         echo ""
@@ -783,6 +812,18 @@ update_qmd_fork() {
     fi
     if ! command -v git >/dev/null 2>&1 || ! command -v bun >/dev/null 2>&1; then
         STATUS_qmd_fork="skipped"; DETAIL_qmd_fork="git or bun not on PATH"
+        # HIMMEL-3068: this precondition-gap skip reads identically to a clean
+        # "nothing to do" skip in the status table, but it is not one — qmd
+        # will NEVER update on this machine until the missing tool is
+        # installed ("verify the artifact, not the return code" per
+        # docs/internals/enforcement.md). QMD_FORK_BUN_MISSING flags it for
+        # report_qmd_bun_missing() to surface loudly, in both check and apply
+        # (this precondition runs before the mode branch, so it is set either
+        # way).
+        QMD_FORK_BUN_MISSING=1
+        QMD_FORK_MISSING_TOOLS=""
+        command -v git >/dev/null 2>&1 || QMD_FORK_MISSING_TOOLS="git"
+        command -v bun >/dev/null 2>&1 || QMD_FORK_MISSING_TOOLS="${QMD_FORK_MISSING_TOOLS:+$QMD_FORK_MISSING_TOOLS, }bun"
         return 0
     fi
     # shellcheck source=lib/qmd-bin.sh
@@ -891,6 +932,29 @@ report_qmd_daemon_restart() {
     echo "     bash marketplace/plugins/qmd/scripts/ensure-qmd-daemon.sh)"
 }
 
+# Advisory (HIMMEL-3068): the ONE update_qmd_fork skip reason that means qmd is
+# PERMANENTLY disabled on this machine until fixed, not a one-off/transient
+# miss. STATUS_qmd_fork reads "skipped" in the status table either way — the
+# same word a harmless "no update available" skip uses — so without this,
+# a missing-bun machine reads as a clean run forever. "Verify the artifact,
+# not the return code" (docs/internals/enforcement.md): a precondition that
+# silently disables an updater must never read as success.
+report_qmd_bun_missing() {
+    [ "${QMD_FORK_BUN_MISSING:-0}" = "1" ] || return 0
+    echo ""
+    echo "==> qmd fork update DISABLED (HIMMEL-3068)"
+    echo "    WARNING: ${QMD_FORK_MISSING_TOOLS:-git or bun} not on PATH — qmd will NEVER update"
+    echo "    on this machine until that is fixed. The status table below reports this as"
+    echo "    'skipped', which looks like routine no-op — it is not."
+    case "${QMD_FORK_MISSING_TOOLS:-}" in
+        *bun*) echo "    Install bun: curl -fsSL https://bun.sh/install | bash   (see docs/setup/new-machine.md)" ;;
+    esac
+    case "${QMD_FORK_MISSING_TOOLS:-}" in
+        *git*) echo "    Install git via your OS package manager (see docs/setup/new-machine.md)" ;;
+    esac
+    return 0
+}
+
 # 5. hermes junior-tier update. Reuses update_hermes() (defined above) and
 #    classifies its outcome into STATUS_hermes/DETAIL_hermes for the shared
 #    status table. CR fix: update_hermes now returns NON-ZERO for a genuine
@@ -983,7 +1047,7 @@ update_luna_template() {
         return 0
     fi
     STATUS_luna_template="failed"
-    DETAIL_luna_template="upgrade.sh exited $rc — see docs/luna, resolve any _CLAUDE.md.template-merge conflict"
+    if [ -f "$vault/_CLAUDE.md.template-merge" ]; then DETAIL_luna_template="upgrade.sh exited $rc — see docs/luna, resolve any _CLAUDE.md.template-merge conflict"; else DETAIL_luna_template="upgrade.sh exited $rc — ${out%%$'\n'*}"; fi
     return 1
 }
 
@@ -1138,19 +1202,36 @@ PY
 
 sync_cli_proxy() {
     local mode="${1:-apply}"   # check | apply
-    local lane="$ROOT/scripts/setup/cli-proxy-lane.ps1"
-    local pin stamp_file installed ps cmp_rc
+    local lane_ps="$ROOT/scripts/setup/cli-proxy-lane.ps1"
+    local lane_sh="$ROOT/scripts/setup/cli-proxy-lane.sh"
+    local lane pin stamp_file installed ps cmp_rc lane_native
     echo "==> cli-proxy-api host roll (HIMMEL-2134)"
+    ps="$(command -v pwsh 2>/dev/null || true)"
+    # Linux only: the shell twin ships a linux_amd64 asset + a systemd user
+    # unit, so a pwsh-less Git-Bash or macOS host keeps the old skip.
+    if [ -z "$ps" ] && [ "$(uname -s 2>/dev/null)" = "Linux" ] && [ -f "$lane_sh" ]; then
+        lane="$lane_sh"
+    else
+        lane="$lane_ps"
+    fi
     if [ ! -f "$lane" ]; then
-        echo "    skip: cli-proxy-lane.ps1 not found ($lane)."
+        echo "    skip: $(basename "$lane") not found ($lane)."
         return 0
     fi
-    # The pin literal is the SAME spot scripts/upstreams.json's version_pin
-    # template names ("$Version = '{version}'"), so this reads whatever
-    # apply-drift-bump.sh last wrote — there is no second copy to drift.
-    pin="$(grep -oE "^\\\$Version *= *'[0-9][0-9A-Za-z.+-]*'" "$lane" 2>/dev/null | head -1 | sed -E "s/.*'([^']*)'.*/\1/")"
+    # PowerShell's pin literal is the spot scripts/upstreams.json's version_pin
+    # template names ("$Version = '{version}'"). On Linux without pwsh, read the
+    # shell twin's hand-maintained VERSION instead (parity tested; HIMMEL-3038).
+    if [ "$lane" = "$lane_sh" ]; then
+        pin="$(grep -oE '^VERSION="[0-9][0-9A-Za-z.+-]*"' "$lane" 2>/dev/null | head -1 | sed -E 's/.*"([^"]*)".*/\1/')"
+    else
+        pin="$(grep -oE "^\\\$Version *= *'[0-9][0-9A-Za-z.+-]*'" "$lane" 2>/dev/null | head -1 | sed -E "s/.*'([^']*)'.*/\1/")"
+    fi
     if [ -z "$pin" ]; then
-        echo "    skip: could not read the \$Version pin from cli-proxy-lane.ps1."
+        if [ "$lane" = "$lane_sh" ]; then
+            echo "    skip: could not read the VERSION pin from cli-proxy-lane.sh."
+        else
+            echo "    skip: could not read the \$Version pin from cli-proxy-lane.ps1."
+        fi
         return 0
     fi
     # cadence_user_home (lib/cadence-format.sh, already sourced): USERPROFILE via
@@ -1160,7 +1241,11 @@ sync_cli_proxy() {
     stamp_file="$(cadence_user_home)/.cli-proxy-api/cli-proxy-api.version"
     if [ ! -f "$stamp_file" ]; then
         echo "    skip: no cli-proxy-api install on this machine (no $stamp_file)."
-        echo "          first install is deliberate operator setup: pwsh -File \"$lane\" -Install -Start"
+        if [ "$lane" = "$lane_sh" ]; then
+            echo "          first install is deliberate operator setup: bash \"$lane\" --install"
+        else
+            echo "          first install is deliberate operator setup: pwsh -File \"$lane\" -Install -Start"
+        fi
         return 0
     fi
     installed="$(head -1 "$stamp_file" 2>/dev/null | tr -d '\r')"
@@ -1188,20 +1273,41 @@ sync_cli_proxy() {
         echo "    cannot verify: host v${installed:-?} vs pin v$pin could not be compared" >&2
         echo "                   (no python3, or the version stamp is not a version) — NOT rolling." >&2
         echo "                   Roll it yourself if the pin is what you want:" >&2
-        echo "                   pwsh -NoProfile -File \"$lane\" -Install -Restart" >&2
+        if [ "$lane" = "$lane_sh" ]; then
+            echo "                   bash \"$lane\" --roll" >&2
+        else
+            echo "                   pwsh -NoProfile -File \"$lane\" -Install -Restart" >&2
+        fi
         return 0
     fi
     if [ "$mode" = "check" ]; then
         echo "    behind: host v${installed:-?} < pin v$pin — run without --check to roll it."
         return 0
     fi
-    # pwsh only — the lane script is Windows-native (HIMMEL-2126: prefer pwsh,
-    # 5.1 only as a loud named fallback). No pwsh means no roll to make.
-    ps="$(command -v pwsh 2>/dev/null || true)"
+    # Prefer the existing Windows path whenever pwsh is present. Without pwsh,
+    # delegate the whole stop -> install -> restart -> verify sequence to the
+    # lane's own --roll (HIMMEL-3051): chaining separate --stop/--install/
+    # --restart calls here left a silent-success trap where a refused
+    # --install (unit still running) meant --restart relaunched the OLD
+    # binary while printing a clean "back up" — --roll's own verify step
+    # catches that instead of this caller having to re-implement it.
     if [ -z "$ps" ]; then
-        echo "    skip: pwsh not on PATH — cli-proxy-lane.ps1 is a Windows-native host script."
-        echo "          host is v${installed:-?}, pin is v$pin — roll it by hand when you are on the host."
-        return 0
+        if [ "$lane" != "$lane_sh" ]; then
+            echo "    skip: pwsh not on PATH — cli-proxy-lane.ps1 is a Windows-native host script."
+            echo "          host is v${installed:-?}, pin is v$pin — roll it by hand when you are on the host."
+            return 0
+        fi
+        echo "    rolling host v${installed:-?} -> v$pin (--roll; stop -> install -> restart -> verify the pin)"
+        if bash "$lane" --roll; then
+            echo "    cli-proxy-api rolled to v$pin."
+            return 0
+        fi
+        echo "    warn: cli-proxy roll did not complete (host stays on v${installed:-?}) — see the message above." >&2
+        echo "          if it refused a bounce, a codex-lane client was connected; re-run when idle:" >&2
+        echo "          bash \"$lane\" --roll" >&2
+        # Return NON-ZERO so the caller decides what it means -- see the
+        # matching comment at the end of the pwsh branch below.
+        return 1
     fi
     # cygpath -m before handing the path to a WINDOWS pwsh — the repo's standing
     # convention (setup-hooks.sh, propagate-public.sh). $lane is built from
@@ -1258,6 +1364,114 @@ sync_marketplaces() {
     fi
     HIMMEL_UPDATE_CLAUDE_BIN="${HIMMEL_UPDATE_CLAUDE_BIN:-claude}" bash "$helper" \
         || echo "    warn: one or more marketplaces did not update — see above (the others were still attempted)." >&2
+    return 0
+}
+
+# ─── node/npm/bun toolchain (HIMMEL-3068) ────────────────────────────────────
+# Installers pin Node from .nvmrc ONCE, at install time (ubuntu.sh/win11.ps1/
+# macos.sh), and this script consumes node/npm/bun throughout (jira_cli,
+# qmd_fork, the pre-push npm-audit gate...) but until now never checked
+# whether the pin had since moved. Best-effort advisory, matching
+# sync_graphify/sync_cli_proxy's shape (never gates the chain).
+#
+# node is deliberately REPORT-ONLY, even on a version-manager (nvm/fnm)
+# install this function could technically re-alias programmatically: whatever
+# node is active right now is very likely serving a running lane (this very
+# script, a live Claude Code session, its hooks) the instant this runs, and
+# silently moving "default" out from under it is exactly the surprise this
+# step must never cause ("Advisory-first" per the ticket). It prints the
+# exact remediation command and stops there.
+#
+# npm and bun DO self-upgrade in apply mode — both ship a safe, in-place,
+# built-in updater (`npm install -g npm@latest`, `bun upgrade`) that replaces
+# only themselves, never the node/bun runtime a live process is currently
+# executing out of, so neither carries the node hazard above.
+#
+# A node version that is behind the pin is also the trigger for the
+# guardrail-mode block hazard report_guardrail_block documents (a
+# version-manager node upgrade can leave ~/.claude/settings.json's baked node
+# path stale) — this function is called immediately BEFORE report_guardrail_block
+# in both the --check and apply advisory blocks below specifically so that
+# check re-runs and surfaces its remedy in the SAME pass, not several
+# sections later where it is easy to miss.
+report_toolchain() {
+    local mode="$1"   # check | apply — npm/bun self-upgrade only in apply; node
+                       # is report-only in both.
+    echo ""
+    echo "==> node/npm/bun toolchain (HIMMEL-3068)"
+
+    local nvmrc="$ROOT/.nvmrc"
+    if [ ! -f "$nvmrc" ]; then
+        echo "    skip: .nvmrc not found."
+        return 0
+    fi
+    local pin pin_major
+    pin="$(tr -d '[:space:]' < "$nvmrc")"
+    pin_major="${pin#v}"; pin_major="${pin_major%%.*}"
+
+    if command -v node >/dev/null 2>&1; then
+        local node_ver node_major
+        node_ver="$(node --version 2>/dev/null)"
+        node_major="${node_ver#v}"; node_major="${node_major%%.*}"
+        if [ -n "$pin_major" ] && [ "$node_major" != "$pin_major" ]; then
+            echo "    node $node_ver is behind the .nvmrc pin ($pin) — NOT moving it automatically."
+            if [ -f "$HOME/.nvm/nvm.sh" ]; then
+                echo "    fix (nvm): . \"\$HOME/.nvm/nvm.sh\" && nvm install $pin && nvm alias default $pin"
+            elif command -v fnm >/dev/null 2>&1; then
+                echo "    fix (fnm): fnm install $pin && fnm default $pin"
+            else
+                echo "    fix: install node $pin via your version manager (or https://nodejs.org), then re-run."
+            fi
+            echo "    after moving node by hand, re-check the guardrail-mode block just below — a node move is"
+            echo "    exactly what can leave its baked path in ~/.claude/settings.json stale."
+        else
+            echo "    node $node_ver matches the .nvmrc pin ($pin)."
+        fi
+    else
+        echo "    node: not on PATH."
+    fi
+
+    if command -v npm >/dev/null 2>&1; then
+        local npm_before npm_after
+        npm_before="$(npm --version 2>/dev/null)"
+        if [ "$mode" = "apply" ]; then
+            if npm install -g npm@latest >/dev/null 2>&1; then
+                npm_after="$(npm --version 2>/dev/null)"
+                if [ "$npm_after" != "$npm_before" ]; then
+                    echo "    npm $npm_before -> $npm_after (self-upgraded)."
+                else
+                    echo "    npm $npm_before already current."
+                fi
+            else
+                echo "    npm $npm_before — self-upgrade failed (non-fatal); run: npm install -g npm@latest" >&2
+            fi
+        else
+            echo "    npm $npm_before (check mode — self-upgrade deferred to apply)."
+        fi
+    else
+        echo "    npm: not on PATH."
+    fi
+
+    if command -v bun >/dev/null 2>&1; then
+        local bun_before bun_after
+        bun_before="$(bun --version 2>/dev/null)"
+        if [ "$mode" = "apply" ]; then
+            if bun upgrade >/dev/null 2>&1; then
+                bun_after="$(bun --version 2>/dev/null)"
+                if [ "$bun_after" != "$bun_before" ]; then
+                    echo "    bun $bun_before -> $bun_after (self-upgraded)."
+                else
+                    echo "    bun $bun_before already current."
+                fi
+            else
+                echo "    bun $bun_before — self-upgrade failed (non-fatal); run: bun upgrade" >&2
+            fi
+        else
+            echo "    bun $bun_before (check mode — self-upgrade deferred to apply)."
+        fi
+    else
+        echo "    bun: not on PATH — the qmd fork update and the jira CLI's bun fallback are both disabled (see above)."
+    fi
     return 0
 }
 
@@ -1547,7 +1761,7 @@ _channel_follow() {
         # `git switch --detach` isn't a `git pull`; autostash's
         # stash/pull/restore semantics don't apply to it, so channel mode
         # always refuses on a dirty tree rather than silently stashing.
-        if is_dirty "$ROOT"; then
+        if is_dirty_tracked "$ROOT"; then
             STATUS_pull="failed"
             DETAIL_pull="checkout has uncommitted changes — refusing to switch onto $tag with a dirty tree; commit or stash your changes, then re-run"
             return 1
@@ -1615,14 +1829,14 @@ fi
 if [ "${1:-}" = "--only" ]; then
     only_item="${2:-}"
     if [ -z "$only_item" ]; then
-        echo "update --only: needs an item — one of: pull marketplace jira_cli qmd_fork hermes luna_template graphify cli_proxy marketplaces" >&2
+        echo "update --only: needs an item — one of: pull marketplace jira_cli qmd_fork hermes luna_template graphify cli_proxy marketplaces toolchain" >&2
         exit 2
     fi
     branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
     only_rc=0
     case "$only_item" in
         pull)
-            if is_dirty "$ROOT"; then
+            if is_dirty_tracked "$ROOT"; then
                 if [ "${HIMMEL_UPDATE_AUTOSTASH:-}" = "1" ]; then
                     echo "update --only pull: dirty tree — HIMMEL_UPDATE_AUTOSTASH=1, autostashing local changes around the pull." >&2
                 else
@@ -1646,11 +1860,13 @@ if [ "${1:-}" = "--only" ]; then
         graphify)      sync_graphify ;;
         cli_proxy)     sync_cli_proxy || only_rc=1 ;;
         marketplaces)  sync_marketplaces ;;
+        toolchain)     report_toolchain apply ;;
         *)
-            echo "update --only: unknown item '$only_item' — one of: pull marketplace jira_cli qmd_fork hermes luna_template graphify cli_proxy marketplaces" >&2
+            echo "update --only: unknown item '$only_item' — one of: pull marketplace jira_cli qmd_fork hermes luna_template graphify cli_proxy marketplaces toolchain" >&2
             exit 2 ;;
     esac
     report_qmd_daemon_restart
+    report_qmd_bun_missing
     print_status_table
     exit "$only_rc"
 fi
@@ -1723,6 +1939,8 @@ if [ "${1:-}" = "--check" ] || [ "${1:-}" = "--dry-run" ]; then
     sync_cli_proxy check || true
     sync_marketplaces check || true
     report_cadence_stale
+    report_qmd_bun_missing
+    report_toolchain check
     report_guardrail_block
     print_status_table
     exit 0
@@ -1731,12 +1949,16 @@ fi
 branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
 
 # ─── dirty-tree pre-check (HIMMEL-893) ───────────────────────────────────────
-# A `git pull` into a dirty tree is exactly the failure this guards against —
-# refuse up front rather than let `git pull --ff-only` fail confusingly (or,
-# worse, silently mix local edits into the pulled tree). is_dirty() is
-# guardrails/lib.sh's own predicate (already sourced above) — the same one the
-# edit-on-main guard uses, so "dirty" means the same thing everywhere in himmel.
-if is_dirty "$ROOT"; then
+# A `git pull` into a dirty TRACKED tree is exactly the failure this guards
+# against — refuse up front rather than let `git pull --ff-only` fail
+# confusingly (or, worse, silently mix local edits into the pulled tree).
+# HIMMEL-3078: untracked-only dirt doesn't count here — `--ff-only` never
+# touches untracked files and refuses on its own if an incoming path would
+# overwrite one, so gating on them protects nothing and just leaves the
+# checkout stuck on stale strays (a bun.lock, a plugin config). Deliberately
+# is_dirty_tracked(), NOT guardrails/lib.sh's is_dirty() — that predicate is
+# unchanged and still counts untracked files for the edit-on-main guard.
+if is_dirty_tracked "$ROOT"; then
     if [ "${HIMMEL_UPDATE_AUTOSTASH:-}" = "1" ]; then
         # Opt-in (HIMMEL-1197): autostash local changes around the pull instead of
         # refusing — update_pull adds --autostash and reports failed (stash kept)
@@ -1894,6 +2116,8 @@ report_plugin_gap
 reconcile_plugins apply
 offer_retired_plugin_removal apply
 report_cadence_stale
+report_qmd_bun_missing
+report_toolchain apply
 report_guardrail_block
 report_dependency_readiness
 backfill_user_claude_md

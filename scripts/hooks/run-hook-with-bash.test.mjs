@@ -1035,8 +1035,11 @@ test('chain-carrying PreToolUse matchers are pairwise disjoint', () => {
 
 function withEnv(overrides, fn) {
   const saved = {};
-  for (const key of Object.keys(overrides)) saved[key] = process.env[key];
-  Object.assign(process.env, overrides);
+  for (const key of Object.keys(overrides)) {
+    saved[key] = process.env[key];
+    if (overrides[key] === undefined) delete process.env[key];
+    else process.env[key] = overrides[key];
+  }
   try {
     return fn();
   } finally {
@@ -1082,13 +1085,16 @@ test('verifyProjectHookIntegrity denies a pinned script whose on-disk content dr
       join(integrityDir, 's1.json'),
       JSON.stringify({ session_id: 's1', pins: { [scriptRel]: pin } }),
     );
-    withEnv({ CLAUDE_PROJECT_DIR: dir, HIMMEL_HOOK_INTEGRITY_DIR: integrityDir }, () => {
-      assert.equal(verifyProjectHookIntegrity(scriptPath, 's1').ok, true);
-      writeFileSync(scriptPath, 'echo tampered\n');
-      const result = verifyProjectHookIntegrity(scriptPath, 's1');
-      assert.equal(result.ok, false);
-      assert.equal(result.relPath, scriptRel);
-    });
+    withEnv(
+      { CLAUDE_PROJECT_DIR: dir, HIMMEL_HOOK_INTEGRITY_DIR: integrityDir, HIMMEL_HOOK_INTEGRITY_BYPASS_OK: undefined },
+      () => {
+        assert.equal(verifyProjectHookIntegrity(scriptPath, 's1').ok, true);
+        writeFileSync(scriptPath, 'echo tampered\n');
+        const result = verifyProjectHookIntegrity(scriptPath, 's1');
+        assert.equal(result.ok, false);
+        assert.equal(result.relPath, scriptRel);
+      },
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
     rmSync(integrityDir, { recursive: true, force: true });

@@ -141,3 +141,10 @@ CorsairLink.log
 # these files are noise.
 __pycache__/
 *.pyc
+# HIMMEL-3078: two recurring strays that tripped himmel-update's dirty-tree
+# gate before the gate was scoped to tracked changes — a `bun.lock` `bun
+# install` drops inside the npm-managed scripts/bitbucket/, and a claude-hud
+# plugin config the HUD writes locally. Both are pure noise, never ours to
+# commit.
+scripts/bitbucket/bun.lock
+.claude/plugins/claude-hud/config.json

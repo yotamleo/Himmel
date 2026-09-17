@@ -178,7 +178,7 @@ function buildEntry(item, ctx, diagnosticState) {
     case 'qmd': {
       // CR fix: the resolver path is passed as a bash POSITIONAL arg ($1),
       // never interpolated into the -c script text — a checkout path
-      // carrying a space or apostrophe (e.g. "C:/Users/John O'Brien/...")
+      // carrying a space or apostrophe (e.g. "C:/Users/John O'Brien/...") // leak-allow: home-path doc example
       // would otherwise break the quoting. spawnSync's argv is never
       // shell-re-parsed, so a positional arg is safe regardless of content.
       // CR fix (CodeRabbit round 19): qmd_install only installs the BINARY.

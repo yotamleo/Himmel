@@ -49,6 +49,10 @@ export const EXPECTED_SCRIPT_ORDER = Object.freeze([
   'block-jira-compound-write.sh',
   'block-tail-pipe-on-gates.sh',
   'block-read-secrets.sh',
+  // HIMMEL-2993: token-saving nudge, deliberately after the secrets fence
+  // (so a denied secret read never gets clamp-recorded) and before the
+  // destructive-command fence.
+  'read-clamp.sh',
   'block-destructive-commands.sh',
   'block-git-stash.sh',
   'block-rogue-claude-schedule.sh',
@@ -65,6 +69,10 @@ export const EXPECTED_SCRIPT_ORDER = Object.freeze([
   // write (`cat >`, `sed -i`, `tee`, a python heredoc) bypassed it entirely —
   // this destination-based twin closes that gap for the Bash chain.
   'block-write-into-main-checkout.sh',
+  // HIMMEL-2975 Guard D: denies a console relay every write channel into
+  // console state via Bash — see the sibling entry on the
+  // Edit|Write|MultiEdit|NotebookEdit chain below.
+  'guard-relay-writes.sh',
   // PreToolUse `PowerShell` chain.
   'block-read-secrets.sh',
   'block-destructive-commands.sh',
@@ -73,6 +81,7 @@ export const EXPECTED_SCRIPT_ORDER = Object.freeze([
   'block-chokepoint-env-prefix.sh',
   // PreToolUse `Read|Grep`.
   'block-read-secrets.sh',
+  'read-clamp.sh',
   // PreToolUse `Edit|Write|MultiEdit|NotebookEdit` chain.
   'block-edit-on-main.sh',
   // HIMMEL-2360: denies writes to a LIVE settings.json/settings.local.json
@@ -82,6 +91,9 @@ export const EXPECTED_SCRIPT_ORDER = Object.freeze([
   // primary checkout from a linked worktree.
   'block-edit-live-settings.sh',
   'guard-memory-capture.sh',
+  // HIMMEL-2975 Guard D: denies a console relay direct writes to the inbox,
+  // leg handover docs, and the console rundir (marker-gated no-op otherwise).
+  'guard-relay-writes.sh',
   // PreToolUse `Edit|Write|NotebookEdit` — its own entry, NOT folded into the
   // chain above: it does not guard MultiEdit, and widening a guard's matcher is
   // not something a launch-count refactor gets to do.

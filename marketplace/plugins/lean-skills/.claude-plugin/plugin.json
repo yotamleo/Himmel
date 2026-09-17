@@ -1,0 +1,10 @@
+{
+  "name": "lean-skills",
+  "version": "0.1.0",
+  "description": "[himmel] The subset of upstream skills himmel actually invokes, vendored verbatim so a session pays for 13 skill listings instead of 25 across two always-on upstream plugins. Sources: obra/superpowers (11 of 14 - the reference closure of the 4 we use) and mattpocock/skills (grilling only). Upstream advance is tracked in scripts/upstreams.json; repair is a reviewed re-vendor.",
+  "author": {
+    "name": "Jesse Vincent / Matt Pocock (upstream) / yotamleo (vendor)"
+  },
+  "license": "MIT",
+  "keywords": ["himmel", "lean", "vendored", "skills", "context-floor"]
+}

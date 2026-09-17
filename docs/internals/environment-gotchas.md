@@ -241,7 +241,7 @@ configs: `.claude/settings.json`, `.codex/hooks.json`, `.gemini/settings.json`
 **Quote the exe if its path contains a space.** Removing backslashes is not enough
 when the path itself has a space — e.g. `C:/Users/Jane Doe/.local/bin/graphify.exe` <!-- leak-allow: home-path doc example -->
 — because the command runs through a shell that word-splits an unquoted string
-(bash splits on the space; cmd.exe treats `C:/Users/Jane` as the program). Wrap the
+(bash splits on the space; cmd.exe treats `C:/Users/Jane` as the program). <!-- leak-allow: home-path doc example --> Wrap the
 executable in quotes inside the command value (JSON-escaped, e.g.
 `"\"C:/Users/Jane Doe/.local/bin/graphify.exe\" hook-guard search"`), or install <!-- leak-allow: home-path doc example -->
 graphify to a space-free path.

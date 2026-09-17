@@ -4,8 +4,8 @@
 #
 # WHY: scripts/guardrails/graphify-fence.sh (the interactive path) and
 # scripts/graphify/refresh-graph-map.sh (the scheduled path) each classify (a)
-# PHI-root/egress-denylist file readability and (b) an Anthropic/Kimi endpoint
-# URL down to a hostname. Before this file existed, each had its OWN copy of
+# PHI-root/egress-denylist file readability and (b) an Anthropic endpoint URL
+# down to a hostname. Before this file existed, each had its OWN copy of
 # both checks, and the scheduled copy fell behind the fence's fail-closed
 # behavior at least once (HIMMEL-1748 / PR #1680 fixed it after the drift was
 # found in review). A parity TEST can only catch drift already committed;

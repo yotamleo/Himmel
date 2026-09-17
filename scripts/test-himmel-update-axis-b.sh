@@ -10,10 +10,10 @@
 # with the scaffolding COMMITTED so the working tree starts clean.
 #
 # Fully offline and non-mutating: no real claude CLI (HIMMEL_UPDATE_CLAUDE_BIN
-# stub), no real pwsh invocation (every cli-proxy case asserts on --check, which
-# compares versions and shells out to nothing), no real marketplace, no real
-# cli-proxy install, and a fake HOME with USERPROFILE cleared so the version
-# stamp is read from the fixture rather than the developer machine.
+# stub), no real pwsh or cli-proxy lane invocation (fake executables capture
+# apply calls), no real marketplace, and a fake HOME with USERPROFILE cleared
+# so the version stamp is read from the fixture rather than the developer
+# machine.
 #
 # Covers:
 #   1. --only rejects a missing / unknown item with rc 2 and names the items.
@@ -29,6 +29,8 @@
 #   7. cli-proxy roll (HIMMEL-2152): APPLY mode (--only cli_proxy) completes
 #      instead of errexiting on an ahead host or an uncomparable stamp, and
 #      later steps still run.
+#   8. Linux without pwsh stops before installing, then restarts; failures
+#      propagate without forcing, with a restore attempted if install fails.
 #
 # Bash 3.2 compatible.
 
@@ -44,6 +46,33 @@ fi
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+
+# A deterministic copy of the caller's executable search path with pwsh
+# omitted and uname -s stubbed. This exercises the Linux lane regardless of the
+# host OS or whether PowerShell is installed; a case can override the stub OS.
+NO_PWSH_BIN="$TMP/no-pwsh-bin"
+mkdir -p "$NO_PWSH_BIN"
+REAL_UNAME="$(command -v uname)"
+cat > "$NO_PWSH_BIN/uname" <<SH
+#!/bin/sh
+if [ "\${1:-}" = "-s" ]; then
+    printf '%s\n' "\${HIMMEL_TEST_UNAME_S:-Linux}"
+else
+    exec "$REAL_UNAME" "\$@"
+fi
+SH
+chmod +x "$NO_PWSH_BIN/uname"
+_old_ifs="$IFS"; IFS=:
+for _bindir in $PATH; do
+    [ -d "$_bindir" ] || continue
+    for _exe in "$_bindir"/*; do
+        [ -x "$_exe" ] || continue
+        _name="${_exe##*/}"
+        case "$_name" in pwsh|pwsh.exe) continue ;; esac
+        [ -e "$NO_PWSH_BIN/$_name" ] || ln -s "$_exe" "$NO_PWSH_BIN/$_name"
+    done
+done
+IFS="$_old_ifs"
 
 pass=0
 fail=0
@@ -121,6 +150,45 @@ write_fake_lane() {   # <clone> <version>
     git -C "$1" commit --quiet -m "fake lane"
 }
 
+# --roll (HIMMEL-3051) is now the ONE call sync_cli_proxy issues, so the fake
+# lane owns the stop -> install -> restart sequencing internally instead of
+# himmel-update.sh issuing three separate invocations. The rc knobs keep their
+# old positional meaning; $3 (the call log) records only the OUTER invocation
+# ("--roll", once) -- matching what a real caller sees, since the fake's own
+# internal stop/install/restart bookkeeping is no longer separately observable
+# from outside a single subcommand.
+write_fake_linux_lane() {   # <clone> <version> <call-log> [install-rc] [stop-rc] [restart-rc]
+    mkdir -p "$1/scripts/setup"
+    printf 'running\n' > "$3.state"
+    cat > "$1/scripts/setup/cli-proxy-lane.sh" <<SH
+#!/bin/sh
+VERSION="$2"
+case "\${1:-}" in
+    --roll)
+        printf '%s\n' "\$*" >> "$3"
+        if [ "${5:-0}" -ne 0 ]; then exit "${5:-0}"; fi
+        printf 'stopped\n' > "$3.state"
+        if [ "${4:-0}" -ne 0 ]; then
+            if [ "${6:-0}" -eq 0 ]; then
+                printf 'running\n' > "$3.state"
+                echo 'cli-proxy-lane: previous binary restored and running.' >&2
+            else
+                echo 'cli-proxy-lane: previous binary did not come back up either -- lane is DOWN.' >&2
+            fi
+            exit 1
+        fi
+        if [ "${6:-0}" -ne 0 ]; then exit "${6:-0}"; fi
+        printf 'running\n' > "$3.state"
+        echo "proxy rolled to v$2 on 127.0.0.1:8317."
+        ;;
+    *) exit 2 ;;
+esac
+SH
+    chmod +x "$1/scripts/setup/cli-proxy-lane.sh"
+    git -C "$1" add -A
+    git -C "$1" commit --quiet -m "fake linux lane"
+}
+
 make_claude_stub() {   # <path> <exit-code> [call-log]
     if [ -n "${3:-}" ]; then
         # SC2016: `$4` must reach the GENERATED stub verbatim — expanding it
@@ -186,6 +254,28 @@ assert_not_contains "--only did NOT run the jira dist rebuild" "\\[3/6\\]" "$OUT
 assert_contains "--only still prints the status table" "==> update chain status" "$OUT"
 
 echo ""
+echo "Test 2b: luna template failure reports the diagnostic, not a phantom conflict"
+make_mock_clone
+LUNA_CLONE="$CHECKOUT_DIR"
+LUNA_VAULT="$TMP/luna-vault"; mkdir -p "$LUNA_VAULT" "$LUNA_CLONE/templates/luna-second-brain/scripts"
+cat > "$LUNA_CLONE/templates/luna-second-brain/scripts/upgrade.sh" <<'UPGRADE'
+#!/usr/bin/env bash
+echo 'syntax error near unexpected token' >&2
+echo 'second diagnostic line' >&2
+exit 2
+UPGRADE
+git -C "$LUNA_CLONE" add -A
+git -C "$LUNA_CLONE" commit --quiet -m "failing upgrade fixture"
+OUT="$(LUNA_VAULT_PATH="$LUNA_VAULT" run_update "$LUNA_CLONE" "$TMP/luna-home" "$STUB1" --only luna_template)"; RC=$?
+assert_eq "luna parse failure exits nonzero" "1" "$RC"
+assert_contains "luna failure table carries the first diagnostic" 'luna_template  *failed  *upgrade.sh exited 2.*syntax error near unexpected token' "$OUT"
+assert_not_contains "luna failure without sidecar gives no conflict hint" 'resolve any _CLAUDE.md.template-merge conflict' "$OUT"
+: > "$LUNA_VAULT/_CLAUDE.md.template-merge"
+OUT="$(LUNA_VAULT_PATH="$LUNA_VAULT" run_update "$LUNA_CLONE" "$TMP/luna-home" "$STUB1" --only luna_template)"; RC=$?
+assert_eq "luna failure with sidecar still exits nonzero" "1" "$RC"
+assert_contains "luna failure with sidecar retains the conflict hint" 'resolve any _CLAUDE.md.template-merge conflict' "$OUT"
+
+echo ""
 echo "Test 3: --only pull honours the dirty-tree pre-check"
 printf 'dirty\n' >> "$CLONE1/file.txt"
 OUT="$(run_update "$CLONE1" "$FH1" "$STUB1" --only pull)"; RC=$?
@@ -247,6 +337,21 @@ assert_eq "--check exits 0 with a behind host" "0" "$RC"
 assert_contains "behind host names both versions" "behind: host v1.0.0 < pin v9.9.9" "$OUT"
 # --check must stay a zero-mutation dry run: no roll, no pwsh shell-out.
 assert_not_contains "--check never rolls the host" "rolling host" "$OUT"
+
+echo ""
+echo "Test 7b: cli-proxy roll — Linux fallback reads the shell lane pin in check mode"
+LINUXLOG="$TMP/linux-lane-calls"; : >"$LINUXLOG"
+make_mock_clone
+LINUXCLONE="$CHECKOUT_DIR"
+write_fake_lane "$LINUXCLONE" "9.9.9"
+write_fake_linux_lane "$LINUXCLONE" "8.8.8" "$LINUXLOG"
+LINUXHOME="$TMP/linux-home"
+mkdir -p "$LINUXHOME/.cli-proxy-api"
+printf '1.0.0\n' > "$LINUXHOME/.cli-proxy-api/cli-proxy-api.version"
+OUT="$(PATH="$NO_PWSH_BIN" run_update "$LINUXCLONE" "$LINUXHOME" "$STUB1" --check)"; RC=$?
+assert_eq "Linux fallback check exits 0" "0" "$RC"
+assert_contains "Linux fallback check reads the shell lane pin" "behind: host v1.0.0 < pin v8.8.8" "$OUT"
+assert_eq "Linux fallback check never invokes the lane" "" "$(cat "$LINUXLOG")"
 
 echo ""
 echo "Test 8: marketplaces catch-up — --check lists rows and calls claude zero times"
@@ -355,6 +460,104 @@ assert_contains "invoked the lane with -Install -Restart" "Install -Restart" "$(
 assert_contains "invoked the lane script itself" "cli-proxy-lane.ps1" "$(cat "$PSLOG")"
 
 echo ""
+echo "Test 9b: cli-proxy roll — Linux fallback stops, installs, then restarts"
+: >"$LINUXLOG"
+OUT="$(PATH="$NO_PWSH_BIN" USERPROFILE='' HOME="$LINUXHOME" \
+    HIMMEL_UPDATE_CLAUDE_BIN="$STUB1" HERMES_HOME="$TMP/no-hermes" \
+    HIMMEL_UPDATE_AUTOSTASH='' CLAUDE_USER_SETTINGS="$LINUXHOME/.claude/settings.json" \
+    bash "$LINUXCLONE/scripts/himmel-update.sh" --only cli_proxy 2>&1)"; RC=$?
+assert_eq "a successful Linux roll exits 0" "0" "$RC"
+assert_contains "Linux roll names the shell lane pin" "rolling host v1.0.0 -> v8.8.8" "$OUT"
+assert_contains "Linux roll reports the completed version" "cli-proxy-api rolled to v8.8.8" "$OUT"
+assert_eq "Linux lane is invoked via a single --roll" "--roll" "$(cat "$LINUXLOG")"
+assert_not_contains "Linux roll never passes --force" "force" "$(cat "$LINUXLOG")"
+
+echo ""
+echo "Test 9c: cli-proxy roll — Linux install failure restores the previous binary"
+: >"$LINUXLOG"
+write_fake_linux_lane "$LINUXCLONE" "8.8.8" "$LINUXLOG" 1
+OUT="$(PATH="$NO_PWSH_BIN" USERPROFILE='' HOME="$LINUXHOME" \
+    HIMMEL_UPDATE_CLAUDE_BIN="$STUB1" HERMES_HOME="$TMP/no-hermes" \
+    HIMMEL_UPDATE_AUTOSTASH='' CLAUDE_USER_SETTINGS="$LINUXHOME/.claude/settings.json" \
+    bash "$LINUXCLONE/scripts/himmel-update.sh" --only cli_proxy 2>&1)"; RC=$?
+assert_eq "a failed Linux install propagates rc 1" "1" "$RC"
+assert_eq "a failed Linux install still shows a single --roll invocation" "--roll" "$(cat "$LINUXLOG")"
+assert_contains "Linux install failure reports the restore" "previous binary restored" "$OUT"
+assert_eq "Linux install failure leaves the proxy running" "running" "$(cat "$LINUXLOG.state")"
+assert_contains "Linux install failure prints the warn block" "warn: cli-proxy roll did not complete" "$OUT"
+assert_contains "Linux failure prints the platform-correct retry" "bash .*--roll" "$OUT"
+assert_not_contains "Linux failure never retries with --force" "force" "$(cat "$LINUXLOG")"
+
+echo ""
+echo "Test 9d: cli-proxy roll — Darwin without pwsh skips the Linux lane"
+DARWINLOG="$TMP/darwin-lane-calls"; : >"$DARWINLOG"
+make_mock_clone
+DARWINCLONE="$CHECKOUT_DIR"
+write_fake_lane "$DARWINCLONE" "9.9.9"
+write_fake_linux_lane "$DARWINCLONE" "8.8.8" "$DARWINLOG"
+DARWINHOME="$TMP/darwin-home"
+mkdir -p "$DARWINHOME/.cli-proxy-api"
+printf '1.0.0\n' > "$DARWINHOME/.cli-proxy-api/cli-proxy-api.version"
+OUT="$(PATH="$NO_PWSH_BIN" HIMMEL_TEST_UNAME_S=Darwin \
+    run_update "$DARWINCLONE" "$DARWINHOME" "$STUB1" --only cli_proxy)"; RC=$?
+assert_eq "Darwin without pwsh exits 0" "0" "$RC"
+assert_contains "Darwin without pwsh reports the skip" "skip: pwsh not on PATH" "$OUT"
+assert_not_contains "Darwin without pwsh never rolls the host" "rolling host" "$OUT"
+assert_eq "Darwin never invokes the Linux lane" "" "$(cat "$DARWINLOG")"
+assert_eq "Darwin leaves the host stamp unchanged" "1.0.0" "$(cat "$DARWINHOME/.cli-proxy-api/cli-proxy-api.version")"
+assert_eq "Darwin leaves the checkout unchanged" "" "$(git -C "$DARWINCLONE" status --porcelain)"
+
+echo ""
+echo "Test 9e: cli-proxy roll — a running Linux proxy cannot trigger install refusal"
+: >"$LINUXLOG"
+write_fake_linux_lane "$LINUXCLONE" "8.8.8" "$LINUXLOG"
+OUT="$(PATH="$NO_PWSH_BIN" run_update "$LINUXCLONE" "$LINUXHOME" "$STUB1" --only cli_proxy)"; RC=$?
+assert_eq "rolling a running Linux proxy exits 0" "0" "$RC"
+assert_not_contains "Linux roll avoids the running-unit install refusal" "RUNNING" "$OUT"
+assert_contains "running Linux proxy reports the completed roll" "cli-proxy-api rolled to v8.8.8" "$OUT"
+assert_eq "successful Linux roll leaves the proxy running" "running" "$(cat "$LINUXLOG.state")"
+
+echo ""
+echo "Test 9f: cli-proxy roll — a refused Linux stop never attempts install"
+: >"$LINUXLOG"
+write_fake_linux_lane "$LINUXCLONE" "8.8.8" "$LINUXLOG" 0 1
+OUT="$(PATH="$NO_PWSH_BIN" run_update "$LINUXCLONE" "$LINUXHOME" "$STUB1" --only cli_proxy)"; RC=$?
+assert_eq "a refused Linux stop propagates rc 1" "1" "$RC"
+assert_eq "a refused Linux stop still shows a single --roll invocation" "--roll" "$(cat "$LINUXLOG")"
+assert_contains "a refused Linux stop prints the warn block" "warn: cli-proxy roll did not complete" "$OUT"
+assert_contains "a refused Linux stop asks to retry when idle" "re-run when idle" "$OUT"
+assert_eq "a refused Linux stop leaves the proxy running" "running" "$(cat "$LINUXLOG.state")"
+
+echo ""
+echo "Test 9g: cli-proxy roll — Linux restart failure after successful install"
+: >"$LINUXLOG"
+write_fake_linux_lane "$LINUXCLONE" "8.8.8" "$LINUXLOG" 0 0 1
+OUT="$(PATH="$NO_PWSH_BIN" run_update "$LINUXCLONE" "$LINUXHOME" "$STUB1" --only cli_proxy)"; RC=$?
+assert_eq "a failed Linux restart propagates rc 1" "1" "$RC"
+assert_eq "a failed Linux restart still shows a single --roll invocation" "--roll" "$(cat "$LINUXLOG")"
+assert_contains "a failed Linux restart prints the warn block" "warn: cli-proxy roll did not complete" "$OUT"
+assert_not_contains "a failed Linux restart never reports a completed roll" "cli-proxy-api rolled to" "$OUT"
+
+echo ""
+echo "Test 9h: cli-proxy roll — Linux install failure and restore failure"
+: >"$LINUXLOG"
+write_fake_linux_lane "$LINUXCLONE" "8.8.8" "$LINUXLOG" 1 0 1
+OUT="$(PATH="$NO_PWSH_BIN" run_update "$LINUXCLONE" "$LINUXHOME" "$STUB1" --only cli_proxy)"; RC=$?
+assert_eq "a failed Linux restore propagates rc 1" "1" "$RC"
+assert_eq "a failed Linux restore still shows a single --roll invocation" "--roll" "$(cat "$LINUXLOG")"
+assert_contains "Linux restore failure is reported" "lane is DOWN" "$OUT"
+assert_contains "Linux restore failure prints the warn block" "warn: cli-proxy roll did not complete" "$OUT"
+
+echo ""
+echo "Test 9i: cli-proxy roll — unverifiable Linux stamp gives the safe retry sequence"
+: >"$LINUXLOG"
+printf 'custom\n' > "$LINUXHOME/.cli-proxy-api/cli-proxy-api.version"
+OUT="$(PATH="$NO_PWSH_BIN" run_update "$LINUXCLONE" "$LINUXHOME" "$STUB1" --only cli_proxy)"; RC=$?
+assert_eq "an unverifiable Linux stamp exits 0" "0" "$RC"
+assert_contains "Linux cannot-verify hint stops before installing" "bash .*--roll" "$OUT"
+assert_eq "an unverifiable Linux stamp never invokes the lane" "" "$(cat "$LINUXLOG")"
+
+echo ""
 echo "Test 10: cli-proxy roll — a REFUSED bounce warns, never aborts the update"
 # Assert-BounceSafe refusing under a live codex-lane client is the expected
 # non-zero here. It must stay advisory: warn with the re-run command, rc 0.
@@ -407,6 +610,20 @@ OUT="$(PATH="$PSDIR:$PATH" run_update "$CLONE5" "$FH5" "$STUB1")"; RC=$?
 assert_eq "a full run still exits 0 despite the failed roll" "0" "$RC"
 assert_contains "the failed roll is still reported" "roll did not complete" "$OUT"
 assert_contains "and the run reaches its status table" "==> update chain status" "$OUT"
+
+echo ""
+echo "Test 14: cli-proxy pins stay equal across Windows, Linux, and upstream registry"
+PS_PIN="$(sed -n "s/^\\\$Version *= *'\\([^']*\\)'.*/\\1/p" "$SRC_SCRIPTS/setup/cli-proxy-lane.ps1" | head -1)"
+SH_PIN="$(sed -n 's/^VERSION="\([^"]*\)".*/\1/p' "$SRC_SCRIPTS/setup/cli-proxy-lane.sh" | head -1)"
+REGISTRY_PIN="$(python3 - "$SRC_SCRIPTS/upstreams.json" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding='utf-8') as f:
+    rows = json.load(f)['entries']
+print(next(row['synced_base'] for row in rows if row['name'] == 'cli-proxy-api'))
+PY
+)"
+assert_eq "PowerShell and Linux lane pins match" "$PS_PIN" "$SH_PIN"
+assert_eq "lane pins match cli-proxy-api synced_base" "$REGISTRY_PIN" "$SH_PIN"
 
 echo ""
 echo "$pass passed, $fail failed"

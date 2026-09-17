@@ -31,7 +31,7 @@ assert() {
 echo "[test-qmd-bin] qmd_install_hint emits the fork clone+build+link recipe (HIMMEL-877)"
 hint="$(qmd_install_hint)"
 assert "hint mentions git clone" grep -q '^git clone ' <<<"$hint"
-assert "hint mentions the himmel fork repo" grep -q 'yotamleo/qmd' <<<"$hint"
+assert "hint mentions the upstream qmd repo" grep -q 'tobi/qmd' <<<"$hint"
 assert "hint pins a full commit SHA (HIMMEL-911), not a movable ref" grep -qE 'fetch origin [0-9a-f]{40} ' <<<"$hint"
 # shellcheck disable=SC2016
 # Single quotes intentional — $1 expands inside the spawned bash -c subshell.
@@ -247,9 +247,15 @@ case "$1" in
       # `remote add origin <url>` -- nothing to simulate, just succeed.
       exit 0
     fi
+    if [ "$2" = "set-url" ]; then
+      # `remote set-url origin <url>` -- the legacy-fork-origin migration
+      # (HIMMEL-3045); nothing to simulate, just succeed and let the GIT_LOG
+      # line above record it.
+      exit 0
+    fi
     # `remote get-url origin` ownership probe: default answers the default
-    # fork repo URL so owned-clone scenarios pass the guard.
-    printf '%s\n' "${STUB_GIT_ORIGIN_URL:-https://github.com/yotamleo/qmd.git}"
+    # upstream repo URL so owned-clone scenarios pass the guard.
+    printf '%s\n' "${STUB_GIT_ORIGIN_URL:-https://github.com/tobi/qmd.git}"
     exit 0
     ;;
   fetch|reset) exit "${STUB_GIT_FETCH_RC:-0}" ;;
@@ -323,6 +329,7 @@ cat > "$id2/bin/node" <<'STUB'
 #!/usr/bin/env bash
 echo "NODE $*" >> "${NODE_LOG:?}"
 case "$1" in
+  -p) printf '%s\n' "${STUB_NODE_PLATFORM_ARCH:-linux-x64}" ;;
   */prebuild-install/bin.js)
     [ "${STUB_NODE_FETCH_RC:-0}" -eq 0 ] || exit "$STUB_NODE_FETCH_RC"
     mkdir -p build/Release
@@ -330,8 +337,11 @@ case "$1" in
     exit 0
     ;;
   *.himmel-binding-probe.cjs)
-    [ "${STUB_NODE_PROBE_RC:-0}" -eq 0 ] || exit "$STUB_NODE_PROBE_RC"
-    if [ -f "$(dirname "$1")/node_modules/better-sqlite3/build/Release/better_sqlite3.node" ]; then
+    if [ "${STUB_NODE_PROBE_RC:-0}" -ne 0 ]; then
+      echo 'stub binding load failed: wrong ABI' >&2
+      exit "$STUB_NODE_PROBE_RC"
+    fi
+    if [ "${STUB_NODE_PROBE_OK:-0}" = 1 ] || [ -f "$(dirname "$1")/node_modules/better-sqlite3/build/Release/better_sqlite3.node" ]; then
       echo "qmd-binding-ok"
       exit 0
     fi
@@ -345,6 +355,12 @@ chmod +x "$id2/bin/node"
 git_log="$id2/git-calls"
 bun_log="$id2/bun-calls"
 node_log="$id2/node-calls"
+node_gyp_log="$id2/node-gyp-calls"
+# Never let a repair regression invoke the host's node-gyp or npx/network.
+for cmd in node-gyp npx; do
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\nexit 1\n' "$node_gyp_log" > "$id2/bin/$cmd"
+  chmod +x "$id2/bin/$cmd"
+done
 qmd_install_env() { # $1 = HOME dir, remaining = the command to run under it
   local home="$1"; shift
   : > "$git_log"; : > "$bun_log"; : > "$node_log"
@@ -546,6 +562,54 @@ assert "unrelated-origin: refuses with the origin mismatch WARNING" grep -qi 're
 assert "unrelated-origin: never fetch/checkout/reset" bash -c '! grep -qE "GIT (fetch|checkout|reset)" "$1"' _ "$git_log"
 assert "unrelated-origin: dir contents untouched" grep -q 'precious local work' "$unrel_home/.himmel/qmd-fork/work.txt"
 
+# -- legacy-fork-origin migration (HIMMEL-3045): an existing owned clone whose
+#    origin is still the retired himmel qmd fork (yotamleo/qmd) migrates to
+#    the new default (tobi/qmd) via `git remote set-url` instead of being
+#    refused like any other mismatched origin above. Covers the exact legacy
+#    URL, its no-.git form, and a trailing slash; the SSH form is a different
+#    string and stays refused like the unrelated-origin case above.
+legacy_home="$id2/legacyorigin"
+mkdir -p "$legacy_home/.himmel/qmd-fork/.git"
+echo '{}' > "$legacy_home/.himmel/qmd-fork/package.json"
+STUB_GIT_ORIGIN_URL="https://github.com/yotamleo/qmd.git"
+out=$(qmd_install_env "$legacy_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+STUB_GIT_ORIGIN_URL=""
+assert "legacy-origin: migrated instead of refused (remote set-url ran)" \
+  grep -q 'GIT remote set-url origin https://github.com/tobi/qmd.git' "$git_log"
+assert "legacy-origin: proceeded to fetch the pin" grep -q 'GIT fetch' "$git_log"
+assert "legacy-origin: rc 0" grep -q '^RC=0$' <<<"$out"
+
+legacy_nogit_home="$id2/legacyorigin-nogit"
+mkdir -p "$legacy_nogit_home/.himmel/qmd-fork/.git"
+echo '{}' > "$legacy_nogit_home/.himmel/qmd-fork/package.json"
+STUB_GIT_ORIGIN_URL="https://github.com/yotamleo/qmd"
+out=$(qmd_install_env "$legacy_nogit_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+STUB_GIT_ORIGIN_URL=""
+assert "legacy-origin (no .git suffix): migrated" \
+  grep -q 'GIT remote set-url origin https://github.com/tobi/qmd.git' "$git_log"
+assert "legacy-origin (no .git suffix): rc 0" grep -q '^RC=0$' <<<"$out"
+
+legacy_slash_home="$id2/legacyorigin-slash"
+mkdir -p "$legacy_slash_home/.himmel/qmd-fork/.git"
+echo '{}' > "$legacy_slash_home/.himmel/qmd-fork/package.json"
+STUB_GIT_ORIGIN_URL="https://github.com/yotamleo/qmd.git/"
+out=$(qmd_install_env "$legacy_slash_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+STUB_GIT_ORIGIN_URL=""
+assert "legacy-origin (trailing slash): migrated" \
+  grep -q 'GIT remote set-url origin https://github.com/tobi/qmd.git' "$git_log"
+assert "legacy-origin (trailing slash): rc 0" grep -q '^RC=0$' <<<"$out"
+
+legacy_ssh_home="$id2/legacyorigin-ssh"
+mkdir -p "$legacy_ssh_home/.himmel/qmd-fork/.git"
+echo "precious local work" > "$legacy_ssh_home/.himmel/qmd-fork/work.txt"
+STUB_GIT_ORIGIN_URL="git@github.com:yotamleo/qmd.git"
+out=$(qmd_install_env "$legacy_ssh_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+STUB_GIT_ORIGIN_URL=""
+assert "legacy-origin (SSH form): still refused, not migrated" grep -qi 'refusing to touch' <<<"$out"
+# shellcheck disable=SC2016
+assert "legacy-origin (SSH form): never fetch/checkout/reset" bash -c '! grep -qE "GIT (fetch|checkout|reset)" "$1"' _ "$git_log"
+assert "legacy-origin (SSH form): dir contents untouched" grep -q 'precious local work' "$legacy_ssh_home/.himmel/qmd-fork/work.txt"
+
 # dirty owned clone -> refused untouched, rc nonzero.
 dirty_home="$id2/dirtyclone"
 mkdir -p "$dirty_home/.himmel/qmd-fork/.git"
@@ -700,6 +764,86 @@ assert "binding fetch-fail: WARNs not-loadable with the manual command" grep -qi
 # leave fresh_home converged for any later assertions.
 out=$(qmd_install_env "$fresh_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
 assert "binding gate: fresh_home re-converged" grep -q '^RC=0$' <<<"$out"
+
+echo "[test-qmd-bin] packaged better-sqlite3 prebuilds (HIMMEL-2506)"
+# Catch the legacy-path early return and attempts to repair a packaged binary.
+prebuild_home="$id2/prebuild-only"
+sqlite_dir="$prebuild_home/.himmel/qmd-fork/node_modules/better-sqlite3"
+platform_arch="$(node -p "process.platform + '-' + process.arch")"
+mkdir -p "$prebuild_home/.himmel/qmd-fork/.git" "$sqlite_dir/prebuilds"
+prebuild="$sqlite_dir/prebuilds/$platform_arch.node"
+: > "$prebuild"
+: > "$node_gyp_log"
+out=$(STUB_NODE_PLATFORM_ARCH="$platform_arch" qmd_install_env "$prebuild_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; _qmd_sqlite_binding')
+assert "prebuild resolver: selects current platform without build/" test "$out" = "$prebuild"
+assert "prebuild resolver: queries platform and arch once" test "$(grep -c '^NODE -p ' "$node_log")" -eq 1
+out=$(STUB_NODE_PROBE_OK=1 qmd_install_env "$prebuild_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+assert "prebuild install: healthy probe succeeds" grep -q '^RC=0$' <<<"$out"
+assert "prebuild install: verified without creating build/" test ! -d "$sqlite_dir/build"
+assert "prebuild install: no prebuild-install fetch" test "$(grep -c 'prebuild-install/bin.js' "$node_log")" -eq 0
+assert "prebuild install: no node-gyp rebuild" test ! -s "$node_gyp_log"
+rc=0
+STUB_NODE_PROBE_OK=1 qmd_install_env "$prebuild_home" bash "$SCRIPT_DIR/qmd-bin.sh" fork-served >/dev/null 2>&1 || rc=$?
+assert "prebuild verify: fork-served accepts healthy prebuild" test "$rc" -eq 0
+
+# A packaged but unloadable binary must survive and retain its real diagnostic.
+out=$(STUB_NODE_PLATFORM_ARCH="$platform_arch" STUB_NODE_PROBE_RC=1 qmd_install_env "$prebuild_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+assert "prebuild failure: returns nonzero" grep -q '^RC=1$' <<<"$out"
+assert "prebuild failure: preserves probe error" grep -q 'stub binding load failed: wrong ABI' <<<"$out"
+assert "prebuild failure: names packaged binary" grep -Fq "$prebuild" <<<"$out"
+assert "prebuild failure: names matched node platform" grep -Fq "under node ($platform_arch)" <<<"$out"
+assert "prebuild failure: preserves packaged binary" test -f "$prebuild"
+assert "prebuild failure: no prebuild-install fetch" test "$(grep -c 'prebuild-install/bin.js' "$node_log")" -eq 0
+assert "prebuild failure: no node-gyp rebuild" test ! -s "$node_gyp_log"
+assert "prebuild failure: no success stamp" test ! -f "$prebuild_home/.himmel/qmd-fork/.himmel-build-ok"
+
+echo "[test-qmd-bin] foreign-only prebuild repair (HIMMEL-2955)"
+# Rejecting every packaged .node must not suppress repair for a different host.
+foreign_home="$id2/foreign-prebuild-only"
+foreign_sqlite="$foreign_home/.himmel/qmd-fork/node_modules/better-sqlite3"
+mkdir -p "$foreign_home/.himmel/qmd-fork/.git" "$foreign_sqlite/prebuilds"
+foreign_prebuild="$foreign_sqlite/prebuilds/darwin-arm64.node"
+: > "$foreign_prebuild"
+out=$(STUB_NODE_PLATFORM_ARCH=linux-x64 qmd_install_env "$foreign_home" bash -ec '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+assert "foreign prebuild: repair fetch attempted" grep -q 'prebuild-install/bin.js' "$node_log"
+assert "foreign prebuild: repaired install succeeds under set -e" grep -q '^RC=0$' <<<"$out"
+assert "foreign prebuild: repaired binding exists" test -f "$foreign_sqlite/build/Release/better_sqlite3.node"
+assert "foreign prebuild: preserves foreign binary" test -f "$foreign_prebuild"
+assert "foreign prebuild: no node-gyp rebuild" test ! -s "$node_gyp_log"
+# A successful fetch must not bypass the final load probe.
+out=$(STUB_NODE_PLATFORM_ARCH=linux-x64 STUB_NODE_PROBE_RC=1 qmd_install_env "$foreign_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+assert "foreign prebuild bad ABI: repair fetch attempted" grep -q 'prebuild-install/bin.js' "$node_log"
+assert "foreign prebuild bad ABI: final probe refuses install" grep -q '^RC=1$' <<<"$out"
+assert "foreign prebuild bad ABI: retains final load warning" grep -q 'native binding still not loadable under node' <<<"$out"
+assert "foreign prebuild bad ABI: no success stamp" test ! -f "$foreign_home/.himmel/qmd-fork/.himmel-build-ok"
+
+# Darwin suffix spelling, and legacy build/Release takes precedence if present.
+rm -f "$prebuild"
+prebuild="$sqlite_dir/prebuilds/darwin-arm64+arm64.node"
+: > "$prebuild"
+out=$(STUB_NODE_PLATFORM_ARCH=darwin-arm64 qmd_install_env "$prebuild_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; _qmd_sqlite_binding')
+assert "prebuild resolver: accepts darwin architecture suffix" test "$out" = "$prebuild"
+mkdir -p "$sqlite_dir/build/Release"
+legacy_binding="$sqlite_dir/build/Release/better_sqlite3.node"
+: > "$legacy_binding"
+out=$(qmd_install_env "$prebuild_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; _qmd_sqlite_binding')
+assert "legacy resolver: build/Release takes precedence" test "$out" = "$legacy_binding"
+rm -f "$prebuild"
+rc=0
+qmd_install_env "$prebuild_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; _qmd_sqlite_binding_ok' || rc=$?
+assert "legacy control: load probe still succeeds without prebuilds" test "$rc" -eq 0
+
+# File discovery is advisory: the package loader, not our path list, decides.
+rm -f "$legacy_binding"
+# shellcheck disable=SC2016
+# Probe diagnostics expand inside the spawned bash, not in the parent suite.
+out=$(STUB_NODE_PROBE_RC=1 qmd_install_env "$prebuild_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; _qmd_sqlite_binding_ok; echo "RC=$?"; printf "%s\n" "$_QMD_BINDING_PROBE_ERR"' 2>&1)
+assert "missing binding: returns nonzero" grep -q '^RC=1$' <<<"$out"
+assert "missing binding: diagnoses both candidate locations" grep -q 'no binding found under build/Release or prebuilds/' <<<"$out"
+assert "missing binding: preserves load failure" grep -q 'stub binding load failed: wrong ABI' <<<"$out"
+rc=0
+STUB_NODE_PROBE_OK=1 qmd_install_env "$prebuild_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; _qmd_sqlite_binding_ok' || rc=$?
+assert "advisory discovery: successful loader overrides absent candidates" test "$rc" -eq 0
 
 echo "[test-qmd-bin] qmd_register_collection() add / idempotent-skip / warn (HIMMEL-752)"
 # Hermetic stub env: a fake `qmd` on PATH (no bun-qmd.js, no bun -> qmd_cmd

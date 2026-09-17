@@ -31,6 +31,10 @@ LIB="$SCRIPT_DIR/../lib/headroom-proxy.sh"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
+# HIMMEL-3074: real crontab arms create the arm log dir and probe the log
+# FILE for append; keep that under the suite's TMP, not the operator's
+# real ~/.himmel/arm-resume.
+export ARM_RESUME_LOG_DIR="$TMP/arm-logs"
 
 # Hermetic shields (same as test-arm-resume.sh / test-arm-resume-queue-lock.sh):
 # no real telemetry/trust writes, no operator-shell env bleed.
@@ -314,6 +318,9 @@ esac
 #     child process honors an inherited/exported OSTYPE.
 # ---------------------------------------------------------------------------
 MACBIN="$TMP/macbin"; mkdir -p "$MACBIN"
+# HIMMEL-3074: the crontab renderer resolves claude ABSOLUTELY at arm time and
+# refuses (rc 2) when it cannot -- CI has no claude, so the stub dir carries one.
+printf '#!/bin/sh\nexit 0\n' > "$MACBIN/claude"; chmod +x "$MACBIN/claude"
 printf '#!/bin/sh\necho "at MUST NOT be called on macOS" >&2; exit 1\n' > "$MACBIN/at"; chmod +x "$MACBIN/at"
 printf '#!/bin/sh\nexit 0\n' > "$MACBIN/atq"; chmod +x "$MACBIN/atq"
 cat > "$MACBIN/crontab" <<'EOF'

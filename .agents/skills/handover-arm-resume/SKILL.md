@@ -31,3 +31,12 @@ arm. This shells the SANCTIONED arm path —
 never hand-roll `schtasks`/`at`
 (blocked by block-rogue-claude-schedule). See
 `.claude/commands/handover-arm-resume.md` for the time sentinels + exit codes.
+
+macOS crontab arms launch headed: cron has no TTY, so `arm-resume.sh` writes
+a runner file under `${ARM_RUNNER_DIR:-$HOME/.claude/handover/arm-runners}`
+(and, unless `ARM_TERMINAL_APP=none`, a `.command` file it `open -a`s in
+`ARM_TERMINAL_APP`, default inferred from `TERM_PROGRAM`) instead of
+inlining the launch on the crontab line. This needs the operator logged
+into the GUI with the Mac awake at fire time — cron skips minutes missed
+during sleep. The relaunch carries `HIMMEL_ARMED_RELAUNCH=1` so it can
+self-exit once a successor is armed — see `docs/handover/overnight-mode.md`.

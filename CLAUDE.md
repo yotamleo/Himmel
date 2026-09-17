@@ -105,6 +105,13 @@ escalate to a hook, gate or classifier, never to stronger prose. Frame + worked
 examples:
 [`docs/internals/context-architecture.md`](docs/internals/context-architecture.md).
 
+### Honesty markers — `ponytail:`
+A `ponytail:` code comment flags a known, deliberate simplification at the
+site a reader would otherwise mistake for complete — it must name the
+concrete limitation, not merely gesture at one. Documented-not-gated is a
+deliberate choice, not an oversight: convention + shape + the drift that
+would justify a gate → [`docs/internals/ponytail-convention.md`](docs/internals/ponytail-convention.md).
+
 ### Where artifacts land
 - **Reference docs operators consume** → the owning repo's `docs/` (plugin specs
   → `plugins/<plugin>/README.md`). `templates/luna-second-brain/` is

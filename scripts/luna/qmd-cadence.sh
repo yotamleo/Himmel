@@ -163,6 +163,11 @@ RUNNER_SCRIPT="$REINDEX_SCRIPT"
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/cadence-format.sh"
 
+# HIMMEL-3075 (himmel#771): macOS cron Full Disk Access arm-time warning.
+# shellcheck source=../lib/macos-fda-warning.sh
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/../lib/macos-fda-warning.sh"
+
 # Off-peak default (see the header for the 05:00 rationale).
 REINDEX_TIME="05:00"
 FORCE=0
@@ -1441,6 +1446,11 @@ cron_arm() {
       bash scripts/luna/qmd-cadence.sh disarm
 ================================================================
 EOF
+    # No arguments: "all configured qmd collections" (above) is resolved by
+    # qmd itself, not a path this script ever sees, so this can't check a
+    # specific target the way graphmap-/pipeline-cadence do — it warns
+    # unconditionally on Darwin instead of guessing at a collection path.
+    macos_fda_warn_if_needed
 }
 
 case "$SUBCMD" in

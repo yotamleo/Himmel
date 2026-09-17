@@ -35,6 +35,14 @@ REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || {
 }
 cd "$REPO_ROOT" || exit 1
 
+# github-sync (HIMMEL-3066) races this script's own commits — both stage,
+# commit and push the same vault on their own schedules. Mutually exclusive;
+# refuse to run rather than let two writers fight over the same tree.
+if [ -f "$REPO_ROOT/.obsidian/community-plugins.json" ] && grep -q '"github-sync"' "$REPO_ROOT/.obsidian/community-plugins.json"; then
+  log "github-sync is enabled in this vault — refusing to run (mutually exclusive, HIMMEL-3066). Disable one of the two sync mechanisms."
+  exit 0
+fi
+
 # ON requires a remote — autosync's whole job is to push. No remote → no-op.
 if [ -z "$(git remote)" ]; then
   log "enabled but no remote is configured — nothing to push (no-op)."

@@ -1740,6 +1740,57 @@ else
     fail "T53: compact registry dropped the leading repo entry (rc=$rc: $out)"
 fi
 
+# --- T53b: registry paths decode JSON escapes (HIMMEL-2868) ---------------
+x_escape_roots() (
+    unset HANDOVER_DIR
+    export HANDOVER_REGISTRY="$X_REG_COMPACT"
+    # shellcheck source=queue-lock.sh
+    . "$LIB"
+    _ql_candidate_roots
+)
+for x_escape in slash quote unicode; do
+    case "$x_escape" in
+        slash) x_repo="$TMPDIR_ROOT/2868-slash"; x_json="${x_repo//\//\\/}" ;;
+        quote) x_repo="$TMPDIR_ROOT/2868-repo\"x"; x_json="${x_repo//\"/\\\"}" ;;
+        unicode) x_repo="$TMPDIR_ROOT/2868-repoA"; x_json="${x_repo%A}\\u0041" ;;
+    esac
+    mkdir -p "$x_repo/handovers"
+    printf '{"repos":{"escaped":{"path":"%s"}}}\n' "$x_json" > "$X_REG_COMPACT"
+    out="$(x_escape_roots)"
+    if [ "$out" = "$x_repo/handovers" ]; then
+        pass "T53b: $x_escape JSON escape yields the registered handover root"
+    else
+        fail "T53b: $x_escape JSON escape yields the registered handover root"
+    fi
+done
+
+# Invalid/unsupported entries must not hide a valid sibling or resolve to
+# a different directory after losing an escape (including unrepresentable NUL).
+x_good="$TMPDIR_ROOT/2868-good"
+mkdir -p "$x_good/handovers"
+x_u="\\u"
+for x_bad in '\q' "\\" '\u12' '\u00xz' "${x_u}0080" '\uD800' "${x_u}0000"; do
+    printf '{"repos":{"bad":{"path":"%s%s"},"good":{"path":"%s"}}}\n' \
+        "$x_good" "$x_bad" "$x_good" > "$X_REG_COMPACT"
+    out="$(x_escape_roots)"
+    if [ "$out" = "$x_good/handovers" ]; then
+        pass "T53c: unsupported escape $x_bad drops only its candidate"
+    else
+        fail "T53c: unsupported escape $x_bad changed the candidate roots"
+    fi
+done
+x_repo="$TMPDIR_ROOT/2868-line"$'\n'"break"
+mkdir -p "$x_repo/handovers"
+x_json="${x_repo//$'\n'/\\n}"
+printf '{"repos":{"bad":{"path":"%s"},"good":{"path":"%s"}}}\n' \
+    "$x_json" "$x_good" > "$X_REG_COMPACT"
+out="$(x_escape_roots)"
+if [ "$out" = "$x_good/handovers" ]; then
+    pass "T53c: decoded newline never splits a root into unrelated candidates"
+else
+    fail "T53c: decoded newline split a root into unrelated candidates"
+fi
+
 # --- T54: a STRANGER's lock on the same slug in the cwd root does not -----
 # hide our own lock in another root (HIMMEL-2861 CR round 1, codex-2).
 # Two roots can carry the same slug; the cross-root search must trigger on
@@ -2025,30 +2076,112 @@ else
     fail "T65: the acquiring session lost its own recall (rc=$rc: $out)"
 fi
 
-# --- T66: forget removes only OUR token, never a new holder's -------------
+# --- T66: forget removes only OUR OWN acquisition's file, never another's -
 # CR round 1, codex-2: the forget runs AFTER the lock dir is removed, so a
 # fresh acquire can land in between and persist its own token to the same
-# path. An unconditional delete threw that away.
-s_ql leg-A acquire "$S_DOC" "forget-mine" >/dev/null 2>&1
-s66_file=""
-for f in "$S_XDG/himmel-queue-lock"/*; do
-    [ -f "$f" ] && s66_file="$f"
+# path. HIMMEL-2870 closed the read-then-rm gap this originally guarded by
+# giving every acquisition its OWN file ("<h>.<token>") instead of one
+# shared "<h>" -- so the old stand-in here (tamper the CONTENT of the one
+# shared file to look like a different holder's) no longer models anything
+# that can happen: a different token now always means a different FILE, and
+# forget identifies its target by name, never by reading content. The
+# equivalent stand-in under the new layout is a second real acquisition's
+# file; T68 below is the direct end-to-end race this ticket fixes.
+T66_XDG="$TMPDIR_ROOT/2870-t66-xdg"
+mkdir -p "$T66_XDG"
+chmod 700 "$T66_XDG"
+t66_call() {
+    ( unset HANDOVER_DIR
+      # shellcheck disable=SC2030,SC2031  # deliberately subshell-local: isolates this call's scope/XDG root from the rest of the suite
+      export QUEUE_LOCK_SESSION_SCOPE="leg-A" XDG_RUNTIME_DIR="$T66_XDG"
+      # shellcheck source=queue-lock.sh
+      . "$LIB"
+      "$@" )
+}
+t66_call _ql_token_persist "$S_DOC" "forget-mine" >/dev/null 2>&1
+t66_call _ql_token_persist "$S_DOC" "forget-mine-newer" >/dev/null 2>&1
+t66_newer_file=""
+for f in "$T66_XDG/himmel-queue-lock"/*; do
+    [ -f "$f" ] && grepq "$(cat "$f" 2>/dev/null)" '^forget-mine-newer$' && t66_newer_file="$f"
 done
-# Stand in for "a new holder acquired between the rm and the forget" by
-# putting a different token in the file the releasing session will look at.
-printf '%s\n' 'a-newer-holders-token' > "$s66_file"
-# The token goes on ARGV here: the point under test is the FORGET step, so
-# the release itself must succeed. (Recalling the substituted token instead
-# would be refused by the holder check -- correct, but a different test.)
-s_ql leg-A release "$S_DOC" "forget-mine" >/dev/null 2>&1
-t66_rc=$?
-if [ "$t66_rc" -eq 0 ] && [ -f "$s66_file" ] \
-    && [ "$(cat "$s66_file" 2>/dev/null)" = "a-newer-holders-token" ]; then
-    pass "T66: forget leaves a token file that no longer holds OUR token untouched"
+t66_call _ql_token_forget "$S_DOC" "forget-mine" >/dev/null 2>&1
+if [ -n "$t66_newer_file" ] && [ -f "$t66_newer_file" ] \
+    && [ "$(cat "$t66_newer_file" 2>/dev/null)" = "forget-mine-newer" ]; then
+    pass "T66: forget leaves a different acquisition's token file untouched"
 else
-    fail "T66: the release (rc=$t66_rc) deleted a newer holder's token file"
+    fail "T66: forget deleted a different acquisition's token file"
 fi
-rm -f "$s66_file"
+rm -rf "$T66_XDG"
+
+# --- T68: the residual race, end to end (HIMMEL-2870) ----------------------
+# A acquires (token-A), its lock dir is force-cleared (a lost-lock cleanup,
+# never touching the token file -- exactly how a real "A's lock is already
+# gone" arises), then the SAME session scope re-acquires as B (token-B),
+# landing in the gap. A's own forget -- as it would run at the tail of A's
+# own release, had the release not been pre-empted by the force-clear --
+# must be structurally unable to address B's file: on the pre-fix single
+# shared "<h>" file this is exactly the destroy-the-newer-holder's-recovery-
+# file bug; post-fix, forget(token-A) can only ever name "<h>.token-A".
+T68_XDG="$TMPDIR_ROOT/2870-race-xdg"
+mkdir -p "$T68_XDG"
+chmod 700 "$T68_XDG"
+T68_ROOT="$TMPDIR_ROOT/2870-race-root"
+mkdir -p "$T68_ROOT/yotamleo/himmel"
+T68_DOC="$T68_ROOT/yotamleo/himmel/RACE-RESUME.md"
+: > "$T68_DOC"
+t68_ql() {
+    QUEUE_LOCK_SESSION_SCOPE="leg-2870" XDG_RUNTIME_DIR="$T68_XDG" HANDOVER_DIR="$T68_ROOT" \
+        bash "$LIB" "$@"
+}
+t68_call() {
+    ( unset HANDOVER_DIR
+      # shellcheck disable=SC2030,SC2031  # deliberately subshell-local: isolates this call's scope/XDG root from the rest of the suite
+      export QUEUE_LOCK_SESSION_SCOPE="leg-2870" XDG_RUNTIME_DIR="$T68_XDG"
+      # shellcheck source=queue-lock.sh
+      . "$LIB"
+      "$@" )
+}
+t68_ql acquire "$T68_DOC" "token-A" >/dev/null 2>&1
+QUEUE_LOCK_SESSION_SCOPE="leg-2870" XDG_RUNTIME_DIR="$T68_XDG" HANDOVER_DIR="$T68_ROOT" \
+    QUEUE_LOCK_FORCE_RELEASE=1 bash "$LIB" release "$T68_DOC" >/dev/null 2>&1
+t68_ql acquire "$T68_DOC" "token-B" >/dev/null 2>&1
+t68_call _ql_token_forget "$T68_DOC" "token-A" >/dev/null 2>&1
+t68_b_file=""
+for f in "$T68_XDG/himmel-queue-lock"/*; do
+    [ -f "$f" ] && grepq "$(cat "$f" 2>/dev/null)" '^token-B$' && t68_b_file="$f"
+done
+if [ -n "$t68_b_file" ] && [ -f "$t68_b_file" ]; then
+    pass "T68: A's forget cannot address B's token file -- different acquisition, different name"
+else
+    fail "T68: B's token file did not survive A's forget"
+fi
+t68_recalled="$(t68_call _ql_token_recall "$T68_DOC" 2>/dev/null)"
+if [ "$t68_recalled" = "token-B" ]; then
+    pass "T68: ...and recall still returns B's (the live holder's) token"
+else
+    fail "T68: recall returned '$t68_recalled', expected token-B"
+fi
+
+# --- T69: recall with several files for one queue picks the newest --------
+# A stale leftover from a lost race (as T68 above leaves behind, since A's
+# own file is never cleaned up once the fix stops forget(token-A) from being
+# able to reach it) must never shadow the live holder's own file forever.
+t68_call _ql_token_persist "$T68_DOC" "token-stale" >/dev/null 2>&1
+t69_stale_file=""
+for f in "$T68_XDG/himmel-queue-lock"/*; do
+    [ -f "$f" ] && grepq "$(cat "$f" 2>/dev/null)" '^token-stale$' && t69_stale_file="$f"
+done
+# Backdate the stale file so mtime ordering is deterministic without a real
+# sleep (`touch -d "@<epoch>"`, the fixed-epoch form this suite already uses
+# elsewhere -- see T31/T44 -- because `touch -t` parses local wall-clock).
+[ -n "$t69_stale_file" ] && touch -d "@$(( $(date -u +%s) - 60 ))" "$t69_stale_file"
+t69_recalled="$(t68_call _ql_token_recall "$T68_DOC" 2>/dev/null)"
+if [ "$t69_recalled" = "token-B" ]; then
+    pass "T69: recall with several token files picks the newest by mtime"
+else
+    fail "T69: recall returned '$t69_recalled', expected token-B (the newest file)"
+fi
+rm -rf "$T68_XDG" "$T68_ROOT"
 
 # --- T67: no resolvable session scope -> the feature turns ITSELF off -----
 # The safe degradation is the pre-HIMMEL-2813 argv-only behaviour, never a

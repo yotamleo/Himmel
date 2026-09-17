@@ -98,7 +98,8 @@ type: tech-ingest
 source: <issue html_url>
 source_type: github-issue
 ingested_at: <UTC ISO-8601>
-last_revalidated: <UTC ISO-8601>
+ingest_spec_version: 1   # HIMMEL-3055 — see Phase 4 "Identity" fields; same versioning rule applies here
+# last_revalidated OMITTED on a fresh ingest (HIMMEL-3055) — see Phase 4 for the full rule
 ingest_command: /luna-ingest
 issue_state: <open|closed>
 issue_author: <user.login>
@@ -209,6 +210,10 @@ existing), with these frontmatter deltas:
   tag vocabulary). Minimum 2 tags.
 - The `## Referenced repos (1-hop)` section lists the **github** refs only;
   the `## Open questions` section carries the unfollowed-bitbucket-refs note.
+- **Omit `upstream_commit`** (HIMMEL-3055) — `bitbucket repo get` returns no default-branch HEAD
+  SHA and there is no cheap CLI call for one; do NOT emit a fake or stale value. `upstream_pushed_at`
+  comes from `updated_on`; `readme_sha256` hashes `readme` the same way as the github path (omit if
+  `readme: missing`); `ingest_spec_version` and `ingest_scope` are populated the same as Phase 4.
 
 `--deep` source-scan is **skipped on a Bitbucket source** (the LUNA-57
 `component-scan.mjs` is `gh`-API-only and cannot scan a Bitbucket repo) — emit a
@@ -299,6 +304,15 @@ gh api "repos/${owner_repo}" --jq '{name, full_name, description, html_url, lang
 
 If `gh api` fails (rc≠0): exit 2 with the stderr inlined.
 
+**Identity (HIMMEL-3055).** Fetch the default-branch HEAD SHA — this is `upstream_commit` in the synthesis, the field that lets later tooling tell whether upstream moved since ingest without re-fetching the whole repo:
+
+```bash
+default_branch=$(jq -r '.default_branch' /tmp/luna-ingest-meta.$$.json)
+gh api "repos/${owner_repo}/commits/${default_branch}" --jq '.sha' > /tmp/luna-ingest-commit.$$.txt
+```
+
+On failure, continue with `upstream_commit` omitted from the synthesis rather than failing the ingest — the repo metadata and README are still useful without it.
+
 Read README via:
 
 ```bash
@@ -310,7 +324,13 @@ gh api "repos/${owner_repo}/readme" --jq '.content' \
   | base64 -d > /tmp/luna-ingest-readme.$$.md
 ```
 
-If the README endpoint returns 404 (some repos have none): proceed with an empty README; record `README: missing` in the synthesis.
+If the README endpoint returns 404 (some repos have none): proceed with an empty README; record `README: missing` in the synthesis; omit `readme_sha256` (a hash of an absent README is an absent field, not a hash of empty bytes).
+
+Otherwise hash the decoded bytes for `readme_sha256` — this is the identity check for "did the README change since ingest", replacing the byte-count-in-prose proxy the audit log used before:
+
+```bash
+sha256sum /tmp/luna-ingest-readme.$$.md | cut -d' ' -f1   # macOS: shasum -a 256
+```
 
 ## Phase 1.5 — Safety pre-filter (LUNA-43)
 
@@ -565,7 +585,17 @@ type: tech-ingest
 source: <URL>
 source_type: github
 ingested_at: <UTC ISO-8601>
-last_revalidated: <UTC ISO-8601>   # LUNA-43: initially same as ingested_at. Reserved for periodic revalidation tooling — currently unused by any sweep script. Future tooling can compute staleness from this field without confusing it with ingested_at (which never moves after first write).
+ingest_spec_version: 1        # HIMMEL-3055: version of OUR OWN extraction rules, independent of upstream movement. Bump this when the extraction rules change so old notes are known-truncated/known-stale on our side even if upstream hasn't moved (e.g. notes written before the --limit/tail-skip work are truncated and nothing else says so).
+ingest_scope:                 # HIMMEL-3055: machine-readable, not a line in the body
+  limit: <effective --limit used for this ingest>
+  tail_skipped: <count, 0 if none>
+upstream_commit: <default-branch HEAD SHA at fetch time, or omit on fetch failure>   # HIMMEL-3055
+upstream_pushed_at: <repo pushed_at, ISO-8601>   # HIMMEL-3055: parseable duplicate of the value also folded into trust_tier_reason prose below
+readme_sha256: <sha256 of the decoded README bytes, or omit if README missing>   # HIMMEL-3055: replaces README-byte-count as the change-detection proxy
+# last_revalidated is OMITTED here — never default it to ingested_at (HIMMEL-3055). "Never
+# checked" and "checked, unchanged" must not write the same value. It is written ONLY when a
+# real revalidation sweep runs later (see "Revalidation invariant" below), paired with a
+# revalidation_delta line.
 ingest_command: /luna-ingest
 verdict_summary:
   integrate: <count>
@@ -657,11 +687,60 @@ If --deep was NOT passed, omit this section entirely.>
 - Refs above confidence floor (0.6): <K>
 - Refs marked api_failure (LUNA-6): <F> (if >0: rc=4; re-run to retry classification)
 - Tail-skipped: <T> (set if more refs existed than --limit)
-- API calls: <N+1>
+- API calls: <N+2> (HIMMEL-3055: +1 over the prior count for the `upstream_commit` fetch)
 - README size: <bytes> (LUNA-7: warn if >512 KB; --limit caps API-call count, not text size)
 - Trust tier: <tier> (<reason>)   (LUNA-43)
 - Safety flag: <term-or-none>   (LUNA-43: non-blank value reached rc=6 unless --allow-unsafe; document the term in this row regardless)
 ```
+
+### Revalidation invariant (HIMMEL-3055)
+
+A prose `## Re-validation` section (written by a future revalidation sweep, not by this MVP)
+MUST rewrite every structured field it confirms — `stars`, `upstream_pushed_at`,
+`upstream_commit`, `trust_tier`, `trust_tier_reason`, `readme_sha256` — not just narrate the
+outcome. A note whose prose says "CONFIRMED alive" while its `stars:` frontmatter still holds a
+three-week-old count is the same class of defect as a vacuous ledger: the structured fields are
+what tooling reads, and prose that disagrees with them is worse than no prose at all. Every such
+rewrite also sets `last_revalidated` to the check time and adds a `revalidation_delta:` one-liner
+(stars delta, `upstream_pushed_at` delta, verdict delta) — this is the one case where writing
+`last_revalidated` is correct, because a real check genuinely happened.
+
+### Semantic layer (HIMMEL-3055 — schema defined, NOT yet populated)
+
+Identity (`upstream_commit`, `readme_sha256`, …) answers "did the repo move". It says nothing
+about what the repo is *for* — the layer that makes the corpus clusterable and searchable rather
+than a bare list of URLs. That is a **model pass**, so it does not run over all 443 repos in this
+MVP — it only earns its cost on a ranked slice a later session selects (see the staleness report's
+ranking). This section defines the fields so a future ingest/backfill pass has a fixed target;
+it does **not** populate them, and no code in this skill writes them yet.
+
+Proposed fields, on the same `tech-ingest` frontmatter:
+
+- `concepts:` — 3-8 normalised concept tags describing what the repo *does*, drawn from a
+  controlled vocabulary (free text defeats clustering). Seed vocabulary: `agent-harness`,
+  `cost-optimization`, `model-routing`, `guardrails`, `orchestration`, `retrieval`, `installer`,
+  `observability`, `review-gate`, `memory`, `sandboxing`, `eval`. Extend deliberately when a repo
+  genuinely doesn't fit (e.g. `browser-automation` for an anti-detect browser agent) — record the
+  addition and why in the note that first needed it, don't mint terms ad hoc per-repo.
+- `solves:` — one sentence, the problem it solves, in the repo's own terms.
+- `maps_to:` — which himmel surface it bears on, if any: `console/leg`, `lane-registry`,
+  `hooks/gates`, `cost-programme`, `installer`, `cr-panel`, `vault`, or `none`. `none` is the
+  common, legitimate answer — a field that always finds a connection means nothing.
+- `value_tier:` — `integrate` / `take-parts` / `inspire` / `skip` (reuses `verdict_summary`'s
+  vocabulary for the repo itself rather than inventing a second scale).
+- `value_reason:` — one line justifying the tier, so it can be audited or disagreed with later.
+
+**Every semantic field carries the `ingest_spec_version` and `upstream_commit` it was derived
+against.** These are judgements, not facts — they can be wrong, and they go stale when a repo
+changes direction (a repo in this corpus was ingested as a job-application tool and is now an
+anti-bot browser agent: `feder-cr/AIHawk`, formerly `jobs_applier_ai_agent_aihawk` — see the
+HIMMEL-3055 staleness report for the worked example). Without the commit anchor, nobody can tell
+whether a stored judgement still applies to the code it was made about.
+
+Five hand-derived examples proving this schema resolves without contradiction across a job-search
+bot turned browser agent, a vendored proxy, an Electron orchestrator, a second-brain plugin, and
+an unrelated SaaS product are in the HIMMEL-3055 staleness report (`§ Semantic layer hand-proof`),
+not applied to any vault note — this is a schema proof, not a backfill.
 
 ## Phase 5 — Daily-note backref (deferred to v2)
 

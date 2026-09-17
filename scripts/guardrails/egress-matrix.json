@@ -30,7 +30,6 @@
     "deepseek": { "region": "CN", "note": "DE-LISTED 2026-07-22 (HIMMEL-1257): dropped from vault + handover-state egress — bad extraction/enrichment results. Prior ratifications (2026-07-05, HIMMEL-343, HIMMEL-833) reversed; the cells below are explicit deny. himmel-code wildcard unaffected (public code)." },
     "zai-glm": { "region": "CN", "note": "DE-LISTED 2026-08-29 (HIMMEL-2224, landing HIMMEL-1749's DROP): dropped from vault + handover-state egress — the GLM Coding Plan auto-renew was cancelled 2026-08-12 and the plan lapsed 2026-08-17, so the lane is gone. Prior ratifications (HIMMEL-1122 extraction, HIMMEL-1167 enrichment, the luna-clippings §4.2 exception and the handover-state brief-scoped cell) reversed; the cells below are explicit deny. himmel-code wildcard unaffected (public code — the `--backend glm` remap in refresh-graph-map.sh still serves it)." },
     "openrouter": { "region": "US", "note": "OpenRouter metered aggregation (scripts/claude-openrouter — Claude 1M tier on the metered path, HIMMEL-1774). Declared as its OWN provider, same capability slot as the other cloud engines but a DIFFERENT provider and trust boundary: content transits OpenRouter before the model vendor, so reaching a Claude model through it is NOT covered by the anthropic cell. The launcher consults this matrix as a HARD gate (no --force bypass) and requires an EXPLICIT provider:\"openrouter\" rule — a wildcard allow does not authorize the lane" },
-    "moonshot": { "region": "CN", "note": "Kimi (kimi-k2.6) via graphify's native kimi backend, api.moonshot.ai. Adopted 2026-08-12 (HIMMEL-1748) as the GLM-lane replacement candidate — GLM Coding Plan auto-renew cancelled, lapses 2026-08-17 (HIMMEL-1749)." },
     "alibaba": { "region": "CN-account, ap-southeast-1 endpoint", "note": "DE-LISTED 2026-07-22 (HIMMEL-1257): not pursuing the HIMMEL-765 pilot — bad results. Vault/handover cells demoted to explicit deny; himmel-code wildcard unaffected (public code)." },
     "google-gemini": { "region": "US", "note": "DE-LISTED; keys deliberately unset" }
   },
@@ -145,11 +144,6 @@
       "why": "REVERSED 2026-08-29 (HIMMEL-2224, landing HIMMEL-1749's DROP branch): the narrow 621/622 G2.3 local-quality-ladder exception for clipped public content (operator-provisioned ZAI_API_KEY, spec §4.2) is dropped; the GRAPHIFY_CLIPPINGS_GLM_OK fence opt-in no longer opens this cell. The GLM (Z.ai) lane was DROPPED 2026-08-12 (HIMMEL-1749) — auto-renew cancelled, GLM Coding Plan lapsed 2026-08-17; Kimi (moonshot, HIMMEL-1748) is the replacement CN extraction lane. Explicit deny on the HIMMEL-1257 de-listing pattern keeps the reversal legible and reviewable; a deleted row would fall through to `default: deny` and lose the history of why the vendor was ever permitted. NOT hard — a future operator decision could re-add."
     },
     {
-      "corpus": "luna-clippings", "provider": "moonshot", "purpose": "extraction",
-      "verdict": "allow+log",
-      "why": "operator ratification 2026-08-12 (HIMMEL-1748): the graphmap corpus copy spans Clippings/ (clipped public web content — the least-sensitive vault slice); same ratification as the luna-personal moonshot cell below. Ledgered per run."
-    },
-    {
       "corpus": "luna-clippings", "provider": "alibaba", "purpose": "embedding",
       "verdict": "deny",
       "why": "NOT PURSUING the HIMMEL-765 pilot (2026-07-22, HIMMEL-1257): Alibaba de-listed — bad results. Was pending-operator (effective deny); now explicit deny."
@@ -186,11 +180,6 @@
       "corpus": "luna-personal", "provider": "zai-glm", "purpose": "extraction",
       "verdict": "deny",
       "why": "REVERSED 2026-08-29 (HIMMEL-2224, landing HIMMEL-1749's DROP branch): the 2026-07-17 HIMMEL-1122 ratification (luna non-Clippings graphify extraction on GLM, full note bodies to Z.ai, ledgered per run) is dropped. The vendor count for this exposure class drops back by one; moonshot (HIMMEL-1748) now carries it. The GLM (Z.ai) lane was DROPPED 2026-08-12 (HIMMEL-1749) — auto-renew cancelled, GLM Coding Plan lapsed 2026-08-17; Kimi (moonshot, HIMMEL-1748) is the replacement CN extraction lane. Explicit deny on the HIMMEL-1257 de-listing pattern keeps the reversal legible and reviewable; a deleted row would fall through to `default: deny` and lose the history of why the vendor was ever permitted. NOT hard — a future operator decision could re-add."
-    },
-    {
-      "corpus": "luna-personal", "provider": "moonshot", "purpose": "extraction",
-      "verdict": "allow+log",
-      "why": "operator ratification 2026-08-12 (HIMMEL-1748, in-session; PR merge is the ratification record): luna non-Clippings graphify extraction on Kimi (Moonshot). WIDENS THE PERMITTED PROVIDER SET — full luna non-Clippings note bodies may reach a third vendor (Moonshot, CN region); vendor count for this exposure class goes 2 -> 3. Corpus, purpose, and content scope are UNCHANGED from the 2026-07-17 zai-glm cell above, so the KIND of exposure is the same. Motivation: the claude-cli cadence measurably drains the operator's interactive 5h usage bank (HIMMEL-1748), GLM 429s under its Coding Plan caps and the plan lapses 2026-08-17 (HIMMEL-1749). Gated on a measured trial vs the GLM link-recall band (63-79%, HIMMEL-1122) before the cadence flips. Ledgered per run; log obligation survives ratification, never plain allow."
     },
     {
       "corpus": "luna-personal", "provider": "deepseek", "purpose": "enrichment",

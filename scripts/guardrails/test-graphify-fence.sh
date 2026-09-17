@@ -70,7 +70,7 @@ LEDGER="$HOME/.claude/graphify-egress.jsonl"
 # env vars scrubbed on every fence call so the outer shell cannot leak state in.
 CLEAN_ENV="-u GRAPHIFY_SALUS_LOCAL_OK -u GRAPHIFY_CLIPPINGS_GLM_OK -u GRAPHIFY_LEDGER \
 -u GRAPHIFY_TOOL_CWD -u GRAPHIFY_DECLARED_BACKEND \
--u OPENAI_BASE_URL -u DEEPSEEK_BASE_URL -u ANTHROPIC_BASE_URL -u KIMI_BASE_URL -u LUNA_VAULT -u OLLAMA_HOST \
+-u OPENAI_BASE_URL -u DEEPSEEK_BASE_URL -u ANTHROPIC_BASE_URL -u LUNA_VAULT -u OLLAMA_HOST \
 -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX -u CLAUDE_CODE_USE_FOUNDRY \
 -u CLAUDE_CODE_USE_GATEWAY -u CLAUDE_CODE_USE_MANTLE -u CLAUDE_CODE_USE_ANTHROPIC_AWS \
 -u CLAUDE_CODE_USE_COWORK_PLUGINS -u CLAUDE_CODE_USE_POWERSHELL_TOOL \
@@ -136,37 +136,18 @@ run_fence allow yes "$HIMMEL" "salus x ollama opt-in -> allow+ledger" \
 
 # luna journal (non-Clippings) + GLM -> DENY (HIMMEL-2224/1749: the GLM/Z.ai
 # Coding Plan lapsed 2026-08-17, so this cell was reversed from HIMMEL-1122's
-# allow+log to an explicit deny — the sanctioned CN extraction lane is now
-# moonshot/kimi (HIMMEL-1748), tested below).
+# allow+log to an explicit deny — no CN/cloud extraction lane remains for
+# luna-personal now that kimi/moonshot is also retired (HIMMEL-2101);
+# claude-cli, the operating substrate, is the sanctioned semantic backend).
 run_fence deny no "$HIMMEL" "luna-personal x glm -> deny (GLM de-listed, HIMMEL-2224/1749)" \
     "graphify update $LUNA/journal-2026.md --backend glm"
 
-# Kimi's native backend maps to Moonshot when unset or pointed at either
-# Moonshot endpoint, and fails closed as an undeclared provider otherwise.
-run_fence allow yes "$HIMMEL" "luna-personal x kimi(unset baseurl) -> moonshot allow+ledger" \
+# kimi/Moonshot is retired (operator ruling 2026-08-24/2026-09-15, HIMMEL-2101):
+# there is no kimi backend any more. graphify-fence.sh no longer classifies it
+# (the deleted _map_kimi_endpoint mapping), so --backend kimi now falls to the
+# undeclared-literal-backend default: deny on any non-himmel-code corpus.
+run_fence deny no "$HIMMEL" "luna-personal x kimi (retired, HIMMEL-2101) -> deny (unclassified backend, fail-closed default)" \
     "graphify update $LUNA/journal-2026.md --backend kimi"
-run_fence allow yes "$HIMMEL" "luna-personal x kimi(moonshot.cn) -> moonshot allow+ledger" \
-    "graphify update $LUNA/journal-2026.md --backend kimi" KIMI_BASE_URL=https://api.moonshot.cn/v1
-run_fence deny no "$HIMMEL" "luna-personal x kimi(custom endpoint) -> deny fail-closed" \
-    "graphify update $LUNA/journal-2026.md --backend kimi" KIMI_BASE_URL=https://example.com/v1
-run_fence deny no "$HIMMEL" "luna-personal x moonshot(custom endpoint) -> kimi-custom deny fail-closed" \
-    "graphify update $LUNA/journal-2026.md --backend moonshot" KIMI_BASE_URL=https://example.com/v1
-run_fence deny no "$HIMMEL" "luna-personal x kimi(moonshot lookalike) -> deny fail-closed" \
-    "graphify update $LUNA/journal-2026.md --backend kimi" KIMI_BASE_URL=https://api.moonshot.ai.evil/v1
-run_fence deny no "$HIMMEL" "luna-personal x kimi(http plaintext) -> deny fail-closed" \
-    "graphify update $LUNA/journal-2026.md --backend kimi" KIMI_BASE_URL=http://api.moonshot.ai/v1
-run_fence deny no "$HIMMEL" "himmel-code x kimi(custom endpoint) -> hard deny (not wildcard allow)" \
-    "graphify update $HIMMEL/README.md --backend kimi" KIMI_BASE_URL=https://example.com/v1
-
-# api.moonshot.ai is the documented DEFAULT Moonshot allowlist host (only .cn
-# was pinned above) -> native moonshot allow+ledger (CR r5, finding 6).
-run_fence allow yes "$HIMMEL" "luna-personal x kimi(moonshot.ai) -> moonshot allow+ledger" \
-    "graphify update $LUNA/journal-2026.md --backend kimi" KIMI_BASE_URL=https://api.moonshot.ai/v1
-# A backslash in the authority is malformed (a lookalike smuggling attempt) ->
-# kimi-custom -> hard deny on every corpus, fail-closed (the backslash-reject
-# branch of _map_kimi_endpoint, CR r5 finding 6).
-run_fence deny no "$HIMMEL" "luna-personal x kimi(backslash authority) -> deny fail-closed" \
-    "graphify update $LUNA/journal-2026.md --backend kimi" 'KIMI_BASE_URL=https://api.moonshot.ai\.evil/v1'
 
 # luna Clippings + GLM -> deny (HIMMEL-2224: the cell is now a plain matrix
 # deny, not a conditional gated by a missing opt-in)
@@ -864,14 +845,12 @@ run_fence deny no "$HIMMEL" "query himmel + unclassifiable path -> deny" \
 
 echo "== fail-closed infra (ledger / trap / node / phi-roots) =="
 
-# (6) unwritable ledger on an allow+log cell -> deny + no partial ledger line.
-# GRAPHIFY_LEDGER parent is a regular file so mkdir -p fails. Vehicle swapped
-# glm -> kimi (moonshot, HIMMEL-1748): this exercises the ledger-write-failure
-# path, which needs an allow+log cell, not GLM policy specifically — zai-glm
-# is a plain deny post-HIMMEL-2224/1749 and would never reach ledger_append.
+# (6) unwritable-ledger fixture: GRAPHIFY_LEDGER parent is a regular file so
+# mkdir -p fails. kimi/Moonshot (the only allow+log matrix cell this fixture
+# used to exercise directly) is retired (HIMMEL-2101) — the equivalent
+# unwritable-ledger case on the DECLARED-path branch is covered by S6b below,
+# which reuses this same $WS/ledblocker file.
 : > "$WS/ledblocker"
-run_fence deny no "$HIMMEL" "unwritable ledger allow+log -> deny, no partial line" \
-    "graphify update $LUNA/journal-2026.md --backend kimi" GRAPHIFY_LEDGER="$WS/ledblocker/led.jsonl"
 
 # (7) abnormal-exit trap: HOME unset -> $HOME expansion aborts under set -u -> trap -> rc 2
 out=$( cd "$HIMMEL" && env -u HOME -u CLAUDE_GLM_CONFIG_DIR "$BASH_BIN" "$FENCE" "graphify update $HIMMEL/scripts/thing.sh --backend deepseek" 2>&1 ); rc=$?
@@ -903,32 +882,33 @@ run_fence deny no "$LUNA" ".. traversal Clippings/../../salus -> deny" \
     "graphify update Clippings/../../salusvault/notes/patient.md --backend deepseek"
 
 # (10b) .. traversal escaping Clippings resolves to luna-personal (NOT treated as
-# a Clippings path). HIMMEL-2224 made luna-clippings and luna-personal
-# verdict-IDENTICAL for every extraction provider (zai-glm now denies on BOTH;
-# moonshot allow+logs on BOTH — see egress-matrix.json), so the old glm-vehicle
-# trick — a wrongly-still-Clippings path hitting the (then) conditional cell's
-# deny while a correctly-reclassified luna-personal path allow+logged — can no
-# longer discriminate by VERDICT alone with any backend. Assert directly on the
-# ledger's "corpus" field instead (strictly stronger: it proves the corpus the
-# fence actually wrote, not merely that some corpus allowed). Vehicle swapped
-# glm -> kimi (moonshot, HIMMEL-1748) since this pins path reclassification,
-# not GLM policy. The opt-in-cannot-save-a-MORE-restrictive-escape property is
+# a Clippings path). luna-clippings and luna-personal are verdict-IDENTICAL for
+# every remaining extraction provider now that moonshot is retired (HIMMEL-2101:
+# both corpora fall to the same plain `allow` via the anthropic operating-
+# substrate cell, or default-deny for everything else), so a verdict-alone
+# discriminator no longer proves reclassification. Assert directly on the
+# ledger's "corpus" field instead (strictly stronger). Vehicle:
+# GRAPHIFY_DECLARED_BACKEND=claude-cli (declared-backend substitution always
+# ledgers, even on the plain `allow` cell this real luna-personal root now
+# hits) rather than an explicit --backend flag, so a ledger line exists to
+# inspect. The opt-in-cannot-save-a-MORE-restrictive-escape property is
 # carried by the salus-escape case (10a above, which stays a hard deny).
 rm -f "$LEDGER"
 # shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
-( cd "$LUNA" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "graphify update Clippings/../journal-2026.md --backend kimi" ) >/dev/null 2>&1; rc_trav=$?
+( cd "$LUNA" && env $CLEAN_ENV GRAPHIFY_DECLARED_BACKEND=claude-cli "$BASH_BIN" "$FENCE" "graphify update Clippings/../journal-2026.md" ) >/dev/null 2>&1; rc_trav=$?
 if [ "$rc_trav" -eq 0 ] && grep -q '"corpus":"luna-personal"' "$LEDGER" 2>/dev/null; then
     pass ".. traversal out of Clippings -> luna-personal reclassification (ledger corpus)"
 else
     fail ".. traversal out of Clippings: rc=$rc_trav ledger=$(cat "$LEDGER" 2>/dev/null)"
 fi
 
-# (11) uppercase --backend KIMI is lower-cased -> moonshot -> luna-personal
-# allow+log (HIMMEL-1748). Pins case-insensitive backend normalization. Vehicle
-# swapped glm -> kimi (HIMMEL-2224: zai-glm is now a plain deny, so it can no
-# longer stand in for the allow+log case this pins).
-run_fence allow yes "$HIMMEL" "uppercase --backend KIMI -> allow+ledger (moonshot, HIMMEL-1748)" \
-    "graphify update $LUNA/journal-2026.md --backend KIMI"
+# (11) uppercase --backend CLAUDE-CLI is lower-cased -> anthropic -> luna-personal
+# allow (HIMMEL-2101: claude-cli is the sanctioned semantic backend, kimi/
+# moonshot is retired). Pins case-insensitive backend normalization: an
+# un-lowered "CLAUDE-CLI" would miss the claude|claude-cli case arm and fall
+# to the default (undeclared-literal) branch, which denies on luna-personal.
+run_fence allow no "$HIMMEL" "uppercase --backend CLAUDE-CLI -> allow (case-insensitive backend normalization)" \
+    "graphify update $LUNA/journal-2026.md --backend CLAUDE-CLI"
 
 # (12a) no --backend + himmel path -> local-ollama -> allow (corpus rule, HIMMEL-621)
 run_fence allow no "$HIMMEL" "no-backend himmel -> allow (local-ollama)" \
@@ -952,11 +932,18 @@ echo "== query (no path arg -> cwd classification) =="
 run_fence allow no "$HIMMEL/scripts" "query cwd-himmel no-key -> allow" \
     "graphify query \"where is the entrypoint\""
 
-# (14b) query with cwd in luna-personal + --backend kimi -> luna-personal x
-# moonshot x extraction -> allow+log (HIMMEL-1748). Pins cwd classification.
-# Vehicle swapped glm -> kimi (HIMMEL-2224: zai-glm now denies on luna-personal).
-run_fence allow yes "$LUNA" "query cwd-luna kimi -> allow+ledger (HIMMEL-1748)" \
-    "graphify query \"what is in my journal\" --backend kimi"
+# (14b) query with cwd in luna-personal + --backend deepseek -> luna-personal
+# x deepseek x extraction -> deny (egress-matrix.json: an explicit deny row,
+# REVERSED 2026-07-22 HIMMEL-1257 — DeepSeek de-listed for luna-personal
+# extraction). This vehicle actually discriminates cwd classification: the
+# SAME --backend deepseek is a plain `allow` under the himmel-code wildcard
+# row (corpus "himmel-code", provider "*", purpose "*"), so if this cwd were
+# misclassified as himmel-code the verdict would flip to allow and the test
+# would catch it — claude-cli could not do this (its luna-personal cell is
+# also `allow`, so a misclassification to himmel-code's wildcard allow would
+# still read as allow and the test would pass either way).
+run_fence deny no "$LUNA" "query cwd-luna deepseek -> deny (cwd classification: luna-personal, not himmel-code)" \
+    "graphify query \"what is in my journal\" --backend deepseek"
 
 echo "== hook-level: parse + delegation + malformed-json fallback =="
 
@@ -995,25 +982,30 @@ if [ "$rc" -eq 0 ]; then pass "hook: malformed JSON no-graphify -> allow rc=0"; 
 
 echo "== ledger line CONTENT (verdict + corpus fields) =="
 
-# allow+log: luna-personal x kimi -> ledger line carries verdict + corpus
-# (kimi/moonshot is the sanctioned luna-personal allow+log lane, HIMMEL-1748;
-# vehicle swapped glm -> kimi since HIMMEL-2224 made zai-glm a plain deny here)
+# declared-backend + plain allow: luna-personal x claude-cli -> ledger line
+# carries verdict + corpus (HIMMEL-2101: kimi/moonshot's native allow+log lane
+# is retired — no matrix cell produces "allow+log" any more, so this now pins
+# the declared-backend-substitution always-ledgers-on-allow path instead;
+# GRAPHIFY_DECLARED_BACKEND, not an explicit --backend flag, so a ledger line
+# exists to inspect on this real, non-marker-declared root).
 rm -f "$LEDGER"
 # shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
-( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "graphify update $LUNA/journal-2026.md --backend kimi" ) >/dev/null 2>&1
-if grep -q '"verdict":"allow+log"' "$LEDGER" 2>/dev/null && grep -q '"corpus":"luna-personal"' "$LEDGER" 2>/dev/null; then
-    pass "ledger content: allow+log verdict + luna-personal corpus"
+( cd "$HIMMEL" && env $CLEAN_ENV GRAPHIFY_DECLARED_BACKEND=claude-cli "$BASH_BIN" "$FENCE" "graphify update $LUNA/journal-2026.md" ) >/dev/null 2>&1
+if grep -q '"verdict":"allow"' "$LEDGER" 2>/dev/null && grep -q '"corpus":"luna-personal"' "$LEDGER" 2>/dev/null; then
+    pass "ledger content: allow verdict + luna-personal corpus (declared backend)"
 else
-    fail "ledger content allow+log: got $(cat "$LEDGER" 2>/dev/null)"
+    fail "ledger content allow: got $(cat "$LEDGER" 2>/dev/null)"
 fi
 
 # A legal POSIX path may contain ESC (0x1b). The ledger must encode it as a
-# Unicode escape so the physical JSONL line remains parseable. Vehicle swapped
-# glm -> kimi (HIMMEL-2224) — this needs an allow+log cell, not GLM policy.
+# Unicode escape so the physical JSONL line remains parseable. Vehicle:
+# GRAPHIFY_DECLARED_BACKEND=claude-cli (HIMMEL-2101: kimi/moonshot's allow+log
+# lane is retired — a declared backend is what still guarantees a ledger line
+# on this real, non-marker root).
 FENCE_CTRL_PATH="$LUNA/$(printf 'control\033path.md')"
 rm -f "$LEDGER"
 # shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
-( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "graphify update $FENCE_CTRL_PATH --backend kimi" ) >/dev/null 2>&1
+( cd "$HIMMEL" && env $CLEAN_ENV GRAPHIFY_DECLARED_BACKEND=claude-cli "$BASH_BIN" "$FENCE" "graphify update $FENCE_CTRL_PATH" ) >/dev/null 2>&1
 if grep -qF "$(printf '\\u%04x' 27)" "$LEDGER" 2>/dev/null \
    && node -e "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'))" "$LEDGER"; then
     pass "ledger content: ESC path is escaped into valid JSON"
@@ -1040,16 +1032,16 @@ fi
 # the vault -> the path classifies as the VAULT corpus (luna-personal, rank 4),
 # NOT handover-state (rank 2) — vault roots are checked first, so a fold-style
 # setup tightens classification and the handover-state row keeps serving only
-# Mode-B external state repos. kimi/moonshot extraction verdict is allow+log
-# (the sanctioned luna-personal lane, HIMMEL-1748; vehicle swapped glm -> kimi,
-# HIMMEL-2224).
+# Mode-B external state repos. claude-cli extraction verdict is a plain allow
+# (HIMMEL-2101: kimi/moonshot's allow+log lane is retired); declared via
+# GRAPHIFY_DECLARED_BACKEND so a ledger line exists to inspect.
 mkdir -p "$LUNA/handovers/op"
 : > "$LUNA/handovers/op/next-session-1.md"
 rm -f "$LEDGER"
 # shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
-( cd "$HIMMEL" && env $CLEAN_ENV HANDOVER_DIR="$LUNA/handovers" "$BASH_BIN" "$FENCE" "graphify update $LUNA/handovers/op/next-session-1.md --backend kimi" ) >/dev/null 2>&1
-if grep -q '"verdict":"allow+log"' "$LEDGER" 2>/dev/null && grep -q '"corpus":"luna-personal"' "$LEDGER" 2>/dev/null; then
-    pass "nested HANDOVER_DIR inside vault classifies as luna-personal (allow+log)"
+( cd "$HIMMEL" && env $CLEAN_ENV HANDOVER_DIR="$LUNA/handovers" GRAPHIFY_DECLARED_BACKEND=claude-cli "$BASH_BIN" "$FENCE" "graphify update $LUNA/handovers/op/next-session-1.md" ) >/dev/null 2>&1
+if grep -q '"verdict":"allow"' "$LEDGER" 2>/dev/null && grep -q '"corpus":"luna-personal"' "$LEDGER" 2>/dev/null; then
+    pass "nested HANDOVER_DIR inside vault classifies as luna-personal (allow)"
 else
     fail "nested handover root: got $(cat "$LEDGER" 2>/dev/null)"
 fi
@@ -1084,11 +1076,12 @@ echo "== HIMMEL-778: MSYS drive-path normalization =="
 run_fence allow no "$HIMMEL" "MSYS /c/... under himmel root -> himmel-code allow" \
     "graphify update /c/fake/himmel/doc.md --backend deepseek" GRAPHIFY_HIMMEL_ROOT="C:/fake/himmel"
 
-# (M2) MSYS-form path under the luna root -> luna-personal (allow+log + ledger).
-# kimi/moonshot is the sanctioned luna-personal allow+log lane (HIMMEL-1748;
-# vehicle swapped glm -> kimi, HIMMEL-2224: zai-glm now denies here).
+# (M2) MSYS-form path under the luna root -> luna-personal (allow + ledger).
+# claude-cli is the sanctioned luna-personal backend (HIMMEL-2101; kimi/
+# moonshot's allow+log lane is retired) — declared via GRAPHIFY_DECLARED_BACKEND
+# so a ledger line exists to prove the MSYS path resolved under this root.
 run_fence allow yes "$HIMMEL" "MSYS /c/... under luna root -> luna-personal allow+ledger" \
-    "graphify update /c/fake/luna/journal.md --backend kimi" LUNA_VAULT_PATH="C:/fake/luna"
+    "graphify update /c/fake/luna/journal.md" LUNA_VAULT_PATH="C:/fake/luna" GRAPHIFY_DECLARED_BACKEND=claude-cli
 
 # (M3) THE --version regression: no path arg -> cwd fallback. The himmel root is
 # supplied drive-lettered (as git prints it); the fence must still classify the
@@ -1175,11 +1168,12 @@ STAGED_BAD="$WS/stgbad";     mkdir -p "$STAGED_BAD";   : > "$STAGED_BAD/copy.md"
 STAGED_NONE="$WS/stgnone";   mkdir -p "$STAGED_NONE";  : > "$STAGED_NONE/copy.md"
 STAGED_HIM="$WS/stghim";     mkdir -p "$STAGED_HIM";   : > "$STAGED_HIM/copy.md";   printf 'himmel-code\n'  > "$STAGED_HIM/.graphify-corpus"
 
-# (S1) staged copy declares luna-personal + kimi -> allow+log + ledger
-# (kimi/moonshot = the sanctioned luna-personal allow+log lane, HIMMEL-1748;
-# vehicle swapped glm -> kimi, HIMMEL-2224: zai-glm now denies here)
-run_fence allow yes "$HIMMEL" "staged marker luna-personal + kimi -> allow+ledger" \
-    "graphify update $STAGED/copy.md --backend kimi"
+# (S1) staged copy declares luna-personal + claude-cli -> allow + ledger (the
+# corpus marker's declared=1 always ledgers on an allow-family verdict, even
+# the plain `allow` claude-cli/anthropic now gets — HIMMEL-2101, kimi/moonshot
+# retired)
+run_fence allow yes "$HIMMEL" "staged marker luna-personal + claude-cli -> allow+ledger" \
+    "graphify update $STAGED/copy.md --backend claude-cli"
 
 # (S2) staged copy declares salus + deepseek -> hard salus deny
 run_fence deny no "$HIMMEL" "staged marker salus + deepseek -> deny (hard salus row)" \
@@ -1194,12 +1188,16 @@ run_fence deny no "$HIMMEL" "staged dir no marker -> deny (unclassifiable)" \
     "graphify update $STAGED_NONE/copy.md --backend deepseek"
 
 # (S5) marker INSIDE the real luna root claiming himmel-code -> luna-personal wins
-# (real root beats the marker; classification NOT relaxed; no declared field).
-# Vehicle swapped glm -> kimi (HIMMEL-2224: zai-glm now denies on luna-personal).
+# (real root beats the marker; classification NOT relaxed; no declared:true
+# field — the corpus is NOT marker-declared). Backend declared via
+# GRAPHIFY_DECLARED_BACKEND=claude-cli (HIMMEL-2101, kimi/moonshot retired) so
+# a ledger line exists to inspect on this real, non-marker-declared root; that
+# is a SEPARATE declared_backend_source field from the corpus "declared" bit
+# this case asserts is absent.
 rm -f "$LEDGER"
 printf 'himmel-code\n' > "$LUNA/.graphify-corpus"
 # shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
-( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "graphify update $LUNA/journal-2026.md --backend kimi" ) >/dev/null 2>&1; rc_s5=$?
+( cd "$HIMMEL" && env $CLEAN_ENV GRAPHIFY_DECLARED_BACKEND=claude-cli "$BASH_BIN" "$FENCE" "graphify update $LUNA/journal-2026.md" ) >/dev/null 2>&1; rc_s5=$?
 rm -f "$LUNA/.graphify-corpus"
 if [ "$rc_s5" -eq 0 ] && grep -q '"corpus":"luna-personal"' "$LEDGER" 2>/dev/null && ! grep -q '"declared":true' "$LEDGER" 2>/dev/null; then
     pass "marker in REAL luna claiming himmel-code -> luna-personal (real root wins)"
@@ -1234,9 +1232,8 @@ chmod 644 "$STAGED_UR/.graphify-corpus" 2>/dev/null || true
 # exits non-zero on EOF-without-newline but populates the variable; the old
 # `|| line=""` cleared it -> false deny on a `printf 'x' >` marker).
 STAGED_NONL="$WS/stgnonl"; mkdir -p "$STAGED_NONL"; : > "$STAGED_NONL/copy.md"; printf 'luna-personal' > "$STAGED_NONL/.graphify-corpus"
-# Vehicle swapped glm -> kimi (HIMMEL-2224: zai-glm now denies on luna-personal).
 run_fence allow yes "$HIMMEL" "staged marker with NO trailing newline -> still classifies (allow+ledger)" \
-    "graphify update $STAGED_NONL/copy.md --backend kimi"
+    "graphify update $STAGED_NONL/copy.md --backend claude-cli"
 
 # (S10) UNCONFIGURED luna root -> the marker is INERT (silent-failure CR round:
 # without a visible luna root the real-root-beats-marker precedence cannot be
@@ -1262,9 +1259,8 @@ if command -v cygpath >/dev/null 2>&1; then
         [A-Za-z]:/*)
             _drv="$(printf '%s' "${STAGED_MIXED%%:*}" | tr '[:upper:]' '[:lower:]')"
             STAGED_MSYS="/${_drv}${STAGED_MIXED#?:}"
-            # Vehicle swapped glm -> kimi (HIMMEL-2224: zai-glm now denies on luna-personal).
             run_fence allow yes "$HIMMEL" "MSYS-form staged path still finds its marker (walk on original form)" \
-                "graphify update $STAGED_MSYS/copy.md --backend kimi"
+                "graphify update $STAGED_MSYS/copy.md --backend claude-cli"
             ;;
         *) printf '  SKIP  MSYS-form marker walk (no drive-lettered form here)\n' ;;
     esac
@@ -1298,15 +1294,16 @@ else
 fi
 
 # (D3) staged luna-personal-declared path + real himmel-code path in ONE
-# invocation -> most-restrictive still wins (luna-personal x kimi ->
-# allow+log) AND declared:true is present. kimi/moonshot = the sanctioned
-# luna-personal allow+log lane (HIMMEL-1748; vehicle swapped glm -> kimi,
-# HIMMEL-2224: zai-glm now denies here).
+# invocation -> most-restrictive still wins (luna-personal x claude-cli ->
+# allow) AND declared:true is present (the corpus marker's declared=1 always
+# ledgers). HIMMEL-2101: kimi/moonshot's allow+log lane is retired — the
+# matrix cell claude-cli reaches (anthropic, operating substrate) is a plain
+# allow.
 rm -f "$LEDGER"
 # shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
-( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "graphify merge-graphs $HIMMEL/scripts/thing.sh $STAGED/copy.md --backend kimi" ) >/dev/null 2>&1; rc_d3=$?
+( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "graphify merge-graphs $HIMMEL/scripts/thing.sh $STAGED/copy.md --backend claude-cli" ) >/dev/null 2>&1; rc_d3=$?
 if [ "$rc_d3" -eq 0 ] && grep -q '"corpus":"luna-personal"' "$LEDGER" 2>/dev/null \
-    && grep -q '"verdict":"allow+log"' "$LEDGER" 2>/dev/null && grep -q '"declared":true' "$LEDGER" 2>/dev/null; then
+    && grep -q '"verdict":"allow"' "$LEDGER" 2>/dev/null && grep -q '"declared":true' "$LEDGER" 2>/dev/null; then
     pass "staged luna-personal + real himmel -> most-restrictive wins + declared ledger"
 else
     fail "mixed-corpus D3: rc=$rc_d3 ledger=$(cat "$LEDGER" 2>/dev/null)"
@@ -1370,12 +1367,11 @@ echo "== HIMMEL-779 gap 3: update-subcommand backend declaration + order-insensi
 # LLM-free), yet the fence demands a declared provider for a non-himmel
 # corpus. A declared backend via env (GRAPHIFY_DECLARED_BACKEND) must satisfy
 # the requirement AND still flow through the egress matrix -> luna-personal x
-# kimi -> allow+ledger (HIMMEL-779 gap 3a). Uses kimi/moonshot (the sanctioned
-# allow+log lane, HIMMEL-1748) as the allow example — vehicle swapped from glm
-# (HIMMEL-2224: zai-glm now denies on luna-personal) after HIMMEL-1257
-# de-listed deepseek.
-run_fence allow yes "$HIMMEL" "declared backend (kimi) on update luna -> allow+ledger" \
-    "graphify update $LUNA/journal-2026.md" GRAPHIFY_DECLARED_BACKEND=kimi
+# claude-cli -> allow+ledger (HIMMEL-779 gap 3a; declared_backend_source
+# always ledgers on allow). claude-cli is the sanctioned luna-personal
+# backend (HIMMEL-2101: kimi/moonshot is retired).
+run_fence allow yes "$HIMMEL" "declared backend (claude-cli) on update luna -> allow+ledger" \
+    "graphify update $LUNA/journal-2026.md" GRAPHIFY_DECLARED_BACKEND=claude-cli
 
 # (D2) declared backend still routed through the matrix: a deny-provider (gemini)
 # declared via env on luna-personal -> deny (declaration is not a bypass). gemini
@@ -1434,11 +1430,12 @@ run_fence deny no "$HIMMEL" "in-command cd then relative graphify target -> deny
     "cd $LUNA && graphify update journal-2026.md --backend glm" GRAPHIFY_TOOL_CWD="$HIMMEL"
 
 # (F2b) same in-command cd, but the graphify target is ABSOLUTE -> unaffected
-# by the cd-drift guard, normal matrix result (luna-personal x kimi ->
-# allow+ledger; kimi/moonshot is the sanctioned luna-personal lane, HIMMEL-1748;
-# vehicle swapped glm -> kimi, HIMMEL-2224: zai-glm now denies here).
+# by the cd-drift guard, normal matrix result (luna-personal x claude-cli ->
+# allow+ledger via GRAPHIFY_DECLARED_BACKEND; claude-cli is the sanctioned
+# luna-personal backend, HIMMEL-2101 — kimi/moonshot's allow+log lane is
+# retired, so a declared backend is what still ledgers here).
 run_fence allow yes "$HIMMEL" "in-command cd then ABSOLUTE graphify target -> unaffected (allow+ledger)" \
-    "cd $LUNA && graphify update $LUNA/journal-2026.md --backend kimi" GRAPHIFY_TOOL_CWD="$HIMMEL"
+    "cd $LUNA && graphify update $LUNA/journal-2026.md" GRAPHIFY_TOOL_CWD="$HIMMEL" GRAPHIFY_DECLARED_BACKEND=claude-cli
 
 # (F2c) no-cwd hook payload regression pin: WITHOUT any .tool_input.cwd field,
 # a relative safe path still resolves against the hook process's own $PWD (the
@@ -1489,17 +1486,15 @@ run_fence deny no "$WS" "bare-word PHI dir resolves via TOOL_CWD not fence \$PWD
 
 echo "== HIMMEL-881: .graphify-backend file-declared backend (update subcommand) =="
 
-# HIMMEL-1257: the fixture ROLES swapped because both my changes inverted the
-# luna-personal polarity (deepseek de-listed -> deny; glm ratified -> allow+log).
-# HIMMEL-2224/1749 then dropped GLM/Z.ai entirely, so this fixture's ALLOW
-# vehicle is swapped glm -> kimi (moonshot, HIMMEL-1748, the replacement CN
-# extraction lane). STAGED_BE = kimi is the "allow example" (luna-personal x
-# moonshot x extraction = allow+log); STAGED_BE2 = gemini is the churn-proof
-# "deny example" (hard-deny everywhere, so it stays a denier no matter how
-# provider policy evolves).
+# HIMMEL-2101: kimi/moonshot is retired (operator ruling — there is no kimi
+# backend). STAGED_BE = claude-cli is the "allow example" (luna-personal x
+# anthropic x extraction = allow, via the operating-substrate cell — the
+# corpus marker's declared=1 ledgers regardless); STAGED_BE2 = gemini is the
+# churn-proof "deny example" (hard-deny everywhere, so it stays a denier no
+# matter how provider policy evolves).
 STAGED_BE="$WS/stgbackend"; mkdir -p "$STAGED_BE"; : > "$STAGED_BE/copy.md"
 printf 'luna-personal\n' > "$STAGED_BE/.graphify-corpus"
-printf 'kimi\n' > "$STAGED_BE/.graphify-backend"
+printf 'claude-cli\n' > "$STAGED_BE/.graphify-backend"
 
 STAGED_BE2="$WS/stgbackend2"; mkdir -p "$STAGED_BE2"; : > "$STAGED_BE2/copy.md"
 printf 'luna-personal\n' > "$STAGED_BE2/.graphify-corpus"
@@ -1511,7 +1506,7 @@ printf 'luna-personal\n' > "$STAGED_BE_EMPTY/.graphify-corpus"
 
 STAGED_BE_MULTI="$WS/stgbemulti"; mkdir -p "$STAGED_BE_MULTI"; : > "$STAGED_BE_MULTI/copy.md"
 printf 'luna-personal\n' > "$STAGED_BE_MULTI/.graphify-corpus"
-printf 'kimi\nextra-line\n' > "$STAGED_BE_MULTI/.graphify-backend"   # multiline -> fail-closed deny (kimi would allow if the check broke)
+printf 'claude-cli\nextra-line\n' > "$STAGED_BE_MULTI/.graphify-backend"   # multiline -> fail-closed deny (claude-cli would allow if the check broke)
 
 STAGED_BE_BADCHARS="$WS/stgbebadchars"; mkdir -p "$STAGED_BE_BADCHARS"; : > "$STAGED_BE_BADCHARS/copy.md"
 printf 'luna-personal\n' > "$STAGED_BE_BADCHARS/.graphify-corpus"
@@ -1519,12 +1514,13 @@ printf 'deep seek\n' > "$STAGED_BE_BADCHARS/.graphify-backend"
 
 STAGED_BE_WRONGDIR="$WS/stgbewrong"; mkdir -p "$STAGED_BE_WRONGDIR/sub"; : > "$STAGED_BE_WRONGDIR/sub/copy.md"
 printf 'luna-personal\n' > "$STAGED_BE_WRONGDIR/sub/.graphify-corpus"
-printf 'kimi\n' > "$STAGED_BE_WRONGDIR/.graphify-backend"   # WRONG dir: parent, not sub/ (kimi would allow if the wrong-dir check broke)
+printf 'claude-cli\n' > "$STAGED_BE_WRONGDIR/.graphify-backend"   # WRONG dir: parent, not sub/ (claude-cli would allow if the wrong-dir check broke)
 
-# (BE1) file-declared backend (kimi) satisfies `update` on a non-himmel
-# corpus with no --backend and no env var -> allow+ledger (luna-personal x
-# kimi x extraction is an allow+log matrix cell, HIMMEL-1748; vehicle swapped
-# glm -> kimi, HIMMEL-2224).
+# (BE1) file-declared backend (claude-cli) satisfies `update` on a non-himmel
+# corpus with no --backend and no env var -> allow+ledger (the corpus
+# marker's declared=1 always ledgers; luna-personal x claude-cli x extraction
+# is a plain `allow` matrix cell via anthropic — HIMMEL-2101, kimi/moonshot's
+# allow+log lane is retired).
 run_fence allow yes "$HIMMEL" "file-declared backend satisfies update on non-himmel corpus -> allow+ledger" \
     "graphify update $STAGED_BE/copy.md"
 
@@ -1535,10 +1531,9 @@ run_fence deny no "$HIMMEL" "file-declared gemini alone denies (matrix still app
     "graphify update $STAGED_BE2/copy.md"
 
 # (BE3) env wins over file: file declares gemini (denies on its own, see BE2),
-# env declares kimi (allows) -> allow, proving env precedence over file.
-# Vehicle swapped glm -> kimi (HIMMEL-2224: zai-glm now denies here).
+# env declares claude-cli (allows) -> allow, proving env precedence over file.
 run_fence allow yes "$HIMMEL" "env backend wins over conflicting file backend -> allow (env precedence)" \
-    "graphify update $STAGED_BE2/copy.md" GRAPHIFY_DECLARED_BACKEND=kimi
+    "graphify update $STAGED_BE2/copy.md" GRAPHIFY_DECLARED_BACKEND=claude-cli
 
 # (BE4) empty .graphify-backend file -> deny (fail-closed).
 run_fence deny no "$HIMMEL" "empty .graphify-backend file -> deny (fail-closed)" \
@@ -1576,20 +1571,21 @@ run_fence allow yes "$HIMMEL" "himmel-code marker + .graphify-backend file ignor
 
 echo "== HIMMEL-881 codex-adv-1: all marker dirs must agree (order cannot mask a declaration) =="
 
-# STAGED_BE declares kimi, STAGED_BE2 declares gemini, STAGED has NO
+# STAGED_BE declares claude-cli, STAGED_BE2 declares gemini, STAGED has NO
 # .graphify-backend (all three are luna-personal-marked, same corpus rank) -
 # before the fix, only the FIRST target's marker dir was consulted, so
 # argument ordering picked which declaration counted (fail-open).
 
 STAGED_BE3="$WS/stgbackend3"; mkdir -p "$STAGED_BE3"; : > "$STAGED_BE3/copy.md"
 printf 'luna-personal\n' > "$STAGED_BE3/.graphify-corpus"
-printf 'kimi\n' > "$STAGED_BE3/.graphify-backend"   # agrees with STAGED_BE (kimi) for MA3
+printf 'claude-cli\n' > "$STAGED_BE3/.graphify-backend"   # agrees with STAGED_BE (claude-cli) for MA3
 
-# (MA1a/MA1b) two same-corpus dirs with CONFLICTING declarations (kimi vs
-# gemini) -> deny in BOTH argument orders (neither can hide behind the other
-# listed first — the conflict is detected by distinct backend NAMES, before
-# any matrix verdict, so the churn-proof kimi/gemini pair works identically).
-run_fence deny no "$HIMMEL" "conflicting file backends kimi-dir first -> deny" \
+# (MA1a/MA1b) two same-corpus dirs with CONFLICTING declarations (claude-cli
+# vs gemini) -> deny in BOTH argument orders (neither can hide behind the
+# other listed first — the conflict is detected by distinct backend NAMES,
+# before any matrix verdict, so the churn-proof claude-cli/gemini pair works
+# identically).
+run_fence deny no "$HIMMEL" "conflicting file backends claude-cli-dir first -> deny" \
     "graphify update $STAGED_BE/copy.md $STAGED_BE2/copy.md"
 run_fence deny no "$HIMMEL" "conflicting file backends gemini-dir first -> deny" \
     "graphify update $STAGED_BE2/copy.md $STAGED_BE/copy.md"
@@ -1601,8 +1597,8 @@ run_fence deny no "$HIMMEL" "declared dir + missing-file dir (declared first) ->
 run_fence deny no "$HIMMEL" "declared dir + missing-file dir (missing first) -> deny" \
     "graphify update $STAGED/copy.md $STAGED_BE/copy.md"
 
-# (MA3) two dirs that AGREE (kimi + kimi) -> allow+ledger (agreement
-# is not over-denied; both orders).
+# (MA3) two dirs that AGREE (claude-cli + claude-cli) -> allow+ledger
+# (agreement is not over-denied; both orders).
 run_fence allow yes "$HIMMEL" "two agreeing file backends -> allow+ledger" \
     "graphify update $STAGED_BE/copy.md $STAGED_BE3/copy.md"
 run_fence allow yes "$HIMMEL" "two agreeing file backends (reverse order) -> allow+ledger" \
@@ -1623,7 +1619,7 @@ run_fence allow yes "$HIMMEL" "two targets under one marker dir -> single dedup'
 
 echo "== HIMMEL-881 codex-adv-2: file declaration is STAGED-ONLY (real-root target disables it) =="
 
-# (SO1a/SO1b) staged luna copy (valid kimi file) + a REAL luna
+# (SO1a/SO1b) staged luna copy (valid claude-cli file) + a REAL luna
 # vault path in ONE update, no --backend / no env: before the fix the staged
 # copy's declaration satisfied the no-backend policy FOR THE REAL PATH (the
 # winning corpus is the real path's) - it must now deny in BOTH orders.
@@ -1633,11 +1629,11 @@ run_fence deny no "$HIMMEL" "REAL luna path + staged copy (real first) -> deny (
     "graphify update $LUNA/journal-2026.md $STAGED_BE/copy.md"
 
 # (SO2) ALL-staged mixed corpora: staged-himmel + staged-luna, both dirs with
-# agreeing kimi files -> most-restrictive luna-personal x kimi ->
+# agreeing claude-cli files -> most-restrictive luna-personal x claude-cli ->
 # allow+ledger (the staged-only rule must not over-deny fully-staged runs).
 STAGED_HIM2="$WS/stghim2"; mkdir -p "$STAGED_HIM2"; : > "$STAGED_HIM2/copy.md"
 printf 'himmel-code\n' > "$STAGED_HIM2/.graphify-corpus"
-printf 'kimi\n' > "$STAGED_HIM2/.graphify-backend"   # agrees with STAGED_BE (kimi) for SO2
+printf 'claude-cli\n' > "$STAGED_HIM2/.graphify-backend"   # agrees with STAGED_BE (claude-cli) for SO2
 run_fence allow yes "$HIMMEL" "all-staged mixed corpora w/ agreeing files -> allow+ledger" \
     "graphify update $STAGED_HIM2/copy.md $STAGED_BE/copy.md"
 # the SO2 ledger line (left by the run_fence call above) must attribute the
@@ -1655,7 +1651,7 @@ echo "== HIMMEL-881 final CR: unreadable file / cwd-fallback / env-over-mixed / 
 # drop read (admin on Windows, root on Linux).
 STAGED_BE_UR="$WS/stgbeunread"; mkdir -p "$STAGED_BE_UR"; : > "$STAGED_BE_UR/copy.md"
 printf 'luna-personal\n' > "$STAGED_BE_UR/.graphify-corpus"
-printf 'kimi\n' > "$STAGED_BE_UR/.graphify-backend"   # kimi would allow if the unreadable check broke (non-vacuous fail-closed)
+printf 'claude-cli\n' > "$STAGED_BE_UR/.graphify-backend"   # claude-cli would allow if the unreadable check broke (non-vacuous fail-closed)
 chmod 000 "$STAGED_BE_UR/.graphify-backend" 2>/dev/null || true
 if [ -r "$STAGED_BE_UR/.graphify-backend" ]; then
     printf '  SKIP  unreadable .graphify-backend marker (chmod could not drop read perm here)\n'
@@ -1669,7 +1665,7 @@ chmod 644 "$STAGED_BE_UR/.graphify-backend" 2>/dev/null || true
 # co-located), `graphify update` with NO path arg -> the fallback
 # classification is marker-declared, its marker dir is threaded as a 1-entry
 # list, any_real_root=0 -> file declaration satisfies the no-backend policy ->
-# luna-personal x kimi allow+log, ledger carries source=file.
+# luna-personal x claude-cli allow, ledger carries source=file.
 rm -f "$LEDGER"
 # shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
 ( cd "$STAGED_BE" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "graphify update --force" ) >/dev/null 2>&1; rc_fc2=$?
@@ -1680,15 +1676,15 @@ else
     fail "cwd-fallback file declaration: rc=$rc_fc2 ledger=$(cat "$LEDGER" 2>/dev/null)"
 fi
 
-# (FC3) env + MIXED staged/real invocation: GRAPHIFY_DECLARED_BACKEND=kimi
+# (FC3) env + MIXED staged/real invocation: GRAPHIFY_DECLARED_BACKEND=claude-cli
 # with a staged dir whose gemini file would deny alone (BE2) plus a REAL luna
 # path. DELIBERATE design: env is the operator/launching-shell trust boundary
 # and overrides the staged-only file gate (the file list is never consulted
-# when env is set) -> env wins, luna-personal x kimi allow+log, ledger
-# records source=env. Vehicle swapped glm -> kimi (HIMMEL-2224).
+# when env is set) -> env wins, luna-personal x claude-cli allow, ledger
+# records source=env.
 rm -f "$LEDGER"
 # shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
-( cd "$HIMMEL" && env $CLEAN_ENV GRAPHIFY_DECLARED_BACKEND=kimi "$BASH_BIN" "$FENCE" "graphify update $STAGED_BE2/copy.md $LUNA/journal-2026.md" ) >/dev/null 2>&1; rc_fc3=$?
+( cd "$HIMMEL" && env $CLEAN_ENV GRAPHIFY_DECLARED_BACKEND=claude-cli "$BASH_BIN" "$FENCE" "graphify update $STAGED_BE2/copy.md $LUNA/journal-2026.md" ) >/dev/null 2>&1; rc_fc3=$?
 if [ "$rc_fc3" -eq 0 ] && grep -q '"declared_backend_source":"env"' "$LEDGER" 2>/dev/null; then
     pass "env declaration wins over mixed staged/real (staged-only gate is file-path-only)"
 else
@@ -1710,12 +1706,11 @@ else
     fail "plain-allow env ledger pin: rc=$rc_fc4 ledger=$(cat "$LEDGER" 2>/dev/null)"
 fi
 
-# (FC5) case-insensitive agreement: 'Kimi' vs 'kimi' across two dirs
-# is NOT a conflict (mirrors _record_backend's lower-cased comparison).
-# Vehicle swapped glm -> kimi (HIMMEL-2224).
+# (FC5) case-insensitive agreement: 'Claude-Cli' vs 'claude-cli' across two
+# dirs is NOT a conflict (mirrors _record_backend's lower-cased comparison).
 STAGED_BE_CASE="$WS/stgbecase"; mkdir -p "$STAGED_BE_CASE"; : > "$STAGED_BE_CASE/copy.md"
 printf 'luna-personal\n' > "$STAGED_BE_CASE/.graphify-corpus"
-printf 'Kimi\n' > "$STAGED_BE_CASE/.graphify-backend"
+printf 'Claude-Cli\n' > "$STAGED_BE_CASE/.graphify-backend"
 run_fence allow yes "$HIMMEL" "case-differing agreeing file backends -> not a conflict -> allow" \
     "graphify update $STAGED_BE/copy.md $STAGED_BE_CASE/copy.md"
 
@@ -1732,26 +1727,28 @@ else
 fi
 
 # env-declared backend -> ledger carries declared_backend_source:"env"
-# (kimi/moonshot is the sanctioned luna-personal allow+log lane, HIMMEL-1748;
-# an allow line must exist to carry the source field, so a de-listed deny
-# provider would make this vacuous — vehicle swapped glm -> kimi, HIMMEL-2224,
-# because zai-glm is now exactly that de-listed deny provider)
+# (claude-cli is the sanctioned luna-personal backend, HIMMEL-2101 — kimi/
+# moonshot's allow+log lane is retired; an allow line must exist to carry the
+# source field, so a denying provider would make this vacuous)
 rm -f "$LEDGER"
 # shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
-( cd "$HIMMEL" && env $CLEAN_ENV GRAPHIFY_DECLARED_BACKEND=kimi "$BASH_BIN" "$FENCE" "graphify update $LUNA/journal-2026.md" ) >/dev/null 2>&1
+( cd "$HIMMEL" && env $CLEAN_ENV GRAPHIFY_DECLARED_BACKEND=claude-cli "$BASH_BIN" "$FENCE" "graphify update $LUNA/journal-2026.md" ) >/dev/null 2>&1
 if grep -q '"declared_backend_source":"env"' "$LEDGER" 2>/dev/null; then
     pass "ledger content: declared_backend_source=env for env-declared backend"
 else
     fail "ledger content declared_backend_source=env: got $(cat "$LEDGER" 2>/dev/null)"
 fi
 
-# real --backend flag (no declaration involved) -> no declared_backend_source field
-# (kimi gives a real allow+log ledger line to grep; a de-listed deny provider
-# would leave NO line, making the negative grep pass vacuously — vehicle
-# swapped glm -> kimi, HIMMEL-2224, because zai-glm is now that deny provider)
+# real --backend flag (no declaration involved) -> no declared_backend_source field.
+# Vehicle: $STAGED (a corpus-marker-declared luna-personal dir, declared=1 --
+# always ledgers) + an explicit --backend claude-cli flag, so a real allow
+# ledger line exists to grep. HIMMEL-2101: kimi/moonshot's native, non-declared
+# allow+log lane is retired, so a plain --backend flag on a REAL (non-marker)
+# root no longer produces any ledger line at all, which would make this
+# negative grep pass vacuously.
 rm -f "$LEDGER"
 # shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
-( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "graphify update $LUNA/journal-2026.md --backend kimi" ) >/dev/null 2>&1
+( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "graphify update $STAGED/copy.md --backend claude-cli" ) >/dev/null 2>&1
 if ! grep -q 'declared_backend_source' "$LEDGER" 2>/dev/null; then
     pass "ledger content: no declared_backend_source field for an explicit --backend flag"
 else

@@ -111,6 +111,19 @@ test("buildRunArgs injects --settings before the prompt when set; omits it other
   // unset => no --settings flag at all
   expect(buildRunArgs("do it").cmd).not.toContain("--settings");
 });
+// --- HIMMEL-2961: --mcp-config (plugin-profile MCP allowlist) injection ---
+test("buildRunArgs injects --mcp-config + --strict-mcp-config before the prompt when set; omits it otherwise", () => {
+  const cfg = '{"mcpServers":{"qmd":{"type":"http","url":"http://localhost:8181/mcp"}}}';
+  const withMcp = buildRunArgs("do it", undefined, undefined, undefined, cfg);
+  expect(withMcp.cmd).toEqual(["claude", "--model", DEFAULT_MODEL, "--mcp-config", cfg, "--strict-mcp-config", "do it"]);
+  // co-present with --settings: settings then mcp-config, both before the prompt
+  const s = '{"enabledPlugins":{"qmd@himmel":true}}';
+  const both = buildRunArgs("do it", undefined, undefined, s, cfg);
+  expect(both.cmd).toEqual(["claude", "--model", DEFAULT_MODEL, "--settings", s, "--mcp-config", cfg, "--strict-mcp-config", "do it"]);
+  // unset => no --mcp-config/--strict-mcp-config flags at all
+  expect(buildRunArgs("do it").cmd).not.toContain("--mcp-config");
+  expect(buildRunArgs("do it").cmd).not.toContain("--strict-mcp-config");
+});
 // --- HIMMEL-671: bounded runs must pin an explicit --model (never inherit the
 // user default, which is currently Fable) ---
 test("buildRunArgs pins --model with the baked-in default in BOTH spawn branches (HIMMEL-671)", () => {

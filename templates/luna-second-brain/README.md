@@ -79,9 +79,13 @@ nothing leaks into commits. Other plugin `data.json` files stay
 tracked so a fresh clone inherits usable defaults (audited free of
 credentials).
 
-**Optional plugins:** six permissively-licensed plugins ship bundled
-under `.obsidian/plugins/` (each with its upstream `LICENSE`). Three
-the source vault also used — Templater, Excalidraw, and Thino — are
+**Optional plugins:** five permissively-licensed plugins ship enabled by
+default under `.obsidian/plugins/` (each with its upstream `LICENSE`). A
+sixth, **GitHub Sync**, ships vendored under `optional/plugins/` but is
+**opt-in, not installed by default** — it is mutually exclusive with
+`scripts/vault-autosync.{sh,ps1}` (the sweeper), which is the default sync
+path; see `.obsidian/PLUGINS-SETUP.md` for how to switch. Three further
+plugins the source vault also used — Templater, Excalidraw, and Thino — are
 **not bundled** (incompatible licenses) and are optional; install them
 yourself from the Community Plugins browser per
 `.obsidian/PLUGINS-SETUP.md`.

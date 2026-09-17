@@ -48,7 +48,12 @@ run_hermes_check_bounded() {
 # mk_systemctl_stub <dir> <unit>... — writes a fake `systemctl` into <dir>
 # that logs every invocation's argv (one line per call) to
 # <dir>/systemctl.log, answers `--user list-units ... --plain --no-legend`
-# with the given fixture unit lines, and answers `--user restart <unit>`
+# with the given fixture unit lines FILTERED against the PATTERN arguments
+# the caller actually passed (each fixture unit is matched with shell `case`
+# glob semantics against every pattern, same fnmatch-style rules real
+# systemctl uses — HIMMEL-3052: this is what makes a glob-only
+# `hermes-gateway-*` list call miss a bare `hermes-gateway.service` fixture,
+# same as the real multiplexer unit), and answers `--user restart <unit>`
 # with rc=1 when <unit> equals $SYSTEMCTL_STUB_FAIL_UNIT (read at RUNTIME,
 # by the generated stub — not expanded here), else rc=0. Never the real
 # systemd bus, so safe to run against this station's live hermes-gateway
@@ -65,7 +70,25 @@ mk_systemctl_stub() {
 #!/bin/sh
 printf '%s\n' "\$*" >> "$dir/systemctl.log"
 if [ "\$1" = "--user" ] && [ "\$2" = "list-units" ]; then
-  cat "$dir/units.txt"
+  shift 2
+  patterns=""
+  while [ \$# -gt 0 ]; do
+    case "\$1" in
+      --*) break ;;
+      *) patterns="\$patterns \$1" ;;
+    esac
+    shift
+  done
+  while IFS= read -r line; do
+    unit=\${line%% *}
+    matched=0
+    for p in \$patterns; do
+      case "\$unit" in
+        \$p) matched=1 ;;
+      esac
+    done
+    [ "\$matched" = 1 ] && printf '%s\n' "\$line"
+  done < "$dir/units.txt"
 elif [ "\$1" = "--user" ] && [ "\$2" = "restart" ]; then
   [ "\$3" = "\${SYSTEMCTL_STUB_FAIL_UNIT:-}" ] && exit 1
 fi
@@ -403,14 +426,16 @@ else
   echo "ok: default root resolution never falls back to \$HOME/AppData/Local on Linux/macOS"
 fi
 
-# ── restart_hermes_gateways() — HIMMEL-2822 ─────────────────────────────────
-# himmel-update fast-forwards the hermes-agent checkout but the running
-# hermes-gateway-*.service units keep old modules in memory until restarted
-# (09-08 ImportError incident). These cases drive update_hermes via a
-# systemctl STUB on PATH — never the real systemd bus (do-not: this station
-# has both units live).
+# ── restart_hermes_gateways() — HIMMEL-2822 / HIMMEL-3052 ───────────────────
+# himmel-update fast-forwards the hermes-agent checkout but a running
+# hermes-gateway unit — per-profile (hermes-gateway-<profile>.service) or the
+# multiplexer (bare hermes-gateway.service, HIMMEL-3052) — keeps old modules
+# in memory until restarted (09-08 ImportError incident). These cases drive
+# update_hermes via a systemctl STUB on PATH — never the real systemd bus
+# (do-not: this station has live units of both shapes).
 GW1=hermes-gateway-grow_agent.service
 GW2=hermes-gateway-himmel_agent.service
+GW3=hermes-gateway.service
 
 # Case 13: apply path, checkout genuinely moves → ONE restart per listed
 # unit, and the output names each restarted unit.
@@ -491,7 +516,7 @@ done
 rc=0
 out=$(PATH="$NOSYSTEMCTL" HERMES_HOME="$tmp/nosysctl16" update_hermes apply 2>&1) || rc=$?
 if [ "$rc" -eq 0 ]; then echo "ok: no-systemctl apply -> exit 0"; else echo "FAIL: no-systemctl apply -> exit $rc"; printf '%s\n' "$out"; fail=1; fi
-check "no systemctl on PATH: loud advisory names exact restart shape" "systemctl --user restart hermes-gateway-<profile>\\.service" "$out"
+check "no systemctl on PATH: loud advisory names exact restart shape" "systemctl --user restart hermes-gateway\\.service \\(multiplexer\\) or hermes-gateway-<profile>\\.service" "$out"
 
 # Case 17: apply path, restart fails for ONE unit → reported FAILED-to-restart
 # with the by-hand command, chain NOT aborted (rc 0), and the OTHER unit
@@ -565,20 +590,88 @@ restarts19=$(grep -c -- '--user restart' "$stub19/systemctl.log" 2>/dev/null) ||
 restarts19=${restarts19:-0}
 if [ "$restarts19" -eq 0 ]; then echo "ok: empty list-units output -> zero restart calls"; else echo "FAIL: expected 0 restart calls, stub log shows $restarts19"; cat "$stub19/systemctl.log" 2>/dev/null; fail=1; fi
 
+# Case 20 (HIMMEL-3052): apply path, checkout moves, ONLY the multiplexer
+# unit ($GW3, bare hermes-gateway.service — no per-profile units running) →
+# it still gets restarted. A `list-units 'hermes-gateway-*'`-only call (the
+# pre-fix glob) never matches this fixture, so this case is RED against the
+# unmodified script and GREEN once the list call also names the bare unit.
+bare20="$tmp/bare20/NousResearch/hermes-agent.git"
+mkdir -p "$bare20"; git init -q --bare "$bare20"
+seed20="$tmp/seed20"
+git clone -q "$bare20" "$seed20"
+git -C "$seed20" config user.email "test@test.test"; git -C "$seed20" config user.name "Test"
+printf 'v1\n' > "$seed20/f.txt"; git -C "$seed20" add f.txt; git -C "$seed20" commit --quiet -m v1
+defbranch20=$(git -C "$seed20" rev-parse --abbrev-ref HEAD)
+git -C "$seed20" push --quiet origin "HEAD:$defbranch20"
+git clone -q "$bare20" "$tmp/mux20/hermes-agent"
+printf 'v2\n' > "$seed20/f.txt"; git -C "$seed20" add f.txt; git -C "$seed20" commit --quiet -m v2
+git -C "$seed20" push --quiet origin "HEAD:$defbranch20"
+want20=$(git -C "$seed20" rev-parse HEAD)
+stub20="$tmp/stub20"
+mk_systemctl_stub "$stub20" "$GW3"
+out=$(PATH="$stub20:$PATH" HERMES_HOME="$tmp/mux20" update_hermes apply 2>&1)
+got20=$(git -C "$tmp/mux20/hermes-agent" rev-parse HEAD)
+if [ "$got20" = "$want20" ]; then echo "ok: multiplexer fixture: checkout genuinely moved"; else echo "FAIL: multiplexer fixture HEAD was '$got20', expected '$want20'"; fail=1; fi
+check "multiplexer-only: restarted $GW3" "restarted $GW3" "$out"
+restarts20=$(grep -c -- '--user restart' "$stub20/systemctl.log" 2>/dev/null) || true
+restarts20=${restarts20:-0}
+if [ "$restarts20" -eq 1 ]; then echo "ok: multiplexer-only -> exactly one restart call"; else echo "FAIL: expected 1 restart call, stub log shows $restarts20"; cat "$stub20/systemctl.log" 2>/dev/null; fail=1; fi
+
+# Case 21 (HIMMEL-3052): apply path, checkout moves, multiplexer unit ($GW3)
+# running ALONGSIDE a per-profile unit ($GW1) — the mixed-shape window
+# during/after a `hermes gateway migrate --standalone` rollback — BOTH get
+# restarted.
+bare21="$tmp/bare21/NousResearch/hermes-agent.git"
+mkdir -p "$bare21"; git init -q --bare "$bare21"
+seed21="$tmp/seed21"
+git clone -q "$bare21" "$seed21"
+git -C "$seed21" config user.email "test@test.test"; git -C "$seed21" config user.name "Test"
+printf 'v1\n' > "$seed21/f.txt"; git -C "$seed21" add f.txt; git -C "$seed21" commit --quiet -m v1
+defbranch21=$(git -C "$seed21" rev-parse --abbrev-ref HEAD)
+git -C "$seed21" push --quiet origin "HEAD:$defbranch21"
+git clone -q "$bare21" "$tmp/mixed21/hermes-agent"
+printf 'v2\n' > "$seed21/f.txt"; git -C "$seed21" add f.txt; git -C "$seed21" commit --quiet -m v2
+git -C "$seed21" push --quiet origin "HEAD:$defbranch21"
+stub21="$tmp/stub21"
+mk_systemctl_stub "$stub21" "$GW3" "$GW1"
+out=$(PATH="$stub21:$PATH" HERMES_HOME="$tmp/mixed21" update_hermes apply 2>&1)
+check "mixed shapes: restarted $GW3" "restarted $GW3" "$out"
+check "mixed shapes: restarted $GW1" "restarted $GW1" "$out"
+restarts21=$(grep -c -- '--user restart' "$stub21/systemctl.log" 2>/dev/null) || true
+restarts21=${restarts21:-0}
+if [ "$restarts21" -eq 2 ]; then echo "ok: mixed shapes -> exactly two restart calls"; else echo "FAIL: expected 2 restart calls, stub log shows $restarts21"; cat "$stub21/systemctl.log" 2>/dev/null; fail=1; fi
+
 # ── report_cadence_stale() — stale cadence runner nudge (HIMMEL-588/969) ─────
 # Same lib seams; *_BAT_DIR point at fixture runner dirs.
+# HIMMEL-2965: cadence_runner_stamp now reads only the CURRENT platform's
+# runner extension (.sh on Linux/macOS, .bat on Windows).
+# CADENCE_RUNNER_PLATFORM_OS is the test seam that forces which platform
+# "current" means, mirroring scheduler_backend_os's SCHEDULER_BACKEND_OS
+# override — it lets these fixtures exercise both platform branches without
+# an actual Windows host.
 
 # Case 5: no runners present anywhere → silent no-op (cadences not armed).
 out=$(PIPELINE_BAT_DIR="$tmp/cad-empty" SWEEP_BAT_DIR="$tmp/sweep-empty" \
   GRAPHMAP_BAT_DIR="$tmp/graphmap-empty" QMD_CADENCE_BAT_DIR="$tmp/qmd-empty" report_cadence_stale 2>&1)
 if [ -z "$out" ]; then echo "ok: cadence absent → silent"; else echo "FAIL: cadence absent not silent"; printf '%s\n' "$out"; fail=1; fi
 
-# Case 6: codex-sweep.bat stamped current → shared probe returns its version.
+# Case 6: codex-sweep.bat stamped current, read under a forced-Windows
+# platform (codex-sweep only ever arms .bat, and only on Windows) → shared
+# probe returns its version.
 mkdir -p "$tmp/cad-codex-current"
 printf 'rem himmel-cadence-runner-format: %s\r\n' "$CADENCE_RUNNER_FORMAT_VERSION" \
   > "$tmp/cad-codex-current/codex-sweep.bat"
-ver=$(cadence_runner_stamp "$tmp/cad-codex-current")
-if [ "$ver" = "$CADENCE_RUNNER_FORMAT_VERSION" ]; then echo "ok: codex-sweep stamp probed"; else echo "FAIL: codex-sweep stamp probe got '$ver'"; fail=1; fi
+ver=$(CADENCE_RUNNER_PLATFORM_OS=windows cadence_runner_stamp "$tmp/cad-codex-current")
+if [ "$ver" = "$CADENCE_RUNNER_FORMAT_VERSION" ]; then echo "ok: codex-sweep stamp probed (forced-Windows)"; else echo "FAIL: codex-sweep stamp probe got '$ver'"; fail=1; fi
+
+# Case 6b (HIMMEL-2965): the SAME .bat-only fixture, read as Linux → the
+# dormant Windows twin is invisible to the Linux reader (reads as "not
+# armed" there) instead of pinning a false-stale floor.
+if ver=$(CADENCE_RUNNER_PLATFORM_OS=linux cadence_runner_stamp "$tmp/cad-codex-current" 2>&1); then
+  echo "FAIL: Linux-platform probe unexpectedly saw the dormant .bat twin (got '$ver')"; fail=1
+else
+  echo "ok: Linux-platform probe ignores the dormant .bat twin (not armed)"
+fi
 
 # Case 7: pipeline runner with no format stamp (armed before HIMMEL-588) →
 # STALE nudge with pipeline re-arm hint.
@@ -589,14 +682,28 @@ out=$(PIPELINE_BAT_DIR="$tmp/cad-stale" SWEEP_BAT_DIR="$tmp/sweep-empty" \
 check "stale pipeline cadence nudged (message)" "pipeline-cadence runners are STALE" "$out"
 check "stale pipeline cadence nudged (rearm hint)" "bash scripts/luna/pipeline-cadence.sh arm --force" "$out"
 
-# Case 8: codex-sweep.bat stamped stale → STALE nudge with codex re-arm hint.
+# Case 8 (HIMMEL-2965 ask 2): codex-sweep is Windows-only by design — a
+# dormant stale .bat twin on a non-Windows platform must never surface the
+# arm --force recipe (arm always refuses there); an explicit n/a note fires
+# instead.
 mkdir -p "$tmp/cad-codex-stale"
 printf 'rem himmel-cadence-runner-format: %s\r\n' "$((CADENCE_RUNNER_FORMAT_VERSION - 1))" \
   > "$tmp/cad-codex-stale/codex-sweep.bat"
-out=$(PIPELINE_BAT_DIR="$tmp/cad-empty" SWEEP_BAT_DIR="$tmp/cad-codex-stale" \
+out=$(CADENCE_RUNNER_PLATFORM_OS=linux PIPELINE_BAT_DIR="$tmp/cad-empty" SWEEP_BAT_DIR="$tmp/cad-codex-stale" \
   GRAPHMAP_BAT_DIR="$tmp/graphmap-empty" QMD_CADENCE_BAT_DIR="$tmp/qmd-empty" report_cadence_stale 2>&1)
-check "stale codex-sweep cadence nudged (message)" "codex-sweep-cadence runners are STALE" "$out"
-check "stale codex-sweep cadence nudged (rearm hint)" "bash scripts/cleanup/codex-sweep-cadence.sh arm --force" "$out"
+check "codex-sweep on non-Windows prints the Windows-only n/a note" "codex-sweep-cadence: Windows-only, n/a on this platform" "$out"
+if grepq "$out" -F 'scripts/cleanup/codex-sweep-cadence.sh arm --force'; then
+  echo "FAIL: codex-sweep arm --force recipe printed on non-Windows"; fail=1
+else
+  echo "ok: codex-sweep arm --force recipe never printed on non-Windows"
+fi
+
+# Case 8b: the SAME stale codex-sweep fixture under a forced-Windows
+# platform → the real recipe still fires (codex-sweep genuinely arms there).
+out=$(CADENCE_RUNNER_PLATFORM_OS=windows PIPELINE_BAT_DIR="$tmp/cad-empty" SWEEP_BAT_DIR="$tmp/cad-codex-stale" \
+  GRAPHMAP_BAT_DIR="$tmp/graphmap-empty" QMD_CADENCE_BAT_DIR="$tmp/qmd-empty" report_cadence_stale 2>&1)
+check "stale codex-sweep cadence nudged on Windows (message)" "codex-sweep-cadence runners are STALE" "$out"
+check "stale codex-sweep cadence nudged on Windows (rearm hint)" "bash scripts/cleanup/codex-sweep-cadence.sh arm --force" "$out"
 
 # Case 9: graphmap runner stamped stale → STALE nudge with graphmap re-arm hint.
 mkdir -p "$tmp/cad-graphmap-stale"
@@ -637,6 +744,24 @@ if [ "$ver" = "$((CADENCE_RUNNER_FORMAT_VERSION - 1))" ]; then echo "ok: mixed v
 out=$(PIPELINE_BAT_DIR="$tmp/cad-mixed" SWEEP_BAT_DIR="$tmp/sweep-empty" \
   GRAPHMAP_BAT_DIR="$tmp/graphmap-empty" QMD_CADENCE_BAT_DIR="$tmp/qmd-empty" report_cadence_stale 2>&1)
 check "mixed-version cadence nudged" "pipeline-cadence runners are STALE" "$out"
+
+# Case 12b (HIMMEL-2965 ask 1): a dormant STALE .bat twin alongside a
+# CURRENT .sh runner for the SAME basename must not pin the Linux minimum —
+# only the current platform's extension is read, so the dormant cross-
+# platform twin never masks (or is masked by) the live one.
+mkdir -p "$tmp/cad-platform-twin"
+printf 'rem himmel-cadence-runner-format: %s\r\n' "$((CADENCE_RUNNER_FORMAT_VERSION - 1))" \
+  > "$tmp/cad-platform-twin/pipeline-harvest.bat"
+printf '#!/bin/sh\n# himmel-cadence-runner-format: %s\necho cur\n' "$CADENCE_RUNNER_FORMAT_VERSION" \
+  > "$tmp/cad-platform-twin/pipeline-harvest.sh"
+ver=$(CADENCE_RUNNER_PLATFORM_OS=linux cadence_runner_stamp "$tmp/cad-platform-twin")
+if [ "$ver" = "$CADENCE_RUNNER_FORMAT_VERSION" ]; then echo "ok: Linux probe reads only the .sh twin (dormant .bat ignored)"; else echo "FAIL: Linux probe pinned by dormant .bat twin (got '$ver')"; fail=1; fi
+out=$(CADENCE_RUNNER_PLATFORM_OS=linux PIPELINE_BAT_DIR="$tmp/cad-platform-twin" SWEEP_BAT_DIR="$tmp/sweep-empty" \
+  GRAPHMAP_BAT_DIR="$tmp/graphmap-empty" QMD_CADENCE_BAT_DIR="$tmp/qmd-empty" report_cadence_stale 2>&1)
+if [ -z "$out" ]; then echo "ok: pipeline platform-twin fixture → no STALE line on Linux"; else echo "FAIL: pipeline platform-twin fixture wrongly nudged on Linux"; printf '%s\n' "$out"; fail=1; fi
+
+ver=$(CADENCE_RUNNER_PLATFORM_OS=windows cadence_runner_stamp "$tmp/cad-platform-twin")
+if [ "$ver" = "$((CADENCE_RUNNER_FORMAT_VERSION - 1))" ]; then echo "ok: Windows probe reads only the .bat twin (stale)"; else echo "FAIL: Windows probe got '$ver'"; fail=1; fi
 
 # Case 13: cadence_user_home — with USERPROFILE unset it echoes $HOME verbatim
 # (the POSIX leg; the Windows USERPROFILE/cygpath leg is exercised by real

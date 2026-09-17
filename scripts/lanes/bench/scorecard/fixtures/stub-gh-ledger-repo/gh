@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Deterministic gh stub for test-ledger-metrics.sh's --repo passthrough check
+# (HIMMEL-2981): fails loudly unless the exact -R custom/repo argument is
+# present, so a dropped --repo value shows up as a stub error, not a silent
+# wrong-repo query.
+set -u
+case "$*" in
+    "pr list "*"-R custom/repo "*) echo '[]'; exit 0 ;;
+    "pr list "*) echo "gh: unexpected repo in call: $*" >&2; exit 1 ;;
+    *) echo "gh: stub does not implement: $*" >&2; exit 1 ;;
+esac

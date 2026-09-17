@@ -1,0 +1,9 @@
+[
+  {
+    "source_file": "scripts/lanes/fanout-plan.mjs",
+    "target_file": "scripts/lanes/resolve.mjs",
+    "relation": "calls",
+    "source_location": "L105",
+    "note": "fanout-plan.mjs liveLaneRoster() execFileSync's resolve.mjs --json as a subprocess"
+  }
+]

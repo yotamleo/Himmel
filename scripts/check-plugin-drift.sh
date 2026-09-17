@@ -56,14 +56,15 @@
 #      by design) from a genuinely stale pin. An absent checkout / uninstalled
 #      tool / unreachable upstream is UNCHECKED, never drift.
 #
-# Fork-delta audit is split by storage shape. Registry forks (qmd and
-# claude-obsidian) are mechanically rebased + classified by
-# scripts/upstreams/resync-fork.sh on the nightly /fork-resync cadence. The
-# claude-obsidian carried delta is verified strictly additive at v2.1.1-himmel.1
-# (+10 -0: PR-#178 test UTF-8 guards + a README fork-attribution banner), so an
-# ADDITIVE result is expected — a NON-ADDITIVE result would be a genuine
-# regression worth investigating — and the unattended cadence stops after
-# reporting (it still audits every eligible fork), never pushes.
+# Fork-delta audit is split by storage shape. A registry entry carrying a
+# `fork` block is mechanically rebased + classified by
+# scripts/upstreams/resync-fork.sh on the nightly /fork-resync cadence — no
+# entry currently carries one (qmd de-forked HIMMEL-3045, claude-obsidian
+# retired at v2.2.0 HIMMEL-2925, so every eligible entry reports SKIP), but the
+# mechanism stays ready for a future fork: an ADDITIVE result is expected for a
+# well-behaved fork, a NON-ADDITIVE result would be a genuine regression worth
+# investigating, and the unattended cadence stops after reporting, never
+# pushes.
 # Vendored single-file forks (telegram-himmel, pr-review-toolkit-himmel) still
 # require a manual file-level delta judgment when their UPSTREAM_PIN changes.
 #

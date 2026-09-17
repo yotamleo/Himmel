@@ -6,8 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".codex/run-hook.sh --sandbox auto-approve-safe-bash.sh+check-cr-marker-on-pr-create.sh+block-read-secrets.sh+block-destructive-commands.sh+block-docker-privesc.sh+block-merged-pr-commit.sh+block-terminal-write-fence.sh+block-lesson-enforcement-writes.sh",
-            "commandWindows": ".codex/run-hook.cmd --sandbox auto-approve-safe-bash.sh+check-cr-marker-on-pr-create.sh+block-read-secrets.sh+block-destructive-commands.sh+block-docker-privesc.sh+block-merged-pr-commit.sh+block-terminal-write-fence.sh+block-lesson-enforcement-writes.sh",
+            "command": ".codex/run-hook.sh --sandbox auto-approve-safe-bash.sh+check-cr-marker-on-pr-create.sh+block-read-secrets.sh+read-clamp.sh+block-destructive-commands.sh+block-docker-privesc.sh+block-merged-pr-commit.sh+block-terminal-write-fence.sh+block-lesson-enforcement-writes.sh",
+            "commandWindows": ".codex/run-hook.cmd --sandbox auto-approve-safe-bash.sh+check-cr-marker-on-pr-create.sh+block-read-secrets.sh+read-clamp.sh+block-destructive-commands.sh+block-docker-privesc.sh+block-merged-pr-commit.sh+block-terminal-write-fence.sh+block-lesson-enforcement-writes.sh",
             "timeout": 60
           }
         ]
@@ -28,9 +28,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".codex/run-hook.sh --sandbox block-read-secrets.sh",
-            "commandWindows": ".codex/run-hook.cmd --sandbox block-read-secrets.sh",
-            "timeout": 15
+            "command": ".codex/run-hook.sh --sandbox block-read-secrets.sh+read-clamp.sh",
+            "commandWindows": ".codex/run-hook.cmd --sandbox block-read-secrets.sh+read-clamp.sh",
+            "timeout": 60
           }
         ]
       },

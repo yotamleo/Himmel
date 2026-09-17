@@ -197,8 +197,8 @@ else
 fi
 
 # T1c: home-path, JSON/log-escaped Windows profile path -- a literal DOUBLE
-# backslash in the file (as a JSON string like "C:\\Users\\Jane
-# Smith\\Documents" serializes it), not the single-backslash form T1b covers
+# backslash in the file (as a JSON string like "C:\\Users\\NAME
+# HERE\\Documents" serializes it), not the single-backslash form T1b covers
 # (CR round-5 codex-2 finding).
 r=$(new_repo)
 printf 'path is C:\\\\Users\\\\Jane Smith\\\\Documents\\\\file.txt\n' > "$r/winjson.txt"  # leak-allow: home-path test fixture
@@ -226,19 +226,35 @@ else
 fi
 fi
 
-# T1e: every name ALLOW_HOME_NAMES's header comment documents as a known
-# fixture placeholder must actually be in the list -- a name present in the
-# comment but dropped from the value silently starts flagging real,
-# pre-existing tracked fixtures that use it, e.g. scripts/lanes/tests/
-# bench-aggregate-tokens.test.mjs's own /home/ada/ and /Users/ada/ fixtures.
+# T1e (HIMMEL-2825): ALLOW_HOME_NAMES no longer globally exempts real-looking
+# human names (alice, bob, diane, jose, claude, jane, john) -- a real
+# adopter's own username commonly collides with one of these, which used to
+# make their genuine home-path leak a false negative. The fixture files that
+# used to rely on the global exemption now carry their own same-line
+# `# leak-allow: home-path <reason>` marker instead. Confirm the removal
+# actually took effect: an unmarked use of a formerly-allowlisted name is
+# flagged like any other real name.
 r=$(new_repo)
-printf 'tmpdir at /home/ada/project and /Users/ada/AppData\n' > "$r/allowlisted.txt"  # leak-allow: home-path test fixture
-git -C "$r" add allowlisted.txt
+printf 'HOME=/home/bob\n' > "$r/removed-allowlist.txt"  # leak-allow: home-path test fixture
+git -C "$r" add removed-allowlist.txt
 scan "$r" --tree
-if [ "$SCAN_RC" -eq 0 ] && ! grepq "$SCAN_OUT" -F "home-path"; then
-    pass "T1e home-path: documented placeholder name (ada) stays allowlisted"
+if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "home-path" && grepq "$SCAN_OUT" -F "removed-allowlist.txt:1"; then
+    pass "T1e home-path: formerly-allowlisted human name (bob) is now flagged unless marked"
 else
-    fail "T1e home-path allowlisted placeholder (rc=$SCAN_RC) out=$SCAN_OUT"
+    fail "T1e home-path removed-allowlist-name control (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T1e2: ...and the same formerly-allowlisted name stays clean when its own
+# fixture line carries the leak-allow marker -- proving the per-line
+# convention is a working replacement, not just a removal.
+r=$(new_repo)
+printf 'HOME=/home/bob  # leak-allow: home-path test fixture\n' > "$r/marked.txt"
+git -C "$r" add marked.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 0 ] && [ -z "$(strip_hostname_skip "$SCAN_OUT")" ]; then
+    pass "T1e2 home-path: same formerly-allowlisted name stays clean with its own leak-allow marker"
+else
+    fail "T1e2 home-path marked-fixture control (rc=$SCAN_RC) out=$SCAN_OUT"
 fi
 
 # T1f: same drift as T1e, for the two placeholders a repo-wide --tree run
@@ -295,11 +311,11 @@ fi
 # must stay clean, proving the fix didn't just start flagging every
 # single-word home-path unconditionally.
 r=$(new_repo)
-printf 'HOME=/home/ada foo bar baz\n' > "$r/swallow-allowed.txt"  # leak-allow: home-path test fixture
+printf 'HOME=/home/testuser foo bar baz\n' > "$r/swallow-allowed.txt"  # leak-allow: home-path test fixture
 git -C "$r" add swallow-allowed.txt
 scan "$r" --tree
 if [ "$SCAN_RC" -eq 0 ] && ! grepq "$SCAN_OUT" -F "home-path"; then
-    pass "T1i home-path: allowlisted /home/ada followed by prose stays clean"
+    pass "T1i home-path: allowlisted /home/testuser followed by prose stays clean"
 else
     fail "T1i home-path allowlisted-with-trailing-prose (rc=$SCAN_RC) out=$SCAN_OUT"
 fi
@@ -390,6 +406,277 @@ if [ "$SCAN_RC" -eq 0 ] && [ -z "$(strip_hostname_skip "$SCAN_OUT")" ]; then
     pass "T1n home-path: http://home/... control stays clean (not a file:// URI)"
 else
     fail "T1n home-path http control (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T1o: home-path, non-ASCII username (HIMMEL-2828) -- the username segment
+# character class used to be ASCII-only, so a real username that STARTS with
+# an accented character (e.g. "élodie") never matched at all: the name-chars
+# `+` quantifier requires at least one ASCII whitelist char right after the
+# prefix, and the very first character here isn't one. Forced to the C
+# locale: under this station's own en_US.UTF-8 default, glibc's
+# collation-based bracket-range matching lets [A-Za-z] incidentally match
+# some accented letters anyway, which would mask the bug (and any fix) here.
+r=$(new_repo)
+printf 'See /home/\xc3\xa9lodie/Documents/notes.txt for details.\n' > "$r/nonascii.txt"  # leak-allow: home-path test fixture
+git -C "$r" add nonascii.txt
+LC_ALL=C LANG=C scan "$r" --tree
+if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "home-path" && grepq "$SCAN_OUT" -F "nonascii.txt:1"; then
+    pass "T1o home-path: non-ASCII username /home/élodie/ flagged"  # leak-allow: home-path test fixture
+else
+    fail "T1o home-path non-ASCII username (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T1r (HIMMEL-2828 follow-up, console-flagged): the same widened, non-ASCII-
+# admitting single-word terminator that fixed T1o also swallows trailing
+# prose/doc-markup punctuation into the captured name -- a quote, comma, or
+# closing paren right after an allowlisted placeholder used to stop the old
+# ASCII-whitelist match before it, so the exact ALLOW_HOME_NAMES comparison
+# still saw the bare name. Confirm an allowlisted name stays allowlisted
+# when immediately followed by each of those shapes.
+r=$(new_repo)
+printf '"/home/otheruser", (/home/otheruser) and `/home/otheruser`\n' > "$r/quoted-allowed.txt"  # leak-allow: home-path test fixture
+git -C "$r" add quoted-allowed.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 0 ] && [ -z "$(strip_hostname_skip "$SCAN_OUT")" ]; then
+    pass "T1r home-path: allowlisted name quoted/comma'd/parenthesized stays allowlisted"
+else
+    fail "T1r home-path punctuation-adjacent allowlisted name (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T1s: RED-preserving control for T1r -- the same punctuation shapes around a
+# NON-allowlisted name must still be flagged, proving the stripped
+# comparison in T1r doesn't accidentally allowlist everything.
+r=$(new_repo)
+printf '"/home/mallory", (/home/mallory) and `/home/mallory`\n' > "$r/quoted-leak.txt"  # leak-allow: home-path test fixture
+git -C "$r" add quoted-leak.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "home-path" && grepq "$SCAN_OUT" -F "quoted-leak.txt:1"; then
+    pass "T1s home-path: non-allowlisted name still flagged despite quote/comma/paren punctuation"
+else
+    fail "T1s home-path punctuation-adjacent leak control (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T1p: home-path, Windows file:// URI with a drive letter (HIMMEL-2856) --
+# file:///C:/users/<name>/... (lowercase "users") was missed: after the
+# file:// boundary's extra leading slash, the path continues /C:/users/...
+# and neither existing alternative matches it (the case-insensitive
+# [A-Za-z]:/[Uu]sers/ alternative needs no leading slash before the drive
+# letter, and the bare, case-SENSITIVE /Users/ alternative requires a
+# capital U -- lowercase falls through both). A capitalized
+# file:///C:/Users/... already happened to match via that bare /Users/
+# alternative (preceded by the ":" boundary char) even pre-fix, which is why
+# the RED case here uses lowercase to prove the real gap.
+r=$(new_repo)
+printf 'see file:///C:/users/alexphantom/x for details\n' > "$r/filedrive.txt"  # leak-allow: home-path test fixture
+git -C "$r" add filedrive.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "home-path" && grepq "$SCAN_OUT" -F "filedrive.txt:1"; then
+    pass "T1p home-path: file:///C:/users/... URI (lowercase) flagged"
+else
+    fail "T1p home-path file:// drive-letter URI (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T1q: control for T1p -- a leading-slash drive-letter segment NOT followed
+# by "Users" must stay clean, proving the new alternative is scoped to the
+# literal "Users" segment and doesn't start matching any "/<drive>:/.../ "
+# shape.
+r=$(new_repo)
+printf 'see /C:/other/path here\n' > "$r/notusers.txt"  # leak-allow: home-path test fixture
+git -C "$r" add notusers.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 0 ] && [ -z "$(strip_hostname_skip "$SCAN_OUT")" ]; then
+    pass "T1q home-path: /C:/other/... control (not a Users segment) stays clean"
+else
+    fail "T1q home-path non-Users drive-letter control (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T1t: HIMMEL-2828 regression fix (console-flagged, public #664) -- a line
+# that itself DEFINES a home-path regex (in a guardrail script or its test)
+# used to be misread as a real leaked path, because ERE syntax like
+# "|[A-Za-z]:" or "[A-Za-z0-9._-]+" was just as word-char-admissible to the
+# old name-char class as a genuine username. Six shapes drawn from the real
+# false positives this regression produced on PR #664 (none of the six real
+# files are touched by this fixture or by the fix -- these are synthetic
+# stand-ins).
+r=$(new_repo)
+cat > "$r/regex-defs.txt" <<'FIXTURE_EOF'
+leak_pattern='(/Users/|[A-Za-z]:\Users\|[A-Za-z]:/Users/|\Users\|/home/[^/]+/|(^|[/\])AppData([/\]|$))'
+grep -qiE '\Users\|/Users/|AppData' "$OUT/report.md" 2>/dev/null \
+ABS_PATTERN='([A-Za-z]:[/\]+Users[/\]|/Users/|/root/|/home/[A-Za-z0-9._-]+/)'
+if LC_ALL=C grep -qE 'C:/Users/[A-Za-z0-9._-]+/' "$SCRIPT"; then
+if grep -qE 'C:\Users\[A-Za-z0-9_]+|/c/Users/[A-Za-z0-9_]+|/home/[A-Za-z0-9_]+/Documents' "$f"; then
+FIXTURE_EOF
+git -C "$r" add regex-defs.txt  # leak-allow: home-path test fixture
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 0 ] && [ -z "$(strip_hostname_skip "$SCAN_OUT")" ]; then
+    pass "T1t home-path: six regex-literal/prose shapes (own name-capture, char classes, alternation) stay clean"
+else
+    fail "T1t home-path regex-definition false-positive control (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T1t2: the sixth false-positive shape is different in kind -- a doc-style
+# Windows 8.3 short-name placeholder immediately followed by a truncating
+# ellipsis (e.g. "RUNNER~1\...", or the Unicode ellipsis "…"), which is
+# suppressed by a separate check in the match loop (not the name-char class
+# T1t exercises above).
+r=$(new_repo)
+printf '// (C:\\Users\\RUNNER~1\\..., because "runneradmin" is over 8 characters) while\n' > "$r/ellipsis.ts"  # leak-allow: home-path test fixture
+git -C "$r" add ellipsis.ts
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 0 ] && [ -z "$(strip_hostname_skip "$SCAN_OUT")" ]; then
+    pass "T1t2 home-path: RUNNER~1\\... doc-placeholder ellipsis stays clean"
+else
+    fail "T1t2 home-path ellipsis-placeholder control (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T1x (HIMMEL-2954 finding 1): a real dotted username (a common corporate
+# first.last shape) is captured whole instead of stopping at the first dot --
+# before this fix, "user" alone would satisfy the allowlist and the rest of
+# the identity ("smith") never got rescanned.
+r=$(new_repo)
+printf 'HOME=/home/user.smith/Documents/x\n' > "$r/dotted.txt"  # leak-allow: home-path test fixture
+git -C "$r" add dotted.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "home-path" && grepq "$SCAN_OUT" -F "dotted.txt:1"; then
+    pass "T1x home-path: dotted username (user.smith) captured whole and flagged"
+else
+    fail "T1x home-path dotted-username control (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T1x2: RED-preserving control for T1x -- a regex literal using '.' as a
+# wildcard right after the /home/ prefix must still stay clean, proving the
+# dotted-username join doesn't reintroduce the #664 wildcard false positive
+# (a '.' NOT followed by another name character still ends the capture).
+r=$(new_repo)
+printf "grep -qE '/home/user.*/Documents' \"\$f\"\n" > "$r/wildcard.txt"  # leak-allow: home-path test fixture
+git -C "$r" add wildcard.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 0 ] && [ -z "$(strip_hostname_skip "$SCAN_OUT")" ]; then
+    pass "T1x2 home-path: /home/user.*/ wildcard-dot regex literal stays clean"
+else
+    fail "T1x2 home-path wildcard-dot control (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T1x3: a trailing dot with no following name character (/home/user./x) still
+# captures just "user" -- the allowlisted leading segment on its own stays
+# clean, same as before this fix (the join only fires when a name character
+# follows the dot).
+r=$(new_repo)
+printf 'HOME=/home/user./x\n' > "$r/trailing-dot.txt"  # leak-allow: home-path test fixture
+git -C "$r" add trailing-dot.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 0 ] && [ -z "$(strip_hostname_skip "$SCAN_OUT")" ]; then
+    pass "T1x3 home-path: /home/user./x stops at the trailing dot (captures 'user' only, allowlisted)"
+else
+    fail "T1x3 home-path trailing-dot control (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T1y (HIMMEL-2954 finding 2): a genuine, non-allowlisted home path truncated
+# by a literal "..." in tool output (not a Windows 8.3 short name) must still
+# be reported -- before this fix, ANY name followed by "..." was suppressed.
+r=$(new_repo)
+printf 'See /home/alice/...\n' > "$r/truncated.txt"  # leak-allow: home-path test fixture
+git -C "$r" add truncated.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "home-path" && grepq "$SCAN_OUT" -F "truncated.txt:1"; then
+    pass "T1y home-path: genuine leak truncated by ... is still flagged (not an 8.3 short name)"
+else
+    fail "T1y home-path truncated-real-leak control (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T1y2: RED-preserving control for T1y -- the documented "<prefix>/<name>/..."
+# doc-elision shape stays clean when <name> is itself allowlisted (e.g.
+# "example"), same as any other allowlisted name -- home_name_allowed
+# suppresses it independent of the narrowed ellipsis check.
+r=$(new_repo)
+printf 'See /home/example/...\n' > "$r/doc-elision.txt"  # leak-allow: home-path test fixture
+git -C "$r" add doc-elision.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 0 ] && [ -z "$(strip_hostname_skip "$SCAN_OUT")" ]; then
+    pass "T1y2 home-path: allowlisted-name doc-elision (/home/example/...) stays clean"
+else
+    fail "T1y2 home-path doc-elision control (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T1u: RED-preserving control for T1t/T1t2 -- a genuine, non-allowlisted home
+# path sitting on its own line in the same file as the regex-literal shapes
+# must still be flagged, proving the metachar exclusion doesn't blind the
+# scanner to a real leak just because regex syntax appears elsewhere nearby.
+r=$(new_repo)
+printf 'leak_pattern=(/Users/|[A-Za-z]:\\Users\\|/home/[^/]+/)\n' > "$r/mixed.txt"
+printf 'See /home/mallory/data for the real leak.\n' >> "$r/mixed.txt"  # leak-allow: home-path test fixture
+git -C "$r" add mixed.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "home-path" && grepq "$SCAN_OUT" -F "mixed.txt:2"; then
+    pass "T1u home-path: a genuine home path still flagged alongside a regex-literal line"
+else
+    fail "T1u home-path RED-preserving control (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T1v (HIMMEL-2951): finishes HIMMEL-2825's ALLOW_HOME_NAMES drift for the
+# three residual names removed here (ada, somebody, yotamleo -- the fourth,
+# jarrod, stays allowlisted pending a vendored-tree follow-up). Same proof as
+# T1e: an unmarked home path under one of these formerly-allowlisted names is
+# now flagged like any other real name.
+r=$(new_repo)
+printf 'HOME=/home/ada\n' > "$r/removed-allowlist2.txt"  # leak-allow: home-path test fixture
+printf 'HOME=/home/somebody\n' >> "$r/removed-allowlist2.txt"  # leak-allow: home-path test fixture
+printf 'HOME=/home/yotamleo\n' >> "$r/removed-allowlist2.txt"  # leak-allow: home-path test fixture
+git -C "$r" add removed-allowlist2.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "home-path" &&
+    grepq "$SCAN_OUT" -F "removed-allowlist2.txt:1" &&
+    grepq "$SCAN_OUT" -F "removed-allowlist2.txt:2" &&
+    grepq "$SCAN_OUT" -F "removed-allowlist2.txt:3"; then
+    pass "T1v home-path: formerly-allowlisted names (ada, somebody, yotamleo) are now each flagged unless marked"
+else
+    fail "T1v home-path removed-allowlist-names control (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T1v2: ...and the same three names stay clean when their own fixture lines
+# carry the leak-allow marker -- proving the per-line convention is a working
+# replacement for all three, not just a removal.
+r=$(new_repo)
+printf 'HOME=/home/ada  # leak-allow: home-path test fixture\n' > "$r/marked2.txt"
+printf 'HOME=/home/somebody  # leak-allow: home-path test fixture\n' >> "$r/marked2.txt"
+printf 'HOME=/home/yotamleo  # leak-allow: home-path test fixture\n' >> "$r/marked2.txt"
+git -C "$r" add marked2.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 0 ] && [ -z "$(strip_hostname_skip "$SCAN_OUT")" ]; then
+    pass "T1v2 home-path: same three formerly-allowlisted names stay clean with their own leak-allow marker"
+else
+    fail "T1v2 home-path marked-fixture control (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T1w (HIMMEL-2958): finishes HIMMEL-2951's ALLOW_HOME_NAMES drift for the
+# last residual name, jarrod -- its only fixture dependents sat in the
+# vendored marketplace/plugins/claude-hud/tests/render.test.js, which now
+# carry their own same-line leak-allow markers. Same proof as T1e/T1v: an
+# unmarked home path under the formerly-allowlisted name is now flagged.
+# (Named T1w, not T1j as the ticket's design doc assumed, to avoid colliding
+# with the existing T1j/T1j2 WSL-path test IDs landed since the ticket was
+# filed.)
+r=$(new_repo)
+printf 'HOME=/home/jarrod\n' > "$r/removed-allowlist3.txt"  # leak-allow: home-path test fixture
+git -C "$r" add removed-allowlist3.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "home-path" && grepq "$SCAN_OUT" -F "removed-allowlist3.txt:1"; then
+    pass "T1w home-path: formerly-allowlisted name (jarrod) is now flagged unless marked"
+else
+    fail "T1w home-path removed-allowlist-name control (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T1w2: ...and the same name stays clean when its own fixture line carries
+# the leak-allow marker -- proving the per-line convention is a working
+# replacement for jarrod too, matching the 13 vendored fixture lines.
+r=$(new_repo)
+printf 'HOME=/home/jarrod  # leak-allow: home-path test fixture\n' > "$r/marked3.txt"
+git -C "$r" add marked3.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 0 ] && [ -z "$(strip_hostname_skip "$SCAN_OUT")" ]; then
+    pass "T1w2 home-path: same formerly-allowlisted name (jarrod) stays clean with its own leak-allow marker"
+else
+    fail "T1w2 home-path marked-fixture control (rc=$SCAN_RC) out=$SCAN_OUT"
 fi
 
 echo "== redaction =="
@@ -807,6 +1094,140 @@ else
 fi
 fi
 
+echo "== HIMMEL-2831 #1: a leak-shaped FILE PATH itself, not just its content =="
+
+# BASE_PRE2831_1 -- the commit at which item 2 (quoted-path parsing) had
+# already landed but item 1 (path-name scanning) had not; used below to prove
+# each case was a genuine miss before this session's scan_path() /
+# scan_new_staged_paths() additions, not just a fixture artifact.
+BASE_PRE2831_1="5e8e4cca8ecafa2864e8f4aa97c06012ab33e6cc"
+PRE_SCRIPT="$WS/leak-classes-pre-2831-1.sh"
+if ! git -C "$REPO_ROOT" show "$BASE_PRE2831_1:scripts/guardrails/leak-classes.sh" > "$PRE_SCRIPT" \
+        || [ ! -s "$PRE_SCRIPT" ]; then
+    echo "FATAL: could not extract pre-#1 leak-classes.sh from $BASE_PRE2831_1 (empty or failed 'git show') -- RED controls T13a/T13c would silently pass against an empty script" >&2
+    exit 1
+fi
+
+# T13a: a NEWLY ADDED staged file named with a denylisted hostname substring,
+# with EMPTY content -- the ticket's own repro case. `git diff --cached -U0`
+# emits no "--- "/"+++ "/"@@" lines at all for a genuinely empty new file (see
+# scan_new_staged_paths()'s header comment in leak-classes.sh), so a detector
+# that only walks diff hunks can never see this file; only a dedicated
+# path-listing pass can.
+r=$(new_repo)
+dl="$WS/denylist-t13a.txt"
+printf 'leaktest-host-xyz123\n' > "$dl"
+: > "$r/leaktest-host-xyz123-notes.txt"
+git -C "$r" add leaktest-host-xyz123-notes.txt
+pre_out=$(cd "$r" && HIMMEL_LEAK_DENYLIST="$dl" bash "$PRE_SCRIPT" --staged 2>&1); pre_rc=$?
+SCAN_OUT="$(cd "$r" && HIMMEL_LEAK_DENYLIST="$dl" bash "$SCRIPT" --staged 2>&1)"; SCAN_RC=$?
+if [ "$pre_rc" -eq 0 ] && ! grepq "$pre_out" -F "leaktest-host-xyz123-notes.txt" \
+   && [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "leaktest-host-xyz123-notes.txt:0:"; then
+    pass "T13a --staged: a newly added EMPTY file whose PATH embeds a denylisted hostname is flagged at :0 (RED pre-fix: the pre-#1 script misses it entirely)"
+else
+    fail "T13a --staged new-file path-name scan (pre_rc=$pre_rc pre_out=$pre_out rc=$SCAN_RC out=$SCAN_OUT)"
+fi
+
+# T13b: the SAME leak-shaped new path, but exact-file listed in
+# .leak-classes-ignore -- a path hit can't carry a same-line leak-allow
+# marker (there's no "line" to attach one to), so exemption is
+# .leak-classes-ignore only, per the header comment added for this ticket.
+# The ignore entry is committed FIRST (like T9d/T9e above) so this
+# changeset's own staged diff is just the new file -- otherwise the ignore
+# file's own content (which must literally spell the leak-shaped filename to
+# exempt it) would itself trip the hostname class as a staged content hit,
+# unrelated to the path-exemption behaviour under test.
+r=$(new_repo)
+dl="$WS/denylist-t13b.txt"
+printf 'leaktest-host-xyz123\n' > "$dl"
+printf 'leaktest-host-xyz123-notes.txt\n' > "$r/.leak-classes-ignore"
+git -C "$r" config user.email t@t
+git -C "$r" config user.name t
+git -C "$r" add .leak-classes-ignore
+git -C "$r" commit -q -m init
+: > "$r/leaktest-host-xyz123-notes.txt"
+git -C "$r" add leaktest-host-xyz123-notes.txt
+SCAN_OUT="$(cd "$r" && HIMMEL_LEAK_DENYLIST="$dl" bash "$SCRIPT" --staged 2>&1)"; SCAN_RC=$?
+if [ "$SCAN_RC" -eq 0 ] && [ -z "$SCAN_OUT" ]; then
+    pass "T13b --staged: a .leak-classes-ignore exact-file entry exempts a leak-shaped new path"
+else
+    fail "T13b --staged path exemption via .leak-classes-ignore (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T13c: --tree over a TRACKED file whose path embeds a leak-shaped class
+# (already committed, no staged change at all) must also be flagged at :0 --
+# run_tree()'s own scan_path() call site, exercised independently of
+# scan_new_staged_paths() above.
+r=$(new_repo)
+dl="$WS/denylist-t13c.txt"
+printf 'leaktest-host-xyz123\n' > "$dl"
+: > "$r/leaktest-host-xyz123-old.txt"
+git -C "$r" config user.email t@t
+git -C "$r" config user.name t
+git -C "$r" add leaktest-host-xyz123-old.txt
+git -C "$r" commit -q -m init
+pre_out=$(cd "$r" && HIMMEL_LEAK_DENYLIST="$dl" bash "$PRE_SCRIPT" --tree 2>&1); pre_rc=$?
+SCAN_OUT="$(cd "$r" && HIMMEL_LEAK_DENYLIST="$dl" bash "$SCRIPT" --tree 2>&1)"; SCAN_RC=$?
+if [ "$pre_rc" -eq 0 ] && ! grepq "$pre_out" -F "leaktest-host-xyz123-old.txt" \
+   && [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "leaktest-host-xyz123-old.txt:0:"; then
+    pass "T13c --tree: a tracked file whose PATH embeds a denylisted hostname is flagged at :0 (RED pre-fix: the pre-#1 script misses it entirely)"
+else
+    fail "T13c --tree path-name scan (pre_rc=$pre_rc pre_out=$pre_out rc=$SCAN_RC out=$SCAN_OUT)"
+fi
+
+# T13d: a MODIFIED (not newly added) file with a leak-shaped name and clean
+# added content -- design point (2): scan_new_staged_paths() only enumerates
+# --diff-filter=A (newly added) paths, so a pre-existing leak-shaped filename
+# must NOT be re-flagged by every subsequent --staged commit that merely
+# edits its clean content. --tree, which has no "new vs modified" concept,
+# still flags it every time via run_tree()'s own scan_path() call site.
+r=$(new_repo)
+dl="$WS/denylist-t13d.txt"
+printf 'leaktest-host-xyz123\n' > "$dl"
+printf 'line one\n' > "$r/leaktest-host-xyz123-old.txt"
+git -C "$r" config user.email t@t
+git -C "$r" config user.name t
+git -C "$r" add leaktest-host-xyz123-old.txt
+git -C "$r" commit -q -m init
+printf 'line one\nline two, still clean\n' > "$r/leaktest-host-xyz123-old.txt"
+git -C "$r" add leaktest-host-xyz123-old.txt
+staged_out="$(cd "$r" && HIMMEL_LEAK_DENYLIST="$dl" bash "$SCRIPT" --staged 2>&1)"; staged_rc=$?
+tree_out="$(cd "$r" && HIMMEL_LEAK_DENYLIST="$dl" bash "$SCRIPT" --tree 2>&1)"; tree_rc=$?
+if [ "$staged_rc" -eq 0 ] && ! grepq "$staged_out" -F "leaktest-host-xyz123-old.txt" \
+   && [ "$tree_rc" -eq 1 ] && grepq "$tree_out" -F "leaktest-host-xyz123-old.txt:0:"; then
+    pass "T13d --staged stays clean on a MODIFIED (not newly added) leak-shaped path with clean content; --tree still flags the path"
+else
+    fail "T13d --staged modified-file path scan scope (staged_rc=$staged_rc staged_out=$staged_out tree_rc=$tree_rc tree_out=$tree_out)"
+fi
+
+echo "== diff-prefix config independence (HIMMEL-2826) =="
+
+# T11: run_staged()'s parser keys on the literal "+++ b/" prefix `git diff
+# --cached` normally emits. A station with diff.mnemonicPrefix=true swaps
+# that to "+++ i/" (index) for the new side; the parser's fallback branch
+# then takes current_file verbatim AS "i/<realpath>" instead of stripping a
+# recognised prefix. If the repo also carries a directory-style
+# .leak-classes-ignore entry that happens to match that mnemonic letter
+# (here "i/" -- a perfectly ordinary directory name, unrelated to git's
+# scheme), EVERY staged file's corrupted "i/..." path now matches that
+# exemption and the leak goes completely unreported, regardless of where it
+# actually lives in the repo. Pinning diff.mnemonicPrefix=false (and
+# diff.noprefix=false, its sibling) on the invocation removes the
+# station-config dependency entirely.
+r=$(new_repo)
+mkdir -p "$r/i"
+printf 'unrelated\n' > "$r/i/placeholder.txt"
+printf 'i/\n' > "$r/.leak-classes-ignore"
+printf 'See /home/alexphantom/secret.txt\n' > "$r/leak.txt"  # leak-allow: home-path test fixture
+git -C "$r" config diff.mnemonicPrefix true
+git -C "$r" add i/placeholder.txt .leak-classes-ignore leak.txt
+scan "$r" --staged
+if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "home-path" && grepq "$SCAN_OUT" -F "leak.txt:1"; then
+    pass "T11 --staged: a diff.mnemonicPrefix=true station config can't corrupt the parsed file path into a spurious ignore-directory match"
+else
+    fail "T11 --staged diff.mnemonicPrefix independence (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
 echo "== the real pre-commit hook fires (not just the script directly) =="
 
 # T10: drives the ACTUAL `leak-classes` entry from this repo's own
@@ -904,7 +1325,13 @@ run_class_red_control() {
         return
     fi
 
-    red_control_run --cwd "$repo" -- bash -c '
+    # Pin HIMMEL_LEAK_DENYLIST to a scratch, guaranteed-absent path (same
+    # convention as scan()'s own hermetic default) rather than inheriting
+    # whatever the calling shell has exported: a station denylist token that
+    # happens to be a substring of this class's fixture text would otherwise
+    # make check_hostname_hits() fire during the mutant run and flip its exit
+    # code for a reason unrelated to the class under test (HIMMEL-2829).
+    red_control_run --cwd "$repo" --env HIMMEL_LEAK_DENYLIST="$WS/no-such-denylist.txt" -- bash -c '
         out=$(bash "$1" --tree 2>&1); rc=$?
         case "$out" in *"'"$class"'"*) hit=yes ;; *) hit=no ;; esac
         echo "hit=$hit"
@@ -973,6 +1400,28 @@ if mutate_call_site '    check_hostname_hits "$content"' 'true # RED-control: ch
     fi
 fi
 
+echo "== RED-control station-denylist independence (HIMMEL-2829) =="
+
+# T12: run_class_red_control()'s red_control_run call (used by the four
+# non-hostname classes above) passes no --env for HIMMEL_LEAK_DENYLIST, so it
+# inherits whatever the calling shell has exported. A station whose real
+# denylist happens to contain a token that is a literal substring of one of
+# those fixtures' own wording (here: "registered", already present in the
+# mac-address fixture "... registered.") makes check_hostname_hits() fire
+# during the mutant run purely by coincidence, flipping the mutant's exit
+# code away from the rc=0 a genuine miss produces -- so
+# red_control_assert's --expect-rc 0 wrongly FAILS the control for a reason
+# that has nothing to do with mac-address detection. Exported here as a
+# scratch, throwaway denylist -- never this station's real one.
+r=$(new_repo)
+printf 'Device MAC 3a:9f:2c:1e:88:04 registered.\n' > "$r/f.txt"  # leak-allow: mac-address test fixture
+git -C "$r" add f.txt
+dl="$WS/t12-contaminating-denylist.txt"
+printf 'registered\n' > "$dl"
+HIMMEL_LEAK_DENYLIST="$dl" run_class_red_control "T12-mac-address-under-station-denylist" "mac-address" \
+    '    if check_mac "$content" && ! line_allows "$content" mac-address; then' \
+    '    if false && check_mac "$content" && ! line_allows "$content" mac-address; then' "$r"
+
 echo "== RED controls: HIMMEL-2831 #2 / HIMMEL-2854 #6 follow-ups =="
 
 # RED-home-path-file-uri (HIMMEL-2854 #6): revert check_home_path's
@@ -1003,6 +1452,105 @@ if mutate_call_site \
             --note "reverting the leading-context regex to drop the file:// alternatives makes the file:///home/... URI in T1m go completely unreported" \
             && pass "RED-home-path-file-uri RED confirmed" \
             || fail "RED-home-path-file-uri RED control did not confirm (see FAIL line above)"
+    fi
+fi
+
+# RED-home-path-metachars (HIMMEL-2828 regression fix, console-flagged
+# #664): revert the ERE-metacharacter exclusion this fix added to the
+# name-char class -- unlike the RED controls above, this fix REMOVES a false
+# positive rather than adding a detection, so the polarity is reversed: the
+# REAL (fixed) script must stay CLEAN on this fixture, and the MUTANT
+# (reverted to pre-fix) must misreport it as a leak. The exclusion appears
+# five times in one regex line (four negated-class copies, one positive
+# terminator copy -- HIMMEL-2954 added a fourth negated-class copy for the
+# `(\.<seg>)*` dotted-username join on the single-word alternative);
+# mutate_call_site's own single-occurrence contract can't express that, so
+# this control does its own occurrence-counted, index()-based substring
+# removal (same literal-substring technique mutate_call_site uses internally,
+# just applied per-line instead of first-match-only) rather than reuse that
+# helper.
+r=$(new_repo)
+printf '%s\n' "ABS_PATTERN='([A-Za-z]:[/\\]+Users[/\\]|/Users/|/root/|/home/[A-Za-z0-9._-]+/)'" > "$r/f.txt"  # leak-allow: home-path test fixture
+git -C "$r" add f.txt
+mutant="$WS/mutant-home-path-metachars.sh"
+old_frag='(.*+?{}|^$['
+before=$(grep -o -F "$old_frag" "$SCRIPT" | wc -l | tr -d ' ')
+if [ "$before" != "5" ]; then
+    fail "RED-home-path-metachars anchor '$old_frag' did not appear exactly 5 times (before=$before) -- a stale anchor would leave the mutant unmutated and this control would pass vacuously"
+else
+    MUT_O="$old_frag" awk '
+        { line = $0
+          o = ENVIRON["MUT_O"]
+          out = ""
+          while ((p = index(line, o)) > 0) {
+              out = out substr(line, 1, p-1)
+              line = substr(line, p + length(o))
+          }
+          out = out line
+          print out
+        }
+    ' "$SCRIPT" > "$mutant"
+    after=$(grep -o -F "$old_frag" "$mutant" | wc -l | tr -d ' ')
+    if [ "$after" != "0" ] || cmp -s "$SCRIPT" "$mutant"; then
+        fail "RED-home-path-metachars mutation did not take effect (after=$after)"
+    else
+        scan "$r" --tree
+        if [ "$SCAN_RC" -ne 0 ] || [ -n "$(strip_hostname_skip "$SCAN_OUT")" ]; then
+            fail "RED-home-path-metachars precondition failed: the REAL (fixed) script does not stay clean on this fixture (rc=$SCAN_RC out=$SCAN_OUT)"
+        else
+            red_control_run --cwd "$r" -- bash -c '
+                out=$(bash "$1" --tree 2>&1); rc=$?
+                case "$out" in *"home-path"*) hit=yes ;; *) hit=no ;; esac
+                echo "hit=$hit"
+                exit "$rc"
+            ' _ "$mutant"
+            red_control_assert --label "RED-home-path-metachars" --expect-rc 1 \
+                --observed "$RED_CONTROL_OUT" \
+                --expect-wrong "hit=yes" \
+                --correct "hit=no" \
+                --note "reverting the ERE-metacharacter exclusion makes the regex-literal ABS_PATTERN fixture get misread as a real home path again, proving the exclusion -- not the fixture -- is what keeps T1t clean" \
+                && pass "RED-home-path-metachars RED confirmed" \
+                || fail "RED-home-path-metachars RED control did not confirm (see FAIL line above)"
+        fi
+    fi
+fi
+
+# RED-home-path-ellipsis (HIMMEL-2828 regression fix, console-flagged #664):
+# revert the doc-ellipsis skip check in check_home_path's match loop -- the
+# RUNNER~1\... placeholder in T1t2 must then be reported as a leak.
+r=$(new_repo)
+printf '// (C:\\Users\\RUNNER~1\\..., because "runneradmin" is over 8 characters) while\n' > "$r/ellipsis.ts"  # leak-allow: home-path test fixture
+git -C "$r" add ellipsis.ts
+mutant="$WS/mutant-home-path-ellipsis.sh"
+# The anchor/replacement are derived from the live script rather than
+# hand-transcribed here: the real line embeds ANSI-C $'...' quoting (the
+# doc-ellipsis and Unicode-ellipsis literals), and hand-escaping that through
+# this file's own single-quoted literals would be exactly the kind of fragile
+# transcription mutate_call_site's own occurrence check exists to catch late,
+# not avoid entirely.
+ellipsis_anchor=$(grep -m1 -F '! home_name_allowed "$name"; then' "$SCRIPT")
+ellipsis_indent=$(printf '%s' "$ellipsis_anchor" | sed -E 's/^([[:space:]]*).*/\1/')
+ellipsis_replacement="${ellipsis_indent}if ! home_name_allowed \"\$name\"; then"
+if [ -z "$ellipsis_anchor" ]; then
+    fail "RED-home-path-ellipsis anchor not found in $SCRIPT (script shape changed?)"
+elif mutate_call_site "$ellipsis_anchor" "$ellipsis_replacement" "$mutant"; then
+    scan "$r" --tree
+    if [ "$SCAN_RC" -ne 0 ] || [ -n "$(strip_hostname_skip "$SCAN_OUT")" ]; then
+        fail "RED-home-path-ellipsis precondition failed: the REAL (fixed) script does not stay clean on this fixture (rc=$SCAN_RC out=$SCAN_OUT)"
+    else
+        red_control_run --cwd "$r" -- bash -c '
+            out=$(bash "$1" --tree 2>&1); rc=$?
+            case "$out" in *"home-path"*) hit=yes ;; *) hit=no ;; esac
+            echo "hit=$hit"
+            exit "$rc"
+        ' _ "$mutant"
+        red_control_assert --label "RED-home-path-ellipsis" --expect-rc 1 \
+            --observed "$RED_CONTROL_OUT" \
+            --expect-wrong "hit=yes" \
+            --correct "hit=no" \
+            --note "reverting the doc-ellipsis skip check makes the RUNNER~1\\... placeholder in T1t2 get reported as a leaked home path again" \
+            && pass "RED-home-path-ellipsis RED confirmed" \
+            || fail "RED-home-path-ellipsis RED control did not confirm (see FAIL line above)"
     fi
 fi
 

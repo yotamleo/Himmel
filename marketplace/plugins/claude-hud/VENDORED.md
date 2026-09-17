@@ -16,7 +16,7 @@ fork_repo:            https://github.com/yotamleo/claude-hud   # public fork (HI
 upstream_repo:        https://github.com/jarrodwatts/claude-hud
 pinned_commit:        939eb66485832dead1b0a28a954f76f7aa2bdb06  # main HEAD (HIMMEL-2274, issue #518)
 pinned_upstream_tree: a9f550fa2eee50682133bc654caaa8a951cf3483  # git tree of pinned_commit (provenance)
-vendored_tree_hash:   dd72076767f9befa5fc3972bfbb98cde7da492197a80fe9ae26ef3ba11695ee4  # sha256 over VENDORED.manifest
+vendored_tree_hash:   06c9eedb6344af24ae95e2747e441241ab21b3699df1ec51ab5b047a6f16f28c  # sha256 over VENDORED.manifest
 vendored_at:          2026-08-30
 ```
 
@@ -63,6 +63,70 @@ protected: editing it without bumping the pin trips the guard.
 > makes the drift guard protect *more* upstream files, not fewer.
 
 ## Fork delta
+
+- **Cache-economics all-sessions scan never blocks a render (HIMMEL-2948,
+  2026-09-13):** `getAllSessionsCacheEconomics` in `src/cache-economics.ts`
+  used to `await` a full recursive scan of `~/.claude/projects/**/*.jsonl`
+  synchronously whenever its 30s cache was absent or expired, blocking that
+  statusline render; the plain `writeFileSync` also let a concurrent reader
+  observe partial JSON, and two HUD processes could race the same scan. It
+  now always returns the cached totals immediately (fresh or stale, zeros on
+  a cold start) and, when the cache is missing or expired, acquires an
+  `fs.mkdirSync`-based refresh lock (EEXIST = another refresh in flight; a
+  lock older than 120s by mtime is reclaimed once) and spawns a detached
+  child (`child_process.spawn(process.execPath, [process.argv[1],
+  '--refresh-cache-economics'], { detached: true, stdio: 'ignore' }).unref()`)
+  that runs the scan, writes the cache atomically (`<path>.tmp.<pid>` +
+  `fs.renameSync`, mode 0o600), and releases the lock in a `finally`. All new
+  effects (spawn, rename) are threaded through the existing
+  `CacheEconomicsDeps` injection so tests never fork a real process.
+  Behavior preserved: same return type, same TTL constant, same cache
+  schema. `vendored_tree_hash` re-recorded accordingly.
+
+  **CR round 1 follow-up:** the refresh lock now carries a `randomUUID()`
+  owner token (written into a file inside the lock dir), threaded through
+  `spawnRefresh`/the child argv/`runCacheEconomicsRefresh`, so a reclaimed
+  stale lock's original (superseded) holder can no longer delete the
+  reclaiming refresh's lock on release; `createSpawnRefresh` also releases
+  the lock on both a synchronous spawn failure and an asynchronous
+  `'error'` event from the child.
+
+  **CR round 2 follow-up:** `runCacheEconomicsRefresh` now checks its
+  `lockToken` still matches the lock's current owner immediately before
+  `writeCache` runs, so a refresh superseded by a stale-lock reclaim can no
+  longer publish its (stale) totals over a newer refresh's cache; `writeCache`'s
+  failure path now always attempts to unlink its pid-suffixed tmp file
+  (previously gated on the write having already succeeded, which could
+  leak a tmp file left behind by a partial `writeFileSync`, e.g. ENOSPC). A
+  third round-2 finding — a narrow TOCTOU window in the lock
+  reclaim/release sequence itself, inherent to a directory-based lock
+  without a real cross-process CAS primitive — is deferred to HIMMEL-3011.
+  `vendored_tree_hash` re-recorded accordingly.
+
+  **CR round 3 follow-up:** `acquireRefreshLock` now cleans up (`rmSync` the
+  freshly-created lock dir) and gives up the acquisition rather than handing
+  back a token when writing the owner file itself fails — a token
+  `isRefreshLockOwner`/`releaseRefreshLock` could never match would both
+  block publish forever and leak the lock dir. `CacheEconomicsDeps` also
+  gained a `writeFile` seam (mirroring the existing `rename` seam) so
+  `writeCache`'s regression test can genuinely drive a partial-write-then-throw
+  failure; the prior version of that test mocked `fs.writeFileSync` directly,
+  which is not portable — `node:fs`'s exports are non-configurable under both
+  bun's and plain node's `mock`/`spyOn` ("Cannot replace module namespace
+  object's binding's value" / "Cannot redefine property"). `vendored_tree_hash`
+  re-recorded accordingly.
+
+- **Leak-scanner markers on the `jarrod` fixture lines (HIMMEL-2958,
+  2026-09-13):** himmel's `scripts/guardrails/leak-classes.sh` dropped
+  `jarrod` from its `ALLOW_HOME_NAMES` global exemption (the last of the
+  human-shaped placeholder names removed there — see HIMMEL-2825/2951). Its
+  only dependents are the 13 `/Users/jarrod/...` / `C:\Users\jarrod\...` <!-- leak-allow: home-path fork-delta prose names the fixture placeholder, HIMMEL-2954 -->
+  fixture lines in `tests/render.test.js` (lines 360, 363, 368, 384, 386,
+  392, 394, 608, 610, 617, 618, 1538, 1548), each of which now carries a
+  trailing `// leak-allow: home-path upstream fixture name, HIMMEL-2958`
+  comment so the scanner still passes without the global exemption. Comment
+  additions only — no behavior change, `bun test` stays byte-for-byte green.
+  `vendored_tree_hash` re-recorded accordingly.
 
 - **Test-only station isolation fixes (HIMMEL-2944, 2026-09-12):** two bugs in
   `tests/core.test.js` / `tests/index.test.js` made `bun test` fail on any

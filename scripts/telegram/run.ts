@@ -47,11 +47,17 @@ function resolveModel(): string {
 // payload spawn-glm resolves. Highest non-managed precedence, so a lane runs the
 // lean profile while ~/.claude (shared, no CLAUDE_CONFIG_DIR) stays full for the
 // operator. Omitted (operator profile / unset) => no flag, inherits ~/.claude.
-export function buildRunArgs(prompt: string, permissionMode?: PermissionMode, modelOverride?: string, settings?: string) {
+// mcpConfig (HIMMEL-2961): when set, injected as `--mcp-config <json>
+// --strict-mcp-config` after --settings — the profile's mcpServers allowlist
+// (plugin-profiles.mjs's collectMcpServerDefs), passed inline the same way
+// --settings is (the claude CLI accepts --mcp-config as a JSON string, not
+// only a file path). Omitted => no flag, inherits the ambient MCP config.
+export function buildRunArgs(prompt: string, permissionMode?: PermissionMode, modelOverride?: string, settings?: string, mcpConfig?: string) {
   const model = modelOverride ?? resolveModel();
   const cmd = ["claude", "--model", model];
   if (permissionMode) cmd.push("--permission-mode", permissionMode);
   if (settings) cmd.push("--settings", settings);
+  if (mcpConfig) cmd.push("--mcp-config", mcpConfig, "--strict-mcp-config");
   cmd.push(prompt);
   return { cmd, stdin: "ignore" as const };
 }
@@ -291,7 +297,7 @@ async function drain(stream: ReadableStream<Uint8Array>, onChunk?: (s: string) =
   return acc;
 }
 
-export async function runSession(prompt: string, cwd: string, permissionMode?: PermissionMode, lane?: "glm", modelOverride?: string, settings?: string, observe?: RunObserver, extraEnv?: Record<string, string>): Promise<{ code: number; capped: boolean; blocked: boolean; timedOut: boolean; pid: number; tail?: string }> {
+export async function runSession(prompt: string, cwd: string, permissionMode?: PermissionMode, lane?: "glm", modelOverride?: string, settings?: string, observe?: RunObserver, extraEnv?: Record<string, string>, mcpConfig?: string): Promise<{ code: number; capped: boolean; blocked: boolean; timedOut: boolean; pid: number; tail?: string }> {
   const env = sessionEnv(lane, extraEnv);
   // PERMISSION POSTURE (HIMMEL-314; see also HIMMEL-203, HIMMEL-578):
   // the bounded run inherits the operator's default permission mode (accept-edits)
@@ -305,7 +311,7 @@ export async function runSession(prompt: string, cwd: string, permissionMode?: P
   // else the FILE-and-commit flow deadlocks on un-answerable prompts. bypass does
   // NOT loosen containment: the VAULT's PreToolUse hooks (e.g. block-cloud-egress)
   // still fire and HARD-block web/cloud/push. Non-vault sessions keep the default.
-  const { cmd } = buildRunArgs(prompt, permissionMode, modelOverride ?? laneModel(lane), settings);
+  const { cmd } = buildRunArgs(prompt, permissionMode, modelOverride ?? laneModel(lane), settings, mcpConfig);
   // SPAWN_OWN_GROUP (HIMMEL-1956): the timeout below calls killTree, and its
   // POSIX half signals the process GROUP -- which has to exist before it can
   // be signalled. Without this the claude worker's own children survive the

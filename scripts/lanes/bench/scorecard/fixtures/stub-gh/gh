@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Deterministic gh stub for test-extra-metrics.sh (HIMMEL-2977 CI fix):
+# extra-metrics.sh calls `gh pr list -R <repo> --state merged --limit 1000
+# --json number,title,mergedAt --jq '.'` unconditionally; a CI runner has no
+# `gh auth`, so that call fails and extra-metrics.sh exits before the
+# operator-intervention section the suite actually exercises. This returns a
+# fixed empty merged-PR list so the suite is hermetic regardless of gh auth.
+set -u
+case "$*" in
+    "pr list "*) echo "[]"; exit 0 ;;
+    *) echo "gh: stub does not implement: $*" >&2; exit 1 ;;
+esac

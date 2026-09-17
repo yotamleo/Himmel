@@ -220,6 +220,36 @@ try {
     Expect-Warn 'claim with adjacent path evidence is silent' 0 $false "feat: add feature`n`nWe don't have this handled yet.`nSee scripts/hooks/check-commit-msg.ps1 for details." @{ TICKET_ID_REQUIRED = '0' }
     Expect-Warn 'no claim is silent' 0 $false "feat: add feature`n`nEverything here works as expected." @{ TICKET_ID_REQUIRED = '0' }
 
+    # HIMMEL-3022 (HIMMEL-2982 Ask 3): commit-msg-time WARNING when a `Security
+    # reviewed:` trailer is present but its token does not conform to
+    # check-security-reviewed.sh's TOKEN_RE (HIMMEL-1681), and when a
+    # `Platforms tested:` trailer is present with an empty value — so the author
+    # sees the problem before the pre-push gate refuses the push. Never blocks
+    # (rc unchanged); TICKET_ID_REQUIRED=0 keeps the ticket gate out of the way,
+    # same as the HIMMEL-2183 cases above.
+    Expect-Warn 'non-conforming Security reviewed token warns' 0 $true "chore: add feature`n`nSecurity reviewed: yes" @{ TICKET_ID_REQUIRED = '0' }
+    $nonconformingResult = Invoke-GateCaptured -Message "chore: add feature`n`nSecurity reviewed: yes" -Env @{ TICKET_ID_REQUIRED = '0' }
+    if ($nonconformingResult.Output -match '(?i)manual' -and $nonconformingResult.Output -match '(?i)claude-code-security-review' -and $nonconformingResult.Output -match '(?i)pr-review-toolkit' -and $nonconformingResult.Output -match '(?i)ad-hoc' -and $nonconformingResult.Output -match '(?i)pre-push gate') {
+        Write-Host '  PASS  non-conforming Security reviewed warning names the four tokens and the pre-push gate'
+    } else {
+        Write-Host '  FAIL  non-conforming Security reviewed warning names the four tokens and the pre-push gate'
+        $script:failures++
+    }
+    Expect-Warn 'conforming Security reviewed token is silent' 0 $false "chore: add feature`n`nSecurity reviewed: manual — checked the diff" @{ TICKET_ID_REQUIRED = '0' }
+    Expect-Warn 'absent Security reviewed line is silent' 0 $false 'chore: add feature' @{ TICKET_ID_REQUIRED = '0' }
+    Expect-Warn 'empty Platforms tested value warns' 0 $true "chore: add feature`n`nPlatforms tested:" @{ TICKET_ID_REQUIRED = '0' }
+    Expect-Warn 'non-empty Platforms tested value is silent' 0 $false "chore: add feature`n`nPlatforms tested: linux" @{ TICKET_ID_REQUIRED = '0' }
+
+    # CodeRabbit (PR #735): the gate exits 0 on a `[skip …]` marker BEFORE it
+    # ever checks ATTEST_RE, and its own ATTEST_RE match is "does any trailer
+    # line conform", not "does the first one conform" — so a skip marker or a
+    # later conforming duplicate must silence the warning even though the FIRST
+    # (or only) trailer line on its own would not conform.
+    Expect-Warn 'skip security-review marker silences a non-conforming token' 0 $false "chore: add feature`n`nSecurity reviewed: yes`n[skip security-review]" @{ TICKET_ID_REQUIRED = '0' }
+    Expect-Warn 'skip platforms-check marker silences an empty value' 0 $false "chore: add feature`n`nPlatforms tested:`n[skip platforms-check]" @{ TICKET_ID_REQUIRED = '0' }
+    Expect-Warn 'a later conforming Security reviewed line silences an earlier bad one' 0 $false "chore: add feature`n`nSecurity reviewed: yes`nSecurity reviewed: manual — checked the diff" @{ TICKET_ID_REQUIRED = '0' }
+    Expect-Warn 'a later non-empty Platforms tested line silences an earlier empty one' 0 $false "chore: add feature`n`nPlatforms tested:`nPlatforms tested: linux" @{ TICKET_ID_REQUIRED = '0' }
+
     $missingPath = Join-Path $R 'no-such-commit-msg-file'
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = (Get-Command pwsh).Source

@@ -17,32 +17,39 @@
 # source this lib; this resolver stays as the consumer-side path until
 # the upstream plugin fix is pulled.
 #
-# HIMMEL-877: qmd installs from the himmel FORK (yotamleo/qmd), never
-# upstream `bun add -g @tobilu/qmd` -- that command EPERM-wedges on this
-# project's machines (zombie `qmd mcp` stdio node processes hold locks) and
-# bun blocks the postinstall script. The proven recipe (done by hand on the
-# primary machine, now automated here): clone the fork to a stable dir,
-# `bun install && bun run build` in the clone, then a directory junction
-# (Windows) / symlink (POSIX) at ~/.bun/install/global/node_modules/@tobilu/qmd
-# pointing at the clone -- bun's stock global shims then transparently serve
-# the fork from the same path every other consumer (qmd_cmd, has_qmd, the
+# HIMMEL-877: qmd installs from a local clone, never upstream
+# `bun add -g @tobilu/qmd` -- that command EPERM-wedges on this project's
+# machines (zombie `qmd mcp` stdio node processes hold locks) and bun blocks
+# the postinstall script. The proven recipe (done by hand on the primary
+# machine, now automated here): clone the repo to a stable dir, `bun install
+# && bun run build` in the clone, then a directory junction (Windows) /
+# symlink (POSIX) at ~/.bun/install/global/node_modules/@tobilu/qmd pointing
+# at the clone -- bun's stock global shims then transparently serve the
+# clone from the same path every other consumer (qmd_cmd, has_qmd, the
 # fix-qmd-stub patched stub) already resolves. qmd_install() is idempotent:
-# it detects an already-fork-served install (global path already links to
-# the fork clone AND the clone's HEAD is the pinned commit AND `qmd
-# --version` reports >= QMD_FORK_MIN_VERSION) and skips.
+# it detects an already-served install (global path already links to the
+# clone AND the clone's HEAD is the pinned commit AND `qmd --version`
+# reports >= QMD_FORK_MIN_VERSION) and skips.
 #
-# PIN (HIMMEL-911): the install ref is a FULL COMMIT SHA on the fork --
-# not the himmel-main branch. himmel-main is a MUTABLE tracking branch
-# (where upstream merges land); a force-push there would silently change
-# what every future `qmd-bin.sh install` runs, with no reviewed repo change
-# -- a supply-chain trust boundary on new-machine bootstrap (mirrors the
-# HIMMEL-891 graphify precedent, scripts/lib/graphify-bin.sh). The commit
-# SHA is the only content-addressed, unmovable ref. The fork branch
-# himmel-main-v2.8.3 carries this commit as human-readable release
-# provenance (HIMMEL-2136, fork-drift #518, resync onto upstream v2.8.3);
-# a pin bump is a reviewed change to this file. Fork
-# repo/ref/clone-dir are overridable via QMD_FORK_REPO / QMD_FORK_REF /
-# QMD_FORK_DIR for testing or a private mirror.
+# HIMMEL-3045: consumes upstream `tobi/qmd` directly. Until HIMMEL-2882 this
+# clone tracked a himmel-owned fork (`yotamleo/qmd`) carrying two local
+# fixes; upstream merged both under its own SHAs, collapsing the fork's
+# delta to empty, so HIMMEL-3045 dropped the fork and pointed the clone at
+# tobi/qmd itself (the fork's history stays on yotamleo/qmd as archive tags).
+# An existing clone whose origin is still the retired fork migrates
+# automatically (`git remote set-url`) the next time qmd_install() runs;
+# QMD_FORK_REPO/_REF/_DIR and the on-disk `qmd-fork` dir name are unchanged
+# (renaming is out of scope -- HIMMEL-3045).
+#
+# PIN (HIMMEL-911): the install ref is a FULL COMMIT SHA -- not a branch.
+# A branch is a MUTABLE tracking ref; a force-push there would silently
+# change what every future `qmd-bin.sh install` runs, with no reviewed repo
+# change -- a supply-chain trust boundary on new-machine bootstrap (mirrors
+# the HIMMEL-891 graphify precedent, scripts/lib/graphify-bin.sh). The commit
+# SHA is the only content-addressed, unmovable ref; a pin bump is a reviewed
+# change to this file (HIMMEL-3041 owns moving it past tobi/qmd's current
+# main). Repo/ref/clone-dir are overridable via QMD_FORK_REPO / QMD_FORK_REF
+# / QMD_FORK_DIR for testing or a private mirror.
 # qmd_register_collection() is the shared idempotent collection-
 # registration helper used by setup.sh + adopt.sh. Executed directly
 # (not sourced), this file also answers `install` on argv (see the CLI
@@ -51,10 +58,21 @@
 # duplicating the clone/build/link recipe natively.
 
 # Fork config -- overridable per call (env var set before sourcing/calling).
-_qmd_fork_repo() { printf '%s\n' "${QMD_FORK_REPO:-https://github.com/yotamleo/qmd.git}"; }
-# = himmel-main-v2.8.3
-_qmd_fork_ref() { printf '%s\n' "${QMD_FORK_REF:-a6ebf30281bf2c9e656c27f9e8ee04455c89d0c3}"; }
+_qmd_fork_repo() { printf '%s\n' "${QMD_FORK_REPO:-https://github.com/tobi/qmd.git}"; }
+_qmd_fork_ref() { printf '%s\n' "${QMD_FORK_REF:-04e4dbd8245c527a88f1a8f0bda547aef9ca81fb}"; }
 _qmd_fork_dir() { printf '%s\n' "${QMD_FORK_DIR:-$HOME/.himmel/qmd-fork}"; }
+# HIMMEL-3045: an owned clone's origin may still be the retired himmel qmd
+# fork (a few forms seen in the wild -- with/without .git, a trailing
+# slash from a hand-fixed remote); recognize those and migrate rather than
+# refuse. The SSH form is a genuinely different string and is intentionally
+# NOT matched here -- it falls through to the ordinary unrecognized-origin
+# refusal, same as any other unowned remote.
+_qmd_is_legacy_fork_origin() {
+  case "${1%/}" in
+    https://github.com/yotamleo/qmd.git | https://github.com/yotamleo/qmd) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 _qmd_fork_min_version() { printf '%s\n' "${QMD_FORK_MIN_VERSION:-2.6.3}"; }
 # Build-success stamp INSIDE the clone (HIMMEL-911 CR r3): one file, no
 # schema -- its content is the exact pinned SHA the artifacts were BUILT
@@ -74,7 +92,22 @@ _qmd_build_stamp() { printf '%s\n' "$(_qmd_fork_dir)/.himmel-build-ok"; }
 # explicitly UNDER NODE (node's ABI is the one that matters); qmd_fork_served
 # treats a non-loadable binding as not-served so a broken install converges on
 # the next install pass.
-_qmd_sqlite_binding() { printf '%s\n' "$(_qmd_fork_dir)/node_modules/better-sqlite3/build/Release/better_sqlite3.node"; }
+_qmd_sqlite_binding() {
+  local sqlite_dir platform_arch binding
+  sqlite_dir="$(_qmd_fork_dir)/node_modules/better-sqlite3"
+  binding="$sqlite_dir/build/Release/better_sqlite3.node"
+  if [ -f "$binding" ]; then
+    printf '%s\n' "$binding"
+    return 0
+  fi
+  platform_arch="$(node -p "process.platform + '-' + process.arch" 2>/dev/null)" || return 1
+  for binding in "$sqlite_dir/prebuilds/$platform_arch"*.node; do
+    [ -f "$binding" ] || continue
+    printf '%s\n' "$binding"
+    return 0
+  done
+  return 1
+}
 
 # True when the node-side better-sqlite3 binding actually LOADS -- an
 # existence-only check would bless a wrong-ABI or corrupt artifact (file
@@ -93,10 +126,6 @@ _qmd_sqlite_binding_ok() {
   local probe probe_out
   _QMD_BINDING_PROBE_ERR=""
   command -v node >/dev/null 2>&1 || return 0
-  if [ ! -f "$(_qmd_sqlite_binding)" ]; then
-    _QMD_BINDING_PROBE_ERR="binding file missing: $(_qmd_sqlite_binding)"
-    return 1
-  fi
   probe="$(_qmd_fork_dir)/.himmel-binding-probe.cjs"
   printf "new (require('better-sqlite3'))(':memory:');\nconsole.log('qmd-binding-ok');\n" > "$probe" 2>/dev/null || return 1
   probe_out="$(node "$probe" 2>&1)"
@@ -105,6 +134,9 @@ _qmd_sqlite_binding_ok() {
     return 0
   fi
   _QMD_BINDING_PROBE_ERR="$probe_out"
+  if [ ! -f "$(_qmd_sqlite_binding)" ]; then
+    _QMD_BINDING_PROBE_ERR="no binding found under build/Release or prebuilds/: $probe_out"
+  fi
   return 1
 }
 
@@ -369,7 +401,7 @@ qmd_fork_served() {
 # falls through to update+rebuild+re-link on a stale/older/pin-drifted or
 # unstamped (failed/interrupted prior build) clone.
 qmd_install() {
-  local fork_dir ref repo global_dir origin_url
+  local fork_dir ref repo global_dir origin_url prebuild platform_arch
 
   fork_dir="$(_qmd_fork_dir)"
   ref="$(_qmd_fork_ref)"
@@ -401,9 +433,19 @@ qmd_install() {
     # overridable only via QMD_FORK_FORCE=1.
     origin_url="$(git -C "$fork_dir" remote get-url origin 2>/dev/null)"
     if [ "$origin_url" != "$repo" ]; then
-      echo "  WARNING: $fork_dir exists but its origin ('$origin_url') is not $repo - refusing to touch it." >&2
-      echo "  Point QMD_FORK_DIR at a dedicated location, or fix the clone's origin remote." >&2
-      return 1
+      if _qmd_is_legacy_fork_origin "$origin_url"; then
+        # HIMMEL-3045: this clone predates the de-fork -- migrate its origin
+        # in place instead of refusing an install this tool actually owns.
+        echo "  $fork_dir origin is the retired himmel qmd fork ('$origin_url') - migrating to $repo (HIMMEL-3045)."
+        if ! git -C "$fork_dir" remote set-url origin "$repo"; then
+          echo "  ERROR: could not update $fork_dir's origin to $repo." >&2
+          return 1
+        fi
+      else
+        echo "  WARNING: $fork_dir exists but its origin ('$origin_url') is not $repo - refusing to touch it." >&2
+        echo "  Point QMD_FORK_DIR at a dedicated location, or fix the clone's origin remote." >&2
+        return 1
+      fi
     fi
     # HIMMEL-911 CR r3: clear the build-success stamp FIRST (ownership is
     # established by the origin check above) -- from here until the
@@ -490,8 +532,19 @@ qmd_install() {
   # load-check is the real gate, and every external command here must stay
   # set-e-safe for callers.
   if command -v node >/dev/null 2>&1 && ! _qmd_sqlite_binding_ok; then
+    # Preserve packaged candidates for this node platform (HIMMEL-2506/2955).
+    # Match _qmd_sqlite_binding; foreign-only prebuilds must not block repair.
+    platform_arch="$(node -p "process.platform + '-' + process.arch" 2>/dev/null)" || true
+    if [ -n "$platform_arch" ]; then
+      for prebuild in "$fork_dir/node_modules/better-sqlite3/prebuilds/$platform_arch"*.node; do
+        [ -f "$prebuild" ] || continue
+        echo "  WARNING: better-sqlite3 packaged binding not loadable under node ($platform_arch): $prebuild" >&2
+        printf '    %s\n' "$_QMD_BINDING_PROBE_ERR" >&2
+        return 1
+      done
+    fi
     echo "  Fetching better-sqlite3 native binding for node (bun blocks its postinstall)..."
-    rm -f -- "$(_qmd_sqlite_binding)"
+    rm -f -- "$fork_dir/node_modules/better-sqlite3/build/Release/better_sqlite3.node"
     ( cd "$fork_dir/node_modules/better-sqlite3" && node ../prebuild-install/bin.js ) || true
     if ! _qmd_sqlite_binding_ok; then
       echo "  WARNING: better-sqlite3 native binding still not loadable under node - node-run qmd cannot open its index." >&2

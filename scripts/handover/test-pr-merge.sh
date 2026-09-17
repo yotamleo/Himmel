@@ -55,6 +55,7 @@ fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1" >&2; }
 LAST_GH_LOG=""
 LAST_OUT=""
 LAST_ERR=""
+LAST_JIRA_LOG=""
 run_case() {
     local branch="$1" expected="$2" name="$3"; shift 3
     # Drop a leading `--` separator if present.
@@ -78,12 +79,18 @@ case "$verb" in
         echo "42"
         ;;
     "pr view")
-        # Three distinct `gh pr view` shapes reach this stub — matched by the
+        # Four distinct `gh pr view` shapes reach this stub — matched by the
         # requested --json fields (order matters; the first two also contain
         # headRefOid, so the mergeability check must be matched FIRST):
         #   1. HIMMEL-1232 mergeability check: --json baseRefName,headRefOid --jq
         #   2. HIMMEL-1058 head-SHA bind read: --json headRefOid --jq .headRefOid
         #   3. HIMMEL-936 CR-gate metadata:    --json number,headRefOid,url (no --jq)
+        #   4. HIMMEL-374 jira-transition title read: --json title -q .title
+        title_match=$(printf ' %s ' "$@" | grep -E -- '--json[[:space:]]+title')
+        if [ -n "$title_match" ]; then
+            printf '%s' "${STUB_PR_TITLE:-}"
+            exit 0
+        fi
         if printf ' %s ' "$@" | grep -q 'baseRefName'; then
             # forge_pr_mergeable (github) reads base+head, then computes the
             # conflict LOCALLY with git merge-tree. Emit "<base> <headoid>":
@@ -181,6 +188,48 @@ esac
 STUB
     chmod +x "$tmp/bin/gh"
 
+    # STUB_JIRA_BUILD=1 (HIMMEL-374): fake a built Jira CLI + reconcile-config
+    # so jira_auto_transition_on_merge's node calls are reachable. A stub
+    # `node` intercepts ONLY the dist/index.js CLI invocations (logging their
+    # argv to $jiralog) and execs the REAL node for the function's own
+    # `node -e` config-parsing call, so that lookup still runs for real.
+    jiralog="$tmp/jira.log"
+    if [ "${STUB_JIRA_BUILD:-0}" = "1" ]; then
+        mkdir -p "$tmp/scripts/jira/dist"
+        : > "$tmp/scripts/jira/dist/index.js"
+        printf '{"HIMMEL":{"targetStatus":"Done"}}\n' > "$tmp/scripts/jira/reconcile-config.json"
+        : > "$jiralog"
+        real_node=$(command -v node)
+        cat > "$tmp/bin/node" <<STUBNODE
+#!/usr/bin/env bash
+if [ "\$1" = "-e" ]; then
+    exec "$real_node" "\$@"
+fi
+case "\$1" in
+    */dist/index.js)
+        echo "\$*" >> "$jiralog"
+        if [ "\$2" = "get" ]; then
+            printf '{"fields":{"issuetype":{"name":"%s"}}}\n' "\${STUB_JIRA_ISSUE_TYPE:-Task}"
+            exit 0
+        fi
+        if [ "\${STUB_JIRA_TRANSITION_FAIL:-0}" = "1" ] && [ "\$2" = "transition" ]; then
+            echo "jira transition failed" >&2
+            exit 1
+        fi
+        if [ "\${STUB_JIRA_COMMENT_FAIL:-0}" = "1" ] && [ "\$2" = "comment" ]; then
+            echo "jira comment failed" >&2
+            exit 1
+        fi
+        exit 0
+        ;;
+    *)
+        exec "$real_node" "\$@"
+        ;;
+esac
+STUBNODE
+        chmod +x "$tmp/bin/node"
+    fi
+
     (
         cd "$tmp" || exit 99
         git init -q
@@ -227,9 +276,11 @@ STUB
     cp "$ghlog" "$keep/gh.log" 2>/dev/null
     cp "$tmp/out" "$keep/out" 2>/dev/null
     cp "$tmp/err" "$keep/err" 2>/dev/null
+    cp "$jiralog" "$keep/jira.log" 2>/dev/null || : > "$keep/jira.log"
     LAST_GH_LOG="$keep/gh.log"
     LAST_OUT="$keep/out"
     LAST_ERR="$keep/err"
+    LAST_JIRA_LOG="$keep/jira.log"
     if [ "$rc" -ne "$expected" ]; then
         fail "$name: expected exit $expected, got $rc (err: $(cat "$keep/err"))"
         rm -rf "$tmp"
@@ -256,6 +307,12 @@ assert_out_lacks() {
 }
 assert_err_has() {
     if grep -qF -- "$1" "$LAST_ERR"; then pass; else fail "$2 (err: $(cat "$LAST_ERR"))"; fi
+}
+assert_jira_log_has() {
+    if grep -qF -- "$1" "$LAST_JIRA_LOG"; then pass; else fail "$2 (jira log: $(cat "$LAST_JIRA_LOG"))"; fi
+}
+assert_jira_log_lacks() {
+    if grep -qF -- "$1" "$LAST_JIRA_LOG"; then fail "$2 (jira log: $(cat "$LAST_JIRA_LOG"))"; else pass; fi
 }
 
 echo "test-pr-merge.sh"
@@ -426,6 +483,52 @@ if run_case "handover/x-slug" 0 "no marker: merge path unchanged"; then
     else
         pass
     fi
+fi
+
+# --- HIMMEL-374: best-effort Jira auto-transition on merge -------------------
+# No ticket tag in the PR title => no Jira CLI calls, merge still succeeds.
+if STUB_JIRA_BUILD=1 STUB_PR_TITLE="chore: tidy things up" \
+    run_case "handover/x-slug" 0 "jira: no ticket tag skips transition"; then
+    assert_jira_log_lacks "comment" "no-tag case makes no jira comment call"
+    assert_jira_log_lacks "transition" "no-tag case makes no jira transition call"
+fi
+
+# Ticket tag present + a built Jira CLI + matching config => comment THEN
+# transition, in that order (comment-then-transition discipline), merge exit 0.
+if STUB_JIRA_BUILD=1 STUB_PR_TITLE="feat(jira): [HIMMEL-374] reconciler" \
+    run_case "handover/x-slug" 0 "jira: tagged title runs comment then transition"; then
+    assert_jira_log_has "comment HIMMEL-374" "comment call carries the extracted key"
+    assert_jira_log_has "transition HIMMEL-374 Done" "transition call carries the key + configured status"
+    comment_ln=$(grep -n 'dist/index.js comment ' "$LAST_JIRA_LOG" | head -1 | cut -d: -f1)
+    transition_ln=$(grep -n 'dist/index.js transition ' "$LAST_JIRA_LOG" | head -1 | cut -d: -f1)
+    if [ -n "$comment_ln" ] && [ -n "$transition_ln" ] && [ "$comment_ln" -lt "$transition_ln" ]; then
+        pass
+    else
+        fail "comment precedes transition (comment@${comment_ln:-none} transition@${transition_ln:-none})"
+    fi
+fi
+
+# A failing Jira transition must never fail the merge itself (best-effort).
+if STUB_JIRA_BUILD=1 STUB_JIRA_TRANSITION_FAIL=1 STUB_PR_TITLE="feat(jira): [HIMMEL-374] reconciler" \
+    run_case "handover/x-slug" 0 "jira: failed transition does not fail the merge"; then
+    assert_err_has "Jira transition of HIMMEL-374" "transition failure is reported on stderr"
+fi
+
+# Never touch Epic/Story (standing project invariant) — the merge hook has no
+# classifyTicket call in its path, so it must check the issue type itself.
+if STUB_JIRA_BUILD=1 STUB_JIRA_ISSUE_TYPE=Epic STUB_PR_TITLE="feat(jira): [HIMMEL-374] reconciler" \
+    run_case "handover/x-slug" 0 "jira: Epic ticket is never transitioned"; then
+    assert_jira_log_lacks "comment" "Epic case makes no jira comment call"
+    assert_jira_log_lacks "transition" "Epic case makes no jira transition call"
+    assert_err_has "never auto-transitioning" "Epic case reports the never-touch skip on stderr"
+fi
+
+# A comment that fails to post leaves no evidence breadcrumb — skip the
+# transition rather than close the ticket silently.
+if STUB_JIRA_BUILD=1 STUB_JIRA_COMMENT_FAIL=1 STUB_PR_TITLE="feat(jira): [HIMMEL-374] reconciler" \
+    run_case "handover/x-slug" 0 "jira: failed comment skips the transition"; then
+    assert_jira_log_lacks "transition" "failed-comment case makes no jira transition call"
+    assert_err_has "not auto-transitioning" "failed-comment case reports the skip on stderr"
 fi
 
 # --- HIMMEL-1977 hermeticity guard (the HIMMEL-1495 shape) -------------------

@@ -12,6 +12,18 @@
 #      SECOND row under the same message id, which is exactly the trap this
 #      suite exists to pin).
 #
+#   HIMMEL-2987 price-weighted fields (weights: cache-read 0.1, cache-create
+#   1.25, input 1, output 5):
+#     cache-read sum  = 1000+2000+500+100 = 3600 -> "3.6k"
+#     cache-create sum = 200+0+50+0       =  250 -> "250"
+#     input sum         = 3+1+0+0         =    4 -> "4"
+#     cost-eq = 4*1 + 3600*0.1 + 250*1.25 + 185*5
+#             = 4 + 360 + 312.5 + 925 = 1601.5 -> "1.6k"
+#     floor-share = first-turn(1203) * calls(4) / cache-read(3600) * 100
+#                 = 133.7%
+#     compaction-rewarm: 2 compact_boundary markers; the first NEW message
+#     after each is msg_C (ctx 550) then msg_D (ctx 100), mean 325 * 2 = 650
+#
 # Platform guard: no .ps1 twin, by design - it drives leg-burn.sh, which is
 # itself twin-less for the reason its own header gives.
 set -u
@@ -32,7 +44,34 @@ has() { case "$2" in *"$3"*) pass "$1";; *) fail "$1: '$3' not in '$2'";; esac; 
 out=$(bash "$BURN" "$FIXTURE"); rc=$?
 eq "fixture exits 0" "$rc" "0"
 eq "one line, every field, hand-computed" "$out" \
-   "leg-burn leg-burn-sample.jsonl: calls=4 avg-ctx=963 first-turn=1.2k out=185 compactions=2 text-only=2"
+   "leg-burn leg-burn-sample.jsonl: calls=4 avg-ctx=963 first-turn=1.2k out=185 compactions=2 text-only=2 cache-read=3.6k cache-create=250 input=4 cost-eq=1.6k floor-share=133.7% compaction-rewarm=650"
+
+# --- HIMMEL-2987: price-weighted fields --------------------------------------
+has "cache-read sum" "$out" "cache-read=3.6k"
+has "cache-create sum" "$out" "cache-create=250"
+has "input sum" "$out" "input=4"
+has "cost-eq weighted sum" "$out" "cost-eq=1.6k"
+has "floor-share pct" "$out" "floor-share=133.7%"
+has "compaction-rewarm" "$out" "compaction-rewarm=650"
+
+# env override: cache-read weight 0.1 -> 1 moves cost-eq from 1.6k to 4.8k
+# (4 + 3600*1 + 312.5 + 925 = 4841.5 -> 4.8k) - pins that the weight is
+# actually read from env, not hardcoded.
+out_override=$(LEG_BURN_W_CACHE_READ=1 bash "$BURN" "$FIXTURE")
+has "cache-read weight override changes cost-eq" "$out_override" "cost-eq=4.8k"
+
+# --- HIMMEL-2996: --raw prints exact integers, default line untouched -------
+# Only cache-read is >=1000 in this fixture (3600), so it's the one field
+# where --raw visibly differs from the default (3.6k -> 3600); out/cache-create/
+# input are already <1000 and print the same integer either way.
+out_raw=$(bash "$BURN" --raw "$FIXTURE")
+eq "--raw: same line except the four counters are exact integers" "$out_raw" \
+   "leg-burn leg-burn-sample.jsonl: calls=4 avg-ctx=963 first-turn=1.2k out=185 compactions=2 text-only=2 cache-read=3600 cache-create=250 input=4 cost-eq=1.6k floor-share=133.7% compaction-rewarm=650"
+eq "default output is byte-identical to before --raw existed" "$out" \
+   "leg-burn leg-burn-sample.jsonl: calls=4 avg-ctx=963 first-turn=1.2k out=185 compactions=2 text-only=2 cache-read=3.6k cache-create=250 input=4 cost-eq=1.6k floor-share=133.7% compaction-rewarm=650"
+
+out_raw_env=$(LEG_BURN_RAW=1 bash "$BURN" "$FIXTURE")
+eq "LEG_BURN_RAW=1 env is equivalent to --raw" "$out_raw_env" "$out_raw"
 
 # --- the dedupe is the point ------------------------------------------------
 # 6 assistant ROWS, 4 message IDS. Counting rows would report calls=6 and

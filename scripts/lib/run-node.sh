@@ -128,6 +128,30 @@ if [ -n "$_script_dir" ]; then
     _node="$(resolve_node)" || _node=''
 fi
 if [ -n "$_node" ]; then
+    # HIMMEL-3073: resolve_node() just proved node is reachable at an
+    # ABSOLUTE location PATH does not cover (a hook shell may carry a
+    # minimal PATH — see the WHY at the top of this file and
+    # resolve-node.sh's own header — and `command -p sh`, the wiring every
+    # hook uses, guarantees only a bare default PATH when the caller had
+    # none). That minimal PATH is exactly what `exec` would otherwise hand
+    # to $_node's own process.env, and run-hook-with-bash.js passes
+    # process.env unchanged to every hook it spawns via spawnSync — so a
+    # hook shelling out to `command -v node` (several of the guardrails
+    # this fixes probe exactly that) or `gh` silently finds neither, even
+    # though node itself just resolved. Widen PATH before exec: first with
+    # $_node's OWN directory — the one location just proven to work,
+    # whatever version manager or install layout put it there — then with
+    # the well-known locations resolve-node.sh's own step 3 already
+    # trusts, since `gh` is a separate binary resolve_node() never looked
+    # for. RUN_NODE_EXTRA_PATH_DIRS is a test seam (like
+    # RESOLVE_NODE_PROBE_DIRS): set it to REPLACE the well-known-locations
+    # half wholesale for a hermetic test; unset, it defaults to the
+    # standard homebrew/Linux/per-user locations `gh` and friends actually
+    # live in.
+    _node_dir="${_node%/*}"
+    _extra_dirs="${RUN_NODE_EXTRA_PATH_DIRS-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${HOME:-}/.local/bin}"
+    PATH="$_node_dir${_extra_dirs:+:}$_extra_dirs${PATH:+:}${PATH:-}"
+    export PATH
     exec "$_node" "$@"
 fi
 

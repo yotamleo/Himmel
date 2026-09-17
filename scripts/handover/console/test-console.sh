@@ -118,6 +118,19 @@ after5="$(find "$root" -type f | sort)"
 check "5 dry-run writes nothing" "$before5" "$after5"
 check "5 dry-run prints would-doc" "$(printf '%s\n' "$out5" | grep -c '^would-doc: ')" "1"
 
+# --- 5b (HIMMEL-2973): the printed launch line defaults to --autocompact
+# 200000, and CONSOLE_CONTEXT=1m in the launching shell flips it to auto.
+out5b="$(console new --bucket dryrepo5b --dry-run)"
+check "5b default launch line carries --autocompact 200000" \
+    "$(printf '%s\n' "$out5b" | grep -c -- '--autocompact 200000')" "1"
+check "5b default launch line carries no --autocompact auto" \
+    "$(printf '%s\n' "$out5b" | grep -c -- '--autocompact auto')" "0"
+out5c="$(CONSOLE_CONTEXT=1m console new --bucket dryrepo5c --dry-run)"
+check "5c CONSOLE_CONTEXT=1m launch line carries --autocompact auto" \
+    "$(printf '%s\n' "$out5c" | grep -c -- '--autocompact auto')" "1"
+check "5c CONSOLE_CONTEXT=1m launch line carries no --autocompact 200000" \
+    "$(printf '%s\n' "$out5c" | grep -c -- '--autocompact 200000')" "0"
+
 # --- 6: next writes the successor stub + predecessor HANDOFF ----------
 doc6A="$root/tester/nextrepo/DEMO-nextleg-${today}A-console.md"
 doc6B="$root/tester/nextrepo/DEMO-nextleg-${today}B-console.md"
@@ -361,15 +374,23 @@ sum_racetestA_after="$(cksum < "$racetest_docA")"
 check "16 the already-claimed doc is left untouched" "$sum_racetestA_before" "$sum_racetestA_after"
 HANDOVER_DIR="$root" bash "$QL" release "$racetest_docB" "$token16" >/dev/null 2>&1
 
-# --- 16b: exhaustion requires 26 real collisions, not arbitrary I/O errors.
+# --- 16b: exhaustion requires ALL 702 letters (A-Z, AA-ZZ) as real
+# collisions, not arbitrary I/O errors. HIMMEL-2984 moved the boundary from
+# 26 (single letters) to 702 (single + bijective base-26 double letters) now
+# that `new` rolls past Z instead of refusing there.
 mkdir -p "$root/tester/exhausted"
 for letter16 in {A..Z}; do
     printf 'claimed\n' > "$root/tester/exhausted/DEMO-nextleg-${today}${letter16}-console.md"
 done
+for letter16a in {A..Z}; do
+    for letter16b in {A..Z}; do
+        printf 'claimed\n' > "$root/tester/exhausted/DEMO-nextleg-${today}${letter16a}${letter16b}-console.md"
+    done
+done
 rc16b=0
 out16b="$(console new --bucket exhausted 2>&1)" || rc16b=$?
-check "16b all 26 claimed letters: exits 1" "$rc16b" "1"
-check "16b all 26 claimed letters: reports exhaustion" "$(printf '%s\n' "$out16b" | grep -c 'all 26 letters')" "1"
+check "16b all 702 letters (A-Z, AA-ZZ) claimed: exits 1" "$rc16b" "1"
+check "16b all 702 letters claimed: reports past-ZZ exhaustion" "$(printf '%s\n' "$out16b" | grep -c 'past ZZ')" "1"
 
 # A directory at candidate A is EISDIR, not an existing console document.
 blocked16A="$root/tester/createerror/DEMO-nextleg-${today}A-console.md"
@@ -1021,5 +1042,193 @@ doc43B="$root/tester/modelbucket/DEMO-nextleg-${today}B-console.md"
 check "43 next's rendered successor doc carries --model <given>" "$(grep -c -- '--model custom-model-x' "$doc43B")" "1"
 check "43 next's rendered successor doc does not carry CONSOLE_MODEL instead" "$(grep -c -- '--model envdefault-model' "$doc43B")" "0"
 HANDOVER_DIR="$root" bash "$QL" release "$doc43A" "$token43a" >/dev/null 2>&1
+
+# --- 44: same-day rollover past Z (HIMMEL-2984) --------------------------
+# 26 consoles on 2026-09-12 hit a hard refusal at letter Z with a live leg
+# in flight. Continuation with no --date flag at all must roll bijective
+# base-26: Z -> AA (an explicit --date, even one matching the predecessor's
+# own date, always resets the chain to A instead -- see case 48).
+mkdir -p "$root/tester/rollz"
+docZ44="$root/tester/rollz/DEMO-nextleg-${today}Z-console.md"
+printf 'stub\n' > "$docZ44"
+out44="$(console next --bucket rollz --dry-run --doc "$docZ44")"
+check "44 next --dry-run rolls Z to AA" "$(printf '%s\n' "$out44" | grep -c "^would-doc: .*${today}AA-console.md$")" "1"
+
+# --- 45: same-day rollover AZ -> BA ---------------------------------------
+mkdir -p "$root/tester/rollaz"
+docAZ45="$root/tester/rollaz/DEMO-nextleg-${today}AZ-console.md"
+printf 'stub\n' > "$docAZ45"
+out45="$(console next --bucket rollaz --dry-run --doc "$docAZ45")"
+check "45 next --dry-run rolls AZ to BA" "$(printf '%s\n' "$out45" | grep -c "^would-doc: .*${today}BA-console.md$")" "1"
+
+# --- 46: the recovery regex accepts a two-letter doc name -----------------
+# --doc alone (no --name) must derive the chain name from a TWO-letter
+# basename just as it already does for a one-letter one (line ~262's regex
+# was [A-Z] only), and bump AA -> AB.
+mkdir -p "$root/tester/rollname"
+docAA46="$root/tester/rollname/DEMO-nextleg-${today}AA-mychain.md"
+printf 'stub\n' > "$docAA46"
+console next --bucket rollname --doc "$docAA46" >/dev/null
+docAB46="$root/tester/rollname/DEMO-nextleg-${today}AB-mychain.md"
+check "46 next --doc <two-letter> derives name and bumps to AB" "$([ -f "$docAB46" ] && echo yes)" "yes"
+
+# --- 47: new with 26 docs present picks AA instead of refusing -----------
+mkdir -p "$root/tester/rollnew"
+for letter47 in {A..Z}; do
+    printf 'claimed\n' > "$root/tester/rollnew/DEMO-nextleg-${today}${letter47}-console.md"
+done
+out47="$(console new --bucket rollnew)"
+token47="$(token_of "$out47")"
+docAA47="$root/tester/rollnew/DEMO-nextleg-${today}AA-console.md"
+check "47 new with all 26 single letters claimed picks AA" "$([ -f "$docAA47" ] && echo yes)" "yes"
+HANDOVER_DIR="$root" bash "$QL" release "$docAA47" "$token47" >/dev/null 2>&1
+
+# --- 48: --date mints tomorrow's A, HANDOFF still pairs with the Z doc ---
+# The whole point of --date: a 23:5x console at letter Z can pre-mint
+# TOMORROW's first console (A) without waiting for midnight to roll the
+# date over naturally. The predecessor pointer (HANDOFF location + the
+# successor stub's own back-reference) still names the Z doc, even though
+# the letter resets rather than continuing the bijective sequence.
+mkdir -p "$root/tester/rolldate"
+docZ48="$root/tester/rolldate/DEMO-nextleg-${today}Z-console.md"
+printf 'stub\n' > "$docZ48"
+tomorrow48="2026-09-14"
+out48="$(console next --bucket rolldate --dry-run --date "$tomorrow48" --doc "$docZ48")"
+check "48 --date mints tomorrow's A, not a same-day AA rollover" "$(printf '%s\n' "$out48" | grep -c "^would-doc: .*${tomorrow48}A-console.md$")" "1"
+check "48 --date dry-run still names the Z predecessor's HANDOFF" "$(printf '%s\n' "$out48" | grep -c "would-handoff: .*${today}Z-console-HANDOFF.md")" "1"
+
+# --- 49: --date malformed exits 2 with a usage line -----------------------
+rc49=0
+out49="$(console next --bucket rolldate --dry-run --date notadate --doc "$docZ48" 2>&1)" || rc49=$?
+check "49 --date malformed exits 2" "$rc49" "2"
+check "49 --date malformed prints a usage line" "$(printf '%s\n' "$out49" | grep -c '^usage: console.sh')" "1"
+
+# --- 50: highest-doc discovery compares letters NUMERICALLY, not lexically
+# "AA" < "B" as strings even though AA (27) is the LATER letter. Auto
+# discovery (no --doc) must pick AA over B as today's predecessor.
+mkdir -p "$root/tester/rollorder"
+printf 'stub\n' > "$root/tester/rollorder/DEMO-nextleg-${today}B-console.md"
+printf 'stub\n' > "$root/tester/rollorder/DEMO-nextleg-${today}AA-console.md"
+out50="$(console next --bucket rollorder --dry-run)"
+check "50 auto-discovery treats AA as newer than B (numeric, not lexical)" "$(printf '%s\n' "$out50" | grep -c "^would-doc: .*${today}AB-console.md$")" "1"
+
+# --- 51-55: --date validates a real calendar date, and an explicitly ------
+# empty value is an ERROR, not a silent reset to today's own chain (console
+# ruling on HIMMEL-3000). An explicit --doc bypasses predecessor auto-
+# discovery so these exercise the date-validation branch alone, not "no
+# predecessor found".
+mkdir -p "$root/tester/dateval"
+docZval="$root/tester/dateval/DEMO-nextleg-${today}Z-console.md"
+printf 'stub\n' > "$docZval"
+
+rc51=0
+out51="$(console next --bucket dateval --dry-run --date 2026-99-99 --doc "$docZval" 2>&1)" || rc51=$?
+check "51 --date 2026-99-99 exits 2" "$rc51" "2"
+check "51 --date 2026-99-99 prints no would-doc line" "$(printf '%s\n' "$out51" | grep -c '^would-doc:')" "0"
+
+rc52=0
+out52="$(console next --bucket dateval --dry-run --date 2026-02-30 --doc "$docZval" 2>&1)" || rc52=$?
+check "52 --date 2026-02-30 exits 2" "$rc52" "2"
+check "52 --date 2026-02-30 prints no would-doc line" "$(printf '%s\n' "$out52" | grep -c '^would-doc:')" "0"
+
+rc53=0
+out53="$(console next --bucket dateval --dry-run --date "" --doc "$docZval" 2>&1)" || rc53=$?
+check "53 --date '' exits 2" "$rc53" "2"
+check "53 --date '' prints a usage line" "$(printf '%s\n' "$out53" | grep -c '^usage: console.sh')" "1"
+
+rc54=0
+out54="$(console next --bucket dateval --dry-run --date= --doc "$docZval" 2>&1)" || rc54=$?
+check "54 --date= exits 2" "$rc54" "2"
+check "54 --date= prints a usage line" "$(printf '%s\n' "$out54" | grep -c '^usage: console.sh')" "1"
+
+out55="$(console next --bucket dateval --dry-run --date "2026-09-14" --doc "$docZval")"
+check "55 a real --date still mints the successor" "$(printf '%s\n' "$out55" | grep -c '^would-doc: .*2026-09-14A-console.md$')" "1"
+
+# --- 56/57 (HIMMEL-2975): CONSOLE_ROLE pass-through to headed-arm.sh's
+# --role, ahead of the positionals, only when set. Each stub records its
+# FULL "$*" to a fixed path baked into the stub itself (never a positional
+# like $5) -- --role judge shifts every downstream position by two, so a
+# positional-indexed record would silently read the wrong field.
+doc56A="$root/tester/rolerepo/DEMO-nextleg-${today}A-console.md"
+record56="$tmp/role-record-56"
+cat > "$tmp/stub-arm-role-56.sh" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$record56"
+STUB
+chmod +x "$tmp/stub-arm-role-56.sh"
+
+out56a="$(console new --bucket rolerepo)"
+token56a="$(token_of "$out56a")"
+out56b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    CONSOLE_HEADED_ARM="$tmp/stub-arm-role-56.sh" CONSOLE_ARM_FOREGROUND=1 CONSOLE_WORK_DIR="$tmp/work" \
+    CONSOLE_ROLE=judge \
+    bash "$C" next --bucket rolerepo --arm --deadline-min 0 ) )"
+check "56 next --arm reports armed" "$(printf '%s\n' "$out56b" | grep -c '^armed: ')" "1"
+check "56 CONSOLE_ROLE=judge: stub record starts with --role judge" \
+    "$(grep -c '^--role judge ' "$record56" 2>/dev/null)" "1"
+HANDOVER_DIR="$root" bash "$QL" release "$doc56A" "$token56a" >/dev/null 2>&1
+
+doc57A="$root/tester/rolerepo2/DEMO-nextleg-${today}A-console.md"
+record57="$tmp/role-record-57"
+cat > "$tmp/stub-arm-role-57.sh" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$record57"
+STUB
+chmod +x "$tmp/stub-arm-role-57.sh"
+
+out57a="$(console new --bucket rolerepo2)"
+token57a="$(token_of "$out57a")"
+out57b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    CONSOLE_HEADED_ARM="$tmp/stub-arm-role-57.sh" CONSOLE_ARM_FOREGROUND=1 CONSOLE_WORK_DIR="$tmp/work" \
+    bash "$C" next --bucket rolerepo2 --arm --deadline-min 0 ) )"
+check "57 next --arm reports armed" "$(printf '%s\n' "$out57b" | grep -c '^armed: ')" "1"
+check "57 no CONSOLE_ROLE: stub record has no --role" \
+    "$(grep -c -- '--role' "$record57" 2>/dev/null)" "0"
+HANDOVER_DIR="$root" bash "$QL" release "$doc57A" "$token57a" >/dev/null 2>&1
+
+# --- 58/59 (HIMMEL-2975 CR round 1, PR #754): do_arm must reject relay and
+# any invalid CONSOLE_ROLE BEFORE the detached launch, not rely on
+# headed-arm.sh's own refusal -- that refusal runs in a background process
+# the caller cannot see, so without this check console.sh printed "armed:"
+# and exited 0 even though nothing started.
+doc58A="$root/tester/rolerepo3/DEMO-nextleg-${today}A-console.md"
+record58="$tmp/role-record-58"
+cat > "$tmp/stub-arm-role-58.sh" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$record58"
+STUB
+chmod +x "$tmp/stub-arm-role-58.sh"
+
+out58a="$(console new --bucket rolerepo3)"
+token58a="$(token_of "$out58a")"
+rc58b=0
+out58b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    CONSOLE_HEADED_ARM="$tmp/stub-arm-role-58.sh" CONSOLE_ARM_FOREGROUND=1 CONSOLE_WORK_DIR="$tmp/work" \
+    CONSOLE_ROLE=relay \
+    bash "$C" next --bucket rolerepo3 --arm --deadline-min 0 ) 2>&1 )" || rc58b=$?
+check "58 CONSOLE_ROLE=relay: exits 2" "$rc58b" "2"
+check "58 CONSOLE_ROLE=relay: no armed line" "$(printf '%s\n' "$out58b" | grep -c '^armed: ')" "0"
+check "58 CONSOLE_ROLE=relay: stub never invoked" "$([ -e "$record58" ] && echo 1 || echo 0)" "0"
+HANDOVER_DIR="$root" bash "$QL" release "$doc58A" "$token58a" >/dev/null 2>&1
+
+doc59A="$root/tester/rolerepo4/DEMO-nextleg-${today}A-console.md"
+record59="$tmp/role-record-59"
+cat > "$tmp/stub-arm-role-59.sh" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$record59"
+STUB
+chmod +x "$tmp/stub-arm-role-59.sh"
+
+out59a="$(console new --bucket rolerepo4)"
+token59a="$(token_of "$out59a")"
+rc59b=0
+out59b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    CONSOLE_HEADED_ARM="$tmp/stub-arm-role-59.sh" CONSOLE_ARM_FOREGROUND=1 CONSOLE_WORK_DIR="$tmp/work" \
+    CONSOLE_ROLE=bogus \
+    bash "$C" next --bucket rolerepo4 --arm --deadline-min 0 ) 2>&1 )" || rc59b=$?
+check "59 CONSOLE_ROLE=bogus: exits 2" "$rc59b" "2"
+check "59 CONSOLE_ROLE=bogus: no armed line" "$(printf '%s\n' "$out59b" | grep -c '^armed: ')" "0"
+check "59 CONSOLE_ROLE=bogus: stub never invoked" "$([ -e "$record59" ] && echo 1 || echo 0)" "0"
+HANDOVER_DIR="$root" bash "$QL" release "$doc59A" "$token59a" >/dev/null 2>&1
 
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

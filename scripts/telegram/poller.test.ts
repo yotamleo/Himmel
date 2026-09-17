@@ -1140,6 +1140,33 @@ test("cold runFn: pending inbound → cold run replies to outbox, passes continu
   expect((await peekPending(r, "HIMMEL-7")).count).toBe(0);        // cursor committed after the clean run
 });
 
+// HIMMEL-2961: every bridge dispatch resolves the `telegram` plugin profile
+// (lever-b, HIMMEL-1040's resolveProfileSettings seam) into --settings, and
+// its mcpServers allowlist (["qmd"]) into --mcp-config, instead of the
+// previous hardcoded `undefined` (full operator ~/.claude injected, unlean).
+test("cold runFn: resolves the telegram profile settings + mcp allowlist for every bridge dispatch", async () => {
+  const r = root(); await ensureSession(r, "HIMMEL-TG1");
+  await writeMeta(r, "HIMMEL-TG1", { chat_id:9, status:"idle", last_run_pid:null, last_run_at:null, task_name:null, retry_at:null });
+  const sd = sessionDir(r, "HIMMEL-TG1");
+  await appendLine(join(sd, "inbox.jsonl"), JSON.stringify({ text:"do A" }));
+  let capturedSettings: string | undefined, capturedMcpConfig: string | undefined;
+  const fakeRun = async (_prompt: string, _cwd: string, _permissionMode?: any, _lane?: any, _modelOverride?: any, settings?: string, _observe?: any, _extraEnv?: any, mcpConfig?: string) => {
+    capturedSettings = settings;
+    capturedMcpConfig = mcpConfig;
+    return { code:0, capped:false, pid:1 };
+  };
+  await makeRunFn(r, "/repo", fakeRun)("HIMMEL-TG1");
+  expect(capturedSettings).toBeDefined();
+  const enabled = JSON.parse(capturedSettings!).enabledPlugins;
+  expect(enabled["obsidian-triage@himmel"]).toBe(true);
+  expect(enabled["claude-obsidian@himmel"]).toBe(true);
+  expect(enabled["pr-review-toolkit-himmel@himmel"]).toBe(true);
+  expect(enabled["telegram-himmel@himmel"]).toBe(false);   // self-referential MCP server, excluded
+  expect(enabled["luna-correlate@himmel"]).toBe(false);    // unrelated, excluded
+  expect(capturedMcpConfig).toBeDefined();
+  expect(JSON.parse(capturedMcpConfig!).mcpServers).toHaveProperty("qmd");
+});
+
 test("cold runFn: a multi-line pending slice is consumed by ONE cold run (whole slice, not per-line)", async () => {
   const r = root(); await ensureSession(r, "HIMMEL-12");
   await writeMeta(r, "HIMMEL-12", { chat_id:9, status:"idle", last_run_pid:null, last_run_at:null, task_name:null, retry_at:null });

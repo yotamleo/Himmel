@@ -57,8 +57,6 @@
 #                      points at api.deepseek.com; otherwise the undeclared
 #                      `openai` (falls to matrix default deny)
 #   glm | zai       -> zai-glm
-#   kimi            -> moonshot (endpoint-aware via KIMI_BASE_URL; non-Moonshot
-#                      hosts fall through fail-closed as kimi-custom)
 #   gemini | google -> google-gemini
 #   claude | claude-cli -> ENDPOINT-AWARE (HIMMEL-1049 + codex-adv-1): graphify's
 #                      claude backend honors ANTHROPIC_BASE_URL, so classify by
@@ -994,22 +992,6 @@ _map_anthropic_endpoint() {
     esac
 }
 
-# _map_kimi_endpoint -> resolve Kimi's effective endpoint. Same exact-host,
-# HTTPS-only, backslash-rejecting rules as _map_anthropic_endpoint: raw substring
-# matching would trust lookalikes such as api.moonshot.ai.evil. Unset means the
-# native backend's default Moonshot endpoint; anything else is an unverified
-# sentinel that is hard-denied before the matrix wildcard can see it.
-_map_kimi_endpoint() {
-    local u host
-    u="${KIMI_BASE_URL:-}"
-    [ -n "$u" ] || { echo moonshot; return; }
-    host="$(_guard_endpoint_host "$u")" || { echo kimi-custom; return; }
-    case "$host" in
-        api.moonshot.ai|api.moonshot.cn) echo moonshot ;;
-        *)                               echo kimi-custom ;;
-    esac
-}
-
 # map_provider <backend(lowercased)> -> echoes provider (may be undeclared literal).
 map_provider() {
     local b="$1" hit=0
@@ -1024,7 +1006,6 @@ map_provider() {
             if [ "$hit" = 1 ]; then echo deepseek; else echo openai; fi
             ;;
         glm|zai)       echo zai-glm ;;
-        kimi|moonshot)  _map_kimi_endpoint ;;
         gemini|google) echo google-gemini ;;
         claude|claude-cli) _map_anthropic_endpoint "$b" ;;
         *)             echo "$b" ;;
@@ -1224,11 +1205,6 @@ apply_verdict() {
         # this message lands on stderr + in the hook trail. Name the VARIABLE, not
         # its value; the operator can inspect it themselves.
         deny "claude backend points at an unverified endpoint (ANTHROPIC_BASE_URL is set to an unrecognized/unsupported value - not echoed, it may carry credentials); refusing on every corpus (fail-closed). Fix: unset ANTHROPIC_BASE_URL, or point it at https://api.anthropic.com or the ratified gateway https://api.z.ai (https only, exact host); or pick a backend that does not read it (e.g. --backend ollama for local extraction)"
-    fi
-
-    if [ "$provider" = "kimi-custom" ]; then
-        # Same credential-redaction rule as ANTHROPIC_BASE_URL above.
-        deny "kimi backend points at an unverified endpoint (KIMI_BASE_URL is set to an unrecognized/unsupported value - not echoed, it may carry credentials); refusing on every corpus (fail-closed). Fix: unset KIMI_BASE_URL, or point it at https://api.moonshot.ai or https://api.moonshot.cn (https only, exact host)"
     fi
 
     command -v node >/dev/null 2>&1 || deny "node not found; cannot evaluate the egress matrix (fail-closed)"

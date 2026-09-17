@@ -180,6 +180,72 @@ expect_warn "no claim is silent" 0 0 \
   "feat: add feature
 
 Everything here works as expected." TICKET_ID_REQUIRED=0
+
+# HIMMEL-3022 (HIMMEL-2982 Ask 3): commit-msg-time WARNING when a `Security
+# reviewed:` trailer is present but its token does not conform to
+# check-security-reviewed.sh's TOKEN_RE (HIMMEL-1681), and when a
+# `Platforms tested:` trailer is present with an empty value — so the author
+# sees the problem before the pre-push gate refuses the push. Never blocks
+# (rc unchanged); TICKET_ID_REQUIRED=0 keeps the ticket gate out of the way,
+# same as the HIMMEL-2183 cases above.
+expect_warn "non-conforming Security reviewed token warns" 0 1 \
+  "chore: add feature
+
+Security reviewed: yes" TICKET_ID_REQUIRED=0
+NONCONFORMING_OUT=$(run_gate "chore: add feature
+
+Security reviewed: yes" TICKET_ID_REQUIRED=0 2>&1)
+if printf '%s' "$NONCONFORMING_OUT" | grep -i 'manual' >/dev/null \
+   && printf '%s' "$NONCONFORMING_OUT" | grep -i 'claude-code-security-review' >/dev/null \
+   && printf '%s' "$NONCONFORMING_OUT" | grep -i 'pr-review-toolkit' >/dev/null \
+   && printf '%s' "$NONCONFORMING_OUT" | grep -i 'ad-hoc' >/dev/null \
+   && printf '%s' "$NONCONFORMING_OUT" | grep -i 'pre-push gate' >/dev/null; then
+  printf '  PASS  %s\n' "non-conforming Security reviewed warning names the four tokens and the pre-push gate"
+else
+  printf '  FAIL  %s\n' "non-conforming Security reviewed warning names the four tokens and the pre-push gate"
+  failures=$((failures + 1))
+fi
+expect_warn "conforming Security reviewed token is silent" 0 0 \
+  "chore: add feature
+
+Security reviewed: manual — checked the diff" TICKET_ID_REQUIRED=0
+expect_warn "absent Security reviewed line is silent" 0 0 \
+  "chore: add feature" TICKET_ID_REQUIRED=0
+expect_warn "empty Platforms tested value warns" 0 1 \
+  "chore: add feature
+
+Platforms tested:" TICKET_ID_REQUIRED=0
+expect_warn "non-empty Platforms tested value is silent" 0 0 \
+  "chore: add feature
+
+Platforms tested: linux" TICKET_ID_REQUIRED=0
+
+# CodeRabbit (PR #735): the gate exits 0 on a `[skip …]` marker BEFORE it
+# ever checks ATTEST_RE, and its own ATTEST_RE match is "does any trailer
+# line conform", not "does the first one conform" — so a skip marker or a
+# later conforming duplicate must silence the warning even though the FIRST
+# (or only) trailer line on its own would not conform.
+expect_warn "skip security-review marker silences a non-conforming token" 0 0 \
+  "chore: add feature
+
+Security reviewed: yes
+[skip security-review]" TICKET_ID_REQUIRED=0
+expect_warn "skip platforms-check marker silences an empty value" 0 0 \
+  "chore: add feature
+
+Platforms tested:
+[skip platforms-check]" TICKET_ID_REQUIRED=0
+expect_warn "a later conforming Security reviewed line silences an earlier bad one" 0 0 \
+  "chore: add feature
+
+Security reviewed: yes
+Security reviewed: manual — checked the diff" TICKET_ID_REQUIRED=0
+expect_warn "a later non-empty Platforms tested line silences an earlier empty one" 0 0 \
+  "chore: add feature
+
+Platforms tested:
+Platforms tested: linux" TICKET_ID_REQUIRED=0
+
 # HIMMEL-2461: an unreadable message file used to be asserted as a SILENT
 # rc=0 pass here — that fail-open assertion is exactly what let the vacuous
 # gate (pass_filenames: false, empty $1) look tested for months. It must now

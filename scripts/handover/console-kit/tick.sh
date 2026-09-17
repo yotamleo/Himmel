@@ -133,8 +133,92 @@ done
 [ -n "$legs_summary" ] || legs_summary=none
 [ -n "$tails_summary" ] || tails_summary=none
 
-proc_out="$(pgrep -af 'claude' 2>/dev/null)" || proc_out=""
-procs="$(printf '%s\n' "$proc_out" | awk '/claude / && / -n (HIMMEL|LUNA)-/ && /-leg/ && !/-console/ { n++ } END { print n+0 }')"
+# HIMMEL-2999: name/model come from claude_sessions() (real
+# /proc/<pid>/cmdline argv, NUL-delimited), never a flattened `pgrep -af`
+# line -- free-text argv (a -p/--append-system-prompt value containing the
+# literal substring "-n X") can no longer spoof procs=/models=.
+# shellcheck source=../../lanes/lib/claude-sessions.sh
+. "$REPO/scripts/lanes/lib/claude-sessions.sh"
+sessions_out="$(claude_sessions)"
+sessions_rc=$?
+# HIMMEL-3002: rc=3 means the census itself succeeded but one or more live
+# sessions had an unreadable cmdline -- the readable rows above are still
+# trustworthy, so keep them (unlike a real scan failure, rc>1 and not 3,
+# where the whole table is suspect and gets discarded below).
+if [ "$sessions_rc" -gt 1 ] && [ "$sessions_rc" -ne 3 ]; then
+    sessions_out=""
+fi
+sessions_lossy=0
+case "$sessions_out" in
+    '# lossy'|$'# lossy\n'*) sessions_lossy=1 ;;
+esac
+unreadable_n=0
+if [ "$sessions_rc" -eq 3 ]; then
+    unreadable_n="$(printf '%s\n' "$sessions_out" | grep -c '^# unreadable ')"
+fi
+
+procs="$(printf '%s\n' "$sessions_out" | awk -F'\t' '
+$1 ~ /^#/ { next }
+NF < 4 { next }
+{
+    name = $2
+    if (name !~ /^(HIMMEL|LUNA)-/) next
+    if (name !~ /-leg/) next
+    if (name ~ /-console$/) next
+    n++
+}
+END { print n+0 }')"
+# HIMMEL-3002: a degraded scan (rc=3) still counted every readable row above
+# -- append how many pids it could NOT read so the console sees the table is
+# incomplete rather than reading procs= as a clean, complete count.
+[ "$unreadable_n" -gt 0 ] && procs="${procs},unreadable=${unreadable_n}"
+
+# HIMMEL-2976: same session table and leg filter as procs= above, bucketed by
+# the tier its real --model argv names (opus/fable cost materially more per
+# turn than the sonnet default - CLAUDE.md "raise effort before tier"). Any
+# non-Claude id (e.g. a claudex gpt-* model) buckets under "other" rather than
+# one unbounded per-model list. A leg matched by the same filter but carrying
+# no --model token at all buckets under "unknown" (codex-2, HIMMEL-2976 round
+# 1 CR) rather than falling out of every bucket while still counted in
+# procs=.
+models_summary="$(printf '%s\n' "$sessions_out" | awk -F'\t' '
+$1 ~ /^#/ { next }
+NF < 4 { next }
+{
+    name = $2; model = $3
+    if (name !~ /^(HIMMEL|LUNA)-/) next
+    if (name !~ /-leg/) next
+    if (name ~ /-console$/) next
+    if (model == "")             { c_unknown++ }
+    else if (model ~ /^claude-opus-/)   c_opus++
+    else if (model ~ /^claude-fable-/)  c_fable++
+    else if (model ~ /^claude-sonnet-/) c_sonnet++
+    else if (model ~ /^claude-haiku-/)  c_haiku++
+    else                                c_other++
+}
+END {
+    out = ""
+    if (c_sonnet > 0)  out = out (out == "" ? "" : ",") "sonnet:" c_sonnet
+    if (c_opus > 0)    out = out (out == "" ? "" : ",") "opus:" c_opus
+    if (c_fable > 0)   out = out (out == "" ? "" : ",") "fable:" c_fable
+    if (c_haiku > 0)   out = out (out == "" ? "" : ",") "haiku:" c_haiku
+    if (c_other > 0)   out = out (out == "" ? "" : ",") "other:" c_other
+    if (c_unknown > 0) out = out (out == "" ? "" : ",") "unknown:" c_unknown
+    print out
+}')"
+[ -n "$models_summary" ] || models_summary=none
+# HIMMEL-2999: /proc absent (macOS, git-bash) degrades claude_sessions() to
+# the old flattened-line parse -- flag it inline (no space, so the tick line
+# stays space-delimited) rather than silently reporting a scan that could
+# again be spoofed by free-text argv.
+[ "$sessions_lossy" -eq 0 ] || models_summary="${models_summary}(lossy)"
+
+# HIMMEL-2974: the same ps table, scanned for --autocompact drift against the
+# leg invariant headed-arm.sh:391 refuses to launch without. The script's own
+# last line is already "ceiling=ok" / "ceiling=DRIFT:<name,...>" so it drops
+# into the tick line unprefixed.
+ceiling_summary="$(bash "$REPO/scripts/lanes/ceiling-conformance.sh" 2>/dev/null | tail -n 1)" || ceiling_summary=""
+[ -n "$ceiling_summary" ] || ceiling_summary="ceiling=?"
 
 at_out="$(atq 2>/dev/null)" || at_out=""
 at_count="$(printf '%s\n' "$at_out" | awk 'NF { n++ } END { print n+0 }')"
@@ -231,6 +315,7 @@ if [ "$verbose" -eq 1 ]; then
     printf 'heartbeat: %s\n' "$hb"
     printf 'leg locks: %s\n' "$legs_summary"
     printf 'leg processes: %s\n' "$procs"
+    printf 'leg models: %s\n' "$models_summary"
     printf 'scheduled jobs: %s\n' "$at_count"
     printf 'suite locks: %s\n' "$suites"
     printf 'open PRs: %s\n' "$prs"
@@ -248,10 +333,10 @@ else
     # The burn field is APPENDED only under --burn: a default tick line stays
     # byte-identical to what every console already parses.
     if [ "$burn" -eq 1 ]; then
-        printf 'TICK %s hb=%s legs=%s procs=%s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s burn=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$procs" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$burn_summary"
+        printf 'TICK %s hb=%s legs=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s burn=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$burn_summary"
     else
-        printf 'TICK %s hb=%s legs=%s procs=%s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$procs" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary"
+        printf 'TICK %s hb=%s legs=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary"
     fi
 fi

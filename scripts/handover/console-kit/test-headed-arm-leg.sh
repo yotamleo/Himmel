@@ -27,6 +27,16 @@
 #       launch (rc<>0, headed-arm.sh never invoked) - the launcher-side half
 #       of the fleet-size cap; scripts/lib/test-bank-preflight.sh covers the
 #       preflight's own fleet-counting logic.
+#   24. HIMMEL-2774: FLEET_RESERVE_TTL is exported to the preflight call,
+#       derived from this leg's own DEADLINE (positional $4) - a future
+#       deadline reaches the preflight as (deadline - now); a past/near
+#       deadline floors to 60.
+#   25. HIMMEL-2774: on SKIPPED-BANK (reachable only AFTER bank-preflight.sh's
+#       admission already created this leg's reservation), headed-arm-leg.sh
+#       releases it. On SKIPPED-FLEET (never holds a reservation of its own -
+#       see bank-preflight.sh's own refusal sub-paths), a same-name
+#       reservation directory (belonging to a DIFFERENT still-pending arm in
+#       the duplicate-name case) is left untouched.
 #
 # Platform guard (gitbash-only): POSIX bash 3.2+, same as headed-arm.sh
 # itself (konsole is Linux/KDE-only) - no .ps1 twin.
@@ -37,7 +47,7 @@ SCRIPT="$HERE/headed-arm-leg.sh"
 HEADED_ARM="$HERE/../headed-arm.sh"
 # The suite owns every launcher input; an ambient leg shell must not silently
 # turn default-native cases into claudex cases.
-unset LEG_LANE LEG_CONTEXT LEG_REPO LEG_EFFORT HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER IMPL_GUARD_OK INLINE_IMPL_OK HIMMEL_CONSOLE_LEG HIMMEL_LEAN_LEG LEG_PROFILE LEG_PROFILE_SETTINGS LEG_PROFILE_PREFACE LEG_PROFILE_MCP_CONFIG 2>/dev/null || true
+unset LEG_LANE LEG_CONTEXT LEG_REPO LEG_EFFORT HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER IMPL_GUARD_OK INLINE_IMPL_OK HIMMEL_CONSOLE_LEG HIMMEL_LEAN_LEG LEG_CLAUDE_BIN LEG_PROFILE LEG_PROFILE_SETTINGS LEG_PROFILE_PREFACE LEG_PROFILE_MCP_CONFIG 2>/dev/null || true
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/headed-arm-leg-test.XXXXXX")" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
 trap 'rm -rf "$tmp"' EXIT
@@ -49,6 +59,13 @@ not_contains() { grepq "$2" -F -e "$3" && { echo "FAIL - $1: output must NOT con
 ends_with()    { grepq "$2" -E -e "$3\$" && echo "ok - $1" || { echo "FAIL - $1: [$2] does not end with [$3]"; fails=$((fails+1)); }; }
 
 PAST=$(( $(date +%s) - 100 ))
+
+# HIMMEL-2985: real (non-dry) native --profile launches now read DOC to build
+# the per-leg preface, so the "some/doc.md" placeholder every other case uses
+# (never opened before this ticket) must be a real, readable file wherever a
+# --profile launch actually reaches that write.
+some_doc="$tmp/some-doc.md"
+printf '%s\n' '# fixture doc' > "$some_doc"
 
 # mk_launch_stubs <dir> <name> - konsole/pgrep/proc stubs, same shape
 # headed-arm.sh's own suite (test-headed-arm.sh) uses: konsole records its
@@ -70,7 +87,7 @@ mk_launch_stubs() {
   cat > "$dir/konsole" <<'KONSOLE_EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$(dirname "$0")/record"
-env | grep -E '^(IMPL_GUARD_OK|INLINE_IMPL_OK|HIMMEL_CONSOLE_LEG|HEADED_ARM_REQUIRED_AUTOCOMPACT|HIMMEL_LEAN_LEG|LEG_PROFILE_SETTINGS|LEG_PROFILE_PREFACE|LEG_PROFILE_MCP_CONFIG)=' > "$(dirname "$0")/env-record"
+env | grep -E '^(IMPL_GUARD_OK|INLINE_IMPL_OK|HIMMEL_CONSOLE_LEG|HEADED_ARM_REQUIRED_AUTOCOMPACT|HIMMEL_LEAN_LEG|LEG_CLAUDE_BIN|LEG_PROFILE_SETTINGS|LEG_PROFILE_PREFACE|LEG_PROFILE_MCP_CONFIG)=' > "$(dirname "$0")/env-record"
 : > "$(dirname "$0")/confirmable"
 sleep 5
 KONSOLE_EOF
@@ -127,8 +144,17 @@ chmod 755 "$SKIPPED_FLEET_PREFLIGHT"
 # verdict so case 13b can assert headed-arm-leg.sh actually consults the
 # SKIPPED-BANK token it computes (CADENCE_BANK_LANE="$LANE") instead of
 # discarding it, same rationale as SKIPPED_FLEET_PREFLIGHT above.
+# HIMMEL-2774 codex-3 (this round): also write a `pid` file into the
+# reservation it is standing in for, matching CADENCE_BANK_CALLER_PID - the
+# real bank-preflight.sh now does the same, and headed-arm-leg.sh's release
+# path on this refusal only deletes a reservation it can verify it owns.
 SKIPPED_BANK_PREFLIGHT="$tmp/skipped-bank-preflight.sh"
-printf '%s\n' '#!/usr/bin/env bash' 'echo SKIPPED-BANK' > "$SKIPPED_BANK_PREFLIGHT"
+# shellcheck disable=SC2016  # deliberately unexpanded: written literally, evaluated when the stub runs.
+printf '%s\n' '#!/usr/bin/env bash' \
+  'slots="${HIMMEL_FLEET_SLOTS:-${XDG_RUNTIME_DIR:-/tmp}/himmel-fleet-$(id -u)}"' \
+  'mkdir -p "$slots/$CADENCE_BANK_LEG" 2>/dev/null' \
+  'printf "%s\n" "$CADENCE_BANK_CALLER_PID" > "$slots/$CADENCE_BANK_LEG/pid" 2>/dev/null' \
+  'echo SKIPPED-BANK' > "$SKIPPED_BANK_PREFLIGHT"
 chmod 755 "$SKIPPED_BANK_PREFLIGHT"
 
 run_leg() {
@@ -172,6 +198,7 @@ not_contains "dry-run default: no [1m] suffix in the would-exec line" "$out" "[1
 contains "dry-run default: reports IMPL_GUARD_OK=1" "$out" "IMPL_GUARD_OK=1"
 contains "dry-run default: reports INLINE_IMPL_OK=1" "$out" "INLINE_IMPL_OK=1"
 contains "dry-run default: reports HIMMEL_CONSOLE_LEG=1" "$out" "HIMMEL_CONSOLE_LEG=1"
+not_contains "dry-run default: no HIMMEL_CONSOLE_RELAY without --relay" "$out" "HIMMEL_CONSOLE_RELAY"
 
 rc=0; out="$(LEG_CONTEXT=1m bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 check "dry-run LEG_CONTEXT=1m: refused with exit 2" "$rc" "2"
@@ -186,6 +213,34 @@ for off in "standard" "yes" "true" "1M" ""; do
   rc=0; out="$(LEG_CONTEXT="$off" bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
   ends_with "dry-run LEG_CONTEXT=[$off]: stays on standard (fail toward the cheaper default)" "$out" "standard"
 done
+
+# --- 6b (HIMMEL-2975). --relay: forces the console-relay profile + the
+# HIMMEL_CONSOLE_RELAY env marker Guard C (inbox-send.sh) and the Task 26
+# write-deny hook key off. No value; defaults MODEL to claude-sonnet-5 when
+# omitted; an explicit --profile (flag or LEG_PROFILE) other than
+# console-relay conflicts and refuses.
+rc=0; out="$(bash "$SCRIPT" --dry-run --relay HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "dry-run --relay: exit 0" "$rc" "0"
+contains "dry-run --relay: reports HIMMEL_CONSOLE_RELAY=1" "$out" "HIMMEL_CONSOLE_RELAY=1"
+contains "dry-run --relay: reports HIMMEL_CONSOLE_LEG=1" "$out" "HIMMEL_CONSOLE_LEG=1"
+contains "dry-run --relay: forces profile=console-relay" "$out" "profile=console-relay"
+contains "dry-run --relay: defaults the model to claude-sonnet-5" "$out" "claude-sonnet-5"
+
+rc=0; out="$(bash "$SCRIPT" --dry-run --relay --profile leg-impl HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "dry-run --relay --profile leg-impl: refused with exit 2" "$rc" "2"
+contains "dry-run --relay --profile leg-impl: refusal names console-relay" "$out" "console-relay"
+
+rc=0; out="$(LEG_PROFILE=leg-impl bash "$SCRIPT" --dry-run --relay HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "dry-run --relay, LEG_PROFILE=leg-impl: refused with exit 2" "$rc" "2"
+contains "dry-run --relay, LEG_PROFILE=leg-impl: refusal names console-relay" "$out" "console-relay"
+
+# --relay with an explicit model: explicit wins over the sonnet default. The
+# existing Opus tier gate then applies exactly as today; some/doc.md carries
+# no Tier line, so this refuses with exit 2 - proving the model reached the
+# tier gate unchanged rather than being silently downgraded to sonnet first.
+rc=0; out="$(bash "$SCRIPT" --dry-run --relay HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
+check "dry-run --relay, explicit opus model: tier gate still applies (exit 2)" "$rc" "2"
+contains "dry-run --relay, explicit opus model: refusal is the tier gate" "$out" "Tier"
 
 # --- 7. LEG_REPO folded into HEADED_ARM_REPO --------------------------------
 rc=0; out="$(LEG_REPO=/some/other/repo bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
@@ -292,7 +347,7 @@ contains "SKIPPED-FLEET: log names the fleet cap and the bypass" \
 # fall through and launch anyway.
 d13b="$tmp/c13b"; mk_launch_stubs "$d13b" "HIMMEL-5555-leg"; mkdir -p "$tmp/repo13b"
 rc=0
-run_leg "$d13b" "$tmp/repo13b" "HIMMEL-5555-leg" "claude-sonnet-5" "$SKIPPED_BANK_PREFLIGHT" >/dev/null 2>&1 || rc=$?
+HIMMEL_FLEET_SLOTS="$d13b/fleet-slots" run_leg "$d13b" "$tmp/repo13b" "HIMMEL-5555-leg" "claude-sonnet-5" "$SKIPPED_BANK_PREFLIGHT" >/dev/null 2>&1 || rc=$?
 n=0; while [ "$n" -lt 10 ]; do sleep 0.05; n=$((n+1)); done
 if [ "$rc" -ne 0 ]; then
   echo "ok - SKIPPED-BANK: refuses the launch (exit $rc <> 0)"
@@ -363,7 +418,9 @@ wait_record "$d16" || true
 rec16="$(cat "$d16/record" 2>/dev/null || true)"
 check "full launch, --lane claudex: exit 0" "$rc" "0"
 contains "full launch, --lane claudex: wrapped in script(1) with the SAME log path, appending (-a)" "$rec16" "script -q -a -f $d16/log -c"
-contains "full launch, --lane claudex: the claude-codex stub path reaches the recorded argv" "$rec16" "$claudex_stub"
+contains "full launch, --lane claudex: the preface shim reaches the recorded argv" "$rec16" "leg-claude-launcher.sh"
+contains "full launch, --lane claudex: the shim retains the claudex backend" \
+  "$(cat "$d16/env-record" 2>/dev/null || true)" "LEG_CLAUDE_BIN=$claudex_stub"
 not_contains "full launch, --lane claudex: launcher not force-wrapped in bash (execs via its own shebang)" "$rec16" "bash $claudex_stub"
 contains "full launch, --lane claudex: --model defaults to gpt-6-astra" "$rec16" "--model gpt-6-astra"
 contains "full launch, --lane claudex: --autocompact 200000 (standard context ceiling)" "$rec16" "--autocompact 200000"
@@ -378,7 +435,7 @@ contains "full launch, --lane claudex: CLAUDE_CODE_EFFORT_LEVEL=medium reaches t
 # --append-system-prompt-file and execs the real claude. Three things must
 # hold, and each is a separate case below: the child really does get both
 # flags; omitting --profile changes nothing; and --profile on --lane claudex
-# is refused rather than silently losing one of the two launchers.
+# composes both launchers rather than silently losing one.
 
 # 17a. The shim itself, driven directly: this is the only place the CHILD
 # cmdline is observable (the konsole stub records the launch command but never
@@ -428,7 +485,7 @@ HEADED_ARM_LEG_TARGET="$HEADED_ARM" \
 HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
 KONSOLE_CMD="$d17/konsole" PGREP_CMD="$d17/pgrep" \
 LEG_REPO="$tmp/repo17" HEADED_ARM_LOCK_DIR="$d17/locks" HEADED_ARM_PROC="$d17/proc" \
-  bash "$SCRIPT" --profile leg-impl "HIMMEL-3333-leg" "some/doc.md" "$d17/signal-never" "$PAST" "$d17/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+  bash "$SCRIPT" --profile leg-impl "HIMMEL-3333-leg" "$some_doc" "$d17/signal-never" "$PAST" "$d17/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
 wait_record "$d17" || true
 rec17="$(cat "$d17/record" 2>/dev/null || true)"
 env17="$(cat "$d17/env-record" 2>/dev/null || true)"
@@ -444,6 +501,122 @@ else
 fi
 contains "full launch --profile: the settings JSON is a real enabledPlugins map" \
   "$(cat "$d17/HIMMEL-3333-leg.leg-settings.json" 2>/dev/null || true)" "enabledPlugins"
+
+# 17b-2 (HIMMEL-2985, superseded by HIMMEL-2990). A native-lane --profile
+# launch's per-leg <name>.leg-preface.md is docs/handover/leg-preface.md
+# only - the brief's own contract no longer rides it (2990 moved that to
+# <name>.leg-contract.md, re-injected by the compact hook; see 17b-3 below).
+# Real (non-dry) launch, same stub shape as 17b - this is the writer of the
+# file, not the shim (the shim only fails closed if it is missing).
+d17b="$tmp/c17b"; mk_launch_stubs "$d17b" "HIMMEL-9999-red"; mkdir -p "$tmp/repo17b"
+fixture17b="$tmp/fixture-brief.md"
+cat > "$fixture17b" <<'FIXTURE_EOF'
+# HIMMEL-9999 - fixture brief
+
+**Contract:**
+1. Do the thing the ticket asks for.
+
+## Results (newest at the bottom)
+
+- 00:00 this bullet must never reach the system-prompt preface.
+FIXTURE_EOF
+rc=0
+HEADED_ARM_LEG_TARGET="$HEADED_ARM" \
+HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+KONSOLE_CMD="$d17b/konsole" PGREP_CMD="$d17b/pgrep" \
+LEG_REPO="$tmp/repo17b" HEADED_ARM_LOCK_DIR="$d17b/locks" HEADED_ARM_PROC="$d17b/proc" \
+  bash "$SCRIPT" --profile leg-impl "HIMMEL-9999-red" "$fixture17b" "$d17b/signal-never" "$PAST" "$d17b/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d17b" || true
+check "brief-preface: full launch exit 0" "$rc" "0"
+preface17b="$d17b/HIMMEL-9999-red.leg-preface.md"
+if [ -s "$preface17b" ]; then
+  echo "ok - brief-preface: <name>.leg-preface.md written next to the launch log"
+else
+  echo "FAIL - brief-preface: no leg-preface.md next to the launch log"; fails=$((fails+1))
+fi
+prefacecontent17b="$(cat "$preface17b" 2>/dev/null || true)"
+contains "brief-preface: carries the standing leg-preface heading" "$prefacecontent17b" \
+  "$(head -1 "$HERE/../../../docs/handover/leg-preface.md")"
+not_contains "brief-preface: does NOT carry the fixture's Contract line (HIMMEL-2990)" \
+  "$prefacecontent17b" "**Contract:**"
+not_contains "brief-preface: does NOT carry the Results tail" "$prefacecontent17b" \
+  "this bullet must never reach the system-prompt preface"
+
+# --- 17b-3 (HIMMEL-2990). 2985's per-call preface concatenation is replaced:
+# the brief's own contract now goes to its own per-leg <name>.leg-contract.md,
+# re-injected only after a compaction via a SessionStart `compact`-matcher
+# hook wired into the generated <name>.leg-settings.json - not ridden on every
+# API call inside the system-prompt preface. Same fixture brief and stub shape
+# as 17b.
+d17b3="$tmp/c17b3"; mk_launch_stubs "$d17b3" "HIMMEL-9999-hook"; mkdir -p "$tmp/repo17b3"
+rc=0
+HEADED_ARM_LEG_TARGET="$HEADED_ARM" \
+HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+KONSOLE_CMD="$d17b3/konsole" PGREP_CMD="$d17b3/pgrep" \
+LEG_REPO="$tmp/repo17b3" HEADED_ARM_LOCK_DIR="$d17b3/locks" HEADED_ARM_PROC="$d17b3/proc" \
+  bash "$SCRIPT" --profile leg-impl "HIMMEL-9999-hook" "$fixture17b" "$d17b3/signal-never" "$PAST" "$d17b3/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d17b3" || true
+check "compact-hook: full launch exit 0" "$rc" "0"
+
+contract17b3="$d17b3/HIMMEL-9999-hook.leg-contract.md"
+if [ -s "$contract17b3" ]; then
+  echo "ok - compact-hook: <name>.leg-contract.md written next to the launch log"
+else
+  echo "FAIL - compact-hook: no leg-contract.md next to the launch log"; fails=$((fails+1))
+fi
+contractcontent17b3="$(cat "$contract17b3" 2>/dev/null || true)"
+contains "compact-hook: contract carries the fixture's Contract line" "$contractcontent17b3" "**Contract:**"
+not_contains "compact-hook: contract does NOT carry the Results tail" "$contractcontent17b3" \
+  "this bullet must never reach the system-prompt preface"
+
+prefacecontent17b3="$(cat "$d17b3/HIMMEL-9999-hook.leg-preface.md" 2>/dev/null || true)"
+not_contains "compact-hook: the preface does NOT carry the contract" "$prefacecontent17b3" "**Contract:**"
+
+rc=0
+node --input-type=module - "$d17b3/HIMMEL-9999-hook.leg-settings.json" "$contract17b3" <<'NODE' || rc=$?
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+const settings = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+const contractPath = process.argv[3];
+const starts = settings.hooks?.SessionStart ?? [];
+const hit = starts.find((e) => e.matcher === 'compact');
+assert.ok(hit, 'no SessionStart entry with matcher "compact"');
+const cmd = hit.hooks?.[0]?.command ?? '';
+assert.ok(cmd.includes(contractPath), `command does not name the contract file: ${cmd}`);
+NODE
+check "compact-hook: settings JSON carries a SessionStart compact hook naming the contract file" "$rc" "0"
+
+# --- 17b-4 (HIMMEL-2990 CR round 1, codex-3). 17b-3 only checks that the
+# generated command STRING names the contract path as a substring; it never
+# actually runs the command, so it would not have caught an unescaped path
+# breaking out of the re-parsed shell at hook-fire time. Log dir here carries
+# a literal double quote - the exact character that breaks out of the OLD
+# `cat "$PROFILE_CONTRACT"` double-quoting (a single quote does NOT: double
+# quotes tolerate an embedded single quote) - so executing the generated
+# command with an unescaped path would misparse rather than `cat` the file.
+d17b4="$tmp/c17b4\"q"; mk_launch_stubs "$d17b4" "HIMMEL-9999-hookq"; mkdir -p "$tmp/repo17b4"
+rc=0
+HEADED_ARM_LEG_TARGET="$HEADED_ARM" \
+HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+KONSOLE_CMD="$d17b4/konsole" PGREP_CMD="$d17b4/pgrep" \
+LEG_REPO="$tmp/repo17b4" HEADED_ARM_LOCK_DIR="$d17b4/locks" HEADED_ARM_PROC="$d17b4/proc" \
+  bash "$SCRIPT" --profile leg-impl "HIMMEL-9999-hookq" "$fixture17b" "$d17b4/signal-never" "$PAST" "$d17b4/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d17b4" || true
+check "compact-hook exec: full launch exit 0 (log dir has a shell-special quote)" "$rc" "0"
+
+contract17b4="$d17b4/HIMMEL-9999-hookq.leg-contract.md"
+settings17b4="$d17b4/HIMMEL-9999-hookq.leg-settings.json"
+contractcontent17b4="$(cat "$contract17b4" 2>/dev/null || true)"
+contains "compact-hook exec: contract carries the fixture's Contract line" "$contractcontent17b4" "**Contract:**"
+
+cmd17b4="$(node --input-type=module -e '
+import { readFileSync } from "node:fs";
+const settings = JSON.parse(readFileSync(process.argv[1], "utf8"));
+const hit = (settings.hooks?.SessionStart ?? []).find((e) => e.matcher === "compact");
+process.stdout.write(hit?.hooks?.[0]?.command ?? "");
+' "$settings17b4")"
+exec17b4="$(bash -c "$cmd17b4" 2>/dev/null || true)"
+check "compact-hook exec: executing the generated command outputs the real contract content" "$exec17b4" "$contractcontent17b4"
 
 # 17c. Omitting --profile changes nothing: no shim, no lean flag, and a
 # dry-run report byte-identical to the pre-HIMMEL-2830 three-line form. This
@@ -469,6 +642,36 @@ else
   echo "ok - --profile: --dry-run writes nothing"
 fi
 
+# HIMMEL-2959: inspect the real seeded settings and the same resolver used by
+# --dry-run; checking only the profile= line would miss dropped permissions.
+rc=0
+node --input-type=module - "$d17/HIMMEL-3333-leg.leg-settings.json" <<'NODE' || rc=$?
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+const settings = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+assert.ok(settings.permissions?.allow.includes('Bash(bash scripts/handover/merge-on-green.sh:*)'));
+NODE
+check "full launch --profile: seeded settings carry gate permissions" "$rc" "0"
+
+rc=0
+node "$HERE/../../lanes/plugin-profiles.mjs" leg-impl > "$tmp/resolved-leg.json" || rc=$?
+check "--dry-run leg-impl: resolver succeeds" "$rc" "0"
+rc=0
+node -e 'const j=require(process.argv[1]); if (!j.permissions?.allow.includes("Bash(bash scripts/cr/ledger-append.sh:*)")) process.exit(1)' "$tmp/resolved-leg.json" || rc=$?
+check "--dry-run leg-impl: resolved settings carry permissions.allow" "$rc" "0"
+
+rc=0
+bareprof="$(bash "$SCRIPT" --dry-run --profile bare HIMMEL-9999-bare some/doc.md /tmp/nosig 99999999999 "$tmp/bare.log" claude-sonnet-5 2>&1)" || rc=$?
+check "--dry-run bare: exit 0" "$rc" "0"
+contains "--dry-run bare: names profile and settings" "$bareprof" \
+  "profile=bare settings=$tmp/HIMMEL-9999-bare.leg-settings.json"
+rc=0
+node "$HERE/../../lanes/plugin-profiles.mjs" bare > "$tmp/resolved-bare.json" || rc=$?
+check "--dry-run bare: resolver succeeds" "$rc" "0"
+rc=0
+node -e 'const j=require(process.argv[1]); if (Object.hasOwn(j,"permissions")) process.exit(1)' "$tmp/resolved-bare.json" || rc=$?
+check "--dry-run bare: resolved settings have no permissions" "$rc" "0"
+
 # LEG_PROFILE is the env equivalent, and the flag wins over it.
 envprof="$(LEG_PROFILE=leg-impl bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 "$tmp/leg.log" claude-sonnet-5 2>&1)"
 contains "LEG_PROFILE=leg-impl is honoured like the flag" "$envprof" "profile=leg-impl"
@@ -479,14 +682,80 @@ check "an unknown profile name is refused with exit 2" "$rc" "2"
 rc=0; out="$(timeout 5 bash "$SCRIPT" --profile 2>&1)" || rc=$?  # gnu-ok: bounds a usage-path regression; this suite exercises Linux/KDE-only headed-arm.sh
 check "usage: --profile with no value -> exit 2 (not an infinite loop)" "$rc" "2"
 
-# 17d. --profile + --lane claudex: both replace the launcher binary, so one
-# would silently win. Refuse instead.
+# 17d. HIMMEL-2962: composition must carry the profile through the claudex
+# backend, not silently select one launcher. Execute the real wrapper + shim
+# against recording endpoints (never launch Claude or a terminal).
 rc=0; out="$(bash "$SCRIPT" --dry-run --lane claudex --profile leg-impl HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
-check "--profile with --lane claudex: exit 2" "$rc" "2"
-contains "--profile with --lane claudex: the refusal says why in one line" "$out" \
-  "--profile is not available on --lane claudex"
+check "--profile with --lane claudex: exit 0" "$rc" "0"
+contains "composed dry-run: profile settings reported" "$out" "profile=leg-impl settings="
+contains "composed dry-run: claudex lane retained" "$out" "lane=claudex"
 rc=0; out="$(LEG_LANE=claudex LEG_PROFILE=leg-impl bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
-check "the same conflict via the env equivalents: exit 2" "$rc" "2"
+check "composition via the env equivalents: exit 0" "$rc" "0"
+
+composed="$tmp/composed launch"; mkdir -p "$composed"
+cat > "$composed/headed" <<'HEADED_EOF'
+#!/usr/bin/env bash
+read -r -a lane_env <<< "${HEADED_ARM_LAUNCHER_ENV:-}"
+exec env ${lane_env[@]+"${lane_env[@]}"} "$HEADED_ARM_LAUNCHER" --model "$6" --autocompact 200000 -n "$1" "load $2 and continue"
+HEADED_EOF
+cat > "$composed/claude-codex" <<'CLAUDEX_EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$(dirname "$0")/args"
+printf '%s\n' "${CLAUDEX_LANE_OK:-}" "${CLAUDE_CODE_EFFORT_LEVEL:-}" > "$(dirname "$0")/lane-env"
+CLAUDEX_EOF
+cat > "$composed/profiles.mjs" <<'PROFILE_EOF'
+switch (process.argv[3]) {
+  case '--mcp-servers': console.log('["qmd"]'); break;
+  case '--mcp-config': console.log('{"mcpServers":{"qmd":{"type":"http","url":"http://localhost:8181/mcp"}}}'); break;
+  default: console.log('{"enabledPlugins":{},"permissions":{"allow":["Bash(bash scripts/handover/merge-on-green.sh:*)"]}}');
+}
+PROFILE_EOF
+chmod 755 "$composed/headed" "$composed/claude-codex"
+rc=0
+HEADED_ARM_LEG_TARGET="$composed/headed" HEADED_ARM_LEG_CLAUDEX_BIN="$composed/claude-codex" \
+HEADED_ARM_LEG_PROFILES="$composed/profiles.mjs" HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" LEG_EFFORT=high \
+  bash "$SCRIPT" --lane claudex --profile leg-impl HIMMEL-composed "some/doc.md" "$composed/signal" "$PAST" "$composed/log" >/dev/null 2>&1 || rc=$?
+check "composition: real wrapper + shim reaches claudex" "$rc" "0"
+check "composition: lane env reaches the backend" "$(cat "$composed/lane-env" 2>/dev/null || true)" "$(printf '1\nhigh')"
+rc=0
+node - "$composed" "$HERE/../../../docs/handover/leg-preface.md" <<'NODE' || rc=$?
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const [dir, profilePreface] = process.argv.slice(2);
+const preface = `${dir}/HIMMEL-composed.leg-preface.md`;
+const claudexPreface = profilePreface.replace('leg-preface.md', 'leg-preface-claudex.md');
+assert.strictEqual(fs.readFileSync(preface, 'utf8'),
+  fs.readFileSync(profilePreface, 'utf8') + fs.readFileSync(claudexPreface, 'utf8'));
+assert.deepStrictEqual(fs.readFileSync(`${dir}/args`, 'utf8').trimEnd().split('\n'), [
+  '--settings', `${dir}/HIMMEL-composed.leg-settings.json`,
+  '--append-system-prompt-file', preface,
+  '--mcp-config', `${dir}/HIMMEL-composed.leg-mcp.json`, '--strict-mcp-config',
+  '--model', 'gpt-6-astra', '--autocompact', '200000', '-n', 'HIMMEL-composed', 'load some/doc.md and continue',
+]);
+const settings = JSON.parse(fs.readFileSync(`${dir}/HIMMEL-composed.leg-settings.json`, 'utf8'));
+assert.ok(settings.permissions.allow.includes('Bash(bash scripts/handover/merge-on-green.sh:*)'));
+assert.deepStrictEqual(JSON.parse(fs.readFileSync(`${dir}/HIMMEL-composed.leg-mcp.json`, 'utf8')),
+  {mcpServers: {qmd: {type: 'http', url: 'http://localhost:8181/mcp'}}});
+NODE
+check "composition: both prefaces, all profile flags, argv order and gate settings survive" "$rc" "0"
+
+# Without a profile, claudex gains exactly the coordination preface pair.
+rc=0
+HEADED_ARM_LEG_TARGET="$composed/headed" HEADED_ARM_LEG_CLAUDEX_BIN="$composed/claude-codex" \
+HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+  bash "$SCRIPT" --lane claudex HIMMEL-unprofiled "some/doc.md" "$composed/signal" "$PAST" "$composed/log" >/dev/null 2>&1 || rc=$?
+check "unprofiled claudex: launcher succeeds" "$rc" "0"
+rc=0
+node - "$composed" "$HERE/../../../docs/handover/leg-preface-claudex.md" <<'NODE' || rc=$?
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const [dir, preface] = process.argv.slice(2);
+assert.deepStrictEqual(fs.readFileSync(`${dir}/args`, 'utf8').trimEnd().split('\n'), [
+  '--append-system-prompt-file', preface,
+  '--model', 'gpt-6-astra', '--autocompact', '200000', '-n', 'HIMMEL-unprofiled', 'load some/doc.md and continue',
+]);
+NODE
+check "unprofiled claudex: exactly one added preface pair, other argv unchanged" "$rc" "0"
 
 # --- 18 (HIMMEL-2935). --profile's mcpServers allowlist: --mcp-config +
 # --strict-mcp-config narrow the leg's MCP surface to exactly the named
@@ -557,7 +826,7 @@ full_launch_mcp() {
   HEADED_ARM_LEG_TARGET="$HEADED_ARM" HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
   KONSOLE_CMD="$d/konsole" PGREP_CMD="$d/pgrep" \
   LEG_REPO="$tmp/repo18$suf" HEADED_ARM_LOCK_DIR="$d/locks" HEADED_ARM_PROC="$d/proc" \
-    bash "$SCRIPT" --profile "$prof" "$name" "some/doc.md" "$d/signal-never" "$PAST" "$d/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+    bash "$SCRIPT" --profile "$prof" "$name" "$some_doc" "$d/signal-never" "$PAST" "$d/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
   wait_record "$d" || true
 }
 
@@ -614,6 +883,184 @@ contains "dry-run mcpServers=[]: reports mcp=[] and the would-be mcp-config path
 
 drynone="$(PLUGIN_PROFILES_REGISTRY="$mcpreg" bash "$SCRIPT" --dry-run --profile mcp-none HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 "$tmp/leg.log" claude-sonnet-5 2>&1)"
 contains "dry-run: no mcpServers field reports mcp=null mcp-config=<none>" "$drynone" "mcp=null mcp-config=<none>"
+
+# --- 19-23 (HIMMEL-2976) + HIMMEL-2997: Opus/Fable legs need a named Tier
+# reason that opens with one of three closed category tags --------------
+# CLAUDE.md: "raise effort before tier" - an Opus or Fable leg costs
+# materially more per turn than the Sonnet default, so it launches only when
+# its brief names a Tier line whose reason opens with one of the three
+# sanctioned category tags (HIMMEL-2997: a closed tag + free text, so the
+# free text after the tag is never validated). Matched by MODEL PREFIX so a
+# [1m] suffix cannot dodge it (codex-2 pattern above).
+doc_no_tier="$tmp/tier-doc-none.md"
+printf '%s\n' '# fixture brief' '> no tier line here' > "$doc_no_tier"
+doc_tier_opus="$tmp/tier-doc-opus.md"
+printf '%s\n' '# fixture brief' '> **Tier:** opus — design: multi-step design' > "$doc_tier_opus"
+doc_tier_fable="$tmp/tier-doc-fable.md"
+printf '%s\n' '# fixture brief' '> **Tier:** fable — tier-return: a Sonnet leg returned the work as above its tier' > "$doc_tier_fable"
+
+rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_no_tier" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
+check "tier gate: opus without a Tier line is refused with exit 2" "$rc" "2"
+contains "tier gate: refusal names the CLAUDE.md sentence" "$out" "raise effort before tier"
+contains "tier gate: refusal names reason 1 (multi-step design)" "$out" "multi-step design"
+contains "tier gate: refusal names reason 2 (unverifiable FINDING)" "$out" "a FINDING the console could not verify at Sonnet"
+contains "tier gate: refusal names reason 3 (above-tier return)" "$out" "a Sonnet leg returned the work as above its tier"
+contains "tier gate: refusal names the three category tags" "$out" "design|unverified-finding|tier-return"
+
+rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_no_tier" /tmp/nosig 99999999999 /tmp/leg.log "claude-opus-5[1m]" 2>&1)" || rc=$?
+check "tier gate: a [1m] suffix does not dodge the opus match" "$rc" "2"
+contains "tier gate: [1m]-suffixed refusal still names the sentence" "$out" "raise effort before tier"
+
+rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_no_tier" /tmp/nosig 99999999999 /tmp/leg.log claude-fable-5-1 2>&1)" || rc=$?
+check "tier gate: fable without a Tier line is refused with exit 2" "$rc" "2"
+contains "tier gate: fable refusal names the CLAUDE.md sentence" "$out" "raise effort before tier"
+
+rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_tier_opus" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
+check "tier gate: opus with a design: Tier line proceeds (dry-run exit 0)" "$rc" "0"
+contains "tier gate: dry-run report carries tier-category=design for opus" "$out" "tier-category=design"
+contains "tier gate: dry-run report carries tier-reason= for opus" "$out" "tier-reason=multi-step design"
+
+rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_tier_fable" /tmp/nosig 99999999999 /tmp/leg.log claude-fable-5-1 2>&1)" || rc=$?
+check "tier gate: fable with a tier-return: Tier line proceeds (dry-run exit 0)" "$rc" "0"
+contains "tier gate: dry-run report carries tier-category=tier-return for fable" "$out" "tier-category=tier-return"
+contains "tier gate: dry-run report carries tier-reason= for fable" "$out" "tier-reason=a Sonnet leg returned the work as above its tier"
+
+rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_no_tier" /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "tier gate: sonnet without a Tier line is unaffected (dry-run exit 0)" "$rc" "0"
+not_contains "tier gate: sonnet dry-run report carries no tier-reason=" "$out" "tier-reason="
+
+rc=0; out="$(bash "$SCRIPT" --dry-run --lane claudex HIMMEL-9999-leg "$doc_no_tier" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "tier gate: --lane claudex is unaffected (dry-run exit 0)" "$rc" "0"
+
+# codex-1 (HIMMEL-2976 round 1 CR): a Tier line whose reason is whitespace-only
+# must be refused exactly like a missing line - `-z` alone treats a
+# whitespace-only string as non-empty and would incorrectly let the launch
+# proceed.
+doc_tier_opus_blank="$tmp/tier-doc-opus-blank.md"
+printf '%s\n' '# fixture brief' '> **Tier:** opus —    ' > "$doc_tier_opus_blank"
+
+rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_tier_opus_blank" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
+check "tier gate: a whitespace-only Tier reason is refused with exit 2" "$rc" "2"
+contains "tier gate: whitespace-only refusal names the CLAUDE.md sentence" "$out" "raise effort before tier"
+
+# --- HIMMEL-2997 (a)-(f): the reason must open with a closed category tag --
+doc_tier_opus_bare="$tmp/tier-doc-opus-bare.md"
+printf '%s\n' '# fixture brief' '> **Tier:** opus — because I prefer it' > "$doc_tier_opus_bare"
+rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_tier_opus_bare" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
+check "tier gate (a): bare free text with no category tag is refused with exit 2" "$rc" "2"
+contains "tier gate (a): refusal names the three category tags" "$out" "design|unverified-finding|tier-return"
+
+doc_tier_opus_finding="$tmp/tier-doc-opus-finding.md"
+printf '%s\n' '# fixture brief' '> **Tier:** opus — unverified-finding: a memory leak the console could not repro at Sonnet' > "$doc_tier_opus_finding"
+rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_tier_opus_finding" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
+check "tier gate (c): unverified-finding: Tier line proceeds (dry-run exit 0)" "$rc" "0"
+contains "tier gate (c): dry-run report carries tier-category=unverified-finding" "$out" "tier-category=unverified-finding"
+
+doc_tier_opus_return="$tmp/tier-doc-opus-return.md"
+printf '%s\n' '# fixture brief' '> **Tier:** opus — tier-return: a Sonnet leg returned the work as above its tier' > "$doc_tier_opus_return"
+rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_tier_opus_return" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
+check "tier gate (d): tier-return: Tier line proceeds (dry-run exit 0)" "$rc" "0"
+contains "tier gate (d): dry-run report carries tier-category=tier-return" "$out" "tier-category=tier-return"
+
+doc_tier_opus_wrongcase="$tmp/tier-doc-opus-wrongcase.md"
+printf '%s\n' '# fixture brief' '> **Tier:** opus — Design: multi-step design' > "$doc_tier_opus_wrongcase"
+rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_tier_opus_wrongcase" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
+check "tier gate (e): wrong-case category tag (Design:) is refused with exit 2" "$rc" "2"
+contains "tier gate (e): refusal names the three category tags" "$out" "design|unverified-finding|tier-return"
+
+doc_tier_opus_emptytext="$tmp/tier-doc-opus-emptytext.md"
+printf '%s\n' '# fixture brief' '> **Tier:** opus — design:' > "$doc_tier_opus_emptytext"
+rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_tier_opus_emptytext" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
+check "tier gate (f): a category tag with empty free text is refused with exit 2" "$rc" "2"
+contains "tier gate (f): refusal names the empty-text problem" "$out" "no free text after"
+
+# codex CR (round 1): a bare sanctioned tag with no ':' at all must not slip
+# through as category=<tag> reason=<tag> — the split is a no-op without a
+# literal colon present, so this must be refused explicitly.
+doc_tier_opus_notag_colon="$tmp/tier-doc-opus-notag-colon.md"
+printf '%s\n' '# fixture brief' '> **Tier:** opus — design' > "$doc_tier_opus_notag_colon"
+rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_tier_opus_notag_colon" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
+check "tier gate (g): a bare sanctioned tag with no colon is refused with exit 2" "$rc" "2"
+contains "tier gate (g): refusal names the three category tags" "$out" "design|unverified-finding|tier-return"
+
+# --- 24 (HIMMEL-2774). FLEET_RESERVE_TTL is exported, derived from DEADLINE -
+# TTL_RECORD_PREFLIGHT stands in for bank-preflight.sh and records the TTL it
+# was called with instead of consulting the real fleet/bank state, mirroring
+# how PROCEED_PREFLIGHT/SKIPPED_FLEET_PREFLIGHT stand in above.
+TTL_RECORD_PREFLIGHT="$tmp/ttl-record-preflight.sh"
+# shellcheck disable=SC2016  # deliberately unexpanded: written literally, evaluated when the stub runs.
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$FLEET_RESERVE_TTL" > "$TTL_RECORD_OUT"' 'echo PROCEED' > "$TTL_RECORD_PREFLIGHT"
+chmod 755 "$TTL_RECORD_PREFLIGHT"
+
+# A genuinely future deadline (500s, clearly above the 60s floor so 24b's
+# floor case is distinguishable) WITHOUT paying for headed-arm.sh's own
+# wait loop: that loop breaks immediately once its SIGNAL file exists
+# (headed-arm.sh tests `[ -e "$SIGNAL" ]` before ever comparing to DEADLINE),
+# so pre-touching a real signal file here gets an immediate launch while
+# still exercising the TTL computation against a real future DEADLINE value.
+d24a="$tmp/c24a"; mk_launch_stubs "$d24a" "HIMMEL-1111-ttl"; mkdir -p "$tmp/repo24a"
+future24=$(( $(date +%s) + 500 ))
+touch "$d24a/signal-now"
+ttl_out24a="$tmp/ttl24a-seen"
+rc=0
+TTL_RECORD_OUT="$ttl_out24a" IMPL_GUARD_OK='' \
+HEADED_ARM_LEG_TARGET="$HEADED_ARM" HEADED_ARM_LEG_PREFLIGHT="$TTL_RECORD_PREFLIGHT" \
+KONSOLE_CMD="$d24a/konsole" PGREP_CMD="$d24a/pgrep" \
+LEG_REPO="$tmp/repo24a" HEADED_ARM_LOCK_DIR="$d24a/locks" HEADED_ARM_PROC="$d24a/proc" \
+  bash "$SCRIPT" "HIMMEL-1111-ttl" "some/doc.md" "$d24a/signal-now" "$future24" "$d24a/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d24a" || true
+ttl_seen24a="$(cat "$ttl_out24a" 2>/dev/null || echo NONE)"
+check "TTL export: full launch, future deadline: exit 0" "$rc" "0"
+# a few seconds of scheduling slop around (deadline - now + 60) is expected;
+# the exact value depends on how long the test harness itself took to reach
+# the preflight call, not on anything this suite controls. codex-5 (HIMMEL-2774,
+# CR round 1): the TTL now carries a fixed +60s grace past (deadline - now) so
+# a reservation outlives the actual process spawn - see headed-arm-leg.sh.
+if [ "$ttl_seen24a" != NONE ] && [ "$ttl_seen24a" -ge 550 ] 2>/dev/null && [ "$ttl_seen24a" -le 560 ] 2>/dev/null; then
+  echo "ok - TTL export: future deadline -> FLEET_RESERVE_TTL ~= deadline - now + 60 ($ttl_seen24a)"
+else
+  echo "FAIL - TTL export: future deadline -> expected 550-560, got [$ttl_seen24a]"
+  fails=$((fails+1))
+fi
+
+d24b="$tmp/c24b"; mk_launch_stubs "$d24b" "HIMMEL-2222-ttlfloor"; mkdir -p "$tmp/repo24b"
+ttl_out24b="$tmp/ttl24b-seen"
+rc=0
+TTL_RECORD_OUT="$ttl_out24b" IMPL_GUARD_OK='' \
+HEADED_ARM_LEG_TARGET="$HEADED_ARM" HEADED_ARM_LEG_PREFLIGHT="$TTL_RECORD_PREFLIGHT" \
+KONSOLE_CMD="$d24b/konsole" PGREP_CMD="$d24b/pgrep" \
+LEG_REPO="$tmp/repo24b" HEADED_ARM_LOCK_DIR="$d24b/locks" HEADED_ARM_PROC="$d24b/proc" \
+  bash "$SCRIPT" "HIMMEL-2222-ttlfloor" "some/doc.md" "$d24b/signal-never" "$PAST" "$d24b/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d24b" || true
+check "TTL export: past deadline floors to 60" "$(cat "$ttl_out24b" 2>/dev/null || echo NONE)" "60"
+
+# --- 25 (HIMMEL-2774). Reservation release on abort, SKIPPED-BANK vs
+# SKIPPED-FLEET -------------------------------------------------------------
+slots25a="$tmp/slots25a"; mkdir -p "$slots25a/HIMMEL-3333-release"
+printf '%s\n' "$(( $(date +%s) + 1800 ))" > "$slots25a/HIMMEL-3333-release/expires"
+d25a="$tmp/c25a"; mk_launch_stubs "$d25a" "HIMMEL-3333-release"; mkdir -p "$tmp/repo25a"
+rc=0
+HIMMEL_FLEET_SLOTS="$slots25a" run_leg "$d25a" "$tmp/repo25a" "HIMMEL-3333-release" "claude-sonnet-5" "$SKIPPED_BANK_PREFLIGHT" >/dev/null 2>&1 || rc=$?
+n=0; while [ "$n" -lt 10 ]; do sleep 0.05; n=$((n+1)); done
+if [ -d "$slots25a/HIMMEL-3333-release" ]; then
+  echo "FAIL - SKIPPED-BANK: reservation not released after refusal"
+  fails=$((fails+1))
+else
+  echo "ok - SKIPPED-BANK: reservation released after refusal (this call's own, created by admission before the bank check ran)"
+fi
+
+slots25b="$tmp/slots25b"; mkdir -p "$slots25b/HIMMEL-4444-noown"
+printf '%s\n' "$(( $(date +%s) + 1800 ))" > "$slots25b/HIMMEL-4444-noown/expires"
+d25b="$tmp/c25b"; mk_launch_stubs "$d25b" "HIMMEL-4444-noown"; mkdir -p "$tmp/repo25b"
+rc=0
+HIMMEL_FLEET_SLOTS="$slots25b" run_leg "$d25b" "$tmp/repo25b" "HIMMEL-4444-noown" "claude-sonnet-5" "$SKIPPED_FLEET_PREFLIGHT" >/dev/null 2>&1 || rc=$?
+n=0; while [ "$n" -lt 10 ]; do sleep 0.05; n=$((n+1)); done
+if [ -d "$slots25b/HIMMEL-4444-noown" ]; then
+  echo "ok - SKIPPED-FLEET: a same-name reservation is left untouched (never held one of its own to release)"
+else
+  echo "FAIL - SKIPPED-FLEET: a same-name reservation was removed - would delete a DIFFERENT pending arm's duplicate-refused slot"
+  fails=$((fails+1))
+fi
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

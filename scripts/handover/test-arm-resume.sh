@@ -155,7 +155,8 @@ T1287|T1287
 2192|2192 HIMMEL-2192
 2199|2199 HIMMEL-2199
 2177|2177 HIMMEL-2177
-2545|2545 HIMMEL-2545'
+2545|2545 HIMMEL-2545
+3118|3118 HIMMEL-3118'
 
 _section_alias_known() {
     local _candidate="$1" _label _aliases _alias
@@ -217,6 +218,21 @@ ARM="$(cd "$(dirname "$0")" && pwd)/arm-resume.sh"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
+# HIMMEL-3074: real crontab arms create the arm log dir and probe the log
+# FILE for append; keep that under the suite's TMP, not the operator's
+# real ~/.himmel/arm-resume. Real crontab/macOS arms also now write a
+# generated runner file (fold of Goomal's fix/arm-resume-macos-cron) under
+# ARM_RUNNER_DIR -- default that under $TMP too, for the same reason.
+export ARM_RESUME_LOG_DIR="$TMP/arm-logs"
+export ARM_RUNNER_DIR="$TMP/arm-runners"
+
+# Fleet-census shield (HIMMEL-2968): all real arms use scheduler stubs, so
+# the host's live session count must not refuse them at the fleet preflight.
+# Match test-arm-resume-queue-lock.sh's empty process-table fixture.
+FLEET_PS_STUB="$TMP/no-fleet-ps.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'true' > "$FLEET_PS_STUB"
+chmod +x "$FLEET_PS_STUB"
+export FLEET_PS_CMD="$FLEET_PS_STUB"
 
 # Global telemetry shield (HIMMEL-236): arm-resume emits to
 # ~/.claude/telemetry/skill-usage.jsonl by default, so without a
@@ -475,13 +491,30 @@ case "\$cmd" in
     *) exit 0 ;;
 esac
 EOF
-cat > "$SCHED_STUB_T17/atq" <<'EOF'
+# HIMMEL-2968: the POSIX backend must also report the jobs it accepted.
+# Match ARMED_STUB's stateful at pair; an empty atq after create correctly
+# refuses at arm-resume.sh's post-arm existence verify (W5/W8 on Linux).
+cat > "$SCHED_STUB_T17/atq" <<EOF
 #!/usr/bin/env bash
+d="$TMP/sched-stub-t17.atdir"; [ -d "\$d" ] || exit 0
+for f in "\$d"/job-*; do
+    [ -f "\$f" ] || continue
+    printf '%s\\tThu Jun 11 09:00:00 2026 a user\\n' "\${f##*/job-}"
+done
 exit 0
 EOF
-cat > "$SCHED_STUB_T17/at" <<'EOF'
+cat > "$SCHED_STUB_T17/at" <<EOF
 #!/usr/bin/env bash
-exit 0
+d="$TMP/sched-stub-t17.atdir"; mkdir -p "\$d"
+case "\${1:-}" in
+    -c) cat "\$d/job-\${2:-}" 2>/dev/null; exit 0 ;;
+    -t)
+        n=\$(cat "\$d/.counter" 2>/dev/null || echo 0); n=\$((n + 1))
+        printf '%s' "\$n" > "\$d/.counter"
+        cat > "\$d/job-\$n"
+        exit 0 ;;
+    *) cat > /dev/null 2>&1 || true; exit 0 ;;
+esac
 EOF
 # HIMMEL-938: schtasks /create above is a stateless "always succeeds" fake —
 # it never actually registers anything with the real OS scheduler. On an
@@ -2658,6 +2691,10 @@ if _sec_selected "macOS" "S1-S5" "S4"; then
 # (atrun is off-by-default / SIP-fragile). Shim at/atq present so the
 # at-vs-crontab mismatch is actually exercised, plus a file-backed crontab.
 MACBIN="$TMP/macbin"; mkdir -p "$MACBIN"
+# HIMMEL-3074: the crontab renderer resolves claude ABSOLUTELY at arm time and
+# refuses (rc 2) when it cannot -- CI has no claude, so every cron stub dir in
+# this suite carries one (same line below for each sibling dir).
+printf '#!/bin/sh\nexit 0\n' > "$MACBIN/claude"; chmod +x "$MACBIN/claude"
 CRON_STORE="$TMP/cron.store"; : > "$CRON_STORE"
 printf '#!/bin/sh\necho "at MUST NOT be called on macOS" >&2; exit 1\n' > "$MACBIN/at";  chmod +x "$MACBIN/at"
 printf '#!/bin/sh\nexit 0\n' > "$MACBIN/atq"; chmod +x "$MACBIN/atq"
@@ -2755,6 +2792,7 @@ exec "$AWKFAIL_REAL_AWK" "\$@"
 AWKEOF
 chmod +x "$AWKFAIL_DIR/awk"
 AWKFAIL_MACBIN="$TMP/awkfail-macbin"; mkdir -p "$AWKFAIL_MACBIN"
+printf '#!/bin/sh\nexit 0\n' > "$AWKFAIL_MACBIN/claude"; chmod +x "$AWKFAIL_MACBIN/claude"   # HIMMEL-3074
 AWKFAIL_CRON_STORE="$TMP/awkfail-cron.store"; : > "$AWKFAIL_CRON_STORE"
 printf '#!/bin/sh\nexit 1\n' > "$AWKFAIL_MACBIN/at"; chmod +x "$AWKFAIL_MACBIN/at"
 printf '#!/bin/sh\nexit 0\n' > "$AWKFAIL_MACBIN/atq"; chmod +x "$AWKFAIL_MACBIN/atq"
@@ -2833,7 +2871,16 @@ cat > "$WINBIN/schtasks" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
-chmod +x "$WINBIN/claude" "$WINBIN/cygpath" "$WINBIN/schtasks"
+# HIMMEL-2968: a deliberately unavailable verify probe only fail-opens when
+# locale detection works (V5). Model that default here; V8/V8b override reg
+# to keep exercising the dual-safeguard refusal explicitly.
+cat > "$WINBIN/reg" <<'EOF'
+#!/usr/bin/env bash
+echo "HKEY_CURRENT_USER\\Control Panel\\International"
+echo "    sShortDate    REG_SZ    M/d/yyyy"
+exit 0
+EOF
+chmod +x "$WINBIN/claude" "$WINBIN/cygpath" "$WINBIN/schtasks" "$WINBIN/reg"
 win_env() {
     local _dir="$1"; shift
     # schtasks via the SCHTASKS_CMD seam (HIMMEL-1610): pin the stub by absolute
@@ -4251,6 +4298,117 @@ rm -f "$ARM_RESUME_DOTENV_ROOT/.env"
 fi
 
 # ---------------------------------------------------------------------------
+# HIMMEL-3118 — --no-automerge decline flag + merge-gate/ARMAUTOMERGE grant
+# decoupling. --automerge raises the dotenv-derived ARMAUTOMERGE opt-in above;
+# until now there was no way to lower it back down for a single arm, so a leg
+# armed specifically to park on every green PR silently inherited the
+# station's on-disk default instead. Separately (item 4, operator ruling): the
+# dotenv default used to grant CR_MERGE_GATE_OK=1 alongside ARMAUTOMERGE=1 --
+# the merge gate's OWN bypass, which a bare `.env` setting never had explicit
+# consent to flip. Only an explicit --automerge on THIS invocation may grant
+# CR_MERGE_GATE_OK=1 now.
+# ---------------------------------------------------------------------------
+if _sec_selected "3118" "HIMMEL-3118"; then
+
+# (a) --automerge and --no-automerge together are refused before any arming
+# work happens.
+HO_3118A=$(make_handover "$WORK_REPO")
+out=$(env -u ARMAUTOMERGE SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_3118A" --dry-run --automerge --no-automerge 2>&1)
+rc=$?
+assert_rc "3118a --automerge + --no-automerge refused (rc=2)" 2 "$rc"
+assert_contains "3118a ERR names the conflict" "mutually exclusive" "$out"
+
+# (b) RED control: dotenv opt-in ON, no --no-automerge -> the .env default
+# still applies (ARMAUTOMERGE=1 in the launch text). Proves the shield below
+# is live before (c) proves --no-automerge overrides it.
+printf 'ARMAUTOMERGE=1\n' > "$ARM_RESUME_DOTENV_ROOT/.env"
+HO_3118B=$(make_handover "$WORK_REPO")
+out=$(env -u ARMAUTOMERGE SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_3118B" --dry-run 2>&1)
+rc=$?
+assert_rc "3118b RED control: dotenv default alone still arms (rc=0)" 0 "$rc"
+assert_contains "3118b RED control: dotenv default grants ARMAUTOMERGE=1" "ARMAUTOMERGE=1" "$out"
+
+# (c) --no-automerge forces AUTOMERGE=0 even though the SAME .env opt-in from
+# (b) is still in place -- the flag must win over the on-disk default.
+HO_3118C=$(make_handover "$WORK_REPO")
+out=$(env -u ARMAUTOMERGE SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_3118C" --dry-run --no-automerge 2>&1)
+rc=$?
+assert_rc "3118c --no-automerge still arms (rc=0)" 0 "$rc"
+assert_contains "3118c resolved state shows automerge=0 sourced from the flag" "automerge=0 merge_gate_bypass=0 (source: --no-automerge flag)" "$out"
+assert_not_contains "3118c --no-automerge overrides the dotenv default -- no ARMAUTOMERGE=1 grant" "ARMAUTOMERGE=1 " "$out"
+assert_not_contains "3118c --no-automerge overrides the dotenv default -- no CR_MERGE_GATE_OK=1 grant" "CR_MERGE_GATE_OK=1" "$out"
+
+# (d) item 4, the console's second RED-control arm: the dotenv default (no
+# flags at all) grants ARMAUTOMERGE=1 ONLY -- CR_MERGE_GATE_OK=1 is no longer
+# bundled into a bare .env opt-in. Pre-fix code emits BOTH here (that is
+# exactly what item 4 rules out), so this assertion fails on the pre-fix
+# arm-resume.sh and passes only after the decoupling fix.
+HO_3118D=$(make_handover "$WORK_REPO")
+out=$(env -u ARMAUTOMERGE SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_3118D" --dry-run 2>&1)
+rc=$?
+assert_rc "3118d dotenv default alone still arms (rc=0)" 0 "$rc"
+assert_contains "3118d resolved state: automerge=1, merge_gate_bypass=0, dotenv source" "automerge=1 merge_gate_bypass=0 (source: dotenv default (ARMAUTOMERGE=1 in .env))" "$out"
+assert_contains "3118d launch text carries ARMAUTOMERGE=1 from the dotenv default" "ARMAUTOMERGE=1" "$out"
+assert_not_contains "3118d launch text does NOT carry CR_MERGE_GATE_OK=1 from a bare dotenv default" "ARMAUTOMERGE=1 CR_MERGE_GATE_OK=1" "$out"
+
+# (e) fenced-off unchanged path: an explicit --automerge on THIS invocation
+# still grants BOTH vars, dotenv opt-in or not.
+HO_3118E=$(make_handover "$WORK_REPO")
+out=$(env -u ARMAUTOMERGE SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_3118E" --dry-run --automerge 2>&1)
+rc=$?
+assert_rc "3118e explicit --automerge still arms (rc=0)" 0 "$rc"
+assert_contains "3118e resolved state: automerge=1, merge_gate_bypass=1, flag source" "automerge=1 merge_gate_bypass=1 (source: --automerge flag)" "$out"
+assert_contains "3118e launch text carries BOTH grants from the explicit flag" "ARMAUTOMERGE=1 CR_MERGE_GATE_OK=1" "$out"
+
+# (f) ambient-env-leak fix: an ambient ARMAUTOMERGE exported into THIS shell
+# (e.g. an operator shell, or a parent armed session's own env) must NOT
+# affect resolution -- only the on-disk .env value matters once --automerge
+# was not passed. Ambient ARMAUTOMERGE=0 must not suppress a truthy .env
+# default -- pre-fix, load_dotenv's non-clobber contract let this ambient
+# value win over the file read, contradicting the code's own comment that an
+# ambient value is irrelevant here.
+HO_3118F=$(make_handover "$WORK_REPO")
+out=$(ARMAUTOMERGE=0 SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_3118F" --dry-run 2>&1)
+rc=$?
+assert_rc "3118f ambient ARMAUTOMERGE=0 + dotenv default still arms (rc=0)" 0 "$rc"
+assert_contains "3118f ambient value is ignored -- resolution reads the .env file, not the process env" "automerge=1 merge_gate_bypass=0 (source: dotenv default (ARMAUTOMERGE=1 in .env))" "$out"
+
+# (g) same assertion with the ambient var genuinely unset -- must resolve
+# IDENTICALLY to (f), proving a set-but-ignored ambient and a genuinely unset
+# ambient are no longer distinguishable outcomes.
+HO_3118G=$(make_handover "$WORK_REPO")
+out=$(env -u ARMAUTOMERGE SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_3118G" --dry-run 2>&1)
+rc=$?
+assert_rc "3118g env -u ARMAUTOMERGE + dotenv default still arms (rc=0)" 0 "$rc"
+assert_contains "3118g unset ambient resolves the same as a set-but-ignored ambient (f)" "automerge=1 merge_gate_bypass=0 (source: dotenv default (ARMAUTOMERGE=1 in .env))" "$out"
+
+# (h) CR round 1 finding: an exact platform-specific grant assertion for the
+# Windows .cmd shape. Unlike the POSIX cron/WSL/at launch bodies, which emit
+# the pair as one fused prefix string ("ARMAUTOMERGE=1 CR_MERGE_GATE_OK=1 "),
+# the Windows launcher emits them as SEPARATE `set` lines -- so (d)'s fused-
+# string assertion never exercises this launcher and would miss a regression
+# that re-grants CR_MERGE_GATE_OK=1 here specifically. Same dotenv-default,
+# no-flags scenario as (d), forced through the Windows branch via win_env.
+HO_3118H=$(make_handover "$WORK_REPO")
+out=$(win_env "$WINBIN" env -u ARMAUTOMERGE \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_3118H" --dry-run 2>&1)
+rc=$?
+assert_rc "3118h dotenv default alone still arms on Windows (rc=0)" 0 "$rc"
+assert_contains "3118h Windows .cmd carries set \"ARMAUTOMERGE=1\" from the dotenv default" 'set "ARMAUTOMERGE=1"' "$out"
+assert_not_contains "3118h Windows .cmd does NOT carry set \"CR_MERGE_GATE_OK=1\" from a bare dotenv default" 'set "CR_MERGE_GATE_OK=1"' "$out"
+
+# Restore the shield dir to its EMPTY default for any later section.
+rm -f "$ARM_RESUME_DOTENV_ROOT/.env"
+fi
+
+# ---------------------------------------------------------------------------
 # HIMMEL-1329 — ticket-level mutex: the SAME ticket armed twice via TWO
 # DIFFERENT handover files must be refused, even though each handover's own
 # derived TASK_NAME differs (so the per-handover dedup above, rc 3, never
@@ -4451,6 +4609,8 @@ assert_rc "1330 ARM_VAULT_CWD_OK=1 overrides the vault refusal" 0 "$rc"
 # scheduler, which is what "a fresh box" meant back when /create registered
 # nothing.
 : > "$TMP/armed-stub.tasks"
+# The Linux scheduler stores jobs separately from the Windows task list.
+rm -f "$TMP/armed-stub.atdir"/job-*
 out=$(GH_CMD=/nonexistent/gh TMPDIR="$TMP" SCHTASKS_CMD="$ARMED_STUB/schtasks" PATH="$ARMED_STUB:$PATH" \
     bash "$ARM" --time "$(future_time)" --handover "$HO_1330" --cwd "$WORK_REPO" 2>&1)
 rc=$?
@@ -4559,7 +4719,7 @@ EOF
 chmod +x "$FAST1337/schtasks" "$FAST1337/powershell"
 
 HO_1337=$(make_handover "$WORK_REPO")
-out=$(env -u SCHTASKS_CMD PATH="$FAST1337:$PATH" OSTYPE=msys \
+out=$(env -u SCHTASKS_CMD PATH="$FAST1337:$WINBIN:$PATH" OSTYPE=msys \
     bash "$ARM" --time "$(future_time)" --handover "$HO_1337" --dedup-any --dry-run 2>&1)
 rc=$?
 assert_rc "1337 dedup-any dry-run sees the powershell-sourced job (rc=3)" 3 "$rc"
@@ -4574,7 +4734,7 @@ fi
 # Regression: with SCHTASKS_CMD explicitly pinned (the pattern every OTHER
 # test in this suite uses), the fast path must NOT intercept — the schtasks
 # stub's own CSV is what gets read, byte-identical to pre-1337 behavior.
-out=$(SCHTASKS_CMD="$FAST1337/schtasks" PATH="$FAST1337:$PATH" OSTYPE=msys \
+out=$(SCHTASKS_CMD="$FAST1337/schtasks" PATH="$FAST1337:$WINBIN:$PATH" OSTYPE=msys \
     bash "$ARM" --time "$(future_time)" --handover "$(make_handover "$WORK_REPO")" --dedup-any --dry-run 2>&1)
 rc=$?
 assert_rc "1337 pinned SCHTASKS_CMD arms cleanly (its stub CSV is empty)" 0 "$rc"
@@ -4791,7 +4951,7 @@ if _sec_selected "T1287"; then
 HOSTILE_DIR="$TMP/hostile-cwd-$RANDOM/some&dir^100%"
 mkdir -p "$HOSTILE_DIR"
 HO=$(make_handover "$WORK_REPO")
-out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+out=$(win_env "$SCHED_STUB_T17" \
     bash "$ARM" --time "$(future_time)" --handover "$HO" --cwd "$HOSTILE_DIR" --force --dry-run 2>&1)
 rc=$?
 assert_rc "T1287a hostile --cwd dry-run exits 0" 0 "$rc"
@@ -4804,7 +4964,7 @@ assert_not_contains "T1287a no caret doubled for literal ^" '^^100' "$out"
 # carrying the same Windows-legal hostile subset exercises the prompt escape.
 HOSTILE_HO="$HANDOVER_DIR/note&caret^100%.md"
 printf -- '---\nsession_kind: test\n---\n# hostile prompt handover\n' > "$HOSTILE_HO"
-out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+out=$(win_env "$SCHED_STUB_T17" \
     bash "$ARM" --time "$(future_time)" --handover "$HOSTILE_HO" --cwd "$WORK_REPO" --force --dry-run 2>&1)
 rc=$?
 assert_rc "T1287b hostile prompt dry-run exits 0" 0 "$rc"
@@ -4818,7 +4978,7 @@ assert_not_contains "T1287b no caret doubled for literal ^" '^^100' "$out"
 # ARM_BRIDGE_LIVE=0 is the existing test seam that keeps the unrelated
 # live-Telegram-bridge refusal (HIMMEL-225) out of the way.
 HO=$(make_handover "$WORK_REPO")
-out=$(ARM_BRIDGE_LIVE=0 SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+out=$(ARM_BRIDGE_LIVE=0 win_env "$SCHED_STUB_T17" \
     bash "$ARM" --time "$(future_time)" --handover "$HO" --channels 'a%b&c^d<e>f|g' --force --dry-run 2>&1)
 rc=$?
 assert_rc "T1287c hostile --channels dry-run exits 0" 0 "$rc"
@@ -4871,7 +5031,7 @@ fi
 
 # The built artifact: a Windows dry-run .bat must carry the full prompt —
 # trigger phrase AND pointer clause — as ONE line.
-out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+out=$(win_env "$SCHED_STUB_T17" \
     bash "$ARM" --time "$(future_time)" --handover "$HO" --cwd "$WORK_REPO" --force --dry-run 2>&1)
 rc=$?
 assert_rc "1719d pointer-clause dry-run exits 0" 0 "$rc"
@@ -5627,6 +5787,7 @@ assert_contains "812 win: the .bat CLEARS an ambient mark first" 'set "AUTO_ARM_
 
 # macOS/crontab: one line, so the mark is an export ahead of the launch body.
 MACBIN_812="$TMP/macbin-812"; mkdir -p "$MACBIN_812"
+printf '#!/bin/sh\nexit 0\n' > "$MACBIN_812/claude"; chmod +x "$MACBIN_812/claude"   # HIMMEL-3074
 CRON_STORE_812="$TMP/cron-812.store"; : > "$CRON_STORE_812"
 printf '#!/bin/sh\nexit 1\n' > "$MACBIN_812/at"; chmod +x "$MACBIN_812/at"
 printf '#!/bin/sh\nexit 0\n' > "$MACBIN_812/atq"; chmod +x "$MACBIN_812/atq"
@@ -5712,6 +5873,7 @@ assert_contains "1636 at: that refusal is the ticket mutex" "$_1636_WARN" "$out"
 
 # --- crontab backend (macOS): list_existing returns the whole LINE ----------
 MACBIN_1636="$TMP/macbin-1636"; mkdir -p "$MACBIN_1636"
+printf '#!/bin/sh\nexit 0\n' > "$MACBIN_1636/claude"; chmod +x "$MACBIN_1636/claude"   # HIMMEL-3074
 CRON_STORE_1636="$TMP/cron-1636.store"; : > "$CRON_STORE_1636"
 # at/atq must never be reached on macOS (arm-resume picks crontab there); a
 # loud-failing `at` proves it, exactly as the macOS section's stub does.
@@ -5746,8 +5908,9 @@ fi
 # HIMMEL-2192 — optional --model passthrough into the relaunch payload.
 #   Present -> flows into the generated .bat as `--model "<name>"`, right
 #   after the prompt/--channels, mirroring the --channels passthrough shape
-#   (T12/T13 above). Absent -> no --model token anywhere in the output, i.e.
-#   byte-identical to the pre-2192 launch line (operator default model).
+#   (T12/T13 above). Absent -> ruling 30 (HIMMEL-2332) defaults a non-console
+#   arm to `--model "opus"`; a *-console.md handover is exempt (ruling 25,
+#   operator default) and stays free of any --model token.
 # ---------------------------------------------------------------------------
 if _sec_selected "2192" "HIMMEL-2192"; then
 HO_2192=$(make_handover "$WORK_REPO")
@@ -5759,15 +5922,29 @@ assert_contains "2192 --model flows into the .bat payload" '--model "opus"' "$ou
 out=$(win_env "$SCHED_STUB_T17" bash "$ARM" --time "$(future_time)" --handover "$HO_2192" --force --dry-run 2>&1)
 rc=$?
 assert_rc "2192 no-flag dry-run exits 0" 0 "$rc"
-assert_not_contains "2192 no --model token when the flag is omitted" "--model" "$out"
+assert_contains "2192 no --model given defaults a non-console arm to opus (ruling 30)" '--model "opus"' "$out"
+assert_contains "2192 no --model given names ruling 30 in the reason" "non-console arms default to opus -- ruling 30" "$out"
+
+HO_2192_CONSOLE="${HO_2192%.md}-console.md"
+cp -- "$HO_2192" "$HO_2192_CONSOLE"
+out=$(win_env "$SCHED_STUB_T17" bash "$ARM" --time "$(future_time)" --handover "$HO_2192_CONSOLE" --force --dry-run 2>&1)
+rc=$?
+assert_rc "2192 no-flag console-named dry-run exits 0" 0 "$rc"
+assert_not_contains "2192 no --model token for a console-named handover (ruling 25)" "--model" "$out"
 
 # CR round 2 finding: crontab treats an unescaped % as end-of-command +
-# stdin even inside %q-quoting, so a MODEL containing % must be \%-escaped
-# in the emitted crontab entry. Forced through the crontab backend the same
-# way the "macOS backend" section above does (OSTYPE=darwin23 + a stub
-# crontab binary) -- a proven pattern in this suite for deterministic
+# stdin even inside %q-quoting, so a MODEL containing % needed \%-escaping
+# in the (pre-HIMMEL-3074) inline crontab entry. Since the runner-file
+# redesign (fold of Goomal's fix/arm-resume-macos-cron), --model lives in the
+# generated runner FILE body, parsed by /bin/sh (not crontab) -- so it is now
+# left BARE, and the \%-escape scope narrows to q_runner alone (the runner
+# PATH, the one value still on the crontab line itself; see the
+# ARM_RUNNER_DIR case at the end of this section). Forced through the crontab
+# backend the same way the "macOS backend" section above does (OSTYPE=darwin23
+# + a stub crontab binary) -- a proven pattern in this suite for deterministic
 # crontab coverage.
 CRONBIN2192="$TMP/cronbin2192"; mkdir -p "$CRONBIN2192"
+printf '#!/bin/sh\nexit 0\n' > "$CRONBIN2192/claude"; chmod +x "$CRONBIN2192/claude"   # HIMMEL-3074
 CRON_STORE_2192="$TMP/cron2192.store"; : > "$CRON_STORE_2192"
 cat > "$CRONBIN2192/crontab" <<CRONEOF
 #!/bin/sh
@@ -5779,10 +5956,17 @@ esac
 CRONEOF
 chmod +x "$CRONBIN2192/crontab"
 HO_2192_PCT=$(make_handover "$WORK_REPO")
-out=$(env PATH="$CRONBIN2192:$PATH" OSTYPE="darwin23" bash "$ARM" --time "$(future_time)" --handover "$HO_2192_PCT" --model 'a%b' --dry-run 2>&1)
+out=$(env PATH="$CRONBIN2192:$PATH" OSTYPE="darwin23" ARM_RUNNER_DIR="$TMP/runners2192" bash "$ARM" --time "$(future_time)" --handover "$HO_2192_PCT" --model 'a%b' --dry-run 2>&1)
 rc=$?
 assert_rc "2192 crontab --model with percent dry-run exits 0" 0 "$rc"
-assert_contains "2192 crontab entry escapes percent in --model" '--model a\%b' "$out"
+assert_contains "2192 runner preview leaves percent BARE in --model (parsed by /bin/sh, not crontab)" '--model a%b' "$out"
+assert_not_contains "2192 RED CONTROL -- --model is not \\%-escaped (that scope narrowed to q_runner)" '--model a\%b' "$out"
+# ARM_RUNNER_DIR is the ONE value left on the crontab line itself (the
+# runner's own path) -- it still needs the \%-escape crontab requires.
+out=$(env PATH="$CRONBIN2192:$PATH" OSTYPE="darwin23" ARM_RUNNER_DIR="$TMP/run%ners2192" bash "$ARM" --time "$(future_time)" --handover "$HO_2192_PCT" --dry-run 2>&1)
+rc=$?
+assert_rc "2192 crontab entry with a %-bearing ARM_RUNNER_DIR dry-run exits 0" 0 "$rc"
+assert_contains "2192 crontab entry escapes percent in the runner path (still crontab-parsed)" 'run\%ners2192/HIMMEL-Resume-' "$out"
 
 # Value-less --model must ERROR, not consume the next option as the model
 # name (CR finding codex-1: `--model --dry-run` would otherwise swallow
@@ -5838,9 +6022,14 @@ fi
 # + a stub crontab); RESUME_PROMPT always embeds the handover PATH verbatim
 # ("load $HANDOVER_PATH overnight mode. ..."), so a %-bearing handover path is
 # the natural vector for q_prompt specifically.
+# Since the runner-file redesign (fold of Goomal's fix/arm-resume-macos-cron),
+# q_prompt/q_channels/q_cwd all moved into the runner FILE body (/bin/sh
+# parsed, not crontab), so these assertions now check for BARE % there --
+# same \%-escape-scope-narrowing rationale as 2192 above.
 # ---------------------------------------------------------------------------
 if _sec_selected "2199" "HIMMEL-2199"; then
 CRONBIN2199="$TMP/cronbin2199"; mkdir -p "$CRONBIN2199"
+printf '#!/bin/sh\nexit 0\n' > "$CRONBIN2199/claude"; chmod +x "$CRONBIN2199/claude"   # HIMMEL-3074
 CRON_STORE_2199="$TMP/cron2199.store"; : > "$CRON_STORE_2199"
 cat > "$CRONBIN2199/crontab" <<CRONEOF
 #!/bin/sh
@@ -5861,15 +6050,17 @@ HO_2199_PCT="$HANDOVER_DIR/handover-100%.md"
     printf '# Test handover\n'
 } > "$HO_2199_PCT"
 
-out=$(env PATH="$CRONBIN2199:$PATH" OSTYPE="darwin23" bash "$ARM" --time "$(future_time)" --handover "$HO_2199_PCT" --channels 'a%b' --long-gap --dry-run 2>&1)
+out=$(env ARM_BRIDGE_LIVE=0 PATH="$CRONBIN2199:$PATH" OSTYPE="darwin23" ARM_RUNNER_DIR="$TMP/runners2199" bash "$ARM" --time "$(future_time)" --handover "$HO_2199_PCT" --channels 'a%b' --long-gap --dry-run 2>&1)
 rc=$?
 assert_rc "2199 crontab %-in-prompt/channels dry-run exits 0" 0 "$rc"
-# Content AFTER the escaped % in each field proves the entry was not
-# truncated there -- a bare (unescaped) % would have dropped everything
-# past it when crontab actually parsed the real entry.
-assert_contains "2199 crontab entry escapes percent in the prompt (from the %-bearing handover path)" 'handover-100\%.md\ overnight\ mode' "$out"
-assert_contains "2199 crontab entry escapes percent in --channels" '--channels a\%b' "$out"
-assert_contains "2199 crontab entry's trailing marker survives past both escapes (nothing truncated)" '# HIMMEL-Resume-handover-100' "$out"
+# Content AFTER the % in each field proves nothing truncated there -- these
+# fields are /bin/sh-parsed runner-file content now (not the crontab line),
+# so % is correctly left BARE; a truncation would still drop the tail.
+assert_contains "2199 runner preview leaves percent BARE in the prompt (from the %-bearing handover path)" 'handover-100%.md\ overnight\ mode' "$out"
+assert_contains "2199 runner preview leaves percent BARE in --channels" '--channels a%b' "$out"
+assert_not_contains "2199 RED CONTROL -- prompt/channels are not \\%-escaped (that scope narrowed to q_runner)" 'handover-100\%.md\ overnight\ mode' "$out"
+assert_not_contains "2199 RED CONTROL -- --channels is not \\%-escaped" '--channels a\%b' "$out"
+assert_contains "2199 crontab entry's trailing marker survives past both (nothing truncated)" '# HIMMEL-Resume-handover-100' "$out"
 
 # CR round on this ticket (critic-panel [codex-1]): q_cwd sits in the SAME
 # crontab entry (`cd $q_cwd && ...`) as q_prompt/q_channels but was missed by
@@ -5877,10 +6068,11 @@ assert_contains "2199 crontab entry's trailing marker survives past both escapes
 # directory) truncates the entry exactly the same way.
 CWD_PCT="$TMP/work%repo"; mkdir -p "$CWD_PCT"
 HO_2199_CWD=$(make_handover "$CWD_PCT")
-out=$(env PATH="$CRONBIN2199:$PATH" OSTYPE="darwin23" bash "$ARM" --time "$(future_time)" --handover "$HO_2199_CWD" --long-gap --dry-run 2>&1)
+out=$(env PATH="$CRONBIN2199:$PATH" OSTYPE="darwin23" ARM_RUNNER_DIR="$TMP/runners2199cwd" bash "$ARM" --time "$(future_time)" --handover "$HO_2199_CWD" --long-gap --dry-run 2>&1)
 rc=$?
 assert_rc "2199 crontab %-in-cwd dry-run exits 0" 0 "$rc"
-assert_contains "2199 crontab entry escapes percent in cwd" 'work\%repo && unset' "$out"
+assert_contains "2199 runner preview leaves percent BARE in cwd" 'work%repo && unset' "$out"
+assert_not_contains "2199 RED CONTROL -- cwd is not \\%-escaped" 'work\%repo && unset' "$out"
 fi
 
 # ---------------------------------------------------------------------------
@@ -5968,6 +6160,10 @@ fi
 #   leaking the arming session's id.
 # ---------------------------------------------------------------------------
 if _sec_selected "2545" "HIMMEL-2545"; then
+# These payload previews use --dedup-any, so earlier real-arm fixtures must
+# not leave either backend's shared scheduler populated (HIMMEL-2968).
+: > "$TMP/sched-stub-t17.tasks"
+rm -f "$TMP/sched-stub-t17.atdir"/job-*
 _2545_UNSET='unset ARMAUTOMERGE CR_MERGE_GATE_OK ARM_RESUME_SAFETY_ARM CLAUDE_CODE_CHILD_SESSION CLAUDE_PID CLAUDE_CODE_SESSION_ID'
 _2545_EXPORT='export CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1'
 
@@ -5997,6 +6193,7 @@ assert_not_contains "2545a body never grants CLAUDE_CODE_CHILD_SESSION=1" "CLAUD
 # binary), because a one-line entry could easily have been patched only on
 # the multi-line POSIX twin.
 CRONBIN2545="$TMP/cronbin2545"; mkdir -p "$CRONBIN2545"
+printf '#!/bin/sh\nexit 0\n' > "$CRONBIN2545/claude"; chmod +x "$CRONBIN2545/claude"   # HIMMEL-3074
 CRON_STORE_2545="$TMP/cron2545.store"; : > "$CRON_STORE_2545"
 cat > "$CRONBIN2545/crontab" <<CRONEOF
 #!/bin/sh

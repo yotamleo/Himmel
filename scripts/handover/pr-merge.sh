@@ -226,6 +226,92 @@ if [ "$forge" = "github" ]; then
     fi
 fi
 
+# HIMMEL-374: best-effort Jira auto-transition on merge — same structural fix
+# as merge-on-green.sh's jira_auto_transition_on_merge (duplicated rather than
+# shared: the two scripts already have no common helper file, and this is a
+# handful of lines). Never fails the merge: every step degrades to a skip/
+# failed message on stderr, never a non-zero return. GitHub-only, matching
+# this script's other title/gh-dependent steps above — reads the ticket key
+# from the PR title's `[PROJ-N]` tag and the target status from
+# reconcile-config.json, so this and reconcile-backlog.mjs share one source
+# of truth for "what status does a closed ticket move to" per project.
+jira_auto_transition_on_merge() {
+    [ "$forge" = "github" ] || return 0
+    local pr="$1" title key project config_path target_status comment_tmp transition_out transition_rc=0
+    local jira_common jira_repo_root issue_type_json issue_type comment_rc=0
+
+    title=$("${GH_CMD:-gh}" pr view "$pr" --json title -q .title 2>/dev/null) || return 0
+    key=$(printf '%s' "$title" | grep -oE '\[[A-Za-z]+-[0-9]+\]' | head -1 | tr -d '[]') || true
+    [ -n "$key" ] || return 0
+
+    # Resolve the PRIMARY checkout, not this process's own (possibly-worktree)
+    # toplevel: scripts/jira/dist/ is an untracked build artifact that only
+    # exists there (project convention — see scripts/jira/CLAUDE.md).
+    jira_common=$(git rev-parse --git-common-dir 2>/dev/null) || return 0
+    jira_repo_root=$(cd "$(dirname "$jira_common")" 2>/dev/null && pwd) || return 0
+
+    [ -f "$jira_repo_root/scripts/jira/dist/index.js" ] || {
+        echo "pr-merge: PR #$pr merged but Jira CLI is not built — not auto-transitioning $key." >&2
+        return 0
+    }
+
+    project="${key%-*}"
+    config_path="$jira_repo_root/scripts/jira/reconcile-config.json"
+    [ -f "$config_path" ] || return 0
+    target_status=$(node -e '
+        try {
+            const c = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+            const t = c[process.argv[2]] && c[process.argv[2]].targetStatus;
+            if (t) process.stdout.write(t);
+        } catch {}
+    ' "$config_path" "$project" 2>/dev/null)
+    [ -n "$target_status" ] || return 0
+
+    # Never touch Epic/Story (standing project invariant — reconcile-lib.mjs's
+    # own classifyTicket enforces this for the batch reconciler; this
+    # merge-time hook has no classifyTicket call in its path, so it must
+    # check independently). Fails safe: an unreadable/undetermined type
+    # skips the transition rather than risking one on an Epic or Story.
+    issue_type_json=$(cd "$jira_repo_root" && node scripts/jira/dist/index.js get "$key" --json 2>/dev/null)
+    issue_type=$(printf '%s' "$issue_type_json" | node -e '
+        try {
+            const d = JSON.parse(require("fs").readFileSync(0, "utf8"));
+            const t = d.fields && d.fields.issuetype && d.fields.issuetype.name;
+            if (t) process.stdout.write(t);
+        } catch {}
+    ' 2>/dev/null)
+    case "$issue_type" in
+        Epic|Story)
+            echo "pr-merge: PR #$pr merged but $key is a $issue_type — never auto-transitioning." >&2
+            return 0
+            ;;
+        "")
+            echo "pr-merge: PR #$pr merged but $key's issue type could not be verified — not auto-transitioning." >&2
+            return 0
+            ;;
+    esac
+
+    comment_tmp=$(mktemp "${TMPDIR:-/tmp}/pr-merge-jira-comment.XXXXXX") || return 0
+    printf 'PR #%s merged. scripts/handover/pr-merge.sh is attempting to auto-transition this ticket to '"'"'%s'"'"'.\n' \
+        "$pr" "$target_status" >"$comment_tmp"
+    ( cd "$jira_repo_root" && node scripts/jira/dist/index.js comment "$key" --comment-file "$comment_tmp" ) \
+        >/dev/null 2>&1 || comment_rc=$?
+    rm -f "$comment_tmp"
+    # A failed comment means no evidence breadcrumb would exist on the
+    # ticket — skip the transition rather than close it silently.
+    if [ "$comment_rc" -ne 0 ]; then
+        echo "pr-merge: PR #$pr merged but the Jira evidence comment on $key failed (rc=$comment_rc) — not auto-transitioning." >&2
+        return 0
+    fi
+
+    transition_out=$(cd "$jira_repo_root" && node scripts/jira/dist/index.js transition "$key" "$target_status" 2>&1) \
+        || transition_rc=$?
+    if [ "$transition_rc" -ne 0 ]; then
+        echo "pr-merge: PR #$pr merged but Jira transition of $key to '$target_status' failed (rc=$transition_rc): ${transition_out//$'\n'/ }" >&2
+    fi
+    return 0
+}
+
 # Squash-merge via the forge seam. The github backend does a PLAIN squash first
 # and escalates to --admin only when GH_ADMIN_MERGE_OK=1 (HIMMEL-224); it also
 # absorbs the cosmetic worktree-held branch-delete error. The bitbucket backend
@@ -234,6 +320,7 @@ fi
 merge_rc=0
 forge_pr_merge "$pr_num" "$vetted_head" || merge_rc=$?
 if [ "$merge_rc" -eq 0 ]; then
+    jira_auto_transition_on_merge "$pr_num"
     exit 0
 fi
 

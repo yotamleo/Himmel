@@ -226,6 +226,40 @@ out=$(FAKE_GH_PR_JSON='[]' run_script --since "$MARKER" --out "$OUT4")
 file=$(cat "$OUT4")
 assert_contains "empty PR fallback" "No merged PRs found" "$file"
 
+# Test 5b: gh search qualifier is inclusive of today (HIMMEL-3016) ----
+# The FAKE_GH stub (above) does not itself filter by the qualifier's value —
+# it only branches on whether --search is present — so this test captures
+# the exact argv sent to gh and asserts the qualifier string, independent
+# of test 1's coincidental fixture date.
+
+echo "TEST: gh search qualifier is merged:>=DATE, not merged:>DATE"
+FAKE_GH_CAPTURE="$TMP_ROOT/gh-capture.sh"
+cat >"$FAKE_GH_CAPTURE" <<'FAKE'
+#!/usr/bin/env bash
+case "$1 $2" in
+    "pr list")
+        if printf '%s ' "$@" | grep -q -- '--search'; then
+            printf '%s\n' "$@" > "$GH_ARGV_CAPTURE"
+            printf '%s\n' "${FAKE_GH_PR_JSON:-[]}"
+        else
+            printf '%s\n' "${FAKE_GH_PR_ALL:-[]}"
+        fi
+        ;;
+esac
+exit 0
+FAKE
+chmod +x "$FAKE_GH_CAPTURE"
+TODAY=$(date +%F)
+CAPTURE="$TMP_ROOT/gh-argv-capture.txt"
+OUT_SEARCH="$TMP_ROOT/out-search.md"
+out=$( cd "$REPO"; GH_CMD="$FAKE_GH_CAPTURE" JIRA_CMD="$FAKE_JIRA" GH_ARGV_CAPTURE="$CAPTURE" \
+    FAKE_GH_PR_JSON='[]' bash "$SCRIPT" --since "$MARKER" --out "$OUT_SEARCH" )
+if [ -f "$CAPTURE" ] && grep -q -- "merged:>=$TODAY" "$CAPTURE"; then
+    pass "search qualifier merged:>=\$today"
+else
+    fail "search qualifier merged:>=\$today" "captured: $(cat "$CAPTURE" 2>/dev/null || echo '<none>')"
+fi
+
 # Test 6: jira unavailable -------------------------------------------
 
 echo "TEST: jira unavailable yields ticket-keys-only fallback"

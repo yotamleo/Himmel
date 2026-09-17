@@ -97,7 +97,7 @@
       "tracked_repo": "kevinmkchin/Obsidian-GitHub-Sync",
       "synced_base": "1.0.7",
       "tier": "A",
-      "note": "Bundled third-party asset at templates/luna-second-brain/.obsidian/plugins/github-sync. synced_base must match manifest.json version. No version_pin: updates require a reviewed re-vendor; data.json stays a credential-free template fixture."
+      "note": "Bundled third-party asset at templates/luna-second-brain/optional/plugins/github-sync (HIMMEL-3066: out of the template default — it races vault-autosync.ps1/.sh's own commits, so upgrade.sh installs it only opt-in or when a vault already has it). synced_base must match manifest.json version. No version_pin: updates require a reviewed re-vendor; data.json stays a credential-free template fixture."
     },
     {
       "name": "luna-obsidian-banners",
@@ -131,7 +131,7 @@
       "kind": "tag_release",
       "mode": "base",
       "tracked_repo": "Graphify-Labs/graphify",
-      "synced_base": "0.9.58",
+      "synced_base": "0.9.61",
       "latest_source": "release",
       "version_pin": { "file": "scripts/lib/graphify-bin.sh", "template": "GRAPHIFY_VERSION:-{version}" },
       "tier": "A",
@@ -142,10 +142,10 @@
       "kind": "tag_release",
       "mode": "base",
       "tracked_repo": "router-for-me/CLIProxyAPI",
-      "synced_base": "7.2.158",
+      "synced_base": "7.3.3",
       "version_pin": { "file": "scripts/setup/cli-proxy-lane.ps1", "template": "$Version = '{version}'" },
       "tier": "A",
-      "note": "CLIProxyAPI codex-lane proxy (HOST process on 127.0.0.1:8317; installed + run by scripts/setup/cli-proxy-lane.ps1). Added to the nightly drift machinery (HIMMEL-1451) so a new upstream release SURFACES as a drift finding instead of needing manual surgery: v7.2.77 threw ~3-min bursts of instant upstream 502s every ~25 min that killed codex-adv renders (Claude Code retries 502s but the companion's render turn does not), and the validated fix was a manual swap to v7.2.113 -- both legs completed clean that night. AUTO-BUMP policy is deliberately SURFACE-ONLY and matches the existing rows' conservatism: apply-drift-bump.sh moves the in-repo pin literal ($Version in cli-proxy-lane.ps1) and synced_base TOGETHER; the drift leg lands that as a PR. Since HIMMEL-2134 (#1928), himmel-update.sh's advisory sync_cli_proxy step DOES roll the host itself, machine-local and pin-aware: every run compares the host's live version stamp to this pin and, when genuinely behind, runs cli-proxy-lane.ps1 -Install -Restart -- never downgrades and never guesses on an uncomparable stamp (rc 1/2 both leave the host alone), and the lane's own Assert-BounceSafe refuses to bounce a live codex-lane render rather than kill it. -Force is the override for the refused-bounce case specifically (it bypasses Assert-BounceSafe only); no pwsh on PATH or an unparseable stamp instead want a plain manual -Install -Restart run on the host, or an immediate roll ahead of the next update. Default tag-mode (highest stable tag, prereleases excluded -- CLIProxyAPI tags are monotonic, so no latest_source override is needed); synced_base lacks the leading 'v' but the guard normalizes both sides before comparing (v7.2.115 tag == 7.2.115 base). tracked_repo is the TRUE upstream (router-for-me/CLIProxyAPI)."
+      "note": "CLIProxyAPI codex-lane proxy (HOST process on 127.0.0.1:8317; installed + run by scripts/setup/cli-proxy-lane.ps1). Added to the nightly drift machinery (HIMMEL-1451) so a new upstream release SURFACES as a drift finding instead of needing manual surgery: v7.2.77 threw ~3-min bursts of instant upstream 502s every ~25 min that killed codex-adv renders (Claude Code retries 502s but the companion's render turn does not), and the validated fix was a manual swap to v7.2.113 -- both legs completed clean that night. AUTO-BUMP policy is deliberately SURFACE-ONLY and matches the existing rows' conservatism: apply-drift-bump.sh moves the in-repo pin literal ($Version in cli-proxy-lane.ps1) and synced_base TOGETHER; the drift leg lands that as a PR. The Linux twin's VERSION + ASSET_SHA256 are bumped by hand alongside the .ps1, enforced by the parity test. Since HIMMEL-2134 (#1928), himmel-update.sh's advisory sync_cli_proxy step DOES roll the host itself, machine-local and pin-aware: every run compares the host's live version stamp to this pin and, when genuinely behind, runs cli-proxy-lane.ps1 -Install -Restart -- never downgrades and never guesses on an uncomparable stamp (rc 1/2 both leave the host alone), and the lane's own Assert-BounceSafe refuses to bounce a live codex-lane render rather than kill it. -Force is the override for the refused-bounce case specifically (it bypasses Assert-BounceSafe only); on Linux without pwsh, sync_cli_proxy runs cli-proxy-lane.sh --install then --restart (assert_bounce_safe refuses a live bounce; --force is the override). A pwsh-less non-Linux host or an unparseable stamp still needs a manual roll, as does an immediate roll ahead of the next update. Default tag-mode (highest stable tag, prereleases excluded -- CLIProxyAPI tags are monotonic, so no latest_source override is needed); synced_base lacks the leading 'v' but the guard normalizes both sides before comparing (v7.2.115 tag == 7.2.115 base). tracked_repo is the TRUE upstream (router-for-me/CLIProxyAPI)."
     },
     {
       "name": "qmd",
@@ -154,15 +154,25 @@
       "tracked_repo": "tobi/qmd",
       "synced_base": "2.8.3",
       "tier": "B",
-      "fork": {
-        "fork_repo": "https://github.com/yotamleo/qmd.git",
-        "upstream_repo": "https://github.com/tobi/qmd.git",
-        "pin_file": "scripts/lib/qmd-bin.sh",
-        "pin_template": "QMD_FORK_REF:-{sha}",
-        "work_dir": "${HOME}/.himmel/fork-resync",
-        "note": "Drives scripts/upstreams/resync-fork.sh — the REAL repair for this entry, and the reason it deliberately has no `version_pin` (HIMMEL-1323). When upstream tags past synced_base, the honest fix is to rebase the fork's additive delta onto the new upstream base, confirm it is still strictly additive, push the rebased fork, and only THEN move both the SHA pin and synced_base. Bumping synced_base alone would claim a base the fork never rebased onto. Scratch clones only (work_dir, mirroring _qmd_fork_dir's $HOME/.himmel convention) — never the live $HOME/.himmel/qmd-fork install. Nothing is pushed without --push, which itself refuses a conflicted or non-additive rebase. KNOWN GAP (HIMMEL-2136, 2026-08-26): the v2.8.3 resync moved this pin on a reviewed but NON-additive delta (two genuine bugfixes against existing upstream files — no fork ever carries a real patch and stays all-new-files) via an explicit operator override outside this script; resync-fork.sh --push will keep refusing (rc=4) on the current delta until HIMMEL-1443's structured expected-delta policy ships, so a future nightly/automated run hitting rc=4 here is expected, not a regression."
-      },
-      "note": "SHA-pinned lib fork yotamleo/qmd (pin in scripts/lib/qmd-bin.sh; the additive-delta audit was previously the MANUAL step named in the header). tracked_repo is the TRUE upstream (tobi/qmd). synced_base = the upstream STABLE tag the fork's carried delta was rebased onto (HIMMEL-2136, fork-drift #518, 2026-08-26 resync onto v2.8.3 — fork branch himmel-main-v2.8.3). The kept delta is now a small, reviewed, NON-additive set of real bugfixes against existing upstream files (Windows index-name path normalization, a REST JSON.parse guard) — resync-fork.sh's strict all-new-files additive bar is unsatisfiable for any fork that carries a genuine patch; see HIMMEL-1443 for the structured expected-delta policy meant to replace that bar. Tier B (reactive) — expected to read BEHIND once upstream tags past 2.8.3, that IS the signal to re-audit the fork delta. Deliberately carries NO `version_pin`: the in-repo pin is the fork SHA `_qmd_fork_ref` in scripts/lib/qmd-bin.sh, not a version, so there is no literal to rewrite — the nightly drift-fix cadence reports it SKIP (manual) and leaves it alone. Auto-bumping synced_base here would mark the fork as carrying an upstream base it has not actually rebased onto, silencing the re-audit signal."
+      "note": "DE-FORKED from yotamleo/qmd in HIMMEL-3045: HIMMEL-2882 found upstream tobi/qmd had merged both of the fork's carried bugfixes (Windows index-name path normalization, a REST JSON.parse guard) under its own SHAs (2d5806fb, 4fde5662, re-authored by the fork maintainer directly against upstream), collapsing the fork's delta to EMPTY, so himmel now consumes tobi/qmd directly (the fork's history is archived as tags on yotamleo/qmd, not deleted). tracked_repo is the TRUE upstream (tobi/qmd). The in-repo pin is a full commit SHA (`_qmd_fork_ref` in scripts/lib/qmd-bin.sh), not a version, so this entry deliberately carries NO `version_pin` — there is no `{version}` literal for scripts/upstreams/apply-drift-bump.sh to rewrite; the nightly drift-fix cadence reports it SKIP (manual) and leaves it alone, unchanged by the de-fork. synced_base = the upstream STABLE tag the pin was last audited against (2.8.3, HIMMEL-2136 / fork-drift #518, 2026-08-26); the pin itself sits ahead of it on unreleased upstream main (`04e4dbd8245c527a88f1a8f0bda547aef9ca81fb`, HIMMEL-2882) — moving either the pin or synced_base past this is HIMMEL-3041's job (tobi/qmd#950, open), not a mechanical bump. Tier B (reactive) — next signal to re-audit is upstream main advancing past the pin."
+    },
+    {
+      "name": "superpowers-skills",
+      "kind": "tag_release",
+      "mode": "base",
+      "tracked_repo": "obra/superpowers",
+      "synced_base": "6.3.0",
+      "tier": "A",
+      "note": "11 of superpowers' 14 skill directories vendored verbatim at marketplace/plugins/lean-skills/skills (HIMMEL-3064): the four himmel invokes (brainstorming, writing-plans, systematic-debugging, verification-before-completion) plus the seven they hand off to, i.e. the `superpowers:<name>` reference closure — vendoring fewer leaves dangling cross-references. Deliberately NOT vendored: using-superpowers, receiving-code-review, dispatching-parallel-agents. Detection is release-level, not per-file: we carry whole DIRECTORIES (SKILL.md plus companion prompts and scripts), so a sha256 pin per file would cost ~36 gh calls a run and would still miss a companion file we had not enumerated — that is also why this plugin carries a VENDORED.md rather than a class-2 UPSTREAM_PIN, which parses only one triple per plugin. No `version_pin`, so scripts/upstreams/apply-drift-bump.sh reports SKIP (manual): repair is a reviewed re-copy of the 11 trees, and moving synced_base alone would launder the very signal this row raises (the qmd caveat). Tier A — these copies ARE himmel's context floor, so upstream fixes are worth adopting promptly."
+    },
+    {
+      "name": "mattpocock-skills",
+      "kind": "tag_release",
+      "mode": "base",
+      "tracked_repo": "mattpocock/skills",
+      "synced_base": "1.2.3",
+      "tier": "B",
+      "note": "ONE skill vendored verbatim at marketplace/plugins/lean-skills/skills/grilling (HIMMEL-3064); the plugin's other 10 exposed skills were invoked 0 times across 1628 local transcripts and are not carried. The upstream skill ships an agents/openai.yaml (Codex interface metadata) dropped here as harness-specific. grilling reaches himmel through inject-minerva-critic.sh's namespace-agnostic `*:grilling|grilling` matcher, which keeps routing the bare vendored name — that matcher is why de-plugining grilling needed no hook change. Tier B (reactive): one short prose skill, so BEHIND is a fine steady state; re-vendor when a release actually touches grilling/SKILL.md. No `version_pin` — same manual-repair discipline as the superpowers-skills row."
     }
   ]
 }

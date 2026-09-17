@@ -22,20 +22,20 @@ const HAIKU_SAMPLE = join(TEST_DIR, 'fixtures', 'bench-transcripts', 'haiku-samp
 const LUNA_SAMPLE = join(TEST_DIR, 'fixtures', 'bench-transcripts', 'luna-sample.jsonl');
 
 test('windowsDriveFormPath converts a Git-Bash POSIX mount path and passes through a native form', () => {
-  assert.equal(windowsDriveFormPath('/c/Users/ada/AppData/Local/Temp'), 'C:\\Users\\ada\\AppData\\Local\\Temp');
-  assert.equal(windowsDriveFormPath('C:\\Users\\ada'), 'C:\\Users\\ada'); // already native, no-op
+  assert.equal(windowsDriveFormPath('/c/Users/ada/AppData/Local/Temp'), 'C:\\Users\\ada\\AppData\\Local\\Temp');  // leak-allow: home-path fixture username, not a real path
+  assert.equal(windowsDriveFormPath('C:\\Users\\ada'), 'C:\\Users\\ada'); // already native, no-op  // leak-allow: home-path fixture username, not a real path
 });
 
 test('cwdToProjectSlug matches the empirically-verified real ~/.claude/projects encoding', () => {
   // Verified against a real directory on this machine (username neutralized,
   // HIMMEL-1730 — the transform is username-agnostic, only the literal changed):
-  // C:\Users\ada\AppData\Local\Temp -> C--Users-ada-AppData-Local-Temp
-  assert.equal(cwdToProjectSlug('/c/Users/ada/AppData/Local/Temp', 'win32'), 'C--Users-ada-AppData-Local-Temp');
-  assert.equal(cwdToProjectSlug('C:\\Users\\ada\\AppData\\Local\\Temp', 'win32'), 'C--Users-ada-AppData-Local-Temp');
+  // C:\Users\ada\AppData\Local\Temp -> C--Users-ada-AppData-Local-Temp  // leak-allow: home-path fixture username, not a real path
+  assert.equal(cwdToProjectSlug('/c/Users/ada/AppData/Local/Temp', 'win32'), 'C--Users-ada-AppData-Local-Temp');  // leak-allow: home-path fixture username, not a real path
+  assert.equal(cwdToProjectSlug('C:\\Users\\ada\\AppData\\Local\\Temp', 'win32'), 'C--Users-ada-AppData-Local-Temp');  // leak-allow: home-path fixture username, not a real path
 });
 
 test('cwdToProjectSlug is a no-op path-shape conversion off Windows', () => {
-  assert.equal(cwdToProjectSlug('/home/ada/project', 'linux'), 'home-ada-project');
+  assert.equal(cwdToProjectSlug('/home/ada/project', 'linux'), 'home-ada-project');  // leak-allow: home-path fixture username, not a real path
 });
 
 test('sumTranscriptUsage sums the committed synthetic sample fixtures correctly', () => {

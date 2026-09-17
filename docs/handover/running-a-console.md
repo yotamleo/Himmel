@@ -51,8 +51,14 @@ tried to acquire again would be refused by its own startup lock.)
 Finally it prints the launch line. Run it in a terminal of its own:
 
 ```text
-claude --model <model> --autocompact auto -n <session-name> "load <doc> and continue"
+claude --model <model> --autocompact 200000 -n <session-name> "load <doc> and continue"
 ```
+
+`--autocompact 200000` is the default (HIMMEL-2973 — the largest cache-read
+cost driver on the fleet was Fable consoles compacting only near the 1M
+window). Set `CONSOLE_CONTEXT=1m` in the launching shell before running
+`console new`/`next` to opt into the old `--autocompact auto` behavior; the
+printed launch line reflects whichever is resolved.
 
 A console wants a real TTY. A session launched without one exits at the first
 idle cross-session message.
@@ -69,6 +75,13 @@ status` that the lock is held, and acquiring one only if it reports `free` —
 and tells its predecessor it is live.
 
 ## Dispatching legs
+
+When drafting the brief's **Ship:** item, spell the attestation trailers'
+grammar rather than paraphrasing it: the token is the FIRST word after the
+colon — `Platforms tested: <os>`, `Security reviewed: manual — <what you
+checked>` (or `claude-code-security-review` / `pr-review-toolkit` / `ad-hoc`
+in place of `manual`) — a paraphrase the leg copies faithfully is how a
+non-conforming trailer reaches the pre-push gate (HIMMEL-2982).
 
 The console writes a brief from
 [`leg-brief-template.md`](leg-brief-template.md) and launches it headed:
@@ -138,6 +151,14 @@ threat model and the verbatim block:
 `READY <pr> <head> GREEN` → the console verifies independently (all check-runs
 green at that exact head, zero unresolved review threads, attestation trailers
 in the first commit) → `GO` → the leg merges and reports `MERGED #<n> → <sha>`.
+
+A PR on HIMMEL-2973/2976/2928/2974/2975 is READY only if its body cites
+`HIMMEL-2977 "GATE <previous lever> PASS <date>"` (for 2973:
+`P0 EXIT <date>` — this line carries no separate status word; its mere
+presence, verbatim, is the pass signal for 2973). Open HIMMEL-2977's comments
+and find that citation's line verbatim: a missing citation or a line not
+found is not READY; for the general `GATE ... <status> <date>` shape (every
+ticket except 2973), a found line whose status is not PASS is also not READY.
 The console pulls the primary and the leg closes out its ticket.
 The console sends GO by first running `bash scripts/handover/console-kit/go.sh
 <pr> <full head sha>` — the file IS the GO, the SendMessage is the
@@ -172,10 +193,13 @@ filled in.
 
 `next` writes the successor stub (letter bumped, pointed at this console and
 its HANDOFF) and the predecessor's `-HANDOFF.md` skeleton, and arms the
-successor on a signal file. Fill in the HANDOFF — head, what is in flight leg
-by leg with nonces and lock tokens, rulings made, the held queue in launch
-order, what wrapped — then `touch` the signal path that `next --arm` printed
-and hand your live legs over by name.
+successor on a signal file. The letter rolls past Z in bijective base-26 (Z →
+AA → AB → … → ZZ, then refuses) instead of ever refusing at Z; pass `--date
+<YYYY-MM-DD>` to pre-mint tomorrow's first console (`A`) immediately, near
+midnight, instead of waiting for the date to roll over. Fill in the HANDOFF —
+head, what is in flight leg by leg with nonces and lock tokens, rulings made,
+the held queue in launch order, what wrapped — then `touch` the signal path
+that `next --arm` printed and hand your live legs over by name.
 
 **Release your lock only after the successor reports `LIVE`.** That message is
 the only evidence the arm actually fired and the successor completed ACTION

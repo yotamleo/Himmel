@@ -161,6 +161,15 @@ well before the hours-scale TTL/aging thresholds fire. See
 [`environment-gotchas.md`](../internals/environment-gotchas.md) for the
 operator recovery.
 
+**A top-level armed session self-exits once its successor is armed
+(macOS/Linux; `HIMMEL_ARMED_RELAUNCH=1` marks it).** A session launched by
+`arm-resume.sh`'s crontab or `at` body carries `HIMMEL_ARMED_RELAUNCH=1` in
+its environment. When such a session's work is done and, if the plan calls
+for one, a successor is armed, it runs `kill -TERM "$CLAUDE_PID"` — SIGTERM
+runs SessionEnd hooks, so this is the clean shutdown path; never `kill -9`.
+This does not apply to a subagent (only the top-level session carries the
+grant), and Windows sessions are not covered.
+
 ## Suite evidence — scope the run, and never wait invisibly (HIMMEL-2215)
 
 **A leg opens its PR on the SCOPED suite covering its diff, and reports the

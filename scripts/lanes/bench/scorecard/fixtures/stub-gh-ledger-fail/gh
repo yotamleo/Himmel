@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Deterministic gh stub for test-ledger-metrics.sh's gh-failure check
+# (HIMMEL-2981): always fails, as a real `gh pr list` does with no `gh auth`.
+set -u
+case "$*" in
+    "pr list "*) echo "gh: not authenticated" >&2; exit 1 ;;
+    *) echo "gh: stub does not implement: $*" >&2; exit 1 ;;
+esac

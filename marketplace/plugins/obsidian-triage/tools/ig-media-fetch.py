@@ -50,6 +50,11 @@ DEFAULT_LIMIT = 10
 SLIDE_CAP = 20
 LONG_EDGE_MAX = 1600
 DEFAULT_WHISPER_MODEL = "base"
+# HIMMEL-3043: an audio stream at or below this mean_volume (ffmpeg
+# volumedetect) is near-digital-silence - soundless in every way that
+# matters, so it takes the same HIMMEL-786 screenshot fallback as a video
+# with no audio stream at all instead of a doomed transcription attempt.
+SILENCE_DB_THRESHOLD = -60.0
 DOWNLOAD_TIMEOUT = 180
 FFMPEG_TIMEOUT = int(os.environ.get("IG_MEDIA_FFMPEG_TIMEOUT", "300"))
 # HIMMEL-805: separate seam for the soundless-video frame-extract subprocess.
@@ -365,39 +370,52 @@ def extract_wav(video: Path, wav: Path) -> bool:
 
 def whisper_transcribe(wav: Path, model: str):
     """Run the sibling transcribe.py under `uv run --python 3.12` with
-    faster-whisper; return the stripped stdout transcript, or None on failure.
-    Resolve uv via shutil.which (same PATHEXT reason as extract_wav)."""
+    faster-whisper. Returns (text, status): status is "ok" (non-empty
+    transcript), "no_speech" (rc=0 but empty/whitespace-only stdout - the
+    audio decoded fine but whisper heard no speech; HIMMEL-3043: a PERMANENT
+    outcome, distinct from a retryable failure), or "error" (uv missing,
+    timeout, or the helper itself failed - always retryable). Resolve uv via
+    shutil.which (same PATHEXT reason as extract_wav)."""
     helper = Path(__file__).with_name("transcribe.py")
     uv = shutil.which("uv")
     if not uv:
-        return None
+        return None, "error"
     cmd = [uv, "run", "--python", "3.12", "--with", "faster-whisper",
            "python", str(helper), str(wav), model]
     try:
         p = subprocess.run(cmd, capture_output=True, text=True,
                            timeout=WHISPER_TIMEOUT)
     except subprocess.TimeoutExpired:
-        return None
+        return None, "error"
     if p.returncode != 0:
         _emit_stderr_tail("whisper", p.stderr)
-        return None
-    return p.stdout.strip() or None
+        return None, "error"
+    text = p.stdout.strip()
+    if not text:
+        return None, "no_speech"
+    return text, "ok"
 
 
-def _has_audio_stream(video: Path) -> bool:
-    """True if the video carries an audio stream (probe: decode one audio
-    frame via -map 0:a:0 -f null). Returns False ONLY on conclusive proof -
-    ffmpeg reporting the 0:a:0 map "matches no streams". Every other failure
-    (no ffmpeg, timeout, decode error, corrupt media) reports True so the
-    caller keeps the conservative failed/partial path instead of silently
-    replacing a lost transcript with a screenshot (codex-adv HIMMEL-786).
+def _probe_audio(video: Path):
+    """One ffmpeg probe answering two questions: does the video carry an
+    audio stream, and if so how loud is it (volumedetect mean_volume,
+    HIMMEL-3043)? A single subprocess call so a fixture built for the old
+    presence-only probe (0:a:0 -> "matches no streams") never reaches the
+    mean_volume question. Returns (has_stream, mean_db): has_stream is False
+    ONLY on conclusive proof - ffmpeg reporting the 0:a:0 map "matches no
+    streams". Every other failure (no ffmpeg, timeout, decode error, corrupt
+    media) reports has_stream=True so the caller keeps the conservative
+    failed/partial path instead of silently replacing a lost transcript with
+    a screenshot (codex-adv HIMMEL-786). mean_db is None whenever it can't be
+    determined (no ffmpeg, no stream, inconclusive probe, timeout, or no
+    volumedetect line in stderr) - the caller never treats None as silence.
     The probe subprocess is pinned to LC_ALL=C/LANG=C so the substring match
     is locale-independent (HIMMEL-791) - the env override is load-bearing;
     a localized ffmpeg build would otherwise silently disable the fallback."""
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
-        return True
-    cmd = [ffmpeg, "-i", str(video), "-map", "0:a:0", "-frames:a", "1",
+        return True, None
+    cmd = [ffmpeg, "-i", str(video), "-map", "0:a:0", "-af", "volumedetect",
            "-f", "null", "-"]
     try:
         p = subprocess.run(cmd, capture_output=True, text=True,
@@ -406,22 +424,29 @@ def _has_audio_stream(video: Path) -> bool:
     except subprocess.TimeoutExpired:
         print(f"ffmpeg(probe): timed out after {FFMPEG_TIMEOUT}s",
               file=sys.stderr)
-        return True
-    if p.returncode == 0:
-        return True
-    if "matches no streams" in (p.stderr or ""):
-        return False
-    _emit_stderr_tail("ffmpeg(probe)", p.stderr)   # inconclusive - trace it
-    return True
+        return True, None
+    stderr = p.stderr or ""
+    if p.returncode != 0:
+        if "matches no streams" in stderr:
+            return False, None
+        _emit_stderr_tail("ffmpeg(probe)", stderr)   # inconclusive - trace it
+        return True, None
+    m = re.search(r"mean_volume:\s*(-?\d+(?:\.\d+)?)\s*dB", stderr)
+    return True, (float(m.group(1)) if m else None)
 
 
 def soundless_video_frame(video: Path):
-    """Screenshot fallback for a soundless GIF-like video (HIMMEL-786):
+    """Screenshot fallback for a soundless video (HIMMEL-786; widened by
+    HIMMEL-3043 to an audio stream that's present but near-digital-silent):
     extract the first frame NEXT TO the video in the download cache (never
     the vault; render_slides copies it in) and return the frame Path.
-    Returns None when the video has an audio stream (genuine transcription
-    failure - caller keeps partial semantics) or the extraction fails."""
-    if _has_audio_stream(video):
+    Returns None when the video carries audible audio - mean_volume above
+    SILENCE_DB_THRESHOLD, a genuine transcription failure where the caller
+    keeps failed/no_speech semantics - or the extraction fails."""
+    has_stream, mean_db = _probe_audio(video)
+    is_soundless = (not has_stream) or (
+        mean_db is not None and mean_db <= SILENCE_DB_THRESHOLD)
+    if not is_soundless:
         return None
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
@@ -443,14 +468,17 @@ def soundless_video_frame(video: Path):
 
 def transcribe_videos(videos, model):
     """videos: list of (slide_index, Path) in carousel order. Returns
-    (results, failed) where results is [{"index": slide_index, "text": t}] for
-    each video that transcodes + transcribes and failed is the list of
-    slide_index values whose transcode/transcribe dropped out (so the caller can
-    tell a PARTIAL run from a full one). slide_index is the item's 1-based
-    position in the FULL carousel, so a mixed-carousel video block is labeled by
-    its slide (never by a video-only counter); a lone reel is index 1. Videos
-    NEVER enter the vault; only the transcript TEXT is written."""
+    (results, no_speech, failed): results is [{"index": slide_index, "text": t}]
+    for each video that transcodes + transcribes; no_speech is the slide_index
+    values whose audio decoded fine but whisper heard no speech (PERMANENT,
+    HIMMEL-3043 - never retried); failed is the slide_index values whose
+    transcode/transcribe genuinely errored (RETRYABLE). slide_index is the
+    item's 1-based position in the FULL carousel, so a mixed-carousel video
+    block is labeled by its slide (never by a video-only counter); a lone reel
+    is index 1. Videos NEVER enter the vault; only the transcript TEXT is
+    written."""
     out = []
+    no_speech = []
     failed = []
     for idx, video in videos:
         with tempfile.TemporaryDirectory() as td:
@@ -458,12 +486,14 @@ def transcribe_videos(videos, model):
             if not extract_wav(video, wav):
                 failed.append(idx)
                 continue
-            text = whisper_transcribe(wav, model)
-            if text:
+            text, status = whisper_transcribe(wav, model)
+            if status == "ok":
                 out.append({"index": idx, "text": text})
+            elif status == "no_speech":
+                no_speech.append(idx)
             else:
                 failed.append(idx)
-    return out, failed
+    return out, no_speech, failed
 
 
 # --- carousel slides (ffmpeg recompress -> vault _media/ copy) --------------
@@ -765,22 +795,30 @@ def enrich_batch(args, selected, matched_total, remaining):
             videos = [(i, f) for i, f in enumerate(files, start=1)
                       if f.suffix.lower() in VIDEO_EXTS]
             expected_videos = len(videos)
-            transcripts, videos_failed = (
+            transcripts, no_speech_videos, videos_failed = (
                 transcribe_videos(videos, args.whisper_model) if videos
-                else ([], []))
-            # Soundless-video screenshot fallback (HIMMEL-786): a failed video
-            # with NO audio stream (GIF-like screen capture) becomes a slide
-            # screenshot in carousel order instead of a failed transcript.
-            if videos_failed:
+                else ([], [], []))
+            # Soundless-video screenshot fallback (HIMMEL-786; widened by
+            # HIMMEL-3043 to near-silent audio): a video that never yielded a
+            # transcript - whether it errored out or whisper legitimately
+            # heard nothing - becomes a slide screenshot in carousel order
+            # when its audio is absent or effectively silent.
+            unresolved = ([(idx, "no_speech") for idx in no_speech_videos]
+                          + [(idx, "error") for idx in videos_failed])
+            if unresolved:
                 vmap = dict(videos)
                 screenshots = {}
+                still_no_speech = []
                 still_failed = []
-                for idx in videos_failed:
+                for idx, reason in unresolved:
                     frame = soundless_video_frame(vmap[idx])
-                    if frame is None:
-                        still_failed.append(idx)
-                    else:
+                    if frame is not None:
                         screenshots[idx] = frame
+                    elif reason == "no_speech":
+                        still_no_speech.append(idx)
+                    else:
+                        still_failed.append(idx)
+                no_speech_videos = still_no_speech
                 videos_failed = still_failed
                 if screenshots:
                     expected_videos -= len(screenshots)
@@ -792,6 +830,11 @@ def enrich_batch(args, selected, matched_total, remaining):
                         elif f.suffix.lower() in IMAGE_EXTS:
                             rebuilt_images.append(f)
                     images = rebuilt_images
+            # A no-speech video with audible (non-silent) audio is a
+            # PERMANENT, per-video outcome (HIMMEL-3043): it never counts
+            # against expected_videos, whether or not other media survived -
+            # a carousel whose slides survive lands ok despite it.
+            expected_videos -= len(no_speech_videos)
             slug = clip_slug(p)
             expected_images = len(images[:SLIDE_CAP])
             media_dir = _media_dir(args.vault, slug)
@@ -820,10 +863,18 @@ def enrich_batch(args, selected, matched_total, remaining):
                 failed += 1
                 continue
             if not transcripts and not slide_embeds:
-                # Nothing survived transcode/recompress -> retryable, no ok marker.
+                # Nothing survived transcode/recompress. A no-speech video with
+                # no genuinely-failed video and no failed-but-recoverable image
+                # is a PERMANENT outcome (HIMMEL-3043): whisper heard nothing
+                # and never will, so release the clip the same way as "removed"
+                # instead of stranding it. Any genuine failure (transcode/
+                # whisper/recompress error) stays retryable.
+                permanent = (bool(no_speech_videos) and not videos_failed
+                             and not recompress_failed)
+                error = "no_speech" if permanent else "no_media_content"
                 if not write_markers(p, text, fm_raw, body, has_crlf,
-                                     status="failed", error="no_media_content",
-                                     permanent=False):
+                                     status="failed", error=error,
+                                     permanent=permanent):
                     print(f"marker write REVERTED - failure NOT recorded for "
                           f"{relpath}", file=sys.stderr)
                 print(f"x {relpath}: no transcript/slides")

@@ -16,21 +16,26 @@ WS="$(mktemp -d)"; trap 'rm -rf "$WS"' EXIT
 # HIMMEL-2050: the fixture used to pass --backend deepseek, a backend
 # refresh-graph-map.sh's egress preflight has no provider mapping for --
 # HIMMEL-1257 de-listed it, so every invocation below fail-closed before the
-# lock logic under test was ever reached. --backend kimi resolves
-# EFFECTIVE_PROVIDER to "moonshot", which the egress matrix allows (allow+log)
-# for luna-personal extraction (this fixture's default --corpus-class).
+# lock logic under test was ever reached. --backend kimi (native graphify
+# backend, no bank-preflight, no seed-claude-config.sh) used to be the
+# vehicle here, but kimi/moonshot is retired (HIMMEL-2101, operator ruling —
+# there is no kimi backend). --backend claude (deliberately NOT claude-cli,
+# the sibling test-refresh-graph-map.sh suite's default) resolves
+# EFFECTIVE_PROVIDER to "anthropic" and is the closest remaining equivalent:
+# this suite asserts sub-second lock-wait/timeout precision, and claude-cli's
+# seed-claude-config.sh (a real ~0.5s+ lock/seed cost, see that script's
+# seed_with_lock) is enough to blow out T2/T4/T5's tight hold-vs-timeout
+# margins -- `claude` skips it (seed-claude-config only runs for claude-cli,
+# see refresh-graph-map.sh's own `[ "$BACKEND" = "claude-cli" ]` guard). The
+# bank-preflight guard still runs for `claude` (it guards claude|claude-cli
+# both), but measured ~70ms fail-open (BANK-STALE, no usage cache in this
+# hermetic $HOME) — small next to this suite's multi-second hold windows.
 # graphify itself is fully stubbed below (GRAPHIFY_MAP_BIN) so no real
-# network call happens regardless of backend. Deliberately kimi, not
-# claude/claude-cli (the sibling test-refresh-graph-map.sh suite's default):
-# this suite asserts sub-second lock-wait/timeout precision, and claude/
-# claude-cli's bank-preflight guard + (claude-cli only) seed-claude-config.sh
-# add real, sometimes multi-second preflight latency before the lock is even
-# attempted -- enough to blow out T2/T4/T5's tight hold-vs-timeout margins.
-# kimi is a native graphify backend that skips both (bank-preflight only
-# guards claude/claude-cli; seed-claude-config only runs for claude-cli).
+# network call happens regardless of backend, and the node shim below stubs
+# egress-matrix-eval.mjs to an instant "allow" so the egress verdict itself
+# adds no latency and does not depend on which provider `claude` resolves to.
 export GRAPHIFY_LEDGER="$WS/graphify-egress.jsonl"
-unset ANTHROPIC_BASE_URL KIMI_BASE_URL
-export MOONSHOT_API_KEY="test-hermetic-key"
+unset ANTHROPIC_BASE_URL
 HERMETIC_HOME="$WS/hermetic-home"; mkdir -p "$HERMETIC_HOME/.claude"
 printf 'test-subscription-auth\n' > "$HERMETIC_HOME/.claude/.credentials.json"
 printf '{}\n' > "$HERMETIC_HOME/.claude/settings.json"
@@ -120,7 +125,7 @@ BBIN="$WS/bbin"; make_stub "$BBIN" "B"
 # Process A: acquires the promote lock, then holds it for 4s (test-only hook)
 # before doing any actual promote work -- a wide, deterministic overlap window.
 GRAPHIFY_MAP_BIN="$ABIN/graphify" PATH="$ABIN:$PATH" GRAPHIFY_PROMOTE_TEST_HOLD_SECONDS=4 \
-  bash "$SCRIPT" --name lock1 --corpus-root "$CORPUS1" --backend kimi \
+  bash "$SCRIPT" --name lock1 --corpus-root "$CORPUS1" --backend claude \
   --maps-dir "$MAPS1" --title "Lock Map" --slug lock-map --corpus-tag lock \
   > "$WS/a.out" 2> "$WS/a.err" &
 APID=$!
@@ -143,7 +148,7 @@ printf '# b\ncontent b\n' > "$CORPUS1/notes/b.md"
 
 START=$(date -u +%s)
 out_b=$( GRAPHIFY_MAP_BIN="$BBIN/graphify" PATH="$BBIN:$PATH" \
-  bash "$SCRIPT" --name lock1 --corpus-root "$CORPUS1" --backend kimi \
+  bash "$SCRIPT" --name lock1 --corpus-root "$CORPUS1" --backend claude \
   --maps-dir "$MAPS1" --title "Lock Map" --slug lock-map --corpus-tag lock 2>&1 ); rc_b=$?
 END=$(date -u +%s)
 ELAPSED=$(( END - START ))
@@ -177,7 +182,7 @@ CBIN="$WS/cbin"; make_stub "$CBIN" "C"
 DBIN="$WS/dbin"; make_stub "$DBIN" "D"
 
 GRAPHIFY_MAP_BIN="$CBIN/graphify" PATH="$CBIN:$PATH" GRAPHIFY_PROMOTE_TEST_HOLD_SECONDS=4 \
-  bash "$SCRIPT" --name lock2 --corpus-root "$CORPUS2" --backend kimi \
+  bash "$SCRIPT" --name lock2 --corpus-root "$CORPUS2" --backend claude \
   --maps-dir "$MAPS2" --title "Lock Map 2" --slug lock-map-2 --corpus-tag lock2 \
   > "$WS/c.out" 2> "$WS/c.err" &
 CPID=$!
@@ -196,7 +201,7 @@ done
 # of refusing fast. Both bounds set short, matching this test's intent.
 out_d=$( GRAPHIFY_MAP_BIN="$DBIN/graphify" PATH="$DBIN:$PATH" \
   GRAPHIFY_PROMOTE_LOCK_TIMEOUT_SECONDS=1 GRAPHIFY_EXTRACTION_LOCK_TIMEOUT_SECONDS=1 \
-  bash "$SCRIPT" --name lock2 --corpus-root "$CORPUS2" --backend kimi \
+  bash "$SCRIPT" --name lock2 --corpus-root "$CORPUS2" --backend claude \
   --maps-dir "$MAPS2" --title "Lock Map 2" --slug lock-map-2 --corpus-tag lock2 2>&1 ); rc_d=$?
 
 [ "$rc_d" -eq 2 ] && pass "T2 the bounded second process (1s timeout) fails with rc=2, not a silent clobber" \
@@ -225,7 +230,7 @@ printf '%s\n' "$STALE_AT" > "$OUT3/.promote.lock/acquired"
 
 EBIN="$WS/ebin"; make_stub "$EBIN" "E"
 out_e=$( GRAPHIFY_MAP_BIN="$EBIN/graphify" PATH="$EBIN:$PATH" GRAPHIFY_PROMOTE_LOCK_STALE_SECONDS=10 \
-  bash "$SCRIPT" --name lock3 --corpus-root "$CORPUS3" --backend kimi \
+  bash "$SCRIPT" --name lock3 --corpus-root "$CORPUS3" --backend claude \
   --maps-dir "$MAPS3" --title "Lock Map 3" --slug lock-map-3 --corpus-tag lock3 2>&1 ); rc_e=$?
 
 [ "$rc_e" -eq 0 ] && pass "T3 refresh succeeds by taking over the stale lock" || fail "T3 should exit 0 (got $rc_e): $out_e"
@@ -272,14 +277,14 @@ START4=$(date -u +%s)
 GRAPHIFY_MAP_BIN="$GBIN4/graphify" PATH="$GBIN4:$PATH" \
   GRAPHIFY_EXTRACTION_LOCK_STALE_SECONDS=300 GRAPHIFY_EXTRACTION_TEST_HOLD_SECONDS=5 \
   GRAPHIFY_EXTRACTION_LOCK_TIMEOUT_SECONDS=60 \
-  bash "$SCRIPT" --name lock4 --corpus-root "$CORPUS4" --backend kimi \
+  bash "$SCRIPT" --name lock4 --corpus-root "$CORPUS4" --backend claude \
   --maps-dir "$MAPS4" --title "Lock Map 4" --slug lock-map-4 --corpus-tag lock4 \
   > "$WS/g4.out" 2> "$WS/g4.err" &
 GPID=$!
 GRAPHIFY_MAP_BIN="$HBIN4/graphify" PATH="$HBIN4:$PATH" \
   GRAPHIFY_EXTRACTION_LOCK_STALE_SECONDS=300 GRAPHIFY_EXTRACTION_TEST_HOLD_SECONDS=5 \
   GRAPHIFY_EXTRACTION_LOCK_TIMEOUT_SECONDS=60 \
-  bash "$SCRIPT" --name lock4 --corpus-root "$CORPUS4" --backend kimi \
+  bash "$SCRIPT" --name lock4 --corpus-root "$CORPUS4" --backend claude \
   --maps-dir "$MAPS4" --title "Lock Map 4" --slug lock-map-4 --corpus-tag lock4 \
   > "$WS/h4.out" 2> "$WS/h4.err" &
 HPID=$!
@@ -331,7 +336,7 @@ SBIN5="$WS/s5bin"; make_stub "$SBIN5" "S"
 # Former owner F: acquires, then holds 6s (simulates a machine-sleep pause
 # mid-run -- alive, but paused past the stale threshold).
 GRAPHIFY_MAP_BIN="$FBIN5/graphify" PATH="$FBIN5:$PATH" GRAPHIFY_EXTRACTION_TEST_HOLD_SECONDS=6 \
-  bash "$SCRIPT" --name lock5 --corpus-root "$CORPUS5" --backend kimi \
+  bash "$SCRIPT" --name lock5 --corpus-root "$CORPUS5" --backend claude \
   --maps-dir "$MAPS5" --title "Lock Map 5" --slug lock-map-5 --corpus-tag lock5 \
   > "$WS/f5.out" 2> "$WS/f5.err" &
 FPID=$!
@@ -349,7 +354,7 @@ printf '%s\n' "$BACKDATE5" > "$OUT5/.extraction.lock/acquired"
 # is still the lock holder when F wakes and releases.
 GRAPHIFY_MAP_BIN="$SBIN5/graphify" PATH="$SBIN5:$PATH" \
   GRAPHIFY_EXTRACTION_LOCK_STALE_SECONDS=10 GRAPHIFY_EXTRACTION_TEST_HOLD_SECONDS=8 \
-  bash "$SCRIPT" --name lock5 --corpus-root "$CORPUS5" --backend kimi \
+  bash "$SCRIPT" --name lock5 --corpus-root "$CORPUS5" --backend claude \
   --maps-dir "$MAPS5" --title "Lock Map 5" --slug lock-map-5 --corpus-tag lock5 \
   > "$WS/s5.out" 2> "$WS/s5.err" &
 SPID=$!
@@ -409,7 +414,7 @@ KBIN6="$WS/k6bin"; make_stub "$KBIN6" "K"
 # variant 1: acquired file MISSING entirely.
 mkdir -p "$OUT6/.promote.lock"
 out_j=$( GRAPHIFY_MAP_BIN="$JBIN6/graphify" PATH="$JBIN6:$PATH" GRAPHIFY_PROMOTE_LOCK_TIMEOUT_SECONDS=20 \
-  bash "$SCRIPT" --name lock6 --corpus-root "$CORPUS6" --backend kimi \
+  bash "$SCRIPT" --name lock6 --corpus-root "$CORPUS6" --backend claude \
   --maps-dir "$MAPS6" --title "Lock Map 6" --slug lock-map-6 --corpus-tag lock6 2>&1 ); rc_j=$?
 [ "$rc_j" -eq 0 ] && pass "T6 refresh reclaims the stamp-less lock and succeeds" \
   || fail "T6 refresh should exit 0 after reclaiming the stamp-less lock (got $rc_j): $out_j"
@@ -427,7 +432,7 @@ grep -q '"gen":"J"' "$OUT6/graph.json" 2>/dev/null && pass "T6 promote completed
 mkdir -p "$OUT6/.promote.lock"
 printf 'not-a-number\n' > "$OUT6/.promote.lock/acquired"
 out_k=$( GRAPHIFY_MAP_BIN="$KBIN6/graphify" PATH="$KBIN6:$PATH" GRAPHIFY_PROMOTE_LOCK_TIMEOUT_SECONDS=20 \
-  bash "$SCRIPT" --name lock6 --corpus-root "$CORPUS6" --backend kimi \
+  bash "$SCRIPT" --name lock6 --corpus-root "$CORPUS6" --backend claude \
   --maps-dir "$MAPS6" --title "Lock Map 6" --slug lock-map-6 --corpus-tag lock6 2>&1 ); rc_k=$?
 [ "$rc_k" -eq 0 ] && pass "T6 refresh reclaims the garbage-stamped lock and succeeds" \
   || fail "T6 refresh should exit 0 after reclaiming the garbage-stamped lock (got $rc_k): $out_k"
@@ -458,7 +463,7 @@ LBIN7="$WS/l7bin"; make_stub "$LBIN7" "L"
 mkdir -p "$OUT7/manifest.json"   # a DIRECTORY at the final manifest.json path -> the
                                  # stamp-invalidation rm -f fails post-acquire
 out_l=$( GRAPHIFY_MAP_BIN="$LBIN7/graphify" PATH="$LBIN7:$PATH" \
-  bash "$SCRIPT" --name lock7 --corpus-root "$CORPUS7" --backend kimi \
+  bash "$SCRIPT" --name lock7 --corpus-root "$CORPUS7" --backend claude \
   --maps-dir "$MAPS7" --title "Lock Map 7" --slug lock-map-7 --corpus-tag lock7 2>&1 ); rc_l=$?
 [ "$rc_l" -ne 0 ] && pass "T7 planted promote failure exits non-zero" \
   || fail "T7 planted promote failure should exit non-zero (got $rc_l): $out_l"
@@ -466,7 +471,7 @@ out_l=$( GRAPHIFY_MAP_BIN="$LBIN7/graphify" PATH="$LBIN7:$PATH" \
   || pass "T7 lock released by the EXIT trap after the post-acquire failure"
 rmdir "$OUT7/manifest.json" 2>/dev/null || rm -rf "$OUT7/manifest.json"
 out_l2=$( GRAPHIFY_MAP_BIN="$LBIN7/graphify" PATH="$LBIN7:$PATH" \
-  bash "$SCRIPT" --name lock7 --corpus-root "$CORPUS7" --backend kimi \
+  bash "$SCRIPT" --name lock7 --corpus-root "$CORPUS7" --backend claude \
   --maps-dir "$MAPS7" --title "Lock Map 7" --slug lock-map-7 --corpus-tag lock7 2>&1 ); rc_l2=$?
 [ "$rc_l2" -eq 0 ] && pass "T7 immediate re-run succeeds (no leftover lock to fight)" \
   || fail "T7 immediate re-run should exit 0 (got $rc_l2): $out_l2"
@@ -496,7 +501,7 @@ MBIN8="$WS/m8bin"; make_stub "$MBIN8" "M"
 NBIN8="$WS/n8bin"; make_stub "$NBIN8" "N"
 
 GRAPHIFY_MAP_BIN="$MBIN8/graphify" PATH="$MBIN8:$PATH" GRAPHIFY_PUBLISH_TEST_HOLD_SECONDS=5 \
-  bash "$SCRIPT" --name lock8 --corpus-root "$CORPUS8" --backend kimi \
+  bash "$SCRIPT" --name lock8 --corpus-root "$CORPUS8" --backend claude \
   --maps-dir "$MAPS8" --title "Lock Map 8" --slug lock-map-8 --corpus-tag lock8 \
   > "$WS/m8.out" 2> "$WS/m8.err" &
 MPID=$!
@@ -516,7 +521,7 @@ sleep 1
   || pass "T8 publish has not run yet inside the seam window"
 # Second refresh meanwhile: must WAIT for the first's publish to finish.
 GRAPHIFY_MAP_BIN="$NBIN8/graphify" PATH="$NBIN8:$PATH" GRAPHIFY_PUBLISH_TEST_HOLD_SECONDS=5 \
-  bash "$SCRIPT" --name lock8 --corpus-root "$CORPUS8" --backend kimi \
+  bash "$SCRIPT" --name lock8 --corpus-root "$CORPUS8" --backend claude \
   --maps-dir "$MAPS8" --title "Lock Map 8" --slug lock-map-8 --corpus-tag lock8 \
   > "$WS/n8.out" 2> "$WS/n8.err" &
 NPID=$!
@@ -548,13 +553,13 @@ PBIN9="$WS/p9bin"; make_stub "$PBIN9" "P"
 QBIN9="$WS/q9bin"; make_stub "$QBIN9" "Q"
 # Seed a published-from state (gen P), then clear the MOC.
 out_seed=$( GRAPHIFY_MAP_BIN="$PBIN9/graphify" PATH="$PBIN9:$PATH" \
-  bash "$SCRIPT" --name lock9 --corpus-root "$CORPUS9" --backend kimi \
+  bash "$SCRIPT" --name lock9 --corpus-root "$CORPUS9" --backend claude \
   --maps-dir "$MAPS9" --title "Lock Map 9" --slug lock-map-9 --corpus-tag lock9 2>&1 ); rc_seed=$?
 [ "$rc_seed" -eq 0 ] || fail "T9 setup: seed refresh failed (rc=$rc_seed): $out_seed"
 rm -f "$MOC9"
 # Writer: full refresh (gen Q) holding the lock pre-promote for 4s.
 GRAPHIFY_MAP_BIN="$QBIN9/graphify" PATH="$QBIN9:$PATH" GRAPHIFY_PROMOTE_TEST_HOLD_SECONDS=4 \
-  bash "$SCRIPT" --name lock9 --corpus-root "$CORPUS9" --backend kimi \
+  bash "$SCRIPT" --name lock9 --corpus-root "$CORPUS9" --backend claude \
   --maps-dir "$MAPS9" --title "Lock Map 9" --slug lock-map-9 --corpus-tag lock9 \
   > "$WS/q9.out" 2> "$WS/q9.err" &
 QPID=$!
@@ -605,7 +610,7 @@ EBIN10="$WS/ebin10"; make_stub "$EBIN10" "E"
 FBIN10="$WS/fbin10"; make_stub "$FBIN10" "F"
 
 GRAPHIFY_MAP_BIN="$EBIN10/graphify" PATH="$EBIN10:$PATH" GRAPHIFY_EXTRACTION_TEST_HOLD_SECONDS=4 \
-  bash "$SCRIPT" --name lock10 --corpus-root "$CORPUS10" --backend kimi \
+  bash "$SCRIPT" --name lock10 --corpus-root "$CORPUS10" --backend claude \
   --maps-dir "$MAPS10" --title "Lock Map 10" --slug lock-map-10 --corpus-tag lock10 \
   > "$WS/e10.out" 2> "$WS/e10.err" &
 EPID=$!
@@ -622,7 +627,7 @@ else
 fi
 
 out_f=$( GRAPHIFY_MAP_BIN="$FBIN10/graphify" PATH="$FBIN10:$PATH" GRAPHIFY_EXTRACTION_LOCK_TIMEOUT_SECONDS=1 \
-  bash "$SCRIPT" --name lock10 --corpus-root "$CORPUS10" --backend kimi \
+  bash "$SCRIPT" --name lock10 --corpus-root "$CORPUS10" --backend claude \
   --maps-dir "$MAPS10" --title "Lock Map 10" --slug lock-map-10 --corpus-tag lock10 2>&1 ); rc_f=$?
 
 [ "$rc_f" -eq 2 ] && pass "T10 the bounded second process (1s timeout) refuses with rc=2, not a silent double-extraction" \

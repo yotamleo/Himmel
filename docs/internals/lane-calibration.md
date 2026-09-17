@@ -28,9 +28,14 @@ is data.
 `operator` is the no-override sentinel: it injects no plugin settings and
 preserves the operator console's installed configuration. `lane-impl` instead
 injects an explicit lean surface of `handover@himmel`, `himmel-ops@himmel`,
-`qmd@himmel`, and `pr-review-toolkit-himmel@himmel`; operator always-tier extras
-such as superpowers, mattpocock-skills, and plannotator-effective-html are
-explicitly disabled there.
+`qmd@himmel`, and `pr-review-toolkit-himmel@himmel`, plus `lean-skills@himmel`
+(HIMMEL-3064: in registry `base`, so every profile inherits it unless it says
+otherwise — `bare` carries no base at all, and `console-relay` drops it
+explicitly, a relay forwarding messages having no business brainstorming;
+vendored workflow skills, not an "operator always-tier extra" the way
+superpowers/mattpocock-skills used to be, both of which are dropped from the
+catalog entirely); `plannotator-effective-html` stays operator-tier-only,
+explicitly disabled here (it is gated behind the separate `design` profile).
 
 `leg-impl` (HIMMEL-2830) is the profile a console leg gets from
 `headed-arm-leg.sh --profile leg-impl`. **There is exactly one leg profile, and
@@ -42,6 +47,31 @@ break `/pr-check` — whose CR gate dispatches
 `pr-review-toolkit-himmel:code-reviewer` — or duplicate `leg-impl` exactly. What
 distinguishes it is `contextBudget: 35000`, the number a leg is expected to
 start under; measure a real leg against it with `scripts/lanes/leg-burn.sh`.
+
+`gateAllow` (HIMMEL-2959) is one registry-level list of validated Bash rules;
+`lane-impl`, `leg-impl`, `lane-review`, and `lane-content` opt in with
+`gateAllow: true`, adding `permissions.allow` to their resolved settings.
+Matching allow rules are evaluated before the narrative-sensitive auto-mode
+classifier, giving deterministic routing; the deny list still wins and is
+untouched. `operator`, `user`, and `bare` keep byte-identical resolver output.
+The list covers guarded merge/lock/inbox/CR/CI scripts. Push rules are omitted:
+a branch-suffix wildcard also admits trailing `--no-verify`, which skips the
+git hooks those rules would rely on. Pushes stay on the classifier path until
+a proven deny pair exists (HIMMEL-2962).
+`quiet-run.sh` itself can execute arbitrary argv, so its rules pin the label,
+separator, interpreter and suite directory: only the basename suffix after
+`test-` is a wildcard, and
+both plain and `SUITE_LOCK_WAIT=60` forms are listed. This supersedes the
+unsafe label/directory-glob proposal; each listed directory has tracked shell
+suites, while the empty direct `scripts/lanes/` set is omitted. Node suite
+rules are omitted entirely and remain on the classifier path. A suite run
+that wants the deterministic rule uses the label `suite`; any other label
+simply falls back to today's classifier path — no regression. Unlisted suite
+directories also retain that path. The matcher's handling of the env prefix
+and of a tail glob is unproven until the console's first native
+`--profile leg-impl` dispatch. These profile rules also reach claudex legs
+through `--lane claudex --profile leg-impl` (HIMMEL-2962); operator-managed
+user-scope rules remain preserved by `sanitize_settings`.
 
 `leg-impl`'s `mcpServers: ["qmd"]` (HIMMEL-2935) layers `--mcp-config` +
 `--strict-mcp-config` onto the same profile, stripping USER-level MCP servers
@@ -58,13 +88,33 @@ built-in tool schemas and skill/agent listings — outside what a plugin or MCP
 lever can touch. Treat that residual as a separate, harder problem, not a
 follow-up to this lever.
 
+`telegram` (HIMMEL-2961) is the profile the bridge (`scripts/telegram/poller.ts`)
+resolves for every cold `claude` spawn dispatched from a Telegram message,
+via `resolveProfileSettings` (the same seam `spawn-claudex.ts` already uses)
+plus a poller-local `--mcp-config`/`--strict-mcp-config` helper built from
+`mcpServersForProfile`/`collectMcpServerDefs`. Its plugin set mirrors
+`lane-content` (floor + `claude-obsidian` + `obsidian-triage` +
+`pr-review-toolkit-himmel`) and its `mcpServers: ["qmd"]` matches `leg-impl`'s
+allowlist. Measured (`profile-context-probe.mjs`): `telegram` = 32541
+first-turn tokens against `contextBudget: 45000`, below the unleaned
+`bare` baseline of 33493 — so unlike `leg-impl`'s token-reduction win, this
+profile's value is deny-by-default correctness (no ambient full `~/.claude`
+plugin/MCP surface leaking into an unattended bridge run), not a token cut.
+Only the bridge entry point is wired; `scripts/telegram/auto-action.{ts,sh}`
+never spawns `claude` itself (it shells out to `hermes`), and the hermes
+gateway has no plugin-profile seam at all — both are out of scope until one
+exists to wire.
+
 `--profile` also exports `HIMMEL_LEAN_LEG=1`, which silences the three advisory
 SessionStart hooks (graphify freshness, qmd staleness, where-are-we) for that
 session only — a leg has one ticket and a console to report to, and never acts
-on an advisory. It applies the profile by replacing `headed-arm.sh`'s launcher
-binary with `scripts/lanes/leg-claude-launcher.sh`, which prepends `--settings`
-and `--append-system-prompt-file`; that is why `--profile` and `--lane claudex`
-are mutually exclusive (both claim the same seam) and refuse with exit 2.
+on an advisory. `--profile` composes with `--lane claudex` through
+`scripts/lanes/leg-claude-launcher.sh` and its `LEG_CLAUDE_BIN` exec target:
+settings, preface and optional strict MCP config reach `scripts/claude-codex`
+without changing native argv. Every `--lane claudex` launch also appends
+[`leg-preface-claudex.md`](../handover/leg-preface-claudex.md), concatenated
+after the profile preface when both apply, making document-channel
+coordination independent of a hand-pasted brief.
 
 Until HIMMEL-2782 reconciles launcher wiring, consumers invoking
 `plugin-profiles.mjs` directly must run it with the child's effective `cwd` and
@@ -338,6 +388,10 @@ measured** — do not assume a `standard` leg makes its children compact early.
 | leg / worker arm | `standard` | none — the resolved argv must carry `--autocompact 200000` |
 | subagent of either | inherits the parent | none — set it on the parent's arm |
 
+Given that, the console-side mitigation is a lean parent (HIMMEL-2975's
+relay/judge split), not a scan: `scripts/lanes/ceiling-conformance.sh`
+(HIMMEL-2974) does not reach subagents, since they carry no `-n` name.
+
 ### The leg launcher pins the default, it does not just document it (HIMMEL-2766)
 
 Legs were already pinned to the standard (200k-autocompact) context mode by
@@ -471,6 +525,15 @@ and keep going; halt only for something genuinely destructive or ambiguous
 enough that guessing wrong is worse than the wait, and say so explicitly in
 the doc rather than going quiet.
 
+**The one sanctioned park:** the READY → GO merge hold
+(`docs/handover/leg-preface-claudex.md`) does not violate "never park" — it is
+bounded by the file inbox channel (`scripts/handover/console-kit/inbox-send.sh`
+writing, `scripts/hooks/claudex-inbox-hook.sh` delivering), observable (a READY
+bullet in the doc, held by one background Bash wait on the doc for the
+matching GO, with a 30-minute timeout, re-issued rather than open-ended), and
+required because a merge is irreversible. See also `docs/internals/retask-channel.md` for the token
+discipline governing the GO itself. No other wait qualifies.
+
 ## Cost posture
 
 Fable stays **conserved** (limited release) — the spread optimizes
@@ -517,3 +580,12 @@ directive. What belongs here is the rationale: batching exists because CR rounds
 are where a top-tier parent quietly burns its scarce weekly quota on mechanical
 edits, and because a worker lane on a shared branch can absorb several findings
 per dispatch instead of one round-trip each.
+
+### Tier-return marker (HIMMEL-2977, G10)
+
+A child returning work as above its tier — "return it" from the escalation
+rule above, made machine-countable — ends its final message with
+`> **Tier-return:** <reason>`. `scripts/lanes/tier-return-sweep.mjs --since
+<ISO>` walks subagent transcripts, takes each one's model from its first
+assistant message, and reports `<model> <returned>/<dispatched>` per model;
+G10 (escalations: Sonnet dispatches returned as above tier) reads its output.

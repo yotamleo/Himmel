@@ -145,4 +145,311 @@ CLAUDE_CONFIG_DIR="   " HOME="$home15" bash "$HELPER" "$proj15/.claude/settings.
 [ ! -e "$proj15/.claude/plugins" ] || fail "whitespace-only CLAUDE_CONFIG_DIR leaked the hud config into the project dir"
 echo "ok 15 whitespace-only CLAUDE_CONFIG_DIR falls back to \$HOME/.claude"
 
+# ── HIMMEL-3065: the hud's RUNTIME cache state is dropped when the wiring
+# CHANGES, and only then. The dir under test is the hud's own plugin dir
+# (${CLAUDE_CONFIG_DIR}/plugins/claude-hud) — config.json is settings this
+# script owns; everything beside it is per-session snapshot state that must not
+# survive a migration onto a different install.
+
+# Seed the three cache dirs + the two ledgers the hud writes, with one file
+# under each dir, so a purge is observable per-entry rather than only per-dir.
+seed_hud_cache() {
+  local dir="$1" sub
+  for sub in transcript-cache context-cache config-cache; do
+    mkdir -p "$dir/$sub"
+    printf '{"stale":true}' > "$dir/$sub/deadbeef.json"
+  done
+  printf '{"reads":1,"writes":2,"inputs":3,"computedAt":1}' > "$dir/cache-economics-all.json"
+  printf '{"date":"20260101","sessions":{}}' > "$dir/daily-cost.json"
+}
+
+# 16. migration: an EARLIER install's statusLine command is already wired and
+# the hud plugin dir is full of that install's snapshots. Re-wiring onto this
+# clone must drop every one of them — the macOS report: an expired cache clock,
+# the previous install's counts, and no cost figure.
+cfg16="$TMP/cfg16"; hud16="$cfg16/plugins/claude-hud"
+proj16="$TMP/proj16"; mkdir -p "$proj16/.claude"
+s16="$proj16/.claude/settings.json"
+echo '{"statusLine":{"type":"command","command":"node \"/old/himmel/marketplace/plugins/claude-hud/dist/index.js\""}}' > "$s16"
+seed_hud_cache "$hud16"
+CLAUDE_CONFIG_DIR="$cfg16" bash "$HELPER" "$s16" "$REPO_ROOT" >/dev/null
+[ ! -e "$hud16/transcript-cache" ] || fail "16: transcript-cache survived a changed wiring"
+[ ! -e "$hud16/context-cache" ]    || fail "16: context-cache survived a changed wiring"
+[ ! -e "$hud16/config-cache" ]     || fail "16: config-cache survived a changed wiring"
+[ ! -e "$hud16/cache-economics-all.json" ] || fail "16: cache-economics ledger survived a changed wiring"
+[ ! -e "$hud16/daily-cost.json" ]  || fail "16: daily-cost ledger survived a changed wiring"
+[ -f "$hud16/config.json" ] || fail "16: config.json must SURVIVE the purge — this script owns it"
+jq -e . "$hud16/config.json" >/dev/null 2>&1 || fail "16: surviving config.json is not valid JSON"
+echo "ok 16 changed wiring drops the hud cache state, keeps config.json"
+
+# 17. steady state: the SAME clone re-wired over its own wiring changes nothing,
+# so the caches stay. Without this, every himmel-update would throw away the
+# context fallback snapshot of every live session.
+seed_hud_cache "$hud16"
+CLAUDE_CONFIG_DIR="$cfg16" bash "$HELPER" "$s16" "$REPO_ROOT" >/dev/null
+[ -f "$hud16/transcript-cache/deadbeef.json" ] || fail "17: an unchanged re-wire purged the transcript cache"
+[ -f "$hud16/context-cache/deadbeef.json" ]    || fail "17: an unchanged re-wire purged the context cache"
+[ -f "$hud16/daily-cost.json" ]                || fail "17: an unchanged re-wire purged the daily-cost ledger"
+echo "ok 17 unchanged re-wire preserves the hud cache state"
+
+# 18. the CONFIG half on its own: same command, but the hud config on disk is
+# the earlier install's. An older himmel instance ships an older
+# himmel-config.json, so this is the migration case where the clone path
+# happens to be unchanged.
+printf '{"display":{"showPromptCache":false}}\n' > "$hud16/config.json"
+seed_hud_cache "$hud16"
+CLAUDE_CONFIG_DIR="$cfg16" bash "$HELPER" "$s16" "$REPO_ROOT" >/dev/null
+[ ! -e "$hud16/transcript-cache" ] || fail "18: a stale hud config did not trigger the purge"
+[ "$(jq -r .display.showPromptCache "$hud16/config.json")" = "true" ] || fail "18: hud config not refreshed"
+echo "ok 18 a changed hud config drops the cache state"
+
+# 19. a MOVED/renamed clone (the command half on its own), with the hud config
+# source absent on both sides — a synthetic himmel path never drops a config, so
+# the command comparison has to carry the decision by itself.
+cfg19="$TMP/cfg19"; hud19="$cfg19/plugins/claude-hud"
+proj19="$TMP/proj19"; mkdir -p "$proj19/.claude"
+s19="$proj19/.claude/settings.json"
+CLAUDE_CONFIG_DIR="$cfg19" bash "$HELPER" "$s19" "/old/path/himmel" >/dev/null
+seed_hud_cache "$hud19"
+CLAUDE_CONFIG_DIR="$cfg19" bash "$HELPER" "$s19" "/new/path/himmel" >/dev/null
+[ ! -e "$hud19/transcript-cache" ] || fail "19: a moved clone did not drop the hud cache state"
+[ ! -e "$hud19/daily-cost.json" ]  || fail "19: a moved clone did not drop the daily-cost ledger"
+echo "ok 19 a moved himmel clone drops the hud cache state"
+
+# 20. the purge never reaches outside the hud plugin dir: Claude Code keeps its
+# real plugin installs (installed_plugins.json, marketplaces/) as siblings.
+cfg20="$TMP/cfg20"; hud20="$cfg20/plugins/claude-hud"
+proj20="$TMP/proj20"; mkdir -p "$proj20/.claude" "$cfg20/plugins/marketplaces/m1"
+s20="$proj20/.claude/settings.json"
+printf 'keep me\n' > "$cfg20/plugins/installed_plugins.json"
+printf 'keep me\n' > "$cfg20/plugins/marketplaces/m1/plugin.json"
+seed_hud_cache "$hud20"
+CLAUDE_CONFIG_DIR="$cfg20" bash "$HELPER" "$s20" "$REPO_ROOT" >/dev/null
+[ -f "$cfg20/plugins/installed_plugins.json" ] || fail "20: purge deleted a sibling of the hud plugin dir"
+[ -f "$cfg20/plugins/marketplaces/m1/plugin.json" ] || fail "20: purge reached into another plugin's dir"
+[ ! -e "$hud20/transcript-cache" ] || fail "20: purge did not run for a first-time wire"
+echo "ok 20 purge stays inside the hud plugin dir"
+
+# 21. CR round 1 [codex-2]: the two halves have different SCOPES — the hud
+# config is per-USER, but the settings file may be a PROJECT one. Wiring a
+# machine's SECOND project (same clone, same hud config, a project settings
+# file with no statusLine of its own) is not a migration, and must not purge
+# the caches every other project's live session is using.
+cfg21="$TMP/cfg21"; hud21="$cfg21/plugins/claude-hud"
+proj21a="$TMP/proj21a"; mkdir -p "$proj21a/.claude"
+proj21b="$TMP/proj21b"; mkdir -p "$proj21b/.claude"
+CLAUDE_CONFIG_DIR="$cfg21" bash "$HELPER" "$proj21a/.claude/settings.json" "$REPO_ROOT" >/dev/null
+seed_hud_cache "$hud21"
+CLAUDE_CONFIG_DIR="$cfg21" bash "$HELPER" "$proj21b/.claude/settings.json" "$REPO_ROOT" >/dev/null
+[ -f "$hud21/transcript-cache/deadbeef.json" ] \
+  || fail "21: wiring a second PROJECT on the same install purged the per-user cache state"
+[ -f "$hud21/daily-cost.json" ] || fail "21: second-project wire purged the daily-cost ledger"
+echo "ok 21 a second project on the same install preserves the hud cache state"
+
+# 22. ...and the migration it must still catch on that same path: a project
+# wired against an OLD clone. The dropped config embeds the clone path, so the
+# config half differs even though this project's settings file is new.
+cfg22="$TMP/cfg22"; hud22="$cfg22/plugins/claude-hud"
+proj22="$TMP/proj22"; mkdir -p "$proj22/.claude"
+mkdir -p "$hud22"
+printf '{"display":{"showPromptCache":true},"customLineCommand":"/old/clone/x.sh"}\n' > "$hud22/config.json"
+seed_hud_cache "$hud22"
+CLAUDE_CONFIG_DIR="$cfg22" bash "$HELPER" "$proj22/.claude/settings.json" "$REPO_ROOT" >/dev/null
+[ ! -e "$hud22/transcript-cache" ] \
+  || fail "22: a config from an OLD clone did not trigger the purge on a fresh project settings file"
+echo "ok 22 an old clone's hud config still purges on a fresh project wire"
+
+# 23. CR round 2: a FAILED purge must abort the wire with nothing published, so
+# the retry still sees a changed wiring and tries again. Publishing first left a
+# failed purge unrepeatable — the next run saw wiring that already matched, took
+# the no-change path, and the stale state survived every run after that.
+#
+# The failure is injected with a PATH `rm` stub that refuses ONLY the seeded
+# cache entries and delegates everything else to the real rm (CodeRabbit, PR
+# #772). An earlier version made the hud dir read-only instead, which stopped
+# being a control the moment round 6 moved staging ahead of the purge: staging
+# writes .config.json.tmp INTO that dir, so the wire failed before the purge was
+# ever reached and the case passed without exercising the path it names. The
+# stub also keeps the case meaningful as root and on Git Bash, where directory
+# permissions do not bind the same way. The asserted precondition is that the
+# staged config was cleaned up — that only happens on the purge-failure path.
+rm_bin23="$TMP/rm23-bin"; mkdir -p "$rm_bin23"
+real_rm23="$(command -v rm)"
+cfg23="$TMP/cfg23"; hud23="$cfg23/plugins/claude-hud"
+proj23="$TMP/proj23"; mkdir -p "$proj23/.claude"
+s23="$proj23/.claude/settings.json"
+old23='node "/old/himmel/marketplace/plugins/claude-hud/dist/index.js"'
+# An earlier install: its command is wired, its config and snapshots are on disk.
+printf '{"statusLine":{"type":"command","command":%s}}\n' "\"$(printf '%s' "$old23" | sed 's/"/\\"/g')\"" > "$s23"
+mkdir -p "$hud23"
+printf '{"display":{"showPromptCache":false}}\n' > "$hud23/config.json"
+seed_hud_cache "$hud23"
+
+# The stub TOUCHES a marker before refusing, so the case can assert the purge
+# was actually reached rather than inferring it (CR round 11): a staging failure
+# would satisfy every other assertion below just as well.
+rm_marker23="$TMP/rm23-was-called"
+cat > "$rm_bin23/rm" <<EOF
+#!/usr/bin/env bash
+# Refuse exactly the seeded cache entries; everything else (the staged config,
+# the settings temp file) goes to the real rm.
+for _a in "\$@"; do
+  case "\$_a" in
+    "$hud23/transcript-cache"|"$hud23/context-cache"|"$hud23/config-cache"|\\
+    "$hud23/cache-economics-all.json"|"$hud23/daily-cost.json")
+      : > "$rm_marker23"
+      exit 1 ;;
+  esac
+done
+exec "$real_rm23" "\$@"
+EOF
+chmod +x "$rm_bin23/rm"
+
+rc23=0
+PATH="$rm_bin23:$PATH" CLAUDE_CONFIG_DIR="$cfg23" bash "$HELPER" "$s23" "$REPO_ROOT" >/dev/null 2>&1 || rc23=$?
+[ "$rc23" -ne 0 ] || fail "23: a failed purge must fail the wire, not report success"
+[ -e "$rm_marker23" ] \
+  || fail "23: precondition — the purge was never reached; this case proves nothing about a failed purge"
+[ ! -e "$hud23/.config.json.tmp" ] \
+  || fail "23: the staged config was left behind after the failed purge"
+[ ! -e "$s23.statusline.tmp" ] || fail "23: the staged settings file was left behind"
+[ "$(jq -r .statusLine.command "$s23")" = "$old23" ] \
+  || fail "23: the settings file was published despite the failed purge — the retry will see no change"
+[ "$(jq -r .display.showPromptCache "$hud23/config.json")" = "false" ] \
+  || fail "23: the hud config was published despite the failed purge"
+[ -e "$hud23/transcript-cache" ] || fail "23: the seeded cache dir should have survived the failed purge"
+[ -e "$hud23/daily-cost.json" ] || fail "23: the seeded ledger should have survived the failed purge"
+
+# The retry, without the stub on PATH, still sees the same changed wiring.
+CLAUDE_CONFIG_DIR="$cfg23" bash "$HELPER" "$s23" "$REPO_ROOT" >/dev/null
+[ ! -e "$hud23/transcript-cache" ] || fail "23: the retry did not purge — the failure was not repeatable"
+[ "$(jq -r .statusLine.command "$s23")" != "$old23" ] || fail "23: the retry did not wire"
+echo "ok 23 a failed purge aborts the wire and the retry still purges"
+
+# 24. CR round 3 [codex-2]: this library is SOURCED (himmel-update.sh does), so
+# the purge cannot rely on the caller's glob settings to skip the staged config.
+# With `shopt -s dotglob`, `"$hud_dir"/*` matches .config.json.tmp — and the
+# purge runs before the publish, so eating it would leave the config unwritten.
+cfg24="$TMP/cfg24"; hud24="$cfg24/plugins/claude-hud"
+proj24="$TMP/proj24"; mkdir -p "$proj24/.claude"
+s24="$proj24/.claude/settings.json"
+mkdir -p "$hud24"
+printf '{"display":{"showPromptCache":false}}\n' > "$hud24/config.json"
+seed_hud_cache "$hud24"
+(
+  shopt -s dotglob
+  # shellcheck disable=SC1090  # the helper under test, resolved at runtime
+  . "$HELPER"
+  # shellcheck disable=SC2030,SC2031  # deliberately subshell-local: the sourced
+  # helper must see it, the surrounding suite must not.
+  export CLAUDE_CONFIG_DIR="$cfg24"
+  wire_statusline "$s24" "$REPO_ROOT"
+) >/dev/null || fail "24: sourced wire_statusline failed under dotglob"
+[ -f "$hud24/config.json" ] || fail "24: the staged config was purged under dotglob — nothing published"
+[ "$(jq -r .display.showPromptCache "$hud24/config.json")" = "true" ] \
+  || fail "24: the published config under dotglob is not this clone's"
+[ ! -e "$hud24/transcript-cache" ] || fail "24: the purge itself did not run under dotglob"
+echo "ok 24 the purge skips the staged config even with dotglob set"
+
+# 25. CR round 5: publish the config THIS call staged, never one a previous
+# call left behind. A run that staged the config and then failed on the settings
+# write used to leave .config.json.tmp in place, and the next source-absent call
+# (a synthetic himmel path, which promises to be a pure statusLine/env op)
+# published that stale file as the machine's hud config.
+cfg25="$TMP/cfg25"; hud25="$cfg25/plugins/claude-hud"
+proj25="$TMP/proj25"; mkdir -p "$proj25/.claude"
+mkdir -p "$hud25"
+printf '{"display":{"showPromptCache":"STALE-STAGED"}}\n' > "$hud25/.config.json.tmp"
+CLAUDE_CONFIG_DIR="$cfg25" bash "$HELPER" "$proj25/.claude/settings.json" "/synthetic/himmel" >/dev/null
+[ ! -e "$hud25/config.json" ] \
+  || fail "25: a source-absent wire published a temp file a previous call left behind"
+[ "$(jq -r .statusLine.type "$proj25/.claude/settings.json")" = "command" ] \
+  || fail "25: the source-absent wire should still do its statusLine/env half"
+echo "ok 25 a source-absent wire never publishes a leftover staged config"
+
+# 26. CR round 6: a settings file that PARSES but cannot take the transform —
+# `{"env":"invalid"}` is valid JSON, yet `.env.KEY = …` cannot be assigned into
+# a string — must abort before the purge, not after it. Staging the transform
+# first is what makes the whole "purge ran, publish failed" class impossible
+# rather than fixed one instance at a time.
+cfg26="$TMP/cfg26"; hud26="$cfg26/plugins/claude-hud"
+proj26="$TMP/proj26"; mkdir -p "$proj26/.claude"
+s26="$proj26/.claude/settings.json"
+old26='node "/old/himmel/marketplace/plugins/claude-hud/dist/index.js"'
+printf '{"env":"invalid","statusLine":{"type":"command","command":%s}}\n' "\"$(printf '%s' "$old26" | sed 's/"/\\"/g')\"" > "$s26"
+mkdir -p "$hud26"
+seed_hud_cache "$hud26"
+rc26=0
+CLAUDE_CONFIG_DIR="$cfg26" bash "$HELPER" "$s26" "$REPO_ROOT" >/dev/null 2>&1 || rc26=$?
+[ "$rc26" -ne 0 ] || fail "26: an untransformable settings file must fail the wire"
+[ -f "$hud26/transcript-cache/deadbeef.json" ] \
+  || fail "26: live cache state was purged for a wire that could never publish"
+[ "$(jq -r .statusLine.command "$s26")" = "$old26" ] || fail "26: the settings file was modified"
+[ ! -e "$hud26/.config.json.tmp" ] || fail "26: the staged config was left behind"
+echo "ok 26 an untransformable settings file aborts before the purge"
+
+# 27. CodeRabbit round 2: the two publishes are two renames, not one atomic
+# operation. They are ordered config-then-settings so that a failed SECOND one
+# leaves the machine on its OLD statusLine command — the previous wiring, intact
+# — which the next run still sees as changed and re-wires AND re-purges. The
+# failure is injected with a PATH `mv` stub that refuses only the settings
+# publish and delegates everything else.
+mv_bin27="$TMP/mv27-bin"; mkdir -p "$mv_bin27"
+real_mv27="$(command -v mv)"
+cfg27="$TMP/cfg27"; hud27="$cfg27/plugins/claude-hud"
+proj27="$TMP/proj27"; mkdir -p "$proj27/.claude"
+s27="$proj27/.claude/settings.json"
+old27='node "/old/himmel/marketplace/plugins/claude-hud/dist/index.js"'
+printf '{"statusLine":{"type":"command","command":%s}}\n' "\"$(printf '%s' "$old27" | sed 's/"/\\"/g')\"" > "$s27"
+mkdir -p "$hud27"
+printf '{"display":{"showPromptCache":false}}\n' > "$hud27/config.json"
+seed_hud_cache "$hud27"
+
+cat > "$mv_bin27/mv" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+  *"$s27.statusline.tmp"*) exit 1 ;;
+esac
+exec "$real_mv27" "\$@"
+EOF
+chmod +x "$mv_bin27/mv"
+
+rc27=0
+PATH="$mv_bin27:$PATH" CLAUDE_CONFIG_DIR="$cfg27" bash "$HELPER" "$s27" "$REPO_ROOT" >/dev/null 2>&1 || rc27=$?
+[ "$rc27" -ne 0 ] || fail "27: a failed settings publish must fail the wire"
+[ "$(jq -r .statusLine.command "$s27")" = "$old27" ] \
+  || fail "27: precondition — the settings publish is what failed, so the OLD command must still be wired"
+[ ! -e "$s27.statusline.tmp" ] || fail "27: the staged settings file was left behind"
+[ "$(jq -r .display.showPromptCache "$hud27/config.json")" = "true" ] \
+  || fail "27: the config publish ran first, so it should have landed"
+[ ! -e "$hud27/transcript-cache" ] || fail "27: the purge runs before either publish and should have happened"
+
+# The retry, without the stub, still sees a changed wiring via the command half
+# (the config half now matches) and completes.
+CLAUDE_CONFIG_DIR="$cfg27" bash "$HELPER" "$s27" "$REPO_ROOT" >/dev/null
+[ "$(jq -r .statusLine.command "$s27")" != "$old27" ] || fail "27: the retry did not wire"
+echo "ok 27 a failed settings publish leaves the OLD command wired and the retry completes"
+
+# 28. CR round 11: the purge pins its own glob options, because this library is
+# sourced and the caller's shopt settings would otherwise decide what the loop
+# sees. `failglob` is the sharp one — a hud dir holding nothing but the staged
+# dotfile makes "$hud_dir"/* an expansion ERROR that aborts the wire.
+cfg28="$TMP/cfg28"; hud28="$cfg28/plugins/claude-hud"
+proj28="$TMP/proj28"; mkdir -p "$proj28/.claude"
+s28="$proj28/.claude/settings.json"
+mkdir -p "$hud28"
+(
+  shopt -s failglob
+  # shellcheck disable=SC1090  # the helper under test, resolved at runtime
+  . "$HELPER"
+  # shellcheck disable=SC2030,SC2031  # deliberately subshell-local: the sourced
+  # helper must see it, the surrounding suite must not.
+  export CLAUDE_CONFIG_DIR="$cfg28"
+  wire_statusline "$s28" "$REPO_ROOT"
+) >/dev/null || fail "28: sourced wire_statusline failed under failglob"
+
+[ -f "$hud28/config.json" ] || fail "28: the config was not published under failglob"
+[ "$(jq -r .statusLine.type "$s28")" = "command" ] || fail "28: the statusLine was not wired under failglob"
+echo "ok 28 the purge survives a caller's failglob on an otherwise-empty hud dir"
+
 echo "ALL PASS"

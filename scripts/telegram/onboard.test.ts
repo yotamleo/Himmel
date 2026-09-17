@@ -375,6 +375,32 @@ test("--help prints usage and exits 0 WITHOUT ever calling loadToken", async () 
 // HIMMEL-2176 Task 9). If it hasn't landed yet, SKIP loudly (never a silent or
 // fake pass) — the parent re-runs this suite once it does.
 
+// HIMMEL-3004: main run 34739779833 went red with `Expected "<path>" Received
+// ""` — restart-bridge.sh had not actually printed a path mismatch, the spawn
+// had timed out (Bun's default) on a slow Windows runner. Give it real
+// headroom and, if it still doesn't finish, say so instead of reporting a
+// blank string as if it were a real answer.
+const PRINT_LOCK_PATH_TIMEOUT_MS = process.platform === "win32" ? 20_000 : 10_000;
+
+function spawnPrintLockPath(scriptPath: string, env: Record<string, string | undefined>): string {
+  const startedAt = Date.now();
+  const proc = Bun.spawnSync([BASH_BIN, scriptPath, "--print-lock-path"], {
+    env, stdout: "pipe", stderr: "pipe", timeout: PRINT_LOCK_PATH_TIMEOUT_MS,
+  });
+  const elapsedMs = Date.now() - startedAt;
+  // Bun.spawnSync reports a clean exit as signalCode: undefined, not null —
+  // check truthiness, not strict-equals-null, or every successful run reads
+  // as a false "timeout".
+  if (proc.exitCode !== 0 || proc.signalCode) {
+    const stderr = proc.stderr.toString().trim();
+    if (proc.signalCode) {
+      throw new Error(`restart-bridge.sh --print-lock-path spawn received signal ${proc.signalCode} after ${elapsedMs} ms (probable timeout, budget ${PRINT_LOCK_PATH_TIMEOUT_MS} ms): ${stderr}`);
+    }
+    throw new Error(`restart-bridge.sh --print-lock-path exited ${proc.exitCode} after ${elapsedMs} ms: ${stderr}`);
+  }
+  return proc.stdout.toString().trim();
+}
+
 test("lock-path cross-check: restart-bridge.sh --print-lock-path agrees with lockPathForToken()", () => {
   const scriptPath = join(import.meta.dir, "restart-bridge.sh");
   if (!existsSync(scriptPath)) {
@@ -388,11 +414,7 @@ test("lock-path cross-check: restart-bridge.sh --print-lock-path agrees with loc
   const lockDir = mkdtempSync(join(tmpdir(), "onboard-lockdir-"));
   const token = "CROSSCHECK_TOKEN_ABC123";
   try {
-    const proc = Bun.spawnSync([BASH_BIN, scriptPath, "--print-lock-path"], {
-      env: { ...process.env, TELEGRAM_BOT_TOKEN: token, BRIDGE_LOCK_DIR: lockDir },
-      stdout: "pipe", stderr: "pipe",
-    });
-    const printed = proc.stdout.toString().trim();
+    const printed = spawnPrintLockPath(scriptPath, { ...process.env, TELEGRAM_BOT_TOKEN: token, BRIDGE_LOCK_DIR: lockDir });
     withEnv({ BRIDGE_LOCK_DIR: lockDir, BRIDGE_ROOT: undefined }, () => {
       // restart-bridge.sh is bash (POSIX forward slashes even under git-bash on
       // Windows); node:path's join() on win32 emits backslashes. Same path,
@@ -418,11 +440,7 @@ test("lock-path cross-check: an empty BRIDGE_LOCK_DIR agrees with the shell's ${
   const bridgeRootDir = mkdtempSync(join(tmpdir(), "onboard-lockdir-empty-"));
   const token = "CROSSCHECK_EMPTY_TOKEN";
   try {
-    const proc = Bun.spawnSync([BASH_BIN, scriptPath, "--print-lock-path"], {
-      env: { ...process.env, TELEGRAM_BOT_TOKEN: token, BRIDGE_LOCK_DIR: "", BRIDGE_ROOT: bridgeRootDir },
-      stdout: "pipe", stderr: "pipe",
-    });
-    const printed = proc.stdout.toString().trim();
+    const printed = spawnPrintLockPath(scriptPath, { ...process.env, TELEGRAM_BOT_TOKEN: token, BRIDGE_LOCK_DIR: "", BRIDGE_ROOT: bridgeRootDir });
     withEnv({ BRIDGE_LOCK_DIR: "", BRIDGE_ROOT: bridgeRootDir }, () => {
       expect(printed.replace(/\\/g, "/")).toBe(lockPathForToken(token).replace(/\\/g, "/"));
     });

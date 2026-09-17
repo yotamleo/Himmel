@@ -512,18 +512,48 @@ _hp_json_field() {
     done
 }
 
-# _hp_json_unescape <escaped-value> -- inverse of _hp_json_escape into
-# $_HP_UNESC. The writer emits only \\ and \" escapes, so a small pure-bash
-# scanner is sufficient and avoids a process per legacy registry line.
+# _hp_json_unescape <escaped-value> -- decode JSON into $_HP_UNESC. A
+# malformed escape or unsupported Unicode clears the result and sets
+# $_HP_UNESC_OK=0 (not a failing return, for callers under errexit).
+# ASCII Unicode uses octal printf for Bash 3.2; NUL cannot exist in Bash.
 _HP_UNESC=""
+_HP_UNESC_OK=1
 _hp_json_unescape() {
-    local _hp_s="$1" _hp_i=0 _hp_ch
+    local _hp_s="$1" _hp_i=0 _hp_ch _hp_hex _hp_num _hp_oct
     _HP_UNESC=""
+    _HP_UNESC_OK=1
     while [ "$_hp_i" -lt "${#_hp_s}" ]; do
         _hp_ch="${_hp_s:$_hp_i:1}"
-        if [ "$_hp_ch" = "\\" ] && [ $((_hp_i + 1)) -lt "${#_hp_s}" ]; then
+        if [ "$_hp_ch" = "\\" ]; then
             _hp_i=$((_hp_i + 1))
             _hp_ch="${_hp_s:$_hp_i:1}"
+            case "$_hp_ch" in
+                '/'|'"'|"\\") ;;
+                b) _hp_ch=$'\b' ;;
+                f) _hp_ch=$'\f' ;;
+                n) _hp_ch=$'\n' ;;
+                r) _hp_ch=$'\r' ;;
+                t) _hp_ch=$'\t' ;;
+                u)
+                    _hp_hex="${_hp_s:$((_hp_i + 1)):4}"
+                    case "$_hp_hex" in
+                        [0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F])
+                            _hp_num=$((16#$_hp_hex))
+                            if [ "$_hp_num" -gt 0 ] && [ "$_hp_num" -le 127 ]; then
+                                printf -v _hp_oct '%03o' "$_hp_num"
+                                printf -v _hp_ch '%b' "\\$_hp_oct"
+                                _hp_i=$((_hp_i + 4))
+                            else
+                                _HP_UNESC_OK=0
+                            fi ;;
+                        *) _HP_UNESC_OK=0 ;;
+                    esac ;;
+                *) _HP_UNESC_OK=0 ;;
+            esac
+        fi
+        if [ "$_HP_UNESC_OK" -eq 0 ]; then
+            _HP_UNESC=""
+            return 0
         fi
         _HP_UNESC="$_HP_UNESC$_hp_ch"
         _hp_i=$((_hp_i + 1))
@@ -575,6 +605,7 @@ _hp_arms_record_matches_path() {
     fi
 
     _hp_json_unescape "$_hp_stored_raw"
+    [ "$_HP_UNESC_OK" -eq 1 ] || return 0
     case "${PLATFORM:-}:${OSTYPE:-}" in
         windows:*|*:msys*|*:cygwin*|*:win32*|*:MINGW*) _hp_windows=1 ;;
     esac

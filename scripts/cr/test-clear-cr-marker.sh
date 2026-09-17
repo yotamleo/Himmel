@@ -29,6 +29,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CLEAR="$SCRIPT_DIR/clear-cr-marker.sh"
 LEDGER_APPEND="$SCRIPT_DIR/ledger-append.sh"
+REVIEW_ROUND="$SCRIPT_DIR/review-round.sh"
 LOCK_LIB="$SCRIPT_DIR/../lib/shared-branch-lock.sh"
 CODEX_SKILL="$ROOT/.agents/skills/pr-check/SKILL.md"
 # shellcheck source=scripts/lib/fixture-tempdir.sh
@@ -83,6 +84,11 @@ build_repo_template() {
         || { echo "FAIL: cp clear-cr-marker.sh into template failed" >&2; rm -rf "$REPO_TEMPLATE"; return 1; }
     cp "$LEDGER_APPEND" "$REPO_TEMPLATE/scripts/cr/ledger-append.sh" \
         || { echo "FAIL: cp ledger-append.sh into template failed" >&2; rm -rf "$REPO_TEMPLATE"; return 1; }
+    # HIMMEL-3027: clear-cr-marker.sh's new branch-wide gate shells out to its
+    # sibling review-round.sh promote -- a missing copy would fail every case
+    # that reaches that gate at once (promote-error, exit 14).
+    cp "$REVIEW_ROUND" "$REPO_TEMPLATE/scripts/cr/review-round.sh" \
+        || { echo "FAIL: cp review-round.sh into template failed" >&2; rm -rf "$REPO_TEMPLATE"; return 1; }
     # HIMMEL-1558: the copied tree must carry the branch-lock lib the clear
     # path now takes around its read-validate-delete section — the script
     # refuses without it, so a missing copy would fail every case at once.
@@ -2071,15 +2077,76 @@ if marker_exists "$tmp"; then fail "amend-adjudicated sug: marker should be GONE
 rm -rf "$tmp"
 
 # 8d. An unadjudicated finding recorded at a SUPERSEDED head (not the current
-# tip) must NOT block -- only the current head is gated.
+# tip) DOES block, branch-wide (HIMMEL-3027, HIMMEL-2917): review-round.sh
+# promote walks every round's ledger rows on the branch, not just the tip, and
+# tags an empty verdict at ANY head as still-open. HIMMEL-2067's tip-only rule
+# is superseded here -- promote's stance wins, so a decision must exist for
+# every round before the branch can clear, not just the current one.
 make_repo || exit 1
 (cd "$tmp" && echo x >> f.txt && git commit -qam "later reviewed work" && git push -q origin feat/x) >/dev/null 2>&1
 _tip=$(git -C "$tmp" rev-parse --verify refs/heads/feat/x)
 write_marker "$tmp" "$_tip"
-write_ledger "$tmp" "$(finding "${sha:0:8}" sug "")" "$(avail_ok "${_tip:0:8}")"
+write_ledger "$tmp" "$(printf '{"kind":"finding","head":"%s","branch":"feat/x","model":"codex","finding_id":"codex-1","severity":"sug","file":"a.sh","line":1,"verdict":""}' "${sha:0:8}")" "$(avail_ok "${_tip:0:8}")"
 stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
-run_clear "$tmp" 0 "unadjudicated finding on a superseded head does not block -> exit 0"
-if marker_exists "$tmp"; then fail "superseded-head unadjudicated: marker should be GONE"; else pass; fi
+run_clear "$tmp" 14 "unadjudicated finding on a superseded head blocks branch-wide -> exit 14"
+if grepq "$LAST_CLEAR_OUT" -F 'REFUSED reason=unadjudicated-earlier-round'; then pass; else
+    fail "superseded-head unadjudicated must refuse with reason=unadjudicated-earlier-round: $LAST_CLEAR_OUT"; fi
+if grepq "$LAST_CLEAR_OUT" -F 'codex-1'; then pass; else
+    fail "the refusal must name the still-open finding id: $LAST_CLEAR_OUT"; fi
+if marker_exists "$tmp"; then pass; else fail "superseded-head unadjudicated: marker must REMAIN"; fi
+rm -rf "$tmp"
+
+# 8e. Unadjudicated findings recorded at an EARLIER round head, with the
+# CURRENT round's own finding fully adjudicated, must still block: gate 4b is
+# tip-only and would pass here, but review-round.sh promote's branch-wide
+# still-open check (HIMMEL-3027) catches the earlier round's open business.
+make_repo || exit 1
+_r1="${sha:0:8}"
+(cd "$tmp" && echo x >> f.txt && git commit -qam "round 2" && git push -q origin feat/x) >/dev/null 2>&1
+_tip=$(git -C "$tmp" rev-parse --verify refs/heads/feat/x)
+write_marker "$tmp" "$_tip"
+write_ledger "$tmp" \
+    "$(printf '{"kind":"finding","head":"%s","branch":"feat/x","model":"codex","finding_id":"r1-imp","severity":"imp","file":"a.sh","line":1,"verdict":""}' "$_r1")" \
+    "$(printf '{"kind":"finding","head":"%s","branch":"feat/x","model":"codex","finding_id":"r1-sug","severity":"sug","file":"a.sh","line":2,"verdict":""}' "$_r1")" \
+    "$(printf '{"kind":"finding","head":"%s","branch":"feat/x","model":"codex","finding_id":"r2-fixed","severity":"sug","file":"a.sh","line":3,"verdict":"fixed"}' "${_tip:0:8}")" \
+    "$(avail_ok "${_tip:0:8}")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 14 "earlier-round unadjudicated findings block even though tip is fully adjudicated -> exit 14"
+if grepq "$LAST_CLEAR_OUT" -F 'REFUSED reason=unadjudicated-earlier-round'; then pass; else
+    fail "earlier-round unadjudicated must refuse with reason=unadjudicated-earlier-round: $LAST_CLEAR_OUT"; fi
+if grepq "$LAST_CLEAR_OUT" -F 'r1-imp'; then pass; else
+    fail "the refusal must name round-1 finding r1-imp: $LAST_CLEAR_OUT"; fi
+if grepq "$LAST_CLEAR_OUT" -F 'r1-sug'; then pass; else
+    fail "the refusal must name round-1 finding r1-sug: $LAST_CLEAR_OUT"; fi
+if marker_exists "$tmp"; then pass; else fail "earlier-round unadjudicated: marker must REMAIN"; fi
+rm -rf "$tmp"
+
+# 8f. --dry-run must NEVER mutate the shared ledger via the branch-wide gate
+# 4c check, even when an earlier round head carries an `agreed` finding that
+# `review-round.sh promote` would otherwise flip to `verdict=fixed` as a side
+# effect of computing still-open (HIMMEL-3027 CR, coderabbitai: a real
+# `promote` call amends the ledger; --dry-run's contract is report-only).
+# Reproduces the exact shape CodeRabbit flagged: an `agreed`-disposed row at
+# an earlier round, tip fully adjudicated -- a non-dry-run run would call
+# promote and it would write; --dry-run must skip that call entirely.
+make_repo || exit 1
+_r1="${sha:0:8}"
+(cd "$tmp" && echo x >> f.txt && git commit -qam "round 2" && git push -q origin feat/x) >/dev/null 2>&1
+_tip=$(git -C "$tmp" rev-parse --verify refs/heads/feat/x)
+write_marker "$tmp" "$_tip"
+write_ledger "$tmp" \
+    "$(printf '{"kind":"finding","head":"%s","branch":"feat/x","model":"codex","finding_id":"r1-agreed","severity":"imp","file":"a.sh","line":1,"verdict":"agreed"}' "$_r1")" \
+    "$(printf '{"kind":"finding","head":"%s","branch":"feat/x","model":"codex","finding_id":"r2-fixed","severity":"sug","file":"a.sh","line":3,"verdict":"fixed"}' "${_tip:0:8}")" \
+    "$(avail_ok "${_tip:0:8}")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+_ledger_before="$(cat "$tmp/.git/cr-critic-scores.jsonl")"
+run_clear "$tmp" 0 "--dry-run with a promotable earlier-round row -> exit 0, gate 4c skipped" --dry-run
+if marker_exists "$tmp"; then pass; else fail "8f dry-run: marker must REMAIN"; fi
+_ledger_after="$(cat "$tmp/.git/cr-critic-scores.jsonl")"
+if [ "$_ledger_before" = "$_ledger_after" ]; then pass; else
+    fail "8f dry-run must NEVER write to the shared ledger -- content changed: before=[$_ledger_before] after=[$_ledger_after]"; fi
+if grepq "$LAST_CLEAR_OUT" -F 'skipping the branch-wide still-open check'; then pass; else
+    fail "8f dry-run must say it skipped the mutating branch-wide check: $LAST_CLEAR_OUT"; fi
 rm -rf "$tmp"
 
 # 5a-5e. HIMMEL-2128 — CR_FLOOR_FALLBACK=claude-only gate-3b escape. All five
@@ -2209,6 +2276,22 @@ write_ledger "$tmp" "$(avail_ok_claude "${sha:0:8}")" \
     "$(avail_reason "${sha:0:8}" glm unavailable keep-one-skipped)"
 run_clear "$tmp" 14 "5i one exhausted + one deselected (reason=keep-one-skipped) non-Claude lane + knob set -> exit 14"
 if marker_exists "$tmp"; then pass; else fail "5i deselected-but-available lane: marker must REMAIN"; fi
+rm -rf "$tmp"
+unset CR_FLOOR_FALLBACK
+
+# 5j (HIMMEL-3110). reason=quota-long specifically -- the exact bucket
+# failure-classify.sh now emits for codex's own usage-limit wording (a
+# multi-day-out absolute reset date). 5a only pins the literal reason
+# "quota"; this closes the loop for the actual string the fixed classifier
+# produces, so a future narrowing of EXHAUSTION_REASONS' membership away
+# from "quota-long" specifically would be caught here, not just generically.
+export CR_FLOOR_FALLBACK=claude-only
+make_repo || exit 1
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_claude "${sha:0:8}")" "$(avail_reason "${sha:0:8}" codex unavailable quota-long)"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 0 "5j reason=quota-long (codex usage-limit bucket, HIMMEL-3110) + claude ok -> exit 0"
+if marker_exists "$tmp"; then fail "5j floor-fallback accepted: marker should be GONE"; else pass; fi
 rm -rf "$tmp"
 unset CR_FLOOR_FALLBACK
 

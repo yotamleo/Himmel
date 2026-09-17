@@ -45,20 +45,28 @@ cleanup() {
 trap cleanup EXIT
 
 # HIMMEL-1960: validate_arm_inputs refuses to arm when the semantic backend's
-# credential (kimi -> MOONSHOT_API_KEY) is not readable from the .env that
-# survives to fire time. GRAPHMAP_DOTENV_ROOT pins WHICH .env is consulted, so
-# the suite asserts both outcomes without depending on the operator's real .env
-# — before this seam the negative test only passed on a machine that happened
-# not to have the key, i.e. it would have broken the moment someone followed
-# the arm instructions. Populated in setup_dotenv_root below (TMP_ROOT is not
-# created until later in this file).
+# credential is not readable from the .env that survives to fire time (an
+# API-key backend like glm/deepseek; claude-cli itself is credential-free,
+# HIMMEL-2101 — kimi/MOONSHOT_API_KEY, HIMMEL-1960's original case, is
+# retired). GRAPHMAP_DOTENV_ROOT pins WHICH .env is consulted, so the suite
+# asserts both outcomes without depending on the operator's real .env — before
+# this seam the negative test only passed on a machine that happened not to
+# have the key, i.e. it would have broken the moment someone followed the arm
+# instructions. Populated in setup_dotenv_root below (TMP_ROOT is not created
+# until later in this file).
 DOTENV_ROOT=""
 DOTENV_ROOT_EMPTY=""
 setup_dotenv_root() {
     DOTENV_ROOT="$TMP_ROOT/dotenv-root"
     DOTENV_ROOT_EMPTY="$TMP_ROOT/dotenv-root-empty"
     mkdir -p "$DOTENV_ROOT" "$DOTENV_ROOT_EMPTY"
-    printf 'MOONSHOT_API_KEY=test-moonshot-key-not-a-real-credential
+    # HIMMEL-2101: BACKEND is claude-cli, which validate_backend_credential
+    # classifies as credential-free (`return 0` before ever reading a key
+    # var), so this .env's content is inert for the default (ambient) path —
+    # kept as a placeholder .env only so GRAPHMAP_DOTENV_ROOT points at a real
+    # directory; ZAI_API_KEY/DEEPSEEK_API_KEY are the only keys the check can
+    # still fail on, and no test exercises that path (BACKEND has no flag).
+    printf 'ZAI_API_KEY=test-zai-key-not-a-real-credential
 ' > "$DOTENV_ROOT/.env"
     export GRAPHMAP_DOTENV_ROOT="$DOTENV_ROOT"
     # Announces the hermetic suite; the credential seam refuses to redirect
@@ -189,10 +197,12 @@ export CADENCE_WSH_POWERSHELL="$FAKE_WSH_POWERSHELL"
 # Fake `graphify` on PATH (HIMMEL-1070, updated HIMMEL-1948): arm now resolves
 # it via `command -v graphify` and FAILS FAST when it is absent, because EVERY
 # armed task (semantic via refresh-graph-map.sh, structural directly) shells it
-# at fire time under the scheduler's minimal PATH. Neither pair shells `claude`
-# any more (BACKEND is kimi, not claude-cli). A stub keeps the suite
-# deterministic on machines with and without a real CLI installed; like the bash
-# stub it is never fired, only resolved + its dirname read.
+# at fire time under the scheduler's minimal PATH. The semantic pair's
+# claude-cli backend ALSO shells the local `claude` CLI internally (HIMMEL-2101,
+# restoring the pre-HIMMEL-1948 shape — kimi is retired), so a matching `claude`
+# stub is set up right below. Stubs keep the suite deterministic on machines
+# with and without the real CLIs installed; like the bash stub they are never
+# fired, only resolved + their dirname read.
 #
 # It lives in its OWN dir, entered on PATH in POSIX form, for two reasons the
 # `bin` dir above cannot serve: (1) TMP_ROOT is cygpath -m'd (C:/... mixed form)
@@ -232,6 +242,34 @@ for _d in $PATH; do
     PATH_NOGRAPHIFY="${PATH_NOGRAPHIFY:+$PATH_NOGRAPHIFY:}$_d"
 done
 IFS=$_oldifs
+
+# Fake `claude` on PATH (HIMMEL-2101, restoring the pre-HIMMEL-1948 shape):
+# validate_arm_inputs resolves it via `command -v claude`, semantic pair only
+# (--ast-only skips it, same as the backend credential), and FAILS FAST when it
+# is absent — graphify's claude-cli backend shells it internally at fire time.
+# Same rationale/placement as GRAPHIFY_BIN_DIR above (own dir, POSIX form on
+# PATH — TMP_ROOT's cygpath -m form is invisible to Git-Bash PATH lookup).
+CLAUDE_BIN_DIR="$TMP_ROOT/claude-bin"
+mkdir -p "$CLAUDE_BIN_DIR"
+printf '#!/bin/sh\nexit 0\n' > "$CLAUDE_BIN_DIR/claude"
+chmod +x "$CLAUDE_BIN_DIR/claude"
+CLAUDE_BIN_DIR_PATH="$CLAUDE_BIN_DIR"
+if command -v cygpath >/dev/null 2>&1; then
+    CLAUDE_BIN_DIR_PATH=$(cygpath -u "$CLAUDE_BIN_DIR")
+fi
+
+# A PATH with graphify resolvable (GRAPHIFY_BIN_DIR_PATH) but every dir
+# carrying a real `claude` filtered out — same construction as
+# PATH_NOGRAPHIFY, mirrored for the claude fail-fast probe below.
+PATH_NOCLAUDE=""
+_oldifs=$IFS; IFS=:
+for _d in $PATH; do
+    [ -n "$_d" ] || continue
+    if [ -x "$_d/claude" ] || [ -x "$_d/claude.exe" ] || [ -x "$_d/claude.cmd" ]; then continue; fi
+    PATH_NOCLAUDE="${PATH_NOCLAUDE:+$PATH_NOCLAUDE:}$_d"
+done
+IFS=$_oldifs
+PATH_NOCLAUDE="$GRAPHIFY_BIN_DIR_PATH:$PATH_NOCLAUDE"
 
 # Hermeticity: point HOME/USERPROFILE at the temp dir so a stray BAT_DIR default
 # (should the seam ever be dropped) can't land under the real user profile.
@@ -329,7 +367,7 @@ CRON_DIR="$TMP_ROOT/cron-runners"
 
 run_cron() {
     env OSTYPE=linux-gnu GRAPHMAP_CRONTAB="$FAKE_CRONTAB" \
-        GRAPHMAP_BAT_DIR="$CRON_DIR" PATH="$TMP_ROOT/bin:$GRAPHIFY_BIN_DIR_PATH:$PATH" \
+        GRAPHMAP_BAT_DIR="$CRON_DIR" PATH="$TMP_ROOT/bin:$GRAPHIFY_BIN_DIR_PATH:$CLAUDE_BIN_DIR_PATH:$PATH" \
         "$REAL_BASH" "$SCRIPT" "$@"
 }
 
@@ -386,52 +424,40 @@ else
     fail "failed arm left state behind" "$(ls -a "$CRON_DIR" 2>/dev/null; cat "$CSTATE/crontab" 2>/dev/null)"
 fi
 
-# Test C13b: arm fails fast when the semantic backend's credential is missing
-# (HIMMEL-1960) --------------------------------------------------------------
+# Test C13b: arm fails fast when `claude` is not on PATH (HIMMEL-2101,
+# restoring the pre-HIMMEL-1948 shape) ---------------------------------------
 #
-# HIMMEL-1948 moved the semantic pair onto the `kimi` backend but nothing
-# checked MOONSHOT_API_KEY, so arm could succeed while every weekly run then
-# died unattended -- a cadence that reports ARMED and produces nothing. This is
-# not hypothetical: the credential was absent from this repo's .env when the
-# check was written, so an arm at that moment WOULD have been inert.
-#
-# Deterministic on ANY machine: GRAPHMAP_DOTENV_ROOT points at an EMPTY
-# directory, so no .env can satisfy the check no matter how the operator's real
-# one is configured, and the env var is unset in the subshell.
+# BACKEND is claude-cli again (kimi is retired — operator ruling, there is no
+# kimi backend), which needs no credential (validate_backend_credential
+# classifies claude|claude-cli as credential-free) but DOES shell the local
+# `claude` CLI internally at fire time, via graphify. Mirrors the graphify
+# fail-fast test directly above: PATH carries graphify but not claude.
 
-echo "TEST: cron arm fails fast when the backend credential is missing"
-rc=0; out=$(unset MOONSHOT_API_KEY; GRAPHMAP_DOTENV_ROOT="$DOTENV_ROOT_EMPTY" run_cron arm --vault "$VAULT" 2>&1) || rc=$?
-assert_rc "cron arm without the kimi credential -> rc 2" 2 "$rc"
-assert_contains "missing-credential error names the variable" "MOONSHOT_API_KEY" "$out"
-assert_contains "missing-credential error explains the armed-and-inert risk" \
-    "report ARMED while every weekly semantic run fails" "$out"
+echo "TEST: cron arm fails fast when claude is not on PATH"
+rc=0; out=$(env OSTYPE=linux-gnu GRAPHMAP_CRONTAB="$FAKE_CRONTAB" \
+    GRAPHMAP_BAT_DIR="$CRON_DIR" PATH="$PATH_NOCLAUDE" \
+    "$REAL_BASH" "$SCRIPT" arm --vault "$VAULT" 2>&1) || rc=$?
+assert_rc "cron arm without claude -> rc 2" 2 "$rc"
+assert_contains "missing-claude error names the CLI" "'claude' not on PATH at arm time" "$out"
 if [ ! -f "$CSTATE/crontab" ] && [ ! -d "$CRON_DIR" ]; then
-    pass "credential-failed arm installed nothing"
+    pass "claude-missing arm installed nothing"
 else
-    fail "credential-failed arm left state behind" "$(ls -a "$CRON_DIR" 2>/dev/null; cat "$CSTATE/crontab" 2>/dev/null)"
+    fail "claude-missing arm left state behind" "$(ls -a "$CRON_DIR" 2>/dev/null; cat "$CSTATE/crontab" 2>/dev/null)"
 fi
 
-# Test C13c: a credential present ONLY in the arming shell's environment
-# (CR r2/r5 codex-2) ----------------------------------------------------------
+# Test C13c: a full (non --ast-only) arm needs no backend credential at all
+# (HIMMEL-2101) ---------------------------------------------------------------
 #
-# Not accepted as proof on EITHER scheduler. Both start with their own
-# environment and the generated runners carry no secrets, so a shell export
-# cannot be shown to reach the weekly run — and "is this export persistent?" is
-# precisely what bash cannot answer here. .env is the source refresh-graph-map.sh
-# reads at fire time, so that is what the gate requires.
+# HIMMEL-1960 gated the kimi-backend era's MOONSHOT_API_KEY requirement; now
+# that BACKEND is claude-cli again, validate_backend_credential's
+# `claude|claude-cli) return 0` arm authenticates via the operator's own
+# Claude Code subscription, so arm must succeed with no credential env/.env
+# ANYWHERE (claude itself still needs to be on PATH — see C13b above).
 
-echo "TEST: cron arm refuses a credential that only exists in the environment"
-rc=0; out=$(MOONSHOT_API_KEY=env-only-key GRAPHMAP_DOTENV_ROOT="$DOTENV_ROOT_EMPTY" \
-    run_cron arm --vault "$VAULT" 2>&1) || rc=$?
-assert_rc "cron env-only credential -> rc 2" 2 "$rc"
-assert_contains "cron env-only refusal explains why a shell export is not proof" \
-    "exported in THIS shell is deliberately not accepted" "$out"
-assert_not_contains "cron env-only refusal does not print the key" "env-only-key" "$out"
-if [ ! -f "$CSTATE/crontab" ] && [ ! -d "$CRON_DIR" ]; then
-    pass "cron env-only refusal installed nothing"
-else
-    fail "cron env-only refusal left state behind" "$(ls -a "$CRON_DIR" 2>/dev/null; cat "$CSTATE/crontab" 2>/dev/null)"
-fi
+echo "TEST: cron arm needs no backend credential (claude-cli authenticates via subscription)"
+rc=0; out=$(unset MOONSHOT_API_KEY ZAI_API_KEY DEEPSEEK_API_KEY; GRAPHMAP_DOTENV_ROOT="$DOTENV_ROOT_EMPTY" \
+    run_cron arm --vault "$VAULT" --dry-run 2>&1) || rc=$?
+assert_rc "cron arm --dry-run succeeds with no backend credential anywhere" 0 "$rc"
 
 # Test C2: arm --dry-run touches nothing --------------------------------------
 
@@ -482,17 +508,10 @@ assert_registry "cron arm registers both weekly graphmap flows" '[.flows[] | sel
 assert_registry "cron arm registers both expected task names" '[.expected_tasks[] | select(. == "HIMMEL-GraphMap-Luna" or . == "HIMMEL-GraphMap-Himmel")] | length == 2'
 assert_registry "cron arm registers both ast graphmap flows" '[.flows[] | select(.name == "graphmap-ast-luna" or .name == "graphmap-ast-himmel")] | length == 2'
 assert_registry "cron arm registers both ast expected task names" '[.expected_tasks[] | select(. == "HIMMEL-GraphMapAst-Luna" or . == "HIMMEL-GraphMapAst-Himmel")] | length == 2'
-# PR-B panel r2, codex-7: the registered flow name must be DERIVED from the
-# SAME corpus-slug computation the runner itself uses (basename(HIMMEL_ROOT),
-# sanitized) -- not a hardcoded "graph-publish-himmel" literal. This checkout
-# is NOT named "himmel" (it's a worktree), so this assertion only passes if
-# the derivation is real: a hardcoded literal would register
-# "graph-publish-himmel" here, which would never match a flow-run row this
-# checkout's own graph-cadence.sh actually emits.
-EXPECTED_PUBLISH_SLUG="$(basename "$HIMMEL_ROOT_EXP" | tr -c 'A-Za-z0-9._-' '-' | sed -e 's/-\{2,\}/-/g' -e 's/^-//' -e 's/-$//')"
-assert_registry "cron arm registers the publish flow under its DERIVED name, not a hardcoded literal" \
-    ".flows[] | select(.name == \"graph-publish-${EXPECTED_PUBLISH_SLUG}\" and .cadence_seconds == 21600)"
-assert_registry "cron arm registers the publish task name" '.expected_tasks[] | select(. == "HIMMEL-GraphPublish-Himmel")'
+# The publish leg (HIMMEL-GraphPublish-Himmel) is opt-in via --with-publish
+# (HIMMEL-3075) and is NOT part of this default arm -- its registration
+# (under its slug-DERIVED name, PR-B panel r2 codex-7) is covered in the
+# dedicated publish-leg fixture below, both with and without the flag.
 # Structural (AST) pair: marker-tagged, own runner files. luna is DAILY and
 # himmel HOURLY since HIMMEL-1960. The luna assertion is made against THAT
 # ENTRY'S OWN LINE, not the whole crontab: himmel's hourly `15 * * * *`
@@ -541,7 +560,7 @@ assert_contains "luna runner fires refresh-graph-map.sh"   "refresh-graph-map.sh
 assert_contains "luna runner names the luna corpus"        "--name luna"          "$luna_sh"
 assert_contains "luna runner sets the luna slug"           "--slug graphify-luna-map" "$luna_sh"
 assert_contains "luna runner sets the luna corpus-tag"     "--corpus-tag luna"    "$luna_sh"
-assert_contains "luna runner uses the kimi backend"        "--backend kimi --corpus-tag" "$luna_sh"
+assert_contains "luna runner uses the claude-cli backend"  "--backend claude-cli --corpus-tag" "$luna_sh"
 assert_contains "luna runner sets the luna title"          "Graphify Luna Map"    "$luna_sh_plain"
 assert_contains "luna runner publishes into 60-Maps"       "60-Maps"              "$luna_sh_plain"
 # Strong corpus-root asserts (HIMMEL-829 CR, pr-test-analyzer): the luna map
@@ -553,7 +572,7 @@ assert_contains "luna runner corpus-root is the vault"     "--corpus-root $VAULT
 assert_contains "himmel runner names the himmel corpus"    "--name himmel"        "$himmel_sh"
 assert_contains "himmel runner sets the himmel slug"       "--slug graphify-himmel-map" "$himmel_sh"
 assert_contains "himmel runner sets the himmel corpus-tag" "--corpus-tag himmel"  "$himmel_sh"
-assert_contains "himmel runner uses the kimi backend"      "--backend kimi --corpus-tag" "$himmel_sh"
+assert_contains "himmel runner uses the claude-cli backend" "--backend claude-cli --corpus-tag" "$himmel_sh"
 assert_contains "himmel runner corpus-root is the himmel repo" "--corpus-root $HIMMEL_ROOT_EXP" "$himmel_sh_plain"
 assert_contains "himmel runner sets the himmel title"      "Graphify Himmel Map"  "$himmel_sh_plain"
 assert_contains "luna runner cds into himmel root" "cd $HIMMEL_ROOT_EXP" "$luna_sh_plain"
@@ -573,6 +592,12 @@ for what in luna himmel; do
     # shellcheck disable=SC2016  # literal $PATH — the runner expands it at fire time
     assert_contains "$what runner prepends the graphify dir to PATH" \
         "export PATH=$GRAPHIFY_BIN_DIR_PATH:\$PATH" "${body//\\/}"
+    # HIMMEL-2101 (restoring the pre-HIMMEL-1948 shape): the claude-cli
+    # backend shells the local `claude` CLI internally, so the semantic
+    # runner must ALSO pin its dir onto PATH the same way.
+    # shellcheck disable=SC2016  # literal $PATH — the runner expands it at fire time
+    assert_contains "$what runner prepends the claude dir to PATH" \
+        "export PATH=$CLAUDE_BIN_DIR_PATH:\$PATH" "${body//\\/}"
 done
 
 # Test C4b: structural (AST) runner .sh fires the promote-lock wrapper
@@ -644,7 +669,7 @@ echo "TEST: cron status summarises run logs"
     printf '[graphify extract] chunk 149/314 done\r\n'
 } > "$CRON_DIR/graphmap-luna.log"
 # shellcheck disable=SC2016  # the $ is graphify's literal cost prefix, not a variable
-printf '[graphify extract] chunk 12/12 done\r\n[graphify extract] tokens: 144,540 in / 10,669 out, est. cost (~kimi): $0.1234\r\n' \
+printf '[graphify extract] chunk 12/12 done\r\n[graphify extract] tokens: 144,540 in / 10,669 out, est. cost (~claude): $0.1234\r\n' \
     > "$CRON_DIR/graphmap-himmel.log"
 printf 'refresh-graph-map: nothing to do\r\n' > "$CRON_DIR/graphmap-ast-luna.log"
 
@@ -655,7 +680,7 @@ assert_contains "storm log reports last chunk reached" "last chunk 149/314" "$ou
 assert_contains "storm log counts hollow responses"     "20 hollow responses" "$out"
 assert_contains "storm log flags the storm"           "HOLLOW-BISECT STORM (HIMMEL-1901)" "$out"
 assert_contains "healthy log reports token totals" \
-    "run summary: 144,540 in / 10,669 out, est. cost (~kimi): \$0.1234 | last chunk 12/12 | 0 hollow responses" "$out"
+    "run summary: 144,540 in / 10,669 out, est. cost (~claude): \$0.1234 | last chunk 12/12 | 0 hollow responses" "$out"
 # One line per marker-bearing log, and no storm marker on the healthy one:
 # exactly two summaries across the four logs (luna + himmel), never three.
 summary_lines=$(grep -c -F 'run summary:' <<< "$out" || true)
@@ -752,6 +777,7 @@ T_LUNA="HIMMEL-GraphMap-Luna"
 T_HIMMEL="HIMMEL-GraphMap-Himmel"
 T_AST_LUNA="HIMMEL-GraphMapAst-Luna"
 T_AST_HIMMEL="HIMMEL-GraphMapAst-Himmel"
+T_PUBLISH="HIMMEL-GraphPublish-Himmel"
 
 echo "TEST: cron arm --ast-only --dry-run skips the semantic pair entirely"
 out=$(run_cron arm --vault "$VAULT" --ast-only --dry-run)
@@ -762,10 +788,11 @@ assert_not_contains "ast-only dry-run never fires refresh-graph-map.sh" "refresh
 assert_contains "ast-only dry-run still has the daily ast-luna entry" "05 00 * * *" "$out"
 assert_contains "ast-only dry-run still has the hourly ast-himmel entry" "15 * * * *" "$out"
 
-echo "TEST: cron arm --ast-only needs no semantic-backend credential"
-rc=0; out=$(unset MOONSHOT_API_KEY; GRAPHMAP_DOTENV_ROOT="$DOTENV_ROOT_EMPTY" \
-    run_cron arm --vault "$VAULT" --ast-only 2>&1) || rc=$?
-assert_rc "ast-only arm succeeds with no MOONSHOT_API_KEY anywhere" 0 "$rc"
+echo "TEST: cron arm --ast-only needs no semantic-backend credential or claude on PATH"
+rc=0; out=$(unset MOONSHOT_API_KEY ZAI_API_KEY DEEPSEEK_API_KEY; GRAPHMAP_DOTENV_ROOT="$DOTENV_ROOT_EMPTY" \
+    env OSTYPE=linux-gnu GRAPHMAP_CRONTAB="$FAKE_CRONTAB" GRAPHMAP_BAT_DIR="$CRON_DIR" \
+    PATH="$PATH_NOCLAUDE" "$REAL_BASH" "$SCRIPT" arm --vault "$VAULT" --ast-only 2>&1) || rc=$?
+assert_rc "ast-only arm succeeds with no credential and no claude on PATH" 0 "$rc"
 tab=$(cat "$CSTATE/crontab" 2>/dev/null || echo MISSING)
 if [ "$(grep -c 'HIMMEL-GraphMap' "$CSTATE/crontab" 2>/dev/null)" -eq 2 ]; then
     pass "ast-only arm installed exactly two cadence entries"
@@ -936,7 +963,7 @@ EVIL_VAULT="$TMP_ROOT/va&ult \$X y"
 EVIL_DIR="$TMP_ROOT/cr%on rnr"
 mkdir -p "$EVIL_VAULT"
 out=$(env OSTYPE=linux-gnu GRAPHMAP_CRONTAB="$FAKE_CRONTAB" \
-    GRAPHMAP_BAT_DIR="$EVIL_DIR" PATH="$TMP_ROOT/bin:$GRAPHIFY_BIN_DIR_PATH:$PATH" \
+    GRAPHMAP_BAT_DIR="$EVIL_DIR" PATH="$TMP_ROOT/bin:$GRAPHIFY_BIN_DIR_PATH:$CLAUDE_BIN_DIR_PATH:$PATH" \
     "$REAL_BASH" "$SCRIPT" arm --vault "$EVIL_VAULT")
 luna_sh=$(cat "$EVIL_DIR/graphmap-luna.sh" 2>/dev/null || echo MISSING)
 assert_contains "ampersand %q-escaped in runner" 'va\&ult' "$luna_sh"
@@ -1000,7 +1027,7 @@ chmod +x "$FAKE_CRONTAB2"
 CRON_DIR2="$TMP_ROOT/cron-runners2"
 run_cron2() {
     env OSTYPE=linux-gnu GRAPHMAP_CRONTAB="$FAKE_CRONTAB2" \
-        GRAPHMAP_BAT_DIR="$CRON_DIR2" PATH="$TMP_ROOT/bin:$GRAPHIFY_BIN_DIR_PATH:$PATH" \
+        GRAPHMAP_BAT_DIR="$CRON_DIR2" PATH="$TMP_ROOT/bin:$GRAPHIFY_BIN_DIR_PATH:$CLAUDE_BIN_DIR_PATH:$PATH" \
         "$REAL_BASH" "$SCRIPT" "$@"
 }
 # "HIMMEL-GraphMapExtra" starts with the old dash-less prefix match
@@ -1074,8 +1101,20 @@ run_cron3() {
         "$REAL_BASH" "$SCRIPT" "$@"
 }
 
-echo "TEST: cron arm --ast-only registers the publish leg (crontab entry + runner)"
+echo "TEST: cron arm --ast-only omits the publish leg by default (HIMMEL-3075)"
 out=$(run_cron3 arm --vault "$VAULT" --ast-only 2>&1)
+assert_not_contains "arm banner without --with-publish does not name the publish task" "HIMMEL-GraphPublish-Himmel" "$out"
+tab3=$(cat "$CSTATE3/crontab" 2>/dev/null || echo MISSING)
+assert_not_contains "no publish crontab entry without --with-publish" "HIMMEL-GraphPublish-Himmel" "$tab3"
+if [ ! -e "$CRON_DIR3/graphmap-publish-himmel.sh" ]; then
+    pass "no publish runner written without --with-publish"
+else
+    fail "publish runner written without --with-publish" "$(ls "$CRON_DIR3" 2>/dev/null)"
+fi
+run_cron3 disarm >/dev/null 2>&1
+
+echo "TEST: cron arm --ast-only --with-publish registers the publish leg (crontab entry + runner)"
+out=$(run_cron3 arm --vault "$VAULT" --ast-only --with-publish 2>&1)
 assert_contains "arm banner names the publish task" "HIMMEL-GraphPublish-Himmel" "$out"
 tab3=$(cat "$CSTATE3/crontab" 2>/dev/null || echo MISSING)
 assert_contains "publish crontab entry present" "# HIMMEL-GraphPublish-Himmel" "$tab3"
@@ -1105,6 +1144,17 @@ assert_contains "publish runner fires graph-cadence.sh" "graph-cadence.sh" "$pub
 # shape does NOT fit this script).
 assert_contains "publish runner passes --corpus-root explicitly" "--corpus-root" "$publish_sh"
 assert_contains "publish runner format stamp present" "# himmel-cadence-runner-format: $FMT" "$publish_sh"
+# PR-B panel r2, codex-7: the registered flow name must be DERIVED from the
+# SAME corpus-slug computation the runner itself uses (basename(HIMMEL_ROOT),
+# sanitized) -- not a hardcoded "graph-publish-himmel" literal. This checkout
+# is NOT named "himmel" (it's a worktree), so this assertion only passes if
+# the derivation is real: a hardcoded literal would register
+# "graph-publish-himmel" here, which would never match a flow-run row this
+# checkout's own graph-cadence.sh actually emits.
+EXPECTED_PUBLISH_SLUG="$(basename "$HIMMEL_ROOT_EXP" | tr -c 'A-Za-z0-9._-' '-' | sed -e 's/-\{2,\}/-/g' -e 's/^-//' -e 's/-$//')"
+assert_registry "cron arm --with-publish registers the publish flow under its DERIVED name, not a hardcoded literal" \
+    ".flows[] | select(.name == \"graph-publish-${EXPECTED_PUBLISH_SLUG}\" and .cadence_seconds == 21600)"
+assert_registry "cron arm --with-publish registers the publish task name" '.expected_tasks[] | select(. == "HIMMEL-GraphPublish-Himmel")'
 
 echo "TEST: cron status reports the publish leg's own schedule + summary"
 out=$(run_cron3 status)
@@ -1122,11 +1172,74 @@ else
 fi
 
 echo "TEST: cron arm --ast-only twice without --force dedup-blocks on the publish leg too"
-run_cron3 arm --vault "$VAULT" --ast-only >/dev/null 2>&1
-rc=0; out=$(run_cron3 arm --vault "$VAULT" --ast-only 2>&1) || rc=$?
+run_cron3 arm --vault "$VAULT" --ast-only --with-publish >/dev/null 2>&1
+rc=0; out=$(run_cron3 arm --vault "$VAULT" --ast-only --with-publish 2>&1) || rc=$?
 assert_rc "second --ast-only arm without --force blocked" 3 "$rc"
 assert_contains "dedup message can name the publish task" "HIMMEL-GraphPublish-Himmel" "$out"
 run_cron3 disarm >/dev/null 2>&1
+
+# ============================================================================
+# Darwin Full Disk Access arm-time warning (HIMMEL-3075, himmel#771), POSIX/
+# cron path. cron_arm is IDENTICAL on macos and linux (both take the crontab
+# branch of the platform case) except for this warning, so OSTYPE + HOME are
+# the only two hermetic seams needed to exercise the real Darwin branch
+# without a macOS machine -- this is a real control, not a stand-in for one
+# (the ticket's own caveat: TCC's actual grant behavior stays unvalidated
+# here regardless; this proves only that the branch fires on the right input).
+# ============================================================================
+
+CSTATE4="$TMP_ROOT/cron-state-darwin"
+mkdir -p "$CSTATE4"
+FAKE_CRONTAB4="$TMP_ROOT/crontab-fake-darwin.sh"
+cat >"$FAKE_CRONTAB4" <<FAKE
+#!/bin/sh
+CSTATE="$CSTATE4"
+FAKE
+cat >>"$FAKE_CRONTAB4" <<'FAKE'
+case "${1:-}" in
+    -l)
+        if [ -f "$CSTATE/crontab" ]; then
+            cat "$CSTATE/crontab"
+        else
+            echo "no crontab for fakeuser" >&2
+            exit 1
+        fi
+        ;;
+    -) cat > "$CSTATE/crontab" ;;
+    *) echo "crontab-fake: unsupported argv: $*" >&2; exit 64 ;;
+esac
+FAKE
+chmod +x "$FAKE_CRONTAB4"
+CRON_DIR4="$TMP_ROOT/cron-runners-darwin"
+FDA_HOME="$TMP_ROOT/fda-home"
+FDA_VAULT="$FDA_HOME/Documents/luna"
+mkdir -p "$FDA_VAULT"
+FDA_OUTSIDE_VAULT="$TMP_ROOT/fda-outside-vault"
+mkdir -p "$FDA_OUTSIDE_VAULT"
+run_fda() {
+    local ostype="$1"; shift
+    env OSTYPE="$ostype" HOME="$FDA_HOME" GRAPHMAP_CRONTAB="$FAKE_CRONTAB4" \
+        GRAPHMAP_BAT_DIR="$CRON_DIR4" PATH="$TMP_ROOT/bin:$GRAPHIFY_BIN_DIR_PATH:$CLAUDE_BIN_DIR_PATH:$PATH" \
+        "$REAL_BASH" "$SCRIPT" "$@"
+}
+
+echo "TEST: Darwin arm warns about Full Disk Access when the vault sits under ~/Documents"
+out=$(run_fda darwin23 arm --vault "$FDA_VAULT" --force)
+assert_contains "Darwin arm names the FDA requirement"        "Full Disk Access required" "$out"
+assert_contains "Darwin arm names cron itself as the grantee" "/usr/sbin/cron"             "$out"
+assert_contains "Darwin arm names himmel#771"                 "himmel#771"                 "$out"
+assert_contains "Darwin arm names the protected vault path"   "$FDA_VAULT"                 "$out"
+run_fda darwin23 disarm >/dev/null 2>&1
+
+echo "TEST: Darwin arm stays silent when the vault sits outside every TCC-protected folder"
+out=$(run_fda darwin23 arm --vault "$FDA_OUTSIDE_VAULT" --force)
+assert_not_contains "Darwin arm on an unprotected vault prints no FDA warning" "Full Disk Access" "$out"
+run_fda darwin23 disarm >/dev/null 2>&1
+
+echo "TEST: non-Darwin arm on the IDENTICAL protected vault path never warns (the control)"
+out=$(run_fda linux-gnu arm --vault "$FDA_VAULT" --force)
+assert_not_contains "Linux arm on the same protected path prints no FDA warning" "Full Disk Access" "$out"
+run_fda linux-gnu disarm >/dev/null 2>&1
 
 # ============================================================================
 # schtasks suite — Windows-only (cmd_arm needs cygpath; the cron suite above
@@ -1215,7 +1328,7 @@ BAT_DIR="$TMP_ROOT/bats"
 
 run_gc() {
     PIPELINE_UNUSED="" GRAPHMAP_SCHTASKS="$FAKE_SCHTASKS" GRAPHMAP_BAT_DIR="$BAT_DIR" \
-        PATH="$TMP_ROOT/bin:$GRAPHIFY_BIN_DIR_PATH:$PATH" "$REAL_BASH" "$SCRIPT" "$@"
+        PATH="$TMP_ROOT/bin:$GRAPHIFY_BIN_DIR_PATH:$CLAUDE_BIN_DIR_PATH:$PATH" "$REAL_BASH" "$SCRIPT" "$@"
 }
 
 # Test 1: usage errors ------------------------------------------------------
@@ -1247,26 +1360,18 @@ assert_contains "ast-himmel not armed" "not armed  HIMMEL-GraphMapAst-Himmel" "$
 
 # Test 4: arm --dry-run touches nothing -------------------------------------
 
-# Test 3b: the same rule on the schtasks path (CR r5 codex-2) -----------------
+# Test 3b: the same shared validate_arm_inputs path on schtasks (CR r5
+# codex-2; mirror of C13c, HIMMEL-2101) ---------------------------------------
 #
-# The mirror of C13c, and the reason the rule is uniform: an earlier revision
-# accepted an env-only key here with a warning, on the grounds that Task
-# Scheduler inherits PERSISTENT user/system variables. It does — but bash cannot
-# tell a persistent variable from a transient export, so that path let exactly
-# the armed-and-inert cadence this gate exists to prevent through on a guess.
+# cmd_arm and cron_arm both call validate_arm_inputs, so this pins the same
+# behavior on the schtasks side: BACKEND=claude-cli needs no credential at
+# all (validate_backend_credential's `claude|claude-cli) return 0`), unlike
+# the retired kimi backend HIMMEL-1960 originally gated here.
 
-echo "TEST: schtasks arm refuses a credential that only exists in the environment"
-rc=0; out=$(MOONSHOT_API_KEY=env-only-key GRAPHMAP_DOTENV_ROOT="$DOTENV_ROOT_EMPTY" \
+echo "TEST: schtasks arm needs no backend credential (claude-cli authenticates via subscription)"
+rc=0; out=$(unset MOONSHOT_API_KEY ZAI_API_KEY DEEPSEEK_API_KEY; GRAPHMAP_DOTENV_ROOT="$DOTENV_ROOT_EMPTY" \
     run_gc arm --vault "$VAULT" --dry-run 2>&1) || rc=$?
-assert_rc "schtasks env-only credential -> rc 2" 2 "$rc"
-assert_contains "schtasks env-only refusal points at .env" \
-    "Put MOONSHOT_API_KEY in .env" "$out"
-assert_not_contains "schtasks env-only refusal does not print the key" "env-only-key" "$out"
-if [ ! -d "$STATE/tasks" ] || [ "$(find "$STATE/tasks" -mindepth 1 2>/dev/null | wc -l)" -eq 0 ]; then
-    pass "schtasks env-only refusal registered nothing"
-else
-    fail "schtasks env-only refusal registered tasks" "$(ls "$STATE/tasks" 2>/dev/null)"
-fi
+assert_rc "schtasks arm --dry-run succeeds with no backend credential anywhere" 0 "$rc"
 
 echo "TEST: arm --dry-run prints plan, registers nothing"
 out=$(run_gc arm --vault "$VAULT" --dry-run)
@@ -1298,7 +1403,7 @@ fi
 # Test 5: arm registers both tasks with operator-decision defaults ----------
 
 echo "TEST: arm registers weekly luna Sunday 13:00 + weekly himmel Sunday 13:20 + hourly AST pair"
-out=$(run_gc arm --vault "$VAULT")
+out=$(run_gc arm --vault "$VAULT" --with-publish)
 assert_contains "arm banner" "GRAPHMAP CADENCE ARMED" "$out"
 luna_args=$(cat "$STATE/tasks/HIMMEL-GraphMap-Luna" 2>/dev/null || echo MISSING)
 himmel_args=$(cat "$STATE/tasks/HIMMEL-GraphMap-Himmel" 2>/dev/null || echo MISSING)
@@ -1371,7 +1476,7 @@ assert_contains "luna bat fires refresh-graph-map.sh" "refresh-graph-map.sh" "$l
 assert_contains "luna bat names the luna corpus"      "--name luna"          "$luna_bat"
 assert_contains "luna bat sets the luna slug"         "--slug graphify-luna-map" "$luna_bat"
 assert_contains "luna bat sets the luna corpus-tag"   "--corpus-tag luna"    "$luna_bat"
-assert_contains "luna bat uses the kimi backend"      "--backend kimi --corpus-tag" "$luna_bat"
+assert_contains "luna bat uses the claude-cli backend" "--backend claude-cli --corpus-tag" "$luna_bat"
 assert_contains "luna bat sets the luna title"        "Graphify Luna Map"    "$luna_bat"
 assert_contains "luna bat publishes into 60-Maps"     "60-Maps"              "$luna_bat"
 assert_contains "luna bat appends run log" 'graphmap-luna.log" 2>&1' "$luna_bat"
@@ -1392,7 +1497,7 @@ done
 assert_contains "himmel bat names the himmel corpus"    "--name himmel"        "$himmel_bat"
 assert_contains "himmel bat sets the himmel slug"       "--slug graphify-himmel-map" "$himmel_bat"
 assert_contains "himmel bat sets the himmel corpus-tag" "--corpus-tag himmel"  "$himmel_bat"
-assert_contains "himmel bat uses the kimi backend"      "--backend kimi --corpus-tag" "$himmel_bat"
+assert_contains "himmel bat uses the claude-cli backend" "--backend claude-cli --corpus-tag" "$himmel_bat"
 # Strong per-corpus-root asserts on the Windows path too (bat_payload is a
 # SEPARATE builder from the cron cron_payload, so the cron suite's exact asserts
 # don't guard a Windows-only swap). VAULT is already mixed-form here, so it
@@ -1539,7 +1644,7 @@ FAKE
 chmod +x "$FAKE_MV"
 rm -f "$STATE/mv-calls.log"
 out=$(PIPELINE_UNUSED="" GRAPHMAP_SCHTASKS="$FAKE_SCHTASKS" GRAPHMAP_BAT_DIR="$BAT_DIR" \
-    PATH="$MVREC_BIN_PATH:$TMP_ROOT/bin:$GRAPHIFY_BIN_DIR_PATH:$PATH" \
+    PATH="$MVREC_BIN_PATH:$TMP_ROOT/bin:$GRAPHIFY_BIN_DIR_PATH:$CLAUDE_BIN_DIR_PATH:$PATH" \
     "$REAL_BASH" "$SCRIPT" arm --vault "$VAULT" --force 2>&1)
 assert_contains "re-arm under the recording mv still succeeds" "GRAPHMAP CADENCE ARMED" "$out"
 mvlog=$(cat "$STATE/mv-calls.log" 2>/dev/null || echo MISSING)
@@ -1613,14 +1718,32 @@ assert_not_contains "schtasks ast-only dry-run has no himmel /create" "/tn $T_HI
 assert_contains "schtasks ast-only dry-run still creates ast-luna"   "/tn $T_AST_LUNA"   "$out"
 assert_contains "schtasks ast-only dry-run still creates ast-himmel" "/tn $T_AST_HIMMEL" "$out"
 
-echo "TEST: schtasks arm --ast-only needs no semantic-backend credential"
-rc=0; out=$(unset MOONSHOT_API_KEY; GRAPHMAP_DOTENV_ROOT="$DOTENV_ROOT_EMPTY" \
-    run_gc arm --vault "$VAULT" --ast-only 2>&1) || rc=$?
-assert_rc "schtasks ast-only arm succeeds with no MOONSHOT_API_KEY anywhere" 0 "$rc"
-if [ "$(find "$STATE/tasks" -mindepth 1 2>/dev/null | wc -l)" -eq 3 ]; then
-    pass "schtasks ast-only arm registered exactly three tasks (AST pair + publish leg, HIMMEL-2095)"
+echo "TEST: schtasks arm --ast-only needs no semantic-backend credential or claude on PATH"
+rc=0; out=$(unset MOONSHOT_API_KEY ZAI_API_KEY DEEPSEEK_API_KEY; GRAPHMAP_DOTENV_ROOT="$DOTENV_ROOT_EMPTY" \
+    PIPELINE_UNUSED="" GRAPHMAP_SCHTASKS="$FAKE_SCHTASKS" GRAPHMAP_BAT_DIR="$BAT_DIR" \
+    PATH="$PATH_NOCLAUDE" "$REAL_BASH" "$SCRIPT" arm --vault "$VAULT" --ast-only 2>&1) || rc=$?
+assert_rc "schtasks ast-only arm succeeds with no credential and no claude on PATH" 0 "$rc"
+if [ "$(find "$STATE/tasks" -mindepth 1 2>/dev/null | wc -l)" -eq 2 ]; then
+    pass "schtasks ast-only arm without --with-publish registers only the AST pair (HIMMEL-3075)"
 else
     fail "schtasks ast-only arm registered the wrong task count" "$(ls "$STATE/tasks" 2>/dev/null)"
+fi
+if [ ! -f "$STATE/tasks/HIMMEL-GraphPublish-Himmel" ]; then
+    pass "schtasks ast-only arm without --with-publish omits the publish task"
+else
+    fail "publish task registered without --with-publish" "$(ls "$STATE/tasks" 2>/dev/null)"
+fi
+run_gc disarm >/dev/null 2>&1
+
+echo "TEST: schtasks arm --ast-only --with-publish registers the AST pair + publish leg"
+rc=0; out=$(unset MOONSHOT_API_KEY ZAI_API_KEY DEEPSEEK_API_KEY; GRAPHMAP_DOTENV_ROOT="$DOTENV_ROOT_EMPTY" \
+    PIPELINE_UNUSED="" GRAPHMAP_SCHTASKS="$FAKE_SCHTASKS" GRAPHMAP_BAT_DIR="$BAT_DIR" \
+    PATH="$PATH_NOCLAUDE" "$REAL_BASH" "$SCRIPT" arm --vault "$VAULT" --ast-only --with-publish 2>&1) || rc=$?
+assert_rc "schtasks ast-only --with-publish arm succeeds with no credential and no claude on PATH" 0 "$rc"
+if [ "$(find "$STATE/tasks" -mindepth 1 2>/dev/null | wc -l)" -eq 3 ]; then
+    pass "schtasks ast-only --with-publish arm registered exactly three tasks (AST pair + publish leg, HIMMEL-2095)"
+else
+    fail "schtasks ast-only --with-publish arm registered the wrong task count" "$(ls "$STATE/tasks" 2>/dev/null)"
 fi
 if [ -f "$STATE/tasks/$T_AST_LUNA" ] && [ -f "$STATE/tasks/$T_AST_HIMMEL" ]; then
     pass "schtasks ast-only arm's two AST tasks are registered"
@@ -1673,6 +1796,49 @@ if [ "$(find "$STATE/tasks" -mindepth 1 2>/dev/null | wc -l)" -eq 5 ]; then
     pass "schtasks ast-only --force re-arm still leaves exactly five tasks total"
 else
     fail "unexpected task count after schtasks ast-only --force re-arm" "$(ls "$STATE/tasks")"
+fi
+run_gc disarm >/dev/null
+
+# Test 10d: --with-publish is opt-IN on the schtasks branch too (HIMMEL-3075,
+# CR round 1) ---------------------------------------------------------------
+#
+# The cron branch scopes --force's replacement with $own_match_re, which omits
+# the publish leg unless --with-publish is set, so a publish entry armed by an
+# earlier opt-in run survives an arm that doesn't ask for it. cmd_arm used to
+# filter $existing ONLY under --ast-only, so a plain `arm --force` deleted
+# every task list_existing returned -- publish included -- and then skipped
+# re-creating it, silently disarming the operator's opt-in leg. Assert the
+# schtasks branch now matches cron: the publish task is untouched, byte for
+# byte (a delete+recreate would also pass a mere existence check).
+
+echo "TEST: schtasks plain --force re-arm leaves an opt-in publish leg untouched"
+run_gc arm --vault "$VAULT" --with-publish >/dev/null
+publish_task_before=$(cat "$STATE/tasks/$T_PUBLISH" 2>/dev/null || echo MISSING)
+if [ "$publish_task_before" != MISSING ]; then
+    pass "precondition: --with-publish arm registered the publish task"
+else
+    fail "precondition failed: publish task not registered" "$(ls "$STATE/tasks" 2>/dev/null)"
+fi
+rc=0; out=$(run_gc arm --vault "$VAULT" --force 2>&1) || rc=$?
+assert_rc "plain --force re-arm over an armed publish leg succeeds" 0 "$rc"
+assert_not_contains "plain --force re-arm does not delete the publish task" \
+    "deleted scheduled task: $T_PUBLISH" "$out"
+publish_task_after=$(cat "$STATE/tasks/$T_PUBLISH" 2>/dev/null || echo MISSING)
+if [ "$publish_task_after" = "$publish_task_before" ]; then
+    pass "plain --force re-arm left the opt-in publish task byte-identical"
+else
+    fail "plain --force re-arm removed or rewrote the opt-in publish task" \
+        "before=$publish_task_before after=$publish_task_after tasks=$(ls "$STATE/tasks" 2>/dev/null)"
+fi
+if [ -f "$BAT_DIR/graphmap-publish-himmel.bat" ]; then
+    pass "plain --force re-arm left the publish .bat runner in place"
+else
+    fail "plain --force re-arm removed the publish .bat runner" "$(ls "$BAT_DIR" 2>/dev/null)"
+fi
+if [ "$(find "$STATE/tasks" -mindepth 1 2>/dev/null | wc -l)" -eq 5 ]; then
+    pass "plain --force re-arm still leaves exactly five tasks total"
+else
+    fail "unexpected task count after plain --force re-arm" "$(ls "$STATE/tasks")"
 fi
 run_gc disarm >/dev/null
 

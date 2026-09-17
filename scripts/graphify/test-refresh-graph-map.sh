@@ -22,12 +22,10 @@ WS="$(mktemp -d)"; trap 'rm -rf "$WS"' EXIT
 # keeps them inside the hermetic workspace this file's own EXIT trap sweeps.
 export TMPDIR="$WS/tmp"; mkdir -p "$TMPDIR"
 export GRAPHIFY_LEDGER="$WS/graphify-egress.jsonl"
-# Keep default claude/claude-cli + kimi cases hermetic: the runner's launching
-# shell may itself be routed through an Anthropic-compatible proxy or carry a
-# stale KIMI_BASE_URL (T40b assumes no inherited Kimi endpoint; the preflight
-# check at refresh-graph-map.sh:176 would otherwise misfire). Endpoint-specific
-# tests below set these explicitly.
-unset ANTHROPIC_BASE_URL KIMI_BASE_URL
+# Keep default claude/claude-cli cases hermetic: the runner's launching shell
+# may itself be routed through an Anthropic-compatible proxy. Endpoint-specific
+# tests below set ANTHROPIC_BASE_URL explicitly.
+unset ANTHROPIC_BASE_URL
 HERMETIC_HOME="$WS/hermetic-home"; mkdir -p "$HERMETIC_HOME/.claude"
 printf 'test-subscription-auth\n' > "$HERMETIC_HOME/.claude/.credentials.json"
 printf '{}\n' > "$HERMETIC_HOME/.claude/settings.json"
@@ -134,6 +132,59 @@ out=$( GRAPHIFY_MAP_BIN="$LOGBIN/graphify" bash "$SCRIPT" --name dtest --corpus-
 got_backend=$(awk 'prev=="--backend"{print; exit} {prev=$0}' "$BACKEND_LOG")
 [ "$got_backend" = "claude-cli" ] && pass "T1b default backend is exactly claude-cli" || fail "T1b default backend not exactly claude-cli (got: '$got_backend')"
 [ "$got_backend" != "deepseek" ] && pass "T1b default no longer deepseek" || fail "T1b default still uses deepseek"
+
+# --- T1c/T1d (HIMMEL-2983): harden-graph.py runs BETWEEN --update and
+# cluster-only, and is skipped entirely under --no-update. A CUSTOM stub is
+# required here: the shared $BIN/graphify stub above overwrites graph.json to
+# {"nodes":[],"links":[]} on BOTH --update and cluster-only, which would wipe
+# any edge harden adds before this test could observe it in the promoted
+# output. This stub's cluster-only branch touches only GRAPH_REPORT.md. ---
+T1C_BIN="$WS/bin-t1c"; mkdir -p "$T1C_BIN"
+cat > "$T1C_BIN/graphify" <<STUB
+#!/usr/bin/env bash
+target=""
+if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
+mkdir -p "\$target/graphify-out"
+if [ "\$1" = "cluster-only" ]; then
+  echo "CLUSTER-ONLY-RAN" >&2
+else
+  echo "UPDATE-RAN" >&2
+  cat > "\$target/graphify-out/graph.json" <<'GJSON'
+{"nodes":[{"id":"doc_x","label":"foo.mjs router","source_file":"docs/x.md","file_type":"concept"},{"id":"scripts_foo","label":"foo.mjs","source_file":"scripts/foo.mjs","file_type":"code","source_location":"L1"}],"links":[]}
+GJSON
+fi
+cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
+$REPORT_FIXTURE
+RPT
+exit 0
+STUB
+chmod +x "$T1C_BIN/graphify"
+T1C_CORPUS="$WS/t1c-vault"; mkdir -p "$T1C_CORPUS/notes"; printf '# n\ncontent\n' > "$T1C_CORPUS/notes/a.md"
+T1C_MAPS="$WS/t1c-maps"; mkdir -p "$T1C_MAPS"
+
+echo "T1c: harden-graph runs between --update and cluster-only"
+out=$( GRAPHIFY_MAP_BIN="$T1C_BIN/graphify" bash "$SCRIPT" --name t1c --corpus-root "$T1C_CORPUS" --backend claude-cli \
+  --maps-dir "$T1C_MAPS" --title T1C --slug t1c-map --corpus-tag t1c 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] || fail "T1c harden-wiring run exit 0 (got $rc): $out"
+upd_line=$(grep -n "^UPDATE-RAN$" <<<"$out" | head -1 | cut -d: -f1)
+harden_line=$(grep -n "^harden-graph:" <<<"$out" | head -1 | cut -d: -f1)
+cluster_line=$(grep -n "^CLUSTER-ONLY-RAN$" <<<"$out" | head -1 | cut -d: -f1)
+if [ -n "$upd_line" ] && [ -n "$harden_line" ] && [ -n "$cluster_line" ] \
+   && [ "$upd_line" -lt "$harden_line" ] && [ "$harden_line" -lt "$cluster_line" ]; then
+  pass "T1c harden-graph runs between --update and cluster-only"
+else
+  fail "T1c ordering wrong (update=$upd_line harden=$harden_line cluster=$cluster_line): $out"
+fi
+grep -q '"hardened": "doc-label-names-code-file"' "$T1C_CORPUS/graphify-out/graph.json" 2>/dev/null \
+  && pass "T1c promoted graph.json carries the harden bridge edge (survived cluster-only)" \
+  || fail "T1c bridge edge missing from promoted graph.json"
+
+echo "T1d: --no-update skips harden-graph entirely"
+rm -f "$T1C_MAPS/t1c-map.md"
+out=$( GRAPHIFY_MAP_BIN="$T1C_BIN/graphify" bash "$SCRIPT" --name t1c --corpus-root "$T1C_CORPUS" \
+  --maps-dir "$T1C_MAPS" --title T1C --slug t1c-map --no-update 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] || fail "T1d no-update run exit 0 (got $rc): $out"
+echo "$out" | grep -q "^harden-graph:" && fail "T1d --no-update must not invoke harden-graph.py" || pass "T1d --no-update skips harden-graph.py"
 
 # --- T2: --no-update publishes from an existing repo-local report without re-extracting ---
 printf 'SENTINEL-EXISTING' > "$CORPUS/graphify-out/graph.json"   # must NOT be overwritten under --no-update
@@ -1021,10 +1072,15 @@ out=$( GRAPHIFY_MAP_BIN="$MISSBIN/graphify" PATH="$MISSBIN:$PATH" \
   --maps-dir "$MISSMAPS" --title "Miss Map" --slug miss-map --corpus-tag miss 2>&1 ); rc=$?
 [ "$rc" -eq 2 ] && pass "T18 missing scratch graph.json fails loudly (rc=2)" \
   || fail "T18 missing scratch graph.json should fail loudly with rc=2 (got $rc): $out"
-echo "$out" | grep -q "missing required scratch artifact" \
-  && pass "T18 error names the missing-artifact failure" || fail "T18 error should mention missing required scratch artifact: $out"
-echo "$out" | grep -q "graph.json" \
-  && pass "T18 error names graph.json as the missing artifact" || fail "T18 error should name graph.json: $out"
+# HIMMEL-2983: harden-graph.py now runs immediately after --update, before the
+# staging-artifact guard below ever sees this scratch dir -- so a graph.json
+# genuinely missing after --update is now caught by harden's own "cannot read"
+# failure first, not by the later required-scratch-artifact check. Both are
+# fail-closed at rc=2 with graphify-out left unpromoted (proven below); only
+# the message text moved from the guard to harden.
+echo "$out" | grep -q "harden-graph failed -- graphify-out left unpromoted" \
+  && pass "T18 error names the harden-graph failure (graph.json unreadable pre-cluster-only)" \
+  || fail "T18 error should mention harden-graph failed: $out"
 cmp -s "$MISS_SNAPSHOT/graph.json" "$MISSCORPUS/graphify-out/graph.json" \
   && pass "T18 prior graph.json byte-identical after rejection" \
   || fail "T18 prior graph.json was mutated by a rejected refresh"
@@ -2484,42 +2540,43 @@ else
 fi
 unset probe_lo probe_up i suffix_used _GRAPHIFY_FS_CASE CORPUS_ROOT_CANON
 
-# --- T40 (HIMMEL-1748): native Kimi backend key wiring, backend passthrough,
-# scheduled-path egress preflight, and one allow+log ledger line per run. Run the
-# missing-key case from a separate git repo whose .env deliberately lacks the key
-# so the primary checkout's real .env cannot satisfy the hermetic negative case. ---
-KENVROOT="$WS/kimi-env-root"; mkdir -p "$KENVROOT"
-git -C "$KENVROOT" init -q 2>/dev/null
-printf 'UNRELATED_KEY=stub\n' > "$KENVROOT/.env"
+# --- T40 (HIMMEL-1748, kimi cases retired HIMMEL-2101): the native Kimi
+# backend (key wiring, backend passthrough, one allow+log ledger line per run,
+# custom-endpoint rejection) is deleted along with the backend itself —
+# operator ruling 2026-08-24/2026-09-15: kimi is retired, there is no kimi
+# backend. KCORPUS/KMAPS stay: later T40h+ (claude/claude-cli) and beyond
+# reuse them. ---
 KCORPUS="$WS/kcorpus"; KMAPS="$WS/kmaps"; mkdir -p "$KCORPUS/notes" "$KMAPS"
-printf '# kimi\ncontent\n' > "$KCORPUS/notes/a.md"
-KMISSING_CALLS="$WS/kimi-missing-calls.log"; : > "$KMISSING_CALLS"
-out=$( cd "$KENVROOT" && env -u MOONSHOT_API_KEY GRAPHIFY_CALL_LOG="$KMISSING_CALLS" GRAPHIFY_MAP_BIN="$BIN/graphify" \
-  bash "$SCRIPT" --name kimi-missing --corpus-root "$KCORPUS" --backend kimi \
-  --maps-dir "$KMAPS" --title "Kimi" --slug kimi-missing-map --corpus-tag kimi 2>&1 ); rc=$?
-{ [ "$rc" -eq 1 ] && grep -q "MOONSHOT_API_KEY" <<< "$out" && [ ! -s "$KMISSING_CALLS" ]; } \
-  && pass "T40a --backend kimi without MOONSHOT_API_KEY fails before graphify (rc=1)" \
-  || fail "T40a missing MOONSHOT_API_KEY should fail rc=1 before graphify and name the key (got $rc): $out calls=$(cat "$KMISSING_CALLS")"
+printf '# n\ncontent\n' > "$KCORPUS/notes/a.md"
 
-KCALLS="$WS/kimi-calls.log"; KLEDGER="$WS/kimi-ledger.jsonl"; : > "$KCALLS"; rm -f "$KLEDGER"
-out=$( MOONSHOT_API_KEY=stub GRAPHIFY_LEDGER="$KLEDGER" GRAPHIFY_CALL_LOG="$KCALLS" \
-  GRAPHIFY_MAP_BIN="$BIN/graphify" bash "$SCRIPT" --name kimi-ok --corpus-root "$KCORPUS" --backend kimi \
-  --maps-dir "$KMAPS" --title "Kimi" --slug kimi-ok-map --corpus-tag kimi 2>&1 ); rc=$?
-[ "$rc" -eq 0 ] || fail "T40b Kimi stub run exit 0 (got $rc): $out"
-awk '/--backend kimi( |$)/ { found=1 } END { exit !found }' "$KCALLS" \
-  && pass "T40b native --backend kimi passes through to graphify" \
-  || fail "T40b Kimi backend did not reach graphify: $(cat "$KCALLS")"
-kledger_lines=$(wc -l < "$KLEDGER" | tr -d ' ')
-if [ "$kledger_lines" -eq 1 ] && grep -q '"provider":"moonshot"' "$KLEDGER" \
-   && grep -q '"tool":"refresh-graph-map"' "$KLEDGER"; then
-  pass "T40b Kimi appends exactly one Moonshot refresh-graph-map ledger line"
-else
-  fail "T40b expected one Moonshot refresh-graph-map ledger line (lines=$kledger_lines): $(cat "$KLEDGER" 2>/dev/null)"
-fi
+# --backend kimi now has no case arm in refresh-graph-map.sh's own BACKEND
+# switch, so EFFECTIVE_PROVIDER stays empty and it hits the SAME
+# "no egress-matrix provider mapping" fail-closed refusal any other
+# unclassified backend literal does — not the old kimi-specific paths above.
+KCALLS_RETIRED="$WS/kimi-retired-calls.log"; : > "$KCALLS_RETIRED"
+out=$( GRAPHIFY_CALL_LOG="$KCALLS_RETIRED" GRAPHIFY_MAP_BIN="$BIN/graphify" \
+  bash "$SCRIPT" --name kimi-retired --corpus-root "$KCORPUS" --backend kimi \
+  --maps-dir "$KMAPS" --title "Kimi" --slug kimi-retired-map 2>&1 ); rc=$?
+{ [ "$rc" -eq 2 ] && grep -q "no egress-matrix provider mapping" <<< "$out" && [ ! -s "$KCALLS_RETIRED" ]; } \
+  && pass "T40a --backend kimi (retired, HIMMEL-2101) fails closed before graphify (no provider mapping)" \
+  || fail "T40a retired kimi backend should fail rc=2 before graphify (got $rc): $out calls=$(cat "$KCALLS_RETIRED")"
 
 # Arbitrary input strings in a JSONL ledger entry must be JSON-escaped completely,
 # including literal tab/newline/ESC bytes in the corpus path. One invocation still
 # produces exactly one physical line, and that line must parse as JSON.
+#
+# HIMMEL-2101 CR r2: this test (T40b2) was deleted when kimi retired because its
+# vehicle was `--backend kimi` -- the only matrix cell that ever reached
+# allow+log via this script's own corpora (see the T40f comment above). But the
+# allow+log)` ledger encoder in refresh-graph-map.sh (the printf around line 373
+# that this test exercises) still exists and still needs its escaping pinned, so
+# the test is restored here on a different vehicle: `--backend claude` (the
+# Anthropic API backend, EFFECTIVE_PROVIDER=anthropic) with the egress-matrix
+# verdict forced to allow+log via a PATH-scoped `node` shim ahead of the real
+# node, the exact seam test-refresh-graph-map-lock.sh uses to stub
+# egress-matrix-eval.mjs -- scoped to this ONE invocation only (env-prefixed on
+# the single `bash "$SCRIPT"` call below, never exported), so no other test's
+# real matrix evaluation is affected.
 KCTRL_PARENT="$WS/kctrl"; mkdir -p "$KCTRL_PARENT"
 KCTRL_CORPUS="$KCTRL_PARENT/$(printf 'corpus\tline\nbreak\033escape')"
 KCTRL_MAPS="$WS/kctrl-maps"; mkdir -p "$KCTRL_MAPS"
@@ -2532,12 +2589,22 @@ KCTRL_MAPS="$WS/kctrl-maps"; mkdir -p "$KCTRL_MAPS"
 if mkdir -p "$KCTRL_CORPUS/notes" 2>/dev/null; then
   printf '# controls\n' > "$KCTRL_CORPUS/notes/a.md"
   KCTRL_LEDGER="$WS/kctrl-ledger.jsonl"; rm -f "$KCTRL_LEDGER"
-  # Stop after the preflight ledger with the failing graphify stub: a literal
-  # newline is not a portable Windows output-path component, while the ledger
-  # encoder itself must still handle it as arbitrary input.
-  out=$( MOONSHOT_API_KEY=stub GRAPHIFY_LEDGER="$KCTRL_LEDGER" GRAPHIFY_MAP_BIN="$FAILBIN/graphify" \
-    bash "$SCRIPT" --name kimi-controls --corpus-root "$KCTRL_CORPUS" --backend kimi \
-    --maps-dir "$KCTRL_MAPS" --title "Kimi Controls" --slug kimi-controls 2>&1 ); rc=$?
+  T40B2_REAL_NODE="$(command -v node)"
+  T40B2_SHIMBIN="$WS/t40b2-shimbin"; mkdir -p "$T40B2_SHIMBIN"
+  cat > "$T40B2_SHIMBIN/node" <<NODESTUB
+#!/usr/bin/env bash
+case "\$1" in
+  *egress-matrix-eval.mjs) printf 'allow+log\tstubbed for HIMMEL-2101 T40b2 ledger escaping test\n'; exit 0 ;;
+esac
+exec "$T40B2_REAL_NODE" "\$@"
+NODESTUB
+  chmod +x "$T40B2_SHIMBIN/node"
+  # Stop after the preflight ledger with the failing graphify stub: the ledger
+  # write happens before graphify is ever invoked, so a failing graphify run
+  # (FAILBIN, rc=2) still proves the encoder ran and wrote exactly one line.
+  out=$( PATH="$T40B2_SHIMBIN:$PATH" ANTHROPIC_API_KEY=stub GRAPHIFY_LEDGER="$KCTRL_LEDGER" GRAPHIFY_MAP_BIN="$FAILBIN/graphify" \
+    bash "$SCRIPT" --name kctrl-controls --corpus-root "$KCTRL_CORPUS" --backend claude \
+    --maps-dir "$KCTRL_MAPS" --title "Ctrl Controls" --slug kctrl-controls-map --corpus-tag kctrl 2>&1 ); rc=$?
   kctrl_lines=$(wc -l < "$KCTRL_LEDGER" | tr -d ' ')
   if [ "$rc" -eq 2 ] && [ "$kctrl_lines" -eq 1 ] \
      && grep -qF "$(printf '\\u%04x' 27)" "$KCTRL_LEDGER" \
@@ -2550,35 +2617,16 @@ else
   skip "T40b2 skipped: filesystem rejects control-char corpus paths (ledger escaping covered where allowed)"
 fi
 
-KCUSTOM_CALLS="$WS/kimi-custom-calls.log"; KCUSTOM_LEDGER="$WS/kimi-custom-ledger.jsonl"
-: > "$KCUSTOM_CALLS"; rm -f "$KCUSTOM_LEDGER"
-out=$( MOONSHOT_API_KEY=stub KIMI_BASE_URL=https://api.moonshot.ai.evil/v1 \
-  GRAPHIFY_LEDGER="$KCUSTOM_LEDGER" GRAPHIFY_CALL_LOG="$KCUSTOM_CALLS" GRAPHIFY_MAP_BIN="$BIN/graphify" \
-  bash "$SCRIPT" --name kimi-custom --corpus-root "$KCORPUS" --backend kimi \
-  --maps-dir "$KMAPS" --title "Kimi" --slug kimi-custom-map --corpus-tag kimi 2>&1 ); rc=$?
-{ [ "$rc" -eq 2 ] && grep -q "KIMI_BASE_URL is set to an unverified endpoint" <<< "$out" \
-  && ! grep -q "api.moonshot.ai.evil" <<< "$out" \
-  && [ ! -s "$KCUSTOM_CALLS" ] && [ ! -e "$KCUSTOM_LEDGER" ]; } \
-  && pass "T40c scheduled Kimi rejects a Moonshot lookalike before ledger/graphify without echoing it" \
-  || fail "T40c scheduled Kimi custom endpoint should fail rc=2 before ledger/graphify without URL disclosure (got $rc): $out calls=$(cat "$KCUSTOM_CALLS")"
-
-# Both CN backend arms must fail closed before graphify dispatch when the selected
-# corpus class has no ratified extraction cell.
-for cn_backend in glm kimi; do
-  KCALLS_DENY="$WS/${cn_backend}-deny-calls.log"; : > "$KCALLS_DENY"
-  if [ "$cn_backend" = glm ]; then
-    out=$( ANTHROPIC_API_KEY=stub ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic GRAPHIFY_CALL_LOG="$KCALLS_DENY" GRAPHIFY_MAP_BIN="$BIN/graphify" \
-      bash "$SCRIPT" --name "${cn_backend}-deny" --corpus-root "$KCORPUS" --backend "$cn_backend" --corpus-class salus \
-      --maps-dir "$KMAPS" --title "Deny" --slug "${cn_backend}-deny-map" 2>&1 ); rc=$?
-  else
-    out=$( MOONSHOT_API_KEY=stub GRAPHIFY_CALL_LOG="$KCALLS_DENY" GRAPHIFY_MAP_BIN="$BIN/graphify" \
-      bash "$SCRIPT" --name "${cn_backend}-deny" --corpus-root "$KCORPUS" --backend "$cn_backend" --corpus-class salus \
-      --maps-dir "$KMAPS" --title "Deny" --slug "${cn_backend}-deny-map" 2>&1 ); rc=$?
-  fi
-  { [ "$rc" -eq 2 ] && grep -q "egress matrix DENIES salus" <<< "$out" && [ ! -s "$KCALLS_DENY" ]; } \
-    && pass "T40d $cn_backend denied corpus class fails closed before graphify" \
-    || fail "T40d $cn_backend salus run should fail rc=2 before graphify (got $rc): $out calls=$(cat "$KCALLS_DENY")"
-done
+# GLM must still fail closed when the selected corpus class has no ratified
+# extraction cell (kimi's parallel arm above this loop is now HIMMEL-2101's
+# retired-backend case, T40a, not a corpus-class denial).
+KCALLS_DENY="$WS/glm-deny-calls.log"; : > "$KCALLS_DENY"
+out=$( ANTHROPIC_API_KEY=stub ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic GRAPHIFY_CALL_LOG="$KCALLS_DENY" GRAPHIFY_MAP_BIN="$BIN/graphify" \
+  bash "$SCRIPT" --name glm-deny --corpus-root "$KCORPUS" --backend glm --corpus-class salus \
+  --maps-dir "$KMAPS" --title "Deny" --slug glm-deny-map 2>&1 ); rc=$?
+{ [ "$rc" -eq 2 ] && grep -q "egress matrix DENIES salus" <<< "$out" && [ ! -s "$KCALLS_DENY" ]; } \
+  && pass "T40d glm denied corpus class fails closed before graphify" \
+  || fail "T40d glm salus run should fail rc=2 before graphify (got $rc): $out calls=$(cat "$KCALLS_DENY")"
 
 GLM_BAD_CALLS="$WS/glm-bad-calls.log"; GLM_BAD_LEDGER="$WS/glm-bad-ledger.jsonl"
 : > "$GLM_BAD_CALLS"; rm -f "$GLM_BAD_LEDGER"
@@ -2607,8 +2655,14 @@ out=$( ANTHROPIC_API_KEY=stub ANTHROPIC_MODEL=glm-5.2 ANTHROPIC_BASE_URL='https:
 #   (2) CLASSIFICATION is still proved, now by the deny naming zai-glm: a run
 #       misclassified as `anthropic` would have hit luna-personal x anthropic =
 #       allow and exited 0, so rc=2-naming-zai-glm discriminates just as the
-#       ledger line used to. The allow+log LEDGER SHAPE for this producer stays
-#       covered by the kimi case above ('"provider":"moonshot"').
+#       ledger line used to. The allow+log LEDGER SHAPE this producer emits is
+#       no longer independently pinned by a LIVE matrix rule here: kimi/moonshot,
+#       the only matrix cell that ever reached "allow+log" via this script's own
+#       corpora, is retired (HIMMEL-2101) — no remaining rule in
+#       egress-matrix.json produces that verdict. T40b2 above restores coverage
+#       of the shape (and its C0-escaping) on a STUBBED allow+log verdict
+#       instead (a `node` shim over egress-matrix-eval.mjs, `--backend claude`
+#       vehicle) since no live cell can vehicle it anymore.
 { [ "$rc" -eq 2 ] && [ ! -s "$GLM_OK_CALLS" ] \
   && grep -qF 'egress matrix DENIES luna-personal x zai-glm x extraction' <<< "$out" \
   && grep -qF 'claude backend @ https://api.z.ai (model glm-5.2)' <<< "$out" \
@@ -2974,8 +3028,8 @@ echo "\$@" >> "$SALLOG"
 exit 0
 STUB
 chmod +x "$SALBIN/graphify"
-out=$( HOME="$SALHOME" MOONSHOT_API_KEY=stub GRAPHIFY_MAP_BIN="$SALBIN/graphify" bash "$SCRIPT" \
-  --name sal --corpus-root "$SALCORPUS" --backend kimi \
+out=$( HOME="$SALHOME" GRAPHIFY_MAP_BIN="$SALBIN/graphify" bash "$SCRIPT" \
+  --name sal --corpus-root "$SALCORPUS" --backend claude \
   --maps-dir "$SALMAPS" --title SAL --slug sal-map 2>&1 ); rc=$?
 if [ "$rc" -eq 2 ] && grep -q "SALUS by path" <<< "$out" && [ ! -s "$SALLOG" ]; then
   pass "T43 salus-by-path corpus refused before any egress despite asserted class"
@@ -3003,8 +3057,8 @@ echo "\$@" >> "$PHILOG"
 exit 0
 STUB
 chmod +x "$PHIBIN/graphify"
-out=$( HOME="$PHIHOME" MOONSHOT_API_KEY=stub GRAPHIFY_MAP_BIN="$PHIBIN/graphify" bash "$SCRIPT" \
-  --name phi --corpus-root "$PHICORPUS" --backend kimi \
+out=$( HOME="$PHIHOME" GRAPHIFY_MAP_BIN="$PHIBIN/graphify" bash "$SCRIPT" \
+  --name phi --corpus-root "$PHICORPUS" --backend claude \
   --maps-dir "$PHIMAPS" --title PHI --slug phi-map 2>&1 ); rc=$?
 if [ "$rc" -eq 2 ] && grep -q "SALUS by path" <<< "$out" && [ ! -s "$PHILOG" ]; then
   pass "T43b phi-roots prefix-match (with backslash normalization) classifies a corpus SALUS before any egress"
@@ -3020,8 +3074,8 @@ mkdir -p "$SALNEST" "$SALNESTMAPS"
 printf 'phi note\n' > "$SALNEST/note.md"
 : > "$SALANCESTOR/.salus"
 : > "$SALLOG"
-out=$( HOME="$SALHOME" MOONSHOT_API_KEY=stub GRAPHIFY_MAP_BIN="$SALBIN/graphify" bash "$SCRIPT" \
-  --name sal-nested --corpus-root "$SALNEST" --backend kimi \
+out=$( HOME="$SALHOME" GRAPHIFY_MAP_BIN="$SALBIN/graphify" bash "$SCRIPT" \
+  --name sal-nested --corpus-root "$SALNEST" --backend claude \
   --maps-dir "$SALNESTMAPS" --title SAL --slug sal-nested-map 2>&1 ); rc=$?
 if [ "$rc" -eq 2 ] && grep -q "SALUS by path" <<< "$out" && [ ! -s "$SALLOG" ]; then
   pass "T43c corpus nested below a .salus-marked ancestor is refused before graphify"
@@ -3033,8 +3087,8 @@ fi
 # corpus with no marker/config signal.
 CLEANCORPUS="$WS/clean-corpus"; CLEANMAPS="$WS/clean-maps"; mkdir -p "$CLEANCORPUS" "$CLEANMAPS"
 printf 'ordinary note\n' > "$CLEANCORPUS/note.md"
-out=$( HOME="$SALHOME" MOONSHOT_API_KEY=stub GRAPHIFY_MAP_BIN="$BIN/graphify" bash "$SCRIPT" \
-  --name clean --corpus-root "$CLEANCORPUS" --backend kimi \
+out=$( HOME="$SALHOME" GRAPHIFY_MAP_BIN="$BIN/graphify" bash "$SCRIPT" \
+  --name clean --corpus-root "$CLEANCORPUS" --backend claude \
   --maps-dir "$CLEANMAPS" --title Clean --slug clean-map 2>&1 ); rc=$?
 [ "$rc" -eq 0 ] \
   && pass "T43d corpus with no salus signal still proceeds" \
@@ -3045,9 +3099,9 @@ out=$( HOME="$SALHOME" MOONSHOT_API_KEY=stub GRAPHIFY_MAP_BIN="$BIN/graphify" ba
 # no PHI signal. A directory is the portable unreadable-policy fixture.
 UNREADABLEHOME="$WS/unreadable-phi-home"; mkdir -p "$UNREADABLEHOME/.config/claude-glm/phi-roots"
 UNREADABLECALLS="$WS/unreadable-phi-calls.log"; : > "$UNREADABLECALLS"
-out=$( HOME="$UNREADABLEHOME" MOONSHOT_API_KEY=stub GRAPHIFY_CALL_LOG="$UNREADABLECALLS" \
+out=$( HOME="$UNREADABLEHOME" GRAPHIFY_CALL_LOG="$UNREADABLECALLS" \
   GRAPHIFY_MAP_BIN="$BIN/graphify" bash "$SCRIPT" \
-  --name unreadable-phi --corpus-root "$CLEANCORPUS" --backend kimi \
+  --name unreadable-phi --corpus-root "$CLEANCORPUS" --backend claude \
   --maps-dir "$CLEANMAPS" --title Clean --slug unreadable-phi-map 2>&1 ); rc=$?
 if [ "$rc" -eq 2 ] && grep -q "PHI root list.*not readable" <<< "$out" \
    && [ ! -s "$UNREADABLECALLS" ]; then
@@ -3076,8 +3130,8 @@ echo "\$@" >> "$CRLFLOG"
 exit 0
 STUB
 chmod +x "$CRLFBIN/graphify"
-out=$( HOME="$CRLFHOME" MOONSHOT_API_KEY=stub GRAPHIFY_MAP_BIN="$CRLFBIN/graphify" bash "$SCRIPT" \
-  --name crlf-phi --corpus-root "$CRLFCORPUS" --backend kimi \
+out=$( HOME="$CRLFHOME" GRAPHIFY_MAP_BIN="$CRLFBIN/graphify" bash "$SCRIPT" \
+  --name crlf-phi --corpus-root "$CRLFCORPUS" --backend claude \
   --maps-dir "$CRLFMAPS" --title PHI --slug crlf-phi-map 2>&1 ); rc=$?
 if [ "$rc" -eq 2 ] && grep -q "SALUS by path" <<< "$out" && [ ! -s "$CRLFLOG" ]; then
   pass "T43f phi-roots saved with CRLF endings (ancestor entry + trailing \\r) classifies a corpus SALUS before any egress"
@@ -3097,8 +3151,8 @@ echo "\$@" >> "$SPCLOG"
 exit 0
 STUB
 chmod +x "$SPCBIN/graphify"
-out=$( HOME="$SPCHOME" MOONSHOT_API_KEY=stub GRAPHIFY_MAP_BIN="$SPCBIN/graphify" bash "$SCRIPT" \
-  --name space-phi --corpus-root "$SPCCORPUS" --backend kimi \
+out=$( HOME="$SPCHOME" GRAPHIFY_MAP_BIN="$SPCBIN/graphify" bash "$SCRIPT" \
+  --name space-phi --corpus-root "$SPCCORPUS" --backend claude \
   --maps-dir "$SPCMAPS" --title PHI --slug space-phi-map 2>&1 ); rc=$?
 if [ "$rc" -eq 2 ] && grep -q "SALUS by path" <<< "$out" && [ ! -s "$SPCLOG" ]; then
   pass "T43g phi-roots entry with leading/trailing spaces classifies a corpus SALUS before any egress"
@@ -3113,8 +3167,8 @@ BLANKHOME="$WS/blank-phi-home"; mkdir -p "$BLANKHOME/.config/claude-glm"
 printf '\r\n   \r\n\t\n' > "$BLANKHOME/.config/claude-glm/phi-roots"
 BLANKCORPUS="$WS/blank-phi-corpus"; BLANKMAPS="$WS/blank-phi-maps"
 mkdir -p "$BLANKCORPUS" "$BLANKMAPS"; printf 'ordinary note\n' > "$BLANKCORPUS/note.md"
-out=$( HOME="$BLANKHOME" MOONSHOT_API_KEY=stub GRAPHIFY_MAP_BIN="$BIN/graphify" bash "$SCRIPT" \
-  --name blank-phi --corpus-root "$BLANKCORPUS" --backend kimi \
+out=$( HOME="$BLANKHOME" GRAPHIFY_MAP_BIN="$BIN/graphify" bash "$SCRIPT" \
+  --name blank-phi --corpus-root "$BLANKCORPUS" --backend claude \
   --maps-dir "$BLANKMAPS" --title Blank --slug blank-phi-map 2>&1 ); rc=$?
 [ "$rc" -eq 0 ] \
   && pass "T43h whitespace-only phi-roots lines are skipped, not treated as a match-everything prefix" \

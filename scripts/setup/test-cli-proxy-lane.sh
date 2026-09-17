@@ -88,12 +88,32 @@ chmod +x "$dir/cli-proxy-api"
 # process" -- unit_owns_port must see this as "can't confirm ownership").
 # Everything else (daemon-reload, enable --now, start, stop) is a logged
 # no-op success. Never touches real systemd.
+#
+# STUB_SYSTEMCTL_STOPFILE (opt-in, HIMMEL-3051): when set, "stop" touches it
+# and "start" removes it, and while it exists is-active/show report
+# stopped/no-MainPID regardless of the STATE/MAINPID vars above -- lets a
+# --roll test model a real stop -> (still running, per the OLD vars) ->
+# install -> start -> (running again) cycle instead of the otherwise-static
+# stub always reporting the same state. Unset (every pre-existing test):
+# byte-for-byte the original behavior.
 make_stub systemctl '
 [ -n "${STUB_SYSTEMCTL_LOG:-}" ] && printf "%s\n" "$*" >> "$STUB_SYSTEMCTL_LOG"
+if [ -n "${STUB_SYSTEMCTL_STOPFILE:-}" ]; then
+  case " $* " in
+    *" stop "*) : > "$STUB_SYSTEMCTL_STOPFILE" ;;
+    *" start "*) rm -f "$STUB_SYSTEMCTL_STOPFILE" ;;
+  esac
+fi
+STOPPED=0
+[ -n "${STUB_SYSTEMCTL_STOPFILE:-}" ] && [ -f "$STUB_SYSTEMCTL_STOPFILE" ] && STOPPED=1
 case " $* " in
-  *" is-active "*) printf "%s\n" "${STUB_SYSTEMCTL_STATE:-inactive}"; exit "${STUB_SYSTEMCTL_ACTIVE:-1}" ;;
+  *" is-active "*)
+    if [ "$STOPPED" = "1" ]; then printf "inactive\n"; exit 3; fi
+    printf "%s\n" "${STUB_SYSTEMCTL_STATE:-inactive}"; exit "${STUB_SYSTEMCTL_ACTIVE:-1}" ;;
   *" is-enabled "*) exit "${STUB_SYSTEMCTL_ENABLED:-1}" ;;
-  *" show "*"--property=MainPID"*) printf "%s\n" "${STUB_SYSTEMCTL_MAINPID:-}"; exit 0 ;;
+  *" show "*"--property=MainPID"*)
+    if [ "$STOPPED" = "1" ]; then printf "0\n"; exit 0; fi
+    printf "%s\n" "${STUB_SYSTEMCTL_MAINPID:-}"; exit 0 ;;
   *) exit 0 ;;
 esac
 '
@@ -204,6 +224,7 @@ assert_contains "register confirms readiness before reporting started" "register
 
 echo "TEST 4: --status parses a stubbed healthy /v1/models"
 F4="$(fixture status --with-exe-config --with-oauth)"
+printf '7.3.3\n' > "$F4/.cli-proxy-api/cli-proxy-api.version"
 HOME="$F4" STUB_HTTP_CODE="200" STUB_SYSTEMCTL_ENABLED="0" run --status
 assert_rc "status exit code (all green)" 0 "$RC"
 assert_contains "status reports the proxy running" "running:     OK" "$OUT"
@@ -245,6 +266,7 @@ assert_contains "activating stop issues systemctl stop" "stop cli-proxy-api.serv
 
 echo "TEST 10: --status flags a reachable-but-unauthenticated proxy (HTTP 401) as not fully OK"
 F10="$(fixture status-401 --with-exe-config --with-oauth)"
+printf '7.3.3\n' > "$F10/.cli-proxy-api/cli-proxy-api.version"
 HOME="$F10" STUB_HTTP_CODE="401" STUB_SYSTEMCTL_ENABLED="0" run --status
 assert_rc "401 status exit code (not fully OK)" 1 "$RC"
 assert_contains "401 status names the mismatch" "UNAUTHENTICATED" "$OUT"
@@ -316,6 +338,69 @@ else
         pass "pattern does not match an in-progress --login"
     fi
 fi
+
+echo "TEST 18: --restart with a stale version stamp warns and names --roll (HIMMEL-3051)"
+F18="$(fixture restart-stale --with-exe-config)"
+printf '7.2.158\n' > "$F18/.cli-proxy-api/cli-proxy-api.version"
+HOME="$F18" STUB_HTTP_CODE="200" STUB_SYSTEMCTL_ENABLED="0" STUB_SYSTEMCTL_MAINPID="4321" STUB_SS_LISTEN_PID="4321" run --restart
+assert_rc "stale-stamp restart exit code (advisory warning, not a failure)" 0 "$RC"
+assert_contains "stale-stamp restart warns" "WARNING" "$OUT"
+assert_contains "stale-stamp restart names --roll" "--roll" "$OUT"
+if grepq "$OUT" -F "proxy back up"; then
+    fail "stale-stamp restart suppresses the clean back-up message" "still printed: proxy back up"
+else
+    pass "stale-stamp restart suppresses the clean back-up message"
+fi
+
+echo "TEST 19: --roll against a running unit ends at the pinned version (HIMMEL-3051)"
+F19="$(fixture roll-running --with-exe-config)"
+STOPFILE19="$TMPROOT/stopfile-19"
+HOME="$F19" STUB_SHA256="$STUB_SHA256" STUB_SYSTEMCTL_STOPFILE="$STOPFILE19" STUB_SYSTEMCTL_STATE="active" STUB_SYSTEMCTL_ACTIVE="0" STUB_SYSTEMCTL_ENABLED="0" STUB_SYSTEMCTL_MAINPID="5555" STUB_SS_LISTEN_PID="5555" STUB_HTTP_CODE="200" run --roll
+assert_rc "roll-against-running-unit exit code" 0 "$RC"
+assert_contains "roll ends at the pinned version" "rolled to v7.3.3" "$OUT"
+STAMP19="$(cat "$F19/.cli-proxy-api/cli-proxy-api.version" 2>/dev/null)"
+if [ "$STAMP19" = "7.3.3" ]; then pass "version stamp converged to the pin"; else fail "version stamp converged to the pin" "got: '$STAMP19'"; fi
+
+echo "TEST 20 (RED control): --roll refuses a live bounce without --force"
+F20="$(fixture roll-live-bounce --with-exe-config)"
+printf '7.2.158\n' > "$F20/.cli-proxy-api/cli-proxy-api.version"
+HOME="$F20" STUB_SS_ESTABLISHED="1" run --roll
+assert_rc "roll live-bounce refusal exit code" 1 "$RC"
+assert_contains "roll live-bounce refusal names the reason" "refusing proxy bounce" "$OUT"
+STAMP20="$(cat "$F20/.cli-proxy-api/cli-proxy-api.version" 2>/dev/null)"
+if [ "$STAMP20" = "7.2.158" ]; then pass "roll live-bounce refusal left the old stamp untouched"; else fail "roll live-bounce refusal left the old stamp untouched" "got: '$STAMP20'"; fi
+
+echo "TEST 21: --roll is a no-op when already at the pin"
+F21="$(fixture roll-noop --with-exe-config)"
+printf '7.3.3\n' > "$F21/.cli-proxy-api/cli-proxy-api.version"
+SYSTEMCTL_LOG21="$TMPROOT/systemctl-21.log"
+HOME="$F21" STUB_SYSTEMCTL_LOG="$SYSTEMCTL_LOG21" run --roll
+assert_rc "roll no-op exit code" 0 "$RC"
+assert_contains "roll no-op message names the pin" "already at pinned v7.3.3" "$OUT"
+assert_contains "roll no-op names itself" "--roll is a no-op" "$OUT"
+if [ -f "$SYSTEMCTL_LOG21" ]; then fail "roll no-op never touches systemctl" "log: $(cat "$SYSTEMCTL_LOG21")"; else pass "roll no-op never touches systemctl"; fi
+
+echo "TEST 22 (RED control): a failed --roll restores the previous binary+stamp (CR finding, HIMMEL-3051)"
+F22="$(fixture roll-recover --with-exe-config)"
+printf '7.2.158\n' > "$F22/.cli-proxy-api/cli-proxy-api.version"
+HOME="$F22" STUB_SHA256="$STUB_SHA256" STUB_HTTP_CODE="200" STUB_SYSTEMCTL_ENABLED="0" STUB_SS_LISTEN_PID="9999" run --roll
+assert_rc "roll-recover exit code (ownership mismatch after install)" 1 "$RC"
+assert_contains "roll-recover names the ownership mismatch" "isn't the one listening there" "$OUT"
+STAMP22="$(cat "$F22/.cli-proxy-api/cli-proxy-api.version" 2>/dev/null)"
+if [ "$STAMP22" = "7.2.158" ]; then pass "roll-recover restored the previous version stamp"; else fail "roll-recover restored the previous version stamp" "got: '$STAMP22'"; fi
+if [ -f "$F22/.cli-proxy-api/cli-proxy-api.version.prev" ] || [ -f "$F22/.cli-proxy-api/cli-proxy-api.prev" ]; then
+    fail "roll-recover cleans up its backup files" "leftover .prev file(s) remain"
+else
+    pass "roll-recover cleans up its backup files"
+fi
+
+echo "TEST 23 (RED control): --status reports staleness independently of an HTTP 401 auth failure (CR finding, HIMMEL-3051)"
+F23="$(fixture status-401-stale --with-exe-config --with-oauth)"
+printf '7.2.158\n' > "$F23/.cli-proxy-api/cli-proxy-api.version"
+HOME="$F23" STUB_HTTP_CODE="401" STUB_SYSTEMCTL_ENABLED="0" run --status
+assert_rc "401-and-stale status exit code (not fully OK)" 1 "$RC"
+assert_contains "401-and-stale status still names the stale version" "WARNING" "$OUT"
+assert_contains "401-and-stale status still names --roll" "--roll" "$OUT"
 
 echo
 echo "===================================="

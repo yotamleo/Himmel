@@ -507,15 +507,15 @@ def insert_frontmatter_pairs(fm_raw: str, pairs: list[tuple[str, str]], preserve
     return insert_fm_lines(fm_replaced, remaining)
 
 
-def persist_thin_partial(path: Path, text: str, fm: dict, fm_raw: str, body: str, gap_host: str | None, hits: list) -> bool:
+def persist_thin_partial(path: Path, text: str, fm: dict, fm_raw: str, body: str, gap_host: str | None, hits: list, is_instagram: bool = False) -> bool:
     """Write only frontmatter marks for a default thin-body partial.
 
     Body bytes must remain identical or the original file is restored. Existing
-    harvest_enricher_gap and harvest_flag keys are preserved for idempotence and
-    to avoid clobbering injection semantics.
+    harvest_enricher_gap, harvest_flag and ig_media_pending keys are preserved
+    for idempotence and to avoid clobbering injection semantics.
     """
     pairs = [("harvest_status", "harvest_status: partial")]
-    preserve = {"harvest_enricher_gap"}
+    preserve = {"harvest_enricher_gap", "ig_media_pending"}
     if "harvest_flag" not in fm:
         if hits:
             pairs.append(("harvest_flag", "harvest_flag: injection-suspect"))
@@ -526,6 +526,11 @@ def persist_thin_partial(path: Path, text: str, fm: dict, fm_raw: str, body: str
         pairs.append(("harvest_flag_detail", f"harvest_flag_detail: {','.join(hits)}"))
     if gap_host and "harvest_enricher_gap" not in fm:
         pairs.append(("harvest_enricher_gap", f"harvest_enricher_gap: {gap_host}"))
+    if is_instagram and "ig_media_pending" not in fm:
+        # HIMMEL-3043: a thin instagram clip needs the media rung
+        # (/ig-media-enrich), so park it the same way harvest-clips.md
+        # Phase 4's own instagram routing row does.
+        pairs.append(("ig_media_pending", "ig_media_pending: true"))
     new_fm = insert_frontmatter_pairs(fm_raw, pairs, preserve_existing=preserve)
     path.write_text(f"---\n{new_fm}\n---\n{body}", encoding="utf-8", newline="\n")
     _dfm, _draw, disk_body, disk_ok = parse_frontmatter(path.read_text(encoding="utf-8"))
@@ -686,10 +691,13 @@ def process_clip(path: Path, dry_run: bool, firecrawl=None) -> tuple[str, str, l
     if is_thin_body(body):
         gap_host = enricher_gap_host(canonical)
         gap_suffix = f"; harvest_enricher_gap={gap_host}" if gap_host else ""
+        is_instagram = _normalized_host(canonical) in {
+            "instagram.com", "m.instagram.com"}
+        ig_suffix = "; ig_media_pending=true" if is_instagram else ""
         if dry_run:
-            return ("~", f"partial (thin-body): clipper captured only a skeleton{gap_suffix} [dry-run]{flag_suffix}", injection_hits)
-        if persist_thin_partial(path, text, fm, fm_raw, body, gap_host, injection_hits):
-            return ("~", f"partial (thin-body): clipper captured only a skeleton{gap_suffix}{flag_suffix}", injection_hits)
+            return ("~", f"partial (thin-body): clipper captured only a skeleton{gap_suffix}{ig_suffix} [dry-run]{flag_suffix}", injection_hits)
+        if persist_thin_partial(path, text, fm, fm_raw, body, gap_host, injection_hits, is_instagram):
+            return ("~", f"partial (thin-body): clipper captured only a skeleton{gap_suffix}{ig_suffix}{flag_suffix}", injection_hits)
         return ("x", f"failed (G-3): thin-body frontmatter mark altered body; reverted{flag_suffix}", injection_hits)
 
     # clip-body path
@@ -834,8 +842,9 @@ def main():
 
     # Inbox-internal exclusions (harvest-clips.md "Scan for unharvested
     # clips"): _synthesis/ (/synthesize-clips proposal pages), _done/
-    # (/archive-clips graduated archive), _deferred.md (backlog log) are
-    # never source clips — scanning them pollutes derived/archived pages
+    # (/archive-clips graduated archive), _deferred.md (backlog log), and
+    # _evidence/ (the reviewed-evidence pool, incl. _rejected/; HIMMEL-3043)
+    # are never source clips — scanning them pollutes derived/archived pages
     # with harvest_* frontmatter, and _synthesis pages (non-URL source:)
     # FAIL canonicalization → exit-4 noise.
     clips = sorted(
@@ -843,6 +852,7 @@ def main():
         for p in clippings.rglob("*.md")
         if "_synthesis" not in p.parts
         and "_done" not in p.parts
+        and "_evidence" not in p.parts
         and p.name != "_deferred.md"
     )
     if args.rescan_flags:

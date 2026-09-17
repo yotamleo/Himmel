@@ -57,9 +57,8 @@
   },
   "_enabledPluginsComment": "HIMMEL-2733 two-tier profile. This map carries the ALWAYS tier (`true` — installed AND enabled on every himmel machine) plus every spec the installers must NOT enable (`false`). A `false` entry is one of two things, and `onDemandPlugins` below is what tells them apart: a spec LISTED there is the ON-DEMAND tier (installed by the installers, written here as `false`, reachable via `/profile enable <spec>`); a spec absent from it is simply NOT INSTALLED. Keep every on-demand spec present here as `false` — reconcile-enabled-plugins.sh writes this map verbatim, so an omitted spec would be appended as false anyway, and the presence-verify in install-plugins.sh reads this key.",
   "enabledPlugins": {
-    "superpowers@claude-plugins-official": true,
-    "mattpocock-skills@claude-plugins-official": true,
-    "plannotator-effective-html@himmel": true,
+    "lean-skills@himmel": true,
+    "plannotator-effective-html@himmel": false,
     "context7@claude-plugins-official": false,
     "code-review@claude-plugins-official": false,
     "code-simplifier@claude-plugins-official": false,
@@ -116,6 +115,9 @@
     },
     "codex@openai-codex": {
       "neededBy": "The codex adversarial critic lane. scripts/cr/codex-adv-kickoff.sh resolves this plugin's CACHED companion (~/.claude/plugins/cache/openai-codex/*/codex-companion.mjs) by glob and degrades the lane to 'skipped' when the cache is absent (HIMMEL-2707) — so the lane needs the plugin INSTALLED, never enabled."
+    },
+    "plannotator-effective-html@himmel": {
+      "neededBy": "Design/UI work via the `design` lane profile (scripts/lanes/plugin-profiles.json), which enables it for its 6 html/design skills. Installed but disabled by default (HIMMEL-3064) — reachable via `/profile enable plannotator-effective-html@himmel`."
     }
   },
   "_onDemandConnectorsComment": "HIMMEL-2733: on-demand capabilities himmel does NOT install and therefore cannot ship a disabled state for — they are per-machine toggles in the Chrome extension and in claude.ai's connector settings. Listed here so the tier is DISCOVERABLE and the install summary can name them; no installer reads this key to write anything.",
@@ -131,7 +133,7 @@
   },
   "extraKnownMarketplaces": {
     "obsidian-skills": {
-      "source": { "source": "github", "repo": "kepano/obsidian-skills" },
+      "source": { "source": "url", "url": "https://github.com/kepano/obsidian-skills.git" },
       "autoUpdate": true
     },
     "himmel": {
@@ -143,7 +145,7 @@
       "autoUpdate": true
     },
     "openai-codex": {
-      "source": { "source": "github", "repo": "openai/codex-plugin-cc" },
+      "source": { "source": "url", "url": "https://github.com/openai/codex-plugin-cc.git" },
       "autoUpdate": true
     }
   },

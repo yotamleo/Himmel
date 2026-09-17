@@ -56,9 +56,9 @@
 # --lane (HIMMEL-2782): native (default) or claudex. --lane claudex (or
 # LEG_LANE=claudex in the launching shell - the flag wins if both are
 # given) routes the leg through scripts/claude-codex on the codex weekly
-# bank instead of the Claude subscription bank: it sets headed-arm.sh's
-# HEADED_ARM_LAUNCHER to the claudex binary (seam: HEADED_ARM_LEG_CLAUDEX_BIN,
-# default ../../claude-codex next to this script), turns on the `script`
+# bank instead of the Claude subscription bank: it routes headed-arm.sh's
+# HEADED_ARM_LAUNCHER through the preface shim to the claudex binary (seam:
+# HEADED_ARM_LEG_CLAUDEX_BIN, default ../../claude-codex), turns on the `script`
 # tty recorder (HEADED_ARM_RECORDER=1 - load-bearing: konsole -e output is
 # otherwise lost and a silent claudex death is undiagnosable), and exports
 # CLAUDEX_LANE_OK=1 + CLAUDE_CODE_EFFORT_LEVEL=${LEG_EFFORT:-medium} into the
@@ -86,7 +86,21 @@
 #      file>` to headed-arm.sh's fixed argv. headed-arm.sh itself is untouched.
 #   2. The same shim prepends `--append-system-prompt-file <leg-preface>`, so
 #      the invariant leg rules ride the system prompt instead of being retyped
-#      into every brief.
+#      into every brief. On the claudex lane this leg-preface is a per-leg
+#      concatenation of docs/handover/leg-preface.md and the claudex
+#      coordination preface, written next to the launch log at real-launch
+#      time. (HIMMEL-2990, superseding 2985's Ask 1) On the native lane the
+#      brief's own contract (the brief up to but excluding its `## Results`
+#      tail, or the whole file if it has none) does NOT ride this preface -
+#      measured, riding it re-pays the contract on EVERY API call
+#      (contract x calls), 25-30x costlier over a typical leg than
+#      re-injecting it only after a compaction (contract x (compactions+1)).
+#      Instead it is written to its own per-leg <name>.leg-contract.md, and a
+#      SessionStart hook with `"matcher": "compact"` is added to the
+#      generated <name>.leg-settings.json to `cat` it back in whenever a
+#      compaction fires - the `load <brief> and continue` first turn is the
+#      only thing still compactable, and this hook re-supplies the contract
+#      the moment it would otherwise be lost.
 #   3. HIMMEL_LEAN_LEG=1 is exported, which silences the three advisory
 #      SessionStart hooks (where-are-we, qmd staleness, graphify freshness) a
 #      leg never acts on. inject-initiative.sh deliberately still speaks.
@@ -104,26 +118,34 @@
 # roster-shaped (~40k of a 74.3k first-turn floor is tool + MCP schemas), so a
 # second or third "profile by skill set" would resolve to the same manifest -
 # see the _comment in plugin-profiles.json.
-# --profile is REFUSED with exit 2 on --lane claudex: that lane replaces the
-# launcher binary with scripts/claude-codex, so both cannot own
-# HEADED_ARM_LAUNCHER. Silently letting one win would produce a leg that is
-# neither lean nor on the codex bank.
+# --profile composes with --lane claudex (HIMMEL-2962): the shim prepends
+# profile flags, then execs scripts/claude-codex via LEG_CLAUDE_BIN. The
+# backend and its guarded argument screen remain in the launch path.
 # Seams: HEADED_ARM_LEG_PROFILES overrides the plugin-profiles.mjs resolver
 # path, HEADED_ARM_LEG_PREFACE the preface file, HEADED_ARM_LEG_SHIM the
 # launcher shim - all script-relative by default, all so the suite can drive
 # the real code against fixtures.
+#
+# --relay (HIMMEL-2975): launches the Sonnet relay half of a split console.
+# Forces --profile console-relay (a real --profile conflicts, exit 2); an
+# empty MODEL defaults to claude-sonnet-5 and LEG_EFFORT defaults low, both
+# only under this flag. Exports HIMMEL_CONSOLE_RELAY=1, the marker
+# inbox-send.sh's Guard C already refuses --token under and the Task 26
+# write-deny hook will key writes off - a distinct signal from the profile.
 set -u
 
 usage() {
-    echo "usage: headed-arm-leg.sh [--dry-run] [--lane native|claudex] [--profile <name>] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
+    echo "usage: headed-arm-leg.sh [--dry-run] [--lane native|claudex] [--profile <name>] [--relay] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
 }
 
 DRY_RUN=0
+RELAY=0
 LANE="${LEG_LANE:-native}"
 PROFILE="${LEG_PROFILE:-}"
 while :; do
     case "${1:-}" in
         --dry-run) DRY_RUN=1; shift ;;
+        --relay) RELAY=1; shift ;;
         --lane)
             # codex CR fix: `--lane` as the LAST arg leaves only 1 positional,
             # so `shift 2` fails (rc=1) and shifts NOTHING under `set -u`
@@ -148,6 +170,18 @@ while :; do
     esac
 done
 
+# --relay (HIMMEL-2975): forces the console-relay plugin profile - a relay is
+# plugin-less by design, so any other --profile (flag or LEG_PROFILE) is a
+# real conflict, not a preference to silently override.
+if [ "$RELAY" -eq 1 ]; then
+    if [ -n "$PROFILE" ] && [ "$PROFILE" != "console-relay" ]; then
+        usage
+        echo "headed-arm-leg: --relay forces --profile console-relay (got: $PROFILE)" >&2
+        exit 2
+    fi
+    PROFILE="console-relay"
+fi
+
 case "$LANE" in
     native|claudex) ;;
     *)
@@ -157,21 +191,23 @@ case "$LANE" in
         ;;
 esac
 
-# --profile and --lane claudex both want to own HEADED_ARM_LAUNCHER (see the
-# header). Refuse rather than pick a winner: either outcome is a leg the
-# operator did not ask for.
-if [ -n "$PROFILE" ] && [ "$LANE" = "claudex" ]; then
-    usage
-    echo "headed-arm-leg: --profile is not available on --lane claudex: both replace headed-arm.sh's launcher binary (the profile shim vs scripts/claude-codex), so only one can apply. Drop --profile, or run this leg on the native lane." >&2
-    exit 2
-fi
-
 if [ "$#" -lt 5 ]; then
     usage
     exit 2
 fi
 
 NAME="$1"; DOC="$2"; SIGNAL="$3"; DEADLINE="$4"; LOG="$5"; MODEL="${6:-}"
+
+# --relay defaults MODEL to the Sonnet relay's own default (an explicit model
+# still wins, same precedence as --lane/--profile above); LEG_EFFORT defaults
+# low for the same reason a relay runs plugin-less - it is not the implementor.
+# Gated on RELAY: a non-relay leg's model default is headed-arm.sh's own, and
+# must stay untouched (--dry-run's no-relay report is pinned byte-identical).
+if [ "$RELAY" -eq 1 ]; then
+    [ -z "$MODEL" ] && MODEL=claude-sonnet-5
+    : "${LEG_EFFORT:=low}"
+    export LEG_EFFORT
+fi
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 HEADED_ARM="${HEADED_ARM_LEG_TARGET:-$HERE/../headed-arm.sh}"
@@ -195,6 +231,56 @@ if [ "$RESOLVED_AUTOCOMPACT" != "200000" ]; then
     exit 2
 fi
 
+# HIMMEL-2976: an Opus or Fable leg costs materially more per turn than the
+# Sonnet default implementor, so it launches only when its brief names one of
+# the three sanctioned reasons on a Tier line (CLAUDE.md: "raise effort
+# before tier"). Matched by MODEL PREFIX, same reasoning as the [1m] suffix
+# guard above - a suffix (e.g. claude-opus-5[1m]) must not dodge the gate.
+TIER_GATE=""
+case "$MODEL" in
+    claude-opus-*) TIER_GATE="opus" ;;
+    claude-fable-*) TIER_GATE="fable" ;;
+esac
+if [ -n "$TIER_GATE" ]; then
+    TIER_REASON="$(grep -m1 -E "^> \*\*Tier:\*\* $TIER_GATE — " "$DOC" 2>/dev/null | sed -E "s/^> \*\*Tier:\*\* $TIER_GATE — //")"
+    # codex-1 (HIMMEL-2976 round 1 CR): `-z` alone treats a whitespace-only
+    # reason (e.g. a Tier line with nothing but trailing spaces after the
+    # dash) as non-empty, so strip surrounding whitespace before the check.
+    TIER_REASON="$(printf '%s' "$TIER_REASON" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+    if [ -z "$TIER_REASON" ]; then
+        echo "headed-arm-leg: refusing $TIER_GATE launch: $DOC has no '> **Tier:** $TIER_GATE — <category>: <reason>' line (CLAUDE.md: raise effort before tier). Sanctioned reasons: multi-step design; a FINDING the console could not verify at Sonnet; a Sonnet leg returned the work as above its tier. Category tags (exact lowercase): design|unverified-finding|tier-return." >&2
+        exit 2
+    fi
+    # HIMMEL-2997: the design was left open (keyword vs enum vs LLM) - console
+    # ruling: a closed category TAG followed by free text, so paraphrase in
+    # the free text can never be falsely rejected. Split on the first ':'.
+    # codex-1 (HIMMEL-2997 round 1 CR): both expansions below are no-ops when
+    # no literal ':' is present, so a bare tag (e.g. "design" alone) would
+    # otherwise pass with TIER_CATEGORY=TIER_REASON=the tag itself - require
+    # the colon explicitly first.
+    case "$TIER_REASON" in
+        *:*) ;;
+        *)
+            echo "headed-arm-leg: refusing $TIER_GATE launch: $DOC's Tier reason must open with one of the three sanctioned category tags (exact lowercase) followed by ': ' and non-blank free text: design|unverified-finding|tier-return." >&2
+            exit 2
+            ;;
+    esac
+    TIER_CATEGORY="${TIER_REASON%%:*}"
+    TIER_REASON="${TIER_REASON#*:}"
+    case "$TIER_CATEGORY" in
+        design|unverified-finding|tier-return) ;;
+        *)
+            echo "headed-arm-leg: refusing $TIER_GATE launch: $DOC's Tier reason must open with one of the three sanctioned category tags (exact lowercase) followed by ': ' and non-blank free text: design|unverified-finding|tier-return." >&2
+            exit 2
+            ;;
+    esac
+    TIER_REASON="$(printf '%s' "$TIER_REASON" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+    if [ -z "$TIER_REASON" ]; then
+        echo "headed-arm-leg: refusing $TIER_GATE launch: $DOC's Tier reason has category '$TIER_CATEGORY' but no free text after the colon." >&2
+        exit 2
+    fi
+fi
+
 # LEG_REPO folds onto headed-arm.sh's own HEADED_ARM_REPO override seam -
 # the one thing the two prior kit-local copies differed on.
 if [ -n "${LEG_REPO:-}" ]; then
@@ -213,6 +299,11 @@ export INLINE_IMPL_OK=1
 # console-spawned leg, both lanes. merge-on-green.sh then merges only on the
 # console's GO file (console-kit/go.sh), and go.sh refuses to run under it.
 export HIMMEL_CONSOLE_LEG=1
+# HIMMEL_CONSOLE_RELAY=1 (HIMMEL-2975): marks this leg as the Sonnet relay half
+# of a split console. inbox-send.sh's Guard C already refuses --token under it
+# (#733); the Task 26 write-deny hook denies writes under it. Both key off
+# this exact marker, not the console-relay profile above.
+[ "$RELAY" -eq 1 ] && export HIMMEL_CONSOLE_RELAY=1
 # headed-arm.sh builds one argv array for both native and recorder launches and
 # refuses exit 2 if this exact pair is absent. This is the final resolved-argv
 # guard; the context-value check above gives the earlier operator-facing error.
@@ -239,6 +330,17 @@ if [ -n "$PROFILE" ]; then
     # console already owns and cleans - never /tmp world-readable, never the
     # repo (it is generated, per-leg state).
     PROFILE_SETTINGS="$(dirname "$LOG")/$NAME.leg-settings.json"
+    # (HIMMEL-2990) Native lane only: the brief's own contract, re-injected by
+    # the compact-matcher SessionStart hook below instead of ridden in the
+    # preface on every call. Resolved to an absolute path (CR round 2,
+    # codex-1): the hook command re-parses this path in the leg's OWN process
+    # at fire time, whose cwd need not match this launcher's cwd, so a
+    # relative path would silently miss.
+    _leg_log_dir="$(cd "$(dirname "$LOG")" && pwd)" || {
+        echo "headed-arm-leg: --profile $PROFILE: cannot resolve log directory for $LOG" >&2
+        exit 2
+    }
+    PROFILE_CONTRACT="$_leg_log_dir/$NAME.leg-contract.md"
     for _leg_need in "$PROFILES_MJS" "$LEG_SHIM" "$LEG_PREFACE"; do
         if [ ! -f "$_leg_need" ]; then
             echo "headed-arm-leg: --profile $PROFILE: required file missing: $_leg_need" >&2
@@ -258,9 +360,29 @@ if [ -n "$PROFILE" ]; then
         echo "headed-arm-leg: --profile $PROFILE: resolver produced no settings JSON" >&2
         exit 2
     fi
+    # (HIMMEL-2990) Native lane only - the claudex lane keeps its own
+    # coordination preface untouched. Resolved even under --dry-run, same
+    # reasoning as the profile/mcp resolution above: a jq failure here must
+    # fail the same way either way.
+    if [ "$LANE" != "claudex" ]; then
+        # %q shell-quotes PROFILE_CONTRACT (log dir + leg name are caller
+        # args, HIMMEL-2990 CR round 1): the generated command is re-parsed
+        # by a DIFFERENT shell when the hook fires, so an unescaped quote or
+        # $(...) in the path would break out of it.
+        _leg_contract_cmd="$(printf 'cat %q' "$PROFILE_CONTRACT")"
+        if ! PROFILE_JSON="$(printf '%s' "$PROFILE_JSON" | jq --arg cmd "$_leg_contract_cmd" \
+            '.hooks.SessionStart = ((.hooks.SessionStart // []) + [{matcher:"compact", hooks:[{type:"command", command:$cmd, timeout:10}]}])')"; then
+            echo "headed-arm-leg: --profile $PROFILE: cannot add compact-hook to settings JSON" >&2
+            exit 2
+        fi
+    fi
     # The shim reads these; export so they survive konsole's `-e env -u ...`.
     export LEG_PROFILE_SETTINGS="$PROFILE_SETTINGS"
-    export LEG_PROFILE_PREFACE="$LEG_PREFACE"
+    # (HIMMEL-2985) Per-leg path, like PROFILE_SETTINGS above - the claudex
+    # lane below overrides this to the same shape for its own coordination
+    # preface; content is written only at real-launch time further down.
+    LEG_PROFILE_PREFACE="$(dirname "$LOG")/$NAME.leg-preface.md"
+    export LEG_PROFILE_PREFACE
     export HEADED_ARM_LAUNCHER="$LEG_SHIM"
     # Lean SessionStart (HIMMEL-2830): the three advisory hooks go quiet. Only
     # the exact value 1 leans - the hooks are fail-open by construction.
@@ -284,20 +406,57 @@ if [ -n "$PROFILE" ]; then
     fi
 fi
 
+# HIMMEL-2953: every claudex leg gets its document-channel coordination
+# rules, even without a profile. Claude accepts one preface file, so a
+# profiled leg gets its own concatenation, with the lane override last.
+if [ "$LANE" = "claudex" ]; then
+    CLAUDEX_PREFACE="$HERE/../../../docs/handover/leg-preface-claudex.md"
+    export HEADED_ARM_LAUNCHER="${HEADED_ARM_LEG_SHIM:-$HERE/../../lanes/leg-claude-launcher.sh}"
+    export LEG_CLAUDE_BIN="$CLAUDEX_BIN"
+    for _leg_need in "$CLAUDEX_PREFACE" "$HEADED_ARM_LAUNCHER"; do
+        if [ ! -f "$_leg_need" ]; then
+            echo "headed-arm-leg: --lane claudex: required file missing: $_leg_need" >&2
+            exit 2
+        fi
+    done
+    if [ -n "$PROFILE" ]; then
+        LEG_PROFILE_PREFACE="$(dirname "$LOG")/$NAME.leg-preface.md"
+        export LEG_PROFILE_PREFACE
+    else
+        export LEG_PROFILE_PREFACE="$CLAUDEX_PREFACE"
+    fi
+fi
+
 if [ "$DRY_RUN" -eq 1 ]; then
     printf 'headed-arm-leg: would exec: %s %s %s %s %s %s %s %s\n' \
         "$HEADED_ARM" "$NAME" "$DOC" "$SIGNAL" "$DEADLINE" "$LOG" "$MODEL" "$CONTEXT"
     printf 'headed-arm-leg: env IMPL_GUARD_OK=%s INLINE_IMPL_OK=%s HIMMEL_CONSOLE_LEG=%s HEADED_ARM_REPO=%s\n' \
         "$IMPL_GUARD_OK" "$INLINE_IMPL_OK" "$HIMMEL_CONSOLE_LEG" "${HEADED_ARM_REPO:-<derived by headed-arm.sh>}"
-    printf 'headed-arm-leg: lane=%s launcher=%s launcher-env=%s\n' \
+    # Printed ONLY under --relay: with the flag omitted this line is absent and
+    # the dry-run report stays byte-identical to today's, same guarantee shape
+    # as the --profile line below.
+    if [ "$RELAY" -eq 1 ]; then
+        printf 'headed-arm-leg: relay=%s HIMMEL_CONSOLE_RELAY=%s LEG_EFFORT=%s\n' \
+            "$RELAY" "$HIMMEL_CONSOLE_RELAY" "$LEG_EFFORT"
+    fi
+    printf 'headed-arm-leg: lane=%s launcher=%s launcher-env=%s' \
         "$LANE" "${HEADED_ARM_LAUNCHER:-claude (native default)}" "${HEADED_ARM_LAUNCHER_ENV:-<none>}"
+    if [ "$LANE" = "claudex" ]; then
+        printf ' exec-target=%s preface=%s' "$LEG_CLAUDE_BIN" "$LEG_PROFILE_PREFACE"
+    fi
+    printf '\n'
     # Printed ONLY under --profile: with the flag omitted this whole line is
     # absent and the dry-run report is byte-identical to the pre-HIMMEL-2830
     # one, matching the argv guarantee it describes.
     if [ -n "$PROFILE" ]; then
-        printf 'headed-arm-leg: profile=%s settings=%s preface=%s lean=%s mcp=%s mcp-config=%s\n' \
-            "$PROFILE" "$PROFILE_SETTINGS" "$LEG_PROFILE_PREFACE" "$HIMMEL_LEAN_LEG" \
+        printf 'headed-arm-leg: profile=%s settings=%s preface=%s contract=%s lean=%s mcp=%s mcp-config=%s\n' \
+            "$PROFILE" "$PROFILE_SETTINGS" "$LEG_PROFILE_PREFACE" "$PROFILE_CONTRACT" "$HIMMEL_LEAN_LEG" \
             "$MCP_NAMES_JSON" "${LEG_PROFILE_MCP_CONFIG:-<none>}"
+    fi
+    # Printed ONLY for an Opus/Fable model that cleared the tier gate above;
+    # absent for Sonnet/Haiku, matching the argv-report guarantee pattern above.
+    if [ -n "$TIER_GATE" ]; then
+        printf 'headed-arm-leg: tier=%s tier-category=%s tier-reason=%s\n' "$TIER_GATE" "$TIER_CATEGORY" "$TIER_REASON"
     fi
     exit 0
 fi
@@ -309,6 +468,31 @@ if [ -n "$PROFILE" ]; then
         exit 2
     fi
     chmod 600 "$PROFILE_SETTINGS" 2>/dev/null || true
+    if [ "$LANE" = "claudex" ]; then
+        if ! cat "$LEG_PREFACE" "$CLAUDEX_PREFACE" > "$LEG_PROFILE_PREFACE"; then
+            echo "headed-arm-leg: --lane claudex: cannot write preface to $LEG_PROFILE_PREFACE" >&2
+            exit 2
+        fi
+        chmod 600 "$LEG_PROFILE_PREFACE" 2>/dev/null || true
+    else
+        # (HIMMEL-2985/2990) Native lane: the leg preface stays the standing
+        # rule set only. The brief's own contract (up to the Results tail) is
+        # written to its own file and re-injected by a SessionStart compact
+        # hook (added to PROFILE_JSON above) instead of riding every API call
+        # in the preface. awk stops at the Results tail (or never, printing
+        # the whole file) rather than mapfile, for bash 3.2 (macOS ships 3.2;
+        # see the Platform guard above).
+        if ! cat "$LEG_PREFACE" > "$LEG_PROFILE_PREFACE"; then
+            echo "headed-arm-leg: --profile $PROFILE: cannot write preface to $LEG_PROFILE_PREFACE" >&2
+            exit 2
+        fi
+        chmod 600 "$LEG_PROFILE_PREFACE" 2>/dev/null || true
+        if ! awk '/^## Results/{exit} {print}' "$DOC" > "$PROFILE_CONTRACT"; then
+            echo "headed-arm-leg: --profile $PROFILE: cannot write contract to $PROFILE_CONTRACT" >&2
+            exit 2
+        fi
+        chmod 600 "$PROFILE_CONTRACT" 2>/dev/null || true
+    fi
     if [ -n "${LEG_PROFILE_MCP_CONFIG:-}" ]; then
         if ! printf '%s\n' "$MCP_CONFIG_JSON" > "$LEG_PROFILE_MCP_CONFIG"; then
             echo "headed-arm-leg: --profile $PROFILE: cannot write mcp config to $LEG_PROFILE_MCP_CONFIG" >&2
@@ -330,18 +514,57 @@ fi
 # bank. Any other verdict (PROCEED, BANK-STALE, BANK-UNKNOWN) falls through.
 BANK_PREFLIGHT="${HEADED_ARM_LEG_PREFLIGHT:-$HERE/../../lib/bank-preflight.sh}"
 if [ -f "$BANK_PREFLIGHT" ]; then
+    # HIMMEL-2774: TTL from OUR OWN deadline plus a fixed grace period,
+    # floored at 60s — a reservation must not outlive the arm attempt it
+    # belongs to, but must also survive long enough to matter. codex-5 (this
+    # round): for a FUTURE deadline, expiring the reservation exactly AT the
+    # deadline leaves zero grace for the actual process spawn (scheduling
+    # jitter, OS overhead) to complete and register in the live census —
+    # another admission racing that gap sees the slot freed and can over-
+    # admit the fleet right as this leg is coming up. The same +60s grace
+    # also covers a near-past DEADLINE or clock skew, so the separate floor
+    # below is now a belt-and-braces minimum rather than the only guard.
+    _arm_fleet_ttl=$(( DEADLINE - $(date +%s) + 60 ))
+    [ "$_arm_fleet_ttl" -ge 60 ] || _arm_fleet_ttl=60
     # HIMMEL-2789: this call launches a leg, so it declares launch intent —
     # the fleet cap must be able to actually refuse it, unlike a plain
     # bank-status READ.
-    preflight_token="$(CADENCE_BANK_LEG="$NAME" CADENCE_BANK_LANE="$LANE" CADENCE_BANK_LAUNCH=1 bash "$BANK_PREFLIGHT" 2>>"$LOG")"
+    preflight_token="$(CADENCE_BANK_LEG="$NAME" CADENCE_BANK_LANE="$LANE" CADENCE_BANK_LAUNCH=1 CADENCE_BANK_CALLER_PID="$$" FLEET_RESERVE_TTL="$_arm_fleet_ttl" bash "$BANK_PREFLIGHT" 2>>"$LOG")"
     if [ "$preflight_token" = SKIPPED-FLEET ]; then
+        # HIMMEL-2774: NOT a reservation release here — bank-preflight.sh
+        # only ever returns SKIPPED-FLEET from its admission block itself
+        # (lock failure, at/over-cap, or a DUPLICATE reservation name), and
+        # none of those paths ever create a reservation for OUR call. The
+        # duplicate case in particular is someone ELSE's still-pending
+        # reservation for this same name — deleting it here would release a
+        # slot out from under that other, still-live arm attempt.
         echo "$(date +%F_%T) headed-arm-leg: refusing to launch $NAME - fleet-size cap reached (bypass: FLEET_CAP_OK=1 in the LAUNCHING shell)" >> "$LOG"
         exit 10
     fi
     if [ "$preflight_token" = SKIPPED-BANK ]; then
+        # HIMMEL-2774: SKIPPED-BANK is only reachable AFTER fleet admission
+        # already succeeded and reserved a slot for $NAME (admission runs
+        # before any bank check) — release it now since this attempt is not
+        # going to launch after all, rather than leaving it to expire by TTL.
+        _arm_fleet_slots="${HIMMEL_FLEET_SLOTS:-${XDG_RUNTIME_DIR:-/tmp}/himmel-fleet-$(id -u)}"
+        # codex-3 (this round): the same admission-lock-failure bypass that
+        # can reach here without ever creating OUR reservation (see the
+        # comment above SKIPPED-FLEET) means a reservation already present
+        # for $NAME may belong to an unrelated concurrent arm attempt —
+        # verify pid ownership before deleting it out from under them.
+        if [ "$(cat "${_arm_fleet_slots:?}/$NAME/pid" 2>/dev/null)" = "$$" ]; then
+            rm -rf "${_arm_fleet_slots:?}/$NAME" 2>/dev/null
+        fi
         echo "$(date +%F_%T) headed-arm-leg: refusing to launch $NAME - $LANE lane bank exhausted (park and retry later; see bank-preflight.sh for the parked lane's own bank status)" >> "$LOG"
         exit 11
     fi
+fi
+
+# HIMMEL-2976: this wrapper execs into headed-arm.sh below, so its own
+# "armed:" line (headed-arm.sh) never sees TIER_GATE - log the reason
+# ourselves, same append style as the SKIPPED-FLEET/SKIPPED-BANK lines above.
+if [ -n "$TIER_GATE" ]; then
+    echo "$(date +%F_%T) headed-arm-leg: tier=$TIER_GATE tier-category=$TIER_CATEGORY tier-reason=$TIER_REASON" >> "$LOG"
 fi
 
 exec "$HEADED_ARM" "$NAME" "$DOC" "$SIGNAL" "$DEADLINE" "$LOG" "$MODEL" "$CONTEXT"

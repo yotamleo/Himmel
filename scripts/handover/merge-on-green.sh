@@ -1096,6 +1096,89 @@ record_after_report_pending_marker() {
     return 0
 }
 
+# HIMMEL-374: best-effort Jira auto-transition on merge — structural fix for
+# backlog drift (a ticket left open after its work landed), rather than
+# relying on the periodic reconciler to catch it later. Never fails the
+# merge: every step degrades to a skip/failed result recorded on the audit
+# line, not a non-zero return from this function. Reads the ticket key from
+# the PR title's `[PROJ-N]` tag (conventional-commit convention enforced by
+# check-commit-msg) and the target status from reconcile-config.json, so
+# this and `reconcile-backlog.mjs` share one source of truth for "what
+# status does a closed ticket move to" per project.
+jira_auto_transition_on_merge() {
+    local nwo="$1" pr_num="$2" pr_sha="$3"
+    JIRA_AUTO_TRANSITION_RESULT="not-attempted"
+
+    local title
+    title=$("$GH" pr view "$pr_num" --repo "$nwo" --json title -q .title 2>/dev/null) \
+        || { JIRA_AUTO_TRANSITION_RESULT="skip=no-title"; return 0; }
+
+    local key
+    key=$(printf '%s' "$title" | grep -oE '\[[A-Za-z]+-[0-9]+\]' | head -1 | tr -d '[]')
+    [ -n "$key" ] || { JIRA_AUTO_TRANSITION_RESULT="skip=no-ticket-tag"; return 0; }
+
+    local common repo_root
+    common=$(git rev-parse --git-common-dir 2>/dev/null) \
+        || { JIRA_AUTO_TRANSITION_RESULT="skip=no-repo-root key=$key"; return 0; }
+    repo_root=$(cd "$(dirname "$common")" 2>/dev/null && pwd) \
+        || { JIRA_AUTO_TRANSITION_RESULT="skip=no-repo-root key=$key"; return 0; }
+    [ -f "$repo_root/scripts/jira/dist/index.js" ] \
+        || { JIRA_AUTO_TRANSITION_RESULT="skip=no-jira-cli-build key=$key"; return 0; }
+
+    local project="${key%-*}"
+    local config_path="$repo_root/scripts/jira/reconcile-config.json"
+    [ -f "$config_path" ] || { JIRA_AUTO_TRANSITION_RESULT="skip=no-config key=$key"; return 0; }
+    local target_status
+    target_status=$(node -e '
+        try {
+            const c = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+            const t = c[process.argv[2]] && c[process.argv[2]].targetStatus;
+            if (t) process.stdout.write(t);
+        } catch {}
+    ' "$config_path" "$project" 2>/dev/null)
+    [ -n "$target_status" ] || { JIRA_AUTO_TRANSITION_RESULT="skip=no-project-config key=$key project=$project"; return 0; }
+
+    # Never touch Epic/Story (standing project invariant — reconcile-lib.mjs's
+    # own classifyTicket enforces this for the batch reconciler; this
+    # merge-time hook has no classifyTicket call in its path, so it must
+    # check independently). Fails safe: an unreadable/undetermined type
+    # skips the transition rather than risking one on an Epic or Story.
+    local issue_type_json issue_type
+    issue_type_json=$(cd "$repo_root" && node scripts/jira/dist/index.js get "$key" --json 2>/dev/null)
+    issue_type=$(printf '%s' "$issue_type_json" | node -e '
+        try {
+            const d = JSON.parse(require("fs").readFileSync(0, "utf8"));
+            const t = d.fields && d.fields.issuetype && d.fields.issuetype.name;
+            if (t) process.stdout.write(t);
+        } catch {}
+    ' 2>/dev/null)
+    case "$issue_type" in
+        Epic|Story) JIRA_AUTO_TRANSITION_RESULT="skip=never-touch-type key=$key type=$issue_type"; return 0 ;;
+        "") JIRA_AUTO_TRANSITION_RESULT="skip=cannot-verify-type key=$key"; return 0 ;;
+    esac
+
+    local comment_tmp comment_rc=0
+    comment_tmp=$(mktemp "${TMPDIR:-/tmp}/merge-on-green-jira-comment.XXXXXX") || { JIRA_AUTO_TRANSITION_RESULT="skip=no-tmpfile key=$key"; return 0; }
+    printf 'PR #%s (%s) merged @ %s. scripts/handover/merge-on-green.sh is attempting to auto-transition this ticket to '"'"'%s'"'"'.\n' \
+        "$pr_num" "$nwo" "$pr_sha" "$target_status" >"$comment_tmp"
+    ( cd "$repo_root" && node scripts/jira/dist/index.js comment "$key" --comment-file "$comment_tmp" ) \
+        >/dev/null 2>&1 || comment_rc=$?
+    rm -f "$comment_tmp"
+    # A failed comment means no evidence breadcrumb would exist on the
+    # ticket — skip the transition rather than close it silently.
+    [ "$comment_rc" -eq 0 ] || { JIRA_AUTO_TRANSITION_RESULT="skip=comment-failed key=$key rc=$comment_rc"; return 0; }
+
+    local transition_out transition_rc=0
+    transition_out=$(cd "$repo_root" && node scripts/jira/dist/index.js transition "$key" "$target_status" 2>&1) \
+        || transition_rc=$?
+    if [ "$transition_rc" -eq 0 ]; then
+        JIRA_AUTO_TRANSITION_RESULT="ok key=$key status=$target_status"
+    else
+        JIRA_AUTO_TRANSITION_RESULT="failed key=$key status=$target_status rc=$transition_rc out=${transition_out//$'\n'/ }"
+    fi
+    return 0
+}
+
 # The merge is pinned to the same resolved identity. No --delete-branch
 # (HIMMEL-1679): every branch here is worktree-held, so gh's local-branch
 # delete failed on every real merge and turned a landed merge into a
@@ -1158,7 +1241,8 @@ if [ "$merge_rc" -ne 0 ]; then
     if [ "$post_state" = "MERGED" ]; then
         prune_merged_worktree "$head_branch" "$sha"
         record_after_report_pending_marker "$head_branch" "$pr_num" "$sha"
-        audit "MERGED repo=$nwo pr=#$pr_num sha=$sha gate=check-ci:0 gh-exit=$merge_rc prune=$PRUNE_RESULT branch=$PRUNE_BRANCH marker=$MARKER_RESULT after-report=$AFTER_REPORT_RESULT cr=$CR_STATE"
+        jira_auto_transition_on_merge "$nwo" "$pr_num" "$sha"
+        audit "MERGED repo=$nwo pr=#$pr_num sha=$sha gate=check-ci:0 gh-exit=$merge_rc prune=$PRUNE_RESULT branch=$PRUNE_BRANCH marker=$MARKER_RESULT after-report=$AFTER_REPORT_RESULT cr=$CR_STATE jira-transition=$JIRA_AUTO_TRANSITION_RESULT"
         echo "merge-on-green: merged PR #$pr_num @ $sha (repo $nwo, squash); MERGED at the certified sha/base although gh exited $merge_rc: ${merge_out:-<no output>}"
         exit 0
     fi
@@ -1231,7 +1315,8 @@ if [ "$merge_rc" -eq 0 ]; then
     if [ "$final_state" = "MERGED" ]; then
         prune_merged_worktree "$head_branch" "$sha"
         record_after_report_pending_marker "$head_branch" "$pr_num" "$sha"
-        audit "MERGED repo=$nwo pr=#$pr_num sha=$sha gate=check-ci:0 prune=$PRUNE_RESULT branch=$PRUNE_BRANCH marker=$MARKER_RESULT after-report=$AFTER_REPORT_RESULT cr=$CR_STATE"
+        jira_auto_transition_on_merge "$nwo" "$pr_num" "$sha"
+        audit "MERGED repo=$nwo pr=#$pr_num sha=$sha gate=check-ci:0 prune=$PRUNE_RESULT branch=$PRUNE_BRANCH marker=$MARKER_RESULT after-report=$AFTER_REPORT_RESULT cr=$CR_STATE jira-transition=$JIRA_AUTO_TRANSITION_RESULT"
         echo "merge-on-green: merged PR #$pr_num @ $sha (repo $nwo, squash). ${merge_out:-}"
         exit 0
     fi

@@ -8,10 +8,17 @@ repos:
       # graphify-out/ holds generated graph artifacts (HIMMEL-1193): reformatting
       # them fights graphify's own output byte-for-byte and would leave the
       # graph-generating station perpetually dirty against the committed copy.
+      # marketplace/plugins/lean-skills/skills/ (HIMMEL-3064) is the same case as
+      # claude-hud: copied VERBATIM from obra/superpowers + mattpocock/skills, so
+      # a reformat here IS the local edit VENDORED.md forbids. Not hypothetical —
+      # end-of-file-fixer had already appended a newline to
+      # writing-skills/graphviz-conventions.dot, making it the one file of 44
+      # that no longer compared byte-identical to upstream and so the one false
+      # positive any cmp-based re-vendor audit would have to explain away.
       - id: trailing-whitespace
-        exclude: '^(templates/luna-second-brain/\.obsidian/plugins/.*\.(js|css)$|marketplace/plugins/claude-hud/|graphify-out/|scripts/lanes/bench/(fixtures|runs)/)'
+        exclude: '^(templates/luna-second-brain/(\.obsidian/plugins|optional/plugins)/.*\.(js|css)$|marketplace/plugins/claude-hud/|marketplace/plugins/lean-skills/skills/|graphify-out/|scripts/lanes/bench/(fixtures|runs)/)'
       - id: end-of-file-fixer
-        exclude: '^(templates/luna-second-brain/\.obsidian/plugins/.*\.(js|css)$|marketplace/plugins/claude-hud/|graphify-out/|scripts/lanes/bench/(fixtures|runs)/)'
+        exclude: '^(templates/luna-second-brain/(\.obsidian/plugins|optional/plugins)/.*\.(js|css)$|marketplace/plugins/claude-hud/|marketplace/plugins/lean-skills/skills/|graphify-out/|scripts/lanes/bench/(fixtures|runs)/)'
       - id: check-yaml
       - id: check-json
       # HIMMEL-2508: 516 tracked scripts reached main as mode 100644 because
@@ -24,9 +31,12 @@ repos:
     hooks:
       # Vendored statusline bar (HIMMEL-331) is third-party code (upstream
       # nilbuild/claude-statusline; the yotamleo fork is archived, HIMMEL-1233)
-      # — don't lint it.
+      # — don't lint it. marketplace/plugins/lean-skills/skills/ (HIMMEL-3064)
+      # is copied VERBATIM from obra/superpowers + mattpocock/skills — same
+      # reasoning: a shellcheck fix here would be a local edit VENDORED.md
+      # explicitly forbids, turning the next re-vendor into a merge.
       - id: shellcheck
-        exclude: '^(scripts/statusline/|scripts/lanes/bench/(fixtures|runs)/)'
+        exclude: '^(scripts/statusline/|scripts/lanes/bench/(fixtures|runs)/|marketplace/plugins/lean-skills/skills/)'
 
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.21.2
@@ -55,6 +65,13 @@ repos:
         entry: bash scripts/hooks/check-template-himmel-plugins.sh
         language: system
         always_run: true
+        pass_filenames: false
+
+      - id: marketplace-source-hermetic
+        name: settings-template marketplace sources stay hermetic (url/directory, never github shorthand)
+        entry: bash scripts/check-marketplace-source-hermetic.sh
+        language: system
+        files: ^docs/setup/settings-template\.json$
         pass_filenames: false
 
       - id: doc-guard
@@ -102,6 +119,14 @@ repos:
         language: system
         always_run: true
         pass_filenames: false
+
+      - id: vacuous-path-assert
+        name: no emptiness assertion runs under an ambient hermetic-PATH scrub (himmel-dev only)
+        # HIMMEL-2957
+        entry: bash scripts/ci/check-vacuous-path-assert.sh
+        language: system
+        files: test-.*\.sh$
+        pass_filenames: true
 
       - id: no-ticket-id-in-user-strings
         name: adopter-facing strings stay free of raw ticket IDs (himmel-dev only)
@@ -424,7 +449,13 @@ repos:
 
       - id: skill-description-cap
         name: skill/command description stays within 120 chars
-        # HIMMEL-2037
+        # HIMMEL-2037. No lean-skills exclude here (HIMMEL-3064): the entry
+        # ALREADY honours vendoring at the authoritative source — skill-cost
+        # reads the nearest VENDORED.md (HIMMEL-3093) and skips upstream prose
+        # while still capping that file's `local=` declarations, of which
+        # lean-skills' context7-mcp is one. A path regex here would be a
+        # second, coarser copy of that policy: it cannot see `local=`, so it
+        # would launder the himmel-authored skill as vendored.
         language: system
         entry: node scripts/lanes/skill-cost.mjs --max-desc 120
         files: '^(\.claude/commands/[^/]+\.md|\.claude/skills/[^/]+/SKILL\.md|\.agents/skills/[^/]+/SKILL\.md|marketplace/plugins/[^/]+/commands/[^/]+\.md|marketplace/plugins/[^/]+/skills/[^/]+/SKILL\.md)$'

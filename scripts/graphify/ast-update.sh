@@ -352,6 +352,15 @@ set +e
 graphify update "$CORPUS_ROOT" --force
 _graphify_rc=$?
 set -e
+# HIMMEL-2983: does NOT run harden-graph.py here. `graphify update --force`
+# rewrites this OUT_DIR in place with no scratch/promote staging (unlike
+# refresh-graph-map.sh), so nothing here guarantees graph.json exists or is
+# well-formed on every hourly tick (confirmed by this script's own hermetic
+# stub, which never produces one) -- wiring a hard-failing harden step to an
+# in-place AST-only write would need touching every existing test double to
+# grow a real fixture graph for a bulk-mechanical harden, for a benefit
+# (surviving the hourly AST refresh) already delivered by the weekly
+# refresh-graph-map.sh cadence re-applying the harden on its own schedule.
 if [ "$_graphify_rc" -eq 0 ]; then
   exit 0
 fi

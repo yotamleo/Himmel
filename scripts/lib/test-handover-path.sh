@@ -162,6 +162,27 @@ assert_eq "T7d absent key resets _HP_FIELD to empty (miss branch)" "" "$_HP_FIEL
 _hp_json_unescape "$esc7b"
 assert_eq "T7e escaped registry value decodes to the original raw value" "$raw7b" "$_HP_UNESC"
 
+# T7f (HIMMEL-2868): all supported JSON escapes, including ASCII Unicode.
+_hp_json_unescape 'repo\/x'
+assert_eq "T7f escaped slash" 'repo/x' "$_HP_UNESC"
+_hp_json_unescape 'repo\"x'
+assert_eq "T7f escaped quote" 'repo"x' "$_HP_UNESC"
+u7f="\\u"
+_hp_json_unescape "repo${u7f}0041"
+assert_eq "T7f ASCII Unicode escape" 'repoA' "$_HP_UNESC"
+_hp_json_unescape '\b\f\n\r\t'
+assert_eq "T7f control escapes" $'\b\f\n\r\t' "$_HP_UNESC"
+_hp_json_unescape "${u7f}0001${u7f}000a${u7f}0022${u7f}005C${u7f}007f"
+assert_eq "T7f ASCII range and hex case" $'\001\n"\\\177' "$_HP_UNESC"
+for bad7f in '\q' "prefix\\" '\u12' '\u00xz' "${u7f}0080" '\uD800' "${u7f}0000"; do
+    _hp_json_unescape "$bad7f"
+    assert_eq "T7f rejects $bad7f" 0 "${_HP_UNESC_OK:-missing}"
+    assert_eq "T7f clears partial result for $bad7f" '' "$_HP_UNESC"
+done
+_hp_json_unescape 'plain'
+assert_eq "T7f success clears prior failure" 1 "${_HP_UNESC_OK:-missing}"
+assert_eq "T7f plain text preserved" plain "$_HP_UNESC"
+
 # T8 (HIMMEL-1344): registry identity is canonical, root-relative, and
 # uniformly case-folded. The scheduler canonicalizer remains platform-specific,
 # while the durable registry key must compare identically across machines.

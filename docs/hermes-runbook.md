@@ -293,9 +293,50 @@ applying it. The step resolves the install root from `HERMES_HOME` (else
 cleanly and never fails the himmel update when hermes isn't installed. After an
 update, **restart the hermes gateway** (`hermes gateway restart`, when no
 session is running) to pick up changes — on Linux, `/himmel-update` now does
-this for you: it restarts any running `hermes-gateway-*.service` user units
-once the checkout actually moves, or prints the command to run by hand when
-`systemctl` isn't available.
+this for you: it restarts any running `hermes-gateway.service` (multiplexer)
+or `hermes-gateway-*.service` (per-profile) user units once the checkout
+actually moves, or prints the command to run by hand when `systemctl` isn't
+available.
+
+### Gateway topology: multiplexed vs per-profile (HIMMEL-3052)
+
+hermes runs its gateway one of two ways:
+
+- **Multiplexed (opt-in; this station's shape since HIMMEL-3052).** ONE
+  systemd user unit, `hermes-gateway.service`, serves `default` plus every
+  named profile out of the `default` profile's home — status, PID and
+  process state all live there. Not hermes' default: you opt in with `hermes
+  gateway migrate --multiplex`, or via `hermes update`'s auto-migration when
+  nothing blocks it. `hermes status` shows a `Serves: …` line naming the
+  profiles it is multiplexing, and `hermes -p <profile> gateway status`
+  reports "running via the default-profile multiplexer" for any profile it
+  is serving instead of duplicating the process/PID info.
+- **Per-profile (rollback shape).** One unit per profile,
+  `hermes-gateway-<profile>.service`, each its own process. Restore it with:
+
+  ```bash
+  hermes gateway migrate --standalone   # rolls back to one unit per profile
+  ```
+
+Restart commands for both shapes:
+
+```bash
+systemctl --user restart hermes-gateway.service            # multiplexer
+systemctl --user restart hermes-gateway-<profile>.service  # per-profile
+```
+
+**A bot token belongs to exactly one profile.** Two profiles polling the same
+`TELEGRAM_BOT_TOKEN` fight over `getUpdates`, so hermes' migration preflight
+refuses to multiplex while a token is duplicated across profiles. On this
+station `default` runs no bot, so its `.env` carries no `TELEGRAM_*` keys.
+
+**Multiplexer caveat — `hactl` role fallback (LUNA-208).** `ggs-local`'s
+`hactl` still honours `GGS_ROLE` from the environment first, but the
+multiplexer sets terminal children's `HERMES_HOME` to the served profile's
+home without forwarding that profile's non-secret `.env` vars, so
+`GGS_ROLE` simply isn't there — `hactl` then falls back to reading
+`$HERMES_HOME/ggs_role`, failing closed to read-only if that file is
+missing.
 
 **Upstream force-pushes `main` (HIMMEL-2139).** So the checkout regularly stops
 being a fast-forward of upstream through no fault of ours, and the update step

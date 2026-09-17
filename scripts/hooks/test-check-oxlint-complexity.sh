@@ -72,9 +72,29 @@ assert_says() {
     fi
 }
 
+# Source-level pin plus parity with the sibling hardening gate (HIMMEL-3044):
+# both gates must invoke the SAME oxlint version, so a future bump of one
+# without the other goes red here rather than in CI.
+HARDENING_GATE="$SCRIPT_DIR/check-oxlint-hardening.sh"
+if grep -q '^OXLINT_VERSION=1\.81\.0$' "$GATE"; then
+    echo "PASS gate pins OXLINT_VERSION=1.81.0"
+else
+    echo "FAIL gate must pin OXLINT_VERSION=1.81.0"
+    FAILED=$((FAILED + 1))
+fi
+
+complexity_pin=$(grep -oE '^OXLINT_VERSION=.*$' "$GATE")
+hardening_pin=$(grep -oE '^OXLINT_VERSION=.*$' "$HARDENING_GATE")
+assert_eq "complexity gate's OXLINT_VERSION matches the hardening gate's" \
+  "$hardening_pin" "$complexity_pin"
+
 if ! command -v bunx >/dev/null 2>&1; then
-    echo "SKIP test-check-oxlint-complexity: bunx not on PATH — cannot exercise the pass/fail cases"
-    exit 0
+    if [ "$FAILED" -eq 0 ]; then
+        echo "SKIP test-check-oxlint-complexity: bunx not on PATH — cannot exercise the pass/fail cases"
+        exit 0
+    fi
+    echo "SKIP test-check-oxlint-complexity: bunx not on PATH — cannot exercise the pass/fail cases (pin/parity checks above already FAILED)"
+    exit 1
 fi
 
 make_clean_fixture() {

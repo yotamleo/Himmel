@@ -68,7 +68,7 @@ JSON
 }
 
 # --- RED: the three shapes the gate exists to refuse ------------------------
-write_settings "$TMP/.claude/settings.json" '"C:/Users/somebody/.local/bin/graphify.EXE hook-guard search"'
+write_settings "$TMP/.claude/settings.json" '"C:/Users/somebody/.local/bin/graphify.EXE hook-guard search"'  # leak-allow: home-path fixture username, not a real path
 case_rc "windows absolute user path refused" 1 "$TMP/.claude/settings.json"
 
 write_settings "$TMP/.claude/settings.local.json" '"/home/osboxes/.local/bin/graphify hook-guard read"'
@@ -121,7 +121,7 @@ printf '%s\n' '{"hooks":{"PreToolUse":[{"hooks":[{"command":"graphify.EXE hook-c
 case_rc "minified JSON: .EXE command still refused" 1 "$TMP/.claude/settings.json"
 
 # --- coverage the C:-only / line-only rules used to miss ---------------------
-write_settings "$TMP/.claude/settings.json" '"D:/Users/somebody/.local/bin/tool run"'
+write_settings "$TMP/.claude/settings.json" '"D:/Users/somebody/.local/bin/tool run"'  # leak-allow: home-path fixture username, not a real path
 case_rc "absolute path on a NON-C drive refused" 1 "$TMP/.claude/settings.json"
 
 write_settings "$TMP/.claude/settings.json" '"/root/.local/bin/tool run"'
@@ -172,7 +172,7 @@ JSON
 case_rc "multi-line portable command passes" 0 "$TMP/.codex/hooks.json"
 
 # --- scope control: a violation in a file this gate does not own ------------
-write_settings "$TMP/other/notes.json" '"C:/Users/somebody/.local/bin/graphify.EXE hook-guard search"'
+write_settings "$TMP/other/notes.json" '"C:/Users/somebody/.local/bin/graphify.EXE hook-guard search"'  # leak-allow: home-path fixture username, not a real path
 case_rc "violation outside the scanned filenames is ignored" 0 "$TMP/other/notes.json"
 
 # --- the regression guard: this repo's own tracked files --------------------

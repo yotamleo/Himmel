@@ -150,7 +150,16 @@ Stages currently wired:
   commit-msg stage's filename argument IS the message file. Handed none, the
   hook falls back to `.git/COMMIT_EDITMSG`; only when that fallback does not
   resolve to a readable file does it fail CLOSED (reject) rather than pass
-  (HIMMEL-2461).
+  (HIMMEL-2461). It also WARNS (never blocks, HIMMEL-3022) at commit time when
+  a `Security reviewed:`/`Platforms tested:` trailer is present but does not
+  conform — staying silent when the trailer is absent altogether — honoring a
+  `[skip security-review]`/`[skip platforms-check]` marker, or a token that
+  will satisfy `check-security-reviewed.sh`'s pre-push TOKEN_RE, or a
+  non-empty `Platforms tested:` value, exactly as those gates would — so the
+  author usually sees the problem before the pre-push gate refuses the push.
+  It cannot see a PR-body attestation (the gate's third path, since no PR
+  exists yet at commit time), so a message the warning still flags may in
+  that one case still pass the gate.
 - **Doc-guard (pre-commit + pre-push, himmel-dev only):** check-doc-guard
   (blocks ADDING a command/skill file without a matching update to
   `docs/commands-catalog.md`; gated behind `.himmel-dev` marker so adopters
@@ -1615,7 +1624,11 @@ hook plus the auto-mode classifier are the outer defense layers, not an
 arms race against every wrapper permutation. Fails CLOSED on missing `jq`
 or malformed/truncated JSON (a security floor, not a convenience hook — the
 EXIT trap also converts any unexpected top-level failure to a block rather
-than a fail-open rc=1). Bypass: `DESTRUCTIVE_OK=1` (launching shell,
+than a fail-open rc=1). Deny text is the tell that separates this
+deterministic hook from an auto-mode classifier denial (HIMMEL-2798/
+HIMMEL-3020 class): this hook's message always names its own short reason
+(e.g. `recursive rm`), never quoted script content or `Stage 2 classifier
+error`. Bypass: `DESTRUCTIVE_OK=1` (launching shell,
 session-sticky). Spec: `scripts/hooks/test-block-destructive-commands.sh`.
 
 ### `check-hook-file-parse.sh` — write-time hook-file parse guard (HIMMEL-2230)
@@ -1822,6 +1835,16 @@ Fails OPEN on anything this
 hook cannot evaluate (missing `jq`, unparseable JSON, non-Bash tool) — a
 workflow nudge, not a security fence. Bypass: `QUIET_RUN_BYPASS=1`
 (launching shell, session-sticky). Spec: `scripts/hooks/test-require-quiet-run.sh`.
+`scripts/quiet-run.sh` itself (HIMMEL-2967) fails closed on any argv element
+with a `..` path component and, for the label `suite` when argv is
+`bash <path> …`, requires `<path>` to be a git-tracked `test-*.sh` — closing the
+gap where a `permissions.allow` tail-glob rule (HIMMEL-2959) admits the literal
+label + directory but quiet-run itself performed no path validation before
+exec. The tracked-file check itself only applies inside a git repository —
+outside one (no `.git` discoverable) it prints a skip note and lets the
+command through unchecked, since there is no tracked-vs-untracked distinction
+to enforce; any OTHER `git rev-parse` failure (git absent, a transient error)
+still fails closed.
 
 ### `block-docker-privesc.sh` — root-equivalent container guard (HIMMEL-441)
 
@@ -2573,6 +2596,36 @@ Second drift on prose → structural. Denies with a message naming SendMessage
 to the console as the replacement. Workflow nudge, not a security fence: fails
 open on missing `jq`, malformed, or empty stdin so it never locks an operator
 session out of the tool. Inert until HIMMEL-2919's launcher export lands.
+
+### `read-clamp.sh` — read-clamp PreToolUse hook (HIMMEL-2993)
+
+Fires on `Read`/`Grep` and `Bash`, keyed on `HIMMEL_CONSOLE_LEG=1` (same gate as
+`block-leg-askuserquestion.sh` — never a console or an interactive session).
+Measured over 12 merged-PR leg sessions, repeated Reads of the same file
+(≈4.5%) and whole-file reads (≈2.2%) were the #2/#3 cost levers on a PR's
+token bill after HIMMEL-2990; the instructional layer already existed (the
+preface's read-range sentence, #692) — this is the structural escalation on
+second drift.
+
+Denies (a) a `Read` without `offset`/`limit` of a file over
+`HIMMEL_READ_CLAMP_LINES` (default 400) lines, naming the file's line count
+and the `offset=<n> limit=<m>` shape to use instead; (b) a `Read` whose exact
+`(path, offset, limit)` triple was already read this session, naming the
+recorded timestamp — a *different* range of the same file is allowed and
+recorded; (c) the equivalent `Bash` shapes (`cat <file>`, `sed -n '1,$p'
+<file>`, `head -n <huge> <file>`) against an over-limit file. An unrecognised
+Bash shape is always allowed — this hook never denies on a guess.
+
+Per-session state: one line per allowed read under
+`${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/himmel-read-clamp/<session_id>/reads.tsv`.
+Workflow nudge, not a security fence: fails open on a missing `jq`, unparsed
+stdin, or an uncreatable runtime dir (state stays unwritten, the call is
+allowed) — this hook saves tokens, it does not protect anything. Escape hatch:
+`HIMMEL_READ_CLAMP_OK=1` in the launching shell allows one session past the
+clamp (e.g. re-reading a file after an external edit invalidated a recorded
+range), logged to stderr each time it fires. Joins the existing
+`block-read-secrets.sh` chain on both the `Read|Grep` and `Bash` PreToolUse
+matchers — right after it, so a denied secret read never gets clamp-recorded.
 
 ### `block-backend-tier.sh` — service-agnostic backend-routing guard (HIMMEL-400)
 

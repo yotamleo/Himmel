@@ -182,6 +182,24 @@ State 3 is the caveat: anyone still on the pre-cutover remote has no release
 tags to follow until they converge (`git remote set-url origin` +
 `git fetch --tags`, above).
 
+## The statusline's cached state (HIMMEL-3065)
+
+The statusline is a renderer (`claude-hud`) with its own per-user state under
+`${CLAUDE_CONFIG_DIR:-~/.claude}/plugins/claude-hud/`: cached session token
+counts, the prompt-cache anchor, the context-window fallback frame, and the
+cost ledgers. That state describes the install that wrote it, not the one you
+are converging onto — a macOS report of a statusline showing an expired cache
+clock, the previous install's counts and no cost figure at all was exactly
+this, carried across from an earlier himmel instance.
+
+Nothing to do about it by hand: whichever path re-wires the statusline
+(`install`, `ensure`, or `himmel-update`'s own re-wire) drops that state as
+soon as the wiring it writes differs from what was already there — a different
+clone path, an older instance's hud config, or a first wire. A re-run that
+changes neither leaves the caches alone, so converging a machine that is
+already on this clone costs a live session nothing. The hud rebuilds whatever
+it dropped on the next render.
+
 ## Windows
 
 **Windows is EXPERIMENTAL in v1** and migrating is no exception. Run every

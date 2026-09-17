@@ -33,13 +33,22 @@ trap 'rm -rf "$TMP"' EXIT
 # against THIS machine's own ambient process table and can spuriously
 # refuse (rc=22) on a host that genuinely has >= HIMMEL_FLEET_CAP `-n
 # HIMMEL-*` sessions running — noise unrelated to what this suite tests.
-# This suite's own known baseline red (a T15 spelling-canonicalization
-# failure, pre-existing at 434c5a51) is untouched by this stub — it is not
-# this ticket's to fix.
 FLEET_PS_STUB="$TMP/no-fleet-ps.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'true' > "$FLEET_PS_STUB"
 chmod +x "$FLEET_PS_STUB"
 export FLEET_PS_CMD="$FLEET_PS_STUB"
+
+# HIMMEL-2774: bank-preflight.sh now RESERVES a fleet slot per declared launch
+# (CADENCE_BANK_LAUNCH=1, set unconditionally by arm-resume.sh for every
+# non-dry-run arm), not just census live processes — so the FLEET_PS_CMD stub
+# above no longer zeroes the fleet count by itself: this suite's several real
+# arms (T15/T19/T20/T21/T22) each leave their own unconsumed reservation
+# (no real session ever appears to consume it) under this suite's own
+# XDG_RUNTIME_DIR (pinned below), and those persist for the default 1800s
+# TTL — far longer than this suite's runtime — so the 5th+ real arm would
+# refuse (rc=22) for a reason unrelated to what this suite tests.
+# FLEET_CAP_OK=1 is the design's own documented bypass.
+export FLEET_CAP_OK=1
 
 # Hermetic: fresh handover root, no real scheduler, no real telemetry/trust
 # writes (same shields test-arm-resume.sh uses).
@@ -517,7 +526,13 @@ HO15_ALT="$HANDOVER_DIR/HIMMEL-856-test/../HIMMEL-856-test/next-session-15.md"
 # clear the scheduler, which is what "always exit 0" used to mean. arms.jsonl is
 # deliberately NOT cleared -- the record from the first arm is the thing the
 # assertion below expects the re-arm to REPLACE.
+# HIMMEL-2964: clearing sched-stub.tasks alone only resets the Windows
+# schtasks stub. On POSIX (ubuntu/macOS CI) arm-resume's dedup check queries
+# atq, which reads sched-stub.atdir -- a leftover job file there still names
+# the same derived task, so the second arm hit a real (if here unwanted)
+# same-task dedup refusal (rc=3). Clear both stores.
 : > "$TMP/sched-stub.tasks"
+rm -rf "$TMP/sched-stub.atdir"
 out=$(bash "$ARM" --time "$(future_time)" --handover "$HO15_ALT" 2>&1)
 rc=$?
 assert_rc "T15: second real arm under another spelling succeeds" 0 "$rc"
@@ -601,7 +616,9 @@ rc=$?
 assert_rc "T19: first arm with a backslash path succeeds" 0 "$rc"
 # Same reason as T15: clear the (now registering) stub scheduler so the re-arm
 # is not refused as its own duplicate. arms.jsonl stays -- it is what is under test.
+# HIMMEL-2964: both stores, same reason as T15.
 : > "$TMP/sched-stub.tasks"
+rm -rf "$TMP/sched-stub.atdir"
 out=$(bash "$ARM" --time "$(future_time)" --handover "$HO19" 2>&1)
 rc=$?
 assert_rc "T19: second arm (re-arm) with a backslash path succeeds" 0 "$rc"

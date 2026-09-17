@@ -425,7 +425,7 @@ const GIT_READ_SUBCMDS = new Set([
 // commands like `node`, `npx`, `bun` and `dotnet` take a PATH or a PACKAGE as
 // their second token, not a verb. `npx https://alice:TOKEN@github.com/acme/x`
 // would have persisted the whole credential-bearing URL, and
-// `node /home/alice/clients/acme/deploy.mjs` a private path. Validating the
+// `node /home/alice/clients/acme/deploy.mjs` a private path. Validating the // leak-allow: home-path doc example
 // token itself is the boundary: anything not on the list is dropped, so an
 // unrecognised token — which is exactly where secrets live — can never land in
 // the ledger. Runner families are therefore absent entirely: verb-only.

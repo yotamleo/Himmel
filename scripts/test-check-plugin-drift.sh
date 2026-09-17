@@ -132,11 +132,11 @@ if grepq "$reg_probe" 'qmd|tobi/qmd|tag_release|base'; then ok "qmd entry -> tru
 
 # 3e. HIMMEL-1435 zero-gap inventory: claude-obsidian must be a plain tag-pinned
 #     resync target (no fork block — the fork was retired at v2.2.0, HIMMEL-2925)
-#     whose duplicated synced_base matches plugin-upstreams.json; qmd is the
-#     remaining fork-block entry and must still carry the fields
-#     resync-fork.sh's rebase-audit mechanism reads; every third-party plugin
-#     actually bundled in the luna template must have a registry row whose base
-#     matches its manifest; deliberate omissions stay explicit in
+#     whose duplicated synced_base matches plugin-upstreams.json; qmd is likewise
+#     a plain SHA-pinned entry with no fork block since HIMMEL-3045 de-forked it
+#     (it was the last remaining fork-block entry until then); every third-party
+#     plugin actually bundled in the luna template must have a registry row
+#     whose base matches its manifest; deliberate omissions stay explicit in
 #     coverage_audit rather than disappearing silently.
 audit_out="$(python3 - "$ROOT" "$REG" "$UPS" <<'PY' 2>&1
 import json, pathlib, sys
@@ -151,17 +151,15 @@ assert co['synced_base'] == ups['claude-obsidian']['synced_base']
 assert 'fork' not in co
 
 qmd = entries['qmd']
-assert qmd['fork']['fork_repo'] == 'https://github.com/yotamleo/qmd.git'
-assert qmd['fork']['upstream_repo'] == 'https://github.com/tobi/qmd.git'
-assert qmd['fork']['pin_file'] == 'scripts/lib/qmd-bin.sh'
-assert qmd['fork']['pin_template'].count('{sha}') == 1
+assert qmd['tracked_repo'] == 'tobi/qmd'
+assert 'fork' not in qmd
+assert 'version_pin' not in qmd
 
 plugin_root = root / 'templates/luna-second-brain/.obsidian/plugins'
 community = json.load(open(root / 'templates/luna-second-brain/.obsidian/community-plugins.json', encoding='utf-8'))
 expected = {
     'calendar': ('luna-calendar', 'liamcain/obsidian-calendar-plugin'),
     'dataview': ('luna-dataview', 'blacksmithgu/obsidian-dataview'),
-    'github-sync': ('luna-github-sync', 'kevinmkchin/Obsidian-GitHub-Sync'),
     'obsidian-banners': ('luna-obsidian-banners', 'noatpad/obsidian-banners'),
     'obsidian-local-rest-api': ('luna-obsidian-local-rest-api', 'coddingtonbear/obsidian-local-rest-api'),
     'qmd-as-md-obsidian': ('luna-qmd-as-md-obsidian', 'danieltomasz/qmd-as-md-obsidian'),
@@ -175,6 +173,17 @@ for plugin_id, (entry_name, repo) in expected.items():
     assert entry['synced_base'].lstrip('v') == manifest['version'].lstrip('v'), (entry_name, entry['synced_base'], manifest['version'])
     assert 'version_pin' not in entry
 
+# github-sync (HIMMEL-3066): opt-in, out of community-plugins.json, vendored
+# under optional/plugins/ instead of .obsidian/plugins/ — checked separately
+# since it is no longer one of the always-installed community entries above.
+assert 'github-sync' not in community
+gs_manifest = json.load(open(root / 'templates/luna-second-brain/optional/plugins/github-sync/manifest.json', encoding='utf-8'))
+gs_entry = entries['luna-github-sync']
+assert gs_entry['tracked_repo'] == 'kevinmkchin/Obsidian-GitHub-Sync'
+assert gs_entry['kind'] == 'tag_release' and gs_entry['mode'] == 'base'
+assert gs_entry['synced_base'].lstrip('v') == gs_manifest['version'].lstrip('v'), (gs_entry['synced_base'], gs_manifest['version'])
+assert 'version_pin' not in gs_entry
+
 audit = reg['coverage_audit']
 covered = {row['name'] for row in audit['covered_elsewhere']}
 skips = {row['name'] for row in audit['skips']}
@@ -187,7 +196,7 @@ PY
 )"
 audit_rc=$?
 if [ "$audit_rc" -eq 0 ]; then
-  ok "zero-gap inventory covers claude-obsidian (plain pin), qmd's fork block, all six bundled luna plugins, scripts/lib pins, codex dynamic discovery, and explicit skips"
+  ok "zero-gap inventory covers claude-obsidian (plain pin), qmd (plain pin, de-forked HIMMEL-3045), the five default-installed luna plugins + the opt-in github-sync (HIMMEL-3066), scripts/lib pins, codex dynamic discovery, and explicit skips"
 else
   bad "zero-gap inventory invalid: $audit_out"
 fi
@@ -217,11 +226,29 @@ fi
 
 # 5. Fail-open path, deterministically (hide gh from PATH). The script's headline
 #    safety property: gh absent -> exit 0 + skip, so CI / fresh clones never break.
-fo_out="$(PATH=/usr/bin:/bin bash "$SCRIPT" 2>&1)"; fo_rc=$?
-if [ "$fo_rc" -eq 0 ] && grepq "$fo_out" "fail-open"; then
-  ok "fail-open: gh absent -> exit 0 + skip message"
+#    A system-directory PATH (e.g. /usr/bin:/bin) does NOT hide gh — gh, jq, git,
+#    sha256sum etc. all live in /usr/bin on this station (HIMMEL-2524's inverse
+#    mistake: hiding by directory re-admits the very tool named). Build a minimal
+#    stub dir instead, naming only what this fail-open path itself needs (bash to
+#    run the script, dirname for its `$(dirname "$0")` ROOT resolution) and
+#    deliberately excluding gh, then assert the precondition that gh really is
+#    unreachable under that PATH before trusting the run.
+if NOGH_BIN="$(mktemp -d "${TMPDIR:-/tmp}/nogh-bin.XXXXXX")"; then
+  ln -s "$(command -v bash)" "$NOGH_BIN/bash"
+  ln -s "$(command -v dirname)" "$NOGH_BIN/dirname"
+  if PATH="$NOGH_BIN" command -v gh >/dev/null 2>&1; then
+    bad "fail-open fixture precondition failed: gh still reachable under stub PATH"
+  else
+    fo_out="$(PATH="$NOGH_BIN" bash "$SCRIPT" 2>&1)"; fo_rc=$?
+    if [ "$fo_rc" -eq 0 ] && grepq "$fo_out" "fail-open"; then
+      ok "fail-open: gh absent -> exit 0 + skip message"
+    else
+      bad "fail-open broken: rc=$fo_rc out=$fo_out"
+    fi
+  fi
+  rm -rf "$NOGH_BIN"
 else
-  bad "fail-open broken: rc=$fo_rc out=$fo_out"
+  bad "fail-open fixture: mktemp -d failed"
 fi
 
 # 5b. Malformed vendored-fork UPSTREAM_PIN: a fork pin missing the generic

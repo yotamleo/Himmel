@@ -24,19 +24,29 @@
 #
 # Method (see HIMMEL-2764 handover for the transcript facts this encodes):
 #   - Pass 1a (per top-level file, streamed via `jq -n reduce inputs`): walks
-#     the JSONL in order tracking the most recent non-tool-result
-#     "type":"user" row's wake-source classification (cross-session / monitor
-#     / operator; a slash command counts as operator) -- title/account/wake
-#     state updates from EVERY row regardless of --since, since they only
-#     track state for later rows, not counted output -- and accumulates usage
-#     per DISTINCT requestId, counting ONLY rows inside the --since window (a
-#     streamed turn repeats its usage across several rows sharing one
-#     requestId, so it is deduped -- first-seen-WITHIN-THE-WINDOW wins, later
-#     dupes are skipped; a duplicate outside the window is simply never
-#     considered, so a turn is never double-counted regardless of how its
-#     copies straddle the cutoff -- HIMMEL-2764 CR round 4, codex-2: verified
-#     against real transcripts that duplicate rows for one requestId always
-#     carry identical usage, so which copy is counted is immaterial).
+#     the JSONL in order tracking the most recent wake-source classification
+#     (cross-session / monitor / operator; a slash command counts as
+#     operator) from either a `type:"user"` row (a rendered cross-session
+#     string, or the older literal `<cross-session-message`/
+#     `<task-notification>`/`[SYSTEM NOTIFICATION` prefixes) or a
+#     `type:"attachment"` row with `attachment.type == "queued_command"` --
+#     a skill body or CLI command-body row inserted as a side effect of a
+#     Skill tool_use or slash command does NOT update this classification
+#     (HIMMEL-2781) -- title/account/wake state updates from EVERY row
+#     regardless of --since, since they only track state for later rows, not
+#     counted output -- and accumulates usage per DISTINCT requestId,
+#     counting ONLY rows inside the --since window (a streamed turn repeats
+#     its usage across several rows sharing one requestId, so it is deduped
+#     -- first-seen-WITHIN-THE-WINDOW wins, later dupes are skipped; a
+#     duplicate outside the window is simply never considered, so a turn is
+#     never double-counted regardless of how its copies straddle the cutoff
+#     -- HIMMEL-2764 CR round 4, codex-2: verified against real transcripts
+#     that duplicate rows for one requestId always carry identical usage, so
+#     which copy is counted is immaterial). The FIRST counted response to
+#     each wake-classification change also has its input tokens recorded
+#     separately per wake class (`first-resp-input`, HIMMEL-2781 ask 2), so
+#     the report can show what one wake actually cost instead of attributing
+#     an entire multi-turn episode to it.
 #   - Pass 1b (per `<sessionId>/subagents/*.jsonl` file, same dedup rule):
 #     accumulates that agent's usage into the PARENT session's subagent
 #     totals; never counted toward the parent's own turn total.
@@ -123,9 +133,31 @@ def is_tool_result($row):
       and (($row.message.content[0].type // "") == "tool_result"));
 
 def classify($s):
-  if ($s | startswith("<cross-session-message")) then "cs"
-  elif ($s | startswith("<task-notification>")) or ($s | startswith("[SYSTEM NOTIFICATION")) then "mon"
-  else "op" end;
+  if ($s | startswith("Another Claude session sent a message:")) or ($s | startswith("<cross-session-message")) then "cs"
+  elif ($s | startswith("<task-notification>")) or ($s | startswith("[SYSTEM NOTIFICATION")) or ($s | startswith("[Cross-session idle notice]")) then "mon"
+  else null end;
+
+# A skill/slash-command body carrying the CLI own
+# `<command-name>`/`<command-message>` wrapper. A genuine operator-typed slash
+# command (e.g. /plugin, /exit) produces this exact text prefix with isMeta
+# ABSENT and entrypoint:cli -- only an injected command/skill body carries
+# isMeta:true on the same prefix (verified against real transcripts,
+# HIMMEL-3006). The caller therefore gates this on isMeta:true as well, so a
+# bare prefix with isMeta absent falls through to the real-wake op branch
+# instead of being swallowed.
+def is_command_body($s):
+  ($s | startswith("<command-name>")) or ($s | startswith("<command-message>"));
+
+def has_skill_tool_use($row):
+  ($row.message.content // []) as $c
+  | ($c | type) == "array"
+  and ($c | any(.type == "tool_use" and .name == "Skill"));
+
+# A monitor/task wake delivered as an `attachment` row (real shape:
+# `type:"attachment"`, `attachment.type:"queued_command"` -- confirmed
+# against the Claude Code binary, HIMMEL-2781), not as `type:"user"` text.
+def is_queued_command($row):
+  ($row.attachment.type // "") == "queued_command";
 
 # Normalizes a UTC timestamp to a fixed 3-fractional-digit form (padding a
 # shorter fraction, truncating a longer one) so lexicographic comparison is
@@ -143,32 +175,50 @@ def in_window($row):
   ($row.timestamp == null) or ($since == "") or (norm_ts($row.timestamp) >= norm_ts($since));
 
 reduce inputs as $row (
-  {wake: "op", seen: {}, name: null, aititle: null, named: false, account: null,
+  {wake: "op", afterSkill: false, pendingEvent: false, seen: {}, name: null, aititle: null, named: false, account: null,
    main: {turns: 0, op: 0, cs: 0, mon: 0, input: 0, cache_read: 0, cache_create: 0, output: 0},
+   firstResp: {op: 0, cs: 0, mon: 0},
    sub:  {turns: 0, input: 0, cache_read: 0, cache_create: 0, output: 0}};
   if $row.type == "custom-title" then (.name = $row.customTitle | .named = true)
   elif $row.type == "ai-title" then (if .name == null then .aititle = $row.aiTitle else . end)
   elif $row.type == "bridge-session" then .account = $row.ownerAccountUuid
+  elif $row.type == "attachment" and is_queued_command($row) then
+    (.wake = "mon" | .afterSkill = false | .pendingEvent = true)
   elif $row.type == "user" and ($row.isSidechain != true) and (is_tool_result($row) | not) then
-    .wake = classify(content_text($row))
-  elif $row.type == "assistant" and (in_window($row)) and ($row.requestId != null)
-       and ((.seen[$row.requestId] // false) | not) then
-    (.seen[$row.requestId] = true)
-    | ($row.message.usage // {}) as $u
-    | if $row.isSidechain == true then
-        .sub.turns += 1
-        | .sub.input += ($u.input_tokens // 0)
-        | .sub.cache_read += ($u.cache_read_input_tokens // 0)
-        | .sub.cache_create += ($u.cache_creation_input_tokens // 0)
-        | .sub.output += ($u.output_tokens // 0)
+    (content_text($row)) as $txt
+    | (classify($txt)) as $c
+    | if $c != null then
+        (.wake = $c | .afterSkill = false | .pendingEvent = true)
+      elif ($row.isMeta == true) and (.afterSkill or is_command_body($txt)) then
+        (if is_command_body($txt) then .afterSkill = false else . end)
       else
-        .main.turns += 1
-        | .main[.wake] += 1
-        | .main.input += ($u.input_tokens // 0)
-        | .main.cache_read += ($u.cache_read_input_tokens // 0)
-        | .main.cache_create += ($u.cache_creation_input_tokens // 0)
-        | .main.output += ($u.output_tokens // 0)
+        (.wake = "op" | .afterSkill = false | .pendingEvent = true)
       end
+  elif $row.type == "assistant" then
+    (if has_skill_tool_use($row) then .afterSkill = true else . end)
+    | if (in_window($row)) and ($row.requestId != null)
+         and ((.seen[$row.requestId] // false) | not) then
+        (.seen[$row.requestId] = true)
+        | ($row.message.usage // {}) as $u
+        | if $row.isSidechain == true then
+            .sub.turns += 1
+            | .sub.input += ($u.input_tokens // 0)
+            | .sub.cache_read += ($u.cache_read_input_tokens // 0)
+            | .sub.cache_create += ($u.cache_creation_input_tokens // 0)
+            | .sub.output += ($u.output_tokens // 0)
+          else
+            .main.turns += 1
+            | .main[.wake] += 1
+            | .main.input += ($u.input_tokens // 0)
+            | .main.cache_read += ($u.cache_read_input_tokens // 0)
+            | .main.cache_create += ($u.cache_creation_input_tokens // 0)
+            | .main.output += ($u.output_tokens // 0)
+            | if .pendingEvent then
+                .firstResp[.wake] += ($u.input_tokens // 0)
+                | .pendingEvent = false
+              else . end
+          end
+      else . end
   else . end
 )
 | {sessionId: $sid, slug: $slug,
@@ -177,6 +227,7 @@ reduce inputs as $row (
    turns: .main.turns, op: .main.op, cs: .main.cs, mon: .main.mon,
    input: .main.input, cache_read: .main.cache_read,
    cache_create: .main.cache_create, output: .main.output,
+   first_resp_op: .firstResp.op, first_resp_cs: .firstResp.cs, first_resp_mon: .firstResp.mon,
    sub_turns: .sub.turns, sub_input: .sub.input, sub_cache_read: .sub.cache_read,
    sub_cache_create: .sub.cache_create, sub_output: .sub.output}
 '
@@ -209,6 +260,7 @@ reduce inputs as $row (
 )
 | {sessionId: $sid, slug: $slug, name: null, named: false, account: null,
    turns: 0, op: 0, cs: 0, mon: 0, input: 0, cache_read: 0, cache_create: 0, output: 0,
+   first_resp_op: 0, first_resp_cs: 0, first_resp_mon: 0,
    sub_turns: .sub.turns, sub_input: .sub.input, sub_cache_read: .sub.cache_read,
    sub_cache_create: .sub.cache_create, sub_output: .sub.output}
 '
@@ -262,13 +314,16 @@ def merge(a; b):
     turns: (a.turns + b.turns), op: (a.op + b.op), cs: (a.cs + b.cs), mon: (a.mon + b.mon),
     input: (a.input + b.input), cache_read: (a.cache_read + b.cache_read),
     cache_create: (a.cache_create + b.cache_create), output: (a.output + b.output),
+    first_resp_op: (a.first_resp_op + b.first_resp_op),
+    first_resp_cs: (a.first_resp_cs + b.first_resp_cs),
+    first_resp_mon: (a.first_resp_mon + b.first_resp_mon),
     sub_turns: (a.sub_turns + b.sub_turns), sub_input: (a.sub_input + b.sub_input),
     sub_cache_read: (a.sub_cache_read + b.sub_cache_read),
     sub_cache_create: (a.sub_cache_create + b.sub_cache_create),
     sub_output: (a.sub_output + b.sub_output) };
 
 . as $rows
-| (group_by(.sessionId) | map(reduce .[] as $r (.[0] | .turns=0|.op=0|.cs=0|.mon=0|.input=0|.cache_read=0|.cache_create=0|.output=0|.sub_turns=0|.sub_input=0|.sub_cache_read=0|.sub_cache_create=0|.sub_output=0|.name=null|.named=false|.account=null; merge(.; $r)))) as $sessions
+| (group_by(.sessionId) | map(reduce .[] as $r (.[0] | .turns=0|.op=0|.cs=0|.mon=0|.input=0|.cache_read=0|.cache_create=0|.output=0|.first_resp_op=0|.first_resp_cs=0|.first_resp_mon=0|.sub_turns=0|.sub_input=0|.sub_cache_read=0|.sub_cache_create=0|.sub_output=0|.name=null|.named=false|.account=null; merge(.; $r)))) as $sessions
 | ($sessions | map(select(.turns > 0 or .sub_turns > 0)
     | .name = (.name // (.sessionId[0:8])))) as $active
 | ($active | sort_by(-(.input + .cache_read))) as $sorted
@@ -285,19 +340,22 @@ def merge(a; b):
 | ($active | map(.sub_cache_read) | add // 0) as $tscr
 | ($active | map(.sub_cache_create) | add // 0) as $tscc
 | ($active | map(.sub_output) | add // 0) as $tsout
+| ($active | map(.first_resp_op) | add // 0) as $tfr_op
+| ($active | map(.first_resp_cs) | add // 0) as $tfr_cs
+| ($active | map(.first_resp_mon) | add // 0) as $tfr_mon
 | (
-    "| session | slug | account | turns | input | cache_read | cache_create | output | wake (op/cs/mon) | subagent turns |",
-    "|---|---|---|---|---|---|---|---|---|---|",
+    "| session | slug | account | turns | input | cache_read | cache_create | output | wake (op/cs/mon) | subagent turns | first-resp-input (op/cs/mon) |",
+    "|---|---|---|---|---|---|---|---|---|---|---|",
     ($shown[] | (
         (if .turns > 0 then
-          "| \(md_safe(.name)) | \(md_safe(.slug)) | \(.account // "n/a") | \(.turns) | \(.input) | \(.cache_read) | \(.cache_create) | \(.output) | \(.op)/\(.cs)/\(.mon) | \(.sub_turns) |"
+          "| \(md_safe(.name)) | \(md_safe(.slug)) | \(.account // "n/a") | \(.turns) | \(.input) | \(.cache_read) | \(.cache_create) | \(.output) | \(.op)/\(.cs)/\(.mon) | \(.sub_turns) | \(.first_resp_op)/\(.first_resp_cs)/\(.first_resp_mon) |"
         else empty end),
         (if .sub_turns > 0 then
-          "| \(md_safe(.name)) (subagents) | \(md_safe(.slug)) | \(.account // "n/a") | \(.sub_turns) | \(.sub_input) | \(.sub_cache_read) | \(.sub_cache_create) | \(.sub_output) | - | - |"
+          "| \(md_safe(.name)) (subagents) | \(md_safe(.slug)) | \(.account // "n/a") | \(.sub_turns) | \(.sub_input) | \(.sub_cache_read) | \(.sub_cache_create) | \(.sub_output) | - | - | - |"
         else empty end)
       )),
-    "| **total** | | | \($tturns) | \($tin) | \($tcr) | \($tcc) | \($tout) | | \($tsub) |",
-    "| **total (subagents)** | | | \($tsub) | \($tsin) | \($tscr) | \($tscc) | \($tsout) | | |",
+    "| **total** | | | \($tturns) | \($tin) | \($tcr) | \($tcc) | \($tout) | | \($tsub) | \($tfr_op)/\($tfr_cs)/\($tfr_mon) |",
+    "| **total (subagents)** | | | \($tsub) | \($tsin) | \($tscr) | \($tscc) | \($tsout) | | | - |",
     "",
     "attributed \(if $grand == 0 then 0 else (($attributed * 10000 / $grand) | round / 100) end) % of tokens to named sessions (main + subagent tokens combined)"
   )

@@ -146,31 +146,6 @@ is_int "$FLEET_CAP" || FLEET_CAP=4
 # command plus flags); an override is a single executable path and must
 # be quoted. Branch on which one this run has instead of disabling
 # SC2086 for both.
-if [ -n "${FLEET_PS_CMD:-}" ]; then
-  _fleet_ps_cmd="$FLEET_PS_CMD"
-  _fleet_ps_raw="$("$FLEET_PS_CMD" 2>&1)"
-else
-  _fleet_ps_cmd="ps -eo pid=,args="
-  _fleet_ps_raw="$(ps -eo pid=,args= 2>&1)"
-fi
-_fleet_ps_rc=$?
-if [ "$_fleet_ps_rc" -ne 0 ]; then
-  echo "bank-preflight: fleet process census failed ('$_fleet_ps_cmd' exited $_fleet_ps_rc) — cannot verify the fleet is under cap; refusing rather than silently permitting an unbounded launch" >&2
-  echo "bank-preflight: FLEET ?/$FLEET_CAP" >&2
-  # codex-2 (CR review, 4th panel round, Suggestion): the documented
-  # FLEET_CAP_OK=1 override must apply here too - a broken/unsupported
-  # census is exactly the situation where the operator most needs the
-  # bypass to recover a launch, and it must not be reachable only on the
-  # ordinary at/over-cap path below.
-  if [ "${FLEET_CAP_OK:-}" = "1" ]; then
-    echo "bank-preflight: FLEET_CAP_OK bypass in effect (launching shell only) — proceeding despite the failed census" >&2
-  elif [ "$LAUNCH_INTENT" = "1" ]; then
-    emit SKIPPED-FLEET
-  else
-    echo "bank-preflight: not a declared launch (CADENCE_BANK_LAUNCH unset) — reporting only, not refusing" >&2
-  fi
-fi
-
 # _fleet_lane_of <pid> (HIMMEL-2782): names the lane a fleet candidate
 # belongs to, for the FLEET line only — never gates the cap itself (that
 # stays total-count, below). Reads the candidate's own /proc/<pid>/environ
@@ -189,42 +164,326 @@ _fleet_lane_of() {
   fi
 }
 
+# HIMMEL-2774: atomic admission + reservation, closing the TOCTOU race where
+# two arms (or one arm racing another) both observe the fleet under-cap and
+# both proceed. Mirrors headed-arm.sh's own claim-lock DISCIPLINE (not its
+# code): claim the admission critical section by atomic `mkdir` (this repo's
+# convention — claim by atomic mkdir, never scan-then-create); a stale
+# holder is reclaimed by mv-then-verify (rename to a private victim path,
+# then check its stamp still matches what was observed before the rename),
+# never a naive rm+mkdir — two reclaimers racing on the same stale lock must
+# never let the second one delete the first one's brand-new claim (the
+# r2-codex-1 CRITICAL in headed-arm.sh's own CR history).
+_fleet_admit_stamp_or_fail() { # _fleet_admit_stamp_or_fail <admit-dir>
+  date +%s > "$1/acquired" 2>/dev/null
+}
+_fleet_steal_stale_admit() { # _fleet_steal_stale_admit <admit-dir> <expected-acquired-stamp>
+  local admit="$1" expected_at="$2" victim stolen_at
+  victim="$admit.stale.$$.$RANDOM"
+  mv "$admit" "$victim" 2>/dev/null || return 1
+  stolen_at="$(cat "$victim/acquired" 2>/dev/null)" || stolen_at=""
+  if [ "$stolen_at" != "$expected_at" ]; then
+    # Wrong victim: a fresh, legitimate claim made after we read the stale
+    # stamp but before our mv landed. Put it back rather than clobber it —
+    # but only if the slot is still empty. codex-1 (this round): if a THIRD
+    # party has since claimed "$admit" (because our own mv vacated it for the
+    # instant between here and the check), `mv victim admit` onto an
+    # existing directory nests the displaced fresh claim inside it (POSIX
+    # mv-into-directory semantics) instead of restoring it — corrupting both.
+    # Leaving the victim as an orphaned `.stale.` dir is safe: it has no
+    # `expires` file, so the next admission's reservation-prune pass removes
+    # it same as any other corrupt reservation.
+    # codex-2 (HIMMEL-2774, 2nd panel round): a plain `[ -e ] || mv` here is
+    # itself a check-then-act race — a FOURTH party's `mkdir "$admit"` can
+    # land in the instant between the `[ -e ]` test and the `mv`, and `mv`
+    # onto an existing directory would then silently NEST the fourth party's
+    # fresh claim inside the restored victim (POSIX mv-into-directory
+    # semantics) rather than fail, corrupting both. `mkdir` itself is the
+    # only atomic "claim iff absent" primitive available here, so restore by
+    # attempting to atomically CLAIM `$admit` fresh, and only copy the
+    # displaced claim's own metadata IN once that succeeds — a plain `mkdir`
+    # can never nest or clobber; it either wins the empty slot outright or
+    # fails closed, leaving the fourth party's claim exactly as it was.
+    # Reproducing the displaced claim's exact original stamp is best-effort
+    # only (advisory, like the `pid` write in _fleet_claim_admit below): the
+    # atomic mkdir above is what protects exclusion, not the stamp contents —
+    # a failed copy here just makes the restored claim look freshly taken,
+    # which is safe (it only delays, never breaks, a future staleness check).
+    if mkdir "$admit" 2>/dev/null; then
+      cp -p "$victim/acquired" "$admit/acquired" 2>/dev/null
+      cp -p "$victim/pid" "$admit/pid" 2>/dev/null
+    fi
+    return 1
+  fi
+  rm -rf "$victim" 2>/dev/null
+  if mkdir "$admit" 2>/dev/null; then
+    # codex-4 (HIMMEL-2774, 2nd panel round): same bug class as codex-2's
+    # fix in _fleet_claim_admit below — an unchecked stamp write here can
+    # fail (disk full, permissions) and still `return 0`, handing the caller
+    # an unstamped claim that can never age out. Fail the reclaim and give
+    # up the empty dir instead of proceeding on an unprotected slot.
+    if _fleet_admit_stamp_or_fail "$admit"; then
+      # codex-1 (HIMMEL-2774, 4th panel round): this steal DID claim
+      # ownership, so record OUR OWN pid here too — same as the fresh-claim
+      # path in _fleet_claim_admit below — so a subsequent staleness check
+      # against a holder that is still genuinely inside the critical section
+      # can find a live pid to protect. codex-5 (same round): `rm -rf`, not
+      # `rmdir`, on the fallback below — redirection into "$admit/acquired"
+      # creates that file before `date` runs, so a `date` failure can leave
+      # a non-empty (if zero-byte) directory that a bare `rmdir` cannot remove,
+      # wedging this reclaim attempt's own cleanup.
+      printf '%s\n' "$$" > "$admit/pid" 2>/dev/null
+      return 0
+    fi
+    rm -rf "$admit" 2>/dev/null
+  fi
+  return 1
+}
+_fleet_claim_admit() { # _fleet_claim_admit <admit-dir>
+  local admit="$1" held_at age
+  if mkdir "$admit" 2>/dev/null; then
+    if _fleet_admit_stamp_or_fail "$admit"; then
+      # codex-1 (HIMMEL-2774, 4th panel round): a fresh claim never wrote a
+      # `pid` file, so the live-owner check below (kill -0 on $admit/pid)
+      # always read empty/missing and could never protect an actively held
+      # lock — a census lasting beyond FLEET_ADMIT_STALE_SECS let a
+      # concurrent caller reclaim it and admit alongside the real holder.
+      # $$ is this preflight subshell's own pid: the critical section is
+      # this subshell's body, so that is the pid whose liveness actually
+      # answers "is the holder still in here" (a slow filesystem, a GC
+      # pause) -- not the launcher's pid, which is what the RESERVATION's
+      # own pid file (below) tracks for a different purpose (whether the
+      # launcher that created it is still around to own a release).
+      printf '%s\n' "$$" > "$admit/pid" 2>/dev/null
+      return 0
+    fi
+    # codex-2 (this round): the stamp write itself failed (disk full,
+    # permissions) — don't return success over an unstamped claim nobody can
+    # ever age out. codex-5 (4th panel round): NOT still empty — `>` opens
+    # and creates "$admit/acquired" before `date` runs, so a `date` failure
+    # leaves that zero-byte file behind; `rmdir` refuses a non-empty
+    # directory, so `rm -rf` is required to actually remove the failed claim.
+    rm -rf "$admit" 2>/dev/null
+    return 1
+  fi
+  held_at="$(cat "$admit/acquired" 2>/dev/null)" || held_at=""
+  case "$held_at" in
+    # No readable stamp yet: a fresh claim racing the stamp write, or a crash
+    # between mkdir and the stamp write. codex-2 (this round): the crash case
+    # used to `return 1` forever with no time reference to ever age out —
+    # wedging admission permanently for anyone who has to fall through this
+    # branch. Stamp it now instead: idempotent against a genuine concurrent
+    # owner (who has already written, or is about to, the same "now"), and it
+    # turns an unreclaimable orphan into one reclaimable
+    # FLEET_ADMIT_STALE_SECS from THIS observation.
+    ''|*[!0-9]*) _fleet_admit_stamp_or_fail "$admit"; return 1 ;;
+  esac
+  age=$(( $(date +%s) - held_at ))
+  [ "$age" -ge "${FLEET_ADMIT_STALE_SECS:-60}" ] || return 1
+  # codex-1/codex-2 (HIMMEL-2774, 3rd panel round): age alone cannot tell a
+  # crashed holder from one still legitimately inside the critical section
+  # (a slow filesystem, a GC pause) — reclaiming out from under a still-live
+  # holder loses mutual exclusion outright, and restoring its metadata on a
+  # lost race above cannot undo that. The recorded pid is always same-host
+  # (this slot dir is per-user tmpfs), so a live pid we own is authoritative:
+  # refuse to reclaim while it is still running, no matter how stale the
+  # timestamp looks. An unreadable/corrupt pid (crash before the pid write)
+  # cannot be verified either way, so it falls through to the existing
+  # age-only reclaim rather than wedging forever on an unverifiable holder.
+  _fleet_held_pid="$(cat "$admit/pid" 2>/dev/null)"
+  case "$_fleet_held_pid" in
+    ''|*[!0-9]*) : ;;
+    *) kill -0 "$_fleet_held_pid" 2>/dev/null && return 1 ;;
+  esac
+  _fleet_steal_stale_admit "$admit" "$held_at"
+}
+
 fleet_n=0
 fleet_native=0
 fleet_claudex=0
+_fleet_live_names=""
 _fleet_procfs_warned=0
-# Plain (non-IFS=) `read` here is deliberate: a real `ps -eo pid=,args=`
-# right-justifies the PID column with LEADING spaces for every row
-# narrower than the widest pid in the table, and default `read` field
-# splitting trims that leading whitespace before assigning $_fleet_pid —
-# an explicit `IFS= read -r` whole-line capture followed by `${line%% *}`
-# does NOT, and silently produces an EMPTY pid (failing is_int, and so
-# silently dropping the row) for every line except the one with the
-# widest pid in the table.
-while read -r _fleet_pid _fleet_rest; do
-  is_int "$_fleet_pid" || continue
-  _fleet_comm="$(cat "${FLEET_PROC:-/proc}/$_fleet_pid/comm" 2>/dev/null)"
-  if [ -n "$_fleet_comm" ]; then
-    [ "$_fleet_comm" = claude ] || continue
-  elif [ "$_fleet_procfs_warned" -eq 0 ]; then
-    echo "bank-preflight: comm unreadable for at least one fleet candidate (pid $_fleet_pid) — falling back to argv-only matching for it (less precise: may double-count a launcher/child pair)" >&2
-    _fleet_procfs_warned=1
-  fi
-  fleet_n=$((fleet_n + 1))
-  if [ "$(_fleet_lane_of "$_fleet_pid")" = claudex ]; then
-    fleet_claudex=$((fleet_claudex + 1))
+
+# _fleet_census (HIMMEL-2774 codex-1, 2nd panel round): captures the process
+# table fresh and (re)sets fleet_n/fleet_native/fleet_claudex/_fleet_live_names
+# from it. Factored into a function so it can be called a SECOND time, while
+# holding the admission lock below, instead of once up front — a snapshot
+# taken before the lock is stale by the time the cap decision runs inside the
+# critical section (a session can start or exit in that gap under real
+# contention), so the pre-lock call below is only a fail-fast sanity check;
+# the decision that actually gates admission uses the in-lock re-census.
+# Sets _fleet_ps_cmd/_fleet_ps_rc as a side effect so callers can report a
+# failed census; returns 1 without touching the counters on failure so a
+# caller can fall back to the last-known-good snapshot instead of zeroing it.
+_fleet_census() {
+  local _fc_n=0 _fc_native=0 _fc_claudex=0 _fc_names="" _fc_raw
+  # Plain (non-IFS=) `read` here is deliberate: a real `ps -eo pid=,args=`
+  # right-justifies the PID column with LEADING spaces for every row
+  # narrower than the widest pid in the table, and default `read` field
+  # splitting trims that leading whitespace before assigning $_fleet_pid —
+  # an explicit `IFS= read -r` whole-line capture followed by `${line%% *}`
+  # does NOT, and silently produces an EMPTY pid (failing is_int, and so
+  # silently dropping the row) for every line except the one with the
+  # widest pid in the table.
+  if [ -n "${FLEET_PS_CMD:-}" ]; then
+    _fleet_ps_cmd="$FLEET_PS_CMD"
+    _fc_raw="$("$FLEET_PS_CMD" 2>&1)"
   else
-    fleet_native=$((fleet_native + 1))
+    _fleet_ps_cmd="ps -eo pid=,args="
+    _fc_raw="$(ps -eo pid=,args= 2>&1)"
   fi
-done <<FLEET_CANDIDATES
-$(printf '%s\n' "$_fleet_ps_raw" \
+  _fleet_ps_rc=$?
+  [ "$_fleet_ps_rc" -eq 0 ] || return 1
+  while read -r _fleet_pid _fleet_rest; do
+    is_int "$_fleet_pid" || continue
+    _fleet_comm="$(cat "${FLEET_PROC:-/proc}/$_fleet_pid/comm" 2>/dev/null)"
+    if [ -n "$_fleet_comm" ]; then
+      [ "$_fleet_comm" = claude ] || continue
+    elif [ "$_fleet_procfs_warned" -eq 0 ]; then
+      echo "bank-preflight: comm unreadable for at least one fleet candidate (pid $_fleet_pid) — falling back to argv-only matching for it (less precise: may double-count a launcher/child pair)" >&2
+      _fleet_procfs_warned=1
+    fi
+    _fc_n=$((_fc_n + 1))
+    if [ "$(_fleet_lane_of "$_fleet_pid")" = claudex ]; then
+      _fc_claudex=$((_fc_claudex + 1))
+    else
+      _fc_native=$((_fc_native + 1))
+    fi
+    # HIMMEL-2774: a live session with this name CONSUMES its reservation
+    # (below) — same match shape as the FLEET_CANDIDATES filter itself, so a
+    # session counted here is recognized consistently there.
+    _fleet_name="$(printf '%s\n' "$_fleet_rest" | grep -oE -- '-n[[:space:]]+(HIMMEL|LUNA)-[^[:space:]]*' | head -1 | awk '{print $2}')"
+    [ -n "$_fleet_name" ] && _fc_names="$_fc_names
+$_fleet_name"
+  done <<FLEET_CANDIDATES
+$(printf '%s\n' "$_fc_raw" \
   | grep -E -- '-n[[:space:]]+(HIMMEL|LUNA)-' \
   | grep -vE -- '-n[[:space:]]+(HIMMEL|LUNA)-[^[:space:]]*-console')
 FLEET_CANDIDATES
+  fleet_n=$_fc_n
+  fleet_native=$_fc_native
+  fleet_claudex=$_fc_claudex
+  _fleet_live_names=$_fc_names
+  return 0
+}
 
-echo "bank-preflight: FLEET native=$fleet_native claudex=$fleet_claudex total=$fleet_n/$FLEET_CAP" >&2
+if ! _fleet_census; then
+  echo "bank-preflight: fleet process census failed ('$_fleet_ps_cmd' exited $_fleet_ps_rc) — cannot verify the fleet is under cap; refusing rather than silently permitting an unbounded launch" >&2
+  echo "bank-preflight: FLEET ?/$FLEET_CAP" >&2
+  # codex-2 (CR review, 4th panel round, Suggestion): the documented
+  # FLEET_CAP_OK=1 override must apply here too - a broken/unsupported
+  # census is exactly the situation where the operator most needs the
+  # bypass to recover a launch, and it must not be reachable only on the
+  # ordinary at/over-cap path below.
+  if [ "${FLEET_CAP_OK:-}" = "1" ]; then
+    echo "bank-preflight: FLEET_CAP_OK bypass in effect (launching shell only) — proceeding despite the failed census" >&2
+  elif [ "$LAUNCH_INTENT" = "1" ]; then
+    emit SKIPPED-FLEET
+  else
+    echo "bank-preflight: not a declared launch (CADENCE_BANK_LAUNCH unset) — reporting only, not refusing" >&2
+  fi
+fi
 
-if [ "$fleet_n" -ge "$FLEET_CAP" ]; then
+# HIMMEL-2774: slot dir is per-user tmpfs, never inside the repo or the
+# handover root — reservations must not survive a reboot or leak into
+# anything git-tracked.
+SLOTS="${HIMMEL_FLEET_SLOTS:-${XDG_RUNTIME_DIR:-/tmp}/himmel-fleet-$(id -u)}"
+mkdir -p "$SLOTS" 2>/dev/null
+
+fleet_reserved=0
+_fleet_admitted=0
+_fleet_admit_iters=0
+while [ "$_fleet_admit_iters" -lt "${FLEET_ADMIT_RETRY_ITERS:-100}" ]; do
+  _fleet_claim_admit "$SLOTS/.admit" && { _fleet_admitted=1; break; }
+  sleep "${FLEET_ADMIT_RETRY_SLEEP:-0.05}"
+  _fleet_admit_iters=$((_fleet_admit_iters + 1))
+done
+
+if [ "$_fleet_admitted" -eq 1 ]; then
+  # codex-1 (HIMMEL-2774, 2nd panel round): re-census now, while holding
+  # the admission lock, so the count feeding the cap decision below cannot
+  # go stale between the pre-lock snapshot above and here — a session can
+  # start or exit in that gap under real contention. codex-5 (HIMMEL-2774,
+  # 3rd panel round): a transient failure of this second census used to fall
+  # back to the pre-lock snapshot silently (_fleet_census leaves the counters
+  # untouched on failure) and admit on it — the same "cannot verify the
+  # fleet is under cap" situation as the pre-lock census failure above, just
+  # reached from inside the lock instead of before it, so it gets the same
+  # refuse-unless-bypassed treatment rather than a silent pass-through.
+  if ! _fleet_census; then
+    echo "bank-preflight: in-lock fleet census failed ('$_fleet_ps_cmd' exited $_fleet_ps_rc) — cannot verify the fleet is under cap; refusing rather than admit on a stale pre-lock snapshot" >&2
+    rm -rf "$SLOTS/.admit" 2>/dev/null
+    # codex-2 (HIMMEL-2774, 4th panel round): the lock is already gone above,
+    # but _fleet_admitted stayed 1 — on the bypass/informational branches
+    # below (the LAUNCH_INTENT=1 refusal branch `emit`s and exits, so it
+    # never reaches this), execution falls through to the final
+    # `[ "$_fleet_admitted" -eq 1 ] && rm -rf "$SLOTS/.admit"` cleanup, which
+    # would then delete whatever a DIFFERENT caller has legitimately claimed
+    # in the meantime. This process no longer holds anything to clean up.
+    _fleet_admitted=0
+    if [ "${FLEET_CAP_OK:-}" = "1" ]; then
+      echo "bank-preflight: FLEET_CAP_OK bypass in effect (launching shell only) — proceeding despite the failed in-lock census" >&2
+    elif [ "$LAUNCH_INTENT" = "1" ]; then
+      emit SKIPPED-FLEET
+    else
+      echo "bank-preflight: not a declared launch (CADENCE_BANK_LAUNCH unset) — reporting only, not refusing" >&2
+    fi
+  fi
+  # codex-2 (HIMMEL-2774, 5th panel round): this whole prune pass must stay
+  # gated on STILL holding the lock — the in-lock-census-failure branch above
+  # can reset _fleet_admitted to 0 and `rm -rf` .admit early (the bypass and
+  # informational sub-branches there don't exit), and this `if` only tested
+  # the ORIGINAL claim result once, at the top: without re-checking here, the
+  # loop below ran UNLOCKED. An unlocked prune reading another caller's
+  # `expires` file in the gap between ITS `mkdir` and its `expires` write
+  # (both above, in `_fleet_reserve`) sees the case-statement's
+  # unreadable/corrupt branch and deletes that brand-new reservation before
+  # its owner ever finishes creating it.
+  if [ "$_fleet_admitted" -eq 1 ]; then
+    _fleet_now=$(date +%s)
+    for _fleet_resv in "$SLOTS"/*/; do
+      [ -d "$_fleet_resv" ] || continue
+      _fleet_resv_name="$(basename "$_fleet_resv")"
+      [ "$_fleet_resv_name" = .admit ] && continue
+      _fleet_resv_expires="$(cat "${_fleet_resv}expires" 2>/dev/null)"
+      case "$_fleet_resv_expires" in
+        # Unreadable/corrupt metadata is not a valid reservation — prune it
+        # the same as an expired one rather than counting it forever.
+        ''|*[!0-9]*) rm -rf "$_fleet_resv" 2>/dev/null; continue ;;
+      esac
+      if [ "$_fleet_now" -ge "$_fleet_resv_expires" ]; then
+        rm -rf "$_fleet_resv" 2>/dev/null
+        continue
+      fi
+      # A live session with this name already counted in fleet_n above
+      # CONSUMES the reservation — do not double-count the same slot.
+      # codex-4 (round 4): consuming must DELETE the reservation, not just
+      # skip it in the count — left on disk, it keeps refusing a same-name
+      # relaunch as a duplicate (line ~356) for up to the full TTL after the
+      # session that consumed it has already exited, with no live session left
+      # to justify the refusal.
+      if printf '%s\n' "$_fleet_live_names" | grep -qxF "$_fleet_resv_name"; then
+        rm -rf "$_fleet_resv" 2>/dev/null
+        continue
+      fi
+      fleet_reserved=$((fleet_reserved + 1))
+    done
+    fleet_n=$((fleet_n + fleet_reserved))
+  fi
+fi
+
+echo "bank-preflight: FLEET native=$fleet_native claudex=$fleet_claudex reserved=$fleet_reserved total=$fleet_n/$FLEET_CAP" >&2
+
+if [ "$_fleet_admitted" -eq 0 ]; then
+  echo "bank-preflight: could not acquire the fleet admission lock ($SLOTS/.admit) after $_fleet_admit_iters retries — cannot verify the fleet is under cap" >&2
+  if [ "${FLEET_CAP_OK:-}" = "1" ]; then
+    echo "bank-preflight: FLEET_CAP_OK bypass in effect (launching shell only) — proceeding despite the admission-lock failure" >&2
+  elif [ "$LAUNCH_INTENT" = "1" ]; then
+    emit SKIPPED-FLEET
+  else
+    echo "bank-preflight: not a declared launch (CADENCE_BANK_LAUNCH unset) — reporting only, not refusing" >&2
+  fi
+elif [ "$fleet_n" -ge "$FLEET_CAP" ]; then
   # codex-3 (CR review, 2nd panel round, Suggestion): the documented
   # contract is FLEET_CAP_OK=1 specifically; a bare `-n` (non-empty) test
   # would also treat FLEET_CAP_OK=0 or FLEET_CAP_OK=false as an enabled
@@ -233,10 +492,106 @@ if [ "$fleet_n" -ge "$FLEET_CAP" ]; then
     echo "bank-preflight: fleet at/over cap ($fleet_n/$FLEET_CAP) — FLEET_CAP_OK bypass in effect (launching shell only), proceeding" >&2
   elif [ "$LAUNCH_INTENT" = "1" ]; then
     echo "bank-preflight: fleet at/over cap ($fleet_n/$FLEET_CAP) — skipping leg=$LEG (bypass: FLEET_CAP_OK=1 in the LAUNCHING shell)" >&2
+    rm -rf "$SLOTS/.admit" 2>/dev/null
     emit SKIPPED-FLEET
   else
     echo "bank-preflight: fleet at/over cap ($fleet_n/$FLEET_CAP) — not a declared launch (CADENCE_BANK_LAUNCH unset), reporting only" >&2
   fi
+elif [ "$LAUNCH_INTENT" = "1" ] && [ -n "$LEG" ] && [ "$LEG" != unknown ]; then
+  # codex-3 (HIMMEL-2774, 4th panel round): '/', a leading '.', and
+  # ENAMETOOLONG used to all "proceed without a reservation" — restoring,
+  # for exactly those names, the concurrent over-admission race this whole
+  # mechanism exists to close. A deterministic, bounded hash of $LEG is
+  # always a valid mkdir target: two callers with the identical (unusable)
+  # $LEG hash to the identical key, so mkdir's own EEXIST still catches a
+  # genuine duplicate declared launch. Such a reservation is never
+  # name-matched by a live session's census entry (its directory name isn't
+  # the leg name) — it just counts against the cap and expires by TTL, the
+  # same fallback arm-resume.sh's own flattened-path reservation already
+  # relies on.
+  _fleet_hash_key() { printf '%s' "$1" | cksum | awk '{print $1}'; }
+  # codex-6 (this round, kept): a failed `expires` write left a reservation
+  # with no readable expiry, which the very next admission's prune pass
+  # (unreadable/corrupt metadata) removes immediately — silently reusing the
+  # capacity this reservation existed to hold. Refuse and clean up instead
+  # of proceeding on an unprotected slot. `pid` (the CALLER's pid, passed
+  # through by launchers that set CADENCE_BANK_CALLER_PID, not this
+  # subshell's own $$ — so a release can verify it owns the slot before
+  # deleting it) is advisory only, so its write is not gated the same way.
+  _fleet_reserve() { # _fleet_reserve <reservation-dir> -- 0 created, 1 mkdir
+    local dir="$1"   # failed (not a dup — e.g. ENAMETOOLONG), 2 duplicate,
+    if mkdir "$dir" 2>/dev/null; then    # 3 metadata write failed
+      if printf '%s\n' "$(( $(date +%s) + ${FLEET_RESERVE_TTL:-1800} ))" > "$dir/expires" 2>/dev/null; then
+        printf '%s\n' "${CADENCE_BANK_CALLER_PID:-$$}" > "$dir/pid" 2>/dev/null
+        return 0
+      fi
+      rm -rf "$dir" 2>/dev/null
+      return 3
+    fi
+    [ -e "$dir" ] && return 2
+    return 1
+  }
+  case "$LEG" in
+    */*|.*) _fleet_resv_key="$(_fleet_hash_key "$LEG")" ;;
+    *) _fleet_resv_key="$LEG" ;;
+  esac
+  _fleet_reserve "$SLOTS/$_fleet_resv_key"
+  _fleet_reserve_rc=$?
+  if [ "$_fleet_reserve_rc" -eq 1 ]; then
+    # codex-5 (HIMMEL-2774, 2nd panel round): `mkdir` failing does NOT mean
+    # "already exists" — a LEG name flattened from a long path can exceed
+    # the filesystem's per-component name limit (ENAMETOOLONG), which reads
+    # here identically to EEXIST unless distinguished. Retry once with the
+    # hashed key, which is always short and always a valid mkdir target.
+    _fleet_resv_key="$(_fleet_hash_key "$LEG")"
+    _fleet_reserve "$SLOTS/$_fleet_resv_key"
+    _fleet_reserve_rc=$?
+  fi
+  case "$_fleet_reserve_rc" in
+    0) : ;;
+    2)
+      echo "bank-preflight: a fleet reservation for leg=$LEG already exists — refusing as a duplicate declared launch" >&2
+      rm -rf "$SLOTS/.admit" 2>/dev/null
+      emit SKIPPED-FLEET
+      ;;
+    3)
+      echo "bank-preflight: failed to write reservation metadata (expires) for leg=$LEG — refusing admission rather than proceed with an unprotected slot" >&2
+      rm -rf "$SLOTS/.admit" 2>/dev/null
+      emit SKIPPED-FLEET
+      ;;
+    *)
+      # codex-3 (HIMMEL-2774, 5th panel round): proceeding here left the
+      # launch unprotected exactly the same way a duplicate (case 2) or a
+      # failed metadata write (case 3) would — this process's own reservation
+      # never lands, so it cannot count against a concurrent caller's cap
+      # decision until its live process shows up in the census, reopening
+      # the over-admission race this mechanism exists to close. Refuse like
+      # its siblings instead of silently proceeding on filesystem/permission
+      # failures that mkdir cannot otherwise distinguish from "already taken".
+      echo "bank-preflight: could not create a fleet reservation directory for leg=$LEG even under a hashed key — refusing rather than proceed without a reservation" >&2
+      rm -rf "$SLOTS/.admit" 2>/dev/null
+      emit SKIPPED-FLEET
+      ;;
+  esac
+fi
+# codex-1 (HIMMEL-2774, 5th panel round): unconditional release here can
+# delete a DIFFERENT owner's lock. _fleet_steal_stale_admit's mv-then-verify
+# genuinely frees .admit for the instant between its mv and its restore/
+# reclaim mkdir; if the original holder is only PRESUMED dead (its pid file
+# was unreadable/corrupt, so the liveness check above could not confirm
+# either way) and is in fact still alive and working, it reaches this same
+# release line later never knowing it was stolen from — and a bare
+# unconditional rm -rf would then delete whatever a THIRD party has since
+# legitimately claimed. Every claim path ($$-stamped at
+# _fleet_claim_admit/_fleet_steal_stale_admit, both above) writes ITS OWN pid
+# into "$admit/pid" the moment it wins the slot, so verifying that pid still
+# reads back as $$ before deleting is the same ownership check
+# arm-resume.sh's own _arm_fleet_release_pending already uses for its
+# reservation release, applied here to the admission lock itself: a mismatch
+# means someone else now legitimately owns .admit, and this process has
+# nothing left to release.
+if [ "$_fleet_admitted" -eq 1 ]; then
+  [ "$(cat "$SLOTS/.admit/pid" 2>/dev/null)" = "$$" ] && rm -rf "$SLOTS/.admit" 2>/dev/null
 fi
 
 # HIMMEL-2782: claudex lane parks on the codex weekly bank instead of the

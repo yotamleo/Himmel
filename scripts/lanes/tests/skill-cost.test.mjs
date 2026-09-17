@@ -388,6 +388,52 @@ test('--max-desc refuses an over-cap description and names the file and length',
   assert.equal(run([withinCap]).status, 2, 'a bare path without --max-desc stays an error');
 });
 
+test('vendoredRoot does not search above the repo root (CR finding, PR #777)', () => {
+  const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'skill-cost.mjs');
+  const stray = join(CWD, 'stray', 'SKILL.md');
+  write(stray, skill([
+    'name: stray',
+    `description: ${LONG_DESCRIPTION}`,
+    'when_to_use: now',
+  ].join('\n')));
+  write(join(ROOT, 'VENDORED.md'), '# fixture: an ancestor OUTSIDE the repo root\n');
+
+  const run = (args) => spawnSync(process.execPath, [cli, ...args], { encoding: 'utf8', cwd: CWD });
+  const result = run(['--max-desc', '120', stray]);
+  assert.equal(result.status, 1, 'a VENDORED.md above the repo root must not exempt an over-cap file');
+  assert.match(result.stderr, /stray\/SKILL\.md: description is 1600 chars \(cap 120\)/);
+
+  rmSync(join(ROOT, 'VENDORED.md'));
+  rmSync(join(CWD, 'stray'), { recursive: true });
+});
+
+// HIMMEL-3064 CR round 1 (PR #777): the plugin-root VENDORED.md exempted every
+// file under it, including the himmel-authored skills the SAME file declares as
+// `local=`. Live shape: lean-skills/VENDORED.md says `local=skills/context7-mcp`
+// and that skill's 265-char description sailed past the 120-char cap.
+test('a `local=` entry in VENDORED.md is NOT exempted by its own marker (CR round 1, PR #777)', () => {
+  const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'skill-cost.mjs');
+  const tree = join(CWD, 'vendored-tree');
+  const upstream = join(tree, 'skills', 'copied', 'SKILL.md');
+  const mine = join(tree, 'skills', 'mine', 'SKILL.md');
+  const frontmatter = (name) => skill([`name: ${name}`, `description: ${LONG_DESCRIPTION}`, 'when_to_use: now'].join('\n'));
+  write(upstream, frontmatter('copied'));
+  write(mine, frontmatter('mine'));
+  write(join(tree, 'VENDORED.md'), 'vendored_from=someone/upstream@1.0.0 path=skills/copied\n\nlocal=skills/mine\n');
+
+  const run = (args) => spawnSync(process.execPath, [cli, ...args], { encoding: 'utf8', cwd: CWD });
+
+  const exempt = run(['--max-desc', '120', upstream]);
+  assert.equal(exempt.status, 0, 'a genuinely vendored file must still be exempt');
+  assert.match(exempt.stderr, /skipping .*copied\/SKILL\.md: vendored per/);
+
+  const caught = run(['--max-desc', '120', mine]);
+  assert.equal(caught.status, 1, 'a local= file must be linted, not laundered by the tree marker');
+  assert.match(caught.stderr, /mine\/SKILL\.md: description is 1600 chars \(cap 120\)/);
+
+  rmSync(tree, { recursive: true });
+});
+
 test('lintPositionalArgs refuses a bare $<digit> in ANY command\'s fenced code, argument-hint or not (HIMMEL-2051)', (t) => {
   const dir = makeTmpDir('skill-cost-posargs-');
   t.after(() => rmSync(dir, { recursive: true, force: true }));

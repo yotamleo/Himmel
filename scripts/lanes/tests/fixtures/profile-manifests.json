@@ -3,11 +3,20 @@
     "enabled": [
       "handover@himmel",
       "himmel-ops@himmel",
-      "mattpocock-skills@claude-plugins-official",
+      "lean-skills@himmel",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel"
+    ],
+    "contextBudget": 50000
+  },
+  "design": {
+    "enabled": [
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "lean-skills@himmel",
       "plannotator-effective-html@himmel",
       "pr-review-toolkit-himmel@himmel",
-      "qmd@himmel",
-      "superpowers@claude-plugins-official"
+      "qmd@himmel"
     ],
     "contextBudget": 50000
   },
@@ -15,6 +24,7 @@
     "enabled": [
       "handover@himmel",
       "himmel-ops@himmel",
+      "lean-skills@himmel",
       "pr-review-toolkit-himmel@himmel",
       "qmd@himmel"
     ],
@@ -24,6 +34,7 @@
     "enabled": [
       "handover@himmel",
       "himmel-ops@himmel",
+      "lean-skills@himmel",
       "pr-review-toolkit-himmel@himmel",
       "qmd@himmel"
     ],
@@ -33,6 +44,7 @@
     "enabled": [
       "handover@himmel",
       "himmel-ops@himmel",
+      "lean-skills@himmel",
       "pr-review-toolkit-himmel@himmel",
       "qmd@himmel"
     ],
@@ -43,6 +55,19 @@
       "claude-obsidian@himmel",
       "handover@himmel",
       "himmel-ops@himmel",
+      "lean-skills@himmel",
+      "obsidian-triage@himmel",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel"
+    ],
+    "contextBudget": 45000
+  },
+  "telegram": {
+    "enabled": [
+      "claude-obsidian@himmel",
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "lean-skills@himmel",
       "obsidian-triage@himmel",
       "pr-review-toolkit-himmel@himmel",
       "qmd@himmel"
@@ -56,5 +81,13 @@
       "qmd@himmel"
     ],
     "contextBudget": 45000
+  },
+  "console-relay": {
+    "enabled": [
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "qmd@himmel"
+    ],
+    "contextBudget": 35000
   }
 }

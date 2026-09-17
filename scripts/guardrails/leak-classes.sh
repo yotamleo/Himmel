@@ -28,9 +28,11 @@
 #                         Windows profile name, e.g. "Jane Smith") but never
 #                         a leading/trailing one; the match still stops at
 #                         the next '/' or '\', so a space only ever extends
-#                         within the same path segment. ASCII-only by design
-#                         (character classes are [A-Za-z0-9...]): a non-ASCII
-#                         username, e.g. /home/élodie/, is not matched. # leak-allow: home-path doc example
+#                         within the same path segment. The name-char class is
+#                         negated ([^/\space]-style, not an ASCII whitelist —
+#                         HIMMEL-2828), so a non-ASCII username like
+#                         /home/élodie/ is matched too. # leak-allow: home-path doc example
+#                         Only '/', '\' and whitespace end a segment/word.
 #   mac-address           six hex pairs joined by a SINGLE consistent
 #                         separator (all ':' or all '-' — never mixed). The
 #                         mixed-separator form used to false-positive on
@@ -76,12 +78,22 @@
 # `/Users/<name>/` survey actually found in tracked test fixtures (confirmed
 # NOT the real operator identity — a separate grep for the live station's
 # actual $HOME basename came back clean):
-#   ada, jarrod, alice, bob, diane, jose, somebody, claude, yotamleo
-#                        - human-shaped placeholder names used across
-#                         fixture/example data (marketplace/plugins test
-#                         suites, propagate-public.sh's own leak-detection
-#                         tests, a console-dispatch fixture). None resolves
-#                         to this station's real identity.
+#   HIMMEL-2825 removed 7 of the human-shaped names formerly enumerated here
+#   (alice, bob, diane, jose, claude, jane, john) -- a real adopter whose
+#   actual username matches one of these is common enough that a global
+#   exemption was a genuine false-negative risk. The fixture files that
+#   relied on them now carry their own same-line `# leak-allow: home-path
+#   <reason>` marker instead (scripts/telegram/spawn-glm.test.ts, scripts/
+#   trust/shadow-ledger.mjs + its test, scripts/himmelctl/lib/install-engine.js,
+#   scripts/parity/test-ps-twin-oem-encoding.ps1, docs/internals/
+#   environment-gotchas.md, and this file's own doc comments). HIMMEL-2951
+#   removed 3 more (ada, somebody, yotamleo -- yotamleo being the operator's
+#   real username, the highest-value one) the same way, across scripts/hooks/,
+#   scripts/lanes/tests/, and scripts/test-uninstall-guard.sh. HIMMEL-2958
+#   removed the last one, jarrod: its only fixture dependents (13 lines in
+#   the vendored marketplace/plugins/claude-hud/tests/render.test.js) now
+#   carry their own same-line `// leak-allow: home-path <reason>` marker,
+#   after the VENDORED.manifest re-hash + fork-delta ceremony.
 #   leaktestuser, leaker, testop, testuser, test, osboxes, nulleak, name,
 #   yourname, wineonlyuser, shouldnotleak, realop, quarantoken, priorleak,
 #   posixuser, profileonlyuser, unixonlyuser, fakeuser, myvault, op, ops,
@@ -103,8 +115,8 @@
 #   ...                  - a literal ellipsis used in docs as an elided
 #                         placeholder (docs/setup/new-machine.md,
 #                         scripts/codex/reap-mcp-fleet.ps1).
-#   parity, mismatched, plainhome, whoever, msysuser, fixture, jane, john,
-#   runner, other, current-user
+#   parity, mismatched, plainhome, whoever, msysuser, fixture, runner, other,
+#   current-user
 #                        - added post-HIMMEL-2835 (the first real --tree run
 #                         against this tree's content, HIMMEL-2705's public
 #                         CI job): fixture/placeholder names in
@@ -119,6 +131,31 @@
 # A name exactly one character long, or starting with '.', is excluded
 # structurally (see above) rather than enumerated — bash 3.2-safe, no
 # associative arrays.
+# HIMMEL-2954 (two narrower refinements to the 0cbd3f6/#664 heuristic,
+# both filed as follow-on panel findings against that fix rather than
+# widening it further):
+#   dotted usernames    the name class is `<seg>(\.<seg>)*`, where <seg> is
+#                        the existing name-char class -- a '.' joins the
+#                        capture ONLY when followed by another name
+#                        character, so a real corporate first.last shape
+#                        (/home/user.smith/) is captured whole instead of # leak-allow: home-path doc example
+#                        stopping at the first dot (which used to let the
+#                        leading segment alone satisfy the allowlist and
+#                        hide the rest of the identity). A '.' NOT followed
+#                        by another name character still ends the capture,
+#                        so the regex-wildcard false-positive class #664
+#                        fixed stays fixed: /home/.*/, /home/user.*/ and
+#                        /home/user./ all still stop before the dot.
+#   ellipsis skip        narrowed to fire only when the captured name itself
+#                        looks like a Windows 8.3 short name (ends "~<digits>",
+#                        the RUNNER~1 shape) -- any other name immediately
+#                        followed by a doc-style "..."/"…" is reported like
+#                        any other leak, so a genuine leaked path truncated in
+#                        tool output is no longer silently dropped. The
+#                        documented "<prefix>/<name>/..." doc-elision shape
+#                        (e.g. C:/Users/example/...) stays clean the same way
+#                        any other allowlisted name does -- home_name_allowed
+#                        suppresses it independent of the ellipsis check.
 #
 # Skips: binary files (grep -I), graphify-out/, and any path prefix listed in
 # .leak-classes-ignore at the repo root (absent/empty by default — an escape
@@ -126,6 +163,18 @@
 # reads that file's STAGED content (git index), not the working tree, so an
 # unstaged local edit can never suppress a leak in the commit being made.
 # --tree reads it off disk, matching what --tree itself scans.
+#
+# Path-name scanning (HIMMEL-2831 #1): the same five detectors above also run
+# against a file's PATH itself, via scan_path() (reports at line 0, so a
+# finding reads "<file>:0 <class> ..." and a reader knows the name is what
+# triggered it, not content) — a leak-shaped hostname, home path, MAC, LAN IP
+# or bot token embedded in a filename used to pass both --staged and --tree
+# untouched, since the tracked path was only ever used for skip_path()
+# exemption checks. --staged calls it once per NEWLY ADDED file (a modified
+# file's path already existed in the tree, so --tree already covers it);
+# --tree calls it once per tracked path. A same-line `leak-allow:` marker has
+# no line to live on for a path hit, so .leak-classes-ignore is the only way
+# to exempt one.
 set -euo pipefail
 
 usage() {
@@ -167,7 +216,7 @@ HOSTNAME_HITS=()
 # ---- home-path allowlist (see header for rationale) ----
 # shellcheck disable=SC2016 # single-quoted on purpose: $user/${user}/$env:username
 # are literal placeholder tokens this list matches against, not expansions.
-ALLOW_HOME_NAMES=' you user <user> $user ${user} me <me> example <you> %username% $env:username %s ada jarrod alice bob diane jose somebody claude yotamleo leaktestuser leaker testop testuser test osboxes nulleak name <name> yourname wineonlyuser shouldnotleak realop quarantoken priorleak posixuser profileonlyuser unixonlyuser fakeuser myvault op ops otheruser fakeop runneradmin fake-sensitive-scriptpath-marker ... parity mismatched plainhome whoever msysuser fixture jane john runner other current-user '
+ALLOW_HOME_NAMES=' you user <user> $user ${user} me <me> example <you> %username% $env:username %s leaktestuser leaker testop testuser test osboxes nulleak name <name> yourname wineonlyuser shouldnotleak realop quarantoken priorleak posixuser profileonlyuser unixonlyuser fakeuser myvault op ops otheruser fakeop runneradmin fake-sensitive-scriptpath-marker ... parity mismatched plainhome whoever msysuser fixture runner other current-user '
 
 home_name_allowed() {
     local name="$1"
@@ -390,8 +439,8 @@ check_home_path() {
     # shellcheck disable=SC2016 # single-quoted on purpose: this is a regex
     # literal for [[ =~ ]], not a string meant to expand.
     # Username segment allows an embedded space (not a leading/trailing one --
-    # `[A-Za-z0-9...]` anchors both ends) so a real Windows profile path like
-    # "C:\Users\Jane Smith\Documents" is still caught. # leak-allow: home-path doc example
+    # the negated `[^/\space]`-style name-char class anchors both ends) so a
+    # real Windows profile path like "C:\Users\Jane Smith\Documents" is still caught. # leak-allow: home-path doc example
     # The two forms are two separate alternatives, not one greedy class: a
     # multi-word name (embedded space) may ONLY terminate at a real '/' or
     # '\' -- so it can never swallow trailing prose that isn't itself a path
@@ -399,8 +448,10 @@ check_home_path() {
     # accepted end-of-line/non-name-char for the space-carrying form, let an
     # unterminated /home/... or C:\Users\... reference run to end-of-line and
     # capture every following word as part of the "name"). A single-word name
-    # keeps the permissive terminator (end-of-line or any non-word char,
-    # SPACE included -- a space simply ends the word, it does not extend it).
+    # keeps the permissive terminator (end-of-line, '/', '\', or whitespace --
+    # a space simply ends the word, it does not extend it; HIMMEL-2828 widened
+    # the name-char class itself from an ASCII whitelist to this negated form
+    # so a non-ASCII username, e.g. élodie, is part of the word too).
     # Both the leading "C:\Users\" and trailing separator also match a
     # doubled backslash, so a JSON/log-escaped path like
     # "C:\\Users\\Jane Smith\\Documents" is still caught (a literal double # leak-allow: home-path doc example
@@ -426,23 +477,76 @@ check_home_path() {
     # without loosening the negated class for anything else (so a bare
     # "http://home/..." -- "home" as an ordinary hostname label, not a
     # /home/ path -- still does not match).
-    local re='(^file://|^|[^A-Za-z0-9_.$/\\-]file://|[^A-Za-z0-9_.$/\\-])(/home/|/Users/|/mnt/[A-Za-z]/[Uu][Ss][Ee][Rr][Ss]/|/[A-Za-z]/[Uu][Ss][Ee][Rr][Ss]/|[A-Za-z]:/[Uu][Ss][Ee][Rr][Ss]/|[A-Za-z]:\\\\[Uu][Ss][Ee][Rr][Ss]\\\\|[A-Za-z]:\\[Uu][Ss][Ee][Rr][Ss]\\)(([A-Za-z0-9_.${}%<>-]+( [A-Za-z0-9_.${}%<>-]+)*)([/\\]|\\\\)|([A-Za-z0-9_.${}%<>-]+)($|[^A-Za-z0-9_.${}%<>-]))'
+    # HIMMEL-2828 follow-up (console-flagged): the word-char class also
+    # excludes a small set of trailing prose/doc-markup punctuation --
+    # backtick, quote, comma, semicolon, colon, or a closing paren/bracket --
+    # and the single-word terminator accepts that same set, so a quoted or
+    # doc-formatted name (e.g. "/home/testuser", `/home/testuser`) is captured
+    # as exactly "testuser" instead of swallowing the punctuation (and, on a line
+    # with more than one occurrence, instead of the name run spilling across
+    # the punctuation into the next occurrence's own "/" as if it were a
+    # multi-word terminator). Non-ASCII bytes stay admitted -- only this
+    # fixed ASCII punctuation set is excluded.
+    # HIMMEL-2828 regression fix (console-flagged, public #664): the same
+    # widened, non-ASCII-admitting word-char class also swallowed ERE
+    # metacharacters -- a line that itself DEFINES a home-path regex (e.g.
+    # `leak_pattern='(/Users/|[A-Za-z]:\Users\|...)'` in a guardrail script,
+    # or `grep -qE 'C:/Users/[A-Za-z0-9._-]+/'` in a test) got misread as a
+    # real path, because "|[A-Za-z]:" or "[A-Za-z0-9._-]+" is just as
+    # word-char-admissible as a real username. The class now also excludes
+    # `( [ . * + ? { } | ^ $` -- ERE syntax a real username never contains --
+    # and the single-word terminator accepts that same set, so the capture
+    # stops cleanly at the metacharacter instead of swallowing it (and, when
+    # that leaves nothing to capture -- e.g. right after "/Users/|" or
+    # "/home/[" -- the whole alternative fails to match at that position,
+    # same as it already does for the excluded punctuation above, rather
+    # than reporting a punctuation-only "name" like "|" or "[A-Za-z0-9._-]+"
+    # as a leak). A captured name immediately followed by a doc-style
+    # ellipsis ("..." or "…", e.g. a Windows 8.3 short-name placeholder like
+    # "C:\Users\RUNNER~1\...") is also not reported: an ellipsis right after
+    # the match marks truncated/placeholder example text, not a real path.
+    # HIMMEL-2856: a Windows file:// URI's drive letter carries file://'s
+    # own extra slash too (file:///C:/Users/... -> leading-context consumes
+    # "file://", leaving "/C:/Users/..."), so the drive-prefixed forms also
+    # need a leading-slash variant, "/[A-Za-z]:/Users/". Lowercase
+    # file:///C:/users/... used to fall through every alternative (the
+    # colon prefix form has no leading slash; the bare /Users/ form is
+    # case-sensitive), while a capitalized file:///C:/Users/... happened to
+    # match anyway -- but only because the leading-context group can also
+    # consume just the ":" as its own non-word boundary char, landing on the
+    # bare case-sensitive /Users/ alternative by coincidence, not by design.
+    local re='(^file://|^|[^A-Za-z0-9_.$/\\-]file://|[^A-Za-z0-9_.$/\\-])(/home/|/Users/|/mnt/[A-Za-z]/[Uu][Ss][Ee][Rr][Ss]/|/[A-Za-z]/[Uu][Ss][Ee][Rr][Ss]/|/[A-Za-z]:/[Uu][Ss][Ee][Rr][Ss]/|[A-Za-z]:/[Uu][Ss][Ee][Rr][Ss]/|[A-Za-z]:\\\\[Uu][Ss][Ee][Rr][Ss]\\\\|[A-Za-z]:\\[Uu][Ss][Ee][Rr][Ss]\\)(([^]/\\[:space:]`"'\'',;:)(.*+?{}|^$[]+( [^]/\\[:space:]`"'\'',;:)(.*+?{}|^$[]+)*)([/\\]|\\\\)|([^]/\\[:space:]`"'\'',;:)(.*+?{}|^$[]+(\.[^]/\\[:space:]`"'\'',;:)(.*+?{}|^$[]+)*)($|[]/\\[:space:]`"'\'',;:)(.*+?{}|^$[]))'
     MATCHES=()
     # Loop past EVERY match, allowlisted or not, so a second (or third)
     # non-allowlisted home path later on the same line is still caught.
     while [[ "$remaining" =~ $re ]]; do
         whole="${BASH_REMATCH[0]}"
+        local prefix="${BASH_REMATCH[2]}"
         if [ -n "${BASH_REMATCH[4]}" ]; then
             name="${BASH_REMATCH[4]}"
             term="${BASH_REMATCH[6]}"
         else
             name="${BASH_REMATCH[7]}"
-            term="${BASH_REMATCH[8]}"
+            term="${BASH_REMATCH[9]}"
         fi
-        if ! home_name_allowed "$name"; then
-            MATCHES+=("${BASH_REMATCH[2]}${name}${term}")
+        local rest="${remaining#*"$whole"}"
+        # A captured name immediately followed by a doc-style ellipsis is only
+        # skipped when the name itself looks like a Windows 8.3 short name
+        # (ends "~<digits>", e.g. "RUNNER~1") -- a genuine leaked path that
+        # happens to sit before a literal "..." in truncated tool output is
+        # NOT a placeholder and must still be reported (HIMMEL-2954 finding 2;
+        # an allowlisted name, e.g. the documented "<prefix>/<name>/..." doc-
+        # elision shape, is already suppressed below by home_name_allowed
+        # regardless of the ellipsis). name/term/prefix are captured above,
+        # before this [[ =~ ]] check, because it overwrites BASH_REMATCH.
+        local is_8dot3=0
+        [[ "$name" =~ ~[0-9]+$ ]] && is_8dot3=1
+        local ellipsis_next=0
+        [[ "$rest" == $'...'* || "$rest" == $'\xe2\x80\xa6'* ]] && ellipsis_next=1
+        if { [ "$ellipsis_next" -eq 0 ] || [ "$is_8dot3" -eq 0 ]; } && ! home_name_allowed "$name"; then
+            MATCHES+=("${prefix}${name}${term}")
         fi
-        remaining="${remaining#*"$whole"}"
+        remaining="$rest"
     done
     [ "${#MATCHES[@]}" -gt 0 ]
 }
@@ -554,6 +658,16 @@ scan_line() {
     HITS=1
 }
 
+# scan_path <file> -- feeds the repo-relative path string itself through the
+# same scan_line dispatch (line 0, so a finding reads "<file>:0 <class> ..."
+# and a reader knows it's the name, not content) so a leak-shaped filename
+# can't slip past a clean diff or clean tree content (HIMMEL-2831 #1). Callers
+# must invoke this strictly after skip_path() so a .leak-classes-ignore
+# exemption still holds for the path itself.
+scan_path() {
+    scan_line "$1" 0 "$1"
+}
+
 # unquote_diff_path <token> -- reverses the two things git's "+++ b/<path>"
 # header can do to a path that a plain ${f#b/} strip does not undo (HIMMEL-2831
 # #2): a bare disambiguating TAB appended after an otherwise-unquoted path
@@ -612,6 +726,24 @@ unquote_diff_path() {
     printf '%s.' "$s"
 }
 
+# scan_new_staged_paths -- HIMMEL-2831 #1: a staged file's own PATH must be
+# scanned once, even for diff shapes where the -U0 hunk-based parser above
+# never represents the file with a "+++ " header at all -- most notably a
+# genuinely EMPTY newly-added file, which produces NO diff body whatsoever
+# (verified: `git diff --cached -U0` for a 0-byte new file prints only the
+# "diff --git"/"new file mode"/"index" lines, no "--- "/"+++ "/"@@" at all).
+# A dedicated `--diff-filter=A` listing, run once, is the only reliable way
+# to enumerate every newly added path regardless of its diff shape. -z
+# disables git's path quoting entirely (regardless of core.quotePath),
+# so no unquote_diff_path() call is needed here.
+scan_new_staged_paths() {
+    local f
+    while IFS= read -r -d '' f; do
+        skip_path "$f" && continue
+        scan_path "$f"
+    done < <(git diff --cached --no-renames --diff-filter=A --name-only -z --)
+}
+
 # ---- --staged: parse `git diff --cached -U0`, scan ADDED lines only ----
 run_staged() {
     local diff_line current_file="" skip_current=0 newline=0 in_hunk=0
@@ -648,7 +780,16 @@ run_staged() {
     # stops git from octal-escaping non-ASCII path bytes, leaving the rarer
     # ", \, and control-character case (which git quotes regardless of this
     # setting) as the only one unquote_diff_path() still has to reverse.
-    if ! diff_output="$(git -c core.quotePath=false -c diff.outputIndicatorNew=+ -c diff.outputIndicatorOld=- -c diff.outputIndicatorContext=' ' diff --no-color --no-ext-diff --no-textconv --no-renames --cached --text -U0 --)"; then
+    # diff.mnemonicPrefix=false / diff.noprefix=false: the "+++ " parsing
+    # below strips a literal "b/" prefix to recover the real path. A
+    # station with diff.mnemonicPrefix=true swaps that to "i/" (index) for
+    # --cached; the parser's fallback then keeps "i/<realpath>" verbatim,
+    # which can spuriously match an unrelated directory-style
+    # .leak-classes-ignore entry (e.g. a repo directory literally named
+    # "i/") and exempt every staged file (HIMMEL-2826). Pinning both off
+    # forces the plain "b/" prefix this parser is written against,
+    # regardless of the running station's git config.
+    if ! diff_output="$(git -c core.quotePath=false -c diff.mnemonicPrefix=false -c diff.noprefix=false -c diff.outputIndicatorNew=+ -c diff.outputIndicatorOld=- -c diff.outputIndicatorContext=' ' diff --no-color --no-ext-diff --no-textconv --no-renames --cached --text -U0 --)"; then
         echo "leak-classes: git diff --cached failed" >&2
         exit 2
     fi
@@ -713,6 +854,7 @@ run_staged() {
             *) ;;
         esac
     done <<< "$diff_output"
+    scan_new_staged_paths
     scan_unignored_full
 }
 
@@ -760,6 +902,7 @@ run_tree() {
     fi
     while IFS= read -r -d '' f; do
         skip_path "$f" && continue
+        scan_path "$f"
         # A tracked symlink: git only ever commits its TARGET STRING, never
         # the content at that target, so scan that string as the one line
         # this entry contributes -- opening "$f" via shell redirection below

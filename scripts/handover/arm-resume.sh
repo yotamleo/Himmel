@@ -107,6 +107,29 @@
 #                           auto-detected-cwd refusal (rc 14) -- arms anyway
 #                           into a vault/state repo with no explicit
 #                           --cwd/--worktree/resume_cwd:.
+#   ARM_RUNNER_DIR          Test seam / override for where crontab arms
+#                           (macOS, and the Linux crontab fallback) write
+#                           their generated runner (+ .command) files.
+#                           Default: $HOME/.claude/handover/arm-runners.
+#                           Files are chmod 700; the dir is mkdir -p'd.
+#   ARM_TERMINAL_APP        macOS crontab arms only: which app `open -a`
+#                           launches the relaunch in (cron has no TTY, so a
+#                           headless launch would be invisible). Default:
+#                           inferred from TERM_PROGRAM at arm time
+#                           (iTerm.app -> iTerm, Apple_Terminal -> Terminal,
+#                           else Terminal). "none" opts out to a headless
+#                           inline launch (the Linux crontab fallback's only
+#                           mode). A bad app name WARNs and falls back to
+#                           Terminal rather than refusing the arm.
+#   ARM_APP_DIRS            Test seam / override for the colon-separated list
+#                           of directories arm-time app resolution searches
+#                           for "<ARM_TERMINAL_APP resolved name>.app" (macOS
+#                           crontab arms only). Default:
+#                           /Applications:/Applications/Utilities:/System/Applications:/System/Applications/Utilities:$HOME/Applications
+#                           (the last entry is where an operator's own
+#                           user-installed iTerm typically lives). A miss
+#                           WARNs and falls back to Terminal, same as an
+#                           unknown ARM_TERMINAL_APP.
 #
 # Exit codes:
 #   0  scheduler armed (or printed under --dry-run)
@@ -244,6 +267,7 @@ DEDUP_ANY=0
 WORKTREE_BRANCH=""
 WSL_DISTRO=""
 AUTOMERGE=0
+NO_AUTOMERGE=0
 LONG_GAP=0
 LIST_TEMP_ARMS=0
 SAFETY_CHILD=0
@@ -255,7 +279,7 @@ _epoch_hhmm() { py_armor_capture -c 'import sys,datetime; print(datetime.datetim
 
 usage() {
     cat <<'EOF'
-Usage: arm-resume.sh --time <HH:MM> --handover <path> [--wsl-distro <name>] [--force] [--long-gap] [--dedup-any] [--dry-run] [--automerge] [--safety-child] [--model <name>] [--fable-ok <reason>] [--context <1m|standard>] [--tier leg] [--provisional-base-ok]
+Usage: arm-resume.sh --time <HH:MM> --handover <path> [--wsl-distro <name>] [--force] [--long-gap] [--dedup-any] [--dry-run] [--automerge] [--no-automerge] [--safety-child] [--model <name>] [--fable-ok <reason>] [--context <1m|standard>] [--tier leg] [--provisional-base-ok]
 
 Arms the OS scheduler to relaunch claude at the given time with a
 resume prompt referencing the given handover file. Dedup-guarded
@@ -379,10 +403,22 @@ Optional:
                      path, then exit (16 = hits, 0 = clean). Never deletes —
                      disable a hit instead, which is reversible. Needs neither
                      --time nor --handover.
-  --automerge        Set ARMAUTOMERGE=1 and CR_MERGE_GATE_OK=1 in the
+  --automerge        Set ARMAUTOMERGE=1 AND CR_MERGE_GATE_OK=1 in the
                      relaunched session's environment (HIMMEL-1382, feature
-                     lineage HIMMEL-1042 armed auto-merge opt-in). Default
-                     omits both vars.
+                     lineage HIMMEL-1042 armed auto-merge opt-in) -- this
+                     explicit flag is the ONLY path that grants the merge
+                     gate's own bypass. Default omits both vars UNLESS the
+                     primary checkout's `.env` has ARMAUTOMERGE on
+                     (HIMMEL-2147), in which case only ARMAUTOMERGE=1 is set
+                     (HIMMEL-3118 item 4) -- a dotenv default never grants
+                     CR_MERGE_GATE_OK=1. See --no-automerge to override the
+                     dotenv default down. Mutually exclusive with
+                     --no-automerge (refused, exit 2).
+  --no-automerge     Force AUTOMERGE=0 regardless of the on-disk ARMAUTOMERGE
+                     default (HIMMEL-3118) -- for an arm that must park on
+                     every green PR even when this station's `.env` opts
+                     in station-wide. Mutually exclusive with --automerge
+                     (refused, exit 2).
   --safety-child     Set AUTO_ARM_SAFETY_CHILD=1 in the relaunched session's
                      environment (HIMMEL-812): that session is the child of an
                      auto-arm SAFETY escalation, so auto-arm-on-cap.sh's stale
@@ -630,6 +666,7 @@ while [ $# -gt 0 ]; do
         --dedup-any)   DEDUP_ANY=1; shift ;;
         --dry-run)     DRY_RUN=1; shift ;;
         --automerge)   AUTOMERGE=1; shift ;;
+        --no-automerge) NO_AUTOMERGE=1; shift ;;
         --safety-child) SAFETY_CHILD=1; shift ;;
         --list-temp-arms) LIST_TEMP_ARMS=1; shift ;;
         --provisional-base-ok) PROVISIONAL_BASE_OK=1; shift ;;
@@ -640,6 +677,14 @@ done
 
 if [ -n "$WSL_DISTRO" ] && ! [[ "$WSL_DISTRO" =~ ^[A-Za-z0-9._-]+$ ]]; then
     echo "ERR arm-resume: invalid --wsl-distro name: $WSL_DISTRO" >&2
+    exit 2
+fi
+
+# HIMMEL-3118: --automerge and --no-automerge are opposite explicit signals;
+# accepting both silently would leave it ambiguous which one the launch body
+# honors. Refuse instead of picking a winner.
+if [ "$AUTOMERGE" -eq 1 ] && [ "$NO_AUTOMERGE" -eq 1 ]; then
+    echo "ERR arm-resume: --automerge and --no-automerge are mutually exclusive" >&2
     exit 2
 fi
 
@@ -1045,13 +1090,46 @@ _arm_profile_report() {
     # shellcheck disable=SC2317  # Invoked indirectly by the EXIT trap.
     echo "PROFILE arm-resume: ${_ARM_PROFILE_LOG[*]}" >&2
 }
+# HIMMEL-2774: releases this arm's own fleet reservation on EVERY exit,
+# success included. codex-4 (4th panel round): this reservation is keyed by
+# the flattened handover path (below), which cannot match the `-n` name the
+# scheduled task will eventually launch under -- so it can never be consumed
+# by a live-session census entry, only expire by TTL. Earlier this was left
+# held on success on the theory that it "reserves the slot" for that future
+# launch, but the reservation exists only to cover the immediate race right
+# here in arm-resume.sh's own admission decision (its default 1800s TTL
+# cannot meaningfully reserve a slot for a launch that may fire hours later
+# anyway -- the scheduled task runs its OWN bank-preflight, under its OWN
+# name, at ITS time). Held past this process's own exit it only
+# double-counts against the cap for up to 30 minutes AND wrongly refuses a
+# legitimate retry of the same handover in that window as a "duplicate".
+# Releasing here unconditionally removes both false positives; nothing else
+# in the fleet count relies on it staying reserved after arm-resume.sh exits.
+# shellcheck disable=SC2329  # Invoked indirectly by the EXIT trap below.
+_arm_fleet_release_pending() {
+    # shellcheck disable=SC2317  # Invoked indirectly by the EXIT trap.
+    [ -n "${_ARM_FLEET_RESERVED_LEG:-}" ] || return 0
+    # shellcheck disable=SC2317  # Invoked indirectly by the EXIT trap.
+    _arm_fleet_resv="${_ARM_FLEET_SLOTS:?}/$_ARM_FLEET_RESERVED_LEG"
+    # codex-3 (this round): bank-preflight.sh returning non-SKIPPED-FLEET
+    # does not guarantee IT created this reservation (the admission-lock-
+    # failure bypass under FLEET_CAP_OK=1 proceeds without creating one) —
+    # if a reservation for this same name already existed from an unrelated
+    # concurrent arm, deleting it unconditionally on our own refusal would
+    # release THEIR still-needed slot out from under them. Only release a
+    # reservation this process itself is recorded as the owner of.
+    # shellcheck disable=SC2317  # Invoked indirectly by the EXIT trap.
+    [ "$(cat "$_arm_fleet_resv/pid" 2>/dev/null)" = "$$" ] || return 0
+    # shellcheck disable=SC2317  # Invoked indirectly by the EXIT trap.
+    rm -rf "$_arm_fleet_resv" 2>/dev/null
+}
 # On an EXIT trap so a REFUSAL (rc=7/9/11/13/19/...) still emits the timings --
 # those are exactly the paths where "which phase burned the time" matters most,
 # and the two hand-picked print sites this replaced only fired on the two
 # success exits. The worker-census block below (DRY_RUN=0) registers its OWN
 # EXIT trap (bash allows only one) -- it chains to this same function rather
 # than clobbering it, so both cleanups still run post-census.
-trap _arm_profile_report EXIT
+trap '_arm_fleet_release_pending; _arm_profile_report' EXIT
 
 # CodeRabbit #1911 (security): a stderr capture at a PREDICTABLE path
 # (/tmp/arm-resume.<label>.$$) lets a local process pre-create a symlink there
@@ -1075,6 +1153,27 @@ _arm_mktemp_or_fail() {
 # check and falls through — arm-resume.sh does not otherwise consult the
 # bank guard. FLEET_CAP_OK=1 in the LAUNCHING shell bypasses (registered in
 # scripts/chokepoints.json so a per-call prefix cannot forge it).
+#
+# HIMMEL-2774 refinements (disclosed in the PR body):
+#   - CADENCE_BANK_LEG must be a bare name (bank-preflight.sh's reservation
+#     directory is `mkdir "$SLOTS/$LEG"`) — HANDOVER_PATH almost always
+#     contains '/', which the pre-fix caller passed straight through. Under
+#     the fixed script that would hit its defensive `*/*` guard and proceed
+#     WITHOUT creating a reservation, leaving arm-resume's own concurrent
+#     calls exactly as racy as before. Sanitized below by collapsing '/' to
+#     '-'.
+#   - No FLEET_RESERVE_TTL export here: this call fires before TARGET_EPOCH
+#     is resolved (below), so there is no deadline yet to derive a TTL from,
+#     and moving the call to after resolution would mean restructuring
+#     arm-resume's scheduling flow, which the brief marks out of scope. The
+#     reservation instead falls back to the design's default 1800s TTL —
+#     ample for the immediate-arm race this ticket targets, and this
+#     sanitized name will not match any later live session's `-n` name, so
+#     it is released by TTL expiry rather than live-session consumption --
+#     UNLESS this run itself later refuses (see _arm_fleet_release_pending
+#     above): most of arm-resume.sh's own refusal exits run AFTER this block,
+#     so on any of them there is no future launch coming and the reservation
+#     is released immediately rather than sitting for the full TTL.
 if [ "$DRY_RUN" -eq 0 ]; then
     _arm_phase_t0 "fleet-preflight"
     _ARM_BANK_PREFLIGHT="$SCRIPT_DIR/../lib/bank-preflight.sh"
@@ -1085,11 +1184,20 @@ if [ "$DRY_RUN" -eq 0 ]; then
         # HIMMEL-2789: this call arms a new leg, so it declares launch intent
         # — the fleet cap must be able to actually refuse it, unlike a plain
         # bank-status READ.
-        _arm_fleet_token="$(CADENCE_BANK_LEG="${HANDOVER_PATH:-arm-resume}" CADENCE_BANK_LAUNCH=1 bash "$_ARM_BANK_PREFLIGHT" </dev/null)"
+        _arm_fleet_leg="${HANDOVER_PATH:-arm-resume}"
+        _arm_fleet_leg="${_arm_fleet_leg//\//-}"
+        _arm_fleet_token="$(CADENCE_BANK_LEG="$_arm_fleet_leg" CADENCE_BANK_LAUNCH=1 CADENCE_BANK_CALLER_PID="$$" bash "$_ARM_BANK_PREFLIGHT" </dev/null)"
         if [ "$_arm_fleet_token" = SKIPPED-FLEET ]; then
             echo "ERR arm-resume: fleet-size cap reached (bank-preflight: SKIPPED-FLEET) — refusing to arm another leg. Override with FLEET_CAP_OK=1 in the LAUNCHING shell." >&2
             exit 22
         fi
+        # Not SKIPPED-FLEET: bank-preflight.sh either created a reservation
+        # for $_arm_fleet_leg or (rarely, an admission-lock failure under
+        # FLEET_CAP_OK=1) created none -- either way `rm -rf` on a name that
+        # was never created is a safe no-op, so track it unconditionally
+        # rather than trying to distinguish the two from the token alone.
+        _ARM_FLEET_SLOTS="${HIMMEL_FLEET_SLOTS:-${XDG_RUNTIME_DIR:-/tmp}/himmel-fleet-$(id -u)}"
+        _ARM_FLEET_RESERVED_LEG="$_arm_fleet_leg"
     fi
     _arm_phase_done "fleet-preflight"
 fi
@@ -1385,17 +1493,67 @@ _arm_dotenv_root() {
 # whether to WARN below. Same load_dotenv bridge the CR_FLOOR_FALLBACK load
 # right after this uses (process env wins; a load_dotenv READ FAILURE is
 # advisory-only, arming never refuses over it).
-if [ "$AUTOMERGE" -ne 1 ] && [ -f "$SCRIPT_DIR/../lib/load-dotenv.sh" ]; then
+#
+# HIMMEL-3118: --no-automerge forces AUTOMERGE=0 and skips the dotenv default
+# entirely -- the whole point of the flag is to decline the station-wide
+# opt-in for THIS arm, so it must win even when ARMAUTOMERGE=1 on disk.
+#
+# HIMMEL-3118 item 4 (operator ruling): the dotenv-derived grant and the
+# explicit --automerge flag are NOT the same grant. `.env` ARMAUTOMERGE
+# expresses consent to "merge when green" only -- CR_MERGE_GATE_OK=1 is the
+# merge gate's OWN bypass, and an operator who set a dotenv default never
+# consented to that. AUTOMERGE_GRANTS_MERGE_GATE tracks which of the two
+# grants THIS resolution carries; every emit site below must gate
+# CR_MERGE_GATE_OK=1 on it, not on AUTOMERGE alone.
+AUTOMERGE_SOURCE="off (no --automerge, no dotenv opt-in)"
+AUTOMERGE_GRANTS_MERGE_GATE=0
+if [ "$NO_AUTOMERGE" -eq 1 ]; then
+    AUTOMERGE=0
+    AUTOMERGE_SOURCE="--no-automerge flag"
+elif [ "$AUTOMERGE" -eq 1 ]; then
+    AUTOMERGE_SOURCE="--automerge flag"
+    AUTOMERGE_GRANTS_MERGE_GATE=1
+elif [ -f "$SCRIPT_DIR/../lib/load-dotenv.sh" ]; then
     # shellcheck disable=SC1091
     . "$SCRIPT_DIR/../lib/load-dotenv.sh"
+    # HIMMEL-3118 item 4: load_dotenv is non-clobbering -- it skips a key that
+    # already holds a non-empty value (HIMMEL-1922) -- so an ambient
+    # ARMAUTOMERGE exported into THIS shell would win over the .env read
+    # below and get mistaken for the on-disk default, contradicting the (a)
+    # comment above that an ambient value is irrelevant here. Unset it first
+    # so only the file can populate it, then move the result into a
+    # DISTINCTLY NAMED variable immediately -- nothing downstream reads the
+    # bare ARMAUTOMERGE shell variable again, so it can no longer be confused
+    # with a live ambient one.
+    unset ARMAUTOMERGE
     if load_dotenv --root "$(_arm_dotenv_root)" ARMAUTOMERGE; then
-        case "$(printf '%s' "${ARMAUTOMERGE:-}" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')" in
-            1|true|on|yes) AUTOMERGE=1 ;;
+        _ARM_DOTENV_AUTOMERGE="${ARMAUTOMERGE:-}"
+        unset ARMAUTOMERGE
+        case "$(printf '%s' "$_ARM_DOTENV_AUTOMERGE" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')" in
+            1|true|on|yes) AUTOMERGE=1; AUTOMERGE_SOURCE="dotenv default (ARMAUTOMERGE=$_ARM_DOTENV_AUTOMERGE in .env)" ;;
         esac
+        # AUTOMERGE_GRANTS_MERGE_GATE stays 0 -- the dotenv path never grants
+        # the merge-gate bypass, only ARMAUTOMERGE.
     fi
 fi
-if [ "$AUTOMERGE" -ne 1 ]; then
+# Same stdout-not-stderr, guard-time-not-only-banner reasoning as the
+# HIMMEL-2658 CONTEXT_REASON echo above -- an operator reading the arm log
+# needs the resolved value AND why it resolved that way.
+echo "arm-resume: automerge=$AUTOMERGE merge_gate_bypass=$AUTOMERGE_GRANTS_MERGE_GATE (source: $AUTOMERGE_SOURCE)"
+if [ "$NO_AUTOMERGE" -eq 1 ]; then
+    # HIMMEL-3118 CR round 1: the OFF-warning below recommends --automerge,
+    # which contradicts an operator who just typed --no-automerge. The warning
+    # exists to catch an ACCIDENTAL omission; an explicit decline is not one,
+    # and the resolved-state echo above already reports it (source:
+    # --no-automerge flag). Stay silent rather than argue with the flag.
+    :
+elif [ "$AUTOMERGE" -ne 1 ]; then
     echo "WARN arm-resume: --automerge was not passed -- the armed session will NOT set ARMAUTOMERGE=1, so merge-on-green.sh will not fire and the chain stops at every green PR instead of merging it. Pass --automerge if this arm is meant to ship through green PRs unattended." >&2
+elif [ "$AUTOMERGE_SOURCE" != "--automerge flag" ]; then
+    # HIMMEL-3118: the inherited-ON case used to resolve silently -- the only
+    # one of the three launch parameters (automerge/context/tier) that did.
+    # WARN symmetrically with the OFF case above.
+    echo "WARN arm-resume: automerge is ON via $AUTOMERGE_SOURCE, not an explicit --automerge on THIS invocation -- the armed session WILL set ARMAUTOMERGE=1 (but NOT CR_MERGE_GATE_OK=1 -- that bypass is granted only by an explicit --automerge), so merge-on-green.sh WILL fire and ship through every green PR unattended. Pass --no-automerge if this arm must park on green instead." >&2
 fi
 
 # (b) CR_FLOOR_FALLBACK. When CR_REQUIRE_CROSS_MODEL is on (HIMMEL-1237) and no
@@ -1465,10 +1623,11 @@ if [ "$DRY_RUN" -eq 0 ]; then
     _worker_census_err=""
     # Chained, not a bare `trap _arm_worker_stderr_cleanup EXIT` -- bash keeps
     # only ONE handler per signal, and that would silently drop the top-of-
-    # script `trap _arm_profile_report EXIT` (HIMMEL-2113 Ask B) for the rest
-    # of this run, exactly the "PROFILE line missing on a real-arm refusal"
-    # bug this chain fixes.
-    trap '_arm_worker_stderr_cleanup; _arm_profile_report' EXIT
+    # script `trap '_arm_fleet_release_pending; _arm_profile_report' EXIT`
+    # (HIMMEL-2113 Ask B; fleet release added HIMMEL-2774) for the rest of
+    # this run, exactly the "PROFILE line / fleet release missing on a real-
+    # arm refusal" bug this chain fixes.
+    trap '_arm_worker_stderr_cleanup; _arm_fleet_release_pending; _arm_profile_report' EXIT
     _worker_census_err=$(_arm_worker_stderr_file census) || exit 2
 
     set +e
@@ -2185,7 +2344,12 @@ _infer_ticket() {
     # identity comes from its PARENT DIR (src-4), never its own H1.
     _stem=$(basename "${_ho//\\//}"); _stem="${_stem%.md}"
     if ! printf '%s' "$_stem" | grep -qE '^next-session-[0-9]+$'; then
-        _raw=$(sed -n '/^# /{p;q}' "$_ho")
+        # HIMMEL-3074: the `q` is `;`-terminated before the closing brace --
+        # BSD sed (macOS) rejects a bare `q` followed directly by `}` ("extra
+        # characters at the end of q command"), which made every macOS arm
+        # print a sed error and infer no ticket from the H1. The `;}` form is
+        # valid in GNU and BSD sed alike.
+        _raw=$(sed -n '/^# /{p;q;}' "$_ho")
         _raw=$(printf '%s\n' "$_raw" | grep -oE '[A-Z][A-Z0-9]+-[0-9]+' | head -1) || true
         _key=$(_validate_key "$_raw")
         if [ -n "$_key" ]; then printf '%s' "$_key"; return 0; fi
@@ -4348,19 +4512,47 @@ fi
 # through schedule-resume.sh's mixed-prose stdout (the v1 bug).
 # _crontab_schedule — install the one-shot crontab entry (HIMMEL-594: shared by
 # the linux crontab fallback + the macOS crontab-only branch). Uses the script
-# globals RESUME_TIME/RESUME_PROMPT/RESUME_CWD/CHANNELS/TASK_NAME/DRY_RUN only.
+# globals RESUME_TIME/RESUME_PROMPT/RESUME_CWD/CHANNELS/TASK_NAME/DRY_RUN (plus
+# PATH/HOME and the ARM_RESUME_LOG_DIR seam, HIMMEL-3074).
 # A `return 0` here (dry-run) returns to the schedule_arm case, which then ends
 # and returns 0 — equivalent to the pre-extraction inline `return 0`.
+#
+# HIMMEL-3074 (himmel#774) — DECISION, revised (fold of Goomal's
+# fix/arm-resume-macos-cron, commit 122659613fe458649327075a9fbda9cc6a8ee15f):
+# the crontab LINE itself only ever carries a fixed-shape `/bin/sh <runner> #
+# <TASK_NAME>` command now (see the runner-file block inside the function
+# below) -- inlining the whole launch on the crontab line, as the first cut of
+# this ticket did, breaks on a real macOS box the moment the rendered command
+# passes Vixie/BSD cron's ~1000-byte MAX_COMMAND: cron silently truncates the
+# line at parse time, and because the self-clean and the launch were BOTH part
+# of that one truncated line, the entry never removes itself either -- it just
+# re-fires, mangled, every day (this is the actual mechanism behind himmel#774,
+# not merely the read-failure bugs CR round 2 fixed below, which a byte-count
+# render confirmed independently of Goomal's own report). A short, well-under-
+# the-cap crontab line that execs a generated FILE sidesteps this regardless of
+# handover path/prompt/cwd length. claude is still resolved to an ABSOLUTE path
+# at arm time (cron's PATH is /usr/bin:/bin; a bare `claude` exits 127 AFTER
+# self-clean had already removed the entry, so the arm "succeeded" and nothing
+# ran) and an arm that cannot resolve claude still REFUSES (rc 2) -- a silent
+# self-removing no-op is worse than a missing feature. On macOS the runner
+# hands the actual launch to a generated `.command` file via `open -a` (see
+# ARM_TERMINAL_APP below): cron gives the job no TTY, so a headless launch is
+# invisible even once it is complete and well-formed. Linux's crontab fallback
+# has no TTY story to fix (it's a fallback behind `at`, which owns Linux's
+# normal one-shot path) and always runs the runner's launch inline, headless.
+# The crontab and `at` bodies both export HIMMEL_ARMED_RELAUNCH=1 so a
+# top-level armed session can self-exit with SIGTERM once its successor is
+# armed (documented in overnight-mode.md).
 _crontab_schedule() {
     # crontab fallback — crontab entries are RECURRING, so the
     # entry SELF-REMOVES as its first action (the cron analogue of
-    # the schtasks .bat self-/delete above): it rewrites the
-    # crontab without its own marker line before running cd+claude,
-    # turning the recurring entry into a one-shot. The running
-    # /bin/sh -c continues after the rewrite, so claude still
-    # launches. The marker match is ANCHORED at end-of-line
-    # (grep -vE '# <TASK_NAME>$'), mirroring the dedup detector's
-    # crontab branch in list_existing so a sibling slot whose
+    # the schtasks .bat self-/delete above): the RUNNER FILE (not the
+    # crontab line itself, see below) rewrites the crontab without its
+    # own marker line before running cd+claude, turning the recurring
+    # entry into a one-shot. The running /bin/sh continues past the
+    # rewrite, so claude still launches. The marker match is ANCHORED
+    # at end-of-line (grep -vE '# <TASK_NAME>$'), mirroring the dedup
+    # detector's crontab branch in list_existing so a sibling slot whose
     # TASK_NAME is a strict PREFIX of this one is not cross-matched
     # and survives. TASK_NAME is sanitized to [:alnum:]_- so it
     # carries no ERE specials. The terminal `crontab -` is NOT
@@ -4368,42 +4560,92 @@ _crontab_schedule() {
     # entry RECURRING (a daily relaunch loop) while we told the
     # operator it is one-shot, so let cron surface the failure
     # (mail/log) — the manual-prune hint printed below is the
-    # backstop. printf '%q' shell-quotes the prompt so cron's
-    # /bin/sh -c can't re-interpret $/backticks/etc in a handover
+    # backstop. printf '%q' shell-quotes the prompt so the runner's
+    # own /bin/sh can't re-interpret $/backticks/etc in a handover
     # path.
     local hh="${RESUME_TIME%:*}" mm="${RESUME_TIME#*:}"
     local q_prompt q_cwd q_channels="" q_name="" q_model="" q_autocompact=""
-    # HIMMEL-2199: \%-escape AFTER %q-quoting, same shape as q_model below --
-    # a handover path, cwd, or prompt containing % otherwise survives %q
-    # untouched and crontab (unlike /bin/sh) reads an unescaped % as
-    # end-of-command + stdin, silently truncating the entry at fire time.
-    # q_cwd needs it too (CR round on this ticket): it sits in the SAME
-    # `cd $q_cwd && ...` entry as q_prompt/q_channels, so a % anywhere in
-    # RESUME_CWD (the git-toplevel-derived working directory) truncates the
-    # entry exactly like an unescaped prompt/channels would. q_name is
-    # exempt: SESSION_NAME only ever comes from _compose_arm_name(), whose
-    # "title" surface sanitizes to [A-Za-z0-9._ -], which cannot contain %.
+    # Fold of Goomal's fix/arm-resume-macos-cron: the \%-escape HIMMEL-2199/
+    # HIMMEL-2192 added at these sites existed ONLY because these values sat
+    # on the crontab LINE itself, and crontab (unlike /bin/sh) reads a bare %
+    # as end-of-command + stdin. They now land in the RUNNER FILE below,
+    # parsed by /bin/sh, not cron, so a literal % is just a literal % -- %q
+    # already gives the runner's /bin/sh everything it needs. The \%-escape
+    # moves to q_runner further down, the one value that still sits on the
+    # crontab line.
     q_prompt=$(printf '%q' "$RESUME_PROMPT")
-    q_prompt=${q_prompt//%/\\%}
     q_cwd=$(printf '%q' "$RESUME_CWD")
-    q_cwd=${q_cwd//%/\\%}
-    [ -n "$CHANNELS" ] && q_channels="--channels $(printf '%q' "$CHANNELS") " && q_channels=${q_channels//%/\\%}
+    [ -n "$CHANNELS" ] && q_channels="--channels $(printf '%q' "$CHANNELS") "
     # -n <session name> (HIMMEL-702): %q-quote so a space in "<TICKET> <name>"
     # stays ONE arg through the /bin/sh re-parse at fire time. Empty -> omit.
     [ -n "$SESSION_NAME" ] && q_name="-n $(printf '%q' "$SESSION_NAME") "
     # Optional --model passthrough (HIMMEL-2192), same %q-quote shape as
-    # --channels above. %q leaves a literal % untouched, and crontab (unlike
-    # /bin/sh) treats an unescaped % as end-of-command + stdin even inside
-    # shell quoting -- so `\%`-escape AFTER %q-quoting to survive crontab's
-    # own parse before /bin/sh ever sees the line.
-    [ -n "$MODEL" ] && q_model="--model $(printf '%q' "$MODEL") " && q_model=${q_model//%/\\%}
+    # --channels above.
+    [ -n "$MODEL" ] && q_model="--model $(printf '%q' "$MODEL") "
     # --autocompact passthrough (HIMMEL-2658): always non-empty by the time
     # this runs (resolved unconditionally alongside CONTEXT_MODE above) --
-    # same %q-quote + \%-escape shape as q_model, since this is the actual
-    # cost-driving lever and a skipped site here is a silent no-op on this
-    # platform.
-    q_autocompact="--autocompact $(printf '%q' "$AUTOCOMPACT") " && q_autocompact=${q_autocompact//%/\\%}
-    local self_clean="crontab -l 2>/dev/null | grep -vE '# ${TASK_NAME}\$' | crontab -;"
+    # same %q-quote shape as q_model, since this is the actual cost-driving
+    # lever and a skipped site here is a silent no-op on this platform.
+    q_autocompact="--autocompact $(printf '%q' "$AUTOCOMPACT") "
+    # HIMMEL-3074: resolve claude ABSOLUTELY at arm time (see the function
+    # header). `command -v` may return a function/alias name for a shell-level
+    # `claude`; only a leading `/` is a path cron can exec, anything else
+    # refuses. rc 2 = the Windows twin's "'claude' not on PATH at arm time"
+    # code. Dry-run takes the same gate so a preview never shows an entry the
+    # real arm would refuse.
+    local claude_abs q_claude
+    claude_abs=$(command -v claude 2>/dev/null) || claude_abs=""
+    case "$claude_abs" in
+        /*) ;;
+        *)
+            echo "ERR arm-resume: 'claude' not on PATH at arm time; a crontab entry running a bare 'claude' exits 127 at fire time (cron PATH=/usr/bin:/bin) and self-removes -- refusing to arm. Install claude or fix PATH, then re-arm." >&2
+            exit 2 ;;
+    esac
+    q_claude=$(printf '%q' "$claude_abs")
+    # arm-time PATH snapshot, folded into the runner file (not the crontab
+    # line -- see below) so claude's own helpers (node, git, gh, the himmel
+    # hook scripts) resolve as they did in the arming shell. PATH ONLY --
+    # never a whole-env snapshot: a console-spawned leg's arming shell carries
+    # INLINE_IMPL_OK / HIMMEL_CONSOLE_LEG / HIMMEL_HOOK_INTEGRITY_BYPASS_OK
+    # (HIMMEL-3092), and baking those into the relaunch would silently
+    # neuter its guardrails. Fold of Goomal's fix/arm-resume-macos-cron: an
+    # npm-installed `claude` is a node shim, so a PATH snapshot that resolves
+    # `claude` (above) but omits node's own directory can still fail at fire
+    # time the instant that shim execs node -- fold node's dir in when it
+    # resolves and isn't already on PATH (this repo has no macOS station to
+    # confirm the shim shape directly; ported as documented in Goomal's
+    # commit message rather than asserted as observed here).
+    local _snap_path="$PATH" _node_bin _node_dir
+    if _node_bin=$(command -v node 2>/dev/null) && [ -n "$_node_bin" ]; then
+        _node_dir=$(dirname "$_node_bin")
+        case ":$PATH:" in
+            *":$_node_dir:"*) ;;
+            *) _snap_path="$_node_dir:$PATH" ;;
+        esac
+    fi
+    local q_path
+    q_path=$(printf '%q' "$_snap_path")
+    # CR round 2 on #780 (still needed: Goomal's fix/arm-resume-macos-cron
+    # relocates this exact one-liner into the runner file unchanged, so it
+    # keeps failing open the same way): `crontab -l | grep -v ... | crontab -`
+    # fails open two ways -- if `crontab -l` fails, grep sees empty input and
+    # `crontab -` still runs, WIPING every unrelated cron job; and a plain
+    # next-line launch runs regardless of self-clean's outcome, so a failed
+    # self-clean re-fires the entry on every subsequent tick. Read the listing
+    # into a variable first and gate the rewrite -- and, via the runner
+    # script's own `exit 1`, the launch that follows -- on that read actually
+    # succeeding. On failure the entry is left installed and NOTHING launches
+    # this tick (safe: no data loss, the manual-prune hint below is the
+    # backstop) rather than a silent wipe or a launch built on a stale crontab
+    # snapshot.
+    local self_clean="_scl=\$(crontab -l 2>/dev/null)
+_scr=\$?
+if [ \$_scr -eq 0 ]; then
+    printf '%s\\n' \"\$_scl\" | grep -vE '# ${TASK_NAME}\$' | crontab -
+else
+    echo \"ERR arm-resume-runner: crontab -l failed (rc=\$_scr) at fire time -- refusing to self-clean or launch this tick; entry stays armed for the next one\" >&2
+    exit 1
+fi"
     # HIMMEL_HEADROOM_PROXY (HIMMEL-901): a crontab entry is ONE line, so the
     # livez-check-then-launch logic (same shape as the `at` branch's
     # $launch_lines) has to be a single ';'-joined compound wrapped in its
@@ -4418,7 +4660,15 @@ _crontab_schedule() {
     # stdin, so a printf format string would truncate the entry. `\$(date)`
     # lands literally and evaluates at fire time.
     local q_automerge=""
-    [ "$AUTOMERGE" -eq 1 ] && q_automerge="ARMAUTOMERGE=1 CR_MERGE_GATE_OK=1 "
+    if [ "$AUTOMERGE" -eq 1 ]; then
+        # HIMMEL-3118 item 4: CR_MERGE_GATE_OK=1 is granted only alongside an
+        # explicit --automerge on THIS invocation, never by the dotenv default.
+        if [ "$AUTOMERGE_GRANTS_MERGE_GATE" -eq 1 ]; then
+            q_automerge="ARMAUTOMERGE=1 CR_MERGE_GATE_OK=1 "
+        else
+            q_automerge="ARMAUTOMERGE=1 "
+        fi
+    fi
     # HIMMEL-1382 fix round: unset both vars unconditionally before the
     # (possibly empty) grant prefix — same always-clear contract as the
     # `at`/Windows/WSL launch bodies, so a crontab entry never depends on
@@ -4445,14 +4695,18 @@ _crontab_schedule() {
     # the relaunched claude PROCESS's own environ otherwise still carried the
     # ARMING session's stale id, misleading anyone inspecting
     # /proc/<claude pid>/environ, exactly the surface this ticket taught
-    # people to check.
-    local tail="unset ARMAUTOMERGE CR_MERGE_GATE_OK ARM_RESUME_SAFETY_ARM CLAUDE_CODE_CHILD_SESSION CLAUDE_PID CLAUDE_CODE_SESSION_ID && export CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 && ${q_automerge}claude ${q_name}$q_prompt $q_channels$q_model$q_autocompact"
+    # people to check. HIMMEL_ARMED_RELAUNCH=1 is a fresh always-set grant
+    # (ported from Goomal's arm-resume-macos-cron fix): it lets the resumed
+    # session know it IS a POSIX armed relaunch, so it can self-exit with
+    # SIGTERM once its work is done and a successor (if any) is armed -- see
+    # docs/handover/overnight-mode.md's Launch preamble.
+    local tail="unset ARMAUTOMERGE CR_MERGE_GATE_OK ARM_RESUME_SAFETY_ARM CLAUDE_CODE_CHILD_SESSION CLAUDE_PID CLAUDE_CODE_SESSION_ID && export CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 HIMMEL_ARMED_RELAUNCH=1 && ${q_automerge}$q_claude ${q_name}$q_prompt $q_channels$q_model$q_autocompact"
     if [ "$HEADROOM_PROXY_ACTIVE" -eq 1 ]; then
         local q_hb q_log q_curl
         q_hb=$(printf '%q' "$HEADROOM_BIN")
         q_log=$(printf '%q' "$HOME/.headroom-proxy.log")
         q_curl=$(printf '%q' "$HEADROOM_CURL")
-        tail="{ unset ARMAUTOMERGE CR_MERGE_GATE_OK ARM_RESUME_SAFETY_ARM CLAUDE_CODE_CHILD_SESSION CLAUDE_PID CLAUDE_CODE_SESSION_ID; export CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1; $q_curl -s -m 5 http://127.0.0.1:$HEADROOM_PROXY_PORT/livez >/dev/null 2>&1 || { $q_hb proxy --port $HEADROOM_PROXY_PORT >> $q_log 2>&1 & sleep 3; }; if $q_curl -s -m 5 http://127.0.0.1:$HEADROOM_PROXY_PORT/livez >/dev/null 2>&1; then echo \"\$(date) arm=$TASK_NAME mode=proxied\" >> $q_log; ANTHROPIC_BASE_URL=http://127.0.0.1:$HEADROOM_PROXY_PORT HEADROOM_OFFLINE=1 ${q_automerge}claude ${q_name}$q_prompt $q_channels$q_model$q_autocompact; else echo \"\$(date) arm=$TASK_NAME mode=bare-fallback\" >> $q_log; ${q_automerge}claude ${q_name}$q_prompt $q_channels$q_model$q_autocompact; fi; }"
+        tail="{ unset ARMAUTOMERGE CR_MERGE_GATE_OK ARM_RESUME_SAFETY_ARM CLAUDE_CODE_CHILD_SESSION CLAUDE_PID CLAUDE_CODE_SESSION_ID; export CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 HIMMEL_ARMED_RELAUNCH=1; $q_curl -s -m 5 http://127.0.0.1:$HEADROOM_PROXY_PORT/livez >/dev/null 2>&1 || { $q_hb proxy --port $HEADROOM_PROXY_PORT >> $q_log 2>&1 & sleep 3; }; if $q_curl -s -m 5 http://127.0.0.1:$HEADROOM_PROXY_PORT/livez >/dev/null 2>&1; then echo \"\$(date) arm=$TASK_NAME mode=proxied\" >> $q_log; ANTHROPIC_BASE_URL=http://127.0.0.1:$HEADROOM_PROXY_PORT HEADROOM_OFFLINE=1 ${q_automerge}$q_claude ${q_name}$q_prompt $q_channels$q_model$q_autocompact; else echo \"\$(date) arm=$TASK_NAME mode=bare-fallback\" >> $q_log; ${q_automerge}$q_claude ${q_name}$q_prompt $q_channels$q_model$q_autocompact; fi; }"
     fi
     _arm_require_leg_autocompact_argv "$tail"
     local q_flow_lib q_task q_note
@@ -4468,18 +4722,196 @@ _crontab_schedule() {
     # be governed by its own text, not by whatever env cron hands it.
     local q_safety_child="unset AUTO_ARM_SAFETY_CHILD && "
     [ "$SAFETY_CHILD" -eq 1 ] && q_safety_child="export AUTO_ARM_SAFETY_CHILD=1 && "
-    local entry="$mm $hh * * * $self_clean cd $q_cwd && ${q_safety_child}$tail # $TASK_NAME"
+    # HIMMEL-3074: the headless shape (function header). The redirects hang
+    # off the flow-ledger `{ ...; }` group so the ledger writes, the launch and
+    # its exit all share the one stdin/log; stdin is /dev/null explicitly
+    # (never cron's undefined stdin), stdout+stderr APPEND to a per-arm log so
+    # a re-arm of the same slot never truncates the previous fire's trace.
+    # Headed (.command) launch keeps $tail's own stdin/stdout -- the .command
+    # file owns a real Terminal TTY, and redirecting it would give claude
+    # immediate EOF and hide its output from the window it was opened for.
+    local log_dir="${ARM_RESUME_LOG_DIR:-$HOME/.himmel/arm-resume}" log_file q_log_file
+    log_file="$log_dir/$TASK_NAME.log"
+    q_log_file=$(printf '%q' "$log_file"); q_log_file=${q_log_file//%/\\%}
+    local headless_tail="$tail < /dev/null >> $q_log_file 2>&1"
+    # launch_body is what used to sit directly on the crontab line after
+    # self-clean; it now lands in a runner file (headless launch) or a
+    # .command file (macOS headed launch) instead -- see the function header.
+    local launch_body="cd $q_cwd && ${q_safety_child}$headless_tail"
+    local headed_launch_body="cd $q_cwd && ${q_safety_child}$tail"
+
+    # Runner dir (fold of Goomal's fix/arm-resume-macos-cron): ARM_RUNNER_DIR
+    # is the test seam; default is a real per-operator dir under $HOME,
+    # mirroring ~/.claude/handover's other state.
+    local runner_dir runner_path
+    runner_dir="${ARM_RUNNER_DIR:-$HOME/.claude/handover/arm-runners}"
+    runner_path="$runner_dir/$TASK_NAME.sh"
+
+    # Headed launch on macOS (fold of Goomal's fix/arm-resume-macos-cron):
+    # cron gives no TTY, so even a complete, resolvable launch starts claude
+    # headless and invisible -- parity with the Windows branch, where schtasks
+    # opens a console window. Resolved HERE, at arm time, so a bad
+    # ARM_TERMINAL_APP or a missing app is caught before the entry is even
+    # installed. ARM_TERMINAL_APP=none opts out to the headless inline launch,
+    # the shape the Linux crontab fallback always uses (no TTY story to fix
+    # there; `at` owns Linux's normal one-shot path and is unaffected).
+    local term_app="" command_path="" q_commandfile=""
+    if [ "$PLATFORM" = macos ] && [ "${ARM_TERMINAL_APP:-}" != "none" ]; then
+        if [ -n "${ARM_TERMINAL_APP:-}" ]; then
+            term_app="$ARM_TERMINAL_APP"
+        else
+            case "${TERM_PROGRAM:-}" in
+                iTerm.app)      term_app="iTerm" ;;
+                Apple_Terminal) term_app="Terminal" ;;
+                *)              term_app="Terminal" ;;
+            esac
+        fi
+        # Existence probe: a PLAIN filesystem test, not `open -Ra` -- `-R`
+        # REVEALS the app in Finder as a side effect (opens a real Finder
+        # window) on every arm and every test run exercising this branch,
+        # which is not an acceptable probe. Fail open to Terminal.app
+        # (present on every Mac) rather than refuse the whole arm over a bad
+        # app name.
+        local _app_dirs="${ARM_APP_DIRS:-/Applications:/Applications/Utilities:/System/Applications:/System/Applications/Utilities:$HOME/Applications}"
+        local _app_found=0 _app_dir _IFS_SAVE="$IFS"
+        IFS=:
+        for _app_dir in $_app_dirs; do
+            [ -n "$_app_dir" ] || continue
+            [ -d "$_app_dir/$term_app.app" ] && { _app_found=1; break; }
+        done
+        IFS="$_IFS_SAVE"
+        if [ "$_app_found" -ne 1 ]; then
+            echo "WARN arm-resume: terminal app '$term_app' not found under ARM_APP_DIRS; falling back to Terminal" >&2
+            term_app="Terminal"
+        fi
+        command_path="$runner_dir/$TASK_NAME.command"
+        q_commandfile=$(printf '%q' "$command_path")
+    fi
+
+    local runner_body command_body=""
+    if [ -n "$term_app" ]; then
+        local q_term
+        q_term=$(printf '%q' "$term_app")
+        runner_body="#!/bin/sh
+# generated by arm-resume.sh -- crontab runner for $TASK_NAME
+# Headed launch: cron has no TTY, so this opens a real terminal window.
+# Needs the user logged into the GUI and the Mac awake at fire time -- cron
+# skips minutes missed during sleep. ARM_TERMINAL_APP=none opts out.
+PATH=$q_path; export PATH
+$self_clean
+if ! open -a $q_term $q_commandfile; then
+    echo ERR arm-resume: open -a $q_term $q_commandfile failed >&2
+    exit 1
+fi"
+        command_body="#!/bin/sh
+# generated by arm-resume.sh -- headed launch body for $TASK_NAME
+PATH=$q_path; export PATH
+$headed_launch_body"
+    else
+        runner_body="#!/bin/sh
+# generated by arm-resume.sh -- crontab runner for $TASK_NAME
+PATH=$q_path; export PATH
+$self_clean
+$launch_body"
+    fi
+
+    # The crontab LINE itself now carries only a FIXED-SHAPE `/bin/sh
+    # <runner> # <TASK_NAME>` command, always far under macOS/Vixie cron's
+    # ~1000-byte MAX_COMMAND regardless of how long the handover
+    # path/prompt/cwd get (see the function header) -- those live in the
+    # runner file, which cron never parses. q_runner is the ONE value still
+    # on the crontab line, so it's the one value that still needs the
+    # \%-escape: crontab (unlike /bin/sh) reads a bare % as end-of-command +
+    # stdin even inside %q quoting. TASK_NAME itself is sanitized to
+    # [:alnum:]_- (no %), so only a %-bearing ARM_RUNNER_DIR/$HOME could ever
+    # trigger this.
+    local q_runner
+    q_runner=$(printf '%q' "$runner_path")
+    q_runner=${q_runner//%/\\%}
+    local entry="$mm $hh * * * /bin/sh $q_runner # $TASK_NAME"
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "DRY arm-resume: would add crontab entry:"
         echo "    $entry"
+        echo "DRY arm-resume: runner ($runner_path):"
+        printf '%s\n' "$runner_body" | sed 's/^/    /'
+        if [ -n "$command_body" ]; then
+            echo "DRY arm-resume: command file ($command_path):"
+            printf '%s\n' "$command_body" | sed 's/^/    /'
+        fi
         echo "DRY arm-resume: NOTE: entry self-removes on first fire (one-shot)."
+        if [ -n "$term_app" ]; then
+            echo "DRY arm-resume: NOTE: headed launch via 'open -a $term_app' -- needs the operator logged into the GUI with the Mac awake at fire time (cron skips minutes missed during sleep); output goes to the Terminal window, NOT $log_file (the per-arm log is written on the headless path only)."
+        else
+            echo "DRY arm-resume: NOTE: cron gives the job no TTY -- the entry runs headless (stdin </dev/null, output appended to $log_file)."
+        fi
         return 0
     fi
-    local snap
-    snap=$(mktemp -t crontab.snap.XXXXXX)
-    if ! crontab -l > "$snap" 2>/dev/null; then
-        : > "$snap"
+
+    mkdir -p "$runner_dir" || {
+        echo "ERR arm-resume: failed to create runner dir $runner_dir" >&2
+        exit 4
+    }
+    chmod 700 "$runner_dir" 2>/dev/null || true
+    # HIMMEL-3074 CR round 3: a fired runner/.command file never removes
+    # itself (only its crontab entry does), and neither does a stale one left
+    # by a mode change -- both carry the resume prompt and handover path.
+    # Re-arming the SAME task overwrites its own files, so this only prunes
+    # files OTHER arms left behind; age-gated so a just-armed, not-yet-fired
+    # file is never at risk. Portable `find` (no GNU-only -maxdepth); the
+    # per-path loop skips names that don't exist rather than letting a
+    # no-match glob reach `find` literally.
+    local _stale_path
+    for _stale_path in "$runner_dir"/HIMMEL-Resume-*.sh "$runner_dir"/HIMMEL-Resume-*.command; do
+        [ -f "$_stale_path" ] || continue
+        find "$_stale_path" -type f -mtime +7 -exec rm -f {} \; 2>/dev/null || true
+    done
+    printf '%s\n' "$runner_body" > "$runner_path" || {
+        echo "ERR arm-resume: failed to write runner $runner_path" >&2
+        exit 4
+    }
+    chmod 700 "$runner_path"
+    if [ -n "$command_body" ]; then
+        printf '%s\n' "$command_body" > "$command_path" || {
+            echo "ERR arm-resume: failed to write command file $command_path" >&2
+            exit 4
+        }
+        chmod 700 "$command_path"
     fi
+    # The log FILE must be appendable BEFORE the entry is installed: a `>>`
+    # into a missing directory, or onto a file that cannot be opened for
+    # append, fails the runner's own /bin/sh at fire time, after self_clean
+    # has already removed the entry -- the exact silent no-op this ticket
+    # removes. Probe the file itself (`: >>` creates it empty, touches
+    # nothing else), not just the directory (CR round 1 on #780). Fail loud
+    # here instead.
+    if ! { mkdir -p "$log_dir" && : >> "$log_file"; }; then
+        echo "ERR arm-resume: cannot create or append the arm log $log_file (the fired entry would have nowhere to write)" >&2
+        exit 4
+    fi
+    # CR round 2 on #780: a read failure other than the trusted "no crontab
+    # yet" signature must NOT be treated as an empty crontab -- doing so would
+    # rewrite over (delete) every unrelated cron job. Same fail-closed
+    # classifier as uninstall.sh:1056 / pipeline-cadence.sh's cron_read: only
+    # rc=1 with empty stderr or a "no crontab" message is trusted-empty;
+    # anything else aborts before the rewrite.
+    local snap cron_err cron_rc
+    snap=$(mktemp -t crontab.snap.XXXXXX)
+    cron_err=$(mktemp -t crontab.err.XXXXXX)
+    set +e
+    LC_ALL=C crontab -l > "$snap" 2>"$cron_err"
+    cron_rc=$?
+    set -e
+    if [ "$cron_rc" -ne 0 ]; then
+        if [ "$cron_rc" -eq 1 ] && { [ ! -s "$cron_err" ] || grep -qi 'no crontab' "$cron_err"; }; then
+            : > "$snap"
+        else
+            echo "ERR arm-resume: crontab -l failed (rc=$cron_rc) -- refusing to treat as empty crontab, aborting before rewrite:" >&2
+            cat "$cron_err" >&2
+            rm -f "$snap" "$cron_err"
+            exit 4
+        fi
+    fi
+    rm -f "$cron_err"
     {
         cat "$snap"
         echo "$entry"
@@ -4489,6 +4921,11 @@ _crontab_schedule() {
     }
     rm -f "$snap"
     echo "arm-resume: NOTE: crontab entry self-removes on first fire (one-shot)."
+    if [ -n "$term_app" ]; then
+        echo "arm-resume: NOTE: headed launch via 'open -a $term_app' -- needs the operator logged into the GUI with the Mac awake at fire time (cron skips minutes missed during sleep); output goes to the Terminal window, NOT the log file (the per-arm log is written on the headless path only)."
+    else
+        echo "arm-resume: NOTE: cron gives the job no TTY -- it runs headless; output: $log_file"
+    fi
     echo "    If it never fires, prune manually with:"
     echo "    crontab -l | grep -v 'HIMMEL-Resume' | crontab -"
 }
@@ -4826,7 +5263,15 @@ schedule_arm() {
                 # by the time this runs.
                 q_autocompact=" --autocompact $(_bash_single_quote "$AUTOCOMPACT")"
                 local q_automerge=""
-                [ "$AUTOMERGE" -eq 1 ] && q_automerge="ARMAUTOMERGE=1 CR_MERGE_GATE_OK=1 "
+                if [ "$AUTOMERGE" -eq 1 ]; then
+                    # HIMMEL-3118 item 4: CR_MERGE_GATE_OK=1 is granted only
+                    # alongside an explicit --automerge, never the dotenv default.
+                    if [ "$AUTOMERGE_GRANTS_MERGE_GATE" -eq 1 ]; then
+                        q_automerge="ARMAUTOMERGE=1 CR_MERGE_GATE_OK=1 "
+                    else
+                        q_automerge="ARMAUTOMERGE=1 "
+                    fi
+                fi
                 # HIMMEL-1382 fix round: unset both vars first (defense against
                 # ambient carryover), THEN conditionally re-grant via the
                 # per-command prefix — same always-clear contract as the
@@ -5055,7 +5500,11 @@ schedule_arm() {
                     printf 'set "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1"\r\n'
                     if [ "$AUTOMERGE" -eq 1 ]; then
                         printf 'set "ARMAUTOMERGE=1"\r\n'
-                        printf 'set "CR_MERGE_GATE_OK=1"\r\n'
+                        # HIMMEL-3118 item 4: CR_MERGE_GATE_OK=1 is granted only
+                        # alongside an explicit --automerge, never the dotenv default.
+                        if [ "$AUTOMERGE_GRANTS_MERGE_GATE" -eq 1 ]; then
+                            printf 'set "CR_MERGE_GATE_OK=1"\r\n'
+                        fi
                     fi
                     # HIMMEL-812: the auto-arm stale escalation's own child.
                     # auto-arm-on-cap.sh reads this out of the relaunched
@@ -5377,7 +5826,15 @@ schedule_arm() {
                 # `\$(date)` is escaped so it lands LITERALLY in the job
                 # body and evaluates at FIRE time, not arm time.
                 local q_automerge=""
-                [ "$AUTOMERGE" -eq 1 ] && q_automerge="ARMAUTOMERGE=1 CR_MERGE_GATE_OK=1 "
+                if [ "$AUTOMERGE" -eq 1 ]; then
+                    # HIMMEL-3118 item 4: CR_MERGE_GATE_OK=1 is granted only
+                    # alongside an explicit --automerge, never the dotenv default.
+                    if [ "$AUTOMERGE_GRANTS_MERGE_GATE" -eq 1 ]; then
+                        q_automerge="ARMAUTOMERGE=1 CR_MERGE_GATE_OK=1 "
+                    else
+                        q_automerge="ARMAUTOMERGE=1 "
+                    fi
+                fi
                 # HIMMEL-1382 fix round: `at` snapshots the submitting shell's
                 # ambient env, so an automerge-armed session's `at -t` job
                 # would otherwise silently RETAIN CR_MERGE_GATE_OK/ARMAUTOMERGE
@@ -5407,8 +5864,13 @@ schedule_arm() {
                 # carried the ARMING session's stale id, misleading anyone inspecting
                 # /proc/<claude pid>/environ, exactly the surface this ticket taught
                 # people to check.
+                # HIMMEL_ARMED_RELAUNCH=1 (ported from Goomal's
+                # arm-resume-macos-cron fix): always-set grant, same
+                # shape/rationale as the crontab runner's twin above -- lets
+                # the resumed session self-exit with SIGTERM once a
+                # successor is armed (see overnight-mode.md).
                 local launch_lines="unset ARMAUTOMERGE CR_MERGE_GATE_OK ARM_RESUME_SAFETY_ARM CLAUDE_CODE_CHILD_SESSION CLAUDE_PID CLAUDE_CODE_SESSION_ID
-export CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1
+export CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 HIMMEL_ARMED_RELAUNCH=1
 ${q_automerge}claude ${q_name}$q_prompt $q_channels$q_model$q_autocompact"
                 if [ "$HEADROOM_PROXY_ACTIVE" -eq 1 ]; then
                     local q_hb q_log q_curl
@@ -5416,7 +5878,7 @@ ${q_automerge}claude ${q_name}$q_prompt $q_channels$q_model$q_autocompact"
                     q_log=$(printf '%q' "$HOME/.headroom-proxy.log")
                     q_curl=$(printf '%q' "$HEADROOM_CURL")
                     launch_lines="unset ARMAUTOMERGE CR_MERGE_GATE_OK ARM_RESUME_SAFETY_ARM CLAUDE_CODE_CHILD_SESSION CLAUDE_PID CLAUDE_CODE_SESSION_ID
-export CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1
+export CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 HIMMEL_ARMED_RELAUNCH=1
 $q_curl -s -m 5 http://127.0.0.1:$HEADROOM_PROXY_PORT/livez >/dev/null 2>&1 || { $q_hb proxy --port $HEADROOM_PROXY_PORT >> $q_log 2>&1 & sleep 3; }
 if $q_curl -s -m 5 http://127.0.0.1:$HEADROOM_PROXY_PORT/livez >/dev/null 2>&1; then
     echo \"\$(date) arm=$TASK_NAME mode=proxied\" >> $q_log

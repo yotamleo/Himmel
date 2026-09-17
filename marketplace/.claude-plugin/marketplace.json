@@ -92,6 +92,22 @@
       ]
     },
     {
+      "name": "lean-skills",
+      "source": "./plugins/lean-skills",
+      "description": "[himmel vendor, no carried delta] The subset of upstream skills himmel actually invokes, copied verbatim so a session lists 13 skills instead of the 25 that superpowers@claude-plugins-official and mattpocock-skills@claude-plugins-official bring between them. Carries 11 of superpowers' 14 (the four himmel uses plus the seven they hand off to - the `superpowers:<name>` reference closure) and grilling from mattpocock/skills; drops using-superpowers, whose SessionStart injection is most of the reclaimed context. Also hosts himmel's own context7-mcp skill, moved out of ~/.claude/skills because plugin membership is the only lever that scopes a skill to a profile. Upstream advance is detected at the release level by the superpowers-skills and mattpocock-skills rows in scripts/upstreams.json; repair is a reviewed re-vendor, never a synced_base bump. See marketplace/plugins/lean-skills/VENDORED.md.",
+      "author": {
+        "name": "Jesse Vincent / Matt Pocock (upstream) / yotamleo (vendor)"
+      },
+      "license": "MIT",
+      "keywords": [
+        "himmel",
+        "lean",
+        "vendored",
+        "skills",
+        "context-floor"
+      ]
+    },
+    {
       "name": "claude-obsidian",
       "source": {
         "source": "url",
@@ -111,9 +127,9 @@
       "source": {
         "source": "url",
         "url": "https://github.com/plannotator/effective-html.git",
-        "sha": "d95debbaef15af1d201fc6c10c77cf92b524a0d6"
+        "sha": "2ac1dfecb0f2474e75260cb6d3c9b9d6d9b5062e"
       },
-      "description": "[plannotator, vendor + attribution only, no carried delta] Effective HTML annotation/plugin tooling. Sourced via an explicit HTTPS git url (NOT the `github` shorthand, which clones over SSH and fails host-key verification on a fresh machine with no github.com in ~/.ssh/known_hosts — HIMMEL-2837, same class as HIMMEL-549). Pinned to an upstream commit SHA per himmel supply-chain policy. Upstream companion PR open: https://github.com/plannotator/effective-html/pull/26 (switches their own marketplace.json to the same explicit-url source).",
+      "description": "[plannotator, vendor + attribution only, no carried delta] Effective HTML annotation/plugin tooling. Sourced via an explicit HTTPS git url (NOT the `github` shorthand, which clones over SSH and fails host-key verification on a fresh machine with no github.com in ~/.ssh/known_hosts — HIMMEL-2837, same class as HIMMEL-549). Pinned to an upstream commit SHA per himmel supply-chain policy. Upstream companion PR merged: https://github.com/plannotator/effective-html/pull/26 (their own marketplace.json now uses the same explicit-url source; pin includes it, HIMMEL-3046).",
       "author": {
         "name": "plannotator",
         "url": "https://github.com/plannotator"

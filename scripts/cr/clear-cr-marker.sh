@@ -64,7 +64,11 @@
 #
 # Usage: clear-cr-marker.sh [<branch>] [--dry-run]
 #   branch     optional; defaults to the current branch
-#   --dry-run  run every gate, report the verdict, then STOP (never clears)
+#   --dry-run  run every gate that can be checked without writing, report the
+#              verdict, then STOP (never clears). Skips the HIMMEL-3027
+#              branch-wide still-open check specifically: that check's own
+#              underlying command amends the shared ledger as a side effect
+#              of checking, which --dry-run must never do (see gate 4c).
 #
 # Exit codes:
 #   0   marker cleared (or --dry-run passed, or no marker — nothing to do)
@@ -81,6 +85,11 @@
 #       be reminted before lane selection.
 #       Also (4b, HIMMEL-2067): a finding at that SHA has no recorded verdict
 #       (agree/disprove/defer it, then re-run).
+#       Also (4c, HIMMEL-3027): review-round.sh promote found a still-open
+#       (unadjudicated or un-re-raised) finding at an EARLIER round head on
+#       this branch — adjudicate it, then re-run. A promote exit other than
+#       0/3 (malformed ledger, bad head, missing ledger) also refuses here,
+#       fail-closed, as reason=promote-error.
 #   15  blocking finding(s) recorded at that SHA — address them, re-run /pr-check
 #   16  the marker is unbound (no endpoint/base recorded — pre-HIMMEL-1540
 #       format), the marker-bound endpoint head is unreadable/different, a PR
@@ -764,6 +773,64 @@ if [ "${unadjudicated_count:-0}" -gt 0 ]; then
     echo "    scripts/cr/ledger-append.sh amend --head ${tip_short:-$tip} --id <finding-id> --artifact <artifact-from-above> --perspective <perspective-from-above> --set verdict=deferred --set deferred_to=<TICKET> --reason \"<why>\"" >&2
     audit "REFUSED reason=unadjudicated-findings branch=$branch sha=$tip count=$unadjudicated_count"
     exit 14
+fi
+
+# 4c. Branch-wide still-open gate (HIMMEL-3027). Gate 4b above only sees the
+# TIP; a finding left unadjudicated (or un-re-raised after an `agreed`) at an
+# EARLIER round head on this branch is still unresolved CR business. Run the
+# SAME check the console runs before promote/merge so the two verdicts can
+# never drift apart (HIMMEL-2917, HIMMEL-2780).
+#
+# `review-round.sh promote` itself WRITES: any `agreed`-disposed row it finds
+# is amended to verdict=fixed as part of computing still-open (coderabbitai,
+# PR #743) — fine on a real run (a real run's whole job is to converge the
+# ledger, and the console's own pre-merge check makes this exact call), but
+# `--dry-run`'s contract is "run every gate, report the verdict, never write".
+# `review-round.sh` has no check-only mode to ask for instead (out of scope
+# to add one — HIMMEL-3027 touches only this file and its test), and the
+# ledger it amends is a single shared file other branches/legs append to
+# concurrently, so a snapshot-and-restore around the call would risk
+# clobbering a concurrent writer's row. Skip the mutating call under
+# --dry-run instead: the branch-wide verdict is simply not previewed, same as
+# any other real-run-only side effect a dry run intentionally does not take.
+if [ "$DRY_RUN" -eq 1 ]; then
+    echo "clear-cr-marker: [dry-run] skipping the branch-wide still-open check — scripts/cr/review-round.sh promote amends the shared ledger as a side effect of checking, and --dry-run must never write. Run without --dry-run, or run 'scripts/cr/review-round.sh promote --branch $branch --head $tip' directly, for the branch-wide verdict." >&2
+else
+    _promote_out="$(mktemp 2>/dev/null || true)"
+    if [ -n "$_promote_out" ]; then
+        bash "$SCRIPT_DIR/review-round.sh" promote --branch "$branch" --head "$tip" >"$_promote_out" 2>&1
+        _promote_rc=$?
+    else
+        _promote_rc=1
+    fi
+    if [ "$_promote_rc" -eq 3 ]; then
+        echo "clear-cr-marker: review-round.sh promote found still-open finding(s) at an earlier round head on $branch — refusing. Every round's ledger rows must carry a decision before the branch can clear, not just the tip's." >&2
+        _stillopen_count=0
+        if [ -n "$_promote_out" ] && [ -f "$_promote_out" ]; then
+            while IFS= read -r _pline; do
+                case "$_pline" in
+                    "still-open "*)
+                        echo "  $_pline" >&2
+                        _stillopen_count=$((_stillopen_count + 1))
+                        ;;
+                esac
+            done < "$_promote_out"
+        fi
+        echo "  Record a decision for each row above at its OWN head with the amend verb:" >&2
+        echo "    scripts/cr/ledger-append.sh amend --head <head-from-above> --id <finding-id> --artifact <artifact> --perspective <perspective> --set verdict=<agreed-or-disproved> --reason \"<one line>\"" >&2
+        rm -f "$_promote_out"
+        audit "REFUSED reason=unadjudicated-earlier-round branch=$branch sha=$tip count=$_stillopen_count"
+        exit 14
+    elif [ "$_promote_rc" -ne 0 ]; then
+        echo "clear-cr-marker: review-round.sh promote exited $_promote_rc (malformed ledger, bad head, or missing ledger) for $branch@${tip_short:-$tip} — refusing closed rather than clearing on a broken ledger." >&2
+        if [ -n "$_promote_out" ] && [ -f "$_promote_out" ]; then
+            cat "$_promote_out" >&2
+        fi
+        rm -f "$_promote_out"
+        audit "REFUSED reason=promote-error branch=$branch sha=$tip code=$_promote_rc"
+        exit 14
+    fi
+    rm -f "$_promote_out"
 fi
 
 # 5. Post-PR / pre-merge gate — when a PR already exists, the review threads and

@@ -303,7 +303,7 @@ if [ -f "$REAL_ROOT/scripts/upstreams.json" ]; then
   if [ "$rc" -eq 0 ]; then pass "graphify resolves against the live registry (dry-run)"; else fail "graphify dry-run — expected rc=0 got $rc: $out"; fi
   assert_contains "$out" "scripts/lib/graphify-bin.sh" "graphify version_pin points at the real resolver"
   out=$(DRIFT_REPO_ROOT="$REAL_ROOT" bash "$BUMP" qmd 99.99.99 --dry-run 2>&1); rc=$?
-  if [ "$rc" -eq 3 ]; then pass "qmd is SKIP (fork SHA pin, not auto-bumpable)"; else fail "qmd — expected rc=3 (SKIP) got $rc: $out"; fi
+  if [ "$rc" -eq 3 ]; then pass "qmd is SKIP (SHA pin, no version_pin, not auto-bumpable)"; else fail "qmd — expected rc=3 (SKIP) got $rc: $out"; fi
 else
   echo "  skip — live registry not found at $REAL_ROOT/scripts/upstreams.json"
 fi

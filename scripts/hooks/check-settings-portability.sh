@@ -79,15 +79,15 @@ selftest() {
         exit 1
     fi
 }
-selftest "$ABS_PATTERN" '      "command": "C:/Users/somebody/.local/bin/tool run",' ABS_PATTERN
-selftest "$ABS_PATTERN" '      "command": "/home/somebody/bin/tool run",' ABS_PATTERN
+selftest "$ABS_PATTERN" '      "command": "C:/Users/somebody/.local/bin/tool run",' ABS_PATTERN  # leak-allow: home-path fixture username, not a real path
+selftest "$ABS_PATTERN" '      "command": "/home/somebody/bin/tool run",' ABS_PATTERN  # leak-allow: home-path fixture username, not a real path
 # The backslash member of `[/\]` specifically — a regex flavour that read that
 # bracket as an escaped `]` would silently stop matching Windows-style paths
 # while the forward-slash probe above kept passing.
-selftest "$ABS_PATTERN" '      "command": "C:\\Users\\somebody\\bin\\tool run",' ABS_PATTERN
+selftest "$ABS_PATTERN" '      "command": "C:\\Users\\somebody\\bin\\tool run",' ABS_PATTERN  # leak-allow: home-path fixture username, not a real path
 # A home directory on another drive leaks a username exactly as hard, and
 # /root is the same class on Linux — both were missed by a C:-only pattern.
-selftest "$ABS_PATTERN" '      "command": "D:/Users/somebody/bin/tool run",' ABS_PATTERN
+selftest "$ABS_PATTERN" '      "command": "D:/Users/somebody/bin/tool run",' ABS_PATTERN  # leak-allow: home-path fixture username, not a real path
 selftest "$ABS_PATTERN" '      "command": "/root/bin/tool run",' ABS_PATTERN
 selftest "$EXE_PATTERN" '      "command": "tool.EXE hook-check"' EXE_PATTERN
 # A `.exe` reached only by crossing a JSON-escaped quote — the shape `[^"]*`

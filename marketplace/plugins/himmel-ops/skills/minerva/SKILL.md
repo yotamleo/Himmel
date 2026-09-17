@@ -16,7 +16,7 @@ stage — you decide when each critic runs and when to advance.
 **One front door (HIMMEL-2039).** grill / stress-test / interrogate / brainstorm
 / "build / design / implement X" / `/minerva` all land here. The grilling
 stance is minerva's Stage 1a, not a second skill: if
-`mattpocock-skills:grilling` fires, run Stage 1a below and continue the
+`lean-skills:grilling` fires, run Stage 1a below and continue the
 pipeline rather than stopping at a shared understanding.
 
 ## Mode (gates)
@@ -90,7 +90,7 @@ assumptions).
 
 ### 1b. Brainstorm → spec
 
-Invoke `superpowers:brainstorming` for the design and the written spec, carrying
+Invoke `lean-skills:brainstorming` for the design and the written spec, carrying
 the Stage-1a outcome in as settled context — do not re-ask what the grill
 settled.
 
@@ -147,7 +147,7 @@ if `autonomous`, proceed.
 
 ## Stage 3 — plan
 
-Invoke `superpowers:writing-plans` on the approved spec to produce the
+Invoke `lean-skills:writing-plans` on the approved spec to produce the
 implementation plan.
 
 ## Stage 4 — plan critic (adversarial)
@@ -194,13 +194,13 @@ bash "$S/legs.sh" 2>/dev/null || true
 ```
 
 - If mode is `autonomous` (Stage 0) **AND** the output contains `execute`: do NOT
-  stop — **invoke `superpowers:subagent-driven-development`** on the hardened plan
+  stop — **invoke `lean-skills:subagent-driven-development`** on the hardened plan
   to implement it task-by-task. This is the execute-seam auto-handoff that makes
   the loop continuous. (You remain the parent: own synthesis across the subagents.)
 - Otherwise (interactive mode, or `execute` not active): minerva STOPS here — it
   does not start implementation. Offer the hand-off:
 
-  > Plan ready. Execute with `superpowers:subagent-driven-development`
-  > (recommended) or `superpowers:executing-plans`?
+  > Plan ready. Execute with `lean-skills:subagent-driven-development`
+  > (recommended) or `lean-skills:executing-plans`?
 
 Interactive mode never auto-executes (a human is present to choose).

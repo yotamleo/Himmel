@@ -54,6 +54,17 @@ a CLI flag) over a cleverer command.
   → it stashes every unstaged file repo-wide and lints the STAGED index;
   `--all-files` does NOT stash. `git add` the fix again before re-running.
   (HIMMEL-2739)
+- **An outward-facing command (`gh pr create` / `gh pr comment` / `git push`)
+  is denied with `Stage 2 classifier error`** → do not retry verbatim
+  back-to-back; end the turn or do one unrelated read, then retry ONCE,
+  delayed, with the same head: `gh pr create`/`gh pr comment` via
+  `--body-file` instead of inline; `git push` has no body flag, so retry the
+  exact same command once — the delay and intervening read are themselves
+  what make it non-identical, not a contrived alternate spelling. Any denial
+  after that one retry → stop, `BLOCKED` to the console with the exact text;
+  the console never runs it (laundering). **`[Out-of-Place Publication]` gets
+  no retry at all**, first time seen or not — escalate immediately the same
+  way. (HIMMEL-3020)
 
 Why these are a load-on-trigger playbook and not CLAUDE.md rules:
 `docs/internals/stuck-playbook.md` § Why this is a playbook, and memory

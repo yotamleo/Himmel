@@ -54,12 +54,16 @@ silent empty index).
 
 ## Upstream watch
 
-The standalone `qmd` CLI now installs from himmel's own fork
-(`yotamleo/qmd`, pinned to an immutable commit SHA rather than a mutable
-branch — HIMMEL-911 — cloned + built with bun, then junctioned/symlinked
-onto the bun-global `@tobilu/qmd` path — `scripts/lib/qmd-bin.sh`,
-HIMMEL-877), not `bun add -g @tobilu/qmd` upstream (that command EPERM-wedges
-on this project's machines and bun blocks its postinstall script). This
+The standalone `qmd` CLI installs from a local clone of upstream `tobi/qmd`
+(pinned to an immutable commit SHA rather than a mutable branch — HIMMEL-911
+— cloned + built with bun, then junctioned/symlinked onto the bun-global
+`@tobilu/qmd` path — `scripts/lib/qmd-bin.sh`, HIMMEL-877), not
+`bun add -g @tobilu/qmd` (that command EPERM-wedges on this project's
+machines and bun blocks its postinstall script). Until HIMMEL-3045 that clone
+tracked a himmel-owned fork (`yotamleo/qmd`) carrying two local fixes; upstream
+merged both under its own SHAs, so the fork was dropped and the clone now
+points at `tobi/qmd` directly (the fork's history stays on `yotamleo/qmd` as
+archive tags). This
 plugin's **manifest + skill** stay pinned separately and are low-churn.
 Re-sync `skills/qmd/` from `tobi/qmd` if the upstream search skill changes
-materially; re-sync the CLI fork per `docs/setup/new-machine.md`.
+materially; re-sync the CLI clone per `docs/setup/new-machine.md`.

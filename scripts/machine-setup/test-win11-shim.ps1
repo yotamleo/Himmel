@@ -57,7 +57,8 @@ $expectedWingetIds = @(
     'jqlang.jq',
     'koalaman.shellcheck',
     'Gitleaks.Gitleaks',
-    'CoreyButler.NVMforWindows'
+    'CoreyButler.NVMforWindows',
+    'Oven-sh.Bun'
 )
 
 $idMatches = [regex]::Matches($source, 'winget install --id (\S+)')

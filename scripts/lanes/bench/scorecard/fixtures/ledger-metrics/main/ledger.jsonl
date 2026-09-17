@@ -1,0 +1,10 @@
+{"kind":"finding","ts":"2026-08-02T01:00:00Z","branch":"feat/alpha","head":"abc111","model":"sonnet","finding_id":"f1","severity":"crit","file":"x.sh","line":1,"verdict":"CONFIRMED","artifact":"diff","perspective":"correctness"}
+{"kind":"finding","ts":"2026-08-02T01:05:00Z","branch":"feat/alpha","head":"abc111","model":"sonnet","finding_id":"f1b","severity":"crit","file":"x.sh","line":2,"verdict":"CONFIRMED","artifact":"code","perspective":"correctness"}
+{"kind":"finding","ts":"2026-08-02T02:00:00Z","branch":"feat/alpha","head":"def222","model":"sonnet","finding_id":"f2","severity":"imp","file":"y.sh","line":5,"verdict":"CONFIRMED","artifact":"diff","perspective":"style"}
+{"kind":"amend","ts":"2026-08-02T03:00:00Z","branch":"feat/alpha","head":"ghi333","model":"sonnet","note":"ignored"}
+{"kind":"finding","ts":"2026-08-03T13:00:00Z","branch":"fix/beta","head":"h1","model":"opus","finding_id":"b1","severity":"crit","file":"a.sh","line":1,"verdict":"CONFIRMED","artifact":"diff","perspective":"correctness"}
+{"kind":"finding","ts":"2026-08-03T13:05:00Z","branch":"fix/beta","head":"h1","model":"opus","finding_id":"b2","severity":"crit","file":"a.sh","line":9,"verdict":"CONFIRMED","artifact":"diff","perspective":"correctness"}
+{"kind":"finding","ts":"2026-08-03T14:00:00Z","branch":"fix/beta","head":"h2","model":"opus","finding_id":"b3","severity":"imp","file":"b.sh","line":2,"verdict":"CONFIRMED","artifact":"diff","perspective":"style"}
+{"kind":"finding","ts":"2026-08-03T15:00:00Z","branch":"fix/beta","head":"h3","model":"opus","finding_id":"b4","severity":"sug","file":"c.sh","line":3,"verdict":"CONFIRMED","artifact":"diff","perspective":"simplification"}
+{"kind":"attempt","ts":"2026-08-03T16:00:00Z","branch":"fix/beta","head":"h4","model":"opus","status":"clean","hour_utc":16,"artifact":"diff","perspective":"correctness"}
+{"kind":"finding","ts":"2026-08-02T05:00:00Z","branch":"orphan/branch","head":"z1","model":"sonnet","finding_id":"o1","severity":"crit","file":"z.sh","line":1,"verdict":"CONFIRMED","artifact":"diff","perspective":"correctness"}

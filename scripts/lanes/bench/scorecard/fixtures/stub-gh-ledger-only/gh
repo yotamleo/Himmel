@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Deterministic gh stub for test-ledger-metrics.sh's artifact-default check
+# (HIMMEL-2981): one merged PR for the one branch in that fixture's ledger.
+set -u
+case "$*" in
+    "pr list "*)
+        cat <<'JSON'
+[{"number":201,"title":"only","mergedAt":"2026-08-02T00:00:00Z","headRefName":"only/branch"}]
+JSON
+        exit 0 ;;
+    *) echo "gh: stub does not implement: $*" >&2; exit 1 ;;
+esac

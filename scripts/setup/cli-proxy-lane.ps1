@@ -14,7 +14,9 @@
   Lifecycle: -Stop / -Restart bounce the running instance (HIMMEL-1451). They
   refuse while a client is actively connected (a bounce kills an in-flight
   codex-lane render) unless -Force is given. -Restart relaunches windowless and
-  verifies /v1/models answers before exiting 0.
+  verifies /v1/models answers before exiting 0. -Restart and the no-switch
+  status report WARN and name -Roll when the running binary is behind the
+  pinned version (HIMMEL-3051) instead of reporting a clean "back up".
 
 .PARAMETER Install   Download the CLIProxyAPI binary + write config.yaml if missing.
 .PARAMETER Login     One-time codex OAuth via device-code flow (no local browser needed).
@@ -22,7 +24,9 @@
 .PARAMETER Register  Register a logon scheduled task so the proxy restarts at each sign-in.
 .PARAMETER Stop      Stop the running proxy (idempotent: no error if not running).
 .PARAMETER Restart   Stop then relaunch the proxy windowless; verify /v1/models answers.
-.PARAMETER Force     Override the claudex-live guard on -Stop / -Restart.
+.PARAMETER Roll      Stop -> install -> restart -> verify the pin, in one guarded step
+                     (HIMMEL-3051). A no-op when already at the pinned version.
+.PARAMETER Force     Override the claudex-live guard on -Stop / -Restart / -Roll.
 .PARAMETER Verify    Curl the running proxy.
 
 .EXAMPLE
@@ -38,8 +42,10 @@
 
 .EXAMPLE
   # roll a pinned-binary bump over a RUNNING proxy (HIMMEL-1451): either three
-  # separate calls (-Stop; -Install; -Start) or the single combined form
+  # separate calls (-Stop; -Install; -Start), the combined form
   .\cli-proxy-lane.ps1 -Install -Restart
+  # or the single guarded subcommand that also verifies the pin (HIMMEL-3051)
+  .\cli-proxy-lane.ps1 -Roll
 #>
 [CmdletBinding()]
 param(
@@ -49,6 +55,7 @@ param(
     [switch]$Register,
     [switch]$Stop,
     [switch]$Restart,
+    [switch]$Roll,
     [switch]$Force,
     [switch]$Verify,
     [Parameter(DontShow = $true)]
@@ -57,14 +64,15 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$Dir     = Join-Path $HOME '.cli-proxy-api'
-$Exe     = Join-Path $Dir 'cli-proxy-api.exe'
-$Cfg     = Join-Path $Dir 'config.yaml'
-$Vbs     = Join-Path $Dir 'start-hidden.vbs'   # GUI-subsystem launcher the logon task runs (HIMMEL-1822)
-$ApiKey  = 'himmel-local-claudex'   # local proxy token; must match config.yaml api-keys
-$Port    = 8317
-$Version = '7.2.158'
-$Release = "https://github.com/router-for-me/CLIProxyAPI/releases/download/v$Version/CLIProxyAPI_${Version}_windows_amd64.zip"
+$Dir        = Join-Path $HOME '.cli-proxy-api'
+$Exe        = Join-Path $Dir 'cli-proxy-api.exe'
+$Cfg        = Join-Path $Dir 'config.yaml'
+$Vbs        = Join-Path $Dir 'start-hidden.vbs'   # GUI-subsystem launcher the logon task runs (HIMMEL-1822)
+$ApiKey     = 'himmel-local-claudex'   # local proxy token; must match config.yaml api-keys
+$Port       = 8317
+$Version    = '7.3.3'
+$Release    = "https://github.com/router-for-me/CLIProxyAPI/releases/download/v$Version/CLIProxyAPI_${Version}_windows_amd64.zip"
+$VerStampPath = Join-Path $Dir 'cli-proxy-api.version'
 
 function Test-OAuth {
     (Test-Path $Dir) -and @(Get-ChildItem $Dir -Filter 'codex-*.json' -ErrorAction SilentlyContinue).Count -gt 0
@@ -87,6 +95,14 @@ function Assert-Exe {
 }
 function Assert-Config {
     if (-not (Test-Path $Cfg)) { throw "config missing at $Cfg - run with -Install first" }
+}
+
+# Get-InstalledProxyVersion: mirrors the bash .sh twin's installed_version --
+# $Exe and $VerStampPath are written together, atomically, by the same swap
+# (Invoke-ProxyBinarySwap), so the stamp faithfully reads whatever is
+# currently on disk (HIMMEL-3051).
+function Get-InstalledProxyVersion {
+    if (Test-Path $VerStampPath) { (Get-Content $VerStampPath -ErrorAction SilentlyContinue | Select-Object -First 1) } else { $null }
 }
 
 # --- lifecycle helpers (-Stop / -Restart, HIMMEL-1451) -----------------------
@@ -523,6 +539,20 @@ if ($AsLibrary) { return }
 
 $restartCompletedDuringInstall = $false
 
+if ($Roll) {
+    # Sugar over the existing, already-verifying -Install -Restart combo
+    # (HIMMEL-1468's deferred-stop atomic swap already stops -> installs ->
+    # restarts -> verifies healthy, with full rollback on failure) -- except
+    # a no-op is checked FIRST so an already-pinned host does not bounce the
+    # running proxy for nothing (HIMMEL-3051).
+    if ((Test-Path $Exe) -and ((Get-InstalledProxyVersion) -eq $Version)) {
+        Write-Host "cli-proxy-lane: already at pinned v${Version} -- -Roll is a no-op."
+    } else {
+        $Install = $true
+        $Restart = $true
+    }
+}
+
 if ($Install) {
     New-Item -ItemType Directory -Force $Dir | Out-Null
     if (-not (Test-Path $Cfg)) {
@@ -661,22 +691,34 @@ if ($Restart -and -not $restartCompletedDuringInstall) {
     if (-not (Wait-ProxyRunning)) {
         throw "proxy did not come up on 127.0.0.1:$Port within 20s (run -Verify, or -Start in the foreground to see the error)"
     }
-    Write-Host "proxy back up on 127.0.0.1:$Port."
+    $installedVerAfterRestart = Get-InstalledProxyVersion
+    if ($installedVerAfterRestart -ne $Version) {
+        Write-Warning "proxy relaunched, but the installed version stamp reads '$(if ($installedVerAfterRestart) { $installedVerAfterRestart } else { 'unknown' })', not the pinned v$Version -- -Install never completed on this host (it likely refused while the proxy was running). Run -Roll to converge."
+    } else {
+        Write-Host "proxy back up on 127.0.0.1:$Port."
+    }
 }
 
-if (-not ($Install -or $Login -or $Start -or $Register -or $Stop -or $Restart -or $Verify)) {
+if (-not ($Install -or $Login -or $Start -or $Register -or $Stop -or $Restart -or $Roll -or $Verify)) {
     Write-Host "== CLIProxyAPI codex lane (HOST-only; serves this host + its WSL via 127.0.0.1:$Port) =="
     $hasExe = Test-Path $Exe
     $hasCfg = Test-Path $Cfg
     $hasOA  = Test-OAuth
     $run    = Test-Running
+    $installedVerStatus = Get-InstalledProxyVersion
+    $stale  = $run -and ($installedVerStatus -ne $Version)
     "{0,-12} {1}" -f 'binary:',    $(if ($hasExe) { "OK   $Exe" }              else { 'MISSING  -> -Install' })
     "{0,-12} {1}" -f 'config:',    $(if ($hasCfg) { "OK   $Cfg" }              else { 'MISSING  -> -Install' })
     "{0,-12} {1}" -f 'codex auth:',$(if ($hasOA)  { 'OK' }                     else { 'MISSING  -> -Login' })
-    "{0,-12} {1}" -f 'running:',   $(if ($run)    { "OK   127.0.0.1:$Port" }   else { 'no       -> -Start (then -Register to restart at sign-in)' })
+    if ($stale) {
+        "{0,-12} {1}" -f 'running:', "WARNING  127.0.0.1:$Port answering, but the running binary is v$(if ($installedVerStatus) { $installedVerStatus } else { 'unknown' }), not the pinned v$Version -> -Roll"
+    } else {
+        "{0,-12} {1}" -f 'running:',   $(if ($run)    { "OK   127.0.0.1:$Port" }   else { 'no       -> -Start (then -Register to restart at sign-in)' })
+    }
     Write-Host ''
     if (-not $hasExe -or -not $hasCfg) { Write-Host 'NEXT: .\cli-proxy-lane.ps1 -Install' }
     elseif (-not $hasOA)               { Write-Host 'NEXT: .\cli-proxy-lane.ps1 -Login   (then -Start, then -Register)' }
     elseif (-not $run)                 { Write-Host 'NEXT: .\cli-proxy-lane.ps1 -Start   (and -Register to restart at sign-in)' }
+    elseif ($stale)                    { Write-Host "NEXT: .\cli-proxy-lane.ps1 -Roll   (running binary is behind the pinned v$Version)" }
     else                               { Write-Host 'lane is up. Test: bash $HOME/Documents/github/himmel/scripts/claude-codex -p "reply OK"' }
 }

@@ -7,16 +7,20 @@ The third repair path. `/drift-fix` handles the two easy classes — a version p
 in the repo (`mode: base`) and an installed binary (`mode: probe`). This one
 handles the class that has no cheap fix: a **fork**.
 
-himmel does not consume upstream `tobi/qmd` directly. It carries `yotamleo/qmd`,
-SHA-pinned by `_qmd_fork_ref()` in `scripts/lib/qmd-bin.sh`. The registry's
-`synced_base` records the highest upstream STABLE tag that fork actually sits on.
+No registry entry currently carries a `fork` block — `qmd` (SHA-pinned via
+`_qmd_fork_ref()` in `scripts/lib/qmd-bin.sh`) was de-forked in HIMMEL-3045
+once its delta against upstream `tobi/qmd` collapsed to empty, and
+`claude-obsidian` was retired at v2.2.0 (HIMMEL-2925) before that. This runbook
+stays ready for the next one: a registry entry with a `fork` block records, in
+`synced_base`, the highest upstream STABLE tag that fork actually sits on.
 
 **The trap this command exists to prevent:** when upstream tags past
 `synced_base`, the entry reads BEHIND, and the one-line "fix" — bump
 `synced_base` — is a lie. It marks the fork as carrying an upstream base it never
 rebased onto, and the guard goes quiet while the fork drifts further. That is why
-qmd deliberately has **no `version_pin`** and why `apply-drift-bump.sh` returns
-SKIP for it rather than being taught to handle it.
+a genuine SHA-pinned fork deliberately has **no `version_pin`** (this was qmd's
+shape until HIMMEL-3045) and why `apply-drift-bump.sh` returns SKIP for it
+rather than being taught to handle it.
 
 The real fix is a rebase, and a rebase can conflict. That needs judgment, which
 is why this is a runbook and not a shell script.
@@ -48,13 +52,16 @@ Take every `BEHIND` entry that declares a **`fork`** block in
 `scripts/upstreams.json`. If a `name` argument was given, restrict to it.
 
 Nothing BEHIND with a `fork` block → report "no fork drift" and stop. This is
-the expected outcome most nights; upstream tags rarely.
+the expected outcome every night right now — zero registry entries currently
+declare a `fork` block (`qmd` de-forked HIMMEL-3045, `claude-obsidian` retired
+HIMMEL-2925) — and stays the expected outcome whenever no fork is drifting.
 
-Any registry entry that declares a `fork` block is in scope — since
-HIMMEL-1435 that includes the pinned-remote fork `claude-obsidian` (its
-marketplace pin is an installable fork TAG, so publishing is a tag re-cut, but
-the nightly rebase-audit runs here like any other fork). Still **not** in
-scope, each needing its own judgment call — say so rather than touching them:
+Any registry entry that declares a `fork` block is in scope, however it is
+pinned — a SHA-pinned fork (qmd's old shape) and a pinned-remote fork whose
+marketplace pin is an installable TAG (claude-obsidian's old shape, so
+publishing there was a tag re-cut) both ran the nightly rebase-audit here the
+same way. Still **not** in scope, each needing its own judgment call — say so
+rather than touching them:
 - vendored forks with an `UPSTREAM_PIN` (`telegram-himmel`,
   `pr-review-toolkit-himmel`) — a re-vendor plus a file-level delta audit.
 
@@ -76,18 +83,18 @@ remote without `--push`.
 | 4 | rebase CONFLICTED, the delta is NOT additive, OR a pin-literal failure (`PIN_FILE_MISSING`/`PIN_NOT_FOUND`/`PIN_AMBIGUOUS`) | **stop and escalate** — see below; expected-non-additive entries are the exception |
 
 **Expected-non-additive entries (HIMMEL-1435).** An entry whose `fork.note`
-declares the delta non-additive BY DESIGN (`qmd` since HIMMEL-2136: a small
-reviewed set of real bugfixes against existing upstream files) reports rc 4
-NON-ADDITIVE on every healthy audit. For such an entry that outcome IS the
-report — record the drift + rebase-feasibility result and **continue with the
-remaining forks**; do not escalate it and do not let it terminate an
-unattended sweep. A CONFLICTED rebase or a pin-literal failure on the SAME
-entry is still a real stop-and-escalate — only the declared non-additive shape
-is expected. **`claude-obsidian` is NOT such an entry (HIMMEL-2153):** its
-carried delta is strictly additive at v2.1.1-himmel.1 (+10 −0), so the healthy
-audit result is ADDITIVE and a NON-ADDITIVE result there is a regression to
-report, not a designed exception; its collapse trigger is upstream merging
-#178 and tagging past v2.1.1.
+declares the delta non-additive BY DESIGN reports rc 4 NON-ADDITIVE on every
+healthy audit — `qmd` was such an entry from HIMMEL-2136 (a small reviewed set
+of real bugfixes against existing upstream files) until HIMMEL-3045 de-forked
+it. For such an entry that outcome IS the report — record the drift +
+rebase-feasibility result and **continue with the remaining forks**; do not
+escalate it and do not let it terminate an unattended sweep. A CONFLICTED
+rebase or a pin-literal failure on the SAME entry is still a real
+stop-and-escalate — only the declared non-additive shape is expected. A fork
+whose carried delta is strictly additive (`claude-obsidian` was one, at
+v2.1.1-himmel.1, +10 −0, before its own HIMMEL-2925 retirement) is NOT such an
+entry: its healthy audit result is ADDITIVE, and a NON-ADDITIVE result there
+would be a regression to report, not a designed exception.
 
 **On rc 4, do not resolve the conflict yourself in an unattended run.** For a
 CONFLICTED/non-additive rebase, report: the conflicting paths (or the upstream
@@ -135,8 +142,8 @@ prints; it is the pin.
 ## 5. Prove the fork still works
 
 A clean rebase is not evidence the result runs. Before moving the pin, exercise
-the thing himmel actually depends on. For qmd that is the resolver plus its
-suite:
+the thing himmel actually depends on — whatever consumes the pin (a resolver
+script, an install step) plus its test suite. When qmd was a fork, that was:
 
 ```bash
 bash scripts/lib/test-qmd-bin.sh
@@ -149,8 +156,9 @@ pin, and report.
 ## 6. Move the pin — both halves
 
 Two edits that must move together, same discipline as `/drift-fix`:
-- the SHA in `pin_file` (`_qmd_fork_ref()` in `scripts/lib/qmd-bin.sh`) → the new
-  rebased SHA from step 4;
+- the SHA in the entry's `fork.pin_file`, at `fork.pin_template`'s `{sha}` slot
+  (for qmd, back when it had one, that was `_qmd_fork_ref()` in
+  `scripts/lib/qmd-bin.sh`) → the new rebased SHA from step 4;
 - `synced_base` in `scripts/upstreams.json` → the upstream tag just rebased onto.
 
 Do this in a worktree (`bash scripts/clean-garden.sh --no-prune chore/fork-resync-<name>-<YYYYMMDD>`),

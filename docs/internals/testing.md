@@ -136,19 +136,26 @@ Three suites ship under HIMMEL-2931:
   `context.scaffold_script: fixture.sh`, which `claude plugin eval` will not
   run without that flag.
 - `marketplace/plugins/obsidian-triage/evals/read-link-vault-first/` — a
-  **RED control**: with the plugin, `/obsidian-triage:read-link` must read a
-  seeded fixture clip and never call `WebFetch` (`tool_used: WebFetch, min: 0,
-  max: 0, arm: both`); without the plugin, the same prompt has no reason to
-  stay off `WebFetch`. Both arms use a fixture vault under the suite dir —
-  never the real `~/Documents/luna`. **Finding (2026-09-12 run):** WITH
-  passed clean (score 1, vault content surfaced, 0 WebFetch calls). WITHOUT
-  scored 0.5 but *not* for the intended reason — Claude Code's slash-command
-  dispatcher intercepts the unrecognized `/obsidian-triage:read-link` line and
-  returns a synthetic "Unknown command" response before any model turn runs,
-  so the WITHOUT arm never gets a chance to reach for `WebFetch` at all. The
-  numeric delta is real but doesn't demonstrate the tool-use asymmetry this
-  control is meant to probe; a slash-command-first prompt structurally cannot
-  produce a meaningful no-plugin baseline under `--ablation with-without`.
+  **RED control**: with the plugin, reading the seeded fixture clip must never
+  call `WebFetch` (`tool_used: WebFetch, min: 0, max: 0, arm: both`); without
+  the plugin, the same prompt has no reason to stay off `WebFetch`. Both arms
+  use a fixture vault under the suite dir — never the real
+  `~/Documents/luna`. **`prompt.md` is natural language, not a leading
+  `/obsidian-triage:read-link` line** (HIMMEL-2938) — a literal slash command
+  made Claude Code's dispatcher intercept the unrecognized command in the
+  WITHOUT arm and return a synthetic "Unknown command" response before any
+  model turn ran, so that arm never got a chance to reach for `WebFetch` at
+  all. **Re-verified (2026-09-12, HIMMEL-2938):** WITH scored 1.00 clean (3/3
+  runs, vault content surfaced, 0 WebFetch calls). WITHOUT scored 0.67 (2/3
+  runs still found the fixture content directly via the generically-granted
+  `Bash`/`Grep`/`Read` tools without calling `WebFetch`, since the prompt
+  necessarily names the `./vault-fixture` path so the WITH arm's lookup CLI
+  can find it; 1/3 runs failed for the intended reason — `WebFetch called 1x`
+  and `vault-content-surfaced: pattern not found`). The dispatcher gap is
+  fixed (every run now reaches a real model turn); the WITHOUT arm no longer
+  fails deterministically because a no-plugin agent can sometimes replicate
+  the vault-first behavior by hand with the same generic tools — a residual
+  limitation of this suite design, not the dispatcher bug this round fixed.
 - `marketplace/plugins/qmd/evals/collections-scoping/` — a natural-language
   prompt asserting the `qmd` MCP `query` tool is called with a `collections`
   scope, against a suite-wide **mock** (`evals/mocks/qmd/`, including a
@@ -161,7 +168,24 @@ Three suites ship under HIMMEL-2931:
   pass a call whose `collections` array held extra collections, or was empty
   with "himmel" appearing elsewhere in the JSON-stringified input — tightened
   to `"collections":\s*\[\s*"himmel"\s*\]` to assert the scope is exactly
-  `["himmel"]`.
+  `["himmel"]`. **Hardened further (HIMMEL-2938):** every WITH-only run makes
+  **2** calls to `mcp__plugin_qmd_qmd__query` (the mock's `query` tool takes
+  one query string, so the model issues its lex- and vec-style sub-queries as
+  two separate calls) — the original `scoped-query` grader's `min: 1` only
+  proved one of the two was in scope and never checked the other. A
+  `graders/no-out-of-scope-query.md` grader now asserts `min: 0, max: 0` on
+  any call whose full input does *not* contain `collections` scoped to
+  exactly `["himmel"]`
+  (`^(?!.*"collections":\s*\[\s*"himmel"\s*\]).*$`), so a genuinely
+  out-of-scope call — including one that omits `collections` entirely, which
+  an earlier `"collections":`-substring form of this regex missed (CR round 1)
+  — fails the run regardless of how many in-scope calls also happened. A
+  `max: 1` on `scoped-query` itself was tried and reverted — re-verified
+  (2026-09-12) against the real 2-calls-per-run behavior, it produced a false
+  failure (`called 2x, expected 1..1`) even though both calls were correctly
+  scoped (`no-out-of-scope-query` passed 0x violations across all 3 runs) —
+  bounding the *count* of in-scope calls is the wrong lever when a legitimate
+  turn makes more than one of them; asserting zero out-of-scope calls is not.
 
 ### Assumptions this round shipped on (unanswered by the operator)
 

@@ -2694,6 +2694,49 @@ check_c36_stray_tmp_git() {
     fi
 }
 
+# --- C37: lean-skills@himmel vendored-skill overlap with an enabled upstream ----
+# (HIMMEL-3064). lean-skills@himmel vendors 11 of superpowers' skills plus
+# grilling from mattpocock/skills so a session lists 13 skills instead of 25.
+# That is only a win while the upstream plugins stay disabled -- an adopter
+# who ALSO enables superpowers@claude-plugins-official or
+# mattpocock-skills@claude-plugins-official gets both copies listed. Advisory
+# only, never FAIL: this is a suboptimal-but-working state (the resolution
+# rule is "prefer upstream"), not a broken one. Delegates to
+# scripts/lanes/vendored-skill-dupes.mjs, same degrade-gracefully stance as
+# C16's himmelctl delegation: no node, a missing script, or a non-{0,10,2}
+# exit is an INFO skip, never a crash or a false FAIL.
+check_c37_vendored_skill_dupes() {
+    local node_bin
+    if ! node_bin="$(resolve_node 2>/dev/null)"; then
+        emit INFO C37-vendored-skill-dupes "no node found -- vendored-skill overlap check skipped"
+        return
+    fi
+    local detector="$REPO_ROOT/scripts/lanes/vendored-skill-dupes.mjs"
+    if [ ! -f "$detector" ]; then
+        emit INFO C37-vendored-skill-dupes "scripts/lanes/vendored-skill-dupes.mjs not found -- check skipped"
+        return
+    fi
+
+    local out rc
+    out="$("$node_bin" "$detector" --json 2>/dev/null)"; rc=$?
+    case "$rc" in
+        0) emit OK C37-vendored-skill-dupes "no lean-skills@himmel / upstream-plugin overlap"; return ;;
+        10) : ;;
+        2) emit INFO C37-vendored-skill-dupes "a settings layer is unreadable/unparseable -- vendored-skill overlap check skipped"; return ;;
+        *) emit INFO C37-vendored-skill-dupes "vendored-skill-dupes.mjs unavailable (rc=$rc) -- check skipped"; return ;;
+    esac
+
+    if ! command -v jq >/dev/null 2>&1 \
+       || ! printf '%s' "$out" | jq -e 'type == "array"' >/dev/null 2>&1; then
+        emit INFO C37-vendored-skill-dupes "vendored-skill-dupes.mjs --json output unparsable -- check skipped"
+        return
+    fi
+    local summary
+    summary="$(printf '%s' "$out" | jq -r '[.[] | "\(.plugin) (\(.skills | length) skills)"] | join(", ")' 2>/dev/null)"
+    emit WARN C37-vendored-skill-dupes "lean-skills@himmel overlaps with an enabled upstream plugin: $summary -- both copies are listed; prefer the upstream plugin (drop the local vendor) or disable it" \
+        "node $detector"
+}
+
 # --- run ------------------------------------------------------------------------
 echo "himmel-doctor — $(uname -s 2>/dev/null || echo ?) — checkout: $REPO_ROOT"
 echo
@@ -2733,6 +2776,7 @@ check_c33_graph_stale
 check_c34
 check_c35
 check_c36_stray_tmp_git
+check_c37_vendored_skill_dupes
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 

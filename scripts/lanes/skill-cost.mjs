@@ -6,6 +6,7 @@
 // but one or more paths were skipped (EACCES/EPERM/ELOOP) - the totals are
 // understated; see `skipped` in --json or the table's `skipped` column.
 import {
+  existsSync,
   readdirSync,
   readFileSync,
   statSync,
@@ -13,9 +14,11 @@ import {
 import { homedir } from 'node:os';
 import {
   basename,
+  dirname,
   extname,
   join,
   resolve,
+  sep,
 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -248,13 +251,57 @@ export function scanSkillCosts(options = {}) {
   };
 }
 
+// HIMMEL-3093 — a VENDORED.md-marked directory is upstream prose this repo
+// mirrors verbatim, not himmel's own surface; walked up from the file's own
+// directory (no hardcoded plugin list) so any vendored tree is covered. The
+// search stops at the repo root — an ancestor OUTSIDE the checkout is never
+// consulted, so a stray VENDORED.md above the repo can't launder an
+// over-limit himmel-owned file as vendored.
+//
+// HIMMEL-3064 (CR round 1, PR #777) — the marker is a directory boundary, but a
+// VENDORED.md also declares that tree's own himmel-authored exceptions as
+// `local=<path>` lines relative to itself (lean-skills' context7-mcp is one).
+// Those are shipped-by-writing-it, not upstream prose, so the nearest marker
+// must NOT exempt them: without this, a plugin-root VENDORED.md laundered a
+// 265-char himmel-authored description straight past the 120-char cap. The
+// nearest marker's own declaration is authoritative — a `local=` hit returns
+// null rather than continuing the walk to some outer marker.
+function localExceptions(root) {
+  const text = readFileSync(join(root, 'VENDORED.md'), 'utf8');
+  return [...text.matchAll(/^local=(\S+)/gm)].map((m) => resolve(join(root, m[1])));
+}
+
+function vendoredRoot(filePath, repoRoot = resolve(process.cwd())) {
+  const file = resolve(filePath);
+  let dir = dirname(file);
+  for (;;) {
+    if (existsSync(join(dir, 'VENDORED.md'))) {
+      const local = localExceptions(dir);
+      if (local.some((p) => file === p || file.startsWith(p + sep))) return null;
+      return dir;
+    }
+    if (dir === repoRoot) return null;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
 // HIMMEL-2037 — the listing pays for every description byte on every session
 // start, so a cap needs a gate. Takes explicit paths (pre-commit passes staged
 // filenames; CI passes the tracked globs) rather than re-scanning a whole tree.
 export function lintDescriptions(files, maxDesc) {
   return files
     .map((file) => ({ file, length: readSkillFrontmatter(readFileSync(file, 'utf8')).description.length }))
-    .filter((entry) => entry.length > maxDesc);
+    .filter((entry) => {
+      if (entry.length <= maxDesc) return false;
+      const root = vendoredRoot(entry.file);
+      if (root) {
+        process.stderr.write(`skill-cost: skipping ${entry.file}: vendored per ${join(root, 'VENDORED.md')}\n`);
+        return false;
+      }
+      return true;
+    });
 }
 
 // HIMMEL-2051 — Claude Code substitutes $ARGUMENTS/$<digit> for the caller's

@@ -199,10 +199,24 @@ HEALTHY_CACHE="{\"five_hour\":{\"utilization\":10},\"seven_day\":{\"utilization\
 fleet_verdict() {
   local dir="$1"; shift
   printf '%s' "$HEALTHY_CACHE" > "$W/c.json"
+  # HIMMEL-2774: a FRESH slot dir per call - these cases share the fixed
+  # CADENCE_BANK_LEG=testleg name and run under cap (creating a reservation)
+  # repeatedly; a shared/real slot dir would carry a reservation from one
+  # call into the next call's "duplicate" refusal, and would pollute this
+  # machine's real fleet slots besides.
+  # codex-6 (HIMMEL-2774, 2nd panel round): an unchecked mktemp failure here
+  # left HIMMEL_FLEET_SLOTS empty, and bank-preflight.sh's own
+  # `${HIMMEL_FLEET_SLOTS:-default}` treats a set-but-empty var the same as
+  # unset — silently falling BACK to this machine's real fleet slot dir,
+  # exactly the pollution this fresh-per-call dir exists to avoid. Fail loud
+  # instead.
+  local _slots
+  _slots="$(mktemp -d "$W/slots.XXXXXX")" || { echo "fleet_verdict: mktemp -d failed" >&2; return 1; }
   env -u FLEET_CAP_OK "$@" CADENCE_BANK_LAUNCH="${FLEET_VERDICT_LAUNCH-1}" \
     CADENCE_BANK_CACHE="$W/c.json" CADENCE_BANK_SKIP_REFRESH=1 \
     CADENCE_BANK_LEDGER="$W/ledger.jsonl" CADENCE_BANK_LEG=testleg \
     FLEET_PS_CMD="$dir/ps" FLEET_PROC="$dir/proc" \
+    HIMMEL_FLEET_SLOTS="$_slots" \
     bash "$SUT" </dev/null 2>"$W/err.log"
 }
 
@@ -246,7 +260,7 @@ check "3 legs, cap=2 (HIMMEL_FLEET_CAP override) -> SKIPPED-FLEET" SKIPPED-FLEET
 # no environ files (mk_ps_stub only writes comm), so every candidate falls
 # back to "native" (the safe default for an unreadable/missing environ).
 fleet_verdict "$p3" HIMMEL_FLEET_CAP=4 >/dev/null
-if grep -q 'FLEET native=3 claudex=0 total=3/4' "$W/err.log" 2>/dev/null; then
+if grep -q 'FLEET native=3 claudex=0 reserved=0 total=3/4' "$W/err.log" 2>/dev/null; then
   PASS=$((PASS+1)); echo "ok - FLEET n/CAP printed on a PROCEED call"
 else
   FAIL=$((FAIL+1)); echo "FAIL - FLEET n/CAP not printed on a PROCEED call"
@@ -277,7 +291,7 @@ pclaudex="$W/psclaudex"; mk_ps_stub_environ "$pclaudex" \
   '9001:claude:HOME=/home/x,CLAUDEX_LANE_OK=1:--model gpt-6-astra -n HIMMEL-1000-leg load doc' \
   '9002:claude:HOME=/home/x:--model claude-opus-5 -n HIMMEL-1001-leg load doc'
 fleet_verdict "$pclaudex" HIMMEL_FLEET_CAP=4 >/dev/null
-if grep -q 'FLEET native=1 claudex=1 total=2/4' "$W/err.log" 2>/dev/null; then
+if grep -q 'FLEET native=1 claudex=1 reserved=0 total=2/4' "$W/err.log" 2>/dev/null; then
   PASS=$((PASS+1)); echo "ok - claudex candidate named separately in the FLEET line"
 else
   FAIL=$((FAIL+1)); echo "FAIL - claudex candidate not named separately in the FLEET line"
@@ -328,10 +342,13 @@ fleet_verdict_no_procfs() {
   # launching shell that already has it set would silently make this
   # helper's own refusal cases pass through the bypass branch instead of
   # exercising the fallback logic they are meant to test.
+  local _slots
+  _slots="$(mktemp -d "$W/slots.XXXXXX")" || { echo "fleet_verdict_no_procfs: mktemp -d failed" >&2; return 1; }
   env -u FLEET_CAP_OK "$@" CADENCE_BANK_LAUNCH="${FLEET_VERDICT_LAUNCH-1}" \
     CADENCE_BANK_CACHE="$W/c.json" CADENCE_BANK_SKIP_REFRESH=1 \
     CADENCE_BANK_LEDGER="$W/ledger.jsonl" CADENCE_BANK_LEG=testleg \
     FLEET_PS_CMD="$dir/ps" FLEET_PROC="$dir/no-such-proc-dir" \
+    HIMMEL_FLEET_SLOTS="$_slots" \
     bash "$SUT" </dev/null 2>"$W/err.log"
 }
 check "no procfs at FLEET_PROC, cap=3 -> SKIPPED-FLEET (argv-only fallback, codex-2)" SKIPPED-FLEET \
@@ -400,7 +417,7 @@ check "4 legs, cap=4, no CADENCE_BANK_LAUNCH -> PROCEED (read-only, not refused)
 # refusal is gated, never the visibility.
 # shellcheck disable=SC1007  # deliberate empty-string prefix assignment, not a typo'd `VAR =`
 FLEET_VERDICT_LAUNCH= fleet_verdict "$p4" HIMMEL_FLEET_CAP=4 >/dev/null
-if grep -q 'FLEET native=4 claudex=0 total=4/4' "$W/err.log" 2>/dev/null; then
+if grep -q 'FLEET native=4 claudex=0 reserved=0 total=4/4' "$W/err.log" 2>/dev/null; then
   PASS=$((PASS+1)); echo "ok - a plain read still prints the FLEET line"
 else
   FAIL=$((FAIL+1)); echo "FAIL - a plain read suppressed the FLEET line"
