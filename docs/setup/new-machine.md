@@ -576,9 +576,9 @@ mode — and set the mode where it is actually observable, at arming.
 
 Context mode is an **arming-time** choice instead: `--context 1m|standard` on
 `scripts/handover/arm-resume.sh` (7th positional on `headed-arm.sh`), defaulting
-to `standard` for every arm, console or not (HIMMEL-2975) — a console can
-still opt into `1m` via `CONSOLE_CONTEXT=1m` in the launching shell, or an
-explicit `--context 1m`. The measured
+to `standard` for every arm, console or not (HIMMEL-2975) — a console (armed
+through `console.sh`, which has no `--context` flag of its own) can still
+opt into `1m` via `CONSOLE_CONTEXT=1m` in the launching shell. The measured
 behaviour of both levers — which model ids accept the suffix, what a plain launch
 actually reports, and why `--autocompact` is the half that does the work — is in
 [`docs/internals/lane-calibration.md`](../internals/lane-calibration.md#context-mode--an-arming-time-choice-not-a-station-default-himmel-2658).
