@@ -52,10 +52,11 @@ const SOURCES = [
 
 function settingsLayers(home, cwd, configDir) {
   const files = [join(configDir || join(home, '.claude'), 'settings.json')];
+  const dirs = [];
   if (cwd) {
     let d = resolve(cwd);
     for (;;) {
-      files.push(join(d, '.claude', 'settings.json'), join(d, '.claude', 'settings.local.json'));
+      dirs.push(d);
       const parent = dirname(d);
       if (parent === d) break;
       d = parent;
@@ -63,7 +64,15 @@ function settingsLayers(home, cwd, configDir) {
   }
   // Nearest layer wins, so apply from the filesystem root inward: reverse the
   // cwd walk (which runs inward -> outward) and keep home settings outermost.
-  return [files[0], ...files.slice(1).reverse()];
+  // Reverse the DIRECTORY order ONLY. Within one directory settings.local.json
+  // must still be applied AFTER settings.json (CR round 1, PR #777): the
+  // previous flat `files.slice(1).reverse()` flipped that pair too, so a
+  // shared settings.json overwrote the sibling settings.local.json for the
+  // same enabledPlugins key -- backwards from this repo's own precedence rule.
+  for (const d of dirs.reverse()) {
+    files.push(join(d, '.claude', 'settings.json'), join(d, '.claude', 'settings.local.json'));
+  }
+  return files;
 }
 
 function effectiveEnabled(home, cwd, configDir) {

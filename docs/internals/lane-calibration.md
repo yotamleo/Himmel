@@ -29,7 +29,9 @@ is data.
 preserves the operator console's installed configuration. `lane-impl` instead
 injects an explicit lean surface of `handover@himmel`, `himmel-ops@himmel`,
 `qmd@himmel`, and `pr-review-toolkit-himmel@himmel`, plus `lean-skills@himmel`
-(HIMMEL-3064: in registry `base`, so every non-bare profile gets it —
+(HIMMEL-3064: in registry `base`, so every profile inherits it unless it says
+otherwise — `bare` carries no base at all, and `console-relay` drops it
+explicitly, a relay forwarding messages having no business brainstorming;
 vendored workflow skills, not an "operator always-tier extra" the way
 superpowers/mattpocock-skills used to be, both of which are dropped from the
 catalog entirely); `plannotator-effective-html` stays operator-tier-only,

@@ -206,6 +206,21 @@ while IFS= read -r f; do
         [ "$d" = "$REPO" ] && break
         d="$(dirname "$d")"
     done
+    # HIMMEL-3064 (CR round 1, PR #777) -- the marker is a directory boundary,
+    # but a VENDORED.md also declares its tree's OWN himmel-authored exceptions
+    # as `local=<path>` lines relative to itself (lean-skills' context7-mcp).
+    # Those are shipped by writing them, so the marker must not exempt them
+    # from a "what did himmel ship" audit. Same rule as skill-cost.mjs's
+    # vendoredRoot(), so both gates agree on the vendored path set.
+    if [ -n "$vendored_root" ]; then
+        vendored_dir="${vendored_root%/VENDORED.md}"
+        while IFS= read -r rel; do
+            [ -n "$rel" ] || continue
+            case "$REPO/$f" in
+            "$vendored_dir/$rel" | "$vendored_dir/$rel"/*) vendored_root="" ;;
+            esac
+        done < <(sed -n 's/^local=\([^[:space:]]*\).*/\1/p' "$vendored_root")
+    fi
     if [ -n "$vendored_root" ]; then
         echo "test-ws5-invariants: skipping $f: vendored per $vendored_root" >&2
         echo "$f" >> "$VENDORED_LIST"

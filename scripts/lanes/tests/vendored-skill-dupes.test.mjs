@@ -101,6 +101,26 @@ test('a nearer settings layer\'s false overrides an outer layer\'s true', () => 
   assert.deepEqual(out, [], 'nearer false must suppress the overlap the outer true would have reported');
 });
 
+// CR round 1 (PR #777): settingsLayers reversed the whole file list, which
+// reversed each directory's own (settings.json, settings.local.json) pair as
+// well as the directory order -- so within ONE directory the shared
+// settings.json was applied last and overwrote the local override. Both files
+// live in the SAME directory here, so only the pair order can decide it; the
+// existing outer-vs-nearer test passes under either ordering.
+test('settings.local.json beats settings.json in the SAME directory', () => {
+  const home = settingsHome({ 'lean-skills@himmel': true });
+  const cwd = makeTmpDir('vsd-cwd-pair-');
+  mkdirSync(join(cwd, '.claude'), { recursive: true });
+  writeFileSync(join(cwd, '.claude', 'settings.json'), JSON.stringify({
+    enabledPlugins: { 'superpowers@claude-plugins-official': true },
+  }));
+  writeFileSync(join(cwd, '.claude', 'settings.local.json'), JSON.stringify({
+    enabledPlugins: { 'superpowers@claude-plugins-official': false },
+  }));
+  const out = findOverlap({ home, cwd, configDir: '', repoRoot: REPO_ROOT });
+  assert.deepEqual(out, [], 'the local override must win over its sibling settings.json');
+});
+
 // HIMMEL-3064 Defect B: the CLI's env-var parsing used `||`, which treats an
 // explicit empty string (the test-hermetic "skip the cwd walk" seam) the same
 // as "unset" and falls back to the REAL process.cwd() — silently walking the
@@ -116,7 +136,16 @@ test('CLI: an explicit empty VENDORED_DUPES_CWD is honoured as "no cwd layers", 
   const run = spawnSync(process.execPath, [CLI, '--json'], {
     encoding: 'utf8',
     cwd: REPO_ROOT,
-    env: { ...process.env, VENDORED_DUPES_HOME: home, VENDORED_DUPES_CWD: '' },
+    env: {
+      ...process.env,
+      VENDORED_DUPES_HOME: home,
+      VENDORED_DUPES_CWD: '',
+      // CR round 1 (PR #777): the CLI falls back to CLAUDE_CONFIG_DIR when the
+      // seam is unset, and a non-empty configDir REPLACES the home layer
+      // outright -- a runner with CLAUDE_CONFIG_DIR exported would bypass this
+      // fixture's settings.json entirely and assert against live operator state.
+      VENDORED_DUPES_CONFIG_DIR: '',
+    },
   });
   assert.equal(run.status, 10, run.stderr);
   const out = JSON.parse(run.stdout);
