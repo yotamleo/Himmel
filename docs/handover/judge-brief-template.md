@@ -12,9 +12,11 @@ inherits the leg launcher's cost gate, queue-lock discipline and RETASK
 asymmetry (`docs/handover/leg-preface.md` — read for contrast; it is not
 edited to fit the judge role) — but this template is a **sibling** of
 `docs/handover/leg-brief-template.md`, not a fork of it: everywhere the two
-disagree, the roles differ, not one drifting from the other. **The console
-holds the lock, the GO authority and the nonce mint; the judge holds nothing
-and is advisory — it rules, the console acts.**
+disagree, the roles differ, not one drifting from the other. **The parent
+holds the applicable lock and the child-call nonce; only the console holds
+fleet GO and RETASK authority. The judge holds no console or fleet
+authority — it holds its own judge-document lock, and is advisory: it
+rules, the console acts.**
 
 ## Blind, not thin
 
