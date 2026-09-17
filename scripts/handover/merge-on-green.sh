@@ -535,10 +535,18 @@ if _truthy "${HIMMEL_CONSOLE_LEG:-}"; then
         audit "REFUSED reason=policy-refused phase=console-go-lib-missing repo=$nwo pr=#$pr_num sha=$sha"
         exit 17
     fi
+    if ! command -v go_gate >/dev/null 2>&1; then
+        echo "merge-on-green: scripts/lib/go-gate.sh sourced but go_gate is not defined (truncated file?) — refusing (a console-spawned leg's GO gate must fail closed, not silently no-op)" >&2
+        audit "REFUSED reason=policy-refused phase=console-go-symbol-missing repo=$nwo pr=#$pr_num sha=$sha"
+        exit 17
+    fi
     go_reason=""
     go_rc=0
     go_reason=$(go_gate "$pr_num" "$sha" "$go_root") || go_rc=$?
-    if [ "$go_rc" = "2" ]; then
+    if [ "$go_rc" -ne 0 ]; then
+        if [ -z "$go_reason" ]; then
+            go_reason="go_gate for PR #$pr_num at $sha returned an unexpected exit code ($go_rc) — this is a console-spawned leg; send READY to your console and wait for GO"
+        fi
         echo "merge-on-green: $go_reason" >&2
         audit "REFUSED reason=policy-refused phase=console-go repo=$nwo pr=#$pr_num sha=$sha go=$go_file"
         exit 17

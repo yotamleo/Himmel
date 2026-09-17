@@ -240,10 +240,17 @@ case "$(printf '%s' "${HIMMEL_CONSOLE_LEG:-}" | tr '[:upper:]' '[:lower:]' | tr 
             echo "block-unresolved-cr-merge: cannot load scripts/lib/go-gate.sh — refusing (a console-spawned leg's GO gate must fail closed, not silently no-op)" >&2
             exit 2
         fi
+        if ! command -v go_gate >/dev/null 2>&1; then
+            echo "block-unresolved-cr-merge: scripts/lib/go-gate.sh sourced but go_gate is not defined (truncated file?) — refusing (a console-spawned leg's GO gate must fail closed, not silently no-op)" >&2
+            exit 2
+        fi
         go_reason=""
         go_rc=0
         go_reason=$(go_gate "$go_num" "$go_sha" "$go_root") || go_rc=$?
-        if [ "$go_rc" = "2" ]; then
+        if [ "$go_rc" -ne 0 ]; then
+            if [ -z "$go_reason" ]; then
+                go_reason="go_gate for PR #$go_num at $go_sha returned an unexpected exit code ($go_rc) — this is a console-spawned leg; send READY to your console and wait for GO"
+            fi
             echo "block-unresolved-cr-merge: $go_reason" >&2
             exit 2
         fi

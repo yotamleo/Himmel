@@ -195,7 +195,12 @@ mog_build_fixture() {
     cp "$SCRIPT_DIR/../lib/handover-path.sh" "$tmp/scripts/lib/handover-path.sh"
     # HIMMEL-3142: the GO file check itself now lives in the shared predicate
     # go_gate() (also used by block-unresolved-cr-merge.sh's own gate).
-    cp "$SCRIPT_DIR/../lib/go-gate.sh" "$tmp/scripts/lib/go-gate.sh"
+    # GO_GATE_SRC is MOG_SRC's own twin (same TEST-HARNESS-ONLY seam, same
+    # non-gate-integrity reasoning above): it lets a RED control swap in a
+    # scratch mutant of go-gate.sh (e.g. truncated, so it sources but never
+    # defines go_gate) while merge-on-green.sh itself stays whichever copy
+    # MOG_SRC picked. Defaults to the real file.
+    cp "${GO_GATE_SRC:-$SCRIPT_DIR/../lib/go-gate.sh}" "$tmp/scripts/lib/go-gate.sh"
     if [ "${NO_CHECK_CI:-0}" != "1" ]; then
         printf '#!/usr/bin/env bash\nexit %s\n' "${STUB_CI_RC:-0}" > "$tmp/scripts/check-ci.sh"
         chmod +x "$tmp/scripts/check-ci.sh"
@@ -2299,6 +2304,84 @@ if [ "$(cat "$LAST_GH_LOG")" = "$GO_B_GHLOG" ]; then pass; else fail "2919-b/d: 
 HIMMEL_CONSOLE_LEG=0 HANDOVER_DIR="$GO_ROOT" STUB_SHA="$GO_SHA" \
     run_mog 0 "2919-d2: HIMMEL_CONSOLE_LEG=0, no GO → merged"
 rm -rf "$GO_ROOT"
+
+# HIMMEL-3142 CR round 3: RED control — the pre-fix script tested
+# `[ "$go_rc" = "2" ]`, enumerating go_gate's one documented refusal code
+# instead of enforcing "nonzero = failure". A go-gate.sh that sources
+# cleanly but never DEFINES go_gate (truncated) makes the call fail with
+# "command not found" (go_rc=127), which is != "2" — so the pre-fix
+# script (head 6749462a, this ticket's round-2 shipped state) fell
+# through the refusal entirely and continued straight to a real merge,
+# with no GO file anywhere. Same fixture as 2919-a (console leg, no GO
+# file) but against a truncated go-gate.sh: prove it wrongly merges
+# pre-fix, and is refused post-fix by the new `command -v go_gate`
+# precondition.
+RC5_TRUNC_GOGATE=$(mktemp "${TMPDIR:-/tmp}/mog-3142-rc127-gogate.XXXXXX")
+head -n 33 "$SCRIPT_DIR/../lib/go-gate.sh" > "$RC5_TRUNC_GOGATE"
+if grep -q '^go_gate()' "$RC5_TRUNC_GOGATE"; then
+    fail "RC-5 setup: go-gate.sh header grew past line 33 — the truncated copy still defines go_gate, so this control no longer exercises a missing-symbol source"
+else
+    RC5_PRE_SHA=6749462a6c22911d748b8a39254fbd86bdf14ece
+    rc5_pre_mutant=$(mktemp "${TMPDIR:-/tmp}/mog-3142-rc127-pre.XXXXXX")
+    git -C "$SCRIPT_DIR/../.." show "$RC5_PRE_SHA:scripts/handover/merge-on-green.sh" > "$rc5_pre_mutant" 2>/dev/null
+    if [ ! -s "$rc5_pre_mutant" ]; then
+        fail "RC-5 setup: could not extract the pre-round-3-fix merge-on-green.sh from head $RC5_PRE_SHA"
+    else
+        rc5_go_root=$(mktemp -d "${TMPDIR:-/tmp}/mog-3142-rc127-go.XXXXXX")
+        rc5_go_root=$(cd "$rc5_go_root" && pwd)
+        rc5_sha=0123456789abcdef0123456789abcdef01234567
+        rc5_tmp=$(mktemp -d "${TMPDIR:-/tmp}/mog-3142-rc127-fixture.XXXXXX")
+        rc5_gh="$rc5_tmp/gh.log"; : > "$rc5_gh"
+        rc5_clear="$rc5_tmp/clear.log"; : > "$rc5_clear"
+        rc5_audit="$rc5_tmp/audit.log"
+        MOG_SRC="$rc5_pre_mutant" GO_GATE_SRC="$RC5_TRUNC_GOGATE" mog_build_fixture "$rc5_tmp"
+        red_control_run --cwd "$rc5_tmp" \
+            --env GH_LOG="$rc5_gh" --env CLEAR_LOG="$rc5_clear" --env MERGE_ON_GREEN_LOG="$rc5_audit" \
+            --env PATH="$rc5_tmp/bin:$PATH" --env MERGE_ON_GREEN_SLEEP_CMD=: \
+            --env HIMMEL_CONSOLE_LEG=1 --env HANDOVER_DIR="$rc5_go_root" --env STUB_SHA="$rc5_sha" \
+            -- bash "$rc5_tmp/scripts/handover/merge-on-green.sh"
+        rc5_merged=no
+        grep -Eq '^pr merge( |$)' "$rc5_gh" 2>/dev/null && rc5_merged=yes
+        if red_control_assert --label "HIMMEL-3142-RC127-MOG-RC" --expect-rc 0 \
+            --observed     "rc=$RED_CONTROL_RC merged=$rc5_merged" \
+            --expect-wrong "rc=0 merged=yes" \
+            --correct      "rc=17 merged=no" \
+            --note "pre-round-3-fix merge-on-green.sh (head $RC5_PRE_SHA) tested go_rc = \"2\" only; a truncated go-gate.sh sources cleanly but never defines go_gate, so the call fails with rc=127, the test is false, and the console-GO gate never fires — same fixture as 2919-a (console leg, no GO file), which the shipped script refuses"
+        then
+            pass
+        else
+            fail "RC-5 mutant: RED control did not hold (see the RED-control diagnostic above)"
+        fi
+        rm -rf "$rc5_tmp" "$rc5_go_root"
+
+        # Post-fix: same truncated go-gate.sh, but the LIVE (fixed) script.
+        rc5_post_tmp=$(mktemp -d "${TMPDIR:-/tmp}/mog-3142-rc127-post.XXXXXX")
+        rc5_post_gh="$rc5_post_tmp/gh.log"; : > "$rc5_post_gh"
+        rc5_post_clear="$rc5_post_tmp/clear.log"; : > "$rc5_post_clear"
+        rc5_post_audit="$rc5_post_tmp/audit.log"
+        rc5_post_go_root=$(mktemp -d "${TMPDIR:-/tmp}/mog-3142-rc127-post-go.XXXXXX")
+        rc5_post_go_root=$(cd "$rc5_post_go_root" && pwd)
+        GO_GATE_SRC="$RC5_TRUNC_GOGATE" mog_build_fixture "$rc5_post_tmp"
+        rc5_post_err="$rc5_post_tmp/stderr.log"
+        (
+            cd "$rc5_post_tmp" && \
+            GH_LOG="$rc5_post_gh" CLEAR_LOG="$rc5_post_clear" MERGE_ON_GREEN_LOG="$rc5_post_audit" \
+            PATH="$rc5_post_tmp/bin:$PATH" MERGE_ON_GREEN_SLEEP_CMD=: \
+            HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$rc5_post_go_root" STUB_SHA="$rc5_sha" \
+            bash "$rc5_post_tmp/scripts/handover/merge-on-green.sh"
+        ) >/dev/null 2>"$rc5_post_err"
+        rc5_post_rc=$?
+        if [ "$rc5_post_rc" -eq 17 ] && grep -qi "not defined" "$rc5_post_err" \
+            && grep -q "phase=console-go-symbol-missing" "$rc5_post_audit" 2>/dev/null; then
+            pass
+        else
+            fail "RC-5 post-fix: expected exit 17 naming 'not defined' + phase=console-go-symbol-missing, got rc=$rc5_post_rc stderr=$(cat "$rc5_post_err" 2>/dev/null)"
+        fi
+        rm -rf "$rc5_post_tmp" "$rc5_post_go_root"
+    fi
+    rm -f "$rc5_pre_mutant"
+fi
+rm -f "$RC5_TRUNC_GOGATE"
 
 # --- HIMMEL-374: best-effort Jira auto-transition on merge -------------------
 # No ticket tag in the PR title => no Jira CLI calls, merge still succeeds.
