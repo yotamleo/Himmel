@@ -337,9 +337,12 @@ not_contains "full launch, ambient CONSOLE_CONTEXT=1m: absent from the konsole i
 # guard must refuse with exit 2 before konsole runs; this proves the policy is
 # enforced on resolved launch argv rather than only on the wrapper's dry-run
 # context report.
-mutant="$tmp/mutant-headed-arm.sh"
+mutantdir="$tmp/mutant-headed-arm"
+mkdir -p "$mutantdir/scripts/handover" "$mutantdir/scripts/lib"
+mutant="$mutantdir/scripts/handover/headed-arm.sh"
 # shellcheck disable=SC2016  # literal source-text mutation, not shell expansion
 sed 's/ --autocompact "$AUTOCOMPACT"//' "$HEADED_ARM" > "$mutant"
+cp "$HERE/../../lib/console-context.sh" "$mutantdir/scripts/lib/console-context.sh"
 chmod 755 "$mutant"
 d12="$tmp/c12"; mk_launch_stubs "$d12" "HIMMEL-4444-leg"; mkdir -p "$tmp/repo12"
 mrc=0

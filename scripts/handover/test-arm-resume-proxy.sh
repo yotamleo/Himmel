@@ -232,6 +232,7 @@ mkdir -p "$ENVROOT/scripts/handover" "$ENVROOT/scripts/lib"
 cp "$ARM" "$ENVROOT/scripts/handover/arm-resume.sh"
 cp "$SCRIPT_DIR/../lib/py-armor.sh" "$ENVROOT/scripts/lib/py-armor.sh"
 cp "$LIB" "$ENVROOT/scripts/lib/headroom-proxy.sh"
+cp "$SCRIPT_DIR/../lib/console-context.sh" "$ENVROOT/scripts/lib/console-context.sh"
 
 # T3b: process env UNSET, repo-root .env carries HIMMEL_HEADROOM_PROXY=1 ->
 #      falls back to the file -> proxy lines present.
@@ -427,6 +428,7 @@ LIBFAIL="$TMP/libfail"
 mkdir -p "$LIBFAIL/scripts/handover" "$LIBFAIL/scripts/lib"
 cp "$ARM" "$LIBFAIL/scripts/handover/arm-resume.sh"
 cp "$SCRIPT_DIR/../lib/py-armor.sh" "$LIBFAIL/scripts/lib/py-armor.sh"
+cp "$SCRIPT_DIR/../lib/console-context.sh" "$LIBFAIL/scripts/lib/console-context.sh"
 printf 'HIMMEL_HEADROOM_PROXY=1\n' > "$LIBFAIL/.env"
 # (a) lib ABSENT: arm works (rc 0), WARNs, and the truthy .env is IGNORED
 #     (fallback disabled without the parser).
