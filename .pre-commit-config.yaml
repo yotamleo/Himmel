@@ -8,10 +8,17 @@ repos:
       # graphify-out/ holds generated graph artifacts (HIMMEL-1193): reformatting
       # them fights graphify's own output byte-for-byte and would leave the
       # graph-generating station perpetually dirty against the committed copy.
+      # marketplace/plugins/lean-skills/skills/ (HIMMEL-3064) is the same case as
+      # claude-hud: copied VERBATIM from obra/superpowers + mattpocock/skills, so
+      # a reformat here IS the local edit VENDORED.md forbids. Not hypothetical —
+      # end-of-file-fixer had already appended a newline to
+      # writing-skills/graphviz-conventions.dot, making it the one file of 44
+      # that no longer compared byte-identical to upstream and so the one false
+      # positive any cmp-based re-vendor audit would have to explain away.
       - id: trailing-whitespace
-        exclude: '^(templates/luna-second-brain/(\.obsidian/plugins|optional/plugins)/.*\.(js|css)$|marketplace/plugins/claude-hud/|graphify-out/|scripts/lanes/bench/(fixtures|runs)/)'
+        exclude: '^(templates/luna-second-brain/(\.obsidian/plugins|optional/plugins)/.*\.(js|css)$|marketplace/plugins/claude-hud/|marketplace/plugins/lean-skills/skills/|graphify-out/|scripts/lanes/bench/(fixtures|runs)/)'
       - id: end-of-file-fixer
-        exclude: '^(templates/luna-second-brain/(\.obsidian/plugins|optional/plugins)/.*\.(js|css)$|marketplace/plugins/claude-hud/|graphify-out/|scripts/lanes/bench/(fixtures|runs)/)'
+        exclude: '^(templates/luna-second-brain/(\.obsidian/plugins|optional/plugins)/.*\.(js|css)$|marketplace/plugins/claude-hud/|marketplace/plugins/lean-skills/skills/|graphify-out/|scripts/lanes/bench/(fixtures|runs)/)'
       - id: check-yaml
       - id: check-json
       # HIMMEL-2508: 516 tracked scripts reached main as mode 100644 because
