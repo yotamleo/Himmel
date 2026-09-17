@@ -11,6 +11,10 @@
 #              red" comment.
 #   rc == 0 -> if an issue is open, comment "green again" and close it.
 #
+# Platform guard (gitbash-only): invoked from the windows-latest leg itself
+# (ci.yml), so it must run under Git Bash on Windows -- pure bash + `gh`; no
+# .ps1 twin needed.
+#
 # Usage:  windows-nightly-issue.sh <bun-suites-windows-outcome-rc> <run-url>
 # Env:
 #   GH_TOKEN / GITHUB_TOKEN  gh auth (issues:write) — supplied by the workflow.

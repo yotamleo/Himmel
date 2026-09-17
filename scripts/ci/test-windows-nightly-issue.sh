@@ -3,6 +3,9 @@
 # DRY_RUN=1 so no gh, no auth, no network — asserts the issue-state decisions
 # per bun-suites (windows-latest) outcome from the emitted DRY: gh command
 # lines. Modeled on scripts/ci/test-fork-drift-issue.sh.
+#
+# Platform guard (gitbash-only): tests a script invoked from the
+# windows-latest leg itself -- pure bash; no .ps1 twin needed.
 set -uo pipefail
 
 # grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
