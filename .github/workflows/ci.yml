@@ -208,14 +208,17 @@ jobs:
       issues: write
     # HIMMEL-3125: serializes the windows-nightly-issue.sh reconciliation.
     # matrix.os keeps normal per-PR/per-ref ubuntu-latest runs from queuing on
-    # each other (each PR branch gets its own group); github.ref keeps this
-    # scoped to same-branch runs, which for schedule/force_all_os is always
-    # main -- the only pair that can actually race is a manual force_all_os
-    # dispatch landing while the nightly schedule is also running. Queue
+    # each other (each PR branch gets its own group, via github.ref). The
+    # windows-latest leg is the one that mutates the shared, repo-wide
+    # tracking issue, and a force_all_os dispatch can be run from ANY branch
+    # -- not only main -- so that leg drops github.ref from its group and
+    # shares ONE group across every ref, ensuring a manual dispatch always
+    # serializes against the nightly schedule regardless of which branch
+    # triggered it (CodeRabbit finding, PR #788). Queue
     # (cancel-in-progress: false) rather than cancel, so neither run's
     # list-then-create against the tracking issue overlaps the other's.
     concurrency:
-      group: bun-suites-${{ matrix.os }}-${{ github.ref }}
+      group: bun-suites-${{ matrix.os }}-${{ matrix.os == 'windows-latest' && 'shared' || github.ref }}
       cancel-in-progress: false
     strategy:
       fail-fast: false
