@@ -478,6 +478,7 @@ esac
 expected_codex_skill="$srr_pkg/skill-codex.md"
 expected_codex_refs="$srr_pkg/skills/codex/references/quickstart.md"
 expected_hermes_skill="$srr_pkg/skill-claw.md"
+expected_hermes_refs="$srr_pkg/skills/claw/references/quickstart.md"
 out=$(HOME="$srr_home" CLAUDE_CONFIG_DIR="$srr_cfg" PATH="$stub_dir/bin:$base_path" \
       UV_TOOL_DIR="$srr_tools" UV_LIST_FILE="$tmpdir/sr-redir-list" UV_LOG="$tmpdir/sr-redir-uvlog" \
       bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; _graphify_skill_refresh; echo "RC=$?"' 2>&1)
@@ -604,6 +605,11 @@ out=$(HOME="$srov_home" HERMESHOME="$srov_hermes" PATH="$stub_dir/bin:$base_path
       bash -c 'unset CLAUDE_CONFIG_DIR CODEXHOME; . "'"$SCRIPT_DIR"'/graphify-bin.sh"; _graphify_skill_refresh; echo "RC=$?"' 2>&1)
 assert "HERMESHOME override: rc 0" grep -q '^RC=0$' <<<"$out"
 assert "HERMESHOME override: the ROUTED hermes dir was refreshed" cmp -s "$srov_hermes/skills/graphify/SKILL.md" "$expected_hermes_skill"
+# CodeRabbit PR #792 finding (PRRT_kwDOS8WKNM6jZ-8L): the SKILL.md assertion
+# above does not prove the claw REFERENCES were copied -- a regression in
+# reference selection/copying (e.g. reusing codex's or claude's references
+# dir) would still pass it.
+assert "HERMESHOME override: the ROUTED hermes references were refreshed" cmp -s "$srov_hermes/skills/graphify/references/quickstart.md" "$expected_hermes_refs"
 assert "HERMESHOME override: the default ~/.hermes was NOT created" test ! -d "$srov_home/.hermes"
 
 echo "[test-graphify-bin] _graphify_skill_refresh: no uv venv python -> silent no-op (foreign installs untouched)"
@@ -1114,6 +1120,34 @@ assert "unprobeable: NO uv install attempted (this is the whole fix)" \
 assert "unprobeable: gives the manual install command" \
   grep -qE "uv tool install --force --with mcp 'graphifyy==[0-9][^']*'" <<<"$out"
 assert "unprobeable: names the GRAPHIFY_UNPROBED_OK override" grep -q 'GRAPHIFY_UNPROBED_OK=1' <<<"$out"
+
+# CodeRabbit PR #792 finding (PRRT_kwDOS8WKNM6jZ-8T): the unprobeable branch
+# above has its OWN `for _plat in $(_graphify_present_platforms)` loop over the
+# manual repair recipe, separate from the holders>0 branch's loop -- the
+# "held platforms" fixture proves the holders>0 loop names each present
+# platform, but that says nothing about THIS loop, since GRAPHIFY_MCP_HOLDERS=1
+# never reaches this branch. A fresh HOME with no codex/hermes present-platform
+# dirs (the fixture above) also cannot tell the two apart: with nothing
+# present, an unconditionally-dropped platform-specific line and a correctly
+# empty one look identical. Codex+hermes must be PRESENT here.
+echo "[test-graphify-bin] graphify_update: unprobeable-SKIP repair recipe ALSO names each PRESENT platform (separate loop from the holders>0 branch)"
+gpp_home="$tmpdir/gup-probe-platforms"; mkdir -p "$gpp_home/.codex/skills/graphify" "$gpp_home/.hermes/skills/graphify"
+gpp_tools="$tmpdir/gup-probe-platforms-tools"; mkdir -p "$gpp_tools/graphifyy"
+printf 'requirements = [{ name = "graphifyy" }]\n' > "$gpp_tools/graphifyy/uv-receipt.toml"
+gpp_list="$tmpdir/gup-probe-platforms-list"; printf 'graphifyy v0.0.1\n' > "$gpp_list"
+gpp_bin="$tmpdir/gup-probe-platforms-bin"; mkdir -p "$gpp_bin"
+printf '#!/usr/bin/env bash\necho x\n' > "$gpp_bin/graphify"; chmod +x "$gpp_bin/graphify"
+gpp_log="$tmpdir/gup-probe-platforms-log"; : > "$gpp_log"
+out=$(HOME="$gpp_home" PATH="$gpp_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gpp_tools" UV_LIST_FILE="$gpp_list" \
+      UV_BIN_DIR="$gpp_bin" UV_LOG="$gpp_log" GRAPHIFY_MCP_HOLDERS=unavailable \
+      bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
+assert "unprobeable platforms: rc 0" grep -q '^RC=0$' <<<"$out"
+assert "unprobeable platforms: names codex's own repair command" grep -q 'graphify install --platform codex' <<<"$out"
+assert "unprobeable platforms: names hermes's own repair command" grep -q 'graphify install --platform hermes' <<<"$out"
+# shellcheck disable=SC2016
+# Single quotes intentional -- $1 expands inside the spawned bash -c subshell.
+assert "unprobeable platforms: does NOT name a platform that was never present" \
+  bash -c '! grep -q "graphify install --platform agents" <<<"$1"' _ "$out"
 
 echo "[test-graphify-bin] graphify_update: unprobeable + GRAPHIFY_UNPROBED_OK=1 -> proceeds anyway"
 gpo_home="$tmpdir/gup-probe-ok"; mkdir -p "$gpo_home"
