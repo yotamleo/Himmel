@@ -477,6 +477,7 @@ esac
 # host-uname branch above is claude/windows-only and does not apply here.
 expected_codex_skill="$srr_pkg/skill-codex.md"
 expected_codex_refs="$srr_pkg/skills/codex/references/quickstart.md"
+expected_hermes_skill="$srr_pkg/skill-claw.md"
 out=$(HOME="$srr_home" CLAUDE_CONFIG_DIR="$srr_cfg" PATH="$stub_dir/bin:$base_path" \
       UV_TOOL_DIR="$srr_tools" UV_LIST_FILE="$tmpdir/sr-redir-list" UV_LOG="$tmpdir/sr-redir-uvlog" \
       bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; _graphify_skill_refresh; echo "RC=$?"' 2>&1)
@@ -591,6 +592,19 @@ out=$(HOME="$srov_home" CODEXHOME="$srov_codex" PATH="$stub_dir/bin:$base_path" 
 assert "CODEXHOME override: rc 0" grep -q '^RC=0$' <<<"$out"
 assert "CODEXHOME override: the ROUTED codex dir was refreshed" cmp -s "$srov_codex/skills/graphify/SKILL.md" "$expected_codex_skill"
 assert "CODEXHOME override: the default ~/.codex was NOT created" test ! -d "$srov_home/.codex"
+
+# HERMESHOME mirrors CODEXHOME above (CodeRabbit #792 finding): a regression
+# that always used the default $HOME/.hermes would pass the CODEXHOME case
+# above while leaving a configured Hermes install stale -- this proves the
+# same override plumbing for the OTHER platform.
+srov_hermes="$tmpdir/sr-override-hermes"; mkdir -p "$srov_hermes/skills/graphify"
+printf '0.0.1' > "$srov_hermes/skills/graphify/.graphify_version"
+out=$(HOME="$srov_home" HERMESHOME="$srov_hermes" PATH="$stub_dir/bin:$base_path" \
+      UV_TOOL_DIR="$srr_tools" UV_LIST_FILE="$tmpdir/sr-override-hermes-list" UV_LOG="$tmpdir/sr-override-hermes-uvlog" \
+      bash -c 'unset CLAUDE_CONFIG_DIR CODEXHOME; . "'"$SCRIPT_DIR"'/graphify-bin.sh"; _graphify_skill_refresh; echo "RC=$?"' 2>&1)
+assert "HERMESHOME override: rc 0" grep -q '^RC=0$' <<<"$out"
+assert "HERMESHOME override: the ROUTED hermes dir was refreshed" cmp -s "$srov_hermes/skills/graphify/SKILL.md" "$expected_hermes_skill"
+assert "HERMESHOME override: the default ~/.hermes was NOT created" test ! -d "$srov_home/.hermes"
 
 echo "[test-graphify-bin] _graphify_skill_refresh: no uv venv python -> silent no-op (foreign installs untouched)"
 srn_home="$tmpdir/sr-noviv"; mkdir -p "$srn_home/.claude/skills/graphify"
@@ -709,6 +723,30 @@ assert "held: NO uv install attempted (this is what keeps graphify working)" \
 # shellcheck disable=SC2016
 assert "held: does NOT use the misleading 'non-fatal' wording" \
   bash -c '! grep -q "non-fatal" <<<"$1"' _ "$out"
+
+echo "[test-graphify-bin] graphify_update: holder-SKIP repair recipe names each PRESENT platform, not just the 4 shared hints (CodeRabbit #792 finding)"
+# The "held" case above only has a Claude dir, so its 4-shared-hint count
+# alone would still pass even if _graphify_present_platforms or the recipe
+# loop silently dropped codex/hermes. Prove the per-platform line by name,
+# with codex+hermes PRESENT and a platform that's never present (agents)
+# absent from the printed recipe.
+ghp_home="$tmpdir/gup-held-platforms"; mkdir -p "$ghp_home/.codex/skills/graphify" "$ghp_home/.hermes/skills/graphify"
+ghp_tools="$tmpdir/gup-held-platforms-tools"; mkdir -p "$ghp_tools/graphifyy"
+printf 'requirements = [{ name = "graphifyy", extras = [] }]\n' > "$ghp_tools/graphifyy/uv-receipt.toml"
+ghp_list="$tmpdir/gup-held-platforms-list"; printf 'graphifyy v0.0.1\n' > "$ghp_list"   # behind the pin
+ghp_bin="$tmpdir/gup-held-platforms-bin"; mkdir -p "$ghp_bin"
+printf '#!/usr/bin/env bash\necho x\n' > "$ghp_bin/graphify"; chmod +x "$ghp_bin/graphify"
+ghp_log="$tmpdir/gup-held-platforms-log"; : > "$ghp_log"
+out=$(HOME="$ghp_home" PATH="$ghp_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$ghp_tools" UV_LIST_FILE="$ghp_list" \
+      UV_BIN_DIR="$ghp_bin" UV_LOG="$ghp_log" GRAPHIFY_MCP_HOLDERS=1 \
+      bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
+assert "held platforms: rc 0" grep -q '^RC=0$' <<<"$out"
+assert "held platforms: names codex's own repair command" grep -q 'graphify install --platform codex' <<<"$out"
+assert "held platforms: names hermes's own repair command" grep -q 'graphify install --platform hermes' <<<"$out"
+# shellcheck disable=SC2016
+# Single quotes intentional -- $1 expands inside the spawned bash -c subshell.
+assert "held platforms: does NOT name a platform that was never present" \
+  bash -c '! grep -q "graphify install --platform agents" <<<"$1"' _ "$out"
 
 # HIMMEL-1601: the reinstall-guard SKIP is a routine outcome on any busy
 # workstation and can persist forever -- it must (a) still refresh the SKILL
