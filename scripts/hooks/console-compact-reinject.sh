@@ -34,6 +34,12 @@
 # prevent, not a feature. Detection is deliberately layered: an explicit
 # `HIMMEL_CONSOLE_DOC` env var first, then a name-based fallback, because most
 # consoles are launched by a pasted line carrying no exported env at all.
+#
+# FAIL-OPEN (workflow nudge, not a security fence, scripts/hooks/CLAUDE.md):
+# an unresolvable session, a missing/unreadable doc, or a doc with no
+# `## Live state` section all degrade to silence or a one-line warning, never
+# to a block — there is no tool call here to deny. No bypass env var: nothing
+# is ever refused, so there is nothing to bypass.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

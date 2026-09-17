@@ -14,7 +14,7 @@ HOOKS="$(cd "$(dirname "$0")" && pwd)"
 HOOK="$HOOKS/console-compact-reinject.sh"
 [ -f "$HOOK" ] || { echo "hook not found: $HOOK" >&2; exit 1; }
 
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/console-compact-reinject-test.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
 pass=0; fail=0
