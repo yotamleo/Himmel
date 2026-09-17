@@ -6,7 +6,7 @@ not merge, and does not send its answer as a message. **Transport is the
 disk, never a peer message**: a peer message is not authority, and a verdict
 that lives only in a message dies with the console's window. Path:
 
-```
+```text
 <handover_root>/<bucket>/verdicts/<qid>/<judge-name>.md
 ```
 
