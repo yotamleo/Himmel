@@ -523,24 +523,62 @@ assert "unsafe staging targets: marker unchanged" test "$(cat "$sru_home/.claude
 assert "unsafe staging targets: SKILL.md remains a directory" test -d "$sru_home/.claude/skills/graphify/SKILL.md"
 assert "unsafe staging targets: staged directory cleaned" test ! -e "$sru_home/.claude/skills/graphify/SKILL.md.tmp"
 
-echo "[test-graphify-bin] _graphify_skill_refresh: OTHER platforms are NEVER touched (HIMMEL-1750 redesign — no installer call at all)"
-# Under the old installer-wrapping design the upstream installer falsified
-# other platforms' markers and the wrapper had to snapshot/restore them (and
-# still missed nested roots — CR r4/r5). The direct copy never invokes the
-# installer, so a stale agents-platform skill keeps BOTH its marker and its
-# content byte-identically; this test pins that invariant.
-srm_home="$tmpdir/sr-markers"; mkdir -p "$srm_home/.claude/skills/graphify" "$srm_home/.agents/skills/graphify"
+echo "[test-graphify-bin] _graphify_skill_refresh: PRESENT codex skill dir is refreshed; ABSENT hermes dir is left untouched and NOT created (HIMMEL-3050)"
+# HIMMEL-1750 pinned "other platforms are NEVER touched" back when the refresh
+# only knew about Claude. HIMMEL-3050 widens the refresh to every platform
+# ALREADY installed on this station -- codex and hermes drift on every pin
+# bump the same way Claude used to. The invariant that must survive unchanged:
+# a platform with no existing skill dir is still never created (the widening
+# is about which ALREADY-PRESENT dirs get refreshed, never about discovering
+# or inventing new ones). A still-untouched platform (agents) stays alongside
+# codex/hermes to prove the widening is scoped, not a blanket "refresh
+# anything under ~/.*/skills/graphify".
+srm_home="$tmpdir/sr-markers"; mkdir -p "$srm_home/.claude/skills/graphify" "$srm_home/.codex/skills/graphify" "$srm_home/.agents/skills/graphify"
 printf '0.0.1' > "$srm_home/.claude/skills/graphify/.graphify_version"
+printf '0.0.1' > "$srm_home/.codex/skills/graphify/.graphify_version"
+printf 'stale codex skill body' > "$srm_home/.codex/skills/graphify/SKILL.md"
 printf '0.0.2' > "$srm_home/.agents/skills/graphify/.graphify_version"
 printf 'stale agents skill body' > "$srm_home/.agents/skills/graphify/SKILL.md"
+# .hermes is deliberately never created at all -- the absent-platform case.
 out=$(HOME="$srm_home" PATH="$stub_dir/bin:$base_path" \
       UV_TOOL_DIR="$srr_tools" UV_LIST_FILE="$tmpdir/sr-markers-list" UV_LOG="$tmpdir/sr-markers-uvlog" \
-      bash -c 'unset CLAUDE_CONFIG_DIR; . "'"$SCRIPT_DIR"'/graphify-bin.sh"; _graphify_skill_refresh; echo "RC=$?"' 2>&1)
+      bash -c 'unset CLAUDE_CONFIG_DIR CODEXHOME HERMESHOME; . "'"$SCRIPT_DIR"'/graphify-bin.sh"; _graphify_skill_refresh; echo "RC=$?"' 2>&1)
 assert "other-platforms: rc 0" grep -q '^RC=0$' <<<"$out"
 assert "other-platforms: refresh performed" grep -qi 'skill refreshed' <<<"$out"
 assert "other-platforms: claude marker advanced" test "$(cat "$srm_home/.claude/skills/graphify/.graphify_version")" = "$pinned_ver"
-assert "other-platforms: agents marker untouched" test "$(cat "$srm_home/.agents/skills/graphify/.graphify_version")" = "0.0.2"
-assert "other-platforms: agents skill content untouched" test "$(cat "$srm_home/.agents/skills/graphify/SKILL.md")" = "stale agents skill body"
+assert "(a) present codex marker advanced" test "$(cat "$srm_home/.codex/skills/graphify/.graphify_version")" = "$pinned_ver"
+assert "(a) present codex SKILL.md refreshed" cmp -s "$srm_home/.codex/skills/graphify/SKILL.md" "$expected_skill"
+assert "(a) present codex references refreshed" cmp -s "$srm_home/.codex/skills/graphify/references/quickstart.md" "$expected_refs"
+assert "(b) absent hermes dir NOT created" test ! -d "$srm_home/.hermes/skills/graphify"
+assert "(b) absent hermes parent NOT created either" test ! -d "$srm_home/.hermes"
+assert "still-untouched platform: agents marker untouched" test "$(cat "$srm_home/.agents/skills/graphify/.graphify_version")" = "0.0.2"
+assert "still-untouched platform: agents skill content untouched" test "$(cat "$srm_home/.agents/skills/graphify/SKILL.md")" = "stale agents skill body"
+
+echo "[test-graphify-bin] _graphify_skill_refresh: (c) codex CURRENT marker with missing content is repaired (HIMMEL-3050)"
+# Mirrors the existing Claude-only case above (line ~503): a marker that
+# already matches the installed version must NOT short-circuit the refresh
+# when the content it claims to describe is gone -- same rule, now proven for
+# a widened platform too.
+src2_home="$tmpdir/sr-platform-repair"; mkdir -p "$src2_home/.claude/skills/graphify" "$src2_home/.codex/skills/graphify"
+printf '%s' "$pinned_ver" > "$src2_home/.codex/skills/graphify/.graphify_version"
+out=$(HOME="$src2_home" PATH="$stub_dir/bin:$base_path" \
+      UV_TOOL_DIR="$srr_tools" UV_LIST_FILE="$tmpdir/sr-platform-repair-list" UV_LOG="$tmpdir/sr-platform-repair-uvlog" \
+      bash -c 'unset CLAUDE_CONFIG_DIR CODEXHOME HERMESHOME; . "'"$SCRIPT_DIR"'/graphify-bin.sh"; _graphify_skill_refresh; echo "RC=$?"' 2>&1)
+assert "(c) platform repair: rc 0" grep -q '^RC=0$' <<<"$out"
+assert "(c) platform repair: codex SKILL.md repaired" cmp -s "$src2_home/.codex/skills/graphify/SKILL.md" "$expected_skill"
+assert "(c) platform repair: codex references repaired" cmp -s "$src2_home/.codex/skills/graphify/references/quickstart.md" "$expected_refs"
+assert "(c) platform repair: codex marker advanced" test "$(cat "$src2_home/.codex/skills/graphify/.graphify_version")" = "$pinned_ver"
+
+echo "[test-graphify-bin] _graphify_skill_refresh: CODEXHOME / HERMESHOME overrides are honoured, not just the default ~/.codex ~/.hermes"
+srov_home="$tmpdir/sr-override-home"; mkdir -p "$srov_home/.claude/skills/graphify"
+srov_codex="$tmpdir/sr-override-codex"; mkdir -p "$srov_codex/skills/graphify"
+printf '0.0.1' > "$srov_codex/skills/graphify/.graphify_version"
+out=$(HOME="$srov_home" CODEXHOME="$srov_codex" PATH="$stub_dir/bin:$base_path" \
+      UV_TOOL_DIR="$srr_tools" UV_LIST_FILE="$tmpdir/sr-override-list" UV_LOG="$tmpdir/sr-override-uvlog" \
+      bash -c 'unset CLAUDE_CONFIG_DIR HERMESHOME; . "'"$SCRIPT_DIR"'/graphify-bin.sh"; _graphify_skill_refresh; echo "RC=$?"' 2>&1)
+assert "CODEXHOME override: rc 0" grep -q '^RC=0$' <<<"$out"
+assert "CODEXHOME override: the ROUTED codex dir was refreshed" cmp -s "$srov_codex/skills/graphify/SKILL.md" "$expected_skill"
+assert "CODEXHOME override: the default ~/.codex was NOT created" test ! -d "$srov_home/.codex"
 
 echo "[test-graphify-bin] _graphify_skill_refresh: no uv venv python -> silent no-op (foreign installs untouched)"
 srn_home="$tmpdir/sr-noviv"; mkdir -p "$srn_home/.claude/skills/graphify"
@@ -1552,8 +1590,12 @@ echo "[test-graphify-bin] graphify_price_hooks: operator hints are copy-pasteabl
 # shellcheck disable=SC2016
 assert "graphify-bin.sh: no ' -- then ' copy-paste trap in any hint" \
   bash -c '! grep -q -- " -- then " "$1"' _ "$SCRIPT_DIR/graphify-bin.sh"
+# HIMMEL-3050: the four hints now read "--platform $label" (per-platform,
+# shared across claude/codex/hermes call sites) instead of a hardcoded
+# "--platform claude" literal.
+# shellcheck disable=SC2016
 assert "graphify-bin.sh: still has 4 'Run by hand'/'run by hand' install hints" \
-  test "$(grep -ic 'run by hand: graphify install --platform claude' "$SCRIPT_DIR/graphify-bin.sh")" = "4"
+  test "$(grep -ic 'run by hand: graphify install --platform \$label' "$SCRIPT_DIR/graphify-bin.sh")" = "4"
 assert "graphify-bin.sh: each install hint is followed by its own re-price echo" \
   test "$(grep -c 'Then re-price the hooks: bash scripts/lib/graphify-bin.sh price-hooks' "$SCRIPT_DIR/graphify-bin.sh")" = "4"
 # shellcheck disable=SC2016
