@@ -49,8 +49,8 @@ see spec §3.5 for the full shape.
 > console** (HIMMEL-2975 lexicon: the console alone holds the console-doc
 > queue lock and the fleet's GO/RETASK authority; the judge holds nothing and
 > is advisory). The judge session holds only its own judge-doc lock, same as
-> any leg — Guard E means `go.sh` refuses under the LEG marker regardless of
-> who runs it, so the judge does not run `go.sh` either. A relay-env child
+> any leg — `go.sh` refuses under the `HIMMEL_CONSOLE_LEG` marker regardless
+> of who runs it, so the judge does not run `go.sh` either. A relay-env child
 > refuses to run `go.sh` under `HIMMEL_CONSOLE_RELAY=1` by construction, so
 > never attempt it or ask a peer to run it on your behalf.
 <!-- -->
