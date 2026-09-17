@@ -493,10 +493,21 @@ if STUB_JIRA_BUILD=1 STUB_PR_TITLE="chore: tidy things up" \
     assert_jira_log_lacks "transition" "no-tag case makes no jira transition call"
 fi
 
-# Ticket tag present + a built Jira CLI + matching config => comment THEN
-# transition, in that order (comment-then-transition discipline), merge exit 0.
+# HIMMEL-3143: the transition is opt-in per merge. Default (no
+# --jira-transition) => report what WOULD have happened; no comment, no
+# transition call at all.
 if STUB_JIRA_BUILD=1 STUB_PR_TITLE="feat(jira): [HIMMEL-374] reconciler" \
-    run_case "handover/x-slug" 0 "jira: tagged title runs comment then transition"; then
+    run_case "handover/x-slug" 0 "jira: default (no --jira-transition) only reports what it would do"; then
+    assert_jira_log_lacks "comment" "default case makes no jira comment call"
+    assert_jira_log_lacks "transition" "default case makes no jira transition call"
+    assert_err_has "would auto-transition HIMMEL-374 to 'Done'" "default case reports the would-transition on stderr"
+fi
+
+# Ticket tag present + a built Jira CLI + matching config + --jira-transition
+# => comment THEN transition, in that order (comment-then-transition
+# discipline), merge exit 0. Opting in is what makes this fire at all.
+if STUB_JIRA_BUILD=1 STUB_PR_TITLE="feat(jira): [HIMMEL-374] reconciler" \
+    run_case "handover/x-slug" 0 "jira: --jira-transition runs comment then transition" -- --jira-transition; then
     assert_jira_log_has "comment HIMMEL-374" "comment call carries the extracted key"
     assert_jira_log_has "transition HIMMEL-374 Done" "transition call carries the key + configured status"
     comment_ln=$(grep -n 'dist/index.js comment ' "$LAST_JIRA_LOG" | head -1 | cut -d: -f1)
@@ -508,25 +519,28 @@ if STUB_JIRA_BUILD=1 STUB_PR_TITLE="feat(jira): [HIMMEL-374] reconciler" \
     fi
 fi
 
-# A failing Jira transition must never fail the merge itself (best-effort).
+# A failing Jira transition must never fail the merge itself (best-effort),
+# even when opted in.
 if STUB_JIRA_BUILD=1 STUB_JIRA_TRANSITION_FAIL=1 STUB_PR_TITLE="feat(jira): [HIMMEL-374] reconciler" \
-    run_case "handover/x-slug" 0 "jira: failed transition does not fail the merge"; then
+    run_case "handover/x-slug" 0 "jira: opted-in failed transition does not fail the merge" -- --jira-transition; then
     assert_err_has "Jira transition of HIMMEL-374" "transition failure is reported on stderr"
 fi
 
 # Never touch Epic/Story (standing project invariant) — the merge hook has no
 # classifyTicket call in its path, so it must check the issue type itself.
+# This skip fires before the opt-in gate, so it applies regardless of the flag.
 if STUB_JIRA_BUILD=1 STUB_JIRA_ISSUE_TYPE=Epic STUB_PR_TITLE="feat(jira): [HIMMEL-374] reconciler" \
-    run_case "handover/x-slug" 0 "jira: Epic ticket is never transitioned"; then
+    run_case "handover/x-slug" 0 "jira: Epic ticket is never transitioned" -- --jira-transition; then
     assert_jira_log_lacks "comment" "Epic case makes no jira comment call"
     assert_jira_log_lacks "transition" "Epic case makes no jira transition call"
     assert_err_has "never auto-transitioning" "Epic case reports the never-touch skip on stderr"
 fi
 
 # A comment that fails to post leaves no evidence breadcrumb — skip the
-# transition rather than close the ticket silently.
+# transition rather than close the ticket silently. Requires opt-in to reach
+# the comment step at all.
 if STUB_JIRA_BUILD=1 STUB_JIRA_COMMENT_FAIL=1 STUB_PR_TITLE="feat(jira): [HIMMEL-374] reconciler" \
-    run_case "handover/x-slug" 0 "jira: failed comment skips the transition"; then
+    run_case "handover/x-slug" 0 "jira: opted-in failed comment skips the transition" -- --jira-transition; then
     assert_jira_log_lacks "transition" "failed-comment case makes no jira transition call"
     assert_err_has "not auto-transitioning" "failed-comment case reports the skip on stderr"
 fi

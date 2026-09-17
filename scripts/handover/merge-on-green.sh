@@ -47,9 +47,14 @@
 # by design: this wrapper IS the sanctioned gated path and embeds the same
 # (stronger, because it WATCHES) predicates via check-ci.sh.
 #
-# Usage: merge-on-green.sh [<pr-selector>] [--dry-run]
-#   selector   optional PR number / branch / url; defaults to the current branch
-#   --dry-run  run every gate, print the intended merge, then STOP (no merge)
+# Usage: merge-on-green.sh [<pr-selector>] [--dry-run] [--jira-transition]
+#   selector           optional PR number / branch / url; defaults to the
+#                      current branch
+#   --dry-run          run every gate, print the intended merge, then STOP
+#                      (no merge)
+#   --jira-transition  opt IN to auto-transitioning the ticket on this merge
+#                      (HIMMEL-3143 — see "Jira auto-transition is opt-in"
+#                      below; default is to report what it would have done)
 #
 # After a CONFIRMED merge it best-effort prunes the local worktree checked out
 # on the PR's head branch (HIMMEL-1970) — plain `git worktree remove`, never
@@ -132,6 +137,17 @@
 #                          (scripts/lib/handover-path.sh); read only under
 #                          HIMMEL_CONSOLE_LEG.
 #
+# Jira auto-transition is opt-in per merge (HIMMEL-3143; --jira-transition
+# above). It used to fire unconditionally on every merge and closed
+# HIMMEL-2975 while sibling work (T1, T6) was still outstanding — one of the
+# two closes had no open PR, no branch and no commit referencing the ticket
+# at all, because the owed work lived only in a design doc's task list. An
+# "only transition when no other PR references this ticket" heuristic
+# CANNOT catch that case (there is nothing PR-shaped to check), so it cannot
+# be the primary fix, only an optional secondary guard layered on top of
+# opt-in. Do not "improve" this back into an open-PR check; make the caller
+# ask for the transition instead. See jira_auto_transition_on_merge below.
+#
 # GATE INTEGRITY (coderabbit): `gh` and `check-ci.sh` are NOT environment-
 # overridable — a contaminated/inherited launching environment must not be able
 # to swap the merge gate or the SHA pin for a permissive stand-in. `gh` is
@@ -171,9 +187,11 @@ HIMMEL_PUBLIC_ORIGIN_NWO="yotamleo/Himmel"
 
 selector=""
 DRY_RUN=0
+JIRA_TRANSITION_OPT_IN=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run) DRY_RUN=1; shift ;;
+        --jira-transition) JIRA_TRANSITION_OPT_IN=1; shift ;;
         -h|--help)
             sed -n '2,/^set -uo pipefail/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'
             exit 0 ;;
@@ -1156,6 +1174,14 @@ jira_auto_transition_on_merge() {
         Epic|Story) JIRA_AUTO_TRANSITION_RESULT="skip=never-touch-type key=$key type=$issue_type"; return 0 ;;
         "") JIRA_AUTO_TRANSITION_RESULT="skip=cannot-verify-type key=$key"; return 0 ;;
     esac
+
+    # HIMMEL-3143: opt-in per merge, not a heuristic (see the file header).
+    # Report what WOULD have happened and stop — no comment, no transition —
+    # so the console can act on it instead of the ticket silently closing.
+    if ! _truthy "$JIRA_TRANSITION_OPT_IN"; then
+        JIRA_AUTO_TRANSITION_RESULT="would-transition key=$key status=$target_status"
+        return 0
+    fi
 
     local comment_tmp comment_rc=0
     comment_tmp=$(mktemp "${TMPDIR:-/tmp}/merge-on-green-jira-comment.XXXXXX") || { JIRA_AUTO_TRANSITION_RESULT="skip=no-tmpfile key=$key"; return 0; }
