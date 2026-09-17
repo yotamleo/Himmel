@@ -1377,6 +1377,54 @@ test("executeRun: transcript growth DISARMS the watchdog — a quiet-but-healthy
   } finally { rmSync(dir, { recursive: true, force: true }); rmSync(watchRoot, { recursive: true, force: true }); }
 });
 
+test("executeRun: growth observed the poll AFTER the window elapses must not kill (HIMMEL-3146)", async () => {
+  // Deterministic version of the race above: mocking Date.now() pins exactly
+  // when the elapsed-window check trips, instead of racing real wall-clock
+  // timing against the poll interval. Sequence: baseline is set while
+  // unelapsed; Date.now() is then bumped past the window with the transcript
+  // still at baseline (the FIRST elapsed tick — pre-fix this is where the
+  // stale sample kills); only after that tick runs does growth land; the
+  // NEXT tick must see the growth (checked before the elapsed branch) and
+  // stand down instead of killing on the now-stale elapsed flag.
+  const { dir, metaPath, runningMeta } = seedRunningMeta();
+  const watchRoot = mkdtempSync(join(tmpdir(), "glmwatch-"));
+  const stderr = spyOn(console, "error").mockImplementation(() => {});
+  const realNow = Date.now();
+  let now = realNow;
+  const dateSpy = spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    const projDir = join(watchRoot, mangle(resolve(dir)));
+    mkdirSync(projDir, { recursive: true });
+    const transcript = join(projDir, "s.jsonl");
+    const pollMs = 40;
+    const windowMs = 300;
+    const killed: number[] = [];
+    const racy = (async (_p: string, _c: string, _pm: unknown, _l: unknown, _m: unknown, _s: unknown, observe: any) => {
+      observe?.onSpawn?.(81);
+      observe?.onChunk?.("x".repeat(192)); // banner only — under the 512 B disarm floor
+      writeFileSync(transcript, "{\"role\":\"user\"}\n"); // baseline, recorded before the window elapses
+      await new Promise((r) => setTimeout(r, pollMs * 2 + 20)); // >=1 real tick records the baseline, unelapsed
+      now = realNow + windowMs; // the window elapses — size still == baseline: the first elapsed tick
+      await new Promise((r) => setTimeout(r, pollMs)); // exactly ONE more tick fires (pre-fix kills here)
+      appendFileSync(transcript, "{\"role\":\"assistant\"}\n"); // the model answers one tick after elapsing
+      await new Promise((r) => setTimeout(r, pollMs * 2 + 20)); // the confirming tick must see the growth first
+      return { code: 0, capped: false, blocked: false, timedOut: false, pid: 81, tail: "" };
+    }) as any;
+    const { code } = await executeRun({
+      runSession: racy, prompt: "p", worktree: dir, sessionDir: dir, metaPath, runningMeta,
+      startupWatch: { rootDir: watchRoot, windowMs, pollMs, kill: (pid) => { killed.push(pid); } },
+    });
+    expect(killed).toEqual([]);
+    expect(code).toBe(0);
+    expect(JSON.parse(readFileSync(metaPath, "utf8")).status).toBe("done");
+  } finally {
+    dateSpy.mockRestore();
+    stderr.mockRestore();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(watchRoot, { recursive: true, force: true });
+  }
+});
+
 test("executeRun: real output beyond the banner DISARMS the watchdog (HIMMEL-1575)", async () => {
   const { dir, metaPath, runningMeta } = seedRunningMeta();
   const watchRoot = mkdtempSync(join(tmpdir(), "glmwatch-"));
