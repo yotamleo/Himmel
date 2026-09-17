@@ -203,9 +203,23 @@ mkdir -p "$GOROOT/.locks/go"
 # leg + no GO file at all -> refused (the PR #798 shape this ticket exists to close)
 HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean t leg-no-go-blocks 2 Bash "gh pr merge 42 --squash"
 
-# leg + a GO file for the exact certified head -> bound, merge allowed
+# leg + a GO file for the exact certified head, and the merge command pins
+# that exact head -> bound, merge allowed
 printf 'pr=42\nhead=abc123\nby=test\nat=now\n' > "$GOROOT/.locks/go/42.abc123"
-HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean t leg-valid-go-allows 0 Bash "gh pr merge 42 --squash"
+HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean t leg-valid-go-allows 0 Bash "gh pr merge 42 --squash --match-head-commit abc123"
+
+# HIMMEL-3142 CR round: a confirmed GO is bound to $go_sha, but that's only
+# THIS hook's own `gh pr view` read -- the merge command that follows is a
+# separate invocation and can land a different commit unless it pins one
+# itself. Three more cases against the SAME valid-GO fixture above:
+# (a) no pin at all -> refused (the gap CodeRabbit found)
+HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean t leg-valid-go-no-pin-blocks 2 Bash "gh pr merge 42 --squash"
+# (b) pin naming a DIFFERENT sha than the GO was bound to -> refused
+HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean t leg-valid-go-wrong-pin-blocks 2 Bash "gh pr merge 42 --squash --match-head-commit WRONGSHA"
+# (c) --match-head-commit=<sha> (the = form; the old parser silently
+# discarded it via the --*|-* catch-all instead of capturing it) naming the
+# exact certified head -> allowed
+HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean t leg-valid-go-pin-eq-form-allows 0 Bash "gh pr merge 42 --squash --match-head-commit=abc123"
 rm -f "$GOROOT/.locks/go/42.abc123"
 
 # leg + a GO file present but for a DIFFERENT (stale) head -> still refused
@@ -236,6 +250,8 @@ GH_STUB_MODE=clean t non-leg-untouched-by-go-gate 0 Bash "gh pr merge 42 --squas
 grep -qi "no console GO" "$TMP/err-leg-no-go-blocks" || { echo "FAIL leg-no-go reason missing"; fail=$((fail+1)); }
 grep -q "42.abc123" "$TMP/err-leg-no-go-blocks" || { echo "FAIL leg-no-go reason missing GO path"; fail=$((fail+1)); }
 grep -qi "no console GO" "$TMP/err-leg-stale-go-blocks" || { echo "FAIL leg-stale-go reason missing"; fail=$((fail+1)); }
+grep -qi "must pin" "$TMP/err-leg-valid-go-no-pin-blocks" || { echo "FAIL leg-valid-go-no-pin reason missing"; fail=$((fail+1)); }
+grep -qi "does not match" "$TMP/err-leg-valid-go-wrong-pin-blocks" || { echo "FAIL leg-valid-go-wrong-pin reason missing"; fail=$((fail+1)); }
 
 # ── HIMMEL-3142 contract item 6: RED control — the pre-fix hook (base
 # 6ac483e4, before this ticket) never consulted .locks/go/ at all, so a
@@ -290,6 +306,58 @@ else
         fail=$((fail+1)); echo "FAIL red-control-pre-fix-allowed-post-fix-refuses"
     fi
 fi
+
+# ── HIMMEL-3142 CR round: SECOND RED control — the previously-shipped hook
+# (head ef6f995a, before the --match-head-commit pin check existed) resolved
+# go_num/go_sha and confirmed a GO was bound to that head, but never checked
+# the merge command's OWN --match-head-commit value, so a leg with a valid
+# GO and no pin at all merged straight through. Prove it: extract that exact
+# blob, run the SAME leg-valid-go-no-pin fixture against it, and confirm it
+# was allowed (rc=0) where the shipped hook (proven by
+# leg-valid-go-no-pin-blocks, above) refuses (rc=2). Deliberately NOT run
+# against PRE_FIX_SHA above: that blob predates go-gate.sh entirely, so it
+# would fail this fixture for the unrelated reason of having no GO concept
+# at all, proving nothing about the pin specifically.
+PRE_PIN_SHA=ef6f995aabf01bae0e19a1cefa04de2ae2977d18
+PRE_PIN_PAYLOAD="$TMP/red-control-pin-payload.json"
+payload Bash "gh pr merge 42 --squash" > "$PRE_PIN_PAYLOAD"
+
+PRE_PIN_ROOT="$TMP/pre-pin-hook"
+mkdir -p "$PRE_PIN_ROOT/scripts/hooks" "$PRE_PIN_ROOT/scripts/lib"
+git -C "$SCRIPT_DIR/../.." show "$PRE_PIN_SHA:scripts/hooks/block-unresolved-cr-merge.sh" \
+    > "$PRE_PIN_ROOT/scripts/hooks/block-unresolved-cr-merge.sh" 2>/dev/null
+cp "$SCRIPT_DIR/../lib/cr-merge-gate.sh" "$PRE_PIN_ROOT/scripts/lib/cr-merge-gate.sh"
+cp "$SCRIPT_DIR/../lib/ci-green-gate.sh" "$PRE_PIN_ROOT/scripts/lib/ci-green-gate.sh"
+cp "$SCRIPT_DIR/../lib/go-gate.sh" "$PRE_PIN_ROOT/scripts/lib/go-gate.sh"
+cp "$SCRIPT_DIR/../lib/handover-path.sh" "$PRE_PIN_ROOT/scripts/lib/handover-path.sh"
+
+cat > "$PRE_PIN_ROOT/run.sh" <<RUNEOF
+#!/usr/bin/env bash
+bash "$PRE_PIN_ROOT/scripts/hooks/block-unresolved-cr-merge.sh" < "$PRE_PIN_PAYLOAD"
+echo "rc=\$?"
+RUNEOF
+chmod +x "$PRE_PIN_ROOT/run.sh"
+
+printf 'pr=42\nhead=abc123\nby=test\nat=now\n' > "$GOROOT/.locks/go/42.abc123"
+if [ ! -s "$PRE_PIN_ROOT/scripts/hooks/block-unresolved-cr-merge.sh" ]; then
+    fail=$((fail+1)); echo "FAIL red-control setup: could not extract the pre-pin hook from head $PRE_PIN_SHA"
+else
+    red_control_run \
+        --env HIMMEL_CONSOLE_LEG=1 --env "HANDOVER_DIR=$GOROOT" --env GH_STUB_MODE=clean \
+        --env "GH_STUB_LOG=$TMP/calls-red-control-pin.log" \
+        -- bash "$PRE_PIN_ROOT/run.sh"
+    if red_control_assert --label "HIMMEL-3142-PIN-RC" --expect-rc 0 \
+        --observed     "$RED_CONTROL_OUT" \
+        --expect-wrong "rc=0" \
+        --correct      "rc=2" \
+        --note "pre-pin block-unresolved-cr-merge.sh (head $PRE_PIN_SHA) confirmed a GO was bound to \$go_sha but never checked the merge command's own --match-head-commit, so a leg with a valid GO and no pin at all merged straight through; the shipped hook's leg-valid-go-no-pin-blocks case (above, same fixture) refuses it"
+    then
+        pass=$((pass+1)); echo "ok   red-control-pin-pre-fix-allowed-post-fix-refuses"
+    else
+        fail=$((fail+1)); echo "FAIL red-control-pin-pre-fix-allowed-post-fix-refuses"
+    fi
+fi
+rm -f "$GOROOT/.locks/go/42.abc123"
 
 # passthrough cases must not touch gh at all (coderabbit: assert EVERY one)
 for pt in non-merge-passthrough string-literal-passthrough quoted-merge-text-passthrough; do

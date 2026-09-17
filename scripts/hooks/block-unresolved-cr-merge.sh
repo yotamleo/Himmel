@@ -95,7 +95,7 @@ EOF
 
 # Extract the selector + --repo from the merge segment only;
 # selector = first non-flag token after the `merge` verb.
-sel=""; repo=""
+sel=""; repo=""; match_head=""
 set -f
 # shellcheck disable=SC2086
 set -- $merge_segment
@@ -109,10 +109,16 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --repo=*) repo="${1#--repo=}" ;;
         --repo|-R) if [ "$#" -ge 2 ]; then repo="$2"; shift; fi ;;
+        # --match-head-commit is captured (not just consumed) so gate 3 can
+        # verify a leg's merge pins the head its GO was bound to (HIMMEL-3142
+        # CR round). Both spellings: the space form below, and =-form here.
+        --match-head-commit=*) match_head="${1#--match-head-commit=}" ;;
+        --match-head-commit)
+            if [ "$#" -ge 2 ]; then match_head="$2"; shift; fi ;;
         # gh pr merge's own value-taking flags: consume the value token so it
         # is never mistaken for the selector (coderabbit CR round; the rc=3
         # re-anchor still backstops flags this list misses).
-        -b|--body|-F|--body-file|-t|--subject|--match-head-commit|-A|--author-email)
+        -b|--body|-F|--body-file|-t|--subject|-A|--author-email)
             if [ "$#" -ge 2 ]; then shift; fi ;;
         --*|-*) ;;             # other flags: ignore (an unknown value-taking
                                # flag may feed a value token; a wrong selector
@@ -128,6 +134,8 @@ done
 # gate via the pr-view fail-open).
 sel="${sel#\"}"; sel="${sel%\"}"; sel="${sel#\'}"; sel="${sel%\'}"
 repo="${repo#\"}"; repo="${repo%\"}"; repo="${repo#\'}"; repo="${repo%\'}"
+match_head="${match_head#\"}"; match_head="${match_head%\"}"
+match_head="${match_head#\'}"; match_head="${match_head%\'}"
 
 # The cwd branch — fallback anchor when no/bad selector was extracted.
 cwd_branch=""
@@ -237,6 +245,24 @@ case "$(printf '%s' "${HIMMEL_CONSOLE_LEG:-}" | tr '[:upper:]' '[:lower:]' | tr 
         go_reason=$(go_gate "$go_num" "$go_sha" "$go_root") || go_rc=$?
         if [ "$go_rc" = "2" ]; then
             echo "block-unresolved-cr-merge: $go_reason" >&2
+            exit 2
+        fi
+
+        # A confirmed GO is bound to $go_sha, but that is THIS hook's own
+        # `gh pr view` read, not a property of the merge command that
+        # follows — a separate `gh pr merge` invocation can land a different
+        # commit unless it pins one itself (coderabbit CR round). Only this
+        # half is fail-closed (GATE INTEGRITY, same boundary as the GO-file
+        # check above): the resolution above still fails OPEN on an
+        # unresolvable selector like its siblings, but once a GO is
+        # confirmed valid, an unpinned or mismatched merge command must
+        # never pass.
+        if [ -z "$match_head" ]; then
+            echo "block-unresolved-cr-merge: a console-spawned leg's merge must pin --match-head-commit $go_sha (the head the GO for PR #$go_num was bound to) — none was given" >&2
+            exit 2
+        fi
+        if [ "$match_head" != "$go_sha" ]; then
+            echo "block-unresolved-cr-merge: --match-head-commit $match_head does not match the GO-bound head $go_sha for PR #$go_num — refusing" >&2
             exit 2
         fi
         ;;
