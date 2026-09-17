@@ -1540,7 +1540,14 @@ fi
 # HIMMEL-2658 CONTEXT_REASON echo above -- an operator reading the arm log
 # needs the resolved value AND why it resolved that way.
 echo "arm-resume: automerge=$AUTOMERGE merge_gate_bypass=$AUTOMERGE_GRANTS_MERGE_GATE (source: $AUTOMERGE_SOURCE)"
-if [ "$AUTOMERGE" -ne 1 ]; then
+if [ "$NO_AUTOMERGE" -eq 1 ]; then
+    # HIMMEL-3118 CR round 1: the OFF-warning below recommends --automerge,
+    # which contradicts an operator who just typed --no-automerge. The warning
+    # exists to catch an ACCIDENTAL omission; an explicit decline is not one,
+    # and the resolved-state echo above already reports it (source:
+    # --no-automerge flag). Stay silent rather than argue with the flag.
+    :
+elif [ "$AUTOMERGE" -ne 1 ]; then
     echo "WARN arm-resume: --automerge was not passed -- the armed session will NOT set ARMAUTOMERGE=1, so merge-on-green.sh will not fire and the chain stops at every green PR instead of merging it. Pass --automerge if this arm is meant to ship through green PRs unattended." >&2
 elif [ "$AUTOMERGE_SOURCE" != "--automerge flag" ]; then
     # HIMMEL-3118: the inherited-ON case used to resolve silently -- the only

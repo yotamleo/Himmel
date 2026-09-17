@@ -4389,6 +4389,21 @@ rc=$?
 assert_rc "3118g env -u ARMAUTOMERGE + dotenv default still arms (rc=0)" 0 "$rc"
 assert_contains "3118g unset ambient resolves the same as a set-but-ignored ambient (f)" "automerge=1 merge_gate_bypass=0 (source: dotenv default (ARMAUTOMERGE=1 in .env))" "$out"
 
+# (h) CR round 1 finding: an exact platform-specific grant assertion for the
+# Windows .cmd shape. Unlike the POSIX cron/WSL/at launch bodies, which emit
+# the pair as one fused prefix string ("ARMAUTOMERGE=1 CR_MERGE_GATE_OK=1 "),
+# the Windows launcher emits them as SEPARATE `set` lines -- so (d)'s fused-
+# string assertion never exercises this launcher and would miss a regression
+# that re-grants CR_MERGE_GATE_OK=1 here specifically. Same dotenv-default,
+# no-flags scenario as (d), forced through the Windows branch via win_env.
+HO_3118H=$(make_handover "$WORK_REPO")
+out=$(win_env "$WINBIN" env -u ARMAUTOMERGE \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_3118H" --dry-run 2>&1)
+rc=$?
+assert_rc "3118h dotenv default alone still arms on Windows (rc=0)" 0 "$rc"
+assert_contains "3118h Windows .cmd carries set \"ARMAUTOMERGE=1\" from the dotenv default" 'set "ARMAUTOMERGE=1"' "$out"
+assert_not_contains "3118h Windows .cmd does NOT carry set \"CR_MERGE_GATE_OK=1\" from a bare dotenv default" 'set "CR_MERGE_GATE_OK=1"' "$out"
+
 # Restore the shield dir to its EMPTY default for any later section.
 rm -f "$ARM_RESUME_DOTENV_ROOT/.env"
 fi
