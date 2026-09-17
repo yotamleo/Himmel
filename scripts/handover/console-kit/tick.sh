@@ -360,6 +360,24 @@ if [ -n "$root" ] && [ -d "$root/inbox" ]; then
 fi
 [ -n "$inbox_summary" ] || inbox_summary=none
 
+# tick=ARMED|MISSING|UNKNOWN (HIMMEL-3144 D2): whether the periodic Monitor
+# call that is SUPPOSED to invoke this script every 60 min (the console
+# template's `## Monitors` tick row, armed in ACTION ZERO step 10) is
+# actually armed. F never armed it and its absence was invisible to F, to
+# this script, and to the handover -- the whole point of this field is to
+# stop that.
+# ponytail: this can only ever report UNKNOWN. A Monitor's armed/pending
+# state lives inside the Claude Code session process that armed it -- there
+# is no pidfile, `atq` entry, or lock on disk for it (unlike the `at_count`
+# scheduled-job census above, which reads real OS state). tick.sh runs as a
+# plain subprocess with no access to that in-session state, so ARMED/MISSING
+# cannot be told apart from here; faking either would be worse than saying
+# so. A console confirms the arm itself, in ACTION ZERO step 10's first
+# bullet -- this field exists so a HUMAN or a later script reading a run of
+# tick lines can see that no honest signal was available, rather than
+# silently assuming one of the other fields would have caught it.
+tick_status=UNKNOWN
+
 # --burn (HIMMEL-2830): what each leg is actually paying per API call. The
 # session name is the leg doc's stem without the -RESUME suffix - the same
 # string headed-arm-leg.sh passes to `claude -n`, which is what leg-burn.sh
@@ -396,6 +414,7 @@ if [ "$verbose" -eq 1 ]; then
     printf 'fill: %s\n' "$fill"
     printf 'leg tails: %s\n' "$tails_summary"
     printf 'inbox size/cursor: %s\n' "$inbox_summary"
+    printf 'tick monitor: %s\n' "$tick_status"
     # Printed only under --burn, so a plain --verbose tick is unchanged. An if,
     # not a `[ ] &&` one-liner: this is the last statement of the branch, so a
     # false test would become the script's exit status.
@@ -403,13 +422,14 @@ if [ "$verbose" -eq 1 ]; then
         printf 'leg burn (first-turn/avg-ctx): %s\n' "$burn_summary"
     fi
 else
-    # The burn field is APPENDED only under --burn: a default tick line stays
-    # byte-identical to what every console already parses.
+    # `tick=` is always appended (HIMMEL-3144); `burn=` stays APPENDED only
+    # under --burn, after it, so a plain --verbose tick without --burn only
+    # ever gains the one new field.
     if [ "$burn" -eq 1 ]; then
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s burn=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$burn_summary"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary"
     else
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status"
     fi
 fi

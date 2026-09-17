@@ -69,6 +69,20 @@ Run these, in order, and write the result as the first bullet under
    `free` (an earlier console released it) do you acquire one yourself, and
    then record the new token instead.
 9. **Tell the predecessor you are live** so it can release its lock and wrap.
+10. **Arm the `tick` monitor now** (HIMMEL-3144 D2). Of the four `## Monitors`
+    below, `tick` is the only one that fires unconditionally (the other three
+    are change-filtered and can go silent for hours with nothing wrong) — it
+    is your one guaranteed periodic wake-up, and a console that never arms it
+    has no structural reason to ever turn again on its own. Call `Monitor`
+    with the `tick` row's command (60 min) and **record the confirmation in
+    your first bullet** — the monitor id/handle it returns. `tick.sh`'s own
+    output always carries a `tick=` field; today it can only ever read
+    `UNKNOWN` (see the `ponytail:` comment in `tick.sh` for why an armed
+    Monitor is not observable from outside the session that armed it) — that
+    field is not a substitute for the confirmation above, it exists so a
+    later read of a run of tick lines shows no honest ARMED/MISSING signal
+    was available, rather than silently assuming one of the other fields
+    would have caught the gap.
 
 ## Live state
 
@@ -112,7 +126,7 @@ filters to terminal-state changes and emits nothing otherwise.
 
 | Monitor | Cadence | What it is |
 |---|---|---|
-| tick | 60 min | `bash "{{KIT}}/tick.sh" --doc "<this file>" --token <your token> --legs "N1.md N2.md"` (or `--legs "N1.md,N2.md"` — `--legs` accepts space- **and** comma-separated docs, both spellings produce identical output) — one batched line: heartbeat, leg locks, leg processes, armed jobs, suite locks, open PRs, bank. Per-leg lock status is one of **`FRESH`** (held, heartbeat current), **`STALE`** (held, heartbeat aged), **`FREE`** (the literal token `tick.sh` emits when the lock is gone — reclaim it; its own comments call this state "MISSING" as a concept, but `FREE` is what actually appears in `legs=`), or **`NOTFOUND`** (the leg doc did not resolve — a warning about a typo'd/nonexistent path, *not* a dead lock; never mistake it for a released lock) |
+| tick | 60 min | **Armed in ACTION ZERO step 10, not here** — the only unconditional monitor of the four, so its absence is the one that goes structurally unnoticed. `bash "{{KIT}}/tick.sh" --doc "<this file>" --token <your token> --legs "N1.md N2.md"` (or `--legs "N1.md,N2.md"` — `--legs` accepts space- **and** comma-separated docs, both spellings produce identical output) — one batched line: heartbeat, leg locks, leg processes, armed jobs, suite locks, open PRs, bank. Per-leg lock status is one of **`FRESH`** (held, heartbeat current), **`STALE`** (held, heartbeat aged), **`FREE`** (the literal token `tick.sh` emits when the lock is gone — reclaim it; its own comments call this state "MISSING" as a concept, but `FREE` is what actually appears in `legs=`), or **`NOTFOUND`** (the leg doc did not resolve — a warning about a typo'd/nonexistent path, *not* a dead lock; never mistake it for a released lock) |
 | bank | 300 s | poll `bank-preflight.sh`, emit only when the state word changes (headroom → park → weekly-ceiling) |
 | CI | 600 s | poll `gh run list -R <owner/repo> --limit 20 --json databaseId,status`, emit only newly-completed runs |
 | notes repo | 300 s | if you keep a second repo for handover state, emit only on STALL (dirty files older than the commit cadence) or PUSH-LAG |
