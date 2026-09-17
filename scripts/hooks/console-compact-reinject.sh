@@ -82,8 +82,16 @@ extract_section() {
     # A subheading appended AFTER the target section (e.g. a "### MILESTONE"
     # entry appended past "## Live state" under the last-section convention)
     # must still end it, not leak into the re-injection.
+    #
+    # Fence-aware: a ```-delimited block can itself contain a line that looks
+    # like a heading (an example command, a quoted doc snippet). Toggling on
+    # ``` lines and suppressing the terminator check while inside one keeps
+    # that from truncating the section and silently dropping real content
+    # (lock tokens, nonces) that follows the fence.
     awk -v want="$1" '
         $0 == want { f = 1; print; next }
+        f && /^```/ { infence = !infence; print; next }
+        f && infence { print; next }
         f && /^##+ / { exit }
         f { print }
     ' "$2"

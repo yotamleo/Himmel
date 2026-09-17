@@ -84,6 +84,24 @@ case "$out" in
     *) ok "output does not leak a ### subheading appended after ## Live state" ;;
 esac
 
+echo "== a fenced code block inside ## Live state containing its own ## line does not truncate the section (fence-aware terminator) =="
+DOC1C="$TMP/some-console-with-fenced-heading.md"
+printf '%s\n' "# Some Console" "" "## Live state" "" \
+    "legs: N1 token-abc" "" \
+    '```markdown' "## Something else entirely" "example body" '```' "" \
+    "CRITICAL: lock token lock-tok-XYZ" "" \
+    "## Results" "" "- LIVE 09:00" > "$DOC1C"
+out="$(env HIMMEL_CONSOLE_DOC="$DOC1C" bash "$HOOK")"; rc=$?
+if [ "$rc" -eq 0 ]; then ok "fenced-heading doc still exits 0"; else bad "expected rc 0, got $rc"; fi
+case "$out" in
+    *'lock-tok-XYZ'*) ok "output preserves content after a fenced ## line inside Live state" ;;
+    *) bad "output silently dropped content past a fenced ## line - got: $out" ;;
+esac
+case "$out" in
+    *'## Results'*) bad "output leaked past Live state's own section boundary into ## Results" ;;
+    *) ok "output still stops at the real ## Results boundary" ;;
+esac
+
 echo "== doc has no ## Live state section -> one-line warning, still rc 0, no COMPACTED promise =="
 DOC2="$TMP/bare-console.md"
 printf '# Bare Console\n\n## Results\n\n- LIVE 09:00\n' > "$DOC2"
