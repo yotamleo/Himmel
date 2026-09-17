@@ -4760,7 +4760,7 @@ $launch_body"
         fi
         echo "DRY arm-resume: NOTE: entry self-removes on first fire (one-shot)."
         if [ -n "$term_app" ]; then
-            echo "DRY arm-resume: NOTE: headed launch via 'open -a $term_app' -- needs the operator logged into the GUI with the Mac awake at fire time (cron skips minutes missed during sleep); output appended to $log_file."
+            echo "DRY arm-resume: NOTE: headed launch via 'open -a $term_app' -- needs the operator logged into the GUI with the Mac awake at fire time (cron skips minutes missed during sleep); output goes to the Terminal window, NOT $log_file (the per-arm log is written on the headless path only)."
         else
             echo "DRY arm-resume: NOTE: cron gives the job no TTY -- the entry runs headless (stdin </dev/null, output appended to $log_file)."
         fi
@@ -4842,7 +4842,7 @@ $launch_body"
     rm -f "$snap"
     echo "arm-resume: NOTE: crontab entry self-removes on first fire (one-shot)."
     if [ -n "$term_app" ]; then
-        echo "arm-resume: NOTE: headed launch via 'open -a $term_app' -- needs the operator logged into the GUI with the Mac awake at fire time (cron skips minutes missed during sleep); output: $log_file"
+        echo "arm-resume: NOTE: headed launch via 'open -a $term_app' -- needs the operator logged into the GUI with the Mac awake at fire time (cron skips minutes missed during sleep); output goes to the Terminal window, NOT the log file (the per-arm log is written on the headless path only)."
     else
         echo "arm-resume: NOTE: cron gives the job no TTY -- it runs headless; output: $log_file"
     fi
