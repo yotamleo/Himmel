@@ -43,7 +43,7 @@ pass=0; fail=0
 ok()  { pass=$((pass+1)); printf '  ok   %s\n' "$1"; }
 bad() { fail=$((fail+1)); printf '  FAIL %s\n' "$1"; }
 
-TMP="$(mktemp -d)" || { echo "setup: mktemp -d failed" >&2; exit 1; }
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/stop-console-idle-guard-test.XXXXXX")" || { echo "setup: mktemp -d failed" >&2; exit 1; }
 HANDOVER_DIR="$TMP/handover"
 XDG_RUNTIME_DIR="$TMP/xdg"
 mkdir -p "$HANDOVER_DIR" "$XDG_RUNTIME_DIR"
@@ -84,7 +84,7 @@ CONSOLE_PAYLOAD="$(printf '{"session_id":"%s","stop_hook_active":false,"hook_eve
 CONSOLE_PAYLOAD_ACTIVE="$(printf '{"session_id":"%s","stop_hook_active":true,"hook_event_name":"Stop"}' "$SESSION_ID")"
 LEG_PAYLOAD='{"session_id":"a-leg-session-not-a-console","stop_hook_active":false,"hook_event_name":"Stop"}'
 
-is_block() { printf '%s' "$1" | grep -q '"decision":"block"'; }
+is_block() { local out; out="$(printf '%s' "$1" | grep '"decision":"block"')"; [ -n "$out" ]; }
 
 run_guard() {   # run_guard <payload> [ENV=val ...]
     local payload="$1"; shift

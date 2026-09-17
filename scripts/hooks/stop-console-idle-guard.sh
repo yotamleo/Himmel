@@ -89,9 +89,8 @@ IFS= read -r -t 5 -d '' payload
 # guard and it must fire on the very first check, unconditionally.
 case "$payload" in
     *'"stop_hook_active"'*)
-        if printf '%s' "$payload" | grep -Eq '"stop_hook_active"[[:space:]]*:[[:space:]]*true'; then
-            exit 0
-        fi
+        stop_active_match="$(printf '%s' "$payload" | grep -E '"stop_hook_active"[[:space:]]*:[[:space:]]*true')"
+        [ -z "$stop_active_match" ] || exit 0
         ;;
 esac
 
@@ -147,7 +146,7 @@ done
 # Gather the state a useful reason names. Any failure here allows the stop
 # outright rather than blocking with an empty/generic reason (HIMMEL-3144:
 # "a reason that only says do not idle is not acceptable").
-bank_err_file="$(mktemp 2>/dev/null)" || exit 0
+bank_err_file="$(mktemp "${TMPDIR:-/tmp}/stop-console-idle-guard-bank.XXXXXX" 2>/dev/null)" || exit 0
 bank_token="$(_bounded env CADENCE_BANK_LEG=stop-console-idle-guard bash "$BANK_PREFLIGHT_SH" 2>"$bank_err_file")"
 bank_rc=$?
 bank_fleet_line="$(grep -m1 '^bank-preflight: FLEET ' "$bank_err_file" 2>/dev/null)"
