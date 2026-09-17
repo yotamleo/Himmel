@@ -44,6 +44,7 @@ export function parseArgs(argv) {
     commitsFile: null,
     jiraCli: join(HERE, 'dist', 'index.js'),
     only: null,
+    maxClose: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -56,6 +57,7 @@ export function parseArgs(argv) {
     else if (a === '--commits-file') opts.commitsFile = argv[++i];
     else if (a === '--jira-cli') opts.jiraCli = argv[++i];
     else if (a === '--only') opts.only = new Set(argv[++i].split(',').map((s) => s.trim()));
+    else if (a === '--max-close') opts.maxClose = Number(argv[++i]);
     else {
       process.stderr.write(`reconcile-backlog: unknown argument "${a}"\n`);
       process.exit(1);
@@ -219,6 +221,18 @@ async function main() {
     );
     process.exit(1);
   }
+  // HIMMEL-3128: --apply requires an explicit --max-close N so a run can
+  // never close more than N tickets without that being a deliberate choice
+  // (defence in depth on top of the evidence-rule fix — the only writing
+  // disposition on the backlog is CLOSE). No default N: an unset cap would
+  // just be a large default someone forgets is there.
+  if (opts.apply && (!Number.isInteger(opts.maxClose) || opts.maxClose < 0)) {
+    process.stderr.write(
+      'reconcile-backlog: --apply requires --max-close N (a non-negative integer safety valve on ' +
+        'how many tickets this run may CLOSE); pass a large N to intentionally allow many closes.\n',
+    );
+    process.exit(1);
+  }
   const config = loadConfig(opts.config);
   const projectConfig = config[opts.project];
   const targetStatus = projectConfig?.targetStatus;
@@ -232,6 +246,7 @@ async function main() {
   const counts = { CLOSE: 0, RESCOPE: 0, 'STALE-PREMISE': 0, LEAVE: 0 };
   const acted = [];
   let failed = 0;
+  let closed = 0;
 
   for (const ticket of backlog) {
     if (opts.only && !opts.only.has(ticket.key)) continue;
@@ -273,24 +288,32 @@ async function main() {
     if (result.disposition !== 'LEAVE') {
       acted.push(record);
       if (opts.apply) {
-        const commentBody = buildEvidenceComment({ key: ticket.key, ...result });
-        try {
-          const applied = await applyDisposition({
-            key: ticket.key,
-            disposition: result.disposition,
-            targetStatus,
-            commentBody,
-            jiraClient,
-          });
-          record.applied = applied.action;
-        } catch (err) {
-          // One ticket's comment/transition failure (a missing
-          // transition-screen field, a permissions gap, ...) must not abort
-          // the whole backlog run — every other candidate still needs its
-          // own disposition recorded.
-          record.applied = 'failed';
-          failed += 1;
-          process.stderr.write(`reconcile-backlog: ${ticket.key} apply failed: ${err.message}\n`);
+        if (result.disposition === 'CLOSE' && closed >= opts.maxClose) {
+          record.applied = 'skipped-max-close';
+          process.stderr.write(
+            `reconcile-backlog: ${ticket.key} CLOSE skipped — --max-close ${opts.maxClose} already reached\n`,
+          );
+        } else {
+          const commentBody = buildEvidenceComment({ key: ticket.key, ...result });
+          try {
+            const applied = await applyDisposition({
+              key: ticket.key,
+              disposition: result.disposition,
+              targetStatus,
+              commentBody,
+              jiraClient,
+            });
+            record.applied = applied.action;
+            if (result.disposition === 'CLOSE' && applied.action === 'commented+transitioned') closed += 1;
+          } catch (err) {
+            // One ticket's comment/transition failure (a missing
+            // transition-screen field, a permissions gap, ...) must not abort
+            // the whole backlog run — every other candidate still needs its
+            // own disposition recorded.
+            record.applied = 'failed';
+            failed += 1;
+            process.stderr.write(`reconcile-backlog: ${ticket.key} apply failed: ${err.message}\n`);
+          }
         }
       }
     }
@@ -306,6 +329,8 @@ async function main() {
       counts,
       acted: acted.length,
       failed,
+      closed,
+      maxClose: opts.maxClose,
     }),
   );
 

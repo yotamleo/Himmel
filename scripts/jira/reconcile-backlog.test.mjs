@@ -37,6 +37,7 @@ describe('parseArgs', () => {
     expect(opts.hygieneDoc).toBeNull();
     expect(opts.commitsFile).toBeNull();
     expect(opts.only).toBeNull();
+    expect(opts.maxClose).toBeNull();
   });
 
   it('--apply flips apply on; a later --dry-run flips it back off', () => {
@@ -55,6 +56,7 @@ describe('parseArgs', () => {
       '--commits-file', '/tmp/commits.tsv',
       '--jira-cli', '/tmp/dist/index.js',
       '--only', 'FOO-1, FOO-2,FOO-3',
+      '--max-close', '5',
     ]);
     expect(opts.project).toBe('FOO');
     expect(opts.limit).toBe('10');
@@ -63,6 +65,7 @@ describe('parseArgs', () => {
     expect(opts.commitsFile).toBe('/tmp/commits.tsv');
     expect(opts.jiraCli).toBe('/tmp/dist/index.js');
     expect([...opts.only]).toEqual(['FOO-1', 'FOO-2', 'FOO-3']);
+    expect(opts.maxClose).toBe(5);
   });
 
   it('exits 1 on an unrecognized argument', () => {

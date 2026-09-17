@@ -60,6 +60,38 @@ export function describeOutcome(descriptionText) {
   return text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd).trim();
 }
 
+// HIMMEL-3128: a bare `[KEY]` on a commit subject only proves ONE commit
+// landed for this ticket, not that the ticket's own scope is finished — and
+// himmel's commit convention puts the ticket key in every commit subject, so
+// subject-match alone has near-zero evidential value for a ticket that ships
+// across several PRs (HIMMEL-2975's "1. Relay / 2. Judge" Proposal section,
+// HIMMEL-2977's "Scope ... 1. Baseline / 2. minerva grill / 3. Quality
+// scorecard / 4. Deliverables"). A description declaring ≥2 numbered items,
+// or ≥2 distinct task-id markers (`T25`, `Task 9`), is multi-task by
+// construction; a SINGLE numbered item (most descriptions have one somewhere)
+// is not a decomposition and must not trigger this, or nearly every CLOSE
+// candidate downgrades and the rule becomes vacuous.
+const NUMBERED_LIST_ITEM_RE = /^\s*\d+[.)]\s+\S/gm;
+const TASK_ID_MARKER_RE = /\bT\d{1,3}\b|\bTask\s+\d+\b/gi;
+
+export function hasNumberedTaskList(descriptionText) {
+  const text = descriptionText ?? '';
+  const listItems = text.match(NUMBERED_LIST_ITEM_RE) ?? [];
+  if (listItems.length >= 2) return true;
+  const taskMarkers = new Set((text.match(TASK_ID_MARKER_RE) ?? []).map((s) => s.toUpperCase()));
+  return taskMarkers.size >= 2;
+}
+
+// The specifics for the evidence comment: how many numbered items, or which
+// task-id markers, decided it — so a wrong disposition is auditable.
+export function describeNumberedTaskList(descriptionText) {
+  const text = descriptionText ?? '';
+  const listItems = text.match(NUMBERED_LIST_ITEM_RE) ?? [];
+  if (listItems.length >= 2) return `${listItems.length} numbered items in the ticket description`;
+  const taskMarkers = new Set((text.match(TASK_ID_MARKER_RE) ?? []).map((s) => s.toUpperCase()));
+  return `task markers ${[...taskMarkers].join(', ')} in the ticket description`;
+}
+
 export function ticketKeyPattern(key) {
   const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`(^|[^0-9A-Za-z-])${escaped}([^0-9A-Za-z]|$)`);
@@ -205,6 +237,14 @@ export function classifyTicket({
       detail: describeOutcome(description),
     };
   }
+  if (hasNumberedTaskList(description)) {
+    return {
+      disposition: 'RESCOPE',
+      reason: 'multi-task-ticket',
+      evidence: top,
+      detail: describeNumberedTaskList(description),
+    };
+  }
   return { disposition: 'CLOSE', reason: 'subject-match', evidence: top };
 }
 
@@ -239,6 +279,11 @@ export function buildEvidenceComment({ key, disposition, reason, evidence, detai
     lines.push('');
     lines.push(`Unverified external outcome (from the ticket's own description): ${detail}`);
     lines.push('A merged commit proves the leg\'s slice landed, not that this outcome occurred — left open pending that check.');
+  }
+  if (reason === 'multi-task-ticket' && detail) {
+    lines.push('');
+    lines.push(`Multi-task ticket (from the ticket's own description): ${detail}`);
+    lines.push('A merged commit proves one task landed, not that every declared task did — confirm the remaining tasks before closing.');
   }
   return lines.join('\n');
 }

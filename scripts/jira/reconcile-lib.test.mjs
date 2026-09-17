@@ -7,12 +7,43 @@ import {
   hasSkipMarker,
   hasHygieneSweepDisposition,
   hasOutcomeAcceptance,
+  hasNumberedTaskList,
   findMatches,
   classifyTicket,
   applyDisposition,
   buildEvidenceComment,
   TOOL_EVIDENCE_MARKER,
 } from './reconcile-lib.mjs';
+
+// Real HIMMEL-2975 description (fetched 2026-09-17): the ticket the 40 %
+// false-positive audit named as the known-positive case for HIMMEL-3128 —
+// task T27 of its scope (PR #754) shipped, and subject-match alone would
+// CLOSE it while T25/T26/T28 and the remaining design work are still open.
+// The description's "Proposal" section is a genuine 2-item numbered list
+// ("1. Relay ... 2. Judge ..."), which is the real signal this fixture
+// exercises (not a `T\d+`-style marker — the description doesn't use those).
+const HIMMEL_2975_DESCRIPTION = `Why (operator hypothesis 2026-09-12 20:4x, quantified by the cost audit)
+Over seven days the Fable console accounted for ~24 % of Claude spend (52 session files, 9,568 turns, 2.68B cache-read tokens).
+Proposal
+Split the console into two roles:
+1. Relay — a Sonnet (or Haiku) session under a new console-relay profile in scripts/lanes/plugin-profiles.json. It owns the monitors, the leg-doc polling, inbox-send.sh delivery, tick.sh, the pushes on BLOCKED lane:, RUN-note insertion and relaunches. It never rules.
+2. Judge — a Fable session (or an on-demand Fable Agent spawned by the relay) under a console-judge profile invoked only for: verifying a leg FINDING before concurrence, CR dispositions, READY verification + GO, operator rulings. The judge owns the queue lock and issues GO (single-writer invariant); the relay holds no lock.
+Acceptance
+- One full shift run relay+judge; Fable turns per shift ≤ 40 % of the baseline; no missed READY→GO; no lock held by the relay.`;
+
+// Real HIMMEL-2977 description (fetched 2026-09-17): the second known-positive
+// case — the P0 instrumentation commit (#689) is one precondition step of a
+// 4-item numbered Scope list, not the ticket's actual deliverable (the
+// scorecard re-baseline).
+const HIMMEL_2977_DESCRIPTION = `Why (operator 2026-09-12 20:3x)
+"We must reduce costs, but we must also have a design on measuring quality so we don't drop quality."
+Scope — one design leg, minerva-driven, escalation-only
+1. Baseline, before any change. Using only existing meters: scripts/lanes/leg-burn.sh over the last 7 days of transcripts by role and model.
+2. minerva grill → spec → plan (himmel-ops:minerva, autonomous mode): the leg answers every frontier question itself.
+3. Quality scorecard as part of the spec: metric set, data source and command per metric, baseline value, per-lever acceptance rule.
+4. Deliverables in the state repo: specs/cost-program/{baseline-…, spec-…, plan-…}.md, each critic-hardened.
+Acceptance
+- Baseline file exists with every metric sourced; the bench run's manifest is referenced.`;
 
 // Real HIMMEL-2875 description (fetched 2026-09-16): closed on a merged
 // commit that delivered only the leg-owned prep (content audit + Pages
@@ -113,6 +144,36 @@ describe('hasOutcomeAcceptance — a commit proves leg scope, not ticket accepta
     const description = `See https://github.io/example for background on the format we're adopting.
 This ticket is just about renaming the internal config field to match it.`;
     expect(hasOutcomeAcceptance(description)).toBe(false);
+  });
+});
+
+describe('hasNumberedTaskList — HIMMEL-3128: a multi-task description is not one-commit-done', () => {
+  it('is true for the real HIMMEL-2975 description (2-item numbered Proposal)', () => {
+    expect(hasNumberedTaskList(HIMMEL_2975_DESCRIPTION)).toBe(true);
+  });
+
+  it('is true for the real HIMMEL-2977 description (4-item numbered Scope)', () => {
+    expect(hasNumberedTaskList(HIMMEL_2977_DESCRIPTION)).toBe(true);
+  });
+
+  it('is true for explicit task-id markers (T25, T26)', () => {
+    expect(hasNumberedTaskList('T27 shipped. T25/T26/T28 are still open.')).toBe(true);
+  });
+
+  it('is false for a single numbered item (not a decomposition)', () => {
+    expect(hasNumberedTaskList('Steps:\n1. Run the migration.\nThat is the whole ticket.')).toBe(false);
+  });
+
+  it('is false for a single task-id marker mentioned once', () => {
+    expect(hasNumberedTaskList('This lands T27 of the console split.')).toBe(false);
+  });
+
+  it('is false for plain prose with no list or task markers', () => {
+    expect(hasNumberedTaskList('Just fix the bug described above, no external dependency.')).toBe(false);
+  });
+
+  it('is false for an empty/undefined description', () => {
+    expect(hasNumberedTaskList(undefined)).toBe(false);
   });
 });
 
@@ -296,6 +357,104 @@ describe('classifyTicket', () => {
     });
     expect(result).toMatchObject({ disposition: 'LEAVE', reason: 'revert' });
     expect(result.evidence.sha).toBe('newest');
+  });
+});
+
+describe('classifyTicket — HIMMEL-3128: multi-task tickets never CLOSE on their first landed task', () => {
+  const base = {
+    issueType: 'Task',
+    status: 'To Do',
+    targetStatus: 'Done',
+    commentBodies: [],
+    hygieneKeys: new Set(),
+    bodyOnlyCommits: [],
+  };
+
+  // The RED control this ticket's DONE WHEN names: the PRE-FIX rule (no
+  // hasNumberedTaskList check) closed HIMMEL-2975 on this exact subject —
+  // see the manual demonstration pasted into the PR body/handover, which
+  // instantiates the pre-fix reconcile-lib.mjs against this same fixture.
+  // This test is the fixed rule's GREEN: it must not CLOSE here.
+  it('downgrades HIMMEL-2975 to RESCOPE on #754s subject, never CLOSE (the known-positive false-close)', () => {
+    const result = classifyTicket({
+      ...base,
+      key: 'HIMMEL-2975',
+      subjectCommits: [
+        commit('feat(handover): [HIMMEL-2975] console --role judge; relay brief template (#754)', {
+          sha: 'd3c69448',
+          date: '2026-09-17',
+        }),
+      ],
+      description: HIMMEL_2975_DESCRIPTION,
+    });
+    expect(result.disposition).toBe('RESCOPE');
+    expect(result.reason).toBe('multi-task-ticket');
+    expect(result.disposition).not.toBe('CLOSE');
+  });
+
+  it('downgrades HIMMEL-2977 to RESCOPE on #689s subject (the P0-instrumentation precondition, not the deliverable)', () => {
+    const result = classifyTicket({
+      ...base,
+      key: 'HIMMEL-2977',
+      subjectCommits: [
+        commit('feat(bench): [HIMMEL-2977] P0 instrumentation — scorecard recipe, leg-burn line, Tier-return counter', {
+          sha: '5202b4c1',
+          date: '2026-09-17',
+        }),
+      ],
+      description: HIMMEL_2977_DESCRIPTION,
+    });
+    expect(result.disposition).toBe('RESCOPE');
+    expect(result.reason).toBe('multi-task-ticket');
+  });
+
+  it('multiple commits carrying one key: the newest still decides, and a multi-task description still blocks CLOSE', () => {
+    const result = classifyTicket({
+      ...base,
+      key: 'HIMMEL-2975',
+      subjectCommits: [
+        commit('feat(handover): [HIMMEL-2975] console --role judge; relay brief template (#754)', {
+          sha: 'newest',
+          date: '2026-09-17',
+        }),
+        commit('feat(handover): [HIMMEL-2975] relay profile scaffolding (#730)', {
+          sha: 'older',
+          date: '2026-09-14',
+        }),
+      ],
+      description: HIMMEL_2975_DESCRIPTION,
+    });
+    expect(result.disposition).toBe('RESCOPE');
+    expect(result.reason).toBe('multi-task-ticket');
+    expect(result.evidence.sha).toBe('newest');
+  });
+
+  // Anti-vacuity, mandatory (this ticket's DONE WHEN): a genuine single-PR
+  // ticket — plain prose, no numbered list or task markers — must still
+  // classify CLOSE. A fix that stops closing everything is not a fix.
+  it('still CLOSEs a genuine single-PR ticket with plain-prose description (anti-vacuity)', () => {
+    const result = classifyTicket({
+      ...base,
+      key: 'HIMMEL-9002',
+      subjectCommits: [commit('fix: [HIMMEL-9002] ship the thing', { sha: 'single-pr' })],
+      description: 'Just fix the bug described above, no external dependency and no sub-tasks.',
+    });
+    expect(result.disposition).toBe('CLOSE');
+    expect(result.reason).toBe('subject-match');
+  });
+
+  it('evidence comment names the multi-task rule and the deciding commit', () => {
+    const result = classifyTicket({
+      ...base,
+      key: 'HIMMEL-2975',
+      subjectCommits: [commit('feat(handover): [HIMMEL-2975] console --role judge (#754)', { sha: 'd3c69448' })],
+      description: HIMMEL_2975_DESCRIPTION,
+    });
+    const text = buildEvidenceComment({ key: 'HIMMEL-2975', ...result });
+    expect(text).toContain('multi-task-ticket');
+    expect(text).toContain('d3c69448');
+    expect(text).toContain('Multi-task ticket');
+    expect(text).toContain('numbered items');
   });
 });
 
