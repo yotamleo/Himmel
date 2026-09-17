@@ -543,7 +543,7 @@ installed_semantic_backend() {
     if [ "$PLATFORM" = "windows" ]; then ext="bat"; else ext="sh"; fi
     runner="$BAT_DIR/$name.$ext"
     if [ -f "$runner" ]; then
-        match=$(grep -o -- '--backend [^ ]*' "$runner" | head -1 || true)
+        match=$(grep -o -- '--backend [^[:space:]]*' "$runner" | head -1 || true)
         if [ -n "$match" ]; then
             printf 'installed: %s' "${match#--backend }"
         else
