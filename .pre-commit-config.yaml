@@ -449,14 +449,16 @@ repos:
 
       - id: skill-description-cap
         name: skill/command description stays within 120 chars
-        # HIMMEL-2037. lean-skills/skills/ (HIMMEL-3064) is excluded: its
-        # SKILL.md `description:` frontmatter is copied VERBATIM from
-        # obra/superpowers + mattpocock/skills, and VENDORED.md forbids
-        # editing it locally — trimming it here would be exactly that edit.
+        # HIMMEL-2037. No lean-skills exclude here (HIMMEL-3064): the entry
+        # ALREADY honours vendoring at the authoritative source — skill-cost
+        # reads the nearest VENDORED.md (HIMMEL-3093) and skips upstream prose
+        # while still capping that file's `local=` declarations, of which
+        # lean-skills' context7-mcp is one. A path regex here would be a
+        # second, coarser copy of that policy: it cannot see `local=`, so it
+        # would launder the himmel-authored skill as vendored.
         language: system
         entry: node scripts/lanes/skill-cost.mjs --max-desc 120
         files: '^(\.claude/commands/[^/]+\.md|\.claude/skills/[^/]+/SKILL\.md|\.agents/skills/[^/]+/SKILL\.md|marketplace/plugins/[^/]+/commands/[^/]+\.md|marketplace/plugins/[^/]+/skills/[^/]+/SKILL\.md)$'
-        exclude: '^marketplace/plugins/lean-skills/skills/'
         stages: [pre-commit]
 
       - id: command-positional-args
