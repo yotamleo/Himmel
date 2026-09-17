@@ -26,6 +26,13 @@ env equivalents: DOC TOKEN LEGS HANDOVER_DIR REPO
 Relative DOC/LEGS resolve under the handover root; include the bucket prefix
 when HANDOVER_DIR names a global state root.
 
+--legs accepts space- and/or comma-separated leg docs -- both spellings
+produce identical output: --legs "N1.md N2.md" and --legs "N1.md,N2.md" are
+the same list. A --legs entry that does not resolve to a readable file prints
+a "tick: no such leg doc: <path>" warning on stderr and is reported as
+NOTFOUND in legs=, never as MISSING -- MISSING is reserved for a lock that is
+actually gone.
+
 --burn adds a per-leg context-burn field (first-turn/avg-ctx, via
 scripts/lanes/leg-burn.sh) for every doc in --legs. OPT-IN because it scans
 the Claude Code transcript root, which a plain tick must never do: a tick runs
@@ -108,12 +115,23 @@ if [ -n "$console_doc" ] && [ -n "$TOKEN" ]; then
     fi
 fi
 
+# HIMMEL-3130: --legs accepts space- and/or comma-separated entries. `for leg
+# in $LEGS` word-splits on IFS whitespace only, so a comma-joined value was
+# silently one iteration over one nonexistent path. Normalize commas to
+# spaces once so both loops below (this one and the --burn loop) split
+# identically regardless of which separator was used.
+LEGS_SPLIT="${LEGS//,/ }"
+
 legs_summary=""
 tails_summary=""
-for leg in $LEGS; do
+for leg in $LEGS_SPLIT; do
     leg_doc="$(resolve_doc "$leg")"
     label="$(leg_label "$leg")"
-    lock_status=MISSING
+    # HIMMEL-3130: NOTFOUND (file does not resolve) is a distinct status from
+    # MISSING. MISSING means "the lock is gone" -- exactly the signal a
+    # console reads as "reclaim this leg's lock" -- and must never be used for
+    # "I could not find the file", which is a warning, not a lock verdict.
+    lock_status=NOTFOUND
     tail_status="?"
     if [ -f "$leg_doc" ]; then
         lock_out="$(bash "$REPO/scripts/handover/queue-lock.sh" status "$leg_doc" 2>&1)" || true
@@ -127,6 +145,8 @@ for leg in $LEGS; do
         tail_status="$(grep -E '^- .*(LIVE|FINDING|READY|BLOCKED|HALTED|WRAPPED)' "$leg_doc" 2>/dev/null \
             | tail -n 1 | grep -Eo '(LIVE|FINDING|READY|BLOCKED|HALTED|WRAPPED)' | head -n 1)" || tail_status=""
         [ -n "$tail_status" ] || tail_status="?"
+    else
+        printf 'tick: no such leg doc: %s\n' "$leg_doc" >&2
     fi
     legs_summary="$(csv_add "$legs_summary" "$label:$lock_status")"
     tails_summary="$(csv_add "$tails_summary" "$label:$tail_status")"
@@ -347,7 +367,7 @@ fi
 # rather than failing the tick.
 burn_summary=""
 if [ "$burn" -eq 1 ]; then
-    for leg in $LEGS; do
+    for leg in $LEGS_SPLIT; do
         stem="${leg##*/}"; stem="${stem%.md}"; stem="${stem%-RESUME}"
         burn_label="$(leg_label "$leg")"
         burn_line="$(bash "$REPO/scripts/lanes/leg-burn.sh" "$stem" 2>/dev/null)" || burn_line=""

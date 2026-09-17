@@ -154,6 +154,37 @@ contains '--verbose labels leg locks' "$verbose" 'leg locks: N61:FRESH,N65:FREE'
 contains '--verbose labels context fill' "$verbose" 'fill: 28'
 contains '--verbose labels leg models (HIMMEL-2976)' "$verbose" 'leg models: sonnet:1,opus:1'
 
+# --- HIMMEL-3130: a comma-separated --legs is equivalent to space-separated -
+# `for leg in $LEGS` word-splits on IFS whitespace only, so a comma-joined
+# value used to be one iteration over one nonexistent path -- the label was
+# derived from the tail of the whole blob, and every leg but the last vanished
+# from legs=/tails= while being reported as a single false MISSING. RED
+# control (pre-fix tick.sh, this same two-leg fixture): the comma form printed
+# 'legs=N61.md,N65:MISSING' (one collapsed entry) while the space form printed
+# the correct 'legs=N61:FRESH,N65:FREE' -- confirmed manually against
+# scripts/handover/console-kit/tick.sh@8fa186e5 before this fix.
+comma_out="$(bash "$SUT" --legs 'HIMMEL-111-legN61,HIMMEL-222-legN65')"; comma_rc=$?
+space_out="$(bash "$SUT" --legs 'HIMMEL-111-legN61 HIMMEL-222-legN65')"; space_rc=$?
+if [ "$comma_rc" -eq 0 ] && [ "$space_rc" -eq 0 ] && [ "$comma_out" = "$space_out" ]; then
+    pass 'a comma-separated --legs produces byte-identical output to space-separated (HIMMEL-3130)'
+else
+    fail "comma vs space --legs mismatch (comma='$comma_out' space='$space_out')"
+fi
+contains 'the comma-separated form resolves every leg, not just the last (HIMMEL-3130)' "$comma_out" 'legs=N61:FRESH,N65:FREE'
+
+# HIMMEL-3130 (ticket DONE WHEN): legs= must never silently disagree with how
+# many docs --legs named -- the original bug's contradiction was legs= naming
+# ONE leg while procs= (a separately-scanned live table) reported more
+# processes alive, with nothing reconciling the two. Assert the leg-entry
+# count against the docs actually passed, independent of the process table.
+legs_field="$(printf '%s\n' "$comma_out" | grep -oE 'legs=[^ ]+' | cut -d= -f2)"
+legs_count="$(printf '%s\n' "$legs_field" | awk -F',' '{print NF}')"
+if [ "$legs_count" = 2 ]; then
+    pass 'legs= names exactly as many entries as --legs docs were passed (HIMMEL-3130)'
+else
+    fail "legs= entry count mismatch (legs_field='$legs_field' count=$legs_count, expected 2)"
+fi
+
 # --- HIMMEL-2973 S1: livestate= drift field --------------------------------
 # legs=N61:FRESH,N65:FREE above -- only N61 is actually held (the stub
 # queue-lock only reports FRESH for a doc path containing "N61"). Each
@@ -292,14 +323,21 @@ else
 fi
 
 rm -f "$W/handover/HIMMEL-222-legN65.md"
-out="$(FILL_STALE=1 bash "$SUT" --legs 'HIMMEL-111-legN61 HIMMEL-333-legN66')"; rc=$?
+out="$(FILL_STALE=1 bash "$SUT" --legs 'HIMMEL-111-legN61 HIMMEL-333-legN66' 2>"$W/notfound-stderr.txt")"; rc=$?
 if [ "$rc" -eq 0 ]; then
     pass 'missing leg document is tolerated'
 else
     fail "missing leg document is tolerated (rc=$rc)"
 fi
-contains 'missing leg has an explicit lock status' "$out" 'legs=N61:FRESH,N66:MISSING'
-contains 'missing leg has an explicit tail status' "$out" 'tails=N61:LIVE,N66:?'
+# HIMMEL-3130: an unresolvable --legs entry is NOTFOUND, never MISSING --
+# MISSING is reserved for a lock that is genuinely gone, which a console
+# reads as "reclaim this leg's lock". RED control (pre-fix tick.sh, same
+# fixture): stdout printed 'legs=N61:FRESH,N66:MISSING' with an EMPTY stderr
+# -- a bare, unwarned MISSING for a typo'd/unresolvable doc.
+contains 'unresolvable leg has NOTFOUND, not MISSING, as its lock status' "$out" 'legs=N61:FRESH,N66:NOTFOUND'
+contains 'unresolvable leg has an explicit tail status' "$out" 'tails=N61:LIVE,N66:?'
+contains 'an unresolvable leg doc emits a named warning on stderr' "$(cat "$W/notfound-stderr.txt")" 'tick: no such leg doc:'
+case "$out" in *MISSING*) fail 'an unresolvable leg doc never prints bare MISSING' ;; *) pass 'an unresolvable leg doc never prints bare MISSING' ;; esac
 contains 'context-fill rc=3 becomes unknown' "$out" 'fill=?'
 case "$out" in *FILL_RC*) fail 'context-fill failure does not print FILL_RC chatter' ;; *) pass 'context-fill failure does not print FILL_RC chatter' ;; esac
 missing_lines="$(printf '%s\n' "$out" | wc -l | tr -d '[:space:]')"
