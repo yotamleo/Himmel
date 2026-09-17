@@ -217,6 +217,16 @@ rm -f "$GOROOT/.locks/go/42.abc123"
 # it) -> gate 3 never activates, no GO file needed
 HIMMEL_CONSOLE_LEG=0 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean t leg-marker-falsy-allows 0 Bash "gh pr merge 42 --squash"
 
+# inversion control: a VALID matching GO file present, marker flipped OFF ->
+# still allowed. Discriminates the marker from the go_root/file as the thing
+# that gates -- leg-marker-falsy-allows above proves the marker gates when no
+# GO file exists at all, but that alone cannot rule out an implementation
+# that is really keying off go_root/file presence rather than the marker; a
+# GO file genuinely present here removes that ambiguity.
+printf 'pr=42\nhead=abc123\nby=test\nat=now\n' > "$GOROOT/.locks/go/42.abc123"
+HIMMEL_CONSOLE_LEG=0 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean t leg-marker-falsy-with-go-present-allows 0 Bash "gh pr merge 42 --squash"
+rm -f "$GOROOT/.locks/go/42.abc123"
+
 # a non-leg session (HIMMEL_CONSOLE_LEG unset, the suite default) is
 # completely untouched by gate 3 even with an unresolvable go_root
 # (HANDOVER_DIR left unset here) -- "a gate that blocks everything is not a
