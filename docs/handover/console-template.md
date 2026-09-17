@@ -172,8 +172,12 @@ per decision point, not one per thought.
 A leg reports `READY <pr> <head> GREEN` plus its code-review status line. The
 console verifies independently — all check-runs success at that exact head,
 zero unresolved review threads, attestation trailers in the first commit — and
-only then answers `GO`. The leg merges; it reports `MERGED #<n> → <sha>`; you
-pull the primary and tell the leg to close out its ticket.
+only then runs `console-kit/go.sh <pr> <head>` — that write is the ACT of
+granting the GO (HIMMEL-3142: `gh pr merge` itself is gated on that file for
+a console-spawned leg, not merely on hearing from you); answering `GO` over
+SendMessage is a notification to the leg, not the mechanism. The leg merges;
+it reports `MERGED #<n> → <sha>`; you pull the primary and tell the leg to
+close out its ticket.
 
 Never merge with open review threads, and never read a handoff calling a PR
 clean as evidence — query that PR yourself.

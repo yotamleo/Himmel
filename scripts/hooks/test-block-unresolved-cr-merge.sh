@@ -11,6 +11,14 @@ set -uo pipefail
 # still block — the CI gate is independent of CR_MERGE_GATE_OK, HIMMEL-1043).
 unset ARMAUTOMERGE CR_MERGE_GATE_OK
 
+# HIMMEL-3142 — a console-spawned leg's own launching shell carries
+# HIMMEL_CONSOLE_LEG=1, which arms the new gate-3 console-GO check below. An
+# ambient value here (this suite is itself frequently run FROM such a leg)
+# would refuse every allow-case below with "no console GO" before gate 3 is
+# even under test (same precedent as test-merge-on-green.sh). Gate 3 gets its
+# own dedicated cases further down, each setting HIMMEL_CONSOLE_LEG itself.
+unset HIMMEL_CONSOLE_LEG
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOK="$SCRIPT_DIR/block-unresolved-cr-merge.sh"
 TMP="$(mktemp -d)"
@@ -182,6 +190,96 @@ GH_STUB_MODE=unresolved CR_MERGE_GATE_OK=1 t bypass-allows 0 Bash "gh pr merge 4
 unset CR_MERGE_GATE_OK
 GH_STUB_MODE=unresolved CR_PROFILE=none t profile-none-allows 0 Bash "gh pr merge 42 --squash"
 unset CR_PROFILE
+
+# ── HIMMEL-3142 gate 3: console-GO merge gate — runs only when
+# HIMMEL_CONSOLE_LEG is truthy, after the CR/CI gates above already pass
+# (GH_STUB_MODE=clean). Shares scripts/lib/go-gate.sh with
+# merge-on-green.sh's own HIMMEL-2919 gate, so the fixture shape (pr=42,
+# head=abc123, GO file at <go_root>/.locks/go/<pr>.<head>) mirrors that
+# suite's 2919-* cases.
+GOROOT="$TMP/handover_root"
+mkdir -p "$GOROOT/.locks/go"
+
+# leg + no GO file at all -> refused (the PR #798 shape this ticket exists to close)
+HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean t leg-no-go-blocks 2 Bash "gh pr merge 42 --squash"
+
+# leg + a GO file for the exact certified head -> bound, merge allowed
+printf 'pr=42\nhead=abc123\nby=test\nat=now\n' > "$GOROOT/.locks/go/42.abc123"
+HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean t leg-valid-go-allows 0 Bash "gh pr merge 42 --squash"
+rm -f "$GOROOT/.locks/go/42.abc123"
+
+# leg + a GO file present but for a DIFFERENT (stale) head -> still refused
+printf 'pr=42\nhead=OLDSHA\nby=test\nat=now\n' > "$GOROOT/.locks/go/42.abc123"
+HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean t leg-stale-go-blocks 2 Bash "gh pr merge 42 --squash"
+rm -f "$GOROOT/.locks/go/42.abc123"
+
+# HIMMEL_CONSOLE_LEG=0 is the falsy convention (go.sh/merge-on-green.sh share
+# it) -> gate 3 never activates, no GO file needed
+HIMMEL_CONSOLE_LEG=0 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean t leg-marker-falsy-allows 0 Bash "gh pr merge 42 --squash"
+
+# a non-leg session (HIMMEL_CONSOLE_LEG unset, the suite default) is
+# completely untouched by gate 3 even with an unresolvable go_root
+# (HANDOVER_DIR left unset here) -- "a gate that blocks everything is not a
+# gate".
+GH_STUB_MODE=clean t non-leg-untouched-by-go-gate 0 Bash "gh pr merge 42 --squash"
+
+grep -qi "no console GO" "$TMP/err-leg-no-go-blocks" || { echo "FAIL leg-no-go reason missing"; fail=$((fail+1)); }
+grep -q "42.abc123" "$TMP/err-leg-no-go-blocks" || { echo "FAIL leg-no-go reason missing GO path"; fail=$((fail+1)); }
+grep -qi "no console GO" "$TMP/err-leg-stale-go-blocks" || { echo "FAIL leg-stale-go reason missing"; fail=$((fail+1)); }
+
+# ── HIMMEL-3142 contract item 6: RED control — the pre-fix hook (base
+# 6ac483e4, before this ticket) never consulted .locks/go/ at all, so a
+# console-spawned leg with no GO file could run `gh pr merge` straight
+# through (the PR #798 shape this ticket exists to close). Prove it: extract
+# that exact script into a scratch mutant, run the SAME leg-no-go fixture
+# leg-no-go-blocks used above against it, and confirm it was allowed (rc=0)
+# where the shipped hook (proven by leg-no-go-blocks, above) refuses (rc=2).
+export RED_CONTROL_TMPDIR="$TMP"
+# shellcheck source=scripts/lib/red-control.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/red-control.sh"
+
+PRE_FIX_SHA=6ac483e4ad49d66e5760a2ea632871bcab029576
+PRE_FIX_PAYLOAD="$TMP/red-control-payload.json"
+payload Bash "gh pr merge 42 --squash" > "$PRE_FIX_PAYLOAD"
+
+PRE_FIX_ROOT="$TMP/pre-fix-hook"
+mkdir -p "$PRE_FIX_ROOT/scripts/hooks" "$PRE_FIX_ROOT/scripts/lib"
+git -C "$SCRIPT_DIR/../.." show "$PRE_FIX_SHA:scripts/hooks/block-unresolved-cr-merge.sh" \
+    > "$PRE_FIX_ROOT/scripts/hooks/block-unresolved-cr-merge.sh" 2>/dev/null
+cp "$SCRIPT_DIR/../lib/cr-merge-gate.sh" "$PRE_FIX_ROOT/scripts/lib/cr-merge-gate.sh"
+cp "$SCRIPT_DIR/../lib/ci-green-gate.sh" "$PRE_FIX_ROOT/scripts/lib/ci-green-gate.sh"
+# The mutant wrapper always exits 0 itself (it prints the gated hook's rc as
+# data rather than propagating it) -- same shape as the RC-3 grep-mutant in
+# test-merge-on-green.sh: point (a) "the mutant RAN" is then trivially
+# satisfied, so the real evidence is the SPECIFIC printed value (point c),
+# which is why this echoes "rc=<n>" to stdout rather than relying on the
+# wrapper's own exit status.
+cat > "$PRE_FIX_ROOT/run.sh" <<RUNEOF
+#!/usr/bin/env bash
+bash "$PRE_FIX_ROOT/scripts/hooks/block-unresolved-cr-merge.sh" < "$PRE_FIX_PAYLOAD"
+echo "rc=\$?"
+RUNEOF
+chmod +x "$PRE_FIX_ROOT/run.sh"
+
+if [ ! -s "$PRE_FIX_ROOT/scripts/hooks/block-unresolved-cr-merge.sh" ]; then
+    fail=$((fail+1)); echo "FAIL red-control setup: could not extract the pre-fix hook from base $PRE_FIX_SHA"
+else
+    red_control_run \
+        --env HIMMEL_CONSOLE_LEG=1 --env "HANDOVER_DIR=$GOROOT" --env GH_STUB_MODE=clean \
+        --env "GH_STUB_LOG=$TMP/calls-red-control-pre.log" \
+        -- bash "$PRE_FIX_ROOT/run.sh"
+    if red_control_assert --label "HIMMEL-3142-RC" --expect-rc 0 \
+        --observed     "$RED_CONTROL_OUT" \
+        --expect-wrong "rc=0" \
+        --correct      "rc=2" \
+        --note "pre-fix block-unresolved-cr-merge.sh (base $PRE_FIX_SHA) had no console-GO gate at all, so it let a console-spawned leg with NO GO file merge straight through; the shipped hook's leg-no-go-blocks case (above, same fixture) refuses it"
+    then
+        pass=$((pass+1)); echo "ok   red-control-pre-fix-allowed-post-fix-refuses"
+    else
+        fail=$((fail+1)); echo "FAIL red-control-pre-fix-allowed-post-fix-refuses"
+    fi
+fi
 
 # passthrough cases must not touch gh at all (coderabbit: assert EVERY one)
 for pt in non-merge-passthrough string-literal-passthrough quoted-merge-text-passthrough; do

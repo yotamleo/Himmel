@@ -193,6 +193,9 @@ mog_build_fixture() {
     cp "$SCRIPT_DIR/../lib/cr-available.sh" "$tmp/scripts/lib/cr-available.sh"
     # HIMMEL-2919: the console-GO gate resolves the GO file under handover_root.
     cp "$SCRIPT_DIR/../lib/handover-path.sh" "$tmp/scripts/lib/handover-path.sh"
+    # HIMMEL-3142: the GO file check itself now lives in the shared predicate
+    # go_gate() (also used by block-unresolved-cr-merge.sh's own gate).
+    cp "$SCRIPT_DIR/../lib/go-gate.sh" "$tmp/scripts/lib/go-gate.sh"
     if [ "${NO_CHECK_CI:-0}" != "1" ]; then
         printf '#!/usr/bin/env bash\nexit %s\n' "${STUB_CI_RC:-0}" > "$tmp/scripts/check-ci.sh"
         chmod +x "$tmp/scripts/check-ci.sh"

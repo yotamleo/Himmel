@@ -516,6 +516,10 @@ fi
 # refused leg mutates nothing, and before the DRY_RUN branch so a dry run
 # reports the refusal too. Unset marker: skipped whole — the resolver is not
 # even sourced, so operator sessions are unchanged.
+#
+# The actual file check is scripts/lib/go-gate.sh's go_gate() (HIMMEL-3142) —
+# shared with block-unresolved-cr-merge.sh's own gh-pr-merge gate, so the two
+# cannot drift on what "the GO binds" means.
 if _truthy "${HIMMEL_CONSOLE_LEG:-}"; then
     go_root=""
     # shellcheck source=scripts/lib/handover-path.sh
@@ -524,8 +528,18 @@ if _truthy "${HIMMEL_CONSOLE_LEG:-}"; then
         go_root=$(handover_root 2>/dev/null) || go_root=""
     fi
     go_file="${go_root:-<unresolved handover root>}/.locks/go/$pr_num.$sha"
-    if [ -z "$go_root" ] || ! grep -qxF "head=$sha" "$go_file" 2>/dev/null; then
-        echo "merge-on-green: PR #$pr_num at $sha has no console GO ($go_file) — you are a console-spawned leg; send READY to your console and wait for GO; a GO for an older head is stale, never reuse it" >&2
+    # shellcheck source=scripts/lib/go-gate.sh
+    # shellcheck disable=SC1091
+    if ! . "$SCRIPT_DIR/../lib/go-gate.sh" 2>/dev/null; then
+        echo "merge-on-green: cannot load scripts/lib/go-gate.sh — refusing (a console-spawned leg's GO gate must fail closed, not silently no-op)" >&2
+        audit "REFUSED reason=policy-refused phase=console-go-lib-missing repo=$nwo pr=#$pr_num sha=$sha"
+        exit 17
+    fi
+    go_reason=""
+    go_rc=0
+    go_reason=$(go_gate "$pr_num" "$sha" "$go_root") || go_rc=$?
+    if [ "$go_rc" = "2" ]; then
+        echo "merge-on-green: $go_reason" >&2
         audit "REFUSED reason=policy-refused phase=console-go repo=$nwo pr=#$pr_num sha=$sha go=$go_file"
         exit 17
     fi
