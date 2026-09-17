@@ -1163,11 +1163,11 @@ check "54 --date= prints a usage line" "$(printf '%s\n' "$out54" | grep -c '^usa
 out55="$(console next --bucket dateval --dry-run --date "2026-09-14" --doc "$docZval")"
 check "55 a real --date still mints the successor" "$(printf '%s\n' "$out55" | grep -c '^would-doc: .*2026-09-14A-console.md$')" "1"
 
-# --- 56/57 (HIMMEL-2975): CONSOLE_ROLE pass-through to headed-arm.sh's
-# --role, ahead of the positionals, only when set. Each stub records its
-# FULL "$*" to a fixed path baked into the stub itself (never a positional
-# like $5) -- --role judge shifts every downstream position by two, so a
-# positional-indexed record would silently read the wrong field.
+# --- 56/57 (HIMMEL-2975, renamed HIMMEL-3133): CONSOLE_ROLE pass-through to
+# headed-arm.sh's --role, ahead of the positionals, only when set. Each stub
+# records its FULL "$*" to a fixed path baked into the stub itself (never a
+# positional like $5) -- --role console shifts every downstream position by
+# two, so a positional-indexed record would silently read the wrong field.
 doc56A="$root/tester/rolerepo/DEMO-nextleg-${today}A-console.md"
 record56="$tmp/role-record-56"
 cat > "$tmp/stub-arm-role-56.sh" <<STUB
@@ -1180,11 +1180,11 @@ out56a="$(console new --bucket rolerepo)"
 token56a="$(token_of "$out56a")"
 out56b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
     CONSOLE_HEADED_ARM="$tmp/stub-arm-role-56.sh" CONSOLE_ARM_FOREGROUND=1 CONSOLE_WORK_DIR="$tmp/work" \
-    CONSOLE_ROLE=judge \
+    CONSOLE_ROLE=console \
     bash "$C" next --bucket rolerepo --arm --deadline-min 0 ) )"
 check "56 next --arm reports armed" "$(printf '%s\n' "$out56b" | grep -c '^armed: ')" "1"
-check "56 CONSOLE_ROLE=judge: stub record starts with --role judge" \
-    "$(grep -c '^--role judge ' "$record56" 2>/dev/null)" "1"
+check "56 CONSOLE_ROLE=console: stub record starts with --role console" \
+    "$(grep -c '^--role console ' "$record56" 2>/dev/null)" "1"
 HANDOVER_DIR="$root" bash "$QL" release "$doc56A" "$token56a" >/dev/null 2>&1
 
 doc57A="$root/tester/rolerepo2/DEMO-nextleg-${today}A-console.md"
@@ -1248,6 +1248,8 @@ out59b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PR
 check "59 CONSOLE_ROLE=bogus: exits 2" "$rc59b" "2"
 check "59 CONSOLE_ROLE=bogus: no armed line" "$(printf '%s\n' "$out59b" | grep -c '^armed: ')" "0"
 check "59 CONSOLE_ROLE=bogus: stub never invoked" "$([ -e "$record59" ] && echo 1 || echo 0)" "0"
+check "59 CONSOLE_ROLE=bogus: error names 'console' as the valid role" \
+    "$(printf '%s\n' "$out59b" | grep -c 'CONSOLE_ROLE must be console, got: bogus')" "1"
 HANDOVER_DIR="$root" bash "$QL" release "$doc59A" "$token59a" >/dev/null 2>&1
 
 # --- 60: HIMMEL-2973 Delta 6 -- `next` copies the predecessor's

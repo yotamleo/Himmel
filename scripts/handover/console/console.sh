@@ -14,7 +14,8 @@
 #
 # Env seams: HANDOVER_DIR / USER_SLUG / JIRA_PROJECT_KEY (via .env, see
 # load-dotenv.sh); CONSOLE_BUCKET, CONSOLE_DOC, CONSOLE_MODEL, CONSOLE_ROLE
-# (HIMMEL-2975: judge|relay, forwarded to headed-arm.sh as --role on --arm;
+# (HIMMEL-2975, renamed HIMMEL-3133: console|relay, forwarded to
+# headed-arm.sh as --role on --arm;
 # headed-arm.sh itself refuses relay -- a relay is a leg, armed via
 # headed-arm-leg.sh --relay, never through this console path),
 # CONSOLE_FILL_PERCENT, CONSOLE_TEMPLATE_DIR, CONSOLE_WORK_DIR (default:
@@ -197,21 +198,22 @@ find_free_letter() {
 do_arm() {
     local session="$1" doc="$2" fill_signal="$3" log="$4" arm
     local -a role_args=()
-    # HIMMEL-2975: CONSOLE_ROLE (judge) is forwarded to headed-arm.sh as a
-    # leading --role, ONLY when set. `relay` and any other value are refused
-    # HERE, before the detached launch -- headed-arm.sh itself also refuses
-    # --role relay (a relay is a leg, never armed through this console path),
-    # but that refusal happens in a background process the caller cannot see,
-    # so validating up front is what keeps a bad role from printing armed:.
+    # HIMMEL-2975, renamed HIMMEL-3133: CONSOLE_ROLE (console) is forwarded to
+    # headed-arm.sh as a leading --role, ONLY when set. `relay` and any other
+    # value are refused HERE, before the detached launch -- headed-arm.sh
+    # itself also refuses --role relay (a relay is a leg, never armed through
+    # this console path), but that refusal happens in a background process
+    # the caller cannot see, so validating up front is what keeps a bad role
+    # from printing armed:.
     case "${CONSOLE_ROLE:-}" in
         "") ;;
-        judge) role_args=(--role judge) ;;
+        console) role_args=(--role console) ;;
         relay)
             err "relay consoles must use headed-arm-leg.sh --relay"
             return 2
             ;;
         *)
-            err "CONSOLE_ROLE must be judge, got: $CONSOLE_ROLE"
+            err "CONSOLE_ROLE must be console, got: $CONSOLE_ROLE"
             return 2
             ;;
     esac
