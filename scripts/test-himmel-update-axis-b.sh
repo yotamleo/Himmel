@@ -150,28 +150,36 @@ write_fake_lane() {   # <clone> <version>
     git -C "$1" commit --quiet -m "fake lane"
 }
 
+# --roll (HIMMEL-3051) is now the ONE call sync_cli_proxy issues, so the fake
+# lane owns the stop -> install -> restart sequencing internally instead of
+# himmel-update.sh issuing three separate invocations. The rc knobs keep their
+# old positional meaning; $3 (the call log) records only the OUTER invocation
+# ("--roll", once) -- matching what a real caller sees, since the fake's own
+# internal stop/install/restart bookkeeping is no longer separately observable
+# from outside a single subcommand.
 write_fake_linux_lane() {   # <clone> <version> <call-log> [install-rc] [stop-rc] [restart-rc]
     mkdir -p "$1/scripts/setup"
     printf 'running\n' > "$3.state"
     cat > "$1/scripts/setup/cli-proxy-lane.sh" <<SH
 #!/bin/sh
 VERSION="$2"
-printf '%s\n' "\$*" >> "$3"
 case "\${1:-}" in
-    --stop)
-        [ "${5:-0}" -eq 0 ] || exit "${5:-0}"
+    --roll)
+        printf '%s\n' "\$*" >> "$3"
+        if [ "${5:-0}" -ne 0 ]; then exit "${5:-0}"; fi
         printf 'stopped\n' > "$3.state"
-        ;;
-    --install)
-        if [ "\$(cat "$3.state")" = running ]; then
-            echo 'proxy unit is RUNNING — stop first' >&2
+        if [ "${4:-0}" -ne 0 ]; then
+            if [ "${6:-0}" -eq 0 ]; then
+                printf 'running\n' > "$3.state"
+                echo 'cli-proxy-lane: previous binary restored and running.' >&2
+            else
+                echo 'cli-proxy-lane: previous binary did not come back up either -- lane is DOWN.' >&2
+            fi
             exit 1
         fi
-        exit "${4:-0}"
-        ;;
-    --restart)
-        [ "${6:-0}" -eq 0 ] || exit "${6:-0}"
+        if [ "${6:-0}" -ne 0 ]; then exit "${6:-0}"; fi
         printf 'running\n' > "$3.state"
+        echo "proxy rolled to v$2 on 127.0.0.1:8317."
         ;;
     *) exit 2 ;;
 esac
@@ -461,9 +469,7 @@ OUT="$(PATH="$NO_PWSH_BIN" USERPROFILE='' HOME="$LINUXHOME" \
 assert_eq "a successful Linux roll exits 0" "0" "$RC"
 assert_contains "Linux roll names the shell lane pin" "rolling host v1.0.0 -> v8.8.8" "$OUT"
 assert_contains "Linux roll reports the completed version" "cli-proxy-api rolled to v8.8.8" "$OUT"
-assert_eq "Linux lane is invoked with stop, install, then restart" "--stop
---install
---restart" "$(cat "$LINUXLOG")"
+assert_eq "Linux lane is invoked via a single --roll" "--roll" "$(cat "$LINUXLOG")"
 assert_not_contains "Linux roll never passes --force" "force" "$(cat "$LINUXLOG")"
 
 echo ""
@@ -475,13 +481,11 @@ OUT="$(PATH="$NO_PWSH_BIN" USERPROFILE='' HOME="$LINUXHOME" \
     HIMMEL_UPDATE_AUTOSTASH='' CLAUDE_USER_SETTINGS="$LINUXHOME/.claude/settings.json" \
     bash "$LINUXCLONE/scripts/himmel-update.sh" --only cli_proxy 2>&1)"; RC=$?
 assert_eq "a failed Linux install propagates rc 1" "1" "$RC"
-assert_eq "a failed Linux install attempts restart after stop" "--stop
---install
---restart" "$(cat "$LINUXLOG")"
+assert_eq "a failed Linux install still shows a single --roll invocation" "--roll" "$(cat "$LINUXLOG")"
 assert_contains "Linux install failure reports the restore" "previous binary restored" "$OUT"
 assert_eq "Linux install failure leaves the proxy running" "running" "$(cat "$LINUXLOG.state")"
 assert_contains "Linux install failure prints the warn block" "warn: cli-proxy roll did not complete" "$OUT"
-assert_contains "Linux failure prints the platform-correct retry" "bash .*--stop && { bash .*--install; bash .*--restart; }" "$OUT"
+assert_contains "Linux failure prints the platform-correct retry" "bash .*--roll" "$OUT"
 assert_not_contains "Linux failure never retries with --force" "force" "$(cat "$LINUXLOG")"
 
 echo ""
@@ -519,7 +523,7 @@ echo "Test 9f: cli-proxy roll — a refused Linux stop never attempts install"
 write_fake_linux_lane "$LINUXCLONE" "8.8.8" "$LINUXLOG" 0 1
 OUT="$(PATH="$NO_PWSH_BIN" run_update "$LINUXCLONE" "$LINUXHOME" "$STUB1" --only cli_proxy)"; RC=$?
 assert_eq "a refused Linux stop propagates rc 1" "1" "$RC"
-assert_eq "a refused Linux stop invokes only stop" "--stop" "$(cat "$LINUXLOG")"
+assert_eq "a refused Linux stop still shows a single --roll invocation" "--roll" "$(cat "$LINUXLOG")"
 assert_contains "a refused Linux stop prints the warn block" "warn: cli-proxy roll did not complete" "$OUT"
 assert_contains "a refused Linux stop asks to retry when idle" "re-run when idle" "$OUT"
 assert_eq "a refused Linux stop leaves the proxy running" "running" "$(cat "$LINUXLOG.state")"
@@ -530,9 +534,7 @@ echo "Test 9g: cli-proxy roll — Linux restart failure after successful install
 write_fake_linux_lane "$LINUXCLONE" "8.8.8" "$LINUXLOG" 0 0 1
 OUT="$(PATH="$NO_PWSH_BIN" run_update "$LINUXCLONE" "$LINUXHOME" "$STUB1" --only cli_proxy)"; RC=$?
 assert_eq "a failed Linux restart propagates rc 1" "1" "$RC"
-assert_eq "a failed Linux restart is attempted once after install" "--stop
---install
---restart" "$(cat "$LINUXLOG")"
+assert_eq "a failed Linux restart still shows a single --roll invocation" "--roll" "$(cat "$LINUXLOG")"
 assert_contains "a failed Linux restart prints the warn block" "warn: cli-proxy roll did not complete" "$OUT"
 assert_not_contains "a failed Linux restart never reports a completed roll" "cli-proxy-api rolled to" "$OUT"
 
@@ -542,10 +544,8 @@ echo "Test 9h: cli-proxy roll — Linux install failure and restore failure"
 write_fake_linux_lane "$LINUXCLONE" "8.8.8" "$LINUXLOG" 1 0 1
 OUT="$(PATH="$NO_PWSH_BIN" run_update "$LINUXCLONE" "$LINUXHOME" "$STUB1" --only cli_proxy)"; RC=$?
 assert_eq "a failed Linux restore propagates rc 1" "1" "$RC"
-assert_eq "a failed Linux restore is attempted once" "--stop
---install
---restart" "$(cat "$LINUXLOG")"
-assert_contains "Linux restore failure is reported" "restore failed" "$OUT"
+assert_eq "a failed Linux restore still shows a single --roll invocation" "--roll" "$(cat "$LINUXLOG")"
+assert_contains "Linux restore failure is reported" "lane is DOWN" "$OUT"
 assert_contains "Linux restore failure prints the warn block" "warn: cli-proxy roll did not complete" "$OUT"
 
 echo ""
@@ -554,7 +554,7 @@ echo "Test 9i: cli-proxy roll — unverifiable Linux stamp gives the safe retry 
 printf 'custom\n' > "$LINUXHOME/.cli-proxy-api/cli-proxy-api.version"
 OUT="$(PATH="$NO_PWSH_BIN" run_update "$LINUXCLONE" "$LINUXHOME" "$STUB1" --only cli_proxy)"; RC=$?
 assert_eq "an unverifiable Linux stamp exits 0" "0" "$RC"
-assert_contains "Linux cannot-verify hint stops before installing" "bash .*--stop && { bash .*--install; bash .*--restart; }" "$OUT"
+assert_contains "Linux cannot-verify hint stops before installing" "bash .*--roll" "$OUT"
 assert_eq "an unverifiable Linux stamp never invokes the lane" "" "$(cat "$LINUXLOG")"
 
 echo ""

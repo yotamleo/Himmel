@@ -15,6 +15,13 @@
 # while a client is actively connected (a bounce kills an in-flight
 # codex-lane render) unless --force is given.
 #
+# --roll (HIMMEL-3051): the manual --install then --restart sequence has a
+# silent-success trap -- --install refuses on a running unit whose version
+# differs (told to --stop first or pass --force), and a bare --restart then
+# relaunches whatever is CURRENTLY at $EXE and prints "proxy back up" even
+# when that is the OLD binary. --roll owns stop -> install -> restart ->
+# verify as one guarded step instead.
+#
 # Usage:
 #   cli-proxy-lane.sh --install            download binary + write config.yaml
 #   cli-proxy-lane.sh --login              one-time codex OAuth (device-code flow)
@@ -22,6 +29,7 @@
 #   cli-proxy-lane.sh --start              foreground (debugging; Ctrl-C to stop)
 #   cli-proxy-lane.sh --stop               stop the running proxy
 #   cli-proxy-lane.sh --restart            bounce the proxy
+#   cli-proxy-lane.sh --roll               stop -> install -> restart -> verify the pin
 #   cli-proxy-lane.sh --verify             one-line reachability probe
 #   cli-proxy-lane.sh --status             multi-line status report
 #   cli-proxy-lane.sh --force              override the bounce-safety guard
@@ -77,9 +85,11 @@ assert_supported_arch() {
 usage() {
   cat <<'USAGE'
 Usage: cli-proxy-lane.sh [--install] [--login] [--register] [--start]
-                          [--stop] [--restart] [--verify] [--status] [--force]
+                          [--stop] [--restart] [--roll] [--verify] [--status]
+                          [--force]
 
 No flag = status report. Per-host order: --install -> --login -> --register.
+--roll = stop -> install -> restart -> verify the pin (a version bump).
 USAGE
 }
 
@@ -153,6 +163,17 @@ assert_bounce_safe() {
 
 assert_exe() { [ -x "$EXE" ] || die "binary missing at $EXE — run --install first"; }
 assert_config() { [ -f "$CFG" ] || die "config missing at $CFG — run --install first"; }
+
+installed_version() { [ -f "$VER_STAMP" ] && head -n1 "$VER_STAMP" 2>/dev/null; }
+
+# version_stale: true when the version stamp doesn't read the pinned
+# VERSION. $EXE and $VER_STAMP are written together, atomically, by the
+# single writer below (install_binary) -- so this isn't blind trust in a
+# stamp file: --restart/--roll always exec $EXE fresh, so the stamp IS the
+# version of whatever they just launched. This is exactly the HIMMEL-3051
+# drift: --install refused (unit running, version differed) so the stamp
+# was never bumped, and the running binary is provably still the old one.
+version_stale() { [ "$(installed_version)" = "$VERSION" ] && return 1; return 0; }
 
 # regex_escape <path> — backslash-escapes BRE metacharacters so a path
 # under $HOME (which may legitimately contain ., +, (, ), etc.) can't be
@@ -458,7 +479,67 @@ cmd_restart() {
   else
     pid_owns_port "$NOHUP_PID" || die "127.0.0.1:${PORT} is reachable, but the process this --restart just launched (pid ${NOHUP_PID}) isn't the one listening there -- something else may be answering that port. Run: cli-proxy-lane --status"
   fi
-  echo "proxy back up on 127.0.0.1:${PORT}."
+  if version_stale; then
+    echo "cli-proxy-lane: WARNING: proxy relaunched, but the installed version stamp reads '$(installed_version)' (unset = unknown), not the pinned v${VERSION} -- --install never completed on this host (it likely refused while the unit was running). Run --roll to converge." >&2
+  else
+    echo "proxy back up on 127.0.0.1:${PORT}."
+  fi
+}
+
+# --- roll (HIMMEL-3051) ----------------------------------------------------
+
+cmd_roll() {
+  # stop -> install -> restart -> verify as ONE guarded step -- see the
+  # header comment for why the manual sequence has a silent-success trap.
+  assert_supported_arch
+  if [ -x "$EXE" ] && ! version_stale; then
+    echo "cli-proxy-lane: already at pinned v${VERSION} -- --roll is a no-op."
+    return 0
+  fi
+  assert_bounce_safe
+  local was_alive=0
+  if proxy_alive; then
+    was_alive=1
+    echo "stopping cli-proxy-api to roll the pinned binary ..."
+    stop_proxy_now
+  fi
+  mkdir -p "$DIR"
+  if [ -f "$CFG" ]; then
+    echo "config already present: $CFG"
+  else
+    write_config
+  fi
+  # Subshell: install_binary calls die() (a hard exit) on failure. Isolating
+  # it here lets a failed download/checksum be caught instead of taking the
+  # whole --roll down silently -- $EXE is untouched until the verified
+  # download is install(1)'d over it, so on failure the previous binary (if
+  # any) is still intact and worth relaunching rather than leaving the lane
+  # down for the sake of an advisory version bump.
+  local install_rc=0
+  ( install_binary ) || install_rc=$?
+  if [ "$install_rc" -ne 0 ]; then
+    if [ "$was_alive" = 1 ]; then
+      echo "cli-proxy-lane: WARNING: install failed -- relaunching the previous binary so the lane doesn't stay down." >&2
+      if start_background && wait_proxy_running 20; then
+        echo "cli-proxy-lane: previous binary restored and running." >&2
+      else
+        echo "cli-proxy-lane: WARNING: previous binary did not come back up either -- lane is DOWN. Run --status." >&2
+      fi
+    fi
+    die "install failed while rolling to v${VERSION} (see above)"
+  fi
+  echo "relaunching proxy (background) ..."
+  start_background || die "launching the proxy failed (systemctl --user start ${UNIT_NAME}, or the detached launch)"
+  if ! wait_proxy_running 20; then
+    die "proxy did not come up on 127.0.0.1:${PORT} within 20s after --roll (run --status, or --start in the foreground to see the error)"
+  fi
+  if systemctl --user is-enabled --quiet "$UNIT_NAME" 2>/dev/null; then
+    unit_owns_port || die "127.0.0.1:${PORT} is reachable, but ${UNIT_NAME}'s own tracked process isn't the one listening there -- something else may be answering that port. Run: cli-proxy-lane --status"
+  else
+    pid_owns_port "$NOHUP_PID" || die "127.0.0.1:${PORT} is reachable, but the process --roll just launched (pid ${NOHUP_PID}) isn't the one listening there -- something else may be answering that port. Run: cli-proxy-lane --status"
+  fi
+  version_stale && die "--roll completed and the proxy is up, but the version stamp reads '$(installed_version)', not the pinned v${VERSION} -- installation did not converge."
+  echo "proxy rolled to v${VERSION} on 127.0.0.1:${PORT}."
 }
 
 # --- verify / status -------------------------------------------------------
@@ -471,7 +552,7 @@ cmd_verify() {
 }
 
 cmd_status() {
-  local has_exe=0 has_cfg=0 has_oa=0 has_unit=0 run=0 authed=1 code
+  local has_exe=0 has_cfg=0 has_oa=0 has_unit=0 run=0 authed=1 stale=0 code
 
   [ -x "$EXE" ] && has_exe=1
   [ -f "$CFG" ] && has_cfg=1
@@ -482,13 +563,16 @@ cmd_status() {
     200) run=1 ;;
     401) run=1; authed=0 ;;
   esac
+  [ "$run" = 1 ] && [ "$authed" = 1 ] && version_stale && stale=1
 
   echo "== CLIProxyAPI codex lane (127.0.0.1:${PORT}) =="
   if [ "$has_exe" = 1 ]; then echo "binary:      OK   $EXE"; else echo "binary:      MISSING      -> --install"; fi
   if [ "$has_cfg" = 1 ]; then echo "config:      OK   $CFG"; else echo "config:      MISSING      -> --install"; fi
   if [ "$has_oa" = 1 ]; then echo "codex auth:  OK"; else echo "codex auth:  MISSING      -> --login"; fi
   if [ "$has_unit" = 1 ]; then echo "unit:        OK   $UNIT_NAME"; else echo "unit:        not registered -> --register"; fi
-  if [ "$run" = 1 ] && [ "$authed" = 1 ]; then
+  if [ "$stale" = 1 ]; then
+    echo "running:     WARNING   127.0.0.1:${PORT} answering, but the running binary is v$(installed_version) not the pinned v${VERSION} -> --roll"
+  elif [ "$run" = 1 ] && [ "$authed" = 1 ]; then
     echo "running:     OK   127.0.0.1:${PORT}"
   elif [ "$run" = 1 ]; then
     echo "running:     OK but UNAUTHENTICATED (HTTP 401) -> CLIPROXY_API_KEY doesn't match config.yaml"
@@ -502,13 +586,15 @@ cmd_status() {
     echo "NEXT: cli-proxy-lane.sh --login   (then --register)"
   elif [ "$run" = 0 ]; then
     echo "NEXT: cli-proxy-lane.sh --register   (or --start for foreground debugging)"
+  elif [ "$stale" = 1 ]; then
+    echo "NEXT: cli-proxy-lane.sh --roll   (running binary is behind the pinned v${VERSION})"
   elif [ "$authed" = 0 ]; then
     echo "NEXT: fix the key in $CFG (--install skips a config.yaml that already exists), then --restart"
   else
     echo "lane is up. Test: bash scripts/claude-codex -p \"reply OK\""
   fi
 
-  [ "$has_exe" = 1 ] && [ "$has_cfg" = 1 ] && [ "$has_oa" = 1 ] && [ "$run" = 1 ] && [ "$authed" = 1 ]
+  [ "$has_exe" = 1 ] && [ "$has_cfg" = 1 ] && [ "$has_oa" = 1 ] && [ "$run" = 1 ] && [ "$authed" = 1 ] && [ "$stale" = 0 ]
 }
 
 # --- dispatch ------------------------------------------------------------
@@ -520,6 +606,7 @@ DO_REGISTER=0
 DO_START=0
 DO_STOP=0
 DO_RESTART=0
+DO_ROLL=0
 DO_VERIFY=0
 DO_STATUS=0
 
@@ -531,6 +618,7 @@ for arg in "$@"; do
     --start) DO_START=1 ;;
     --stop) DO_STOP=1 ;;
     --restart) DO_RESTART=1 ;;
+    --roll) DO_ROLL=1 ;;
     --verify) DO_VERIFY=1 ;;
     --status) DO_STATUS=1 ;;
     --force) FORCE=1 ;;
@@ -547,10 +635,12 @@ RC=0
 [ "$DO_VERIFY" = 1 ] && { cmd_verify || RC=$?; }
 [ "$DO_STOP" = 1 ] && { cmd_stop || RC=$?; }
 [ "$DO_RESTART" = 1 ] && { cmd_restart || RC=$?; }
+[ "$DO_ROLL" = 1 ] && { cmd_roll || RC=$?; }
 [ "$DO_STATUS" = 1 ] && { cmd_status || RC=$?; }
 
 if [ "$DO_INSTALL" = 0 ] && [ "$DO_LOGIN" = 0 ] && [ "$DO_REGISTER" = 0 ] && \
    [ "$DO_START" = 0 ] && [ "$DO_STOP" = 0 ] && [ "$DO_RESTART" = 0 ] && \
+   [ "$DO_ROLL" = 0 ] && \
    [ "$DO_VERIFY" = 0 ] && [ "$DO_STATUS" = 0 ]; then
   cmd_status || RC=$?
 fi
