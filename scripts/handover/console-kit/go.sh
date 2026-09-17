@@ -13,8 +13,9 @@
 #   0  written
 #   1  handover root unresolvable, or the write failed
 #   2  usage (arg count, non-digit PR, sha not exactly 40 lowercase hex)
-#   3  refused: run from a console-spawned leg - a leg never writes its own GO
-#   3  refused: run from a console relay
+#   3  refused: run from a console-spawned leg (a judge included - HIMMEL-3133,
+#      "the judge is a leg") - a leg never writes its own GO
+#   3  refused: run from a console relay - only the console writes a GO
 #
 # Platform guard (gitbash-only): POSIX bash 3.2+, same as headed-arm-leg.sh.
 set -u
@@ -56,7 +57,7 @@ esac
 case "$(printf '%s' "${HIMMEL_CONSOLE_RELAY:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
     ''|0|false|off|no) ;;
     *)
-        echo "go: refusing - this is a console relay (HIMMEL_CONSOLE_RELAY is set); only the judge writes a GO. Escalate the READY to your judge." >&2
+        echo "go: refusing - this is a console relay (HIMMEL_CONSOLE_RELAY is set); only the console writes a GO. Escalate the READY to your console." >&2
         exit 3 ;;
 esac
 

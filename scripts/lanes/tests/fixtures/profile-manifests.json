@@ -89,5 +89,13 @@
       "qmd@himmel"
     ],
     "contextBudget": 35000
+  },
+  "console-judge": {
+    "enabled": [
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "qmd@himmel"
+    ],
+    "contextBudget": 35000
   }
 }

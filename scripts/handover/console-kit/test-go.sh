@@ -8,8 +8,11 @@
 #   2. write: path printed, file fields pr= / head= / by= / at= (ISO-8601 UTC).
 #   3. by= falls back to <user>@<host> without CONSOLE_SESSION_NAME.
 #   4. idempotent: a re-run overwrites in place, no temp file left behind.
-#   5. HIMMEL_CONSOLE_LEG set -> exit 3, nothing written (a leg never writes its own GO).
-#   6. unresolvable handover root -> exit 1.
+#   5. HIMMEL_CONSOLE_LEG set -> exit 3, nothing written (a leg never writes its own GO;
+#      this covers a --judge leg too - HIMMEL-3133, same marker, no separate one).
+#   6. HIMMEL_CONSOLE_RELAY set -> exit 3, and its message names the console, never
+#      a judge, as the writer (HIMMEL-3133 fixed pre-existing stale wording here).
+#   7. unresolvable handover root -> exit 1.
 #
 # Platform guard (gitbash-only): POSIX bash 3.2+.
 set -uo pipefail
@@ -83,7 +86,19 @@ contains "relay: names the relay" "$out" "console relay"
 check    "relay: no GO file written" "$(find "$ROOT6" -type f | wc -l | tr -d ' ')" "0"
 rm -rf "$ROOT6"
 
-# --- 7. unresolvable handover root -------------------------------------------
+# --- 7. HIMMEL-3133: "the judge is a leg" - no separate HIMMEL_CONSOLE_JUDGE
+# marker exists, so nothing anywhere in go.sh's output should still claim
+# "only the judge writes a GO" (stale pre-3133 wording: only the CONSOLE does,
+# whether the caller is a plain leg, a --judge leg, or a relay).
+if grepq "$out" -F -e "the judge writes"; then
+  echo "FAIL - relay refusal still claims a judge writes the GO (pre-3133 wording)"
+  fails=$((fails+1))
+else
+  echo "ok - relay refusal does not claim a judge writes the GO"
+fi
+contains "relay: correctly names the console as the GO writer" "$out" "only the console writes a GO"
+
+# --- 8. unresolvable handover root -------------------------------------------
 rc=0; HANDOVER_DIR="$tmp/absent" bash "$SCRIPT" 77 "$SHA" >/dev/null 2>&1 || rc=$?
 check "no root: exit 1" "$rc" "1"
 

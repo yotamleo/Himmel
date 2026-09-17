@@ -132,20 +132,34 @@
 # only under this flag. Exports HIMMEL_CONSOLE_RELAY=1, the marker
 # inbox-send.sh's Guard C already refuses --token under and the Task 26
 # write-deny hook will key writes off - a distinct signal from the profile.
+#
+# --judge (HIMMEL-3133 / design §3.2 "the judge is a leg"): launches a judge
+# session through this SAME launcher rather than a separate mechanism. Forces
+# --profile console-judge (a real --profile conflicts, exit 2, same shape as
+# --relay above); an empty MODEL defaults to claude-fable-5-1 but only on the
+# native lane. No new HIMMEL_CONSOLE_JUDGE marker: HIMMEL_CONSOLE_LEG=1 is
+# already exported for every leg, so Guard E (go.sh refuses under it,
+# merge-on-green.sh demands a console GO) already covers a judge - it is a
+# leg, not a new role the guards need to learn. What DOES differ from a
+# plain leg: no IMPL_GUARD_OK/INLINE_IMPL_OK (a judge does not implement),
+# a raised HIMMEL_READ_CLAMP_LINES (independent reading is the job), and the
+# judge preface instead of the leg preface.
 set -u
 
 usage() {
-    echo "usage: headed-arm-leg.sh [--dry-run] [--lane native|claudex] [--profile <name>] [--relay] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
+    echo "usage: headed-arm-leg.sh [--dry-run] [--lane native|claudex] [--profile <name>] [--relay] [--judge] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
 }
 
 DRY_RUN=0
 RELAY=0
+JUDGE=0
 LANE="${LEG_LANE:-native}"
 PROFILE="${LEG_PROFILE:-}"
 while :; do
     case "${1:-}" in
         --dry-run) DRY_RUN=1; shift ;;
         --relay) RELAY=1; shift ;;
+        --judge) JUDGE=1; shift ;;
         --lane)
             # codex CR fix: `--lane` as the LAST arg leaves only 1 positional,
             # so `shift 2` fails (rc=1) and shifts NOTHING under `set -u`
@@ -182,6 +196,20 @@ if [ "$RELAY" -eq 1 ]; then
     PROFILE="console-relay"
 fi
 
+# --judge (HIMMEL-3133): forces console-judge the same way --relay forces
+# console-relay above - a real conflicting --profile refuses rather than
+# silently overriding. --judge and --relay therefore also refuse each other
+# here (each forces a different profile), which is the correct outcome: a
+# session is not both roles at once.
+if [ "$JUDGE" -eq 1 ]; then
+    if [ -n "$PROFILE" ] && [ "$PROFILE" != "console-judge" ]; then
+        usage
+        echo "headed-arm-leg: --judge forces --profile console-judge (got: $PROFILE)" >&2
+        exit 2
+    fi
+    PROFILE="console-judge"
+fi
+
 case "$LANE" in
     native|claudex) ;;
     *)
@@ -207,6 +235,15 @@ if [ "$RELAY" -eq 1 ]; then
     [ -z "$MODEL" ] && MODEL=claude-sonnet-5
     : "${LEG_EFFORT:=low}"
     export LEG_EFFORT
+fi
+
+# --judge defaults MODEL to the Fable tier, but ONLY on the native lane - the
+# tier gate below matches a claude-* prefix, so a claudex judge would carry no
+# cost gate at all under a borrowed default. --judge --lane claudex is left to
+# fall through to the claudex lane's own gpt-6-astra default further down,
+# unchanged: a known gap (design §3.2 P1), not this ticket's to close.
+if [ "$JUDGE" -eq 1 ] && [ "$LANE" = "native" ]; then
+    [ -z "$MODEL" ] && MODEL=claude-fable-5-1
 fi
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -310,12 +347,27 @@ fi
 # headed-arm.sh's shared console/leg child-env block does not set these.
 # Export into THIS process so both survive konsole's `-e env -u ...`, which
 # only unsets the three HIMMEL-2545 vars and otherwise inherits as-is.
-export IMPL_GUARD_OK=1
-export INLINE_IMPL_OK=1
+# --judge (HIMMEL-3133): a judge does not implement, so neither permission is
+# exported for it. The --dry-run report below reads both via ${VAR:-<unset>}
+# rather than a bare $VAR, since a judge launch never sets them at all and
+# this script runs under `set -u`.
+if [ "$JUDGE" -ne 1 ]; then
+    export IMPL_GUARD_OK=1
+    export INLINE_IMPL_OK=1
+fi
 # HIMMEL_CONSOLE_LEG=1 (HIMMEL-2919): marks the launched process as a
-# console-spawned leg, both lanes. merge-on-green.sh then merges only on the
+# console-spawned leg, both lanes - including --judge (design §3.2, "the
+# judge is a leg": this IS Guard E for a judge too, no separate
+# HIMMEL_CONSOLE_JUDGE marker). merge-on-green.sh then merges only on the
 # console's GO file (console-kit/go.sh), and go.sh refuses to run under it.
 export HIMMEL_CONSOLE_LEG=1
+# HIMMEL_READ_CLAMP_LINES (HIMMEL-3133 / design §3.2): raises read-clamp.sh's
+# whole-file limit for a judge - independent reading is the job. 4000 is a
+# judgment call (no source document names a number): ~10x the leg default of
+# 400, generous for a design-sized doc without reopening the clamp entirely,
+# which stays HIMMEL_READ_CLAMP_OK's own, operator-only lever. The repeat-read
+# half of the clamp (read-clamp.sh's per-range dedup) is untouched.
+[ "$JUDGE" -eq 1 ] && export HIMMEL_READ_CLAMP_LINES=4000
 # HIMMEL_CONSOLE_RELAY=1 (HIMMEL-2975): marks this leg as the Sonnet relay half
 # of a split console. inbox-send.sh's Guard C already refuses --token under it
 # (#733); the Task 26 write-deny hook denies writes under it. Both key off
@@ -342,7 +394,15 @@ fi
 if [ -n "$PROFILE" ]; then
     PROFILES_MJS="${HEADED_ARM_LEG_PROFILES:-$HERE/../../lanes/plugin-profiles.mjs}"
     LEG_SHIM="${HEADED_ARM_LEG_SHIM:-$HERE/../../lanes/leg-claude-launcher.sh}"
-    LEG_PREFACE="${HEADED_ARM_LEG_PREFACE:-$HERE/../../../docs/handover/leg-preface.md}"
+    # --judge (HIMMEL-3133): the leg preface tells a read-only judge to
+    # implement and ship, which is wrong for the role. HEADED_ARM_LEG_PREFACE
+    # stays the higher-precedence test seam either branch honors - only the
+    # DEFAULT changes.
+    if [ "$JUDGE" -eq 1 ]; then
+        LEG_PREFACE="${HEADED_ARM_LEG_PREFACE:-$HERE/../../../docs/handover/judge-preface.md}"
+    else
+        LEG_PREFACE="${HEADED_ARM_LEG_PREFACE:-$HERE/../../../docs/handover/leg-preface.md}"
+    fi
     # Next to the launch log, i.e. inside the per-uid console work dir the
     # console already owns and cleans - never /tmp world-readable, never the
     # repo (it is generated, per-leg state).
@@ -453,8 +513,13 @@ if [ "$DRY_RUN" -eq 1 ]; then
     # CONSOLE_CONTEXT=1m and see it reported <unset> here, proving the scrub
     # above ran in THIS wrapper's own process before it ever execs into
     # headed-arm.sh.
+    # HIMMEL-3133: ${VAR:-<unset>}, not a bare $VAR - a --judge dry-run never
+    # exports IMPL_GUARD_OK/INLINE_IMPL_OK (see above) and this line must not
+    # die on set -u the moment --judge is passed. A non-judge launch always
+    # has both set to 1, so this stays byte-identical to before for every
+    # existing caller.
     printf 'headed-arm-leg: env IMPL_GUARD_OK=%s INLINE_IMPL_OK=%s HIMMEL_CONSOLE_LEG=%s HEADED_ARM_REPO=%s scrub=%s CONSOLE_CONTEXT=%s\n' \
-        "$IMPL_GUARD_OK" "$INLINE_IMPL_OK" "$HIMMEL_CONSOLE_LEG" "${HEADED_ARM_REPO:-<derived by headed-arm.sh>}" \
+        "${IMPL_GUARD_OK:-<unset>}" "${INLINE_IMPL_OK:-<unset>}" "$HIMMEL_CONSOLE_LEG" "${HEADED_ARM_REPO:-<derived by headed-arm.sh>}" \
         "$LEG_ENV_SCRUB" "${CONSOLE_CONTEXT:-<unset>}"
     # Printed ONLY under --relay: with the flag omitted this line is absent and
     # the dry-run report stays byte-identical to today's, same guarantee shape
@@ -462,6 +527,15 @@ if [ "$DRY_RUN" -eq 1 ]; then
     if [ "$RELAY" -eq 1 ]; then
         printf 'headed-arm-leg: relay=%s HIMMEL_CONSOLE_RELAY=%s LEG_EFFORT=%s\n' \
             "$RELAY" "$HIMMEL_CONSOLE_RELAY" "$LEG_EFFORT"
+    fi
+    # Printed ONLY under --judge, same guarantee shape as --relay above.
+    # preface-source names the FILE that will be concatenated into the per-leg
+    # preface (LEG_PROFILE_PREFACE, in the --profile line below, is the
+    # generated per-leg copy - this is the one place the SOURCE choice is
+    # directly observable in --dry-run).
+    if [ "$JUDGE" -eq 1 ]; then
+        printf 'headed-arm-leg: judge=%s read-clamp-lines=%s preface-source=%s\n' \
+            "$JUDGE" "${HIMMEL_READ_CLAMP_LINES:-<unset>}" "$LEG_PREFACE"
     fi
     printf 'headed-arm-leg: lane=%s launcher=%s launcher-env=%s' \
         "$LANE" "${HEADED_ARM_LAUNCHER:-claude (native default)}" "${HEADED_ARM_LAUNCHER_ENV:-<none>}"

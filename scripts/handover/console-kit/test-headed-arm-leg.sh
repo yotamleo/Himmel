@@ -11,6 +11,11 @@
 #   3-6. --dry-run argv: default standard succeeds; LEG_CONTEXT=1m is refused
 #        for ordinary and Fable-family models; off-values (e.g. "standard" or
 #        a typo) stay on the cheaper, already-correct standard ceiling.
+#   6c. HIMMEL-3133: --judge forces --profile console-judge, defaults MODEL to
+#       claude-fable-5-1 on the native lane only, withholds IMPL_GUARD_OK/
+#       INLINE_IMPL_OK, raises HIMMEL_READ_CLAMP_LINES, and switches the
+#       preface source to docs/handover/judge-preface.md; conflicts with a
+#       mismatched --profile or with --relay the same way --relay itself does.
 #   7. --dry-run reports LEG_REPO folded into HEADED_ARM_REPO.
 #   8-9. full (non-dry) launch via the same KONSOLE_CMD/PGREP_CMD/
 #        HEADED_ARM_PROC seams headed-arm.sh's own suite uses (the wrapper
@@ -262,6 +267,49 @@ contains "dry-run --relay, LEG_PROFILE=leg-impl: refusal names console-relay" "$
 rc=0; out="$(bash "$SCRIPT" --dry-run --relay HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
 check "dry-run --relay, explicit opus model: tier gate still applies (exit 2)" "$rc" "2"
 contains "dry-run --relay, explicit opus model: refusal is the tier gate" "$out" "Tier"
+
+# --- 6c (HIMMEL-3133). --judge: forces the console-judge profile + the same
+# HIMMEL_CONSOLE_LEG=1 marker every leg carries (design §3.2, "the judge is a
+# leg" - Guard E refuses a judge's own GO identically, no separate marker).
+# Defaults MODEL to claude-fable-5-1 on the native lane only; withholds
+# IMPL_GUARD_OK/INLINE_IMPL_OK (a judge does not implement); raises
+# HIMMEL_READ_CLAMP_LINES; and switches the preface source to
+# docs/handover/judge-preface.md. The Fable default still has to clear the
+# existing tier gate, so this uses a fixture doc carrying a Tier line rather
+# than some/doc.md.
+doc_tier_judge="$tmp/tier-doc-judge.md"
+printf '%s\n' '# fixture brief' '> **Tier:** fable — design: judge adjudication' > "$doc_tier_judge"
+
+rc=0; out="$(env -u IMPL_GUARD_OK -u INLINE_IMPL_OK bash "$SCRIPT" --dry-run --judge HIMMEL-9999-leg "$doc_tier_judge" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "dry-run --judge: exit 0" "$rc" "0"
+contains "dry-run --judge: reports HIMMEL_CONSOLE_LEG=1" "$out" "HIMMEL_CONSOLE_LEG=1"
+contains "dry-run --judge: forces profile=console-judge" "$out" "profile=console-judge"
+contains "dry-run --judge: defaults the model to claude-fable-5-1" "$out" "claude-fable-5-1"
+contains "dry-run --judge: withholds IMPL_GUARD_OK" "$out" "IMPL_GUARD_OK=<unset>"
+contains "dry-run --judge: withholds INLINE_IMPL_OK" "$out" "INLINE_IMPL_OK=<unset>"
+contains "dry-run --judge: raises the read-clamp line limit" "$out" "read-clamp-lines=4000"
+contains "dry-run --judge: preface source is judge-preface.md" "$out" "docs/handover/judge-preface.md"
+
+# --judge --lane claudex: the Fable default is scoped to the native lane only
+# (HIMMEL-3133 explicitly leaves composing --judge with claudex out of scope)
+# - claudex keeps its own gpt-6-astra default untouched, and some/doc.md (no
+# Tier line) proves that default never reached the Opus/Fable tier gate.
+rc=0; out="$(bash "$SCRIPT" --dry-run --judge --lane claudex HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "dry-run --judge --lane claudex: exit 0" "$rc" "0"
+not_contains "dry-run --judge --lane claudex: does not force claude-fable-5-1" "$out" "claude-fable-5-1"
+contains "dry-run --judge --lane claudex: still forces profile=console-judge" "$out" "profile=console-judge"
+
+# --judge conflicts with an explicit non-matching --profile, same shape as --relay.
+rc=0; out="$(bash "$SCRIPT" --dry-run --judge --profile leg-impl HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "dry-run --judge --profile leg-impl: refused with exit 2" "$rc" "2"
+contains "dry-run --judge --profile leg-impl: refusal names console-judge" "$out" "console-judge"
+
+# --judge --relay together: each flag's own conflict check refuses in turn
+# (RELAY forces console-relay first; JUDGE then sees a mismatched non-empty
+# PROFILE and refuses) - no dedicated mutual-exclusion guard needed.
+rc=0; out="$(bash "$SCRIPT" --dry-run --judge --relay HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "dry-run --judge --relay: refused with exit 2" "$rc" "2"
+contains "dry-run --judge --relay: refusal names console-judge" "$out" "console-judge"
 
 # --- 7. LEG_REPO folded into HEADED_ARM_REPO --------------------------------
 rc=0; out="$(LEG_REPO=/some/other/repo bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
