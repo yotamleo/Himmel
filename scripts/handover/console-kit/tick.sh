@@ -98,8 +98,9 @@ csv_add() {
 clock="$(date +%H:%M 2>/dev/null)" || clock="??:??"
 
 hb=skip
-if [ -n "$DOC" ] && [ -n "$TOKEN" ]; then
-    console_doc="$(resolve_doc "$DOC")"
+console_doc=""
+[ -n "$DOC" ] && console_doc="$(resolve_doc "$DOC")"
+if [ -n "$console_doc" ] && [ -n "$TOKEN" ]; then
     if bash "$REPO/scripts/handover/queue-lock.sh" heartbeat "$console_doc" "$TOKEN" >/dev/null 2>&1; then
         hb=ok
     else
@@ -132,6 +133,57 @@ for leg in $LEGS; do
 done
 [ -n "$legs_summary" ] || legs_summary=none
 [ -n "$tails_summary" ] || tails_summary=none
+
+# HIMMEL-2973 S1: cross-reference the console doc's own `## Live state`
+# `legs:` line against the lock status just computed above (legs_summary),
+# the same way ceiling_summary below cross-references argv against a
+# separate invariant. "skip" (no --doc given, same as hb=skip above) and
+# "unknown" (doc given but no `## Live state`/`legs:` line found -- e.g. a
+# pre-HIMMEL-2973 doc) are both distinct from "ok": neither says the state
+# agrees, only that there was nothing to disagree about.
+list_has() {  # list_has <needle> <word> [word...]
+    local needle="$1" w
+    shift
+    for w in "$@"; do
+        [ "$w" = "$needle" ] && return 0
+    done
+    return 1
+}
+
+livestate_summary=skip
+if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
+    live_state_body="$(awk '
+        $0 == "## Live state" { f = 1; next }
+        f && /^## / { exit }
+        f { print }
+    ' "$console_doc")"
+    legs_line="$(printf '%s\n' "$live_state_body" | grep '^legs:' | head -n 1)"
+    if [ -n "$legs_line" ]; then
+        # Each leg is one backtick span `<label>:<nonce>:<lock-token>:<pid>`
+        # (Delta 2's format) -- take the label, the text before the first
+        # colon inside the span.
+        # shellcheck disable=SC2016  # backtick span pattern, not a shell expansion
+        live_legs="$(printf '%s\n' "$legs_line" | grep -oE '`[A-Za-z0-9_]+:[^`]*`' | sed -E 's/^`([A-Za-z0-9_]+):.*`$/\1/')"
+        held_legs="$(printf '%s\n' "$legs_summary" | tr ',' '\n' | awk -F: '$2 == "FRESH" || $2 == "STALE" { print $1 }')"
+        drift_csv=""
+        for l in $live_legs; do
+            # shellcheck disable=SC2086  # word-split on purpose: list_has takes "$@"
+            list_has "$l" $held_legs || drift_csv="$(csv_add "$drift_csv" "$l")"
+        done
+        for l in $held_legs; do
+            # shellcheck disable=SC2086  # word-split on purpose: list_has takes "$@"
+            list_has "$l" $live_legs || drift_csv="$(csv_add "$drift_csv" "$l")"
+        done
+        drift_csv="$(printf '%s\n' "$drift_csv" | tr ',' '\n' | awk 'NF' | sort -u | tr '\n' ',' | sed 's/,$//')"
+        if [ -n "$drift_csv" ]; then
+            livestate_summary="DRIFT:${drift_csv}"
+        else
+            livestate_summary=ok
+        fi
+    else
+        livestate_summary=unknown
+    fi
+fi
 
 # HIMMEL-2999: name/model come from claude_sessions() (real
 # /proc/<pid>/cmdline argv, NUL-delimited), never a flattened `pgrep -af`
@@ -314,6 +366,7 @@ if [ "$verbose" -eq 1 ]; then
     printf 'TICK %s\n' "$clock"
     printf 'heartbeat: %s\n' "$hb"
     printf 'leg locks: %s\n' "$legs_summary"
+    printf 'livestate: %s\n' "$livestate_summary"
     printf 'leg processes: %s\n' "$procs"
     printf 'leg models: %s\n' "$models_summary"
     printf 'scheduled jobs: %s\n' "$at_count"
@@ -333,10 +386,10 @@ else
     # The burn field is APPENDED only under --burn: a default tick line stays
     # byte-identical to what every console already parses.
     if [ "$burn" -eq 1 ]; then
-        printf 'TICK %s hb=%s legs=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s burn=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$burn_summary"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s burn=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$burn_summary"
     else
-        printf 'TICK %s hb=%s legs=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary"
     fi
 fi

@@ -139,6 +139,12 @@ export const EXPECTED_SCRIPT_ORDER = Object.freeze([
   // claudex-inbox-hook.sh above — same cursor file, so a bullet delivered by
   // one is never re-delivered by the other.
   'claudex-inbox-sessionstart.sh',
+  // SessionStart, own matcher "compact" (HIMMEL-2973 S1): re-injects a
+  // console's `## Live state` after an autocompact, the console-side twin of
+  // the per-leg contract cat headed-arm-leg.sh already wires (HIMMEL-2990).
+  // Its own group, not the --chain above, because it fires only on
+  // "compact", not on every SessionStart source.
+  'console-compact-reinject.sh',
 ]);
 const KNOWN_HOOK_SCRIPTS = new Set(EXPECTED_SCRIPT_ORDER);
 const COMMAND_FIELD = /("command")(\s*:\s*)("(?:\\.|[^"\\])*")/g;

@@ -135,7 +135,7 @@ export TICK_BANK_CACHE_FILE="$W/bank.json"
 export CLAUDE_SESSIONS_PROC="$W/proc"
 
 out="$(bash "$SUT")"; rc=$?
-expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE procs=2 models=sonnet:1,opus:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8'
+expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=2 models=sonnet:1,opus:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8'
 lines="$(printf '%s\n' "$out" | wc -l | tr -d '[:space:]')"
 if [ "$rc" -eq 0 ] && [ "$lines" = 1 ] && [ "$out" = "$expected" ]; then
     pass 'default run emits exactly the expected one batched line'
@@ -153,6 +153,45 @@ fi
 contains '--verbose labels leg locks' "$verbose" 'leg locks: N61:FRESH,N65:FREE'
 contains '--verbose labels context fill' "$verbose" 'fill: 28'
 contains '--verbose labels leg models (HIMMEL-2976)' "$verbose" 'leg models: sonnet:1,opus:1'
+
+# --- HIMMEL-2973 S1: livestate= drift field --------------------------------
+# legs=N61:FRESH,N65:FREE above -- only N61 is actually held (the stub
+# queue-lock only reports FRESH for a doc path containing "N61"). Each
+# sub-case below rewrites $W/handover/console.md's `## Live state` section
+# and re-runs the same --legs pair, so only the doc content changes between
+# assertions.
+# shellcheck disable=SC2016  # backtick leg span, literal fixture text
+printf '%s\n' '# console' '' '## Live state' '' \
+    'legs: `N61:nonce-ok:tok-ok:111`' 'queue: none' 'last GO: none' 'acked: none' \
+    > "$W/handover/console.md"
+ok_out="$(bash "$SUT")"; rc=$?
+if [ "$rc" -eq 0 ]; then pass 'livestate=ok run exits 0'; else fail "livestate=ok run exits 0 (rc=$rc)"; fi
+contains 'Live state agreeing with held locks reports ok' "$ok_out" 'livestate=ok'
+
+# Naming ONLY N65 here also makes N61 (the actually held lock) go unnamed --
+# both directions of the mismatch fire at once, so the drift list is BOTH
+# legs, sorted, not N65 alone.
+# shellcheck disable=SC2016  # backtick leg span, literal fixture text
+printf '%s\n' '# console' '' '## Live state' '' \
+    'legs: `N65:nonce-stale:tok-stale:222`' 'queue: none' 'last GO: none' 'acked: none' \
+    > "$W/handover/console.md"
+named_not_held_out="$(bash "$SUT")"; rc=$?
+if [ "$rc" -eq 0 ]; then pass 'livestate=DRIFT (named, not held) run exits 0'; else fail "livestate=DRIFT (named, not held) run exits 0 (rc=$rc)"; fi
+contains 'Live state naming a leg with no held lock is DRIFT' "$named_not_held_out" 'livestate=DRIFT:N61,N65'
+
+printf '%s\n' '# console' '' '## Live state' '' \
+    'legs: none' 'queue: none' 'last GO: none' 'acked: none' \
+    > "$W/handover/console.md"
+held_not_named_out="$(bash "$SUT")"; rc=$?
+if [ "$rc" -eq 0 ]; then pass 'livestate=DRIFT (held, not named) run exits 0'; else fail "livestate=DRIFT (held, not named) run exits 0 (rc=$rc)"; fi
+contains 'a held lock absent from Live state is DRIFT' "$held_not_named_out" 'livestate=DRIFT:N61'
+
+printf '%s\n' '# console' '' 'no Live state section in this doc at all' > "$W/handover/console.md"
+no_section_out="$(bash "$SUT")"; rc=$?
+if [ "$rc" -eq 0 ]; then pass 'livestate=unknown run exits 0'; else fail "livestate=unknown run exits 0 (rc=$rc)"; fi
+contains 'a doc with no Live state section reports unknown, not ok' "$no_section_out" 'livestate=unknown'
+
+rm -f "$W/handover/console.md"
 
 # HIMMEL-2999: /proc absent (CLAUDE_SESSIONS_PROC pointing nowhere) falls back
 # to the old flattened `pgrep -af` parse, kept byte-identical, plus a

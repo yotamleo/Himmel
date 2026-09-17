@@ -1231,4 +1231,54 @@ check "59 CONSOLE_ROLE=bogus: no armed line" "$(printf '%s\n' "$out59b" | grep -
 check "59 CONSOLE_ROLE=bogus: stub never invoked" "$([ -e "$record59" ] && echo 1 || echo 0)" "0"
 HANDOVER_DIR="$root" bash "$QL" release "$doc59A" "$token59a" >/dev/null 2>&1
 
+# --- 60: HIMMEL-2973 Delta 6 -- `next` copies the predecessor's
+# `## Live state` verbatim into the successor's HANDOFF `## In flight`
+# section, and ONLY that section: a marker planted in the neighbouring
+# `## Compact instructions` body must NOT leak. Two controls, not one
+# presence check -- a copy that grabbed the whole rest of the file would
+# also make the first assertion pass.
+out60a="$(console new --bucket livestatesrc)"
+token60a="$(token_of "$out60a")"
+doc60A="$root/tester/livestatesrc/DEMO-nextleg-${today}A-console.md"
+doc60B="$root/tester/livestatedst/DEMO-nextleg-${today}B-console.md"
+handoff60A="$root/tester/livestatesrc/DEMO-nextleg-${today}A-console-HANDOFF.md"
+
+# shellcheck disable=SC2016  # backtick leg span, literal fixture text
+fixture60_legs='legs: `N9:nonce-fixture-60:lock-fixture-60:42424`'
+marker60='MARKER-60-COMPACT-INSTRUCTIONS-MUST-NOT-LEAK'
+awk -v legs_line="$fixture60_legs" -v marker="$marker60" '
+    $0 == "## Live state" {
+        print
+        print ""
+        print legs_line
+        print "queue: N9"
+        print "last GO: `#999:deadbeef00`"
+        print "acked: none"
+        skip = 1
+        next
+    }
+    skip && /^## / { skip = 0 }
+    skip { next }
+    $0 == "## Compact instructions" {
+        print
+        print ""
+        print marker
+        skip2 = 1
+        next
+    }
+    skip2 && /^## / { skip2 = 0 }
+    skip2 { next }
+    { print }
+' "$doc60A" > "$doc60A.new" && mv "$doc60A.new" "$doc60A"
+
+rc60=0
+console next --bucket livestatedst --doc "$doc60A" >/dev/null 2>&1 || rc60=$?
+check "60 next succeeds against a doc with a real Live state section" "$rc60" "0"
+check "60 HANDOFF carries the Live state legs line verbatim" \
+    "$(grep -Fc "$fixture60_legs" "$handoff60A" 2>/dev/null)" "1"
+check "60 the control: Compact instructions marker does not leak into the HANDOFF" \
+    "$(grep -Fc "$marker60" "$handoff60A" 2>/dev/null)" "0"
+check "60 successor doc itself was still written" "$([ -s "$doc60B" ] && echo yes)" "yes"
+HANDOVER_DIR="$root" bash "$QL" release "$doc60A" "$token60a" >/dev/null 2>&1
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

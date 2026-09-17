@@ -870,7 +870,7 @@ cmd_next() {
     [ -f "$console_template" ] || { err "missing template $console_template"; exit 2; }
     [ -f "$handoff_template" ] || { err "missing template $handoff_template"; exit 2; }
 
-    local predecessor_doc predecessor_base predecessor_stem predecessor_prefix_part predecessor_letter
+    local predecessor_doc predecessor_base predecessor_stem predecessor_prefix_part predecessor_letter predecessor_live_state
     predecessor_doc="$(resolve_predecessor)" || { err "no predecessor console doc found under $state_dir for '$name' — pass --doc <path>"; exit 1; }
     # An explicit --doc / CONSOLE_DOC is used as given, with no existence
     # check inside resolve_predecessor (the auto-discovery branches already
@@ -881,6 +881,17 @@ cmd_next() {
         err "predecessor console doc does not exist: $predecessor_doc"
         exit 1
     fi
+    # HIMMEL-2973 S1: the predecessor's `## Live state` (nonces, lock
+    # tokens, held queue, last GO) is copied verbatim into the successor's
+    # HANDOFF below — a continuously maintained Live state IS a handoff, so
+    # the successor never has to re-derive authority-bearing state by hand.
+    # Absent section -> empty string -> the HANDOFF's own placeholder prose
+    # in the template still shows through render_template, not an error.
+    predecessor_live_state="$(awk '
+        $0 == "## Live state" { f = 1; print; next }
+        f && /^## / { exit }
+        f { print }
+    ' "$predecessor_doc")"
     predecessor_base="$(basename "$predecessor_doc")"
     predecessor_stem="${predecessor_base%.md}"
     predecessor_prefix_part="${predecessor_stem%-"$name"}"
@@ -1019,7 +1030,8 @@ cmd_next() {
             SUCCESSOR_DOC "$successor_doc_ref" \
             REPO "$repo" \
             BUCKET "$bucket" \
-            KIT "$kit"
+            KIT "$kit" \
+            LIVE_STATE "$predecessor_live_state"
         echo "handoff: $predecessor_handoff"
     else
         set +C
