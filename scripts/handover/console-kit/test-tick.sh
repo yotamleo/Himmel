@@ -418,6 +418,23 @@ case "$census_fail_out" in
     *) pass 'a fatal census scan must not render procs=0' ;;
 esac
 
+# --- HIMMEL-3145 (console review, round 2): the same "cannot be computed
+# must say so" rule applies to an EMPTY dispatch set, not just a broken
+# census scan. --legs is optional (usage block, :23) -- with it absent,
+# leg_names stays empty and leg_names_wrapped is ",,", so a matched-nothing
+# filter would print a clean "0" (index(",,", ","name",") is always 0,
+# since the needle is longer than the haystack) even while the default
+# fixture's two legs are live in the session table. procs=0 is only true
+# when there IS a dispatch set and it is empty of matches, never when there
+# is no dispatch set to check against.
+no_legs_out="$(LEGS='' bash "$SUT")"
+contains 'no --legs reports procs=unknown, not a false procs=0 (HIMMEL-3145)' "$no_legs_out" 'procs=unknown'
+contains 'no --legs reports models=unknown, not a false models=none (HIMMEL-3145)' "$no_legs_out" 'models=unknown'
+case "$no_legs_out" in
+    *'procs=0'*) fail 'no --legs must not render procs=0' ;;
+    *) pass 'no --legs must not render procs=0' ;;
+esac
+
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-tick.sh'
     exit 0

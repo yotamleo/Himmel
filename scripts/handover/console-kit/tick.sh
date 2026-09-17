@@ -257,10 +257,15 @@ fi
 # built from --legs above) against the census name, not a "-leg" spelling
 # guess -- a filter that silently matches nothing must never render as 0.
 leg_names_wrapped=",${leg_names},"
-if [ "$census_failed" -eq 1 ]; then
+if [ "$census_failed" -eq 1 ] || [ -z "$leg_names" ]; then
     # A field that cannot be computed must say so (HIMMEL-3130 NOTFOUND-vs-
     # MISSING, HIMMEL-3002 unreadable=): procs=0 and procs=unknown must be
     # distinguishable, or a real scan failure reads as "no legs running".
+    # An empty --legs is the same case: there is no dispatch set to count
+    # against, so "0" would be a bare guess (and, worse, a matched-nothing
+    # filter would print it as a clean 0 -- ",,".index(",name,") is always
+    # 0), not a real count. procs= is only ever a count of the dispatched
+    # set; without one, it cannot be computed either.
     procs=unknown
 else
     procs="$(printf '%s\n' "$sessions_out" | awk -F'\t' -v names="$leg_names_wrapped" '
@@ -289,8 +294,9 @@ fi
 # 1 CR) rather than falling out of every bucket while still counted in
 # procs=.
 # HIMMEL-3145: same dispatched-name filter as procs= above, same
-# unknown-vs-empty distinction on a real census failure.
-if [ "$census_failed" -eq 1 ]; then
+# unknown-vs-empty distinction on a real census failure or an empty
+# dispatch set (no --legs -- see procs= above).
+if [ "$census_failed" -eq 1 ] || [ -z "$leg_names" ]; then
     models_summary=unknown
 else
     models_summary="$(printf '%s\n' "$sessions_out" | awk -F'\t' -v names="$leg_names_wrapped" '
