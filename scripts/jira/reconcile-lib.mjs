@@ -74,12 +74,18 @@ export function describeOutcome(descriptionText) {
 const NUMBERED_LIST_ITEM_RE = /^\s*\d+[.)]\s+\S/gm;
 const TASK_ID_MARKER_RE = /\bT\d{1,3}\b|\bTask\s+\d+\b/gi;
 
+// `T1` and `Task 1` name the same task under two spellings — normalize to
+// the numeric id so they count as one marker, not two, or a ticket that
+// mentions one task both ways falsely looks like it declares two.
+function taskMarkerIds(text) {
+  return new Set((text.match(TASK_ID_MARKER_RE) ?? []).map((s) => s.match(/\d+/)[0]));
+}
+
 export function hasNumberedTaskList(descriptionText) {
   const text = descriptionText ?? '';
   const listItems = text.match(NUMBERED_LIST_ITEM_RE) ?? [];
   if (listItems.length >= 2) return true;
-  const taskMarkers = new Set((text.match(TASK_ID_MARKER_RE) ?? []).map((s) => s.toUpperCase()));
-  return taskMarkers.size >= 2;
+  return taskMarkerIds(text).size >= 2;
 }
 
 // The specifics for the evidence comment: how many numbered items, or which
@@ -88,8 +94,8 @@ export function describeNumberedTaskList(descriptionText) {
   const text = descriptionText ?? '';
   const listItems = text.match(NUMBERED_LIST_ITEM_RE) ?? [];
   if (listItems.length >= 2) return `${listItems.length} numbered items in the ticket description`;
-  const taskMarkers = new Set((text.match(TASK_ID_MARKER_RE) ?? []).map((s) => s.toUpperCase()));
-  return `task markers ${[...taskMarkers].join(', ')} in the ticket description`;
+  const taskMarkers = [...taskMarkerIds(text)].map((id) => `T${id}`);
+  return `task markers ${taskMarkers.join(', ')} in the ticket description`;
 }
 
 export function ticketKeyPattern(key) {

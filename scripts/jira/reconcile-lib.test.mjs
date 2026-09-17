@@ -168,6 +168,10 @@ describe('hasNumberedTaskList — HIMMEL-3128: a multi-task description is not o
     expect(hasNumberedTaskList('This lands T27 of the console split.')).toBe(false);
   });
 
+  it('is false when T1 and Task 1 both name the same single task (CodeRabbit #790)', () => {
+    expect(hasNumberedTaskList('This lands T1, also known as Task 1, of the console split.')).toBe(false);
+  });
+
   it('is false for plain prose with no list or task markers', () => {
     expect(hasNumberedTaskList('Just fix the bug described above, no external dependency.')).toBe(false);
   });
