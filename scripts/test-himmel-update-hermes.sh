@@ -117,6 +117,34 @@ EOF
   chmod +x "$dir/systemctl"
 }
 
+# ── suite-level systemctl stub (HIMMEL-3158) ────────────────────────────────
+# restart_hermes_gateways() fires whenever `update_hermes apply` genuinely
+# moves the checkout head — not only from the dedicated gateway-restart cases
+# further down. Cases 8/9 below drive `apply` against REAL local git remotes
+# and genuinely move the head, so without a stub in place before they run,
+# `systemctl` resolves to the real binary and restarts this station's REAL
+# hermes-gateway unit (HIMMEL-3158: it did, 2026-09-18 15:12:49). Put a
+# recording stub first on PATH before ANY case runs. Cases that assert
+# restart behaviour (Case 13 on) push their own stub further ahead on PATH
+# and are unaffected — their systemctl.log stays separate from this one.
+suite_systemctl_dir="$tmp/suite-systemctl"
+mk_systemctl_stub "$suite_systemctl_dir" hermes-gateway.service
+export PATH="$suite_systemctl_dir:$PATH"
+export HOME="$tmp/suite-home"; mkdir -p "$HOME"
+export CLAUDE_CONFIG_DIR="$tmp/suite-claude-config"; mkdir -p "$CLAUDE_CONFIG_DIR"
+export HERMES_HOME="$tmp/suite-hermes-home-default"
+
+# Sentinel: refuse to run a single case if `systemctl` does not resolve to
+# the suite stub above — the alternative is this suite silently falling
+# through to the real systemd bus.
+resolved_systemctl="$(command -v systemctl)"
+if [ "$resolved_systemctl" != "$suite_systemctl_dir/systemctl" ]; then
+  echo "FAIL: sentinel — systemctl resolved to '$resolved_systemctl', not the suite stub ($suite_systemctl_dir/systemctl); refusing to run (would hit the real hermes-gateway bus)."
+  echo "FAILED"
+  exit 1
+fi
+echo "ok: sentinel — systemctl resolves to the suite stub"
+
 # HERMES_HOME is the install ROOT; the git checkout is its hermes-agent/ subdir.
 
 # Case 1: install root with no hermes-agent checkout → "not installed" skip.
@@ -372,6 +400,20 @@ gotF=$(git -C "$tmp/forcepush/hermes-agent" rev-parse HEAD)
 if [ "$gotF" = "$wantF" ]; then echo "ok: force-pushed upstream -> checkout moved to upstream HEAD"; else echo "FAIL: resynced HEAD was '$gotF', expected '$wantF'"; fail=1; fi
 rescuedF=$(git -C "$tmp/forcepush/hermes-agent" rev-parse himmel-pre-resync 2>/dev/null || echo missing)
 if [ "$rescuedF" = "$oldF" ]; then echo "ok: previous HEAD preserved at tag himmel-pre-resync"; else echo "FAIL: rescue tag was '$rescuedF', expected '$oldF'"; fail=1; fi
+
+# HIMMEL-3158: Case 8 and Case 9 above are real head-changing `apply` calls
+# with no case-local systemctl stub — exactly the shape that hit the
+# operator's real hermes-gateway.service on 2026-09-18. Assert the SUITE
+# stub (not the real bus) is what intercepted both restarts.
+suite_restarts=$(grep -c -- '--user restart hermes-gateway\.service' "$suite_systemctl_dir/systemctl.log" 2>/dev/null) || true
+suite_restarts=${suite_restarts:-0}
+if [ "$suite_restarts" -eq 2 ]; then
+  echo "ok: suite-level stub intercepted the apply-mode restarts (Case 8, Case 9)"
+else
+  echo "FAIL: expected 2 restart calls logged to the suite stub from Case 8/9, got $suite_restarts"
+  cat "$suite_systemctl_dir/systemctl.log" 2>/dev/null
+  fail=1
+fi
 
 # Case 10: same force-push shape but the checkout holds a commit by its OWN
 # identity → the HIMMEL-893 contract wins, still a genuine FAILURE. This is
