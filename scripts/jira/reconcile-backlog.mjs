@@ -335,6 +335,17 @@ async function main() {
     );
     process.exit(1);
   }
+  // --max-close only caps CLOSE; RESCOPE (a comment, not a transition) is
+  // uncapped and would otherwise apply to every non-LEAVE ticket in the
+  // backlog on an --only-less run. Require an explicit, non-empty --only so
+  // apply mode never touches a ticket the operator did not name.
+  if (opts.apply && (!opts.only || opts.only.size === 0)) {
+    process.stderr.write(
+      'reconcile-backlog: --apply requires a non-empty --only <key-list> (no writes to a ticket ' +
+        'the operator did not explicitly select).\n',
+    );
+    process.exit(1);
+  }
   const config = loadConfig(opts.config);
   const projectConfig = config[opts.project];
   const targetStatus = projectConfig?.targetStatus;
