@@ -333,7 +333,7 @@ ASSIGN_RE='^[A-Za-z_][A-Za-z0-9_]*='
 # tokenizer work is fenced off (HIMMEL-1688) and this guard must not grow a
 # dependency on it.
 segment_cmd() {
-    local s="$1" seg='' c i n sub pdepth=0 confused=0 no_scope="${2:-0}"
+    local s="$1" seg='' c i n sub pdepth=0 confused=0 no_scope="${2:-0}" bdepth=0
     local cmdpos=1 kind='' lb='' nx=''
     local -a pkind
     local ptop=0
@@ -400,6 +400,35 @@ segment_cmd() {
                 esac
             done
             cmdpos=0
+            ;;
+        \$)
+            # `$[ ... ]` legacy arithmetic expansion is an OPAQUE span, like
+            # `$(( ... ))` (HIMMEL-2929). `$((` is already inert because the
+            # `$` here lands in the default case (cmdpos:=0) so its parens are
+            # never command-position -- but `$[...]` has no paren to hang that
+            # on, and a `;`/`&`/`|`/newline INSIDE it would otherwise split the
+            # segment and let the following `(` read as a real subshell,
+            # scoping a seam assignment out of the deny set (the `$[1 +\n
+            # (HIMMEL_CONSOLE_LEG=0)]` bypass). Consume the whole `$[...]` as
+            # one opaque word, `[`-depth balanced, so it never splits and never
+            # opens scope; an unterminated `$[` folds forward (safe direction),
+            # same as a stray `(`. Any other `$` (including `$(` / `$((`) falls
+            # through to the default char handling below, unchanged.
+            if [ "${s:$((i + 1)):1}" = "[" ]; then
+                seg="$seg\$["; i=$((i + 2))
+                bdepth=1
+                while [ "$i" -lt "$n" ] && [ "$bdepth" -gt 0 ]; do
+                    c=${s:i:1}
+                    case "$c" in
+                    \[) bdepth=$((bdepth + 1)) ;;
+                    \]) bdepth=$((bdepth - 1)) ;;
+                    esac
+                    seg="$seg$c"; i=$((i + 1))
+                done
+                cmdpos=0
+            else
+                seg="$seg$c"; i=$((i + 1)); cmdpos=0
+            fi
             ;;
         \\)
             seg="$seg$c"; i=$((i + 1))

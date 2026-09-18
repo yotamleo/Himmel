@@ -1780,17 +1780,24 @@ arming direction (HIMMEL-2933). That cross-segment carry is SCOPED to the
 when its matching `)` closes, so `(unset SEAM); bash
 scripts/handover/merge-on-green.sh` still allows, while any unresolved paren
 (unmatched `)`, an unclosed subshell, a `{ … }` group, or a `bash -c`/`eval`
-string) stays fail-closed at depth 0 exactly like today (HIMMEL-2929). The
-paren-depth counter is plain balanced-single-`(`/`)` only, with one global
-override: if the command contains `((`, `$( … )` or a backtick ANYWHERE,
-depth tracking is disabled for the whole call and every clear folds forward
-as if no parens were present. Telling an arithmetic compound or command
-substitution's own parens apart from a real subshell's, paren-by-paren, was
-tried twice (HIMMEL-2929 rounds 1-2) and each attempt found the next false
-ALLOW at the next nesting shape — the collapse trades scoping precision on
-those shapes for never being wrong in the ALLOW direction; a subshell-scoped
-clear that shares a payload with an unrelated `$(...)` elsewhere is a
-documented over-deny. The `eval`/`bash -c` recursion target (the re-parsed
+string) stays fail-closed at depth 0 exactly like today (HIMMEL-2929). A `(`
+opens a real (scoping) subshell ONLY when it stands at COMMAND POSITION — the
+first token of a command; every other paren shape is opaque and never changes
+depth: arithmetic `(( … ))`, command/process substitution `$( … )`/`<( … )`,
+an array-assignment `NAME=( … )`, and `[[ ( ) ]]` / `case … in (x)` grouping
+parens (each opaque for the mundane reason that a word already consumed command
+position before the paren), plus any paren nested inside an already-opaque one.
+Legacy `$[ … ]` arithmetic is consumed as one opaque, bracket-balanced span, so
+a `;`/`&`/`|`/newline inside it neither splits a segment nor lets the following
+`(` read as a real subshell — the `$[1 +<newline>(SEAM=0)]` shape `main` denies was
+briefly allowed by an early paren-depth build (HIMMEL-2929, leg N45). Telling
+those shapes apart via a blacklist ("any `((`/`$(`/backtick ANYWHERE disables
+scoping for the whole call") was tried and abandoned across rounds 1-2 — each
+found the next false ALLOW at the next nesting shape. The positive
+command-position rule replaced it: anything the tracker does not positively
+recognise as a real subshell folds forward to `main`'s un-scoped deny, so a
+subshell-scoped clear that shares a payload with an unrelated `$(...)` elsewhere
+now allows precisely instead of over-denying. The `eval`/`bash -c` recursion target (the re-parsed
 operand string) forces this same no-scope override unconditionally,
 regardless of what that string itself contains — a paren-scoped clear and
 its chokepoint call both living inside one `-c`/`eval` string (no `((`/`$(`/

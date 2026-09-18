@@ -602,6 +602,21 @@ assert_allow "genuine subshell after && following an unrelated command"    "$(j 
 assert_deny "\$( ) as an argument to a preceding command word stays denied" "$(j "echo \$(unset HIMMEL_CONSOLE_LEG); bash $MERGE_ON_GREEN 1")"
 assert_deny "bare backtick command substitution stays denied"              "$(j "\`unset HIMMEL_CONSOLE_LEG\`; bash $MERGE_ON_GREEN 1")"
 assert_deny "legacy \$[(...)] arithmetic paren is not a subshell"           "$(j "echo \$[(HIMMEL_CONSOLE_LEG=0)]; bash $MERGE_ON_GREEN 1")"
+# --- HIMMEL-2929 (leg N45): a `$[ ... ]` legacy-arithmetic span carrying an
+# unquoted `;`/`&`/`|`/NEWLINE was split into segments by segment_cmd before
+# scan_segment's `$[` guard could see it -- and a `(` on the far side of that
+# split read as a real subshell, scoping the seam assignment out of the deny
+# set. Reproduced 4x (Q, N193, N8, console): `main` DENIES, the branch head
+# ALLOWED. Fix: `$[` opens an OPAQUE span to its matching `]` (bracket-depth
+# balanced, like `$((...))`), so it never splits and never opens scope. The
+# whole class stays DENY; the genuine narrowing (a `$[...]` assign INSIDE a
+# real closed subshell) stays ALLOW -- verified against real bash (the seam
+# never survives the subshell). ---
+assert_deny "legacy \$[ ] with an embedded NEWLINE before its paren (the N193/console bypass)" "$(j "$(printf 'echo $[1 +\n(HIMMEL_CONSOLE_LEG=0)]; bash %s 1' "$MERGE_ON_GREEN")")"
+assert_deny "legacy \$[ ] with a NEWLINE before its closing bracket" "$(j "$(printf 'echo $[HIMMEL_CONSOLE_LEG=0\n]; bash %s 1' "$MERGE_ON_GREEN")")"
+assert_deny "legacy \$[ ] with an embedded semicolon before its paren" "$(j "echo \$[1 ;(HIMMEL_CONSOLE_LEG=0)]; bash $MERGE_ON_GREEN 1")"
+assert_deny "second \$[ ] after a newline smuggles the seam"          "$(j "$(printf 'echo $[0]$[\nHIMMEL_CONSOLE_LEG=0]; bash %s 1' "$MERGE_ON_GREEN")")"
+assert_allow "a \$[ ] assign INSIDE a real closed subshell is genuinely scoped" "$(j "(echo \$[HIMMEL_CONSOLE_LEG=0]); bash $MERGE_ON_GREEN 1")"
 assert_deny "let '(...)' quoted arithmetic paren is not a subshell"        "$(j "let '(HIMMEL_CONSOLE_LEG=0)'; bash $MERGE_ON_GREEN 1")"
 assert_deny "array-assignment paren (declare -a a=(...)) is not a subshell" "$(j "declare -a a=( HIMMEL_CONSOLE_LEG=0 ); bash $MERGE_ON_GREEN 1")"
 assert_deny "[[ ( ) ]] grouping paren is not a subshell"                    "$(j "[[ ( HIMMEL_CONSOLE_LEG=0 ) ]]; bash $MERGE_ON_GREEN 1")"
