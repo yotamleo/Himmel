@@ -535,13 +535,21 @@ jobs:
           sudo rm -f /etc/apt/sources.list.d/google-chrome* /etc/apt/sources.list.d/microsoft-* /etc/apt/sources.list.d/azure-cli*
           sudo apt-get update -o Acquire::Retries=3
           sudo apt-get install -y --no-install-recommends at
-          sudo systemctl enable --now atd || sudo service atd start || true
+          sudo systemctl enable --now atd || sudo service atd start
       # HIMMEL-2742: same shape as HIMMEL-2587 (lanes-and-trust-suites) — a
       # suite in this corpus (test-wizard-luna-sections.sh) shells out to bun
       # and fails closed ("required test tool not found before PATH scrub:
       # bun") without it. Installing bun keeps that hermetic PATH-scrub case
       # under a runner check; a self-skip would exit 0 with nothing exercised.
       - uses: oven-sh/setup-bun@v2
+      # HIMMEL-3193: the run step below now covers marketplace/ (root `.`), where
+      # the obsidian-triage suites need js-yaml + playwright from
+      # tools/node_modules. ensure-deps.sh installs them and exits non-zero on
+      # ANY npm/network failure (no `|| true`, no continue-on-error), so a flaky
+      # install fails THIS step loudly instead of surfacing as a dozen
+      # unrelated suite reds. Pinned by test-run-shell-tests.sh Case 23e.
+      - name: Install obsidian-triage tool deps (marketplace suites)
+        run: bash marketplace/plugins/obsidian-triage/tools/ensure-deps.sh
       # Explicit `bash` prefix: on windows-latest the default run shell is pwsh,
       # but Git Bash is preinstalled + on PATH, so `bash …` runs under MSYS2.
       # FAIL_LOG_DIR: full failed-suite logs land there and upload as an
@@ -555,7 +563,9 @@ jobs:
       # SUITE_CHANGED_SINCE: only on pull_request, where a base SHA exists —
       # a docs-only PR then skips the whole corpus (run-shell-tests.sh's own
       # docs-only fast lane); push/schedule/dispatch have no PR base to diff.
-      - run: bash scripts/ci/run-shell-tests.sh --shard ${{ matrix.shard }}/8
+      # Scan root `.` (HIMMEL-3193) = scripts/ + templates/ + marketplace/; the
+      # duration ledger keys all three, so the bin-pack balances across them.
+      - run: bash scripts/ci/run-shell-tests.sh --shard ${{ matrix.shard }}/8 .
         env:
           FAIL_LOG_DIR: failed-suite-logs
           SUITE_TIER_MODE: ${{ (github.event_name == 'schedule' || inputs.force_all_os) && 'all' || 'fast' }}

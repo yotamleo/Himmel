@@ -3,6 +3,9 @@
 # source: GitHub Actions run 34408076490 (yotamleo/Himmel), PR #598, head d026803c,
 #   shell-unit-shard (ubuntu-latest, 1..6), SUITE_TIER_MODE=fast, SUITE_CHANGED_SINCE=<pr base>.
 #   466 suites, 2685s serial total.
+# HIMMEL-3193: the 58 marketplace/ + templates/ rows were measured LOCALLY (2026-09-19,
+#   linux, one serial run, +189s) when scan root `.` began covering those trees — not
+#   CI-measured; the next REFRESH replaces them. The quarantined suites (SKIP_LIST, HIMMEL-3196) have no row.
 #
 # Read by scripts/ci/run-shell-tests.sh to assign --shard <i>/<n> by a greedy
 # longest-first bin-pack instead of round-robin ($SUITE_DURATIONS overrides this
@@ -26,6 +29,59 @@
 #     | sed -nE 's/.*\[(PASS|FAIL)\] ([^ ]+) \(([0-9]+)s\).*/\2\t\3/p' \
 #     | sort -u
 # then replace the rows below and update the source line above.
+marketplace/plugins/handover/scripts/test-migrate-v1-to-v2.sh	0
+marketplace/plugins/himmel-ops/hooks/test-inject-minerva-critic.sh	0
+marketplace/plugins/himmel-ops/scripts/test-autonomy-mode.sh	0
+marketplace/plugins/himmel-ops/scripts/test-himmel-update-cmd-resolution.sh	0
+marketplace/plugins/himmel-ops/scripts/test-legs.sh	0
+marketplace/plugins/himmel-ops/scripts/test-minerva-scripts-resolution.sh	0
+marketplace/plugins/obsidian-triage/tests/test-archive-clips.sh	0
+marketplace/plugins/obsidian-triage/tests/test-archive-deload.sh	0
+marketplace/plugins/obsidian-triage/tests/test-clip-lookup.sh	0
+marketplace/plugins/obsidian-triage/tests/test-component-scan.sh	1
+marketplace/plugins/obsidian-triage/tests/test-cookie-jar.sh	0
+marketplace/plugins/obsidian-triage/tests/test-daily-timeline.sh	0
+marketplace/plugins/obsidian-triage/tests/test-dedup-sweep.sh	0
+marketplace/plugins/obsidian-triage/tests/test-deepen-fanout.sh	1
+marketplace/plugins/obsidian-triage/tests/test-ensure-deps.sh	0
+marketplace/plugins/obsidian-triage/tests/test-evidence-kind-cli.sh	0
+marketplace/plugins/obsidian-triage/tests/test-evidence-substrate.sh	0
+marketplace/plugins/obsidian-triage/tests/test-firecrawl-thin.sh	0
+marketplace/plugins/obsidian-triage/tests/test-follow-dossier.sh	0
+marketplace/plugins/obsidian-triage/tests/test-follow-judge-prep.sh	0
+marketplace/plugins/obsidian-triage/tests/test-follow-list-score-assemble.sh	0
+marketplace/plugins/obsidian-triage/tests/test-follow-list-score-gather.sh	1
+marketplace/plugins/obsidian-triage/tests/test-follow-roster.sh	0
+marketplace/plugins/obsidian-triage/tests/test-follow-score.sh	0
+marketplace/plugins/obsidian-triage/tests/test-follow-screen.sh	0
+marketplace/plugins/obsidian-triage/tests/test-follow-verify.sh	1
+marketplace/plugins/obsidian-triage/tests/test-follow-web.sh	0
+marketplace/plugins/obsidian-triage/tests/test-fxtwitter-bodyfill.sh	7
+marketplace/plugins/obsidian-triage/tests/test-fxtwitter-enrich.sh	6
+marketplace/plugins/obsidian-triage/tests/test-fxtwitter-quote-own-text.sh	6
+marketplace/plugins/obsidian-triage/tests/test-grow-feed-log.sh	3
+marketplace/plugins/obsidian-triage/tests/test-harvest-clips.sh	1
+marketplace/plugins/obsidian-triage/tests/test-harvest-thinness.sh	0
+marketplace/plugins/obsidian-triage/tests/test-luna-upgrade-skill.sh	0
+marketplace/plugins/obsidian-triage/tests/test-migrate-clip-lifecycle.sh	1
+marketplace/plugins/obsidian-triage/tests/test-playwright-headful-fallback.sh	0
+marketplace/plugins/obsidian-triage/tests/test-reddit-enrich.sh	123
+marketplace/plugins/obsidian-triage/tests/test-roadmap-aggregate.sh	1
+marketplace/plugins/obsidian-triage/tests/test-synthesize-densify.sh	0
+marketplace/plugins/obsidian-triage/tests/test-synthesize-edge.sh	1
+marketplace/plugins/obsidian-triage/tests/test-synthesize-invariants.sh	0
+marketplace/plugins/obsidian-triage/tests/test-synthesize-stubs.sh	0
+marketplace/plugins/obsidian-triage/tests/test-synthesize-telegram-digest.sh	0
+marketplace/plugins/obsidian-triage/tests/test-telegram-clip-dedup-url.sh	1
+marketplace/plugins/obsidian-triage/tests/test-telegram-clip-inbox.sh	0
+marketplace/plugins/obsidian-triage/tests/test-telegram-clip-inline.sh	0
+marketplace/plugins/obsidian-triage/tests/test-telegram-clip.sh	1
+marketplace/plugins/obsidian-triage/tests/test-telegram-digest.sh	0
+marketplace/plugins/obsidian-triage/tests/test-triage-evidence-move.sh	0
+marketplace/plugins/obsidian-triage/tests/test-triage-invariants.sh	1
+marketplace/plugins/obsidian-triage/tests/test-twitter-cli-enrich.sh	0
+marketplace/plugins/obsidian-triage/tests/test-url-canonical.sh	0
+marketplace/plugins/obsidian-triage/tests/test-x-media-enrich.sh	2
 scripts/agents-md/test-generate.sh	1
 scripts/ci/test-check-claude-md-budget.sh	0
 scripts/ci/test-check-commit-range.sh	1
@@ -492,3 +548,8 @@ scripts/vm/test-vm-lock.sh	18
 scripts/where-are-we/test-statusline-rollup.sh	0
 scripts/where-are-we/test-statusline-segment.sh	4
 scripts/where-are-we/test-statusline-wrapper.sh	3
+templates/luna-second-brain/scripts/test-salus-overlay.sh	0
+templates/luna-second-brain/scripts/test-salus-upgrade.sh	1
+templates/luna-second-brain/scripts/test-upgrade-pyresolve.sh	0
+templates/luna-second-brain/scripts/test-upgrade.sh	12
+templates/luna-second-brain/scripts/test-vault-git.sh	18

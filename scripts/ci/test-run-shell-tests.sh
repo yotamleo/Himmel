@@ -1979,4 +1979,76 @@ fi
 rm -rf "$sb22v"
 fi
 
+# --------------------------------------------------------------------------
+# Case 23 (HIMMEL-3193) — scan root `.` covers scripts/ + templates/ +
+# marketplace/. The CI shards ran `scripts` only, so ~65 suites under the
+# other two trees never gated a PR.
+# --------------------------------------------------------------------------
+echo "== Case 23 (HIMMEL-3193): scan root '.' covers scripts/ templates/ marketplace/ =="
+repo23=$(cd "$RST_FIXTURE_DIR/../.." && pwd)
+o23=$(cd "$repo23" && bash "$RUNNER" --list . 2>&1); rc23=$?
+if [ "$rc23" -eq 0 ]; then
+  pass "23a: --list . exits 0"
+else
+  fail "23a: --list . expected exit 0 got $rc23; out: $o23"
+fi
+for tree23 in scripts templates marketplace; do
+  if grepq "$o23" -E "^\[(RUN |SKIP)\] (\./)?${tree23}/"; then
+    pass "23b: --list . lists a ${tree23}/ suite"
+  else
+    fail "23b: --list . lists no ${tree23}/ suite"
+  fi
+done
+
+# Drift guard: every top-level tree that holds a tracked test-*.sh must be
+# covered by the include list, so a new tree cannot silently stay ungated.
+trees23=$(cd "$repo23" && git ls-files | grep -E '/test-[^/]*\.sh$' \
+  | grep -v '/node_modules/' | cut -d/ -f1 | sort -u)
+missing23=""
+for tree23 in $trees23; do
+  grepq "$o23" -E "^\[(RUN |SKIP)\] (\./)?${tree23}/" || missing23="$missing23 $tree23"
+done
+if [ -n "$trees23" ] && [ -z "$missing23" ]; then
+  pass "23c: every top-level tree with a tracked test-*.sh is covered by --list ."
+else
+  fail "23c: trees with tracked suites but absent from --list .:${missing23:- (git ls-files found none)}"
+fi
+
+# Paths are repo-root-relative with no "./" prefix: the duration ledger and the
+# SKIP_LIST tables are keyed "scripts/...", so a "./scripts/..." find path
+# misses the ledger (every suite then packs at the median) and the shards
+# balance on nothing.
+if grepq "$o23" -E '^\[(RUN |SKIP)\] \./'; then
+  fail "23d: --list . emits \"./\"-prefixed paths (ledger keys would all miss): $(grep -m1 -E '^\[(RUN |SKIP)\] \./' <<< "$o23")"
+else
+  pass "23d: --list . paths are repo-root-relative (ledger-keyable)"
+fi
+
+# 23e: every quarantined templates/marketplace suite is a visible [SKIP] whose
+# reason names a ticket — never a silent drop (HIMMEL-3193 plan (b)).
+q23=$(grep -E '^\[SKIP\] (marketplace|templates)/' <<< "$o23")
+if [ -n "$q23" ] && ! grep -qvE 'HIMMEL-[0-9]+' <<< "$q23"; then
+  pass "23e: quarantined marketplace/templates suites are [SKIP]s that each name a ticket"
+else
+  fail "23e: expected >=1 marketplace/templates [SKIP] and every reason to name a HIMMEL-N; got: ${q23:-none}"
+fi
+
+# 23f: the workflow wiring. The shards run with root `.`, and the
+# obsidian-triage dep install runs BEFORE them and cannot be swallowed: a
+# failed npm/network step must fail the job, not surface as a dozen suite reds.
+ci23="$repo23/.github/workflows/ci.yml"
+dep_ln=$(grep -n 'run: bash marketplace/plugins/obsidian-triage/tools/ensure-deps.sh' "$ci23" | cut -d: -f1)
+# shellcheck disable=SC2016 # the ${{ }} is literal workflow text, not a shell expansion
+shard_ln=$(grep -n 'run: bash scripts/ci/run-shell-tests.sh --shard \${{ matrix.shard }}/8 \.$' "$ci23" | cut -d: -f1)
+if [ -n "$dep_ln" ] && [ -n "$shard_ln" ] && [ "$dep_ln" -lt "$shard_ln" ]; then
+  pass "23f: ci.yml installs the tool deps before the shard run, and the shard run passes root ."
+else
+  fail "23f: ci.yml wiring — ensure-deps line='${dep_ln:-missing}' shard-with-root-. line='${shard_ln:-missing}' (deps must come first)"
+fi
+if [ -n "$dep_ln" ] && ! sed -n "$((dep_ln - 2)),$((dep_ln + 2))p" "$ci23" | grep -qE '\|\| *(true|:)|continue-on-error'; then
+  pass "23f: the ensure-deps step is not swallowed (no || true, no continue-on-error)"
+else
+  fail "23f: the ensure-deps step is swallowed (|| true / continue-on-error near line ${dep_ln:-?})"
+fi
+
 rst_tally

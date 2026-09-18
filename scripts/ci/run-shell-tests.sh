@@ -657,6 +657,12 @@ scripts/test-plugin-test.sh          # integration: self-bootstraps a plugin's d
 scripts/test-adopt.sh                # timing-heavy full adoption matrix exceeds the hermetic runner's per-suite cap on Windows (600s default since HIMMEL-2233; the exceedance was last measured against the older 180s cap and has not been re-measured); runnable individually, no VM e2e coverage
 scripts/handover/test-arm-resume-probe.sh  # MEASUREMENT tool, not an assertion suite — times a dry-run/real arm and reports python3 spawn counts; always exits 0, so collecting it would spend ~20s per full run to assert nothing (HIMMEL-2125)
 scripts/test-check-ci-forks-probe.sh  # MEASUREMENT tool, not an assertion suite — re-runs the full test-check-ci.sh suite instrumented to report gh-stub fork counts + wall time per case; always exits 0 and duplicates the suite's own run, so collecting it would double the extended-tier cost to assert nothing (HIMMEL-2169)
+marketplace/plugins/handover/scripts/test-skill-e2e.sh  # HIMMEL-3196: real bug — asserts status/roadmap/tech-debt/counter.md under handovers/hbtest-PID that nothing creates, plus a jira npm build+test that fails (5 FAIL of 13); quarantined when HIMMEL-3193 turned the marketplace root on
+marketplace/plugins/obsidian-triage/tests/test-fxt-blocklist-author.sh  # HIMMEL-3196: test coupled to dep layout — require of js-yaml runs from the plugin root but the dep is installed only under tools/
+marketplace/plugins/obsidian-triage/tests/test-ig-media-enrich.sh  # HIMMEL-3196: host-coupled — test 6 strips PATH dirs named ffmpeg but ffmpeg is /usr/bin/ffmpeg; CI outcome unknown, quarantined pre-emptively
+marketplace/plugins/obsidian-triage/tests/test-luna-ingest-skill.sh  # HIMMEL-3196: test drift — the SKILL description no longer starts with Use-when or advertises bitbucket.org (2 FAIL)
+marketplace/plugins/obsidian-triage/tests/test-playwright-crawl.sh  # HIMMEL-3196: test drift — pins playwright 1.58.x, package.json is 1.63.0 (1 FAIL of 28)
+marketplace/plugins/telegram-himmel/tests/test-telegram-poller-gate.sh  # HIMMEL-3196: real bug — reads bot.pid after killing the server, which removes bot.pid on shutdown (server.ts:684), so the owner case always reads NO_PID
 "
 
 # Conditional suites (HIMMEL-1589). Unlike SKIP_LIST (always skipped), a
@@ -2658,6 +2664,9 @@ _scan_key="${scan#./}"
 # tolerance is lock-specific: the rotation cursor below cannot accept the
 # same collision and derives its own, different key (see there).
 _scan_key=$(printf '%s' "$_scan_key" | sed 's#/#__#g' | tr -c 'A-Za-z0-9_-' '-')
+# HIMMEL-3193: the whole-repo root `.` covers everything a `scripts` run does, so
+# it takes that run's lock (never a third key) — the two refuse to overlap.
+[ "$scan" = "." ] && _scan_key="scripts"
 
 # Derive the scan-keyed lock path now that $scan is known (an explicit
 # SUITE_LOCK_DIR wins).
@@ -2755,7 +2764,21 @@ trap 'rm -f "$suites_file" "$suites_raw"; suite_lock_release; suite_lock_queue_l
 # INSIDE the tree stay unfollowed exactly as before, so no scan root other
 # than a symlinked one changes what it discovers. (The symlinked root's
 # table-matching half is already handled by $scan_resolved, HIMMEL-2260.)
-find -H "$scan" -path '*/node_modules' -prune -o -name 'test-*.sh' -print > "$suites_raw" 2>/dev/null
+#
+# HIMMEL-3193: scan root `.` is the WHOLE-REPO run — the trees that hold suites,
+# not a blind walk of the checkout (a local run would otherwise also pick up
+# .claude/worktrees/* copies of every suite). Paths come out repo-root-relative
+# with no "./" prefix ("scripts/...", "templates/..."), which is the key form
+# the duration ledger and the suite tables use. The runner cds to $REPO_ROOT at
+# the top, so `.` means the repo root wherever it was launched from.
+# ponytail: the tree list is hand-kept — a NEW top-level tree that gains a
+# test-*.sh is not run until it is added here; test-run-shell-tests.sh Case 23c
+# fails on exactly that drift (a tracked suite absent from `--list .`).
+if [ "$scan" = "." ]; then
+  find -H scripts templates marketplace -path '*/node_modules' -prune -o -name 'test-*.sh' -print > "$suites_raw" 2>/dev/null
+else
+  find -H "$scan" -path '*/node_modules' -prune -o -name 'test-*.sh' -print > "$suites_raw" 2>/dev/null
+fi
 find_rc=$?
 if [ "$find_rc" -ne 0 ]; then
   printf 'ERROR: suite discovery failed under scan root "%s" (find rc=%s) — refusing to report green.\n' "$scan" "$find_rc" >&2

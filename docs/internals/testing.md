@@ -20,6 +20,24 @@ it in an interactive session.
 plan without executing anything — use it to check what a change would trigger
 before committing to the long run.
 
+## Scan roots — what the corpus covers (HIMMEL-3193)
+
+The default scan root is `scripts` (a scoped run: `run-shell-tests.sh scripts/hooks`).
+CI's shards pass root **`.`**, the whole-repo run: `scripts/`, `templates/` and
+`marketplace/`. `.` is an include list, not a blind walk of the checkout (a local
+run would otherwise also collect every `.claude/worktrees/*` copy), so a **new
+top-level tree that gains a `test-*.sh` must be added to the list** in
+`run-shell-tests.sh` — `test-run-shell-tests.sh` Case 23c fails on that drift. Paths
+are repo-root-relative (`marketplace/plugins/...`), the key form the ledger and the
+suite tables use. A `.` run takes the **same lock as a `scripts` run**, so the two
+refuse to overlap rather than run the same trees twice.
+
+The obsidian-triage suites need `js-yaml`/`playwright` from `tools/node_modules`;
+CI installs them with `marketplace/plugins/obsidian-triage/tools/ensure-deps.sh` before
+the shards, and locally run that once (it exits non-zero on any npm/network failure).
+Suites that fail under the runner are quarantined on `SKIP_LIST` with a ticket ID
+(HIMMEL-3196 for the marketplace set) — never silently.
+
 ## Shard assignment — the duration ledger (HIMMEL-2894)
 
 `--shard <i>/<n>` splits the corpus across CI's `shell-unit-shard` matrix. The
