@@ -820,6 +820,22 @@ run_clear "$tmp" 14 "only 'unavailable' critics → exit 14 (missing != clean)"
 if marker_exists "$tmp"; then pass; else fail "no responders: marker must REMAIN"; fi
 rm -rf "$tmp"
 
+# 4a. HIMMEL-3104: a `score` row (one per completed critic run, carrying the raw
+# artifact path) is EVIDENCE about a verdict, not a responder — it must never
+# satisfy gate 3 on its own, and must not disturb a clear that has a real avail.
+_score_row() { printf '{"kind":"score","head":"%s","model":"codex","critical":0,"important":0,"suggestions":0,"raw_path":"/x/y.raw"}' "$1"; }
+make_repo || exit 1
+write_marker "$tmp" "$sha"; write_ledger "$tmp" "$(_score_row "${sha:0:8}")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 14 "a score row alone is not a responder → exit 14"
+if marker_exists "$tmp"; then pass; else fail "score row alone: marker must REMAIN"; fi
+rm -rf "$tmp"
+make_repo || exit 1
+write_marker "$tmp" "$sha"; write_ledger "$tmp" "$(_score_row "${sha:0:8}")" "$(avail_ok "${sha:0:8}")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 0 "score row + real responder clears exactly as before → exit 0"
+rm -rf "$tmp"
+
 # 4b. Empty ledger → no evidence /pr-check ever ran → refuse.
 make_repo || exit 1
 write_marker "$tmp" "$sha"; write_ledger "$tmp"

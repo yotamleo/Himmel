@@ -358,5 +358,19 @@ fixed_out="$(CR_LEDGER="$LF" CR_SCORES_DROP_BELOW=40 CR_SCORES_MIN_N=10 bash "$C
 not_contains "all-fixed critic gets NO drop advice" "$fixed_out" "consider dropping epsilon"
 contains "all-fixed critic shows 100% agreed" "$fixed_out" "100%"
 
+# ── HIMMEL-3104: `score` rows (one per completed critic run) are invisible to
+# every table: the same ledger with a score row added at each head (stamped at
+# that head's earliest ts, the worst case for the last-N-heads window) renders
+# byte-identically, plain and --by-branch.
+LS="$tmp/ledger-with-score.jsonl"
+L="$L" LS="$LS" node -e '
+const fs=require("fs"), rows=fs.readFileSync(process.env.L,"utf8").split("\n").filter(Boolean).map(JSON.parse);
+const first={}; for(const r of rows){ if(r.head&&(!first[r.head]||r.ts<first[r.head])) first[r.head]=r.ts; }
+const extra=Object.keys(first).map(h=>JSON.stringify({kind:"score",ts:first[h],branch:"b",head:h,model:"alpha",critical:0,important:0,suggestions:0,raw_path:"/r/"+h+".raw"}));
+fs.writeFileSync(process.env.LS, extra.join("\n")+"\n"+rows.map(r=>JSON.stringify(r)).join("\n")+"\n");'
+check "score rows are present in the augmented fixture" "$(grep -c '"kind":"score"' "$LS" | tr -d ' ')" "$(L="$L" node -e 'const s=new Set(require("fs").readFileSync(process.env.L,"utf8").split("\n").filter(Boolean).map(JSON.parse).map(r=>r.head).filter(Boolean));console.log(s.size)')"
+check "cr-scores output is identical with score rows present" "$(CR_LEDGER="$LS" bash "$CS" 2>&1)" "$(CR_LEDGER="$L" bash "$CS" 2>&1)"
+check "cr-scores --by-branch output is identical with score rows present" "$(CR_LEDGER="$LS" bash "$CS" --by-branch 2>&1)" "$(CR_LEDGER="$L" bash "$CS" --by-branch 2>&1)"
+
 # ── Final ──────────────────────────────────────────────────────────────────
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

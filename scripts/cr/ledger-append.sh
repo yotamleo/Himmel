@@ -58,16 +58,27 @@
 # than colliding with a prior one. Reuses the existing --branch/--head flags,
 # plus --reason (why: the diff touches scripts/cr/) and --detail (which
 # anchor, which branch copy) rather than inventing new ones.
+#
+# `score` (HIMMEL-3104): one row per COMPLETED critic run — the verdict counts
+# (--critical/--important/--suggestions, plus --dropped citation-guard drops)
+# and --raw-path, the durable copy of the critic's raw response. A clean 0/0/0
+# verdict used to leave neither a raw artifact nor any row, so the one verdict
+# that can carry the merge gate alone had nothing behind it; the row makes a
+# 0-finding verdict distinguishable from a run that never happened (a failed or
+# unavailable run writes no `score` row — its `avail` row says why). NEVER
+# deduped, same posture as `attempt`: each run owns its own raw file. Readers
+# key on `kind`, so the row is ignored by every gate/scorecard reader.
 set -uo pipefail
 kind="${1:-}"; shift || true
 case "$kind" in
-  finding|avail|usage|amend|attempt|delegation) ;;
-  *) echo "ledger-append.sh: kind must be finding|avail|usage|amend|attempt|delegation" >&2; exit 2;;
+  finding|avail|usage|amend|attempt|delegation|score) ;;
+  *) echo "ledger-append.sh: kind must be finding|avail|usage|amend|attempt|delegation|score" >&2; exit 2;;
 esac
 
 branch="" head="" model="" responding_model="" id="" severity="" file="" line="" verdict="" status="" artifact="diff" perspective="off"
 prompt_chars="" response_chars="" reason="" detail="" deferred_to="" set_pairs="" attempt_num="" duration_secs="" batch_file="" text=""
 round="" disposition_round=""
+crit_n="" imp_n="" sug_n="" dropped_n="" raw_path=""
 while [ $# -gt 0 ]; do case "$1" in
   --branch) branch="$2"; shift 2;; --head) head="$2"; shift 2;;
   --model) model="$2"; shift 2;; --responding-model) responding_model="$2"; shift 2;;
@@ -82,6 +93,9 @@ while [ $# -gt 0 ]; do case "$1" in
   --text) text="$2"; shift 2;;
   --round) round="$2"; shift 2;;
   --disposition-round) disposition_round="$2"; shift 2;;
+  --critical) crit_n="$2"; shift 2;; --important) imp_n="$2"; shift 2;;
+  --suggestions) sug_n="$2"; shift 2;; --dropped) dropped_n="$2"; shift 2;;
+  --raw-path) raw_path="$2"; shift 2;;
   --set) set_pairs="$set_pairs$2"$'\n'; shift 2;;
   --attempt) attempt_num="$2"; shift 2;; --duration-secs) duration_secs="$2"; shift 2;;
   --batch-file) batch_file="$2"; shift 2;;
@@ -252,6 +266,21 @@ if [ "$kind" = "attempt" ]; then
   fi
 fi
 
+# score (HIMMEL-3104): a row with no head cannot be joined to a run, one with no
+# model cannot say whose verdict it is, and one with no raw path or no counts is
+# exactly the unauditable verdict this kind exists to replace.
+if [ "$kind" = "score" ]; then
+  [ -n "$head" ]     || { echo "ledger-append.sh: score requires --head" >&2; exit 2; }
+  [ -n "$model" ]    || { echo "ledger-append.sh: score requires --model" >&2; exit 2; }
+  [ -n "$raw_path" ] || { echo "ledger-append.sh: score requires --raw-path" >&2; exit 2; }
+  for _sc in "critical:$crit_n" "important:$imp_n" "suggestions:$sug_n"; do
+    expr "${_sc#*:}" : '^[0-9][0-9]*$' > /dev/null 2>&1 || { echo "ledger-append.sh: score --${_sc%%:*} must be a non-negative integer (got '${_sc#*:}')" >&2; exit 2; }
+  done
+  if [ -n "$dropped_n" ] && ! expr "$dropped_n" : '^[0-9][0-9]*$' > /dev/null 2>&1; then
+    echo "ledger-append.sh: score --dropped must be a non-negative integer (got '$dropped_n')" >&2; exit 2
+  fi
+fi
+
 # delegation (HIMMEL-2335): --head and --reason are both required - a
 # delegation record with no head cannot be correlated to a run, and one with
 # no reason is indistinguishable from an unexplained hand-off.
@@ -318,6 +347,7 @@ KIND="$kind" BRANCH="$branch" HEAD_="$head" RAW_HEAD="$raw_head" MODEL="$model" 
 FILE="$file" LINE="$line" VERDICT="$verdict" STATUS="$status" BATCH_FILE="$batch_file" \
 PROMPT_CHARS="$prompt_chars" RESPONSE_CHARS="$response_chars" TS="$ts" LEDGER="$ledger" ARTIFACT="$artifact" PERSPECTIVE="$perspective" \
 ATTEMPT_NUM="$attempt_num" DURATION_SECS="$duration_secs" ROUND="$round" DISPOSITION_ROUND="$disposition_round" \
+CRIT_N="$crit_n" IMP_N="$imp_n" SUG_N="$sug_n" DROPPED_N="$dropped_n" RAW_PATH="$raw_path" \
 REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TEXT="$raw_text" SET_PAIRS="$set_pairs" node -e '
   const fs=require("fs"), cp=require("child_process"), crypto=require("crypto"), e=process.env;
   // Keep this small inline copy in parity with finding-fingerprint.js. The
@@ -823,6 +853,15 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
     if(e.ATTEMPT_NUM) rec.attempt=Number(e.ATTEMPT_NUM);
     if(e.DURATION_SECS!=="") rec.duration_secs=Number(e.DURATION_SECS)||0;
     if(e.DETAIL) rec.detail=e.DETAIL;
+    dup=false;
+  } else if(e.KIND==="score"){
+    // HIMMEL-3104: one row per COMPLETED critic run. Never deduped: each run
+    // owns its own raw file, so a re-run at the same head appends its own row.
+    rec={kind:"score",ts:e.TS,branch:e.BRANCH,head:e.HEAD_,model:e.MODEL,
+         critical:Number(e.CRIT_N),important:Number(e.IMP_N),suggestions:Number(e.SUG_N),
+         raw_path:e.RAW_PATH};
+    if(e.DROPPED_N!=="") rec.dropped=Number(e.DROPPED_N);
+    if(e.RESPONDING_MODEL) rec.responding_model=e.RESPONDING_MODEL;
     dup=false;
   } else if(e.KIND==="delegation"){
     // HIMMEL-2335: one row per anchor->branch delegation event. NEVER

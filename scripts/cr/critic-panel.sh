@@ -768,6 +768,10 @@ if [ "${_SKIP_LEDGER:-0}" != "1" ]; then
         echo "critic-panel.sh: ledger append helper is not readable: $LEDGER_APPEND" >&2
         exit 5
     fi
+    # HIMMEL-3104: each member's critic-first-pass.sh keeps its raw response and
+    # writes a `score` row keyed on the head the panel reviewed. Hand it the
+    # panel's own head/branch/ledger — this cwd need not be the review root.
+    export CR_TARGET_HEAD="$REVIEW_HEAD" CR_TARGET_BRANCH="$REVIEW_BRANCH" CR_LEDGER="$PANEL_LEDGER"
 fi
 
 # Triviality gate (HIMMEL-737): a diff classified 'trivial' skips the PAID tier

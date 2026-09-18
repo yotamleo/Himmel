@@ -27,6 +27,10 @@ tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 # never pollutes ~/.himmel/flow-runs.jsonl (killed/timeout cases were paging
 # HimmelFlowRunStalled off pure test noise).
 export HIMMEL_FLOW_RUNS_LEDGER="$tmp/flow-runs.jsonl"
+# HIMMEL-3104: a completed run now writes a raw artifact + a `score` row beside
+# the ledger. Default every un-overridden case at a scratch ledger so this suite
+# never writes into the real repo's .git/cr-critic-scores.jsonl.
+export CR_LEDGER="$tmp/default-ledger.jsonl"
 fails=0
 check(){ if [ "$2" = "$3" ]; then echo "ok - $1"; else echo "FAIL - $1: got [$2] want [$3]"; fails=$((fails+1)); fi; }
 
@@ -400,13 +404,13 @@ PY
 u_ledger="$tmp/usage-ledger.jsonl"
 printf '%s' "$DIFF" | CR_USAGE_LOG=1 CR_LEDGER="$u_ledger" HERMES_PY="$tmp/py.sh" bash "$CFP" --model x/y --slug codex >/dev/null 2>&1
 check "usage record written when CR_USAGE_LOG=1" "$([ -f "$u_ledger" ] && grep -c '"kind":"usage"' "$u_ledger" || echo 0)" "1"
-check "usage record carries slug as model"       "$([ -f "$u_ledger" ] && grep -c '"model":"codex"' "$u_ledger" || echo 0)" "1"
+check "usage record carries slug as model"       "$([ -f "$u_ledger" ] && grep '"kind":"usage"' "$u_ledger" | grep -c '"model":"codex"' || echo 0)" "1"
 check "usage est_total_tokens positive"          "$(u="$u_ledger" node -e 'const o=require("fs").readFileSync(process.env.u,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="usage");process.stdout.write(String(o.est_total_tokens>0))' 2>/dev/null)" "true"
 
 # CR_USAGE_LOG unset (default) → NO usage record (telemetry is opt-in).
 u_off="$tmp/usage-ledger-off.jsonl"
 printf '%s' "$DIFF" | CR_LEDGER="$u_off" HERMES_PY="$tmp/py.sh" bash "$CFP" --model x/y --slug codex >/dev/null 2>&1
-check "no usage record when CR_USAGE_LOG unset" "$([ -f "$u_off" ] && grep -c '"kind":"usage"' "$u_off" || echo 0)" "0"
+check "no usage record when CR_USAGE_LOG unset" "$([ -f "$u_off" ] && { grep -c '"kind":"usage"' "$u_off" || true; } || echo 0)" "0"
 
 # stdout contract is byte-intact whether or not usage logging is on.
 out_on="$(printf '%s' "$DIFF" | CR_USAGE_LOG=1 CR_LEDGER="$tmp/u3.jsonl" HERMES_PY="$tmp/py.sh" bash "$CFP" --model x/y --slug s 2>/dev/null)"
@@ -787,5 +791,90 @@ check "a content mention of the catalogue path keeps the block" "$(grepq "$pp_kf
 pp_kf_missing="$(printf '%s' "$DIFF" | KNOWN_FINDINGS_FILE="$tmp/absent.json" bash "$CFP" --model x/y --slug s --print-prompt 2>/dev/null)"; kf_missing_rc=$?
 check "missing known-findings JSON is silently empty, prompt still builds" "$kf_missing_rc" "0"
 check "missing known-findings JSON: prompt still has the rules block" "$(grepq "$pp_kf_missing" -F 'Do NOT call any tools.' && echo yes || echo no)" "yes"
+
+# --- HIMMEL-3104: a completed run keeps its raw response + writes a `score` row ---
+# A clean 0/0/0 verdict used to keep no raw output and write no ledger row — the
+# one verdict that can carry the merge gate alone had no evidence behind it.
+S_HEAD="1111111111111111111111111111111111111111"
+s_ledger="$tmp/score-ledger.jsonl"
+s_raw_dir="$tmp/cr-panel-raw"
+cat > "$tmp/stub.py" <<'PY'
+print("## Critical Issues (0 found)")
+print("## Important Issues (0 found)")
+print("## Suggestions (0 found)")
+PY
+s_out="$(printf '%s' "$DIFF" | CR_LEDGER="$s_ledger" CR_TARGET_HEAD="$S_HEAD" CR_TARGET_BRANCH="fix/x" HERMES_PY="$tmp/py.sh" bash "$CFP" --model x/y --slug codex 2>/dev/null)"; s_rc=$?
+check "clean run: rc 0 and stdout is the clean verdict" "$s_rc:$(grepq "$s_out" -F '## Critical Issues (0 found)' && echo y || echo n)" "0:y"
+score_field() { s_ledger="$s_ledger" S_HEAD="$S_HEAD" F="$1" node -e '
+const rows=require("fs").readFileSync(process.env.s_ledger,"utf8").split("\n").filter(Boolean).map(JSON.parse)
+  .filter(r=>r.kind==="score"&&r.head===process.env.S_HEAD);
+const v=rows.length===1?rows[0][process.env.F]:"ROWS="+rows.length;
+process.stdout.write(String(v===undefined?"":v));' 2>/dev/null; }
+check "clean run: exactly one score row joined on target_head" "$(score_field model)" "codex"
+check "clean run: score row carries crit/imp/sug = 0/0/0" "$(score_field critical)/$(score_field important)/$(score_field suggestions)" "0/0/0"
+s_raw="$(score_field raw_path)"
+check "clean run: score row records a raw path beside the ledger" "$(case "$s_raw" in "$s_raw_dir"/*) echo y ;; *) echo n ;; esac)" "y"
+check "clean run: the raw artifact still exists after the process exited" "$([ -n "$s_raw" ] && [ -f "$s_raw" ] && echo y || echo n)" "y"
+check "clean run: the raw artifact holds the critic's response" "$([ -n "$s_raw" ] && grep -c '^## Suggestions (0 found)' "$s_raw" 2>/dev/null || echo 0)" "1"
+
+# Non-zero findings: the counts are the FINAL (post citation-guard) verdict.
+cat > "$tmp/stub.py" <<'PY'
+print("## Critical Issues (1 found)")
+print("- [CRITIC-1]: off-by-one in loop bound [foo.sh:3]")
+print("## Important Issues (0 found)")
+print("## Suggestions (1 found)")
+print("- [CRITIC-2]: rename i [foo.sh:2]")
+PY
+S_HEAD="2222222222222222222222222222222222222222"
+printf '%s' "$DIFF" | CR_LEDGER="$s_ledger" CR_TARGET_HEAD="$S_HEAD" HERMES_PY="$tmp/py.sh" bash "$CFP" --model x/y --slug codex >/dev/null 2>&1
+check "findings run: score row carries crit/imp/sug = 1/0/1" "$(score_field critical)/$(score_field important)/$(score_field suggestions)" "1/0/1"
+
+# rc=4 (every blocking finding dropped by the citation guard) is still a completed run.
+cat > "$tmp/stub.py" <<'PY'
+print("## Critical Issues (1 found)")
+print("- [CRITIC-1]: hallucinated [nope.sh:99]")
+print("## Important Issues (0 found)")
+print("## Suggestions (0 found)")
+PY
+S_HEAD="3333333333333333333333333333333333333333"
+printf '%s' "$DIFF" | CR_LEDGER="$s_ledger" CR_TARGET_HEAD="$S_HEAD" HERMES_PY="$tmp/py.sh" bash "$CFP" --model x/y --slug codex >/dev/null 2>&1; s_rc4=$?
+check "gated run: rc 4 unchanged" "$s_rc4" "4"
+check "gated run: score row present, 0 kept / 1 dropped" "$(score_field critical)/$(score_field dropped)" "0/1"
+
+# A failed / malformed run writes NO score row (its avail row says why).
+S_HEAD="4444444444444444444444444444444444444444"
+cat > "$tmp/stub.py" <<'PY'
+print("this is not a review")
+PY
+printf '%s' "$DIFF" | CR_LEDGER="$s_ledger" CR_TARGET_HEAD="$S_HEAD" HERMES_PY="$tmp/py.sh" bash "$CFP" --model x/y --slug codex >/dev/null 2>&1; s_rc_bad=$?
+check "malformed run: rc 1 unchanged" "$s_rc_bad" "1"
+check "malformed run: no score row" "$(score_field model)" "ROWS=0"
+cat > "$tmp/stub.py" <<'PY'
+import sys
+sys.exit(3)
+PY
+S_HEAD="5555555555555555555555555555555555555555"
+printf '%s' "$DIFF" | CR_LEDGER="$s_ledger" CR_TARGET_HEAD="$S_HEAD" HERMES_PY="$tmp/py.sh" bash "$CFP" --model x/y --slug codex >/dev/null 2>&1
+check "invoke-failed run: no score row" "$(score_field model)" "ROWS=0"
+
+# Retention: raw artifacts older than CR_RAW_RETAIN_DAYS are pruned on the next
+# write; a fresh one is kept. No daemon — the bound rides on the writer.
+cat > "$tmp/stub.py" <<'PY'
+print("## Critical Issues (0 found)")
+print("## Important Issues (0 found)")
+print("## Suggestions (0 found)")
+PY
+mkdir -p "$s_raw_dir"
+: > "$s_raw_dir/old-run.raw"; touch -d '90 days ago' "$s_raw_dir/old-run.raw"
+: > "$s_raw_dir/fresh-run.raw"
+S_HEAD="6666666666666666666666666666666666666666"
+printf '%s' "$DIFF" | CR_LEDGER="$s_ledger" CR_TARGET_HEAD="$S_HEAD" HERMES_PY="$tmp/py.sh" bash "$CFP" --model x/y --slug codex >/dev/null 2>&1
+check "retention: a raw artifact past the window is pruned" "$([ -e "$s_raw_dir/old-run.raw" ] && echo kept || echo pruned)" "pruned"
+check "retention: a recent raw artifact survives" "$([ -e "$s_raw_dir/fresh-run.raw" ] && echo kept || echo pruned)" "kept"
+
+# Fail-open: an unwritable ledger dir never changes rc or stdout.
+S_HEAD="7777777777777777777777777777777777777777"
+s_out_bad="$(printf '%s' "$DIFF" | CR_LEDGER="/proc/no-such-dir/ledger.jsonl" CR_TARGET_HEAD="$S_HEAD" HERMES_PY="$tmp/py.sh" bash "$CFP" --model x/y --slug codex 2>/dev/null)"; s_rc_bad2=$?
+check "unwritable ledger dir: rc 0 and stdout intact" "$s_rc_bad2:$(grepq "$s_out_bad" -F '## Suggestions (0 found)' && echo y || echo n)" "0:y"
 
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILED"; exit 1; fi

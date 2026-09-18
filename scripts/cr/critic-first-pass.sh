@@ -553,6 +553,59 @@ _cfp_emit_raw_diag() {
     fi
 }
 
+# HIMMEL-3104: keep the critic's raw response and write ONE `score` ledger row
+# for a COMPLETED run (rc 0 and rc 4 — the model answered). A clean 0/0/0
+# verdict used to leave no raw output and no row: the one verdict that can carry
+# the merge gate alone had no evidence behind it, and "0 findings" was
+# indistinguishable from "never ran". The raw file lives beside the ledger
+# (<ledger dir>/cr-panel-raw/), per run, and the row records its path. Bounded
+# by an age prune on each write (CR_RAW_RETAIN_DAYS, default 30) — no daemon.
+# Purely additive + fail-open: any failure here warns and returns, never
+# touching stdout or the exit code. Head/branch/ledger come from the panel's
+# exported CR_TARGET_HEAD/CR_TARGET_BRANCH/CR_LEDGER (its review root may not be
+# this cwd), else the cwd's repo.
+# ponytail: score rows do not carry an artifact label (spec/plan/diff); the raw
+# filename's mode field (diff|artifact) is the only marker of artifact mode.
+_cfp_record_score() {
+    _crs_final="$1"
+    _crs_head="${CR_TARGET_HEAD:-}"
+    [ -n "$_crs_head" ] || _crs_head="$(git rev-parse HEAD 2>/dev/null)" || _crs_head=""
+    if [ -n "${CR_LEDGER:-}" ]; then
+        _crs_ledger="$CR_LEDGER"
+    else
+        _crs_common="$(git rev-parse --git-common-dir 2>/dev/null)" || _crs_common=""
+        [ -n "$_crs_common" ] && _crs_ledger="$_crs_common/cr-critic-scores.jsonl" || _crs_ledger=""
+    fi
+    if [ -z "$_crs_head" ] || [ -z "$_crs_ledger" ]; then
+        echo "critic-first-pass.sh: no head/ledger to key a score row on — raw response not kept" >&2
+        return 0
+    fi
+    _crs_dir="$(dirname "$_crs_ledger")/cr-panel-raw"
+    _crs_mode="diff"
+    [ "$artifact_mode" -eq 1 ] && _crs_mode="artifact"
+    _crs_slug="$(printf '%s' "$slug" | tr -c 'A-Za-z0-9._-' '_')"
+    _crs_path="$_crs_dir/$(printf '%s' "$_crs_head" | cut -c1-12).$_crs_slug.$_crs_mode.$(date -u +%Y%m%dT%H%M%SZ).$$.raw"
+    if ! { (umask 077; mkdir -p "$_crs_dir") && (umask 077; printf '%s\n' "$raw" > "$_crs_path"); } 2>/dev/null; then
+        echo "critic-first-pass.sh: cannot write raw response under $_crs_dir — no score row" >&2
+        return 0
+    fi
+    _crs_days="${CR_RAW_RETAIN_DAYS:-30}"
+    case "$_crs_days" in ''|*[!0-9]*) _crs_days=30 ;; esac
+    find "$_crs_dir" -maxdepth 1 -type f -name '*.raw' -mtime +"$_crs_days" -exec rm -f {} + 2>/dev/null || true
+    _crs_n() { printf '%s\n' "$_crs_final" | sed -n "s/^## $1 (\([0-9][0-9]*\) $2).*/\1/p" | head -1; }
+    _crs_c="$(_crs_n 'Critical Issues' found)"
+    _crs_i="$(_crs_n 'Important Issues' found)"
+    _crs_s="$(_crs_n 'Suggestions' found)"
+    _crs_d="$(_crs_n 'Dropped Citations' dropped)"
+    CR_LEDGER="$_crs_ledger" bash "$SCRIPT_DIR/ledger-append.sh" score \
+        --branch "${CR_TARGET_BRANCH:-$(git branch --show-current 2>/dev/null || true)}" \
+        --head "$_crs_head" --model "$slug" --responding-model "$model" \
+        --critical "${_crs_c:-0}" --important "${_crs_i:-0}" --suggestions "${_crs_s:-0}" \
+        --dropped "${_crs_d:-0}" --raw-path "$_crs_path" >/dev/null 2>&1 \
+        || echo "critic-first-pass.sh: score row append failed (raw kept at $_crs_path)" >&2
+    return 0
+}
+
 _attempt=0
 raw=""
 rc=1
@@ -808,6 +861,7 @@ if [ "$rc" -eq 4 ]; then
     printf '%s
 ' "$final"
     echo "critic-first-pass.sh: review NOT clean - all blocking findings were dropped by citation validation (exit 4; rejected evidence emitted for the citation guard)" >&2
+    _cfp_record_score "$final"
     exit 4
 fi
 if [ "$rc" -ne 0 ]; then
@@ -835,4 +889,5 @@ if [ "$rc" -ne 0 ]; then
 fi
 
 printf '%s\n' "$final"
+_cfp_record_score "$final"
 exit 0

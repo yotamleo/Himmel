@@ -641,8 +641,13 @@ PATH="$FAKEBIN:$PATH" HERMES_PY="$AD_PY" CR_LEDGER="$DIGF_LEDGER" CRITIC_LEDGER_
 check "HIMMEL-1871 round 7: second distinct-evidence run also refuses (exit 6)" "$digf_rc_b" "6"
 check "HIMMEL-1871 round 7: distinct same-head drops share NO ledger key (no guard rows)" \
     "$(grep -c 'citation-guard' "$DIGF_LEDGER" || true)" "0"
-check "HIMMEL-1871 round 7: refused runs append NOTHING to the ledger" \
-    "$(wc -l < "$DIGF_LEDGER" | tr -d ' ')" "0"
+# HIMMEL-3104: the critic DID answer on both refused runs, so CFP keeps the
+# raw response and records one `score` row each (audit evidence the panel
+# refused to certify, not a verdict). Everything else stays out of the ledger.
+check "HIMMEL-1871 round 7: refused runs append NOTHING to the ledger but score rows" \
+    "$(grep -vc '"kind":"score"' "$DIGF_LEDGER" || true)" "0"
+check "HIMMEL-3104: each refused run that got an answer records one score row" \
+    "$(grep -c '"kind":"score"' "$DIGF_LEDGER" || true)" "2"
 
 # Round 9: the FALLBACK chain shares the rc=4 contract the primary path
 # learned in round 8. Before this, the chain accepted only rc 0: a fallback

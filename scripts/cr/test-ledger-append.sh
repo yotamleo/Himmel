@@ -1061,4 +1061,25 @@ CR_LEDGER="$ARL" CR_REVIEW_ROUND=nope bash "$LA" amend --branch b --head "$AR_HE
 check "an unusable ambient round is ignored, not refused" "$?" "0"
 check "an unusable ambient round records no adjudication round" "$(L="$ARL" node -e 'const r=require("fs").readFileSync(process.env.L,"utf8").trim().split("\n").map(JSON.parse);const a=r.filter(x=>x.kind==="amend").pop();console.log(String(a.disposition_round))')" "undefined"
 
+# ── HIMMEL-3104: `score` kind — one row per COMPLETED critic run, carrying the
+# verdict counts and the durable raw-response path; never deduped.
+SC="$tmp/score.jsonl"
+SC_HEAD=$(printf '%040d' 3104)
+CR_LEDGER="$SC" bash "$LA" score --branch b --head "$SC_HEAD" --model codex --responding-model gpt-5 --critical 0 --important 0 --suggestions 0 --raw-path /r/a.raw
+check "score write exits 0" "$?" "0"
+check "score row shape: kind/head/model/counts/raw_path" \
+    "$(L="$SC" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="score");console.log([o.kind,o.head,o.model,o.responding_model,o.critical,o.important,o.suggestions,o.raw_path,"dropped" in o].join("|"))')" \
+    "score|$SC_HEAD|codex|gpt-5|0|0|0|/r/a.raw|false"
+CR_LEDGER="$SC" bash "$LA" score --branch b --head "$SC_HEAD" --model codex --critical 1 --important 0 --suggestions 2 --dropped 3 --raw-path /r/b.raw
+check "score is never deduped: a re-run at the same head+model appends its own row" "$(grep -c '"kind":"score"' "$SC")" "2"
+check "score --dropped is recorded when given" "$(L="$SC" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).filter(r=>r.kind==="score").pop();console.log(o.dropped+"|"+o.suggestions)')" "3|2"
+for _miss in "--head:--model codex --critical 0 --important 0 --suggestions 0 --raw-path /r" "--model:--head $SC_HEAD --critical 0 --important 0 --suggestions 0 --raw-path /r" "--raw-path:--head $SC_HEAD --model codex --critical 0 --important 0 --suggestions 0" "--critical:--head $SC_HEAD --model codex --important 0 --suggestions 0 --raw-path /r"; do
+  # shellcheck disable=SC2086  # the arg string is deliberately word-split
+  CR_LEDGER="$SC" bash "$LA" score ${_miss#*:} 2>/dev/null
+  check "score without ${_miss%%:*} is refused (rc 2)" "$?" "2"
+done
+CR_LEDGER="$SC" bash "$LA" score --head "$SC_HEAD" --model codex --critical x --important 0 --suggestions 0 --raw-path /r 2>/dev/null
+check "score with a non-integer count is refused (rc 2)" "$?" "2"
+check "refused score writes nothing" "$(grep -c '"kind":"score"' "$SC")" "2"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }
