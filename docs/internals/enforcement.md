@@ -993,7 +993,39 @@ carries the matching branch-aware carve-out on the deny side (HIMMEL-2054) —
 before that fix the deny hook refused every `--force-with-lease` shape
 unconditionally, and deny/exit-2 wins over this allow, so the grant described
 above was unreachable in practice.
-Spec: `scripts/hooks/test-auto-approve-safe-bash.sh`.
+
+**Second exception — one `queue-lock.sh` lock verb (HIMMEL-3131, HIMMEL-3192):**
+`[HANDOVER_DIR=<root>] bash [<repo>/]scripts/handover/queue-lock.sh acquire <doc>`
+`| release|heartbeat <doc> [<token>] | status <doc> | status --sweep [<dir>]`
+is granted, because `bash` is not a safe binary and a leading `HANDOVER_DIR=`
+is not an innocuous assignment, so the shape used to fall through to the
+auto-mode classifier — which, having read a just-landed merge in the
+narrative, denied `release` as a merge without review. Guards:
+- **The WHOLE command only.** Never one segment of a compound: the exception
+  is not wired into the per-segment safe check, and ANY unquoted separator in
+  the command (`;` `|` `&` newline — including a trailing `&`, `;`, `&&`, `||`
+  or `|` that leaves an empty tail) disqualifies it. `HANDOVER_DIR` is the only
+  env prefix accepted, so `QUEUE_LOCK_FORCE_RELEASE=1` (a console action) can
+  never ride along.
+- **Every value literal:** no expansion, glob or `..`; the doc is an absolute
+  `.md`, and — when `HANDOVER_DIR` is given — contained under it.
+- **The script resolves into a real checkout of this repo** (the checkout the
+  hook lives in or one of its `git worktree list` siblings); a lookalike
+  `…/scripts/handover/queue-lock.sh` falls through. The relative form is judged
+  against the payload `cwd` (else `$PWD`).
+- **Windows Git Bash drive-letter paths (HIMMEL-3192).** Each of the four path
+  positions (the `HANDOVER_DIR` value, the script, the `--sweep` dir, the doc)
+  goes through ONE helper (`ql_abs_path`) accepting `/x`, `/c/x` and `C:/x`
+  (`C:\x` when quoted — an unquoted backslash is eaten by bash before the path
+  is seen, so it never qualifies). Every containment comparison first
+  normalises BOTH sides to `/<lower-case drive>/…`, so `C:/x`, `c:/x` and
+  `/c/x` are equal and a drive spelling cannot dodge containment (a mixed
+  spelling of two different directories still falls through). Drive-relative
+  `C:x`, UNC and a `/`-prefixed path carrying a backslash are not accepted.
+  Linux-only tested — the cases simulate the spelling; Git Bash itself was not run.
+
+It fails toward a prompt, never toward approval. Spec:
+`scripts/hooks/test-auto-approve-safe-bash.sh`.
 
 ### `check-cr-marker-on-pr-create.sh` — CR-marker-pending pre-PR-create guard
 

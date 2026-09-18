@@ -759,7 +759,8 @@ scan_cmd() {
 # falls through. HANDOVER_DIR is the only env prefix accepted, so
 # QUEUE_LOCK_FORCE_RELEASE=1 (a console action) can never ride along.
 # Every value must be a literal: no expansion, no glob, no `..`, doc absolute
-# and `.md`, doc under HANDOVER_DIR when one is given.
+# and `.md`, doc under HANDOVER_DIR when one is given. "Absolute" is `/x`, `/c/x`
+# or a Git-Bash drive path `C:/x` (ql_abs_path, HIMMEL-3192).
 # The script is the relative `scripts/handover/queue-lock.sh` or an ABSOLUTE
 # path; either way the checkout it resolves into must be a real one of this repo
 # (ql_root_is_own_checkout) — for the relative form that is the payload `cwd`
@@ -779,21 +780,55 @@ ql_word_literal() {   # $1 raw word → QW (cooked); fails on any expansion/glob
     [ -n "$QW" ]
 }
 
+# HIMMEL-3192: the ONE absolute-path helper for every path position (the
+# HANDOVER_DIR value, the script, the `status --sweep` dir, the doc). $1 is a
+# cooked word; fails unless it is absolute and `..`-free. Accepts a slash-prefixed
+# POSIX/MSYS path (`/x`, `/c/x`) or a Git-Bash drive-letter path (`C:/x`, `c:\x`).
+# Sets QN — the canonical spelling every containment comparison uses (a drive
+# path becomes `/<lower-case drive>/…`, so `C:/x` and `/c/x` are equal and a
+# drive spelling cannot dodge containment) — and QC, the spelling `cd` is given.
+# A backslash is a separator only in a drive path; a `/`-prefixed path carrying
+# one is refused, since MSYS reads it as a separator that would hide a `..`.
+# ponytail: on a POSIX host `C:/x` is really a cwd-relative name, and the
+# script-root `cd` (ql_root_is_own_checkout) is the only thing that decides it
+# there; the drive-relative `C:x`, UNC `//host/x` and an upper-case `/C/x` are
+# not accepted (they fall through to a prompt).
+ql_abs_path() {
+    local p="$1" d
+    case "$p" in
+        [A-Za-z]:[/\\]*)
+            p=$(printf '%s' "$p" | tr "\\\\" '/')
+            d=$(printf '%s' "${p%%:*}" | tr '[:upper:]' '[:lower:]')
+            QC="$p"; QN="/$d${p#?:}" ;;
+        /*)
+            case "$p" in *"\\"*) return 1 ;; esac
+            QC="$p"; QN="$p" ;;
+        *) return 1 ;;
+    esac
+    case "$QN" in */..|*/../*) return 1 ;; esac
+    return 0
+}
+
 # Is <root> a real checkout of THIS repo — the checkout this hook lives in, or
 # one of its `git worktree list` siblings (the primary checkout included) — that
 # actually holds queue-lock.sh? A lookalike `/tmp/x/scripts/handover/queue-lock.sh`
-# (even one that exists) is not, so it falls through.
+# (even one that exists) is not, so it falls through. Both sides of every
+# comparison go through ql_abs_path (HIMMEL-3192), so the drive letter's case or
+# a `C:/x` vs `/c/x` spelling can neither dodge nor defeat it.
 ql_root_is_own_checkout() {
     local real here wt wts
     real=$(cd "$1" 2>/dev/null && pwd -P) || return 1
     [ -f "$real/scripts/handover/queue-lock.sh" ] || return 1
     here=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd -P) || return 1
+    ql_abs_path "$real" || return 1; real="$QN"
+    ql_abs_path "$here" || return 1; here="$QN"
     [ "$real" = "$here" ] && return 0
     wts=$(git -C "$here" worktree list --porcelain 2>/dev/null) || return 1
     while IFS= read -r wt; do
         case "$wt" in "worktree "*) ;; *) continue ;; esac
         wt=$(cd "${wt#worktree }" 2>/dev/null && pwd -P) || continue
-        [ "$wt" = "$real" ] && return 0
+        ql_abs_path "$wt" || continue
+        [ "$QN" = "$real" ] && return 0
     done <<EOF
 $wts
 EOF
@@ -808,7 +843,8 @@ segment_is_queue_lock() {
     case "${a[0]}" in
         HANDOVER_DIR=*)
             ql_word_literal "${a[0]#HANDOVER_DIR=}" || return 1
-            case "$QW" in /*) hd="${QW%/}" ;; *) return 1 ;; esac
+            ql_abs_path "$QW" || return 1
+            hd="${QN%/}"
             i=1 ;;
     esac
     [ "${a[$i]:-}" = "bash" ] || return 1
@@ -823,8 +859,10 @@ segment_is_queue_lock() {
             ql_cwd="${ql_cwd%$'\r'}"
             [ -n "$ql_cwd" ] || ql_cwd="$PWD"
             ql_root_is_own_checkout "$ql_cwd" || return 1 ;;
-        /*/scripts/handover/queue-lock.sh) ql_root_is_own_checkout "${QW%/scripts/handover/queue-lock.sh}" || return 1 ;;
-        *) return 1 ;;
+        *)
+            ql_abs_path "$QW" || return 1
+            case "$QN" in /*/scripts/handover/queue-lock.sh) ;; *) return 1 ;; esac
+            ql_root_is_own_checkout "${QC%/scripts/handover/queue-lock.sh}" || return 1 ;;
     esac
     verb="${a[$((i + 2))]:-}"
     i=$((i + 3))
@@ -833,14 +871,15 @@ segment_is_queue_lock() {
         [ "$rest" -le 2 ] || return 1
         if [ "$rest" -eq 2 ]; then
             ql_word_literal "${a[$((i + 1))]}" || return 1
-            case "$QW" in /*) ;; *) return 1 ;; esac
+            ql_abs_path "$QW" || return 1
         fi
         return 0
     fi
     [ "$rest" -ge 1 ] || return 1
     ql_word_literal "${a[$i]}" || return 1
-    doc="$QW"
-    case "$doc" in /*.md) ;; *) return 1 ;; esac
+    ql_abs_path "$QW" || return 1
+    doc="$QN"
+    case "$doc" in *.md) ;; *) return 1 ;; esac
     [ -z "$hd" ] || case "$doc" in "$hd"/*) ;; *) return 1 ;; esac
     case "$verb" in
         acquire|status) [ "$rest" -eq 1 ] ;;

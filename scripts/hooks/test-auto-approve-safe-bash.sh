@@ -488,6 +488,75 @@ assert "ctl: leading &&"                        PASS "$(decide "$(j_bash "&& $QL
 assert "ctl: release trailing &"                PASS "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash scripts/handover/queue-lock.sh release $QL_DOC $QL_TOK &")")"
 assert "the lone command still approves"        ALLOW "$(decide "$(j_bash "$QL_LONE")")"
 
+# --- HIMMEL-3192: Windows Git Bash drive-letter spellings (C:/x, C:\x, /c/x) ---
+# The carve-out took only `/`-prefixed paths, so on Git Bash a `C:/…` word fell
+# through to the classifier (toward a prompt, never toward approval). ONE helper
+# (ql_abs_path) now accepts slash-prefixed and drive-letter paths at all four
+# positions: the HANDOVER_DIR value, the absolute script path, the status --sweep
+# dir and the doc. Both sides of every containment comparison are normalised to
+# the same `/<drive>/…` spelling (drive letter case-folded), so `C:/x` and `/c/x`
+# are equal and a drive-letter spelling cannot dodge containment. This is Linux:
+# the cases SIMULATE the spelling, they do not run Git Bash.
+QD_R='C:/luna/handovers'
+QD_DOC="$QD_R/yotamleo/himmel/HIMMEL-1-legN1-2026-09-18.md"
+qd() { decide "$(j_bash_cwd "$QL_HERE" "$1")"; }   # relative script, cwd = own checkout
+QD_S="bash scripts/handover/queue-lock.sh"
+# Position 1 + 4 (HANDOVER_DIR value and doc), and both mixed spellings of one path
+assert "drive: HANDOVER_DIR + doc, release"         ALLOW "$(qd "HANDOVER_DIR=$QD_R $QD_S release $QD_DOC $QL_TOK")"
+assert "drive: HANDOVER_DIR C:/ + doc /c/"          ALLOW "$(qd "HANDOVER_DIR=$QD_R $QD_S release /c/luna/handovers/y/x.md $QL_TOK")"
+assert "drive: HANDOVER_DIR /c/ + doc C:/"          ALLOW "$(qd "HANDOVER_DIR=/c/luna/handovers $QD_S release $QD_DOC $QL_TOK")"
+assert "drive: lower-case drive vs upper-case doc"  ALLOW "$(qd "HANDOVER_DIR=c:/luna/handovers $QD_S release $QD_DOC $QL_TOK")"
+assert "drive: upper-case HANDOVER_DIR, lower doc"  ALLOW "$(qd "HANDOVER_DIR=C:/luna/handovers $QD_S acquire c:/luna/handovers/y/x.md")"
+assert "drive: HANDOVER_DIR with a trailing slash"  ALLOW "$(qd "HANDOVER_DIR=$QD_R/ $QD_S status $QD_DOC")"
+assert "drive: single-quoted backslash spelling"    ALLOW "$(qd "HANDOVER_DIR='C:\\luna\\handovers' $QD_S heartbeat 'C:\\luna\\handovers\\y\\x.md' $QL_TOK")"
+# Position 4 alone (no HANDOVER_DIR)
+assert "drive: doc alone, acquire"                  ALLOW "$(qd "$QD_S acquire C:/luna/handovers/y/x.md")"
+# Position 3 (status --sweep <dir>)
+assert "drive: sweep dir"                           ALLOW "$(qd "$QD_S status --sweep $QD_R")"
+assert "drive: sweep dir, HANDOVER_DIR"             ALLOW "$(qd "HANDOVER_DIR=$QD_R $QD_S status --sweep $QD_R")"
+assert "drive: sweep dir, backslash"                ALLOW "$(qd "$QD_S status --sweep 'C:\\luna\\handovers'")"
+# Position 2 (absolute script path). The script root is resolved with `cd`, so on
+# Linux a `C:/…` word is simulated by a `C:` symlink in the hook's cwd that points
+# at a real checkout (own = ALLOW) or at a lookalike (must fall through).
+QD_DRV="$(mktemp -d "${TMPDIR:-/tmp}/qd-drv.XXXXXX")"
+QD_FAKE="$(mktemp -d "${TMPDIR:-/tmp}/qd-fake.XXXXXX")"; mkdir -p "$QD_FAKE/scripts/handover" "$QD_FAKE/.git"; : > "$QD_FAKE/scripts/handover/queue-lock.sh"
+ln -s "$QL_HERE" "$QD_DRV/C:" 2>/dev/null; ln -s "$QL_HERE" "$QD_DRV/c:" 2>/dev/null; ln -s "$QD_FAKE" "$QD_DRV/D:" 2>/dev/null
+if [ -f "$QD_DRV/C:/scripts/handover/queue-lock.sh" ] && [ -f "$QD_DRV/c:/scripts/handover/queue-lock.sh" ] && [ -f "$QD_DRV/D:/scripts/handover/queue-lock.sh" ]; then
+    qdd() { decide_in "$QD_DRV" "$(j_bash "$1")"; }   # no payload cwd → cwd = the symlink dir
+    assert "drive: abs script C:/, own checkout"        ALLOW "$(qdd "HANDOVER_DIR=$QD_R bash C:/scripts/handover/queue-lock.sh release $QD_DOC $QL_TOK")"
+    assert "drive: abs script c:/ (lower-case letter)"  ALLOW "$(qdd "HANDOVER_DIR=$QD_R bash c:/scripts/handover/queue-lock.sh release $QD_DOC $QL_TOK")"
+    assert "drive: abs script, backslash spelling"      ALLOW "$(qdd "HANDOVER_DIR=$QD_R bash 'C:\\scripts\\handover\\queue-lock.sh' release $QD_DOC $QL_TOK")"
+    assert "drive: abs script + doc + sweep together"   ALLOW "$(qdd "bash C:/scripts/handover/queue-lock.sh status --sweep $QD_R")"
+    assert "ctl: drive abs script, lookalike checkout (exists + .git)" PASS "$(qdd "HANDOVER_DIR=$QD_R bash D:/scripts/handover/queue-lock.sh release $QD_DOC $QL_TOK")"
+    assert "ctl: drive abs script, drive not present"   PASS "$(qdd "HANDOVER_DIR=$QD_R bash E:/scripts/handover/queue-lock.sh release $QD_DOC $QL_TOK")"
+else
+    echo "SKIP drive: abs script rows (cannot create C:/c:/D: symlinks here)"
+fi
+rm -rf "$QD_DRV" "$QD_FAKE"
+assert "ctl: drive abs script, lookalike (absent)"  PASS "$(qd "HANDOVER_DIR=$QD_R bash C:/tmp/x-himmel-3192-absent/scripts/handover/queue-lock.sh release $QD_DOC $QL_TOK")"
+assert "ctl: drive abs script, dot-dot root"        PASS "$(qd "HANDOVER_DIR=$QD_R bash C:/x/../scripts/handover/queue-lock.sh release $QD_DOC $QL_TOK")"
+# CONTROLS — a drive-letter spelling must never dodge containment or a lexical guard
+assert "ctl: drive doc, other drive"                PASS "$(qd "HANDOVER_DIR=$QD_R $QD_S release D:/luna/handovers/y/x.md $QL_TOK")"
+assert "ctl: drive doc outside HANDOVER_DIR"        PASS "$(qd "HANDOVER_DIR=$QD_R $QD_S release C:/other/x.md $QL_TOK")"
+assert "ctl: mixed spelling escape (C:/a vs /c/b)"  PASS "$(qd "HANDOVER_DIR=C:/a $QD_S release /c/b/x.md $QL_TOK")"
+assert "ctl: mixed spelling escape (/c/a vs C:/b)"  PASS "$(qd "HANDOVER_DIR=/c/a $QD_S release C:/b/x.md $QL_TOK")"
+assert "ctl: sibling with the root as a name prefix" PASS "$(qd "HANDOVER_DIR=$QD_R $QD_S release C:/luna/handovers-evil/x.md $QL_TOK")"
+assert "ctl: drive doc, dot-dot"                    PASS "$(qd "HANDOVER_DIR=$QD_R $QD_S release C:/luna/handovers/../x.md $QL_TOK")"
+assert "ctl: drive doc, dot-dot backslash"          PASS "$(qd "HANDOVER_DIR=$QD_R $QD_S release 'C:\\luna\\handovers\\..\\x.md' $QL_TOK")"
+assert "ctl: drive HANDOVER_DIR, dot-dot"           PASS "$(qd "HANDOVER_DIR=C:/luna/../x $QD_S release C:/luna/../x/y.md $QL_TOK")"
+assert "ctl: drive sweep dir, dot-dot"              PASS "$(qd "$QD_S status --sweep C:/luna/..")"
+assert "ctl: drive doc, not .md"                    PASS "$(qd "HANDOVER_DIR=$QD_R $QD_S release C:/luna/handovers/x.txt $QL_TOK")"
+assert "ctl: drive-relative doc (C:x)"              PASS "$(qd "$QD_S acquire C:luna/x.md")"
+assert "ctl: unquoted backslash doc (bash eats \\)" PASS "$(qd "$QD_S acquire C:\\luna\\x.md")"
+assert "ctl: variable in a drive path"              PASS "$(qd "$QD_S acquire C:/\$X/x.md")"
+assert "ctl: drive doc, unknown verb"               PASS "$(qd "HANDOVER_DIR=$QD_R $QD_S force-release $QD_DOC")"
+assert "ctl: drive doc, extra arg"                  PASS "$(qd "HANDOVER_DIR=$QD_R $QD_S release $QD_DOC $QL_TOK extra")"
+assert "ctl: drive trailing &"                      PASS "$(qd "HANDOVER_DIR=$QD_R $QD_S status $QD_DOC &")"
+assert "ctl: drive trailing ;"                      PASS "$(qd "HANDOVER_DIR=$QD_R $QD_S status $QD_DOC;")"
+assert "ctl: drive doc, compound"                   PASS "$(qd "git log -1 && HANDOVER_DIR=$QD_R $QD_S status $QD_DOC")"
+assert "ctl: POSIX doc with a backslash"            PASS "$(qd "HANDOVER_DIR=$QL_R $QD_S status '$QL_R/y/a\\..\\b.md'")"
+assert "the POSIX lone command still approves"      ALLOW "$(qd "HANDOVER_DIR=$QL_R $QD_S status $QL_DOC")"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "All cases passed."
