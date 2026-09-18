@@ -624,8 +624,104 @@ assert_deny "process substitution <(...) is not a subshell"                "$(j 
 assert_deny "case pattern paren ( in (x)) is not a subshell"                "$(j "case x in (x) unset HIMMEL_CONSOLE_LEG;; esac; bash $MERGE_ON_GREEN 1")"
 assert_deny "function-body paren (f() (...)) is not command-position"      "$(j "f() ( unset HIMMEL_CONSOLE_LEG ); f; bash $MERGE_ON_GREEN 1")"
 
+# --- HIMMEL-3185: an arithmetic COMMAND `(( ... ))` / EXPANSION `$(( ... ))`
+# whose body ASSIGNS a registered seam is a current-shell clear, exactly like
+# `let` -- but ONLY the spaced spellings escaped: `((NAME=0))` reads as an
+# assignment WORD once `(`/`)` split it into its own segment, while
+# `(( NAME = 0 ))` leaves the words `NAME`, `=`, `0` and no assignment word.
+# Every row below carries a REAL-BASH LEAK ORACLE: the payload runs in a
+# scratch dir whose merge-on-green path is a STUB that prints the four
+# registered merge-on-green seams as the chokepoint would see them (never the
+# real chokepoint), launched with all four = 1. `leak` rows must change one
+# (else the row is vacuous -- it would pass a guard that denies everything);
+# `noleak` rows must leave all four intact (else the ALLOW is a real bypass).
+# The guard's own decision is then asserted against that ground truth. ---
+ORACLE_DIR=$(mktemp -d)
+ORACLE_EXPECT='L=1 A=1 H=1 M=1'
+mkdir -p "$ORACLE_DIR/$(dirname "$MERGE_ON_GREEN")"
+# shellcheck disable=SC2016 # the stub's ${...} must expand in the ORACLE shell, not here
+printf '%s\n' 'echo "L=${HIMMEL_CONSOLE_LEG-UNSET} A=${ARMAUTOMERGE-UNSET} H=${HANDOVER_DIR-UNSET} M=${MERGE_ON_GREEN_LOG-UNSET}"' >"$ORACLE_DIR/$MERGE_ON_GREEN"
+oracle_line() {  # oracle_line <payload> -> the stub's seam line (empty if the stub never ran)
+    (cd "$ORACLE_DIR" && env HIMMEL_CONSOLE_LEG=1 ARMAUTOMERGE=1 HANDOVER_DIR=1 MERGE_ON_GREEN_LOG=1 bash -c "$1" 2>/dev/null) | grep '^L=' | tail -n 1
+}
+diff_row() {  # diff_row <leak|noleak> <label> <payload with @P@ = the chokepoint call>
+    local kind="$1" label="$2" payload="$3" line
+    payload=${payload//@P@/bash $MERGE_ON_GREEN 1}
+    line=$(oracle_line "$payload")
+    if [ -z "$line" ]; then
+        CASES=$((CASES + 1)); FAILED=$((FAILED + 1))
+        echo "FAIL $label -- oracle: the stub chokepoint never ran (row cannot discriminate)"
+        return
+    fi
+    if [ "$kind" = "leak" ]; then
+        if [ "$line" = "$ORACLE_EXPECT" ]; then
+            CASES=$((CASES + 1)); FAILED=$((FAILED + 1))
+            echo "FAIL $label -- oracle: real bash did NOT clear a seam (vacuous leak row)"
+            return
+        fi
+        assert_deny "$label [oracle: leaks]" "$(j "$payload")"
+    else
+        if [ "$line" != "$ORACLE_EXPECT" ]; then
+            CASES=$((CASES + 1)); FAILED=$((FAILED + 1))
+            echo "FAIL $label -- oracle: real bash DID change a seam ($line) -- an ALLOW here is a bypass"
+            return
+        fi
+        assert_allow "$label [oracle: no leak]" "$(j "$payload")"
+    fi
+}
+diff_row leak   "spaced (( NAME = 0 )) (the ticket repro)"          '(( HIMMEL_CONSOLE_LEG = 0 )); @P@'
+diff_row leak   "spaced (( NAME += n ))"                            '(( HIMMEL_CONSOLE_LEG += 5 )); @P@'
+diff_row leak   "spaced (( NAME -= n ))"                            '(( HIMMEL_CONSOLE_LEG -= 1 )); @P@'
+diff_row leak   "spaced (( NAME *= n ))"                            '(( HIMMEL_CONSOLE_LEG *= 2 )); @P@'
+diff_row leak   "spaced (( NAME <<= n ))"                           '(( HIMMEL_CONSOLE_LEG <<= 1 )); @P@'
+diff_row leak   "spaced (( NAME ^= n ))"                            '(( HIMMEL_CONSOLE_LEG ^= 1 )); @P@'
+diff_row leak   "postfix (( NAME++ ))"                              '(( HIMMEL_CONSOLE_LEG++ )); @P@'
+diff_row leak   "postfix with a space (( NAME ++ ))"                '(( HIMMEL_CONSOLE_LEG ++ )); @P@'
+diff_row leak   "prefix (( ++NAME ))"                               '(( ++HIMMEL_CONSOLE_LEG )); @P@'
+diff_row leak   "postfix (( NAME-- ))"                              '(( HIMMEL_CONSOLE_LEG-- )); @P@'
+diff_row leak   "prefix (( --NAME ))"                               '(( --HIMMEL_CONSOLE_LEG )); @P@'
+diff_row leak   "compound (( a = 1, NAME = 0 ))"                    '(( a = 1, HIMMEL_CONSOLE_LEG = 0 )); @P@'
+diff_row leak   "seam assigned inside a ternary"                    '(( 1 ? HIMMEL_CONSOLE_LEG = 0 : 0 )); @P@'
+diff_row leak   "grouping parens inside the arithmetic body"        '(( ( HIMMEL_CONSOLE_LEG = 0 ) )); @P@'
+diff_row leak   "tabs around the operator"                          "(( HIMMEL_CONSOLE_LEG$(printf '\t')=$(printf '\t')0 )); @P@"
+diff_row leak   "array-element form (( NAME[0] = 0 ))"              '(( HIMMEL_CONSOLE_LEG[0] = 0 )); @P@'
+diff_row leak   "other seam: ARMAUTOMERGE"                          '(( ARMAUTOMERGE = 0 )); @P@'
+diff_row leak   "other seam: HANDOVER_DIR"                          '(( HANDOVER_DIR = 0 )); @P@'
+diff_row leak   "other seam: MERGE_ON_GREEN_LOG"                    '(( MERGE_ON_GREEN_LOG = 0 )); @P@'
+diff_row leak   "(( )) then && chokepoint"                          '(( HIMMEL_CONSOLE_LEG = 5 )) && @P@'
+# shellcheck disable=SC2016 # literal $(( )) payload, must not expand
+diff_row leak   "\$(( )) as a bare statement"                       '$(( HIMMEL_CONSOLE_LEG = 0 )); @P@'
+# shellcheck disable=SC2016 # literal $(( )) payload, must not expand
+diff_row leak   "\$(( )) as an argument"                            'echo $(( HIMMEL_CONSOLE_LEG = 0 )); @P@'
+# shellcheck disable=SC2016 # literal $(( )) payload, must not expand
+diff_row leak   "\$(( )) inside an assignment word"                 'x=$(( HIMMEL_CONSOLE_LEG = 0 )); @P@'
+# shellcheck disable=SC2016 # literal $(( )) payload, must not expand
+diff_row leak   "\$(( )) inside double quotes, spaced"              'echo "$(( HIMMEL_CONSOLE_LEG = 0 ))"; @P@'
+# shellcheck disable=SC2016 # literal $(( )) payload, must not expand
+diff_row leak   "\$(( )) inside double quotes, no spaces"           'echo "$((HIMMEL_CONSOLE_LEG=0))"; @P@'
+diff_row leak   "seam cleared in an if condition"                   'if (( HIMMEL_CONSOLE_LEG = 0 )); then :; fi; @P@'
+diff_row leak   "seam cleared in a while condition"                 'while (( HIMMEL_CONSOLE_LEG = 0 )); do :; done; @P@'
+diff_row leak   "seam cleared in a C-style for init"                'for (( HIMMEL_CONSOLE_LEG = 5; HIMMEL_CONSOLE_LEG < 3; )); do :; done; @P@'
+diff_row leak   "inside an eval string (recursion)"                 "eval '(( HIMMEL_CONSOLE_LEG = 0 ))'; @P@"
+diff_row leak   "inside a bash -c string, same child shell"         "bash -c '(( HIMMEL_CONSOLE_LEG = 0 )); @P@'"
+diff_row leak   "chokepoint inside the SAME subshell as the clear"  '( (( HIMMEL_CONSOLE_LEG = 0 )); @P@ )'
+diff_row noleak "non-seam spaced assignment"                        '(( x = 0 )); @P@'
+diff_row noleak "seam == comparison"                                '(( HIMMEL_CONSOLE_LEG == 0 )); @P@'
+diff_row noleak "seam > comparison"                                 '(( HIMMEL_CONSOLE_LEG > 0 )); @P@'
+diff_row noleak "seam >= comparison"                                '(( HIMMEL_CONSOLE_LEG >= 0 )); @P@'
+diff_row noleak "seam <= comparison"                                '(( HIMMEL_CONSOLE_LEG <= 1 )); @P@'
+diff_row noleak "seam != comparison"                                '(( HIMMEL_CONSOLE_LEG != 0 )); @P@'
+diff_row noleak "seam read into another variable"                   '(( x = HIMMEL_CONSOLE_LEG )); @P@'
+diff_row noleak "seam in a ternary condition"                       '(( HIMMEL_CONSOLE_LEG ? 1 : 2 )); @P@'
+diff_row noleak "seam compared, joined with ||"                     '(( x == 1 || HIMMEL_CONSOLE_LEG == 2 )); @P@'
+diff_row noleak "longer name sharing the seam as a prefix"          '(( HIMMEL_CONSOLE_LEG_X = 0 )); @P@'
+# shellcheck disable=SC2016 # literal $(( )) payload, must not expand
+diff_row noleak "\$(( )) read of the seam"                          'echo $(( HIMMEL_CONSOLE_LEG + 1 )); @P@'
+diff_row noleak "seam assigned inside a real closed subshell"       '( (( HIMMEL_CONSOLE_LEG = 0 )) ); @P@'
+rm -rf "$ORACLE_DIR"
+
 # --- ALLOWED: fail-open proofs ---
-assert_allow "bare sanctioned invocation (no prefix)"    "$(j "bash $MERGE_ON_GREEN")"
+assert_allow "bare sanctioned invocation (no prefix)"   "$(j "bash $MERGE_ON_GREEN")"
 assert_allow "bare invocation, other chokepoint"         "$(j "bash $STOP_WORKER --list")"
 assert_allow "env wrapper WITHOUT a seam var"            "$(j "env bash $MERGE_ON_GREEN")"
 assert_allow "registered var, UNREGISTERED script"       "$(j "${SW_VAR}=9 bash scripts/some/unregistered-script.sh")"
