@@ -11,9 +11,22 @@
 # deliberately narrow and testable: a console that has genuinely finished
 # its shift RELEASES its queue-lock (wrap) or hands off via `/console next`
 # before ending its turn; holding the lock at Stop time, on a turn that is
-# not the guard's own re-entry, IS the D1 failure mode. This hook does not
-# inspect the held Jira/dispatch queue itself (out of scope per the ticket —
-# "not in scope: changing what a console does with its queue").
+# not the guard's own re-entry, IS the D1 failure mode — but ONLY when the
+# fleet is empty (HIMMEL-3148). With one or more leg locks held, the legs
+# ARE the wake path: a leg's own SendMessage back to the console starts a
+# new turn, structurally, with nothing to probe for. So this hook blocks
+# exactly the zero-leg case and no other — not because it verified a wake
+# path is absent there (it cannot; a Monitor arm is unobservable from
+# outside the session that armed it, see tick.sh's own "tick_status is
+# ALWAYS UNKNOWN" contract), but because with zero legs there is genuinely
+# nothing left that could wake this console. leg_count is a straight count
+# of held `slug=` lines excluding the console's own lock — deliberately NOT
+# gated on lock freshness/age: `IDLE-HELD?` is heartbeat age, not death, and
+# a leg parked on an external event (a CR slot, an operator ack) makes no
+# tool calls while it waits, which is exactly the state this hook must
+# still count as "alive." This hook does not inspect the held Jira/dispatch
+# queue itself (out of scope per the ticket — "not in scope: changing what a
+# console does with its queue").
 #
 # ROUTING — sibling entry, NOT enqueued through stop-queue.mjs. stop-queue
 # exists to make detached, end-of-session work non-blocking (HIMMEL-2004):
@@ -198,6 +211,15 @@ done <<SWEEP
 $sweep_out
 SWEEP
 [ -n "$leg_names" ] || leg_names="none"
+
+# HIMMEL-3148: one or more held leg locks IS the wake path -- a leg's own
+# SendMessage back to this console starts a new turn, structurally, so the
+# stop is not terminal. Only the zero-leg case (D1 verbatim: console F sat
+# 58 minutes dead with an empty fleet) has nothing to wake it, and blocks.
+# Deliberately not gated on status/age (console ruling, HIMMEL-3148):
+# IDLE-HELD? is heartbeat age, not death -- a leg parked on an external
+# event is correctly silent, not correctly forgotten.
+[ "$leg_count" -eq 0 ] || exit 0
 
 console_doc_name="${console_doc##*/}"
 

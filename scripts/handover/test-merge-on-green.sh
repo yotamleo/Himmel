@@ -2321,9 +2321,14 @@ head -n 33 "$SCRIPT_DIR/../lib/go-gate.sh" > "$RC5_TRUNC_GOGATE"
 if grep -q '^go_gate()' "$RC5_TRUNC_GOGATE"; then
     fail "RC-5 setup: go-gate.sh header grew past line 33 — the truncated copy still defines go_gate, so this control no longer exercises a missing-symbol source"
 else
+    # HIMMEL-3154: this commit's PR branch was deleted on squash-merge, so
+    # `git show <sha>:<path>` is unreachable from a fresh clone of origin —
+    # not flaky, permanently gone the moment the introducing PR merges, while
+    # a developer's stale local checkout may still have the object loose and
+    # stay falsely green. Replaced with a committed fixture snapshot.
     RC5_PRE_SHA=6749462a6c22911d748b8a39254fbd86bdf14ece
     rc5_pre_mutant=$(mktemp "${TMPDIR:-/tmp}/mog-3142-rc127-pre.XXXXXX")
-    git -C "$SCRIPT_DIR/../.." show "$RC5_PRE_SHA:scripts/handover/merge-on-green.sh" > "$rc5_pre_mutant" 2>/dev/null
+    cp "$SCRIPT_DIR/fixtures/red-control/merge-on-green.pre-rc127-fix.sh" "$rc5_pre_mutant" 2>/dev/null
     if [ ! -s "$rc5_pre_mutant" ]; then
         fail "RC-5 setup: could not extract the pre-round-3-fix merge-on-green.sh from head $RC5_PRE_SHA"
     else
@@ -2400,9 +2405,13 @@ head -n 33 "$SCRIPT_DIR/../lib/go-gate.sh" > "$RC67_TRUNC_GOGATE"
 if grep -q '^go_gate()' "$RC67_TRUNC_GOGATE"; then
     fail "RC-6/RC-7 setup: go-gate.sh header grew past line 33 — the truncated copy still defines go_gate, so this control no longer exercises a missing-symbol source"
 else
+    # HIMMEL-3154: this commit's PR branch was deleted on squash-merge, so
+    # `git show <sha>:<path>` is unreachable from a fresh clone of origin —
+    # see the note on the RC5_PRE_SHA extraction above. Replaced with a
+    # committed fixture snapshot.
     RC67_PRE_SHA=6fe4ad205612f59c71c8354ff9f5981c5d23bb5f
     rc67_pre_mutant=$(mktemp "${TMPDIR:-/tmp}/mog-3142-rc67-pre.XXXXXX")
-    git -C "$SCRIPT_DIR/../.." show "$RC67_PRE_SHA:scripts/handover/merge-on-green.sh" > "$rc67_pre_mutant" 2>/dev/null
+    cp "$SCRIPT_DIR/fixtures/red-control/merge-on-green.pre-rc4-fix.sh" "$rc67_pre_mutant" 2>/dev/null
     if [ ! -s "$rc67_pre_mutant" ]; then
         fail "RC-6/RC-7 setup: could not extract the pre-round-4-fix merge-on-green.sh from head $RC67_PRE_SHA"
     else
@@ -2584,6 +2593,19 @@ STUB_JIRA_BUILD=1 STUB_JIRA_COMMENT_FAIL=1 STUB_PR_TITLE="feat(jira): [HIMMEL-37
     run_mog 0 "jira: opted-in failed comment skips the transition" -- --jira-transition
 assert_audit_has "jira: failed-comment case records the skip" "jira-transition=skip=comment-failed key=HIMMEL-374"
 assert_jira_log_lacks "jira: failed-comment case makes no jira transition call" "transition"
+
+# HIMMEL-3154: guard against reintroducing extraction of a historical
+# commit's blob via `git show <sha>:<path>` — the class of fragility this
+# ticket fixed. Once a PR's branch is squash-merged, that commit is
+# permanently unreachable from a fresh clone; a RED-control mutant must come
+# from a committed fixtures/red-control/ snapshot, never a live git-show of a
+# past ref.
+if grep -vE '^[[:space:]]*#' "$SCRIPT_DIR/test-merge-on-green.sh" \
+    | grep -Eq 'git[[:space:]]+(-C[[:space:]]+\S+[[:space:]]+)?show[[:space:]].*:scripts/'; then
+    fail "lint: this file extracts a historical blob via git show <ref>:<path> — use a committed fixtures/red-control/ snapshot instead (HIMMEL-3154)"
+else
+    pass
+fi
 
 echo
 echo "merge-on-green: $PASS passed, $FAIL failed"
