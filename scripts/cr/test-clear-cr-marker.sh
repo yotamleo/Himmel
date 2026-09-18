@@ -2313,6 +2313,71 @@ unset CR_FLOOR_FALLBACK
 
 unset CR_REQUIRE_CROSS_MODEL
 
+# 9. GraphQL budget preflight before the PR lookup (HIMMEL-3190). The fixture
+# copies scripts/lib selectively, so the shared helper is copied in explicitly
+# here; every case above ran WITHOUT it (the documented fail-open on a missing
+# helper). gh is a stub that fakes the X-Ratelimit-* headers of `gh api -i
+# graphql`; `sleep` is a PATH stub that records its argument and "wakes" the
+# budget, so a 40 s wait costs no real time. run_clear puts $tmp/bin first.
+GHB_LIB_SRC="$SCRIPT_DIR/../lib/gh-graphql-budget.sh"
+stub_budget() {   # stub_budget <tmp> <reset-seconds-from-now>  (exhausted until slept)
+    local tmp="$1"
+    mkdir -p "$tmp/scripts/lib"
+    cp "$GHB_LIB_SRC" "$tmp/scripts/lib/gh-graphql-budget.sh"
+    [ -n "${2:-}" ] && echo "$(( $(date +%s) + $2 ))" > "$tmp/exhausted"
+    cat > "$tmp/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+D="$(dirname "$0")/.."
+case " $* " in
+    *" -i "*)
+        if [ -f "$D/exhausted" ] && [ ! -f "$D/woke" ]; then rem=0; rst=$(cat "$D/exhausted"); else rem=5000; rst=$(( $(date +%s) + 3000 )); fi
+        printf 'HTTP/2.0 200 OK\r\nX-Ratelimit-Remaining: %s\r\nX-Ratelimit-Reset: %s\r\n\r\n{}\n' "$rem" "$rst"
+        [ "$rem" -gt 0 ] || exit 1
+        exit 0 ;;
+esac
+for a in "$@"; do [ "$a" = "--head" ] && exit 0; done
+exit 1
+STUB
+    cat > "$tmp/bin/sleep" <<'STUB'
+#!/usr/bin/env bash
+D="$(dirname "$0")/.."
+echo "$1" >> "$D/sleeps.log"
+touch "$D/woke"
+STUB
+    chmod +x "$tmp/bin/gh" "$tmp/bin/sleep"
+}
+biggest_sleep() { sort -n "$1/sleeps.log" 2>/dev/null | tail -1; }
+
+# 9a. exhausted, reset inside the bound: sleeps until the reset, then the lookup
+# succeeds (no PR yet) and the marker clears -- NOT pr-lookup-failed.
+make_repo || exit 1
+write_marker "$tmp" "$sha"; write_ledger "$tmp" "$(avail_ok "${sha:0:8}")"
+stub_check_ci "$tmp" 0; stub_budget "$tmp" 40
+run_clear "$tmp" 0 "9a exhausted budget, reset inside the bound -> waits, then clears (exit 0)"
+b=$(biggest_sleep "$tmp")
+if [ "${b:-0}" -ge 40 ] 2>/dev/null; then pass; else fail "9a slept until the reset (biggest sleep '${b:-none}', want >= 40)"; fi
+if marker_exists "$tmp"; then fail "9a: marker should be GONE after the wait"; else pass; fi
+rm -rf "$tmp"
+
+# 9b. exhausted, reset BEYOND CLEAR_CR_MARKER_BUDGET_WAIT: refuses with the
+# existing exit 16, keeps the marker, names the cause, never sleeps.
+make_repo || exit 1
+write_marker "$tmp" "$sha"; write_ledger "$tmp" "$(avail_ok "${sha:0:8}")"
+stub_check_ci "$tmp" 0; stub_budget "$tmp" 1000
+CLEAR_CR_MARKER_BUDGET_WAIT=30 run_clear "$tmp" 16 "9b reset beyond the bound -> exit 16 (rc meaning unchanged)"
+if marker_exists "$tmp"; then pass; else fail "9b: marker must REMAIN"; fi
+if [ ! -s "$tmp/sleeps.log" ]; then pass; else fail "9b: must not sleep past the bound"; fi
+if grep -q 'reason=graphql-budget-exhausted' "$tmp/.git/clear-cr-marker.log" 2>/dev/null; then pass; else fail "9b: audit line names graphql-budget-exhausted"; fi
+rm -rf "$tmp"
+
+# 9c. healthy budget: one header read, no sleep, normal clear.
+make_repo || exit 1
+write_marker "$tmp" "$sha"; write_ledger "$tmp" "$(avail_ok "${sha:0:8}")"
+stub_check_ci "$tmp" 0; stub_budget "$tmp" ""
+run_clear "$tmp" 0 "9c healthy budget -> exit 0"
+if [ ! -s "$tmp/sleeps.log" ]; then pass; else fail "9c: healthy budget must not sleep"; fi
+rm -rf "$tmp"
+
 echo
 echo "clear-cr-marker: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

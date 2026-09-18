@@ -864,6 +864,27 @@ command -v gh >/dev/null 2>&1 || {
 pr_num=""
 pr_head=""
 pr_rc=0
+# GraphQL budget preflight (HIMMEL-3190): this lookup is the first of the two
+# GraphQL-spending steps here (check-ci.sh, below, is the second and runs its own
+# preflight). When the shared budget is exhausted, wait for the reset — bounded
+# by CLEAR_CR_MARKER_BUDGET_WAIT (default 300 s) and a plain `sleep` (no sleep
+# seam: the GATE INTEGRITY note above keeps this script's collaborators fixed) —
+# rather than let the lookup fail into `pr-lookup-failed`. A reset beyond the
+# bound refuses with the SAME exit 16 an unreadable PR state already gets, so
+# no exit code changes meaning.
+# ponytail: a missing helper file skips this ADVISORY wait (fail-open on the
+# preflight only); the lookup and check-ci below still fail closed on their own.
+GHB_LIB="$SCRIPT_DIR/../lib/gh-graphql-budget.sh"
+if [ -f "$GHB_LIB" ]; then
+    # shellcheck source=scripts/lib/gh-graphql-budget.sh
+    # shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
+    . "$GHB_LIB"
+    if ! ghb_wait_for_budget "${CLEAR_CR_MARKER_BUDGET_WAIT:-300}" sleep; then
+        echo "clear-cr-marker: GitHub GraphQL budget exhausted beyond the ${CLEAR_CR_MARKER_BUDGET_WAIT:-300}s bound — cannot read the PR state; refusing. Re-run after the reset." >&2
+        audit "REFUSED reason=graphql-budget-exhausted branch=$branch sha=$tip"
+        exit 16
+    fi
+fi
 pr_lookup=$(gh pr list --head "$branch" --state open --json number,headRefOid \
     -q '.[] | "\(.number) \(.headRefOid)"' 2>&1) || pr_rc=$?
 if [ "$pr_rc" -ne 0 ]; then

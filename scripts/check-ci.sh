@@ -116,7 +116,15 @@
 #                            it to `:` so a simulated poll costs no real seconds
 #   CHECK_CI_MAX_WAIT      — default for --max-wait (flag wins; default 900, 0 =
 #                            unbounded; HIMMEL-2062, raised in HIMMEL-2907)
-#   CR_ESCALATE_WAIT       — --escalate total wait budget (default 600)
+#   CHECK_CI_WATCH_INTERVAL — seconds between `gh pr checks --watch` polls
+#                            (default 30; gh's own default is 10). HIMMEL-3190.
+#   CHECK_CI_PROBE_INTERVAL — seconds between watch_decidable probes (default 60;
+#                            the first probe is immediate). Each probe is 4
+#                            GraphQL calls; at 10 s it was ~80% of a watcher's
+#                            ~30 calls/min. Tests export 1.
+#   GH_BUDGET_FLOOR / GH_BUDGET_JITTER_MAX / GH_BUDGET_PREFLIGHT — the shared
+#                            GraphQL-budget preflight, see lib/gh-graphql-budget.sh
+#   CR_ESCALATE_WAIT      — --escalate total wait budget (default 600)
 #   CR_ESCALATE_POLL       — --escalate seconds between re-reads (default 120)
 #   CR_PROFILE=none        — this repo has no CodeRabbit: skip the required-signal
 #                            gate. Still honored, but no longer something an
@@ -170,6 +178,10 @@ env: CR_PROFILE=none skips the required-CodeRabbit-signal + body-findings + revi
      CR_ESCALATE_WAIT / CR_ESCALATE_POLL tune --escalate for absent or stale-anchor reviews (defaults 600 / 120 seconds)
      CHECK_CI_SLEEP_CMD replaces the command every wall-clock wait runs (default sleep; hermetic suites set it to :)
      CHECK_CI_MAX_WAIT sets --max-wait's default (default 900 seconds, 0 = unbounded; HIMMEL-2062, raised in HIMMEL-2907)
+     CHECK_CI_WATCH_INTERVAL / CHECK_CI_PROBE_INTERVAL set the watch poll (default 30 s) and the early-stop probe (default 60 s)
+       cadence — the GitHub GraphQL budget is shared by every leg on the box (HIMMEL-3190)
+     GraphQL budget exhausted: check-ci sleeps until X-Ratelimit-Reset (bounded by --max-wait) instead of failing; exit
+       codes keep their meaning (a reset beyond --max-wait is exit 2). GH_BUDGET_PREFLIGHT=0 skips the one preflight call.
 note: "armed" above means the required-CodeRabbit-signal + body-findings + review-freshness gates are active —
       DISARMED by default. On a repo that has the CodeRabbit App, arm it once:  git config --local himmel.coderabbit true
       CR_APP=1|0 overrides; CR_PROFILE=none outranks both. On a disarmed repo the CodeRabbit-conditional
@@ -202,6 +214,21 @@ SETTLE="${CHECK_CI_SETTLE:-30}"
 # 12m16s-12m45s, over the prior 540s default.
 MAX_WAIT="${CHECK_CI_MAX_WAIT:-900}"
 POLL="${CHECK_CI_POLL_INTERVAL:-10}"
+# HIMMEL-3190: the GraphQL budget (5000/h) is shared by every leg on the box and
+# ~7 watchers each spending ~30 calls/min ran it dry twice in three hours. Both
+# cadences are per-watcher GraphQL spend, so they are knobs — defaults chosen so
+# a watcher costs ~6 calls/min: gh's own poll (3 setup + 1 status per poll) every
+# 30 s = ~2/min, and the 4-call watch_decidable probe every 60 s = ~4/min.
+WATCH_INTERVAL="${CHECK_CI_WATCH_INTERVAL:-30}"
+PROBE_INTERVAL="${CHECK_CI_PROBE_INTERVAL:-60}"
+case "$WATCH_INTERVAL" in
+    ''|*[!0-9]*|0) echo "check-ci: CHECK_CI_WATCH_INTERVAL='$WATCH_INTERVAL' is not a positive integer — using 30" >&2
+        WATCH_INTERVAL=30 ;;
+esac
+case "$PROBE_INTERVAL" in
+    ''|*[!0-9]*|0) echo "check-ci: CHECK_CI_PROBE_INTERVAL='$PROBE_INTERVAL' is not a positive integer — using 60" >&2
+        PROBE_INTERVAL=60 ;;
+esac
 # Sleep seam (HIMMEL-1953). EVERY wall-clock wait below goes through this one
 # command word so a hermetic suite can inject `:` and never burn real seconds on
 # a simulated poll. That matters most for the --escalate nap: a case that leaves
@@ -299,6 +326,34 @@ trap 'echo "check-ci: verdict exit=$?"' EXIT
 
 if ! command -v gh >/dev/null 2>&1; then
     echo "check-ci: gh CLI not found on PATH" >&2
+    exit 2
+fi
+
+# GraphQL budget preflight (HIMMEL-3190). The shared helper reads the
+# X-Ratelimit-* headers of ONE real call (`gh api rate_limit` misreports) and,
+# when the budget is under its floor, sleeps until the reset instead of letting
+# the first gh call fail generically. Called once here and again only after a
+# rate-limit error (_rl_recover) — never per poll round: the preflight is a
+# request too. Bounded by --max-wait; a reset further away than that is exit 2,
+# the same "cannot evaluate" every other unreadable gate already reports.
+# shellcheck source=scripts/lib/gh-graphql-budget.sh
+# shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
+. "$(cd "$(dirname "$0")" && pwd)/lib/gh-graphql-budget.sh"
+RL_RECOVERIES=0
+# _rl_recover — after a gh failure that reads as a rate limit: wait for the
+# reset and tell the caller to retry (rc 0), at most 3 times per run. rc 1 =
+# do not retry (recovery budget spent, the reset is beyond --max-wait, or the
+# preflight saw a healthy budget so waiting would not help): the caller keeps
+# its original fail-closed exit.
+_rl_recover() {
+    [ "$RL_RECOVERIES" -ge 3 ] && return 1
+    ghb_wait_for_budget "$MAX_WAIT" "$CHECK_CI_SLEEP_CMD" || return 1
+    [ "$GHB_WAITED" -eq 1 ] || return 1
+    RL_RECOVERIES=$((RL_RECOVERIES + 1))
+    return 0
+}
+if ! ghb_wait_for_budget "$MAX_WAIT" "$CHECK_CI_SLEEP_CMD"; then
+    echo "check-ci: GitHub GraphQL budget exhausted and the reset is beyond --max-wait (${MAX_WAIT}s) — cannot evaluate the gate; re-run after the reset" >&2
     exit 2
 fi
 # jq is needed to read CodeRabbit's status + review-body findings + review
@@ -541,8 +596,8 @@ watch_round() {
         gh_rc=1
         trap 'printf "%s\n" "$gh_rc" >"$rc_file.tmp" 2>/dev/null && mv -f "$rc_file.tmp" "$rc_file" 2>/dev/null' EXIT
         (
-            if [ -n "$selector" ]; then exec gh pr checks "$selector" --watch --fail-fast
-            else exec gh pr checks --watch --fail-fast
+            if [ -n "$selector" ]; then exec gh pr checks "$selector" --watch --fail-fast --interval "$WATCH_INTERVAL"
+            else exec gh pr checks --watch --fail-fast --interval "$WATCH_INTERVAL"
             fi
         ) 2>"$err_file" &
         gh_pid=$!
@@ -573,10 +628,12 @@ watch_round() {
     # CHECK_CI_POLL_INTERVAL can legitimately be 0 — so this loop can spin with
     # no delay at all. watch_decidable forks a `gh` call, so an unthrottled spin
     # is a subprocess STORM: it made test-check-ci.sh crawl and intermittently
-    # wedge on Windows Git-Bash. Probe at most once per real second; between
-    # probes the loop body is builtins only (a file existence test +
-    # arithmetic), which costs nothing and stays correct because the rc
-    # sentinel appears on its own once gh exits (HIMMEL-2206).
+    # wedge on Windows Git-Bash. Probe at most once per $PROBE_INTERVAL seconds
+    # (HIMMEL-3190: was once per real second, i.e. every loop pass, = 4 GraphQL
+    # calls per probe and ~80% of the watcher's spend; the first probe is still
+    # the first pass); between probes the loop body is builtins only (a file
+    # existence test + arithmetic), which costs nothing and stays correct
+    # because the rc sentinel appears on its own once gh exits (HIMMEL-2206).
     local last_probe=-1 elapsed remaining sleep_for
     while [ ! -f "$rc_file" ]; do
         # Cap check BEFORE sleeping + clamp the sleep to the remaining budget
@@ -605,7 +662,7 @@ watch_round() {
         "$CHECK_CI_SLEEP_CMD" "$sleep_for"
         [ -f "$rc_file" ] && break
         if [ "$MAX_WAIT" -gt 0 ] && [ $((SECONDS - watch_start)) -ge "$MAX_WAIT" ]; then stopped=cap; break; fi
-        if [ "$SECONDS" != "$last_probe" ]; then
+        if [ "$last_probe" -lt 0 ] || [ $((SECONDS - last_probe)) -ge "$PROBE_INTERVAL" ]; then
             last_probe=$SECONDS
             if watch_decidable; then stopped=decidable; break; fi
         fi
@@ -628,6 +685,12 @@ watch_round() {
         esac
         if [ "$rc" -ne 0 ]; then
             if [ -n "$err" ]; then
+                # HIMMEL-3190: a rate limit is not a verdict — wait for the
+                # reset and re-run the round instead of exit 2.
+                if ghb_is_rate_limited "$err" && _rl_recover; then
+                    watch_round "$extend_ok"
+                    return $?
+                fi
                 echo "check-ci: gh pr checks --watch failed — cannot evaluate the gate: $err" >&2
                 exit 2
             fi
@@ -794,6 +857,8 @@ if [ "$THREADS_ONLY" -eq 0 ]; then
             exit 2
         fi
         if ! printf '%s' "$err" | grep -i 'no checks reported' >/dev/null; then
+            # HIMMEL-3190: budget exhaustion is a wait, not a verdict.
+            if ghb_is_rate_limited "$err" && _rl_recover; then continue; fi
             echo "check-ci: gh pr checks failed — cannot evaluate the gate: $err" >&2
             exit 2
         fi
@@ -1000,6 +1065,10 @@ review_state_gate() {
         cursor=${rest#* }
         case "$page_count" in
             ''|*[!0-9]*)
+                # HIMMEL-3190: stderr is discarded above, so ask the budget
+                # itself: exhausted -> wait for the reset and retry THIS page;
+                # healthy (or beyond --max-wait) -> the original fail-closed exit.
+                if _rl_recover; then pages=$((pages - 1)); cursor="$sent_cursor"; continue; fi
                 echo "check-ci: ${ctx}the review-thread query failed — re-run, or check threads manually on PR #$num" >&2
                 exit 2 ;;
         esac

@@ -796,6 +796,8 @@ run() {
         CR_APP="$CR_APP_OVERRIDE" \
         CR_BOT_LOGINS="$CR_BOT_LOGINS_OVERRIDE" \
         CHECK_CI_SLEEP_CMD="$SLEEP_CMD_OVERRIDE" \
+        CHECK_CI_PROBE_INTERVAL=1 \
+        GH_BUDGET_PREFLIGHT=0 \
         "$CASE_RUNNER" $CASE_RUNNER_ARGS bash "$SCRIPT" "$@" >"$of" 2>"$ef"
     RC=$?
     if [ "$RC" -eq 124 ] && [ "$CASE_RUNNER" != env ]; then
