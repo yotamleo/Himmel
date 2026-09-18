@@ -206,5 +206,26 @@ _fsl_missing="$(
     . "$FC"; first_signal_line "$tmp/does-not-exist"; echo "rc=$?"
 )"
 check "35: missing file -> empty, rc 0" "$_fsl_missing" "rc=0"
+# The signature set must cover every distinctive token classify_failure keys a
+# non-generic class on (CodeRabbit round 1): a quota-long line outside the raw
+# tail has to surface, and a bare "usage limit" (which classify_failure alone
+# never acts on, see 3110 above) must not select prose over the real line.
+check "36: codex 'hit your usage limit' line is a signal" \
+    "$(fsl "prelude
+You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Sep 19th, 2026 10:09 AM.
+tail")" \
+    "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Sep 19th, 2026 10:09 AM."
+check "37: plan-expired (quota-long sentinel) line is a signal" \
+    "$(fsl 'prelude
+Your plan has expired
+tail')" \
+    "Your plan has expired"
+check "38: weekly-cap (quota-long sentinel) line is a signal" \
+    "$(fsl 'prelude
+Weekly cap reached for this account
+tail')" \
+    "Weekly cap reached for this account"
+check "39: a bare 'usage limit' in prose is not a signal (classify_failure never acts on it alone)" \
+    "$(fsl 'The reviewer mentioned a usage limit in passing.')" ""
 
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }
