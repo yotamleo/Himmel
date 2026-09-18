@@ -37,6 +37,10 @@ make_repo() {
     }
     git -C "$repo" config user.email t@test.com
     git -C "$repo" config user.name t
+    # HIMMEL-3187: a detached `git maintenance run --auto` (spawned by every
+    # commit) prunes admin records whose `gitdir` file is gone — the very state
+    # the 2267 fixture below creates on purpose. No async pruner.
+    git -C "$repo" config maintenance.auto false
     printf 'base\n' > "$repo/README"
     git -C "$repo" add README
     git -C "$repo" commit -q -m "base"
