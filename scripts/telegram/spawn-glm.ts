@@ -163,8 +163,11 @@ export function mintGlmOutboxHelper(sessionDir: string, source = join(REPO_ROOT,
 // Claude Code keys transcript dirs by the ESCAPED CWD — EVERY non-alphanumeric
 // char → "-" (ground truth: real project dirs escape "_" and "." too, e.g.
 // my_docs → my-docs). Not keyed by any name/slug.
-export function transcriptDirFor(cwd: string): string {
-  return join(homedir(), ".claude", "projects", resolve(cwd).replace(/[^a-zA-Z0-9]/g, "-"));
+// `root` is the lane's projects dir (default: the glm/shared ~/.claude one; the
+// claudex lane passes ~/.claude-codex/projects — HIMMEL-3173). The startup
+// watchdog resolves its poll path through this same function.
+export function transcriptDirFor(cwd: string, root: string = join(homedir(), ".claude", "projects")): string {
+  return join(root, resolve(cwd).replace(/[^a-zA-Z0-9]/g, "-"));
 }
 
 // HIMMEL-1218: dispatch-time nonce for the RETASK channel — a token the
@@ -1170,7 +1173,7 @@ export function armStartupWatchdog(p: {
 }): () => void {
   let watchTimer: ReturnType<typeof setInterval> | undefined;
   const disarm = () => { if (watchTimer !== undefined) { clearInterval(watchTimer); watchTimer = undefined; } };
-  const projDir = join(p.rootDir, resolve(p.worktree).replace(/[^A-Za-z0-9]/g, "-"));
+  const projDir = transcriptDirFor(p.worktree, p.rootDir);
   const killWorker = p.kill
     ?? ((pid: number) => killTree(pid, (sig) => { try { process.kill(pid, sig as NodeJS.Signals); } catch { /* already gone */ } }));
   const watchStart = Date.now();

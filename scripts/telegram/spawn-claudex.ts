@@ -1059,6 +1059,12 @@ export function claudexTranscriptRoot(): string {
   return join(homedir(), ".claude-codex", "projects");
 }
 
+// HIMMEL-3173: the transcript-dir main() PRINTS, resolved through the same
+// helper (transcriptDirFor + claudexTranscriptRoot) the startup watchdog polls.
+export function claudexTranscriptDirFor(worktree: string): string {
+  return transcriptDirFor(worktree, claudexTranscriptRoot());
+}
+
 // The run-and-record step (mirrors spawn-glm's executeRun's meta-transition
 // contract and its HIMMEL-1575 startup-hang watchdog — the latter via the
 // shared armStartupWatchdog, HIMMEL-3147 — minus the prompt-too-long
@@ -1455,7 +1461,7 @@ async function main(): Promise<void> {
   }
 
   console.log(`session-dir: ${sessionDir}`);
-  console.log(`transcript-dir: ${transcriptDirFor(worktree)}`);
+  console.log(`transcript-dir: ${claudexTranscriptDirFor(worktree)}`);
   console.log(PUSH_PROTECTION_DISCLOSURE);
   console.log(`exit: ${code}`);
   process.exit(code);

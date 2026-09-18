@@ -381,6 +381,12 @@ test("transcript dir escapes EVERY non-alphanumeric (underscore too — matches 
   expect(d).toBe(join(homedir(), ".claude", "projects", CWD_FIXTURE.underscoreEscaped));
 });
 
+test("transcript dir honours an explicit lane root; the default stays the glm ~/.claude root (HIMMEL-3173)", () => {
+  const root = join(homedir(), ".claude-codex", "projects");
+  expect(transcriptDirFor(CWD_FIXTURE.worktree, root)).toBe(join(root, CWD_FIXTURE.worktreeEscaped));
+  expect(transcriptDirFor(CWD_FIXTURE.worktree)).toBe(join(homedir(), ".claude", "projects", CWD_FIXTURE.worktreeEscaped));
+});
+
 // --- runSharedDispatch (HIMMEL-800 I7): lock lifecycle, and (HIMMEL-1961) the
 // promise that a dispatch leaves the operator's git config alone — exercised
 // against a REAL temp git repo + worktree + the REAL lock script (mirrors the

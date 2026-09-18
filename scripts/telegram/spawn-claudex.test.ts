@@ -1,7 +1,7 @@
 // scripts/telegram/spawn-claudex.test.ts
 import { expect, test, spyOn } from "bun:test";
 import { homedir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { appendFileSync, existsSync, mkdtempSync, realpathSync, rmSync, readFileSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
 import { GIT_TEST_TIMEOUT_MS as CX_GIT_TEST_TIMEOUT_MS, fixtureDir, initHermeticRepo, makeSharedFixtureRepo, removeFixture } from "./fixture-repo";
 import { tmpdir } from "node:os";
@@ -33,6 +33,7 @@ import {
   writeClaudexLiveMeta,
   executeClaudexRun,
   claudexTranscriptRoot,
+  claudexTranscriptDirFor,
   captureTimeoutForensics,
   killThenCaptureTimeoutForensics,
   awaitDrainWithBound,
@@ -42,7 +43,7 @@ import {
   refuseNonPrimaryCwd,
 } from "./spawn-claudex";
 import { BASH_BIN } from "./run";
-import { resolveFailfastWindowMs } from "./spawn-glm";
+import { resolveFailfastWindowMs, transcriptDirFor } from "./spawn-glm";
 
 // HIMMEL-1096 (codex-adv round 2): runClaudexSharedDispatch now trust-seeds
 // UNCONDITIONALLY (needsWorktreeAdd true or false), so every test below that
@@ -2044,6 +2045,36 @@ const mangleCx = (p: string) => p.replace(/[^A-Za-z0-9]/g, "-");
 test("claudexTranscriptRoot is ~/.claude-codex/projects (claude-codex exports CLAUDE_CONFIG_DIR), not the glm ~/.claude/projects (HIMMEL-3147)", () => {
   expect(claudexTranscriptRoot()).toBe(join(homedir(), ".claude-codex", "projects"));
   expect(claudexTranscriptRoot()).not.toBe(join(homedir(), ".claude", "projects"));
+});
+
+// HIMMEL-3173: the transcript-dir line spawn-claudex PRINTS must name the same
+// root the startup watchdog POLLS (claudexTranscriptRoot), not the glm
+// ~/.claude/projects root transcriptDirFor defaults to. Stub launcher
+// (`exit 0`) + --skip-auth-preflight: the full main() path runs to the print
+// with no live worker; HOME is redirected so no real ~/.claude* is touched.
+test("spawn-claudex real CLI: the printed transcript-dir is under claudexTranscriptRoot, the root the watchdog polls (HIMMEL-3173)", () => {
+  const { repo } = initHermeticRepo("cxcli-tdir-");
+  const fakeHome = mkdtempSync(join(tmpdir(), "cxcli-tdir-home-"));
+  try {
+    mkdirSync(join(repo, "scripts"), { recursive: true });
+    writeFileSync(join(repo, "scripts", "claude-codex"), "#!/usr/bin/env bash\nexit 0\n");
+    const r = Bun.spawnSync(["bun", "scripts/telegram/spawn-claudex.ts", "do the task", "--cwd", repo, "--force", "--skip-auth-preflight"], {
+      cwd: resolve("."), stdout: "pipe", stderr: "pipe", timeout: 60_000,
+      env: { ...process.env, CLIPROXY_API_KEY: "test-key", HOME: fakeHome },
+    });
+    const out = r.stdout.toString();
+    const line = out.split("\n").find((l) => l.startsWith("transcript-dir: "));
+    expect(line, `no transcript-dir line; stdout=${out} stderr=${r.stderr.toString()}`).toBeDefined();
+    const printed = line!.slice("transcript-dir: ".length);
+    expect(dirname(printed)).toBe(join(fakeHome, ".claude-codex", "projects"));
+    expect(basename(printed).startsWith(mangleCx(join(resolve(repo), ".claude", "worktrees")))).toBe(true);
+  } finally { rmSync(fakeHome, { recursive: true, force: true }); removeFixture(repo); }
+}, CX_GIT_TEST_TIMEOUT_MS);
+
+test("claudexTranscriptDirFor is claudexTranscriptRoot + the mangled worktree, the same path the watchdog polls (HIMMEL-3173)", () => {
+  const wt = "/tmp/my_repo/.claude/worktrees/fix+x";
+  expect(claudexTranscriptDirFor(wt)).toBe(join(claudexTranscriptRoot(), mangleCx(wt)));
+  expect(claudexTranscriptDirFor(wt)).not.toBe(transcriptDirFor(wt));
 });
 
 test("resolveFailfastWindowMs: default 10 min, env override, 0/garbage/negative = off (HIMMEL-3147)", () => {
