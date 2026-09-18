@@ -576,6 +576,8 @@ assert_contains "harvest runner chains /triage-clips" "/triage-clips" "$harvest_
 # spaces - strip the escapes before multi-word prompt assertions (HIMMEL-798).
 harvest_sh_plain=${harvest_sh//\\/}
 assert_contains "harvest runner chains /ig-media-enrich default limit" "/ig-media-enrich --limit 10" "$harvest_sh_plain"
+assert_contains "harvest runner passes --include-evidence to /ig-media-enrich (HIMMEL-3174)" "/ig-media-enrich --limit 10 --include-evidence" "$harvest_sh_plain"
+assert_contains "harvest runner names --include-evidence on the step sentence too (HIMMEL-3174)" "step uses --limit 10 --include-evidence" "$harvest_sh_plain"
 assert_contains "harvest runner fail-opens ig-media-enrich" "must not abort" "$harvest_sh_plain"
 assert_contains "harvest runner bounded run"         "< /dev/null"    "$harvest_sh"
 assert_contains "synth runner cds into vault" "cd $VAULT || exit 1" "$synth_sh"
@@ -1864,6 +1866,7 @@ assert_contains "harvest bat cds into vault" 'cd /d "' "$harvest_bat"
 assert_contains "harvest bat runs /harvest-clips" "/harvest-clips" "$harvest_bat"
 assert_contains "harvest bat chains /triage-clips" "/triage-clips" "$harvest_bat"
 assert_contains "harvest bat chains /ig-media-enrich default limit" "/ig-media-enrich --limit 10" "$harvest_bat"
+assert_contains "harvest bat passes --include-evidence to /ig-media-enrich (HIMMEL-3174)" "/ig-media-enrich --limit 10 --include-evidence" "$harvest_bat"
 assert_contains "harvest bat fail-opens ig-media-enrich" "must not abort" "$harvest_bat"
 assert_contains "harvest bat bounded run"          "< NUL"         "$harvest_bat"
 assert_contains "harvest bat appends run log" 'pipeline-harvest.log" 2>&1' "$harvest_bat"

@@ -148,8 +148,17 @@
 # with `pipeline-cadence.sh arm --force` to pick up the full snapshot. The
 # other cadences are unaffected but stamp v17 too, so one version still
 # answers "is this runner current".
+# v18 (HIMMEL-3174): the pipeline-harvest runner's baked prompt now passes
+# `--include-evidence` to /ig-media-enrich. Triage Phase 8 moves finished clips
+# into Clippings/_evidence/ and the default selection skips that folder, so every
+# reel left scope one step before enrichment (0 selected / 0 enriched). The
+# prompt is BAKED into the runner at arm time — regenerating it needs an arm, the
+# stamp only lets doctor/update flag the old runner — so an armed v17 harvest
+# keeps firing the old prompt; re-arm with `pipeline-cadence.sh arm --force`. The
+# other cadences are unaffected but stamp v18 too, so one version still answers
+# "is this runner current".
 # shellcheck disable=SC2034  # consumed by sourcing scripts (pipeline-cadence/doctor/update)
-CADENCE_RUNNER_FORMAT_VERSION=17
+CADENCE_RUNNER_FORMAT_VERSION=18
 
 # Marker line stamped into each generated runner
 # (.bat: `rem <marker> N`; .sh: `# <marker> N`).
