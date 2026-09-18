@@ -1066,6 +1066,21 @@ _cr_panel_carries_absent_signal() {
     return 1
 }
 
+# _cr_escalate_note_if_inapplicable — HIMMEL-3152. --escalate's only effect
+# (_cr_body_escalate, the `@coderabbitai full review` request) is reachable
+# solely through review_freshness_gate's `stale` arm — a review OBJECT
+# anchored to an older commit. cr_signal_gate's skip-classified branch exits
+# BEFORE review_freshness_gate ever runs (there is no head review object here
+# to be stale, so escalating would not even make sense), so an explicit
+# --escalate silently did nothing on this path: same output, same exit 2,
+# flag accepted and ignored (reproduced on PR #804 — byte-identical with and
+# without the flag). Say so, and name the route that actually applies, instead
+# of letting the flag look consumed.
+_cr_escalate_note_if_inapplicable() {
+    [ "$ESCALATE" -eq 1 ] || return 0
+    echo "check-ci: --escalate does not apply here — it only re-requests a review whose OBJECT is stale-anchored (review_freshness_gate's 'stale' case), and a skip-classified STATUS with no head review object is not that shape (HIMMEL-3152). The sanctioned route for an absent/skip-classified App signal is a clean exact-head critic panel (HIMMEL-1506): run /pr-check on this HEAD." >&2
+}
+
 cr_signal_gate() {
     # Availability gate (HIMMEL-1125): no CodeRabbit App on this repo -> no-op.
     # Silent on purpose — an adopter without CodeRabbit must not notice that a
@@ -1142,6 +1157,7 @@ cr_signal_gate() {
                 skip_low=$(printf '%s' "$skip_desc" | tr '[:upper:]' '[:lower:]')
             else
                 if _cr_panel_carries_absent_signal "description is unreadable"; then return 0; fi
+                _cr_escalate_note_if_inapplicable
                 echo "check-ci: CodeRabbit SKIPPED the review on head $head0 of PR #$num and its description could not be read to tell rate-limiting from a disabled review — cannot evaluate the panel-carried allowance; re-run. If this repo has no CodeRabbit, set CR_PROFILE=none." >&2
                 exit 2
             fi
@@ -1150,6 +1166,7 @@ cr_signal_gate() {
             case "$skip_low" in
                 *rate?limit*|*ratelimit*)
                     if _cr_panel_carries_absent_signal "rate-limited"; then return 0; fi
+                    _cr_escalate_note_if_inapplicable
                     echo "check-ci: CodeRabbit is rate-limited on head $head0 of PR #$num and the critic panel did NOT carry the gate at this head (ledger: $_cr_panel_evidence) — a rate-limited App with no clean panel is not a green one. Wait for the App's limit to reset, or run /pr-check on this HEAD so a panel reviews it. Bypass: CR_APP=0 (or CR_PROFILE=none)." >&2
                     exit 2 ;;
                 '')
@@ -1159,6 +1176,7 @@ cr_signal_gate() {
                 *)
                     if _cr_panel_carries_absent_signal "posted skip-classified wording"; then return 0; fi ;;
             esac
+            _cr_escalate_note_if_inapplicable
             echo "check-ci: CodeRabbit SKIPPED the review on head $head0 of PR #$num — it posted state=success, but its description does not say the review completed. A DECLINED review is not a clean one. Known causes: automatic reviews are disabled on this repo (trigger one with a '@coderabbitai review' comment, wait for it to conclude, then re-run), or CodeRabbit is RATE LIMITED (HIMMEL-1354 — wait for the limit to reset; do NOT re-trigger in a loop, and note the CLI lane 'bash scripts/cr/coderabbit-review.sh --branch <b> --base main' is a separate, independently-limited path). A clean exact-head critic panel carries every skip-classified state (HIMMEL-1506) — run /pr-check on this HEAD if no panel evidence exists yet. If CodeRabbit merely RENAMED its success wording (an OK review misclassified as a skip), widen the OK allow-list for one run with CR_OK_DESC_RE — keep both default alternatives and the ^(...)\$ anchors (HIMMEL-1354 R2); the knob does NOT apply to genuine skip wordings. If this repo has no CodeRabbit, set CR_PROFILE=none." >&2
             exit 2 ;;
         *)
