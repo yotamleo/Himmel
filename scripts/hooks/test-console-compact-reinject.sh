@@ -102,6 +102,50 @@ case "$out" in
     *) ok "output still stops at the real ## Results boundary" ;;
 esac
 
+echo "== an UNTERMINATED fence inside ## Live state does not leak the doc tail to EOF (HIMMEL-3137) =="
+DOC1D="$TMP/some-console-with-unterminated-fence.md"
+printf '%s\n' "# Some Console" "" "## Live state" "" \
+    "legs: N1 token-abc" "" \
+    '```unterminated' "fence never closes" "" \
+    "## Results" "" "- LIVE 09:00" "" \
+    "SECRET-TAIL-SHOULD-NOT-APPEAR" > "$DOC1D"
+out="$(env HIMMEL_CONSOLE_DOC="$DOC1D" bash "$HOOK" 2>"$TMP/stderr1d")"; rc=$?
+if [ "$rc" -eq 0 ]; then ok "unterminated-fence doc still exits 0"; else bad "expected rc 0, got $rc"; fi
+case "$out" in
+    *'SECRET-TAIL-SHOULD-NOT-APPEAR'*) bad "output leaked the doc tail past an unterminated fence - got: $out" ;;
+    *) ok "output does not leak the doc tail past an unterminated fence" ;;
+esac
+case "$out" in
+    *'## Results'*) bad "output leaked into ## Results after an unterminated fence" ;;
+    *) ok "output stops at the plain ## Results boundary when the fence is unterminated" ;;
+esac
+case "$(cat "$TMP/stderr1d")" in
+    *"$DOC1D"*'Live state'*) ok "warns on stderr naming the doc and the section" ;;
+    *) bad "expected a stderr warning naming the doc - got: $(cat "$TMP/stderr1d")" ;;
+esac
+case "$out" in
+    *'falling back'*) bad "the stderr warning leaked onto stdout - got: $out" ;;
+    *) ok "the warning does not leak onto stdout" ;;
+esac
+
+echo "== an INDENTED fence inside ## Live state containing a ## line still toggles (HIMMEL-3137) =="
+DOC1E="$TMP/some-console-with-indented-fence.md"
+printf '%s\n' "# Some Console" "" "## Live state" "" \
+    "legs: N1 token-abc" "" \
+    '  ```markdown' "## Something else entirely" "example body" '  ```' "" \
+    "CRITICAL: lock token lock-tok-ABC" "" \
+    "## Results" "" "- LIVE 09:00" > "$DOC1E"
+out="$(env HIMMEL_CONSOLE_DOC="$DOC1E" bash "$HOOK")"; rc=$?
+if [ "$rc" -eq 0 ]; then ok "indented-fence doc still exits 0"; else bad "expected rc 0, got $rc"; fi
+case "$out" in
+    *'lock-tok-ABC'*) ok "output preserves content after an indented fence's ## line" ;;
+    *) bad "output silently dropped content past an indented fence - got: $out" ;;
+esac
+case "$out" in
+    *'## Results'*) bad "output leaked past Live state's own section boundary into ## Results" ;;
+    *) ok "output still stops at the real ## Results boundary" ;;
+esac
+
 echo "== doc has no ## Live state section -> one-line warning, still rc 0, no COMPACTED promise =="
 DOC2="$TMP/bare-console.md"
 printf '# Bare Console\n\n## Results\n\n- LIVE 09:00\n' > "$DOC2"

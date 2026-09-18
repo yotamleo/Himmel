@@ -85,16 +85,46 @@ extract_section() {
     #
     # Fence-aware: a ```-delimited block can itself contain a line that looks
     # like a heading (an example command, a quoted doc snippet). Toggling on
-    # ``` lines and suppressing the terminator check while inside one keeps
-    # that from truncating the section and silently dropping real content
-    # (lock tokens, nonces) that follows the fence.
-    awk -v want="$1" '
-        $0 == want { f = 1; print; next }
-        f && /^```/ { infence = !infence; print; next }
-        f && infence { print; next }
+    # ``` lines (indentation allowed, HIMMEL-3137) and suppressing the
+    # terminator check while inside one keeps that from truncating the
+    # section and silently dropping real content (lock tokens, nonces) that
+    # follows the fence.
+    #
+    # An UNTERMINATED fence (odd fence-line count) leaves the toggle stuck
+    # on, so the fence-aware scan never finds its terminator and runs to
+    # EOF, re-injecting the whole doc tail. Detect that first (a dry pass
+    # that reports whether it reached EOF still "in fence") and fall back to
+    # the plain, non-fence-aware terminator for this doc — bounded but
+    # truncates any content after a genuine fence on malformed input, which
+    # is visible and recoverable, versus unbounded re-injection on every
+    # compaction. The warning goes to stderr only: stdout IS the re-injected
+    # content.
+    local heading="$1" doc="$2" stuck
+    stuck="$(awk -v want="$heading" '
+        $0 == want { f = 1; next }
+        f && /^[[:space:]]*```/ { infence = !infence; next }
+        f && infence { next }
         f && /^##+ / { exit }
-        f { print }
-    ' "$2"
+        f { next }
+        END { if (f) print infence + 0 }
+    ' "$doc")"
+
+    if [ "$stuck" = "1" ]; then
+        printf 'console-compact-reinject: %s — unterminated fence in "%s", falling back to the plain heading boundary.\n' "$doc" "$heading" >&2
+        awk -v want="$heading" '
+            $0 == want { f = 1; print; next }
+            f && /^##+ / { exit }
+            f { print }
+        ' "$doc"
+    else
+        awk -v want="$heading" '
+            $0 == want { f = 1; print; next }
+            f && /^[[:space:]]*```/ { infence = !infence; print; next }
+            f && infence { print; next }
+            f && /^##+ / { exit }
+            f { print }
+        ' "$doc"
+    fi
 }
 
 DOC="$(resolve_console_doc)" || exit 0
