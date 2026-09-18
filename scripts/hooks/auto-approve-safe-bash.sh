@@ -838,7 +838,7 @@ EOF
 segment_is_queue_lock() {
     tokenize_seg_words "$1" || return 1
     local -a a=("${RB_TOKENS[@]}")
-    local n=${#a[@]} i=0 hd="" verb doc ql_cwd
+    local n=${#a[@]} i=0 hd="" verb doc ql_cwd ql_root
     [ "$n" -ge 3 ] || return 1
     case "${a[0]}" in
         HANDOVER_DIR=*)
@@ -862,7 +862,11 @@ segment_is_queue_lock() {
         *)
             ql_abs_path "$QW" || return 1
             case "$QN" in /*/scripts/handover/queue-lock.sh) ;; *) return 1 ;; esac
-            ql_root_is_own_checkout "${QC%/scripts/handover/queue-lock.sh}" || return 1 ;;
+            ql_root="${QC%/scripts/handover/queue-lock.sh}"
+            # A script at a drive root strips to `C:`, which `cd` reads as the
+            # drive-relative cwd, not `C:/` — keep the slash so it is the root.
+            case "$ql_root" in ?:) ql_root="$ql_root/" ;; esac
+            ql_root_is_own_checkout "$ql_root" || return 1 ;;
     esac
     verb="${a[$((i + 2))]:-}"
     i=$((i + 3))
