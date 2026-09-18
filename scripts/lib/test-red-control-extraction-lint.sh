@@ -136,6 +136,15 @@ EOF
 out=$(bash "$LINT" "$fx6e"); rc=$?
 if [ "$rc" -eq 0 ]; then ok "T6e exits 0 on a branch ref"; else bad "T6e expected rc=0, got $rc: $out"; fi
 
+echo "[test-red-control-extraction-lint] T6f documented gap (see the ponytail comment above PATTERN in red-control-extraction-lint.sh): a historical-ref var NOT named *_SHA escapes the gate -- pinned so widening the pattern is a visible test change, not a silent one"
+fx6f="$tmpdir/t6f"; mkdir -p "$fx6f"
+cat > "$fx6f/test-nonstandard-var.sh" <<'EOF'
+#!/usr/bin/env bash
+git show "$BASE_PRE2831_1:scripts/guardrails/leak-classes.sh" > out
+EOF
+out=$(bash "$LINT" "$fx6f"); rc=$?
+if [ "$rc" -eq 0 ]; then ok "T6f exits 0 -- documented gap, not caught (widen or per-file guard per the ponytail)"; else bad "T6f expected rc=0 (documented gap), got $rc: $out"; fi
+
 echo "[test-red-control-extraction-lint] T7 a non-*.sh file and a non-test-*.sh file are not scanned"
 fx7="$tmpdir/t7"; mkdir -p "$fx7"
 cat > "$fx7/lib.sh" <<'EOF'
