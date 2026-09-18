@@ -194,7 +194,7 @@ trap 'rm -f "$SHIPPED" "$VENDORED_LIST"' EXIT
 while IFS= read -r f; do
     [ -n "$f" ] || continue
     base="${f##*/}"
-    case "$base" in test-* | *.tsv) continue ;;
+    case "$base" in test-* | *.tsv | *.test.ts | *.test.js | *.test.mjs | *.test.cjs) continue ;;
     esac
     d="$REPO/$(dirname "$f")"
     vendored_root=""
@@ -239,8 +239,12 @@ git diff "$BASE...HEAD" | awk -v vendored_file="$VENDORED_LIST" '
         base = parts[n]
         # data ledgers (HIMMEL-2894 suite-durations.tsv) list suite basenames,
         # which legitimately contain the marker words; T13 is about runtime
-        # surface, and a TSV has none.
-        skip = (base ~ /^test-/) || (base ~ /\.tsv$/) || (f in vendored)
+        # surface, and a TSV has none. *.test.(ts|js|mjs|cjs) (HIMMEL-3151)
+        # gets the same test-fixture exemption as the shell "test-*"
+        # convention: a JS/TS test legitimately asserts on the very marker
+        # words T13(b) scans for (e.g. a setInterval-timing test).
+        skip = (base ~ /^test-/) || (base ~ /\.tsv$/) \
+            || (base ~ /\.test\.(ts|js|mjs|cjs)$/) || (f in vendored)
         next
     }
     skip { next }
