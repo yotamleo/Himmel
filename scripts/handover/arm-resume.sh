@@ -2535,7 +2535,11 @@ if [ "$_arm_is_console" -eq 1 ]; then
     fi
     CONSOLE_PRECOMPACT_DOC=$(_arm_realpath "$HANDOVER_PATH")
     _cp_slug=$(printf '%s' "$(basename -- "$CONSOLE_PRECOMPACT_DOC" .md)" | tr -c '[:alnum:]_-' '-')
-    CONSOLE_PRECOMPACT_WORKDIR="$_cp_base/precompact-$_cp_slug"
+    # Two console docs can share a basename (every repo's handovers/ has an
+    # n<k>-console.md); the checker reads the newest snap without checking which
+    # document wrote it, so the workdir carries a path hash, like the lock slug.
+    _cp_hash=$(_arm_path_hash "$(_arm_identity_path "$CONSOLE_PRECOMPACT_DOC")")
+    CONSOLE_PRECOMPACT_WORKDIR="$_cp_base/precompact-$_cp_slug${_cp_hash:+-h$_cp_hash}"
 fi
 
 # Compute working directory for the relaunched claude process. Without

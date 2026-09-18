@@ -1401,8 +1401,16 @@ KONSOLE_CMD="$d38g/konsole" PGREP_CMD="$d38g/pgrep" HEADED_ARM_REPO="$REPO" HEAD
 wait_record "$d38g" || true
 rec38g="$(cat "$d38g/record" 2>/dev/null || true)"
 check "38g --role console: exit 0" "$rc38g" "0"
-contains "38g --role console: konsole record exports HIMMEL_CONSOLE_DOC" "$rec38g" "HIMMEL_CONSOLE_DOC=doc38g.md"
+contains "38g --role console: a repo-relative DOC is exported ABSOLUTE (against REPO, where the session runs)" "$rec38g" "HIMMEL_CONSOLE_DOC=$REPO/doc38g.md"
 contains "38g --role console: konsole record exports HIMMEL_CONSOLE_WORKDIR=dirname(signal)" "$rec38g" "HIMMEL_CONSOLE_WORKDIR=$d38g/chain"
+d38h="$tmp/c38h"; mk_stub "$d38h" 1 alive "HIMMEL-role38h"
+rc38h=0
+KONSOLE_CMD="$d38h/konsole" PGREP_CMD="$d38h/pgrep" HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$d38h/locks" HEADED_ARM_PROC="$d38h/proc" \
+  bash "$SCRIPT" --role console "HIMMEL-role38h" "/abs/doc38h.md" "$d38h/chain/sig-HIMMEL-role38h" "$PAST" "$d38h/log" >/dev/null 2>&1 || rc38h=$?
+wait_record "$d38h" || true
+rec38h="$(cat "$d38h/record" 2>/dev/null || true)"
+check "38h --role console (absolute DOC): exit 0" "$rc38h" "0"
+contains "38h --role console: an absolute DOC is exported unchanged" "$rec38h" "HIMMEL_CONSOLE_DOC=/abs/doc38h.md"
 
 # --- 39. --dry-run (HIMMEL-3140): prints the resolved argv + exits 0 BEFORE
 # the signal/deadline wait loop, the claim lock, or konsole/pgrep are ever

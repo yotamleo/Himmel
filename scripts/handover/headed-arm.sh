@@ -468,7 +468,15 @@ ROLE_ENV_UNSET=""
 CONSOLE_ENV=()
 if [ "$ROLE" = "console" ]; then
     ROLE_ENV_UNSET="-u HIMMEL_CONSOLE_RELAY"
-    CONSOLE_ENV=("HIMMEL_CONSOLE_DOC=$DOC" "HIMMEL_CONSOLE_WORKDIR=$(dirname -- "$SIGNAL")")
+    # A relative DOC resolves against REPO (the session's --workdir, see the
+    # DOC note below), but the PreCompact hook runs in whatever cwd the session
+    # has by then -- export it absolute so the hook opens the file the console
+    # was actually told to load.
+    case "$DOC" in
+        /*) _console_doc="$DOC" ;;
+        *)  _console_doc="$REPO/$DOC" ;;
+    esac
+    CONSOLE_ENV=("HIMMEL_CONSOLE_DOC=$_console_doc" "HIMMEL_CONSOLE_WORKDIR=$(dirname -- "$SIGNAL")")
 fi
 LAUNCH_ARGV=("$LAUNCHER" --model "$MODEL" --autocompact "$AUTOCOMPACT" -n "$NAME" "load $DOC and continue")
 

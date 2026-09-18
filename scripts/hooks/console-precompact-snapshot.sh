@@ -106,6 +106,9 @@ main() {
     . "$REPO/scripts/lib/handover-path.sh" 2>/dev/null
     # shellcheck source=scripts/handover/queue-lock.sh
     . "$REPO/scripts/handover/queue-lock.sh" 2>/dev/null
+    # queue-lock.sh runs `set -uo pipefail` at top level; sourcing it must not
+    # leave nounset on for the rest of this fail-open hook.
+    set +u
     primary="$(handover_root 2>/dev/null)" || primary=""
     candidates="$primary
 $(_ql_candidate_roots 2>/dev/null)"

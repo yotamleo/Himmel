@@ -15,9 +15,9 @@ HOOK="$HOOKS/console-precompact-snapshot.sh"
 CHECKER="$HOOKS/../handover/console-kit/compacted-check.sh"
 [ -f "$HOOK" ] || { echo "hook not found: $HOOK" >&2; exit 1; }
 
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/console-precompact-snapshot-test.XXXXXX")"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/console-precompact-snapshot-test.XXXXXX")" || { echo "mktemp -d failed" >&2; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
-TMP="$(cd "$TMP" && pwd)"
+TMP="$(cd "$TMP" && pwd)" || { echo "cannot resolve $TMP" >&2; exit 1; }
 
 pass=0; fail=0
 ok()  { pass=$((pass+1)); printf '  ok   %s\n' "$1"; }
@@ -116,6 +116,14 @@ if grep -qx -- '--- tick' "$SNAP3" 2>/dev/null; then ok "--- tick separator pres
 if grep -qx 'tick fixture line' "$SNAP3" 2>/dev/null; then ok "tick output carried verbatim"; else bad "tick output missing"; fi
 bash "$CHECKER" "$TMP/bullet.md" "$WORK" >/dev/null 2>&1; crc=$?
 eq "checker still parses a snap with a tick tail (LOSS rc 1 vs the stale bullet, never rc 2)" "$crc" 1
+
+echo "== sourced queue-lock.sh leaks nounset; a scrubbed env (no HOME) must still snapshot =="
+W4="$TMP/work-nounset"
+out="$(printf '%s' "$STDIN" | env -u HIMMEL_CONSOLE_DOC -u HIMMEL_CONSOLE_WORKDIR -u HOME -u HANDOVER_REGISTRY \
+    HANDOVER_DIR="$ROOT" HIMMEL_CONSOLE_DOC="$DOC" HIMMEL_CONSOLE_WORKDIR="$W4" bash "$HOOK" 2>&1)"; rc=$?
+eq "no-HOME exits 0" "$rc" 0
+eq "no-HOME still records the lock owner" "$(field "$W4/precompact-1.snap" lock)" "host-pid4242"
+eq "no-HOME still records legs=" "$(field "$W4/precompact-1.snap" legs)" "N1:nA:lA:111, N2:nB:lB:222"
 
 echo "== HIMMEL_CONSOLE_DOC unset (a non-console session) -> exit 0, nothing written =="
 W2="$TMP/work-nonconsole"
