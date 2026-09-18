@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseArgs, loadConfig, loadHygieneKeys, loadCommits } from './reconcile-backlog.mjs';
+import { parseArgs, loadConfig, loadHygieneKeys, loadCommits, runReconciliation } from './reconcile-backlog.mjs';
 
 // I/O-boundary functions this file does NOT cover (loadBacklog,
 // loadCommentBodies, loadDescription, makeJiraClient, main): each requires a
@@ -166,5 +166,41 @@ describe('loadCommits', () => {
     expect(commits[0]).toHaveProperty('date');
     expect(commits[0]).toHaveProperty('subject');
     errSpy.mockRestore();
+  });
+});
+
+// HIMMEL-3127: the /backlog-reconcile surface's operator-approval gate is
+// `apply` on this injectable orchestration entrypoint — the only thing that
+// decides whether the loop ever calls into jiraClient. A fixture backlog
+// with a CLOSE-worthy commit proves the classifier still finds the
+// candidate; the assertion that matters is zero writes when apply is false
+// (approval declined).
+describe('runReconciliation — operator-approval gate', () => {
+  const backlog = [{ key: 'HIMMEL-1', issueType: 'Task', status: 'To Do' }];
+  const commits = [{ sha: 'abc123', date: '2026-09-01', subject: 'feat: [HIMMEL-1] ship it', body: '' }];
+  const baseOpts = {
+    backlog,
+    commits,
+    hygieneKeys: new Set(),
+    targetStatus: 'Done',
+    only: null,
+    loadCommentBodies: async () => [],
+    loadDescription: async () => '',
+  };
+
+  it('DECLINED approval (apply:false) against a fixture backlog makes zero Jira writes', async () => {
+    const jiraClient = { comment: vi.fn(), transition: vi.fn() };
+    const result = await runReconciliation({ ...baseOpts, apply: false, maxClose: null, jiraClient });
+    expect(result.counts.CLOSE).toBe(1);
+    expect(jiraClient.comment).not.toHaveBeenCalled();
+    expect(jiraClient.transition).not.toHaveBeenCalled();
+  });
+
+  it('APPROVED (apply:true, max-close headroom) comments and transitions the CLOSE candidate', async () => {
+    const jiraClient = { comment: vi.fn(), transition: vi.fn() };
+    const result = await runReconciliation({ ...baseOpts, apply: true, maxClose: 5, jiraClient });
+    expect(jiraClient.comment).toHaveBeenCalledOnce();
+    expect(jiraClient.transition).toHaveBeenCalledOnce();
+    expect(result.closed).toBe(1);
   });
 });

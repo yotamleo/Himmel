@@ -207,6 +207,108 @@ function makeJiraClient(jiraCliPath) {
   };
 }
 
+// HIMMEL-3127: the orchestration loop main() used to run inline against real
+// I/O (network Jira calls baked into loadCommentBodies/loadDescription,
+// makeJiraClient's subprocess). Extracted here with every I/O boundary
+// injected so the /backlog-reconcile surface's operator-approval gate is
+// unit-testable against a fixture backlog — `apply` is the ONLY switch that
+// lets the loop reach jiraClient.comment/transition.
+export async function runReconciliation({
+  backlog,
+  commits,
+  hygieneKeys,
+  targetStatus,
+  only,
+  apply,
+  maxClose,
+  jiraClient,
+  loadCommentBodies,
+  loadDescription,
+  onRecord = () => {},
+}) {
+  const counts = { CLOSE: 0, RESCOPE: 0, 'STALE-PREMISE': 0, LEAVE: 0 };
+  const records = [];
+  const acted = [];
+  let failed = 0;
+  let closed = 0;
+
+  for (const ticket of backlog) {
+    if (only && !only.has(ticket.key)) continue;
+
+    const { subjectCommits, bodyOnlyCommits } = findMatches(commits, ticket.key);
+
+    // Fetch comments only when there is evidence to act on — the tool's own
+    // marker can only ever exist on a ticket it previously found evidence
+    // for, so a zero-evidence ticket cannot carry it. Keeps the real run
+    // bounded to the candidate set instead of a comment-fetch per all ~989
+    // open tickets.
+    const hasEvidence = subjectCommits.length > 0 || bodyOnlyCommits.length > 0;
+    const commentBodies = hasEvidence ? await loadCommentBodies(ticket.key) : [];
+    const description = hasEvidence ? await loadDescription(ticket.key) : '';
+
+    const result = classifyTicket({
+      key: ticket.key,
+      issueType: ticket.issueType,
+      status: ticket.status,
+      targetStatus,
+      commentBodies,
+      hygieneKeys,
+      subjectCommits,
+      bodyOnlyCommits,
+      description,
+    });
+
+    counts[result.disposition] = (counts[result.disposition] ?? 0) + 1;
+
+    const record = {
+      key: ticket.key,
+      issueType: ticket.issueType,
+      status: ticket.status,
+      disposition: result.disposition,
+      reason: result.reason,
+      evidence: result.evidence ? { sha: result.evidence.sha, date: result.evidence.date, subject: result.evidence.subject } : null,
+    };
+
+    if (result.disposition !== 'LEAVE') {
+      acted.push(record);
+      if (apply) {
+        if (result.disposition === 'CLOSE' && closed >= maxClose) {
+          record.applied = 'skipped-max-close';
+          process.stderr.write(
+            `reconcile-backlog: ${ticket.key} CLOSE skipped — --max-close ${maxClose} already reached\n`,
+          );
+        } else {
+          const commentBody = buildEvidenceComment({ key: ticket.key, ...result });
+          try {
+            const applied = await applyDisposition({
+              key: ticket.key,
+              disposition: result.disposition,
+              targetStatus,
+              commentBody,
+              jiraClient,
+            });
+            record.applied = applied.action;
+            if (result.disposition === 'CLOSE' && applied.action === 'commented+transitioned') closed += 1;
+          } catch (err) {
+            // One ticket's comment/transition failure (a missing
+            // transition-screen field, a permissions gap, ...) must not abort
+            // the whole backlog run — every other candidate still needs its
+            // own disposition recorded.
+            record.applied = 'failed';
+            failed += 1;
+            process.stderr.write(`reconcile-backlog: ${ticket.key} apply failed: ${err.message}\n`);
+          }
+        }
+      }
+    }
+
+    records.push(record);
+    onRecord(record);
+  }
+
+  return { records, counts, acted, failed, closed };
+}
+
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   // A LEFT ALONE hygiene-sweep row carries no Jira comment at all, so
@@ -243,83 +345,19 @@ async function main() {
 
   const jiraClient = makeJiraClient(opts.jiraCli);
 
-  const counts = { CLOSE: 0, RESCOPE: 0, 'STALE-PREMISE': 0, LEAVE: 0 };
-  const acted = [];
-  let failed = 0;
-  let closed = 0;
-
-  for (const ticket of backlog) {
-    if (opts.only && !opts.only.has(ticket.key)) continue;
-
-    const { subjectCommits, bodyOnlyCommits } = findMatches(commits, ticket.key);
-
-    // Fetch comments only when there is evidence to act on — the tool's own
-    // marker can only ever exist on a ticket it previously found evidence
-    // for, so a zero-evidence ticket cannot carry it. Keeps the real run
-    // bounded to the candidate set instead of a comment-fetch per all ~989
-    // open tickets.
-    const hasEvidence = subjectCommits.length > 0 || bodyOnlyCommits.length > 0;
-    const commentBodies = hasEvidence ? await loadCommentBodies({ jiraCli: opts.jiraCli, key: ticket.key }) : [];
-    const description = hasEvidence ? await loadDescription({ jiraCli: opts.jiraCli, key: ticket.key }) : '';
-
-    const result = classifyTicket({
-      key: ticket.key,
-      issueType: ticket.issueType,
-      status: ticket.status,
-      targetStatus,
-      commentBodies,
-      hygieneKeys,
-      subjectCommits,
-      bodyOnlyCommits,
-      description,
-    });
-
-    counts[result.disposition] = (counts[result.disposition] ?? 0) + 1;
-
-    const record = {
-      key: ticket.key,
-      issueType: ticket.issueType,
-      status: ticket.status,
-      disposition: result.disposition,
-      reason: result.reason,
-      evidence: result.evidence ? { sha: result.evidence.sha, date: result.evidence.date, subject: result.evidence.subject } : null,
-    };
-
-    if (result.disposition !== 'LEAVE') {
-      acted.push(record);
-      if (opts.apply) {
-        if (result.disposition === 'CLOSE' && closed >= opts.maxClose) {
-          record.applied = 'skipped-max-close';
-          process.stderr.write(
-            `reconcile-backlog: ${ticket.key} CLOSE skipped — --max-close ${opts.maxClose} already reached\n`,
-          );
-        } else {
-          const commentBody = buildEvidenceComment({ key: ticket.key, ...result });
-          try {
-            const applied = await applyDisposition({
-              key: ticket.key,
-              disposition: result.disposition,
-              targetStatus,
-              commentBody,
-              jiraClient,
-            });
-            record.applied = applied.action;
-            if (result.disposition === 'CLOSE' && applied.action === 'commented+transitioned') closed += 1;
-          } catch (err) {
-            // One ticket's comment/transition failure (a missing
-            // transition-screen field, a permissions gap, ...) must not abort
-            // the whole backlog run — every other candidate still needs its
-            // own disposition recorded.
-            record.applied = 'failed';
-            failed += 1;
-            process.stderr.write(`reconcile-backlog: ${ticket.key} apply failed: ${err.message}\n`);
-          }
-        }
-      }
-    }
-
-    console.log(JSON.stringify(record));
-  }
+  const { counts, acted, failed, closed } = await runReconciliation({
+    backlog,
+    commits,
+    hygieneKeys,
+    targetStatus,
+    only: opts.only,
+    apply: opts.apply,
+    maxClose: opts.maxClose,
+    jiraClient,
+    loadCommentBodies: (key) => loadCommentBodies({ jiraCli: opts.jiraCli, key }),
+    loadDescription: (key) => loadDescription({ jiraCli: opts.jiraCli, key }),
+    onRecord: (record) => console.log(JSON.stringify(record)),
+  });
 
   console.log(
     JSON.stringify({
