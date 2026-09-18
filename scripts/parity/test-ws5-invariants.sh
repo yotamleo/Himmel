@@ -158,7 +158,7 @@ elif [ -f "$PUBLIC_PROJECTION_MARKER" ] && [ -n "$marker_in_diff" ]; then
 else
     PROPAGATION_SNAPSHOT=0
 fi
-SHIPPED="$(mktemp)"
+SHIPPED="$(mktemp "${TMPDIR:-/tmp}/ws5-shipped.XXXXXX")" || { echo "test-ws5-invariants.sh: mktemp failed" >&2; exit 2; }
 trap 'rm -f "$SHIPPED"' EXIT
 
 # Corpus of ADDED lines from SHIPPED source (every changed file whose basename
@@ -189,7 +189,7 @@ trap 'rm -f "$SHIPPED"' EXIT
 # any nesting depth) and fed into the awk filter as a lookup table; the diff
 # itself still runs once, full-tree. Never silent: every skip is named on
 # stderr.
-VENDORED_LIST="$(mktemp)"
+VENDORED_LIST="$(mktemp "${TMPDIR:-/tmp}/ws5-vendored-list.XXXXXX")" || { echo "test-ws5-invariants.sh: mktemp failed" >&2; exit 2; }
 trap 'rm -f "$SHIPPED" "$VENDORED_LIST"' EXIT
 while IFS= read -r f; do
     [ -n "$f" ] || continue
