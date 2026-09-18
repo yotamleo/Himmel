@@ -48,6 +48,14 @@
 #       see bank-preflight.sh's own refusal sub-paths), a same-name
 #       reservation directory (belonging to a DIFFERENT still-pending arm in
 #       the duplicate-name case) is left untouched.
+#   26. HIMMEL-3155: when HANDOVER_DIR is unset, the wrapper resolves the
+#       CONSOLE's own handover root (its own process/cwd, before any konsole
+#       child exists) and exports it explicitly into the leg's launch env -
+#       reaches konsole's own process environment (mirrors case 10's shape),
+#       and an end-to-end check: a GO written by go.sh from that SAME
+#       console-like cwd, then go_gate resolved from a DIFFERENT cwd
+#       (simulating the leg's linked worktree) using ONLY the exported
+#       HANDOVER_DIR, finds it.
 #
 # Platform guard (gitbash-only): POSIX bash 3.2+, same as headed-arm.sh
 # itself (konsole is Linux/KDE-only) - no .ps1 twin.
@@ -98,7 +106,7 @@ mk_launch_stubs() {
   cat > "$dir/konsole" <<'KONSOLE_EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$(dirname "$0")/record"
-env | grep -E '^(IMPL_GUARD_OK|INLINE_IMPL_OK|HIMMEL_CONSOLE_LEG|HEADED_ARM_REQUIRED_AUTOCOMPACT|HIMMEL_LEAN_LEG|LEG_CLAUDE_BIN|LEG_PROFILE_SETTINGS|LEG_PROFILE_PREFACE|LEG_PROFILE_MCP_CONFIG|CONSOLE_CONTEXT)=' > "$(dirname "$0")/env-record"
+env | grep -E '^(IMPL_GUARD_OK|INLINE_IMPL_OK|HIMMEL_CONSOLE_LEG|HEADED_ARM_REQUIRED_AUTOCOMPACT|HIMMEL_LEAN_LEG|LEG_CLAUDE_BIN|LEG_PROFILE_SETTINGS|LEG_PROFILE_PREFACE|LEG_PROFILE_MCP_CONFIG|CONSOLE_CONTEXT|HANDOVER_DIR)=' > "$(dirname "$0")/env-record"
 : > "$(dirname "$0")/confirmable"
 sleep 5
 KONSOLE_EOF
@@ -1156,6 +1164,56 @@ else
   echo "FAIL - SKIPPED-FLEET: a same-name reservation was removed - would delete a DIFFERENT pending arm's duplicate-refused slot"
   fails=$((fails+1))
 fi
+
+# --- 26 (HIMMEL-3155). GO gate reachable from a leg worktree: the wrapper
+# resolves the CONSOLE's own handover root (its own process/cwd, before ANY
+# konsole child exists) and exports it explicitly as HANDOVER_DIR into the
+# leg's launch env - so a leg's later handover_root() call (run from a
+# linked worktree, whose `git rev-parse --show-toplevel` resolves to the
+# WORKTREE, not the console's checkout) binds to the SAME root the console
+# used to write its GO (console-kit/go.sh), instead of silently re-deriving
+# (and missing) a different one. RED on today's code: no HANDOVER_DIR export
+# exists at all, so every assertion below fails.
+primary26="$tmp/primary26"
+mkdir -p "$primary26/handovers" && git -C "$primary26" init -q
+d26="$tmp/c26"; mk_launch_stubs "$d26" "HIMMEL-3155-leg"; mkdir -p "$tmp/repo26"
+rc=0
+( cd "$primary26" && \
+  IMPL_GUARD_OK='' HIMMEL_CONSOLE_LEG='' HANDOVER_DIR='' \
+  HEADED_ARM_LEG_TARGET="$HEADED_ARM" HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+  KONSOLE_CMD="$d26/konsole" PGREP_CMD="$d26/pgrep" \
+  LEG_REPO="$tmp/repo26" HEADED_ARM_LOCK_DIR="$d26/locks" HEADED_ARM_PROC="$d26/proc" \
+    bash "$SCRIPT" "HIMMEL-3155-leg" "some/doc.md" "$d26/signal-never" "$PAST" "$d26/log" "claude-sonnet-5" \
+) >/dev/null 2>&1 || rc=$?
+wait_record "$d26" || true
+env26="$(cat "$d26/env-record" 2>/dev/null || true)"
+check "HANDOVER_DIR e2e: full launch, console cwd has inline handovers/: exit 0" "$rc" "0"
+contains "HANDOVER_DIR e2e: leg env carries the console's resolved root verbatim" "$env26" "HANDOVER_DIR=$primary26/handovers"
+
+# End-to-end: a GO written by go.sh from the SAME primary-like cwd (the
+# console's own resolution), then go_gate resolved from a DIFFERENT cwd
+# (simulating the leg's linked worktree) using ONLY the HANDOVER_DIR VALUE
+# ACTUALLY CAPTURED FROM THE LEG'S OWN ENV ABOVE (env26, not a hardcoded
+# primary26/handovers - a hardcoded value would pass vacuously even if the
+# wrapper never exported anything), must find it.
+sha26="$(printf 'a%.0s' $(seq 1 40))"
+go_out26="$(cd "$primary26" && bash "$HERE/go.sh" 26260 "$sha26" 2>&1)"
+leg_handover_dir26="$(printf '%s\n' "$env26" | sed -n 's/^HANDOVER_DIR=//p')"
+worktree26="$tmp/worktree26"; mkdir -p "$worktree26"
+gate_script26="$tmp/gate26.sh"
+cat > "$gate_script26" <<EOF
+#!/usr/bin/env bash
+set -u
+. "$HERE/../../lib/handover-path.sh"
+. "$HERE/../../lib/go-gate.sh"
+root="\$(handover_root)" || exit 9
+go_gate 26260 "$sha26" "\$root"
+EOF
+chmod 755 "$gate_script26"
+rc2=0
+( cd "$worktree26" && HANDOVER_DIR="$leg_handover_dir26" bash "$gate_script26" ) >/dev/null 2>&1 || rc2=$?
+check "HANDOVER_DIR e2e: go.sh wrote the GO from the console cwd" "$go_out26" "$primary26/handovers/.locks/go/26260.$sha26"
+check "HANDOVER_DIR e2e: go_gate resolved from a linked worktree (HANDOVER_DIR only) finds the GO" "$rc2" "0"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

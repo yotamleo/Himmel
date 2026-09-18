@@ -256,6 +256,32 @@ fi
 HERE="$(cd "$(dirname "$0")" && pwd)"
 HEADED_ARM="${HEADED_ARM_LEG_TARGET:-$HERE/../headed-arm.sh}"
 
+# HIMMEL-3155: a console-spawned leg that runs merge-on-green.sh from its own
+# (linked) worktree gets exit 17 "no console GO" - handover_root() falls back
+# to `git rev-parse --show-toplevel`, which resolves to the WORKTREE, not the
+# console's checkout, and <worktree>/handovers does not exist. Resolve the
+# handover root HERE, in this wrapper's own process (still running in the
+# CONSOLE's launching cwd - no konsole child exists yet), and export it
+# explicitly as HANDOVER_DIR so the leg's own handover_root() call binds to
+# the exact same root the console used to write its GO (console-kit/go.sh).
+# HANDOVER_DIR is already a registered seam var (scripts/lib/handover-path.sh)
+# read by every handover script; this widens nothing - it only makes each
+# launch's already-resolved root explicit instead of leaving a leg in a
+# linked worktree to silently re-derive (and miss) it. Skip only when the
+# console's own launching shell already set HANDOVER_DIR (Mode B - already
+# correct, nothing to resolve) or when this process can't resolve one either
+# (nothing to export - unchanged behavior from before this ticket).
+if [ -z "${HANDOVER_DIR:-}" ]; then
+    unset -f handover_root 2>/dev/null || true
+    # shellcheck source=scripts/lib/handover-path.sh
+    # shellcheck disable=SC1091
+    if . "$HERE/../../lib/handover-path.sh" 2>/dev/null; then
+        _leg_handover_root="$(handover_root 2>/dev/null)" || _leg_handover_root=""
+        [ -n "$_leg_handover_root" ] && export HANDOVER_DIR="$_leg_handover_root"
+        unset -v _leg_handover_root
+    fi
+fi
+
 # Context resolution (HIMMEL-2766/HIMMEL-2779): off-values stay standard;
 # the one old 1m opt-in is resolved explicitly so the argv guard below can
 # reject it with a useful message rather than silently ignoring operator input.
@@ -546,9 +572,9 @@ if [ "$DRY_RUN" -eq 1 ]; then
     # reason - proves LEG_SUPPRESS_CR_TRIGGER->CR_TRIGGER_SUPPRESS ran in
     # THIS wrapper's own process, and stays <unset> (the default-ON case)
     # for every caller that never sets LEG_SUPPRESS_CR_TRIGGER.
-    printf 'headed-arm-leg: env IMPL_GUARD_OK=%s INLINE_IMPL_OK=%s HIMMEL_CONSOLE_LEG=%s HEADED_ARM_REPO=%s scrub=%s CONSOLE_CONTEXT=%s CR_TRIGGER_SUPPRESS=%s\n' \
+    printf 'headed-arm-leg: env IMPL_GUARD_OK=%s INLINE_IMPL_OK=%s HIMMEL_CONSOLE_LEG=%s HEADED_ARM_REPO=%s scrub=%s CONSOLE_CONTEXT=%s CR_TRIGGER_SUPPRESS=%s HANDOVER_DIR=%s\n' \
         "${IMPL_GUARD_OK:-<unset>}" "${INLINE_IMPL_OK:-<unset>}" "$HIMMEL_CONSOLE_LEG" "${HEADED_ARM_REPO:-<derived by headed-arm.sh>}" \
-        "$LEG_ENV_SCRUB" "${CONSOLE_CONTEXT:-<unset>}" "${CR_TRIGGER_SUPPRESS:-<unset>}"
+        "$LEG_ENV_SCRUB" "${CONSOLE_CONTEXT:-<unset>}" "${CR_TRIGGER_SUPPRESS:-<unset>}" "${HANDOVER_DIR:-<unset>}"
     # Printed ONLY under --relay: with the flag omitted this line is absent and
     # the dry-run report stays byte-identical to today's, same guarantee shape
     # as the --profile line below.
