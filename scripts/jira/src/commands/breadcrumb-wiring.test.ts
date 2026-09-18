@@ -18,6 +18,7 @@ import { registerTransition } from './transition.js';
 import { registerMove } from './move.js';
 import { registerGet } from './get.js';
 import { registerWorklog } from './worklog.js';
+import { registerComments } from './comments.js';
 
 const mockRequest = request as unknown as ReturnType<typeof vi.fn>;
 const mockBreadcrumb = writeJiraBreadcrumb as unknown as ReturnType<typeof vi.fn>;
@@ -77,6 +78,13 @@ describe('jira breadcrumb wiring', () => {
     mockRequest.mockImplementation(async () => ({ worklogs: [] }));
     const p = freshProgram(registerWorklog);
     await p.parseAsync(['node', 'jira', 'worklog', 'list', 'HIMMEL-4']);
+    expect(mockBreadcrumb).not.toHaveBeenCalled();
+  });
+
+  it('comments (read) does NOT drop a breadcrumb', async () => {
+    mockRequest.mockImplementation(async () => ({ comments: [] }));
+    const p = freshProgram(registerComments);
+    await p.parseAsync(['node', 'jira', 'comments', 'HIMMEL-5']);
     expect(mockBreadcrumb).not.toHaveBeenCalled();
   });
 });

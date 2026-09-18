@@ -48,10 +48,21 @@ the lock at wrap requires it. The console *adopts* this lock; it does not
 acquire a second one. (`new` takes the lock and then exits, so a console that
 tried to acquire again would be refused by its own startup lock.)
 
+Paste the printed `launch:` line **verbatim, including its `env -u …` prefix**.
+That prefix is load-bearing, not decoration: you are almost always pasting into
+a terminal that was itself spawned from a claude session, and it clears the
+`CLAUDE_CODE_CHILD_SESSION` / `CLAUDE_PID` / `CLAUDE_CODE_SESSION_ID` variables
+that shell inherited. A console that keeps them writes no transcript and gets
+`UNKNOWN` from `scripts/context-fill.sh --percent` — which is the signal its
+own handover contract runs on (HIMMEL-3081). Trimming the line to just
+`claude …` silently recreates that failure.
+
 Finally it prints the launch line. Run it in a terminal of its own:
 
 ```text
-claude --model <model> --autocompact 200000 -n <session-name> "load <doc> and continue"
+env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID \
+    CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 \
+    claude --model <model> --autocompact 200000 -n <session-name> "load <doc> and continue"
 ```
 
 `--autocompact 200000` is the default (HIMMEL-2973 — the largest cache-read
@@ -151,6 +162,18 @@ threat model and the verbatim block:
 `READY <pr> <head> GREEN` → the console verifies independently (all check-runs
 green at that exact head, zero unresolved review threads, attestation trailers
 in the first commit) → `GO` → the leg merges and reports `MERGED #<n> → <sha>`.
+
+`scripts/handover/console-kit/ready-check.sh <pr> <full-40-hex-head-sha>`
+mechanizes that independent verification (HIMMEL-3163): it re-runs checks
+1-6 (head match + clean merge state, statusCheckRollup all green, zero
+unresolved review threads, a CR-ledger row for that head, attestation
+trailers in the first commit, a ticket ID on every commit subject) and
+prints `READY-CHECK PASS|FAIL`. It is read-only — no ledger rows, GO files,
+or PR comments — and it does **not** read the three-dot diff; that judgement
+call stays the console's own, which the script says on its last line. On a
+PR that is already `MERGED`, GitHub reports `mergeStateStatus: UNKNOWN`
+permanently, so check 1 always fails there — that is expected, not a bug;
+the script's domain is a PR that has not yet merged.
 
 A PR on HIMMEL-2973/2976/2928/2974/2975 is READY only if its body cites
 `HIMMEL-2977 "GATE <previous lever> PASS <date>"` (for 2973:

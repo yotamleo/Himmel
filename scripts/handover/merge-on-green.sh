@@ -47,9 +47,14 @@
 # by design: this wrapper IS the sanctioned gated path and embeds the same
 # (stronger, because it WATCHES) predicates via check-ci.sh.
 #
-# Usage: merge-on-green.sh [<pr-selector>] [--dry-run]
-#   selector   optional PR number / branch / url; defaults to the current branch
-#   --dry-run  run every gate, print the intended merge, then STOP (no merge)
+# Usage: merge-on-green.sh [<pr-selector>] [--dry-run] [--jira-transition]
+#   selector           optional PR number / branch / url; defaults to the
+#                      current branch
+#   --dry-run          run every gate, print the intended merge, then STOP
+#                      (no merge)
+#   --jira-transition  opt IN to auto-transitioning the ticket on this merge
+#                      (HIMMEL-3143 — see "Jira auto-transition is opt-in"
+#                      below; default is to report what it would have done)
 #
 # After a CONFIRMED merge it best-effort prunes the local worktree checked out
 # on the PR's head branch (HIMMEL-1970) — plain `git worktree remove`, never
@@ -132,6 +137,17 @@
 #                          (scripts/lib/handover-path.sh); read only under
 #                          HIMMEL_CONSOLE_LEG.
 #
+# Jira auto-transition is opt-in per merge (HIMMEL-3143; --jira-transition
+# above). It used to fire unconditionally on every merge and closed
+# HIMMEL-2975 while sibling work (T1, T6) was still outstanding — one of the
+# two closes had no open PR, no branch and no commit referencing the ticket
+# at all, because the owed work lived only in a design doc's task list. An
+# "only transition when no other PR references this ticket" heuristic
+# CANNOT catch that case (there is nothing PR-shaped to check), so it cannot
+# be the primary fix, only an optional secondary guard layered on top of
+# opt-in. Do not "improve" this back into an open-PR check; make the caller
+# ask for the transition instead. See jira_auto_transition_on_merge below.
+#
 # GATE INTEGRITY (coderabbit): `gh` and `check-ci.sh` are NOT environment-
 # overridable — a contaminated/inherited launching environment must not be able
 # to swap the merge gate or the SHA pin for a permissive stand-in. `gh` is
@@ -171,9 +187,11 @@ HIMMEL_PUBLIC_ORIGIN_NWO="yotamleo/Himmel"
 
 selector=""
 DRY_RUN=0
+JIRA_TRANSITION_OPT_IN=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run) DRY_RUN=1; shift ;;
+        --jira-transition) JIRA_TRANSITION_OPT_IN=1; shift ;;
         -h|--help)
             sed -n '2,/^set -uo pipefail/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'
             exit 0 ;;
@@ -496,9 +514,40 @@ fi
 # --match-head-commit pins below. The evidence is a file, never an env value
 # the leg could set on its own merge line. Placed before the marker clear so a
 # refused leg mutates nothing, and before the DRY_RUN branch so a dry run
-# reports the refusal too. Unset marker: skipped whole — the resolver is not
-# even sourced, so operator sessions are unchanged.
-if _truthy "${HIMMEL_CONSOLE_LEG:-}"; then
+# reports the refusal too. Unset marker: the go_root resolution and the GO
+# file read below are both skipped whole, so an operator session's
+# handover_root() failure never surfaces.
+#
+# Both the marker predicate (console_leg) and the file check (go_gate) live in
+# scripts/lib/go-gate.sh (HIMMEL-3142/HIMMEL-3149) — shared with
+# block-unresolved-cr-merge.sh's own gh-pr-merge gate and go.sh's own
+# refusal, so none of the three can drift on either "is this a leg" or "what
+# the GO binds". A non-leg session (HIMMEL_CONSOLE_LEG unset/empty, by far the
+# common case) never sources go-gate.sh at all, so a missing/broken library
+# never blocks a merge this gate was never meant to bind — this outer check is
+# only "is the var non-empty", not a copy of console_leg's own five-spelling
+# interpretation, so an explicitly-set falsy value (e.g. HIMMEL_CONSOLE_LEG=0)
+# still sources go-gate.sh and gets the real, shared interpretation.
+# Drop any go_gate/console_leg already in scope (a PATH executable or an
+# inherited `export -f` would otherwise survive the source below undetected —
+# declare -F after sourcing can't tell "the file defined it" from "it was
+# already callable") before sourcing, so only the file's own definitions can
+# satisfy the declare -F checks that follow.
+is_leg=1
+if [ -n "${HIMMEL_CONSOLE_LEG:-}" ]; then
+    unset -f go_gate console_leg 2>/dev/null || true
+    # shellcheck source=scripts/lib/go-gate.sh
+    # shellcheck disable=SC1091
+    if ! . "$SCRIPT_DIR/../lib/go-gate.sh" 2>/dev/null || ! declare -F console_leg >/dev/null 2>&1; then
+        echo "merge-on-green: cannot load scripts/lib/go-gate.sh — refusing (the console-leg marker check must fail closed, not silently no-op)" >&2
+        audit "REFUSED reason=policy-refused phase=console-go-lib-missing repo=$nwo pr=#$pr_num sha=$sha"
+        exit 17
+    fi
+    console_leg || is_leg=0
+else
+    is_leg=0
+fi
+if [ "$is_leg" -eq 1 ]; then
     go_root=""
     # shellcheck source=scripts/lib/handover-path.sh
     # shellcheck disable=SC1091
@@ -506,8 +555,19 @@ if _truthy "${HIMMEL_CONSOLE_LEG:-}"; then
         go_root=$(handover_root 2>/dev/null) || go_root=""
     fi
     go_file="${go_root:-<unresolved handover root>}/.locks/go/$pr_num.$sha"
-    if [ -z "$go_root" ] || ! grep -qxF "head=$sha" "$go_file" 2>/dev/null; then
-        echo "merge-on-green: PR #$pr_num at $sha has no console GO ($go_file) — you are a console-spawned leg; send READY to your console and wait for GO; a GO for an older head is stale, never reuse it" >&2
+    if ! declare -F go_gate >/dev/null 2>&1; then
+        echo "merge-on-green: scripts/lib/go-gate.sh sourced but go_gate is not defined (truncated file?) — refusing (a console-spawned leg's GO gate must fail closed, not silently no-op)" >&2
+        audit "REFUSED reason=policy-refused phase=console-go-symbol-missing repo=$nwo pr=#$pr_num sha=$sha"
+        exit 17
+    fi
+    go_reason=""
+    go_rc=0
+    go_reason=$(go_gate "$pr_num" "$sha" "$go_root") || go_rc=$?
+    if [ "$go_rc" -ne 0 ]; then
+        if [ -z "$go_reason" ]; then
+            go_reason="go_gate for PR #$pr_num at $sha returned an unexpected exit code ($go_rc) — this is a console-spawned leg; send READY to your console and wait for GO"
+        fi
+        echo "merge-on-green: $go_reason" >&2
         audit "REFUSED reason=policy-refused phase=console-go repo=$nwo pr=#$pr_num sha=$sha go=$go_file"
         exit 17
     fi
@@ -1156,6 +1216,14 @@ jira_auto_transition_on_merge() {
         Epic|Story) JIRA_AUTO_TRANSITION_RESULT="skip=never-touch-type key=$key type=$issue_type"; return 0 ;;
         "") JIRA_AUTO_TRANSITION_RESULT="skip=cannot-verify-type key=$key"; return 0 ;;
     esac
+
+    # HIMMEL-3143: opt-in per merge, not a heuristic (see the file header).
+    # Report what WOULD have happened and stop — no comment, no transition —
+    # so the console can act on it instead of the ticket silently closing.
+    if ! _truthy "$JIRA_TRANSITION_OPT_IN"; then
+        JIRA_AUTO_TRANSITION_RESULT="would-transition key=$key status=$target_status"
+        return 0
+    fi
 
     local comment_tmp comment_rc=0
     comment_tmp=$(mktemp "${TMPDIR:-/tmp}/merge-on-green-jira-comment.XXXXXX") || { JIRA_AUTO_TRANSITION_RESULT="skip=no-tmpfile key=$key"; return 0; }

@@ -470,6 +470,184 @@ assert_contains "success line reports the version bump" "0.43.0 -> 0.44.0" "$out
 new_version=$("$RTK_FIXTURE" --version 2>&1)
 assert_contains "fixture now reports the new version" "0.44.0" "$new_version"
 
+echo "[test-upgrade-rtk] HIMMEL-3049: dpkg-owned RTK_BIN_PATH still takes the deb+apt flow, unchanged"
+reset_fixture
+TARBALL_DIR="$TMP_ROOT/tarball-assets"
+rm -rf "$TARBALL_DIR"; mkdir -p "$TARBALL_DIR"
+cat > "$BIN_DIR/curl" <<'EOF'
+#!/usr/bin/env bash
+out=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+echo "fake deb payload" > "$out"
+EOF
+chmod +x "$BIN_DIR/curl"
+cat > "$BIN_DIR/sudo" <<'EOF'
+#!/usr/bin/env bash
+touch "$(dirname "$0")/../sudo-invoked"
+[ "$1" = "-n" ] && shift
+[ "$1" = "apt" ] || exit 1
+cat > "$RTK_APT_TARGET" <<'INNER'
+#!/usr/bin/env bash
+case "$1" in
+  --version) echo "rtk 0.44.0"; exit 0 ;;
+  ls) command ls "$2" >/dev/null 2>&1; exit 0 ;;
+  *) exit 1 ;;
+esac
+INNER
+chmod +x "$RTK_APT_TARGET"
+EOF
+chmod +x "$BIN_DIR/sudo"
+rm -f "$TMP_ROOT/sudo-invoked"
+out=$(env PATH="$BIN_DIR:$PATH" RTK_UPGRADE_PLATFORM=linux RTK_BIN_OWNER=dpkg RTK_APT_TARGET="$RTK_FIXTURE" \
+      RTK_INSTALL_DIR="$INSTALL_DIR" RTK_LATEST_TAG=v0.44.0 \
+      bash "$UPGRADE" 2>&1); rc=$?
+assert_rc "dpkg-owned binary -> rc 0" 0 "$rc"
+if [ -e "$INSTALL_DIR/rtk_amd64.deb" ]; then
+  pass "dpkg branch downloaded rtk_amd64.deb (deb+apt flow taken)"
+else
+  fail "dpkg branch did not download rtk_amd64.deb -- deb+apt flow was NOT taken" "$out"
+fi
+if [ -e "$TMP_ROOT/sudo-invoked" ]; then
+  pass "dpkg branch invoked sudo apt (unchanged behavior)"
+else
+  fail "dpkg branch never invoked sudo -- deb+apt flow was NOT taken" "$out"
+fi
+rm -f "$BIN_DIR/sudo" "$BIN_DIR/curl" "$TMP_ROOT/sudo-invoked"
+
+echo "[test-upgrade-rtk] HIMMEL-3049: non-dpkg tarball happy path -- replaced, version bumped, no sudo"
+reset_fixture
+rm -rf "$TARBALL_DIR"; mkdir -p "$TARBALL_DIR"
+TARBALL_STAGE="$TMP_ROOT/tarball-stage"
+rm -rf "$TARBALL_STAGE"; mkdir -p "$TARBALL_STAGE"
+cat > "$TARBALL_STAGE/rtk" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  --version) echo "rtk 0.44.0"; exit 0 ;;
+  ls) command ls "$2" >/dev/null 2>&1; exit 0 ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$TARBALL_STAGE/rtk"
+tar czf "$TARBALL_DIR/rtk-x86_64-unknown-linux-musl.tar.gz" -C "$TARBALL_STAGE" rtk
+GOOD_SUM=$(sha256sum "$TARBALL_DIR/rtk-x86_64-unknown-linux-musl.tar.gz" | awk '{print $1}')
+printf '%s  rtk-x86_64-unknown-linux-musl.tar.gz\n' "$GOOD_SUM" > "$TARBALL_DIR/checksums.txt"
+cat > "$BIN_DIR/curl" <<EOF
+#!/usr/bin/env bash
+url=""; out=""
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+    -o) out="\$2"; shift 2 ;;
+    -f|-L|-s) shift ;;
+    --max-time) shift 2 ;;
+    http*) url="\$1"; shift ;;
+    *) shift ;;
+  esac
+done
+name="\${url##*/}"
+src="$TARBALL_DIR/\$name"
+if [ -f "\$src" ]; then cp "\$src" "\$out"; exit 0; fi
+exit 22
+EOF
+chmod +x "$BIN_DIR/curl"
+cat > "$BIN_DIR/sudo" <<'EOF'
+#!/usr/bin/env bash
+touch "$(dirname "$0")/../sudo-invoked"
+exit 1
+EOF
+chmod +x "$BIN_DIR/sudo"
+rm -f "$TMP_ROOT/sudo-invoked"
+out=$(env PATH="$BIN_DIR:$PATH" RTK_UPGRADE_PLATFORM=linux RTK_BIN_OWNER=other RTK_UPGRADE_ARCH=x86_64 \
+      RTK_INSTALL_DIR="$INSTALL_DIR" RTK_LATEST_TAG=v0.44.0 \
+      bash "$UPGRADE" 2>&1); rc=$?
+assert_rc "tarball happy path -> rc 0" 0 "$rc"
+assert_contains "success line reports the version bump" "0.43.0 -> 0.44.0" "$out"
+new_version=$("$RTK_FIXTURE" --version 2>&1)
+assert_contains "fixture now reports the new version" "0.44.0" "$new_version"
+if [ -e "$TMP_ROOT/sudo-invoked" ]; then
+  fail "tarball branch invoked sudo -- must never sudo on an already-user-writable path"
+else
+  pass "tarball branch never invoked sudo"
+fi
+if ls "$BIN_DIR"/.rtk.upgrade.* >/dev/null 2>&1; then
+  fail "tarball branch left a stray .rtk.upgrade.* staging file behind"
+else
+  pass "tarball branch left no stray staging file behind"
+fi
+rm -f "$BIN_DIR/curl" "$BIN_DIR/sudo" "$TMP_ROOT/sudo-invoked"
+
+echo "[test-upgrade-rtk] HIMMEL-3049 RED->GREEN: checksum mismatch fails closed -- binary byte-identical, rc!=0, no partial write"
+reset_fixture
+rm -rf "$TARBALL_DIR"; mkdir -p "$TARBALL_DIR"
+rm -rf "$TARBALL_STAGE"; mkdir -p "$TARBALL_STAGE"
+cat > "$TARBALL_STAGE/rtk" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  --version) echo "rtk 0.44.0"; exit 0 ;;
+  ls) command ls "$2" >/dev/null 2>&1; exit 0 ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$TARBALL_STAGE/rtk"
+tar czf "$TARBALL_DIR/rtk-x86_64-unknown-linux-musl.tar.gz" -C "$TARBALL_STAGE" rtk
+# Deliberately WRONG checksum -- simulates a tampered/attacker-controlled
+# checksums.txt, or a corrupted download. This is the exact scenario the
+# RED-first demo (paste in the PR/handover) proved the pre-fix script accepts
+# unconditionally: a corrupted "new" binary that merely passes --version + ls.
+printf 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef  rtk-x86_64-unknown-linux-musl.tar.gz\n' > "$TARBALL_DIR/checksums.txt"
+cat > "$BIN_DIR/curl" <<EOF
+#!/usr/bin/env bash
+url=""; out=""
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+    -o) out="\$2"; shift 2 ;;
+    -f|-L|-s) shift ;;
+    --max-time) shift 2 ;;
+    http*) url="\$1"; shift ;;
+    *) shift ;;
+  esac
+done
+name="\${url##*/}"
+src="$TARBALL_DIR/\$name"
+if [ -f "\$src" ]; then cp "\$src" "\$out"; exit 0; fi
+exit 22
+EOF
+chmod +x "$BIN_DIR/curl"
+# Precondition check (avoid a vacuous control): confirm sha256sum is on PATH
+# and the fixture curl actually serves the tarball+checksums, so a failure
+# below is caused by the mismatch check, not a missing stub.
+if ! command -v sha256sum >/dev/null 2>&1; then
+  fail "checksum-mismatch precondition: sha256sum not on PATH -- this control cannot run"
+elif [ ! -s "$TARBALL_DIR/rtk-x86_64-unknown-linux-musl.tar.gz" ] || [ ! -s "$TARBALL_DIR/checksums.txt" ]; then
+  fail "checksum-mismatch precondition: fixture tarball/checksums.txt missing -- this control cannot run"
+else
+  pass "checksum-mismatch precondition: sha256sum available and fixture assets present"
+fi
+original="$(cat "$RTK_FIXTURE")"
+out=$(env PATH="$BIN_DIR:$PATH" RTK_UPGRADE_PLATFORM=linux RTK_BIN_OWNER=other RTK_UPGRADE_ARCH=x86_64 \
+      RTK_INSTALL_DIR="$INSTALL_DIR" RTK_LATEST_TAG=v0.44.0 \
+      bash "$UPGRADE" 2>&1); rc=$?
+if [ "$rc" != "0" ]; then pass "checksum mismatch -> non-zero exit (rc=$rc)"; else fail "checksum mismatch -> rc 0, should have refused"; fi
+assert_contains "output names the checksum mismatch" "checksum mismatch" "$out"
+restored="$(cat "$RTK_FIXTURE")"
+if [ "$restored" = "$original" ]; then
+  pass "binary is byte-identical to the pre-upgrade original after a checksum mismatch"
+else
+  fail "binary bytes CHANGED despite a checksum mismatch -- fail-closed guarantee broken"
+fi
+post_version=$("$RTK_FIXTURE" --version 2>&1)
+assert_contains "fixture still reports the original version (never replaced)" "0.43.0" "$post_version"
+if ls "$BIN_DIR"/.rtk.upgrade.* >/dev/null 2>&1; then
+  fail "checksum mismatch left a partial-write staging file (.rtk.upgrade.*) behind"
+else
+  pass "checksum mismatch left no partial-write staging file behind"
+fi
+rm -f "$BIN_DIR/curl"
+
 echo ""
 echo "===================================="
 echo "test summary: $PASS passed, $FAIL failed"

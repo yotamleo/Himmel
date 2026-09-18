@@ -454,9 +454,26 @@ assert_not_contains "T12: no DOUBLE-ARM warning on a clean arm" "DOUBLE-ARM DETE
 FAKE="$TMP/no-ql"
 mkdir -p "$FAKE/handover" "$FAKE/lib"
 cp "$SCRIPT_DIR/arm-resume.sh" "$FAKE/handover/arm-resume.sh"
-cp "$SCRIPT_DIR/../lib/py-armor.sh" "$FAKE/lib/py-armor.sh"
-cp "$SCRIPT_DIR/../lib/handover-path.sh" "$FAKE/lib/handover-path.sh"
-cp "$SCRIPT_DIR/../lib/telemetry.sh" "$FAKE/lib/telemetry.sh" 2>/dev/null || true
+for lib in console-context py-armor handover-path telemetry; do
+    cp "$SCRIPT_DIR/../lib/$lib.sh" "$FAKE/lib/$lib.sh"
+done
+# HIMMEL-3165 guard: a lib arm-resume.sh hard-sources (column-0 `. .../lib/X.sh`
+# with no `||` / `2>/dev/null` fail-open) must exist in the fake tree, else the
+# T13-T14 cases die at source time with an unrelated-looking rc=1. Name the
+# missing lib here instead. Derived from arm-resume.sh so the next hard-sourced
+# lib is caught without editing this list; queue-lock.sh is not a lib/ source.
+HARD_LIBS=$(grep -E '^\. .*\.\./lib/[a-z-]+\.sh' "$SCRIPT_DIR/arm-resume.sh" \
+    | grep -vE '\|\||2>/dev/null' | sed -E 's|.*\.\./lib/([a-z-]+\.sh).*|\1|')
+if [ -z "$HARD_LIBS" ]; then
+    echo "FAIL T13 fixture: found no hard-sourced lib in arm-resume.sh -- the derivation is vacuous"
+    FAILED=$((FAILED + 1))
+fi
+for lib in $HARD_LIBS; do
+    if [ ! -f "$FAKE/lib/$lib" ]; then
+        echo "FAIL T13 fixture: arm-resume.sh hard-sources lib/$lib but the fake tree does not copy it -- add it to the copy loop above"
+        FAILED=$((FAILED + 1))
+    fi
+done
 HO13="$HANDOVER_DIR/HIMMEL-856-test/next-session-13.md"
 printf -- '---\nsession_kind: test\n---\n# HIMMEL-856 t13 handover\n' > "$HO13"
 out=$(bash "$FAKE/handover/arm-resume.sh" --time "$(future_time)" --handover "$HO13" --dry-run 2>&1)

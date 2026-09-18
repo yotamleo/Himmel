@@ -168,6 +168,14 @@ CLAUDE_END_ONLY=(
   session-run-hook.ts       # deliberate: the session-runs census is Claude-scoped, and the
                             # Codex adapter resolves scripts/hooks/<name>.sh only - a bun .ts
                             # entrypoint has no adapter shape (HIMMEL-2021).
+  stop-console-idle-guard.sh # deliberate (HIMMEL-3144): console detection reads
+                             # queue-lock.sh's persisted token, keyed on
+                             # CLAUDE_CODE_SESSION_ID -- a Claude Code-specific env
+                             # var the Codex lane never sets -- and the console
+                             # kit (tick.sh, ACTION ZERO) this guard exists to
+                             # enforce is itself Claude-only (console-kit/tick.sh's
+                             # own header: "Linux-only... Bash 3.2-compatible" with
+                             # no Codex wiring). Not ported.
 )
 
 echo "== codex hook inventory parity =="

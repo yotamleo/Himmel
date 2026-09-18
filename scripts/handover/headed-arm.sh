@@ -308,34 +308,52 @@
 # failure mode; only a caller that sets HEADED_ARM_RECORDER=1 pays for the
 # extra tty layer.
 #
-# --role (HIMMEL-2975): an optional leading `--role relay|judge` flag, ahead
-# of the positionals, for the console arm path only. `judge` clears
-# HIMMEL_CONSOLE_RELAY from the child env (so a judge console never inherits
-# a relay marker from whatever armed it) and stamps `role=judge` on the
-# `armed:` log line. `relay` refuses outright (exit 2): a relay is a LEG,
-# armed via headed-arm-leg.sh --relay (Task 25, #752), never through this
-# console-oriented launcher. Omitting --role keeps today's behaviour byte-
-# identical (`role=unsplit` on the log line, no env change).
+# --role (HIMMEL-2975, renamed HIMMEL-3133): an optional leading `--role
+# relay|console` flag, ahead of the positionals, for the console arm path
+# only. `console` clears HIMMEL_CONSOLE_RELAY from the child env (so a
+# console session never inherits a relay marker from whatever armed it) and
+# stamps `role=console` on the `armed:` log line. `relay` refuses outright
+# (exit 2): a relay is a LEG, armed via headed-arm-leg.sh --relay (Task 25,
+# #752), never through this console-oriented launcher. Omitting --role keeps
+# today's behaviour byte-identical (`role=unsplit` on the log line, no env
+# change).
+#
+# --dry-run (HIMMEL-3140): prints the resolved argv this would hand to
+# konsole, plus the env it would apply, and exits 0 -- BEFORE the
+# signal/deadline wait loop, the dedup pgrep scan, the claim lock, or konsole
+# are ever touched. Every usage/argument validation below (usage-arity,
+# --role, context, the placeholder-name refusal, the NAME/DEADLINE shape
+# checks, and konsole/pgrep PATH availability) still runs first and can still
+# exit non-zero -- --dry-run only skips the parts that actually cost a real
+# launch. WHY: proving this launcher accepts a flag or a resolved argv used
+# to mean a REAL billed konsole+claude launch, twice (N279, N13-of-3133) --
+# second occurrence, structural seam.
 set -u
 
+usage() {
+    echo "usage: headed-arm.sh [--dry-run] [--role relay|console] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model] [context: 1m|standard]" >&2
+}
+
 ROLE=""
+DRY_RUN=0
 while :; do
     case "${1:-}" in
+        --dry-run) DRY_RUN=1; shift ;;
         --role)
             if [ "$#" -lt 2 ]; then
-                echo "usage: headed-arm.sh [--role relay|judge] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model] [context: 1m|standard]" >&2
+                usage
                 exit 2
             fi
             ROLE="$2"
             case "$ROLE" in
-                judge) : ;;
+                console) : ;;
                 relay)
                     echo "headed-arm.sh: a relay is a leg: launch it with headed-arm-leg.sh --relay" >&2
                     exit 2
                     ;;
                 *)
-                    echo "usage: headed-arm.sh [--role relay|judge] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model] [context: 1m|standard]" >&2
-                    echo "headed-arm.sh: --role must be relay or judge, got: $ROLE" >&2
+                    usage
+                    echo "headed-arm.sh: --role must be relay or console, got: $ROLE" >&2
                     exit 2
                     ;;
             esac
@@ -346,38 +364,47 @@ while :; do
 done
 
 if [ "$#" -lt 5 ]; then
-    echo "usage: headed-arm.sh [--role relay|judge] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model] [context: 1m|standard]" >&2
+    usage
     exit 2
 fi
 
-NAME="$1"; DOC="$2"; SIGNAL="$3"; DEADLINE="$4"; LOG="$5"; MODEL="${6:-claude-fable-5-1}"
-# HIMMEL-2973: --context resolution, arming-time only (see the header
-# comment above). Defaults to `standard` (--autocompact 200000): the console
-# arm path is the largest cache-read cost driver on the fleet (2026-09-12
-# cost audit), so 1m is now an explicit operator opt-in via CONSOLE_CONTEXT=1m
-# in the LAUNCHING shell, never the bare default. $#-ge 7 (not just
-# "${7:-}" non-empty) is what distinguishes an explicit empty-string 7th
-# positional from "omitted" for the log line below -- nothing currently
-# passes an empty string here, but the distinction costs nothing and matches
-# how arm-resume.sh tells explicit from default.
+# HIMMEL-2975 T6: resolved from $0, NOT $HEADED_ARM_REPO -- tests point that
+# override at a synthetic tmp repo with no scripts/lib of its own, and this
+# script's own source location never moves with it.
+. "$(cd "$(dirname "$0")" && pwd)/../lib/console-context.sh"
+
+# HIMMEL-3079: the console parent defaults to Opus (default parent tier);
+# Fable is the escalation target, reached only via an explicit [model].
+NAME="$1"; DOC="$2"; SIGNAL="$3"; DEADLINE="$4"; LOG="$5"; MODEL="${6:-claude-opus-5}"
+# HIMMEL-2973 (default re-pinned by HIMMEL-2975 T6, resolution now shared
+# via scripts/lib/console-context.sh): --context resolution, arming-time
+# only (see the header comment above). Defaults to `standard`
+# (--autocompact 200000): the console arm path is the largest cache-read
+# cost driver on the fleet (2026-09-12 cost audit), so 1m is now an explicit
+# operator opt-in via CONSOLE_CONTEXT=1m in the LAUNCHING shell, never the
+# bare default. $#-ge 7 (not just "${7:-}" non-empty) is what distinguishes
+# an explicit empty-string 7th positional from "omitted" for the log line
+# below -- nothing currently passes an empty string here, but the
+# distinction costs nothing and matches how arm-resume.sh tells explicit
+# from default. This launcher is always console-class (is_console=1) --
+# it has no non-console callers, unlike arm-resume.sh's handover-name test.
 if [ "$#" -ge 7 ]; then
     CONTEXT="$7"
     _headed_context_source="positional"
-elif [ "${CONSOLE_CONTEXT:-}" = "1m" ]; then
-    CONTEXT="1m"
-    _headed_context_source="CONSOLE_CONTEXT=1m"
 else
-    CONTEXT="standard"
-    _headed_context_source="default"
+    console_context_default 1 "${CONSOLE_CONTEXT:-}"
+    CONTEXT="$CONSOLE_CONTEXT_RESOLVED_MODE"
+    if [ "$CONSOLE_CONTEXT_RESOLVED_SOURCE" = "console-context-env" ]; then
+        _headed_context_source="CONSOLE_CONTEXT=1m"
+    else
+        _headed_context_source="default"
+    fi
 fi
-case "$CONTEXT" in
-    1m|standard) ;;
-    *)
-        echo "usage: headed-arm.sh [--role relay|judge] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model] [context: 1m|standard]" >&2
-        echo "headed-arm: context must be 1m or standard, got: $CONTEXT" >&2
-        exit 2
-        ;;
-esac
+if ! console_context_valid "$CONTEXT"; then
+    usage
+    echo "headed-arm: context must be 1m or standard, got: $CONTEXT" >&2
+    exit 2
+fi
 # HIMMEL-2973: 1m is an explicit operator opt-in -- refuse before the claim
 # lock or konsole is ever touched (same refusal shape as the HIMMEL-2779
 # leg-side REQUIRED_AUTOCOMPACT check below) unless CONSOLE_CONTEXT=1m was
@@ -385,25 +412,22 @@ esac
 # check already passed (the `elif` above only reaches 1m when it did), so
 # this only ever fires for an explicit positional `1m` without the env.
 if [ "$CONTEXT" = "1m" ] && [ "${CONSOLE_CONTEXT:-}" != "1m" ]; then
-    echo "usage: headed-arm.sh [--role relay|judge] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model] [context: 1m|standard]" >&2
+    usage
     echo "headed-arm: refusing 1m context: set CONSOLE_CONTEXT=1m in the launching shell to opt in; omit [context] or pass standard for the --autocompact 200000 default." >&2
     exit 2
 fi
-# Fable-family match (matched by substring, same idiom arm-resume.sh's
-# _arm_model_is_fable uses) -- the default MODEL here IS Fable, so the
-# common path through this script hits this branch every time.
+# Fable-family match (shared with arm-resume.sh via console_context_model_is_fable)
+# -- only an explicit Fable [model] takes this branch now (the default MODEL
+# is Opus, HIMMEL-3079).
 _headed_model_is_fable=0
-case "$(printf '%s' "$MODEL" | tr '[:upper:]' '[:lower:]')" in
-    *fable*) _headed_model_is_fable=1 ;;
-esac
+if console_context_model_is_fable "$MODEL"; then
+    _headed_model_is_fable=1
+fi
 # Strip any [1m] suffix the caller may have typed into MODEL directly, so
-# `standard` can guarantee its absence and `1m` never doubles it. `[`/`]`
-# escaped so this is a literal-suffix match, not a `[1m]` character class.
-case "$MODEL" in
-    *\[1m\]) MODEL="${MODEL%\[1m\]}" ;;
-esac
+# `standard` can guarantee its absence and `1m` never doubles it.
+MODEL="$(console_context_strip_1m_suffix "$MODEL")"
+AUTOCOMPACT="$(console_context_autocompact "$CONTEXT")"
 if [ "$CONTEXT" = "1m" ]; then
-    AUTOCOMPACT="auto"
     if [ "$_headed_model_is_fable" -eq 1 ]; then
         # Measured fact: the CLI silently strips [1m] for Fable-family
         # models -- never claim to have set 1m context on one.
@@ -413,7 +437,6 @@ if [ "$CONTEXT" = "1m" ]; then
         CONTEXT_REASON="context=1m ($_headed_context_source); model=$MODEL"
     fi
 else
-    AUTOCOMPACT="200000"
     CONTEXT_REASON="context=standard ($_headed_context_source); model=$MODEL"
 fi
 KONSOLE="${KONSOLE_CMD:-konsole}"
@@ -426,13 +449,14 @@ LAUNCHER_ENV="${HEADED_ARM_LAUNCHER_ENV:-}"
 RECORDER="${HEADED_ARM_RECORDER:-0}"
 REQUIRED_AUTOCOMPACT="${HEADED_ARM_REQUIRED_AUTOCOMPACT:-}"
 unset HEADED_ARM_REQUIRED_AUTOCOMPACT
-# HIMMEL-2975: a judge console must never inherit a relay marker from
-# whatever armed it -- ROLE_ENV_UNSET is an extra `-u` token added to BOTH
-# konsole launch branches' env -u list below, unconditional (not merely "if
-# set"), so a HIMMEL_CONSOLE_RELAY already present in the arming shell's own
-# env is cleared the same way CLAUDE_CODE_CHILD_SESSION etc already are.
+# HIMMEL-2975 (renamed HIMMEL-3133): a console session must never inherit a
+# relay marker from whatever armed it -- ROLE_ENV_UNSET is an extra `-u`
+# token added to BOTH konsole launch branches' env -u list below,
+# unconditional (not merely "if set"), so a HIMMEL_CONSOLE_RELAY already
+# present in the arming shell's own env is cleared the same way
+# CLAUDE_CODE_CHILD_SESSION etc already are.
 ROLE_ENV_UNSET=""
-if [ "$ROLE" = "judge" ]; then
+if [ "$ROLE" = "console" ]; then
     ROLE_ENV_UNSET="-u HIMMEL_CONSOLE_RELAY"
 fi
 LAUNCH_ARGV=("$LAUNCHER" --model "$MODEL" --autocompact "$AUTOCOMPACT" -n "$NAME" "load $DOC and continue")
@@ -503,6 +527,19 @@ case "$NAME" in
     */*) echo "headed-arm: session name must not contain '/': '$NAME'" >&2; exit 2 ;;
 esac
 
+# HIMMEL-3140: no legitimate caller (console.sh, headed-arm-leg.sh) ever
+# passes one of the usage string's own placeholder tokens - both build a
+# real session name first. The likeliest way one of these reaches NAME is a
+# human copy-pasting the usage line verbatim (including the angle brackets)
+# while hand-testing --dry-run. Refuse loudly rather than let a --dry-run
+# report look like a genuine one for args nobody meant to pass.
+case "$NAME" in
+    name|session|'<session-name>')
+        echo "headed-arm: '$NAME' looks like a placeholder copied from the usage string, not a real session name - check what you're actually invoking" >&2
+        exit 2
+        ;;
+esac
+
 case "$DEADLINE" in
     ''|*[!0-9]*) echo "headed-arm: deadline must be an epoch second, got '$DEADLINE'" >&2; exit 2 ;;
 esac
@@ -517,6 +554,25 @@ fi
 if ! command -v "$PGREP" >/dev/null 2>&1; then
     echo "headed-arm: no '$PGREP' on PATH - dedup needs pgrep (procps) to tell whether a session named $NAME is already running; refusing rather than risk launching a duplicate (HIMMEL-2545)" >&2
     exit 4
+fi
+
+# HIMMEL-3140: everything above this point is pure argument resolution and
+# validation (usage-arity, --role, context, the placeholder-name refusal,
+# NAME/DEADLINE shape, konsole/pgrep PATH availability) - none of it writes
+# to $LOG, touches the claim lock, or execs anything. Report the resolved
+# argv and env here and exit, before the ONLY parts of this script that cost
+# a real launch: the signal/deadline wait loop, the dedup pgrep scan, the
+# claim lock, and konsole itself.
+if [ "$DRY_RUN" -eq 1 ]; then
+    printf 'headed-arm: would exec: %s\n' "$(printf '%q ' "${LAUNCH_ARGV[@]}")"
+    printf 'headed-arm: env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID%s CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 HIMMEL_INITIATIVE=%s ARMAUTOMERGE=1%s\n' \
+        "${ROLE_ENV_UNSET:+ $ROLE_ENV_UNSET}" "$INIT" "${LAUNCHER_ENV:+ $LAUNCHER_ENV}"
+    printf 'headed-arm: name=%s doc=%s signal=%s deadline=%s log=%s role=%s\n' \
+        "$NAME" "$DOC" "$SIGNAL" "$DEADLINE" "$LOG" "${ROLE:-unsplit}"
+    printf 'headed-arm: %s (autocompact=%s)\n' "$CONTEXT_REASON" "$AUTOCOMPACT"
+    printf 'headed-arm: launcher=%s recorder=%s konsole=%s pgrep=%s repo=%s\n' \
+        "$LAUNCHER" "$RECORDER" "$KONSOLE" "$PGREP" "$REPO"
+    exit 0
 fi
 
 echo "$(date +%F_%T) armed: name=$NAME doc=$DOC signal=$SIGNAL deadline=$DEADLINE role=${ROLE:-unsplit}" >> "$LOG"

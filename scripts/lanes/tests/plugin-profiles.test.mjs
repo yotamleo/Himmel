@@ -942,6 +942,22 @@ test('console-relay resolves via resolveProfileByName/resolveProfile to the floo
   assert.deepEqual(mcpServersForProfile(REG, 'console-relay'), []);
 });
 
+// ── console-judge (HIMMEL-3133) ─────────────────────────────────────────────
+// Plugin-less profile for a judge session ("the judge is a leg", design
+// §3.2), launched via headed-arm-leg.sh --judge. Not in LEG_PROFILES: unlike
+// console-relay it carries no gateAllow — a judge's gate-shaped calls take
+// the ordinary classifier path — so it emits no permissions.allow at all.
+test('console-judge resolves via resolveProfileByName/resolveProfile to the floor plus qmd, no gateAllow', () => {
+  const settings = resolveProfileByName('console-judge', {}, REGISTRY_PATH);
+  const enabled = Object.entries(settings.enabledPlugins).filter(([, v]) => v).map(([id]) => id);
+  assert.deepEqual(enabled.sort(), [...REG.floor].sort());
+  assert.deepEqual(resolveProfile(REG, 'console-judge').enabledPlugins, settings.enabledPlugins);
+  assert.deepEqual(REG.profiles['console-judge'].enable, []);
+  assert.deepEqual(mcpServersForProfile(REG, 'console-judge'), ['qmd']);
+  assert.ok(!Object.hasOwn(settings, 'permissions'), 'console-judge must not emit gateAllow permissions');
+  assert.ok(!REG.profiles['console-judge'].gateAllow, 'console-judge must not set gateAllow');
+});
+
 test('validateRegistry: the shipped registry (console-relay included) validates clean', () => {
   assert.deepEqual(validateRegistry(REG), []);
 });

@@ -642,7 +642,7 @@ scripts/gemini/test-invoke.sh        # needs the gemini-cli binary
 scripts/cr/test-hermes-critic.sh     # integration: needs the hermes runtime (no keys on CI) — VM e2e covers it
 scripts/handover/test-hop.sh         # integration: needs a live 'claude' (--print relaunch) — VM e2e covers it
 scripts/handover/test-resume-armed.sh  # integration: needs the bun runtime + armed-resume flow — VM e2e covers it
-scripts/handover/test-arm-resume.sh  # timing-heavy Windows scheduler lifecycle suite: measured 2775s standalone-green (637/0/1, HIMMEL-2254) against the runner's 600s per-suite default (600s since HIMMEL-2233, not the 180s this entry used to cite); runnable individually, no VM e2e coverage
+scripts/handover/test-arm-resume.sh  # HIMMEL-3132: superseded by its two --only wrappers below, not a VM-coverage gap — per-section timing (2026-09-18) found the 2775s runtime (637/0/1, HIMMEL-2254) concentrated almost entirely in one section (real wall-clock wait loops); the other 91 sections (~200s) run per-PR via test-arm-resume-fast.sh and the slow section runs nightly via test-arm-resume-1879.sh (SUITE_TIER_DEFAULT extended below). This monolith stays skipped only so a bare run doesn't duplicate both wrappers' coverage; runnable individually
 scripts/luna/test-pipeline-cadence.sh  # integration: drives a live 'claude' (--settings fragment) — VM e2e covers it
 scripts/statusline/test-usage-fetch-scheduled.sh  # needs network + OAuth credential; GATE probe run manually (HIMMEL-1841)
 scripts/test-plugin-test.sh          # integration: self-bootstraps a plugin's deps over npm/network — VM e2e covers it
@@ -686,6 +686,7 @@ SUITE_TIER_DEFAULT="
 scripts/test-check-ci.sh  extended  # measured 559s idle 2026-08-27 (>300s rule)
 scripts/handover/test-arm-resume-identity.sh  extended  # measured 814s idle 2026-08-27, 802s repro (>300s rule)
 scripts/handover/test-arm-resume-queue-lock.sh  extended  # measured 307s idle 2026-08-27 (>300s rule)
+scripts/handover/test-arm-resume-1879.sh  extended  # HIMMEL-3132: measured 843s idle 2026-09-18, real wall-clock wait loops with no shortcut (>300s rule)
 "
 SUITE_TIER="${SUITE_TIER:-$SUITE_TIER_DEFAULT}"
 SUITE_TIER_MODE="${SUITE_TIER_MODE:-all}"

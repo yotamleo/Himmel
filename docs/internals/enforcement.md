@@ -2596,6 +2596,10 @@ Second drift on prose → structural. Denies with a message naming SendMessage
 to the console as the replacement. Workflow nudge, not a security fence: fails
 open on missing `jq`, malformed, or empty stdin so it never locks an operator
 session out of the tool. Inert until HIMMEL-2919's launcher export lands.
+A `--judge` leg (HIMMEL-3133, design §3.2 "the judge is a leg") is denied
+identically — same `HIMMEL_CONSOLE_LEG=1`, no separate judge marker — and
+correctly so: a judge is read-only and evidence-gathering, so it has no one
+to ask either.
 
 ### `read-clamp.sh` — read-clamp PreToolUse hook (HIMMEL-2993)
 
@@ -2623,7 +2627,11 @@ stdin, or an uncreatable runtime dir (state stays unwritten, the call is
 allowed) — this hook saves tokens, it does not protect anything. Escape hatch:
 `HIMMEL_READ_CLAMP_OK=1` in the launching shell allows one session past the
 clamp (e.g. re-reading a file after an external edit invalidated a recorded
-range), logged to stderr each time it fires. Joins the existing
+range), logged to stderr each time it fires. `headed-arm-leg.sh --judge`
+(HIMMEL-3133) takes the other lever instead — it raises the whole-file limit
+itself (`HIMMEL_READ_CLAMP_LINES=4000`) rather than bypassing the clamp,
+since independent reading is a judge's actual job; the repeat-read half of
+the clamp is untouched. Joins the existing
 `block-read-secrets.sh` chain on both the `Read|Grep` and `Bash` PreToolUse
 matchers — right after it, so a denied secret read never gets clamp-recorded.
 
@@ -3850,7 +3858,7 @@ opposite ways — this script's pin NARROWS what a human-only,
 `CLAUDECODE`-self-refusing chokepoint may touch, while merge-on-green's WIDENS a
 boundary an agent runs under.
 `merge-on-green.sh` exits 17 (`policy-refused`) on a fresh pre-merge `BLOCKED` + `REVIEW_REQUIRED` policy read after green checks or an explicit GitHub base-branch policy rejection at merge time; if no automation identity can satisfy the required review, the merge is a human admin action; on this repo the operator relaxed `protect-main` on 2026-09-09 (HIMMEL-2887).
-It also exits 17 (`policy-refused phase=console-go`) when `HIMMEL_CONSOLE_LEG` is set — exported by `console-kit/headed-arm-leg.sh` into every console-spawned leg — and `<handover_root>/.locks/go/<pr>.<certified head sha>` is missing or does not carry `head=<that sha>`; only the console writes it, via `console-kit/go.sh` (which refuses under the marker), and `scripts/chokepoints.json` registers the marker so a per-call `HIMMEL_CONSOLE_LEG=` prefix is denied (HIMMEL-2919).
+It also exits 17 (`policy-refused phase=console-go`) when `HIMMEL_CONSOLE_LEG` is set — exported by `console-kit/headed-arm-leg.sh` into every console-spawned leg — and `<handover_root>/.locks/go/<pr>.<certified head sha>` is missing or does not carry `head=<that sha>`; only the console writes it, via `console-kit/go.sh` (which refuses under the marker), and `scripts/chokepoints.json` registers the marker so a per-call `HIMMEL_CONSOLE_LEG=` prefix is denied (HIMMEL-2919). A `--judge` leg (HIMMEL-3133) is the same `HIMMEL_CONSOLE_LEG=1` process, so it is blocked from writing its own `GO` by this exact same gate — no separate `HIMMEL_CONSOLE_JUDGE` marker was added; "the judge is a leg" (design §3.2) means Guard E already covered it.
 That is why merge-on-green deliberately does NOT
 reuse this script's `CR_PUBLIC_REPO`: an env-overridable constant costs nothing
 on a narrowing pin and would be a widening seam on the other. Supports

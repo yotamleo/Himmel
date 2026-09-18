@@ -864,6 +864,26 @@ test('lifecycle concatenates every member body in chain order', () => {
   });
 });
 
+// HIMMEL-3134: a member that never reads stdin (every advisory body here is a
+// bare `printf`) can exit before OUR write of the shared `input` payload
+// finishes landing in its pipe. That write then gets EPIPE even though the
+// member ran to completion and its stdout was fully captured — the same
+// recoverable case `isRecoverableEpipe` exists to absorb in the non-lifecycle
+// loop below (:589). The lifecycle loop's `if (result.error)` at :511 has no
+// such guard, so a recoverable EPIPE is treated as a launch failure and the
+// member's stdout is dropped via `continue`. A payload past the OS pipe
+// buffer (64 KiB on Linux) makes the child-exits-before-write-finishes race
+// deterministic instead of load-dependent, reproducing CI's flaky drop
+// on demand.
+test('lifecycle keeps a member\'s stdout when writing its stdin EPIPEs (HIMMEL-3134)', () => {
+  withChain((dir) => {
+    const bigInput = 'x'.repeat(200_000);
+    const result = runLifecycle(dir, ['adv1.sh', 'adv2.sh', 'adv3.sh'], bigInput);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, 'ADV-ONE\nADV-TWO\nADV-THREE\n');
+  });
+});
+
 test('lifecycle keeps going past a member that exits 2, and still exits 0', () => {
   withChain((dir) => {
     const result = runLifecycle(dir, ['adv1.sh', 'deny-exit2.sh', 'adv3.sh']);

@@ -26,6 +26,13 @@ env equivalents: DOC TOKEN LEGS HANDOVER_DIR REPO
 Relative DOC/LEGS resolve under the handover root; include the bucket prefix
 when HANDOVER_DIR names a global state root.
 
+--legs accepts space- and/or comma-separated leg docs -- both spellings
+produce identical output: --legs "N1.md N2.md" and --legs "N1.md,N2.md" are
+the same list. A --legs entry that does not resolve to a readable file prints
+a "tick: no such leg doc: <path>" warning on stderr and is reported as
+NOTFOUND in legs=, never as MISSING -- MISSING is reserved for a lock that is
+actually gone.
+
 --burn adds a per-leg context-burn field (first-turn/avg-ctx, via
 scripts/lanes/leg-burn.sh) for every doc in --legs. OPT-IN because it scans
 the Claude Code transcript root, which a plain tick must never do: a tick runs
@@ -79,10 +86,20 @@ resolve_doc() {
 }
 
 leg_label() {
+    # HIMMEL-3145: two label spellings share this one namespace. Legacy
+    # consoles (archived docs) named a leg <TICKET>-legN<k>-<slug>; every
+    # console since HIMMEL-2975 names one <TICKET>-N<k>-<slug> (no "-leg"
+    # substring at all -- docs/handover/console-template.md:104 is the
+    # contract, and this must extract the same N<k> token the template
+    # tells a console to write in its `## Live state` legs: line, or
+    # livestate= below compares two namespaces that never intersect.
     local stem="$1" label
     stem="${stem##*/}"
     stem="${stem%.md}"
     label="$(printf '%s\n' "$stem" | sed -n 's/.*-leg\(N[0-9][0-9]*\).*/\1/p')"
+    if [ -z "$label" ]; then
+        label="$(printf '%s\n' "$stem" | sed -n 's/^[A-Za-z][A-Za-z]*-[0-9][0-9]*-\(N[0-9][0-9]*\).*/\1/p')"
+    fi
     [ -n "$label" ] || label="$stem"
     printf '%s' "$label" | tr -c 'A-Za-z0-9_.-' '_'
 }
@@ -98,8 +115,9 @@ csv_add() {
 clock="$(date +%H:%M 2>/dev/null)" || clock="??:??"
 
 hb=skip
-if [ -n "$DOC" ] && [ -n "$TOKEN" ]; then
-    console_doc="$(resolve_doc "$DOC")"
+console_doc=""
+[ -n "$DOC" ] && console_doc="$(resolve_doc "$DOC")"
+if [ -n "$console_doc" ] && [ -n "$TOKEN" ]; then
     if bash "$REPO/scripts/handover/queue-lock.sh" heartbeat "$console_doc" "$TOKEN" >/dev/null 2>&1; then
         hb=ok
     else
@@ -107,12 +125,31 @@ if [ -n "$DOC" ] && [ -n "$TOKEN" ]; then
     fi
 fi
 
+# HIMMEL-3130: --legs accepts space- and/or comma-separated entries. `for leg
+# in $LEGS` word-splits on IFS whitespace only, so a comma-joined value was
+# silently one iteration over one nonexistent path. Normalize commas to
+# spaces once so both loops below (this one and the --burn loop) split
+# identically regardless of which separator was used.
+LEGS_SPLIT="${LEGS//,/ }"
+
 legs_summary=""
 tails_summary=""
-for leg in $LEGS; do
+# HIMMEL-3145: the census names the -n session the console actually passed
+# to `claude`, which is the leg doc's stem minus a -RESUME suffix (the same
+# string the --burn loop below matches on) -- collect it here so procs=/
+# models= can count against what THIS console dispatched instead of
+# guessing from a "-leg" spelling.
+leg_names=""
+for leg in $LEGS_SPLIT; do
     leg_doc="$(resolve_doc "$leg")"
     label="$(leg_label "$leg")"
-    lock_status=MISSING
+    leg_stem="${leg##*/}"; leg_stem="${leg_stem%.md}"; leg_stem="${leg_stem%-RESUME}"
+    leg_names="$(csv_add "$leg_names" "$leg_stem")"
+    # HIMMEL-3130: NOTFOUND (file does not resolve) is a distinct status from
+    # MISSING. MISSING means "the lock is gone" -- exactly the signal a
+    # console reads as "reclaim this leg's lock" -- and must never be used for
+    # "I could not find the file", which is a warning, not a lock verdict.
+    lock_status=NOTFOUND
     tail_status="?"
     if [ -f "$leg_doc" ]; then
         lock_out="$(bash "$REPO/scripts/handover/queue-lock.sh" status "$leg_doc" 2>&1)" || true
@@ -126,12 +163,65 @@ for leg in $LEGS; do
         tail_status="$(grep -E '^- .*(LIVE|FINDING|READY|BLOCKED|HALTED|WRAPPED)' "$leg_doc" 2>/dev/null \
             | tail -n 1 | grep -Eo '(LIVE|FINDING|READY|BLOCKED|HALTED|WRAPPED)' | head -n 1)" || tail_status=""
         [ -n "$tail_status" ] || tail_status="?"
+    else
+        printf 'tick: no such leg doc: %s\n' "$leg_doc" >&2
     fi
     legs_summary="$(csv_add "$legs_summary" "$label:$lock_status")"
     tails_summary="$(csv_add "$tails_summary" "$label:$tail_status")"
 done
 [ -n "$legs_summary" ] || legs_summary=none
 [ -n "$tails_summary" ] || tails_summary=none
+
+# HIMMEL-2973 S1: cross-reference the console doc's own `## Live state`
+# `legs:` line against the lock status just computed above (legs_summary),
+# the same way ceiling_summary below cross-references argv against a
+# separate invariant. "skip" (no --doc given, same as hb=skip above) and
+# "unknown" (doc given but no `## Live state`/`legs:` line found -- e.g. a
+# pre-HIMMEL-2973 doc) are both distinct from "ok": neither says the state
+# agrees, only that there was nothing to disagree about.
+list_has() {  # list_has <needle> <word> [word...]
+    local needle="$1" w
+    shift
+    for w in "$@"; do
+        [ "$w" = "$needle" ] && return 0
+    done
+    return 1
+}
+
+livestate_summary=skip
+if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
+    live_state_body="$(awk '
+        $0 == "## Live state" { f = 1; next }
+        f && /^## / { exit }
+        f { print }
+    ' "$console_doc")"
+    legs_line="$(printf '%s\n' "$live_state_body" | grep '^legs:' | head -n 1)"
+    if [ -n "$legs_line" ]; then
+        # Each leg is one backtick span `<label>:<nonce>:<lock-token>:<pid>`
+        # (Delta 2's format) -- take the label, the text before the first
+        # colon inside the span.
+        # shellcheck disable=SC2016  # backtick span pattern, not a shell expansion
+        live_legs="$(printf '%s\n' "$legs_line" | grep -oE '`[A-Za-z0-9_]+:[^`]*`' | sed -E 's/^`([A-Za-z0-9_]+):.*`$/\1/')"
+        held_legs="$(printf '%s\n' "$legs_summary" | tr ',' '\n' | awk -F: '$2 == "FRESH" || $2 == "STALE" { print $1 }')"
+        drift_csv=""
+        for l in $live_legs; do
+            # shellcheck disable=SC2086  # word-split on purpose: list_has takes "$@"
+            list_has "$l" $held_legs || drift_csv="$(csv_add "$drift_csv" "$l")"
+        done
+        for l in $held_legs; do
+            # shellcheck disable=SC2086  # word-split on purpose: list_has takes "$@"
+            list_has "$l" $live_legs || drift_csv="$(csv_add "$drift_csv" "$l")"
+        done
+        drift_csv="$(printf '%s\n' "$drift_csv" | tr ',' '\n' | awk 'NF' | sort -u | tr '\n' ',' | sed 's/,$//')"
+        if [ -n "$drift_csv" ]; then
+            livestate_summary="DRIFT:${drift_csv}"
+        else
+            livestate_summary=ok
+        fi
+    else
+        livestate_summary=unknown
+    fi
+fi
 
 # HIMMEL-2999: name/model come from claude_sessions() (real
 # /proc/<pid>/cmdline argv, NUL-delimited), never a flattened `pgrep -af`
@@ -144,9 +234,15 @@ sessions_rc=$?
 # HIMMEL-3002: rc=3 means the census itself succeeded but one or more live
 # sessions had an unreadable cmdline -- the readable rows above are still
 # trustworthy, so keep them (unlike a real scan failure, rc>1 and not 3,
-# where the whole table is suspect and gets discarded below).
-if [ "$sessions_rc" -gt 1 ] && [ "$sessions_rc" -ne 3 ]; then
+# where the whole table is suspect and gets discarded below). CAVEAT
+# (claude-sessions.sh, same ticket): pgrep's own fatal-error rc is ALSO 3,
+# forwarded with no output printed first -- ceiling-conformance.sh already
+# tells the two apart by whether sessions_out is empty at rc=3; mirror that
+# here so census_failed below (HIMMEL-3145) is not blind to it.
+census_failed=0
+if [ "$sessions_rc" -gt 1 ] && { [ "$sessions_rc" -ne 3 ] || [ -z "$sessions_out" ]; }; then
     sessions_out=""
+    census_failed=1
 fi
 sessions_lossy=0
 case "$sessions_out" in
@@ -157,21 +253,37 @@ if [ "$sessions_rc" -eq 3 ]; then
     unreadable_n="$(printf '%s\n' "$sessions_out" | grep -c '^# unreadable ')"
 fi
 
-procs="$(printf '%s\n' "$sessions_out" | awk -F'\t' '
+# HIMMEL-3145: count sessions the console actually dispatched (leg_names,
+# built from --legs above) against the census name, not a "-leg" spelling
+# guess -- a filter that silently matches nothing must never render as 0.
+leg_names_wrapped=",${leg_names},"
+if [ "$census_failed" -eq 1 ] || [ -z "$leg_names" ]; then
+    # A field that cannot be computed must say so (HIMMEL-3130 NOTFOUND-vs-
+    # MISSING, HIMMEL-3002 unreadable=): procs=0 and procs=unknown must be
+    # distinguishable, or a real scan failure reads as "no legs running".
+    # An empty --legs is the same case: there is no dispatch set to count
+    # against, so "0" would be a bare guess (and, worse, a matched-nothing
+    # filter would print it as a clean 0 -- ",,".index(",name,") is always
+    # 0), not a real count. procs= is only ever a count of the dispatched
+    # set; without one, it cannot be computed either.
+    procs=unknown
+else
+    procs="$(printf '%s\n' "$sessions_out" | awk -F'\t' -v names="$leg_names_wrapped" '
 $1 ~ /^#/ { next }
 NF < 4 { next }
 {
     name = $2
-    if (name !~ /^(HIMMEL|LUNA)-/) next
-    if (name !~ /-leg/) next
-    if (name ~ /-console$/) next
+    if (name == "") next
+    if (index(names, "," name ",") == 0) next
     n++
 }
 END { print n+0 }')"
-# HIMMEL-3002: a degraded scan (rc=3) still counted every readable row above
-# -- append how many pids it could NOT read so the console sees the table is
-# incomplete rather than reading procs= as a clean, complete count.
-[ "$unreadable_n" -gt 0 ] && procs="${procs},unreadable=${unreadable_n}"
+    # HIMMEL-3002: a degraded scan (rc=3) still counted every readable row
+    # above -- append how many pids it could NOT read so the console sees
+    # the table is incomplete rather than reading procs= as a clean, complete
+    # count.
+    [ "$unreadable_n" -gt 0 ] && procs="${procs},unreadable=${unreadable_n}"
+fi
 
 # HIMMEL-2976: same session table and leg filter as procs= above, bucketed by
 # the tier its real --model argv names (opus/fable cost materially more per
@@ -181,14 +293,19 @@ END { print n+0 }')"
 # no --model token at all buckets under "unknown" (codex-2, HIMMEL-2976 round
 # 1 CR) rather than falling out of every bucket while still counted in
 # procs=.
-models_summary="$(printf '%s\n' "$sessions_out" | awk -F'\t' '
+# HIMMEL-3145: same dispatched-name filter as procs= above, same
+# unknown-vs-empty distinction on a real census failure or an empty
+# dispatch set (no --legs -- see procs= above).
+if [ "$census_failed" -eq 1 ] || [ -z "$leg_names" ]; then
+    models_summary=unknown
+else
+    models_summary="$(printf '%s\n' "$sessions_out" | awk -F'\t' -v names="$leg_names_wrapped" '
 $1 ~ /^#/ { next }
 NF < 4 { next }
 {
     name = $2; model = $3
-    if (name !~ /^(HIMMEL|LUNA)-/) next
-    if (name !~ /-leg/) next
-    if (name ~ /-console$/) next
+    if (name == "") next
+    if (index(names, "," name ",") == 0) next
     if (model == "")             { c_unknown++ }
     else if (model ~ /^claude-opus-/)   c_opus++
     else if (model ~ /^claude-fable-/)  c_fable++
@@ -206,12 +323,13 @@ END {
     if (c_unknown > 0) out = out (out == "" ? "" : ",") "unknown:" c_unknown
     print out
 }')"
-[ -n "$models_summary" ] || models_summary=none
-# HIMMEL-2999: /proc absent (macOS, git-bash) degrades claude_sessions() to
-# the old flattened-line parse -- flag it inline (no space, so the tick line
-# stays space-delimited) rather than silently reporting a scan that could
-# again be spoofed by free-text argv.
-[ "$sessions_lossy" -eq 0 ] || models_summary="${models_summary}(lossy)"
+    [ -n "$models_summary" ] || models_summary=none
+    # HIMMEL-2999: /proc absent (macOS, git-bash) degrades claude_sessions()
+    # to the old flattened-line parse -- flag it inline (no space, so the
+    # tick line stays space-delimited) rather than silently reporting a scan
+    # that could again be spoofed by free-text argv.
+    [ "$sessions_lossy" -eq 0 ] || models_summary="${models_summary}(lossy)"
+fi
 
 # HIMMEL-2974: the same ps table, scanned for --autocompact drift against the
 # leg invariant headed-arm.sh:391 refuses to launch without. The script's own
@@ -288,6 +406,24 @@ if [ -n "$root" ] && [ -d "$root/inbox" ]; then
 fi
 [ -n "$inbox_summary" ] || inbox_summary=none
 
+# tick=ARMED|MISSING|UNKNOWN (HIMMEL-3144 D2): whether the periodic Monitor
+# call that is SUPPOSED to invoke this script every 60 min (the console
+# template's `## Monitors` tick row, armed in ACTION ZERO step 10) is
+# actually armed. F never armed it and its absence was invisible to F, to
+# this script, and to the handover -- the whole point of this field is to
+# stop that.
+# ponytail: this can only ever report UNKNOWN. A Monitor's armed/pending
+# state lives inside the Claude Code session process that armed it -- there
+# is no pidfile, `atq` entry, or lock on disk for it (unlike the `at_count`
+# scheduled-job census above, which reads real OS state). tick.sh runs as a
+# plain subprocess with no access to that in-session state, so ARMED/MISSING
+# cannot be told apart from here; faking either would be worse than saying
+# so. A console confirms the arm itself, in ACTION ZERO step 10's first
+# bullet -- this field exists so a HUMAN or a later script reading a run of
+# tick lines can see that no honest signal was available, rather than
+# silently assuming one of the other fields would have caught it.
+tick_status=UNKNOWN
+
 # --burn (HIMMEL-2830): what each leg is actually paying per API call. The
 # session name is the leg doc's stem without the -RESUME suffix - the same
 # string headed-arm-leg.sh passes to `claude -n`, which is what leg-burn.sh
@@ -295,7 +431,7 @@ fi
 # rather than failing the tick.
 burn_summary=""
 if [ "$burn" -eq 1 ]; then
-    for leg in $LEGS; do
+    for leg in $LEGS_SPLIT; do
         stem="${leg##*/}"; stem="${stem%.md}"; stem="${stem%-RESUME}"
         burn_label="$(leg_label "$leg")"
         burn_line="$(bash "$REPO/scripts/lanes/leg-burn.sh" "$stem" 2>/dev/null)" || burn_line=""
@@ -314,6 +450,7 @@ if [ "$verbose" -eq 1 ]; then
     printf 'TICK %s\n' "$clock"
     printf 'heartbeat: %s\n' "$hb"
     printf 'leg locks: %s\n' "$legs_summary"
+    printf 'livestate: %s\n' "$livestate_summary"
     printf 'leg processes: %s\n' "$procs"
     printf 'leg models: %s\n' "$models_summary"
     printf 'scheduled jobs: %s\n' "$at_count"
@@ -323,6 +460,7 @@ if [ "$verbose" -eq 1 ]; then
     printf 'fill: %s\n' "$fill"
     printf 'leg tails: %s\n' "$tails_summary"
     printf 'inbox size/cursor: %s\n' "$inbox_summary"
+    printf 'tick monitor: %s\n' "$tick_status"
     # Printed only under --burn, so a plain --verbose tick is unchanged. An if,
     # not a `[ ] &&` one-liner: this is the last statement of the branch, so a
     # false test would become the script's exit status.
@@ -330,13 +468,14 @@ if [ "$verbose" -eq 1 ]; then
         printf 'leg burn (first-turn/avg-ctx): %s\n' "$burn_summary"
     fi
 else
-    # The burn field is APPENDED only under --burn: a default tick line stays
-    # byte-identical to what every console already parses.
+    # `tick=` is always appended (HIMMEL-3144); `burn=` stays APPENDED only
+    # under --burn, after it, so a plain --verbose tick without --burn only
+    # ever gains the one new field.
     if [ "$burn" -eq 1 ]; then
-        printf 'TICK %s hb=%s legs=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s burn=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$burn_summary"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary"
     else
-        printf 'TICK %s hb=%s legs=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status"
     fi
 fi

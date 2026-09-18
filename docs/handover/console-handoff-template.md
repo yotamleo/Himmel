@@ -20,10 +20,14 @@ Send **`{{LETTER}} LIVE`** to the {{PREDECESSOR_LETTER}} console session
 
 ## In flight
 
-<One block per live leg: session name, model, ticket, worktree + branch, its
-brief path, its RETASK nonce, its queue-lock release token, its window pid,
-what it last reported, and what it owes next. A leg not listed here is not
-alive — the successor confirms with ListAgents regardless.>
+{{LIVE_STATE}}
+
+<Copied verbatim from the predecessor's `## Live state` (HIMMEL-2973 S1) —
+each leg's nonce, lock release token and pid are already there; do not
+retype them. Add here what Live state does not carry: each leg's model,
+ticket, worktree + branch, brief path, what it last reported and what it
+owes next. A leg not listed above is not alive — the successor confirms with
+ListAgents regardless.>
 
 ## Rulings made this shift
 

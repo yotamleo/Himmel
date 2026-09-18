@@ -551,10 +551,14 @@ _UCM_OLDPWD="$PWD"
 cd "$UCM_REPO" || true
 check_bounded block-unresolved-cr-merge Bash 2 "gh pr mer""ge 42 --squash" \
     "unresolved CodeRabbit threads block a merge" \
-    -u ARMAUTOMERGE -u CR_MERGE_GATE_OK GH_STUB_MODE=unresolved PATH="$UCM_BIN:$PATH"
+    -u ARMAUTOMERGE -u CR_MERGE_GATE_OK -u HIMMEL_CONSOLE_LEG GH_STUB_MODE=unresolved PATH="$UCM_BIN:$PATH"
+# HIMMEL-3142 -- HIMMEL_CONSOLE_LEG arms gate 3 (console-GO), which this
+# fixture never sets up a GO file for; an ambient truthy value here (the
+# suite's own launching shell may carry one) would refuse this allow-case
+# with "no console GO" before the CR gate under test even decides anything.
 check_bounded block-unresolved-cr-merge Bash 0 "gh pr mer""ge 42 --squash" \
     "a clean review allows the merge" \
-    -u ARMAUTOMERGE -u CR_MERGE_GATE_OK GH_STUB_MODE=clean PATH="$UCM_BIN:$PATH"
+    -u ARMAUTOMERGE -u CR_MERGE_GATE_OK -u HIMMEL_CONSOLE_LEG GH_STUB_MODE=clean PATH="$UCM_BIN:$PATH"
 cd "$_UCM_OLDPWD" || true
 
 # ── block-glm-external-writes.sh ─────────────────────────────────────────────

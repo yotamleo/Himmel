@@ -168,6 +168,13 @@
       "drop": ["pr-review-toolkit-himmel@himmel", "lean-skills@himmel"],
       "mcpServers": [],
       "contextBudget": 35000
+    },
+    "console-judge": {
+      "_comment": "HIMMEL-3133 / design §3.2: a judge session, launched via headed-arm-leg.sh --judge (\"the judge is a leg\"). drop removes the same two non-floor ids console-relay drops above (pr-review-toolkit-himmel@himmel, lean-skills@himmel) -- a judge reads and writes a verdict, it does not implement or ship. Deliberately no gateAllow, unlike console-relay: a judge's few gate-shaped calls (inbox-send.sh, queue-lock.sh, write-verdicts.sh) take the ordinary classifier path rather than being pre-approved wholesale -- its custody rule is \"transport is the disk\" (a verdict file), not a permission grant, so this name does NOT belong in plugin-profiles.mjs's LEG_PROFILES set (:29, its only reader) and that file is not touched for this profile. mcpServers names only qmd, same reasoning as leg-impl/telegram above: the one MCP tool a judge's evidence-gathering actually needs; graphify/obsidian-vault/context7 are USER-level servers a judge never touches.",
+      "enable": [],
+      "drop": ["pr-review-toolkit-himmel@himmel", "lean-skills@himmel"],
+      "mcpServers": ["qmd"],
+      "contextBudget": 35000
     }
   }
 }

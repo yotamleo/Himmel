@@ -1100,11 +1100,16 @@ echo "== HIMMEL-2831 #1: a leak-shaped FILE PATH itself, not just its content ==
 # already landed but item 1 (path-name scanning) had not; used below to prove
 # each case was a genuine miss before this session's scan_path() /
 # scan_new_staged_paths() additions, not just a fixture artifact.
-BASE_PRE2831_1="5e8e4cca8ecafa2864e8f4aa97c06012ab33e6cc"
+#
+# HIMMEL-3018: previously extracted via `git show 5e8e4cca:<path>` at test
+# time. That commit is reachable from main today, so the extraction passed --
+# but it fails FATAL on a shallow clone or a source archive, the same class
+# HIMMEL-3154 fixed elsewhere (#810). Replaced with a committed static
+# snapshot, consistent with that fix.
 PRE_SCRIPT="$WS/leak-classes-pre-2831-1.sh"
-if ! git -C "$REPO_ROOT" show "$BASE_PRE2831_1:scripts/guardrails/leak-classes.sh" > "$PRE_SCRIPT" \
+if ! cp "$REPO_ROOT/scripts/guardrails/fixtures/red-control/leak-classes.pre-2831-1.sh" "$PRE_SCRIPT" \
         || [ ! -s "$PRE_SCRIPT" ]; then
-    echo "FATAL: could not extract pre-#1 leak-classes.sh from $BASE_PRE2831_1 (empty or failed 'git show') -- RED controls T13a/T13c would silently pass against an empty script" >&2
+    echo "FATAL: could not extract pre-#1 leak-classes.sh from the committed fixture (empty or failed 'cp') -- RED controls T13a/T13c would silently pass against an empty script" >&2
     exit 1
 fi
 
@@ -1704,6 +1709,20 @@ if mutate_call_site \
             && pass "RED-staged-unquote-cr RED confirmed" \
             || fail "RED-staged-unquote-cr RED control did not confirm (see FAIL line above)"
     fi
+fi
+
+# HIMMEL-3018 (same class as HIMMEL-3154/#810): guard against reintroducing
+# extraction of a historical commit's blob via `git show <sha>:<path>` -- a
+# RED-control mutant must come from a committed fixtures/red-control/
+# snapshot, never a live git-show of a past ref, which is unreachable from a
+# shallow clone or source archive regardless of whether the ref is still a
+# main ancestor.
+extraction_lint_hit=$(grep -vE '^[[:space:]]*#' "$REPO_ROOT/scripts/guardrails/test-leak-classes.sh" \
+    | grep -E 'git[[:space:]]+(-C[[:space:]]+\S+[[:space:]]+)?show[[:space:]].*:scripts/')
+if [ -n "$extraction_lint_hit" ]; then
+    fail "lint: this file extracts a historical blob via git show <ref>:<path> -- use a committed fixtures/red-control/ snapshot instead (HIMMEL-3018)"
+else
+    pass "lint: no historical git-show blob extraction in this file"
 fi
 
 echo

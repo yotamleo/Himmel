@@ -45,11 +45,14 @@ see spec §3.5 for the full shape.
 > doc change (same brief, same doc) stays with you.
 <!-- -->
 > **What you hold vs. what the judge holds.** You hold a lock on your OWN
-> relay doc only and never acquire the console doc. The judge IS the console
-> in the lock sense: it holds the console-doc queue lock, the fleet's
-> GO/RETASK authority, and it alone runs `go.sh` — a relay-env child refuses
-> under `HIMMEL_CONSOLE_RELAY=1` by construction, so never attempt it or ask
-> a peer to run it on your behalf.
+> relay doc only and never acquire the console doc. **The judge is not the
+> console** (HIMMEL-2975 lexicon: the console alone holds the console-doc
+> queue lock and the fleet's GO/RETASK authority; the judge holds nothing and
+> is advisory). The judge session holds only its own judge-doc lock, same as
+> any leg — `go.sh` refuses under the `HIMMEL_CONSOLE_LEG` marker regardless
+> of who runs it, so the judge does not run `go.sh` either. A relay-env child
+> refuses to run `go.sh` under `HIMMEL_CONSOLE_RELAY=1` by construction, so
+> never attempt it or ask a peer to run it on your behalf.
 <!-- -->
 > **Do not:** run `inbox-send.sh --token`; write a leg doc, the inbox dir, or
 > the sent-record directory directly; assign `HIMMEL_CONSOLE_RELAY`,

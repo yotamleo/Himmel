@@ -158,7 +158,7 @@ elif [ -f "$PUBLIC_PROJECTION_MARKER" ] && [ -n "$marker_in_diff" ]; then
 else
     PROPAGATION_SNAPSHOT=0
 fi
-SHIPPED="$(mktemp)"
+SHIPPED="$(mktemp "${TMPDIR:-/tmp}/ws5-shipped.XXXXXX")" || { echo "test-ws5-invariants.sh: mktemp failed" >&2; exit 2; }
 trap 'rm -f "$SHIPPED"' EXIT
 
 # Corpus of ADDED lines from SHIPPED source (every changed file whose basename
@@ -189,12 +189,12 @@ trap 'rm -f "$SHIPPED"' EXIT
 # any nesting depth) and fed into the awk filter as a lookup table; the diff
 # itself still runs once, full-tree. Never silent: every skip is named on
 # stderr.
-VENDORED_LIST="$(mktemp)"
+VENDORED_LIST="$(mktemp "${TMPDIR:-/tmp}/ws5-vendored-list.XXXXXX")" || { echo "test-ws5-invariants.sh: mktemp failed" >&2; exit 2; }
 trap 'rm -f "$SHIPPED" "$VENDORED_LIST"' EXIT
 while IFS= read -r f; do
     [ -n "$f" ] || continue
     base="${f##*/}"
-    case "$base" in test-* | *.tsv) continue ;;
+    case "$base" in test-* | *.tsv | *.test.ts | *.test.js | *.test.mjs | *.test.cjs) continue ;;
     esac
     d="$REPO/$(dirname "$f")"
     vendored_root=""
@@ -239,8 +239,12 @@ git diff "$BASE...HEAD" | awk -v vendored_file="$VENDORED_LIST" '
         base = parts[n]
         # data ledgers (HIMMEL-2894 suite-durations.tsv) list suite basenames,
         # which legitimately contain the marker words; T13 is about runtime
-        # surface, and a TSV has none.
-        skip = (base ~ /^test-/) || (base ~ /\.tsv$/) || (f in vendored)
+        # surface, and a TSV has none. *.test.(ts|js|mjs|cjs) (HIMMEL-3151)
+        # gets the same test-fixture exemption as the shell "test-*"
+        # convention: a JS/TS test legitimately asserts on the very marker
+        # words T13(b) scans for (e.g. a setInterval-timing test).
+        skip = (base ~ /^test-/) || (base ~ /\.tsv$/) \
+            || (base ~ /\.test\.(ts|js|mjs|cjs)$/) || (f in vendored)
         next
     }
     skip { next }
@@ -393,7 +397,7 @@ else
             fi
             continue
         fi
-        echo "FAIL T15: $sh_path has neither a .ps1 twin nor a platform-guard marker." >&2
+        echo "WARN T15: $sh_path has neither a .ps1 twin nor a platform-guard marker (advisory only, HIMMEL-3125 -- Windows is alpha)." >&2
         t15_fail=1
     done < <(git diff "$BASE...HEAD" --diff-filter=A --name-only -- 'scripts/' \
         | grep -E '\.sh$' || true)
@@ -403,7 +407,7 @@ else
     elif [ "$t15_fail" -eq 0 ]; then
         echo "PASS T15 x-platform: all ${t15_n} new scripts/**/*.sh have a twin or guard."
     else
-        FAIL=$((FAIL + 1))
+        echo "PASS T15 x-platform (advisory, HIMMEL-3125): ${t15_n} new scripts/**/*.sh, some without a twin or guard -- no longer CI-gated now that Windows is alpha; see docs/internals/harness-compat.md."
     fi
 fi
 

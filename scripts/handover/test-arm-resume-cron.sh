@@ -538,6 +538,97 @@ fi
 assert_contains "e2: RED CONTROL -- unrelated job survives a failed self-clean" "unrelated-job" "$(cat "$CRON_STORE" 2>/dev/null)"
 
 # ---------------------------------------------------------------------------
+# (f) HIMMEL-3122: the age-gated stale-runner prune (HIMMEL-Resume-*.sh/
+#     .command, mtime +7) ran BEFORE the runner write. A --force re-arm of a
+#     task whose OWN prior runner had gone stale (parked, not yet fired)
+#     pruned that file first; if the replacement write then failed for a
+#     reason unrelated to the prune, schedule_arm exited 4 having already
+#     deleted the runner -- and because HIMMEL-1304 defers the old crontab
+#     entry's replacement until the NEW job is registered, that untouched old
+#     entry is left installed pointing at a now-missing file.
+#
+# Reproduced with a stubbed `rm` -- found first on PATH, the exact external
+# command find's `-exec rm -f` in the prune loop shells out to -- that
+# performs the REAL delete and only THEN (so the delete itself still
+# happens, exactly as it would on main) revokes write on the runner dir.
+# NOT a blanket read-only ARM_RUNNER_DIR (that would block the FIRST,
+# unforced arm's own write too, and is a vacuous control): the stub only
+# trips once armed via a flag file set right before the second call, so it
+# strikes only the prune's own delete, nothing earlier. The stub also only
+# ever acts on the ONE path it targets (compared by exact string, never a
+# blind `dirname` of every argument): arm-resume.sh's own bank-preflight
+# call shells out to `rm` too (fleet-reservation cleanup), so a stub that
+# chmods any rm'd path's parent would reach into that reservation dir --
+# which lives under the REAL $XDG_RUNTIME_DIR unless overridden, not $TMP.
+# A dedicated throwaway XDG_RUNTIME_DIR keeps that reservation path (and
+# every other real-host runtime path bank-preflight touches) off the host
+# filesystem entirely, so the stub has nothing but the runner file to see.
+# ---------------------------------------------------------------------------
+: > "$CRON_STORE"
+REAL_RM=$(command -v rm)
+RUNNERDIR_F="$TMP/arm-runners-f"
+XDG_F="$TMP/xdg-f"; mkdir -p "$XDG_F"
+RMSTUB="$TMP/rmstub"; mkdir -p "$RMSTUB"
+RM_TRIP_FLAG="$TMP/rm-trip-armed"
+RUNNER_PATH_F_FLAG="$TMP/runner-path-f"
+cat > "$RMSTUB/rm" <<RMEOF
+#!/bin/sh
+$REAL_RM "\$@"
+_rc=\$?
+if [ -e "$RM_TRIP_FLAG" ]; then
+    _target=\$(cat "$RUNNER_PATH_F_FLAG" 2>/dev/null)
+    for _a in "\$@"; do
+        if [ -n "\$_target" ] && [ "\$_a" = "\$_target" ]; then
+            chmod 555 "\$(dirname "\$_a")" 2>/dev/null || true
+        fi
+    done
+fi
+exit "\$_rc"
+RMEOF
+chmod +x "$RMSTUB/rm"
+
+HO_F=$(make_handover)
+out=$(FLEET_CAP_OK=1 ARM_WITH_LIVE_WORKERS=1 XDG_RUNTIME_DIR="$XDG_F" ARM_RUNNER_DIR="$RUNNERDIR_F" mac_env bash "$ARM" --time "$(future_time)" --handover "$HO_F" 2>&1)
+rc=$?
+assert_rc "f: PRECONDITION first (real) arm succeeds" 0 "$rc"
+installed=$(cat "$CRON_STORE" 2>/dev/null || true)
+INSTALLED_LINE_F=$(printf '%s\n' "$installed" | grep -F '# HIMMEL-Resume-' | head -1)
+TASK_NAME_F=$(task_name_from_entry "$INSTALLED_LINE_F")
+RUNNER_PATH_F="$RUNNERDIR_F/$TASK_NAME_F.sh"
+if [ -f "$RUNNER_PATH_F" ]; then
+    echo "PASS f: PRECONDITION runner file exists after the first arm"
+else
+    echo "FAIL f: PRECONDITION runner file missing after the first arm: $RUNNER_PATH_F"; FAILED=$((FAILED + 1))
+fi
+# Backdate the runner past the 7-day prune gate (portable: touch -d is
+# GNU-only, BSD/macOS touch rejects it -- same fallback idiom as test-cap-
+# reset-time.sh and test-arm-resume.sh's 1606 sibling fixture).
+touch -d "8 days ago" "$RUNNER_PATH_F" 2>/dev/null \
+    || touch -t "$(date -v -8d +%Y%m%d%H%M 2>/dev/null)" "$RUNNER_PATH_F"
+printf '%s' "$RUNNER_PATH_F" > "$RUNNER_PATH_F_FLAG"
+touch "$RM_TRIP_FLAG"
+out2=$(FLEET_CAP_OK=1 ARM_WITH_LIVE_WORKERS=1 env PATH="$RMSTUB:$MACBIN:$PATH" OSTYPE="darwin23" ARM_TERMINAL_APP=none XDG_RUNTIME_DIR="$XDG_F" ARM_RUNNER_DIR="$RUNNERDIR_F" bash "$ARM" --time "$(future_time)" --handover "$HO_F" --force 2>&1)
+rc2=$?
+chmod -R u+w "$RUNNERDIR_F" 2>/dev/null || true
+rm -f "$RM_TRIP_FLAG" "$RUNNER_PATH_F_FLAG"
+assert_rc "f: forced re-arm of a task whose own runner had gone stale survives a write that races the prune" 0 "$rc2"
+if [ -f "$RUNNER_PATH_F" ]; then
+    echo "PASS f: runner file exists after the forced re-arm (not pruned out from under its own replacement write)"
+else
+    echo "FAIL f: HIMMEL-3122 -- runner file is GONE after the forced re-arm ($RUNNER_PATH_F); rc=$rc2, output: $out2"; FAILED=$((FAILED + 1))
+fi
+installed2=$(cat "$CRON_STORE" 2>/dev/null || true)
+if printf '%s\n' "$installed2" | grep -qF "# $TASK_NAME_F"; then
+    if [ -f "$RUNNER_PATH_F" ]; then
+        echo "PASS f: the installed crontab entry's runner exists (not dangling)"
+    else
+        echo "FAIL f: HIMMEL-3122 RED CONTROL -- crontab entry for $TASK_NAME_F is installed but its runner is MISSING (the exact dangling-entry bug)"; FAILED=$((FAILED + 1))
+    fi
+else
+    echo "FAIL f: no crontab entry for $TASK_NAME_F survives the forced re-arm attempt"; FAILED=$((FAILED + 1))
+fi
+
+# ---------------------------------------------------------------------------
 # (d) sed portability: no GNU-only `{p;q}` left in the script; the portable
 #     form works under the sed on THIS host; H1 ticket inference still works.
 # ---------------------------------------------------------------------------
@@ -563,6 +654,89 @@ rc=$?
 assert_rc "d: H1-keyed dry-run exits 0" 0 "$rc"
 assert_contains "d: ticket inferred from the H1 via the portable sed" "HIMMEL-Resume-ABC-1" "$out"
 assert_not_contains "d: no sed diagnostic on stderr" "extra characters at the end of q command" "$out"
+
+# ---------------------------------------------------------------------------
+# (g) HIMMEL-3121: `--time` defaults to `smart`, and the post-arm banner states
+#     only what is true.
+#
+#   g1  --handover with NO --time reaches the smart path (dry-run, bank-free
+#       fixture cache -> the ASAP slot). Pre-fix this died on the
+#       "--time and --handover are required" refusal (rc=1).
+#   g2  a missing --handover still refuses rc=1 -- the default covers --time only.
+#   g3  regression control: an explicit past HH:MM is NEVER routed to smart.
+#       It rolls to tomorrow and the >60-min guard refuses it (rc=9), exactly as
+#       before this ticket.
+#   g4  a REAL arm (stateful crontab stub, never a real scheduler) prints the
+#       self-resume NOTE and no longer orders /exit. Pre-fix it printed
+#       "PLEASE /exit YOUR CURRENT CLAUDE SESSION NOW." on every platform.
+#
+# Hermetic: a throwaway HOME + CLAUDE_CONFIG_DIR so nothing under the real
+# ~/.claude is read or written; the usage cache is the RESUME_SLOT_CACHE fixture.
+# ---------------------------------------------------------------------------
+G_HOME="$TMP/g-home"; mkdir -p "$G_HOME/.claude"
+g_env() { mac_env HOME="$G_HOME" CLAUDE_CONFIG_DIR="$G_HOME/.claude" "$@"; }
+SLOT_FREE_3121="$TMP/usage-free-3121.json"
+printf '{"five_hour":{"utilization":0.0,"resets_at":"%s"},"seven_day":{"utilization":5.0,"resets_at":"%s"}}' \
+    "$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=2)).isoformat())')" \
+    "$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(days=6)).isoformat())')" \
+    > "$SLOT_FREE_3121"
+
+: > "$CRON_STORE"
+HO_G1=$(make_handover)
+out=$(RESUME_SLOT_CACHE="$SLOT_FREE_3121" SLOT_MAX_AGE=0 g_env bash "$ARM" --handover "$HO_G1" --dry-run 2>&1)
+rc=$?
+assert_rc "g1: no --time (dry-run) exits 0 via the smart default" 0 "$rc"
+assert_contains "g1: the omitted --time resolved through smart" "--time smart -> " "$out"
+assert_contains "g1: smart reason is the bank-free ASAP slot" "bank free" "$out"
+assert_not_contains "g1: RED CONTROL -- no --time/--handover required refusal" "are required" "$out"
+
+out=$(RESUME_SLOT_CACHE="$SLOT_FREE_3121" SLOT_MAX_AGE=0 g_env bash "$ARM" --dry-run 2>&1)
+rc=$?
+assert_rc "g2: no --handover still refuses rc=1" 1 "$rc"
+assert_contains "g2: the refusal names --handover" "--handover is required" "$out"
+assert_not_contains "g2: RED CONTROL -- a missing --handover never reaches smart" "--time smart -> " "$out"
+
+# An explicit-but-empty --time is malformed, not "omitted": it keeps refusing.
+out=$(RESUME_SLOT_CACHE="$SLOT_FREE_3121" SLOT_MAX_AGE=0 g_env bash "$ARM" --time "" --handover "$HO_G1" --dry-run 2>&1)
+rc=$?
+assert_rc "g2b: an explicit empty --time still refuses rc=1" 1 "$rc"
+assert_not_contains "g2b: RED CONTROL -- an empty --time never falls into smart" "--time smart -> " "$out"
+
+# g3: a HH:MM that is already past today (1 minute ago) -- the exact minute
+# rolls to tomorrow, ~24h out, which the long-gap guard refuses.
+_past_hhmm=$(python3 -c "import datetime; print((datetime.datetime.now()-datetime.timedelta(minutes=1)).strftime('%H:%M'))")
+out=$(RESUME_SLOT_CACHE="$SLOT_FREE_3121" SLOT_MAX_AGE=0 g_env bash "$ARM" --time "$_past_hhmm" --handover "$HO_G1" --dry-run 2>&1)
+rc=$?
+assert_rc "g3: an explicit past HH:MM is refused, not defaulted (rc=9 long-gap)" 9 "$rc"
+assert_contains "g3: the refusal is the long-gap guard, not a smart resolution" "Refusing without --long-gap (rc=9)" "$out"
+assert_not_contains "g3: RED CONTROL -- an explicit HH:MM never reaches smart" "--time smart -> " "$out"
+
+# g4: REAL arm, no --time. Self-resume NOTE present; the imperative /exit gone.
+: > "$CRON_STORE"
+HO_G4=$(make_handover)
+out=$(FLEET_CAP_OK=1 ARM_WITH_LIVE_WORKERS=1 ARM_RUNNER_DIR="$TMP/arm-runners-g" \
+    RESUME_SLOT_CACHE="$SLOT_FREE_3121" SLOT_MAX_AGE=0 g_env bash "$ARM" --handover "$HO_G4" 2>&1)
+rc=$?
+assert_rc "g4: a real arm without --time succeeds through the crontab stub" 0 "$rc"
+assert_contains "g4: the omitted --time resolved through smart" "--time smart -> " "$out"
+assert_contains "g4: the arm registered" "RESUME ARMED" "$out"
+assert_contains "g4: crontab stub holds the armed entry" "# HIMMEL-Resume-" "$(cat "$CRON_STORE" 2>/dev/null || true)"
+assert_not_contains "g4: the imperative /exit order is gone" "PLEASE /exit YOUR CURRENT CLAUDE SESSION NOW." "$out"
+assert_contains "g4: the self-resume NOTE replaces it" "NOTE (self-resume only):" "$out"
+assert_contains "g4: the NOTE names the different-handover case" "different handover" "$out"
+
+# g5: the same banner on an EXPLICIT-time real arm -- the imperative is gone
+# there too. This is the assertion that is RED on the pre-fix banner even on a
+# tree where g4's default cannot arm at all.
+: > "$CRON_STORE"
+HO_G5=$(make_handover)
+out=$(FLEET_CAP_OK=1 ARM_WITH_LIVE_WORKERS=1 ARM_RUNNER_DIR="$TMP/arm-runners-g" g_env \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_G5" 2>&1)
+rc=$?
+assert_rc "g5: a real explicit-time arm succeeds through the crontab stub" 0 "$rc"
+assert_contains "g5: it armed" "RESUME ARMED" "$out"
+assert_not_contains "g5: the imperative /exit order is gone" "PLEASE /exit YOUR CURRENT CLAUDE SESSION NOW." "$out"
+assert_contains "g5: the self-resume NOTE is present" "NOTE (self-resume only):" "$out"
 
 if [ "$FAILED" -gt 0 ]; then
     echo "---"

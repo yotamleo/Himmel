@@ -391,11 +391,19 @@ assert "update at-pin: no install call" bash -c '! grep -q "tool install" "$1"' 
 make_fake_graphify_venv() { # <tooldir> <version> -> echoes the fake package dir
   local tooldir="$1" ver="$2" pkg
   pkg="$tooldir/graphifyy/fake-site/graphify"
-  mkdir -p "$tooldir/graphifyy/Scripts" "$pkg/skills/claude/references" "$pkg/skills/windows/references"
+  mkdir -p "$tooldir/graphifyy/Scripts" "$pkg/skills/claude/references" "$pkg/skills/windows/references" \
+    "$pkg/skills/codex/references" "$pkg/skills/claw/references"
   printf 'FAKE POSIX SKILL BODY v%s\n' "$ver" > "$pkg/skill.md"
   printf 'FAKE WINDOWS SKILL BODY v%s\n' "$ver" > "$pkg/skill-windows.md"
+  # Distinct per-platform bundles (HIMMEL-3050): codex and hermes package their
+  # own skill body, never claude's -- a fixture that reused claude's content
+  # here would let a cross-platform mixup pass silently (it did, before the fix).
+  printf 'FAKE CODEX SKILL BODY v%s\n' "$ver" > "$pkg/skill-codex.md"
+  printf 'FAKE CLAW SKILL BODY v%s\n' "$ver" > "$pkg/skill-claw.md"
   printf 'posix ref content v%s\n' "$ver" > "$pkg/skills/claude/references/quickstart.md"
   printf 'windows ref content v%s\n' "$ver" > "$pkg/skills/windows/references/quickstart.md"
+  printf 'codex ref content v%s\n' "$ver" > "$pkg/skills/codex/references/quickstart.md"
+  printf 'claw ref content v%s\n' "$ver" > "$pkg/skills/claw/references/quickstart.md"
   cat > "$tooldir/graphifyy/Scripts/python" <<EOF
 #!/usr/bin/env bash
 case "\$2" in
@@ -465,6 +473,12 @@ case "$(uname -s 2>/dev/null || echo)" in
     expected_refs="$srr_pkg/skills/claude/references/quickstart.md"
     ;;
 esac
+# codex/hermes package their OWN bundle (never claude's -- HIMMEL-3050); the
+# host-uname branch above is claude/windows-only and does not apply here.
+expected_codex_skill="$srr_pkg/skill-codex.md"
+expected_codex_refs="$srr_pkg/skills/codex/references/quickstart.md"
+expected_hermes_skill="$srr_pkg/skill-claw.md"
+expected_hermes_refs="$srr_pkg/skills/claw/references/quickstart.md"
 out=$(HOME="$srr_home" CLAUDE_CONFIG_DIR="$srr_cfg" PATH="$stub_dir/bin:$base_path" \
       UV_TOOL_DIR="$srr_tools" UV_LIST_FILE="$tmpdir/sr-redir-list" UV_LOG="$tmpdir/sr-redir-uvlog" \
       bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; _graphify_skill_refresh; echo "RC=$?"' 2>&1)
@@ -523,24 +537,80 @@ assert "unsafe staging targets: marker unchanged" test "$(cat "$sru_home/.claude
 assert "unsafe staging targets: SKILL.md remains a directory" test -d "$sru_home/.claude/skills/graphify/SKILL.md"
 assert "unsafe staging targets: staged directory cleaned" test ! -e "$sru_home/.claude/skills/graphify/SKILL.md.tmp"
 
-echo "[test-graphify-bin] _graphify_skill_refresh: OTHER platforms are NEVER touched (HIMMEL-1750 redesign — no installer call at all)"
-# Under the old installer-wrapping design the upstream installer falsified
-# other platforms' markers and the wrapper had to snapshot/restore them (and
-# still missed nested roots — CR r4/r5). The direct copy never invokes the
-# installer, so a stale agents-platform skill keeps BOTH its marker and its
-# content byte-identically; this test pins that invariant.
-srm_home="$tmpdir/sr-markers"; mkdir -p "$srm_home/.claude/skills/graphify" "$srm_home/.agents/skills/graphify"
+echo "[test-graphify-bin] _graphify_skill_refresh: PRESENT codex skill dir is refreshed; ABSENT hermes dir is left untouched and NOT created (HIMMEL-3050)"
+# HIMMEL-1750 pinned "other platforms are NEVER touched" back when the refresh
+# only knew about Claude. HIMMEL-3050 widens the refresh to every platform
+# ALREADY installed on this station -- codex and hermes drift on every pin
+# bump the same way Claude used to. The invariant that must survive unchanged:
+# a platform with no existing skill dir is still never created (the widening
+# is about which ALREADY-PRESENT dirs get refreshed, never about discovering
+# or inventing new ones). A still-untouched platform (agents) stays alongside
+# codex/hermes to prove the widening is scoped, not a blanket "refresh
+# anything under ~/.*/skills/graphify".
+srm_home="$tmpdir/sr-markers"; mkdir -p "$srm_home/.claude/skills/graphify" "$srm_home/.codex/skills/graphify" "$srm_home/.agents/skills/graphify"
 printf '0.0.1' > "$srm_home/.claude/skills/graphify/.graphify_version"
+printf '0.0.1' > "$srm_home/.codex/skills/graphify/.graphify_version"
+printf 'stale codex skill body' > "$srm_home/.codex/skills/graphify/SKILL.md"
 printf '0.0.2' > "$srm_home/.agents/skills/graphify/.graphify_version"
 printf 'stale agents skill body' > "$srm_home/.agents/skills/graphify/SKILL.md"
+# .hermes is deliberately never created at all -- the absent-platform case.
 out=$(HOME="$srm_home" PATH="$stub_dir/bin:$base_path" \
       UV_TOOL_DIR="$srr_tools" UV_LIST_FILE="$tmpdir/sr-markers-list" UV_LOG="$tmpdir/sr-markers-uvlog" \
-      bash -c 'unset CLAUDE_CONFIG_DIR; . "'"$SCRIPT_DIR"'/graphify-bin.sh"; _graphify_skill_refresh; echo "RC=$?"' 2>&1)
+      bash -c 'unset CLAUDE_CONFIG_DIR CODEXHOME HERMESHOME; . "'"$SCRIPT_DIR"'/graphify-bin.sh"; _graphify_skill_refresh; echo "RC=$?"' 2>&1)
 assert "other-platforms: rc 0" grep -q '^RC=0$' <<<"$out"
 assert "other-platforms: refresh performed" grep -qi 'skill refreshed' <<<"$out"
 assert "other-platforms: claude marker advanced" test "$(cat "$srm_home/.claude/skills/graphify/.graphify_version")" = "$pinned_ver"
-assert "other-platforms: agents marker untouched" test "$(cat "$srm_home/.agents/skills/graphify/.graphify_version")" = "0.0.2"
-assert "other-platforms: agents skill content untouched" test "$(cat "$srm_home/.agents/skills/graphify/SKILL.md")" = "stale agents skill body"
+assert "(a) present codex marker advanced" test "$(cat "$srm_home/.codex/skills/graphify/.graphify_version")" = "$pinned_ver"
+assert "(a) present codex SKILL.md refreshed" cmp -s "$srm_home/.codex/skills/graphify/SKILL.md" "$expected_codex_skill"
+assert "(a) present codex references refreshed" cmp -s "$srm_home/.codex/skills/graphify/references/quickstart.md" "$expected_codex_refs"
+assert "(b) absent hermes dir NOT created" test ! -d "$srm_home/.hermes/skills/graphify"
+assert "(b) absent hermes parent NOT created either" test ! -d "$srm_home/.hermes"
+assert "still-untouched platform: agents marker untouched" test "$(cat "$srm_home/.agents/skills/graphify/.graphify_version")" = "0.0.2"
+assert "still-untouched platform: agents skill content untouched" test "$(cat "$srm_home/.agents/skills/graphify/SKILL.md")" = "stale agents skill body"
+
+echo "[test-graphify-bin] _graphify_skill_refresh: (c) codex CURRENT marker with missing content is repaired (HIMMEL-3050)"
+# Mirrors the existing Claude-only case above (line ~503): a marker that
+# already matches the installed version must NOT short-circuit the refresh
+# when the content it claims to describe is gone -- same rule, now proven for
+# a widened platform too.
+src2_home="$tmpdir/sr-platform-repair"; mkdir -p "$src2_home/.claude/skills/graphify" "$src2_home/.codex/skills/graphify"
+printf '%s' "$pinned_ver" > "$src2_home/.codex/skills/graphify/.graphify_version"
+out=$(HOME="$src2_home" PATH="$stub_dir/bin:$base_path" \
+      UV_TOOL_DIR="$srr_tools" UV_LIST_FILE="$tmpdir/sr-platform-repair-list" UV_LOG="$tmpdir/sr-platform-repair-uvlog" \
+      bash -c 'unset CLAUDE_CONFIG_DIR CODEXHOME HERMESHOME; . "'"$SCRIPT_DIR"'/graphify-bin.sh"; _graphify_skill_refresh; echo "RC=$?"' 2>&1)
+assert "(c) platform repair: rc 0" grep -q '^RC=0$' <<<"$out"
+assert "(c) platform repair: codex SKILL.md repaired" cmp -s "$src2_home/.codex/skills/graphify/SKILL.md" "$expected_codex_skill"
+assert "(c) platform repair: codex references repaired" cmp -s "$src2_home/.codex/skills/graphify/references/quickstart.md" "$expected_codex_refs"
+assert "(c) platform repair: codex marker advanced" test "$(cat "$src2_home/.codex/skills/graphify/.graphify_version")" = "$pinned_ver"
+
+echo "[test-graphify-bin] _graphify_skill_refresh: CODEXHOME / HERMESHOME overrides are honoured, not just the default ~/.codex ~/.hermes"
+srov_home="$tmpdir/sr-override-home"; mkdir -p "$srov_home/.claude/skills/graphify"
+srov_codex="$tmpdir/sr-override-codex"; mkdir -p "$srov_codex/skills/graphify"
+printf '0.0.1' > "$srov_codex/skills/graphify/.graphify_version"
+out=$(HOME="$srov_home" CODEXHOME="$srov_codex" PATH="$stub_dir/bin:$base_path" \
+      UV_TOOL_DIR="$srr_tools" UV_LIST_FILE="$tmpdir/sr-override-list" UV_LOG="$tmpdir/sr-override-uvlog" \
+      bash -c 'unset CLAUDE_CONFIG_DIR HERMESHOME; . "'"$SCRIPT_DIR"'/graphify-bin.sh"; _graphify_skill_refresh; echo "RC=$?"' 2>&1)
+assert "CODEXHOME override: rc 0" grep -q '^RC=0$' <<<"$out"
+assert "CODEXHOME override: the ROUTED codex dir was refreshed" cmp -s "$srov_codex/skills/graphify/SKILL.md" "$expected_codex_skill"
+assert "CODEXHOME override: the default ~/.codex was NOT created" test ! -d "$srov_home/.codex"
+
+# HERMESHOME mirrors CODEXHOME above (CodeRabbit #792 finding): a regression
+# that always used the default $HOME/.hermes would pass the CODEXHOME case
+# above while leaving a configured Hermes install stale -- this proves the
+# same override plumbing for the OTHER platform.
+srov_hermes="$tmpdir/sr-override-hermes"; mkdir -p "$srov_hermes/skills/graphify"
+printf '0.0.1' > "$srov_hermes/skills/graphify/.graphify_version"
+out=$(HOME="$srov_home" HERMESHOME="$srov_hermes" PATH="$stub_dir/bin:$base_path" \
+      UV_TOOL_DIR="$srr_tools" UV_LIST_FILE="$tmpdir/sr-override-hermes-list" UV_LOG="$tmpdir/sr-override-hermes-uvlog" \
+      bash -c 'unset CLAUDE_CONFIG_DIR CODEXHOME; . "'"$SCRIPT_DIR"'/graphify-bin.sh"; _graphify_skill_refresh; echo "RC=$?"' 2>&1)
+assert "HERMESHOME override: rc 0" grep -q '^RC=0$' <<<"$out"
+assert "HERMESHOME override: the ROUTED hermes dir was refreshed" cmp -s "$srov_hermes/skills/graphify/SKILL.md" "$expected_hermes_skill"
+# CodeRabbit PR #792 finding (PRRT_kwDOS8WKNM6jZ-8L): the SKILL.md assertion
+# above does not prove the claw REFERENCES were copied -- a regression in
+# reference selection/copying (e.g. reusing codex's or claude's references
+# dir) would still pass it.
+assert "HERMESHOME override: the ROUTED hermes references were refreshed" cmp -s "$srov_hermes/skills/graphify/references/quickstart.md" "$expected_hermes_refs"
+assert "HERMESHOME override: the default ~/.hermes was NOT created" test ! -d "$srov_home/.hermes"
 
 echo "[test-graphify-bin] _graphify_skill_refresh: no uv venv python -> silent no-op (foreign installs untouched)"
 srn_home="$tmpdir/sr-noviv"; mkdir -p "$srn_home/.claude/skills/graphify"
@@ -659,6 +729,30 @@ assert "held: NO uv install attempted (this is what keeps graphify working)" \
 # shellcheck disable=SC2016
 assert "held: does NOT use the misleading 'non-fatal' wording" \
   bash -c '! grep -q "non-fatal" <<<"$1"' _ "$out"
+
+echo "[test-graphify-bin] graphify_update: holder-SKIP repair recipe names each PRESENT platform, not just the 4 shared hints (CodeRabbit #792 finding)"
+# The "held" case above only has a Claude dir, so its 4-shared-hint count
+# alone would still pass even if _graphify_present_platforms or the recipe
+# loop silently dropped codex/hermes. Prove the per-platform line by name,
+# with codex+hermes PRESENT and a platform that's never present (agents)
+# absent from the printed recipe.
+ghp_home="$tmpdir/gup-held-platforms"; mkdir -p "$ghp_home/.codex/skills/graphify" "$ghp_home/.hermes/skills/graphify"
+ghp_tools="$tmpdir/gup-held-platforms-tools"; mkdir -p "$ghp_tools/graphifyy"
+printf 'requirements = [{ name = "graphifyy", extras = [] }]\n' > "$ghp_tools/graphifyy/uv-receipt.toml"
+ghp_list="$tmpdir/gup-held-platforms-list"; printf 'graphifyy v0.0.1\n' > "$ghp_list"   # behind the pin
+ghp_bin="$tmpdir/gup-held-platforms-bin"; mkdir -p "$ghp_bin"
+printf '#!/usr/bin/env bash\necho x\n' > "$ghp_bin/graphify"; chmod +x "$ghp_bin/graphify"
+ghp_log="$tmpdir/gup-held-platforms-log"; : > "$ghp_log"
+out=$(HOME="$ghp_home" PATH="$ghp_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$ghp_tools" UV_LIST_FILE="$ghp_list" \
+      UV_BIN_DIR="$ghp_bin" UV_LOG="$ghp_log" GRAPHIFY_MCP_HOLDERS=1 \
+      bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
+assert "held platforms: rc 0" grep -q '^RC=0$' <<<"$out"
+assert "held platforms: names codex's own repair command" grep -q 'graphify install --platform codex' <<<"$out"
+assert "held platforms: names hermes's own repair command" grep -q 'graphify install --platform hermes' <<<"$out"
+# shellcheck disable=SC2016
+# Single quotes intentional -- $1 expands inside the spawned bash -c subshell.
+assert "held platforms: does NOT name a platform that was never present" \
+  bash -c '! grep -q "graphify install --platform agents" <<<"$1"' _ "$out"
 
 # HIMMEL-1601: the reinstall-guard SKIP is a routine outcome on any busy
 # workstation and can persist forever -- it must (a) still refresh the SKILL
@@ -1026,6 +1120,34 @@ assert "unprobeable: NO uv install attempted (this is the whole fix)" \
 assert "unprobeable: gives the manual install command" \
   grep -qE "uv tool install --force --with mcp 'graphifyy==[0-9][^']*'" <<<"$out"
 assert "unprobeable: names the GRAPHIFY_UNPROBED_OK override" grep -q 'GRAPHIFY_UNPROBED_OK=1' <<<"$out"
+
+# CodeRabbit PR #792 finding (PRRT_kwDOS8WKNM6jZ-8T): the unprobeable branch
+# above has its OWN `for _plat in $(_graphify_present_platforms)` loop over the
+# manual repair recipe, separate from the holders>0 branch's loop -- the
+# "held platforms" fixture proves the holders>0 loop names each present
+# platform, but that says nothing about THIS loop, since GRAPHIFY_MCP_HOLDERS=1
+# never reaches this branch. A fresh HOME with no codex/hermes present-platform
+# dirs (the fixture above) also cannot tell the two apart: with nothing
+# present, an unconditionally-dropped platform-specific line and a correctly
+# empty one look identical. Codex+hermes must be PRESENT here.
+echo "[test-graphify-bin] graphify_update: unprobeable-SKIP repair recipe ALSO names each PRESENT platform (separate loop from the holders>0 branch)"
+gpp_home="$tmpdir/gup-probe-platforms"; mkdir -p "$gpp_home/.codex/skills/graphify" "$gpp_home/.hermes/skills/graphify"
+gpp_tools="$tmpdir/gup-probe-platforms-tools"; mkdir -p "$gpp_tools/graphifyy"
+printf 'requirements = [{ name = "graphifyy" }]\n' > "$gpp_tools/graphifyy/uv-receipt.toml"
+gpp_list="$tmpdir/gup-probe-platforms-list"; printf 'graphifyy v0.0.1\n' > "$gpp_list"
+gpp_bin="$tmpdir/gup-probe-platforms-bin"; mkdir -p "$gpp_bin"
+printf '#!/usr/bin/env bash\necho x\n' > "$gpp_bin/graphify"; chmod +x "$gpp_bin/graphify"
+gpp_log="$tmpdir/gup-probe-platforms-log"; : > "$gpp_log"
+out=$(HOME="$gpp_home" PATH="$gpp_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gpp_tools" UV_LIST_FILE="$gpp_list" \
+      UV_BIN_DIR="$gpp_bin" UV_LOG="$gpp_log" GRAPHIFY_MCP_HOLDERS=unavailable \
+      bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
+assert "unprobeable platforms: rc 0" grep -q '^RC=0$' <<<"$out"
+assert "unprobeable platforms: names codex's own repair command" grep -q 'graphify install --platform codex' <<<"$out"
+assert "unprobeable platforms: names hermes's own repair command" grep -q 'graphify install --platform hermes' <<<"$out"
+# shellcheck disable=SC2016
+# Single quotes intentional -- $1 expands inside the spawned bash -c subshell.
+assert "unprobeable platforms: does NOT name a platform that was never present" \
+  bash -c '! grep -q "graphify install --platform agents" <<<"$1"' _ "$out"
 
 echo "[test-graphify-bin] graphify_update: unprobeable + GRAPHIFY_UNPROBED_OK=1 -> proceeds anyway"
 gpo_home="$tmpdir/gup-probe-ok"; mkdir -p "$gpo_home"
@@ -1552,8 +1674,12 @@ echo "[test-graphify-bin] graphify_price_hooks: operator hints are copy-pasteabl
 # shellcheck disable=SC2016
 assert "graphify-bin.sh: no ' -- then ' copy-paste trap in any hint" \
   bash -c '! grep -q -- " -- then " "$1"' _ "$SCRIPT_DIR/graphify-bin.sh"
+# HIMMEL-3050: the four hints now read "--platform $label" (per-platform,
+# shared across claude/codex/hermes call sites) instead of a hardcoded
+# "--platform claude" literal.
+# shellcheck disable=SC2016
 assert "graphify-bin.sh: still has 4 'Run by hand'/'run by hand' install hints" \
-  test "$(grep -ic 'run by hand: graphify install --platform claude' "$SCRIPT_DIR/graphify-bin.sh")" = "4"
+  test "$(grep -ic 'run by hand: graphify install --platform \$label' "$SCRIPT_DIR/graphify-bin.sh")" = "4"
 assert "graphify-bin.sh: each install hint is followed by its own re-price echo" \
   test "$(grep -c 'Then re-price the hooks: bash scripts/lib/graphify-bin.sh price-hooks' "$SCRIPT_DIR/graphify-bin.sh")" = "4"
 # shellcheck disable=SC2016

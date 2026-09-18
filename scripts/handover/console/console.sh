@@ -14,7 +14,8 @@
 #
 # Env seams: HANDOVER_DIR / USER_SLUG / JIRA_PROJECT_KEY (via .env, see
 # load-dotenv.sh); CONSOLE_BUCKET, CONSOLE_DOC, CONSOLE_MODEL, CONSOLE_ROLE
-# (HIMMEL-2975: judge|relay, forwarded to headed-arm.sh as --role on --arm;
+# (HIMMEL-2975, renamed HIMMEL-3133: console|relay, forwarded to
+# headed-arm.sh as --role on --arm;
 # headed-arm.sh itself refuses relay -- a relay is a leg, armed via
 # headed-arm-leg.sh --relay, never through this console path),
 # CONSOLE_FILL_PERCENT, CONSOLE_TEMPLATE_DIR, CONSOLE_WORK_DIR (default:
@@ -47,6 +48,16 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# HIMMEL-3081: the launch line below is PASTED by an operator, and the terminal
+# they paste it into was itself spawned from a claude session -- so
+# CLAUDE_CODE_CHILD_SESSION=1, CLAUDE_PID and CLAUDE_CODE_SESSION_ID are live in
+# that shell. A console that adopts them writes no transcript and cannot read
+# its own context fill, which is the signal its handover contract runs on.
+# headed-arm.sh scrubs these on the --arm path (HIMMEL-2545); the printed line
+# was missed, so an un-armed console silently became a throwaway child session.
+# Keep this identical to headed-arm.sh's env prefix.
+CONSOLE_LAUNCH_ENV="env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1"
 # shellcheck source=../../lib/load-dotenv.sh
 # shellcheck disable=SC1091
 . "$HERE/../../lib/load-dotenv.sh"
@@ -56,6 +67,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../../lib/handover-path.sh
 # shellcheck disable=SC1091
 . "$HERE/../../lib/handover-path.sh"
+. "$HERE/../../lib/console-context.sh"
 load_dotenv HANDOVER_DIR USER_SLUG JIRA_PROJECT_KEY
 
 ALPHABET="ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -187,21 +199,22 @@ find_free_letter() {
 do_arm() {
     local session="$1" doc="$2" fill_signal="$3" log="$4" arm
     local -a role_args=()
-    # HIMMEL-2975: CONSOLE_ROLE (judge) is forwarded to headed-arm.sh as a
-    # leading --role, ONLY when set. `relay` and any other value are refused
-    # HERE, before the detached launch -- headed-arm.sh itself also refuses
-    # --role relay (a relay is a leg, never armed through this console path),
-    # but that refusal happens in a background process the caller cannot see,
-    # so validating up front is what keeps a bad role from printing armed:.
+    # HIMMEL-2975, renamed HIMMEL-3133: CONSOLE_ROLE (console) is forwarded to
+    # headed-arm.sh as a leading --role, ONLY when set. `relay` and any other
+    # value are refused HERE, before the detached launch -- headed-arm.sh
+    # itself also refuses --role relay (a relay is a leg, never armed through
+    # this console path), but that refusal happens in a background process
+    # the caller cannot see, so validating up front is what keeps a bad role
+    # from printing armed:.
     case "${CONSOLE_ROLE:-}" in
         "") ;;
-        judge) role_args=(--role judge) ;;
+        console) role_args=(--role console) ;;
         relay)
             err "relay consoles must use headed-arm-leg.sh --relay"
             return 2
             ;;
         *)
-            err "CONSOLE_ROLE must be judge, got: $CONSOLE_ROLE"
+            err "CONSOLE_ROLE must be console, got: $CONSOLE_ROLE"
             return 2
             ;;
     esac
@@ -372,17 +385,19 @@ if [ "$DATE_GIVEN" -eq 1 ]; then
     esac
 fi
 state_dir="$root/$slug/$bucket"
-model="${MODEL:-${CONSOLE_MODEL:-claude-fable-5-1}}"
+# HIMMEL-3079: the console parent defaults to Opus (default parent tier);
+# Fable is the escalation target, reached only via --model / CONSOLE_MODEL.
+model="${MODEL:-${CONSOLE_MODEL:-claude-opus-5}}"
 fill_percent="${CONSOLE_FILL_PERCENT:-45}"
-# HIMMEL-2973: do_arm passes headed-arm.sh no [context] positional, so
-# headed-arm.sh's own default resolution decides the launch's --autocompact
-# value; mirrored here (not shared — a different script) purely for the
+# HIMMEL-2973 (genuinely shared as of HIMMEL-2975 T6): do_arm passes
+# headed-arm.sh no [context] positional, so headed-arm.sh's own default
+# resolution decides the launch's --autocompact value; this calls the same
+# scripts/lib/console-context.sh resolver headed-arm.sh does, purely for the
 # printed launch/would-launch lines below to show the value that will
-# actually be used, same CONSOLE_CONTEXT=1m opt-in headed-arm.sh honours.
-console_autocompact="200000"
-if [ "${CONSOLE_CONTEXT:-}" = "1m" ]; then
-    console_autocompact="auto"
-fi
+# actually be used -- the printed line and the launched value can no longer
+# drift apart, same CONSOLE_CONTEXT=1m opt-in headed-arm.sh honours.
+console_context_default 1 "${CONSOLE_CONTEXT:-}"
+console_autocompact="$(console_context_autocompact "$CONSOLE_CONTEXT_RESOLVED_MODE")"
 
 # _console_sha256_8 <string> -- first 8 hex chars of sha256(<string>). Small
 # per-script helper, matching the repo's own convention of duplicating this
@@ -692,7 +707,7 @@ cmd_new() {
         echo "would-doc: $doc"
         echo "would-session: $session"
         echo "would-kit: $kit"
-        echo "would-launch: claude --model $model --autocompact $console_autocompact -n $session \"load $doc and continue\""
+        echo "would-launch: $CONSOLE_LAUNCH_ENV claude --model $model --autocompact $console_autocompact -n $session \"load $doc and continue\""
         if [ "$ARM" -eq 1 ]; then
             echo "would-armed: name=$session doc=$doc signal=$fill_signal deadline=$deadline_epoch log=$log"
             echo "would-arm-log: $log"
@@ -790,7 +805,7 @@ cmd_new() {
 
     printf '%s\n' "$lock_out"
 
-    echo "launch: claude --model $model --autocompact $console_autocompact -n $session \"load $doc and continue\""
+    echo "launch: $CONSOLE_LAUNCH_ENV claude --model $model --autocompact $console_autocompact -n $session \"load $doc and continue\""
 
     if [ "$ARM" -eq 1 ]; then
         do_arm "$session" "$doc" "$fill_signal" "$log"
@@ -870,7 +885,7 @@ cmd_next() {
     [ -f "$console_template" ] || { err "missing template $console_template"; exit 2; }
     [ -f "$handoff_template" ] || { err "missing template $handoff_template"; exit 2; }
 
-    local predecessor_doc predecessor_base predecessor_stem predecessor_prefix_part predecessor_letter
+    local predecessor_doc predecessor_base predecessor_stem predecessor_prefix_part predecessor_letter predecessor_live_state
     predecessor_doc="$(resolve_predecessor)" || { err "no predecessor console doc found under $state_dir for '$name' — pass --doc <path>"; exit 1; }
     # An explicit --doc / CONSOLE_DOC is used as given, with no existence
     # check inside resolve_predecessor (the auto-discovery branches already
@@ -881,6 +896,17 @@ cmd_next() {
         err "predecessor console doc does not exist: $predecessor_doc"
         exit 1
     fi
+    # HIMMEL-2973 S1: the predecessor's `## Live state` (nonces, lock
+    # tokens, held queue, last GO) is copied verbatim into the successor's
+    # HANDOFF below — a continuously maintained Live state IS a handoff, so
+    # the successor never has to re-derive authority-bearing state by hand.
+    # Absent section -> empty string -> the HANDOFF's own placeholder prose
+    # in the template still shows through render_template, not an error.
+    predecessor_live_state="$(awk '
+        $0 == "## Live state" { f = 1; print; next }
+        f && /^## / { exit }
+        f { print }
+    ' "$predecessor_doc")"
     predecessor_base="$(basename "$predecessor_doc")"
     predecessor_stem="${predecessor_base%.md}"
     predecessor_prefix_part="${predecessor_stem%-"$name"}"
@@ -947,7 +973,7 @@ cmd_next() {
         else
             echo "would-handoff: $predecessor_handoff"
         fi
-        echo "would-launch: claude --model $model --autocompact $console_autocompact -n $session \"load $doc and continue\""
+        echo "would-launch: $CONSOLE_LAUNCH_ENV claude --model $model --autocompact $console_autocompact -n $session \"load $doc and continue\""
         if [ "$ARM" -eq 1 ]; then
             echo "would-armed: name=$session doc=$doc signal=$fill_signal deadline=$deadline_epoch log=$log"
             echo "would-arm-log: $log"
@@ -1019,7 +1045,8 @@ cmd_next() {
             SUCCESSOR_DOC "$successor_doc_ref" \
             REPO "$repo" \
             BUCKET "$bucket" \
-            KIT "$kit"
+            KIT "$kit" \
+            LIVE_STATE "$predecessor_live_state"
         echo "handoff: $predecessor_handoff"
     else
         set +C
@@ -1040,7 +1067,7 @@ cmd_next() {
     fi
     trap - EXIT
 
-    echo "launch: claude --model $model --autocompact $console_autocompact -n $session \"load $doc and continue\""
+    echo "launch: $CONSOLE_LAUNCH_ENV claude --model $model --autocompact $console_autocompact -n $session \"load $doc and continue\""
 
     if [ "$ARM" -eq 1 ]; then
         do_arm "$session" "$doc" "$fill_signal" "$log"

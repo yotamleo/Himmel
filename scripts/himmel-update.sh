@@ -47,7 +47,10 @@ cd "$ROOT"
 is_dirty_tracked() {
     local dir="${1:-.}"
     local out
-    out=$(git -C "$dir" status --porcelain --untracked-files=no 2>/dev/null) || return 2
+    out=$(git -C "$dir" status --porcelain --untracked-files=no 2>/dev/null) || {
+        echo "is_dirty_tracked: git status failed in $dir - treating as dirty" >&2
+        return 0
+    }
     [ -n "$out" ]
 }
 
@@ -651,6 +654,10 @@ STATUS_jira_cli="not-attempted";      DETAIL_jira_cli=""
 STATUS_qmd_fork="not-attempted";      DETAIL_qmd_fork=""
 STATUS_hermes="not-attempted";        DETAIL_hermes=""
 STATUS_luna_template="not-attempted"; DETAIL_luna_template=""
+# graphify is NOT a chain item (sync_graphify is a best-effort advisory step), so
+# it has no fixed row: print_status_table adds one only when sync_graphify set
+# STATUS_graphify — today only for the uv-missing skip (HIMMEL-3077).
+STATUS_graphify="";                   DETAIL_graphify=""
 
 # 1. checkout pull. The real `git pull --ff-only` (apply only — --check mode
 #    has its own read-only fetch+rev-list reporting above and sets STATUS_pull
@@ -1076,6 +1083,11 @@ qmd_fork
 hermes
 luna_template
 EOF
+    # HIMMEL-3077: the one advisory (non-chain) row — only when it has something
+    # to report, so a healthy run keeps the six-item table.
+    if [ -n "$STATUS_graphify" ]; then
+        printf '    %-14s %-14s %s\n' "graphify" "$STATUS_graphify" "$DETAIL_graphify"
+    fi
 }
 
 # ─── graphify pin sync (HIMMEL-1048) ─────────────────────────────────────────
@@ -1094,7 +1106,20 @@ sync_graphify() {
         return 0
     fi
     if ! command -v uv >/dev/null 2>&1; then
-        echo "    skip: uv not on PATH — graphify is uv-managed."
+        # HIMMEL-3077: this precondition-gap skip used to finish green with no
+        # status-table row, so graphify never installed and every graphify
+        # surface failed later with no pointer back — the same "skip that is
+        # not a no-op" shape as HIMMEL-3068's missing-bun qmd skip. Record a
+        # table row and name the platform-correct fix.
+        local uv_hint
+        if [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
+            uv_hint="brew install uv"
+        else
+            uv_hint="curl -LsSf https://astral.sh/uv/install.sh | sh"
+        fi
+        echo "    WARNING: uv not on PATH — graphify is uv-managed and will NOT install or update"
+        echo "    on this machine until uv is installed. Install uv: $uv_hint   (see docs/setup/new-machine.md)"
+        STATUS_graphify="skipped"; DETAIL_graphify="uv missing — $uv_hint"
         return 0
     fi
     # shellcheck source=lib/graphify-bin.sh

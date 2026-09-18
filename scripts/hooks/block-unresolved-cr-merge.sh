@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # PreToolUse hook: block-unresolved-cr-merge.sh
 #
-# Blocks `gh pr merge` on TWO independent gates, run in order:
+# Blocks `gh pr merge` on THREE independent gates, run in order:
 #   1. CR gate (HIMMEL-936): unresolved CodeRabbit review threads or a
 #      CodeRabbit check-run still running on the head SHA (except a proven old
 #      zombie backed by success status + zero unresolved threads, HIMMEL-980;
@@ -10,11 +10,23 @@
 #      CI — no failing/pending check-run, no failing/pending combined status.
 #      This repo has NO branch protection, so GitHub will not otherwise block a
 #      merge over red/pending CI (operator rule: "ready to merge" requires green).
+#   3. Console-GO gate (HIMMEL-2919/HIMMEL-3142): when this is a console-spawned
+#      leg (HIMMEL_CONSOLE_LEG truthy, exported by headed-arm-leg.sh), the PR's
+#      head SHA must have a matching GO file under the handover root's
+#      `.locks/go/` (console-kit/go.sh writes it — "the file IS the GO"). Before
+#      this gate existed, a leg merging via `gh pr merge` directly (instead of
+#      merge-on-green.sh) never consulted `.locks/go/` at all, so the GO was
+#      advisory rather than binding on that path (PR #798). No bypass env var —
+#      same as merge-on-green.sh's own console-GO gate, which this one shares
+#      its predicate with (scripts/lib/go-gate.sh) so the two cannot drift.
+#      Untouched for a non-leg session (HIMMEL_CONSOLE_LEG unset/falsy skips it
+#      whole, no extra gh call).
 # Sibling of check-cr-marker-on-pr-create.sh / block-merged-pr-commit.sh.
 #
 # Exit: 0 allow (incl. every fail-open path), 2 block (stderr shown to model).
 # Bypass: CR_MERGE_GATE_OK=1 and/or CI_MERGE_GATE_OK=1 in the LAUNCHING shell
 # (each gates its own check independently). CR_PROFILE=none skips the CR gate.
+# The console-GO gate has no bypass (see gate 3 above).
 set -uo pipefail
 # NOT set -e: fail-open hook, must never abort on a sub-call's rc 1.
 
@@ -83,7 +95,7 @@ EOF
 
 # Extract the selector + --repo from the merge segment only;
 # selector = first non-flag token after the `merge` verb.
-sel=""; repo=""
+sel=""; repo=""; match_head=""
 set -f
 # shellcheck disable=SC2086
 set -- $merge_segment
@@ -97,10 +109,16 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --repo=*) repo="${1#--repo=}" ;;
         --repo|-R) if [ "$#" -ge 2 ]; then repo="$2"; shift; fi ;;
+        # --match-head-commit is captured (not just consumed) so gate 3 can
+        # verify a leg's merge pins the head its GO was bound to (HIMMEL-3142
+        # CR round). Both spellings: the space form below, and =-form here.
+        --match-head-commit=*) match_head="${1#--match-head-commit=}" ;;
+        --match-head-commit)
+            if [ "$#" -ge 2 ]; then match_head="$2"; shift; fi ;;
         # gh pr merge's own value-taking flags: consume the value token so it
         # is never mistaken for the selector (coderabbit CR round; the rc=3
         # re-anchor still backstops flags this list misses).
-        -b|--body|-F|--body-file|-t|--subject|--match-head-commit|-A|--author-email)
+        -b|--body|-F|--body-file|-t|--subject|-A|--author-email)
             if [ "$#" -ge 2 ]; then shift; fi ;;
         --*|-*) ;;             # other flags: ignore (an unknown value-taking
                                # flag may feed a value token; a wrong selector
@@ -116,6 +134,8 @@ done
 # gate via the pr-view fail-open).
 sel="${sel#\"}"; sel="${sel%\"}"; sel="${sel#\'}"; sel="${sel%\'}"
 repo="${repo#\"}"; repo="${repo%\"}"; repo="${repo#\'}"; repo="${repo%\'}"
+match_head="${match_head#\"}"; match_head="${match_head%\"}"
+match_head="${match_head#\'}"; match_head="${match_head%\'}"
 
 # The cwd branch — fallback anchor when no/bad selector was extracted.
 cwd_branch=""
@@ -175,5 +195,107 @@ fi
 if [ "$ci_rc" = "2" ]; then
     echo "block-red-ci-merge: $ci_reason" >&2
     exit 2
+fi
+
+# ── Console-GO merge gate (HIMMEL-2919/HIMMEL-3142) — runs THIRD, after CR
+# and CI — see the header comment for gate 3. Only binds a console-spawned leg
+# (console_leg truthy, scripts/lib/go-gate.sh — HIMMEL-3149); a non-leg
+# session (HIMMEL_CONSOLE_LEG unset/empty, by far the common case) never
+# reaches the `. go-gate.sh` below, so it costs an ordinary merge nothing —
+# including the case where go-gate.sh itself is missing or broken; this gate
+# must never turn a broken library into a blocker for sessions it was never
+# meant to bind.
+#
+# console_leg lives in scripts/lib/go-gate.sh beside go_gate() itself, shared
+# with merge-on-green.sh's own console-GO gate and go.sh's own refusal, so
+# none of the three can drift on "is this a leg". The five-spelling
+# interpretation (empty/0/false/off/no, case-insensitive, whitespace-stripped)
+# is console_leg's alone — this outer check is only "is the var non-empty at
+# all", cheap enough not to duplicate that logic, so an explicitly-set falsy
+# value (e.g. HIMMEL_CONSOLE_LEG=0) still sources go-gate.sh and gets the
+# real, shared interpretation.
+is_leg=1
+if [ -n "${HIMMEL_CONSOLE_LEG:-}" ]; then
+    # Drop any go_gate/console_leg already in scope first (a PATH executable
+    # or an inherited `export -f` would otherwise survive the source below
+    # undetected) so only the file's own definitions can satisfy the
+    # declare -F checks below.
+    unset -f go_gate console_leg 2>/dev/null || true
+    # shellcheck source=scripts/lib/go-gate.sh
+    # shellcheck disable=SC1091
+    if ! . "$SCRIPT_DIR/../lib/go-gate.sh" 2>/dev/null || ! declare -F console_leg >/dev/null 2>&1; then
+        echo "block-unresolved-cr-merge: cannot load scripts/lib/go-gate.sh — refusing (the console-leg marker check must fail closed, not silently no-op)" >&2
+        exit 2
+    fi
+    console_leg || is_leg=0
+else
+    is_leg=0
+fi
+if [ "$is_leg" -eq 1 ]; then
+    # Resolve pr-number + head-sha the same way cr_merge_gate/ci_green_gate
+    # do above (own `gh pr view`, same $sel/$repo, same re-anchor to
+    # $cwd_branch on an unresolvable selector) — an unresolvable selector
+    # here would also fail the `gh pr merge` this hook is gating, so it
+    # fails OPEN like its siblings. Only the GO FILE check below is
+    # fail-closed (GATE INTEGRITY): once the PR and head are known, an
+    # ambiguous or missing GO must never read as "no gate".
+    go_meta=""
+    if [ -n "$repo" ]; then
+        go_meta=$(gh pr view "$sel" --repo "$repo" --json number,headRefOid 2>/dev/null) || go_meta=""
+    else
+        go_meta=$(gh pr view "$sel" --json number,headRefOid 2>/dev/null) || go_meta=""
+    fi
+    go_num=$(printf '%s' "$go_meta" | jq -r '.number // empty' 2>/dev/null || true)
+    go_sha=$(printf '%s' "$go_meta" | jq -r '.headRefOid // empty' 2>/dev/null || true)
+    if { [ -z "$go_num" ] || [ -z "$go_sha" ]; } && [ -n "$cwd_branch" ] && { [ "$cwd_branch" != "$sel" ] || [ -n "$repo" ]; }; then
+        go_meta=$(gh pr view "$cwd_branch" --json number,headRefOid 2>/dev/null) || go_meta=""
+        go_num=$(printf '%s' "$go_meta" | jq -r '.number // empty' 2>/dev/null || true)
+        go_sha=$(printf '%s' "$go_meta" | jq -r '.headRefOid // empty' 2>/dev/null || true)
+    fi
+    if [ -z "$go_num" ] || [ -z "$go_sha" ]; then
+        exit 0
+    fi
+
+    go_root=""
+    # shellcheck source=scripts/lib/handover-path.sh
+    # shellcheck disable=SC1091
+    if . "$SCRIPT_DIR/../lib/handover-path.sh" 2>/dev/null; then
+        go_root=$(handover_root 2>/dev/null) || go_root=""
+    fi
+    # go-gate.sh is already sourced above (console_leg check) — only confirm
+    # go_gate itself is defined (a truncated file could define console_leg
+    # but not go_gate).
+    if ! declare -F go_gate >/dev/null 2>&1; then
+        echo "block-unresolved-cr-merge: scripts/lib/go-gate.sh sourced but go_gate is not defined (truncated file?) — refusing (a console-spawned leg's GO gate must fail closed, not silently no-op)" >&2
+        exit 2
+    fi
+    go_reason=""
+    go_rc=0
+    go_reason=$(go_gate "$go_num" "$go_sha" "$go_root") || go_rc=$?
+    if [ "$go_rc" -ne 0 ]; then
+        if [ -z "$go_reason" ]; then
+            go_reason="go_gate for PR #$go_num at $go_sha returned an unexpected exit code ($go_rc) — this is a console-spawned leg; send READY to your console and wait for GO"
+        fi
+        echo "block-unresolved-cr-merge: $go_reason" >&2
+        exit 2
+    fi
+
+    # A confirmed GO is bound to $go_sha, but that is THIS hook's own
+    # `gh pr view` read, not a property of the merge command that
+    # follows — a separate `gh pr merge` invocation can land a different
+    # commit unless it pins one itself (coderabbit CR round). Only this
+    # half is fail-closed (GATE INTEGRITY, same boundary as the GO-file
+    # check above): the resolution above still fails OPEN on an
+    # unresolvable selector like its siblings, but once a GO is
+    # confirmed valid, an unpinned or mismatched merge command must
+    # never pass.
+    if [ -z "$match_head" ]; then
+        echo "block-unresolved-cr-merge: a console-spawned leg's merge must pin --match-head-commit $go_sha (the head the GO for PR #$go_num was bound to) — none was given" >&2
+        exit 2
+    fi
+    if [ "$match_head" != "$go_sha" ]; then
+        echo "block-unresolved-cr-merge: --match-head-commit $match_head does not match the GO-bound head $go_sha for PR #$go_num — refusing" >&2
+        exit 2
+    fi
 fi
 exit 0

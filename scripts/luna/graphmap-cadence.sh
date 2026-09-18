@@ -528,10 +528,36 @@ query_one() {
     return 2
 }
 
+# HIMMEL-3048 (HIMMEL-2101 CR round 3, codex-1 Suggestion): the semantic
+# pair's backend label must come from the INSTALLED runner's baked-in
+# --backend, not this script's current BACKEND constant -- a runner armed
+# before HIMMEL-2101 still carries --backend kimi until re-armed, so reading
+# BACKEND here would assert a migration that has not happened on that
+# station. "installed: X" (read from the runner file) vs "configured: X"
+# (BACKEND, no runner armed yet) stay visually distinct so a reader can tell
+# which one they are looking at; a runner that exists but carries no
+# --backend flag gets its own explicit label rather than silently falling
+# back to "configured".
+installed_semantic_backend() {
+    local name="$1" ext runner match
+    if [ "$PLATFORM" = "windows" ]; then ext="bat"; else ext="sh"; fi
+    runner="$BAT_DIR/$name.$ext"
+    if [ -f "$runner" ]; then
+        match=$(grep -o -- '--backend [^[:space:]]*' "$runner" | head -1 || true)
+        if [ -n "$match" ]; then
+            printf 'installed: %s' "${match#--backend }"
+        else
+            printf 'installed: no --backend flag in runner'
+        fi
+    else
+        printf 'configured: %s' "$BACKEND"
+    fi
+}
+
 task_summary() {
     case "$1" in
-        "$TASK_LUNA")       printf ' -> refresh-graph-map luna (weekly, semantic, claude-cli)' ;;
-        "$TASK_HIMMEL")     printf ' -> refresh-graph-map himmel (weekly, semantic, claude-cli)' ;;
+        "$TASK_LUNA")       printf ' -> refresh-graph-map luna (weekly, semantic, %s)' "$(installed_semantic_backend graphmap-luna)" ;;
+        "$TASK_HIMMEL")     printf ' -> refresh-graph-map himmel (weekly, semantic, %s)' "$(installed_semantic_backend graphmap-himmel)" ;;
         "$TASK_AST_LUNA")   printf ' -> graphify update luna (daily, structural, free)' ;;
         "$TASK_AST_HIMMEL") printf ' -> graphify update himmel (hourly, structural, free)' ;;
         "$TASK_PUBLISH_HIMMEL") printf ' -> graph-cadence publish himmel (every 6h, free, auto-merge) [refuses every fire — do not arm until HIMMEL-2654 lands]' ;;

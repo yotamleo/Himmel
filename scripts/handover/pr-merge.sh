@@ -36,6 +36,15 @@
 #   GH_ADMIN_MERGE_OK        When `1`, authorizes the `--admin` fallback on a
 #                            non-cosmetic plain-merge failure (GitHub only).
 #                            Default off. The github backend reads this directly.
+#
+# Jira auto-transition is opt-in per merge (HIMMEL-3143; --jira-transition
+# above), not the old unconditional default. It used to fire on every merge
+# and closed HIMMEL-2975 while sibling work was still outstanding — one of
+# those closes had no open PR, branch or commit referencing the ticket at
+# all, because the owed work lived only in a design doc's task list. An
+# "only transition when no other PR references this ticket" heuristic
+# cannot catch that case, so it cannot be the primary fix, only an optional
+# secondary guard on top of opt-in. See jira_auto_transition_on_merge below.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -50,10 +59,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # GH_ADMIN_MERGE_OK is consumed by the github backend (gh_forge_pr_merge) — it
 # reads the env var directly, so this script no longer normalizes it.
 DRY_RUN=0
+JIRA_TRANSITION_OPT_IN=0
 
 usage() {
     cat <<'EOF'
-Usage: pr-merge.sh [--dry-run]
+Usage: pr-merge.sh [--dry-run] [--jira-transition]
 
 Squash-merges the PR associated with the current handover branch
 (--squash --delete-branch). Repo settings forbid merge-commits, so
@@ -63,13 +73,19 @@ squash is the only allowed mode. Defaults to a plain merge; escalates to
 Refuses (rc=3) if HEAD is not on a `handover/*` branch.
 
 Optional:
-  --dry-run    Print intended gh call; don't invoke.
+  --dry-run          Print intended gh call; don't invoke.
+  --jira-transition  Opt IN to auto-transitioning the ticket on this merge
+                     (HIMMEL-3143). Default: report what would have happened,
+                     do not touch Jira. See jira_auto_transition_on_merge
+                     below for why this is opt-in rather than an open-PR
+                     heuristic.
 EOF
 }
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run)  DRY_RUN=1; shift ;;
+        --jira-transition) JIRA_TRANSITION_OPT_IN=1; shift ;;
         -h|--help)  usage; exit 0 ;;
         *)          echo "ERR pr-merge: unknown arg: $1" >&2; usage >&2; exit 1 ;;
     esac
@@ -290,6 +306,13 @@ jira_auto_transition_on_merge() {
             return 0
             ;;
     esac
+
+    # HIMMEL-3143: opt-in per merge, not a heuristic (see the file header).
+    # Report what WOULD have happened and stop — no comment, no transition.
+    if [ "$JIRA_TRANSITION_OPT_IN" != "1" ]; then
+        echo "pr-merge: PR #$pr merged; would auto-transition $key to '$target_status' (pass --jira-transition to do it — opt-in per HIMMEL-3143)." >&2
+        return 0
+    fi
 
     comment_tmp=$(mktemp "${TMPDIR:-/tmp}/pr-merge-jira-comment.XXXXXX") || return 0
     printf 'PR #%s merged. scripts/handover/pr-merge.sh is attempting to auto-transition this ticket to '"'"'%s'"'"'.\n' \

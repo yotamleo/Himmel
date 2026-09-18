@@ -114,6 +114,30 @@ function Set-HimmelStatusLine {
         # $null.TrimEnd() would throw in the comparison below.
         $prevHudCfg = if (Test-Path $hudConfigPath) { [string](Get-Content $hudConfigPath -Raw) } else { '' }
 
+        # HIMMEL-3157: an operator suppressing the HUD economics rows prefixes
+        # .display.customLineCommand with an env var, e.g.
+        # `HIMMEL_STATUSLINE_ECON=off ` (see scripts/statusline/hud-custom-lines.sh).
+        # Every rewire rebuilds that command from the template, which has no
+        # such prefix, so the operator's override kept reverting. Extract an
+        # exact `HIMMEL_STATUSLINE_ECON=<alnum> ` prefix off the PREVIOUS
+        # config here, before it is overwritten below, so it can be reapplied
+        # to the freshly substituted command once staged. Twin of the bash
+        # lib's $econ_prefix.
+        $econPrefix = ''
+        if ($prevHudCfg) {
+            try {
+                $prevCfgObj = $prevHudCfg | ConvertFrom-Json
+                $prevLineCmd = if ($prevCfgObj.display -and $prevCfgObj.display.PSObject.Properties['customLineCommand']) {
+                    [string]$prevCfgObj.display.customLineCommand
+                } else { '' }
+            } catch {
+                $prevLineCmd = ''
+            }
+            if ($prevLineCmd -match '^HIMMEL_STATUSLINE_ECON=[A-Za-z0-9]+ ') {
+                $econPrefix = $Matches[0]
+            }
+        }
+
         $settingsDir = Split-Path $SettingsPath -Parent
         if (-not $settingsDir) { $settingsDir = '.' }
 
@@ -177,6 +201,28 @@ function Set-HimmelStatusLine {
         if (Test-Path $hudSrc) {
             New-Item -ItemType Directory -Force $hudDir | Out-Null
             $hudCfg = (Get-Content $hudSrc -Raw).Replace('<himmel-path>', $himmelFwd).Replace("`r`n", "`n")
+            # Carry the operator's HIMMEL_STATUSLINE_ECON prefix forward onto
+            # the freshly substituted command, before the JSON validation
+            # below. A failed prepend (e.g. malformed JSON) leaves $hudCfg
+            # unchanged and is left for that validation to catch, same as an
+            # unprefixed run.
+            if ($econPrefix) {
+                try {
+                    $hudCfgObj = $hudCfg | ConvertFrom-Json
+                    if ($hudCfgObj.display -and $hudCfgObj.display.PSObject.Properties['customLineCommand']) {
+                        $hudCfgObj.display.customLineCommand = $econPrefix + $hudCfgObj.display.customLineCommand
+                        $hudCfgReformatted = $hudCfgObj | ConvertTo-Json -Depth 20
+                        if (Get-Command jq -ErrorAction SilentlyContinue) {
+                            $normalized = $hudCfgReformatted | jq --indent 2 .
+                            if ($LASTEXITCODE -eq 0 -and $normalized) { $hudCfgReformatted = $normalized -join "`n" }
+                        }
+                        $hudCfg = $hudCfgReformatted
+                    }
+                } catch {
+                    # Leave $hudCfg unchanged -- the jq validation just below
+                    # (or the source config being malformed) surfaces it.
+                }
+            }
             # Staged as a DOTFILE so the purge below (which runs before
             # anything is published) skips it — see the bash twin's comment.
             $hudTmp = Join-Path $hudDir '.config.json.tmp'

@@ -1215,6 +1215,17 @@ export async function executeRun(deps: {
       ?? ((pid: number) => killTree(pid, (sig) => { try { process.kill(pid, sig as NodeJS.Signals); } catch { /* already gone */ } }));
     const watchStart = Date.now();
     let baseline: number | undefined;
+    // HIMMEL-3146: the elapsed check below and the transcript write it must
+    // not race are decided by two independent timers on the same event loop.
+    // A single stat sample taken on the tick where the window happens to
+    // elapse can be stale by a hair if a same-instant write's own callback
+    // just hasn't had its turn yet (observed under CI's contended bun-suites
+    // run: 1/10 under matched load, never unloaded). Require two consecutive
+    // ticks, one poll apart, to both observe "elapsed" before killing — that
+    // spare tick is what gives an already-due write's timer a chance to run
+    // and be observed as growth first. This is a confirm, not a longer
+    // window: watchWindowMs is unchanged.
+    let elapsedOnce = false;
     watchTimer = setInterval(() => {
       try {
         // Newest session transcript born around/after spawn (60s clock slack).
@@ -1232,6 +1243,7 @@ export async function executeRun(deps: {
           else if (size > baseline) { disarmWatch(); return; } // model responded — healthy, stand down for good
         }
         if (Date.now() - watchStart >= watchWindowMs) {
+          if (!elapsedOnce) { elapsedOnce = true; return; } // one more poll to let a same-instant write land
           disarmWatch();
           if (livePid !== undefined && outputBytes <= 512) {
             startupHang = true;

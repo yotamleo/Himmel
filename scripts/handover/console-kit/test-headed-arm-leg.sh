@@ -11,6 +11,11 @@
 #   3-6. --dry-run argv: default standard succeeds; LEG_CONTEXT=1m is refused
 #        for ordinary and Fable-family models; off-values (e.g. "standard" or
 #        a typo) stay on the cheaper, already-correct standard ceiling.
+#   6c. HIMMEL-3133: --judge forces --profile console-judge, defaults MODEL to
+#       claude-fable-5-1 on the native lane only, withholds IMPL_GUARD_OK/
+#       INLINE_IMPL_OK, raises HIMMEL_READ_CLAMP_LINES, and switches the
+#       preface source to docs/handover/judge-preface.md; conflicts with a
+#       mismatched --profile or with --relay the same way --relay itself does.
 #   7. --dry-run reports LEG_REPO folded into HEADED_ARM_REPO.
 #   8-9. full (non-dry) launch via the same KONSOLE_CMD/PGREP_CMD/
 #        HEADED_ARM_PROC seams headed-arm.sh's own suite uses (the wrapper
@@ -21,6 +26,12 @@
 #       own process environment (the leg-only env headed-arm.sh's child-env
 #       block does not set).
 #   11. LEG_REPO reaches headed-arm.sh's --workdir.
+#   3b/10b (HIMMEL-3139): CONSOLE_CONTEXT is a console-only knob (the
+#       CONSOLE_CONTEXT=1m 1M-context opt-in, console.sh:382) that must never
+#       reach a leg - --dry-run reports the enumerated scrub set and the
+#       resolved value as <unset> even with CONSOLE_CONTEXT=1m ambient in the
+#       launching shell (3b); the real (non-dry) path proves it never reaches
+#       the konsole child's own process environment either (10b).
 #   12. RED control: a mutant headed-arm renderer with --autocompact removed is
 #       refused on the full non-dry launch path before konsole runs.
 #   13. HIMMEL-2765: bank-preflight.sh reporting SKIPPED-FLEET refuses the
@@ -37,6 +48,14 @@
 #       see bank-preflight.sh's own refusal sub-paths), a same-name
 #       reservation directory (belonging to a DIFFERENT still-pending arm in
 #       the duplicate-name case) is left untouched.
+#   26. HIMMEL-3155: when HANDOVER_DIR is unset, the wrapper resolves the
+#       CONSOLE's own handover root (its own process/cwd, before any konsole
+#       child exists) and exports it explicitly into the leg's launch env -
+#       reaches konsole's own process environment (mirrors case 10's shape),
+#       and an end-to-end check: a GO written by go.sh from that SAME
+#       console-like cwd, then go_gate resolved from a DIFFERENT cwd
+#       (simulating the leg's linked worktree) using ONLY the exported
+#       HANDOVER_DIR, finds it.
 #
 # Platform guard (gitbash-only): POSIX bash 3.2+, same as headed-arm.sh
 # itself (konsole is Linux/KDE-only) - no .ps1 twin.
@@ -47,7 +66,7 @@ SCRIPT="$HERE/headed-arm-leg.sh"
 HEADED_ARM="$HERE/../headed-arm.sh"
 # The suite owns every launcher input; an ambient leg shell must not silently
 # turn default-native cases into claudex cases.
-unset LEG_LANE LEG_CONTEXT LEG_REPO LEG_EFFORT HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER IMPL_GUARD_OK INLINE_IMPL_OK HIMMEL_CONSOLE_LEG HIMMEL_LEAN_LEG LEG_CLAUDE_BIN LEG_PROFILE LEG_PROFILE_SETTINGS LEG_PROFILE_PREFACE LEG_PROFILE_MCP_CONFIG 2>/dev/null || true
+unset LEG_LANE LEG_CONTEXT LEG_REPO LEG_EFFORT HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER IMPL_GUARD_OK INLINE_IMPL_OK HIMMEL_CONSOLE_LEG HIMMEL_LEAN_LEG LEG_CLAUDE_BIN LEG_PROFILE LEG_PROFILE_SETTINGS LEG_PROFILE_PREFACE LEG_PROFILE_MCP_CONFIG LEG_SUPPRESS_CR_TRIGGER CR_TRIGGER_SUPPRESS 2>/dev/null || true
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/headed-arm-leg-test.XXXXXX")" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
 trap 'rm -rf "$tmp"' EXIT
@@ -87,7 +106,7 @@ mk_launch_stubs() {
   cat > "$dir/konsole" <<'KONSOLE_EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$(dirname "$0")/record"
-env | grep -E '^(IMPL_GUARD_OK|INLINE_IMPL_OK|HIMMEL_CONSOLE_LEG|HEADED_ARM_REQUIRED_AUTOCOMPACT|HIMMEL_LEAN_LEG|LEG_CLAUDE_BIN|LEG_PROFILE_SETTINGS|LEG_PROFILE_PREFACE|LEG_PROFILE_MCP_CONFIG)=' > "$(dirname "$0")/env-record"
+env | grep -E '^(IMPL_GUARD_OK|INLINE_IMPL_OK|HIMMEL_CONSOLE_LEG|HEADED_ARM_REQUIRED_AUTOCOMPACT|HIMMEL_LEAN_LEG|LEG_CLAUDE_BIN|LEG_PROFILE_SETTINGS|LEG_PROFILE_PREFACE|LEG_PROFILE_MCP_CONFIG|CONSOLE_CONTEXT|HANDOVER_DIR)=' > "$(dirname "$0")/env-record"
 : > "$(dirname "$0")/confirmable"
 sleep 5
 KONSOLE_EOF
@@ -199,6 +218,21 @@ contains "dry-run default: reports IMPL_GUARD_OK=1" "$out" "IMPL_GUARD_OK=1"
 contains "dry-run default: reports INLINE_IMPL_OK=1" "$out" "INLINE_IMPL_OK=1"
 contains "dry-run default: reports HIMMEL_CONSOLE_LEG=1" "$out" "HIMMEL_CONSOLE_LEG=1"
 not_contains "dry-run default: no HIMMEL_CONSOLE_RELAY without --relay" "$out" "HIMMEL_CONSOLE_RELAY"
+contains "dry-run default: scrub list names CONSOLE_CONTEXT" "$out" "scrub=CONSOLE_CONTEXT"
+
+# HIMMEL-3139: a console armed with CONSOLE_CONTEXT=1m in its own environ (the
+# mandatory opt-in for a 1M successor, console.sh:382) must not forward that
+# console-only knob into a leg it arms. Ambient CONSOLE_CONTEXT=1m in THIS
+# suite's own launching shell must not silently satisfy the assertion either -
+# not_contains on a value the wrapper never receives proves nothing - so this
+# sets it explicitly on the invocation, same shape as the LEG_CONTEXT=1m case
+# below. Enumerates the expected scrub set explicitly (not merely "non-empty")
+# so a future console-only knob added without a matching scrub here fails
+# this exact assertion, not a vaguer one.
+rc=0; out="$(CONSOLE_CONTEXT=1m LEG_CONTEXT='' LEG_REPO='' bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "dry-run, ambient CONSOLE_CONTEXT=1m: exit 0 (a leg is unaffected by it)" "$rc" "0"
+contains "dry-run, ambient CONSOLE_CONTEXT=1m: scrubbed to <unset> in the wrapper's own env" "$out" "scrub=CONSOLE_CONTEXT CONSOLE_CONTEXT=<unset>"
+not_contains "dry-run, ambient CONSOLE_CONTEXT=1m: never reported as still set" "$out" "CONSOLE_CONTEXT=1m"
 
 rc=0; out="$(LEG_CONTEXT=1m bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 check "dry-run LEG_CONTEXT=1m: refused with exit 2" "$rc" "2"
@@ -242,9 +276,60 @@ rc=0; out="$(bash "$SCRIPT" --dry-run --relay HIMMEL-9999-leg some/doc.md /tmp/n
 check "dry-run --relay, explicit opus model: tier gate still applies (exit 2)" "$rc" "2"
 contains "dry-run --relay, explicit opus model: refusal is the tier gate" "$out" "Tier"
 
+# --- 6c (HIMMEL-3133). --judge: forces the console-judge profile + the same
+# HIMMEL_CONSOLE_LEG=1 marker every leg carries (design §3.2, "the judge is a
+# leg" - Guard E refuses a judge's own GO identically, no separate marker).
+# Defaults MODEL to claude-fable-5-1 on the native lane only; withholds
+# IMPL_GUARD_OK/INLINE_IMPL_OK (a judge does not implement); raises
+# HIMMEL_READ_CLAMP_LINES; and switches the preface source to
+# docs/handover/judge-preface.md. The Fable default still has to clear the
+# existing tier gate, so this uses a fixture doc carrying a Tier line rather
+# than some/doc.md.
+doc_tier_judge="$tmp/tier-doc-judge.md"
+printf '%s\n' '# fixture brief' '> **Tier:** fable — design: judge adjudication' > "$doc_tier_judge"
+
+rc=0; out="$(env -u IMPL_GUARD_OK -u INLINE_IMPL_OK bash "$SCRIPT" --dry-run --judge HIMMEL-9999-leg "$doc_tier_judge" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "dry-run --judge: exit 0" "$rc" "0"
+contains "dry-run --judge: reports HIMMEL_CONSOLE_LEG=1" "$out" "HIMMEL_CONSOLE_LEG=1"
+contains "dry-run --judge: forces profile=console-judge" "$out" "profile=console-judge"
+contains "dry-run --judge: defaults the model to claude-fable-5-1" "$out" "claude-fable-5-1"
+contains "dry-run --judge: withholds IMPL_GUARD_OK" "$out" "IMPL_GUARD_OK=<unset>"
+contains "dry-run --judge: withholds INLINE_IMPL_OK" "$out" "INLINE_IMPL_OK=<unset>"
+contains "dry-run --judge: raises the read-clamp line limit" "$out" "read-clamp-lines=4000"
+contains "dry-run --judge: preface source is judge-preface.md" "$out" "docs/handover/judge-preface.md"
+
+# --judge --lane claudex: the Fable default is scoped to the native lane only
+# (HIMMEL-3133 explicitly leaves composing --judge with claudex out of scope)
+# - claudex keeps its own gpt-6-astra default untouched, and some/doc.md (no
+# Tier line) proves that default never reached the Opus/Fable tier gate.
+rc=0; out="$(bash "$SCRIPT" --dry-run --judge --lane claudex HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "dry-run --judge --lane claudex: exit 0" "$rc" "0"
+not_contains "dry-run --judge --lane claudex: does not force claude-fable-5-1" "$out" "claude-fable-5-1"
+contains "dry-run --judge --lane claudex: still forces profile=console-judge" "$out" "profile=console-judge"
+
+# --judge conflicts with an explicit non-matching --profile, same shape as --relay.
+rc=0; out="$(bash "$SCRIPT" --dry-run --judge --profile leg-impl HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "dry-run --judge --profile leg-impl: refused with exit 2" "$rc" "2"
+contains "dry-run --judge --profile leg-impl: refusal names console-judge" "$out" "console-judge"
+
+# --judge --relay together: each flag's own conflict check refuses in turn
+# (RELAY forces console-relay first; JUDGE then sees a mismatched non-empty
+# PROFILE and refuses) - no dedicated mutual-exclusion guard needed.
+rc=0; out="$(bash "$SCRIPT" --dry-run --judge --relay HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "dry-run --judge --relay: refused with exit 2" "$rc" "2"
+contains "dry-run --judge --relay: refusal names console-judge" "$out" "console-judge"
+
 # --- 7. LEG_REPO folded into HEADED_ARM_REPO --------------------------------
 rc=0; out="$(LEG_REPO=/some/other/repo bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 contains "dry-run: LEG_REPO folded into HEADED_ARM_REPO" "$out" "HEADED_ARM_REPO=/some/other/repo"
+
+# --- 7b (HIMMEL-3141). LEG_SUPPRESS_CR_TRIGGER folded into CR_TRIGGER_SUPPRESS
+rc=0; out="$(LEG_SUPPRESS_CR_TRIGGER=1 bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+contains "dry-run: LEG_SUPPRESS_CR_TRIGGER folded into CR_TRIGGER_SUPPRESS" "$out" "CR_TRIGGER_SUPPRESS=1"
+
+# --- 7c (HIMMEL-3141). unset LEG_SUPPRESS_CR_TRIGGER -> stays <unset> (default ON)
+rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+contains "dry-run: unset LEG_SUPPRESS_CR_TRIGGER leaves CR_TRIGGER_SUPPRESS unset (default ON)" "$out" "CR_TRIGGER_SUPPRESS=<unset>"
 
 # --- 8-9, 11. full (non-dry) launch: proves the non-dry path builds the SAME
 # argv --dry-run predicted, via the real headed-arm.sh and its own KONSOLE_CMD
@@ -296,14 +381,32 @@ contains "full launch: INLINE_IMPL_OK=1 in the konsole invocation's env" "$env8"
 contains "full launch: HIMMEL_CONSOLE_LEG=1 in the konsole invocation's env" "$env8" "HIMMEL_CONSOLE_LEG=1"
 not_contains "full launch: internal autocompact requirement does not leak into the launched leg" "$env8" "HEADED_ARM_REQUIRED_AUTOCOMPACT="
 
+# --- 10b (HIMMEL-3139). Asserted absence on the REAL (non-dry) path: a
+# console armed with CONSOLE_CONTEXT=1m in its own environ must not forward
+# it into the konsole child's own process environment when it arms a leg -
+# the live symptom this ticket fixes. Mirrors case 10's shape (env-record,
+# not argv - CONSOLE_CONTEXT never appears in argv either way, only in
+# inherited env) so the control is on the same deterministic seam headed-arm's
+# own suite already trusts, not a live /proc read.
+d10b="$tmp/c10b"; mk_launch_stubs "$d10b" "HIMMEL-3139-leg"; mkdir -p "$tmp/repo10b"
+rc=0
+CONSOLE_CONTEXT=1m LEG_CONTEXT='' run_leg "$d10b" "$tmp/repo10b" "HIMMEL-3139-leg" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d10b" || true
+env10b="$(cat "$d10b/env-record" 2>/dev/null || true)"
+check "full launch, ambient CONSOLE_CONTEXT=1m: exit 0 (a leg is unaffected by it)" "$rc" "0"
+not_contains "full launch, ambient CONSOLE_CONTEXT=1m: absent from the konsole invocation's own env" "$env10b" "CONSOLE_CONTEXT="
+
 # --- 12. RED control: mutate the ACTUAL headed-arm launch renderer to drop
 # --autocompact, then drive the wrapper's full non-dry path. The shared argv
 # guard must refuse with exit 2 before konsole runs; this proves the policy is
 # enforced on resolved launch argv rather than only on the wrapper's dry-run
 # context report.
-mutant="$tmp/mutant-headed-arm.sh"
+mutantdir="$tmp/mutant-headed-arm"
+mkdir -p "$mutantdir/scripts/handover" "$mutantdir/scripts/lib"
+mutant="$mutantdir/scripts/handover/headed-arm.sh"
 # shellcheck disable=SC2016  # literal source-text mutation, not shell expansion
 sed 's/ --autocompact "$AUTOCOMPACT"//' "$HEADED_ARM" > "$mutant"
+cp "$HERE/../../lib/console-context.sh" "$mutantdir/scripts/lib/console-context.sh"
 chmod 755 "$mutant"
 d12="$tmp/c12"; mk_launch_stubs "$d12" "HIMMEL-4444-leg"; mkdir -p "$tmp/repo12"
 mrc=0
@@ -1061,6 +1164,56 @@ else
   echo "FAIL - SKIPPED-FLEET: a same-name reservation was removed - would delete a DIFFERENT pending arm's duplicate-refused slot"
   fails=$((fails+1))
 fi
+
+# --- 26 (HIMMEL-3155). GO gate reachable from a leg worktree: the wrapper
+# resolves the CONSOLE's own handover root (its own process/cwd, before ANY
+# konsole child exists) and exports it explicitly as HANDOVER_DIR into the
+# leg's launch env - so a leg's later handover_root() call (run from a
+# linked worktree, whose `git rev-parse --show-toplevel` resolves to the
+# WORKTREE, not the console's checkout) binds to the SAME root the console
+# used to write its GO (console-kit/go.sh), instead of silently re-deriving
+# (and missing) a different one. RED on today's code: no HANDOVER_DIR export
+# exists at all, so every assertion below fails.
+primary26="$tmp/primary26"
+mkdir -p "$primary26/handovers" && git -C "$primary26" init -q
+d26="$tmp/c26"; mk_launch_stubs "$d26" "HIMMEL-3155-leg"; mkdir -p "$tmp/repo26"
+rc=0
+( cd "$primary26" && \
+  IMPL_GUARD_OK='' HIMMEL_CONSOLE_LEG='' HANDOVER_DIR='' \
+  HEADED_ARM_LEG_TARGET="$HEADED_ARM" HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+  KONSOLE_CMD="$d26/konsole" PGREP_CMD="$d26/pgrep" \
+  LEG_REPO="$tmp/repo26" HEADED_ARM_LOCK_DIR="$d26/locks" HEADED_ARM_PROC="$d26/proc" \
+    bash "$SCRIPT" "HIMMEL-3155-leg" "some/doc.md" "$d26/signal-never" "$PAST" "$d26/log" "claude-sonnet-5" \
+) >/dev/null 2>&1 || rc=$?
+wait_record "$d26" || true
+env26="$(cat "$d26/env-record" 2>/dev/null || true)"
+check "HANDOVER_DIR e2e: full launch, console cwd has inline handovers/: exit 0" "$rc" "0"
+contains "HANDOVER_DIR e2e: leg env carries the console's resolved root verbatim" "$env26" "HANDOVER_DIR=$primary26/handovers"
+
+# End-to-end: a GO written by go.sh from the SAME primary-like cwd (the
+# console's own resolution), then go_gate resolved from a DIFFERENT cwd
+# (simulating the leg's linked worktree) using ONLY the HANDOVER_DIR VALUE
+# ACTUALLY CAPTURED FROM THE LEG'S OWN ENV ABOVE (env26, not a hardcoded
+# primary26/handovers - a hardcoded value would pass vacuously even if the
+# wrapper never exported anything), must find it.
+sha26="$(printf 'a%.0s' $(seq 1 40))"
+go_out26="$(cd "$primary26" && bash "$HERE/go.sh" 26260 "$sha26" 2>&1)"
+leg_handover_dir26="$(printf '%s\n' "$env26" | sed -n 's/^HANDOVER_DIR=//p')"
+worktree26="$tmp/worktree26"; mkdir -p "$worktree26"
+gate_script26="$tmp/gate26.sh"
+cat > "$gate_script26" <<EOF
+#!/usr/bin/env bash
+set -u
+. "$HERE/../../lib/handover-path.sh"
+. "$HERE/../../lib/go-gate.sh"
+root="\$(handover_root)" || exit 9
+go_gate 26260 "$sha26" "\$root"
+EOF
+chmod 755 "$gate_script26"
+rc2=0
+( cd "$worktree26" && HANDOVER_DIR="$leg_handover_dir26" bash "$gate_script26" ) >/dev/null 2>&1 || rc2=$?
+check "HANDOVER_DIR e2e: go.sh wrote the GO from the console cwd" "$go_out26" "$primary26/handovers/.locks/go/26260.$sha26"
+check "HANDOVER_DIR e2e: go_gate resolved from a linked worktree (HANDOVER_DIR only) finds the GO" "$rc2" "0"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

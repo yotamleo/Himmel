@@ -37,6 +37,14 @@ Run these, in order, and write the result as the first bullet under
 5. **Leg processes:** `pgrep -af 'claude .*-n {{PREFIX}}-'` — cross-check
    against step 1. A process with no `ListAgents` row is a window whose session
    already exited.
+   Then `bash "{{REPO}}/scripts/himmel-doctor.sh" | grep C29` — it reads each
+   claude process's own `/proc/<pid>/environ` and WARNs on any session that
+   inherited `CLAUDE_CODE_CHILD_SESSION=1`. **If it names YOU, your own
+   transcript is not being saved**: `scripts/context-fill.sh --percent` will
+   return `UNKNOWN`, so the 45 % handover trigger below is unmeasurable and you
+   must hand over on a proxy instead, treating this document as the only
+   durable record of your state. Say so in the first bullet rather than
+   discovering it mid-shift (HIMMEL-3081).
 6. **Host load:** `uptime`, and whatever else competes for RAM on this station.
    The harness kills background tasks under memory pressure, so a vanished
    watcher is not evidence of anything — poll CI by hand when that happens.
@@ -61,6 +69,55 @@ Run these, in order, and write the result as the first bullet under
    `free` (an earlier console released it) do you acquire one yourself, and
    then record the new token instead.
 9. **Tell the predecessor you are live** so it can release its lock and wrap.
+10. **Arm the `tick` monitor now** (HIMMEL-3144 D2). Of the four `## Monitors`
+    below, `tick` is the only one that fires unconditionally (the other three
+    are change-filtered and can go silent for hours with nothing wrong) — it
+    is your one guaranteed periodic wake-up, and a console that never arms it
+    has no structural reason to ever turn again on its own. Call `Monitor`
+    with the `tick` row's command (60 min) and **record the confirmation in
+    your first bullet** — the monitor id/handle it returns. `tick.sh`'s own
+    output always carries a `tick=` field; today it can only ever read
+    `UNKNOWN` (see the `ponytail:` comment in `tick.sh` for why an armed
+    Monitor is not observable from outside the session that armed it) — that
+    field is not a substitute for the confirmation above, it exists so a
+    later read of a run of tick lines shows no honest ARMED/MISSING signal
+    was available, rather than silently assuming one of the other fields
+    would have caught the gap.
+
+## Live state
+
+> **Authority-bearing state — not a summary.** Per-leg RETASK nonces, lock
+> release tokens, the held queue and the last GO live HERE, on disk, not only
+> in this context window: `SessionStart:compact` (HIMMEL-2973 S1) re-injects
+> exactly this section after an autocompact, and `{{KIT}}/tick.sh` flags
+> `livestate=DRIFT:<leg>[,…]` when it disagrees with the leg locks actually
+> held. Update this section on every dispatch, ruling, wrap and GO — not only
+> at handover; `console.sh next` copies it verbatim into the successor's
+> HANDOFF, so a stale line here is a stale line there too.
+>
+> **Every nonce and lock token is a single backtick span, one per leg, with no
+> trailing punctuation inside or directly after the span** — bare
+> token-shaped text stalls the vault's gitleaks pre-commit scanners. Format:
+> `` `<leg>:<nonce>:<lock-token>:<pid>` ``. Anything comparing these values
+> strips backticks before comparing.
+
+legs: <none dispatched yet, or `N1:<nonce>:<lock-token>:<pid>`, `N2:…`>
+queue: <held queue-lock docs in launch order, or "none">
+last GO: <`<pr>:<sha>`, or "none this shift">
+acked: <escalation ids acked this shift (judge consoles only), or "none">
+
+## Compact instructions
+
+`SessionStart:compact` re-injects the `## Live state` section above verbatim,
+this section verbatim, and one fixed line telling you to write the
+`COMPACTED` bullet. **Your first action after every compaction is that
+bullet** — under `## Results`:
+`- COMPACTED <HH:MM> — legs: <as re-injected>, queue: <as re-injected>, last GO: <as re-injected>`
+— copied from what the hook just showed you, which proves you read the
+re-injected state rather than reconstructing it from a fading summary. If the
+hook instead warned that `## Live state` is missing, your first action is
+writing that section from ACTION ZERO step 2's lock sweep before doing
+anything else.
 
 ## Monitors
 
@@ -69,7 +126,7 @@ filters to terminal-state changes and emits nothing otherwise.
 
 | Monitor | Cadence | What it is |
 |---|---|---|
-| tick | 60 min | `bash "{{KIT}}/tick.sh" --doc "<this file>" --token <your token> --legs "<leg docs>"` — one batched line: heartbeat, leg locks, leg processes, armed jobs, suite locks, open PRs, bank |
+| tick | 60 min | **Armed in ACTION ZERO step 10, not here** — the only unconditional monitor of the four, so its absence is the one that goes structurally unnoticed. `bash "{{KIT}}/tick.sh" --doc "<this file>" --token <your token> --legs "N1.md N2.md"` (or `--legs "N1.md,N2.md"` — `--legs` accepts space- **and** comma-separated docs, both spellings produce identical output) — one batched line: heartbeat, leg locks, leg processes, armed jobs, suite locks, open PRs, bank. Per-leg lock status is one of **`FRESH`** (held, heartbeat current), **`STALE`** (held, heartbeat aged), **`FREE`** (the literal token `tick.sh` emits when the lock is gone — reclaim it; its own comments call this state "MISSING" as a concept, but `FREE` is what actually appears in `legs=`), or **`NOTFOUND`** (the leg doc did not resolve — a warning about a typo'd/nonexistent path, *not* a dead lock; never mistake it for a released lock) |
 | bank | 300 s | poll `bank-preflight.sh`, emit only when the state word changes (headroom → park → weekly-ceiling) |
 | CI | 600 s | poll `gh run list -R <owner/repo> --limit 20 --json databaseId,status`, emit only newly-completed runs |
 | notes repo | 300 s | if you keep a second repo for handover state, emit only on STALL (dirty files older than the commit cadence) or PUSH-LAG |
@@ -115,8 +172,12 @@ per decision point, not one per thought.
 A leg reports `READY <pr> <head> GREEN` plus its code-review status line. The
 console verifies independently — all check-runs success at that exact head,
 zero unresolved review threads, attestation trailers in the first commit — and
-only then answers `GO`. The leg merges; it reports `MERGED #<n> → <sha>`; you
-pull the primary and tell the leg to close out its ticket.
+only then runs `console-kit/go.sh <pr> <head>` — that write is the ACT of
+granting the GO (HIMMEL-3142: `gh pr merge` itself is gated on that file for
+a console-spawned leg, not merely on hearing from you); answering `GO` over
+SendMessage is a notification to the leg, not the mechanism. The leg merges;
+it reports `MERGED #<n> → <sha>`; you pull the primary and tell the leg to
+close out its ticket.
 
 Never merge with open review threads, and never read a handoff calling a PR
 clean as evidence — query that PR yourself.
@@ -144,10 +205,14 @@ own end-of-session hook still writing — it prunes on the next sweep.
 - **Never assume a lane is down.** A failing lane is nearly always a local
   credential or config fault — diagnose before rerouting.
 - **Judge consoles only: ack every relay escalation with `ack <escalation
-  id>`.** Keep the shift's acked ids on one line `acked: <id>[,…]` in this
-  console doc (moves into `## Live state` once HIMMEL-2973 Task 9 lands). An
-  id already on that line is a duplicate — reply `duplicate <id>` and take no
-  action.
+  id>`.** Keep the shift's acked ids on the `acked:` line of `## Live state`
+  above. An id already on that line is a duplicate — reply `duplicate <id>`
+  and take no action.
+- **Every judge question leaves four fields, whichever grade asked it:**
+  `grade: call|session` · `prior: <one line, written BEFORE asking>` ·
+  `answer: <verdict line>` · `flipped: y|n`. Write `prior:` before you ask —
+  a prior recorded afterwards measures nothing. This makes M3 (judge flip
+  rate) countable by `grep`; keep the field names exactly as written here.
 
 ## Handing over
 
@@ -167,9 +232,10 @@ At **{{FILL_PERCENT}} % fill or 90 k input in one turn**, hand over:
    the successor's signal path on its `armed:` line — **that** is the path
    step 3 touches, not this console's own `{{FILL_SIGNAL}}` (which fired when
    *this* session launched and nothing waits on it any more).
-2. Fill in the HANDOFF: current head, what is in flight (leg by leg, with
-   nonces and lock tokens), operator rulings made today, the held queue in
-   launch order, and what wrapped. **The HANDOFF wins over this file's Results
+2. `next` copies this file's `## Live state` verbatim into the HANDOFF's
+   in-flight section — nonces and lock tokens do not need retyping. Fill in
+   the rest of the HANDOFF by hand: current head, operator rulings made
+   today, and what wrapped. **The HANDOFF wins over this file's Results
    tail** — write it as the successor's only required read.
 3. `touch` the signal path step 1 printed to fire the arm, and hand your live
    legs to the successor by name.

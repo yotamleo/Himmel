@@ -11,10 +11,13 @@
 #
 # Exit codes:
 #   0  written
-#   1  handover root unresolvable, or the write failed
+#   1  handover root unresolvable, or the write failed; also scripts/lib/go-gate.sh
+#      failed to source or did not define console_leg (fail closed - writing a GO
+#      is sensitive enough that a broken shared lib must never read as "not a leg")
 #   2  usage (arg count, non-digit PR, sha not exactly 40 lowercase hex)
-#   3  refused: run from a console-spawned leg - a leg never writes its own GO
-#   3  refused: run from a console relay
+#   3  refused: run from a console-spawned leg (a judge included - HIMMEL-3133,
+#      "the judge is a leg") - a leg never writes its own GO
+#   3  refused: run from a console relay - only the console writes a GO
 #
 # Platform guard (gitbash-only): POSIX bash 3.2+, same as headed-arm-leg.sh.
 set -u
@@ -45,22 +48,32 @@ if [ "$SHA_OK" -ne 1 ] || [ "${#SHA}" -ne 40 ]; then
     exit 2
 fi
 
-# Same truthiness as merge-on-green.sh's _truthy.
-case "$(printf '%s' "${HIMMEL_CONSOLE_LEG:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
-    ''|0|false|off|no) ;;
-    *)
-        echo "go: refusing - this is a console-spawned leg (HIMMEL_CONSOLE_LEG is set); only the console writes a GO. Send READY to your console and wait for GO." >&2
-        exit 3 ;;
-esac
+HERE="$(cd "$(dirname "$0")" && pwd)"
+
+# console_leg (HIMMEL-3149) is the same shared predicate merge-on-green.sh and
+# block-unresolved-cr-merge.sh enforce with - go.sh is the writer those two
+# gate against, so it must use their exact rule, not a hand-rolled copy of it.
+# Fail closed: this write is sensitive enough that a broken/missing shared lib
+# must never be read as "not a leg".
+unset -f console_leg go_gate 2>/dev/null || true
+# shellcheck source=scripts/lib/go-gate.sh
+# shellcheck disable=SC1091
+if ! . "$HERE/../../lib/go-gate.sh" 2>/dev/null || ! declare -F console_leg >/dev/null 2>&1; then
+    echo "go: cannot load scripts/lib/go-gate.sh - refusing (the console-leg marker check must fail closed, not silently no-op)" >&2
+    exit 1
+fi
+if console_leg; then
+    echo "go: refusing - this is a console-spawned leg (HIMMEL_CONSOLE_LEG is set); only the console writes a GO. Send READY to your console and wait for GO." >&2
+    exit 3
+fi
 
 case "$(printf '%s' "${HIMMEL_CONSOLE_RELAY:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
     ''|0|false|off|no) ;;
     *)
-        echo "go: refusing - this is a console relay (HIMMEL_CONSOLE_RELAY is set); only the judge writes a GO. Escalate the READY to your judge." >&2
+        echo "go: refusing - this is a console relay (HIMMEL_CONSOLE_RELAY is set); only the console writes a GO. Escalate the READY to your console." >&2
         exit 3 ;;
 esac
 
-HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=scripts/lib/handover-path.sh
 # shellcheck disable=SC1091
 if ! . "$HERE/../../lib/handover-path.sh"; then

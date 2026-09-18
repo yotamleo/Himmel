@@ -243,7 +243,8 @@ contains "happy path: clears CLAUDE_CODE_SESSION_ID"    "$rec1" "-u CLAUDE_CODE_
 contains "happy path: passes --separate (own process, not a hand-off)" "$rec1" "--separate"
 contains "happy path: forces session persistence"       "$rec1" "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1"
 contains "happy path: carries the session name via -n"  "$rec1" "-n HIMMEL-9999-leg"
-contains "happy path: carries the default model"        "$rec1" "claude-fable-5-1"
+contains     "happy path: carries the default model (Opus parent, HIMMEL-3079)" "$rec1" "claude-opus-5"
+not_contains "happy path: default model is not Fable"   "$rec1" "claude-fable-5-1"
 contains "happy path: doc reaches the prompt"            "$rec1" "load some/handover-doc.md and continue"
 # HIMMEL-2973: default [context] is now `standard` (--autocompact 200000) --
 # the console arm path is the biggest cache-read cost driver on the fleet
@@ -251,7 +252,7 @@ contains "happy path: doc reaches the prompt"            "$rec1" "load some/hand
 # CONSOLE_CONTEXT=1m in the launching shell, never the bare default.
 contains     "happy path: default context passes autocompact 200000" "$rec1" "--autocompact 200000"
 not_contains "happy path: default context has no autocompact auto"   "$rec1" "--autocompact auto"
-not_contains "happy path: default Fable model carries no [1m] suffix" "$rec1" "[1m]"
+not_contains "happy path: default model carries no [1m] suffix" "$rec1" "[1m]"
 log1="$(cat "$d1/log" 2>/dev/null || true)"
 contains "happy path: log records the default context (standard)" "$log1" "context=standard (default)"
 
@@ -290,11 +291,11 @@ contains "positional 1m with env: passes autocompact auto" "$rec1d" "--autocompa
 
 # --- 2. explicit model overrides the default -----------------------------
 d2="$tmp/c2"; mk_stub "$d2" 1 alive "HIMMEL-leg2"
-run_headed_arm "$d2" "$REPO" "HIMMEL-leg2" "doc2.md" "$d2/signal-never" "$PAST" "claude-opus-5" >/dev/null 2>&1
+run_headed_arm "$d2" "$REPO" "HIMMEL-leg2" "doc2.md" "$d2/signal-never" "$PAST" "claude-fable-5-1" >/dev/null 2>&1
 wait_record "$d2" || true
 rec2="$(cat "$d2/record" 2>/dev/null || true)"
-contains     "explicit model: carries the given model" "$rec2" "claude-opus-5"
-not_contains "explicit model: does not fall back to the default" "$rec2" "claude-fable-5-1"
+contains     "explicit model: carries the given model (Fable stays reachable)" "$rec2" "claude-fable-5-1"
+not_contains "explicit model: does not fall back to the default" "$rec2" "claude-opus-5"
 
 # --- 2b (HIMMEL-2658). explicit [context] positional, non-default value ---
 # claude-opus-5 is not Fable-family, so `standard` here also proves the
@@ -1303,9 +1304,16 @@ contains "resolved launcher: SHELL forced to bash ahead of script(1), independen
 # --- 37. RED control: a mutant that always takes the RECORDER=1 branch
 # must fail case 36's "no script(1) wrapper" assertion for the DEFAULT
 # (unset) launcher - proves that assertion is not vacuous. -----------------
-mutant36="$tmp/mutant-headed-arm-recorder.sh"
+# HIMMEL-2975 T6: the mutant must keep the same scripts/handover + ../lib
+# layout as the real tree -- headed-arm.sh now sources
+# scripts/lib/console-context.sh relative to its OWN path ($0), and a bare
+# copy dropped straight into $tmp has no sibling ../lib to find.
+mutant36dir="$tmp/mutant-headed-arm-recorder"
+mkdir -p "$mutant36dir/scripts/handover" "$mutant36dir/scripts/lib"
+mutant36="$mutant36dir/scripts/handover/headed-arm.sh"
 # shellcheck disable=SC2016 # single-quoted sed script; $RECORDER must stay literal
 sed 's/if \[ "\$RECORDER" = "1" \]; then/if true; then/' "$SCRIPT" > "$mutant36"
+cp "$HERE/../lib/console-context.sh" "$mutant36dir/scripts/lib/console-context.sh"
 chmod 755 "$mutant36"
 d37="$tmp/c37"; mk_stub "$d37" 1 alive "HIMMEL-red36"
 mrc36=0
@@ -1321,31 +1329,32 @@ else
   fails=$((fails+1))
 fi
 
-# --- 38 (HIMMEL-2975). --role relay|judge on the console arm path ---------
-# 38a. --role judge unsets HIMMEL_CONSOLE_RELAY in the child env and stamps
-# role=judge on the armed: log line.
+# --- 38 (HIMMEL-2975, renamed HIMMEL-3133). --role relay|console on the
+# console arm path -----------------------------------------------------------
+# 38a. --role console unsets HIMMEL_CONSOLE_RELAY in the child env and stamps
+# role=console on the armed: log line.
 d38a="$tmp/c38a"; mk_stub "$d38a" 1 alive "HIMMEL-role38a"
 rc38a=0
 KONSOLE_CMD="$d38a/konsole" PGREP_CMD="$d38a/pgrep" HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$d38a/locks" HEADED_ARM_PROC="$d38a/proc" \
-  bash "$SCRIPT" --role judge "HIMMEL-role38a" "doc38a.md" "$d38a/signal-never" "$PAST" "$d38a/log" >/dev/null 2>&1 || rc38a=$?
+  bash "$SCRIPT" --role console "HIMMEL-role38a" "doc38a.md" "$d38a/signal-never" "$PAST" "$d38a/log" >/dev/null 2>&1 || rc38a=$?
 wait_record "$d38a" || true
 rec38a="$(cat "$d38a/record" 2>/dev/null || true)"
 log38a="$(cat "$d38a/log" 2>/dev/null || true)"
-check "38a --role judge: exit 0" "$rc38a" "0"
-contains "38a --role judge: armed log line stamps role=judge" "$log38a" "role=judge"
-contains "38a --role judge: konsole record clears HIMMEL_CONSOLE_RELAY" "$rec38a" "-u HIMMEL_CONSOLE_RELAY"
+check "38a --role console: exit 0" "$rc38a" "0"
+contains "38a --role console: armed log line stamps role=console" "$log38a" "role=console"
+contains "38a --role console: konsole record clears HIMMEL_CONSOLE_RELAY" "$rec38a" "-u HIMMEL_CONSOLE_RELAY"
 
-# 38b. the judge clear is UNCONDITIONAL: an inherited HIMMEL_CONSOLE_RELAY=1
+# 38b. the console clear is UNCONDITIONAL: an inherited HIMMEL_CONSOLE_RELAY=1
 # in the arming shell's own env never reaches the child.
 d38b="$tmp/c38b"; mk_stub "$d38b" 1 alive "HIMMEL-role38b"
 rc38b=0
 HIMMEL_CONSOLE_RELAY=1 \
   KONSOLE_CMD="$d38b/konsole" PGREP_CMD="$d38b/pgrep" HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$d38b/locks" HEADED_ARM_PROC="$d38b/proc" \
-  bash "$SCRIPT" --role judge "HIMMEL-role38b" "doc38b.md" "$d38b/signal-never" "$PAST" "$d38b/log" >/dev/null 2>&1 || rc38b=$?
+  bash "$SCRIPT" --role console "HIMMEL-role38b" "doc38b.md" "$d38b/signal-never" "$PAST" "$d38b/log" >/dev/null 2>&1 || rc38b=$?
 wait_record "$d38b" || true
 rec38b="$(cat "$d38b/record" 2>/dev/null || true)"
-check "38b --role judge with inherited HIMMEL_CONSOLE_RELAY=1: exit 0" "$rc38b" "0"
-contains "38b --role judge with inherited HIMMEL_CONSOLE_RELAY=1: still cleared in the child argv" "$rec38b" "-u HIMMEL_CONSOLE_RELAY"
+check "38b --role console with inherited HIMMEL_CONSOLE_RELAY=1: exit 0" "$rc38b" "0"
+contains "38b --role console with inherited HIMMEL_CONSOLE_RELAY=1: still cleared in the child argv" "$rec38b" "-u HIMMEL_CONSOLE_RELAY"
 
 # 38c. --role relay refuses outright: a relay is a leg, not a console arm.
 outc38c=$(bash "$SCRIPT" --role relay "HIMMEL-role38c" "doc38c.md" "$tmp/signal-never-38c" "$PAST" "$tmp/log38c" 2>&1)
@@ -1353,11 +1362,14 @@ rc38c=$?
 check "38c --role relay: exit 2" "$rc38c" "2"
 contains "38c --role relay: refuses with headed-arm-leg.sh --relay" "$outc38c" "headed-arm-leg.sh --relay"
 
-# 38d. --role bogus: exit 2 + usage.
+# 38d. --role bogus: exit 2 + usage. The unknown-role message must name the
+# new spelling (HIMMEL-3133) -- a passing exit code alone doesn't prove the
+# renamed error text shipped.
 outd38d=$(bash "$SCRIPT" --role bogus "HIMMEL-role38d" "doc38d.md" "$tmp/signal-never-38d" "$PAST" "$tmp/log38d" 2>&1)
 rc38d=$?
 check "38d --role bogus: exit 2" "$rc38d" "2"
 contains "38d --role bogus: usage text" "$outd38d" "usage: headed-arm.sh"
+contains "38d --role bogus: error names 'console' as the valid role" "$outd38d" "--role must be relay or console, got: bogus"
 
 # 38e. --role with no value: exit 2.
 oute38e=$(bash "$SCRIPT" --role 2>&1)
@@ -1376,5 +1388,51 @@ log38f="$(cat "$d38f/log" 2>/dev/null || true)"
 check "38f no --role: exit 0" "$rc38f" "0"
 contains "38f no --role: armed log line stamps role=unsplit" "$log38f" "role=unsplit"
 not_contains "38f no --role: konsole record carries no HIMMEL_CONSOLE_RELAY clear" "$rec38f" "HIMMEL_CONSOLE_RELAY"
+
+# --- 39. --dry-run (HIMMEL-3140): prints the resolved argv + exits 0 BEFORE
+# the signal/deadline wait loop, the claim lock, or konsole/pgrep are ever
+# touched -- proving a flag is accepted must never cost a real billed launch
+# (N279, N13-of-3133). Both stubs below record every invocation to their own
+# counter file (distinct from mk_stub's launch-record file, which only proves
+# a REAL launch happened); asserting those counters stay absent is what
+# proves dry-run never reached the dedup pgrep scan or the konsole exec, not
+# merely that it exited 0.
+d39="$tmp/c39"
+mkdir -p "$d39"
+cat > "$d39/konsole" <<'KONSOLE_EOF'
+#!/usr/bin/env bash
+echo invoked >> "$(dirname "$0")/konsole-calls"
+KONSOLE_EOF
+chmod 755 "$d39/konsole"
+cat > "$d39/pgrep" <<'PGREP_EOF'
+#!/usr/bin/env bash
+echo invoked >> "$(dirname "$0")/pgrep-calls"
+exit 1
+PGREP_EOF
+chmod 755 "$d39/pgrep"
+out39=$(KONSOLE_CMD="$d39/konsole" PGREP_CMD="$d39/pgrep" HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$d39/locks" \
+    bash "$SCRIPT" --dry-run --role console "HIMMEL-dry39" "doc39.md" "$d39/signal-never" "$PAST" "$d39/log" 2>&1)
+rc39=$?
+check "39 --dry-run: exit 0" "$rc39" "0"
+contains "39 --dry-run: reports the session name" "$out39" "HIMMEL-dry39"
+contains "39 --dry-run: reports the doc" "$out39" "doc39.md"
+contains "39 --dry-run: reports role=console" "$out39" "console"
+if [ -e "$d39/konsole-calls" ]; then echo "FAIL - 39 --dry-run: konsole must NOT be invoked"; fails=$((fails+1))
+else echo "ok - 39 --dry-run: konsole must NOT be invoked"; fi
+if [ -e "$d39/pgrep-calls" ]; then echo "FAIL - 39 --dry-run: pgrep must NOT be invoked"; fails=$((fails+1))
+else echo "ok - 39 --dry-run: pgrep must NOT be invoked"; fi
+if [ -d "$d39/locks" ] && [ -n "$(ls -A "$d39/locks" 2>/dev/null)" ]; then
+    echo "FAIL - 39 --dry-run: no claim lock left behind"; fails=$((fails+1))
+else echo "ok - 39 --dry-run: no claim lock left behind"; fi
+
+# --- 39b. --dry-run with a placeholder name copy-pasted from the usage
+# string: refused loudly (exit 2) rather than silently "succeeding" a dry-run
+# on args nobody meant to pass.
+bash "$SCRIPT" --dry-run "<session-name>" "doc.md" "$tmp/signal-never" "$PAST" "$tmp/log39b" >/dev/null 2>&1
+rcb39b=$?
+check "39b --dry-run placeholder name '<session-name>': exit 2" "$rcb39b" "2"
+bash "$SCRIPT" --dry-run "session" "doc.md" "$tmp/signal-never" "$PAST" "$tmp/log39b" >/dev/null 2>&1
+rcc39b=$?
+check "39b --dry-run placeholder name 'session': exit 2" "$rcc39b" "2"
 
 [ "$fails" -eq 0 ] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILED"; exit 1; }

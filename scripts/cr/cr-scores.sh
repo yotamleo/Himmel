@@ -265,11 +265,15 @@ for (const r of filteredRecords) {
     const k = [r.head, r.finding_id, r.artifact || "diff", r.perspective || "off"].join(SEP);
     const eff = amendsMap.has(k) ? Object.assign({}, r, amendsMap.get(k)) : r;
     const effVerdict = typeof eff.verdict === "string" ? eff.verdict.trim() : eff.verdict;
+    // HIMMEL-3161: `fixed` is acceptance too (the code changed in response to
+    // the finding) — fold it into the same `agreed` bucket the agreed% column
+    // and drop-advice read, rather than a dynamic bucket neither ever sees.
+    const bucket = effVerdict === "fixed" ? "agreed" : effVerdict;
     all[r.model].total++;
-    all[r.model][effVerdict] = (all[r.model][effVerdict] || 0) + 1;
+    all[r.model][bucket] = (all[r.model][bucket] || 0) + 1;
     if (inWin) {
       win[r.model].total++;
-      win[r.model][effVerdict] = (win[r.model][effVerdict] || 0) + 1;
+      win[r.model][bucket] = (win[r.model][bucket] || 0) + 1;
     }
   } else if (r.kind === "avail") {
     all[r.model].avail_total++;

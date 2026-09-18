@@ -82,6 +82,34 @@ else
     fail "whitespace in name refused (rc=$rc out='$out')"
 fi
 
+# --- Case 5b: glob metacharacters refused (find -name treats them as
+# wildcards, not literal characters, so an unsanitized name can cross-match
+# another session's console doc under resolve_console_doc's find -name
+# "${name}.md" — HIMMEL-2973 Finding 2) -----------------------------------
+fake_cmdline claude -n "*-console" load doc.md
+out="$(current_session_name)"; rc=$?
+if [ "$rc" -ne 0 ] && [ -z "$out" ]; then
+    pass "glob star in name refused"
+else
+    fail "glob star in name refused (rc=$rc out='$out')"
+fi
+
+fake_cmdline claude -n "foo?bar" load doc.md
+out="$(current_session_name)"; rc=$?
+if [ "$rc" -ne 0 ] && [ -z "$out" ]; then
+    pass "glob question-mark in name refused"
+else
+    fail "glob question-mark in name refused (rc=$rc out='$out')"
+fi
+
+fake_cmdline claude -n "foo[bar]" load doc.md
+out="$(current_session_name)"; rc=$?
+if [ "$rc" -ne 0 ] && [ -z "$out" ]; then
+    pass "glob bracket in name refused"
+else
+    fail "glob bracket in name refused (rc=$rc out='$out')"
+fi
+
 # --- Case 6: missing cmdline file -----------------------------------------
 export CLAUDE_PID="12345"
 export SESSION_NAME_CMDLINE_FILE="$WORK/does-not-exist"

@@ -132,20 +132,41 @@
 # only under this flag. Exports HIMMEL_CONSOLE_RELAY=1, the marker
 # inbox-send.sh's Guard C already refuses --token under and the Task 26
 # write-deny hook will key writes off - a distinct signal from the profile.
+#
+# --judge (HIMMEL-3133 / design §3.2 "the judge is a leg"): launches a judge
+# session through this SAME launcher rather than a separate mechanism. Forces
+# --profile console-judge (a real --profile conflicts, exit 2, same shape as
+# --relay above); an empty MODEL defaults to claude-fable-5-1 but only on the
+# native lane. No new HIMMEL_CONSOLE_JUDGE marker: HIMMEL_CONSOLE_LEG=1 is
+# already exported for every leg, so Guard E (go.sh refuses under it,
+# merge-on-green.sh demands a console GO) already covers a judge - it is a
+# leg, not a new role the guards need to learn. What DOES differ from a
+# plain leg: no IMPL_GUARD_OK/INLINE_IMPL_OK (a judge does not implement),
+# a raised HIMMEL_READ_CLAMP_LINES (independent reading is the job), and the
+# judge preface instead of the leg preface.
+#
+# LEG_SUPPRESS_CR_TRIGGER (HIMMEL-3141): set in the launching shell to
+# suppress the CodeRabbit auto-trigger for this one leg - see the
+# LEG_REPO-style fold below for the mechanism and scripts/lib/cr-trigger-ledger.sh
+# for why a console would ever want this (sequencing the account-wide,
+# roughly-hourly CodeRabbit review slot across several open PRs). Opt-out,
+# default ON: unset changes nothing.
 set -u
 
 usage() {
-    echo "usage: headed-arm-leg.sh [--dry-run] [--lane native|claudex] [--profile <name>] [--relay] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
+    echo "usage: headed-arm-leg.sh [--dry-run] [--lane native|claudex] [--profile <name>] [--relay] [--judge] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
 }
 
 DRY_RUN=0
 RELAY=0
+JUDGE=0
 LANE="${LEG_LANE:-native}"
 PROFILE="${LEG_PROFILE:-}"
 while :; do
     case "${1:-}" in
         --dry-run) DRY_RUN=1; shift ;;
         --relay) RELAY=1; shift ;;
+        --judge) JUDGE=1; shift ;;
         --lane)
             # codex CR fix: `--lane` as the LAST arg leaves only 1 positional,
             # so `shift 2` fails (rc=1) and shifts NOTHING under `set -u`
@@ -182,6 +203,20 @@ if [ "$RELAY" -eq 1 ]; then
     PROFILE="console-relay"
 fi
 
+# --judge (HIMMEL-3133): forces console-judge the same way --relay forces
+# console-relay above - a real conflicting --profile refuses rather than
+# silently overriding. --judge and --relay therefore also refuse each other
+# here (each forces a different profile), which is the correct outcome: a
+# session is not both roles at once.
+if [ "$JUDGE" -eq 1 ]; then
+    if [ -n "$PROFILE" ] && [ "$PROFILE" != "console-judge" ]; then
+        usage
+        echo "headed-arm-leg: --judge forces --profile console-judge (got: $PROFILE)" >&2
+        exit 2
+    fi
+    PROFILE="console-judge"
+fi
+
 case "$LANE" in
     native|claudex) ;;
     *)
@@ -209,8 +244,43 @@ if [ "$RELAY" -eq 1 ]; then
     export LEG_EFFORT
 fi
 
+# --judge defaults MODEL to the Fable tier, but ONLY on the native lane - the
+# tier gate below matches a claude-* prefix, so a claudex judge would carry no
+# cost gate at all under a borrowed default. --judge --lane claudex is left to
+# fall through to the claudex lane's own gpt-6-astra default further down,
+# unchanged: a known gap (design §3.2 P1), not this ticket's to close.
+if [ "$JUDGE" -eq 1 ] && [ "$LANE" = "native" ]; then
+    [ -z "$MODEL" ] && MODEL=claude-fable-5-1
+fi
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 HEADED_ARM="${HEADED_ARM_LEG_TARGET:-$HERE/../headed-arm.sh}"
+
+# HIMMEL-3155: a console-spawned leg that runs merge-on-green.sh from its own
+# (linked) worktree gets exit 17 "no console GO" - handover_root() falls back
+# to `git rev-parse --show-toplevel`, which resolves to the WORKTREE, not the
+# console's checkout, and <worktree>/handovers does not exist. Resolve the
+# handover root HERE, in this wrapper's own process (still running in the
+# CONSOLE's launching cwd - no konsole child exists yet), and export it
+# explicitly as HANDOVER_DIR so the leg's own handover_root() call binds to
+# the exact same root the console used to write its GO (console-kit/go.sh).
+# HANDOVER_DIR is already a registered seam var (scripts/lib/handover-path.sh)
+# read by every handover script; this widens nothing - it only makes each
+# launch's already-resolved root explicit instead of leaving a leg in a
+# linked worktree to silently re-derive (and miss) it. Skip only when the
+# console's own launching shell already set HANDOVER_DIR (Mode B - already
+# correct, nothing to resolve) or when this process can't resolve one either
+# (nothing to export - unchanged behavior from before this ticket).
+if [ -z "${HANDOVER_DIR:-}" ]; then
+    unset -f handover_root 2>/dev/null || true
+    # shellcheck source=scripts/lib/handover-path.sh
+    # shellcheck disable=SC1091
+    if . "$HERE/../../lib/handover-path.sh" 2>/dev/null; then
+        _leg_handover_root="$(handover_root 2>/dev/null)" || _leg_handover_root=""
+        [ -n "$_leg_handover_root" ] && export HANDOVER_DIR="$_leg_handover_root"
+        unset -v _leg_handover_root
+    fi
+fi
 
 # Context resolution (HIMMEL-2766/HIMMEL-2779): off-values stay standard;
 # the one old 1m opt-in is resolved explicitly so the argv guard below can
@@ -222,6 +292,23 @@ else
     CONTEXT="standard"
     RESOLVED_AUTOCOMPACT="200000"
 fi
+
+# HIMMEL-3139: console-only knobs that must never reach a leg's own process,
+# and therefore never reach the konsole child this wrapper execs into via
+# headed-arm.sh (whose env -u list only clears the three HIMMEL-2545
+# session-identity vars, not this one). CONSOLE_CONTEXT is read by
+# headed-arm.sh to pick a CONSOLE's --autocompact ceiling; a leg's ceiling is
+# already pinned above via LEG_CONTEXT/RESOLVED_AUTOCOMPACT, which never
+# consults CONSOLE_CONTEXT, so unsetting it here loses nothing. A console
+# armed with CONSOLE_CONTEXT=1m in its own environ (the same leak, one hop
+# earlier - out of scope here, see the ticket) would otherwise forward it to
+# every leg it arms. Kept as a list, not a bare `unset`, so --dry-run can
+# print it and test-headed-arm-leg.sh can assert the exact set and fail on
+# drift if a future console-only knob needs the same treatment.
+LEG_ENV_SCRUB="CONSOLE_CONTEXT"
+for _leg_env_scrub in $LEG_ENV_SCRUB; do
+    unset "$_leg_env_scrub"
+done
 
 # HIMMEL-2779: a leg's ceiling is the resolved CLI pair, not the absence of a
 # model suffix. Fail before dry-run reporting or preflight when context already
@@ -288,17 +375,49 @@ if [ -n "${LEG_REPO:-}" ]; then
     export HEADED_ARM_REPO
 fi
 
+# LEG_SUPPRESS_CR_TRIGGER (HIMMEL-3141): opt-out-by-console seam for the
+# CodeRabbit auto-trigger hooks (trigger-cr-on-pr-create.sh,
+# trigger-cr-on-push.sh - both route their post through
+# cr_trigger_post_review in scripts/lib/cr-trigger-ledger.sh, so this ONE
+# knob covers both; see that function for why). Set in the LAUNCHING shell
+# (e.g. `LEG_SUPPRESS_CR_TRIGGER=1 bash headed-arm-leg.sh ...`), same
+# pattern as LEG_REPO above, and folded here into CR_TRIGGER_SUPPRESS, the
+# name the hooks/ledger actually read - never a flag, since this is a
+# per-launch console decision, not part of the leg's identity. Opt-out
+# ONLY: leaving it unset changes nothing, which is the ticket's explicit
+# requirement (the auto-trigger hook exists because manual triggering was
+# left to discretion once already and every open PR went unreviewed,
+# HIMMEL-1362) - a default-off seam here would recreate that exact failure.
+if [ -n "${LEG_SUPPRESS_CR_TRIGGER:-}" ]; then
+    export CR_TRIGGER_SUPPRESS=1
+fi
+
 # IMPL_GUARD_OK=1 / INLINE_IMPL_OK=1: leg-only env for
 # guard-implementor-dispatch / orchestrator-inline-guard (HIMMEL-2879).
 # headed-arm.sh's shared console/leg child-env block does not set these.
 # Export into THIS process so both survive konsole's `-e env -u ...`, which
 # only unsets the three HIMMEL-2545 vars and otherwise inherits as-is.
-export IMPL_GUARD_OK=1
-export INLINE_IMPL_OK=1
+# --judge (HIMMEL-3133): a judge does not implement, so neither permission is
+# exported for it. The --dry-run report below reads both via ${VAR:-<unset>}
+# rather than a bare $VAR, since a judge launch never sets them at all and
+# this script runs under `set -u`.
+if [ "$JUDGE" -ne 1 ]; then
+    export IMPL_GUARD_OK=1
+    export INLINE_IMPL_OK=1
+fi
 # HIMMEL_CONSOLE_LEG=1 (HIMMEL-2919): marks the launched process as a
-# console-spawned leg, both lanes. merge-on-green.sh then merges only on the
+# console-spawned leg, both lanes - including --judge (design §3.2, "the
+# judge is a leg": this IS Guard E for a judge too, no separate
+# HIMMEL_CONSOLE_JUDGE marker). merge-on-green.sh then merges only on the
 # console's GO file (console-kit/go.sh), and go.sh refuses to run under it.
 export HIMMEL_CONSOLE_LEG=1
+# HIMMEL_READ_CLAMP_LINES (HIMMEL-3133 / design §3.2): raises read-clamp.sh's
+# whole-file limit for a judge - independent reading is the job. 4000 is a
+# judgment call (no source document names a number): ~10x the leg default of
+# 400, generous for a design-sized doc without reopening the clamp entirely,
+# which stays HIMMEL_READ_CLAMP_OK's own, operator-only lever. The repeat-read
+# half of the clamp (read-clamp.sh's per-range dedup) is untouched.
+[ "$JUDGE" -eq 1 ] && export HIMMEL_READ_CLAMP_LINES=4000
 # HIMMEL_CONSOLE_RELAY=1 (HIMMEL-2975): marks this leg as the Sonnet relay half
 # of a split console. inbox-send.sh's Guard C already refuses --token under it
 # (#733); the Task 26 write-deny hook denies writes under it. Both key off
@@ -325,7 +444,15 @@ fi
 if [ -n "$PROFILE" ]; then
     PROFILES_MJS="${HEADED_ARM_LEG_PROFILES:-$HERE/../../lanes/plugin-profiles.mjs}"
     LEG_SHIM="${HEADED_ARM_LEG_SHIM:-$HERE/../../lanes/leg-claude-launcher.sh}"
-    LEG_PREFACE="${HEADED_ARM_LEG_PREFACE:-$HERE/../../../docs/handover/leg-preface.md}"
+    # --judge (HIMMEL-3133): the leg preface tells a read-only judge to
+    # implement and ship, which is wrong for the role. HEADED_ARM_LEG_PREFACE
+    # stays the higher-precedence test seam either branch honors - only the
+    # DEFAULT changes.
+    if [ "$JUDGE" -eq 1 ]; then
+        LEG_PREFACE="${HEADED_ARM_LEG_PREFACE:-$HERE/../../../docs/handover/judge-preface.md}"
+    else
+        LEG_PREFACE="${HEADED_ARM_LEG_PREFACE:-$HERE/../../../docs/handover/leg-preface.md}"
+    fi
     # Next to the launch log, i.e. inside the per-uid console work dir the
     # console already owns and cleans - never /tmp world-readable, never the
     # repo (it is generated, per-leg state).
@@ -430,14 +557,39 @@ fi
 if [ "$DRY_RUN" -eq 1 ]; then
     printf 'headed-arm-leg: would exec: %s %s %s %s %s %s %s %s\n' \
         "$HEADED_ARM" "$NAME" "$DOC" "$SIGNAL" "$DEADLINE" "$LOG" "$MODEL" "$CONTEXT"
-    printf 'headed-arm-leg: env IMPL_GUARD_OK=%s INLINE_IMPL_OK=%s HIMMEL_CONSOLE_LEG=%s HEADED_ARM_REPO=%s\n' \
-        "$IMPL_GUARD_OK" "$INLINE_IMPL_OK" "$HIMMEL_CONSOLE_LEG" "${HEADED_ARM_REPO:-<derived by headed-arm.sh>}"
+    # HIMMEL-3139: scrub= and the resolved CONSOLE_CONTEXT are folded into this
+    # existing unconditional line (rather than a new line) so the no-flag dry-run
+    # report keeps its established line count - a caller can still set
+    # CONSOLE_CONTEXT=1m and see it reported <unset> here, proving the scrub
+    # above ran in THIS wrapper's own process before it ever execs into
+    # headed-arm.sh.
+    # HIMMEL-3133: ${VAR:-<unset>}, not a bare $VAR - a --judge dry-run never
+    # exports IMPL_GUARD_OK/INLINE_IMPL_OK (see above) and this line must not
+    # die on set -u the moment --judge is passed. A non-judge launch always
+    # has both set to 1, so this stays byte-identical to before for every
+    # existing caller.
+    # HIMMEL-3141: CR_TRIGGER_SUPPRESS folded in the same way, for the same
+    # reason - proves LEG_SUPPRESS_CR_TRIGGER->CR_TRIGGER_SUPPRESS ran in
+    # THIS wrapper's own process, and stays <unset> (the default-ON case)
+    # for every caller that never sets LEG_SUPPRESS_CR_TRIGGER.
+    printf 'headed-arm-leg: env IMPL_GUARD_OK=%s INLINE_IMPL_OK=%s HIMMEL_CONSOLE_LEG=%s HEADED_ARM_REPO=%s scrub=%s CONSOLE_CONTEXT=%s CR_TRIGGER_SUPPRESS=%s HANDOVER_DIR=%s\n' \
+        "${IMPL_GUARD_OK:-<unset>}" "${INLINE_IMPL_OK:-<unset>}" "$HIMMEL_CONSOLE_LEG" "${HEADED_ARM_REPO:-<derived by headed-arm.sh>}" \
+        "$LEG_ENV_SCRUB" "${CONSOLE_CONTEXT:-<unset>}" "${CR_TRIGGER_SUPPRESS:-<unset>}" "${HANDOVER_DIR:-<unset>}"
     # Printed ONLY under --relay: with the flag omitted this line is absent and
     # the dry-run report stays byte-identical to today's, same guarantee shape
     # as the --profile line below.
     if [ "$RELAY" -eq 1 ]; then
         printf 'headed-arm-leg: relay=%s HIMMEL_CONSOLE_RELAY=%s LEG_EFFORT=%s\n' \
             "$RELAY" "$HIMMEL_CONSOLE_RELAY" "$LEG_EFFORT"
+    fi
+    # Printed ONLY under --judge, same guarantee shape as --relay above.
+    # preface-source names the FILE that will be concatenated into the per-leg
+    # preface (LEG_PROFILE_PREFACE, in the --profile line below, is the
+    # generated per-leg copy - this is the one place the SOURCE choice is
+    # directly observable in --dry-run).
+    if [ "$JUDGE" -eq 1 ]; then
+        printf 'headed-arm-leg: judge=%s read-clamp-lines=%s preface-source=%s\n' \
+            "$JUDGE" "${HIMMEL_READ_CLAMP_LINES:-<unset>}" "$LEG_PREFACE"
     fi
     printf 'headed-arm-leg: lane=%s launcher=%s launcher-env=%s' \
         "$LANE" "${HEADED_ARM_LAUNCHER:-claude (native default)}" "${HEADED_ARM_LAUNCHER_ENV:-<none>}"

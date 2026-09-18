@@ -58,7 +58,7 @@ cat > "$W/repo/scripts/handover/queue-lock.sh" <<'STUB'
 case "$1" in
   heartbeat) exit 0 ;;
   status)
-    case "$2" in *N61*) printf '%s\n' 'status: FRESH'; exit 11 ;; *) printf '%s\n' free; exit 0 ;; esac ;;
+    case "$2" in *N61*|*-N1-*|*-N2-*) printf '%s\n' 'status: FRESH'; exit 11 ;; *) printf '%s\n' free; exit 0 ;; esac ;;
 esac
 exit 2
 STUB
@@ -82,8 +82,12 @@ cat > "$W/bin/date" <<'STUB'
 case "$1" in +%H:%M) printf '%s\n' 12:34 ;; *) /bin/date "$@" ;; esac
 STUB
 
-# Default primary-path table: pid 101 (a pinned sonnet leg), 102 (a pinned
-# opus leg), 103 (the console -- no --autocompact, exempt from drift).
+# Default primary-path table: pid 101 (a pinned sonnet leg, named in $LEGS
+# below), 102 (a pinned opus leg belonging to a DIFFERENT console's --legs --
+# HIMMEL-3145: procs=/models= now count only the sessions THIS console
+# dispatched, so 102 is live but must not appear in procs=/models=, only in
+# ceiling= which scans every session regardless of --legs), 103 (the console
+# -- no --autocompact, exempt from drift).
 mkcmdline 101 claude --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-111-legN61 work
 mkcmdline 102 claude --model claude-opus-5 --autocompact 200000 -n LUNA-222-legN9 work
 mkcmdline 103 claude --model claude-sonnet-5 -n HIMMEL-next-console work
@@ -135,7 +139,7 @@ export TICK_BANK_CACHE_FILE="$W/bank.json"
 export CLAUDE_SESSIONS_PROC="$W/proc"
 
 out="$(bash "$SUT")"; rc=$?
-expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE procs=2 models=sonnet:1,opus:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8'
+expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN'
 lines="$(printf '%s\n' "$out" | wc -l | tr -d '[:space:]')"
 if [ "$rc" -eq 0 ] && [ "$lines" = 1 ] && [ "$out" = "$expected" ]; then
     pass 'default run emits exactly the expected one batched line'
@@ -152,7 +156,77 @@ else
 fi
 contains '--verbose labels leg locks' "$verbose" 'leg locks: N61:FRESH,N65:FREE'
 contains '--verbose labels context fill' "$verbose" 'fill: 28'
-contains '--verbose labels leg models (HIMMEL-2976)' "$verbose" 'leg models: sonnet:1,opus:1'
+contains '--verbose labels leg models (HIMMEL-2976, HIMMEL-3145)' "$verbose" 'leg models: sonnet:1'
+
+# --- HIMMEL-3130: a comma-separated --legs is equivalent to space-separated -
+# `for leg in $LEGS` word-splits on IFS whitespace only, so a comma-joined
+# value used to be one iteration over one nonexistent path -- the label was
+# derived from the tail of the whole blob, and every leg but the last vanished
+# from legs=/tails= while being reported as a single false MISSING. RED
+# control (pre-fix tick.sh, this same two-leg fixture): the comma form printed
+# 'legs=N61.md,N65:MISSING' (one collapsed entry) while the space form printed
+# the correct 'legs=N61:FRESH,N65:FREE' -- confirmed manually against
+# scripts/handover/console-kit/tick.sh@8fa186e5 before this fix.
+comma_out="$(bash "$SUT" --legs 'HIMMEL-111-legN61,HIMMEL-222-legN65')"; comma_rc=$?
+space_out="$(bash "$SUT" --legs 'HIMMEL-111-legN61 HIMMEL-222-legN65')"; space_rc=$?
+if [ "$comma_rc" -eq 0 ] && [ "$space_rc" -eq 0 ] && [ "$comma_out" = "$space_out" ]; then
+    pass 'a comma-separated --legs produces byte-identical output to space-separated (HIMMEL-3130)'
+else
+    fail "comma vs space --legs mismatch (comma='$comma_out' space='$space_out')"
+fi
+contains 'the comma-separated form resolves every leg, not just the last (HIMMEL-3130)' "$comma_out" 'legs=N61:FRESH,N65:FREE'
+
+# HIMMEL-3130 (ticket DONE WHEN): legs= must never silently disagree with how
+# many docs --legs named -- the original bug's contradiction was legs= naming
+# ONE leg while procs= (a separately-scanned live table) reported more
+# processes alive, with nothing reconciling the two. Assert the leg-entry
+# count against the docs actually passed, independent of the process table.
+legs_field="$(printf '%s\n' "$comma_out" | grep -oE 'legs=[^ ]+' | cut -d= -f2)"
+legs_count="$(printf '%s\n' "$legs_field" | awk -F',' '{print NF}')"
+if [ "$legs_count" = 2 ]; then
+    pass 'legs= names exactly as many entries as --legs docs were passed (HIMMEL-3130)'
+else
+    fail "legs= entry count mismatch (legs_field='$legs_field' count=$legs_count, expected 2)"
+fi
+
+# --- HIMMEL-2973 S1: livestate= drift field --------------------------------
+# legs=N61:FRESH,N65:FREE above -- only N61 is actually held (the stub
+# queue-lock only reports FRESH for a doc path containing "N61"). Each
+# sub-case below rewrites $W/handover/console.md's `## Live state` section
+# and re-runs the same --legs pair, so only the doc content changes between
+# assertions.
+# shellcheck disable=SC2016  # backtick leg span, literal fixture text
+printf '%s\n' '# console' '' '## Live state' '' \
+    'legs: `N61:nonce-ok:tok-ok:111`' 'queue: none' 'last GO: none' 'acked: none' \
+    > "$W/handover/console.md"
+ok_out="$(bash "$SUT")"; rc=$?
+if [ "$rc" -eq 0 ]; then pass 'livestate=ok run exits 0'; else fail "livestate=ok run exits 0 (rc=$rc)"; fi
+contains 'Live state agreeing with held locks reports ok' "$ok_out" 'livestate=ok'
+
+# Naming ONLY N65 here also makes N61 (the actually held lock) go unnamed --
+# both directions of the mismatch fire at once, so the drift list is BOTH
+# legs, sorted, not N65 alone.
+# shellcheck disable=SC2016  # backtick leg span, literal fixture text
+printf '%s\n' '# console' '' '## Live state' '' \
+    'legs: `N65:nonce-stale:tok-stale:222`' 'queue: none' 'last GO: none' 'acked: none' \
+    > "$W/handover/console.md"
+named_not_held_out="$(bash "$SUT")"; rc=$?
+if [ "$rc" -eq 0 ]; then pass 'livestate=DRIFT (named, not held) run exits 0'; else fail "livestate=DRIFT (named, not held) run exits 0 (rc=$rc)"; fi
+contains 'Live state naming a leg with no held lock is DRIFT' "$named_not_held_out" 'livestate=DRIFT:N61,N65'
+
+printf '%s\n' '# console' '' '## Live state' '' \
+    'legs: none' 'queue: none' 'last GO: none' 'acked: none' \
+    > "$W/handover/console.md"
+held_not_named_out="$(bash "$SUT")"; rc=$?
+if [ "$rc" -eq 0 ]; then pass 'livestate=DRIFT (held, not named) run exits 0'; else fail "livestate=DRIFT (held, not named) run exits 0 (rc=$rc)"; fi
+contains 'a held lock absent from Live state is DRIFT' "$held_not_named_out" 'livestate=DRIFT:N61'
+
+printf '%s\n' '# console' '' 'no Live state section in this doc at all' > "$W/handover/console.md"
+no_section_out="$(bash "$SUT")"; rc=$?
+if [ "$rc" -eq 0 ]; then pass 'livestate=unknown run exits 0'; else fail "livestate=unknown run exits 0 (rc=$rc)"; fi
+contains 'a doc with no Live state section reports unknown, not ok' "$no_section_out" 'livestate=unknown'
+
+rm -f "$W/handover/console.md"
 
 # HIMMEL-2999: /proc absent (CLAUDE_SESSIONS_PROC pointing nowhere) falls back
 # to the old flattened `pgrep -af` parse, kept byte-identical, plus a
@@ -167,8 +241,8 @@ printf '%s\n' \
 STUB
 chmod +x "$W/bin-lossy/pgrep"
 lossy_out="$(CLAUDE_SESSIONS_PROC="$W/no-such-proc" PATH="$W/bin-lossy:$PATH" bash "$SUT")"
-contains 'the /proc-absent fallback still counts the same two legs' "$lossy_out" 'procs=2'
-contains 'the /proc-absent fallback flags the degraded read' "$lossy_out" 'models=sonnet:1,opus:1(lossy)'
+contains 'the /proc-absent fallback still counts the dispatched leg (HIMMEL-3145)' "$lossy_out" 'procs=1'
+contains 'the /proc-absent fallback flags the degraded read' "$lossy_out" 'models=sonnet:1(lossy)'
 contains 'the /proc-absent fallback still reports ceiling=ok' "$lossy_out" 'ceiling=ok'
 
 # codex-2 (HIMMEL-2976 round 1 CR): a leg process matched by the leg filter
@@ -253,14 +327,21 @@ else
 fi
 
 rm -f "$W/handover/HIMMEL-222-legN65.md"
-out="$(FILL_STALE=1 bash "$SUT" --legs 'HIMMEL-111-legN61 HIMMEL-333-legN66')"; rc=$?
+out="$(FILL_STALE=1 bash "$SUT" --legs 'HIMMEL-111-legN61 HIMMEL-333-legN66' 2>"$W/notfound-stderr.txt")"; rc=$?
 if [ "$rc" -eq 0 ]; then
     pass 'missing leg document is tolerated'
 else
     fail "missing leg document is tolerated (rc=$rc)"
 fi
-contains 'missing leg has an explicit lock status' "$out" 'legs=N61:FRESH,N66:MISSING'
-contains 'missing leg has an explicit tail status' "$out" 'tails=N61:LIVE,N66:?'
+# HIMMEL-3130: an unresolvable --legs entry is NOTFOUND, never MISSING --
+# MISSING is reserved for a lock that is genuinely gone, which a console
+# reads as "reclaim this leg's lock". RED control (pre-fix tick.sh, same
+# fixture): stdout printed 'legs=N61:FRESH,N66:MISSING' with an EMPTY stderr
+# -- a bare, unwarned MISSING for a typo'd/unresolvable doc.
+contains 'unresolvable leg has NOTFOUND, not MISSING, as its lock status' "$out" 'legs=N61:FRESH,N66:NOTFOUND'
+contains 'unresolvable leg has an explicit tail status' "$out" 'tails=N61:LIVE,N66:?'
+contains 'an unresolvable leg doc emits a named warning on stderr' "$(cat "$W/notfound-stderr.txt")" 'tick: no such leg doc:'
+case "$out" in *MISSING*) fail 'an unresolvable leg doc never prints bare MISSING' ;; *) pass 'an unresolvable leg doc never prints bare MISSING' ;; esac
 contains 'context-fill rc=3 becomes unknown' "$out" 'fill=?'
 case "$out" in *FILL_RC*) fail 'context-fill failure does not print FILL_RC chatter' ;; *) pass 'context-fill failure does not print FILL_RC chatter' ;; esac
 missing_lines="$(printf '%s\n' "$out" | wc -l | tr -d '[:space:]')"
@@ -284,6 +365,75 @@ case "$burn_out" in *'no transcript found'*) fail '--burn leaks leg-burn stderr 
 noburn_out="$(bash "$SUT" --legs 'HIMMEL-111-legN61')"
 case "$noburn_out" in *burn=*) fail 'burn= appears without --burn' ;; *) pass 'burn= is absent without --burn' ;; esac
 contains '--verbose --burn labels the burn line' "$(bash "$SUT" --verbose --burn --legs 'HIMMEL-111-legN61')" 'leg burn (first-turn/avg-ctx): N61:74.3k/128.1k'
+
+# --- HIMMEL-3145: current-convention leg names (<TICKET>-N<k>-<slug>, no
+# "-leg" substring at all -- docs/handover/console-template.md:104 is the
+# contract every console since HIMMEL-2975 writes) must resolve/count/compare
+# identically to the legacy -legN<k> spelling. This fixture is the ticket's
+# own RED control (console G, 2026-09-17, HIMMEL-3145 evidence): two live
+# legs named this way used to report procs=0 models=none and an
+# unconditional livestate=DRIFT naming every leg twice -- confirmed against
+# scripts/handover/console-kit/tick.sh@6ac483e4 before this fix.
+mkcmdline 110 claude --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-3144-N1-console-idle-guard work
+mkcmdline 111 claude --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-3143-N2-merge-jira-optin work
+mk_pgrep_x "$W/bin-conv" 110 111
+printf '%s\n' '# leg' '- LIVE — working' > "$W/handover/HIMMEL-3144-N1-console-idle-guard.md"
+printf '%s\n' '# leg' '- LIVE — working' > "$W/handover/HIMMEL-3143-N2-merge-jira-optin.md"
+# shellcheck disable=SC2016  # backtick leg span, literal fixture text
+printf '%s\n' '# console' '' '## Live state' '' \
+    'legs: `N1:nonce1:tok1:110`, `N2:nonce2:tok2:111`' 'queue: none' 'last GO: none' 'acked: none' \
+    > "$W/handover/console.md"
+conv_out="$(PATH="$W/bin-conv:$PATH" bash "$SUT" --legs 'HIMMEL-3144-N1-console-idle-guard HIMMEL-3143-N2-merge-jira-optin')"
+contains 'a current-convention leg label resolves to N<k> (HIMMEL-3145)' "$conv_out" 'legs=N1:FRESH,N2:FRESH'
+contains 'current-convention legs are counted in procs= (HIMMEL-3145)' "$conv_out" 'procs=2'
+contains 'current-convention legs are bucketed in models= (HIMMEL-3145)' "$conv_out" 'models=sonnet:2'
+contains 'current-convention legs compare like-with-like in livestate= (HIMMEL-3145)' "$conv_out" 'livestate=ok'
+case "$conv_out" in
+    *DRIFT*) fail 'a current-convention leg must not report livestate=DRIFT (HIMMEL-3145)' ;;
+    *) pass 'a current-convention leg must not report livestate=DRIFT (HIMMEL-3145)' ;;
+esac
+
+# Legacy regression (ticket acceptance): an archived console doc named in the
+# OLD -legN<k>- spelling still resolves to N<k> -- leg_label() must recognise
+# both spellings in the same namespace, not just the new one.
+legacy_out="$(bash "$SUT" --legs 'HIMMEL-3064-legN12-old-console-format' 2>/dev/null)"
+contains 'a legacy -legN<k>- doc still resolves to N<k> (HIMMEL-3145 regression)' "$legacy_out" 'legs=N12:NOTFOUND'
+
+# --- HIMMEL-3145 (ticket root cause 3 / acceptance): a field that cannot be
+# computed must say so. A fatal census scan (pgrep itself failing, rc>1 and
+# not the HIMMEL-3002 degraded-scan rc=3) discards the whole session table --
+# procs=/models= must report "unknown", never a clean "0"/"none" that reads
+# as "no legs are running" when the truth is "the scan itself broke".
+mkdir -p "$W/bin-census-fail"
+cat > "$W/bin-census-fail/pgrep" <<'STUB'
+#!/usr/bin/env bash
+exit 2
+STUB
+chmod +x "$W/bin-census-fail/pgrep"
+census_fail_out="$(PATH="$W/bin-census-fail:$PATH" bash "$SUT" --legs 'HIMMEL-111-legN61')"
+contains 'a fatal census scan reports procs=unknown, not a false procs=0 (HIMMEL-3145)' "$census_fail_out" 'procs=unknown'
+contains 'a fatal census scan reports models=unknown, not a false models=none (HIMMEL-3145)' "$census_fail_out" 'models=unknown'
+case "$census_fail_out" in
+    *'procs=0'*) fail 'a fatal census scan must not render procs=0' ;;
+    *) pass 'a fatal census scan must not render procs=0' ;;
+esac
+
+# --- HIMMEL-3145 (console review, round 2): the same "cannot be computed
+# must say so" rule applies to an EMPTY dispatch set, not just a broken
+# census scan. --legs is optional (usage block, :23) -- with it absent,
+# leg_names stays empty and leg_names_wrapped is ",,", so a matched-nothing
+# filter would print a clean "0" (index(",,", ","name",") is always 0,
+# since the needle is longer than the haystack) even while the default
+# fixture's two legs are live in the session table. procs=0 is only true
+# when there IS a dispatch set and it is empty of matches, never when there
+# is no dispatch set to check against.
+no_legs_out="$(LEGS='' bash "$SUT")"
+contains 'no --legs reports procs=unknown, not a false procs=0 (HIMMEL-3145)' "$no_legs_out" 'procs=unknown'
+contains 'no --legs reports models=unknown, not a false models=none (HIMMEL-3145)' "$no_legs_out" 'models=unknown'
+case "$no_legs_out" in
+    *'procs=0'*) fail 'no --legs must not render procs=0' ;;
+    *) pass 'no --legs must not render procs=0' ;;
+esac
 
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-tick.sh'

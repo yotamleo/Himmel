@@ -745,13 +745,144 @@ _graphify_pin_skip_reset() {
   rm -f "$(_graphify_pin_skip_marker)" 2>/dev/null || true
 }
 
+# _graphify_platform_root -- $1 = claude|codex|hermes -> that platform's
+# config root, honouring the same override each platform's own tooling reads
+# (CLAUDE_CONFIG_DIR / CODEXHOME / HERMESHOME).
+_graphify_platform_root() {
+  case "$1" in
+    claude) printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" ;;
+    codex)  printf '%s\n' "${CODEXHOME:-$HOME/.codex}" ;;
+    hermes) printf '%s\n' "${HERMESHOME:-$HOME/.hermes}" ;;
+  esac
+}
+
+# _graphify_platform_skill_bundle -- $1 = codex|hermes -> "skill_file:refs_bundle"
+# for the packaged content graphify's own installer maps that platform to
+# (graphify's install.py _PLATFORM_CONFIG: codex -> skill-codex.md / codex
+# references; hermes reuses claw's bundle -- skill-claw.md / claw
+# references). Codex and hermes do NOT ship claude's skill.md content; the
+# direct-copy refresh must resolve each platform's own bundle rather than
+# reusing claude's, or it would overwrite their skill with the wrong body.
+_graphify_platform_skill_bundle() {
+  case "$1" in
+    codex)  printf '%s\n' "skill-codex.md:codex" ;;
+    hermes) printf '%s\n' "skill-claw.md:claw" ;;
+  esac
+}
+
+# _graphify_present_platforms -- one platform name per line, for every
+# platform whose skill dir ALREADY exists. Used both to decide which
+# non-Claude platforms _graphify_skill_refresh widens to (HIMMEL-3050) and to
+# name which `graphify install --platform <p>` lines the manual repair recipe
+# should print.
+_graphify_present_platforms() {
+  local plat root
+  for plat in claude codex hermes; do
+    root="$(_graphify_platform_root "$plat")"
+    [ -d "$root/skills/graphify" ] && printf '%s\n' "$plat"
+  done
+  return 0
+}
+
+# _graphify_skill_refresh_one -- copy the resolved skill/references into ONE
+# platform's dst dir. $1=dst $2=label(for messages/recipes) $3=inst version
+# $4=skill_src $5=refs_src $6=require_existing (1 = never create dst; skip
+# silently if it is not already there -- the HIMMEL-1750 never-invent-a-
+# platform invariant, now scoped per platform instead of "just Claude").
+_graphify_skill_refresh_one() {
+  local dst="$1" label="$2" inst="$3" skill_src="$4" refs_src="$5" require_existing="$6"
+  local marker skill_ver stage backup had_skill=0 had_refs=0
+
+  if [ "$require_existing" = "1" ] && [ ! -d "$dst" ]; then
+    return 0
+  fi
+
+  marker="$dst/.graphify_version"
+  skill_ver="$(cat "$marker" 2>/dev/null || true)"
+  [ "$skill_ver" = "$inst" ] && [ -f "$dst/SKILL.md" ] && [ -d "$dst/references" ] && return 0
+  if [ ! -f "$skill_src" ] || [ ! -d "$refs_src" ]; then
+    echo "  WARNING: graphify skill refresh ($label) SKIPPED -- packaged skill layout not found under the installed package (upstream layout change?); skill stays at ${skill_ver:-absent} (package $inst). Run by hand: graphify install --platform $label" >&2
+    echo "  Then re-price the hooks: bash scripts/lib/graphify-bin.sh price-hooks" >&2
+    return 0
+  fi
+  if ! mkdir -p "$dst"; then
+    echo "  WARNING: graphify skill refresh ($label) failed (cannot create $dst); skill stays at ${skill_ver:-absent} (package $inst)." >&2
+    return 0
+  fi
+  # Clear staging names used by older himmel releases, then fail closed if
+  # they survived or SKILL.md is a directory (mv would nest a staged file).
+  rm -rf "$dst/references.tmp" "$dst/SKILL.md.tmp" 2>/dev/null
+  if [ -e "$dst/references.tmp" ] || [ -L "$dst/references.tmp" ] \
+     || [ -e "$dst/SKILL.md.tmp" ] || [ -L "$dst/SKILL.md.tmp" ] \
+     || [ -d "$dst/SKILL.md" ]; then
+    rm -rf "$dst/references.tmp" "$dst/SKILL.md.tmp" 2>/dev/null
+    echo "  WARNING: graphify skill refresh ($label) SKIPPED -- unsafe staging target under $dst could not be cleared; skill stays at ${skill_ver:-absent} (package $inst). Close sessions holding it and re-run." >&2
+    return 0
+  fi
+  stage="$(mktemp -d "$dst.refresh.XXXXXX" 2>/dev/null)" || stage=""
+  backup="$(mktemp -d "$dst.backup.XXXXXX" 2>/dev/null)" || backup=""
+  if [ -z "$stage" ] || [ -z "$backup" ]; then
+    [ -n "$stage" ] && rm -rf "$stage" 2>/dev/null
+    [ -n "$backup" ] && rm -rf "$backup" 2>/dev/null
+    echo "  WARNING: graphify skill refresh ($label) failed (cannot create unique staging paths); skill stays at ${skill_ver:-absent} (package $inst)." >&2
+    return 0
+  fi
+  # Stage both artifacts before touching live content. Unique sibling paths keep
+  # concurrent refreshes from deleting or overwriting each other's copies.
+  if ! cp "$skill_src" "$stage/SKILL.md" 2>/dev/null \
+     || ! cp -R "$refs_src" "$stage/references" 2>/dev/null; then
+    rm -rf "$stage" "$backup" 2>/dev/null
+    echo "  WARNING: graphify skill refresh ($label) failed (copy from the installed package); skill stays at ${skill_ver:-absent} (package $inst). Run by hand: graphify install --platform $label" >&2
+    echo "  Then re-price the hooks: bash scripts/lib/graphify-bin.sh price-hooks" >&2
+    return 0
+  fi
+  # Move the old pair aside before landing either replacement. If any move or
+  # marker write fails, remove the new pair and restore the old pair so a failed
+  # refresh cannot leave mixed-version content behind.
+  if [ -e "$dst/SKILL.md" ] || [ -L "$dst/SKILL.md" ]; then
+    if ! mv "$dst/SKILL.md" "$backup/SKILL.md"; then
+      rm -rf "$stage" "$backup" 2>/dev/null
+      echo "  WARNING: graphify skill refresh ($label) partially failed during the swap; marker NOT advanced; run by hand: graphify install --platform $label" >&2
+      echo "  Then re-price the hooks: bash scripts/lib/graphify-bin.sh price-hooks" >&2
+      return 0
+    fi
+    had_skill=1
+  fi
+  if [ -e "$dst/references" ] || [ -L "$dst/references" ]; then
+    if ! mv "$dst/references" "$backup/references"; then
+      [ "$had_skill" -eq 1 ] && mv "$backup/SKILL.md" "$dst/SKILL.md" 2>/dev/null
+      rm -rf "$stage" "$backup" 2>/dev/null
+      echo "  WARNING: graphify skill refresh ($label) SKIPPED -- the existing references/ could not be moved (a file may be locked); skill stays at ${skill_ver:-absent} (package $inst). Close sessions holding it and re-run." >&2
+      return 0
+    fi
+    had_refs=1
+  fi
+  if mv "$stage/references" "$dst/references" \
+     && mv "$stage/SKILL.md" "$dst/SKILL.md" \
+     && printf '%s' "$inst" > "$marker"; then
+    rm -rf "$stage" "$backup" 2>/dev/null
+    echo "  graphify skill refreshed ($label) to $inst (was ${skill_ver:-absent}) by direct copy from the package (no installer side effects)."
+  else
+    rm -rf "$dst/references" "$dst/SKILL.md" 2>/dev/null
+    [ "$had_refs" -eq 1 ] && mv "$backup/references" "$dst/references" 2>/dev/null
+    [ "$had_skill" -eq 1 ] && mv "$backup/SKILL.md" "$dst/SKILL.md" 2>/dev/null
+    rm -rf "$stage" "$backup" 2>/dev/null
+    echo "  WARNING: graphify skill refresh ($label) partially failed during the swap; marker NOT advanced; run by hand: graphify install --platform $label" >&2
+    echo "  Then re-price the hooks: bash scripts/lib/graphify-bin.sh price-hooks" >&2
+  fi
+  return 0
+}
+
 # the common already-current case costs one file read after the version probe.
+# Refreshes the Claude skill unconditionally (pre-existing HIMMEL-1750
+# behaviour, unchanged: Claude's dir is created if absent) plus every OTHER
+# platform (codex, hermes) whose skill dir is ALREADY on disk -- HIMMEL-3050
+# widens the refresh without ever inventing a platform that wasn't there.
 _graphify_skill_refresh() {
-  local root marker skill_ver py pkg inst dst stage backup tool_dir skill_src refs_src _cand
-  local had_skill=0 had_refs=0
+  local root py pkg inst dst tool_dir skill_src refs_src _cand plat plat_root
+  local bundle plat_skill_file plat_refs_bundle
   root="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
   dst="$root/skills/graphify"
-  marker="$dst/.graphify_version"
   tool_dir="$(_graphify_uv_tool_dir)"
   py=""
   for _cand in "$tool_dir/graphifyy/Scripts/python.exe" \
@@ -773,8 +904,6 @@ _graphify_skill_refresh() {
     echo "  WARNING: graphify skill refresh SKIPPED -- the uv-managed Python cannot resolve graphifyy package metadata." >&2
     return 0
   fi
-  skill_ver="$(cat "$marker" 2>/dev/null || true)"
-  [ "$skill_ver" = "$inst" ] && [ -f "$dst/SKILL.md" ] && [ -d "$dst/references" ] && return 0
   case "$(uname -s 2>/dev/null || echo)" in
     MINGW*|MSYS*|CYGWIN*)
       skill_src="$pkg/skill-windows.md"
@@ -785,76 +914,17 @@ _graphify_skill_refresh() {
       refs_src="$pkg/skills/claude/references"
       ;;
   esac
-  if [ ! -f "$skill_src" ] || [ ! -d "$refs_src" ]; then
-    echo "  WARNING: graphify skill refresh SKIPPED -- packaged skill layout not found under the installed package (upstream layout change?); skill stays at ${skill_ver:-absent} (package $inst). Run by hand: graphify install --platform claude" >&2
-    echo "  Then re-price the hooks: bash scripts/lib/graphify-bin.sh price-hooks" >&2
-    return 0
-  fi
-  if ! mkdir -p "$dst"; then
-    echo "  WARNING: graphify skill refresh failed (cannot create $dst); skill stays at ${skill_ver:-absent} (package $inst)." >&2
-    return 0
-  fi
-  # Clear staging names used by older himmel releases, then fail closed if
-  # they survived or SKILL.md is a directory (mv would nest a staged file).
-  rm -rf "$dst/references.tmp" "$dst/SKILL.md.tmp" 2>/dev/null
-  if [ -e "$dst/references.tmp" ] || [ -L "$dst/references.tmp" ] \
-     || [ -e "$dst/SKILL.md.tmp" ] || [ -L "$dst/SKILL.md.tmp" ] \
-     || [ -d "$dst/SKILL.md" ]; then
-    rm -rf "$dst/references.tmp" "$dst/SKILL.md.tmp" 2>/dev/null
-    echo "  WARNING: graphify skill refresh SKIPPED -- unsafe staging target under $dst could not be cleared; skill stays at ${skill_ver:-absent} (package $inst). Close sessions holding it and re-run." >&2
-    return 0
-  fi
-  stage="$(mktemp -d "$dst.refresh.XXXXXX" 2>/dev/null)" || stage=""
-  backup="$(mktemp -d "$dst.backup.XXXXXX" 2>/dev/null)" || backup=""
-  if [ -z "$stage" ] || [ -z "$backup" ]; then
-    [ -n "$stage" ] && rm -rf "$stage" 2>/dev/null
-    [ -n "$backup" ] && rm -rf "$backup" 2>/dev/null
-    echo "  WARNING: graphify skill refresh failed (cannot create unique staging paths); skill stays at ${skill_ver:-absent} (package $inst)." >&2
-    return 0
-  fi
-  # Stage both artifacts before touching live content. Unique sibling paths keep
-  # concurrent refreshes from deleting or overwriting each other's copies.
-  if ! cp "$skill_src" "$stage/SKILL.md" 2>/dev/null \
-     || ! cp -R "$refs_src" "$stage/references" 2>/dev/null; then
-    rm -rf "$stage" "$backup" 2>/dev/null
-    echo "  WARNING: graphify skill refresh failed (copy from the installed package); skill stays at ${skill_ver:-absent} (package $inst). Run by hand: graphify install --platform claude" >&2
-    echo "  Then re-price the hooks: bash scripts/lib/graphify-bin.sh price-hooks" >&2
-    return 0
-  fi
-  # Move the old pair aside before landing either replacement. If any move or
-  # marker write fails, remove the new pair and restore the old pair so a failed
-  # refresh cannot leave mixed-version content behind.
-  if [ -e "$dst/SKILL.md" ] || [ -L "$dst/SKILL.md" ]; then
-    if ! mv "$dst/SKILL.md" "$backup/SKILL.md"; then
-      rm -rf "$stage" "$backup" 2>/dev/null
-      echo "  WARNING: graphify skill refresh partially failed during the swap; marker NOT advanced; run by hand: graphify install --platform claude" >&2
-      echo "  Then re-price the hooks: bash scripts/lib/graphify-bin.sh price-hooks" >&2
-      return 0
-    fi
-    had_skill=1
-  fi
-  if [ -e "$dst/references" ] || [ -L "$dst/references" ]; then
-    if ! mv "$dst/references" "$backup/references"; then
-      [ "$had_skill" -eq 1 ] && mv "$backup/SKILL.md" "$dst/SKILL.md" 2>/dev/null
-      rm -rf "$stage" "$backup" 2>/dev/null
-      echo "  WARNING: graphify skill refresh SKIPPED -- the existing references/ could not be moved (a file may be locked); skill stays at ${skill_ver:-absent} (package $inst). Close sessions holding it and re-run." >&2
-      return 0
-    fi
-    had_refs=1
-  fi
-  if mv "$stage/references" "$dst/references" \
-     && mv "$stage/SKILL.md" "$dst/SKILL.md" \
-     && printf '%s' "$inst" > "$marker"; then
-    rm -rf "$stage" "$backup" 2>/dev/null
-    echo "  graphify skill refreshed to $inst (was ${skill_ver:-absent}) by direct copy from the package (no installer side effects)."
-  else
-    rm -rf "$dst/references" "$dst/SKILL.md" 2>/dev/null
-    [ "$had_refs" -eq 1 ] && mv "$backup/references" "$dst/references" 2>/dev/null
-    [ "$had_skill" -eq 1 ] && mv "$backup/SKILL.md" "$dst/SKILL.md" 2>/dev/null
-    rm -rf "$stage" "$backup" 2>/dev/null
-    echo "  WARNING: graphify skill refresh partially failed during the swap; marker NOT advanced; run by hand: graphify install --platform claude" >&2
-    echo "  Then re-price the hooks: bash scripts/lib/graphify-bin.sh price-hooks" >&2
-  fi
+
+  _graphify_skill_refresh_one "$dst" "claude" "$inst" "$skill_src" "$refs_src" 0
+
+  for plat in codex hermes; do
+    plat_root="$(_graphify_platform_root "$plat")"
+    bundle="$(_graphify_platform_skill_bundle "$plat")"
+    plat_skill_file="${bundle%%:*}"
+    plat_refs_bundle="${bundle##*:}"
+    _graphify_skill_refresh_one "$plat_root/skills/graphify" "$plat" "$inst" \
+      "$pkg/$plat_skill_file" "$pkg/skills/$plat_refs_bundle/references" 1
+  done
   return 0
 }
 
@@ -944,6 +1014,9 @@ graphify_update() {
         echo "        To advance the pin: close the Claude Code sessions holding graphify-mcp"
         echo "        (each live session spawns one), then re-run. Or install by hand once clear:"
         echo "            uv tool install --force --with mcp '$spec'"
+        for _plat in $(_graphify_present_platforms); do
+          echo "            graphify install --platform $_plat"
+        done
       } >&2
       # Share the WSL store like EVERY other path that leaves a working
       # uv-managed install in place and returns 0 (already-at-pin,
@@ -1012,6 +1085,9 @@ graphify_update() {
         echo "        To advance the pin, either close the Claude Code sessions holding graphify-mcp"
         echo "        (each live session spawns one) and install by hand:"
         echo "            uv tool install --force --with mcp '$spec'"
+        for _plat in $(_graphify_present_platforms); do
+          echo "            graphify install --platform $_plat"
+        done
         echo "        or, on a host that genuinely cannot probe, re-run with the override:"
         echo "            GRAPHIFY_UNPROBED_OK=1 <this command>"
       } >&2

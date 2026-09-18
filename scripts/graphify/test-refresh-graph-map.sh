@@ -2983,6 +2983,22 @@ else
   fail "T42g missing-timeout gate should skip sweep + print message (rc=$rc head=$nt_head_before->$nt_head_after): $out calls=$(cat "$PULLLOG")"
 fi
 
+# T42g2 (HIMMEL-3077): with no functional timeout the run deadline is DISABLED,
+# and that message must name the remedy (macOS: brew install coreutils provides
+# gtimeout) the way the pull-before-regenerate message above already does.
+# Reuses NOBIN (timeout + gtimeout present but failing the GNU -k probe).
+NT2CORPUS="$WS/nt2corpus"; NT2MAPS="$WS/nt2maps"; mkdir -p "$NT2CORPUS/notes" "$NT2MAPS"
+printf '# n\ncontent\n' > "$NT2CORPUS/notes/a.md"
+out=$( PATH="$NOBIN:$PATH" CADENCE_BANK_SKIP_REFRESH=1 CADENCE_BANK_CACHE="$WS/no-bank-cache.json" \
+  bash "$SCRIPT" --name nt2 --corpus-root "$NT2CORPUS" --backend claude-cli \
+  --maps-dir "$NT2MAPS" --title NT2 --slug nt2-map 2>&1 ); rc=$?
+if [ "$rc" -eq 0 ] && grep -q "run deadline DISABLED" <<< "$out" \
+   && grep -q "brew install coreutils" <<< "$out" && grep -q "gtimeout" <<< "$out"; then
+  pass "T42g2 no-timeout run-deadline message names the coreutils/gtimeout remedy"
+else
+  fail "T42g2 DISABLED message should name 'brew install coreutils' + gtimeout (rc=$rc): $out"
+fi
+
 # T42h (HIMMEL-2245): T42a/T42e's hooks must not vanish when `git init` leaves
 # no `.git/hooks/` (the template copy is not guaranteed — observed absent on a
 # concurrent Windows full-corpus run, where the old bare `cat >` failed with

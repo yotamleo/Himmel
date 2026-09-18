@@ -13,11 +13,20 @@
 # release .deb / zip) instead of upstream's `curl | sh` one-liner, which
 # himmel does not run unattended.
 #
+# On Linux, install method is selected by who owns RTK_BIN_PATH (HIMMEL-3049):
+# a dpkg-owned binary (Debian/Ubuntu) still takes the deb + `sudo apt` path
+# above; a NON-package-owned binary (e.g. the ~/.local/bin/rtk static-pie
+# musl build machine-setup's non-apt path leaves behind, or any other
+# machine with no apt at all) is replaced directly from the release's
+# `<arch>-unknown-linux-*` tarball, verified against that release's own
+# `checksums.txt` -- no `sudo`, since the path is already user-writable.
+#
 # This is an UPGRADER, not an installer: a machine with no rtk installed is
 # rc=2, not a fresh install. Safety is the whole point:
 #   1. record the current version (rtk --version)
 #   2. back up the current binary before touching anything
-#   3. replace it
+#   3. replace it (deb+apt, or tarball+checksum -- a checksum mismatch is
+#      fail-closed: the live binary is never written)
 #   4. smoke-test the replacement — --version must parse strictly newer, PLUS
 #      one trivial functional probe (`rtk ls <tmpdir>`, verified by hand
 #      against the real 0.43.0 install before this script was written)
@@ -37,14 +46,23 @@
 #                         --version / the functional probe (default: rtk).
 #   RTK_LATEST_TAG         skip the GitHub releases/latest API call and use
 #                         this tag directly (e.g. v0.44.0).
-#   RTK_INSTALL_DIR        scratch dir for the downloaded .deb + the
-#                         pre-upgrade backup (default: a fresh mktemp -d).
+#   RTK_INSTALL_DIR        scratch dir for the downloaded .deb (or tarball +
+#                         checksums.txt) + the pre-upgrade backup (default: a
+#                         fresh mktemp -d).
 #   RTK_DOWNLOAD_CMD       replace the entire fetch+install step with this
 #                         shell command (env RTK_TARGET_VERSION,
 #                         RTK_TARGET_TAG, RTK_BIN_PATH, RTK_INSTALL_DIR are
-#                         exported to it). Unset in production: does the
-#                         real curl-the-deb + `sudo apt install -y` flow
-#                         ubuntu.sh uses.
+#                         exported to it), taking precedence over BOTH the
+#                         deb+apt and tarball+checksum branches below.
+#                         Unset in production: does the real deb+apt or
+#                         tarball+checksum flow, chosen by RTK_BIN_OWNER.
+#   RTK_BIN_OWNER          force dpkg|other instead of auto-detecting via
+#                         `dpkg -S "$RTK_BIN_PATH"` -- selects the deb+apt
+#                         install (dpkg) or the tarball+checksum install
+#                         (other, or any host with no dpkg at all).
+#   RTK_UPGRADE_ARCH       force x86_64|aarch64 instead of deriving from
+#                         `uname -m`, for the tarball asset name (only
+#                         consulted on the "other" RTK_BIN_OWNER branch).
 #   RTK_PWSH_BIN           pwsh/powershell.exe override for the Windows
 #                         dispatch (default: resolved from PATH).
 #   RTK_UPGRADE_LOCK_TTL   seconds after which a held concurrency lock is
@@ -53,7 +71,8 @@
 # Exit codes:
 #   0  upgraded, or already current (both are a clean no-op on re-run)
 #   2  environment unusable — no rtk installed, unsupported platform, no
-#      curl/jq, or the release tag is malformed / asset could not be resolved
+#      curl/jq/tar/sha256sum, an unsupported CPU arch for the tarball
+#      branch, or the release tag is malformed / asset could not be resolved
 #   3  another upgrade already holds the concurrency lock — refused, never
 #      queued (a stacked nightly cadence run must fail fast, not wait)
 #   4  the upgrade was attempted and FAILED; the pre-upgrade backup was
@@ -170,6 +189,39 @@ if [ -z "$CURRENT_VERSION" ]; then
   exit 2
 fi
 
+# BIN_OWNER selects the install method (HIMMEL-3049): dpkg only ever owns a
+# path it put there itself (`dpkg -S` fails outright on any other path, no
+# false positives), so this is a safe default even when dpkg exists but
+# RTK_BIN_PATH is a manually-placed binary like ~/.local/bin/rtk.
+if [ -n "${RTK_BIN_OWNER:-}" ]; then
+  BIN_OWNER="$RTK_BIN_OWNER"
+elif command -v dpkg >/dev/null 2>&1 && dpkg -S "$RTK_BIN_PATH" >/dev/null 2>&1; then
+  BIN_OWNER="dpkg"
+else
+  BIN_OWNER="other"
+fi
+
+# Resolve the tarball asset name up front, before any network call or
+# backup, same "environment unusable -> exit 2 immediately" treatment as the
+# unsupported-platform check above -- an arch with no published tarball is
+# not a failed upgrade attempt, it's a machine this script cannot serve yet.
+TARBALL_ASSET=""
+if [ "$BIN_OWNER" != "dpkg" ]; then
+  ARCH="${RTK_UPGRADE_ARCH:-$(uname -m 2>/dev/null || echo unknown)}"
+  case "$ARCH" in
+    # rtk-ai/rtk publishes a musl x86_64 build (matching the static-pie
+    # ~/.local/bin/rtk binary this branch exists for) but only a gnu
+    # aarch64 build -- verified against the v0.49.0 release asset list
+    # (HIMMEL-3049); not a hardcoded x86_64-only assumption.
+    x86_64|amd64) TARBALL_ASSET="rtk-x86_64-unknown-linux-musl.tar.gz" ;;
+    aarch64|arm64) TARBALL_ASSET="rtk-aarch64-unknown-linux-gnu.tar.gz" ;;
+    *)
+      echo "upgrade-rtk: unsupported CPU architecture '$ARCH' -- no rtk release tarball for this arch (see rtk-ai/rtk releases)." >&2
+      exit 2
+      ;;
+  esac
+fi
+
 if [ -n "${RTK_LATEST_TAG:-}" ]; then
   TARGET_TAG="$RTK_LATEST_TAG"
 else
@@ -194,7 +246,11 @@ fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
   echo "DRY upgrade-rtk: $RTK_BIN_PATH  $CURRENT_VERSION -> $TARGET_VERSION (tag $TARGET_TAG)"
-  echo "DRY would back up $RTK_BIN_PATH, install the new rtk_amd64.deb, smoke-test, and roll back on any failure."
+  if [ "$BIN_OWNER" = "dpkg" ]; then
+    echo "DRY would back up $RTK_BIN_PATH, install the new rtk_amd64.deb, smoke-test, and roll back on any failure."
+  else
+    echo "DRY would back up $RTK_BIN_PATH, download+verify $TARBALL_ASSET against checksums.txt, replace it in place, smoke-test, and roll back on any failure."
+  fi
   exit 0
 fi
 
@@ -333,11 +389,12 @@ if [ -n "${RTK_DOWNLOAD_CMD:-}" ]; then
     announce_rollback
     exit 4
   fi
-else
-  # Real flow (mirrors ubuntu.sh's "Install RTK" step): the unversioned
-  # rtk_amd64.deb alias survives both version AND debian-revision bumps —
-  # see ubuntu.sh's comment on the same derivation. Assumes sudo credentials
-  # are already usable in this shell, same assumption ubuntu.sh makes.
+elif [ "$BIN_OWNER" = "dpkg" ]; then
+  # Real deb+apt flow (mirrors ubuntu.sh's "Install RTK" step), unchanged:
+  # the unversioned rtk_amd64.deb alias survives both version AND
+  # debian-revision bumps — see ubuntu.sh's comment on the same derivation.
+  # Assumes sudo credentials are already usable in this shell, same
+  # assumption ubuntu.sh makes.
   DEB="$INSTALL_DIR/rtk_amd64.deb"
   if ! curl -fL --max-time 120 "https://github.com/rtk-ai/rtk/releases/download/${TARGET_TAG}/rtk_amd64.deb" -o "$DEB"; then
     echo "upgrade-rtk: download of rtk_amd64.deb ($TARGET_TAG) failed -- $RTK_BIN_PATH was never touched." >&2
@@ -348,6 +405,74 @@ else
   # configured for this user -- fail fast with a clear message instead.
   if ! sudo -n apt install -y "$DEB"; then
     echo "upgrade-rtk: 'sudo apt install' of the new rtk failed (or sudo needs a password -- NOPASSWD is not configured for this user) -- restoring the pre-upgrade backup." >&2
+    announce_rollback
+    exit 4
+  fi
+else
+  # Non-dpkg-owned (HIMMEL-3049): RTK_BIN_PATH is a user-writable path no
+  # package manager tracks (e.g. ~/.local/bin/rtk, a static-pie musl build),
+  # so apt/dpkg would never even see it, let alone replace it. Install
+  # directly from the release tarball, verified against that release's own
+  # checksums.txt before a single byte of the live binary is touched. No
+  # sudo -- the path is already writable by this user.
+  command -v tar >/dev/null 2>&1 || { echo "upgrade-rtk: tar required to install the rtk release tarball" >&2; exit 2; }
+  command -v sha256sum >/dev/null 2>&1 || { echo "upgrade-rtk: sha256sum required to verify the rtk release tarball" >&2; exit 2; }
+
+  # ponytail: checksums.txt is fetched from the same GitHub releases host as
+  # the tarball itself, so this proves the download matches the manifest
+  # (integrity), not that the manifest is who it claims to be (authenticity).
+  # A host compromise or an MITM able to substitute the release asset could
+  # substitute checksums.txt too. No signature/attestation check exists here.
+  CHECKSUMS_FILE="$INSTALL_DIR/checksums.txt"
+  TARBALL_FILE="$INSTALL_DIR/$TARBALL_ASSET"
+  if ! curl -fL --max-time 60 "https://github.com/rtk-ai/rtk/releases/download/${TARGET_TAG}/checksums.txt" -o "$CHECKSUMS_FILE"; then
+    echo "upgrade-rtk: download of checksums.txt ($TARGET_TAG) failed -- $RTK_BIN_PATH was never touched." >&2
+    exit 2
+  fi
+  if ! curl -fL --max-time 120 "https://github.com/rtk-ai/rtk/releases/download/${TARGET_TAG}/${TARBALL_ASSET}" -o "$TARBALL_FILE"; then
+    echo "upgrade-rtk: download of $TARBALL_ASSET ($TARGET_TAG) failed -- $RTK_BIN_PATH was never touched." >&2
+    exit 2
+  fi
+
+  # Exact filename match (awk field compare, not a substring grep) -- a
+  # release's checksums.txt lists several assets and two names can share a
+  # prefix (rtk_amd64.deb / rtk_0.49.0-1_amd64.deb).
+  EXPECTED_SUM="$(awk -v f="$TARBALL_ASSET" '$2==f{print $1; exit}' "$CHECKSUMS_FILE" 2>/dev/null)"
+  if [ -z "$EXPECTED_SUM" ]; then
+    echo "upgrade-rtk: no checksum entry for $TARBALL_ASSET in checksums.txt ($TARGET_TAG) -- refusing to install an unverifiable binary. $RTK_BIN_PATH was never touched." >&2
+    exit 4
+  fi
+  ACTUAL_SUM="$(sha256sum "$TARBALL_FILE" 2>/dev/null | awk '{print $1}')"
+  if [ -z "$ACTUAL_SUM" ] || [ "$ACTUAL_SUM" != "$EXPECTED_SUM" ]; then
+    echo "upgrade-rtk: checksum mismatch for $TARBALL_ASSET -- expected $EXPECTED_SUM, got ${ACTUAL_SUM:-<none>}. Refusing to install; $RTK_BIN_PATH was never touched." >&2
+    exit 4
+  fi
+
+  EXTRACT_DIR="$INSTALL_DIR/extract"
+  mkdir -p "$EXTRACT_DIR"
+  if ! tar -xzf "$TARBALL_FILE" -C "$EXTRACT_DIR" rtk 2>/dev/null || [ ! -f "$EXTRACT_DIR/rtk" ]; then
+    echo "upgrade-rtk: could not extract an 'rtk' binary from $TARBALL_ASSET -- $RTK_BIN_PATH was never touched." >&2
+    exit 2
+  fi
+  chmod +x "$EXTRACT_DIR/rtk"
+
+  # Atomic replace: stage the verified binary in the SAME directory as
+  # RTK_BIN_PATH (so the final `mv` is a same-filesystem rename, not a
+  # cross-filesystem copy) and rename it over the live path. A reader (or a
+  # crash mid-write) never observes a partially-written binary, and the
+  # write can only ever land at RTK_BIN_PATH itself -- never some other path
+  # in the directory.
+  RTK_BIN_DIR="$(dirname "$RTK_BIN_PATH")"
+  REPLACE_TMP="$RTK_BIN_DIR/.rtk.upgrade.$$"
+  if ! cp "$EXTRACT_DIR/rtk" "$REPLACE_TMP" 2>/dev/null; then
+    echo "upgrade-rtk: could not stage the new binary in $RTK_BIN_DIR -- $RTK_BIN_PATH was never touched." >&2
+    rm -f "$REPLACE_TMP" 2>/dev/null
+    exit 2
+  fi
+  chmod +x "$REPLACE_TMP"
+  if ! mv -f "$REPLACE_TMP" "$RTK_BIN_PATH" 2>/dev/null; then
+    echo "upgrade-rtk: atomic replace of $RTK_BIN_PATH failed -- restoring the pre-upgrade backup." >&2
+    rm -f "$REPLACE_TMP" 2>/dev/null
     announce_rollback
     exit 4
   fi

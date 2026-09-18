@@ -82,11 +82,15 @@ is_main_ref() {
 
 # is_dirty [DIR]
 # True iff `git status --porcelain` has any output (staged, unstaged, or
-# untracked).
+# untracked). HIMMEL-3101: fail-safe on a `git status` failure itself too -
+# treat an uninspectable repo as dirty rather than clean.
 is_dirty() {
     local dir="${1:-.}"
     local out
-    out=$(git -C "$dir" status --porcelain 2>/dev/null) || return 2
+    out=$(git -C "$dir" status --porcelain 2>/dev/null) || {
+        echo "is_dirty: git status failed in $dir - treating as dirty" >&2
+        return 0
+    }
     [ -n "$out" ]
 }
 

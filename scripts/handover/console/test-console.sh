@@ -131,6 +131,25 @@ check "5c CONSOLE_CONTEXT=1m launch line carries --autocompact auto" \
 check "5c CONSOLE_CONTEXT=1m launch line carries no --autocompact 200000" \
     "$(printf '%s\n' "$out5c" | grep -c -- '--autocompact 200000')" "0"
 
+# --- 5d (HIMMEL-3081): the printed launch line must clear the inherited
+# child-session marker. An operator pastes this line into a terminal that was
+# itself spawned from a claude session, so CLAUDE_CODE_CHILD_SESSION=1,
+# CLAUDE_PID and CLAUDE_CODE_SESSION_ID are live in that shell's environment.
+# Without an `env -u` prefix the new console adopts them, writes no transcript,
+# and cannot read its own context fill -- which is the handover trigger its
+# operating contract is built on. headed-arm.sh already does this for the leg
+# path (HIMMEL-2545); the printed line was missed.
+for v in CLAUDE_CODE_CHILD_SESSION CLAUDE_PID CLAUDE_CODE_SESSION_ID; do
+    check "5d launch line unsets $v" \
+        "$(printf '%s\n' "$out5b" | grep -c -- "-u $v")" "1"
+done
+check "5d launch line forces session persistence" \
+    "$(printf '%s\n' "$out5b" | grep -c -- 'CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1')" "1"
+# The env prefix must precede the binary, not trail it -- `claude ... env -u X`
+# would pass the flags to claude as arguments instead of scrubbing anything.
+check "5d env prefix precedes the claude binary" \
+    "$(printf '%s\n' "$out5b" | grep -c -E '^(would-)?launch: env( -u [A-Z_]+)+ CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 claude ')" "1"
+
 # --- 6: next writes the successor stub + predecessor HANDOFF ----------
 doc6A="$root/tester/nextrepo/DEMO-nextleg-${today}A-console.md"
 doc6B="$root/tester/nextrepo/DEMO-nextleg-${today}B-console.md"
@@ -1144,11 +1163,11 @@ check "54 --date= prints a usage line" "$(printf '%s\n' "$out54" | grep -c '^usa
 out55="$(console next --bucket dateval --dry-run --date "2026-09-14" --doc "$docZval")"
 check "55 a real --date still mints the successor" "$(printf '%s\n' "$out55" | grep -c '^would-doc: .*2026-09-14A-console.md$')" "1"
 
-# --- 56/57 (HIMMEL-2975): CONSOLE_ROLE pass-through to headed-arm.sh's
-# --role, ahead of the positionals, only when set. Each stub records its
-# FULL "$*" to a fixed path baked into the stub itself (never a positional
-# like $5) -- --role judge shifts every downstream position by two, so a
-# positional-indexed record would silently read the wrong field.
+# --- 56/57 (HIMMEL-2975, renamed HIMMEL-3133): CONSOLE_ROLE pass-through to
+# headed-arm.sh's --role, ahead of the positionals, only when set. Each stub
+# records its FULL "$*" to a fixed path baked into the stub itself (never a
+# positional like $5) -- --role console shifts every downstream position by
+# two, so a positional-indexed record would silently read the wrong field.
 doc56A="$root/tester/rolerepo/DEMO-nextleg-${today}A-console.md"
 record56="$tmp/role-record-56"
 cat > "$tmp/stub-arm-role-56.sh" <<STUB
@@ -1161,11 +1180,11 @@ out56a="$(console new --bucket rolerepo)"
 token56a="$(token_of "$out56a")"
 out56b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
     CONSOLE_HEADED_ARM="$tmp/stub-arm-role-56.sh" CONSOLE_ARM_FOREGROUND=1 CONSOLE_WORK_DIR="$tmp/work" \
-    CONSOLE_ROLE=judge \
+    CONSOLE_ROLE=console \
     bash "$C" next --bucket rolerepo --arm --deadline-min 0 ) )"
 check "56 next --arm reports armed" "$(printf '%s\n' "$out56b" | grep -c '^armed: ')" "1"
-check "56 CONSOLE_ROLE=judge: stub record starts with --role judge" \
-    "$(grep -c '^--role judge ' "$record56" 2>/dev/null)" "1"
+check "56 CONSOLE_ROLE=console: stub record starts with --role console" \
+    "$(grep -c '^--role console ' "$record56" 2>/dev/null)" "1"
 HANDOVER_DIR="$root" bash "$QL" release "$doc56A" "$token56a" >/dev/null 2>&1
 
 doc57A="$root/tester/rolerepo2/DEMO-nextleg-${today}A-console.md"
@@ -1229,6 +1248,93 @@ out59b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PR
 check "59 CONSOLE_ROLE=bogus: exits 2" "$rc59b" "2"
 check "59 CONSOLE_ROLE=bogus: no armed line" "$(printf '%s\n' "$out59b" | grep -c '^armed: ')" "0"
 check "59 CONSOLE_ROLE=bogus: stub never invoked" "$([ -e "$record59" ] && echo 1 || echo 0)" "0"
+check "59 CONSOLE_ROLE=bogus: error names 'console' as the valid role" \
+    "$(printf '%s\n' "$out59b" | grep -c 'CONSOLE_ROLE must be console, got: bogus')" "1"
 HANDOVER_DIR="$root" bash "$QL" release "$doc59A" "$token59a" >/dev/null 2>&1
+
+# --- 60: HIMMEL-2973 Delta 6 -- `next` copies the predecessor's
+# `## Live state` verbatim into the successor's HANDOFF `## In flight`
+# section, and ONLY that section: a marker planted in the neighbouring
+# `## Compact instructions` body must NOT leak. Two controls, not one
+# presence check -- a copy that grabbed the whole rest of the file would
+# also make the first assertion pass.
+out60a="$(console new --bucket livestatesrc)"
+token60a="$(token_of "$out60a")"
+doc60A="$root/tester/livestatesrc/DEMO-nextleg-${today}A-console.md"
+doc60B="$root/tester/livestatedst/DEMO-nextleg-${today}B-console.md"
+handoff60A="$root/tester/livestatesrc/DEMO-nextleg-${today}A-console-HANDOFF.md"
+
+# shellcheck disable=SC2016  # backtick leg span, literal fixture text
+fixture60_legs='legs: `N9:nonce-fixture-60:lock-fixture-60:42424`'
+marker60='MARKER-60-COMPACT-INSTRUCTIONS-MUST-NOT-LEAK'
+awk -v legs_line="$fixture60_legs" -v marker="$marker60" '
+    $0 == "## Live state" {
+        print
+        print ""
+        print legs_line
+        print "queue: N9"
+        print "last GO: `#999:deadbeef00`"
+        print "acked: none"
+        skip = 1
+        next
+    }
+    skip && /^## / { skip = 0 }
+    skip { next }
+    $0 == "## Compact instructions" {
+        print
+        print ""
+        print marker
+        skip2 = 1
+        next
+    }
+    skip2 && /^## / { skip2 = 0 }
+    skip2 { next }
+    { print }
+' "$doc60A" > "$doc60A.new" && mv "$doc60A.new" "$doc60A"
+
+rc60=0
+console next --bucket livestatedst --doc "$doc60A" >/dev/null 2>&1 || rc60=$?
+check "60 next succeeds against a doc with a real Live state section" "$rc60" "0"
+check "60 HANDOFF carries the Live state legs line verbatim" \
+    "$(grep -Fc "$fixture60_legs" "$handoff60A" 2>/dev/null)" "1"
+check "60 the control: Compact instructions marker does not leak into the HANDOFF" \
+    "$(grep -Fc "$marker60" "$handoff60A" 2>/dev/null)" "0"
+check "60 successor doc itself was still written" "$([ -s "$doc60B" ] && echo yes)" "yes"
+HANDOVER_DIR="$root" bash "$QL" release "$doc60A" "$token60a" >/dev/null 2>&1
+
+# --- 61: HIMMEL-3079 -- the console parent defaults to Opus, not Fable
+# (Opus = default parent, Fable = the escalation target; operator halt
+# 2026-09-14). The armed path has no terminal to notice a wrong default, so
+# the check reads what the arm stub actually RECEIVED (its model positional,
+# $6), not just the printed --dry-run line. CONSOLE_MODEL is unset in every
+# subshell so an ambient value cannot mask the built-in default. Fable stays
+# reachable through an explicit --model / CONSOLE_MODEL.
+out61a="$( ( cd "$fixture_repo" && unset CONSOLE_MODEL && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    CONSOLE_WORK_DIR="$tmp/work" bash "$C" new --bucket modeldefault --dry-run --arm ) )"
+check "61 dry-run --arm launch line defaults to claude-opus-5" \
+    "$(printf '%s\n' "$out61a" | grep -c '^would-launch: .* claude --model claude-opus-5 ')" "1"
+check "61 dry-run --arm launch line carries no fable model" \
+    "$(printf '%s\n' "$out61a" | grep -c 'claude-fable-5-1')" "0"
+out61b="$( ( cd "$fixture_repo" && unset CONSOLE_MODEL && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    CONSOLE_WORK_DIR="$tmp/work" bash "$C" new --bucket modeldefault --dry-run --arm --model claude-fable-5-1 ) )"
+check "61 explicit --model claude-fable-5-1 still launches Fable" \
+    "$(printf '%s\n' "$out61b" | grep -c '^would-launch: .* claude --model claude-fable-5-1 ')" "1"
+out61c="$( ( cd "$fixture_repo" && CONSOLE_MODEL=claude-fable-5-1 HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    CONSOLE_WORK_DIR="$tmp/work" bash "$C" new --bucket modeldefault --dry-run --arm ) )"
+check "61 CONSOLE_MODEL=claude-fable-5-1 still launches Fable" \
+    "$(printf '%s\n' "$out61c" | grep -c '^would-launch: .* claude --model claude-fable-5-1 ')" "1"
+
+record61="$tmp/record-61"
+cat > "$tmp/stub-arm-model-61.sh" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$6" >> "$record61"
+STUB
+chmod +x "$tmp/stub-arm-model-61.sh"
+out61d="$( ( cd "$fixture_repo" && unset CONSOLE_MODEL && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    CONSOLE_HEADED_ARM="$tmp/stub-arm-model-61.sh" CONSOLE_ARM_FOREGROUND=1 CONSOLE_WORK_DIR="$tmp/work" \
+    bash "$C" new --bucket modeldefault --arm --deadline-min 0 ) )"
+token61d="$(token_of "$out61d")"
+check "61 armed console without --model: the arm target received claude-opus-5" "$(cat "$record61" 2>/dev/null)" "claude-opus-5"
+HANDOVER_DIR="$root" bash "$QL" release "$root/tester/modeldefault/DEMO-nextleg-${today}A-console.md" "$token61d" >/dev/null 2>&1
 
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

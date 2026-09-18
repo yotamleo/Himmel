@@ -6,6 +6,17 @@ Complete checklist for getting a new machine to full working state.
 
 **Setting up a clean Windows machine remotely (over SSH), including the delegation-lane fleet (hermes/codex/…)?** Follow [windows-clean-machine.md](./windows-clean-machine.md) — the ordered walkthrough through this doc plus the remote-drive pattern, lane installs, and always-on hardening (HIMMEL-852).
 
+## Support matrix (HIMMEL-3125)
+
+| Tier | Platforms | What it promises |
+|---|---|---|
+| **Supported** | Linux, macOS | Linux is CI-gated on every PR (required check) — [green `bun-suites` run on `main`](https://github.com/yotamleo/Himmel/actions/runs/35175771338); adopter round trip verified on both. macOS CI runs nightly/dispatch only (same trigger as Alpha below), not yet a per-PR required check. |
+| **Alpha** | Windows (Git Bash), WSL | Code paths present, best effort, not CI-gated per-PR — a nightly `schedule` run, or a manual `workflow_dispatch` with `force_all_os=true` (a plain dispatch alone stays `ubuntu-latest`-only). Bug reports welcome; no round-trip guarantee. |
+
+Windows sections below stay accurate for the alpha tier, but nothing in them
+is CI-verified per-PR. See [`docs/internals/harness-compat.md`](../internals/harness-compat.md)
+for the same tiering applied to hook/skill/agent compatibility.
+
 ---
 
 ## 1. Required environment (HIMMEL-123)
@@ -38,7 +49,7 @@ Complete checklist for getting a new machine to full working state.
 | `realpath -m` (coreutils) | Default on most distros. |
 | `shellcheck`, `gitleaks` | `sudo apt-get install -y shellcheck gitleaks`. Both are real apt packages on Ubuntu (verified 26.04: ShellCheck 0.11.0, gitleaks 8.16.0) — the tarball is only needed on distros that do not package gitleaks. Used by pre-commit. |
 | `gh` | `sudo apt-get install -y gh` on Ubuntu >= 24.04 / Debian >= 13 — `gh` is a real apt package there. `himmelctl deps ensure` / `setup.sh`'s `[0/9]` preflight asks whichever package manager is present (apt-get/dnf/brew) whether it has a candidate for `gh`, and installs it automatically when the answer is yes (HIMMEL-2548) — not just on apt. When the selected manager has no candidate, the manual routes are the fallback: GitHub's official apt repo (https://cli.github.com/packages) or the release tarball (https://github.com/cli/cli/releases). |
-| `uv` OR `pipx` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` (recommended). PEP 668 blocks system pip. |
+| `uv` (or `pipx` for pre-commit only) | `curl -LsSf https://astral.sh/uv/install.sh \| sh` (recommended). PEP 668 blocks system pip. `pipx` can install pre-commit, but **graphify is uv-managed** — without `uv`, `himmel-update` skips graphify (status row `graphify skipped uv missing`) and it never installs (HIMMEL-3077). |
 | `npm` | **Not bundled.** Debian/Ubuntu's `nodejs` package ships without npm, so a box with a working `node` can still fail the install preflight (`ERROR: missing required tools: npm`). `sudo apt-get install -y npm`, or install Node + npm together from [NodeSource](https://github.com/nodesource/distributions). **And apt's npm is too old to push with** — 9.2.0's bundled registry key expired 2025-01-29, so the pre-push `npm audit signatures` gate refuses every push with `EEXPIREDSIGNATUREKEY`. Follow up with `sudo npm install -g npm@11` (npm 12 requires node ^22.22.2; apt ships 22.22.1). |
 | `sudo` | The toolchain steps that use `apt-get` need root. `himmelctl deps ensure` does **not** elevate — run the apt lines yourself (see the clean-install walkthrough below). |
 | claudex lane (optional) | `bash scripts/setup/cli-proxy-lane.sh` (`--install` → `--login` → `--register`) brings up the codex-proxied `cc-codex` lane on this host — needs `systemctl --user` + `ss` (iproute2), both stock on Ubuntu/Debian/Arch/Fedora. See [cli-proxy-lane.md](cli-proxy-lane.md#linux-bring-up-himmel-2778). |
@@ -50,7 +61,8 @@ Complete checklist for getting a new machine to full working state.
 | `bash` 4+ | `brew install bash` — system bash is 3.2 and 8 scripts need 4+. Add `/usr/local/bin/bash` (Intel) or `/opt/homebrew/bin/bash` (Apple Silicon) to PATH or use `#!/usr/bin/env bash` (already the convention). |
 | `at` daemon | Preinstalled but disabled. Enable: `sudo launchctl load -F /System/Library/LaunchDaemons/com.apple.atrun.plist`. |
 | `realpath -m` (optional) | Macos has no `realpath -m`; the 5 scripts that use it (`arm-resume.sh`, `auto-commit.sh`, `block-edit-on-main.sh`, `check-hookspath.sh`) already include a `python3 -c "from pathlib import Path; print(Path(p).resolve(strict=False))"` fallback. Pure-GNU operators: `brew install coreutils && export PATH="$(brew --prefix coreutils)/libexec/gnubin:$PATH"` exposes `grealpath` as plain `realpath`. |
-| `uv` OR `pipx` | `brew install uv` (or pipx). |
+| `uv` (or `pipx` for pre-commit only) | `brew install uv`. `pipx` can install pre-commit, but **graphify is uv-managed** — without `uv`, `himmel-update` skips graphify (HIMMEL-3077). |
+| `coreutils` (for `gtimeout`) | `brew install coreutils` — macOS has no GNU `timeout`. Without `gtimeout`, `scripts/graphify/refresh-graph-map.sh` runs graph extraction with its run deadline DISABLED (unbounded) and skips the bounded pre-pull auto-commit/fetch (HIMMEL-3126). Homebrew installs it as `gtimeout`; no PATH change is needed. |
 | `bun` | `brew tap oven-sh/bun && brew install oven-sh/bun/bun` (HIMMEL-3068) — bun is NOT in homebrew-core; the tap is still required (verified 2026-09 against github.com/oven-sh/homebrew-bun). `scripts/machine-setup/macos.sh` installs both `uv` and `bun` this way; it previously installed neither. |
 
 **Windows (Git Bash via Git for Windows):**
@@ -565,7 +577,9 @@ mode — and set the mode where it is actually observable, at arming.
 
 Context mode is an **arming-time** choice instead: `--context 1m|standard` on
 `scripts/handover/arm-resume.sh` (7th positional on `headed-arm.sh`), defaulting
-to `1m` for console arms and `standard` for every other arm. The measured
+to `standard` for every arm, console or not (HIMMEL-2975) — a console (armed
+through `console.sh`, which has no `--context` flag of its own) can still
+opt into `1m` via `CONSOLE_CONTEXT=1m` in the launching shell. The measured
 behaviour of both levers — which model ids accept the suffix, what a plain launch
 actually reports, and why `--autocompact` is the half that does the work — is in
 [`docs/internals/lane-calibration.md`](../internals/lane-calibration.md#context-mode--an-arming-time-choice-not-a-station-default-himmel-2658).

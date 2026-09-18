@@ -107,14 +107,31 @@ rm -rf "$work" "$origin"
 
 echo "== rc=2 fail-closed contract =="
 # Non-git dir: every predicate that touches git must return rc=2 (not 1).
+# is_dirty is the deliberate exception (HIMMEL-3101, see below): it never
+# returns rc=2 at all - a `git status` it cannot run is fail-safe dirty (0).
 ngd=$(mktemp -d)
 is_on_main "$ngd"; rc=$?
 if [ "$rc" -eq 2 ]; then pass "is_on_main non-git -> rc=2"; else fail "is_on_main non-git -> expected 2 got $rc"; fi
-is_dirty "$ngd"; rc=$?
-if [ "$rc" -eq 2 ]; then pass "is_dirty non-git -> rc=2"; else fail "is_dirty non-git -> expected 2 got $rc"; fi
 is_merged_into_main "$ngd"; rc=$?
 if [ "$rc" -eq 2 ]; then pass "is_merged_into_main non-git -> rc=2"; else fail "is_merged_into_main non-git -> expected 2 got $rc"; fi
 rm -rf "$ngd"
+
+echo "== is_dirty: a git-status failure fails safe (HIMMEL-3101) =="
+# Pre-fix, is_dirty returned rc=2 on a `git status` it could not run - every
+# caller uses `if is_dirty "$dir"; then`, which collapses rc=1 (clean) and
+# rc=2 (uninspectable) into the same "not dirty" branch. This must FAIL on
+# pre-fix code (rc=2, no stderr) and pass after: rc=0 (dirty) plus a stderr
+# warning naming the dir. A non-git dir is used to make `git status` itself
+# fail, per the same shape as the existing rc=2 contract case above.
+ngd2=$(mktemp -d "${TMPDIR:-/tmp}/is-dirty-test.XXXXXX")
+warn=$(is_dirty "$ngd2" 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 0 ]; then pass "is_dirty git-status-fails -> rc=0 (treated as dirty)"; else fail "is_dirty git-status-fails -> expected rc=0 got $rc"; fi
+if grepq "$warn" "is_dirty: git status failed in $ngd2"; then
+    pass "is_dirty git-status-fails -> stderr warning names the dir"
+else
+    fail "is_dirty git-status-fails -> expected stderr warning naming $ngd2, got: $warn"
+fi
+rm -rf "$ngd2"
 
 # is_merged_into_main: missing local `main` ref -> rc=2 (cannot evaluate).
 d=$(setup_repo feat/x) || exit 1

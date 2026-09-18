@@ -1377,6 +1377,67 @@ test("executeRun: transcript growth DISARMS the watchdog — a quiet-but-healthy
   } finally { rmSync(dir, { recursive: true, force: true }); rmSync(watchRoot, { recursive: true, force: true }); }
 });
 
+test("executeRun: growth observed the poll AFTER the window elapses must not kill (HIMMEL-3146)", async () => {
+  // Fully deterministic version of the race above: real-timer ticks racing
+  // Date.now() made "exactly one tick fires in this window" an assumption
+  // the test never enforced (a stray extra tick under contention would
+  // legitimately kill even the fixed code; a missing tick would pass
+  // vacuously either way). Intercepting setInterval/clearInterval removes
+  // real timing from the decision path entirely: the watchdog's own callback
+  // is captured instead of scheduled, and the test fires it by hand at
+  // exactly the three logical moments that matter — baseline, first-elapsed
+  // (pre-fix kills here), and confirming (must see growth first and stand
+  // down) — so no tick count can go missing or double up.
+  const { dir, metaPath, runningMeta } = seedRunningMeta();
+  const watchRoot = mkdtempSync(join(tmpdir(), "glmwatch-"));
+  const stderr = spyOn(console, "error").mockImplementation(() => {});
+  const realNow = Date.now();
+  let now = realNow;
+  const dateSpy = spyOn(Date, "now").mockImplementation(() => now);
+  let tick: (() => void) | undefined;
+  const intervalSpy = spyOn(global, "setInterval").mockImplementation(((fn: () => void) => {
+    tick = fn;
+    return 0 as unknown as ReturnType<typeof setInterval>;
+  }) as unknown as typeof setInterval);
+  const clearSpy = spyOn(global, "clearInterval").mockImplementation((() => {
+    tick = undefined;
+  }) as unknown as typeof clearInterval);
+  try {
+    const projDir = join(watchRoot, mangle(resolve(dir)));
+    mkdirSync(projDir, { recursive: true });
+    const windowMs = 300;
+    const killed: number[] = [];
+    const fire = () => { tick?.(); }; // a no-op once disarmed — matches the real timer's own behavior
+    const racy = (async (_p: string, _c: string, _pm: unknown, _l: unknown, _m: unknown, _s: unknown, observe: any) => {
+      observe?.onSpawn?.(81);
+      observe?.onChunk?.("x".repeat(192)); // banner only — under the 512 B disarm floor
+      const transcriptFile = join(projDir, "s.jsonl");
+      writeFileSync(transcriptFile, "{\"role\":\"user\"}\n"); // baseline, recorded before the window elapses
+      expect(typeof tick).toBe("function"); // fail loudly if the watchdog never called setInterval
+      fire(); // baseline tick: records baseline, unelapsed
+      now = realNow + windowMs; // the window elapses — size still == baseline: the first elapsed tick
+      fire(); // pre-fix kills here; fixed code sets elapsedOnce and waits one more poll
+      appendFileSync(transcriptFile, "{\"role\":\"assistant\"}\n"); // the model answers before the confirming tick
+      fire(); // confirming tick — must see the growth first (checked before the elapsed branch) and stand down
+      return { code: 0, capped: false, blocked: false, timedOut: false, pid: 81, tail: "" };
+    }) as any;
+    const { code } = await executeRun({
+      runSession: racy, prompt: "p", worktree: dir, sessionDir: dir, metaPath, runningMeta,
+      startupWatch: { rootDir: watchRoot, windowMs, pollMs: 10_000, kill: (pid) => { killed.push(pid); } },
+    });
+    expect(killed).toEqual([]);
+    expect(code).toBe(0);
+    expect(JSON.parse(readFileSync(metaPath, "utf8")).status).toBe("done");
+  } finally {
+    intervalSpy.mockRestore();
+    clearSpy.mockRestore();
+    dateSpy.mockRestore();
+    stderr.mockRestore();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(watchRoot, { recursive: true, force: true });
+  }
+});
+
 test("executeRun: real output beyond the banner DISARMS the watchdog (HIMMEL-1575)", async () => {
   const { dir, metaPath, runningMeta } = seedRunningMeta();
   const watchRoot = mkdtempSync(join(tmpdir(), "glmwatch-"));

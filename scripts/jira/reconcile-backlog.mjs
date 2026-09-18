@@ -207,49 +207,33 @@ function makeJiraClient(jiraCliPath) {
   };
 }
 
-async function main() {
-  const opts = parseArgs(process.argv.slice(2));
-  // A LEFT ALONE hygiene-sweep row carries no Jira comment at all, so
-  // hasSkipMarker cannot protect it — --hygiene-doc is the ONLY guard for
-  // those tickets. Silently running --apply without it would let a real
-  // write run re-disposition tickets a concurrent sweep already adjudicated.
-  if (opts.apply && !opts.hygieneDoc) {
-    process.stderr.write(
-      'reconcile-backlog: --apply requires --hygiene-doc (protects LEFT ALONE tickets the ' +
-        'hygiene sweep already adjudicated but never commented on); pass it explicitly, or ' +
-        '--hygiene-doc /dev/null if none applies.\n',
-    );
-    process.exit(1);
-  }
-  // HIMMEL-3128: --apply requires an explicit --max-close N so a run can
-  // never close more than N tickets without that being a deliberate choice
-  // (defence in depth on top of the evidence-rule fix — the only writing
-  // disposition on the backlog is CLOSE). No default N: an unset cap would
-  // just be a large default someone forgets is there.
-  if (opts.apply && (!Number.isInteger(opts.maxClose) || opts.maxClose < 0)) {
-    process.stderr.write(
-      'reconcile-backlog: --apply requires --max-close N (a non-negative integer safety valve on ' +
-        'how many tickets this run may CLOSE); pass a large N to intentionally allow many closes.\n',
-    );
-    process.exit(1);
-  }
-  const config = loadConfig(opts.config);
-  const projectConfig = config[opts.project];
-  const targetStatus = projectConfig?.targetStatus;
-
-  const hygieneKeys = loadHygieneKeys(opts.hygieneDoc);
-  const commits = loadCommits(opts.commitsFile);
-  const backlog = await loadBacklog({ jiraCli: opts.jiraCli, project: opts.project, limit: opts.limit });
-
-  const jiraClient = makeJiraClient(opts.jiraCli);
-
+// HIMMEL-3127: the orchestration loop main() used to run inline against real
+// I/O (network Jira calls baked into loadCommentBodies/loadDescription,
+// makeJiraClient's subprocess). Extracted here with every I/O boundary
+// injected so the /backlog-reconcile surface's operator-approval gate is
+// unit-testable against a fixture backlog — `apply` is the ONLY switch that
+// lets the loop reach jiraClient.comment/transition.
+export async function runReconciliation({
+  backlog,
+  commits,
+  hygieneKeys,
+  targetStatus,
+  only,
+  apply,
+  maxClose,
+  jiraClient,
+  loadCommentBodies,
+  loadDescription,
+  onRecord = () => {},
+}) {
   const counts = { CLOSE: 0, RESCOPE: 0, 'STALE-PREMISE': 0, LEAVE: 0 };
+  const records = [];
   const acted = [];
   let failed = 0;
   let closed = 0;
 
   for (const ticket of backlog) {
-    if (opts.only && !opts.only.has(ticket.key)) continue;
+    if (only && !only.has(ticket.key)) continue;
 
     const { subjectCommits, bodyOnlyCommits } = findMatches(commits, ticket.key);
 
@@ -259,8 +243,8 @@ async function main() {
     // bounded to the candidate set instead of a comment-fetch per all ~989
     // open tickets.
     const hasEvidence = subjectCommits.length > 0 || bodyOnlyCommits.length > 0;
-    const commentBodies = hasEvidence ? await loadCommentBodies({ jiraCli: opts.jiraCli, key: ticket.key }) : [];
-    const description = hasEvidence ? await loadDescription({ jiraCli: opts.jiraCli, key: ticket.key }) : '';
+    const commentBodies = hasEvidence ? await loadCommentBodies(ticket.key) : [];
+    const description = hasEvidence ? await loadDescription(ticket.key) : '';
 
     const result = classifyTicket({
       key: ticket.key,
@@ -287,11 +271,11 @@ async function main() {
 
     if (result.disposition !== 'LEAVE') {
       acted.push(record);
-      if (opts.apply) {
-        if (result.disposition === 'CLOSE' && closed >= opts.maxClose) {
+      if (apply) {
+        if (result.disposition === 'CLOSE' && closed >= maxClose) {
           record.applied = 'skipped-max-close';
           process.stderr.write(
-            `reconcile-backlog: ${ticket.key} CLOSE skipped — --max-close ${opts.maxClose} already reached\n`,
+            `reconcile-backlog: ${ticket.key} CLOSE skipped — --max-close ${maxClose} already reached\n`,
           );
         } else {
           const commentBody = buildEvidenceComment({ key: ticket.key, ...result });
@@ -318,8 +302,73 @@ async function main() {
       }
     }
 
-    console.log(JSON.stringify(record));
+    records.push(record);
+    onRecord(record);
   }
+
+  return { records, counts, acted, failed, closed };
+}
+
+async function main() {
+  const opts = parseArgs(process.argv.slice(2));
+  // A LEFT ALONE hygiene-sweep row carries no Jira comment at all, so
+  // hasSkipMarker cannot protect it — --hygiene-doc is the ONLY guard for
+  // those tickets. Silently running --apply without it would let a real
+  // write run re-disposition tickets a concurrent sweep already adjudicated.
+  if (opts.apply && !opts.hygieneDoc) {
+    process.stderr.write(
+      'reconcile-backlog: --apply requires --hygiene-doc (protects LEFT ALONE tickets the ' +
+        'hygiene sweep already adjudicated but never commented on); pass it explicitly, or ' +
+        '--hygiene-doc /dev/null if none applies.\n',
+    );
+    process.exit(1);
+  }
+  // HIMMEL-3128: --apply requires an explicit --max-close N so a run can
+  // never close more than N tickets without that being a deliberate choice
+  // (defence in depth on top of the evidence-rule fix — the only writing
+  // disposition on the backlog is CLOSE). No default N: an unset cap would
+  // just be a large default someone forgets is there.
+  if (opts.apply && (!Number.isInteger(opts.maxClose) || opts.maxClose < 0)) {
+    process.stderr.write(
+      'reconcile-backlog: --apply requires --max-close N (a non-negative integer safety valve on ' +
+        'how many tickets this run may CLOSE); pass a large N to intentionally allow many closes.\n',
+    );
+    process.exit(1);
+  }
+  // --max-close only caps CLOSE; RESCOPE (a comment, not a transition) is
+  // uncapped and would otherwise apply to every non-LEAVE ticket in the
+  // backlog on an --only-less run. Require an explicit, non-empty --only so
+  // apply mode never touches a ticket the operator did not name.
+  if (opts.apply && (!opts.only || opts.only.size === 0)) {
+    process.stderr.write(
+      'reconcile-backlog: --apply requires a non-empty --only <key-list> (no writes to a ticket ' +
+        'the operator did not explicitly select).\n',
+    );
+    process.exit(1);
+  }
+  const config = loadConfig(opts.config);
+  const projectConfig = config[opts.project];
+  const targetStatus = projectConfig?.targetStatus;
+
+  const hygieneKeys = loadHygieneKeys(opts.hygieneDoc);
+  const commits = loadCommits(opts.commitsFile);
+  const backlog = await loadBacklog({ jiraCli: opts.jiraCli, project: opts.project, limit: opts.limit });
+
+  const jiraClient = makeJiraClient(opts.jiraCli);
+
+  const { counts, acted, failed, closed } = await runReconciliation({
+    backlog,
+    commits,
+    hygieneKeys,
+    targetStatus,
+    only: opts.only,
+    apply: opts.apply,
+    maxClose: opts.maxClose,
+    jiraClient,
+    loadCommentBodies: (key) => loadCommentBodies({ jiraCli: opts.jiraCli, key }),
+    loadDescription: (key) => loadDescription({ jiraCli: opts.jiraCli, key }),
+    onRecord: (record) => console.log(JSON.stringify(record)),
+  });
 
   console.log(
     JSON.stringify({

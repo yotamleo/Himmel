@@ -72,6 +72,11 @@
 #   91. stranded attempt 1 → one bounded re-request as attempt 2, rc 4
 #   92. stranded attempt 2 → rc 4 STRANDED, no third request
 #   93. full-review POST fails after the claim → claim rolled back, rc 2
+#   3152-a/b. skip-classified WITHOUT vs WITH --escalate → both rc 2, but WITH
+#       must differ: names --escalate inapplicable + the HIMMEL-1506 panel-carry
+#       route instead of silently no-op'ing (HIMMEL-3152, PR #804)
+#   3152-c. rate-limited skip WITH --escalate → rc 2, same inapplicable note
+#   3152-d. panel-carried skip WITH --escalate → rc 0, no spurious note
 set -uo pipefail
 
 # HIMMEL-1495 — an --automerge-armed launching shell carries ARMAUTOMERGE=1 +
@@ -1202,6 +1207,45 @@ assert_err_has "does not say the review completed" "34f allow-list reason surfac
 run_in_repo "$LEDGER_REPO" cr-unknownword
 assert_rc 0 "34f2 unenumerated skip wording with a clean exact-head panel is carried"
 assert_out_has "posted skip-classified wording" "34f2 distinct generic-skip carry line surfaced"
+
+# 3152-a/b — HIMMEL-3152. --escalate is documented as the remedy for an absent
+# or stale-anchored review, but cr_signal_gate's skip-classified branch exits
+# BEFORE review_freshness_gate (the only --escalate call site) ever runs — so
+# on PR #804 `--escalate` against a skip-classified status produced output
+# byte-identical to the same run without it: the flag was accepted and did
+# nothing. 3152-a pins the WITHOUT-flag baseline (no inapplicable-note text);
+# 3152-b is the SAME fixture WITH --escalate and must differ — a RED control
+# built on a stub that always agrees with itself would prove nothing.
+run_in_repo "$EMPTY_LEDGER_REPO" cr-skipped
+assert_rc 2 "3152-a skip-classified without --escalate: baseline refusal"
+if printf '%s' "$ERR" | grep -iF -- "--escalate does not apply" >/dev/null; then
+    fail "3152-a baseline carries no escalate-inapplicable note" "ERR: $ERR"
+else
+    pass "3152-a baseline carries no escalate-inapplicable note"
+fi
+run_in_repo "$EMPTY_LEDGER_REPO" cr-skipped --escalate
+assert_rc 2 "3152-b skip-classified WITH --escalate: same rc, but the output must differ from 3152-a"
+assert_err_has "--escalate does not apply here" "3152-b names --escalate as inapplicable, not silently ignored"
+assert_err_has "HIMMEL-1506" "3152-b names the sanctioned panel-carry route"
+assert_err_has "run /pr-check on this HEAD" "3152-b names the concrete remedy"
+
+# 3152-c — the rate-limited sub-case has its own exit-2 message (a distinct
+# call site from the shared skip message 3152-a/b exercises); it needs the
+# same note.
+run_in_repo "$EMPTY_LEDGER_REPO" cr-ratelimited --escalate
+assert_rc 2 "3152-c rate-limited skip WITH --escalate is also refused"
+assert_err_has "--escalate does not apply here" "3152-c rate-limited path names --escalate as inapplicable too"
+
+# 3152-d — negative control: when the panel DOES carry the gate, --escalate
+# must not spuriously print the inapplicable note (the note lives on the
+# refusal path only, after the carry check has already returned 0).
+run_in_repo "$LEDGER_REPO" cr-skipped --escalate
+assert_rc 0 "3152-d panel-carried skip-classified state stays green with --escalate set"
+if printf '%s' "$OUT$ERR" | grep -iF -- "--escalate does not apply" >/dev/null; then
+    fail "3152-d carried path prints no inapplicable note" "OUT+ERR: $OUT$ERR"
+else
+    pass "3152-d carried path prints no inapplicable note"
+fi
 
 # 34g — the escape hatch that makes the allow-list safe to ship. If CodeRabbit
 # renames its success description, every PR blocks at once; the operator must be
@@ -2449,5 +2493,5 @@ unset CR_CLI_MARKER
 
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 150 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 150"; exit 1; fi
+if [ "$COUNT" -ne 154 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 154"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1

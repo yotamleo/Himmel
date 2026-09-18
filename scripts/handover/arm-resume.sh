@@ -37,15 +37,20 @@
 #
 # Usage:
 #   bash scripts/handover/arm-resume.sh \
-#     --time <HH:MM> --handover <path> [--force] [--dedup-any] [--dry-run]
+#     --handover <path> [--time <HH:MM|smart|auto>] [--force] [--dedup-any] [--dry-run]
 #
 # Required:
-#   --time <HH:MM>     24h local time. Today if future, tomorrow if past.
 #   --handover <path>  Resume marker file path. Must exist. Pasted into
 #                      the claude relaunch prompt so the next session
 #                      picks up state.
 #
 # Optional:
+#   --time <HH:MM|smart|auto>
+#                      Default: smart (HIMMEL-3121) -- omitting --time is
+#                      exactly `--time smart`. An explicit HH:MM is 24h local
+#                      time (today if future, tomorrow if past), is never moved
+#                      forward, and a lapsed one still refuses; auto is
+#                      unchanged.
 #   --force            Replace the existing same-handover HIMMEL-Resume job
 #                      (always THIS handover's own job only — never a sibling
 #                      chain's, even under --dedup-any; HIMMEL-1563).
@@ -249,6 +254,7 @@
 set -euo pipefail
 
 RESUME_TIME=""
+_TIME_GIVEN=0
 HANDOVER_PATH=""
 FORCE=0
 DRY_RUN=0
@@ -279,27 +285,29 @@ _epoch_hhmm() { py_armor_capture -c 'import sys,datetime; print(datetime.datetim
 
 usage() {
     cat <<'EOF'
-Usage: arm-resume.sh --time <HH:MM> --handover <path> [--wsl-distro <name>] [--force] [--long-gap] [--dedup-any] [--dry-run] [--automerge] [--no-automerge] [--safety-child] [--model <name>] [--fable-ok <reason>] [--context <1m|standard>] [--tier leg] [--provisional-base-ok]
+Usage: arm-resume.sh --handover <path> [--time <HH:MM|smart|auto>] [--wsl-distro <name>] [--force] [--long-gap] [--dedup-any] [--dry-run] [--automerge] [--no-automerge] [--safety-child] [--model <name>] [--fable-ok <reason>] [--context <1m|standard>] [--tier leg] [--provisional-base-ok]
 
 Arms the OS scheduler to relaunch claude at the given time with a
 resume prompt referencing the given handover file. Dedup-guarded
 against existing HIMMEL-Resume-* jobs; pass --force to replace.
 
 Required:
+  --handover <path>    Resume marker file (must exist)
+
+Optional:
   --time <HH:MM|smart|auto>
+                       Default: smart (omitting --time is exactly --time smart).
                        24h local time, OR a sentinel resolved from the
                        claude-statusline usage cache:
                          smart — usage-aware: relaunch ASAP when the bank
                                  has headroom, else wait for the binding
                                  window's reset (scripts/handover/resume-slot.sh).
-                                 Maximizes throughput — prefer this.
+                                 Maximizes throughput — the default.
                          auto  — next 5-hour cap reset regardless of headroom
                                  (scripts/handover/cap-reset-time.sh).
-                       A past HH:MM rolls to tomorrow; sentinels carry their
-                       own (possibly multi-day) date.
-  --handover <path>    Resume marker file (must exist)
-
-Optional:
+                       An explicit HH:MM is never moved forward. A past HH:MM
+                       rolls to tomorrow; sentinels carry their own (possibly
+                       multi-day) date.
   --cwd <path>       Working directory for the relaunched claude.
                      Default: git toplevel containing the --handover
                      file. Override when the handover lives in a
@@ -359,10 +367,12 @@ Optional:
                      Fable-family model — the CLI strips it there) and
                      passes --autocompact auto; standard strips any
                      [1m] suffix and passes --autocompact 200000.
-                     Default: 1m on a *-console.md handover, standard on
-                     every other arm. The resolved mode, its source
-                     (explicit vs. default) and the effective autocompact
-                     value are always echoed to the arm log.
+                     Default: standard on every arm, console or not
+                     (HIMMEL-2975); a console-class arm can still opt into
+                     1m via CONSOLE_CONTEXT=1m in the launching shell. The
+                     resolved mode, its source (explicit vs. default) and
+                     the effective autocompact value are always echoed to
+                     the arm log.
   --tier leg         Mark this as a worker-leg arm. The resolved launch argv
                      must carry the exact --autocompact 200000 ceiling;
                      --context 1m is refused with exit 2. Omit for existing
@@ -492,13 +502,19 @@ Env:
 EOF
 }
 
+# HIMMEL-2975 T6: sourced here (ahead of SCRIPT_DIR at the bottom of the
+# file) because --context validation below needs console_context_valid
+# during arg parsing, well before SCRIPT_DIR/py-armor sourcing normally
+# happens.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/console-context.sh"
+
 # Arg parsing — accept --flag <value> or --flag=<value>, any order,
 # unknown flags are rejected loudly. Avoids the v1 "$3 == --force"
 # positional trap.
 while [ $# -gt 0 ]; do
     case "$1" in
-        --time)        RESUME_TIME="${2:-}"; shift 2 ;;
-        --time=*)      RESUME_TIME="${1#--time=}"; shift ;;
+        --time)        RESUME_TIME="${2:-}"; _TIME_GIVEN=1; shift 2 ;;
+        --time=*)      RESUME_TIME="${1#--time=}"; _TIME_GIVEN=1; shift ;;
         --handover)    HANDOVER_PATH="${2:-}"; shift 2 ;;
         --handover=*)  HANDOVER_PATH="${1#--handover=}"; shift ;;
         --cwd)         RESUME_CWD_OVERRIDE="${2:-}"; shift 2 ;;
@@ -556,13 +572,10 @@ while [ $# -gt 0 ]; do
                 echo "ERR arm-resume: --context requires a non-empty, non-option value" >&2
                 exit 2
             fi
-            case "$2" in
-                1m|standard) ;;
-                *)
-                    echo "ERR arm-resume: --context must be 1m or standard, got: $2" >&2
-                    exit 2
-                    ;;
-            esac
+            if ! console_context_valid "$2"; then
+                echo "ERR arm-resume: --context must be 1m or standard, got: $2" >&2
+                exit 2
+            fi
             CONTEXT_MODE="$2"; shift 2
             ;;
         --context=*)
@@ -571,13 +584,10 @@ while [ $# -gt 0 ]; do
                 echo "ERR arm-resume: --context requires a non-empty, non-option value" >&2
                 exit 2
             fi
-            case "$CONTEXT_MODE" in
-                1m|standard) ;;
-                *)
-                    echo "ERR arm-resume: --context must be 1m or standard, got: $CONTEXT_MODE" >&2
-                    exit 2
-                    ;;
-            esac
+            if ! console_context_valid "$CONTEXT_MODE"; then
+                echo "ERR arm-resume: --context must be 1m or standard, got: $CONTEXT_MODE" >&2
+                exit 2
+            fi
             shift
             ;;
         --tier)
@@ -881,8 +891,14 @@ EOF
     exit 16
 fi
 
+# HIMMEL-3121: an OMITTED --time is `--time smart` -- the self-correcting
+# ASAP-or-wait slot -- so a caller never hand-picks an HH:MM that nothing moves
+# forward. Keyed on whether --time was passed, not on the value being empty: an
+# explicit `--time ""` is malformed and still refuses below. An explicit
+# HH:MM is untouched (never moved; a lapsed one still refuses).
+[ "$_TIME_GIVEN" -eq 1 ] || RESUME_TIME="smart"
 if [ -z "$RESUME_TIME" ] || [ -z "$HANDOVER_PATH" ]; then
-    echo "ERR arm-resume: --time and --handover are required" >&2
+    echo "ERR arm-resume: --handover is required (--time defaults to smart; when passed it needs a value)" >&2
     usage >&2
     exit 1
 fi
@@ -917,10 +933,8 @@ esac
 # Claude-Fable-5 all match. A plain `case` glob on a lowercased form, same
 # idiom the rest of this script uses (no `[[ ... ]]` regex).
 _arm_model_is_fable=0
-if [ -n "$MODEL" ]; then
-    case "$(printf '%s' "$MODEL" | tr '[:upper:]' '[:lower:]')" in
-        *fable*) _arm_model_is_fable=1 ;;
-    esac
+if [ -n "$MODEL" ] && console_context_model_is_fable "$MODEL"; then
+    _arm_model_is_fable=1
 fi
 
 MODEL_REASON=""
@@ -948,24 +962,36 @@ fi
 # not stderr -- this is a report, not an error.
 echo "arm-resume: $MODEL_REASON"
 
-# --context resolution (HIMMEL-2658): the ONLY structural fix for a station
-# silently running a 1M window on every session -- a stray [1m] suffix on
-# the operator's user-level `model` setting drove ~25-35% of the weekly
-# token bank, and dropping the suffix from settings alone did NOT move the
-# station off 1M (measured; see docs/internals/lane-calibration.md "Context
-# mode -- an arming-time choice"). Context mode is now an ARMING-TIME
-# choice per console/leg, never inherited. Runs right here -- before
-# SCRIPT_DIR/py-armor sourcing below -- so --dry-run exercises it and all
-# four downstream --model emission sites inherit CONTEXT_MODE/MODEL/
-# AUTOCOMPACT for free without themselves changing. Reuses _arm_is_console
-# and _arm_model_is_fable, already computed above for the MODEL_REASON
-# block -- do not recompute either.
+# --context resolution (HIMMEL-2658, default re-pinned by HIMMEL-2975 T6):
+# the ONLY structural fix for a station silently running a 1M window on
+# every session -- a stray [1m] suffix on the operator's user-level `model`
+# setting drove ~25-35% of the weekly token bank, and dropping the suffix
+# from settings alone did NOT move the station off 1M (measured; see
+# docs/internals/lane-calibration.md "Context mode -- an arming-time
+# choice"). Context mode is now an ARMING-TIME choice per console/leg, never
+# inherited. Runs right here -- before SCRIPT_DIR/py-armor sourcing below --
+# so --dry-run exercises it and all four downstream --model emission sites
+# inherit CONTEXT_MODE/MODEL/AUTOCOMPACT for free without themselves
+# changing. Reuses _arm_is_console and _arm_model_is_fable, already computed
+# above for the MODEL_REASON block -- do not recompute either.
+#
+# HIMMEL-2975: every arm defaults to `standard` now -- a console-class arm
+# used to default to `1m` unconditionally, the largest single measured
+# saving in the cost program going unrealized every time one armed with no
+# --context. console_context_default() (scripts/lib/console-context.sh)
+# also gives CONSOLE_CONTEXT=1m in the launching shell a way to opt a
+# console arm back into 1m without an explicit --context -- arm-resume.sh
+# had no CONSOLE_CONTEXT support at all before this ticket; adding it here
+# is what keeps the opt-in reachable now that the bare default no longer
+# gets you there by accident.
 if [ -z "$CONTEXT_MODE" ]; then
-    if [ "$_arm_is_console" -eq 1 ]; then
-        CONTEXT_MODE="1m"
-        CONTEXT_REASON="context=1m (no --context given; console arms default to 1m -- HIMMEL-2658)"
+    console_context_default "$_arm_is_console" "${CONSOLE_CONTEXT:-}"
+    CONTEXT_MODE="$CONSOLE_CONTEXT_RESOLVED_MODE"
+    if [ "$_arm_is_console" -eq 1 ] && [ "$CONSOLE_CONTEXT_RESOLVED_SOURCE" = "console-context-env" ]; then
+        CONTEXT_REASON="context=1m (CONSOLE_CONTEXT=1m; console arm -- HIMMEL-2975)"
+    elif [ "$_arm_is_console" -eq 1 ]; then
+        CONTEXT_REASON="context=standard (no --context given; console arms default to standard -- HIMMEL-2975)"
     else
-        CONTEXT_MODE="standard"
         CONTEXT_REASON="context=standard (no --context given; non-console arms default to standard -- HIMMEL-2658)"
     fi
 else
@@ -977,19 +1003,16 @@ fi
 # never doubled, and `standard` can guarantee its absence. `[` and `]` are
 # escaped so this is a literal-suffix match, not a `[1m]` character class.
 _arm_model_had_suffix=0
-case "$MODEL" in
-    *\[1m\])
-        MODEL="${MODEL%\[1m\]}"
-        _arm_model_had_suffix=1
-        ;;
-esac
+if console_context_has_1m_suffix "$MODEL"; then
+    _arm_model_had_suffix=1
+fi
+MODEL="$(console_context_strip_1m_suffix "$MODEL")"
 
+# autocompact is the lever that actually moves the cost driver (measured
+# fact 3) -- passed regardless of whether --model is even present in the
+# launch command, so a console arm with no explicit --model still gets it.
+AUTOCOMPACT="$(console_context_autocompact "$CONTEXT_MODE")"
 if [ "$CONTEXT_MODE" = "1m" ]; then
-    # autocompact is the lever that actually moves the cost driver
-    # (measured fact 3) -- passed regardless of whether --model is even
-    # present in the launch command, so a console arm with no explicit
-    # --model still gets it.
-    AUTOCOMPACT="auto"
     if [ -z "$MODEL" ]; then
         CONTEXT_REASON="$CONTEXT_REASON; model unset (operator default) -- no [1m] suffix to apply here, autocompact=auto still passed"
     elif [ "$_arm_model_is_fable" -eq 1 ]; then
@@ -1002,7 +1025,6 @@ if [ "$CONTEXT_MODE" = "1m" ]; then
         CONTEXT_REASON="$CONTEXT_REASON; model=$MODEL"
     fi
 else
-    AUTOCOMPACT="200000"
     if [ "$_arm_model_had_suffix" -eq 1 ]; then
         CONTEXT_REASON="$CONTEXT_REASON; stripped an operator-typed [1m] suffix from --model"
     fi
@@ -4852,19 +4874,6 @@ $launch_body"
         exit 4
     }
     chmod 700 "$runner_dir" 2>/dev/null || true
-    # HIMMEL-3074 CR round 3: a fired runner/.command file never removes
-    # itself (only its crontab entry does), and neither does a stale one left
-    # by a mode change -- both carry the resume prompt and handover path.
-    # Re-arming the SAME task overwrites its own files, so this only prunes
-    # files OTHER arms left behind; age-gated so a just-armed, not-yet-fired
-    # file is never at risk. Portable `find` (no GNU-only -maxdepth); the
-    # per-path loop skips names that don't exist rather than letting a
-    # no-match glob reach `find` literally.
-    local _stale_path
-    for _stale_path in "$runner_dir"/HIMMEL-Resume-*.sh "$runner_dir"/HIMMEL-Resume-*.command; do
-        [ -f "$_stale_path" ] || continue
-        find "$_stale_path" -type f -mtime +7 -exec rm -f {} \; 2>/dev/null || true
-    done
     printf '%s\n' "$runner_body" > "$runner_path" || {
         echo "ERR arm-resume: failed to write runner $runner_path" >&2
         exit 4
@@ -4877,6 +4886,24 @@ $launch_body"
         }
         chmod 700 "$command_path"
     fi
+    # HIMMEL-3074 CR round 3: a fired runner/.command file never removes
+    # itself (only its crontab entry does), and neither does a stale one left
+    # by a mode change -- both carry the resume prompt and handover path.
+    # HIMMEL-3122: this prune runs AFTER both writes above have already
+    # succeeded, never before -- a re-arm of THIS task just wrote (or
+    # rewrote) its own runner/.command with mtime=now, so this can only ever
+    # prune files OTHER arms left behind; a just-armed file is never at risk
+    # regardless of the age gate. Running it any earlier would let a forced
+    # re-arm of a task whose own runner had gone stale unlink that runner
+    # before its replacement write, leaving a dangling crontab entry if the
+    # write then failed. Portable `find` (no GNU-only -maxdepth); the
+    # per-path loop skips names that don't exist rather than letting a
+    # no-match glob reach `find` literally.
+    local _stale_path
+    for _stale_path in "$runner_dir"/HIMMEL-Resume-*.sh "$runner_dir"/HIMMEL-Resume-*.command; do
+        [ -f "$_stale_path" ] || continue
+        find "$_stale_path" -type f -mtime +7 -exec rm -f {} \; 2>/dev/null || true
+    done
     # The log FILE must be appendable BEFORE the entry is installed: a `>>`
     # into a missing directory, or onto a file that cannot be opened for
     # append, fails the runner's own /bin/sh at fire time, after self_clean
@@ -6274,16 +6301,13 @@ cat <<EOF
   Model: $MODEL_REASON
   Context: $CONTEXT_REASON (autocompact=$AUTOCOMPACT)
 
-  PLEASE /exit YOUR CURRENT CLAUDE SESSION NOW.
-
-  The cron/schtasks relaunch will spawn a NEW claude process at the
-  scheduled time. If this session is still running then, you'll
-  have two concurrent claude processes operating on the same
-  handover state (file races, doubled API spend, possible
-  double-pushes from auto-commit).
-
-  Closing also gives the next session a clean prompt cache and a
-  fresh handover-context read.
+  NOTE (self-resume only): if THIS session is still working the handover
+  it just armed, exit before the fire time -- the relaunch starts a NEW
+  claude on that same document, and two processes on one handover can
+  race (file races, doubled API spend, double-pushes from auto-commit).
+  Exiting also gives the relaunch a clean prompt cache.
+  Arming a different handover (e.g. a console arming a leg)? No exit
+  is needed.
 ================================================================
 
 EOF

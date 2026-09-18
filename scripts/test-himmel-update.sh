@@ -42,6 +42,21 @@ export HIMMELCTL_CACHE_DIR="$TMP/himmelctl-cache"
 mkdir -p "$HIMMELCTL_CACHE_DIR"
 unset HIMMEL_UPDATE_CHANNEL
 
+# HIMMEL-3101: suite-level hermeticity. Several cases invoke the bare default
+# chain (no --only/--check), which on a guard fall-through reaches the
+# unconditional post-chain advisory block (rewire_statusline, update_hermes,
+# ...) — that block writes into $HOME/.claude (or $CLAUDE_CONFIG_DIR if set)
+# and can restart the real hermes-gateway service via the real ~/.hermes
+# checkout. Per-test HOME/HERMES_HOME overrides (Test 7b, Test 23) aren't
+# enough on their own — this is a suite-wide floor so no case, present or
+# future, can reach real host state by omission.
+REAL_HOME="$HOME"
+export USERPROFILE=''
+export HOME="$TMP/suite-home"
+export CLAUDE_CONFIG_DIR="$TMP/suite-no-claude-config"
+export HERMES_HOME="$TMP/suite-no-hermes"
+mkdir -p "$HOME/.claude"
+
 pass=0
 fail=0
 assert_pass() { pass=$((pass + 1)); echo "  PASS: $1"; }
@@ -384,6 +399,7 @@ th7_home="$TMP/th7-home"; mkdir -p "$th7_home/.claude"
 rc=0
 out=$(env -u HIMMEL_UPDATE_AUTOSTASH USERPROFILE='' HOME="$th7_home" \
       HERMES_HOME="$TMP/th7-no-hermes" CLAUDE_USER_SETTINGS="$th7_home/.claude/settings.json" \
+      CLAUDE_CONFIG_DIR="$TMP/th7-no-claude-config" \
       bash "$CHECKOUT_DIR/scripts/himmel-update.sh" 2>&1) || rc=$?
 assert_contains "dirty + .env opt-in: autostashes (not refuses)" "autostashing local changes" "$out"
 # The guard line above would still print if the pull dropped --autostash, so
@@ -699,7 +715,13 @@ rc=0
 out=$(HIMMELCTL_CACHE_DIR="$PROFILE_DIR" bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --plugins-check 2>&1) || rc=$?
 assert_eq "malformed channel: --plugins-check still exits 0" "0" "$rc"
 rc=0
-out=$(HIMMELCTL_CACHE_DIR="$PROFILE_DIR" bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --only marketplace 2>&1) || rc=$?
+# Pre-existing, out-of-scope gap (not HIMMEL-3101's): `claude plugin
+# marketplace update himmel` only succeeds against this station's real
+# marketplace registration, so this one case needs the real HOME rather than
+# the suite-level throwaway — `--only marketplace` never reaches
+# rewire_statusline/update_hermes, so this does not reopen the leak the
+# suite-level sandbox above exists to close.
+out=$(env -u CLAUDE_CONFIG_DIR HIMMELCTL_CACHE_DIR="$PROFILE_DIR" HOME="$REAL_HOME" bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --only marketplace 2>&1) || rc=$?
 assert_eq "malformed channel: --only marketplace (unrelated item) still exits 0" "0" "$rc"
 rc=0
 out=$(HIMMELCTL_CACHE_DIR="$PROFILE_DIR" bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --only pull 2>&1) || rc=$?
@@ -784,6 +806,47 @@ case "$out" in
     *"no stable release yet"*) fail=$((fail + 1)); echo "  FAIL: ls-remote failure: must not be misreported as 'no stable release yet'" ;;
     *) pass=$((pass + 1)); echo "  PASS: ls-remote failure: must not be misreported as 'no stable release yet'" ;;
 esac
+
+# ─── Test 23 (HIMMEL-3101): an uninspectable repo must NOT be pulled ────────
+# is_dirty_tracked() returning "clean" on a `git status` it could not even run
+# would let the pull gate below wave a repo it never actually inspected
+# through to `git pull --ff-only` — the exact silent-mix-in failure the dirty
+# guard exists to prevent. A PATH-stub intercepts ONLY the is_dirty_tracked
+# call shape (`status --porcelain --untracked-files=no`) and fails it; every
+# other git subcommand (fetch, rev-parse, pull, ...) passes through to the
+# real binary so the rest of the chain runs normally.
+echo "Test 23: git status failure inside is_dirty_tracked fails safe — refuses to pull, not silently proceeds"
+make_repo_behind 0
+REAL_GIT=$(command -v git)
+TH23_STUB="$TMP/th23-git-stub"
+mkdir -p "$TH23_STUB"
+cat > "$TH23_STUB/git" <<SHIM
+#!/usr/bin/env bash
+if [ "\$1" = "-C" ] && [ "\$3" = "status" ] && [ "\$4" = "--porcelain" ] && [ "\$5" = "--untracked-files=no" ]; then
+    exit 128
+fi
+exec "$REAL_GIT" "\$@"
+SHIM
+chmod +x "$TH23_STUB/git"
+# Precondition: the stub is the git actually resolved on this PATH.
+resolved_git=$(PATH="$TH23_STUB:$PATH" command -v git)
+assert_eq "git-status-fails: stub is the git resolved on PATH" "$TH23_STUB/git" "$resolved_git"
+head_before=$(git -C "$CHECKOUT_DIR" rev-parse HEAD)
+# The guard should refuse BEFORE the chain ever reaches marketplace/hermes, but
+# sandbox anyway (same shape as Test 7 Case b) so a regression that lets the
+# chain run doesn't fall through to the real ~/.hermes checkout or the real
+# `claude` marketplace registry.
+th23_home="$TMP/th23-home"; mkdir -p "$th23_home/.claude"
+rc=0
+out=$(PATH="$TH23_STUB:$PATH" USERPROFILE='' HOME="$th23_home" \
+      HERMES_HOME="$TMP/th23-no-hermes" CLAUDE_USER_SETTINGS="$th23_home/.claude/settings.json" \
+      CLAUDE_CONFIG_DIR="$TMP/th23-no-claude-config" \
+      bash "$CHECKOUT_DIR/scripts/himmel-update.sh" 2>&1) || rc=$?
+assert_eq "git-status-fails: refuses (rc 1), not a silent pass-through" "1" "$rc"
+assert_contains "git-status-fails: warns on stderr naming the dir" "is_dirty_tracked: git status failed in $CHECKOUT_DIR" "$out"
+assert_contains "git-status-fails: refuses to pull into a dirty tree" "refusing to pull into a dirty tree" "$out"
+head_after=$(git -C "$CHECKOUT_DIR" rev-parse HEAD)
+assert_eq "git-status-fails: HEAD unchanged — never pulled" "$head_before" "$head_after"
 
 # ─── Summary ─────────────────────────────────────────────────────────────────
 echo
