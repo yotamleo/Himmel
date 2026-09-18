@@ -95,8 +95,8 @@ fi
 # do-not list), which the plain value table above would otherwise miss if the
 # new spelling isn't also added there.
 CASE_LINE=$(grep -E "return 1 ;;" "$GO_GATE_SRC" 2>/dev/null | head -1)
-CASE_LINE_MATCH=$(printf '%s' "$CASE_LINE" | grep -E "''\|0\|false\|off\|no\) return 1")
-if [ -z "$CASE_LINE_MATCH" ]; then
+CASE_PATTERN=$(printf '%s' "$CASE_LINE" | sed -E 's/^[[:space:]]*//; s/\).*$//')
+if [ "$CASE_PATTERN" != "''|0|false|off|no" ]; then
     fail "$GO_GATE_SRC's console_leg falsy branch no longer matches exactly the five spellings (empty/0/false/off/no) -- got: $CASE_LINE"
 fi
 
@@ -105,7 +105,9 @@ for site in "$MERGE_ON_GREEN_SRC" "$BLOCK_CR_MERGE_SRC" "$GO_SCRIPT"; do
     if grep -qE "HIMMEL_CONSOLE_LEG.*tr -d '\[:space:\]'.*\bin\$|case .*HIMMEL_CONSOLE_LEG" "$site"; then
         fail "$site still hand-rolls a HIMMEL_CONSOLE_LEG case statement instead of calling console_leg"
     fi
-    if ! grep -q 'console_leg' "$site"; then
+    # Executable call only: strip full-line comments and the two references
+    # to the name that are not invocations (declare -F probe, unset -f drop).
+    if ! grep -vE '^[[:space:]]*#' "$site" | grep -vE 'declare -F console_leg|unset -f' | grep -q 'console_leg'; then
         fail "$site never calls console_leg -- HIMMEL-3149 predicate not wired in"
     fi
 done
