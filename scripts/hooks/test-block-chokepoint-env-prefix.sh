@@ -718,6 +718,52 @@ diff_row noleak "longer name sharing the seam as a prefix"          '(( HIMMEL_C
 # shellcheck disable=SC2016 # literal $(( )) payload, must not expand
 diff_row noleak "\$(( )) read of the seam"                          'echo $(( HIMMEL_CONSOLE_LEG + 1 )); @P@'
 diff_row noleak "seam assigned inside a real closed subshell"       '( (( HIMMEL_CONSOLE_LEG = 0 )) ); @P@'
+# --- HIMMEL-3185 CodeRabbit round 1 (PR #853): the arithmetic body sits in the
+# SAME segment as the chokepoint call (bash expands `$(( ))` in a word BEFORE it
+# execs the command, so the seam is already cleared when the child starts), and
+# a NESTED subscript. Every earlier `$(( ))` row put the chokepoint in a LATER
+# segment (`echo $(( ... )); @P@`), which is why none of them saw this shape: the
+# `;` had already flushed the arithmetic segment before the chokepoint segment
+# was scanned. Neighbouring shapes swept with it. ---
+# shellcheck disable=SC2016 # literal $(( )) payload, must not expand
+diff_row leak   "\$(( )) as an argument of the chokepoint call itself" '@P@ $(( HIMMEL_CONSOLE_LEG = 0 ))'
+# shellcheck disable=SC2016 # literal $(( )) payload, must not expand
+diff_row leak   "\$(( )) argument, no spaces"                       '@P@ $((HIMMEL_CONSOLE_LEG=0))'
+# shellcheck disable=SC2016 # literal $(( )) payload, must not expand
+diff_row leak   "\$(( )) in double quotes as the chokepoint argument" '@P@ "$(( HIMMEL_CONSOLE_LEG = 0 ))"'
+# shellcheck disable=SC2016 # literal $(( )) payload, must not expand
+diff_row leak   "\$(( )) in a prefix assignment word before the call" 'x=$(( HIMMEL_CONSOLE_LEG = 0 )) @P@'
+# shellcheck disable=SC2016 # literal $(( )) payload, must not expand
+diff_row leak   "\$(( )) argument, other seam: ARMAUTOMERGE"        '@P@ $(( ARMAUTOMERGE = 0 ))'
+# shellcheck disable=SC2016 # literal $(( )) payload, must not expand
+diff_row leak   "\$(( )) argument inside a bash -c string"          "bash -c '@P@ \$(( HIMMEL_CONSOLE_LEG = 0 ))'"
+# shellcheck disable=SC2016 # literal $(( )) payload, must not expand
+diff_row leak   ": \$(( )) no-op command carrying the clear"         ': $(( HIMMEL_CONSOLE_LEG = 0 )); @P@'
+# shellcheck disable=SC2016 # literal $(( )) payload, must not expand
+diff_row leak   ": \$(( )) no-op, chokepoint chained with &&"        ': $((HIMMEL_CONSOLE_LEG=0)) && @P@'
+diff_row leak   "nested subscript (( NAME[idx[0]] = 0 ))"            'idx=2; (( HIMMEL_CONSOLE_LEG[idx[0]] = 0 )); @P@'
+diff_row leak   "doubly nested subscript"                            'a=0; b=0; (( HIMMEL_CONSOLE_LEG[a[b[0]]] = 0 )); @P@'
+diff_row leak   "nested subscript, compound operator"                'idx=2; (( HIMMEL_CONSOLE_LEG[idx[0]] += 1 )); @P@'
+diff_row leak   "seam assigned INSIDE another element's subscript"   '(( x[ HIMMEL_CONSOLE_LEG = 0 ] = 1 )); @P@'
+# shellcheck disable=SC2016 # literal $[ ] payload, must not expand
+diff_row leak   "legacy \$[ ] arithmetic as the chokepoint argument"  '@P@ $[ HIMMEL_CONSOLE_LEG = 0 ]'
+# shellcheck disable=SC2016 # literal $[ ] payload, must not expand
+diff_row leak   "legacy \$[ ] arithmetic as a bare statement"        ': $[ HIMMEL_CONSOLE_LEG = 0 ]; @P@'
+# `${NAME:=v}` / `${NAME=v}` assign only when the variable is UNSET (or null for
+# `:=`): the armed seam is set to a non-empty value, so real bash leaves it
+# alone -- no leak (verified by the oracle, not assumed).
+# shellcheck disable=SC2016 # literal ${ } payload, must not expand
+diff_row noleak "\${NAME:=0} default-assignment of the SET seam"     ': ${HIMMEL_CONSOLE_LEG:=0}; @P@'
+# shellcheck disable=SC2016 # literal ${ } payload, must not expand
+diff_row noleak "\${NAME=0} default-assignment of the SET seam"      ': ${HIMMEL_CONSOLE_LEG=0}; @P@'
+# shellcheck disable=SC2016 # literal ${ } payload, must not expand
+diff_row noleak "\${NAME:=0} as the chokepoint argument"             '@P@ ${HIMMEL_CONSOLE_LEG:=0}'
+# shellcheck disable=SC2016 # literal $(( )) payload, must not expand
+diff_row noleak "\$(( )) read of the seam as the chokepoint argument" '@P@ $(( HIMMEL_CONSOLE_LEG + 1 ))'
+# shellcheck disable=SC2016 # literal $(( )) payload, must not expand
+diff_row noleak "\$(( )) == comparison as the chokepoint argument"   '@P@ $(( HIMMEL_CONSOLE_LEG == 1 ))'
+# shellcheck disable=SC2016 # literal $(( )) payload, must not expand
+diff_row noleak "non-seam \$(( )) assignment as the chokepoint argument" '@P@ $(( x = 0 ))'
 rm -rf "$ORACLE_DIR"
 
 # --- ALLOWED: fail-open proofs ---

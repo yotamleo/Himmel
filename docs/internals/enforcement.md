@@ -1800,7 +1800,18 @@ tagged segment, which `scan_segment` folds (`arith_fold`) into the same
 operators, prefix/postfix `++`/`--`, an array element `SEAM[0]=0`, a
 comma-joined `(( a = 1, SEAM = 0 ))`, a ternary arm and a `$(( … ))` used as a
 statement, argument or assignment-word value all deny, exactly as real bash
-assigns the seam in the current shell. The fold names ASSIGNMENT forms only:
+assigns the seam in the current shell. Two ordering/nesting rules came out of
+CodeRabbit's round on PR #853: the tagged body is emitted BEFORE the segment
+that holds the call, because bash expands `$(( … ))` in a word before it execs
+the command (`bash <chokepoint> $(( SEAM = 0 ))` leaked while
+`echo $(( SEAM = 0 )); bash <chokepoint>` did not — the earlier rows all put
+the call in a later segment), and a subscript may nest, so `arith_fold` scans
+`SEAM[a[b]] = 0` with a bracket-depth counter and folds the inside of every
+subscript as arithmetic in its own right (`x[ SEAM = 0 ] = 1`). The legacy
+`$[ … ]` fold likewise reaches the call in its own segment. `${SEAM:=0}` /
+`${SEAM=0}` do NOT leak — they assign only an unset (or, for `:=`, empty)
+variable and an armed seam is set — which the oracle pins as `noleak` rows. The
+fold names ASSIGNMENT forms only:
 comparisons and reads — `(( SEAM == 0 ))`, `>`, `>=`, `<=`, `!=`, `$(( SEAM + 1 ))`
 — and assignments to a non-seam name (or one that merely shares a prefix,
 `HIMMEL_CONSOLE_LEG_X`) still allow, and a clear inside a real closed subshell

@@ -342,19 +342,53 @@ arith_body() {
 # spelling is the one the no-space assignment-WORD path never saw. Anywhere in
 # the body counts (comma lists, ternary arms, grouping parens).
 arith_fold() {
-    local body="$1" n re
+    local body="$1" flat='' n re c i=0 k=0 d=0 ins='' nb=${#1}
+    local -a spans
+    local ns=0
     local ws='[[:space:]]*'
+    # A subscript `[ ... ]` may nest (`NAME[i[0]] = 0`), which no bracket
+    # regex can match, so scan it with a depth counter (bash 3.2-safe): flatten
+    # every top-level span to `[]` for the assignment test below and keep its
+    # inside to be folded on its own -- an index is itself arithmetic
+    # (`x[ SEAM = 0 ] = 1` assigns SEAM). An unterminated `[` is a bash syntax
+    # error, so that body keeps its raw text.
+    while [ "$i" -lt "$nb" ]; do
+        c=${body:i:1}
+        if [ "$d" -eq 0 ]; then
+            flat="$flat$c"
+            if [ "$c" = "[" ]; then d=1; ins=''; fi
+        else
+            case "$c" in
+            '[') d=$((d + 1)); ins="$ins$c" ;;
+            ']')
+                d=$((d - 1))
+                if [ "$d" -eq 0 ]; then
+                    flat="$flat]"; spans[ns]="$ins"; ns=$((ns + 1))
+                else
+                    ins="$ins$c"
+                fi
+                ;;
+            *) ins="$ins$c" ;;
+            esac
+        fi
+        i=$((i + 1))
+    done
+    if [ "$d" -ne 0 ]; then flat="$body"; ns=0; fi
     for n in $ALL_SEAM_VARS; do
         [ -n "$n" ] || continue
-        re="(^|[^A-Za-z0-9_])${n}${ws}(\\[[^]]*\\])?${ws}((\\+\\+|--)|(([-+*/%&|^]|<<|>>)?=([^=]|\$)))"
-        if [[ $body =~ $re ]]; then
+        re="(^|[^A-Za-z0-9_])${n}${ws}(\\[\\])?${ws}((\\+\\+|--)|(([-+*/%&|^]|<<|>>)?=([^=]|\$)))"
+        if [[ $flat =~ $re ]]; then
             UNSET_NAMES="$UNSET_NAMES $n"
             continue
         fi
         re="(\\+\\+|--)${ws}${n}(\$|[^A-Za-z0-9_])"
-        if [[ $body =~ $re ]]; then
+        if [[ $flat =~ $re ]]; then
             UNSET_NAMES="$UNSET_NAMES $n"
         fi
+    done
+    while [ "$k" -lt "$ns" ]; do
+        arith_fold "${spans[k]}"
+        k=$((k + 1))
     done
 }
 
@@ -519,15 +553,20 @@ segment_cmd() {
             seg="$seg$c"; i=$((i + 1)); cmdpos=1
             ;;
         \()
-            printf '%s\t%s\n' "$pdepth" "$seg"; seg=''
             # HIMMEL-3185: `((` / `$((` -- lift the arithmetic body out
             # whole, tagged, so scan_segment can fold a seam ASSIGNMENT in
             # it. The body's own text still segments below exactly as
             # before (its parens are opaque), but that path only sees an
             # assignment WORD (`NAME=0`); the spaced `NAME = 0` is words.
+            # Emitted BEFORE the pending segment is flushed: bash expands
+            # `$(( ))` in a word before it execs the command, so in
+            # `bash chokepoint.sh $(( SEAM = 0 ))` the fold must already be
+            # in UNSET_NAMES when the segment holding the chokepoint (the
+            # text ahead of this `(`) is scanned (CodeRabbit, PR #853).
             if [ "${s:$((i + 1)):1}" = "(" ] && arith_body "$s" $((i + 2)); then
                 printf '%s\t%s\n' "$pdepth" "$ARITH_TAG$ARITH_BODY"
             fi
+            printf '%s\t%s\n' "$pdepth" "$seg"; seg=''
             if [ "$confused" = "0" ]; then
                 kind='O'
                 if [ "$no_scope" = "1" ]; then
@@ -1064,6 +1103,10 @@ scan_segment() {
             [ -n "$n" ] || continue
             if [[ $seg =~ (^|[^A-Za-z0-9_])"$n"($|[^A-Za-z0-9_]) ]]; then
                 UNSET_NAMES="$UNSET_NAMES $n"
+                # ...and into THIS segment's own names: `bash chokepoint.sh
+                # $[ SEAM = 0 ]` expands before the exec, so the call in the
+                # same segment must see it (CodeRabbit, PR #853 class sweep).
+                names="$names $n"
             fi
         done
     fi
