@@ -54,6 +54,8 @@ SESSION_ID="test-session-himmel-3144"
 CONSOLE_DOC="$HANDOVER_DIR/FIXTURE-nextleg-console.md"
 printf 'fixture console doc\n' > "$CONSOLE_DOC"
 
+LEG_DOC="$HANDOVER_DIR/FIXTURE-leg-N1.md"
+
 RELEASE_TOKEN=""
 cleanup() {
     if [ -n "$RELEASE_TOKEN" ]; then
@@ -66,11 +68,18 @@ cleanup() {
     rmdir "$HANDOVER_DIR/.locks/queue" 2>/dev/null
     rmdir "$HANDOVER_DIR/.locks" 2>/dev/null
     rm -f "$CONSOLE_DOC" 2>/dev/null
+    rm -f "$LEG_DOC" 2>/dev/null
     rmdir "$HANDOVER_DIR" 2>/dev/null
     for f in "$XDG_RUNTIME_DIR/himmel-queue-lock"/*; do rm -f "$f" 2>/dev/null; done
     rmdir "$XDG_RUNTIME_DIR/himmel-queue-lock" 2>/dev/null
     rmdir "$XDG_RUNTIME_DIR" 2>/dev/null
     rm -f "$TMP/bank-preflight-stub.sh" 2>/dev/null
+    rm -f "$TMP/prefix-repo-himmel-3148/scripts/hooks/stop-console-idle-guard.sh" 2>/dev/null
+    rm -f "$TMP/prefix-repo-himmel-3148/scripts/lib/handover-path.sh" 2>/dev/null
+    rmdir "$TMP/prefix-repo-himmel-3148/scripts/hooks" 2>/dev/null
+    rmdir "$TMP/prefix-repo-himmel-3148/scripts/lib" 2>/dev/null
+    rmdir "$TMP/prefix-repo-himmel-3148/scripts" 2>/dev/null
+    rmdir "$TMP/prefix-repo-himmel-3148" 2>/dev/null
     rmdir "$TMP" 2>/dev/null
 }
 trap cleanup EXIT
@@ -90,6 +99,11 @@ is_block() { local out; out="$(printf '%s' "$1" | grep '"decision":"block"')"; [
 run_guard() {   # run_guard <payload> [ENV=val ...]
     local payload="$1"; shift
     printf '%s' "$payload" | env "$@" bash "$HOOK"
+}
+
+run_guard_hook() {   # run_guard_hook <hook_path> <payload> [ENV=val ...]
+    local hookpath="$1" payload="$2"; shift 2
+    printf '%s' "$payload" | env "$@" bash "$hookpath"
 }
 
 # --- RED control: no wake path existed at the base this ticket cut from ---
@@ -148,6 +162,94 @@ if is_block "$out"; then bad "(d-ii) bank-preflight.sh exit!=0 -> expected allow
 # silently turn (d-ii) into a vacuous control.
 out="$(run_guard "$CONSOLE_PAYLOAD")"
 if is_block "$out"; then ok "(d-ii) control: the real bank-preflight.sh still blocks (stub was exercised, not bypassed)"; else bad "(d-ii) control: the real bank-preflight.sh no longer blocks — got: $out"; fi
+
+# --- HIMMEL-3148: a held leg lock IS the wake path -------------------------
+# The base this ticket cut from blocked UNCONDITIONALLY whenever a console
+# session held its lock, regardless of the fleet/leg state it had just
+# gathered (bank PROCEED, leg locks fresh, fleet at cap all made no
+# difference — every state-gathering success reached the same block). The
+# fix: block iff leg_count == 0 (D1 verbatim — console F, empty fleet, 58
+# min dead); one or more held leg locks means a leg's own SendMessage is a
+# structural wake path, so the stop is allowed.
+#
+# PREDICATE_BASE_SHA pins the RED control to the exact commit this ticket
+# cut from (the shipped, always-blocks hook) rather than HEAD, so the
+# control keeps proving the historical bug after this fix is committed.
+PREDICATE_BASE_SHA="5e58a2f3fa30ee6b44d5df2ebee19a2cba418e34"
+PREFIX_ROOT="$TMP/prefix-repo-himmel-3148"
+PREFIX_HOOK=""
+mkdir -p "$PREFIX_ROOT/scripts/hooks" "$PREFIX_ROOT/scripts/lib"
+if git -C "$REPO" show "$PREDICATE_BASE_SHA:scripts/hooks/stop-console-idle-guard.sh" \
+        > "$PREFIX_ROOT/scripts/hooks/stop-console-idle-guard.sh" 2>/dev/null; then
+    # A copy, not a symlink into $REPO -- the prefix hook's OWN "$HERE/../.."
+    # must resolve to $PREFIX_ROOT (a hook with no seam for its handover-path.sh
+    # source), so this file has to physically exist under the copied tree
+    # rather than pull in the real REPO root as a side effect of following a
+    # symlink.
+    if cp "$REPO/scripts/lib/handover-path.sh" "$PREFIX_ROOT/scripts/lib/handover-path.sh" 2>/dev/null; then
+        PREFIX_HOOK="$PREFIX_ROOT/scripts/hooks/stop-console-idle-guard.sh"
+    fi
+fi
+
+if [ -n "$PREFIX_HOOK" ]; then
+    ok "HIMMEL-3148 setup: extracted the pre-fix hook from $PREDICATE_BASE_SHA"
+else
+    skip "HIMMEL-3148 setup: could not extract the pre-fix hook from $PREDICATE_BASE_SHA — RED control skipped"
+fi
+
+if ! leg_lock_out="$(QUEUE_LOCK_SESSION_SCOPE="leg-fixture-session" bash "$REPO/scripts/handover/queue-lock.sh" acquire "$LEG_DOC" 2>&1)"; then
+    echo "setup: could not acquire the fixture leg lock: $leg_lock_out" >&2
+    exit 1
+fi
+LEG_LOCKDIR="$HANDOVER_DIR/.locks/queue/FIXTURE-leg-N1.lock"
+[ -d "$LEG_LOCKDIR" ] || { echo "setup: fixture leg lock dir not found at $LEG_LOCKDIR" >&2; exit 1; }
+# shellcheck disable=SC2016  # backtick span pattern, not a shell expansion
+LEG_RELEASE_TOKEN="$(printf '%s\n' "$leg_lock_out" | sed -n 's/^release-token: `\(.*\)`$/\1/p')"
+[ -n "$LEG_RELEASE_TOKEN" ] || { echo "setup: leg acquire printed no release token" >&2; exit 1; }
+
+# --- (e) RED control: the PRE-FIX hook still blocks with a leg held -------
+if [ -n "$PREFIX_HOOK" ]; then
+    out="$(run_guard_hook "$PREFIX_HOOK" "$CONSOLE_PAYLOAD" \
+        HIMMEL_STOP_GUARD_BANK_PREFLIGHT="$REPO/scripts/lib/bank-preflight.sh" \
+        HIMMEL_STOP_GUARD_QUEUE_LOCK="$REPO/scripts/handover/queue-lock.sh")"
+    if is_block "$out"; then
+        ok "(e) RED: pre-fix hook ($PREDICATE_BASE_SHA) still blocks with a leg held — bug reproduced"
+    else
+        bad "(e) RED: pre-fix hook did not block with a leg held (expected block to prove the bug) — got: $out"
+    fi
+fi
+
+# --- (f) fixed hook allows once a leg lock is held -------------------------
+out="$(run_guard "$CONSOLE_PAYLOAD")"
+if is_block "$out"; then bad "(f) console + leg held -> expected allow, got: $out"; else ok "(f) console + leg held -> allow"; fi
+
+# --- (g) trap: a STALE/IDLE-HELD? leg lock must still allow (HIMMEL-3148 --
+# console ruling: IDLE-HELD? is heartbeat age, not death; a leg parked on an
+# external event makes no tool calls and must still count as held) --------
+stale_hb=$(date -u -d "@$(( $(date -u +%s) - 9000 ))" +%Y-%m-%dT%H:%M:%SZ)
+printf '{"session":"leg-fixture-session","host":"h","handover":"%s","started":"%s","heartbeat":"%s"}\n' \
+    "$LEG_DOC" "$stale_hb" "$stale_hb" > "$LEG_LOCKDIR/owner.json"
+sweep_check="$(bash "$REPO/scripts/handover/queue-lock.sh" status --sweep "$HANDOVER_DIR" 2>/dev/null)"
+case "$sweep_check" in
+    *'FIXTURE-leg-N1'*'IDLE-HELD?'*) ok "(g) precondition: fixture sweep shows the leg lock as IDLE-HELD?" ;;
+    *) bad "(g) precondition: fixture sweep did not flag the leg lock IDLE-HELD? — got: $sweep_check" ;;
+esac
+out="$(run_guard "$CONSOLE_PAYLOAD")"
+if is_block "$out"; then bad "(g) stale/IDLE-HELD? leg lock -> expected allow, got: $out"; else ok "(g) stale/IDLE-HELD? leg lock -> allow (age is not death)"; fi
+
+# --- (h) paired control: release the leg lock -> back to block -------------
+# A manual rm of owner.json alone leaves the mkdir-CAS arbiter file (`owner`)
+# behind, so the lock DIR survives and the sweep still reports the slug
+# (as INDETERMINATE) -- that undercounts as "still held", not "gone". Use
+# the real release path so this control actually removes the lock. (g) just
+# overwrote owner.json's session field to the fabricated "leg-fixture-session"
+# identity, which no longer matches the real acquire token -- force the
+# release rather than re-deriving a token for an identity the test invented.
+if ! release_out="$(QUEUE_LOCK_FORCE_RELEASE=1 bash "$REPO/scripts/handover/queue-lock.sh" release "$LEG_DOC" "$LEG_RELEASE_TOKEN" 2>&1)"; then
+    bad "(h) setup: could not release the fixture leg lock: $release_out"
+fi
+out="$(run_guard "$CONSOLE_PAYLOAD")"
+if is_block "$out"; then ok "(h) paired control: leg lock removed -> block again (same fixture, leg count is the only variable)"; else bad "(h) paired control: expected block once the leg lock is gone, got: $out"; fi
 
 echo
 printf '%d passed, %d failed\n' "$pass" "$fail"
