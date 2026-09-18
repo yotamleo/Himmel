@@ -1008,7 +1008,10 @@ narrative, denied `release` as a merge without review. Guards:
   env prefix accepted, so `QUEUE_LOCK_FORCE_RELEASE=1` (a console action) can
   never ride along.
 - **Every value literal:** no expansion, glob or `..`; the doc is an absolute
-  `.md`, and — when `HANDOVER_DIR` is given — contained under it.
+  `.md`, and — when `HANDOVER_DIR` is given — contained under it. A
+  `HANDOVER_DIR` that is `/` or a bare drive root (`/c`, `C:/`; trailing slashes
+  and `.` components included) falls through (HIMMEL-3198): it would turn
+  containment off or span a whole drive.
 - **The script resolves into a real checkout of this repo** (the checkout the
   hook lives in or one of its `git worktree list` siblings); a lookalike
   `…/scripts/handover/queue-lock.sh` falls through. The relative form is judged

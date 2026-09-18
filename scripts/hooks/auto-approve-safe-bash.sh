@@ -839,12 +839,18 @@ EOF
 segment_is_queue_lock() {
     tokenize_seg_words "$1" || return 1
     local -a a=("${RB_TOKENS[@]}")
-    local n=${#a[@]} i=0 hd="" verb doc ql_cwd ql_root
+    local n=${#a[@]} i=0 hd="" hr verb doc ql_cwd ql_root
     [ "$n" -ge 3 ] || return 1
     case "${a[0]}" in
         HANDOVER_DIR=*)
             ql_word_literal "${a[0]#HANDOVER_DIR=}" || return 1
             ql_abs_path "$QW" || return 1
+            # HIMMEL-3198: a root (`/`, empty once stripped) reads below as "no
+            # handover dir given", and a bare drive root (`C:/` → `/c`) contains a
+            # whole drive — neither may stand in for a handover dir.
+            hr="$QN"; while [ "${hr%/}" != "$hr" ]; do hr="${hr%/}"; done
+            # A `.` component spells the same root (`/.`, `/c/.`, `/./`), so it is refused too.
+            case "$hr" in ""|/[A-Za-z]|*/.|*/./*) return 1 ;; esac
             hd="${QN%/}"
             i=1 ;;
     esac

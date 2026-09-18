@@ -563,6 +563,41 @@ assert "ctl: UNC sweep dir"                         PASS "$(qd "$QD_S status --s
 assert "ctl: UNC abs script path"                   PASS "$(qd "HANDOVER_DIR=$QL_R bash //host/share/scripts/handover/queue-lock.sh release $QL_DOC $QL_TOK")"
 assert "the POSIX lone command still approves"      ALLOW "$(qd "HANDOVER_DIR=$QL_R $QD_S status $QL_DOC")"
 
+# --- HIMMEL-3198: a root-only HANDOVER_DIR must not turn containment off ---
+# `HANDOVER_DIR=/` strips to an empty `hd`, which the containment test reads as
+# "no handover dir given" — so ANY absolute .md doc was approved. A bare drive
+# root (`C:/`, canonical `/c`) contains a whole drive and is the same hole. The
+# hook now refuses (falls through to the classifier) when the HANDOVER_DIR value
+# is `/` or `/<letter>` in any spelling. Each ctl: row below was ALLOW before.
+assert "ctl: HANDOVER_DIR=/ + any doc"              PASS "$(qd "HANDOVER_DIR=/ $QD_S status /etc/x.md")"
+assert "ctl: HANDOVER_DIR=/ + doc, release"         PASS "$(qd "HANDOVER_DIR=/ $QD_S release /etc/x.md $QL_TOK")"
+assert "ctl: HANDOVER_DIR=/ + sweep"                PASS "$(qd "HANDOVER_DIR=/ $QD_S status --sweep $QL_R")"
+assert "ctl: HANDOVER_DIR=C:/ + drive doc"          PASS "$(qd "HANDOVER_DIR=C:/ $QD_S status C:/x.md")"
+assert "ctl: HANDOVER_DIR=C:/ + any drive-C doc"    PASS "$(qd "HANDOVER_DIR=C:/ $QD_S status C:/Windows/x.md")"
+assert "ctl: HANDOVER_DIR=/c + doc"                 PASS "$(qd "HANDOVER_DIR=/c $QD_S status /c/x.md")"
+assert "ctl: HANDOVER_DIR=/c/ + doc"                PASS "$(qd "HANDOVER_DIR=/c/ $QD_S status /c/x.md")"
+assert "ctl: HANDOVER_DIR=c:/ (lower) + doc"        PASS "$(qd "HANDOVER_DIR=c:/ $QD_S status /c/x.md")"
+assert "ctl: HANDOVER_DIR='C:\\' (quoted) + doc"     PASS "$(qd "HANDOVER_DIR='C:\\' $QD_S status 'C:\\x.md'")"
+assert "ctl: HANDOVER_DIR=/c// (repeated slash)"    PASS "$(qd "HANDOVER_DIR=/c// $QD_S status /c//x.md")"
+assert "ctl: HANDOVER_DIR=// (slash-form UNC root)" PASS "$(qd "HANDOVER_DIR=// $QD_S status //x.md")"
+assert "ctl: HANDOVER_DIR=// + POSIX doc"           PASS "$(qd "HANDOVER_DIR=// $QD_S status /etc/x.md")"
+assert "ctl: HANDOVER_DIR=/// + doc"                PASS "$(qd "HANDOVER_DIR=/// $QD_S status /etc/x.md")"
+# A `.` component spells the same root (`/.` is `/`, `/c/.` is `/c`).
+assert "ctl: HANDOVER_DIR=/. + any doc"             PASS "$(qd "HANDOVER_DIR=/. $QD_S status /etc/x.md")"
+assert "ctl: HANDOVER_DIR=/./ + any doc"            PASS "$(qd "HANDOVER_DIR=/./ $QD_S status /./etc/x.md")"
+assert "ctl: HANDOVER_DIR=/c/. + drive doc"         PASS "$(qd "HANDOVER_DIR=/c/. $QD_S status /c/./x.md")"
+assert "ctl: HANDOVER_DIR=C:/. + drive doc"         PASS "$(qd "HANDOVER_DIR=C:/. $QD_S status C:/./x.md")"
+# `/a` is indistinguishable from the drive root `A:/` (any single letter), so it
+# is refused too (the ticket's own control: `/a` + a foreign doc falls through).
+assert "ctl: HANDOVER_DIR=/a + doc outside it"      PASS  "$(qd "HANDOVER_DIR=/a $QD_S status /tmp/anywhere-else/x.md")"
+assert "ctl: HANDOVER_DIR=/a + contained doc"       PASS  "$(qd "HANDOVER_DIR=/a $QD_S status /a/x.md")"
+# Not a drive root: a two-letter dir (`/cc`), a subdirectory of a one-letter dir
+# or of a drive — all still contain-checked and still approved.
+assert "HANDOVER_DIR=/cc + contained doc"           ALLOW "$(qd "HANDOVER_DIR=/cc $QD_S status /cc/x.md")"
+assert "HANDOVER_DIR=/a/b + contained doc"          ALLOW "$(qd "HANDOVER_DIR=/a/b $QD_S status /a/b/x.md")"
+assert "HANDOVER_DIR=C:/a + contained doc"          ALLOW "$(qd "HANDOVER_DIR=C:/a $QD_S status /c/a/x.md")"
+assert "ctl: HANDOVER_DIR=/a/b + doc outside it"    PASS  "$(qd "HANDOVER_DIR=/a/b $QD_S status /a/x.md")"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "All cases passed."
