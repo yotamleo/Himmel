@@ -538,6 +538,97 @@ fi
 assert_contains "e2: RED CONTROL -- unrelated job survives a failed self-clean" "unrelated-job" "$(cat "$CRON_STORE" 2>/dev/null)"
 
 # ---------------------------------------------------------------------------
+# (f) HIMMEL-3122: the age-gated stale-runner prune (HIMMEL-Resume-*.sh/
+#     .command, mtime +7) ran BEFORE the runner write. A --force re-arm of a
+#     task whose OWN prior runner had gone stale (parked, not yet fired)
+#     pruned that file first; if the replacement write then failed for a
+#     reason unrelated to the prune, schedule_arm exited 4 having already
+#     deleted the runner -- and because HIMMEL-1304 defers the old crontab
+#     entry's replacement until the NEW job is registered, that untouched old
+#     entry is left installed pointing at a now-missing file.
+#
+# Reproduced with a stubbed `rm` -- found first on PATH, the exact external
+# command find's `-exec rm -f` in the prune loop shells out to -- that
+# performs the REAL delete and only THEN (so the delete itself still
+# happens, exactly as it would on main) revokes write on the runner dir.
+# NOT a blanket read-only ARM_RUNNER_DIR (that would block the FIRST,
+# unforced arm's own write too, and is a vacuous control): the stub only
+# trips once armed via a flag file set right before the second call, so it
+# strikes only the prune's own delete, nothing earlier. The stub also only
+# ever acts on the ONE path it targets (compared by exact string, never a
+# blind `dirname` of every argument): arm-resume.sh's own bank-preflight
+# call shells out to `rm` too (fleet-reservation cleanup), so a stub that
+# chmods any rm'd path's parent would reach into that reservation dir --
+# which lives under the REAL $XDG_RUNTIME_DIR unless overridden, not $TMP.
+# A dedicated throwaway XDG_RUNTIME_DIR keeps that reservation path (and
+# every other real-host runtime path bank-preflight touches) off the host
+# filesystem entirely, so the stub has nothing but the runner file to see.
+# ---------------------------------------------------------------------------
+: > "$CRON_STORE"
+REAL_RM=$(command -v rm)
+RUNNERDIR_F="$TMP/arm-runners-f"
+XDG_F="$TMP/xdg-f"; mkdir -p "$XDG_F"
+RMSTUB="$TMP/rmstub"; mkdir -p "$RMSTUB"
+RM_TRIP_FLAG="$TMP/rm-trip-armed"
+RUNNER_PATH_F_FLAG="$TMP/runner-path-f"
+cat > "$RMSTUB/rm" <<RMEOF
+#!/bin/sh
+$REAL_RM "\$@"
+_rc=\$?
+if [ -e "$RM_TRIP_FLAG" ]; then
+    _target=\$(cat "$RUNNER_PATH_F_FLAG" 2>/dev/null)
+    for _a in "\$@"; do
+        if [ -n "\$_target" ] && [ "\$_a" = "\$_target" ]; then
+            chmod 555 "\$(dirname "\$_a")" 2>/dev/null || true
+        fi
+    done
+fi
+exit "\$_rc"
+RMEOF
+chmod +x "$RMSTUB/rm"
+
+HO_F=$(make_handover)
+out=$(FLEET_CAP_OK=1 ARM_WITH_LIVE_WORKERS=1 XDG_RUNTIME_DIR="$XDG_F" ARM_RUNNER_DIR="$RUNNERDIR_F" mac_env bash "$ARM" --time "$(future_time)" --handover "$HO_F" 2>&1)
+rc=$?
+assert_rc "f: PRECONDITION first (real) arm succeeds" 0 "$rc"
+installed=$(cat "$CRON_STORE" 2>/dev/null || true)
+INSTALLED_LINE_F=$(printf '%s\n' "$installed" | grep -F '# HIMMEL-Resume-' | head -1)
+TASK_NAME_F=$(task_name_from_entry "$INSTALLED_LINE_F")
+RUNNER_PATH_F="$RUNNERDIR_F/$TASK_NAME_F.sh"
+if [ -f "$RUNNER_PATH_F" ]; then
+    echo "PASS f: PRECONDITION runner file exists after the first arm"
+else
+    echo "FAIL f: PRECONDITION runner file missing after the first arm: $RUNNER_PATH_F"; FAILED=$((FAILED + 1))
+fi
+# Backdate the runner past the 7-day prune gate (portable: touch -d is
+# GNU-only, BSD/macOS touch rejects it -- same fallback idiom as test-cap-
+# reset-time.sh and test-arm-resume.sh's 1606 sibling fixture).
+touch -d "8 days ago" "$RUNNER_PATH_F" 2>/dev/null \
+    || touch -t "$(date -v -8d +%Y%m%d%H%M 2>/dev/null)" "$RUNNER_PATH_F"
+printf '%s' "$RUNNER_PATH_F" > "$RUNNER_PATH_F_FLAG"
+touch "$RM_TRIP_FLAG"
+out2=$(FLEET_CAP_OK=1 ARM_WITH_LIVE_WORKERS=1 env PATH="$RMSTUB:$MACBIN:$PATH" OSTYPE="darwin23" ARM_TERMINAL_APP=none XDG_RUNTIME_DIR="$XDG_F" ARM_RUNNER_DIR="$RUNNERDIR_F" bash "$ARM" --time "$(future_time)" --handover "$HO_F" --force 2>&1)
+rc2=$?
+chmod -R u+w "$RUNNERDIR_F" 2>/dev/null || true
+rm -f "$RM_TRIP_FLAG" "$RUNNER_PATH_F_FLAG"
+assert_rc "f: forced re-arm of a task whose own runner had gone stale survives a write that races the prune" 0 "$rc2"
+if [ -f "$RUNNER_PATH_F" ]; then
+    echo "PASS f: runner file exists after the forced re-arm (not pruned out from under its own replacement write)"
+else
+    echo "FAIL f: HIMMEL-3122 -- runner file is GONE after the forced re-arm ($RUNNER_PATH_F); rc=$rc2, output: $out2"; FAILED=$((FAILED + 1))
+fi
+installed2=$(cat "$CRON_STORE" 2>/dev/null || true)
+if printf '%s\n' "$installed2" | grep -qF "# $TASK_NAME_F"; then
+    if [ -f "$RUNNER_PATH_F" ]; then
+        echo "PASS f: the installed crontab entry's runner exists (not dangling)"
+    else
+        echo "FAIL f: HIMMEL-3122 RED CONTROL -- crontab entry for $TASK_NAME_F is installed but its runner is MISSING (the exact dangling-entry bug)"; FAILED=$((FAILED + 1))
+    fi
+else
+    echo "FAIL f: no crontab entry for $TASK_NAME_F survives the forced re-arm attempt"; FAILED=$((FAILED + 1))
+fi
+
+# ---------------------------------------------------------------------------
 # (d) sed portability: no GNU-only `{p;q}` left in the script; the portable
 #     form works under the sed on THIS host; H1 ticket inference still works.
 # ---------------------------------------------------------------------------

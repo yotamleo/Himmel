@@ -4860,19 +4860,6 @@ $launch_body"
         exit 4
     }
     chmod 700 "$runner_dir" 2>/dev/null || true
-    # HIMMEL-3074 CR round 3: a fired runner/.command file never removes
-    # itself (only its crontab entry does), and neither does a stale one left
-    # by a mode change -- both carry the resume prompt and handover path.
-    # Re-arming the SAME task overwrites its own files, so this only prunes
-    # files OTHER arms left behind; age-gated so a just-armed, not-yet-fired
-    # file is never at risk. Portable `find` (no GNU-only -maxdepth); the
-    # per-path loop skips names that don't exist rather than letting a
-    # no-match glob reach `find` literally.
-    local _stale_path
-    for _stale_path in "$runner_dir"/HIMMEL-Resume-*.sh "$runner_dir"/HIMMEL-Resume-*.command; do
-        [ -f "$_stale_path" ] || continue
-        find "$_stale_path" -type f -mtime +7 -exec rm -f {} \; 2>/dev/null || true
-    done
     printf '%s\n' "$runner_body" > "$runner_path" || {
         echo "ERR arm-resume: failed to write runner $runner_path" >&2
         exit 4
@@ -4885,6 +4872,24 @@ $launch_body"
         }
         chmod 700 "$command_path"
     fi
+    # HIMMEL-3074 CR round 3: a fired runner/.command file never removes
+    # itself (only its crontab entry does), and neither does a stale one left
+    # by a mode change -- both carry the resume prompt and handover path.
+    # HIMMEL-3122: this prune runs AFTER both writes above have already
+    # succeeded, never before -- a re-arm of THIS task just wrote (or
+    # rewrote) its own runner/.command with mtime=now, so this can only ever
+    # prune files OTHER arms left behind; a just-armed file is never at risk
+    # regardless of the age gate. Running it any earlier would let a forced
+    # re-arm of a task whose own runner had gone stale unlink that runner
+    # before its replacement write, leaving a dangling crontab entry if the
+    # write then failed. Portable `find` (no GNU-only -maxdepth); the
+    # per-path loop skips names that don't exist rather than letting a
+    # no-match glob reach `find` literally.
+    local _stale_path
+    for _stale_path in "$runner_dir"/HIMMEL-Resume-*.sh "$runner_dir"/HIMMEL-Resume-*.command; do
+        [ -f "$_stale_path" ] || continue
+        find "$_stale_path" -type f -mtime +7 -exec rm -f {} \; 2>/dev/null || true
+    done
     # The log FILE must be appendable BEFORE the entry is installed: a `>>`
     # into a missing directory, or onto a file that cannot be opened for
     # append, fails the runner's own /bin/sh at fire time, after self_clean
