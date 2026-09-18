@@ -344,5 +344,19 @@ drop_amend_out="$(CR_LEDGER="$LD" CR_SCORES_DROP_BELOW=40 CR_SCORES_MIN_N=10 bas
 not_contains "merged verdicts above threshold suppress drop advice for codex" "$drop_amend_out" "consider dropping codex"
 contains "codex merged agreed% shows 67" "$drop_amend_out" "67%"
 
+# ── HIMMEL-3161: `fixed` verdicts count as agreement ────────────────────────
+# epsilon: 10 findings, ALL verdict="fixed". A fixed finding is an accepted
+# finding (the code was changed in response to it) — it must count toward
+# agreed% and must NOT trigger drop advice, even though `total` >= MIN_N.
+# Before the fix, `fixed` tallied into a dynamic (never-displayed) bucket and
+# left `agreed` at 0, so agreed%=0% and drop advice fired for a 100%-accepted critic.
+LF="$tmp/fixed-scores.jsonl"
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  echo "{\"kind\":\"finding\",\"ts\":\"2026-07-01T00:00:$(printf '%02d' "$i")Z\",\"branch\":\"b\",\"head\":\"FH1\",\"model\":\"epsilon\",\"finding_id\":\"e-${i}\",\"severity\":\"minor\",\"file\":\"f\",\"line\":${i},\"verdict\":\"fixed\"}" >> "$LF"
+done
+fixed_out="$(CR_LEDGER="$LF" CR_SCORES_DROP_BELOW=40 CR_SCORES_MIN_N=10 bash "$CS" 2>&1)"
+not_contains "all-fixed critic gets NO drop advice" "$fixed_out" "consider dropping epsilon"
+contains "all-fixed critic shows 100% agreed" "$fixed_out" "100%"
+
 # ── Final ──────────────────────────────────────────────────────────────────
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }
