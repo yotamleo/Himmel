@@ -234,13 +234,20 @@ case "$(printf '%s' "${HIMMEL_CONSOLE_LEG:-}" | tr '[:upper:]' '[:lower:]' | tr 
         if . "$SCRIPT_DIR/../lib/handover-path.sh" 2>/dev/null; then
             go_root=$(handover_root 2>/dev/null) || go_root=""
         fi
+        # Drop any go_gate already in scope (a PATH executable or an
+        # inherited `export -f go_gate` would otherwise survive the source
+        # below undetected — `command -v`/`declare -F` after sourcing can't
+        # tell "the file defined it" from "it was already callable") before
+        # sourcing, so only the file's own definition can satisfy the
+        # declare -F check that follows.
+        unset -f go_gate 2>/dev/null || true
         # shellcheck source=scripts/lib/go-gate.sh
         # shellcheck disable=SC1091
         if ! . "$SCRIPT_DIR/../lib/go-gate.sh" 2>/dev/null; then
             echo "block-unresolved-cr-merge: cannot load scripts/lib/go-gate.sh — refusing (a console-spawned leg's GO gate must fail closed, not silently no-op)" >&2
             exit 2
         fi
-        if ! command -v go_gate >/dev/null 2>&1; then
+        if ! declare -F go_gate >/dev/null 2>&1; then
             echo "block-unresolved-cr-merge: scripts/lib/go-gate.sh sourced but go_gate is not defined (truncated file?) — refusing (a console-spawned leg's GO gate must fail closed, not silently no-op)" >&2
             exit 2
         fi

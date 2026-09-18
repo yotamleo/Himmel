@@ -438,6 +438,157 @@ RUNEOF
     fi
 fi
 
+# ── HIMMEL-3142 CR round 4: FOURTH and FIFTH RED controls — `command -v
+# go_gate` (round 3's fix) answers "is the name go_gate callable", not "did
+# sourcing go-gate.sh define the function". Two distinct ways that diverges,
+# each needing its own control, against the SAME truncated go-gate.sh
+# ($TRUNC_GOGATE, built above — does not define go_gate):
+#   (A) a PATH executable named go_gate: `command -v` finds it on PATH and
+#       PASSES; the hook then CALLS it (not a function — the real binary),
+#       it exits 0, go_rc=0, and the hook proceeds to a full GO bypass.
+#       `declare -F` (bash-function-only) correctly rejects this.
+#   (B) an inherited `export -f go_gate` in the launching shell: it IS a
+#       real bash function, so `declare -F` ALSO passes it through — the
+#       symbol check alone cannot distinguish "the file just defined this"
+#       from "this was already in scope before we sourced". Only
+#       `unset -f go_gate` BEFORE the source (so a stale/inherited
+#       definition cannot survive it) closes this half.
+# The pre-fix blob for both is head 6fe4ad20 (round 3's shipped hook, the
+# `command -v` version) — control (B) also proves round 3's own fix does not
+# close this second door, motivating the unset-then-declare-F combination.
+PRE_RC4_SHA=6fe4ad205612f59c71c8354ff9f5981c5d23bb5f
+RC4_PAYLOAD="$TMP/red-control-rc4-payload.json"
+payload Bash "gh pr merge 42 --squash --match-head-commit abc123" > "$RC4_PAYLOAD"
+
+rc4_extract_hook() {
+    # $1 = dest root
+    mkdir -p "$1/scripts/hooks" "$1/scripts/lib"
+    git -C "$SCRIPT_DIR/../.." show "$PRE_RC4_SHA:scripts/hooks/block-unresolved-cr-merge.sh" \
+        > "$1/scripts/hooks/block-unresolved-cr-merge.sh" 2>/dev/null
+    cp "$SCRIPT_DIR/../lib/cr-merge-gate.sh" "$1/scripts/lib/cr-merge-gate.sh"
+    cp "$SCRIPT_DIR/../lib/ci-green-gate.sh" "$1/scripts/lib/ci-green-gate.sh"
+    cp "$SCRIPT_DIR/../lib/handover-path.sh" "$1/scripts/lib/handover-path.sh"
+    cp "$TRUNC_GOGATE" "$1/scripts/lib/go-gate.sh"
+}
+
+if [ ! -s "$TRUNC_GOGATE" ] || grep -q '^go_gate()' "$TRUNC_GOGATE"; then
+    fail=$((fail+1)); echo "FAIL red-control setup: TRUNC_GOGATE unusable for round-4 controls"
+else
+    # (A) PATH-executable go_gate
+    RC4A_BIN="$TMP/rc4a-bin"
+    mkdir -p "$RC4A_BIN"
+    cat > "$RC4A_BIN/go_gate" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+    chmod +x "$RC4A_BIN/go_gate"
+
+    PRE_RC4A_ROOT="$TMP/pre-rc4a-hook"
+    rc4_extract_hook "$PRE_RC4A_ROOT"
+    if [ ! -s "$PRE_RC4A_ROOT/scripts/hooks/block-unresolved-cr-merge.sh" ]; then
+        fail=$((fail+1)); echo "FAIL red-control setup: could not extract the pre-rc4-fix hook from head $PRE_RC4_SHA"
+    else
+        cat > "$PRE_RC4A_ROOT/run.sh" <<RUNEOF
+#!/usr/bin/env bash
+bash "$PRE_RC4A_ROOT/scripts/hooks/block-unresolved-cr-merge.sh" < "$RC4_PAYLOAD"
+echo "rc=\$?"
+RUNEOF
+        chmod +x "$PRE_RC4A_ROOT/run.sh"
+        red_control_run \
+            --env HIMMEL_CONSOLE_LEG=1 --env "HANDOVER_DIR=$GOROOT" --env GH_STUB_MODE=clean \
+            --env "GH_STUB_LOG=$TMP/calls-red-control-rc4a.log" \
+            --env "PATH=$RC4A_BIN:$PATH" \
+            -- bash "$PRE_RC4A_ROOT/run.sh"
+        if red_control_assert --label "HIMMEL-3142-RC4A-RC" --expect-rc 0 \
+            --observed     "$RED_CONTROL_OUT" \
+            --expect-wrong "rc=0" \
+            --correct      "rc=2" \
+            --note "round-3-shipped block-unresolved-cr-merge.sh (head $PRE_RC4_SHA) used \`command -v go_gate\`, which finds a PATH executable named go_gate exactly as readily as a sourced function; against a truncated go-gate.sh plus a PATH-executable go_gate that exits 0, the hook calls that executable, treats go_rc=0 as a real GO, and merges with no go_gate function ever having run"
+        then
+            pass=$((pass+1)); echo "ok   red-control-rc4a-pre-fix-allowed"
+        else
+            fail=$((fail+1)); echo "FAIL red-control-rc4a-pre-fix-allowed"
+        fi
+    fi
+
+    POST_RC4A_ROOT="$TMP/post-rc4a-hook"
+    mkdir -p "$POST_RC4A_ROOT/scripts/hooks" "$POST_RC4A_ROOT/scripts/lib"
+    cp "$HOOK" "$POST_RC4A_ROOT/scripts/hooks/block-unresolved-cr-merge.sh"
+    cp "$SCRIPT_DIR/../lib/cr-merge-gate.sh" "$POST_RC4A_ROOT/scripts/lib/cr-merge-gate.sh"
+    cp "$SCRIPT_DIR/../lib/ci-green-gate.sh" "$POST_RC4A_ROOT/scripts/lib/ci-green-gate.sh"
+    cp "$SCRIPT_DIR/../lib/handover-path.sh" "$POST_RC4A_ROOT/scripts/lib/handover-path.sh"
+    cp "$TRUNC_GOGATE" "$POST_RC4A_ROOT/scripts/lib/go-gate.sh"
+
+    POST_RC4A_OUT="$TMP/post-rc4a-out"
+    POST_RC4A_ERR="$TMP/post-rc4a-err"
+    HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean \
+        GH_STUB_LOG="$TMP/calls-red-control-rc4a-post.log" \
+        PATH="$RC4A_BIN:$PATH" \
+        bash "$POST_RC4A_ROOT/scripts/hooks/block-unresolved-cr-merge.sh" \
+        < "$RC4_PAYLOAD" > "$POST_RC4A_OUT" 2>"$POST_RC4A_ERR"
+    post_rc4a_rc=$?
+    if [ "$post_rc4a_rc" -eq 2 ] && grep -qi "not defined" "$POST_RC4A_ERR"; then
+        pass=$((pass+1)); echo "ok   red-control-rc4a-post-fix-refuses"
+    else
+        fail=$((fail+1)); echo "FAIL red-control-rc4a-post-fix-refuses rc=$post_rc4a_rc (want 2, stderr naming 'not defined')"
+    fi
+
+    # (B) inherited `export -f go_gate`
+    # shellcheck disable=SC2329,SC2317  # invoked indirectly via export -f in a child bash process (rc4b fixture)
+    go_gate() { exit 0; }
+    export -f go_gate
+
+    PRE_RC4B_ROOT="$TMP/pre-rc4b-hook"
+    rc4_extract_hook "$PRE_RC4B_ROOT"
+    if [ ! -s "$PRE_RC4B_ROOT/scripts/hooks/block-unresolved-cr-merge.sh" ]; then
+        fail=$((fail+1)); echo "FAIL red-control setup: could not extract the pre-rc4-fix hook from head $PRE_RC4_SHA (control B)"
+    else
+        cat > "$PRE_RC4B_ROOT/run.sh" <<RUNEOF
+#!/usr/bin/env bash
+bash "$PRE_RC4B_ROOT/scripts/hooks/block-unresolved-cr-merge.sh" < "$RC4_PAYLOAD"
+echo "rc=\$?"
+RUNEOF
+        chmod +x "$PRE_RC4B_ROOT/run.sh"
+        red_control_run \
+            --env HIMMEL_CONSOLE_LEG=1 --env "HANDOVER_DIR=$GOROOT" --env GH_STUB_MODE=clean \
+            --env "GH_STUB_LOG=$TMP/calls-red-control-rc4b.log" \
+            -- bash "$PRE_RC4B_ROOT/run.sh"
+        if red_control_assert --label "HIMMEL-3142-RC4B-RC" --expect-rc 0 \
+            --observed     "$RED_CONTROL_OUT" \
+            --expect-wrong "rc=0" \
+            --correct      "rc=2" \
+            --note "round-3-shipped block-unresolved-cr-merge.sh (head $PRE_RC4_SHA) used \`command -v go_gate\` with no unset -f before sourcing; an inherited export -f go_gate in the launching shell is a real bash function, so command -v finds it exactly like one the file just defined, and a truncated go-gate.sh never overrides it"
+        then
+            pass=$((pass+1)); echo "ok   red-control-rc4b-pre-fix-allowed"
+        else
+            fail=$((fail+1)); echo "FAIL red-control-rc4b-pre-fix-allowed"
+        fi
+    fi
+
+    POST_RC4B_ROOT="$TMP/post-rc4b-hook"
+    mkdir -p "$POST_RC4B_ROOT/scripts/hooks" "$POST_RC4B_ROOT/scripts/lib"
+    cp "$HOOK" "$POST_RC4B_ROOT/scripts/hooks/block-unresolved-cr-merge.sh"
+    cp "$SCRIPT_DIR/../lib/cr-merge-gate.sh" "$POST_RC4B_ROOT/scripts/lib/cr-merge-gate.sh"
+    cp "$SCRIPT_DIR/../lib/ci-green-gate.sh" "$POST_RC4B_ROOT/scripts/lib/ci-green-gate.sh"
+    cp "$SCRIPT_DIR/../lib/handover-path.sh" "$POST_RC4B_ROOT/scripts/lib/handover-path.sh"
+    cp "$TRUNC_GOGATE" "$POST_RC4B_ROOT/scripts/lib/go-gate.sh"
+
+    POST_RC4B_OUT="$TMP/post-rc4b-out"
+    POST_RC4B_ERR="$TMP/post-rc4b-err"
+    HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean \
+        GH_STUB_LOG="$TMP/calls-red-control-rc4b-post.log" \
+        bash "$POST_RC4B_ROOT/scripts/hooks/block-unresolved-cr-merge.sh" \
+        < "$RC4_PAYLOAD" > "$POST_RC4B_OUT" 2>"$POST_RC4B_ERR"
+    post_rc4b_rc=$?
+    if [ "$post_rc4b_rc" -eq 2 ] && grep -qi "not defined" "$POST_RC4B_ERR"; then
+        pass=$((pass+1)); echo "ok   red-control-rc4b-post-fix-refuses"
+    else
+        fail=$((fail+1)); echo "FAIL red-control-rc4b-post-fix-refuses rc=$post_rc4b_rc (want 2, stderr naming 'not defined')"
+    fi
+
+    unset -f go_gate
+fi
+
 # passthrough cases must not touch gh at all (coderabbit: assert EVERY one)
 for pt in non-merge-passthrough string-literal-passthrough quoted-merge-text-passthrough; do
     [ -s "$TMP/calls-$pt.log" ] && { echo "FAIL $pt called gh"; fail=$((fail+1)); }
