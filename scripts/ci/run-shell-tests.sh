@@ -402,6 +402,14 @@ _suite_timeout_for() {
       # observed loaded 1192s here. Rule: loaded x2 -- 1192 * 2 = 2384,
       # rounded up to 2400.
       printf '2400' ;;
+    scripts/handover/test-arm-resume-1879.sh|*/scripts/handover/test-arm-resume-1879.sh)
+      # HIMMEL-3175 (nightly #843, run 35375554792): no dedicated entry existed
+      # -- the generic 600s default killed it CAP EXCEEDED on ubuntu (603s),
+      # macOS (604s) and Windows (603s). Measured 843s idle (HIMMEL-3132, tier
+      # table below). Rule: loaded x2 -- 843 * 2 = 1686, rounded up to 1700;
+      # the CI runners' own completion time is unmeasured (every run was
+      # killed at the cap), so the wider figure is the safe one.
+      printf '1700' ;;
     scripts/handover/test-arm-resume-queue-lock.sh|*/scripts/handover/test-arm-resume-queue-lock.sh)
       printf '650' ;;  # measured 307s idle 2026-08-27 (rc=1 was the HIMMEL-1329 ticket-mutex
       # false-positive fixed by HIMMEL-2165, not HIMMEL-1796 -- that ticket is about two
