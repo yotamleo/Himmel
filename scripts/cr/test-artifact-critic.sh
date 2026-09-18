@@ -20,6 +20,10 @@ fails=0
 # the wrapper, so its flow-run rows went to the PRODUCTION ledger. Redirect
 # into this test's own scratch dir.
 export HIMMEL_FLOW_RUNS_LEDGER="$tmp/flow-runs.jsonl"
+# HIMMEL-3104: the real critic-first-pass.sh now writes a `score` row and a
+# raw response beside the CR ledger on every completed run; without an
+# explicit CR_LEDGER that is the PRODUCTION ledger (git common dir).
+export CR_LEDGER="$tmp/cr-ledger.jsonl"
 check(){ if [ "$2" = "$3" ]; then echo "ok - $1"; else echo "FAIL - $1: got [$2] want [$3]"; fails=$((fails+1)); fi; }
 check_contains(){ if grepq "$2" -F -- "$3"; then echo "ok - $1"; else echo "FAIL - $1: missing [$3]"; fails=$((fails+1)); fi; }
 

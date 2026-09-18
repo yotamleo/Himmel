@@ -37,6 +37,10 @@ LEDGER_NOOP="$tmp/ledger-noop.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$LEDGER_NOOP"
 chmod +x "$LEDGER_NOOP"
 export CRITIC_LEDGER_APPEND="$LEDGER_NOOP"
+# HIMMEL-3104: the panel's own ledger writes are stubbed above, but each real
+# critic-first-pass.sh member writes a `score` row + raw response beside the
+# ledger — the PRODUCTION one (git common dir) unless CR_LEDGER is explicit.
+export CR_LEDGER="$tmp/cr-ledger.jsonl"
 
 # HIMMEL-2241: case 11 deliberately does NOT stub CRITIC_FIRST_PASS, so the
 # real critic-first-pass.sh -> scripts/hermes/invoke.sh chain runs and appends
