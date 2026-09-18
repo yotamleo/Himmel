@@ -1054,8 +1054,9 @@ else
   check_timeout_2267 "scripts/ci/test-suite-concurrency.sh" "1500"
   check_timeout_2267 "/repo/scripts/ci/test-suite-concurrency.sh" "1500"
 
-  # HIMMEL-3175 (nightly #843): the 1879 suite has no arm, so the 600s default
-  # killed it on every OS (603s on ubuntu). Its tier comment records 843s idle.
+  # HIMMEL-3175 (nightly #843): the 1879 suite previously had no dedicated arm,
+  # so the 600s default killed it on every OS (603s on ubuntu). Its tier comment
+  # records 843s idle.
   check_timeout_2267 "scripts/handover/test-arm-resume-1879.sh" "1700"
   check_timeout_2267 "/repo/scripts/handover/test-arm-resume-1879.sh" "1700"
 
