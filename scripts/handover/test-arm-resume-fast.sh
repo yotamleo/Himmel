@@ -117,4 +117,5 @@ exec bash test-arm-resume.sh \
     --only "2199" \
     --only "2177" \
     --only "2545" \
-    --only "3118"
+    --only "3118" \
+    --only "2973"

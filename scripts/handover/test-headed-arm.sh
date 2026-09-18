@@ -1388,6 +1388,21 @@ log38f="$(cat "$d38f/log" 2>/dev/null || true)"
 check "38f no --role: exit 0" "$rc38f" "0"
 contains "38f no --role: armed log line stamps role=unsplit" "$log38f" "role=unsplit"
 not_contains "38f no --role: konsole record carries no HIMMEL_CONSOLE_RELAY clear" "$rec38f" "HIMMEL_CONSOLE_RELAY"
+not_contains "38f no --role: konsole record exports no HIMMEL_CONSOLE_DOC (HIMMEL-2973)" "$rec38f" "HIMMEL_CONSOLE_DOC"
+
+# 38g (HIMMEL-2973 S3). --role console exports HIMMEL_CONSOLE_DOC (the console
+# doc) and HIMMEL_CONSOLE_WORKDIR (dirname of the signal file = the console's
+# chain dir) into the launched session, so the PreCompact hook can snapshot;
+# a session that is not a console gets neither (38f).
+d38g="$tmp/c38g"; mk_stub "$d38g" 1 alive "HIMMEL-role38g"
+rc38g=0
+KONSOLE_CMD="$d38g/konsole" PGREP_CMD="$d38g/pgrep" HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$d38g/locks" HEADED_ARM_PROC="$d38g/proc" \
+  bash "$SCRIPT" --role console "HIMMEL-role38g" "doc38g.md" "$d38g/chain/sig-HIMMEL-role38g" "$PAST" "$d38g/log" >/dev/null 2>&1 || rc38g=$?
+wait_record "$d38g" || true
+rec38g="$(cat "$d38g/record" 2>/dev/null || true)"
+check "38g --role console: exit 0" "$rc38g" "0"
+contains "38g --role console: konsole record exports HIMMEL_CONSOLE_DOC" "$rec38g" "HIMMEL_CONSOLE_DOC=doc38g.md"
+contains "38g --role console: konsole record exports HIMMEL_CONSOLE_WORKDIR=dirname(signal)" "$rec38g" "HIMMEL_CONSOLE_WORKDIR=$d38g/chain"
 
 # --- 39. --dry-run (HIMMEL-3140): prints the resolved argv + exits 0 BEFORE
 # the signal/deadline wait loop, the claim lock, or konsole/pgrep are ever
