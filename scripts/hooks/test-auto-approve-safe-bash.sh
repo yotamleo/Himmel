@@ -464,6 +464,29 @@ assert "ctl: extra trailing arg"                PASS "$(decide "$(j_bash "HANDOV
 assert "ctl: relative doc"                      PASS "$(decide "$(j_bash "bash scripts/handover/queue-lock.sh release yotamleo/x.md $QL_TOK")")"
 assert "ctl: non-.md doc"                       PASS "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash scripts/handover/queue-lock.sh release $QL_R/x.txt $QL_TOK")")"
 assert "ctl: other bash script"                 PASS "$(decide "$(j_bash "bash scripts/handover/merge-on-green.sh 1 --jira-transition")")"
+# Whole-command means NO unquoted separator anywhere — not merely one non-empty
+# segment. scan_cmd emits an EMPTY segment after a trailing separator and the
+# segment count skips it, so these once counted as a lone command (CodeRabbit,
+# round 2): a trailing `&` even backgrounds the lock op. The lone command above
+# still approves; each of these is a control that must fall through.
+QL_LONE="HANDOVER_DIR=$QL_R bash scripts/handover/queue-lock.sh status $QL_DOC"
+assert "ctl: trailing &"                        PASS "$(decide "$(j_bash "$QL_LONE &")")"
+assert "ctl: trailing ;"                        PASS "$(decide "$(j_bash "$QL_LONE;")")"
+assert "ctl: trailing && (empty tail)"          PASS "$(decide "$(j_bash "$QL_LONE &&")")"
+assert "ctl: trailing || (empty tail)"          PASS "$(decide "$(j_bash "$QL_LONE ||")")"
+assert "ctl: trailing |  (empty tail)"          PASS "$(decide "$(j_bash "$QL_LONE |")")"
+# A bare trailing newline never reaches the scanner (the hook's `$(jq …)` capture
+# strips it), and `cmd\n` is the identical single command to the shell, so it
+# approves; a newline that leaves ANYTHING behind it is a real separator.
+assert "lone command + bare trailing newline"   ALLOW "$(decide "$(j_bash "$QL_LONE"$'\n')")"
+assert "ctl: newline + whitespace tail"         PASS "$(decide "$(j_bash "$QL_LONE"$'\n  ')")"
+assert "ctl: newline + second command"          PASS "$(decide "$(j_bash "$QL_LONE"$'\necho x')")"
+assert "ctl: leading newline + command"         PASS "$(decide "$(j_bash $'\n'"$QL_LONE")")"
+assert "ctl: trailing ;;"                       PASS "$(decide "$(j_bash "$QL_LONE ;;")")"
+assert "ctl: leading ;"                         PASS "$(decide "$(j_bash "; $QL_LONE")")"
+assert "ctl: leading &&"                        PASS "$(decide "$(j_bash "&& $QL_LONE")")"
+assert "ctl: release trailing &"                PASS "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash scripts/handover/queue-lock.sh release $QL_DOC $QL_TOK &")")"
+assert "the lone command still approves"        ALLOW "$(decide "$(j_bash "$QL_LONE")")"
 
 echo ""
 if [ "$FAILED" -eq 0 ]; then

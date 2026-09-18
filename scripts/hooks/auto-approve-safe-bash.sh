@@ -961,7 +961,14 @@ case "$rd" in *'>'*) exit 0 ;; esac
 # left as literal text. Segment text retains its quotes so the per-binary
 # guards (find -delete, sort -o, …) still see real flag values.
 # HIMMEL-3131: a queue-lock.sh lock verb is approved ONLY as the whole command
-# (exactly one segment) — see segment_is_queue_lock.
+# (exactly one segment) — see segment_is_queue_lock. "Exactly one non-empty
+# segment" is not enough: scan_cmd emits an EMPTY segment after a trailing (or
+# before a leading) separator and the count below skips it, so `… status <doc> &`
+# (which backgrounds the op), `…;`, `… &&`, `… |` and a trailing newline would all
+# pass as a lone command. SCAN_MASK keeps every UNQUOTED separator (quoted spans
+# are blanked), so any of them in it disqualifies the carve-out outright.
+ql_unquoted_sep=0
+case "$SCAN_MASK" in *';'*|*'|'*|*'&'*|*$'\n'*) ql_unquoted_sep=1 ;; esac
 ql_segs=0; ql_only=""
 while IFS= read -r seg; do
     seg="${seg#"${seg%%[![:space:]]*}"}"   # ltrim
@@ -970,7 +977,7 @@ while IFS= read -r seg; do
 done <<EOF
 $SCAN_SEGS
 EOF
-if [ "$ql_segs" -eq 1 ] && segment_is_queue_lock "$ql_only"; then
+if [ "$ql_unquoted_sep" -eq 0 ] && [ "$ql_segs" -eq 1 ] && segment_is_queue_lock "$ql_only"; then
     emit_allow "queue-lock.sh lock verb (HIMMEL-3131): $cmd"
 fi
 
