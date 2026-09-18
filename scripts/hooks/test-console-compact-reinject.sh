@@ -217,5 +217,77 @@ case "$out" in
     *) bad "fallback path did not emit the fixture doc's Live state - got: $out" ;;
 esac
 
+echo "== HIMMEL-3160: HANDOVER_DIR unset, handover_root resolves to a bare inline stub, a sandboxed registry root holds the doc -> Live state is re-injected via the registry fallback =="
+# Hermeticity (HARD rule): a throwaway HOME/CLAUDE_CONFIG_DIR + a sandboxed
+# registry.json at the real default path, so a bug that ever falls through
+# to the unqualified default can't reach the operator's actual registry.
+N3160_HOME="$TMP/3160-home"
+mkdir -p "$N3160_HOME/.claude/handover"
+printf '{"repos":{}}\n' > "$N3160_HOME/.claude/handover/registry.json"
+
+N3160_WT="$TMP/3160-worktree"
+mkdir -p "$N3160_WT/handovers"
+git -C "$N3160_WT" init -q >/dev/null 2>&1
+
+N3160_STATE="$TMP/3160-state"
+mkdir -p "$N3160_STATE/handovers/yotamleo/himmel"
+mk_console_doc "$N3160_STATE/handovers/yotamleo/himmel/fixture-3160-console.md"
+
+N3160_REG="$TMP/3160-registry.json"
+printf '{"repos":{"state":{"path":"%s","user":"yotamleo","branch_prefix":"handover/"}}}\n' \
+    "$N3160_STATE" > "$N3160_REG"
+
+CMDLINE_3160="$TMP/cmdline-3160-console"
+printf 'claude\0-n\0fixture-3160-console\0' > "$CMDLINE_3160"
+
+reg_before="$(sha256sum "$N3160_HOME/.claude/handover/registry.json" | awk '{print $1}')"
+out="$(cd "$N3160_WT" && env -u HANDOVER_DIR -u HIMMEL_CONSOLE_DOC \
+    HOME="$N3160_HOME" CLAUDE_CONFIG_DIR="$N3160_HOME/.claude" \
+    CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_3160" \
+    HANDOVER_REGISTRY="$N3160_REG" bash "$HOOK")"; rc=$?
+reg_after="$(sha256sum "$N3160_HOME/.claude/handover/registry.json" | awk '{print $1}')"
+if [ "$rc" -eq 0 ]; then ok "registry-root fallback exits 0"; else bad "expected rc 0, got $rc"; fi
+# shellcheck disable=SC2016  # backtick leg span, literal fixture text
+case "$out" in
+    *'legs: `N1:nonce-abc:lock-tok-1:1234`'*) ok "registry-root fallback finds the doc under the sandboxed state repo and emits Live state" ;;
+    *) bad "registry-root fallback did not emit the fixture doc's Live state (HIMMEL-3160) - got: $out" ;;
+esac
+if [ "$reg_before" = "$reg_after" ]; then ok "the sandboxed default-path registry was untouched by the run"; else bad "the sandboxed default-path registry CHANGED during the run"; fi
+
+echo "== HIMMEL-3160: HANDOVER_DIR unset, handover_root's stub misses AND the registry names nobody -> one-line warning naming the searched roots =="
+N3160B_WT="$TMP/3160b-worktree"
+mkdir -p "$N3160B_WT/handovers"
+git -C "$N3160B_WT" init -q >/dev/null 2>&1
+
+N3160B_REG="$TMP/3160b-registry.json"
+printf '{"repos":{}}\n' > "$N3160B_REG"
+
+CMDLINE_3160B="$TMP/cmdline-3160b-console"
+printf 'claude\0-n\0fixture-3160b-console\0' > "$CMDLINE_3160B"
+
+out="$(cd "$N3160B_WT" && env -u HANDOVER_DIR -u HIMMEL_CONSOLE_DOC \
+    HOME="$N3160_HOME" CLAUDE_CONFIG_DIR="$N3160_HOME/.claude" \
+    CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_3160B" \
+    HANDOVER_REGISTRY="$N3160B_REG" bash "$HOOK")"; rc=$?
+if [ "$rc" -eq 0 ]; then ok "no-doc-anywhere fallback exits 0"; else bad "expected rc 0, got $rc"; fi
+case "$out" in
+    *'NOT re-injected'*) ok "no-doc-anywhere fallback warns Live state was NOT re-injected" ;;
+    *) bad "expected a not-re-injected warning - got: $out" ;;
+esac
+case "$out" in
+    *"$N3160B_WT/handovers"*) ok "warning names the searched handover_root stub" ;;
+    *) bad "warning did not name the searched handover_root stub - got: $out" ;;
+esac
+
+echo "== HIMMEL-3160: the registry fallback never fires for a non-console session name, even with a matching registry root =="
+CMDLINE_3160C="$TMP/cmdline-3160c-nonconsole"
+printf 'claude\0-n\0fixture-3160-notconsole\0' > "$CMDLINE_3160C"
+out="$(cd "$N3160_WT" && env -u HANDOVER_DIR -u HIMMEL_CONSOLE_DOC \
+    HOME="$N3160_HOME" CLAUDE_CONFIG_DIR="$N3160_HOME/.claude" \
+    CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_3160C" \
+    HANDOVER_REGISTRY="$N3160_REG" bash "$HOOK")"; rc=$?
+if [ "$rc" -eq 0 ]; then ok "non-console name with a populated registry still exits 0"; else bad "expected rc 0, got $rc"; fi
+if [ -z "$out" ]; then ok "non-console session stays silent even when the registry holds a matching doc"; else bad "expected total silence - got: $out"; fi
+
 echo
 printf '%d ok, %d FAILED\n' "$pass" "$fail"

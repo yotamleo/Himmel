@@ -45,9 +45,33 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 
+# Set by resolve_console_doc. _RESOLVED_DOC on success, _REINJECT_WARN when
+# a -console session name resolves but no doc is found under ANY searched
+# root. resolve_console_doc is called directly below, never inside a $()
+# capture -- a command substitution runs the function in a SUBSHELL, and a
+# global it sets there never reaches the parent shell (HIMMEL-3160).
+_RESOLVED_DOC=""
+_REINJECT_WARN=""
+
+# _find_doc_under_root <root> <session-name> -- prints the first
+# <root>/**/<session-name>.md match, or nothing (rc 1).
+_find_doc_under_root() {
+    local root="$1" name="$2" hit=""
+    [ -n "$root" ] && [ -d "$root" ] || return 1
+    while IFS= read -r -d '' hit; do
+        printf '%s\n' "$hit"
+        return 0
+    done < <(find "$root" -type f -name "${name}.md" -print0 2>/dev/null)
+    return 1
+}
+
 resolve_console_doc() {
+    _RESOLVED_DOC=""
     if [ -n "${HIMMEL_CONSOLE_DOC:-}" ]; then
-        [ -f "$HIMMEL_CONSOLE_DOC" ] && printf '%s\n' "$HIMMEL_CONSOLE_DOC" && return 0
+        if [ -f "$HIMMEL_CONSOLE_DOC" ]; then
+            _RESOLVED_DOC="$HIMMEL_CONSOLE_DOC"
+            return 0
+        fi
         return 1
     fi
 
@@ -62,16 +86,42 @@ resolve_console_doc() {
 
     # shellcheck source=scripts/lib/handover-path.sh
     . "$REPO/scripts/lib/handover-path.sh" || return 1
-    local root
-    root="$(handover_root)" || return 1
-    [ -n "$root" ] && [ -d "$root" ] || return 1
-
-    local hit=""
-    while IFS= read -r -d '' hit; do
-        printf '%s\n' "$hit"
+    local primary hit
+    primary="$(handover_root 2>/dev/null)" || primary=""
+    if hit="$(_find_doc_under_root "$primary" "$name")"; then
+        _RESOLVED_DOC="$hit"
         return 0
-    done < <(find "$root" -type f -name "${name}.md" -print0 2>/dev/null)
+    fi
 
+    # HIMMEL-3160: handover_root missed -- with HANDOVER_DIR unset (the
+    # common case: a console is usually launched by a pasted line with no
+    # exported env) it resolves to THIS repo's own inline handovers/ stub,
+    # not the registered state repo most consoles actually write their doc
+    # to. Fall back to the exact registry candidates queue-lock.sh already
+    # searches on a cross-root release/heartbeat
+    # (_ql_candidate_roots, HIMMEL-2861: HANDOVER_DIR, then every
+    # ~/.claude/handover/registry.json repo's inline handovers/ dir) instead
+    # of re-parsing the registry a second way.
+    # shellcheck source=scripts/handover/queue-lock.sh
+    . "$REPO/scripts/handover/queue-lock.sh" || return 1
+
+    local root searched="" tried=""
+    while IFS= read -r root; do
+        [ -n "$root" ] || continue
+        [ "$root" = "$primary" ] && continue
+        case "$searched" in *"|$root|"*) continue ;; esac
+        searched="$searched|$root|"
+        tried="$tried$root, "
+        if hit="$(_find_doc_under_root "$root" "$name")"; then
+            _RESOLVED_DOC="$hit"
+            return 0
+        fi
+    done <<EOF
+$(_ql_candidate_roots)
+EOF
+
+    [ -n "$primary" ] && tried="$primary, $tried"
+    _REINJECT_WARN="console-compact-reinject: no doc named '${name}.md' found under any handover root (searched: ${tried%, }) -- Live state was NOT re-injected."
     return 1
 }
 
@@ -156,7 +206,13 @@ extract_section() {
     fi
 }
 
-DOC="$(resolve_console_doc)" || exit 0
+resolve_console_doc
+_rc=$?
+if [ "$_rc" -ne 0 ]; then
+    [ -n "$_REINJECT_WARN" ] && printf '%s\n' "$_REINJECT_WARN"
+    exit 0
+fi
+DOC="$_RESOLVED_DOC"
 [ -n "$DOC" ] || exit 0
 
 LIVE_STATE="$(extract_section "## Live state" "$DOC")"
