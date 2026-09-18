@@ -51,19 +51,19 @@ GO_DIR="$ROOT/.locks/go"
 # GNU `date -d` first; BSD/macOS `date -j -f` fallback (same convention as
 # leg-over-by-day.sh's to_epoch).
 to_epoch() {
-    date -d "$1" +%s 2>/dev/null && return 0
+    date -d "$1" +%s 2>/dev/null && return 0  # gnu-ok: BSD/macOS fallback on the next line
     date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$(printf '%s' "$1" | sed 's/\.[0-9]*Z$/Z/')" +%s 2>/dev/null
 }
 # <YYYY-MM-DD> <HH:MM> -> epoch, read in TZ (both date flavours honour TZ).
 local_epoch() {
-    date -d "$1 $2:00" +%s 2>/dev/null && return 0
+    date -d "$1 $2:00" +%s 2>/dev/null && return 0  # gnu-ok: BSD/macOS fallback on the next line
     date -j -f '%Y-%m-%d %H:%M:%S' "$1 $2:00" +%s 2>/dev/null
 }
-mtime_of() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
+mtime_of() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }  # gnu-ok: stat -f fallback in the same line
 # <YYYY-MM-DD> <n> -> the date n CALENDAR days later (not n*86400 s, so a DST
 # change in between cannot skew the wall clock).
 add_days() {
-    date -d "$1 +$2 day" +%Y-%m-%d 2>/dev/null && return 0
+    date -d "$1 +$2 day" +%Y-%m-%d 2>/dev/null && return 0  # gnu-ok: BSD/macOS fallback on the next line
     date -j -v+"$2"d -f '%Y-%m-%d' "$1" +%Y-%m-%d 2>/dev/null
 }
 
