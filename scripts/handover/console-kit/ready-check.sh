@@ -143,7 +143,11 @@ else
         ] | map(select(.ok | not)) | map("\(.name)=\(.detail)") | join(", ")
     ' 2>/dev/null)
     total=$(printf '%s' "$rollup" | jq 'length' 2>/dev/null || echo 0)
-    if [ -z "$bad" ]; then
+    case "$total" in ''|*[!0-9]*) total=0 ;; esac
+    if [ "$total" -eq 0 ]; then
+        echo "[FAIL] 2. statusCheckRollup: no checks reported yet (0 entries — CI may not have registered)"
+        mark_fail
+    elif [ -z "$bad" ]; then
         echo "[PASS] 2. statusCheckRollup: $total/$total checks completed SUCCESS/SKIPPED/NEUTRAL"
     else
         echo "[FAIL] 2. statusCheckRollup: not-green — $bad"
@@ -256,21 +260,26 @@ else
 
     first_msg=$(printf '%s' "$commits_json" | jq -r '.[0].messageHeadline + "\n\n" + (.[0].messageBody // "")' 2>/dev/null)
 
-    sensitive=$(printf '%s\n' "$files_json" | grep -E '(\.(sh|bash|zsh|ps1|psm1|psd1|cmd|bat)$|^scripts/|(^|/)bin/[^/]+$)' || true)
-    non_docs=$(printf '%s\n' "$files_json" | grep -Ev '\.(md|txt)$|^docs/|^handovers/' || true)
-
-    need_plat=0; [ -n "$sensitive" ] && need_plat=1
-    need_sec=0; [ -n "$non_docs" ] && need_sec=1
-
-    plat_ok=1; [ "$need_plat" -eq 1 ] && { echo "$first_msg" | grep -qiE "$ATTEST_RE" || plat_ok=0; }
-    sec_ok=1; [ "$need_sec" -eq 1 ] && { echo "$first_msg" | grep -qiE "$SEC_RE" || sec_ok=0; }
-
-    if [ "$plat_ok" -eq 1 ] && [ "$sec_ok" -eq 1 ]; then
-        echo "[PASS] 5. first commit: Platforms tested (needed=$need_plat), Security reviewed (needed=$need_sec) — attested where needed"
-    else
-        [ "$plat_ok" -eq 0 ] && echo "[FAIL] 5. first commit missing 'Platforms tested:' (diff touches scripts/shell files)"
-        [ "$sec_ok" -eq 0 ] && echo "[FAIL] 5. first commit missing 'Security reviewed:' (diff touches non-docs code)"
+    if [ -z "$files_json" ]; then
+        echo "[FAIL] 5. cannot read PR files (gh api .../pulls/$PR/files failed or returned nothing)"
         mark_fail
+    else
+        sensitive=$(printf '%s\n' "$files_json" | grep -E '(\.(sh|bash|zsh|ps1|psm1|psd1|cmd|bat)$|^scripts/|(^|/)bin/[^/]+$)' || true)
+        non_docs=$(printf '%s\n' "$files_json" | grep -Ev '\.(md|txt)$|^docs/|^handovers/' || true)
+
+        need_plat=0; [ -n "$sensitive" ] && need_plat=1
+        need_sec=0; [ -n "$non_docs" ] && need_sec=1
+
+        plat_ok=1; [ "$need_plat" -eq 1 ] && { echo "$first_msg" | grep -qiE "$ATTEST_RE" || plat_ok=0; }
+        sec_ok=1; [ "$need_sec" -eq 1 ] && { echo "$first_msg" | grep -qiE "$SEC_RE" || sec_ok=0; }
+
+        if [ "$plat_ok" -eq 1 ] && [ "$sec_ok" -eq 1 ]; then
+            echo "[PASS] 5. first commit: Platforms tested (needed=$need_plat), Security reviewed (needed=$need_sec) — attested where needed"
+        else
+            [ "$plat_ok" -eq 0 ] && echo "[FAIL] 5. first commit missing 'Platforms tested:' (diff touches scripts/shell files)"
+            [ "$sec_ok" -eq 0 ] && echo "[FAIL] 5. first commit missing 'Security reviewed:' (diff touches non-docs code)"
+            mark_fail
+        fi
     fi
 
     # ── 6. every commit subject carries a ticket ID ─────────────────────────

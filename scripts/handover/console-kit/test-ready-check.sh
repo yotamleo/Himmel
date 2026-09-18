@@ -54,6 +54,7 @@ case "$args" in
     *"api graphql"*)
         printf '%s %s %s\n' "${STUB_UNRESOLVED:-0}" "false" "null" ;;
     *"api --paginate"*"/files"*"filename"*)
+        [ -n "${STUB_FILES_FAIL:-}" ] && exit 1
         printf '%s\n' "${STUB_FILES:-README.md}" ;;
     *)
         echo "gh-stub: unhandled args: $args" >&2
@@ -86,12 +87,13 @@ run() {
         STUB_UNRESOLVED="${STUB_UNRESOLVED:-0}" \
         STUB_COMMITS="${STUB_COMMITS:-$GREEN_COMMITS}" \
         STUB_FILES="${STUB_FILES:-$GREEN_FILES}" \
+        STUB_FILES_FAIL="${STUB_FILES_FAIL:-}" \
         PATH="$PATH" GH_LOG="$GH_LOG" \
         bash "$SCRIPT" "$PR" "$SHA")
 }
 
 reset_stubs() {
-    unset STUB_HEAD STUB_MSS STUB_ROLLUP STUB_UNRESOLVED STUB_COMMITS STUB_FILES
+    unset STUB_HEAD STUB_MSS STUB_ROLLUP STUB_UNRESOLVED STUB_COMMITS STUB_FILES STUB_FILES_FAIL
     seed_ledger_ok
 }
 
@@ -140,6 +142,13 @@ check "red-check: exit 1" "$rc" "1"
 contains "red-check: check 2 fails" "$out" "[FAIL] 2."
 contains "red-check: names the offender" "$out" "build=COMPLETED/FAILURE"
 
+# --- 2b. check 2 fails: empty rollup (CI not registered yet) ------------
+reset_stubs
+STUB_ROLLUP='[]'
+rc=0; out="$(run)" || rc=$?
+check "empty-rollup: exit 1" "$rc" "1"
+contains "empty-rollup: check 2 fails" "$out" "[FAIL] 2. statusCheckRollup: no checks reported yet"
+
 # --- 3. check 3 fails: unresolved review threads > 0 --------------------
 reset_stubs
 STUB_UNRESOLVED=2
@@ -176,6 +185,13 @@ STUB_COMMITS='[{"messageHeadline":"docs: [HIMMEL-1] note","messageBody":""}]'
 rc=0; out="$(run)" || rc=$?
 check "docs-only: exit 0" "$rc" "0"
 contains "docs-only: check 5 passes" "$out" "[PASS] 5."
+
+# --- 5d. check 5 fails: PR files unreadable (API call failed) -----------
+reset_stubs
+STUB_FILES_FAIL=1
+rc=0; out="$(run)" || rc=$?
+check "files-unreadable: exit 1" "$rc" "1"
+contains "files-unreadable: check 5 fails" "$out" "[FAIL] 5. cannot read PR files"
 
 # --- 6. check 6 fails: a commit subject with no ticket ID ---------------
 reset_stubs
