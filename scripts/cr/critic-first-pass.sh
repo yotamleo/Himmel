@@ -591,7 +591,7 @@ _cfp_record_score() {
     fi
     _crs_days="${CR_RAW_RETAIN_DAYS:-30}"
     case "$_crs_days" in ''|*[!0-9]*) _crs_days=30 ;; esac
-    find "$_crs_dir" -maxdepth 1 -type f -name '*.raw' -mtime +"$_crs_days" -exec rm -f {} + 2>/dev/null || true
+    find "$_crs_dir" -maxdepth 1 -type f -name '*.raw' -mtime +"$_crs_days" -exec rm -f {} + 2>/dev/null || true  # gnu-ok: -maxdepth/-mtime/-exec + are all in BSD find too
     _crs_n() { printf '%s\n' "$_crs_final" | sed -n "s/^## $1 (\([0-9][0-9]*\) $2).*/\1/p" | head -1; }
     _crs_c="$(_crs_n 'Critical Issues' found)"
     _crs_i="$(_crs_n 'Important Issues' found)"
