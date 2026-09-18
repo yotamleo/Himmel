@@ -385,9 +385,11 @@ rm -f "$GOROOT/.locks/go/42.abc123"
 # truncated go-gate.sh is refused (rc=2), via its new `command -v go_gate`
 # precondition.
 TRUNC_GOGATE="$TMP/go-gate-truncated.sh"
-head -n 33 "$SCRIPT_DIR/../lib/go-gate.sh" > "$TRUNC_GOGATE"
+head -n 29 "$SCRIPT_DIR/../lib/go-gate.sh" > "$TRUNC_GOGATE"
 if grep -q '^go_gate()' "$TRUNC_GOGATE"; then
-    fail=$((fail+1)); echo "FAIL red-control setup: go-gate.sh header grew past line 33 — the truncated copy still defines go_gate, so this control no longer exercises a missing-symbol source"
+    fail=$((fail+1)); echo "FAIL red-control setup: go-gate.sh header grew past line 29 — the truncated copy still defines go_gate, so this control no longer exercises a missing-symbol source"
+elif ! grep -q '^console_leg()' "$TRUNC_GOGATE"; then
+    fail=$((fail+1)); echo "FAIL red-control setup: go-gate.sh's console_leg() no longer fits in the first 29 lines — the truncated copy would fail the new console_leg lib-missing check instead of exercising the go_gate missing-symbol source this control targets"
 else
     RC127_PAYLOAD="$TMP/red-control-rc127-payload.json"
     payload Bash "gh pr merge 42 --squash --match-head-commit abc123" > "$RC127_PAYLOAD"

@@ -514,13 +514,31 @@ fi
 # --match-head-commit pins below. The evidence is a file, never an env value
 # the leg could set on its own merge line. Placed before the marker clear so a
 # refused leg mutates nothing, and before the DRY_RUN branch so a dry run
-# reports the refusal too. Unset marker: skipped whole — the resolver is not
-# even sourced, so operator sessions are unchanged.
+# reports the refusal too. Unset marker: the go_root resolution and the GO
+# file read below are both skipped whole, so an operator session's
+# handover_root() failure never surfaces.
 #
-# The actual file check is scripts/lib/go-gate.sh's go_gate() (HIMMEL-3142) —
-# shared with block-unresolved-cr-merge.sh's own gh-pr-merge gate, so the two
-# cannot drift on what "the GO binds" means.
-if _truthy "${HIMMEL_CONSOLE_LEG:-}"; then
+# Both the marker predicate (console_leg) and the file check (go_gate) live in
+# scripts/lib/go-gate.sh (HIMMEL-3142/HIMMEL-3149) — shared with
+# block-unresolved-cr-merge.sh's own gh-pr-merge gate and go.sh's own
+# refusal, so none of the three can drift on either "is this a leg" or "what
+# the GO binds". Sourcing the file is side-effect-free (defines two
+# functions, touches nothing on disk) — safe to do unconditionally, before we
+# even know whether this is a leg.
+# Drop any go_gate/console_leg already in scope (a PATH executable or an
+# inherited `export -f` would otherwise survive the source below undetected —
+# declare -F after sourcing can't tell "the file defined it" from "it was
+# already callable") before sourcing, so only the file's own definitions can
+# satisfy the declare -F checks that follow.
+unset -f go_gate console_leg 2>/dev/null || true
+# shellcheck source=scripts/lib/go-gate.sh
+# shellcheck disable=SC1091
+if ! . "$SCRIPT_DIR/../lib/go-gate.sh" 2>/dev/null || ! declare -F console_leg >/dev/null 2>&1; then
+    echo "merge-on-green: cannot load scripts/lib/go-gate.sh — refusing (the console-leg marker check must fail closed, not silently no-op)" >&2
+    audit "REFUSED reason=policy-refused phase=console-go-lib-missing repo=$nwo pr=#$pr_num sha=$sha"
+    exit 17
+fi
+if console_leg; then
     go_root=""
     # shellcheck source=scripts/lib/handover-path.sh
     # shellcheck disable=SC1091
@@ -528,19 +546,6 @@ if _truthy "${HIMMEL_CONSOLE_LEG:-}"; then
         go_root=$(handover_root 2>/dev/null) || go_root=""
     fi
     go_file="${go_root:-<unresolved handover root>}/.locks/go/$pr_num.$sha"
-    # Drop any go_gate already in scope (a PATH executable or an inherited
-    # `export -f go_gate` would otherwise survive the source below
-    # undetected — declare -F after sourcing can't tell "the file defined
-    # it" from "it was already callable") before sourcing, so only the
-    # file's own definition can satisfy the declare -F check that follows.
-    unset -f go_gate 2>/dev/null || true
-    # shellcheck source=scripts/lib/go-gate.sh
-    # shellcheck disable=SC1091
-    if ! . "$SCRIPT_DIR/../lib/go-gate.sh" 2>/dev/null; then
-        echo "merge-on-green: cannot load scripts/lib/go-gate.sh — refusing (a console-spawned leg's GO gate must fail closed, not silently no-op)" >&2
-        audit "REFUSED reason=policy-refused phase=console-go-lib-missing repo=$nwo pr=#$pr_num sha=$sha"
-        exit 17
-    fi
     if ! declare -F go_gate >/dev/null 2>&1; then
         echo "merge-on-green: scripts/lib/go-gate.sh sourced but go_gate is not defined (truncated file?) — refusing (a console-spawned leg's GO gate must fail closed, not silently no-op)" >&2
         audit "REFUSED reason=policy-refused phase=console-go-symbol-missing repo=$nwo pr=#$pr_num sha=$sha"

@@ -2317,9 +2317,11 @@ rm -rf "$GO_ROOT"
 # pre-fix, and is refused post-fix by the new `command -v go_gate`
 # precondition.
 RC5_TRUNC_GOGATE=$(mktemp "${TMPDIR:-/tmp}/mog-3142-rc127-gogate.XXXXXX")
-head -n 33 "$SCRIPT_DIR/../lib/go-gate.sh" > "$RC5_TRUNC_GOGATE"
+head -n 29 "$SCRIPT_DIR/../lib/go-gate.sh" > "$RC5_TRUNC_GOGATE"
 if grep -q '^go_gate()' "$RC5_TRUNC_GOGATE"; then
-    fail "RC-5 setup: go-gate.sh header grew past line 33 — the truncated copy still defines go_gate, so this control no longer exercises a missing-symbol source"
+    fail "RC-5 setup: go-gate.sh header grew past line 29 — the truncated copy still defines go_gate, so this control no longer exercises a missing-symbol source"
+elif ! grep -q '^console_leg()' "$RC5_TRUNC_GOGATE"; then
+    fail "RC-5 setup: go-gate.sh's console_leg() no longer fits in the first 29 lines — the truncated copy would fail the new console_leg lib-missing check instead of exercising the go_gate missing-symbol source this control targets"
 else
     # HIMMEL-3154: this commit's PR branch was deleted on squash-merge, so
     # `git show <sha>:<path>` is unreachable from a fresh clone of origin —
@@ -2401,9 +2403,11 @@ rm -f "$RC5_TRUNC_GOGATE"
 # Pre-fix blob for both is head 6fe4ad20 (round 3's shipped script, the
 # `command -v` version).
 RC67_TRUNC_GOGATE=$(mktemp "${TMPDIR:-/tmp}/mog-3142-rc67-gogate.XXXXXX")
-head -n 33 "$SCRIPT_DIR/../lib/go-gate.sh" > "$RC67_TRUNC_GOGATE"
+head -n 29 "$SCRIPT_DIR/../lib/go-gate.sh" > "$RC67_TRUNC_GOGATE"
 if grep -q '^go_gate()' "$RC67_TRUNC_GOGATE"; then
-    fail "RC-6/RC-7 setup: go-gate.sh header grew past line 33 — the truncated copy still defines go_gate, so this control no longer exercises a missing-symbol source"
+    fail "RC-6/RC-7 setup: go-gate.sh header grew past line 29 — the truncated copy still defines go_gate, so this control no longer exercises a missing-symbol source"
+elif ! grep -q '^console_leg()' "$RC67_TRUNC_GOGATE"; then
+    fail "RC-6/RC-7 setup: go-gate.sh's console_leg() no longer fits in the first 29 lines — the truncated copy would fail the new console_leg lib-missing check instead of exercising the go_gate missing-symbol source this control targets"
 else
     # HIMMEL-3154: this commit's PR branch was deleted on squash-merge, so
     # `git show <sha>:<path>` is unreachable from a fresh clone of origin —
