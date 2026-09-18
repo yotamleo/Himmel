@@ -3329,6 +3329,48 @@ It does not inspect the held Jira/dispatch queue. Test seams:
 `HIMMEL_STOP_GUARD_BANK_PREFLIGHT`, `HIMMEL_STOP_GUARD_QUEUE_LOCK`. Spec:
 `scripts/hooks/test-stop-console-idle-guard.sh`.
 
+### `console-precompact-snapshot.sh` — snapshot a console's Live state at compaction (HIMMEL-2973)
+
+Wired as the repo's one `PreCompact` entry in `.claude/settings.json` (10 s
+timeout, no matcher, so it fires for both `manual` and `auto` compaction). It is
+the out-of-band sibling of the `SessionStart:compact` re-inject hook: that one
+restores a console's state INTO the transcript after compaction; this one
+records what the state WAS at compaction time, so the restoration can be audited
+rather than trusted.
+
+It reads the console doc named by `HIMMEL_CONSOLE_DOC` (exported by
+`headed-arm.sh` / `arm-resume.sh`) and writes an immutable
+`<HIMMEL_CONSOLE_WORKDIR>/precompact-<n>.snap`, `n` = highest existing + 1
+(written to a temp name and hard-linked into place, so a snap is never
+overwritten and a torn write is never visible). The snap is `sha256=<hex of the
+body>` then `lock=` (the queue-lock owner token, read from `.locks/queue/`,
+never written), `legs=` / `queue=` / `last-go=` / `acked=` (the doc's
+`## Live state` lines, backticks stripped), `go-file=<pr>.<sha7>` (newest file
+in `.locks/go/`), `trigger=` (from stdin when present), and a verbatim
+`--- tick` tail when `<workdir>/last-tick.txt` exists. The work dir is created
+0700 and refused when it is a symlink or not owned by the caller, since the snap
+carries RETASK nonces and lock tokens.
+
+It is a SILENT NO-OP for every non-console session (`HIMMEL_CONSOLE_DOC` unset,
+or the doc or work dir unusable): no output, no file. A console launched by a
+hand-pasted line has neither variable and is simply not snapshotted. It ALWAYS
+exits 0 and has no bypass variable: a workflow nudge, not a security fence, so a
+failure must degrade to "no snapshot", never block a compaction.
+
+The consumer is `scripts/handover/console-kit/compacted-check.sh` (G11): it
+compares the doc's last `COMPACTED` bullet (`legs`, `queue`, `last GO`, and
+`acked` when present) against the newest snap. rc 0 `G11 ok`; rc 1 `G11 LOSS
+<field>` per differing field; rc 2 `no snapshot` / `snapshot corrupt`, which the
+gate treats as a loss — preservation unverified is never a pass. Known
+simplifications (`ponytail:` in the sources): `## Live state` is read with a
+plain fence toggle and single-line `key: value` lines, so a wrapped value is
+truncated to its first line (G11 then reports LOSS, it does not hide it);
+`lock` and `go-file` are recorded for forensics but not compared, because the
+shipped bullet carries neither; and nothing writes `last-tick.txt` yet, so the
+`--- tick` tail is normally absent. Specs:
+`scripts/hooks/test-console-precompact-snapshot.sh`,
+`scripts/handover/console-kit/test-compacted-check.sh`.
+
 ## Claude SessionEnd Hooks
 
 Wired in the `SessionEnd` array of the himmel-ops plugin `hooks.json`
