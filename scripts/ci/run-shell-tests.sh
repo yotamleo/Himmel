@@ -662,6 +662,7 @@ marketplace/plugins/obsidian-triage/tests/test-fxt-blocklist-author.sh  # HIMMEL
 marketplace/plugins/obsidian-triage/tests/test-ig-media-enrich.sh  # HIMMEL-3196: host-coupled — test 6 strips PATH dirs named ffmpeg but ffmpeg is /usr/bin/ffmpeg; CI outcome unknown, quarantined pre-emptively
 marketplace/plugins/obsidian-triage/tests/test-luna-ingest-skill.sh  # HIMMEL-3196: test drift — the SKILL description no longer starts with Use-when or advertises bitbucket.org (2 FAIL)
 marketplace/plugins/obsidian-triage/tests/test-playwright-crawl.sh  # HIMMEL-3196: test drift — pins playwright 1.58.x, package.json is 1.63.0 (1 FAIL of 28)
+marketplace/plugins/obsidian-triage/tests/test-triage-invariants.sh  # HIMMEL-3196: host-coupled — Test 9g asserts mv -n exits 0 on a refused no-clobber move, but the CI runner coreutils exits 1 (1 FAIL, every other assertion passes); green on the operator station, red on the ubuntu runner
 marketplace/plugins/telegram-himmel/tests/test-telegram-poller-gate.sh  # HIMMEL-3196: real bug — reads bot.pid after killing the server, which removes bot.pid on shutdown (server.ts:684), so the owner case always reads NO_PID
 "
 

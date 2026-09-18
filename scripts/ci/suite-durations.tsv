@@ -78,7 +78,6 @@ marketplace/plugins/obsidian-triage/tests/test-telegram-clip-inline.sh	0
 marketplace/plugins/obsidian-triage/tests/test-telegram-clip.sh	1
 marketplace/plugins/obsidian-triage/tests/test-telegram-digest.sh	0
 marketplace/plugins/obsidian-triage/tests/test-triage-evidence-move.sh	0
-marketplace/plugins/obsidian-triage/tests/test-triage-invariants.sh	1
 marketplace/plugins/obsidian-triage/tests/test-twitter-cli-enrich.sh	0
 marketplace/plugins/obsidian-triage/tests/test-url-canonical.sh	0
 marketplace/plugins/obsidian-triage/tests/test-x-media-enrich.sh	2
