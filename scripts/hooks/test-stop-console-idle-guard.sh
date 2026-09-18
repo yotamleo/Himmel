@@ -226,7 +226,12 @@ if is_block "$out"; then bad "(f) console + leg held -> expected allow, got: $ou
 # --- (g) trap: a STALE/IDLE-HELD? leg lock must still allow (HIMMEL-3148 --
 # console ruling: IDLE-HELD? is heartbeat age, not death; a leg parked on an
 # external event makes no tool calls and must still count as held) --------
-stale_hb=$(date -u -d "@$(( $(date -u +%s) - 9000 ))" +%Y-%m-%dT%H:%M:%SZ)
+# Fixed literal, not `date -d @<epoch>` arithmetic: `-d` is GNU-only and has
+# no macOS equivalent, which would leave $stale_hb empty there. Any old
+# timestamp works -- the sweep's IDLE-HELD? classification has no upper
+# bound (queue-lock.sh) -- and this exact %Y-%m-%dT%H:%M:%SZ shape parses on
+# all three platforms via _ql_epoch_of_iso's GNU/BSD/python fallbacks.
+stale_hb="2000-01-01T00:00:00Z"
 printf '{"session":"leg-fixture-session","host":"h","handover":"%s","started":"%s","heartbeat":"%s"}\n' \
     "$LEG_DOC" "$stale_hb" "$stale_hb" > "$LEG_LOCKDIR/owner.json"
 sweep_check="$(bash "$REPO/scripts/handover/queue-lock.sh" status --sweep "$HANDOVER_DIR" 2>/dev/null)"
