@@ -559,7 +559,7 @@ _cfp_emit_raw_diag() {
 # the merge gate alone had no evidence behind it, and "0 findings" was
 # indistinguishable from "never ran". The raw file lives beside the ledger
 # (<ledger dir>/cr-panel-raw/), per run, and the row records its path. Bounded
-# by an age prune on each write (CR_RAW_RETAIN_DAYS, default 30) — no daemon.
+# by an age prune on each write (CR_RAW_RETAIN_DAYS, default 30) — no separate sweeper process.
 # Purely additive + fail-open: any failure here warns and returns, never
 # touching stdout or the exit code. Head/branch/ledger come from the panel's
 # exported CR_TARGET_HEAD/CR_TARGET_BRANCH/CR_LEDGER (its review root may not be

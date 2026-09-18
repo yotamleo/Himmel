@@ -858,7 +858,7 @@ printf '%s' "$DIFF" | CR_LEDGER="$s_ledger" CR_TARGET_HEAD="$S_HEAD" HERMES_PY="
 check "invoke-failed run: no score row" "$(score_field model)" "ROWS=0"
 
 # Retention: raw artifacts older than CR_RAW_RETAIN_DAYS are pruned on the next
-# write; a fresh one is kept. No daemon — the bound rides on the writer.
+# write; a fresh one is kept. No separate sweeper process — the bound rides on the writer.
 cat > "$tmp/stub.py" <<'PY'
 print("## Critical Issues (0 found)")
 print("## Important Issues (0 found)")
