@@ -27,6 +27,9 @@ function comment(id: string, created: string, text = 'x'): JiraCommentEntry {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // clearAllMocks keeps queued mockResolvedValueOnce values, which would leak
+  // one test's unconsumed page into the next
+  mockRequest.mockReset();
   vi.spyOn(console, 'log').mockImplementation(() => {});
 });
 
@@ -67,12 +70,72 @@ describe('formatComments', () => {
   });
 });
 
+// HIMMEL-3164. Jira paginates /issue/<key>/comment (startAt/maxResults/total);
+// a single GET silently drops everything past the first page, and `--last N`
+// then slices the tail of that first page instead of the newest N.
+function pageOf(n: number, from: number): JiraCommentEntry[] {
+  return Array.from({ length: n }, (_, i) => {
+    const seq = from + i;
+    // zero-padded day so the ISO strings sort in `seq` order
+    return comment(String(seq), `2026-01-${String(seq).padStart(2, '0')}T00:00:00.000Z`, `body-${seq}`);
+  });
+}
+
 describe('registerComments (comments <key>)', () => {
-  it('GETs /issue/<key>/comment', async () => {
-    mockRequest.mockResolvedValue({ comments: [] });
+  it('GETs /issue/<key>/comment starting at offset 0', async () => {
+    mockRequest.mockResolvedValue({ comments: [], startAt: 0, maxResults: 50, total: 0 });
     const p = freshProgram();
     await p.parseAsync(['node', 'jira', 'comments', 'HIMMEL-1']);
-    expect(mockRequest).toHaveBeenCalledWith('GET', '/issue/HIMMEL-1/comment');
+    expect(mockRequest).toHaveBeenCalledTimes(1);
+    const [method, path] = mockRequest.mock.calls[0];
+    expect(method).toBe('GET');
+    expect(path).toContain('/issue/HIMMEL-1/comment?');
+    expect(path).toContain('startAt=0');
+  });
+
+  it('pages through the endpoint: all 52 comments across two pages are printed', async () => {
+    mockRequest
+      .mockResolvedValueOnce({ comments: pageOf(50, 1), startAt: 0, maxResults: 50, total: 52 })
+      .mockResolvedValueOnce({ comments: pageOf(2, 51), startAt: 50, maxResults: 50, total: 52 });
+    const p = freshProgram();
+    const logSpy = vi.spyOn(console, 'log');
+    await p.parseAsync(['node', 'jira', 'comments', 'HIMMEL-1']);
+    const out = logSpy.mock.calls.map((c) => c[0]).join('\n');
+    expect(out.match(/^author-\d+\t/gm)).toHaveLength(52);
+    expect(out).toContain('body-52');
+    expect(mockRequest).toHaveBeenCalledTimes(2);
+    expect(mockRequest.mock.calls[1][1]).toContain('startAt=50');
+  });
+
+  it('--last 2 yields the two newest comments (from page 2), not the tail of page 1', async () => {
+    mockRequest
+      .mockResolvedValueOnce({ comments: pageOf(50, 1), startAt: 0, maxResults: 50, total: 52 })
+      .mockResolvedValueOnce({ comments: pageOf(2, 51), startAt: 50, maxResults: 50, total: 52 });
+    const p = freshProgram();
+    const logSpy = vi.spyOn(console, 'log');
+    await p.parseAsync(['node', 'jira', 'comments', 'HIMMEL-1', '--last', '2']);
+    const out = logSpy.mock.calls.map((c) => c[0]).join('\n');
+    expect(out.match(/^author-\d+\t/gm)).toEqual(['author-51\t', 'author-52\t']);
+    expect(out).not.toContain('body-50');
+  });
+
+  it('stops on an empty page even when total lies (no infinite loop)', async () => {
+    mockRequest
+      .mockResolvedValueOnce({ comments: pageOf(3, 1), startAt: 0, maxResults: 50, total: 999 })
+      .mockResolvedValue({ comments: [], startAt: 3, maxResults: 50, total: 999 });
+    const p = freshProgram();
+    const logSpy = vi.spyOn(console, 'log');
+    await p.parseAsync(['node', 'jira', 'comments', 'HIMMEL-1']);
+    const out = logSpy.mock.calls.map((c) => c[0]).join('\n');
+    expect(out.match(/^author-\d+\t/gm)).toHaveLength(3);
+    expect(mockRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it('a single page that already covers total makes exactly one request', async () => {
+    mockRequest.mockResolvedValue({ comments: pageOf(3, 1), startAt: 0, maxResults: 50, total: 3 });
+    const p = freshProgram();
+    await p.parseAsync(['node', 'jira', 'comments', 'HIMMEL-1']);
+    expect(mockRequest).toHaveBeenCalledTimes(1);
   });
 
   it('prints oldest-first, honoring --last', async () => {
