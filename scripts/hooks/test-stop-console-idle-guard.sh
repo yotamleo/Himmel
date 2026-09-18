@@ -172,15 +172,18 @@ if is_block "$out"; then ok "(d-ii) control: the real bank-preflight.sh still bl
 # min dead); one or more held leg locks means a leg's own SendMessage is a
 # structural wake path, so the stop is allowed.
 #
-# PREDICATE_BASE_SHA pins the RED control to the exact commit this ticket
-# cut from (the shipped, always-blocks hook) rather than HEAD, so the
-# control keeps proving the historical bug after this fix is committed.
+# PREDICATE_BASE_SHA names the commit this ticket cut from (the shipped,
+# always-blocks hook) for provenance only -- HIMMEL-3018: the pre-fix hook
+# itself comes from a committed fixtures/red-control/ snapshot, not a live
+# `git show` of that historical ref, which fails FATAL on a shallow clone or
+# a source archive even though the commit is a reachable main ancestor
+# (HIMMEL-3154's class, same fix pattern as #810).
 PREDICATE_BASE_SHA="5e58a2f3fa30ee6b44d5df2ebee19a2cba418e34"
 PREFIX_ROOT="$TMP/prefix-repo-himmel-3148"
 PREFIX_HOOK=""
 mkdir -p "$PREFIX_ROOT/scripts/hooks" "$PREFIX_ROOT/scripts/lib"
-if git -C "$REPO" show "$PREDICATE_BASE_SHA:scripts/hooks/stop-console-idle-guard.sh" \
-        > "$PREFIX_ROOT/scripts/hooks/stop-console-idle-guard.sh" 2>/dev/null; then
+if cp "$HOOKS/fixtures/red-control/stop-console-idle-guard.pre-himmel3148.sh" \
+        "$PREFIX_ROOT/scripts/hooks/stop-console-idle-guard.sh" 2>/dev/null; then
     # A copy, not a symlink into $REPO -- the prefix hook's OWN "$HERE/../.."
     # must resolve to $PREFIX_ROOT (a hook with no seam for its handover-path.sh
     # source), so this file has to physically exist under the copied tree
