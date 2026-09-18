@@ -88,6 +88,14 @@ _wire_statusline_config_dir() {
 _wire_statusline_purge_hud_cache() {
   local hud_dir="$1"
   [ -d "$hud_dir" ] || return 0
+  # A dir the sweep cannot enumerate (mode 300: writable, so staging succeeded,
+  # but unlistable) makes the glob below expand to zero entries — the same shape
+  # as an empty dir — so the purge would report success with the stale caches
+  # still on disk (HIMMEL-3070). Fail it the way a failed removal fails.
+  if [ ! -r "$hud_dir" ] || [ ! -x "$hud_dir" ]; then
+    echo "wire-statusline: cannot enumerate hud cache dir (not readable): $hud_dir" >&2
+    return 1
+  fi
   # The sweep runs in a SUBSHELL with the glob options PINNED, because this
   # library is sourced (himmel-update.sh does) and the caller's `shopt` settings
   # would otherwise decide what this loop sees: `dotglob` makes `*` match the

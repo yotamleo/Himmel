@@ -62,6 +62,11 @@ function Remove-HimmelHudCacheState {
     param([Parameter(Mandatory = $true)] [string]$HudDir)
 
     if (-not (Test-Path $HudDir)) { return }
+    # HIMMEL-3070: the bash twin needs an explicit readability probe because an
+    # unlistable dir globs to zero entries there. Here the enumeration itself is
+    # the probe: Get-ChildItem on a dir it cannot list raises, and
+    # -ErrorAction Stop turns that into the terminating error the caller's catch
+    # acts on -- an unenumerable dir cannot read as "nothing to drop".
     $dropped = $false
     foreach ($entry in Get-ChildItem -LiteralPath $HudDir -Force -ErrorAction Stop) {
         # Dotfiles are skipped in both directions: the hud's own

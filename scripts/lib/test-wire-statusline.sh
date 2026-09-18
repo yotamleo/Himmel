@@ -506,4 +506,45 @@ CLAUDE_CONFIG_DIR="$cfg31b" bash "$HELPER" "$s31b" "$REPO_ROOT" >/dev/null
   || fail "31b: a malformed HIMMEL_STATUSLINE_ECON=\$(x) prefix must not be carried"
 echo "ok 31b a malformed HIMMEL_STATUSLINE_ECON value is not carried"
 
+# 32. HIMMEL-3070: a hud dir that is writable but NOT enumerable (mode 300) globs
+# to zero entries, so the sweep used to see "nothing to drop" and report success
+# while the stale caches stayed on disk — and the wire published over them. It
+# must fail like a failed removal does. Staging still succeeds (mode 300 can
+# create the dotfile), so the wire reaches the purge; the precondition below
+# proves the directory really is unenumerable (permissions do not bind as root
+# or on Git Bash, where this case would prove nothing and self-skips).
+cfg32="$TMP/cfg32"; hud32="$cfg32/plugins/claude-hud"
+proj32="$TMP/proj32"; mkdir -p "$proj32/.claude"
+s32="$proj32/.claude/settings.json"
+old32='node "/old/himmel/marketplace/plugins/claude-hud/dist/index.js"'
+printf '{"statusLine":{"type":"command","command":%s}}\n' "\"$(printf '%s' "$old32" | sed 's/"/\\"/g')\"" > "$s32"
+mkdir -p "$hud32"
+printf '{"display":{"showPromptCache":false}}\n' > "$hud32/config.json"
+seed_hud_cache "$hud32"
+chmod 300 "$hud32"
+if ls "$hud32" >/dev/null 2>&1; then
+  chmod 700 "$hud32"
+  echo "ok 32 (skipped: directory permissions do not bind here, uid $(id -u))"
+else
+  rc32=0
+  err32="$(CLAUDE_CONFIG_DIR="$cfg32" bash "$HELPER" "$s32" "$REPO_ROOT" 2>&1 >/dev/null)" || rc32=$?
+  chmod 700 "$hud32"
+  [ "$rc32" -ne 0 ] || fail "32: an unenumerable hud dir must fail the purge, not report success"
+  case "$err32" in
+    *"$hud32"*) : ;;
+    *) fail "32: the failure must name the unreadable directory (got: $err32)" ;;
+  esac
+  [ ! -e "$hud32/.config.json.tmp" ] || fail "32: the staged config was left behind after the failed purge"
+  [ ! -e "$s32.statusline.tmp" ] || fail "32: the staged settings file was left behind"
+  [ "$(jq -r .statusLine.command "$s32")" = "$old32" ] \
+    || fail "32: the settings file was published despite the failed purge — the retry will see no change"
+  [ "$(jq -r .display.showPromptCache "$hud32/config.json")" = "false" ] \
+    || fail "32: the hud config was published despite the failed purge"
+  [ -e "$hud32/transcript-cache" ] || fail "32: the seeded cache dir should still be there"
+  # Readable again, the retry sees the same changed wiring and purges.
+  CLAUDE_CONFIG_DIR="$cfg32" bash "$HELPER" "$s32" "$REPO_ROOT" >/dev/null
+  [ ! -e "$hud32/transcript-cache" ] || fail "32: the retry did not purge once the dir was readable"
+  echo "ok 32 an unenumerable hud dir fails the purge and the retry still purges"
+fi
+
 echo "ALL PASS"
