@@ -165,6 +165,25 @@ else
 fi
 rm -rf "$d"
 
+echo "== pr-create on uninspectable worktree (corrupt index) → still warns rc=1 (HIMMEL-3159) =="
+d=$(setup_repo feat/x) || exit 1
+git -C "$d" commit --allow-empty -q -m "feat"
+fixture_home=$(fixture_mktemp_dir) || exit 1
+printf 'garbage not an index' > "$d/.git/index"
+if git -C "$d" status --porcelain >/dev/null 2>&1; then
+    fail "fixture setup: git status unexpectedly succeeded against a corrupted index"
+elif ! git -C "$d" rev-parse --abbrev-ref HEAD >/dev/null 2>&1; then
+    fail "fixture setup: branch lookup failed alongside git status - not an uninspectable-but-evaluable fixture"
+else
+    out=$(cd "$d" && HOME="$fixture_home" bash "$GUARD" pr-create --title foo 2>&1); rc=$?
+    if [ "$rc" -eq 1 ] && grepq "$out" -i "dirty" && grepq "$out" '^--title$' && grepq "$out" '^foo$'; then
+        pass "uninspectable worktree still warns and forwards argv"
+    else
+        fail "expected rc=1 + dirty warn + forwarded argv; got rc=$rc out=$out"
+    fi
+fi
+rm -rf "$d" "$fixture_home"
+
 echo "== pr-create refusal ordering: merged+dirty → refuse with merged message =="
 d=$(setup_repo feat/x) || exit 1
 git -C "$d" commit --allow-empty -q -m "feat"
