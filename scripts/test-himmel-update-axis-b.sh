@@ -626,5 +626,44 @@ assert_eq "PowerShell and Linux lane pins match" "$PS_PIN" "$SH_PIN"
 assert_eq "lane pins match cli-proxy-api synced_base" "$REGISTRY_PIN" "$SH_PIN"
 
 echo ""
+echo "Test 15: graphify uv-missing skip is loud (HIMMEL-3077)"
+# sync_graphify used to print `skip: uv not on PATH` and finish green with NO
+# status-table row, so graphify never installed and every graphify surface
+# failed later with no pointer back. It must now name the gap in the table and
+# print the platform-correct install hint. NO_UV_BIN is NO_PWSH_BIN (a copy of
+# the caller's PATH with a uname stub) minus uv/uvx, so the case holds on a
+# host that has uv installed.
+NO_UV_BIN="$TMP/no-uv-bin"
+mkdir -p "$NO_UV_BIN"
+for _exe in "$NO_PWSH_BIN"/*; do
+    _name="${_exe##*/}"
+    case "$_name" in uv|uvx) continue ;; esac
+    ln -s "$_exe" "$NO_UV_BIN/$_name"
+done
+make_mock_clone
+CLONE15="$CHECKOUT_DIR"
+cp "$SRC_SCRIPTS/lib/graphify-bin.sh" "$CLONE15/scripts/lib/graphify-bin.sh"
+git -C "$CLONE15" add -A
+git -C "$CLONE15" commit --quiet -m "graphify-bin fixture"
+STUB15="$TMP/claude15"; make_claude_stub "$STUB15" 0
+FH15="$TMP/home15"
+OUT="$(PATH="$NO_UV_BIN" run_update "$CLONE15" "$FH15" "$STUB15" --only graphify)"; RC=$?
+assert_eq "--only graphify without uv still exits 0 (advisory)" "0" "$RC"
+assert_contains "no-uv: graphify row is in the status table" "graphify  *skipped  *uv missing" "$OUT"
+assert_contains "no-uv (Linux): astral installer hint" "curl -LsSf https://astral.sh/uv/install.sh" "$OUT"
+assert_not_contains "no-uv (Linux): no brew hint" "brew install uv" "$OUT"
+OUT="$(PATH="$NO_UV_BIN" HIMMEL_TEST_UNAME_S=Darwin run_update "$CLONE15" "$FH15" "$STUB15" --only graphify)"
+assert_contains "no-uv (macOS): brew hint" "brew install uv" "$OUT"
+assert_not_contains "no-uv (macOS): no astral hint" "astral.sh/uv/install.sh" "$OUT"
+# The full apply chain must surface it too — it is the run an operator reads.
+OUT="$(PATH="$NO_UV_BIN" run_update "$CLONE15" "$FH15" "$STUB15")"; RC=$?
+assert_contains "full run without uv: graphify row is in the status table" "graphify  *skipped  *uv missing" "$OUT"
+# With uv present the row must NOT claim a skip.
+UV_OK_BIN="$TMP/uv-ok-bin"; mkdir -p "$UV_OK_BIN"
+printf '#!/bin/sh\nexit 0\n' > "$UV_OK_BIN/uv"; chmod +x "$UV_OK_BIN/uv"
+OUT="$(PATH="$UV_OK_BIN:$NO_UV_BIN" run_update "$CLONE15" "$FH15" "$STUB15" --only graphify)"
+assert_not_contains "uv present: no uv-missing row" "uv missing" "$OUT"
+
+echo ""
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

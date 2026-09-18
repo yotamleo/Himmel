@@ -1811,7 +1811,7 @@ if [ "$DO_UPDATE" -eq 1 ]; then
         _deadline_bin="$_t"; break
       fi
     done
-    [ -n "$_deadline_bin" ] || echo "refresh-graph-map: no functional timeout(1) — run deadline DISABLED, extraction is unbounded" >&2
+    [ -n "$_deadline_bin" ] || echo "refresh-graph-map: no functional timeout(1) — run deadline DISABLED, extraction is unbounded (macOS: brew install coreutils provides gtimeout)" >&2
   fi
 
   # Bank guard: claude-backed extraction only. API backends (glm/deepseek)
