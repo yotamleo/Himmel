@@ -278,6 +278,30 @@ check "quota-shaped garbage exits 1" "$?" "1"
 check "raw tail on stderr carries the quota text" \
     "$(grep -c 'critic-first-pass.sh: raw tail: HTTP 403: The free quota has been exhausted' "$err403")" "1"
 
+# --- HIMMEL-3105: a decisive provider line OUTSIDE the raw-tail bound still reaches stderr ---
+# A long body whose HTTP 429 line is first: the 2000-byte tail cut drops it, and
+# the panel's classifier then sees only cfp's own "malformed output" text. The
+# fail path must surface the first provider-signal line of the FULL raw body as
+# its own "raw signal:" line - and must NOT duplicate it when the tail already
+# carries it (the 403 case above).
+cat > "$tmp/stub_long429.py" <<'PY'
+print("Provider said: HTTP 429: The usage limit has been reached")
+for i in range(60):
+    print("Filler diagnostic line padding the response body well past the tail bound number %d" % i)
+PY
+cat > "$tmp/py_long429.sh" <<SHEOF
+#!/usr/bin/env bash
+exec python3 "$tmp/stub_long429.py"
+SHEOF
+chmod +x "$tmp/py_long429.sh"
+errlong="$tmp/errlong"
+printf '%s' "$DIFF" | HERMES_PY="$tmp/py_long429.sh" bash "$CFP" --model x/y --slug s >/dev/null 2>"$errlong"
+check "long 429 body exits 1" "$?" "1"
+check "long 429 body: signal line outside the tail surfaces on stderr" \
+    "$(grep -c 'critic-first-pass.sh: raw signal: Provider said: HTTP 429: The usage limit has been reached' "$errlong")" "1"
+check "short 403 body: signal already in the tail, NOT duplicated" \
+    "$(grep -c 'raw signal:' "$err403")" "0"
+
 # --- test: retry recovers on first-attempt empty response ---
 # Counter file: bash shim increments it, decides which stub.py to exec.
 counter_file="$tmp/retry_counter"

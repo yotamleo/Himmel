@@ -1356,6 +1356,21 @@ _rc_completed() { [ "$1" -eq 0 ] || [ "$1" -eq 4 ]; }
 # ledger-append.sh, are already safe and short, never multi-KB of raw
 # provider text. 160 chars leaves room for a "reason=...: " prefix a caller
 # prepends before ledger-append.sh's own cap lands.
+# _pm_err_line <err_file> (HIMMEL-3105): the ONE stderr line a ledger detail
+# should show — the FIRST line carrying a provider-failure signature
+# (failure-classify.sh's first_signal_line), else the LAST line (the
+# HIMMEL-3109 behaviour, for a failure with no recognizable signature). The
+# last line alone recorded a body's trailing prose ("Contact support if this
+# persists.") over the provider's own "HTTP 429: ..." line above it.
+_pm_err_line() {
+    _pel_line=""
+    if [ -n "${1:-}" ] && type first_signal_line >/dev/null 2>&1; then
+        _pel_line="$(first_signal_line "$1")"
+    fi
+    [ -n "$_pel_line" ] || _pel_line="$(tail -n 1 "$1" 2>/dev/null)"
+    printf '%s' "$_pel_line"
+}
+
 _pm_redact_detail() {
     printf '%s' "$1" | tr -d '[:cntrl:]' | sed -E \
         -e 's/[0-9]{8,10}:[A-Za-z0-9_-]{35}/[REDACTED]/g' \
@@ -1427,7 +1442,7 @@ process_member() {
         # decisive line is what ends up last.
         _pm_attempt_detail="rc=$_pm_rc"
         if [ "$_pm_rc" -ne 0 ] && [ -n "$_pm_err_file" ] && [ -s "$_pm_err_file" ]; then
-            _pm_attempt_snip="$(_pm_redact_detail "$(tail -n 1 "$_pm_err_file" 2>/dev/null)")"
+            _pm_attempt_snip="$(_pm_redact_detail "$(_pm_err_line "$_pm_err_file")")"
             [ -n "$_pm_attempt_snip" ] && _pm_attempt_detail="rc=$_pm_rc: $_pm_attempt_snip"
         fi
         _queue_attempt "$_pm_slug" "$_pm_model" 1 "$_pm_attempt_outcome" "$_pm_duration" "$_pm_attempt_detail"
@@ -1526,7 +1541,7 @@ process_member() {
                 # above, applied to each fallback candidate.
                 _fb_attempt_detail="rc=$_fb_rc"
                 if ! _rc_completed "$_fb_rc" && [ -s "$_fb_err" ]; then
-                    _fb_attempt_snip="$(_pm_redact_detail "$(tail -n 1 "$_fb_err" 2>/dev/null)")"
+                    _fb_attempt_snip="$(_pm_redact_detail "$(_pm_err_line "$_fb_err")")"
                     [ -n "$_fb_attempt_snip" ] && _fb_attempt_detail="rc=$_fb_rc: $_fb_attempt_snip"
                 fi
                 _queue_attempt "$_pm_slug" "$_fb_model" "$_fb_attempt_num" "$_fb_attempt_outcome" "$_fb_last_duration" "$_fb_attempt_detail"
@@ -1553,7 +1568,7 @@ process_member() {
                 # before deleting it (CR round: a bare rc collapses rate-limit
                 # vs auth vs outage into the same line). HIMMEL-3109: tail, not
                 # head — same reasoning as _pm_detail above.
-                _fb_snip="$(_pm_redact_detail "$(tail -n 1 "$_fb_err" 2>/dev/null)")"
+                _fb_snip="$(_pm_redact_detail "$(_pm_err_line "$_fb_err")")"
                 echo "panel-availability: $_pm_slug fallback-failed($_fb_model) (rc=$_fb_rc)${_fb_snip:+: $_fb_snip}" >&2
                 rm -f "$_fb_out" "$_fb_err"
             done
@@ -1596,7 +1611,7 @@ process_member() {
             # patterns ledger-append.sh's --detail scrub uses, HIMMEL-1176 —
             # this line reaches the stderr console BEFORE that scrub would
             # ever see it).
-            _pm_detail="$(_pm_redact_detail "$(tail -n 1 "$_pm_err_file" 2>/dev/null)")"
+            _pm_detail="$(_pm_redact_detail "$(_pm_err_line "$_pm_err_file")")"
             echo "panel-availability: $_pm_slug unavailable (rc=$_pm_rc) reason=$_pm_reason${_pm_detail:+: $_pm_detail}" >&2
             _queue_avail "$_pm_slug" unavailable "" "$_pm_reason" "$_pm_detail"
             return

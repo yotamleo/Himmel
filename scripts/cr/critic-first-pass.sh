@@ -24,6 +24,16 @@ export LC_ALL
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INVOKE="$SCRIPT_DIR/../hermes/invoke.sh"
+# HIMMEL-3105: first_signal_line (see _cfp_emit_raw_diag). Sourcing only defines
+# functions. Fail-open on a missing file, like critic-panel.sh's own source of
+# it: the raw-signal line degrades to absent, never a broken review.
+if [ -r "$SCRIPT_DIR/failure-classify.sh" ]; then
+    # shellcheck source=scripts/cr/failure-classify.sh
+    # shellcheck disable=SC1091
+    . "$SCRIPT_DIR/failure-classify.sh"
+else
+    first_signal_line() { return 0; }
+fi
 CAP_BYTES="${CRITIC_FIRST_PASS_CAP_BYTES:-204800}"
 case "$CAP_BYTES" in
     ''|*[!0-9]*) echo "critic-first-pass.sh: invalid CRITIC_FIRST_PASS_CAP_BYTES='$CAP_BYTES' — using default 204800" >&2; CAP_BYTES=204800 ;;
@@ -524,6 +534,25 @@ _cfp_raw_excerpt() {
     printf '%s' "$1" | tail -c 2000
 }
 
+# HIMMEL-3105: the tail bound above still loses a decisive line at the HEAD of
+# a long body (an HTTP 429 line followed by >2000 bytes of diagnostics), so
+# classify_failure saw only this file's own "malformed output" text and
+# recorded reason=malformed-output — CR_FLOOR_FALLBACK, keyed on the quota
+# reasons, could not engage on a genuine exhaustion. Emit the first
+# provider-signal line of the FULL raw body (the $2 log file) as its own
+# "raw signal:" line, but only when the excerpt does not already carry it.
+_cfp_emit_raw_diag() {
+    _ced_ex="$(_cfp_raw_excerpt "$1")"
+    printf 'critic-first-pass.sh: raw tail: %s\n' "$_ced_ex" >&2
+    _ced_sig="$(first_signal_line "$2")"
+    if [ -n "$_ced_sig" ]; then
+        case "$_ced_ex" in
+            *"$_ced_sig"*) ;;
+            *) printf 'critic-first-pass.sh: raw signal: %s\n' "$_ced_sig" >&2 ;;
+        esac
+    fi
+}
+
 _attempt=0
 raw=""
 rc=1
@@ -552,7 +581,7 @@ if [ "$rc" -ne 0 ] || [ -z "$(printf '%s' "$raw" | tr -d '[:space:]')" ]; then
         # (auth/quota/rate-limit) landing here was invisible to
         # failure-classify.sh and fell through to generic-rc-N. See
         # _cfp_raw_excerpt for why this is a tail, not a head.
-        printf 'critic-first-pass.sh: raw tail: %s\n' "$(_cfp_raw_excerpt "$raw")" >&2
+        _cfp_emit_raw_diag "$raw" "$log"
     else
         echo "critic-first-pass.sh: invoke failed (rc=$rc) — fail-open, proceed claude-only. mktemp failed; raw output follows on stderr:" >&2
         printf '%s\n' "$raw" >&2
@@ -797,7 +826,7 @@ if [ "$rc" -ne 0 ]; then
         # pushed the decisive status line past a head cut, so a genuine
         # 429/401 classified malformed-output instead (see _cfp_raw_excerpt
         # above for the full account).
-        printf 'critic-first-pass.sh: raw tail: %s\n' "$(_cfp_raw_excerpt "$raw")" >&2
+        _cfp_emit_raw_diag "$raw" "$log"
     else
         echo "critic-first-pass.sh: malformed output — fail-open, proceed claude-only. mktemp failed; raw output follows on stderr:" >&2
         printf '%s\n' "$raw" >&2

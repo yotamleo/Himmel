@@ -142,6 +142,33 @@ $(cat "$_cf_err" 2>/dev/null)"
     return 0
 }
 
+# ---------------------------------------------------------------------------
+# first_signal_line <file> (HIMMEL-3105)
+#
+# Echoes the FIRST line of <file> that carries a provider-failure signature,
+# bounded to 300 chars; echoes nothing (rc 0) when none matches or the file is
+# unreadable. Two callers: critic-first-pass.sh surfaces it as a "raw signal:"
+# stderr line for a body whose decisive line sits outside its raw-tail bound
+# (so classify_failure sees it instead of falling through to
+# malformed-output), and critic-panel.sh uses it as the ledger detail so the
+# avail row shows the provider's own error line, not whatever prose the body
+# happened to end on. The signature set is this file's own quota/auth/status
+# vocabulary, so it cannot drift from classify_failure. cfp's own
+# "Raw output: <mktemp path>" line is skipped: the random suffix can spell a
+# status code ("cfp-raw.a429bc").
+#
+# ponytail: a line-level match. A body whose only signal spans a line break, or
+# a model reply that merely QUOTES a status code, is not told apart from a real
+# provider error here — the same limit classify_failure already has on a blob.
+# ---------------------------------------------------------------------------
+_FC_SIGNAL_SIG="$_FC_QUOTA_SIG|past 5 hours|usage limit|insufficient balance|rate[ -]?limit|(^|[^0-9-])[45][0-9][0-9]([^0-9]|\$)|invalid api key|unauthorized|access[ -]?denied|authentication failed"
+
+first_signal_line() {
+    [ -n "${1:-}" ] && [ -f "$1" ] || return 0
+    grep -iE "$_FC_SIGNAL_SIG" "$1" 2>/dev/null | grep -vF 'Raw output:' | sed -n 1p | cut -c1-300
+    return 0
+}
+
 # CLI form (not sourced): classify_failure <rc> [out_file] [err_file].
 if [ "${BASH_SOURCE[0]:-}" = "${0}" ]; then
     set -uo pipefail

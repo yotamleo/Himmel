@@ -555,6 +555,62 @@ check_not_contains "11c: NOT reported ok (rc=0 is not trusted as success)" "$std
     "panel-availability: qwen3coder ok"
 
 # ===========================================================================
+# Case 11d/11e (HIMMEL-3105 + HIMMEL-3119): a sole-critic, no-fallback lane
+# whose HTTP 429 prose body reaches the ledger avail row. HIMMEL-3119's
+# primary-path wiring (process_member's no-fallback branch classifying the
+# primary attempt's captured files) was already correct after
+# HIMMEL-3109/3110 - the single-line 429 body classifies quota-5h (verified
+# 2026-09-18 before this change). Two narrower residuals remained and are
+# pinned here through the REAL critic-first-pass.sh -> invoke.sh chain
+# (seam = HERMES_PY, as in cases 11b/11c):
+#   11d - the decisive 429 line sits OUTSIDE critic-first-pass.sh's 2000-byte
+#         raw TAIL bound (a long body): classify_failure never saw it and
+#         recorded reason=malformed-output, so CR_FLOOR_FALLBACK
+#         (EXHAUSTION_REASONS = quota/quota-5h/quota-long/rate-limit) could
+#         not engage.
+#   11e - the 429 line is followed by prose: the ledger detail was the LAST
+#         stderr line (a support boilerplate line), not the provider error.
+# ===========================================================================
+LONGP_PY="$tmp/py-429-long.sh"
+cat > "$LONGP_PY" <<'SHEOF'
+#!/usr/bin/env bash
+printf '%s\n' 'Provider said: HTTP 429: The usage limit has been reached'
+i=0
+while [ "$i" -lt 60 ]; do
+    printf '%s\n' "Filler diagnostic line padding the response body well past the tail bound number $i"
+    i=$((i + 1))
+done
+SHEOF
+chmod +x "$LONGP_PY"
+
+printf '%s' "$DIFF" | CRITICS_JSON="$JSON_NOFB" HERMES_PY="$LONGP_PY" \
+    bash "$PANEL" >"$tmp/out11d" 2>"$tmp/err11d"
+stderr11d="$(cat "$tmp/err11d")"
+check_contains "11d: 429 line outside the 2000-byte raw tail -> reason=quota-5h" \
+    "$stderr11d" "panel-availability: qwen3coder unavailable (rc=1) reason=quota-5h"
+check_not_contains "11d: NOT reduced to malformed-output" "$stderr11d" "reason=malformed-output"
+check_contains "11d: ledger detail carries the provider's own 429 line" \
+    "$stderr11d" "HTTP 429: The usage limit has been reached"
+
+TRAIL_PY="$tmp/py-429-trailing.sh"
+cat > "$TRAIL_PY" <<'SHEOF'
+#!/usr/bin/env bash
+printf '%s\n' 'Provider said: HTTP 429: The usage limit has been reached'
+printf '%s\n' 'Please retry later.' 'Contact support if this persists.'
+SHEOF
+chmod +x "$TRAIL_PY"
+
+printf '%s' "$DIFF" | CRITICS_JSON="$JSON_NOFB" HERMES_PY="$TRAIL_PY" \
+    bash "$PANEL" >"$tmp/out11e" 2>"$tmp/err11e"
+stderr11e="$(cat "$tmp/err11e")"
+check_contains "11e: 429 line then prose -> reason=quota-5h" \
+    "$stderr11e" "panel-availability: qwen3coder unavailable (rc=1) reason=quota-5h"
+check_contains "11e: detail is the provider's 429 line" \
+    "$stderr11e" "HTTP 429: The usage limit has been reached"
+check_not_contains "11e: detail is NOT the trailing support prose" \
+    "$stderr11e" "reason=quota-5h: Contact support if this persists."
+
+# ===========================================================================
 # HIMMEL-953: fallback_trigger="any" widens the retry condition to ANY
 # non-zero rc (incl. timeout), not just a quota-exhaustion signature match —
 # opt-in per row (e.g. the qwenor seat, whose whole chain is same-tier
