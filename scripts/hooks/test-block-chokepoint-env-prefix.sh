@@ -636,7 +636,7 @@ assert_deny "function-body paren (f() (...)) is not command-position"      "$(j 
 # (else the row is vacuous -- it would pass a guard that denies everything);
 # `noleak` rows must leave all four intact (else the ALLOW is a real bypass).
 # The guard's own decision is then asserted against that ground truth. ---
-ORACLE_DIR=$(mktemp -d)
+ORACLE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/chokepoint-oracle.XXXXXX") || { echo "FAIL: mktemp for the leak oracle" >&2; exit 1; }
 ORACLE_EXPECT='L=1 A=1 H=1 M=1'
 mkdir -p "$ORACLE_DIR/$(dirname "$MERGE_ON_GREEN")"
 # shellcheck disable=SC2016 # the stub's ${...} must expand in the ORACLE shell, not here
