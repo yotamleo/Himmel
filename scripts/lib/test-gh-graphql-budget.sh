@@ -41,7 +41,7 @@ PASS=0; FAIL=0
 pass() { echo "  PASS: $1"; PASS=$((PASS+1)); }
 fail() { echo "  FAIL: $1"; if [ $# -ge 2 ]; then printf '    %s\n' "$2"; fi; FAIL=$((FAIL+1)); }
 
-ROOT=$(mktemp -d) || { echo "FATAL: mktemp -d failed"; exit 1; }
+ROOT=$(mktemp -d "${TMPDIR:-/tmp}/gh-graphql-budget.XXXXXX") ||{ echo "FATAL: mktemp -d failed"; exit 1; }
 [ -d "$ROOT" ] || { echo "FATAL: no temp dir"; exit 1; }
 # shellcheck disable=SC2329,SC2317
 cleanup() { if [ -n "$ROOT" ] && [ -d "$ROOT" ]; then rm -rf "$ROOT" 2>/dev/null; fi; return 0; }
