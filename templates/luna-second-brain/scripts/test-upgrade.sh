@@ -1192,5 +1192,62 @@ T="$TMP/t45-tmpl"; V="$TMP/t45-vault"; make_template "$T" "1.0.0"; add_optional_
 run_upgrade --yes --with-github-sync >/dev/null 2>&1
 assert_eq "T45 --with-github-sync writes LICENSE" "$(sha_of "$T/optional/plugins/github-sync/LICENSE")" "$(sha_of "$V/.obsidian/plugins/github-sync/LICENSE")"
 
+# ---------------------------------------------------------------------------
+# T46-T48 (HIMMEL-3094): when the github-sync community-plugins source cannot
+# be prepared (mktemp fails, or the merge step fails), the run must WARN and
+# keep merging from the template's own list — not repoint CP_MERGE_SRC at a
+# missing/empty file and silently skip the whole plugin merge.
+t46_realpy=$(command -v "$PY")
+t46_realmktemp=$(command -v mktemp)
+t46_bin="$TMP/t46-bin"; t47_bin="$TMP/t47-bin"; mkdir -p "$t46_bin" "$t47_bin"
+# mktemp stub: fails ONLY for the github-sync scratch file, real mktemp otherwise.
+printf '#!/bin/sh\ncase "$*" in *luna-upgrade-gh-sync-cp*) exit 1 ;; esac\nexec "%s" "$@"\n' "$t46_realmktemp" > "$t46_bin/mktemp"
+# python3 stub: fails ONLY for the github-sync merge script (read from stdin,
+# recognised by its json.dump(tmpl, fh)); `-c` probes and every other script
+# pass straight through to the real interpreter.
+# shellcheck disable=SC2016  # the stub's own $1/$in/$@ must stay literal
+printf '#!/bin/sh\ncase "$1" in -c) exec "%s" "$@" ;; esac\nin="$(cat)"\ncase "$in" in *"json.dump(tmpl, fh)"*) exit 1 ;; esac\nprintf "%%s\\n" "$in" | exec "%s" "$@"\n' "$t46_realpy" "$t46_realpy" > "$t47_bin/python3"
+chmod +x "$t46_bin/mktemp" "$t47_bin/python3"
+# Preconditions: each stub really does fail where it should, and passes elsewhere.
+t46_pre=$(PATH="$t46_bin:$PATH" mktemp "$TMP/luna-upgrade-gh-sync-cp.XXXXXX" >/dev/null 2>&1; echo $?)
+assert_eq "T46 setup: mktemp stub fails for the github-sync scratch file" "1" "$t46_pre"
+t46_pre=$(PATH="$t46_bin:$PATH" mktemp "$TMP/other.XXXXXX" >/dev/null 2>&1; echo $?)
+assert_eq "T46 setup: mktemp stub passes through for other files" "0" "$t46_pre"
+t46_pre=$(printf 'json.dump(tmpl, fh)\n' | PATH="$t47_bin:$PATH" python3 - >/dev/null 2>&1; echo $?)
+assert_eq "T46 setup: python3 stub fails for the github-sync merge script" "1" "$t46_pre"
+t46_pre=$(printf 'print(7)\n' | PATH="$t47_bin:$PATH" python3 - 2>/dev/null)
+assert_eq "T46 setup: python3 stub passes through other scripts" "7" "$t46_pre"
+
+t46_check() {   # $1 label prefix, $2 output of the run; asserts on $V
+    local merged
+    case "$2" in
+        *"WARNING — could not prepare the github-sync plugin enablement"*) pass "$1 warns that github-sync enablement could not be prepared" ;;
+        *) fail "$1 warns that github-sync enablement could not be prepared" "got: $2" ;;
+    esac
+    merged=$("$PY" -c 'import json,sys;print(",".join(sorted(json.load(open(sys.argv[1])))))' "$V/.obsidian/community-plugins.json" 2>/dev/null)
+    assert_eq "$1 still merges the template's own plugin list" "calendar,dataview,new" "$merged"
+}
+
+# T46: the scratch file cannot be created.
+T="$TMP/t46-tmpl"; V="$TMP/t46-vault"; make_template "$T" "1.0.0"; add_optional_github_sync "$T"; mkdir -p "$V"; stamp_vault "$V" "0.1.0"
+t46_out=$(PATH="$t46_bin:$PATH" run_upgrade --yes --with-github-sync 2>&1)
+t46_check "T46 mktemp fails:" "$t46_out"
+
+# T47: the scratch file exists but the merge step fails.
+T="$TMP/t47-tmpl"; V="$TMP/t47-vault"; make_template "$T" "1.0.0"; add_optional_github_sync "$T"; mkdir -p "$V"; stamp_vault "$V" "0.1.0"
+t47_out=$(PATH="$t47_bin:$PATH" run_upgrade --yes --with-github-sync 2>&1)
+t46_check "T47 merge step fails:" "$t47_out"
+
+# T48 (control): the normal path is unchanged — no warning, and the prepared
+# temp file carries github-sync into community-plugins.json.
+T="$TMP/t48-tmpl"; V="$TMP/t48-vault"; make_template "$T" "1.0.0"; add_optional_github_sync "$T"; mkdir -p "$V"; stamp_vault "$V" "0.1.0"
+t48_out=$(run_upgrade --yes --with-github-sync 2>&1)
+case "$t48_out" in
+    *"could not prepare the github-sync plugin enablement"*) fail "T48 normal path: no github-sync warning" "got: $t48_out" ;;
+    *) pass "T48 normal path: no github-sync warning" ;;
+esac
+merged=$("$PY" -c 'import json,sys;print(",".join(sorted(json.load(open(sys.argv[1])))))' "$V/.obsidian/community-plugins.json")
+assert_eq "T48 normal path: community-plugins.json includes github-sync" "calendar,dataview,github-sync,new" "$merged"
+
 echo
 if [ "$FAILED" -eq 0 ]; then echo "All upgrade tests passed."; else echo "$FAILED test(s) failed."; exit 1; fi
