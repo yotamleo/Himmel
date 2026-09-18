@@ -163,6 +163,18 @@ threat model and the verbatim block:
 green at that exact head, zero unresolved review threads, attestation trailers
 in the first commit) → `GO` → the leg merges and reports `MERGED #<n> → <sha>`.
 
+`scripts/handover/console-kit/ready-check.sh <pr> <full-40-hex-head-sha>`
+mechanizes that independent verification (HIMMEL-3163): it re-runs checks
+1-6 (head match + clean merge state, statusCheckRollup all green, zero
+unresolved review threads, a CR-ledger row for that head, attestation
+trailers in the first commit, a ticket ID on every commit subject) and
+prints `READY-CHECK PASS|FAIL`. It is read-only — no ledger rows, GO files,
+or PR comments — and it does **not** read the three-dot diff; that judgement
+call stays the console's own, which the script says on its last line. On a
+PR that is already `MERGED`, GitHub reports `mergeStateStatus: UNKNOWN`
+permanently, so check 1 always fails there — that is expected, not a bug;
+the script's domain is a PR that has not yet merged.
+
 A PR on HIMMEL-2973/2976/2928/2974/2975 is READY only if its body cites
 `HIMMEL-2977 "GATE <previous lever> PASS <date>"` (for 2973:
 `P0 EXIT <date>` — this line carries no separate status word; its mere
