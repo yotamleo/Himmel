@@ -123,7 +123,7 @@ echo "== is_dirty: a git-status failure fails safe (HIMMEL-3101) =="
 # pre-fix code (rc=2, no stderr) and pass after: rc=0 (dirty) plus a stderr
 # warning naming the dir. A non-git dir is used to make `git status` itself
 # fail, per the same shape as the existing rc=2 contract case above.
-ngd2=$(mktemp -d)
+ngd2=$(mktemp -d "${TMPDIR:-/tmp}/is-dirty-test.XXXXXX")
 warn=$(is_dirty "$ngd2" 2>&1 >/dev/null); rc=$?
 if [ "$rc" -eq 0 ]; then pass "is_dirty git-status-fails -> rc=0 (treated as dirty)"; else fail "is_dirty git-status-fails -> expected rc=0 got $rc"; fi
 if grepq "$warn" "is_dirty: git status failed in $ngd2"; then
