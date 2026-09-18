@@ -508,7 +508,7 @@ function runChain(members, lifecycle = false) {
         maxBuffer: MEMBER_MAX_BUFFER,
         windowsHide: true,   // HIMMEL-2043: no console flash per hook call
       });
-      if (result.error) {
+      if (result.error && !isRecoverableEpipe(result)) {
         // Advisory: a member that hung, flooded, or failed to start is dropped
         // with a note and the chain continues — never a nonzero exit. No
         // must-run concept here: a --lifecycle chain is advisory BY DEFINITION
