@@ -33,6 +33,7 @@ For Jira ops in this repo, default to the local CLI at
 | Create      | `... create --type Story --title ... --desc ... [--labels a,b]` (project auto-loaded from `.env`; pass `--project FOO` only to override per-call; `--labels` comma-separated, HIMMEL-243) | `createJiraIssue`                                                |
 | Edit        | `... edit HIMMEL-N --title ... --desc ... [--labels a,b]` (`--labels` is FULL-REPLACE: the set becomes the complete label list — no MCP `editJiraIssue` fallback needed for labels since HIMMEL-243) | `editJiraIssue`                                                  |
 | Comment     | `... comment HIMMEL-N "text"`                                               | `addCommentToJiraIssue`                                          |
+| Comments    | `... comments HIMMEL-N [--last N]` (HIMMEL-3162 — read path; author/created/body oldest-first, ADF rendered to plain text) | (none — MCP has no comment read) |
 | Attach      | `... attach HIMMEL-N file.png`                                              | (none — MCP has no attach)                                       |
 | Transition  | `... transition HIMMEL-N Done`                                              | `getTransitionsForJiraIssue` + `transitionJiraIssue` (two calls) |
 | Transitions | `... transitions HIMMEL-N` (HIMMEL-149 — id<TAB>name per available transition) | `getTransitionsForJiraIssue`                                  |
