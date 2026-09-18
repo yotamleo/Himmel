@@ -95,7 +95,8 @@ fi
 # do-not list), which the plain value table above would otherwise miss if the
 # new spelling isn't also added there.
 CASE_LINE=$(grep -E "return 1 ;;" "$GO_GATE_SRC" 2>/dev/null | head -1)
-if ! printf '%s' "$CASE_LINE" | grep -qE "''\|0\|false\|off\|no\) return 1"; then
+CASE_LINE_MATCH=$(printf '%s' "$CASE_LINE" | grep -E "''\|0\|false\|off\|no\) return 1")
+if [ -z "$CASE_LINE_MATCH" ]; then
     fail "$GO_GATE_SRC's console_leg falsy branch no longer matches exactly the five spellings (empty/0/false/off/no) -- got: $CASE_LINE"
 fi
 
