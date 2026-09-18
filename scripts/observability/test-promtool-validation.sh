@@ -228,7 +228,7 @@ if [ -z "$PROMTOOL" ] && command -v promtool >/dev/null 2>&1; then
     PROMTOOL="promtool"
 fi
 if [ -z "$PROMTOOL" ]; then
-    echo "SKIP: promtool not resolvable — looked at the himmel-observability-prometheus scheduled task's registered Execute path (via schtasks //Query) and then on PATH. This suite needs the real binary, not a stub; nothing to validate against on a station with no Prometheus release installed." >&2
+    echo "SKIP: promtool not resolvable — looked at the himmel-observability-prometheus scheduled task's registered Execute path (via schtasks //Query) and then on PATH. This suite needs the real binary, not a stub; nothing to validate against on a station with no Prometheus release installed."
     # Case 0 (rules parity) needs no binary and already ran above — don't let
     # a missing promtool swallow a genuine parity failure into a SKIP.
     if [ "$FAIL" -gt 0 ]; then

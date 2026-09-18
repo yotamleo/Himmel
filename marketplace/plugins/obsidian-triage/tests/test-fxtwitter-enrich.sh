@@ -224,26 +224,25 @@ echo "Test 9: rate-limit 1000ms sleep present"
 if grep -qE 'RATE_LIMIT_MS\s*=\s*1000' "$SCRIPT"; then has_rl=yes; else has_rl=no; fi
 assert "1000ms rate-limit constant present" "yes" "$has_rl"
 
-# -- Test 10: smoke against cached JSON in /tmp/fxt-compare/ ----------
-echo "Test 10: cached fxt JSON smoke (optional)"
-# Resolve to a node-friendly absolute path. /tmp/ on Git Bash is a shell
-# alias to %TEMP%; node sees /tmp/ as C:\tmp\ literally. Use cygpath when
-# available; fall back to the bash-visible path otherwise.
-fxt_cache_raw="/tmp/fxt-compare"
-if command -v cygpath >/dev/null 2>&1; then
-    fxt_cache="$(cygpath -w "$fxt_cache_raw" 2>/dev/null)"
-else
-    fxt_cache="$fxt_cache_raw"
-fi
-# Normalise backslashes for the JS string literal.
-fxt_cache_js="${fxt_cache//\\//}"
-if [ ! -d "$fxt_cache_raw" ]; then
-    echo "  SKIP  $fxt_cache_raw not present"
-else
+# -- Test 10: smoke against cached fxt JSON -------------------------------
+echo "Test 10: cached fxt JSON smoke"
+# smoke_fxt_dir <dir> -> prints the PARSED=/WITH_*= counters for every *.json in
+# <dir>. Resolves <dir> to a node-friendly absolute path first: /tmp/ on Git Bash
+# is a shell alias to %TEMP%; node sees /tmp/ as C:\tmp\ literally. Use cygpath
+# when available; fall back to the bash-visible path otherwise.
+smoke_fxt_dir() {
+    local dir_raw="$1" dir dir_js
+    if command -v cygpath >/dev/null 2>&1; then
+        dir="$(cygpath -w "$dir_raw" 2>/dev/null)"
+    else
+        dir="$dir_raw"
+    fi
+    # Normalise backslashes for the JS string literal.
+    dir_js="${dir//\\//}"
     cat >"$tmpdir/smoke.mjs" <<EOF
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-const dir = "$fxt_cache_js";
+const dir = "$dir_js";
 const files = readdirSync(dir).filter(f => f.endsWith(".json"));
 let parsed = 0, withTweet = 0, withArticle = 0, withNote = 0, withQuote = 0;
 for (const f of files) {
@@ -262,7 +261,28 @@ console.log("WITH_NOTE=" + withNote);
 console.log("WITH_QUOTE=" + withQuote);
 console.log("WITH_ARTICLE=" + withArticle);
 EOF
-    out="$(node "$tmpdir/smoke.mjs" 2>&1)"
+    node "$tmpdir/smoke.mjs" 2>&1
+}
+
+# HIMMEL-3191: the hermetic case runs everywhere — a fixture cache built here,
+# never the operator's scratch dir (absent on CI, where this used to SKIP).
+fxt_fixture="$tmpdir/fxt-fixture"
+mkdir -p "$fxt_fixture"
+printf '%s\n' '{"tweet":{"text":"plain"}}' > "$fxt_fixture/plain.json"
+printf '%s\n' '{"tweet":{"text":"note","is_note_tweet":true}}' > "$fxt_fixture/note.json"
+printf '%s\n' '{"tweet":{"text":"q","quote":{"text":"inner"},"article":{"title":"a"}}}' > "$fxt_fixture/quote-article.json"
+printf '%s\n' '{"code":404}' > "$fxt_fixture/no-tweet.json"
+out="$(smoke_fxt_dir "$fxt_fixture")"
+assert "fxt fixture JSON cache: counters match the fixture" \
+    "PARSED=4 WITH_TWEET=3 WITH_NOTE=1 WITH_QUOTE=1 WITH_ARTICLE=1" \
+    "$(echo "$out" | tr '\n' ' ' | sed 's/ $//')"
+
+# Optional extra: the operator's scratch dir of real payloads, when present.
+fxt_cache_raw="/tmp/fxt-compare"
+if [ ! -d "$fxt_cache_raw" ]; then
+    echo "  SKIP  $fxt_cache_raw not present — real cached fxt payloads NOT smoked on this host"
+else
+    out="$(smoke_fxt_dir "$fxt_cache_raw")"
     parsed_n="$(echo "$out" | grep -oE 'PARSED=[0-9]+' | cut -d= -f2)"
     if [ -n "$parsed_n" ] && [ "$parsed_n" -gt 0 ]; then
         assert "fxt JSON cache parses (n>0)" "yes" "yes"
