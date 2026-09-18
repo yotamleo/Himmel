@@ -522,23 +522,32 @@ fi
 # scripts/lib/go-gate.sh (HIMMEL-3142/HIMMEL-3149) — shared with
 # block-unresolved-cr-merge.sh's own gh-pr-merge gate and go.sh's own
 # refusal, so none of the three can drift on either "is this a leg" or "what
-# the GO binds". Sourcing the file is side-effect-free (defines two
-# functions, touches nothing on disk) — safe to do unconditionally, before we
-# even know whether this is a leg.
+# the GO binds". A non-leg session (HIMMEL_CONSOLE_LEG unset/empty, by far the
+# common case) never sources go-gate.sh at all, so a missing/broken library
+# never blocks a merge this gate was never meant to bind — this outer check is
+# only "is the var non-empty", not a copy of console_leg's own five-spelling
+# interpretation, so an explicitly-set falsy value (e.g. HIMMEL_CONSOLE_LEG=0)
+# still sources go-gate.sh and gets the real, shared interpretation.
 # Drop any go_gate/console_leg already in scope (a PATH executable or an
 # inherited `export -f` would otherwise survive the source below undetected —
 # declare -F after sourcing can't tell "the file defined it" from "it was
 # already callable") before sourcing, so only the file's own definitions can
 # satisfy the declare -F checks that follow.
-unset -f go_gate console_leg 2>/dev/null || true
-# shellcheck source=scripts/lib/go-gate.sh
-# shellcheck disable=SC1091
-if ! . "$SCRIPT_DIR/../lib/go-gate.sh" 2>/dev/null || ! declare -F console_leg >/dev/null 2>&1; then
-    echo "merge-on-green: cannot load scripts/lib/go-gate.sh — refusing (the console-leg marker check must fail closed, not silently no-op)" >&2
-    audit "REFUSED reason=policy-refused phase=console-go-lib-missing repo=$nwo pr=#$pr_num sha=$sha"
-    exit 17
+is_leg=1
+if [ -n "${HIMMEL_CONSOLE_LEG:-}" ]; then
+    unset -f go_gate console_leg 2>/dev/null || true
+    # shellcheck source=scripts/lib/go-gate.sh
+    # shellcheck disable=SC1091
+    if ! . "$SCRIPT_DIR/../lib/go-gate.sh" 2>/dev/null || ! declare -F console_leg >/dev/null 2>&1; then
+        echo "merge-on-green: cannot load scripts/lib/go-gate.sh — refusing (the console-leg marker check must fail closed, not silently no-op)" >&2
+        audit "REFUSED reason=policy-refused phase=console-go-lib-missing repo=$nwo pr=#$pr_num sha=$sha"
+        exit 17
+    fi
+    console_leg || is_leg=0
+else
+    is_leg=0
 fi
-if console_leg; then
+if [ "$is_leg" -eq 1 ]; then
     go_root=""
     # shellcheck source=scripts/lib/handover-path.sh
     # shellcheck disable=SC1091

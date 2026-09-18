@@ -200,25 +200,38 @@ fi
 # ── Console-GO merge gate (HIMMEL-2919/HIMMEL-3142) — runs THIRD, after CR
 # and CI — see the header comment for gate 3. Only binds a console-spawned leg
 # (console_leg truthy, scripts/lib/go-gate.sh — HIMMEL-3149); a non-leg
-# session never reaches the `gh pr view` below, so it costs an ordinary merge
-# nothing.
+# session (HIMMEL_CONSOLE_LEG unset/empty, by far the common case) never
+# reaches the `. go-gate.sh` below, so it costs an ordinary merge nothing —
+# including the case where go-gate.sh itself is missing or broken; this gate
+# must never turn a broken library into a blocker for sessions it was never
+# meant to bind.
 #
 # console_leg lives in scripts/lib/go-gate.sh beside go_gate() itself, shared
 # with merge-on-green.sh's own console-GO gate and go.sh's own refusal, so
-# none of the three can drift on "is this a leg". Sourcing it is
-# side-effect-free (defines two functions, touches nothing on disk) — safe to
-# do unconditionally, before we even know whether this is a leg. Drop any
-# go_gate/console_leg already in scope first (a PATH executable or an
-# inherited `export -f` would otherwise survive the source below undetected)
-# so only the file's own definitions can satisfy the declare -F checks below.
-unset -f go_gate console_leg 2>/dev/null || true
-# shellcheck source=scripts/lib/go-gate.sh
-# shellcheck disable=SC1091
-if ! . "$SCRIPT_DIR/../lib/go-gate.sh" 2>/dev/null || ! declare -F console_leg >/dev/null 2>&1; then
-    echo "block-unresolved-cr-merge: cannot load scripts/lib/go-gate.sh — refusing (the console-leg marker check must fail closed, not silently no-op)" >&2
-    exit 2
+# none of the three can drift on "is this a leg". The five-spelling
+# interpretation (empty/0/false/off/no, case-insensitive, whitespace-stripped)
+# is console_leg's alone — this outer check is only "is the var non-empty at
+# all", cheap enough not to duplicate that logic, so an explicitly-set falsy
+# value (e.g. HIMMEL_CONSOLE_LEG=0) still sources go-gate.sh and gets the
+# real, shared interpretation.
+is_leg=1
+if [ -n "${HIMMEL_CONSOLE_LEG:-}" ]; then
+    # Drop any go_gate/console_leg already in scope first (a PATH executable
+    # or an inherited `export -f` would otherwise survive the source below
+    # undetected) so only the file's own definitions can satisfy the
+    # declare -F checks below.
+    unset -f go_gate console_leg 2>/dev/null || true
+    # shellcheck source=scripts/lib/go-gate.sh
+    # shellcheck disable=SC1091
+    if ! . "$SCRIPT_DIR/../lib/go-gate.sh" 2>/dev/null || ! declare -F console_leg >/dev/null 2>&1; then
+        echo "block-unresolved-cr-merge: cannot load scripts/lib/go-gate.sh — refusing (the console-leg marker check must fail closed, not silently no-op)" >&2
+        exit 2
+    fi
+    console_leg || is_leg=0
+else
+    is_leg=0
 fi
-if console_leg; then
+if [ "$is_leg" -eq 1 ]; then
     # Resolve pr-number + head-sha the same way cr_merge_gate/ci_green_gate
     # do above (own `gh pr view`, same $sel/$repo, same re-anchor to
     # $cwd_branch on an unresolvable selector) — an unresolvable selector
