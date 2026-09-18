@@ -4035,7 +4035,7 @@ rm -rf "$c3839_t"
 
 echo "== C39: Darwin with a timeout that fails the -k probe (BSD-like) -> WARN, not OK =="
 c3839_setup
-if PATH="$c3839_t/badt:$PATH" timeout -k 1 1 true >/dev/null 2>&1; then
+if PATH="$c3839_t/badt:$PATH" timeout -k 1 1 true >/dev/null 2>&1; then # gnu-ok: runs the suite's own stub timeout (first on PATH), never the host binary
     fail "C39 darwin bad-timeout: precondition — the stub timeout passed the -k probe"
 else
     out="$(PATH="$c3839_t/badt:$c3839_t/darwin:$PATH" HIMMEL_DOCTOR_TIMEOUT_BINS="timeout $c3839_t/no-gtimeout" CLAUDE_DIR="$c3839_t/claude" HOME="$c3839_t/home" bash "$DOC" --no-color 2>&1)"
