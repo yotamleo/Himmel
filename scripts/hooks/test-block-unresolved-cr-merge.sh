@@ -265,14 +265,22 @@ export RED_CONTROL_TMPDIR="$TMP"
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/../lib/red-control.sh"
 
+# HIMMEL-3154: extracted via `git show <sha>:<path>` until this ticket. A
+# historical PR-branch commit is only reachable while its PR stays open; once
+# squash-merged the branch commit is unreachable from a fresh clone forever,
+# so the extraction silently produced an empty file in CI while a developer's
+# stale local checkout still had the object loose and stayed green. Replaced
+# with a committed fixture snapshot (frozen at commit 6ac483e4, still a live
+# main ancestor and not actually affected by that bug, but converted here too
+# for consistency with the other fixtures in this directory).
 PRE_FIX_SHA=6ac483e4ad49d66e5760a2ea632871bcab029576
 PRE_FIX_PAYLOAD="$TMP/red-control-payload.json"
 payload Bash "gh pr merge 42 --squash" > "$PRE_FIX_PAYLOAD"
 
 PRE_FIX_ROOT="$TMP/pre-fix-hook"
 mkdir -p "$PRE_FIX_ROOT/scripts/hooks" "$PRE_FIX_ROOT/scripts/lib"
-git -C "$SCRIPT_DIR/../.." show "$PRE_FIX_SHA:scripts/hooks/block-unresolved-cr-merge.sh" \
-    > "$PRE_FIX_ROOT/scripts/hooks/block-unresolved-cr-merge.sh" 2>/dev/null
+cp "$SCRIPT_DIR/fixtures/red-control/block-unresolved-cr-merge.pre-fix.sh" \
+    "$PRE_FIX_ROOT/scripts/hooks/block-unresolved-cr-merge.sh" 2>/dev/null
 cp "$SCRIPT_DIR/../lib/cr-merge-gate.sh" "$PRE_FIX_ROOT/scripts/lib/cr-merge-gate.sh"
 cp "$SCRIPT_DIR/../lib/ci-green-gate.sh" "$PRE_FIX_ROOT/scripts/lib/ci-green-gate.sh"
 # The mutant wrapper always exits 0 itself (it prints the gated hook's rc as
@@ -318,14 +326,18 @@ fi
 # against PRE_FIX_SHA above: that blob predates go-gate.sh entirely, so it
 # would fail this fixture for the unrelated reason of having no GO concept
 # at all, proving nothing about the pin specifically.
+# HIMMEL-3154: this commit's PR branch was deleted on squash-merge, so
+# `git show <sha>:<path>` is unreachable from a fresh clone of origin — see
+# the note on the PRE_FIX_SHA extraction above. Replaced with a committed
+# fixture snapshot.
 PRE_PIN_SHA=ef6f995aabf01bae0e19a1cefa04de2ae2977d18
 PRE_PIN_PAYLOAD="$TMP/red-control-pin-payload.json"
 payload Bash "gh pr merge 42 --squash" > "$PRE_PIN_PAYLOAD"
 
 PRE_PIN_ROOT="$TMP/pre-pin-hook"
 mkdir -p "$PRE_PIN_ROOT/scripts/hooks" "$PRE_PIN_ROOT/scripts/lib"
-git -C "$SCRIPT_DIR/../.." show "$PRE_PIN_SHA:scripts/hooks/block-unresolved-cr-merge.sh" \
-    > "$PRE_PIN_ROOT/scripts/hooks/block-unresolved-cr-merge.sh" 2>/dev/null
+cp "$SCRIPT_DIR/fixtures/red-control/block-unresolved-cr-merge.pre-pin.sh" \
+    "$PRE_PIN_ROOT/scripts/hooks/block-unresolved-cr-merge.sh" 2>/dev/null
 cp "$SCRIPT_DIR/../lib/cr-merge-gate.sh" "$PRE_PIN_ROOT/scripts/lib/cr-merge-gate.sh"
 cp "$SCRIPT_DIR/../lib/ci-green-gate.sh" "$PRE_PIN_ROOT/scripts/lib/ci-green-gate.sh"
 cp "$SCRIPT_DIR/../lib/go-gate.sh" "$PRE_PIN_ROOT/scripts/lib/go-gate.sh"
@@ -380,11 +392,15 @@ else
     RC127_PAYLOAD="$TMP/red-control-rc127-payload.json"
     payload Bash "gh pr merge 42 --squash --match-head-commit abc123" > "$RC127_PAYLOAD"
 
+    # HIMMEL-3154: this commit's PR branch was deleted on squash-merge, so
+    # `git show <sha>:<path>` is unreachable from a fresh clone of origin —
+    # see the note on the PRE_FIX_SHA extraction above. Replaced with a
+    # committed fixture snapshot.
     PRE_RC127_SHA=6749462a6c22911d748b8a39254fbd86bdf14ece
     PRE_RC127_ROOT="$TMP/pre-rc127-hook"
     mkdir -p "$PRE_RC127_ROOT/scripts/hooks" "$PRE_RC127_ROOT/scripts/lib"
-    git -C "$SCRIPT_DIR/../.." show "$PRE_RC127_SHA:scripts/hooks/block-unresolved-cr-merge.sh" \
-        > "$PRE_RC127_ROOT/scripts/hooks/block-unresolved-cr-merge.sh" 2>/dev/null
+    cp "$SCRIPT_DIR/fixtures/red-control/block-unresolved-cr-merge.pre-rc127-fix.sh" \
+        "$PRE_RC127_ROOT/scripts/hooks/block-unresolved-cr-merge.sh" 2>/dev/null
     cp "$SCRIPT_DIR/../lib/cr-merge-gate.sh" "$PRE_RC127_ROOT/scripts/lib/cr-merge-gate.sh"
     cp "$SCRIPT_DIR/../lib/ci-green-gate.sh" "$PRE_RC127_ROOT/scripts/lib/ci-green-gate.sh"
     cp "$SCRIPT_DIR/../lib/handover-path.sh" "$PRE_RC127_ROOT/scripts/lib/handover-path.sh"
@@ -462,9 +478,13 @@ payload Bash "gh pr merge 42 --squash --match-head-commit abc123" > "$RC4_PAYLOA
 
 rc4_extract_hook() {
     # $1 = dest root
+    # HIMMEL-3154: this commit's PR branch was deleted on squash-merge, so
+    # `git show <sha>:<path>` is unreachable from a fresh clone of origin —
+    # see the note on the PRE_FIX_SHA extraction above. Replaced with a
+    # committed fixture snapshot.
     mkdir -p "$1/scripts/hooks" "$1/scripts/lib"
-    git -C "$SCRIPT_DIR/../.." show "$PRE_RC4_SHA:scripts/hooks/block-unresolved-cr-merge.sh" \
-        > "$1/scripts/hooks/block-unresolved-cr-merge.sh" 2>/dev/null
+    cp "$SCRIPT_DIR/fixtures/red-control/block-unresolved-cr-merge.pre-rc4-fix.sh" \
+        "$1/scripts/hooks/block-unresolved-cr-merge.sh" 2>/dev/null
     cp "$SCRIPT_DIR/../lib/cr-merge-gate.sh" "$1/scripts/lib/cr-merge-gate.sh"
     cp "$SCRIPT_DIR/../lib/ci-green-gate.sh" "$1/scripts/lib/ci-green-gate.sh"
     cp "$SCRIPT_DIR/../lib/handover-path.sh" "$1/scripts/lib/handover-path.sh"
@@ -619,6 +639,19 @@ if [ "${HIMMEL_1495_SELF:-0}" != "1" ]; then
     else
         fail=$((fail+1)); echo "FAIL hermetic-to-armed-env (startup scrub missing?)"; sed 's/^/  armed: /' "$TMP/armed.log"
     fi
+fi
+
+# HIMMEL-3154: guard against reintroducing extraction of a historical
+# commit's blob via `git show <sha>:<path>` — the class of fragility this
+# ticket fixed. Once a PR's branch is squash-merged, that commit is
+# permanently unreachable from a fresh clone; a RED-control mutant must come
+# from a committed fixtures/red-control/ snapshot, never a live git-show of a
+# past ref.
+if grep -vE '^[[:space:]]*#' "$SCRIPT_DIR/test-block-unresolved-cr-merge.sh" \
+    | grep -Eq 'git[[:space:]]+(-C[[:space:]]+\S+[[:space:]]+)?show[[:space:]].*:scripts/'; then
+    fail=$((fail+1)); echo "FAIL lint: this file extracts a historical blob via git show <ref>:<path> — use a committed fixtures/red-control/ snapshot instead (HIMMEL-3154)"
+else
+    pass=$((pass+1)); echo "ok   lint-no-historical-git-show-extraction"
 fi
 
 echo "pass=$pass fail=$fail"
