@@ -3,6 +3,9 @@
 # Builds throwaway repos, invokes the dispatcher with verb+state+flags,
 # asserts rc and stderr signal-words.
 set -uo pipefail
+# An inherited GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE would override `-C`
+# below and redirect fixture git calls at the wrong repo or index.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 
 # grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
 # pipeline. printf/echo-into-`grep -q` is a trap under this file's
