@@ -64,6 +64,10 @@ XDG_RUNTIME_DIR="$TMP/xdg"
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 export XDG_RUNTIME_DIR
+# HIMMEL-3103: pin the slot dir explicitly and fail the suite if it could leak
+# into the production dir the live fleet counts.
+. "$SCRIPT_DIR/../lib/fleet-slots-shield.sh"
+fleet_slots_shield "$TMP" || exit 1
 
 export SKILL_TELEMETRY_DIR="$TMP/telemetry"
 export WORKSPACE_TRUST_CONFIG="$TMP/claude-trust.json"

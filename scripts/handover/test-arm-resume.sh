@@ -218,6 +218,11 @@ ARM="$(cd "$(dirname "$0")" && pwd)/arm-resume.sh"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
+# HIMMEL-3103: every non-dry-run arm reserves a FLEET_CAP slot; redirect it off
+# the production dir the live fleet counts, and fail the suite if it could leak.
+# This file is also the body of test-arm-resume-fast.sh / -1879.sh (`--only`).
+. "$(dirname "$ARM")/../lib/fleet-slots-shield.sh"
+fleet_slots_shield "$TMP" || exit 1
 # HIMMEL-3074: real crontab arms create the arm log dir and probe the log
 # FILE for append; keep that under the suite's TMP, not the operator's
 # real ~/.himmel/arm-resume. Real crontab/macOS arms also now write a

@@ -46,6 +46,10 @@ export FLEET_PS_CMD="$FLEET_PS_STUB"
 export XDG_RUNTIME_DIR="$TMP/xdg"
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
+# HIMMEL-3103: pin the slot dir explicitly and fail the suite if it could leak
+# into the production dir the live fleet counts.
+. "$(dirname "$ARM")/../lib/fleet-slots-shield.sh"
+fleet_slots_shield "$TMP" || exit 1
 export FLEET_CAP_OK=1
 
 # Hermetic shields — same set test-arm-resume.sh uses so the assertions below

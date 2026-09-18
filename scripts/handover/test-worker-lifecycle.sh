@@ -69,6 +69,11 @@ export FLEET_PS_CMD="$FLEET_PS_STUB"
 export XDG_RUNTIME_DIR="$TMP/xdg"
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
+# HIMMEL-3103: assert-only (no HIMMEL_FLEET_SLOTS export) — reset_fleet_slots
+# below clears the XDG-derived dir, so the slot dir must stay XDG-derived, under
+# this suite's TMP and never the production dir the live fleet counts.
+. "$SCRIPT_DIR/../lib/fleet-slots-shield.sh"
+fleet_slots_assert_isolated "$TMP" || exit 1
 export FLEET_CAP_OK=1
 reset_fleet_slots() { rm -rf "${XDG_RUNTIME_DIR:?}/himmel-fleet-$(id -u)"; }
 

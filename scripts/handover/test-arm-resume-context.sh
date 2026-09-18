@@ -42,6 +42,10 @@ TMP=$(mktemp -d "${TMPDIR:-/tmp}/arm-resume-context.XXXXXX") || {
     exit 1
 }
 trap 'rm -rf "$TMP"' EXIT
+# HIMMEL-3103: every non-dry-run arm reserves a FLEET_CAP slot; redirect it off
+# the production dir the live fleet counts, and fail the suite if it could leak.
+. "$(dirname "$ARM")/../lib/fleet-slots-shield.sh"
+fleet_slots_shield "$TMP" || exit 1
 
 # ---------------------------------------------------------------------------
 # Hermetic shields — copied verbatim from test-arm-resume-tier.sh's own
