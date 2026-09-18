@@ -157,7 +157,7 @@ else
   fail "2260/18a: sentinel present — the SKIP_LISTed suite ran under a full scan; output: $out18a"
 fi
 if grepq "$skipline18a" -F "$sb18/scripts/handover/test-arm-resume.sh" \
-   && grepq "$skipline18a" -F 'no VM e2e coverage'; then
+   && grepq "$skipline18a" -F 'superseded by its two --only wrappers'; then
   pass "2260/18a: full scan — loud [SKIP] line names the suite AND carries its ledger reason"
 else
   fail "2260/18a: expected a [SKIP] line naming the suite with its reason, got: '$skipline18a'"

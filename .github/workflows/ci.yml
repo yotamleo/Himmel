@@ -634,9 +634,21 @@ jobs:
   #    shard failed — and a required check that never reports leaves the PR
   #    hanging rather than red.
   # 4. No checkout, no setup: this job is a verdict, not work.
+  #
+  # 5. issues:write (beyond the workflow-level contents:read) is needed only
+  #    by the shell-extended-nightly-issue.sh steps below — scoped to this
+  #    job alone, same pattern as bun-suites' windows-nightly-issue.sh.
+  #    HIMMEL-3132: SUITE_TIER_DEFAULT `extended` suites only run under
+  #    SUITE_TIER_MODE=all (the schedule/force_all_os leg, set above at
+  #    shell-unit-shard), so a red extended suite only ever reddens THIS
+  #    job on that leg — a run nobody watches interactively. Without these
+  #    steps that failure is silent even though the job itself goes red.
   shell-unit:
     needs: shell-unit-shard
     if: always()
+    permissions:
+      contents: read
+      issues: write
     strategy:
       matrix:
         os: [ubuntu-latest]
@@ -652,3 +664,18 @@ jobs:
             exit 1
           fi
           echo "OK: every gating shell-unit shard passed."
+      # Scoped to the schedule/force_all_os leg: that is the only leg where
+      # SUITE_TIER_MODE=all actually exercises the extended tier (see
+      # shell-unit-shard above), so only there does a red here plausibly mean
+      # an extended suite broke rather than double-reporting a per-PR fast-
+      # tier failure the PR gate already surfaced.
+      - name: Extended-tier nightly issue — clear on green
+        if: success() && (github.event_name == 'schedule' || inputs.force_all_os)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/ci/shell-extended-nightly-issue.sh 0 "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      - name: Extended-tier nightly issue — file/refresh on red
+        if: failure() && (github.event_name == 'schedule' || inputs.force_all_os)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/ci/shell-extended-nightly-issue.sh 1 "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
