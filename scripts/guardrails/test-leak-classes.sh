@@ -1717,8 +1717,9 @@ fi
 # snapshot, never a live git-show of a past ref, which is unreachable from a
 # shallow clone or source archive regardless of whether the ref is still a
 # main ancestor.
-if grep -vE '^[[:space:]]*#' "$REPO_ROOT/scripts/guardrails/test-leak-classes.sh" \
-    | grep -Eq 'git[[:space:]]+(-C[[:space:]]+\S+[[:space:]]+)?show[[:space:]].*:scripts/'; then
+extraction_lint_hit=$(grep -vE '^[[:space:]]*#' "$REPO_ROOT/scripts/guardrails/test-leak-classes.sh" \
+    | grep -E 'git[[:space:]]+(-C[[:space:]]+\S+[[:space:]]+)?show[[:space:]].*:scripts/')
+if [ -n "$extraction_lint_hit" ]; then
     fail "lint: this file extracts a historical blob via git show <ref>:<path> -- use a committed fixtures/red-control/ snapshot instead (HIMMEL-3018)"
 else
     pass "lint: no historical git-show blob extraction in this file"
