@@ -1790,7 +1790,26 @@ position before the paren), plus any paren nested inside an already-opaque one.
 Legacy `$[ … ]` arithmetic is consumed as one opaque, bracket-balanced span, so
 a `;`/`&`/`|`/newline inside it neither splits a segment nor lets the following
 `(` read as a real subshell — the `$[1 +<newline>(SEAM=0)]` shape `main` denies was
-briefly allowed by an early paren-depth build (HIMMEL-2929, leg N45). Telling
+briefly allowed by an early paren-depth build (HIMMEL-2929, leg N45).
+Opaque for SCOPING is not opaque for SCANNING (HIMMEL-3185): `segment_cmd`
+lifts every `(( … ))` / `$(( … ))` body out whole (`arith_body`, paren-balanced
+to the closing `))`, also inside a double-quoted string) and emits it as its own
+tagged segment, which `scan_segment` folds (`arith_fold`) into the same
+`UNSET_NAMES` accumulator `let`/`declare` use — so the spaced
+`(( HIMMEL_CONSOLE_LEG = 0 ))`, `+=`/`-=`/`<<=` and the other compound
+operators, prefix/postfix `++`/`--`, an array element `SEAM[0]=0`, a
+comma-joined `(( a = 1, SEAM = 0 ))`, a ternary arm and a `$(( … ))` used as a
+statement, argument or assignment-word value all deny, exactly as real bash
+assigns the seam in the current shell. The fold names ASSIGNMENT forms only:
+comparisons and reads — `(( SEAM == 0 ))`, `>`, `>=`, `<=`, `!=`, `$(( SEAM + 1 ))`
+— and assignments to a non-seam name (or one that merely shares a prefix,
+`HIMMEL_CONSOLE_LEG_X`) still allow, and a clear inside a real closed subshell
+`( (( SEAM = 0 )) ); …` still allows through #643's positive rule. Known
+residual (`ponytail:` in the source): quotes inside an arithmetic body are not
+modelled, so a `)` inside a quoted string there mis-balances. Each spelling is
+pinned by a real-bash leak oracle in the suite (a stub chokepoint prints the four
+merge-on-green seams; a `leak` row must change one, a `noleak` row must leave
+all four intact). Telling
 those shapes apart via a blacklist ("any `((`/`$(`/backtick ANYWHERE disables
 scoping for the whole call") was tried and abandoned across rounds 1-2 — each
 found the next false ALLOW at the next nesting shape. The positive
@@ -1981,6 +2000,35 @@ instead, HIMMEL-1058's spoof-resistance stance). An infrastructure failure
 (query/parse error) is remembered and only fails OPEN at the very end,
 alongside the verdict and body-findings degrades — a broken query is not
 evidence.
+
+**Console-GO gate (HIMMEL-2919 / HIMMEL-3142) — runs THIRD, after the CR and CI
+gates.** A console-spawned leg (`console-kit/headed-arm-leg.sh` exports
+`HIMMEL_CONSOLE_LEG=1`) may merge only on its console's GO. The hook first
+checks the marker is non-empty at all — an unset/empty marker (the ordinary
+session) never sources `scripts/lib/go-gate.sh`, so a missing or broken library
+cannot block a merge the gate was never meant to bind. A non-empty marker
+sources it (dropping any inherited `go_gate`/`console_leg` first) and
+`console_leg` applies the one shared reading: empty/`0`/`false`/`off`/`no`,
+case-insensitive and whitespace-stripped, is not a leg; anything else is. A
+leg's `gh pr merge` then resolves the PR number and head SHA itself and calls
+`go_gate <pr> <head> <handover_root>`, which is pure (no `gh`, no write): rc 0
+only when `<root>/.locks/go/<pr>.<head>` exists and carries the line
+`head=<head>` exactly; otherwise rc 2 with a one-line reason naming the exact
+GO path (no root / no file / a GO for an older head are all the same refusal —
+a stale GO is never reusable). The GO file is written only by the console
+(`console-kit/go.sh`, which itself refuses under the marker), so the evidence is
+a file the leg cannot set on its own command line. Once a GO is confirmed the
+hook additionally REQUIRES the merge command to pin `--match-head-commit`
+(space- or `=`-form, quotes stripped) equal to that GO-bound head: an unpinned
+or mismatched pin exits 2, because the GO was bound to this hook's own `gh pr
+view` read and a separate `gh pr merge` could otherwise land a different commit.
+Only the GO/pin half is fail-CLOSED (a missing `go-gate.sh`, or one that
+sources but lacks `go_gate`, exits 2); an unresolvable PR selector still fails
+open like the CR/CI siblings. `merge-on-green.sh` runs the same
+`console_leg`/`go_gate` pair as its own gate (below), using the `$sha` check-ci
+certified — the same head its `--match-head-commit` pins — and `go.sh` uses
+`console_leg` for its refusal, so none of the three can drift on "is this a
+leg" or "what a GO binds" (HIMMEL-3149).
 
 ### CodeRabbit availability — arm it per repo (HIMMEL-1125)
 
@@ -3250,6 +3298,37 @@ command still names the same `.sh`/`.ts` script, so
 `scripts/codex/test-codex-hook-parity.sh` sees the same end-side inventory and
 the `CLAUDE_END_ONLY` allowlist is untouched.
 
+### `stop-console-idle-guard.sh` — a console may not go structurally dead (HIMMEL-3144 / HIMMEL-3148)
+
+A second `Stop` entry in `.claude/settings.json`, deliberately a SIBLING of the
+`stop-queue.mjs` entry and NOT enqueued through it: the queue exists to run
+end-side work asynchronously and always allows, while this hook must hand
+Claude Code a synchronous `{"decision":"block","reason":"…"}` on stdout before
+the turn ends. Origin: a console ended its turn with an empty fleet and a
+9-item held queue and sat dead for 58 minutes — no Stop guard and no monitor
+event starts a new turn in an idle interactive session.
+
+It blocks a stop only when ALL of these hold, and allows (exit 0, no stdout)
+on anything it cannot positively confirm: the payload is not the hook's own
+re-entry (`stop_hook_active` is not `true`, so it blocks at most once per turn);
+the stopping session holds a `*-console` queue-lock (best-effort — it recomputes
+`sha256("<session_id>|<handover path>")` and looks for `queue-lock.sh`'s
+persisted per-session token file under `${XDG_RUNTIME_DIR:-/tmp}/himmel-queue-lock/`;
+a false negative only allows); `bank-preflight.sh` and `queue-lock.sh status
+--sweep` both answer (sweep rc 0 or 20 are valid, anything else is a fault);
+and **zero leg locks are held** (a straight count of held `slug=` lines other
+than the console's own — deliberately not gated on freshness, since
+`IDLE-HELD?` is heartbeat age, not death). One or more held leg locks IS the
+wake path (a leg's `SendMessage` starts a new turn), so the hook does not block
+then (HIMMEL-3148). The block reason names the lock document, the
+`bank-preflight` FLEET line, the bank token and the held leg locks, and says to
+dispatch the next queued item, verify a READY PR, or run `/console next --arm`.
+Every subprocess shares ONE 8 s budget (`HIMMEL_STOP_GUARD_TIMEOUT`, under the
+wired 10 s Stop timeout), and the JSON is printed only as the last statement.
+It does not inspect the held Jira/dispatch queue. Test seams:
+`HIMMEL_STOP_GUARD_BANK_PREFLIGHT`, `HIMMEL_STOP_GUARD_QUEUE_LOCK`. Spec:
+`scripts/hooks/test-stop-console-idle-guard.sh`.
+
 ## Claude SessionEnd Hooks
 
 Wired in the `SessionEnd` array of the himmel-ops plugin `hooks.json`
@@ -3865,7 +3944,8 @@ opposite ways — this script's pin NARROWS what a human-only,
 `CLAUDECODE`-self-refusing chokepoint may touch, while merge-on-green's WIDENS a
 boundary an agent runs under.
 `merge-on-green.sh` exits 17 (`policy-refused`) on a fresh pre-merge `BLOCKED` + `REVIEW_REQUIRED` policy read after green checks or an explicit GitHub base-branch policy rejection at merge time; if no automation identity can satisfy the required review, the merge is a human admin action; on this repo the operator relaxed `protect-main` on 2026-09-09 (HIMMEL-2887).
-It also exits 17 (`policy-refused phase=console-go`) when `HIMMEL_CONSOLE_LEG` is set — exported by `console-kit/headed-arm-leg.sh` into every console-spawned leg — and `<handover_root>/.locks/go/<pr>.<certified head sha>` is missing or does not carry `head=<that sha>`; only the console writes it, via `console-kit/go.sh` (which refuses under the marker), and `scripts/chokepoints.json` registers the marker so a per-call `HIMMEL_CONSOLE_LEG=` prefix is denied (HIMMEL-2919). A `--judge` leg (HIMMEL-3133) is the same `HIMMEL_CONSOLE_LEG=1` process, so it is blocked from writing its own `GO` by this exact same gate — no separate `HIMMEL_CONSOLE_JUDGE` marker was added; "the judge is a leg" (design §3.2) means Guard E already covered it.
+The Jira auto-transition is opt-in per merge (HIMMEL-3143): without `--jira-transition` `merge-on-green.sh` merges, then only records `jira-transition=would-transition key=<KEY> status=<target>` on the `MERGED` audit line — no Jira comment, no transition — so the console decides; with the flag it comments and transitions the ticket named by the PR title's `[PROJ-N]` tag (never an Epic/Story; any unreadable step degrades to a `skip=…` result, never a failed merge). It used to fire on every merge and closed a ticket whose sibling work was still owed, which no "no other open PR" heuristic can detect, so it stays opt-in rather than heuristic. A PR carrying two ticket tags transitions only the first.
+It also exits 17 (`policy-refused phase=console-go`) when `HIMMEL_CONSOLE_LEG` is set — exported by `console-kit/headed-arm-leg.sh` into every console-spawned leg — and `go_gate` (`scripts/lib/go-gate.sh`, shared with `block-unresolved-cr-merge.sh`'s Console-GO gate and with `go.sh`; see there) finds `<handover_root>/.locks/go/<pr>.<certified head sha>` missing or not carrying `head=<that sha>` (a broken/truncated `go-gate.sh` refuses too: `phase=console-go-lib-missing` / `console-go-symbol-missing`); the gate runs before the marker clear and before `--dry-run`, so a refused leg mutates nothing and a dry run reports the refusal, and the merge itself pins `--match-head-commit` to that same certified sha; only the console writes it, via `console-kit/go.sh` (which refuses under the marker), and `scripts/chokepoints.json` registers the marker so a per-call `HIMMEL_CONSOLE_LEG=` prefix is denied (HIMMEL-2919). A `--judge` leg (HIMMEL-3133) is the same `HIMMEL_CONSOLE_LEG=1` process, so it is blocked from writing its own `GO` by this exact same gate — no separate `HIMMEL_CONSOLE_JUDGE` marker was added; "the judge is a leg" (design §3.2) means Guard E already covered it.
 That is why merge-on-green deliberately does NOT
 reuse this script's `CR_PUBLIC_REPO`: an env-overridable constant costs nothing
 on a narrowing pin and would be a widening seam on the other. Supports
