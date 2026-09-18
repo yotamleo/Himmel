@@ -810,8 +810,15 @@ chmod +x "$TH23_STUB/git"
 resolved_git=$(PATH="$TH23_STUB:$PATH" command -v git)
 assert_eq "git-status-fails: stub is the git resolved on PATH" "$TH23_STUB/git" "$resolved_git"
 head_before=$(git -C "$CHECKOUT_DIR" rev-parse HEAD)
+# The guard should refuse BEFORE the chain ever reaches marketplace/hermes, but
+# sandbox anyway (same shape as Test 7 Case b) so a regression that lets the
+# chain run doesn't fall through to the real ~/.hermes checkout or the real
+# `claude` marketplace registry.
+th23_home="$TMP/th23-home"; mkdir -p "$th23_home/.claude"
 rc=0
-out=$(PATH="$TH23_STUB:$PATH" bash "$CHECKOUT_DIR/scripts/himmel-update.sh" 2>&1) || rc=$?
+out=$(PATH="$TH23_STUB:$PATH" USERPROFILE='' HOME="$th23_home" \
+      HERMES_HOME="$TMP/th23-no-hermes" CLAUDE_USER_SETTINGS="$th23_home/.claude/settings.json" \
+      bash "$CHECKOUT_DIR/scripts/himmel-update.sh" 2>&1) || rc=$?
 assert_eq "git-status-fails: refuses (rc 1), not a silent pass-through" "1" "$rc"
 assert_contains "git-status-fails: warns on stderr naming the dir" "is_dirty_tracked: git status failed in $CHECKOUT_DIR" "$out"
 assert_contains "git-status-fails: refuses to pull into a dirty tree" "refusing to pull into a dirty tree" "$out"
