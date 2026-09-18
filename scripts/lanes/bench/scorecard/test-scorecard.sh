@@ -201,6 +201,41 @@ check "rgl g4: no READY bullets -> events=0" "$G4_OUT" "events=0 median_min=n/a 
 HANDOVER_DIR="$RGL_TMP/g4" "$RGL" --since 2026-10-01T00:00:00Z >/dev/null 2>&1
 check_exit "rgl g4: missing --doc exits 2" "$?" "2"
 
+# g5: (HIMMEL-2975 review round 1) a `*` bullet is not a READY bullet
+mkdir -p "$RGL_TMP/g5"
+printf '%s\n' '* 09:00 READY 95 abcdef1' > "$RGL_TMP/g5/console-2026-10-01.md"
+mkgo "$RGL_TMP/g5" 95 abcdef1 202610010915
+G5_OUT=$(TZ=UTC HANDOVER_DIR="$RGL_TMP/g5" READY_GO_NOW=1790856000 "$RGL" --doc "$RGL_TMP/g5/console-2026-10-01.md" 2>&1)
+check "rgl g5: a '*' bullet is ignored (strict '- HH:MM' grammar)" "$G5_OUT" "events=0 median_min=n/a missed=0"
+
+# g6: a GO older than the READY stamp is a stale file from an earlier round,
+# not the answer to this READY -> unpaired (MISSED once 60 min pass)
+mkdir -p "$RGL_TMP/g6"
+printf '%s\n' '- 09:00 READY 96 abcdef1' > "$RGL_TMP/g6/console-2026-10-01.md"
+mkgo "$RGL_TMP/g6" 96 abcdef1234567890abcdef1234567890abcdef12 202610010850
+G6_OUT=$(TZ=UTC HANDOVER_DIR="$RGL_TMP/g6" READY_GO_NOW=1790856000 "$RGL" --doc "$RGL_TMP/g6/console-2026-10-01.md" 2>&1)
+check "rgl g6: a GO older than its READY is not paired" \
+    "$(printf '%s\n' "$G6_OUT" | tr '\n' '|')" "events=0 median_min=n/a missed=1|MISSED 96 abcdef1 09:00|"
+
+# g7: a 7-char prefix matching two distinct GO shas is ambiguous -> unpaired
+mkdir -p "$RGL_TMP/g7"
+printf '%s\n' '- 09:00 READY 97 abcdef1' > "$RGL_TMP/g7/console-2026-10-01.md"
+mkgo "$RGL_TMP/g7" 97 abcdef1234567890abcdef1234567890abcdef12 202610010915
+mkgo "$RGL_TMP/g7" 97 abcdef1fedcba0987654321fedcba0987654321f 202610010930
+G7_OUT=$(TZ=UTC HANDOVER_DIR="$RGL_TMP/g7" READY_GO_NOW=1790856000 "$RGL" --doc "$RGL_TMP/g7/console-2026-10-01.md" 2>/dev/null)
+check "rgl g7: an ambiguous 7-char prefix pairs with neither GO" \
+    "$(printf '%s\n' "$G7_OUT" | tr '\n' '|')" "events=0 median_min=n/a missed=1|MISSED 97 abcdef1 09:00|"
+
+# g8: the day offset is a CALENDAR day, not 86400 s - across the 2026-11-01
+# DST end in New_York the 03:00 bullet (past midnight) is 03:00 EST = 08:00Z
+mkdir -p "$RGL_TMP/g8"
+printf '%s\n' '- 22:00 READY 98 1111111' '- 03:00 READY 99 2222222' > "$RGL_TMP/g8/console-2026-10-31.md"
+mkgo "$RGL_TMP/g8" 98 1111111 202611010300
+mkgo "$RGL_TMP/g8" 99 2222222 202611010830
+G8_OUT=$(TZ=America/New_York HANDOVER_DIR="$RGL_TMP/g8" READY_GO_NOW=1790910000 "$RGL" --doc "$RGL_TMP/g8/console-2026-10-31.md" 2>&1)
+check "rgl g8: past-midnight bullet across a DST change keeps wall-clock time" \
+    "$(printf '%s\n' "$G8_OUT" | head -1)" "events=2 median_min=45 missed=0"
+
 echo "---"
 if [ "$fails" -eq 0 ]; then
     echo "PASS - test-scorecard.sh: 0 failures"

@@ -60,6 +60,12 @@ local_epoch() {
     date -j -f '%Y-%m-%d %H:%M:%S' "$1 $2:00" +%s 2>/dev/null
 }
 mtime_of() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
+# <YYYY-MM-DD> <n> -> the date n CALENDAR days later (not n*86400 s, so a DST
+# change in between cannot skew the wall clock).
+add_days() {
+    date -d "$1 +$2 day" +%Y-%m-%d 2>/dev/null && return 0
+    date -j -v+"$2"d -f '%Y-%m-%d' "$1" +%Y-%m-%d 2>/dev/null
+}
 
 SINCE_EPOCH=""; UNTIL_EPOCH=""
 if [ -n "$SINCE" ]; then
@@ -80,9 +86,9 @@ BASE_DATE=$(basename "$DOC" | grep -o '[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}' | head 
 # One line per surviving READY: <pr> <sha> <HH:MM> <day-offset> <held 0|1>.
 # Every `- HH:MM` bullet feeds the midnight-crossing check, not only READY/HOLD.
 PARSED=$(awk '
-    /^[ \t]*[-*][ \t]+[0-9][0-9]:[0-9][0-9]([ \t]|$)/ {
+    /^[ \t]*-[ \t]+[0-9][0-9]:[0-9][0-9]([ \t]|$)/ {
         line = $0
-        sub(/^[ \t]*[-*][ \t]+/, "", line)
+        sub(/^[ \t]*-[ \t]+/, "", line)
         stamp = substr(line, 1, 5)
         mins = substr(stamp, 1, 2) * 60 + substr(stamp, 4, 2)
         if (seen && mins < prev) day++
@@ -112,19 +118,26 @@ PARSED=$(awk '
 EVENTS=0; MISSED=0; LATS=""; MISSED_LINES=""
 while read -r pr sha stamp day held; do
     [ -n "$pr" ] || continue
-    ready_epoch=$(local_epoch "$BASE_DATE" "$stamp") || { echo "ready-go-latency: cannot parse $BASE_DATE $stamp" >&2; exit 2; }
-    # ponytail: a day offset is added as 86400 s, so a DST change between the
-    # base date and a bullet past midnight skews that bullet by an hour.
-    ready_epoch=$((ready_epoch + day * 86400))
+    ready_date=$(add_days "$BASE_DATE" "$day") || { echo "ready-go-latency: cannot add $day day(s) to $BASE_DATE" >&2; exit 2; }
+    ready_epoch=$(local_epoch "$ready_date" "$stamp") || { echo "ready-go-latency: cannot parse $ready_date $stamp" >&2; exit 2; }
     if [ -n "$SINCE_EPOCH" ] && [ "$ready_epoch" -lt "$SINCE_EPOCH" ]; then continue; fi
     if [ -n "$UNTIL_EPOCH" ] && [ "$ready_epoch" -ge "$UNTIL_EPOCH" ]; then continue; fi
 
-    go_mtime=""
+    # The bullet's sha is a prefix: two GO files behind one prefix are
+    # ambiguous (refuse to guess), and a GO older than the READY stamp is a
+    # stale file from an earlier round, not the answer to this READY.
+    go_mtime=""; nmatch=0
     for f in "$GO_DIR/$pr.$sha"*; do
         [ -e "$f" ] || continue
-        m=$(mtime_of "$f") || continue
-        if [ -z "$go_mtime" ] || [ "$m" -lt "$go_mtime" ]; then go_mtime="$m"; fi
+        nmatch=$((nmatch + 1))
+        go_mtime=$(mtime_of "$f") || go_mtime=""
     done
+    if [ "$nmatch" -gt 1 ]; then
+        echo "ready-go-latency: ambiguous GO prefix $pr.$sha ($nmatch files); not paired" >&2
+        go_mtime=""
+    elif [ -n "$go_mtime" ] && [ "$go_mtime" -lt "$ready_epoch" ]; then
+        go_mtime=""
+    fi
 
     if [ -n "$go_mtime" ]; then
         EVENTS=$((EVENTS + 1))
