@@ -2737,6 +2737,54 @@ check_c37_vendored_skill_dupes() {
         "node $detector"
 }
 
+# --- C38: uv on PATH (graphify is uv-managed) --------------------------------------
+# (HIMMEL-3170, follow-up promised on adopter issue #769.) himmel-update reports
+# a missing uv and never installs/updates graphify without it (HIMMEL-3077), but
+# only when that path runs -- this surfaces it up front. WARN only: a box that
+# never uses graphify is fine without uv. The remedy is the platform install
+# line; docs/setup/new-machine.md carries the fuller "why".
+# Test seam: HIMMEL_DOCTOR_UV (the uv command to probe, default `uv`).
+check_c38_uv() {
+    local uv_bin="${HIMMEL_DOCTOR_UV:-uv}"
+    if command -v "$uv_bin" >/dev/null 2>&1; then
+        emit OK C38-uv-graphify "uv on PATH (graphify can install/update via himmel-update)"
+        return
+    fi
+    local hint
+    case "$(uname -s 2>/dev/null || echo x)" in
+        Darwin) hint="brew install uv" ;;
+        *) hint="curl -LsSf https://astral.sh/uv/install.sh | sh" ;;
+    esac
+    emit WARN C38-uv-graphify "uv not on PATH — graphify is uv-managed and will never install/update (himmel-update reports 'graphify skipped uv missing')" \
+        "$hint (see docs/setup/new-machine.md)"
+}
+
+# --- C39: functional GNU timeout on macOS -------------------------------------------
+# (HIMMEL-3170.) macOS ships no GNU `timeout`; Homebrew coreutils installs it as
+# `gtimeout`. Without one, scripts/graphify/refresh-graph-map.sh runs graph
+# extraction with its run deadline DISABLED and skips the bounded pre-pull
+# auto-commit/fetch (HIMMEL-3126). The probe mirrors refresh-graph-map's own:
+# being on PATH is insufficient -- the bounded calls need `-k`, so accept only a
+# candidate that passes `-k 1 1 true`. Darwin only: elsewhere `timeout` ships with
+# coreutils, so the check is an OK skip, never a WARN.
+# Test seam: HIMMEL_DOCTOR_TIMEOUT_BINS (space-separated candidates, default
+# `timeout gtimeout`).
+check_c39_gtimeout_darwin() {
+    if [ "$(uname -s 2>/dev/null || echo x)" != Darwin ]; then
+        emit OK C39-gtimeout-darwin "not macOS — GNU timeout probe skipped"
+        return
+    fi
+    local t
+    for t in ${HIMMEL_DOCTOR_TIMEOUT_BINS:-timeout gtimeout}; do
+        if command -v "$t" >/dev/null 2>&1 && "$t" -k 1 1 true >/dev/null 2>&1; then
+            emit OK C39-gtimeout-darwin "functional GNU timeout found ($t)"
+            return
+        fi
+    done
+    emit WARN C39-gtimeout-darwin "no functional 'timeout' or 'gtimeout' on macOS — graph refresh (refresh-graph-map.sh) runs unbounded and skips its bounded pre-pull auto-commit/fetch" \
+        "brew install coreutils (installs gtimeout; no PATH change needed — see docs/setup/new-machine.md)"
+}
+
 # --- run ------------------------------------------------------------------------
 echo "himmel-doctor — $(uname -s 2>/dev/null || echo ?) — checkout: $REPO_ROOT"
 echo
@@ -2777,6 +2825,8 @@ check_c34
 check_c35
 check_c36_stray_tmp_git
 check_c37_vendored_skill_dupes
+check_c38_uv
+check_c39_gtimeout_darwin
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 

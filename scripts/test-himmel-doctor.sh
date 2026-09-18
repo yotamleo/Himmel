@@ -3937,6 +3937,130 @@ else
 fi
 rm -rf "$t"
 
+# --- C38 / C39 (HIMMEL-3170): uv + GNU timeout presence, reported up front ----
+# Seams: HIMMEL_DOCTOR_UV (uv command, default `uv`) and HIMMEL_DOCTOR_TIMEOUT_BINS
+# (space-separated GNU-timeout candidates, default `timeout gtimeout`). /usr/bin
+# holds the REAL uv and timeout on this station and TOOLS_PATH cannot scrub it, so
+# "absent" is an absolute nonexistent path (`command -v` on one never falls
+# through to PATH -- same shape as the HIMMEL_DOCTOR_SYSTEMCTL seam). "Present"
+# is a stub FIRST on PATH. Every case asserts what the doctor will SEE before
+# running it, so a stub that silently failed to take effect cannot pass.
+c3839_setup() {
+    c3839_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c3839.XXXXXX")" || { fail "C38/C39 setup: mktemp -d failed"; exit 1; }
+    mkdir -p "$c3839_t/darwin" "$c3839_t/uvbin" "$c3839_t/tbin" "$c3839_t/badt"
+    printf '#!/bin/sh\necho Darwin\n' > "$c3839_t/darwin/uname"
+    printf '#!/bin/sh\nexit 0\n' > "$c3839_t/uvbin/uv"
+    printf '#!/bin/sh\nexit 0\n' > "$c3839_t/tbin/gtimeout"
+    printf '#!/bin/sh\nexit 1\n' > "$c3839_t/badt/timeout"
+    chmod +x "$c3839_t/darwin/uname" "$c3839_t/uvbin/uv" "$c3839_t/tbin/gtimeout" "$c3839_t/badt/timeout"
+    c3839_absent_uv="$c3839_t/no-uv"
+    c3839_absent_t="$c3839_t/no-timeout $c3839_t/no-gtimeout"
+}
+
+echo "== C38: no uv -> WARN naming uv + graphify never installing, curl hint on Linux (RED) =="
+c3839_setup
+if [ -e "$c3839_absent_uv" ] || PATH="$FAKEBIN:$PATH" bash -c 'command -v "$1"' _ "$c3839_absent_uv" >/dev/null 2>&1; then
+    fail "C38 no-uv: precondition — the absent-uv seam path resolves"
+elif [ "$(PATH="$FAKEBIN:$PATH" uname -s)" != Linux ]; then
+    fail "C38 no-uv: precondition — the uname stub did not report Linux"
+else
+    out="$(PATH="$FAKEBIN:$PATH" HIMMEL_DOCTOR_UV="$c3839_absent_uv" CLAUDE_DIR="$c3839_t/claude" HOME="$c3839_t/home" bash "$DOC" --no-color 2>&1)"
+    if grepq "$out" 'WARN C38-uv-graphify' && grepq "$out" 'uv' && grepq "$out" -F 'graphify is uv-managed' \
+       && grepq "$out" -F 'https://astral.sh/uv/install.sh' && ! grepq "$out" -F 'brew install uv'; then
+        pass "C38 no uv -> WARN naming uv/graphify, astral curl hint (not brew) on Linux"
+    else
+        fail "C38 no uv -> $(printf '%s' "$out" | grep -A1 C38)"
+    fi
+fi
+rm -rf "$c3839_t"
+
+echo "== C38: uv on PATH -> OK, no WARN =="
+c3839_setup
+if [ "$(PATH="$c3839_t/uvbin:$FAKEBIN:$PATH" command -v uv)" != "$c3839_t/uvbin/uv" ]; then
+    fail "C38 uv-present: precondition — the stub uv is not what PATH resolves"
+else
+    out="$(PATH="$c3839_t/uvbin:$FAKEBIN:$PATH" CLAUDE_DIR="$c3839_t/claude" HOME="$c3839_t/home" bash "$DOC" --no-color 2>&1)"
+    if grepq "$out" 'OK   C38-uv-graphify' && ! grepq "$out" 'WARN C38-uv-graphify'; then
+        pass "C38 uv present -> OK, no warning"
+    else
+        fail "C38 uv present -> $(printf '%s' "$out" | grep -A1 C38)"
+    fi
+fi
+rm -rf "$c3839_t"
+
+echo "== C38: no uv on Darwin -> remedy is brew install uv =="
+c3839_setup
+if [ "$(PATH="$c3839_t/darwin:$PATH" uname -s)" != Darwin ] || PATH="$c3839_t/darwin:$PATH" bash -c 'command -v "$1"' _ "$c3839_absent_uv" >/dev/null 2>&1; then
+    fail "C38 darwin: precondition — uname is not Darwin or the absent-uv seam resolves"
+else
+    out="$(PATH="$c3839_t/darwin:$PATH" HIMMEL_DOCTOR_UV="$c3839_absent_uv" CLAUDE_DIR="$c3839_t/claude" HOME="$c3839_t/home" bash "$DOC" --no-color 2>&1)"
+    if grepq "$out" 'WARN C38-uv-graphify' && grepq "$out" -F 'brew install uv' && ! grepq "$out" -F 'astral.sh'; then
+        pass "C38 darwin no uv -> WARN with the brew install uv remedy"
+    else
+        fail "C38 darwin no uv -> $(printf '%s' "$out" | grep -A1 C38)"
+    fi
+fi
+rm -rf "$c3839_t"
+
+echo "== C39: Darwin without a functional timeout/gtimeout -> WARN naming coreutils, unbounded refresh (RED) =="
+c3839_setup
+if [ "$(PATH="$c3839_t/darwin:$PATH" uname -s)" != Darwin ]; then
+    fail "C39 darwin no-timeout: precondition — the uname stub did not report Darwin"
+elif PATH="$c3839_t/darwin:$PATH" bash -c 'for c in $1; do command -v "$c" >/dev/null 2>&1 && exit 1; done; exit 0' _ "$c3839_absent_t"; then
+    out="$(PATH="$c3839_t/darwin:$PATH" HIMMEL_DOCTOR_TIMEOUT_BINS="$c3839_absent_t" CLAUDE_DIR="$c3839_t/claude" HOME="$c3839_t/home" bash "$DOC" --no-color 2>&1)"
+    if grepq "$out" 'WARN C39-gtimeout-darwin' && grepq "$out" -F 'brew install coreutils' && grepq "$out" -F 'unbounded'; then
+        pass "C39 darwin no timeout -> WARN naming coreutils / unbounded"
+    else
+        fail "C39 darwin no timeout -> $(printf '%s' "$out" | grep -A1 C39)"
+    fi
+else
+    fail "C39 darwin no-timeout: precondition — an absent-timeout seam candidate resolves"
+fi
+rm -rf "$c3839_t"
+
+echo "== C39: Darwin with a functional gtimeout on PATH -> OK =="
+c3839_setup
+if [ "$(PATH="$c3839_t/tbin:$c3839_t/darwin:$PATH" command -v gtimeout)" != "$c3839_t/tbin/gtimeout" ] \
+   || ! "$c3839_t/tbin/gtimeout" -k 1 1 true; then
+    fail "C39 darwin gtimeout: precondition — the stub gtimeout is not resolvable/functional"
+else
+    out="$(PATH="$c3839_t/tbin:$c3839_t/darwin:$PATH" HIMMEL_DOCTOR_TIMEOUT_BINS="$c3839_t/no-timeout gtimeout" CLAUDE_DIR="$c3839_t/claude" HOME="$c3839_t/home" bash "$DOC" --no-color 2>&1)"
+    if grepq "$out" 'OK   C39-gtimeout-darwin' && ! grepq "$out" 'WARN C39-gtimeout-darwin'; then
+        pass "C39 darwin gtimeout present -> OK"
+    else
+        fail "C39 darwin gtimeout present -> $(printf '%s' "$out" | grep -A1 C39)"
+    fi
+fi
+rm -rf "$c3839_t"
+
+echo "== C39: Darwin with a timeout that fails the -k probe (BSD-like) -> WARN, not OK =="
+c3839_setup
+if PATH="$c3839_t/badt:$PATH" timeout -k 1 1 true >/dev/null 2>&1; then
+    fail "C39 darwin bad-timeout: precondition — the stub timeout passed the -k probe"
+else
+    out="$(PATH="$c3839_t/badt:$c3839_t/darwin:$PATH" HIMMEL_DOCTOR_TIMEOUT_BINS="timeout $c3839_t/no-gtimeout" CLAUDE_DIR="$c3839_t/claude" HOME="$c3839_t/home" bash "$DOC" --no-color 2>&1)"
+    if grepq "$out" 'WARN C39-gtimeout-darwin' && grepq "$out" -F 'brew install coreutils'; then
+        pass "C39 darwin non-functional timeout -> WARN (on PATH is not enough)"
+    else
+        fail "C39 darwin non-functional timeout -> $(printf '%s' "$out" | grep -A1 C39)"
+    fi
+fi
+rm -rf "$c3839_t"
+
+echo "== C39: Linux without timeout/gtimeout -> no macOS WARN =="
+c3839_setup
+if [ "$(PATH="$FAKEBIN:$PATH" uname -s)" != Linux ]; then
+    fail "C39 linux: precondition — the uname stub did not report Linux"
+else
+    out="$(PATH="$FAKEBIN:$PATH" HIMMEL_DOCTOR_TIMEOUT_BINS="$c3839_absent_t" CLAUDE_DIR="$c3839_t/claude" HOME="$c3839_t/home" bash "$DOC" --no-color 2>&1)"
+    if grepq "$out" 'OK   C39-gtimeout-darwin' && ! grepq "$out" 'WARN C39-gtimeout-darwin'; then
+        pass "C39 linux no timeout -> OK (macOS-only check skipped), no WARN"
+    else
+        fail "C39 linux no timeout -> $(printf '%s' "$out" | grep -A1 C39)"
+    fi
+fi
+rm -rf "$c3839_t"
+
 rm -rf "$HIMMEL_DOCTOR_NOOP_HANDOVER"
 
 rm -rf "$FAKEROOT"

@@ -39,6 +39,14 @@ on a public/adopter clone the private tooling is absent so it prints `skipped` a
 OK. A WARN ("stale/unreadable refs") means the compare couldn't fetch fresh `origin/main`
 — a 0-finding result there is not a clean bill of health.
 
+It also reports two **tool-presence gaps up front** (C38/C39, WARN only, HIMMEL-3170) that
+`himmel-update` and `refresh-graph-map.sh` otherwise surface only when their own paths run:
+**`uv` missing from PATH** (C38 — graphify is uv-managed, so it never installs/updates;
+remedy `brew install uv` on macOS, the astral curl line elsewhere) and, **on macOS only**,
+**no functional `timeout`/`gtimeout`** (C39 — graph refresh runs unbounded; remedy
+`brew install coreutils`). On other platforms C39 is an OK skip. Install detail:
+`docs/setup/new-machine.md`.
+
 It is read-only EXCEPT `--fix`, which heals the C1-guardrail node wiring by
 re-baking the 3 user-level guardrail hooks in the **user-scope**
 `~/.claude/settings.json` (outside any repo — the on-main / repo-settings
