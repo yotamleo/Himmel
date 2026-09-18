@@ -414,7 +414,7 @@ assert "queue-lock release (HANDOVER_DIR, rel script)" ALLOW "$(decide "$(j_bash
 # the one the hook lives in, or a `git worktree list` sibling (the primary).
 QL_HERE="$(cd "$(dirname "$HOOK")/../.." && pwd -P)"
 QL_PRIMARY="$(git -C "$QL_HERE" worktree list --porcelain | sed -n '1s/^worktree //p')"
-QL_FAKE="$(mktemp -d)"; mkdir -p "$QL_FAKE/scripts/handover" "$QL_FAKE/.git"; : > "$QL_FAKE/scripts/handover/queue-lock.sh"
+QL_FAKE="$(mktemp -d "${TMPDIR:-/tmp}/ql-fake.XXXXXX")"; mkdir -p "$QL_FAKE/scripts/handover" "$QL_FAKE/.git"; : > "$QL_FAKE/scripts/handover/queue-lock.sh"
 assert "precondition: primary checkout resolved"  ALLOW "$([ -f "$QL_PRIMARY/scripts/handover/queue-lock.sh" ] && echo ALLOW || echo "PASS:$QL_PRIMARY")"
 assert "queue-lock release (abs, own checkout)" ALLOW "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash $QL_HERE/scripts/handover/queue-lock.sh release $QL_DOC $QL_TOK")")"
 assert "queue-lock release (abs, primary)"      ALLOW "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash $QL_PRIMARY/scripts/handover/queue-lock.sh release $QL_DOC $QL_TOK")")"
