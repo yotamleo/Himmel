@@ -70,6 +70,18 @@ unset LEG_LANE LEG_CONTEXT LEG_REPO LEG_EFFORT HEADED_ARM_LAUNCHER HEADED_ARM_LA
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/headed-arm-leg-test.XXXXXX")" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
 trap 'rm -rf "$tmp"' EXIT
+# HIMMEL-3186: pin every root this suite could resolve to its own temp dir, at
+# SUITE level. A console-spawned leg exports the LIVE HANDOVER_DIR into this
+# shell (headed-arm-leg.sh, HIMMEL-3155); the case-26 e2e below runs the real
+# go.sh, which writes a GO file (merge authority, HIMMEL-2919) under whatever
+# handover_root() resolves - so an inherited live root would get a fake GO for
+# PR 26260 written into it. Same shield shape as the fleet-slots pin
+# (bank-preflight.sh / headed-arm-leg.sh read HIMMEL_FLEET_SLOTS, then
+# XDG_RUNTIME_DIR). Cases that need a different root (case 26) set their own.
+export HANDOVER_DIR="$tmp/pinned-handover-root"
+export HIMMEL_FLEET_SLOTS="$tmp/pinned-fleet-slots"
+export XDG_RUNTIME_DIR="$tmp/pinned-xdg-runtime"
+mkdir -p "$HANDOVER_DIR" "$HIMMEL_FLEET_SLOTS" "$XDG_RUNTIME_DIR"
 fails=0
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 check()        { [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
@@ -1197,7 +1209,21 @@ contains "HANDOVER_DIR e2e: leg env carries the console's resolved root verbatim
 # primary26/handovers - a hardcoded value would pass vacuously even if the
 # wrapper never exported anything), must find it.
 sha26="$(printf 'a%.0s' $(seq 1 40))"
-go_out26="$(cd "$primary26" && bash "$HERE/go.sh" 26260 "$sha26" 2>&1)"
+# HIMMEL-3186: fail closed BEFORE go.sh runs. The GO root this e2e is about to
+# write into is resolved by the exact call go.sh makes (handover_root, from the
+# primary-like cwd, HANDOVER_DIR cleared like the launch above) and must sit
+# inside this suite's own temp dir; anything else (a live root leaking in)
+# skips the write and fails loudly instead of minting a fake GO there.
+go_root26="$(cd "$primary26" && HANDOVER_DIR='' bash -c '. "$1/../../lib/handover-path.sh" && handover_root' _ "$HERE" 2>/dev/null)" || go_root26=""
+case "$go_root26" in
+  "$tmp"/?*) echo "ok - HANDOVER_DIR e2e: resolved GO root [$go_root26] is inside the suite's temp dir"; go_root26_ok=1 ;;
+  *) echo "FAIL - HANDOVER_DIR e2e: resolved GO root [$go_root26] is not inside the suite's temp dir [$tmp] - refusing to write a GO"; fails=$((fails+1)); go_root26_ok=0 ;;
+esac
+if [ "$go_root26_ok" -eq 1 ]; then
+  go_out26="$(cd "$primary26" && HANDOVER_DIR='' bash "$HERE/go.sh" 26260 "$sha26" 2>&1)"
+else
+  go_out26="SKIPPED: unsafe GO root"
+fi
 leg_handover_dir26="$(printf '%s\n' "$env26" | sed -n 's/^HANDOVER_DIR=//p')"
 worktree26="$tmp/worktree26"; mkdir -p "$worktree26"
 gate_script26="$tmp/gate26.sh"
