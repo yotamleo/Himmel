@@ -128,6 +128,79 @@ BURN_TOTAL_OVERRIDE=$(LEG_BURN_W_OUTPUT=1 "$AGG_BURN" --since 2026-01-01T00:00:0
 check "agg-burn TOTAL: output weight override changes cost-eq" \
     "$BURN_TOTAL_OVERRIDE" "cost-eq=11.6k"
 
+# --- (g) HIMMEL-2975 Task 29: ready-go-latency.sh. Fixtures are built at run
+# time; GO-file mtimes are set with `touch -t` (BSD-portable, unlike
+# `touch -d`) under TZ=UTC. The handover root (and so .locks/go) is pinned
+# with HANDOVER_DIR, never the live one.
+RGL="$HERE/ready-go-latency.sh"
+RGL_TMP=$(mktemp -d "${TMPDIR:-/tmp}/rgl-test.XXXXXX") || { echo "FAIL - mktemp"; exit 1; }
+trap 'rm -rf "$RGL_TMP"' EXIT
+
+# mkgo <root> <pr> <sha> <CCYYMMDDhhmm>
+mkgo() {
+    mkdir -p "$1/.locks/go"
+    : > "$1/.locks/go/$2.$3"
+    TZ=UTC touch -t "$4" "$1/.locks/go/$2.$3"
+}
+
+# g1: the day-2026-10-01 table, READY_GO_NOW = 2026-10-01T12:00:00Z
+mkdir -p "$RGL_TMP/g1"
+cat > "$RGL_TMP/g1/console-2026-10-01.md" <<'EOF'
+# console
+
+- 09:00 READY 77 aaaaaaa
+- 09:30 READY 81 fffffff
+- 10:00 READY 78 bbbbbbb
+- 10:05 READY 78 ccccccc
+- 10:10 READY 79 ddddddd
+- 10:20 READY 80 eeeeeee
+- 10:30 READY 83 7654321
+- 10:40 HOLD 79 waiting on CR
+- 11:01 READY 82 1234567
+EOF
+mkgo "$RGL_TMP/g1" 77 aaaaaaa 202610010912
+mkgo "$RGL_TMP/g1" 81 fffffff 202610010950
+mkgo "$RGL_TMP/g1" 78 ccccccc 202610011030
+mkgo "$RGL_TMP/g1" 83 7654321 202610011130
+G1_OUT=$(TZ=UTC HANDOVER_DIR="$RGL_TMP/g1" READY_GO_NOW=1790856000 "$RGL" --doc "$RGL_TMP/g1/console-2026-10-01.md" --since 2026-10-01T00:00:00Z 2>&1)
+check "rgl g1: events/median/missed summary" "$(printf '%s\n' "$G1_OUT" | head -1)" "events=4 median_min=22.5 missed=1"
+check "rgl g1: exactly one MISSED line (80 eeeeeee 10:20)" "$(printf '%s\n' "$G1_OUT" | grep '^MISSED')" "MISSED 80 eeeeeee 10:20"
+
+# g2: midnight crossing, READY_GO_NOW = 2026-10-02T03:00:00Z
+mkdir -p "$RGL_TMP/g2"
+cat > "$RGL_TMP/g2/console-2026-10-01.md" <<'EOF'
+- 22:00 READY 90 9999999
+- 23:40 READY 91 1111111
+- 00:30 READY 92 2222222
+EOF
+mkgo "$RGL_TMP/g2" 90 9999999 202610012210
+mkgo "$RGL_TMP/g2" 91 1111111 202610020010
+G2_DOC="$RGL_TMP/g2/console-2026-10-01.md"
+G2_SINCE=$(TZ=UTC HANDOVER_DIR="$RGL_TMP/g2" READY_GO_NOW=1790910000 "$RGL" --doc "$G2_DOC" --since 2026-10-01T23:00:00Z 2>&1)
+check "rgl g2: --since 23:00Z excludes READY 90" "$(printf '%s\n' "$G2_SINCE" | head -1)" "events=1 median_min=30 missed=1"
+G2_ALL=$(TZ=UTC HANDOVER_DIR="$RGL_TMP/g2" READY_GO_NOW=1790910000 "$RGL" --doc "$G2_DOC" 2>&1)
+check "rgl g2: no --since counts both GO'd READYs" "$(printf '%s\n' "$G2_ALL" | head -1)" "events=2 median_min=20 missed=1"
+check "rgl g2: reconstructed MISSED stamp is 00:30" "$(printf '%s\n' "$G2_ALL" | grep '^MISSED')" "MISSED 92 2222222 00:30"
+G2_UNTIL=$(TZ=UTC HANDOVER_DIR="$RGL_TMP/g2" READY_GO_NOW=1790910000 "$RGL" --doc "$G2_DOC" --until 2026-10-01T23:00:00Z 2>&1)
+check "rgl g2: --until 23:00Z keeps only READY 90" "$(printf '%s\n' "$G2_UNTIL" | head -1)" "events=1 median_min=10 missed=0"
+
+# g3: real GO files carry the full 40-char sha; a 7-char READY matches by prefix
+mkdir -p "$RGL_TMP/g3"
+printf '%s\n' '- 09:00 READY 93 abcdef1' '- 09:05 READY 94 abcdef1' > "$RGL_TMP/g3/console-2026-10-01.md"
+mkgo "$RGL_TMP/g3" 93 abcdef1234567890abcdef1234567890abcdef12 202610010915
+mkgo "$RGL_TMP/g3" 94 fedcba9234567890abcdef1234567890abcdef12 202610010915
+G3_OUT=$(TZ=UTC HANDOVER_DIR="$RGL_TMP/g3" READY_GO_NOW=1790856000 "$RGL" --doc "$RGL_TMP/g3/console-2026-10-01.md" --since 2026-10-01T00:00:00Z 2>&1)
+check "rgl g3: 40-char GO matches a 7-char READY; a different-prefix GO does not" \
+    "$(printf '%s\n' "$G3_OUT" | tr '\n' '|')" "events=1 median_min=15 missed=1|MISSED 94 abcdef1 09:05|"
+
+# g4: no bullets -> zero events, and missing --doc is a usage error (rc 2)
+mkdir -p "$RGL_TMP/g4"
+printf '%s\n' '# nothing to see' > "$RGL_TMP/g4/console-2026-10-01.md"
+G4_OUT=$(TZ=UTC HANDOVER_DIR="$RGL_TMP/g4" READY_GO_NOW=1790856000 "$RGL" --doc "$RGL_TMP/g4/console-2026-10-01.md" --since 2026-10-01T00:00:00Z 2>&1)
+check "rgl g4: no READY bullets -> events=0" "$G4_OUT" "events=0 median_min=n/a missed=0"
+HANDOVER_DIR="$RGL_TMP/g4" "$RGL" --since 2026-10-01T00:00:00Z >/dev/null 2>&1
+check_exit "rgl g4: missing --doc exits 2" "$?" "2"
+
 echo "---"
 if [ "$fails" -eq 0 ]; then
     echo "PASS - test-scorecard.sh: 0 failures"
