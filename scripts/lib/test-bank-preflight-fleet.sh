@@ -323,5 +323,38 @@ else
   FAIL=$((FAIL+1)); echo "FAIL - (j) no hashed-key reservation created for the dot-prefixed name"
 fi
 
+# --- (k) CodeRabbit (PR #858, outside-diff): the `pid` write is what
+# arm-resume.sh's release verifies ownership against, so a reservation whose
+# pid write failed can never be released by its owner and lingers to its TTL
+# (the HIMMEL-3017 failure shape). It is now gated like `expires`: refuse and
+# clean up. The failure is injected with an exported `printf` function that
+# fails only for the caller-pid line (the redirect still opens the file; the
+# function's status is what the `&&` chain reads) and defers to the builtin
+# for every other call.
+slots_k="$(mktemp -d "$W/slots-k.XXXXXX")" || { echo "FAIL - could not create slots-k scratch dir" >&2; exit 1; }
+: > "$W/err.log"
+k_out="$(
+  # shellcheck disable=SC2317,SC2059  # exported into run_pf's bash; shadows the builtin only inside this subshell
+  printf() { if [ "${1:-}" = '%s\n' ] && [ "${2:-}" = 424242 ]; then return 1; fi; builtin printf "$@"; }
+  export -f printf
+  run_pf "$slots_k" "$p0" CADENCE_BANK_LAUNCH=1 CADENCE_BANK_LEG=HIMMEL-9020-pidwritefail HIMMEL_FLEET_CAP=4 CADENCE_BANK_CALLER_PID=424242
+)"
+check "(k) a failed pid write is a reservation failure -> SKIPPED-FLEET, not PROCEED" SKIPPED-FLEET "$k_out"
+if [ -e "$slots_k/HIMMEL-9020-pidwritefail" ]; then
+  FAIL=$((FAIL+1)); echo "FAIL - (k) a reservation with no pid was left behind (unreleasable until TTL)"
+else
+  PASS=$((PASS+1)); echo "ok - (k) no half-written reservation left behind"
+fi
+# Control: the SAME injection with a different caller pid must not trip the
+# shim, so the case above fails for the pid write and not for the harness.
+slots_k2="$(mktemp -d "$W/slots-k2.XXXXXX")" || { echo "FAIL - could not create slots-k2 scratch dir" >&2; exit 1; }
+k2_out="$(
+  # shellcheck disable=SC2317,SC2059  # exported into run_pf's bash; shadows the builtin only inside this subshell
+  printf() { if [ "${1:-}" = '%s\n' ] && [ "${2:-}" = 424242 ]; then return 1; fi; builtin printf "$@"; }
+  export -f printf
+  run_pf "$slots_k2" "$p0" CADENCE_BANK_LAUNCH=1 CADENCE_BANK_LEG=HIMMEL-9020-pidwriteok HIMMEL_FLEET_CAP=4 CADENCE_BANK_CALLER_PID=424243
+)"
+check "(k) control: a different caller pid, same shim -> PROCEED" PROCEED "$k2_out"
+
 echo "--- $PASS passed, $FAIL failed ---"
 [ "$FAIL" -eq 0 ]

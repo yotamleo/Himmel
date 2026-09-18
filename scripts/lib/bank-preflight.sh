@@ -523,12 +523,14 @@ elif [ "$LAUNCH_INTENT" = "1" ] && [ -n "$LEG" ] && [ "$LEG" != unknown ]; then
   # of proceeding on an unprotected slot. `pid` (the CALLER's pid, passed
   # through by launchers that set CADENCE_BANK_CALLER_PID, not this
   # subshell's own $$ — so a release can verify it owns the slot before
-  # deleting it) is advisory only, so its write is not gated the same way.
+  # deleting it) is what arm-resume.sh's release checks ownership against, so
+  # a reservation without it could never be released by its owner and would
+  # linger to its TTL: its write is gated the same way (CodeRabbit, PR #858).
   _fleet_reserve() { # _fleet_reserve <reservation-dir> -- 0 created, 1 mkdir
     local dir="$1"   # failed (not a dup — e.g. ENAMETOOLONG), 2 duplicate,
     if mkdir "$dir" 2>/dev/null; then    # 3 metadata write failed
-      if printf '%s\n' "$(( $(date +%s) + ${FLEET_RESERVE_TTL:-1800} ))" > "$dir/expires" 2>/dev/null; then
-        printf '%s\n' "${CADENCE_BANK_CALLER_PID:-$$}" > "$dir/pid" 2>/dev/null
+      if printf '%s\n' "$(( $(date +%s) + ${FLEET_RESERVE_TTL:-1800} ))" > "$dir/expires" 2>/dev/null &&
+         printf '%s\n' "${CADENCE_BANK_CALLER_PID:-$$}" > "$dir/pid" 2>/dev/null; then
         return 0
       fi
       rm -rf "$dir" 2>/dev/null
@@ -571,7 +573,7 @@ elif [ "$LAUNCH_INTENT" = "1" ] && [ -n "$LEG" ] && [ "$LEG" != unknown ]; then
       emit SKIPPED-FLEET
       ;;
     3)
-      echo "bank-preflight: failed to write reservation metadata (expires) for leg=$LEG — refusing admission rather than proceed with an unprotected slot" >&2
+      echo "bank-preflight: failed to write reservation metadata (expires/pid) for leg=$LEG — refusing admission rather than proceed with an unprotected slot" >&2
       rm -rf "$SLOTS/.admit" 2>/dev/null
       emit SKIPPED-FLEET
       ;;
