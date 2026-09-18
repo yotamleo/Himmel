@@ -555,6 +555,12 @@ assert "ctl: drive trailing &"                      PASS "$(qd "HANDOVER_DIR=$QD
 assert "ctl: drive trailing ;"                      PASS "$(qd "HANDOVER_DIR=$QD_R $QD_S status $QD_DOC;")"
 assert "ctl: drive doc, compound"                   PASS "$(qd "git log -1 && HANDOVER_DIR=$QD_R $QD_S status $QD_DOC")"
 assert "ctl: POSIX doc with a backslash"            PASS "$(qd "HANDOVER_DIR=$QL_R $QD_S status '$QL_R/y/a\\..\\b.md'")"
+# A slash-form UNC path (`//host/share`) is a remote share under Git Bash — no position accepts it
+assert "ctl: UNC doc under a UNC HANDOVER_DIR"      PASS "$(qd "HANDOVER_DIR=//host/share/h $QD_S release //host/share/h/x.md $QL_TOK")"
+assert "ctl: UNC doc alone"                         PASS "$(qd "$QD_S acquire //host/share/x.md")"
+assert "ctl: UNC HANDOVER_DIR, POSIX doc"           PASS "$(qd "HANDOVER_DIR=//host/share $QD_S status /host/share/x.md")"
+assert "ctl: UNC sweep dir"                         PASS "$(qd "$QD_S status --sweep //host/share/h")"
+assert "ctl: UNC abs script path"                   PASS "$(qd "HANDOVER_DIR=$QL_R bash //host/share/scripts/handover/queue-lock.sh release $QL_DOC $QL_TOK")"
 assert "the POSIX lone command still approves"      ALLOW "$(qd "HANDOVER_DIR=$QL_R $QD_S status $QL_DOC")"
 
 echo ""

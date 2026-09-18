@@ -800,6 +800,7 @@ ql_abs_path() {
             p=$(printf '%s' "$p" | tr "\\\\" '/')
             d=$(printf '%s' "${p%%:*}" | tr '[:upper:]' '[:lower:]')
             QC="$p"; QN="/$d${p#?:}" ;;
+        //*) return 1 ;;   # slash-form UNC (`//host/share`) is a remote share under Git Bash
         /*)
             case "$p" in *"\\"*) return 1 ;; esac
             QC="$p"; QN="$p" ;;

@@ -1021,7 +1021,8 @@ narrative, denied `release` as a merge without review. Guards:
   normalises BOTH sides to `/<lower-case drive>/…`, so `C:/x`, `c:/x` and
   `/c/x` are equal and a drive spelling cannot dodge containment (a mixed
   spelling of two different directories still falls through). Drive-relative
-  `C:x`, UNC and a `/`-prefixed path carrying a backslash are not accepted.
+  `C:x`, slash-form UNC (`//host/share`) and a `/`-prefixed path carrying a
+  backslash are not accepted.
   Linux-only tested — the cases simulate the spelling; Git Bash itself was not run.
 
 It fails toward a prompt, never toward approval. Spec:
