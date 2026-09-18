@@ -18,6 +18,9 @@
 #      (not the whole report) is checked for the nonce prefix, so an
 #      unrelated rule matching only the suffix does not count as proof the
 #      allowlist anchor still holds.
+#   5-7. (HIMMEL-3168) The same baseline / allowlisted / anchor-control shape
+#      for the 16-hex nonce (`B-N44-<16 hex>`): allowlisted, while a 17-hex
+#      tail and a credential-suffixed 16-hex nonce still leak.
 #
 # `run_gitleaks` classifies gitleaks' own exit code rather than treating any
 # nonzero as "leak found": 0 = clean, 1 = leak found (gitleaks' documented
@@ -154,6 +157,56 @@ else
         0) bad "nonce-suffixed real-looking credential did NOT leak — allowlist regex over-matches" ;;
         *) bad "nonce-suffixed: gitleaks scanner error (rc=$GITLEAKS_RC), not a leak verdict" ;;
     esac
+
+    # -----------------------------------------------------------------------
+    # 5-7. HIMMEL-3168: the RETASK nonce grew to 16 hex (`B-N44-<16 hex>`), so
+    # the allowlist's hex run is bounded {4,16}, not {4,8}. Same three-part
+    # shape as rows 2-4: RED baseline, allowlisted GREEN, anchor controls.
+    # None of these literals is Stripe-shaped, so they can sit inline here
+    # with the same-line gitleaks:allow the row-2 fixture uses.
+    # -----------------------------------------------------------------------
+    NONCE16='B-N44-b5c0792bbc9bdc03'
+    printf 'token="B-N44-b5c0792bbc9bdc03"\n' > "$FIX/nonce16-alone.txt" # gitleaks:allow
+    printf 'token="B-N44-b5c0792bbc9bdc035"\n' > "$FIX/nonce17-alone.txt" # gitleaks:allow
+    printf 'token="B-N44-b5c0792bbc9bdc03-x9Kq2mZ7vLp4Rt8w"\n' > "$FIX/nonce16-suffixed.txt" # gitleaks:allow
+
+    # leaks_with_secret <fixture> <config> <report> <eq|prefix>: 0 iff gitleaks
+    # exits 1 AND a generic-api-key finding's .Secret equals (eq) or starts
+    # with (prefix) the nonce — an rc=1 alone does not prove the fixture was
+    # detected.
+    leaks_with_secret() {
+        run_gitleaks "$1" "$2" "$3"
+        [ "$GITLEAKS_RC" -eq 1 ] || return 1
+        jq -e --arg nonce "$NONCE16" --arg mode "$4" \
+            'any(.[]; .RuleID == "generic-api-key" and ((.Secret // "") | if $mode == "eq" then . == $nonce else startswith($nonce) end))' \
+            "$3" >/dev/null 2>&1
+    }
+
+    if leaks_with_secret "$FIX/nonce16-alone.txt" "$BASELINE_CFG" "$WORK/report-16-baseline.json" eq; then
+        ok "baseline (no new allowlist entry): bare 16-hex RETASK nonce leaks"
+    else
+        bad "baseline: bare 16-hex RETASK nonce does not leak under the stripped config (rc=$GITLEAKS_RC) — the RED control is vacuous"
+    fi
+
+    run_gitleaks "$FIX/nonce16-alone.txt" "$TMPL/.gitleaks.toml" /dev/null
+    case "$GITLEAKS_RC" in
+        0) ok "bare 16-hex RETASK nonce does not leak (allowlisted)" ;;
+        1) bad "bare 16-hex RETASK nonce still leaks — allowlist hex bound is narrower than 16" ;;
+        *) bad "nonce16-alone: gitleaks scanner error (rc=$GITLEAKS_RC), not a leak verdict" ;;
+    esac
+
+    # Controls: one hex digit past the bound, and a real-looking suffix, must
+    # each still leak with the nonce inside the finding's own .Secret.
+    if leaks_with_secret "$FIX/nonce17-alone.txt" "$TMPL/.gitleaks.toml" "$WORK/report-17.json" prefix; then
+        ok "17-hex tail still leaks — allowlist hex bound stops at 16 (control)"
+    else
+        bad "17-hex tail did NOT leak with the nonce in .Secret (rc=$GITLEAKS_RC) — allowlist over-matches past 16 hex"
+    fi
+    if leaks_with_secret "$FIX/nonce16-suffixed.txt" "$TMPL/.gitleaks.toml" "$WORK/report-16-suffixed.json" prefix; then
+        ok "16-hex nonce + credential suffix still leaks, detected secret covers the nonce prefix (control)"
+    else
+        bad "16-hex nonce + credential suffix did NOT leak with the nonce in .Secret (rc=$GITLEAKS_RC) — allowlist anchor lost"
+    fi
 fi
 
 echo "----"

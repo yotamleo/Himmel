@@ -45,11 +45,12 @@ paths = [
 # `<console letter(s)>-N<leg>-<hex>` e.g. `Y-N204-a68d71`, are written into
 # leg briefs/handovers on purpose and land in session notes the same way the
 # queue-lock token above does (HIMMEL-3003: a nonce stalled the vault's
-# autosync commit on 2026-09-13). Anchored to that exact shape, plus one
+# autosync commit on 2026-09-13; HIMMEL-3168: nonces are now 16 hex, e.g.
+# `B-N44-b5c0792bbc9bdc03`, so the hex run is bounded {4,16}). Anchored to that exact shape, plus one
 # optional trailing sentence-punctuation character — a suffixed real
 # credential is still caught, only that shape.
 regexes = [
   '''^himmel-local-claudex$''',
   '''^[a-z0-9]+-[a-z0-9]+-pid[0-9]+[.,;:)]?$''',
-  '''^[A-Z]{1,2}-N[0-9]+-[0-9a-f]{4,8}[.,;:)]?$''',
+  '''^[A-Z]{1,2}-N[0-9]+-[0-9a-f]{4,16}[.,;:)]?$''',
 ]
