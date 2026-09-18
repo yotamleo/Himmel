@@ -422,6 +422,31 @@ the leg's window via `!`.
 
 ---
 
+## Symptom: a leg's `queue-lock.sh release` is denied `[Merge Without Review]` right after its merge (HIMMEL-3131)
+
+`HANDOVER_DIR=<root> bash scripts/handover/queue-lock.sh release <doc> <token>`
+acquired the lock at session start, but the same shape is denied after the
+leg's GO'd merge landed. The command is not a merge — it writes one lock dir
+under the handover root and touches no git ref — but the auto-mode classifier
+reads the session narrative (a merge just happened), not only the payload.
+
+**What to do:**
+- `auto-approve-safe-bash` now approves exactly this shape (any of
+  acquire / release / heartbeat / status, absolute doc under `HANDOVER_DIR`,
+  literal args) **when it is the whole command**. A denial therefore means the
+  spelling drifted: a compound (`&&` / `;` / a pipe in or out), an env prefix
+  other than `HANDOVER_DIR=`, a `$VAR` in an argument, or a relative doc path.
+  Re-issue the one bare literal — do not add a second spelling.
+- Still denied (or a permission prompt) → **stop and escalate**: `BLOCKED` to the
+  console with the doc path and your release token. The console releases with
+  your token as ordinary lock administration. **Never** reshape the command,
+  touch the lock file directly, or force-release yourself.
+- **Verify with `status`, not the return code:** `release` succeeds silently
+  (no output, rc 0). `bash scripts/handover/queue-lock.sh status <doc>` must
+  report the lock free.
+
+---
+
 ## Why this is a playbook, not a `CLAUDE.md` rule
 
 Root `CLAUDE.md` is **state, not a prompt** — frame-shaping invariants only, paid

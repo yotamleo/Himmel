@@ -398,6 +398,46 @@ assert "find single-quoted tilde literal" ALLOW "$(decide "$(j_bash "find '~' -n
 assert "find double-quoted tilde literal" ALLOW "$(decide "$(j_bash 'find "~" -name x')")"
 assert "find escaped tilde literal"       ALLOW "$(decide "$(j_bash 'find \~ -name x')")"
 
+# --- HIMMEL-3131: queue-lock.sh verbs are a sanctioned single-segment write ---
+# `bash` is deliberately not a safe binary and a leading HANDOVER_DIR= is not an
+# innocuous assignment, so `HANDOVER_DIR=<root> bash scripts/handover/queue-lock.sh
+# release <doc> <token>` fell through to the auto-mode classifier, which read a
+# just-landed merge in the narrative and denied it [Merge Without Review]. The
+# hook can now approve exactly this shape — ONLY as the whole command (a lone
+# segment), never as one segment of a compound. It cannot prove anything about
+# the real classifier; these cases pin the hook's own decisions.
+QL_R=/home/u/luna/handovers
+QL_DOC="$QL_R/yotamleo/himmel/HIMMEL-1-legN1-2026-09-18.md"
+QL_TOK='cachyos-x8664-pid3377422'
+assert "queue-lock release (HANDOVER_DIR, rel script)" ALLOW "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash scripts/handover/queue-lock.sh release $QL_DOC $QL_TOK")")"
+assert "queue-lock release (abs script path)"   ALLOW "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash /repo/scripts/handover/queue-lock.sh release $QL_DOC $QL_TOK")")"
+assert "queue-lock release (no HANDOVER_DIR)"   ALLOW "$(decide "$(j_bash "bash scripts/handover/queue-lock.sh release $QL_DOC $QL_TOK")")"
+assert "queue-lock acquire"                     ALLOW "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash scripts/handover/queue-lock.sh acquire $QL_DOC")")"
+assert "queue-lock heartbeat"                   ALLOW "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash scripts/handover/queue-lock.sh heartbeat $QL_DOC $QL_TOK")")"
+assert "queue-lock status"                      ALLOW "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash scripts/handover/queue-lock.sh status $QL_DOC")")"
+assert "queue-lock status --sweep"              ALLOW "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash scripts/handover/queue-lock.sh status --sweep $QL_R")")"
+# CONTROLS — none of these may be approved. Compound: the carve-out is the whole
+# command only; a queue-lock segment after &&/;/| (or a pipe INTO it) falls through.
+assert "ctl: git log && queue-lock release"     PASS "$(decide "$(j_bash "git log --oneline -1 && HANDOVER_DIR=$QL_R bash scripts/handover/queue-lock.sh release $QL_DOC $QL_TOK")")"
+assert "ctl: queue-lock release && git log"     PASS "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash scripts/handover/queue-lock.sh release $QL_DOC $QL_TOK && git log")")"
+assert "ctl: echo ; queue-lock release"         PASS "$(decide "$(j_bash "echo x; HANDOVER_DIR=$QL_R bash scripts/handover/queue-lock.sh release $QL_DOC $QL_TOK")")"
+assert "ctl: pipe INTO queue-lock"              PASS "$(decide "$(j_bash "cat $QL_DOC | HANDOVER_DIR=$QL_R bash scripts/handover/queue-lock.sh release $QL_DOC $QL_TOK")")"
+assert "ctl: queue-lock | tail"                 PASS "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash scripts/handover/queue-lock.sh status $QL_DOC | tail -1")")"
+assert "ctl: queue-lock > file"                 PASS "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash scripts/handover/queue-lock.sh status $QL_DOC > /tmp/out")")"
+assert "ctl: force-release env prefix"          PASS "$(decide "$(j_bash "QUEUE_LOCK_FORCE_RELEASE=1 bash scripts/handover/queue-lock.sh release $QL_DOC")")"
+assert "ctl: second assignment"                 PASS "$(decide "$(j_bash "HANDOVER_DIR=$QL_R QUEUE_LOCK_FORCE_RELEASE=1 bash scripts/handover/queue-lock.sh release $QL_DOC")")"
+assert "ctl: other script name"                 PASS "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash scripts/handover/other.sh release $QL_DOC $QL_TOK")")"
+assert "ctl: bash flag before script"           PASS "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash -x scripts/handover/queue-lock.sh release $QL_DOC $QL_TOK")")"
+assert "ctl: unknown verb"                      PASS "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash scripts/handover/queue-lock.sh force-release $QL_DOC")")"
+assert "ctl: doc outside HANDOVER_DIR"          PASS "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash scripts/handover/queue-lock.sh release /etc/passwd.md $QL_TOK")")"
+assert "ctl: dot-dot doc"                       PASS "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash scripts/handover/queue-lock.sh release $QL_R/../x.md $QL_TOK")")"
+assert "ctl: variable doc"                      PASS "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash scripts/handover/queue-lock.sh release \$DOC $QL_TOK")")"
+assert "ctl: variable HANDOVER_DIR"             PASS "$(decide "$(j_bash "HANDOVER_DIR=\$X bash scripts/handover/queue-lock.sh release $QL_DOC $QL_TOK")")"
+assert "ctl: extra trailing arg"                PASS "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash scripts/handover/queue-lock.sh release $QL_DOC $QL_TOK extra")")"
+assert "ctl: relative doc"                      PASS "$(decide "$(j_bash "bash scripts/handover/queue-lock.sh release yotamleo/x.md $QL_TOK")")"
+assert "ctl: non-.md doc"                       PASS "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash scripts/handover/queue-lock.sh release $QL_R/x.txt $QL_TOK")")"
+assert "ctl: other bash script"                 PASS "$(decide "$(j_bash "bash scripts/handover/merge-on-green.sh 1 --jira-transition")")"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "All cases passed."
