@@ -420,6 +420,23 @@ assert "queue-lock release (abs, own checkout)" ALLOW "$(decide "$(j_bash "HANDO
 assert "queue-lock release (abs, primary)"      ALLOW "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash $QL_PRIMARY/scripts/handover/queue-lock.sh release $QL_DOC $QL_TOK")")"
 assert "ctl: lookalike abs path (absent)"       PASS  "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash /tmp/x-himmel-3131-absent/scripts/handover/queue-lock.sh release $QL_DOC $QL_TOK")")"
 assert "ctl: lookalike abs path (exists + .git)" PASS "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash $QL_FAKE/scripts/handover/queue-lock.sh release $QL_DOC $QL_TOK")")"
+# The RELATIVE script form resolves against the session cwd, so a fake
+# scripts/handover/queue-lock.sh in a lookalike cwd must not be approved: the
+# payload's `cwd` (else $PWD, when the payload has none) has to be a real
+# checkout. j_bash_cwd puts a cwd field in the payload; decide_in runs the hook
+# from a directory with no payload cwd (the $PWD fallback).
+j_bash_cwd() { printf '{"tool_name":"Bash","cwd":%s,"tool_input":{"command":%s}}' "$(printf '%s' "$1" | jq -Rs .)" "$(printf '%s' "$2" | jq -Rs .)"; }
+QL_REL="HANDOVER_DIR=$QL_R bash scripts/handover/queue-lock.sh release $QL_DOC $QL_TOK"
+assert "ctl: rel script, payload cwd = lookalike dir"  PASS  "$(decide "$(j_bash_cwd "$QL_FAKE" "$QL_REL")")"
+assert "ctl: rel script, payload cwd = absent dir"     PASS  "$(decide "$(j_bash_cwd /tmp/x-himmel-3131-absent "$QL_REL")")"
+assert "ctl: rel script, payload cwd = sub-dir"        PASS  "$(decide "$(j_bash_cwd "$QL_HERE/scripts" "$QL_REL")")"
+assert "rel script, payload cwd = own checkout"        ALLOW "$(decide "$(j_bash_cwd "$QL_HERE" "$QL_REL")")"
+assert "rel script, payload cwd = primary checkout"    ALLOW "$(decide "$(j_bash_cwd "$QL_PRIMARY" "$QL_REL")")"
+assert "ctl: rel script, no payload cwd, PWD = lookalike"  PASS  "$(decide_in "$QL_FAKE" "$(j_bash "$QL_REL")")"
+assert "rel script, no payload cwd, PWD = own checkout"    ALLOW "$(decide_in "$QL_HERE" "$(j_bash "$QL_REL")")"
+assert "rel script, no payload cwd, PWD = primary"         ALLOW "$(decide_in "$QL_PRIMARY" "$(j_bash "$QL_REL")")"
+assert "ctl: payload cwd (lookalike) beats PWD (real)" PASS  "$(decide_in "$QL_HERE" "$(j_bash_cwd "$QL_FAKE" "$QL_REL")")"
+assert "payload cwd (real) beats PWD (lookalike)"      ALLOW "$(decide_in "$QL_FAKE" "$(j_bash_cwd "$QL_HERE" "$QL_REL")")"
 rm -rf "$QL_FAKE"
 assert "queue-lock release (no HANDOVER_DIR)"   ALLOW "$(decide "$(j_bash "bash scripts/handover/queue-lock.sh release $QL_DOC $QL_TOK")")"
 assert "queue-lock acquire"                     ALLOW "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash scripts/handover/queue-lock.sh acquire $QL_DOC")")"

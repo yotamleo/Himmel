@@ -435,8 +435,10 @@ reads the session narrative (a merge just happened), not only the payload.
   acquire / release / heartbeat / status, absolute doc under `HANDOVER_DIR`,
   literal args) **when it is the whole command**. A denial therefore means the
   spelling drifted: a compound (`&&` / `;` / a pipe in or out), an env prefix
-  other than `HANDOVER_DIR=`, a `$VAR` in an argument, or a relative doc path.
-  Re-issue the one bare literal — do not add a second spelling.
+  other than `HANDOVER_DIR=`, a `$VAR` in an argument, or a relative doc path —
+  or, for the relative `scripts/handover/queue-lock.sh` form, a session cwd that
+  is not the root of a real checkout (a sub-directory or a lookalike dir: run it
+  from the worktree root). Re-issue the one bare literal — do not add a second spelling.
 - Still denied (or a permission prompt) → **stop and escalate**: `BLOCKED` to the
   console with the doc path and your release token. The console releases with
   your token as ordinary lock administration. **Never** reshape the command,

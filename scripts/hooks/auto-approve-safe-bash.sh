@@ -760,12 +760,14 @@ scan_cmd() {
 # QUEUE_LOCK_FORCE_RELEASE=1 (a console action) can never ride along.
 # Every value must be a literal: no expansion, no glob, no `..`, doc absolute
 # and `.md`, doc under HANDOVER_DIR when one is given.
-# The script is the relative `scripts/handover/queue-lock.sh` (resolved by bash
-# against the session cwd — not verified here) or an ABSOLUTE path inside a real
-# checkout of this repo (ql_root_is_own_checkout).
+# The script is the relative `scripts/handover/queue-lock.sh` or an ABSOLUTE
+# path; either way the checkout it resolves into must be a real one of this repo
+# (ql_root_is_own_checkout) — for the relative form that is the payload `cwd`
+# (else $PWD, when the payload has none), since bash resolves it there.
 # ponytail: HANDOVER_DIR is not checked against the registered handover root —
 # a stray root only lets queue-lock write a `.locks/queue/` dir there — and the
-# relative form is not checked against the payload cwd.
+# relative form only accepts a cwd that IS a checkout root: from a sub-directory
+# (where the relative path would not resolve anyway) it falls through to a prompt.
 ql_word_literal() {   # $1 raw word → QW (cooked); fails on any expansion/glob/`..`
     case "$1" in *'$'*) return 1 ;; esac
     shell_word_value "$1" || return 1
@@ -801,7 +803,7 @@ EOF
 segment_is_queue_lock() {
     tokenize_seg_words "$1" || return 1
     local -a a=("${RB_TOKENS[@]}")
-    local n=${#a[@]} i=0 hd="" verb doc
+    local n=${#a[@]} i=0 hd="" verb doc ql_cwd
     [ "$n" -ge 3 ] || return 1
     case "${a[0]}" in
         HANDOVER_DIR=*)
@@ -812,7 +814,15 @@ segment_is_queue_lock() {
     [ "${a[$i]:-}" = "bash" ] || return 1
     ql_word_literal "${a[$((i + 1))]:-}" || return 1
     case "$QW" in
-        scripts/handover/queue-lock.sh) ;;
+        scripts/handover/queue-lock.sh)
+            # Relative: bash resolves it against the session cwd, so that cwd
+            # must itself be a real checkout. Payload `.cwd`; $PWD only when the
+            # payload has none. Read lazily (this rare path only) so the hot
+            # path keeps its single jq call.
+            ql_cwd=$(jq -r '.cwd // ""' <<<"$input" 2>/dev/null) || return 1
+            ql_cwd="${ql_cwd%$'\r'}"
+            [ -n "$ql_cwd" ] || ql_cwd="$PWD"
+            ql_root_is_own_checkout "$ql_cwd" || return 1 ;;
         /*/scripts/handover/queue-lock.sh) ql_root_is_own_checkout "${QW%/scripts/handover/queue-lock.sh}" || return 1 ;;
         *) return 1 ;;
     esac
