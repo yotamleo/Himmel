@@ -865,7 +865,7 @@ print("## Important Issues (0 found)")
 print("## Suggestions (0 found)")
 PY
 mkdir -p "$s_raw_dir"
-: > "$s_raw_dir/old-run.raw"; touch -d '90 days ago' "$s_raw_dir/old-run.raw"
+: > "$s_raw_dir/old-run.raw"; touch -t 202001010000 "$s_raw_dir/old-run.raw"
 : > "$s_raw_dir/fresh-run.raw"
 S_HEAD="6666666666666666666666666666666666666666"
 printf '%s' "$DIFF" | CR_LEDGER="$s_ledger" CR_TARGET_HEAD="$S_HEAD" HERMES_PY="$tmp/py.sh" bash "$CFP" --model x/y --slug codex >/dev/null 2>&1
