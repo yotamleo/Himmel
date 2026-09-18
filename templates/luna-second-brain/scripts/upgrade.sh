@@ -615,17 +615,31 @@ fi
 # editing the template's own file on disk.
 CP_MERGE_SRC="$TEMPLATE_DIR/$CP_REL"
 if [ "$INSTALL_GITHUB_SYNC" = 1 ] && [ -d "$GH_SYNC_SRC" ]; then
-    GH_SYNC_CP_TMP="$(mktemp "${TMPDIR:-/tmp}/luna-upgrade-gh-sync-cp.XXXXXX")"
-    "$PYTHON" - "$CP_MERGE_SRC" "$GH_SYNC_CP_TMP" <<'PY'
+    # Repoint CP_MERGE_SRC only when the temp file exists AND the merge wrote it
+    # AND it reads back as a JSON list — a half-prepared source would make the
+    # plugin merge below skip or mis-merge with no report (HIMMEL-3094).
+    gh_sync_cp_ok=0
+    GH_SYNC_CP_TMP="$(mktemp "${TMPDIR:-/tmp}/luna-upgrade-gh-sync-cp.XXXXXX" 2>/dev/null)" || GH_SYNC_CP_TMP=""
+    if [ -n "$GH_SYNC_CP_TMP" ] && [ -f "$GH_SYNC_CP_TMP" ]; then
+        "$PYTHON" - "$CP_MERGE_SRC" "$GH_SYNC_CP_TMP" <<'PY' && gh_sync_cp_ok=1
 import json, os, sys
 tmpl_p, out_p = sys.argv[1], sys.argv[2]
 tmpl = json.load(open(tmpl_p, encoding="utf-8")) if os.path.exists(tmpl_p) else []
+if not isinstance(tmpl, list):
+    sys.exit(1)
 if "github-sync" not in tmpl:
-    tmpl = list(tmpl) + ["github-sync"]
+    tmpl = tmpl + ["github-sync"]
 with open(out_p, "w", encoding="utf-8") as fh:
     json.dump(tmpl, fh)
+if not isinstance(json.load(open(out_p, encoding="utf-8")), list):
+    sys.exit(1)
 PY
-    CP_MERGE_SRC="$GH_SYNC_CP_TMP"
+    fi
+    if [ "$gh_sync_cp_ok" = 1 ]; then
+        CP_MERGE_SRC="$GH_SYNC_CP_TMP"
+    else
+        echo "upgrade: WARNING — could not prepare the github-sync plugin enablement for community-plugins.json; merging from the template's own plugin list, so github-sync will not be enabled by this run." >&2
+    fi
 fi
 
 # ---------------------------------------------------------------------------

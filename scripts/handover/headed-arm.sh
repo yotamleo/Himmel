@@ -456,8 +456,27 @@ unset HEADED_ARM_REQUIRED_AUTOCOMPACT
 # present in the arming shell's own env is cleared the same way
 # CLAUDE_CODE_CHILD_SESSION etc already are.
 ROLE_ENV_UNSET=""
+# HIMMEL-2973 S3: a console also gets HIMMEL_CONSOLE_DOC / HIMMEL_CONSOLE_WORKDIR
+# exported, which is what switches on the PreCompact snapshot hook
+# (scripts/hooks/console-precompact-snapshot.sh); every other session gets
+# neither, so that hook stays a silent no-op fleet-wide. The workdir is
+# dirname(SIGNAL) -- console.sh's chain dir, 0700 and non-symlink. An array,
+# not a word-split string, so a path with a space survives.
+# ponytail: keyed on --role console only. A console armed without --role (a
+# hand-pasted headed-arm.sh line) gets no export and so no snapshot; G11
+# (compacted-check.sh) reports that as `no snapshot` rc 2, never a false pass.
+CONSOLE_ENV=()
 if [ "$ROLE" = "console" ]; then
     ROLE_ENV_UNSET="-u HIMMEL_CONSOLE_RELAY"
+    # A relative DOC resolves against REPO (the session's --workdir, see the
+    # DOC note below), but the PreCompact hook runs in whatever cwd the session
+    # has by then -- export it absolute so the hook opens the file the console
+    # was actually told to load.
+    case "$DOC" in
+        /*) _console_doc="$DOC" ;;
+        *)  _console_doc="$REPO/$DOC" ;;
+    esac
+    CONSOLE_ENV=("HIMMEL_CONSOLE_DOC=$_console_doc" "HIMMEL_CONSOLE_WORKDIR=$(dirname -- "$SIGNAL")")
 fi
 LAUNCH_ARGV=("$LAUNCHER" --model "$MODEL" --autocompact "$AUTOCOMPACT" -n "$NAME" "load $DOC and continue")
 
@@ -565,8 +584,8 @@ fi
 # claim lock, and konsole itself.
 if [ "$DRY_RUN" -eq 1 ]; then
     printf 'headed-arm: would exec: %s\n' "$(printf '%q ' "${LAUNCH_ARGV[@]}")"
-    printf 'headed-arm: env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID%s CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 HIMMEL_INITIATIVE=%s ARMAUTOMERGE=1%s\n' \
-        "${ROLE_ENV_UNSET:+ $ROLE_ENV_UNSET}" "$INIT" "${LAUNCHER_ENV:+ $LAUNCHER_ENV}"
+    printf 'headed-arm: env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID%s CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 HIMMEL_INITIATIVE=%s ARMAUTOMERGE=1%s%s\n' \
+        "${ROLE_ENV_UNSET:+ $ROLE_ENV_UNSET}" "$INIT" "${CONSOLE_ENV[0]:+ ${CONSOLE_ENV[0]} ${CONSOLE_ENV[1]}}" "${LAUNCHER_ENV:+ $LAUNCHER_ENV}"
     printf 'headed-arm: name=%s doc=%s signal=%s deadline=%s log=%s role=%s\n' \
         "$NAME" "$DOC" "$SIGNAL" "$DEADLINE" "$LOG" "${ROLE:-unsplit}"
     printf 'headed-arm: %s (autocompact=%s)\n' "$CONTEXT_REASON" "$AUTOCOMPACT"
@@ -1045,7 +1064,7 @@ if [ "$RECORDER" = "1" ]; then
     # deliberately unquoted, same word-split contract as LAUNCHER_ENV above.
     "$KONSOLE" --separate --workdir "$REPO" -p "tabtitle=$NAME" \
         -e env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID $ROLE_ENV_UNSET \
-            CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 HIMMEL_INITIATIVE="$INIT" ARMAUTOMERGE=1 SHELL="$BASH_BIN" $LAUNCHER_ENV \
+            CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 HIMMEL_INITIATIVE="$INIT" ARMAUTOMERGE=1 ${CONSOLE_ENV[@]+"${CONSOLE_ENV[@]}"} SHELL="$BASH_BIN" $LAUNCHER_ENV \
             script -q -a -f "$LOG" -c "$LAUNCH_CMD" \
         >> "$LOG" 2>&1 &
 else
@@ -1055,7 +1074,7 @@ else
     # recorder branch above (HIMMEL-2975).
     "$KONSOLE" --separate --workdir "$REPO" -p "tabtitle=$NAME" \
         -e env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID $ROLE_ENV_UNSET \
-            CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 HIMMEL_INITIATIVE="$INIT" ARMAUTOMERGE=1 $LAUNCHER_ENV \
+            CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 HIMMEL_INITIATIVE="$INIT" ARMAUTOMERGE=1 ${CONSOLE_ENV[@]+"${CONSOLE_ENV[@]}"} $LAUNCHER_ENV \
             "${LAUNCH_ARGV[@]}" \
         >> "$LOG" 2>&1 &
 fi

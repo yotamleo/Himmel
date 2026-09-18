@@ -143,6 +143,7 @@ T1287|T1287
 1879|1879 HIMMEL-1879 1999 HIMMEL-1999
 1879-1365|1879-1365 1998 HIMMEL-1998
 812|812 HIMMEL-812
+2973|2973 HIMMEL-2973
 1830|1830 HIMMEL-1830
 1636|1636 HIMMEL-1636
 2113c|2113c HIMMEL-2113
@@ -5827,6 +5828,73 @@ assert_not_contains "812 at: no mark without the flag" "$_SC812" "$out"
 # cosmetic: an ordinary arm made from a safety-child session must not relaunch
 # still carrying the mark (panel r3 [codex-2]).
 assert_contains "812 at: the job body CLEARS an ambient mark" "unset AUTO_ARM_SAFETY_CHILD" "$out"
+fi
+
+# ---------------------------------------------------------------------------
+# HIMMEL-2973 S3 -- a console arm exports HIMMEL_CONSOLE_DOC / HIMMEL_CONSOLE_WORKDIR
+# into the relaunch so the PreCompact snapshot hook
+# (scripts/hooks/console-precompact-snapshot.sh) can fire; any other arm gets
+# neither, and BOTH runners always-clear an ambient pair first (`at` snapshots
+# the submitting env). "Console" = handover basename *-console.md, the same
+# test the model default uses. Windows/WSL bodies are deliberately not wired
+# (ponytail in arm-resume.sh), so only the crontab and `at` runners are pinned.
+# ---------------------------------------------------------------------------
+if _sec_selected "2973" "HIMMEL-2973"; then
+echo "--- 2973 ---"
+HO_2973="$(make_handover "$WORK_REPO")"
+HO_2973C="$HANDOVER_DIR/n46-console.md"
+cp "$HO_2973" "$HO_2973C"
+CW_2973="$TMP/cw2973"
+_WD2973="$CW_2973/precompact-n46-console"
+
+MACBIN_2973="$TMP/macbin-2973"; mkdir -p "$MACBIN_2973"
+printf '#!/bin/sh\nexit 0\n' > "$MACBIN_2973/claude"; chmod +x "$MACBIN_2973/claude"
+printf '#!/bin/sh\nexit 1\n' > "$MACBIN_2973/at"; chmod +x "$MACBIN_2973/at"
+printf '#!/bin/sh\nexit 0\n' > "$MACBIN_2973/atq"; chmod +x "$MACBIN_2973/atq"
+CRON_STORE_2973="$TMP/cron-2973.store"; : > "$CRON_STORE_2973"
+cat > "$MACBIN_2973/crontab" <<CRONEOF2973
+#!/bin/sh
+case "\$1" in
+  -l) cat "$CRON_STORE_2973" 2>/dev/null ;;
+  -) cat > "$CRON_STORE_2973" ;;
+  *) exit 0 ;;
+esac
+CRONEOF2973
+chmod +x "$MACBIN_2973/crontab"
+
+# crontab runner: console arm exports the pair; a non-console arm only clears.
+out=$(env CONSOLE_WORK_DIR="$CW_2973" PATH="$MACBIN_2973:$PATH" OSTYPE=darwin23 bash "$ARM" --time "$(future_time)" --handover "$HO_2973C" --dry-run 2>&1)
+rc=$?
+assert_rc "2973 cron: console arm dry-run exits 0" 0 "$rc"
+assert_contains "2973 cron: the entry exports HIMMEL_CONSOLE_DOC" "export HIMMEL_CONSOLE_DOC=$HO_2973C" "$out"
+assert_contains "2973 cron: the entry exports HIMMEL_CONSOLE_WORKDIR (basename slug + path-hash suffix)" "HIMMEL_CONSOLE_WORKDIR=$_WD2973-h" "$out"
+_wd_c=$(printf '%s\n' "$out" | sed -n 's/.*\(HIMMEL_CONSOLE_WORKDIR=[^ ]*\).*/\1/p' | head -n 1)
+assert_contains "2973 cron: the entry CLEARS an ambient pair first" "unset HIMMEL_CONSOLE_DOC HIMMEL_CONSOLE_WORKDIR" "$out"
+out=$(env CONSOLE_WORK_DIR="$CW_2973" PATH="$MACBIN_2973:$PATH" OSTYPE=darwin23 bash "$ARM" --time "$(future_time)" --handover "$HO_2973" --dry-run 2>&1)
+assert_not_contains "2973 cron: a non-console arm exports no HIMMEL_CONSOLE_DOC" "export HIMMEL_CONSOLE_DOC" "$out"
+assert_contains "2973 cron: a non-console arm still CLEARS an ambient pair" "unset HIMMEL_CONSOLE_DOC HIMMEL_CONSOLE_WORKDIR" "$out"
+
+# Two console docs sharing a basename (different repos' handovers/) must not
+# share a workdir: the checker picks the highest-numbered snap without checking
+# which document wrote it.
+mkdir -p "$TMP/other2973"; HO_2973D="$TMP/other2973/n46-console.md"; cp "$HO_2973" "$HO_2973D"
+out=$(env CONSOLE_WORK_DIR="$CW_2973" PATH="$MACBIN_2973:$PATH" OSTYPE=darwin23 bash "$ARM" --time "$(future_time)" --handover "$HO_2973D" --dry-run 2>&1)
+assert_contains "2973 cron: a same-basename console doc elsewhere still exports a workdir" "HIMMEL_CONSOLE_WORKDIR=$_WD2973-h" "$out"
+assert_not_contains "2973 cron: a same-basename console doc elsewhere gets a DIFFERENT workdir" "$_wd_c" "$out"
+
+# linux/at runner: same contract, as job-body lines.
+DBD_2973="$TMP/h2973.atdir"; rm -rf "$DBD_2973"; mkdir -p "$DBD_2973"
+out=$(SCHED_DB="$TMP/h2973-sched.db" SCHED_DB_DIR="$DBD_2973" CONSOLE_WORK_DIR="$CW_2973" PATH="$STATEFUL_STUB:$PATH" OSTYPE=linux-gnu \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_2973C" --dry-run 2>&1)
+rc=$?
+assert_rc "2973 at: console arm dry-run exits 0" 0 "$rc"
+assert_contains "2973 at: the job body exports HIMMEL_CONSOLE_DOC" "export HIMMEL_CONSOLE_DOC=$HO_2973C" "$out"
+assert_contains "2973 at: the job body exports HIMMEL_CONSOLE_WORKDIR (basename slug + path-hash suffix)" "HIMMEL_CONSOLE_WORKDIR=$_WD2973-h" "$out"
+assert_contains "2973 at: the job body CLEARS an ambient pair first" "unset HIMMEL_CONSOLE_DOC HIMMEL_CONSOLE_WORKDIR" "$out"
+out=$(SCHED_DB="$TMP/h2973-sched.db" SCHED_DB_DIR="$DBD_2973" CONSOLE_WORK_DIR="$CW_2973" PATH="$STATEFUL_STUB:$PATH" OSTYPE=linux-gnu \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_2973" --dry-run 2>&1)
+assert_not_contains "2973 at: a non-console arm exports no HIMMEL_CONSOLE_DOC" "export HIMMEL_CONSOLE_DOC" "$out"
+assert_contains "2973 at: a non-console arm still CLEARS an ambient pair" "unset HIMMEL_CONSOLE_DOC HIMMEL_CONSOLE_WORKDIR" "$out"
 fi
 
 # ---------------------------------------------------------------------------

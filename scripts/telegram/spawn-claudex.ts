@@ -31,7 +31,7 @@ import { join, resolve, dirname } from "node:path";
 import { spawn } from "bun";
 import { BASH_BIN, REPO_ROOT, killTree, detectContentFilter, NON_INTERACTIVE_EDITOR_ENV, type PermissionMode } from "./run";
 import { SPAWN_OWN_GROUP } from "../lib/kill-tree.mjs";
-import { transcriptDirFor, PUSH_PROTECTION_DISCLOSURE, ensureWorkspaceTrust, preflightWindowCheck, measureOverheadChars, finalMeta, resolveProfileSettings, teardownMintedWorktree, DEFAULT_LANE_PROFILE, mintRetaskNonce, composeRetaskBlock, STASH_BAN_LINE, composeBashShapeWarning, composeOutboxWriteHint, composeWorkerSettings, refuseBypassPermissions, refuseUnknownPermissionMode, isHelpFlag, writeLiveWorkerMeta, readBriefFile } from "./spawn-glm";
+import { transcriptDirFor, PUSH_PROTECTION_DISCLOSURE, ensureWorkspaceTrust, preflightWindowCheck, measureOverheadChars, finalMeta, resolveProfileSettings, teardownMintedWorktree, DEFAULT_LANE_PROFILE, mintRetaskNonce, composeRetaskBlock, STASH_BAN_LINE, composeBashShapeWarning, composeOutboxWriteHint, composeWorkerSettings, refuseBypassPermissions, refuseUnknownPermissionMode, isHelpFlag, writeLiveWorkerMeta, readBriefFile, armStartupWatchdog, resolveFailfastWindowMs } from "./spawn-glm";
 // HIMMEL-1553: symptom-brief loop breaker, two-stage — shared with spawn-glm
 // so both worker lanes carry one decision table: invariant required at the
 // warn stage, cheap lane refused at the escalate stage. Thresholds live in
@@ -775,6 +775,9 @@ export type ClaudexRunResult = {
 type ClaudexRunOpts = {
   permMode?: PermissionMode; effort?: EffortLevel; model?: CodexModelTier; repoRoot: string; settings?: string;
   runLogPath?: string; timeoutForensicsPath?: string;
+  // HIMMEL-3147: byte count of every stdout/stderr chunk as it arrives — the
+  // startup watchdog's "real output beyond the banner" disarm signal.
+  onOutput?: (bytes: number) => void;
 };
 
 const EMPTY_OUTPUT_NOTE = (endReason: ClaudexEndReason) =>
@@ -986,6 +989,7 @@ export async function runClaudexSession(prompt: string, cwd: string, opts: Claud
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        opts.onOutput?.(value.byteLength);
         if (channel === "stdout") stdoutBytes += value.byteLength;
         else stderrBytes += value.byteLength;
         liveLog.append(value);
@@ -1047,19 +1051,41 @@ export function writeClaudexLiveMeta(
   else writeLiveWorkerMeta(metaPath, runningMeta, extra, "spawn-claudex");
 }
 
-// The run-and-record step (mirrors spawn-glm's executeRun, minus the
-// prompt-too-long classification and cap-guard resume scheduling — both
-// GLM-specific / deferred here). meta.json ALWAYS leaves "running": the
-// success path writes finalMeta (done/failed/capped/blocked/timeout), and a
-// thrown run() writes {status:"failed", exit_code:-1} THEN rethrows.
+// HIMMEL-3147: claude-codex exports CLAUDE_CONFIG_DIR=~/.claude-codex, so the
+// worker's session transcript lands under ~/.claude-codex/projects — NOT the
+// ~/.claude/projects root the glm lane (and transcriptDirFor) uses. Watching
+// the wrong root would read every healthy worker as never-started.
+export function claudexTranscriptRoot(): string {
+  return join(homedir(), ".claude-codex", "projects");
+}
+
+// The run-and-record step (mirrors spawn-glm's executeRun's meta-transition
+// contract and its HIMMEL-1575 startup-hang watchdog — the latter via the
+// shared armStartupWatchdog, HIMMEL-3147 — minus the prompt-too-long
+// classification, the done_escalated reclassification and cap-guard resume
+// scheduling, all GLM-specific / deferred here). meta.json ALWAYS leaves
+// "running": the success path writes finalMeta (done/failed/capped/blocked/
+// timeout), and a thrown run() writes {status:"failed", exit_code:-1} THEN
+// rethrows. ponytail: the watchdog only sees the pid + stdout/stderr byte
+// counts + the transcript dir; a worker that hangs AFTER its first model
+// response is not startup-class and is still caught only by RUN_TIMEOUT_MS.
 export async function executeClaudexRun(deps: {
   run: (prompt: string, cwd: string, opts: ClaudexRunOpts, onSpawn?: (pid: number) => void) => Promise<ClaudexRunResult>;
   prompt: string; worktree: string; permMode?: PermissionMode; effort?: EffortLevel; model?: CodexModelTier; repoRoot: string;
   sessionDir: string; metaPath: string; runningMeta: Record<string, unknown>;
   // HIMMEL-1040: the resolved --settings plugin-profile payload (undefined = operator / no injection).
   settings?: string;
+  // HIMMEL-3147 test seams for the startup-hang watchdog (all optional; prod
+  // callers pass nothing and get the env-tunable defaults below).
+  startupWatch?: { rootDir?: string; windowMs?: number; pollMs?: number; kill?: (pid: number) => void };
 }): Promise<{ code: number }> {
+  let livePid: number | undefined;
+  let outputBytes = 0;
+  let startupHang = false;
+  let disarmWatch: () => void = () => {};
+  const watchWindowMs = deps.startupWatch?.windowMs ?? resolveFailfastWindowMs(process.env.CLAUDEX_STARTUP_FAILFAST_MINS);
   const recordLivePid = (pid: number) => {
+    livePid = pid;
     // Match spawn-glm's live metadata contract: arm-resume can only protect a
     // running claudex worker if meta.json stops advertising the bootstrap pid 0.
     // Write-then-rename keeps concurrent census readers off partial JSON; a
@@ -1069,7 +1095,22 @@ export async function executeClaudexRun(deps: {
   try {
     const runLogPath = join(deps.sessionDir, "run.log");
     const timeoutForensicsPath = join(deps.sessionDir, "timeout-forensics.txt");
-    const res = await deps.run(deps.prompt, deps.worktree, { permMode: deps.permMode, effort: deps.effort, model: deps.model, repoRoot: deps.repoRoot, settings: deps.settings, runLogPath, timeoutForensicsPath }, recordLivePid);
+    // HIMMEL-3147: armed at spawn, disarmed on the first transcript growth or
+    // on output beyond the banner (onOutput below) — a quiet-but-healthy
+    // worker is never killed (HIMMEL-1575's rule); only one that never starts.
+    if (watchWindowMs > 0) {
+      disarmWatch = armStartupWatchdog({
+        worktree: deps.worktree, windowMs: watchWindowMs,
+        rootDir: deps.startupWatch?.rootDir ?? claudexTranscriptRoot(),
+        pollMs: deps.startupWatch?.pollMs, kill: deps.startupWatch?.kill,
+        livePid: () => livePid, outputBytes: () => outputBytes,
+        onHang: () => { startupHang = true; },
+        label: "spawn-claudex", tuneHint: "CLAUDEX_STARTUP_FAILFAST_MINS",
+      });
+    }
+    const onOutput = (bytes: number) => { outputBytes += bytes; if (outputBytes > 512) disarmWatch(); };
+    const res = await deps.run(deps.prompt, deps.worktree, { permMode: deps.permMode, effort: deps.effort, model: deps.model, repoRoot: deps.repoRoot, settings: deps.settings, runLogPath, timeoutForensicsPath, onOutput }, recordLivePid);
+    disarmWatch(); // the run is over either way — never let the interval outlive it
     // run.log append is COSMETIC persistence — isolated so an I/O failure here
     // never flips a successful run to failed. Real runs stream live; injected
     // test/alternate runners retain the old post-run tail persistence fallback.
@@ -1084,11 +1125,22 @@ export async function executeClaudexRun(deps: {
       catch (e) { console.error(`spawn-claudex: run.log append failed (non-fatal): ${String((e as any)?.message ?? e)}`); }
     }
     const fm = finalClaudexMeta(res);
-    writeFileSync(deps.metaPath, JSON.stringify({ ...deps.runningMeta, ...fm }, null, 2));
+    // HIMMEL-3147: a watchdog-killed run reports failed with a reason naming
+    // the startup timeout, so a console reads it as a hang, not a crash (same
+    // failure_class the glm lane records for HIMMEL-1575).
+    const hang = startupHang && (fm.status === "failed" || fm.status === "timeout")
+      ? {
+        failure_class: "startup-hang",
+        failure_reason: `startup timeout: no transcript growth and no output beyond the banner within ${Math.round(watchWindowMs / 60_000)} min; worker killed by the startup watchdog (HIMMEL-3147) — never started, not a crash`,
+      }
+      : {};
+    writeFileSync(deps.metaPath, JSON.stringify({ ...deps.runningMeta, ...fm, ...hang }, null, 2));
     return { code: res.code };
   } catch (e) {
     writeFileSync(deps.metaPath, JSON.stringify({ ...deps.runningMeta, status: "failed", exit_code: -1, pid: 0 }, null, 2));
     throw e;
+  } finally {
+    disarmWatch();
   }
 }
 

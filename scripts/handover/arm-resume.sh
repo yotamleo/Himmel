@@ -919,10 +919,13 @@ fi
 # is ever composed, so all four --model consumption sites downstream inherit
 # the default/refusal for free without themselves changing.
 #
-# Ruling 25 exempts the CONSOLE lane, which is ALWAYS Fable: a console arm
-# (handover basename *-console.md, case-insensitive) must stay
+# Ruling 25 exempts the CONSOLE lane, which may legitimately pin Fable: a
+# console arm (handover basename *-console.md, case-insensitive) must stay
 # ceremony-free -- neither defaulted to opus nor required to justify a Fable
-# pin. Computed from the raw --handover path as typed; the file-existence
+# pin. An UNPINNED console arm passes no --model at all, so the launched
+# claude uses the operator's own default; console.sh / headed-arm.sh default
+# their console parent to Opus (#836, HIMMEL-3079) but arm-resume does not
+# choose one (HIMMEL-3169). Computed from the raw --handover path as typed; the file-existence
 # check happens later, so no canonicalization dependency is needed here.
 _arm_is_console=0
 case "$(basename -- "$HANDOVER_PATH" | tr '[:upper:]' '[:lower:]')" in
@@ -941,7 +944,7 @@ MODEL_REASON=""
 if [ -n "$MODEL" ] && [ "$_arm_model_is_fable" -eq 1 ] && [ "$_arm_is_console" -eq 0 ] && [ -z "$FABLE_OK" ]; then
     # rc 0-19 are already taken by this script (see the Exit codes table
     # near the top of the file) -- 20 is the first free code.
-    echo "ERR arm-resume: --model $MODEL is Fable-family, and ruling 30 (\"we shouldn't arm fable unless theres a good reason\") refuses arming it unjustified. Pass --fable-ok \"<reason>\" to arm it anyway, or drop --model to get the opus default. *-console.md handovers are exempt (ruling 25 -- the console lane is ALWAYS Fable)." >&2
+    echo "ERR arm-resume: --model $MODEL is Fable-family, and ruling 30 (\"we shouldn't arm fable unless theres a good reason\") refuses arming it unjustified. Pass --fable-ok \"<reason>\" to arm it anyway, or drop --model to get the opus default. *-console.md handovers are exempt (ruling 25 -- a console arm may pin Fable)." >&2
     exit 20
 elif [ -n "$MODEL" ] && [ "$_arm_model_is_fable" -eq 1 ] && [ "$_arm_is_console" -eq 1 ]; then
     MODEL_REASON="model=$MODEL (fable pinned; console arm -- ruling 25, exempt)"
@@ -951,7 +954,7 @@ elif [ -z "$MODEL" ] && [ "$_arm_is_console" -eq 0 ]; then
     MODEL="opus"
     MODEL_REASON="model=opus (no --model given; non-console arms default to opus -- ruling 30)"
 elif [ -z "$MODEL" ] && [ "$_arm_is_console" -eq 1 ]; then
-    MODEL_REASON="model=<operator default> (console arm, unpinned -- ruling 25 keeps the fable default)"
+    MODEL_REASON="model=<operator default> (console arm, unpinned -- no model flag passed, so the launched claude uses the operator's own default; arm-resume never forces Fable, HIMMEL-3169)"
 else
     # Explicit non-Fable pin (or a harmless --fable-ok on a non-Fable/absent
     # pin, which is belt-and-braces and needs no warning here).
@@ -2505,6 +2508,39 @@ _compose_arm_name() {
 
 # HIMMEL-1719: the pointer clause names § Launch preamble (docs/handover/overnight-mode.md) — single line, quoting-safe charset; test section 1719 pins both.
 RESUME_PROMPT="load $HANDOVER_PATH overnight mode. Apply the Launch preamble standing instructions in docs/handover/overnight-mode.md before Phase 1."
+
+# HIMMEL-2973 S3: a console arm exports HIMMEL_CONSOLE_DOC / HIMMEL_CONSOLE_WORKDIR
+# into the relaunched session, which is what switches on the PreCompact
+# snapshot hook (scripts/hooks/console-precompact-snapshot.sh); any other arm
+# exports neither (the launch bodies still always-clear an ambient pair -- `at`
+# snapshots the submitting env). The workdir is the console work dir console.sh
+# resolves (CONSOLE_WORK_DIR, else $XDG_RUNTIME_DIR/himmel-console, else
+# ${TMPDIR:-/tmp}/himmel-console-<uid>) plus a per-doc precompact-<doc> subdir:
+# arm-resume cannot reproduce console.sh's chain_dir (it needs the bucket + root
+# digest), and the hook creates the subdir 0700.
+# ponytail: only the crontab and `at` launch bodies are wired; the Windows
+# (.bat) and WSL bodies export nothing, so a console relaunched there has no
+# snapshot and G11 (compacted-check.sh) reports `no snapshot` rc 2 -- unverified,
+# never a false pass. "Console" = the same basename *-console.md test the model
+# default uses, so a console doc with another name is not snapshotted either.
+CONSOLE_PRECOMPACT_DOC=""; CONSOLE_PRECOMPACT_WORKDIR=""
+if [ "$_arm_is_console" -eq 1 ]; then
+    _cp_base="${CONSOLE_WORK_DIR:-}"
+    if [ -z "$_cp_base" ]; then
+        if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+            _cp_base="$XDG_RUNTIME_DIR/himmel-console"
+        else
+            _cp_base="${TMPDIR:-/tmp}/himmel-console-$(id -u)"
+        fi
+    fi
+    CONSOLE_PRECOMPACT_DOC=$(_arm_realpath "$HANDOVER_PATH")
+    _cp_slug=$(printf '%s' "$(basename -- "$CONSOLE_PRECOMPACT_DOC" .md)" | tr -c '[:alnum:]_-' '-')
+    # Two console docs can share a basename (every repo's handovers/ has an
+    # n<k>-console.md); the checker reads the newest snap without checking which
+    # document wrote it, so the workdir carries a path hash, like the lock slug.
+    _cp_hash=$(_arm_path_hash "$(_arm_identity_path "$CONSOLE_PRECOMPACT_DOC")")
+    CONSOLE_PRECOMPACT_WORKDIR="$_cp_base/precompact-$_cp_slug${_cp_hash:+-h$_cp_hash}"
+fi
 
 # Compute working directory for the relaunched claude process. Without
 # this, schtasks fires .bat with CWD=C:\Windows\System32 (and at/cron
@@ -4744,6 +4780,15 @@ fi"
     # be governed by its own text, not by whatever env cron hands it.
     local q_safety_child="unset AUTO_ARM_SAFETY_CHILD && "
     [ "$SAFETY_CHILD" -eq 1 ] && q_safety_child="export AUTO_ARM_SAFETY_CHILD=1 && "
+    # HIMMEL-2973 S3: same always-clear-then-grant shape for the console
+    # PreCompact pair. `%` is escaped for cron like q_log_file below.
+    q_safety_child="${q_safety_child}unset HIMMEL_CONSOLE_DOC HIMMEL_CONSOLE_WORKDIR && "
+    if [ -n "$CONSOLE_PRECOMPACT_DOC" ]; then
+        local q_cp_doc q_cp_wd
+        q_cp_doc=$(printf '%q' "$CONSOLE_PRECOMPACT_DOC"); q_cp_doc=${q_cp_doc//%/\\%}
+        q_cp_wd=$(printf '%q' "$CONSOLE_PRECOMPACT_WORKDIR"); q_cp_wd=${q_cp_wd//%/\\%}
+        q_safety_child="${q_safety_child}export HIMMEL_CONSOLE_DOC=$q_cp_doc HIMMEL_CONSOLE_WORKDIR=$q_cp_wd && "
+    fi
     # HIMMEL-3074: the headless shape (function header). The redirects hang
     # off the flow-ledger `{ ...; }` group so the ledger writes, the launch and
     # its exit all share the one stdin/log; stdin is /dev/null explicitly
@@ -5932,6 +5977,16 @@ fi"
 "
                 [ "$SAFETY_CHILD" -eq 1 ] && at_safety_child="export AUTO_ARM_SAFETY_CHILD=1
 "
+                # HIMMEL-2973 S3: the console PreCompact pair, same
+                # always-clear-then-grant shape (`at` snapshots the submitting
+                # env, so a console arm's own pair must not leak into a
+                # non-console relaunch).
+                at_safety_child="${at_safety_child}unset HIMMEL_CONSOLE_DOC HIMMEL_CONSOLE_WORKDIR
+"
+                if [ -n "$CONSOLE_PRECOMPACT_DOC" ]; then
+                    at_safety_child="${at_safety_child}export HIMMEL_CONSOLE_DOC=$(printf '%q' "$CONSOLE_PRECOMPACT_DOC") HIMMEL_CONSOLE_WORKDIR=$(printf '%q' "$CONSOLE_PRECOMPACT_WORKDIR")
+"
+                fi
                 launch_lines="${at_safety_child}_flow_run_id=\$($q_flow_lib --append-start armed-resume \"\" \"\" claude \"\" $q_task \"\" \"\$\$\" 2>/dev/null) || _flow_run_id=
 _flow_rc=0
 $launch_lines || _flow_rc=\$?

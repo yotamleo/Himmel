@@ -8,7 +8,7 @@
 # judgment lane. This suite exercises the guard: an unpinned non-console arm
 # now defaults to opus; an explicit Fable-family --model on a non-console arm
 # is refused (rc=20) unless paired with --fable-ok; a *-console.md handover
-# (ruling 25 — the console lane is ALWAYS Fable) is exempt from both.
+# (ruling 25 — a console arm may pin Fable) is exempt from both.
 #
 # Uses --dry-run throughout so no real scheduler job is ever created. Harness
 # shields, helpers, and the scheduler stub are copied from
@@ -290,13 +290,15 @@ assert_contains "c2: relaunch command carries the fable model" '--model fable ' 
 
 # ---------------------------------------------------------------------------
 # (d) *-console.md handover: unpinned -> NO --model flag at all (operator
-#     default stands, ruling 25). Fable-pinned + no --fable-ok -> exempt, rc=0.
+#     default stands; arm-resume itself names no model -- unlike console.sh /
+#     headed-arm.sh, whose own default is Opus since #836, HIMMEL-3169).
+#     Fable-pinned + no --fable-ok -> exempt, rc=0 (ruling 25).
 # ---------------------------------------------------------------------------
 HO_D1=$(make_handover "arm-guard-console.md")
 out=$(run_arm --time "$(future_time)" --handover "$HO_D1" --dry-run 2>&1)
 rc=$?
 assert_rc "d1: unpinned console arm exits 0" 0 "$rc"
-assert_contains "d1: guard line reports operator default kept" "arm-resume: model=<operator default> (console arm, unpinned -- ruling 25 keeps the fable default)" "$out"
+assert_contains "d1: guard line reports operator default kept" "arm-resume: model=<operator default> (console arm, unpinned -- no model flag passed, so the launched claude uses the operator's own default; arm-resume never forces Fable, HIMMEL-3169)" "$out"
 # Negative control for the bare/unquoted rendering above (see case a's
 # comment): with MODEL unset, q_model is never built at all, so NO spelling
 # of --model appears here -- this proves the case-a/c/c2/d2/e1/e2 assertions

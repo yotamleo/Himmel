@@ -189,8 +189,18 @@ trap 'rm -f "$SHIPPED"' EXIT
 # any nesting depth) and fed into the awk filter as a lookup table; the diff
 # itself still runs once, full-tree. Never silent: every skip is named on
 # stderr.
+#
+# The SAME pass also collects the REMOVED lines of the non-skipped files into
+# $REMOVED (HIMMEL-3147). T13(b) uses them to tell moved code from new code: a
+# refactor that hoists a setInterval poll out of one file into a shared helper
+# reads, per line, as an add in the new home -- but the identical line is
+# removed from the old one in the same diff. Still one full-tree diff, no
+# per-file loop (HIMMEL-3090). `--- ` headers are dropped, so a removed line
+# whose own text starts with `-- ` is missed: that only ever makes a
+# cancellation LESS likely, i.e. the gate stays strict.
 VENDORED_LIST="$(mktemp "${TMPDIR:-/tmp}/ws5-vendored-list.XXXXXX")" || { echo "test-ws5-invariants.sh: mktemp failed" >&2; exit 2; }
-trap 'rm -f "$SHIPPED" "$VENDORED_LIST"' EXIT
+REMOVED="$(mktemp "${TMPDIR:-/tmp}/ws5-removed.XXXXXX")" || { echo "test-ws5-invariants.sh: mktemp failed" >&2; exit 2; }
+trap 'rm -f "$SHIPPED" "$VENDORED_LIST" "$REMOVED"' EXIT
 while IFS= read -r f; do
     [ -n "$f" ] || continue
     base="${f##*/}"
@@ -227,7 +237,7 @@ while IFS= read -r f; do
     fi
 done < <(git diff "$BASE...HEAD" --name-only)
 
-git diff "$BASE...HEAD" | awk -v vendored_file="$VENDORED_LIST" '
+git diff "$BASE...HEAD" | awk -v vendored_file="$VENDORED_LIST" -v removed_file="$REMOVED" '
     BEGIN {
         while ((getline line < vendored_file) > 0) vendored[line] = 1
         close(vendored_file)
@@ -249,6 +259,7 @@ git diff "$BASE...HEAD" | awk -v vendored_file="$VENDORED_LIST" '
     }
     skip { next }
     /^\+/ { print }
+    /^-/ && !/^--- / { print > removed_file }
 ' > "$SHIPPED"
 
 # ----------------------------------------------------------------------------
@@ -317,8 +328,29 @@ else
         | grep -E '(^|/)hooks\.json$|^\.claude/settings\.json$' || true)
 
     # (b) shipped-source loop / service / timer markers.
+    # A marker line counts only if no identical line (compared after trimming
+    # leading/trailing whitespace) is REMOVED elsewhere in the same diff: code
+    # moved between files is not new always-on surface (HIMMEL-3147; same class
+    # as HIMMEL-3090 renames / HIMMEL-3151 test fixtures). One removal cancels
+    # ONE addition, so a moved line plus a duplicate still fails, and a marker
+    # added while a DIFFERENT line is removed is never neutral.
     t13b_hit=0
-    if grep -Ei 'while[[:space:]]+true|setInterval|daemon' "$SHIPPED" >/dev/null; then
+    t13b_count="$(awk -v removed_file="$REMOVED" '
+        function trim(x) { sub(/^[ \t]+/, "", x); sub(/[ \t\r]+$/, "", x); return x }
+        BEGIN {
+            while ((getline line < removed_file) > 0) removed[trim(substr(line, 2))]++
+            close(removed_file)
+        }
+        {
+            t = trim(substr($0, 2))
+            if (tolower(t) ~ /while[ \t]+true|setinterval|daemon/) {
+                if (removed[t] > 0) removed[t]--
+                else hits++
+            }
+        }
+        END { print hits + 0 }
+    ' "$SHIPPED")" || t13b_count=1
+    if [ "$t13b_count" != "0" ]; then
         t13b_hit=1
         echo "FAIL T13(b): unbounded-loop / background-service / JS-timer marker in shipped source." >&2
     fi

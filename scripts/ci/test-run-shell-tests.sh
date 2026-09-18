@@ -1054,6 +1054,12 @@ else
   check_timeout_2267 "scripts/ci/test-suite-concurrency.sh" "1500"
   check_timeout_2267 "/repo/scripts/ci/test-suite-concurrency.sh" "1500"
 
+  # HIMMEL-3175 (nightly #843): the 1879 suite previously had no dedicated arm,
+  # so the 600s default killed it on every OS (603s on ubuntu). Its tier comment
+  # records 843s idle.
+  check_timeout_2267 "scripts/handover/test-arm-resume-1879.sh" "1700"
+  check_timeout_2267 "/repo/scripts/handover/test-arm-resume-1879.sh" "1700"
+
   # HIMMEL-2895. The third HIMMEL-2267 arm was this file's own 1200s budget,
   # sized to a 712s measurement of the pre-split 3086-line suite. The split
   # left six suites whose slowest is 114s, so every one of them falls under

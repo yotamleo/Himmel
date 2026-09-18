@@ -43,6 +43,12 @@ git init -q --initial-branch=main "$REPO" 2>/dev/null || {
 }
 git -C "$REPO" config user.email t@test.com
 git -C "$REPO" config user.name t
+# HIMMEL-3187: every `git commit` here spawns a DETACHED `git maintenance run
+# --auto`, whose worktree-prune task deletes any .git/worktrees/<n> that has no
+# `gitdir` file yet — exactly the state mk_husk leaves between its `mkdir` and
+# its `gitdir` write. Under load the detached child lands inside that window
+# (F3/F4 "checkpoint missing", or a husk mid-build erased). No async pruner.
+git -C "$REPO" config maintenance.auto false
 printf 'base\n' > "$REPO/README"
 git -C "$REPO" add README
 git -C "$REPO" commit -q -m "base"
