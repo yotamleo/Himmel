@@ -141,6 +141,24 @@ wire_statusline() {
   local prev_hud_cfg=""
   [ -f "$hud_dir/config.json" ] && prev_hud_cfg="$(cat "$hud_dir/config.json")"
 
+  # HIMMEL-3157: an operator suppressing the HUD economics rows prefixes
+  # .display.customLineCommand with an env var, e.g. `HIMMEL_STATUSLINE_ECON=off `
+  # (see scripts/statusline/hud-custom-lines.sh). Every rewire rebuilds that
+  # command from the template, which has no such prefix, so the operator's
+  # override kept reverting. Extract an exact `HIMMEL_STATUSLINE_ECON=<alnum> `
+  # prefix off the PREVIOUS config here — before it's overwritten below — so it
+  # can be reapplied to the freshly substituted command once staged.
+  local econ_prefix=""
+  if [ -n "$prev_hud_cfg" ]; then
+    local prev_line_cmd
+    prev_line_cmd="$(printf '%s' "$prev_hud_cfg" | jq -r '.display.customLineCommand? // empty' 2>/dev/null || true)"
+    if [ -n "$prev_line_cmd" ]; then
+      econ_prefix="$(printf '%s' "$prev_line_cmd" \
+        | jq -Rr 'if test("^HIMMEL_STATUSLINE_ECON=[A-Za-z0-9]+ ") then capture("^(?<p>HIMMEL_STATUSLINE_ECON=[A-Za-z0-9]+ )").p else "" end' \
+          2>/dev/null || true)"
+    fi
+  fi
+
   local settings_dir; settings_dir="$(dirname "$settings")"
   mkdir -p "$settings_dir"
   local base="{}"
@@ -174,6 +192,17 @@ wire_statusline() {
     mkdir -p "$hud_dir"
     hud_cfg="$(cat "$hud_src")"
     hud_cfg="${hud_cfg//<himmel-path>/$himmel_fwd}"
+    # Carry the operator's HIMMEL_STATUSLINE_ECON prefix forward onto the
+    # freshly substituted command, before the JSON validation below. A failed
+    # prepend (e.g. the substitution above broke the JSON) is left for that
+    # validation to catch, same as an unprefixed run.
+    if [ -n "$econ_prefix" ]; then
+      local hud_cfg_prefixed
+      hud_cfg_prefixed="$(printf '%s' "$hud_cfg" \
+        | jq --arg p "$econ_prefix" '.display.customLineCommand = ($p + .display.customLineCommand)' \
+          2>/dev/null || true)"
+      [ -n "$hud_cfg_prefixed" ] && hud_cfg="$hud_cfg_prefixed"
+    fi
     printf '%s\n' "$hud_cfg" > "$hud_dir/.config.json.tmp" \
       || { rm -f "$hud_dir/.config.json.tmp"; return 1; }
     # Validate the substituted config is still JSON before publishing it — a

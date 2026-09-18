@@ -452,4 +452,58 @@ mkdir -p "$hud28"
 [ "$(jq -r .statusLine.type "$s28")" = "command" ] || fail "28: the statusLine was not wired under failglob"
 echo "ok 28 the purge survives a caller's failglob on an otherwise-empty hud dir"
 
+# 29. HIMMEL-3157: an operator-set HIMMEL_STATUSLINE_ECON=<val> prefix on the
+# previous hud config's .display.customLineCommand must be carried forward
+# across a rewire — dropping it lets the suppressed HUD economics rows come
+# back on every run (the operator's own report).
+cfg29="$TMP/cfg29"; hud29="$cfg29/plugins/claude-hud"
+proj29="$TMP/proj29"; mkdir -p "$proj29/.claude" "$hud29"
+s29="$proj29/.claude/settings.json"
+printf '{"display":{"customLineCommand":"HIMMEL_STATUSLINE_ECON=off bash \\"/old/himmel/scripts/statusline/hud-custom-lines.sh\\""}}\n' > "$hud29/config.json"
+CLAUDE_CONFIG_DIR="$cfg29" bash "$HELPER" "$s29" "$REPO_ROOT" >/dev/null
+newcmd29="$(jq -r .display.customLineCommand "$hud29/config.json")"
+case "$newcmd29" in
+  "HIMMEL_STATUSLINE_ECON=off "*) : ;;
+  *) fail "29: HIMMEL_STATUSLINE_ECON=off prefix was not carried forward" ;;
+esac
+case "$newcmd29" in
+  *"$REPO_ROOT/scripts/statusline/hud-custom-lines.sh"*) : ;;
+  *) fail "29: carried prefix did not still point at the new himmel path" ;;
+esac
+echo "ok 29 HIMMEL_STATUSLINE_ECON prefix carried forward across a rewire"
+
+# 30. ...and with no prefix on the previous config, the rewire yields the bare
+# template command unchanged (no prefix invented out of nowhere).
+cfg30="$TMP/cfg30"; hud30="$cfg30/plugins/claude-hud"
+proj30="$TMP/proj30"; mkdir -p "$proj30/.claude" "$hud30"
+s30="$proj30/.claude/settings.json"
+printf '{"display":{"customLineCommand":"bash \\"/old/himmel/scripts/statusline/hud-custom-lines.sh\\""}}\n' > "$hud30/config.json"
+CLAUDE_CONFIG_DIR="$cfg30" bash "$HELPER" "$s30" "$REPO_ROOT" >/dev/null
+expected30="bash \"$REPO_ROOT/scripts/statusline/hud-custom-lines.sh\""
+[ "$(jq -r .display.customLineCommand "$hud30/config.json")" = "$expected30" ] \
+  || fail "30: no-prefix rewire should yield the bare template command"
+echo "ok 30 no prefix on the previous config leaves the bare template command"
+
+# 31. ...and a foreign or malformed prefix is never carried — only the exact
+# HIMMEL_STATUSLINE_ECON=<alnum> shape is recognized.
+cfg31="$TMP/cfg31"; hud31="$cfg31/plugins/claude-hud"
+proj31="$TMP/proj31"; mkdir -p "$proj31/.claude" "$hud31"
+s31="$proj31/.claude/settings.json"
+printf '{"display":{"customLineCommand":"FOO=1 bash \\"/old/himmel/scripts/statusline/hud-custom-lines.sh\\""}}\n' > "$hud31/config.json"
+CLAUDE_CONFIG_DIR="$cfg31" bash "$HELPER" "$s31" "$REPO_ROOT" >/dev/null
+expected31="bash \"$REPO_ROOT/scripts/statusline/hud-custom-lines.sh\""
+[ "$(jq -r .display.customLineCommand "$hud31/config.json")" = "$expected31" ] \
+  || fail "31: a foreign FOO=1 prefix must not be carried"
+echo "ok 31a a foreign prefix is not carried"
+
+cfg31b="$TMP/cfg31b"; hud31b="$cfg31b/plugins/claude-hud"
+proj31b="$TMP/proj31b"; mkdir -p "$proj31b/.claude" "$hud31b"
+s31b="$proj31b/.claude/settings.json"
+# shellcheck disable=SC2016  # literal $(x) fixture text, not meant to expand
+printf '{"display":{"customLineCommand":"HIMMEL_STATUSLINE_ECON=$(x) bash \\"/old/himmel/scripts/statusline/hud-custom-lines.sh\\""}}\n' > "$hud31b/config.json"
+CLAUDE_CONFIG_DIR="$cfg31b" bash "$HELPER" "$s31b" "$REPO_ROOT" >/dev/null
+[ "$(jq -r .display.customLineCommand "$hud31b/config.json")" = "$expected31" ] \
+  || fail "31b: a malformed HIMMEL_STATUSLINE_ECON=\$(x) prefix must not be carried"
+echo "ok 31b a malformed HIMMEL_STATUSLINE_ECON value is not carried"
+
 echo "ALL PASS"

@@ -177,6 +177,50 @@ Wire (Join-Path $proj13b '.claude/settings.json') $repoRoot | Out-Null
 Check (Test-Path (Join-Path $hud13 'transcript-cache/deadbeef.json')) "13 a second project on the same install keeps the cache state"
 $env:CLAUDE_CONFIG_DIR = $cfgDir
 
+# 14 HIMMEL-3157: an operator-set HIMMEL_STATUSLINE_ECON=<val> prefix on the
+# previous hud config's .display.customLineCommand must be carried forward
+# across a rewire, parity with bash cases 29-31 -- dropping it lets the
+# suppressed HUD economics rows come back on every run.
+$cfg14 = Join-Path $tmp 'cfg14'
+$hud14 = Join-Path $cfg14 'plugins/claude-hud'
+$proj14 = Join-Path $tmp 'proj14'
+New-Item -ItemType Directory -Force (Join-Path $proj14 '.claude') | Out-Null
+New-Item -ItemType Directory -Force $hud14 | Out-Null
+$s14 = Join-Path $proj14 '.claude/settings.json'
+$env:CLAUDE_CONFIG_DIR = $cfg14
+'{"display":{"customLineCommand":"HIMMEL_STATUSLINE_ECON=off bash \"/old/himmel/scripts/statusline/hud-custom-lines.sh\""}}' | Set-Content (Join-Path $hud14 'config.json')
+Wire $s14 $repoRoot | Out-Null
+$c14 = Get-Content (Join-Path $hud14 'config.json') -Raw | ConvertFrom-Json
+Check ($c14.display.customLineCommand.StartsWith('HIMMEL_STATUSLINE_ECON=off ')) "14a HIMMEL_STATUSLINE_ECON=off prefix carried forward"
+Check ($c14.display.customLineCommand.Contains("$repoRoot/scripts/statusline/hud-custom-lines.sh")) "14b carried prefix still points at the new himmel path"
+
+# 14c no prefix on the previous config -> the bare template command, unchanged.
+$cfg14c = Join-Path $tmp 'cfg14c'
+$hud14c = Join-Path $cfg14c 'plugins/claude-hud'
+$proj14c = Join-Path $tmp 'proj14c'
+New-Item -ItemType Directory -Force (Join-Path $proj14c '.claude') | Out-Null
+New-Item -ItemType Directory -Force $hud14c | Out-Null
+$s14c = Join-Path $proj14c '.claude/settings.json'
+$env:CLAUDE_CONFIG_DIR = $cfg14c
+'{"display":{"customLineCommand":"bash \"/old/himmel/scripts/statusline/hud-custom-lines.sh\""}}' | Set-Content (Join-Path $hud14c 'config.json')
+Wire $s14c $repoRoot | Out-Null
+$c14c = Get-Content (Join-Path $hud14c 'config.json') -Raw | ConvertFrom-Json
+Check ($c14c.display.customLineCommand -eq "bash `"$repoRoot/scripts/statusline/hud-custom-lines.sh`"") "14c no prefix leaves the bare template command"
+
+# 14d a foreign or malformed prefix is never carried.
+$cfg14d = Join-Path $tmp 'cfg14d'
+$hud14d = Join-Path $cfg14d 'plugins/claude-hud'
+$proj14d = Join-Path $tmp 'proj14d'
+New-Item -ItemType Directory -Force (Join-Path $proj14d '.claude') | Out-Null
+New-Item -ItemType Directory -Force $hud14d | Out-Null
+$s14d = Join-Path $proj14d '.claude/settings.json'
+$env:CLAUDE_CONFIG_DIR = $cfg14d
+'{"display":{"customLineCommand":"FOO=1 bash \"/old/himmel/scripts/statusline/hud-custom-lines.sh\""}}' | Set-Content (Join-Path $hud14d 'config.json')
+Wire $s14d $repoRoot | Out-Null
+$c14d = Get-Content (Join-Path $hud14d 'config.json') -Raw | ConvertFrom-Json
+Check ($c14d.display.customLineCommand -eq "bash `"$repoRoot/scripts/statusline/hud-custom-lines.sh`"") "14d a foreign FOO=1 prefix is not carried"
+$env:CLAUDE_CONFIG_DIR = $cfgDir
+
 $env:CLAUDE_CONFIG_DIR = $prevClaudeConfigDir
 Get-ChildItem $tmp -Recurse | Remove-Item -Force -Recurse
 Remove-Item $tmp -Force
