@@ -760,9 +760,12 @@ scan_cmd() {
 # QUEUE_LOCK_FORCE_RELEASE=1 (a console action) can never ride along.
 # Every value must be a literal: no expansion, no glob, no `..`, doc absolute
 # and `.md`, doc under HANDOVER_DIR when one is given.
-# ponytail: the script is matched by path SUFFIX (same as the jira CLI
-# carve-out), and HANDOVER_DIR is not checked against the registered handover
-# root — a stray root only lets queue-lock write a `.locks/queue/` dir there.
+# The script is the relative `scripts/handover/queue-lock.sh` (resolved by bash
+# against the session cwd — not verified here) or an ABSOLUTE path inside a real
+# checkout of this repo (ql_root_is_own_checkout).
+# ponytail: HANDOVER_DIR is not checked against the registered handover root —
+# a stray root only lets queue-lock write a `.locks/queue/` dir there — and the
+# relative form is not checked against the payload cwd.
 ql_word_literal() {   # $1 raw word → QW (cooked); fails on any expansion/glob/`..`
     case "$1" in *'$'*) return 1 ;; esac
     shell_word_value "$1" || return 1
@@ -772,6 +775,27 @@ ql_word_literal() {   # $1 raw word → QW (cooked); fails on any expansion/glob
         ..|../*|*/..|*/../*) return 1 ;;
     esac
     [ -n "$QW" ]
+}
+
+# Is <root> a real checkout of THIS repo — the checkout this hook lives in, or
+# one of its `git worktree list` siblings (the primary checkout included) — that
+# actually holds queue-lock.sh? A lookalike `/tmp/x/scripts/handover/queue-lock.sh`
+# (even one that exists) is not, so it falls through.
+ql_root_is_own_checkout() {
+    local real here wt wts
+    real=$(cd "$1" 2>/dev/null && pwd -P) || return 1
+    [ -f "$real/scripts/handover/queue-lock.sh" ] || return 1
+    here=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd -P) || return 1
+    [ "$real" = "$here" ] && return 0
+    wts=$(git -C "$here" worktree list --porcelain 2>/dev/null) || return 1
+    while IFS= read -r wt; do
+        case "$wt" in "worktree "*) ;; *) continue ;; esac
+        wt=$(cd "${wt#worktree }" 2>/dev/null && pwd -P) || continue
+        [ "$wt" = "$real" ] && return 0
+    done <<EOF
+$wts
+EOF
+    return 1
 }
 
 segment_is_queue_lock() {
@@ -788,7 +812,8 @@ segment_is_queue_lock() {
     [ "${a[$i]:-}" = "bash" ] || return 1
     ql_word_literal "${a[$((i + 1))]:-}" || return 1
     case "$QW" in
-        scripts/handover/queue-lock.sh|/*/scripts/handover/queue-lock.sh) ;;
+        scripts/handover/queue-lock.sh) ;;
+        /*/scripts/handover/queue-lock.sh) ql_root_is_own_checkout "${QW%/scripts/handover/queue-lock.sh}" || return 1 ;;
         *) return 1 ;;
     esac
     verb="${a[$((i + 2))]:-}"

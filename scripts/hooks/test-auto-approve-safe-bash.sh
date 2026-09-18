@@ -410,7 +410,17 @@ QL_R=/home/u/luna/handovers
 QL_DOC="$QL_R/yotamleo/himmel/HIMMEL-1-legN1-2026-09-18.md"
 QL_TOK='cachyos-x8664-pid3377422'
 assert "queue-lock release (HANDOVER_DIR, rel script)" ALLOW "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash scripts/handover/queue-lock.sh release $QL_DOC $QL_TOK")")"
-assert "queue-lock release (abs script path)"   ALLOW "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash /repo/scripts/handover/queue-lock.sh release $QL_DOC $QL_TOK")")"
+# An absolute script path is approved only inside a real checkout of THIS repo:
+# the one the hook lives in, or a `git worktree list` sibling (the primary).
+QL_HERE="$(cd "$(dirname "$HOOK")/../.." && pwd -P)"
+QL_PRIMARY="$(git -C "$QL_HERE" worktree list --porcelain | sed -n '1s/^worktree //p')"
+QL_FAKE="$(mktemp -d)"; mkdir -p "$QL_FAKE/scripts/handover" "$QL_FAKE/.git"; : > "$QL_FAKE/scripts/handover/queue-lock.sh"
+assert "precondition: primary checkout resolved"  ALLOW "$([ -f "$QL_PRIMARY/scripts/handover/queue-lock.sh" ] && echo ALLOW || echo "PASS:$QL_PRIMARY")"
+assert "queue-lock release (abs, own checkout)" ALLOW "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash $QL_HERE/scripts/handover/queue-lock.sh release $QL_DOC $QL_TOK")")"
+assert "queue-lock release (abs, primary)"      ALLOW "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash $QL_PRIMARY/scripts/handover/queue-lock.sh release $QL_DOC $QL_TOK")")"
+assert "ctl: lookalike abs path (absent)"       PASS  "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash /tmp/x-himmel-3131-absent/scripts/handover/queue-lock.sh release $QL_DOC $QL_TOK")")"
+assert "ctl: lookalike abs path (exists + .git)" PASS "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash $QL_FAKE/scripts/handover/queue-lock.sh release $QL_DOC $QL_TOK")")"
+rm -rf "$QL_FAKE"
 assert "queue-lock release (no HANDOVER_DIR)"   ALLOW "$(decide "$(j_bash "bash scripts/handover/queue-lock.sh release $QL_DOC $QL_TOK")")"
 assert "queue-lock acquire"                     ALLOW "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash scripts/handover/queue-lock.sh acquire $QL_DOC")")"
 assert "queue-lock heartbeat"                   ALLOW "$(decide "$(j_bash "HANDOVER_DIR=$QL_R bash scripts/handover/queue-lock.sh heartbeat $QL_DOC $QL_TOK")")"
