@@ -655,6 +655,89 @@ assert_rc "d: H1-keyed dry-run exits 0" 0 "$rc"
 assert_contains "d: ticket inferred from the H1 via the portable sed" "HIMMEL-Resume-ABC-1" "$out"
 assert_not_contains "d: no sed diagnostic on stderr" "extra characters at the end of q command" "$out"
 
+# ---------------------------------------------------------------------------
+# (g) HIMMEL-3121: `--time` defaults to `smart`, and the post-arm banner states
+#     only what is true.
+#
+#   g1  --handover with NO --time reaches the smart path (dry-run, bank-free
+#       fixture cache -> the ASAP slot). Pre-fix this died on the
+#       "--time and --handover are required" refusal (rc=1).
+#   g2  a missing --handover still refuses rc=1 -- the default covers --time only.
+#   g3  regression control: an explicit past HH:MM is NEVER routed to smart.
+#       It rolls to tomorrow and the >60-min guard refuses it (rc=9), exactly as
+#       before this ticket.
+#   g4  a REAL arm (stateful crontab stub, never a real scheduler) prints the
+#       self-resume NOTE and no longer orders /exit. Pre-fix it printed
+#       "PLEASE /exit YOUR CURRENT CLAUDE SESSION NOW." on every platform.
+#
+# Hermetic: a throwaway HOME + CLAUDE_CONFIG_DIR so nothing under the real
+# ~/.claude is read or written; the usage cache is the RESUME_SLOT_CACHE fixture.
+# ---------------------------------------------------------------------------
+G_HOME="$TMP/g-home"; mkdir -p "$G_HOME/.claude"
+g_env() { mac_env HOME="$G_HOME" CLAUDE_CONFIG_DIR="$G_HOME/.claude" "$@"; }
+SLOT_FREE_3121="$TMP/usage-free-3121.json"
+printf '{"five_hour":{"utilization":0.0,"resets_at":"%s"},"seven_day":{"utilization":5.0,"resets_at":"%s"}}' \
+    "$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=2)).isoformat())')" \
+    "$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(days=6)).isoformat())')" \
+    > "$SLOT_FREE_3121"
+
+: > "$CRON_STORE"
+HO_G1=$(make_handover)
+out=$(RESUME_SLOT_CACHE="$SLOT_FREE_3121" SLOT_MAX_AGE=0 g_env bash "$ARM" --handover "$HO_G1" --dry-run 2>&1)
+rc=$?
+assert_rc "g1: no --time (dry-run) exits 0 via the smart default" 0 "$rc"
+assert_contains "g1: the omitted --time resolved through smart" "--time smart -> " "$out"
+assert_contains "g1: smart reason is the bank-free ASAP slot" "bank free" "$out"
+assert_not_contains "g1: RED CONTROL -- no --time/--handover required refusal" "are required" "$out"
+
+out=$(RESUME_SLOT_CACHE="$SLOT_FREE_3121" SLOT_MAX_AGE=0 g_env bash "$ARM" --dry-run 2>&1)
+rc=$?
+assert_rc "g2: no --handover still refuses rc=1" 1 "$rc"
+assert_contains "g2: the refusal names --handover" "--handover is required" "$out"
+assert_not_contains "g2: RED CONTROL -- a missing --handover never reaches smart" "--time smart -> " "$out"
+
+# An explicit-but-empty --time is malformed, not "omitted": it keeps refusing.
+out=$(RESUME_SLOT_CACHE="$SLOT_FREE_3121" SLOT_MAX_AGE=0 g_env bash "$ARM" --time "" --handover "$HO_G1" --dry-run 2>&1)
+rc=$?
+assert_rc "g2b: an explicit empty --time still refuses rc=1" 1 "$rc"
+assert_not_contains "g2b: RED CONTROL -- an empty --time never falls into smart" "--time smart -> " "$out"
+
+# g3: a HH:MM that is already past today (1 minute ago) -- the exact minute
+# rolls to tomorrow, ~24h out, which the long-gap guard refuses.
+_past_hhmm=$(python3 -c "import datetime; print((datetime.datetime.now()-datetime.timedelta(minutes=1)).strftime('%H:%M'))")
+out=$(RESUME_SLOT_CACHE="$SLOT_FREE_3121" SLOT_MAX_AGE=0 g_env bash "$ARM" --time "$_past_hhmm" --handover "$HO_G1" --dry-run 2>&1)
+rc=$?
+assert_rc "g3: an explicit past HH:MM is refused, not defaulted (rc=9 long-gap)" 9 "$rc"
+assert_contains "g3: the refusal is the long-gap guard, not a smart resolution" "Refusing without --long-gap (rc=9)" "$out"
+assert_not_contains "g3: RED CONTROL -- an explicit HH:MM never reaches smart" "--time smart -> " "$out"
+
+# g4: REAL arm, no --time. Self-resume NOTE present; the imperative /exit gone.
+: > "$CRON_STORE"
+HO_G4=$(make_handover)
+out=$(FLEET_CAP_OK=1 ARM_WITH_LIVE_WORKERS=1 ARM_RUNNER_DIR="$TMP/arm-runners-g" \
+    RESUME_SLOT_CACHE="$SLOT_FREE_3121" SLOT_MAX_AGE=0 g_env bash "$ARM" --handover "$HO_G4" 2>&1)
+rc=$?
+assert_rc "g4: a real arm without --time succeeds through the crontab stub" 0 "$rc"
+assert_contains "g4: the omitted --time resolved through smart" "--time smart -> " "$out"
+assert_contains "g4: the arm registered" "RESUME ARMED" "$out"
+assert_contains "g4: crontab stub holds the armed entry" "# HIMMEL-Resume-" "$(cat "$CRON_STORE" 2>/dev/null || true)"
+assert_not_contains "g4: the imperative /exit order is gone" "PLEASE /exit YOUR CURRENT CLAUDE SESSION NOW." "$out"
+assert_contains "g4: the self-resume NOTE replaces it" "NOTE (self-resume only):" "$out"
+assert_contains "g4: the NOTE names the different-handover case" "different handover" "$out"
+
+# g5: the same banner on an EXPLICIT-time real arm -- the imperative is gone
+# there too. This is the assertion that is RED on the pre-fix banner even on a
+# tree where g4's default cannot arm at all.
+: > "$CRON_STORE"
+HO_G5=$(make_handover)
+out=$(FLEET_CAP_OK=1 ARM_WITH_LIVE_WORKERS=1 ARM_RUNNER_DIR="$TMP/arm-runners-g" g_env \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_G5" 2>&1)
+rc=$?
+assert_rc "g5: a real explicit-time arm succeeds through the crontab stub" 0 "$rc"
+assert_contains "g5: it armed" "RESUME ARMED" "$out"
+assert_not_contains "g5: the imperative /exit order is gone" "PLEASE /exit YOUR CURRENT CLAUDE SESSION NOW." "$out"
+assert_contains "g5: the self-resume NOTE is present" "NOTE (self-resume only):" "$out"
+
 if [ "$FAILED" -gt 0 ]; then
     echo "---"
     echo "FAIL $FAILED case(s)"

@@ -37,15 +37,20 @@
 #
 # Usage:
 #   bash scripts/handover/arm-resume.sh \
-#     --time <HH:MM> --handover <path> [--force] [--dedup-any] [--dry-run]
+#     --handover <path> [--time <HH:MM|smart|auto>] [--force] [--dedup-any] [--dry-run]
 #
 # Required:
-#   --time <HH:MM>     24h local time. Today if future, tomorrow if past.
 #   --handover <path>  Resume marker file path. Must exist. Pasted into
 #                      the claude relaunch prompt so the next session
 #                      picks up state.
 #
 # Optional:
+#   --time <HH:MM|smart|auto>
+#                      Default: smart (HIMMEL-3121) -- omitting --time is
+#                      exactly `--time smart`. An explicit HH:MM is 24h local
+#                      time (today if future, tomorrow if past), is never moved
+#                      forward, and a lapsed one still refuses; auto is
+#                      unchanged.
 #   --force            Replace the existing same-handover HIMMEL-Resume job
 #                      (always THIS handover's own job only — never a sibling
 #                      chain's, even under --dedup-any; HIMMEL-1563).
@@ -249,6 +254,7 @@
 set -euo pipefail
 
 RESUME_TIME=""
+_TIME_GIVEN=0
 HANDOVER_PATH=""
 FORCE=0
 DRY_RUN=0
@@ -279,27 +285,29 @@ _epoch_hhmm() { py_armor_capture -c 'import sys,datetime; print(datetime.datetim
 
 usage() {
     cat <<'EOF'
-Usage: arm-resume.sh --time <HH:MM> --handover <path> [--wsl-distro <name>] [--force] [--long-gap] [--dedup-any] [--dry-run] [--automerge] [--no-automerge] [--safety-child] [--model <name>] [--fable-ok <reason>] [--context <1m|standard>] [--tier leg] [--provisional-base-ok]
+Usage: arm-resume.sh --handover <path> [--time <HH:MM|smart|auto>] [--wsl-distro <name>] [--force] [--long-gap] [--dedup-any] [--dry-run] [--automerge] [--no-automerge] [--safety-child] [--model <name>] [--fable-ok <reason>] [--context <1m|standard>] [--tier leg] [--provisional-base-ok]
 
 Arms the OS scheduler to relaunch claude at the given time with a
 resume prompt referencing the given handover file. Dedup-guarded
 against existing HIMMEL-Resume-* jobs; pass --force to replace.
 
 Required:
+  --handover <path>    Resume marker file (must exist)
+
+Optional:
   --time <HH:MM|smart|auto>
+                       Default: smart (omitting --time is exactly --time smart).
                        24h local time, OR a sentinel resolved from the
                        claude-statusline usage cache:
                          smart — usage-aware: relaunch ASAP when the bank
                                  has headroom, else wait for the binding
                                  window's reset (scripts/handover/resume-slot.sh).
-                                 Maximizes throughput — prefer this.
+                                 Maximizes throughput — the default.
                          auto  — next 5-hour cap reset regardless of headroom
                                  (scripts/handover/cap-reset-time.sh).
-                       A past HH:MM rolls to tomorrow; sentinels carry their
-                       own (possibly multi-day) date.
-  --handover <path>    Resume marker file (must exist)
-
-Optional:
+                       An explicit HH:MM is never moved forward. A past HH:MM
+                       rolls to tomorrow; sentinels carry their own (possibly
+                       multi-day) date.
   --cwd <path>       Working directory for the relaunched claude.
                      Default: git toplevel containing the --handover
                      file. Override when the handover lives in a
@@ -505,8 +513,8 @@ EOF
 # positional trap.
 while [ $# -gt 0 ]; do
     case "$1" in
-        --time)        RESUME_TIME="${2:-}"; shift 2 ;;
-        --time=*)      RESUME_TIME="${1#--time=}"; shift ;;
+        --time)        RESUME_TIME="${2:-}"; _TIME_GIVEN=1; shift 2 ;;
+        --time=*)      RESUME_TIME="${1#--time=}"; _TIME_GIVEN=1; shift ;;
         --handover)    HANDOVER_PATH="${2:-}"; shift 2 ;;
         --handover=*)  HANDOVER_PATH="${1#--handover=}"; shift ;;
         --cwd)         RESUME_CWD_OVERRIDE="${2:-}"; shift 2 ;;
@@ -883,8 +891,14 @@ EOF
     exit 16
 fi
 
+# HIMMEL-3121: an OMITTED --time is `--time smart` -- the self-correcting
+# ASAP-or-wait slot -- so a caller never hand-picks an HH:MM that nothing moves
+# forward. Keyed on whether --time was passed, not on the value being empty: an
+# explicit `--time ""` is malformed and still refuses below. An explicit
+# HH:MM is untouched (never moved; a lapsed one still refuses).
+[ "$_TIME_GIVEN" -eq 1 ] || RESUME_TIME="smart"
 if [ -z "$RESUME_TIME" ] || [ -z "$HANDOVER_PATH" ]; then
-    echo "ERR arm-resume: --time and --handover are required" >&2
+    echo "ERR arm-resume: --handover is required (--time defaults to smart; when passed it needs a value)" >&2
     usage >&2
     exit 1
 fi
@@ -6287,16 +6301,13 @@ cat <<EOF
   Model: $MODEL_REASON
   Context: $CONTEXT_REASON (autocompact=$AUTOCOMPACT)
 
-  PLEASE /exit YOUR CURRENT CLAUDE SESSION NOW.
-
-  The cron/schtasks relaunch will spawn a NEW claude process at the
-  scheduled time. If this session is still running then, you'll
-  have two concurrent claude processes operating on the same
-  handover state (file races, doubled API spend, possible
-  double-pushes from auto-commit).
-
-  Closing also gives the next session a clean prompt cache and a
-  fresh handover-context read.
+  NOTE (self-resume only): if THIS session is still working the handover
+  it just armed, exit before the fire time -- the relaunch starts a NEW
+  claude on that same document, and two processes on one handover can
+  race (file races, doubled API spend, double-pushes from auto-commit).
+  Exiting also gives the relaunch a clean prompt cache.
+  Arming a different handover (e.g. a console arming a leg)? No exit
+  is needed.
 ================================================================
 
 EOF
