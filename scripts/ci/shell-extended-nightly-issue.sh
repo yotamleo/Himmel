@@ -5,7 +5,7 @@
 # HIMMEL-3125).
 #
 # run-shell-tests.sh's SUITE_TIER_DEFAULT `extended` suites (currently
-# test-arm-resume-identity.sh, test-arm-resume-queue-lock.sh and
+# test-check-ci.sh, test-arm-resume-identity.sh and
 # test-arm-resume-1879.sh) only execute under SUITE_TIER_MODE=all, which
 # ci.yml sets only on the schedule/force_all_os leg of shell-unit-shard. A red
 # extended suite therefore only ever reddens the `shell-unit` aggregating job

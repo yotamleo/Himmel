@@ -134,9 +134,11 @@ decides whether a suite is *offered* to the later filters, not whether it
 ultimately runs.
 
 The production table currently carries three `extended` entries, assigned from
-measured per-suite cost under the >300s rule (HIMMEL-2120 Task 6):
+measured per-suite cost under the >300s rule (HIMMEL-2120 Task 6, HIMMEL-3132):
 `scripts/test-check-ci.sh` (559s), `scripts/handover/test-arm-resume-identity.sh`
-(814s), and `scripts/handover/test-arm-resume-queue-lock.sh` (307s). Env-overridable
+(814s), and `scripts/handover/test-arm-resume-1879.sh` (843s). (`test-arm-resume-queue-lock.sh`
+left the table under HIMMEL-3166: re-measured at 19s local / 18s Linux CI on
+2026-09-18, far under the rule, so it runs per-PR.) Env-overridable
 (`SUITE_TIER`), the same seam `SUITE_REQUIRE_TOOL` exposes, so the runner
 self-test can drive fast/extended deterministically without touching the
 production table.

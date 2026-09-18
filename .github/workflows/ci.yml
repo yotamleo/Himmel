@@ -633,7 +633,14 @@ jobs:
   #    job. A bare `needs:` without `always()` would SKIP this job whenever a
   #    shard failed — and a required check that never reports leaves the PR
   #    hanging rather than red.
-  # 4. No checkout, no setup: this job is a verdict, not work.
+  # 4. No setup: this job is a verdict, not work. It DOES check out (HIMMEL-3166)
+  #    — the report steps below run a repo script, and without a checkout
+  #    `bash scripts/ci/shell-extended-nightly-issue.sh` died with rc=127 on
+  #    the 2026-09-18 nightly, so the alert never fired. A plain checkout
+  #    rather than a sparse `scripts/ci` one: the script sources nothing today,
+  #    but this leg only runs unwatched, so a future `source` of a sibling lib
+  #    would re-break it silently. Same shape as bun-suites' windows-nightly
+  #    steps.
   #
   # 5. issues:write (beyond the workflow-level contents:read) is needed only
   #    by the shell-extended-nightly-issue.sh steps below — scoped to this
@@ -654,6 +661,7 @@ jobs:
         os: [ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
+      - uses: actions/checkout@v7
       - name: Every gating shell-unit shard must have passed
         env:
           SHARDS_RESULT: ${{ needs.shell-unit-shard.result }}

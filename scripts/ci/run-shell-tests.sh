@@ -685,7 +685,6 @@ scripts/test-propagate-public.sh  ^scripts/(propagate-public|lib/public-clone-pa
 SUITE_TIER_DEFAULT="
 scripts/test-check-ci.sh  extended  # measured 559s idle 2026-08-27 (>300s rule)
 scripts/handover/test-arm-resume-identity.sh  extended  # measured 814s idle 2026-08-27, 802s repro (>300s rule)
-scripts/handover/test-arm-resume-queue-lock.sh  extended  # measured 307s idle 2026-08-27 (>300s rule)
 scripts/handover/test-arm-resume-1879.sh  extended  # HIMMEL-3132: measured 843s idle 2026-09-18, real wall-clock wait loops with no shortcut (>300s rule)
 "
 SUITE_TIER="${SUITE_TIER:-$SUITE_TIER_DEFAULT}"
