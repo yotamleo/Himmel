@@ -1285,5 +1285,39 @@ case "$(cat "$V/.obsidian/community-plugins.json" 2>/dev/null)" in
     *) pass "T49 non-array template: github-sync is not injected" ;;
 esac
 
+# T50-T52 (HIMMEL-3189): the add-only plugin merge must validate ITS OWN source.
+# A non-array template community-plugins.json ({"calendar":true}) used to be
+# iterated as its KEYS and written into the vault as ["calendar"], with the run
+# exiting 0. Now the merge warns and leaves the vault's file untouched; the run
+# still exits 0 (like the vault-side non-array guard: one bad plugin list must
+# not block the rest of the upgrade — the warning is the signal).
+# T50: the vault already has a plugin list — it must stay byte-identical.
+T="$TMP/t50-tmpl"; V="$TMP/t50-vault"; make_template "$T" "1.0.0"; mkdir -p "$V/.obsidian"; stamp_vault "$V" "0.1.0"
+printf '%s\n' '["dataview"]' > "$V/.obsidian/community-plugins.json"
+printf '%s\n' '{"calendar":true}' > "$T/.obsidian/community-plugins.json"
+t50_pre_sha=$(sha_of "$V/.obsidian/community-plugins.json")
+t50_out=$(run_upgrade --yes 2>&1); t50_rc=$?
+assert_eq "T50 non-array template: vault plugin list untouched" "$t50_pre_sha" "$(sha_of "$V/.obsidian/community-plugins.json")"
+assert_eq "T50 non-array template: run still exits 0 (warn-and-continue)" "0" "$t50_rc"
+case "$t50_out" in
+    *"template plugin list "*"is not a JSON array; leaving the vault's list untouched"*) pass "T50 non-array template: warns that the template plugin list is not an array" ;;
+    *) fail "T50 non-array template: warns that the template plugin list is not an array" "got: $t50_out" ;;
+esac
+# T51: the vault has NO plugin list yet — none must be created from the bad source.
+T="$TMP/t51-tmpl"; V="$TMP/t51-vault"; make_template "$T" "1.0.0"; add_optional_github_sync "$T"; mkdir -p "$V"; stamp_vault "$V" "0.1.0"
+printf '%s\n' '{"calendar":true}' > "$T/.obsidian/community-plugins.json"
+run_upgrade --yes --with-github-sync >/dev/null 2>&1
+if [ -e "$V/.obsidian/community-plugins.json" ]; then
+    fail "T51 non-array template: no plugin list is created in a vault that lacks one" "got: $(cat "$V/.obsidian/community-plugins.json")"
+else
+    pass "T51 non-array template: no plugin list is created in a vault that lacks one"
+fi
+# T52 (control): a normal list template still merges add-only into the vault's list.
+T="$TMP/t52-tmpl"; V="$TMP/t52-vault"; make_template "$T" "1.0.0"; mkdir -p "$V/.obsidian"; stamp_vault "$V" "0.1.0"
+printf '%s\n' '["dataview"]' > "$V/.obsidian/community-plugins.json"
+run_upgrade --yes >/dev/null 2>&1
+merged=$("$PY" -c 'import json,sys;print(",".join(sorted(json.load(open(sys.argv[1])))))' "$V/.obsidian/community-plugins.json" 2>/dev/null)
+assert_eq "T52 list template: still merges add-only" "calendar,dataview,new" "$merged"
+
 echo
 if [ "$FAILED" -eq 0 ]; then echo "All upgrade tests passed."; else echo "$FAILED test(s) failed."; exit 1; fi

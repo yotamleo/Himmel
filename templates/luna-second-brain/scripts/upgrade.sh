@@ -674,6 +674,12 @@ if os.path.exists(vault_p):
 else:
     vault = []
 tmpl = json.load(open(tmpl_p, encoding="utf-8"))
+# The same guard for the merge SOURCE (HIMMEL-3189): iterating a non-array
+# template ({"calendar":true}) walks its KEYS and would write ["calendar"] into
+# the vault. Warn and leave the vault's file untouched.
+if not isinstance(tmpl, list):
+    sys.stderr.write("  WARN: template plugin list %s is not a JSON array; leaving the vault's list untouched\n" % tmpl_p)
+    sys.exit(0)
 seen = set(vault)
 added = [x for x in tmpl if x not in seen]
 for a in added:
