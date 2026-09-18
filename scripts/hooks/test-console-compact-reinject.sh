@@ -146,6 +146,24 @@ case "$out" in
     *) ok "output still stops at the real ## Results boundary" ;;
 esac
 
+echo "== a 4-backtick fence containing a nested 3-backtick line is NOT closed by the shorter marker (HIMMEL-3137) =="
+DOC1F="$TMP/some-console-with-longer-fence.md"
+printf '%s\n' "# Some Console" "" "## Live state" "" \
+    "legs: N1 token-abc" "" \
+    '````markdown' '```' "## Nested example heading, inside the 3-backtick inner fence" '```' '````' "" \
+    "CRITICAL: lock token lock-tok-NESTED" "" \
+    "## Results" "" "- LIVE 09:00" > "$DOC1F"
+out="$(env HIMMEL_CONSOLE_DOC="$DOC1F" bash "$HOOK")"; rc=$?
+if [ "$rc" -eq 0 ]; then ok "longer-fence doc still exits 0"; else bad "expected rc 0, got $rc"; fi
+case "$out" in
+    *'lock-tok-NESTED'*) ok "output preserves content after a 4-backtick fence with a nested 3-backtick line" ;;
+    *) bad "output was truncated by the nested shorter fence marker - got: $out" ;;
+esac
+case "$out" in
+    *'## Results'*) bad "output leaked past Live state's own section boundary into ## Results" ;;
+    *) ok "output still stops at the real ## Results boundary" ;;
+esac
+
 echo "== doc has no ## Live state section -> one-line warning, still rc 0, no COMPACTED promise =="
 DOC2="$TMP/bare-console.md"
 printf '# Bare Console\n\n## Results\n\n- LIVE 09:00\n' > "$DOC2"

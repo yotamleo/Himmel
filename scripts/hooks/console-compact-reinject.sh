@@ -99,11 +99,40 @@ extract_section() {
     # is visible and recoverable, versus unbounded re-injection on every
     # compaction. The warning goes to stderr only: stdout IS the re-injected
     # content.
+    #
+    # Marker-matched, not "any ``` line": CommonMark closes a fence only on
+    # a line with the SAME character (backtick or tilde) and at LEAST the
+    # opening run length. A 4-backtick fence may contain a 3-backtick
+    # content line (a nested fenced example) without closing early.
     local heading="$1" doc="$2" stuck
-    stuck="$(awk -v want="$heading" '
+    # shellcheck disable=SC2016  # literal awk source, no shell expansion wanted
+    local fence_funcs='
+        function fence_open(line,    rest, c, n) {
+            match(line, /^[[:space:]]*/)
+            rest = substr(line, RLENGTH + 1)
+            c = substr(rest, 1, 1)
+            if (c != "`" && c != "~") return 0
+            n = 0
+            while (substr(rest, n + 1, 1) == c) n++
+            if (n < 3) return 0
+            if (c == "`" && index(substr(rest, n + 1), "`") > 0) return 0
+            fencechar = c
+            fencelen = n
+            return 1
+        }
+        function fence_close(line,    rest, n) {
+            match(line, /^[[:space:]]*/)
+            rest = substr(line, RLENGTH + 1)
+            n = 0
+            while (substr(rest, n + 1, 1) == fencechar) n++
+            if (n < fencelen) return 0
+            return substr(rest, n + 1) ~ /^[[:space:]]*$/
+        }
+    '
+    stuck="$(awk -v want="$heading" "$fence_funcs"'
         $0 == want { f = 1; next }
-        f && /^[[:space:]]*```/ { infence = !infence; next }
-        f && infence { next }
+        f && infence { if (fence_close($0)) infence = 0; next }
+        f && !infence && fence_open($0) { infence = 1; next }
         f && /^##+ / { exit }
         f { next }
         END { if (f) print infence + 0 }
@@ -117,10 +146,10 @@ extract_section() {
             f { print }
         ' "$doc"
     else
-        awk -v want="$heading" '
+        awk -v want="$heading" "$fence_funcs"'
             $0 == want { f = 1; print; next }
-            f && /^[[:space:]]*```/ { infence = !infence; print; next }
-            f && infence { print; next }
+            f && infence { if (fence_close($0)) infence = 0; print; next }
+            f && !infence && fence_open($0) { infence = 1; print; next }
             f && /^##+ / { exit }
             f { print }
         ' "$doc"
