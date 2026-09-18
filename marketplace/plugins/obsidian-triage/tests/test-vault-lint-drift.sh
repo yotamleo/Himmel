@@ -29,7 +29,7 @@ echo "=== vault-lint drift guard tests ==="
 # $HOME (absent on CI, so they used to fail or self-skip there). The fixture is a
 # fake HOME holding an upstream cache whose files hash to a fixture UPSTREAM.json,
 # next to a copy of the drift script (it locates UPSTREAM.json beside itself).
-FIX="$(mktemp -d)"
+FIX="$(mktemp -d "${TMPDIR:-/tmp}/vault-lint-drift.XXXXXX")" || { echo "FAIL: mktemp -d"; exit 1; }
 trap 'rm -rf "$FIX"' EXIT
 FAKE_HOME="$FIX/home"
 CACHE_VER="$FAKE_HOME/.claude/plugins/cache/claude-obsidian-marketplace/claude-obsidian/1.0.0"
@@ -71,7 +71,7 @@ else
   fail "expected non-zero exit on tampered hash, got 0"
 fi
 
-if echo "$OUTPUT" | grep -q "upstream wiki-lint changed since fork"; then
+if grep -q "upstream wiki-lint changed since fork" <<< "$OUTPUT"; then
   ok "warning message present"
 else
   fail "warning message missing; got: $OUTPUT"
@@ -83,7 +83,7 @@ echo "Test 2: fixture cache matching UPSTREAM.json → should exit 0, in sync"
 
 write_upstream_json "$GOOD_SKILL_SHA" "$GOOD_AGENT_SHA"
 OUTPUT2="$(run_fixture_drift --strict)" && EXIT_CODE2=0 || EXIT_CODE2=$?
-if [ "$EXIT_CODE2" -eq 0 ] && echo "$OUTPUT2" | grep -q "in sync with upstream wiki-lint"; then
+if [ "$EXIT_CODE2" -eq 0 ] && grep -q "in sync with upstream wiki-lint" <<< "$OUTPUT2"; then
   ok "exit 0 and 'in sync' against a matching fixture cache"
 else
   fail "expected exit 0 + 'in sync', got $EXIT_CODE2; output: $OUTPUT2"
