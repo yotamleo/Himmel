@@ -1134,19 +1134,31 @@ _arm_profile_report() {
 _arm_fleet_release_pending() {
     # shellcheck disable=SC2317  # Invoked indirectly by the EXIT trap.
     [ -n "${_ARM_FLEET_RESERVED_LEG:-}" ] || return 0
+    # HIMMEL-3017 (codex-4): bank-preflight.sh reserves under
+    # fleet_reservation_key <name> — a HASH of the name when it is over
+    # NAME_MAX or leads with '.' — not under the name itself, and on a
+    # filesystem with a stricter limit it retries under fleet_hash_key. Release
+    # by both keys the reserver can have used (both from the one shared
+    # helper) or a hashed reservation lingers to its TTL, double-counting and
+    # refusing a legitimate retry as a duplicate.
     # shellcheck disable=SC2317  # Invoked indirectly by the EXIT trap.
-    _arm_fleet_resv="${_ARM_FLEET_SLOTS:?}/$_ARM_FLEET_RESERVED_LEG"
-    # codex-3 (this round): bank-preflight.sh returning non-SKIPPED-FLEET
-    # does not guarantee IT created this reservation (the admission-lock-
-    # failure bypass under FLEET_CAP_OK=1 proceeds without creating one) —
-    # if a reservation for this same name already existed from an unrelated
-    # concurrent arm, deleting it unconditionally on our own refusal would
-    # release THEIR still-needed slot out from under them. Only release a
-    # reservation this process itself is recorded as the owner of.
-    # shellcheck disable=SC2317  # Invoked indirectly by the EXIT trap.
-    [ "$(cat "$_arm_fleet_resv/pid" 2>/dev/null)" = "$$" ] || return 0
-    # shellcheck disable=SC2317  # Invoked indirectly by the EXIT trap.
-    rm -rf "$_arm_fleet_resv" 2>/dev/null
+    for _arm_fleet_key in "$(fleet_reservation_key "$_ARM_FLEET_RESERVED_LEG")" "$(fleet_hash_key "$_ARM_FLEET_RESERVED_LEG")"; do
+        # shellcheck disable=SC2317  # Invoked indirectly by the EXIT trap.
+        [ -n "$_arm_fleet_key" ] || continue
+        # shellcheck disable=SC2317  # Invoked indirectly by the EXIT trap.
+        _arm_fleet_resv="${_ARM_FLEET_SLOTS:?}/$_arm_fleet_key"
+        # codex-3 (this round): bank-preflight.sh returning non-SKIPPED-FLEET
+        # does not guarantee IT created this reservation (the admission-lock-
+        # failure bypass under FLEET_CAP_OK=1 proceeds without creating one) —
+        # if a reservation for this same name already existed from an unrelated
+        # concurrent arm, deleting it unconditionally on our own refusal would
+        # release THEIR still-needed slot out from under them. Only release a
+        # reservation this process itself is recorded as the owner of.
+        # shellcheck disable=SC2317  # Invoked indirectly by the EXIT trap.
+        [ "$(cat "$_arm_fleet_resv/pid" 2>/dev/null)" = "$$" ] || continue
+        # shellcheck disable=SC2317  # Invoked indirectly by the EXIT trap.
+        rm -rf "$_arm_fleet_resv" 2>/dev/null
+    done
 }
 # On an EXIT trap so a REFUSAL (rc=7/9/11/13/19/...) still emits the timings --
 # those are exactly the paths where "which phase burned the time" matters most,
@@ -1203,6 +1215,16 @@ if [ "$DRY_RUN" -eq 0 ]; then
     _arm_phase_t0 "fleet-preflight"
     _ARM_BANK_PREFLIGHT="$SCRIPT_DIR/../lib/bank-preflight.sh"
     if [ -f "$_ARM_BANK_PREFLIGHT" ]; then
+        # HIMMEL-3017: the shared leg-name -> reservation-key helper, which
+        # _arm_fleet_release_pending (EXIT trap) releases by. Fail closed: a
+        # launch whose reservation this run could not later release must not
+        # be reserved at all. Sourced BEFORE the reservation exists so a
+        # missing helper cannot strand one.
+        # shellcheck source=scripts/lib/fleet-reservation-key.sh
+        . "$SCRIPT_DIR/../lib/fleet-reservation-key.sh" || {
+            echo "ERR arm-resume: cannot source $SCRIPT_DIR/../lib/fleet-reservation-key.sh — refusing to arm without a releasable fleet reservation." >&2
+            exit 22
+        }
         # </dev/null: bank-preflight.sh's own producer reads stdin to EOF
         # (its held-open-stdin regression test exists for exactly this) - an
         # unattended arm must never inherit an open stdin here.

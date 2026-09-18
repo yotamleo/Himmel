@@ -509,7 +509,13 @@ elif [ "$LAUNCH_INTENT" = "1" ] && [ -n "$LEG" ] && [ "$LEG" != unknown ]; then
   # the leg name) — it just counts against the cap and expires by TTL, the
   # same fallback arm-resume.sh's own flattened-path reservation already
   # relies on.
-  _fleet_hash_key() { printf '%s' "$1" | cksum | awk '{print $1}'; }
+  #
+  # HIMMEL-3014/3017: the key derivation lives in fleet-reservation-key.sh so
+  # arm-resume.sh's exit-trap release resolves the SAME key this reserves under
+  # (it used to look up the raw name and miss a hashed reservation). Names over
+  # NAME_MAX are now hashed BEFORE the mkdir instead of only after it fails;
+  # the resulting key is the one the old retry produced, so a reservation made
+  # by an older copy of this script is still found by the new release.
   # codex-6 (this round, kept): a failed `expires` write left a reservation
   # with no readable expiry, which the very next admission's prune pass
   # (unreadable/corrupt metadata) removes immediately — silently reusing the
@@ -531,10 +537,18 @@ elif [ "$LAUNCH_INTENT" = "1" ] && [ -n "$LEG" ] && [ "$LEG" != unknown ]; then
     [ -e "$dir" ] && return 2
     return 1
   }
-  case "$LEG" in
-    */*|.*) _fleet_resv_key="$(_fleet_hash_key "$LEG")" ;;
-    *) _fleet_resv_key="$LEG" ;;
-  esac
+  # Sourced here, not at the top: only a declared launch needs a key, and a
+  # plain bank READ must never be refused over it. Fail closed like the
+  # siblings below — a launch this script cannot key is one it cannot count.
+  # Sibling of this script (not $REPO/scripts/lib): suites copy the lib dir
+  # into an isolated tree whose layout is not the repo's.
+  # shellcheck source=scripts/lib/fleet-reservation-key.sh
+  . "$(dirname "$0")/fleet-reservation-key.sh" 2>/dev/null || {
+    echo "bank-preflight: cannot source $(dirname "$0")/fleet-reservation-key.sh — refusing rather than launch without a countable reservation" >&2
+    rm -rf "$SLOTS/.admit" 2>/dev/null
+    emit SKIPPED-FLEET
+  }
+  _fleet_resv_key="$(fleet_reservation_key "$LEG")"
   _fleet_reserve "$SLOTS/$_fleet_resv_key"
   _fleet_reserve_rc=$?
   if [ "$_fleet_reserve_rc" -eq 1 ]; then
@@ -542,8 +556,10 @@ elif [ "$LAUNCH_INTENT" = "1" ] && [ -n "$LEG" ] && [ "$LEG" != unknown ]; then
     # "already exists" — a LEG name flattened from a long path can exceed
     # the filesystem's per-component name limit (ENAMETOOLONG), which reads
     # here identically to EEXIST unless distinguished. Retry once with the
-    # hashed key, which is always short and always a valid mkdir target.
-    _fleet_resv_key="$(_fleet_hash_key "$LEG")"
+    # hashed key, which is always short and always a valid mkdir target. Still
+    # reachable on a filesystem whose limit is below 255 bytes (e.g. 143 on
+    # ecryptfs) — arm-resume.sh's release tries this key too.
+    _fleet_resv_key="$(fleet_hash_key "$LEG")"
     _fleet_reserve "$SLOTS/$_fleet_resv_key"
     _fleet_reserve_rc=$?
   fi

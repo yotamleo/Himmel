@@ -881,13 +881,36 @@ echo "== Group 6: HIMMEL-2774 fleet reservation sanitization + release-on-every-
 
 # --- G6.1: a HANDOVER_PATH containing '/' reserves a SANITIZED (no-'/') name,
 # then releases it immediately even on SUCCESS (codex-4).
+#
+# codex-5 (HIMMEL-3017): asserting only that the reservation is ABSENT after the
+# arm passes identically when it was created-then-released and when it was
+# never created at all. OBS wraps every scheduler verb the arm calls AFTER
+# fleet-preflight and logs the slot dir's contents at each call, so G6.1c can
+# observe the reservation EXISTING mid-arm before G6.1b's release assertion
+# means anything.
+OBS="$TMP/obs-bin"; mkdir -p "$OBS"
+for _obs_tool in at atq atrm schtasks crontab; do
+    cat > "$OBS/$_obs_tool" <<OBSEOF
+#!/usr/bin/env bash
+ls -A "\${HIMMEL_FLEET_SLOTS:?}" >> "\${OBS_LOG:?}" 2>/dev/null
+exec "$STUB/$_obs_tool" "\$@"
+OBSEOF
+    chmod +x "$OBS/$_obs_tool"
+done
 G6_SLOTS="$TMP/g6-fleet-slots"; mkdir -p "$G6_SLOTS"
 G6_HO="$HANDOVER_DIR/g6/slash.md"; mk_ho "$G6_HO"
 EXPECT_LEG="${G6_HO//\//-}"
 DB14=$(new_db "$TMP/db14.tasks")
-out=$(HIMMEL_FLEET_SLOTS="$G6_SLOTS" SCHED_DB="$DB14" SCHED_DB_DIR="${DB14}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$G6_HO" 2>&1)
+G6_OBS_LOG="$TMP/g6-obs.log"; : > "$G6_OBS_LOG"
+out=$(OBS_LOG="$G6_OBS_LOG" HIMMEL_FLEET_SLOTS="$G6_SLOTS" SCHED_DB="$DB14" SCHED_DB_DIR="${DB14}.atdir" PATH="$OBS:$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$G6_HO" 2>&1)
 rc=$?
 assert_rc "G6.1a arm with a slash-bearing handover path succeeds" 0 "$rc" "$out"
+if grep -qxF -- "$EXPECT_LEG" "$G6_OBS_LOG"; then
+    echo "PASS G6.1c reservation was OBSERVED existing mid-arm (so G6.1b's absence is a real release, codex-5)"
+else
+    echo "FAIL G6.1c reservation never observed mid-arm -- G6.1b would pass vacuously (codex-5)"
+    FAILED=$((FAILED + 1))
+fi
 if [ -d "$G6_SLOTS/$EXPECT_LEG" ]; then
     echo "FAIL G6.1b reservation SURVIVED a successful arm (should release immediately -- codex-4)"
     FAILED=$((FAILED + 1))
@@ -919,6 +942,42 @@ else
     echo "PASS G6.2b reservation released immediately on rc=7 abort"
 fi
 bash "$QL" release "$G6B_HO" "live-session-6b" >/dev/null 2>&1 || true
+rm -f "$HANDOVER_DIR/.locks/arms.jsonl"
+
+# --- G6.3: HIMMEL-3017 codex-4. A flattened name over NAME_MAX (or a leading
+# '.') is reserved by bank-preflight.sh under a HASHED key, not the name
+# arm-resume passed in. Pre-fix _arm_fleet_release_pending looked the flattened
+# name up, found nothing, and the real reservation lingered until its TTL
+# (double-counting and refusing a legitimate retry as a duplicate).
+G6C_SLOTS="$TMP/g6c-fleet-slots"; mkdir -p "$G6C_SLOTS"
+_g6c_seg="$(printf 'z%.0s' $(seq 1 90))"
+G6C_HO="$HANDOVER_DIR/g6c/$_g6c_seg/$_g6c_seg/$_g6c_seg/long.md"; mk_ho "$G6C_HO"
+G6C_FLAT="${G6C_HO//\//-}"
+if [ "${#G6C_FLAT}" -gt 255 ]; then
+    echo "PASS G6.3 seed: flattened leg name is ${#G6C_FLAT} bytes (> NAME_MAX 255)"
+else
+    echo "FAIL G6.3 seed: flattened leg name only ${#G6C_FLAT} bytes -- not over-length"
+    FAILED=$((FAILED + 1))
+fi
+G6C_KEY="$(printf '%s' "$G6C_FLAT" | cksum | awk '{print $1}')"
+DB16=$(new_db "$TMP/db16.tasks")
+G6C_OBS_LOG="$TMP/g6c-obs.log"; : > "$G6C_OBS_LOG"
+out=$(OBS_LOG="$G6C_OBS_LOG" HIMMEL_FLEET_SLOTS="$G6C_SLOTS" SCHED_DB="$DB16" SCHED_DB_DIR="${DB16}.atdir" PATH="$OBS:$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$G6C_HO" 2>&1)
+rc=$?
+assert_rc "G6.3a arm with an over-length flattened handover path succeeds" 0 "$rc" "$out"
+if grep -qxF -- "$G6C_KEY" "$G6C_OBS_LOG"; then
+    echo "PASS G6.3b hashed-key reservation OBSERVED mid-arm (the fleet did count this launch)"
+else
+    echo "FAIL G6.3b no reservation under the hashed key $G6C_KEY mid-arm"
+    FAILED=$((FAILED + 1))
+fi
+G6C_LEFT="$(ls -A "$G6C_SLOTS" 2>/dev/null)"
+if [ -z "$G6C_LEFT" ]; then
+    echo "PASS G6.3c hashed-key reservation released on exit (nothing left in the slot dir)"
+else
+    echo "FAIL G6.3c reservation SURVIVED exit under the hashed key: $G6C_LEFT (codex-4)"
+    FAILED=$((FAILED + 1))
+fi
 rm -f "$HANDOVER_DIR/.locks/arms.jsonl"
 
 echo "---"

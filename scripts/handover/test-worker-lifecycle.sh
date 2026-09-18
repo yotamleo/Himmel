@@ -58,14 +58,17 @@ export FLEET_PS_CMD="$FLEET_PS_STUB"
 # arming on this machine right now. Both hermetic (own slot dir) and bypassed
 # (this suite doesn't test the fleet cap, only the worker-census guards).
 #
-# Separately: every real arm in this suite reuses the SAME $HANDOVER fixture,
-# so a case that reaches "RESUME ARMED" (T6, T9's override) HOLDS its
-# reservation for that name deliberately (a genuinely-armed future launch
-# keeps its slot — arm-resume.sh only releases on its OWN refusal exits).
-# The next case reusing that name would then be refused as a duplicate
-# declared launch, unrelated to what it tests — reset_fleet_slots clears
-# this suite's own isolated slot dir before every real arm so each case
-# starts clean.
+# Separately: every real arm in this suite reuses the SAME $HANDOVER fixture.
+# arm-resume.sh releases its reservation on EVERY exit (its EXIT trap,
+# _arm_fleet_release_pending), a successful "RESUME ARMED" included — the
+# name it reserves can never match the `-n` name the scheduled task later
+# launches under, so holding it would only double-count (HIMMEL-2774,
+# HIMMEL-3017). So a clean case leaves nothing behind for the next one.
+# reset_fleet_slots is kept as belt-and-braces for the cases that do not exit
+# cleanly (a killed arm, a stubbed preflight): a reservation left by one would
+# make the next case reusing that name a refused "duplicate declared launch",
+# unrelated to what it tests. It clears this suite's own isolated slot dir
+# before every real arm so each case starts clean.
 export XDG_RUNTIME_DIR="$TMP/xdg"
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
