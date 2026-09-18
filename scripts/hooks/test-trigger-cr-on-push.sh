@@ -226,6 +226,39 @@ else
     fail "expected 2 posts (one per PR) for the same shared head SHA, got posted=$(posted_count)" "out: $out; ledger: $(cat "$LEDGER_PATH" 2>/dev/null)"
 fi
 
+# Test 3d: CR_TRIGGER_SUPPRESS=1 -> no post, head NOT recorded (HIMMEL-3141) --
+# Same seam as trigger-cr-on-pr-create.sh — both hooks route through
+# cr_trigger_post_review in scripts/lib/cr-trigger-ledger.sh, so ONE knob
+# covers both. Not recorded in the ledger: the review is deferred, not
+# satisfied, so a later un-suppressed push for the same head must still post.
+echo "TEST: CR_TRIGGER_SUPPRESS=1 -> no post, head not recorded"
+reset_state
+FAKE_GH_PR_VIEW_JSON=$(pr_view_json 317 "cafef00d0002" "OPEN" "https://github.com/acme/widget/pull/317")
+export FAKE_GH_PR_VIEW_JSON
+CR_TRIGGER_SUPPRESS=1 run_hook "git push"
+if [ "$rc" -eq 0 ] && [ "$(posted_count)" -eq 0 ] \
+   && ! grep -qF "cafef00d0002" "$LEDGER_PATH" 2>/dev/null; then
+    pass "CR_TRIGGER_SUPPRESS=1 suppressed the trigger and left the head unrecorded"
+else
+    fail "expected rc=0, 0 posts, and NO ledger row for cafef00d0002" \
+        "out: $out; ledger: $(cat "$LEDGER_PATH" 2>/dev/null)"
+fi
+
+# Test 3e: CR_TRIGGER_SUPPRESS unset (default) -> trigger still fires --------
+# Opt-out, never opt-in (HIMMEL-1362): the direction that catches a default
+# silently flipped to off.
+echo "TEST: CR_TRIGGER_SUPPRESS unset -> the trigger still fires (default ON)"
+reset_state
+unset CR_TRIGGER_SUPPRESS 2>/dev/null || true
+FAKE_GH_PR_VIEW_JSON=$(pr_view_json 318 "cafef00d0003" "OPEN" "https://github.com/acme/widget/pull/318")
+export FAKE_GH_PR_VIEW_JSON
+run_hook "git push"
+if [ "$rc" -eq 0 ] && [ "$(posted_count)" -eq 1 ]; then
+    pass "unset CR_TRIGGER_SUPPRESS left the default trigger behaviour intact"
+else
+    fail "expected rc=0 and 1 post with CR_TRIGGER_SUPPRESS unset, got rc=$rc posted=$(posted_count)" "out: $out"
+fi
+
 # Test 4: ledger unwritable -> fails open, does not strand the push ----------
 # Point the ledger at a path whose PARENT is a plain FILE, so the append
 # always fails deterministically (no chmod — unreliable on Git Bash/Windows).

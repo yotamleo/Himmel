@@ -49,6 +49,42 @@
 # etc.) must never strand the caller's push/create — a missing/unreadable
 # ledger is treated as "not yet triggered" (post proceeds) and a failed
 # write after posting only warns.
+#
+# CR_TRIGGER_SUPPRESS (HIMMEL-3141): a console sequencing the account-wide,
+# roughly-one-review-per-hour CodeRabbit slot across several open PRs could
+# not act on that plan — a leg spent the slot the instant it ran `gh pr
+# create` or `git push`, whether or not the console had cleared it, because
+# the hooks had no opt-out. Checked ONCE here, in cr_trigger_post_review —
+# the single function BOTH hooks (and the forge seam) route every post
+# through — rather than in either hook individually: a seam on only one
+# hook is half a lever, since either a create or a later push can consume
+# the same slot for the same PR. Suppression is SAFE to add precisely
+# because check-ci.sh's skipped/absent arms already refuse green until a
+# genuine review lands at head (see the header above) — a suppressed
+# trigger can only DEFER the review to a moment the console chooses, never
+# silently ship one unreviewed. That backstop is also why suppression must
+# not record the ledger: the review is deferred, not satisfied, so a later
+# un-suppressed call for the same (repo, PR, SHA) must still be free to
+# post.
+#
+# Opt-out ONLY, default ON: an unset/empty CR_TRIGGER_SUPPRESS changes
+# nothing. The hook's own header explains why — on 2026-07-29 triggering
+# was left to agent discretion and every open PR went unreviewed, because
+# CodeRabbit's "Review skipped: automatic reviews are disabled" status is
+# indistinguishable from a clean review to a gate reading only the status.
+# A default-off seam here would recreate that exact failure; a console must
+# deliberately set it per leg (scripts/handover/console-kit/headed-arm-leg.sh's
+# LEG_SUPPRESS_CR_TRIGGER, folded to this var the same way LEG_REPO folds to
+# HEADED_ARM_REPO).
+#
+# On the refusal note (HIMMEL-3141 option 3): a refused trigger attempt
+# ("Review limit reached … Next included review available in N minutes")
+# still counts toward CodeRabbit's rolling 7-day attempt total that sets
+# the allowance. Deriving availability from the rate plus the last
+# consumption is arithmetic, not evidence — the printed estimate can have
+# already moved by the time you act on it, and arming a trigger on a stale
+# estimate costs an attempt AND pushes the real reset further out. Read the
+# refusal itself when one is available; do not precompute it.
 
 cr_trigger_ledger_path() {
     # Test-only escape hatch: point the ledger at a throwaway file instead of
@@ -186,6 +222,17 @@ cr_trigger_repo_armed() {
 # Requires the caller to define `warn()` before calling.
 cr_trigger_post_review() {
     local sha="$1" num="$2" repo_path="$3" scan_existing="$4" existing
+
+    # CR_TRIGGER_SUPPRESS (HIMMEL-3141): see the header note above for the
+    # full rationale. Checked first — cheapest, and a suppressed leg should
+    # never pay for the foreign-repo / gh round-trips below just to no-op.
+    # Deliberately does NOT touch the ledger: the trigger is deferred, not
+    # satisfied, so a later un-suppressed call for this exact
+    # (repo, PR, SHA) must still post.
+    if [ -n "${CR_TRIGGER_SUPPRESS:-}" ]; then
+        warn "CR_TRIGGER_SUPPRESS set — not triggering CodeRabbit for head ${sha} on PR #$num ($repo_path); trigger manually (or unset it and re-push) once a slot is confirmed free"
+        return 0
+    fi
 
     # HIMMEL-2034: never comment on a repo whose CR gate is not ours. Checked
     # HERE, in the one function all three callers (both PostToolUse hooks and

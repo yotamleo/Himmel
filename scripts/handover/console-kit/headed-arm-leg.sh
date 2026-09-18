@@ -144,6 +144,13 @@
 # plain leg: no IMPL_GUARD_OK/INLINE_IMPL_OK (a judge does not implement),
 # a raised HIMMEL_READ_CLAMP_LINES (independent reading is the job), and the
 # judge preface instead of the leg preface.
+#
+# LEG_SUPPRESS_CR_TRIGGER (HIMMEL-3141): set in the launching shell to
+# suppress the CodeRabbit auto-trigger for this one leg - see the
+# LEG_REPO-style fold below for the mechanism and scripts/lib/cr-trigger-ledger.sh
+# for why a console would ever want this (sequencing the account-wide,
+# roughly-hourly CodeRabbit review slot across several open PRs). Opt-out,
+# default ON: unset changes nothing.
 set -u
 
 usage() {
@@ -342,6 +349,23 @@ if [ -n "${LEG_REPO:-}" ]; then
     export HEADED_ARM_REPO
 fi
 
+# LEG_SUPPRESS_CR_TRIGGER (HIMMEL-3141): opt-out-by-console seam for the
+# CodeRabbit auto-trigger hooks (trigger-cr-on-pr-create.sh,
+# trigger-cr-on-push.sh - both route their post through
+# cr_trigger_post_review in scripts/lib/cr-trigger-ledger.sh, so this ONE
+# knob covers both; see that function for why). Set in the LAUNCHING shell
+# (e.g. `LEG_SUPPRESS_CR_TRIGGER=1 bash headed-arm-leg.sh ...`), same
+# pattern as LEG_REPO above, and folded here into CR_TRIGGER_SUPPRESS, the
+# name the hooks/ledger actually read - never a flag, since this is a
+# per-launch console decision, not part of the leg's identity. Opt-out
+# ONLY: leaving it unset changes nothing, which is the ticket's explicit
+# requirement (the auto-trigger hook exists because manual triggering was
+# left to discretion once already and every open PR went unreviewed,
+# HIMMEL-1362) - a default-off seam here would recreate that exact failure.
+if [ -n "${LEG_SUPPRESS_CR_TRIGGER:-}" ]; then
+    export CR_TRIGGER_SUPPRESS=1
+fi
+
 # IMPL_GUARD_OK=1 / INLINE_IMPL_OK=1: leg-only env for
 # guard-implementor-dispatch / orchestrator-inline-guard (HIMMEL-2879).
 # headed-arm.sh's shared console/leg child-env block does not set these.
@@ -518,9 +542,13 @@ if [ "$DRY_RUN" -eq 1 ]; then
     # die on set -u the moment --judge is passed. A non-judge launch always
     # has both set to 1, so this stays byte-identical to before for every
     # existing caller.
-    printf 'headed-arm-leg: env IMPL_GUARD_OK=%s INLINE_IMPL_OK=%s HIMMEL_CONSOLE_LEG=%s HEADED_ARM_REPO=%s scrub=%s CONSOLE_CONTEXT=%s\n' \
+    # HIMMEL-3141: CR_TRIGGER_SUPPRESS folded in the same way, for the same
+    # reason - proves LEG_SUPPRESS_CR_TRIGGER->CR_TRIGGER_SUPPRESS ran in
+    # THIS wrapper's own process, and stays <unset> (the default-ON case)
+    # for every caller that never sets LEG_SUPPRESS_CR_TRIGGER.
+    printf 'headed-arm-leg: env IMPL_GUARD_OK=%s INLINE_IMPL_OK=%s HIMMEL_CONSOLE_LEG=%s HEADED_ARM_REPO=%s scrub=%s CONSOLE_CONTEXT=%s CR_TRIGGER_SUPPRESS=%s\n' \
         "${IMPL_GUARD_OK:-<unset>}" "${INLINE_IMPL_OK:-<unset>}" "$HIMMEL_CONSOLE_LEG" "${HEADED_ARM_REPO:-<derived by headed-arm.sh>}" \
-        "$LEG_ENV_SCRUB" "${CONSOLE_CONTEXT:-<unset>}"
+        "$LEG_ENV_SCRUB" "${CONSOLE_CONTEXT:-<unset>}" "${CR_TRIGGER_SUPPRESS:-<unset>}"
     # Printed ONLY under --relay: with the flag omitted this line is absent and
     # the dry-run report stays byte-identical to today's, same guarantee shape
     # as the --profile line below.

@@ -259,6 +259,37 @@ else
         "out: $out; ledger: $(cat "$LEDGER_PATH" 2>/dev/null)"
 fi
 
+# Test 4d: CR_TRIGGER_SUPPRESS=1 -> no post, head NOT recorded (HIMMEL-3141) --
+# The seam lives in cr_trigger_post_review (scripts/lib/cr-trigger-ledger.sh),
+# shared with the push twin. Deliberately not recorded in the ledger: the
+# review is DEFERRED, not satisfied, so a later un-suppressed call for the
+# same head must still be free to post.
+echo "TEST: CR_TRIGGER_SUPPRESS=1 -> no post, head not recorded"
+reset_state
+export FAKE_GH_HEAD_SHA="cafef00d0001"
+CR_TRIGGER_SUPPRESS=1 run_hook "gh pr create --base main" "https://github.com/acme/widget/pull/301"
+if [ "$rc" -eq 0 ] && [ "$(posted_count)" -eq 0 ] \
+   && ! grep -qF "cafef00d0001" "$LEDGER_PATH" 2>/dev/null; then
+    pass "CR_TRIGGER_SUPPRESS=1 suppressed the trigger and left the head unrecorded"
+else
+    fail "expected rc=0, 0 posts, and NO ledger row for cafef00d0001" \
+        "out: $out; ledger: $(cat "$LEDGER_PATH" 2>/dev/null)"
+fi
+unset FAKE_GH_HEAD_SHA
+
+# Test 4e: CR_TRIGGER_SUPPRESS unset (default) -> trigger still fires --------
+# The seam MUST be opt-out, never opt-in (HIMMEL-1362's whole argument): this
+# is the direction that catches a default silently flipped to off.
+echo "TEST: CR_TRIGGER_SUPPRESS unset -> the trigger still fires (default ON)"
+reset_state
+unset CR_TRIGGER_SUPPRESS 2>/dev/null || true
+run_hook "gh pr create --base main" "https://github.com/acme/widget/pull/302"
+if [ "$rc" -eq 0 ] && [ "$(posted_count)" -eq 1 ]; then
+    pass "unset CR_TRIGGER_SUPPRESS left the default trigger behaviour intact"
+else
+    fail "expected rc=0 and 1 post with CR_TRIGGER_SUPPRESS unset, got rc=$rc posted=$(posted_count)" "out: $out"
+fi
+
 # Test 5: anchoring — echo string literal -> no post -------------------------
 echo "TEST: echo \"gh pr create …\" (string literal, not command position) -> no post"
 reset_state
