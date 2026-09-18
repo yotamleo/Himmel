@@ -625,8 +625,10 @@ if [ "$INSTALL_GITHUB_SYNC" = 1 ] && [ -d "$GH_SYNC_SRC" ]; then
 import json, os, sys
 tmpl_p, out_p = sys.argv[1], sys.argv[2]
 tmpl = json.load(open(tmpl_p, encoding="utf-8")) if os.path.exists(tmpl_p) else []
+if not isinstance(tmpl, list):
+    sys.exit(1)
 if "github-sync" not in tmpl:
-    tmpl = list(tmpl) + ["github-sync"]
+    tmpl = tmpl + ["github-sync"]
 with open(out_p, "w", encoding="utf-8") as fh:
     json.dump(tmpl, fh)
 if not isinstance(json.load(open(out_p, encoding="utf-8")), list):

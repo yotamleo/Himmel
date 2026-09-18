@@ -1249,5 +1249,20 @@ esac
 merged=$("$PY" -c 'import json,sys;print(",".join(sorted(json.load(open(sys.argv[1])))))' "$V/.obsidian/community-plugins.json")
 assert_eq "T48 normal path: community-plugins.json includes github-sync" "calendar,dataview,github-sync,new" "$merged"
 
+# T49: a template community-plugins.json that is not a JSON array must not be
+# laundered into a list by the github-sync preparation (list({"a":1}) == ["a"]);
+# it warns and keeps the template source, so github-sync is not injected.
+T="$TMP/t49-tmpl"; V="$TMP/t49-vault"; make_template "$T" "1.0.0"; add_optional_github_sync "$T"; mkdir -p "$V"; stamp_vault "$V" "0.1.0"
+printf '%s\n' '{"calendar":true}' > "$T/.obsidian/community-plugins.json"
+t49_out=$(run_upgrade --yes --with-github-sync 2>&1)
+case "$t49_out" in
+    *"WARNING — could not prepare the github-sync plugin enablement"*) pass "T49 non-array template: warns that github-sync enablement could not be prepared" ;;
+    *) fail "T49 non-array template: warns that github-sync enablement could not be prepared" "got: $t49_out" ;;
+esac
+case "$(cat "$V/.obsidian/community-plugins.json" 2>/dev/null)" in
+    *github-sync*) fail "T49 non-array template: github-sync is not injected" "got: $(cat "$V/.obsidian/community-plugins.json")" ;;
+    *) pass "T49 non-array template: github-sync is not injected" ;;
+esac
+
 echo
 if [ "$FAILED" -eq 0 ]; then echo "All upgrade tests passed."; else echo "$FAILED test(s) failed."; exit 1; fi
