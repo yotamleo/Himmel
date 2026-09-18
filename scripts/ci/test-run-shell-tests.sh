@@ -2045,7 +2045,7 @@ if [ -n "$dep_ln" ] && [ -n "$shard_ln" ] && [ "$dep_ln" -lt "$shard_ln" ]; then
 else
   fail "23f: ci.yml wiring — ensure-deps line='${dep_ln:-missing}' shard-with-root-. line='${shard_ln:-missing}' (deps must come first)"
 fi
-if [ -n "$dep_ln" ] && ! sed -n "$((dep_ln - 2)),$((dep_ln + 2))p" "$ci23" | grep -qE '\|\| *(true|:)|continue-on-error'; then
+if [ -n "$dep_ln" ] && ! sed -n "$((dep_ln - 2)),$((dep_ln + 2))p" "$ci23" | grep -qE '\|\| *(true|:)|continue-on-error'; then # pipefail-ok: a 5-line sed window, far under the pipe buffer, so grep -q cannot SIGPIPE the producer
   pass "23f: the ensure-deps step is not swallowed (no || true, no continue-on-error)"
 else
   fail "23f: the ensure-deps step is swallowed (|| true / continue-on-error near line ${dep_ln:-?})"
