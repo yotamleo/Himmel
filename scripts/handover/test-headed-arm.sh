@@ -1388,4 +1388,50 @@ check "38f no --role: exit 0" "$rc38f" "0"
 contains "38f no --role: armed log line stamps role=unsplit" "$log38f" "role=unsplit"
 not_contains "38f no --role: konsole record carries no HIMMEL_CONSOLE_RELAY clear" "$rec38f" "HIMMEL_CONSOLE_RELAY"
 
+# --- 39. --dry-run (HIMMEL-3140): prints the resolved argv + exits 0 BEFORE
+# the signal/deadline wait loop, the claim lock, or konsole/pgrep are ever
+# touched -- proving a flag is accepted must never cost a real billed launch
+# (N279, N13-of-3133). Both stubs below record every invocation to their own
+# counter file (distinct from mk_stub's launch-record file, which only proves
+# a REAL launch happened); asserting those counters stay absent is what
+# proves dry-run never reached the dedup pgrep scan or the konsole exec, not
+# merely that it exited 0.
+d39="$tmp/c39"
+mkdir -p "$d39"
+cat > "$d39/konsole" <<'KONSOLE_EOF'
+#!/usr/bin/env bash
+echo invoked >> "$(dirname "$0")/konsole-calls"
+KONSOLE_EOF
+chmod 755 "$d39/konsole"
+cat > "$d39/pgrep" <<'PGREP_EOF'
+#!/usr/bin/env bash
+echo invoked >> "$(dirname "$0")/pgrep-calls"
+exit 1
+PGREP_EOF
+chmod 755 "$d39/pgrep"
+out39=$(KONSOLE_CMD="$d39/konsole" PGREP_CMD="$d39/pgrep" HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$d39/locks" \
+    bash "$SCRIPT" --dry-run --role console "HIMMEL-dry39" "doc39.md" "$d39/signal-never" "$PAST" "$d39/log" 2>&1)
+rc39=$?
+check "39 --dry-run: exit 0" "$rc39" "0"
+contains "39 --dry-run: reports the session name" "$out39" "HIMMEL-dry39"
+contains "39 --dry-run: reports the doc" "$out39" "doc39.md"
+contains "39 --dry-run: reports role=console" "$out39" "console"
+if [ -e "$d39/konsole-calls" ]; then echo "FAIL - 39 --dry-run: konsole must NOT be invoked"; fails=$((fails+1))
+else echo "ok - 39 --dry-run: konsole must NOT be invoked"; fi
+if [ -e "$d39/pgrep-calls" ]; then echo "FAIL - 39 --dry-run: pgrep must NOT be invoked"; fails=$((fails+1))
+else echo "ok - 39 --dry-run: pgrep must NOT be invoked"; fi
+if [ -d "$d39/locks" ] && [ -n "$(ls -A "$d39/locks" 2>/dev/null)" ]; then
+    echo "FAIL - 39 --dry-run: no claim lock left behind"; fails=$((fails+1))
+else echo "ok - 39 --dry-run: no claim lock left behind"; fi
+
+# --- 39b. --dry-run with a placeholder name copy-pasted from the usage
+# string: refused loudly (exit 2) rather than silently "succeeding" a dry-run
+# on args nobody meant to pass.
+bash "$SCRIPT" --dry-run "<session-name>" "doc.md" "$tmp/signal-never" "$PAST" "$tmp/log39b" >/dev/null 2>&1
+rcb39b=$?
+check "39b --dry-run placeholder name '<session-name>': exit 2" "$rcb39b" "2"
+bash "$SCRIPT" --dry-run "session" "doc.md" "$tmp/signal-never" "$PAST" "$tmp/log39b" >/dev/null 2>&1
+rcc39b=$?
+check "39b --dry-run placeholder name 'session': exit 2" "$rcc39b" "2"
+
 [ "$fails" -eq 0 ] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILED"; exit 1; }

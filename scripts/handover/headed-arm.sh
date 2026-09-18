@@ -317,14 +317,31 @@
 # #752), never through this console-oriented launcher. Omitting --role keeps
 # today's behaviour byte-identical (`role=unsplit` on the log line, no env
 # change).
+#
+# --dry-run (HIMMEL-3140): prints the resolved argv this would hand to
+# konsole, plus the env it would apply, and exits 0 -- BEFORE the
+# signal/deadline wait loop, the dedup pgrep scan, the claim lock, or konsole
+# are ever touched. Every usage/argument validation below (usage-arity,
+# --role, context, the placeholder-name refusal, the NAME/DEADLINE shape
+# checks, and konsole/pgrep PATH availability) still runs first and can still
+# exit non-zero -- --dry-run only skips the parts that actually cost a real
+# launch. WHY: proving this launcher accepts a flag or a resolved argv used
+# to mean a REAL billed konsole+claude launch, twice (N279, N13-of-3133) --
+# second occurrence, structural seam.
 set -u
 
+usage() {
+    echo "usage: headed-arm.sh [--dry-run] [--role relay|console] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model] [context: 1m|standard]" >&2
+}
+
 ROLE=""
+DRY_RUN=0
 while :; do
     case "${1:-}" in
+        --dry-run) DRY_RUN=1; shift ;;
         --role)
             if [ "$#" -lt 2 ]; then
-                echo "usage: headed-arm.sh [--role relay|console] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model] [context: 1m|standard]" >&2
+                usage
                 exit 2
             fi
             ROLE="$2"
@@ -335,7 +352,7 @@ while :; do
                     exit 2
                     ;;
                 *)
-                    echo "usage: headed-arm.sh [--role relay|console] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model] [context: 1m|standard]" >&2
+                    usage
                     echo "headed-arm.sh: --role must be relay or console, got: $ROLE" >&2
                     exit 2
                     ;;
@@ -347,7 +364,7 @@ while :; do
 done
 
 if [ "$#" -lt 5 ]; then
-    echo "usage: headed-arm.sh [--role relay|console] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model] [context: 1m|standard]" >&2
+    usage
     exit 2
 fi
 
@@ -382,7 +399,7 @@ else
     fi
 fi
 if ! console_context_valid "$CONTEXT"; then
-    echo "usage: headed-arm.sh [--role relay|console] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model] [context: 1m|standard]" >&2
+    usage
     echo "headed-arm: context must be 1m or standard, got: $CONTEXT" >&2
     exit 2
 fi
@@ -393,7 +410,7 @@ fi
 # check already passed (the `elif` above only reaches 1m when it did), so
 # this only ever fires for an explicit positional `1m` without the env.
 if [ "$CONTEXT" = "1m" ] && [ "${CONSOLE_CONTEXT:-}" != "1m" ]; then
-    echo "usage: headed-arm.sh [--role relay|console] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model] [context: 1m|standard]" >&2
+    usage
     echo "headed-arm: refusing 1m context: set CONSOLE_CONTEXT=1m in the launching shell to opt in; omit [context] or pass standard for the --autocompact 200000 default." >&2
     exit 2
 fi
@@ -508,6 +525,19 @@ case "$NAME" in
     */*) echo "headed-arm: session name must not contain '/': '$NAME'" >&2; exit 2 ;;
 esac
 
+# HIMMEL-3140: no legitimate caller (console.sh, headed-arm-leg.sh) ever
+# passes one of the usage string's own placeholder tokens - both build a
+# real session name first. The likeliest way one of these reaches NAME is a
+# human copy-pasting the usage line verbatim (including the angle brackets)
+# while hand-testing --dry-run. Refuse loudly rather than let a --dry-run
+# report look like a genuine one for args nobody meant to pass.
+case "$NAME" in
+    name|session|'<session-name>')
+        echo "headed-arm: '$NAME' looks like a placeholder copied from the usage string, not a real session name - check what you're actually invoking" >&2
+        exit 2
+        ;;
+esac
+
 case "$DEADLINE" in
     ''|*[!0-9]*) echo "headed-arm: deadline must be an epoch second, got '$DEADLINE'" >&2; exit 2 ;;
 esac
@@ -522,6 +552,25 @@ fi
 if ! command -v "$PGREP" >/dev/null 2>&1; then
     echo "headed-arm: no '$PGREP' on PATH - dedup needs pgrep (procps) to tell whether a session named $NAME is already running; refusing rather than risk launching a duplicate (HIMMEL-2545)" >&2
     exit 4
+fi
+
+# HIMMEL-3140: everything above this point is pure argument resolution and
+# validation (usage-arity, --role, context, the placeholder-name refusal,
+# NAME/DEADLINE shape, konsole/pgrep PATH availability) - none of it writes
+# to $LOG, touches the claim lock, or execs anything. Report the resolved
+# argv and env here and exit, before the ONLY parts of this script that cost
+# a real launch: the signal/deadline wait loop, the dedup pgrep scan, the
+# claim lock, and konsole itself.
+if [ "$DRY_RUN" -eq 1 ]; then
+    printf 'headed-arm: would exec: %s\n' "$(printf '%q ' "${LAUNCH_ARGV[@]}")"
+    printf 'headed-arm: env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID%s CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 HIMMEL_INITIATIVE=%s ARMAUTOMERGE=1%s\n' \
+        "${ROLE_ENV_UNSET:+ $ROLE_ENV_UNSET}" "$INIT" "${LAUNCHER_ENV:+ $LAUNCHER_ENV}"
+    printf 'headed-arm: name=%s doc=%s signal=%s deadline=%s log=%s role=%s\n' \
+        "$NAME" "$DOC" "$SIGNAL" "$DEADLINE" "$LOG" "${ROLE:-unsplit}"
+    printf 'headed-arm: %s (autocompact=%s)\n' "$CONTEXT_REASON" "$AUTOCOMPACT"
+    printf 'headed-arm: launcher=%s recorder=%s konsole=%s pgrep=%s repo=%s\n' \
+        "$LAUNCHER" "$RECORDER" "$KONSOLE" "$PGREP" "$REPO"
+    exit 0
 fi
 
 echo "$(date +%F_%T) armed: name=$NAME doc=$DOC signal=$SIGNAL deadline=$DEADLINE role=${ROLE:-unsplit}" >> "$LOG"
