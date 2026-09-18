@@ -247,7 +247,7 @@ pconsole="$W/psconsole"; mk_ps_stub "$pconsole" \
   '9001:claude:--model claude-opus-5 -n HIMMEL-1000-leg load doc' \
   '9002:claude:--model claude-opus-5 -n HIMMEL-1001-leg load doc' \
   '9003:claude:--model claude-opus-5 -n HIMMEL-1002-leg load doc' \
-  '9004:claude:--model claude-fable-5-1 -n HIMMEL-nextleg-2026-09-05V-console load doc'
+  '9004:claude:--model claude-opus-5 -n HIMMEL-nextleg-2026-09-05V-console load doc'
 check "3 legs + 1 console, cap=4 -> PROCEED (console excluded)" PROCEED \
   "$(fleet_verdict "$pconsole" HIMMEL_FLEET_CAP=4)"
 

@@ -385,7 +385,9 @@ if [ "$DATE_GIVEN" -eq 1 ]; then
     esac
 fi
 state_dir="$root/$slug/$bucket"
-model="${MODEL:-${CONSOLE_MODEL:-claude-fable-5-1}}"
+# HIMMEL-3079: the console parent defaults to Opus (default parent tier);
+# Fable is the escalation target, reached only via --model / CONSOLE_MODEL.
+model="${MODEL:-${CONSOLE_MODEL:-claude-opus-5}}"
 fill_percent="${CONSOLE_FILL_PERCENT:-45}"
 # HIMMEL-2973 (genuinely shared as of HIMMEL-2975 T6): do_arm passes
 # headed-arm.sh no [context] positional, so headed-arm.sh's own default

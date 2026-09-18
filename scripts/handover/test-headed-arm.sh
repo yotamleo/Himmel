@@ -243,7 +243,8 @@ contains "happy path: clears CLAUDE_CODE_SESSION_ID"    "$rec1" "-u CLAUDE_CODE_
 contains "happy path: passes --separate (own process, not a hand-off)" "$rec1" "--separate"
 contains "happy path: forces session persistence"       "$rec1" "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1"
 contains "happy path: carries the session name via -n"  "$rec1" "-n HIMMEL-9999-leg"
-contains "happy path: carries the default model"        "$rec1" "claude-fable-5-1"
+contains     "happy path: carries the default model (Opus parent, HIMMEL-3079)" "$rec1" "claude-opus-5"
+not_contains "happy path: default model is not Fable"   "$rec1" "claude-fable-5-1"
 contains "happy path: doc reaches the prompt"            "$rec1" "load some/handover-doc.md and continue"
 # HIMMEL-2973: default [context] is now `standard` (--autocompact 200000) --
 # the console arm path is the biggest cache-read cost driver on the fleet
@@ -251,7 +252,7 @@ contains "happy path: doc reaches the prompt"            "$rec1" "load some/hand
 # CONSOLE_CONTEXT=1m in the launching shell, never the bare default.
 contains     "happy path: default context passes autocompact 200000" "$rec1" "--autocompact 200000"
 not_contains "happy path: default context has no autocompact auto"   "$rec1" "--autocompact auto"
-not_contains "happy path: default Fable model carries no [1m] suffix" "$rec1" "[1m]"
+not_contains "happy path: default model carries no [1m] suffix" "$rec1" "[1m]"
 log1="$(cat "$d1/log" 2>/dev/null || true)"
 contains "happy path: log records the default context (standard)" "$log1" "context=standard (default)"
 
@@ -290,11 +291,11 @@ contains "positional 1m with env: passes autocompact auto" "$rec1d" "--autocompa
 
 # --- 2. explicit model overrides the default -----------------------------
 d2="$tmp/c2"; mk_stub "$d2" 1 alive "HIMMEL-leg2"
-run_headed_arm "$d2" "$REPO" "HIMMEL-leg2" "doc2.md" "$d2/signal-never" "$PAST" "claude-opus-5" >/dev/null 2>&1
+run_headed_arm "$d2" "$REPO" "HIMMEL-leg2" "doc2.md" "$d2/signal-never" "$PAST" "claude-fable-5-1" >/dev/null 2>&1
 wait_record "$d2" || true
 rec2="$(cat "$d2/record" 2>/dev/null || true)"
-contains     "explicit model: carries the given model" "$rec2" "claude-opus-5"
-not_contains "explicit model: does not fall back to the default" "$rec2" "claude-fable-5-1"
+contains     "explicit model: carries the given model (Fable stays reachable)" "$rec2" "claude-fable-5-1"
+not_contains "explicit model: does not fall back to the default" "$rec2" "claude-opus-5"
 
 # --- 2b (HIMMEL-2658). explicit [context] positional, non-default value ---
 # claude-opus-5 is not Fable-family, so `standard` here also proves the

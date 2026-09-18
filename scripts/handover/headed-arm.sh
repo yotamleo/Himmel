@@ -373,7 +373,9 @@ fi
 # script's own source location never moves with it.
 . "$(cd "$(dirname "$0")" && pwd)/../lib/console-context.sh"
 
-NAME="$1"; DOC="$2"; SIGNAL="$3"; DEADLINE="$4"; LOG="$5"; MODEL="${6:-claude-fable-5-1}"
+# HIMMEL-3079: the console parent defaults to Opus (default parent tier);
+# Fable is the escalation target, reached only via an explicit [model].
+NAME="$1"; DOC="$2"; SIGNAL="$3"; DEADLINE="$4"; LOG="$5"; MODEL="${6:-claude-opus-5}"
 # HIMMEL-2973 (default re-pinned by HIMMEL-2975 T6, resolution now shared
 # via scripts/lib/console-context.sh): --context resolution, arming-time
 # only (see the header comment above). Defaults to `standard`
@@ -415,8 +417,8 @@ if [ "$CONTEXT" = "1m" ] && [ "${CONSOLE_CONTEXT:-}" != "1m" ]; then
     exit 2
 fi
 # Fable-family match (shared with arm-resume.sh via console_context_model_is_fable)
-# -- the default MODEL here IS Fable, so the common path through this
-# script hits this branch every time.
+# -- only an explicit Fable [model] takes this branch now (the default MODEL
+# is Opus, HIMMEL-3079).
 _headed_model_is_fable=0
 if console_context_model_is_fable "$MODEL"; then
     _headed_model_is_fable=1

@@ -1302,4 +1302,39 @@ check "60 the control: Compact instructions marker does not leak into the HANDOF
 check "60 successor doc itself was still written" "$([ -s "$doc60B" ] && echo yes)" "yes"
 HANDOVER_DIR="$root" bash "$QL" release "$doc60A" "$token60a" >/dev/null 2>&1
 
+# --- 61: HIMMEL-3079 -- the console parent defaults to Opus, not Fable
+# (Opus = default parent, Fable = the escalation target; operator halt
+# 2026-09-14). The armed path has no terminal to notice a wrong default, so
+# the check reads what the arm stub actually RECEIVED (its model positional,
+# $6), not just the printed --dry-run line. CONSOLE_MODEL is unset in every
+# subshell so an ambient value cannot mask the built-in default. Fable stays
+# reachable through an explicit --model / CONSOLE_MODEL.
+out61a="$( ( cd "$fixture_repo" && unset CONSOLE_MODEL && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    CONSOLE_WORK_DIR="$tmp/work" bash "$C" new --bucket modeldefault --dry-run --arm ) )"
+check "61 dry-run --arm launch line defaults to claude-opus-5" \
+    "$(printf '%s\n' "$out61a" | grep -c '^would-launch: .* claude --model claude-opus-5 ')" "1"
+check "61 dry-run --arm launch line carries no fable model" \
+    "$(printf '%s\n' "$out61a" | grep -c 'claude-fable-5-1')" "0"
+out61b="$( ( cd "$fixture_repo" && unset CONSOLE_MODEL && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    CONSOLE_WORK_DIR="$tmp/work" bash "$C" new --bucket modeldefault --dry-run --arm --model claude-fable-5-1 ) )"
+check "61 explicit --model claude-fable-5-1 still launches Fable" \
+    "$(printf '%s\n' "$out61b" | grep -c '^would-launch: .* claude --model claude-fable-5-1 ')" "1"
+out61c="$( ( cd "$fixture_repo" && CONSOLE_MODEL=claude-fable-5-1 HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    CONSOLE_WORK_DIR="$tmp/work" bash "$C" new --bucket modeldefault --dry-run --arm ) )"
+check "61 CONSOLE_MODEL=claude-fable-5-1 still launches Fable" \
+    "$(printf '%s\n' "$out61c" | grep -c '^would-launch: .* claude --model claude-fable-5-1 ')" "1"
+
+record61="$tmp/record-61"
+cat > "$tmp/stub-arm-model-61.sh" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$6" >> "$record61"
+STUB
+chmod +x "$tmp/stub-arm-model-61.sh"
+out61d="$( ( cd "$fixture_repo" && unset CONSOLE_MODEL && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    CONSOLE_HEADED_ARM="$tmp/stub-arm-model-61.sh" CONSOLE_ARM_FOREGROUND=1 CONSOLE_WORK_DIR="$tmp/work" \
+    bash "$C" new --bucket modeldefault --arm --deadline-min 0 ) )"
+token61d="$(token_of "$out61d")"
+check "61 armed console without --model: the arm target received claude-opus-5" "$(cat "$record61" 2>/dev/null)" "claude-opus-5"
+HANDOVER_DIR="$root" bash "$QL" release "$root/tester/modeldefault/DEMO-nextleg-${today}A-console.md" "$token61d" >/dev/null 2>&1
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }
