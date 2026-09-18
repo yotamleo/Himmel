@@ -193,6 +193,12 @@ own end-of-session hook still writing — it prunes on the next sweep.
 
 - **Operator messages are additive.** A new task is added to the in-flight
   work; pivot only on an explicit halt or redirect.
+- **Idle capacity is your duty.** On a tick's `capacity=UNDERFILLED:<slack>`
+  (`fleet=<live>/<cap>` below cap, no launch for `TICK_UNDERFILL_MIN` minutes,
+  default 10), pull dispatchable work from the Jira backlog — not only the held
+  queue — after a file-collision check against live legs and open PRs, and
+  launch up to `<slack>` legs. `capacity=unknown` means the census failed, not
+  that capacity is fine.
 - **A leg's BLOCKED, permission prompt, or question comes to the console
   first** — say so in every brief.
 - **One session = one worktree.** Worktree isolation pins a session to the

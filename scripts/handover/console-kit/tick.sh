@@ -33,6 +33,14 @@ a "tick: no such leg doc: <path>" warning on stderr and is reported as
 NOTFOUND in legs=, never as MISSING -- MISSING is reserved for a lock that is
 actually gone.
 
+fleet=<live>/<cap> and capacity= (HIMMEL-3167) are always appended, last on the
+line. fleet= is bank-preflight.sh's own census (native + claudex + reserved,
+HIMMEL_FLEET_CAP) -- never a second count; fleet=? when that census cannot be
+read. capacity=UNDERFILLED:<slack> means live < cap AND no leg launched for
+TICK_UNDERFILL_MIN minutes (default 10); capacity=ok otherwise, capacity=unknown
+when fleet=?. TICK_LAUNCH_DIR overrides the console work dir the launch logs
+are read from.
+
 --burn adds a per-leg context-burn field (first-turn/avg-ctx, via
 scripts/lanes/leg-burn.sh) for every doc in --legs. OPT-IN because it scans
 the Claude Code transcript root, which a plain tick must never do: a tick runs
@@ -104,6 +112,13 @@ leg_label() {
     printf '%s' "$label" | tr -c 'A-Za-z0-9_.-' '_'
 }
 
+# HIMMEL-3167: a leg doc is <TICKET>-N<k>-<slug>-<YYYY-MM-DD>[-RESUME].md but
+# headed-arm-leg.sh names the session <TICKET>-N<k>-<slug> (no date), so the
+# doc stem alone matched nothing and a live leg read procs=0.
+undated_stem() {
+    printf '%s' "$1" | sed -E 's/-[0-9]{4}-[0-9]{2}-[0-9]{2}$//'
+}
+
 csv_add() {
     if [ -n "$1" ]; then
         printf '%s,%s' "$1" "$2"
@@ -145,6 +160,8 @@ for leg in $LEGS_SPLIT; do
     label="$(leg_label "$leg")"
     leg_stem="${leg##*/}"; leg_stem="${leg_stem%.md}"; leg_stem="${leg_stem%-RESUME}"
     leg_names="$(csv_add "$leg_names" "$leg_stem")"
+    leg_undated="$(undated_stem "$leg_stem")"
+    [ "$leg_undated" = "$leg_stem" ] || leg_names="$(csv_add "$leg_names" "$leg_undated")"
     # HIMMEL-3130: NOTFOUND (file does not resolve) is a distinct status from
     # MISSING. MISSING means "the lock is gone" -- exactly the signal a
     # console reads as "reclaim this leg's lock" -- and must never be used for
@@ -406,6 +423,46 @@ if [ -n "$root" ] && [ -d "$root/inbox" ]; then
 fi
 [ -n "$inbox_summary" ] || inbox_summary=none
 
+# fleet=<live>/<cap> + capacity= (HIMMEL-3167). The census is bank-preflight.sh's
+# own -- it counts native + claudex + reserved against HIMMEL_FLEET_CAP inline,
+# in a script that exits, so its `FLEET ... total=<n>/<cap>` line is the seam
+# (a second count here would be the drift this field exists to end). Run as a
+# plain read: CADENCE_BANK_LAUNCH stays empty so it can never refuse anything,
+# and the ledger goes to /dev/null so a tick writes no cadence-ledger row.
+# ponytail: bank-preflight still takes its fleet admission lock and prunes
+# expired/consumed reservations while it counts, exactly as any bank read does.
+fleet_out="$(CADENCE_BANK_LAUNCH='' CADENCE_BANK_LEDGER=/dev/null bash "$REPO/scripts/lib/bank-preflight.sh" 2>&1 >/dev/null)" || fleet_out=""
+fleet_total="$(printf '%s\n' "$fleet_out" | sed -n 's/^bank-preflight: FLEET .*total=\([0-9][0-9]*\)\/\([0-9][0-9]*\)$/\1 \2/p' | tail -n 1)"
+underfill_min="${TICK_UNDERFILL_MIN:-10}"
+case "$underfill_min" in ''|*[!0-9]*) underfill_min=10 ;; esac
+if [ -n "$fleet_total" ]; then
+    fleet_live="${fleet_total% *}"
+    fleet_cap="${fleet_total#* }"
+    fleet="$fleet_live/$fleet_cap"
+    # Last dispatch = newest <name>.launch.log under the console work dir: the
+    # file's final write is the "konsole launched" line, so its mtime is the
+    # real window start (the sig- file is touched again at release, and lock
+    # dirs are re-stamped by every heartbeat). The dir is fleet-wide, like the
+    # census, so any console's recent launch counts as capacity being filled.
+    launch_dir="${TICK_LAUNCH_DIR:-}"
+    if [ -z "$launch_dir" ]; then
+        if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "$XDG_RUNTIME_DIR/himmel-console" ]; then
+            launch_dir="$XDG_RUNTIME_DIR/himmel-console"
+        else
+            launch_dir="${TMPDIR:-/tmp}/himmel-console-$(id -u)"
+        fi
+    fi
+    recent_launch="$(find "$launch_dir" -maxdepth 2 -name '*.launch.log' -mmin "-$underfill_min" 2>/dev/null | head -n 1)"
+    if [ $((10#$fleet_live)) -ge $((10#$fleet_cap)) ] || [ -n "$recent_launch" ]; then
+        capacity=ok
+    else
+        capacity="UNDERFILLED:$((10#$fleet_cap - 10#$fleet_live))"
+    fi
+else
+    fleet='?'
+    capacity=unknown
+fi
+
 # tick=ARMED|MISSING|UNKNOWN (HIMMEL-3144 D2): whether the periodic Monitor
 # call that is SUPPOSED to invoke this script every 60 min (the console
 # template's `## Monitors` tick row, armed in ACTION ZERO step 10) is
@@ -435,6 +492,12 @@ if [ "$burn" -eq 1 ]; then
         stem="${leg##*/}"; stem="${stem%.md}"; stem="${stem%-RESUME}"
         burn_label="$(leg_label "$leg")"
         burn_line="$(bash "$REPO/scripts/lanes/leg-burn.sh" "$stem" 2>/dev/null)" || burn_line=""
+        if [ -z "$burn_line" ]; then
+            # HIMMEL-3167: the session name has no -YYYY-MM-DD suffix (see
+            # undated_stem above); retry with the name headed-arm-leg.sh used.
+            burn_undated="$(undated_stem "$stem")"
+            [ "$burn_undated" = "$stem" ] || burn_line="$(bash "$REPO/scripts/lanes/leg-burn.sh" "$burn_undated" 2>/dev/null)" || burn_line=""
+        fi
         if [ -n "$burn_line" ]; then
             burn_ft="$(printf '%s\n' "$burn_line" | sed -n 's/.*first-turn=\([^ ]*\).*/\1/p')"
             burn_avg="$(printf '%s\n' "$burn_line" | sed -n 's/.*avg-ctx=\([^ ]*\).*/\1/p')"
@@ -467,15 +530,18 @@ if [ "$verbose" -eq 1 ]; then
     if [ "$burn" -eq 1 ]; then
         printf 'leg burn (first-turn/avg-ctx): %s\n' "$burn_summary"
     fi
+    printf 'fleet: %s\n' "$fleet"
+    printf 'capacity: %s\n' "$capacity"
 else
     # `tick=` is always appended (HIMMEL-3144); `burn=` stays APPENDED only
-    # under --burn, after it, so a plain --verbose tick without --burn only
-    # ever gains the one new field.
+    # under --burn, after it. `fleet=`/`capacity=` (HIMMEL-3167) are appended
+    # after everything else, so a consumer keyed on the existing fields and
+    # their order sees them only as a tail.
     if [ "$burn" -eq 1 ]; then
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity"
     else
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity"
     fi
 fi

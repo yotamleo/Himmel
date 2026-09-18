@@ -124,6 +124,15 @@ pasted into the brief. Detail:
 `block-leg-askuserquestion.sh` (HIMMEL-2923) uses to structurally deny
 `AskUserQuestion` on the leg, rather than relying on the brief's prose NEVER.
 
+**Idle capacity is the console's duty.** `tick.sh` appends `fleet=<live>/<cap>`
+(bank-preflight's own census: native + claudex + reserved, `HIMMEL_FLEET_CAP`)
+and `capacity=`. On `capacity=UNDERFILLED:<slack>` — live below cap and no leg
+launched for `TICK_UNDERFILL_MIN` minutes (default 10) — pull dispatchable work
+from the Jira backlog, not only the held queue, after a file-collision check
+against live legs and open PRs, and launch up to `<slack>` legs.
+`capacity=unknown` (`fleet=?`) means the census could not be read, not that
+capacity is fine.
+
 ## Claudex legs: the inbox is the only channel
 
 A `--lane claudex` leg (`headed-arm-leg.sh`, HIMMEL-2782) runs under

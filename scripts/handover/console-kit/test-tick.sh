@@ -74,6 +74,8 @@ cat > "$W/repo/scripts/lanes/leg-burn.sh" <<'STUB'
 case "$1" in
   HIMMEL-111-legN61)
     printf 'leg-burn x.jsonl: calls=4 avg-ctx=128.1k first-turn=74.3k out=185 compactions=2 text-only=2\n' ;;
+  HIMMEL-555-N41-thing)
+    printf 'leg-burn y.jsonl: calls=9 avg-ctx=90.0k first-turn=60.0k out=100 compactions=0 text-only=1\n' ;;
   *) printf 'leg-burn: no transcript found for session name: %s\n' "$1" >&2; exit 2 ;;
 esac
 STUB
@@ -117,7 +119,18 @@ cp "$HERE/../../lanes/ceiling-conformance.sh" "$W/repo/scripts/lanes/ceiling-con
 # source by $REPO-relative path.
 cp "$HERE/../../lanes/lib/claude-sessions.sh" "$W/repo/scripts/lanes/lib/claude-sessions.sh"
 
-chmod +x "$W/repo/scripts/handover/queue-lock.sh" "$W/repo/scripts/context-fill.sh" "$W/repo/scripts/lanes/leg-burn.sh" "$W/repo/scripts/lanes/ceiling-conformance.sh" "$W/bin/"*
+# HIMMEL-3167: fleet=/capacity= reuse bank-preflight.sh's FLEET line. This stub
+# prints the same stderr line shape (STUB_FLEET_LINE overrides it) and records
+# the env tick ran it under, so the suite can pin that tick never asks it for a
+# ledger row or a launch refusal.
+cat > "$W/repo/scripts/lib/bank-preflight.sh" <<'STUB'
+#!/usr/bin/env bash
+[ -z "${STUB_PF_SEEN:-}" ] || printf 'ledger=%s launch=%s\n' "${CADENCE_BANK_LEDGER:-unset}" "${CADENCE_BANK_LAUNCH:-unset}" > "$STUB_PF_SEEN"
+printf '%s\n' "${STUB_FLEET_LINE-bank-preflight: FLEET native=1 claudex=0 reserved=0 total=1/8}" >&2
+printf 'PROCEED\n'
+STUB
+
+chmod +x "$W/repo/scripts/handover/queue-lock.sh" "$W/repo/scripts/context-fill.sh" "$W/repo/scripts/lanes/leg-burn.sh" "$W/repo/scripts/lanes/ceiling-conformance.sh" "$W/repo/scripts/lib/bank-preflight.sh" "$W/bin/"*
 
 printf '%s\n' '{"five_hour":{"utilization":30},"seven_day":{"utilization":28}}' > "$W/bank.json"
 printf '%s\n' '# leg' '- LIVE — working' > "$W/handover/HIMMEL-111-legN61.md"
@@ -137,9 +150,12 @@ export REPO="$W/repo"
 export TICK_TMPDIR="$W"
 export TICK_BANK_CACHE_FILE="$W/bank.json"
 export CLAUDE_SESSIONS_PROC="$W/proc"
+# HIMMEL-3167: launch logs live in <work-dir>/<chain>/<name>.launch.log.
+export TICK_LAUNCH_DIR="$W/console-work"
+mkdir -p "$W/console-work/chain"
 
 out="$(bash "$SUT")"; rc=$?
-expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN'
+expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7'
 lines="$(printf '%s\n' "$out" | wc -l | tr -d '[:space:]')"
 if [ "$rc" -eq 0 ] && [ "$lines" = 1 ] && [ "$out" = "$expected" ]; then
     pass 'default run emits exactly the expected one batched line'
@@ -434,6 +450,73 @@ case "$no_legs_out" in
     *'procs=0'*) fail 'no --legs must not render procs=0' ;;
     *) pass 'no --legs must not render procs=0' ;;
 esac
+
+# --- HIMMEL-3167: fleet=<live>/<cap> + capacity= ------------------------------
+# fleet= is bank-preflight.sh's own census (its FLEET total=n/cap line), never a
+# second count. capacity=UNDERFILLED:<slack> fires when live < cap AND no leg has
+# launched for TICK_UNDERFILL_MIN (default 10) minutes, judged by the newest
+# <name>.launch.log mtime under the console work dir.
+launch_log="$W/console-work/chain/HIMMEL-9-N1-x.launch.log"
+: > "$launch_log"; touch -d '2 hours ago' "$launch_log"
+old_out="$(bash "$SUT")"
+contains 'fleet=<live>/<cap> comes from the bank-preflight census (HIMMEL-3167)' "$old_out" 'fleet=1/8'
+contains 'live < cap and an old last dispatch is UNDERFILLED:<slack> (HIMMEL-3167)' "$old_out" 'capacity=UNDERFILLED:7'
+: > "$launch_log"
+fresh_out="$(bash "$SUT")"
+contains 'a fresh dispatch reads capacity=ok (HIMMEL-3167 control)' "$fresh_out" 'fleet=1/8 capacity=ok'
+touch -d '2 hours ago' "$launch_log"
+tuned_out="$(TICK_UNDERFILL_MIN=180 bash "$SUT")"
+contains 'TICK_UNDERFILL_MIN moves the threshold (HIMMEL-3167)' "$tuned_out" 'capacity=ok'
+bad_min_out="$(TICK_UNDERFILL_MIN=abc bash "$SUT")"
+contains 'a non-numeric TICK_UNDERFILL_MIN falls back to 10 (HIMMEL-3167)' "$bad_min_out" 'capacity=UNDERFILLED:7'
+full_out="$(STUB_FLEET_LINE='bank-preflight: FLEET native=8 claudex=0 reserved=0 total=8/8' bash "$SUT")"
+contains 'live == cap is never underfilled (HIMMEL-3167)' "$full_out" 'fleet=8/8 capacity=ok'
+res_out="$(STUB_FLEET_LINE='bank-preflight: FLEET native=6 claudex=1 reserved=1 total=8/8' bash "$SUT")"
+contains 'native+claudex+reserved arrive as bank-preflight total (HIMMEL-3167)' "$res_out" 'fleet=8/8'
+cap4_out="$(STUB_FLEET_LINE='bank-preflight: FLEET native=1 claudex=0 reserved=0 total=1/4' bash "$SUT")"
+contains 'the cap is bank-preflight cap, not a tick constant (HIMMEL-3167)' "$cap4_out" 'fleet=1/4 capacity=UNDERFILLED:3'
+fail_out="$(STUB_FLEET_LINE='bank-preflight: FLEET ?/8' bash "$SUT")"
+contains 'a failed fleet census reports fleet=? (HIMMEL-3167)' "$fail_out" 'fleet=? capacity=unknown'
+case "$fail_out" in
+    *'capacity=ok'*|*UNDERFILLED*) fail 'a failed fleet census must not claim ok/UNDERFILLED (HIMMEL-3167)' ;;
+    *) pass 'a failed fleet census must not claim ok/UNDERFILLED (HIMMEL-3167)' ;;
+esac
+mv "$W/repo/scripts/lib/bank-preflight.sh" "$W/bank-preflight.sh.away"
+gone_out="$(bash "$SUT")"
+contains 'a missing bank-preflight.sh reports fleet=? (HIMMEL-3167)' "$gone_out" 'fleet=? capacity=unknown'
+mv "$W/bank-preflight.sh.away" "$W/repo/scripts/lib/bank-preflight.sh"
+STUB_PF_SEEN="$W/pf-seen" bash "$SUT" >/dev/null
+contains 'tick asks bank-preflight for no ledger row and no launch refusal (HIMMEL-3167)' "$(cat "$W/pf-seen" 2>/dev/null)" 'ledger=/dev/null launch=unset'
+rm -f "$launch_log"
+none_out="$(bash "$SUT")"
+contains 'no launch log at all counts as no recent dispatch (HIMMEL-3167)' "$none_out" 'capacity=UNDERFILLED:7'
+mkdir -p "$W/xdg/himmel-console/chain"
+: > "$W/xdg/himmel-console/chain/HIMMEL-9-N1-x.launch.log"
+xdg_out="$(env -u TICK_LAUNCH_DIR XDG_RUNTIME_DIR="$W/xdg" bash "$SUT")"
+contains 'the default launch dir is XDG_RUNTIME_DIR/himmel-console (HIMMEL-3167)' "$xdg_out" 'capacity=ok'
+verbose_cap="$(bash "$SUT" --verbose)"
+contains '--verbose labels fleet (HIMMEL-3167)' "$verbose_cap" 'fleet: 1/8'
+contains '--verbose labels capacity (HIMMEL-3167)' "$verbose_cap" 'capacity: UNDERFILLED:7'
+burn_cap="$(bash "$SUT" --burn --legs 'HIMMEL-111-legN61')"
+case "$burn_cap" in
+    *' burn=N61:'*' fleet=1/8 capacity=UNDERFILLED:7') pass 'fleet=/capacity= append after every existing field incl. burn= (HIMMEL-3167)' ;;
+    *) fail "fleet=/capacity= not appended last under --burn (out='$burn_cap')" ;;
+esac
+
+# --- HIMMEL-3167 (3): procs=0 for a live headed leg. headed-arm-leg.sh names the
+# session <TICKET>-N<k>-<slug> with NO date, while the leg DOC is
+# <TICKET>-N<k>-<slug>-<YYYY-MM-DD>[-RESUME].md; the census filter matched the
+# doc stem verbatim, so a live leg read procs=0 (reproduced on N41 itself).
+mkcmdline 108 claude --settings /run/user/1000/himmel-console/x/HIMMEL-555-N41-thing.leg-settings.json \
+    --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-555-N41-thing work
+mk_pgrep_x "$W/bin-dated" 108
+dated_out="$(PATH="$W/bin-dated:$PATH" bash "$SUT" --legs 'HIMMEL-555-N41-thing-2026-09-18')"
+contains 'a date-suffixed leg doc still counts its live session in procs= (HIMMEL-3167)' "$dated_out" 'procs=1'
+contains 'a date-suffixed leg doc still buckets its model (HIMMEL-3167)' "$dated_out" 'models=sonnet:1'
+dated_resume_out="$(PATH="$W/bin-dated:$PATH" bash "$SUT" --legs 'HIMMEL-555-N41-thing-2026-09-18-RESUME')"
+contains 'a date-suffixed -RESUME doc still counts its live session (HIMMEL-3167)' "$dated_resume_out" 'procs=1'
+dated_burn_out="$(PATH="$W/bin-dated:$PATH" bash "$SUT" --burn --legs 'HIMMEL-555-N41-thing-2026-09-18')"
+contains 'a date-suffixed leg doc still resolves its --burn transcript (HIMMEL-3167)' "$dated_burn_out" 'burn=N41:60.0k/90.0k'
 
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-tick.sh'
