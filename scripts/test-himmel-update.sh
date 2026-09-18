@@ -785,6 +785,39 @@ case "$out" in
     *) pass=$((pass + 1)); echo "  PASS: ls-remote failure: must not be misreported as 'no stable release yet'" ;;
 esac
 
+# ─── Test 23 (HIMMEL-3101): an uninspectable repo must NOT be pulled ────────
+# is_dirty_tracked() returning "clean" on a `git status` it could not even run
+# would let the pull gate below wave a repo it never actually inspected
+# through to `git pull --ff-only` — the exact silent-mix-in failure the dirty
+# guard exists to prevent. A PATH-stub intercepts ONLY the is_dirty_tracked
+# call shape (`status --porcelain --untracked-files=no`) and fails it; every
+# other git subcommand (fetch, rev-parse, pull, ...) passes through to the
+# real binary so the rest of the chain runs normally.
+echo "Test 23: git status failure inside is_dirty_tracked fails safe — refuses to pull, not silently proceeds"
+make_repo_behind 0
+REAL_GIT=$(command -v git)
+TH23_STUB="$TMP/th23-git-stub"
+mkdir -p "$TH23_STUB"
+cat > "$TH23_STUB/git" <<SHIM
+#!/usr/bin/env bash
+if [ "\$1" = "-C" ] && [ "\$3" = "status" ] && [ "\$4" = "--porcelain" ] && [ "\$5" = "--untracked-files=no" ]; then
+    exit 128
+fi
+exec "$REAL_GIT" "\$@"
+SHIM
+chmod +x "$TH23_STUB/git"
+# Precondition: the stub is the git actually resolved on this PATH.
+resolved_git=$(PATH="$TH23_STUB:$PATH" command -v git)
+assert_eq "git-status-fails: stub is the git resolved on PATH" "$TH23_STUB/git" "$resolved_git"
+head_before=$(git -C "$CHECKOUT_DIR" rev-parse HEAD)
+rc=0
+out=$(PATH="$TH23_STUB:$PATH" bash "$CHECKOUT_DIR/scripts/himmel-update.sh" 2>&1) || rc=$?
+assert_eq "git-status-fails: refuses (rc 1), not a silent pass-through" "1" "$rc"
+assert_contains "git-status-fails: warns on stderr naming the dir" "is_dirty_tracked: git status failed in $CHECKOUT_DIR" "$out"
+assert_contains "git-status-fails: refuses to pull into a dirty tree" "refusing to pull into a dirty tree" "$out"
+head_after=$(git -C "$CHECKOUT_DIR" rev-parse HEAD)
+assert_eq "git-status-fails: HEAD unchanged — never pulled" "$head_before" "$head_after"
+
 # ─── Summary ─────────────────────────────────────────────────────────────────
 echo
 echo "RESULTS: $pass passed, $fail failed"

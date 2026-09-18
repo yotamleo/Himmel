@@ -47,7 +47,10 @@ cd "$ROOT"
 is_dirty_tracked() {
     local dir="${1:-.}"
     local out
-    out=$(git -C "$dir" status --porcelain --untracked-files=no 2>/dev/null) || return 2
+    out=$(git -C "$dir" status --porcelain --untracked-files=no 2>/dev/null) || {
+        echo "is_dirty_tracked: git status failed in $dir - treating as dirty" >&2
+        return 0
+    }
     [ -n "$out" ]
 }
 
