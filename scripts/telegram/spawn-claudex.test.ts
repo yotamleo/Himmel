@@ -2,7 +2,7 @@
 import { expect, test, spyOn } from "bun:test";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
-import { existsSync, mkdtempSync, realpathSync, rmSync, readFileSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, realpathSync, rmSync, readFileSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
 import { GIT_TEST_TIMEOUT_MS as CX_GIT_TEST_TIMEOUT_MS, fixtureDir, initHermeticRepo, makeSharedFixtureRepo, removeFixture } from "./fixture-repo";
 import { tmpdir } from "node:os";
 import {
@@ -32,6 +32,7 @@ import {
   claudexChildEnv,
   writeClaudexLiveMeta,
   executeClaudexRun,
+  claudexTranscriptRoot,
   captureTimeoutForensics,
   killThenCaptureTimeoutForensics,
   awaitDrainWithBound,
@@ -41,6 +42,7 @@ import {
   refuseNonPrimaryCwd,
 } from "./spawn-claudex";
 import { BASH_BIN } from "./run";
+import { resolveFailfastWindowMs } from "./spawn-glm";
 
 // HIMMEL-1096 (codex-adv round 2): runClaudexSharedDispatch now trust-seeds
 // UNCONDITIONALLY (needsWorktreeAdd true or false), so every test below that
@@ -1869,7 +1871,7 @@ test("executeClaudexRun: passes permMode/effort/repoRoot through to run() unchan
   try {
     const run = (async (prompt: string, cwd: string, opts: any) => { seen.push({ prompt, cwd, opts }); return { code: 0, capped: false, blocked: false, timedOut: false, pid: 1, tail: "" }; }) as any;
     await executeClaudexRun({ run, prompt: "the prompt", worktree: "/wt", permMode: "bypassPermissions", effort: "xhigh", repoRoot: "/repo", sessionDir: dir, metaPath, runningMeta });
-    expect(seen[0]).toEqual({ prompt: "the prompt", cwd: "/wt", opts: { permMode: "bypassPermissions", effort: "xhigh", repoRoot: "/repo", runLogPath: join(dir, "run.log"), timeoutForensicsPath: join(dir, "timeout-forensics.txt") } });
+    expect(seen[0]).toEqual({ prompt: "the prompt", cwd: "/wt", opts: { permMode: "bypassPermissions", effort: "xhigh", repoRoot: "/repo", runLogPath: join(dir, "run.log"), timeoutForensicsPath: join(dir, "timeout-forensics.txt"), onOutput: expect.any(Function) } });
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -2029,4 +2031,148 @@ test("HIMMEL-1778: runBody runs the shared huge-diff guard BEFORE the worker lau
   expect(/if \(hugeDiff\.note\) console\.error\(hugeDiff\.note\);/.test(src)).toBe(true);
   expect(src).toContain('from "./huge-diff-guard"');
   expect(src).not.toContain("function findDominatingPath");
+});
+
+// --- HIMMEL-3147: startup-hang watchdog for the claudex lane ---
+// Mirrors spawn-glm's HIMMEL-1575 suite (same shared armStartupWatchdog): a
+// worker that never starts (no transcript growth, no output beyond the
+// banner) is killed at the startup window and the run reports failed with a
+// startup-timeout reason; a worker that starts — then goes quiet — never is.
+
+const mangleCx = (p: string) => p.replace(/[^A-Za-z0-9]/g, "-");
+
+test("claudexTranscriptRoot is ~/.claude-codex/projects (claude-codex exports CLAUDE_CONFIG_DIR), not the glm ~/.claude/projects (HIMMEL-3147)", () => {
+  expect(claudexTranscriptRoot()).toBe(join(homedir(), ".claude-codex", "projects"));
+  expect(claudexTranscriptRoot()).not.toBe(join(homedir(), ".claude", "projects"));
+});
+
+test("resolveFailfastWindowMs: default 10 min, env override, 0/garbage/negative = off (HIMMEL-3147)", () => {
+  expect(resolveFailfastWindowMs(undefined)).toBe(600_000);
+  expect(resolveFailfastWindowMs("3")).toBe(180_000);
+  expect(resolveFailfastWindowMs("0")).toBe(0);
+  expect(resolveFailfastWindowMs("abc")).toBe(0);
+  expect(resolveFailfastWindowMs("-5")).toBe(0);
+});
+
+test("executeClaudexRun: startup watchdog kills a never-started worker and reports failed with a startup-timeout reason (HIMMEL-3147)", async () => {
+  const { dir, metaPath, runningMeta } = seedRunningMeta();
+  const watchRoot = mkdtempSync(join(tmpdir(), "cxwatch-"));
+  const stderr = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const killed: number[] = [];
+    let releaseHang: () => void = () => {};
+    const hang = (async (_p: string, _c: string, _opts: unknown, onSpawn: (pid: number) => void) => {
+      onSpawn(77);
+      await new Promise<void>((r) => { releaseHang = r; });
+      return { code: 143, capped: false, blocked: false, timedOut: false, pid: 77, tail: "" };
+    }) as any;
+    const t0 = Date.now();
+    const { code } = await executeClaudexRun({
+      run: hang, prompt: "p", worktree: dir, repoRoot: "/repo", sessionDir: dir, metaPath, runningMeta,
+      startupWatch: { rootDir: watchRoot, windowMs: 120, pollMs: 30, kill: (pid) => { killed.push(pid); releaseHang(); } },
+    } as any);
+    expect(Date.now() - t0).toBeLessThan(2_000); // reaped in the startup window, nowhere near a run deadline
+    expect(killed).toEqual([77]);
+    expect(code).toBe(143);
+    const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+    expect(meta.status).toBe("failed");
+    expect(meta.failure_class).toBe("startup-hang");
+    expect(meta.failure_reason).toMatch(/startup timeout/);
+  } finally { stderr.mockRestore(); rmSync(dir, { recursive: true, force: true }); rmSync(watchRoot, { recursive: true, force: true }); }
+});
+
+test("executeClaudexRun: a worker that STARTS (transcript grows) then goes quiet past the window is NOT killed (HIMMEL-3147 control)", async () => {
+  const { dir, metaPath, runningMeta } = seedRunningMeta();
+  const watchRoot = mkdtempSync(join(tmpdir(), "cxwatch-"));
+  try {
+    const projDir = join(watchRoot, mangleCx(resolve(dir)));
+    mkdirSync(projDir, { recursive: true });
+    const transcript = join(projDir, "s.jsonl");
+    writeFileSync(transcript, "{\"role\":\"user\"}\n");
+    const killed: number[] = [];
+    const quiet = (async (_p: string, _c: string, _opts: unknown, onSpawn: (pid: number) => void) => {
+      onSpawn(78);
+      await new Promise((r) => setTimeout(r, 60));
+      appendFileSync(transcript, "{\"role\":\"assistant\"}\n"); // the model answers — stdout stays silent
+      await new Promise((r) => setTimeout(r, 300)); // outlive the window by 2x
+      return { code: 0, capped: false, blocked: false, timedOut: false, pid: 78, tail: "" };
+    }) as any;
+    const { code } = await executeClaudexRun({
+      run: quiet, prompt: "p", worktree: dir, repoRoot: "/repo", sessionDir: dir, metaPath, runningMeta,
+      startupWatch: { rootDir: watchRoot, windowMs: 150, pollMs: 30, kill: (pid) => { killed.push(pid); } },
+    } as any);
+    expect(killed).toEqual([]);
+    expect(code).toBe(0);
+    const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+    expect(meta.status).toBe("done");
+    expect(meta.failure_class).toBeUndefined();
+  } finally { rmSync(dir, { recursive: true, force: true }); rmSync(watchRoot, { recursive: true, force: true }); }
+});
+
+test("executeClaudexRun: real output beyond the banner DISARMS the watchdog (HIMMEL-3147)", async () => {
+  const { dir, metaPath, runningMeta } = seedRunningMeta();
+  const watchRoot = mkdtempSync(join(tmpdir(), "cxwatch-"));
+  try {
+    const killed: number[] = [];
+    const chatty = (async (_p: string, _c: string, opts: any, onSpawn: (pid: number) => void) => {
+      onSpawn(79);
+      opts.onOutput?.(1024); // well past the 512 B banner floor
+      await new Promise((r) => setTimeout(r, 300));
+      return { code: 0, capped: false, blocked: false, timedOut: false, pid: 79, tail: "" };
+    }) as any;
+    await executeClaudexRun({
+      run: chatty, prompt: "p", worktree: dir, repoRoot: "/repo", sessionDir: dir, metaPath, runningMeta,
+      startupWatch: { rootDir: watchRoot, windowMs: 150, pollMs: 30, kill: (pid) => { killed.push(pid); } },
+    } as any);
+    expect(killed).toEqual([]);
+    expect(JSON.parse(readFileSync(metaPath, "utf8")).status).toBe("done");
+  } finally { rmSync(dir, { recursive: true, force: true }); rmSync(watchRoot, { recursive: true, force: true }); }
+});
+
+test("executeClaudexRun: growth observed the poll AFTER the window elapses must not kill (HIMMEL-3146 ordering, deterministic)", async () => {
+  // Same interception as spawn-glm's HIMMEL-3146 test: the watchdog's own
+  // callback is captured instead of scheduled and fired by hand at the three
+  // logical moments (baseline / first-elapsed / confirming), so no real-timer
+  // tick count — and therefore no CI contention — can decide the outcome.
+  const { dir, metaPath, runningMeta } = seedRunningMeta();
+  const watchRoot = mkdtempSync(join(tmpdir(), "cxwatch-"));
+  const stderr = spyOn(console, "error").mockImplementation(() => {});
+  const realNow = Date.now();
+  let now = realNow;
+  const dateSpy = spyOn(Date, "now").mockImplementation(() => now);
+  let tick: (() => void) | undefined;
+  const intervalSpy = spyOn(global, "setInterval").mockImplementation(((fn: () => void) => {
+    tick = fn;
+    return 0 as unknown as ReturnType<typeof setInterval>;
+  }) as unknown as typeof setInterval);
+  const clearSpy = spyOn(global, "clearInterval").mockImplementation((() => { tick = undefined; }) as unknown as typeof clearInterval);
+  try {
+    const projDir = join(watchRoot, mangleCx(resolve(dir)));
+    mkdirSync(projDir, { recursive: true });
+    const windowMs = 300;
+    const killed: number[] = [];
+    const fire = () => { tick?.(); };
+    const racy = (async (_p: string, _c: string, _opts: unknown, onSpawn: (pid: number) => void) => {
+      onSpawn(81);
+      const transcriptFile = join(projDir, "s.jsonl");
+      writeFileSync(transcriptFile, "{\"role\":\"user\"}\n");
+      expect(typeof tick).toBe("function"); // fail loudly if the watchdog never called setInterval
+      fire(); // baseline tick
+      now = realNow + windowMs;
+      fire(); // first elapsed tick — pre-3146 code kills here
+      appendFileSync(transcriptFile, "{\"role\":\"assistant\"}\n");
+      fire(); // confirming tick — must see the growth first and stand down
+      return { code: 0, capped: false, blocked: false, timedOut: false, pid: 81, tail: "" };
+    }) as any;
+    const { code } = await executeClaudexRun({
+      run: racy, prompt: "p", worktree: dir, repoRoot: "/repo", sessionDir: dir, metaPath, runningMeta,
+      startupWatch: { rootDir: watchRoot, windowMs, pollMs: 10_000, kill: (pid) => { killed.push(pid); } },
+    } as any);
+    expect(killed).toEqual([]);
+    expect(code).toBe(0);
+    expect(JSON.parse(readFileSync(metaPath, "utf8")).status).toBe("done");
+  } finally {
+    intervalSpy.mockRestore(); clearSpy.mockRestore(); dateSpy.mockRestore(); stderr.mockRestore();
+    rmSync(dir, { recursive: true, force: true }); rmSync(watchRoot, { recursive: true, force: true });
+  }
 });

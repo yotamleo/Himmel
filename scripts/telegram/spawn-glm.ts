@@ -1148,6 +1148,78 @@ export function sigtermFinalize(): void {
   }
 }
 
+// HIMMEL-1575 / HIMMEL-3147: the startup-hang watchdog substrate, shared by the
+// glm (executeRun) and claudex (executeClaudexRun) lanes so the HIMMEL-3146
+// two-tick ordering fix lives in exactly one place (HIMMEL-2624 direction).
+// `raw` is the lane's *_STARTUP_FAILFAST_MINS env value; 0/garbage = off.
+export function resolveFailfastWindowMs(raw: string | undefined, defaultMins = 10): number {
+  const mins = Number(raw ?? defaultMins);
+  return Number.isFinite(mins) && mins > 0 ? mins * 60_000 : 0;
+}
+
+// Arms a poll of the worker's session TRANSCRIPT under `rootDir` (the lane's
+// projects dir + the mangled cwd). Returns `disarm`, which the caller MUST call
+// when the run ends and when real output (> the banner) arrives. On expiry
+// with the worker still alive and banner-only output it calls onHang(pid)
+// then kills the worker; every error path disarms (fail-open).
+export function armStartupWatchdog(p: {
+  worktree: string; windowMs: number; rootDir: string; pollMs?: number; kill?: (pid: number) => void;
+  livePid: () => number | undefined; outputBytes: () => number;
+  onHang: (pid: number) => void;
+  label: string; tuneHint: string;
+}): () => void {
+  let watchTimer: ReturnType<typeof setInterval> | undefined;
+  const disarm = () => { if (watchTimer !== undefined) { clearInterval(watchTimer); watchTimer = undefined; } };
+  const projDir = join(p.rootDir, resolve(p.worktree).replace(/[^A-Za-z0-9]/g, "-"));
+  const killWorker = p.kill
+    ?? ((pid: number) => killTree(pid, (sig) => { try { process.kill(pid, sig as NodeJS.Signals); } catch { /* already gone */ } }));
+  const watchStart = Date.now();
+  let baseline: number | undefined;
+  // HIMMEL-3146: the elapsed check below and the transcript write it must
+  // not race are decided by two independent timers on the same event loop.
+  // A single stat sample taken on the tick where the window happens to
+  // elapse can be stale by a hair if a same-instant write's own callback
+  // just hasn't had its turn yet (observed under CI's contended bun-suites
+  // run: 1/10 under matched load, never unloaded). Require two consecutive
+  // ticks, one poll apart, to both observe "elapsed" before killing — that
+  // spare tick is what gives an already-due write's timer a chance to run
+  // and be observed as growth first. This is a confirm, not a longer
+  // window: windowMs is unchanged.
+  let elapsedOnce = false;
+  watchTimer = setInterval(() => {
+    try {
+      // Newest session transcript born around/after spawn (60s clock slack).
+      let size = -1;
+      if (existsSync(projDir)) {
+        let newest = -1;
+        for (const f of readdirSync(projDir)) {
+          if (!f.endsWith(".jsonl")) continue;
+          const st = statSync(join(projDir, f));
+          if (st.mtimeMs >= watchStart - 60_000 && st.mtimeMs > newest) { newest = st.mtimeMs; size = st.size; }
+        }
+      }
+      if (size >= 0) {
+        if (baseline === undefined) { baseline = size; }
+        else if (size > baseline) { disarm(); return; } // model responded — healthy, stand down for good
+      }
+      if (Date.now() - watchStart >= p.windowMs) {
+        if (!elapsedOnce) { elapsedOnce = true; return; } // one more poll to let a same-instant write land
+        disarm();
+        const livePid = p.livePid();
+        if (livePid !== undefined && p.outputBytes() <= 512) {
+          p.onHang(livePid);
+          console.error(`${p.label}: STARTUP HANG (HIMMEL-1575) — no transcript growth and no output beyond the banner within ${Math.round(p.windowMs / 60_000)} min; killing pid ${livePid} instead of burning the full run window (disable/tune: ${p.tuneHint}, 0=off)`);
+          killWorker(livePid);
+        }
+      }
+    } catch (e) {
+      disarm(); // fail-open: a watchdog error must never decide a worker's fate
+      console.error(`${p.label}: startup watchdog disabled after error (non-fatal): ${String((e as any)?.message ?? e)}`);
+    }
+  }, p.pollMs ?? 45_000);
+  return disarm;
+}
+
 // The run-and-record step, extracted so the meta-transition contract is
 // testable with an injected runSession. meta.json ALWAYS leaves "running": the
 // success path writes finalMeta (done/failed/capped/blocked), and a thrown
@@ -1204,58 +1276,17 @@ export async function executeRun(deps: {
   // never-started from ran-then-timed-out (the ticket's step 1).
   let startupHang = false;
   let outputBytes = 0;
-  let watchTimer: ReturnType<typeof setInterval> | undefined;
-  const disarmWatch = () => { if (watchTimer !== undefined) { clearInterval(watchTimer); watchTimer = undefined; } };
-  const failfastMins = Number(process.env.GLM_STARTUP_FAILFAST_MINS ?? 10);
-  const watchWindowMs = deps.startupWatch?.windowMs ?? (Number.isFinite(failfastMins) && failfastMins > 0 ? failfastMins * 60_000 : 0);
+  let disarmWatch: () => void = () => {};
+  const watchWindowMs = deps.startupWatch?.windowMs ?? resolveFailfastWindowMs(process.env.GLM_STARTUP_FAILFAST_MINS);
   if (watchWindowMs > 0) {
-    const rootDir = deps.startupWatch?.rootDir ?? join(homedir(), ".claude", "projects");
-    const projDir = join(rootDir, resolve(deps.worktree).replace(/[^A-Za-z0-9]/g, "-"));
-    const killWorker = deps.startupWatch?.kill
-      ?? ((pid: number) => killTree(pid, (sig) => { try { process.kill(pid, sig as NodeJS.Signals); } catch { /* already gone */ } }));
-    const watchStart = Date.now();
-    let baseline: number | undefined;
-    // HIMMEL-3146: the elapsed check below and the transcript write it must
-    // not race are decided by two independent timers on the same event loop.
-    // A single stat sample taken on the tick where the window happens to
-    // elapse can be stale by a hair if a same-instant write's own callback
-    // just hasn't had its turn yet (observed under CI's contended bun-suites
-    // run: 1/10 under matched load, never unloaded). Require two consecutive
-    // ticks, one poll apart, to both observe "elapsed" before killing — that
-    // spare tick is what gives an already-due write's timer a chance to run
-    // and be observed as growth first. This is a confirm, not a longer
-    // window: watchWindowMs is unchanged.
-    let elapsedOnce = false;
-    watchTimer = setInterval(() => {
-      try {
-        // Newest session transcript born around/after spawn (60s clock slack).
-        let size = -1;
-        if (existsSync(projDir)) {
-          let newest = -1;
-          for (const f of readdirSync(projDir)) {
-            if (!f.endsWith(".jsonl")) continue;
-            const st = statSync(join(projDir, f));
-            if (st.mtimeMs >= watchStart - 60_000 && st.mtimeMs > newest) { newest = st.mtimeMs; size = st.size; }
-          }
-        }
-        if (size >= 0) {
-          if (baseline === undefined) { baseline = size; }
-          else if (size > baseline) { disarmWatch(); return; } // model responded — healthy, stand down for good
-        }
-        if (Date.now() - watchStart >= watchWindowMs) {
-          if (!elapsedOnce) { elapsedOnce = true; return; } // one more poll to let a same-instant write land
-          disarmWatch();
-          if (livePid !== undefined && outputBytes <= 512) {
-            startupHang = true;
-            console.error(`spawn-glm: STARTUP HANG (HIMMEL-1575) — no transcript growth and no output beyond the banner within ${Math.round(watchWindowMs / 60_000)} min; killing pid ${livePid} instead of burning the full run window (disable/tune: GLM_STARTUP_FAILFAST_MINS, 0=off)`);
-            killWorker(livePid);
-          }
-        }
-      } catch (e) {
-        disarmWatch(); // fail-open: a watchdog error must never decide a worker's fate
-        console.error(`spawn-glm: startup watchdog disabled after error (non-fatal): ${String((e as any)?.message ?? e)}`);
-      }
-    }, deps.startupWatch?.pollMs ?? 45_000);
+    disarmWatch = armStartupWatchdog({
+      worktree: deps.worktree, windowMs: watchWindowMs,
+      rootDir: deps.startupWatch?.rootDir ?? join(homedir(), ".claude", "projects"),
+      pollMs: deps.startupWatch?.pollMs, kill: deps.startupWatch?.kill,
+      livePid: () => livePid, outputBytes: () => outputBytes,
+      onHang: () => { startupHang = true; },
+      label: "spawn-glm", tuneHint: "GLM_STARTUP_FAILFAST_MINS",
+    });
   }
   const writeRunningMeta = (extra: Record<string, unknown>) => {
     // HIMMEL-1404 CR/T14: write-then-rename, not a truncating in-place write —
