@@ -328,6 +328,23 @@ run_hook "$S" "$C"
 assert_rc "util==threshold run exits 2" 2 $?
 rm -f "$ARM_LOG"
 
+echo "Test 13b: out-of-range AUTO_ARM_THRESHOLD falls back to 90 (HIMMEL-1278) — 970 must still trip at 95%"
+S="$TMP/s13b"; mkdir -p "$S"
+C="$TMP/c13b.json"; write_cache "$C" 95 14
+AUTO_ARM_THRESHOLD=970 run_hook "$S" "$C"
+assert_rc "AUTO_ARM_THRESHOLD=970 falls back to 90 and trips at 95%" 2 $?
+assert_file "arm stub invoked for out-of-range threshold" present "$ARM_LOG"
+assert_grep "block message says RESUME ARMED (out-of-range threshold)" "RESUME ARMED" "$STDERR_LOG"
+rm -f "$ARM_LOG"
+
+echo "Test 13c: control — in-range AUTO_ARM_THRESHOLD=97 is honoured (95% does NOT trip), so 13b fell back rather than clamped"
+S="$TMP/s13c"; mkdir -p "$S"
+C="$TMP/c13c.json"; write_cache "$C" 95 14
+AUTO_ARM_THRESHOLD=97 run_hook "$S" "$C"
+assert_rc "AUTO_ARM_THRESHOLD=97 does not trip at 95%" 0 $?
+assert_file "no arm call for in-range threshold above utilization" absent "$ARM_LOG"
+rm -f "$ARM_LOG"
+
 echo "Test 14: handover root unresolvable — snapshot falls back to state dir, arm still proceeds"
 S="$TMP/s14"; mkdir -p "$S"
 C="$TMP/c14.json"; write_cache "$C" 95 14

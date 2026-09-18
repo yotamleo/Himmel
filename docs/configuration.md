@@ -443,7 +443,9 @@ default subset:
 both must be raised to move the effective wall:
 
 - `AUTO_ARM_THRESHOLD` decides **when the watchdog trips** — the utilization at
-  which `auto-arm-on-cap.sh` writes a snapshot and arms a resume.
+  which `auto-arm-on-cap.sh` writes a snapshot and arms a resume. Must be
+  0-100; a non-numeric or out-of-range value falls back to 90 silently (a `970`
+  typo would otherwise never be crossed and the watchdog would never trip).
 - `RESUME_SLOT_THRESHOLD` decides **where that resume is parked** —
   `resume-slot.sh` (the `--time smart` resolver, used by the armed watchdog,
   the Telegram bridge, and every manual `arm-resume.sh --time smart`) counts a

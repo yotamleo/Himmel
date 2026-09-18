@@ -189,6 +189,13 @@ ARM_BIN="${AUTO_ARM_BIN:-$hook_dir/../handover/arm-resume.sh}"
 # threshold also rejects multi-dot strings ("9..5") — those would slip
 # past a digits-and-dots filter and silently disable the python check.
 case "$THRESHOLD" in ''|*[!0-9.]*|*.*.*) THRESHOLD=90 ;; esac
+# Range guard (HIMMEL-1278): a numeric but out-of-range value — `970`, a
+# fat-finger for 97 — passes the filter above yet can never be crossed by a
+# 0-100% utilization, so the watchdog would silently never trip. Fall back to
+# the default, silently (fail-open: never block on its own config). Mirrors
+# resume-slot.sh's wall-2 guard; awk because the threshold may be fractional
+# and bash arithmetic is integer-only.
+awk -v t="$THRESHOLD" 'BEGIN { exit !(t >= 0 && t <= 100) }' || THRESHOLD=90
 case "$CHECK_INTERVAL" in ''|*[!0-9]*) CHECK_INTERVAL=60 ;; esac
 case "$MAX_CACHE_AGE" in ''|*[!0-9]*) MAX_CACHE_AGE=300 ;; esac
 case "$MAX_ARM_FAILURES" in ''|*[!0-9]*) MAX_ARM_FAILURES=3 ;; esac
