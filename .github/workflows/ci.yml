@@ -27,6 +27,20 @@ on:
 permissions:
   contents: read
 
+# HIMMEL-3217: a newer push to main cancels the superseded push-to-main run --
+# on 2026-09-19 stale post-merge runs kept the Actions queue at 5+ and leg PR
+# runs waited 25-40 min. Push is restricted to `main` above, so `push` here
+# means main: those runs share ONE group (github.ref) and cancel in progress.
+# Every other event (pull_request, schedule, workflow_dispatch) gets a group
+# unique to its run (run_id), so a main push never cancels -- nor queues behind
+# -- a PR run, and the nightly is untouched. cancel-in-progress is push-only
+# for the same reason: it stays inert even if a group is ever widened.
+# Required PR checks and the `shell-unit` aggregator report on the PR run,
+# which this never cancels; a cancelled main run is superseded by a newer one.
+concurrency:
+  group: ci-${{ github.event_name == 'push' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
 jobs:
   secret-scan:
     runs-on: ubuntu-latest
