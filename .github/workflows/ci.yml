@@ -244,6 +244,19 @@ jobs:
       # CI step at all until HIMMEL-2620. It runs on both matrix legs because
       # three of its cases are platform-sensitive by construction.
       - run: bun test scripts/telegram --dots
+      # HIMMEL-3215: the luna source-identity suites (source-identity +
+      # backfill, 40 tests) had no CI step, so a regression in
+      # scripts/vault/** could merge green. Runs from the repo root like the
+      # telegram suite (fixtures are repo-relative). Hermetic: a stub `gh` and a
+      # preloaded fetch stub, no network, no live vault. Ubuntu only — the
+      # backfill suite prepends a bash `gh` stub to PATH with a `:` separator
+      # and calls execFileSync("gh"), which windows-latest cannot resolve, so
+      # the non-gating Windows nightly would go red and file a spurious issue.
+      # A step in this job (not a new job) rides the already-required
+      # `bun-suites (ubuntu-latest)` context: no branch-protection change.
+      - name: Vault tests (ubuntu only)
+        if: matrix.os == 'ubuntu-latest'
+        run: bun test scripts/vault/tests --dots
       # --frozen-lockfile fails if bun.lock has drifted from package.json. Catches
       # the class of bug where a dep range is bumped in package.json but the
       # lockfile is never regenerated (HIMMEL-553). HIMMEL-2620 wired the test
