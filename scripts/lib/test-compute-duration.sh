@@ -28,7 +28,7 @@ check() { [ "$2" = "$3" ] && pass "$1" || { fail "$1: [$2] != [$3]"; }; }
 # --- GNU path (real date) still works -----------------------------------------
 # Derive `now` from date itself (no brittle epoch constant); +300s -> 5 min. If the
 # GNU `-d` branch regressed to empty, start would be huge -> delta clamps 0 -> fails.
-gnu_start="$(date -u -d "2026-06-30T16:00:00Z" +%s)"
+gnu_start="$(date -u -d "2026-06-30T16:00:00Z" +%s 2>/dev/null || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "2026-06-30T16:00:00Z" +%s)"  # gnu-ok: GNU -d paired with the BSD -j -f fallback on this line (macOS date has no -d; HIMMEL-3177)
 compute_duration "2026-06-30T16:00:00Z" "$(( gnu_start + 300 ))"
 check "GNU path: DURATION_SECONDS" "300" "$DURATION_SECONDS"
 check "GNU path: DURATION_MINUTES" "5"   "$DURATION_MINUTES"

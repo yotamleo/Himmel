@@ -46,6 +46,14 @@ FAILED=0
 pass() { echo "PASS: $1"; PASSED=$((PASSED + 1)); }
 fail() { echo "FAIL: $1"; FAILED=$((FAILED + 1)); }
 
+# _t_date_at <epoch> <fmt> -- format an epoch as UTC. GNU `date -d "@e"` first, BSD
+# `date -r e` fallback (macOS date has no -d; HIMMEL-3177).
+_t_date_at() { date -u -d "@$1" "$2" 2>/dev/null || date -u -r "$1" "$2"; }  # gnu-ok: GNU -d paired with the BSD -r fallback on this line
+# _t_touch_at <epoch> <path> -- backdate an mtime to an absolute epoch. GNU
+# `touch -d "@e"` first; BSD touch rejects "@e", so fall back to `touch -t` with the
+# stamp rendered AND parsed in UTC (touch -t alone reads local wall-clock).
+_t_touch_at() { touch -d "@$1" "$2" 2>/dev/null || TZ=UTC touch -t "$(_t_date_at "$1" +%Y%m%d%H%M.%S)" "$2"; }  # gnu-ok: GNU -d paired with the BSD -t fallback on this line
+
 TMPDIR_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR_ROOT"' EXIT
 
@@ -911,7 +919,7 @@ HO31="$HANDOVER_DIR/HIMMEL-856-test/next-session-31.md"
 mkdir -p "$ARMS_REGISTRY.lock"
 printf '%s' "stale-holder-tok" > "$ARMS_REGISTRY.lock/owner"
 t31_epoch=$(( $(date -u +%s) - 58 ))
-touch -d "@$t31_epoch" "$ARMS_REGISTRY.lock"
+_t_touch_at "$t31_epoch" "$ARMS_REGISTRY.lock"
 t31_out=$(bash -c '
     . "$1"
     _ql_arms_mutex_acquire "$2"
@@ -1223,7 +1231,7 @@ HO36="$HANDOVER_DIR/HIMMEL-856-test/next-session-36.md"
 : > "$HO36"
 LOCKDIR36="$HANDOVER_DIR/.locks/queue/HIMMEL-856-test__next-session-36.lock"
 mkdir -p "$LOCKDIR36"
-t36_hb=$(date -u -d "@$(( $(date -u +%s) - 3000 ))" +%Y-%m-%dT%H:%M:%SZ)
+t36_hb=$(_t_date_at "$(( $(date -u +%s) - 3000 ))" +%Y-%m-%dT%H:%M:%SZ)
 printf '{"session":"idler","host":"h","handover":"%s","started":"%s","heartbeat":"%s"}\n' \
     "$HO36" "$t36_hb" "$t36_hb" > "$LOCKDIR36/owner.json"
 # age ~3000s: past the default 2700s idle-warn but far short of the default
@@ -1355,7 +1363,7 @@ mkdir -p "$CORRUPT1_LOCKDIR"   # no owner.json at all
 # CORRUPT (see T44) -- this fixture needs to be a genuinely OLD miss to
 # still exercise the CORRUPT path T42 is about.
 t42_grace=$(sed -n 's/^_QL_SWEEP_CORRUPT_GRACE_SECS=\([0-9][0-9]*\).*/\1/p' "$LIB" | head -1)
-touch -d "@$(( $(date -u +%s) - ${t42_grace:-5} - 60 ))" "$CORRUPT1_LOCKDIR"
+_t_touch_at "$(( $(date -u +%s) - ${t42_grace:-5} - 60 ))" "$CORRUPT1_LOCKDIR"
 CORRUPT2_SLUG="HIMMEL-2369-test__corrupt-garbage"
 CORRUPT2_LOCKDIR="$SWEEP_QDIR/$CORRUPT2_SLUG.lock"
 mkdir -p "$CORRUPT2_LOCKDIR"
@@ -1481,7 +1489,7 @@ else
     # codex-4 last round; this is the SAME idiom T31 already uses to backdate
     # a lock dir's mtime, proven to work on this box).
     t44_old_epoch=$(( $(date -u +%s) - T44_GRACE - 60 ))
-    touch -d "@$t44_old_epoch" "$OLDMISS_LOCKDIR"
+    _t_touch_at "$t44_old_epoch" "$OLDMISS_LOCKDIR"
     out="$(HANDOVER_DIR="$SWEEP_ROOT" bash "$LIB" status --sweep 2>&1)"
     rc=$?
     if [ "$rc" -eq 20 ] && grepq "$out" "slug=$OLDMISS_SLUG.*status=CORRUPT"; then
@@ -2174,7 +2182,7 @@ done
 # Backdate the stale file so mtime ordering is deterministic without a real
 # sleep (`touch -d "@<epoch>"`, the fixed-epoch form this suite already uses
 # elsewhere -- see T31/T44 -- because `touch -t` parses local wall-clock).
-[ -n "$t69_stale_file" ] && touch -d "@$(( $(date -u +%s) - 60 ))" "$t69_stale_file"
+[ -n "$t69_stale_file" ] && _t_touch_at "$(( $(date -u +%s) - 60 ))" "$t69_stale_file"
 t69_recalled="$(t68_call _ql_token_recall "$T68_DOC" 2>/dev/null)"
 if [ "$t69_recalled" = "token-B" ]; then
     pass "T69: recall with several token files picks the newest by mtime"
