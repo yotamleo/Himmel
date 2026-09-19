@@ -106,22 +106,21 @@ a skipped-and-retried refresh next fire, not a failure — the wider offset
 just makes that the exception rather than the rule).
 
 Two fires of this leg itself are serialized by `graph-cadence.sh`'s own
-pipeline lock (`<worktree>.lock`, skip-not-wait), because each run
-`reset --hard` + `clean -fdx`es the same worktree. Holding it means winning a
-noclobber write of the run's owner token (HIMMEL-2654). The holder re-stamps a
-`heartbeat` every 30s. A contender takes a lock over only when neither
-liveness signal answers: the holder pid is not alive (checked only on the same
-host) and the heartbeat is ≥600s old. To take over, a contender must first
-win an atomic `mkdir <lock>/reclaim` claim and then confirm that the lock
-still carries the owner token and inode it judged dead. Only after that does
-it move the dead lock aside. An acquirer that finds a `reclaim` claim right
-after publishing its own token yields. That covers a holder that stalled
-before its first write until its lock aged out and then resumed. A live lock is never moved, so of any number of
-contenders racing one stale lock, exactly one proceeds. A run re-checks
-ownership right before its first destructive git command. If a contender
-crashes after winning the claim, the leftover `reclaim` makes every later
-fire skip until an operator removes `<worktree>.lock`. That fails safe: no
-run proceeds, and two runs never do. A refreshed graph lands only through a `chore/graph-publish-<slug>`
+pipeline lock (`<worktree>.lock`), because each run `reset --hard` +
+`clean -fdx`es the same worktree. `mkdir` is the whole protocol (HIMMEL-2654,
+following `scripts/luna/qmd-cadence.sh`, where three rounds of automatic
+stale-lock takeover each produced the next race). A run proceeds only if its
+own `mkdir` succeeded, and nothing ever removes a lock it did not create: the
+exit trap removes the run's own instance only, by owner token. The lock
+records the holder's pid, host and a `heartbeat` re-stamped every 30s — for
+detection only. A contender that finds a live holder (pid alive on this host,
+or a heartbeat under 600s old from another host) skips, `action=skipped`,
+rc 0. A contender that finds a dead holder never takes the lock over: it
+refuses loudly — `action=failed`, rc 3, naming the lock path, the holder pid
+("stale: holder pid N dead") and its age — and so does every later fire until
+an operator removes `<worktree>.lock`. `himmel-doctor` C33 surfaces that
+failed row. A run re-checks its owner token right before its first
+destructive git command. A refreshed graph lands only through a `chore/graph-publish-<slug>`
 PR merged on green — never a direct push to `main` (asserted in
 `test-graph-cadence.sh`).
 

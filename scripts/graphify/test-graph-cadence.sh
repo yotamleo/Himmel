@@ -864,6 +864,10 @@ CORPUS_SLUG4d=$(corpus_slug_of "$REPO4d")
 PRE_LOCK="$HOME4d/.claude/graph-cadence/${CORPUS_SLUG4d}.lock"
 mkdir -p "$(dirname "$PRE_LOCK")"
 mkdir "$PRE_LOCK"
+# A LIVE holder (this test shell) on this host -- a dead one is refused, not
+# skipped (HIMMEL-2654; see the stale-lock case further down).
+echo "$$" > "$PRE_LOCK/pid"
+uname -n > "$PRE_LOCK/host"
 : > "$FAKE_MERGE_LOG"
 rc=0
 out=$(HOME="$HOME4d" GRAPH_CADENCE_HIMMEL_ROOT="$REPO4d" GRAPH_CADENCE_LEDGER_ROOT="$LEDGER4d" \
@@ -878,35 +882,11 @@ if [ -d "$HOME4d/.claude/graph-cadence/$CORPUS_SLUG4d" ]; then
 else
     pass "lock-contended run never created/touched the worktree"
 fi
-rmdir "$PRE_LOCK" 2>/dev/null || true
+rm -rf "$PRE_LOCK"
 
-# --- codex-1 (PR-B panel r2, hardened): a STALE lock (old "acquired" stamp,
-# simulating a crashed prior run -- reboot/SIGKILL leaves exactly this
-# behind) is TAKEN OVER, not honoured forever. Before this fix a lock with no
-# owner/staleness recovery at all would make EVERY subsequent above-threshold
-# run report a successful skip while refreshing and publishing nothing --
-# forever, since nothing but a clean release ever removed it.
-echo "TEST: a STALE pipeline lock (crashed prior run) is taken over, not honoured forever"
-REPO4j="$TMP_ROOT/t4j-primary"; BARE4j="$TMP_ROOT/t4j-origin.git"
-HOME4j="$TMP_ROOT/t4j-home"; LEDGER4j="$TMP_ROOT/t4j-ledger"
-mkdir -p "$HOME4j" "$LEDGER4j"
-seed_repo "$REPO4j" "$BARE4j" 20
-CORPUS_SLUG4j=$(corpus_slug_of "$REPO4j")
-STALE_LOCK="$HOME4j/.claude/graph-cadence/${CORPUS_SLUG4j}.lock"
-mkdir -p "$(dirname "$STALE_LOCK")"
-mkdir "$STALE_LOCK"
-echo "crashed-holder-pid-not-us" > "$STALE_LOCK/owner"
-STALE_EPOCH=$(( $(date -u +%s) - 7200 ))
-echo "$STALE_EPOCH" > "$STALE_LOCK/acquired"
-: > "$FAKE_MERGE_LOG"
-rc=0
-out=$(HOME="$HOME4j" GRAPH_CADENCE_HIMMEL_ROOT="$REPO4j" GRAPH_CADENCE_LEDGER_ROOT="$LEDGER4j" \
-      run_gc --threshold 10 2>&1) || rc=$?
-assert_eq "stale-lock takeover run completes normally (not a skip)" "0" "$rc"
-assert_contains "run reports taking over the stale lock" "is stale" "$out"
-LEDGER_LINE4j=$(tail -n1 "$LEDGER4j/.graph-cadence/ledger.jsonl" 2>/dev/null || echo MISSING)
-assert_contains "ledger action=merged -- the run actually refreshed+published+merged, not skipped" '"action":"merged"' "$LEDGER_LINE4j"
-assert_not_contains "ledger action is not skipped for a stale-lock takeover" '"action":"skipped"' "$LEDGER_LINE4j"
+# (A STALE lock -- crashed prior run -- was TAKEN OVER here until HIMMEL-2654;
+# it now blocks every fire loudly until a human removes it. Covered by the
+# HIMMEL-2654 "STALE lock blocks and is reported" case below.)
 
 # --- codex-3: a `git clean -fdx` failure aborts the pipeline (hard failure,
 # never a silent `|| true` that lets refresh/publish proceed on an unproven
@@ -1001,68 +981,22 @@ flow4f=$(cat "$FLOW_LEDGER4f" 2>/dev/null || echo MISSING)
 assert_contains "the flow-run end row's own outcome is ALSO error (not masked)" '"outcome":"error"' "$flow4f"
 
 # =============================================================================
-# HIMMEL-2654: the pipeline lock is single-winner and liveness-checked.
-# Two PATH stubs (never code seams, so the SAME fixture drives the pre-fix
-# code as its RED control): `git` counts every `reset --hard` (the first
-# destructive step); `mv` and `mkdir` park a run at a gate between judging
-# the lock stale and taking it over -- the exact window where a rival can
-# complete a whole takeover+acquire:
-#   LOCKTEST_MV_GATE      parks the first lock->sideline `mv` (the takeover's
-#                         move, after any reclaim claim was won);
-#   LOCKTEST_CLAIM_GATE   parks the first takeover step of either shape -- the
-#                         `mkdir <lock>/reclaim` claim, or (claim-less code)
-#                         the lock->sideline `mv` -- i.e. right after judging;
-#   LOCKTEST_RESTORE_GATE parks the first sideline->lock `mv` (a restore).
-# The fake
-# graphify holds each run that gets past the sync (FAKE_GRAPHIFY_HOLD_DIR),
+# HIMMEL-2654: the pipeline lock is single-winner -- mkdir is the whole
+# protocol (scripts/luna/qmd-cadence.sh precedent). A PATH-stub `git` counts
+# every `reset --hard` (the first destructive step) -- a stub, never a code
+# seam, so the SAME fixture drives the pre-fix code as its RED control. The
+# fake graphify holds each run that gets past the sync (FAKE_GRAPHIFY_HOLD_DIR),
 # so a holder is provably LIVE while its rival decides.
 # =============================================================================
 LOCKBIN="$TMP_ROOT/lockbin"
 mkdir -p "$LOCKBIN"
 REAL_GIT=$(command -v git)
-REAL_MV=$(command -v mv)
 cat > "$LOCKBIN/git" <<EOF
 #!/usr/bin/env bash
 case " \$* " in *" reset --hard "*) [ -n "\${LOCKTEST_RESET_LOG:-}" ] && echo "reset \$PPID" >> "\$LOCKTEST_RESET_LOG" ;; esac
 exec "$REAL_GIT" "\$@"
 EOF
-REAL_MKDIR=$(command -v mkdir)
-# park_at <gate-dir> -- the first caller for this gate parks until <gate>/go.
-cat > "$LOCKBIN/lockgate.sh" <<EOF
-park_at() {
-    [ -n "\$1" ] && "$REAL_MKDIR" "\$1/first" 2>/dev/null || return 0
-    : > "\$1/paused"
-    i=0
-    while [ ! -e "\$1/go" ] && [ "\$i" -lt 3000 ]; do sleep 0.01; i=\$((i + 1)); done
-}
-EOF
-cat > "$LOCKBIN/mv" <<EOF
-#!/usr/bin/env bash
-. "$LOCKBIN/lockgate.sh"
-case "\$1" in
-    *.lock.stale.*) park_at "\${LOCKTEST_RESTORE_GATE:-}" ;;
-    *) case "\$*" in
-           *.lock.stale.*) park_at "\${LOCKTEST_CLAIM_GATE:-}"; park_at "\${LOCKTEST_MV_GATE:-}" ;;
-       esac ;;
-esac
-exec "$REAL_MV" "\$@"
-EOF
-cat > "$LOCKBIN/mkdir" <<EOF
-#!/usr/bin/env bash
-. "$LOCKBIN/lockgate.sh"
-case "\$*" in
-    *.lock/reclaim) park_at "\${LOCKTEST_CLAIM_GATE:-}" ;;
-    *.lock)
-        # A holder stalled right after creating its lock, before any write.
-        if [ -n "\${LOCKTEST_ACQUIRE_GATE:-}" ]; then
-            rc=0; "$REAL_MKDIR" "\$@" || rc=\$?
-            [ "\$rc" -eq 0 ] && park_at "\$LOCKTEST_ACQUIRE_GATE"
-            exit "\$rc"
-        fi ;;
-esac
-exec "$REAL_MKDIR" "\$@"
-EOF
-chmod +x "$LOCKBIN/git" "$LOCKBIN/mv" "$LOCKBIN/mkdir"
+chmod +x "$LOCKBIN/git"
 
 # wait_for <path-glob> <max-centiseconds> -- bounded poll; rc 1 on timeout.
 wait_for() {
@@ -1092,6 +1026,12 @@ lock_run() {
         run_gc --threshold 10 > "$TMP_ROOT/tl$1-$2.out" 2>&1 &
     LOCK_PID=$!
 }
+# lock_fire <n> <ledger-suffix> -- one foreground run; sets rc and out.
+lock_fire() {
+    rc=0
+    out=$(HOME="$HOME_L" GRAPH_CADENCE_HIMMEL_ROOT="$REPO_L" GRAPH_CADENCE_LEDGER_ROOT="$TMP_ROOT/tl$1-ledger-$2" \
+          PATH="$LOCKBIN:$PATH" LOCKTEST_RESET_LOG="$RESETS_L" run_gc --threshold 10 2>&1) || rc=$?
+}
 # wait_exit_or_resets <pid> <n-resets> <max-centiseconds> -- until the run
 # exits (it lost) or the reset count reaches n (it got in).
 wait_exit_or_resets() {
@@ -1101,120 +1041,12 @@ wait_exit_or_resets() {
         sleep 0.01; i=$((i + 1))
     done
 }
+# A pid that provably belonged to a process that has exited.
+true & DEAD_PID=$!
+wait "$DEAD_PID" 2>/dev/null || true
+LOCK_HOST=$(uname -n)
 
-# lock_leftovers <label> -- no lock and no sideline may survive the runs.
-lock_leftovers() {
-    if [ -d "$LOCK_L" ] || [ -n "$(ls -d "$LOCK_L".stale.* 2>/dev/null)" ]; then
-        fail "$1: lock or a sideline survived the runs" "$(ls -d "$LOCK_L"* 2>/dev/null)"
-    else
-        pass "$1: no lock and no sideline left behind"
-    fi
-}
-# stale_lock_seed -- a crashed holder's lock: token, stamps two hours old.
-stale_lock_seed() {
-    mkdir "$LOCK_L"
-    echo "crashed-holder" > "$LOCK_L/owner"
-    echo "$(( $(date -u +%s) - 7200 ))" > "$LOCK_L/acquired"
-    echo "$(( $(date -u +%s) - 7200 ))" > "$LOCK_L/heartbeat"
-}
-
-echo "TEST (HIMMEL-2654): two contenders racing one STALE lock -- exactly one enters the pipeline"
-lock_fixture 1
-GATE_L="$TMP_ROOT/tl1-gate"; mkdir -p "$GATE_L"
-stale_lock_seed
-# Run A judges the lock stale and parks at its takeover move.
-LOCKTEST_MV_GATE="$GATE_L" lock_run 1 a; PID_A=$LOCK_PID
-wait_for "$GATE_L/paused" 3000 || fail "run A never reached the stale-lock takeover"
-# Run B judges the same stale lock while A is mid-takeover: it must not take
-# it over a second time.
-lock_run 1 b; PID_B=$LOCK_PID
-wait_exit_or_resets "$PID_B" 1 3000 || true
-: > "$GATE_L/go"
-wait_for "$HOLD_L/entered.*" 3000 || fail "neither run entered the pipeline"
-: > "$HOLD_L/release"
-wait "$PID_A" 2>/dev/null || true
-wait "$PID_B" 2>/dev/null || true
-assert_eq "exactly ONE run reached reset --hard (the destructive step)" "1" "$(wc -l < "$RESETS_L" | tr -d ' ')"
-out_a=$(cat "$TMP_ROOT/tl1-a.out"); out_b=$(cat "$TMP_ROOT/tl1-b.out")
-assert_contains "run A (first to the takeover) is the one that acquired" "is stale" "$out_a"
-ledger_b=$(tail -n1 "$TMP_ROOT/tl1-ledger-b/.graph-cadence/ledger.jsonl" 2>/dev/null || echo MISSING)
-assert_contains "run B (the second contender) knows it LOST: action=skipped" '"action":"skipped"' "$ledger_b"
-assert_not_contains "run B never claims a takeover" "-- taking over" "$out_b"
-lock_leftovers "tl1"
-
-echo "TEST (HIMMEL-2654): a DELAYED contender never moves the live lock that replaced the stale one it judged"
-# [codex-1]: A judges X stale and stalls; B takes X over and is LIVE in the
-# pipeline; A resumes. A must leave B's lock in place -- a move-then-restore
-# takeover parks B's lock, so a third run C finds the slot empty, acquires it
-# and resets B's worktree under it.
-lock_fixture 6
-GATE_L="$TMP_ROOT/tl6-gate"; GATE_R="$TMP_ROOT/tl6-restore"; mkdir -p "$GATE_L" "$GATE_R"
-stale_lock_seed
-LOCKTEST_CLAIM_GATE="$GATE_L" LOCKTEST_RESTORE_GATE="$GATE_R" lock_run 6 a; PID_A=$LOCK_PID
-wait_for "$GATE_L/paused" 3000 || fail "run A never reached the stale-lock takeover"
-lock_run 6 b; PID_B=$LOCK_PID
-wait_for "$HOLD_L/entered.*" 3000 || fail "run B never entered the pipeline"
-: > "$GATE_L/go"
-# A either leaves (claim-based takeover) or parks mid-restore with B's lock
-# sidelined -- the window C would walk into.
-i=0
-while kill -0 "$PID_A" 2>/dev/null && [ ! -e "$GATE_R/paused" ] && [ "$i" -lt 3000 ]; do sleep 0.01; i=$((i + 1)); done
-lock_run 6 c; PID_C=$LOCK_PID
-wait_exit_or_resets "$PID_C" 2 3000 || true
-: > "$GATE_R/go"
-: > "$HOLD_L/release"
-wait "$PID_A" 2>/dev/null || true
-wait "$PID_B" 2>/dev/null || true
-wait "$PID_C" 2>/dev/null || true
-assert_eq "only the live holder B reached reset --hard" "1" "$(wc -l < "$RESETS_L" | tr -d ' ')"
-out_a=$(cat "$TMP_ROOT/tl6-a.out")
-ledger_a=$(tail -n1 "$TMP_ROOT/tl6-ledger-a/.graph-cadence/ledger.jsonl" 2>/dev/null || echo MISSING)
-assert_contains "the delayed contender A skipped" '"action":"skipped"' "$ledger_a"
-assert_not_contains "A never moved B's live lock (no restore attempted)" "restored it" "$out_a"
-ledger_c=$(tail -n1 "$TMP_ROOT/tl6-ledger-c/.graph-cadence/ledger.jsonl" 2>/dev/null || echo MISSING)
-assert_contains "the third run C skipped (B's lock was never vacated)" '"action":"skipped"' "$ledger_c"
-lock_leftovers "tl6"
-
-echo "TEST (HIMMEL-2654): a reclaim claim abandoned by a crashed contender fails SAFE -- the run skips"
-lock_fixture 7
-stale_lock_seed
-mkdir "$LOCK_L/reclaim"
-out=$(HOME="$HOME_L" GRAPH_CADENCE_HIMMEL_ROOT="$REPO_L" GRAPH_CADENCE_LEDGER_ROOT="$TMP_ROOT/tl7-ledger-a" \
-    PATH="$LOCKBIN:$PATH" LOCKTEST_RESET_LOG="$RESETS_L" \
-    run_gc --threshold 10 2>&1) || true
-assert_eq "no run reached reset --hard" "0" "$(wc -l < "$RESETS_L" | tr -d ' ')"
-assert_contains "the skip names the in-flight reclaim" "already reclaiming" "$out"
-ledger_a=$(tail -n1 "$TMP_ROOT/tl7-ledger-a/.graph-cadence/ledger.jsonl" 2>/dev/null || echo MISSING)
-assert_contains "the run recorded action=skipped" '"action":"skipped"' "$ledger_a"
-if [ -d "$LOCK_L/reclaim" ]; then pass "the stuck lock is left for the operator"; else fail "the stuck lock was removed"; fi
-rm -rf "$LOCK_L"
-
-echo "TEST (HIMMEL-2654): a holder stalled before its first write cannot resume under a reclaim of its aged-out lock"
-# [codex-1, round 2]: H creates the lock and stalls before writing anything;
-# the token-less directory ages out; C judges it dead, wins the claim and
-# validates it. H resumes and publishes its token. H must yield -- otherwise
-# C moves H's now-live lock and both reset the worktree.
-lock_fixture 8
-GATE_H="$TMP_ROOT/tl8-acquire"; GATE_C="$TMP_ROOT/tl8-move"; mkdir -p "$GATE_H" "$GATE_C"
-LOCKTEST_ACQUIRE_GATE="$GATE_H" lock_run 8 a; PID_A=$LOCK_PID
-wait_for "$GATE_H/paused" 3000 || fail "holder H never created its lock"
-touch -t 202001010000 "$LOCK_L"
-LOCKTEST_MV_GATE="$GATE_C" lock_run 8 b; PID_B=$LOCK_PID
-wait_for "$GATE_C/paused" 3000 || fail "reclaimer C never reached its takeover move"
-: > "$GATE_H/go"
-wait_exit_or_resets "$PID_A" 1 3000 || true
-: > "$GATE_C/go"
-wait_exit_or_resets "$PID_B" "$(( $(wc -l < "$RESETS_L") + 1 ))" 3000 || true
-: > "$HOLD_L/release"
-wait "$PID_A" 2>/dev/null || true
-wait "$PID_B" 2>/dev/null || true
-assert_eq "exactly ONE run reached reset --hard" "1" "$(wc -l < "$RESETS_L" | tr -d ' ')"
-ledger_a=$(tail -n1 "$TMP_ROOT/tl8-ledger-a/.graph-cadence/ledger.jsonl" 2>/dev/null || echo MISSING)
-assert_contains "the resumed holder H yielded to the reclaim: action=skipped" '"action":"skipped"' "$ledger_a"
-assert_contains "the reclaimer C took the aged-out lock over" "-- taking over" "$(cat "$TMP_ROOT/tl8-b.out")"
-lock_leftovers "tl8"
-
-echo "TEST (HIMMEL-2654): a LIVE but slow holder is NOT evicted at the age threshold"
+echo "TEST (HIMMEL-2654): two CONCURRENT runs -- a live (and old-looking) holder is never evicted"
 lock_fixture 2
 lock_run 2 b; PID_B=$LOCK_PID
 wait_for "$HOLD_L/entered.*" 3000 || fail "holder never entered the pipeline"
@@ -1225,13 +1057,53 @@ done
 lock_run 2 a; PID_A=$LOCK_PID
 wait_exit_or_resets "$PID_A" 2 3000 || true
 : > "$HOLD_L/release"
-wait "$PID_A" 2>/dev/null || true
+rc_a=0; wait "$PID_A" 2>/dev/null || rc_a=$?
 wait "$PID_B" 2>/dev/null || true
-assert_eq "the old-but-live holder was not evicted (one reset --hard)" "1" "$(wc -l < "$RESETS_L" | tr -d ' ')"
+assert_eq "exactly ONE run reached reset --hard (the destructive step)" "1" "$(wc -l < "$RESETS_L" | tr -d ' ')"
+assert_eq "the contender exits 0 (a live holder is a benign skip)" "0" "$rc_a"
 ledger_a=$(tail -n1 "$TMP_ROOT/tl2-ledger-a/.graph-cadence/ledger.jsonl" 2>/dev/null || echo MISSING)
-assert_contains "the contender skipped instead" '"action":"skipped"' "$ledger_a"
+assert_contains "the contender skipped" '"action":"skipped"' "$ledger_a"
+assert_contains "the skip names the live holder" "is alive" "$(cat "$TMP_ROOT/tl2-a.out")"
+if [ -d "$LOCK_L" ]; then fail "holder left its lock behind" "$(ls "$LOCK_L")"; else pass "holder released its lock on exit"; fi
 
-echo "TEST (HIMMEL-2654): a fresh HEARTBEAT alone keeps an old lock (holder pid not checkable here) from being evicted"
+echo "TEST (HIMMEL-2654): a STALE lock blocks and is reported loudly, never taken over"
+lock_fixture 1
+mkdir "$LOCK_L"
+echo "crashed-holder" > "$LOCK_L/owner"
+echo "$DEAD_PID" > "$LOCK_L/pid"
+echo "$LOCK_HOST" > "$LOCK_L/host"
+echo "$(( $(date -u +%s) - 7200 ))" > "$LOCK_L/acquired"
+echo "$(( $(date -u +%s) - 7200 ))" > "$LOCK_L/heartbeat"
+for _fire in a b; do
+    lock_fire 1 "$_fire"
+    assert_eq "fire $_fire: refuses non-zero (rc 3)" "3" "$rc"
+    assert_contains "fire $_fire: names the dead holder" "stale: holder pid $DEAD_PID dead" "$out"
+    assert_contains "fire $_fire: names the lock path" "$LOCK_L" "$out"
+    assert_contains "fire $_fire: names the lock's age" "acquired 720" "$out"
+    ledger=$(tail -n1 "$TMP_ROOT/tl1-ledger-$_fire/.graph-cadence/ledger.jsonl" 2>/dev/null || echo MISSING)
+    assert_contains "fire $_fire: ledger records action=failed" '"action":"failed"' "$ledger"
+    assert_contains "fire $_fire: ledger names the stale holder" "stale: holder pid $DEAD_PID dead" "$ledger"
+done
+assert_eq "nothing destructive ran while the stale lock stood" "0" "$(wc -l < "$RESETS_L" | tr -d ' ')"
+assert_eq "the stale lock is left untouched for the operator" "crashed-holder" "$(cat "$LOCK_L/owner" 2>/dev/null)"
+# The operator removes it by hand; the next fire runs normally.
+rm -rf "$LOCK_L"
+lock_fire 1 c
+assert_eq "after a human removes the lock, the next fire completes" "0" "$rc"
+assert_eq "...and reaches reset --hard exactly once" "1" "$(wc -l < "$RESETS_L" | tr -d ' ')"
+
+echo "TEST (HIMMEL-2654): a stamp-less lock (holder died between mkdir and its pid write) is reported, never taken over"
+lock_fixture 5
+mkdir "$LOCK_L"
+touch -t 202001010000 "$LOCK_L"
+lock_fire 5 a
+assert_eq "stamp-less lock: refuses non-zero (rc 3)" "3" "$rc"
+assert_contains "stamp-less lock: reported stale with an unknown holder" "stale: holder pid unknown dead" "$out"
+assert_eq "stamp-less lock: nothing destructive ran" "0" "$(wc -l < "$RESETS_L" | tr -d ' ')"
+if [ -d "$LOCK_L" ] && [ -z "$(ls -A "$LOCK_L")" ]; then pass "stamp-less lock: left untouched"; else fail "stamp-less lock: was modified or removed" "$(ls -A "$LOCK_L" 2>&1)"; fi
+rm -rf "$LOCK_L"
+
+echo "TEST (HIMMEL-2654): a fresh HEARTBEAT keeps another host's lock (pid not checkable here) a benign skip"
 lock_fixture 3
 mkdir "$LOCK_L"
 echo "holder-on-another-host" > "$LOCK_L/owner"
@@ -1239,16 +1111,14 @@ echo "1" > "$LOCK_L/pid"
 echo "some-other-host" > "$LOCK_L/host"
 echo "$(( $(date -u +%s) - 7200 ))" > "$LOCK_L/acquired"
 date -u +%s > "$LOCK_L/heartbeat"
-rc=0
-out=$(HOME="$HOME_L" GRAPH_CADENCE_HIMMEL_ROOT="$REPO_L" GRAPH_CADENCE_LEDGER_ROOT="$TMP_ROOT/tl3-ledger-a" \
-      PATH="$LOCKBIN:$PATH" LOCKTEST_RESET_LOG="$RESETS_L" run_gc --threshold 10 2>&1) || rc=$?
+lock_fire 3 a
 assert_eq "heartbeat-live lock: contender exits 0" "0" "$rc"
 assert_eq "heartbeat-live lock: nothing destructive ran" "0" "$(wc -l < "$RESETS_L" | tr -d ' ')"
 assert_contains "heartbeat-live lock: the skip names the heartbeat" "last heartbeat" "$out"
 assert_eq "heartbeat-live lock: the holder's lock is untouched" "holder-on-another-host" "$(cat "$LOCK_L/owner" 2>/dev/null)"
 rm -rf "$LOCK_L"
 
-echo "TEST (HIMMEL-2654): the holder's heartbeat ADVANCES while it runs (liveness is observable)"
+echo "TEST (HIMMEL-2654): the holder's heartbeat ADVANCES, and its EXIT trap removes only its OWN lock"
 lock_fixture 4
 HOME="$HOME_L" GRAPH_CADENCE_HIMMEL_ROOT="$REPO_L" GRAPH_CADENCE_LEDGER_ROOT="$TMP_ROOT/tl4-ledger-b" \
     GRAPH_CADENCE_LOCK_HEARTBEAT_SECONDS=1 FAKE_GRAPHIFY_HOLD_DIR="$HOLD_L" \
@@ -1266,20 +1136,18 @@ if kill -0 "$_lpid" 2>/dev/null; then pass "lock records a LIVE holder pid"; els
 rc=0; wait "$PID_B" || rc=$?
 assert_eq "heartbeating holder completes normally" "0" "$rc"
 if [ -d "$LOCK_L" ]; then fail "holder left its lock behind" "$(ls "$LOCK_L")"; else pass "holder released its lock on exit"; fi
-
-echo "TEST (HIMMEL-2654): a stamp-less lock is honoured while young, reclaimed once its directory is old"
-lock_fixture 5
-mkdir "$LOCK_L"
-rc=0
-out=$(HOME="$HOME_L" GRAPH_CADENCE_HIMMEL_ROOT="$REPO_L" GRAPH_CADENCE_LEDGER_ROOT="$TMP_ROOT/tl5-ledger-a" \
-      run_gc --threshold 10 2>&1) || rc=$?
-assert_contains "young stamp-less lock -> skip" "no stamp yet" "$out"
-touch -t 202001010000 "$LOCK_L"
-rc=0
-out=$(HOME="$HOME_L" GRAPH_CADENCE_HIMMEL_ROOT="$REPO_L" GRAPH_CADENCE_LEDGER_ROOT="$TMP_ROOT/tl5-ledger-b" \
-      run_gc --threshold 10 2>&1) || rc=$?
-assert_eq "old stamp-less lock -> taken over, run completes" "0" "$rc"
-assert_contains "old stamp-less lock -> takeover names the missing stamp" "no stamp, directory older than" "$out"
+# Same holder shape, but its lock is replaced mid-run (removed by hand and
+# re-created by another run): its exit must leave the other instance alone.
+rm -rf "$HOLD_L"; mkdir -p "$HOLD_L"
+HOME="$HOME_L" GRAPH_CADENCE_HIMMEL_ROOT="$REPO_L" GRAPH_CADENCE_LEDGER_ROOT="$TMP_ROOT/tl4-ledger-b" \
+    FAKE_GRAPHIFY_HOLD_DIR="$HOLD_L" run_gc --threshold 10 > "$TMP_ROOT/tl4-c.out" 2>&1 &
+PID_C=$!
+wait_for "$HOLD_L/entered.*" 3000 || fail "second holder never entered the pipeline"
+echo "another-instance" > "$LOCK_L/owner"
+: > "$HOLD_L/release"
+wait "$PID_C" 2>/dev/null || true
+assert_eq "a lock this run did not create survives its exit" "another-instance" "$(cat "$LOCK_L/owner" 2>/dev/null)"
+rm -rf "$LOCK_L"
 
 # =============================================================================
 # Test 8: usage errors
