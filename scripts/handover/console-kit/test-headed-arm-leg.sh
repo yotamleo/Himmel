@@ -660,6 +660,15 @@ fi
 prefacecontent17b="$(cat "$preface17b" 2>/dev/null || true)"
 contains "brief-preface: carries the standing leg-preface heading" "$prefacecontent17b" \
   "$(head -1 "$HERE/../../../docs/handover/leg-preface.md")"
+# HIMMEL-3097: a "system is running low on memory" background-task kill is not
+# proof of memory pressure; the leg's system prompt tells it to read the
+# pressure file and the cgroup's memory.events before believing one.
+contains "brief-preface: names the low-memory kill (HIMMEL-3097)" "$prefacecontent17b" \
+  "running low on memory"
+contains "brief-preface: says to read /proc/pressure/memory before believing it (HIMMEL-3097)" \
+  "$prefacecontent17b" "/proc/pressure/memory"
+contains "brief-preface: says to read the cgroup memory.events before believing it (HIMMEL-3097)" \
+  "$prefacecontent17b" "memory.events"
 not_contains "brief-preface: does NOT carry the fixture's Contract line (HIMMEL-2990)" \
   "$prefacecontent17b" "**Contract:**"
 not_contains "brief-preface: does NOT carry the Results tail" "$prefacecontent17b" \

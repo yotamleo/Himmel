@@ -98,6 +98,12 @@ console change without your token is ignored, not merely distrusted.
   the command the classifier reads.
 - Never use bare `git stash` / `git stash pop`: the stash stack is shared with
   every other worktree and another session may pop yours.
+- A background task "stopped because the system is running low on memory" is
+  not proof of memory pressure (HIMMEL-3097). Before believing it, read
+  `/proc/pressure/memory` and the `memory.events` under `/sys/fs/cgroup` for
+  the cgroup in `/proc/self/cgroup`: all-zero pressure and `oom_kill 0` = a
+  false kill. Then stop retrying, run the suite in the foreground, and report
+  `BLOCKED` with those numbers — never name a cause you have not controlled for.
 
 ## Tests
 
