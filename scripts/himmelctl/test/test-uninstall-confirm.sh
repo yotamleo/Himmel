@@ -20,8 +20,11 @@ HIMMELCTL_BIN_DIR="$(winpath "$tmp/bin")"
 HIMMEL_LUNA_CONFIG_PATH="$(winpath "$tmp/home/luna-config.json")"
 export USERPROFILE HIMMELCTL_CACHE_DIR HIMMELCTL_REPO_ROOT HIMMELCTL_BIN_DIR HIMMEL_LUNA_CONFIG_PATH
 # Existing repo-root seam resolves only these harmless teardown scripts.
-printf '#!/usr/bin/env bash\necho fixture-teardown\nexit 7\n' > "$tmp/repo/scripts/uninstall.sh"
-printf 'Write-Output "fixture-teardown"\nexit 7\n' > "$tmp/repo/scripts/uninstall.ps1"
+# HIMMEL-3058: --dry-run now RUNS the executor's own --dry-run (the plan it
+# prints is the script's, not a second copy) — the stub answers it distinctly.
+printf '#!/usr/bin/env bash\ncase " $* " in *" --dry-run "*) echo fixture-dry-run; exit 0 ;; esac\necho fixture-teardown\nexit 7\n' > "$tmp/repo/scripts/uninstall.sh"
+# shellcheck disable=SC2016 # PowerShell $-variables must reach the file literally
+printf 'param([switch]$Yes,[switch]$DryRun,[switch]$PurgeState)\nif ($DryRun) { Write-Output "fixture-dry-run"; exit 0 }\nWrite-Output "fixture-teardown"\nexit 7\n' > "$tmp/repo/scripts/uninstall.ps1"
 
 check_rc() {
     [ "$1" -eq "$2" ] || { echo "FAIL - $3: expected rc=$1, got $2"; cat "$tmp/out" "$tmp/err"; exit 1; }
@@ -48,12 +51,21 @@ echo 'ok - C2 a piped decline also refuses with rc=2'
 node "$root/scripts/himmelctl/bin.js" uninstall --dry-run </dev/null >"$tmp/out" 2>"$tmp/err"; rc=$?
 check_rc 0 "$rc" C3
 check_not_has 'Proceed?' "$tmp/out" C3
-echo 'ok - C3 dry-run exits 0 without a prompt'
+check_has 'fixture-dry-run' "$tmp/out" C3
+check_not_has 'fixture-teardown' "$tmp/out" C3
+echo 'ok - C3 dry-run exits 0 without a prompt and runs the executor in dry-run mode only'
 
 node "$root/scripts/himmelctl/bin.js" uninstall --yes --dry-run </dev/null >"$tmp/out" 2>"$tmp/err"; rc=$?
 check_rc 0 "$rc" C4
 check_not_has 'unknown option for uninstall' "$tmp/err" C4
-echo 'ok - C4 --yes accepted with --dry-run'
+check_not_has 'fixture-teardown' "$tmp/out" C4
+echo 'ok - C4 --yes accepted with --dry-run, and --dry-run still wins (no teardown)'
+
+node "$root/scripts/himmelctl/bin.js" uninstall -n </dev/null >"$tmp/out" 2>"$tmp/err"; rc=$?
+check_rc 0 "$rc" C3n
+check_has 'fixture-dry-run' "$tmp/out" C3n
+check_not_has 'fixture-teardown' "$tmp/out" C3n
+echo 'ok - C3n -n is the short form of --dry-run'
 
 node "$root/scripts/himmelctl/bin.js" uninstall --lanes x </dev/null >"$tmp/out" 2>"$tmp/err"; rc=$?
 if [ "$rc" -eq 0 ]; then echo 'FAIL - C5 unrelated option accepted'; exit 1; fi

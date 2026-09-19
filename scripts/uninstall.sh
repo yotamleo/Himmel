@@ -18,9 +18,18 @@
 #   [8/8] remove the himmelctl cache + state dir ~/.claude/himmel
 #         (install-profile.json, state.json — HIMMEL-2459)
 #
+# Two removal choices, never conflated (HIMMEL-3058):
+#   default          himmel's OWN code — plugins, git hooks, settings.json
+#                    wiring, scheduled jobs, marketplaces, the himmelctl cache.
+#                    Operator STATE (telegram pairing + bridge state) is KEPT.
+#   --purge-state    additionally removes that operator state.
+# Every surface either choice touches is listed in the path manifest
+# scripts/install/uninstall-manifest.tsv, which THIS script reads (targets,
+# code-vs-state class, printed footprint) — see HIMMEL_UNINSTALL_MANIFEST.
+#
 # Removes ONLY (HIMMEL-2505 — the fixed target set, no discovery/globbing):
-#   $HOME/.claude/channels/telegram (or $TELEGRAM_CHANNEL_DIR)
-#   $HOME/.claude/handover/bridge   (or $BRIDGE_ROOT)
+#   $HOME/.claude/channels/telegram (or $TELEGRAM_CHANNEL_DIR)   [state]
+#   $HOME/.claude/handover/bridge   (or $BRIDGE_ROOT)            [state]
 #   $HOME/.claude/himmel            (or $HIMMELCTL_CACHE_DIR)
 # An override pointing INSIDE a protected location (e.g. $HOME/.ssh,
 # $HOME/Documents) is refused unless it names exactly one of these three.
@@ -35,14 +44,18 @@
 #
 # Usage:
 #   bash scripts/uninstall.sh [--dry-run] [--yes]
-#        [--keep-telegram-state] [--skip-plugins] [--skip-tasks] [--skip-hooks]
+#        [--purge-state] [--skip-plugins] [--skip-tasks] [--skip-hooks]
 #        [--skip-settings]
 #
 # Flags:
 #   --dry-run              Print actions instead of running them.
 #   --yes                  Skip the confirmation prompt.
-#   --keep-telegram-state  Keep the channel dir (token + access.json) and
-#                          bridge state; still stops the bridge process.
+#   --purge-state          ALSO remove operator state: the telegram channel dir
+#                          (bot token + access.json) and the bridge state.
+#                          Without it that state is kept (the conservative
+#                          default); the bridge process is stopped either way.
+#   --keep-telegram-state  Accepted for compatibility; state is already kept by
+#                          default. Contradicts --purge-state (rc=2).
 #   --skip-plugins         Keep Claude plugins + marketplaces installed.
 #   --skip-tasks           Keep HIMMEL-Resume-* / HimmelTelegramBridge jobs.
 #   --skip-hooks           Keep the repo's pre-commit git hooks.
@@ -52,6 +65,8 @@
 #                          stop before any action — `. uninstall.sh --source-only`.
 #
 # Env overrides (tests):
+#   HIMMEL_UNINSTALL_MANIFEST — default scripts/install/uninstall-manifest.tsv
+#                          (next to this script); the fixture-manifest seam.
 #   TELEGRAM_CHANNEL_DIR — default $HOME/.claude/channels/telegram
 #   BRIDGE_ROOT          — default $HOME/.claude/handover/bridge
 #                          (same var the bridge's bus.ts honors)
@@ -99,6 +114,7 @@ HOOKS_REPO_ROOT="${HIMMEL_UNINSTALL_REPO_ROOT:-$PWD}"
 DRY_RUN=0
 YES=0
 KEEP_TELEGRAM_STATE=0
+PURGE_STATE=0
 SKIP_PLUGINS=0
 SKIP_TASKS=0
 SKIP_HOOKS=0
@@ -109,7 +125,8 @@ while [ $# -gt 0 ]; do
     --dry-run)             DRY_RUN=1 ;;
     --yes)                 YES=1 ;;
     --keep-telegram-state) KEEP_TELEGRAM_STATE=1 ;;
-    --skip-plugins)        SKIP_PLUGINS=1 ;;
+    --purge-state)         PURGE_STATE=1 ;;
+    --skip-plugins)       SKIP_PLUGINS=1 ;;
     --skip-tasks)          SKIP_TASKS=1 ;;
     --skip-hooks)          SKIP_HOOKS=1 ;;
     --skip-settings)       SKIP_SETTINGS=1 ;;
@@ -122,6 +139,10 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+if [ "$PURGE_STATE" -eq 1 ] && [ "$KEEP_TELEGRAM_STATE" -eq 1 ]; then
+  echo "ERROR: --purge-state and --keep-telegram-state contradict each other — pick one." >&2
+  exit 2
+fi
 
 # strip_trailing_slash <path> — HIMMEL-2505 gap A.3: a trailing slash makes
 # `cd`/`rm -rf` follow a symlinked directory instead of the removal sites
@@ -135,18 +156,84 @@ strip_trailing_slash() {
   printf '%s\n' "$_v"
 }
 
-CHANNEL_DIR="${TELEGRAM_CHANNEL_DIR:-$HOME/.claude/channels/telegram}"
-CHANNEL_DIR="$(strip_trailing_slash "$CHANNEL_DIR")"
-BRIDGE_ROOT="${BRIDGE_ROOT:-$HOME/.claude/handover/bridge}"
-BRIDGE_ROOT="$(strip_trailing_slash "$BRIDGE_ROOT")"
-# Test override (HIMMEL_USER_SETTINGS) so the [6/8] settings-unwire can target a
-# temp file instead of the operator's real ~/.claude/settings.json.
-USER_SETTINGS="${HIMMEL_USER_SETTINGS:-$HOME/.claude/settings.json}"
+# --- Path manifest (HIMMEL-3058) ---------------------------------------------
+# scripts/install/uninstall-manifest.tsv is the ONE list of every surface this
+# script acts on. It is READ here — removal targets, the code-vs-state class
+# behind --purge-state, the printed footprint and the post-run read-back all
+# come from it — so a surface cannot be touched without being listed.
+# Fail-closed: an unreadable/malformed manifest is a refusal, never a fallback
+# to a re-derived list (a re-derived list is how paths get missed).
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+MANIFEST_FILE="${HIMMEL_UNINSTALL_MANIFEST:-$SCRIPT_DIR/install/uninstall-manifest.tsv}"
+M_ID=(); M_CLASS=(); M_KIND=(); M_ENV=(); M_PATH=(); M_STEP=(); M_WHAT=()
+load_manifest() {
+  local _id _class _surface _kind _env _path _step _what _extra
+  [ -r "$MANIFEST_FILE" ] || { echo "ERROR: uninstall manifest unreadable: $MANIFEST_FILE" >&2; return 1; }
+  while IFS=$'\t' read -r _id _class _surface _kind _env _path _step _what _extra; do
+    case "$_id" in ''|'#'*) continue ;; esac
+    if [ -z "$_what" ] || [ -n "$_extra" ]; then
+      echo "ERROR: malformed row '$_id' in $MANIFEST_FILE (need exactly 8 tab-separated columns)" >&2
+      return 1
+    fi
+    case "$_class" in
+      code|state|keep) ;;
+      *) echo "ERROR: row '$_id' has class '$_class' (want code|state|keep) in $MANIFEST_FILE" >&2; return 1 ;;
+    esac
+    M_ID+=("$_id"); M_CLASS+=("$_class"); M_KIND+=("$_kind"); M_ENV+=("$_env")
+    M_PATH+=("$_path"); M_STEP+=("$_step"); M_WHAT+=("$_what")
+  done < "$MANIFEST_FILE"
+  [ "${#M_ID[@]}" -gt 0 ] || { echo "ERROR: uninstall manifest has no rows: $MANIFEST_FILE" >&2; return 1; }
+}
+
+# m_index <id> — echo the row index; rc=1 (and an error) when the id is absent.
+m_index() {
+  local _i
+  for _i in "${!M_ID[@]}"; do
+    if [ "${M_ID[$_i]}" = "$1" ]; then printf '%s\n' "$_i"; return 0; fi
+  done
+  echo "ERROR: manifest $MANIFEST_FILE has no row '$1'" >&2
+  return 1
+}
+
+# m_path <row-index> — the row's target: its override env var when set, else
+# the default template with {HOME} {PWD} {REPO_ROOT} {HOOKS_REPO_ROOT} expanded.
+m_path() {
+  local _i="$1" _var="${M_ENV[$1]}" _p _t
+  if [ "$_var" != "-" ] && [ -n "${!_var:-}" ]; then
+    printf '%s\n' "${!_var}"
+    return 0
+  fi
+  _p="${M_PATH[$_i]}"
+  if [ "$_p" = "-" ]; then printf '%s\n' "-"; return 0; fi
+  _t='{HOME}';            _p="${_p//"$_t"/$HOME}"
+  _t='{PWD}';             _p="${_p//"$_t"/$PWD}"
+  _t='{REPO_ROOT}';       _p="${_p//"$_t"/$REPO_ROOT}"
+  _t='{HOOKS_REPO_ROOT}'; _p="${_p//"$_t"/$HOOKS_REPO_ROOT}"
+  printf '%s\n' "$_p"
+}
+
+load_manifest || exit 2
+_ix_channel=$(m_index telegram-channel) || exit 2
+_ix_bridge=$(m_index telegram-bridge) || exit 2
+_ix_settings=$(m_index user-settings) || exit 2
+_ix_cache=$(m_index himmelctl-cache) || exit 2
+_ix_pset=$(m_index project-settings) || exit 2
+
+CHANNEL_DIR="$(strip_trailing_slash "$(m_path "$_ix_channel")")"
+BRIDGE_ROOT="$(strip_trailing_slash "$(m_path "$_ix_bridge")")"
+# Test override (HIMMEL_USER_SETTINGS, the manifest row's env column) so the
+# [6/8] settings-unwire can target a temp file instead of the operator's real
+# ~/.claude/settings.json.
+USER_SETTINGS="$(m_path "$_ix_settings")"
 # Same override himmelctl reads (scripts/himmelctl/bin.js) — pointing one at a
 # temp dir must point the other there too, or uninstall would delete the real
 # cache during a test.
-HIMMEL_CACHE_DIR="${HIMMELCTL_CACHE_DIR:-$HOME/.claude/himmel}"
-HIMMEL_CACHE_DIR="$(strip_trailing_slash "$HIMMEL_CACHE_DIR")"
+HIMMEL_CACHE_DIR="$(strip_trailing_slash "$(m_path "$_ix_cache")")"
+
+# Operator state (manifest class=state) is removed only on --purge-state; the
+# legacy --keep-telegram-state can only ever keep more, and contradicts the
+# purge flag above.
+state_removed() { [ "$PURGE_STATE" -eq 1 ] && [ "$KEEP_TELEGRAM_STATE" -eq 0 ]; }
 
 # WHY (HIMMEL-2694): `claude plugin list --json` is the primary source for
 # each installed plugin's scope. The profile supplies only the child's
@@ -832,12 +919,16 @@ echo "==> himmel uninstall (offboard)"
 echo ""
 echo "This will:"
 echo "  1. stop the telegram bun bridge (if running)"
-if [ "$KEEP_TELEGRAM_STATE" -eq 0 ]; then
-  echo "  2. REMOVE telegram pairing + bridge state:"
+if state_removed; then
+  echo "  2. REMOVE telegram pairing + bridge state (--purge-state):"
   echo "       $CHANNEL_DIR   (bot-token .env + access.json)"
   echo "       $BRIDGE_ROOT   (sessions, inbox/outbox, supervisor state)"
-else
+elif [ "$KEEP_TELEGRAM_STATE" -eq 1 ]; then
   echo "  2. keep telegram state (--keep-telegram-state)"
+else
+  echo "  2. KEEP telegram pairing + bridge state (pass --purge-state to remove it):"
+  echo "       $CHANNEL_DIR"
+  echo "       $BRIDGE_ROOT"
 fi
 if [ "$SKIP_TASKS" -eq 0 ]; then
   echo "  3. remove HIMMEL-Resume-* scheduled jobs (+ HimmelTelegramBridge logon task)"
@@ -870,6 +961,26 @@ fi
 echo "  8. REMOVE the himmelctl cache + state: $HIMMEL_CACHE_DIR"
 echo "     (install-profile.json, state.json — a re-install would otherwise"
 echo "     start from the previous install's profile)"
+echo ""
+
+# Footprint — every manifest row with its disposition, so the operator sees the
+# code-vs-state split and what is never touched before confirming. REMOVE =
+# himmel code (default), KEEP = operator state without --purge-state, NEVER =
+# not uninstall's to touch. Per-step --skip-* flags are shown in the list above.
+echo "Footprint (scripts/install/uninstall-manifest.tsv):"
+for _mi in "${!M_ID[@]}"; do
+  case "${M_CLASS[$_mi]}" in
+    code)  _disp="REMOVE" ;;
+    state) if state_removed; then _disp="REMOVE"; else _disp="KEEP  "; fi ;;
+    *)     _disp="NEVER " ;;
+  esac
+  _mp=$(m_path "$_mi")
+  [ "$_mp" = "-" ] && _mp="(${M_ID[$_mi]})"
+  echo "  $_disp  $_mp — ${M_WHAT[$_mi]}"
+done
+if ! state_removed; then
+  echo "  (operator state is KEPT by default; --purge-state also removes the KEEP rows tagged state)"
+fi
 echo ""
 
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -926,8 +1037,12 @@ echo "[2/8] Removing telegram pairing + bridge state..."
 if [ "$HALTED" -eq 1 ]; then
   echo "  SKIPPED: step 1 could not stop the bridge — halted after an earlier failure"
   STEPS_INCOMPLETE+=("[2/8] telegram pairing + bridge state: skipped — halted after an earlier failure")
-elif [ "$KEEP_TELEGRAM_STATE" -eq 1 ]; then
-  echo "  kept (--keep-telegram-state)."
+elif ! state_removed; then
+  if [ "$KEEP_TELEGRAM_STATE" -eq 1 ]; then
+    echo "  kept (--keep-telegram-state)."
+  else
+    echo "  kept (operator state; pass --purge-state to remove): $CHANNEL_DIR, $BRIDGE_ROOT"
+  fi
 else
   for _dir in "$CHANNEL_DIR" "$BRIDGE_ROOT"; do
     if [ "$HALTED" -eq 1 ]; then
@@ -1279,8 +1394,43 @@ echo ""
 # operator's own hooks, MCP config). --dry-run flows through to each.
 echo "[6/8] Unwiring ~/.claude/settings.json (statusLine, HIMMEL_REPO, LUNA_VAULT_PATH, HANDOVER_DIR, hooks)..."
 # One sanctioned unwire sequence for both scopes; retain the user-scope order.
+#
+# HIMMEL-3058: the hook patterns the read-back matches are read from THIS
+# script's own sibling lib (never from $REPO_ROOT, which a fixture or a stub
+# can replace) in a subshell — that lib sets `set -euo pipefail` when sourced.
+# The read-back re-reads the settings file with jq; it never trusts a helper's
+# return code, because a helper that exits 0 without removing anything is the
+# failure this guards against.
+HIMMEL_HOOK_PAT="$( . "$SCRIPT_DIR/lib/unwire-pretooluse-hooks.sh" >/dev/null 2>&1; printf '%s|%s' "${_UNWIRE_PRE_PAT:-}" "${_UNWIRE_SS_PAT:-}" )"
+[ "$HIMMEL_HOOK_PAT" = "|" ] && HIMMEL_HOOK_PAT=""
+
+# himmel_wiring_lines <settings> — one "<what>" line per himmel hook command and
+# per himmel env key currently present in the file (empty when none / unreadable).
+himmel_wiring_lines() {
+  [ -n "$HIMMEL_HOOK_PAT" ] || return 0
+  jq -r --arg pat "$HIMMEL_HOOK_PAT" '
+    ((.hooks // {}) | to_entries[] | .key as $ev | (.value // [])[]? | (.hooks // [])[]?
+      | (.command // "") | select(test($pat)) | "hook \($ev): \(.)"),
+    ((.env // {}) | to_entries[] | select(.key | IN("HIMMEL_REPO","LUNA_VAULT_PATH","HANDOVER_DIR"))
+      | "env.\(.key)=\(.value)")
+  ' "$1" 2>/dev/null || true
+}
+
+# himmel_hook_lines <settings> — hooks only; rc=1 when the file cannot be read back.
+himmel_hook_lines() {
+  jq -r --arg pat "$HIMMEL_HOOK_PAT" '
+    (.hooks // {}) | to_entries[] | .key as $ev | (.value // [])[]? | (.hooks // [])[]?
+      | (.command // "") | select(test($pat)) | "\($ev): \(.)"
+  ' "$1"
+}
+
 unwire_settings() {
-  local settings="$1" helper
+  local settings="$1" helper _line _left
+  # Print exactly what is about to change (dry-run: what WOULD change).
+  himmel_wiring_lines "$settings" | while IFS= read -r _line; do
+    if [ "$DRY_RUN" -eq 1 ]; then echo "DRY: would remove $_line  [$settings]"
+    else echo "  removing $_line  [$settings]"; fi
+  done
   if [ "$DRY_RUN" -eq 1 ]; then
     echo "DRY: unwire statusLine (himmel), env.HIMMEL_REPO, env.LUNA_VAULT_PATH, env.HANDOVER_DIR from $settings"
     if ! bash "$REPO_ROOT/scripts/lib/unwire-pretooluse-hooks.sh" "$settings" 1; then
@@ -1294,6 +1444,20 @@ unwire_settings() {
       fail_step "[6/8] settings unwire: $helper failed"
     fi
   done
+  [ "$HALTED" -eq 0 ] || return 0
+  # Positive read-back: the file itself, not the helpers' exit codes.
+  if [ -z "$HIMMEL_HOOK_PAT" ]; then
+    echo "  ERROR: cannot verify $settings — hook patterns unavailable" >&2
+    fail_step "[6/8] read-back: cannot verify $settings (hook patterns unavailable)"
+  elif ! _left="$(himmel_hook_lines "$settings")"; then
+    echo "  ERROR: could not read $settings back" >&2
+    fail_step "[6/8] read-back: could not read $settings back"
+  elif [ -n "$_left" ]; then
+    printf '%s\n' "$_left" | while IFS= read -r _line; do echo "  STILL WIRED: $_line  [$settings]" >&2; done
+    fail_step "[6/8] read-back: himmel hook still wired in $settings"
+  else
+    echo "  verified: no himmel hook wired in $settings"
+  fi
 }
 
 # Same project target as install-plugins.sh/adopt.sh: invocation CWD, not the
@@ -1313,7 +1477,7 @@ project_is_himmel_checkout() {
 }
 
 _user_settings="$USER_SETTINGS"
-_project_settings="$PWD/.claude/settings.json"
+_project_settings="$(m_path "$_ix_pset")"
 if [ "$HALTED" -eq 1 ]; then
   echo "  skipped (halted after an earlier failure)"
   STEPS_INCOMPLETE+=("[6/8] settings unwire: skipped — halted after an earlier failure")
@@ -1452,9 +1616,37 @@ if [ "${#STEPS_INCOMPLETE[@]}" -gt 0 ]; then
   exit 2
 fi
 
+if [ "$DRY_RUN" -eq 0 ]; then
+  # Footprint read-back (HIMMEL-3058): every manifest directory this run was
+  # meant to remove is checked absent on disk — the file system, not the rc.
+  for _mi in "${!M_ID[@]}"; do
+    [ "${M_KIND[$_mi]}" = "dir" ] || continue
+    case "${M_CLASS[$_mi]}" in
+      code) ;;
+      state) state_removed || continue ;;
+      *) continue ;;
+    esac
+    _mp="$(strip_trailing_slash "$(m_path "$_mi")")"
+    if [ -e "$_mp" ] || [ -L "$_mp" ]; then
+      echo "  ERROR: $_mp is still present after uninstall" >&2
+      STEPS_INCOMPLETE+=("read-back: ${M_ID[$_mi]} $_mp still present")
+    else
+      echo "  verified: absent $_mp"
+    fi
+  done
+  if [ "${#STEPS_INCOMPLETE[@]}" -gt 0 ]; then
+    echo "Uninstall INCOMPLETE — read-back found residue:" >&2
+    for _step in "${STEPS_INCOMPLETE[@]}"; do echo "  - $_step" >&2; done
+    exit 2
+  fi
+fi
+
 echo "Uninstall complete."
 echo ""
 echo "NOT touched (by design):"
-echo "  - ~/.claude/settings.json non-himmel keys (MCP config, your own hooks, rtk guard)"
-echo "  - the himmel clone itself, .env, and worktrees"
-echo "  - ~/.claude/handover/registry.json + handover state outside the bridge root"
+for _mi in "${!M_ID[@]}"; do
+  case "${M_CLASS[$_mi]}" in
+    keep)  echo "  - $(m_path "$_mi") — ${M_WHAT[$_mi]}" ;;
+    state) state_removed || echo "  - $(m_path "$_mi") — ${M_WHAT[$_mi]} (operator state; --purge-state removes it)" ;;
+  esac
+done

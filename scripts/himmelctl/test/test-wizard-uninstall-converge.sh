@@ -219,9 +219,16 @@ grepq "$out" -F 'left untouched (your data): fixture-keep' \
   || fail "caseA: expected fixture-keep reported as left-untouched (got: $out)"
 grepq "$out" 'Proceed?' \
   && fail "caseA: --dry-run must NOT show the confirm prompt (got: $out)"
+# HIMMEL-3058: --dry-run RUNS the executor in its own dry-run mode (never
+# --yes/-Yes) so its plan is the one printed; nothing is asked.
 [ -f "$fixtureA/uninstall-calls.log" ] \
-  && fail "caseA: --dry-run must NOT execute uninstall.sh/uninstall.ps1 (got: $(cat "$fixtureA/uninstall-calls.log"))"
-echo "ok: caseA --dry-run -> full advisory plan printed (owned/advise/keep), nothing asked or executed"
+  || fail "caseA: --dry-run must run the executor in dry-run mode (no call log)"
+callsA=$(cat "$fixtureA/uninstall-calls.log")
+grepq "$callsA" -iE -- '--dry-run|DryRun=True' \
+  || fail "caseA: the executor must be invoked in dry-run mode (got: $callsA)"
+grepq "$callsA" -iE -- '--yes|Yes=True' \
+  && fail "caseA: the executor must NOT see --yes/-Yes on a dry-run (got: $callsA)"
+echo "ok: caseA --dry-run -> full advisory plan printed (owned/advise/keep), executor run dry-run only, nothing asked"
 
 # ── Case B: accepted run, nothing pre-wired -> advisory shown, shared/keep
 # items untouched, completeness reads clean (nothing was wired to begin

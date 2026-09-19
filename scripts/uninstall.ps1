@@ -26,9 +26,16 @@
 # the locations setup.ps1 / the installers write into.
 #
 # Usage:
-#   pwsh -File scripts/uninstall.ps1 [-DryRun] [-Yes]
+#   pwsh -File scripts/uninstall.ps1 [-DryRun] [-Yes] [-PurgeState]
 #        [-KeepTelegramState] [-SkipPlugins] [-SkipTasks] [-SkipHooks]
 #        [-SkipSettings]
+#
+# Code vs state (HIMMEL-3058): by default only himmel's CODE is removed (plugins,
+# hooks, settings wiring, cache). Operator STATE — the telegram pairing and the
+# bridge state (step 2) — is kept unless -PurgeState is passed. -KeepTelegramState
+# is retained for callers that still pass it; it contradicts -PurgeState (rc=2).
+# scripts/install/uninstall-manifest.tsv lists every surface; uninstall.sh reads
+# it, and scripts/test-uninstall-ux.sh holds this script to it.
 #
 # Env overrides (tests): $env:TELEGRAM_CHANNEL_DIR, $env:BRIDGE_ROOT,
 # $env:HIMMEL_USER_SETTINGS, $env:HIMMELCTL_CACHE_DIR
@@ -38,6 +45,7 @@ param(
     [switch]$DryRun,
     [switch]$Yes,
     [switch]$KeepTelegramState,
+    [switch]$PurgeState,
     [switch]$SkipPlugins,
     [switch]$SkipTasks,
     [switch]$SkipHooks,
@@ -45,6 +53,13 @@ param(
 )
 
 $RepoRoot = Resolve-Path (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) '..')
+
+if ($PurgeState -and $KeepTelegramState) {
+    [Console]::Error.WriteLine('ERROR: -PurgeState and -KeepTelegramState contradict each other -- pick one.')
+    exit 2
+}
+# Operator state is removed only on -PurgeState (HIMMEL-3058).
+$RemoveState = $PurgeState -and (-not $KeepTelegramState)
 
 $ChannelDir = if ($env:TELEGRAM_CHANNEL_DIR) { $env:TELEGRAM_CHANNEL_DIR }
               else { Join-Path $HOME '.claude\channels\telegram' }
@@ -154,12 +169,16 @@ Write-Host "==> himmel uninstall (offboard)"
 Write-Host ""
 Write-Host "This will:"
 Write-Host "  1. stop the telegram bun bridge (if running)"
-if (-not $KeepTelegramState) {
-    Write-Host "  2. REMOVE telegram pairing + bridge state:"
+if ($RemoveState) {
+    Write-Host "  2. REMOVE telegram pairing + bridge state (-PurgeState):"
     Write-Host "       $ChannelDir   (bot-token .env + access.json)"
     Write-Host "       $BridgeRoot   (sessions, inbox/outbox, supervisor state)"
-} else {
+} elseif ($KeepTelegramState) {
     Write-Host "  2. keep telegram state (-KeepTelegramState)"
+} else {
+    Write-Host "  2. KEEP telegram pairing + bridge state (pass -PurgeState to remove it):"
+    Write-Host "       $ChannelDir"
+    Write-Host "       $BridgeRoot"
 }
 if (-not $SkipTasks) {
     Write-Host "  3. remove HIMMEL-Resume-* scheduled tasks + HimmelTelegramBridge logon task"
@@ -240,8 +259,9 @@ Write-Host ""
 
 # --- [2/7] remove telegram pairing + bridge state ------------------------------
 Write-Host "[2/7] Removing telegram pairing + bridge state..."
-if ($KeepTelegramState) {
-    Write-Host "  kept (-KeepTelegramState)."
+if (-not $RemoveState) {
+    if ($KeepTelegramState) { Write-Host "  kept (-KeepTelegramState)." }
+    else { Write-Host "  kept (operator state; pass -PurgeState to remove): $ChannelDir, $BridgeRoot" }
 } elseif ($BridgeMaybeRunning) {
     Write-Host "  SKIPPED: step 1 could not stop the bridge -- a running supervisor would" -ForegroundColor Yellow
     Write-Host "  recreate (or hold locks on) state under $BridgeRoot. Kill the bridge" -ForegroundColor Yellow

@@ -1,0 +1,32 @@
+# himmel uninstall path manifest (HIMMEL-3058) — the ONE list of every surface
+# scripts/uninstall.sh acts on. The uninstaller READS this file: the removal
+# targets, the code-vs-state class that gates --purge-state, the printed
+# footprint and the post-run read-back all come from here, so a path cannot be
+# touched without being listed (a re-derived list is how paths get missed).
+# scripts/uninstall.ps1 keeps its own targets and is held to this file by
+# scripts/test-uninstall-ux.sh.
+#
+# Columns, TAB-separated ('-' = not applicable; blank/# lines ignored):
+#   id       stable name, referenced by uninstall.sh
+#   class    code  = himmel's own code/wiring/cache — removed by default
+#            state = operator data — kept unless --purge-state is passed
+#            keep  = never touched by uninstall, listed so the footprint is complete
+#   surface  which of the machine's surfaces this lives on
+#   kind     dir | settings | githooks | process | jobs | plugins | marketplaces | file
+#   env      env var that overrides the path (tests, non-default installs)
+#   path     default path; tokens {HOME} {PWD} {REPO_ROOT} {HOOKS_REPO_ROOT}
+#   step     uninstall.sh step that acts on it (1-8; '-' for keep rows)
+#   what     one line shown in the footprint
+bridge-process	code	telegram-bridge	process	-	-	1	the telegram bun bridge supervisor (stopped, not deleted)
+telegram-channel	state	telegram-bridge	dir	TELEGRAM_CHANNEL_DIR	{HOME}/.claude/channels/telegram	2	telegram pairing: bot-token .env + access.json
+telegram-bridge	state	telegram-bridge	dir	BRIDGE_ROOT	{HOME}/.claude/handover/bridge	2	bridge sessions, inbox/outbox, supervisor state
+scheduled-jobs	code	scheduler	jobs	-	-	3	HIMMEL-Resume-* scheduled jobs + the HimmelTelegramBridge logon task
+plugins	code	claude-plugins	plugins	-	-	4	Claude plugins from himmel-owned marketplaces (USER-SCOPE plugins affect every repo)
+git-hooks	code	project-repo	githooks	-	{HOOKS_REPO_ROOT}/.git/hooks	5	himmel's pre-commit/pre-push/commit-msg git hooks in the current repo
+user-settings	code	claude-settings	settings	HIMMEL_USER_SETTINGS	{HOME}/.claude/settings.json	6	himmel statusLine, env.HIMMEL_REPO/LUNA_VAULT_PATH/HANDOVER_DIR and UNIVERSAL hooks (other keys untouched)
+project-settings	code	claude-settings	settings	-	{PWD}/.claude/settings.json	6	same wiring in the current project's settings.json (himmel's own checkout excluded)
+marketplaces	code	claude-plugins	marketplaces	-	-	7	Claude marketplaces with no remaining installed plugins
+himmelctl-cache	code	himmelctl	dir	HIMMELCTL_CACHE_DIR	{HOME}/.claude/himmel	8	himmelctl install-profile.json + state.json (himmel's own cache)
+handover-registry	keep	handover	file	-	{HOME}/.claude/handover/registry.json	-	handover registry and handover state outside the bridge root
+himmel-clone	keep	himmel-checkout	dir	-	{REPO_ROOT}	-	the himmel clone itself, its .env (Jira config) and worktrees
+foreign-settings	keep	claude-settings	settings	-	{HOME}/.claude/settings.json	-	non-himmel settings.json keys: MCP config, your own hooks, the rtk guard

@@ -338,8 +338,10 @@ install: [`docs/setup/migrating.md`](docs/setup/migrating.md).
 pull` + marketplace re-sync — Claude Code's own `autoUpdate` does **not**
 deliver himmel; it only re-syncs already-installed plugins from the on-disk
 dir) and, separately, upgrade a companion luna vault with `/luna-upgrade`.
-Offboard with `node scripts/himmelctl/bin.js uninstall` (runs the symmetric
-`scripts/uninstall.sh` teardown). All three, in full:
+Uninstall with `node scripts/himmelctl/bin.js uninstall` — preview it first with
+`uninstall --dry-run` (touches nothing); it removes himmel's code wiring and keeps
+your operator state unless you pass `--purge-state` ([details](docs/setup/install.md#uninstalling)).
+All three, in full:
 [`docs/setup/updating.md`](docs/setup/updating.md).
 
 Claude Code global config (`~/.claude/`) setup: see

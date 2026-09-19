@@ -153,20 +153,32 @@ if is_win32; then
     || fail "caseB(win32): expected a PowerShell 5.1 fallback (pwsh scrubbed) (got: $out)"
   grepq "$out" -F -- '-ExecutionPolicy Bypass -File' \
     || fail "caseB(win32): expected -ExecutionPolicy Bypass -File (got: $out)"
+  grepq "$out" -F -- 'uninstall.ps1 -DryRun' \
+    || fail "caseB(win32): expected uninstall.ps1 -DryRun (got: $out)"
   grepq "$out" -F -- 'uninstall.ps1 -Yes' \
-    || fail "caseB(win32): expected uninstall.ps1 -Yes (got: $out)"
+    && fail "caseB(win32): --dry-run must NOT derive -Yes (got: $out)"
 else
-  grepq "$out" -E 'derived:.*bash .*uninstall\.sh --yes$' \
-    || fail "caseB(posix): expected 'bash .../uninstall.sh --yes' (got: $out)"
+  grepq "$out" -E 'derived:.*bash .*uninstall\.sh --dry-run$' \
+    || fail "caseB(posix): expected 'bash .../uninstall.sh --dry-run' (got: $out)"
 fi
 grepq "$out" 'Proceed?' \
   && fail "caseB: --dry-run must NOT show the confirm prompt (got: $out)"
+# HIMMEL-3058: --dry-run RUNS the executor in its own dry-run mode (the plan it
+# prints is the script's, not a second copy) — never with --yes/-Yes, and
+# never with HIMMEL_UNINSTALL_REAL_HOME (the wet-run fence's only opt-in).
 [ -f "$fixtureB/uninstall-calls.log" ] \
-  && fail "caseB: --dry-run must NOT execute uninstall.sh/uninstall.ps1 (got: $(cat "$fixtureB/uninstall-calls.log"))"
-# HIMMEL-2505: no call log at all is also proof the child never saw
-# HIMMEL_UNINSTALL_REAL_HOME=1 — the dry-run/plan path returns before
-# cmdUninstall's confirmed spawn (the only call site that sets it) ever runs.
-echo "ok: caseB --dry-run -> derived plan printed, nothing asked or executed, HIMMEL_UNINSTALL_REAL_HOME never set"
+  || fail "caseB: --dry-run must run the executor in dry-run mode (no call log)"
+callsB=$(cat "$fixtureB/uninstall-calls.log")
+if is_win32; then
+  grepq "$callsB" -F -- 'DryRun=True' \
+    || fail "caseB(win32): the executor must see -DryRun (got: $callsB)"
+  grepq "$callsB" -F -- 'Yes=True' \
+    && fail "caseB(win32): the executor must NOT see -Yes on a dry-run (got: $callsB)"
+else
+  grepq "$callsB" -F -- 'uninstall.sh: --dry-run HIMMEL_UNINSTALL_REAL_HOME=unset' \
+    || fail "caseB(posix): expected exactly '--dry-run' with the real-home fence unset (got: $callsB)"
+fi
+echo "ok: caseB --dry-run -> derived plan printed, executor run with --dry-run only, nothing asked, HIMMEL_UNINSTALL_REAL_HOME never set"
 
 # ── Case B2 (HIMMEL-2126): --dry-run on win32 prefers pwsh when it is
 # resolvable — a stub pwsh is injected onto PATH (posix is a no-op: caseB
@@ -187,8 +199,8 @@ if is_win32; then
     || fail "caseB2(win32): expected pwsh to be preferred when resolvable (got: $outB2)"
   grepq "$outB2" -F -- '-ExecutionPolicy Bypass -File' \
     || fail "caseB2(win32): expected -ExecutionPolicy Bypass -File (got: $outB2)"
-  grepq "$outB2" -F -- 'uninstall.ps1 -Yes' \
-    || fail "caseB2(win32): expected uninstall.ps1 -Yes (got: $outB2)"
+  grepq "$outB2" -F -- 'uninstall.ps1 -DryRun' \
+    || fail "caseB2(win32): expected uninstall.ps1 -DryRun (got: $outB2)"
   echo "ok: caseB2 win32 -> pwsh preferred over PowerShell 5.1 when resolvable"
 else
   echo "ok: caseB2 -> (skipped: posix has no pwsh/powershell branch, covered by caseB)"
