@@ -353,7 +353,11 @@ HBIN="$WS/hbin"; mkdir -p "$HBIN"
 # hermetic PATH omitting grep hits "grep: command not found" first, and the
 # resulting rc=2 was coincidentally the same as the python3-preflight rc=2,
 # masking the wrong-stderr failure until this was caught.
-for _tool in bash env find cp mkdir rm mv dirname date cat node grep; do
+# tr + mktemp (HIMMEL-1084): the egress preflight now runs graphify-fence.sh
+# --eval, which lower-cases the backend with tr and stages node stderr in a
+# mktemp file; without them the fence dies (fail-closed rc=2) before the
+# python3 preflight this case targets.
+for _tool in bash env find cp mkdir rm mv dirname date cat node grep tr mktemp; do
   link_hermetic_tool "$_tool" "$HBIN"
 done
 # Hermetic PATH carrying every tool EXCEPT python3. scrub_path drops every dir
@@ -2558,7 +2562,7 @@ KCALLS_RETIRED="$WS/kimi-retired-calls.log"; : > "$KCALLS_RETIRED"
 out=$( GRAPHIFY_CALL_LOG="$KCALLS_RETIRED" GRAPHIFY_MAP_BIN="$BIN/graphify" \
   bash "$SCRIPT" --name kimi-retired --corpus-root "$KCORPUS" --backend kimi \
   --maps-dir "$KMAPS" --title "Kimi" --slug kimi-retired-map 2>&1 ); rc=$?
-{ [ "$rc" -eq 2 ] && grep -q "no egress-matrix provider mapping" <<< "$out" && [ ! -s "$KCALLS_RETIRED" ]; } \
+{ [ "$rc" -eq 2 ] && grep -qF 'DENY luna-personal x kimi x extraction' <<< "$out" && [ ! -s "$KCALLS_RETIRED" ]; } \
   && pass "T40a --backend kimi (retired, HIMMEL-2101) fails closed before graphify (no provider mapping)" \
   || fail "T40a retired kimi backend should fail rc=2 before graphify (got $rc): $out calls=$(cat "$KCALLS_RETIRED")"
 
@@ -2625,7 +2629,7 @@ KCALLS_DENY="$WS/glm-deny-calls.log"; : > "$KCALLS_DENY"
 out=$( ANTHROPIC_API_KEY=stub ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic GRAPHIFY_CALL_LOG="$KCALLS_DENY" GRAPHIFY_MAP_BIN="$BIN/graphify" \
   bash "$SCRIPT" --name glm-deny --corpus-root "$KCORPUS" --backend glm --corpus-class salus \
   --maps-dir "$KMAPS" --title "Deny" --slug glm-deny-map 2>&1 ); rc=$?
-{ [ "$rc" -eq 2 ] && grep -q "egress matrix DENIES salus" <<< "$out" && [ ! -s "$KCALLS_DENY" ]; } \
+{ [ "$rc" -eq 2 ] && grep -qF 'DENY salus x zai-glm x extraction' <<< "$out" && [ ! -s "$KCALLS_DENY" ]; } \
   && pass "T40d glm denied corpus class fails closed before graphify" \
   || fail "T40d glm salus run should fail rc=2 before graphify (got $rc): $out calls=$(cat "$KCALLS_DENY")"
 
@@ -2665,7 +2669,7 @@ out=$( ANTHROPIC_API_KEY=stub ANTHROPIC_MODEL=glm-5.2 ANTHROPIC_BASE_URL='https:
 #       instead (a `node` shim over egress-matrix-eval.mjs, `--backend claude`
 #       vehicle) since no live cell can vehicle it anymore.
 { [ "$rc" -eq 2 ] && [ ! -s "$GLM_OK_CALLS" ] \
-  && grep -qF 'egress matrix DENIES luna-personal x zai-glm x extraction' <<< "$out" \
+  && grep -qF 'DENY luna-personal x zai-glm x extraction' <<< "$out" \
   && grep -qF 'claude backend @ https://api.z.ai (model glm-5.2)' <<< "$out" \
   && ! grep -qF 'test-user:test-pass' <<< "$out" && ! grep -qF '/api/anthropic' <<< "$out" \
   && ! grep -qF 'secret-token' <<< "$out"; } \
@@ -2704,9 +2708,15 @@ out=$( env -u ANTHROPIC_BASE_URL GRAPHIFY_LEDGER="$CLAUDE_PREFLIGHT_LEDGER" \
   GRAPHIFY_CALL_LOG="$CLAUDE_PREFLIGHT_CALLS" GRAPHIFY_MAP_BIN="$BIN/graphify" \
   bash "$SCRIPT" --name claude-default --corpus-root "$KCORPUS" --backend claude-cli \
   --maps-dir "$KMAPS" --title "Claude" --slug claude-default-map 2>&1 ); rc=$?
-{ [ "$rc" -eq 0 ] && [ -s "$CLAUDE_PREFLIGHT_CALLS" ] && [ ! -e "$CLAUDE_PREFLIGHT_LEDGER" ]; } \
-  && pass "T40i claude-cli default Anthropic endpoint proceeds without a ledger line" \
-  || fail "T40i claude-cli default endpoint should proceed without ledger (rc=$rc): $out calls=$(cat "$CLAUDE_PREFLIGHT_CALLS") ledger=$(cat "$CLAUDE_PREFLIGHT_LEDGER" 2>/dev/null)"
+# HIMMEL-1084: the preflight is graphify-fence.sh --eval, which treats the
+# asserted --corpus-class as a DECLARATION and ledgers every allow-family
+# verdict (the same rule as a `.graphify-corpus` marker-declared staged copy),
+# so an allowed scheduled run now always leaves an audit line.
+{ [ "$rc" -eq 0 ] && [ -s "$CLAUDE_PREFLIGHT_CALLS" ] \
+  && [ "$(grep -c . "$CLAUDE_PREFLIGHT_LEDGER" 2>/dev/null)" = 1 ] \
+  && grep -qF '"corpus":"luna-personal","backend":"claude-cli","provider":"anthropic","verdict":"allow","tool":"refresh-graph-map","declared":true' "$CLAUDE_PREFLIGHT_LEDGER"; } \
+  && pass "T40i claude-cli default Anthropic endpoint proceeds and writes one declared ledger line" \
+  || fail "T40i claude-cli default endpoint should proceed with one declared ledger line (rc=$rc): $out calls=$(cat "$CLAUDE_PREFLIGHT_CALLS") ledger=$(cat "$CLAUDE_PREFLIGHT_LEDGER" 2>/dev/null)"
 
 : > "$CLAUDE_PREFLIGHT_CALLS"; rm -f "$CLAUDE_PREFLIGHT_LEDGER"
 out=$( ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic GRAPHIFY_LEDGER="$CLAUDE_PREFLIGHT_LEDGER" \
@@ -2720,7 +2730,7 @@ out=$( ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic GRAPHIFY_LEDGER="$CLAUD
 # classification produces this deny. The discriminator moved from the ledger line
 # to the verdict; no graphify call and no ledger line may be produced.
 { [ "$rc" -eq 2 ] && [ ! -s "$CLAUDE_PREFLIGHT_CALLS" ] && [ ! -e "$CLAUDE_PREFLIGHT_LEDGER" ] \
-  && grep -qF 'egress matrix DENIES luna-personal x zai-glm x extraction' <<< "$out"; } \
+  && grep -qF 'DENY luna-personal x zai-glm x extraction' <<< "$out"; } \
   && pass "T40j claude-cli exact Z.ai endpoint is classified zai-glm and denied (HIMMEL-2224; anthropic would have allowed)" \
   || fail "T40j claude-cli Z.ai endpoint should deny rc=2 naming zai-glm, no call, no ledger (rc=$rc): $out ledger=$(cat "$CLAUDE_PREFLIGHT_LEDGER" 2>/dev/null)"
 
@@ -3200,7 +3210,7 @@ UNKNOWNCALLS="$WS/unknown-calls.log"; : > "$UNKNOWNCALLS"
 out=$( HOME="$SALHOME" GRAPHIFY_CALL_LOG="$UNKNOWNCALLS" GRAPHIFY_MAP_BIN="$BIN/graphify" bash "$SCRIPT" \
   --name unknown --corpus-root "$UNKNOWNCORPUS" --backend unmapped-test \
   --maps-dir "$UNKNOWNMAPS" --title Unknown --slug unknown-map 2>&1 ); rc=$?
-if [ "$rc" -eq 2 ] && grep -q "backend 'unmapped-test' has no egress-matrix provider mapping" <<< "$out" \
+if [ "$rc" -eq 2 ] && grep -qF 'DENY luna-personal x unmapped-test x extraction' <<< "$out" \
    && [ ! -s "$UNKNOWNCALLS" ]; then
   pass "T44a unknown backend extraction fails closed before graphify and names the backend"
 else

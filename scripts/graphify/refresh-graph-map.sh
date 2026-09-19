@@ -78,7 +78,7 @@ REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 # do NOT strip those vars here (the operator may intend the API path); this is a
 # default, not a billing guarantee.
 NAME="" CORPUS_ROOT="" BACKEND="claude-cli" MAPS_DIR="" TITLE="" SLUG="" CORPUS_TAG=""
-SCRATCH="" DO_UPDATE=1 CORPUS_CLASS="luna-personal" EFFECTIVE_PROVIDER=""
+SCRATCH="" DO_UPDATE=1 CORPUS_CLASS="luna-personal"
 # HIMMEL-1704: OPTIONAL device:inode identity for --corpus-root / --maps-dir,
 # as probed by the caller's OWN preflight (graph-refresh.sh) at validation
 # time. A caller that does not pass one (e.g. a direct/manual invocation, or
@@ -237,7 +237,6 @@ case "$BACKEND" in
       echo "refresh-graph-map: ANTHROPIC_BASE_URL is set to an unverified GLM endpoint (value not echoed); refusing scheduled egress (fail-closed). Use exact HTTPS host api.z.ai or open.bigmodel.cn." >&2
       exit 2
     }
-    EFFECTIVE_PROVIDER="zai-glm"
     : "${ANTHROPIC_MODEL:=glm-5.2}"
     if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
       # shellcheck source=../lib/load-dotenv.sh
@@ -267,58 +266,29 @@ case "$BACKEND" in
     ;;
 esac
 
-# In-script egress preflight + ledger for the scheduled claude/claude-cli/glm
-# paths (partial HIMMEL-1084). graphify-fence.sh owns matrix eval + the
-# allow+log ledger on interactive paths, but it never runs on a scheduled
-# invocation. Resolve claude/claude-cli by their EFFECTIVE ANTHROPIC_BASE_URL,
-# then run the same matrix eval. Unknown/custom endpoints use the fence's
-# anthropic-custom provider name and are hard-denied before matrix evaluation,
-# so they cannot escape through a wildcard cell. Append the same ledger
-# line for allow+log verdicts (same file, same JSONL shape), fail-closed: a deny/
-# conditional verdict OR a failed ledger append aborts the run. Extraction path
-# only: a --no-update republish makes no backend calls, and neither does a
-# --promote-only recovery (HIMMEL-3205: DO_EXTRACT=0 skips every backend gate).
+# Egress preflight for the scheduled/direct path (HIMMEL-1084).
+# graphify-fence.sh is wired only as a PreToolUse hook, so it never sees the
+# graphify calls THIS script makes when cron/schtasks fire it
+# (graphmap-cadence.sh). Rather than keep a private copy of the fence's
+# backend->provider map + matrix eval + ledger (the pre-HIMMEL-1084 shape,
+# which had already drifted: its own provider map, no conditional opt-ins, a
+# different ledger shape), run the fence's direct-eval contract:
+#   graphify-fence.sh --eval <corpus-class> <backend> <corpus-root> refresh-graph-map
+# That gives the unattended run EXACTLY the verdict an agent-typed graphify
+# invocation gets (corpus class x resolved provider x extraction, per
+# scripts/guardrails/egress-matrix.json): endpoint-aware claude/claude-cli
+# (an unratified ANTHROPIC_BASE_URL is hard-denied on every corpus), the
+# ratified gateways only where the matrix allows them, conditional cells only
+# with their opt-in, and the same ledger file/shape (tool=refresh-graph-map;
+# the asserted --corpus-class is ledgered as a declaration on every allow).
+# Credentials are deliberately NOT cleared: --backend claude needs
+# ANTHROPIC_API_KEY, and the matrix - not this script - decides which
+# gateways are allowed. One preflight covers BOTH graphify dispatches below
+# (--update and cluster-only): same corpus, same --backend, and nothing
+# between them touches the environment. Extraction path only: a --no-update
+# republish makes no backend calls, and neither does a --promote-only recovery
+# (HIMMEL-3205: DO_EXTRACT=0 skips every backend gate).
 if [ "$DO_EXTRACT" -eq 1 ]; then
-  if [ -z "$EFFECTIVE_PROVIDER" ]; then
-    case "$BACKEND" in
-      claude|claude-cli)
-        if [ -z "${ANTHROPIC_BASE_URL:-}" ]; then
-          EFFECTIVE_PROVIDER="anthropic"
-        else
-          endpoint_host="$(_endpoint_host "$ANTHROPIC_BASE_URL")" || endpoint_host=""
-          case "$endpoint_host" in
-            api.anthropic.com) EFFECTIVE_PROVIDER="anthropic" ;;
-            api.z.ai|open.bigmodel.cn) EFFECTIVE_PROVIDER="zai-glm" ;;
-            *) EFFECTIVE_PROVIDER="anthropic-custom" ;;
-          esac
-        fi
-        ;;
-    esac
-  fi
-fi
-if [ "$DO_EXTRACT" -eq 1 ] && [ -z "$EFFECTIVE_PROVIDER" ]; then
-  echo "refresh-graph-map: backend '$BACKEND' has no egress-matrix provider mapping — refusing scheduled extraction (fail-closed)" >&2
-  exit 2
-fi
-if [ "$DO_EXTRACT" -eq 1 ] && [ "$EFFECTIVE_PROVIDER" = "anthropic-custom" ]; then
-  echo "refresh-graph-map: claude backend points at an unverified endpoint (ANTHROPIC_BASE_URL is set to an unrecognized/unsupported value — not echoed, it may carry credentials); refusing scheduled egress on every corpus (fail-closed)" >&2
-  exit 2
-fi
-if [ -n "$EFFECTIVE_PROVIDER" ] && [ "$DO_EXTRACT" -eq 1 ]; then
-  _mx_json_escape() {
-    local s="$1" i octal ctrl escaped
-    s="${s//\\/\\\\}"
-    s="${s//\"/\\\"}"
-    # POSIX paths may contain every C0 byte except NUL, which bash variables
-    # cannot carry. Encode the representable range uniformly as \u00XX.
-    for i in {1..31}; do
-      printf -v octal '%03o' "$i"
-      printf -v ctrl '%b' "\\0$octal"
-      printf -v escaped '\\u%04x' "$i"
-      s="${s//$ctrl/$escaped}"
-    done
-    printf '%s' "$s"
-  }
   # PATH-DERIVED salus guard (CR codex-adv r4): --corpus-class is a caller
   # ASSERTION, and the fence (which classifies by path) never runs on the
   # scheduled path — so before honoring the asserted class, derive the one
@@ -328,7 +298,7 @@ if [ -n "$EFFECTIVE_PROVIDER" ] && [ "$DO_EXTRACT" -eq 1 ]; then
   # egress-denylist. A salus-derived root fails closed here REGARDLESS of the
   # asserted class or backend (the matrix salus row wildcard-denies every
   # non-local provider; the local-ollama conditional is out of scope for this
-  # preflight, which only ever runs for network backends). Non-salus roots
+  # guard, which refuses salus on every backend - stricter than the fence). Non-salus roots
   # proceed under the asserted class exactly as before — deriving
   # luna-personal vs himmel-code from a path needs vault-root config this
   # script does not own; salus is the class where a mislabel is catastrophic
@@ -370,53 +340,27 @@ if [ -n "$EFFECTIVE_PROVIDER" ] && [ "$DO_EXTRACT" -eq 1 ]; then
     return 1
   }
   if _corpus_is_salus_root "$CORPUS_ROOT"; then
-    echo "refresh-graph-map: corpus root classifies as SALUS by path (marker/phi-roots/denylist) — refusing scheduled egress to $EFFECTIVE_PROVIDER regardless of the asserted --corpus-class '$CORPUS_CLASS' (PHI hard deny, fail-closed)" >&2
+    echo "refresh-graph-map: corpus root classifies as SALUS by path (marker/phi-roots/denylist) — refusing scheduled egress (backend '$BACKEND') regardless of the asserted --corpus-class '$CORPUS_CLASS' (PHI hard deny, fail-closed)" >&2
     exit 2
   fi
   if [ -n "$PHI_POLICY_UNREADABLE" ]; then
     echo "refresh-graph-map: a PHI root list under $HOME/.config/claude-glm exists but is not readable (fail-closed)" >&2
     exit 2
   fi
-  MX_EVAL="$REPO_ROOT/scripts/guardrails/egress-matrix-eval.mjs"
-  verdict_line="$(node "$MX_EVAL" "$CORPUS_CLASS" "$EFFECTIVE_PROVIDER" extraction)" \
-    || { echo "refresh-graph-map: egress matrix eval failed (node/$MX_EVAL)" >&2; exit 2; }
-  verdict="${verdict_line%%$'\t'*}"
-  case "$verdict" in
-    allow) : ;;
-    allow+log)
-      ledger="${GRAPHIFY_LEDGER:-$HOME/.claude/graphify-egress.jsonl}"
-      mkdir -p "$(dirname "$ledger")" || { echo "refresh-graph-map: cannot create ledger dir for $ledger" >&2; exit 2; }
-      ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      # Ledger shape (HIMMEL-1787 CR follow-up): HIMMEL-1084's intent was
-      # "the same file, same JSONL shape" as scripts/guardrails/
-      # graphify-fence.sh's ledger_append would write for a fence-mediated
-      # run (one shared audit trail regardless of entry path) -- checked
-      # field-for-field against BOTH producers below, not assumed, and the
-      # two do NOT currently fully agree (see the "purpose" gap this same
-      # note flags), so this is a confirmed DIVERGENCE, not confirmed
-      # parity. The field set here (ts, path, corpus, backend, provider,
-      # verdict, purpose, tool) matches egress-matrix.json's OWN documented
-      # allow+log contract ("the executing tool MUST append a ledger line
-      # (JSONL: ts, corpus, provider, purpose, path, tool)") exactly,
-      # including "purpose" -- which ledger_append() does NOT currently
-      # emit (a gap against that same documented contract, in
-      # scripts/guardrails/**, out of this ticket's file scope to fix).
-      # Every OTHER shared field does agree (backend is a superset addition
-      # both producers make); the
-      # fence's conditional "declared"/"declared_backend_source" fields have
-      # no equivalent here because a scheduled refresh-graph-map.sh run never
-      # goes through the fence's `.graphify-corpus` marker declaration path
-      # at all (HIMMEL-1084: "the fence never runs on scheduled paths") --
-      # structurally not this producer's fields to add.
-      printf '{"ts":"%s","path":"%s","corpus":"%s","backend":"%s","provider":"%s","verdict":"allow+log","purpose":"extraction","tool":"refresh-graph-map"}\n' \
-        "$ts" "$(_mx_json_escape "$CORPUS_ROOT")" "$(_mx_json_escape "$CORPUS_CLASS")" "$(_mx_json_escape "$BACKEND")" "$EFFECTIVE_PROVIDER" >> "$ledger" \
-        || { echo "refresh-graph-map: ledger append failed ($ledger) — allow+log without its ledger line is a deny" >&2; exit 2; }
-      ;;
-    *)
-      echo "refresh-graph-map: egress matrix DENIES $CORPUS_CLASS x $EFFECTIVE_PROVIDER x extraction ($verdict_line)" >&2
-      exit 2
-      ;;
-  esac
+  # CLEAR THE CLAUDE REROUTE SELECTORS before the preflight (HIMMEL-1070,
+  # codex-adv-1), so the fence evaluates the environment graphify will actually
+  # run under. The fence hard-denies these for an agent-typed claude-cli run;
+  # here we clear rather than refuse, which keeps a Bedrock/Vertex-configured
+  # operator's cadence working on the intended provider and fails LOUDLY if
+  # their CLI genuinely cannot auth without the reroute - never silently to
+  # another cloud. Exactly what himmel's scripts/claude-codex does with the same
+  # variables. Harmless for non-claude backends, which do not read them.
+  unset CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY
+  unset CLAUDE_CODE_USE_GATEWAY CLAUDE_CODE_USE_MANTLE CLAUDE_CODE_USE_ANTHROPIC_AWS
+  corpus_root_abs="$(cd "$CORPUS_ROOT" && pwd -P)" \
+    || { echo "refresh-graph-map: cannot resolve corpus root for the egress preflight (fail-closed)" >&2; exit 2; }
+  bash "$REPO_ROOT/scripts/guardrails/graphify-fence.sh" --eval "$CORPUS_CLASS" "$BACKEND" "$corpus_root_abs" refresh-graph-map \
+    || { echo "refresh-graph-map: egress preflight refused $CORPUS_CLASS x backend '$BACKEND' (graphify-fence.sh --eval, reason above) - refusing scheduled extraction (fail-closed)" >&2; exit 2; }
 fi
 
 GRAPHIFY_MAP="${GRAPHIFY_MAP_BIN:-graphify}"   # test hook: stub graphify
@@ -2016,28 +1960,9 @@ if [ "$DO_EXTRACT" -eq 1 ]; then
   # right corpus only (a workdir is named for --name, which two corpora can share).
   _corpus_root_marker > "$SCRATCH/.graphify-source-root" \
     || { echo "refresh-graph-map: could not record the corpus root marker in $SCRATCH" >&2; exit 1; }
-  # CLEAR THE CLAUDE REROUTE SELECTORS before dispatching (HIMMEL-1070,
-  # codex-adv-1). graphify-fence.sh hard-denies these, but the fence is a
-  # PreToolUse hook — it only sees graphify invocations an AGENT types. THIS
-  # script is fired directly by cron/schtasks (graphmap-cadence.sh), so the
-  # fence never runs on the scheduled path: an inherited CLAUDE_CODE_USE_BEDROCK
-  # would send corpus content to AWS with nothing to stop it, and the hard-deny
-  # we document would be true only for the interactive path. Clearing them here
-  # makes the property hold where the extraction actually happens. This is
-  # exactly what himmel's own scripts/claude-codex does with the same variables,
-  # for the same "would silently reroute the session away" reason.
-  # Clearing (not refusing) keeps a Bedrock/Vertex-configured operator's cadence
-  # working on the intended provider, and fails LOUDLY if their CLI genuinely
-  # cannot auth without the reroute — never silently to another cloud. Harmless
-  # for non-claude backends, which do not read these at all.
-  unset CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY
-  unset CLAUDE_CODE_USE_GATEWAY CLAUDE_CODE_USE_MANTLE CLAUDE_CODE_USE_ANTHROPIC_AWS
-  # HIMMEL-1084 residual: the scheduled extraction preflight above now resolves
-  # the effective endpoint and runs the matrix for claude/claude-cli/glm,
-  # while deliberately preserving supported Anthropic credentials and custom
-  # `--backend claude` endpoints for public himmel-code corpora. Unmapped
-  # backends have no provider mapping, so the fail-closed check above refuses
-  # them (rc=2, pinned by T44a); mapping remains tracked by HIMMEL-1084.
+  # The CLAUDE_CODE_USE_* reroute selectors were cleared before the egress
+  # preflight above (HIMMEL-1070/HIMMEL-1084), so both dispatches below run
+  # under the environment the fence evaluated.
   # HIMMEL-1901 ask 4 — bank preflight + TOTAL-run deadline.
   #
   # Two independent holes let the 2026-08-17 fire burn ~18x the previous day's

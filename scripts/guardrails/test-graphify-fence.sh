@@ -1755,6 +1755,88 @@ else
     fail "ledger content unexpected declared_backend_source: got $(cat "$LEDGER" 2>/dev/null)"
 fi
 
+# --- HIMMEL-1084: direct-eval mode (non-hook callers) ------------------------
+# `graphify-fence.sh --eval <corpus> <backend> <abs-target> <tool>` (exactly 5
+# args) is the contract a scheduled/non-agent graphify caller uses instead of a
+# private copy of this fence's matrix eval + ledger. The hook passes exactly
+# ONE arg, so it can never enter this mode. The caller-asserted corpus is a
+# DECLARATION (ledgered on every allow, like a `.graphify-corpus` marker) and
+# can only be TIGHTENED by the target's own path classification.
+
+# E1 unverified endpoint -> deny before any egress (RED today: rc=0, not a graphify cmd)
+rm -f "$LEDGER"
+# shellcheck disable=SC2086
+env $CLEAN_ENV ANTHROPIC_BASE_URL=https://evil.example/v1 "$BASH_BIN" "$FENCE" --eval luna-clippings claude-cli "$NOWHERE" refresh-graph-map >/dev/null 2>"$WS/eval.err"; rc=$?
+if [ "$rc" -eq 2 ] && grepq "$(cat "$WS/eval.err")" 'unverified endpoint' && [ ! -s "$LEDGER" ]; then
+    pass "HIMMEL-1084 E1 --eval: unratified ANTHROPIC_BASE_URL denied, no ledger line"
+else
+    fail "HIMMEL-1084 E1 --eval unratified endpoint: rc=$rc err=$(cat "$WS/eval.err")"
+fi
+
+# E2 asserted clippings x claude-cli (anthropic) -> allow + declared ledger line carrying the caller's tool label
+rm -f "$LEDGER"
+# shellcheck disable=SC2086
+env $CLEAN_ENV "$BASH_BIN" "$FENCE" --eval luna-clippings claude-cli "$NOWHERE" refresh-graph-map >/dev/null 2>"$WS/eval.err"; rc=$?
+if [ "$rc" -eq 0 ] && grep -q '"corpus":"luna-clippings","backend":"claude-cli","provider":"anthropic","verdict":"allow","tool":"refresh-graph-map","declared":true' "$LEDGER" 2>/dev/null; then
+    pass "HIMMEL-1084 E2 --eval: clippings x anthropic allowed + ledgered with tool=refresh-graph-map"
+else
+    fail "HIMMEL-1084 E2 --eval allow+ledger: rc=$rc err=$(cat "$WS/eval.err") ledger=$(cat "$LEDGER" 2>/dev/null)"
+fi
+
+# E3 path-derived salus tightens a laxer asserted class -> hard deny
+# shellcheck disable=SC2086
+env $CLEAN_ENV "$BASH_BIN" "$FENCE" --eval himmel-code claude-cli "$SALUS/notes" refresh-graph-map >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 2 ]; then pass "HIMMEL-1084 E3 --eval: path-derived salus beats asserted himmel-code"; else fail "HIMMEL-1084 E3 --eval salus tighten: rc=$rc"; fi
+
+# E4 luna-clippings x zai-glm: matrix explicit deny, the retired opt-in cannot open it
+# shellcheck disable=SC2086
+env $CLEAN_ENV GRAPHIFY_CLIPPINGS_GLM_OK=1 ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic "$BASH_BIN" "$FENCE" --eval luna-clippings claude "$NOWHERE" refresh-graph-map >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 2 ]; then pass "HIMMEL-1084 E4 --eval: clippings x zai-glm denied even with GRAPHIFY_CLIPPINGS_GLM_OK=1"; else fail "HIMMEL-1084 E4 --eval clippings zai-glm: rc=$rc"; fi
+
+# E5 himmel-code x zai-glm (the --backend glm remap shape) -> allow + ledger names zai-glm
+rm -f "$LEDGER"
+# shellcheck disable=SC2086
+env $CLEAN_ENV ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic "$BASH_BIN" "$FENCE" --eval himmel-code claude "$NOWHERE" refresh-graph-map >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 0 ] && grep -q '"provider":"zai-glm","verdict":"allow","tool":"refresh-graph-map"' "$LEDGER" 2>/dev/null; then
+    pass "HIMMEL-1084 E5 --eval: himmel-code x zai-glm allowed + ledgered"
+else
+    fail "HIMMEL-1084 E5 --eval himmel-code zai-glm: rc=$rc ledger=$(cat "$LEDGER" 2>/dev/null)"
+fi
+
+# E6 salus x local-ollama: conditional -> denied without the opt-in, allowed + ledgered with it
+# shellcheck disable=SC2086
+env $CLEAN_ENV "$BASH_BIN" "$FENCE" --eval salus ollama "$SALUS/notes" refresh-graph-map >/dev/null 2>&1; rc_a=$?
+rm -f "$LEDGER"
+# shellcheck disable=SC2086
+env $CLEAN_ENV GRAPHIFY_SALUS_LOCAL_OK=1 "$BASH_BIN" "$FENCE" --eval salus ollama "$SALUS/notes" refresh-graph-map >/dev/null 2>&1; rc_b=$?
+if [ "$rc_a" -eq 2 ] && [ "$rc_b" -eq 0 ] && grep -q '"verdict":"conditional","tool":"refresh-graph-map"' "$LEDGER" 2>/dev/null; then
+    pass "HIMMEL-1084 E6 --eval: salus x local-ollama needs GRAPHIFY_SALUS_LOCAL_OK=1"
+else
+    fail "HIMMEL-1084 E6 --eval salus conditional: rc_a=$rc_a rc_b=$rc_b ledger=$(cat "$LEDGER" 2>/dev/null)"
+fi
+
+# E7 malformed --eval arguments fail closed (unknown corpus, unsafe tool label/backend, relative target)
+e7=0
+# shellcheck disable=SC2086
+env $CLEAN_ENV "$BASH_BIN" "$FENCE" --eval not-a-corpus claude-cli "$NOWHERE" refresh-graph-map >/dev/null 2>&1; [ "$?" -eq 2 ] || e7=1
+# shellcheck disable=SC2086
+env $CLEAN_ENV "$BASH_BIN" "$FENCE" --eval himmel-code claude-cli "$NOWHERE" 'bad"tool' >/dev/null 2>&1; [ "$?" -eq 2 ] || e7=1
+# shellcheck disable=SC2086
+env $CLEAN_ENV "$BASH_BIN" "$FENCE" --eval himmel-code 'claude"x' "$NOWHERE" refresh-graph-map >/dev/null 2>&1; [ "$?" -eq 2 ] || e7=1
+# shellcheck disable=SC2086
+env $CLEAN_ENV "$BASH_BIN" "$FENCE" --eval himmel-code claude-cli rel/path refresh-graph-map >/dev/null 2>&1; [ "$?" -eq 2 ] || e7=1
+if [ "$e7" -eq 0 ]; then pass "HIMMEL-1084 E7 --eval: malformed arguments deny"; else fail "HIMMEL-1084 E7 --eval malformed arguments did not all deny"; fi
+
+# E8 the hook path passes ONE arg and cannot reach --eval: a hook-mode ledger line keeps tool=graphify
+rm -f "$LEDGER"
+# shellcheck disable=SC2086
+( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "graphify update $STAGED/copy.md --backend claude-cli" ) >/dev/null 2>&1
+if grep -q '"tool":"graphify"' "$LEDGER" 2>/dev/null && ! grep -q '"tool":"refresh-graph-map"' "$LEDGER" 2>/dev/null; then
+    pass "HIMMEL-1084 E8 hook-mode ledger keeps tool=graphify"
+else
+    fail "HIMMEL-1084 E8 hook-mode ledger tool: $(cat "$LEDGER" 2>/dev/null)"
+fi
+
 if [ "$failures" -eq 0 ]; then
     echo "OK: all cases passed"
     exit 0
