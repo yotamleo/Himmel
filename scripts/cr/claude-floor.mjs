@@ -61,8 +61,9 @@ const git = (args, opts = {}) => spawnSync("git", args, { maxBuffer: 1 << 30, ..
 // its findings emptied.
 function payload(a) {
     const findings = crypto.createHash("sha256").update(JSON.stringify(a.findings ?? null)).digest("hex");
-    return Buffer.from(JSON.stringify(["cr-floor-stamp/v1", a.head, a.base, a.diff_hash, a.session_id, a.dispatch_id, findings]));
+    return Buffer.from(JSON.stringify(["cr-floor-stamp/v1", a.schema, a.head, a.base, a.diff_hash, a.session_id, a.dispatch_id, findings]));
 }
+const SCHEMA = 2;
 const keyId = (pub) => crypto.createHash("sha256").update(pub.export({ type: "spki", format: "der" })).digest("hex").slice(0, 16);
 const readArtifact = (f) => { try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch (_) { return die(`cannot parse ${f}`); } };
 
@@ -93,18 +94,23 @@ function snapshot(head, dest) {
         if (nl + 1 + Number(size) > out.length) die(`cat-file output truncated at ${e.sha}`);
         const body = out.subarray(nl + 1, nl + 1 + Number(size));
         pos = nl + 1 + Number(size) + 1;
-        fs.mkdirSync(path.dirname(e.file), { recursive: true });
-        if (e.mode === "120000") {
-            // A symlink blob holds its target. Written as an inert file holding
-            // that target (as git does with core.symlinks=false), never a real
-            // link: a committed link could point the reviewer outside the
-            // snapshot, at host files or the key dir.
-            fs.writeFileSync(e.file, body, { mode: 0o644 });
-        } else {
-            fs.writeFileSync(e.file, body, { mode: e.mode === "100755" ? 0o755 : 0o644 });
+        // A symlink blob holds its target. Written as an inert file holding
+        // that target (as git does with core.symlinks=false), never a real
+        // link: a committed link could point the reviewer outside the
+        // snapshot, at host files or the key dir. Every file is created
+        // exclusively (wx): two tree paths that land on one host path (a
+        // case-insensitive or normalising filesystem, a Windows backslash)
+        // refuse the snapshot instead of one silently replacing the other.
+        try {
+            fs.mkdirSync(path.dirname(e.file), { recursive: true });
+            fs.writeFileSync(e.file, body, { mode: e.mode === "100755" ? 0o755 : 0o644, flag: "wx" });
+        } catch (err) {
+            die(`${e.file} collides with another path in ${head} on this filesystem (${err.code}); the snapshot cannot reproduce the tree`);
         }
     }
-    for (const e of entries) if (e.type === "commit") fs.mkdirSync(e.file, { recursive: true });
+    for (const e of entries) if (e.type === "commit") {
+        try { fs.mkdirSync(e.file, { recursive: true }); } catch (err) { die(`${e.file} collides with another path in ${head} on this filesystem (${err.code})`); }
+    }
 }
 
 // init-key — the OPERATOR's one-time provisioning step (never run by a leg or
@@ -114,6 +120,7 @@ function initKey() {
     const dir = keyDir(), privF = path.join(dir, "signing.key"), pubF = path.join(dir, "signing.pub");
     if (fs.existsSync(privF) || fs.existsSync(pubF)) {
         if (!(fs.existsSync(privF) && fs.existsSync(pubF))) die(`${dir} holds only half a key pair; inspect it by hand (nothing overwritten)`);
+        keyPrivate(privF);
         process.stdout.write(`claude-floor: key pair already present in ${dir} (unchanged)\n`);
         return;
     }
@@ -126,9 +133,16 @@ function initKey() {
     process.stdout.write(`claude-floor: created the floor signing key pair in ${dir} (key ${keyId(publicKey)})\n`);
 }
 
+// A private key other users can read fails CLOSED: they could sign with it.
+// ponytail: POSIX mode bits only; on Windows the ACL is not checked.
+function keyPrivate(f) {
+    if (process.platform !== "win32" && (fs.statSync(f).mode & 0o077) !== 0) die(`${f} is readable by other users; restrict it: chmod 600 ${f}`);
+}
+
 // A missing key fails CLOSED and names the init command — never an unsigned artifact.
 function loadKey(name) {
     const f = path.join(keyDir(), name);
+    if (name === "signing.key" && fs.existsSync(f)) keyPrivate(f);
     try {
         const pem = fs.readFileSync(f);
         return name === "signing.key" ? crypto.createPrivateKey(pem) : crypto.createPublicKey(pem);
@@ -146,6 +160,7 @@ function keyCheck() {
 // completed, is_error=false dispatch whose id and session id are the artifact's.
 function sign(file, rowFile) {
     const a = readArtifact(file), r = readArtifact(rowFile);
+    if (a.schema !== SCHEMA) die(`artifact schema ${a.schema} is not ${SCHEMA}`);
     if (r.status !== "completed" || r.outcome?.is_error !== false) die(`registry row ${rowFile} is not a completed, is_error=false dispatch`);
     if (typeof r.id !== "string" || r.id === "" || r.id !== a.dispatch_id) die(`registry row id ${r.id} is not the artifact's dispatch id ${a.dispatch_id}`);
     if (typeof r.outcome.session_id !== "string" || r.outcome.session_id === "" || r.outcome.session_id !== a.session_id) die(`registry row session id is not the artifact's session id`);
@@ -158,6 +173,7 @@ function verify(file) {
     const a = readArtifact(file);
     const s = a.stamp;
     if (!s || s.alg !== "ed25519" || typeof s.sig !== "string") die("floor artifact carries no ed25519 stamp (hand-written, or from before HIMMEL-3220)");
+    if (a.schema !== SCHEMA) die(`floor artifact schema ${a.schema} is not ${SCHEMA}`);
     if (typeof a.dispatch_id !== "string" || a.dispatch_id.trim() === "") die("floor artifact carries no dispatch id");
     const pub = loadKey("signing.pub");
     if (s.key_id !== keyId(pub)) die(`floor stamp key ${s.key_id} is not this machine's floor signing key ${keyId(pub)}`);

@@ -228,8 +228,13 @@ check "15 claude never invoked" no "$([ -e "$REC/argv" ] && echo yes || echo no)
 mk_repo 16
 ( cd "$R" && git config filter.up.smudge 'tr a-z A-Z' && git config filter.up.clean cat &&
   printf 'f.txt filter=up\ng.txt text eol=crlf\n' > .gitattributes &&
-  printf 'one\ntwo\n' > g.txt && printf '#!/bin/sh\n' > x.sh && chmod +x x.sh && ln -s f.txt link &&
-  git add .gitattributes g.txt x.sh link && git commit -qm attrs ) >/dev/null 2>&1
+  printf 'one\ntwo\n' > g.txt && printf '#!/bin/sh\n' > x.sh && chmod +x x.sh &&
+  git add .gitattributes g.txt x.sh &&
+  # The 120000 entry goes through the index, not `ln -s` (which fails on a
+  # Git Bash without the symlink privilege).
+  link_blob=$(printf 'f.txt' | git hash-object -w --stdin) &&
+  git update-index --add --cacheinfo 120000 "$link_blob" link &&
+  git commit -qm attrs ) >/dev/null 2>&1
 HEAD_SHA=$(git -C "$R" rev-parse HEAD); row codex unavailable quota
 run_sut
 check "16 smudge/eol repo -> exit 0" 0 "$RC"
@@ -261,7 +266,7 @@ has "18 second init-key says unchanged" "unchanged" "$W/out"
 
 # 19. sign stamps only an artifact its registry row backs (completed,
 # is_error=false, same dispatch id and session id).
-printf '{"head":"h","base":"b","diff_hash":"d","session_id":"s1","dispatch_id":"d1","findings":[]}\n' > "$W/a19.json"
+printf '{"schema":2,"head":"h","base":"b","diff_hash":"d","session_id":"s1","dispatch_id":"d1","findings":[]}\n' > "$W/a19.json"
 printf '{"id":"d1","status":"completed","outcome":{"is_error":false,"session_id":"s1"}}\n' > "$W/r19-ok.json"
 printf '{"id":"d1","status":"completed","outcome":{"is_error":true,"session_id":"s1"}}\n' > "$W/r19-err.json"
 printf '{"id":"d1","status":"completed","outcome":{"is_error":false,"session_id":"s2"}}\n' > "$W/r19-sess.json"
@@ -285,6 +290,38 @@ if ( cd "$R" && : > "$(printf 'bad\377name')" && git add -A && git commit -qm ba
 else
     ok "20 SKIP: this filesystem refuses non-UTF-8 names"
 fi
+
+# 21. The schema is signed and must be 2: sign refuses another schema, and a
+# signed artifact whose schema is edited no longer verifies.
+sed 's/"schema":2/"schema":1/' "$W/a19.json" > "$W/a21-s1.json"
+RC=0; node "$FLOOR_MJS" sign "$W/a21-s1.json" "$W/r19-ok.json" > /dev/null 2>"$W/out" || RC=$?
+check "21 sign refuses schema 1" 1 "$RC"
+has "21 refusal names the schema" "schema" "$W/out"
+sed 's/"schema":2/"schema":3/' "$W/a19.signed" > "$W/a21-edit.json"
+RC=0; node "$FLOOR_MJS" verify "$W/a21-edit.json" > "$W/out" 2>&1 || RC=$?
+check "21 schema edited after signing -> verify refuses" 1 "$RC"
+
+# 22. Two tree paths landing on one host path (a case-insensitive or
+# normalising filesystem, a Windows backslash) never overwrite silently: the
+# snapshot creates every file exclusively. Simulated with a dest that already
+# holds one of the head's paths.
+mk_repo 22
+mkdir -p "$W/snap22" && printf 'stale\n' > "$W/snap22/f.txt"
+RC=0; ( cd "$R" && node "$FLOOR_MJS" snapshot HEAD "$W/snap22" ) > "$W/out" 2>&1 || RC=$?
+check "22 colliding host path -> snapshot refused" 1 "$RC"
+has "22 refusal names the collision" "collides" "$W/out"
+
+# 23. A private key other users can read fails closed (POSIX): key-check and
+# init-key both refuse it.
+K="$W/k23"; mkdir -p "$K" && cp "$CR_FLOOR_KEY_DIR/signing.key" "$CR_FLOOR_KEY_DIR/signing.pub" "$K/" && chmod 700 "$K" && chmod 640 "$K/signing.key"
+RC=0; CR_FLOOR_KEY_DIR="$K" node "$FLOOR_MJS" key-check > "$W/out" 2>&1 || RC=$?
+check "23 group-readable key -> key-check refuses" 1 "$RC"
+has "23 refusal names the permissions" "readable by other users" "$W/out"
+RC=0; CR_FLOOR_KEY_DIR="$K" node "$FLOOR_MJS" init-key > "$W/out" 2>&1 || RC=$?
+check "23 group-readable key -> init-key refuses" 1 "$RC"
+chmod 600 "$K/signing.key"
+RC=0; CR_FLOOR_KEY_DIR="$K" node "$FLOOR_MJS" key-check > "$W/out" 2>&1 || RC=$?
+check "23 0600 key -> key-check passes" 0 "$RC"
 
 echo "claude-floor-review: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
