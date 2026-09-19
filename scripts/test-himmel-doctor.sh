@@ -3937,6 +3937,139 @@ else
 fi
 rm -rf "$t"
 
+# --- C37 (HIMMEL-3123, deferred from HIMMEL-3064): vendored-skill overlap ------
+# One case per branch of check_c37_vendored_skill_dupes: OK (rc 0), WARN (rc 10),
+# and every INFO skip (no node, detector absent, rc 2, any other rc, no jq,
+# unparsable --json). Every case runs in a FAKE repo whose scripts/lib is a
+# symlink to the real one (the doctor sources its libs from HIMMEL_REPO, so an
+# empty fake repo would leave resolve_node undefined and turn every case into the
+# "no node" branch for the wrong reason) and whose detector is a copy of the real
+# one -- the detector derives its repoRoot from its own path, so the fake
+# marketplace/plugins/lean-skills/skills tree is what it sees. The detector's
+# VENDORED_DUPES_* seams keep it off the operator's real ~/.claude and cwd walk.
+c37_setup() {
+    c37_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c37.XXXXXX")" || { fail "C37 setup: mktemp -d failed"; exit 1; }
+    mkdir -p "$c37_t/scripts/lanes" "$c37_t/marketplace/plugins/lean-skills/skills/test-driven-development" "$c37_t/home" "$c37_t/cfg"
+    ln -s "$REPO_ROOT/scripts/lib" "$c37_t/scripts/lib"
+    cp "$REPO_ROOT/scripts/lanes/vendored-skill-dupes.mjs" "$c37_t/scripts/lanes/vendored-skill-dupes.mjs"
+    printf '{"enabledPlugins":{"lean-skills@himmel":true}}' > "$c37_t/cfg/settings.json"
+}
+c37_detector_rc() {  # rc the detector itself gives this fixture (precondition probe)
+    env VENDORED_DUPES_HOME="$c37_t/home" VENDORED_DUPES_CWD="" VENDORED_DUPES_CONFIG_DIR="$c37_t/cfg" \
+        node "$c37_t/scripts/lanes/vendored-skill-dupes.mjs" --json >/dev/null 2>&1
+    echo $?
+}
+c37_run() {  # c37_run [extra env assignments...] -> the doctor's stdout
+    (cd "$c37_t" && env HIMMEL_REPO="$c37_t" CLAUDE_DIR="$c37_t/claude" HOME="$c37_t/home" DOCTOR_OBSERVABILITY_SKIP=1 \
+        VENDORED_DUPES_HOME="$c37_t/home" VENDORED_DUPES_CWD="" VENDORED_DUPES_CONFIG_DIR="$c37_t/cfg" \
+        "$@" "$BASH" "$DOC" --no-color 2>/dev/null)
+}
+c37_overlap() {  # turn the fixture into a rc=10 overlap
+    printf '{"enabledPlugins":{"lean-skills@himmel":true,"superpowers@claude-plugins-official":true}}' > "$c37_t/cfg/settings.json"
+}
+
+echo "== C37: enabled lean-skills, no upstream enabled (detector rc 0) -> OK =="
+c37_setup
+if [ "$(c37_detector_rc)" != 0 ]; then fail "C37 rc0: precondition -- the detector did not exit 0"; else
+    out="$(c37_run)"
+    if grepq "$out" 'OK   C37-vendored-skill-dupes' && ! grepq "$out" 'WARN C37-vendored-skill-dupes'; then
+        pass "C37 rc 0 -> OK, no overlap"
+    else
+        fail "C37 rc0 -> $(printf '%s' "$out" | grep C37)"
+    fi
+fi
+rm -rf "$c37_t"
+
+echo "== C37: upstream superpowers also enabled (detector rc 10) -> WARN naming plugin + skill count =="
+c37_setup; c37_overlap
+if [ "$(c37_detector_rc)" != 10 ]; then fail "C37 rc10: precondition -- the detector did not exit 10"; else
+    out="$(c37_run)"
+    if grepq "$out" 'WARN C37-vendored-skill-dupes' && grepq "$out" -F 'superpowers@claude-plugins-official (1 skills)' \
+       && ! grepq "$out" 'OK   C37-vendored-skill-dupes'; then
+        pass "C37 rc 10 -> WARN naming superpowers@claude-plugins-official (1 skills)"
+    else
+        fail "C37 rc10 -> $(printf '%s' "$out" | grep C37)"
+    fi
+fi
+rm -rf "$c37_t"
+
+echo "== C37: a settings layer is unparseable (detector rc 2) -> INFO skip, never WARN/FAIL =="
+c37_setup
+printf '{ this is not json' > "$c37_t/cfg/settings.json"
+if [ "$(c37_detector_rc)" != 2 ]; then fail "C37 rc2: precondition -- the detector did not exit 2"; else
+    out="$(c37_run)"
+    if grepq "$out" 'INFO C37-vendored-skill-dupes' && grepq "$out" -F 'unreadable/unparseable' \
+       && ! grepq "$out" 'WARN C37-vendored-skill-dupes' && ! grepq "$out" 'FAIL C37-vendored-skill-dupes'; then
+        pass "C37 rc 2 -> INFO skip naming the unreadable settings layer"
+    else
+        fail "C37 rc2 -> $(printf '%s' "$out" | grep C37)"
+    fi
+fi
+rm -rf "$c37_t"
+
+echo "== C37: detector exits an unexpected rc -> INFO skip carrying the rc =="
+c37_setup
+printf 'process.exit(7);\n' > "$c37_t/scripts/lanes/vendored-skill-dupes.mjs"
+out="$(c37_run)"
+if grepq "$out" 'INFO C37-vendored-skill-dupes' && grepq "$out" -F 'unavailable (rc=7)' && ! grepq "$out" 'WARN C37-vendored-skill-dupes'; then
+    pass "C37 other rc -> INFO skip, rc named"
+else
+    fail "C37 other rc -> $(printf '%s' "$out" | grep C37)"
+fi
+rm -rf "$c37_t"
+
+echo "== C37: detector script absent -> INFO skip =="
+c37_setup
+rm -f "$c37_t/scripts/lanes/vendored-skill-dupes.mjs"
+out="$(c37_run)"
+if grepq "$out" 'INFO C37-vendored-skill-dupes' && grepq "$out" -F 'vendored-skill-dupes.mjs not found' && ! grepq "$out" 'WARN C37-vendored-skill-dupes'; then
+    pass "C37 detector absent -> INFO skip"
+else
+    fail "C37 detector absent -> $(printf '%s' "$out" | grep C37)"
+fi
+rm -rf "$c37_t"
+
+echo "== C37: no node resolvable -> INFO skip =="
+c37_setup
+if PATH="$NOGH" bash -c 'command -v node >/dev/null 2>&1'; then fail "C37 no-node: precondition -- node is on the curated PATH"; else
+    out="$(c37_run PATH="$NOGH" RESOLVE_NODE_PROBE_DIRS="" RESOLVE_NODE_NVM_ROOT="$c37_t/none" FNM_DIR="$c37_t/none")"
+    if grepq "$out" 'INFO C37-vendored-skill-dupes' && grepq "$out" -F 'no node found' && ! grepq "$out" 'WARN C37-vendored-skill-dupes'; then
+        pass "C37 no node -> INFO skip"
+    else
+        fail "C37 no node -> $(printf '%s' "$out" | grep C37)"
+    fi
+fi
+rm -rf "$c37_t"
+
+echo "== C37: overlap found but jq missing -> INFO skip, not a WARN with an empty summary =="
+c37_setup; c37_overlap
+NOJQ="$c37_t/nojq"; mkdir -p "$NOJQ"
+for _tool in bash sh git node sort tail sed cat date mktemp mkdir dirname uname wc tr head cp rm mv chmod grep basename; do
+    _p="$(command -v "$_tool" 2>/dev/null)" && ln -sf "$_p" "$NOJQ/$_tool" 2>/dev/null
+done
+if [ "$(c37_detector_rc)" != 10 ]; then fail "C37 no-jq: precondition -- the detector did not exit 10"
+elif PATH="$NOJQ" bash -c 'command -v jq >/dev/null 2>&1'; then fail "C37 no-jq: precondition -- jq is on the curated PATH"
+else
+    out="$(c37_run PATH="$NOJQ")"
+    if grepq "$out" 'INFO C37-vendored-skill-dupes' && grepq "$out" -F 'unparsable' && ! grepq "$out" 'WARN C37-vendored-skill-dupes'; then
+        pass "C37 no jq -> INFO skip"
+    else
+        fail "C37 no jq -> $(printf '%s' "$out" | grep C37)"
+    fi
+fi
+rm -rf "$c37_t"
+
+echo "== C37: rc 10 with non-JSON --json output -> INFO skip =="
+c37_setup
+printf 'process.stdout.write("not json\\n"); process.exit(10);\n' > "$c37_t/scripts/lanes/vendored-skill-dupes.mjs"
+out="$(c37_run)"
+if grepq "$out" 'INFO C37-vendored-skill-dupes' && grepq "$out" -F 'unparsable' && ! grepq "$out" 'WARN C37-vendored-skill-dupes'; then
+    pass "C37 unparsable --json -> INFO skip"
+else
+    fail "C37 unparsable --json -> $(printf '%s' "$out" | grep C37)"
+fi
+rm -rf "$c37_t"
+
 # --- C38 / C39 (HIMMEL-3170): uv + GNU timeout presence, reported up front ----
 # Seams: HIMMEL_DOCTOR_UV (uv command, default `uv`) and HIMMEL_DOCTOR_TIMEOUT_BINS
 # (space-separated GNU-timeout candidates, default `timeout gtimeout`). /usr/bin
