@@ -78,6 +78,12 @@ if [ -z "$base" ] || [ -z "$head" ]; then
     echo "impacted-suites.sh: expected <base>..<head>, got '${range}'" >&2; exit 2
 fi
 
+# git ls-tree and git grep are scoped to the cwd while git diff emits
+# repo-relative paths: from a subdirectory the suites above it would drop out.
+if ! top=$(git rev-parse --show-toplevel) || ! cd "$top"; then
+    echo "impacted-suites.sh: not inside a git work tree" >&2; exit 2
+fi
+
 if ! base_sha=$(git rev-parse --verify --quiet --end-of-options "${base}^{commit}"); then
     echo "impacted-suites.sh: base '${base}' does not resolve to a commit" >&2; exit 2
 fi
@@ -103,7 +109,8 @@ found="$work/found"
 
 suite_re='(^|/)test-[^/]*\.sh$|\.test\.(mjs|js|ts)$'
 suites=$(grep -E "$suite_re" <<< "$tree" || true)
-# Basenames that name nothing on their own: match them by "<parent>/<name>".
+# Basenames that name nothing on their own: match them by "<parent>/<name>"
+# (a repo-root file has no parent, so it falls back to the bare name).
 generic_re='^(README\.md|CLAUDE\.md|SKILL\.md|CHANGELOG\.md|index\.(js|mjs|ts)|package\.json|package-lock\.json|\.gitignore|LICENSE)$'
 
 # add_needle <literal> — one ERE per needle: a literal bounded so `install.sh`
@@ -126,6 +133,9 @@ while IFS= read -r f; do
     if grep -Eq "$generic_re" <<< "$name"; then
         case "$f" in
             */*) parent="${f%/*}"; add_needle "${parent##*/}/$name" ;;
+            # Repo root: no parent to qualify it, so the bare name is the only
+            # needle — it also matches sub-directory copies (over-approximates).
+            *) add_needle "$name" ;;
         esac
     else
         add_needle "$name"

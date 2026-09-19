@@ -55,6 +55,8 @@ mkf scripts/test-clean-cmd.sh 'grep -q "/pr-check_extra" x'
 mkf docs/foo/README.md
 mkf scripts/test-readme-foo.sh 'grep -q foo/README.md x'
 mkf scripts/test-readme-bare.sh 'grep -q README.md x'
+mkf package.json '{}'
+mkf scripts/test-pkg.sh 'grep -q "$root/package.json" x'
 git -C "$FX" add -A
 git -C "$FX" commit -q -m "chore: base"
 
@@ -156,6 +158,19 @@ out="$( cd "$FX" && PATH="$SHIM:$PATH" bash "$IS" "$range" 2>/dev/null )"; rc=$?
 if [ "$rc" -eq 2 ] && [ -z "$out" ]; then pass "a failing git grep -> rc2, empty stdout (not an empty impacted set)"; else fail "git grep failure: rc=$rc out=$out"; fi
 err="$( cd "$FX" && PATH="$SHIM:$PATH" bash "$IS" "$range" 2>&1 >/dev/null )"
 if grepq "$err" 'git grep failed'; then pass "the failed search is named on stderr"; else fail "git grep failure not named: $err"; fi
+
+# --- 11. a root-level generic file has no parent to qualify it ---------------
+# package.json / CLAUDE.md at the repo root: the bare name is the only needle.
+change package.json
+out="$(run_is "$range")"
+if [ "$out" = "scripts/test-pkg.sh" ]; then pass "root-level package.json -> suite naming package.json"; else fail "root-level generic file reached nothing: $out"; fi
+
+# --- 12. the answer does not depend on the cwd it is run from ----------------
+# git ls-tree / git grep are cwd-scoped; from a subdirectory the suites one
+# level up would silently drop out and --check would pass on a partial set.
+change scripts/machine-setup/uninstall-plugins.sh
+out="$( cd "$FX/scripts/machine-setup" && bash "$IS" "$range" 2>/dev/null )"
+if grepq "$out" '^scripts/test-uninstall\.sh$'; then pass "run from a subdirectory: repo-relative list still reaches test-uninstall.sh"; else fail "subdirectory run dropped suites: $out"; fi
 
 echo
 if [ "$failures" -eq 0 ]; then echo "OK: all cases passed"; exit 0; fi
