@@ -14,7 +14,7 @@ set -euo pipefail
 SCRIPT="$(cd "$(dirname "$0")" && pwd)/himmel-update.sh"
 [ -f "$SCRIPT" ] || { echo "FAIL: $SCRIPT not found" >&2; exit 1; }
 
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/test-himmel-update-toolchain.XXXXXX")" || exit 1
 trap 'rm -rf "$TMP"' EXIT
 
 export USERPROFILE=''
