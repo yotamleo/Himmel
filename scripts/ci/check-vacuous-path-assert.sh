@@ -41,6 +41,11 @@
 #     check and is read as preserving, even though single quotes suppress
 #     expansion entirely and the assignment does not preserve anything
 #     (CR round 4, codex-2).
+#   - The multi-operand `export` scan (HIMMEL-3015) tokenizes double-quoted
+#     values but not single-quoted ones, so a single-quoted operand holding
+#     a space (`export PATH=/stub OTHER='a b'`) ends the scan unterminated
+#     and the line is NOT flagged — an under-flag, rare, and the same
+#     failure direction as the pre-fix behaviour.
 #   - Pattern B matches both `-z` and `-n`; a `-n` (non-emptiness)
 #     assertion after a real PATH break fails loudly rather than passing
 #     vacuously, so flagging it is noise, not a missed vacuous pass — kept
