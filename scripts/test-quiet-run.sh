@@ -363,7 +363,10 @@ for SIG in TERM INT HUP; do
         sleep 0.25
     done
     kill -KILL "$QR_PID" 2>/dev/null
-    wait "$QR_PID" 2>/dev/null
+    QR_RC=0
+    wait "$QR_PID" 2>/dev/null || QR_RC=$?
+    case "$SIG" in TERM) EXPECT_RC=143 ;; INT) EXPECT_RC=130 ;; *) EXPECT_RC=129 ;; esac
+    assert_rc "reap $SIG - wrapper exits 128+signal on its own (not killed by the test)" "$EXPECT_RC" "$QR_RC"
     GONE=0
     for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
         if ! kill -0 "$GRANDCHILD" 2>/dev/null; then GONE=1; break; fi
@@ -410,6 +413,50 @@ if [ -n "$LOGFILE" ] && grep -q 'stdin-payload' "$LOGFILE"; then
 else
     echo "FAIL command did not receive the caller's stdin through quiet-run"
     FAILED=$((FAILED + 1))
+fi
+
+# 17. A command that reads the caller's TTY must not be stopped: a background
+# process group that reads the terminal gets SIGTTIN (wrapper rc 149), so with a
+# tty on stdin quiet-run keeps the foreground shape. Needs python3's pty module;
+# skipped where it is absent (Windows).
+if command -v python3 >/dev/null 2>&1; then
+    TTYIN="$SCRATCH/pty-stdin.py"
+    cat > "$TTYIN" <<'TTYIN_EOF'
+import os, sys, time, signal, glob
+try:
+    import pty
+except ImportError:
+    sys.exit(77)
+qr, scratch = sys.argv[1], sys.argv[2]
+env = dict(os.environ, TMPDIR=scratch)
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvpe("bash", ["bash", qr, "ttyin", "--", "bash", "-c", "read x; echo got:$x"], env)
+time.sleep(1.0)
+os.write(fd, b"hello\n")
+rc = None
+for _ in range(20):
+    p, status = os.waitpid(pid, os.WNOHANG)
+    if p:
+        rc = os.waitstatus_to_exitcode(status)
+        break
+    time.sleep(0.25)
+got = any("got:hello" in open(f).read() for f in glob.glob(os.path.join(scratch, "quiet-run-ttyin-*.log")))
+print(f"wrapper rc={rc} (None=hung) log-has-input={got}")
+if rc is None:
+    os.kill(pid, signal.SIGKILL)
+sys.exit(0 if (rc == 0 and got) else 1)
+TTYIN_EOF
+    mkdir -p "$SCRATCH/tty-log"
+    python3 "$TTYIN" "$QUIET_RUN" "$SCRATCH/tty-log"
+    RC=$?
+    if [ "$RC" -eq 77 ]; then
+        echo "SKIP 17: python3 has no pty module on this host"
+    else
+        assert_rc "command reads the caller's tty through quiet-run without SIGTTIN" 0 "$RC"
+    fi
+else
+    echo "SKIP 17: python3 not found"
 fi
 
 echo ""
