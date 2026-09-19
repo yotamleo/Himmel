@@ -11,7 +11,9 @@ code. Green means: every check passed, every PR review thread resolved, no
 review requesting changes, no outside-diff-range CodeRabbit body finding left
 undispositioned (an exact-head ledger `deferred`/`disproved` disposition counts,
 HIMMEL-3124 — see the exit-3 text below), and — when CodeRabbit is armed
-(HIMMEL-1125) — the latest bot review is anchored to the head SHA (HIMMEL-1181, B2). An unresolved CR comment, a
+(HIMMEL-1125) — the latest bot review is anchored to the head SHA (HIMMEL-1181,
+B2), or a clean exact-head critic panel carries a stale anchor (HIMMEL-1718; see
+exit `4` below). An unresolved CR comment, a
 CHANGES_REQUESTED review, or a stale (never re-reviewed) head is a merge
 blocker, same as a red check. Non-blocking nitpick/additional body findings
 are surfaced in the success line, never silenced (HIMMEL-1147/1148).
