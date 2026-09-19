@@ -35,6 +35,9 @@ sleep 300 & A_PID=$!
 trap 'kill "$A_PID" 2>/dev/null; rm -rf "$W"' EXIT
 NOW="$(date +%s)"
 
+# count_glob <pattern...> — how many of the (already glob-expanded) paths exist;
+# a bash-glob count, so no GNU/BSD `find -maxdepth` divergence.
+count_glob() { local n=0 f; for f in "$@"; do [ -e "$f" ] && n=$((n+1)); done; echo "$n"; }
 check() { if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "ok - $1";
   else FAIL=$((FAIL+1)); echo "FAIL - $1: expected '$2' got '$3'"; fi; }
 
@@ -141,7 +144,7 @@ _now="$(date +%s)"
 mk_admit "$admit" "$_now" "$A_PID"
 rm -rf "$W"/.admit.stale.* 2>/dev/null
 _fleet_steal_stale_admit "$admit" "$((_now - 61))"
-victims="$(find "$W" -maxdepth 1 -name '.admit.stale.*' | wc -l | tr -d ' ')"
+victims="$(count_glob "$W"/.admit.stale.*)"
 check "(a2) a mismatched reclaim creates no .stale. victim (it never renames)" 0 "$victims"
 
 # --- (b) release under a BUSY gate retry-succeeds once the gate drops ---------
@@ -190,7 +193,7 @@ if have_fn _fleet_gate_take; then
   check "(c) B2 lost (one winner, not two)" 1 "$b2_rc"
   check "(c) B1's gate is still in place and fresh after B2's failed break" "held" \
     "$([ -d "$gate" ] && [ "$(cat "$gate/acquired" 2>/dev/null)" -ge "$NOW" ] && echo held || echo lost)"
-  check "(c) no .broken. victim left behind" 0 "$(find "$W" -maxdepth 1 -name '.gate-c.broken.*' | wc -l | tr -d ' ')"
+  check "(c) no .broken. victim left behind" 0 "$(count_glob "$W"/.gate-c.broken.*)"
 else
   FAIL=$((FAIL+5)); echo "FAIL - (c) _fleet_gate_take does not exist (no gate)"
 fi
