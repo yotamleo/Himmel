@@ -98,8 +98,10 @@ sb5=$(mktemp -d "${TMPDIR:-/tmp}/override-env-c5.XXXXXX") || sb5=""
 if [ -z "$sb5" ]; then
   fail "5: mktemp failed"
 else
-  cp "$REPO/scripts/hooks/block-git-stash.sh" "$sb5/hook-clean.sh"
-  cp "$REPO/scripts/hooks/block-git-stash.sh" "$sb5/hook-drifted.sh"
+  if ! cp "$REPO/scripts/hooks/block-git-stash.sh" "$sb5/hook-clean.sh" \
+     || ! cp "$REPO/scripts/hooks/block-git-stash.sh" "$sb5/hook-drifted.sh"; then
+    fail "5: could not copy the scratch hook -- drift control would be vacuous"
+  fi
   # shellcheck disable=SC2016  # the literal `${FOO_BAR_OK:-}` IS the fixture text
   printf '\n[ -n "${FOO_BAR_OK:-}" ] && exit 0\n' >> "$sb5/hook-drifted.sh"
   clean5=$(override_env_undeclared "$sb5/hook-clean.sh")
@@ -129,6 +131,8 @@ else
 #!/usr/bin/env bash
 # Exit 1, naming them, if any guard override reaches this suite.
 set -uo pipefail
+# Proof the runner actually ran this suite (rc 0 alone could be a skipped suite).
+: > "$(dirname "$0")/ran.marker"
 seen=""
 for v in INLINE_IMPL_OK HIMMEL_CONSOLE_LEG CLAUDE_CODE_CHILD_SESSION \
          HIMMEL_HOOK_INTEGRITY_BYPASS_OK IMPL_GUARD_OK IMPL_GUARD_DISABLE MCP_ZZZ_TEST_OK; do
@@ -143,8 +147,10 @@ SHEOF
     bash "$RUNNER" "$sb6" 2>&1
   )
   rc6=$?
-  if [ "$rc6" -eq 0 ]; then
-    pass "runner -> suite sees none of the seven overrides (rc 0)"
+  if [ "$rc6" -eq 0 ] && [ -f "$sb6/ran.marker" ]; then
+    pass "runner ran the fixture suite and it saw none of the seven overrides (rc 0)"
+  elif [ "$rc6" -eq 0 ]; then
+    fail "runner rc 0 but the fixture suite never ran (no ran.marker) -- vacuous pass"
   else
     fail "runner leaked overrides into a suite: rc=$rc6 $(printf '%s' "$out6" | grep -a 'LEAKED' | head -n 2)"
   fi

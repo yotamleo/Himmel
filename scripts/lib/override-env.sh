@@ -26,7 +26,7 @@
 # non-test hook/guardrail/lib script for a `$..._OK` read and fails when one is
 # missing from the list below (override_env_undeclared).
 
-# Guard overrides read as `${NAME_OK...}` / `process.env.NAME_OK` by a hook,
+# Guard overrides read as a shell variable expansion or a JS process-env property named NAME_OK by a hook,
 # guardrail or lib script. MCP_<SERVICE>_OK is per-service and dynamic
 # (block-backend-tier.sh), so scrub_override_env also clears every `MCP_*_OK`.
 HIMMEL_OVERRIDE_ENV_OK_VARS="GRAPHIFY_SALUS_LOCAL_OK GH_ADMIN_MERGE_OK EDIT_ON_MAIN_OK
@@ -45,7 +45,7 @@ CI_MERGE_GATE_OK CR_MERGE_GATE_OK GRAPHIFY_UNPROBED_OK"
 # Overrides / leg markers that do not end in _OK, so the scan cannot find them.
 HIMMEL_OVERRIDE_ENV_MARKERS="IMPL_GUARD_DISABLE HIMMEL_CONSOLE_LEG CLAUDE_CODE_CHILD_SESSION"
 
-# `$NAME_OK` reads that are internal flags, not overrides -- exempt from the scan.
+# Variable reads named LIB_OK or HOOK_OK are internal flags, not overrides -- exempt from the scan.
 HIMMEL_OVERRIDE_ENV_INTERNAL="LIB_OK HOOK_OK"
 
 # scrub_override_env -- unset every listed override in the CURRENT process.
@@ -63,8 +63,8 @@ scrub_override_env() {
   return 0
 }
 
-# override_env_undeclared <file>... -- print (sorted, unique) every `$NAME_OK` /
-# `process.env.NAME_OK` read in the given files that is in neither the override
+# override_env_undeclared <file>... -- print (sorted, unique) every shell expansion or
+# JS process-env read of an _OK name in the given files that is in neither the override
 # list nor the internal-flag exemptions. Empty output = the list is complete for
 # those files. Reads only; safe to run anywhere.
 override_env_undeclared() {
