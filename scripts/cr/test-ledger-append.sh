@@ -1082,4 +1082,43 @@ CR_LEDGER="$SC" bash "$LA" score --head "$SC_HEAD" --model codex --critical x --
 check "score with a non-integer count is refused (rc 2)" "$?" "2"
 check "refused score writes nothing" "$(grep -c '"kind":"score"' "$SC")" "2"
 
+# ── HIMMEL-3204: the JS program must reach node on stdin, never as argv ──────
+# The writer's ~37 KB program used to be `node -e '<program>'`: on Windows a
+# command line is capped at 32,767 chars, so every ledger write died with
+# "Argument list too long" and the CR gate lost its evidence store. This shim
+# fails node the same way whenever its argv exceeds that cap (and otherwise
+# execs the real node), so the RED is reproducible on Linux, where the kernel
+# limit is far higher.
+E2="$tmp/e2big"; mkdir -p "$E2/bin"
+HIMMEL_REAL_NODE="$(command -v node)"; export HIMMEL_REAL_NODE
+cat > "$E2/bin/node" <<'SHIM'
+#!/usr/bin/env bash
+_n=0; for _a in "$@"; do _n=$((_n + ${#_a} + 1)); done
+if [ "$_n" -gt 32767 ]; then echo "node: Argument list too long" >&2; exit 126; fi
+exec "$HIMMEL_REAL_NODE" "$@"
+SHIM
+chmod +x "$E2/bin/node"
+PATH="$E2/bin:$PATH" node -e "$(head -c 40000 /dev/zero | tr '\0' 'x')" 2>/dev/null
+check "E2BIG shim control: a >32,767-char argv is refused (rc 126)" "$?" "126"
+PATH="$E2/bin:$PATH" node -e 'process.exit(0)'
+check "E2BIG shim control: a small argv still reaches the real node" "$?" "0"
+
+E2L="$tmp/e2big-ledger.jsonl"; : > "$E2L"
+E2H=$(printf '%040d' 3204)
+PATH="$E2/bin:$PATH" CR_LEDGER="$E2L" bash "$LA" finding --branch b --head "$E2H" --model m --id e-1 --severity critical --file f --line 3 --verdict agreed 2>"$tmp/e2big.err"
+check "finding write survives the Windows argv cap (rc 0)" "$?" "0"
+check "finding write under the argv cap lands its row" "$(grep -c '"finding_id":"e-1"' "$E2L")" "1"
+PATH="$E2/bin:$PATH" CR_LEDGER="$E2L" bash "$LA" avail --branch b --head "$E2H" --model m --status ok 2>>"$tmp/e2big.err"
+check "avail write under the argv cap lands its row" "$(grep -c '"kind":"avail"' "$E2L")" "1"
+E2BF="$tmp/e2big-batch.jsonl"
+printf '{"branch":"b","head":"%s","model":"codex","id":"e-b1","severity":"imp","file":"f","line":1,"verdict":""}\n' "$E2H" > "$E2BF"
+PATH="$E2/bin:$PATH" CR_LEDGER="$E2L" bash "$LA" finding --batch-file "$E2BF" 2>>"$tmp/e2big.err"
+check "batch write under the argv cap lands its row" "$(grep -c '"finding_id":"e-b1"' "$E2L")" "1"
+# The program now occupies node's stdin; a caller's own stdin must be inert.
+PATH="$E2/bin:$PATH" CR_LEDGER="$E2L" bash "$LA" finding --branch b --head "$E2H" --model m --id e-2 --severity imp --file f --line 4 --verdict agreed < /dev/null 2>>"$tmp/e2big.err"
+check "a closed caller stdin does not break the write" "$(grep -c '"finding_id":"e-2"' "$E2L")" "1"
+printf 'garbage that must not be run as JS\n' | PATH="$E2/bin:$PATH" CR_LEDGER="$E2L" bash "$LA" finding --branch b --head "$E2H" --model m --id e-3 --severity imp --file f --line 5 --verdict agreed 2>>"$tmp/e2big.err"
+check "a piped caller stdin is ignored, not run as the program" "$(grep -c '"finding_id":"e-3"' "$E2L")" "1"
+check "no argv-cap error reached the caller" "$(grep -c 'Argument list too long' "$tmp/e2big.err")" "0"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

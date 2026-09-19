@@ -342,13 +342,18 @@ touch "$ledger" || { echo "ledger-append.sh: cannot write $ledger" >&2; exit 2; 
 
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 # Build the record + a dedup grep key via node (safe JSON + escaping).
+# HIMMEL-3204: the program goes to node on STDIN (`node -` + heredoc), never as
+# `node -e '<program>'` argv — on Windows a command line is capped at 32,767
+# chars and this ~37 KB program made every ledger write die "Argument list too
+# long". Consequence: node's stdin IS the program, so nothing inside may read
+# stdin (it does not; its one child, git cat-file, is handed `input:`).
 # shellcheck disable=SC2016  # the $-refs inside are a JS heredoc (process.env), not shell expansions
 KIND="$kind" BRANCH="$branch" HEAD_="$head" RAW_HEAD="$raw_head" MODEL="$model" RESPONDING_MODEL="$responding_model" ID="$id" SEV="$severity" \
 FILE="$file" LINE="$line" VERDICT="$verdict" STATUS="$status" BATCH_FILE="$batch_file" \
 PROMPT_CHARS="$prompt_chars" RESPONSE_CHARS="$response_chars" TS="$ts" LEDGER="$ledger" ARTIFACT="$artifact" PERSPECTIVE="$perspective" \
 ATTEMPT_NUM="$attempt_num" DURATION_SECS="$duration_secs" ROUND="$round" DISPOSITION_ROUND="$disposition_round" \
 CRIT_N="$crit_n" IMP_N="$imp_n" SUG_N="$sug_n" DROPPED_N="$dropped_n" RAW_PATH="$raw_path" \
-REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TEXT="$raw_text" SET_PAIRS="$set_pairs" node -e '
+REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TEXT="$raw_text" SET_PAIRS="$set_pairs" node - <<'JS'
   const fs=require("fs"), cp=require("child_process"), crypto=require("crypto"), e=process.env;
   // Keep this small inline copy in parity with finding-fingerprint.js. The
   // writer is intentionally standalone: anchor/fixture flows copy this one
@@ -932,4 +937,4 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
     process.exit(0);
   }
   fs.appendFileSync(led, JSON.stringify(rec)+"\n");
-'
+JS
