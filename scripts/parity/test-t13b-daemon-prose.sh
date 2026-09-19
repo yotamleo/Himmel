@@ -10,9 +10,10 @@
 #   - in any other file, full-line comments are skipped, the word `daemon`
 #     counts outside prose strings (a quoted string holding whitespace is a
 #     message; a single-token string such as "--daemon" is an argv element
-#     and still counts), and service-creation shapes (nohup, setsid, disown,
-#     systemctl ... enable, launchctl load|bootstrap) count anywhere on the
-#     line, quoted or not.
+#     and still counts), and service-creation shapes (backgrounded
+#     `nohup ... &`, systemctl ... enable, launchctl load|bootstrap) count
+#     anywhere on the line, quoted or not. Bare nohup/setsid/disown do not
+#     (hook case lists and bounded detach helpers use them routinely).
 #
 # End-to-end against real fixture repos: each case commits a base and a feature
 # commit into a throwaway git repo carrying a COPY of the real ws5 script, then
@@ -104,8 +105,19 @@ run_case sh-systemctl-enable FAIL scripts/start.sh \
     'systemctl --user enable --now qmd.service'
 run_case sh-launchctl FAIL scripts/start.sh \
     'launchctl bootstrap gui/501 ~/Library/LaunchAgents/qmd.plist'
-run_case sh-setsid FAIL scripts/start.sh \
-    'setsid qmd mcp'
+# shellcheck disable=SC2016  # "$arm" is fixture text, not expansion
+run_case sh-setsid-nohup-bg FAIL scripts/start.sh \
+    'setsid nohup bash "$arm" >/dev/null 2>&1 &'
+
+echo "== T13(b): nohup/setsid/disown without the backgrounding shape PASS =="
+run_case sh-nohup-case-list PASS scripts/hook.sh \
+    '            command|exec|builtin|nohup|time|nice)'
+run_case sh-nohup-and-and PASS scripts/start.sh \
+    'nohup true 2>&1 && echo ok'
+run_case sh-disown PASS scripts/start.sh \
+    'disown 2>/dev/null || true'
+run_case sh-setsid-probe PASS scripts/start.sh \
+    'if command -v setsid >/dev/null 2>&1; then'
 
 echo "== T13(b): while true / setInterval unchanged (prose too) =="
 run_case md-setinterval FAIL docs/qmd.md \

@@ -350,10 +350,15 @@ else
     # scoped to what can START one, and is never weaker on code:
     #   - *.md is prose: the daemon class does not apply there;
     #   - a full-line comment (#, //, /*, *, <!--) is prose: skipped;
-    #   - service-creation shapes (nohup, setsid, disown, systemctl ...
-    #     enable, launchctl load|bootstrap) count ANYWHERE else on the line,
-    #     quoted or not -- `bash -c "nohup x &"` launches one. These are new
-    #     coverage: the bare word never caught `nohup x &`;
+    #   - service-creation shapes (`nohup ... &` backgrounded -- a lone `&`,
+    #     not `&&` or a `2>&1` redirect -- `systemctl ... enable`, `launchctl
+    #     load|bootstrap`) count ANYWHERE else on the line, quoted or not --
+    #     `bash -c "nohup x &"` launches one. These are new coverage: the bare
+    #     word never caught `nohup x &`. Bare nohup/setsid/disown are NOT
+    #     shapes: measured on main 2026-09-19 they hit 31 lines, mostly hook
+    #     command-position case lists (`command|exec|nohup)`) and bounded
+    #     detach helpers (scripts/lib/detach.sh); `nohup ... &` hits 7 lines
+    #     in 4 files, each a real detached process;
     #   - the word `daemon` counts outside quoted strings that hold whitespace
     #     (a message such as "the qmd daemon is wedged"); a single-token string
     #     ("--daemon", "ensure-qmd-daemon.sh") is an argv element or a path
@@ -396,7 +401,7 @@ else
             lt = tolower(t)
             hit = (lt ~ /while[ \t]+true|setinterval/)
             if (!hit && kind == "code" && lt !~ /^(#|\/\/|\/\*|\*([ \t]|$)|<!--)/) {
-                if (lt ~ /(^|[^a-z0-9_-])(nohup|setsid|disown)([^a-z0-9_-]|$)|systemctl[^|;&]*[ \t]enable([ \t]|$)|launchctl[ \t]+(load|bootstrap)([ \t]|$)/)
+                if (lt ~ /(^|[^a-z0-9_-])nohup[ \t].*(^|[^&<>])&([ \t]*($|[);"\047])|[ \t]+[^&> \t])|systemctl[^|;&]*[ \t]enable([ \t]|$)|launchctl[ \t]+(load|bootstrap)([ \t]|$)/)
                     hit = 1
                 else if (tolower(drop_prose(t)) ~ /daemon/)
                     hit = 1
