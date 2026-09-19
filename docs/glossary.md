@@ -92,7 +92,7 @@ the set available on this machine. It is not a role, and not a wave.
   `harness-compat.md`) — a different object from a chain of legs.
 - **wave** has no code identifier in the lexicon sense. `MID-AGENT-WAVE`
   (`auto-arm-on-subagent-cap.sh`) is a wave of *subagents*; "wave-1" in
-  `environment-gotchas.md` is a project-phase label.
+  `internals/environment-gotchas.md` is a project-phase label.
 - **armed** in "armed merge" (`ARMAUTOMERGE`, auto-merge) and "arm the tick
   Monitor" (`console-template.md`) are different senses from arming a session.
 - **orchestrator** / **coordinator** in
