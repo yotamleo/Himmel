@@ -144,8 +144,9 @@ fi
 # adopt.sh's install_precommit_hooks runs for every profile (HIMMEL-2441), so the
 # git gates are no longer roadmap; a "Gates for every profile" roadmap chip or
 # panel would contradict the page's own "wired by the install" sentence.
-if grep -q -E 'rm-gates|Gates for every profile' "$PAGE"; then
-  bad "the commit/push gates install for every profile (adopt.sh install_precommit_hooks); the page still lists them as roadmap" "$(grep -n -E 'rm-gates|Gates for every profile' "$PAGE" | head -3)"
+gates_roadmap='rm-gates|Gates for every profile|roadmap gates item|arrive with the developer setup'
+if grep -q -i -E "$gates_roadmap" "$PAGE"; then
+  bad "the commit/push gates install for every profile (adopt.sh install_precommit_hooks); the page still lists them as roadmap" "$(grep -n -i -E "$gates_roadmap" "$PAGE" | head -3)"
 else
   ok "the git gates are not listed as roadmap work"
 fi
