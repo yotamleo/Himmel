@@ -40,6 +40,13 @@
 # so a since-FIXED misconfig's stale rows persist forever; filtering by the newest
 # session's thread_id means a fixed config stops firing on the next launch.
 #
+# PRESENCE, not just complaints (HIMMEL-1145): everything above is read from what
+# codex LOGGED, so a codex that lost the himmel marketplace/plugin registration
+# entirely — nothing loads, nothing is logged — would read healthy. The
+# `plugin-unregistered` signal reads $CODEX_HOME/config.toml and asserts the himmel
+# plugin set (himmel-plugin-set.conf, shared with install-himmel-codex) is
+# registered AND enabled.
+#
 # Output: one `WARN <signal>: <detail>` line per finding, on stdout.
 # Exit:   0 = healthy (no findings)   1 = finding(s)   2 = cannot read codex logs.
 # Env:    CODEX_HOME (default ~/.codex)
@@ -68,6 +75,8 @@ fi
 
 findings=0
 emit() { printf 'WARN %s: %s\n' "$1" "$2"; findings=$((findings + 1)); }
+# Every finding here is about the codex CLI alone (the HIMMEL-1104 convention).
+scope_note="Scope: the codex CLI only — claudex / cc-glm / hermes are separate surfaces and are NOT implicated by this finding."
 
 # Newest rollout session. Rollout filenames are ISO-timestamp-prefixed
 # (rollout-2026-07-07T11-56-16-<uuid>.jsonl), so a lexical sort is chronological
@@ -158,7 +167,6 @@ if [ -f "$LOGDB" ] && [ -n "$tid" ]; then
     done <<EOF
 $desc_offenders
 EOF
-    scope_note="Scope: the codex CLI only — claudex / cc-glm / hermes are separate surfaces and are NOT implicated by this finding."
     upgrade_note="Most likely fix: upgrade codex to >= rust-v0.143.0, which accepts a root-level 'description' (upstream PR #30229)."
     scan_note=""
     [ "$desc_scan" = "ok" ] || scan_note=" NOTE: the cache scan was INCOMPLETE (a hooks.json could not be enumerated, read, or parsed — jq may be absent), so candidates may be missing."
@@ -191,6 +199,68 @@ if [ -n "$newest_jsonl" ] && command -v jq >/dev/null 2>&1; then
   if [ "$waw_bytes" -gt "$BUDGET" ]; then
     emit where-are-we-oversized \
       "the _where-are-we context injected into the most recent codex session is ${waw_bytes} bytes (budget ${BUDGET})"
+  fi
+fi
+
+# --- (d) himmel plugin registration (HIMMEL-1145) -------------------------------
+# (a)-(c) all read what codex LOGGED. A codex that lost the himmel marketplace +
+# plugin registration loads nothing, parses no manifest, and so logs nothing: every
+# check above reads healthy while every himmel guardrail is absent. Assert
+# PRESENCE instead — a deterministic read of $CODEX_HOME/config.toml, same posture
+# as scan_plugin_cache (no log parsing, no sqlite).
+#
+# The expected set is DATA, shared with install-himmel-codex (himmel-plugin-set.conf)
+# — never restated here. Only the `default` set is required; `--all` extras are
+# opt-in. Per-plugin, not all-or-nothing: a partial loss is reported by name.
+# ponytail: only the table-header form codex itself writes ([marketplaces.X],
+# [plugins."name@X"] + `enabled = true`) is parsed; a hand-written dotted-key or
+# inline-table config reads as unregistered (fail closed — the installer would
+# rewrite it in the header form). A registered marketplace whose `source` path has
+# gone stale is not checked either.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_SET_FILE="$SCRIPT_DIR/himmel-plugin-set.conf"
+plugin_set_field() { tr -d '\r' < "$PLUGIN_SET_FILE" 2>/dev/null | awk -F': *' -v k="$1" '$1==k{print $2; exit}'; }
+# One `market <name>` line per registered marketplace, one `enabled <id>` line per
+# plugin table carrying `enabled = true`; header quoting/whitespace stripped.
+config_state() {
+  awk '
+    /^[[:space:]]*\[/ {
+      s = $0; sub(/^[[:space:]]*\[/, "", s); sub(/\][[:space:]]*(#.*)?$/, "", s)
+      gsub(/["[:space:]]/, "", s); cur = s
+      if (s ~ /^marketplaces\./) print "market " substr(s, 14)
+      next
+    }
+    cur ~ /^plugins\./ && /^[[:space:]]*enabled[[:space:]]*=[[:space:]]*true[[:space:]]*(#.*)?$/ { print "enabled " substr(cur, 9) }
+  ' "$1" 2>/dev/null
+}
+
+want_market="$(plugin_set_field marketplace)"
+want_plugins="$(plugin_set_field default)"
+if [ -z "$want_market" ] || [ -z "$want_plugins" ]; then
+  # Cannot say what to look for -> cannot say it is present. Never a silent pass.
+  emit plugin-presence-unchecked \
+    "codex CLI ($CODEX_HOME): cannot read the expected himmel plugin set from $PLUGIN_SET_FILE (missing, unreadable, or empty) — plugin registration NOT verified, so himmel's guardrails may not be loaded. $scope_note"
+else
+  cfg="$CODEX_HOME/config.toml"
+  cfg_state=""; cfg_note=""
+  if [ -r "$cfg" ]; then cfg_state="$(config_state "$cfg")"; else cfg_note=" $cfg is missing or unreadable."; fi
+  market_missing=""; plugins_missing=""
+  cfg_has() { grep -qxF "$1" <<< "$cfg_state"; }
+  cfg_has "market $want_market" || market_missing=1
+  for p in $want_plugins; do
+    cfg_has "enabled $p@$want_market" || plugins_missing="$plugins_missing $p@$want_market"
+  done
+  if [ -n "$market_missing" ] || [ -n "$plugins_missing" ]; then
+    what=""
+    [ -z "$market_missing" ] || what="marketplace '$want_market' is not registered"
+    [ -z "$plugins_missing" ] || what="${what:+$what; }plugin(s) not registered+enabled:${plugins_missing}"
+    # himmel-ops carries the guardrail hooks, and no marketplace = nothing loads.
+    alarm=""
+    if [ -n "$market_missing" ] || [ "${plugins_missing#*himmel-ops@}" != "$plugins_missing" ]; then
+      alarm=" GUARDRAILS MAY BE OFF — himmel's hooks are not loaded; do not route work to the codex CLI lane until fixed."
+    fi
+    emit plugin-unregistered \
+      "codex CLI ($CODEX_HOME) has lost part of its himmel plugin registration: $what.${cfg_note}${alarm} No log row is written for a plugin that never loads, so the checks above cannot see this. Fix: re-run scripts/codex/install-himmel-codex.sh (idempotent; only ever adds), then restart codex. $scope_note"
   fi
 fi
 

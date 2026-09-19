@@ -34,7 +34,41 @@ function New-Home([string]$name, [string]$tid, [string]$waw) {
   '{"type":"event_msg","payload":{"type":"token_count"}}' | Set-Content -LiteralPath $f -Encoding utf8
   $rec = [pscustomobject]@{ type = 'response_item'; payload = [pscustomobject]@{ type = 'message'; content = @([pscustomobject]@{ type = 'text'; text = $waw }) } }
   ($rec | ConvertTo-Json -Depth 20 -Compress) | Add-Content -LiteralPath $f -Encoding utf8
+  # HIMMEL-1145: a fully-registered config.toml, so every case that is NOT about
+  # registration stays healthy. Registration cases overwrite it via Write-Config.
+  Write-Config $h 'all'
   return $h
+}
+
+# The expected set comes from the SAME data file the detector reads — this suite
+# must not become the second hardcoded copy the ticket forbids.
+$PLUGIN_SET = Join-Path $PSScriptRoot 'himmel-plugin-set.conf'
+function Get-SetField([string]$file, [string]$key) {
+  foreach ($l in (Get-Content -LiteralPath $file)) { if ($l -match "^$([regex]::Escape($key)):\s*(.*?)\s*$") { return $Matches[1] } }
+  return ''
+}
+$MARKET = Get-SetField $PLUGIN_SET 'marketplace'
+$DEFAULT_PLUGINS = @((Get-SetField $PLUGIN_SET 'default') -split '\s+' | Where-Object { $_ })
+
+# Synthesize $CODEX_HOME/config.toml in the shape codex itself writes
+# (`[marketplaces.himmel]` + `[plugins."name@himmel"]` / `enabled = true`).
+#   all      marketplace + every default plugin enabled
+#   nomarket every default plugin enabled, marketplace table absent
+#   skip     everything except $skip (absent entirely)
+#   disable  everything, but $skip carries `enabled = false`
+#   empty    an unrelated config only (no himmel registration at all)
+function Write-Config([string]$homeDir, [string]$mode, [string]$skip = '') {
+  $t = @('model = "gpt-5"', '', '[marketplaces.openai-bundled]', 'source_type = "local"', '', '[plugins."browser@openai-bundled"]', 'enabled = true', '')
+  if ($mode -ne 'empty') {
+    if ($mode -ne 'nomarket') { $t += @("[marketplaces.$MARKET]", 'source_type = "local"', 'source = "/x/marketplace"', '') }
+    foreach ($p in $DEFAULT_PLUGINS) {
+      if ($mode -eq 'skip' -and $p -eq $skip) { continue }
+      $t += "[plugins.`"$p@$MARKET`"]"
+      $t += $(if ($mode -eq 'disable' -and $p -eq $skip) { 'enabled = false' } else { 'enabled = true' })
+      $t += ''
+    }
+  }
+  $t | Set-Content -LiteralPath (Join-Path $homeDir 'config.toml') -Encoding utf8
 }
 function Set-Db([string]$homeDir, [string]$line) { $line | Set-Content -LiteralPath (Join-Path $homeDir 'logs_2.sqlite') -Encoding utf8 }
 function Run([string]$homeDir, [hashtable]$envx = @{}) {
@@ -156,6 +190,75 @@ try {
   if ($r.rc -eq 1 -and $r.out -match 'WARN where-are-we-oversized:') { Pass 'oversized where-are-we -> exit 1' } else { Fail "oversized rc=$($r.rc) out=$($r.out)" }
   $r = Run $h @{ budget = '100000' }
   if ($r.rc -eq 0) { Pass 'big block under generous budget -> exit 0' } else { Fail "budget-gate rc=$($r.rc)" }
+
+  # 8. HIMMEL-1145: himmel plugin registration is asserted PRESENT (twin of the
+  # .sh suite's section 8). The session in each case is otherwise clean — only
+  # config.toml differs.
+  function New-RegHome([string]$name, [string]$mode, [string]$skip = '') {
+    $h = New-Home $name $NEW $small
+    Set-Db $h "INFO codex_core_skills::service session_loop{thread_id=$NEW}: skills cache cleared padding"
+    Write-Config $h $mode $skip
+    return $h
+  }
+  $r = Run (New-RegHome 'regall' 'all')
+  if ($r.rc -eq 0) { Pass 'fully registered set -> exit 0' } else { Fail "regall rc=$($r.rc) out=$($r.out)" }
+
+  # 8a. no config.toml at all -> fail closed
+  $h = New-RegHome 'regnocfg' 'all'; Remove-Item -LiteralPath (Join-Path $h 'config.toml')
+  $r = Run $h
+  if ($r.rc -eq 1 -and $r.out -match '^WARN plugin-unregistered:' -and $r.out -match 'config\.toml') { Pass 'no config.toml -> plugin-unregistered naming the file' } else { Fail "nocfg rc=$($r.rc) out=$($r.out)" }
+
+  # 8b. total loss
+  $r = Run (New-RegHome 'regempty' 'empty')
+  $allNamed = $true; foreach ($p in $DEFAULT_PLUGINS) { if ($r.out -notmatch [regex]::Escape("$p@$MARKET")) { $allNamed = $false } }
+  if ($r.rc -eq 1 -and $r.out -match '^WARN plugin-unregistered:' -and $allNamed -and $r.out -match "marketplace '$MARKET'" -and $r.out -match 'GUARDRAILS MAY BE OFF') { Pass 'total loss -> names marketplace + every plugin, GUARDRAILS MAY BE OFF' } else { Fail "empty rc=$($r.rc) out=$($r.out)" }
+  if ($r.out -match 'codex CLI' -and $r.out -match 'claudex / cc-glm / hermes are separate surfaces') { Pass 'finding names the surface (codex CLI)' } else { Fail "surface out=$($r.out)" }
+  if ($r.out -notmatch 'luna-correlate') { Pass 'opt-in extras are not required' } else { Fail "extras required: $($r.out)" }
+
+  # 8c. marketplace gone, plugin tables still there
+  $r = Run (New-RegHome 'regnomarket' 'nomarket')
+  if ($r.rc -eq 1 -and $r.out -match "marketplace '$MARKET'" -and $r.out -match 'GUARDRAILS MAY BE OFF') { Pass 'marketplace missing -> named + escalates' } else { Fail "nomarket rc=$($r.rc) out=$($r.out)" }
+
+  # 8d. PARTIAL: himmel-ops disabled -> named alone, escalates
+  $r = Run (New-RegHome 'regdisabled' 'disable' 'himmel-ops')
+  if ($r.rc -eq 1 -and $r.out -match "himmel-ops@$MARKET" -and $r.out -match 'GUARDRAILS MAY BE OFF' -and $r.out -notmatch "handover@$MARKET") { Pass 'himmel-ops disabled -> named alone (per-plugin), escalates' } else { Fail "disabled rc=$($r.rc) out=$($r.out)" }
+
+  # 8e. PARTIAL: a non-guardrail plugin absent -> named, no guardrails alarm
+  $r = Run (New-RegHome 'regpartial' 'skip' 'telegram-himmel')
+  if ($r.rc -eq 1 -and $r.out -match "telegram-himmel@$MARKET" -and $r.out -notmatch 'GUARDRAILS MAY BE OFF') { Pass 'non-guardrail loss named, no GUARDRAILS MAY BE OFF' } else { Fail "partial rc=$($r.rc) out=$($r.out)" }
+
+  # 8f. same plugin name under ANOTHER marketplace does not count
+  $h = New-RegHome 'regforeign' 'all'
+  $cfgPath = Join-Path $h 'config.toml'
+  (Get-Content -LiteralPath $cfgPath) -replace "`"himmel-ops@$MARKET`"", '"himmel-ops@other"' | Set-Content -LiteralPath $cfgPath -Encoding utf8
+  $r = Run $h
+  if ($r.rc -eq 1 -and $r.out -match "himmel-ops@$MARKET") { Pass 'foreign-marketplace himmel-ops does not satisfy the requirement' } else { Fail "foreign rc=$($r.rc) out=$($r.out)" }
+
+  # 8g. no session at all (no sessions dir -> no thread_id): config-only check
+  $h = Join-Path $TMP 'regnosession'; New-Item -ItemType Directory -Force -Path $h | Out-Null
+  Set-Db $h "INFO x session_loop{thread_id=$NEW}: noise padding line here"; Write-Config $h 'empty'
+  $r = Run $h
+  if ($r.rc -eq 1 -and $r.out -match '^WARN plugin-unregistered:') { Pass 'registration check does not depend on a session' } else { Fail "nosession rc=$($r.rc) out=$($r.out)" }
+
+  # 8h. the expected set is DERIVED from the data file, not restated in the detector
+  $dd = Join-Path $TMP 'derive'; New-Item -ItemType Directory -Force -Path $dd | Out-Null
+  Copy-Item -LiteralPath $DET -Destination (Join-Path $dd 'startup-health.ps1')
+  "marketplace: himmel`ndefault: zzz-only-plugin`nall-extra: x" | Set-Content -LiteralPath (Join-Path $dd 'himmel-plugin-set.conf') -Encoding utf8
+  $h = New-RegHome 'regderived' 'all'
+  $env:CODEX_HOME = $h; $out = & pwsh -NoProfile -File (Join-Path $dd 'startup-health.ps1') 2>&1; $rc = $LASTEXITCODE; $env:CODEX_HOME = $null
+  $out = $out -join "`n"
+  if ($rc -eq 1 -and $out -match 'zzz-only-plugin@himmel' -and $out -notmatch 'himmel-ops') { Pass 'custom data file drives the requirement (no second hardcoded copy)' } else { Fail "derived rc=$rc out=$out" }
+  @('[marketplaces.himmel]', 'source_type = "local"', '', '[plugins."zzz-only-plugin@himmel"]', 'enabled = true') | Set-Content -LiteralPath (Join-Path $h 'config.toml') -Encoding utf8
+  $env:CODEX_HOME = $h; $null = & pwsh -NoProfile -File (Join-Path $dd 'startup-health.ps1') 2>&1; $rc = $LASTEXITCODE; $env:CODEX_HOME = $null
+  if ($rc -eq 0) { Pass 'custom data file: its plugin present -> exit 0' } else { Fail "derived-ok rc=$rc" }
+
+  # 8i. data file missing -> cannot judge -> say so, never a silent pass
+  $nd = Join-Path $TMP 'nodata'; New-Item -ItemType Directory -Force -Path $nd | Out-Null
+  Copy-Item -LiteralPath $DET -Destination (Join-Path $nd 'startup-health.ps1')
+  $h = New-RegHome 'regnodata' 'all'
+  $env:CODEX_HOME = $h; $out = & pwsh -NoProfile -File (Join-Path $nd 'startup-health.ps1') 2>&1; $rc = $LASTEXITCODE; $env:CODEX_HOME = $null
+  $out = $out -join "`n"
+  if ($rc -eq 1 -and $out -match '^WARN plugin-presence-unchecked:') { Pass 'data file missing -> plugin-presence-unchecked (fail closed)' } else { Fail "nodata rc=$rc out=$out" }
 
   # 6. missing CODEX_HOME -> 2
   $r = Run (Join-Path $TMP 'nope/.codex')
