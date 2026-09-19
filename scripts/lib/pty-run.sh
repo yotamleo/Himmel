@@ -12,7 +12,9 @@
 # ever writes to it) gives script a stdin that never EOFs, so the session is
 # genuinely interactive and idles until a message arrives.
 #
-#   _himmel_pty_run <cmd> [args...]     rc = <cmd>'s exit status
+#   _himmel_pty_run <cmd> [args...]     rc = <cmd>'s exit status, except on a
+#                                       BSD script(1) that rejects -e: there rc
+#                                       is 0 whatever <cmd> returned
 #
 # Both `script` dialects: util-linux (`-qefc STRING FILE`, -e = child's rc) and
 # BSD/macOS (`-q FILE cmd args...`). The command string is handed to the inner
