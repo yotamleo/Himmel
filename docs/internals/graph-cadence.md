@@ -111,10 +111,15 @@ pipeline lock (`<worktree>.lock`, skip-not-wait), because each run
 noclobber write of the run's owner token (HIMMEL-2654). The holder re-stamps a
 `heartbeat` every 30s. A contender takes a lock over only when neither
 liveness signal answers: the holder pid is not alive (checked only on the same
-host) and the heartbeat is ≥600s old. The takeover itself
-is identity-checked, so of two contenders racing one stale lock, exactly one
-proceeds. A run re-checks ownership right before its first destructive git
-command. A refreshed graph lands only through a `chore/graph-publish-<slug>`
+host) and the heartbeat is ≥600s old. To take over, a contender must first
+win an atomic `mkdir <lock>/reclaim` claim and then confirm that the lock
+still carries the owner token and inode it judged dead. Only after that does
+it move the dead lock aside. A live lock is never moved, so of any number of
+contenders racing one stale lock, exactly one proceeds. A run re-checks
+ownership right before its first destructive git command. If a contender
+crashes after winning the claim, the leftover `reclaim` makes every later
+fire skip until an operator removes `<worktree>.lock`. That fails safe: no
+run proceeds, and two runs never do. A refreshed graph lands only through a `chore/graph-publish-<slug>`
 PR merged on green — never a direct push to `main` (asserted in
 `test-graph-cadence.sh`).
 

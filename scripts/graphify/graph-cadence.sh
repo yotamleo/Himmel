@@ -628,21 +628,25 @@ mkdir -p "$(dirname "$WORKTREE_DIR")" || _fail "could not create $(dirname "$WOR
 #      reclaimable. A lock with no readable stamp at all (a holder that died
 #      between mkdir and its first write) is judged by the directory's own
 #      mtime against the same threshold.
-#   2. SINGLE-WINNER takeover, identity-checked -- the protocol of
-#      refresh-graph-map.sh's _extraction_lock_takeover (HIMMEL-2618), not a
-#      third convention. The owner token is read FIRST, as the identity of
-#      what was judged dead; after the sideline mv the moved directory must
-#      still carry that token, otherwise a rival completed a whole
-#      takeover+acquire in between and we just grabbed its LIVE lock -- so we
-#      put it back and report that we LOST. Acquire then verifies its own
-#      token after stamping, and the holder re-checks it right before the
-#      first destructive git command (step 5b).
+#   2. SINGLE-WINNER takeover by CLAIM, never by moving first. The owner
+#      token (and the directory's inode) are read FIRST, as the identity of
+#      what was judged dead. A contender must then win an atomic
+#      `mkdir <lock>/reclaim` -- one winner per dead lock -- and re-check,
+#      under that claim, that the directory still carries the judged
+#      identity. Only then is the dead lock moved aside. A live lock is never
+#      moved, not even briefly: a sideline-then-validate takeover (round 1 of
+#      this fix) could park a live holder's lock, let a third run acquire the
+#      empty slot, and so let two runs reset one worktree. Acquire then
+#      verifies its own token after stamping (the noclobber owner write is
+#      the single-winner point for any one directory), and the holder
+#      re-checks it right before the first destructive git command (step 5b).
 # ponytail: a holder that is alive but HUNG (never exits) keeps heartbeating,
 # so every later fire skips until someone kills it -- deliberate, since an
 # unkillable-by-age lock is the whole fix; the ledger's skipped rows name its
-# pid. Residual (the same one _extraction_lock_takeover documents): a restore
-# that finds the slot already re-taken by a THIRD contender drops the
-# sideline -- it needs three runs inside one mv->restore gap on a 6h cadence.
+# pid. Likewise a contender that dies between winning the reclaim claim and
+# moving the dead lock leaves `<lock>/reclaim` behind, and every later fire
+# skips ("another run is already reclaiming it") until an operator removes
+# the lock directory -- fail-safe (no run proceeds), never two runs.
 PIPELINE_LOCK="${WORKTREE_DIR}.lock"
 PIPELINE_LOCK_HELD=0
 PIPELINE_LOCK_TOKEN=""
@@ -701,9 +705,18 @@ _pipeline_lock_stamp_heartbeat() {
 # holder is dead and the lock reclaimable. rc 1: live (or undecidable) --
 # never evicted.
 PIPELINE_LOCK_JUDGED_OWNER=""
+PIPELINE_LOCK_JUDGED_INODE=""
 PIPELINE_LOCK_VERDICT=""
+# _pipeline_lock_inode -- the lock directory's inode number (`ls -di`, which
+# GNU and BSD both support), or empty. Identity for a lock with no owner token.
+_pipeline_lock_inode() {
+    local out=""
+    out=$(ls -di "$PIPELINE_LOCK" 2>/dev/null) || return 0
+    printf '%s\n' "${out%% *}"
+}
 _pipeline_lock_judge() {
-    local pid host stamp now age
+    local pid host stamp now age ino2
+    PIPELINE_LOCK_JUDGED_INODE=$(_pipeline_lock_inode)
     PIPELINE_LOCK_JUDGED_OWNER=$(cat "$PIPELINE_LOCK/owner" 2>/dev/null) || PIPELINE_LOCK_JUDGED_OWNER=""
     pid=$(cat "$PIPELINE_LOCK/pid" 2>/dev/null) || pid=""
     host=$(cat "$PIPELINE_LOCK/host" 2>/dev/null) || host=""
@@ -726,7 +739,10 @@ _pipeline_lock_judge() {
         PIPELINE_LOCK_VERDICT="is stale (no live holder, last heartbeat ${age}s ago >= ${PIPELINE_LOCK_STALE_SECONDS}s)"
         return 0
     fi
-    if [ -n "$(find "$PIPELINE_LOCK" -maxdepth 0 -mmin "+$(( PIPELINE_LOCK_STALE_SECONDS / 60 ))" 2>/dev/null)" ]; then
+    # No owner token either: the directory's inode is its only identity, so
+    # the age read must be bracketed by two identical inode reads.
+    if [ -n "$(find "$PIPELINE_LOCK" -maxdepth 0 -mmin "+$(( PIPELINE_LOCK_STALE_SECONDS / 60 ))" 2>/dev/null)" ] \
+        && ino2=$(_pipeline_lock_inode) && [ -n "$ino2" ] && [ "$ino2" = "$PIPELINE_LOCK_JUDGED_INODE" ]; then
         PIPELINE_LOCK_VERDICT="is stale (no live holder, no stamp, directory older than ${PIPELINE_LOCK_STALE_SECONDS}s)"
         return 0
     fi
@@ -734,19 +750,32 @@ _pipeline_lock_judge() {
     return 1
 }
 # _pipeline_lock_takeover -- identity-checked single-winner takeover of the
-# lock just judged dead (see 2. above). rc 0: the dead lock is gone.
+# lock just judged dead (see 2. above). rc 0: the dead lock is gone. rc 1:
+# another run claimed it first, or it was replaced -- skip, nothing moved.
 _pipeline_lock_takeover() {
-    local sideline="$PIPELINE_LOCK.stale.$$.$RANDOM" got=""
-    mv "$PIPELINE_LOCK" "$sideline" 2>/dev/null || return 1
-    got=$(cat "$sideline/owner" 2>/dev/null) || got=""
-    if [ "$got" != "$PIPELINE_LOCK_JUDGED_OWNER" ]; then
-        if [ ! -e "$PIPELINE_LOCK" ] && mv "$sideline" "$PIPELINE_LOCK" 2>/dev/null; then
-            echo "graph-cadence: pipeline lock $PIPELINE_LOCK was replaced by a live holder before our takeover landed -- restored it, not taking over" >&2
-        else
-            rm -rf "$sideline" 2>/dev/null || true
-            echo "graph-cadence: pipeline lock $PIPELINE_LOCK was replaced before our takeover landed and its slot is already re-taken -- dropped the sidelined copy, not taking over" >&2
-        fi
+    local claim="$PIPELINE_LOCK/reclaim" sideline="$PIPELINE_LOCK.stale.$$.$RANDOM" got="" ino=""
+    # Claim FIRST, move second: winning this mkdir is the only licence to move
+    # the directory, so a lock is never moved on a judgement alone. A claim
+    # won inside a directory that has meanwhile been replaced by a live
+    # holder's is detected below and withdrawn -- that holder's lock is never
+    # touched (a sideline-then-restore would leave its slot empty for a third
+    # run to take).
+    mkdir "$claim" 2>/dev/null || {
+        PIPELINE_LOCK_VERDICT="another run is already reclaiming it"
+        return 1
+    }
+    got=$(cat "$PIPELINE_LOCK/owner" 2>/dev/null) || got=""
+    ino=$(_pipeline_lock_inode)
+    if [ "$got" != "$PIPELINE_LOCK_JUDGED_OWNER" ] || [ -z "$ino" ] || [ "$ino" != "$PIPELINE_LOCK_JUDGED_INODE" ]; then
+        rmdir "$claim" 2>/dev/null || true
+        echo "graph-cadence: pipeline lock $PIPELINE_LOCK was replaced by another run before our takeover landed -- left it alone, not taking over" >&2
         PIPELINE_LOCK_VERDICT="lost the takeover race to a live holder"
+        return 1
+    fi
+    # Only the claim winner reaches here, and the directory is still the one
+    # judged dead, so this mv can only ever move that dead lock.
+    if ! mv "$PIPELINE_LOCK" "$sideline" 2>/dev/null; then
+        rmdir "$claim" 2>/dev/null || true
         return 1
     fi
     echo "graph-cadence: WARN pipeline lock $PIPELINE_LOCK $PIPELINE_LOCK_VERDICT -- taking over" >&2
