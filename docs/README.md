@@ -5,7 +5,7 @@ Map of the `docs/` tree. New here? Start at **[getting-started.md](getting-start
 ## Start here
 
 - [why-himmel.md](why-himmel.md) — the case for the harness: the five failure modes it exists for, the evidence, and what it costs you.
-- [adoption-trail.html](adoption-trail.html) — the eight-level adoption trail, as a page you open in a browser: what each level turns on, what it changes, and what it does not. Public URL (once Pages is enabled): https://yotamleo.github.io/Himmel/adoption-trail.html
+- [adoption-trail.html](adoption-trail.html) — the eight-level adoption trail, as a page you open in a browser: what each level turns on, what it changes, and what it does not. Public URL: https://yotamleo.github.io/Himmel/adoption-trail.html ([how the site is published](#publishing-these-docs-github-pages))
 - [architecture.md](architecture.md) — five diagrams: the enforcement layers, the handover system, the fleet/console model, the Jira seam, the observability chain.
 - [getting-started.md](getting-started.md) — clone to your first PR-gated loop in ~15 minutes.
 - [daily-loop.md](daily-loop.md) — one full loop (worktree → PR → merge → clean → handover), with every hook and gate explained where it fires.
@@ -77,6 +77,35 @@ Map of the `docs/` tree. New here? Start at **[getting-started.md](getting-start
 - [tool-adoption/registry.md](tool-adoption/registry.md) — every evaluated tool, recorded.
 - [tool-adoption/telemetry.md](tool-adoption/telemetry.md) — adoption-outcome telemetry for the registry.
 - [license-audit.md](license-audit.md) · [skills-taxonomy-audit.md](skills-taxonomy-audit.md) — audits.
+
+## Publishing these docs (GitHub Pages)
+
+The public repo serves this folder as a static site at
+`https://yotamleo.github.io/Himmel/<path under docs/>`.
+
+- **Source.** Pages is set to "Deploy from a branch": branch `main`, folder
+  `/docs` (a legacy branch build — there is no Pages workflow in
+  `.github/workflows/`). Publishing is merging to `main`; GitHub rebuilds
+  within a minute or two. Read the live settings and the last build with
+  `gh api repos/yotamleo/Himmel/pages` and
+  `gh api repos/yotamleo/Himmel/pages/builds/latest`.
+- **What is served.** Every file under `docs/`, byte for byte, and nothing
+  outside it (the root `README.md`, `scripts/` and the rest are not on the
+  site). `docs/.nojekyll` turns Jekyll off, so there is no build step and no
+  theme: `.html` renders as a page, `.md` is served as raw text (not
+  rendered), and because `docs/` has no `index.html` the site root itself
+  returns 404 — `adoption-trail.html` is the entry point.
+- **Preview locally.** The same static serving, no account needed:
+  `python3 -m http.server 8000 --directory docs`, then open
+  `http://localhost:8000/adoption-trail.html`. (The page loads its fonts from
+  Google Fonts; offline it falls back to system fonts.)
+- **Check before you merge.** `bash scripts/docs/test-adoption-trail.sh`
+  resolves every link on the trail page, confirms every detail chip has its
+  panel, and pins the claims that have drifted before (cadence count, lanes
+  menu, plugin provenance) to the tree.
+- **Check after.** Once the build shows `built`,
+  `curl -s https://yotamleo.github.io/Himmel/adoption-trail.html | cmp - docs/adoption-trail.html`
+  prints nothing when the live page matches your checkout.
 
 ## Historical / working records (not a navigation target)
 

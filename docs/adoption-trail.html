@@ -239,20 +239,24 @@
         plugins, vault and hooks.</p>
         <p class="note">Before you clone: install
         <span class="mono">git</span>, <span class="mono">node</span> <em>and</em>
-        <span class="mono">npm</span>, <span class="mono">jq</span>,
-        <span class="mono">gh</span>, <span class="mono">bun</span>,
-        <span class="mono">pre-commit</span> and the
-        <span class="mono">claude</span> CLI. The installer checks for them and
-        stops on the ones it needs, but it does not install them for you. On
+        <span class="mono">npm</span> (or <span class="mono">bun</span>),
+        <span class="mono">jq</span>, <span class="mono">python3</span>,
+        <span class="mono">gh</span>, <span class="mono">pre-commit</span> and
+        the <span class="mono">claude</span> CLI. The installer hard-stops on
+        the ones it cannot work without (bash, git, jq, python3, and npm or
+        bun) and lists the rest in its plan. On an interactive terminal it
+        will <em>offer</em> to install a missing hard requirement, but only
+        after you say yes; with <span class="mono">--dry-run</span> or no
+        terminal it just tells you what is missing. On
         Debian/Ubuntu note that the <span class="mono">nodejs</span> package
         ships <em>without</em> npm. Exact per-platform commands, and a verified
         end-to-end Linux walkthrough, are in
         <a href="setup/new-machine.md">setup/new-machine.md</a>; the narrative
         version is <a href="getting-started.md">getting-started.md</a>.</p>
         <p class="note">This page ships in <span class="mono">docs/</span> in
-        the public himmel repo, at
-        <a href="https://yotamleo.github.io/Himmel/adoption-trail.html">yotamleo.github.io/Himmel/adoption-trail.html</a>
-        once GitHub Pages is enabled; until then, open it from your clone.</p>
+        the public himmel repo and is published from there at
+        <a href="https://yotamleo.github.io/Himmel/adoption-trail.html">yotamleo.github.io/Himmel/adoption-trail.html</a>;
+        you can also open the file straight from your clone.</p>
         <div class="chipgroup"><span class="glabel">himmel brings</span>
           <ul class="chips">
             <li><button class="chip" data-detail="himmel-ops">himmel-ops</button></li>
@@ -262,7 +266,7 @@
             <li><button class="chip" data-detail="jira-cli">Jira
             CLI</button></li>
             <li><button class="chip" data-detail="bitbucket">Bitbucket
-            plugin</button></li>
+            CLI</button></li>
             <li><button class="chip" data-detail="hud">claude-hud</button></li>
             <li><button class="chip" data-detail="doctor">himmel-doctor</button></li>
           </ul></div>
@@ -306,7 +310,8 @@
         discipline, attested pushes and a review loop that runs before
         anything merges — on GitHub via the required
         <span class="mono">gh</span> CLI, or Bitbucket via the bundled
-        plugin.</p>
+        Bitbucket CLI (the <span class="mono">himmel-gh</span> plugin routes
+        to whichever your repo uses).</p>
         <ul class="guard">
           <li><b>Worktree isolation</b> — feature work never edits your
           main branch directly</li>
@@ -335,9 +340,12 @@
         <p class="note">The Claude-session guards (worktree isolation,
         dangerous-command blocking, the egress fences) and the <em>git</em>
         gates (pre-commit, commit-msg, pre-push) are both wired by the
-        install &mdash; opt out with
-        <span class="mono">--skip-hooks</span>/<span class="mono">-SkipHooks</span>
-        if you manage git hooks yourself. Ticket discipline is <em>on by
+        install &mdash; the opt-out,
+        <span class="mono">--skip-hooks</span> (<span class="mono">-SkipHooks</span>
+        on Windows), is a flag of <span class="mono">scripts/adopt.sh</span>
+        / <span class="mono">adopt.ps1</span>, not of
+        <span class="mono">himmelctl install</span>, so use it if you manage
+        git hooks yourself. Ticket discipline is <em>on by
         default</em> once they are placed: the commit-msg gate wants a
         <span class="mono">PROJECT-123</span> reference when you set
         <span class="mono">JIRA_PROJECT_KEY</span> (or your own
@@ -347,7 +355,7 @@
         half; the conventional-commit shape check stays on either way. See
         <a href="setup/new-machine.md">setup/new-machine.md</a>.</p>
         <p>Today the git flow is structurally <b>PR-only</b>: no direct
-        push to main, one sanctioned merge path, auto-merge only where you
+        push to main, one sanctioned merge path, auto-merge only when you
         opt in.</p>
         <ul class="chips">
           <li><button class="chip" data-detail="git-flow">PR-only git
@@ -373,17 +381,18 @@
         <p>Connect a vault — start from the bundled
         <button class="textlink" data-detail="luna-template">luna-second-brain
         template</button> or point at the notes you already have — and
-        pick which of the four <b>cadences</b> to arm: the content
+        pick which of the eight <b>cadences</b> to arm: the content
         pipeline (harvest, synthesize, health), the search reindex, the
-        knowledge-graph refresh, and (if you took the codex lane) a
-        cleanup sweep. <b>The search reindex is its own cadence with its
-        own arming</b> — arm only the pipeline and your search goes
-        stale.</p>
+        knowledge-graph refresh, a cleanup sweep (if you took the codex
+        lane), the upstream drift-fix and upstream watch, and — only where
+        they apply — a Windows repo sync and a Google Health pull.
+        <b>The search reindex is its own cadence with its own arming</b> —
+        arm only the pipeline and your search goes stale.</p>
         <div class="chipgroup"><span class="glabel">himmel brings</span>
           <ul class="chips">
             <li><button class="chip" data-detail="obsidian-triage">obsidian-triage
             skills</button></li>
-            <li><button class="chip" data-detail="cadences">Cadences (4,
+            <li><button class="chip" data-detail="cadences">Cadences (8,
             pick-list)</button></li>
             <li><button class="chip" data-detail="cadence-graphmap">Graph
             refresh cadence</button></li>
@@ -404,8 +413,8 @@
         <p class="impact"><b>Impact:</b> knowledge compounds while you
         sleep. A link you toss in at midnight is a connected, summarized
         note by morning.</p>
-        <div class="hint">Asked during install once a vault exists.
-        Anything you decline is recorded as declined — never switched on
+        <div class="hint">The vault-dependent cadences are asked once a
+        vault exists. Anything you decline is recorded as declined — never switched on
         behind your back.</div>
       </div>
     </section>
@@ -418,8 +427,9 @@
         <span class="lvl-tag">LEVEL 3</span>
         <h2>Reach: your phone joins</h2>
         <p>Wire the Telegram bridge. The installer also asks — explicitly,
-        by name — whether the bridge should survive reboots on your
-        platform.</p>
+        by name — whether the bridge should survive reboots, on the
+        platforms where it has an installer for that (Windows and
+        Linux).</p>
         <ul class="chips">
           <li><button class="chip" data-detail="bridge">Telegram
           bridge</button></li>
@@ -456,8 +466,8 @@
           (review)</button></li>
           <li><button class="chip" data-detail="hermes">hermes lane
           (review)</button></li>
-          <li><button class="chip" data-detail="local-lanes">Other lanes
-          on the menu</button></li>
+          <li><button class="chip" data-detail="local-lanes">What the
+          lanes question offers</button></li>
         </ul>
         <p class="impact"><b>Impact:</b> two model families argue over
         your diff before it merges. The trade, plainly: <b>without these
@@ -543,32 +553,33 @@
       <div class="card">
         <span class="lvl-tag">LEVEL 7</span>
         <h2>Command a fleet</h2>
-        <p>Two words first, because the rest of this level uses them. A
-        <b>lane</b> is one work session that owns exactly one ticket, in
+        <p>Two words first, because the rest of this level uses them (both
+        are defined in the <a href="glossary.md">glossary</a>). A
+        <b>leg</b> is one work session that owns exactly one ticket, in
         its own worktree. The <b>console</b> is the one session you keep
-        in front of you: it reviews lanes at their stop points, holds the
-        sole authority to merge, and escalates to you only what genuinely
-        needs you.</p>
-        <p>The summit is many lanes running at once under one console.
+        in front of you: it reviews legs at their stop points, holds the
+        sole authority to release a merge, and escalates to you only what
+        genuinely needs you.</p>
+        <p>The summit is many legs running at once under one console.
         They coordinate through a <b>written layer</b> — mission briefs
-        plus handover and roadmap documents every lane reads and appends —
+        plus handover and roadmap documents every leg reads and appends —
         and by direct messages to the console when something is
         urgent.</p>
         <p>A read-only console for watching it happen ships today: a local
-        web UI showing lane state, escalations and a live event stream.
+        web UI showing fleet state, escalations and a live event stream.
         <b>Dispatch and adjudication are not built yet</b> — the console's
         own UI says so.</p>
         <ul class="chips">
           <li><button class="chip" data-detail="briefs">Mission
           briefs</button></li>
           <li><button class="chip" data-detail="legs">Parallel
-          lanes</button></li>
+          legs</button></li>
           <li><button class="chip" data-detail="comms">Written comms
           layer</button></li>
           <li><button class="chip" data-detail="stops">Stop-point
           reviews</button></li>
-          <li><button class="chip" data-detail="merge-auth">Sole merge
-          authority</button></li>
+          <li><button class="chip" data-detail="merge-auth">Console-gated
+          merge</button></li>
           <li><button class="chip" data-detail="fleet-control">Fleet
           console (read-only)</button></li>
           <li><button class="chip roadmap" data-detail="rm-judge">Installable
@@ -604,7 +615,7 @@
     the plan first.
     Click any level marker to track where you are — it's remembered on
     this device only.
-    <br>Public URL, once GitHub Pages is enabled:
+    <br>Public URL:
     <a href="https://yotamleo.github.io/Himmel/adoption-trail.html" class="mono">yotamleo.github.io/Himmel/adoption-trail.html</a>
   </footer>
 </div>
@@ -677,9 +688,11 @@
     '<span class="listhead">himmel’s own plugins</span>' +
     '<ul>' +
     '<li><b>himmel-ops · handover · qmd · obsidian-triage · pr-review-toolkit-himmel · ' +
-    'telegram-himmel · luna-correlate · claude-obsidian</b></li>' +
+    'telegram-himmel · luna-correlate · lean-skills</b></li>' +
+    '<li><b>claude-obsidian</b> is listed in the same marketplace but comes from upstream, pinned to a release tag — not a himmel fork</li>' +
     '<li><b>claude-hud</b>, vendored in-repo rather than marketplace-registered</li>' +
-    '<li>Bundled tooling: <b>Jira CLI · Bitbucket scripts · guard hooks</b></li>' +
+    '<li><b>himmel-gh</b>, a repo-root plugin that routes GitHub or Bitbucket operations to the right CLI</li>' +
+    '<li>Bundled tooling: <b>Jira CLI · Bitbucket CLI · guard hooks</b></li>' +
     '</ul>' +
     '<span class="listhead">From elsewhere</span>' +
     '<p>Official Claude Code plugins and a selection of community ones — the review, ' +
@@ -694,16 +707,16 @@
 
   var D = {
     'questions': { t: 'What the wizard asks', s: 'ship', h:
-      '<p><b>Seven questions are always asked, and up to eighteen in total, depending on your earlier answers.</b></p>' +
+      '<p><b>Seven questions are always asked, and up to twenty-two in total, depending on your earlier answers.</b></p>' +
       '<p><b>Always asked:</b></p><ul>' +
       '<li><b>profile</b> — starter | luna | operator | custom, default starter. A preset only <i>seeds</i> the default answer at each question below — it never skips one.</li>' +
       '<li><b>scope</b> — this project, or your user account</li>' +
       '<li><b>vault</b> — none | the bundled template | your existing vault</li>' +
       '<li><b>handover</b> — inline, or an external state directory</li>' +
       '<li><b>pluginSet</b> — <span class="mono">lean</span>, currently the only option</li>' +
-      '<li><b>lanes</b> — pick from ollama, copilot, codex, hermes, or none</li>' +
+      '<li><b>lanes</b> — the review lanes: codex and hermes (each opt-in), or none</li>' +
       '<li><b>alwaysOn</b> — unattended-machine hardening, yes or no</li></ul>' +
-      '<p><b>Conditional</b>, up to eleven more: vault and handover paths, the per-cadence pick-list and a follow-up asking whether to tear down any cadence you declined, a PHI declaration, an optional secrets walk, the Telegram bridge on or off with its env path, whisper CLI and model paths, and bridge reboot persistence.</p>' +
+      '<p><b>Conditional</b>, up to fifteen more: vault and handover paths, the per-cadence pick-list and a follow-up asking whether to tear down any cadence you declined, a PHI declaration, a separate personal/medical-vault declaration with its path and an optional <span class="mono">.salus</span> marker, an optional secrets walk, the Telegram bridge on or off with its env path, whisper CLI and model paths (plus a custom model filename), and bridge reboot persistence.</p>' +
       '<p>The secrets walk and the later status nags filter by what you actually selected, so a feature you declined never nags you again.</p>' +
       '<p>Every question has a safe default. <span class="mono">--dry-run</span> shows the whole plan first.</p>' },
     'jira-cli': { t: 'Jira CLI', s: 'ship', h:
@@ -719,15 +732,15 @@
     'superpowers': { t: 'superpowers', s: 'ship', h:
       '<p>A community plugin himmel installs and builds on: it powers the <b>overnight planning and subagent-driven implementation</b> flows — the plan-then-implement-with-reviews pipeline that autonomous runs execute.</p>' },
     'claude-obsidian': { t: 'claude-obsidian', s: 'ship', h:
-      '<p>himmel’s <b>fork of AgriciDaniel’s claude-obsidian</b> plugin: the vault connection layer Claude uses to read and write your Obsidian notes.</p>' },
+      '<p>AgriciDaniel’s <b>claude-obsidian</b> plugin, installed <b>from upstream and pinned to a release tag</b> (himmel’s fork was retired once its fixes landed upstream): the vault connection layer Claude uses to read and write your Obsidian notes.</p>' },
     'luna-correlate': { t: 'luna-correlate', s: 'ship', h:
       '<p>A bundled plugin for correlating vault content — surfacing connections across notes that the nightly synthesis builds on.</p>' },
-    'bitbucket': { t: 'Bitbucket plugin', s: 'ship', h:
-      '<p>himmel <b>brings</b> a Bitbucket integration plugin, so teams on Bitbucket get the same ticket/PR flow. GitHub goes through the required <span class="mono">gh</span> CLI instead.</p>' },
+    'bitbucket': { t: 'Bitbucket CLI', s: 'ship', h:
+      '<p>himmel <b>brings</b> a Bitbucket command-line client (built by the installer), so teams on Bitbucket get the same PR flow. The <span class="mono">himmel-gh</span> plugin routes each operation to it on a Bitbucket repo and to the required <span class="mono">gh</span> CLI on a GitHub one.</p>' },
     'doctor': { t: 'himmel-doctor', s: 'ship', h:
       '<p>The environment doctor: probes your tools, config and wiring, and reports honest per-item verdicts. A check that cannot run reports as unknown — never as a pass.</p>' },
     'gh': { t: 'gh CLI', s: 'ship', h:
-      '<p>GitHub’s official CLI — a <b>required</b> toolchain dependency; the installer probes it before anything else. All GitHub operations (PRs, checks, merges) route through it.</p>' },
+      '<p>GitHub’s official CLI — a <b>required</b> toolchain dependency for GitHub repos; the installer probes it and lists it in its plan. All GitHub operations (PRs, checks, merges) route through it.</p>' },
     'graphify': { t: 'graphify', s: 'ship', h:
       '<p>A knowledge-graph tool himmel <b>installs from upstream, version-pinned</b> — not a fork. It builds a queryable graph of your codebase (<span class="mono">graphify query</span>, <span class="mono">graphify explain</span>) and refreshes on a schedule. <span class="mono">/himmel-update</span> rolls the pin.</p>' },
     'plugins': { t: 'The plugin roster', s: 'ship', h: PLUGINS },
@@ -736,7 +749,7 @@
     'rm-profiles': { t: 'Skill & agent profiles', s: 'road', h:
       '<p><b>Roadmap.</b> Choose which skills and agents your machine carries as named profiles, instead of inheriting one fixed set.</p>' },
     'git-flow': { t: 'PR-only git flow', s: 'ship', h:
-      '<p>Structural, not advisory: no direct pushes to main (a gate refuses them), every change lands via a pull request, one sanctioned merge path verifies the review verdict at the exact head being merged, and auto-merge exists only where you opt in per repository.</p>' +
+      '<p>Structural, not advisory: no direct pushes to main (a gate refuses them), every change lands via a pull request, one sanctioned merge path verifies the review verdict at the exact head being merged, and auto-merge exists only when you opt in (<span class="mono">ARMAUTOMERGE</span>, honoured only on a private repo, or on your configured public origin once its branch protection is verified live).</p>' +
       '<p>The workflow itself is a <b>configurable step list</b> — execute, review, PR, ticket, merge, publish, handover. Drop the merge step and the agent <b>stops at open, review-clean PRs</b>: push-without-merge exists today.</p>' +
       '<p>Even with merge active, merging is <b>double-gated</b>: it only happens through the sanctioned merge script, and that script refuses unless an explicit opt-in was set when the session launched.</p>' +
       '<p>Pre-commit gates are a separate, orthogonal layer: git hooks that fire on <b>every</b> commit, agent or human alike. They arrive with the developer setup today; bringing them to every profile from the installer is the roadmap gates item.</p>' },
@@ -749,17 +762,21 @@
       '<p>The bundled vault template — notes structure, a clipper inbox, maps of content, and a daily flow — also published as a standalone repository. Start from it, or keep your own vault and let himmel work inside it.</p>' },
     'obsidian-triage': { t: 'obsidian-triage skills', s: 'ship', h:
       '<p>Bundled vault skills: triage new clippings, harvest links, synthesize themes across notes, run vault health checks. They are what the nightly cadences execute.</p>' },
-    'cadences': { t: 'Cadences (4, pick-list)', s: 'ship', h:
-      '<p>The wizard offers a <b>per-cadence pick-list</b> read from the real registry — four rows:</p><ul>' +
-      '<li><b>pipeline</b> — harvest, synthesize, health and fetch-health are all <b>legs of this one cadence</b>, armed together by a single call</li>' +
+    'cadences': { t: 'Cadences (8, pick-list)', s: 'ship', h:
+      '<p>The wizard offers a <b>per-cadence pick-list</b> read from the real registry — eight rows:</p><ul>' +
+      '<li><b>pipeline</b> — harvest, synthesize, health and fetch-health are all <b>steps of this one cadence</b>, armed together by a single call</li>' +
       '<li><b>qmd</b> — the nightly search reindex, armed separately</li>' +
       '<li><b>graphmap</b> — the graphify graph refresh</li>' +
-      '<li><b>codex-sweep</b> — a cleanup sweep, offered only if you took the codex lane</li></ul>' +
-      '<p>Rows that need a vault are offered only once a vault exists. Declining any is recorded as declined, and you are then asked whether to disarm anything already running — a no leaves it armed and the summary says so, per unit.</p>' },
+      '<li><b>codex-sweep</b> — a cleanup sweep, offered only if you took the codex lane</li>' +
+      '<li><b>drift-fix</b> — a nightly upstream-drift pass: bumps auto-bumpable pins into an ordinary PR and audits your forks; it never merges</li>' +
+      '<li><b>upstream-watch</b> — a daily scan of himmel’s open upstream PRs and issues, notifying you only when something changed</li>' +
+      '<li><b>repo-sync</b> — a daily fast-forward-only pull of your git repos plus stale-worktree cleanup; Windows only</li>' +
+      '<li><b>pull-cadence</b> — a daily Google Health pull, offered only once its refresh token is configured</li></ul>' +
+      '<p>pipeline, qmd and graphmap need a vault (codex-sweep needs the codex lane instead); drift-fix and upstream-watch are always offered. Declining any is recorded as declined, and you are then asked whether to disarm anything already running — a no leaves it armed and the summary says so, per unit.</p>' },
     'cadence-graphmap': { t: 'Graph refresh cadence', s: 'ship', h:
-      '<p>One of the four cadences: it keeps the graphify graph current on a schedule, instead of only when you run <span class="mono">graphify update</span> by hand.</p>' },
+      '<p>One of the cadences: it keeps the graphify graph current on a schedule, instead of only when you run <span class="mono">graphify update</span> by hand. It also arms a separate six-hourly task that refreshes and publishes himmel’s own graph as a pull request.</p>' },
     'cadence-codex-sweep': { t: 'Codex sweep cadence', s: 'ship', h:
-      '<p>One of the four cadences: a cleanup sweep for the codex lane’s leftovers. It is offered only if you selected the codex lane.</p>' },
+      '<p>One of the cadences: a cleanup sweep for orphaned codex broker processes. It is offered only if you selected the codex lane.</p>' },
     'qmd': { t: 'qmd vault search', s: 'ship', h:
       '<p>himmel’s <b>fork of tobi’s qmd</b> search tool. <b>Installed by setup</b>: the CLI is installed and your vault registered as a collection, so semantic search works immediately. The <b>nightly reindex</b> is its own cadence in the pick-list — arm it separately from the pipeline, or search goes stale.</p>' },
     'luna-sources': { t: 'Source connectors', s: 'ship', h:
@@ -780,9 +797,9 @@
       '<p>OpenAI’s codex CLI as an optional <b>review</b> lane — a second-opinion critic on your diff. It never takes implementation work of its own. Its own explicit opt-in with its own login; never installed behind your back.</p>' },
     'hermes': { t: 'hermes lane (review)', s: 'ship', h:
       '<p>A gateway lane reaching additional models for <b>review</b> second opinions only. Own opt-in, own install profile, own credentials.</p>' },
-    'local-lanes': { t: 'Other lanes on the menu', s: 'ship', h:
-      '<p>The lanes question offers four: <b>ollama</b> (local models), <b>copilot</b>, <b>codex</b> and <b>hermes</b> — or none.</p>' +
-      '<p>ollama and copilot are useful helpers, but neither puts a second model family in front of your diff. If a cross-model review floor is what you are after, codex or hermes is the answer — and the wizard says exactly that at the question, before you choose.</p>' },
+    'local-lanes': { t: 'What the lanes question offers', s: 'ship', h:
+      '<p>The lanes question offers exactly two: <b>codex</b> and <b>hermes</b> — or none. Both are review lanes, and each is off until you name it; none is the default.</p>' +
+      '<p>Either one puts a second model family in front of your diff. Skip both and review runs Claude-only — the wizard says so at the question, before you choose.</p>' },
     'hud': { t: 'claude-hud statusline', s: 'ship', h:
       '<p>A heads-up statusline himmel <b>brings, vendored in-repo</b>: context-fill bar, usage and quota windows, model badge, and a prompt-cache expiry clock — the live dashboard of every session.</p>' },
     'bank': { t: 'Budget preflight', s: 'ship', h:
@@ -813,15 +830,15 @@
     'rm-report': { t: 'Templatable report', s: 'road', h:
       '<p><b>Roadmap.</b> The morning report becomes a template you shape to your needs, instead of one fixed layout.</p>' },
     'briefs': { t: 'Mission briefs', s: 'ship', h:
-      '<p>Every lane starts from a written brief: scope, constraints, verified context, and what to do at a stop point. A lane inherits nothing implicitly, so the brief has to carry everything.</p>' },
-    'legs': { t: 'Parallel lanes', s: 'ship', h:
+      '<p>Every leg starts from a written brief: scope, constraints, verified context, and what to do at a stop point. A leg inherits nothing implicitly, so the brief has to carry everything.</p>' },
+    'legs': { t: 'Parallel legs', s: 'ship', h:
       '<p>Independent work sessions, each owning one ticket in its own isolated worktree — many tickets progress at once without stepping on each other.</p>' },
     'comms': { t: 'Written comms layer', s: 'ship', h:
-      '<p>Lanes coordinate through <b>writing, not shared memory</b>: briefs carry everything a lane needs, and handover and roadmap documents are read and appended by every lane as work progresses. Anything urgent goes to the console as a direct message. The written layer is why work survives any single session dying.</p>' },
+      '<p>Legs coordinate through <b>writing, not shared memory</b>: briefs carry everything a leg needs, and handover and roadmap documents are read and appended by every leg as work progresses. Anything urgent goes to the console as a direct message. The written layer is why work survives any single session dying.</p>' },
     'stops': { t: 'Stop-point reviews', s: 'ship', h:
-      '<p>A lane drives its PR to a clean review verdict, then <b>stops</b> and reports. The console reviews the evidence — never a lane’s own word for it — before anything merges.</p>' },
-    'merge-auth': { t: 'One merge authority', s: 'ship', h:
-      '<p>Only the console merges, through the sanctioned gate that verifies checks, resolved threads and the reviewed head. Lanes structurally cannot merge their own work.</p>' },
+      '<p>A leg drives its PR to a clean review verdict, then <b>stops</b> and reports. The console reviews the evidence — never a leg’s own word for it — before anything merges.</p>' },
+    'merge-auth': { t: 'Console-gated merge', s: 'ship', h:
+      '<p>A merge needs the console’s explicit go: the console writes a per-PR, per-commit GO file, and the sanctioned merge gate refuses a console-launched leg without it. The gate also verifies checks, resolved threads and the reviewed head, so a leg cannot merge its own work on its own say-so.</p>' },
     'fleet-control': { t: 'Fleet console (read-only)', s: 'ship', h:
       '<p>A local web console bound to <span class="mono">127.0.0.1:7350</span>, with routes for <span class="mono">/fleet</span>, <span class="mono">/escalations</span> and a live <span class="mono">/events</span> stream.</p>' +
       '<p>It states its own scope plainly: “Read-only Phase 1 pane. Dispatch and adjudication controls remain disabled until Phase 2.”</p>' },
