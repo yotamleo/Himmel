@@ -41,6 +41,10 @@ TICK_UNDERFILL_MIN minutes (default 10); capacity=ok otherwise, capacity=unknown
 when fleet=?. TICK_LAUNCH_DIR overrides the console work dir the launch logs
 are read from.
 
+gql=<remaining>/<reset HH:MM> (HIMMEL-3197) is the last field: the GitHub GraphQL
+budget, read from the X-Ratelimit-* headers of ONE `gh api -i graphql` call
+(gh-graphql-budget.sh ghb_read); gql=? when the headers cannot be read.
+
 --burn adds a per-leg context-burn field (first-turn/avg-ctx, via
 scripts/lanes/leg-burn.sh) for every doc in --legs. OPT-IN because it scans
 the Claude Code transcript root, which a plain tick must never do: a tick runs
@@ -463,6 +467,25 @@ else
     capacity=unknown
 fi
 
+# gql=<remaining>/<reset HH:MM> (HIMMEL-3197): the GitHub GraphQL budget, shared by
+# every leg on the box, so a console sees exhaustion coming instead of hitting it.
+# ghb_read is ONE real `gh api -i graphql` call -- `gh api rate_limit` reports the
+# REST core bucket and misreports this one (HIMMEL-3190) -- so a tick pays exactly
+# one extra request. gql=? when the headers are unreadable; never fails the tick.
+gql='?'
+if [ -f "$HERE/../../lib/gh-graphql-budget.sh" ]; then
+    # shellcheck source=../../lib/gh-graphql-budget.sh
+    . "$HERE/../../lib/gh-graphql-budget.sh"
+    if ghb_read; then
+        gql_reset='?'
+        if [ -n "$GHB_RESET" ]; then
+            gql_reset="$(date -d "@$GHB_RESET" +%H:%M 2>/dev/null || date -r "$GHB_RESET" +%H:%M 2>/dev/null)" || gql_reset=""
+            [ -n "$gql_reset" ] || gql_reset='?'
+        fi
+        gql="$GHB_REMAINING/$gql_reset"
+    fi
+fi
+
 # tick=ARMED|MISSING|UNKNOWN (HIMMEL-3144 D2): whether the periodic Monitor
 # call that is SUPPOSED to invoke this script every 60 min (the console
 # template's `## Monitors` tick row, armed in ACTION ZERO step 10) is
@@ -532,16 +555,17 @@ if [ "$verbose" -eq 1 ]; then
     fi
     printf 'fleet: %s\n' "$fleet"
     printf 'capacity: %s\n' "$capacity"
+    printf 'gql: %s\n' "$gql"
 else
     # `tick=` is always appended (HIMMEL-3144); `burn=` stays APPENDED only
     # under --burn, after it. `fleet=`/`capacity=` (HIMMEL-3167) are appended
     # after everything else, so a consumer keyed on the existing fields and
-    # their order sees them only as a tail.
+    # their order sees them only as a tail. `gql=` (HIMMEL-3197) follows them.
     if [ "$burn" -eq 1 ]; then
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s gql=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity" "$gql"
     else
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s gql=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity" "$gql"
     fi
 fi

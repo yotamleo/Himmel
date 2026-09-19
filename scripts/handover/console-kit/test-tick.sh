@@ -99,8 +99,16 @@ cat > "$W/bin/atq" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' '1 Tue job' '2 Wed job'
 STUB
+# HIMMEL-3197: `gh api -i graphql` is the gql= budget probe (ghb_read). The stub
+# logs each call to STUB_GH_API_LOG, and prints STUB_GQL_OUT (a printf %b string,
+# default = a healthy header set) then exits STUB_GQL_RC (default 0).
 cat > "$W/bin/gh" <<'STUB'
 #!/usr/bin/env bash
+if [ "${1:-}" = api ]; then
+  [ -z "${STUB_GH_API_LOG:-}" ] || printf '%s\n' "$*" >> "$STUB_GH_API_LOG"
+  printf '%b' "${STUB_GQL_OUT-HTTP/2.0 200 OK\r\nX-Ratelimit-Remaining: 4321\r\nX-Ratelimit-Reset: 1790000000\r\n\r\n}"
+  exit "${STUB_GQL_RC:-0}"
+fi
 if [ "$PWD" != "$REPO" ]; then
   printf 'gh stub: expected cwd=%s, got %s\n' "$REPO" "$PWD" >&2
   exit 9
@@ -154,8 +162,10 @@ export CLAUDE_SESSIONS_PROC="$W/proc"
 export TICK_LAUNCH_DIR="$W/console-work"
 mkdir -p "$W/console-work/chain"
 
+# The default stub reset epoch, rendered the way tick.sh renders it (local HH:MM).
+gql_hm="$(date -d @1790000000 +%H:%M 2>/dev/null || date -r 1790000000 +%H:%M)"
 out="$(bash "$SUT")"; rc=$?
-expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7'
+expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7 gql=4321/'"$gql_hm"
 lines="$(printf '%s\n' "$out" | wc -l | tr -d '[:space:]')"
 if [ "$rc" -eq 0 ] && [ "$lines" = 1 ] && [ "$out" = "$expected" ]; then
     pass 'default run emits exactly the expected one batched line'
@@ -499,7 +509,7 @@ contains '--verbose labels fleet (HIMMEL-3167)' "$verbose_cap" 'fleet: 1/8'
 contains '--verbose labels capacity (HIMMEL-3167)' "$verbose_cap" 'capacity: UNDERFILLED:7'
 burn_cap="$(bash "$SUT" --burn --legs 'HIMMEL-111-legN61')"
 case "$burn_cap" in
-    *' burn=N61:'*' fleet=1/8 capacity=UNDERFILLED:7') pass 'fleet=/capacity= append after every existing field incl. burn= (HIMMEL-3167)' ;;
+    *' burn=N61:'*' fleet=1/8 capacity=UNDERFILLED:7 gql='*) pass 'fleet=/capacity= append after every existing field incl. burn= (HIMMEL-3167)' ;;
     *) fail "fleet=/capacity= not appended last under --burn (out='$burn_cap')" ;;
 esac
 
@@ -517,6 +527,42 @@ dated_resume_out="$(PATH="$W/bin-dated:$PATH" bash "$SUT" --legs 'HIMMEL-555-N41
 contains 'a date-suffixed -RESUME doc still counts its live session (HIMMEL-3167)' "$dated_resume_out" 'procs=1'
 dated_burn_out="$(PATH="$W/bin-dated:$PATH" bash "$SUT" --burn --legs 'HIMMEL-555-N41-thing-2026-09-18')"
 contains 'a date-suffixed leg doc still resolves its --burn transcript (HIMMEL-3167)' "$dated_burn_out" 'burn=N41:60.0k/90.0k'
+
+# --- HIMMEL-3197: gql=<remaining>/<reset HH:MM> ----------------------------------
+# The GitHub GraphQL budget is shared fleet-wide; a console needs to see exhaustion
+# coming. Read by gh-graphql-budget.sh's ghb_read -- ONE real `gh api -i graphql`
+# call (never `gh api rate_limit`, which reports the REST core bucket) -- and
+# appended after capacity=, so every existing field keeps its position.
+: > "$W/gh-api.log"
+STUB_GH_API_LOG="$W/gh-api.log" bash "$SUT" >/dev/null
+api_calls="$(wc -l < "$W/gh-api.log" | tr -d '[:space:]')"
+if [ "$api_calls" = 1 ]; then
+    pass 'a tick costs exactly one gh api call for gql= (HIMMEL-3197)'
+else
+    fail "gql= must cost exactly one gh api call per tick (calls=$api_calls)"
+fi
+contains 'the gql= probe is a real graphql call, not rate_limit (HIMMEL-3197)' "$(cat "$W/gh-api.log")" 'graphql'
+gql_ex_out="$(STUB_GQL_OUT='HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 1790000000\r\n\r\n' STUB_GQL_RC=1 bash "$SUT")"; gql_ex_rc=$?
+if [ "$gql_ex_rc" -eq 0 ]; then
+    contains 'an exhausted budget (gh exits 1, headers still printed) reads gql=0/<reset> (HIMMEL-3197)' "$gql_ex_out" "gql=0/$gql_hm"
+else
+    fail "an exhausted budget must not fail the tick (rc=$gql_ex_rc)"
+fi
+gql_bad_out="$(STUB_GQL_OUT='gh: connection refused\n' STUB_GQL_RC=1 bash "$SUT")"; gql_bad_rc=$?
+if [ "$gql_bad_rc" -eq 0 ]; then
+    contains 'unreadable headers read gql=? and never fail the tick (HIMMEL-3197)' "$gql_bad_out" ' capacity=UNDERFILLED:7 gql=?'
+else
+    fail "unreadable gql headers must not fail the tick (rc=$gql_bad_rc)"
+fi
+gql_nores_out="$(STUB_GQL_OUT='HTTP/2.0 200 OK\r\nX-Ratelimit-Remaining: 4321\r\n\r\n' bash "$SUT")"
+contains 'a missing reset header reads gql=<remaining>/? (HIMMEL-3197)' "$gql_nores_out" 'gql=4321/?'
+gql_verbose="$(bash "$SUT" --verbose)"
+contains '--verbose labels the graphql budget (HIMMEL-3197)' "$gql_verbose" "gql: 4321/$gql_hm"
+gql_burn="$(bash "$SUT" --burn --legs 'HIMMEL-111-legN61')"
+case "$gql_burn" in
+    *' burn=N61:'*" capacity=UNDERFILLED:7 gql=4321/$gql_hm") pass 'gql= is the final field under --burn too (HIMMEL-3197)' ;;
+    *) fail "gql= not last under --burn (out='$gql_burn')" ;;
+esac
 
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-tick.sh'

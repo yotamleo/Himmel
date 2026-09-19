@@ -40,7 +40,6 @@
 # Seams (test overrides — same shape as scripts/lib/branch-shipped.sh):
 #   FORGE=github              bypass origin detection (forge seam)
 #   GH_CMD=<path>             override the `gh` binary for the per-branch pr query
-#   OB_CI_CMD=<path>          override `gh pr checks` (ci enrichment; defaults to gh)
 #   ORPHAN_BRANCH_DAYS=N      date window in days (default 30)
 #   ORPHAN_BRANCH_MAX=N       cap on branches scanned (default 50)
 #   ORPHAN_BRANCH_IGNORE=     space-separated glob patterns to always skip
@@ -72,7 +71,7 @@ _ob_timeout_cmd() {
 # timeout-binary path).
 #
 # Why this exists (HIMMEL-1325): _ob_timeout_cmd returns empty when no timeout
-# binary is present, and without this fallback _ob_gh_list / _ob_ci_state run `gh`
+# binary is present, and without this fallback _ob_gh_list runs `gh`
 # UNBOUNDED — a hung call hangs the whole scan with no ceiling, on a lib whose
 # whole point is to be bounded by ORPHAN_BRANCH_TIMEOUT.
 #
@@ -141,12 +140,39 @@ _ob_fetch() {
     else
         # Same bound as the `timeout` path above. This else-branch previously ran
         # the fetch UNBOUNDED, which is the third instance of the defect fixed at
-        # _ob_gh_list and _ob_ci_state — a network fetch is the likeliest of the
+        # _ob_gh_list (and the retired per-PR `gh pr checks` call) — a network fetch is the likeliest of the
         # three to hang, so leaving it out would have shipped a bounded-scan
         # guarantee with a hole in it.
         _ob_bounded 60 /dev/null "$1" git fetch origin --prune
     fi
 }
+
+# _OB_LIST_JQ — the --jq filter handed to `gh pr list`; one tab row per PR:
+# <number> <state> <mergeCommit oid | -> <ci>, ci = green|none|pending|failed
+# derived from statusCheckRollup (HIMMEL-3197). Before this the ci state cost a
+# SECOND call per open branch — `gh pr checks <n>`, measured at 4 GraphQL requests
+# each (GH_DEBUG=api) on a budget every leg on the box shares — and rc=1 there was
+# ambiguous between a red check and "no checks reported" (cli/cli#9390, #9682,
+# #7401), which is why it used to be resolved by inspecting the output. The rollup
+# rides the branch's own `pr list` request at no extra call, and an empty rollup
+# is unambiguously `none` (Actions is OFF on this private repo, so it is the
+# COMMON case). Precedence mirrors `gh pr checks` (rc 8 pending wins over rc 1
+# failed): pending > failed > green. CheckRun rows carry status/conclusion;
+# StatusContext rows carry state. Best-effort, never affects the orphan/merged
+# determination — only enriches an open-pr branch. Runs under gh's built-in gojq
+# AND jq (T26 exercises it with jq), so it sticks to constructs both support.
+# ponytail: a conclusion this filter does not name (a state GitHub adds later)
+# reads as green, not pending — the first-party set is enumerated above, not
+# derived, so a new failing conclusion needs adding to the `failed` arm.
+# shellcheck disable=SC2016  # a jq program: $r/$c are jq variables, not shell expansions
+_OB_LIST_JQ='
+def ci:
+  (.statusCheckRollup // []) as $r
+  | if ($r | length) == 0 then "none"
+    elif any($r[]; ((.status // "COMPLETED") != "COMPLETED") or ((.state // "") == "PENDING") or ((.state // "") == "EXPECTED")) then "pending"
+    elif any($r[]; ((.conclusion // "") as $c | $c == "FAILURE" or $c == "TIMED_OUT" or $c == "CANCELLED" or $c == "ACTION_REQUIRED" or $c == "STARTUP_FAILURE" or $c == "STALE") or ((.state // "") == "FAILURE") or ((.state // "") == "ERROR")) then "failed"
+    else "green" end;
+.[] | [.number, .state, (.mergeCommit.oid // "-"), ci] | @tsv'
 
 # _ob_gh_list <primary_dir> <branch> — query THIS branch's PRs from the target
 # repo (per-branch, never global). Sets globals _ob_out (tsv rows) and _ob_rc
@@ -171,8 +197,8 @@ _ob_gh_list() {
     # is the truncation root cause (see file header). T14 STATIC asserts this.
     if [ -n "$tcmd" ]; then
         (cd "$primary" && "$tcmd" -k 2 "$secs" "${GH_CMD:-gh}" pr list --head "$branch" \
-            --state all --limit 100 --json number,state,mergeCommit \
-            --jq '.[] | [.number, .state, (.mergeCommit.oid // "-")] | @tsv') \
+            --state all --limit 100 \
+            --json number,state,mergeCommit,statusCheckRollup --jq "$_OB_LIST_JQ") \
             >"$tmp" 2>/dev/null
         _ob_rc=$?
     else
@@ -180,51 +206,12 @@ _ob_gh_list() {
         # _ob_bounded runner enforces the same ORPHAN_BRANCH_TIMEOUT budget so a
         # hung gh cannot hang the scan unbounded (HIMMEL-1325).
         _ob_bounded "$secs" "$tmp" "$primary" "${GH_CMD:-gh}" pr list --head "$branch" \
-            --state all --limit 100 --json number,state,mergeCommit \
-            --jq '.[] | [.number, .state, (.mergeCommit.oid // "-")] | @tsv'
+            --state all --limit 100 \
+            --json number,state,mergeCommit,statusCheckRollup --jq "$_OB_LIST_JQ"
         _ob_rc=$?
     fi
     _ob_out="$(cat "$tmp" 2>/dev/null)"
     rm -f "$tmp"
-}
-
-# _ob_ci_state <primary_dir> <pr_number> -> echoes green|none|pending|failed
-# (best-effort; never affects the orphan/merged determination — only enriches
-# an open-pr branch). gh documents rc=8 for pending checks. rc=1 is AMBIGUOUS:
-# `gh pr checks` exits 1 for BOTH a genuinely red check AND "no checks reported"
-# (cli/cli#9390, #9682, #7401 — upstream has repeatedly declined to change it),
-# and Actions is OFF on this private repo, so "no checks" is the COMMON case. rc=1
-# is therefore resolved by INSPECTING the captured output, not the exit code alone:
-# empty/whitespace-only output, or gh's "no checks" message, => none; any
-# check-row content => failed. Other non-zero exits stay pending (conservative).
-_ob_ci_state() {
-    local primary="$1" num="$2" secs="${ORPHAN_BRANCH_TIMEOUT:-15}" tcmd out rc tmp
-    tcmd="$(_ob_timeout_cmd)"
-    # Same grandchild-holds-the-pipe reason as _ob_gh_list: capture to a file.
-    # mktemp for the same symlink-clobbering reason as _ob_gh_list (codex-1).
-    tmp=$(mktemp -t ob-ci.XXXXXX) || { printf 'pending'; return; }
-    if [ -n "$tcmd" ]; then
-        (cd "$primary" && "$tcmd" -k 2 "$secs" "${OB_CI_CMD:-${GH_CMD:-gh}}" pr checks "$num") >"$tmp" 2>/dev/null; rc=$?
-    else
-        # Same portable bound as _ob_gh_list when no `timeout` binary exists (HIMMEL-1325).
-        _ob_bounded "$secs" "$tmp" "$primary" "${OB_CI_CMD:-${GH_CMD:-gh}}" pr checks "$num"; rc=$?
-    fi
-    out="$(cat "$tmp" 2>/dev/null)"; rm -f "$tmp"
-    if [ "$rc" -eq 8 ]; then printf 'pending'; return; fi
-    if [ "$rc" -eq 1 ]; then
-        # Resolve the rc=1 ambiguity by OUTPUT, not exit code alone (see header).
-        # gh's no-checks message goes to stderr (captured to /dev/null), so the
-        # common no-checks case leaves $out empty/whitespace-only => none. The
-        # literal "no checks" message is matched too, for gh builds that print it
-        # to stdout (anchored to a line start so a check whose NAME contains those
-        # words is not misread). Anything else is a real checks table => failed.
-        if [ -z "${out//[[:space:]]/}" ]; then printf 'none'; return; fi
-        if printf '%s\n' "$out" | grep -qiE '^[[:space:]]*no checks'; then printf 'none'; return; fi
-        printf 'failed'; return
-    fi
-    if [ "$rc" -ne 0 ]; then printf 'pending'; return; fi
-    if [ -z "$out" ]; then printf 'none'; return; fi
-    printf 'green'
 }
 
 # _ob_is_propagated <merge_oid> <public_clone> -> rc 0 if the squash commit is
@@ -259,13 +246,13 @@ _ob_classify() {
     if [ "$_ob_rc" -ne 0 ]; then
         printf 'uncertain: %s (forge unreachable)\n' "$branch"; return
     fi
-    local has_any=0 merged_oid="" open_num="" has_closed=0 num state oid
-    while IFS="$(printf '\t')" read -r num state oid; do
+    local has_any=0 merged_oid="" open_num="" open_ci="" has_closed=0 num state oid ci
+    while IFS="$(printf '\t')" read -r num state oid ci; do
         [ -n "$num" ] || continue
         has_any=1
         case "$state" in
             MERGED) [ -n "$merged_oid" ] || merged_oid="${oid:--}" ;;
-            OPEN)   open_num="$num" ;;
+            OPEN)   open_num="$num"; open_ci="$ci" ;;
             CLOSED) has_closed=1 ;;
         esac
     done <<EOF
@@ -283,11 +270,12 @@ EOF
         return
     fi
     if [ -n "$open_num" ]; then
-        local ci; ci="$(_ob_ci_state "$primary" "$open_num")"
-        if [ "$ci" = green ]; then
+        # A missing/unrecognised ci column reads pending — never green, never failed.
+        case "$open_ci" in green|none|pending|failed) ;; *) open_ci=pending ;; esac
+        if [ "$open_ci" = green ]; then
             printf 'chain: ci-green %s (pr #%s)\n' "$branch" "$open_num"
         else
-            printf 'chain: pr %s (pr #%s, ci=%s)\n' "$branch" "$open_num" "$ci"
+            printf 'chain: pr %s (pr #%s, ci=%s)\n' "$branch" "$open_num" "$open_ci"
         fi
         return
     fi
