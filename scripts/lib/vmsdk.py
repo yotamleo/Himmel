@@ -346,8 +346,10 @@ class VM:
                 # `test -d` rc 1 = nothing staged there. Any other rc (e.g. an
                 # ssh failure) is not "absent" — let the scan itself refuse.
                 rc, _ = self.run(f"test -d {root}")
+                # A staged tree carries the whole secret set (the copy excludes
+                # *.local.json); only ~ is scanned with the narrower env profile.
                 if rc != 1:
-                    self.assert_guest_clean(root, "env")
+                    self.assert_guest_clean(root, "full")
         vbox.take_snapshot(self.name, name)
 
     def restore(self, name):

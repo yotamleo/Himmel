@@ -623,6 +623,27 @@ class TestSecretBoundary(unittest.TestCase):
             self._snapshot_with(present=(d,), hits={d: d + "/scripts/.env\n"})
         self.assertIn("REFUSING", str(cm.exception))
 
+    def test_snapshot_scans_staging_dirs_with_the_full_profile(self):
+        """A staging dir holds a host-staged tree, so the whole secret set
+        applies there (the env profile drops *.local.json, which is right only
+        for a guest home). The fake find reports the file only when the scan
+        command actually names *.local.json."""
+        d = self._STAGING[1]
+        vm = self._vm()
+        def fake_run(cmd, *a, **k):
+            if cmd.startswith("test -d "):
+                return (0, "") if cmd.split()[-1] == d else (1, "")
+            if f" {d} " in cmd and "-name '*.local.json'" in cmd:
+                return (0, d + "/.claude/settings.local.json\n")
+            return (0, "")
+        with mock.patch.object(vmsdk.vbox, "is_running", return_value=True), \
+             mock.patch.object(vm, "run", side_effect=fake_run), \
+             mock.patch.object(vmsdk.vbox, "take_snapshot") as snap:
+            with self.assertRaises(vmsdk.VMError) as cm:
+                vm.snapshot("base")
+        self.assertIn("REFUSING", str(cm.exception))
+        snap.assert_not_called()
+
     def test_assert_guest_clean_clean_and_dirty_and_unscannable(self):
         vm = self._vm()
         with mock.patch.object(vm, "run", return_value=(0, "")):
