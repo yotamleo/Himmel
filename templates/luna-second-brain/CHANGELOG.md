@@ -8,6 +8,22 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.47] — 2026-09-19
+
+### Fixed
+- `upgrade.sh` no longer withholds `.gitleaks.toml` / `.gitignore` as a local
+  edit when the vault's copy differs from the template's only in comments,
+  ordering or spacing (a vault owner who hand-landed the same fix the template
+  later ships). Such a file is reported as converged and the template copy is
+  written, so the run no longer ends at NEEDS-RECONCILE (rc 3). The comparison
+  is fail-closed: `.gitleaks.toml` is parsed with python `tomllib` (3.11+) and
+  every key compared, order-insensitively — an extra or dropped allowlist
+  regex/path/stopword, a changed rule, a parse error or a missing `tomllib`
+  keeps it withheld; `.gitignore` is compared as a pattern multiset and stays
+  withheld when either side has a `!` negation (order is then semantic), a
+  leading-space pattern or an escaped trailing space. The converged write
+  replaces the vault's comments/ordering with the template copy. (HIMMEL-3206)
+
 ## [0.4.46] — 2026-09-19
 
 ### Fixed

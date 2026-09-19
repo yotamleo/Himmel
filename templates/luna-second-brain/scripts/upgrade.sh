@@ -598,6 +598,90 @@ content_equiv() {
     return 1
 }
 
+# converged_equiv <rel> <template-file> <vault-file>: exit 0 iff the vault's copy
+# is PROVABLY the same effective content as the template's, differing only in
+# comments / ordering / spacing (HIMMEL-3206 — a vault owner landed by hand the
+# same fix the template later ships). Only .gitignore and .gitleaks.toml are
+# eligible; everything else, and anything not provable, exits 1 (fail-closed —
+# the file stays a LOCAL-EDIT). CONVERGED means the caller writes the TEMPLATE
+# copy (the vault's comments/ordering are replaced; nothing semantic is lost).
+#   .gitignore    multiset of pattern lines (trailing spaces stripped; blank and
+#                 column-0 `#` lines dropped). Leading whitespace is part of a
+#                 gitignore pattern, so it is kept. Order is semantic once a
+#                 negation exists, so any `!` line, a line ending in a backslash
+#                 (escaped trailing space), a CR or a trailing tab on EITHER side
+#                 => not provable.
+#   .gitleaks.toml  tomllib parse of both, compared as a normalised structure:
+#                 EVERY key at every level, dict order and array order ignored
+#                 (arrays compare as multisets — a rule/regex/path/stopword added
+#                 or dropped on either side differs). It is the secret scanner's
+#                 own config, so a narrower OR wider allowlist is never
+#                 "converged". No tomllib (python < 3.11) or a parse error =>
+#                 withheld; the missing parser is named once on stderr.
+TOMLLIB_OK=""
+converged_equiv() {
+    local rel="$1" a="$2" b="$3" mode
+    case "$rel" in
+        .gitignore) mode=gitignore ;;
+        .gitleaks.toml)
+            if [ -z "$TOMLLIB_OK" ]; then
+                if "$PYTHON" -c 'import tomllib' </dev/null >/dev/null 2>&1; then
+                    TOMLLIB_OK=1
+                else
+                    TOMLLIB_OK=0
+                    echo "  note: python tomllib (3.11+) not available — a .gitleaks.toml that differs from the template only in comments/order reads as a local edit" >&2
+                fi
+            fi
+            [ "$TOMLLIB_OK" = 1 ] || return 1
+            mode=toml ;;
+        *) return 1 ;;
+    esac
+    [ -f "$a" ] && [ -f "$b" ] || return 1
+    "$PYTHON" - "$mode" "$a" "$b" 2>/dev/null <<'PY'
+import collections, json, sys
+
+mode, a, b = sys.argv[1:4]
+
+
+def gitignore_lines(path):
+    with open(path, "rb") as f:
+        text = f.read().decode("utf-8")
+    out = []
+    for raw in text.split("\n"):
+        line = raw.rstrip(" ")
+        if "\r" in line or line.endswith("\t") or line.endswith("\\"):
+            raise ValueError("whitespace/escape handling not provable")
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("!"):
+            raise ValueError("negation: order is semantic")
+        out.append(line)
+    return collections.Counter(out)
+
+
+def canon(v):
+    if isinstance(v, dict):
+        return {k: canon(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return sorted(json.dumps(canon(x), sort_keys=True, default=repr) for x in v)
+    return v
+
+
+def toml_struct(path):
+    import tomllib
+    with open(path, "rb") as f:
+        return json.dumps(canon(tomllib.load(f)), sort_keys=True, default=repr)
+
+
+try:
+    load = gitignore_lines if mode == "gitignore" else toml_struct
+    same = load(a) == load(b)
+except Exception:
+    same = False
+sys.exit(0 if same else 1)
+PY
+}
+
 # Snapshot accumulator (HIMMEL-2903): the execute pass records, for every
 # "overwrite"-class file, the sha of what is in the VAULT once the pass is
 # done — which is what the template just wrote, because the stamp is written
@@ -844,7 +928,7 @@ claude_threeway() {
 }
 
 process() {
-    local execute="$1" rel class src dst
+    local execute="$1" rel class src dst conv
     while IFS= read -r src; do
         rel="${src#"$TEMPLATE_DIR"/}"
         class="$(classify "$rel")"
@@ -853,11 +937,15 @@ process() {
             skip) ;;
             overwrite)
                 if ! content_equiv "$src" "$dst" "$rel"; then
-                    if has_local_edit "$rel" "$dst" "$((1 - execute))"; then
+                    # HIMMEL-3206: same effective rules, only comments/order differ
+                    # => not a local edit; the template copy is taken.
+                    conv=""
+                    converged_equiv "$rel" "$src" "$dst" && conv=" (converged: same rules, only comments/order differ — template copy taken)"
+                    if [ -z "$conv" ] && has_local_edit "$rel" "$dst" "$((1 - execute))"; then
                         PLAN+=("LOCAL-EDIT   $rel (vault has local edits since last upgrade — NOT overwritten)")
                         n_local_edit=$((n_local_edit+1))
                     else
-                        PLAN+=("WRITE        $rel"); n_write=$((n_write+1))
+                        PLAN+=("WRITE        $rel$conv"); n_write=$((n_write+1))
                         [ "$execute" = 1 ] && { write_file "$src" "$dst" || WRITE_FAILURES=$((WRITE_FAILURES+1)); }
                     fi
                 else

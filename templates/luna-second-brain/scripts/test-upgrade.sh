@@ -1561,5 +1561,180 @@ case "$t61_out" in
     *) fail "T61 REPORT plan row keeps its column alignment" "got: $t61_out" ;;
 esac
 
+# ---------------------------------------------------------------------------
+# T63 (HIMMEL-3206): a vault owner lands by hand the SAME fix the template later
+# ships (the HIMMEL-3003 case) — .gitleaks.toml / .gitignore then differ from
+# the template only in comments, ordering and spacing. That is CONVERGED, not a
+# local edit: the template copy is taken and the stamp advances. Anything not
+# PROVABLY the same stays withheld (rc 3): .gitleaks.toml is the secret
+# scanner's own config, and .gitignore order is semantic once a `!` exists.
+t63_gl1() { cat > "$1" <<'EOF'
+title = "vault gitleaks"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "shipped allowlist"
+regexes = ['''sk-test-[0-9]+''']
+EOF
+}
+t63_gl2() { cat > "$1" <<'EOF'
+# shipped by the template
+title = "vault gitleaks"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "rule-a"
+regex = '''AAA[0-9]+'''
+
+[[rules]]
+id = "rule-b"
+regex = '''BBB[0-9]+'''
+
+[allowlist]
+description = "shipped allowlist"
+regexes = ['''sk-test-[0-9]+''', '''ghp_EXAMPLE''']
+paths = ['''graphify-out/.*''']
+stopwords = ["example"]
+EOF
+}
+# The vault owner's hand-landed copy of gl2: rules + array entries reordered,
+# different comments and blank lines, otherwise the same structure.
+t63_gl2_hand() { cat > "$1" <<'EOF'
+title = "vault gitleaks"
+[extend]
+useDefault = true   # keep the shipped rules
+
+# hand-landed: the HIMMEL-3003 fix
+[[rules]]
+id = "rule-b"
+regex = '''BBB[0-9]+'''
+[[rules]]
+id = "rule-a"
+regex = '''AAA[0-9]+'''
+
+[allowlist]
+description = "shipped allowlist"
+stopwords = ["example"]
+paths = ['''graphify-out/.*''']
+regexes = ['''ghp_EXAMPLE''', '''sk-test-[0-9]+''']
+EOF
+}
+t63_gi1() { printf '.env\n.env.*\n' > "$1"; }
+t63_gi2() { printf '.env\n.env.*\n# graphify output\ngraphify-out/\n*.cache\n' > "$1"; }
+t63_gi2_hand() { printf '# my own block\n*.cache\n\ngraphify-out/   \n.env.*\n.env\n' > "$1"; }
+t63_seed() {   # $1 case tag; vault upgraded once with the v1 files, then template -> 1.0.1 with the v2 files
+    T="$TMP/$1-tmpl"; V="$TMP/$1-vault"
+    make_template "$T" "1.0.0"
+    t63_gl1 "$T/.gitleaks.toml"; t63_gi1 "$T/.gitignore"
+    mkdir -p "$V"; stamp_vault "$V" "0.1.0"
+    run_upgrade --yes >/dev/null 2>&1
+    printf '{"metadata":{"version":"1.0.1"}}\n' > "$T/marketplace/.claude-plugin/marketplace.json"
+    t63_gl2 "$T/.gitleaks.toml"; t63_gi2 "$T/.gitignore"
+}
+t63_expect_taken() {   # $1 label $2 file(s)...: vault holds the template's copy, run exits 0, stamp advances
+    local lbl="$1" f; shift
+    assert_eq "$lbl: run exits 0" "0" "$t63_rc"
+    for f in "$@"; do assert_eq "$lbl: $f is the template copy" "$(sha_of "$T/$f")" "$(sha_of "$V/$f")"; done
+    assert_eq "$lbl: stamp advances" "1.0.1" "$(t53_stamp_version)"
+    case "$t63_out" in
+        *"local edits withheld"*) fail "$lbl: nothing is withheld" "got: $t63_out" ;;
+        *) pass "$lbl: nothing is withheld" ;;
+    esac
+}
+t63_expect_withheld() {   # $1 label $2 file: vault copy untouched (sha $3), rc 3, stamp not advanced
+    assert_eq "$1: run exits 3 (NEEDS-RECONCILE)" "3" "$t63_rc"
+    case "$t63_out" in
+        *"local edits withheld (not overwritten): $2"*) pass "$1: $2 is withheld as a local edit" ;;
+        *) fail "$1: $2 is withheld as a local edit" "got: $t63_out" ;;
+    esac
+    assert_eq "$1: the vault copy is untouched" "$3" "$(sha_of "$V/$2")"
+    assert_eq "$1: stamp NOT advanced" "1.0.0" "$(t53_stamp_version)"
+}
+
+# T63a: the ticket's two observed cases together — comment/order-only drift in
+# BOTH files converges: template copies written, no rc 3, stamp advances.
+t63_seed t63a
+t63_gl2_hand "$V/.gitleaks.toml"; t63_gi2_hand "$V/.gitignore"
+t63_out=$(run_upgrade --yes 2>&1); t63_rc=$?
+t63_expect_taken "T63a converged .gitleaks.toml + .gitignore" .gitleaks.toml .gitignore
+# T63b: the dry-run plan names the row as converged, not as a LOCAL-EDIT.
+t63_seed t63b
+t63_gl2_hand "$V/.gitleaks.toml"; t63_gi2_hand "$V/.gitignore"
+t63_out=$(run_upgrade --dry-run 2>&1)
+case "$t63_out" in
+    *"WRITE        .gitleaks.toml (converged"*"WRITE        .gitignore (converged"*|*"WRITE        .gitignore (converged"*"WRITE        .gitleaks.toml (converged"*) pass "T63b plan rows say converged" ;;
+    *) fail "T63b plan rows say converged" "got: $t63_out" ;;
+esac
+case "$t63_out" in
+    *LOCAL-EDIT*) fail "T63b no LOCAL-EDIT row" "got: $t63_out" ;;
+    *) pass "T63b no LOCAL-EDIT row" ;;
+esac
+
+# --- controls: each stays withheld (over-forgiveness) before AND after ---
+t63_control_gl() {   # $1 tag, $2 sed expression applied to the hand-landed copy
+    t63_seed "$1"
+    t63_gl2_hand "$V/.gitleaks.toml"
+    sed -i.bak "$2" "$V/.gitleaks.toml" && rm -f "$V/.gitleaks.toml.bak"
+    t63_pre=$(sha_of "$V/.gitleaks.toml")
+    t63_out=$(run_upgrade --yes 2>&1); t63_rc=$?
+}
+# T63c: an EXTRA allowlist regex (wider allowlist) is not converged.
+t63_control_gl t63c "s#^regexes = .*#regexes = ['''ghp_EXAMPLE''', '''sk-test-[0-9]+''', '''extra''']#"
+t63_expect_withheld "T63c extra allowlist regex" .gitleaks.toml "$t63_pre"
+# T63d: one allowlist regex MISSING (narrower allowlist) is not converged.
+t63_control_gl t63d "s#^regexes = .*#regexes = ['''sk-test-[0-9]+''']#"
+t63_expect_withheld "T63d dropped allowlist regex" .gitleaks.toml "$t63_pre"
+# T63e: a changed RULE regex is not converged.
+t63_control_gl t63e "s#AAA\\[0-9\\]+#AAA[0-9]*#"
+t63_expect_withheld "T63e changed rule regex" .gitleaks.toml "$t63_pre"
+# T63f: same regexes but one MORE stopword — every key counts, not just regexes.
+t63_control_gl t63f 's#^stopwords = .*#stopwords = ["example", "more"]#'
+t63_expect_withheld "T63f extra stopword" .gitleaks.toml "$t63_pre"
+# T63g: same regexes but one MORE path entry.
+t63_control_gl t63g "s#^paths = .*#paths = ['''graphify-out/.*''', '''extra-dir/.*''']#"
+t63_expect_withheld "T63g extra path" .gitleaks.toml "$t63_pre"
+# T63h: a TOML parse error on the vault side is not converged (fail closed).
+t63_control_gl t63h 's#^title = .*#title = #'
+t63_expect_withheld "T63h TOML parse error" .gitleaks.toml "$t63_pre"
+# T63i: no tomllib (python < 3.11) => withheld, one stderr note. Simulated with
+# a python3 shim that fails only the `import tomllib` probe.
+t63_seed t63i
+t63_gl2_hand "$V/.gitleaks.toml"
+t63_pre=$(sha_of "$V/.gitleaks.toml")
+t63_shim="$TMP/t63i-shim"; mkdir -p "$t63_shim"
+t63_real_py="$(command -v python3 || command -v python)"
+printf '#!/bin/sh\ncase "$*" in *tomllib*) exit 1 ;; esac\nexec "%s" "$@"\n' "$t63_real_py" > "$t63_shim/python3"
+chmod +x "$t63_shim/python3"
+t63_out=$(PATH="$t63_shim:$PATH" run_upgrade --yes 2>&1); t63_rc=$?
+t63_expect_withheld "T63i no tomllib" .gitleaks.toml "$t63_pre"
+case "$t63_out" in
+    *"tomllib"*) pass "T63i the missing parser is named in a note" ;;
+    *) fail "T63i the missing parser is named in a note" "got: $t63_out" ;;
+esac
+# T63j: .gitignore with a NEGATION — reordered lines are semantic, withheld.
+t63_seed t63j
+printf '.env\n*.cache\n!keep.cache\ngraphify-out/\n' > "$T/.gitignore"
+printf '.env\ngraphify-out/\n!keep.cache\n*.cache\n' > "$V/.gitignore"
+t63_pre=$(sha_of "$V/.gitignore")
+t63_out=$(run_upgrade --yes 2>&1); t63_rc=$?
+t63_expect_withheld "T63j reordered .gitignore with a ! line" .gitignore "$t63_pre"
+# T63k: .gitignore with one EXTRA pattern is not converged.
+t63_seed t63k
+t63_gi2_hand "$V/.gitignore"; printf 'secret.txt\n' >> "$V/.gitignore"
+t63_pre=$(sha_of "$V/.gitignore")
+t63_out=$(run_upgrade --yes 2>&1); t63_rc=$?
+t63_expect_withheld "T63k extra .gitignore pattern" .gitignore "$t63_pre"
+# T63l: leading whitespace is part of a gitignore pattern (" graphify-out/" does
+# not match graphify-out/) — not converged.
+t63_seed t63l
+t63_gi2_hand "$V/.gitignore"; sed -i.bak 's#^graphify-out/ *$# graphify-out/#' "$V/.gitignore" && rm -f "$V/.gitignore.bak"
+t63_pre=$(sha_of "$V/.gitignore")
+t63_out=$(run_upgrade --yes 2>&1); t63_rc=$?
+t63_expect_withheld "T63l leading-space pattern" .gitignore "$t63_pre"
+
 echo
 if [ "$FAILED" -eq 0 ]; then echo "All upgrade tests passed."; else echo "$FAILED test(s) failed."; exit 1; fi
