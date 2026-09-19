@@ -51,6 +51,15 @@
 # `$(winpath ...)` command substitution with "command not found" instead of
 # silently expanding to "".
 #
+# _HERMETIC_UNAME: `uname -s`, resolved ONCE at source time on the REAL PATH.
+# winpath() runs inside `$(...)` on assignment lines that already carry a stub
+# `PATH=` (bash applies earlier assignments to later expansions), and scrub_path
+# drops whole directories -- on macOS uname lives in /usr/bin beside jq, so a
+# scrubbed stub PATH has no uname and every winpath died "uname: command not
+# found" (HIMMEL-3177). The host OS cannot change mid-suite; a fixture that
+# fakes `uname` for the code under test never reaches this variable.
+_HERMETIC_UNAME="$(uname -s)"
+
 # winpath <posix-or-windows-path> — echoes <path> unchanged on posix, or its
 # Windows form on git-bash/MSYS/Cygwin (node.exe/pwsh.exe misresolve MSYS
 # /tmp-style paths). Dies loud on an empty INPUT, a missing/failing `cygpath`
@@ -61,7 +70,7 @@ winpath() {
     exit 1
   fi
   local _out
-  case "$(uname -s)" in
+  case "$_HERMETIC_UNAME" in
     MINGW*|MSYS*|CYGWIN*)
       # codex-panel round 4: `cygpath -m "$1" 2>/dev/null || printf '%s' "$1"`
       # used to fall back to the RAW MSYS path (e.g. /c/Users/...) whenever
