@@ -1149,7 +1149,12 @@ def _scan_args(args: dict) -> None:
                   "tools.")
         # PHI fence: only path-shaped values (a sentence resolved against the
         # launch dir would judge the launch dir, not the value) and not URLs.
-        if ("/" in v or "\\" in v) and "://" not in v and not any(c.isspace() for c in v):
+        # A value with whitespace counts only when it is ANCHORED (/, ~, C:\):
+        # an anchored path resolves the same wherever it is judged, and a real
+        # path may hold spaces ("/vault/patient records/x.pdf").
+        anchored = bool(re.match(r"^(?:[/~]|[A-Za-z]:[\\/])", v))
+        if ("/" in v or "\\" in v) and "://" not in v and (
+                anchored or not any(c.isspace() for c in v)):
             reason = phi_egress_reason(v)
             if reason:
                 block(reason)

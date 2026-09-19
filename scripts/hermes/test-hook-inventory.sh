@@ -162,10 +162,12 @@ registry.register(
     name="zz_tool_added_by_a_hermes_upgrade",
     toolset="new",
 )
+registry.register(toolset="new", name='zz_single_quoted_late_name')
 EOF
 
 HERMES_HOME="$tmpdir/hermes-home" "$PY" - "$tmpdir/full.yaml" "$GUARD" \
     "$REGISTRY_SRC" "$tmpdir/fixture-good" "$tmpdir/fixture-new" <<'PY'
+import ast
 import glob
 import importlib.util
 import os
@@ -194,9 +196,27 @@ def registry_names(src):
     for path in glob.glob(os.path.join(src, "tools", "*.py")):
         with open(path, encoding="utf-8", errors="replace") as f:
             text = f.read()
+        # register(...) calls by AST: any quote style, `name` in any argument
+        # position. A file that does not parse falls back to a regex, so a syntax
+        # quirk can only widen what is checked, never silently drop a tool.
+        try:
+            for node in ast.walk(ast.parse(text)):
+                if (isinstance(node, ast.Call)
+                        and isinstance(node.func, ast.Attribute)
+                        and node.func.attr == "register"):
+                    for kw in node.keywords:
+                        if (kw.arg == "name" and isinstance(kw.value, ast.Constant)
+                                and isinstance(kw.value.value, str)):
+                            names.add(kw.value.value)
+        except SyntaxError:
+            names.update(re.findall(
+                r'register\(\s*name\s*=\s*["\']([a-z][a-z0-9_]*)["\']', text))
+        # The schema `"name": ...` form the table-driven modules use.
+        # ponytail: this also collects a "name" key that is NOT a tool's name, so
+        # the check can only over-report (a false red names the string and is
+        # cleared by classifying it), never miss a registered tool.
         names.update(re.findall(
-            r'registry\.register\(\s*name\s*=\s*"([a-z][a-z0-9_]*)"', text))
-        names.update(re.findall(r'"name":\s*"([a-z][a-z0-9_]*)"', text))
+            r'["\']name["\']:\s*["\']([a-z][a-z0-9_]*)["\']', text))
     return names
 
 
@@ -249,8 +269,9 @@ for dead in ("delete_file", "remove_file", "move_file", "rename_file"):
 
 # A tool a hermes upgrade adds must FAIL the check until the guard classifies it.
 new_bad = problems(registry_names(fixture_new), matcher or "", guard.classify_tool)
-check("control: an unclassified new registry tool is flagged",
-      [p.split(":")[0] for p in new_bad], ["zz_tool_added_by_a_hermes_upgrade"])
+check("control: unclassified new registry tools are flagged (any quote style / arg order)",
+      [p.split(":")[0] for p in new_bad],
+      ["zz_single_quoted_late_name", "zz_tool_added_by_a_hermes_upgrade"])
 good = problems(registry_names(fixture_good), matcher or "", guard.classify_tool)
 check("fixture registry (terminal, execute_code) fully covered", good, [])
 

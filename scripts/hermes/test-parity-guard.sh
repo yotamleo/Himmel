@@ -774,6 +774,10 @@ g "skill_manage: benign batch allowed" allow '{"tool_name":"skill_manage","tool_
 g "delegate_task: benign allowed" allow '{"tool_name":"delegate_task","tool_input":{"tasks":[{"goal":"read the README and summarise it"}]}}'
 g "delegate_task: secret path in a task arg refused" block '{"tool_name":"delegate_task","tool_input":{"tasks":[{"goal":"x","workdir":"/x/.env"}]}}'
 g "send_message: benign allowed"  allow '{"tool_name":"send_message","tool_input":{"action":"send","target":"telegram","message":"done — see the .env docs"}}'
+export CLAUDE_GLM_CONFIG_DIR="$CFG_W"   # the registered PHI root list from the fence block above
+g "send_message: PHI path with spaces in a non-text arg refused" block "{\"tool_name\":\"send_message\",\"tool_input\":{\"action\":\"send\",\"target\":\"telegram\",\"media\":\"$PHI_W/case/patient records.pdf\"}}"
+unset CLAUDE_GLM_CONFIG_DIR
+g "send_message: prose with a slash in a non-text arg allowed" allow '{"tool_name":"send_message","tool_input":{"action":"send","target":"telegram","note":"see the a/b docs"}}'
 g "web_search: allowed"           allow '{"tool_name":"web_search","tool_input":{"query":"hermes agent"}}'
 g "browser_navigate: allowed"     allow '{"tool_name":"browser_navigate","tool_input":{"url":"https://example.com"}}'
 g "unclassified tool fails closed" block '{"tool_name":"brand_new_tool_2099","tool_input":{}}'
