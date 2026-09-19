@@ -4226,6 +4226,7 @@ case "$d" in
             inithang) exit 28 ;;
             foreign) printf '%s' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"other-server"}}}'; exit 0 ;;
         esac
+        [ "$mode" = init_multiline ] && { printf '{\n  "result": {\n    "serverInfo": {\n      "version": "2.8.3",\n      "name": "qmd"\n    }\n  }\n}\n'; exit 0; }
         printf '%s' "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"serverInfo\":{\"name\":\"qmd\",\"version\":\"2.8.3\"},\"instructions\":\"QMD is your local search engine.$note\"}}"
         exit 0 ;;
     *'"type":"vec"'*)
@@ -4235,6 +4236,8 @@ case "$d" in
             iserror) printf '%s' '{"result":{"content":[{"type":"text","text":"embedding model failed to load"}],"isError":true},"jsonrpc":"2.0","id":2}'; exit 0 ;;
             rpcerr) printf '%s' '{"error":{"code":-32603,"message":"vector store unavailable"},"jsonrpc":"2.0","id":2}'; exit 0 ;;
             garbage) printf '%s' 'not json at all'; exit 0 ;;
+            trunc) printf '%s' '{"jsonrpc":"2.0","id":2,"result":'; exit 0 ;;
+            partial) printf '%s' '{"result":{"content":[{"type":"text","text":"x"'; exit 18 ;;
             iserror_spaced) printf '%s' '{"result": {"content": [{"type": "text", "text": "embedding model failed to load"}], "isError": true}, "jsonrpc": "2.0", "id": 2}'; exit 0 ;;
         esac
         printf '%s' '{"result":{"content":[{"type":"text","text":"No results found"}],"structuredContent":{"results":[]}},"jsonrpc":"2.0","id":2}'
@@ -4373,6 +4376,45 @@ else
         pass "C40 spaced isError:true -> WARN with the daemon's reason"
     else
         fail "C40 spaced isError:true -> $(printf '%s' "$out" | grep -A1 C40)"
+    fi
+fi
+rm -rf "$c40_t"
+
+echo "== C40 (CR panel r2): pretty-printed initialize (serverInfo/name on separate lines) is still qmd -> OK, not a foreign-listener WARN =="
+c40_setup
+if ! c40_precond init_multiline; then fail "C40 init_multiline: precondition — stub did not answer init"
+else
+    out="$(c40_run init_multiline)"
+    if grepq "$out" 'OK   C40-qmd-vec' && ! grepq "$out" 'WARN C40-qmd-vec'; then
+        pass "C40 multi-line initialize reply -> recognised as qmd"
+    else
+        fail "C40 multi-line initialize reply -> $(printf '%s' "$out" | grep -A1 C40)"
+    fi
+fi
+rm -rf "$c40_t"
+
+echo "== C40 (CR panel r2): truncated vec reply (rc 0, body cut before the result object) -> WARN, never OK =="
+c40_setup
+if ! c40_precond trunc; then fail "C40 trunc: precondition — stub did not answer init"
+else
+    out="$(c40_run trunc)"
+    if grepq "$out" 'WARN C40-qmd-vec' && ! grepq "$out" 'OK   C40-qmd-vec'; then
+        pass "C40 truncated reply -> WARN"
+    else
+        fail "C40 truncated reply -> $(printf '%s' "$out" | grep -A1 C40)"
+    fi
+fi
+rm -rf "$c40_t"
+
+echo "== C40 (CR panel r2): vec reply cut off mid-transfer (curl rc 18 with a partial body) -> WARN, never OK =="
+c40_setup
+if ! c40_precond partial; then fail "C40 partial: precondition — stub did not answer init"
+else
+    out="$(c40_run partial)"
+    if grepq "$out" 'WARN C40-qmd-vec' && ! grepq "$out" 'OK   C40-qmd-vec'; then
+        pass "C40 mid-transfer cut-off -> WARN"
+    else
+        fail "C40 mid-transfer cut-off -> $(printf '%s' "$out" | grep -A1 C40)"
     fi
 fi
 rm -rf "$c40_t"

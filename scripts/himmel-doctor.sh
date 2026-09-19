@@ -2822,8 +2822,11 @@ check_c40_qmd_vec() {
         emit INFO C40-qmd-vec "no qmd daemon answering on $url -- vector-health check skipped (qmd is optional)"
         return
     fi
-    local is_qmd
-    is_qmd="$(printf '%s' "$init" | grep -Eo '"serverInfo"[[:space:]]*:[[:space:]]*\{[^}]*"name"[[:space:]]*:[[:space:]]*"qmd"' | head -1)"
+    # Match structure on a whitespace-stripped copy, so a pretty-printed reply
+    # (fields on separate lines, spaces after colons) reads like qmd's compact one.
+    local is_qmd init_flat
+    init_flat="$(printf '%s' "$init" | tr -d '[:space:]')"
+    is_qmd="$(printf '%s' "$init_flat" | grep -Eo '"serverInfo":\{[^}]*"name":"qmd"' | head -1)"
     if [ -z "$is_qmd" ]; then
         emit WARN C40-qmd-vec "a process on $url answers but it is NOT qmd (initialize reply has no qmd serverInfo) -- qmd vector search cannot work" \
             "free port 8181 (see marketplace/plugins/qmd/scripts/ensure-qmd-daemon.sh), then start a fresh session"
@@ -2847,13 +2850,13 @@ check_c40_qmd_vec() {
             "$remedy"
         return
     fi
-    if [ "$rc" -ne 0 ] && [ -z "$body" ]; then
-        emit WARN C40-qmd-vec "qmd daemon dropped the vector probe (curl rc=$rc) -- vec search is not being served" "$remedy"
+    if [ "$rc" -ne 0 ]; then
+        emit WARN C40-qmd-vec "qmd daemon dropped or cut off the vector probe (curl rc=$rc) -- vec search is not being served" "$remedy"
         return
     fi
     local reason
-    # Match on a whitespace-stripped copy so a pretty-printed reply ("isError": true)
-    # reads the same as qmd's compact one; the reason is still read from the original.
+    # Same whitespace-stripped matching as the initialize reply; the reason is
+    # still read from the original body.
     local flat
     flat="$(printf '%s' "$body" | tr -d '[:space:]')"
     case "$flat" in
@@ -2867,7 +2870,7 @@ check_c40_qmd_vec() {
         emit WARN C40-qmd-vec "qmd vector query failed (JSON-RPC error): ${reason:-unreadable error} -- vec search is not being served" "$remedy"
         return
         ;;
-    *'"result"'*) ;;
+    *'"result":{'*) ;;
     *)
         emit WARN C40-qmd-vec "qmd vector probe returned an unrecognised reply -- vec search health could not be confirmed" "$remedy"
         return
