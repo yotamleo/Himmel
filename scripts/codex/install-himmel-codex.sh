@@ -18,11 +18,11 @@
 #   install-himmel-codex.sh --plugins=himmel-ops,handover
 #   install-himmel-codex.sh --dry-run       # report intended changes, mutate nothing
 #
-# Default plugin set (all @himmel): himmel-ops handover obsidian-triage telegram-himmel.
+# Default plugin set (all @himmel): himmel-ops handover obsidian-triage telegram-himmel
+# — defined in himmel-plugin-set.conf (also what startup-health requires to stay registered).
 # Env overrides: CODEX_BIN (codex CLI path).
 set -euo pipefail
 
-MARKET="himmel"   # the himmel marketplace name (per marketplace/.claude-plugin/marketplace.json)
 DRY_RUN=0
 ALL=0
 PLUGINS_OVERRIDE=""
@@ -41,6 +41,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 MARKET_PATH="$REPO_ROOT/marketplace"
 
+# The marketplace name + plugin sets live in ONE data file, shared with
+# startup-health (which asserts they are still registered — HIMMEL-1145).
+PLUGIN_SET_FILE="$SCRIPT_DIR/himmel-plugin-set.conf"
+plugin_set_field() { tr -d '\r' < "$PLUGIN_SET_FILE" | awk -F': *' -v k="$1" '$1==k{print $2; exit}'; }
+[ -r "$PLUGIN_SET_FILE" ] || { echo "ERR: plugin set file not found at $PLUGIN_SET_FILE" >&2; exit 1; }
+MARKET="$(plugin_set_field marketplace)"   # the himmel marketplace name (per marketplace/.claude-plugin/marketplace.json)
+[ -n "$MARKET" ] || { echo "ERR: no 'marketplace:' in $PLUGIN_SET_FILE" >&2; exit 1; }
+
 # --- resolve the codex CLI ---------------------------------------------------
 resolve_codex() {
   if [ -n "${CODEX_BIN:-}" ]; then
@@ -58,8 +66,9 @@ CODEX="$(resolve_codex)" || { echo "ERR: codex CLI not found (set CODEX_BIN, or 
 if [ -n "$PLUGINS_OVERRIDE" ]; then
   PLUGINS="$(printf '%s' "$PLUGINS_OVERRIDE" | tr ',' ' ')"
 else
-  PLUGINS="himmel-ops handover obsidian-triage telegram-himmel"
-  [ "$ALL" = "1" ] && PLUGINS="$PLUGINS luna-correlate pr-review-toolkit-himmel"
+  PLUGINS="$(plugin_set_field default)"
+  [ -n "$PLUGINS" ] || { echo "ERR: no 'default:' plugin set in $PLUGIN_SET_FILE" >&2; exit 1; }
+  [ "$ALL" = "1" ] && PLUGINS="$PLUGINS $(plugin_set_field all-extra)"
 fi
 
 echo "codex CLI   : $CODEX"

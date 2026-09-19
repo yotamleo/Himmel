@@ -49,6 +49,8 @@ function Emit([string]$signal, [string]$detail) {
   Write-Output "WARN ${signal}: ${detail}"
   $script:findings++
 }
+# Every finding here is about the codex CLI alone (the HIMMEL-1104 convention).
+$scopeNote = "Scope: the codex CLI only — claudex / cc-glm / hermes are separate surfaces and are NOT implicated by this finding."
 
 # Newest rollout session (lexical sort of ISO-timestamp-prefixed filenames).
 $newest = $null
@@ -122,7 +124,6 @@ if ((Test-Path -LiteralPath $logdb) -and $tid) {
       $rel = ($f -replace '^.*[\\/]plugins[\\/]cache[\\/]', '') -replace '\\', '/'
       if ($rel -match '^(himmel|qmd)/') { $himmelHit += $rel } else { $upstreamHit += $rel }
     }
-    $scopeNote = "Scope: the codex CLI only — claudex / cc-glm / hermes are separate surfaces and are NOT implicated by this finding."
     $upgradeNote = "Most likely fix: upgrade codex to >= rust-v0.143.0, which accepts a root-level 'description' (upstream PR #30229)."
     $scanNote = if ($scan.Scan -ne 'ok') { " NOTE: the cache scan was INCOMPLETE (a hooks.json could not be enumerated, read, or parsed), so candidates may be missing." } else { '' }
     if ($himmelHit.Count -gt 0) {
@@ -171,6 +172,102 @@ if ($newest) {
   }
   if ($script:maxBytes -gt $budget) {
     Emit 'where-are-we-oversized' "the _where-are-we context injected into the most recent codex session is $($script:maxBytes) bytes (budget $budget)"
+  }
+}
+
+# --- (d) himmel plugin registration (HIMMEL-1145) -----------------------------
+# (a)-(c) all read what codex LOGGED. A codex that lost the himmel marketplace +
+# plugin registration loads nothing, parses no manifest, and so logs nothing: every
+# check above reads healthy while every himmel guardrail is absent. Assert
+# PRESENCE instead — a deterministic read of $codexHome/config.toml, no log parsing.
+# Mirrors the .sh twin (see its comments for the full reasoning).
+#
+# The expected set is DATA, shared with install-himmel-codex
+# (himmel-plugin-set.conf) — never restated here. Only the `default` set is
+# required; `-All` extras are opt-in. Per-plugin, not all-or-nothing.
+# ponytail: only the table-header form codex itself writes ([marketplaces.X],
+# [plugins."name@X"] + `enabled = true`) is parsed; a hand-written dotted-key or
+# inline-table config reads as unregistered (fail closed). A registered
+# marketplace whose `source` path has gone stale is not checked either. Multiline
+# strings are skipped by delimiter parity on the comment-stripped line only: a
+# quote escaped next to a triple-quote can still desync it.
+$pluginSetFile = Join-Path $PSScriptRoot 'himmel-plugin-set.conf'
+function Get-PluginSetField([string]$key) {
+  $b = Read-SharedBytes $pluginSetFile
+  if (-not $b) { return '' }
+  foreach ($line in ([System.Text.Encoding]::UTF8.GetString($b) -split "`r?`n")) {
+    if ($line -match "^$([regex]::Escape($key)):\s*(.*?)\s*$") { return $Matches[1] }
+  }
+  return ''
+}
+# The line up to its TOML comment: a `#` inside a quoted string is not a comment
+# (walks quote state; a backslash escapes the next char inside a basic string).
+function Remove-TomlComment([string]$l) {
+  $q = ''; $o = New-Object System.Text.StringBuilder
+  for ($i = 0; $i -lt $l.Length; $i++) {
+    $c = [string]$l[$i]
+    if ($q -eq '' -and $c -eq '#') { break }
+    if ($q -eq '"' -and $c -eq '\' -and ($i + 1) -lt $l.Length) { [void]$o.Append($c).Append($l[$i + 1]); $i++; continue }
+    if ($c -eq '"' -or $c -eq "'") { if ($q -eq '') { $q = $c } elseif ($q -eq $c) { $q = '' } }
+    [void]$o.Append($c)
+  }
+  return $o.ToString()
+}
+# Registered marketplaces + enabled plugin ids from config.toml. Comparisons are
+# -c (case-SENSITIVE) like the .sh twin's awk/grep: TOML keys are case-sensitive.
+function Get-ConfigState([string]$cfgPath) {
+  $b = Read-SharedBytes $cfgPath
+  if (-not $b) { return $null }
+  $res = [pscustomobject]@{ Markets = @(); Enabled = @() }
+  $cur = ''
+  $text = [System.Text.Encoding]::UTF8.GetString($b).TrimStart([char]0xFEFF)
+  # $ml = the open TOML multiline-string delimiter (triple double or single quote), or
+  # '' outside one: lines inside it are text, never headers or `enabled`. Tracked by
+  # delimiter parity per line, like the .sh twin.
+  $ml = ''
+  foreach ($line in ($text -split "`r?`n")) {
+    if ($ml -ne '') {
+      if (([regex]::Matches($line, [regex]::Escape($ml))).Count % 2 -eq 1) { $ml = '' }
+      continue
+    }
+    if ($line -match '^\s*\[') {
+      $s = $line -replace '^\s*\[', ''
+      $s = $s -replace '\][ \t]*(#.*)?$', ''
+      # whitespace INSIDE a quoted key is part of the key: drop only the ends and the
+      # space around dots, then the quote characters (both kinds, like the .sh twin).
+      $s = ($s.Trim() -replace '\s*\.\s*', '.') -replace '["'']', ''
+      $cur = $s
+      if ($s -clike 'marketplaces.*') { $res.Markets += $s.Substring(13) }
+    } elseif (($cur -clike 'plugins.*') -and ($line -cmatch '^\s*enabled\s*=\s*true\s*(#.*)?$')) { $res.Enabled += $cur.Substring(8) }
+    $t = Remove-TomlComment $line
+    if (([regex]::Matches($t, '"""')).Count % 2 -eq 1) { $ml = '"""' }
+    elseif (([regex]::Matches($t, "'''")).Count % 2 -eq 1) { $ml = "'''" }
+  }
+  return $res
+}
+
+$wantMarket  = Get-PluginSetField 'marketplace'
+$wantPlugins = @((Get-PluginSetField 'default') -split '\s+' | Where-Object { $_ })
+if (-not $wantMarket -or $wantPlugins.Count -eq 0) {
+  # Cannot say what to look for -> cannot say it is present. Never a silent pass.
+  Emit 'plugin-presence-unchecked' "codex CLI ($codexHome): cannot read the expected himmel plugin set from $pluginSetFile (missing, unreadable, or empty) — plugin registration NOT verified, so himmel's guardrails may not be loaded. $scopeNote"
+} else {
+  $cfg = Join-Path $codexHome 'config.toml'
+  $state = Get-ConfigState $cfg
+  $cfgNote = ''
+  if ($null -eq $state) { $state = [pscustomobject]@{ Markets = @(); Enabled = @() }; $cfgNote = " $cfg is missing or unreadable." }
+  $marketMissing = -not ($state.Markets -ccontains $wantMarket)
+  $pluginsMissing = @($wantPlugins | Where-Object { -not ($state.Enabled -ccontains "$_@$wantMarket") } | ForEach-Object { "$_@$wantMarket" })
+  if ($marketMissing -or $pluginsMissing.Count -gt 0) {
+    $what = @()
+    if ($marketMissing) { $what += "marketplace '$wantMarket' is not registered" }
+    if ($pluginsMissing.Count -gt 0) { $what += "plugin(s) not registered+enabled: $($pluginsMissing -join ' ')" }
+    # himmel-ops carries the guardrail hooks, and no marketplace = nothing loads.
+    $alarm = ''
+    if ($marketMissing -or ($pluginsMissing -ccontains "himmel-ops@$wantMarket")) {
+      $alarm = " GUARDRAILS MAY BE OFF — himmel's hooks are not loaded; do not route work to the codex CLI lane until fixed."
+    }
+    Emit 'plugin-unregistered' "codex CLI ($codexHome) has lost part of its himmel plugin registration: $($what -join '; ').$cfgNote$alarm No log row is written for a plugin that never loads, so the checks above cannot see this. Fix: re-run scripts/codex/install-himmel-codex.ps1 (idempotent; only ever adds), then restart codex. $scopeNote"
   }
 }
 

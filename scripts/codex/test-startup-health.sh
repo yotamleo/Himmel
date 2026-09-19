@@ -42,7 +42,41 @@ make_home() {
   # A token_count line (noise) + the where-are-we injection line.
   printf '%s\n' '{"type":"event_msg","payload":{"type":"token_count"}}' > "$f"
   jq -cn --arg t "$waw" '{type:"response_item",payload:{type:"message",content:[{type:"text",text:$t}]}}' >> "$f"
+  # HIMMEL-1145: a fully-registered config.toml, so every case below that is NOT
+  # about registration stays healthy. Cases that are overwrite it via write_config.
+  write_config "$home" all
   echo "$home"
+}
+
+# The expected set comes from the SAME data file the detector reads — this suite
+# must not become the second hardcoded copy the ticket forbids.
+PLUGIN_SET="$SCRIPT_DIR/himmel-plugin-set.conf"
+set_field() { tr -d '\r' < "$1" | awk -F': *' -v k="$2" '$1==k{print $2; exit}'; }
+MARKET="$(set_field "$PLUGIN_SET" marketplace)"
+DEFAULT_PLUGINS="$(set_field "$PLUGIN_SET" default)"
+
+# write_config <home> <mode> [skip-plugin] — synthesize $CODEX_HOME/config.toml in
+# the shape codex itself writes (live-verified: `[marketplaces.himmel]` +
+# `[plugins."name@himmel"]` / `enabled = true`).
+#   all      marketplace + every default plugin enabled
+#   nomarket every default plugin enabled, marketplace table absent
+#   skip     everything except <skip-plugin> (absent entirely)
+#   disable  everything, but <skip-plugin> carries `enabled = false`
+#   empty    an unrelated config only (no himmel registration at all)
+write_config() {
+  local home="$1" mode="$2" skip="${3:-}" cfg="$1/config.toml" p
+  {
+    printf 'model = "gpt-5"\n\n[marketplaces.openai-bundled]\nsource_type = "local"\n\n'
+    printf '[plugins."browser@openai-bundled"]\nenabled = true\n\n'
+    if [ "$mode" != empty ]; then
+      [ "$mode" = nomarket ] || printf '[marketplaces.%s]\nsource_type = "local"\nsource = "/x/marketplace"\n\n' "$MARKET"
+      for p in $DEFAULT_PLUGINS; do
+        if [ "$mode" = skip ] && [ "$p" = "$skip" ]; then continue; fi
+        printf '[plugins."%s@%s"]\n' "$p" "$MARKET"
+        if [ "$mode" = disable ] && [ "$p" = "$skip" ]; then printf 'enabled = false\n\n'; else printf 'enabled = true\n\n'; fi
+      done
+    fi
+  } > "$cfg"
 }
 
 # A real-shape WARN row body (level+target+span+message on one printable line).
@@ -208,6 +242,134 @@ want_line '^WARN where-are-we-oversized:' "$out" "where-are-we-oversized line pr
 # same big block stays healthy under a generous budget (proves it is the size, not presence)
 rc=0; out="$(CODEX_HOME="$H" WHERE_ARE_WE_BUDGET_BYTES=100000 bash "$DETECT" 2>&1)" || rc=$?
 check_rc 0 "$rc" "big block under generous budget -> exit 0"
+
+# --- 8. HIMMEL-1145: himmel plugin registration is asserted PRESENT --------------
+# Every check above reads what codex LOGGED. A codex that lost its plugin
+# registration loads nothing, parses no manifest and logs nothing, so all of them
+# read healthy while every himmel guardrail is absent. The current session below
+# is otherwise perfectly clean (noise row only) — only config.toml differs.
+# reg_case <name> <mode> [skip-plugin] -> sets $out / $rc
+reg_case() {
+  local h; h="$(make_home "$1" "$NEW_TID" "$SMALL_WAW")"
+  db_noise_row "$NEW_TID" > "$h/logs_2.sqlite"
+  write_config "$h" "$2" "${3:-}"
+  rc=0; out="$(CODEX_HOME="$h" bash "$DETECT" 2>&1)" || rc=$?
+}
+reg_case regall all
+check_rc 0 "$rc" "fully registered set -> exit 0"
+
+# 8a. no config.toml at all -> the registration cannot be shown -> fail closed
+H="$(make_home regnocfg "$NEW_TID" "$SMALL_WAW")"
+db_noise_row "$NEW_TID" > "$H/logs_2.sqlite"; rm -f "$H/config.toml"
+rc=0; out="$(CODEX_HOME="$H" bash "$DETECT" 2>&1)" || rc=$?
+check_rc 1 "$rc" "no config.toml -> exit 1"
+want_line '^WARN plugin-unregistered:' "$out" "no config.toml -> plugin-unregistered finding"
+want_line 'config.toml' "$out" "no config.toml names the missing file"
+
+# 8b. total loss: no himmel marketplace, no himmel plugin
+reg_case regempty empty
+check_rc 1 "$rc" "total registration loss -> exit 1"
+want_line '^WARN plugin-unregistered:' "$out" "total loss -> plugin-unregistered finding"
+for p in $DEFAULT_PLUGINS; do want_line "$p@$MARKET" "$out" "total loss names $p@$MARKET"; done
+want_line "marketplace '$MARKET'" "$out" "total loss names the missing marketplace"
+want_line 'GUARDRAILS MAY BE OFF' "$out" "total loss escalates to GUARDRAILS MAY BE OFF"
+want_line 'codex CLI' "$out" "finding names the surface (codex CLI)"
+want_line 'claudex / cc-glm / hermes are separate surfaces' "$out" "finding scopes itself to the codex CLI"
+if grepq "$out" 'luna-correlate'; then fail "the opt-in --all extras must NOT be required (out: $out)"; else pass "opt-in extras are not required"; fi
+
+# 8c. marketplace gone, plugin tables still there -> nothing can load
+reg_case regnomarket nomarket
+check_rc 1 "$rc" "marketplace missing -> exit 1"
+want_line "marketplace '$MARKET'" "$out" "marketplace missing is named"
+want_line 'GUARDRAILS MAY BE OFF' "$out" "marketplace missing escalates"
+
+# 8d. PARTIAL: the guardrail-carrying plugin disabled, the rest fine
+reg_case regdisabled disable himmel-ops
+check_rc 1 "$rc" "himmel-ops disabled -> exit 1"
+want_line "himmel-ops@$MARKET" "$out" "disabled himmel-ops is named"
+want_line 'GUARDRAILS MAY BE OFF' "$out" "himmel-ops missing escalates (it carries the hooks)"
+if grepq "$out" "handover@$MARKET"; then fail "a plugin that IS enabled must not be named missing (out: $out)"; else pass "only the missing plugin is named (per-plugin, not all-or-nothing)"; fi
+
+# 8e. PARTIAL: a non-guardrail plugin absent -> named, but no guardrails alarm
+reg_case regpartial skip telegram-himmel
+check_rc 1 "$rc" "telegram-himmel absent -> exit 1"
+want_line "telegram-himmel@$MARKET" "$out" "absent telegram-himmel is named"
+if grepq "$out" 'GUARDRAILS MAY BE OFF'; then fail "a lost non-guardrail plugin must not claim guardrails are off (out: $out)"; else pass "non-guardrail loss does not cry GUARDRAILS MAY BE OFF"; fi
+
+# 8f. same plugin name under ANOTHER marketplace does not count
+H="$(make_home regforeign "$NEW_TID" "$SMALL_WAW")"
+db_noise_row "$NEW_TID" > "$H/logs_2.sqlite"
+sed "s/\"himmel-ops@$MARKET\"/\"himmel-ops@other\"/" "$H/config.toml" > "$H/config.toml.new" && mv "$H/config.toml.new" "$H/config.toml"
+rc=0; out="$(CODEX_HOME="$H" bash "$DETECT" 2>&1)" || rc=$?
+check_rc 1 "$rc" "himmel-ops only under another marketplace -> exit 1"
+want_line "himmel-ops@$MARKET" "$out" "foreign-marketplace himmel-ops does not satisfy the requirement"
+
+# 8f2. a registration that only appears INSIDE a multiline string is not a
+# registration (TOML `"""` and `'''` values carry arbitrary text, e.g. pasted
+# instructions) — table headers and `enabled = true` there must not count.
+mlno=0
+for q in '"""' "'''"; do
+  mlno=$((mlno + 1))
+  reg_case "regml$mlno" skip himmel-ops
+  printf 'note = %s\n[plugins."himmel-ops@%s"]\nenabled = true\n%s\n' "$q" "$MARKET" "$q" >> "$TMP/regml$mlno/config.toml"
+  rc=0; out="$(CODEX_HOME="$TMP/regml$mlno" bash "$DETECT" 2>&1)" || rc=$?
+  check_rc 1 "$rc" "himmel-ops registered only inside a $q string -> exit 1"
+  want_line "himmel-ops@$MARKET" "$out" "himmel-ops inside a $q string is still reported missing"
+done
+
+# 8f3. parser fidelity (class sweep with 8f2): a comment mentioning a triple quote
+# must not hide the registrations after it; whitespace INSIDE a quoted key is part
+# of the key; a literal-quoted ('...') header is the same registration.
+for cm in '# stray """ in a full-line comment' 'x = "a" # trailing """ comment'; do
+  H="$(make_home regcomment "$NEW_TID" "$SMALL_WAW")"
+  db_noise_row "$NEW_TID" > "$H/logs_2.sqlite"
+  { printf '%s\n' "$cm"; cat "$H/config.toml"; } > "$H/config.toml.new" && mv "$H/config.toml.new" "$H/config.toml"
+  rc=0; out="$(CODEX_HOME="$H" bash "$DETECT" 2>&1)" || rc=$?
+  check_rc 0 "$rc" "triple quotes inside a comment ($cm) do not hide later registrations -> exit 0"
+done
+
+H="$(make_home regspacekey "$NEW_TID" "$SMALL_WAW")"
+db_noise_row "$NEW_TID" > "$H/logs_2.sqlite"
+sed "s/\"himmel-ops@$MARKET\"/\"himmel- ops@$MARKET\"/" "$H/config.toml" > "$H/config.toml.new" && mv "$H/config.toml.new" "$H/config.toml"
+rc=0; out="$(CODEX_HOME="$H" bash "$DETECT" 2>&1)" || rc=$?
+check_rc 1 "$rc" "whitespace inside a quoted key is not stripped -> himmel-ops reported missing"
+want_line "himmel-ops@$MARKET" "$out" "space-in-key does not satisfy himmel-ops"
+
+H="$(make_home regliteral "$NEW_TID" "$SMALL_WAW")"
+db_noise_row "$NEW_TID" > "$H/logs_2.sqlite"
+sed "s/\"himmel-ops@$MARKET\"/'himmel-ops@$MARKET'/" "$H/config.toml" > "$H/config.toml.new" && mv "$H/config.toml.new" "$H/config.toml"
+rc=0; out="$(CODEX_HOME="$H" bash "$DETECT" 2>&1)" || rc=$?
+check_rc 0 "$rc" "literal-quoted header is the same registration -> exit 0"
+
+# 8g. no session at all (no sessions dir -> no thread_id): the registration check
+# reads config only, so it must not depend on a session existing.
+H="$TMP/regnosession"; mkdir -p "$H"
+db_noise_row "$NEW_TID" > "$H/logs_2.sqlite"; write_config "$H" empty
+rc=0; out="$(CODEX_HOME="$H" bash "$DETECT" 2>&1)" || rc=$?
+check_rc 1 "$rc" "no session, lost registration -> exit 1"
+want_line '^WARN plugin-unregistered:' "$out" "registration check does not depend on a session"
+
+# 8h. the expected set is DERIVED from the data file, not restated in the detector
+mkdir -p "$TMP/derive"
+cp "$DETECT" "$TMP/derive/startup-health.sh"
+printf 'marketplace: himmel\ndefault: zzz-only-plugin\nall-extra: x\n' > "$TMP/derive/himmel-plugin-set.conf"
+H="$(make_home derived "$NEW_TID" "$SMALL_WAW")"
+db_noise_row "$NEW_TID" > "$H/logs_2.sqlite"
+rc=0; out="$(CODEX_HOME="$H" bash "$TMP/derive/startup-health.sh" 2>&1)" || rc=$?
+check_rc 1 "$rc" "custom data file: its plugin absent -> exit 1"
+want_line 'zzz-only-plugin@himmel' "$out" "the finding names the plugin the DATA FILE requires"
+if grepq "$out" 'himmel-ops'; then fail "detector still requires a plugin the data file does not list (out: $out)"; else pass "no second hardcoded copy of the plugin set"; fi
+printf '[marketplaces.himmel]\nsource_type = "local"\n\n[plugins."zzz-only-plugin@himmel"]\nenabled = true\n' > "$H/config.toml"
+rc=0; out="$(CODEX_HOME="$H" bash "$TMP/derive/startup-health.sh" 2>&1)" || rc=$?
+check_rc 0 "$rc" "custom data file: its plugin present -> exit 0"
+
+# 8i. data file unreadable -> cannot judge -> say so, never a silent pass
+mkdir -p "$TMP/nodata"; cp "$DETECT" "$TMP/nodata/startup-health.sh"
+H="$(make_home nodatafile "$NEW_TID" "$SMALL_WAW")"
+db_noise_row "$NEW_TID" > "$H/logs_2.sqlite"
+rc=0; out="$(CODEX_HOME="$H" bash "$TMP/nodata/startup-health.sh" 2>&1)" || rc=$?
+check_rc 1 "$rc" "data file missing -> exit 1 (fail closed)"
+want_line '^WARN plugin-presence-unchecked:' "$out" "data file missing -> plugin-presence-unchecked, not a clean pass"
 
 # --- 6. missing CODEX_HOME -> exit 2 -------------------------------------------
 rc=0; out="$(CODEX_HOME="$TMP/nope/.codex" bash "$DETECT" 2>&1)" || rc=$?

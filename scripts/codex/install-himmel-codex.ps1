@@ -15,7 +15,8 @@
   the himmel marketplace only when absent and enables the himmel plugin set; never
   removes or disables anything; re-runs are no-ops.
 
-  Default plugin set (all @himmel): himmel-ops handover obsidian-triage telegram-himmel.
+  Default plugin set (all @himmel): himmel-ops handover obsidian-triage telegram-himmel
+  — defined in himmel-plugin-set.conf (also what startup-health requires to stay registered).
   -All also enables luna-correlate + pr-review-toolkit-himmel.
   -Plugins <csv> overrides the set. -DryRun reports intended changes, mutates nothing.
   Env overrides: CODEX_BIN (codex CLI path).
@@ -44,10 +45,21 @@ if ($Rest -and $Rest.Count -gt 0) {
   Write-Error "unknown argument(s): $($Rest -join ' ') (use -DryRun / -All / -Plugins <csv>)"
   exit 2
 }
-$Marketplace = "himmel"   # the himmel marketplace name (marketplace/.claude-plugin/marketplace.json)
-
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $MarketPath = Join-Path $RepoRoot "marketplace"
+
+# The marketplace name + plugin sets live in ONE data file, shared with
+# startup-health (which asserts they are still registered — HIMMEL-1145).
+$PluginSetFile = Join-Path $PSScriptRoot "himmel-plugin-set.conf"
+if (-not (Test-Path -LiteralPath $PluginSetFile)) { Write-Error "plugin set file not found at $PluginSetFile"; exit 1 }
+function Get-PluginSetField([string]$key) {
+  foreach ($line in (Get-Content -LiteralPath $PluginSetFile)) {
+    if ($line -match "^$([regex]::Escape($key)):\s*(.*?)\s*$") { return $Matches[1] }
+  }
+  return ""
+}
+$Marketplace = Get-PluginSetField "marketplace"   # the himmel marketplace name (marketplace/.claude-plugin/marketplace.json)
+if (-not $Marketplace) { Write-Error "no 'marketplace:' in $PluginSetFile"; exit 1 }
 
 # --- resolve the codex CLI ---
 $Codex = $null
@@ -65,8 +77,9 @@ if (-not (Test-Path $MarketPath)) { Write-Error "himmel marketplace dir not foun
 if ($Plugins) {
   $PluginSet = @($Plugins -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 } else {
-  $PluginSet = @("himmel-ops","handover","obsidian-triage","telegram-himmel")
-  if ($All) { $PluginSet += @("luna-correlate","pr-review-toolkit-himmel") }
+  $PluginSet = @((Get-PluginSetField "default") -split '\s+' | Where-Object { $_ })
+  if ($PluginSet.Count -eq 0) { Write-Error "no 'default:' plugin set in $PluginSetFile"; exit 1 }
+  if ($All) { $PluginSet += @((Get-PluginSetField "all-extra") -split '\s+' | Where-Object { $_ }) }
 }
 
 Write-Host "codex CLI   : $Codex"

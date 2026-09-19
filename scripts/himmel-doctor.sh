@@ -513,13 +513,13 @@ check_c12() {
     local out rc
     out="$(bash "$detector" 2>/dev/null)"; rc=$?
     case "$rc" in
-        0) emit OK C12-codex "codex startup healthy (no skill-truncation / hook-failure / oversized where-are-we in the last session)" ;;
+        0) emit OK C12-codex "codex startup healthy (himmel plugins registered; no skill-truncation / hook-failure / oversized where-are-we in the last session)" ;;
         2) emit OK C12-codex "no codex logs under CODEX_HOME (codex lane not in use here — skipped)" ;;
         1)
             local n; n="$(printf '%s\n' "$out" | grep -c '^WARN ')"
             emit WARN C12-codex \
                 "codex started DEGRADED -- $n startup finding(s) in the most recent session (a routed codex lane looks healthy but is not)" \
-                "restart codex after fixing (skills: scripts/codex/sanitize-plugin-hooks.sh; hooks: check .codex/hooks.json shape). Detail: scripts/codex/startup-health.sh"
+                "restart codex after fixing (skills: scripts/codex/sanitize-plugin-hooks.sh; hooks: check .codex/hooks.json shape; plugin-unregistered: scripts/codex/install-himmel-codex.sh). Detail: scripts/codex/startup-health.sh"
             printf '%s\n' "$out" | sed 's/^WARN /       · /'
             ;;
         *) emit WARN C12-codex "codex startup-health detector exited rc=$rc (unexpected)" "inspect scripts/codex/startup-health.sh" ;;
