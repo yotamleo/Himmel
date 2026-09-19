@@ -8,9 +8,10 @@ waiting happens inside ONE `gh pr checks --watch --fail-fast` process (plus a
 settle re-watch for late-registering check runs and a review-thread query);
 the session spends tokens only on launching the script and reading its exit
 code. Green means: every check passed, every PR review thread resolved, no
-review requesting changes, zero outside-diff-range CodeRabbit body findings,
-and — when CodeRabbit is armed (HIMMEL-1125) — the latest bot review is
-anchored to the head SHA (HIMMEL-1181, B2). An unresolved CR comment, a
+review requesting changes, no outside-diff-range CodeRabbit body finding left
+undispositioned (an exact-head ledger `deferred`/`disproved` disposition counts,
+HIMMEL-3124 — see the exit-3 text below), and — when CodeRabbit is armed
+(HIMMEL-1125) — the latest bot review is anchored to the head SHA (HIMMEL-1181, B2). An unresolved CR comment, a
 CHANGES_REQUESTED review, or a stale (never re-reviewed) head is a merge
 blocker, same as a red check. Non-blocking nitpick/additional body findings
 are surfaced in the success line, never silenced (HIMMEL-1147/1148).
