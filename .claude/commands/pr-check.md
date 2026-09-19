@@ -278,10 +278,10 @@ Steps:
    **Claude-only floor & availability escape hatch (HIMMEL-1224).** This backstop IS the availability escape hatch, and it is airtight for **Claude-only adopters** (no codex/glm/CodeRabbit configured): when every external lane is genuinely ABSENT/unconfigured, your own diff review is the floor, recorded in step 4.5 as `avail --model claude --status ok` so `clear-cr-marker.sh` gate 3 certifies a review that DID happen and the marker clears WITHOUT a bypass. Two invariants keep the hatch honest — it opens for ABSENCE, never for a failed review:
    - **Fail-OPEN on ABSENCE only.** A genuinely absent/unconfigured lane writes NO ledger row (step 3.0/3.1 print a skip note) and never blocks. The Claude floor covers the HEAD, so one `avail --model claude --status ok` is sufficient evidence.
    - **Fail-CLOSED on ATTEMPTED-but-failed (preserve HIMMEL-1126).** A lane that RAN but errored/timed-out/rate-limited is NOT absent and NOT clean: it records `avail … unavailable` (never `ok`), which the chokepoint counts as a MISSING signal. If such a failed lane is the SOLE evidence at this HEAD (no `… ok` row at all), the gate stays CLOSED (`clear-cr-marker.sh` exit 14) — it does not fall through to a reviewless clear. A blocker your own floor review finds is recorded as a `finding` and blocks the same way (exit 15).
-   - **Opt-in cross-model floor (`CR_REQUIRE_CROSS_MODEL=1`, HIMMEL-1237).** The Claude-alone floor above is the right *default* (adopter-portable). A setup that wants cross-model coverage *required* — the Claude self-review is deliberately NOT sufficient — sets `CR_REQUIRE_CROSS_MODEL=1` in `.env`. `clear-cr-marker.sh` gate 3b then additionally requires ≥1 **non-Claude** `avail … ok` at the SHA, so a claude-only floor (whether the external lanes were absent OR attempted-but-failed) keeps the marker CLOSED (exit 14) until a codex/glm lane actually reviews. Enforced structurally in the gate, not by this prose (HIMMEL-195). Default unset ⇒ unchanged Claude-alone floor.
+   - **Opt-in cross-model floor (`CR_REQUIRE_CROSS_MODEL=1`, HIMMEL-1237).** The Claude-alone floor above is the right *default* (adopter-portable). A setup that wants cross-model coverage *required* — the Claude self-review is deliberately NOT sufficient — sets `CR_REQUIRE_CROSS_MODEL=1` in `.env`. `clear-cr-marker.sh` gate 3b then additionally requires ≥1 **non-Claude** `avail … ok` at the SHA, so a claude-only floor (whether the external lanes were absent OR attempted-but-failed) keeps the marker CLOSED (exit 14) until a codex/glm lane actually reviews — unless `CR_FLOOR_FALLBACK=claude-only` and a provenance-valid claude-floor row is present (HIMMEL-3107). Enforced structurally in the gate, not by this prose (HIMMEL-195). Default unset ⇒ unchanged Claude-alone floor.
    - **Context-free claude floor under `CR_REQUIRE_CROSS_MODEL=1` (`CR_FLOOR_FALLBACK=claude-only`, HIMMEL-2128 → HIMMEL-3107).** When every non-Claude lane is EXHAUSTED (quota / rate-limit, a CodeRabbit `vacuous` or rate-limited pass, or an empty panel in `critics.json`), the floor is NOT your own review and NOT a `--model claude` row you record: record the CodeRabbit state from `check-ci.sh` first (`ledger-append.sh avail --model coderabbit --status unavailable --reason rate-limit` or `--reason vacuous`), then run `bash "<himmel_dir>/scripts/cr/claude-floor-review.sh" --branch '<branch>' --base <base>`. It runs the `pr-review-toolkit-himmel` code-reviewer definition as a fresh isolated headless session whose ONLY input is the diff + a repo snapshot, writes the provenance artifact the gate checks, and records the `claude-floor` avail row + its `[claude-floor-N]` findings — adjudicate those like panel candidates. Exit 3 = the floor is not eligible (a lane is auth/404/config-faulted, or not every lane is exhausted): do not force it. It is same-model coverage only — say so in the report: the shared-model blind spot remains. This is the one sanctioned headless call in `/pr-check` (bank-preflighted through `scripts/lib/claude-headless.sh`); the line below forbids the others.
 
-   This is the OPPOSITE of `SKIP_CR=1` (a documented no-review emergency bypass): under the floor a review genuinely happened (at least Claude-only), so the gate clears on that evidence with no bypass and no marker-suppression (unless `CR_REQUIRE_CROSS_MODEL` is set — gate 3b then refuses a Claude-only floor until a non-Claude critic reviews, per the opt-in bullet above). You already adjudicated the panel `[<slug>-N]` and codex `[codex-adv-N]` candidates in **step 3.2** — carry those verdict lines forward into the aggregate below, then aggregate into the structured output format at the end of this step. There are no CodeRabbit findings to adjudicate here: the App's findings arrive as review THREADS on the PR and are handled in step 7 (HIMMEL-2704). This composition removes the ~5-agent Claude fan-out per run; instant revert = `CR_CLAUDE_AGENTS=1` in `.env`.
+   This is the OPPOSITE of `SKIP_CR=1` (a documented no-review emergency bypass): under the floor a review genuinely happened (at least Claude-only), so the gate clears on that evidence with no bypass and no marker-suppression (unless `CR_REQUIRE_CROSS_MODEL` is set — gate 3b then refuses a Claude-only floor until a non-Claude critic reviews, per the opt-in bullet above — unless `CR_FLOOR_FALLBACK=claude-only` and a provenance-valid claude-floor row is present, HIMMEL-3107). You already adjudicated the panel `[<slug>-N]` and codex `[codex-adv-N]` candidates in **step 3.2** — carry those verdict lines forward into the aggregate below, then aggregate into the structured output format at the end of this step. There are no CodeRabbit findings to adjudicate here: the App's findings arrive as review THREADS on the PR and are handled in step 7 (HIMMEL-2704). This composition removes the ~5-agent Claude fan-out per run; instant revert = `CR_CLAUDE_AGENTS=1` in `.env`.
 
    Resolve the flag deterministically (same bridge as `CR_PROFILE`; a live-env value wins) — through `scripts/cr/pr-check-env.sh`, for the same reason step 2.5 does (HIMMEL-2226: the fence sourced `load-dotenv.sh` through a runtime-determined path, which the worktree-isolation guard refuses). An unset flag prints the runbook's own placeholder, `<unset: inline adjudication, no Claude reviewer agents>`:
    ```bash
@@ -366,6 +366,31 @@ Steps:
    ```
 
    The `(N found)` parenthetical on Critical / Important headings is the contract surface that step 4 parses. Keep it stable.
+
+   **Step 3.6 — Impacted suites: one verdict per suite (HIMMEL-2821; runs in BOTH lanes — the docs-audit lane of step 2.5 skips step 3 but not this).** PR #2261 changed `scripts/machine-setup/uninstall-plugins.sh` and merged with `scripts/test-uninstall.sh` — the suite one directory up that drives it end to end — never run: the implementor swept the owning directory, this command certified, and nothing computed *which suites reference what the PR changed*. This step is that computation. It is a gate, not advice: a missing verdict makes the row NOT clean.
+
+   `<base>` is step 3.0's `<db_sha>` (carried forward like `<head>`; the script takes the merge-base itself). In the docs-audit lane there is no step 3.0, so use the PR's base branch as `origin/<branch>` — `origin/main` for himmel. Both halves are 40-hex / a fixed literal, so the range stays unquoted (see the quoting rules above).
+
+   ```bash
+   bash "<himmel_dir>/scripts/cr/impacted-suites.sh" <db_sha>..<head>
+   ```
+
+   It prints every test suite (`**/test-*.sh`, `*.test.mjs`, `*.test.js`, `*.test.ts`) whose text references the basename of a file this PR changed — or, for a slash command or skill, `/<name>` — plus every suite the PR itself changed, one repo-relative path per line. **Print that list in your report row as `impacted suites (N): <paths>`.** An unresolvable range exits 2: treat that as BLOCKED for the whole step, never as an empty list. Then, for EACH listed suite, run it FOREGROUND and scoped — shell suites as `bash scripts/quiet-run.sh <label> -- bash <suite>` (or all of them in one go with `scripts/ci/run-shell-tests.sh --impacted <db_sha>..<head>`, wrapped the same way; it only reaches suites under its scan root and names the rest), `*.test.mjs` / `.js` / `.ts` suites through their own runner — and record exactly one verdict line each:
+
+   - `SUITE <path> = PASS` — it ran and passed. A suite that FAILED is a finding, not a verdict: fix it (or the code) and re-run; do not record it as anything else.
+   - `SUITE <path> = SKIP <reason>` — it was not run, and the reason names WHY it does not apply to this diff (a host that lacks the tool, a suite that cannot exercise the changed lines). A bare `SKIP` is not a verdict.
+   - `SUITE <path> = BLOCKED <denial>` — it could not be run, and the denial quotes the refusal (a hook/permission text, a lock wait that expired). Route the BLOCKED to your console/operator; it is not clean either, only *accounted for*.
+
+   Then submit them. The heredoc delimiter is quoted so the pasted lines stay inert; write `<path>` and the reason as printed, one line per suite:
+
+   ```bash
+   bash "<himmel_dir>/scripts/cr/impacted-suites.sh" --check <db_sha>..<head> <<'IMPACTED_EOF'
+   SUITE <path> = PASS
+   SUITE <path> = SKIP <reason>
+   IMPACTED_EOF
+   ```
+
+   Carry forward `impacted_rc` (the fence's exit code) and its `impacted-suites: N impacted, M without a verdict` line. `impacted_rc = 0` means every impacted suite has a verdict (or none is impacted); `impacted_rc = 1` names each unverdicted suite on stderr and the row is NOT clean; `impacted_rc = 2` is an unresolvable range — fix the range, do not proceed as if it were empty. Step 5 and step 6 read `impacted_rc`.
 
 4. Parse the aggregated output (from step 3) for the two count headings:
    - `Critical Issues (N found)`
@@ -718,7 +743,7 @@ Steps:
    ```
    `CR_DEFER_TO=HIMMEL-<n>` is the process-environment alternative; `--defer-to` wins when both are present. Exit 4 means an unresolved Critical/Important finding remains: leave the marker and follow step 6. If suggestion/nit rows exist but no valid ticket was supplied, the script stops with exit 6 and prints the exact bare `node '<primary-checkout>/scripts/jira/dist/index.js' create --type Task ...` command (no compound `cd`, environment prefix, or redundant `--project`; session setup already requires `JIRA_PROJECT_KEY`). **Print it; never execute or auto-file it.** Once the operator supplies the created ticket, run the printed `review-round.sh defer` recovery command against the same captured head; it dispositions the producer-written rows without another paid panel run. A retry after amendments persisted but verdict-scratch writing or marker clearance failed recognizes those cap-deferred rows, repairs both scratch files without discarding prior valid verdicts, and re-attempts the sanctioned clear. When the script prints `CR clean — marker cleared`, step 5 is already complete; do not invoke the clearance script a second time. Only when neither unadjudicated suggestion/nit rows nor a recoverable cap disposition exists does it exit 0 without clearing and leave the normal step-5 decision to apply.
 
-5. If step 4.9 did not already clear the marker, and both `N == 0` AND step 4.8 reported `threads_rc = 0`, clear the marker via
+5. If step 4.9 did not already clear the marker, and `N == 0` AND step 4.8 reported `threads_rc = 0` AND step 3.6 reported `impacted_rc = 0` (every suite that references a changed file has a verdict — HIMMEL-2821), clear the marker via
    the chokepoint — **never a bare `rm -f <marker>`** (HIMMEL-1064). Substitute
    step 0's printed `branch=` literal, SINGLE-quoted (HIMMEL-2226 — this is a
    pasted, shell-parsed operand, and a git ref may legitimately contain `;`,
@@ -763,9 +788,9 @@ Steps:
    later. The summary line is not evidence the ledger is clean until every
    row prints as `promoted` or `skip-terminal`.
 
-6. If either `N > 0`, or step 4.8 reported `threads_rc != 0`:
+6. If either `N > 0`, or step 4.8 reported `threads_rc != 0`, or step 3.6 reported `impacted_rc != 0`:
    - Leave the marker in place.
-   - Surface the Critical / Important findings (and any unresolved-thread count) to the user.
+   - Surface the Critical / Important findings (and any unresolved-thread count, and every impacted suite still missing a verdict) to the user.
    - Instruct: address the findings, commit fixes, resolve the addressed PR threads, then re-run `/pr-check`. (A new commit invalidates the SHA in the marker too, but the marker is still present until `/pr-check` clears it.)
 
 6.5. **Critic-score footer (append after the gate decision in steps 5/6).** Emit a per-model verdict tally for this run plus the cumulative agreed% from the ledger:

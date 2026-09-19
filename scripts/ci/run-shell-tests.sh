@@ -44,6 +44,17 @@
 #                                                        # never default-on, never posted
 #                                                        # without one of these set
 #   --shard <i>/<n>      run only slice <i> of <n> of the final run list
+#   --impacted <base>..<head>   run ONLY the suites that reference a file the
+#                                                        # range changed (HIMMEL-2821): the
+#                                                        # one-shot runner for the list
+#                                                        # scripts/cr/impacted-suites.sh
+#                                                        # prints. A range that does not
+#                                                        # resolve is refused (rc 2), never
+#                                                        # read as "nothing impacted". Suites
+#                                                        # outside <scan-root> are NOTEd, not
+#                                                        # run; *.test.mjs suites are not
+#                                                        # shell suites and are run by their
+#                                                        # own runner.
 #
 #   Flags may appear before or after the scan-root.
 #   scan-root defaults to "scripts" when omitted.
@@ -2450,6 +2461,9 @@ scan=""
 # export to silently narrow an unrelated run's plan.
 shard_spec=""
 shard_given=0
+# Impacted-suites selection (HIMMEL-2821). Flag-only, like --shard: an ambient
+# env var must not silently narrow an unrelated run.
+impacted_range=""
 # OPT-IN conditional filter (HIMMEL-1589). Env is the default; the flag overrides.
 changed_since="${SUITE_CHANGED_SINCE:-}"
 # OPT-IN after-report PR comment (HIMMEL-2383). Env is the default; the flag
@@ -2493,6 +2507,16 @@ while [ "$#" -gt 0 ]; do
           ;;
       esac
       report_pr="$2"
+      shift 2
+      ;;
+    --impacted)
+      case "${2:-}" in
+        ''|-*)
+          echo "run-shell-tests.sh: --impacted requires a <base>..<head> argument, got '${2:-<missing>}'" >&2
+          exit 2
+          ;;
+      esac
+      impacted_range="$2"
       shift 2
       ;;
     --shard)
@@ -2598,6 +2622,52 @@ scan="${scan:-scripts}"
 # the real error, so this must not exit here.
 scan_resolved=$(cd "$scan" 2>/dev/null && pwd -P) || scan_resolved=""
 [ -n "$scan_resolved" ] || scan_resolved="$scan"
+
+# Resolve --impacted (HIMMEL-2821) BEFORE the machine lock and discovery: the
+# answer needs only git, and an empty/refused one must not queue behind a
+# full-tree run for nothing. The set is impacted-suites.sh's `--shell` output —
+# repo-relative paths — held newline-bracketed so suite_filter_reason matches
+# a whole line with one `case` glob.
+#
+# A range that does not resolve is REFUSED (rc 2), never treated as an empty
+# set: "nothing impacted" would exit 0 having run nothing, the HIMMEL-1128
+# false green reached through a typo'd ref. A genuinely empty set (a docs-only
+# diff) is a clean exit 0 that says so.
+impacted_active=0
+impacted_nl=""
+impacted_repo_root=""
+if [ -n "$impacted_range" ]; then
+  if ! _impacted_out=$(bash "$REPO_ROOT/scripts/cr/impacted-suites.sh" "$impacted_range" --shell); then
+    echo "run-shell-tests.sh: --impacted '${impacted_range}' could not be resolved — refusing to guess a suite list" >&2
+    exit 2
+  fi
+  if [ -z "$_impacted_out" ]; then
+    echo "run-shell-tests.sh: --impacted ${impacted_range}: 0 impacted shell suites — nothing to run"
+    exit 0
+  fi
+  impacted_active=1
+  impacted_repo_root=$(pwd -P)
+  impacted_nl="
+${_impacted_out}
+"
+  # A suite outside the scan root is never discovered, so it would drop out of
+  # the run silently — say so, once, per suite.
+  # The scan root's repo-relative spelling, from the RESOLVED path: `.`, `./`
+  # and an absolute spelling of the repo root all mean "the whole repo" (empty).
+  _imp_scan_rel="${scan_resolved#"$impacted_repo_root"}"
+  _imp_scan_rel="${_imp_scan_rel#/}"
+  while IFS= read -r _imp_p; do
+    if [ -n "$_imp_scan_rel" ]; then
+      case "$_imp_p" in
+        "${_imp_scan_rel}"/*) ;;
+        *) printf 'NOTE: impacted suite %s is outside scan root %s — not run here; run it directly.\n' \
+             "$_imp_p" "$scan" >&2 ;;
+      esac
+    fi
+  done <<EOF
+$_impacted_out
+EOF
+fi
 
 # HIMMEL-2517 — the scan root can be DELETED while this run is live, and the
 # loop below does not notice: every `bash "$suite"` against a vanished path
@@ -3028,6 +3098,10 @@ if [ "$shard_total" -gt 0 ]; then
   plan_narrowed=1
   plan_narrowed_why="${plan_narrowed_why}--shard ${shard_spec}, "
 fi
+if [ "$impacted_active" -eq 1 ]; then
+  plan_narrowed=1
+  plan_narrowed_why="${plan_narrowed_why}--impacted ${impacted_range}, "
+fi
 plan_narrowed_why="${plan_narrowed_why%, }"
 
 
@@ -3049,6 +3123,22 @@ plan_narrowed_why="${plan_narrowed_why%, }"
 suite_filter_reason() {
   local _relpath="$1" _key="$2" _reason _ere
   _filter_reason=""
+
+  # --impacted (HIMMEL-2821): FIRST, so every suite the range does not touch
+  # reads as "not impacted" rather than as whichever standing skip it also
+  # carries; an impacted suite falls through to the ordinary chain unchanged
+  # (a SKIP_LIST'd impacted suite is still [SKIP]ped, with its own reason).
+  if [ "$impacted_active" -eq 1 ]; then
+    case "$impacted_nl" in
+      *"
+${_key#"$impacted_repo_root"/}
+"*) ;;
+      *)
+        _filter_reason="impacted: no reference to a file changed in ${impacted_range}"
+        return 0
+        ;;
+    esac
+  fi
 
   if _reason=$(is_skipped "$_key" "$_relpath"); then
     _filter_reason="$_reason"

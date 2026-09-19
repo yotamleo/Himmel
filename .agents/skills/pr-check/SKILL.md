@@ -20,8 +20,9 @@ happens to fail-close:
   an attempted-but-failed lane, distinct from `SKIP_CR`. **Opt-in raise
   (`CR_REQUIRE_CROSS_MODEL=1`, HIMMEL-1237):** a setup that wants cross-model
   coverage *required* makes the Claude-alone floor insufficient — `clear-cr-marker.sh`
-  gate 3b then also requires ≥1 **non-Claude** `avail … ok` at the SHA. Default
-  off keeps the adopter-portable Claude-alone floor.
+  gate 3b then also requires ≥1 **non-Claude** `avail … ok` at the SHA — unless
+  `CR_FLOOR_FALLBACK=claude-only` and a provenance-valid claude-floor row is
+  present (HIMMEL-3107). Default off keeps the adopter-portable Claude-alone floor.
 - `scripts/cr/pr-check-external.sh` (the Claude-FREE ship lane) → **"codex
   responded"** is the floor. A diff that changes the gate infrastructure itself
   needs a quorum of two responding cross-model reviewers, which that lane can no

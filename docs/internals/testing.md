@@ -20,6 +20,21 @@ it in an interactive session.
 plan without executing anything — use it to check what a change would trigger
 before committing to the long run.
 
+## Impacted suites — which suites a change actually reaches (HIMMEL-2821)
+
+`bash scripts/cr/impacted-suites.sh <base>..<head>` lists every suite
+(`test-*.sh`, `*.test.mjs`/`.js`/`.ts`) whose text references the basename of a
+file the range changed (or `/<name>` for a slash command or skill) — including a
+suite in another directory, which "sweep the owning directory" never reaches
+(PR #2261: `uninstall-plugins.sh` changed, `scripts/test-uninstall.sh` drove it
+and never ran). `run-shell-tests.sh --impacted <base>..<head>` runs just the
+shell ones; `--impacted` is refused (rc 2) on a range that does not resolve, and
+a suite outside the scan root is named, not silently dropped. `/pr-check` step
+3.6 requires one `PASS` / `SKIP <reason>` / `BLOCKED <denial>` verdict per listed
+suite (`impacted-suites.sh --check`); a missing one leaves the row NOT clean.
+References are direct and textual only — a suite that reaches the file only
+through another script it calls is not listed.
+
 ## Scan roots — what the corpus covers (HIMMEL-3193)
 
 The default scan root is `scripts` (a scoped run: `run-shell-tests.sh scripts/hooks`).
