@@ -110,6 +110,10 @@ run_case sh-assign-daemon FAIL scripts/start.sh \
     'cmd="qmd mcp --http --daemon"'
 run_case js-inline-comment-code FAIL src/probe.ts \
     '/* start worker */ daemon.start()'
+run_case js-two-inline-comments-code FAIL src/probe.ts \
+    '/* start */ /* worker */ daemon.start()'
+run_case html-comment-then-code FAIL src/page.html \
+    '<!-- a --> /* b */ <script>daemon.start()</script>'
 run_case sh-systemctl-enable FAIL scripts/start.sh \
     'systemctl --user enable --now qmd.service'
 run_case sh-launchctl FAIL scripts/start.sh \

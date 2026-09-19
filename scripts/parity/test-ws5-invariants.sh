@@ -350,7 +350,7 @@ else
     # weaker on code:
     #   - *.md is prose: the daemon class does not apply there;
     #   - a full-line comment (#, //, /*, *, <!--) is prose: skipped. A
-    #     leading `/* ... */` or `<!-- ... -->` closed on the line is
+    #     leading run of `/* ... */` / `<!-- ... -->` closed on the line is
     #     stripped first, so the code after it is still checked;
     #   - on every other line the bare word `daemon` still counts, quoted or
     #     not. Known limit: a message string naming a daemon (a doctor
@@ -382,8 +382,10 @@ else
             lt = tolower(t)
             hit = (lt ~ /while[ \t]+true|setinterval/)
             code = lt
-            if (code ~ /^\/\*.*\*\//) code = trim(substr(code, index(code, "*/") + 2))
-            else if (code ~ /^<!--.*-->/) code = trim(substr(code, index(code, "-->") + 3))
+            while (code ~ /^\/\*.*\*\/|^<!--.*-->/) {
+                if (substr(code, 1, 2) == "/*") code = trim(substr(code, index(code, "*/") + 2))
+                else code = trim(substr(code, index(code, "-->") + 3))
+            }
             if (!hit && kind == "code" && code != "" && code !~ /^(#|\/\/|\/\*|\*([ \t]|$)|<!--)/ &&
                 code ~ /daemon|(^|[^a-z0-9_-])nohup[ \t].*(^|[^&<>])&([ \t]*($|[);"\047])|[ \t]+[^&> \t])|systemctl[^|;&]*[ \t]enable([ \t]|$)|launchctl[ \t]+(load|bootstrap)([ \t]|$)/)
                 hit = 1
