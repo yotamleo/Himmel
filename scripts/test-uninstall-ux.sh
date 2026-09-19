@@ -190,8 +190,8 @@ assert_not_has "S1 user settings: no himmel hook left" "block-edit-on-main" "$(c
 assert_has "S1 user settings: foreign hook survives" "$HOOK_FOREIGN" "$(cat "$FX_HOME/.claude/settings.json")"
 assert_has "S1 user settings: foreign env key survives" '"KEEP"' "$(cat "$FX_HOME/.claude/settings.json")"
 assert_has "S1 prints the exact hook line it removed" "$HOOK_PRE" "$out"
-assert_has "S1 positive read-back of the user settings" "verified: no himmel hook wired in $FX_HOME/.claude/settings.json" "$out"
-assert_has "S1 positive read-back of the project settings" "verified: no himmel hook wired in $FX_PROJ/.claude/settings.json" "$out"
+assert_has "S1 positive read-back of the user settings" "verified: no himmel wiring left in $FX_HOME/.claude/settings.json" "$out"
+assert_has "S1 positive read-back of the project settings" "verified: no himmel wiring left in $FX_PROJ/.claude/settings.json" "$out"
 assert_has "S1 footprint marks state as kept" "KEEP" "$out"
 assert_has "S1 footprint names the purge flag" "--purge-state" "$out"
 
@@ -392,6 +392,98 @@ else fail "P1 uninstall.ps1 does not derive RemoveState from -PurgeState"; fi
 # shellcheck disable=SC2016 # the PowerShell $-variables are literal grep patterns
 if grep -Fq 'if (-not $RemoveState) {' "$SCRIPTS/uninstall.ps1"; then pass "P1 uninstall.ps1 step 2 is gated on RemoveState"
 else fail "P1 uninstall.ps1 step 2 is not gated on RemoveState"; fi
+
+# ── P2 — CodeRabbit round: a skipped purge is an INCOMPLETE step (ps1) ─────
+# Source-level (no pwsh here): the -PurgeState + bridge-maybe-running branch
+# must record an incomplete step, or the run ends "Uninstall complete." with
+# the bot token still on disk. The suite's own cache redirect is asserted too.
+# shellcheck disable=SC2016 # the PowerShell $-variables are literal grep patterns
+if grep -Fq "\$StepsIncomplete.Add('[2/7] telegram pairing + bridge state" "$SCRIPTS/uninstall.ps1"; then pass "P2 uninstall.ps1 records a skipped purge as an incomplete step"
+else fail "P2 uninstall.ps1 skips the purge without recording an incomplete step"; fi
+# shellcheck disable=SC2016 # the PowerShell $-variables are literal grep patterns
+if grep -Fq '$SavedCacheDir = $env:HIMMELCTL_CACHE_DIR' "$SCRIPTS/test-uninstall.ps1" \
+    && grep -Fq "\$env:HIMMELCTL_CACHE_DIR = Join-Path \$Tmp 'cache-default'" "$SCRIPTS/test-uninstall.ps1" \
+    && grep -Fq '$env:HIMMELCTL_CACHE_DIR = $SavedCacheDir' "$SCRIPTS/test-uninstall.ps1"; then
+    pass "P2 test-uninstall.ps1 redirects the cache dir under \$Tmp and restores the operator's value"
+else fail "P2 test-uninstall.ps1 lets the wet default runs inherit the operator's HIMMELCTL_CACHE_DIR"; fi
+
+# ── L2 — the loader checks each required row's structural contract ─────────
+# Kind/step each valid on their own is not enough: a cache row of path '-' and
+# step '-' targets the literal '-' and reports the real cache absent.
+fixture l2
+sed -e $'s/\t{HOME}\\/.claude\\/himmel\t8\t/\t-\t-\t/' "$MANIFEST" > "$FX/l2-nopath-manifest.tsv"
+sed -e $'s/^user-settings\tcode\tclaude-settings\tsettings/user-settings\tcode\tclaude-settings\tdir/' "$MANIFEST" > "$FX/l2-kind-manifest.tsv"
+sed -e $'s/^scheduled-jobs\tcode\tscheduler\tjobs\t-\t-\t3/scheduled-jobs\tcode\tscheduler\tjobs\t-\t-\t-/' "$MANIFEST" > "$FX/l2-step-manifest.tsv"
+sed -e $'s/\tHIMMELCTL_CACHE_DIR\t/\tBAD-NAME\t/' "$MANIFEST" > "$FX/l2-env-manifest.tsv"
+for l2_case in "nopath:row 'himmelctl-cache' violates its contract" \
+    "kind:row 'user-settings' violates its contract" \
+    "step:row 'scheduled-jobs' violates its contract" \
+    "env:row 'himmelctl-cache' has env 'BAD-NAME'"; do
+    l2_key="${l2_case%%:*}"; l2_want="${l2_case#*:}"
+    out=$(cd "$FX_PROJ" && HOME="$FX_HOME" PATH="$STUB:$HBIN" HIMMEL_UNINSTALL_MANIFEST="$FX/l2-$l2_key-manifest.tsv" \
+        bash "$CLI" --yes --skip-tasks --skip-plugins </dev/null 2>&1); rc=$?
+    assert_rc "L2 $l2_key: contract violation refused" 2 "$rc"
+    assert_has "L2 $l2_key: names the defect" "$l2_want" "$out"
+done
+assert_exists "L2 nothing removed on refusal" "$FX_HOME/.claude/himmel/install-profile.json"
+
+# ── R2 — read-back covers statusLine and env, not only hooks ───────────────
+# Every unwire helper is a no-op (rc=0). The settings hold a himmel statusLine
+# and the three himmel env keys but no hook: the read-back must still refuse.
+fixture r2
+R2REPO="$FX/repo"
+mkdir -p "$R2REPO/scripts/lib" "$R2REPO/scripts/machine-setup"
+cp "$SCRIPTS"/lib/unwire-*.sh "$R2REPO/scripts/lib/"
+for r2_h in statusline himmel-repo luna-vault handover-dir pretooluse-hooks; do
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$R2REPO/scripts/lib/unwire-$r2_h.sh"
+done
+R2_JSON='{"statusLine":{"type":"command","command":"bash /x/scripts/where-are-we/statusline.sh"},"env":{"HIMMEL_REPO":"/x","LUNA_VAULT_PATH":"/v","HANDOVER_DIR":"/h","CLAUDE_HUD_ALLOW_EXTRA_CMD":"1"}}'
+printf '%s\n' "$R2_JSON" > "$FX_HOME/.claude/settings.json"
+printf '{}\n' > "$FX_PROJ/.claude/settings.json"
+out=$(cd "$FX_PROJ" && HOME="$FX_HOME" PATH="$STUB:$HBIN" HIMMEL_UNINSTALL_REPO_ROOT="$R2REPO" \
+    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+assert_rc "R2 no-op unwire leaving statusLine + env fails the uninstall" 2 "$rc"
+assert_has "R2 names the leftover statusLine" "STILL WIRED: statusLine" "$out"
+assert_has "R2 names the leftover env.HIMMEL_REPO" "STILL WIRED: env.HIMMEL_REPO" "$out"
+assert_has "R2 names the leftover env.HANDOVER_DIR" "STILL WIRED: env.HANDOVER_DIR" "$out"
+assert_not_has "R2 the intentionally retained env key is not flagged" "CLAUDE_HUD_ALLOW_EXTRA_CMD" "$out"
+assert_not_has "R2 never claims completion" "Uninstall complete." "$out"
+# Control: the real helpers remove them, the retained key survives, rc=0.
+fixture r2b
+printf '%s\n' "$R2_JSON" > "$FX_HOME/.claude/settings.json"
+printf '{}\n' > "$FX_PROJ/.claude/settings.json"
+run_uninstall --yes --skip-tasks --skip-plugins --skip-hooks
+assert_rc "R2 control: real helpers clear statusLine + env" 0 "$rc"
+assert_has "R2 control: verified line printed" "verified: no himmel wiring left in $FX_HOME/.claude/settings.json" "$out"
+assert_has "R2 control: the retained env key survives" "CLAUDE_HUD_ALLOW_EXTRA_CMD" "$(cat "$FX_HOME/.claude/settings.json")"
+
+# ── K6 — the step-8 PLAN says what step 8 does, per the cache row's class ───
+fixture k6
+sed -e $'s/^himmelctl-cache\tcode/himmelctl-cache\tkeep/' "$MANIFEST" > "$FX/k6-keep.tsv"
+sed -e $'s/^himmelctl-cache\tcode/himmelctl-cache\tstate/' "$MANIFEST" > "$FX/k6-state.tsv"
+k6_run() { # <manifest> <args...>
+    k6_m="$1"; shift
+    out=$(cd "$FX_PROJ" && HOME="$FX_HOME" PATH="$STUB:$HBIN" HIMMEL_UNINSTALL_MANIFEST="$k6_m" \
+        bash "$CLI" --dry-run --skip-tasks --skip-plugins "$@" </dev/null 2>&1); rc=$?
+    k6_plan=$(printf '%s\n' "$out" | sed -n '/^This will:/,/^Footprint/p')
+}
+k6_run "$FX/k6-keep.tsv"
+assert_rc "K6 dry-run with the cache row re-classed keep" 0 "$rc"
+assert_not_has "K6 keep: the plan does not announce cache removal" "REMOVE the himmelctl cache" "$k6_plan"
+assert_has "K6 keep: the plan says keep by manifest class" "8. keep the himmelctl cache + state (manifest class keep)" "$k6_plan"
+k6_run "$FX/k6-state.tsv"
+assert_not_has "K6 state without --purge-state: the plan does not announce removal" "REMOVE the himmelctl cache" "$k6_plan"
+assert_has "K6 state without --purge-state: the plan says keep" "8. keep the himmelctl cache + state (manifest class state)" "$k6_plan"
+k6_run "$FX/k6-state.tsv" --purge-state
+assert_has "K6 state with --purge-state: the plan removes" "8. REMOVE the himmelctl cache + state" "$k6_plan"
+k6_run "$MANIFEST"
+assert_has "K6 control: the shipped code-class cache row is removed" "8. REMOVE the himmelctl cache + state" "$k6_plan"
+
+# ── DOC2 — a guarded --purge-state is documented as conditional ────────────
+if [ "$(grep -c 'still running' "$ROOT/docs/setup/updating.md")" -ge 2 ]; then pass "DOC2 updating.md qualifies --purge-state at both sites"
+else fail "DOC2 updating.md does not qualify --purge-state with the running-supervisor guard at both sites"; fi
+if grep -q 'still running' "$ROOT/docs/setup/install.md"; then pass "DOC2 install.md qualifies --purge-state"
+else fail "DOC2 install.md does not qualify --purge-state with the running-supervisor guard"; fi
 
 # ── DOC — the install doc and the README link the command ──────────────────
 if grep -Eq 'himmelctl.*uninstall.*--dry-run|uninstall --dry-run' "$ROOT/docs/setup/install.md"; then pass "DOC install.md documents uninstall --dry-run"

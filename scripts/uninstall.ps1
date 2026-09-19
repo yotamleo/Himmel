@@ -263,6 +263,9 @@ if (-not $RemoveState) {
     if ($KeepTelegramState) { Write-Host "  kept (-KeepTelegramState)." }
     else { Write-Host "  kept (operator state; pass -PurgeState to remove): $ChannelDir, $BridgeRoot" }
 } elseif ($BridgeMaybeRunning) {
+    # -PurgeState was asked for and did not happen: an incomplete step, not a
+    # success (the bot token + access state are still under $ChannelDir).
+    $StepsIncomplete.Add('[2/7] telegram pairing + bridge state: not purged, the bridge may still be running')
     Write-Host "  SKIPPED: step 1 could not stop the bridge -- a running supervisor would" -ForegroundColor Yellow
     Write-Host "  recreate (or hold locks on) state under $BridgeRoot. Kill the bridge" -ForegroundColor Yellow
     Write-Host "  manually, then re-run uninstall." -ForegroundColor Yellow

@@ -20,6 +20,11 @@
 # call unwire_statusline directly, or invoke via bash.
 set -euo pipefail
 
+# Matches the himmel statusLine in any of its shapes; a user's own custom
+# statusLine matches none and is left alone. Also read by uninstall.sh's
+# post-unwire read-back (HIMMEL-3058), so the two cannot drift.
+_UNWIRE_SL_PAT='marketplace/plugins/claude-hud/dist/index[.]js|scripts/(statusline/bin/statusline|where-are-we/statusline)[.]sh'
+
 unwire_statusline() {
   local settings="$1" himmel="${2:-}"
   command -v jq >/dev/null 2>&1 || { echo "unwire-statusline: jq required" >&2; return 1; }
@@ -31,9 +36,7 @@ unwire_statusline() {
     echo "unwire-statusline: $settings is not valid JSON -- refusing to modify" >&2
     return 1
   fi
-  # Matches the himmel statusLine in any of its shapes; a user's own custom
-  # statusLine matches none and is left alone.
-  local match_re='marketplace/plugins/claude-hud/dist/index[.]js|scripts/(statusline/bin/statusline|where-are-we/statusline)[.]sh'
+  local match_re="$_UNWIRE_SL_PAT"
   if [ -n "$himmel" ]; then
     local himmel_fwd="${himmel//\\//}"
     local cmd="bash \"${himmel_fwd}/scripts/where-are-we/statusline.sh\""

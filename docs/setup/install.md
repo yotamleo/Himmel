@@ -218,15 +218,17 @@ conservative one:
   (hooks and `env`), the `HIMMEL-Resume-*` scheduled jobs, the Telegram bridge
   process and the himmelctl cache.
 - **State** (kept unless you pass `--purge-state`): your Telegram pairing
-  (`~/.claude/channels/telegram`) and the bridge state directory.
+  (`~/.claude/channels/telegram`) and the bridge state directory. A purge is
+  refused (non-zero exit) rather than run while the bridge is still running,
+  so state can remain after a guarded purge; stop the bridge and re-run.
 - **Never touched**: the himmel clone, your `.env`, worktrees, handover state,
   and any `settings.json` key himmel did not add.
 
 Every change is printed with its exact path and line (`removing hook
 PreToolUse: …`). After the settings step it re-reads the file and prints
-`verified: no himmel hook wired in <file>` — a check of the file, not of a
-return code; if any himmel hook is still wired the run stops with a non-zero
-exit. The full path list lives in
+`verified: no himmel wiring left in <file>` — a check of the file (hooks,
+statusLine and the himmel `env` keys), not of a return code; if any of it is
+still wired the run stops with a non-zero exit. The full path list lives in
 [`scripts/install/uninstall-manifest.tsv`](../../scripts/install/uninstall-manifest.tsv),
 which the uninstaller reads — `--dry-run` prints it as a `KEEP`/`REMOVE`
 footprint. Flags and exit codes: [updating.md](updating.md#uninstalling--offboarding).

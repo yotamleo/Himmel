@@ -167,7 +167,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 MANIFEST_FILE="${HIMMEL_UNINSTALL_MANIFEST:-$SCRIPT_DIR/install/uninstall-manifest.tsv}"
 M_ID=(); M_CLASS=(); M_KIND=(); M_ENV=(); M_PATH=(); M_STEP=(); M_WHAT=()
 load_manifest() {
-  local _id _class _surface _kind _env _path _step _what _extra
+  local _id _class _surface _kind _env _path _step _what _extra _want _wk _wp _ws _haspath
   [ -r "$MANIFEST_FILE" ] || { echo "ERROR: uninstall manifest unreadable: $MANIFEST_FILE" >&2; return 1; }
   while IFS=$'\t' read -r _id _class _surface _kind _env _path _step _what _extra; do
     case "$_id" in ''|'#'*) continue ;; esac
@@ -187,6 +187,34 @@ load_manifest() {
       [1-8]|-) ;;
       *) echo "ERROR: row '$_id' has step '$_step' (want 1-8 or -) in $MANIFEST_FILE" >&2; return 1 ;;
     esac
+    case "$_env" in
+      -) ;;
+      *[!A-Za-z0-9_]*|[0-9]*|'') echo "ERROR: row '$_id' has env '$_env' (want a shell variable name or -) in $MANIFEST_FILE" >&2; return 1 ;;
+    esac
+    # Structural contract of the rows this script reads by id: kind, step and
+    # whether it carries a path. Each field valid on its own is not enough — a
+    # cache row of path '-' and step '-' would target the literal '-'.
+    case "$_id" in
+      bridge-process)   _want="process - 1" ;;
+      telegram-channel) _want="dir path 2" ;;
+      telegram-bridge)  _want="dir path 2" ;;
+      scheduled-jobs)   _want="jobs - 3" ;;
+      plugins)          _want="plugins - 4" ;;
+      git-hooks)        _want="githooks path 5" ;;
+      user-settings)    _want="settings path 6" ;;
+      project-settings) _want="settings path 6" ;;
+      marketplaces)     _want="marketplaces - 7" ;;
+      himmelctl-cache)  _want="dir path 8" ;;
+      *)                _want="" ;;
+    esac
+    if [ -n "$_want" ]; then
+      read -r _wk _wp _ws <<< "$_want"
+      _haspath=path; [ "$_path" = "-" ] && _haspath=-
+      if [ "$_kind" != "$_wk" ] || [ "$_haspath" != "$_wp" ] || [ "$_step" != "$_ws" ]; then
+        echo "ERROR: row '$_id' violates its contract (want kind=$_wk path=$_wp step=$_ws; got kind=$_kind path=$_haspath step=$_step) in $MANIFEST_FILE" >&2
+        return 1
+      fi
+    fi
     case " ${M_ID[*]:-} " in
       *" $_id "*) echo "ERROR: duplicate manifest id '$_id' in $MANIFEST_FILE" >&2; return 1 ;;
     esac
@@ -1029,9 +1057,13 @@ elif ! class_removes "$_ix_mkt"; then
 else
   echo "  7. remove Claude marketplaces with no remaining installed plugins"
 fi
-echo "  8. REMOVE the himmelctl cache + state: $HIMMEL_CACHE_DIR"
-echo "     (install-profile.json, state.json — a re-install would otherwise"
-echo "     start from the previous install's profile)"
+if class_removes "$_ix_cache"; then
+  echo "  8. REMOVE the himmelctl cache + state: $HIMMEL_CACHE_DIR"
+  echo "     (install-profile.json, state.json — a re-install would otherwise"
+  echo "     start from the previous install's profile)"
+else
+  echo "  8. keep the himmelctl cache + state (manifest class ${M_CLASS[$_ix_cache]}): $HIMMEL_CACHE_DIR"
+fi
 echo ""
 
 # Footprint — every manifest row with its disposition, so the operator sees the
@@ -1496,42 +1528,41 @@ echo ""
 echo "[6/8] Unwiring ~/.claude/settings.json (statusLine, HIMMEL_REPO, LUNA_VAULT_PATH, HANDOVER_DIR, hooks)..."
 # One sanctioned unwire sequence for both scopes; retain the user-scope order.
 #
-# HIMMEL-3058: the hook patterns the read-back matches are read from THIS
-# script's own sibling lib (never from $REPO_ROOT, which a fixture or a stub
-# can replace) in a subshell — that lib sets `set -euo pipefail` when sourced.
-# The read-back re-reads the settings file with jq; it never trusts a helper's
-# return code, because a helper that exits 0 without removing anything is the
-# failure this guards against.
+# HIMMEL-3058: the patterns the read-back matches are read from THIS script's
+# own sibling libs (never from $REPO_ROOT, which a fixture or a stub can
+# replace), each in a subshell — those libs set `set -euo pipefail` when
+# sourced. The read-back re-reads the settings file with jq; it never trusts a
+# helper's return code, because a helper that exits 0 without removing anything
+# is the failure this guards against.
 HIMMEL_HOOK_PAT="$( . "$SCRIPT_DIR/lib/unwire-pretooluse-hooks.sh" >/dev/null 2>&1; printf '%s|%s' "${_UNWIRE_PRE_PAT:-}" "${_UNWIRE_SS_PAT:-}" )"
 [ "$HIMMEL_HOOK_PAT" = "|" ] && HIMMEL_HOOK_PAT=""
+HIMMEL_SL_PAT="$( . "$SCRIPT_DIR/lib/unwire-statusline.sh" >/dev/null 2>&1; printf '%s' "${_UNWIRE_SL_PAT:-}" )"
 
-# himmel_wiring_lines <settings> — one "<what>" line per himmel hook command and
-# per himmel env key currently present in the file (empty when none / unreadable).
+# himmel_wiring_lines <settings> — one "<what>" line per himmel wiring currently
+# in the file: each himmel hook command, the himmel statusLine and each of the
+# three himmel env keys (env.CLAUDE_HUD_ALLOW_EXTRA_CMD is intentionally kept by
+# the statusline helper and is not listed). Not suppressing: a jq failure is a
+# non-zero rc, so the read-back cannot mistake "could not read" for "clean".
 himmel_wiring_lines() {
-  [ -n "$HIMMEL_HOOK_PAT" ] || return 0
-  jq -r --arg pat "$HIMMEL_HOOK_PAT" '
+  jq -r --arg pat "$HIMMEL_HOOK_PAT" --arg sl "$HIMMEL_SL_PAT" '
     ((.hooks // {}) | to_entries[] | .key as $ev | (.value // [])[]? | (.hooks // [])[]?
       | (.command // "") | select(test($pat)) | "hook \($ev): \(.)"),
+    ((.statusLine.command? // "") | select(test($sl)) | "statusLine: \(.)"),
     ((.env // {}) | to_entries[] | select(.key | IN("HIMMEL_REPO","LUNA_VAULT_PATH","HANDOVER_DIR"))
       | "env.\(.key)=\(.value)")
-  ' "$1" 2>/dev/null || true
-}
-
-# himmel_hook_lines <settings> — hooks only; rc=1 when the file cannot be read back.
-himmel_hook_lines() {
-  jq -r --arg pat "$HIMMEL_HOOK_PAT" '
-    (.hooks // {}) | to_entries[] | .key as $ev | (.value // [])[]? | (.hooks // [])[]?
-      | (.command // "") | select(test($pat)) | "\($ev): \(.)"
   ' "$1"
 }
 
 unwire_settings() {
   local settings="$1" helper _line _left
   # Print exactly what is about to change (dry-run: what WOULD change).
-  himmel_wiring_lines "$settings" | while IFS= read -r _line; do
-    if [ "$DRY_RUN" -eq 1 ]; then echo "DRY: would remove $_line  [$settings]"
-    else echo "  removing $_line  [$settings]"; fi
-  done
+  # Preview only: an unreadable file is reported by the helpers / the read-back.
+  if [ -n "$HIMMEL_HOOK_PAT" ] && [ -n "$HIMMEL_SL_PAT" ]; then
+    { himmel_wiring_lines "$settings" 2>/dev/null || true; } | while IFS= read -r _line; do
+      if [ "$DRY_RUN" -eq 1 ]; then echo "DRY: would remove $_line  [$settings]"
+      else echo "  removing $_line  [$settings]"; fi
+    done
+  fi
   if [ "$DRY_RUN" -eq 1 ]; then
     echo "DRY: unwire statusLine (himmel), env.HIMMEL_REPO, env.LUNA_VAULT_PATH, env.HANDOVER_DIR from $settings"
     if ! bash "$REPO_ROOT/scripts/lib/unwire-pretooluse-hooks.sh" "$settings" 1; then
@@ -1547,17 +1578,17 @@ unwire_settings() {
   done
   [ "$HALTED" -eq 0 ] || return 0
   # Positive read-back: the file itself, not the helpers' exit codes.
-  if [ -z "$HIMMEL_HOOK_PAT" ]; then
-    echo "  ERROR: cannot verify $settings — hook patterns unavailable" >&2
-    fail_step "[6/8] read-back: cannot verify $settings (hook patterns unavailable)"
-  elif ! _left="$(himmel_hook_lines "$settings")"; then
+  if [ -z "$HIMMEL_HOOK_PAT" ] || [ -z "$HIMMEL_SL_PAT" ]; then
+    echo "  ERROR: cannot verify $settings — hook/statusLine patterns unavailable" >&2
+    fail_step "[6/8] read-back: cannot verify $settings (hook/statusLine patterns unavailable)"
+  elif ! _left="$(himmel_wiring_lines "$settings")"; then
     echo "  ERROR: could not read $settings back" >&2
     fail_step "[6/8] read-back: could not read $settings back"
   elif [ -n "$_left" ]; then
     printf '%s\n' "$_left" | while IFS= read -r _line; do echo "  STILL WIRED: $_line  [$settings]" >&2; done
-    fail_step "[6/8] read-back: himmel hook still wired in $settings"
+    fail_step "[6/8] read-back: himmel hook/statusLine/env still wired in $settings"
   else
-    echo "  verified: no himmel hook wired in $settings"
+    echo "  verified: no himmel wiring left in $settings"
   fi
 }
 

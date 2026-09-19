@@ -70,6 +70,12 @@ New-Item -ItemType Directory -Force $Tmp | Out-Null
 $SavedChannelDir = $env:TELEGRAM_CHANNEL_DIR
 $SavedBridgeRoot = $env:BRIDGE_ROOT
 $SavedUserSettings = $env:HIMMEL_USER_SETTINGS
+$SavedCacheDir = $env:HIMMELCTL_CACHE_DIR
+
+# The wet runs that do not name a cache dir (e.g. Test 4b, the default run)
+# would otherwise inherit the operator's HIMMELCTL_CACHE_DIR, or fall back to
+# the real $HOME\.claude\himmel, and delete it. Redirect it for the whole suite.
+$env:HIMMELCTL_CACHE_DIR = Join-Path $Tmp 'cache-default'
 
 # Redirect the [6/7] settings-unwire target away from the operator's REAL
 # ~/.claude/settings.json for the whole suite (HIMMEL-460). SC6 cases re-seed it.
@@ -615,7 +621,7 @@ function Unregister-ScheduledTask {
     $env:TELEGRAM_CHANNEL_DIR = $SavedChannelDir
     $env:BRIDGE_ROOT = $SavedBridgeRoot
     $env:HIMMEL_USER_SETTINGS = $SavedUserSettings
-    $env:HIMMELCTL_CACHE_DIR = $null
+    $env:HIMMELCTL_CACHE_DIR = $SavedCacheDir
     Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
 }
 
