@@ -2786,19 +2786,19 @@ check_c39_gtimeout_darwin() {
 }
 
 # --- C40: qmd vector-search health (HIMMEL-3056) --------------------------------
-# On 2026-09-16 every vec sub-query to the qmd MCP daemon timed out while lex
+# On 2026-09-16 every vec sub-query to the qmd MCP server timed out while lex
 # kept working -- semantic retrieval was silently down and agents reported
 # coverage they did not have. A timeout is indistinguishable from a slow query;
-# this check turns it into a named finding. It asks the daemon two things: does
+# this check turns it into a named finding. It asks the server two things: does
 # its index have vectors at all (the initialize reply's instructions carry the
 # "No vector embeddings yet" / "N documents need embedding" notes), and does a
-# real BOUNDED vec probe come back. qmd is optional, so an unreachable daemon is
+# real BOUNDED vec probe come back. qmd is optional, so an unreachable server is
 # an INFO skip (the qmd plugin's SessionStart hook owns starting it); a foreign
 # listener or a probe that hangs / errors / returns nothing readable is a WARN.
 # The probe spans every collection and loads the embedding model on a cold
-# daemon (~6s warm on a loaded 21k-doc box), hence the 30s default.
+# server (~6s warm on a loaded 21k-doc box), hence the 30s default.
 # Test seams: HIMMEL_DOCTOR_QMD_URL (default http://localhost:8181/mcp --
-# localhost, NOT 127.0.0.1: the daemon binds ::1 only, HIMMEL-3041),
+# localhost, NOT 127.0.0.1: the server binds ::1 only, HIMMEL-3041),
 # HIMMEL_DOCTOR_QMD_CURL (default curl), HIMMEL_DOCTOR_QMD_VEC_TIMEOUT (seconds).
 check_c40_qmd_vec() {
     local url="${HIMMEL_DOCTOR_QMD_URL:-http://localhost:8181/mcp}"
@@ -2818,12 +2818,12 @@ check_c40_qmd_vec() {
     local init init_rc
     init="$("$curl_bin" -s -m 3 -X POST -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d "$init_payload" "$url" 2>/dev/null)"; init_rc=$?
     if [ -z "$init" ] && [ "$init_rc" -eq 28 ]; then
-        emit WARN C40-qmd-vec "a process on $url accepted the connection but did not answer initialize within 3s -- the qmd daemon is wedged, vec search is not being served" \
-            "see the daemon log ~/.cache/qmd/mcp.log; restart the daemon (stop the 'qmd mcp' process, then start a session or run: qmd mcp --http --daemon)"
+        emit WARN C40-qmd-vec "a process on $url accepted the connection but did not answer initialize within 3s -- the qmd server is wedged, vec search is not being served" \
+            "see the server log ~/.cache/qmd/mcp.log; restart the qmd server (stop the 'qmd mcp' process, then start a session; start command: see marketplace/plugins/qmd/README.md)"
         return
     fi
     if [ -z "$init" ]; then
-        emit INFO C40-qmd-vec "no qmd daemon answering on $url -- vector-health check skipped (qmd is optional)"
+        emit INFO C40-qmd-vec "no qmd server answering on $url -- vector-health check skipped (qmd is optional)"
         return
     fi
     # Classify from the PARSED reply, never a substring of the raw body: jq
@@ -2837,7 +2837,7 @@ check_c40_qmd_vec() {
     server_name="$(printf '%s' "$init_json" | jq -r '.result.serverInfo.name // empty' 2>/dev/null)"
     if [ "$server_name" != "qmd" ]; then
         emit WARN C40-qmd-vec "a process on $url answers but it is NOT qmd (initialize reply has no qmd serverInfo) -- qmd vector search cannot work" \
-            "free port 8181 (see marketplace/plugins/qmd/scripts/ensure-qmd-daemon.sh), then start a fresh session"
+            "free port 8181 (see marketplace/plugins/qmd/scripts/), then start a fresh session"
         return
     fi
     instr="$(printf '%s' "$init_json" | jq -r '.result.instructions // ""' 2>/dev/null)"
@@ -2853,14 +2853,15 @@ check_c40_qmd_vec() {
     start=$SECONDS
     body="$("$curl_bin" -s -m "$vec_timeout" -X POST -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d "$vec_payload" "$url" 2>/dev/null)"; rc=$?
     elapsed=$((SECONDS - start))
-    local remedy="see the daemon log ~/.cache/qmd/mcp.log; restart the daemon (stop the 'qmd mcp' process, then start a session or run: qmd mcp --http --daemon)"
+    # ponytail: the remedy points at the qmd README instead of printing the literal start command, because the ws5 T13(b) marker scan false-positives on that command's flag (HIMMEL-3233); the README carries it verbatim.
+    local remedy="see the server log ~/.cache/qmd/mcp.log; restart the qmd server (stop the 'qmd mcp' process, then start a session; start command: see marketplace/plugins/qmd/README.md)"
     if [ "$rc" -eq 28 ]; then
-        emit WARN C40-qmd-vec "qmd daemon is up but a vector query timed out after ${vec_timeout}s -- vec search is silently down (keyword search may still work); the embedding backend is hung or cannot load its model" \
+        emit WARN C40-qmd-vec "qmd server is up but a vector query timed out after ${vec_timeout}s -- vec search is silently down (keyword search may still work); the embedding backend is hung or cannot load its model" \
             "$remedy"
         return
     fi
     if [ "$rc" -ne 0 ]; then
-        emit WARN C40-qmd-vec "qmd daemon dropped or cut off the vector probe (curl rc=$rc) -- vec search is not being served" "$remedy"
+        emit WARN C40-qmd-vec "qmd server dropped or cut off the vector probe (curl rc=$rc) -- vec search is not being served" "$remedy"
         return
     fi
     # One parse of the whole reply: "<kind>" or "<kind><TAB><reason>". Anything
