@@ -1819,7 +1819,7 @@ cr_body_gate() {
 # count differs from what parsed) is exit 2 and prints NO recording recipe.
 # On success sets body_outside_note for _cbg_note.
 _cr_outside_gate() {
-    local rows rc id sev file line title n_ok=0 n_all=0 c=0 i=0 s=0 msg="" q
+    local rows rc id sev file line title n_ok=0 n_all=0 c=0 i=0 s=0 msg="" q qf
     rows=$(cr_body_outside_findings "$owner" "$repo" "$num" "$head0")
     rc=$?
     case "$rc" in
@@ -1841,11 +1841,13 @@ _cr_outside_gate() {
             n_ok=$((n_ok + 1))
             case "$sev" in crit) c=$((c + 1)) ;; imp) i=$((i + 1)) ;; *) s=$((s + 1)) ;; esac
         else
-            # single-quote the title for the paste-ready recipe (it may hold a quote)
+            # single-quote the reviewer-authored path and title for the paste-ready
+            # recipe (either may hold a quote; id/sev/line/head are inert by shape)
             q=${title//\'/\'\\\'\'}
+            qf=${file//\'/\'\\\'\'}
             msg="$msg
   - $id [$sev] $file:$line — $title
-      bash scripts/cr/ledger-append.sh finding --head $head0 --branch <pr-branch> --model coderabbit-outside --id $id --severity $sev --file '$file' --line '$line' --text '$q' --verdict deferred --deferred-to <TICKET> --reason \"<why>\"   (or: --verdict disproved --reason \"<why>\")"
+      bash scripts/cr/ledger-append.sh finding --head $head0 --branch <pr-branch> --model coderabbit-outside --id $id --severity $sev --file '$qf' --line '$line' --text '$q' --verdict deferred --deferred-to <TICKET> --reason \"<why>\"   (or: --verdict disproved --reason \"<why>\")"
         fi
     done <<<"$rows"
     if [ "$n_all" -ne "$_cbg_outside" ]; then

@@ -1462,6 +1462,16 @@ OD_REPO=$(mk_od_repo "$OD_ROW")
 BODY_FILE_OVERRIDE="$STUBDIR/od-count2.txt"; run_in_repo "$OD_REPO" body-file
 assert_rc 2 "R10b real body with header (2) but one finding cannot certify, even with a row"
 
+# R17 — the printed recipe is PASTE-READY: the path and the title come from a
+# bot review body (untrusted) and may hold an apostrophe, which would close the
+# single quotes around --file / --text and hand the rest to the shell. Both must
+# be emitted with the standard '\'' escape.
+sed -e "s/\.pre-commit-config\.yaml:459/x'y.yaml:459/g" -e "s/Keep \`context7-mcp\` in the description-cap gate\./Don't keep \`context7-mcp\`./" "$OD_BQ_BODY" > "$STUBDIR/od-apos.txt"
+BODY_FILE_OVERRIDE="$STUBDIR/od-apos.txt"; run_in_repo "$EMPTY_LEDGER_REPO" body-file
+assert_rc 3 "R17 apostrophe path+title finding is still undispositioned exit 3"
+assert_err_has "--file 'x'\\''y.yaml'" "R17 recipe escapes an apostrophe in the file path"
+assert_err_has "--text 'Don'\\''t keep" "R17 recipe escapes an apostrophe in the title"
+
 # Gate integrity: the ledger is read from the FIXED per-repo path. An ambient
 # CR_LEDGER pointing at a forged ledger must not clear the finding.
 FORGED_LEDGER="$STUBDIR/forged-ledger.jsonl"; printf '%s\n' "$OD_ROW" > "$FORGED_LEDGER"
@@ -2654,5 +2664,5 @@ unset CR_CLI_MARKER
 
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 179 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 179"; exit 1; fi
+if [ "$COUNT" -ne 180 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 180"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1
