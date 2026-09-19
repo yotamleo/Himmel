@@ -25,7 +25,8 @@ UTILS_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/test-run-node-utils.XXXXXX")"
 # then swept by this same file-scope trap alongside $UTILS_ROOT.
 PATH_WIDEN_TMP=""
 EMPTY_PATH_TMP=""
-trap 'rm -rf "$UTILS_ROOT" "${PATH_WIDEN_TMP:-}" "${EMPTY_PATH_TMP:-}"' EXIT
+PATH_ORDER_TMP=""
+trap 'rm -rf "$UTILS_ROOT" "${PATH_WIDEN_TMP:-}" "${EMPTY_PATH_TMP:-}" "${PATH_ORDER_TMP:-}"' EXIT
 UTILS_DIR="$UTILS_ROOT/utils"
 mkdir -p "$UTILS_DIR"
 for _t in bash dirname sort tail cat mkdir date; do
@@ -631,6 +632,96 @@ EOF
                     pass "widened PATH has no trailing colon under an EMPTY starting PATH (PATH='$out')"
                     ;;
             esac
+        fi
+        rm -rf "$tmp"
+    fi
+fi
+
+echo "== run-node: fallback dirs are APPENDED after the inherited PATH, never prepended (HIMMEL-3096) =="
+# HIMMEL-3096 (codex-1 on PR #778): run-node.sh used to PREPEND the well-known
+# fallback dirs (/usr/local/bin, /usr/bin, ...) ahead of the inherited PATH, so
+# any binary in those dirs shadowed a wrapper or virtualenv the caller had put
+# EARLIER in PATH. 3073's bug was PATH absent/truncated, not misordered — the
+# fallbacks only need to be REACHABLE, so they go last. The node dir stays
+# first (it is the exact node resolve_node() chose). The fixture uses a
+# symlink-only node dir so "node's own dir" cannot itself carry a stray gh.
+real_node="$(command -v node 2>/dev/null || true)"
+if [ -z "$real_node" ]; then
+    echo "  SKIP: no real node on PATH to resolve against"
+else
+    if ! tmp="$(mktemp -d "${TMPDIR:-/tmp}/test-run-node-path-order.XXXXXX")" || [ -z "$tmp" ]; then
+        fail "mktemp -d failed for the path-order fixture"
+        tmp=""
+    fi
+    if [ -n "$tmp" ]; then
+        PATH_ORDER_TMP="$tmp"
+        hook_dir="$tmp/hooks"; mkdir -p "$hook_dir"
+        node_link_dir="$tmp/nodebin"; mkdir -p "$node_link_dir"
+        ln -s "$real_node" "$node_link_dir/node"
+        wrapper_dir="$tmp/wrapper"; mkdir -p "$wrapper_dir"
+        fallback_dir="$tmp/fallback"; mkdir -p "$fallback_dir"
+        printf '#!/bin/sh\necho WRAPPER_GH\n' > "$wrapper_dir/gh"
+        printf '#!/bin/sh\necho FALLBACK_GH\n' > "$fallback_dir/gh"
+        chmod +x "$wrapper_dir/gh" "$fallback_dir/gh"
+        cat > "$hook_dir/gh-which-hook.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s|%s' "$(gh)" "$PATH"
+EOF
+        chmod +x "$hook_dir/gh-which-hook.sh"
+
+        cmd="command -p sh \"$REPO_ROOT/scripts/lib/run-node.sh\" \"$REPO_ROOT/scripts/hooks/run-hook-with-bash.js\" \"$hook_dir/gh-which-hook.sh\""
+        # Starting PATH = wrapper dir first, then UTILS_DIR; the fallback list
+        # names UTILS_DIR again (already present — must not be duplicated) and
+        # the fallback dir carrying the SHADOWING gh.
+        out="$(cd "$tmp" && env -u CLAUDE_PLUGIN_ROOT PATH="$wrapper_dir:$UTILS_DIR" RESOLVE_NODE_PROBE_DIRS="$node_link_dir" RUN_NODE_EXTRA_PATH_DIRS="$UTILS_DIR:$fallback_dir" NVM_SYMLINK="" RESOLVE_NODE_NVM4W_DIR="" RESOLVE_NODE_NVM_ROOT="$tmp/none" FNM_DIR="$tmp/none" HOME="${HOME:-}" CLAUDE_PROJECT_DIR="$REPO_ROOT" bash --posix -c "$cmd" 2>"$tmp/err.txt")"
+        rc=$?
+        err="$(cat "$tmp/err.txt")"
+        want="WRAPPER_GH|$node_link_dir:$wrapper_dir:$UTILS_DIR:$fallback_dir"
+        if [ "$rc" -eq 0 ] && [ "$out" = "$want" ]; then
+            pass "caller-selected wrapper stays ahead of the fallback dirs; fallbacks appended, no duplicate (out='$out')"
+        else
+            fail "path order -> rc=$rc out='$out' err='$err' (want '$want')"
+        fi
+        rm -rf "$tmp"
+    fi
+fi
+
+echo "== run-node: an EMPTY inherited PATH still reaches node AND gh via the appended fallbacks (HIMMEL-3096 guard for HIMMEL-3073) =="
+# Appending must not regress 3073: with nothing inherited the fallbacks are the
+# whole PATH, so node and gh have to stay reachable. This passes both before
+# and after the reorder — it is a regression guard, not a RED control.
+if [ -z "$real_node" ]; then
+    echo "  SKIP: no real node on PATH to resolve against"
+else
+    if ! tmp="$(mktemp -d "${TMPDIR:-/tmp}/test-run-node-empty-reach.XXXXXX")" || [ -z "$tmp" ]; then
+        fail "mktemp -d failed for the empty-reach fixture"
+        tmp=""
+    fi
+    if [ -n "$tmp" ]; then
+        PATH_ORDER_TMP="$tmp"
+        hook_dir="$tmp/hooks"; mkdir -p "$hook_dir"
+        node_link_dir="$tmp/nodebin"; mkdir -p "$node_link_dir"
+        ln -s "$real_node" "$node_link_dir/node"
+        fallback_dir="$tmp/fallback"; mkdir -p "$fallback_dir"
+        printf '#!/bin/sh\necho FALLBACK_GH\n' > "$fallback_dir/gh"
+        chmod +x "$fallback_dir/gh"
+        cat > "$hook_dir/reach-hook.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s|%s|%s' "$(gh)" "$(command -v node >/dev/null 2>&1 && echo NODE_FOUND || echo NODE_MISSING)" "$PATH"
+EOF
+        chmod +x "$hook_dir/reach-hook.sh"
+
+        cmd="if [ -n \"\$PATH\" ]; then echo PRECONDITION_BROKEN_NONEMPTY_PATH >&2; exit 3; fi; command -p sh \"$REPO_ROOT/scripts/lib/run-node.sh\" \"$REPO_ROOT/scripts/hooks/run-hook-with-bash.js\" \"$hook_dir/reach-hook.sh\""
+        out="$(cd "$tmp" && env -u CLAUDE_PLUGIN_ROOT RESOLVE_NODE_PROBE_DIRS="$node_link_dir" RUN_NODE_EXTRA_PATH_DIRS="$fallback_dir:$UTILS_DIR" NVM_SYMLINK="" RESOLVE_NODE_NVM4W_DIR="" RESOLVE_NODE_NVM_ROOT="$tmp/none" FNM_DIR="$tmp/none" HOME="${HOME:-}" CLAUDE_PROJECT_DIR="$REPO_ROOT" bash --posix -c "PATH=''; export PATH; $cmd" 2>"$tmp/err.txt")"
+        rc=$?
+        err="$(cat "$tmp/err.txt")"
+        want="FALLBACK_GH|NODE_FOUND|$node_link_dir:$fallback_dir:$UTILS_DIR"
+        if [ "$rc" -eq 3 ]; then
+            fail "precondition broken: PATH was non-empty inside the launching shell before the chokepoint ran"
+        elif [ "$rc" -eq 0 ] && [ "$out" = "$want" ]; then
+            pass "empty inherited PATH -> node + gh reachable, no stray colon (out='$out')"
+        else
+            fail "empty-PATH reach -> rc=$rc out='$out' err='$err' (want '$want')"
         fi
         rm -rf "$tmp"
     fi

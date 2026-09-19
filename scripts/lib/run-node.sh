@@ -148,9 +148,37 @@ if [ -n "$_node" ]; then
     # half wholesale for a hermetic test; unset, it defaults to the
     # standard homebrew/Linux/per-user locations `gh` and friends actually
     # live in.
+    #
+    # ORDER (HIMMEL-3096): the well-known dirs go AFTER the inherited PATH.
+    # 3073's bug was a PATH that was absent or truncated, not misordered —
+    # the fallbacks only have to be REACHABLE. Prepending them let every
+    # binary in /usr/bin et al. shadow a wrapper or virtualenv the caller
+    # had deliberately put earlier in PATH. The node dir stays first: it is
+    # the exact node resolve_node() chose, so it is safe — but it is skipped
+    # when already on PATH, since resolve_node() looks on PATH first (a
+    # prepend there would only reorder the caller's own entries) and so an
+    # entry is never duplicated. Each fallback is likewise added only if
+    # absent, and an empty inherited PATH yields no stray empty segment (an
+    # empty segment means "search the cwd", which for a hook is the repo
+    # under review).
     _node_dir="${_node%/*}"
     _extra_dirs="${RUN_NODE_EXTRA_PATH_DIRS-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${HOME:-}/.local/bin}"
-    PATH="$_node_dir${_extra_dirs:+:}$_extra_dirs${PATH:+:}${PATH:-}"
+    case ":${PATH:-}:" in
+        *":$_node_dir:"*) ;;
+        *) PATH="$_node_dir${PATH:+:}${PATH:-}" ;;
+    esac
+    _old_ifs="$IFS"
+    IFS=:
+    set -f
+    for _d in $_extra_dirs; do
+        [ -n "$_d" ] || continue
+        case ":$PATH:" in
+            *":$_d:"*) ;;
+            *) PATH="$PATH:$_d" ;;
+        esac
+    done
+    set +f
+    IFS="$_old_ifs"
     export PATH
     exec "$_node" "$@"
 fi
