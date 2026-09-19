@@ -280,6 +280,55 @@ OUT=$(cd "$REPO_ROOT/scripts/lanes" && bash "$QUIET_RUN" suite -- bash "$ABS_TRA
 RC=$?
 assert_rc "suite with tracked test-*.sh via absolute path from a subdirectory cwd" 0 "$RC"
 
+# 14. Git-Bash on Windows: `git rev-parse --show-toplevel` prints the MIXED
+# form (D:/a/repo) while a caller's absolute path is POSIX (/a/repo). The
+# guard must also strip the `cygpath -u` form of the toplevel, or a tracked
+# suite is refused rc=2 (HIMMEL-3181). Emulated with a git stub that prefixes
+# `D:` (and strips it back from `-C`) plus a cygpath stub; skipped on a real
+# Windows host, where the native cases above already exercise the real forms.
+case "$(uname -s 2>/dev/null)" in
+    MINGW*|MSYS*|CYGWIN*)
+        echo "SKIP 14: real Windows host - native cases above cover the mixed toplevel form"
+        ;;
+    *)
+        WINSTUB="$SCRATCH/winstub"
+        mkdir -p "$WINSTUB"
+        REAL_GIT=$(command -v git)
+        cat > "$WINSTUB/git" <<GITSTUB
+#!/bin/sh
+REAL="$REAL_GIT"
+if [ "\$1" = "-C" ]; then
+  d="\${2#D:}"; shift 2
+  exec "\$REAL" -C "\$d" "\$@"
+fi
+if [ "\$1" = "rev-parse" ] && [ "\$2" = "--show-toplevel" ]; then
+  out=\$("\$REAL" rev-parse --show-toplevel) || exit \$?
+  printf 'D:%s\n' "\$out"
+  exit 0
+fi
+exec "\$REAL" "\$@"
+GITSTUB
+        cat > "$WINSTUB/cygpath" <<'CYGSTUB'
+#!/bin/sh
+case "$1" in
+  -u) printf '%s\n' "${2#D:}" ;;
+  *)  printf '%s\n' "$2" ;;
+esac
+CYGSTUB
+        chmod +x "$WINSTUB/git" "$WINSTUB/cygpath"
+        # RED control: same emulation with cygpath absent (the pre-fix shape:
+        # nothing converts the D:/ toplevel back to POSIX) must still refuse.
+        mkdir -p "$SCRATCH/winstub-nocyg"
+        cp "$WINSTUB/git" "$SCRATCH/winstub-nocyg/git"
+        OUT=$(cd "$REPO_ROOT" && PATH="$SCRATCH/winstub-nocyg:$PATH" bash "$QUIET_RUN" suite -- bash "$ABS_TRACKED" 2>&1)
+        RC=$?
+        assert_rc "RED: D:/-form toplevel without a cygpath conversion is refused" 2 "$RC"
+        OUT=$(cd "$REPO_ROOT" && PATH="$WINSTUB:$PATH" bash "$QUIET_RUN" suite -- bash "$ABS_TRACKED" 2>&1)
+        RC=$?
+        assert_rc "suite with tracked test-*.sh via POSIX path under a D:/-form toplevel" 0 "$RC"
+        ;;
+esac
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "All quiet-run.sh guard cases passed."
