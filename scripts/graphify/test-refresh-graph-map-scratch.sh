@@ -15,7 +15,7 @@ FAILS=0
 pass() { echo "  ok: $1"; }
 fail() { echo "  FAIL: $1"; FAILS=$((FAILS+1)); }
 
-WS="$(mktemp -d)"; trap 'rm -rf "$WS"' EXIT
+WS="$(mktemp -d "${TMPDIR:-/tmp}/rgm-scratch.XXXXXX")" || { echo "cannot create test workspace" >&2; exit 1; }; trap 'rm -rf "$WS"' EXIT
 export TMPDIR="$WS/tmp"; mkdir -p "$TMPDIR"
 export GRAPHIFY_LEDGER="$WS/graphify-egress.jsonl"
 unset ANTHROPIC_BASE_URL
