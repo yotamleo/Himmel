@@ -1157,9 +1157,14 @@ def _file_url_path(v: str) -> str:
     return path[1:] if re.match(r"^/[A-Za-z]:[\\/]", path) else path
 
 
-def _scan_args(args: dict) -> None:
-    """The `scan` class: secret material and PHI paths in the non-text args."""
-    for v in _strings(args, TEXT_KEYS):
+def _scan_args(args: dict, text_args=()) -> None:
+    """The `scan` class: secret material and PHI paths in the non-text args, at
+    any nesting depth. `text_args` names top-level args whose STRING value is
+    command/path text judged elsewhere; a dict/list under one of those names is
+    structured data (e.g. browser_cdp `params`) and is still scanned."""
+    scan = {k: v for k, v in args.items()
+            if not (k in text_args and isinstance(v, str))}
+    for v in _strings(scan, TEXT_KEYS):
         v = _file_url_path(v)
         if SECRET_READ.search(norm(v)):
             block("Secret material (.env / keys / credential stores / channel "
@@ -1337,6 +1342,7 @@ def main() -> None:
         raw_cmd = str(args.get("command") or args.get("cmd") or "")
         cmd = norm(raw_cmd or json.dumps(args))
         _command_checks(raw_cmd, cmd, payload, args)
+        _scan_args(args, ("command", "cmd"))
         allow()
 
     if tool in CODE_TOOL_ARGS:
@@ -1349,7 +1355,7 @@ def main() -> None:
         # do not treat as a command start — so quotes read as separators here.
         # Over-blocks prose like print("git push later"); fail-closed.
         _command_checks(raw, re.sub(r"[\"'`]", ";", norm(raw)), payload, args)
-        _scan_args({k: v for k, v in args.items() if k not in CODE_TOOL_ARGS[tool]})
+        _scan_args(args, CODE_TOOL_ARGS[tool])
         allow()
 
     if tool == SKILL_TOOL:
@@ -1358,7 +1364,7 @@ def main() -> None:
 
     if tool in PATH_TOOL_ARGS:
         _check_write_targets(payload, args, PATH_TOOL_ARGS[tool])
-        _scan_args({k: v for k, v in args.items() if k not in PATH_TOOL_ARGS[tool]})
+        _scan_args(args, PATH_TOOL_ARGS[tool])
         allow()
 
     _scan_args(args)

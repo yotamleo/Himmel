@@ -783,6 +783,14 @@ g "browser_navigate: file://localhost/ into a PHI dir refused" block "{\"tool_na
 g "browser_navigate: percent-encoded file:// PHI path refused" block "{\"tool_name\":\"browser_navigate\",\"tool_input\":{\"url\":\"file://$PHI_W/case/patient%20records.pdf\"}}"
 g "browser_navigate: file:// URL outside PHI allowed" allow '{"tool_name":"browser_navigate","tool_input":{"url":"file:///usr/share/doc/readme.html"}}'
 g "browser_navigate: https URL naming a PHI-looking path allowed" allow "{\"tool_name\":\"browser_navigate\",\"tool_input\":{\"url\":\"https://example.com$PHI_W/case/pt.pdf\"}}"
+# Nested structured args are scanned for EVERY tool, code tools included: only the
+# top-level text of a code arg (code/script/data) stays with the command checks.
+g "browser_cdp: Page.navigate file:// %2eenv in params refused" block '{"tool_name":"browser_cdp","tool_input":{"method":"Page.navigate","params":{"url":"file:///x/%2eenv"}}}'
+g "browser_cdp: file:// PHI path in params refused" block "{\"tool_name\":\"browser_cdp\",\"tool_input\":{\"method\":\"Page.navigate\",\"params\":{\"url\":\"file://$PHI_W/case/pt.pdf\"}}}"
+g "browser_cdp: nested list of dicts with a PHI path refused" block "{\"tool_name\":\"browser_cdp\",\"tool_input\":{\"method\":\"DOM.setFileInputFiles\",\"params\":{\"files\":[\"$PHI_W/case/pt.pdf\"]}}}"
+g "browser_cdp: https URL in params allowed" allow '{"tool_name":"browser_cdp","tool_input":{"method":"Page.navigate","params":{"url":"https://example.com/a"}}}'
+g "terminal: PHI path in a non-command arg (workdir) refused" block "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"ls\",\"workdir\":\"$PHI_W/case\"}}"
+g "delegate_task: PHI path in a nested list-of-dicts refused" block "{\"tool_name\":\"delegate_task\",\"tool_input\":{\"tasks\":[{\"goal\":\"x\",\"workdir\":\"$PHI_W/case\"}]}}"
 unset CLAUDE_GLM_CONFIG_DIR
 g "send_message: prose with a slash in a non-text arg allowed" allow '{"tool_name":"send_message","tool_input":{"action":"send","target":"telegram","note":"see the a/b docs"}}'
 g "web_search: allowed"           allow '{"tool_name":"web_search","tool_input":{"query":"hermes agent"}}'
