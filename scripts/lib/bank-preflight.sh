@@ -703,7 +703,10 @@ if [ "$_fleet_admitted" -eq 1 ]; then
     done
     for _fleet_resv in "$SLOTS"/*/; do
       [ -d "$_fleet_resv" ] || continue
-      _fleet_resv_name="$(basename "$_fleet_resv")"
+      # Parameter expansion, not `$(basename)`: command substitution strips a
+      # trailing newline from the directory name.
+      _fleet_resv_name="${_fleet_resv%/}"
+      _fleet_resv_name="${_fleet_resv_name##*/}"
       [ "$_fleet_resv_name" = .admit ] && continue
       _fleet_resv_expires="$(cat "${_fleet_resv}expires" 2>/dev/null)"
       case "$_fleet_resv_expires" in
@@ -753,10 +756,20 @@ if [ "$_fleet_admitted" -eq 1 ]; then
       # line) has no single identity, so it matches nothing. `read -d ''` keeps
       # every trailing newline (`$(cat)` would strip them all, turning
       # "name<LF><LF>" back into "name"); only the writer's one LF is dropped.
-      [ -f "${_fleet_resv}name" ] && IFS= read -r -d '' _fleet_resv_sname <"${_fleet_resv}name" 2>/dev/null
+      # `read -d ''` also stops at a NUL, which the writer cannot emit: a status
+      # of 0 means one was found, so the prefix is not a complete identity.
+      if [ -f "${_fleet_resv}name" ] &&
+         IFS= read -r -d '' _fleet_resv_sname <"${_fleet_resv}name" 2>/dev/null; then
+        _fleet_resv_sname=""
+      fi
       _fleet_resv_sname="${_fleet_resv_sname%$'\n'}"
       case "$_fleet_resv_sname" in *[[:cntrl:]]*) _fleet_resv_sname="" ;; esac
-      if printf '%s\n' "$_fleet_live_names" | grep -qxF "$_fleet_resv_name" ||
+      # The directory name is an identity of the same kind: `$(basename)`
+      # strips a trailing newline, and a multi-line pattern given to `grep -F`
+      # is a LIST, so a control-character name matches nothing.
+      case "$_fleet_resv_name" in *[[:cntrl:]]*) _fleet_resv_name="" ;; esac
+      if { [ -n "$_fleet_resv_name" ] &&
+           printf '%s\n' "$_fleet_live_names" | grep -qxF "$_fleet_resv_name"; } ||
          { [ -n "$_fleet_resv_sname" ] &&
            printf '%s\n' "$_fleet_live_names" | grep -qxF "$_fleet_resv_sname"; }; then
         rm -rf "$_fleet_resv" 2>/dev/null

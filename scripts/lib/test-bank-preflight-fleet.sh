@@ -563,6 +563,30 @@ printf '%s\n' "$((NOW + 600))" > "$slots_p7b/4243/expires"; printf '%s\n' "$$" >
 printf '%s\n\n' "HIMMEL-9611-x" > "$slots_p7b/4243/name"
 p_live "$slots_p7b" "HIMMEL-9611-x" "HIMMEL-9611-x"
 p_expect "p7b name file with extra trailing blank lines" "$slots_p7b" kept
+# p7c: a NUL byte in a name file is not a complete identity — `read -d ''`
+# stops at it, so the prefix must not be accepted as the whole name.
+slots_p7c="$(mktemp -d "$W/slots-p7c.XXXXXX")" || { echo "FAIL - could not create slots-p7c scratch dir" >&2; exit 1; }
+mkdir -p "$slots_p7c/4244"
+printf '%s\n' "$((NOW + 600))" > "$slots_p7c/4244/expires"; printf '%s\n' "$$" > "$slots_p7c/4244/pid"
+printf 'HIMMEL-9612-x\0other\n' > "$slots_p7c/4244/name"
+p_live "$slots_p7c" "HIMMEL-9612-x" "HIMMEL-9612-x"
+p_expect "p7c name file with an embedded NUL" "$slots_p7c" kept
+# p8: the reservation DIRECTORY name is an identity too. `$(basename)` strips a
+# trailing newline ("HIMMEL-9613-x<LF>" -> "HIMMEL-9613-x") and a multi-line
+# name handed to `grep -F` is a LIST of patterns, so either shape would consume
+# a plain live name. A control-character directory name matches nothing.
+p8_i=0
+for p8 in $'HIMMEL-9613-x\n' $'HIMMEL-9614-y\nHIMMEL-9615-z'; do
+  p8_i=$((p8_i + 1))
+  slots_p8="$(mktemp -d "$W/slots-p8.XXXXXX")" || { echo "FAIL - could not create slots-p8 scratch dir" >&2; exit 1; }
+  mkdir -p "$slots_p8/$p8"
+  printf '%s\n' "$((NOW + 600))" > "$slots_p8/$p8/expires"; printf '%s\n' "$$" > "$slots_p8/$p8/pid"
+  case $p8_i in
+    1) p_live "$slots_p8" "HIMMEL-9613-x" "HIMMEL-9613-x" ;;
+    2) p_live "$slots_p8" "HIMMEL-9615-z" "HIMMEL-9615-z" ;;
+  esac
+  p_expect "p8.$p8_i reservation directory name with a newline" "$slots_p8" kept
+done
 
 echo "--- $PASS passed, $FAIL failed ---"
 [ "$FAIL" -eq 0 ]
