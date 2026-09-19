@@ -341,7 +341,7 @@ for SIG in TERM INT HUP; do
     set -m
     (
         TMPDIR="$SCRATCH" exec bash "$QUIET_RUN" reap-$SIG -- \
-            bash -c 'sleep 300 & echo $! > "$1"; wait' _ "$PIDFILE" >/dev/null 2>&1
+            bash -c 'sleep 300 & echo $! > "$1"; wait' _ "$PIDFILE" </dev/null >/dev/null 2>&1
     ) &
     QR_PID=$!
     set +m

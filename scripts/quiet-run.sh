@@ -112,6 +112,12 @@ LOG="${TMPDIR:-/tmp}/quiet-run-${LABEL}-$(date +%Y%m%d-%H%M%S)-$$.log"
 reap() {
     local sig="$1" code="$2" i=0
     trap '' TERM INT HUP
+    # A signal can land between the spawn and `CHILD=$!`; $! still names the job.
+    CHILD="${CHILD:-${!:-}}"
+    if [ -z "$CHILD" ]; then
+        echo "ERR quiet-run $LABEL killed by $sig before the command started (log: $LOG)" >&2
+        exit "$code"
+    fi
     kill -TERM -- "-$CHILD" 2>/dev/null || true
     while kill -0 -- "-$CHILD" 2>/dev/null && [ "$i" -lt 20 ]; do
         sleep 0.25
@@ -128,12 +134,13 @@ RC=0
 if [ -t 0 ]; then
     "$@" >>"$LOG" 2>&1 || RC=$?
 else
-    set -m
-    "$@" >>"$LOG" 2>&1 &
-    CHILD=$!
+    CHILD=""
     trap 'reap TERM 143' TERM
     trap 'reap INT 130' INT
     trap 'reap HUP 129' HUP
+    set -m
+    "$@" >>"$LOG" 2>&1 &
+    CHILD=$!
     wait "$CHILD" || RC=$?
 fi
 if [ "$RC" -eq 0 ]; then
