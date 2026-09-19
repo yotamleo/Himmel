@@ -184,6 +184,10 @@ load_live() {
     }
     /^[[:space:]]*Status:/ {
       if (stage != 3 || $0 !~ /^[[:space:]]*Status:[[:space:]]+[^[:space:]]+[[:space:]]+(enabled|disabled)[[:space:]]*$/) invalid()
+      # One stanza per (spec, scope): a repeat is contradictory, never a tie-break.
+      key = spec "\t" scope
+      if (key in seen) invalid()
+      seen[key] = 1
       if (scope == "user") print spec "\t" $3
       stage = 0
       next

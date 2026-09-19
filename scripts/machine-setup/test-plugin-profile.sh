@@ -104,6 +104,12 @@ if [ "${1:-}" = "plugin" ] && [ "${2:-}" = "list" ]; then
     project-only)
       printf 'Installed plugins:\n\n  ❯ od-a@mkt\n    Version: 1.0.0\n    Scope: project\n    Status: ✘ disabled\n'
       exit 0 ;;
+    dup-user-conflict)
+      printf 'Installed plugins:\n\n  ❯ od-a@mkt\n    Version: 1.0.0\n    Scope: user\n    Status: ✔ enabled\n\n  ❯ od-a@mkt\n    Version: 1.0.0\n    Scope: user\n    Status: ✘ disabled\n'
+      exit 0 ;;
+    dup-user-same)
+      printf 'Installed plugins:\n\n  ❯ od-a@mkt\n    Version: 1.0.0\n    Scope: user\n    Status: ✔ enabled\n\n  ❯ od-a@mkt\n    Version: 1.0.0\n    Scope: user\n    Status: ✔ enabled\n'
+      exit 0 ;;
   esac
   # STUB_LIVE: newline-separated "<spec> <enabled|disabled>"; a spec named
   # here is "installed at user scope"; a spec never named is "absent".
@@ -356,6 +362,19 @@ for bad_mode in garbage malformed-status malformed-stanza; do
 done
 STUB_LIST_MODE=normal
 
+# One stanza per (spec, scope): a repeated key is contradictory (bash would read
+# the sorted-first state, PowerShell the last) and must fail closed (HIMMEL-2801).
+for bad_mode in dup-user-conflict dup-user-same; do
+  : > "$CALL_LOG"
+  STUB_LIST_MODE="$bad_mode"
+  STUB_LIVE=""
+  out=$(run lean --template "$TMPL_LF"); rc=$?
+  assert_rc "$bad_mode duplicate (spec,scope) stanza fails closed" 1 "$rc"
+  assert_has "$bad_mode names the unrecognized list response" "unrecognized response" "$out"
+  assert_empty_file "$bad_mode causes no plugin writes" "$CALL_LOG"
+done
+STUB_LIST_MODE=normal
+
 # The real CLI's exact no-installed-plugins sentence is a supported empty map.
 : > "$CALL_LOG"
 STUB_LIST_MODE=valid-empty
@@ -384,6 +403,11 @@ out=$(run --help); rc=$?
 assert_rc "help exits 0" 0 "$rc"
 assert_has "bash help defines full as installed-only at user scope" "Enable every installed on-demand plugin at user scope" "$out"
 PS_PROFILE="$repo_root/scripts/machine-setup/plugin-profile.ps1"
+if grep -Fq "\$seen[\$key] = \$true" "$PS_PROFILE" && grep -Fq "\$seen.ContainsKey(\$key)" "$PS_PROFILE"; then
+  echo "PASS PowerShell twin rejects duplicate (spec,scope) stanzas (static parity)"
+else
+  echo "FAIL PowerShell twin lacks the duplicate (spec,scope) rejection"; FAILED=$((FAILED + 1))
+fi
 if grep -Fq 'Enable every installed on-demand plugin at user scope.' "$PS_PROFILE"; then
   echo "PASS PowerShell help defines full as installed-only at user scope"
 else

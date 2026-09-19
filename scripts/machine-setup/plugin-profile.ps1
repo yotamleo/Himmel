@@ -229,6 +229,7 @@ function Get-LiveMap([object[]]$Lines) {
   if ($clean.Count -eq 0 -or $clean[0] -cne 'Installed plugins:') { Stop-UnrecognizedList }
 
   $map = @{}
+  $seen = @{}
   $spec = $null
   $scope = $null
   $stage = 0
@@ -261,6 +262,10 @@ function Get-LiveMap([object[]]$Lines) {
     if ($line -match '^\s*Status:\s+\S+\s+(enabled|disabled)\s*$') {
       if ($stage -ne 3) { Stop-UnrecognizedList }
       $state = $Matches[1]
+      # One stanza per (spec, scope): a repeat is contradictory, never last-wins.
+      $key = "$spec|$scope"
+      if ($seen.ContainsKey($key)) { Stop-UnrecognizedList }
+      $seen[$key] = $true
       if ($scope -ceq 'user') { $map[$spec] = $state }
       $stage = 0
       continue
