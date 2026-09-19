@@ -270,11 +270,9 @@ DRY_RUN=0
 AST_ONLY=0
 
 # --with-publish (HIMMEL-3075, himmel#771): the publish leg
-# (HIMMEL-GraphPublish-Himmel) refuses every fire (exit 2) until HIMMEL-2654
-# lands — status's own line already says so (see status_one). Without this
-# flag `arm` no longer registers it at all, so the only way to get a task
-# that fires and refuses on schedule is asking for it explicitly. disarm
-# still removes it unconditionally if present (idempotent either way).
+# (HIMMEL-GraphPublish-Himmel) opens graph-refresh PRs on a schedule, so
+# `arm` registers it only when asked for explicitly. disarm still removes
+# it unconditionally if present (idempotent either way).
 WITH_PUBLISH=0
 
 # Fixed per-corpus map identity (titles/slugs/tags). ASCII-only: the .bat is
@@ -361,8 +359,7 @@ Flags (arm only, except --dry-run):
                          semantic pair back in (--force to replace).
   --with-publish         Also register the publish leg
                          (HIMMEL-GraphPublish-Himmel, every 6h). Opt-in
-                         (HIMMEL-3075): this leg refuses every fire until
-                         HIMMEL-2654 lands, so arm leaves it out by default.
+                         (HIMMEL-3075): arm leaves it out by default.
 
 The structural (AST) pair's offsets (luna daily 00:05, himmel hourly at :15)
 are NOT flags — see WEEKLY_DAY_*/AST_*_TIME in this script.
@@ -560,7 +557,7 @@ task_summary() {
         "$TASK_HIMMEL")     printf ' -> refresh-graph-map himmel (weekly, semantic, %s)' "$(installed_semantic_backend graphmap-himmel)" ;;
         "$TASK_AST_LUNA")   printf ' -> graphify update luna (daily, structural, free)' ;;
         "$TASK_AST_HIMMEL") printf ' -> graphify update himmel (hourly, structural, free)' ;;
-        "$TASK_PUBLISH_HIMMEL") printf ' -> graph-cadence publish himmel (every 6h, free, auto-merge) [refuses every fire — do not arm until HIMMEL-2654 lands]' ;;
+        "$TASK_PUBLISH_HIMMEL") printf ' -> graph-cadence publish himmel (every 6h, free, auto-merge)' ;;
     esac
 }
 
@@ -1723,13 +1720,7 @@ $himmel_line"
     fi
     local publish_lines=""
     if [ "$WITH_PUBLISH" -eq 1 ]; then
-        publish_lines="  $TASK_PUBLISH_HIMMEL  every 6h from $GRAPH_PUBLISH_TIME   -> graph-cadence publish himmel (free, auto-merge)
-
-  NOT YET LIVE — $TASK_PUBLISH_HIMMEL is registered but will REFUSE every
-  fire (exit 2) until HIMMEL-2654 lands. graph-cadence.sh's pipeline lock is
-  not safe under concurrency, so it stops before anything destructive rather
-  than risk two concurrent reset --hard + clean -fdx runs on one worktree.
-  Details: docs/internals/graph-cadence.md, HIMMEL-2654."
+        publish_lines="  $TASK_PUBLISH_HIMMEL  every 6h from $GRAPH_PUBLISH_TIME   -> graph-cadence publish himmel (free, auto-merge)"
     fi
     cat <<EOF
 
@@ -2174,8 +2165,7 @@ cron_arm() {
     mv -f "$tmp_ast_himmel" "$CRON_RUNNER_AST_HIMMEL"
     observability_register_cadence graphmap-ast-luna 86400 "$TASK_AST_LUNA"
     observability_register_cadence graphmap-ast-himmel 3600 "$TASK_AST_HIMMEL"
-    # Publish leg (HIMMEL-2095): opt-in via --with-publish (HIMMEL-3075), not
-    # unconditional -- it refuses every fire until HIMMEL-2654 lands.
+    # Publish leg (HIMMEL-2095): opt-in via --with-publish (HIMMEL-3075).
     # $PUBLISH_FLOW_NAME ("graph-publish-<slug>"), NOT the
     # "graphmap-*.bat/.vbs/.log" runner-file naming this file's OTHER legs use --
     # it must match graph-cadence.sh's OWN FLOW_NAME byte-for-byte, or the
@@ -2225,13 +2215,7 @@ $himmel_line"
     fi
     local publish_lines=""
     if [ "$WITH_PUBLISH" -eq 1 ]; then
-        publish_lines="  $TASK_PUBLISH_HIMMEL  every 6h at :$publish_himmel_mm   -> graph-cadence publish himmel (free, auto-merge)
-
-  NOT YET LIVE — $TASK_PUBLISH_HIMMEL is registered but will REFUSE every
-  fire (exit 2) until HIMMEL-2654 lands. graph-cadence.sh's pipeline lock is
-  not safe under concurrency, so it stops before anything destructive rather
-  than risk two concurrent reset --hard + clean -fdx runs on one worktree.
-  Details: docs/internals/graph-cadence.md, HIMMEL-2654."
+        publish_lines="  $TASK_PUBLISH_HIMMEL  every 6h at :$publish_himmel_mm   -> graph-cadence publish himmel (free, auto-merge)"
     fi
     cat <<EOF
 

@@ -177,13 +177,6 @@
 #                                 assert the HANDOVER_DIR-unset refusal
 #                                 without depending on this checkout's own
 #                                 .env happening to be absent.
-#   GRAPH_CADENCE_BYPASS_2654_GUARD  the ONLY way past the HIMMEL-2654 stop
-#                                 sign (see right below this table). Honoured
-#                                 ONLY alongside GRAPH_CADENCE_HIMMEL_ROOT, so
-#                                 it is structurally unreachable outside this
-#                                 script's own test fixtures. Gone entirely
-#                                 once HIMMEL-2654 lands and the guard is
-#                                 removed.
 #
 # HANDOVER_DIR is NOT a test seam -- it is the normal, required way this
 # script locates <handover-root>/.graph-cadence/ledger.jsonl (via
@@ -201,9 +194,7 @@
 #   0  skipped (below threshold), refreshed, published, or merged
 #   1  usage error
 #   2  environment unusable (HOME unresolvable, required tool missing,
-#      HANDOVER_DIR unset or unresolvable) -- OR (as of HIMMEL-2654, see the
-#      STOP SIGN right below this table) the script refuses to run AT ALL,
-#      unconditionally, until that ticket lands.
+#      HANDOVER_DIR unset or unresolvable)
 #   3  a pipeline leg failed (action=failed in the ledger; see stderr)
 #   4  the run itself completed (or failed) but its OWN ledger.jsonl append
 #      failed (disk full, permissions, etc.) -- the run is UNRECORDED; see
@@ -211,33 +202,6 @@
 #      be confused with a genuine pipeline failure or a usage/environment
 #      problem (PR-B panel r1, codex-6: the ledger IS the report).
 set -uo pipefail
-
-# --- HIMMEL-2654 STOP SIGN -- structural, not prose ---------------------------
-# The gate row at a7e10179 found the pipeline lock (step 5a below) is not
-# actually safe under concurrency: stale-lock takeover is not single-winner
-# (two contenders can both pass it), and lock age alone can evict a STILL-
-# RUNNING pipeline (no heartbeat, no overall timeout) -- either way, two
-# concurrent `reset --hard` + `clean -fdx` runs against one worktree. Filed as
-# HIMMEL-2654; not fixed here under the cost throttle. A doc note and a ticket
-# do not stop the next operator registering the scheduled entry, so this
-# refuses to run at all until 2654 lands -- before ANYTHING destructive: no
-# worktree resolution, no lock acquisition, no fetch, nothing below this line
-# runs by default. The ONLY way past it is GRAPH_CADENCE_BYPASS_2654_GUARD,
-# double-gated on GRAPH_CADENCE_HIMMEL_ROOT (same pattern as the existing
-# GRAPH_CADENCE_DOTENV_ROOT seam below) so a real cadence run -- cron or a
-# manual invocation, neither of which ever sets GRAPH_CADENCE_HIMMEL_ROOT --
-# can never satisfy it; only test-graph-cadence.sh's own fixtures can, which
-# is how the other ~100 pipeline-logic tests still exercise the code this
-# guard sits in front of. REMOVAL TRIGGER (HIMMEL-2654 step 3): once the lock
-# is fixed and has its own RED controls proving it, delete this block (the
-# echo/exit AND the bypass conditional), the matching note in
-# docs/internals/graph-cadence.md, and test-graph-cadence.sh's refusal test
-# (plus the now-unneeded bypass exports it added to every other test) --
-# that deletion is what makes 2654's closure observable.
-if [ -z "${GRAPH_CADENCE_HIMMEL_ROOT:-}" ] || [ -z "${GRAPH_CADENCE_BYPASS_2654_GUARD:-}" ]; then
-    echo "ERR graph-cadence: refusing to run -- HIMMEL-2654 (unresolved): the pipeline lock below is not safe under concurrency (stale-lock takeover is not single-winner; lock age alone can evict a still-running pipeline) and two concurrent runs can both reset --hard + clean -fdx the same worktree. This script will not run destructively until HIMMEL-2654 lands. Wait for HIMMEL-2654, or read it for the exact race." >&2
-    exit 2
-fi
 
 # --- PATH self-heal (HIMMEL-2619 class) -------------------------------------
 # Cron fires with, at most, a bare default PATH -- sometimes none at all
@@ -634,42 +598,77 @@ fi
 # --- 5. dedicated worktree: create on demand, always resync to origin/main --
 mkdir -p "$(dirname "$WORKTREE_DIR")" || _fail "could not create $(dirname "$WORKTREE_DIR")"
 
-# --- 5a. pipeline lock (PR-B panel r1 codex-1, hardened r2 codex-1): serializes
-# the WHOLE refresh/publish/merge pipeline below, not just ast-update.sh's own
-# promote step. ast-update.sh's HIMMEL-910 promote lock is SKIP-not-wait and
-# scoped to ITS OWN write into graphify-out/ -- it does not, and was never
-# meant to, cover graph-publish.sh's checkout/commit/push or merge-on-green.sh's
-# merge, both of which also mutate $WORKTREE_DIR. Without a run-wide lock, an
+# --- 5a. pipeline lock (PR-B panel r1 codex-1, hardened r2 codex-1, made
+# single-winner + liveness-checked by HIMMEL-2654): serializes the WHOLE
+# refresh/publish/merge pipeline below, not just ast-update.sh's own promote
+# step. ast-update.sh's HIMMEL-910 promote lock is SKIP-not-wait and scoped to
+# ITS OWN write into graphify-out/ -- it does not, and was never meant to,
+# cover graph-publish.sh's checkout/commit/push or merge-on-green.sh's merge,
+# both of which also mutate $WORKTREE_DIR. Without a run-wide lock, an
 # overlapping scheduled fire and a manual invocation can reset/clean the
 # worktree out from under each other mid-refresh or mid-publish.
 # SKIP-not-wait, mirroring ast-update.sh's own convention: a losing run
 # reports action=skipped (not a failure) and the next scheduled fire retries.
-# OWNER TOKEN + STALE-AGE RECOVERY (r2 codex-1): round 1's lock had neither --
-# a reboot or SIGKILL between mkdir and the matching rm leaves it behind
-# PERMANENTLY, and every above-threshold run afterward reports a successful
-# skip while refreshing and publishing nothing -- silently doing nothing
-# forever, reporting success each time, exactly this branch's subject class.
-# The owner-token + acquired-epoch-stamp + single-winner-takeover shape below
-# is NOT a new convention: it mirrors refresh-graph-map.sh's OWN
-# `_promote_lock_acquire`/`_promote_lock_release` (HIMMEL-1960) byte-for-byte
-# in spirit -- a proven pattern in this exact codebase, reused rather than
-# reinvented. Residual TOCTOU (a lock that mkdir'd but crashed before its
-# stamp was written) is the SAME documented HIMMEL-2618-class race that
-# script's own header carries and this ticket does not fix -- this script's
-# single-attempt skip-not-wait shape treats a missing/unreadable stamp as
-# "held" (never a takeover candidate), narrower exposure than a wait-and-poll
-# acquire but the same accepted residual, not a new one.
+#
+# The lock directory carries: owner (a per-run token, published with a
+# noclobber create -- winning that write IS holding), pid + host (the holder
+# process), heartbeat (epoch seconds, rewritten every
+# PIPELINE_LOCK_HEARTBEAT_SECONDS by a background loop that lives exactly as
+# long as this process does) and acquired (informational). It lives BESIDE
+# the worktree, never inside it: an in-worktree file would trip graph-
+# publish.sh's clean-tree refusal and be wiped by the very `clean -fdx` it
+# gates (same constraint as the ownership marker, step 5b).
+#
+# HIMMEL-2654 closed the two holes round 2 left open:
+#   1. LIVENESS, not age. A holder is live while its pid answers `kill -0` on
+#      this host OR its heartbeat is younger than PIPELINE_LOCK_STALE_SECONDS.
+#      Age alone never authorizes evicting a running pipeline: a slow refresh
+#      or a stalled publish keeps heartbeating, so it is never taken over.
+#      Only a lock whose holder is gone AND whose heartbeat has stopped is
+#      reclaimable. A lock with no readable stamp at all (a holder that died
+#      between mkdir and its first write) is judged by the directory's own
+#      mtime against the same threshold.
+#   2. SINGLE-WINNER takeover, identity-checked -- the protocol of
+#      refresh-graph-map.sh's _extraction_lock_takeover (HIMMEL-2618), not a
+#      third convention. The owner token is read FIRST, as the identity of
+#      what was judged dead; after the sideline mv the moved directory must
+#      still carry that token, otherwise a rival completed a whole
+#      takeover+acquire in between and we just grabbed its LIVE lock -- so we
+#      put it back and report that we LOST. Acquire then verifies its own
+#      token after stamping, and the holder re-checks it right before the
+#      first destructive git command (step 5b).
+# ponytail: a holder that is alive but HUNG (never exits) keeps heartbeating,
+# so every later fire skips until someone kills it -- deliberate, since an
+# unkillable-by-age lock is the whole fix; the ledger's skipped rows name its
+# pid. Residual (the same one _extraction_lock_takeover documents): a restore
+# that finds the slot already re-taken by a THIRD contender drops the
+# sideline -- it needs three runs inside one mv->restore gap on a 6h cadence.
 PIPELINE_LOCK="${WORKTREE_DIR}.lock"
 PIPELINE_LOCK_HELD=0
 PIPELINE_LOCK_TOKEN=""
-# Comfortably above any genuine run's ceiling (fetch + ast-update + graph-
-# publish + merge-on-green.sh's own up-to-540s check-ci watch), comfortably
-# below the 6h armed interval -- a crashed holder is reclaimed well before
-# more than one scheduled fire is lost to it.
-PIPELINE_LOCK_STALE_SECONDS=1800
+PIPELINE_LOCK_HEARTBEAT_PID=""
+PIPELINE_LOCK_HOST=$(uname -n 2>/dev/null) || PIPELINE_LOCK_HOST=""
+[ -n "$PIPELINE_LOCK_HOST" ] || PIPELINE_LOCK_HOST="unknown-host"
+# Twenty missed beats: comfortably above a loaded box's scheduling jitter,
+# and a crashed holder is still reclaimed long before the next 6h fire.
+PIPELINE_LOCK_HEARTBEAT_SECONDS=30
+PIPELINE_LOCK_STALE_SECONDS=600
+# Test seam, honoured ONLY alongside GRAPH_CADENCE_HIMMEL_ROOT (never set in a
+# real cadence run): a fast heartbeat so a test can watch it advance.
+if [ -n "${GRAPH_CADENCE_HIMMEL_ROOT:-}" ]; then
+    case "${GRAPH_CADENCE_LOCK_HEARTBEAT_SECONDS:-}" in
+        ''|*[!0-9]*|0) ;;
+        *) PIPELINE_LOCK_HEARTBEAT_SECONDS="$GRAPH_CADENCE_LOCK_HEARTBEAT_SECONDS" ;;
+    esac
+fi
 # shellcheck disable=SC2317  # invoked only via `trap ... EXIT` below
 _pipeline_lock_release() {
     local cur=""
+    if [ -n "$PIPELINE_LOCK_HEARTBEAT_PID" ]; then
+        kill "$PIPELINE_LOCK_HEARTBEAT_PID" 2>/dev/null || true
+        wait "$PIPELINE_LOCK_HEARTBEAT_PID" 2>/dev/null || true
+        PIPELINE_LOCK_HEARTBEAT_PID=""
+    fi
     if [ "$PIPELINE_LOCK_HELD" -eq 1 ]; then
         PIPELINE_LOCK_HELD=0
         [ -d "$PIPELINE_LOCK" ] || return 0
@@ -685,43 +684,125 @@ _pipeline_lock_release() {
     fi
 }
 trap _pipeline_lock_release EXIT
-# _pipeline_lock_try_acquire -- rc 0: lock dir now exists and is ours to
-# stamp (either mkdir won outright, or we won a stale takeover). rc 1: held
-# by another run, genuinely contended (skip, benign).
-_pipeline_lock_try_acquire() {
-    if mkdir "$PIPELINE_LOCK" 2>/dev/null; then
+# _pipeline_lock_is_ours -- rc 0 iff the lock directory still carries our token.
+_pipeline_lock_is_ours() {
+    local cur=""
+    cur=$(cat "$PIPELINE_LOCK/owner" 2>/dev/null) || cur=""
+    [ -n "$PIPELINE_LOCK_TOKEN" ] && [ "$cur" = "$PIPELINE_LOCK_TOKEN" ]
+}
+# _pipeline_lock_stamp_heartbeat -- atomic (tmp + rename) so a reader never
+# sees a half-written stamp.
+_pipeline_lock_stamp_heartbeat() {
+    local tmp="$PIPELINE_LOCK/heartbeat.tmp.$$"
+    date -u +%s > "$tmp" 2>/dev/null && mv -f "$tmp" "$PIPELINE_LOCK/heartbeat" 2>/dev/null
+}
+# _pipeline_lock_judge -- sets PIPELINE_LOCK_JUDGED_OWNER (read FIRST: the
+# identity a takeover must match) and PIPELINE_LOCK_VERDICT (why). rc 0: the
+# holder is dead and the lock reclaimable. rc 1: live (or undecidable) --
+# never evicted.
+PIPELINE_LOCK_JUDGED_OWNER=""
+PIPELINE_LOCK_VERDICT=""
+_pipeline_lock_judge() {
+    local pid host stamp now age
+    PIPELINE_LOCK_JUDGED_OWNER=$(cat "$PIPELINE_LOCK/owner" 2>/dev/null) || PIPELINE_LOCK_JUDGED_OWNER=""
+    pid=$(cat "$PIPELINE_LOCK/pid" 2>/dev/null) || pid=""
+    host=$(cat "$PIPELINE_LOCK/host" 2>/dev/null) || host=""
+    case "$pid" in ''|*[!0-9]*) pid="" ;; esac
+    if [ -n "$pid" ] && [ "$host" = "$PIPELINE_LOCK_HOST" ] && kill -0 "$pid" 2>/dev/null; then
+        PIPELINE_LOCK_VERDICT="holder pid $pid is alive"
+        return 1
+    fi
+    # heartbeat; `acquired` only for a lock written before heartbeats existed.
+    stamp=$(cat "$PIPELINE_LOCK/heartbeat" 2>/dev/null) || stamp=""
+    case "$stamp" in ''|*[!0-9]*) stamp=$(cat "$PIPELINE_LOCK/acquired" 2>/dev/null) || stamp="" ;; esac
+    case "$stamp" in ''|*[!0-9]*) stamp="" ;; esac
+    if [ -n "$stamp" ]; then
+        now=$(date -u +%s)
+        age=$(( now - stamp ))
+        if [ "$age" -lt "$PIPELINE_LOCK_STALE_SECONDS" ]; then
+            PIPELINE_LOCK_VERDICT="last heartbeat ${age}s ago"
+            return 1
+        fi
+        PIPELINE_LOCK_VERDICT="is stale (no live holder, last heartbeat ${age}s ago >= ${PIPELINE_LOCK_STALE_SECONDS}s)"
         return 0
     fi
-    local held_at now age sideline
-    held_at=$(cat "$PIPELINE_LOCK/acquired" 2>/dev/null) || held_at=""
-    case "$held_at" in ''|*[!0-9]*) held_at="" ;; esac
-    [ -n "$held_at" ] || return 1
-    now=$(date -u +%s)
-    age=$(( now - held_at ))
-    [ "$age" -ge "$PIPELINE_LOCK_STALE_SECONDS" ] || return 1
-    # Single-winner atomic takeover: exactly one contender's mv succeeds.
-    sideline="$PIPELINE_LOCK.stale.$$.$RANDOM"
+    if [ -n "$(find "$PIPELINE_LOCK" -maxdepth 0 -mmin "+$(( PIPELINE_LOCK_STALE_SECONDS / 60 ))" 2>/dev/null)" ]; then
+        PIPELINE_LOCK_VERDICT="is stale (no live holder, no stamp, directory older than ${PIPELINE_LOCK_STALE_SECONDS}s)"
+        return 0
+    fi
+    PIPELINE_LOCK_VERDICT="no stamp yet (holder still acquiring?)"
+    return 1
+}
+# _pipeline_lock_takeover -- identity-checked single-winner takeover of the
+# lock just judged dead (see 2. above). rc 0: the dead lock is gone.
+_pipeline_lock_takeover() {
+    local sideline="$PIPELINE_LOCK.stale.$$.$RANDOM" got=""
     mv "$PIPELINE_LOCK" "$sideline" 2>/dev/null || return 1
-    echo "graph-cadence: WARN pipeline lock $PIPELINE_LOCK is stale (age ${age}s >= ${PIPELINE_LOCK_STALE_SECONDS}s, presumably a crashed prior run) -- taking over" >&2
+    got=$(cat "$sideline/owner" 2>/dev/null) || got=""
+    if [ "$got" != "$PIPELINE_LOCK_JUDGED_OWNER" ]; then
+        if [ ! -e "$PIPELINE_LOCK" ] && mv "$sideline" "$PIPELINE_LOCK" 2>/dev/null; then
+            echo "graph-cadence: pipeline lock $PIPELINE_LOCK was replaced by a live holder before our takeover landed -- restored it, not taking over" >&2
+        else
+            rm -rf "$sideline" 2>/dev/null || true
+            echo "graph-cadence: pipeline lock $PIPELINE_LOCK was replaced before our takeover landed and its slot is already re-taken -- dropped the sidelined copy, not taking over" >&2
+        fi
+        PIPELINE_LOCK_VERDICT="lost the takeover race to a live holder"
+        return 1
+    fi
+    echo "graph-cadence: WARN pipeline lock $PIPELINE_LOCK $PIPELINE_LOCK_VERDICT -- taking over" >&2
     rm -rf "$sideline" 2>/dev/null || true
-    mkdir "$PIPELINE_LOCK" 2>/dev/null || return 1
+    return 0
+}
+# _pipeline_lock_try_acquire -- single attempt (skip-not-wait). rc 0: held,
+# stamped, verified and heartbeating. rc 1: another run holds it, or we lost
+# a race for it -- skip, benign.
+_pipeline_lock_try_acquire() {
+    local token
+    if ! mkdir "$PIPELINE_LOCK" 2>/dev/null; then
+        _pipeline_lock_judge || return 1
+        _pipeline_lock_takeover || return 1
+        mkdir "$PIPELINE_LOCK" 2>/dev/null || return 1
+    fi
+    token="$$-$RANDOM"
+    # LOST if this noclobber write fails: a takeover moved the directory away
+    # (ENOENT) or a rival published first (EEXIST). Holding is defined solely
+    # by winning it; remove nothing, it may be the rival's.
+    ( set -C; printf '%s\n' "$token" > "$PIPELINE_LOCK/owner" ) 2>/dev/null || return 1
+    PIPELINE_LOCK_TOKEN="$token"
+    if ! { printf '%s\n' "$$" > "$PIPELINE_LOCK/pid" \
+           && printf '%s\n' "$PIPELINE_LOCK_HOST" > "$PIPELINE_LOCK/host" \
+           && _pipeline_lock_stamp_heartbeat \
+           && date -u +%s > "$PIPELINE_LOCK/acquired"; } 2>/dev/null; then
+        if _pipeline_lock_is_ours; then
+            # A genuine write failure while the directory is still ours: a
+            # stamp-less lock only ages out by mtime, so fail closed now.
+            rm -rf "$PIPELINE_LOCK" 2>/dev/null || true
+            _fail "pipeline lock acquired but its pid/host/heartbeat stamps could not be written ($PIPELINE_LOCK) -- released again"
+        fi
+        return 1
+    fi
+    # verify-after-stamp (HIMMEL-2618 shape): a takeover that sidelined us
+    # mid-acquire leaves the token missing or someone else's.
+    _pipeline_lock_is_ours || return 1
+    PIPELINE_LOCK_HELD=1
+    (
+        trap - EXIT
+        while kill -0 "$$" 2>/dev/null && _pipeline_lock_is_ours; do
+            _pipeline_lock_stamp_heartbeat || true
+            sleep "$PIPELINE_LOCK_HEARTBEAT_SECONDS"
+        done
+    ) </dev/null >/dev/null 2>&1 &
+    PIPELINE_LOCK_HEARTBEAT_PID=$!
     return 0
 }
 if ! _pipeline_lock_try_acquire; then
     ACTION="skipped"
-    ERROR="pipeline lock $PIPELINE_LOCK held by a concurrent graph-cadence run -- skip-not-wait, retried on the next scheduled fire"
+    ERROR="pipeline lock $PIPELINE_LOCK held by a concurrent graph-cadence run (${PIPELINE_LOCK_VERDICT:-lost the race for it}) -- skip-not-wait, retried on the next scheduled fire"
     FINAL_RC=0
     echo "graph-cadence: $ERROR"
     _write_ledger
     exit 0
 fi
-PIPELINE_LOCK_TOKEN="$$-$RANDOM"
-if ! printf '%s\n' "$PIPELINE_LOCK_TOKEN" > "$PIPELINE_LOCK/owner" 2>/dev/null; then
-    rm -rf "$PIPELINE_LOCK" 2>/dev/null || true
-    _fail "pipeline lock acquired but its owner token could not be written ($PIPELINE_LOCK/owner) -- released again"
-fi
-date -u +%s > "$PIPELINE_LOCK/acquired" 2>/dev/null || true
-PIPELINE_LOCK_HELD=1
 
 _just_created_worktree=0
 if [ ! -f "$WORKTREE_DIR/.git" ] && [ ! -d "$WORKTREE_DIR/.git" ]; then
@@ -803,6 +884,10 @@ fi
 # `git worktree add` just handed it to us in this same process; the marker
 # is written fresh below, after the sync succeeds, for the NEXT run to check.)
 
+# HIMMEL-2654: last ownership check before the first destructive command --
+# a lock we no longer hold must never reach checkout/reset/clean.
+_pipeline_lock_is_ours \
+    || _fail "pipeline lock $PIPELINE_LOCK no longer carries this run's owner token -- refusing to checkout/reset/clean the worktree"
 if ! git -C "$WORKTREE_DIR" checkout -B graph-cadence-work origin/main >/dev/null 2>&1; then
     _fail "could not sync dedicated worktree $WORKTREE_DIR to origin/main"
 fi
