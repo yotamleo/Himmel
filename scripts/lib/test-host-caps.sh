@@ -32,21 +32,36 @@ assert_eq() {
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/host-caps-test.XXXXXX") || { echo "FAIL could not create temp dir"; exit 1; }
 trap 'chmod -R u+rwx "$TMP" 2>/dev/null; rm -rf "$TMP"' EXIT
 REAL_PATH="$PATH"
+# Every probe puts its scratch dir under TMPDIR; point that at a suite-private
+# parent so T18 counts only THIS suite's leftovers, never a concurrent run's.
+SCRATCH="$TMP/scratch"; mkdir -p "$SCRATCH"; export TMPDIR="$SCRATCH"
 
 # --- the real host -----------------------------------------------------------
 # A POSIX host that is not root can do all of it; uid 0 ignores read/write bits.
-assert_rc "T1 modes stick on a POSIX host" 0 host_modes_stick
-assert_rc "T2 symlinks are real on a POSIX host" 0 host_symlinks_real
-if [ "$(id -u)" -eq 0 ]; then
-    want_deny=1
-else
-    want_deny=0
-fi
-assert_rc "T3 read denial matches the uid" "$want_deny" host_can_deny_read
-assert_rc "T4 write denial matches the uid" "$want_deny" host_can_deny_write
-
+# Git Bash on NTFS cannot (that is what the probes exist to report), so asserting
+# "capable" there would fail the suite for the very reason the library exists;
+# the simulated hosts below still run everywhere. The real-host expectation is
+# keyed on uname/id -u ONLY to know what THIS host must report -- measuring it
+# with the probe under test would be circular.
+case "$(uname -s 2>/dev/null)" in
+    MINGW*|MSYS*|CYGWIN*) POSIX_HOST=0 ;;
+    *) POSIX_HOST=1 ;;
+esac
 f="$TMP/f"; : > "$f"; chmod 640 "$f"
-assert_eq "T5 host_mode_of reads the octal mode" "640" "$(host_mode_of "$f")"
+if [ "$POSIX_HOST" -eq 1 ]; then
+    assert_rc "T1 modes stick on a POSIX host" 0 host_modes_stick
+    assert_rc "T2 symlinks are real on a POSIX host" 0 host_symlinks_real
+    if [ "$(id -u)" -eq 0 ]; then
+        want_deny=1
+    else
+        want_deny=0
+    fi
+    assert_rc "T3 read denial matches the uid" "$want_deny" host_can_deny_read
+    assert_rc "T4 write denial matches the uid" "$want_deny" host_can_deny_write
+    assert_eq "T5 host_mode_of reads the octal mode" "640" "$(host_mode_of "$f")"
+else
+    host_skip "T1-T5 real-host POSIX capability assertions: this host is not POSIX (NTFS mode/symlink semantics)"
+fi
 assert_rc "T6 host_mode_of on a missing path fails" 1 host_mode_of "$TMP/absent"
 assert_rc "T7 host_mode_of with no argument fails" 1 host_mode_of
 
@@ -88,7 +103,11 @@ assert_rc "T20 the same stub still lets plain mkdir + a real chmod work" 0 mkdir
 PATH="$REAL_PATH"
 
 # --- NTFS: a directory name cannot hold a newline -----------------------------
-assert_rc "T21 a POSIX host can name a dir with a newline" 0 host_newline_paths
+if [ "$POSIX_HOST" -eq 1 ]; then
+    assert_rc "T21 a POSIX host can name a dir with a newline" 0 host_newline_paths
+else
+    host_skip "T21 real-host newline-name assertion: this host is not POSIX (NTFS cannot hold a newline in a name)"
+fi
 NL="$TMP/stubs-nl"; mkdir -p "$NL"
 cat > "$NL/mkdir" <<'STUB'
 #!/bin/sh
@@ -108,20 +127,26 @@ BSD="$TMP/stubs-bsd"; mkdir -p "$BSD"
 cat > "$BSD/stat" <<'STUB'
 #!/bin/sh
 [ "$1" = "-f" ] || { echo "stat: illegal option -- $1" >&2; exit 1; }
-exec "$REAL_STAT" -c '%a' "$3"
+"$REAL_STAT" -c '%a' "$3" 2>/dev/null || exec "$REAL_STAT" -f '%Lp' "$3"
 STUB
 chmod +x "$BSD/stat"
 REAL_STAT=$(command -v stat); export REAL_STAT
+want_mode=$(host_mode_of "$f")
 PATH="$BSD:$REAL_PATH"
-assert_eq "T14 BSD stat: host_mode_of falls back to -f %Lp" "640" "$(host_mode_of "$f")"
-assert_rc "T15 BSD stat: modes still stick" 0 host_modes_stick
+assert_eq "T14 BSD stat: host_mode_of falls back to -f %Lp" "$want_mode" "$(host_mode_of "$f")"
+if [ "$POSIX_HOST" -eq 1 ]; then
+    assert_rc "T15 BSD stat: modes still stick" 0 host_modes_stick
+else
+    host_skip "T15 BSD-stat modes-stick assertion: this host is not POSIX (chmod does not stick on NTFS)"
+fi
 PATH="$REAL_PATH"
 
 # --- scratch is always cleaned ----------------------------------------------
 # An unwritable TMPDIR must read as "not capable", never crash the sourcing suite.
 assert_rc "T16 no scratch dir: modes_stick reports incapable" 1 env TMPDIR="$TMP/no/such/dir" bash -c ". '$LIB_DIR/host-caps.sh'; host_modes_stick"
 assert_rc "T17 no scratch dir: symlinks_real reports incapable" 1 env TMPDIR="$TMP/no/such/dir" bash -c ". '$LIB_DIR/host-caps.sh'; host_symlinks_real"
-leftover=$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'host-caps.*' -newer "$f" 2>/dev/null | wc -l | tr -d ' ')
+leftover=0
+for p in "$SCRATCH"/*; do [ -e "$p" ] && leftover=$((leftover + 1)); done
 assert_eq "T18 probes leave no scratch dir behind" "0" "$leftover"
 
 if [ "$FAILED" -ne 0 ]; then echo "SOME FAILED ($FAILED)"; exit 1; fi
