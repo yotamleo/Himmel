@@ -130,7 +130,9 @@ _hp_ascii_lower() {
     while [ "$_hp_i" -lt "${#_hp_s}" ]; do
         _hp_ch="${_hp_s:$_hp_i:1}"
         case "$_hp_ch" in
-            [A-Z])
+            # Explicit list, NOT [A-Z]: a range expands by locale collation and
+            # under en_US on bash 3.2 also matches lowercase (HIMMEL-3200).
+            [ABCDEFGHIJKLMNOPQRSTUVWXYZ])
                 _hp_prefix="${_hp_upper%%"$_hp_ch"*}"
                 _hp_ch="${_hp_lower:${#_hp_prefix}:1}"
                 ;;

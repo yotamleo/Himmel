@@ -34,14 +34,29 @@ FAILED=0
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
+# expected_inline_root <repo> -- <repo>/handovers spelled the way handover_root
+# derives it (git toplevel), NOT the logical mktemp spelling: they differ on
+# macOS (/var vs /private/var) and Git Bash (/tmp vs /c/Users/...) (HIMMEL-3180).
+expected_inline_root() {
+    local top
+    top=$(git -C "$1" rev-parse --show-toplevel) || return 1
+    (cd "$top/handovers" && pwd)
+}
+
 # T1: HANDOVER_DIR unset → inline default under repo root (pure)
-# PURE handover_root only resolves when the dir already exists. The
-# himmel repo has handovers/ tracked (README stub), so this passes on
-# main without bootstrap.
+# PURE handover_root only resolves when the dir already exists, and himmel's
+# own checkout has no tracked handovers/ (HIMMEL-3180), so resolve inside a
+# hermetic temp repo that has one.
 unset HANDOVER_DIR
-REPO=$(git rev-parse --show-toplevel)
-got=$(handover_root)
-expected=$(cd "$REPO/handovers" && pwd)
+TMP_REPO_INLINE=$(fixture_mktemp_dir) || exit 1
+git -C "$TMP_REPO_INLINE" init --quiet
+mkdir "$TMP_REPO_INLINE/handovers"
+expected=$(expected_inline_root "$TMP_REPO_INLINE")
+got=$(cd "$TMP_REPO_INLINE" && handover_root)
+if [ -z "$expected" ]; then
+    echo "FAIL T1 fixture: expected inline root is empty (vacuous comparison)"
+    FAILED=$((FAILED + 1))
+fi
 assert_eq "T1 mode A resolves to repo/handovers" "$expected" "$got"
 assert_eq "T1 mode A reports A" "A" "$(handover_mode)"
 
@@ -72,7 +87,7 @@ got_ensure=$(
     unset HANDOVER_DIR
     handover_root_ensure 2>/dev/null
 )
-expected_ensure=$(cd "$TMP_REPO_ENSURE/handovers" 2>/dev/null && pwd)
+expected_ensure=$(expected_inline_root "$TMP_REPO_ENSURE" 2>/dev/null)
 assert_eq "T1c ensure resolves to repo/handovers" "$expected_ensure" "$got_ensure"
 if [ -d "$TMP_REPO_ENSURE/handovers" ]; then
     echo "PASS T1c ensure did mkdir"
@@ -104,9 +119,14 @@ assert_rc "T4 HANDOVER_DIR is a file" 2 "$?"
 # T5: HANDOVER_DIR empty string → treat as unset → inline default
 unset HANDOVER_DIR
 export HANDOVER_DIR=""
-got=$(handover_root)
-expected=$(cd "$REPO/handovers" && pwd)
+got=$(cd "$TMP_REPO_INLINE" && handover_root)
+expected=$(expected_inline_root "$TMP_REPO_INLINE")
+if [ -z "$expected" ]; then
+    echo "FAIL T5 fixture: expected inline root is empty (vacuous comparison)"
+    FAILED=$((FAILED + 1))
+fi
 assert_eq "T5 empty HANDOVER_DIR falls back to inline" "$expected" "$got"
+rm -rf "$TMP_REPO_INLINE"
 
 # T6: trailing slash on HANDOVER_DIR is normalised
 HANDOVER_DIR="$TMP/external/"
@@ -182,6 +202,27 @@ done
 _hp_json_unescape 'plain'
 assert_eq "T7f success clears prior failure" 1 "${_HP_UNESC_OK:-missing}"
 assert_eq "T7f plain text preserved" plain "$_HP_UNESC"
+
+# T7g (HIMMEL-3200): _hp_ascii_lower must fold ASCII only, under ANY locale.
+# macOS bash 3.2 (and bash >= 4.3 with globasciiranges off) expands [A-Z] by
+# locale collation in en_US, matching lowercase too, which deleted lowercase
+# letters from registry keys on the nightly macOS leg. Runs in a subshell so
+# the locale/shopt change cannot leak.
+loc7g=""
+for cand7g in en_US.UTF-8 en_US.utf8; do
+    if locale -a 2>/dev/null | grep -qx "$cand7g"; then loc7g="$cand7g"; break; fi
+done
+if [ -n "$loc7g" ]; then
+    got7g=$(
+        export LC_ALL="$loc7g"
+        shopt -u globasciiranges 2>/dev/null
+        _hp_ascii_lower "Himmel-TEST_1.md"
+        printf '%s' "$_HP_LOWER"
+    )
+    assert_eq "T7g ASCII fold survives a collating locale ($loc7g)" "himmel-test_1.md" "$got7g"
+else
+    echo "SKIP T7g: no en_US UTF-8 locale on this host (not exercised here)"
+fi
 
 # T8 (HIMMEL-1344): registry identity is canonical, root-relative, and
 # uniformly case-folded. The scheduler canonicalizer remains platform-specific,
