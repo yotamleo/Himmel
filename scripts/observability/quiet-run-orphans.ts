@@ -106,7 +106,9 @@ export function scanQuietRunOrphans(procRoot = "/proc"): QuietRunOrphanCounts {
     if (stat.comm === "tail") {
       const args = readArgs(procRoot, pid);
       if (!isFollowing(args)) continue;
-      const logs = quietRunLogFds(procRoot, pid).all;
+      // `tail -F` on an unlinked log holds no fd while it retries, so the
+      // operands name the log too.
+      const logs = [...quietRunLogFds(procRoot, pid).all, ...args.filter((a) => QUIET_RUN_LOG.test(a))];
       if (logs.length > 0) followers.push({ logs });
       continue;
     }

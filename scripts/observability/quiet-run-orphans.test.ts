@@ -124,6 +124,20 @@ test("follow flag spellings: -F, --follow=name, and a bundled -fn", () => {
   expect(scanQuietRunOrphans(root).tail).toBe(3);
 });
 
+test("tail -F retrying on a missing log holds no fd but is still an orphaned follower", () => {
+  addProc(1, { comm: "systemd", ppid: 0, args: ["/sbin/init"] });
+  addProc(200, { comm: "tail", ppid: 1, args: ["tail", "-F", LOG] }); // log unlinked: no open fd
+  addProc(201, { comm: "tail", ppid: 1, args: ["tail", "--follow=name", "--retry", "/var/log/syslog"] });
+  expect(scanQuietRunOrphans(root).tail).toBe(1);
+});
+
+test("a retrying follower whose log is written by a live process is not counted", () => {
+  addProc(1, { comm: "systemd", ppid: 0, args: ["/sbin/init"] });
+  addProc(200, { comm: "tail", ppid: 1, args: ["tail", "-F", LOG] });
+  addProc(201, { comm: "bash", ppid: 60, args: ["bash", "scripts/test-a.sh"], fds: [{ n: 1, target: LOG, flags: O_WRONLY }] });
+  expect(scanQuietRunOrphans(root).tail).toBe(0);
+});
+
 test("a process whose /proc entry vanished mid-scan is skipped, not fatal", () => {
   addProc(1, { comm: "systemd", ppid: 0, args: ["/sbin/init"] });
   addProc(100, wrapper(1));
