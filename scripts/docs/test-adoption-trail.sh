@@ -141,6 +141,15 @@ else
   bad "the page must state the wizard question counts (seven always, up to twenty-two in total, up to fifteen conditional)"
 fi
 
+# adopt.sh's install_precommit_hooks runs for every profile (HIMMEL-2441), so the
+# git gates are no longer roadmap; a "Gates for every profile" roadmap chip or
+# panel would contradict the page's own "wired by the install" sentence.
+if grep -q -E 'rm-gates|Gates for every profile' "$PAGE"; then
+  bad "the commit/push gates install for every profile (adopt.sh install_precommit_hooks); the page still lists them as roadmap" "$(grep -n -E 'rm-gates|Gates for every profile' "$PAGE" | head -3)"
+else
+  ok "the git gates are not listed as roadmap work"
+fi
+
 echo
 printf '%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
