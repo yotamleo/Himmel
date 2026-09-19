@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/note-superpowers-prefix.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -44,6 +44,16 @@ namespace-agnostic `*:grilling|grilling` matcher, which keeps routing the
 bare vendored name. The upstream skill ships an agents/openai.yaml (Codex
 interface metadata) that is dropped here as harness-specific.
 
+local=hooks
+
+himmel-authored, no upstream (HIMMEL-3100): the adaptation for the vendored
+`superpowers:<name>` citations. NOT a vendored-prose edit — hooks/hooks.json +
+hooks/note-superpowers-prefix.sh (a PostToolUse(Skill) hint that maps
+`superpowers:<x>` to `lean-skills:<x>` when a citing skill loads), guarded by
+hooks/test-note-superpowers-prefix.sh (which also asserts every cited
+`superpowers:<name>` is vendored). A re-vendor replaces skills/ only and leaves
+hooks/ alone; the suite tells you if the new copy cites something not shipped.
+
 local=skills/context7-mcp
 
 himmel-authored, no upstream. Lived in ~/.claude/skills (always-on, and

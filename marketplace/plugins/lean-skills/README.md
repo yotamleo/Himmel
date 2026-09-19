@@ -92,11 +92,33 @@ upstream plugin's own qualified name, e.g. `superpowers:test-driven-development`
 This is a **namespace-prefix mismatch, not a missing capability**: every
 skill any of those references cites is vendored here, under the same
 directory name, just as `lean-skills:<name>` instead of
-`superpowers:<name>`. Resolve the prefix accordingly when following one of
-these handoffs. Per the VERBATIM rule above, the cited files are not
-locally edited to fix this — the durable fix (an upstream rename + re-vendor,
-or a himmel-owned adaptation outside the vendored tree) is tracked in
-HIMMEL-3100.
+`superpowers:<name>`; the bare `<name>` resolves too. Per the VERBATIM rule
+above, the cited files are not locally edited to fix this, and an upstream
+rename is not an option (obra/superpowers correctly names itself
+`superpowers:`).
+
+**Mitigation (HIMMEL-3100, himmel-owned, outside the vendored tree):**
+`hooks/note-superpowers-prefix.sh`, a `PostToolUse(Skill)` hook wired by
+`hooks/hooks.json`. When a lean-skills skill whose files cite `superpowers:`
+loads, it adds one line of context — `superpowers:<x>` means
+`lean-skills:<x>`. It reads the citing skills from the tree (no hard-coded
+list, so a re-vendor cannot drift it) and is advisory and fail-open; set
+`LEAN_SKILLS_PREFIX_HINT_DISABLE=1` in the launching shell to switch it off.
+
+Why a hint on load and not a rewrite of the failing call: Claude Code rejects
+`Unknown skill: superpowers:<x>` at validation time, before hooks run — neither
+`PreToolUse` nor `PostToolUseFailure` fires for it (hooks docs), so the call
+cannot be intercepted or remapped. Verified live (one headless haiku session
+with temp settings and a stub logging hook): `PostToolUse` fires for
+`lean-skills:systematic-debugging`.
+
+`hooks/test-note-superpowers-prefix.sh` also asserts the closure — every
+`superpowers:<name>` the vendored tree cites has a `skills/<name>/SKILL.md`
+here — so a re-vendor that starts citing an unvendored skill fails the suite.
+
+Not covered: `executing-plans/SKILL.md` also points at
+`../using-superpowers/references/` (per-platform tool refs), which is not
+vendored and has no lean-skills equivalent; that path just does not exist here.
 
 ### Known limitation: `brainstorming`'s server reports its own version as `unknown`
 
