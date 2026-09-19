@@ -657,8 +657,6 @@ scripts/test-plugin-test.sh          # integration: self-bootstraps a plugin's d
 scripts/test-adopt.sh                # timing-heavy full adoption matrix exceeds the hermetic runner's per-suite cap on Windows (600s default since HIMMEL-2233; the exceedance was last measured against the older 180s cap and has not been re-measured); runnable individually, no VM e2e coverage
 scripts/handover/test-arm-resume-probe.sh  # MEASUREMENT tool, not an assertion suite — times a dry-run/real arm and reports python3 spawn counts; always exits 0, so collecting it would spend ~20s per full run to assert nothing (HIMMEL-2125)
 scripts/test-check-ci-forks-probe.sh  # MEASUREMENT tool, not an assertion suite — re-runs the full test-check-ci.sh suite instrumented to report gh-stub fork counts + wall time per case; always exits 0 and duplicates the suite's own run, so collecting it would double the extended-tier cost to assert nothing (HIMMEL-2169)
-marketplace/plugins/handover/scripts/test-skill-e2e.sh  # HIMMEL-3196: real bug — asserts status/roadmap/tech-debt/counter.md under handovers/hbtest-PID that nothing creates, plus a jira npm build+test that fails (5 FAIL of 13); quarantined when HIMMEL-3193 turned the marketplace root on
-marketplace/plugins/telegram-himmel/tests/test-telegram-poller-gate.sh  # HIMMEL-3196: real bug — reads bot.pid after killing the server, which removes bot.pid on shutdown (server.ts:684), so the owner case always reads NO_PID
 "
 
 # Conditional suites (HIMMEL-1589). Unlike SKIP_LIST (always skipped), a
