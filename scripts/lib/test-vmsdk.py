@@ -450,7 +450,8 @@ class TestSyncRepo(unittest.TestCase):
         def fake_run(argv, **kwargs):
             calls.append(argv)
             return mock.Mock(returncode=0, stderr="")
-        with mock.patch.object(vmsdk.subprocess, "run", side_effect=fake_run):
+        with mock.patch.object(vmsdk.subprocess, "run", side_effect=fake_run), \
+             mock.patch.object(vm, "run", return_value=(0, "")):
             vm.sync_repo(local_root, **kw)
         self.assertEqual(len(calls), 1)
         return calls[0]
@@ -514,9 +515,242 @@ class TestSyncRepo(unittest.TestCase):
     def test_returns_dest_on_success(self):
         vm = self._vm()
         with mock.patch.object(vmsdk.subprocess, "run",
-                               return_value=mock.Mock(returncode=0, stderr="")):
+                               return_value=mock.Mock(returncode=0, stderr="")), \
+             mock.patch.object(vm, "run", return_value=(0, "")):
             result = vm.sync_repo(r"C:\Users\x\himmel")
         self.assertEqual(result, "~/github/himmel")
+
+
+class TestSecretBoundary(unittest.TestCase):
+    """HIMMEL-2540: the host->guest copy must exclude the secret set and the
+    guest must be asserted clean; a snapshot of an unverified guest is refused."""
+
+    def _vm(self):
+        with mock.patch.dict(os.environ,
+                             {"ubuntu_vm_user": "osboxes", "ubuntu_vm_pass": "pw"}, clear=False):
+            with mock.patch.object(vmsdk, "_load_dotenv_into_env"):
+                return vmsdk.VM("ubuntu_new")
+
+    def _sync_pipe(self, vm, **kw):
+        calls = []
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            return mock.Mock(returncode=0, stderr="")
+        with mock.patch.object(vmsdk.subprocess, "run", side_effect=fake_run), \
+             mock.patch.object(vm, "run", return_value=(0, "")):
+            vm.sync_repo(r"C:\Users\x\himmel", **kw)
+        return str(calls[0][-1])
+
+    def test_default_excludes_carry_the_whole_secret_set(self):
+        pipe = self._sync_pipe(self._vm())
+        for g in (".env", ".env.*", "*.local.json"):
+            self.assertIn("--exclude=" + g, pipe)
+
+    def test_secret_globs_are_shell_quoted(self):
+        """An unquoted --exclude=*.local.json can be glob-expanded by the pipe's
+        bash before tar sees it, silently dropping the exclusion."""
+        pipe = self._sync_pipe(self._vm())
+        self.assertIn("'--exclude=*.local.json'", pipe)
+        self.assertIn("'--exclude=.env.*'", pipe)
+
+    def test_sync_repo_refuses_when_guest_scan_finds_a_secret(self):
+        """RED control: a caller-supplied exclude list that omits the secrets
+        (the pre-fix shape) leaves a .env on the guest; sync_repo must refuse."""
+        vm = self._vm()
+        with mock.patch.object(vmsdk.subprocess, "run",
+                               return_value=mock.Mock(returncode=0, stderr="")), \
+             mock.patch.object(vm, "run",
+                               return_value=(0, "/home/u/github/himmel/.env\n")):
+            with self.assertRaises(EnvironmentError) as cm:
+                vm.sync_repo(r"C:\Users\x\himmel", excludes=(".git",))
+        self.assertIn("REFUSING", str(cm.exception))
+
+    def test_caller_supplied_excludes_cannot_drop_the_secret_set(self):
+        """A custom excludes tuple used to REPLACE the defaults, so the secrets
+        crossed the boundary before the post-copy scan could refuse them."""
+        pipe = self._sync_pipe(self._vm(), excludes=(".git",))
+        import shlex  # tokens, not text: shlex.quote leaves a bare --exclude=.env unquoted
+        toks = shlex.split(pipe)
+        for g in (".env", ".env.*", "*.local.json", ".git"):
+            self.assertIn("--exclude=" + g, toks)
+
+    _STAGING = ("/tmp/himmel-symmetry-vm", "/tmp/himmel-luna-upgrade-vm")
+
+    def _snapshot_with(self, present=(), hits=None, tmp_errors=True):
+        """Run vm.snapshot against a fake guest. `present`: staging dirs that
+        exist; `hits`: {root: find output}; `tmp_errors`: a bare /tmp scan fails
+        like find on root-owned 0700 dirs (systemd-private-*)."""
+        vm = self._vm()
+        cmds = []
+        hits = hits or {}
+        def fake_run(cmd, *a, **k):
+            cmds.append(cmd)
+            if cmd.startswith("test -d "):
+                return (0, "") if cmd.split()[-1] in present else (1, "")
+            if " /tmp -xdev" in cmd and tmp_errors:
+                return (1, "find: '/tmp/systemd-private-x': Permission denied")
+            for root, out in hits.items():
+                if f" {root} " in cmd:
+                    return (0, out)
+            return (0, "")
+        with mock.patch.object(vmsdk.vbox, "is_running", return_value=True), \
+             mock.patch.object(vm, "run", side_effect=fake_run), \
+             mock.patch.object(vmsdk.vbox, "take_snapshot") as snap:
+            vm.snapshot("base")
+        return cmds, snap
+
+    def test_snapshot_scans_home_and_the_staging_dirs_only(self):
+        """The tracked VM scripts stage under two fixed /tmp dirs; those plus ~
+        are the scan surface. A bare /tmp scan is NOT (unreadable siblings)."""
+        cmds, snap = self._snapshot_with(present=self._STAGING)
+        scans = [c for c in cmds if c.startswith("find ")]
+        self.assertTrue(any(" ~ " in c for c in scans), scans)
+        for d in self._STAGING:
+            self.assertTrue(any(f" {d} " in c for c in scans), (d, scans))
+        self.assertFalse(any(" /tmp -xdev" in c for c in scans), scans)
+        snap.assert_called_once()
+
+    def test_snapshot_ignores_unreadable_tmp_siblings(self):
+        """find on all of /tmp exits non-zero on root-owned 0700 dirs, which
+        refused every clean running guest; absent staging dirs are skipped."""
+        cmds, snap = self._snapshot_with(present=())
+        snap.assert_called_once()
+        self.assertFalse(any(c.startswith("find ") and " /tmp/" in c for c in cmds), cmds)
+
+    def test_snapshot_refuses_a_secret_in_a_staging_dir(self):
+        d = self._STAGING[0]
+        with self.assertRaises(vmsdk.VMError) as cm:
+            self._snapshot_with(present=(d,), hits={d: d + "/scripts/.env\n"})
+        self.assertIn("REFUSING", str(cm.exception))
+
+    def test_snapshot_scans_staging_dirs_with_the_full_profile(self):
+        """A staging dir holds a host-staged tree, so the whole secret set
+        applies there (the env profile drops *.local.json, which is right only
+        for a guest home). The fake find reports the file only when the scan
+        command actually names *.local.json."""
+        d = self._STAGING[1]
+        vm = self._vm()
+        def fake_run(cmd, *a, **k):
+            if cmd.startswith("test -d "):
+                return (0, "") if cmd.split()[-1] == d else (1, "")
+            if f" {d} " in cmd and "-name '*.local.json'" in cmd:
+                return (0, d + "/.claude/settings.local.json\n")
+            return (0, "")
+        with mock.patch.object(vmsdk.vbox, "is_running", return_value=True), \
+             mock.patch.object(vm, "run", side_effect=fake_run), \
+             mock.patch.object(vmsdk.vbox, "take_snapshot") as snap:
+            with self.assertRaises(vmsdk.VMError) as cm:
+                vm.snapshot("base")
+        self.assertIn("REFUSING", str(cm.exception))
+        snap.assert_not_called()
+
+    def test_assert_guest_clean_clean_and_dirty_and_unscannable(self):
+        vm = self._vm()
+        with mock.patch.object(vm, "run", return_value=(0, "")):
+            self.assertIsNone(vm.assert_guest_clean("~", "env"))
+        with mock.patch.object(vm, "run", return_value=(0, "/home/u/.env\n")):
+            with self.assertRaises(vmsdk.VMError) as cm:
+                vm.assert_guest_clean("~", "env")
+        self.assertIn("REFUSING", str(cm.exception))
+        with mock.patch.object(vm, "run", return_value=(1, "find: cannot read\n")):
+            with self.assertRaises(vmsdk.VMError):
+                vm.assert_guest_clean("~", "env")
+
+    def test_assert_guest_clean_rejects_unsafe_root(self):
+        with self.assertRaises(vmsdk.VMError):
+            self._vm().assert_guest_clean("~; rm -rf /", "env")
+
+    def test_snapshot_refuses_dirty_guest_and_never_snapshots(self):
+        vm = self._vm()
+        with mock.patch.object(vmsdk.vbox, "is_running", return_value=True), \
+             mock.patch.object(vm, "run", return_value=(0, "/home/u/himmel-rc/.env\n")), \
+             mock.patch.object(vmsdk.vbox, "take_snapshot") as take:
+            with self.assertRaises(vmsdk.VMError):
+                vm.snapshot("base")
+        take.assert_not_called()
+
+    def test_snapshot_clean_guest_snapshots(self):
+        vm = self._vm()
+        with mock.patch.object(vmsdk.vbox, "is_running", return_value=True), \
+             mock.patch.object(vm, "run", return_value=(0, "")), \
+             mock.patch.object(vmsdk.vbox, "take_snapshot") as take:
+            vm.snapshot("base")
+        take.assert_called_once_with("ubuntu_new", "base")
+
+    def test_snapshot_of_powered_off_guest_is_refused(self):
+        """A guest that cannot be scanned is not a clean guest."""
+        vm = self._vm()
+        with mock.patch.object(vmsdk.vbox, "is_running", return_value=False), \
+             mock.patch.object(vmsdk.vbox, "take_snapshot") as take:
+            with self.assertRaises(vmsdk.VMError) as cm:
+                vm.snapshot("base")
+        take.assert_not_called()
+        self.assertIn("--no-secret-scan", str(cm.exception))
+
+    def test_snapshot_skip_flag_is_explicit_and_loud(self):
+        vm = self._vm()
+        with mock.patch.object(vmsdk.vbox, "take_snapshot") as take, \
+             mock.patch("sys.stderr") as err:
+            vm.snapshot("base", skip_secret_scan=True)
+        take.assert_called_once_with("ubuntu_new", "base")
+        self.assertIn("WARNING", "".join(str(c) for c in err.write.call_args_list))
+
+    def test_cli_snapshot_forwards_no_secret_scan(self):
+        with mock.patch.dict(os.environ,
+                             {"ubuntu_vm_user": "u", "ubuntu_vm_pass": "p"}, clear=False):
+            with mock.patch.object(vmsdk, "_load_dotenv_into_env"):
+                with mock.patch.object(vmsdk.VM, "snapshot") as snap:
+                    self.assertEqual(vmsdk.main(["ubuntu_new", "snapshot", "b", "--no-secret-scan"]), 0)
+                    snap.assert_called_once_with("b", skip_secret_scan=True)
+                with mock.patch.object(vmsdk.VM, "snapshot") as snap:
+                    self.assertEqual(vmsdk.main(["ubuntu_new", "snapshot", "b"]), 0)
+                    snap.assert_called_once_with("b", skip_secret_scan=False)
+
+    def test_scan_root_cannot_be_a_find_option(self):
+        """A leading-hyphen root becomes a find EXPRESSION: -quit scans nothing
+        (rc 0) and -delete deletes. Both spellings must refuse it."""
+        for bad in ("-quit", "-delete", "-H"):
+            for prof in ("full", "env"):
+                with self.assertRaises(vmsdk.VMError):
+                    vmsdk.secret_scan_cmd(bad, prof)
+
+    def test_push_file_refuses_the_whole_secret_set(self):
+        """push_file guarded only a .env* basename, so a *.local.json crossed the
+        boundary through the push CLI."""
+        vm = self._vm()
+        for name in ("settings.local.json", "x.local.json", ".env", ".env.prod"):
+            with self.assertRaises(vmsdk.VMError) as cm:
+                vm.push_file(name, "~/inbox/" + name, data=b"stub")
+            self.assertIn("refusing", str(cm.exception))
+
+    def test_assert_guest_clean_wraps_a_run_exception(self):
+        """An ssh failure during the scan must surface as the VMError contract
+        (REFUSING), not a raw exception out of the CLI handlers."""
+        vm = self._vm()
+        with mock.patch.object(vm, "run", side_effect=OSError("ssh down")):
+            with self.assertRaises(vmsdk.VMError) as cm:
+                vm.assert_guest_clean("~", "env")
+        self.assertIn("REFUSING", str(cm.exception))
+
+    def test_scan_follows_a_symlinked_root(self):
+        """find without -H lists only the link itself, so a root that is a
+        symlink to the checkout would scan as clean."""
+        for prof in ("full", "env"):
+            self.assertTrue(vmsdk.secret_scan_cmd("~/x", prof).startswith("find -H "))
+
+    def test_scan_command_parity_with_the_bash_helper(self):
+        """vmsdk and scripts/lib/vm-guest-excludes.sh are two spellings of one
+        boundary; this pins them together so neither drifts alone."""
+        import subprocess
+        lib = Path(__file__).resolve().parent / "vm-guest-excludes.sh"
+        for prof in ("full", "env"):
+            sh = subprocess.run(
+                ["bash", "-c", f'. "{lib}"; vm_guest_scan_cmd "~/x" {prof}'],
+                capture_output=True, text=True, check=True).stdout
+            self.assertEqual(vmsdk.secret_scan_cmd("~/x", prof), sh)
+        out = subprocess.run(["bash", "-c", f'. "{lib}"; vm_guest_tar_excludes'],
+                             capture_output=True, text=True, check=True).stdout.split()
+        self.assertEqual(out, ["--exclude=" + g for g in vmsdk.SECRET_EXCLUDES])
 
 
 class TestInstallPlugin(unittest.TestCase):
@@ -1347,7 +1581,8 @@ class TestStation(unittest.TestCase):
         def fake_run(argv, **kwargs):
             calls.append(argv)
             return mock.Mock(returncode=0, stderr="")
-        with mock.patch.object(vmsdk.subprocess, "run", side_effect=fake_run):
+        with mock.patch.object(vmsdk.subprocess, "run", side_effect=fake_run), \
+             mock.patch.object(vm, "run", return_value=(0, "")):
             vm.sync_repo(r"C:\Users\x\himmel")
         pipe = " ".join(str(a) for a in calls[0])
         self.assertIn("teststation", pipe)
@@ -1365,7 +1600,8 @@ class TestStation(unittest.TestCase):
         def fake_run(argv, **kwargs):
             calls.append(argv)
             return mock.Mock(returncode=0, stderr="")
-        with mock.patch.object(vmsdk.subprocess, "run", side_effect=fake_run):
+        with mock.patch.object(vmsdk.subprocess, "run", side_effect=fake_run), \
+             mock.patch.object(vm, "run", return_value=(0, "")):
             vm.sync_repo(r"C:\Users\x\himmel")
         pipe = " ".join(str(a) for a in calls[0])
         self.assertIn("testuser@teststation", pipe)
@@ -1378,7 +1614,8 @@ class TestStation(unittest.TestCase):
         def fake_run(argv, **kwargs):
             calls.append(argv)
             return mock.Mock(returncode=0, stderr="")
-        with mock.patch.object(vmsdk.subprocess, "run", side_effect=fake_run):
+        with mock.patch.object(vmsdk.subprocess, "run", side_effect=fake_run), \
+             mock.patch.object(vm, "run", return_value=(0, "")):
             vm.sync_repo(r"C:\Users\x\himmel")
         pipe = " ".join(str(a) for a in calls[0])
         self.assertNotIn("@teststation", pipe)
