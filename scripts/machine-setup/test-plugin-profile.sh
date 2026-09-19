@@ -104,11 +104,28 @@ if [ "${1:-}" = "plugin" ] && [ "${2:-}" = "list" ]; then
     project-only)
       printf 'Installed plugins:\n\n  ❯ od-a@mkt\n    Version: 1.0.0\n    Scope: project\n    Status: ✘ disabled\n'
       exit 0 ;;
+    dup-user-conflict)
+      printf 'Installed plugins:\n\n  ❯ od-a@mkt\n    Version: 1.0.0\n    Scope: user\n    Status: ✔ enabled\n\n  ❯ od-a@mkt\n    Version: 1.0.0\n    Scope: user\n    Status: ✘ disabled\n'
+      exit 0 ;;
+    dup-user-same)
+      printf 'Installed plugins:\n\n  ❯ od-a@mkt\n    Version: 1.0.0\n    Scope: user\n    Status: ✔ enabled\n\n  ❯ od-a@mkt\n    Version: 1.0.0\n    Scope: user\n    Status: ✔ enabled\n'
+      exit 0 ;;
   esac
   # STUB_LIVE: newline-separated "<spec> <enabled|disabled>"; a spec named
   # here is "installed at user scope"; a spec never named is "absent".
+  # STUB_OVERLAY records the enable/disable writes of THIS script run, so a
+  # post-write re-read sees the state the stub "wrote" (last write per spec
+  # wins). STUB_LIST_FAIL_AFTER_WRITE makes the re-read fail once a write
+  # happened; STUB_PROJECT_LIVE adds project-scope stanzas (a higher-precedence
+  # override that must never be read as user-scope state).
+  [ -n "${LIST_LOG:-}" ] && echo list >> "$LIST_LOG"
+  if [ -n "${STUB_LIST_FAIL_AFTER_WRITE:-}" ] && [ -s "${STUB_OVERLAY:-/dev/null}" ]; then
+    echo "stub: list boom after write" >&2; exit 3
+  fi
   printf 'Installed plugins:\n\n'
-  printf '%s\n' "${STUB_LIVE:-}" | while IFS=' ' read -r spec state; do
+  { printf '%s\n' "${STUB_LIVE:-}"; cat "${STUB_OVERLAY:-/dev/null}" 2>/dev/null; } \
+    | awk 'NF { if (!($1 in s)) order[++n] = $1; s[$1] = $2 } END { for (i = 1; i <= n; i++) print order[i], s[order[i]] }' \
+    | while IFS=' ' read -r spec state; do
     [ -z "$spec" ] && continue
     if [ "${STUB_CRLF:-0}" = 1 ]; then
       printf '❯ %s\r\n  Version: 1.0.0\r\n  Scope: user\r\n  Status: ● %s\r\n\r\n' "$spec" "$state"
@@ -116,10 +133,20 @@ if [ "${1:-}" = "plugin" ] && [ "${2:-}" = "list" ]; then
       printf '❯ %s\n  Version: 1.0.0\n  Scope: user\n  Status: ● %s\n\n' "$spec" "$state"
     fi
   done
+  printf '%s\n' "${STUB_PROJECT_LIVE:-}" | while IFS=' ' read -r spec state; do
+    [ -z "$spec" ] && continue
+    printf '❯ %s\n  Version: 1.0.0\n  Scope: project\n  Status: ● %s\n\n' "$spec" "$state"
+  done
   exit 0
 fi
 if [ "${1:-}" = "plugin" ] && { [ "${2:-}" = "enable" ] || [ "${2:-}" = "disable" ]; }; then
   echo "$*" >> "${CALL_LOG:?CALL_LOG not set for stub claude}"
+  # STUB_APPLY_MODE=noop: exit 0 without changing any state (the false-success
+  # shape the post-write re-read exists to catch). Default: record the write.
+  if [ "${STUB_APPLY_MODE:-mutate}" != noop ]; then
+    case "$2" in enable) _st=enabled ;; *) _st=disabled ;; esac
+    echo "$3 $_st" >> "${STUB_OVERLAY:-/dev/null}"
+  fi
   exit 0
 fi
 echo "stub: unhandled claude invocation: $*" >&2
@@ -130,8 +157,11 @@ chmod +x "$STUB_DIR/claude"
 CALL_LOG="$TMP/calls.log"
 : > "$CALL_LOG"
 
+LIST_LOG="$TMP/lists.log"
 run() {  # run <args...> — drives the real script with the stub claude on PATH
+  rm -f "$TMP/overlay"
   PATH="$STUB_DIR:$PATH" CALL_LOG="$CALL_LOG" STUB_LIVE="${STUB_LIVE:-}" STUB_LIST_FAIL="${STUB_LIST_FAIL:-}" STUB_CRLF="${STUB_CRLF:-0}" STUB_LIST_MODE="${STUB_LIST_MODE:-normal}" \
+    STUB_OVERLAY="$TMP/overlay" STUB_APPLY_MODE="${STUB_APPLY_MODE:-mutate}" STUB_LIST_FAIL_AFTER_WRITE="${STUB_LIST_FAIL_AFTER_WRITE:-}" STUB_PROJECT_LIVE="${STUB_PROJECT_LIVE:-}" LIST_LOG="$LIST_LOG" \
     bash "$script" "$@" 2>&1
 }
 
@@ -332,6 +362,19 @@ for bad_mode in garbage malformed-status malformed-stanza; do
 done
 STUB_LIST_MODE=normal
 
+# One stanza per (spec, scope): a repeated key is contradictory (bash would read
+# the sorted-first state, PowerShell the last) and must fail closed (HIMMEL-2801).
+for bad_mode in dup-user-conflict dup-user-same; do
+  : > "$CALL_LOG"
+  STUB_LIST_MODE="$bad_mode"
+  STUB_LIVE=""
+  out=$(run lean --template "$TMPL_LF"); rc=$?
+  assert_rc "$bad_mode duplicate (spec,scope) stanza fails closed" 1 "$rc"
+  assert_has "$bad_mode names the unrecognized list response" "unrecognized response" "$out"
+  assert_empty_file "$bad_mode causes no plugin writes" "$CALL_LOG"
+done
+STUB_LIST_MODE=normal
+
 # The real CLI's exact no-installed-plugins sentence is a supported empty map.
 : > "$CALL_LOG"
 STUB_LIST_MODE=valid-empty
@@ -360,6 +403,11 @@ out=$(run --help); rc=$?
 assert_rc "help exits 0" 0 "$rc"
 assert_has "bash help defines full as installed-only at user scope" "Enable every installed on-demand plugin at user scope" "$out"
 PS_PROFILE="$repo_root/scripts/machine-setup/plugin-profile.ps1"
+if grep -Fq "\$seen[\$key] = \$true" "$PS_PROFILE" && grep -Fq "\$seen.ContainsKey(\$key)" "$PS_PROFILE"; then
+  echo "PASS PowerShell twin rejects duplicate (spec,scope) stanzas (static parity)"
+else
+  echo "FAIL PowerShell twin lacks the duplicate (spec,scope) rejection"; FAILED=$((FAILED + 1))
+fi
 if grep -Fq 'Enable every installed on-demand plugin at user scope.' "$PS_PROFILE"; then
   echo "PASS PowerShell help defines full as installed-only at user scope"
 else
@@ -389,6 +437,100 @@ out=$(run lean --dry-run --template "$TMPL_LF"); rc=$?
 assert_rc "--dry-run exits 0" 0 "$rc"
 assert_has "--dry-run prints the DRY command" "DRY: claude plugin disable od-a@mkt --scope user" "$out"
 assert_empty_file "--dry-run issues no real writes" "$CALL_LOG"
+
+# ── 10b: --dry-run never re-reads: exactly the one initial `plugin list` ────
+: > "$LIST_LOG"
+out=$(run lean --dry-run --template "$TMPL_LF"); rc=$?
+assert_rc "--dry-run (list-count) exits 0" 0 "$rc"
+assert_lines_eq "--dry-run reads live state once and never re-reads" "$LIST_LOG" "list"
+
+# ── 10c: post-write re-read (HIMMEL-2801) — user-scope only ─────────────────
+# The CLI's exit status alone is not proof: the acknowledgement is printed only
+# after a re-read shows the requested USER-scope state.
+LIVE_OD=$'handover@himmel enabled\nhimmel-ops@himmel enabled\nqmd@himmel enabled\nod-a@mkt disabled'
+
+# successful state change: verified by the re-read, acknowledgement qualified
+: > "$CALL_LOG"; : > "$LIST_LOG"
+STUB_LIVE="$LIVE_OD"
+out=$(run enable od-a@mkt --template "$TMPL_LF"); rc=$?
+assert_rc "readback: successful change exits 0" 0 "$rc"
+assert_has "readback: success names the user-scope re-read" "re-read: enabled" "$out"
+assert_has "readback: success stays qualified (project/local may override)" "project/local settings may override effective state" "$out"
+assert_lines_eq "readback: the write path reads live state exactly twice" "$LIST_LOG" "list" "list"
+
+# exit-0 no-op with unchanged user state: NOT acknowledged, exit 1
+: > "$CALL_LOG"
+STUB_LIVE="$LIVE_OD"; STUB_APPLY_MODE=noop
+out=$(run enable od-a@mkt --template "$TMPL_LF"); rc=$?
+STUB_APPLY_MODE=
+assert_rc "readback: exit-0 no-op (state unchanged) exits 1" 1 "$rc"
+assert_has "readback: no-op names the unchanged user state" "still disabled at user scope" "$out"
+assert_not_has "readback: no-op is never acknowledged as changed" "user scope changed" "$out"
+
+# readback failure: the write ran but cannot be verified — fail closed, exit 1
+: > "$CALL_LOG"
+STUB_LIVE="$LIVE_OD"; STUB_LIST_FAIL_AFTER_WRITE=1
+out=$(run enable od-a@mkt --template "$TMPL_LF"); rc=$?
+STUB_LIST_FAIL_AFTER_WRITE=
+assert_rc "readback: failed re-read exits 1" 1 "$rc"
+assert_has "readback: failed re-read says the change is unverified" "could not verify" "$out"
+assert_not_has "readback: failed re-read is never acknowledged as changed" "user scope changed" "$out"
+
+# higher-precedence project override: user state is what is verified and
+# claimed; the project stanza never stands in for it, in either direction
+: > "$CALL_LOG"
+STUB_LIVE="$LIVE_OD"; STUB_PROJECT_LIVE=$'od-a@mkt disabled'
+out=$(run enable od-a@mkt --template "$TMPL_LF"); rc=$?
+assert_rc "readback: project override does not fail a real user-scope change" 0 "$rc"
+assert_has "readback: project override still qualified in the acknowledgement" "project/local settings may override effective state" "$out"
+: > "$CALL_LOG"
+STUB_LIVE="$LIVE_OD"; STUB_PROJECT_LIVE=$'od-a@mkt enabled'; STUB_APPLY_MODE=noop
+out=$(run enable od-a@mkt --template "$TMPL_LF"); rc=$?
+STUB_APPLY_MODE=; STUB_PROJECT_LIVE=
+assert_rc "readback: project-effective state is never read as user state" 1 "$rc"
+assert_has "readback: project-masked no-op still reports the unchanged user state" "still disabled at user scope" "$out"
+
+# bulk: one no-op write fails the aggregate; the rest are still attempted
+: > "$CALL_LOG"
+STUB_LIVE=$'handover@himmel enabled\nhimmel-ops@himmel enabled\nqmd@himmel enabled\nod-a@mkt enabled\nod-b@mkt enabled\nod-c@mkt disabled'; STUB_APPLY_MODE=noop
+out=$(run lean --template "$TMPL_LF"); rc=$?
+STUB_APPLY_MODE=
+assert_rc "readback: bulk lean with false-success writes exits 1" 1 "$rc"
+assert_lines_eq "readback: bulk still attempts every needed write" "$CALL_LOG" \
+  "plugin disable od-a@mkt --scope user" "plugin disable od-b@mkt --scope user"
+assert_not_has "readback: bulk never acknowledges an unverified write" "user scope changed" "$out"
+
+# ── 10d: exit contract (HIMMEL-2801) — bulk aggregate vs single refusal ─────
+# single `disable <floor>` = refused spec = 2 (case 7); bulk `lean` that
+# refuses a floor plugin = aggregate "requested state not fully reached" = 1.
+# Floor protection is the same either way: no write is ever issued for it.
+TMPL_FLOOR_ONLY="$TMP/settings-template-floor-only.json"
+printf '%s\n' '{"enabledPlugins":{"qmd@himmel":true},"onDemandPlugins":{"qmd@himmel":{"neededBy":"floor-only"}}}' > "$TMPL_FLOOR_ONLY"
+: > "$CALL_LOG"
+STUB_LIVE=$'handover@himmel enabled\nhimmel-ops@himmel enabled\nqmd@himmel enabled'
+out=$(run lean --template "$TMPL_FLOOR_ONLY"); rc=$?
+assert_rc "contract: bulk lean refusing a floor plugin exits 1 (aggregate)" 1 "$rc"
+assert_empty_file "contract: bulk floor refusal issues no write" "$CALL_LOG"
+: > "$CALL_LOG"
+out=$(run disable qmd@himmel --template "$TMPL_FLOOR_ONLY"); rc=$?
+assert_rc "contract: single disable of the same floor plugin exits 2 (refused spec)" 2 "$rc"
+assert_empty_file "contract: single floor refusal issues no write" "$CALL_LOG"
+out=$(run --help); rc=$?
+assert_has "contract: bash help documents the bulk aggregate exit" "lean/full: any per-plugin write refused (floor) or failed" "$out"
+assert_has "contract: bash help documents single-spec floor refusal as 2" "single disable <spec> refused by the floor" "$out"
+assert_has "contract: bash help documents the post-write re-read" "re-read" "$out"
+for phrase in 'lean/full: any per-plugin write refused (floor) or failed' 'single disable <spec> refused by the floor'; do
+  if [ "$(grep -Fc -- "$phrase" "$PS_PROFILE")" -ge 2 ]; then
+    echo "PASS PowerShell header + usage text both document: $phrase"
+  else
+    echo "FAIL PowerShell header + usage text must both document: $phrase"; FAILED=$((FAILED + 1))
+  fi
+done
+if grep -Fq 'Read-LiveMap' "$PS_PROFILE" && grep -Fq "still \$got at user scope" "$PS_PROFILE" && grep -Fq 'could not verify' "$PS_PROFILE"; then
+  echo "PASS PowerShell twin carries the post-write re-read (static parity)"
+else
+  echo "FAIL PowerShell twin lacks the post-write re-read"; FAILED=$((FAILED + 1))
+fi
 
 # ── CRLF list output must not turn installed plugins into absent no-ops ────
 STUB_CRLF=1

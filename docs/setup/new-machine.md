@@ -1426,6 +1426,14 @@ refuses the three harness-operational plugins `handover@himmel`,
 `himmel-ops@himmel`, `qmd@himmel` — disabling any of them would break the
 session running the command.
 
+Each write is verified: after `claude plugin enable|disable` the script re-reads
+`claude plugin list` and confirms the **user-scope** state, so an exit-0 no-op is
+reported rather than acknowledged (project/local state is never read as user
+state; those settings may still override the effective state). Exit codes: `0`
+reached (or already there); `1` a CLI call failed, the state could not be read
+or verified, or a bulk `lean`/`full` had any write refused (floor) or failed;
+`2` usage error or a single `disable <spec>` refused by the floor.
+
 | On-demand plugin | Needed by | Enable |
 |---|---|---|
 | `context7@claude-plugins-official` | `/find-docs` and the context7-mcp skill — live library/API documentation lookups | `plugin-profile.sh enable context7` |

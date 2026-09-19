@@ -46,8 +46,23 @@
 #
 # Exit codes:
 #   0  the requested state was reached (including a no-op — already there)
-#   1  a `claude plugin` call failed, or the live state could not be read
-#   2  usage error (unknown verb/flag, unknown or ambiguous <spec>, refused spec)
+#   1  a `claude plugin` call failed, or the live state could not be read, or a
+#      write exited 0 but the post-write re-read of `claude plugin list` did not
+#      show the requested USER-scope state (or could not be re-read); also the
+#      bulk aggregate — lean/full: any per-plugin write refused (floor) or failed
+#   2  usage error (unknown verb/flag, unknown or ambiguous <spec>), or a
+#      single disable <spec> refused by the floor
+#
+# Bulk vs single: `lean`/`full` attempt every target and report "requested state
+# not fully reached" as 1; a single `disable <spec>` is refused before any attempt
+# and reports 2. Floor protection is identical either way: a floor plugin is never
+# disabled and no write is issued for it.
+#
+# Post-write verification: after each `claude plugin enable|disable` the script
+# re-reads `claude plugin list` and checks the USER-scope stanza only. It never
+# reads project/local state as user state, so "user scope changed" is a verified
+# claim about user scope alone; project/local settings may still override the
+# effective state. --dry-run performs no write and no re-read.
 #
 # plugin-profile.sh is the bash twin — keep the resolution + refusal rules in
 # lockstep. Verbs/flags are positional + intermixed (like the bash getopts
@@ -103,8 +118,12 @@ Flags:
 
 Exit codes:
   0  the requested state was reached (including a no-op - already there)
-  1  a `claude plugin` call failed, or the live state could not be read
-  2  usage error (unknown verb/flag, unknown or ambiguous <spec>, refused spec)
+  1  a `claude plugin` call failed, or the live state could not be read, or a
+     write exited 0 but the post-write re-read of `claude plugin list` did not
+     show the requested USER-scope state (or could not be re-read); also the
+     bulk aggregate - lean/full: any per-plugin write refused (floor) or failed
+  2  usage error (unknown verb/flag, unknown or ambiguous <spec>), or a
+     single disable <spec> refused by the floor
 '@
 function Show-Usage { Write-Host $UsageText }
 
@@ -199,9 +218,9 @@ if ($listRc -ne 0) {
 # and must not make lean/full report a false no-op. The supported empty response
 # is the real CLI's exact sentence; non-empty output is the observed header plus
 # complete Version/Scope/Status stanzas. TrimEnd handles native CRLF capture.
-function Stop-UnrecognizedList {
-  Die "plugin-profile: 'claude plugin list' returned an unrecognized response -- cannot read live plugin state" 1
-}
+# Throws (rather than exiting) so the post-write re-read can report "unverified"
+# instead of dying; the startup read below turns the throw into the exit-1 Die.
+function Stop-UnrecognizedList { throw 'unrecognized claude plugin list response' }
 function Get-LiveMap([object[]]$Lines) {
   $clean = @($Lines | ForEach-Object { ([string]$_).TrimEnd("`r") })
   if ($clean.Count -eq 1 -and $clean[0] -ceq 'No plugins installed. Use `claude plugin install` to install a plugin.') {
@@ -210,6 +229,7 @@ function Get-LiveMap([object[]]$Lines) {
   if ($clean.Count -eq 0 -or $clean[0] -cne 'Installed plugins:') { Stop-UnrecognizedList }
 
   $map = @{}
+  $seen = @{}
   $spec = $null
   $scope = $null
   $stage = 0
@@ -242,6 +262,10 @@ function Get-LiveMap([object[]]$Lines) {
     if ($line -match '^\s*Status:\s+\S+\s+(enabled|disabled)\s*$') {
       if ($stage -ne 3) { Stop-UnrecognizedList }
       $state = $Matches[1]
+      # One stanza per (spec, scope): a repeat is contradictory, never last-wins.
+      $key = "$spec|$scope"
+      if ($seen.ContainsKey($key)) { Stop-UnrecognizedList }
+      $seen[$key] = $true
       if ($scope -ceq 'user') { $map[$spec] = $state }
       $stage = 0
       continue
@@ -251,7 +275,19 @@ function Get-LiveMap([object[]]$Lines) {
   if ($stage -ne 0 -or $count -eq 0) { Stop-UnrecognizedList }
   return $map
 }
-$LiveMap = Get-LiveMap $listOutput
+try { $LiveMap = Get-LiveMap $listOutput } catch {
+  Die "plugin-profile: 'claude plugin list' returned an unrecognized response -- cannot read live plugin state" 1
+}
+
+# Post-write re-read (HIMMEL-2801): the same fail-closed parse, but $null instead
+# of an exit so Invoke-Apply can report the write as unverified.
+function Read-LiveMap {
+  try {
+    $raw = @(& claude plugin list 2>&1)
+    if ($LASTEXITCODE -ne 0) { return $null }
+    return (Get-LiveMap $raw)
+  } catch { return $null }
+}
 
 function Get-LiveState([string]$spec) {
   if ($LiveMap.ContainsKey($spec)) { return $LiveMap[$spec] }
@@ -306,7 +342,23 @@ function Invoke-Apply([string]$Action, [string]$SpecArg) {
     $out | ForEach-Object { [Console]::Error.WriteLine("    $_") }
     return $false
   }
-  Write-Host "  user scope changed: $Action $SpecArg; project/local settings may override effective state"
+  # The CLI's exit status is not proof the write landed. Re-read the list and
+  # check the USER-scope state the caller asked for (HIMMEL-2801): an exit-0
+  # no-op or a list we cannot re-read is reported, never acknowledged. Only the
+  # user-scope stanza is compared -- project/local state is never read as it.
+  $wantState = if ($Action -eq 'enable') { 'enabled' } else { 'disabled' }
+  $after = Read-LiveMap
+  if ($null -eq $after) {
+    [Console]::Error.WriteLine("plugin-profile: 'claude plugin $Action $SpecArg --scope user' exited 0 but could not verify the change: 'claude plugin list' could not be re-read; user-scope state of $SpecArg is unknown.")
+    return $false
+  }
+  $script:LiveMap = $after
+  $got = Get-LiveState $SpecArg
+  if ($got -ne $wantState) {
+    [Console]::Error.WriteLine("plugin-profile: 'claude plugin $Action $SpecArg --scope user' exited 0 but $SpecArg is still $got at user scope (wanted $wantState).")
+    return $false
+  }
+  Write-Host "  user scope changed: $Action $SpecArg (re-read: $got); project/local settings may override effective state"
   return $true
 }
 
