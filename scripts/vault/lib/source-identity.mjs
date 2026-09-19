@@ -1,6 +1,7 @@
 // Pure logic for scripts/vault/backfill-source-identity.mjs (HIMMEL-3055).
 // No I/O here — every function takes plain data in and returns plain data out,
 // so it is unit-testable without a vault, a network, or gh.
+import { createHash } from "node:crypto";
 
 /**
  * Parse a github repo source URL into { owner, repo }, or null if it is not
@@ -51,6 +52,19 @@ export function applyCanonicalRenames(groupedByRawKey, canonicalByRawKey) {
     }
   }
   return { merged, renames };
+}
+
+/**
+ * sha256 of the README bytes from the README API's `.content` (base64, wrapped
+ * with embedded newlines). Mirrors luna-ingest's `tr -d '\n' | base64 -d |
+ * sha256sum`, so backfill and ingest hash the same document. Null when there
+ * is no API reply at all (404 / non-string) — an absent README is an absent
+ * field, never a hash of empty bytes.
+ */
+export function readmeSha256FromApiContent(content) {
+  if (typeof content !== "string") return null;
+  const decoded = Buffer.from(content.replace(/\n/g, ""), "base64");
+  return createHash("sha256").update(decoded).digest("hex");
 }
 
 function formatDelta(label, oldVal, newVal) {

@@ -23,9 +23,9 @@
 import { readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import {
   parseGithubSource,
+  readmeSha256FromApiContent,
   groupNotesByRepo,
   applyCanonicalRenames,
   buildIdentityFields,
@@ -153,15 +153,20 @@ function ghGraphqlBatch(rawKeys) {
   return { ghDataByRawKey, canonicalNameByRawKey, apiCalls };
 }
 
-async function fetchReadmeSha256(nameWithOwner) {
-  const url = `https://raw.githubusercontent.com/${nameWithOwner}/HEAD/README.md`;
+// Authenticated README API — the same endpoint luna-ingest reads — so private
+// repos and non-standard README names resolve and both paths hash one document.
+// ponytail: a README over the API's 1 MB inline limit returns empty `.content`,
+// which hashes as empty bytes here exactly as it does in luna-ingest.
+function fetchReadmeSha256(nameWithOwner) {
   try {
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    const buf = Buffer.from(await res.arrayBuffer());
-    return createHash("sha256").update(buf).digest("hex");
+    const out = execFileSync("gh", ["api", `repos/${nameWithOwner}/readme`, "--jq", ".content"], {
+      encoding: "utf8",
+      maxBuffer: 32 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return readmeSha256FromApiContent(out);
   } catch {
-    return null;
+    return null; // 404 (no README) or gh failure: omit the field
   }
 }
 
@@ -209,8 +214,7 @@ async function main() {
     const newPushedAtDate = upstreamPushedAt ? upstreamPushedAt.slice(0, 10) : null;
     const newStars = typeof gh.stargazerCount === "number" ? gh.stargazerCount : null;
 
-    // eslint-disable-next-line no-await-in-loop
-    const readmeSha256 = await fetchReadmeSha256(gh.nameWithOwner);
+    const readmeSha256 = fetchReadmeSha256(gh.nameWithOwner);
 
     const hasTechNote = entry.notes.some((n) => n.path.startsWith("30-Resources/Tech/"));
     if (!hasTechNote) clipOnlyRepos.push(canonicalKey);
