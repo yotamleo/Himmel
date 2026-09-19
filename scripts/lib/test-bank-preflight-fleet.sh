@@ -490,7 +490,8 @@ mk_argv_stub() { # <dir> <pid> <ps-visible -n value> <exact -n value>
 # p_live <slots> <ps-visible> <exact>: informational read with one live session.
 p_live() {
   local pp
-  pp="$(mktemp -d "$W/ps-p.XXXXXX")"; mk_argv_stub "$pp" 9001 "$2" "$3"
+  pp="$(mktemp -d "$W/ps-p.XXXXXX")" || { echo "FAIL - could not create ps-p scratch dir" >&2; exit 1; }
+  mk_argv_stub "$pp" 9001 "$2" "$3"
   : > "$W/err.log"
   run_pf "$1" "$pp" HIMMEL_FLEET_CAP=4 >/dev/null
 }
@@ -542,10 +543,21 @@ p_case "p5b live name embedding a second line" "HIMMEL-9606-b" "HIMMEL-9605-a?HI
 # an identity ("foo/bar<LF>other" read as "foo/bar").
 for p6 in "$(printf 'HIMMEL-9607/x\nother')" "$(printf 'HIMMEL-9608\tx')" "$(printf 'HIMMEL-9609\rx')"; do
   slots_p6="$(mktemp -d "$W/slots-p6.XXXXXX")" || { echo "FAIL - could not create slots-p6 scratch dir" >&2; exit 1; }
+  : > "$W/ledger.jsonl"
   p6_out="$(run_pf "$slots_p6" "$p0" CADENCE_BANK_LAUNCH=1 CADENCE_BANK_LEG="$p6" HIMMEL_FLEET_CAP=4)"
   check "(p6) a control character in the leg name -> SKIPPED-FLEET, not PROCEED" SKIPPED-FLEET "$p6_out"
   check "(p6) no reservation left behind for a control-character name" 0 "$(count_resv "$slots_p6")"
+  # The refusal is recorded in the JSONL ledger: the rejected name must not split
+  # the record (newline) or put a raw control character inside the JSON string.
+  check "(p6) the ledger gets exactly one record for the refused name" 1 "$(grep -c '' "$W/ledger.jsonl")"
+  check "(p6) the ledger record carries no raw control character" 0 "$(tr -d '\n' < "$W/ledger.jsonl" | tr -cd '[:cntrl:]' | wc -c | tr -d ' ')"
 done
+# p6b: same class, no control character — a quote or backslash in the leg name
+# must be escaped in the ledger record, not close the JSON string early.
+slots_p6b="$(mktemp -d "$W/slots-p6b.XXXXXX")" || { echo "FAIL - could not create slots-p6b scratch dir" >&2; exit 1; }
+: > "$W/ledger.jsonl"
+run_pf "$slots_p6b" "$p0" CADENCE_BANK_LAUNCH=1 CADENCE_BANK_LEG='HIMMEL-9611"x\y' HIMMEL_FLEET_CAP=4 >/dev/null
+check "(p6b) a quote/backslash in the leg name is escaped in the ledger record" 1 "$(grep -cF 'HIMMEL-9611\"x\\y' "$W/ledger.jsonl")"
 # p7: a PRE-EXISTING (forged / older-copy) name file whose second line differs
 # is not read as its first line: it must not consume the live `HIMMEL-9610/x`.
 slots_p7="$(mktemp -d "$W/slots-p7.XXXXXX")" || { echo "FAIL - could not create slots-p7 scratch dir" >&2; exit 1; }

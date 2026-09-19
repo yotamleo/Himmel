@@ -64,8 +64,13 @@ is_int() { case "$1" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
 emit() {
   [ -d "$LEDGER_DIR" ] || mkdir -p "$LEDGER_DIR" 2>/dev/null
   degraded=false; [ "$usable" -eq 1 ] && degraded=true
+  # HIMMEL-3216: $LEG is caller-controlled and lands inside a JSON string — a
+  # newline would split the record and a control character, quote or backslash
+  # would make it invalid JSONL. Control characters become `?` (the ps view's own
+  # convention), then `\` and `"` are escaped.
+  _leg_json="$(printf '%s' "$LEG" | tr '[:cntrl:]' '?' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
   printf '{"ts":"%s","leg":"%s","verdict":"%s","five_hour":"%s","seven_day":"%s","age":"%s","degraded":%s}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$LEG" "$1" "${fh:-}" "${sd:-}" "${age:-}" "$degraded" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_leg_json" "$1" "${fh:-}" "${sd:-}" "${age:-}" "$degraded" \
     >> "$LEDGER" 2>/dev/null
   printf '%s\n' "$1"
   exit 0
