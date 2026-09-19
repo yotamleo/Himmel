@@ -682,7 +682,7 @@ EXTRACTION_LOCK_TOKEN=""
 # >>> HIMMEL-2731 extraction lock protocol -- sliced VERBATIM out of this file
 # by test-refresh-graph-map-lock.sh (T11) and sourced there, so the contention
 # harness drives the shipped functions rather than a copy. Keep these three
-# functions contiguous between the markers, and keep them dependent only on
+# functions (plus the test seam) contiguous between the markers, and keep them dependent only on
 # EXTRACTION_LOCK / EXTRACTION_LOCK_TIMEOUT_SECONDS /
 # EXTRACTION_LOCK_STALE_SECONDS / EXTRACTION_LOCK_HELD / EXTRACTION_LOCK_TOKEN.
 #
@@ -704,12 +704,55 @@ _extraction_lock_release() {
   fi
 }
 
-# _extraction_lock_takeover <reason> -- single-winner takeover, same
-# atomic-rename protocol as _promote_lock_takeover (below): exactly one
+# _extraction_lock_test_seam -- test-only (HIMMEL-2618), default OFF: when
+# GRAPHIFY_EXTRACTION_TEST_TAKEOVER_GATE names a directory, the FIRST contender
+# to reach a takeover mkdirs "$gate/first", touches "$gate/paused" and blocks
+# (bounded ~15s) until "$gate/go" exists -- i.e. between having judged the lock
+# stale and the sideline mv -- so a test can force a rival's complete
+# takeover+acquire into that window deterministically instead of by load.
+# Every later contender (and every run without the env var) passes straight
+# through.
+_extraction_lock_test_seam() {
+  local gate="${GRAPHIFY_EXTRACTION_TEST_TAKEOVER_GATE:-}" i=0
+  [ -n "$gate" ] || return 0
+  mkdir "$gate/first" 2>/dev/null || return 0
+  : > "$gate/paused"
+  while [ ! -e "$gate/go" ] && [ "$i" -lt 1500 ]; do
+    sleep 0.01
+    i=$((i + 1))
+  done
+  return 0
+}
+
+# _extraction_lock_takeover <reason> <judged-owner> -- single-winner takeover,
+# same atomic-rename protocol as _promote_lock_takeover (below): exactly one
 # contender's mv succeeds; the loser just loops back to the mkdir spin.
+#
+# HIMMEL-2618: the mv alone is NOT enough. Between a contender judging the
+# lock stale and its mv, a rival can complete a whole takeover+acquire, so the
+# mv would sideline the rival's LIVE lock and both would then run extraction.
+# <judged-owner> is the owner token read (before the stamp) from the directory
+# that was judged stale -- empty when it had none. After the mv the sidelined
+# directory's owner must still be that token; otherwise what we grabbed is not
+# what we judged, so put it back (its holder never learns it was touched) and
+# report "not taken over". Only a verified-identical directory is reaped.
+# Residual, accepted: a restore that finds its slot already re-mkdir'd drops
+# the sideline (that holder was superseded by the new mkdir anyway), and the
+# microsecond mv->restore gap is not closed by mkdir alone.
 _extraction_lock_takeover() {
-  local sideline="$EXTRACTION_LOCK.stale.$$.$RANDOM"
+  local sideline="$EXTRACTION_LOCK.stale.$$.$RANDOM" got=""
+  _extraction_lock_test_seam
   if mv "$EXTRACTION_LOCK" "$sideline" 2>/dev/null; then
+    got=$(cat "$sideline/owner" 2>/dev/null) || got=""
+    if [ "$got" != "$2" ]; then
+      if [ ! -e "$EXTRACTION_LOCK" ] && mv "$sideline" "$EXTRACTION_LOCK" 2>/dev/null; then
+        echo "refresh-graph-map: extraction lock $EXTRACTION_LOCK was replaced by a live holder before our takeover landed -- restored it, not proceeding with the takeover" >&2
+      else
+        rm -rf "$sideline" 2>/dev/null || true
+        echo "refresh-graph-map: extraction lock $EXTRACTION_LOCK was replaced before our takeover landed and its slot is already re-taken -- dropped the sidelined copy, not proceeding with the takeover" >&2
+      fi
+      return 1
+    fi
     echo "refresh-graph-map: WARN extraction lock $EXTRACTION_LOCK $1 -- taking over" >&2
     rm -rf "$sideline" 2>/dev/null || true
     return 0
@@ -735,27 +778,44 @@ _extraction_lock_takeover() {
 # Same mkdir+stamp+grace-window algorithm PROMOTE_LOCK ships with (below)
 # gets the identical owner-publication fix.
 #
-# Residual (accepted, SAME class already documented + shipped for
-# PROMOTE_LOCK -- CR follow-up, codex-2/codex-3 @ HIMMEL-1653 paid panel):
-# the `date -u +%s > "$EXTRACTION_LOCK/acquired" 2>/dev/null || true`
-# write below can itself fail (disk full, permissions) and is swallowed
-# -- a genuinely LIVE, PUBLISHED holder with no readable stamp reads
-# identically to a crashed one, so its directory can still be sidelined
-# by the 5-poll grace-window takeover. Not hardened further here (a real
-# lock-protocol redesign, e.g. staging owner+acquired atomically together,
-# is out of proportion to this ticket; promote lock's own acquired-write
-# (below) has the identical `|| true` swallow and would need the same
-# treatment to stay consistent).
+# HIMMEL-2618: the acquired-stamp write is no longer swallowed (it used to
+# `|| true`, so a failed stamp left a LIVE, PUBLISHED holder reading as a
+# crashed one to the 5-poll grace-window takeover): a failed stamp now fails
+# closed, and holding is only claimed after re-reading our own token back
+# from the directory (verify-after-stamp). Takeover is identity-checked
+# against the owner token judged stale (see _extraction_lock_takeover).
+# Residual (accepted): the promote lock's own acquired-write (below) still
+# has the `|| true` swallow -- it is not reachable by two live invocations
+# (the extraction lock serialises them first, T10) and is out of this scope.
 _extraction_lock_acquire() {
-  local waited=0 missing_polls=0 held_at now age token
+  local waited=0 missing_polls=0 held_at now age token judged_owner cur
   while :; do
     if mkdir "$EXTRACTION_LOCK" 2>/dev/null; then
       token="$$-$RANDOM"
       if ( set -C; printf '%s\n' "$token" > "$EXTRACTION_LOCK/owner" ) 2>/dev/null; then
-        date -u +%s > "$EXTRACTION_LOCK/acquired" 2>/dev/null || true
-        EXTRACTION_LOCK_TOKEN="$token"
-        EXTRACTION_LOCK_HELD=1
-        return 0
+        # HIMMEL-2618 verify-after-stamp: the stamp is part of holding, so a
+        # failed stamp write is not swallowed, and holding is only claimed if
+        # the directory still carries OUR owner token afterwards -- a takeover
+        # that sidelined us mid-acquire leaves it missing or someone else's.
+        if date -u +%s > "$EXTRACTION_LOCK/acquired" 2>/dev/null; then
+          cur=$(cat "$EXTRACTION_LOCK/owner" 2>/dev/null) || cur=""
+          if [ "$cur" = "$token" ]; then
+            EXTRACTION_LOCK_TOKEN="$token"
+            EXTRACTION_LOCK_HELD=1
+            return 0
+          fi
+          continue
+        fi
+        cur=$(cat "$EXTRACTION_LOCK/owner" 2>/dev/null) || cur=""
+        if [ "$cur" = "$token" ]; then
+          # a genuine stamp-write failure (disk full, permissions) while the
+          # directory is still ours: a stamp-less lock would only be
+          # reclaimed by the grace-window takeover, so fail closed instead.
+          rm -rf "$EXTRACTION_LOCK" 2>/dev/null || true
+          echo "refresh-graph-map: extraction lock $EXTRACTION_LOCK: could not write the acquired stamp -- refusing to start (out dir: $OUT_DIR)" >&2
+          return 1
+        fi
+        continue
       fi
       # LOST: the noclobber owner write failed -- either a takeover moved
       # the directory away while we were paused between mkdir and this
@@ -767,6 +827,10 @@ _extraction_lock_acquire() {
       # EXTRACTION_LOCK_TIMEOUT_SECONDS.
       continue
     fi
+    # HIMMEL-2618: read the owner BEFORE the stamp -- if the directory is
+    # replaced between the two reads, the fresh replacement's stamp fails the
+    # staleness judgement instead of pairing a stale stamp with a new owner.
+    judged_owner=$(cat "$EXTRACTION_LOCK/owner" 2>/dev/null) || judged_owner=""
     held_at=$(cat "$EXTRACTION_LOCK/acquired" 2>/dev/null) || held_at=""
     case "$held_at" in ''|*[!0-9]*) held_at="" ;; esac
     if [ -n "$held_at" ]; then
@@ -774,7 +838,7 @@ _extraction_lock_acquire() {
       now=$(date -u +%s)
       age=$(( now - held_at ))
       if [ "$age" -ge "$EXTRACTION_LOCK_STALE_SECONDS" ]; then
-        if _extraction_lock_takeover "is stale (age ${age}s >= ${EXTRACTION_LOCK_STALE_SECONDS}s)"; then
+        if _extraction_lock_takeover "is stale (age ${age}s >= ${EXTRACTION_LOCK_STALE_SECONDS}s)" "$judged_owner"; then
           continue
         fi
       fi
@@ -782,7 +846,7 @@ _extraction_lock_acquire() {
       missing_polls=$((missing_polls + 1))
       if [ "$missing_polls" -ge 5 ]; then
         missing_polls=0
-        if _extraction_lock_takeover "has no readable acquired stamp after a ~5s grace window (holder crashed between mkdir and stamp?)"; then
+        if _extraction_lock_takeover "has no readable acquired stamp after a ~5s grace window (holder crashed between mkdir and stamp?)" "$judged_owner"; then
           continue
         fi
       fi

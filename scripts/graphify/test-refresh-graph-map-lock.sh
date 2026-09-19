@@ -273,21 +273,41 @@ printf '%s\n' "$STALE_AT4" > "$OUT4/.extraction.lock/acquired"
 GBIN4="$WS/g4bin"; make_stub "$GBIN4" "G"
 HBIN4="$WS/h4bin"; make_stub "$HBIN4" "H"
 
+# HIMMEL-2618: the interleaving is FORCED, not left to load. The test-only
+# takeover gate parks the FIRST contender to judge the lock stale just before
+# its sideline mv; the other contender then runs its whole takeover+acquire
+# and is holding a LIVE lock when the parked one is released -- whose mv then
+# lands on that live lock (the pre-fix "got 2" takeovers / overlapping holds).
+GATE4="$WS/gate4"; mkdir -p "$GATE4"
 START4=$(date -u +%s)
 GRAPHIFY_MAP_BIN="$GBIN4/graphify" PATH="$GBIN4:$PATH" \
   GRAPHIFY_EXTRACTION_LOCK_STALE_SECONDS=300 GRAPHIFY_EXTRACTION_TEST_HOLD_SECONDS=5 \
-  GRAPHIFY_EXTRACTION_LOCK_TIMEOUT_SECONDS=60 \
+  GRAPHIFY_EXTRACTION_LOCK_TIMEOUT_SECONDS=60 GRAPHIFY_EXTRACTION_TEST_TAKEOVER_GATE="$GATE4" \
   bash "$SCRIPT" --name lock4 --corpus-root "$CORPUS4" --backend claude \
   --maps-dir "$MAPS4" --title "Lock Map 4" --slug lock-map-4 --corpus-tag lock4 \
   > "$WS/g4.out" 2> "$WS/g4.err" &
 GPID=$!
 GRAPHIFY_MAP_BIN="$HBIN4/graphify" PATH="$HBIN4:$PATH" \
   GRAPHIFY_EXTRACTION_LOCK_STALE_SECONDS=300 GRAPHIFY_EXTRACTION_TEST_HOLD_SECONDS=5 \
-  GRAPHIFY_EXTRACTION_LOCK_TIMEOUT_SECONDS=60 \
+  GRAPHIFY_EXTRACTION_LOCK_TIMEOUT_SECONDS=60 GRAPHIFY_EXTRACTION_TEST_TAKEOVER_GATE="$GATE4" \
   bash "$SCRIPT" --name lock4 --corpus-root "$CORPUS4" --backend claude \
   --maps-dir "$MAPS4" --title "Lock Map 4" --slug lock-map-4 --corpus-tag lock4 \
   > "$WS/h4.out" 2> "$WS/h4.err" &
 HPID=$!
+# Release the parked contender only once the other one holds a live lock:
+# an owner file appears (the stale fixture has none) AND a fresh stamp is
+# readable (>= START4; the fixture's own stamp is far older).
+i=0
+while [ "$i" -lt 1500 ]; do
+  live4=$(cat "$OUT4/.extraction.lock/acquired" 2>/dev/null) || live4=0
+  case "$live4" in ''|*[!0-9]*) live4=0 ;; esac
+  [ -e "$GATE4/paused" ] && [ -f "$OUT4/.extraction.lock/owner" ] && [ "$live4" -ge "$START4" ] && break
+  sleep 0.01
+  i=$((i + 1))
+done
+[ "$i" -lt 1500 ] && pass "T4 forced interleave reached: one contender parked at the takeover seam, the other holds a live lock" \
+  || fail "T4 setup: never reached the forced interleave (paused=$([ -e "$GATE4/paused" ] && echo y || echo n))"
+: > "$GATE4/go"
 wait "$GPID"; rc_g=$?
 wait "$HPID"; rc_h=$?
 END4=$(date -u +%s)
@@ -836,6 +856,91 @@ done < "$LOG11"
   || fail "T11 malformed/unbalanced critical-section log: $(tr '\n' ';' < "$LOG11")"
 [ "$overlap11" -eq 0 ] && pass "T11 critical-section log has no overlapping enter/leave interval" \
   || fail "T11 RED: mutual exclusion violated: $(tr '\n' ';' < "$LOG11")"
+
+# --- T12 (HIMMEL-2618): identity-checked takeover + verify-after-stamp, driven
+# against the same shipped, marker-sliced protocol T11 uses. Each case runs in
+# its own bash so the shell overrides (date) cannot leak. ---
+echo "T12: takeover verifies what it grabbed; acquire verifies its own stamp"
+run12() {
+  # run12 <name> <body> -- body sees the protocol sourced with a fresh lock dir
+  local name="$1" body="$2"
+  LOCK12="$WS/t12-$name/.extraction.lock" PROTOCOL11="$PROTOCOL11" bash -c '
+    set -u
+    source "$PROTOCOL11"
+    EXTRACTION_LOCK="$LOCK12"
+    EXTRACTION_LOCK_TIMEOUT_SECONDS=1
+    EXTRACTION_LOCK_STALE_SECONDS=7200
+    EXTRACTION_LOCK_HELD=0
+    EXTRACTION_LOCK_TOKEN=""
+    OUT_DIR="$(dirname "$EXTRACTION_LOCK")"
+    mkdir -p "$OUT_DIR"
+    '"$body" > "$WS/t12-$name.out" 2> "$WS/t12-$name.err"
+}
+
+# (a) takeover of a directory whose owner is NOT the judged one -> restored,
+# reported as not taken over, no takeover trail.
+run12 mismatch '
+  mkdir "$EXTRACTION_LOCK"; printf "tokB\n" > "$EXTRACTION_LOCK/owner"; date -u +%s > "$EXTRACTION_LOCK/acquired"
+  if _extraction_lock_takeover "is stale" "tokA"; then echo TOOK; else echo REFUSED; fi
+  [ "$(cat "$EXTRACTION_LOCK/owner" 2>/dev/null)" = "tokB" ] && echo RESTORED
+  [ -e "$EXTRACTION_LOCK/acquired" ] && echo STAMP-KEPT
+'
+if [ "$(sed -n 1p "$WS/t12-mismatch.out")" = "REFUSED" ] && grep -qx RESTORED "$WS/t12-mismatch.out" \
+    && grep -qx STAMP-KEPT "$WS/t12-mismatch.out" && ! grep -q "taking over" "$WS/t12-mismatch.err"; then
+  pass "T12a takeover of a replaced (owner mismatch) lock is refused and the live lock restored intact"
+else
+  fail "T12a mismatched-owner takeover must refuse + restore: out=$(tr '\n' ';' < "$WS/t12-mismatch.out") err=$(cat "$WS/t12-mismatch.err")"
+fi
+
+# (b) the judged owner matches -> takeover proceeds and the lock is gone;
+# an ownerless (crashed-before-publish) directory judged "" also proceeds.
+run12 match '
+  mkdir "$EXTRACTION_LOCK"; printf "tokA\n" > "$EXTRACTION_LOCK/owner"
+  if _extraction_lock_takeover "is stale" "tokA"; then echo TOOK; else echo REFUSED; fi
+  [ -e "$EXTRACTION_LOCK" ] && echo LEFT
+  mkdir "$EXTRACTION_LOCK"
+  if _extraction_lock_takeover "is stale" ""; then echo TOOK-OWNERLESS; else echo REFUSED-OWNERLESS; fi
+  [ -e "$EXTRACTION_LOCK" ] && echo LEFT
+'
+[ "$(tr '\n' ' ' < "$WS/t12-match.out")" = "TOOK TOOK-OWNERLESS " ] \
+  && pass "T12b a matching judged owner (and an ownerless dir judged \"\") is taken over and reaped" \
+  || fail "T12b matching-owner takeover: out=$(tr '\n' ';' < "$WS/t12-match.out") err=$(cat "$WS/t12-match.err")"
+
+# (c) a stamp write that FAILS is not swallowed: acquire fails closed and does
+# not leave (or claim) a lock.
+run12 stampfail '
+  date() { return 1; }
+  if _extraction_lock_acquire; then echo ACQUIRED; else echo REFUSED; fi
+  echo "held=$EXTRACTION_LOCK_HELD"
+  [ -e "$EXTRACTION_LOCK" ] && echo LEFT
+'
+if [ "$(tr '\n' ' ' < "$WS/t12-stampfail.out")" = "REFUSED held=0 " ]; then
+  pass "T12c a failed acquired-stamp write fails acquire closed (no claim, no orphan lock)"
+else
+  fail "T12c failed stamp must not count as holding: out=$(tr '\n' ';' < "$WS/t12-stampfail.out") err=$(cat "$WS/t12-stampfail.err")"
+fi
+
+# (d) our directory is sidelined and replaced by a live rival between the owner
+# write and the stamp verify -> we did NOT acquire, and the rival is untouched.
+run12 replaced '
+  date() {
+    [ -e "$EXTRACTION_LOCK.gone" ] && { command date "$@"; return; }
+    # the stamp redirect is already open on OUR directory; now a rival replaces it
+    command mv "$EXTRACTION_LOCK" "$EXTRACTION_LOCK.gone"
+    command mkdir "$EXTRACTION_LOCK"
+    printf "rival\n" > "$EXTRACTION_LOCK/owner"
+    command date "$@" > "$EXTRACTION_LOCK/acquired"
+    command date "$@"
+  }
+  if _extraction_lock_acquire; then echo ACQUIRED; else echo REFUSED; fi
+  echo "held=$EXTRACTION_LOCK_HELD"
+  echo "owner=$(cat "$EXTRACTION_LOCK/owner" 2>/dev/null)"
+'
+if [ "$(tr '\n' ' ' < "$WS/t12-replaced.out")" = "REFUSED held=0 owner=rival " ]; then
+  pass "T12d an acquire whose directory was replaced mid-acquire is NOT acquired and leaves the rival's lock alone"
+else
+  fail "T12d replaced-mid-acquire must not claim holding: out=$(tr '\n' ';' < "$WS/t12-replaced.out") err=$(cat "$WS/t12-replaced.err")"
+fi
 
 if [ "$FAILS" -ne 0 ]; then echo "$FAILS FAILURES"; exit 1; fi
 echo "ALL PASS"
