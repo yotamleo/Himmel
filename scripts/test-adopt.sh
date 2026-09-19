@@ -302,8 +302,13 @@ echo "ok: core/project idempotent on re-run"
 # run, the guarded version once the fix lands) and run its OWN adopt.sh
 # against itself.
 fakeClone="$work/fake-himmel-clone"; mkdir -p "$fakeClone"
-( cd "$repo_root" && git ls-files -z ) | xargs -0 cp --parents -t "$fakeClone"
+# -P: copy tracked symlinks as symlinks. Without it GNU cp follows a symlink to
+# a directory (tier-return-configdir/projects, HIMMEL-2977), refuses it without
+# -r and exits 1 -- xargs reports that as rc=123 (HIMMEL-3201).
+( cd "$repo_root" && git ls-files -z ) | xargs -0 cp -P --parents -t "$fakeClone"
 [ -f "$fakeClone/scripts/adopt.sh" ] || fail "HIMMEL-2435 fixture: scripts/adopt.sh did not land in the fake clone"
+[ -L "$fakeClone/scripts/lanes/tests/fixtures/tier-return-configdir/projects" ] \
+  || fail "HIMMEL-3201 fixture: the tracked dir-symlink tier-return-configdir/projects must land in the fake clone AS a symlink"
 
 # case A (the important one, red-first): the documented flow -- cd into the
 # clone and run `adopt.sh --scope project`, TARGET defaulting to $PWD (the
