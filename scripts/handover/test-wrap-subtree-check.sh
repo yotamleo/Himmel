@@ -121,6 +121,26 @@ lacks 'no session found never prints CLOSABLE' "$out" 'CLOSABLE:'
 run "$W/clean.txt" not-a-pid >/dev/null 2>&1; rc=$?
 eq 'a non-numeric pid is a usage error' 2 "$rc"
 
+# A chain deeper than any fixed hop budget: the check is pid 4066, 67 tool-call
+# shells below the session, and 5000 is a poll loop beside it. It must still be
+# listed (a walk that runs out of hops fails closed, never "outside") and the
+# check's own long chain must not be counted (codex-1, round 2).
+{
+    printf '    1     0 40-00:00:01 /sbin/init\n  101     1    05:00:00 claude --model claude-sonnet-5 -n HIMMEL-111-N61 work\n'
+    prev=101
+    i=4000
+    while [ "$i" -le 4066 ]; do
+        printf '%5s %5s    00:30 /usr/bin/zsh -c source /home/u/.claude/shell-snapshots/snapshot-zsh-%s-d.sh && eval "sleep 1"\n' "$i" "$prev" "$i"
+        prev=$i
+        i=$((i + 1))
+    done
+    printf '%5s %5s    01:00 sleep 999\n' 5000 4065
+} > "$W/deep.txt"
+out="$(PATH="$W/bin:$PATH" PS_FIXTURE="$W/deep.txt" WRAP_SUBTREE_SELF=4066 bash "$SUT" 101 2>&1)"; rc=$?
+eq 'a process beyond the old 64-hop budget is still withheld: rc 1 (codex-1 r2)' 1 "$rc"
+contains 'only the deep sibling is listed; the check'"'"'s own 67-deep chain is exempt' "$out" 'WITHHELD: 1 process(es)'
+contains 'the deep sibling is named' "$out" 'pid=5000'
+
 # The wrap step points every leg/judge at this script instead of a hand-typed
 # banner (HIMMEL-2761): pin the three docs that carry the HALT/WRAP line.
 DOCS="$HERE/../../docs/handover"

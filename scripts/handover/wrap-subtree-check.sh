@@ -69,6 +69,7 @@ function isharness(p) {
     if (iswrap(arg[p])) return 0
     return arg[p] ~ hre
 }
+BEGIN { maxh = 4096 }
 {
     pid = $1; ppid[pid] = $2; et[pid] = $3
     a = $0
@@ -79,7 +80,7 @@ function isharness(p) {
 END {
     if (root == "") {
         p = self
-        for (h = 0; h < 64; h++) {
+        for (h = 0; h < maxh; h++) {
             p = ppid[p]
             if (p == "" || p == 0) break
             if (isclaude(arg[p])) { root = p; break }
@@ -89,13 +90,13 @@ END {
     if (!isclaude(arg[root])) { print "NOTCLAUDE"; exit }
     # This script'"'"'s own chain: itself and every ancestor below the session.
     p = self
-    for (h = 0; h < 64 && p != "" && p != 0 && p != root; h++) { chain[p] = 1; p = ppid[p] }
+    for (h = 0; h < maxh && p != "" && p != 0 && p != root; h++) { chain[p] = 1; p = ppid[p] }
     n = 0
     for (i = 1; i <= np; i++) {
         pid = order[i]
         if (pid == root) continue
         p = pid; under = 0; skip = (pid in chain); harness = 0
-        for (h = 0; h < 64; h++) {
+        for (h = 0; h < maxh; h++) {
             if (p == self) skip = 1
             if (isharness(p)) harness = 1
             q = ppid[p]
@@ -103,6 +104,9 @@ END {
             if (q == "" || q == 0) break
             p = q
         }
+        # Ran out of hops without reaching the session or init: cannot prove this
+        # process is outside the subtree, so count it (fail closed).
+        if (h >= maxh) under = 1
         if (!under || skip || harness) continue
         n++
         cmd = substr(arg[pid], 1, 100)
