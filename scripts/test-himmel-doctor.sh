@@ -4215,6 +4215,10 @@ while [ $# -gt 0 ]; do
     shift
 done
 mode="${C40_MODE:-ok}"
+# The live daemon frames every reply as an SSE event (`event: message`, then
+# `data: <json>`), not a bare JSON body -- model that by default. C40_FRAME=plain
+# gives the bare body so both framings stay covered.
+pfx() { [ "${C40_FRAME:-sse}" = sse ] && printf 'event: message\ndata: '; return 0; }
 note=""
 [ "$mode" = novec ] && note=" Note: No vector embeddings yet. Run \`qmd embed\` to enable semantic search."
 [ "$mode" = stale ] && note=" Note: 12 documents need embedding. Run \`qmd embed\`."
@@ -4224,23 +4228,24 @@ case "$d" in
         case "$mode" in
             down) exit 7 ;;
             inithang) exit 28 ;;
-            foreign) printf '%s' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"other-server"}}}'; exit 0 ;;
+            foreign) pfx; printf '%s' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"other-server"}}}'; exit 0 ;;
         esac
         [ "$mode" = init_multiline ] && { printf '{\n  "result": {\n    "serverInfo": {\n      "version": "2.8.3",\n      "name": "qmd"\n    }\n  }\n}\n'; exit 0; }
-        printf '%s' "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"serverInfo\":{\"name\":\"qmd\",\"version\":\"2.8.3\"},\"instructions\":\"QMD is your local search engine.$note\"}}"
+        pfx; printf '%s' "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"serverInfo\":{\"name\":\"qmd\",\"version\":\"2.8.3\"},\"instructions\":\"QMD is your local search engine.$note\"}}"
         exit 0 ;;
     *'"type":"vec"'*)
         echo "vec m=$m" >> "$C40_LOG"
         case "$mode" in
             hang) exit 28 ;;
-            iserror) printf '%s' '{"result":{"content":[{"type":"text","text":"embedding model failed to load"}],"isError":true},"jsonrpc":"2.0","id":2}'; exit 0 ;;
-            rpcerr) printf '%s' '{"error":{"code":-32603,"message":"vector store unavailable"},"jsonrpc":"2.0","id":2}'; exit 0 ;;
-            garbage) printf '%s' 'not json at all'; exit 0 ;;
-            trunc) printf '%s' '{"jsonrpc":"2.0","id":2,"result":'; exit 0 ;;
-            partial) printf '%s' '{"result":{"content":[{"type":"text","text":"x"'; exit 18 ;;
-            iserror_spaced) printf '%s' '{"result": {"content": [{"type": "text", "text": "embedding model failed to load"}], "isError": true}, "jsonrpc": "2.0", "id": 2}'; exit 0 ;;
+            iserror) pfx; printf '%s' '{"result":{"content":[{"type":"text","text":"embedding model failed to load"}],"isError":true},"jsonrpc":"2.0","id":2}'; exit 0 ;;
+            rpcerr) pfx; printf '%s' '{"error":{"code":-32603,"message":"vector store unavailable"},"jsonrpc":"2.0","id":2}'; exit 0 ;;
+            garbage) pfx; printf '%s' 'not json at all'; exit 0 ;;
+            trunc) pfx; printf '%s' '{"jsonrpc":"2.0","id":2,"result":'; exit 0 ;;
+            truncobj) pfx; printf '%s' '{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"No res'; exit 0 ;;
+            partial) pfx; printf '%s' '{"result":{"content":[{"type":"text","text":"x"'; exit 18 ;;
+            iserror_spaced) pfx; printf '%s' '{"result": {"content": [{"type": "text", "text": "embedding model failed to load"}], "isError": true}, "jsonrpc": "2.0", "id": 2}'; exit 0 ;;
         esac
-        printf '%s' '{"result":{"content":[{"type":"text","text":"No results found"}],"structuredContent":{"results":[]}},"jsonrpc":"2.0","id":2}'
+        pfx; printf '%s' '{"result":{"content":[{"type":"text","text":"No results found"}],"structuredContent":{"results":[]}},"jsonrpc":"2.0","id":2}'
         exit 0 ;;
 esac
 exit 0
@@ -4402,6 +4407,34 @@ else
         pass "C40 truncated reply -> WARN"
     else
         fail "C40 truncated reply -> $(printf '%s' "$out" | grep -A1 C40)"
+    fi
+fi
+rm -rf "$c40_t"
+
+echo "== C40 (CR panel r3): body cut INSIDE the result object (curl rc 0, opens with {\"result\":{) -> WARN unparseable, never OK =="
+c40_setup
+if ! c40_precond truncobj; then fail "C40 truncobj: precondition — stub did not answer init"
+else
+    out="$(c40_run truncobj)"
+    if grepq "$out" 'WARN C40-qmd-vec' && grepq "$out" -F 'unparseable' && ! grepq "$out" 'OK   C40-qmd-vec'; then
+        pass "C40 body cut inside the result object -> WARN unparseable"
+    else
+        fail "C40 body cut inside the result object -> $(printf '%s' "$out" | grep -A1 C40)"
+    fi
+fi
+rm -rf "$c40_t"
+
+echo "== C40 (CR panel r3): a bare JSON reply (no SSE framing) is classified the same way =="
+c40_setup
+if ! C40_FRAME=plain c40_precond ok; then fail "C40 plain: precondition — stub did not answer init"
+else
+    out_ok="$(C40_FRAME=plain c40_run ok)"
+    out_cut="$(C40_FRAME=plain c40_run truncobj)"
+    if grepq "$out_ok" 'OK   C40-qmd-vec' && ! grepq "$out_ok" 'WARN C40-qmd-vec' \
+        && grepq "$out_cut" 'WARN C40-qmd-vec' && ! grepq "$out_cut" 'OK   C40-qmd-vec'; then
+        pass "C40 bare JSON reply -> OK when whole, WARN when cut"
+    else
+        fail "C40 bare JSON reply -> ok:[$(printf '%s' "$out_ok" | grep C40)] cut:[$(printf '%s' "$out_cut" | grep C40)]"
     fi
 fi
 rm -rf "$c40_t"

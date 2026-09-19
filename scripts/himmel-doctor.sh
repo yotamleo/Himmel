@@ -2808,6 +2808,10 @@ check_c40_qmd_vec() {
         emit INFO C40-qmd-vec "curl not found -- qmd vector-health check skipped"
         return
     fi
+    if ! command -v jq >/dev/null 2>&1; then
+        emit INFO C40-qmd-vec "jq not found -- qmd vector-health check skipped (replies are classified from parsed JSON)"
+        return
+    fi
 
     local init_payload='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"himmel-doctor","version":"1"}}}'
     local vec_payload='{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"query","arguments":{"searches":[{"type":"vec","query":"himmel doctor vector probe"}],"limit":1,"rerank":false}}}'
@@ -2822,17 +2826,22 @@ check_c40_qmd_vec() {
         emit INFO C40-qmd-vec "no qmd daemon answering on $url -- vector-health check skipped (qmd is optional)"
         return
     fi
-    # Match structure on a whitespace-stripped copy, so a pretty-printed reply
-    # (fields on separate lines, spaces after colons) reads like qmd's compact one.
-    local is_qmd init_flat
-    init_flat="$(printf '%s' "$init" | tr -d '[:space:]')"
-    is_qmd="$(printf '%s' "$init_flat" | grep -Eo '"serverInfo":\{[^}]*"name":"qmd"' | head -1)"
-    if [ -z "$is_qmd" ]; then
+    # Classify from the PARSED reply, never a substring of the raw body: jq
+    # rejects a truncated or non-JSON body outright, and reads a pretty-printed
+    # reply exactly like qmd's compact one.
+    # qmd answers as an SSE event (`event: message` / `data: <json>`); take the
+    # data: payload when there is one, else the body as-is (a plain JSON reply).
+    local init_json server_name instr
+    init_json="$(printf '%s\n' "$init" | sed -n 's/^data:[[:space:]]*//p')"
+    [ -n "$init_json" ] || init_json="$init"
+    server_name="$(printf '%s' "$init_json" | jq -r '.result.serverInfo.name // empty' 2>/dev/null)"
+    if [ "$server_name" != "qmd" ]; then
         emit WARN C40-qmd-vec "a process on $url answers but it is NOT qmd (initialize reply has no qmd serverInfo) -- qmd vector search cannot work" \
             "free port 8181 (see marketplace/plugins/qmd/scripts/ensure-qmd-daemon.sh), then start a fresh session"
         return
     fi
-    case "$init" in
+    instr="$(printf '%s' "$init_json" | jq -r '.result.instructions // ""' 2>/dev/null)"
+    case "$instr" in
     *'No vector embeddings yet'*)
         emit WARN C40-qmd-vec "qmd has no vector index (no embeddings) -- every vec query returns nothing, only lex works" \
             "qmd embed"
@@ -2854,31 +2863,40 @@ check_c40_qmd_vec() {
         emit WARN C40-qmd-vec "qmd daemon dropped or cut off the vector probe (curl rc=$rc) -- vec search is not being served" "$remedy"
         return
     fi
-    local reason
-    # Same whitespace-stripped matching as the initialize reply; the reason is
-    # still read from the original body.
-    local flat
-    flat="$(printf '%s' "$body" | tr -d '[:space:]')"
-    case "$flat" in
-    *'"isError":true'*)
-        reason="$(printf '%s' "$body" | sed -n 's/.*"text"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+    # One parse of the whole reply: "<kind>" or "<kind><TAB><reason>". Anything
+    # jq cannot parse to a complete value (a truncated body, HTML, garbage) or that
+    # is not a JSON-RPC error / CallToolResult falls to "bad".
+    local body_json cls kind reason
+    body_json="$(printf '%s\n' "$body" | sed -n 's/^data:[[:space:]]*//p')"
+    [ -n "$body_json" ] || body_json="$body"
+    cls="$(printf '%s' "$body_json" | jq -r '
+        def oneline: gsub("\\s+"; " ");
+        if type != "object" then "bad"
+        elif (.error | type) == "object" then "rpcerr\t\(.error.message // "" | tostring | oneline)"
+        elif (.result | type) == "object" and (.result.content | type) == "array" then
+            if .result.isError == true then "toolerr\t\([.result.content[] | objects | .text? | strings] | first // "" | oneline)"
+            else "ok" end
+        else "bad" end' 2>/dev/null)" || cls=bad
+    kind="${cls%%$'\t'*}"
+    reason="${cls#*$'\t'}"
+    case "$kind" in
+    toolerr)
         emit WARN C40-qmd-vec "qmd vector query returned an error: ${reason:-unreadable tool error} -- vec search is not being served" "$remedy"
         return
         ;;
-    *'"error":{'*)
-        reason="$(printf '%s' "$body" | sed -n 's/.*"message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+    rpcerr)
         emit WARN C40-qmd-vec "qmd vector query failed (JSON-RPC error): ${reason:-unreadable error} -- vec search is not being served" "$remedy"
         return
         ;;
-    *'"result":{'*) ;;
+    ok) ;;
     *)
-        emit WARN C40-qmd-vec "qmd vector probe returned an unrecognised reply -- vec search health could not be confirmed" "$remedy"
+        emit WARN C40-qmd-vec "qmd vector probe returned an unparseable reply (not a complete JSON-RPC result) -- vec search health could not be confirmed" "$remedy"
         return
         ;;
     esac
     emit OK C40-qmd-vec "qmd vector search served a probe query in ${elapsed}s ($url)"
     local pending
-    pending="$(printf '%s' "$init" | sed -n 's/.*Note: \([0-9][0-9]*\) documents need embedding.*/\1/p' | head -1)"
+    pending="$(printf '%s' "$instr" | sed -n 's/.*Note: \([0-9][0-9]*\) documents need embedding.*/\1/p' | head -1)"
     if [ -n "$pending" ]; then
         emit INFO C40-qmd-vec "$pending documents are not yet embedded -- invisible to vec queries until embedded" "qmd embed"
     fi
