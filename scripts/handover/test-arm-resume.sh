@@ -6190,8 +6190,18 @@ SEVEN_RESET_2177=$(python3 -c 'import datetime; print((datetime.datetime.now(dat
 printf '{"five_hour":{"utilization":0.0,"resets_at":"%s"},"seven_day":{"utilization":15.0,"resets_at":"%s"}}' \
     "$FIVE_RESET_2177" "$SEVEN_RESET_2177" > "$SLOT_CACHE_2177"
 
+# HIMMEL-3199: both arms below pass --force. The stub's candidates sit at the
+# fixed minutes 00:00/00:05/00:15/00:20/00:40, but the arm target comes from the
+# wall clock (explicit: now+30min via future_time; smart: now+~4min), so near
+# midnight it lands EXACTLY on a stub minute and arm-resume correctly refuses
+# (rc=6, exact-minute collision) -- a red for a fixture reason, e.g. explicit at
+# 23:35 (target 00:05), smart at 00:01. --force downgrades only that refusal to
+# a WARN; check_collision's candidate loop (the _minutes_from_midnight CR-strip
+# path 2177 is about) still runs over every candidate first. (--dedup-any also
+# downgrades it but widens the dedup scope to the stub's other HIMMEL task: rc=3.)
+
 # (a) --time smart
-out=$(RESUME_SLOT_CACHE="$SLOT_CACHE_2177" SLOT_MAX_AGE=0 win_env "$STUB2177" bash "$ARM" --time smart --handover "$HO_2177" --dry-run 2>&1)
+out=$(RESUME_SLOT_CACHE="$SLOT_CACHE_2177" SLOT_MAX_AGE=0 win_env "$STUB2177" bash "$ARM" --time smart --handover "$HO_2177" --force --dry-run 2>&1)
 rc=$?
 assert_rc "2177a --time smart with near-midnight candidates exits 0" 0 "$rc"
 assert_not_contains "2177a no arithmetic syntax error on --time smart" "arithmetic syntax error" "$out"
@@ -6199,7 +6209,7 @@ assert_not_contains "2177a no arithmetic syntax error on --time smart" "arithmet
 # (b) explicit --time HH:MM -- the mission's corrected repro: this is NOT
 # smart-only, so the regression case must cover both paths.
 HO_2177B=$(make_handover "$WORK_REPO")
-out=$(win_env "$STUB2177" bash "$ARM" --time "$(future_time)" --handover "$HO_2177B" --dry-run 2>&1)
+out=$(win_env "$STUB2177" bash "$ARM" --time "$(future_time)" --handover "$HO_2177B" --force --dry-run 2>&1)
 rc=$?
 assert_rc "2177b explicit --time with near-midnight candidates exits 0" 0 "$rc"
 assert_not_contains "2177b no arithmetic syntax error on explicit --time" "arithmetic syntax error" "$out"
