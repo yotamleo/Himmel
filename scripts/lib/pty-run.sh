@@ -49,18 +49,25 @@ _himmel_pty_sq() {
 # one launch.
 _himmel_pty_run() (
     _hp_script=${HIMMEL_PTY_SCRIPT_CMD:-script}
+    # The fifo lives in a private 0700 dir made by mktemp -d: a bare fifo name in
+    # a shared TMPDIR could be swapped by another user between mkfifo and open,
+    # and whatever replaced it would become the session's stdin.
+    _hp_d=
     _hp_f=
     if command -v "$_hp_script" >/dev/null 2>&1 \
-        && _hp_f=$(mktemp -u "${TMPDIR:-/tmp}/himmel-pty.XXXXXX" 2>/dev/null) \
+        && _hp_d=$(mktemp -d "${TMPDIR:-/tmp}/himmel-pty.XXXXXX" 2>/dev/null) \
+        && _hp_f=$_hp_d/in \
         && mkfifo -m 600 "$_hp_f" 2>/dev/null; then
         :
     else
+        [ -n "$_hp_d" ] && rmdir "$_hp_d" 2>/dev/null
         echo "WARN pty-run: script(1)/mkfifo unavailable -- launching $1 WITHOUT a pty; an idle cross-session message will end this session (HIMMEL-2534)" >&2
         command "$@"
         exit $?
     fi
-    exec 3<>"$_hp_f" || exit 1
+    exec 3<>"$_hp_f" || { rm -f "$_hp_f"; rmdir "$_hp_d" 2>/dev/null; exit 1; }
     rm -f "$_hp_f"
+    rmdir "$_hp_d" 2>/dev/null
     # A pty made for a non-tty stdin is 0x0, which a TUI can lay itself out
     # against; give it a sane size. Dropped from the environment before exec so
     # the prompt does not sit in claude's /proc environ.
@@ -84,7 +91,11 @@ _himmel_pty_run() (
             "$_hp_script" -qefc 'sh -c "$HIMMEL_PTY_CMD"' /dev/null <&3 3<&- >/dev/null
             ;;
         *)
-            "$_hp_script" -q /dev/null sh -c "$HIMMEL_PTY_CMD" <&3 3<&- >/dev/null
+            # BSD/macOS: -e (exit with the child's status) is not on every BSD
+            # script, and an unknown flag would abort the launch, so probe it.
+            _hp_e=
+            if "$_hp_script" -qe /dev/null true </dev/null >/dev/null 2>&1; then _hp_e=e; fi
+            "$_hp_script" "-q$_hp_e" /dev/null sh -c "$HIMMEL_PTY_CMD" <&3 3<&- >/dev/null
             ;;
     esac
 )

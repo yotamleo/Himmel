@@ -149,11 +149,44 @@ if [ -r "$LIB" ]; then
     if [ "$HAVE_SCRIPT" -eq 1 ]; then
         # The fifo is the session's stdin: create it owner-only, whatever the umask.
         MKF_STUB="$TMP/mkfifo-stub"; mkdir -p "$MKF_STUB"
+        export REAL_MKFIFO STUB_LOG="$TMP/mkfifo"
         REAL_MKFIFO=$(command -v mkfifo)
-        printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/mkfifo.args"\nexec "%s" "$@"\n' "$TMP" "$REAL_MKFIFO" > "$MKF_STUB/mkfifo"
+        cat > "$MKF_STUB/mkfifo" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$STUB_LOG.args"
+for _a in "$@"; do _last=$_a; done
+ls -ld "$(dirname "$_last")" | cut -c1-10 >> "$STUB_LOG.dirmode"
+exec "$REAL_MKFIFO" "$@"
+EOF
         chmod +x "$MKF_STUB/mkfifo"
-        (umask 000; PATH="$MKF_STUB:$PATH" _himmel_pty_run claude one </dev/null)
+        (umask 000; TMPDIR="$TMP" PATH="$MKF_STUB:$PATH" _himmel_pty_run claude one </dev/null)
         assert_contains "Q4 the pty fifo is created mode 600 regardless of umask" "-m 600" "$(cat "$TMP/mkfifo.args" 2>/dev/null)"
+        assert_eq "Q5 the fifo sits in a private 0700 directory, not bare in a shared TMPDIR" "drwx------" "$(cat "$TMP/mkfifo.dirmode" 2>/dev/null)"
+        assert_eq "Q5b no private fifo dir is left behind" "0" "$(find "$TMP" -maxdepth 1 -name 'himmel-pty.*' | wc -l | tr -d ' ')"
+
+        # BSD/macOS dialect (no util-linux in --version): a stub `script` that
+        # takes `-q[e] FILE cmd...`, exits with the child's status only under -e.
+        BSD_DIR="$TMP/bsd-script"; mkdir -p "$BSD_DIR"
+        cat > "$BSD_DIR/script" <<'EOF'
+#!/bin/sh
+case $1 in --version) echo "script: illegal option -- -" >&2; exit 1 ;; esac
+flags=$1; shift
+case $flags in *e*) [ -n "${BSD_NO_E-}" ] && { echo "script: illegal option -- e" >&2; exit 1; } ;; esac
+shift
+echo "flags=$flags" >> "$BSD_LOG"
+"$@"; rc=$?
+case $flags in *e*) exit "$rc" ;; *) exit 0 ;; esac
+EOF
+        chmod +x "$BSD_DIR/script"
+        export BSD_LOG="$TMP/bsd.log"; : > "$BSD_LOG"
+        printf '#!/bin/sh\nexit 7\n' > "$BSD_DIR/claude"; chmod +x "$BSD_DIR/claude"
+        PATH="$BSD_DIR:$PATH" HIMMEL_PTY_SCRIPT_CMD="$BSD_DIR/script" _himmel_pty_run claude one </dev/null; rc=$?
+        assert_eq "Q6 BSD dialect passes the child's exit status through (-e)" "7" "$rc"
+        assert_contains "Q6 BSD dialect was invoked with -qe" "flags=-qe" "$(cat "$BSD_LOG")"
+        : > "$BSD_LOG"
+        PATH="$BSD_DIR:$PATH" BSD_NO_E=1 HIMMEL_PTY_SCRIPT_CMD="$BSD_DIR/script" _himmel_pty_run claude one </dev/null; rc=$?
+        assert_eq "Q7 BSD script without -e still launches (falls back to -q)" "0" "$rc"
+        assert_contains "Q7 fallback invocation is plain -q" "flags=-q" "$(cat "$BSD_LOG")"
     fi
     : > "$ARGS_REC"
     HIMMEL_PTY_SCRIPT_CMD="$TMP/no-such-script" _himmel_pty_run claude one 'two words' </dev/null 2>"$TMP/fb.err"; rc=$?
