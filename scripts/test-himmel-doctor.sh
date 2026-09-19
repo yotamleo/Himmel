@@ -4631,7 +4631,10 @@ echo "== C41: a 3-segment JWT argument, and a URL carrying ?token= (inline --fla
 for c41_case in \
     'jwt|"srv","eyJNOTAREALVALUE1.eyJNOTAREALVALUE2.NOTAREALSIG-zq81x"' \
     'inlineurl|"srv","--url=https://example.invalid/mcp?token=NOT-A-REAL-VALUE-zq81x"' \
-    'bareurl|"srv","https://example.invalid/mcp?apikey=NOT-A-REAL-VALUE-zq81x"'; do
+    'bareurl|"srv","https://example.invalid/mcp?apikey=NOT-A-REAL-VALUE-zq81x"' \
+    'urlpassword|"srv","https://example.invalid/mcp?password=NOT-A-REAL-VALUE-zq81x"' \
+    'urlpasswd|"srv","--url=https://example.invalid/mcp?passwd=NOT-A-REAL-VALUE-zq81x"' \
+    'urlcredential|"srv","https://example.invalid/mcp?credentials=NOT-A-REAL-VALUE-zq81x"'; do
     c41_name="${c41_case%%|*}"; c41_args="${c41_case#*|}"
     c41_setup
     printf '{"mcpServers":{"%s":{"command":"npx","args":[%s]}}}\n' "$c41_name" "$c41_args" > "$c41_t/home/.claude.json"

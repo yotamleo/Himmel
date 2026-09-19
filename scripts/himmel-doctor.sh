@@ -2961,7 +2961,7 @@ check_c41_mcp_argv_key() {
               and (($t | last) | IN("file","path","env","name","dir","var","id") | not);
         def generic: test("^[A-Za-z0-9]{32,}$") and test("[0-9]") and test("[A-Za-z]");
         def keyval: test("^(sk-[A-Za-z0-9_-]{20,}|fc-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[A-Za-z0-9_-]{30,}|eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}(\\.[A-Za-z0-9_-]*)?)$") or generic;
-        def urlcred: test("[?&][A-Za-z_-]*(key|token|secret)[A-Za-z_-]*=[^&]+"; "i");
+        def urlcred: test("[?&][A-Za-z_-]*(key|token|secret|password|passwd|credential)[A-Za-z_-]*=[^&]+"; "i");
         def hits: . as $a
             | range(0; length) as $i
             | $a[$i] as $x
