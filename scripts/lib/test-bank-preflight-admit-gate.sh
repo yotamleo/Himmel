@@ -317,6 +317,16 @@ env -u FLEET_ADMIT_TEST_HOOK FLEET_CAP_OK= CADENCE_BANK_LAUNCH= HIMMEL_FLEET_SLO
   bash "$SUT" </dev/null >"$W/i.out" 2>"$W/i.err"
 if grep -q 'reserved=0 total=0/4' "$W/i.err"; then PASS=$((PASS+1)); echo "ok - (i) dot-prefixed gate/victim dirs are not counted as reservations"
 else FAIL=$((FAIL+1)); echo "FAIL - (i) a dot-prefixed lock dir was counted as a fleet reservation"; grep 'FLEET' "$W/i.err" || true; fi
+# The census line alone would also be logged by a run that then dies, and the
+# script exits 0 by contract (an exit-status assert is vacuous), so completion
+# is asserted through the verdict token on stdout.
+check "(i) the run completes to a PROCEED verdict on stdout" PROCEED "$(cat "$W/i.out")"
+# Control: a run that logs the census line and then dies passes the census grep
+# above but must NOT yield a verdict — proves the PROCEED assert can fail.
+printf '%s\n' '#!/usr/bin/env bash' 'echo "bank-preflight: FLEET reserved=0 total=0/4" >&2' 'exit 3' > "$W/dies.sh"
+bash "$W/dies.sh" </dev/null >"$W/dies.out" 2>"$W/dies.err"
+check "(i) control: census-line-then-die passes the census grep" 1 "$(grep -c 'reserved=0 total=0/4' "$W/dies.err")"
+check "(i) control: census-line-then-die yields no PROCEED verdict" "" "$(cat "$W/dies.out")"
 
 echo "--- $PASS passed, $FAIL failed ---"
 [ "$FAIL" -eq 0 ]
