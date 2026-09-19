@@ -1050,7 +1050,16 @@ EOF
 cat > "$LOCKBIN/mkdir" <<EOF
 #!/usr/bin/env bash
 . "$LOCKBIN/lockgate.sh"
-case "\$*" in *.lock/reclaim) park_at "\${LOCKTEST_CLAIM_GATE:-}" ;; esac
+case "\$*" in
+    *.lock/reclaim) park_at "\${LOCKTEST_CLAIM_GATE:-}" ;;
+    *.lock)
+        # A holder stalled right after creating its lock, before any write.
+        if [ -n "\${LOCKTEST_ACQUIRE_GATE:-}" ]; then
+            rc=0; "$REAL_MKDIR" "\$@" || rc=\$?
+            [ "\$rc" -eq 0 ] && park_at "\$LOCKTEST_ACQUIRE_GATE"
+            exit "\$rc"
+        fi ;;
+esac
 exec "$REAL_MKDIR" "\$@"
 EOF
 chmod +x "$LOCKBIN/git" "$LOCKBIN/mv" "$LOCKBIN/mkdir"
@@ -1179,6 +1188,31 @@ ledger_a=$(tail -n1 "$TMP_ROOT/tl7-ledger-a/.graph-cadence/ledger.jsonl" 2>/dev/
 assert_contains "the run recorded action=skipped" '"action":"skipped"' "$ledger_a"
 if [ -d "$LOCK_L/reclaim" ]; then pass "the stuck lock is left for the operator"; else fail "the stuck lock was removed"; fi
 rm -rf "$LOCK_L"
+
+echo "TEST (HIMMEL-2654): a holder stalled before its first write cannot resume under a reclaim of its aged-out lock"
+# [codex-1, round 2]: H creates the lock and stalls before writing anything;
+# the token-less directory ages out; C judges it dead, wins the claim and
+# validates it. H resumes and publishes its token. H must yield -- otherwise
+# C moves H's now-live lock and both reset the worktree.
+lock_fixture 8
+GATE_H="$TMP_ROOT/tl8-acquire"; GATE_C="$TMP_ROOT/tl8-move"; mkdir -p "$GATE_H" "$GATE_C"
+LOCKTEST_ACQUIRE_GATE="$GATE_H" lock_run 8 a; PID_A=$LOCK_PID
+wait_for "$GATE_H/paused" 3000 || fail "holder H never created its lock"
+touch -t 202001010000 "$LOCK_L"
+LOCKTEST_MV_GATE="$GATE_C" lock_run 8 b; PID_B=$LOCK_PID
+wait_for "$GATE_C/paused" 3000 || fail "reclaimer C never reached its takeover move"
+: > "$GATE_H/go"
+wait_exit_or_resets "$PID_A" 1 3000 || true
+: > "$GATE_C/go"
+wait_exit_or_resets "$PID_B" "$(( $(wc -l < "$RESETS_L") + 1 ))" 3000 || true
+: > "$HOLD_L/release"
+wait "$PID_A" 2>/dev/null || true
+wait "$PID_B" 2>/dev/null || true
+assert_eq "exactly ONE run reached reset --hard" "1" "$(wc -l < "$RESETS_L" | tr -d ' ')"
+ledger_a=$(tail -n1 "$TMP_ROOT/tl8-ledger-a/.graph-cadence/ledger.jsonl" 2>/dev/null || echo MISSING)
+assert_contains "the resumed holder H yielded to the reclaim: action=skipped" '"action":"skipped"' "$ledger_a"
+assert_contains "the reclaimer C took the aged-out lock over" "-- taking over" "$(cat "$TMP_ROOT/tl8-b.out")"
+lock_leftovers "tl8"
 
 echo "TEST (HIMMEL-2654): a LIVE but slow holder is NOT evicted at the age threshold"
 lock_fixture 2

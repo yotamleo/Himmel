@@ -636,7 +636,10 @@ mkdir -p "$(dirname "$WORKTREE_DIR")" || _fail "could not create $(dirname "$WOR
 #      identity. Only then is the dead lock moved aside. A live lock is never
 #      moved, not even briefly: a sideline-then-validate takeover (round 1 of
 #      this fix) could park a live holder's lock, let a third run acquire the
-#      empty slot, and so let two runs reset one worktree. Acquire then
+#      empty slot, and so let two runs reset one worktree. An acquirer that
+#      finds a reclaim claim right after publishing its token yields, so a
+#      holder stalled before its first write cannot resume under a reclaim
+#      (see _pipeline_lock_try_acquire). Acquire then
 #      verifies its own token after stamping (the noclobber owner write is
 #      the single-winner point for any one directory), and the holder
 #      re-checks it right before the first destructive git command (step 5b).
@@ -797,6 +800,15 @@ _pipeline_lock_try_acquire() {
     # (ENOENT) or a rival published first (EEXIST). Holding is defined solely
     # by winning it; remove nothing, it may be the rival's.
     ( set -C; printf '%s\n' "$token" > "$PIPELINE_LOCK/owner" ) 2>/dev/null || return 1
+    # Yield to a reclaim already under way. A contender claims BEFORE it reads
+    # the owner and we publish BEFORE we look for a claim, so of a stalled
+    # acquirer (a still token-less directory aged out) and its reclaimer at
+    # least one always sees the other: either the reclaimer reads our token
+    # and withdraws, or we see its claim here and skip. Never both proceed.
+    if [ -e "$PIPELINE_LOCK/reclaim" ]; then
+        PIPELINE_LOCK_VERDICT="another run is already reclaiming it"
+        return 1
+    fi
     PIPELINE_LOCK_TOKEN="$token"
     if ! { printf '%s\n' "$$" > "$PIPELINE_LOCK/pid" \
            && printf '%s\n' "$PIPELINE_LOCK_HOST" > "$PIPELINE_LOCK/host" \

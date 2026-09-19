@@ -114,7 +114,9 @@ liveness signal answers: the holder pid is not alive (checked only on the same
 host) and the heartbeat is ≥600s old. To take over, a contender must first
 win an atomic `mkdir <lock>/reclaim` claim and then confirm that the lock
 still carries the owner token and inode it judged dead. Only after that does
-it move the dead lock aside. A live lock is never moved, so of any number of
+it move the dead lock aside. An acquirer that finds a `reclaim` claim right
+after publishing its own token yields. That covers a holder that stalled
+before its first write until its lock aged out and then resumed. A live lock is never moved, so of any number of
 contenders racing one stale lock, exactly one proceeds. A run re-checks
 ownership right before its first destructive git command. If a contender
 crashes after winning the claim, the leftover `reclaim` makes every later
