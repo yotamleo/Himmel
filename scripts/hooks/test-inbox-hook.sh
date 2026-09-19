@@ -183,6 +183,11 @@ fi
 # HIMMEL-2790: pause writer one at mv, then start writer two. The second
 # announces either its lock attempt (fixed) or its mv (unlocked baseline).
 # These handshakes force overlap; elapsed time is never the assertion.
+if ! command -v flock >/dev/null 2>&1; then
+    # macOS ships no flock and claudex-inbox.sh then delivers UNLOCKED by design, so
+    # the lock-contention handshake below has nothing to observe (HIMMEL-3177).
+    printf 'SKIP: cursor race - flock not installed (unlocked delivery is the documented fallback)\n'
+else
 mkdir -p "$WORK/race-bin" "$WORK/race"
 INBOX_RACE="$WORK/race"
 REAL_MV="$(command -v mv)"
@@ -231,12 +236,20 @@ if [ "$count" -eq 1 ]; then
 else
     fail "concurrent cursor writers duplicated ruling (count=$count)"
 fi
+fi
+
+# Run "$@" with a stdout whose every write fails. /dev/full (ENOSPC) is Linux-only: on
+# macOS a redirect to it fails BEFORE the command runs, so the case proved nothing and the
+# hooks looked broken (HIMMEL-3177). A closed stdout (EBADF) fails every write too.
+stdout_fails() {
+    if [ -c /dev/full ]; then "$@" > /dev/full 2>/dev/null; else "$@" >&- 2>/dev/null; fi
+}
 
 # Both hook delivery mechanisms must preserve pending content on stdout error.
 for hook in claudex-inbox-hook.sh claudex-inbox-sessionstart.sh; do
     printf -- '- stdout retry %s\n' "$hook" >> "$INBOX2"
     before="$(cat "$HANDOVER_DIR/inbox/.cursor/$SESSION2")"
-    run_hook "$REPO_ROOT/scripts/hooks/$hook" > /dev/full 2>/dev/null; rc=$?
+    stdout_fails run_hook "$REPO_ROOT/scripts/hooks/$hook"; rc=$?
     after="$(cat "$HANDOVER_DIR/inbox/.cursor/$SESSION2")"
     out="$(run_hook "$REPO_ROOT/scripts/hooks/$hook")"
     if [ "$rc" -eq 0 ] && [ "$before" = "$after" ] && printf '%s' "$out" | grep -qF "stdout retry $hook"; then
@@ -248,7 +261,7 @@ done
 
 printf -- '- direct stdout retry\n' >> "$INBOX"
 before="$(cat "$HANDOVER_DIR/inbox/.cursor/$SESSION")"
-inbox_with_lock "$SESSION" deliver_direct > /dev/full 2>/dev/null
+stdout_fails inbox_with_lock "$SESSION" deliver_direct
 after="$(cat "$HANDOVER_DIR/inbox/.cursor/$SESSION")"
 out="$(inbox_with_lock "$SESSION" deliver_direct)"
 if [ "$before" = "$after" ] && printf '%s' "$out" | grep -qF 'direct stdout retry'; then
