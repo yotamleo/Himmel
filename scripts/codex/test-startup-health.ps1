@@ -234,6 +234,16 @@ try {
   $r = Run $h
   if ($r.rc -eq 1 -and $r.out -match "himmel-ops@$MARKET") { Pass 'foreign-marketplace himmel-ops does not satisfy the requirement' } else { Fail "foreign rc=$($r.rc) out=$($r.out)" }
 
+  # 8f2. a registration that only appears INSIDE a multiline string is not one
+  $mlno = 0
+  foreach ($q in @('"""', "'''")) {
+    $mlno++
+    $h = New-RegHome "regml$mlno" 'skip' 'himmel-ops'
+    Add-Content -LiteralPath (Join-Path $h 'config.toml') -Value "note = $q`n[plugins.`"himmel-ops@$MARKET`"]`nenabled = true`n$q"
+    $r = Run $h
+    if ($r.rc -eq 1 -and $r.out -match "himmel-ops@$MARKET") { Pass "himmel-ops registered only inside a $q string is still reported missing" } else { Fail "multiline $q rc=$($r.rc) out=$($r.out)" }
+  }
+
   # 8g. no session at all (no sessions dir -> no thread_id): config-only check
   $h = Join-Path $TMP 'regnosession'; New-Item -ItemType Directory -Force -Path $h | Out-Null
   Set-Db $h "INFO x session_loop{thread_id=$NEW}: noise padding line here"; Write-Config $h 'empty'

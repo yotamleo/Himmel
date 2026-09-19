@@ -216,21 +216,27 @@ fi
 # [plugins."name@X"] + `enabled = true`) is parsed; a hand-written dotted-key or
 # inline-table config reads as unregistered (fail closed — the installer would
 # rewrite it in the header form). A registered marketplace whose `source` path has
-# gone stale is not checked either.
+# gone stale is not checked either. Multiline strings are skipped by delimiter
+# parity only: a quote escaped next to a triple-quote (`\"""`) can desync it.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_SET_FILE="$SCRIPT_DIR/himmel-plugin-set.conf"
 plugin_set_field() { tr -d '\r' < "$PLUGIN_SET_FILE" 2>/dev/null | awk -F': *' -v k="$1" '$1==k{print $2; exit}'; }
 # One `market <name>` line per registered marketplace, one `enabled <id>` line per
 # plugin table carrying `enabled = true`; header quoting/whitespace stripped.
 config_state() {
+  # ml = the open TOML multiline-string delimiter (triple double or single quote), or ""
+  # outside one: lines inside it are text, never headers or `enabled`. Tracked by
+  # delimiter parity per line (\047 = the single quote, unwritable inside this awk).
   awk '
+    ml != "" { t = $0; if (gsub(ml, "", t) % 2) ml = ""; next }
     /^[[:space:]]*\[/ {
       s = $0; sub(/^[[:space:]]*\[/, "", s); sub(/\][[:space:]]*(#.*)?$/, "", s)
       gsub(/["[:space:]]/, "", s); cur = s
       if (s ~ /^marketplaces\./) print "market " substr(s, 14)
-      next
     }
-    cur ~ /^plugins\./ && /^[[:space:]]*enabled[[:space:]]*=[[:space:]]*true[[:space:]]*(#.*)?$/ { print "enabled " substr(cur, 9) }
+    !/^[[:space:]]*\[/ && cur ~ /^plugins\./ && /^[[:space:]]*enabled[[:space:]]*=[[:space:]]*true[[:space:]]*(#.*)?$/ { print "enabled " substr(cur, 9) }
+    { t = $0; if (gsub(/"""/, "", t) % 2) ml = "\"\"\""
+      else { t = $0; if (gsub(/\047\047\047/, "", t) % 2) ml = "\047\047\047" } }
   ' "$1" 2>/dev/null
 }
 

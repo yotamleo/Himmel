@@ -304,6 +304,19 @@ rc=0; out="$(CODEX_HOME="$H" bash "$DETECT" 2>&1)" || rc=$?
 check_rc 1 "$rc" "himmel-ops only under another marketplace -> exit 1"
 want_line "himmel-ops@$MARKET" "$out" "foreign-marketplace himmel-ops does not satisfy the requirement"
 
+# 8f2. a registration that only appears INSIDE a multiline string is not a
+# registration (TOML `"""` and `'''` values carry arbitrary text, e.g. pasted
+# instructions) — table headers and `enabled = true` there must not count.
+mlno=0
+for q in '"""' "'''"; do
+  mlno=$((mlno + 1))
+  reg_case "regml$mlno" skip himmel-ops
+  printf 'note = %s\n[plugins."himmel-ops@%s"]\nenabled = true\n%s\n' "$q" "$MARKET" "$q" >> "$TMP/regml$mlno/config.toml"
+  rc=0; out="$(CODEX_HOME="$TMP/regml$mlno" bash "$DETECT" 2>&1)" || rc=$?
+  check_rc 1 "$rc" "himmel-ops registered only inside a $q string -> exit 1"
+  want_line "himmel-ops@$MARKET" "$out" "himmel-ops inside a $q string is still reported missing"
+done
+
 # 8g. no session at all (no sessions dir -> no thread_id): the registration check
 # reads config only, so it must not depend on a session existing.
 H="$TMP/regnosession"; mkdir -p "$H"

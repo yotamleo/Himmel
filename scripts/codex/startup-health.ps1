@@ -188,7 +188,9 @@ if ($newest) {
 # ponytail: only the table-header form codex itself writes ([marketplaces.X],
 # [plugins."name@X"] + `enabled = true`) is parsed; a hand-written dotted-key or
 # inline-table config reads as unregistered (fail closed). A registered
-# marketplace whose `source` path has gone stale is not checked either.
+# marketplace whose `source` path has gone stale is not checked either. Multiline
+# strings are skipped by delimiter parity only: a quote escaped next to a
+# triple-quote can desync it.
 $pluginSetFile = Join-Path $PSScriptRoot 'himmel-plugin-set.conf'
 function Get-PluginSetField([string]$key) {
   $b = Read-SharedBytes $pluginSetFile
@@ -206,16 +208,24 @@ function Get-ConfigState([string]$cfgPath) {
   $res = [pscustomobject]@{ Markets = @(); Enabled = @() }
   $cur = ''
   $text = [System.Text.Encoding]::UTF8.GetString($b).TrimStart([char]0xFEFF)
+  # $ml = the open TOML multiline-string delimiter (triple double or single quote), or
+  # '' outside one: lines inside it are text, never headers or `enabled`. Tracked by
+  # delimiter parity per line, like the .sh twin.
+  $ml = ''
   foreach ($line in ($text -split "`r?`n")) {
+    if ($ml -ne '') {
+      if (([regex]::Matches($line, [regex]::Escape($ml))).Count % 2 -eq 1) { $ml = '' }
+      continue
+    }
     if ($line -match '^\s*\[') {
       $s = $line -replace '^\s*\[', ''
       $s = $s -replace '\][ \t]*(#.*)?$', ''
       $s = $s -replace '["\s]', ''
       $cur = $s
       if ($s -clike 'marketplaces.*') { $res.Markets += $s.Substring(13) }
-      continue
-    }
-    if (($cur -clike 'plugins.*') -and ($line -cmatch '^\s*enabled\s*=\s*true\s*(#.*)?$')) { $res.Enabled += $cur.Substring(8) }
+    } elseif (($cur -clike 'plugins.*') -and ($line -cmatch '^\s*enabled\s*=\s*true\s*(#.*)?$')) { $res.Enabled += $cur.Substring(8) }
+    if (([regex]::Matches($line, '"""')).Count % 2 -eq 1) { $ml = '"""' }
+    elseif (([regex]::Matches($line, "'''")).Count % 2 -eq 1) { $ml = "'''" }
   }
   return $res
 }
