@@ -511,6 +511,24 @@ fleet_claudex=0
 _fleet_live_names=""
 _fleet_procfs_warned=0
 
+# _fleet_cmdline_name <pid> (HIMMEL-3216): sets _fleet_argv_name to the exact argv
+# element after the first `-n` in <pid>'s NUL-separated /proc cmdline. Returns 0
+# with the name set, 1 when cmdline is unreadable (no procfs, another platform, a
+# stub — the caller falls back to the ps line), 2 when it is readable but has no
+# `-n` (or the file vanished mid-read): no name, so nothing is consumed. A global,
+# not a `$(...)`, on purpose: command substitution strips trailing newlines, which
+# would turn the name "HIMMEL-9500<LF>" into a plain "HIMMEL-9500".
+_fleet_cmdline_name() {
+  local _fcn_file="${FLEET_PROC:-/proc}/$1/cmdline" _fcn_arg _fcn_want=0
+  _fleet_argv_name=""
+  [ -r "$_fcn_file" ] || return 1
+  while IFS= read -r -d '' _fcn_arg || [ -n "$_fcn_arg" ]; do
+    if [ "$_fcn_want" -eq 1 ]; then _fleet_argv_name="$_fcn_arg"; return 0; fi
+    [ "$_fcn_arg" = -n ] && _fcn_want=1
+  done 2>/dev/null <"$_fcn_file"
+  return 2
+}
+
 # _fleet_census (HIMMEL-2774 codex-1, 2nd panel round): captures the process
 # table fresh and (re)sets fleet_n/fleet_native/fleet_claudex/_fleet_live_names
 # from it. Factored into a function so it can be called a SECOND time, while
@@ -559,7 +577,19 @@ _fleet_census() {
     # HIMMEL-2774: a live session with this name CONSUMES its reservation
     # (below) — same match shape as the FLEET_CANDIDATES filter itself, so a
     # session counted here is recognized consistently there.
-    _fleet_name="$(printf '%s\n' "$_fleet_rest" | grep -oE -- '-n[[:space:]]+(HIMMEL|LUNA)-[^[:space:]]*' | head -1 | awk '{print $2}')"
+    # HIMMEL-3216: the name is the EXACT argv element after `-n` where procfs
+    # gives it (a name with spaces stays whole, so it can be tied to one live
+    # session by identity); only when cmdline is unreadable does it fall back to
+    # the FIRST whitespace token of the ps line. A name with a control character
+    # can be neither one list line nor a reservation name (refused at reserve
+    # time), so it is left out — over-count, never a forged or stripped entry.
+    _fleet_name=""
+    _fleet_cmdline_name "$_fleet_pid"
+    case $? in
+      0) _fleet_name="$_fleet_argv_name" ;;
+      1) _fleet_name="$(printf '%s\n' "$_fleet_rest" | grep -oE -- '-n[[:space:]]+(HIMMEL|LUNA)-[^[:space:]]*' | head -1 | awk '{print $2}')" ;;
+    esac
+    case "$_fleet_name" in *[[:cntrl:]]*) _fleet_name="" ;; esac
     [ -n "$_fleet_name" ] && _fc_names="$_fc_names
 $_fleet_name"
   done <<FLEET_CANDIDATES
@@ -699,21 +729,30 @@ if [ "$_fleet_admitted" -eq 1 ]; then
       # ('/', a leading '.', over NAME_MAX) is consumed instead of
       # double-counted until its TTL.
       # INVARIANT: the census may OVER-count (a launch is refused for at most
-      # the TTL — safe) but must never UNDER-count (admits past the cap). The
-      # census exposes only the FIRST whitespace token of a live `-n` value,
-      # so a name CONTAINING whitespace can never be tied to one live session
-      # by identity — any token rule can consume the reservation of a
-      # different leg that shares the token. Such a reservation is therefore
-      # deliberately NOT consumed by the `name` match (a space-in-name leg
-      # over-counts until its TTL, or its owner releases it). Whitespace-free
-      # names are exact: the live first token IS the whole name.
+      # the TTL — safe) but must never UNDER-count (admits past the cap).
+      # HIMMEL-3216: a live name is the FULL `-n` argv element (read from
+      # /proc/<pid>/cmdline), so consumption is identity on the whole name — a
+      # name with whitespace is consumed only by the session with that exact
+      # name, and a live `-n "HIMMEL-9500 anything"` no longer consumes a
+      # HIMMEL-9500 reservation. A name with a control character is never a
+      # census entry (and never a reservation, see `_fleet_reserve`'s caller),
+      # so it cannot forge a match.
+      # ponytail: without a readable cmdline (no procfs — macOS/Windows — or a
+      # stub) the census only has the FIRST whitespace token of the ps line, so
+      # there the shared-first-token consumption of HIMMEL-3012 stays: a
+      # whitespace-name reservation is never consumed (its full name is never a
+      # first token), a plain one can still be consumed by another live leg that
+      # shares its first token.
       # BY DESIGN not matched: arm-resume.sh reserves under the flattened
       # handover path but launches under `-n <TICKET> <name> s<N>`, so its
       # reservation never matches a live session — it is released by that
       # script's EXIT trap (_arm_fleet_release_pending) on every exit instead.
       _fleet_resv_sname=""
-      [ -f "${_fleet_resv}name" ] && IFS= read -r _fleet_resv_sname <"${_fleet_resv}name" 2>/dev/null
-      case "$_fleet_resv_sname" in *[[:space:]]*) _fleet_resv_sname="" ;; esac
+      # The whole file, not its first line: a name file with a second line
+      # (HIMMEL-3216 — a forged or hand-edited one; `_fleet_reserve` writes one
+      # line) has no single identity, so it matches nothing.
+      [ -f "${_fleet_resv}name" ] && _fleet_resv_sname="$(cat "${_fleet_resv}name" 2>/dev/null)"
+      case "$_fleet_resv_sname" in *[[:cntrl:]]*) _fleet_resv_sname="" ;; esac
       if printf '%s\n' "$_fleet_live_names" | grep -qxF "$_fleet_resv_name" ||
          { [ -n "$_fleet_resv_sname" ] &&
            printf '%s\n' "$_fleet_live_names" | grep -qxF "$_fleet_resv_sname"; }; then
@@ -787,8 +826,8 @@ elif [ "$LAUNCH_INTENT" = "1" ] && [ -n "$LEG" ] && [ "$LEG" != unknown ]; then
          printf '%s\n' "${CADENCE_BANK_CALLER_PID:-$$}" > "$dir/pid" 2>/dev/null; then
         # HIMMEL-3012: the raw leg name, for the consume check in the prune
         # pass — the directory name is a hash whenever $LEG cannot be one
-        # directory component, and the census only ever sees the FIRST
-        # whitespace token of a live `-n` value. Best-effort by design: it
+        # directory component. HIMMEL-3216: one line, guaranteed by the
+        # control-character refusal at the call below. Best-effort by design: it
         # only WIDENS what consumes the reservation, so a failed write falls
         # back to today's dir-name match rather than refusing the launch.
         printf '%s\n' "$LEG" > "$dir/name" 2>/dev/null || true
@@ -811,6 +850,17 @@ elif [ "$LAUNCH_INTENT" = "1" ] && [ -n "$LEG" ] && [ "$LEG" != unknown ]; then
     _fleet_release_admit "$SLOTS/.admit"
     emit SKIPPED-FLEET
   }
+  # HIMMEL-3216: a newline (or any control character) in the leg name would make
+  # the one-line `name` file read back as a different identity ("foo/bar<LF>other"
+  # as "foo/bar"). The census never lists such a live name either, so a leg named
+  # this could not be consumed anyway — refuse it before it takes a slot.
+  case "$LEG" in
+    *[[:cntrl:]]*)
+      echo "bank-preflight: leg name contains a control character (newline/tab/...) — refusing rather than reserve a slot under an identity that cannot be matched" >&2
+      _fleet_release_admit "$SLOTS/.admit"
+      emit SKIPPED-FLEET
+      ;;
+  esac
   _fleet_resv_key="$(fleet_reservation_key "$LEG")"
   _fleet_reserve "$SLOTS/$_fleet_resv_key"
   _fleet_reserve_rc=$?
