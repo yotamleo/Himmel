@@ -428,6 +428,16 @@ _tolower_ascii() {
         *) return 0 ;;
     esac
     local b="$_TOLOWER_OUT"
+    # bash 3.2 (macOS) runs each `${b//X/x}` below in O(n^2): 16 KB took 16 s on a
+    # locally built 3.2.57 (8KB+16KB = 294 s on the macOS nightly) while bash 5 needs
+    # 62 ms. Past a length no filesystem basename reaches, one `tr` fork is linear on
+    # every bash. LC_ALL=C keeps it ASCII-only like the substitutions; the sentinel
+    # keeps a trailing newline, which $(...) would otherwise strip (HIMMEL-3177).
+    if [ "${#b}" -gt 256 ]; then
+        b=$(printf '%sx' "$b" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+        _TOLOWER_OUT="${b%x}"
+        return 0
+    fi
     b="${b//A/a}"; b="${b//B/b}"; b="${b//C/c}"; b="${b//D/d}"
     b="${b//E/e}"; b="${b//F/f}"; b="${b//G/g}"; b="${b//H/h}"
     b="${b//I/i}"; b="${b//J/j}"; b="${b//K/k}"; b="${b//L/l}"
