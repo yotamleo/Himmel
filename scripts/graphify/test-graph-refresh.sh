@@ -365,6 +365,18 @@ assert_contains "phi-roots refuse message names the list" "phi-roots" "$out"
 assert_eq "phi-roots refusal fired no runner leg" "" "$(cat "$RUNNER_LOG")"
 rm -f "$CLAUDE_GLM_CONFIG_DIR/phi-roots"
 
+# HIMMEL-3242: same list, indented + between #-comment lines (the fence's
+# _under_any_list twin trims and skips comments in lockstep); a bare
+# whitespace/# line must not turn the whole tree into a phi root.
+echo "TEST: indented phi-roots entry between #-comments still refused (rc=2)"
+printf '# operator note\n   %s\n\t\n#\n' "$PHI_ZONE" > "$CLAUDE_GLM_CONFIG_DIR/phi-roots"
+reset_runner_log
+rc=0; out=$(run_refresh luna --vault "$PHI_ZONE/vault" 2>&1) || rc=$?
+assert_rc "indented phi-roots vault -> rc 2" 2 "$rc"
+assert_contains "indented phi-roots refuse message names the list" "phi-roots" "$out"
+assert_eq "indented phi-roots refusal fired no runner leg" "" "$(cat "$RUNNER_LOG")"
+rm -f "$CLAUDE_GLM_CONFIG_DIR/phi-roots"
+
 # ============================================================================
 # Test 12: vault preflight — refuse a filesystem root and the operator HOME
 # ============================================================================

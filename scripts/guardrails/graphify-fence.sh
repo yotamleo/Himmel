@@ -738,7 +738,16 @@ _under_any_list() {
     [ -e "$listfile" ] || { echo miss; return; }
     _guard_file_readable "$listfile" || { echo unreadable; return; }
     while IFS= read -r root || [ -n "$root" ]; do
+        # HIMMEL-3242: trim + skip whole-line `#` comments, same rules as
+        # refresh-graph-map.sh's _corpus_is_salus_root. Untrimmed, an indented or
+        # space-padded root never prefix-matched (fail-OPEN on the hook path).
+        # Trimming can only make MORE lines match; an entry that trims to ""
+        # is skipped, never compared (it would match every path). Bash 3.2-safe.
         root="${root%$'\r'}"
+        root="${root#"${root%%[![:space:]]*}"}"
+        root="${root%"${root##*[![:space:]]}"}"
+        [ -n "$root" ] || continue
+        case "$root" in \#*) continue ;; esac
         root="${root%/}"; root="${root%\\}"
         [ -n "$root" ] || continue
         if _under_root "$p" "$root"; then echo hit; return; fi

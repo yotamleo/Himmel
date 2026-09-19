@@ -225,7 +225,13 @@ _under_any_list() {
     [ -e "$listfile" ] || { echo miss; return; }
     { [ -f "$listfile" ] && [ -r "$listfile" ]; } || { echo unreadable; return; }
     while IFS= read -r root || [ -n "$root" ]; do
+        # HIMMEL-3242: kept in lockstep with graphify-fence.sh (trim + skip
+        # whole-line `#` comments; an entry that trims to "" is skipped).
         root="${root%$'\r'}"
+        root="${root#"${root%%[![:space:]]*}"}"
+        root="${root%"${root##*[![:space:]]}"}"
+        [ -n "$root" ] || continue
+        case "$root" in \#*) continue ;; esac
         root="${root%/}"; root="${root%\\}"
         [ -n "$root" ] || continue
         if _under_root "$p" "$root"; then echo hit; return; fi

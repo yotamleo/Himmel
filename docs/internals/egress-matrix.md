@@ -136,6 +136,12 @@ HIMMEL-2622 — and `scripts/hermes/assets/parity_guard.py`),
 plus vault/state roots from env or config — never hardcoded absolute paths.
 The matrix defines *policy*; membership resolution stays with the guards.
 
+List files are read line by line with surrounding whitespace (and a CRLF `\r`)
+trimmed and whole-line `#` comments skipped — in `graphify-fence.sh`
+(`_under_any_list`), its `graph-refresh.sh` twin, and `refresh-graph-map.sh`'s
+`_corpus_is_salus_root` alike (HIMMEL-3242). A line that trims to nothing is
+skipped, never compared (an empty root would prefix-match every path).
+
 ## Staged-copy corpus declaration (`.graphify-corpus`, HIMMEL-778)
 
 The 621/622 plan runs extraction on scratchpad **copies** of corpus content,
@@ -197,6 +203,43 @@ staged copy — any target that classifies via a real configured root disables
 the file path outright (a staged copy's declaration must not vouch for a
 real vault path listed beside it); mixed staged+real invocations need
 `--backend` or the launching-shell env var.
+
+## Direct-eval mode (`--eval`, HIMMEL-1084)
+
+The fence is wired only as a PreToolUse hook, which never sees graphify calls a
+script makes itself (cron/schtasks). Non-hook callers — currently
+`scripts/graphify/refresh-graph-map.sh`, before both of its graphify
+dispatches — run the same evaluation directly instead of keeping a private
+copy of the provider map, matrix eval and ledger:
+
+```
+graphify-fence.sh --eval <corpus> <backend> <abs-target> <tool-label>
+```
+
+Exit 0 = allow (ledger written where the verdict requires it); exit 2 = deny,
+reason on stderr. The verdict is exactly what an agent-typed invocation of the
+same corpus × provider gets from the matrix.
+
+- **Validation (fail-closed, exit 2):** `<corpus>` must be one of the five
+  classes (`salus`, `luna-personal`, `luna-clippings`, `handover-state`,
+  `himmel-code`); `<backend>` and `<tool-label>` must match `[A-Za-z0-9._-]+`
+  (they land in the ledger JSON unescaped, so the charset is the escaping);
+  `<abs-target>` must be an absolute path. Any operand count other than four
+  after `--eval` exits 2 — a malformed direct call is never let fall through to
+  hook-mode parsing, where a bare `--eval` is not a graphify clause and would
+  exit 0.
+- **Class tightening:** `<corpus>` is the caller's *asserted* class, a
+  declaration. The fence also classifies `<abs-target>` by path (`.salus`
+  markers, the PHI root lists, configured real roots) and the more restrictive
+  of the two wins — classification can only tighten the asserted class, never
+  relax it.
+- **Ledger:** allow-family lines go to the same ledger file as hook mode, with
+  `tool=<tool-label>`, `"declared":true` (the asserted class is a declaration,
+  like a `.graphify-corpus` marker) and `"purpose":"extraction"`. Hook-mode
+  lines keep `tool=graphify` and carry no `purpose` field.
+
+This section documents the contract only. It deliberately restates no matrix
+verdicts — `scripts/guardrails/egress-matrix.json` is authoritative.
 
 ## Consumers
 
