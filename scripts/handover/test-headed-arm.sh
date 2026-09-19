@@ -879,23 +879,11 @@ rc20=0
 ) || rc20=$?
 stderr20="$(cat "$d20/stderr" 2>/dev/null || true)"
 check "unstampable lock: exit 8, distinct from every other outcome" "$rc20" "8"
-# HIMMEL-3182: the removal below is `rm -rf` on a mode-000 directory (the lock
-# was mkdir'd under umask 0777). BSD/macOS rm cannot remove one (EACCES), so
-# there the lock is left behind whatever headed-arm.sh does -- probed by making
-# such a directory here and trying, so a host where rm can still asserts it.
-_rm_removes_mode000() {
-  local d rc=0
-  d=$(mktemp -d "${TMPDIR:-/tmp}/headed-arm-rm000.XXXXXX") || return 1
-  ( umask 0777; mkdir "$d/x" ) 2>/dev/null
-  rm -rf "$d/x" 2>/dev/null
-  [ -e "$d/x" ] && { rc=1; chmod 700 "$d/x" 2>/dev/null; }
-  rm -rf "$d"
-  return $rc
-}
-if [ -d "$LOCK20" ] && ! _rm_removes_mode000; then
+# HIMMEL-3182: the lock was mkdir'd mode 000 (umask 0777); headed-arm.sh
+# restores owner access before its `rm -rf`, so a BSD/macOS rm (which cannot
+# remove a mode-000 directory) removes it too - case 20b emulates that rm.
+if [ -d "$LOCK20" ]; then
   chmod 700 "$LOCK20" 2>/dev/null; rm -rf "$LOCK20"
-  host_skip "unstampable lock: this host's rm -rf cannot remove a mode-000 directory, so the cleanup cannot be asserted"
-elif [ -d "$LOCK20" ]; then
   echo "FAIL - unstampable lock: must be removed, never held as a silent wedge"
   fails=$((fails+1))
 else
@@ -908,6 +896,116 @@ else
   echo "ok - unstampable lock: konsole never invoked (refused before launch)"
 fi
 contains "unstampable lock: stderr names the cause" "$stderr20" "acquired stamp"
+
+# --- 20b (HIMMEL-3182). same unstampable-claim path, but under a BSD-rm
+# emulation: macOS rm -rf cannot remove a mode-000 directory (EACCES), so
+# stamp_or_fail_loudly must restore owner permissions on the lock it created
+# before removing it, and must touch nothing else. macOS itself is NOT run
+# here (the scheduled nightly is that proof) - the stub below is a PATH `rm`
+# that refuses any directory whose owner bits are all clear, judged from
+# `ls -ld` (not `[ -r ]`, which root would defeat), and otherwise defers to
+# the real rm.
+d20b="$tmp/c20b"; mkdir -p "$d20b/dA" "$d20b/repo" "$d20b/locks" "$d20b/bin"
+chmod 755 "$d20b/locks"
+LOCK20B="$d20b/locks/HIMMEL-stampfail-bsd.lock"
+SIBLING20B="$d20b/locks/HIMMEL-stampfail-bsd.lock.keep"
+mkdir -p "$SIBLING20B"; : > "$SIBLING20B/acquired"
+REAL_RM="$(command -v rm)"
+cat > "$d20b/bin/rm" <<RM_EOF
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case "\$a" in -*) continue ;; esac
+  if [ -d "\$a" ]; then
+    case "\$(ls -ld "\$a")" in d---*) echo "rm: \$a: Permission denied" >&2; exit 1 ;; esac
+  fi
+done
+exec "$REAL_RM" "\$@"
+RM_EOF
+chmod 755 "$d20b/bin/rm"
+# The emulation must itself behave as BSD rm on a mode-000 directory, or the
+# case below proves nothing.
+mkdir -p "$d20b/probe"; chmod 000 "$d20b/probe"
+PATH="$d20b/bin:$PATH" rm -rf "$d20b/probe" 2>/dev/null
+if [ -d "$d20b/probe" ]; then
+  echo "ok - bsd-rm emulation: refuses a mode-000 directory"
+else
+  echo "FAIL - bsd-rm emulation: stub removed a mode-000 directory, so the case below is vacuous"
+  fails=$((fails+1))
+fi
+chmod 700 "$d20b/probe"; "$REAL_RM" -rf "$d20b/probe"
+cp "$d20/dA/konsole" "$d20b/dA/konsole"; cp "$d20/dA/pgrep" "$d20b/dA/pgrep"
+: > "$d20b/dA/log"; : > "$d20b/stderr"
+rc20b=0
+( umask 0777
+  PATH="$d20b/bin:$PATH" HEADED_ARM_LOCK_DIR="$d20b/locks" KONSOLE_CMD="$d20b/dA/konsole" PGREP_CMD="$d20b/dA/pgrep" HEADED_ARM_REPO="$d20b/repo" \
+    bash "$SCRIPT" "HIMMEL-stampfail-bsd" "doc20b.md" "$d20b/dA/signal-never" "$PAST" "$d20b/dA/log" >/dev/null 2>"$d20b/stderr"
+) || rc20b=$?
+check "unstampable lock under bsd rm: still exit 8" "$rc20b" "8"
+if [ -d "$LOCK20B" ]; then
+  chmod 700 "$LOCK20B" 2>/dev/null; "$REAL_RM" -rf "$LOCK20B"
+  echo "FAIL - unstampable lock under bsd rm: mode-000 lock left behind (a silent wedge)"
+  fails=$((fails+1))
+else
+  echo "ok - unstampable lock under bsd rm: removed"
+fi
+if [ -f "$SIBLING20B/acquired" ]; then
+  echo "ok - unstampable lock under bsd rm: sibling lock dir untouched"
+else
+  echo "FAIL - unstampable lock under bsd rm: cleanup reached a sibling path"
+  fails=$((fails+1))
+fi
+if [ -s "$d20b/dA/record" ]; then
+  echo "FAIL - unstampable lock under bsd rm: konsole must NEVER be invoked"
+  fails=$((fails+1))
+else
+  echo "ok - unstampable lock under bsd rm: konsole never invoked"
+fi
+
+# --- 20c (HIMMEL-3182). the owner-permission restore must not follow a
+# symlink found inside the lock: a `mkdir` stub, right after creating the
+# lock, plants a symlink inside it to a mode-000 directory OUTSIDE it and
+# re-closes the lock to 000 (as umask 0777 would), so the stamp write fails
+# with a symlink present. (A `date` stub cannot do this: the failing
+# `date +%s > "$LOCK/acquired"` redirect is refused before date ever runs.)
+# After the cleanup the lock is gone but the outside directory still has
+# mode 000 - the restore reached only what the lock itself contained.
+d20c="$tmp/c20c"; mkdir -p "$d20c/dA" "$d20c/repo" "$d20c/locks" "$d20c/bin" "$d20c/outside"
+chmod 755 "$d20c/locks"
+LOCK20C="$d20c/locks/HIMMEL-stampfail-link.lock"
+chmod 000 "$d20c/outside"
+cat > "$d20c/bin/mkdir" <<MKDIR_EOF
+#!/usr/bin/env bash
+"$(command -v mkdir)" "\$@" || exit \$?
+case "\${!#}" in
+  */HIMMEL-stampfail-link.lock)
+    chmod 700 "\${!#}"; ln -s "$d20c/outside" "\${!#}/link" && : > "$d20c/planted"; chmod 000 "\${!#}" ;;
+esac
+MKDIR_EOF
+chmod 755 "$d20c/bin/mkdir"
+cp "$d20b/bin/rm" "$d20c/bin/rm"
+cp "$d20/dA/konsole" "$d20c/dA/konsole"; cp "$d20/dA/pgrep" "$d20c/dA/pgrep"
+: > "$d20c/dA/log"; : > "$d20c/stderr"
+rc20c=0
+( umask 0777
+  PATH="$d20c/bin:$PATH" HEADED_ARM_LOCK_DIR="$d20c/locks" KONSOLE_CMD="$d20c/dA/konsole" PGREP_CMD="$d20c/dA/pgrep" HEADED_ARM_REPO="$d20c/repo" \
+    bash "$SCRIPT" "HIMMEL-stampfail-link" "doc20c.md" "$d20c/dA/signal-never" "$PAST" "$d20c/dA/log" >/dev/null 2>"$d20c/stderr"
+) || rc20c=$?
+check "unstampable lock holding a symlink: still exit 8" "$rc20c" "8"
+# precondition: the stub really did plant the symlink inside the lock
+check "unstampable lock holding a symlink: symlink was planted inside the lock" "$([ -e "$d20c/planted" ] && echo yes || echo no)" "yes"
+if [ -d "$LOCK20C" ]; then
+  chmod -R 700 "$LOCK20C" 2>/dev/null; "$REAL_RM" -rf "$LOCK20C"
+  echo "FAIL - unstampable lock holding a symlink: lock left behind"
+  fails=$((fails+1))
+else
+  echo "ok - unstampable lock holding a symlink: removed"
+fi
+case "$(ls -ld "$d20c/outside")" in
+  d---------*) echo "ok - unstampable lock holding a symlink: outside dir keeps mode 000 (chmod did not follow)" ;;
+  *) echo "FAIL - unstampable lock holding a symlink: outside dir mode changed - chmod followed the link"
+     fails=$((fails+1)) ;;
+esac
+chmod 700 "$d20c/outside" 2>/dev/null
 
 # --- 21 (r5-codex-3). a HARD deadline wakes the wait loop near the
 # deadline, not up to 30s late - a flat `sleep 30` used to let a deadline

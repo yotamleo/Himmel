@@ -884,6 +884,10 @@ stamp_or_fail_loudly() {
     if date +%s > "$LOCK/acquired" 2>/dev/null; then
         return 0
     fi
+    # HIMMEL-3182: the failed stamp write usually means $LOCK was mkdir'd mode
+    # 000 (umask 0777); BSD/macOS `rm -rf` cannot remove such a directory
+    # (EACCES), so restore owner access to the lock this claim created first.
+    chmod -R u+rwx "$LOCK" 2>/dev/null
     rm -rf "$LOCK" 2>/dev/null
     echo "headed-arm: claimed the lock '$LOCK' but could not write its acquired stamp - refusing to hold an unstampable lock that could never be reclaimed (HIMMEL-2545)" >&2
     exit 8
