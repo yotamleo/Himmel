@@ -338,10 +338,32 @@ check "(i) the run logs no admit-lock age-out (its release took the gate)" 0 "$(
 # it gives up and leaves `.admit` refused for the 60s admit-stale window.
 # Asserted as a RELATION over the script's own defaults (not a literal), so a
 # later change to either knob trips it.
-_dflt() { sed -n "s/.*$1:-\\([0-9][0-9.]*\\)}.*/\\1/p" "$SUT" | sort -u; }
-_j_iters="$(_dflt FLEET_ADMIT_RELEASE_ITERS)"; _j_sleep="$(_dflt FLEET_ADMIT_RETRY_SLEEP)"; _j_gate="$(_dflt FLEET_ADMIT_GATE_STALE_SECS)"
-check "(j) each knob has exactly one default in the script" "1 1 1" "$(printf '%s\n' "$_j_iters" | wc -l | tr -d ' ') $(printf '%s\n' "$_j_sleep" | wc -l | tr -d ' ') $(printf '%s\n' "$_j_gate" | wc -l | tr -d ' ')"
+# CodeRabbit (PR 909, round 2): the declaration COUNT is taken before any
+# deduplication, and separately from the extracted value — `sort -u` collapses
+# identical duplicates and an empty extraction still counts one line, so a
+# missing or duplicated default used to pass.
+_dflt_vals() { sed -n "s/.*$2:-\\([0-9][0-9.]*\\)}.*/\\1/p" "$1"; }
+_dflt_sites() { _dflt_vals "$1" "$2" | grep -c . || true; }
+_dflt_distinct() { _dflt_vals "$1" "$2" | sort -u | grep -c . || true; }
+# _j_shape <script> — "<sites ITERS SLEEP GATE> / <distinct values ITERS SLEEP GATE>"
+_j_shape() {
+  echo "$(_dflt_sites "$1" FLEET_ADMIT_RELEASE_ITERS) $(_dflt_sites "$1" FLEET_ADMIT_RETRY_SLEEP) $(_dflt_sites "$1" FLEET_ADMIT_GATE_STALE_SECS) / $(_dflt_distinct "$1" FLEET_ADMIT_RELEASE_ITERS) $(_dflt_distinct "$1" FLEET_ADMIT_RETRY_SLEEP) $(_dflt_distinct "$1" FLEET_ADMIT_GATE_STALE_SECS)"
+}
+# Declaration sites in the script: ITERS 1 (the release loop), GATE_STALE 1 (the
+# gate age check), RETRY_SLEEP 2 (the release loop and the claim loop) — each
+# knob one value across its sites.
+_j_want="1 2 1 / 1 1 1"
+check "(j) each knob is declared at the expected sites, with one value each" "$_j_want" "$(_j_shape "$SUT")"
+_j_iters="$(_dflt_vals "$SUT" FLEET_ADMIT_RELEASE_ITERS | sort -u)"; _j_sleep="$(_dflt_vals "$SUT" FLEET_ADMIT_RETRY_SLEEP | sort -u)"; _j_gate="$(_dflt_vals "$SUT" FLEET_ADMIT_GATE_STALE_SECS | sort -u)"
 check "(j) default ITERS x SLEEP exceeds the default gate-stale age" exceeds "$(awk -v i="$_j_iters" -v s="$_j_sleep" -v g="$_j_gate" 'BEGIN{print (i*s > g) ? "exceeds" : "short"}')"
+# Controls on variant copies of the script: a DUPLICATED and an ABSENT default
+# must each change the shape (the old sort -u | wc -l check saw "1 1 1" for both).
+cp "$SUT" "$W/j-dup.sh"
+# shellcheck disable=SC2016 # a literal declaration line appended to the copy
+printf '%s\n' ': "${FLEET_ADMIT_RELEASE_ITERS:-160}"' >> "$W/j-dup.sh"
+sed 's/FLEET_ADMIT_GATE_STALE_SECS:-5}/FLEET_ADMIT_GATE_STALE_SECS}/' "$SUT" > "$W/j-absent.sh"
+check "(j) control: a duplicated default is caught" "2 2 1 / 1 1 1" "$(_j_shape "$W/j-dup.sh")"
+check "(j) control: an absent default is caught" "1 2 0 / 1 1 0" "$(_j_shape "$W/j-absent.sh")"
 
 # --- (k) a failed release leaves the flag set, so the final cleanup retries ---
 # CodeRabbit (PR 909): the in-lock-census-failure branch used to clear
