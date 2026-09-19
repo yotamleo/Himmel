@@ -32,7 +32,8 @@
 # a ledger that cannot be written refuses the dispatch (allow+log obligation).
 #
 # SNAPSHOT (HIMMEL-3221): with --snapshot <dest> the gate copies the classified
-# file ONCE into <dest> (a private mode-0600 file the caller created) and the
+# file ONCE into <dest> (a private mode-0600 file the caller created and owns —
+# anything else is refused, never created here with umask perms) and the
 # caller dispatches only that copy — never the path — so a file swapped or a
 # symlink retargeted after the gate cannot change what the interpreter reads.
 # The file's identity (dev:inode:size:mtime) is taken before classification and
@@ -130,8 +131,16 @@ _ident() {
 # classification and the copy, or an unreadable size all refuse.
 take_snapshot() {
     [ -n "$snapshot" ] || return 0
-    local after now ssize
-    cat "$pf" > "$snapshot" 2>/dev/null || refuse "cannot copy '$pf' into the prompt snapshot '$snapshot' — refusing rather than dispatching a path that can change under us"
+    local after now ssize sperm
+    # The destination must already be the caller's private file: a nonexistent (or
+    # group/world-readable, or foreign-owned, or symlinked) destination would take
+    # gated bytes under umask-derived permissions or into someone else's file.
+    if [ -L "$snapshot" ] || [ ! -f "$snapshot" ]; then
+        refuse "--snapshot '$snapshot' must already exist as a regular file (not a symlink) — refusing to create it with umask-derived permissions"
+    fi
+    sperm="$(stat -c '%a:%u' "$snapshot" 2>/dev/null || stat -f '%Lp:%u' "$snapshot" 2>/dev/null)" || sperm=""
+    [ "$sperm" = "600:$(id -u)" ] || refuse "--snapshot '$snapshot' must be mode 0600 and owned by the caller (found '${sperm:-unreadable}') — refusing to write gated bytes into it"
+    ( umask 077; cat "$pf" > "$snapshot" ) 2>/dev/null || refuse "cannot copy '$pf' into the prompt snapshot '$snapshot' — refusing rather than dispatching a path that can change under us"
     chmod 600 "$snapshot" 2>/dev/null || refuse "cannot restrict the prompt snapshot '$snapshot' to mode 0600"
     after="$(_ident "$pf")" || refuse "cannot re-stat '$pf' after the snapshot copy — refusing rather than trusting an unverified copy"
     [ "$after" = "$ident" ] || refuse "'$pf' changed between the egress classification and the snapshot copy (identity $ident -> $after) — refusing a swapped prompt file"

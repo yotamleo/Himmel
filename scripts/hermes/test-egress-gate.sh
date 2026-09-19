@@ -284,7 +284,7 @@ exec "$REALSTAT" "\$@"
 EOS
 chmod +x "$STATBIN/stat"
 for mode in file dir; do
-    printf 'GATED-CORPUS\n' > "$SWAPFILE"; rm -f "$TMP/stat.swapped" "$TMP/snap2.out"
+    printf 'GATED-CORPUS\n' > "$SWAPFILE"; rm -f "$TMP/stat.swapped" "$TMP/snap2.out"; : > "$TMP/snap2.out"; chmod 600 "$TMP/snap2.out"
     err="$(SWAP_MODE=$mode PATH="$STATBIN:$PATH" bash "$GATE" --prompt-file "$SWAPFILE" --provider openai-codex --snapshot "$TMP/snap2.out" 2>&1)"; rc=$?
     check "snapshot: the $mode-symlink swap fired before the identity read (control)" "swapped" "$([ -e "$TMP/stat.swapped" ] && echo swapped || echo not)"
     check "snapshot: a $mode symlink swapped in after canonicalisation is refused rc 4" 4 "$rc"
@@ -294,19 +294,37 @@ done
 
 # C. the gate's own --snapshot + the ledger line
 printf 'GATED-CORPUS\n' > "$SWAPFILE"; : > "$HIMMEL_HERMES_EGRESS_LEDGER"; SNAP="$TMP/snap.out"
+: > "$SNAP"; chmod 600 "$SNAP"   # the caller pre-creates its private destination (invoke.sh: mktemp)
 bash "$GATE" --prompt-file "$SWAPFILE" --provider openai-codex --snapshot "$SNAP" >/dev/null 2>&1; rc=$?
 check "gate --snapshot: permitted dispatch rc 0" 0 "$rc"
 check "gate --snapshot: the snapshot holds the gated bytes" "GATED-CORPUS" "$(tr -d '\n' < "$SNAP" 2>/dev/null)"
 WANT_SHA="$(node -e 'process.stdout.write(require("crypto").createHash("sha256").update(require("fs").readFileSync(process.argv[1])).digest("hex"))' "$SNAP")"
 check "gate --snapshot: the ledger line carries the snapshot sha256 and byte size" "$WANT_SHA 13" "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n");const r=JSON.parse(l[l.length-1]);process.stdout.write(r.sha256+" "+r.bytes)' "$HIMMEL_HERMES_EGRESS_LEDGER" 2>/dev/null || echo bad)"
 # a NOT-gated file is snapshotted too (a swap could turn it into a gated one)
-rm -f "$SNAP"; bash "$GATE" --prompt-file "$TMP/code/diff.txt" --snapshot "$SNAP" >/dev/null 2>&1; rc=$?
+: > "$SNAP"; chmod 600 "$SNAP"; bash "$GATE" --prompt-file "$TMP/code/diff.txt" --snapshot "$SNAP" >/dev/null 2>&1; rc=$?
 check "gate --snapshot: an un-gated file is snapshotted too" "0 diff" "$rc $(tr -d '\n' < "$SNAP" 2>/dev/null)"
 
 # D. fail closed on any copy / mktemp error
 err="$(bash "$GATE" --prompt-file "$SWAPFILE" --provider openai-codex --snapshot "$TMP/no-such-dir/snap" 2>&1)"; rc=$?
 check "gate --snapshot: an uncopyable destination refuses rc 4" 4 "$rc"
 check_contains "gate --snapshot: …with an explicit snapshot refusal" "snapshot" "$err"
+# D2. the destination must ALREADY be a regular 0600 caller-owned file: the gate never
+# creates it (a umask-derived mode would expose the gated bytes), and never writes into
+# one that is not private. Each refusal is rc 4 and leaves the destination empty.
+GOODSNAP="$TMP/d2.good"; : > "$GOODSNAP"; chmod 600 "$GOODSNAP"
+bash "$GATE" --prompt-file "$SWAPFILE" --provider openai-codex --snapshot "$GOODSNAP" >/dev/null 2>&1; rc=$?
+check "gate --snapshot: a pre-created 0600 destination is accepted (control)" "0 GATED-CORPUS" "$rc $(tr -d '\n' < "$GOODSNAP")"
+D2NEW="$TMP/d2.new"; rm -f "$D2NEW"
+err="$(bash "$GATE" --prompt-file "$SWAPFILE" --provider openai-codex --snapshot "$D2NEW" 2>&1)"; rc=$?
+check "gate --snapshot: a destination that does not exist is refused rc 4, not created" "4 absent" "$rc $([ -e "$D2NEW" ] && echo present || echo absent)"
+check_contains "gate --snapshot: …naming the destination requirement" "must already exist" "$err"
+D2OPEN="$TMP/d2.open"; : > "$D2OPEN"; chmod 644 "$D2OPEN"
+err="$(bash "$GATE" --prompt-file "$SWAPFILE" --provider openai-codex --snapshot "$D2OPEN" 2>&1)"; rc=$?
+check "gate --snapshot: a mode-0644 destination is refused rc 4 and stays empty" "4 0" "$rc $(wc -c < "$D2OPEN" | tr -d ' ')"
+check_contains "gate --snapshot: …naming the mode requirement" "0600" "$err"
+D2LINK="$TMP/d2.link"; D2TARGET="$TMP/d2.target"; : > "$D2TARGET"; chmod 600 "$D2TARGET"; ln -sf "$D2TARGET" "$D2LINK"
+err="$(bash "$GATE" --prompt-file "$SWAPFILE" --provider openai-codex --snapshot "$D2LINK" 2>&1)"; rc=$?
+check "gate --snapshot: a symlink destination is refused rc 4 and the target stays empty" "4 0" "$rc $(wc -c < "$D2TARGET" | tr -d ' ')"
 rm -f "$STUB_CAPTURE"
 err="$(TMPDIR="$TMP/no-such-tmpdir" bash "$INVOKE" --prompt-file "$SWAPFILE" --provider openai-codex 2>&1)"; rc=$?
 check "invoke.sh: a snapshot mktemp failure refuses rc 2" 2 "$rc"
