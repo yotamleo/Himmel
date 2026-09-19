@@ -24,12 +24,15 @@
 #           SUITE <path> = PASS
 #           SUITE <path> = SKIP <reason>          (reason required)
 #           SUITE <path> = BLOCKED <denial>       (denial required)
-#       Exit 0 when every impacted suite has one; exit 1, naming each on
-#       stderr, when any is missing — the /pr-check row is then NOT clean.
+#       Exit 0 when every impacted suite has a PASS or SKIP; exit 1, naming
+#       each on stderr, when any is missing; exit 3 when every suite has a
+#       verdict but one is BLOCKED — accounted for, yet the suite did not run,
+#       so the /pr-check row is NOT clean until the console/operator rules.
 #
-# Exit codes: 0 ok / clean; 1 --check found a missing verdict; 2 usage or an
-# unresolvable range. A range that cannot be resolved is an ERROR, never an
-# empty list: an empty impacted set reads as "nothing to run".
+# Exit codes: 0 ok / clean; 1 --check found a missing verdict; 2 usage, an
+# unresolvable range, or a failed search; 3 --check found a BLOCKED suite. A
+# range that cannot be resolved (or searched) is an ERROR, never an empty
+# list: an empty impacted set reads as "nothing to run".
 #
 # ponytail: references are DIRECT and textual. A suite that reaches a changed
 # file only through an intermediate script it calls (no mention of the changed
@@ -114,9 +117,10 @@ add_needle() {
 while IFS= read -r f; do
     [ -n "$f" ] || continue
     if grep -Eq "$suite_re" <<< "$f"; then
-        # A changed suite is impacted by itself (unless the PR deleted it).
+        # A changed suite is impacted by itself (unless the PR deleted it) —
+        # and falls through so its basename is also a needle: a wrapper that
+        # invokes it (test-arm-resume-fast.sh -> test-arm-resume.sh) is reached.
         if grep -Fxq -- "$f" <<< "$suites"; then printf '%s\n' "$f" >> "$found"; fi
-        continue
     fi
     name="${f##*/}"
     if grep -Eq "$generic_re" <<< "$name"; then
@@ -137,9 +141,17 @@ done <<< "$changed"
 if [ -s "$pats" ]; then
     # git grep on the resolved <head> tree, not the working tree: the answer is
     # about the PR as pushed. -l prefixes each path with "<head_sha>:".
+    # rc 1 is "no match"; anything higher is a search that did not run, which
+    # must not read as an empty impacted set.
+    grep_rc=0
     git grep -l -E -f "$pats" "$head_sha" -- \
         ':(glob)**/test-*.sh' ':(glob)**/*.test.mjs' ':(glob)**/*.test.js' ':(glob)**/*.test.ts' \
-        2>/dev/null | sed "s/^${head_sha}://" >> "$found"
+        > "$work/grep.out" || grep_rc=$?
+    if [ "$grep_rc" -gt 1 ]; then
+        echo "impacted-suites: git grep failed (rc=$grep_rc) — cannot tell which suites are impacted" >&2
+        exit 2
+    fi
+    sed "s/^${head_sha}://" "$work/grep.out" >> "$found"
 fi
 
 impacted="$work/impacted"
@@ -156,13 +168,18 @@ fi
 
 # --check: every impacted suite needs a valid verdict line on stdin.
 have="$work/have"
-awk '
+blocked_raw="$work/blocked.raw"
+: > "$blocked_raw"
+awk -v blockedf="$blocked_raw" '
     /^SUITE +[^ ]+ += +(PASS|SKIP|BLOCKED)( +.*)?$/ {
         path = $2
         verdict = $4
         reason = $0
         sub(/^SUITE +[^ ]+ += +(PASS|SKIP|BLOCKED) */, "", reason)
-        if (verdict == "PASS" || reason ~ /[^ \t\r]/) print path
+        if (verdict == "PASS" || reason ~ /[^ \t\r]/) {
+            print path
+            if (verdict == "BLOCKED") print path > blockedf
+        }
     }
 ' | sort -u > "$have"
 missing="$work/missing"
@@ -175,5 +192,15 @@ if [ "$n_missing" -gt 0 ]; then
         printf 'impacted-suites: MISSING VERDICT %s\n' "$s" >&2
     done < "$missing"
     exit 1
+fi
+# Every suite has a verdict; a BLOCKED one is accounted for but did not run.
+blocked="$work/blocked"
+sort -u "$blocked_raw" | comm -12 "$impacted" - > "$blocked"
+if [ -s "$blocked" ]; then
+    printf 'impacted-suites: %s BLOCKED (accounted for, NOT clean — the suite did not run)\n' "$(wc -l < "$blocked" | tr -d ' ')" >&2
+    while IFS= read -r s; do
+        printf 'impacted-suites: BLOCKED %s\n' "$s" >&2
+    done < "$blocked"
+    exit 3
 fi
 exit 0

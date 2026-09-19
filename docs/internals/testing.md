@@ -31,7 +31,7 @@ and never ran). `run-shell-tests.sh --impacted <base>..<head>` runs just the
 shell ones; `--impacted` is refused (rc 2) on a range that does not resolve, and
 a suite outside the scan root is named, not silently dropped. `/pr-check` step
 3.6 requires one `PASS` / `SKIP <reason>` / `BLOCKED <denial>` verdict per listed
-suite (`impacted-suites.sh --check`); a missing one leaves the row NOT clean.
+suite (`impacted-suites.sh --check`); a missing one (rc 1) or a `BLOCKED` one (rc 3 — accounted for, but the suite did not run) leaves the row NOT clean.
 References are direct and textual only — a suite that reaches the file only
 through another script it calls is not listed.
 

@@ -46,6 +46,7 @@ mkf scripts/machine-setup/install.sh
 mkf scripts/uninstall.sh
 mkf scripts/test-uninstall.sh 'bash "$d/machine-setup/uninstall-plugins.sh"; bash "$d/uninstall.sh"'
 mkf scripts/test-other.sh 'bash "$d/uninstall.sh"'
+mkf scripts/test-wrapper.sh 'bash "$d/test-other.sh"'
 mkf scripts/test-installer.sh 'bash "$d/machine-setup/install.sh"'
 mkf scripts/lanes/tests/plugins.test.mjs "// drives uninstall-plugins.sh"
 mkf .claude/commands/pr-check.md
@@ -95,6 +96,7 @@ if [ "$out" = "scripts/test-readme-foo.sh" ]; then pass "README.md matched via f
 change scripts/test-other.sh
 out="$(run_is "$range")"
 if grepq "$out" '^scripts/test-other\.sh$'; then pass "a changed suite is impacted by itself"; else fail "changed suite not listed: $out"; fi
+if grepq "$out" '^scripts/test-wrapper\.sh$'; then pass "a suite that invokes the changed suite is impacted too"; else fail "caller of the changed suite not listed: $out"; fi
 
 # --- 6. a deleted file still lists the suites that reference it --------------
 git -C "$FX" rm -q scripts/machine-setup/install.sh
@@ -125,8 +127,11 @@ if [ "$rc" -eq 0 ]; then pass "PASS + SKIP-with-reason for every impacted suite 
 ( cd "$FX" && printf '%s\n%s\n' "$V1" 'SUITE scripts/lanes/tests/plugins.test.mjs = SKIP' | bash "$IS" --check "$range" >/dev/null 2>&1 ); rc=$?
 if [ "$rc" -eq 1 ]; then pass "SKIP without a reason is not a verdict (rc1)"; else fail "reasonless SKIP accepted: rc=$rc"; fi
 
-( cd "$FX" && printf '%s\n%s\n' "$V1" 'SUITE scripts/lanes/tests/plugins.test.mjs = BLOCKED denied: bun not permitted' | bash "$IS" --check "$range" >/dev/null 2>&1 ); rc=$?
-if [ "$rc" -eq 0 ]; then pass "BLOCKED-with-denial is a verdict (rc0)"; else fail "BLOCKED-with-denial refused: rc=$rc"; fi
+err="$( cd "$FX" && printf '%s\n%s\n' "$V1" 'SUITE scripts/lanes/tests/plugins.test.mjs = BLOCKED denied: bun not permitted' | bash "$IS" --check "$range" 2>&1 >/dev/null )"; rc=$?
+if [ "$rc" -eq 3 ] && grepq "$err" 'BLOCKED scripts/lanes/tests/plugins\.test\.mjs'; then pass "BLOCKED-with-denial is accounted for but NOT clean (rc3, names the suite)"; else fail "BLOCKED suite: rc=$rc err=$err"; fi
+
+( cd "$FX" && printf '%s\n' 'SUITE scripts/lanes/tests/plugins.test.mjs = BLOCKED denied: bun not permitted' | bash "$IS" --check "$range" >/dev/null 2>&1 ); rc=$?
+if [ "$rc" -eq 1 ]; then pass "a missing verdict (rc1) still outranks BLOCKED (rc3)"; else fail "missing+blocked ordering: rc=$rc"; fi
 
 ( cd "$FX" && printf '%s\n%s\n' "$V1" 'SUITE scripts/lanes/tests/plugins.test.mjs = MAYBE' | bash "$IS" --check "$range" >/dev/null 2>&1 ); rc=$?
 if [ "$rc" -eq 1 ]; then pass "an unknown verdict word is not a verdict (rc1)"; else fail "unknown verdict accepted: rc=$rc"; fi
@@ -138,6 +143,19 @@ if [ "$rc" -eq 1 ]; then pass "a verdict for a suite that is not impacted does n
 change docs/foo/other.md
 out="$( cd "$FX" && printf '' | bash "$IS" --check "$range" 2>&1 )"; rc=$?
 if [ "$rc" -eq 0 ] && grepq "$out" '0 impacted'; then pass "no impacted suites -> rc0 '0 impacted'"; else fail "empty impacted set: rc=$rc out=$out"; fi
+
+# --- 10. a search that fails is an error, never an empty impacted set --------
+# A `git` shim that fails only `grep` (fatal, rc 128); every other subcommand
+# reaches the real git so the range still resolves and needles are built.
+SHIM="$(fixture_mktemp_dir)" || exit 1
+trap 'rm -rf "$FX" "$SHIM"' EXIT
+printf '#!/usr/bin/env bash\nif [ "${1:-}" = grep ]; then echo "fatal: injected" >&2; exit 128; fi\nexec "%s" "$@"\n' "$(command -v git)" > "$SHIM/git"
+chmod +x "$SHIM/git"
+change scripts/machine-setup/uninstall-plugins.sh
+out="$( cd "$FX" && PATH="$SHIM:$PATH" bash "$IS" "$range" 2>/dev/null )"; rc=$?
+if [ "$rc" -eq 2 ] && [ -z "$out" ]; then pass "a failing git grep -> rc2, empty stdout (not an empty impacted set)"; else fail "git grep failure: rc=$rc out=$out"; fi
+err="$( cd "$FX" && PATH="$SHIM:$PATH" bash "$IS" "$range" 2>&1 >/dev/null )"
+if grepq "$err" 'git grep failed'; then pass "the failed search is named on stderr"; else fail "git grep failure not named: $err"; fi
 
 echo
 if [ "$failures" -eq 0 ]; then echo "OK: all cases passed"; exit 0; fi
