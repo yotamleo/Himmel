@@ -3829,6 +3829,7 @@ then pass "T52 manifest stamped from the workdir's corpus copy"; else fail "T52 
 [ -f "$W/graphify-out/graph.json" ] && [ -f "$W/.graphify-corpus" ] && pass "T52 workdir NEVER deleted on success" || fail "T52 workdir deleted or altered on success"
 grep -qF "promoted; safe to remove $W" <<< "$out" && pass "T52 success names the workdir as safe to remove" || fail "T52 missing 'promoted; safe to remove' line: $out"
 [ ! -e "$T52_MAPS/t52-map.md" ] && pass "T52 MOC NOT published without --publish" || fail "T52 published the MOC without --publish"
+grep -qF "MOC not published" <<< "$out" && grep -F "MOC not published" <<< "$out" | grep -qF -- "--no-update" && pass "T52 unpublished notice points at --no-update (a re-run is refused as stale)" || fail "T52 unpublished notice does not name --no-update: $out"
 [ ! -e "$T52_C/graphify-out/.promote.lock" ] && [ ! -e "$T52_C/graphify-out/.extraction.lock" ] && pass "T52 both locks released" || fail "T52 a lock was left behind"
 
 # --publish: the MOC is published from the promoted graph, workdir still kept

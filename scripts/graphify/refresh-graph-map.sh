@@ -2779,7 +2779,7 @@ fi
 if [ -n "$PROMOTE_ONLY" ]; then
   echo "refresh-graph-map: promoted; safe to remove $PROMOTE_ONLY_DIR" >&2
   if [ "$PUBLISH" -eq 0 ]; then
-    echo "refresh-graph-map: MOC not published (re-run with --publish to publish it from the promoted graph)" >&2
+    echo "refresh-graph-map: MOC not published (pass --publish next time; to publish this already-promoted graph now, run with --no-update -- a second --promote-only is refused as stale without --force)" >&2
     exit 0
   fi
 fi
