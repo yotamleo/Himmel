@@ -587,10 +587,10 @@ class TestSecretBoundary(unittest.TestCase):
             cmds.append(cmd)
             if cmd.startswith("test -d "):
                 return (0, "") if cmd.split()[-1] in present else (1, "")
-            if " /tmp -xdev" in cmd and tmp_errors:
+            if cmd.endswith("; _s /tmp") and tmp_errors:
                 return (1, "find: '/tmp/systemd-private-x': Permission denied")
             for root, out in hits.items():
-                if f" {root} " in cmd:
+                if cmd.endswith(f"; _s {root}"):
                     return (0, out)
             return (0, "")
         with mock.patch.object(vmsdk.vbox, "is_running", return_value=True), \
@@ -603,11 +603,11 @@ class TestSecretBoundary(unittest.TestCase):
         """The tracked VM scripts stage under two fixed /tmp dirs; those plus ~
         are the scan surface. A bare /tmp scan is NOT (unreadable siblings)."""
         cmds, snap = self._snapshot_with(present=self._STAGING)
-        scans = [c for c in cmds if c.startswith("find ")]
-        self.assertTrue(any(" ~ " in c for c in scans), scans)
+        scans = [c for c in cmds if "; _s " in c]
+        self.assertTrue(any(c.endswith("; _s ~") for c in scans), scans)
         for d in self._STAGING:
-            self.assertTrue(any(f" {d} " in c for c in scans), (d, scans))
-        self.assertFalse(any(" /tmp -xdev" in c for c in scans), scans)
+            self.assertTrue(any(c.endswith(f"; _s {d}") for c in scans), (d, scans))
+        self.assertFalse(any(c.endswith("; _s /tmp") for c in scans), scans)
         snap.assert_called_once()
 
     def test_snapshot_ignores_unreadable_tmp_siblings(self):
@@ -615,7 +615,7 @@ class TestSecretBoundary(unittest.TestCase):
         refused every clean running guest; absent staging dirs are skipped."""
         cmds, snap = self._snapshot_with(present=())
         snap.assert_called_once()
-        self.assertFalse(any(c.startswith("find ") and " /tmp/" in c for c in cmds), cmds)
+        self.assertFalse(any("; _s /tmp/" in c for c in cmds), cmds)
 
     def test_snapshot_refuses_a_secret_in_a_staging_dir(self):
         d = self._STAGING[0]
@@ -633,7 +633,7 @@ class TestSecretBoundary(unittest.TestCase):
         def fake_run(cmd, *a, **k):
             if cmd.startswith("test -d "):
                 return (0, "") if cmd.split()[-1] == d else (1, "")
-            if f" {d} " in cmd and "-name '*.local.json'" in cmd:
+            if cmd.endswith(f"; _s {d}") and "-name '*.local.json'" in cmd:
                 return (0, d + "/.claude/settings.local.json\n")
             return (0, "")
         with mock.patch.object(vmsdk.vbox, "is_running", return_value=True), \
@@ -732,11 +732,46 @@ class TestSecretBoundary(unittest.TestCase):
                 vm.assert_guest_clean("~", "env")
         self.assertIn("REFUSING", str(cm.exception))
 
+    # HIMMEL-3228: a spaced guest root is quoted, not refused; everything that could
+    # end the word or start a find option still is.
+    _UNSAFE_ROOTS = ("", "a b;rm -rf x", "a b'c", "a b$x", "a b`x`", "a b\nc", "a\tb",
+                     " lead", "-a b", "-quit", "~user a b", "a b|c", "a b&c", "a b(c")
+
+    def test_scan_root_with_a_space_is_quoted(self):
+        self.assertTrue(vmsdk.secret_scan_cmd("/tmp/a b", "env").endswith("; _s '/tmp/a b'"))
+        # the ~ stays outside the quotes so the guest shell still expands it
+        self.assertTrue(vmsdk.secret_scan_cmd("~/my dir/x", "full").endswith("; _s ~/'my dir/x'"))
+        # an unspaced root stays byte-for-byte what it was
+        self.assertTrue(vmsdk.secret_scan_cmd("~/x", "env").endswith("; _s ~/x"))
+
+    def test_spaced_scan_root_still_refuses_unsafe_text(self):
+        for bad in self._UNSAFE_ROOTS:
+            for prof in ("full", "env"):
+                with self.assertRaises(vmsdk.VMError, msg=repr(bad)):
+                    vmsdk.secret_scan_cmd(bad, prof)
+
+    def test_sync_repo_refuses_an_unscannable_dest_before_any_transfer(self):
+        """A dest the post-copy scan would refuse must stop BEFORE the tar pipe
+        runs — not after every file already crossed."""
+        vm = self._vm()
+        with mock.patch.object(vmsdk.subprocess, "run") as run, \
+             mock.patch.object(vm, "run", return_value=(0, "")):
+            with self.assertRaises(EnvironmentError) as cm:
+                vm.sync_repo(r"C:\Users\x\himmel", dest="~/x;rm -rf y")
+        run.assert_not_called()
+        self.assertIn("guest-path characters", str(cm.exception))
+
+    def test_sync_repo_quotes_a_spaced_dest_for_the_guest_shell(self):
+        import shlex  # tokens, not text
+        pipe = self._sync_pipe(self._vm(), dest="~/my repo")
+        remote = shlex.split(pipe)[-1]
+        self.assertEqual(remote, "mkdir -p ~/'my repo' && tar xzf - -C ~/'my repo'")
+
     def test_scan_follows_a_symlinked_root(self):
         """find without -H lists only the link itself, so a root that is a
         symlink to the checkout would scan as clean."""
         for prof in ("full", "env"):
-            self.assertTrue(vmsdk.secret_scan_cmd("~/x", prof).startswith("find -H "))
+            self.assertIn('find -H "$d" -xdev', vmsdk.secret_scan_cmd("~/x", prof))
 
     def test_scan_command_parity_with_the_bash_helper(self):
         """vmsdk and scripts/lib/vm-guest-excludes.sh are two spellings of one
@@ -744,10 +779,18 @@ class TestSecretBoundary(unittest.TestCase):
         import subprocess
         lib = Path(__file__).resolve().parent / "vm-guest-excludes.sh"
         for prof in ("full", "env"):
-            sh = subprocess.run(
-                ["bash", "-c", f'. "{lib}"; vm_guest_scan_cmd "~/x" {prof}'],
-                capture_output=True, text=True, check=True).stdout
-            self.assertEqual(vmsdk.secret_scan_cmd("~/x", prof), sh)
+            for root in ("~/x", "~", "/tmp/a b", "~/my dir/sub dir", "a b"):
+                sh = subprocess.run(
+                    ["bash", "-c", f'. "{lib}"; vm_guest_scan_cmd "$1" {prof}', "_", root],
+                    capture_output=True, text=True, check=True).stdout
+                self.assertEqual(vmsdk.secret_scan_cmd(root, prof), sh, root)
+        for bad in self._UNSAFE_ROOTS:
+            rc = subprocess.run(
+                ["bash", "-c", f'. "{lib}"; vm_guest_scan_cmd "$1" full', "_", bad],
+                capture_output=True, text=True).returncode
+            self.assertNotEqual(rc, 0, bad)
+            with self.assertRaises(vmsdk.VMError):
+                vmsdk.secret_scan_cmd(bad, "full")
         out = subprocess.run(["bash", "-c", f'. "{lib}"; vm_guest_tar_excludes'],
                              capture_output=True, text=True, check=True).stdout.split()
         self.assertEqual(out, ["--exclude=" + g for g in vmsdk.SECRET_EXCLUDES])

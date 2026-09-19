@@ -66,18 +66,56 @@ _SCAN_PROFILES = {
 }
 
 
+# HIMMEL-3236: the scan follows nested DIRECTORY symlinks (a checkout linked into
+# the home dir from outside the scanned roots), bounded — see the ponytail note in
+# vm-guest-excludes.sh. One POSIX-sh function; the two spellings must stay
+# byte-identical (test_scan_command_parity_with_the_bash_helper).
+_SCAN_SYSTEM_TREES = ("//|/proc/*|/sys/*|/dev/*|/run/*|/usr/*|/bin/*|/sbin/*|/lib/*|"
+                      "/lib32/*|/lib64/*|/libx32/*|/etc/*|/boot/*|/snap/*|/var/*")
+_SCAN_FN_HEAD = (
+    '_s() ( d=$(cd -P -- "$1" && pwd -P) || exit 1; shift; '
+    'for a; do [ "$a" = "$d" ] && exit 0; done; '
+    f'if [ $# -gt 0 ]; then case "$d/" in {_SCAN_SYSTEM_TREES}) exit 0;; esac; fi; '
+    'find -H "$d" -xdev \\( ')
+_SCAN_FN_TAIL = (
+    " \\) ! -name '.env.example' ! -type d -print || exit 1; "
+    'l=$(find -H "$d" -xdev -type l -exec test -d {} \\; -print) || exit 1; '
+    '[ -n "$l" ] || exit 0; '
+    "printf '%s\\n' \"$l\" | while IFS= read -r x; do "
+    '_s "$x" "$d" "$@" || exit 1; done ); ')
+
+
+def _guest_path(root):
+    """`root` as one guest-shell word: a space is allowed and single-quoted
+    (a leading `~/` stays outside the quotes so the guest shell still expands it).
+    Nothing that could end a word or start an option gets through: no leading
+    `-` (it would become a find expression), no quote, `;`, `$`, newline, ...
+    (byte-identical to vm_guest_quote_root in vm-guest-excludes.sh)."""
+    root = str(root)
+    if not re.fullmatch(r"[A-Za-z0-9._/~+][A-Za-z0-9._/~+ -]*", root):
+        raise VMError(
+            f"secret scan root {root!r}: guest-path characters only (a space is "
+            "allowed, not first)")
+    if " " not in root:
+        return root
+    if root.startswith("~/"):
+        return "~/'" + root[2:] + "'"
+    if root.startswith("~"):
+        raise VMError(f"secret scan root {root!r}: a ~user root cannot contain a space")
+    return "'" + root + "'"
+
+
 def secret_scan_cmd(root, profile="full"):
-    """The portable guest-side `find` that lists secret-bearing files under root
+    """The portable guest-side command that lists secret-bearing files under root
     (byte-identical to vm_guest_scan_cmd in vm-guest-excludes.sh)."""
-    if not re.fullmatch(r"[A-Za-z0-9._/~+][A-Za-z0-9._/~+-]*", str(root)):
-        raise VMError(f"secret scan root {root!r}: guest-path characters only")
+    q = _guest_path(root)
     if profile not in _SCAN_PROFILES:
         raise VMError(f"unknown secret-scan profile {profile!r} (full|env)")
     names = " -o ".join(f"-name '{g}'" for g in _SCAN_PROFILES[profile])
     # ! -type d: a directory named .env is a virtualenv convention, not a secret.
-    # -H follows a symlinked root; -xdev limit: see vm-guest-excludes.sh.
-    return (f"find -H {root} -xdev \\( {names} \\) "
-            f"! -name '.env.example' ! -type d -print")
+    # -H follows a symlinked root; nested directory symlinks are followed by the
+    # `_s` recursion; -xdev limit: see vm-guest-excludes.sh.
+    return f"{_SCAN_FN_HEAD}{names}{_SCAN_FN_TAIL}_s {q}"
 
 
 class VMError(RuntimeError):
@@ -453,10 +491,17 @@ class VM:
             ssh_target = (f"-p {self.port} -i {key} "
                           f"-o BatchMode=yes -o StrictHostKeyChecking=accept-new "
                           f"{self.user}@127.0.0.1")
+        # HIMMEL-3228: refuse a dest the post-copy scan could not check BEFORE
+        # any file crosses, and quote it (a spaced dest) for the guest shell.
+        try:
+            secret_scan_cmd(dest, "full")
+            guest_dest = _guest_path(dest)
+        except VMError as e:
+            raise EnvironmentError(str(e)) from e
+        remote = f"mkdir -p {guest_dest} && tar xzf - -C {guest_dest}"
         pipe = (
             f"tar czf - {exclude_flags} -C {local_fwd} . "
-            f"| ssh {ssh_target} "
-            f"'mkdir -p {dest} && tar xzf - -C {dest}'"
+            f"| ssh {ssh_target} {shlex.quote(remote)}"
         )
         argv = [bash, "-c", pipe]
         r = subprocess.run(argv, capture_output=True)

@@ -32,7 +32,8 @@
 # API (source this file):
 #   vm_guest_tar_excludes            one tar flag per line
 #   vm_guest_rsync_excludes          one rsync flag per line
-#   vm_guest_scan_cmd <root> <prof>  the portable `find` command string
+#   vm_guest_quote_root <root>       the root as ONE guest-shell word (spaces quoted)
+#   vm_guest_scan_cmd <root> <prof>  the portable scan command string
 #   vm_guest_scan <root> <prof>      run it locally; rc 0 = clean
 #   vm_guest_assert_clean <runner> <root> <prof>
 #       <runner> is a function taking ONE shell-command string and running it
@@ -47,6 +48,12 @@
 # /tmp/himmel-luna-upgrade-vm), and never crosses filesystems (find -xdev, so a
 # separate mount beneath a root is skipped). All of /tmp is not scanned: find exits
 # non-zero on root-owned 0700 dirs (systemd-private-*), refusing every clean guest.
+# Nested DIRECTORY symlinks are followed (HIMMEL-3236), one resolved target at a time
+# and each with its own `find -xdev`, bounded: a target already on the chain (loop) is
+# skipped, and so is one that resolves into a system tree (/ /proc /sys /dev /run /usr
+# /bin /sbin /lib* /etc /boot /snap /var) — those never receive a host checkout and hold
+# root-owned 0700 dirs that would refuse every guest. A secret planted under a system
+# tree is therefore NOT covered. An unreadable or unresolvable target fails closed.
 # The untracked base builder (/tmp/m2457-rebuild.sh) stages wherever it likes and is
 # NOT covered — it must call this CLI itself (operator item, HIMMEL-2540).
 #
@@ -69,13 +76,41 @@ vm_guest_rsync_excludes() {
   vm_guest_tar_excludes
 }
 
-vm_guest_scan_cmd() {
-  local root="$1" prof="${2:-full}" globs
+# A root as ONE guest-shell word (HIMMEL-3228): a space is allowed and single-quoted
+# (a leading '~/' stays outside the quotes so the guest shell still expands it).
+# Nothing that could end a word or start an option gets through: no leading '-' (it
+# would become a find expression), no quote, ';', '$', newline, ...
+# Byte-identical to _guest_path in vmsdk.py (parity-tested).
+vm_guest_quote_root() {
+  local root="$1"
   case "$root" in
-    ''|-*|*[!A-Za-z0-9._/~+-]*)
-      echo "vm_guest_scan_cmd: unsafe root '$root' (guest-path characters only, no leading '-')" >&2
+    ''|[!A-Za-z0-9._/~+]*|*[!A-Za-z0-9._/~+\ -]*)
+      echo "vm_guest_scan_cmd: unsafe root '$root' (guest-path characters only; a space is allowed, not first)" >&2
       return 2 ;;
+    *' '*)
+      # shellcheck disable=SC2088  # the tilde is meant literally: the GUEST shell expands it
+      case "$root" in
+        '~/'*) printf "~/'%s'" "${root#'~/'}" ;;
+        '~'*) echo "vm_guest_scan_cmd: unsafe root '$root' (a ~user root cannot contain a space)" >&2; return 2 ;;
+        *) printf "'%s'" "$root" ;;
+      esac ;;
+    *) printf '%s' "$root" ;;
   esac
+}
+
+# The scan is one POSIX-sh function (HIMMEL-3236): find the secret set under a dir,
+# then recurse into each nested DIRECTORY symlink's resolved target. Bounds: a
+# target already on the chain (loop) or in a system tree is skipped; every target is
+# scanned by its own `find -xdev`; any find/cd failure exits non-zero (fail closed).
+# Byte-identical to _SCAN_FN_HEAD/_SCAN_FN_TAIL in vmsdk.py (parity-tested).
+# shellcheck disable=SC2016  # literal guest-shell text: nothing may expand HERE
+VM_GUEST_SCAN_FN_HEAD='_s() ( d=$(cd -P -- "$1" && pwd -P) || exit 1; shift; for a; do [ "$a" = "$d" ] && exit 0; done; if [ $# -gt 0 ]; then case "$d/" in //|/proc/*|/sys/*|/dev/*|/run/*|/usr/*|/bin/*|/sbin/*|/lib/*|/lib32/*|/lib64/*|/libx32/*|/etc/*|/boot/*|/snap/*|/var/*) exit 0;; esac; fi; find -H "$d" -xdev \( '
+# shellcheck disable=SC2016  # literal guest-shell text: nothing may expand HERE
+VM_GUEST_SCAN_FN_TAIL=' \) ! -name '\''.env.example'\'' ! -type d -print || exit 1; l=$(find -H "$d" -xdev -type l -exec test -d {} \; -print) || exit 1; [ -n "$l" ] || exit 0; printf '\''%s\n'\'' "$l" | while IFS= read -r x; do _s "$x" "$d" "$@" || exit 1; done ); '
+
+vm_guest_scan_cmd() {
+  local root="$1" prof="${2:-full}" globs q
+  q=$(vm_guest_quote_root "$root") || return 2
   case "$prof" in
     full) globs="-name '.env' -o -name '.env.*' -o -name '*.local.json'" ;;
     env)  globs="-name '.env' -o -name '.env.*'" ;;
@@ -83,8 +118,9 @@ vm_guest_scan_cmd() {
   esac
   # ! -type d: a directory named .env is a virtualenv convention, not a secret file.
   # -H: follow the ROOT if it is a symlink (find lists only the link otherwise, so a
-  # root linking to a tree holding a .env would scan clean).
-  printf "find -H %s -xdev \\( %s \\) ! -name '.env.example' ! -type d -print" "$root" "$globs"
+  # root linking to a tree holding a .env would scan clean); nested directory
+  # symlinks are followed by the `_s` recursion.
+  printf '%s%s%s_s %s' "$VM_GUEST_SCAN_FN_HEAD" "$globs" "$VM_GUEST_SCAN_FN_TAIL" "$q"
 }
 
 vm_guest_scan() {

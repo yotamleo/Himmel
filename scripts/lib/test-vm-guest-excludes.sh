@@ -123,13 +123,96 @@ else
   fail_case "T4c a symlinked scan root passed as clean (secret hidden behind the link)"
 fi
 
+# shellcheck disable=SC2317,SC2329  # invoked indirectly by vm_guest_assert_clean
+local_runner_early() { bash -c "$1"; }
+# --- T4d a root containing a SPACE is quoted, scanned, and still flags a leak (HIMMEL-3228)
+SPD="$WORK/sp ace/tree"; mkdir -p "$SPD/sub"; echo x > "$SPD/sub/.env"
+SPC="$WORK/sp ace/clean"; mkdir -p "$SPC"; echo keep > "$SPC/keep.txt"
+if ! vm_guest_scan "$SPD" env >/dev/null 2>&1 && vm_guest_scan "$SPC" env >/dev/null 2>&1; then
+  pass "T4d a spaced scan root is scanned: leak flagged, clean tree passes"
+else fail_case "T4d spaced root refused or mis-scanned: $(vm_guest_scan "$SPD" env 2>&1 | head -2)"; fi
+if vm_guest_assert_clean local_runner_early "$SPC" full >/dev/null 2>&1 \
+   && ! vm_guest_assert_clean local_runner_early "$SPD" full >/dev/null 2>&1; then
+  pass "T4d2 assert_clean works through a runner on a spaced root"
+else fail_case "T4d2 assert_clean on a spaced root wrong"; fi
+
+# --- T4e nested DIRECTORY symlinks are followed (HIMMEL-3236). NB: the fixtures live
+# under $WORK, so a TMPDIR inside a skipped system tree (/var, /usr, ...) would
+# legitimately be bounded out and fail here.
+NST_T="$WORK/nest-target"; mkdir -p "$NST_T/proj"; echo x > "$NST_T/proj/.env"
+NST_R="$WORK/nest-root"; mkdir -p "$NST_R/home"; ln -s "$NST_T" "$NST_R/home/checkout"
+out=$(vm_guest_scan "$NST_R" env 2>&1); rc=$?
+if [ "$rc" -ne 0 ] && grep -q '/proj/\.env$' <<< "$out"; then
+  pass "T4e a .env behind a nested directory symlink is flagged"
+else fail_case "T4e nested symlinked dir passed as clean (rc=$rc): $out"; fi
+
+# --- T4f two hops: root -> a -> b, the secret sits behind the SECOND link
+HOP_B="$WORK/hop-b"; mkdir -p "$HOP_B"; echo x > "$HOP_B/.env.prod"
+HOP_A="$WORK/hop-a"; mkdir -p "$HOP_A"; ln -s "$HOP_B" "$HOP_A/next"
+HOP_R="$WORK/hop-root"; mkdir -p "$HOP_R"; ln -s "$HOP_A" "$HOP_R/first"
+if ! vm_guest_scan "$HOP_R" env >/dev/null 2>&1; then
+  pass "T4f a .env two symlink hops away is flagged"
+else fail_case "T4f a two-hop symlinked secret passed as clean"; fi
+
+# --- T4g loops terminate: a link to an ancestor, and two dirs linking each other
+LP="$WORK/loop-root"; mkdir -p "$LP/a" "$LP/b"; echo keep > "$LP/a/keep.txt"
+ln -s "$LP" "$LP/a/up"; ln -s "$LP/b" "$LP/a/to-b"; ln -s "$LP/a" "$LP/b/to-a"
+# shellcheck disable=SC2016  # the -c script is meant to expand in the child
+lp_out=$(${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" -k 5 30} bash -c '. "$1"; vm_guest_scan "$2" env' _ "$LIB" "$LP" 2>&1); lp_rc=$?
+if [ "$lp_rc" -eq 0 ] && [ -z "$lp_out" ]; then
+  pass "T4g symlink loops (ancestor link, mutual links) terminate clean"
+else fail_case "T4g loop scan did not finish clean (rc=$lp_rc): $lp_out"; fi
+
+# --- T4h file links and dangling links are not directories: nothing to follow
+FL="$WORK/filelink-root"; mkdir -p "$FL"; echo keep > "$FL/plain.txt"
+ln -s "$FL/plain.txt" "$FL/flink"; ln -s "$WORK/no-such-target" "$FL/dangling"
+if vm_guest_scan "$FL" env >/dev/null 2>&1; then
+  pass "T4h file symlinks and dangling symlinks do not fail or flag the scan"
+else fail_case "T4h file/dangling symlink broke the scan: $(vm_guest_scan "$FL" env 2>&1)"; fi
+
+# --- T4i the bound: a link into a system tree is NOT followed (never scan /usr, /proc, ...)
+# find is wrapped on PATH to log every start dir; the OK link is the positive control.
+FSTUB="$WORK/findstub"; mkdir -p "$FSTUB"
+REAL_FIND=$(command -v find)
+cat > "$FSTUB/find" <<EOS
+#!/bin/sh
+printf '%s\n' "\$*" >> "\$FIND_LOG"
+exec "$REAL_FIND" "\$@"
+EOS
+chmod +x "$FSTUB/find"
+BND_OK="$WORK/bound-ok"; mkdir -p "$BND_OK"; echo keep > "$BND_OK/keep.txt"
+BND_R="$WORK/bound-root"; mkdir -p "$BND_R"
+ln -s /usr "$BND_R/sys-link"; ln -s /proc "$BND_R/proc-link"; ln -s / "$BND_R/slash-link"; ln -s "$BND_OK" "$BND_R/ok-link"
+: > "$WORK/find.log"
+# shellcheck disable=SC2016  # the -c script is meant to expand in the child
+bnd_out=$(PATH="$FSTUB:$PATH" FIND_LOG="$WORK/find.log" ${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" -k 5 30} bash -c '. "$1"; vm_guest_scan "$2" env' _ "$LIB" "$BND_R" 2>&1); bnd_rc=$?
+if [ "$bnd_rc" -eq 0 ] && grep -q -- "^-H $(cd -P "$BND_OK" && pwd -P) " "$WORK/find.log" \
+   && ! grep -qE -- '^-H (/|/usr|/proc)( |$)' "$WORK/find.log"; then
+  pass "T4i links into /usr, /proc and / are not followed; a normal link target is scanned"
+else fail_case "T4i bound wrong (rc=$bnd_rc): $bnd_out; log: $(head -8 "$WORK/find.log")"; fi
+
+# --- T4j an unreadable link target fails CLOSED (never a silent clean)
+if [ "$(id -u)" -ne 0 ]; then
+  DN_T="$WORK/deny-target"; mkdir -p "$DN_T/locked"; chmod 000 "$DN_T/locked"
+  DN_R="$WORK/deny-root"; mkdir -p "$DN_R"; ln -s "$DN_T" "$DN_R/link"
+  dn_out=$(vm_guest_scan "$DN_R" env 2>&1); dn_rc=$?
+  chmod 755 "$DN_T/locked"
+  if [ "$dn_rc" -ne 0 ] && grep -q 'failed (find rc' <<< "$dn_out"; then
+    pass "T4j an unreadable symlink target refuses (rc=$dn_rc) instead of scanning clean"
+  else fail_case "T4j unreadable symlink target did not fail closed (rc=$dn_rc): $dn_out"; fi
+else echo "SKIP T4j running as root (chmod 000 does not deny)"; fi
+
 # --- T5 fail closed: missing root, unsafe root text, unknown profile
 if ! vm_guest_scan "$WORK/does-not-exist" env >/dev/null 2>&1; then
   pass "T5 scan of a missing root fails closed"
 else fail_case "T5 missing root passed the scan"; fi
-if ! vm_guest_scan_cmd 'a b;rm -rf x' env >/dev/null 2>&1; then
-  pass "T5b unsafe root text refused"
-else fail_case "T5b unsafe root accepted"; fi
+unsafe_ok=1
+# shellcheck disable=SC2016  # literal metacharacters are the point
+for r in 'a b;rm -rf x' "a b'c" 'a b$x' 'a b`x`' ' lead' '-a b' '~user a b' 'a b|c'; do
+  vm_guest_scan_cmd "$r" env >/dev/null 2>&1 && { unsafe_ok=0; echo "  accepted: $r"; }
+done
+if [ "$unsafe_ok" -eq 1 ]; then pass "T5b unsafe root text refused (spaces alone are not unsafe)"
+else fail_case "T5b an unsafe root was accepted"; fi
 if ! vm_guest_scan "$GT" bogus >/dev/null 2>&1; then
   pass "T5c unknown profile refused"
 else fail_case "T5c unknown profile accepted"; fi
