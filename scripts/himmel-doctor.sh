@@ -2817,16 +2817,20 @@ check_c40_qmd_vec() {
         emit INFO C40-qmd-vec "no qmd daemon answering on $url -- vector-health check skipped (qmd is optional)"
         return
     fi
-    if ! printf '%s' "$init" | grep -Eq '"serverInfo"[[:space:]]*:[[:space:]]*\{[^}]*"name"[[:space:]]*:[[:space:]]*"qmd"'; then
+    local is_qmd
+    is_qmd="$(printf '%s' "$init" | grep -Eo '"serverInfo"[[:space:]]*:[[:space:]]*\{[^}]*"name"[[:space:]]*:[[:space:]]*"qmd"' | head -1)"
+    if [ -z "$is_qmd" ]; then
         emit WARN C40-qmd-vec "a process on $url answers but it is NOT qmd (initialize reply has no qmd serverInfo) -- qmd vector search cannot work" \
             "free port 8181 (see marketplace/plugins/qmd/scripts/ensure-qmd-daemon.sh), then start a fresh session"
         return
     fi
-    if printf '%s' "$init" | grep -Fq 'No vector embeddings yet'; then
+    case "$init" in
+    *'No vector embeddings yet'*)
         emit WARN C40-qmd-vec "qmd has no vector index (no embeddings) -- every vec query returns nothing, only lex works" \
             "qmd embed"
         return
-    fi
+        ;;
+    esac
 
     local body rc start elapsed
     start=$SECONDS
@@ -2843,20 +2847,23 @@ check_c40_qmd_vec() {
         return
     fi
     local reason
-    if printf '%s' "$body" | grep -Fq '"isError":true'; then
+    case "$body" in
+    *'"isError":true'*)
         reason="$(printf '%s' "$body" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p' | head -1)"
         emit WARN C40-qmd-vec "qmd vector query returned an error: ${reason:-unreadable tool error} -- vec search is not being served" "$remedy"
         return
-    fi
-    if printf '%s' "$body" | grep -Fq '"error":{'; then
+        ;;
+    *'"error":{'*)
         reason="$(printf '%s' "$body" | sed -n 's/.*"message":"\([^"]*\)".*/\1/p' | head -1)"
         emit WARN C40-qmd-vec "qmd vector query failed (JSON-RPC error): ${reason:-unreadable error} -- vec search is not being served" "$remedy"
         return
-    fi
-    if ! printf '%s' "$body" | grep -Fq '"result"'; then
+        ;;
+    *'"result"'*) ;;
+    *)
         emit WARN C40-qmd-vec "qmd vector probe returned an unrecognised reply -- vec search health could not be confirmed" "$remedy"
         return
-    fi
+        ;;
+    esac
     emit OK C40-qmd-vec "qmd vector search served a probe query in ${elapsed}s ($url)"
     local pending
     pending="$(printf '%s' "$init" | sed -n 's/.*Note: \([0-9][0-9]*\) documents need embedding.*/\1/p' | head -1)"
