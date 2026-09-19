@@ -76,8 +76,7 @@ Two ways to get himmel — pick based on what you're doing:
    walkthrough instead of this section, or see the eight-level
    [adoption trail](docs/adoption-trail.html) for what each stage of adoption
    changes (also at
-   [yotamleo.github.io/Himmel/adoption-trail.html](https://yotamleo.github.io/Himmel/adoption-trail.html)
-   once GitHub Pages is enabled).
+   [yotamleo.github.io/Himmel/adoption-trail.html](https://yotamleo.github.io/Himmel/adoption-trail.html)).
 2. **Run / develop himmel standalone** — the contributor path, heavier
    prereqs. The rest of this Quickstart documents this path.
 
