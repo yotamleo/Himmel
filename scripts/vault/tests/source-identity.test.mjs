@@ -252,6 +252,17 @@ describe("classifyMovement (HIMMEL-3063)", () => {
     expect(classifyMovement({ ...none, existingPushedAtDate: "2026-09-10", newPushedAtDate: "2026-09-11" })).toBe("moved");
   });
 
+  test("a date-only upstream_pushed_at is calendar evidence, never full precision (HIMMEL-3212)", () => {
+    const sameDay = { ...none, existingPushedAtDate: "2026-09-10", newPushedAtDate: "2026-09-10" };
+    // hand-edited note holds only the date; live value is that day's 00:00:00Z — Date.parse says equal instants
+    expect(classifyMovement({ ...sameDay, existingPushedAtFull: "2026-09-10", newPushedAtFull: "2026-09-10T00:00:00Z" })).toBe("date-only");
+    // a date-only value vs a different day still reads as moved via the date branch
+    const nextDay = { ...none, existingPushedAtDate: "2026-09-10", newPushedAtDate: "2026-09-11" };
+    expect(classifyMovement({ ...nextDay, existingPushedAtFull: "2026-09-10", newPushedAtFull: "2026-09-11T00:00:00Z" })).toBe("moved");
+    // a date-only side on the new value is equally not full precision
+    expect(classifyMovement({ ...sameDay, existingPushedAtFull: "2026-09-10T00:00:00Z", newPushedAtFull: "2026-09-10" })).toBe("date-only");
+  });
+
   test("a one-sided full timestamp falls back to the date comparison; nothing usable is no-baseline", () => {
     expect(classifyMovement({ ...none, existingPushedAtFull: "2026-09-10T01:00:00Z", existingPushedAtDate: "2026-09-10", newPushedAtDate: "2026-09-10" })).toBe("date-only");
     expect(classifyMovement(none)).toBe("no-baseline");

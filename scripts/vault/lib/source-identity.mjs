@@ -82,9 +82,14 @@ const sameInstant = (a, b) => {
   return Number.isNaN(ta) || Number.isNaN(tb) ? String(a) === String(b) : ta === tb;
 };
 
+// Date.parse reads a bare "2026-09-10" as that day's 00:00:00Z, so a date-only
+// value would pass for a full timestamp; require a time component.
+const hasTime = (s) => /T\d/.test(s);
+
 /**
  * Has the repo moved since the note's recorded evidence? Full-precision
- * evidence wins: a commit OID and/or a full pushed_at timestamp on both sides.
+ * evidence wins: a commit OID and/or a full pushed_at timestamp (one carrying a
+ * time component — a bare date is calendar evidence) on both sides.
  * Any difference there is "moved"; all-equal is "unchanged" (confirmed).
  * With no full-precision pair, calendar dates are compared: a different date
  * is still "moved", but the SAME date is only "date-only" — two pushes on one
@@ -101,7 +106,7 @@ export function classifyMovement({
 }) {
   const compared = [];
   if (existingCommit && newCommit) compared.push(existingCommit === newCommit);
-  if (existingPushedAtFull && newPushedAtFull) compared.push(sameInstant(existingPushedAtFull, newPushedAtFull));
+  if (hasTime(existingPushedAtFull ?? "") && hasTime(newPushedAtFull ?? "")) compared.push(sameInstant(existingPushedAtFull, newPushedAtFull));
   if (compared.length > 0) return compared.includes(false) ? "moved" : "unchanged";
   if (existingPushedAtDate && newPushedAtDate) {
     return existingPushedAtDate === newPushedAtDate ? "date-only" : "moved";
