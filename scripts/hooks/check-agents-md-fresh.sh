@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GEN="$SCRIPT_DIR/../agents-md/generate.mjs"
 
 # shellcheck disable=SC1091
-if ! . "$SCRIPT_DIR/../guardrails/lib.sh" 2>/dev/null; then
+if ! { [ -r "$SCRIPT_DIR/../guardrails/lib.sh" ] && . "$SCRIPT_DIR/../guardrails/lib.sh"; } 2>/dev/null; then
     echo "→ agents-md-fresh: cannot source guardrails/lib.sh — fail-closed" >&2; exit 2
 fi
 rc=0; is_himmel_dev_repo || rc=$?

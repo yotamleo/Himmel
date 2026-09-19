@@ -58,7 +58,7 @@ _py_lib="$hook_dir/../lib/py-armor.sh"
 [ -f "$_py_lib" ] || _py_lib="$project_dir/scripts/lib/py-armor.sh"
 # shellcheck source=../lib/py-armor.sh
 # shellcheck disable=SC1091
-if ! . "$_py_lib" 2>/dev/null; then
+if ! { [ -r "$_py_lib" ] && . "$_py_lib"; } 2>/dev/null; then
     warn "MALFUNCTION: cannot source py-armor.sh (tried $hook_dir/../lib and \$CLAUDE_PROJECT_DIR/scripts/lib)"
     exit 1
 fi

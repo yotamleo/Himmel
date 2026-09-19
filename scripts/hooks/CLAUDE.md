@@ -10,6 +10,10 @@ is how to safely edit a hook.
 - **bash 3.2-compatible by default** (macOS ships 3.2). Avoid bash 4 features
   (`mapfile` — use a `while IFS= read -r` loop; associative arrays). All hooks
   here are 3.2-safe.
+- **Never rely on `if ! . lib` / `. lib || …` to catch a MISSING lib under
+  `set -e`**: bash 3.2 exits the shell (rc=1) on a failed `.` regardless of the
+  guard, so a fail-closed hook silently fails open. Test readability first:
+  `if ! { [ -r "$lib" ] && . "$lib"; } 2>/dev/null; then` (HIMMEL-3177).
 - Hooks fail-closed (non-zero exit blocks the action). Preserve that.
   Exception: `auto-arm-on-cap.sh` is a WATCHDOG, deliberately fail-open
   (it must never block tool calls on its own bugs) — do not "fix" it

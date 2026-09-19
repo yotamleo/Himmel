@@ -147,7 +147,7 @@ _qg_lib="$hook_dir/../lib/quota-gauge-ledger.sh"
 [ -f "$_qg_lib" ] || _qg_lib="$project_dir/scripts/lib/quota-gauge-ledger.sh"
 # shellcheck source=../lib/quota-gauge-ledger.sh
 # shellcheck disable=SC1090,SC1091
-. "$_qg_lib" 2>/dev/null || true  # fail-open-ok: watchdog — a missing/unreadable ledger lib must never block the tool call this hook is watching (scripts/hooks/CLAUDE.md fail-open-vs-fail-closed rule)
+{ [ -r "$_qg_lib" ] && . "$_qg_lib"; } 2>/dev/null || true  # fail-open-ok: watchdog — a missing/unreadable ledger lib must never block the tool call this hook is watching (scripts/hooks/CLAUDE.md fail-open-vs-fail-closed rule)
 # FAIL-OPEN wrapper: a failure here must NEVER touch this watchdog's exit
 # path or the $? the exit path sees. Guards on the helper being present,
 # swallows every error, always returns 0.
@@ -169,7 +169,7 @@ _py_lib="$hook_dir/../lib/py-armor.sh"
 [ -f "$_py_lib" ] || _py_lib="$project_dir/scripts/lib/py-armor.sh"
 # shellcheck source=../lib/py-armor.sh
 # shellcheck disable=SC1091
-if ! . "$_py_lib" 2>/dev/null; then
+if ! { [ -r "$_py_lib" ] && . "$_py_lib"; } 2>/dev/null; then
     warn "MALFUNCTION: cannot source py-armor.sh (tried $hook_dir/../lib and \$CLAUDE_PROJECT_DIR/scripts/lib)"
     exit 1
 fi

@@ -62,7 +62,7 @@ warn() { echo "trigger-cr-on-pr-create: $*" >&2; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/cr-trigger-ledger.sh
 # shellcheck disable=SC1091
-if ! . "$SCRIPT_DIR/../lib/cr-trigger-ledger.sh" 2>/dev/null; then
+if ! { [ -r "$SCRIPT_DIR/../lib/cr-trigger-ledger.sh" ] && . "$SCRIPT_DIR/../lib/cr-trigger-ledger.sh"; } 2>/dev/null; then
     # Was: fall back to a per-PR comment scan and post anyway. That fallback is
     # gone (HIMMEL-2034) — this lib now also owns cr_trigger_repo_armed, the
     # check that keeps the trigger off FOREIGN repos, so a run without it

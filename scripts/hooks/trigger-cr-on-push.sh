@@ -70,7 +70,7 @@ warn() { echo "trigger-cr-on-push: $*" >&2; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/cr-trigger-ledger.sh
 # shellcheck disable=SC1091
-if ! . "$SCRIPT_DIR/../lib/cr-trigger-ledger.sh" 2>/dev/null; then
+if ! { [ -r "$SCRIPT_DIR/../lib/cr-trigger-ledger.sh" ] && . "$SCRIPT_DIR/../lib/cr-trigger-ledger.sh"; } 2>/dev/null; then
     warn "WARNING: could not load cr-trigger-ledger.sh — cannot dedup safely; skipping this run"
     exit 0
 fi

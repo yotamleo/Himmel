@@ -185,7 +185,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../guardrails/lib.sh
 # shellcheck disable=SC1091
-if ! . "$SCRIPT_DIR/../guardrails/lib.sh" 2>/dev/null; then
+if ! { [ -r "$SCRIPT_DIR/../guardrails/lib.sh" ] && . "$SCRIPT_DIR/../guardrails/lib.sh"; } 2>/dev/null; then
     echo "block-read-secrets: cannot source guardrails/lib.sh — refusing to evaluate" >&2
     exit 2
 fi

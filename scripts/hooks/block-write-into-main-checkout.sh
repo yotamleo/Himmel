@@ -165,7 +165,7 @@ if [ "$_bwimc_sourced" = 0 ]; then
     fi
     # shellcheck source=../guardrails/lib.sh
     # shellcheck disable=SC1091
-    if ! . "$_bwimc_dir/../guardrails/lib.sh" 2>/dev/null; then
+    if ! { [ -r "$_bwimc_dir/../guardrails/lib.sh" ] && . "$_bwimc_dir/../guardrails/lib.sh"; } 2>/dev/null; then
         echo "block-write-into-main-checkout: cannot source guardrails/lib.sh — refusing to evaluate" >&2
         exit 2
     fi

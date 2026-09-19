@@ -44,7 +44,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # we cannot compute the right base, so refuse the push.
 # shellcheck source=../guardrails/lib.sh
 # shellcheck disable=SC1091
-if ! . "$SCRIPT_DIR/../guardrails/lib.sh" 2>/dev/null; then
+if ! { [ -r "$SCRIPT_DIR/../guardrails/lib.sh" ] && . "$SCRIPT_DIR/../guardrails/lib.sh"; } 2>/dev/null; then
     echo "→ platforms-check: cannot source guardrails/lib.sh — refusing the push (rc=2 = cannot evaluate; bypass with git push --no-verify)" >&2
     exit 2
 fi

@@ -7,7 +7,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # shellcheck disable=SC1091
-if ! . "$HERE/../guardrails/lib.sh" 2>/dev/null; then
+if ! { [ -r "$HERE/../guardrails/lib.sh" ] && . "$HERE/../guardrails/lib.sh"; } 2>/dev/null; then
     echo "→ lanes-inventory-guard: cannot source guardrails/lib.sh — fail-closed" >&2; exit 2
 fi
 # Tri-valued is_himmel_dev_repo (mirror check-agents-md-fresh.sh:15-17):

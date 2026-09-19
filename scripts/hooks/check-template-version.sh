@@ -27,7 +27,7 @@ if [ "${TEMPLATE_VERSION_FORCE_ERR:-0}" = "1" ]; then
     echo "→ template-version: TEMPLATE_VERSION_FORCE_ERR=1 — forced cannot-evaluate" >&2; exit 2
 fi
 # shellcheck disable=SC1091
-if ! . "$SCRIPT_DIR/../guardrails/lib.sh" 2>/dev/null; then
+if ! { [ -r "$SCRIPT_DIR/../guardrails/lib.sh" ] && . "$SCRIPT_DIR/../guardrails/lib.sh"; } 2>/dev/null; then
     echo "→ template-version: cannot source guardrails/lib.sh — fail-closed" >&2; exit 2
 fi
 rc=0; is_himmel_dev_repo || rc=$?

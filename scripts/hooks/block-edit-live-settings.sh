@@ -91,7 +91,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # hook OPEN. Fail CLOSED instead (matches the capability checks below).
 # shellcheck source=../lib/py-armor.sh
 # shellcheck disable=SC1091
-if ! . "$SCRIPT_DIR/../lib/py-armor.sh" 2>/dev/null; then
+if ! { [ -r "$SCRIPT_DIR/../lib/py-armor.sh" ] && . "$SCRIPT_DIR/../lib/py-armor.sh"; } 2>/dev/null; then
     echo "block-edit-live-settings: cannot source py-armor.sh — refusing to evaluate" >&2
     exit 2
 fi

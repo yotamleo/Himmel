@@ -71,7 +71,7 @@ fi
 LIB_OK=1
 # shellcheck source=../guardrails/lib.sh
 # shellcheck disable=SC1091
-. "$SCRIPT_DIR/../guardrails/lib.sh" 2>/dev/null || LIB_OK=0
+{ [ -r "$SCRIPT_DIR/../guardrails/lib.sh" ] && . "$SCRIPT_DIR/../guardrails/lib.sh"; } 2>/dev/null || LIB_OK=0
 
 input=$(cat)
 tool=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || true)

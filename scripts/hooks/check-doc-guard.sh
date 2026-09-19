@@ -10,11 +10,11 @@ if [ "${DOC_GUARD_FORCE_ERR:-0}" = "1" ]; then
     echo "→ doc-guard: DOC_GUARD_FORCE_ERR=1 — forced cannot-evaluate" >&2; exit 2
 fi
 # shellcheck disable=SC1091
-if ! . "$SCRIPT_DIR/../guardrails/lib.sh" 2>/dev/null; then
+if ! { [ -r "$SCRIPT_DIR/../guardrails/lib.sh" ] && . "$SCRIPT_DIR/../guardrails/lib.sh"; } 2>/dev/null; then
     echo "→ doc-guard: cannot source guardrails/lib.sh — fail-closed" >&2; exit 2
 fi
 # shellcheck disable=SC1091
-if ! . "$SCRIPT_DIR/../lib/doc-guard-map.sh" 2>/dev/null; then
+if ! { [ -r "$SCRIPT_DIR/../lib/doc-guard-map.sh" ] && . "$SCRIPT_DIR/../lib/doc-guard-map.sh"; } 2>/dev/null; then
     echo "→ doc-guard: cannot source lib/doc-guard-map.sh — fail-closed" >&2; exit 2
 fi
 rc=0; is_himmel_dev_repo || rc=$?

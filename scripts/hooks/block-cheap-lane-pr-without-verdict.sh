@@ -121,7 +121,7 @@ fi
 hook_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/cr/lane-classify.sh
 # shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
-if ! . "$hook_dir/../cr/lane-classify.sh" 2>/dev/null; then
+if ! { [ -r "$hook_dir/../cr/lane-classify.sh" ] && . "$hook_dir/../cr/lane-classify.sh"; } 2>/dev/null; then
     warn "WARNING: could not source lane-classify.sh; fail-open"
     exit 0
 fi
