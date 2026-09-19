@@ -383,7 +383,7 @@ printf '%s\n' '#!/usr/bin/env bash' 'c="$(cat "$0.n" 2>/dev/null || echo 0)"; ec
 # shellcheck disable=SC2016
 printf '%s\n' '#!/usr/bin/env bash' 'c="$(cat "$0.n" 2>/dev/null || echo 0)"; echo $((c+1)) > "$0.n"' '[ "$c" -eq 0 ]' > "$W/k/ps.sh"
 chmod +x "$W/k/hook.sh" "$W/k/ps.sh"
-env FLEET_ADMIT_TEST_HOOK="$W/k/hook.sh" FLEET_ADMIT_RELEASE_ITERS=2 FLEET_ADMIT_RETRY_SLEEP=0.01 FLEET_ADMIT_GATE_STALE_SECS=3600 FLEET_CAP_OK=CADENCE_BANK_LAUNCH= \
+env FLEET_ADMIT_TEST_HOOK="$W/k/hook.sh" FLEET_ADMIT_RELEASE_ITERS=2 FLEET_ADMIT_RETRY_SLEEP=0.01 FLEET_ADMIT_GATE_STALE_SECS=3600 FLEET_CAP_OK= CADENCE_BANK_LAUNCH= \
   HIMMEL_FLEET_SLOTS="$slots_k" FLEET_PS_CMD="$W/k/ps.sh" FLEET_PROC="$W/ps/proc" CADENCE_BANK_CACHE="$W/c.json" CADENCE_BANK_SKIP_REFRESH=1 \
   CADENCE_BANK_LEDGER="$W/ledger.jsonl" HIMMEL_FLEET_CAP=4 bash "$SUT" </dev/null >"$W/k.out" 2>"$W/k.err"
 check "(k) the in-lock census failed (precondition)" 1 "$(grep -c 'in-lock fleet census failed' "$W/k.err")"
