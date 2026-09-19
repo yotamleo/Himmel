@@ -494,11 +494,20 @@ if [ "$tool_is_shell" = 1 ] && [ "${HIMMEL_HOOK_INTEGRITY_BYPASS_OK:-0}" != "1" 
             # build one (BSD), and that marker is a legal filename: refuse it
             # up front so a script named with it cannot be filtered out of the
             # scan as "invalid" (HIMMEL-3177).
+            # A PowerShell `u{1} escape (any zero-padded spelling) resolves to the
+            # SOH byte, so it can rebuild the marker from parts without the
+            # literal bytes ever appearing in the command: refuse it too.
+            nul_marker_hit=0
             case "$pin_cmd$tool_cwd" in
-                *$'\001NUL\001'*)
-                    echo "⛔ block-glm-external-writes: refusing a command or cwd carrying the reserved SOH-NUL-SOH byte sequence; no legitimate path holds it." >&2
-                    exit 2 ;;
+                *$'\001NUL\001'*) nul_marker_hit=1 ;;
             esac
+            if [ "$nul_marker_hit" = 0 ] && printf '%s' "$pin_cmd" | grep -Eq '`u\{0*1\}'; then
+                nul_marker_hit=1
+            fi
+            if [ "$nul_marker_hit" = 1 ]; then
+                echo "⛔ block-glm-external-writes: refusing a command or cwd that carries or builds the reserved SOH-NUL-SOH byte sequence; no legitimate path holds it." >&2
+                exit 2
+            fi
             while IFS= read -r script_path; do
                 [ -z "$script_path" ] && continue
                 case "$script_path" in
@@ -567,9 +576,11 @@ function is_direct_exec_prefix(tok) {
 # than added to.
 # ponytail: BSD awk (macOS) sprintf("%c", 0) yields the EMPTY string (C strings), so
 # NUL falls back to a printable marker (SOH NUL SOH). Unlike a real NUL that marker IS
-# a legal filename, so the shell loop above refuses any command or cwd carrying it
-# BEFORE this awk runs; otherwise a real script named with it would be filtered as
-# invalid and never scanned. The cost is one over-deny of a command no one writes.
+# a legal filename, so the shell loop above refuses any command or cwd carrying it,
+# or a `u{1} escape that can rebuild it, BEFORE this awk runs; otherwise a real script
+# named with it would be filtered as invalid and never scanned. The cost is one
+# over-deny of a command no one writes. SOH is the only non-letter byte in the marker,
+# so `u{1} (any zero-padded spelling) is the one escape that can rebuild it.
 function has_nul(str) { return index(str, NUL) > 0 }
 function run_segment(   j, i, target, seen, n2, cand) {
     if (ntok == 0) return
