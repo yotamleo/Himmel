@@ -87,7 +87,8 @@ for pair in \
     "himmel_watcher_down|- uid: himmel_watcher_down|HimmelWatcherDown|- alert: HimmelWatcherDown" \
     "himmel_hook_chain_budget_pressure|- uid: himmel_hook_chain_budget_pressure|HimmelHookChainBudgetPressure|- alert: HimmelHookChainBudgetPressure" \
     "himmel_hook_chain_budget_denials|- uid: himmel_hook_chain_budget_denials|HimmelHookChainBudgetDenials|- alert: HimmelHookChainBudgetDenials" \
-    "himmel_hook_chain_log_unreadable|- uid: himmel_hook_chain_log_unreadable|HimmelHookChainLogUnreadable|- alert: HimmelHookChainLogUnreadable"
+    "himmel_hook_chain_log_unreadable|- uid: himmel_hook_chain_log_unreadable|HimmelHookChainLogUnreadable|- alert: HimmelHookChainLogUnreadable" \
+    "himmel_quiet_run_orphans|- uid: himmel_quiet_run_orphans|HimmelQuietRunOrphans|- alert: HimmelQuietRunOrphans"
 do
     IFS='|' read -r label grafana_marker _name prom_marker <<<"$pair"
     grafana_for="$(extract_for "$SCRIPT_DIR/provisioning/alerting/rules.yaml" "$grafana_marker")"
@@ -126,6 +127,7 @@ nodatastate_table() {
         "himmel_scheduled_task_disabled|OK" \
         "himmel_agent_tree_ram_runaway|OK" \
         "himmel_orphan_processes|NoData" \
+        "himmel_quiet_run_orphans|OK" \
         "himmel_watcher_down|OK" \
         "${PRIVATE_REPO_METRIC_UID}|OK" \
         "himmel_session_dead|NoData" \

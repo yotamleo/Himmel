@@ -228,7 +228,18 @@ an explanatory `# agent_tree_*/orphan_* omitted: ...` comment.
 - `orphan_process_count{class="..."}` - report-only orphan-shaped process count
   by detector class (`codex-fleet`, `codex-exec-registry`,
   `hermes-gateway-orphan`, `codex-app-server-orphan`,
-  `mcp-dead-parent-unattributed`).
+  `mcp-dead-parent-unattributed`). **Windows only** - see the next paragraph.
+
+`quiet_run_orphan_count{kind="suite"|"tail"}` (HIMMEL-3219) is the Linux twin,
+read straight from `/proc` by `quiet-run-orphans.ts` (report-only, never signals
+a process; a scan is ~15 ms). `kind="suite"` counts a `quiet-run.sh` wrapper, or a
+process holding a `quiet-run-*.log` open for writing, that has been reparented to
+init/`systemd` (its owning session is gone, or its wrapper was SIGKILLed).
+`kind="tail"` counts `tail -f` followers of a `quiet-run-*.log` that no process
+holds open for writing. Linux only: elsewhere, or when `/proc` is unreadable,
+the family is omitted with a `# quiet_run_orphan_count omitted: ...` comment.
+A suite launched on purpose from a systemd unit or a `setsid`/`nohup` is
+counted too, and a log written by a different user reads as writer-less.
 
 `luna_git_unpushed_commits`/`luna_git_uncommitted_files` (HIMMEL-1199) are a
 local-refs-only divergence read of the `vault_path` git clone, cached for 60s
@@ -707,7 +718,7 @@ one):
   recorded series. **No Alertmanager is installed in this stack**, so
   nothing here is ever delivered from Prometheus's side — purely
   self-visibility + testability.
-- `provisioning/alerting/rules.yaml` — the same 17 rules re-implemented in
+- `provisioning/alerting/rules.yaml` — the same 18 rules re-implemented in
   Grafana's file-provisioning dialect (query `data` + a `__expr__` threshold
   condition; structurally different from Prometheus's `expr:`/`for:` rule
   format, so it can't just include the file above). **This is what actually
@@ -767,8 +778,9 @@ depend on the failing component itself (the design's acceptance test, §5):
 | The exporter/collector itself dying | `HimmelWatcherDown` (`up == 0`) | No — Prometheus's own scrape health, not the exporter's output |
 | 2026-09-03 spawn-storm hang (HIMMEL-2478) | `HimmelHookChainBudgetPressure` + `HimmelHookChainBudgetDenials` + `HimmelHookChainLogUnreadable` | No — reads the skip log `scripts/hooks/run-hook-with-bash.js` writes when a chain member blows its time budget, independent of the starved member itself; `HimmelHookChainLogUnreadable` covers the reader's own read/enumeration failures, which would otherwise degrade the first two silently |
 
-Four more rules extend coverage past the 918 postmortem: `HimmelAgentTreeRamRunaway`
-and `HimmelOrphanProcesses` (host-level, design §4), `HimmelLunaInboxBacklogRising`
+Five more rules extend coverage past the 918 postmortem: `HimmelAgentTreeRamRunaway`,
+`HimmelOrphanProcesses` and `HimmelQuietRunOrphans` (host-level, design §4; the
+latter is the Linux `/proc` sibling, HIMMEL-3219), `HimmelLunaInboxBacklogRising`
 (pipeline-level, design §3), and `HimmelSessionDead` (session-level, HIMMEL-1052/1635).
 Four more again cover kernel pool and commit pressure — see below.
 
@@ -875,6 +887,13 @@ these can carry ledger `note` free text; `flow-exporter.ts` never turns
 - `HimmelOrphanProcesses` only watches `codex-fleet`/`codex-exec-registry`
   (the design's literal default). `mcp-dead-parent-unattributed` and the
   gateway/app-server orphan classes stay dashboard-visible, unalerted.
+  **It is also Windows-only:** `orphan_process_count` comes from
+  `host-detectors.ps1` (`Win32_Process`) and `flow-exporter.ts` gates it to
+  `win32`, so on a Linux host the rule has no series to evaluate. It never
+  covered quiet-run suites or `tail -f` followers either (both missed on
+  2026-08-29). `HimmelQuietRunOrphans` (HIMMEL-3219, `quiet_run_orphan_count > 0`
+  for 30m, both rule files) covers those two shapes on Linux; the Windows
+  equivalents remain uncovered.
 - `HimmelFlowLastSuccessAgeExceeded` needs a flow's `cadence_seconds`
   declared in `observability.json` (`flow_cadence_seconds{flow}`,
   HIMMEL-924) — a flow with no declared cadence is excluded from the `on

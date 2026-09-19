@@ -380,6 +380,40 @@ groups:
         annotations:
           summary: '{{ $labels.class }} orphan count is {{ $values.A.Value }}'
 
+      # HIMMEL-3219: Linux /proc twin of himmel_orphan_processes, which is
+      # dark on Linux (orphan_process_count is win32-only). See
+      # alerts.rules.yml HimmelQuietRunOrphans; keep the two together.
+      - uid: himmel_quiet_run_orphans
+        title: "Orphaned quiet-run suites / writer-less tail followers"
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: quiet_run_orphan_count > 0
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [-1] }
+              datasource: { type: __expr__, uid: __expr__ }
+              refId: B
+        # refId A filters in PromQL (`> 0`) - empty vector is the healthy
+        # case, and a non-Linux host legitimately exports no series. See file
+        # header.
+        noDataState: OK
+        execErrState: Alerting
+        for: 30m
+        labels:
+          severity: warn
+        annotations:
+          summary: 'quiet-run {{ $labels.kind }} orphan count is {{ $values.A.Value }}'
+
       # HIMMEL-2365: `for: 5m` still paged 11 times/24h on load-induced
       # scrape-miss bursts (102 misses/24h, mostly singletons under suite
       # load; 91 pending vs 11 firing shows most already resolved before 5m

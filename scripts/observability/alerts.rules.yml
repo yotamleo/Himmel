@@ -189,6 +189,25 @@ groups:
         annotations:
           summary: '{{ $labels.class }} orphan count is {{ $value }}'
 
+      # HIMMEL-3219: HimmelOrphanProcesses reads orphan_process_count, which
+      # only the win32 host-detectors.ps1 emits (flow-exporter.ts gates it to
+      # win32) and whose classes never covered quiet-run. On 2026-08-29 a
+      # quiet-run.sh suite whose session was closed ran for hours, and 24 h+
+      # `tail -f /tmp/quiet-run-*.log` followers outlived their log's writer,
+      # with this alert dark. quiet_run_orphan_count is the Linux /proc gauge
+      # (quiet-run-orphans.ts): kind="suite" = a quiet-run wrapper or log writer
+      # reparented to init/systemd, kind="tail" = a follower with no writer.
+      # A platform that emits no series (win32) or an unreadable /proc leaves
+      # the vector empty: dark, not healthy - see README. `for: 30m` absorbs a
+      # reparent window and a follower racing its writer's exit.
+      - alert: HimmelQuietRunOrphans
+        expr: quiet_run_orphan_count > 0
+        for: 30m
+        labels:
+          severity: warn
+        annotations:
+          summary: 'quiet-run {{ $labels.kind }} orphan count is {{ $value }}'
+
       # Watcher-down (design §5): the collector itself dying must not be
       # single-covered by rules that depend on it. Scoped to the two
       # himmel-owned exporters (flow-exporter, windows_exporter) — Prometheus

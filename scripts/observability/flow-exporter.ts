@@ -16,6 +16,7 @@ import {
   type SubagentEndRow,
   type SubagentStartRow,
 } from "./session-run-ledger";
+import { scanQuietRunOrphans } from "./quiet-run-orphans";
 import { defaultClaudeCachePath, readClaudeBank, readCodexBank, readGlmBank, readLaneQuotaTargets, type BankId, type BankResult } from "./quota-sources";
 
 const LOOKBACK_MS = 14 * 24 * 60 * 60 * 1000;
@@ -233,6 +234,8 @@ export type RenderMetricsOptions = {
   platform?: NodeJS.Platform;
   schedulerRunner?: SchedulerRunner;
   hostDetectorRunner?: HostDetectorRunner;
+  // HIMMEL-3219: test seam for the quiet-run orphan scan's /proc root.
+  procRoot?: string;
   gitRunner?: GitRunner;
   // HIMMEL-2211: test seam for the flow-stall liveness probe (defaultPidLiveness).
   pidLivenessRunner?: PidLivenessRunner;
@@ -1445,6 +1448,27 @@ function buildHostDetectorLines(result: HostDetectorResult): { lines: string[]; 
   return { lines, comments: [] };
 }
 
+// HIMMEL-3219: HimmelOrphanProcesses' source (orphan_process_count) is
+// win32-only, so this is the Linux-side orphan signal for quiet-run suites and
+// their writer-less `tail -f` followers. A separate family (not more classes on
+// orphan_process_count) keeps the win32 detector's contract untouched. An
+// unreadable /proc exports nothing, never a fabricated 0.
+function quietRunOrphanMetrics(platform: NodeJS.Platform, procRoot?: string): { lines: string[]; comments: string[] } {
+  if (platform !== "linux") return { lines: [], comments: ["# quiet_run_orphan_count omitted: platform has no /proc"] };
+  try {
+    const counts = scanQuietRunOrphans(procRoot);
+    const lines: string[] = [];
+    addFamily(lines, "quiet_run_orphan_count", "quiet-run.sh suites whose owning session is gone (kind=suite) and tail -f followers of a quiet-run log with no remaining writer (kind=tail).", "gauge", [
+      sample("quiet_run_orphan_count", { kind: "suite" }, counts.suite),
+      sample("quiet_run_orphan_count", { kind: "tail" }, counts.tail),
+    ]);
+    return { lines, comments: [] };
+  } catch (e) {
+    const message = e instanceof Error && e.message ? e.message : "/proc scan failed";
+    return { lines: [], comments: [`# quiet_run_orphan_count omitted: ${message.replace(/\s+/g, " ").trim()}`] };
+  }
+}
+
 function frontmatter(text: string): string {
   if (!text.startsWith("---")) return "";
   const end = text.indexOf("\n---", 3);
@@ -1925,6 +1949,10 @@ export async function renderMetrics(options: RenderMetricsOptions = {}): Promise
   });
   lines.push(...host.comments);
   lines.push(...host.lines);
+
+  const quietRun = quietRunOrphanMetrics(options.platform ?? process.platform, options.procRoot);
+  lines.push(...quietRun.comments);
+  lines.push(...quietRun.lines);
 
   lines.push(...lunaMetrics(cfg, nowMs, cache));
   const lunaGit = await lunaGitMetrics(cfg, { nowMs, cache, gitRunner: options.gitRunner });

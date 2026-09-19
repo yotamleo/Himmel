@@ -133,6 +133,8 @@ test("golden scrape folds active and rotated flow ledgers", async () => {
     quotaLedgerPath: join(tmp, "missing-quota.jsonl"),
     lanesPath: join(tmp, "empty-lanes.json"),
     platform: "linux",
+    // HIMMEL-3219: an empty /proc, never the developer's live one.
+    procRoot: mkdtempSync(join(tmp, "empty-proc-")),
   }));
 
   expect(body).toBe(`# HELP flow_run_last_success_timestamp Epoch seconds of the last complete run end row in the 14d ledger window.
@@ -175,6 +177,10 @@ hook_chain_budget_events_recent{action="skip"} 0
 # TYPE hook_chain_skip_log_unreadable gauge
 hook_chain_skip_log_unreadable 0
 # agent_tree_*/orphan_* omitted: platform has no Windows process tree API
+# HELP quiet_run_orphan_count quiet-run.sh suites whose owning session is gone (kind=suite) and tail -f followers of a quiet-run log with no remaining writer (kind=tail).
+# TYPE quiet_run_orphan_count gauge
+quiet_run_orphan_count{kind="suite"} 0
+quiet_run_orphan_count{kind="tail"} 0
 # HELP flow_exporter_scrape_duration_seconds Wall-clock duration of this exporter scrape.
 # TYPE flow_exporter_scrape_duration_seconds gauge
 flow_exporter_scrape_duration_seconds 0
@@ -1587,6 +1593,35 @@ test("host detector scrape uses TTL cache and drops cache on refresh failure", a
   expect(second).toContain('agent_tree_process_count{class="claude"} 1');
   expect(third).toContain("# agent_tree_*/orphan_* omitted: expired refresh failed");
   expect(third).not.toContain("agent_tree_rss_bytes");
+});
+
+// HIMMEL-3219: quiet-run orphan family. Linux-only (/proc), and an unreadable
+// /proc says so with a comment instead of exporting a 0 it never measured.
+test("quiet-run orphan gauge is linux-only, reads the injected proc root, and fails soft", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  writeLines(ledger, []);
+  const procRoot = join(tmp, "proc");
+  const put = (pid: number, comm: string, ppid: number, args: string[]) => {
+    mkdirSync(join(procRoot, String(pid)), { recursive: true });
+    writeFileSync(join(procRoot, String(pid), "stat"), `${pid} (${comm}) S ${ppid} ${pid} ${pid} 0 -1 0\n`);
+    writeFileSync(join(procRoot, String(pid), "cmdline"), args.join("\0") + "\0");
+  };
+  put(1, "systemd", 0, ["/sbin/init"]);
+  put(100, "bash", 1, ["bash", "scripts/quiet-run.sh", "suite", "--", "bash", "scripts/test-a.sh"]);
+  const base = { nowMs: NOW, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"), procRoot };
+
+  const linux = await renderMetrics({ ...base, platform: "linux" });
+  expect(linux).toContain("# TYPE quiet_run_orphan_count gauge");
+  expect(linux).toContain('quiet_run_orphan_count{kind="suite"} 1');
+  expect(linux).toContain('quiet_run_orphan_count{kind="tail"} 0');
+
+  const win = await renderMetrics({ ...base, platform: "win32", hostDetectorRunner: () => ({ trees: [], orphans: [] }) });
+  expect(win).not.toContain("quiet_run_orphan_count{");
+  expect(win).toContain("# quiet_run_orphan_count omitted: platform has no /proc");
+
+  const missing = await renderMetrics({ ...base, platform: "linux", procRoot: join(tmp, "no-proc") });
+  expect(missing).toContain("# quiet_run_orphan_count omitted:");
+  expect(missing).not.toContain("quiet_run_orphan_count{");
 });
 
 // ---------------------------------------------------------------------------

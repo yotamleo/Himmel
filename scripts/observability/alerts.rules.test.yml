@@ -382,6 +382,57 @@ tests:
             exp_annotations:
               summary: 'codex-fleet orphan count is 2'
 
+  # HimmelQuietRunOrphans (HIMMEL-3219): the Linux /proc gauge that
+  # HimmelOrphanProcesses (win32-only orphan_process_count) cannot see. Each
+  # kind alerts on its own series; a 0 series and a platform with no series at
+  # all both stay quiet.
+  - interval: 1m
+    input_series:
+      - series: 'quiet_run_orphan_count{kind="suite"}'
+        values: '1x35'
+      - series: 'quiet_run_orphan_count{kind="tail"}'
+        values: '0x35'
+    alert_rule_test:
+      - eval_time: 29m
+        alertname: HimmelQuietRunOrphans
+        exp_alerts: []
+      - eval_time: 31m
+        alertname: HimmelQuietRunOrphans
+        exp_alerts:
+          - exp_labels:
+              kind: suite
+              severity: warn
+            exp_annotations:
+              summary: 'quiet-run suite orphan count is 1'
+
+  - interval: 1m
+    input_series:
+      - series: 'quiet_run_orphan_count{kind="tail"}'
+        values: '0x5 3x30'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: HimmelQuietRunOrphans
+        exp_alerts: []
+      - eval_time: 36m
+        alertname: HimmelQuietRunOrphans
+        exp_alerts:
+          - exp_labels:
+              kind: tail
+              severity: warn
+            exp_annotations:
+              summary: 'quiet-run tail orphan count is 3'
+
+  # A transient orphan (a reparent window, a follower racing its writer's
+  # exit) that clears inside `for:` never pages.
+  - interval: 1m
+    input_series:
+      - series: 'quiet_run_orphan_count{kind="tail"}'
+        values: '2x20 0x15'
+    alert_rule_test:
+      - eval_time: 34m
+        alertname: HimmelQuietRunOrphans
+        exp_alerts: []
+
   # HimmelWatcherDown: flow-exporter job goes to 0 (down) and stays down past
   # the 10m grace (HIMMEL-2365: was 5m).
   - interval: 1m
