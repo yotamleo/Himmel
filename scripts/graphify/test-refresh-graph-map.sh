@@ -2714,7 +2714,7 @@ out=$( env -u ANTHROPIC_BASE_URL GRAPHIFY_LEDGER="$CLAUDE_PREFLIGHT_LEDGER" \
 # so an allowed scheduled run now always leaves an audit line.
 { [ "$rc" -eq 0 ] && [ -s "$CLAUDE_PREFLIGHT_CALLS" ] \
   && [ "$(grep -c . "$CLAUDE_PREFLIGHT_LEDGER" 2>/dev/null)" = 1 ] \
-  && grep -qF '"corpus":"luna-personal","backend":"claude-cli","provider":"anthropic","verdict":"allow","tool":"refresh-graph-map","declared":true' "$CLAUDE_PREFLIGHT_LEDGER"; } \
+  && grep -qF '"corpus":"luna-personal","backend":"claude-cli","provider":"anthropic","verdict":"allow","purpose":"extraction","tool":"refresh-graph-map","declared":true' "$CLAUDE_PREFLIGHT_LEDGER"; } \
   && pass "T40i claude-cli default Anthropic endpoint proceeds and writes one declared ledger line" \
   || fail "T40i claude-cli default endpoint should proceed with one declared ledger line (rc=$rc): $out calls=$(cat "$CLAUDE_PREFLIGHT_CALLS") ledger=$(cat "$CLAUDE_PREFLIGHT_LEDGER" 2>/dev/null)"
 

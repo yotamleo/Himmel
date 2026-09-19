@@ -1777,7 +1777,7 @@ fi
 rm -f "$LEDGER"
 # shellcheck disable=SC2086
 env $CLEAN_ENV "$BASH_BIN" "$FENCE" --eval luna-clippings claude-cli "$NOWHERE" refresh-graph-map >/dev/null 2>"$WS/eval.err"; rc=$?
-if [ "$rc" -eq 0 ] && grep -q '"corpus":"luna-clippings","backend":"claude-cli","provider":"anthropic","verdict":"allow","tool":"refresh-graph-map","declared":true' "$LEDGER" 2>/dev/null; then
+if [ "$rc" -eq 0 ] && grep -q '"corpus":"luna-clippings","backend":"claude-cli","provider":"anthropic","verdict":"allow","purpose":"extraction","tool":"refresh-graph-map","declared":true' "$LEDGER" 2>/dev/null; then
     pass "HIMMEL-1084 E2 --eval: clippings x anthropic allowed + ledgered with tool=refresh-graph-map"
 else
     fail "HIMMEL-1084 E2 --eval allow+ledger: rc=$rc err=$(cat "$WS/eval.err") ledger=$(cat "$LEDGER" 2>/dev/null)"
@@ -1797,7 +1797,7 @@ if [ "$rc" -eq 2 ]; then pass "HIMMEL-1084 E4 --eval: clippings x zai-glm denied
 rm -f "$LEDGER"
 # shellcheck disable=SC2086
 env $CLEAN_ENV ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic "$BASH_BIN" "$FENCE" --eval himmel-code claude "$NOWHERE" refresh-graph-map >/dev/null 2>&1; rc=$?
-if [ "$rc" -eq 0 ] && grep -q '"provider":"zai-glm","verdict":"allow","tool":"refresh-graph-map"' "$LEDGER" 2>/dev/null; then
+if [ "$rc" -eq 0 ] && grep -q '"provider":"zai-glm","verdict":"allow","purpose":"extraction","tool":"refresh-graph-map"' "$LEDGER" 2>/dev/null; then
     pass "HIMMEL-1084 E5 --eval: himmel-code x zai-glm allowed + ledgered"
 else
     fail "HIMMEL-1084 E5 --eval himmel-code zai-glm: rc=$rc ledger=$(cat "$LEDGER" 2>/dev/null)"
@@ -1809,7 +1809,7 @@ env $CLEAN_ENV "$BASH_BIN" "$FENCE" --eval salus ollama "$SALUS/notes" refresh-g
 rm -f "$LEDGER"
 # shellcheck disable=SC2086
 env $CLEAN_ENV GRAPHIFY_SALUS_LOCAL_OK=1 "$BASH_BIN" "$FENCE" --eval salus ollama "$SALUS/notes" refresh-graph-map >/dev/null 2>&1; rc_b=$?
-if [ "$rc_a" -eq 2 ] && [ "$rc_b" -eq 0 ] && grep -q '"verdict":"conditional","tool":"refresh-graph-map"' "$LEDGER" 2>/dev/null; then
+if [ "$rc_a" -eq 2 ] && [ "$rc_b" -eq 0 ] && grep -q '"verdict":"conditional","purpose":"extraction","tool":"refresh-graph-map"' "$LEDGER" 2>/dev/null; then
     pass "HIMMEL-1084 E6 --eval: salus x local-ollama needs GRAPHIFY_SALUS_LOCAL_OK=1"
 else
     fail "HIMMEL-1084 E6 --eval salus conditional: rc_a=$rc_a rc_b=$rc_b ledger=$(cat "$LEDGER" 2>/dev/null)"
@@ -1831,11 +1831,26 @@ if [ "$e7" -eq 0 ]; then pass "HIMMEL-1084 E7 --eval: malformed arguments deny";
 rm -f "$LEDGER"
 # shellcheck disable=SC2086
 ( cd "$HIMMEL" && env $CLEAN_ENV "$BASH_BIN" "$FENCE" "graphify update $STAGED/copy.md --backend claude-cli" ) >/dev/null 2>&1
-if grep -q '"tool":"graphify"' "$LEDGER" 2>/dev/null && ! grep -q '"tool":"refresh-graph-map"' "$LEDGER" 2>/dev/null; then
-    pass "HIMMEL-1084 E8 hook-mode ledger keeps tool=graphify"
+if grep -q '"tool":"graphify"' "$LEDGER" 2>/dev/null && ! grep -q '"tool":"refresh-graph-map"' "$LEDGER" 2>/dev/null \
+   && ! grep -q '"purpose"' "$LEDGER" 2>/dev/null; then
+    pass "HIMMEL-1084 E8 hook-mode ledger keeps tool=graphify (no purpose field)"
 else
     fail "HIMMEL-1084 E8 hook-mode ledger tool: $(cat "$LEDGER" 2>/dev/null)"
 fi
+
+# E9 (CR codex-1) --eval with the wrong operand count denies instead of falling
+# through to hook-mode parsing (where a bare "--eval" is not a graphify clause
+# and would exit 0 - a false allow for a malformed preflight)
+e9=0
+rm -f "$LEDGER"
+# shellcheck disable=SC2086
+env $CLEAN_ENV "$BASH_BIN" "$FENCE" --eval >/dev/null 2>&1; [ "$?" -eq 2 ] || e9=1
+# shellcheck disable=SC2086
+env $CLEAN_ENV "$BASH_BIN" "$FENCE" --eval himmel-code claude-cli "$NOWHERE" >/dev/null 2>&1; [ "$?" -eq 2 ] || e9=1
+# shellcheck disable=SC2086
+env $CLEAN_ENV "$BASH_BIN" "$FENCE" --eval himmel-code claude-cli "$NOWHERE" refresh-graph-map extra >/dev/null 2>&1; [ "$?" -eq 2 ] || e9=1
+[ ! -e "$LEDGER" ] || e9=1
+if [ "$e9" -eq 0 ]; then pass "HIMMEL-1084 E9 --eval: wrong operand count denies, no ledger"; else fail "HIMMEL-1084 E9 --eval wrong operand count did not all deny"; fi
 
 if [ "$failures" -eq 0 ]; then
     echo "OK: all cases passed"
