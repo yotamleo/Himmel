@@ -501,8 +501,8 @@ if [ "$RUN_CLAUDE" = "1" ] && command -v jq >/dev/null 2>&1 && command -v node >
             env "${INERT_ENV[@]}" timeout "$REPLAY_TIMEOUT" bash -c "$cmd" < "$CR_PAYLOAD" >/dev/null 2>&1
             _rc=$?
             case "$_rc" in
-                0) ;;
-                *) _f=$((_f + 1)); _n="${_n:+$_n }rc=$_rc" ;;
+                (0) ;;
+                (*) _f=$((_f + 1)); _n="${_n:+$_n }rc=$_rc" ;;
             esac
         done < "$CR_CMDS"
         printf '%s|%s\n' "$_f" "$_n"

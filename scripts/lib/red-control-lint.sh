@@ -117,7 +117,7 @@ WINDOW=40
 
 # The detector. One awk pass per candidate file; the file is buffered so the
 # walk can go both up (to the conditional) and down (to the matching `fi`).
-AWK_PROG=$(cat <<'AWK'
+IFS= read -r -d '' AWK_PROG <<'AWK' || true
 # nif/nfi -- crude `if`/`fi` counting, enough to find the end of the block that
 # a given `if` opens. `elif` is deliberately not counted as an opener.
 function nif(s,   n, t) {
@@ -317,7 +317,6 @@ END {
     }
 }
 AWK
-)
 
 scanned=0
 hits=0

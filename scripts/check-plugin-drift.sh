@@ -127,7 +127,7 @@ else
   # (the Windows Store stub can wedge) is treated as UNCHECKED, never as "0 pins".
   # Each line: name|repo|ref|upstream_repo|track|synced_base (last three empty
   # unless scripts/plugin-upstreams.json declares a true-upstream override).
-  pins_out="$(python3 - "$MJSON" "$UPSTREAMS" <<'PY' 2>/dev/null | tr -d '\r'
+  IFS= read -r -d '' _pins_py <<'PY' || true
 import json, os, sys
 m = json.load(open(sys.argv[1]))
 ups = {}
@@ -152,7 +152,7 @@ for p in m.get("plugins", []):
         print("|".join([p["name"], repo_of(s), ref,
                         o.get("upstream_repo", ""), o.get("track", ""), o.get("synced_base", "")]))
 PY
-)"
+  pins_out="$(python3 -c "$_pins_py" "$MJSON" "$UPSTREAMS" 2>/dev/null | tr -d '\r')"
   pins_rc=$?  # pipefail makes this the pipeline's status (= python3's, if it failed)
   if [ "$pins_rc" -ne 0 ]; then
     echo "  ? marketplace.json / plugin-upstreams.json parse failed (python3 error) — pinned-remote class UNCHECKED."
@@ -314,7 +314,7 @@ else
   # pipe-delimited protocol. v1/v2 are kind/mode-specific (see header). A
   # malformed JSON file raises -> the pipeline exits non-zero -> class UNCHECKED;
   # a missing/empty file emits nothing (clean).
-  reg_out="$(python3 - "$REGISTRY" "$KNOWN_MKTS" <<'PY' 2>/dev/null | tr -d '\r'
+  IFS= read -r -d '' _reg_py <<'PY' || true
 import json, os, re, sys
 reg_path, mkt_path = sys.argv[1], sys.argv[2]
 
@@ -379,7 +379,7 @@ if os.path.exists(mkt_path) and os.path.getsize(mkt_path) > 0:
                 line('mkt:' + mname, 'commit_head', src['repo'], 'checkout',
                      expand(loc), '', tier)
 PY
-)"
+  reg_out="$(python3 -c "$_reg_py" "$REGISTRY" "$KNOWN_MKTS" 2>/dev/null | tr -d '\r')"
   reg_rc=$?
   if [ "$reg_rc" -ne 0 ]; then
     echo "  ? upstreams.json / known_marketplaces.json parse failed (python3 error) — carried-upstreams class UNCHECKED."

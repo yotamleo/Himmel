@@ -32,7 +32,7 @@ if [ "$#" -ne 1 ]; then
   exit 2
 fi
 
-LINT_JS=$(cat <<'NODE'
+IFS= read -r -d '' LINT_JS <<'NODE' || true
 "use strict";
 var fs = require("fs");
 var cfgPath = process.argv[1];
@@ -225,7 +225,6 @@ if (fails.length) {
 process.stdout.write("PASS: omniroute compression stack disabled (" + asserted + " keys asserted)\n");
 process.exit(0);
 NODE
-)
 
 # Preflight: JSON parsing is delegated to node, so a missing node would otherwise
 # surface as a generic "node: command not found" (exit 127). Catch it up front with

@@ -2319,7 +2319,7 @@ PYEOF
       echo "refresh-graph-map: shrink guard SKIPPED -- graphify version changed ($_prior_version -> $_graphify_version); a node/link drop from upstream extraction changes is expected here, not a collapse" >&2
     else
       _rc=0
-      _guard_out="$(python3 - "$PROMOTE_STAGE/graph.json" "$OUT_DIR/graph.json" "$GRAPHIFY_PROMOTE_MIN_RETAIN_PCT" <<'PYEOF'
+      IFS= read -r -d '' _guard_py <<'PYEOF' || true
 import json, sys
 staged_path, prior_path, pct_s = sys.argv[1], sys.argv[2], sys.argv[3]
 pct = int(pct_s)
@@ -2380,7 +2380,7 @@ if staged_nodes < node_floor or staged_links < link_floor:
     sys.exit(2)
 print("OK %d %d %d %d %d %d" % (prior_nodes, prior_links, prior_hyper, staged_nodes, staged_links, staged_hyper))
 PYEOF
-)" || _rc=$?
+      _guard_out="$(python3 -c "$_guard_py" "$PROMOTE_STAGE/graph.json" "$OUT_DIR/graph.json" "$GRAPHIFY_PROMOTE_MIN_RETAIN_PCT")" || _rc=$?
       case "$_guard_out" in
         STAGED_UNPARSEABLE*)
           echo "refresh-graph-map: REFUSING to promote -- staged graph $PROMOTE_STAGE/graph.json is missing or unparseable JSON; refusing to promote something we cannot verify" >&2

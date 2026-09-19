@@ -349,9 +349,9 @@ _lrb_main() {
             printf -- '- **worktree path:** no worktree found for this branch in %s\n' "$root_display"
         fi
         case "$status_state" in
-            clean) printf -- '- **git status:** clean\n' ;;
-            dirty) printf -- '- **git status:** dirty (see dirty paths below)\n' ;;
-            unknown) printf -- '- **git status:** unknown -- %s\n' "$status_reason" ;;
+            (clean) printf -- '- **git status:** clean\n' ;;
+            (dirty) printf -- '- **git status:** dirty (see dirty paths below)\n' ;;
+            (unknown) printf -- '- **git status:** unknown -- %s\n' "$status_reason" ;;
         esac
         # codex-4: the base ref not resolving (no origin/main or main) and
         # the ref resolving but `git merge-base` itself failing (unrelated
@@ -374,8 +374,8 @@ _lrb_main() {
         printf -- '- **head:** %s @ %s -- %s\n' "$branch_display" "${head_sha:-<unresolved>}" "${head_subject:-<no subject>}"
         printf '\n**Dirty paths:**\n\n'
         case "$status_state" in
-            clean) printf -- '- (clean)\n' ;;
-            dirty)
+            (clean) printf -- '- (clean)\n' ;;
+            (dirty)
                 # round-5/6 CR (codex-1): each path here is REPO-CONTROLLED
                 # text (git status --short output) reaching the same
                 # agent-loaded doc as the subjects above -- render (sanitize
@@ -385,7 +385,7 @@ _lrb_main() {
                     printf -- '- %s\n' "$(_lrb_md_value "${_lrb_dirty_line:3}")"
                 done <<< "$status_lines"
                 ;;
-            unknown) printf -- '- (unknown -- %s)\n' "$status_reason" ;;
+            (unknown) printf -- '- (unknown -- %s)\n' "$status_reason" ;;
         esac
         # round-7 CR (codex-1): the operator-gated wrap clause (all three
         # next-session templates) promises this brief carries "the verbatim

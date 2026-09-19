@@ -677,7 +677,7 @@ GUEST_ASKPASS="$GUEST_TMP/askpass"
 # triggers (git also asks for a username when the URL carries none): the
 # literal `x-access-token` username GitHub's PAT auth expects, and the
 # actual token read back out of $GUEST_TOKEN_FILE for anything else.
-ASKPASS_SETUP=$(cat <<EOF
+IFS= read -r -d '' ASKPASS_SETUP <<EOF || true
 cat > '$GUEST_ASKPASS' <<'INNER_EOF'
 #!/usr/bin/env bash
 case "\$1" in
@@ -687,7 +687,7 @@ esac
 INNER_EOF
 chmod 700 '$GUEST_ASKPASS'
 EOF
-)
+ASKPASS_SETUP=${ASKPASS_SETUP%$'\n'}
 if ! guest_ssh "$ASKPASS_SETUP"; then
     cleanup_guest_token
     fail "could not write the guest askpass helper"
