@@ -104,10 +104,21 @@ for spec in "${SPECS[@]}"; do
                     cp -p "$INSTALLED_JSON" "$REGISTRY_BACKUP"
                 fi
                 registry_tmp=$(mktemp "$INSTALLED_JSON.tmp.XXXXXX")
+                # HIMMEL-3040: compare-and-swap. cksum (POSIX) before the read and
+                # again just before the mv; a change means a concurrent writer
+                # (e.g. `claude plugin install`) — abort rather than replace its write.
+                # ponytail: a writer landing between the re-check and the mv is
+                # still lost — there is no atomic compare-and-rename in POSIX shell.
+                registry_sum=$(cksum < "$INSTALLED_JSON")
                 if jq --arg spec "$spec" --arg path "$project_path" '
                     .plugins[$spec] |= map(select(.scope != "project" or .projectPath != $path))
                     | if .plugins[$spec] == [] then del(.plugins[$spec]) else . end
                 ' "$INSTALLED_JSON" > "$registry_tmp"; then
+                    if [ "$(cksum < "$INSTALLED_JSON")" != "$registry_sum" ]; then
+                        rm -f "$registry_tmp"
+                        echo "ERROR: $INSTALLED_JSON changed during prune (concurrent write); aborting so it is not overwritten. Registry left as the other writer wrote it; backup kept at $REGISTRY_BACKUP" >&2
+                        exit 1
+                    fi
                     mv "$registry_tmp" "$INSTALLED_JSON"
                 else
                     rm -f "$registry_tmp"

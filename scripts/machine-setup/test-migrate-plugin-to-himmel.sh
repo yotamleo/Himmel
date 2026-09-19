@@ -7,6 +7,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT="$REPO_ROOT/scripts/machine-setup/migrate-plugin-to-himmel.sh"
 command -v jq >/dev/null || { echo 'FAIL: jq required'; exit 1; }
+REAL_JQ="$(command -v jq)"; export REAL_JQ
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/test-migrate.XXXXXX")"
 trap 'chmod -R u+rwx "$TMP"; rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin" "$TMP/live project+wt"
@@ -64,6 +65,28 @@ esac
 STUB
 chmod +x "$TMP/bin/claude"
 
+# jq passthrough. With MIGRATE_CONCURRENT_WRITE=1 it simulates another registry
+# writer landing between the prune's jq read and its mv: after the prune jq (the
+# only call carrying `--arg path`) has read the registry, it adds a foreign entry.
+cat > "$TMP/bin/jq" <<'STUB'
+#!/usr/bin/env bash
+rc=0
+"$REAL_JQ" "$@" || rc=$?
+if [ "${MIGRATE_CONCURRENT_WRITE:-0}" = 1 ] && [ ! -e "$HIMMEL_INSTALLED_PLUGINS_JSON.raced" ]; then
+    for a in "$@"; do
+        if [ "$a" = path ]; then
+            : > "$HIMMEL_INSTALLED_PLUGINS_JSON.raced"
+            "$REAL_JQ" '.plugins["concurrent@writer"] = [{scope:"user"}]' \
+                "$HIMMEL_INSTALLED_PLUGINS_JSON" > "$HIMMEL_INSTALLED_PLUGINS_JSON.writer"
+            mv "$HIMMEL_INSTALLED_PLUGINS_JSON.writer" "$HIMMEL_INSTALLED_PLUGINS_JSON"
+            break
+        fi
+    done
+fi
+exit "$rc"
+STUB
+chmod +x "$TMP/bin/jq"
+
 failures=0
 check() {
     local label="$1"; shift
@@ -75,7 +98,7 @@ check() {
     fi
 }
 fixture() {
-    rm -f "$HIMMEL_INSTALLED_PLUGINS_JSON".bak-*
+    rm -f "$HIMMEL_INSTALLED_PLUGINS_JSON".bak-* "$HIMMEL_INSTALLED_PLUGINS_JSON.raced"
     : > "$MIGRATE_CALLS"
     jq -n --arg spec "$SPEC" --arg project "$1" '{version:2, plugins:{
         ($spec):[{scope:"user"},
@@ -210,6 +233,25 @@ else
     check 'inaccessible project creates no backup' test ! -e "$1"
     chmod 755 "$LOCKED"
 fi
+
+echo '== concurrent registry write during prune (HIMMEL-3040) =='
+fixture "$GONE"
+# Expected registry: the fixture plus the racing writer's entry, untouched by the prune.
+jq '.plugins["concurrent@writer"] = [{scope:"user"}]' "$TMP/before.json" > "$TMP/expected.json"
+export MIGRATE_CONCURRENT_WRITE=1
+rc=0
+bash "$SCRIPT" --apply "$SPEC" > "$TMP/output" 2>&1 || rc=$?
+export MIGRATE_CONCURRENT_WRITE=0
+check 'concurrent write aborts nonzero' test "$rc" -ne 0
+check 'concurrent write message names the registry and the backup' grep -Fq \
+    "changed during prune" "$TMP/output"
+check 'registry holds the concurrent writer content' cmp -s "$TMP/expected.json" "$HIMMEL_INSTALLED_PLUGINS_JSON"
+set -- "$HIMMEL_INSTALLED_PLUGINS_JSON".bak-*
+check 'exactly one backup kept after abort' test "$#" -eq 1
+check 'kept backup preserves pre-prune registry' cmp -s "$TMP/before.json" "$1"
+set -- "$HIMMEL_INSTALLED_PLUGINS_JSON".tmp.*
+check 'no prune temp file left behind' test ! -e "$1"
+check 'aborted prune runs no mutations' jq -se 'length == 0' "$MIGRATE_CALLS"
 
 echo "$failures FAILURE(S)"
 [ "$failures" -eq 0 ]
