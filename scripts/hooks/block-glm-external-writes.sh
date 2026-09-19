@@ -516,7 +516,7 @@ printf '%s' "$pin_cmd" | awk -v initcwd="$tool_cwd" -v pwsh="$pwsh_flag" '
 # in-token escape handling in scan_line() and the line-continuation join in
 # the main block, so the two dialects share one mechanism instead of two
 # parallel patches.
-BEGIN { SQ = sprintf("%c", 39); NUL = sprintf("%c", 0); ESC = pwsh ? "`" : "\\"; cwd_cand[1] = initcwd; ncand = 1; MAXCAND = 32 }
+BEGIN { SQ = sprintf("%c", 39); NUL = sprintf("%c", 0); if (NUL == "") NUL = "\001NUL\001"; ESC = pwsh ? "`" : "\\"; cwd_cand[1] = initcwd; ncand = 1; MAXCAND = 32 }
 function is_abs(p) {
     if (p ~ /^\//) return 1
     if (p ~ /^[A-Za-z]:[\/\\]/) return 1
@@ -556,6 +556,10 @@ function is_direct_exec_prefix(tok) {
 # silent repair. Filtering where the value is finally produced covers both
 # inputs at once, which is why the two per-input tests were replaced rather
 # than added to.
+# ponytail: BSD awk (macOS) sprintf("%c", 0) yields the EMPTY string (C strings), so
+# NUL falls back to a printable marker (SOH NUL SOH). The marker is a stand-in, not a
+# real NUL: a command that itself carries that literal marker in a path is filtered
+# as if it held a NUL, an over-skip of the pin scan that no real path can trigger.
 function has_nul(str) { return index(str, NUL) > 0 }
 function run_segment(   j, i, target, seen, n2, cand) {
     if (ntok == 0) return
@@ -694,7 +698,7 @@ function pwsh_unescape(c) {
     # enumeration below in the test suite. Emit a real NUL instead: no filename
     # on any platform can contain one, so the modeled path correctly matches
     # nothing, which is exactly what the real command does.
-    if (c == "0") return sprintf("%c", 0)
+    if (c == "0") return NUL
     return c
 }
 # HIMMEL-2218 [codex-1], pr-check panel ROUND 3: PowerShell also has a
