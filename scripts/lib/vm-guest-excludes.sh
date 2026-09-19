@@ -57,8 +57,10 @@
 # tree is therefore NOT covered. A directory target that stat's but cannot be entered
 # fails closed; a link whose target cannot be stat'ed (EACCES behind an unsearchable
 # ancestor) is indistinguishable in POSIX sh from a dangling link and is SKIPPED, not
-# failed closed (HIMMEL-3238). Every skipped link is reported as a read-only
-# `scan-skipped:` line and counted by the consumers (never a refusal). Consumers filter
+# failed closed (HIMMEL-3238). Every link left UNSCANNED (file, dangling, system-tree or
+# unstat-able target) is reported as a read-only `scan-skipped:` line and counted by the
+# consumers (never a refusal); a loop skip is NOT reported, its target is an ancestor
+# already on the scan chain and so is being scanned. Consumers filter
 # that prefix out of the hit list; find prints absolute paths, so a real hit cannot start
 # with it unless a directory name embeds a newline followed by the prefix (a hostile
 # guest could then hide one hit line — an accepted residual, not a host-secret carrier).

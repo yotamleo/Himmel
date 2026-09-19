@@ -228,14 +228,16 @@ else fail_case "T4k5 assert_clean refused a tree with only skipped links"; fi
 
 # --- T4l (HIMMEL-3238 limit) a link behind an UNSEARCHABLE ancestor is indistinguishable from a dangling one:
 # skipped, not failed closed -- but VISIBLE as a scan-skipped note, never silently clean
-UNS="$WORK/unsearchable"; UNL="$WORK/unsearch-root"; mkdir -p "$UNS/inner" "$UNL"; : > "$UNS/inner/.env"
-ln -s "$UNS/inner" "$UNL/behind"; chmod 000 "$UNS"
-un_raw=$(sh -c "$(vm_guest_scan_cmd "$UNL" env)" 2>&1); un_rc=$?
-un_err=$(vm_guest_scan "$UNL" env 2>&1 >/dev/null)
-chmod 755 "$UNS"
-if [ "$un_rc" -eq 0 ] && grep -q '^scan-skipped: .*/behind$' <<< "$un_raw" && grep -q 'did not follow 1 nested link(s)' <<< "$un_err"; then
-  pass "T4l link behind an unsearchable ancestor is skipped VISIBLY (scan-skipped note + count), not silently clean"
-else fail_case "T4l unsearchable-ancestor link not surfaced (rc=$un_rc): raw=[$un_raw] err=[$un_err]"; fi
+if [ "$(id -u)" -ne 0 ]; then
+  UNS="$WORK/unsearchable"; UNL="$WORK/unsearch-root"; mkdir -p "$UNS/inner" "$UNL"; : > "$UNS/inner/.env"
+  ln -s "$UNS/inner" "$UNL/behind"; chmod 000 "$UNS"
+  un_raw=$(sh -c "$(vm_guest_scan_cmd "$UNL" env)" 2>&1); un_rc=$?
+  un_err=$(vm_guest_scan "$UNL" env 2>&1 >/dev/null)
+  chmod 755 "$UNS"
+  if [ "$un_rc" -eq 0 ] && grep -q '^scan-skipped: .*/behind$' <<< "$un_raw" && grep -q 'did not follow 1 nested link(s)' <<< "$un_err"; then
+    pass "T4l link behind an unsearchable ancestor is skipped VISIBLY (scan-skipped note + count), not silently clean"
+  else fail_case "T4l unsearchable-ancestor link not surfaced (rc=$un_rc): raw=[$un_raw] err=[$un_err]"; fi
+else echo "SKIP T4l running as root (chmod 000 does not deny)"; fi
 
 # --- T5 fail closed: missing root, unsafe root text, unknown profile
 if ! vm_guest_scan "$WORK/does-not-exist" env >/dev/null 2>&1; then
