@@ -151,7 +151,7 @@ if [ "$rc" -eq 0 ] && grepq "$out" '0 impacted'; then pass "no impacted suites -
 # reaches the real git so the range still resolves and needles are built.
 SHIM="$(fixture_mktemp_dir)" || exit 1
 trap 'rm -rf "$FX" "$SHIM"' EXIT
-printf '#!/usr/bin/env bash\nif [ "${1:-}" = grep ]; then echo "fatal: injected" >&2; exit 128; fi\nexec "%s" "$@"\n' "$(command -v git)" > "$SHIM/git"
+printf '#!/usr/bin/env bash\nfor a in "$@"; do if [ "$a" = grep ]; then echo "fatal: injected" >&2; exit 128; fi; done\nexec "%s" "$@"\n' "$(command -v git)" > "$SHIM/git"
 chmod +x "$SHIM/git"
 change scripts/machine-setup/uninstall-plugins.sh
 out="$( cd "$FX" && PATH="$SHIM:$PATH" bash "$IS" "$range" 2>/dev/null )"; rc=$?
@@ -171,6 +171,29 @@ if [ "$out" = "scripts/test-pkg.sh" ]; then pass "root-level package.json -> sui
 change scripts/machine-setup/uninstall-plugins.sh
 out="$( cd "$FX/scripts/machine-setup" && bash "$IS" "$range" 2>/dev/null )"
 if grepq "$out" '^scripts/test-uninstall\.sh$'; then pass "run from a subdirectory: repo-relative list still reaches test-uninstall.sh"; else fail "subdirectory run dropped suites: $out"; fi
+
+# --- 13. a non-ASCII suite path comes back as itself, not quoted -------------
+# git grep -l quotes such a path ("scripts/test-caf\303\251.sh") unless
+# core.quotepath is off; the runner would then filter it out as "not a suite".
+mkf scripts/uniq-widget.sh
+mkf 'scripts/test-café.sh' 'bash "$d/uniq-widget.sh"'
+git -C "$FX" add -A
+git -C "$FX" commit -q -m "chore: add widget + café suite"
+change scripts/uniq-widget.sh
+out="$(run_is "$range" --shell)"
+if [ "$out" = "scripts/test-café.sh" ]; then pass "non-ASCII suite path is emitted verbatim"; else fail "non-ASCII suite path mangled: $out"; fi
+
+# --- 14. a step that builds the list and fails is an error, not a short list --
+# A `sort` shim that fails: the shell-only filter used to end in `|| true`, so
+# an empty impacted set (rc 0) was the result of a pipeline that never ran.
+SHIM2="$(fixture_mktemp_dir)" || exit 1
+trap 'rm -rf "$FX" "$SHIM" "$SHIM2"' EXIT
+printf '#!/usr/bin/env bash\necho "sort: injected" >&2\nexit 2\n' > "$SHIM2/sort"
+chmod +x "$SHIM2/sort"
+out="$( cd "$FX" && PATH="$SHIM2:$PATH" bash "$IS" "$range" --shell 2>/dev/null )"; rc=$?
+if [ "$rc" -eq 2 ] && [ -z "$out" ]; then pass "a failing sort -> rc2, empty stdout (not an empty impacted set)"; else fail "sort failure: rc=$rc out=$out"; fi
+err="$( cd "$FX" && PATH="$SHIM2:$PATH" bash "$IS" "$range" --shell 2>&1 >/dev/null )"
+if grepq "$err" 'sorting the impacted list failed'; then pass "the failed step is named on stderr"; else fail "sort failure not named: $err"; fi
 
 echo
 if [ "$failures" -eq 0 ]; then echo "OK: all cases passed"; exit 0; fi

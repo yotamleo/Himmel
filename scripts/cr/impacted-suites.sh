@@ -46,6 +46,13 @@
 # under Git Bash on Windows. No .ps1 twin — it is a git + grep pipeline.
 set -uo pipefail
 
+# io_fail <what> — a step that builds the impacted list or the verdict set did
+# not run; an empty or partial list must never read as "nothing to run".
+io_fail() {
+    echo "impacted-suites: ${1} failed — cannot trust the impacted list" >&2
+    exit 2
+}
+
 usage() {
     sed -n '2,/^set -uo/p' "$0" | sed -n 's/^# \{0,1\}//p' >&2
 }
@@ -108,7 +115,7 @@ found="$work/found"
 : > "$found"
 
 suite_re='(^|/)test-[^/]*\.sh$|\.test\.(mjs|js|ts)$'
-suites=$(grep -E "$suite_re" <<< "$tree" || true)
+suites=$(grep -E "$suite_re" <<< "$tree"); [ $? -le 1 ] || io_fail "listing suites"   # rc 1 = none
 # Basenames that name nothing on their own: match them by "<parent>/<name>"
 # (a repo-root file has no parent, so it falls back to the bare name).
 generic_re='^(README\.md|CLAUDE\.md|SKILL\.md|CHANGELOG\.md|index\.(js|mjs|ts)|package\.json|package-lock\.json|\.gitignore|LICENSE)$'
@@ -117,8 +124,8 @@ generic_re='^(README\.md|CLAUDE\.md|SKILL\.md|CHANGELOG\.md|index\.(js|mjs|ts)|p
 # never matches `uninstall.sh` and `/pr-check` never matches `/pr-check_x`.
 add_needle() {
     local esc
-    esc=$(printf '%s' "$1" | sed 's/[.[\*^$+?(){}|]/\\&/g')
-    printf '(^|[^A-Za-z0-9_.-])%s($|[^A-Za-z0-9_-])\n' "$esc" >> "$pats"
+    esc=$(printf '%s' "$1" | sed 's/[.[\*^$+?(){}|]/\\&/g') || io_fail "escaping a needle"
+    printf '(^|[^A-Za-z0-9_.-])%s($|[^A-Za-z0-9_-])\n' "$esc" >> "$pats" || io_fail "writing a needle"
 }
 
 while IFS= read -r f; do
@@ -127,7 +134,7 @@ while IFS= read -r f; do
         # A changed suite is impacted by itself (unless the PR deleted it) —
         # and falls through so its basename is also a needle: a wrapper that
         # invokes it (test-arm-resume-fast.sh -> test-arm-resume.sh) is reached.
-        if grep -Fxq -- "$f" <<< "$suites"; then printf '%s\n' "$f" >> "$found"; fi
+        if grep -Fxq -- "$f" <<< "$suites"; then printf '%s\n' "$f" >> "$found" || io_fail "recording a changed suite"; fi
     fi
     name="${f##*/}"
     if grep -Eq "$generic_re" <<< "$name"; then
@@ -154,21 +161,26 @@ if [ -s "$pats" ]; then
     # rc 1 is "no match"; anything higher is a search that did not run, which
     # must not read as an empty impacted set.
     grep_rc=0
-    git grep -l -E -f "$pats" "$head_sha" -- \
+    # core.quotepath=off like the diff and ls-tree above: a non-ASCII suite path
+    # must come back as itself, not as a quoted "\303\251" the runner cannot open.
+    git -c core.quotepath=off grep -l -E -f "$pats" "$head_sha" -- \
         ':(glob)**/test-*.sh' ':(glob)**/*.test.mjs' ':(glob)**/*.test.js' ':(glob)**/*.test.ts' \
         > "$work/grep.out" || grep_rc=$?
     if [ "$grep_rc" -gt 1 ]; then
         echo "impacted-suites: git grep failed (rc=$grep_rc) — cannot tell which suites are impacted" >&2
         exit 2
     fi
-    sed "s/^${head_sha}://" "$work/grep.out" >> "$found"
+    sed "s/^${head_sha}://" "$work/grep.out" >> "$found" || io_fail "reading the search result"
 fi
 
 impacted="$work/impacted"
 if [ "$shell_only" -eq 1 ]; then
-    grep -E '(^|/)test-[^/]*\.sh$' "$found" | sort -u > "$impacted" || true
+    grep_rc=0
+    grep -E '(^|/)test-[^/]*\.sh$' "$found" > "$work/shell" || grep_rc=$?   # rc 1 = no shell suite
+    [ "$grep_rc" -le 1 ] || io_fail "filtering to shell suites"
+    sort -u "$work/shell" > "$impacted" || io_fail "sorting the impacted list"
 else
-    sort -u "$found" > "$impacted"
+    sort -u "$found" > "$impacted" || io_fail "sorting the impacted list"
 fi
 
 if [ "$check" -eq 0 ]; then
@@ -191,9 +203,9 @@ awk -v blockedf="$blocked_raw" '
             if (verdict == "BLOCKED") print path > blockedf
         }
     }
-' | sort -u > "$have"
+' | sort -u > "$have" || io_fail "reading the verdicts"
 missing="$work/missing"
-comm -23 "$impacted" "$have" > "$missing"
+comm -23 "$impacted" "$have" > "$missing" || io_fail "comparing verdicts to the impacted list"
 n_impacted=$(wc -l < "$impacted" | tr -d ' ')
 n_missing=$(wc -l < "$missing" | tr -d ' ')
 printf 'impacted-suites: %s impacted, %s without a verdict\n' "$n_impacted" "$n_missing"
@@ -205,7 +217,7 @@ if [ "$n_missing" -gt 0 ]; then
 fi
 # Every suite has a verdict; a BLOCKED one is accounted for but did not run.
 blocked="$work/blocked"
-sort -u "$blocked_raw" | comm -12 "$impacted" - > "$blocked"
+sort -u "$blocked_raw" | comm -12 "$impacted" - > "$blocked" || io_fail "finding BLOCKED verdicts"
 if [ -s "$blocked" ]; then
     printf 'impacted-suites: %s BLOCKED (accounted for, NOT clean — the suite did not run)\n' "$(wc -l < "$blocked" | tr -d ' ')" >&2
     while IFS= read -r s; do
