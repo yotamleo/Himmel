@@ -67,6 +67,8 @@ trap 'rm -rf "$TMP"' EXIT
 # the production dir the live fleet counts, and fail the suite if it could leak.
 . "$(dirname "$ARM")/../lib/fleet-slots-shield.sh"
 fleet_slots_shield "$TMP" || exit 1
+# shellcheck source=../lib/host-caps.sh
+. "$(dirname "$ARM")/../lib/host-caps.sh"
 
 # ---------------------------------------------------------------------------
 # Hermetic shields — copied verbatim from test-arm-resume-context.sh.
@@ -363,8 +365,11 @@ if [ -f "$RUNNER_PATH_C" ]; then
 else
     echo "FAIL c: runner file missing: $RUNNER_PATH_C"; FAILED=$((FAILED + 1))
 fi
-_mode_c=$(stat -c '%a' "$RUNNER_PATH_C" 2>/dev/null || stat -f '%Lp' "$RUNNER_PATH_C" 2>/dev/null)
-if [ "$_mode_c" = "700" ]; then
+_mode_c=$(host_mode_of "$RUNNER_PATH_C")
+if ! host_modes_stick; then
+    # HIMMEL-3182: NTFS/MSYS keeps the file at 755 whatever the script chmods
+    host_skip "c: runner file mode 700: chmod does not stick on this host (read back $_mode_c)"
+elif [ "$_mode_c" = "700" ]; then
     echo "PASS c: runner file mode 700"
 else
     echo "FAIL c: runner file mode=$_mode_c (expected 700)"; FAILED=$((FAILED + 1))

@@ -424,8 +424,11 @@ launch "$FX_PROJ" "$FX_OUT" s13 "$LAUNCHER" --optional "$FX_PROJ/$REL"
 expect_deny "row 13: an unresolvable anchor_ref is denied" 'could not be resolved'
 
 # --- row 14: an unwritable pin directory must deny, never allow ------------
-if [ "$(id -u)" = 0 ]; then
-  ok "row 14: SKIP (running as root — a read-only directory does not stop a write)"
+# shellcheck source=../lib/host-caps.sh
+. "$REPO_ROOT/scripts/lib/host-caps.sh"
+if ! host_can_deny_write; then
+  # root, or NTFS/MSYS: chmod 500 does not stop a write there (HIMMEL-3182)
+  host_skip "row 14: a read-only directory does not stop a write on this host"
 else
   fixture r14
   A14="$(fx_commit A c1)"; fx_publish "$A14"; BLOB_A14="$(fx_blob)"

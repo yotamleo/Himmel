@@ -39,6 +39,32 @@ fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1" >&2; }
 # nothing was asserted (HIMMEL-2258 audit; HIMMEL-2226 fix).
 skip() { SKIP=$((SKIP + 1)); echo "SKIP $1"; }
 
+# sed_inplace <sed args...> <file> -- GNU `sed -i -e` and BSD `sed -i -e` differ
+# (BSD reads the `-e` as the backup suffix: "sed: -e: No such file"). An
+# attached suffix works on both; the backup is removed (HIMMEL-3182).
+sed_inplace() {
+    local f
+    for f; do :; done
+    sed -i.bak "$@" && rm -f "$f.bak"
+}
+
+# run_bounded <secs> <cmd...> -- `timeout` where present (GNU coreutils, or
+# `gtimeout`), else a bash watchdog: stock macOS has neither (HIMMEL-3182). A
+# hang still fails the case (rc 124 from timeout, 143 from the watchdog).
+_TIMEOUT_BIN="$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)"
+run_bounded() {
+    if [ -n "$_TIMEOUT_BIN" ]; then "$_TIMEOUT_BIN" "$@"; return; fi
+    local secs="$1" pid wd rc
+    shift
+    "$@" &
+    pid=$!
+    ( sleep "$secs"; kill "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+    wd=$!
+    wait "$pid"; rc=$?
+    kill "$wd" 2>/dev/null; wait "$wd" 2>/dev/null
+    return "$rc"
+}
+
 is_mingw() {
     case "$(uname -s 2>/dev/null || echo)" in
         *MINGW*|*MSYS*|*CYGWIN*|*NT*) return 0 ;; *) return 1 ;;
@@ -160,7 +186,7 @@ echo "T12: --status on a fixture-local hook whose baked path is sed-edited to a 
 d3="$TMP_ROOT/f3"; mk_foreign_repo "$d3" || exit 1
 hook3="$d3/work/.git/hooks/pre-push"
 bash "$INSTALLER" --target "$d3/work" >/dev/null 2>&1
-sed -i -e 's|^gate=.*|gate=/no/such/gate.sh|' \
+sed_inplace -e 's|^gate=.*|gate=/no/such/gate.sh|' \
        -e 's|^# himmel-cr-gate-path: .*|# himmel-cr-gate-path: /no/such/gate.sh|' "$hook3"
 out=$(bash "$INSTALLER" --target "$d3/work" --status 2>&1); rc=$?
 [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -Fq "stale" && pass || fail "T12 rc=$rc out=$out"
@@ -315,7 +341,7 @@ echo "T22: a rewrite lands COMPLETE and leaves no staging residue (not failed-wr
 d11="$TMP_ROOT/f11"; mk_foreign_repo "$d11" || exit 1
 bash "$INSTALLER" --target "$d11/work" >/dev/null 2>&1
 hook11="$d11/work/.git/hooks/pre-push"
-sed -i -e 's|^gate=.*|gate=/deliberately/different/path.sh|' \
+sed_inplace -e 's|^gate=.*|gate=/deliberately/different/path.sh|' \
        -e 's|^# himmel-cr-gate-path: .*|# himmel-cr-gate-path: /deliberately/different/path.sh|' "$hook11"
 before11=$(cat "$hook11")
 # Prove the precondition: content now DIFFERS, so a re-install must write.
@@ -397,11 +423,11 @@ echo "T18a: a bare trailing --target -> usage error, NOT an infinite loop"
 # with one arg left FAILS, and this script runs without `set -e` — so $# never
 # decreased and the while loop spun forever. A timeout is the only honest
 # assertion for a hang: rc 124 here means the bug is back.
-out=$(timeout 15 bash "$INSTALLER" --target 2>&1); rc=$?
+out=$(run_bounded 15 bash "$INSTALLER" --target 2>&1); rc=$?
 [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -Fq "requires a value" && pass || fail "T18a rc=$rc out=$out"
 
 echo "T18b: unknown flag -> usage error"
-out=$(timeout 15 bash "$INSTALLER" --target "$d/work" --bogus 2>&1); rc=$?
+out=$(run_bounded 15 bash "$INSTALLER" --target "$d/work" --bogus 2>&1); rc=$?
 [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -Fq "unknown argument" && pass || fail "T18b rc=$rc out=$out"
 
 echo "T19 (e2e, LAST): install then git push origin feat/x -> marker written with pushed SHA"

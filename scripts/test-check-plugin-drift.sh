@@ -20,6 +20,18 @@ fails=0
 ok() { echo "ok - $1"; }
 bad() { echo "FAIL - $1" >&2; fails=$((fails + 1)); }
 
+# tool_link <src> <dst> -- put a tool on a masked PATH dir. Where `ln -s` makes a
+# real link that is the link; where it COPIES (Git Bash without the symlink
+# privilege) a copied bash.exe/dirname.exe cannot load its DLLs and answers rc=127
+# (HIMMEL-3182), so a one-line exec wrapper stands in for it instead.
+# shellcheck source=lib/host-caps.sh
+. "$ROOT/scripts/lib/host-caps.sh"
+if host_symlinks_real; then
+  tool_link() { ln -s "$1" "$2" 2>/dev/null; }
+else
+  tool_link() { printf '#!/bin/sh\nexec "%s" "$@"\n' "$1" > "$2" && chmod +x "$2"; }
+fi
+
 # 1. Syntax.
 if bash -n "$SCRIPT"; then ok "syntax (bash -n)"; else bad "syntax"; fi
 
@@ -234,8 +246,8 @@ fi
 #    deliberately excluding gh, then assert the precondition that gh really is
 #    unreachable under that PATH before trusting the run.
 if NOGH_BIN="$(mktemp -d "${TMPDIR:-/tmp}/nogh-bin.XXXXXX")"; then
-  ln -s "$(command -v bash)" "$NOGH_BIN/bash"
-  ln -s "$(command -v dirname)" "$NOGH_BIN/dirname"
+  tool_link "$(command -v bash)" "$NOGH_BIN/bash"
+  tool_link "$(command -v dirname)" "$NOGH_BIN/dirname"
   if PATH="$NOGH_BIN" command -v gh >/dev/null 2>&1; then
     bad "fail-open fixture precondition failed: gh still reachable under stub PATH"
   else
@@ -280,11 +292,11 @@ for f in /usr/bin/*; do
   case "$b" in
     sha256sum|sha256sum.exe|shasum|shasum.exe) continue ;;
   esac
-  ln -s "$f" "$W5C/nosha/$b" 2>/dev/null
+  tool_link "$f" "$W5C/nosha/$b"
 done
 for tool in awk base64 basename bash dirname grep head mktemp python3 rm sed tr; do
   tool_path="$(command -v "$tool" 2>/dev/null || true)"
-  if [ -n "$tool_path" ]; then ln -s "$tool_path" "$W5C/nosha/$tool" 2>/dev/null; fi
+  if [ -n "$tool_path" ]; then tool_link "$tool_path" "$W5C/nosha/$tool"; fi
 done
 # Fixture content is base64('hello\n') (the gh stub below); the pin carries the
 # REAL sha256 of those bytes so the decode->tmpfile->hash->parse data path is
@@ -305,9 +317,14 @@ exit 0
 GH
 # Real-computing shasum stub: hashes its FILE argument (same output shape as
 # `shasum -a 256`), so a wrong tmpfile/decode would fail the CURRENT assertion.
+# The real sha256sum is resolved HERE (the mask below hides it from the script
+# under test, not from this stub); python3 is the fallback where it is absent
+# (macOS), and the runner's Git Bash has no python3 (HIMMEL-3182).
+REAL_SHA256SUM="$(command -v sha256sum 2>/dev/null || true)"; export REAL_SHA256SUM
 cat >"$W5C/bin/shasum" <<'SHASUM'
 #!/usr/bin/env bash
 if [ "$1" = "-a" ] && [ "$2" = "256" ]; then
+  [ -n "${REAL_SHA256SUM:-}" ] && exec "$REAL_SHA256SUM" "$3"
   exec python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest() + "  " + sys.argv[1])' "$3"
 fi
 exit 1
@@ -555,7 +572,7 @@ for f in /usr/bin/*; do
   case "$b" in
     timeout|timeout.exe) continue ;;
   esac
-  ln -s "$f" "$W8/notimeout/$b" 2>/dev/null
+  tool_link "$f" "$W8/notimeout/$b"
 done
 cat > "$W8/bin/gh" <<'GH'
 #!/usr/bin/env bash

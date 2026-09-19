@@ -10,6 +10,17 @@ set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$HERE/inbox-send.sh"
 
+# HIMMEL-3182: inbox-send.sh takes a flock and secures its ledger/lock dirs with
+# `mkdir -m 700` + `chmod 700`; a host without flock, or where the mode does not
+# stick (Git Bash / NTFS), cannot run it at all, so every case below would fail
+# for that reason. Probed, so a Linux host still runs the whole suite.
+# shellcheck source=../../lib/host-caps.sh
+. "$HERE/../../lib/host-caps.sh"
+if ! command -v flock >/dev/null 2>&1 || ! host_modes_stick; then
+    host_skip "inbox-send.sh needs flock and a chmod/mkdir -m 700 that sticks; this host has neither"
+    exit 0
+fi
+
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails + 1)); }

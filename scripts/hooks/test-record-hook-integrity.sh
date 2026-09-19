@@ -380,8 +380,14 @@ for f in "$OUT7"/.hook-integrity.*; do
   stray_outdir=$((stray_outdir + 1))
 done
 if [ -f "$REC7" ] && [ "$stray_tmpdir" -eq 0 ] && [ "$stray_outdir" -eq 0 ]; then
-  if command -v stat >/dev/null 2>&1; then
-    mode="$(stat -c %a "$REC7" 2>/dev/null || stat -f %Lp "$REC7" 2>/dev/null)"
+  # shellcheck source=../lib/host-caps.sh
+  . "$REPO_ROOT/scripts/lib/host-caps.sh"
+  if ! host_modes_stick; then
+    # HIMMEL-3182: NTFS/MSYS reports 444 for a chmod 400 file
+    host_skip "row7: published record mode 400: chmod does not stick on this host"
+    ok "row7: staged beside dest (no TMPDIR/out_dir temp survives) [mode not checked: chmod does not stick here]"
+  elif command -v stat >/dev/null 2>&1; then
+    mode="$(host_mode_of "$REC7")"
     if [ "$mode" = "400" ]; then
       ok "row7: staged beside dest (no TMPDIR/out_dir temp survives), mode 400"
     else

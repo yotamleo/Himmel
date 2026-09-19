@@ -603,9 +603,13 @@ fi
 exec "$REAL_GIT" "\$@"
 STUBEOF
 chmod +x "$GIT_STUB_DIR/git"
+# TMP_ROOT is `cygpath -m` (C:/...) on Git Bash; a colon-joined PATH entry in that
+# form splits at the drive colon, so the shim was never found and the real git
+# answered (HIMMEL-3182). PATH takes the POSIX form; a no-op elsewhere.
+GIT_STUB_PATH="$(cygpath -u "$GIT_STUB_DIR" 2>/dev/null || printf '%s' "$GIT_STUB_DIR")"
 rc=0
 out=$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"gh pr create --base main"}}' \
-    | PATH="$GIT_STUB_DIR:$PATH" CLAUDE_PROJECT_DIR="$UNREADABLE" bash "$HOOK" 2>&1) || rc=$?
+    | PATH="$GIT_STUB_PATH:$PATH" CLAUDE_PROJECT_DIR="$UNREADABLE" bash "$HOOK" 2>&1) || rc=$?
 if [ "$rc" -eq 2 ]; then
     pass "unreadable HEAD with marker -> denied (exit 2), not fail-open"
 else
@@ -622,7 +626,7 @@ case "$g" in /*|?:/*|?:\\*) ;; *) g="$UNREADABLE/$g" ;; esac
 rm -f "$g/cr-pending/feat/X"
 rc=0
 out=$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"gh pr create --base main"}}' \
-    | PATH="$GIT_STUB_DIR:$PATH" CLAUDE_PROJECT_DIR="$UNREADABLE" bash "$HOOK" 2>&1) || rc=$?
+    | PATH="$GIT_STUB_PATH:$PATH" CLAUDE_PROJECT_DIR="$UNREADABLE" bash "$HOOK" 2>&1) || rc=$?
 if [ "$rc" -eq 0 ]; then
     pass "unreadable HEAD with no marker -> still allowed"
 else

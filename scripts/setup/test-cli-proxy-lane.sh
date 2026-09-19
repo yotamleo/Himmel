@@ -186,9 +186,16 @@ if [ -f "$CFG1" ]; then
     assert_contains "config pins loopback host" 'host: "127.0.0.1"' "$CFG1_BODY"
     assert_contains "config pins the port" "port: 8317" "$CFG1_BODY"
     assert_contains "config carries the env key" '- "stub-key-1"' "$CFG1_BODY"
-    # gnu-ok: this suite is Linux-only in scope (see header) -- stubs systemctl/ss/loginctl
-    MODE1="$(stat -c '%a' "$CFG1" 2>/dev/null)"
-    assert_rc "config mode is 0600" "600" "$MODE1"
+    # host_mode_of speaks GNU and BSD stat (macOS has no -c); a host where chmod
+    # does not stick (NTFS/MSYS keeps 644) SKIPs the mode assertion (HIMMEL-3182).
+    # shellcheck source=../lib/host-caps.sh
+    . "$SCRIPT_DIR/../lib/host-caps.sh"
+    MODE1="$(host_mode_of "$CFG1")"
+    if host_modes_stick; then
+        assert_rc "config mode is 0600" "600" "$MODE1"
+    else
+        host_skip "config mode is 0600: chmod does not stick on this host (read back $MODE1)"
+    fi
 else
     fail "config.yaml was written" "not found at $CFG1"
 fi

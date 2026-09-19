@@ -113,6 +113,8 @@ INSTALL="$ROOT/scripts/hooks/install-main-ref-transaction.sh"
 fails=0
 ok() { echo "ok - $1"; }
 bad() { echo "FAIL - $1" >&2; fails=$((fails + 1)); }
+# shellcheck source=../lib/host-caps.sh
+. "$ROOT/scripts/lib/host-caps.sh"
 
 if bash -n "$CHECK"; then ok "check script syntax (bash -n)"; else bad "check script syntax"; fi
 if bash -n "$INSTALL"; then ok "install script syntax (bash -n)"; else bad "install script syntax"; fi
@@ -918,6 +920,9 @@ fi
 # necessarily a loud failure the hostile-path case's assertions would
 # catch.
 # ---------------------------------------------------------------------------
+if ! host_newline_paths; then
+    host_skip "newline-path install: this filesystem cannot hold a newline in a directory name"
+else
 newline_dir="$BASE"/$'weird\nname\ndir'
 mkdir -p "$newline_dir/scripts/hooks"
 cp "$INSTALL" "$newline_dir/scripts/hooks/install-main-ref-transaction.sh"
@@ -945,6 +950,7 @@ then
     ok "newline-path shim still correctly REFUSES (rc!=0, HEAD unchanged) -- no injection, no corruption, the guard genuinely fires through it"
 else
     bad "newline-path functional refusal failed: rc=$newline_commit_rc out=$newline_out"
+fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -1075,6 +1081,9 @@ fi
 # saw it) -- a linked worktree whose own path contains a real embedded
 # newline must still be discovered and get its own shim.
 # ---------------------------------------------------------------------------
+if ! host_newline_paths; then
+    host_skip "newline-named worktree: this filesystem cannot hold a newline in a directory name"
+else
 work=$(mk_sandbox wtnewlinepath)
 git -C "$work" config core.hooksPath ".githooks"
 newline_wt_path="$BASE"/$'weird-worktree-name\nwith-a-newline'
@@ -1085,6 +1094,7 @@ if [ -x "$newline_wt_hook" ] && grep -Fq "himmel-main-ref-transaction-v1" "$newl
     ok "a linked worktree whose OWN path contains a literal embedded newline is still correctly enumerated (-z parsing) and gets its own shim at its own resolved location"
 else
     bad "newline-named worktree not covered (checked $newline_wt_hook)"
+fi
 fi
 
 # ---------------------------------------------------------------------------

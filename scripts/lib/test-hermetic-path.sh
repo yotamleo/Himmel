@@ -71,12 +71,25 @@ echo "[test-hermetic-path] the built dir actually RESOLVES its tools"
 # named `command` and fail for a reason that has nothing to do with the library.
 # Starting the shell as `bash` also proves the dir can bootstrap an interpreter,
 # which is the property the whole floor exists for.
-check "bash resolves under the built dir alone" \
-  env PATH="$d1" bash -c 'command -v bash >/dev/null'
-check "sed resolves under the built dir alone" \
-  env PATH="$d1" bash -c 'command -v sed >/dev/null'
-check "an unlinked tool does NOT resolve there" \
-  env PATH="$d1" bash -c '! command -v awk >/dev/null'
+# HIMMEL-3182: the library falls back to COPYING bash where `ln -s` is refused
+# (MSYS without the symlink privilege). A copied bash.exe cannot load msys-2.0.dll
+# from a dir that does not hold it, so no shell can start under $d1 alone and
+# every case below fails for that reason, not for the one it names. Probe the
+# bootstrap once: a host where the built dir cannot start bash SKIPs the cases
+# that start it (three here, one in the composition section below), a host where
+# it can (every POSIX one) runs them.
+hermetic_bash_boots=0
+if env PATH="$d1" bash -c ':' >/dev/null 2>&1; then hermetic_bash_boots=1; fi
+if [ "$hermetic_bash_boots" -eq 1 ]; then
+  check "bash resolves under the built dir alone" \
+    env PATH="$d1" bash -c 'command -v bash >/dev/null'
+  check "sed resolves under the built dir alone" \
+    env PATH="$d1" bash -c 'command -v sed >/dev/null'
+  check "an unlinked tool does NOT resolve there" \
+    env PATH="$d1" bash -c '! command -v awk >/dev/null'
+else
+  echo "  SKIP the built dir cannot bootstrap bash on this host (a copied bash cannot load its runtime libs) (HIMMEL-3182)"
+fi
 
 echo "[test-hermetic-path] build_hermetic_bin creates a dir that does not exist yet"
 d2="$tmpdir/nested/deeper"
@@ -166,8 +179,12 @@ echo "[test-hermetic-path] the documented composition is safe end to end"
 d3="$tmpdir/d3"
 build_hermetic_bin "$d3" sed
 composed="$d3:$(scrub_path "$withbun" bun)"
-check "composed PATH resolves the interpreter" \
-  env PATH="$composed" bash -c 'command -v bash >/dev/null'
+if [ "$hermetic_bash_boots" -eq 1 ]; then
+  check "composed PATH resolves the interpreter" \
+    env PATH="$composed" bash -c 'command -v bash >/dev/null'
+else
+  echo "  SKIP composed PATH resolves the interpreter: the built dir cannot bootstrap bash on this host (HIMMEL-3182)"
+fi
 check "composed PATH excludes the scrubbed tool" hermetic_path_excludes "$composed" bun
 
 echo

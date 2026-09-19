@@ -85,11 +85,13 @@ fi
 echo "ok: fully-registered template passes"
 
 # Case 6 (fail-open lint finding): an EXISTING but unreadable template must
-# fail CLOSED (exit 1), not silently read as empty and pass. Skipped when
-# running as root (uid 0 ignores file-mode read permission, so chmod 000
-# would not reproduce "unreadable" there).
-if [ "$(id -u)" -eq 0 ]; then
-  echo "skip: unreadable-template case (running as root, chmod is not enforced)"
+# fail CLOSED (exit 1), not silently read as empty and pass. Skipped where the
+# host cannot make a file unreadable (root ignores file-mode read permission,
+# NTFS/MSYS ignores chmod 000), probed rather than guessed from the uid.
+# shellcheck source=../lib/host-caps.sh
+. "$HERE/../lib/host-caps.sh"
+if ! host_can_deny_read; then
+  host_skip "unreadable-template case: chmod 000 does not make a file unreadable on this host"
 else
   printf '{"enabledPlugins":{"handover@himmel":true,"obsidian-triage@himmel":true},"extraKnownMarketplaces":{"himmel":{"source":{"source":"directory","path":"x"}}}}' > "$tmp/unreadable.json"
   chmod 000 "$tmp/unreadable.json"
