@@ -259,6 +259,75 @@ FIXTURE
 bash "$GUARD" "$tmp/case-p.sh" >/dev/null; rc=$?
 if [ "$rc" -eq 1 ]; then pass "case-p -> exit 1"; else fail "case-p -> expected 1 got $rc"; fi
 
+# Case Q (HIMMEL-3015): an UNQUOTED bare assignment followed directly by a
+# `;` command separator (`PATH=/stub; hash -r`) is still an ambient scrub --
+# the unquoted-word value used to swallow the `;` into itself and leave
+# `hash -r` as a trailing command word, so the line looked like a per-command
+# prefix and was missed.
+echo "== Case Q: unquoted PATH=/stub; <cmd> is ambient -> 1 finding =="
+cat > "$tmp/case-q.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+PATH=/stub; hash -r
+[ -z "$(tool foo)" ]
+FIXTURE
+bash "$GUARD" "$tmp/case-q.sh" >/dev/null; rc=$?
+if [ "$rc" -eq 1 ]; then pass "case-q -> exit 1"; else fail "case-q -> expected 1 got $rc"; fi
+
+# Case R (HIMMEL-3015): a multi-operand `export` (`export PATH=/stub OTHER=1`)
+# still exports the scrubbed PATH into the calling shell; the trailing
+# `OTHER=1` is another export operand, not a command word that scopes it.
+echo "== Case R: multi-operand export with PATH first is ambient -> 1 finding =="
+cat > "$tmp/case-r.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+export PATH=/stub OTHER=1
+[ -z "$(tool foo)" ]
+FIXTURE
+bash "$GUARD" "$tmp/case-r.sh" >/dev/null; rc=$?
+if [ "$rc" -eq 1 ]; then pass "case-r -> exit 1"; else fail "case-r -> expected 1 got $rc"; fi
+
+# Case R2 (HIMMEL-3015): the same class with PATH NOT the first operand.
+echo "== Case R2: multi-operand export with PATH last is ambient -> 1 finding =="
+cat > "$tmp/case-r2.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+export OTHER=1 PATH=/stub
+[ -z "$(tool foo)" ]
+FIXTURE
+bash "$GUARD" "$tmp/case-r2.sh" >/dev/null; rc=$?
+if [ "$rc" -eq 1 ]; then pass "case-r2 -> exit 1"; else fail "case-r2 -> expected 1 got $rc"; fi
+
+# Case S (HIMMEL-3015 control): a per-command prefix followed by a `;` chain is
+# still scoped to its one command -> 0 findings.
+echo "== Case S: per-command prefix then ; chain stays scoped -> 0 findings =="
+cat > "$tmp/case-s.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+PATH=/stub bash "$S"; hash -r
+[ -z "$(tool foo)" ]
+FIXTURE
+bash "$GUARD" "$tmp/case-s.sh" >/dev/null; rc=$?
+if [ "$rc" -eq 0 ]; then pass "case-s -> exit 0"; else fail "case-s -> expected 0 got $rc"; fi
+
+# Case T (HIMMEL-3015 control): a multi-operand export that does NOT assign
+# PATH itself (`PATH_X` is a different variable) -> 0 findings.
+echo "== Case T: multi-operand export of PATH_X (not PATH) -> 0 findings =="
+cat > "$tmp/case-t.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+export OTHER=1 PATH_X=/stub
+[ -z "$(tool foo)" ]
+FIXTURE
+bash "$GUARD" "$tmp/case-t.sh" >/dev/null; rc=$?
+if [ "$rc" -eq 0 ]; then pass "case-t -> exit 0"; else fail "case-t -> expected 0 got $rc"; fi
+
+# Case U (HIMMEL-3015 control): an unquoted preserving prepend followed by a
+# `;` chain (`PATH=/stub:$PATH; hash -r`) can only ADD entries -> 0 findings.
+echo "== Case U: unquoted preserving prepend then ; chain -> 0 findings =="
+cat > "$tmp/case-u.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+PATH=/stub:$PATH; hash -r
+[ -z "$(tool foo)" ]
+FIXTURE
+bash "$GUARD" "$tmp/case-u.sh" >/dev/null; rc=$?
+if [ "$rc" -eq 0 ]; then pass "case-u -> exit 0"; else fail "case-u -> expected 0 got $rc"; fi
+
 # Case H: no-args tree walk over the real repo exits 0 or 1, never 2.
 echo "== Case H: no-args tree walk exits 0/1, not 2 =="
 ( cd "$REPO_ROOT" && bash "$GUARD" ) >/dev/null 2>&1; rc=$?

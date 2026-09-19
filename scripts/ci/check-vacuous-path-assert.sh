@@ -97,6 +97,77 @@ for f in "${files[@]}"; do
     [ -f "$f" ] || { echo "→ vacuous-path-assert: no such file: $f" >&2; exit 2; }
     out="$(LC_ALL=C awk '
         function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+
+        # Parse the value of one NAME=value assignment starting at rest.
+        # Sets tv_val (the value), tv_rem (what follows it) and tv_pres (1
+        # when a verbatim PATH reference means the value can only ADD
+        # entries).
+        function take_value(rest) {
+            tv_val = ""; tv_rem = ""; tv_pres = 0
+            if (match(rest, /^"\$\(.*\)"/)) {
+                # A quoted command substitution, e.g.
+                # PATH="$(scrub_path "$PATH" tool)" -- the greedy .*
+                # reaches the LAST )" on the line, so an inner quoted
+                # $PATH argument does not truncate the match early
+                # (CR round 1, codex-1: the plain quoted-string branch
+                # below stops at that inner quote and silently misses
+                # this ambient scrub).
+                tv_val = substr(rest, RSTART, RLENGTH)
+                tv_rem = substr(rest, RSTART + RLENGTH)
+                tv_pres = 0
+            } else if (match(rest, /^"[^"]*"/)) {
+                tv_val = substr(rest, RSTART, RLENGTH)
+                tv_rem = substr(rest, RSTART + RLENGTH)
+                # A $PATH/${PATH} reference only preserves the ORIGINAL
+                # entries when it sits at a complete path-component
+                # boundary (start/end of the value, or a colon) on both
+                # sides -- `"/nonexistent$PATH"` and `"${PATH}/suffix"`
+                # instead MERGE a bogus segment onto the first/last real
+                # entry with no colon between them, silently dropping it
+                # (CR round 3, codex-2). This boundary requirement also
+                # resolves the round-2 codex-1 single-quote-literal gap:
+                # a single-quoted PATH assignment has a quote character
+                # immediately before the reference, which is not a
+                # boundary char either.
+                tv_pres = (tv_val ~ /(^|[:"])\$\{?PATH\}?([:"]|$)/)
+            } else if (match(rest, /^\$\(.*\)/)) {
+                tv_val = substr(rest, RSTART, RLENGTH)
+                tv_rem = substr(rest, RSTART + RLENGTH)
+                # A command substitution (e.g. scrub_path) may REDUCE
+                # PATH even when it takes $PATH as an input argument --
+                # never treat this branch as preserving.
+                tv_pres = 0
+            } else if (match(rest, /^[^ \t;]+/)) {
+                # An unquoted word ends at an unquoted `;` -- the command
+                # separator is not part of the value, so `PATH=/stub; cmd`
+                # leaves `; cmd` as the remainder (HIMMEL-3015).
+                tv_val = substr(rest, RSTART, RLENGTH)
+                tv_rem = substr(rest, RSTART + RLENGTH)
+                tv_pres = (tv_val ~ /(^|[:"])\$\{?PATH\}?([:"]|$)/)
+            }
+        }
+
+        # 1 when an `export` line assigns a non-preserving PATH among its
+        # operands and the statement ends cleanly (end of line, comment, `;`,
+        # `&&`, `||`); 0 otherwise. Each operand is NAME or NAME=value, so
+        # `export PATH=/stub OTHER=1` and `export OTHER=1 PATH=/stub` both
+        # count, while PATH_X is a different name (HIMMEL-3015).
+        function export_scrubs(s,   name, hit) {
+            sub(/^[ \t]*export[ \t]+/, "", s)
+            hit = 0
+            while (match(s, /^[A-Za-z_][A-Za-z0-9_]*/)) {
+                name = substr(s, RSTART, RLENGTH)
+                s = substr(s, RSTART + RLENGTH)
+                if (substr(s, 1, 1) == "=") {
+                    take_value(substr(s, 2))
+                    if (name == "PATH" && !tv_pres) { hit = 1 }
+                    s = tv_rem
+                }
+                s = trim(s)
+                if (s == "" || s ~ /^#/ || s ~ /^;/ || s ~ /^(&&|\|\|)/) { return hit }
+            }
+            return 0
+        }
         {
             line = $0
 
@@ -120,57 +191,21 @@ for f in "${files[@]}"; do
                 isA = 0
             } else if (line ~ /^[ \t]*env[ \t]/) {
                 isA = 0
-            } else if (match(line, /^[ \t]*(export[ \t]+)?PATH=/)) {
-                rest = substr(line, RSTART + RLENGTH)
-                remainder = ""
-                val = ""
-                preserves_path = 0
-                if (match(rest, /^"\$\(.*\)"/)) {
-                    # A quoted command substitution, e.g.
-                    # PATH="$(scrub_path "$PATH" tool)" -- the greedy .*
-                    # reaches the LAST )" on the line, so an inner quoted
-                    # $PATH argument does not truncate the match early
-                    # (CR round 1, codex-1: the plain quoted-string branch
-                    # below stops at that inner quote and silently misses
-                    # this ambient scrub).
-                    val = substr(rest, RSTART, RLENGTH)
-                    remainder = substr(rest, RSTART + RLENGTH)
-                    preserves_path = 0
-                } else if (match(rest, /^"[^"]*"/)) {
-                    val = substr(rest, RSTART, RLENGTH)
-                    remainder = substr(rest, RSTART + RLENGTH)
-                    # A $PATH/${PATH} reference only preserves the ORIGINAL
-                    # entries when it sits at a complete path-component
-                    # boundary (start/end of the value, or a colon) on both
-                    # sides -- `"/nonexistent$PATH"` and `"${PATH}/suffix"`
-                    # instead MERGE a bogus segment onto the first/last real
-                    # entry with no colon between them, silently dropping it
-                    # (CR round 3, codex-2). This boundary requirement also
-                    # resolves the round-2 codex-1 single-quote-literal gap:
-                    # a single-quoted PATH assignment has a quote character
-                    # immediately before the reference, which is not a
-                    # boundary char either.
-                    preserves_path = (val ~ /(^|[:"])\$\{?PATH\}?([:"]|$)/)
-                } else if (match(rest, /^\$\(.*\)/)) {
-                    val = substr(rest, RSTART, RLENGTH)
-                    remainder = substr(rest, RSTART + RLENGTH)
-                    # A command substitution (e.g. scrub_path) may REDUCE
-                    # PATH even when it takes $PATH as an input argument --
-                    # never treat this branch as preserving.
-                    preserves_path = 0
-                } else if (match(rest, /^[^ \t]+/)) {
-                    val = substr(rest, RSTART, RLENGTH)
-                    remainder = substr(rest, RSTART + RLENGTH)
-                    preserves_path = (val ~ /(^|[:"])\$\{?PATH\}?([:"]|$)/)
-                }
-                remainder = trim(remainder)
+            } else if (line ~ /^[ \t]*export[ \t]/) {
+                # Every operand of the export is scanned, so a trailing
+                # `OTHER=1` (or PATH in a later position) cannot hide the
+                # scrub behind a leading operand (HIMMEL-3015).
+                isA = export_scrubs(line)
+            } else if (match(line, /^[ \t]*PATH=/)) {
+                take_value(substr(line, RSTART + RLENGTH))
+                remainder = trim(tv_rem)
                 if (remainder == "" || remainder ~ /^#/ || remainder ~ /^;/ || remainder ~ /^(&&|\|\|)/) {
                     # A verbatim $PATH / ${PATH} reference retained in the
                     # assigned value means this assignment can only ADD
                     # entries, never remove one -- no later assertions tool
                     # lookup can be made vacuous by it (HIMMEL-2957 tree-run
                     # false positives: export PATH="$stub:$PATH" idioms).
-                    if (!preserves_path) { isA = 1 }
+                    if (!tv_pres) { isA = 1 }
                 }
             }
             if (isA) { lastA = NR }
