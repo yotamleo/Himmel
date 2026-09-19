@@ -114,9 +114,10 @@ assert_eq "T9 jitter=0 sets flag" "true" "$(read_flag "$CFG" "$KEY")"
 # 900ms cap must complete well under 5s even with node startup; a `sleep 900`
 # (seconds) units bug would blow past it.
 CFG="$TMP/jitbound.json"
-start=$(date +%s%3N)
+now_ms() { node -e 'process.stdout.write(String(Date.now()))'; }  # date +%s%3N is GNU-only: BSD date prints a literal N (macOS)
+start=$(now_ms)
 TRUST_WRITE_JITTER_MS=900 WORKSPACE_TRUST_CONFIG="$CFG" bash "$HELPER" "$WORKDIR" >/dev/null; rc=$?
-end=$(date +%s%3N)
+end=$(now_ms)
 elapsed=$(( end - start ))
 assert_eq "T10 jitter-bound rc" "0" "$rc"
 if [ "$elapsed" -lt 5000 ]; then echo "PASS T10 jitter bounded in ms (${elapsed}ms)"; else echo "FAIL T10 jitter bounded in ms — took ${elapsed}ms (units bug?)"; FAILED=$((FAILED + 1)); fi

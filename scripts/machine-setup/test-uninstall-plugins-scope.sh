@@ -605,7 +605,7 @@ for plugins in \
     log=$(cat "$ARGV_LOG")
     assert_rc "2796: mismatched/spanning plugin scopes exit cleanly" 0 "$rc"
     assert_has "2796: install-profile scope attempted" "plugin marketplace remove mp --scope user" "$log"
-    assert_rc "2796: exactly one successful removal" 1 "$(wc -l < "$TMP/successes" 2>/dev/null)"
+    assert_rc "2796: exactly one successful removal" 1 "$(wc -l < "$TMP/successes" 2>/dev/null | tr -d '[:space:]')"
     assert_has "2796: no inflated failures" "Done: 0 failed call(s)" "$out"
 done
 rm -f "$TMP/plugins-user.json"
@@ -655,7 +655,7 @@ for mode in wet dry; do
     out=$(PATH="$STUB_DIR:$PATH" ARGV_LOG="$ARGV_LOG" \
           STUB_PLUGINS='[{"id":"good-b@mp","scope":"user"}]' \
           bash "$script" --template "$TEMPLATE" --marketplaces-only \
-          --scope-map "$TMP/scope-map-partial" "${args[@]}" 2>&1); rc=$?
+          --scope-map "$TMP/scope-map-partial" ${args[@]+"${args[@]}"} 2>&1); rc=$?
     assert_rc "2800: partial handoff blocks $mode run" 1 "$rc"
     assert_has "2800: partial handoff names remaining dependency in $mode run" "SKIP: marketplace mp" "$out"
 done
@@ -684,7 +684,7 @@ for map in none legacy; do
     args=()
     [[ "$map" != legacy ]] || args+=(--scope-map "$TMP/scope-map-legacy-preview")
     out=$(PATH="$STUB_DIR:$PATH" ARGV_LOG="$ARGV_LOG" \
-          bash "$script" --template "$TEMPLATE" --marketplaces-only --dry-run "${args[@]}" 2>&1); rc=$?
+          bash "$script" --template "$TEMPLATE" --marketplaces-only --dry-run ${args[@]+"${args[@]}"} 2>&1); rc=$?
     assert_rc "2800: $map handoff cannot hide installed plugins" 1 "$rc"
 done
 

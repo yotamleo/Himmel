@@ -369,7 +369,8 @@ PYFREE="$(scrub_path "$PATH" python3)"
 HPATH="$HBIN:$PYFREE"
 if PATH="$PYFREE" bash -c 'true' 2>/dev/null; then HPATH="$PYFREE"; fi
 # belt-and-braces: the chosen hermetic PATH must really lack python3.
-if PATH="$HPATH" command -v python3 >/dev/null 2>&1; then
+# bash 3.2: `command -v` answers from the shell's command hash (a python3 run earlier in this suite) and ignores a temporary PATH= -- hash -r in a subshell first.
+if ( hash -r; PATH="$HPATH" command -v python3 ) >/dev/null 2>&1; then
   fail "T6f hermetic PATH still resolves python3 — scrub did not isolate it"
 fi
 PBIN="$WS/pbin"; mkdir -p "$PBIN"
