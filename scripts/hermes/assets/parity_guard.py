@@ -1040,6 +1040,229 @@ def qmd_scope_reason(tool: str, args: dict):
             f"can verify — denied fail-closed (HIMMEL-1239).")
 
 
+# --- Tool classification (HIMMEL-2637) ---------------------------------------
+# The hook matcher is `.*` (wire_parity_guard.py): pre_tool_call is hermes'
+# ONLY blocking event and it fullmatches the tool name, so a tool the matcher
+# missed was never judged at all — execute_code, delegate_task, browser_*,
+# skill_manage, send_message and the rest of the registry all bypassed every
+# fence above. Every tool now reaches this guard and is judged by CLASS:
+#   code   — carries command/code text -> the terminal deny-guards on that text
+#   skill  — skill_manage: action allow-list + write-fence on its paths
+#   path   — writes to one named path arg -> the write-fence on that arg
+#   scan   — everything else: secret/PHI paths in the non-content args refused
+# A name in no class is DENIED (fail closed): a tool a hermes upgrade adds is
+# refused until it is classified here, and test-hook-inventory.sh fails on it.
+# Removing a working capability is the operator's call, not this table's — so
+# no known tool is blanket-denied; each is inspected through its payload.
+#
+# ponytail: the `code` class is a LITERAL-TEXT scan — the same regexes the
+# terminal tool gets, run over the code string. Obfuscation (string concat,
+# base64, dynamic paths) is not caught; the file tools + CC-side hooks stay the
+# enforcing layer. `.key`/`.env` substrings in code over-block (fail-closed).
+# ponytail: the `scan` class does not apply the engine-specific external-write
+# fence (_external_writes_allowed) to the outbound tools (send_message,
+# react_to_message, yb_send_*, ha_call_service, feishu_drive_*_comment); making
+# them refuse on an untrusted engine is a separate operator decision.
+CODE_TOOL_ARGS = {
+    "execute_code": ("code",),
+    "browser_exec": ("code",),
+    "browser_cdp": ("method", "params"),
+    "cronjob_manage": ("script",),
+    "process_manage": ("data",),
+}
+PATH_TOOL_ARGS = {
+    "text_to_speech": ("output_path",),
+    "desktop_project": ("path",),
+}
+SKILL_TOOL = "skill_manage"
+SKILL_ACTIONS = ("create", "edit", "patch", "delete", "write_file", "remove_file")
+SCAN_TOOLS = (
+    "annotate_preview", "apply_layout", "browser_back", "browser_click",
+    "browser_console", "browser_dialog", "browser_get_images",
+    "browser_navigate", "browser_press", "browser_scroll", "browser_snapshot",
+    "browser_type", "browser_vault_enter_code", "browser_vault_fill",
+    "browser_vault_list", "browser_vault_save_login", "browser_vault_unlock",
+    "browser_vision", "clarify", "close_preview", "close_terminal",
+    "computer_use", "delegate_task", "desktop_preview", "drive_preview",
+    "feishu_doc_read", "feishu_drive_add_comment",
+    "feishu_drive_list_comment_replies", "feishu_drive_list_comments",
+    "feishu_drive_reply_comment", "focus_pane", "gui_tour", "ha_call_service",
+    "ha_get_state", "ha_list_entities", "ha_list_services", "image_generate",
+    "memory", "open_preview", "react_to_message", "read_preview",
+    "read_terminal", "read_window_below", "send_message", "session_search",
+    "setup_mcp", "show_tip", "skill_view", "skills_list", "todo_list",
+    "video_analyze", "video_generate", "vision_analyze", "web_extract",
+    "web_search", "x_search", "yb_query_group_info", "yb_query_group_members",
+    "yb_search_sticker", "yb_send_dm", "yb_send_sticker",
+)
+# Free-text args (prose for the model / a peer, not a path): skipped by the
+# `scan` class so a message that merely MENTIONS ".env" is not refused.
+TEXT_KEYS = CONTENT_KEYS + ("message", "prompt", "goal", "context", "query",
+                            "instructions", "description")
+
+
+def classify_tool(tool: str):
+    """The class of `tool`, or None when this guard has never heard of it."""
+    if not isinstance(tool, str) or not tool:
+        return None
+    if tool.startswith("mcp__"):
+        return "mcp"
+    if tool in WRITE_TOOLS:
+        return "write"
+    if tool in DELETE_TOOLS:
+        return "delete"
+    if tool in READ_TOOLS:
+        return "read"
+    if tool == "terminal":
+        return "terminal"
+    if tool in CODE_TOOL_ARGS:
+        return "code"
+    if tool == SKILL_TOOL:
+        return "skill"
+    if tool in PATH_TOOL_ARGS:
+        return "path"
+    if tool in SCAN_TOOLS:
+        return "scan"
+    return None
+
+
+def _strings(value, skip=()):
+    """Every string inside `value` (nested dicts/lists), except those under a
+    key in `skip`."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            if k not in skip:
+                yield from _strings(v, skip)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            yield from _strings(v, skip)
+
+
+def _scan_args(args: dict) -> None:
+    """The `scan` class: secret material and PHI paths in the non-text args."""
+    for v in _strings(args, TEXT_KEYS):
+        if SECRET_READ.search(norm(v)):
+            block("Secret material (.env / keys / credential stores / channel "
+                  "tokens) is off-limits to every tool, not just the file "
+                  "tools.")
+        # PHI fence: only path-shaped values (a sentence resolved against the
+        # launch dir would judge the launch dir, not the value) and not URLs.
+        if ("/" in v or "\\" in v) and "://" not in v and not any(c.isspace() for c in v):
+            reason = phi_egress_reason(v)
+            if reason:
+                block(reason)
+
+
+def _skill_check(payload: dict, args: dict) -> None:
+    """skill_manage: every action (the flat shape and each entry of the atomic
+    `operations` batch) must be a known one, and any file_path it writes must
+    clear the write-fence. A relative file_path is relative to the SKILL dir,
+    so it is judged there — a `..` climb out of it onto the guard is refused."""
+    ops = args.get("operations")
+    if ops is None:
+        ops = [args]
+    if not isinstance(ops, list) or not ops:
+        block("skill_manage: `operations` must be a non-empty list — refused.")
+    for op in ops:
+        if not isinstance(op, dict) or op.get("action") not in SKILL_ACTIONS:
+            block(f"skill_manage: action {op.get('action') if isinstance(op, dict) else op!r} "
+                  f"is not one of {', '.join(SKILL_ACTIONS)} — refused fail-closed "
+                  "(HIMMEL-2637).")
+        fp = op.get("file_path")
+        if isinstance(fp, str) and fp:
+            if not os.path.isabs(fp) and not re.match(r"^[A-Za-z]:[\\/]", fp):
+                name = os.path.basename(str(op.get("name") or "x"))
+                fp = os.path.normpath(os.path.join(HERMES_HOME, "skills", name, fp))
+            check_write_path(norm(fp))
+            reason = phi_egress_reason(fp)
+            if reason:
+                block(reason)
+
+
+def _check_write_targets(payload: dict, args: dict, keys=None) -> None:
+    """The write-fence over every candidate path in `args` (or just the `keys`
+    named): guard/config/Claude-home paths, the PHI fence, the main-branch lock.
+    block() on a hit, return when clean."""
+    base_cwd = _agent_cwd(payload, args)
+    # Check EVERY non-content string arg as a candidate path, regardless of
+    # key name — a path under a non-standard key must not slip the fence.
+    for k, v in args.items():
+        if isinstance(v, str) and k not in CONTENT_KEYS and (keys is None or k in keys):
+            check_write_path(norm(v))
+            # The REAL target: a relative path belongs to the agent's cwd,
+            # not this guard's (HIMMEL-2008). "" = undeterminable.
+            target = _resolve_target(v, base_cwd)
+            # PHI fence gets the resolved target when known, else raw v —
+            # it is never SKIPPED the way the branch check below is. Be
+            # exact about what the fallback buys, though: `_abs` resolves a
+            # relative v against this guard PROCESS's cwd, which is the
+            # session launch dir, so it is a best-effort base and not a
+            # guarantee. A relative write whose real cwd is a PHI workspace
+            # the launch dir is outside of still slips it — the same
+            # unknown-cwd root cause the branch check discloses, with the
+            # same remedy (`hermes -w <dir>`). PHI egress is additionally
+            # governed by scripts/guardrails/egress-matrix.json and the
+            # salus vault guard; this fence is one layer, not the only one.
+            reason = phi_egress_reason(target or v)
+            if reason:
+                block(reason)
+            # Branch check is the fail-OPEN half: skipped when undeterminable.
+            if target:
+                reason = _edit_on_main_reason(target)
+                if reason:
+                    block(reason)
+
+
+def _command_checks(raw_cmd: str, cmd: str, payload: dict, args: dict) -> None:
+    """The terminal deny-guards on one command text — block() on a hit, return
+    when clean. `cmd` is norm()-ed `raw_cmd`. Shared by the `terminal` tool and by
+    every tool that carries command text (CODE_TOOL_ARGS, HIMMEL-2637)."""
+    if TERMINAL_FORBIDDEN_PATHS.search(cmd):
+        block("Shell access to secret paths, the guard hook, or Claude "
+              "Code's home is forbidden — use the file tools for those.")
+    if TERMINAL_DESTRUCTIVE.search(cmd):
+        block("Catastrophic command class refused (recursive deletion, "
+              "disk/scheduler/process/registry mutation, force-push, "
+              "remote-exec). Ask the operator if genuinely needed.")
+    if DOCKER_PRIVESC.search(cmd):
+        block("Container privesc shape refused (docker/podman --privileged, "
+              "host-root bind mount, docker.sock, --pid=host, root-"
+              "equivalent --cap-add, --volumes-from, or root --user) — "
+              "docker-group access is root-equivalent and bypasses the "
+              "write/secret fences. Ask the operator if genuinely needed "
+              "(block-docker-privesc parity).")
+    reason = terminal_phi_egress_reason(cmd)
+    if reason:
+        block(reason)
+    # Main-branch commit lock (block-edit-on-main parity): a `git commit`
+    # in a repo checked out on the default branch is refused; a worker's own
+    # type/slug branch commits freely.
+    # EVERY `git commit` in the command is judged, not just the first
+    # (HIMMEL-2008) — one refusal is enough to block the whole command.
+    for commit_dir in _commit_dirs(raw_cmd, _agent_cwd(payload, args)):
+        # "" = that commit's dir is undeterminable (no -C, no cd/pushd, no
+        # agent cwd) -> skip both locks rather than judge this guard
+        # process's own cwd, which is the session launch dir (HIMMEL-2008).
+        if commit_dir:
+            reason = _edit_on_main_reason(commit_dir)
+            if reason:
+                block(reason)
+            # Merged-PR commit lock (block-merged-pr-commit parity): refuse
+            # a commit onto a branch whose PR is already MERGED (fail-open).
+            reason = _merged_pr_reason(commit_dir)
+            if reason:
+                block(reason)
+    # Engine-specific external-write fence: block push / remote-URL / gh
+    # PR-mutation / network CLIs unless the engine is an affirmed trusted
+    # main tier (fail-closed on an unknown engine).
+    if not _external_writes_allowed():
+        reason = terminal_external_write_reason(cmd)
+        if reason:
+            block(reason)
+
+
 def main() -> None:
     global _CUR_TOOL, _CUR_ARGS
     payload = json.load(sys.stdin)
@@ -1067,35 +1290,13 @@ def main() -> None:
               "profile; only the qmd knowledge-base carve-out is allowed "
               "(block-backend-tier / MCP-fence parity).")
 
+    if classify_tool(tool) is None:
+        block(f"tool '{tool}' is not classified by this guard — refused "
+              "fail-closed (HIMMEL-2637). A tool a hermes upgrade added needs "
+              "a class in parity_guard.py; ask the operator.")
+
     if tool in WRITE_TOOLS or tool in DELETE_TOOLS:
-        base_cwd = _agent_cwd(payload, args)
-        # Check EVERY non-content string arg as a candidate path, regardless of
-        # key name — a path under a non-standard key must not slip the fence.
-        for k, v in args.items():
-            if isinstance(v, str) and k not in CONTENT_KEYS:
-                check_write_path(norm(v))
-                # The REAL target: a relative path belongs to the agent's cwd,
-                # not this guard's (HIMMEL-2008). "" = undeterminable.
-                target = _resolve_target(v, base_cwd)
-                # PHI fence gets the resolved target when known, else raw v —
-                # it is never SKIPPED the way the branch check below is. Be
-                # exact about what the fallback buys, though: `_abs` resolves a
-                # relative v against this guard PROCESS's cwd, which is the
-                # session launch dir, so it is a best-effort base and not a
-                # guarantee. A relative write whose real cwd is a PHI workspace
-                # the launch dir is outside of still slips it — the same
-                # unknown-cwd root cause the branch check discloses, with the
-                # same remedy (`hermes -w <dir>`). PHI egress is additionally
-                # governed by scripts/guardrails/egress-matrix.json and the
-                # salus vault guard; this fence is one layer, not the only one.
-                reason = phi_egress_reason(target or v)
-                if reason:
-                    block(reason)
-                # Branch check is the fail-OPEN half: skipped when undeterminable.
-                if target:
-                    reason = _edit_on_main_reason(target)
-                    if reason:
-                        block(reason)
+        _check_write_targets(payload, args)
         allow()
 
     if tool in READ_TOOLS:
@@ -1112,50 +1313,32 @@ def main() -> None:
     if tool == "terminal":
         raw_cmd = str(args.get("command") or args.get("cmd") or "")
         cmd = norm(raw_cmd or json.dumps(args))
-        if TERMINAL_FORBIDDEN_PATHS.search(cmd):
-            block("Shell access to secret paths, the guard hook, or Claude "
-                  "Code's home is forbidden — use the file tools for those.")
-        if TERMINAL_DESTRUCTIVE.search(cmd):
-            block("Catastrophic command class refused (recursive deletion, "
-                  "disk/scheduler/process/registry mutation, force-push, "
-                  "remote-exec). Ask the operator if genuinely needed.")
-        if DOCKER_PRIVESC.search(cmd):
-            block("Container privesc shape refused (docker/podman --privileged, "
-                  "host-root bind mount, docker.sock, --pid=host, root-"
-                  "equivalent --cap-add, --volumes-from, or root --user) — "
-                  "docker-group access is root-equivalent and bypasses the "
-                  "write/secret fences. Ask the operator if genuinely needed "
-                  "(block-docker-privesc parity).")
-        reason = terminal_phi_egress_reason(cmd)
-        if reason:
-            block(reason)
-        # Main-branch commit lock (block-edit-on-main parity): a `git commit`
-        # in a repo checked out on the default branch is refused; a worker's own
-        # type/slug branch commits freely.
-        # EVERY `git commit` in the command is judged, not just the first
-        # (HIMMEL-2008) — one refusal is enough to block the whole command.
-        for commit_dir in _commit_dirs(raw_cmd, _agent_cwd(payload, args)):
-            # "" = that commit's dir is undeterminable (no -C, no cd/pushd, no
-            # agent cwd) -> skip both locks rather than judge this guard
-            # process's own cwd, which is the session launch dir (HIMMEL-2008).
-            if commit_dir:
-                reason = _edit_on_main_reason(commit_dir)
-                if reason:
-                    block(reason)
-                # Merged-PR commit lock (block-merged-pr-commit parity): refuse
-                # a commit onto a branch whose PR is already MERGED (fail-open).
-                reason = _merged_pr_reason(commit_dir)
-                if reason:
-                    block(reason)
-        # Engine-specific external-write fence: block push / remote-URL / gh
-        # PR-mutation / network CLIs unless the engine is an affirmed trusted
-        # main tier (fail-closed on an unknown engine).
-        if not _external_writes_allowed():
-            reason = terminal_external_write_reason(cmd)
-            if reason:
-                block(reason)
+        _command_checks(raw_cmd, cmd, payload, args)
         allow()
 
+    if tool in CODE_TOOL_ARGS:
+        # Command/code text, not a shell command: judged by the same terminal
+        # guards, over the arg values that carry it (a dict arg as JSON).
+        raw = "\n".join(v if isinstance(v, str) else json.dumps(v, default=str)
+                        for k, v in args.items() if k in CODE_TOOL_ARGS[tool])
+        # A command inside code sits in a string literal, i.e. right after a
+        # quote, which the command-position regexes (git push, gh, curl, ...)
+        # do not treat as a command start — so quotes read as separators here.
+        # Over-blocks prose like print("git push later"); fail-closed.
+        _command_checks(raw, re.sub(r"[\"'`]", ";", norm(raw)), payload, args)
+        _scan_args({k: v for k, v in args.items() if k not in CODE_TOOL_ARGS[tool]})
+        allow()
+
+    if tool == SKILL_TOOL:
+        _skill_check(payload, args)
+        allow()
+
+    if tool in PATH_TOOL_ARGS:
+        _check_write_targets(payload, args, PATH_TOOL_ARGS[tool])
+        _scan_args({k: v for k, v in args.items() if k not in PATH_TOOL_ARGS[tool]})
+        allow()
+
+    _scan_args(args)
     allow()
 
 

@@ -119,9 +119,9 @@ printf 'model:\n  default: gpt-5.5\nhooks:\n  post_tool_call:\n  - command: /x/l
 mkdir -p "$HOME_DIR/profiles/legacy"
 printf 'hooks:\n  pre_tool_call:\n  - command: /x/agent-hooks/luna_vault_guard.py\n    timeout: 10\n' > "$HOME_DIR/profiles/legacy/config.yaml"
 run >/dev/null
-# himmel_agent still owns its whole hooks block (set-mode canonical, mcp__ matcher)
+# himmel_agent still owns its whole hooks block (set-mode canonical, matcher .*)
 assert_contains "$HOME_DIR/profiles/himmel_agent/config.yaml" "parity_guard.py" "himmel_agent wired (set)"
-assert_contains "$HOME_DIR/profiles/himmel_agent/config.yaml" "mcp__" "himmel_agent canonical matcher (set-mode)"
+assert_contains "$HOME_DIR/profiles/himmel_agent/config.yaml" "matcher: .*" "himmel_agent canonical matcher (set-mode)"
 # default profile guarded by default
 assert_contains "$HOME_DIR/config.yaml" "parity_guard.py" "default profile guarded (universal)"
 # guard-less profile now guarded, unrelated hook preserved

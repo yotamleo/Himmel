@@ -134,3 +134,142 @@ if fails:
     sys.exit(1)
 print("PASS: hermes hook inventory matches expected list")
 PY
+inv_rc=$?
+
+# --- C) registry conformance (HIMMEL-2637) -----------------------------------
+# The hook matcher is fullmatch-ed against the tool name, and pre_tool_call is
+# the ONLY blocking event: a registered tool the matcher does not cover never
+# reaches parity_guard.py at all. test-parity-guard.sh proves the guard DENIES
+# correctly when invoked; this proves the matcher DELIVERS. The registry is read
+# statically from the installed hermes source (never imported — importing it
+# would initialise tools that hold live credentials); when no install is present
+# the fixture controls below still run, and the installed scan is reported SKIP.
+REGISTRY_SRC="${HERMES_AGENT_SRC:-${HERMES_HOME:-$HOME/.hermes}/hermes-agent}"
+
+mkdir -p "$tmpdir/fixture-good/tools" "$tmpdir/fixture-new/tools"
+cat > "$tmpdir/fixture-good/tools/a.py" <<'EOF'
+registry.register(
+    name="terminal",
+    toolset="terminal",
+)
+registry.register(
+    name="execute_code",
+    toolset="code",
+)
+EOF
+cat > "$tmpdir/fixture-new/tools/b.py" <<'EOF'
+registry.register(
+    name="zz_tool_added_by_a_hermes_upgrade",
+    toolset="new",
+)
+EOF
+
+HERMES_HOME="$tmpdir/hermes-home" "$PY" - "$tmpdir/full.yaml" "$GUARD" \
+    "$REGISTRY_SRC" "$tmpdir/fixture-good" "$tmpdir/fixture-new" <<'PY'
+import glob
+import importlib.util
+import os
+import re
+import sys
+
+cfg, guard_path, installed, fixture_good, fixture_new = sys.argv[1:6]
+
+# The matcher exactly as hermes would read it out of the wired config.
+matcher = None
+for line in open(cfg, encoding="utf-8"):
+    m = re.match(r"^\s*-?\s*matcher:\s*(.*?)\s*$", line)
+    if m:
+        matcher = m.group(1)
+        break
+
+spec = importlib.util.spec_from_file_location("parity_guard_under_test", guard_path)
+guard = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(guard)
+
+
+def registry_names(src):
+    """Tool names declared by tools/*.py: registry.register(name=...) plus the
+    schema `"name": ...` form the table-driven modules use."""
+    names = set()
+    for path in glob.glob(os.path.join(src, "tools", "*.py")):
+        with open(path, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        names.update(re.findall(
+            r'registry\.register\(\s*name\s*=\s*"([a-z][a-z0-9_]*)"', text))
+        names.update(re.findall(r'"name":\s*"([a-z][a-z0-9_]*)"', text))
+    return names
+
+
+def fullmatches(pattern, name):
+    """hermes' matches_tool: fullmatch, literal equality if it will not compile."""
+    try:
+        return re.compile(pattern).fullmatch(name) is not None
+    except re.error:
+        return name == pattern
+
+
+def problems(names, pattern, classify):
+    out = []
+    for name in sorted(names):
+        if not fullmatches(pattern, name):
+            out.append(f"{name}: matcher does not deliver it to the guard")
+        elif classify(name) is None:
+            out.append(f"{name}: delivered but not classified by parity_guard "
+                       "(the guard fails it closed)")
+    return out
+
+
+fails = []
+
+
+def check(label, actual, expected):
+    if actual == expected:
+        print(f"  ok: {label}")
+    else:
+        fails.append(f"{label}: expected {expected!r} got {actual!r}")
+
+
+# The matcher this fix replaced. It stays here as the RED control: the checker
+# must flag every tool it never delivered.
+OLD = ("write_file|patch|read_file|search_files|terminal|"
+       "delete_file|remove_file|move_file|rename_file|mcp__.*")
+old_bad = problems({"execute_code", "delegate_task", "skill_manage",
+                    "browser_navigate", "terminal"}, OLD, guard.classify_tool)
+check("control: pre-fix matcher leaves execute_code undelivered",
+      any(p.startswith("execute_code:") and "matcher" in p for p in old_bad), True)
+check("control: pre-fix matcher leaves skill_manage undelivered",
+      any(p.startswith("skill_manage:") and "matcher" in p for p in old_bad), True)
+check("control: pre-fix matcher still delivers terminal",
+      any(p.startswith("terminal:") for p in old_bad), False)
+
+check("wired matcher was parsed", bool(matcher), True)
+for dead in ("delete_file", "remove_file", "move_file", "rename_file"):
+    check(f"wired matcher carries no dead term {dead}",
+          dead in (matcher or ""), False)
+
+# A tool a hermes upgrade adds must FAIL the check until the guard classifies it.
+new_bad = problems(registry_names(fixture_new), matcher or "", guard.classify_tool)
+check("control: an unclassified new registry tool is flagged",
+      [p.split(":")[0] for p in new_bad], ["zz_tool_added_by_a_hermes_upgrade"])
+good = problems(registry_names(fixture_good), matcher or "", guard.classify_tool)
+check("fixture registry (terminal, execute_code) fully covered", good, [])
+
+# The installed registry: report every gap, not just the first.
+if os.path.isdir(os.path.join(installed, "tools")):
+    names = registry_names(installed)
+    check(f"installed registry sane ({len(names)} tools found)", len(names) > 20, True)
+    real = problems(names, matcher or "", guard.classify_tool)
+    check(f"installed hermes registry ({installed}) fully covered", real, [])
+else:
+    print(f"  skip: no installed hermes source at {installed} "
+          "(set HERMES_AGENT_SRC); fixture controls above still enforce")
+
+for line in fails:
+    print(f"  FAIL: {line}", file=sys.stderr)
+if fails:
+    print(f"FAIL: {len(fails)} registry conformance assertion(s) failed", file=sys.stderr)
+    sys.exit(1)
+print("PASS: every registered tool reaches, and is classified by, parity_guard")
+PY
+conf_rc=$?
+[ "$inv_rc" -eq 0 ] && [ "$conf_rc" -eq 0 ]

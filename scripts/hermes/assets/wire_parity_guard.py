@@ -15,7 +15,8 @@ Three modes:
            parity_guard, whatever guard state it starts in. Already on
            parity_guard -> no-op; carries luna_vault_guard -> swap it; has NO
            guard hook -> ADD the canonical parity_guard pre_tool_call entry
-           WITHOUT clobbering any other hooks the profile already has.
+           WITHOUT clobbering any other hooks the profile already has. Also
+           rewrites the one legacy hand-listed matcher to `.*` (HIMMEL-2637).
 
 `set` optionally also wires the END-side hook (HIMMEL-2021): pass
 <node_bin> <repo_root> and the block gains an `on_session_finalize` entry
@@ -34,11 +35,24 @@ Idempotent. Exit 0 on success/skip, non-zero only on bad input.
 
 import sys
 
-# `mcp__.*` extends the matcher to every MCP tool so parity_guard's MCP fence
-# (block-backend-tier / block-glm-external-writes parity, HIMMEL-731) actually
-# fires — without it, MCP tool calls never invoke the guard.
-MATCHER = ("write_file|patch|read_file|search_files|terminal|"
-           "delete_file|remove_file|move_file|rename_file|mcp__.*")
+# Every tool reaches the guard (HIMMEL-2637). hermes fullmatches this against the
+# tool name and pre_tool_call is its ONLY blocking event, so any tool the pattern
+# missed was never judged at all — the old hand-listed pattern left execute_code,
+# delegate_task, browser_*, skill_manage, process_manage, cronjob_manage and
+# send_message outside every fence, and carried four terms (delete_file,
+# remove_file, move_file, rename_file) that are no tool's name (they are
+# skill_manage's action values). A hand-list re-rots on the next hermes release;
+# `.*` fails closed instead, and parity_guard.py decides per tool — an
+# unclassified tool is refused there. test-hook-inventory.sh checks the installed
+# registry against this matcher and the guard's classes.
+MATCHER = ".*"
+
+# The one matcher every earlier release wired (parity_guard's first commit through
+# HIMMEL-2637). A profile already on parity_guard keeps whatever matcher it was
+# wired with, so `ensure` rewrites exactly this value to MATCHER — nothing else:
+# a matcher an operator chose is theirs.
+LEGACY_MATCHER = ("write_file|patch|read_file|search_files|terminal|"
+                  "delete_file|remove_file|move_file|rename_file|mcp__.*")
 
 
 def _hook_body(interp: str, guard: str) -> str:
@@ -192,7 +206,20 @@ def do_add(cfg_path: str, guard: str, interp: str) -> None:
     print(f"added parity_guard hook to {cfg_path}")
 
 
+def migrate_matcher(cfg_path: str) -> None:
+    """Rewrite the pre-HIMMEL-2637 hand-listed matcher to MATCHER (idempotent)."""
+    with open(cfg_path, "r", encoding="utf-8") as f:
+        text = f.read()
+    old = f"- matcher: {LEGACY_MATCHER}\n"
+    if old not in text:
+        return
+    with open(cfg_path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text.replace(old, f"- matcher: {MATCHER}\n"))
+    print(f"migrated the legacy parity_guard matcher to {MATCHER} in {cfg_path}")
+
+
 def do_ensure(cfg_path: str, guard: str, interp: str) -> None:
+    migrate_matcher(cfg_path)
     with open(cfg_path, "r", encoding="utf-8") as f:
         text = f.read()
     # already on parity_guard, or carrying luna_vault_guard: do_swap covers both
