@@ -196,14 +196,17 @@ cmd_resolve() {
           }catch(err){ console.error("breadcrumb resolve: corrupt breadcrumb "+e.BC+": "+err.message); process.exit(1); }
         ')" && have_bc=1 || have_bc=0
         if [ "$have_bc" -eq 1 ]; then
-            # Disable pathname expansion before the unquoted split: a field (e.g.
-            # next_step) containing a glob char (* ?) must NOT be expanded against
-            # the cwd. IFS=$'\001' gives the field split; set -f kills globbing.
-            local IFS_OLD="$IFS"; IFS=$'\001'; set -f
-            # shellcheck disable=SC2086
-            set -- $parsed
-            set +f; IFS="$IFS_OLD"
-            bc_branch="${1:-}"; bc_head="${2:-}"; bc_base="${3:-}"; bc_next="${4:-}"; bc_completed="${5:-}"; bc_ts="${6:-}"
+            # Split on SOH by parameter expansion, not `IFS=$'\001'; set -- $parsed`:
+            # bash 3.2 (macOS /bin/bash) never splits on \001 -- CTLESC is its
+            # internal quote byte -- so every field landed in $1 (HIMMEL-3177).
+            # Expansion also never globs, so a field (e.g. next_step) containing
+            # * or ? cannot be expanded against the cwd.
+            local _bc_sep=$'\001' _bc_rest="$parsed"
+            bc_branch="${_bc_rest%%"$_bc_sep"*}"; _bc_rest="${_bc_rest#*"$_bc_sep"}"
+            bc_head="${_bc_rest%%"$_bc_sep"*}"; _bc_rest="${_bc_rest#*"$_bc_sep"}"
+            bc_base="${_bc_rest%%"$_bc_sep"*}"; _bc_rest="${_bc_rest#*"$_bc_sep"}"
+            bc_next="${_bc_rest%%"$_bc_sep"*}"; _bc_rest="${_bc_rest#*"$_bc_sep"}"
+            bc_completed="${_bc_rest%%"$_bc_sep"*}"; bc_ts="${_bc_rest#*"$_bc_sep"}"
         fi
     fi
 
