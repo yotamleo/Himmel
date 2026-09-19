@@ -355,6 +355,10 @@ if [ "$cmd" = "api" ]; then
         *"reviews(last:"*)
             case "${GH_STUB_FRESHNESS:-fresh}" in
                 fresh)    echo '{"data":{"repository":{"pullRequest":{"reviews":{"totalCount":1,"nodes":[{"author":{"login":"coderabbitai","__typename":"Bot"},"commit":{"oid":"sha1"},"state":"COMMENTED","body":"fixture review body","comments":{"totalCount":1}}]}}}}}' ;;
+                # HIMMEL-3123: a bot object AT the head that is a thread REPLY —
+                # body empty, one inline comment. It survives the shell filter
+                # (comments > 0) but delivers no verdict at the head.
+                threadsonly) echo '{"data":{"repository":{"pullRequest":{"reviews":{"totalCount":1,"nodes":[{"author":{"login":"coderabbitai","__typename":"Bot"},"commit":{"oid":"sha1"},"state":"COMMENTED","body":"","comments":{"totalCount":1}}]}}}}}' ;;
                 stale)    echo '{"data":{"repository":{"pullRequest":{"reviews":{"totalCount":1,"nodes":[{"author":{"login":"coderabbitai","__typename":"Bot"},"commit":{"oid":"shaOLD"},"state":"COMMENTED","body":"fixture review body","comments":{"totalCount":1}}]}}}}}' ;;
                 staleflip)
                     a=$(cat "$GH_STUB_FRESHNESS_READS" 2>/dev/null)
@@ -1613,6 +1617,19 @@ run body-empty --threads-only
 assert_rc 0 "59 threads-only fresh review: rc 0"
 assert_out_has "fresh coderabbitai review @ sha1" "59 success line names the fresh anchor"
 
+# 59b — HIMMEL-3123: the only bot object at the head is a body-empty thread
+# reply (comments=1). The verdict is UNCHANGED (rc 0 — the state stays fresh),
+# but the summary must not claim a fresh REVIEW: it says thread activity only.
+FRESHNESS_OVERRIDE=threadsonly
+run body-empty --threads-only
+assert_rc 0 "59b threads-only fresh, body-empty reply at head: rc 0 (verdict unchanged)"
+assert_out_has "fresh thread activity only by coderabbitai @ sha1" "59b summary says thread activity only"
+if printf '%s' "$OUT" | grep -iF -- "fresh coderabbitai review" >/dev/null; then
+    fail "59b summary must not claim a fresh coderabbitai review at a head with no review body"
+else
+    pass "59b summary does not claim a fresh coderabbitai review"
+fi
+
 # 60 — threads-only, stale: rc 4, remedy names both the stale and head SHAs
 # and is DISTINCT wording from rc 3 (no thread to resolve here).
 FRESHNESS_OVERRIDE=stale
@@ -2495,5 +2512,5 @@ unset CR_CLI_MARKER
 
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 154 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 154"; exit 1; fi
+if [ "$COUNT" -ne 155 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 155"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1

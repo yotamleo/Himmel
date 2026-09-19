@@ -116,6 +116,41 @@ printf '{"data":{"repository":{"pullRequest":{"reviews":{"totalCount":2,"nodes":
 out=$(cr_review_freshness o r 1 "$HEAD")
 check "empty shell does not mask the latest substantive review" "$out" "stale coderabbitai $OLD"
 
+# ── 4b. HIMMEL-3123: a thread REPLY at the head is `fresh`, but says so ─────
+# CodeRabbit replying to a review thread mints a COMMENTED object with an empty
+# body and comments=1. It survives the shell filter (comments > 0), so the state
+# stays `fresh` (the bot did touch the head) — but no verdict was delivered
+# there, so the line carries a 4th token `threads-only` for the caller's prose.
+reviews_json() {  # reviews_json <node>...   (nodes from bot_node)
+    local IFS=,
+    printf '{"data":{"repository":{"pullRequest":{"reviews":{"totalCount":%s,"nodes":[%s]}}}}}' "$#" "$*"
+}
+bot_node() {  # bot_node <oid> <body> <comment-count>
+    printf '{"author":{"login":"coderabbitai","__typename":"Bot"},"commit":{"oid":"%s"},"state":"COMMENTED","body":"%s","comments":{"totalCount":%s}}' "$1" "$2" "$3"
+}
+printf '[]' > "$TMP/c.json"
+
+reviews_json "$(bot_node "$HEAD" "" 1)" > "$TMP/r.json"
+out=$(cr_review_freshness o r 1 "$HEAD"); rc=$?
+check "body-empty comments-only object at head -> fresh ... threads-only" \
+    "$out" "fresh coderabbitai $HEAD threads-only"
+check "threads-only is still rc 0 (verdict unchanged)" "$rc" "0"
+
+reviews_json "$(bot_node "$OLD" "real findings" 3)" "$(bot_node "$HEAD" "" 1)" > "$TMP/r.json"
+out=$(cr_review_freshness o r 1 "$HEAD")
+check "real review at an OLD head + reply at head -> threads-only (no verdict AT head)" \
+    "$out" "fresh coderabbitai $HEAD threads-only"
+
+reviews_json "$(bot_node "$HEAD" "real findings" 3)" "$(bot_node "$HEAD" "" 1)" > "$TMP/r.json"
+out=$(cr_review_freshness o r 1 "$HEAD")
+check "substantive review at head + a later reply at head -> plain fresh, no token" \
+    "$out" "fresh coderabbitai $HEAD"
+
+reviews_json "$(bot_node "$HEAD" "   " 1)" > "$TMP/r.json"
+out=$(cr_review_freshness o r 1 "$HEAD")
+check "whitespace-only body counts as body-empty -> threads-only" \
+    "$out" "fresh coderabbitai $HEAD threads-only"
+
 # ── 5. walkthrough reader in isolation ─────────────────────────────────────
 walkthrough_json "$HEAD" clean > "$TMP/c.json"
 check "walkthrough clean at head" "$(cr_review_walkthrough o r 1 "$HEAD")" "clean"

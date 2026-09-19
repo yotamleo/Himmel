@@ -73,6 +73,16 @@
 # cr_review_freshness <owner> <repo> <pr-number> <head-sha>
 #   stdout (single line):
 #     "fresh <login> <oid>"  the latest bot review is anchored to <head-sha>
+#     "fresh <login> <oid> threads-only"
+#                            same, but no bot object AT the head carries a
+#                            body: the only survivors are body-empty COMMENTED
+#                            objects with inline comments — thread REPLIES, not
+#                            a delivered verdict (HIMMEL-3123). Same state and
+#                            same verdict as plain `fresh`; the 4th token exists
+#                            so a caller's prose can say "thread activity" not
+#                            "review". Consumers must read the state as the
+#                            first word and login/oid as fields 2/3 — never the
+#                            last field — on a `fresh` line.
 #     "fresh-clean-no-object <login> <oid>"
 #                            no review OBJECT at head, but the walkthrough
 #                            certifies the head was reviewed with no actionable
@@ -170,6 +180,7 @@ cr_review_bot_logins() {
 # shellcheck disable=SC2016  # this is a jq program, not a shell variable
 _CRF_JQ_PROGRAM='
 def norm: ascii_downcase | sub("\\[bot\\]$"; "");
+def blank_body: ((.body // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "")) == "";
 ($bots | split(" ") | map(select(length > 0))) as $set
 | .data.repository.pullRequest.reviews as $r
 | [ $r.nodes[]?
@@ -180,8 +191,7 @@ def norm: ascii_downcase | sub("\\[bot\\]$"; "");
     # body and zero comments (two such at 12:18:00 on PR #1708). They carry no
     # verdict, so counting them lets an empty payload fake FRESH as easily as
     # it can bury a real review under a newer nothing.
-    | select(((.body // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "")) != ""
-             or ((.comments.totalCount // 0) > 0))
+    | select((blank_body | not) or ((.comments.totalCount // 0) > 0))
     | select((.author.login // "" | norm) as $l | $set | index($l) != null) ]
   as $bot
 | if ($bot | length) == 0 then
@@ -191,7 +201,15 @@ def norm: ascii_downcase | sub("\\[bot\\]$"; "");
     | ($latest.commit.oid // "") as $oid
     | if $oid == "" then "malformed"
       elif $oid != $head then "stale \($latest.author.login) \($oid)"
-      else "fresh \($latest.author.login) \($oid)"
+      else
+        # HIMMEL-3123: the comments-only survivor of the filter above is a
+        # thread REPLY (body empty, one inline comment) — proof the bot touched
+        # the head, not a verdict delivered at it. Same state and same verdict;
+        # the optional 4th token lets the caller word the difference. Present
+        # only when NO bot object at the head carries a body.
+        "fresh \($latest.author.login) \($oid)"
+        + (if [ $bot[] | select(.commit.oid == $head and (blank_body | not)) ] | length == 0
+           then " threads-only" else "" end)
       end
   end
 '

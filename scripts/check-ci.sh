@@ -1380,7 +1380,11 @@ review_freshness_gate() {
                     fresh|fresh-clean-no-object)
                         # shellcheck disable=SC2086
                         set -- $fr; login=$2
-                        FRESHNESS_NOTE="${fr%% *} $login review @ $head0 (escalated)"
+                        if [ "${4:-}" = threads-only ]; then
+                            FRESHNESS_NOTE="fresh thread activity only by $login @ $head0 (no review body at this head; escalated)"
+                        else
+                            FRESHNESS_NOTE="${fr%% *} $login review @ $head0 (escalated)"
+                        fi
                         return 0 ;;
                 esac
                 echo "check-ci: DO-NOT-MERGE — a CodeRabbit full review landed at head $head0 of PR #$num but the latest $login review is STILL not anchored there (freshness: $fr); cannot certify" >&2
@@ -1433,7 +1437,14 @@ review_freshness_gate() {
             # fr = "fresh <login> <oid>"
             # shellcheck disable=SC2086
             set -- $fr; login=$2
-            FRESHNESS_NOTE="fresh $login review @ $head0" ;;
+            # HIMMEL-3123: a `threads-only` 4th token means every bot object at
+            # the head is a body-empty thread reply — the bot touched the head
+            # but delivered no verdict at it. Same pass, honest prose.
+            if [ "${4:-}" = threads-only ]; then
+                FRESHNESS_NOTE="fresh thread activity only by $login @ $head0 (no review body at this head)"
+            else
+                FRESHNESS_NOTE="fresh $login review @ $head0"
+            fi ;;
         *)
             echo "check-ci: ${ctx}unrecognized freshness state '$state' — cannot evaluate; re-run" >&2
             exit 2 ;;
