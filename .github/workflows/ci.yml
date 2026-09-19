@@ -27,19 +27,24 @@ on:
 permissions:
   contents: read
 
-# HIMMEL-3217: a newer push to main cancels the superseded push-to-main run --
-# on 2026-09-19 stale post-merge runs kept the Actions queue at 5+ and leg PR
-# runs waited 25-40 min. Push is restricted to `main` above, so `push` here
-# means main: those runs share ONE group (github.ref) and cancel in progress.
-# Every other event (pull_request, schedule, workflow_dispatch) gets a group
-# unique to its run (run_id), so a main push never cancels -- nor queues behind
-# -- a PR run, and the nightly is untouched. cancel-in-progress is push-only
-# for the same reason: it stays inert even if a group is ever widened.
-# Required PR checks and the `shell-unit` aggregator report on the PR run,
-# which this never cancels; a cancelled main run is superseded by a newer one.
+# HIMMEL-3217 / HIMMEL-3226: a newer run cancels the run it supersedes -- on
+# 2026-09-19 stale runs kept the Actions queue at 5+ and leg PR runs waited
+# 25-40 min. Three DISJOINT groups (a workflow has one top-level block):
+#   pull_request -> ci-pr-<PR number>: a PR's newer push cancels that PR's
+#                   older run, and never another PR's;
+#   push         -> ci-<github.ref>: push is restricted to `main` above, so
+#                   these runs share ONE group and a newer main push cancels
+#                   the older post-merge run;
+#   everything else (schedule, workflow_dispatch) -> ci-<run_id>: unique to the
+#                   run, so the nightly / a force_all_os dispatch is never
+#                   cancelled nor queued behind anything.
+# cancel-in-progress is scoped to exactly the two grouped events, so it stays
+# inert for the run_id group. A cancelled run only ever belongs to a superseded
+# head: the required checks (incl. the `shell-unit` aggregator) are evaluated
+# on the PR's current head, whose own run this never cancels.
 concurrency:
-  group: ci-${{ github.event_name == 'push' && github.ref || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'push' }}
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'push' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
 
 jobs:
   secret-scan:
