@@ -299,7 +299,7 @@ if grepq "$out" 'GUARDRAILS MAY BE OFF'; then fail "a lost non-guardrail plugin 
 # 8f. same plugin name under ANOTHER marketplace does not count
 H="$(make_home regforeign "$NEW_TID" "$SMALL_WAW")"
 db_noise_row "$NEW_TID" > "$H/logs_2.sqlite"
-sed -i "s/\"himmel-ops@$MARKET\"/\"himmel-ops@other\"/" "$H/config.toml"
+sed "s/\"himmel-ops@$MARKET\"/\"himmel-ops@other\"/" "$H/config.toml" > "$H/config.toml.new" && mv "$H/config.toml.new" "$H/config.toml"
 rc=0; out="$(CODEX_HOME="$H" bash "$DETECT" 2>&1)" || rc=$?
 check_rc 1 "$rc" "himmel-ops only under another marketplace -> exit 1"
 want_line "himmel-ops@$MARKET" "$out" "foreign-marketplace himmel-ops does not satisfy the requirement"
