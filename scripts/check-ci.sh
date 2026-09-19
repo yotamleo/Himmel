@@ -78,8 +78,10 @@
 # ARMED — see the availability note above; on a disarmed repo they simply do not
 # fire, and the checks + thread verdicts stand on their own):
 #   0 — all checks green AND all review threads resolved AND, WHEN ARMED,
-#       CodeRabbit concluded success on the head SHA AND zero outside-diff-range
-#       body findings AND the latest bot review is anchored to the head SHA, OR
+#       CodeRabbit concluded success on the head SHA AND no outside-diff-range
+#       body finding left undispositioned (an exact-head ledger deferred/disproved
+#       disposition counts, HIMMEL-3124 — see exit 3) AND the latest bot review is
+#       anchored to the head SHA, OR
 #       a stale-anchor diff is carried by a clean exact-head critic panel —
 #       the DEFAULT for that shape regardless of risk classification, HIMMEL-2162
 #       (safe to merge; nitpick/additional body findings are surfaced,
@@ -155,7 +157,8 @@ usage() {
 usage: check-ci.sh [<pr-number|branch|url>] [--grace <sec>] [--settle <sec>] [--max-wait <sec>] [--threads-only] [--escalate]
 exit codes: 0 = checks green + all review threads resolved
                 + (if CodeRabbit is armed) CodeRabbit concluded success on the head SHA
-                + zero outside-diff-range body findings
+                + no outside-diff-range body finding left undispositioned (an exact-head ledger
+                  deferred/disproved disposition counts, HIMMEL-3124 — see exit 3)
                 + the latest bot review is anchored to the head SHA, or a clean exact-head panel
                   carries an ordinary stale-anchor diff,
             1 = a check failed, or (if armed) CodeRabbit's status is failure/error,
