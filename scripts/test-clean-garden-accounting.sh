@@ -38,7 +38,9 @@ TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/himmel-clean-accounting.XXXXXX")
 # shellcheck source=scripts/lib/canon-path.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/lib/canon-path.sh"
-TMP_ROOT=$(canon_path "$TMP_ROOT") || { echo "setup: canon_path failed for the fixture root" >&2; exit 1; }
+# Scratch var: a failed substitution would blank TMP_ROOT and cleanup() would skip it.
+CANON_ROOT=$(canon_path "$TMP_ROOT") || { echo "setup: canon_path failed for the fixture root" >&2; exit 1; }
+TMP_ROOT="$CANON_ROOT"
 TMP_ROOT_UNIX="$TMP_ROOT"
 if command -v cygpath >/dev/null 2>&1; then
     TMP_ROOT=$(cygpath -m "$TMP_ROOT")

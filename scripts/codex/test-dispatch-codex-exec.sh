@@ -29,7 +29,10 @@ trap 'rm -rf "$TMP"' EXIT
 # HIMMEL-3179: dispatch-codex-exec.sh resolves the worktree with `pwd -P`, so the
 # fixture root must be the physical spelling too (macOS TMPDIR sits behind the
 # /var -> /private/var link).
-TMP="$(canon_path "$TMP")" || { echo "setup: canon_path failed for the fixture root" >&2; exit 1; }
+# Assign through a scratch var: a failed substitution would otherwise blank TMP
+# and the EXIT trap above would clean nothing.
+CANON_TMP="$(canon_path "$TMP")" || { echo "setup: canon_path failed for the fixture root" >&2; exit 1; }
+TMP="$CANON_TMP"
 
 WT="$TMP/.claude/worktrees/wt"
 mkdir -p "$WT"
