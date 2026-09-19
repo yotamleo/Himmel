@@ -41,7 +41,7 @@ cat > "$REC/stdin"
 ls -A > "$REC/ls"
 for f in f.txt g.txt x.sh; do [ -f "$f" ] && cp "$f" "$REC/$f"; done
 [ -x x.sh ] && echo yes > "$REC/x-exec"
-[ -L link ] && readlink link > "$REC/link"
+if [ -L link ]; then echo symlink > "$REC/link-kind"; elif [ -f link ]; then echo file > "$REC/link-kind"; cp link "$REC/link"; fi
 prev=""; for a in "$@"; do [ "$prev" = "--system-prompt-file" ] && cp "$a" "$REC/system.md"; prev="$a"; done
 [ -z "${FAKE_OUT:-}" ] || printf '%s' "$FAKE_OUT" > .cr-floor-review.json
 # Default in a variable: inside ${FAKE_ENV:-...} the JSON's first } would close
@@ -223,7 +223,8 @@ check "15 no origin/HEAD or origin/main -> exit 3" 3 "$RC"
 check "15 claude never invoked" no "$([ -e "$REC/argv" ] && echo yes || echo no)"
 
 # 16. HIMMEL-3229: the snapshot holds the RAW committed bytes — no smudge
-# filter, no eol conversion — plus the exec bit and symlinks.
+# filter, no eol conversion — plus the exec bit; a symlink is an inert file
+# holding its target, so it cannot point the reviewer outside the snapshot.
 mk_repo 16
 ( cd "$R" && git config filter.up.smudge 'tr a-z A-Z' && git config filter.up.clean cat &&
   printf 'f.txt filter=up\ng.txt text eol=crlf\n' > .gitattributes &&
@@ -235,7 +236,8 @@ check "16 smudge/eol repo -> exit 0" 0 "$RC"
 if git -C "$R" cat-file blob "$HEAD_SHA:f.txt" | cmp -s - "$REC/f.txt"; then ok "16 smudge-filtered f.txt is the raw blob"; else bad "16 smudge-filtered f.txt is the raw blob (got: $(head -c 40 "$REC/f.txt" 2>/dev/null))"; fi
 if git -C "$R" cat-file blob "$HEAD_SHA:g.txt" | cmp -s - "$REC/g.txt"; then ok "16 eol=crlf g.txt is the raw blob"; else bad "16 eol=crlf g.txt is the raw blob"; fi
 check "16 exec bit kept" yes "$(cat "$REC/x-exec" 2>/dev/null)"
-check "16 symlink kept" f.txt "$(cat "$REC/link" 2>/dev/null)"
+check "16 symlink is an inert file, not a link" file "$(cat "$REC/link-kind" 2>/dev/null)"
+check "16 inert symlink file holds its target" f.txt "$(cat "$REC/link" 2>/dev/null)"
 
 # 17. No floor signing key provisioned -> refuse BEFORE spending, naming the
 # operator's init command (fail closed, never an unsigned artifact).
@@ -256,6 +258,23 @@ RC=0; CR_FLOOR_KEY_DIR="$K" node "$FLOOR_MJS" init-key > "$W/out" 2>&1 || RC=$?
 check "18 second init-key exits 0" 0 "$RC"
 if cmp -s "$K/signing.key" "$W/k18.before"; then ok "18 second init-key leaves the key unchanged"; else bad "18 second init-key overwrote the key"; fi
 has "18 second init-key says unchanged" "unchanged" "$W/out"
+
+# 19. sign stamps only an artifact its registry row backs (completed,
+# is_error=false, same dispatch id and session id).
+printf '{"head":"h","base":"b","diff_hash":"d","session_id":"s1","dispatch_id":"d1","findings":[]}\n' > "$W/a19.json"
+printf '{"id":"d1","status":"completed","outcome":{"is_error":false,"session_id":"s1"}}\n' > "$W/r19-ok.json"
+printf '{"id":"d1","status":"completed","outcome":{"is_error":true,"session_id":"s1"}}\n' > "$W/r19-err.json"
+printf '{"id":"d1","status":"completed","outcome":{"is_error":false,"session_id":"s2"}}\n' > "$W/r19-sess.json"
+printf '{"id":"d2","status":"completed","outcome":{"is_error":false,"session_id":"s1"}}\n' > "$W/r19-id.json"
+RC=0; node "$FLOOR_MJS" sign "$W/a19.json" "$W/r19-ok.json" > "$W/a19.signed" 2>"$W/out" || RC=$?
+check "19 matching registry row -> signed" 0 "$RC"
+RC=0; node "$FLOOR_MJS" verify "$W/a19.signed" > "$W/out" 2>&1 || RC=$?
+check "19 the signed artifact verifies" 0 "$RC"
+for c in err sess id; do
+    RC=0; node "$FLOOR_MJS" sign "$W/a19.json" "$W/r19-$c.json" > /dev/null 2>"$W/out" || RC=$?
+    check "19 registry row mismatch ($c) -> refused" 1 "$RC"
+    has "19 refusal ($c) names the registry row" "registry row" "$W/out"
+done
 
 echo "claude-floor-review: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

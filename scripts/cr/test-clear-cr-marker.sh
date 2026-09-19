@@ -168,7 +168,9 @@ write_floor_artifact() {
     printf '{"schema":2,"head":"%s","base":"%s","diff_hash":"%s","session_id":"00000000-0000-4000-8000-000000000001","dispatch_id":"00000000-0000-4000-8000-0000000000d1","model":"claude-floor","same_model":true,"context_free":true,"findings":[]}\n' \
         "$head" "$base" "$hash" > "$art"
     [ "$unsigned" = unsigned ] && return 0
-    node "$FLOOR_MJS" sign "$art" > "$art.signed" && mv "$art.signed" "$art"
+    # The registry row claude-headless.sh would have written for that dispatch.
+    printf '{"id":"00000000-0000-4000-8000-0000000000d1","status":"completed","outcome":{"is_error":false,"session_id":"00000000-0000-4000-8000-000000000001"}}\n' > "$tmp/floor-row.json"
+    node "$FLOOR_MJS" sign "$art" "$tmp/floor-row.json" > "$art.signed" && mv "$art.signed" "$art"
 }
 # avail_reason <head> <model> <status> [reason] — HIMMEL-2128: a non-Claude
 # avail row carrying an optional --reason (HIMMEL-1176 failure classification),

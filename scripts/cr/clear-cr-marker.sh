@@ -647,9 +647,10 @@ exhausted_lanes=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("d
 # other diff never unlocks the floor - AND its ed25519 stamp verifies against
 # the floor signing PUBLIC key (claude-floor.mjs verify, HIMMEL-3220), so a
 # hand-written artifact (correct hash, invented session id) is refused.
-# ponytail: the signer runs as the authoring leg's uid, so a leg that
-# deliberately reads the private key (~/.himmel/cr-floor-key/signing.key) or
-# swaps the key pair can still sign a forgery. The stamp stops the hand-written
+# ponytail: the signer runs as the authoring leg's uid, so any same-uid process
+# can still sign a forgery: run `claude-floor.mjs sign` with a registry row it
+# wrote itself, read the private key (~/.himmel/cr-floor-key/signing.key), or
+# swap the key pair. The stamp stops the hand-written
 # artifact, not a determined same-uid forger; the real fix is a signer on a
 # separate uid legs cannot become (verification here is public-key only, so
 # that move needs no gate change). Trust boundary: scripts/cr/claude-floor.mjs.

@@ -246,7 +246,7 @@ if ! jq -n --arg head "$head" --arg base "$base" --arg diff_hash "$diff_hash" --
     '{schema:2, head:$head, base:$base, diff_hash:$diff_hash, session_id:$session_id, dispatch_id:$dispatch_id,
       model:"claude-floor", reviewer:"pr-review-toolkit-himmel:code-reviewer", same_model:true, context_free:true,
       unlocked_by:($unlocked | split(" ")), findings:$findings}' > "$work/artifact.json" \
-    || ! node "$SCRIPT_DIR/claude-floor.mjs" sign "$work/artifact.json" > "$git_dir/cr-floor/$head.json.tmp" \
+    || ! node "$SCRIPT_DIR/claude-floor.mjs" sign "$work/artifact.json" "$row" >"$git_dir/cr-floor/$head.json.tmp" \
     || ! mv "$git_dir/cr-floor/$head.json.tmp" "$git_dir/cr-floor/$head.json"; then
     die "cannot write the floor artifact" 1
 fi

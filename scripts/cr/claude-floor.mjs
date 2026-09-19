@@ -8,9 +8,13 @@
 //                           RAW blob (no smudge/clean filter, no eol or
 //                           working-tree-encoding conversion): the reviewer
 //                           reads exactly the bytes the provenance hash covers.
-//   sign <artifact.json>    print the artifact with a `stamp` added: an ed25519
+//                           A symlink becomes an inert file holding its target.
+//   sign <artifact.json> <registry-row.json>
+//                           print the artifact with a `stamp` added: an ed25519
 //                           signature over its provenance fields, made with the
-//                           private key in the key dir.
+//                           private key in the key dir. Refuses unless the
+//                           registry row is a completed, is_error=false
+//                           dispatch with the artifact's dispatch + session id.
 //   verify <artifact.json>  exit 0 iff the stamp verifies against the PUBLIC key
 //                           in the key dir; else exit 1 with the reason on stderr.
 //   key-check               exit 0 iff a matching key pair is provisioned (the
@@ -30,11 +34,12 @@
 // dispatch id and session id. The verifier needs only the public key, so the
 // gate holds no secret: moving the private key to another uid later changes
 // the signer alone.
-// ponytail: the signer runs as the authoring leg's uid, so a leg that
-// DELIBERATELY reads signing.key (or replaces the key pair) can still sign a
-// forged artifact. The stamp stops the hand-written artifact (correct hash,
-// invented session id); it is not cryptographically out of a same-uid leg's
-// reach. block-read-secrets.sh refuses Read/cat of *.key, which catches the
+// ponytail: the signer runs as the authoring leg's uid, so any same-uid
+// process can still stamp a forged artifact: run `sign` with a registry row it
+// wrote itself, read signing.key, or replace the key pair. The stamp stops the
+// hand-written artifact (correct hash, invented session id); it is not
+// cryptographically out of a same-uid leg's reach. `sign` checking the
+// registry row and block-read-secrets.sh refusing Read/cat of *.key catch the
 // accidental path, not a determined one. The real fix is a signer running as
 // a SEPARATE uid that legs cannot become; the gate side needs no change then.
 import { spawnSync } from "node:child_process";
@@ -82,9 +87,11 @@ function snapshot(head, dest) {
         pos = nl + 1 + Number(size) + 1;
         fs.mkdirSync(path.dirname(e.file), { recursive: true });
         if (e.mode === "120000") {
-            // A symlink blob holds its target; where symlinks are unavailable
-            // write the target as a file, as git does with core.symlinks=false.
-            try { fs.symlinkSync(body.toString(), e.file); } catch (_) { fs.writeFileSync(e.file, body); }
+            // A symlink blob holds its target. Written as an inert file holding
+            // that target (as git does with core.symlinks=false), never a real
+            // link: a committed link could point the reviewer outside the
+            // snapshot, at host files or the key dir.
+            fs.writeFileSync(e.file, body, { mode: 0o644 });
         } else {
             fs.writeFileSync(e.file, body, { mode: e.mode === "100755" ? 0o755 : 0o644 });
         }
@@ -127,8 +134,13 @@ function keyCheck() {
     if (keyId(crypto.createPublicKey(priv)) !== keyId(loadKey("signing.pub"))) die(`signing.key and signing.pub in ${keyDir()} are not one key pair`);
 }
 
-function sign(file) {
-    const a = readArtifact(file);
+// Stamp only an artifact its claude-headless.sh registry row backs: a
+// completed, is_error=false dispatch whose id and session id are the artifact's.
+function sign(file, rowFile) {
+    const a = readArtifact(file), r = readArtifact(rowFile);
+    if (r.status !== "completed" || r.outcome?.is_error !== false) die(`registry row ${rowFile} is not a completed, is_error=false dispatch`);
+    if (typeof r.id !== "string" || r.id === "" || r.id !== a.dispatch_id) die(`registry row id ${r.id} is not the artifact's dispatch id ${a.dispatch_id}`);
+    if (typeof r.outcome.session_id !== "string" || r.outcome.session_id === "" || r.outcome.session_id !== a.session_id) die(`registry row session id is not the artifact's session id`);
     const priv = loadKey("signing.key");
     a.stamp = { alg: "ed25519", key_id: keyId(crypto.createPublicKey(priv)), sig: crypto.sign(null, payload(a), priv).toString("base64") };
     process.stdout.write(JSON.stringify(a) + "\n");
@@ -146,8 +158,8 @@ function verify(file) {
 
 const [cmd, ...args] = process.argv.slice(2);
 if (cmd === "snapshot" && args.length === 2) snapshot(args[0], args[1]);
-else if (cmd === "sign" && args.length === 1) sign(args[0]);
+else if (cmd === "sign" && args.length === 2) sign(args[0], args[1]);
 else if (cmd === "verify" && args.length === 1) verify(args[0]);
 else if (cmd === "key-check" && args.length === 0) keyCheck();
 else if (cmd === "init-key" && args.length === 0) initKey();
-else die("usage: claude-floor.mjs snapshot <head> <dest> | sign <artifact.json> | verify <artifact.json> | key-check | init-key", 2);
+else die("usage: claude-floor.mjs snapshot <head> <dest> | sign <artifact.json> <registry-row.json> | verify <artifact.json> | key-check | init-key", 2);
