@@ -22,6 +22,18 @@
 #       --maps-dir <luna>/60-Maps --title "Graphify Luna Map" --slug graphify-luna-map \
 #       [--corpus-tag luna] [--scratch <dir>] [--no-update]
 #
+#   refresh-graph-map.sh --name luna --corpus-root <path> --maps-dir <luna>/60-Maps \
+#       --title "Graphify Luna Map" --slug graphify-luna-map \
+#       --promote-only <scratch-workdir> [--publish] [--force] [--allow-unverified-corpus]
+#
+# --promote-only (HIMMEL-3205) recovers an ORPHANED, finished extraction (a
+# scratch workdir `graphify-refresh-<name>-*` holding graphify-out/, or a
+# `graphify-refresh-<name>-*.quarantine` holding graph.json directly) without
+# re-paying for it: validate -> extraction lock -> promote lock -> harden ->
+# host-path leak scan -> promote + manifest stamp. No corpus copy, no
+# extraction. The MOC is published ONLY with --publish. The workdir is never
+# deleted or quarantined; success prints "promoted; safe to remove <dir>".
+#
 # Exit: 0 ok; 1 usage/IO; 2 fence/graphify failure; 3 extraction skipped (bank
 # at/over threshold — not a failure, graphify-out was left untouched).
 #
@@ -74,7 +86,12 @@ SCRATCH="" DO_UPDATE=1 CORPUS_CLASS="luna-personal" EFFECTIVE_PROVIDER=""
 # behaviour unchanged -- this is defense-in-depth ON TOP of the caller's
 # validation, not a new requirement for every caller.
 CORPUS_ID="" MAPS_ID="" MAPS_PARENT_ID=""
-usage() { echo "usage: refresh-graph-map.sh --name N --corpus-root P --maps-dir D --title T --slug S [--backend B] [--corpus-tag T] [--corpus-class C] [--corpus-id DEV:INODE] [--maps-id DEV:INODE] [--maps-parent-id DEV:INODE] [--scratch DIR] [--no-update]" >&2; exit 1; }
+# HIMMEL-3205: --promote-only state. DO_EXTRACT is 1 for a normal run (the
+# copy + extraction + promote region) and 0 under --promote-only, which reuses
+# the promote half of that region on an existing workdir instead.
+PROMOTE_ONLY="" PUBLISH=0 FORCE=0 ALLOW_UNVERIFIED=0 DO_EXTRACT=1
+PROMOTE_ONLY_DIR="" PROMOTE_ONLY_SHAPE=""   # shape: workdir | quarantine
+usage() { echo "usage: refresh-graph-map.sh --name N --corpus-root P --maps-dir D --title T --slug S [--backend B] [--corpus-tag T] [--corpus-class C] [--corpus-id DEV:INODE] [--maps-id DEV:INODE] [--maps-parent-id DEV:INODE] [--scratch DIR] [--no-update] [--promote-only WORKDIR [--publish] [--force] [--allow-unverified-corpus]]" >&2; exit 1; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --name) NAME="${2:-}"; shift 2 ;;
@@ -118,11 +135,31 @@ while [ $# -gt 0 ]; do
     --corpus-class) CORPUS_CLASS="${2:-}"; shift 2 ;;
     --scratch) SCRATCH="${2:-}"; shift 2 ;;
     --no-update) DO_UPDATE=0; shift ;;
+    # HIMMEL-3205: recover an orphaned finished extraction (see the header).
+    --promote-only) PROMOTE_ONLY="${2:-}"; shift 2 ;;
+    --publish) PUBLISH=1; shift ;;
+    --force) FORCE=1; shift ;;
+    --allow-unverified-corpus) ALLOW_UNVERIFIED=1; shift ;;
     *) echo "refresh-graph-map: unknown flag: $1" >&2; usage ;;
   esac
 done
 if [ -z "$NAME" ] || [ -z "$CORPUS_ROOT" ] || [ -z "$MAPS_DIR" ] || [ -z "$TITLE" ] || [ -z "$SLUG" ]; then usage; fi
 [ -d "$CORPUS_ROOT" ] || { echo "refresh-graph-map: corpus root not found: $CORPUS_ROOT" >&2; exit 1; }
+# HIMMEL-3205: the promote-only modifiers mean nothing without --promote-only,
+# and --no-update (publish-only: no extraction, no promote) contradicts it.
+if [ -z "$PROMOTE_ONLY" ]; then
+  if [ "$PUBLISH" -eq 1 ] || [ "$FORCE" -eq 1 ] || [ "$ALLOW_UNVERIFIED" -eq 1 ]; then
+    echo "refresh-graph-map: --publish / --force / --allow-unverified-corpus are only valid with --promote-only" >&2; exit 2
+  fi
+else
+  if [ "$DO_UPDATE" -eq 0 ]; then
+    echo "refresh-graph-map: --promote-only cannot be combined with --no-update (promote-only IS the promote half of an update)" >&2; exit 2
+  fi
+fi
+# DO_EXTRACT gates every extraction-only step (backend matrix, concurrency and
+# timeout validation, copy + extraction); it is 0 for --no-update AND for
+# --promote-only, which run no extraction.
+if [ "$DO_UPDATE" -eq 0 ] || [ -n "$PROMOTE_ONLY" ]; then DO_EXTRACT=0; fi
 
 # HIMMEL-1704 TOCTOU guard: probe $1's filesystem identity (device+inode,
 # symlink-resolved via stat -L, same as graph-refresh.sh's own _fs_id) and
@@ -239,8 +276,9 @@ esac
 # so they cannot escape through a wildcard cell. Append the same ledger
 # line for allow+log verdicts (same file, same JSONL shape), fail-closed: a deny/
 # conditional verdict OR a failed ledger append aborts the run. Extraction path
-# only: a --no-update republish makes no backend calls.
-if [ "$DO_UPDATE" -eq 1 ]; then
+# only: a --no-update republish makes no backend calls, and neither does a
+# --promote-only recovery (HIMMEL-3205: DO_EXTRACT=0 skips every backend gate).
+if [ "$DO_EXTRACT" -eq 1 ]; then
   if [ -z "$EFFECTIVE_PROVIDER" ]; then
     case "$BACKEND" in
       claude|claude-cli)
@@ -258,15 +296,15 @@ if [ "$DO_UPDATE" -eq 1 ]; then
     esac
   fi
 fi
-if [ "$DO_UPDATE" -eq 1 ] && [ -z "$EFFECTIVE_PROVIDER" ]; then
+if [ "$DO_EXTRACT" -eq 1 ] && [ -z "$EFFECTIVE_PROVIDER" ]; then
   echo "refresh-graph-map: backend '$BACKEND' has no egress-matrix provider mapping — refusing scheduled extraction (fail-closed)" >&2
   exit 2
 fi
-if [ "$DO_UPDATE" -eq 1 ] && [ "$EFFECTIVE_PROVIDER" = "anthropic-custom" ]; then
+if [ "$DO_EXTRACT" -eq 1 ] && [ "$EFFECTIVE_PROVIDER" = "anthropic-custom" ]; then
   echo "refresh-graph-map: claude backend points at an unverified endpoint (ANTHROPIC_BASE_URL is set to an unrecognized/unsupported value — not echoed, it may carry credentials); refusing scheduled egress on every corpus (fail-closed)" >&2
   exit 2
 fi
-if [ -n "$EFFECTIVE_PROVIDER" ] && [ "$DO_UPDATE" -eq 1 ]; then
+if [ -n "$EFFECTIVE_PROVIDER" ] && [ "$DO_EXTRACT" -eq 1 ]; then
   _mx_json_escape() {
     local s="$1" i octal ctrl escaped
     s="${s//\\/\\\\}"
@@ -417,7 +455,7 @@ GRAPHIFY_MAX_CONCURRENCY="${GRAPHIFY_MAX_CONCURRENCY-6}"
 # --update + cluster-only graphify calls, which a --no-update publish-only run
 # never makes — so an invalid value is irrelevant there and must not fail an
 # unrelated republish (CR: codex-1).
-if [ "$DO_UPDATE" -eq 1 ]; then
+if [ "$DO_EXTRACT" -eq 1 ]; then
   case "$GRAPHIFY_MAX_CONCURRENCY" in
     ''|*[!0-9]*) echo "refresh-graph-map: GRAPHIFY_MAX_CONCURRENCY must be a positive integer (got '$GRAPHIFY_MAX_CONCURRENCY')" >&2; exit 1 ;;
   esac
@@ -453,7 +491,7 @@ fi
 # graphify calls a --no-update publish-only run never makes, so an invalid value is
 # irrelevant there and must not fail an unrelated republish (same DO_UPDATE gating as
 # GRAPHIFY_MAX_CONCURRENCY).
-if [ "$DO_UPDATE" -eq 1 ]; then
+if [ "$DO_EXTRACT" -eq 1 ]; then
   if [ "$BACKEND" = "claude-cli" ]; then
     GRAPHIFY_API_TIMEOUT="${GRAPHIFY_API_TIMEOUT-900}"
     export GRAPHIFY_API_TIMEOUT
@@ -878,6 +916,13 @@ _promote_stage_cleanup() {
     rm -rf "$PROMOTE_STAGE" 2>/dev/null || true
     PROMOTE_STAGE=""
   fi
+  # HIMMEL-3205: the leak scan's scoped extract lands in $SCRATCH; a normal run
+  # removes the whole scratch, but a --promote-only workdir is the operator's
+  # and survives, so its scan temp (which may hold the very host path a refusal
+  # names) must not.
+  if [ -n "$PROMOTE_ONLY" ] && [ -n "$SCRATCH" ]; then
+    rm -f "$SCRATCH/.graph-structural-fields.$$" 2>/dev/null || true
+  fi
 }
 
 # _promote_lock_release -- owner-tokened (CR r1 [codex-1]): a former holder
@@ -1075,7 +1120,142 @@ _report_leftover_scratches() {
   done
 }
 
+# _corpus_root_marker -- the value of the `.graphify-source-root` marker: the
+# corpus root's physical (symlink-resolved) absolute path. The extraction path
+# writes it into the scratch workdir; --promote-only compares it against the
+# recovering run's --corpus-root. One helper for both sides, so the two cannot
+# disagree on spelling.
+_corpus_root_marker() { ( cd "$CORPUS_ROOT" 2>/dev/null && pwd -P ); }
+
+# _promote_only_prepare -- HIMMEL-3205. Validate the --promote-only argument
+# and take the extraction lock. Every refusal is rc=2 and happens BEFORE
+# anything under $OUT_DIR is touched (the lock lives there, so it is taken last).
+# The EXIT trap it installs deliberately omits _scratch_cleanup: the workdir is
+# not this run's to delete or quarantine -- it is the operator's paid artifact.
+# Sets SCRATCH (workdir or quarantine dir), SCRATCH_OUT, PROMOTE_ONLY_DIR and
+# PROMOTE_ONLY_SHAPE for the shared promote section.
+_promote_only_prepare() {
+  local dir="$PROMOTE_ONLY" base have want
+  while [ -n "${dir%/}" ] && [ "${dir%/}" != "$dir" ]; do dir="${dir%/}"; done
+  case "$dir" in
+    /*|[A-Za-z]:[/\\]*) ;;
+    *) dir="$PWD/$dir" ;;
+  esac
+  [ -d "$dir" ] || { echo "refresh-graph-map: --promote-only refused: not an existing directory: $PROMOTE_ONLY" >&2; exit 2; }
+  base="${dir##*/}"
+  case "$base" in
+    "graphify-refresh-$NAME-"*.quarantine) PROMOTE_ONLY_SHAPE=quarantine ;;
+    "graphify-refresh-$NAME-"*) PROMOTE_ONLY_SHAPE=workdir ;;
+    *) echo "refresh-graph-map: --promote-only refused: '$base' is not a scratch workdir for --name $NAME (expected graphify-refresh-$NAME-* or graphify-refresh-$NAME-*.quarantine)" >&2; exit 2 ;;
+  esac
+  if [ "$PROMOTE_ONLY_SHAPE" = workdir ]; then
+    SCRATCH_OUT="$dir/$GRAPHIFY_OUT_NAME"
+    [ -d "$SCRATCH_OUT" ] || { echo "refresh-graph-map: --promote-only refused: $base holds no $GRAPHIFY_OUT_NAME/ (nothing was extracted there)" >&2; exit 2; }
+  else
+    SCRATCH_OUT="$dir"
+  fi
+  command -v python3 >/dev/null 2>&1 || { echo "refresh-graph-map: python3 not found (needed to validate and promote)" >&2; exit 2; }
+  # graph.json must parse AND carry a non-empty nodes array (an empty graph is
+  # the shape of a failed extraction, not a recoverable one).
+  python3 - "$SCRATCH_OUT/graph.json" <<'PYEOF' || { echo "refresh-graph-map: --promote-only refused: $base graph.json is missing, does not parse, or has no nodes" >&2; exit 2; }
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as fh:
+        data = json.load(fh)
+except Exception:
+    sys.exit(1)
+nodes = data.get("nodes") if isinstance(data, dict) else None
+sys.exit(0 if isinstance(nodes, list) and len(nodes) > 0 else 1)
+PYEOF
+  # GRAPH_REPORT.md present with the header shape the promote's sanitize step
+  # requires -- refuse here rather than after the locks.
+  have="$(head -n 1 "$SCRATCH_OUT/GRAPH_REPORT.md" 2>/dev/null)" || have=""
+  case "$have" in
+    '# Graph Report - '*) ;;
+    *) echo "refresh-graph-map: --promote-only refused: $base GRAPH_REPORT.md is missing or has no parseable '# Graph Report - ' header" >&2; exit 2 ;;
+  esac
+  # Corpus match. A PRESENT marker that disagrees is always refused (this
+  # extraction is of a different corpus); an ABSENT marker (an orphan from
+  # before the marker existed, or a *.quarantine, which never carried one) is
+  # refused unless the operator vouches for it with --allow-unverified-corpus.
+  want="$CORPUS_CLASS"
+  if [ -f "$dir/.graphify-corpus" ]; then
+    have="$(head -n 1 "$dir/.graphify-corpus" 2>/dev/null)" || have=""
+    [ "$have" = "$want" ] || { echo "refresh-graph-map: --promote-only refused: $base was extracted as corpus class '$have', this run is '$want'" >&2; exit 2; }
+  elif [ "$ALLOW_UNVERIFIED" -ne 1 ]; then
+    echo "refresh-graph-map: --promote-only refused: $base carries no .graphify-corpus marker, so its corpus class cannot be verified (pass --allow-unverified-corpus if you know it was extracted from this corpus)" >&2; exit 2
+  fi
+  want="$(_corpus_root_marker)" || want=""
+  if [ -f "$dir/.graphify-source-root" ]; then
+    have="$(head -n 1 "$dir/.graphify-source-root" 2>/dev/null)" || have=""
+    [ "$have" = "$want" ] || { echo "refresh-graph-map: --promote-only refused: $base was extracted from a different corpus root than --corpus-root" >&2; exit 2; }
+  elif [ "$ALLOW_UNVERIFIED" -ne 1 ]; then
+    echo "refresh-graph-map: --promote-only refused: $base carries no .graphify-source-root marker, so its corpus root cannot be verified (pass --allow-unverified-corpus if you know it was extracted from this corpus)" >&2; exit 2
+  fi
+  SCRATCH="$dir"
+  PROMOTE_ONLY_DIR="$dir"
+  # OUT_DIR must exist before mkdir-locking under it (see the same note on the
+  # extraction path's lock).
+  mkdir -p "$OUT_DIR"
+  trap '_promote_stage_cleanup; _promote_lock_release; _extraction_lock_release' EXIT
+  _extraction_lock_acquire || exit 2
+}
+
+# _promote_only_post_lock -- HIMMEL-3205. Runs once BOTH locks are held (the
+# shared promote section calls it right after _promote_lock_acquire): the
+# staleness check is only race-free under the lock, and harden mutates the
+# workdir, so neither happens before the refusals above have all passed.
+_promote_only_post_lock() {
+  # A promoted manifest newer than the workdir's graph.json means a later
+  # refresh already promoted a graph -- promoting this older one would
+  # silently regress it. --force is the operator's explicit override.
+  if [ -f "$OUT_DIR/manifest.json" ] && [ "$OUT_DIR/manifest.json" -nt "$SCRATCH_OUT/graph.json" ]; then
+    if [ "$FORCE" -eq 1 ]; then
+      echo "refresh-graph-map: --force: promoting $PROMOTE_ONLY_DIR although $OUT_DIR holds a promoted manifest newer than its graph.json" >&2
+    else
+      echo "refresh-graph-map: --promote-only refused: $OUT_DIR holds a promoted manifest newer than $PROMOTE_ONLY_DIR's graph.json -- promoting it would regress a newer graph (pass --force to override)" >&2
+      exit 2
+    fi
+  fi
+  # harden-graph is idempotent (a re-run on a hardened graph adds 0 edges), so
+  # an orphan that stopped before or after this step both end up hardened.
+  python3 "$HERE/harden-graph.py" --out "$SCRATCH_OUT" >&2 \
+    || { echo "refresh-graph-map: harden-graph failed -- $PROMOTE_ONLY_DIR left unpromoted (and untouched)" >&2; exit 2; }
+}
+
 if [ "$DO_UPDATE" -eq 1 ]; then
+  # Promote shrink guard (HIMMEL-1901 addendum -- operator directive: "graphify
+  # should always expand but not just flat rewrite as this is huge costs"). The
+  # promote below is a flat `mv`, no floor: HIMMEL-1650 silently collapsed luna
+  # from 16,630 to 10,538 nodes on a 0.9.32 replay, HIMMEL-1817 collapsed a
+  # single CLAUDE.md extraction from 17 nodes to 1 (134 source files vanished,
+  # nothing caught it), and leg 28 of this very chain overwrote a committed
+  # 1295-node/1605-edge graph with a 920/854 cluster-only run. Worse than
+  # losing one good graph: the semantic cache the NEXT run seeds from
+  # (HIMMEL-1097, below) is whatever got promoted, so an uncaught collapse
+  # also poisons every future incremental into a full, expensive
+  # re-extraction -- this compounds, it does not just cost one bad graph.
+  # Default 90 == refuse a promote that drops node OR link counts more
+  # than 10% below the graph already on disk. 0 disables the guard outright
+  # (operator override for a deliberate, known-good shrink). The actual
+  # compare runs later, once the staged graph exists (see GRAPHIFY_PROMOTE_MIN_RETAIN_PCT usage below).
+  GRAPHIFY_PROMOTE_MIN_RETAIN_PCT="${GRAPHIFY_PROMOTE_MIN_RETAIN_PCT:-90}"
+  case "$GRAPHIFY_PROMOTE_MIN_RETAIN_PCT" in
+    ''|*[!0-9]*) echo "refresh-graph-map: GRAPHIFY_PROMOTE_MIN_RETAIN_PCT must be a non-negative integer <= 100 (got '$GRAPHIFY_PROMOTE_MIN_RETAIN_PCT')" >&2; exit 1 ;;
+  esac
+  [ "$GRAPHIFY_PROMOTE_MIN_RETAIN_PCT" -le 100 ] || { echo "refresh-graph-map: GRAPHIFY_PROMOTE_MIN_RETAIN_PCT must be a non-negative integer <= 100 (got '$GRAPHIFY_PROMOTE_MIN_RETAIN_PCT')" >&2; exit 1; }
+fi
+
+if [ -n "$PROMOTE_ONLY" ]; then
+  _promote_only_prepare
+fi
+
+if [ "$DO_UPDATE" -eq 1 ]; then
+# HIMMEL-3205: under --promote-only the whole copy + extraction region below is
+# skipped (DO_EXTRACT=0) -- it is one long `if`, kept un-indented so its
+# heredocs and the HIMMEL-2731-sliced lock protocol stay byte-identical. The
+# promote section after it is shared with --promote-only.
+if [ "$DO_EXTRACT" -eq 1 ]; then
   command -v "$GRAPHIFY_MAP" >/dev/null 2>&1 || { echo "refresh-graph-map: '$GRAPHIFY_MAP' not on PATH (needed for --update; use --no-update to publish from an existing report)" >&2; exit 2; }
   # F3 (HIMMEL-907): python3 writes the freshness manifest (see stamp step
   # below). Preflight it next to the graphify check so a python3-less box fails
@@ -1831,6 +2011,11 @@ if [ "$DO_UPDATE" -eq 1 ]; then
     done
   fi
   printf '%s\n' "$CORPUS_CLASS" > "$SCRATCH/.graphify-corpus"
+  # HIMMEL-3205: record WHICH corpus this workdir was extracted from, so an
+  # orphaned workdir can later be recovered by --promote-only against the
+  # right corpus only (a workdir is named for --name, which two corpora can share).
+  _corpus_root_marker > "$SCRATCH/.graphify-source-root" \
+    || { echo "refresh-graph-map: could not record the corpus root marker in $SCRATCH" >&2; exit 1; }
   # CLEAR THE CLAUDE REROUTE SELECTORS before dispatching (HIMMEL-1070,
   # codex-adv-1). graphify-fence.sh hard-denies these, but the fence is a
   # PreToolUse hook — it only sees graphify invocations an AGENT types. THIS
@@ -1961,26 +2146,9 @@ if [ "$DO_UPDATE" -eq 1 ]; then
     fi
   fi
 
-  # Promote shrink guard (HIMMEL-1901 addendum -- operator directive: "graphify
-  # should always expand but not just flat rewrite as this is huge costs"). The
-  # promote below is a flat `mv`, no floor: HIMMEL-1650 silently collapsed luna
-  # from 16,630 to 10,538 nodes on a 0.9.32 replay, HIMMEL-1817 collapsed a
-  # single CLAUDE.md extraction from 17 nodes to 1 (134 source files vanished,
-  # nothing caught it), and leg 28 of this very chain overwrote a committed
-  # 1295-node/1605-edge graph with a 920/854 cluster-only run. Worse than
-  # losing one good graph: the semantic cache the NEXT run seeds from
-  # (HIMMEL-1097, below) is whatever got promoted, so an uncaught collapse
-  # also poisons every future incremental into a full, expensive
-  # re-extraction -- this compounds, it does not just cost one bad graph.
-  # Default 90 == refuse a promote that drops node OR link counts more
-  # than 10% below the graph already on disk. 0 disables the guard outright
-  # (operator override for a deliberate, known-good shrink). The actual
-  # compare runs later, once the staged graph exists (see GRAPHIFY_PROMOTE_MIN_RETAIN_PCT usage below).
-  GRAPHIFY_PROMOTE_MIN_RETAIN_PCT="${GRAPHIFY_PROMOTE_MIN_RETAIN_PCT:-90}"
-  case "$GRAPHIFY_PROMOTE_MIN_RETAIN_PCT" in
-    ''|*[!0-9]*) echo "refresh-graph-map: GRAPHIFY_PROMOTE_MIN_RETAIN_PCT must be a non-negative integer <= 100 (got '$GRAPHIFY_PROMOTE_MIN_RETAIN_PCT')" >&2; exit 1 ;;
-  esac
-  [ "$GRAPHIFY_PROMOTE_MIN_RETAIN_PCT" -le 100 ] || { echo "refresh-graph-map: GRAPHIFY_PROMOTE_MIN_RETAIN_PCT must be a non-negative integer <= 100 (got '$GRAPHIFY_PROMOTE_MIN_RETAIN_PCT')" >&2; exit 1; }
+  # (The promote shrink guard's GRAPHIFY_PROMOTE_MIN_RETAIN_PCT default +
+  # validation moved above the DO_UPDATE block, HIMMEL-3205: the shrink guard
+  # protects --promote-only too, which skips this whole extraction region.)
   _deadline_start="$(date +%s)"
   # Seconds left of the total budget, floor 0. Callers treat 0 as expired.
   _deadline_left() {
@@ -2059,6 +2227,7 @@ if [ "$DO_UPDATE" -eq 1 ]; then
     fi
     exit 2
   fi
+fi   # DO_EXTRACT -- end of the copy + extraction region (--promote-only rejoins here)
   # HIMMEL-907: stamp freshness artifacts so the companion guard
   # check-graph-freshness.sh can VERIFY this graph (not "fresh by age" only).
   # Source-of-truth for shape is the guard's parser: manifest.json = flat
@@ -2091,6 +2260,15 @@ if [ "$DO_UPDATE" -eq 1 ]; then
   # (CORPUS_ROOT_ABS removed with HIMMEL-1116 — the .graphify_root marker is now
   # relative, and that assignment was its only consumer.)
   SCRATCH_ABS="$(cd "$SCRATCH" && pwd)"
+  MANIFEST_ROOT="$SCRATCH_ABS"
+  if [ "$PROMOTE_ONLY_SHAPE" = quarantine ]; then
+    # ponytail: a *.quarantine holds only graphify-out's contents, no corpus
+    # copy, so the freshness manifest is keyed from the LIVE corpus instead --
+    # it attests the corpus as it is now, not as the graph saw it (and does not
+    # apply the extraction's derived-page exclusions). check-graph-freshness.sh
+    # only needs the keys to exist, so it verifies; the mtimes are provenance.
+    MANIFEST_ROOT="$(cd "$CORPUS_ROOT" && pwd)"
+  fi
   # HIMMEL-910: acquire the exclusive per-out-dir lock (see its definition
   # above) around the WHOLE promote block that follows -- steps 1-4 below
   # must run as one atomic unit relative to any OTHER refresh-graph-map
@@ -2106,6 +2284,10 @@ if [ "$DO_UPDATE" -eq 1 ]; then
   if [ -n "${GRAPHIFY_PROMOTE_TEST_HOLD_SECONDS:-}" ]; then
     sleep "$GRAPHIFY_PROMOTE_TEST_HOLD_SECONDS"
   fi
+  # HIMMEL-3205: --promote-only staleness check + harden, under both locks.
+  if [ -n "$PROMOTE_ONLY" ]; then
+    _promote_only_post_lock
+  fi
   # HIMMEL-1134 CR follow-up round 5: sanitize + guard-scan now run on the
   # SCRATCH artifacts (staging), BEFORE anything in $OUT_DIR is touched.
   # Previously this block invalidated the old manifest.json/.graphify_root
@@ -2120,8 +2302,8 @@ if [ "$DO_UPDATE" -eq 1 ]; then
   # IDENTICAL coverage (byte-for-byte what would be promoted) while
   # guaranteeing $OUT_DIR's prior clean artifacts + stamps are completely
   # untouched on rejection.
-  SCRATCH_REPORT="$SCRATCH/$GRAPHIFY_OUT_NAME/GRAPH_REPORT.md"
-  SCRATCH_GRAPH="$SCRATCH/$GRAPHIFY_OUT_NAME/graph.json"
+  SCRATCH_REPORT="$SCRATCH_OUT/GRAPH_REPORT.md"
+  SCRATCH_GRAPH="$SCRATCH_OUT/graph.json"
   # HIMMEL-1134 CR follow-up (CodeRabbit App, PR #1274): assert BOTH staging
   # artifacts exist BEFORE the sanitize/guard even start. Without this, a
   # missing graph.json (or report) would fall through every check below --
@@ -2325,7 +2507,7 @@ if [ "$DO_UPDATE" -eq 1 ]; then
   # does not exist and the real one -- carrying GRAPH_REPORT.md -- leaked
   # straight into the manifest keys. The default name is pruned as well, so a
   # leftover from a previous default-named run cannot leak either.
-  python3 - "$SCRATCH_ABS" "$PROMOTE_STAGE/manifest.json" "$GRAPHIFY_OUT_NAME" <<'PYEOF'
+  python3 - "$MANIFEST_ROOT" "$PROMOTE_STAGE/manifest.json" "$GRAPHIFY_OUT_NAME" <<'PYEOF'
 import json, os, sys
 root, manifest_path = sys.argv[1], sys.argv[2]
 out_names = {sys.argv[3], "graphify-out"} if len(sys.argv) > 3 else {"graphify-out"}
@@ -2362,7 +2544,13 @@ PYEOF
   # failure/timeout, which the guard below treats as "unknown" and never gates
   # on.
   _graphify_version=""
-  if [ -n "$_deadline_bin" ]; then
+  if [ -n "$PROMOTE_ONLY" ]; then
+    # ponytail: --promote-only never invokes graphify (no extraction, and the
+    # stub/real binary may not even be installed on the recovering box), so it
+    # cannot know which version produced the orphan. Left empty = "unknown",
+    # which the shrink guard treats as never gating on a version change.
+    :
+  elif [ -n "$_deadline_bin" ]; then
     _graphify_version="$("$_deadline_bin" -k 2 5 "$GRAPHIFY_MAP" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | tail -n1)" || _graphify_version=""
   else
     _graphify_version="$("$GRAPHIFY_MAP" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | tail -n1)" || _graphify_version=""
@@ -2572,12 +2760,27 @@ PYEOF
   # report despite the serialized promote.
   # The lock is held THROUGH publish and released after it (the EXIT trap
   # stays the failure-path backstop).
-  rm -rf "$SCRATCH"   # eager clean on success; the EXIT trap is the failure-path backstop
+  # eager clean on success; the EXIT trap is the failure-path backstop.
+  # HIMMEL-3205: never for --promote-only -- that workdir is the operator's
+  # artifact, not this run's scratch; the operator removes it after reading
+  # the "safe to remove" line below.
+  if [ "$DO_EXTRACT" -eq 1 ]; then rm -rf "$SCRATCH"; fi
   # Test-only hook (CR r2): hold between promote and publish, so the
   # promote-vs-publish overlap test can create a deterministic window.
   # No-op unless set.
   if [ -n "${GRAPHIFY_PUBLISH_TEST_HOLD_SECONDS:-}" ]; then
     sleep "$GRAPHIFY_PUBLISH_TEST_HOLD_SECONDS"
+  fi
+fi
+
+# HIMMEL-3205 --promote-only: the workdir is untouched (never deleted or
+# quarantined). The MOC is published ONLY on an explicit --publish (operator
+# ruling 2026-09-19); otherwise stop here, the EXIT trap releases both locks.
+if [ -n "$PROMOTE_ONLY" ]; then
+  echo "refresh-graph-map: promoted; safe to remove $PROMOTE_ONLY_DIR" >&2
+  if [ "$PUBLISH" -eq 0 ]; then
+    echo "refresh-graph-map: MOC not published (re-run with --publish to publish it from the promoted graph)" >&2
+    exit 0
   fi
 fi
 

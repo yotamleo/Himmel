@@ -3688,5 +3688,209 @@ else
   skip "T51b SKIPPED (this environment cannot create symlinks -- unprivileged Windows without Developer Mode; guarded on POSIX CI)"
 fi
 
+# --- T52 (HIMMEL-3205): --promote-only <scratch-workdir> recovers an orphaned,
+# finished extraction: validate -> locks -> harden -> leak scan -> promote +
+# manifest stamp, optionally --publish. Stubs only: the shared graphify stub
+# LOGS every call (GRAPHIFY_CALL_LOG) so the happy path can prove promote-only
+# never extracts; fixtures are hand-built workdirs, never a live extraction or
+# vault. ---
+T52_PARENT="$WS/t52-scratch"; mkdir -p "$T52_PARENT"
+T52_MAPS="$WS/t52-maps"; mkdir -p "$T52_MAPS"
+T52_LOG="$WS/t52-graphify.log"; : > "$T52_LOG"
+t52_corpus() { # <dir> -- a fresh corpus root with one md file
+  mkdir -p "$1/notes"; printf '# n\ncontent\n' > "$1/notes/a.md"
+}
+t52_workdir() { # <dir> <corpus-root> -- a finished, unpromoted extraction (workdir shape)
+  local d="$1" real
+  real="$(cd "$2" && pwd -P)"
+  mkdir -p "$d/graphify-out" "$d/notes"
+  printf '# n\ncontent\n' > "$d/notes/a.md"
+  printf '{"nodes":[{"id":"n1","label":"Alpha","source_file":"notes/a.md"},{"id":"n2","label":"Beta","source_file":"notes/a.md"}],"links":[{"source":"n1","target":"n2"}]}' > "$d/graphify-out/graph.json"
+  printf '%s\n' "$REPORT_FIXTURE" > "$d/graphify-out/GRAPH_REPORT.md"
+  printf '%s\n' "luna-personal" > "$d/.graphify-corpus"
+  printf '%s\n' "$real" > "$d/.graphify-source-root"
+}
+t52_run() { # <corpus-root> <workdir> [flags...] -> sets $out / $rc
+  local c="$1" wd="$2"; shift 2
+  out=$( GRAPHIFY_CALL_LOG="$T52_LOG" GRAPHIFY_MAP_BIN="$BIN/graphify" bash "$SCRIPT" --name t52 \
+    --corpus-root "$c" --maps-dir "$T52_MAPS" --title "T52" --slug t52-map \
+    --promote-only "$wd" "$@" 2>&1 ); rc=$?
+}
+# refusal <label> <corpus> <workdir> [flags...]: rc=2, nothing under the out dir
+# touched, and a workdir that existed is never deleted or quarantined.
+t52_refuse() {
+  local label="$1" c="$2" wd="$3" existed=0; shift 3
+  [ -e "$wd" ] && existed=1
+  t52_run "$c" "$wd" "$@"
+  [ "$rc" -eq 2 ] && pass "T52 $label refused with rc=2" || fail "T52 $label should refuse with rc=2 (got $rc): $out"
+  [ ! -e "$c/graphify-out" ] && pass "T52 $label left the out dir untouched" || fail "T52 $label touched $c/graphify-out"
+  if [ "$existed" -eq 1 ]; then
+    [ -d "$wd" ] && pass "T52 $label kept the workdir" || fail "T52 $label removed the workdir"
+  fi
+}
+
+T52_C="$WS/t52-corpus"; t52_corpus "$T52_C"
+
+# 1. the argument must be an existing directory named for THIS --name
+t52_refuse "1a missing dir" "$T52_C" "$T52_PARENT/graphify-refresh-t52-nope"
+t52_workdir "$T52_PARENT/arbitrary-dir" "$T52_C"
+t52_refuse "1b arbitrary basename" "$T52_C" "$T52_PARENT/arbitrary-dir"
+t52_workdir "$T52_PARENT/graphify-refresh-other-aaaaaa" "$T52_C"
+t52_refuse "1c another --name's workdir" "$T52_C" "$T52_PARENT/graphify-refresh-other-aaaaaa"
+t52_workdir "$T52_PARENT/graphify-refresh-t52-nograph" "$T52_C"
+rm -rf "$T52_PARENT/graphify-refresh-t52-nograph/graphify-out"
+t52_refuse "1e workdir without graphify-out/" "$T52_C" "$T52_PARENT/graphify-refresh-t52-nograph"
+
+# 2. graph.json must parse and carry a non-empty nodes array
+W="$T52_PARENT/graphify-refresh-t52-bad2a"; t52_workdir "$W" "$T52_C"
+printf '{"nodes": [' > "$W/graphify-out/graph.json"
+t52_refuse "2a unparseable graph.json" "$T52_C" "$W"
+W="$T52_PARENT/graphify-refresh-t52-bad2b"; t52_workdir "$W" "$T52_C"
+printf '{"nodes":[],"links":[]}' > "$W/graphify-out/graph.json"
+t52_refuse "2b empty nodes" "$T52_C" "$W"
+
+# 3. GRAPH_REPORT.md present with a parseable header
+W="$T52_PARENT/graphify-refresh-t52-bad3a"; t52_workdir "$W" "$T52_C"
+rm -f "$W/graphify-out/GRAPH_REPORT.md"
+t52_refuse "3a missing GRAPH_REPORT.md" "$T52_C" "$W"
+W="$T52_PARENT/graphify-refresh-t52-bad3b"; t52_workdir "$W" "$T52_C"
+printf 'not a graph report\n' > "$W/graphify-out/GRAPH_REPORT.md"
+t52_refuse "3b unparseable report header" "$T52_C" "$W"
+
+# 4. corpus match: .graphify-corpus == --corpus-class AND .graphify-source-root
+# == this run's canonical corpus root. A present-but-wrong marker is always
+# refused; an ABSENT source-root marker (orphan predating it) needs the flag.
+W="$T52_PARENT/graphify-refresh-t52-bad4a"; t52_workdir "$W" "$T52_C"
+printf '%s\n' "himmel-code" > "$W/.graphify-corpus"
+t52_refuse "4a wrong corpus class" "$T52_C" "$W"
+W="$T52_PARENT/graphify-refresh-t52-bad4b"; t52_workdir "$W" "$T52_C"
+printf '%s\n' "$WS/some-other-corpus" > "$W/.graphify-source-root"
+t52_refuse "4b wrong source root" "$T52_C" "$W"
+t52_refuse "4b wrong source root even with --allow-unverified-corpus" "$T52_C" "$W" --allow-unverified-corpus
+W="$T52_PARENT/graphify-refresh-t52-bad4c"; t52_workdir "$W" "$T52_C"
+rm -f "$W/.graphify-source-root"
+t52_refuse "4c missing source-root marker" "$T52_C" "$W"
+grep -q -- '--allow-unverified-corpus' <<< "$out" && pass "T52 4c refusal names the --allow-unverified-corpus escape hatch" || fail "T52 4c refusal should name --allow-unverified-corpus: $out"
+
+# flag combinations
+W="$T52_PARENT/graphify-refresh-t52-flags"; t52_workdir "$W" "$T52_C"
+t52_refuse "--promote-only with --no-update" "$T52_C" "$W" --no-update
+for f in --publish --force --allow-unverified-corpus; do
+  out=$( bash "$SCRIPT" --name t52 --corpus-root "$T52_C" --maps-dir "$T52_MAPS" --title T --slug s "$f" 2>&1 ); rc=$?
+  [ "$rc" -eq 2 ] && pass "T52 $f without --promote-only refused with rc=2" || fail "T52 $f without --promote-only should refuse rc=2 (got $rc): $out"
+done
+out=$( bash "$SCRIPT" 2>&1 ); rc=$?
+grep -q -- '--promote-only' <<< "$out" && pass "T52 usage text documents --promote-only" || fail "T52 usage text missing --promote-only: $out"
+
+# 5. staleness: a promoted manifest newer than the workdir's graph.json refuses
+# (it would regress a newer graph) unless --force.
+T52_S="$WS/t52-stale-corpus"; t52_corpus "$T52_S"
+W="$T52_PARENT/graphify-refresh-t52-stale"; t52_workdir "$W" "$T52_S"
+touch -d '2 days ago' "$W/graphify-out/graph.json" 2>/dev/null || touch -t 200001010000 "$W/graphify-out/graph.json"
+mkdir -p "$T52_S/graphify-out"; printf '{"notes/a.md":{"mtime":1}}\n' > "$T52_S/graphify-out/manifest.json"
+t52_run "$T52_S" "$W"
+[ "$rc" -eq 2 ] && grep -qi 'newer' <<< "$out" && pass "T52 5 stale workdir refused with rc=2" || fail "T52 5 stale workdir should refuse rc=2 naming the newer manifest (got $rc): $out"
+[ ! -f "$T52_S/graphify-out/graph.json" ] && pass "T52 5 refusal left the promoted graph untouched" || fail "T52 5 refusal wrote graph.json"
+[ -f "$W/graphify-out/graph.json" ] && ! ls "$T52_PARENT"/graphify-refresh-t52-stale*.quarantine >/dev/null 2>&1 \
+  && pass "T52 5 refusal after the locks did not delete or quarantine the workdir" || fail "T52 5 workdir deleted/quarantined on refusal"
+[ ! -e "$T52_S/graphify-out/.extraction.lock" ] && [ ! -e "$T52_S/graphify-out/.promote.lock" ] \
+  && pass "T52 5 refusal released both locks" || fail "T52 5 refusal leaked a lock"
+t52_run "$T52_S" "$W" --force
+[ "$rc" -eq 0 ] && [ -f "$T52_S/graphify-out/graph.json" ] && pass "T52 5 --force promotes a stale workdir" || fail "T52 5 --force should promote (rc=$rc): $out"
+
+# 6. take the extraction lock like a normal run; fail fast if a live one holds it
+T52_L="$WS/t52-lock-corpus"; t52_corpus "$T52_L"
+W="$T52_PARENT/graphify-refresh-t52-locked"; t52_workdir "$W" "$T52_L"
+mkdir -p "$T52_L/graphify-out/.extraction.lock"
+printf 'other-holder\n' > "$T52_L/graphify-out/.extraction.lock/owner"
+date -u +%s > "$T52_L/graphify-out/.extraction.lock/acquired"
+export GRAPHIFY_EXTRACTION_LOCK_TIMEOUT_SECONDS=1
+t52_run "$T52_L" "$W"
+unset GRAPHIFY_EXTRACTION_LOCK_TIMEOUT_SECONDS
+[ "$rc" -eq 2 ] && grep -q 'extraction lock' <<< "$out" && pass "T52 6 live extraction lock -> fail fast rc=2" || fail "T52 6 should fail fast on a held extraction lock (rc=$rc): $out"
+[ ! -f "$T52_L/graphify-out/graph.json" ] && [ -d "$W" ] && pass "T52 6 held-lock refusal promoted nothing and kept the workdir" || fail "T52 6 promoted or removed the workdir under a held lock"
+
+# happy path: promote WITHOUT publishing (the operator's explicit --publish gate)
+W="$T52_PARENT/graphify-refresh-t52-happy"; t52_workdir "$W" "$T52_C"
+: > "$T52_LOG"
+t52_run "$T52_C" "$W"
+[ "$rc" -eq 0 ] && pass "T52 happy path promotes (rc=0)" || fail "T52 happy path rc=$rc: $out"
+grep -q '"id": *"n1"' "$T52_C/graphify-out/graph.json" 2>/dev/null && pass "T52 workdir graph promoted into the out dir" || fail "T52 promoted graph.json missing the workdir's nodes"
+[ -f "$T52_C/graphify-out/GRAPH_REPORT.md" ] && pass "T52 GRAPH_REPORT.md promoted" || fail "T52 GRAPH_REPORT.md not promoted"
+if python3 - "$T52_C/graphify-out/manifest.json" <<'PYEOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert "notes/a.md" in d, d
+assert not any(k.startswith("graphify-out/") or k.startswith(".graphify") for k in d), d
+PYEOF
+then pass "T52 manifest stamped from the workdir's corpus copy"; else fail "T52 manifest not stamped from the workdir copy"; fi
+[ "$(head -n1 "$T52_C/graphify-out/.graphify_root" 2>/dev/null)" = "." ] && pass "T52 .graphify_root stamped" || fail "T52 .graphify_root missing/wrong"
+[ ! -s "$T52_LOG" ] && pass "T52 promote-only never invoked graphify (no extraction)" || fail "T52 graphify was invoked: $(cat "$T52_LOG")"
+[ -f "$W/graphify-out/graph.json" ] && [ -f "$W/.graphify-corpus" ] && pass "T52 workdir NEVER deleted on success" || fail "T52 workdir deleted or altered on success"
+grep -qF "promoted; safe to remove $W" <<< "$out" && pass "T52 success names the workdir as safe to remove" || fail "T52 missing 'promoted; safe to remove' line: $out"
+[ ! -e "$T52_MAPS/t52-map.md" ] && pass "T52 MOC NOT published without --publish" || fail "T52 published the MOC without --publish"
+[ ! -e "$T52_C/graphify-out/.promote.lock" ] && [ ! -e "$T52_C/graphify-out/.extraction.lock" ] && pass "T52 both locks released" || fail "T52 a lock was left behind"
+
+# --publish: the MOC is published from the promoted graph, workdir still kept
+T52_P="$WS/t52-publish-corpus"; t52_corpus "$T52_P"
+W="$T52_PARENT/graphify-refresh-t52-pub"; t52_workdir "$W" "$T52_P"
+t52_run "$T52_P" "$W" --publish
+[ "$rc" -eq 0 ] && [ -f "$T52_MAPS/t52-map.md" ] && grep -q 'graph_nodes: 42' "$T52_MAPS/t52-map.md" \
+  && pass "T52 --publish publishes the MOC from the promoted report" || fail "T52 --publish should publish (rc=$rc): $out"
+[ -f "$W/graphify-out/graph.json" ] && pass "T52 workdir kept after --publish" || fail "T52 workdir removed after --publish"
+
+# --allow-unverified-corpus: an orphan predating the source-root marker
+T52_U="$WS/t52-unverified-corpus"; t52_corpus "$T52_U"
+W="$T52_PARENT/graphify-refresh-t52-old"; t52_workdir "$W" "$T52_U"
+rm -f "$W/.graphify-source-root"
+t52_run "$T52_U" "$W" --allow-unverified-corpus
+[ "$rc" -eq 0 ] && [ -f "$T52_U/graphify-out/graph.json" ] && pass "T52 4d --allow-unverified-corpus promotes a marker-less orphan" || fail "T52 4d should promote (rc=$rc): $out"
+
+# a *.quarantine dir (graph.json directly inside, no corpus copy, no markers)
+T52_Q="$WS/t52-quarantine-corpus"; t52_corpus "$T52_Q"
+QD="$T52_PARENT/graphify-refresh-t52-qq.quarantine"; mkdir -p "$QD"
+printf '{"nodes":[{"id":"n1","label":"Alpha","source_file":"notes/a.md"}],"links":[]}' > "$QD/graph.json"
+printf '%s\n' "$REPORT_FIXTURE" > "$QD/GRAPH_REPORT.md"
+t52_refuse "1d quarantine without markers" "$T52_Q" "$QD"
+t52_run "$T52_Q" "$QD" --allow-unverified-corpus
+[ "$rc" -eq 0 ] && [ -f "$T52_Q/graphify-out/graph.json" ] && [ -f "$QD/graph.json" ] \
+  && pass "T52 quarantine dir promoted with --allow-unverified-corpus and kept" || fail "T52 quarantine promote (rc=$rc): $out"
+if python3 - "$T52_Q/graphify-out/manifest.json" <<'PYEOF'
+import json, sys
+assert "notes/a.md" in json.load(open(sys.argv[1]))
+PYEOF
+then pass "T52 quarantine manifest keyed from the live corpus (no corpus copy inside)"; else fail "T52 quarantine manifest wrong"; fi
+
+# the normal extraction path writes the source-root marker promote-only checks
+T52_N="$WS/t52-normal-corpus"; t52_corpus "$T52_N"
+T52_MARKER_LOG="$WS/t52-marker.log"; : > "$T52_MARKER_LOG"
+T52_MBIN="$WS/t52-mbin"; mkdir -p "$T52_MBIN"
+cat > "$T52_MBIN/graphify" <<STUB
+#!/usr/bin/env bash
+target=""; if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
+[ -f "\$target/.graphify-source-root" ] && cat "\$target/.graphify-source-root" > "$T52_MARKER_LOG"
+exec "$BIN/graphify" "\$@"
+STUB
+chmod +x "$T52_MBIN/graphify"
+out=$( GRAPHIFY_MAP_BIN="$T52_MBIN/graphify" bash "$SCRIPT" --name t52n --corpus-root "$T52_N" \
+  --maps-dir "$T52_MAPS" --title N --slug t52n-map --scratch "$T52_PARENT" 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] || fail "T52 normal run rc=$rc: $out"
+[ "$(cat "$T52_MARKER_LOG")" = "$(cd "$T52_N" && pwd -P)" ] \
+  && pass "T52 normal extraction writes .graphify-source-root = canonical corpus root before extracting" \
+  || fail "T52 .graphify-source-root marker missing/wrong at extraction time: '$(cat "$T52_MARKER_LOG")'"
+
+# leak refusal: a workdir whose graph.json carries a host path is refused at the
+# promote-time leak scan, nothing is promoted, no scan temp is left in the
+# workdir, and the workdir is kept (never-delete).
+T52_L="$WS/t52-leak-corpus"; t52_corpus "$T52_L"
+W="$T52_PARENT/graphify-refresh-t52-leak"; t52_workdir "$W" "$T52_L"
+printf '{"nodes":[{"id":"n1","label":"Alpha","source_file":"/home/someone/notes/a.md"}],"links":[]}' > "$W/graphify-out/graph.json"  # leak-allow: home-path fixture -- a host path the promote-time leak scan must refuse
+t52_run "$T52_L" "$W"
+[ "$rc" -ne 0 ] && pass "T52 leak: workdir with a host path is refused (rc=$rc)" || fail "T52 leak: promoted a host-path graph"
+[ ! -e "$T52_L/graphify-out/graph.json" ] && pass "T52 leak: nothing promoted" || fail "T52 leak: graph.json promoted"
+t52_tmp_left=0; for f in "$W"/.graph-structural-fields.*; do [ -e "$f" ] && t52_tmp_left=1; done
+[ "$t52_tmp_left" -eq 0 ] && pass "T52 leak: no scan temp left in the workdir" || fail "T52 leak: scan temp left in the workdir"
+[ -d "$W/graphify-out" ] && pass "T52 leak: workdir kept" || fail "T52 leak: workdir removed"
+
 if [ "$FAILS" -ne 0 ]; then echo "$FAILS FAILURES"; exit 1; fi
 if [ "$SKIPS" -ne 0 ]; then echo "ALL PASS ($SKIPS skipped)"; else echo "ALL PASS"; fi

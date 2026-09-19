@@ -39,6 +39,32 @@ prints a next-step hint to run `/graph-publish` (HIMMEL-1129) to ship the
 refreshed tracked `graphify-out/` — it does NOT auto-run it (that commit + push
 + PR stays an explicit operator action).
 
+**Recovering an orphaned extraction (HIMMEL-3205).** When an extraction finished
+but its promote never ran (the runner was killed mid-flight), re-promote it
+without paying for a second extraction. `graph-refresh.sh` does not forward this
+flag; call the runner directly, once per corpus, with the corpus's own argument
+set:
+
+```bash
+bash scripts/graphify/refresh-graph-map.sh --name <name> --corpus-root <root> \
+  --maps-dir <maps> --title <title> --slug <slug> \
+  --promote-only /tmp/graphify-refresh-<name>-XXXXXX [--publish] [--force]
+```
+
+`--promote-only <dir>` runs only validate → extraction lock → promote lock →
+harden → host-path leak scan → promote + manifest stamp; it does no corpus copy
+and no extraction. `<dir>` must be a `graphify-refresh-<name>-*` scratch workdir
+(holding `graphify-out/`) or its `*.quarantine` sibling (`graph.json` directly
+inside). Each refusal exits `2` with nothing under the out dir touched: a bad
+basename, an unparseable or empty `graph.json`, a `GRAPH_REPORT.md` without a
+header, a `.graphify-corpus` / `.graphify-source-root` marker that disagrees
+with `--corpus-class` / the canonical `--corpus-root` (a missing marker is
+refused unless `--allow-unverified-corpus`), an out dir whose promoted manifest
+is newer than the workdir's `graph.json` (unless `--force`), a live extraction
+holding the lock, and `--no-update`. The MOC is published only with an explicit
+`--publish`. The workdir is never deleted; on success the runner prints
+`promoted; safe to remove <dir>`.
+
 Timeout calibration lives in `refresh-graph-map.sh` (HIMMEL-1645); this command
 forwards the caller's environment verbatim and does not set `GRAPHIFY_API_TIMEOUT`.
 
