@@ -887,33 +887,37 @@ run_fence deny no "$HIMMEL" "unreadable phi-roots -> rc 2" \
 echo "== phi-roots / egress-denylist trim + #-comment skip (HIMMEL-3242) =="
 mkdir -p "$HIMMEL/phiA" "$HIMMEL/phiB" "$HIMMEL/other"
 : > "$HIMMEL/phiA/x.md"; : > "$HIMMEL/phiB/y.md"; : > "$HIMMEL/other/z.md"
-# trimcfg <list-name> <printf-format> [args...] — fresh config dir, echoes it.
+# trimcfg <list-name> <printf-format> [args...] — fresh config dir, left in
+# $_cfg. Not a command substitution: a fixture failure aborts the suite, since
+# an empty $_cfg would make the allow cases pass vacuously (no list at all).
 trimcfg() {
-    local d; d="$(mktemp -d "$WS/trimcfg.XXXXXX")"
     local name="$1" fmt="$2"; shift 2
+    if ! _cfg="$(mktemp -d "$WS/trimcfg.XXXXXX")" || [ ! -d "$_cfg" ]; then
+        echo "FAIL: trimcfg: mktemp -d under $WS failed" >&2; exit 1
+    fi
     # shellcheck disable=SC2059 # fmt is the per-case printf format
-    printf "$fmt" "$@" > "$d/$name"
-    printf '%s' "$d"
+    printf "$fmt" "$@" > "$_cfg/$name" \
+        || { echo "FAIL: trimcfg: cannot write $_cfg/$name" >&2; exit 1; }
 }
-_cfg="$(trimcfg phi-roots '   %s\n' "$HIMMEL/phiA")"
+trimcfg phi-roots '   %s\n' "$HIMMEL/phiA"
 run_fence deny no "$HIMMEL" "phi-roots: space-indented salus root classifies salus -> deny" \
     "graphify update $HIMMEL/phiA/x.md --backend deepseek" CLAUDE_GLM_CONFIG_DIR="$_cfg"
-_cfg="$(trimcfg phi-roots '\t%s\t\n' "$HIMMEL/phiA")"
+trimcfg phi-roots '\t%s\t\n' "$HIMMEL/phiA"
 run_fence deny no "$HIMMEL" "phi-roots: tab-padded salus root classifies salus -> deny" \
     "graphify update $HIMMEL/phiA/x.md --backend deepseek" CLAUDE_GLM_CONFIG_DIR="$_cfg"
-_cfg="$(trimcfg egress-denylist '  %s  \r\n' "$HIMMEL/phiA")"
+trimcfg egress-denylist '  %s  \r\n' "$HIMMEL/phiA"
 run_fence deny no "$HIMMEL" "egress-denylist: space-padded CRLF salus root classifies salus -> deny" \
     "graphify update $HIMMEL/phiA/x.md --backend deepseek" CLAUDE_GLM_CONFIG_DIR="$_cfg"
-_cfg="$(trimcfg phi-roots '# operator note\n%s\n# trailing note\n' "$HIMMEL/phiA")"
+trimcfg phi-roots '# operator note\n%s\n# trailing note\n' "$HIMMEL/phiA"
 run_fence deny no "$HIMMEL" "phi-roots: root between #-comment lines still classifies salus -> deny" \
     "graphify update $HIMMEL/phiA/x.md --backend deepseek" CLAUDE_GLM_CONFIG_DIR="$_cfg"
-_cfg="$(trimcfg phi-roots '  # indented note\n%s\n' "$HIMMEL/phiA")"
+trimcfg phi-roots '  # indented note\n%s\n' "$HIMMEL/phiA"
 run_fence deny no "$HIMMEL" "phi-roots: indented #-comment line does not hide the next root -> deny" \
     "graphify update $HIMMEL/phiA/x.md --backend deepseek" CLAUDE_GLM_CONFIG_DIR="$_cfg"
-_cfg="$(trimcfg phi-roots '   \n\t\n\n#\n')"
+trimcfg phi-roots '   \n\t\n\n#\n'
 run_fence allow no "$HIMMEL" "phi-roots: blank / whitespace-only / bare-# lines match nothing -> allow" \
     "graphify update $HIMMEL/other/z.md --backend deepseek" CLAUDE_GLM_CONFIG_DIR="$_cfg"
-_cfg="$(trimcfg phi-roots '# %s\n  #%s\n' "$HIMMEL/phiB" "$HIMMEL/phiB")"
+trimcfg phi-roots '# %s\n  #%s\n' "$HIMMEL/phiB" "$HIMMEL/phiB"
 run_fence allow no "$HIMMEL" "phi-roots: a commented-out root is NOT an entry -> allow" \
     "graphify update $HIMMEL/phiB/y.md --backend deepseek" CLAUDE_GLM_CONFIG_DIR="$_cfg"
 
