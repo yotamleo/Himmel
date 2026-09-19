@@ -103,10 +103,39 @@ handover_mode() {
     fi
 }
 
+# _arm_realpath_walk <path> -- pure-bash `realpath -m`: resolve every existing
+# directory component physically (cd -P) and normalise ./.. lexically past the
+# first missing one. For hosts whose realpath lacks -m (macOS/BSD) and that have
+# no armored python (HIMMEL-3177). ponytail: a symlink LEAF that is a file (or
+# dangling) is kept as written, where GNU realpath -m would follow it.
+_arm_realpath_walk() {
+    local _in="$1" _cur="" _seg _rest _phys
+    [ -n "$_in" ] || return 1
+    case "$_in" in /*) ;; *) _in="$PWD/$_in" ;; esac
+    _rest="${_in#/}"
+    while [ -n "$_rest" ]; do
+        case "$_rest" in
+            */*) _seg="${_rest%%/*}"; _rest="${_rest#*/}" ;;
+            *) _seg="$_rest"; _rest="" ;;
+        esac
+        case "$_seg" in
+            ""|.) continue ;;
+            ..) _cur="${_cur%/*}"; continue ;;
+        esac
+        if [ -d "$_cur/$_seg" ] && _phys=$(cd -P "$_cur/$_seg" 2>/dev/null && pwd -P); then
+            _cur="${_phys%/}"
+        else
+            _cur="$_cur/$_seg"
+        fi
+    done
+    printf '%s\n' "${_cur:-/}"
+}
+
 # Canonicalise a path, tolerating non-existent ones: GNU realpath -m, else
-# armored python3 pathlib, else the input unchanged (best effort). Shared by
-# arm-resume.sh's scheduler identity and the arms-registry contract so those
-# two keys cannot drift (HIMMEL-1304/HIMMEL-1344).
+# armored python3 pathlib, else a pure-bash walk (_arm_realpath_walk), else the
+# input unchanged (best effort). Shared by arm-resume.sh's scheduler identity
+# and the arms-registry contract so those two keys cannot drift
+# (HIMMEL-1304/HIMMEL-1344).
 _arm_realpath() {
     local _p=""
     _p=$(realpath -m "$1" 2>/dev/null) || _p=""
@@ -115,6 +144,7 @@ _arm_realpath() {
             _p="$PY_ARMOR_OUT"
         fi
     fi
+    [ -n "$_p" ] || _p=$(_arm_realpath_walk "$1") || _p=""
     [ -n "$_p" ] || _p="$1"
     printf '%s\n' "$_p"
 }

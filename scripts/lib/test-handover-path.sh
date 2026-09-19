@@ -425,6 +425,30 @@ else
 fi
 _ARM_CACHE_DIR="$T9I_SAVED_CACHE_DIR"
 
+# T10 (HIMMEL-3177): _arm_realpath on a host whose realpath lacks -m (macOS/BSD)
+# and has no armored python must still canonicalise -- T8a/T8b/T9f went red in the
+# extended-tier nightly because it fell through to the input unchanged. A shell
+# function named realpath shadows the binary and fails like BSD's "illegal option".
+mkdir -p "$TMP/t10/real/sub"
+ln -s "$TMP/t10/real" "$TMP/t10/link"
+T10_REAL=$(cd -P "$TMP/t10/real" && pwd -P)
+# shellcheck disable=SC2317,SC2329 # realpath() is invoked by _arm_realpath, not directly
+t10_bsd_realpath() { (realpath() { return 1; }; _arm_realpath "$@"); }
+assert_eq "T10a no-realpath-m: symlinked dir + '..' + missing leaf canonicalises" \
+    "$T10_REAL/sub/new.md" "$(t10_bsd_realpath "$TMP/t10/link/sub/../sub/new.md")"
+assert_eq "T10b no-realpath-m: '..' after a missing component pops it lexically" \
+    "$T10_REAL/x" "$(t10_bsd_realpath "$TMP/t10/link/missing/../x")"
+assert_eq "T10c no-realpath-m: a relative path resolves against \$PWD" \
+    "$T10_REAL/sub/f" "$(cd "$T10_REAL" && t10_bsd_realpath "sub/../sub/f")"
+assert_eq "T10d no-realpath-m: root stays root" "/" "$(t10_bsd_realpath "/")"
+assert_eq "T10e no-realpath-m: empty input is returned unchanged" "" "$(t10_bsd_realpath "")"
+if realpath -m / >/dev/null 2>&1; then
+    assert_eq "T10f the pure-bash walk agrees with GNU realpath -m" \
+        "$(realpath -m "$TMP/t10/link/sub/../sub/new.md")" "$(_arm_realpath_walk "$TMP/t10/link/sub/../sub/new.md")"
+else
+    echo "SKIP T10f: this host's realpath has no -m (no GNU reference to compare against)"
+fi
+
 if [ "$FAILED" -gt 0 ]; then
     echo "---"
     echo "FAIL $FAILED case(s)"
