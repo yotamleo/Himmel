@@ -7,7 +7,10 @@ case "$2" in
     cat "$GH_STUB_DIR/graphql.json"
     ;;
   repos/*/readme)
-    if [ -f "$GH_STUB_DIR/readme.b64" ]; then
+    if [ -f "$GH_STUB_DIR/readme.fail" ]; then
+      cat "$GH_STUB_DIR/readme.fail" >&2
+      exit 1
+    elif [ -f "$GH_STUB_DIR/readme.b64" ]; then
       cat "$GH_STUB_DIR/readme.b64"
     else
       echo "gh: Not Found (HTTP 404)" >&2

@@ -32,7 +32,7 @@ afterEach(() => {
  * `readme` = Buffer of the README bytes the authenticated API serves, or null
  * for "the API 404s". `pushedAt` is what GraphQL reports upstream.
  */
-function run({ notes, readme = null, pushedAt = "2026-09-10T15:00:00Z", oid = "abc123", apply = true }) {
+function run({ notes, readme = null, readmeError = null, pushedAt = "2026-09-10T15:00:00Z", oid = "abc123", apply = true }) {
   const vault = join(work, "vault");
   const stubDir = join(work, "stub");
   mkdirSync(vault, { recursive: true });
@@ -52,6 +52,8 @@ function run({ notes, readme = null, pushedAt = "2026-09-10T15:00:00Z", oid = "a
     const b64 = readme.toString("base64").replace(/(.{60})/g, "$1\n");
     writeFileSync(join(stubDir, "readme.b64"), b64 + "\n");
   }
+  // `readmeError` = stderr text of a NON-404 README API failure (5xx, auth, rate limit).
+  if (readmeError !== null) writeFileSync(join(stubDir, "readme.fail"), readmeError + "\n");
   // A stub `gh` first on PATH, under a name the script's execFileSync("gh") finds.
   const binDir = join(work, "bin");
   mkdirSync(binDir, { recursive: true });
@@ -202,5 +204,25 @@ describe("item 1 — README hash comes from the authenticated README API, same b
     const out = r.read("30-Resources/Tech/repo.md").toString();
     expect(out).not.toContain("readme_sha256");
     expect(out).toContain("upstream_commit: abc123"); // the rest of the identity still lands
+    // luna-ingest permits omission on a 404 only, and a 404 is not a failure.
+    expect(r.summary.readmeFetchFailed).toBe(0);
+    expect(r.summary.readmeFetchFailedRepos).toEqual([]);
+  });
+
+  test("a NON-404 README failure is surfaced in the summary, not silently omitted", () => {
+    const r = run({
+      notes: { "30-Resources/Tech/repo.md": LF_NOTE },
+      readmeError: "gh: Bad Gateway (HTTP 502)",
+    });
+    const out = r.read("30-Resources/Tech/repo.md").toString();
+    expect(out).not.toContain("readme_sha256"); // nothing to hash
+    expect(r.summary.readmeFetchFailed).toBe(1);
+    expect(r.summary.readmeFetchFailedRepos).toEqual(["Owner/Repo"]);
+  });
+
+  test("a successful README fetch reports zero README failures", () => {
+    const r = run({ notes: { "30-Resources/Tech/repo.md": LF_NOTE }, readme: README });
+    expect(r.summary.readmeFetchFailed).toBe(0);
+    expect(r.summary.readmeFetchFailedRepos).toEqual([]);
   });
 });

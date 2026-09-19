@@ -148,16 +148,22 @@ function ghGraphqlBatch(rawKeys) {
 // repos and non-standard README names resolve and both paths hash one document.
 // ponytail: a README over the API's 1 MB inline limit returns empty `.content`,
 // which hashes as empty bytes here exactly as it does in luna-ingest.
+// Returns { sha256, failed }: a 404 is the one sanctioned omission (no README ->
+// no field, not a failure); any other gh error also omits the field but is
+// flagged `failed` so main() can surface it instead of dropping it silently.
 function fetchReadmeSha256(nameWithOwner) {
   try {
     const out = execFileSync("gh", ["api", `repos/${nameWithOwner}/readme`, "--jq", ".content"], {
       encoding: "utf8",
       maxBuffer: 32 * 1024 * 1024,
-      stdio: ["ignore", "pipe", "ignore"],
+      stdio: ["ignore", "pipe", "pipe"],
     });
-    return readmeSha256FromApiContent(out);
-  } catch {
-    return null; // 404 (no README) or gh failure: omit the field
+    return { sha256: readmeSha256FromApiContent(out), failed: false };
+  } catch (e) {
+    const stderr = e.stderr ? e.stderr.toString() : "";
+    if (/HTTP 404/.test(stderr)) return { sha256: null, failed: false };
+    console.error(`backfill-source-identity: README fetch failed for ${nameWithOwner}: ${stderr.trim() || e.message}`);
+    return { sha256: null, failed: true };
   }
 }
 
@@ -192,6 +198,7 @@ async function main() {
   let reposDateOnly = 0;
   let reposFetchFailed = 0;
   const clipOnlyRepos = [];
+  const readmeFetchFailedRepos = [];
 
   for (const [canonicalKey, entry] of merged) {
     reposChecked++;
@@ -206,7 +213,8 @@ async function main() {
     const newPushedAtDate = upstreamPushedAt ? upstreamPushedAt.slice(0, 10) : null;
     const newStars = typeof gh.stargazerCount === "number" ? gh.stargazerCount : null;
 
-    const readmeSha256 = fetchReadmeSha256(gh.nameWithOwner);
+    const { sha256: readmeSha256, failed: readmeFailed } = fetchReadmeSha256(gh.nameWithOwner);
+    if (readmeFailed) readmeFetchFailedRepos.push(gh.nameWithOwner);
 
     const hasTechNote = entry.notes.some((n) => n.path.startsWith("30-Resources/Tech/"));
     if (!hasTechNote) clipOnlyRepos.push(canonicalKey);
@@ -261,6 +269,8 @@ async function main() {
     reposUnchanged,
     reposDateOnly,
     reposFetchFailed,
+    readmeFetchFailed: readmeFetchFailedRepos.length,
+    readmeFetchFailedRepos,
     notesUpdated,
     renames,
     clipOnlyRepos,
