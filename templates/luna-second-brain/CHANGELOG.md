@@ -8,6 +8,18 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.46] — 2026-09-19
+
+### Fixed
+- `upgrade.sh` no longer reads a formatting-only rewrite as a local edit on a
+  vault that a previous upgrade already snapshotted. The stamp's snapshot is a
+  hash and could not tell a newline/re-indent rewrite (Obsidian) from a real
+  edit once the template had also changed the file; on a snapshot mismatch the
+  vault's git baseline now answers, but only a verified one — the content at
+  the stamp commit must hash to the snapshot, so a local edit committed in the
+  stamp commit itself is still withheld. A vault with no git baseline stays
+  fail-closed. (HIMMEL-3037)
+
 ## [0.4.45] — 2026-09-19
 
 ### Fixed

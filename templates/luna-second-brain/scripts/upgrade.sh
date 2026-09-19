@@ -397,6 +397,28 @@ withhold_notice() {
     echo "  local edits withheld (not overwritten): $rel (backup: $backup_note) [baseline: $prov]"
 }
 
+# snapshot_git_equiv <rel> <dst> <snap>: exit 0 iff <dst> differs from the
+# snapshot ONLY by formatting (HIMMEL-3037). The snapshot is a hash, so it
+# cannot itself be compared newline/JSON-insensitively; instead the vault's git
+# baseline is consulted — but only a VERIFIED one: the file's content at
+# STAMP_COMMIT must hash to <snap>. That proves the commit holds what the
+# template wrote; a stamp commit that also swallowed a local edit (the
+# HIMMEL-2903 poison) hashes differently and is NOT trusted. Every other case
+# (no repo/stamp commit, BASELINE_ERROR, file absent or unreadable there,
+# hash mismatch, a real difference) exits 1 = keep withholding, fail-closed.
+snapshot_git_equiv() {
+    local rel="$1" dst="$2" snap="$3" committed rc=1
+    [ "$BASELINE_ERROR" = 0 ] && [ -n "$STAMP_COMMIT" ] || return 1
+    committed="$(mktemp)" && [ -e "$committed" ] || return 1
+    if git -C "$VAULT_DIR" show "$STAMP_COMMIT:./$rel" > "$committed" 2>/dev/null \
+        && [ "sha256:$(sha_of "$committed")" = "$snap" ] \
+        && content_equiv "$committed" "$dst" "$rel"; then
+        rc=0
+    fi
+    rm -f "$committed"
+    return $rc
+}
+
 # has_local_edit <rel> <dst> [print]: exit 0 iff <dst> differs from the
 # baseline for <rel> — i.e. the vault edited it since its last upgrade.
 # Baseline resolution order (HIMMEL-2903):
@@ -418,13 +440,16 @@ has_local_edit() {
 
     # (1) Snapshot baseline: the sha the template itself last wrote here.
     # ponytail: a HASH cannot be compared newline/JSON-insensitively (HIMMEL-3037),
-    # so a file Obsidian re-serialised AND the template has since really changed
-    # still withholds here; the git baseline below and the template-vs-vault
-    # compare in process() do ignore formatting-only drift.
+    # so a mismatch is only forgiven when a VERIFIED git baseline (see
+    # snapshot_git_equiv) shows the difference is formatting-only. A vault with
+    # no git baseline, or whose stamp commit already holds the re-serialised
+    # content (nothing left to verify against the hash), still withholds a file
+    # Obsidian re-serialised AND the template has since really changed.
     local snap dst_sha
     if snap="$(snapshot_sha "$rel")" && [ -n "$snap" ]; then
         dst_sha="sha256:$(sha_of "$dst")"
         if [ "$snap" != "$dst_sha" ]; then
+            snapshot_git_equiv "$rel" "$dst" "$snap" && return 1
             if [ "$print" = 1 ]; then
                 withhold_notice "$rel" "snapshot"
                 # The snapshot is a hash, not content — there is nothing to

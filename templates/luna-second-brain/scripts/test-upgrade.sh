@@ -1431,6 +1431,82 @@ t58_out=$(run_upgrade --yes 2>&1); t58_rc=$?
 if [ "$t58_rc" -eq 0 ]; then pass "T58 git baseline: newline-only vault drift + a real template change exits 0"; else fail "T58 git baseline: newline-only vault drift + a real template change exits 0" "rc=$t58_rc, out: $t58_out"; fi
 assert_eq "T58 git baseline: the template's new app.json was written" "$(sha_of "$T/.obsidian/app.json")" "$(sha_of "$V/.obsidian/app.json")"
 
+# T62 (HIMMEL-3037, CodeRabbit round on #888): the SNAPSHOT baseline is a hash,
+# so a vault that a prior upgrade snapshotted, Obsidian then re-serialised, and
+# the template then REALLY changed read as a local edit before the formatting-
+# tolerant git compare was ever reached. On a snapshot mismatch the git baseline
+# now answers too — but only a VERIFIED one: the content at STAMP_COMMIT must
+# hash to the snapshot (else a local edit committed in the stamp commit itself
+# would be trusted, the HIMMEL-2903 poison).
+t62_seed() {   # $1 case tag; git vault upgraded once + committed; template then changes app.json
+    T="$TMP/$1-tmpl"; V="$TMP/$1-vault"
+    make_template "$T" "1.0.0"
+    printf '{"promptDelete":false,"alwaysUpdateLinks":true}\n' > "$T/.obsidian/app.json"
+    mkdir -p "$V"; stamp_vault "$V" "0.1.0"
+    git -C "$V" init -q
+    git -C "$V" config user.email "test@example.com"
+    git -C "$V" config user.name "Test"
+    git -C "$V" add -A
+    git -C "$V" commit -q --no-verify -m "seed"
+    run_upgrade --yes >/dev/null 2>&1
+    git -C "$V" add -A
+    git -C "$V" commit -q --no-verify -m "upgrade 1.0.0"
+    printf '{"metadata":{"version":"1.0.1"}}\n' > "$T/marketplace/.claude-plugin/marketplace.json"
+    printf '{"promptDelete":true,"alwaysUpdateLinks":true}\n' > "$T/.obsidian/app.json"
+}
+t62_expect_taken() {   # $1 label; vault must have taken the template's app.json and stamped 1.0.1
+    assert_eq "$1: run exits 0" "0" "$t62_rc"
+    assert_eq "$1: the template's new app.json was written" "$(sha_of "$T/.obsidian/app.json")" "$(sha_of "$V/.obsidian/app.json")"
+    assert_eq "$1: stamp advances" "1.0.1" "$(t53_stamp_version)"
+}
+t62_expect_withheld() {   # $1 label
+    assert_eq "$1: run exits 3 (NEEDS-RECONCILE)" "3" "$t62_rc"
+    case "$t62_out" in
+        *"local edits withheld (not overwritten): .obsidian/app.json"*) pass "$1: app.json is withheld as a local edit" ;;
+        *) fail "$1: app.json is withheld as a local edit" "got: $t62_out" ;;
+    esac
+    assert_eq "$1: stamp NOT advanced" "1.0.0" "$(t53_stamp_version)"
+}
+
+# T62a: newline-only Obsidian rewrite of an already-snapshotted, stamp-committed
+# file + a later real template change => not a local edit, template taken.
+t62_seed t62a
+printf '{"promptDelete":false,"alwaysUpdateLinks":true}' > "$V/.obsidian/app.json"
+t62_out=$(run_upgrade --yes 2>&1); t62_rc=$?
+t62_expect_taken "T62a newline-only rewrite + later template change"
+# T62b: same with re-indented / re-keyed JSON (needs jq).
+if jq -n . >/dev/null 2>&1; then
+    t62_seed t62b
+    printf '{\n\t"alwaysUpdateLinks": true,\n\t"promptDelete": false\n}' > "$V/.obsidian/app.json"
+    t62_out=$(run_upgrade --yes 2>&1); t62_rc=$?
+    t62_expect_taken "T62b re-indented rewrite + later template change"
+else
+    echo "SKIP T62b — no working jq on PATH"
+fi
+# T62c control: a REAL local edit on top of the snapshot is still withheld.
+t62_seed t62c
+printf '{"promptDelete":"edited-by-hand","alwaysUpdateLinks":true}' > "$V/.obsidian/app.json"
+t62_out=$(run_upgrade --yes 2>&1); t62_rc=$?
+t62_expect_withheld "T62c real local edit over a snapshot"
+# T62d control: snapshot-only vault (no git baseline at all) stays fail-closed.
+t53_seed t62d
+printf '{"promptDelete":false,"alwaysUpdateLinks":true}' > "$V/.obsidian/app.json"
+printf '{"promptDelete":true,"alwaysUpdateLinks":true}\n' > "$T/.obsidian/app.json"
+t62_out=$(run_upgrade --yes 2>&1); t62_rc=$?
+t62_expect_withheld "T62d snapshot-only vault, no git baseline"
+# T62e control: a local edit COMMITTED IN the stamp commit itself (the 2903
+# poison) — the git baseline no longer hashes to the snapshot, so it is not
+# trusted and the file stays withheld.
+t62_seed t62e
+printf '{"promptDelete":"poisoned","alwaysUpdateLinks":true}' > "$V/.obsidian/app.json"
+git -C "$V" add -A
+git -C "$V" commit -q --no-verify -m "autosync: edit + stamp in one commit"
+printf '{"template":"luna-second-brain","version":"1.0.0","upgraded_at":"2026-01-02T00:00:00Z","files":%s}\n' "$("$PY" -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get("files",{})))' "$V/.vault-template.json")" > "$V/.vault-template.json"
+git -C "$V" add -A
+git -C "$V" commit -q --no-verify -m "stamp re-touched"
+t62_out=$(run_upgrade --yes 2>&1); t62_rc=$?
+t62_expect_withheld "T62e local edit committed alongside the stamp"
+
 # ---------------------------------------------------------------------------
 # T59-T60 (HIMMEL-3037): a run whose ONLY non-success is withheld local edits
 # (no write failure, no snapshot failure, no _CLAUDE.md conflict) is not a
