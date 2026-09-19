@@ -27,14 +27,17 @@ the cross-project layer (HIMMEL-3129), not a role in this fleet.
 
 ## Who holds what
 
-| Authority | Console | Judge | Relay | Leg |
-|---|---|---|---|---|
-| Queue lock on the **console** document | yes | no | no | no |
-| Queue lock on its **own** document | yes | yes | yes | yes |
-| Run `go.sh` (write a GO) | yes | no | no | no |
-| Mint a nonce, send a token-quoting message (`inbox-send.sh --token`) | yes | no | no | no |
-| Send tokenless messages (narrowing, halt, RUN notes) | yes | no | yes | to its console |
-| Rule on a question | acts on the ruling | rules, advisory | never | escalates |
+| Authority | Console | Judge session | Judge call | Relay | Work leg |
+|---|---|---|---|---|---|
+| Queue lock on the **console** document | yes | no | no | no | no |
+| Queue lock on its **own** document | yes | yes | no (in-process child: no document, no lock) | yes | yes |
+| Run `go.sh` (write a GO) | yes | no | no | no | no |
+| Mint a nonce, send a token-quoting message (`inbox-send.sh --token`) | yes | no | no | no | no |
+| Send tokenless messages (narrowing, halt, RUN notes) | yes | no | no | yes | to its console |
+| Rule on a question | acts on the ruling | rules, advisory | rules, advisory | never | escalates |
+
+A judge leg is a leg kind, so a judge session inherits the leg guards; a judge
+call runs inside the caller's process and holds nothing of its own.
 
 `go.sh` refuses under `HIMMEL_CONSOLE_LEG` (every console-spawned session) and
 under `HIMMEL_CONSOLE_RELAY`; `inbox-send.sh` refuses `--token` under
