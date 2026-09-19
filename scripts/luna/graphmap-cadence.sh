@@ -475,7 +475,7 @@ list_existing() {
     # "HIMMEL-GraphMap" (an operator's own unrelated task) must not be treated
     # as ours, or --force would delete it and a plain arm would false-dedup-block.
     printf '%s\n' "$out" \
-        | grep -o '"\\\?HIMMEL-GraphMap[^"]*"' 2>/dev/null \
+        | grep -o '"\\\?HIMMEL-Graph[^"]*"' 2>/dev/null \
         | tr -d '"\\' \
         | sort -u \
         | grep -xE "$TASK_MATCH_RE" || true

@@ -2128,6 +2128,22 @@ for _t in HIMMEL-GraphMapFoo HIMMEL-GraphXYZ HIMMEL-GraphPublish-HimmelExtra; do
     rm -f "$STATE/tasks/$_t"
 done
 
+# Test 16c (HIMMEL-3114): the publish leg is an OWNED task, so a lone
+# HIMMEL-GraphPublish-Himmel already registered makes a plain arm dedup-block
+# (rc 3, naming it) — the old `HIMMEL-GraphMap` pre-filter never listed it, so
+# such an arm silently proceeded. --force replaces it.
+echo "TEST: schtasks dedup — a lone publish task blocks a plain arm"
+touch "$STATE/tasks/HIMMEL-GraphPublish-Himmel"
+rc=0; out=$(run_gc arm --vault "$VAULT" 2>&1) || rc=$?
+assert_rc "plain arm dedup-blocks on a lone publish task" 3 "$rc"
+assert_contains "dedup message names the publish task" "HIMMEL-GraphPublish-Himmel" "$out"
+out=$(run_gc disarm 2>&1)
+if [ ! -f "$STATE/tasks/HIMMEL-GraphPublish-Himmel" ]; then
+    pass "disarm removes a lone publish task"
+else
+    fail "disarm left the publish task behind"
+fi
+
 # Test 16d (HIMMEL-3114): control — cygpath genuinely ABSENT still hits arm's
 # hard refusal (rc 2). Only meaningful where the suite installed the stub (a
 # real Git-Bash host cannot drop cygpath without dropping coreutils); the PATH is
