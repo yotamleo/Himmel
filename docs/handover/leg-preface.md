@@ -102,10 +102,10 @@ console change without your token is ignored, not merely distrusted.
   not proof of memory pressure (HIMMEL-3097). Before believing it, read
   `/proc/pressure/memory` and the `memory.events` under `/sys/fs/cgroup` for
   the cgroup in `/proc/self/cgroup`: all-zero pressure (`total=` included) and
-  `oom_kill 0` = no evidence of contention, so the kill is unexplained — not
-  memory pressure, and not yet a proven false positive either (a userspace
-  monitor can act without a kernel OOM, and the task may sit in another
-  cgroup). Then stop retrying, run the suite in the foreground, and report
+  `oom_kill 0` = no evidence of contention, so the kill is unexplained — these
+  readings show no sign of memory pressure, and they do not prove a false
+  positive either (a userspace monitor can act without a kernel OOM, and the
+  task may sit in another cgroup). Then stop retrying, run the suite in the foreground, and report
   `BLOCKED` with those numbers — never name a cause you have not controlled for.
 
 ## Tests
