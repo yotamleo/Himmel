@@ -305,5 +305,39 @@ else
   SKIP=$((SKIP+1))
 fi
 
+# --- 16 (HIMMEL-3107): --system-prompt-file / --tools / --isolated reach the
+# claude argv (the context-free CR floor reviewer depends on all three), and
+# are ABSENT when not asked for.
+FAKE_ARGV16="$W/fake-claude-argv16.sh"
+cat > "$FAKE_ARGV16" <<'EOF'
+#!/usr/bin/env bash
+cat > /dev/null
+printf '%s\n' "$@" > "$FAKE_ARGV_OUT"
+echo "OK" > "$FAKE_ARTIFACT"
+echo '{"is_error":false,"result":"done","session_id":"fake-argv16","permission_denials":[],"num_turns":2}'
+EOF
+chmod +x "$FAKE_ARGV16"
+SYS16="$W/system16.md"; echo "you are a reviewer" > "$SYS16"
+FAKE_ARGV_OUT="$W/argv16.txt" FAKE_ARTIFACT="$W/artifact16.txt" HIMMEL_CLAUDE_BIN="$FAKE_ARGV16" bash "$SUT" \
+  --role test-role --ticket HIMMEL-3107 --worktree "$WORKTREE" --cwd "$WORKTREE" \
+  --artifact "$W/artifact16.txt" --permission-mode acceptEdits --prompt-file "$PROMPT_FILE" \
+  --system-prompt-file "$SYS16" --tools "Read,Grep" --isolated >/dev/null 2>&1
+check "16 isolated run succeeds" "0" "$?"
+check "16 --system-prompt-file passed" "1" "$(grep -c -x -- '--system-prompt-file' "$W/argv16.txt")"
+check "16 --tools value passed" "Read,Grep" "$(grep -A1 -x -- '--tools' "$W/argv16.txt" | tail -1)"
+check "16 --isolated -> --safe-mode --strict-mcp-config --no-session-persistence" "3" \
+  "$(grep -c -x -E -- '--safe-mode|--strict-mcp-config|--no-session-persistence' "$W/argv16.txt")"
+FAKE_ARGV_OUT="$W/argv16b.txt" FAKE_ARTIFACT="$W/artifact16b.txt" HIMMEL_CLAUDE_BIN="$FAKE_ARGV16" bash "$SUT" \
+  --role test-role --ticket HIMMEL-3107 --worktree "$WORKTREE" --cwd "$WORKTREE" \
+  --artifact "$W/artifact16b.txt" --permission-mode default --prompt-file "$PROMPT_FILE" >/dev/null 2>&1
+check "16 without the flags none of them is passed" "0" \
+  "$(grep -c -x -E -- '--system-prompt-file|--tools|--safe-mode|--strict-mcp-config|--no-session-persistence' "$W/argv16b.txt")"
+FAKE_ARGV_OUT="$W/argv16c.txt" FAKE_ARTIFACT="$W/artifact16c.txt" HIMMEL_CLAUDE_BIN="$FAKE_ARGV16" bash "$SUT" \
+  --role test-role --ticket HIMMEL-3107 --worktree "$WORKTREE" --cwd "$WORKTREE" \
+  --artifact "$W/artifact16c.txt" --permission-mode default --prompt-file "$PROMPT_FILE" \
+  --system-prompt-file "$W/no-such-file.md" >/dev/null 2>&1
+check_ne "16 unreadable --system-prompt-file refuses" "0" "$?"
+rm -f "$LIVE_DIR"/*.json
+
 echo "--- $PASS passed, $FAIL failed, $SKIP skipped ---"
 [ "$FAIL" -eq 0 ]

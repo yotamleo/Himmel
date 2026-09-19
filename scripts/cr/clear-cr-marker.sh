@@ -30,13 +30,18 @@
 #      NON-claude — a single-model Claude self-review floor is not sufficient in
 #      this setup. Default off (adopter-portable HIMMEL-1224 floor). Else refuse.
 #      OPT-IN ESCAPE (CR_FLOOR_FALLBACK=claude-only, HIMMEL-2128): when 3b would
-#      otherwise refuse, accept the Claude-only floor instead IFF >=1 claude
-#      avail-ok row exists, zero blocking findings are recorded, AND every
-#      non-Claude lane that recorded ANY avail row at this head is
-#      `unavailable` with a VERIFIED-exhaustion reason (quota/rate-limit) — a
-#      lane that never ran, or that failed for any other reason (config,
-#      timeout, an unclassified rc), still refuses. Default unset (no
-#      fallback, today's behaviour unchanged).
+#      otherwise refuse, accept the Claude-only floor instead IFF a
+#      `claude-floor` avail-ok row exists WITH its provenance artifact (a
+#      context-free review by claude-floor-review.sh, HIMMEL-3107 — a
+#      session-written `claude` row no longer counts), zero blocking findings
+#      are recorded, AND every non-Claude lane that recorded ANY avail row at
+#      this head is `unavailable` with a VERIFIED-exhaustion reason
+#      (quota/rate-limit, or `vacuous` for coderabbit only) — or critics.json
+#      lists an EMPTY panel and no lane recorded a row. A lane that never ran
+#      (with a non-empty panel), or that failed for any other reason (auth,
+#      404, config, timeout, an unclassified rc), still refuses. `claude-floor`
+#      is the Claude model family: never cross-model evidence. Default unset
+#      (no fallback).
 #   4. The ledger records NO blocking finding at that SHA (severity crit|imp
 #      whose verdict is anything other than `disproved` or a TRACKED `deferred`).
 #      `amend` supersede records are applied before this is judged, so a
@@ -353,8 +358,15 @@ command -v node >/dev/null 2>&1 || {
     exit 11
 }
 ledger="$git_dir/cr-critic-scores.jsonl"
+# HIMMEL-3107: is the configured critic panel EMPTY? Read from the FIXED
+# sibling critics.json (no env seam, same as the ledger). Only a readable file
+# whose .panel is an empty array counts; missing/unreadable => 0 (not empty),
+# so an unknown roster never turns silence into an unlock.
+panel_empty=$(CRITICS="$SCRIPT_DIR/critics.json" node -e '
+  try { const p = JSON.parse(require("fs").readFileSync(process.env.CRITICS, "utf8")).panel;
+        console.log(Array.isArray(p) && p.length === 0 ? 1 : 0); } catch (_) { console.log(0); }' 2>/dev/null)
 # shellcheck disable=SC2016  # $-refs below are JS inside a single-quoted node script, not shell
-verdict=$(LEDGER="$ledger" FULL_SHA="$tip" node -e '
+verdict=$(LEDGER="$ledger" FULL_SHA="$tip" PANEL_EMPTY="${panel_empty:-0}" node -e '
   const fs = require("fs"), e = process.env;
   const lines = fs.existsSync(e.LEDGER)
       ? fs.readFileSync(e.LEDGER, "utf8").split("\n").filter(Boolean) : [];
@@ -433,7 +445,12 @@ verdict=$(LEDGER="$ledger" FULL_SHA="$tip" node -e '
   // exempted by this exact-string check and would count as non-claude for
   // both nonClaudeResponders and exhaustion tracking - deliberate: only the
   // literal "claude" string is ever the self-review floor.
-  let claudeOk = false;
+  // HIMMEL-3107: the ONE exception is "claude-floor", the context-free floor
+  // reviewer (claude-floor-review.sh). It is the Claude model family, so it is
+  // never cross-model evidence and never an exhaustion-tracked lane; floorOk
+  // (not claudeOk) is what unlocks CR_FLOOR_FALLBACK - a session-written
+  // "claude" self-review row no longer does.
+  let claudeOk = false, floorOk = false;
   const availByModel = new Map();
   // HIMMEL-2067: ANY finding at this head with no EFFECTIVE verdict (null,
   // undefined or empty string, after amends are applied) — not just
@@ -519,7 +536,7 @@ verdict=$(LEDGER="$ledger" FULL_SHA="$tip" node -e '
           // one at this head wins - not just the "ok" rows gate 3 counts -
           // so a lane that stayed unavailable is visible to the floor-fallback
           // eligibility check below.
-          if (model && model !== "claude") {
+          if (model && model !== "claude" && model !== "claude-floor") {
               availByModel.set(model, {
                   status: (typeof o.status === "string" ? o.status : "").trim().toLowerCase(),
                   reason: (typeof o.reason === "string" ? o.reason : "").trim().toLowerCase(),
@@ -533,8 +550,9 @@ verdict=$(LEDGER="$ledger" FULL_SHA="$tip" node -e '
               // when required. (Scope: this tightens the cross-model count
               // only — the gate-3 responders count is unchanged; a model-less
               // row cannot occur via ledger-append.sh, which requires --model.)
-              if (model && model !== "claude") nonClaudeResponders++;
+              if (model && model !== "claude" && model !== "claude-floor") nonClaudeResponders++;
               if (model === "claude") claudeOk = true;
+              if (model === "claude-floor") floorOk = true;
           }
       }
       if (o.kind === "finding" && (o.severity === "crit" || o.severity === "imp")
@@ -576,20 +594,33 @@ verdict=$(LEDGER="$ledger" FULL_SHA="$tip" node -e '
   // around. That asymmetry is the entire point of this knob. Silence (zero
   // non-claude avail rows at this head) is never eligible either - a lane that
   // never even attempted is not "verified exhausted".
+  // HIMMEL-3107: a VACUOUS CodeRabbit pass (a success status with no review
+  // behind it - the rate-limited / zero-review-object shapes check-ci reports)
+  // is exhausted too, for model coderabbit ONLY: on any other lane "vacuous"
+  // is not a classification failure-classify.sh emits. Twin of
+  // claude-floor-review.sh eligible_lanes() - keep the two in step.
   const EXHAUSTION_REASONS = new Set(["quota", "quota-5h", "quota-long", "rate-limit"]);
+  const isExhausted = (m, r) => r.status === "unavailable" &&
+      (EXHAUSTION_REASONS.has(r.reason) || (m === "coderabbit" && r.reason === "vacuous"));
   const nonClaudeAvailModels = [...availByModel.keys()];
   const exhaustedLanes = [], nonExhaustedLanes = [];
   for (const m of nonClaudeAvailModels) {
       const r = availByModel.get(m);
-      if (r.status === "unavailable" && EXHAUSTION_REASONS.has(r.reason)) {
+      if (isExhausted(m, r)) {
           exhaustedLanes.push(m + "(reason=" + r.reason + ")");
       } else {
           nonExhaustedLanes.push(m + "(status=" + (r.status || "?") + ",reason=" + (r.reason || "none") + ")");
       }
   }
-  const floorFallbackEligible = claudeOk && nonClaudeAvailModels.length > 0 &&
+  // HIMMEL-3107: the empty panel is its own explicit unlock - critics.json
+  // lists no panel critic at all (PANEL_EMPTY=1, read by the shell below), so
+  // no non-Claude lane can ever record a row and silence IS the whole roster.
+  // A non-empty or unreadable roster keeps "silence != exhaustion".
+  const emptyPanel = e.PANEL_EMPTY === "1" && nonClaudeAvailModels.length === 0;
+  if (emptyPanel) exhaustedLanes.push("empty-panel");
+  const floorFallbackEligible = floorOk && (nonClaudeAvailModels.length > 0 || emptyPanel) &&
       nonExhaustedLanes.length === 0 && blocking.length === 0;
-  console.log(JSON.stringify({ responders, nonClaudeResponders, blocking, blockingFiles, malformed, deferred, applied, unadjudicated, floorFallbackEligible, exhaustedLanes, nonExhaustedLanes }));
+  console.log(JSON.stringify({ responders, nonClaudeResponders, blocking, blockingFiles, malformed, deferred, applied, unadjudicated, floorFallbackEligible, floorOk, exhaustedLanes, nonExhaustedLanes }));
 ' 2>/dev/null)
 if [ -z "$verdict" ]; then
     echo "clear-cr-marker: could not read the CR ledger at $ledger — refusing (cannot certify the review)." >&2
@@ -606,6 +637,36 @@ unadjudicated_count=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.o
 # HIMMEL-2128: CR_FLOOR_FALLBACK=claude-only eligibility (see gate 3b below).
 floor_fallback_eligible=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).floorFallbackEligible?1:0))' 2>/dev/null)
 exhausted_lanes=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log((JSON.parse(s).exhaustedLanes||[]).join(" ")))' 2>/dev/null)
+
+# HIMMEL-3107: provenance of the context-free floor review. claude-floor-review.sh
+# stamps <git-common-dir>/cr-floor/<full-head>.json with the head, the diff base,
+# a hash of the exact diff it reviewed and the headless session id. Returns 0
+# only when that artifact exists, names THIS tip, carries a session id, and its
+# diff hash matches the diff between its base and this tip recomputed here -
+# so a review of an older push or of some other diff never unlocks the floor.
+# ponytail: this raises the cost of forging a floor, it does not prevent it -
+# a session able to run ledger-append.sh can also hand-write this JSON with a
+# correct hash and an invented session id. The gate has no way to verify the
+# session id against the live Anthropic session; closing that needs a signed
+# stamp from outside the session's reach - HIMMEL-3220.
+floor_provenance_ok() {
+    local _art="$git_dir/cr-floor/$tip.json" _fields _base _want _got
+    [ -s "$_art" ] || { floor_provenance_why="no floor artifact at $_art"; return 1; }
+    _fields=$(ART="$_art" node -e '
+      try { const a = JSON.parse(require("fs").readFileSync(process.env.ART, "utf8"));
+            const ok = typeof a.head === "string" && typeof a.base === "string" &&
+                       typeof a.diff_hash === "string" && typeof a.session_id === "string" &&
+                       a.session_id.trim() !== "" && Array.isArray(a.findings);
+            console.log(ok ? [a.head, a.base, a.diff_hash].join(" ") : "");
+      } catch (_) { console.log(""); }' 2>/dev/null)
+    [ -n "$_fields" ] || { floor_provenance_why="floor artifact $_art is malformed (needs head, base, diff_hash, session_id, findings)"; return 1; }
+    read -r _got _base _want <<<"$_fields"
+    [ "$_got" = "$tip" ] || { floor_provenance_why="floor artifact names head $_got, not ${tip}"; return 1; }
+    _got=$(git diff --no-color --no-ext-diff "$_base...$tip" 2>/dev/null | git hash-object --stdin 2>/dev/null)
+    [ -n "$_got" ] && [ "$_got" = "$_want" ] && return 0
+    floor_provenance_why="floor artifact diff hash $_want does not match the diff $_base...${tip:0:8} ($_got)"
+    return 1
+}
 # Say what was amended BEFORE reporting the verdict it produced. An amend can be
 # the reason the gate cleared (it can re-key a blocking finding off this SHA, or
 # lower its severity), so it must never be the one piece of decisive evidence
@@ -649,6 +710,12 @@ if [ "${require_cross_model:-0}" = "1" ] && [ "${non_claude_responders:-0}" -lt 
     # config, only a genuinely exhausted bank. Exit codes are otherwise
     # unchanged: when this does not fire, the refusal below is byte-identical
     # to before this ticket.
+    floor_provenance_why=""
+    if [ "$cr_floor_fallback" = "claude-only" ] && [ "${floor_fallback_eligible:-0}" = "1" ] && ! floor_provenance_ok; then
+        echo "clear-cr-marker: CR_FLOOR_FALLBACK=claude-only would accept the floor at ${tip:0:8}, but the claude-floor review has no valid provenance: $floor_provenance_why. Re-run scripts/cr/claude-floor-review.sh at this head." >&2
+        audit "REFUSED reason=floor-provenance branch=$branch sha=$tip"
+        exit 14
+    fi
     if [ "$cr_floor_fallback" = "claude-only" ] && [ "${floor_fallback_eligible:-0}" = "1" ]; then
         # HIMMEL-2128 codex-1: worded against what this gate ACTUALLY checks —
         # every non-Claude lane that RECORDED an avail row at this head, not a
@@ -657,10 +724,17 @@ if [ "${require_cross_model:-0}" = "1" ] && [ "${non_claude_responders:-0}" -lt 
         # is false in that case — see the "silence != exhaustion" guard above).
         # Roster-vs-recorded hardening for a multi-lane future is HIMMEL-2129,
         # deliberately not implemented here.
-        echo "clear-cr-marker: CR_FLOOR_FALLBACK=claude-only — accepting the Claude-only review floor at ${tip:0:8}. Every non-Claude lane that recorded an avail row at this head is exhaustion-classed (quota/rate-limit): ${exhausted_lanes:-none}. A lane failing for any other reason (config, timeout, an unclassified rc) still refuses — diagnose it instead of routing around it." >&2
-        audit "FLOOR-FALLBACK branch=$branch sha=$tip reason=claude-only-floor-accepted exhausted=${exhausted_lanes:-none} responders=$responders"
+        # HIMMEL-3107: say what the floor did and did NOT cover. The review ran
+        # in a fresh headless claude session with only the diff + a git-archive snapshot of
+        # this head (no session transcript, no CLAUDE.md/memory/hooks), so it
+        # does not share the authoring session's context. It is still the SAME
+        # model family as the author: context-freshness removes the shared
+        # context, not the shared-model blind spot. This is not cross-model
+        # coverage and must never be reported as such.
+        echo "clear-cr-marker: CR_FLOOR_FALLBACK=claude-only — accepting the context-free Claude floor review at ${tip:0:8}. Unlocked by: ${exhausted_lanes:-none} (every non-Claude lane recorded at this head is exhausted: quota/rate-limit, or a vacuous CodeRabbit pass; an empty panel is labelled empty-panel). COVERED: a fresh headless claude session reviewed only the diff and a snapshot of this head, with no session context. NOT COVERED: this is NOT cross-model review — the reviewer is the same model family as the author, so the shared-model blind spot remains. An auth/404/config/timeout failure on any lane still refuses — diagnose it instead of routing around it." >&2
+        audit "FLOOR-FALLBACK branch=$branch sha=$tip reason=claude-only-floor-accepted exhausted=${exhausted_lanes:-none} responders=$responders same_model=1 context_free=1"
     else
-        echo "clear-cr-marker: CR_REQUIRE_CROSS_MODEL is set but no non-Claude 'avail ... ok' responder exists at ${tip:0:8} (${responders:-0} total responders, ${non_claude_responders:-0} non-Claude). This setup requires cross-model coverage — a codex/glm/CodeRabbit lane must actually review this SHA. Configure/retry an external critic, or unset CR_REQUIRE_CROSS_MODEL. If the diff is TRIVIAL (a one-liner or docs-only), the panel used to strip its only paid tier and leave exactly this refusal with no explanation — it now keeps ONE critic instead when this variable is set (HIMMEL-1950), so re-run the panel; CR_TRIVIALITY_OVERRIDE=full forces the whole panel. CR_FLOOR_FALLBACK=claude-only accepts a Claude-only floor ONLY once every configured non-Claude lane is verified quota/rate-limit exhausted (not merely absent or misconfigured)." >&2
+        echo "clear-cr-marker: CR_REQUIRE_CROSS_MODEL is set but no non-Claude 'avail ... ok' responder exists at ${tip:0:8} (${responders:-0} total responders, ${non_claude_responders:-0} non-Claude). This setup requires cross-model coverage — a codex/glm/CodeRabbit lane must actually review this SHA. Configure/retry an external critic, or unset CR_REQUIRE_CROSS_MODEL. If the diff is TRIVIAL (a one-liner or docs-only), the panel used to strip its only paid tier and leave exactly this refusal with no explanation — it now keeps ONE critic instead when this variable is set (HIMMEL-1950), so re-run the panel; CR_TRIVIALITY_OVERRIDE=full forces the whole panel. CR_FLOOR_FALLBACK=claude-only accepts a Claude-only floor ONLY once every configured non-Claude lane is verified quota/rate-limit exhausted (not merely absent or misconfigured) AND the floor is a context-free review by scripts/cr/claude-floor-review.sh (a session-written 'claude' row does not count)." >&2
         audit "REFUSED reason=no-cross-model branch=$branch sha=$tip responders=$responders non_claude=${non_claude_responders:-0}"
         exit 14
     fi

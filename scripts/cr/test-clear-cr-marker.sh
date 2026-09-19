@@ -136,6 +136,20 @@ avail_bad()  { printf '{"kind":"avail","head":"%s","model":"coderabbit","status"
 # HIMMEL-1224 — the Claude-only floor evidence: a self-review avail row with
 # model "claude", the ONLY avail row a zero-external-critic adopter produces.
 avail_ok_claude() { printf '{"kind":"avail","head":"%s","model":"claude","status":"ok"}' "$1"; }
+# HIMMEL-3107 — the context-free floor reviewer's row (claude-floor-review.sh
+# writes it). Same model family as "claude": never cross-model evidence.
+avail_ok_floor() { printf '{"kind":"avail","head":"%s","model":"claude-floor","status":"ok"}' "$1"; }
+# write_floor_artifact <tmp> <head> [diff-hash-override] — the provenance
+# stamp claude-floor-review.sh leaves at <git-common-dir>/cr-floor/<head>.json.
+# The diff hash is computed exactly as the gate recomputes it (main...head).
+write_floor_artifact() {
+    local tmp="$1" head="$2" hash="${3:-}" base
+    base=$(git -C "$tmp" rev-parse --verify refs/heads/main)
+    [ -n "$hash" ] || hash=$(git -C "$tmp" diff --no-color --no-ext-diff "$base...$head" | git -C "$tmp" hash-object --stdin)
+    mkdir -p "$tmp/.git/cr-floor"
+    printf '{"schema":1,"head":"%s","base":"%s","diff_hash":"%s","session_id":"00000000-0000-4000-8000-000000000001","model":"claude-floor","same_model":true,"context_free":true,"findings":[]}\n' \
+        "$head" "$base" "$hash" > "$tmp/.git/cr-floor/$head.json"
+}
 # avail_reason <head> <model> <status> [reason] — HIMMEL-2128: a non-Claude
 # avail row carrying an optional --reason (HIMMEL-1176 failure classification),
 # the shape CR_FLOOR_FALLBACK=claude-only reads to judge verified exhaustion.
@@ -2177,7 +2191,8 @@ export CR_REQUIRE_CROSS_MODEL=1
 export CR_FLOOR_FALLBACK=claude-only
 make_repo || exit 1
 write_marker "$tmp" "$sha"
-write_ledger "$tmp" "$(avail_ok_claude "${sha:0:8}")" "$(avail_reason "${sha:0:8}" codex unavailable quota)"
+write_floor_artifact "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_floor "${sha:0:8}")" "$(avail_reason "${sha:0:8}" codex unavailable quota)"
 stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
 run_clear "$tmp" 0 "5a CR_FLOOR_FALLBACK=claude-only + codex quota-exhausted + claude ok -> exit 0"
 if marker_exists "$tmp"; then fail "5a floor-fallback accepted: marker should be GONE"; else pass; fi
@@ -2190,7 +2205,8 @@ unset CR_FLOOR_FALLBACK
 # 5b. Same ledger, knob UNSET -> exit 14 (unchanged default refusal).
 make_repo || exit 1
 write_marker "$tmp" "$sha"
-write_ledger "$tmp" "$(avail_ok_claude "${sha:0:8}")" "$(avail_reason "${sha:0:8}" codex unavailable quota)"
+write_floor_artifact "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_floor "${sha:0:8}")" "$(avail_reason "${sha:0:8}" codex unavailable quota)"
 run_clear "$tmp" 14 "5b same ledger, CR_FLOOR_FALLBACK unset -> exit 14"
 if marker_exists "$tmp"; then pass; else fail "5b fallback unset: marker must REMAIN"; fi
 rm -rf "$tmp"
@@ -2200,7 +2216,8 @@ rm -rf "$tmp"
 export CR_FLOOR_FALLBACK=claude-only
 make_repo || exit 1
 write_marker "$tmp" "$sha"
-write_ledger "$tmp" "$(avail_ok_claude "${sha:0:8}")" "$(avail_reason "${sha:0:8}" codex unavailable)"
+write_floor_artifact "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_floor "${sha:0:8}")" "$(avail_reason "${sha:0:8}" codex unavailable)"
 run_clear "$tmp" 14 "5c codex unavailable with no reason + knob set -> exit 14"
 if marker_exists "$tmp"; then pass; else fail "5c no-reason unavailable: marker must REMAIN"; fi
 rm -rf "$tmp"
@@ -2209,7 +2226,8 @@ rm -rf "$tmp"
 # verified-exhaustion class — a failing lane is usually OUR config).
 make_repo || exit 1
 write_marker "$tmp" "$sha"
-write_ledger "$tmp" "$(avail_ok_claude "${sha:0:8}")" "$(avail_reason "${sha:0:8}" codex unavailable timeout)"
+write_floor_artifact "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_floor "${sha:0:8}")" "$(avail_reason "${sha:0:8}" codex unavailable timeout)"
 run_clear "$tmp" 14 "5d codex unavailable reason=timeout + knob set -> exit 14"
 if marker_exists "$tmp"; then pass; else fail "5d reason=timeout: marker must REMAIN"; fi
 rm -rf "$tmp"
@@ -2218,7 +2236,8 @@ rm -rf "$tmp"
 # exit 14 (ALL must be exhaustion-classed, not just one).
 make_repo || exit 1
 write_marker "$tmp" "$sha"
-write_ledger "$tmp" "$(avail_ok_claude "${sha:0:8}")" \
+write_floor_artifact "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_floor "${sha:0:8}")" \
     "$(avail_reason "${sha:0:8}" codex unavailable quota)" \
     "$(avail_reason "${sha:0:8}" glm unavailable config)"
 run_clear "$tmp" 14 "5e one exhausted + one config-broken non-Claude lane + knob set -> exit 14"
@@ -2232,7 +2251,8 @@ rm -rf "$tmp"
 # "verified exhausted").
 make_repo || exit 1
 write_marker "$tmp" "$sha"
-write_ledger "$tmp" "$(avail_ok_claude "${sha:0:8}")"
+write_floor_artifact "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_floor "${sha:0:8}")"
 run_clear "$tmp" 14 "5f claude-only, zero non-Claude avail rows + knob set -> exit 14 (silence != exhaustion)"
 if marker_exists "$tmp"; then pass; else fail "5f silence: marker must REMAIN"; fi
 if grepq "$LAST_CLEAR_OUT" 'FLOOR-FALLBACK'; then
@@ -2253,7 +2273,8 @@ rm -rf "$tmp"
 # raw JSONL synthesis, independent of ledger-append.sh's own write-time dedup.
 make_repo || exit 1
 write_marker "$tmp" "$sha"
-write_ledger "$tmp" "$(avail_ok_claude "${sha:0:8}")" \
+write_floor_artifact "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_floor "${sha:0:8}")" \
     "$(avail_reason "${sha:0:8}" codex unavailable quota)" \
     "$(avail_reason "${sha:0:8}" codex unavailable config)"
 run_clear "$tmp" 14 "5g last-write-wins: unavailable(quota) then unavailable(config) -> exit 14"
@@ -2271,7 +2292,8 @@ rm -rf "$tmp"
 export CR_FLOOR_FALLBACK=claude-only
 make_repo || exit 1
 write_marker "$tmp" "$sha"
-write_ledger "$tmp" "$(avail_ok_claude "${sha:0:8}")" \
+write_floor_artifact "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_floor "${sha:0:8}")" \
     "$(avail_reason "${sha:0:8}" codex unavailable quota)" \
     "$(avail_reason "${sha:0:8}" glm unavailable tier-excluded)"
 run_clear "$tmp" 14 "5h one exhausted + one deselected (reason=tier-excluded) non-Claude lane + knob set -> exit 14"
@@ -2287,7 +2309,8 @@ unset CR_FLOOR_FALLBACK
 export CR_FLOOR_FALLBACK=claude-only
 make_repo || exit 1
 write_marker "$tmp" "$sha"
-write_ledger "$tmp" "$(avail_ok_claude "${sha:0:8}")" \
+write_floor_artifact "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_floor "${sha:0:8}")" \
     "$(avail_reason "${sha:0:8}" codex unavailable quota)" \
     "$(avail_reason "${sha:0:8}" glm unavailable keep-one-skipped)"
 run_clear "$tmp" 14 "5i one exhausted + one deselected (reason=keep-one-skipped) non-Claude lane + knob set -> exit 14"
@@ -2304,7 +2327,8 @@ unset CR_FLOOR_FALLBACK
 export CR_FLOOR_FALLBACK=claude-only
 make_repo || exit 1
 write_marker "$tmp" "$sha"
-write_ledger "$tmp" "$(avail_ok_claude "${sha:0:8}")" "$(avail_reason "${sha:0:8}" codex unavailable quota-long)"
+write_floor_artifact "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_floor "${sha:0:8}")" "$(avail_reason "${sha:0:8}" codex unavailable quota-long)"
 stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
 run_clear "$tmp" 0 "5j reason=quota-long (codex usage-limit bucket, HIMMEL-3110) + claude ok -> exit 0"
 if marker_exists "$tmp"; then fail "5j floor-fallback accepted: marker should be GONE"; else pass; fi
@@ -2327,7 +2351,8 @@ export CR_FLOOR_FALLBACK=claude-only
 for _r in auth http-4xx http-5xx malformed-output empty-response config generic-rc-1; do
     make_repo || exit 1
     write_marker "$tmp" "$sha"
-    write_ledger "$tmp" "$(avail_ok_claude "$sha")" "$(avail_reason "$sha" codex unavailable "$_r")"
+    write_floor_artifact "$tmp" "$sha"
+    write_ledger "$tmp" "$(avail_ok_floor "$sha")" "$(avail_reason "$sha" codex unavailable "$_r")"
     run_clear "$tmp" 14 "5k codex unavailable reason=$_r + claude ok + floor on + knob set -> exit 14"
     if marker_exists "$tmp"; then pass; else fail "5k reason=$_r: marker must REMAIN"; fi
     if grepq "$LAST_CLEAR_OUT" 'FLOOR-FALLBACK'; then
@@ -2346,7 +2371,8 @@ unset _r
 # marker clears, and the audit line names the full head and the exhausted lane.
 make_repo || exit 1
 write_marker "$tmp" "$sha"
-write_ledger "$tmp" "$(avail_ok_claude "$sha")" \
+write_floor_artifact "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_floor "$sha")" \
     "$(printf '{"kind":"avail","ts":"2026-09-19T00:50:19Z","branch":"feat/x","head":"%s","model":"codex","status":"unavailable","artifact":"diff","perspective":"off","reason":"quota-5h","detail":"ChatGPT or Codex Subscription rate-limited every one of 3 attempts: HTTP 429: The usage limit has been reached"}' "$sha")"
 stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
 run_clear "$tmp" 0 "5l real codex quota-5h row (full head + detail) + claude ok + floor on + knob set -> exit 0"
@@ -2361,7 +2387,8 @@ rm -rf "$tmp"
 # there is no non-Claude attempt at this head -> exit 14, marker stays.
 make_repo || exit 1
 write_marker "$tmp" "$sha"
-write_ledger "$tmp" "$(avail_ok_claude "$sha")" \
+write_floor_artifact "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_floor "$sha")" \
     "$(avail_reason "0000000000000000000000000000000000000000" codex unavailable quota-5h)"
 run_clear "$tmp" 14 "5m quota-5h row at a DIFFERENT head + claude ok at tip + knob set -> exit 14"
 if marker_exists "$tmp"; then pass; else fail "5m other-head exhaustion: marker must REMAIN"; fi
@@ -2370,6 +2397,145 @@ if grepq "$LAST_CLEAR_OUT" 'FLOOR-FALLBACK'; then
 else
     pass
 fi
+rm -rf "$tmp"
+unset CR_FLOOR_FALLBACK
+
+# 5n-5w (HIMMEL-3107). The floor that unlocks CR_FLOOR_FALLBACK is a REAL
+# context-free review (scripts/cr/claude-floor-review.sh), never a row the
+# session records about itself: only a `claude-floor` avail-ok row backed by
+# its provenance artifact at <git-common-dir>/cr-floor/<head>.json unlocks it.
+# claude-floor is the Claude model family — it is NEVER cross-model evidence.
+export CR_FLOOR_FALLBACK=claude-only
+
+# 5n. The pre-3107 shape: a plain session-written `claude` ok row + codex
+# quota-exhausted + knob set -> REFUSES now (the floor must be the reviewer's).
+make_repo || exit 1
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_claude "$sha")" "$(avail_reason "$sha" codex unavailable quota-5h)"
+run_clear "$tmp" 14 "5n plain claude self-review row + codex quota-5h + knob set -> exit 14 (not the context-free floor)"
+if marker_exists "$tmp"; then pass; else fail "5n session-written claude row: marker must REMAIN"; fi
+if grepq "$LAST_CLEAR_OUT" 'claude-floor-review.sh'; then pass; else
+    fail "5n refusal must point at the floor reviewer script: $LAST_CLEAR_OUT"
+fi
+rm -rf "$tmp"
+
+# 5o. claude-floor is NOT cross-model: floor row alone, cross-model required,
+# knob UNSET -> exit 14 (before 3107 any non-"claude" slug counted as a
+# non-Claude responder, so this cleared).
+unset CR_FLOOR_FALLBACK
+make_repo || exit 1
+write_marker "$tmp" "$sha"
+write_floor_artifact "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_floor "$sha")"
+run_clear "$tmp" 14 "5o claude-floor ok row alone + cross-model required + knob unset -> exit 14"
+if marker_exists "$tmp"; then pass; else fail "5o claude-floor counted as cross-model: marker must REMAIN"; fi
+rm -rf "$tmp"
+export CR_FLOOR_FALLBACK=claude-only
+
+# 5p. The operator's case: CodeRabbit rate-limited + codex quota-exhausted +
+# a real floor review -> clears, and the audit line records the unlocking
+# lanes AND that the review was same-model + context-free.
+make_repo || exit 1
+write_marker "$tmp" "$sha"
+write_floor_artifact "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_floor "$sha")" \
+    "$(avail_reason "$sha" coderabbit unavailable rate-limit)" \
+    "$(avail_reason "$sha" codex unavailable quota-5h)"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 0 "5p coderabbit rate-limit + codex quota-5h + claude-floor -> exit 0"
+if marker_exists "$tmp"; then fail "5p floor accepted: marker should be GONE"; else pass; fi
+if grepq "$LAST_CLEAR_OUT" -F 'exhausted=coderabbit(reason=rate-limit) codex(reason=quota-5h)'; then pass; else
+    fail "5p audit must name both unlocking lanes: $LAST_CLEAR_OUT"
+fi
+if grepq "$LAST_CLEAR_OUT" -F 'same_model=1 context_free=1'; then pass; else
+    fail "5p audit must record same-model + context-free: $LAST_CLEAR_OUT"
+fi
+if grepq "$LAST_CLEAR_OUT" 'NOT cross-model'; then pass; else
+    fail "5p operator message must say the floor is not cross-model coverage: $LAST_CLEAR_OUT"
+fi
+rm -rf "$tmp"
+
+# 5q. A VACUOUS CodeRabbit pass (a success status with no review behind it)
+# qualifies as exhausted — for model coderabbit only.
+make_repo || exit 1
+write_marker "$tmp" "$sha"
+write_floor_artifact "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_floor "$sha")" \
+    "$(avail_reason "$sha" coderabbit unavailable vacuous)" \
+    "$(avail_reason "$sha" codex unavailable quota-long)"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 0 "5q coderabbit vacuous + codex quota-long + claude-floor -> exit 0"
+if grepq "$LAST_CLEAR_OUT" -F 'coderabbit(reason=vacuous)'; then pass; else
+    fail "5q audit must name the vacuous coderabbit lane: $LAST_CLEAR_OUT"
+fi
+rm -rf "$tmp"
+
+# 5r. reason=vacuous on any lane OTHER than coderabbit is not exhaustion.
+make_repo || exit 1
+write_marker "$tmp" "$sha"
+write_floor_artifact "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_floor "$sha")" "$(avail_reason "$sha" codex unavailable vacuous)"
+run_clear "$tmp" 14 "5r codex reason=vacuous + claude-floor -> exit 14 (vacuous is coderabbit-only)"
+if marker_exists "$tmp"; then pass; else fail "5r codex vacuous: marker must REMAIN"; fi
+rm -rf "$tmp"
+
+# 5s. A 401 on codex still REFUSES next to a rate-limited CodeRabbit and a
+# real floor review — same fixture as 5p, only codex's reason varies.
+make_repo || exit 1
+write_marker "$tmp" "$sha"
+write_floor_artifact "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_floor "$sha")" \
+    "$(avail_reason "$sha" coderabbit unavailable rate-limit)" \
+    "$(avail_reason "$sha" codex unavailable auth)"
+run_clear "$tmp" 14 "5s coderabbit rate-limit + codex auth(401) + claude-floor -> exit 14"
+if marker_exists "$tmp"; then pass; else fail "5s auth fault: marker must REMAIN"; fi
+if grepq "$LAST_CLEAR_OUT" 'FLOOR-FALLBACK'; then fail "5s must NOT report a floor-fallback acceptance"; else pass; fi
+rm -rf "$tmp"
+
+# 5t. Provenance: a claude-floor row with NO artifact (a hand-appended row)
+# -> exit 14.
+make_repo || exit 1
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_floor "$sha")" "$(avail_reason "$sha" codex unavailable quota-5h)"
+run_clear "$tmp" 14 "5t claude-floor row without its provenance artifact -> exit 14"
+if marker_exists "$tmp"; then pass; else fail "5t no artifact: marker must REMAIN"; fi
+if grepq "$LAST_CLEAR_OUT" 'provenance'; then pass; else fail "5t must name the missing provenance: $LAST_CLEAR_OUT"; fi
+rm -rf "$tmp"
+
+# 5u. Provenance: an artifact whose diff hash does not match the diff at this
+# head (a review of some OTHER diff) -> exit 14.
+make_repo || exit 1
+write_marker "$tmp" "$sha"
+write_floor_artifact "$tmp" "$sha" "0000000000000000000000000000000000000000"
+write_ledger "$tmp" "$(avail_ok_floor "$sha")" "$(avail_reason "$sha" codex unavailable quota-5h)"
+run_clear "$tmp" 14 "5u floor artifact with a stale diff hash -> exit 14"
+if marker_exists "$tmp"; then pass; else fail "5u stale diff hash: marker must REMAIN"; fi
+rm -rf "$tmp"
+
+# 5v. Empty panel, explicit: critics.json lists NO panel critic, so no
+# non-Claude lane can ever record a row. A real floor review + knob set ->
+# clears, labelled empty-panel.
+make_repo || exit 1
+write_marker "$tmp" "$sha"
+write_floor_artifact "$tmp" "$sha"
+printf '{"panel":[]}\n' > "$tmp/scripts/cr/critics.json"
+write_ledger "$tmp" "$(avail_ok_floor "$sha")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 0 "5v empty panel (critics.json panel=[]) + claude-floor -> exit 0"
+if grepq "$LAST_CLEAR_OUT" -F 'exhausted=empty-panel'; then pass; else
+    fail "5v audit must label the empty-panel unlock: $LAST_CLEAR_OUT"
+fi
+rm -rf "$tmp"
+
+# 5w. Silence with a NON-empty panel is still not exhaustion: floor row, zero
+# non-Claude rows, critics.json lists codex -> exit 14.
+make_repo || exit 1
+write_marker "$tmp" "$sha"
+write_floor_artifact "$tmp" "$sha"
+printf '{"panel":[{"slug":"codex"}]}\n' > "$tmp/scripts/cr/critics.json"
+write_ledger "$tmp" "$(avail_ok_floor "$sha")"
+run_clear "$tmp" 14 "5w non-empty panel, zero non-Claude rows + claude-floor -> exit 14"
+if marker_exists "$tmp"; then pass; else fail "5w silence: marker must REMAIN"; fi
 rm -rf "$tmp"
 unset CR_FLOOR_FALLBACK
 

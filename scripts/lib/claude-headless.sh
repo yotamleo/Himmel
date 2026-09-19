@@ -42,6 +42,11 @@ usage: claude-headless.sh [options] < prompt-on-stdin, or --prompt-file <path>
   --allowed-tools <spec>     optional --allowedTools value
   --settings <path>          optional --settings overlay path
   --json-schema-file <path>  optional --json-schema payload (file contents passed inline)
+  --system-prompt-file <path> optional --system-prompt-file (REPLACES the default system prompt)
+  --tools <list>             optional --tools value (the ONLY built-in tools the session gets)
+  --isolated                 add --safe-mode --strict-mcp-config --no-session-persistence:
+                             no CLAUDE.md, memory, skills, plugins, hooks or MCP reach the
+                             session, and it is never saved (HIMMEL-3107 context-free floor)
   -h, --help                 show this help
 
 Env:
@@ -64,7 +69,7 @@ need_arg() { if [ $# -lt 2 ] || [ -z "$2" ]; then die "$1 requires a value"; fi;
 
 ROLE=""; TICKET=""; WORKTREE=""; ARTIFACT=""; PERMISSION_MODE=""
 PROMPT_FILE=""; CWD=""; MAX_TURNS="2"; MODEL=""; ALLOWED_TOOLS=""; SETTINGS=""
-JSON_SCHEMA_FILE=""
+JSON_SCHEMA_FILE=""; SYSTEM_PROMPT_FILE=""; TOOLS=""; ISOLATED=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --role) need_arg "$@"; ROLE="$2"; shift 2 ;;
@@ -79,6 +84,9 @@ while [ $# -gt 0 ]; do
     --allowed-tools) need_arg "$@"; ALLOWED_TOOLS="$2"; shift 2 ;;
     --settings) need_arg "$@"; SETTINGS="$2"; shift 2 ;;
     --json-schema-file) need_arg "$@"; JSON_SCHEMA_FILE="$2"; shift 2 ;;
+    --system-prompt-file) need_arg "$@"; SYSTEM_PROMPT_FILE="$2"; shift 2 ;;
+    --tools) need_arg "$@"; TOOLS="$2"; shift 2 ;;
+    --isolated) ISOLATED=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
@@ -93,6 +101,7 @@ done
 case "$MAX_TURNS" in *[!0-9]*|0|1) die "--max-turns must be an integer >= 2 (got '$MAX_TURNS')" ;; esac
 [ -z "$PROMPT_FILE" ] || [ -r "$PROMPT_FILE" ] || die "--prompt-file not readable: $PROMPT_FILE"
 [ -z "$JSON_SCHEMA_FILE" ] || [ -r "$JSON_SCHEMA_FILE" ] || die "--json-schema-file not readable: $JSON_SCHEMA_FILE"
+[ -z "$SYSTEM_PROMPT_FILE" ] || [ -r "$SYSTEM_PROMPT_FILE" ] || die "--system-prompt-file not readable: $SYSTEM_PROMPT_FILE"
 [ -n "$CWD" ] || CWD="$WORKTREE"
 command -v jq >/dev/null 2>&1 || die "jq is required"
 command -v node >/dev/null 2>&1 || die "node is required"
@@ -373,6 +382,13 @@ if [ -n "$SETTINGS" ]; then
   CMD+=(--settings "$SETTINGS")
 fi
 [ -z "$JSON_SCHEMA" ] || CMD+=(--json-schema "$JSON_SCHEMA")
+if [ -n "$SYSTEM_PROMPT_FILE" ]; then
+  # Same codex-4 Git-Bash path conversion as --settings above.
+  if command -v cygpath >/dev/null 2>&1; then SYSTEM_PROMPT_FILE="$(cygpath -m "$SYSTEM_PROMPT_FILE")"; fi
+  CMD+=(--system-prompt-file "$SYSTEM_PROMPT_FILE")
+fi
+[ -z "$TOOLS" ] || CMD+=(--tools "$TOOLS")
+[ "$ISOLATED" = "0" ] || CMD+=(--safe-mode --strict-mcp-config --no-session-persistence)
 
 STDERR_FILE="$(mktemp "${TMPDIR:-${TEMP:-/tmp}}/claude-headless-stderr.XXXXXX")"
 STDOUT_FILE="$(mktemp "${TMPDIR:-${TEMP:-/tmp}}/claude-headless-stdout.XXXXXX")"
