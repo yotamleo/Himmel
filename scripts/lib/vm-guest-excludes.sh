@@ -48,10 +48,12 @@
 VM_GUEST_SECRET_GLOBS='.env .env.* *.local.json'
 
 vm_guest_tar_excludes() {
-  local g
-  set -f
-  for g in $VM_GUEST_SECRET_GLOBS; do printf '%s\n' "--exclude=$g"; done
-  set +f
+  # Subshell: the noglob needed to split the unexpanded globs must not leak into
+  # (or clobber) the caller's own `set -f` state.
+  (
+    set -f
+    for g in $VM_GUEST_SECRET_GLOBS; do printf '%s\n' "--exclude=$g"; done
+  )
 }
 
 vm_guest_rsync_excludes() {

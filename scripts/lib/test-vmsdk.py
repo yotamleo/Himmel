@@ -565,6 +565,30 @@ class TestSecretBoundary(unittest.TestCase):
                 vm.sync_repo(r"C:\Users\x\himmel", excludes=(".git",))
         self.assertIn("REFUSING", str(cm.exception))
 
+    def test_caller_supplied_excludes_cannot_drop_the_secret_set(self):
+        """A custom excludes tuple used to REPLACE the defaults, so the secrets
+        crossed the boundary before the post-copy scan could refuse them."""
+        pipe = self._sync_pipe(self._vm(), excludes=(".git",))
+        import shlex  # tokens, not text: shlex.quote leaves a bare --exclude=.env unquoted
+        toks = shlex.split(pipe)
+        for g in (".env", ".env.*", "*.local.json", ".git"):
+            self.assertIn("--exclude=" + g, toks)
+
+    def test_snapshot_scans_home_and_tmp_staging(self):
+        """The tracked VM scripts stage under /tmp; a home-only scan would
+        snapshot a secret sitting there."""
+        vm = self._vm()
+        cmds = []
+        def fake_run(cmd, *a, **k):
+            cmds.append(cmd)
+            return (0, "")
+        with mock.patch.object(vmsdk.vbox, "is_running", return_value=True), \
+             mock.patch.object(vm, "run", side_effect=fake_run), \
+             mock.patch.object(vmsdk.vbox, "take_snapshot"):
+            vm.snapshot("base")
+        self.assertTrue(any(" ~ " in c or " '~' " in c for c in cmds), cmds)
+        self.assertTrue(any("/tmp" in c for c in cmds), cmds)
+
     def test_assert_guest_clean_clean_and_dirty_and_unscannable(self):
         vm = self._vm()
         with mock.patch.object(vm, "run", return_value=(0, "")):

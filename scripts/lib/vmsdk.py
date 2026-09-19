@@ -49,6 +49,7 @@ _REGISTRY = Path(__file__).resolve().parent / "vms.json"
 # step with VM_GUEST_SECRET_GLOBS in scripts/lib/vm-guest-excludes.sh (the
 # parity test in test-vmsdk.py pins them together).
 SECRET_EXCLUDES = (".env", ".env.*", "*.local.json")
+_SNAPSHOT_SCAN_ROOTS = ("~", "/tmp")
 _SCAN_PROFILES = {
     # full: a tree staged from the host — nothing in the set may exist there.
     "full": SECRET_EXCLUDES,
@@ -326,7 +327,10 @@ class VM:
                 "cannot be scanned for host secrets (.env). Bring it up first, "
                 "or pass --no-secret-scan if you verified the image another way.")
         else:
-            self.assert_guest_clean("~", "env")
+            # ~ is where a checkout is synced; /tmp is where the tracked VM
+            # scripts stage. Other roots are out of scope for this guard.
+            for root in _SNAPSHOT_SCAN_ROOTS:
+                self.assert_guest_clean(root, "env")
         vbox.take_snapshot(self.name, name)
 
     def restore(self, name):
@@ -412,6 +416,9 @@ class VM:
         local_fwd = str(local_root).replace("\\", "/")
         # shlex.quote: an unquoted --exclude=*.local.json can be glob-expanded by
         # the pipe's own bash before tar sees it, silently dropping the exclusion.
+        # The secret set is mandatory: a caller-supplied tuple extends the
+        # defaults, it can never replace them.
+        excludes = tuple(excludes) + tuple(e for e in SECRET_EXCLUDES if e not in excludes)
         exclude_flags = " ".join(shlex.quote(f"--exclude={e}") for e in excludes)
         if self.kind == "station":
             # Alias-only: hostname/port/identity come from ~/.ssh/config, same

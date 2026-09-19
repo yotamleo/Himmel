@@ -68,6 +68,15 @@ for f in .env .env.local sub/.env sub/deep/.env.production .claude/settings.loca
   [ -e "$GT/$f" ] && fail_case "T2 $f crossed the boundary via tar"
 done
 
+# --- T2b the emitter must not change the caller's noglob state (either way)
+( set -f; vm_guest_tar_excludes >/dev/null; case $- in *f*) exit 0 ;; *) exit 1 ;; esac )
+r_on=$?
+( set +f; vm_guest_tar_excludes >/dev/null; case $- in *f*) exit 1 ;; *) exit 0 ;; esac )
+r_off=$?
+if [ "$r_on" -eq 0 ] && [ "$r_off" -eq 0 ]; then
+  pass "T2b tar-excludes emitter preserves the caller's noglob setting"
+else fail_case "T2b emitter clobbered noglob (kept-on rc=$r_on, kept-off rc=$r_off)"; fi
+
 # --- T3 rsync with the shared excludes (skipped loudly when rsync is absent)
 if command -v rsync >/dev/null 2>&1; then
   RSX=(); while IFS= read -r _x; do RSX+=("$_x"); done < <(vm_guest_rsync_excludes)

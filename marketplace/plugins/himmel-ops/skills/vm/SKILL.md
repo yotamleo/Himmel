@@ -199,7 +199,8 @@ usage: vmsdk.py <vm> <up|down|snapshot NAME [--no-secret-scan]|restore NAME|base
 
 **Secret boundary (HIMMEL-2540).** Every host→guest copy excludes `.env`,
 `.env.*` and `*.local.json` (incl. `.claude/settings.local.json`), and the guest
-is scanned before a snapshot — a snapshot is durable, so a leaked `.env` in one
+is scanned (home directory and `/tmp`, where the tracked scripts stage) before a
+snapshot — a snapshot is durable, so a leaked `.env` in one
 outlives the VM. The set lives in ONE tracked place, `scripts/lib/vm-guest-excludes.sh`
 (`vmsdk.SECRET_EXCLUDES` mirrors it; a parity test pins them). A base builder that
 rsyncs a checkout itself (the ad-hoc `m2457-rebuild.sh` style) must use it too:
