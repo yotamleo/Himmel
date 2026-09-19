@@ -16,8 +16,10 @@
 # inspectable; put a fake `bash` first on PATH so arm resolves the stub, never
 # the real interpreter. HOME/USERPROFILE point at the temp dir so nothing
 # touches the real user profile. The cron suite runs on EVERY platform (the
-# POSIX path is forced with an OSTYPE override); the schtasks suite stays
-# Windows-only (cmd_arm needs cygpath).
+# POSIX path is forced with an OSTYPE override); the schtasks suite runs on
+# Windows against the real cygpath, and elsewhere against a deterministic
+# cygpath STUB (scripts/lib/cygpath-stub.sh, HIMMEL-3114) — see the note at the
+# top of that section for what the stubbed run does and does not prove.
 set -euo pipefail
 
 # grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
@@ -1305,17 +1307,41 @@ assert_not_contains "Linux arm on the same protected path prints no FDA warning"
 run_fda linux-gnu disarm >/dev/null 2>&1
 
 # ============================================================================
-# schtasks suite — Windows-only (cmd_arm needs cygpath; the cron suite above
-# already exercised the POSIX path on this platform).
+# schtasks suite (HIMMEL-3114). cmd_arm hard-refuses without cygpath, and the
+# cron suite above only exercised the POSIX path, so this section used to SKIP
+# everywhere but Git-Bash — the green tally held zero schtasks cases, and a real
+# Windows-branch bug (HIMMEL-3075) had a regression test that had never run.
+#
+# Off Windows it now runs against two seams, the same way run_fda drives the
+# Darwin branch: an OSTYPE=msys override (run_gc and the direct calls below) and
+# a deterministic `cygpath` stub on PATH (scripts/lib/cygpath-stub.sh). schtasks
+# itself was already faked (GRAPHMAP_SCHTASKS).
+#
+# WHAT THAT PROVES: the branch logic of cmd_arm / cmd_disarm / cmd_status — task
+# registration, dedup and --force scope, runner emission, staged-rename
+# publication — executes, and emits exactly what the strings cygpath returns
+# imply. WHAT IT DOES NOT: that real schtasks.exe / wscript.exe / cmd.exe accept
+# those strings. A green run here is "Platforms tested: linux", never a Windows
+# validation; the scheduled nightly on the Windows/macOS runners is that proof.
 # ============================================================================
 
 case "${OSTYPE:-$(uname -s 2>/dev/null || echo unknown)}" in
     msys*|cygwin*|win32*|MINGW*) : ;;
     *)
-        echo "SKIP: schtasks suite (Windows-only — needs cygpath/schtasks shapes)"
-        summary
+        # shellcheck source=../lib/cygpath-stub.sh
+        # shellcheck disable=SC1091
+        . "$SCRIPT_DIR/../lib/cygpath-stub.sh"
+        CYGPATH_STUB_DIR="$TMP_ROOT/cygpath-stub"
+        cygpath_stub_install "$CYGPATH_STUB_DIR"
+        export PATH="$CYGPATH_STUB_DIR:$PATH"
+        PATH_NOCLAUDE="$CYGPATH_STUB_DIR:$PATH_NOCLAUDE"
+        echo "NOTE: schtasks suite runs against a cygpath STUB (not a Windows validation)"
         ;;
 esac
+# Every emitted path is the cygpath -m / -w form of a fixture path; on Windows
+# TMP_ROOT is already mixed so this is the identity, off Windows it is the stub's
+# C:/cygstub/... mapping. Expectations below use these, never the raw POSIX path.
+VAULT_MIXED=$(cygpath -m "$VAULT")
 
 # schtasks fixtures ----------------------------------------------------------
 
@@ -1390,7 +1416,7 @@ chmod +x "$FAKE_SCHTASKS"
 BAT_DIR="$TMP_ROOT/bats"
 
 run_gc() {
-    PIPELINE_UNUSED="" GRAPHMAP_SCHTASKS="$FAKE_SCHTASKS" GRAPHMAP_BAT_DIR="$BAT_DIR" \
+    OSTYPE=msys PIPELINE_UNUSED="" GRAPHMAP_SCHTASKS="$FAKE_SCHTASKS" GRAPHMAP_BAT_DIR="$BAT_DIR" \
         PATH="$TMP_ROOT/bin:$GRAPHIFY_BIN_DIR_PATH:$CLAUDE_BIN_DIR_PATH:$PATH" "$REAL_BASH" "$SCRIPT" "$@"
 }
 
@@ -1567,8 +1593,8 @@ assert_contains "himmel bat uses the claude-cli backend" "--backend claude-cli -
 # matches the cygpath -m'd corpus-root the .bat carries. The luna bat's
 # corpus-root IS the vault; the himmel bat's corpus-root is NOT (it's the himmel
 # repo) — so a swap that makes the himmel map extract the vault fails here.
-assert_contains     "luna bat corpus-root is the vault"       "--corpus-root \"$VAULT\"" "$luna_bat"
-assert_not_contains "himmel bat corpus-root is not the vault" "--corpus-root \"$VAULT\"" "$himmel_bat"
+assert_contains     "luna bat corpus-root is the vault"       "--corpus-root \"$VAULT_MIXED\"" "$luna_bat"
+assert_not_contains "himmel bat corpus-root is not the vault" "--corpus-root \"$VAULT_MIXED\"" "$himmel_bat"
 assert_contains     "himmel bat carries a corpus-root"        "--corpus-root"            "$himmel_bat"
 assert_contains "himmel bat sets the himmel title"      "Graphify Himmel Map"  "$himmel_bat"
 assert_contains "himmel bat appends run log" 'graphmap-himmel.log" 2>&1' "$himmel_bat"
@@ -1598,7 +1624,7 @@ assert_contains "ast-luna bat fires ast-update.sh by absolute path"   "\"$AST_UP
 assert_contains "ast-himmel bat fires ast-update.sh by absolute path" "\"$AST_UPDATE_SCRIPT_MIXED\"" "$ast_himmel_bat"
 assert_not_contains "ast-luna bat has no bare --force on the cadence line (it's inside the wrapper)"   "--force" "$ast_luna_bat"
 assert_not_contains "ast-himmel bat has no bare --force on the cadence line (it's inside the wrapper)" "--force" "$ast_himmel_bat"
-assert_contains "ast-luna bat corpus is the absolute vault path"    "\"$AST_UPDATE_SCRIPT_MIXED\" \"$VAULT\"" "$ast_luna_bat"
+assert_contains "ast-luna bat corpus is the absolute vault path"    "\"$AST_UPDATE_SCRIPT_MIXED\" \"$VAULT_MIXED\"" "$ast_luna_bat"
 assert_contains "ast-himmel bat corpus is the absolute himmel path" "\"$AST_UPDATE_SCRIPT_MIXED\" \"$HIMMEL_ROOT_MIXED\"" "$ast_himmel_bat"
 assert_contains "ast-luna bat declares GRAPHIFY_DECLARED_BACKEND=ollama" 'set "GRAPHIFY_DECLARED_BACKEND=ollama"' "$ast_luna_bat"
 assert_not_contains "ast-himmel bat does not declare a backend" "GRAPHIFY_DECLARED_BACKEND" "$ast_himmel_bat"
@@ -1706,7 +1732,7 @@ exec "$REAL_MV" "$@"
 FAKE
 chmod +x "$FAKE_MV"
 rm -f "$STATE/mv-calls.log"
-out=$(PIPELINE_UNUSED="" GRAPHMAP_SCHTASKS="$FAKE_SCHTASKS" GRAPHMAP_BAT_DIR="$BAT_DIR" \
+out=$(OSTYPE=msys PIPELINE_UNUSED="" GRAPHMAP_SCHTASKS="$FAKE_SCHTASKS" GRAPHMAP_BAT_DIR="$BAT_DIR" \
     PATH="$MVREC_BIN_PATH:$TMP_ROOT/bin:$GRAPHIFY_BIN_DIR_PATH:$CLAUDE_BIN_DIR_PATH:$PATH" \
     "$REAL_BASH" "$SCRIPT" arm --vault "$VAULT" --force 2>&1)
 assert_contains "re-arm under the recording mv still succeeds" "GRAPHMAP CADENCE ARMED" "$out"
@@ -1783,7 +1809,7 @@ assert_contains "schtasks ast-only dry-run still creates ast-himmel" "/tn $T_AST
 
 echo "TEST: schtasks arm --ast-only needs no semantic-backend credential or claude on PATH"
 rc=0; out=$(unset MOONSHOT_API_KEY ZAI_API_KEY DEEPSEEK_API_KEY; GRAPHMAP_DOTENV_ROOT="$DOTENV_ROOT_EMPTY" \
-    PIPELINE_UNUSED="" GRAPHMAP_SCHTASKS="$FAKE_SCHTASKS" GRAPHMAP_BAT_DIR="$BAT_DIR" \
+    OSTYPE=msys PIPELINE_UNUSED="" GRAPHMAP_SCHTASKS="$FAKE_SCHTASKS" GRAPHMAP_BAT_DIR="$BAT_DIR" \
     PATH="$PATH_NOCLAUDE" "$REAL_BASH" "$SCRIPT" arm --vault "$VAULT" --ast-only 2>&1) || rc=$?
 assert_rc "schtasks ast-only arm succeeds with no credential and no claude on PATH" 0 "$rc"
 if [ "$(find "$STATE/tasks" -mindepth 1 2>/dev/null | wc -l)" -eq 2 ]; then
@@ -1800,7 +1826,7 @@ run_gc disarm >/dev/null 2>&1
 
 echo "TEST: schtasks arm --ast-only --with-publish registers the AST pair + publish leg"
 rc=0; out=$(unset MOONSHOT_API_KEY ZAI_API_KEY DEEPSEEK_API_KEY; GRAPHMAP_DOTENV_ROOT="$DOTENV_ROOT_EMPTY" \
-    PIPELINE_UNUSED="" GRAPHMAP_SCHTASKS="$FAKE_SCHTASKS" GRAPHMAP_BAT_DIR="$BAT_DIR" \
+    OSTYPE=msys PIPELINE_UNUSED="" GRAPHMAP_SCHTASKS="$FAKE_SCHTASKS" GRAPHMAP_BAT_DIR="$BAT_DIR" \
     PATH="$PATH_NOCLAUDE" "$REAL_BASH" "$SCRIPT" arm --vault "$VAULT" --ast-only --with-publish 2>&1) || rc=$?
 assert_rc "schtasks ast-only --with-publish arm succeeds with no credential and no claude on PATH" 0 "$rc"
 if [ "$(find "$STATE/tasks" -mindepth 1 2>/dev/null | wc -l)" -eq 3 ]; then
@@ -2025,7 +2051,11 @@ run_gc disarm >/dev/null
 # Reuses the (now-empty, post-disarm) $STATE/tasks from Test 15.
 echo "TEST: schtasks scoping — unrelated HIMMEL-GraphMap*-prefixed task survives removal, never blocks arm"
 touch "$STATE/tasks/HIMMEL-GraphMapExtra"
-rc=0; out=$(run_gc arm --vault "$VAULT" 2>&1) || rc=$?
+# --with-publish: the counts below are "five real tasks + the unrelated one".
+# Since HIMMEL-3075 made the publish leg opt-in, a plain arm registers only four,
+# so the six-task expectations were stale — this section had never run
+# (HIMMEL-3114), so nothing caught it.
+rc=0; out=$(run_gc arm --vault "$VAULT" --with-publish 2>&1) || rc=$?
 assert_rc "arm succeeds with only an unrelated prefixed task present (no false dedup-block)" 0 "$rc"
 if [ -f "$STATE/tasks/HIMMEL-GraphMapExtra" ]; then
     pass "unrelated prefixed task survives arm"
@@ -2064,5 +2094,61 @@ else
     fail "disarm removed or left the wrong tasks" "$(ls "$STATE/tasks")"
 fi
 rm -f "$STATE/tasks/HIMMEL-GraphMapExtra"
+
+# Test 16b (HIMMEL-3114): list_existing's pre-filter is `HIMMEL-Graph` (wide
+# enough to reach the publish leg, HIMMEL-GraphPublish-Himmel — the old
+# `HIMMEL-GraphMap` prefix never listed it) and TASK_MATCH_RE then narrows to the
+# exact owned names. Widening the pre-filter must not let a look-alike through:
+# an operator's own HIMMEL-GraphMapFoo / HIMMEL-GraphXYZ / HIMMEL-GraphPublish-
+# HimmelExtra is neither deleted by --force/disarm nor a dedup-block.
+echo "TEST: schtasks scoping — widened pre-filter still ignores HIMMEL-Graph* look-alikes"
+for _t in HIMMEL-GraphMapFoo HIMMEL-GraphXYZ HIMMEL-GraphPublish-HimmelExtra; do
+    touch "$STATE/tasks/$_t"
+done
+rc=0; out=$(run_gc arm --vault "$VAULT" 2>&1) || rc=$?
+assert_rc "arm succeeds with only look-alike tasks present (no false dedup-block)" 0 "$rc"
+for _t in HIMMEL-GraphMapFoo HIMMEL-GraphXYZ HIMMEL-GraphPublish-HimmelExtra; do
+    assert_not_contains "arm output does not name look-alike $_t" "$_t" "$out"
+done
+out=$(run_gc arm --vault "$VAULT" --force 2>&1)
+out=$(run_gc disarm 2>&1)
+for _t in HIMMEL-GraphMapFoo HIMMEL-GraphXYZ HIMMEL-GraphPublish-HimmelExtra; do
+    if [ -f "$STATE/tasks/$_t" ]; then
+        pass "look-alike $_t survives arm, --force re-arm and disarm"
+    else
+        fail "look-alike $_t was deleted"
+    fi
+done
+if [ "$(find "$STATE/tasks" -mindepth 1 | wc -l)" -eq 3 ]; then
+    pass "only the three look-alikes remain after disarm"
+else
+    fail "unexpected tasks after disarm" "$(ls "$STATE/tasks")"
+fi
+for _t in HIMMEL-GraphMapFoo HIMMEL-GraphXYZ HIMMEL-GraphPublish-HimmelExtra; do
+    rm -f "$STATE/tasks/$_t"
+done
+
+# Test 16d (HIMMEL-3114): control — cygpath genuinely ABSENT still hits arm's
+# hard refusal (rc 2). Only meaningful where the suite installed the stub (a
+# real Git-Bash host cannot drop cygpath without dropping coreutils); the PATH is
+# the suite's own with just the stub dir removed, so nothing else changes.
+if [ -n "${CYGPATH_STUB_DIR:-}" ]; then
+    echo "TEST: schtasks arm with cygpath genuinely absent -> hard refusal"
+    PATH_NOCYG=""
+    _oldifs=$IFS; IFS=:
+    for _d in $PATH; do
+        [ -n "$_d" ] || continue
+        [ "$_d" = "$CYGPATH_STUB_DIR" ] && continue
+        PATH_NOCYG="${PATH_NOCYG:+$PATH_NOCYG:}$_d"
+    done
+    IFS=$_oldifs
+    if PATH="$PATH_NOCYG" command -v cygpath >/dev/null 2>&1; then
+        pass "SKIP: a real cygpath is on PATH beyond the stub dir — control not applicable"
+    else
+        rc=0; out=$(PATH="$PATH_NOCYG" run_gc arm --vault "$VAULT" 2>&1) || rc=$?
+        assert_rc "arm with no cygpath -> rc 2" 2 "$rc"
+        assert_contains "refusal names the missing cygpath" "cygpath not on PATH; cannot convert paths for schtasks" "$out"
+    fi
+fi
 
 summary

@@ -15,8 +15,10 @@
 # inspectable; put a fake `bash` first on PATH so arm resolves the stub, never
 # the real interpreter. HOME/USERPROFILE point at the temp dir so nothing
 # touches the real user profile. The cron suite runs on EVERY platform (the
-# POSIX path is forced with an OSTYPE override); the schtasks suite stays
-# Windows-only (cmd_arm needs cygpath).
+# POSIX path is forced with an OSTYPE override); the schtasks suite runs on
+# Windows against the real cygpath, and elsewhere against a deterministic
+# cygpath STUB (scripts/lib/cygpath-stub.sh, HIMMEL-3114) — see the note at the
+# top of that section for what the stubbed run does and does not prove.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -982,15 +984,34 @@ assert_not_contains "Linux arm prints no FDA warning" "Full Disk Access" "$out"
 run_fda linux-gnu disarm >/dev/null 2>&1
 
 # ============================================================================
-# schtasks suite — Windows-only (cmd_arm needs cygpath; the cron suite above
-# already exercised the POSIX path on this platform).
+# schtasks suite (HIMMEL-3114). cmd_arm hard-refuses without cygpath, and the
+# cron suite above only exercised the POSIX path, so this section used to SKIP
+# everywhere but Git-Bash — the green tally held zero schtasks cases.
+#
+# Off Windows it now runs against two seams, the same way run_fda drives the
+# Darwin branch: an OSTYPE=msys override (run_qc, run_qc_wsh and the direct
+# calls below) and a deterministic `cygpath` stub on PATH
+# (scripts/lib/cygpath-stub.sh). schtasks itself was already faked
+# (QMD_CADENCE_SCHTASKS).
+#
+# WHAT THAT PROVES: the branch logic of cmd_arm / cmd_disarm / cmd_status — task
+# registration, dedup and --force scope, runner emission, staged-rename
+# publication — executes, and emits exactly what the strings cygpath returns
+# imply. WHAT IT DOES NOT: that real schtasks.exe / wscript.exe / cmd.exe accept
+# those strings. A green run here is "Platforms tested: linux", never a Windows
+# validation; the scheduled nightly on the Windows/macOS runners is that proof.
 # ============================================================================
 
 case "${OSTYPE:-$(uname -s 2>/dev/null || echo unknown)}" in
     msys*|cygwin*|win32*|MINGW*) : ;;
     *)
-        echo "SKIP: schtasks suite (Windows-only — needs cygpath/schtasks shapes)"
-        summary
+        # shellcheck source=../lib/cygpath-stub.sh
+        # shellcheck disable=SC1091
+        . "$SCRIPT_DIR/../lib/cygpath-stub.sh"
+        CYGPATH_STUB_DIR="$TMP_ROOT/cygpath-stub"
+        cygpath_stub_install "$CYGPATH_STUB_DIR"
+        export PATH="$CYGPATH_STUB_DIR:$PATH"
+        echo "NOTE: schtasks suite runs against a cygpath STUB (not a Windows validation)"
         ;;
 esac
 
@@ -1088,7 +1109,7 @@ export CADENCE_WSH_POWERSHELL="$FAKE_WSH_POWERSHELL"
 BAT_DIR="$TMP_ROOT/bats"
 
 run_qc() {
-    QMD_CADENCE_SCHTASKS="$FAKE_SCHTASKS" QMD_CADENCE_BAT_DIR="$BAT_DIR" \
+    OSTYPE=msys QMD_CADENCE_SCHTASKS="$FAKE_SCHTASKS" QMD_CADENCE_BAT_DIR="$BAT_DIR" \
         PATH="$TMP_ROOT/bin:$QMD_BIN_DIR_PATH:$PATH" "$REAL_BASH" "$SCRIPT" "$@"
 }
 
@@ -1097,7 +1118,7 @@ run_qc_wsh() {
     shift 3
     env CADENCE_WSCRIPT_BIN="$wscript" CADENCE_WSH_POWERSHELL="$FAKE_WSH_POWERSHELL" \
         FAKE_WSH_HKLM="$hklm" FAKE_WSH_HKCU="$hkcu" \
-        QMD_CADENCE_SCHTASKS="$FAKE_SCHTASKS" QMD_CADENCE_BAT_DIR="$BAT_DIR" \
+        OSTYPE=msys QMD_CADENCE_SCHTASKS="$FAKE_SCHTASKS" QMD_CADENCE_BAT_DIR="$BAT_DIR" \
         PATH="$TMP_ROOT/bin:$QMD_BIN_DIR_PATH:$PATH" "$REAL_BASH" "$SCRIPT" "$@"
 }
 
@@ -1206,7 +1227,9 @@ bat=$(cat "$BAT_DIR/qmd-reindex.bat" 2>/dev/null || echo MISSING)
 assert_contains "bat stamps the format version (HIMMEL-588)" "rem himmel-cadence-runner-format: $FMT" "$bat"
 assert_contains "bat cds into himmel root" 'cd /d "' "$bat"
 assert_contains "bat fires qmd-reindex.sh" "qmd-reindex.sh" "$bat"
-assert_contains "bat pins the resolved qmd absolute path" "--qmd-bin \"$QMD_BIN_DIR/qmd\"" "$bat"
+# The emitter interpolates the cygpath -m form; on Windows TMP_ROOT is already
+# mixed (identity), off Windows it is the stub's C:/cygstub/... mapping.
+assert_contains "bat pins the resolved qmd absolute path" "--qmd-bin \"$(cygpath -m "$QMD_BIN_DIR")/qmd\"" "$bat"
 assert_contains "bat appends run log" 'qmd-reindex.log" 2>&1' "$bat"
 assert_contains "bat rotates the log before firing" 'move /y' "$bat"
 assert_contains "bat stamps every fire" 'echo [fired %DATE% %TIME%]' "$bat"
@@ -1393,7 +1416,7 @@ exec "$REAL_MV" "$@"
 FAKE
 chmod +x "$FAKE_MV"
 printf '%s' "$BAT_DIR/qmd-reindex.bat" > "$STATE/mv-fail-target"
-rc=0; out=$(QMD_CADENCE_SCHTASKS="$FAKE_SCHTASKS" QMD_CADENCE_BAT_DIR="$BAT_DIR" \
+rc=0; out=$(OSTYPE=msys QMD_CADENCE_SCHTASKS="$FAKE_SCHTASKS" QMD_CADENCE_BAT_DIR="$BAT_DIR" \
     PATH="$MVFAIL_BIN_PATH:$TMP_ROOT/bin:$QMD_BIN_DIR_PATH:$PATH" "$REAL_BASH" "$SCRIPT" arm 2>&1) || rc=$?
 assert_rc "failed .bat promotion is rc 4" 4 "$rc"
 assert_contains "promotion failure names the runner" "failed to promote staged runner" "$out"
@@ -1410,7 +1433,7 @@ fi
 
 echo "TEST: failed shim promotion aborts the arm, no task registered"
 printf '%s' "$BAT_DIR/qmd-reindex.vbs" > "$STATE/mv-fail-target"
-rc=0; out=$(QMD_CADENCE_SCHTASKS="$FAKE_SCHTASKS" QMD_CADENCE_BAT_DIR="$BAT_DIR" \
+rc=0; out=$(OSTYPE=msys QMD_CADENCE_SCHTASKS="$FAKE_SCHTASKS" QMD_CADENCE_BAT_DIR="$BAT_DIR" \
     PATH="$MVFAIL_BIN_PATH:$TMP_ROOT/bin:$QMD_BIN_DIR_PATH:$PATH" "$REAL_BASH" "$SCRIPT" arm 2>&1) || rc=$?
 assert_rc "failed shim promotion is rc 4" 4 "$rc"
 assert_contains "promotion failure names the shim" "failed to promote staged shim" "$out"
@@ -1496,7 +1519,7 @@ run_qc disarm >/dev/null
 echo "TEST: hostile %&^ in BAT_DIR lands on the REAL dir in the .bat (W12)"
 EVIL_BAT_DIR="$TMP_ROOT/cr%on rnr&x^y"
 mkdir -p "$EVIL_BAT_DIR"
-out=$(QMD_CADENCE_SCHTASKS="$FAKE_SCHTASKS" QMD_CADENCE_BAT_DIR="$EVIL_BAT_DIR" \
+out=$(OSTYPE=msys QMD_CADENCE_SCHTASKS="$FAKE_SCHTASKS" QMD_CADENCE_BAT_DIR="$EVIL_BAT_DIR" \
     PATH="$TMP_ROOT/bin:$QMD_BIN_DIR_PATH:$PATH" "$REAL_BASH" "$SCRIPT" arm)
 evil_bat=$(cat "$EVIL_BAT_DIR/qmd-reindex.bat" 2>/dev/null || echo MISSING)
 # Assert the WHOLE `>> "<path>"` redirect as ONE contiguous string — separate
@@ -1509,7 +1532,7 @@ assert_contains "log redirect targets the real dir, fully quoted (% doubled, & ^
     "$EVIL_LOG_EXPECTED" "$evil_bat"
 assert_not_contains "no caret-escaped ampersand" '^&' "$evil_bat"
 assert_not_contains "no doubled caret" '^^' "$evil_bat"
-QMD_CADENCE_SCHTASKS="$FAKE_SCHTASKS" QMD_CADENCE_BAT_DIR="$EVIL_BAT_DIR" \
+OSTYPE=msys QMD_CADENCE_SCHTASKS="$FAKE_SCHTASKS" QMD_CADENCE_BAT_DIR="$EVIL_BAT_DIR" \
     PATH="$TMP_ROOT/bin:$QMD_BIN_DIR_PATH:$PATH" "$REAL_BASH" "$SCRIPT" disarm >/dev/null 2>&1 || true
 
 summary

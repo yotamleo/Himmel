@@ -22,7 +22,9 @@
 # inspectable; put a fake `claude` first on PATH. The cron suite runs
 # on EVERY platform (the POSIX code path is forced with an OSTYPE
 # override, exactly like the old non-Windows-stub test); the schtasks
-# suite stays Windows-only (cmd_arm needs cygpath).
+# suite runs on Windows against the real cygpath, and elsewhere against a
+# deterministic cygpath STUB (scripts/lib/cygpath-stub.sh, HIMMEL-3114) —
+# see the note at the top of that section for what the stubbed run proves.
 #
 # Cron suite covers (C*):
 #   C1.  status with empty crontab ("no crontab for user") -> not armed.
@@ -1537,15 +1539,33 @@ assert_not_contains "Linux arm on the same protected path prints no FDA warning"
 run_fda linux-gnu disarm >/dev/null 2>&1
 
 # ============================================================================
-# schtasks suite — Windows-only (cmd_arm needs cygpath; the cron suite
-# above already exercised the POSIX path on this platform).
+# schtasks suite (HIMMEL-3114). cmd_arm hard-refuses without cygpath, and the
+# cron suite above only exercised the POSIX path, so this section used to SKIP
+# everywhere but Git-Bash — the green tally held zero schtasks cases.
+#
+# Off Windows it now runs against two seams, the same way run_fda drives the
+# Darwin branch: an OSTYPE=msys override (run_pc and the direct calls below) and
+# a deterministic `cygpath` stub on PATH (scripts/lib/cygpath-stub.sh).
+# schtasks itself was already faked (PIPELINE_SCHTASKS).
+#
+# WHAT THAT PROVES: the branch logic of cmd_arm / cmd_disarm / cmd_status — task
+# registration, dedup and --force scope, runner emission, staged-rename
+# publication — executes, and emits exactly what the strings cygpath returns
+# imply. WHAT IT DOES NOT: that real schtasks.exe / wscript.exe / cmd.exe accept
+# those strings. A green run here is "Platforms tested: linux", never a Windows
+# validation; the scheduled nightly on the Windows/macOS runners is that proof.
 # ============================================================================
 
 case "${OSTYPE:-$(uname -s 2>/dev/null || echo unknown)}" in
     msys*|cygwin*|win32*|MINGW*) : ;;
     *)
-        echo "SKIP: schtasks suite (Windows-only — needs cygpath/schtasks shapes)"
-        summary
+        # shellcheck source=../lib/cygpath-stub.sh
+        # shellcheck disable=SC1091
+        . "$SCRIPT_DIR/../lib/cygpath-stub.sh"
+        CYGPATH_STUB_DIR="$TMP_ROOT/cygpath-stub"
+        cygpath_stub_install "$CYGPATH_STUB_DIR"
+        export PATH="$CYGPATH_STUB_DIR:$PATH"
+        echo "NOTE: schtasks suite runs against a cygpath STUB (not a Windows validation)"
         ;;
 esac
 
@@ -1655,7 +1675,7 @@ chmod +x "$FAKE_SCHTASKS"
 BAT_DIR="$TMP_ROOT/bats"
 
 run_pc() {
-    PIPELINE_SCHTASKS="$FAKE_SCHTASKS" PIPELINE_BAT_DIR="$BAT_DIR" bash "$SCRIPT" "$@"
+    OSTYPE=msys PIPELINE_SCHTASKS="$FAKE_SCHTASKS" PIPELINE_BAT_DIR="$BAT_DIR" bash "$SCRIPT" "$@"
 }
 
 # Test 1: usage errors ------------------------------------------------------
@@ -1762,7 +1782,7 @@ SB_PC="$TMP_ROOT/hook-sb-pc"
 SB_PC_SCRIPT="$(build_hook_sandbox "$SB_PC")"
 SB_PC_HOOKS="$(cd "$SB_PC/scripts/hooks" && pwd)"
 sb_pc() {
-    PIPELINE_SCHTASKS="$FAKE_SCHTASKS" PIPELINE_BAT_DIR="$BAT_DIR" bash "$SB_PC_SCRIPT" "$@"
+    OSTYPE=msys PIPELINE_SCHTASKS="$FAKE_SCHTASKS" PIPELINE_BAT_DIR="$BAT_DIR" bash "$SB_PC_SCRIPT" "$@"
 }
 
 echo "TEST: schtasks arm warns when the deny-background hook is unreadable"
@@ -2234,7 +2254,7 @@ exec "$REAL_MV" "$@"
 FAKE
 chmod +x "$FAKE_MV"
 rm -f "$STATE/mv-calls.log"
-out=$(env PIPELINE_SCHTASKS="$FAKE_SCHTASKS" PIPELINE_BAT_DIR="$BAT_DIR" \
+out=$(env OSTYPE=msys PIPELINE_SCHTASKS="$FAKE_SCHTASKS" PIPELINE_BAT_DIR="$BAT_DIR" \
     PATH="$MVREC_BIN_PATH:$PATH" bash "$SCRIPT" arm --vault "$VAULT" --force 2>&1)
 assert_contains "re-arm under the recording mv still succeeds" "PIPELINE CADENCE ARMED" "$out"
 mvlog=$(cat "$STATE/mv-calls.log" 2>/dev/null || echo MISSING)
