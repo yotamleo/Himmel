@@ -50,7 +50,10 @@
 #
 # ponytail: the snapshot pins the bytes at copy time, not at classification time:
 # a same-inode in-place edit before the copy is not detected (the identity check
-# compares dev:inode:size:mtime, so it catches replacement and size/mtime moves).
+# compares dev:inode:size:mtime, so it catches replacement and size/mtime moves),
+# and a swap landing between _canon and the first identity read is refused only
+# when it leaves a symlink at the path (a shell cannot bind an fd to the
+# classified inode, so a plain-file replacement in that window is not detected).
 # Classification is by the prompt FILE's path only. A brief handed over
 # as positional text or stdin (or copied out of the vault into /tmp first)
 # carries no path and is NOT recognised as handover-derived; only a
@@ -110,8 +113,9 @@ _canon() {
     printf '%s/%s\n' "${d%/}" "$(basename "$p")"
 }
 
-# _ident <path> -> dev:inode:size:mtime of the file behind <path> (symlinks
-# followed); rc 1 + no output if it cannot be read. GNU stat, then BSD/macOS stat.
+# _ident <path> -> dev:inode:size:mtime of the directory ENTRY at <path> (a
+# symlink is NOT followed, so a link swapped in changes the identity); rc 1 + no
+# output if it cannot be read. GNU stat, then BSD/macOS stat.
 _ident() {
     local o
     o="$(stat -c '%d:%i:%s:%Y' "$1" 2>/dev/null)" || o="$(stat -f '%d:%i:%z:%m' "$1" 2>/dev/null)" || return 1
@@ -187,6 +191,9 @@ if [ -n "$handover_root" ] && _under "$lex" "$hr_raw" && ! _under "$pf" "$handov
     refuse "'$prompt_file' sits under the handover root but resolves to '$pf', outside the handover root — refusing a symlink/'..' escape rather than classifying it as un-gated"
 fi
 ident="$(_ident "$pf")" || refuse "cannot stat '$pf' — a snapshot needs the file's identity to detect a swap"
+# _canon resolved every symlink, so a link here means the path was swapped after
+# canonicalisation; stat did not follow it but wc/cat would — refuse it.
+[ ! -L "$pf" ] || refuse "'$pf' became a symlink after it was classified — refusing a swapped prompt file"
 size="$(wc -c < "$pf" 2>/dev/null | tr -d ' ')"
 case "$size" in ''|*[!0-9]*) refuse "cannot read the size of '$pf' — a permitted gated dispatch must record its byte size" ;; esac
 
