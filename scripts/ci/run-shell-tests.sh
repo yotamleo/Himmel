@@ -658,11 +658,6 @@ scripts/test-adopt.sh                # timing-heavy full adoption matrix exceeds
 scripts/handover/test-arm-resume-probe.sh  # MEASUREMENT tool, not an assertion suite — times a dry-run/real arm and reports python3 spawn counts; always exits 0, so collecting it would spend ~20s per full run to assert nothing (HIMMEL-2125)
 scripts/test-check-ci-forks-probe.sh  # MEASUREMENT tool, not an assertion suite — re-runs the full test-check-ci.sh suite instrumented to report gh-stub fork counts + wall time per case; always exits 0 and duplicates the suite's own run, so collecting it would double the extended-tier cost to assert nothing (HIMMEL-2169)
 marketplace/plugins/handover/scripts/test-skill-e2e.sh  # HIMMEL-3196: real bug — asserts status/roadmap/tech-debt/counter.md under handovers/hbtest-PID that nothing creates, plus a jira npm build+test that fails (5 FAIL of 13); quarantined when HIMMEL-3193 turned the marketplace root on
-marketplace/plugins/obsidian-triage/tests/test-fxt-blocklist-author.sh  # HIMMEL-3196: test coupled to dep layout — require of js-yaml runs from the plugin root but the dep is installed only under tools/
-marketplace/plugins/obsidian-triage/tests/test-ig-media-enrich.sh  # HIMMEL-3196: host-coupled — test 6 strips PATH dirs named ffmpeg but ffmpeg is /usr/bin/ffmpeg; CI outcome unknown, quarantined pre-emptively
-marketplace/plugins/obsidian-triage/tests/test-luna-ingest-skill.sh  # HIMMEL-3196: test drift — the SKILL description no longer starts with Use-when or advertises bitbucket.org (2 FAIL)
-marketplace/plugins/obsidian-triage/tests/test-playwright-crawl.sh  # HIMMEL-3196: test drift — pins playwright 1.58.x, package.json is 1.63.0 (1 FAIL of 28)
-marketplace/plugins/obsidian-triage/tests/test-triage-invariants.sh  # HIMMEL-3196: host-coupled — Test 9g asserts mv -n exits 0 on a refused no-clobber move, but the CI runner coreutils exits 1 (1 FAIL, every other assertion passes); green on the operator station, red on the ubuntu runner
 marketplace/plugins/telegram-himmel/tests/test-telegram-poller-gate.sh  # HIMMEL-3196: real bug — reads bot.pid after killing the server, which removes bot.pid on shutdown (server.ts:684), so the owner case always reads NO_PID
 "
 
