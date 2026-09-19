@@ -31,6 +31,7 @@ CLEAR="$SCRIPT_DIR/clear-cr-marker.sh"
 LEDGER_APPEND="$SCRIPT_DIR/ledger-append.sh"
 REVIEW_ROUND="$SCRIPT_DIR/review-round.sh"
 LOCK_LIB="$SCRIPT_DIR/../lib/shared-branch-lock.sh"
+DEFAULT_BASE_LIB="$SCRIPT_DIR/../lib/cr-default-base.sh"
 CODEX_SKILL="$ROOT/.agents/skills/pr-check/SKILL.md"
 # shellcheck source=scripts/lib/fixture-tempdir.sh
 # shellcheck disable=SC1091
@@ -94,6 +95,9 @@ build_repo_template() {
     # refuses without it, so a missing copy would fail every case at once.
     cp "$LOCK_LIB" "$REPO_TEMPLATE/scripts/lib/shared-branch-lock.sh" \
         || { echo "FAIL: cp shared-branch-lock.sh into template failed" >&2; rm -rf "$REPO_TEMPLATE"; return 1; }
+    # HIMMEL-3107: the floor provenance check binds its base through this lib.
+    cp "$DEFAULT_BASE_LIB" "$REPO_TEMPLATE/scripts/lib/cr-default-base.sh" \
+        || { echo "FAIL: cp cr-default-base.sh into template failed" >&2; rm -rf "$REPO_TEMPLATE"; return 1; }
 }
 trap '[ -n "$REPO_TEMPLATE" ] && rm -rf "$REPO_TEMPLATE"' EXIT
 build_repo_template || { echo "FAIL: could not build repo template fixture" >&2; exit 1; }
@@ -144,6 +148,8 @@ avail_ok_floor() { printf '{"kind":"avail","head":"%s","model":"claude-floor","s
 # The diff hash is computed exactly as the gate recomputes it (main...head).
 write_floor_artifact() {
     local tmp="$1" head="$2" hash="${3:-}" base
+    # The gate binds the base to the REMOTE default branch, so publish main.
+    git -C "$tmp" push -q origin main >/dev/null 2>&1
     base=$(git -C "$tmp" rev-parse --verify refs/heads/main)
     [ -n "$hash" ] || hash=$(git -C "$tmp" diff --no-color --no-ext-diff "$base...$head" | git -C "$tmp" hash-object --stdin)
     mkdir -p "$tmp/.git/cr-floor"
@@ -2553,6 +2559,36 @@ stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
 run_clear "$tmp" 14 "5x floor artifact based on a mid-branch commit -> exit 14"
 if marker_exists "$tmp"; then pass; else fail "5x partial-range review: marker must REMAIN"; fi
 if grepq "$LAST_CLEAR_OUT" 'default branch'; then pass; else fail "5x must name the base problem: $LAST_CLEAR_OUT"; fi
+rm -rf "$tmp"
+
+# 5y. A LOCAL main that contains a mid-branch commit is not the default branch:
+# only the remote default (origin/HEAD, else origin/main) binds the base.
+make_repo || exit 1
+( cd "$tmp" && git push -q origin main && echo a > mid.txt && git add mid.txt && git commit -qm mid &&
+  echo b > tip.txt && git add tip.txt && git commit -qm tip && git push -q origin feat/x &&
+  git branch -f main HEAD~1 ) >/dev/null 2>&1
+sha=$(git -C "$tmp" rev-parse HEAD); mid=$(git -C "$tmp" rev-parse HEAD~1)
+write_marker "$tmp" "$sha"
+mkdir -p "$tmp/.git/cr-floor"
+printf '{"schema":1,"head":"%s","base":"%s","diff_hash":"%s","session_id":"00000000-0000-4000-8000-000000000001","findings":[]}\n' \
+    "$sha" "$mid" "$(git -C "$tmp" diff --no-color --no-ext-diff "$mid...$sha" | git -C "$tmp" hash-object --stdin)" > "$tmp/.git/cr-floor/$sha.json"
+write_ledger "$tmp" "$(avail_ok_floor "$sha")" "$(avail_reason "$sha" codex unavailable quota-5h)"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 14 "5y base on a local main holding a mid-branch commit -> exit 14"
+if marker_exists "$tmp"; then pass; else fail "5y local-main base: marker must REMAIN"; fi
+rm -rf "$tmp"
+
+# 5z. No remote default branch to bind to -> refuse (fail-closed), even though
+# the base is on local main.
+make_repo || exit 1
+write_marker "$tmp" "$sha"
+write_floor_artifact "$tmp" "$sha"
+git -C "$tmp" update-ref -d refs/remotes/origin/main >/dev/null 2>&1
+write_ledger "$tmp" "$(avail_ok_floor "$sha")" "$(avail_reason "$sha" codex unavailable quota-5h)"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 14 "5z no origin/HEAD or origin/main -> exit 14"
+if marker_exists "$tmp"; then pass; else fail "5z no remote default: marker must REMAIN"; fi
+if grepq "$LAST_CLEAR_OUT" 'default branch'; then pass; else fail "5z must name the missing default branch: $LAST_CLEAR_OUT"; fi
 rm -rf "$tmp"
 unset CR_FLOOR_FALLBACK
 

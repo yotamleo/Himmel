@@ -51,6 +51,7 @@ mk_repo() {
     R="$W/repo.$1"; rm -rf "$R"; mkdir -p "$R"
     ( cd "$R" && git init -q -b main . && git config user.email t@t.t && git config user.name t &&
       echo hi > f.txt && git add f.txt && git commit -qm base &&
+      git init -q --bare .git/origin.git && git remote add origin .git/origin.git && git push -q origin main &&
       git checkout -qb feat/himmel-9-x && echo more >> f.txt && git commit -qam work ) >/dev/null 2>&1
     HEAD_SHA=$(git -C "$R" rev-parse HEAD)
     export CR_LEDGER="$R/.git/cr-critic-scores.jsonl"; : > "$CR_LEDGER"
@@ -190,6 +191,22 @@ run_sut
 chmod u+w "$CR_LEDGER"
 check "13 repeat review whose ledger write fails -> exit 1" 1 "$RC"
 check "13 artifact still carries the first review's findings" 0 "$(jq '.findings | length' "$R/.git/cr-floor/$HEAD_SHA.json" 2>/dev/null)"
+
+# 14. A LOCAL main holding a mid-branch commit is not the default branch: the
+# base binds to origin/HEAD (else origin/main) only, so nothing is spent.
+mk_repo 14
+( cd "$R" && echo tip >> f.txt && git commit -qam tip && git branch -f main HEAD~1 ) >/dev/null 2>&1
+HEAD_SHA=$(git -C "$R" rev-parse HEAD); row codex unavailable quota
+run_sut
+check "14 base on a local main holding a mid-branch commit -> exit 3" 3 "$RC"
+check "14 claude never invoked" no "$([ -e "$REC/argv" ] && echo yes || echo no)"
+
+# 15. No remote default branch -> refuse before any spend (fail-closed).
+mk_repo 15; row codex unavailable quota
+git -C "$R" update-ref -d refs/remotes/origin/main >/dev/null 2>&1
+run_sut
+check "15 no origin/HEAD or origin/main -> exit 3" 3 "$RC"
+check "15 claude never invoked" no "$([ -e "$REC/argv" ] && echo yes || echo no)"
 
 echo "claude-floor-review: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

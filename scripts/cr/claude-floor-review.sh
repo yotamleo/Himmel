@@ -65,13 +65,12 @@ head=$(git rev-parse --verify "${head:-HEAD}^{commit}" 2>/dev/null) || die "cann
 base=$(git rev-parse --verify "$base^{commit}" 2>/dev/null) || die "cannot resolve --base"
 [ "$base" != "$head" ] || die "--base equals --head: there is no diff to review"
 # Twin of clear-cr-marker.sh floor_provenance_ok: the gate refuses an artifact
-# whose base is off the default branch (a partial range), so never spend one.
-on_default=0
-for ref in refs/remotes/origin/HEAD refs/remotes/origin/main refs/remotes/origin/master refs/heads/main refs/heads/master; do
-    git rev-parse --verify -q "$ref" >/dev/null 2>&1 || continue
-    if git merge-base --is-ancestor "$base" "$ref" 2>/dev/null; then on_default=1; break; fi
-done
-[ "$on_default" = 1 ] || die "not eligible: --base ${base:0:8} is not on the default branch, so the review would cover only part of the branch. Nothing spent." 3
+# whose base is off the remote default branch (a partial range), so never spend one.
+# shellcheck source=scripts/lib/cr-default-base.sh
+. "$REPO_ROOT/scripts/lib/cr-default-base.sh" || die "cannot load scripts/lib/cr-default-base.sh" 1
+default_ref=$(cr_default_base_ref) || die "not eligible: no remote default branch (origin/HEAD or origin/main) to bind --base to. Nothing spent." 3
+git merge-base --is-ancestor "$base" "$default_ref" 2>/dev/null ||
+    die "not eligible: --base ${base:0:8} is not on the default branch ($default_ref), so the review would cover only part of the branch. Nothing spent." 3
 [ -r "$AGENT_MD" ] || die "reviewer agent definition not readable: $AGENT_MD"
 git_dir=$(git rev-parse --git-common-dir 2>/dev/null) || die "not in a git repository"
 ledger="${CR_LEDGER:-$git_dir/cr-critic-scores.jsonl}"
