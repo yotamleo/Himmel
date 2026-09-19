@@ -305,7 +305,11 @@ assert "SKILL.md canonical form, vault == \".\" (cwd-relative) -> allowed" ALLOW
 # None of these must auto-allow -- they fall through to the normal
 # permission flow, same as the pre-existing `$VAR` case above.
 assert "tilde-expansion vault arg -> refused"  PASS "$(decide_with_hook "$HOOK" "$(j_bash_cwd "python \"${ABS}\" \"~/private-vault\"" "$VAULT_FIXTURE_MIXED")")"
-assert "brace-expansion vault arg -> refused"  PASS "$(decide_with_hook "$HOOK" "$(j_bash_cwd "python \"${ABS}\" \"{a,b}\"" "$VAULT_FIXTURE_MIXED")")"
+# Built in a variable first: bash 3.2 (macOS) brace-expands a quoted `{a,b}` written
+# inside a "$(...)" nested in another "$(...)", so the hook would receive `"a"`
+# and the case would test nothing (HIMMEL-3177).
+BRACE_CMD="python \"${ABS}\" \"{a,b}\""
+assert "brace-expansion vault arg -> refused"  PASS "$(decide_with_hook "$HOOK" "$(j_bash_cwd "$BRACE_CMD" "$VAULT_FIXTURE_MIXED")")"
 assert "glob (*) vault arg -> refused"         PASS "$(decide_with_hook "$HOOK" "$(j_bash_cwd "python \"${ABS}\" \"*.md\"" "$VAULT_FIXTURE_MIXED")")"
 assert "glob ([...]) vault arg -> refused"     PASS "$(decide_with_hook "$HOOK" "$(j_bash_cwd "python \"${ABS}\" \"foo[0-9]\"" "$VAULT_FIXTURE_MIXED")")"
 
