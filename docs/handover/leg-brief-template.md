@@ -108,3 +108,9 @@ template_version: 3
   loop; a leg that blocks in one never wakes to receive it.
 - (d) `/pr-check` runs at the exact head the leg reports in its `READY` line,
   not an earlier or later one.
+- (e) Every HALT or WRAP brief or message says: "TaskStop EVERY background
+  task and every agent you spawned, then prove the subtree is clean with
+  `bash scripts/handover/wrap-subtree-check.sh` — only its `CLOSABLE:` line
+  makes the window closable." The console cannot kill a leg's orphaned
+  background shell (HIMMEL-2761); tick's `orphans=` field shows one that a
+  leg left behind.

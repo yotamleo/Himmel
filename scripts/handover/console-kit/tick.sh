@@ -41,9 +41,16 @@ TICK_UNDERFILL_MIN minutes (default 10); capacity=ok otherwise, capacity=unknown
 when fleet=?. TICK_LAUNCH_DIR overrides the console work dir the launch logs
 are read from.
 
-gql=<remaining>/<reset HH:MM> (HIMMEL-3197) is the last field: the GitHub GraphQL
-budget, read from the X-Ratelimit-* headers of ONE `gh api -i graphql` call
+gql=<remaining>/<reset HH:MM> (HIMMEL-3197): the GitHub GraphQL budget, read from
+the X-Ratelimit-* headers of ONE `gh api -i graphql` call
 (gh-graphql-budget.sh ghb_read); gql=? when the headers cannot be read.
+
+orphans=<owner>:<count>/<oldest>m (HIMMEL-2761) is the last field: shell-tool
+wrappers older than TICK_ORPHAN_MIN minutes (default 30), per owning session
+name (`orphan` = no live claude session above it), read-only via
+orphan-loops.sh; orphans=none when clean, orphans=? when the process table
+cannot be read. A leg whose lock is FREE / tail WRAPPED but which still owns a
+wrapper here left a background loop running -- tell the leg to TaskStop it.
 
 --burn adds a per-leg context-burn field (first-turn/avg-ctx, via
 scripts/lanes/leg-burn.sh) for every doc in --legs. OPT-IN because it scans
@@ -467,6 +474,14 @@ else
     capacity=unknown
 fi
 
+# orphans= (HIMMEL-2761): shell-tool wrappers older than TICK_ORPHAN_MIN minutes,
+# joined to the owning session name -- a poll loop that outlives its wrapped
+# leg (TaskStop on an agent does not reap the shell it spawned) surfaces at the
+# next tick. Read-only; orphans=? when the process table cannot be read.
+orphans_line="$(REPO="$REPO" bash "$HERE/orphan-loops.sh" 2>/dev/null | tail -n 1)" || orphans_line=""
+orphans="${orphans_line#orphans=}"
+[ -n "$orphans" ] || orphans='?'
+
 # gql=<remaining>/<reset HH:MM> (HIMMEL-3197): the GitHub GraphQL budget, shared by
 # every leg on the box, so a console sees exhaustion coming instead of hitting it.
 # ghb_read is ONE real `gh api -i graphql` call -- `gh api rate_limit` reports the
@@ -556,16 +571,18 @@ if [ "$verbose" -eq 1 ]; then
     printf 'fleet: %s\n' "$fleet"
     printf 'capacity: %s\n' "$capacity"
     printf 'gql: %s\n' "$gql"
+    printf 'orphans: %s\n' "$orphans"
 else
     # `tick=` is always appended (HIMMEL-3144); `burn=` stays APPENDED only
     # under --burn, after it. `fleet=`/`capacity=` (HIMMEL-3167) are appended
     # after everything else, so a consumer keyed on the existing fields and
-    # their order sees them only as a tail. `gql=` (HIMMEL-3197) follows them.
+    # their order sees them only as a tail. `gql=` (HIMMEL-3197) follows them, and
+    # `orphans=` (HIMMEL-2761) is last.
     if [ "$burn" -eq 1 ]; then
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s gql=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity" "$gql"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s gql=%s orphans=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity" "$gql" "$orphans"
     else
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s gql=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity" "$gql"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s gql=%s orphans=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity" "$gql" "$orphans"
     fi
 fi

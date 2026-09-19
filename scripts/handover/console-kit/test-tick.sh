@@ -115,6 +115,18 @@ if [ "$PWD" != "$REPO" ]; then
 fi
 printf '%s\n' 2247 2250
 STUB
+# HIMMEL-2761: orphans= reads `ps -eo pid=,ppid=,etime=,args=` (orphan-loops.sh).
+# Answered from $PS_FIXTURE so the suite never reads the live process table;
+# any other ps argv falls through to the real ps.
+cat > "$W/bin/ps" <<'STUB'
+#!/usr/bin/env bash
+if [ "$*" = "-eo pid=,ppid=,etime=,args=" ]; then
+  cat "$PS_FIXTURE"
+  exit 0
+fi
+exec /bin/ps "$@"
+STUB
+printf '%s\n' '    1     0 40-00:00:01 /sbin/init' > "$W/ps-none.txt"
 cat > "$W/bin/bun" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' 'claudex funded measured 5h used=12% free=88%; weekly used=34% free=66%'
@@ -156,6 +168,7 @@ export LEGS='HIMMEL-111-legN61 HIMMEL-222-legN65'
 export HANDOVER_DIR="$W/handover"
 export REPO="$W/repo"
 export TICK_TMPDIR="$W"
+export PS_FIXTURE="$W/ps-none.txt"
 export TICK_BANK_CACHE_FILE="$W/bank.json"
 export CLAUDE_SESSIONS_PROC="$W/proc"
 # HIMMEL-3167: launch logs live in <work-dir>/<chain>/<name>.launch.log.
@@ -165,7 +178,7 @@ mkdir -p "$W/console-work/chain"
 # The default stub reset epoch, rendered the way tick.sh renders it (local HH:MM).
 gql_hm="$(date -d @1790000000 +%H:%M 2>/dev/null || date -r 1790000000 +%H:%M)"
 out="$(bash "$SUT")"; rc=$?
-expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7 gql=4321/'"$gql_hm"
+expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7 gql=4321/'"$gql_hm"' orphans=none'
 lines="$(printf '%s\n' "$out" | wc -l | tr -d '[:space:]')"
 if [ "$rc" -eq 0 ] && [ "$lines" = 1 ] && [ "$out" = "$expected" ]; then
     pass 'default run emits exactly the expected one batched line'
@@ -560,9 +573,28 @@ gql_verbose="$(bash "$SUT" --verbose)"
 contains '--verbose labels the graphql budget (HIMMEL-3197)' "$gql_verbose" "gql: 4321/$gql_hm"
 gql_burn="$(bash "$SUT" --burn --legs 'HIMMEL-111-legN61')"
 case "$gql_burn" in
-    *' burn=N61:'*" capacity=UNDERFILLED:7 gql=4321/$gql_hm") pass 'gql= is the final field under --burn too (HIMMEL-3197)' ;;
-    *) fail "gql= not last under --burn (out='$gql_burn')" ;;
+    *' burn=N61:'*" capacity=UNDERFILLED:7 gql=4321/$gql_hm orphans=none") pass 'gql= keeps its slot under --burn, orphans= trails it (HIMMEL-3197, HIMMEL-2761)' ;;
+    *) fail "gql=/orphans= order under --burn (out='$gql_burn')" ;;
 esac
+
+# --- HIMMEL-2761: orphans=<owner>:<count>/<oldest>m ---------------------------
+# A wrapper shell older than the floor under a live session is surfaced at the
+# next tick, joined to that session's name (orphan-loops.sh; its own suite pins
+# the walk/threshold rules). Appended last, after gql=, so no field moves.
+cat > "$W/ps-orphan.txt" <<'FIX'
+    1     0 40-00:00:01 /sbin/init
+  101     1    05:00:00 claude --model claude-sonnet-5 -n HIMMEL-111-legN61 work
+  201   101    02:10:05 /usr/bin/zsh -c source /home/u/.claude/shell-snapshots/snapshot-zsh-1-a.sh 2>/dev/null || true && eval 'until false; do sleep 10; done'
+FIX
+orph_out="$(PS_FIXTURE="$W/ps-orphan.txt" bash "$SUT")"; orph_rc=$?
+if [ "$orph_rc" -eq 0 ]; then
+    contains 'a stale wrapper under a live session surfaces as orphans=<name>:<n>/<m>m, last on the line (HIMMEL-2761)' "$orph_out" " gql=4321/$gql_hm orphans=HIMMEL-111-legN61:1/130m"
+else
+    fail "an orphan inventory must not fail the tick (rc=$orph_rc)"
+fi
+contains '--verbose labels the orphan inventory (HIMMEL-2761)' "$(PS_FIXTURE="$W/ps-orphan.txt" bash "$SUT" --verbose)" 'orphans: HIMMEL-111-legN61:1/130m'
+: > "$W/ps-empty.txt"
+contains 'an unreadable process table reads orphans=? and never fails the tick (HIMMEL-2761)' "$(PS_FIXTURE="$W/ps-empty.txt" bash "$SUT")" ' orphans=?'
 
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-tick.sh'
