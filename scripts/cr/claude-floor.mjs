@@ -78,11 +78,48 @@ const readArtifact = (f) => { try { return JSON.parse(fs.readFileSync(f, "utf8")
 export function snapshotPath(dest, name, p = path) {
     if (name.split("/").some((c) => c === "" || c === "." || c === ".." || c.includes("\\") || c.includes(":"))) return null;
     const file = p.resolve(dest, name), rel = p.relative(p.resolve(dest), file);
-    return rel === "" || rel.startsWith("..") || p.isAbsolute(rel) ? null : file;
+    // rel is `..` or `..<sep>…` only when the path climbs out; `..config` is an
+    // ordinary in-tree name (the component check above already refused a literal `..`).
+    return rel === "" || rel === ".." || rel.startsWith(".." + p.sep) || p.isAbsolute(rel) ? null : file;
+}
+
+// Blobs are read through `git cat-file --batch` in BOUNDED batches: consecutive
+// blobs are grouped until their listed sizes (from ls-tree -l) reach <limit>, and
+// each batch's buffer is capped at its own size plus record headers. Resident
+// memory is one batch, not the whole tree. A blob larger than <limit> gets a
+// batch of its own. fn(entry, body) runs per verified record; any mismatch
+// throws (the caller fails closed).
+// ponytail: one blob is still read into one Buffer, so a single blob beyond what
+// a Buffer can hold (or than the host has memory for) still fails closed.
+const BATCH_BYTES = 64 << 20, RECORD_SLACK = 128;
+const catBatch = (shas, maxBuffer) => git(["cat-file", "--batch"], { input: shas.join("\n") + "\n", maxBuffer });
+
+export function eachBlob(blobs, fn, { limit = BATCH_BYTES, cat = catBatch } = {}) {
+    for (let i = 0; i < blobs.length;) {
+        let j = i, bytes = 0;
+        do bytes += blobs[j++].size; while (j < blobs.length && bytes + blobs[j].size <= limit);
+        const batch = blobs.slice(i, j);
+        i = j;
+        const res = cat(batch.map((e) => e.sha), bytes + batch.length * RECORD_SLACK + 1024);
+        if (res.status !== 0) throw new Error(`git cat-file --batch failed: ${res.error?.message ?? res.stderr}`);
+        const out = res.stdout;
+        let pos = 0;
+        for (const e of batch) {
+            const nl = out.indexOf(0x0a, pos);
+            if (nl < 0) throw new Error(`cat-file output truncated at ${e.sha}`);
+            const [sha, type, size] = out.subarray(pos, nl).toString().split(" ");
+            if (sha !== e.sha || type !== "blob") throw new Error(`unexpected cat-file record for ${e.sha}: ${sha} ${type}`);
+            if (Number(size) !== e.size) throw new Error(`cat-file size ${size} != listed ${e.size} at ${e.sha}`);
+            if (nl + 1 + e.size > out.length) throw new Error(`cat-file output truncated at ${e.sha}`);
+            fn(e, out.subarray(nl + 1, nl + 1 + e.size));
+            pos = nl + 1 + e.size + 1;
+        }
+    }
 }
 
 function snapshot(head, dest) {
-    const ls = git(["ls-tree", "-r", "-z", "--full-tree", head]);
+    // -l adds each blob's size (`-` for a commit entry): the batches are sized from it.
+    const ls = git(["ls-tree", "-r", "-l", "-z", "--full-tree", head]);
     if (ls.status !== 0) die(`git ls-tree ${head} failed: ${ls.stderr}`);
     const listing = ls.stdout.toString("utf8");
     // A non-UTF-8 path would decode lossily (U+FFFD) and be renamed or collide
@@ -92,39 +129,32 @@ function snapshot(head, dest) {
     for (const rec of listing.split("\0")) {
         if (!rec) continue;
         const tab = rec.indexOf("\t");
-        const [mode, type, sha] = rec.slice(0, tab).split(" ");
+        const m = /^(\d+) (\w+) ([0-9a-f]+) +(\d+|-)$/.exec(rec.slice(0, tab));
+        if (!m) die(`unexpected ls-tree record in ${head}: ${JSON.stringify(rec.slice(0, tab))}`);
         const name = rec.slice(tab + 1);
         const file = snapshotPath(dest, name);
         if (file === null) die(`${head} has a path that could leave the snapshot: ${JSON.stringify(name)}`);
-        entries.push({ mode, type, sha, file });
+        entries.push({ mode: m[1], type: m[2], sha: m[3], size: m[4] === "-" ? 0 : Number(m[4]), file });
     }
     const blobs = entries.filter((e) => e.type === "blob");
-    // One `cat-file --batch` stream: raw object bytes, no attribute applied.
-    const cat = git(["cat-file", "--batch"], { input: blobs.map((e) => e.sha).join("\n") + "\n" });
-    if (cat.status !== 0) die(`git cat-file --batch failed: ${cat.stderr}`);
-    const out = cat.stdout;
-    let pos = 0;
-    for (const e of blobs) {
-        const nl = out.indexOf(0x0a, pos);
-        const [sha, type, size] = out.subarray(pos, nl).toString().split(" ");
-        if (nl < 0 || sha !== e.sha || type !== "blob") die(`unexpected cat-file record for ${e.sha}: ${sha} ${type}`);
-        if (nl + 1 + Number(size) > out.length) die(`cat-file output truncated at ${e.sha}`);
-        const body = out.subarray(nl + 1, nl + 1 + Number(size));
-        pos = nl + 1 + Number(size) + 1;
-        // A symlink blob holds its target. Written as an inert file holding
-        // that target (as git does with core.symlinks=false), never a real
-        // link: a committed link could point the reviewer outside the
-        // snapshot, at host files or the key dir. Every file is created
-        // exclusively (wx): two tree paths that land on one host path (a
-        // case-insensitive or normalising filesystem, a Windows backslash)
-        // refuse the snapshot instead of one silently replacing the other.
-        try {
-            fs.mkdirSync(path.dirname(e.file), { recursive: true });
-            fs.writeFileSync(e.file, body, { mode: e.mode === "100755" ? 0o755 : 0o644, flag: "wx" });
-        } catch (err) {
-            die(`${e.file} collides with another path in ${head} on this filesystem (${err.code}); the snapshot cannot reproduce the tree`);
-        }
-    }
+    // Raw object bytes, no attribute applied.
+    try {
+        eachBlob(blobs, (e, body) => {
+            // A symlink blob holds its target. Written as an inert file holding
+            // that target (as git does with core.symlinks=false), never a real
+            // link: a committed link could point the reviewer outside the
+            // snapshot, at host files or the key dir. Every file is created
+            // exclusively (wx): two tree paths that land on one host path (a
+            // case-insensitive or normalising filesystem, a Windows backslash)
+            // refuse the snapshot instead of one silently replacing the other.
+            try {
+                fs.mkdirSync(path.dirname(e.file), { recursive: true });
+                fs.writeFileSync(e.file, body, { mode: e.mode === "100755" ? 0o755 : 0o644, flag: "wx" });
+            } catch (err) {
+                die(`${e.file} collides with another path in ${head} on this filesystem (${err.code}); the snapshot cannot reproduce the tree`);
+            }
+        });
+    } catch (err) { die(err.message); }
     for (const e of entries) if (e.type === "commit") {
         try { fs.mkdirSync(e.file, { recursive: true }); } catch (err) { die(`${e.file} collides with another path in ${head} on this filesystem (${err.code})`); }
     }

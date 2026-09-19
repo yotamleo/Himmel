@@ -347,10 +347,63 @@ for (const p of [path.win32, path.posix]) for (const n of refused)
     console.log(`${p === path.win32 ? "win32" : "posix"} ${JSON.stringify(n)} ${snapshotPath(p === path.win32 ? "C:\\snap" : "/snap", n, p) === null ? "refused" : "ALLOWED"}`);
 console.log(`win32 ok ${snapshotPath("C:\\snap", "a/b.txt", path.win32)}`);
 console.log(`posix ok ${snapshotPath("/snap", "a/b.txt", path.posix)}`);
+// HIMMEL-3240: a component that merely STARTS with two dots is an ordinary name.
+for (const [p, d] of [[path.win32, "C:\\snap"], [path.posix, "/snap"]])
+    for (const n of ["..config", "a/..config", "...", "a/..b/c"])
+        console.log(`${p === path.win32 ? "win32" : "posix"} dots ${JSON.stringify(n)} ${snapshotPath(d, n, p) === null ? "REFUSED" : "inside"}`);
 ' > "$W/out25" 2>&1
 check "25 every escaping name refused under win32 and posix" 20 "$(grep -c ' refused$' "$W/out25")"
 check "25 a plain win32 path stays inside" 'win32 ok C:\snap\a\b.txt' "$(grep '^win32 ok' "$W/out25")"
 check "25 a plain posix path stays inside" 'posix ok /snap/a/b.txt' "$(grep '^posix ok' "$W/out25")"
+check "25 in-tree names starting with two dots stay inside (win32 + posix)" 8 "$(grep -c ' inside$' "$W/out25")"
+
+# 26. HIMMEL-3240: `..config` (and an empty blob) snapshot end to end.
+mk_repo 26
+( cd "$R" && mkdir -p a && : > empty && echo cfg > ..config && echo b > a/..b && git add -A && git commit -qm dots ) >/dev/null 2>&1
+RC=0; ( cd "$R" && node "$FLOOR_MJS" snapshot HEAD "$W/snap26" ) > "$W/out" 2>&1 || RC=$?
+check "26 in-tree ..config snapshot -> exit 0" 0 "$RC"
+check "26 ..config holds its bytes" cfg "$(cat "$W/snap26/..config" 2>/dev/null)"
+check "26 a/..b holds its bytes" b "$(cat "$W/snap26/a/..b" 2>/dev/null)"
+check "26 an empty blob snapshots as an empty file" "yes 0" "$([ -f "$W/snap26/empty" ] && echo yes) $(wc -c < "$W/snap26/empty" 2>/dev/null | tr -d ' ')"
+
+# 27. HIMMEL-3240: blobs are read in BOUNDED batches (a tree larger than one
+# batch must not need one whole-tree buffer), with every per-record check kept.
+# eachBlob takes the cat-file runner as a seam, so the tamper cases need no git
+# shim (a PATH stub does not work under Windows). Sizes are real, from ls-tree -l.
+mk_repo 27
+( cd "$R" && for i in 1 2 3 4 5; do head -c 1000 /dev/zero | tr '\0' "$i" > "big$i"; done && git add -A && git commit -qm big ) >/dev/null 2>&1
+# shellcheck disable=SC2016 # a JS program, not a shell string
+( cd "$R" && FLOOR_MJS="$FLOOR_MJS" node --input-type=module -e '
+import { spawnSync, execFileSync } from "node:child_process";
+const { eachBlob } = await import(process.env.FLOOR_MJS);
+const listing = execFileSync("git", ["ls-tree", "-r", "-l", "HEAD"]).toString().split("\n").filter(Boolean);
+const blobs = listing.map((l) => l.match(/^\d+ blob (\w+) +(\d+)\t(big\d)$/)).filter(Boolean).map((m) => ({ sha: m[1], size: Number(m[2]), name: m[3] }));
+const real = (shas, maxBuffer) => spawnSync("git", ["cat-file", "--batch"], { input: shas.join("\n") + "\n", maxBuffer });
+const run = (limit, cat) => { const calls = [], got = []; try {
+    eachBlob(blobs, (e, body) => got.push(`${e.name}:${body.length}:${body[0]}`), { limit, cat: (s, m) => { calls.push({ n: s.length, m }); return cat(s, m, calls.length); } });
+    return { calls, got, err: null };
+} catch (e) { return { calls, got, err: e.message }; } };
+const ok = run(2500, real);
+console.log(`batches ${ok.calls.map((c) => c.n).join(",")}`);
+console.log(`bounded ${ok.calls.length > 0 && ok.calls.every((c) => c.m < 5000)}`);
+console.log(`bodies ${ok.got.length} ${ok.got.every((g, i) => g === `big${i + 1}:1000:${49 + i}`)}`);
+console.log(`oversize ${run(500, real).calls.map((c) => c.n).join(",")}`);
+const bad = (label, cat) => console.log(`${label} ${(run(2500, cat).err || "NO-ERROR").replace(/[0-9a-f]{40}/g, "<sha>")}`);
+bad("truncated", (s, m, n) => { const r = real(s, m); return n === 2 ? { ...r, stdout: r.stdout.subarray(0, r.stdout.length - 5) } : r; });
+bad("badsha", (s, m, n) => { const r = real(s, m); return n === 2 ? { ...r, stdout: Buffer.concat([Buffer.from("0"), r.stdout.subarray(1)]) } : r; });
+bad("badsize", (s, m, n) => { const r = real(s, m); return n === 2 ? { ...r, stdout: Buffer.from(r.stdout.toString("latin1").replace(" 1000\n", " 999\n"), "latin1") } : r; });
+bad("failed", (s, m, n) => (n === 2 ? { status: 128, stderr: Buffer.from("boom"), stdout: Buffer.alloc(0) } : real(s, m)));
+bad("enobufs", (s, m, n) => (n === 2 ? { status: null, error: new Error("spawnSync git ENOBUFS"), stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) } : real(s, m)));
+' ) > "$W/out27" 2>&1
+check "27 five 1000-byte blobs under a 2500 cap -> batches 2,2,1" "batches 2,2,1" "$(grep '^batches' "$W/out27")"
+check "27 every batch buffer is smaller than the whole tree" "bounded true" "$(grep '^bounded' "$W/out27")"
+check "27 every blob is delivered, in order, with its bytes" "bodies 5 true" "$(grep '^bodies' "$W/out27")"
+check "27 a blob over the cap gets a batch of its own" "oversize 1,1,1,1,1" "$(grep '^oversize' "$W/out27")"
+has "27 a truncated batch is refused" "cat-file output truncated at" "$W/out27"
+has "27 a wrong record sha is refused" "unexpected cat-file record" "$W/out27"
+has "27 a size that differs from ls-tree is refused" "!= listed" "$W/out27"
+has "27 a failed cat-file is refused" "git cat-file --batch failed" "$W/out27"
+check "27 no tamper case slipped through" 0 "$(grep -c 'NO-ERROR' "$W/out27")"
 
 echo "claude-floor-review: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
