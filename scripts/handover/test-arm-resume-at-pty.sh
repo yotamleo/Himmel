@@ -162,7 +162,8 @@ EOF
         (umask 000; TMPDIR="$TMP" PATH="$MKF_STUB:$PATH" _himmel_pty_run claude one </dev/null)
         assert_contains "Q4 the pty fifo is created mode 600 regardless of umask" "-m 600" "$(cat "$TMP/mkfifo.args" 2>/dev/null)"
         assert_eq "Q5 the fifo sits in a private 0700 directory, not bare in a shared TMPDIR" "drwx------" "$(cat "$TMP/mkfifo.dirmode" 2>/dev/null)"
-        assert_eq "Q5b no private fifo dir is left behind" "0" "$(find "$TMP" -maxdepth 1 -name 'himmel-pty.*' | wc -l | tr -d ' ')"
+        LEFT=0; for _d in "$TMP"/himmel-pty.*; do [ -e "$_d" ] && LEFT=$((LEFT + 1)); done
+        assert_eq "Q5b no private fifo dir is left behind" "0" "$LEFT"
 
         # BSD/macOS dialect (no util-linux in --version): a stub `script` that
         # takes `-q[e] FILE cmd...`, exits with the child's status only under -e.
