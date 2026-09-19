@@ -2151,4 +2151,54 @@ fi
 rm -rf "$sb24"
 fi
 
+# --------------------------------------------------------------------------
+# Case 25 — SKIP_LIST_NON_LINUX (HIMMEL-3203): scripts/test-adopt.sh runs on
+#   Linux and stays [SKIP]ped off-Linux. The real table entry is driven with a
+#   sentinel-writing stub at scripts/test-adopt.sh; `uname` is stubbed on PATH
+#   so every host exercises the Darwin / MINGW branches deterministically.
+#     a. uname -s = Linux   -> [PASS] scripts/test-adopt.sh, stub ran
+#     b. uname -s = Darwin  -> [SKIP] with the HIMMEL-3203 reason, stub never ran
+#     c. uname -s = MINGW64_NT-10.0 -> same skip
+# --------------------------------------------------------------------------
+echo "== Case 25 (HIMMEL-3203): test-adopt.sh runs on Linux, skipped off-Linux =="
+sb25=$(mktemp -d "${TMPDIR:-/tmp}/rst-case25.XXXXXX") || { fail "25: mktemp failed"; sb25=""; }
+fakebin25=$(mktemp -d "${TMPDIR:-/tmp}/rst-case25-fakebin.XXXXXX") || { fail "25: fakebin mktemp failed"; fakebin25=""; }
+[ -n "$sb25" ] && [ -z "$fakebin25" ] && { rm -rf "$sb25"; sb25=""; }
+[ -z "$sb25" ] && [ -n "$fakebin25" ] && { rm -rf "$fakebin25"; fakebin25=""; }
+if [ -n "$sb25" ] && [ -n "$fakebin25" ]; then
+mkdir -p "$sb25/scripts"
+cat > "$sb25/scripts/test-adopt.sh" <<'SHEOF'
+#!/usr/bin/env bash
+touch "$(dirname "$0")/adopt-ran.sentinel"
+exit 0
+SHEOF
+chmod +x "$sb25/scripts/test-adopt.sh"
+sentinel25="$sb25/scripts/adopt-ran.sentinel"
+
+for os25 in Linux Darwin MINGW64_NT-10.0; do
+  cat > "$fakebin25/uname" <<SHEOF
+#!/usr/bin/env bash
+echo "$os25"
+SHEOF
+  chmod +x "$fakebin25/uname"
+  rm -f "$sentinel25"
+  out25=$(HIMMEL_RUNTIME_PREFLIGHT=0 PATH="$fakebin25:$PATH" bash "$RUNNER" "$sb25/scripts" 2>&1); rc25=$?
+  if [ "$os25" = "Linux" ]; then
+    if [ -f "$sentinel25" ] && grepq "$out25" -F '[PASS] ' && grepq "$out25" -F 'test-adopt.sh' && ! grepq "$out25" -F '[SKIP]'; then
+      pass "25a: uname=Linux -> scripts/test-adopt.sh RUNS and passes"
+    else
+      fail "25a: uname=Linux -> expected test-adopt.sh to run; rc=$rc25 sentinel=$([ -f "$sentinel25" ] && echo yes || echo no); out: $out25"
+    fi
+  else
+    # rc is 1 by design: the only suite in the sandbox is skipped, so nothing ran.
+    if [ ! -f "$sentinel25" ] && grepq "$out25" -F '[SKIP] ' && grepq "$out25" -F 'HIMMEL-3203'; then
+      pass "25b: uname=$os25 -> scripts/test-adopt.sh SKIPped with the HIMMEL-3203 reason, not run"
+    else
+      fail "25b: uname=$os25 -> expected loud HIMMEL-3203 skip; rc=$rc25 sentinel=$([ -f "$sentinel25" ] && echo yes || echo no); out: $out25"
+    fi
+  fi
+done
+rm -rf "$sb25" "$fakebin25"
+fi
+
 rst_tally

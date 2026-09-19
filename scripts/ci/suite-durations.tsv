@@ -506,6 +506,7 @@ scripts/telegram/test-dispatch-lane.sh	37
 scripts/telegram/test-phi-egress-guard-parity.sh	0
 scripts/telegram/test-restart-bridge.sh	63
 scripts/test-adopt-user-claude-md.sh	0
+scripts/test-adopt.sh	62
 scripts/test-check-marketplace-source-hermetic.sh	0
 scripts/test-check-plugin-drift.sh	30
 scripts/test-claude-codex.sh	0
