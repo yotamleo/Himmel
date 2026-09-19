@@ -66,7 +66,15 @@ row=$(jq -r --arg sep "$SOH" '
 ' <<<"$input" 2>/dev/null) || exit 0
 [ -n "$row" ] || exit 0
 
-IFS="$SOH" read -r tool fp offset limit cmd session_id <<<"$row"
+# Split by parameter expansion, NOT `IFS="$SOH" read`: bash 3.2 (macOS
+# /bin/bash) never splits on \001 -- CTLESC is its internal quote byte -- so
+# `read` returned the whole row in $tool and every gate below silently allowed
+# (HIMMEL-3177). block-read-secrets.sh splits the same way.
+tool="${row%%"$SOH"*}"; row="${row#*"$SOH"}"
+fp="${row%%"$SOH"*}"; row="${row#*"$SOH"}"
+offset="${row%%"$SOH"*}"; row="${row#*"$SOH"}"
+limit="${row%%"$SOH"*}"; row="${row#*"$SOH"}"
+cmd="${row%%"$SOH"*}"; session_id="${row#*"$SOH"}"
 
 # file_line_count: prints a file's line count, or nothing (and fails) if the
 # file cannot be read -- callers must allow on failure, never deny on a guess.
