@@ -315,10 +315,23 @@ check "invoke.sh: …and the interpreter never ran" "absent" "$([ -e "$STUB_CAPT
 
 # E. the snapshot is removed on every exit path (success, refusal, hermes failure)
 PTMP="$TMP/ptmp"; mkdir -p "$PTMP"
-TMPDIR="$PTMP" HERMES_PY="$SNAPSTUB" bash "$INVOKE" --prompt-file "$SWAPFILE" --provider openai-codex >/dev/null 2>&1
-TMPDIR="$PTMP" HERMES_PY="$SNAPSTUB" bash "$INVOKE" --prompt-file "$SWAPFILE" --provider deepseek >/dev/null 2>&1
-FAILPY="$TMP/fake-python-fail"; printf '#!/usr/bin/env bash\nexit 7\n' > "$FAILPY"; chmod +x "$FAILPY"
-TMPDIR="$PTMP" HERMES_PY="$FAILPY" bash "$INVOKE" --prompt-file "$SWAPFILE" --provider openai-codex >/dev/null 2>&1
+rm -f "$STUB_CAPTURE" "$STUB_CAPTURE.path"
+TMPDIR="$PTMP" HERMES_PY="$SNAPSTUB" bash "$INVOKE" --prompt-file "$SWAPFILE" --provider openai-codex >/dev/null 2>&1; rc_ok=$?
+# the control: the interpreter ran and read a snapshot under THIS TMPDIR, so the cleanup below has something to remove
+check "cleanup control: success run rc 0 and the interpreter read a snapshot under TMPDIR" "0 $PTMP/hermes-snapshot." "$rc_ok $(cut -c1-$((${#PTMP} + 17)) "$STUB_CAPTURE.path" 2>/dev/null)"
+rm -f "$STUB_CAPTURE"
+TMPDIR="$PTMP" HERMES_PY="$SNAPSTUB" bash "$INVOKE" --prompt-file "$SWAPFILE" --provider deepseek >/dev/null 2>&1; rc_ref=$?
+check "cleanup control: refusal run rc 4 and the interpreter never ran" "4 absent" "$rc_ref $([ -e "$STUB_CAPTURE" ] && echo present || echo absent)"
+FAILPY="$TMP/fake-python-fail"
+cat > "$FAILPY" <<'EOS'
+#!/usr/bin/env bash
+touch "${STUB_CAPTURE:?}.failran"
+exit 7
+EOS
+chmod +x "$FAILPY"
+rm -f "$STUB_CAPTURE.failran"
+TMPDIR="$PTMP" HERMES_PY="$FAILPY" bash "$INVOKE" --prompt-file "$SWAPFILE" --provider openai-codex >/dev/null 2>&1; rc_fail=$?
+check "cleanup control: hermes-failure run exits non-zero and the failing interpreter ran" "nonzero ran" "$([ "$rc_fail" -ne 0 ] && echo nonzero || echo "rc=$rc_fail") $([ -e "$STUB_CAPTURE.failran" ] && echo ran || echo not-run)"
 check "snapshot: no hermes-snapshot file survives success, refusal or hermes failure" 0 "$(find "$PTMP" -name 'hermes-snapshot.*' 2>/dev/null | wc -l | tr -d ' ')"
 
 if [ "$FAILED" -gt 0 ]; then echo "---"; echo "FAIL $FAILED case(s)"; exit 1; fi
