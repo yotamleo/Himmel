@@ -19,6 +19,15 @@ set -uo pipefail
 
 HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HOOKS_DIR/../.." && pwd)"
+
+# HIMMEL-3092: a console leg's shell exports guard overrides (INLINE_IMPL_OK,
+# HIMMEL_CONSOLE_LEG, HIMMEL_HOOK_INTEGRITY_BYPASS_OK, ...) that reach the hook
+# under test and flip every "override UNSET" case. Clear them before any case
+# runs; a case that needs one still sets it explicitly on its own invocation.
+# shellcheck source=../lib/override-env.sh
+# shellcheck disable=SC1091
+. "$HOOKS_DIR/../lib/override-env.sh"
+scrub_override_env
 RECORDER="$HOOKS_DIR/record-hook-integrity.sh"
 LAUNCHER="$HOOKS_DIR/run-hook-with-bash.js"
 PLUGIN_LAUNCHER="$REPO_ROOT/marketplace/plugins/himmel-ops/hooks/run-hook-with-bash.js"

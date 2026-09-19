@@ -182,6 +182,15 @@ REPORT_HEAD=$(git rev-parse HEAD 2>/dev/null || echo unknown)
 # shellcheck disable=SC1091
 . "$REPO_ROOT/scripts/lib/git-test-env.sh"
 
+# HIMMEL-3092: the guard-override list + scrub_override_env. A console leg's
+# shell exports INLINE_IMPL_OK / HIMMEL_CONSOLE_LEG / HIMMEL_HOOK_INTEGRITY_BYPASS_OK
+# and friends; without the scrub below they reach every suite and turn "override
+# UNSET, guard must fire" cases red (or vacuously green). Sourced only — the
+# scrub runs in each suite's own subshell, never in the runner's environment.
+# shellcheck source=../lib/override-env.sh
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/lib/override-env.sh"
+
 # _suite_num <name> <value> <default> — a POSITIVE integer, or the default with
 # a warning. Every knob below feeds arithmetic or `sleep`, where a bad value
 # does not fail loudly: SUITE_TIMEOUT=abc makes `sleep abc` complain and return
@@ -3462,6 +3471,9 @@ while IFS= read -r suite <&3; do
     # reach real operator state (restart-bridge.sh) REFUSES when the suite
     # forgot to sandbox its root, instead of trusting it.
     export HIMMEL_TEST_FIXTURE=1
+    # HIMMEL-3092: no ambient guard override reaches a suite; a case that needs
+    # one sets it explicitly on its own invocation.
+    scrub_override_env
     bash "$suite" >"$log" 2>&1 </dev/null; printf '%s\n' "$?" > "$rcfile"; } &
   suite_pid=$!
   # Its own group as well, so cancelling it below takes its `sleep` too —
