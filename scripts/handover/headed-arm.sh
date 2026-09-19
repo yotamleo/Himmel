@@ -464,6 +464,23 @@ ROLE_ENV_UNSET=""
 CONSOLE_ENV=()
 if [ "$ROLE" = "console" ]; then
     ROLE_ENV_UNSET="-u HIMMEL_CONSOLE_RELAY"
+    # HIMMEL-3035: the `-u` above sits BEFORE $LAUNCHER_ENV in both konsole
+    # branches, and `env -u FOO FOO=1` ends with FOO=1 -- so a
+    # HIMMEL_CONSOLE_RELAY=<v> token carried in HEADED_ARM_LAUNCHER_ENV would
+    # silently undo the unconditional clear. Drop that exact name here (a
+    # prefix-sharing name, e.g. HIMMEL_CONSOLE_RELAY_X, is left alone). noglob
+    # keeps the word-split from expanding a `*` in a token, matching the
+    # unquoted use at the launch sites.
+    _kept_env=""
+    set -f
+    for _tok in $LAUNCHER_ENV; do
+        case "$_tok" in
+            HIMMEL_CONSOLE_RELAY=*) ;;
+            *) _kept_env="${_kept_env:+$_kept_env }$_tok" ;;
+        esac
+    done
+    set +f
+    LAUNCHER_ENV="$_kept_env"
     # A relative DOC resolves against REPO (the session's --workdir, see the
     # DOC note below), but the PreCompact hook runs in whatever cwd the session
     # has by then -- export it absolute so the hook opens the file the console

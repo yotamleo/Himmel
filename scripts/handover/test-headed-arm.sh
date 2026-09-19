@@ -1542,6 +1542,61 @@ rec38h="$(cat "$d38h/record" 2>/dev/null || true)"
 check "38h --role console (absolute DOC): exit 0" "$rc38h" "0"
 contains "38h --role console: an absolute DOC is exported unchanged" "$rec38h" "HIMMEL_CONSOLE_DOC=/abs/doc38h.md"
 
+# 38i/38j (HIMMEL-3035). The console clear survives HEADED_ARM_LAUNCHER_ENV:
+# `env -u FOO FOO=1` ends with FOO=1, so a HIMMEL_CONSOLE_RELAY=<v> token carried
+# in the launcher env must be stripped for --role console, in BOTH konsole
+# branches (38i default exec, 38j RECORDER=1), while the sibling tokens still
+# reach the argv and the -u clear stays.
+d38i="$tmp/c38i"; mk_stub "$d38i" 1 alive "HIMMEL-role38i"
+rc38i=0
+KONSOLE_CMD="$d38i/konsole" PGREP_CMD="$d38i/pgrep" HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$d38i/locks" HEADED_ARM_PROC="$d38i/proc" \
+  HEADED_ARM_LAUNCHER_ENV="HIMMEL_CONSOLE_RELAY=1 CLAUDEX_LANE_OK=1 HIMMEL_CONSOLE_RELAY=2" \
+  bash "$SCRIPT" --role console "HIMMEL-role38i" "doc38i.md" "$d38i/signal-never" "$PAST" "$d38i/log" >/dev/null 2>&1 || rc38i=$?
+wait_record "$d38i" || true
+rec38i="$(cat "$d38i/record" 2>/dev/null || true)"
+check "38i --role console + LAUNCHER_ENV HIMMEL_CONSOLE_RELAY=1: exit 0" "$rc38i" "0"
+contains "38i --role console: the -u HIMMEL_CONSOLE_RELAY clear stays" "$rec38i" "-u HIMMEL_CONSOLE_RELAY"
+not_contains "38i --role console: no HIMMEL_CONSOLE_RELAY=<v> re-set after the clear (default branch)" "$rec38i" "HIMMEL_CONSOLE_RELAY="
+contains "38i --role console: the sibling LAUNCHER_ENV token still reaches the argv" "$rec38i" "CLAUDEX_LANE_OK=1"
+
+d38j="$tmp/c38j"; mk_stub "$d38j" 1 alive "HIMMEL-role38j"
+rc38j=0
+KONSOLE_CMD="$d38j/konsole" PGREP_CMD="$d38j/pgrep" HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$d38j/locks" HEADED_ARM_PROC="$d38j/proc" \
+  HEADED_ARM_LAUNCHER_ENV="HIMMEL_CONSOLE_RELAY=1 CLAUDEX_LANE_OK=1" HEADED_ARM_RECORDER=1 \
+  bash "$SCRIPT" --role console "HIMMEL-role38j" "doc38j.md" "$d38j/signal-never" "$PAST" "$d38j/log" >/dev/null 2>&1 || rc38j=$?
+wait_record "$d38j" || true
+rec38j="$(cat "$d38j/record" 2>/dev/null || true)"
+check "38j --role console + LAUNCHER_ENV HIMMEL_CONSOLE_RELAY=1 + RECORDER=1: exit 0" "$rc38j" "0"
+contains "38j RECORDER branch reached (script(1) wrapper present)" "$rec38j" "script -q -a -f"
+contains "38j --role console: the -u HIMMEL_CONSOLE_RELAY clear stays (recorder branch)" "$rec38j" "-u HIMMEL_CONSOLE_RELAY"
+not_contains "38j --role console: no HIMMEL_CONSOLE_RELAY=<v> re-set after the clear (recorder branch)" "$rec38j" "HIMMEL_CONSOLE_RELAY="
+contains "38j --role console: the sibling LAUNCHER_ENV token still reaches the argv (recorder branch)" "$rec38j" "CLAUDEX_LANE_OK=1"
+
+# 38k. control: with NO --role the launcher env is passed through untouched --
+# the strip is console-only (a relay LEG legitimately carries the marker).
+d38k="$tmp/c38k"; mk_stub "$d38k" 1 alive "HIMMEL-role38k"
+rc38k=0
+KONSOLE_CMD="$d38k/konsole" PGREP_CMD="$d38k/pgrep" HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$d38k/locks" HEADED_ARM_PROC="$d38k/proc" \
+  HEADED_ARM_LAUNCHER_ENV="HIMMEL_CONSOLE_RELAY=1 CLAUDEX_LANE_OK=1" \
+  bash "$SCRIPT" "HIMMEL-role38k" "doc38k.md" "$d38k/signal-never" "$PAST" "$d38k/log" >/dev/null 2>&1 || rc38k=$?
+wait_record "$d38k" || true
+rec38k="$(cat "$d38k/record" 2>/dev/null || true)"
+check "38k no --role + LAUNCHER_ENV HIMMEL_CONSOLE_RELAY=1: exit 0" "$rc38k" "0"
+contains "38k no --role: HIMMEL_CONSOLE_RELAY=1 in LAUNCHER_ENV is passed through unchanged" "$rec38k" "HIMMEL_CONSOLE_RELAY=1"
+
+# 38l. control: the strip matches the exact name only -- a prefix-sharing token
+# (HIMMEL_CONSOLE_RELAY_X=1) survives while HIMMEL_CONSOLE_RELAY=1 beside it goes.
+d38l="$tmp/c38l"; mk_stub "$d38l" 1 alive "HIMMEL-role38l"
+rc38l=0
+KONSOLE_CMD="$d38l/konsole" PGREP_CMD="$d38l/pgrep" HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$d38l/locks" HEADED_ARM_PROC="$d38l/proc" \
+  HEADED_ARM_LAUNCHER_ENV="HIMMEL_CONSOLE_RELAY_X=1 HIMMEL_CONSOLE_RELAY=1" \
+  bash "$SCRIPT" --role console "HIMMEL-role38l" "doc38l.md" "$d38l/signal-never" "$PAST" "$d38l/log" >/dev/null 2>&1 || rc38l=$?
+wait_record "$d38l" || true
+rec38l="$(cat "$d38l/record" 2>/dev/null || true)"
+check "38l --role console + prefix-sharing token: exit 0" "$rc38l" "0"
+contains "38l --role console: HIMMEL_CONSOLE_RELAY_X=1 (prefix-sharing) is NOT stripped" "$rec38l" "HIMMEL_CONSOLE_RELAY_X=1"
+not_contains "38l --role console: the exact HIMMEL_CONSOLE_RELAY=1 beside it IS stripped" "$rec38l" "HIMMEL_CONSOLE_RELAY="
+
 # --- 39. --dry-run (HIMMEL-3140): prints the resolved argv + exits 0 BEFORE
 # the signal/deadline wait loop, the claim lock, or konsole/pgrep are ever
 # touched -- proving a flag is accepted must never cost a real billed launch
