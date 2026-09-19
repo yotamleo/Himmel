@@ -47,6 +47,15 @@ remedy `brew install uv` on macOS, the astral curl line elsewhere) and, **on mac
 `brew install coreutils`). On other platforms C39 is an OK skip. Install detail:
 `docs/setup/new-machine.md`.
 
+**C41-mcp-argv-key** (HIMMEL-2762, WARN only) flags any MCP server whose `args` carry a
+credential — a `--*key*`/`--*token*`/`--*secret*`/`--*password*` flag followed by a value
+(or written `--flag=value`), or an argument shaped like a key. A key on the command line is
+readable by any local user via `ps` or `/proc/<pid>/cmdline`. It scans `~/.claude.json`
+(top level and per-project), the repo `.mcp.json`, the generated
+`.claude/mcp-profiles/local.*.json` and each plugin's `.mcp.json`, and prints the server
+**name and flag only, never the value**. Remedy: move the key into the server's `env` block
+(or a file it reads) and rotate the exposed key.
+
 It is read-only EXCEPT `--fix`, which heals the C1-guardrail node wiring by
 re-baking the 3 user-level guardrail hooks in the **user-scope**
 `~/.claude/settings.json` (outside any repo — the on-main / repo-settings

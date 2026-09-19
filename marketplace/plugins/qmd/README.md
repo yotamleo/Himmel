@@ -58,7 +58,10 @@ sweep silently degraded to keyword-only (HIMMEL-3056). The MCP client only sees
 a timeout, so himmel detects it instead: `bash scripts/himmel-doctor.sh`
 check `C40-qmd-vec` probes the server with one bounded `vec` query and names
 the reason (timed out / tool error / no vector index / foreign listener on
-8181). If a `vec` call times out, run that check — do not retry-loop the query, and
+8181 / empty or dropped reply — a refused connection is an INFO skip, since qmd is
+optional). `HIMMEL_DOCTOR_QMD_VEC_TIMEOUT` (seconds) must be a positive integer; `0`
+or a non-number falls back to 30 with an INFO, because curl treats `-m 0` as "no
+timeout". If a `vec` call times out, run that check — do not retry-loop the query, and
 treat a lex-only result as incomplete coverage, not a miss.
 
 ## Upstream watch

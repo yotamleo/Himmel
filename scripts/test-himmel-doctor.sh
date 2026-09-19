@@ -166,6 +166,13 @@ printf '#!/bin/sh\necho Linux\n' > "$FAKEBIN/uname"; chmod +x "$FAKEBIN/uname"
 # skip. Dedicated C40 cases override this seam per invocation with a stub curl.
 export HIMMEL_DOCTOR_QMD_CURL="$FAKEROOT/no-such-curl"
 
+# Keep unrelated cases from scanning this checkout's own .mcp.json files (and the
+# operator's generated mcp-profiles) for C41 (HIMMEL-2762): point the scan root at
+# an empty dir. HOME is redirected per case, so ~/.claude.json is already hermetic.
+# Dedicated C41 cases override this seam per invocation.
+mkdir -p "$FAKEROOT/no-mcp-root"
+export HIMMEL_DOCTOR_MCP_ROOT="$FAKEROOT/no-mcp-root"
+
 # Keep unrelated cases from scanning the operator's real worktree garden (and
 # making live forge calls). Dedicated C7 cases override this seam per invocation.
 DOCTOR_WT_EMPTY="$FAKEROOT/doctor-wt-empty"; mkdir -p "$DOCTOR_WT_EMPTY"
@@ -4209,12 +4216,15 @@ c40_setup() {
     c40_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c40.XXXXXX")" || { fail "C40 setup: mktemp -d failed"; exit 1; }
     cat > "$c40_t/curl" <<'STUB'
 #!/usr/bin/env bash
-m=""; d=""
+m=""; d=""; w=""
 while [ $# -gt 0 ]; do
-    case "$1" in -m) m="$2"; shift ;; -d) d="$2"; shift ;; esac
+    case "$1" in -m) m="$2"; shift ;; -d) d="$2"; shift ;; -w) w="$2"; shift ;; esac
     shift
 done
 mode="${C40_MODE:-ok}"
+# Like real curl, `-w %{http_code}` appends the status AFTER the body ("000" when
+# no HTTP exchange happened); finish <code> [rc] models that and exits.
+finish() { [ -n "$w" ] && printf '%s' "$1"; exit "${2:-0}"; }
 # The live daemon frames every reply as an SSE event (`event: message`, then
 # `data: <json>`), not a bare JSON body -- model that by default. C40_FRAME=plain
 # gives the bare body so both framings stay covered.
@@ -4226,13 +4236,15 @@ case "$d" in
     *'"method":"initialize"'*)
         echo "init m=$m" >> "$C40_LOG"
         case "$mode" in
-            down) exit 7 ;;
-            inithang) exit 28 ;;
-            foreign) pfx; printf '%s' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"other-server"}}}'; exit 0 ;;
+            down) finish 000 7 ;;
+            inithang) finish 000 28 ;;
+            reset) finish 000 52 ;;
+            empty204) finish 204 0 ;;
+            foreign) pfx; printf '%s' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"other-server"}}}'; finish 200 ;;
         esac
-        [ "$mode" = init_multiline ] && { printf '{\n  "result": {\n    "serverInfo": {\n      "version": "2.8.3",\n      "name": "qmd"\n    }\n  }\n}\n'; exit 0; }
+        [ "$mode" = init_multiline ] && { printf '{\n  "result": {\n    "serverInfo": {\n      "version": "2.8.3",\n      "name": "qmd"\n    }\n  }\n}\n'; finish 200; }
         pfx; printf '%s' "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"serverInfo\":{\"name\":\"qmd\",\"version\":\"2.8.3\"},\"instructions\":\"QMD is your local search engine.$note\"}}"
-        exit 0 ;;
+        finish 200 ;;
     *'"type":"vec"'*)
         echo "vec m=$m" >> "$C40_LOG"
         case "$mode" in
@@ -4264,6 +4276,8 @@ c40_precond() { # <mode> — the stub must answer the init payload the way the m
     case "$1" in
         down) [ "$rc" -eq 7 ] && [ -z "$got" ] ;;
         inithang) [ "$rc" -eq 28 ] && [ -z "$got" ] ;;
+        reset) [ "$rc" -eq 52 ] && [ -z "$got" ] ;;
+        empty204) [ "$rc" -eq 0 ] && [ -z "$got" ] ;;
         *) [ "$rc" -eq 0 ] && [ -n "$got" ] ;;
     esac
 }
@@ -4487,6 +4501,185 @@ else
     fail "C40 no curl -> $(printf '%s' "$out" | grep -A1 C40)"
 fi
 rm -rf "$c40_t"
+
+echo "== C40 (HIMMEL-3224): an unusable HIMMEL_DOCTOR_QMD_VEC_TIMEOUT falls back to 30 with one INFO naming it (curl -m 0 = no timeout = a hang) =="
+for c40_bad in 0 abc 1.5 -5 ''; do
+    c40_setup
+    if ! c40_precond ok; then fail "C40 timeout '$c40_bad': precondition — stub did not answer init"
+    else
+        out="$(HIMMEL_DOCTOR_QMD_VEC_TIMEOUT="$c40_bad" c40_run ok)"
+        if grep -qx 'vec m=30' "$c40_t/log" && grepq "$out" 'INFO C40-qmd-vec' \
+            && grepq "$out" -F "HIMMEL_DOCTOR_QMD_VEC_TIMEOUT='$c40_bad'" && grepq "$out" 'OK   C40-qmd-vec'; then
+            pass "C40 timeout '$c40_bad' -> probe bounded at 30s + INFO naming the rejected value"
+        else
+            fail "C40 timeout '$c40_bad' -> vec bound=[$(grep '^vec ' "$c40_t/log")] $(printf '%s' "$out" | grep -A1 C40)"
+        fi
+    fi
+    rm -rf "$c40_t"
+done
+
+echo "== C40 (HIMMEL-3224): a valid positive-integer timeout passes through, no rejection INFO =="
+c40_setup
+if ! c40_precond ok; then fail "C40 timeout 7: precondition — stub did not answer init"
+else
+    out="$(HIMMEL_DOCTOR_QMD_VEC_TIMEOUT=7 c40_run ok)"
+    if grep -qx 'vec m=7' "$c40_t/log" && ! grepq "$out" -F 'HIMMEL_DOCTOR_QMD_VEC_TIMEOUT='; then
+        pass "C40 timeout 7 -> used as-is, silent"
+    else
+        fail "C40 timeout 7 -> vec bound=[$(grep '^vec ' "$c40_t/log")] $(printf '%s' "$out" | grep -A1 C40)"
+    fi
+fi
+rm -rf "$c40_t"
+
+echo "== C40 (HIMMEL-3224): HTTP 204 / empty initialize body is a WARN naming the status, not 'no server answering' =="
+c40_setup
+if ! c40_precond empty204; then fail "C40 empty204: precondition — stub did not return an empty 204"
+else
+    out="$(c40_run empty204)"
+    if grepq "$out" 'WARN C40-qmd-vec' && grepq "$out" -F 'HTTP 204' && ! grepq "$out" -F 'no qmd server answering' \
+        && ! grepq "$out" 'INFO C40-qmd-vec' && ! grep -q '^vec ' "$c40_t/log"; then
+        pass "C40 empty 204 -> WARN naming HTTP 204, no vec probe"
+    else
+        fail "C40 empty 204 -> $(printf '%s' "$out" | grep -A1 C40)"
+    fi
+fi
+rm -rf "$c40_t"
+
+echo "== C40 (HIMMEL-3224): connection dropped without a reply (curl rc 52) is a WARN naming the rc =="
+c40_setup
+if ! c40_precond reset; then fail "C40 reset: precondition — stub did not fail with rc 52"
+else
+    out="$(c40_run reset)"
+    if grepq "$out" 'WARN C40-qmd-vec' && grepq "$out" -F 'curl rc=52' && ! grepq "$out" -F 'no qmd server answering' && ! grepq "$out" 'INFO C40-qmd-vec'; then
+        pass "C40 transport failure rc 52 -> WARN naming the rc"
+    else
+        fail "C40 transport failure rc 52 -> $(printf '%s' "$out" | grep -A1 C40)"
+    fi
+fi
+rm -rf "$c40_t"
+
+# --- C41 (HIMMEL-2762): MCP server credential on the command line --------------
+# A key passed as an argv element is readable by any local user through ps and
+# /proc/<pid>/cmdline. C41 scans the MCP server specs (user ~/.claude.json incl.
+# per-project entries, plus <root>/.mcp.json, <root>/.claude/mcp-profiles/local.*.json
+# and <root>/marketplace/plugins/*/.mcp.json) and WARNs on a credential-shaped
+# flag+value or a key-shaped argument -- printing the server NAME and flag only,
+# never the value. Seam: HIMMEL_DOCTOR_MCP_ROOT (the <root> above, default the
+# checkout); HOME is redirected per case for the user-level file.
+c41_setup() {
+    c41_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c41.XXXXXX")" || { fail "C41 setup: mktemp -d failed"; exit 1; }
+    mkdir -p "$c41_t/home" "$c41_t/root"
+}
+c41_run() {
+    PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$c41_t/claude" HOME="$c41_t/home" HIMMEL_DOCTOR_MCP_ROOT="$c41_t/root" \
+        bash "$DOC" --no-color 2>&1
+}
+
+echo "== C41: '--api-key <value>' in a server's args -> WARN naming server + flag, never the value =="
+c41_setup
+cat > "$c41_t/home/.claude.json" <<'EOF'
+{"mcpServers":{"fc":{"command":"npm","args":["exec","some-mcp","--","--api-key","NOT-A-REAL-VALUE-zq81x"]}}}
+EOF
+out="$(c41_run)"
+if grepq "$out" 'WARN C41-mcp-argv-key' && grepq "$out" -F "'fc'" && grepq "$out" -F -- '--api-key' && ! grepq "$out" -F 'NOT-A-REAL-VALUE'; then
+    pass "C41 flag+value -> WARN with server and flag, value withheld"
+else
+    fail "C41 flag+value -> $(printf '%s' "$out" | grep -A1 C41)"
+fi
+rm -rf "$c41_t"
+
+echo "== C41: '--token=<value>' inline form -> WARN =="
+c41_setup
+cat > "$c41_t/home/.claude.json" <<'EOF'
+{"mcpServers":{"inl":{"command":"npx","args":["-y","some-mcp","--access-token=NOT-A-REAL-VALUE-zq81x"]}}}
+EOF
+out="$(c41_run)"
+if grepq "$out" 'WARN C41-mcp-argv-key' && grepq "$out" -F "'inl'" && grepq "$out" -F -- '--access-token' && ! grepq "$out" -F 'NOT-A-REAL-VALUE'; then
+    pass "C41 inline --flag=value -> WARN, value withheld"
+else
+    fail "C41 inline --flag=value -> $(printf '%s' "$out" | grep -A1 C41)"
+fi
+rm -rf "$c41_t"
+
+echo "== C41: a key-shaped argument with no credential flag -> WARN =="
+c41_setup
+cat > "$c41_t/home/.claude.json" <<'EOF'
+{"mcpServers":{"bare":{"command":"npx","args":["some-mcp","sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"]}}}
+EOF
+out="$(c41_run)"
+if grepq "$out" 'WARN C41-mcp-argv-key' && grepq "$out" -F "'bare'" && ! grepq "$out" -F 'sk-aaaaaaaa'; then
+    pass "C41 key-shaped argument -> WARN, value withheld"
+else
+    fail "C41 key-shaped argument -> $(printf '%s' "$out" | grep -A1 C41)"
+fi
+rm -rf "$c41_t"
+
+echo "== C41: env-block key, --key-file <path>, --keyboard, bare --token flag -> no WARN, OK =="
+c41_setup
+cat > "$c41_t/home/.claude.json" <<'EOF'
+{"mcpServers":{"ok1":{"command":"npx","args":["-y","some-mcp","--key-file","/run/secrets/k","--secret-file","/run/secrets/s","--keyboard","us","--token","--verbose"],"env":{"SOME_API_KEY":"NOT-A-REAL-VALUE-zq81x"}},"http1":{"type":"http","url":"https://example.invalid/mcp"}}}
+EOF
+out="$(c41_run)"
+if grepq "$out" 'OK   C41-mcp-argv-key' && ! grepq "$out" 'WARN C41-mcp-argv-key'; then
+    pass "C41 env / file / non-credential flags -> OK"
+else
+    fail "C41 safe shapes -> $(printf '%s' "$out" | grep -A1 C41)"
+fi
+rm -rf "$c41_t"
+
+echo "== C41: a per-project mcpServers entry in ~/.claude.json is scanned =="
+c41_setup
+cat > "$c41_t/home/.claude.json" <<'EOF'
+{"projects":{"/some/proj":{"mcpServers":{"projsrv":{"command":"npx","args":["some-mcp","--secret","NOT-A-REAL-VALUE-zq81x"]}}}}}
+EOF
+out="$(c41_run)"
+if grepq "$out" 'WARN C41-mcp-argv-key' && grepq "$out" -F "'projsrv'" && ! grepq "$out" -F 'NOT-A-REAL-VALUE'; then
+    pass "C41 project-scoped entry -> WARN"
+else
+    fail "C41 project-scoped entry -> $(printf '%s' "$out" | grep -A1 C41)"
+fi
+rm -rf "$c41_t"
+
+echo "== C41: repo-level .mcp.json, generated mcp-profiles and plugin .mcp.json are scanned =="
+c41_setup
+mkdir -p "$c41_t/root/.claude/mcp-profiles" "$c41_t/root/marketplace/plugins/p1"
+cat > "$c41_t/root/.mcp.json" <<'EOF'
+{"mcpServers":{"rootsrv":{"command":"npx","args":["some-mcp","--client-secret","NOT-A-REAL-VALUE-zq81x"]}}}
+EOF
+cat > "$c41_t/root/.claude/mcp-profiles/local.minimal.json" <<'EOF'
+{"mcpServers":{"profsrv":{"command":"npx","args":["some-mcp","--api-key","NOT-A-REAL-VALUE-zq81x"]}}}
+EOF
+cat > "$c41_t/root/marketplace/plugins/p1/.mcp.json" <<'EOF'
+{"mcpServers":{"plugsrv":{"command":"bash","args":["run.sh","--password","NOT-A-REAL-VALUE-zq81x"]}}}
+EOF
+out="$(c41_run)"
+if grepq "$out" -F "'rootsrv'" && grepq "$out" -F "'profsrv'" && grepq "$out" -F "'plugsrv'" && ! grepq "$out" -F 'NOT-A-REAL-VALUE'; then
+    pass "C41 repo-level configs -> all three flagged, value withheld"
+else
+    fail "C41 repo-level configs -> $(printf '%s' "$out" | grep -A1 C41)"
+fi
+rm -rf "$c41_t"
+
+echo "== C41: an unparseable config -> INFO naming the file, no WARN, no crash =="
+c41_setup
+printf '{ this is not json' > "$c41_t/home/.claude.json"
+out="$(c41_run)"
+if grepq "$out" 'INFO C41-mcp-argv-key' && ! grepq "$out" 'WARN C41-mcp-argv-key' && grepq "$out" 'Summary:'; then
+    pass "C41 unparseable config -> INFO skip"
+else
+    fail "C41 unparseable config -> $(printf '%s' "$out" | grep -A1 C41)"
+fi
+rm -rf "$c41_t"
+
+echo "== C41: no MCP config anywhere -> OK =="
+c41_setup
+out="$(c41_run)"
+if grepq "$out" 'OK   C41-mcp-argv-key' && ! grepq "$out" 'WARN C41-mcp-argv-key'; then
+    pass "C41 no MCP config -> OK"
+else
+    fail "C41 no MCP config -> $(printf '%s' "$out" | grep -A1 C41)"
+fi
+rm -rf "$c41_t"
 
 rm -rf "$HIMMEL_DOCTOR_NOOP_HANDOVER"
 

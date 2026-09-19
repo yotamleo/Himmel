@@ -2792,18 +2792,22 @@ check_c39_gtimeout_darwin() {
 # this check turns it into a named finding. It asks the server two things: does
 # its index have vectors at all (the initialize reply's instructions carry the
 # "No vector embeddings yet" / "N documents need embedding" notes), and does a
-# real BOUNDED vec probe come back. qmd is optional, so an unreachable server is
-# an INFO skip (the qmd plugin's SessionStart hook owns starting it); a foreign
-# listener or a probe that hangs / errors / returns nothing readable is a WARN.
+# real BOUNDED vec probe come back. qmd is optional, so a REFUSED connection (nothing
+# listening, curl rc 7) is an INFO skip (the qmd plugin's SessionStart hook owns
+# starting it); a foreign listener, an empty initialize body / other transport
+# failure (WARN naming the curl rc and HTTP code), or a probe that hangs / errors /
+# returns nothing readable is a WARN.
 # The probe spans every collection and loads the embedding model on a cold
 # server (~6s warm on a loaded 21k-doc box), hence the 30s default.
 # Test seams: HIMMEL_DOCTOR_QMD_URL (default http://localhost:8181/mcp --
 # localhost, NOT 127.0.0.1: the server binds ::1 only, HIMMEL-3041),
-# HIMMEL_DOCTOR_QMD_CURL (default curl), HIMMEL_DOCTOR_QMD_VEC_TIMEOUT (seconds).
+# HIMMEL_DOCTOR_QMD_CURL (default curl), HIMMEL_DOCTOR_QMD_VEC_TIMEOUT (seconds,
+# a positive integer -- 0 / non-numeric / empty falls back to 30 with an INFO,
+# since curl -m 0 is "no timeout", HIMMEL-3224).
 check_c40_qmd_vec() {
     local url="${HIMMEL_DOCTOR_QMD_URL:-http://localhost:8181/mcp}"
     local curl_bin="${HIMMEL_DOCTOR_QMD_CURL:-curl}"
-    local vec_timeout="${HIMMEL_DOCTOR_QMD_VEC_TIMEOUT:-30}"
+    local vec_timeout=30
     if ! command -v "$curl_bin" >/dev/null 2>&1; then
         emit INFO C40-qmd-vec "curl not found -- qmd vector-health check skipped"
         return
@@ -2815,15 +2819,26 @@ check_c40_qmd_vec() {
 
     local init_payload='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"himmel-doctor","version":"1"}}}'
     local vec_payload='{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"query","arguments":{"searches":[{"type":"vec","query":"himmel doctor vector probe"}],"limit":1,"rerank":false}}}'
-    local init init_rc
-    init="$("$curl_bin" -s -m 3 -X POST -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d "$init_payload" "$url" 2>/dev/null)"; init_rc=$?
+    # ponytail: the remedy points at the qmd README instead of printing the literal start command, because the ws5 T13(b) marker scan false-positives on that command's flag (HIMMEL-3233); the README carries it verbatim.
+    local remedy="see the server log ~/.cache/qmd/mcp.log; restart the qmd server (stop the 'qmd mcp' process, then start a session; start command: see marketplace/plugins/qmd/README.md)"
+    local init init_rc init_code=""
+    # `-w '%{http_code}'` appends the status after the body ("000" when no HTTP
+    # exchange happened); peel it off so an empty body can be told apart by status.
+    init="$("$curl_bin" -s -m 3 -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d "$init_payload" "$url" 2>/dev/null)"; init_rc=$?
+    case "${init: -3}" in [0-9][0-9][0-9]) init_code="${init: -3}"; init="${init%???}" ;; esac
     if [ -z "$init" ] && [ "$init_rc" -eq 28 ]; then
-        emit WARN C40-qmd-vec "a process on $url accepted the connection but did not answer initialize within 3s -- the qmd server is wedged, vec search is not being served" \
-            "see the server log ~/.cache/qmd/mcp.log; restart the qmd server (stop the 'qmd mcp' process, then start a session; start command: see marketplace/plugins/qmd/README.md)"
+        emit WARN C40-qmd-vec "a process on $url accepted the connection but did not answer initialize within 3s -- the qmd server is wedged, vec search is not being served" "$remedy"
+        return
+    fi
+    # Only a refused connection (curl rc 7) means nothing is listening. An empty
+    # body from a live listener (HTTP 204, a connection closed without a reply)
+    # is a fault, not an absent optional service.
+    if [ -z "$init" ] && [ "$init_rc" -eq 7 ]; then
+        emit INFO C40-qmd-vec "no qmd server answering on $url -- vector-health check skipped (qmd is optional)"
         return
     fi
     if [ -z "$init" ]; then
-        emit INFO C40-qmd-vec "no qmd server answering on $url -- vector-health check skipped (qmd is optional)"
+        emit WARN C40-qmd-vec "a process on $url returned no usable initialize reply (curl rc=$init_rc, HTTP ${init_code:-unknown}) -- vec search is not being served" "$remedy"
         return
     fi
     # Classify from the PARSED reply, never a substring of the raw body: jq
@@ -2849,12 +2864,19 @@ check_c40_qmd_vec() {
         ;;
     esac
 
+    # The override must be a positive integer: curl -m 0 means NO timeout, so a
+    # wedged server would hang the doctor -- the very failure this check reports.
+    if [ -n "${HIMMEL_DOCTOR_QMD_VEC_TIMEOUT+x}" ]; then
+        if [[ "$HIMMEL_DOCTOR_QMD_VEC_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
+            vec_timeout="$HIMMEL_DOCTOR_QMD_VEC_TIMEOUT"
+        else
+            emit INFO C40-qmd-vec "HIMMEL_DOCTOR_QMD_VEC_TIMEOUT='$HIMMEL_DOCTOR_QMD_VEC_TIMEOUT' is not a positive integer (0 would disable curl's timeout) -- using the default ${vec_timeout}s"
+        fi
+    fi
     local body rc start elapsed
     start=$SECONDS
     body="$("$curl_bin" -s -m "$vec_timeout" -X POST -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d "$vec_payload" "$url" 2>/dev/null)"; rc=$?
     elapsed=$((SECONDS - start))
-    # ponytail: the remedy points at the qmd README instead of printing the literal start command, because the ws5 T13(b) marker scan false-positives on that command's flag (HIMMEL-3233); the README carries it verbatim.
-    local remedy="see the server log ~/.cache/qmd/mcp.log; restart the qmd server (stop the 'qmd mcp' process, then start a session; start command: see marketplace/plugins/qmd/README.md)"
     if [ "$rc" -eq 28 ]; then
         emit WARN C40-qmd-vec "qmd server is up but a vector query timed out after ${vec_timeout}s -- vec search is silently down (keyword search may still work); the embedding backend is hung or cannot load its model" \
             "$remedy"
@@ -2903,6 +2925,95 @@ check_c40_qmd_vec() {
     fi
 }
 
+# --- C41: MCP server credential on the command line (HIMMEL-2762) ---------------
+# An MCP server entry launched as `npm exec <server> --api-key <key>` puts the key
+# in argv, so any local user reads it via ps or /proc/<pid>/cmdline, and it lands
+# in every process listing a session captures. The fix is the server's `env`
+# block (or a file the server reads), never an `args` element. This check scans
+# each server's `args` array in ~/.claude.json (top level and per-project),
+# <root>/.mcp.json, <root>/.claude/mcp-profiles/local.*.json (build-mcp-profiles
+# copies the machine's specs there verbatim) and <root>/marketplace/plugins/*/.mcp.json,
+# and WARNs on (a) a credential-named flag (key/token/secret/password) followed by
+# a value, or written --flag=value, or (b) an argument shaped like a key (known
+# vendor prefixes, a JWT, a 32+ char alphanumeric mix, a URL query parameter named
+# key/token/secret). It prints the server NAME and the flag / arg index only --
+# NEVER the value.
+# ponytail: only `args` arrays are examined -- a key inside `command` (a `bash -c "... --api-key K"`
+# string) or in `env` is not; flag names split on -/_ so a one-word camelCase flag
+# (--apiKey) matches but a credential flag whose words fuse without a separator
+# (--authkey) does not. Flags ending in file/path/env/name/dir/var/id are treated as
+# pointers, not secrets.
+# Test seam: HIMMEL_DOCTOR_MCP_ROOT (the <root> above, default this checkout).
+check_c41_mcp_argv_key() {
+    if ! command -v jq >/dev/null 2>&1; then
+        emit INFO C41-mcp-argv-key "jq not found -- MCP argv-credential scan skipped"
+        return
+    fi
+    local root="${HIMMEL_DOCTOR_MCP_ROOT:-$REPO_ROOT}" f shown out rc name what n=0 hits=0 bad=0
+    local remedy="move the key into the server's env block (mcpServers.<name>.env) or a file the server reads, never an args element; then rotate the exposed key"
+    # The jq program is deliberately single-quoted: its $vars are jq's, not the shell's.
+    # shellcheck disable=SC2016
+    local program='
+        def toks: sub("^-+"; "") | ascii_downcase | split("[-_]"; null);
+        def bareflag: test("^-{1,2}[A-Za-z][A-Za-z0-9_-]*$");
+        def credflag: toks as $t
+            | ($t | any(.[]; IN("key","apikey","token","secret","password","passwd","credential","credentials")))
+              and (($t | last) | IN("file","path","env","name","dir","var","id") | not);
+        def generic: test("^[A-Za-z0-9]{32,}$") and test("[0-9]") and test("[A-Za-z]");
+        def keyval: test("^(sk-[A-Za-z0-9_-]{20,}|fc-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[A-Za-z0-9_-]{30,}|eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,})$") or generic;
+        def hits: . as $a
+            | range(0; length) as $i
+            | $a[$i] as $x
+            | (if $i > 0 then $a[$i - 1] else null end) as $p
+            | (($p | type) == "string" and ($p | bareflag) and ($p | credflag)) as $afterflag
+            | if ($x | type) != "string" then empty
+              elif ($x | test("^-{0,2}[A-Za-z][A-Za-z0-9_-]*=.+$")) then
+                  ($x | capture("^(?<f>-{0,2}[A-Za-z][A-Za-z0-9_-]*)=(?<v>.+)$")) as $c
+                  | if ($c.f | credflag) then "flag \($c.f)"
+                    elif ($c.v | keyval) then "key-shaped argument args[\($i)]"
+                    else empty end
+              elif ($x | bareflag) then
+                  if ($x | credflag) and (($a[$i + 1] | type) == "string") and (($a[$i + 1] | startswith("-")) | not) and ($a[$i + 1] != "")
+                  then "flag \($x)" else empty end
+              elif ($afterflag | not) and ($x | keyval) then "key-shaped argument args[\($i)]"
+              elif ($x | test("[?&][A-Za-z_-]*(key|token|secret)[A-Za-z_-]*=[^&]+"; "i")) then "URL argument args[\($i)] carrying a credential query parameter"
+              else empty end;
+        [ (.mcpServers | objects | to_entries[]),
+          (.projects | objects | .[] | objects | .mcpServers | objects | to_entries[]) ]
+        | .[] | select(.value | type == "object") | .key as $n
+        | [ .value.args | arrays | hits ] | unique
+        | select(length > 0)
+        | [$n, join(", ")] | @tsv'
+    for f in "${HOME:-}/.claude.json" "$root/.mcp.json" "$root"/.claude/mcp-profiles/local.*.json "$root"/marketplace/plugins/*/.mcp.json; do
+        [ -f "$f" ] || continue
+        shown="$f"
+        case "$f" in
+            "$root"/*) shown="${f#"$root"/}" ;;
+            "${HOME:-/nonexistent}"/*) shown="~${f#"$HOME"}" ;;
+        esac
+        out="$(jq -r "$program" "$f" 2>/dev/null)"; rc=$?
+        if [ "$rc" -ne 0 ]; then
+            bad=$((bad+1))
+            emit INFO C41-mcp-argv-key "could not parse $shown -- MCP argv-credential scan skipped for it"
+            continue
+        fi
+        n=$((n+1))
+        while IFS=$'\t' read -r name what; do
+            [ -n "$name" ] || continue
+            hits=$((hits+1))
+            emit WARN C41-mcp-argv-key "MCP server '$name' ($shown) passes a credential on its command line ($what) -- readable by any local user via ps and /proc/<pid>/cmdline" "$remedy"
+        done <<< "$out"
+    done
+    if [ "$hits" -gt 0 ] || [ "$bad" -gt 0 ]; then
+        return
+    fi
+    if [ "$n" -eq 0 ]; then
+        emit OK C41-mcp-argv-key "no MCP server config found to scan"
+    else
+        emit OK C41-mcp-argv-key "scanned $n MCP config file(s); no credential passed on a server command line"
+    fi
+}
+
 # --- run ------------------------------------------------------------------------
 echo "himmel-doctor — $(uname -s 2>/dev/null || echo ?) — checkout: $REPO_ROOT"
 echo
@@ -2946,6 +3057,7 @@ check_c37_vendored_skill_dupes
 check_c38_uv
 check_c39_gtimeout_darwin
 check_c40_qmd_vec
+check_c41_mcp_argv_key
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 
