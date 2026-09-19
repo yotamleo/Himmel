@@ -46,8 +46,10 @@ else
   bad "cancel-in-progress is not scoped to push events; got '$cancel'"
 fi
 
-# The trigger set is what makes 'push' mean main: a push to any other branch
-# would share ONE group with main and cancel it.
+# The group key includes github.ref, so branches stay isolated from each other
+# even if the trigger widens; but widening it would make every branch push start
+# cancelling its own predecessor, so the comments/docs claim "push means main"
+# only holds while the trigger stays restricted to main.
 push_branches="$(awk '/^  push:/ {f=1; next} f && /branches:/ {print; exit} f && /^  [a-z_]+:/ {exit}' "$CI_YML")"
 if [ "${push_branches#*'branches: [main]'}" != "$push_branches" ]; then
   ok "push trigger is restricted to branches: [main]"
