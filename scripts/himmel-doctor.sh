@@ -2811,8 +2811,13 @@ check_c40_qmd_vec() {
 
     local init_payload='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"himmel-doctor","version":"1"}}}'
     local vec_payload='{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"query","arguments":{"searches":[{"type":"vec","query":"himmel doctor vector probe"}],"limit":1,"rerank":false}}}'
-    local init
-    init="$("$curl_bin" -s -m 3 -X POST -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d "$init_payload" "$url" 2>/dev/null)"
+    local init init_rc
+    init="$("$curl_bin" -s -m 3 -X POST -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d "$init_payload" "$url" 2>/dev/null)"; init_rc=$?
+    if [ -z "$init" ] && [ "$init_rc" -eq 28 ]; then
+        emit WARN C40-qmd-vec "a process on $url accepted the connection but did not answer initialize within 3s -- the qmd daemon is wedged, vec search is not being served" \
+            "see the daemon log ~/.cache/qmd/mcp.log; restart the daemon (stop the 'qmd mcp' process, then start a session or run: qmd mcp --http --daemon)"
+        return
+    fi
     if [ -z "$init" ]; then
         emit INFO C40-qmd-vec "no qmd daemon answering on $url -- vector-health check skipped (qmd is optional)"
         return
@@ -2847,14 +2852,18 @@ check_c40_qmd_vec() {
         return
     fi
     local reason
-    case "$body" in
+    # Match on a whitespace-stripped copy so a pretty-printed reply ("isError": true)
+    # reads the same as qmd's compact one; the reason is still read from the original.
+    local flat
+    flat="$(printf '%s' "$body" | tr -d '[:space:]')"
+    case "$flat" in
     *'"isError":true'*)
-        reason="$(printf '%s' "$body" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p' | head -1)"
+        reason="$(printf '%s' "$body" | sed -n 's/.*"text"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
         emit WARN C40-qmd-vec "qmd vector query returned an error: ${reason:-unreadable tool error} -- vec search is not being served" "$remedy"
         return
         ;;
     *'"error":{'*)
-        reason="$(printf '%s' "$body" | sed -n 's/.*"message":"\([^"]*\)".*/\1/p' | head -1)"
+        reason="$(printf '%s' "$body" | sed -n 's/.*"message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
         emit WARN C40-qmd-vec "qmd vector query failed (JSON-RPC error): ${reason:-unreadable error} -- vec search is not being served" "$remedy"
         return
         ;;

@@ -4223,6 +4223,7 @@ case "$d" in
         echo "init m=$m" >> "$C40_LOG"
         case "$mode" in
             down) exit 7 ;;
+            inithang) exit 28 ;;
             foreign) printf '%s' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"other-server"}}}'; exit 0 ;;
         esac
         printf '%s' "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"serverInfo\":{\"name\":\"qmd\",\"version\":\"2.8.3\"},\"instructions\":\"QMD is your local search engine.$note\"}}"
@@ -4234,6 +4235,7 @@ case "$d" in
             iserror) printf '%s' '{"result":{"content":[{"type":"text","text":"embedding model failed to load"}],"isError":true},"jsonrpc":"2.0","id":2}'; exit 0 ;;
             rpcerr) printf '%s' '{"error":{"code":-32603,"message":"vector store unavailable"},"jsonrpc":"2.0","id":2}'; exit 0 ;;
             garbage) printf '%s' 'not json at all'; exit 0 ;;
+            iserror_spaced) printf '%s' '{"result": {"content": [{"type": "text", "text": "embedding model failed to load"}], "isError": true}, "jsonrpc": "2.0", "id": 2}'; exit 0 ;;
         esac
         printf '%s' '{"result":{"content":[{"type":"text","text":"No results found"}],"structuredContent":{"results":[]}},"jsonrpc":"2.0","id":2}'
         exit 0 ;;
@@ -4253,6 +4255,7 @@ c40_precond() { # <mode> — the stub must answer the init payload the way the m
     : > "$c40_t/log"
     case "$1" in
         down) [ "$rc" -eq 7 ] && [ -z "$got" ] ;;
+        inithang) [ "$rc" -eq 28 ] && [ -z "$got" ] ;;
         *) [ "$rc" -eq 0 ] && [ -n "$got" ] ;;
     esac
 }
@@ -4344,6 +4347,32 @@ else
         pass "C40 documents awaiting embedding -> OK + INFO count"
     else
         fail "C40 documents awaiting embedding -> $(printf '%s' "$out" | grep -A1 C40)"
+    fi
+fi
+rm -rf "$c40_t"
+
+echo "== C40 (CR panel): initialize itself times out (daemon holds the port but is wedged) -> WARN, not the optional-service INFO skip =="
+c40_setup
+if ! c40_precond inithang; then fail "C40 inithang: precondition — stub did not time out on init"
+else
+    out="$(c40_run inithang)"
+    if grepq "$out" 'WARN C40-qmd-vec' && grepq "$out" -F 'did not answer' && ! grepq "$out" 'INFO C40-qmd-vec' && ! grepq "$out" 'OK   C40-qmd-vec'; then
+        pass "C40 initialize timeout -> WARN (a wedged daemon is not an absent one)"
+    else
+        fail "C40 initialize timeout -> $(printf '%s' "$out" | grep -A1 C40)"
+    fi
+fi
+rm -rf "$c40_t"
+
+echo "== C40 (CR panel): pretty-printed \"isError\": true tool error -> WARN, never a false OK =="
+c40_setup
+if ! c40_precond iserror_spaced; then fail "C40 iserror_spaced: precondition — stub did not answer init"
+else
+    out="$(c40_run iserror_spaced)"
+    if grepq "$out" 'WARN C40-qmd-vec' && grepq "$out" -F 'embedding model failed to load' && ! grepq "$out" 'OK   C40-qmd-vec'; then
+        pass "C40 spaced isError:true -> WARN with the daemon's reason"
+    else
+        fail "C40 spaced isError:true -> $(printf '%s' "$out" | grep -A1 C40)"
     fi
 fi
 rm -rf "$c40_t"
