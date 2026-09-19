@@ -69,6 +69,8 @@ _t_hook() { # <point> <path> — env-gated seam target; a no-op unless a case se
     pid-write-fails:post-verify) HOOK_FIRED=$((HOOK_FIRED + 1)); PRINTF_FAIL=1 ;;
     break-race:gate-break) HOOK_FIRED=$((HOOK_FIRED + 1)); HOOK_MODE=""; _inject_breaker_one "$2" ;;
     count-retry:release-retry) HOOK_FIRED=$((HOOK_FIRED + 1)) ;;
+    paused-holder:post-verify) HOOK_FIRED=$((HOOK_FIRED + 1)); HOOK_MODE=""; _inject_paused_holder "$2" ;;
+    paused-taker:gate-made) HOOK_FIRED=$((HOOK_FIRED + 1)); HOOK_MODE=""; _inject_paused_taker "$2" ;;
   esac
   return 0
 }
@@ -94,14 +96,38 @@ _inject_swap_fresh() { # an UNGATED older-copy actor replaces the stale claim wi
 _inject_breaker_one() { # breaker B1 takes the (stale) gate in full while B2 sits between its age check and its rename
   _fleet_gate_take "$1"; B1_RC=$?
 }
+# shellcheck disable=SC2317
+_inject_paused_holder() { # C is PAUSED past the gate age between its verify and its rename
+  # The pause: C's gate is now older than FLEET_ADMIT_GATE_STALE_SECS. B breaks
+  # it and completes its OWN steal of the same stale admit — B is the live
+  # successor holder, marked `who=B`. Only then does D (a fourth party) arm, to
+  # claim in whatever window C's resumed rename opens.
+  builtin printf '%s\n' "$(( $(date +%s) - 10 ))" > "$1.reclaim/acquired"
+  _fleet_steal_stale_admit "$1" "$P_STALE"; B1_RC=$?
+  builtin printf '%s\n' B > "$1/who" 2>/dev/null
+  MV_INJECT=_inject_d
+}
+# shellcheck disable=SC2317
+_inject_paused_taker() { # A is PAUSED between its gate mkdir and its fence mkdir
+  # The pause ages A's (still unstamped) gate out; B breaks it and holds a
+  # fresh, fenced gate. A then resumes INTO B's gate.
+  builtin printf '%s\n' "$(( $(date +%s) - 10 ))" > "$1/acquired"
+  _fleet_gate_take "$1"; B1_RC=$?; B_FENCE="${_fleet_gate_fence:-}" # set by the SUT's _fleet_gate_take
+}
 # `mv` shadow: a function outranks the command, so the SUT's own `mv` calls run
 # this — the pre-fix script has no hook points at all, and this is how the SAME
 # interleaving is forced against it (D claims straight after the rename).
 mv() { command mv "$@"; local rc=$?; [ -n "$MV_INJECT" ] && "$MV_INJECT" "${1:-}"; return $rc; }
+# `rm` shadow, same shape: RM_INJECT fires after a `rm` whose arguments name a
+# fence of RM_GATE (the breaker's in-place fence delete) — the one point
+# between that delete and the breaker's gate `mv`.
+RM_INJECT=""; RM_GATE=""
+# shellcheck disable=SC2317
+rm() { command rm "$@"; local rc=$?; case " $* " in *" $RM_GATE/fence."*) [ -n "$RM_INJECT" ] && "$RM_INJECT" ;; esac; return $rc; }
 PRINTF_FAIL=0
 # shellcheck disable=SC2317,SC2059
 printf() { if [ "$PRINTF_FAIL" = 1 ] && [ "${1:-}" = '%s\n' ] && [ "${2:-}" = "$$" ]; then return 1; fi; builtin printf "$@"; }
-D_WON=0; D_RC=""; REL_RC=""; B1_RC=""
+D_WON=0; D_RC=""; REL_RC=""; B1_RC=""; P_STALE=""; B_FENCE=""
 # shellcheck disable=SC1091
 . "$W/fns.sh"
 
@@ -389,6 +415,153 @@ env FLEET_ADMIT_TEST_HOOK="$W/k/hook.sh" FLEET_ADMIT_RELEASE_ITERS=2 FLEET_ADMIT
 check "(k) the in-lock census failed (precondition)" 1 "$(grep -c 'in-lock fleet census failed' "$W/k.err")"
 check "(k) the first release met the busy gate and gave up (precondition)" 1 "$(grep -c 'could not take the admit-lock gate' "$W/k.err")"
 check "(k) the final cleanup retried and released the lock" absent "$([ -e "$slots_k/.admit" ] && echo present || echo absent)"
+
+# --- (l) HIMMEL-3210: a gate holder PAUSED past the gate age is fenced -------
+# C takes the gate and verifies the stale admit, then "pauses": its gate ages
+# out, B breaks it and completes its own steal (B now holds a LIVE admit), and D
+# arms a claim for any window C opens. C resumes and renames. Pre-fence, C's
+# rename displaces B's live claim, D wins the empty slot, C's restore mkdir
+# loses, and B's claim ends as `.admit.stale.*` debris: two holders (B and D),
+# B's claim silently gone. Fenced, C's rename fails (its fence left with the
+# broken gate) and nothing moves. Deterministic: the pause is simulated by the
+# hook backdating the gate stamp — no SIGSTOP, no sleeps.
+P_STALE=$((NOW - 61))
+mk_admit "$admit" "$P_STALE" 999999
+rm -rf "$W"/.admit.stale.* 2>/dev/null
+D_WON=0; B1_RC=""; HOOK_FIRED=0; HOOK_MODE=paused-holder
+_fleet_steal_stale_admit "$admit" "$P_STALE"; l_rc=$?
+HOOK_MODE=""; MV_INJECT=""
+check "(l) the seam fired (C paused between its verify and its rename)" 1 "$HOOK_FIRED"
+check "(l) precondition: B broke C's aged gate and stole the stale admit" 0 "$B1_RC"
+check "(l) the resumed C does not own the lock (rc 1)" 1 "$l_rc"
+check "(l) D was refused (C's resumed rename opened no window)" 0 "$D_WON"
+check "(l) B's live claim is still THE admit" B "$(cat "$admit/who" 2>/dev/null)"
+check "(l) no .stale. victim left behind" 0 "$(count_glob "$W"/.admit.stale.*)"
+check "(l) no gate left behind" gone "$([ -e "$admit.reclaim" ] && echo present || echo gone)"
+
+# --- (m) HIMMEL-3210: a taker paused between its gate mkdir and its fence -----
+# A's gate is broken while A is paused before creating its fence; B holds a
+# fresh, fenced gate. A resumes and would drop its fence into B's gate — the
+# sole-fence check must make A lose and leave B's gate (and fence) intact.
+gate="$W/.gate-m"
+rm -rf "$gate"; B1_RC=""; B_FENCE=""; HOOK_FIRED=0; HOOK_MODE=paused-taker
+_fleet_gate_take "$gate"; m_rc=$?
+HOOK_MODE=""
+check "(m) the seam fired (A paused between its gate mkdir and its fence)" 1 "$HOOK_FIRED"
+check "(m) precondition: B broke A's aged gate and holds it" 0 "$B1_RC"
+check "(m) A, resumed inside B's gate, does not hold it (rc 1)" 1 "$m_rc"
+check "(m) B's fence is the gate's only fence" "1 1" \
+  "$([ -n "$B_FENCE" ] && [ -d "$B_FENCE" ] && echo 1 || echo 0) $(count_glob "$gate"/fence.*)"
+
+# --- (o) HIMMEL-3210: a rename that resolved its fence BEFORE the break -------
+# Panel codex-1. C holds the gate and its rename has already resolved the fence
+# (simulated by pinning the fence as this shell's cwd and renaming into it
+# RELATIVELY — renameat against a destination parent resolved in advance). C's
+# gate ages out; B breaks it, and in the window between B's `mv "$gate"` and its
+# `rm -rf` of the broken copy E takes the freed gate name, steals the stale
+# admit and holds a LIVE claim, and C's pre-resolved rename lands. With the
+# fence still alive inside B's broken copy it moves E's live claim; with the
+# break deleting fences in place first, it fails ENOENT and E keeps the lock.
+# shellcheck disable=SC2317
+_inject_e_after_break() { # E acts right after B's gate `mv`, before B's `rm -rf`
+  [ "$1" = "$admit.reclaim" ] || return 0
+  MV_INJECT=""; HOOK_FIRED=$((HOOK_FIRED + 1))
+  _fleet_steal_stale_admit "$admit" "$P_STALE"; E_RC=$?
+  builtin printf '%s\n' E > "$admit/who" 2>/dev/null
+  command mv "$admit" victim 2>/dev/null; o_rc=$? # C's rename lands, still inside B's window
+}
+P_STALE=$((NOW - 61)); E_RC=""; o_rc=""
+mk_admit "$admit" "$P_STALE" 999999
+_fleet_gate_take "$admit.reclaim"; o_take=$?; C_FENCE="${_fleet_gate_fence:-}"
+o_pwd="$PWD"; o_cd=1
+if builtin cd "$C_FENCE" 2>/dev/null; then o_cd=0; fi
+builtin printf '%s\n' "$(( $(date +%s) - 10 ))" > "$admit.reclaim/acquired"
+HOOK_FIRED=0; MV_INJECT=_inject_e_after_break
+_fleet_gate_take "$admit.reclaim"; B1_RC=$?
+MV_INJECT=""
+builtin cd "$o_pwd" || exit 1
+check "(o) precondition: C held the gate with its fence pinned" "0 0" "$o_take $o_cd"
+check "(o) the seam fired (E acted between B's gate mv and its rm)" 1 "$HOOK_FIRED"
+check "(o) precondition: E stole the stale admit" 0 "$E_RC"
+check "(o) C's pre-resolved rename fails (its fence died before the break)" 1 "$([ -n "$o_rc" ] && [ "$o_rc" -ne 0 ] && echo 1 || echo 0)"
+check "(o) E's live claim is still THE admit" E "$(cat "$admit/who" 2>/dev/null)"
+[ "$B1_RC" = 0 ] && _fleet_gate_drop "$admit.reclaim" "${_fleet_gate_fence:-}"
+rm -rf "$admit.reclaim"
+
+# --- (p) HIMMEL-3210: a late fence created in the doomed gate ----------------
+# Panel round-2 codex-1, case (i). A took the gate and paused before its fence
+# mkdir; the gate aged out. B breaks it, and A resumes exactly between B's
+# in-place fence delete and B's gate `mv`: A creates its fence in the doomed
+# gate and runs its sole-fence check. It is the only fence there, so without
+# the `revoked` marker A passes and holds a gate that is about to be moved
+# away; with it, A refuses.
+# shellcheck disable=SC2317
+_inject_late_fence() { # A's fence mkdir + sole check, inside B's delete->mv window
+  RM_INJECT=""; HOOK_FIRED=$((HOOK_FIRED + 1))
+  p_fence="$RM_GATE/fence.A.1"
+  mkdir "$p_fence" 2>/dev/null; p_mk=$?
+  _fleet_gate_sole "$RM_GATE" "$p_fence"; p_sole=$?
+  [ "$p_sole" = 0 ] || command rm -rf "$p_fence"
+}
+gate="$W/.gate-p"; rm -rf "$gate"; mkdir "$gate"
+builtin printf '%s\n' "$(( $(date +%s) - 10 ))" > "$gate/acquired"
+p_mk=""; p_sole=""; p_fence=""; HOOK_FIRED=0
+RM_GATE="$gate"; RM_INJECT=_inject_late_fence
+_fleet_gate_take "$gate"; p_rc=$?; P_FENCE="${_fleet_gate_fence:-}"
+RM_INJECT=""; RM_GATE=""
+check "(p) the seam fired (A resumed between B's fence delete and its mv)" 1 "$HOOK_FIRED"
+check "(p) precondition: A's fence was created in the doomed gate" 0 "$p_mk"
+check "(p) A's sole-fence check refuses the doomed gate (rc 1)" 1 "$p_sole"
+check "(p) B broke the aged gate and holds a fresh one, its fence the only one" "0 1 1" \
+  "$p_rc $([ -n "$P_FENCE" ] && [ -d "$P_FENCE" ] && echo 1 || echo 0) $(count_glob "$gate"/fence.*)"
+[ "$p_rc" = 0 ] && _fleet_gate_drop "$gate" "$P_FENCE"
+rm -rf "$gate"
+
+# --- (q) HIMMEL-3210: a late fence created after the doomed gate's mv --------
+# Case (ii), first half: A resumes after B's gate `mv` and before B re-creates
+# the gate — its fence mkdir finds no parent (ENOENT) and A refuses. The second
+# half (A's fence lands in the successor's fenced gate and the sole check sees
+# two fences) is (m). Neither half depends on the `revoked` marker.
+# shellcheck disable=SC2317
+_inject_fence_after_mv() {
+  [ "$1" = "$gate" ] || return 0
+  MV_INJECT=""; HOOK_FIRED=$((HOOK_FIRED + 1))
+  mkdir "$gate/fence.A.2" 2>/dev/null; q_mk=$?
+}
+gate="$W/.gate-q"; rm -rf "$gate"; mkdir "$gate"
+builtin printf '%s\n' "$(( $(date +%s) - 10 ))" > "$gate/acquired"
+q_mk=""; HOOK_FIRED=0; MV_INJECT=_inject_fence_after_mv
+_fleet_gate_take "$gate"; q_rc=$?; Q_FENCE="${_fleet_gate_fence:-}"
+MV_INJECT=""
+check "(q) the seam fired (A resumed between B's gate mv and its re-mkdir)" 1 "$HOOK_FIRED"
+check "(q) A's fence mkdir fails: the gate name is gone" 1 "$([ -n "$q_mk" ] && [ "$q_mk" -ne 0 ] && echo 1 || echo 0)"
+check "(q) B holds the fresh gate, its fence the only one" "0 1 1" \
+  "$q_rc $([ -n "$Q_FENCE" ] && [ -d "$Q_FENCE" ] && echo 1 || echo 0) $(count_glob "$gate"/fence.*)"
+[ "$q_rc" = 0 ] && _fleet_gate_drop "$gate" "$Q_FENCE"
+rm -rf "$gate"
+
+# --- (n) HIMMEL-3210: displaced-victim debris is pruned by age ----------------
+# End to end through the real script. Debris first seen long ago goes; debris
+# never seen before is stamped and kept (it may still be in flight); debris
+# seen recently is kept; a reservation is untouched by the debris pass.
+slots_n="$W/slots-n"; rm -rf "$slots_n"
+mkdir -p "$slots_n/.admit.stale.1.1" "$slots_n/.admit.reclaim.broken.1.1" "$slots_n/.admit.stale.2.2" \
+  "$slots_n/.admit.reclaim.broken.2.2" "$slots_n/.admit.stale.3.3" "$slots_n/HIMMEL-resv"
+builtin printf '%s\n' "$((NOW - 7200))" > "$slots_n/.admit.stale.1.1/seen"
+builtin printf '%s\n' "$((NOW - 7200))" > "$slots_n/.admit.reclaim.broken.1.1/seen"
+builtin printf '%s\n' "$NOW" > "$slots_n/.admit.stale.3.3/seen"
+builtin printf '%s\n' "$((NOW + 3600))" > "$slots_n/HIMMEL-resv/expires"
+env -u FLEET_ADMIT_TEST_HOOK FLEET_CAP_OK= CADENCE_BANK_LAUNCH= HIMMEL_FLEET_SLOTS="$slots_n" FLEET_PS_CMD="$W/ps/ps" FLEET_PROC="$W/ps/proc" \
+  CADENCE_BANK_CACHE="$W/c.json" CADENCE_BANK_SKIP_REFRESH=1 CADENCE_BANK_LEDGER="$W/ledger.jsonl" HIMMEL_FLEET_CAP=4 \
+  bash "$SUT" </dev/null >"$W/n.out" 2>"$W/n.err"
+check "(n) the run completes to a PROCEED verdict" PROCEED "$(cat "$W/n.out")"
+check "(n) long-seen .admit.stale.* debris is pruned" gone "$([ -e "$slots_n/.admit.stale.1.1" ] && echo present || echo gone)"
+check "(n) long-seen .admit.reclaim.broken.* debris is pruned" gone "$([ -e "$slots_n/.admit.reclaim.broken.1.1" ] && echo present || echo gone)"
+check "(n) never-seen debris is kept and stamped (stale, broken)" "numeric numeric" \
+  "$(for _d in .admit.stale.2.2 .admit.reclaim.broken.2.2; do case "$(cat "$slots_n/$_d/seen" 2>/dev/null)" in ''|*[!0-9]*) echo bad ;; *) echo numeric ;; esac; done | tr '\n' ' ' | sed 's/ $//')"
+check "(n) recently-seen debris is kept" present "$([ -e "$slots_n/.admit.stale.3.3" ] && echo present || echo gone)"
+check "(n) a live reservation is untouched and counted" "present 1" \
+  "$([ -e "$slots_n/HIMMEL-resv" ] && echo present || echo gone) $(grep -c 'reserved=1 total=1/4' "$W/n.err")"
 
 echo "--- $PASS passed, $FAIL failed ---"
 [ "$FAIL" -eq 0 ]

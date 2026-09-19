@@ -196,7 +196,9 @@ _fleet_admit_hook() { # _fleet_admit_hook <point> <path>
   [ -n "${FLEET_ADMIT_TEST_HOOK:-}" ] && "$FLEET_ADMIT_TEST_HOOK" "$1" "$2"
   return 0
 }
-# _fleet_gate_take <gate> -> 0 held (stamped + pid recorded), 1 busy/refused.
+# _fleet_gate_take <gate> -> 0 held (fenced + stamped + pid recorded), 1
+# busy/refused. On 0, _fleet_gate_fence names this holder's FENCE — read it
+# straight after the call; it is the holder's proof of ownership (below).
 # The gate is held for milliseconds, so it is breakable by AGE alone
 # (FLEET_ADMIT_GATE_STALE_SECS, default 5) — deliberately NOT by `kill -0` on
 # its pid: a reused pid must not wedge every reclaim and every release. An
@@ -206,20 +208,47 @@ _fleet_admit_hook() { # _fleet_admit_hook <point> <path>
 # private path, then re-read ITS stamp — if a concurrent breaker already
 # replaced it with a fresh gate, our rename just displaced THAT live gate, so
 # put it back (create-based, never a nesting mv) and lose.
-# ponytail: this closes the 4-party race for every actor that runs THIS code,
-# but a gate break is still a rename-then-verify, not a compare-and-swap: with
-# >=3 actors racing one CRASHED gate, a slow breaker's rename can displace a
-# faster breaker's fresh gate, and the create-based restore is best-effort — so
-# two gate holders can briefly coexist (only ever for one gate-hold's few
-# milliseconds, and only after a gate holder died mid-hold). The same
-# age-lease has NO fencing for a live holder PAUSED past the age (SIGSTOP, VM
-# suspend) between its stamp check and its rename: it can resume after the gate
-# was broken and rename a successor's admit away. No CAS primitive
-# (link/renameat2) is portable across bash 3.2 / macOS / Git-Bash; the
-# defence-in-depth restore in the steal keeps a displaced live claim alive, but
-# `.admit` is absent for that instant (HIMMEL-3210 tracks both residuals).
+# HIMMEL-3210 — fencing. An age lease alone cannot stop a holder PAUSED past the
+# age (SIGSTOP, VM suspend) from resuming after its gate was broken and acting
+# on a successor's state. The fence is a uniquely named directory the holder
+# creates INSIDE the gate it took, and every destructive rename a holder does
+# targets a path THROUGH it (`mv "$admit" "$fence/victim"`). Breaking a gate
+# first deletes its fences IN PLACE, then renames the gate away, and nothing
+# ever puts a fence back (a break's restore copies only `acquired`/`pid`), so
+# the rename itself is the fence check: it fails with ENOENT once the gate is
+# not ours — no userspace check-then-act gap for a pause to land in. The
+# in-place delete is what covers a rename that resolved the fence BEFORE the
+# break: the fence dies while the gate NAME is still held, so no successor can
+# exist yet, and rename(2) locks its destination parent — it either completes
+# first (moving the stale admit the breaker is replacing; nothing fresh can
+# exist while the name is held) or finds the fence dead and fails ENOENT
+# (Linux; probed via renameat into a removed dirfd). Moving the gate away with
+# its fences alive would NOT do: the name is re-takeable from that `mv` until
+# the broken copy's `rm -rf`, and a successor that steals and claims in that
+# window would have its live admit moved by the pre-resolved rename.
+# That is why this is a
+# fence-by-path, not a generation number re-read before the mv: a re-read is
+# still followed by a separate mv, and the pause can land between them.
+# The one gap left is creating the fence itself: a holder paused between its
+# `mkdir "$gate"` and its `mkdir "$fence"` can resume after its gate was broken
+# and drop its fence into a SUCCESSOR's gate, or into the doomed gate after the
+# breaker's fence delete. Hence the sole-fence check: after creating its fence
+# each actor lists the gate, and holds only if its own fence is the only one
+# there AND the gate carries no `revoked` marker. Two actors in one gate each
+# create-then-list, so the one that creates second always sees both — at most
+# one ever passes (both failing is fine: a refusal, and the gate ages out). A
+# breaker writes `revoked` BEFORE deleting the fences, so a fence created in
+# the doomed gate after that delete sees `revoked` and refuses; one created
+# after the `mv` lands in a successor's gate (two fences, refuses) or nowhere
+# (ENOENT); a sole check that passed before `revoked` existed had its fence
+# deleted, so its rename fails ENOENT. Every branch refuses: over-count only.
+# ponytail: `_fleet_gate_drop` is still check-then-remove — a holder paused
+# between its fence check and its `rm -rf` can delete a successor's gate. That
+# only ever REMOVES a successor's fence, so the successor's fenced rename fails
+# and it refuses (over-count, never under-count); no destructive admit
+# operation is reachable without a live fence.
 _fleet_gate_take() {
-  local gate="$1" held_at victim seen
+  local gate="$1" held_at victim seen fence
   if ! mkdir "$gate" 2>/dev/null; then
     held_at="$(cat "$gate/acquired" 2>/dev/null)" || held_at=""
     case "$held_at" in
@@ -227,6 +256,22 @@ _fleet_gate_take() {
     esac
     [ $(( $(date +%s) - held_at )) -ge "${FLEET_ADMIT_GATE_STALE_SECS:-5}" ] || return 1
     _fleet_admit_hook gate-break "$gate"
+    # Kill the fences IN PLACE before the gate name becomes re-takeable (panel
+    # codex-1): once `mv` frees the name a third actor can take the gate, steal
+    # and claim fresh before the `rm -rf "$victim"` below, and a holder's rename
+    # that resolved its fence before the break would then move that live claim.
+    # A fence removed here is dead before any successor can exist. `revoked`
+    # goes in FIRST: a fence created after the delete is listed by its own sole
+    # check after `revoked` exists, so it refuses instead of holding a gate
+    # that is about to be moved away.
+    # ponytail: neither result below is checked. A failed `mkdir revoked`
+    # (EACCES/EIO/RO fs, or EEXIST from a concurrent breaker) or a fence that
+    # survives the `rm -rf` still lets the mv proceed, and a surviving fence's
+    # pre-resolved rename can then move a successor's live admit. This needs a
+    # filesystem failure. The race path is harmless: a rename landing mid-rm
+    # already ran while the name was held. Fail-closed abort: HIMMEL-3223.
+    mkdir "$gate/revoked" 2>/dev/null
+    rm -rf "$gate"/fence.* 2>/dev/null
     victim="$gate.broken.$$.$RANDOM"
     mv "$gate" "$victim" 2>/dev/null || return 1
     seen="$(cat "$victim/acquired" 2>/dev/null)" || seen=""
@@ -241,16 +286,32 @@ _fleet_gate_take() {
     rm -rf "$victim" 2>/dev/null
     mkdir "$gate" 2>/dev/null || return 1
   fi
+  _fleet_admit_hook gate-made "$gate"
+  fence="$gate/fence.$$.$RANDOM"
+  mkdir "$fence" 2>/dev/null || return 1
+  if ! _fleet_gate_sole "$gate" "$fence"; then
+    rm -rf "$fence" 2>/dev/null
+    return 1
+  fi
   if _fleet_admit_stamp_or_fail "$gate" && printf '%s\n' "$$" > "$gate/pid" 2>/dev/null; then
+    _fleet_gate_fence="$fence"
     return 0
   fi
   rm -rf "$gate" 2>/dev/null
   return 1
 }
-# Drop only a gate this process still holds (its pid reads back as ours): a
-# gate aged out from under a very slow holder now belongs to someone else.
-_fleet_gate_drop() { # _fleet_gate_drop <gate>
-  [ "$(cat "$1/pid" 2>/dev/null)" = "$$" ] && rm -rf "$1" 2>/dev/null
+_fleet_gate_sole() { # _fleet_gate_sole <gate> <fence> -> 0 iff <fence> is the gate's only fence and the gate is not being broken
+  local f
+  [ ! -e "$1/revoked" ] || return 1
+  for f in "$1"/fence.*; do
+    [ "$f" = "$2" ] || return 1
+  done
+  [ -d "$2" ]
+}
+# Drop only a gate this process still holds (its fence is still in it): a gate
+# aged out from under a very slow holder now belongs to someone else.
+_fleet_gate_drop() { # _fleet_gate_drop <gate> <fence>
+  [ -n "$2" ] && [ -d "$2" ] && rm -rf "$1" 2>/dev/null
   return 0
 }
 # _fleet_release_admit <admit-dir>: the ONE way this script gives up its own
@@ -261,7 +322,7 @@ _fleet_gate_drop() { # _fleet_gate_drop <gate>
 # cannot get it, the lock is left to age out (a REFUSED launch — SKIPPED-FLEET —
 # for up to FLEET_ADMIT_STALE_SECS) and that is logged, never silent.
 _fleet_release_admit() {
-  local admit="$1" gate="$1.reclaim" iters=0
+  local admit="$1" gate="$1.reclaim" iters=0 fence
   while ! _fleet_gate_take "$gate"; do
     iters=$((iters + 1))
     # The retry window (ITERS x RETRY_SLEEP = 160 x 0.05 = 8s) must exceed
@@ -276,12 +337,16 @@ _fleet_release_admit() {
     _fleet_admit_hook release-retry "$gate"
     sleep "${FLEET_ADMIT_RETRY_SLEEP:-0.05}"
   done
+  fence="$_fleet_gate_fence"
+  # No fence needed on this rm (HIMMEL-3210): only a holder presumed DEAD loses
+  # its admit to a steal (a live pid, stopped ones included, answers `kill -0`
+  # and is refused below), so a releaser paused here still owns what it checked.
   [ "$(cat "$admit/pid" 2>/dev/null)" = "$$" ] && rm -rf "$admit" 2>/dev/null
-  _fleet_gate_drop "$gate"
+  _fleet_gate_drop "$gate" "$fence"
   return 0
 }
 _fleet_steal_stale_admit_gated() { # runs UNDER the gate — see _fleet_steal_stale_admit below
-  local admit="$1" expected_at="$2" victim stolen_at
+  local admit="$1" expected_at="$2" fence="$3" victim stolen_at
   # The verification the rename below cannot do for itself: is what occupies
   # "$admit" NOW still the stale entry the caller observed? Nothing can change
   # that between here and the rename (fresh claims need an absent admit,
@@ -290,7 +355,12 @@ _fleet_steal_stale_admit_gated() { # runs UNDER the gate — see _fleet_steal_st
   stolen_at="$(cat "$admit/acquired" 2>/dev/null)" || stolen_at=""
   [ "$stolen_at" = "$expected_at" ] || return 1
   _fleet_admit_hook post-verify "$admit"
-  victim="$admit.stale.$$.$RANDOM"
+  # Fenced (HIMMEL-3210): the victim lives INSIDE our gate, so this rename fails
+  # outright if the gate was broken while we were paused anywhere since taking
+  # it — and a successful one proves we held it the whole time, i.e. "$admit" is
+  # still exactly what we verified above. The victim goes when the gate drops.
+  [ -n "$fence" ] || return 1
+  victim="$fence/victim"
   mv "$admit" "$victim" 2>/dev/null || return 1
   _fleet_admit_hook post-rename "$admit"
   stolen_at="$(cat "$victim/acquired" 2>/dev/null)" || stolen_at=""
@@ -305,10 +375,9 @@ _fleet_steal_stale_admit_gated() { # runs UNDER the gate — see _fleet_steal_st
     # it for the instant between here and the check), `mv victim admit` onto an
     # existing directory nests the displaced fresh claim inside it (POSIX
     # mv-into-directory semantics) instead of restoring it — corrupting both.
-    # Leaving the victim as an orphaned `.admit.stale.*` dir is harmless to
-    # exclusion (it holds no lock), but it is NOT pruned: the reservation
-    # prune pass globs "$SLOTS"/*/, which skips dot-dirs, so such victims
-    # accumulate in tmpfs until reboot (follow-up on HIMMEL-3019).
+    # The displaced victim stays inside our fence and goes with the gate when
+    # it drops (HIMMEL-3210); `.admit.stale.*` victims left by older copies are
+    # swept by the debris pass in the prune below.
     # codex-2 (HIMMEL-2774, 2nd panel round): a plain `[ -e ] || mv` here is
     # itself a check-then-act race — a FOURTH party's `mkdir "$admit"` can
     # land in the instant between the `[ -e ]` test and the `mv`, and `mv`
@@ -360,11 +429,12 @@ _fleet_steal_stale_admit_gated() { # runs UNDER the gate — see _fleet_steal_st
   return 1
 }
 _fleet_steal_stale_admit() { # _fleet_steal_stale_admit <admit-dir> <expected-acquired-stamp>
-  local gate="$1.reclaim" rc
+  local gate="$1.reclaim" rc fence
   _fleet_gate_take "$gate" || return 1
-  _fleet_steal_stale_admit_gated "$@"
+  fence="$_fleet_gate_fence"
+  _fleet_steal_stale_admit_gated "$1" "$2" "$fence"
   rc=$?
-  _fleet_gate_drop "$gate"
+  _fleet_gate_drop "$gate" "$fence"
   return "$rc"
 }
 _fleet_claim_admit() { # _fleet_claim_admit <admit-dir>
@@ -576,6 +646,25 @@ if [ "$_fleet_admitted" -eq 1 ]; then
   # its owner ever finishes creating it.
   if [ "$_fleet_admitted" -eq 1 ]; then
     _fleet_now=$(date +%s)
+    # HIMMEL-3210: displaced-victim debris — `.admit.stale.*` (steal victims of
+    # older, unfenced copies of this script) and `.admit.reclaim.broken.*`
+    # (gate-break victims whose breaker died before its rm) — is dot-prefixed
+    # so the reservation glob below never counts it, which also means that
+    # glob never prunes it. Its own pass, aged from FIRST SIGHTING: a pass
+    # stamps `seen` into an unstamped victim and removes it once that is
+    # FLEET_ADMIT_DEBRIS_SECS old, so a victim still in flight (read by its
+    # renamer within milliseconds) is never removed on the pass that first
+    # meets it. Removing one early anyway is only ever a refusal, never an
+    # over-admit: its renamer reads an empty stamp, takes the mismatch branch
+    # and returns 1, leaving at most an unstamped lock that ages out.
+    for _fleet_debris in "$SLOTS"/.admit.stale.* "$SLOTS"/.admit.reclaim.broken.*; do
+      [ -d "$_fleet_debris" ] || continue
+      _fleet_debris_seen="$(cat "$_fleet_debris/seen" 2>/dev/null)" || _fleet_debris_seen=""
+      case "$_fleet_debris_seen" in
+        ''|*[!0-9]*) printf '%s\n' "$_fleet_now" > "$_fleet_debris/seen" 2>/dev/null; continue ;;
+      esac
+      [ $((_fleet_now - _fleet_debris_seen)) -ge "${FLEET_ADMIT_DEBRIS_SECS:-600}" ] && rm -rf "$_fleet_debris" 2>/dev/null
+    done
     for _fleet_resv in "$SLOTS"/*/; do
       [ -d "$_fleet_resv" ] || continue
       _fleet_resv_name="$(basename "$_fleet_resv")"
