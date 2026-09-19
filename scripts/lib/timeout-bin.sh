@@ -27,6 +27,14 @@ _timeout_bin_resolve() {
     for _c in timeout gtimeout; do
         _p="$(command -v "$_c" 2>/dev/null)" || continue
         [ -n "$_p" ] || continue
+        # `command -v` prints a bare name for a function/builtin/alias (not a
+        # binary: reject) and a RELATIVE path for a relative PATH entry (make it
+        # absolute now, so a later `cd` cannot orphan it).
+        case "$_p" in
+            /*) ;;
+            */*) _p="$(cd -P "${_p%/*}" 2>/dev/null && pwd -P)/${_p##*/}" || continue ;;
+            *) continue ;;
+        esac
         if "$_p" --version >/dev/null 2>&1; then
             _TIMEOUT_BIN="$_p"
             return 0

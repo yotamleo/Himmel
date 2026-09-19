@@ -10,6 +10,8 @@
 #   T4  a non-GNU `timeout` (Windows timeout.exe shape: --version fails) is
 #       rejected, and does not shadow a working gtimeout behind it
 #   T5  sourcing under `set -u` with an empty PATH does not error
+#   T6  a relative PATH dir is stored ABSOLUTE (survives a cd); a shell function
+#       named timeout (command -v prints a bare name) is rejected
 
 set -uo pipefail
 
@@ -101,6 +103,18 @@ rc=0
 out="$(PATH="$W/nonexistent" "$BASH_BIN" -c 'set -u; . "$1"; printf "[%s]" "$_TIMEOUT_BIN"' _ "$LIBF" 2>/dev/null)" || rc=$?
 eq "T5 rc 0" "$rc" "0"
 eq "T5 empty" "$out" "[]"
+
+echo "[test-timeout-bin] T6 relative PATH dir: stored ABSOLUTE, survives a cd; a shell function is not a binary"
+d6="$W/t6"; mkdir -p "$d6/bin"; fake_gnu "$d6/bin" timeout
+d6t="$(stub_dir t6tools cat)"; mkdir -p "$d6/elsewhere"
+rc=0
+# shellcheck disable=SC2016 # single quotes intentional: the child shell expands $1/$_TIMEOUT_BIN
+out="$(cd "$d6" && PATH="bin:$d6t" "$BASH_BIN" -c '. "$1"; printf "%s" "$_TIMEOUT_BIN"; cd "$2"; "$_TIMEOUT_BIN" 5 cat /dev/null' _ "$LIBF" "$d6/elsewhere" 2>/dev/null)" || rc=$?
+case "$out" in /*/t6/bin/timeout) ok "T6 relative PATH result stored as an absolute path ($out)" ;; *) bad "T6 stored [$out]" ;; esac
+eq "T6 the stored path still runs after a cd (rc 0, not 127)" "$rc" "0"
+# shellcheck disable=SC2016 # single quotes intentional: the child shell expands $1/$_TIMEOUT_BIN
+out="$(PATH="$d2" "$BASH_BIN" -c 'timeout() { [ "$1" = "--version" ]; }; . "$1"; printf "[%s]" "$_TIMEOUT_BIN"' _ "$LIBF" 2>/dev/null)"
+eq "T6 a shell function named timeout is rejected" "$out" "[]"
 
 echo "[test-timeout-bin] $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
