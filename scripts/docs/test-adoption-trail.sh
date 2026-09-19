@@ -112,10 +112,18 @@ else
   ok "Level 7 uses the glossary's 'leg' for a work session"
 fi
 
+# ponytail: the wizard's questions are asked by an imperative flow in
+# scripts/himmelctl/bin.js (no question table to count), so the expected 7 /
+# 22 / 15 are pinned here from the verified read, not derived. The pin fails
+# on removal or a changed number, but a wizard that gains a question still
+# needs this line and the page updated by hand.
 if grep -q -i -E 'up to eighteen|up to eleven' "$PAGE"; then
   bad "question counts are stale (7 always + up to 15 conditional = 22)" "$(grep -n -i -E 'up to eighteen|up to eleven' "$PAGE" | head -2)"
+elif grep -q -F 'Seven questions are always asked, and up to twenty-two in total' "$PAGE" \
+     && grep -q -F 'up to fifteen more' "$PAGE"; then
+  ok "wizard question counts on the page are seven always / twenty-two total / fifteen conditional"
 else
-  ok "wizard question counts are not the stale eighteen/eleven"
+  bad "the page must state the wizard question counts (seven always, up to twenty-two in total, up to fifteen conditional)"
 fi
 
 echo
