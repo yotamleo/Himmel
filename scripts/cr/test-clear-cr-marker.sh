@@ -2537,6 +2537,23 @@ write_ledger "$tmp" "$(avail_ok_floor "$sha")"
 run_clear "$tmp" 14 "5w non-empty panel, zero non-Claude rows + claude-floor -> exit 14"
 if marker_exists "$tmp"; then pass; else fail "5w silence: marker must REMAIN"; fi
 rm -rf "$tmp"
+
+# 5x. Provenance: an artifact based on a MID-BRANCH commit (its hash matches
+# that narrower range) reviewed only the newest slice of the branch -> exit 14.
+make_repo || exit 1
+( cd "$tmp" && echo a > mid.txt && git add mid.txt && git commit -qm mid &&
+  echo b > tip.txt && git add tip.txt && git commit -qm tip && git push -q origin feat/x ) >/dev/null 2>&1
+sha=$(git -C "$tmp" rev-parse HEAD); mid=$(git -C "$tmp" rev-parse HEAD~1)
+write_marker "$tmp" "$sha"
+mkdir -p "$tmp/.git/cr-floor"
+printf '{"schema":1,"head":"%s","base":"%s","diff_hash":"%s","session_id":"00000000-0000-4000-8000-000000000001","findings":[]}\n' \
+    "$sha" "$mid" "$(git -C "$tmp" diff --no-color --no-ext-diff "$mid...$sha" | git -C "$tmp" hash-object --stdin)" > "$tmp/.git/cr-floor/$sha.json"
+write_ledger "$tmp" "$(avail_ok_floor "$sha")" "$(avail_reason "$sha" codex unavailable quota-5h)"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 14 "5x floor artifact based on a mid-branch commit -> exit 14"
+if marker_exists "$tmp"; then pass; else fail "5x partial-range review: marker must REMAIN"; fi
+if grepq "$LAST_CLEAR_OUT" 'default branch'; then pass; else fail "5x must name the base problem: $LAST_CLEAR_OUT"; fi
+rm -rf "$tmp"
 unset CR_FLOOR_FALLBACK
 
 unset CR_REQUIRE_CROSS_MODEL

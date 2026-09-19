@@ -662,6 +662,16 @@ floor_provenance_ok() {
     [ -n "$_fields" ] || { floor_provenance_why="floor artifact $_art is malformed (needs head, base, diff_hash, session_id, findings)"; return 1; }
     read -r _got _base _want <<<"$_fields"
     [ "$_got" = "$tip" ] || { floor_provenance_why="floor artifact names head $_got, not ${tip}"; return 1; }
+    # The hash binds the artifact to $_base...$tip, so $_base must be on the
+    # default branch: a mid-branch base hashes a narrower range that reviewed
+    # only the newest slice of the branch.
+    case "$_base" in *[!0-9a-f]*|'') floor_provenance_why="floor artifact base '$_base' is not a commit sha"; return 1 ;; esac
+    local _ref _on_default=0
+    for _ref in refs/remotes/origin/HEAD refs/remotes/origin/main refs/remotes/origin/master refs/heads/main refs/heads/master; do
+        git rev-parse --verify -q "$_ref" >/dev/null 2>&1 || continue
+        if git merge-base --is-ancestor "$_base" "$_ref" 2>/dev/null; then _on_default=1; break; fi
+    done
+    [ "$_on_default" = 1 ] || { floor_provenance_why="floor artifact base ${_base:0:8} is not on the default branch — the review did not cover the whole branch"; return 1; }
     _got=$(git diff --no-color --no-ext-diff "$_base...$tip" 2>/dev/null | git hash-object --stdin 2>/dev/null)
     [ -n "$_got" ] && [ "$_got" = "$_want" ] && return 0
     floor_provenance_why="floor artifact diff hash $_want does not match the diff $_base...${tip:0:8} ($_got)"

@@ -25,7 +25,9 @@
 # a class of bug this model does not see, it does not see from a clean start
 # either. The gate never counts claude-floor as cross-model evidence.
 #
-# It refuses to spend (exit 3) unless the ledger shows the floor can actually
+# It refuses to spend (exit 3) unless the operator opted in (the primary's
+# .env or the process env sets CR_REQUIRE_CROSS_MODEL truthy AND
+# CR_FLOOR_FALLBACK=claude-only) and the ledger shows the floor can actually
 # unlock: no non-Claude ok row at this head, and every non-Claude lane that
 # recorded a row is exhausted (quota/rate-limit, or a vacuous CodeRabbit pass)
 # — or critics.json lists an empty panel and no lane recorded anything.
@@ -67,6 +69,21 @@ git_dir=$(git rev-parse --git-common-dir 2>/dev/null) || die "not in a git repos
 ledger="${CR_LEDGER:-$git_dir/cr-critic-scores.jsonl}"
 
 # --- 1. eligibility: never spend a review the gate could not accept ---------
+# The operator opt-in first, read exactly as clear-cr-marker.sh reads it (the
+# primary's .env; a non-empty process value wins): without BOTH knobs the gate
+# never accepts a claude-floor row, so the review would be spent for nothing.
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/lib/load-dotenv.sh" || die "cannot load scripts/lib/load-dotenv.sh" 1
+load_dotenv --root "$(_load_dotenv_primary_for "$REPO_ROOT")" CR_REQUIRE_CROSS_MODEL CR_FLOOR_FALLBACK \
+    || die "could not read CR_REQUIRE_CROSS_MODEL/CR_FLOOR_FALLBACK from .env" 3
+norm() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'; }
+case "$(norm "${CR_REQUIRE_CROSS_MODEL:-}")" in
+    1|true|on|yes) ;;
+    *) die "not eligible: CR_REQUIRE_CROSS_MODEL is not set, so the gate needs no floor. Nothing spent." 3 ;;
+esac
+[ "$(norm "${CR_FLOOR_FALLBACK:-}")" = claude-only ] \
+    || die "not eligible: CR_FLOOR_FALLBACK is not claude-only, so the gate would refuse a floor row. Nothing spent." 3
+
 # Twin of clear-cr-marker.sh's isExhausted()/emptyPanel — keep the two in step.
 # shellcheck disable=SC2016  # JS inside single quotes
 unlocked=$(LEDGER="$ledger" FULL_SHA="$head" CRITICS="$SCRIPT_DIR/critics.json" node -e '
@@ -113,6 +130,8 @@ git diff --no-color --no-ext-diff "$base...$head" > "$work/diff.patch" || die "g
 [ -s "$work/diff.patch" ] || die "the diff $base...${head:0:8} is empty — nothing to review" 3
 diff_hash=$(git hash-object --stdin < "$work/diff.patch") || die "hashing the diff failed" 1
 out_json="$snap/.cr-floor-review.json"
+# A tracked file of that name must never stand in for the review.
+rm -f "$out_json" || die "cannot clear $out_json" 1
 
 # The plugin's own reviewer, verbatim (frontmatter stripped), plus the output
 # contract this script parses. Its model: line picks the model.
@@ -163,7 +182,9 @@ if [ -z "$row" ] || [ ! -r "$row" ]; then
     record_failure "dispatch-refused" "$(tr '\n' ' ' < "$work/headless.err" | cut -c1-180)"
 fi
 # is_error / session id come from the parsed --output-format json envelope.
-read -r h_status h_error session_id dispatch_id <<<"$(jq -r '[.status, (.outcome.is_error|tostring), (.outcome.session_id // ""), .id] | @tsv' "$row" 2>/dev/null)"
+# Unit-separator delimited: tab is IFS whitespace, so an empty session id
+# would collapse and the dispatch id would shift into its place.
+IFS=$'\x1f' read -r h_status h_error session_id dispatch_id <<<"$(jq -r '[.status, (.outcome.is_error|tostring), (.outcome.session_id // ""), .id] | join("\u001f")' "$row" 2>/dev/null)"
 [ "$h_error" = "false" ] || record_failure "empty-response" "headless envelope is_error=$h_error (rc=$headless_rc)"
 if [ "$h_status" != "completed" ] || [ "$headless_rc" -ne 0 ]; then
     record_failure "empty-response" "dispatch status=$h_status rc=$headless_rc: no review artifact"

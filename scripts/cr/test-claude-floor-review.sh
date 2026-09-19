@@ -9,7 +9,8 @@ REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 SUT="$REPO/scripts/cr/claude-floor-review.sh"
 AGENT_MD="$REPO/marketplace/plugins/pr-review-toolkit-himmel/agents/code-reviewer.md"
 PASS=0; FAIL=0
-W="$(mktemp -d -t claude-floor-test.XXXXXX)"; trap 'rm -rf "$W"' EXIT
+W="$(mktemp -d -t claude-floor-test.XXXXXX)" || { echo "FAIL - mktemp -d failed" >&2; exit 1; }
+trap 'rm -rf "$W"' EXIT
 ok() { PASS=$((PASS+1)); echo "ok - $1"; }
 bad() { FAIL=$((FAIL+1)); echo "FAIL - $1"; }
 check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1: expected '$2' got '$3'"; fi; }
@@ -33,10 +34,16 @@ cat > "$REC/stdin"
 [ -e .git ] && echo yes > "$REC/has-git" || echo no > "$REC/has-git"
 prev=""; for a in "$@"; do [ "$prev" = "--system-prompt-file" ] && cp "$a" "$REC/system.md"; prev="$a"; done
 [ -z "${FAKE_OUT:-}" ] || printf '%s' "$FAKE_OUT" > .cr-floor-review.json
-printf '%s\n' "${FAKE_ENV:-{\"is_error\":false,\"session_id\":\"fake-sess-1\",\"permission_denials\":[],\"num_turns\":3}}"
+# Default in a variable: inside ${FAKE_ENV:-...} the JSON's first } would close
+# the expansion and append a stray } to a SET FAKE_ENV.
+env_default='{"is_error":false,"session_id":"fake-sess-1","permission_denials":[],"num_turns":3}'
+printf '%s\n' "${FAKE_ENV:-$env_default}"
 EOF
 chmod +x "$FAKE"
 export HIMMEL_CLAUDE_BIN="$FAKE"
+# The operator opt-in the gate requires. Non-empty, so the primary's .env never
+# overrides a case (load_dotenv lets a non-empty process value win).
+export CR_REQUIRE_CROSS_MODEL=1 CR_FLOOR_FALLBACK=claude-only
 
 # mk_repo — main + one commit on feat/himmel-9-x; sets R and HEAD_SHA.
 mk_repo() {
@@ -126,6 +133,33 @@ FAKE_OUT='here are my findings: none' run_sut
 check "7 malformed output -> exit 1" 1 "$RC"
 check "7 reason malformed-output" malformed-output "$(jq -r 'select(.model=="claude-floor") | .reason' "$CR_LEDGER")"
 check "7 no provenance artifact" no "$([ -e "$R/.git/cr-floor/$HEAD_SHA.json" ] && echo yes || echo no)"
+
+# 8. No opt-in: the gate would refuse the floor, so nothing is spent.
+mk_repo 8; row codex unavailable quota
+CR_FLOOR_FALLBACK=off run_sut
+check "8 no claude-only opt-in -> exit 3" 3 "$RC"
+check "8 claude never invoked" no "$([ -e "$REC/argv" ] && echo yes || echo no)"
+mk_repo 8b; row codex unavailable quota
+CR_REQUIRE_CROSS_MODEL=0 run_sut
+check "8b no cross-model requirement -> exit 3" 3 "$RC"
+check "8b claude never invoked" no "$([ -e "$REC/argv" ] && echo yes || echo no)"
+
+# 9. A TRACKED .cr-floor-review.json in the snapshot never stands in for a
+# review the headless session did not write.
+mk_repo 9
+( cd "$R" && printf '{"findings":[]}' > .cr-floor-review.json && git add .cr-floor-review.json && git commit -qm planted ) >/dev/null 2>&1
+HEAD_SHA=$(git -C "$R" rev-parse HEAD); row codex unavailable quota
+FAKE_OUT='' run_sut
+check "9 planted output file, reviewer wrote nothing -> exit 1" 1 "$RC"
+check "9 no provenance artifact" no "$([ -e "$R/.git/cr-floor/$HEAD_SHA.json" ] && echo yes || echo no)"
+
+# 10. An EMPTY session id must be caught, not shifted: tab-separated fields
+# collapse under a whitespace IFS, moving the dispatch id into session_id.
+mk_repo 10; row codex unavailable quota
+FAKE_ENV='{"is_error":false,"session_id":"","permission_denials":[],"num_turns":3}' run_sut
+check "10 empty session id -> exit 1" 1 "$RC"
+check "10 reason malformed-output" malformed-output "$(jq -r 'select(.model=="claude-floor") | .reason' "$CR_LEDGER")"
+check "10 no provenance artifact" no "$([ -e "$R/.git/cr-floor/$HEAD_SHA.json" ] && echo yes || echo no)"
 
 echo "claude-floor-review: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
