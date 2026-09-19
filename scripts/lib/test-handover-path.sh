@@ -209,8 +209,15 @@ assert_eq "T7f plain text preserved" plain "$_HP_UNESC"
 # letters from registry keys on the nightly macOS leg. Runs in a subshell so
 # the locale/shopt change cannot leak.
 loc7g=""
+locales7g=$(locale -a 2>/dev/null)
 for cand7g in en_US.UTF-8 en_US.utf8; do
-    if locale -a 2>/dev/null | grep -qx "$cand7g"; then loc7g="$cand7g"; break; fi
+    case "
+$locales7g
+" in
+        *"
+$cand7g
+"*) loc7g="$cand7g"; break ;;
+    esac
 done
 if [ -n "$loc7g" ]; then
     got7g=$(
