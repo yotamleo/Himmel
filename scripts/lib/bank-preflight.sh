@@ -270,6 +270,13 @@ _fleet_gate_take() {
     # pre-resolved rename can then move a successor's live admit. This needs a
     # filesystem failure. The race path is harmless: a rename landing mid-rm
     # already ran while the name was held. Fail-closed abort: HIMMEL-3223.
+    # ponytail: the three steps below resolve `$gate` by name, so a breaker that
+    # pauses between them can revoke one gate generation and then kill the
+    # fences of, and move, a successor generation that was never revoked. A
+    # taker that fences into that generation after the rm passes its sole check,
+    # and if the breaker pauses again before its victim rm, a later successor's
+    # live admit can be moved (under-count). This needs a double pause.
+    # Move-then-revoke design: HIMMEL-3232.
     mkdir "$gate/revoked" 2>/dev/null
     rm -rf "$gate"/fence.* 2>/dev/null
     victim="$gate.broken.$$.$RANDOM"
