@@ -1456,6 +1456,26 @@ case "$t30_line" in
     *) fail "T30 sweep classifies local-config-edits, not clean-upgrade" "got: $t30_line" ;;
 esac
 
+# T31 (HIMMEL-3037): apply on a vault whose ONLY non-success is a withheld
+# local edit (committed, git status clean) surfaces upgrade.sh's rc 3 as its own
+# NEEDS-RECONCILE signal + exit 3 — not PARTIAL, not a bare passed-through rc —
+# and leaves the stamp behind.
+t31_rc=0
+t31_out=$(run_engine apply --template-dir "$T30_TMPL" --vault "$T30_VAULT" 2>&1) || t31_rc=$?
+assert_eq "T31 withheld-local-edits-only apply exits 3" "3" "$t31_rc"
+if grepq "$t31_out" "^NEEDS-RECONCILE	$T30_VAULT\$"; then
+    pass "T31 apply emits the NEEDS-RECONCILE signal line"
+else
+    fail "T31 apply emits the NEEDS-RECONCILE signal line" "got: $t31_out"
+fi
+if grepq "$t31_out" "^PARTIAL	"; then
+    fail "T31 the signal is not PARTIAL" "got: $t31_out"
+else
+    pass "T31 the signal is not PARTIAL"
+fi
+t31_stamp=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version",""))' "$T30_VAULT/.vault-template.json" 2>/dev/null)
+assert_eq "T31 stamp NOT advanced" "0.9.0" "$t31_stamp"
+
 # ===========================================================================
 echo
 if [ "$FAILED" -eq 0 ]; then

@@ -8,6 +8,17 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.44] — 2026-09-19
+
+### Changed
+- `upgrade.sh` now exits `3` (stdout line `upgrade: NEEDS-RECONCILE — …`) when
+  the only reason it did not stamp the version is withheld local edits — every
+  other file was applied and there was no write failure. Previously that run
+  exited `1`, indistinguishable from a real partial upgrade. A run that also
+  has a write/snapshot failure or a `_CLAUDE.md` conflict still exits `1`. The
+  stamp is still not written, so `--check` keeps reporting the update as
+  available until the edits are reconciled.
+
 ## [0.4.43] — 2026-09-19
 
 ### Fixed

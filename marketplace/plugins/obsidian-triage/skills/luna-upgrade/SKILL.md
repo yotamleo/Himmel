@@ -171,6 +171,11 @@ that flags a dirty single-writer vault later.)
 - `0` — applied (or dry-run completed, or already current).
 - `1` — a partial upgrade: write failure or `_CLAUDE.md` conflict — stamp NOT
   written, re-run after resolving.
+- `3` — needs reconcile: every other file was applied, but local edits were
+  withheld (no write failure) — stamp NOT written. Stdout carries one stable
+  `upgrade: NEEDS-RECONCILE — …` line. Reconcile each withheld file (take the
+  template copy or keep yours), then re-run. A run that also has a write
+  failure or `_CLAUDE.md` conflict is still `1`.
 - `2` — env/usage error (e.g. template not located, vault dir missing, unknown
   flag, unreadable marketplace.json, missing python3/git/sha256sum). On "could
   not locate the himmel template", set `HIMMEL_DIR` or pass `--template-dir`.

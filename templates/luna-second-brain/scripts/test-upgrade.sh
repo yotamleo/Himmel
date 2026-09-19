@@ -1431,5 +1431,47 @@ t58_out=$(run_upgrade --yes 2>&1); t58_rc=$?
 if [ "$t58_rc" -eq 0 ]; then pass "T58 git baseline: newline-only vault drift + a real template change exits 0"; else fail "T58 git baseline: newline-only vault drift + a real template change exits 0" "rc=$t58_rc, out: $t58_out"; fi
 assert_eq "T58 git baseline: the template's new app.json was written" "$(sha_of "$T/.obsidian/app.json")" "$(sha_of "$V/.obsidian/app.json")"
 
+# ---------------------------------------------------------------------------
+# T59-T60 (HIMMEL-3037): a run whose ONLY non-success is withheld local edits
+# (no write failure, no snapshot failure, no _CLAUDE.md conflict) is not a
+# failure — it exits a distinct rc 3 and prints a stable NEEDS-RECONCILE line
+# (stdout, last line), while the stamp is still NOT written so the vault keeps
+# being offered the upgrade. Anything else stays rc 1.
+# T59: local edit only.
+t53_seed t59
+printf '{"promptDelete":true,"alwaysUpdateLinks":true}' > "$V/.obsidian/app.json"
+t59_pre_sha=$(sha_of "$V/.obsidian/app.json")
+t59_out=$(run_upgrade --yes 2>/dev/null); t59_rc=$?
+assert_eq "T59 withheld-local-edits-only run exits 3" "3" "$t59_rc"
+case "$t59_out" in
+    *"upgrade: NEEDS-RECONCILE — 1 local edit(s) withheld, version stamp NOT written"*) pass "T59 stdout carries the stable NEEDS-RECONCILE line" ;;
+    *) fail "T59 stdout carries the stable NEEDS-RECONCILE line" "got: $t59_out" ;;
+esac
+t59_last=$(printf '%s\n' "$t59_out" | tail -n 1)
+case "$t59_last" in
+    "upgrade: NEEDS-RECONCILE"*) pass "T59 the NEEDS-RECONCILE line is the LAST stdout line (callers show it as the detail)" ;;
+    *) fail "T59 the NEEDS-RECONCILE line is the LAST stdout line (callers show it as the detail)" "last: $t59_last" ;;
+esac
+assert_eq "T59 the withheld file is untouched" "$t59_pre_sha" "$(sha_of "$V/.obsidian/app.json")"
+assert_eq "T59 stamp NOT advanced" "1.0.0" "$(t53_stamp_version)"
+t59_check=$(run_upgrade --check 2>&1)
+case "$t59_check" in
+    *"template v1.0.1 available (vault is v1.0.0)"*) pass "T59 --check afterwards still reports the template update as available" ;;
+    *) fail "T59 --check afterwards still reports the template update as available" "got: $t59_check" ;;
+esac
+# T60: a real failure alongside the withheld edit stays rc 1, and is NOT
+# relabelled NEEDS-RECONCILE (a _CLAUDE.md conflict needs a human first).
+t53_seed t60
+printf '{"promptDelete":true,"alwaysUpdateLinks":true}' > "$V/.obsidian/app.json"
+mkdir -p "$V/.vault-template.base"; cp "$T/_CLAUDE.md" "$V/.vault-template.base/_CLAUDE.md"
+printf '# Operating Manual OURS\n\nline-a\nline-b\nline-c\n' > "$V/_CLAUDE.md"
+printf '# Operating Manual THEIRS\n\nline-a\nline-b\nline-c\n' > "$T/_CLAUDE.md"
+t60_out=$(run_upgrade --yes 2>&1); t60_rc=$?
+assert_eq "T60 local edit + _CLAUDE.md conflict stays rc 1" "1" "$t60_rc"
+case "$t60_out" in
+    *NEEDS-RECONCILE*) fail "T60 a mixed failure is not labelled NEEDS-RECONCILE" "got: $t60_out" ;;
+    *) pass "T60 a mixed failure is not labelled NEEDS-RECONCILE" ;;
+esac
+
 echo
 if [ "$FAILED" -eq 0 ]; then echo "All upgrade tests passed."; else echo "$FAILED test(s) failed."; exit 1; fi

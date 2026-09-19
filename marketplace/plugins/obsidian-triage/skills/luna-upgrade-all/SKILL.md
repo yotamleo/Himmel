@@ -148,6 +148,21 @@ Surface the engine's full output verbatim and tell the operator:
 
 Continue to the next vault.
 
+### Signal: `NEEDS-RECONCILE\t<vault>`
+
+Every other template-owned file was updated, but one or more files with local
+edits were withheld (no write failure) — the version stamp was NOT written, so
+the vault still reads as update-available. This is not a failure and not
+`PARTIAL`: nothing is broken, the operator just has to decide per withheld file.
+Surface the engine's `LOCAL-EDIT` lines and tell the operator:
+
+> Needs reconcile: local edits were withheld and the version stamp was not
+> written. For each listed file, take the template copy or keep yours (a file
+> that only differs by a trailing newline or JSON formatting is no longer
+> reported), then re-run `/luna-upgrade-all`.
+
+Continue to the next vault.
+
 ### Signal: `CONFLICT\t<vault>\t<sidecar>`
 
 The `_CLAUDE.md` 3-way merge could not auto-resolve. The engine left

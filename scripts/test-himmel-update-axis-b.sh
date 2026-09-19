@@ -276,6 +276,23 @@ assert_eq "luna failure with sidecar still exits nonzero" "1" "$RC"
 assert_contains "luna failure with sidecar retains the conflict hint" 'resolve any _CLAUDE.md.template-merge conflict' "$OUT"
 
 echo ""
+echo "Test 2c: luna upgrade.sh rc 3 (NEEDS-RECONCILE, HIMMEL-3037) is not a chain failure"
+rm -f "$LUNA_VAULT/_CLAUDE.md.template-merge"
+cat > "$LUNA_CLONE/templates/luna-second-brain/scripts/upgrade.sh" <<'UPGRADE'
+#!/usr/bin/env bash
+echo '  local edits withheld (not overwritten): .obsidian/app.json'
+echo 'upgrade: NEEDS-RECONCILE — 1 local edit(s) withheld, version stamp NOT written'
+exit 3
+UPGRADE
+git -C "$LUNA_CLONE" add -A
+git -C "$LUNA_CLONE" commit --quiet -m "needs-reconcile upgrade fixture"
+OUT="$(LUNA_VAULT_PATH="$LUNA_VAULT" run_update "$LUNA_CLONE" "$TMP/luna-home" "$STUB1" --only luna_template)"; RC=$?
+assert_eq "luna rc 3 exits 0 (not a failed chain item)" "0" "$RC"
+assert_contains "luna rc 3 row is needs-reconcile with the engine's marker line as detail" 'luna_template  *needs-reconcile  *upgrade: NEEDS-RECONCILE — 1 local edit' "$OUT"
+assert_not_contains "luna rc 3 is not labelled failed" 'luna_template  *failed' "$OUT"
+assert_not_contains "luna rc 3 is not labelled updated" 'luna_template  *updated' "$OUT"
+
+echo ""
 echo "Test 3: --only pull honours the dirty-tree pre-check"
 printf 'dirty\n' >> "$CLONE1/file.txt"
 OUT="$(run_update "$CLONE1" "$FH1" "$STUB1" --only pull)"; RC=$?

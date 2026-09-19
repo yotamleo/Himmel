@@ -781,6 +781,14 @@ cmd_apply() {
             fi
             exit 1
             ;;
+        3)
+            # HIMMEL-3037: upgrade.sh's NEEDS-RECONCILE — the only non-success
+            # is withheld local edits (no write failed, stamp NOT written).
+            # Its own signal, not PARTIAL: nothing broke, an operator decision
+            # is pending.
+            printf 'NEEDS-RECONCILE\t%s\n' "$vault"
+            exit 3
+            ;;
         *)
             exit "$upgrade_rc"
             ;;

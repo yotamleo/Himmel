@@ -1053,6 +1053,14 @@ update_luna_template() {
         DETAIL_luna_template="$(_last_line_trimmed "$out")"
         return 0
     fi
+    # HIMMEL-3037: rc 3 = upgrade.sh NEEDS-RECONCILE — the only non-success is
+    # withheld local edits (zero write failures). Not a failed chain item and
+    # not "updated" either: the vault stays unstamped, so --check keeps
+    # offering the upgrade until the operator reconciles the withheld files.
+    if [ "$rc" -eq 3 ]; then
+        STATUS_luna_template="needs-reconcile"; DETAIL_luna_template="$(_last_line_trimmed "$out")"
+        return 0
+    fi
     STATUS_luna_template="failed"
     if [ -f "$vault/_CLAUDE.md.template-merge" ]; then DETAIL_luna_template="upgrade.sh exited $rc — see docs/luna, resolve any _CLAUDE.md.template-merge conflict"; else DETAIL_luna_template="upgrade.sh exited $rc — ${out%%$'\n'*}"; fi
     return 1
@@ -2164,9 +2172,14 @@ EOF
 # CR fix: only claim Luna files were refreshed when the step actually RAN
 # (updated/up-to-date) — by the time we reach here chain_rc is 0, so
 # STATUS_luna_template is one of updated/up-to-date/skipped (a failure would
-# have exit 1'd above); skipped (vault/upgrade.sh missing, or LUNA_VAULT_PATH
+# have exit 1'd above); needs-reconcile (HIMMEL-3037: withheld local edits, not
+# a failure); skipped (vault/upgrade.sh missing, or LUNA_VAULT_PATH
 # unset) prints nothing, matching the other steps' silence-on-skip.
 case "$STATUS_luna_template" in
+    needs-reconcile)
+        echo "    - the luna template step withheld local edits in the vault (see the"
+        echo "      luna_template row above) — reconcile them, then re-run to stamp it."
+        ;;
     updated)
         echo "    - the luna template step refreshed template-owned vault files —"
         echo "      journal/notes/clips are never touched."

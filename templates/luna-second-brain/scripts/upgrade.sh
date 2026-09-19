@@ -35,6 +35,12 @@
 #                       from the install get written (skip-if-present); the
 #                       flag never removes it either.
 #
+# Exit codes: 0 applied / already current / dry-run / aborted at the prompt;
+# 1 partial (a write or snapshot failure, or a _CLAUDE.md conflict/error —
+# stamp NOT written); 2 env/usage error; 3 NEEDS-RECONCILE (HIMMEL-3037): the
+# only non-success is withheld local edits, no write failed — stamp NOT written,
+# last stdout line is "upgrade: NEEDS-RECONCILE — …".
+#
 # Version source = the template's marketplace/.claude-plugin/marketplace.json
 # metadata.version. The vault records its level in .vault-template.json; a
 # missing stamp is treated as 0.0.0 (full pass). The stamp is written LAST so
@@ -1006,7 +1012,7 @@ fi
 # target version — leave the stamp behind so a re-run re-processes (and
 # re-alerts) instead of a "current" stamp silently masking the gap. The stamp
 # is the last write, so an aborted run also re-runs cleanly (idempotent).
-if [ "$WRITE_FAILURES" -gt 0 ] || [ "$n_local_edit" -gt 0 ] || [ "$SNAPSHOT_FAILURES" -gt 0 ] || [ "$CLAUDE_MERGE_RESULT" = "conflict" ] || [ "$CLAUDE_MERGE_RESULT" = "error" ]; then
+if [ "$WRITE_FAILURES" -gt 0 ] || [ "$SNAPSHOT_FAILURES" -gt 0 ] || [ "$CLAUDE_MERGE_RESULT" = "conflict" ] || [ "$CLAUDE_MERGE_RESULT" = "error" ]; then
     echo "" >&2
     echo "upgrade: NOT writing the version stamp — the vault is partially upgraded" >&2
     echo "  (write failures: $WRITE_FAILURES; local edits withheld: $n_local_edit;" >&2
@@ -1014,6 +1020,21 @@ if [ "$WRITE_FAILURES" -gt 0 ] || [ "$n_local_edit" -gt 0 ] || [ "$SNAPSHOT_FAIL
     echo "  _CLAUDE.md: ${CLAUDE_MERGE_RESULT:-ok}). Resolve the issues above and re-run;" >&2
     echo "  template-owned writes are idempotent." >&2
     exit 1
+fi
+
+# HIMMEL-3037: withheld local edits are the ONLY thing left — every write
+# succeeded and _CLAUDE.md merged. That is not a failure, but it is not
+# "upgraded" either: exit a distinct rc 3 (0 would read as applied to every
+# caller) and leave the stamp behind so the vault keeps being offered the
+# upgrade. The marker is the LAST stdout line — himmel-update shows the last
+# line as the status detail — so keep it last.
+if [ "$n_local_edit" -gt 0 ]; then
+    echo "" >&2
+    echo "upgrade: every other template-owned file was updated; the local edits listed above" >&2
+    echo "  were withheld. Take the template copy or keep yours for each (a backup path is" >&2
+    echo "  named above when one was given), then re-run to write the version stamp." >&2
+    echo "upgrade: NEEDS-RECONCILE — $n_local_edit local edit(s) withheld, version stamp NOT written"
+    exit 3
 fi
 
 if ! "$PYTHON" - "$STAMP" "$TEMPLATE_VERSION" "$SNAPSHOT_FILE" <<'PY'
