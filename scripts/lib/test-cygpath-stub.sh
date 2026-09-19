@@ -28,7 +28,7 @@ assert_eq() {
   fi
 }
 
-TMP=$(mktemp -d)
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/cygpath-stub-test.XXXXXX") || { echo "mktemp failed" >&2; exit 1; }
 cygpath_stub_install "$TMP/bin"
 CYG="$TMP/bin/cygpath"
 
