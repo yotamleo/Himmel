@@ -2025,12 +2025,32 @@ else
 fi
 
 # 23e: every quarantined templates/marketplace suite is a visible [SKIP] whose
-# reason names a ticket — never a silent drop (HIMMEL-3193 plan (b)).
+# reason names a ticket — never a silent drop (HIMMEL-3193 plan (b)). Zero
+# quarantined suites is valid: HIMMEL-3196 un-quarantined the last ones, so the
+# check must not assume one exists.
+q23_ok() { [ -z "$1" ] || ! grep -qvE 'HIMMEL-[0-9]+' <<< "$1"; }
 q23=$(grep -E '^\[SKIP\] (marketplace|templates)/' <<< "$o23")
-if [ -n "$q23" ] && ! grep -qvE 'HIMMEL-[0-9]+' <<< "$q23"; then
-  pass "23e: quarantined marketplace/templates suites are [SKIP]s that each name a ticket"
+if q23_ok "$q23"; then
+  pass "23e: quarantined marketplace/templates suites (if any) are [SKIP]s that each name a ticket"
 else
-  fail "23e: expected >=1 marketplace/templates [SKIP] and every reason to name a HIMMEL-N; got: ${q23:-none}"
+  fail "23e: every marketplace/templates [SKIP] must name a HIMMEL-N; got: $q23"
+fi
+# 23e-control: the predicate can fail. A ticketless [SKIP] must be rejected, a
+# ticketed one and an empty set accepted.
+if ! q23_ok $'[SKIP] marketplace/plugins/x/test-a.sh  # no ticket named here'; then
+  pass "23e-control: a marketplace [SKIP] with no ticket is rejected"
+else
+  fail "23e-control: a ticketless marketplace [SKIP] was accepted"
+fi
+if ! q23_ok $'[SKIP] marketplace/plugins/x/test-a.sh  # HIMMEL-1: ok\n[SKIP] templates/y/test-b.sh  # missing'; then
+  pass "23e-control: one ticketless line among ticketed ones is rejected"
+else
+  fail "23e-control: a mixed set with one ticketless [SKIP] was accepted"
+fi
+if q23_ok $'[SKIP] marketplace/plugins/x/test-a.sh  # HIMMEL-1: ok' && q23_ok ""; then
+  pass "23e-control: a ticketed [SKIP] and an empty set are accepted"
+else
+  fail "23e-control: a ticketed [SKIP] or the empty set was rejected"
 fi
 
 # 23f: the workflow wiring. The shards run with root `.`, and the
