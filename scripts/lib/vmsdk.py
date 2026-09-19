@@ -70,15 +70,19 @@ _SCAN_PROFILES = {
 # the home dir from outside the scanned roots), bounded — see the ponytail note in
 # vm-guest-excludes.sh. One POSIX-sh function; the two spellings must stay
 # byte-identical (test_scan_command_parity_with_the_bash_helper).
+_SCAN_SKIPPED_PREFIX = "scan-skipped: "
 _SCAN_SYSTEM_TREES = ("//|/proc/*|/sys/*|/dev/*|/run/*|/usr/*|/bin/*|/sbin/*|/lib/*|"
                       "/lib32/*|/lib64/*|/libx32/*|/etc/*|/boot/*|/snap/*|/var/*")
 _SCAN_FN_HEAD = (
     '_s() ( d=$(cd -P -- "$1" && pwd -P) || exit 1; shift; '
     'for a; do [ "$a" = "$d" ] && exit 0; done; '
-    f'if [ $# -gt 0 ]; then case "$d/" in {_SCAN_SYSTEM_TREES}) exit 0;; esac; fi; '
+    f'if [ $# -gt 0 ]; then case "$d/" in {_SCAN_SYSTEM_TREES}) '
+    'printf "scan-skipped: %s\\n" "$d" >&2; exit 0;; esac; fi; '
     'find -H "$d" -xdev \\( ')
 _SCAN_FN_TAIL = (
     " \\) ! -name '.env.example' ! -type d -print || exit 1; "
+    'find -H "$d" -xdev -type l ! -exec test -d {} \\; -print | '
+    'while IFS= read -r x; do printf "scan-skipped: %s\\n" "$x" >&2; done; '
     'l=$(find -H "$d" -xdev -type l -exec test -d {} \\; -print) || exit 1; '
     '[ -n "$l" ] || exit 0; '
     "printf '%s\\n' \"$l\" | while IFS= read -r x; do "
@@ -357,7 +361,16 @@ class VM:
             raise VMError(
                 f"REFUSING: could not scan {self.name}:{root} for secrets "
                 f"(find rc {rc}): {out.strip()[-200:]}")
-        hits = [ln for ln in out.splitlines() if ln.strip()]
+        lines = [ln for ln in out.splitlines() if ln.strip()]
+        # `scan-skipped:` notes are read-only (a nested link the scan did not
+        # follow); they are never hits, but a skip must not be silent.
+        skipped = [ln for ln in lines if ln.startswith(_SCAN_SKIPPED_PREFIX)]
+        hits = [ln for ln in lines if not ln.startswith(_SCAN_SKIPPED_PREFIX)]
+        if skipped:
+            print(f"{self.name}:{root}: secret scan did not follow {len(skipped)} "
+                  f"nested link(s) (system tree, non-directory or unstat-able "
+                  f"target); first: {skipped[0][len(_SCAN_SKIPPED_PREFIX):]}",
+                  file=sys.stderr)
         if hits:
             raise VMError(
                 f"REFUSING: secret-bearing files on {self.name} under {root}: "

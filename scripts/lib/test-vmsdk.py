@@ -656,6 +656,25 @@ class TestSecretBoundary(unittest.TestCase):
             with self.assertRaises(vmsdk.VMError):
                 vm.assert_guest_clean("~", "env")
 
+    def test_assert_guest_clean_skipped_link_notes_are_visible_not_hits(self):
+        import contextlib
+        import io
+        vm = self._vm()
+        notes = "scan-skipped: /home/u/dangling\nscan-skipped: /home/u/x\n"
+        err = io.StringIO()
+        with mock.patch.object(vm, "run", return_value=(0, notes)), \
+             contextlib.redirect_stderr(err):
+            self.assertIsNone(vm.assert_guest_clean("~", "env"))
+        self.assertIn("did not follow 2 nested link(s)", err.getvalue())
+        self.assertIn("/home/u/dangling", err.getvalue())
+        err = io.StringIO()
+        with mock.patch.object(vm, "run", return_value=(0, notes + "/home/u/.env\n")), \
+             contextlib.redirect_stderr(err):
+            with self.assertRaises(vmsdk.VMError) as cm:
+                vm.assert_guest_clean("~", "env")
+        self.assertIn("/home/u/.env", str(cm.exception))
+        self.assertNotIn("scan-skipped", str(cm.exception))
+
     def test_assert_guest_clean_rejects_unsafe_root(self):
         with self.assertRaises(vmsdk.VMError):
             self._vm().assert_guest_clean("~; rm -rf /", "env")

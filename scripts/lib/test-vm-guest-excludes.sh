@@ -202,6 +202,41 @@ if [ "$(id -u)" -ne 0 ]; then
   else fail_case "T4j unreadable symlink target did not fail closed (rc=$dn_rc): $dn_out"; fi
 else echo "SKIP T4j running as root (chmod 000 does not deny)"; fi
 
+# --- T4k a skipped nested link is VISIBLE (read-only `scan-skipped:` note, counted), never a refusal
+sk_cmd=$(vm_guest_scan_cmd "$FL" env)
+sk_raw=$(sh -c "$sk_cmd" 2>&1 >/dev/null); sk_rc=$?
+sk_std=$(sh -c "$sk_cmd" 2>/dev/null)
+if [ "$sk_rc" -eq 0 ] && [ -z "$sk_std" ] && [ "$(grep -c '^scan-skipped: ' <<< "$sk_raw")" -eq 2 ]; then
+  pass "T4k file and dangling links print one scan-skipped note each on stderr, stdout stays empty"
+else fail_case "T4k skip notes wrong (rc=$sk_rc): std=[$sk_std] err=[$sk_raw]"; fi
+sk_err=$(vm_guest_scan "$FL" env 2>&1 >/dev/null); sk_rc=$?
+if [ "$sk_rc" -eq 0 ] && grep -q 'did not follow 2 nested link(s)' <<< "$sk_err"; then
+  pass "T4k2 vm_guest_scan stays clean and reports the skipped-link count"
+else fail_case "T4k2 skipped-link count not reported (rc=$sk_rc): $sk_err"; fi
+sk_err=$(vm_guest_scan "$BND_R" env 2>&1 >/dev/null)
+if grep -q 'did not follow 3 nested link(s)' <<< "$sk_err"; then
+  pass "T4k3 system-tree links (/usr, /proc, /) are counted as skipped"
+else fail_case "T4k3 system-tree skips not counted: $sk_err"; fi
+SKH="$WORK/skip-hit"; mkdir -p "$SKH"; : > "$SKH/.env"; ln -s "$WORK/no-such-target" "$SKH/dangling"
+sk_out=$(vm_guest_scan "$SKH" env 2>/dev/null); sk_rc=$?
+if [ "$sk_rc" -eq 1 ] && [ "$sk_out" = "$(cd -P "$SKH" && pwd -P)/.env" ]; then
+  pass "T4k4 a real hit still refuses beside skip notes, and the notes are not hits"
+else fail_case "T4k4 hit beside skip notes wrong (rc=$sk_rc): $sk_out"; fi
+if vm_guest_assert_clean local_runner_early "$FL" env >/dev/null 2>&1; then
+  pass "T4k5 assert_clean is not refused by skip notes alone"
+else fail_case "T4k5 assert_clean refused a tree with only skipped links"; fi
+
+# --- T4l (HIMMEL-3238 limit) a link behind an UNSEARCHABLE ancestor is indistinguishable from a dangling one:
+# skipped, not failed closed -- but VISIBLE as a scan-skipped note, never silently clean
+UNS="$WORK/unsearchable"; UNL="$WORK/unsearch-root"; mkdir -p "$UNS/inner" "$UNL"; : > "$UNS/inner/.env"
+ln -s "$UNS/inner" "$UNL/behind"; chmod 000 "$UNS"
+un_raw=$(sh -c "$(vm_guest_scan_cmd "$UNL" env)" 2>&1); un_rc=$?
+un_err=$(vm_guest_scan "$UNL" env 2>&1 >/dev/null)
+chmod 755 "$UNS"
+if [ "$un_rc" -eq 0 ] && grep -q '^scan-skipped: .*/behind$' <<< "$un_raw" && grep -q 'did not follow 1 nested link(s)' <<< "$un_err"; then
+  pass "T4l link behind an unsearchable ancestor is skipped VISIBLY (scan-skipped note + count), not silently clean"
+else fail_case "T4l unsearchable-ancestor link not surfaced (rc=$un_rc): raw=[$un_raw] err=[$un_err]"; fi
+
 # --- T5 fail closed: missing root, unsafe root text, unknown profile
 if ! vm_guest_scan "$WORK/does-not-exist" env >/dev/null 2>&1; then
   pass "T5 scan of a missing root fails closed"
