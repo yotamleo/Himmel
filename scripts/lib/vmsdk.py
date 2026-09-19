@@ -68,7 +68,9 @@ def secret_scan_cmd(root, profile="full"):
         raise VMError(f"unknown secret-scan profile {profile!r} (full|env)")
     names = " -o ".join(f"-name '{g}'" for g in _SCAN_PROFILES[profile])
     # ! -type d: a directory named .env is a virtualenv convention, not a secret.
-    return (f"find {root} -xdev \\( {names} \\) "
+    # -H follows a symlinked root; ponytail: -xdev skips nested mounts (see the
+    # matching note in vm-guest-excludes.sh) — scan such a mount as its own root.
+    return (f"find -H {root} -xdev \\( {names} \\) "
             f"! -name '.env.example' ! -type d -print")
 
 

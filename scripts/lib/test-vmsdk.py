@@ -651,6 +651,12 @@ class TestSecretBoundary(unittest.TestCase):
                     self.assertEqual(vmsdk.main(["ubuntu_new", "snapshot", "b"]), 0)
                     snap.assert_called_once_with("b", skip_secret_scan=False)
 
+    def test_scan_follows_a_symlinked_root(self):
+        """find without -H lists only the link itself, so a root that is a
+        symlink to the checkout would scan as clean."""
+        for prof in ("full", "env"):
+            self.assertTrue(vmsdk.secret_scan_cmd("~/x", prof).startswith("find -H "))
+
     def test_scan_command_parity_with_the_bash_helper(self):
         """vmsdk and scripts/lib/vm-guest-excludes.sh are two spellings of one
         boundary; this pins them together so neither drifts alone."""

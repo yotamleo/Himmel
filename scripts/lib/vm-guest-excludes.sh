@@ -74,7 +74,12 @@ vm_guest_scan_cmd() {
     *) echo "vm_guest_scan_cmd: unknown profile '$prof' (full|env)" >&2; return 2 ;;
   esac
   # ! -type d: a directory named .env is a virtualenv convention, not a secret file.
-  printf "find %s -xdev \\( %s \\) ! -name '.env.example' ! -type d -print" "$root" "$globs"
+  # -H: follow the ROOT if it is a symlink (find lists only the link otherwise, so a
+  # root linking to a tree holding a .env would scan clean).
+  # ponytail: -xdev stops at nested filesystems, so a separate mount beneath the root
+  # is NOT scanned; a base image's home has none today, and crossing devices would
+  # walk /proc-style trees. Scan such a mount as its own root if one ever appears.
+  printf "find -H %s -xdev \\( %s \\) ! -name '.env.example' ! -type d -print" "$root" "$globs"
 }
 
 vm_guest_scan() {

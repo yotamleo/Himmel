@@ -114,6 +114,15 @@ else
   fail_case "T4b env profile missed a nested .env"
 fi
 
+# --- T4c a SYMLINKED scan root must be followed (find without -H lists only the link)
+LNK_TGT="$WORK/link-target"; mkdir -p "$LNK_TGT/sub"; echo x > "$LNK_TGT/sub/.env"
+ln -s "$LNK_TGT" "$WORK/link-root"
+if ! vm_guest_scan "$WORK/link-root" env >/dev/null 2>&1; then
+  pass "T4c a symlinked scan root is followed and its .env is flagged"
+else
+  fail_case "T4c a symlinked scan root passed as clean (secret hidden behind the link)"
+fi
+
 # --- T5 fail closed: missing root, unsafe root text, unknown profile
 if ! vm_guest_scan "$WORK/does-not-exist" env >/dev/null 2>&1; then
   pass "T5 scan of a missing root fails closed"
@@ -178,6 +187,8 @@ run_caller() { # $1=script $2=leak-or-empty ; args after: the script's args
 mkdir -p "$WORK/home/.ssh"
 
 rc=$(run_caller scripts/test-install-symmetry-vm.sh "")
+if [ "$rc" -eq 0 ]; then pass "T7g clean symmetry run completes rc=0"
+else fail_case "T7g clean symmetry run failed rc=$rc: $(tail -3 "$WORK/caller.out")"; fi
 if grep -qE '^RSYNC .*--exclude[= ]\.env( |$)' "$WORK/stub.log" \
    && grep -qE '^RSYNC .*--exclude[= ]\*\.local\.json( |$)' "$WORK/stub.log"; then
   pass "T7 test-install-symmetry-vm.sh rsync carries the shared secret excludes"
@@ -205,6 +216,14 @@ fi
 # luna-upgrade: run against the real template dir (it exists in-repo)
 TMPL_ARGS=()
 rc=$(run_caller scripts/test-luna-upgrade-vm.sh "" "${TMPL_ARGS[@]+"${TMPL_ARGS[@]}"}")
+# The stub guest cannot run the upgrade body, so the script ends on its own
+# vacuity floor (rc=1). Reaching that floor proves the run got PAST staging and
+# the clean-guest scan; an early failure or a REFUSING would not print it.
+if grep -q 'assertions ran (floor' "$WORK/caller.out" && ! grep -q 'REFUSING' "$WORK/caller.out"; then
+  pass "T7h clean luna-upgrade run passes staging + scan (ends only on the stub guest's vacuity floor)"
+else
+  fail_case "T7h clean luna-upgrade run did not reach the post-stage phase (rc=$rc): $(tail -3 "$WORK/caller.out")"
+fi
 if grep -qE '^RSYNC .*--exclude[= ]\.env( |$)' "$WORK/stub.log"; then
   pass "T7d test-luna-upgrade-vm.sh rsync carries the shared secret excludes"
 else
