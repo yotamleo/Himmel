@@ -642,9 +642,11 @@ echo "== run-node: fallback dirs are APPENDED after the inherited PATH, never pr
 # fallback dirs (/usr/local/bin, /usr/bin, ...) ahead of the inherited PATH, so
 # any binary in those dirs shadowed a wrapper or virtualenv the caller had put
 # EARLIER in PATH. 3073's bug was PATH absent/truncated, not misordered — the
-# fallbacks only need to be REACHABLE, so they go last. The node dir stays
-# first (it is the exact node resolve_node() chose). The fixture uses a
-# symlink-only node dir so "node's own dir" cannot itself carry a stray gh.
+# fallbacks only need to be REACHABLE, so they go last. HIMMEL-3246 applies
+# the same rule to node's OWN dir: it too is appended (before the fallbacks),
+# never prepended — the launcher execs node by absolute path, so nothing needs
+# it first. The fixture uses a symlink-only node dir so "node's own dir" cannot
+# itself carry a stray gh; the shared-dir case below covers that.
 real_node="$(command -v node 2>/dev/null || true)"
 if [ -z "$real_node" ]; then
     echo "  SKIP: no real node on PATH to resolve against"
@@ -676,11 +678,70 @@ EOF
         out="$(cd "$tmp" && env -u CLAUDE_PLUGIN_ROOT PATH="$wrapper_dir:$UTILS_DIR" RESOLVE_NODE_PROBE_DIRS="$node_link_dir" RUN_NODE_EXTRA_PATH_DIRS="$UTILS_DIR:$fallback_dir" NVM_SYMLINK="" RESOLVE_NODE_NVM4W_DIR="" RESOLVE_NODE_NVM_ROOT="$tmp/none" FNM_DIR="$tmp/none" HOME="${HOME:-}" CLAUDE_PROJECT_DIR="$REPO_ROOT" bash --posix -c "$cmd" 2>"$tmp/err.txt")"
         rc=$?
         err="$(cat "$tmp/err.txt")"
-        want="WRAPPER_GH|$node_link_dir:$wrapper_dir:$UTILS_DIR:$fallback_dir"
+        want="WRAPPER_GH|$wrapper_dir:$UTILS_DIR:$node_link_dir:$fallback_dir"
         if [ "$rc" -eq 0 ] && [ "$out" = "$want" ]; then
-            pass "caller-selected wrapper stays ahead of the fallback dirs; fallbacks appended, no duplicate (out='$out')"
+            pass "caller-selected wrapper stays ahead of node's dir and the fallback dirs; both appended, no duplicate (out='$out')"
         else
             fail "path order -> rc=$rc out='$out' err='$err' (want '$want')"
+        fi
+        rm -rf "$tmp"
+    fi
+fi
+
+echo "== run-node: node in a SHARED dir (not on PATH) does not shadow a caller wrapper (HIMMEL-3246) =="
+# HIMMEL-3246 (follow-up of 3096): run-node.sh still PREPENDED the directory of
+# the node resolve_node() chose whenever that dir was not already on the
+# inherited PATH. When node lives in a SHARED dir (/usr/bin, /usr/local/bin) the
+# whole dir landed ahead of a wrapper or virtualenv the caller had put earlier
+# in PATH, so any sibling binary there shadowed it for the hook's node process.
+# The launcher execs node by ABSOLUTE path, so nothing needs the dir first: it
+# is appended for reachability only. The fixture's node dir carries a stray gh
+# beside the node symlink (a shared dir), and is deliberately NOT on the
+# starting PATH.
+if [ -z "$real_node" ]; then
+    echo "  SKIP: no real node on PATH to resolve against"
+else
+    if ! tmp="$(mktemp -d "${TMPDIR:-/tmp}/test-run-node-shared-dir.XXXXXX")" || [ -z "$tmp" ]; then
+        fail "mktemp -d failed for the shared-dir fixture"
+        tmp=""
+    fi
+    if [ -n "$tmp" ]; then
+        PATH_ORDER_TMP="$tmp"
+        hook_dir="$tmp/hooks"; mkdir -p "$hook_dir"
+        shared_dir="$tmp/shared"; mkdir -p "$shared_dir"
+        ln -s "$real_node" "$shared_dir/node"
+        wrapper_dir="$tmp/wrapper"; mkdir -p "$wrapper_dir"
+        printf '#!/bin/sh\necho WRAPPER_GH\n' > "$wrapper_dir/gh"
+        printf '#!/bin/sh\necho SHARED_GH\n' > "$shared_dir/gh"
+        chmod +x "$wrapper_dir/gh" "$shared_dir/gh"
+        cat > "$hook_dir/gh-which-hook.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s|%s' "$(gh)" "$PATH"
+EOF
+        chmod +x "$hook_dir/gh-which-hook.sh"
+
+        # Precondition: shared_dir really is off the starting PATH, and the
+        # fixture's shadowing gh is real — otherwise a WRAPPER_GH result proves
+        # nothing.
+        case ":$wrapper_dir:$UTILS_DIR:" in
+            *":$shared_dir:"*) fail "precondition broken: the shared node dir is already on the starting PATH" ;;
+            *) pass "precondition: the shared node dir is NOT on the starting PATH" ;;
+        esac
+        if [ "$("$shared_dir/gh")" = "SHARED_GH" ]; then
+            pass "precondition: the shared dir carries its own gh (the would-be shadow)"
+        else
+            fail "precondition broken: the shared dir's gh does not run"
+        fi
+
+        cmd="command -p sh \"$REPO_ROOT/scripts/lib/run-node.sh\" \"$REPO_ROOT/scripts/hooks/run-hook-with-bash.js\" \"$hook_dir/gh-which-hook.sh\""
+        out="$(cd "$tmp" && env -u CLAUDE_PLUGIN_ROOT PATH="$wrapper_dir:$UTILS_DIR" RESOLVE_NODE_PROBE_DIRS="$shared_dir" RUN_NODE_EXTRA_PATH_DIRS="" NVM_SYMLINK="" RESOLVE_NODE_NVM4W_DIR="" RESOLVE_NODE_NVM_ROOT="$tmp/none" FNM_DIR="$tmp/none" HOME="${HOME:-}" CLAUDE_PROJECT_DIR="$REPO_ROOT" bash --posix -c "$cmd" 2>"$tmp/err.txt")"
+        rc=$?
+        err="$(cat "$tmp/err.txt")"
+        want="WRAPPER_GH|$wrapper_dir:$UTILS_DIR:$shared_dir"
+        if [ "$rc" -eq 0 ] && [ "$out" = "$want" ]; then
+            pass "wrapper earlier in PATH is NOT shadowed by node's shared dir; dir appended (out='$out')"
+        else
+            fail "shared node dir -> rc=$rc out='$out' err='$err' (want '$want')"
         fi
         rm -rf "$tmp"
     fi

@@ -153,28 +153,34 @@ if [ -n "$_node" ]; then
     # 3073's bug was a PATH that was absent or truncated, not misordered —
     # the fallbacks only have to be REACHABLE. Prepending them let every
     # binary in /usr/bin et al. shadow a wrapper or virtualenv the caller
-    # had deliberately put earlier in PATH. The node dir stays first: it is
-    # the exact node resolve_node() chose, so it is safe — but it is skipped
-    # when already on PATH, since resolve_node() looks on PATH first (a
-    # prepend there would only reorder the caller's own entries) and so an
-    # entry is never duplicated. Each fallback is likewise added only if
-    # absent, and an empty inherited PATH yields no stray empty segment (an
-    # empty segment means "search the cwd", which for a hook is the repo
-    # under review).
+    # had deliberately put earlier in PATH.
+    #
+    # HIMMEL-3246: the node dir is appended too, never prepended. 3096 kept
+    # it first as "the exact node resolve_node() chose", but when node lives
+    # in a SHARED dir (/usr/bin, /usr/local/bin) that is not already on PATH,
+    # prepending the whole dir let every sibling binary shadow a caller's
+    # wrapper exactly as the fallbacks did. The exec below uses $_node by
+    # ABSOLUTE path, so nothing needs the dir first — it only has to be
+    # REACHABLE for a hook's own `command -v node` (3073). It goes ahead of
+    # the fallbacks so the chosen node's dir still outranks them. Trade-off:
+    # a DIFFERENT `node` earlier on the inherited PATH now wins a hook's
+    # child `command -v node`. resolve_node() consults PATH before its
+    # absolute probes, so that is the caller's own node — except the
+    # nvm-windows step-1 node, which resolve_node() prefers over PATH.
+    #
+    # Every entry is added only if absent (never duplicated), and an empty
+    # inherited PATH yields no stray empty segment (an empty segment means
+    # "search the cwd", which for a hook is the repo under review).
     _node_dir="${_node%/*}"
     _extra_dirs="${RUN_NODE_EXTRA_PATH_DIRS-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${HOME:-}/.local/bin}"
-    case ":${PATH:-}:" in
-        *":$_node_dir:"*) ;;
-        *) PATH="$_node_dir${PATH:+:}${PATH:-}" ;;
-    esac
     _old_ifs="$IFS"
     IFS=:
     set -f
-    for _d in $_extra_dirs; do
+    for _d in "$_node_dir" $_extra_dirs; do
         [ -n "$_d" ] || continue
         case ":$PATH:" in
             *":$_d:"*) ;;
-            *) PATH="$PATH:$_d" ;;
+            *) PATH="${PATH:+$PATH:}$_d" ;;
         esac
     done
     set +f
