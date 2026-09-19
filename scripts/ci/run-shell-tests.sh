@@ -2887,6 +2887,20 @@ if [ "$list_only" -eq 0 ]; then
 fi
 
 pass=0 fail=0 skip=0 ran=0
+# HIMMEL-3194: PASSING suites whose output holds a SKIP line. `skip` above is
+# the runner's own filter (SKIP_LIST, --skip-extra, tiers); this is a suite that
+# RAN, exited 0, and told us it skipped something — counted in `pass`, so the
+# two are otherwise indistinguishable. Suite-level, not case-level: a suite
+# that skips three cases counts once, because the log has no case boundary the
+# runner can rely on across ~450 hand-rolled suites.
+skipped_ran=0
+# A SKIP line = optional whitespace, then SKIP followed by a space, a colon or
+# end of line. Anchored at the line start so a suite that merely mentions the
+# word in an assertion message ("not a SKIP: mid-line") does not count. Never a
+# bare count line (" SKIP: 0", a nested runner's own summary echoed by a suite).
+_log_has_skip_line() {
+  awk '/^[ \t]*SKIP([ \t:\r]|$)/ && !/^[ \t]*SKIP:[ \t]*[0-9]+[ \t\r]*$/ { found = 1; exit } END { exit !found }' "$1" 2>/dev/null
+}
 # Counts run-eligible suites (post every skip filter) for the --shard split
 # below; advances for every one of them regardless of which shard claims it
 # (HIMMEL-2872).
@@ -3486,6 +3500,7 @@ while IFS= read -r suite <&3; do
   if [ "$rc" -eq 0 ]; then
     pass=$((pass + 1))
     printf '[PASS] %s (%ss)\n' "$suite" "$dur"
+    _log_has_skip_line "$log" && skipped_ran=$((skipped_ran + 1))
   else
     fail=$((fail + 1))
     # HIMMEL-2233: a suite the watchdog killed for exceeding its cap has NO
@@ -3583,6 +3598,7 @@ if [ "$list_only" -eq 1 ]; then
   exit 0
 fi
 printf ' PASS: %s\n SKIP: %s\n FAIL: %s\n' "$pass" "$skip" "$fail"
+printf ' skipped=%s (suites counted in PASS that printed a SKIP line)\n' "$skipped_ran"
 if [ "$timed_out" -gt 0 ]; then
   printf ' TIMED OUT: %s (counted in FAIL)\n' "$timed_out"
 fi
@@ -3666,7 +3682,7 @@ if [ -n "$report_pr" ]; then
   # SOME scoped run against this head happened to pass. base-status.sh
   # requires this scope to be an ancestor of (or equal to) the fence it is
   # certifying before treating the SUMMARY as covering it.
-  summary_block=$(printf '== Summary ==\n head: %s\n scope: %s\n PASS: %s\n SKIP: %s\n FAIL: %s' "$REPORT_HEAD" "$scan" "$pass" "$skip" "$fail")
+  summary_block=$(printf '== Summary ==\n head: %s\n scope: %s\n PASS: %s\n SKIP: %s\n FAIL: %s\n skipped=%s (suites counted in PASS that printed a SKIP line)' "$REPORT_HEAD" "$scan" "$pass" "$skip" "$fail" "$skipped_ran")
   # $(...) strips the trailing newline each printf above would otherwise
   # end with (HIMMEL-2383 CR finding codex-3, round 4) — without the
   # explicit newline below, an optional TIMED OUT/TRUNCATED line lands
@@ -3814,5 +3830,5 @@ if [ "$ran" -eq 0 ]; then
   printf 'ERROR: no suites ran under scan root "%s" (all discovered suites were skipped) — refusing to report green.\n' "$scan" >&2
   exit 1
 fi
-echo "OK: all $ran run suites passed ($skip skipped)"
+echo "OK: all $ran run suites passed ($skip skipped) skipped=$skipped_ran"
 exit 0

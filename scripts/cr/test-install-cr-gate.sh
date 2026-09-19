@@ -34,7 +34,7 @@ fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1" >&2; }
 # skip <label> -- a case that could not run in this environment. Must NEVER
 # be reported via pass(): a skip credited as a pass hides the fact that
 # nothing was asserted (HIMMEL-2258 audit; HIMMEL-2226 fix).
-skip() { SKIP=$((SKIP + 1)); echo "  SKIP: $1" >&2; }
+skip() { SKIP=$((SKIP + 1)); echo "SKIP $1"; }
 
 is_mingw() {
     case "$(uname -s 2>/dev/null || echo)" in

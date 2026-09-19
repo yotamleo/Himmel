@@ -22,8 +22,8 @@ if [ ! -f "$INVOKE" ]; then
 fi
 
 if ! command -v gemini >/dev/null 2>&1; then
-    echo "SKIP: gemini binary not on PATH — skipping live invoke.sh smoke test." >&2
-    echo "      (Run on a machine with gemini-cli installed + OAuth configured.)" >&2
+    echo "SKIP gemini binary not on PATH — skipping live invoke.sh smoke test."
+    echo "      (Run on a machine with gemini-cli installed + OAuth configured.)"
     exit 0
 fi
 

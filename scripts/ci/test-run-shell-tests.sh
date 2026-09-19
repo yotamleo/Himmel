@@ -2051,4 +2051,84 @@ else
   fail "23f: the ensure-deps step is swallowed (|| true / continue-on-error near line ${dep_ln:-?})"
 fi
 
+# --------------------------------------------------------------------------
+# Case 24 — skipped=<n> (HIMMEL-3194). A suite that prints a SKIP line and
+# exits 0 is a PASS to the runner, so a skipped suite and a real pass were
+# indistinguishable in the CI summary. The runner now counts, per suite (not
+# per case), the PASSING suites whose output holds a SKIP line, and reports
+# skipped=<n> — in the Summary block and on the final OK line. A SKIP line is
+# a line that STARTS with optional whitespace then SKIP (then space, colon or
+# end of line): a suite that merely mentions the word mid-line does not count,
+# and neither does a nested runner's own ` SKIP: 0` count line.
+# --------------------------------------------------------------------------
+echo "== Case 24: skipped=<n> counts passing suites that print a SKIP line =="
+sb24=$(mktemp -d "${TMPDIR:-/tmp}/rst-case24.XXXXXX") || { fail "24: mktemp failed"; sb24=""; }
+if [ -n "$sb24" ]; then
+printf '#!/usr/bin/env bash\nexit 0\n' > "$sb24/test-pass.sh"
+# Mentions SKIP inside non-skip lines: must NOT count.
+cat > "$sb24/test-mention.sh" <<'SHEOF'
+#!/usr/bin/env bash
+echo "ok - the SKIP list is honoured"
+echo "  assertion: no SKIP leaked into the plan"
+echo "not a SKIP: mid-line"
+exit 0
+SHEOF
+# A nested runner's own summary echoed by a suite: ` SKIP: 0` is a count, not a skip.
+cat > "$sb24/test-nested-summary.sh" <<'SHEOF'
+#!/usr/bin/env bash
+printf '== Summary ==\n PASS: 3\n SKIP: 0\n FAIL: 0\n'
+exit 0
+SHEOF
+chmod +x "$sb24"/test-*.sh
+
+# 24a: nothing skips -> skipped=0 is still reported, summary fields unchanged.
+out24a=$(bash "$RUNNER" "$sb24" 2>&1)
+rc24a=$?
+if [ "$rc24a" -eq 0 ] && grepq "$out24a" -F ' PASS: 3' && grepq "$out24a" -F ' SKIP: 0' \
+   && grepq "$out24a" -F ' FAIL: 0' && grepq "$out24a" -F ' skipped=0' \
+   && grepq "$out24a" -F 'OK: all 3 run suites passed (0 skipped) skipped=0'; then
+  pass "24a: mid-line SKIP mentions and a nested ' SKIP: 0' count do not count; skipped=0 reported"
+else
+  fail "24a: expected rc=0, PASS: 3, SKIP: 0, FAIL: 0, skipped=0; rc=$rc24a output: $out24a"
+fi
+
+# 24b: two suites that print a SKIP line (both spellings) and exit 0 -> skipped=2;
+# a FAILING suite that prints SKIP is a FAIL, not a skip, so it is not counted.
+cat > "$sb24/test-skip-colon.sh" <<'SHEOF'
+#!/usr/bin/env bash
+echo "  SKIP: live path not available here"
+exit 0
+SHEOF
+cat > "$sb24/test-skip-space.sh" <<'SHEOF'
+#!/usr/bin/env bash
+echo "SKIP no gemini on PATH" >&2
+exit 0
+SHEOF
+chmod +x "$sb24"/test-*.sh
+out24b=$(bash "$RUNNER" "$sb24" 2>&1)
+rc24b=$?
+if [ "$rc24b" -eq 0 ] && grepq "$out24b" -F ' PASS: 5' && grepq "$out24b" -F ' SKIP: 0' \
+   && grepq "$out24b" -F ' FAIL: 0' && grepq "$out24b" -F ' skipped=2' \
+   && grepq "$out24b" -F 'OK: all 5 run suites passed (0 skipped) skipped=2'; then
+  pass "24b: two passing suites that print SKIP -> skipped=2, still counted in PASS, other fields unchanged"
+else
+  fail "24b: expected rc=0, PASS: 5, SKIP: 0, FAIL: 0, skipped=2; rc=$rc24b output: $out24b"
+fi
+
+cat > "$sb24/test-fail-skip.sh" <<'SHEOF'
+#!/usr/bin/env bash
+echo "SKIP: half the cases"
+exit 1
+SHEOF
+chmod +x "$sb24"/test-*.sh
+out24c=$(bash "$RUNNER" "$sb24" 2>&1)
+rc24c=$?
+if [ "$rc24c" -eq 1 ] && grepq "$out24c" -F ' FAIL: 1' && grepq "$out24c" -F ' skipped=2'; then
+  pass "24c: a failing suite that prints SKIP is a FAIL and is not counted in skipped= (still 2), rc=1"
+else
+  fail "24c: expected rc=1, FAIL: 1, skipped=2; rc=$rc24c output: $out24c"
+fi
+rm -rf "$sb24"
+fi
+
 rst_tally
