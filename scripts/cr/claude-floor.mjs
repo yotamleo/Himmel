@@ -51,6 +51,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 const die = (msg, rc = 1) => { process.stderr.write(`claude-floor: ${msg}\n`); process.exit(rc); };
 const keyDir = () => process.env.CR_FLOOR_KEY_DIR || path.join(os.homedir(), ".himmel", "cr-floor-key");
@@ -67,6 +68,19 @@ const SCHEMA = 2;
 const keyId = (pub) => crypto.createHash("sha256").update(pub.export({ type: "spki", format: "der" })).digest("hex").slice(0, 16);
 const readArtifact = (f) => { try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch (_) { return die(`cannot parse ${f}`); } };
 
+// The one chokepoint every snapshot write goes through: the host path for tree
+// path <name> under <dest>, or null when it could leave <dest>. Refuses (never
+// normalises) any component that is empty, `.` or `..`, or holds a backslash
+// or a colon (Windows splits on `\`, so `..\..\x` — one legal component on
+// POSIX git — climbs out there; `C:x` is drive-relative), on every platform;
+// then requires the resolved path to stay inside <dest>. <p> is path.win32 in
+// the unit test.
+export function snapshotPath(dest, name, p = path) {
+    if (name.split("/").some((c) => c === "" || c === "." || c === ".." || c.includes("\\") || c.includes(":"))) return null;
+    const file = p.resolve(dest, name), rel = p.relative(p.resolve(dest), file);
+    return rel === "" || rel.startsWith("..") || p.isAbsolute(rel) ? null : file;
+}
+
 function snapshot(head, dest) {
     const ls = git(["ls-tree", "-r", "-z", "--full-tree", head]);
     if (ls.status !== 0) die(`git ls-tree ${head} failed: ${ls.stderr}`);
@@ -79,7 +93,10 @@ function snapshot(head, dest) {
         if (!rec) continue;
         const tab = rec.indexOf("\t");
         const [mode, type, sha] = rec.slice(0, tab).split(" ");
-        entries.push({ mode, type, sha, file: path.join(dest, rec.slice(tab + 1)) });
+        const name = rec.slice(tab + 1);
+        const file = snapshotPath(dest, name);
+        if (file === null) die(`${head} has a path that could leave the snapshot: ${JSON.stringify(name)}`);
+        entries.push({ mode, type, sha, file });
     }
     const blobs = entries.filter((e) => e.type === "blob");
     // One `cat-file --batch` stream: raw object bytes, no attribute applied.
@@ -180,8 +197,11 @@ function verify(file) {
     if (!crypto.verify(null, payload(a), pub, Buffer.from(s.sig, "base64"))) die("floor stamp signature does not verify (the artifact was edited after signing, or signed by another key)");
 }
 
+// Run as a CLI only; the unit test imports snapshotPath without dispatching.
+const isCli = (() => { try { return import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href; } catch (_) { return false; } })();
 const [cmd, ...args] = process.argv.slice(2);
-if (cmd === "snapshot" && args.length === 2) snapshot(args[0], args[1]);
+if (!isCli) { /* imported */ }
+else if (cmd === "snapshot" && args.length === 2) snapshot(args[0], args[1]);
 else if (cmd === "sign" && args.length === 2) sign(args[0], args[1]);
 else if (cmd === "verify" && args.length === 1) verify(args[0]);
 else if (cmd === "key-check" && args.length === 0) keyCheck();

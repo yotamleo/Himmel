@@ -323,5 +323,34 @@ chmod 600 "$K/signing.key"
 RC=0; CR_FLOOR_KEY_DIR="$K" node "$FLOOR_MJS" key-check > "$W/out" 2>&1 || RC=$?
 check "23 0600 key -> key-check passes" 0 "$RC"
 
+# 24. A tree path that could leave the snapshot (a backslash `..` climbs out
+# on Windows) is refused on every platform, and nothing is written outside it.
+mk_repo 24
+if ( cd "$R" && b=$(printf 'x' | git hash-object -w --stdin) &&
+     t=$(printf '100644 blob %s\t..\\..\\evil24\n' "$b" | git mktree) &&
+     c=$(git commit-tree -m esc "$t") && git update-ref refs/heads/esc "$c" ) >/dev/null 2>&1; then
+    RC=0; ( cd "$R" && node "$FLOOR_MJS" snapshot esc "$W/snap24/in" ) > "$W/out" 2>&1 || RC=$?
+    check "24 escaping tree path -> snapshot refused" 1 "$RC"
+    has "24 refusal names the escape" "could leave the snapshot" "$W/out"
+else
+    bad "24 could not build the escaping tree"
+fi
+
+# 25. snapshotPath, the one write chokepoint, unit-tested under path.win32 and
+# POSIX: every escaping or ambiguous component is refused, never normalised.
+# shellcheck disable=SC2016 # a JS program, not a shell string
+FLOOR_MJS="$FLOOR_MJS" node --input-type=module -e '
+import path from "node:path";
+const { snapshotPath } = await import(process.env.FLOOR_MJS);
+const refused = ["..\\..\\x", "a\\b", "C:x", "a/C:/x", "../x", "a/../../x", "./x", "a//b", "", "a/."];
+for (const p of [path.win32, path.posix]) for (const n of refused)
+    console.log(`${p === path.win32 ? "win32" : "posix"} ${JSON.stringify(n)} ${snapshotPath(p === path.win32 ? "C:\\snap" : "/snap", n, p) === null ? "refused" : "ALLOWED"}`);
+console.log(`win32 ok ${snapshotPath("C:\\snap", "a/b.txt", path.win32)}`);
+console.log(`posix ok ${snapshotPath("/snap", "a/b.txt", path.posix)}`);
+' > "$W/out25" 2>&1
+check "25 every escaping name refused under win32 and posix" 20 "$(grep -c ' refused$' "$W/out25")"
+check "25 a plain win32 path stays inside" 'win32 ok C:\snap\a\b.txt' "$(grep '^win32 ok' "$W/out25")"
+check "25 a plain posix path stays inside" 'posix ok /snap/a/b.txt' "$(grep '^posix ok' "$W/out25")"
+
 echo "claude-floor-review: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
