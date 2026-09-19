@@ -14,7 +14,7 @@ command -v bun >/dev/null || { echo "SKIP: bun not on PATH"; exit 0; }
 # loudly if that install fails rather than skipping.
 SERVER_DIR="$HERE"
 if [ ! -d "$HERE/node_modules" ]; then
-  SERVER_DIR="$(mktemp -d)"
+  SERVER_DIR="$(mktemp -d "${TMPDIR:-/tmp}/poller-gate-deps.XXXXXX")" || { echo "FAIL: mktemp"; exit 1; }
   trap 'rm -rf "$SERVER_DIR"' EXIT
   cp "$HERE/server.ts" "$HERE/package.json" "$HERE/bun.lock" "$SERVER_DIR/"
   ( cd "$SERVER_DIR" && bun install --frozen-lockfile --no-summary >/dev/null 2>&1 ) \
