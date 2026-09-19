@@ -1121,4 +1121,46 @@ printf 'garbage that must not be run as JS\n' | PATH="$E2/bin:$PATH" CR_LEDGER="
 check "a piped caller stdin is ignored, not run as the program" "$(grep -c '"finding_id":"e-3"' "$E2L")" "1"
 check "no argv-cap error reached the caller" "$(grep -c 'Argument list too long' "$tmp/e2big.err")" "0"
 
+# ── HIMMEL-3207: a scheme word split from its secret by a CR/LF run ─────────
+# The per-character flatten turns `Bearer\r\n<tok>` into `Bearer  <tok>` (TWO
+# spaces); the scrub patterns used to expect exactly one, so the raw token was
+# persisted (the ledger is mirrored into handover notes). The scrub patterns now
+# take `[[:space:]]+` after the scheme word and around the telegram `:` — the
+# flatten sites are untouched, so bytes of every input with no scheme+secret
+# shape are unchanged (controls below).
+CRL="$tmp/crlf.jsonl"; : > "$CRL"
+_c_tok="Zq7Lm3Xv9Pk2Rt5Wy8Bn4Hc6"   # 24 chars, fake
+_c_tg="AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsawX"
+crlf_text(){ L="$CRL" H="$1" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.head===process.env.H);console.log(o.text)'; }
+crlf_detail(){ L="$CRL" H="$1" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.head===process.env.H);console.log(o.detail)'; }
+crlf_add(){ CR_LEDGER="$CRL" bash "$LA" finding --branch b --head "$1" --model m --id "c-$1" --severity imp --file f --line 1 --verdict "" --text "$2"; }
+crlf_add CR1 "leaked Bearer"$'\r\n'"$_c_tok in diff"
+check "argv --text: Bearer<CRLF><tok> is redacted" "$(crlf_text CR1)" "leaked Bearer [REDACTED] in diff"
+crlf_add CR2 "leaked Bearer"$'\n'"$_c_tok in diff"
+check "argv --text: Bearer<LF><tok> is redacted" "$(crlf_text CR2)" "leaked Bearer [REDACTED] in diff"
+crlf_add CR3 "leaked Bearer"$'\r\n\r\n'"$_c_tok in diff"
+check "argv --text: Bearer<CRLF CRLF><tok> is redacted" "$(crlf_text CR3)" "leaked Bearer [REDACTED] in diff"
+crlf_add CR4 "leaked bearer "$'\r\n'" $_c_tok in diff"
+check "argv --text: bearer<sp CRLF sp><tok> is redacted" "$(crlf_text CR4)" "leaked bearer [REDACTED] in diff"
+crlf_add CR5 "bot ${_tg_id}"$'\r\n'":"$'\r\n'"${_c_tg} leaked"
+check "argv --text: telegram id<CRLF>:<CRLF>secret is redacted" "$(crlf_text CR5)" "bot [REDACTED] leaked"
+CR_LEDGER="$CRL" bash "$LA" avail --branch b --head CR6 --model m --status unavailable --reason http-4xx --detail "auth failed Bearer"$'\r\n'"$_c_tok"
+check "argv --detail: Bearer<CRLF><tok> is redacted" "$(crlf_detail CR6)" "auth failed Bearer [REDACTED]"
+CRBH=$(printf '%040d' 3207); CRBF="$tmp/crlf-batch.jsonl"
+CT="$_c_tok" CH="$CRBH" node -e 'const e=process.env;process.stdout.write(JSON.stringify({branch:"b",head:e.CH,model:"codex",id:"cb-1",severity:"imp",file:"f",line:1,verdict:"",text:"leaked Bearer\r\n"+e.CT+" in diff"})+"\n"+JSON.stringify({branch:"b",head:e.CH,model:"codex",id:"cb-2",severity:"imp",file:"f",line:2,verdict:"",text:"leaked Bearer \r\n\r\n "+e.CT+" in diff"})+"\n")' > "$CRBF"
+CR_LEDGER="$CRL" bash "$LA" finding --batch-file "$CRBF"
+check "batch spec.text: Bearer<CRLF><tok> and Bearer<sp CRLF CRLF sp><tok> are redacted" "$(H="$CRBH" L="$CRL" node -e 'const rs=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).filter(r=>r.head===process.env.H);console.log(rs.map(r=>r.text).join("|"))')" "leaked Bearer [REDACTED] in diff|leaked Bearer [REDACTED] in diff"
+# Controls: inputs with NO CR/LF and no scheme+secret shape (and the already-
+# redacted single-space shape) must come out byte-identical to the old scrub.
+crlf_add CR7 "leaked bearer   $_c_tok in diff"
+check "argv --text: bearer<3 spaces, no CR><tok> is redacted (same class: a run of whitespace)" "$(crlf_text CR7)" "leaked bearer [REDACTED] in diff"
+crlf_add CN1 "leaked Bearer $_c_tok in diff"
+check "control: single-space Bearer<tok> still redacted identically" "$(crlf_text CN1)" "leaked Bearer [REDACTED] in diff"
+crlf_add CN2 "a  double  space  claim, Bearer  short"
+check "control: no-CR text with double spaces + a too-short Bearer value is byte-identical" "$(crlf_text CN2)" "a  double  space  claim, Bearer  short"
+crlf_add CN3 "the Bearer authentication scheme and 1234567890: not a token"
+check "control: prose mentioning Bearer / a bare numeric id is byte-identical" "$(crlf_text CN3)" "the Bearer authentication scheme and 1234567890: not a token"
+crlf_add CN4 "a"$'\r\n'"b"$'\n\n'"c"
+check "control: a plain CRLF/LF run still flattens per character (no re-spacing)" "$(crlf_text CN4)" "a  b  c"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }
