@@ -574,20 +574,54 @@ class TestSecretBoundary(unittest.TestCase):
         for g in (".env", ".env.*", "*.local.json", ".git"):
             self.assertIn("--exclude=" + g, toks)
 
-    def test_snapshot_scans_home_and_tmp_staging(self):
-        """The tracked VM scripts stage under /tmp; a home-only scan would
-        snapshot a secret sitting there."""
+    _STAGING = ("/tmp/himmel-symmetry-vm", "/tmp/himmel-luna-upgrade-vm")
+
+    def _snapshot_with(self, present=(), hits=None, tmp_errors=True):
+        """Run vm.snapshot against a fake guest. `present`: staging dirs that
+        exist; `hits`: {root: find output}; `tmp_errors`: a bare /tmp scan fails
+        like find on root-owned 0700 dirs (systemd-private-*)."""
         vm = self._vm()
         cmds = []
+        hits = hits or {}
         def fake_run(cmd, *a, **k):
             cmds.append(cmd)
+            if cmd.startswith("test -d "):
+                return (0, "") if cmd.split()[-1] in present else (1, "")
+            if " /tmp -xdev" in cmd and tmp_errors:
+                return (1, "find: '/tmp/systemd-private-x': Permission denied")
+            for root, out in hits.items():
+                if f" {root} " in cmd:
+                    return (0, out)
             return (0, "")
         with mock.patch.object(vmsdk.vbox, "is_running", return_value=True), \
              mock.patch.object(vm, "run", side_effect=fake_run), \
-             mock.patch.object(vmsdk.vbox, "take_snapshot"):
+             mock.patch.object(vmsdk.vbox, "take_snapshot") as snap:
             vm.snapshot("base")
-        self.assertTrue(any(" ~ " in c or " '~' " in c for c in cmds), cmds)
-        self.assertTrue(any("/tmp" in c for c in cmds), cmds)
+        return cmds, snap
+
+    def test_snapshot_scans_home_and_the_staging_dirs_only(self):
+        """The tracked VM scripts stage under two fixed /tmp dirs; those plus ~
+        are the scan surface. A bare /tmp scan is NOT (unreadable siblings)."""
+        cmds, snap = self._snapshot_with(present=self._STAGING)
+        scans = [c for c in cmds if c.startswith("find ")]
+        self.assertTrue(any(" ~ " in c for c in scans), scans)
+        for d in self._STAGING:
+            self.assertTrue(any(f" {d} " in c for c in scans), (d, scans))
+        self.assertFalse(any(" /tmp -xdev" in c for c in scans), scans)
+        snap.assert_called_once()
+
+    def test_snapshot_ignores_unreadable_tmp_siblings(self):
+        """find on all of /tmp exits non-zero on root-owned 0700 dirs, which
+        refused every clean running guest; absent staging dirs are skipped."""
+        cmds, snap = self._snapshot_with(present=())
+        snap.assert_called_once()
+        self.assertFalse(any(c.startswith("find ") and " /tmp/" in c for c in cmds), cmds)
+
+    def test_snapshot_refuses_a_secret_in_a_staging_dir(self):
+        d = self._STAGING[0]
+        with self.assertRaises(vmsdk.VMError) as cm:
+            self._snapshot_with(present=(d,), hits={d: d + "/scripts/.env\n"})
+        self.assertIn("REFUSING", str(cm.exception))
 
     def test_assert_guest_clean_clean_and_dirty_and_unscannable(self):
         vm = self._vm()

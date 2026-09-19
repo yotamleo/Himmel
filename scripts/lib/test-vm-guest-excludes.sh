@@ -207,10 +207,10 @@ fi
 
 # scp fallback (guest without rsync): must be a filtered tar pipe, not scp -r
 STUB_NO_GUEST_RSYNC=1; rc=$(run_caller scripts/test-install-symmetry-vm.sh ""); STUB_NO_GUEST_RSYNC=
-if ! grep -q '^SCP .* -r ' "$WORK/stub.log" && grep -qE '^SSH .*tar .*-xf -' "$WORK/stub.log"; then
+if [ "$rc" -eq 0 ] && ! grep -q '^SCP .* -r ' "$WORK/stub.log" && grep -qE '^SSH .*tar .*-xf -' "$WORK/stub.log"; then
   pass "T7f no-rsync guest: symmetry script stages via tar pipe, not scp -r"
 else
-  fail_case "T7f no-rsync fallback still unfiltered: $(grep -E '^(SCP|SSH .*tar)' "$WORK/stub.log")"
+  fail_case "T7f no-rsync fallback failed or still unfiltered (rc=$rc): $(grep -E '^(SCP|SSH .*tar)' "$WORK/stub.log")"
 fi
 
 # luna-upgrade: run against the real template dir (it exists in-repo)

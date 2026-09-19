@@ -49,7 +49,13 @@ _REGISTRY = Path(__file__).resolve().parent / "vms.json"
 # step with VM_GUEST_SECRET_GLOBS in scripts/lib/vm-guest-excludes.sh (the
 # parity test in test-vmsdk.py pins them together).
 SECRET_EXCLUDES = (".env", ".env.*", "*.local.json")
-_SNAPSHOT_SCAN_ROOTS = ("~", "/tmp")
+# Snapshot scan surface: the home dir plus the fixed staging dirs the tracked VM
+# scripts use (REMOTE_DIR in test-install-symmetry-vm.sh / test-luna-upgrade-vm.sh).
+# Not all of /tmp: find exits non-zero on root-owned 0700 dirs (systemd-private-*),
+# which would refuse every clean running guest. Coverage limits: see the ponytail
+# note in scripts/lib/vm-guest-excludes.sh.
+_SNAPSHOT_HOME_ROOT = "~"
+_SNAPSHOT_STAGING_ROOTS = ("/tmp/himmel-symmetry-vm", "/tmp/himmel-luna-upgrade-vm")
 _SCAN_PROFILES = {
     # full: a tree staged from the host — nothing in the set may exist there.
     "full": SECRET_EXCLUDES,
@@ -68,8 +74,7 @@ def secret_scan_cmd(root, profile="full"):
         raise VMError(f"unknown secret-scan profile {profile!r} (full|env)")
     names = " -o ".join(f"-name '{g}'" for g in _SCAN_PROFILES[profile])
     # ! -type d: a directory named .env is a virtualenv convention, not a secret.
-    # -H follows a symlinked root; ponytail: -xdev skips nested mounts (see the
-    # matching note in vm-guest-excludes.sh) — scan such a mount as its own root.
+    # -H follows a symlinked root; -xdev limit: see vm-guest-excludes.sh.
     return (f"find -H {root} -xdev \\( {names} \\) "
             f"! -name '.env.example' ! -type d -print")
 
@@ -329,10 +334,13 @@ class VM:
                 "cannot be scanned for host secrets (.env). Bring it up first, "
                 "or pass --no-secret-scan if you verified the image another way.")
         else:
-            # ~ is where a checkout is synced; /tmp is where the tracked VM
-            # scripts stage. Other roots are out of scope for this guard.
-            for root in _SNAPSHOT_SCAN_ROOTS:
-                self.assert_guest_clean(root, "env")
+            self.assert_guest_clean(_SNAPSHOT_HOME_ROOT, "env")
+            for root in _SNAPSHOT_STAGING_ROOTS:
+                # `test -d` rc 1 = nothing staged there. Any other rc (e.g. an
+                # ssh failure) is not "absent" — let the scan itself refuse.
+                rc, _ = self.run(f"test -d {root}")
+                if rc != 1:
+                    self.assert_guest_clean(root, "env")
         vbox.take_snapshot(self.name, name)
 
     def restore(self, name):

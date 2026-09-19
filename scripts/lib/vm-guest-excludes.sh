@@ -42,6 +42,14 @@
 # CLI (untracked builders): vm-guest-excludes.sh excludes tar|rsync
 #                           vm-guest-excludes.sh scan <root> [full|env]
 #
+# ponytail: the snapshot scan (vmsdk.snapshot) covers ONLY the guest home dir and the
+# two fixed staging dirs the tracked scripts use (/tmp/himmel-symmetry-vm,
+# /tmp/himmel-luna-upgrade-vm), and never crosses filesystems (find -xdev, so a
+# separate mount beneath a root is skipped). All of /tmp is not scanned: find exits
+# non-zero on root-owned 0700 dirs (systemd-private-*), refusing every clean guest.
+# The untracked base builder (/tmp/m2457-rebuild.sh) stages wherever it likes and is
+# NOT covered — it must call this CLI itself (operator item, HIMMEL-2540).
+#
 # bash 3.2-safe (sourced by scripts that run on macOS): no mapfile, no assoc arrays.
 
 # Keep in step with SECRET_EXCLUDES in scripts/lib/vmsdk.py (parity-tested).
@@ -76,9 +84,6 @@ vm_guest_scan_cmd() {
   # ! -type d: a directory named .env is a virtualenv convention, not a secret file.
   # -H: follow the ROOT if it is a symlink (find lists only the link otherwise, so a
   # root linking to a tree holding a .env would scan clean).
-  # ponytail: -xdev stops at nested filesystems, so a separate mount beneath the root
-  # is NOT scanned; a base image's home has none today, and crossing devices would
-  # walk /proc-style trees. Scan such a mount as its own root if one ever appears.
   printf "find -H %s -xdev \\( %s \\) ! -name '.env.example' ! -type d -print" "$root" "$globs"
 }
 
