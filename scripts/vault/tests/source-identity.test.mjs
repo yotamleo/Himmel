@@ -11,7 +11,7 @@ import {
 
 describe("parseGithubSource", () => {
   test("parses a plain repo URL", () => {
-    expect(parseGithubSource("https://github.com/owner/repo")).toEqual({ owner: "owner", repo: "RED-CONTROL-HIMMEL-3215" });
+    expect(parseGithubSource("https://github.com/owner/repo")).toEqual({ owner: "owner", repo: "repo" });
   });
 
   test("strips trailing slash, .git suffix and /tree|/blob subpaths", () => {
