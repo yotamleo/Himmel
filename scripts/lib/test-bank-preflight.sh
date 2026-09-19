@@ -504,14 +504,20 @@ stub_status() { # stub_status <name> <body-line...> -> path of an executable stu
 }
 
 S_BOTH="$(stub_status codex-both "printf '%s\n' 'haiku funded measured 5h used=26% free=74%; weekly used=13% free=87%' 'claudex funded measured 5h used=12% free=88%; weekly used=34% free=66% resets=2026-09-20T00:00:00Z'")"
-check "native lane, codex funded -> PROCEED (verdict untouched)" PROCEED "$(native_codex_run "$S_BOTH")"
-check "bank line prints BOTH banks: Claude five_hour/seven_day AND codex=5h12/wk34" \
-  "bank-preflight: leg=testleg five_hour=10 seven_day=20 extra_usage=n/a age=0s codex=5h12/wk34" "$(bank_line | sed 's/age=[0-9]*s/age=0s/')"
+# A funded reading needs the bounded read to run, which needs a timeout binary;
+# on a host without one production prints codex=? (asserted further down).
+if [ -n "$_TIMEOUT_BIN" ]; then
+  check "native lane, codex funded -> PROCEED (verdict untouched)" PROCEED "$(native_codex_run "$S_BOTH")"
+  check "bank line prints BOTH banks: Claude five_hour/seven_day AND codex=5h12/wk34" \
+    "bank-preflight: leg=testleg five_hour=10 seven_day=20 extra_usage=n/a age=0s codex=5h12/wk34" "$(bank_line | sed 's/age=[0-9]*s/age=0s/')"
 
-S_WK="$(stub_status codex-wk "printf '%s\n' 'claudex funded measured weekly used=14% free=86%'")"
-native_codex_run "$S_WK" >/dev/null
-case "$(bank_line)" in *' codex=5h?/wk14') PASS=$((PASS+1)); echo "ok - weekly-only codex reading -> codex=5h?/wk14" ;;
-  *) FAIL=$((FAIL+1)); echo "FAIL - weekly-only codex reading: '$(bank_line)'" ;; esac
+  S_WK="$(stub_status codex-wk "printf '%s\n' 'claudex funded measured weekly used=14% free=86%'")"
+  native_codex_run "$S_WK" >/dev/null
+  case "$(bank_line)" in *' codex=5h?/wk14') PASS=$((PASS+1)); echo "ok - weekly-only codex reading -> codex=5h?/wk14" ;;
+    *) FAIL=$((FAIL+1)); echo "FAIL - weekly-only codex reading: '$(bank_line)'" ;; esac
+else
+  echo "skip - funded codex readings: no timeout binary on this host (codex=? asserted below)"
+fi
 
 # The codex figure DEGRADES: missing / failing / empty / unmeasurable / hung
 # probe -> `codex=?`, and the verdict is exactly what the Claude bank says.
