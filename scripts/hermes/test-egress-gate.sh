@@ -262,27 +262,35 @@ check "snapshot: …and the interpreter never ran" "absent" "$([ -e "$STUB_CAPTU
 check_contains "snapshot: …and the refusal names the change" "changed" "$err"
 
 # B2. a symlink swapped in right before the identity read (after the path was
-# canonicalised): stat does not follow it, but wc/cat do — the gate must refuse it
-# rather than snapshot whatever the link points at under the classified name
+# canonicalised), as the file itself OR as an ANCESTOR directory: stat, wc and cat
+# follow it consistently, so only re-resolving the original argument after the
+# copy shows the path no longer lands where it was classified
 REALSTAT="$(command -v stat)"; STATBIN="$TMP/statbin"; mkdir -p "$STATBIN"
 OTHERFILE="$HO/u/himmel/other.md"; printf 'OTHER-GATED-CORPUS\n' > "$OTHERFILE"
+ALTDIR="$HO/u/alt"; mkdir -p "$ALTDIR"; cp "$OTHERFILE" "$ALTDIR/swap.md"; HDIR="$HO/u/himmel"
 cat > "$STATBIN/stat" <<EOS
 #!/usr/bin/env bash
 if [ ! -e "$TMP/stat.swapped" ]; then
     for a in "\$@"; do
-        [ "\$a" = "$SWAPFILE" ] && { : > "$TMP/stat.swapped"; ln -sf "$OTHERFILE" "$SWAPFILE.lnk" && mv -f "$SWAPFILE.lnk" "$SWAPFILE"; }
+        [ "\$a" = "$SWAPFILE" ] || continue
+        : > "$TMP/stat.swapped"
+        case "\${SWAP_MODE:-file}" in
+            file) ln -sf "$OTHERFILE" "$SWAPFILE.lnk" && mv -f "$SWAPFILE.lnk" "$SWAPFILE" ;;
+            dir)  mv "$HDIR" "$HDIR.orig" && ln -s "$ALTDIR" "$HDIR" ;;
+        esac
     done
 fi
 exec "$REALSTAT" "\$@"
 EOS
 chmod +x "$STATBIN/stat"
-printf 'GATED-CORPUS\n' > "$SWAPFILE"; rm -f "$TMP/stat.swapped"; SNAP2="$TMP/snap2.out"; rm -f "$SNAP2"
-err="$(PATH="$STATBIN:$PATH" bash "$GATE" --prompt-file "$SWAPFILE" --provider openai-codex --snapshot "$SNAP2" 2>&1)"; rc=$?
-check "snapshot: the link swap fired before the identity read (control)" "link" "$([ -L "$SWAPFILE" ] && echo link || echo file)"
-check "snapshot: a symlink swapped in after canonicalisation is refused rc 4" 4 "$rc"
-check "snapshot: …and the link's target bytes are never snapshotted" "clean" "$(grep -q OTHER-GATED "$SNAP2" 2>/dev/null && echo leaked || echo clean)"
-check_contains "snapshot: …and the refusal names the symlink" "symlink" "$err"
-rm -f "$SWAPFILE"
+for mode in file dir; do
+    printf 'GATED-CORPUS\n' > "$SWAPFILE"; rm -f "$TMP/stat.swapped" "$TMP/snap2.out"
+    err="$(SWAP_MODE=$mode PATH="$STATBIN:$PATH" bash "$GATE" --prompt-file "$SWAPFILE" --provider openai-codex --snapshot "$TMP/snap2.out" 2>&1)"; rc=$?
+    check "snapshot: the $mode-symlink swap fired before the identity read (control)" "swapped" "$([ -e "$TMP/stat.swapped" ] && echo swapped || echo not)"
+    check "snapshot: a $mode symlink swapped in after canonicalisation is refused rc 4" 4 "$rc"
+    check_contains "snapshot: …and the refusal says the path no longer resolves" "no longer resolves" "$err"
+    if [ "$mode" = dir ]; then rm -f "$HDIR"; mv "$HDIR.orig" "$HDIR"; else rm -f "$SWAPFILE"; fi
+done
 
 # C. the gate's own --snapshot + the ledger line
 printf 'GATED-CORPUS\n' > "$SWAPFILE"; : > "$HIMMEL_HERMES_EGRESS_LEDGER"; SNAP="$TMP/snap.out"

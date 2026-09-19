@@ -51,9 +51,11 @@
 # ponytail: the snapshot pins the bytes at copy time, not at classification time:
 # a same-inode in-place edit before the copy is not detected (the identity check
 # compares dev:inode:size:mtime, so it catches replacement and size/mtime moves),
-# and a swap landing between _canon and the first identity read is refused only
-# when it leaves a symlink at the path (a shell cannot bind an fd to the
-# classified inode, so a plain-file replacement in that window is not detected).
+# and the original argument is re-resolved after the copy, so a symlink (final
+# component or ancestor) swapped in and still present then is refused. A shell
+# cannot bind an fd to the classified inode: a swap that is undone again before
+# the post-copy checks, or a plain-file replacement landing before the first
+# identity read, is not detected.
 # Classification is by the prompt FILE's path only. A brief handed over
 # as positional text or stdin (or copied out of the vault into /tmp first)
 # carries no path and is NOT recognised as handover-derived; only a
@@ -128,11 +130,16 @@ _ident() {
 # classification and the copy, or an unreadable size all refuse.
 take_snapshot() {
     [ -n "$snapshot" ] || return 0
-    local after ssize
+    local after now ssize
     cat "$pf" > "$snapshot" 2>/dev/null || refuse "cannot copy '$pf' into the prompt snapshot '$snapshot' — refusing rather than dispatching a path that can change under us"
     chmod 600 "$snapshot" 2>/dev/null || refuse "cannot restrict the prompt snapshot '$snapshot' to mode 0600"
     after="$(_ident "$pf")" || refuse "cannot re-stat '$pf' after the snapshot copy — refusing rather than trusting an unverified copy"
     [ "$after" = "$ident" ] || refuse "'$pf' changed between the egress classification and the snapshot copy (identity $ident -> $after) — refusing a swapped prompt file"
+    # The identity above compares the file at $pf with ITSELF, so a symlink (final
+    # component or ancestor) swapped in before the first read would match. Re-resolve
+    # the ORIGINAL argument: it must still land on the path that was classified.
+    now="$(_canon "$prompt_file")" || refuse "cannot re-resolve '$prompt_file' after the snapshot copy — refusing rather than trusting an unverified copy"
+    [ "$now" = "$pf" ] || refuse "'$prompt_file' no longer resolves to the classified path '$pf' (now '$now') — refusing a swapped prompt file"
     ssize="$(wc -c < "$snapshot" 2>/dev/null | tr -d ' ')"
     [ "$ssize" = "$size" ] || refuse "the prompt snapshot holds ${ssize:-?} bytes but '$pf' was classified at $size — refusing a partial or changed copy"
 }
@@ -191,9 +198,6 @@ if [ -n "$handover_root" ] && _under "$lex" "$hr_raw" && ! _under "$pf" "$handov
     refuse "'$prompt_file' sits under the handover root but resolves to '$pf', outside the handover root — refusing a symlink/'..' escape rather than classifying it as un-gated"
 fi
 ident="$(_ident "$pf")" || refuse "cannot stat '$pf' — a snapshot needs the file's identity to detect a swap"
-# _canon resolved every symlink, so a link here means the path was swapped after
-# canonicalisation; stat did not follow it but wc/cat would — refuse it.
-[ ! -L "$pf" ] || refuse "'$pf' became a symlink after it was classified — refusing a swapped prompt file"
 size="$(wc -c < "$pf" 2>/dev/null | tr -d ' ')"
 case "$size" in ''|*[!0-9]*) refuse "cannot read the size of '$pf' — a permitted gated dispatch must record its byte size" ;; esac
 
