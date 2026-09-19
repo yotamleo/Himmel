@@ -226,18 +226,50 @@ if vm_guest_assert_clean local_runner_early "$FL" env >/dev/null 2>&1; then
   pass "T4k5 assert_clean is not refused by skip notes alone"
 else fail_case "T4k5 assert_clean refused a tree with only skipped links"; fi
 
-# --- T4l (HIMMEL-3238 limit) a link behind an UNSEARCHABLE ancestor is indistinguishable from a dangling one:
-# skipped, not failed closed -- but VISIBLE as a scan-skipped note, never silently clean
+# --- T4l (HIMMEL-3238) a link whose target sits behind an UNSEARCHABLE ancestor cannot be
+# inspected: it is reported `scan-unscanned:` and the scan REFUSES (fail closed), while a
+# plain dangling link beside the same fixture still does not refuse (T4l2, the control)
 if [ "$(id -u)" -ne 0 ]; then
   UNS="$WORK/unsearchable"; UNL="$WORK/unsearch-root"; mkdir -p "$UNS/inner" "$UNL"; : > "$UNS/inner/.env"
-  ln -s "$UNS/inner" "$UNL/behind"; chmod 000 "$UNS"
+  ln -s "$UNS/inner" "$UNL/behind"; ln -s "$WORK/no-such-target" "$UNL/dangling"
+  UND="$WORK/dangle-only-root"; mkdir -p "$UND"; ln -s "$WORK/no-such-target" "$UND/dangling"
+  chmod 000 "$UNS"
   un_raw=$(sh -c "$(vm_guest_scan_cmd "$UNL" env)" 2>&1); un_rc=$?
-  un_err=$(vm_guest_scan "$UNL" env 2>&1 >/dev/null)
+  un_err=$(vm_guest_scan "$UNL" env 2>&1 >/dev/null); un_src=$?
+  ud_raw=$(sh -c "$(vm_guest_scan_cmd "$UND" env)" 2>&1); ud_rc=$?
   chmod 755 "$UNS"
-  if [ "$un_rc" -eq 0 ] && grep -q '^scan-skipped: .*/behind$' <<< "$un_raw" && grep -q 'did not follow 1 nested link(s)' <<< "$un_err"; then
-    pass "T4l link behind an unsearchable ancestor is skipped VISIBLY (scan-skipped note + count), not silently clean"
-  else fail_case "T4l unsearchable-ancestor link not surfaced (rc=$un_rc): raw=[$un_raw] err=[$un_err]"; fi
+  if [ "$un_rc" -ne 0 ] && [ "$un_src" -ne 0 ] && grep -q '^scan-unscanned: .*/behind$' <<< "$un_raw" \
+     && grep -q 'failed (find rc' <<< "$un_err"; then
+    pass "T4l link behind an unsearchable ancestor is reported scan-unscanned and REFUSES (rc=$un_rc)"
+  else fail_case "T4l unsearchable-ancestor link not refused (rc=$un_rc/$un_src): raw=[$un_raw] err=[$un_err]"; fi
+  if [ "$ud_rc" -eq 0 ] && grep -q '^scan-skipped: .*/dangling$' <<< "$ud_raw" && ! grep -q 'scan-unscanned' <<< "$ud_raw"; then
+    pass "T4l2 a plain dangling link still does NOT refuse (skip note only)"
+  else fail_case "T4l2 a plain dangling link refused or went unreported (rc=$ud_rc): $ud_raw"; fi
 else echo "SKIP T4l running as root (chmod 000 does not deny)"; fi
+
+# --- T4m (HIMMEL-3239) an inherited CDPATH must not redirect a RELATIVE root: cd would
+# resolve 'a b' through CDPATH and print the dir, so d became two lines (or the wrong dir)
+CDB="$WORK/cdpath/base"; CDO="$WORK/cdpath/other"; mkdir -p "$CDB/a b" "$CDO/a b" "$CDB/c d" "$CDO/c d"
+: > "$CDB/a b/.env"; : > "$CDO/c d/.env"
+cd_hit=$(cd "$CDB" && CDPATH="$CDO" sh -c "$(vm_guest_scan_cmd 'a b' env)" 2>&1); cd_hrc=$?
+cd_cln=$(cd "$CDB" && CDPATH="$CDO" sh -c "$(vm_guest_scan_cmd 'c d' env)" 2>&1); cd_crc=$?
+if [ "$cd_hrc" -eq 0 ] && [ "$cd_hit" = "$(cd -P "$CDB/a b" && pwd -P)/.env" ] && [ "$cd_crc" -eq 0 ] && [ -z "$cd_cln" ]; then
+  pass "T4m a relative root is resolved against the cwd, never through CDPATH"
+else fail_case "T4m CDPATH redirected a relative root: hit(rc=$cd_hrc)=[$cd_hit] clean(rc=$cd_crc)=[$cd_cln]"; fi
+
+# --- T4n (HIMMEL-3239) shared link targets are scanned ONCE: layers k=1..10, each holding
+# two directory links to the next, scanned the innermost layer 2^10 times (a hang)
+LAY="$WORK/layers"; mkdir -p "$LAY/L10"; : > "$LAY/L10/keep.txt"
+for k in 9 8 7 6 5 4 3 2 1 0; do
+  mkdir -p "$LAY/L$k"; ln -s "$LAY/L$((k + 1))" "$LAY/L$k/a"; ln -s "$LAY/L$((k + 1))" "$LAY/L$k/b"
+done
+: > "$WORK/find.log"
+# shellcheck disable=SC2016  # the -c script is meant to expand in the child
+lay_out=$(PATH="$FSTUB:$PATH" FIND_LOG="$WORK/find.log" ${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" -k 5 60} bash -c '. "$1"; vm_guest_scan "$2" env' _ "$LIB" "$LAY/L0" 2>&1); lay_rc=$?
+lay_n=$(grep -c -- "^-H $(cd -P "$LAY/L10" && pwd -P) -xdev ( " "$WORK/find.log")
+if [ "$lay_rc" -eq 0 ] && [ -z "$lay_out" ] && [ "$lay_n" -eq 1 ]; then
+  pass "T4n a 10-layer shared-target fixture scans the innermost layer once (not 2^10)"
+else fail_case "T4n shared targets rescanned: innermost scanned $lay_n time(s) (rc=$lay_rc): $(printf '%s' "$lay_out" | head -3)"; fi
 
 # --- T5 fail closed: missing root, unsafe root text, unknown profile
 if ! vm_guest_scan "$WORK/does-not-exist" env >/dev/null 2>&1; then

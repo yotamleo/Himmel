@@ -74,19 +74,22 @@ _SCAN_SKIPPED_PREFIX = "scan-skipped: "
 _SCAN_SYSTEM_TREES = ("//|/proc/*|/sys/*|/dev/*|/run/*|/usr/*|/bin/*|/sbin/*|/lib/*|"
                       "/lib32/*|/lib64/*|/libx32/*|/etc/*|/boot/*|/snap/*|/var/*")
 _SCAN_FN_HEAD = (
-    '_s() ( d=$(cd -P -- "$1" && pwd -P) || exit 1; shift; '
-    'for a; do [ "$a" = "$d" ] && exit 0; done; '
-    f'if [ $# -gt 0 ]; then case "$d/" in {_SCAN_SYSTEM_TREES}) '
-    'printf "scan-skipped: %s\\n" "$d" >&2; exit 0;; esac; fi; '
+    '_s() ( n=$(printf "\\n_"); n=${n%_}; q="$1$n"; v=$n; r=; '
+    'while [ -n "$q" ]; do x=${q%%"$n"*}; q=${q#*"$n"}; '
+    'd=$(CDPATH= cd -P -- "$x" && pwd -P) || exit 1; '
+    'case "$v" in *"$n$d$n"*) continue;; esac; v="$v$d$n"; '
+    f'if [ -n "$r" ]; then case "$d/" in {_SCAN_SYSTEM_TREES}) '
+    'printf "scan-skipped: %s\\n" "$d" >&2; continue;; esac; fi; r=1; '
     'find -H "$d" -xdev \\( ')
 _SCAN_FN_TAIL = (
     " \\) ! -name '.env.example' ! -type d -print || exit 1; "
-    'find -H "$d" -xdev -type l ! -exec test -d {} \\; -print | '
-    'while IFS= read -r x; do printf "scan-skipped: %s\\n" "$x" >&2; done; '
+    'k=$(find -H "$d" -xdev -type l ! -exec test -d {} \\; -print) || exit 1; '
+    "[ -z \"$k\" ] || printf '%s\\n' \"$k\" | while IFS= read -r y; do "
+    'find -L "$y" -prune >/dev/null 2>&1 || '
+    '{ printf "scan-unscanned: %s\\n" "$y" >&2; exit 1; }; '
+    'printf "scan-skipped: %s\\n" "$y" >&2; done || exit 1; '
     'l=$(find -H "$d" -xdev -type l -exec test -d {} \\; -print) || exit 1; '
-    '[ -n "$l" ] || exit 0; '
-    "printf '%s\\n' \"$l\" | while IFS= read -r x; do "
-    '_s "$x" "$d" "$@" || exit 1; done ); ')
+    '[ -z "$l" ] || q="$q$l$n"; done ); ')
 
 
 def _guest_path(root):
@@ -368,7 +371,7 @@ class VM:
         hits = [ln for ln in lines if not ln.startswith(_SCAN_SKIPPED_PREFIX)]
         if skipped:
             print(f"{self.name}:{root}: secret scan did not follow {len(skipped)} "
-                  f"nested link(s) (system tree, non-directory or unstat-able "
+                  f"nested link(s) (system tree, non-directory or dangling "
                   f"target); first: {skipped[0][len(_SCAN_SKIPPED_PREFIX):]}",
                   file=sys.stderr)
         if hits:

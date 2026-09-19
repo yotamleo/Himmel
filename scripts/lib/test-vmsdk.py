@@ -815,6 +815,68 @@ class TestSecretBoundary(unittest.TestCase):
         self.assertEqual(out, ["--exclude=" + g for g in vmsdk.SECRET_EXCLUDES])
 
 
+class TestScanCommandLocally(unittest.TestCase):
+    """HIMMEL-3239 / HIMMEL-3238: run the generated scan command under a local
+    `sh` against throwaway fixtures (never a VM)."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = Path(tempfile.mkdtemp(prefix="test-vmsdk-scan."))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def _scan(self, root, cwd=None, env=None):
+        import subprocess
+        return subprocess.run(["sh", "-c", vmsdk.secret_scan_cmd(root, "env")],
+                              cwd=cwd, env={**os.environ, **(env or {})},
+                              capture_output=True, text=True, timeout=120)
+
+    def test_relative_root_ignores_an_inherited_cdpath(self):
+        base, other = self.tmp / "base", self.tmp / "other"
+        for p in (base / "a b", other / "a b", base / "c d", other / "c d"):
+            p.mkdir(parents=True)
+        (base / "a b" / ".env").touch()
+        (other / "c d" / ".env").touch()
+        env = {"CDPATH": str(other)}
+        hit = self._scan("a b", cwd=base, env=env)
+        self.assertEqual((hit.returncode, hit.stdout),
+                         (0, str((base / "a b").resolve() / ".env") + "\n"), hit.stderr)
+        clean = self._scan("c d", cwd=base, env=env)
+        self.assertEqual((clean.returncode, clean.stdout), (0, ""), clean.stderr)
+
+    def test_shared_link_targets_are_scanned_once(self):
+        """Layers k=1..10, each with two directory links to the next: the
+        innermost layer was scanned 2^10 times."""
+        lay = self.tmp / "layers"
+        (lay / "L10").mkdir(parents=True)
+        (lay / "L10" / ".env").touch()
+        for k in range(9, -1, -1):
+            (lay / f"L{k}").mkdir()
+            for name in ("a", "b"):
+                (lay / f"L{k}" / name).symlink_to(lay / f"L{k + 1}")
+        r = self._scan(str(lay / "L0"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, str((lay / "L10").resolve() / ".env") + "\n")
+
+    @unittest.skipIf(os.name != "posix" or os.geteuid() == 0, "chmod 000 needs a non-root posix user")
+    def test_link_behind_an_unsearchable_ancestor_refuses_but_dangling_does_not(self):
+        locked, root, dang = self.tmp / "locked", self.tmp / "root", self.tmp / "dang"
+        (locked / "inner").mkdir(parents=True)
+        (locked / "inner" / ".env").touch()
+        root.mkdir()
+        dang.mkdir()
+        (root / "behind").symlink_to(locked / "inner")
+        (dang / "dangling").symlink_to(self.tmp / "no-such-target")
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o755)
+        r = self._scan(str(root))
+        self.assertNotEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"scan-unscanned: {root.resolve()}/behind", r.stderr)
+        d = self._scan(str(dang))
+        self.assertEqual((d.returncode, d.stdout), (0, ""), d.stderr)
+        self.assertIn(vmsdk._SCAN_SKIPPED_PREFIX, d.stderr)
+        self.assertNotIn("scan-unscanned", d.stderr)
+
+
 class TestInstallPlugin(unittest.TestCase):
     def _vm(self):
         with mock.patch.dict(os.environ,

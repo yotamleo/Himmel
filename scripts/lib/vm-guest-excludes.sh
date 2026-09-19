@@ -50,17 +50,20 @@
 # separate mount beneath a root is skipped). All of /tmp is not scanned: find exits
 # non-zero on root-owned 0700 dirs (systemd-private-*), refusing every clean guest.
 # Nested DIRECTORY symlinks are followed (HIMMEL-3236), one resolved target at a time
-# and each with its own `find -xdev`, bounded: a target already on the chain (loop) is
-# skipped, and so is one that resolves into a system tree (/ /proc /sys /dev /run /usr
-# /bin /sbin /lib* /etc /boot /snap /var) — those never receive a host checkout and hold
+# and each with its own `find -xdev`, bounded: every resolved target is scanned at most
+# ONCE per scan (a whole-scan visited set, HIMMEL-3239 — a loop or a target shared by
+# many links is not rescanned, so layered sharing stays linear), and a target that
+# resolves into a system tree (/ /proc /sys /dev /run /usr /bin /sbin /lib* /etc /boot
+# /snap /var) is skipped — those never receive a host checkout and hold
 # root-owned 0700 dirs that would refuse every guest. A secret planted under a system
 # tree is therefore NOT covered. A directory target that stat's but cannot be entered
-# fails closed; a link whose target cannot be stat'ed (EACCES behind an unsearchable
-# ancestor) is indistinguishable in POSIX sh from a dangling link and is SKIPPED, not
-# failed closed (HIMMEL-3238). Every link left UNSCANNED (file, dangling, system-tree or
-# unstat-able target) is reported as a read-only `scan-skipped:` line and counted by the
-# consumers (never a refusal); a loop skip is NOT reported, its target is an ancestor
-# already on the scan chain and so is being scanned. Consumers filter
+# fails closed. A non-directory link is probed with `find -L <link> -prune`, which exits 0
+# for a dangling (ENOENT) link or a stat-able target and non-zero when the target cannot
+# be stat'ed (EACCES behind an unsearchable ancestor, but also a link loop or ENOTDIR):
+# such a link is reported `scan-unscanned:` and the scan REFUSES (HIMMEL-3238). Every
+# other link left unscanned (file, dangling or system-tree target) is reported as a
+# read-only `scan-skipped:` line and counted by the consumers (never a refusal); an
+# already-visited target is NOT reported, it is being scanned. Consumers filter
 # that prefix out of the hit list; find prints absolute paths, so a real hit cannot start
 # with it unless a directory name embeds a newline followed by the prefix (a hostile
 # guest could then hide one hit line — an accepted residual, not a host-secret carrier).
@@ -109,14 +112,16 @@ vm_guest_quote_root() {
 }
 
 # The scan is one POSIX-sh function (HIMMEL-3236): find the secret set under a dir,
-# then recurse into each nested DIRECTORY symlink's resolved target. Bounds: a
-# target already on the chain (loop) or in a system tree is skipped; every target is
-# scanned by its own `find -xdev`; any find/cd failure exits non-zero (fail closed).
+# then queue each nested DIRECTORY symlink's resolved target (a worklist, not
+# recursion). Bounds: a target already visited in this scan (loop or shared) or in a
+# system tree is skipped; every target is scanned by its own `find -xdev`; the root is
+# resolved with CDPATH cleared (HIMMEL-3239); any find/cd failure, or a link whose
+# target cannot be stat'ed, exits non-zero (fail closed).
 # Byte-identical to _SCAN_FN_HEAD/_SCAN_FN_TAIL in vmsdk.py (parity-tested).
 # shellcheck disable=SC2016  # literal guest-shell text: nothing may expand HERE
-VM_GUEST_SCAN_FN_HEAD='_s() ( d=$(cd -P -- "$1" && pwd -P) || exit 1; shift; for a; do [ "$a" = "$d" ] && exit 0; done; if [ $# -gt 0 ]; then case "$d/" in //|/proc/*|/sys/*|/dev/*|/run/*|/usr/*|/bin/*|/sbin/*|/lib/*|/lib32/*|/lib64/*|/libx32/*|/etc/*|/boot/*|/snap/*|/var/*) printf "scan-skipped: %s\n" "$d" >&2; exit 0;; esac; fi; find -H "$d" -xdev \( '
+VM_GUEST_SCAN_FN_HEAD='_s() ( n=$(printf "\n_"); n=${n%_}; q="$1$n"; v=$n; r=; while [ -n "$q" ]; do x=${q%%"$n"*}; q=${q#*"$n"}; d=$(CDPATH= cd -P -- "$x" && pwd -P) || exit 1; case "$v" in *"$n$d$n"*) continue;; esac; v="$v$d$n"; if [ -n "$r" ]; then case "$d/" in //|/proc/*|/sys/*|/dev/*|/run/*|/usr/*|/bin/*|/sbin/*|/lib/*|/lib32/*|/lib64/*|/libx32/*|/etc/*|/boot/*|/snap/*|/var/*) printf "scan-skipped: %s\n" "$d" >&2; continue;; esac; fi; r=1; find -H "$d" -xdev \( '
 # shellcheck disable=SC2016  # literal guest-shell text: nothing may expand HERE
-VM_GUEST_SCAN_FN_TAIL=' \) ! -name '\''.env.example'\'' ! -type d -print || exit 1; find -H "$d" -xdev -type l ! -exec test -d {} \; -print | while IFS= read -r x; do printf "scan-skipped: %s\n" "$x" >&2; done; l=$(find -H "$d" -xdev -type l -exec test -d {} \; -print) || exit 1; [ -n "$l" ] || exit 0; printf '\''%s\n'\'' "$l" | while IFS= read -r x; do _s "$x" "$d" "$@" || exit 1; done ); '
+VM_GUEST_SCAN_FN_TAIL=' \) ! -name '\''.env.example'\'' ! -type d -print || exit 1; k=$(find -H "$d" -xdev -type l ! -exec test -d {} \; -print) || exit 1; [ -z "$k" ] || printf '\''%s\n'\'' "$k" | while IFS= read -r y; do find -L "$y" -prune >/dev/null 2>&1 || { printf "scan-unscanned: %s\n" "$y" >&2; exit 1; }; printf "scan-skipped: %s\n" "$y" >&2; done || exit 1; l=$(find -H "$d" -xdev -type l -exec test -d {} \; -print) || exit 1; [ -z "$l" ] || q="$q$l$n"; done ); '
 
 vm_guest_scan_cmd() {
   local root="$1" prof="${2:-full}" globs q
@@ -141,7 +146,7 @@ vm_guest_scan_hits() {
   local root="$1" out="$2" skipped
   skipped=$(printf '%s\n' "$out" | grep -c '^scan-skipped: ') || true
   if [ "${skipped:-0}" -gt 0 ]; then
-    echo "vm_guest_scan: $root: secret scan did not follow $skipped nested link(s) (system tree, non-directory or unstat-able target)" >&2
+    echo "vm_guest_scan: $root: secret scan did not follow $skipped nested link(s) (system tree, non-directory or dangling target)" >&2
   fi
   printf '%s\n' "$out" | grep -v -e '^scan-skipped: ' -e '^$' || true
 }
