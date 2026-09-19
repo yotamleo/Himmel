@@ -126,9 +126,7 @@ case "\${OXLINT_STUB_MODE:-clean}" in
 esac
 EOF
     chmod +x "$dir/bin/bunx"
-    # Physical path: the gate reports `pwd -P`, and on macOS $TMPDIR (/var/...)
-    # is a symlink to /private/var/..., so the raw mktemp path never matches.
-    (cd "$dir" && pwd -P)
+    printf '%s' "$dir"
 }
 
 run_stub_case() {
