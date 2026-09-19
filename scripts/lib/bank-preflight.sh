@@ -211,9 +211,13 @@ _fleet_admit_hook() { # _fleet_admit_hook <point> <path>
 # >=3 actors racing one CRASHED gate, a slow breaker's rename can displace a
 # faster breaker's fresh gate, and the create-based restore is best-effort — so
 # two gate holders can briefly coexist (only ever for one gate-hold's few
-# milliseconds, and only after a gate holder died mid-hold). No CAS primitive
+# milliseconds, and only after a gate holder died mid-hold). The same
+# age-lease has NO fencing for a live holder PAUSED past the age (SIGSTOP, VM
+# suspend) between its stamp check and its rename: it can resume after the gate
+# was broken and rename a successor's admit away. No CAS primitive
 # (link/renameat2) is portable across bash 3.2 / macOS / Git-Bash; the
-# defence-in-depth restore in the steal keeps a displaced live claim alive.
+# defence-in-depth restore in the steal keeps a displaced live claim alive, but
+# `.admit` is absent for that instant (HIMMEL-3210 tracks both residuals).
 _fleet_gate_take() {
   local gate="$1" held_at victim seen
   if ! mkdir "$gate" 2>/dev/null; then
