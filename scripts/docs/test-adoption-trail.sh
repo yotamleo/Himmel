@@ -80,6 +80,21 @@ n_cad="$(jq '.cadences | length' "$REGISTRY")"
 chip_n="$(grep -o -E 'Cadences \([0-9]+' "$PAGE" | grep -o -E '[0-9]+' | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [ "$chip_n" = "$n_cad" ]; then ok "cadence count on the page ($chip_n) = registry rows ($n_cad)"; else bad "cadence count on the page is '$chip_n', registry has $n_cad"; fi
 
+# The prose spells the count out ("eight cadences", "eight rows"): derive the
+# word from the registry too, so every count the page displays is checked.
+case "$n_cad" in
+  1) n_word=one ;; 2) n_word=two ;; 3) n_word=three ;; 4) n_word=four ;; 5) n_word=five ;;
+  6) n_word=six ;; 7) n_word=seven ;; 8) n_word=eight ;; 9) n_word=nine ;; 10) n_word=ten ;;
+  11) n_word=eleven ;; 12) n_word=twelve ;; *) n_word="" ;;
+esac
+if [ -z "$n_word" ]; then
+  bad "registry has $n_cad cadences; extend the number-word table in this suite"
+elif grep -q -F "pick which of the $n_word <b>cadences</b>" "$PAGE" && grep -q -F "— $n_word rows:" "$PAGE"; then
+  ok "spelled-out cadence counts on the page ($n_word) = registry rows ($n_cad)"
+else
+  bad "the page's prose cadence counts ('pick which of the N cadences', 'N rows:') must read '$n_word' (registry has $n_cad)"
+fi
+
 missing=""
 for id in $(jq -r '.cadences[].id' "$REGISTRY"); do
   grep -q -E "<b>$id</b>" "$PAGE" || missing="$missing $id"
