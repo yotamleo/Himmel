@@ -329,6 +329,89 @@ CYGSTUB
         ;;
 esac
 
+# 15. Killing quiet-run.sh must reap the command it wraps, grandchildren
+# included - a TERM/INT/HUP to the wrapper used to leave the whole suite
+# running with no owning session (HIMMEL-2221). The wrapped command spawns a
+# long sleep and records its pid; after the signal that pid must be gone.
+for SIG in TERM INT HUP; do
+    PIDFILE="$SCRATCH/reap-$SIG.pid"
+    rm -f "$PIDFILE"
+    # A non-interactive `&` starts its child with INT ignored (and an ignored
+    # signal cannot be trapped); job control gives it the default disposition.
+    set -m
+    (
+        TMPDIR="$SCRATCH" exec bash "$QUIET_RUN" reap-$SIG -- \
+            bash -c 'sleep 300 & echo $! > "$1"; wait' _ "$PIDFILE" >/dev/null 2>&1
+    ) &
+    QR_PID=$!
+    set +m
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+        [ -s "$PIDFILE" ] && break
+        sleep 0.25
+    done
+    GRANDCHILD=$(cat "$PIDFILE" 2>/dev/null)
+    if [ -z "$GRANDCHILD" ]; then
+        echo "FAIL reap $SIG - wrapped command never recorded its grandchild pid"
+        FAILED=$((FAILED + 1))
+        kill -KILL "$QR_PID" 2>/dev/null
+        continue
+    fi
+    kill -"$SIG" "$QR_PID" 2>/dev/null
+    # Bounded: an unreaped wrapper (the pre-fix shape) sits out its child.
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+        kill -0 "$QR_PID" 2>/dev/null || break
+        sleep 0.25
+    done
+    kill -KILL "$QR_PID" 2>/dev/null
+    wait "$QR_PID" 2>/dev/null
+    GONE=0
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+        if ! kill -0 "$GRANDCHILD" 2>/dev/null; then GONE=1; break; fi
+        sleep 0.25
+    done
+    if [ "$GONE" -eq 1 ]; then
+        echo "PASS reap $SIG - grandchild $GRANDCHILD gone after the wrapper was signalled"
+    else
+        echo "FAIL reap $SIG - grandchild $GRANDCHILD still running after the wrapper was signalled"
+        FAILED=$((FAILED + 1))
+        kill -KILL "$GRANDCHILD" 2>/dev/null
+    fi
+done
+
+# 16. Running the command as its own process group must not cost it stdin: a
+# suite that reads stdin still gets the caller's bytes and exits with its own
+# rc. The control is the naive shape (a bare `&` with job control off), which
+# hands the command /dev/null - it must read nothing, proving this case can
+# fail.
+NAIVE="$SCRATCH/quiet-run-naive-bg.sh"
+cat > "$NAIVE" <<'NAIVE_EOF'
+#!/usr/bin/env bash
+shift; shift
+"$@" >"$TMPDIR/naive.log" 2>&1 &
+wait $!
+NAIVE_EOF
+mkdir -p "$SCRATCH/stdin-log"
+printf 'stdin-payload\n' | TMPDIR="$SCRATCH/stdin-log" bash "$NAIVE" x -- bash -c 'cat; exit 3'
+if grep -q 'stdin-payload' "$SCRATCH/stdin-log/naive.log"; then
+    echo "FAIL RED: a bare-& wrapper was expected to lose stdin"
+    FAILED=$((FAILED + 1))
+else
+    echo "PASS RED: a bare-& wrapper loses stdin (control can fail)"
+fi
+OUT=$(printf 'stdin-payload\n' | TMPDIR="$SCRATCH/stdin-log" bash "$QUIET_RUN" stdin -- bash -c 'cat; exit 3' 2>&1)
+RC=$?
+assert_rc "command's own rc survives the process-group wrapper" 3 "$RC"
+LOGFILE=""
+for f in "$SCRATCH"/stdin-log/quiet-run-stdin-*.log; do
+    [ -f "$f" ] && { LOGFILE="$f"; break; }
+done
+if [ -n "$LOGFILE" ] && grep -q 'stdin-payload' "$LOGFILE"; then
+    echo "PASS command reads the caller's stdin through quiet-run"
+else
+    echo "FAIL command did not receive the caller's stdin through quiet-run"
+    FAILED=$((FAILED + 1))
+fi
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "All quiet-run.sh guard cases passed."
