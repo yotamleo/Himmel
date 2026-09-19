@@ -192,10 +192,44 @@ Then walk one real loop: [getting-started.md](../getting-started.md#3-your-first
 | Change scope after the fact | `node scripts/himmelctl/bin.js scope set <project\|user>` |
 | Update the harness | `/himmel-update` (Claude Code's own `autoUpdate` does **not** deliver himmel) |
 | Diagnose a sick install | `/himmel-doctor` (`--fix` repairs the node wiring) |
+| Preview an offboard | `node scripts/himmelctl/bin.js uninstall --dry-run` (or `-n`) |
 | Offboard | `node scripts/himmelctl/bin.js uninstall` |
 
 Detail for all of these: [updating.md](updating.md). Coming from an older
 himmel install rather than a fresh one: [migrating.md](migrating.md).
+
+### Uninstalling
+
+`himmelctl uninstall` is the inverse of install. Preview first — `--dry-run`
+lists every path, plugin, hook and settings key it would touch and changes
+nothing:
+
+```bash
+node scripts/himmelctl/bin.js uninstall --dry-run   # preview; touches nothing
+node scripts/himmelctl/bin.js uninstall             # remove himmel's CODE wiring
+node scripts/himmelctl/bin.js uninstall --purge-state   # ...and your operator STATE too
+```
+
+It splits what himmel installed into two classes, and the default is the
+conservative one:
+
+- **Code** (removed by default): the Claude plugins and marketplaces himmel
+  added, the repo's git hooks, the himmel keys in `~/.claude/settings.json`
+  (hooks and `env`), the `HIMMEL-Resume-*` scheduled jobs, the Telegram bridge
+  process and the himmelctl cache.
+- **State** (kept unless you pass `--purge-state`): your Telegram pairing
+  (`~/.claude/channels/telegram`) and the bridge state directory.
+- **Never touched**: the himmel clone, your `.env`, worktrees, handover state,
+  and any `settings.json` key himmel did not add.
+
+Every change is printed with its exact path and line (`removing hook
+PreToolUse: …`). After the settings step it re-reads the file and prints
+`verified: no himmel hook wired in <file>` — a check of the file, not of a
+return code; if any himmel hook is still wired the run stops with a non-zero
+exit. The full path list lives in
+[`scripts/install/uninstall-manifest.tsv`](../../scripts/install/uninstall-manifest.tsv),
+which the uninstaller reads — `--dry-run` prints it as a `KEEP`/`REMOVE`
+footprint. Flags and exit codes: [updating.md](updating.md#uninstalling--offboarding).
 
 ## Appendix — manual install (recovery only)
 

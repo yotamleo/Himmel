@@ -16,7 +16,7 @@
 // Usage:
 //   node scripts/himmelctl/bin.js --help
 //   node scripts/himmelctl/bin.js install [--dry-run] [--from-profile <path>]
-//   node scripts/himmelctl/bin.js uninstall [--dry-run] [--yes]
+//   node scripts/himmelctl/bin.js uninstall [--dry-run|-n] [--yes] [--purge-state]
 //   uninstall exit codes: 0 = torn down,
 //   2 = refused by the wrapper (non-interactive without --yes) or
 //   incomplete teardown (a required step could not run),
@@ -61,8 +61,13 @@ const USAGE = `usage: himmelctl <command> [options]
 
 commands:
   install                install himmel into this project or your user scope
-  uninstall [--dry-run] [--yes]
+  uninstall [--dry-run|-n] [--yes] [--purge-state]
                           offboard himmel from this machine (thin wrapper)
+                          --dry-run lists every path, plugin, hook and settings
+                          key it would remove and touches nothing;
+                          default removes himmel's CODE only — operator STATE
+                          (telegram pairing, bridge state) is kept unless
+                          --purge-state is passed
                           uninstall exit codes: 0 = torn down,
                           2 = refused (non-interactive without --yes) or
                           incomplete teardown (a required step could not run),
@@ -173,7 +178,10 @@ options:
                           Selected lanes still have to pass their real probes; the
                           allowlist only suppresses non-selected optional lanes.
                           It does NOT install a lane CLI or force a lane present.
-  --dry-run              print the derived plan/actions without executing
+  --dry-run, -n          print the derived plan/actions without executing
+                          (uninstall: runs the executor in dry-run, touching nothing)
+  --purge-state          uninstall: ALSO remove operator state (telegram pairing,
+                          bridge state); without it only himmel's code is removed
   --items <a,b>          status/ensure: scope the run to these item ids (comma list)
   --json                 status/deps status/gaps: emit stable machine-readable JSON instead of text
   --profile <p>          ensure: reconcile the target to this profile first (core|luna|all)
@@ -197,7 +205,7 @@ options:
 // only a genuinely-set option outside the whitelist is).
 const ALLOWED_OPTIONS = {
   install: ['fromProfile', 'defaultScope', 'scope', 'contribute', 'dryRun', 'lanes', 'withCodex', 'withHermes'],
-  uninstall: ['dryRun', 'yes'],
+  uninstall: ['dryRun', 'yes', 'purgeState'],
   update: ['dryRun'],
   status: ['items', 'json'],
   ensure: ['items', 'profile', 'yes', 'dryRun', 'prune'],
@@ -239,6 +247,7 @@ const OPTION_FLAGS = {
   lanes: '--lanes', withCodex: '--with-codex', withHermes: '--with-hermes',
   prune: '--prune',
   preset: '--preset',
+  purgeState: '--purge-state',
 };
 const OPTION_DEFAULTS = {
   fromProfile: null, defaultScope: null, scope: null, contribute: false, dryRun: false, items: null, json: false, profile: null, yes: false,
@@ -246,6 +255,7 @@ const OPTION_DEFAULTS = {
   lanes: null, withCodex: false, withHermes: false,
   prune: false,
   preset: null,
+  purgeState: false,
 };
 
 // Parse the CLI args into a plain object. Unknown args are a hard error (exit
@@ -274,6 +284,7 @@ function parseArgs(argv) {
     withHermes: false, // install: --with-hermes (opt-in lane)
     prune: false,      // ensure: --prune (opt-in — disable/unwire candidates require this; HIMMEL-2349)
     preset: null,      // gaps: --preset <name> (null = default 'operator' reference)
+    purgeState: false, // uninstall: --purge-state (also remove operator state; default keeps it — HIMMEL-3058)
   };
   // CR fix (CodeRabbit round 17, item 4): the last process.exit(2) sites in
   // this parser, converted to the process.exitCode + return pattern the
@@ -500,7 +511,11 @@ function parseArgs(argv) {
         args.withHermes = true;
         break;
       case '--dry-run':
+      case '-n':
         args.dryRun = true;
+        break;
+      case '--purge-state':
+        args.purgeState = true;
         break;
       case '--profile':
         args.profile = argv[++i];
@@ -4245,12 +4260,23 @@ async function cmdInstall(args) {
 
 // Derive { argv } for the uninstall command, honoring the same
 // HIMMELCTL_REPO_ROOT seam as deriveCommand.
-function deriveUninstallCommand() {
+//
+// HIMMEL-3058: --dry-run runs the executor's OWN dry-run (never with --yes, so
+// it can never be mistaken for a wet run) — the executor is what knows every
+// path/hook/settings key, and reading it from one place keeps the preview and
+// the teardown from drifting. --purge-state is the code-vs-state switch; the
+// default (absent) keeps operator state.
+function deriveUninstallCommand(args = {}) {
   const scriptsDir = path.join(repoRoot(), 'scripts');
   if (process.platform === 'win32') {
-    return { argv: [resolvePowershell(), '-ExecutionPolicy', 'Bypass', '-File', path.join(scriptsDir, 'uninstall.ps1'), '-Yes'] };
+    const argv = [resolvePowershell(), '-ExecutionPolicy', 'Bypass', '-File', path.join(scriptsDir, 'uninstall.ps1')];
+    argv.push(args.dryRun ? '-DryRun' : '-Yes');
+    if (args.purgeState) argv.push('-PurgeState');
+    return { argv };
   }
-  return { argv: [resolveBash(), toBashPath(path.join(scriptsDir, 'uninstall.sh')), '--yes'] };
+  const argv = [resolveBash(), toBashPath(path.join(scriptsDir, 'uninstall.sh')), args.dryRun ? '--dry-run' : '--yes'];
+  if (args.purgeState) argv.push('--purge-state');
+  return { argv };
 }
 
 // HIMMEL-755 sub-ticket E (uninstall-completeness, operator LOCKED
@@ -4399,9 +4425,12 @@ function checkUninstallCompleteness(unwireItems) {
 }
 
 async function cmdUninstall(args) {
-  const cmd = deriveUninstallCommand();
+  const cmd = deriveUninstallCommand(args);
   console.log('himmelctl: this will offboard himmel from this machine —');
   console.log('  plugins, scheduled jobs, git hooks, and settings.json wiring.');
+  console.log(args.purgeState
+    ? '  --purge-state: operator state (telegram pairing, bridge state) is REMOVED too.'
+    : '  operator state (telegram pairing, bridge state) is KEPT — pass --purge-state to remove it.');
   console.log(`derived: ${displayCommand(cmd)}`);
 
   // Guard the manifest load: uninstall is the "thin wrapper, always works,
@@ -4421,8 +4450,12 @@ async function cmdUninstall(args) {
     console.error(`himmelctl: WARN: could not read manifest.json (${e.message}) — skipping offboard plan/completeness check`);
   }
 
-  // --dry-run prints the plan and exits WITHOUT asking or executing anything.
-  if (args.dryRun) return 0;
+  // --dry-run asks nothing and removes nothing: it runs the executor in its own
+  // --dry-run, which prints every path/plugin/hook/settings key it WOULD touch
+  // (HIMMEL-3058). No HIMMEL_UNINSTALL_REAL_HOME here — the wet-run fence is
+  // for wet runs; a dry run is never fenced. No completeness check or launcher
+  // removal either: nothing was torn down.
+  if (args.dryRun) return runSpawn(cmd);
 
   // HIMMEL-2755: EOF and an explicit "n" are DIFFERENT facts and a caller that
   // records an offboard must be able to tell them apart. A closed/non-tty

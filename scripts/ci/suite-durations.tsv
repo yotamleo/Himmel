@@ -534,6 +534,7 @@ scripts/test-retitle.sh	0
 scripts/test-sessions-reindex.sh	0
 scripts/test-uninstall-guard.sh	1
 scripts/test-uninstall-plugins.sh	3
+scripts/test-uninstall-ux.sh	1
 scripts/test-uninstall.sh	29
 scripts/test-unlanded-work.sh	1
 scripts/test-user-slug-resolve.sh	1

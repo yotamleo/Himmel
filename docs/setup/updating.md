@@ -364,8 +364,12 @@ node scripts/himmelctl/bin.js uninstall --dry-run    # preview; nothing is execu
 node scripts/himmelctl/bin.js uninstall              # actually offboard
 ```
 
-`himmelctl uninstall --yes` confirms without prompting; `--dry-run` previews
-without changing anything. Exit codes: `0` = torn down (or preview complete),
+`himmelctl uninstall --yes` confirms without prompting; `--dry-run` (`-n`)
+runs the teardown script's own `--dry-run`, so the preview is exactly what a
+real run would do, and changes nothing. By default only himmel's **code**
+wiring is removed and operator **state** (your Telegram pairing + bridge state)
+is kept; `--purge-state` removes that too (`--keep-telegram-state` is the older
+spelling of the default and contradicts `--purge-state`). Exit codes: `0` = torn down (or preview complete),
 `2` = non-interactive refusal without `--yes`, `3` = operator declined;
 otherwise the teardown script's own code is returned. For `uninstall.sh`,
 `2` also means bad usage or an incomplete teardown (any failed step halts
@@ -374,7 +378,8 @@ later steps), and `3` means the live-HOME safety fence refused a wet run.
 Under the hood it derives + confirms, then execs
 [`scripts/uninstall.sh`](../../scripts/uninstall.sh) (`scripts\uninstall.ps1`
 on Windows) — a symmetric eight-step teardown of what `setup.sh`/`adopt` onboard:
-stops the Telegram bridge, removes its pairing + bridge state, deletes the
+stops the Telegram bridge, removes its pairing + bridge state (only with
+`--purge-state`), deletes the
 `HIMMEL-Resume-*` scheduled jobs, uninstalls the installed Claude plugins at
 their own scope, uninstalls the repo's git hooks, unwires the user-scope
 `~/.claude/settings.json` keys himmel added, removes the Claude marketplaces
@@ -387,8 +392,14 @@ individual steps with `--skip-plugins` / `--skip-hooks` / `--skip-tasks` /
 
 ```bash
 bash scripts/uninstall.sh --dry-run    # preview; nothing is executed
-bash scripts/uninstall.sh --yes        # actually offboard
+bash scripts/uninstall.sh --yes        # remove code wiring, keep operator state
+bash scripts/uninstall.sh --yes --purge-state   # ...and remove operator state too
 ```
+
+The paths it acts on are listed in
+[`scripts/install/uninstall-manifest.tsv`](../../scripts/install/uninstall-manifest.tsv)
+(the script reads it); after the settings step it re-reads the file and prints
+`verified: no himmel hook wired in <file>`.
 
 It deliberately leaves the himmel clone, your `.env`, worktrees, handover state
 outside the bridge root, and non-himmel `settings.json` keys untouched. **hermes

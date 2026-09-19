@@ -136,7 +136,7 @@ mk_state() {
 # 1. fail-closed: non-interactive without --yes aborts, removes nothing
 mk_state
 out=$(TELEGRAM_CHANNEL_DIR="$CHANNEL" BRIDGE_ROOT="$BRIDGE" PATH="$HBIN" \
-    bash "$CLI" --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_rc "non-interactive without --yes aborts" 2 "$rc"
 assert_has "abort message names --yes" "non-interactive run without --yes" "$out"
 if [ -f "$CHANNEL/access.json" ] && [ -d "$BRIDGE" ]; then
@@ -152,7 +152,7 @@ assert_rc "unknown flag rejected" 2 "$rc"
 # 3. dry-run: prints actions, removes nothing, needs no confirmation
 mk_state
 out=$(TELEGRAM_CHANNEL_DIR="$CHANNEL" BRIDGE_ROOT="$BRIDGE" PATH="$HBIN" \
-    bash "$CLI" --dry-run --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --dry-run --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_rc "dry-run exits 0" 0 "$rc"
 assert_has "dry-run prints DRY rm for channel dir" "DRY: rm -rf -- $CHANNEL" "$out"
 assert_has "dry-run prints DRY rm for bridge root" "DRY: rm -rf -- $BRIDGE" "$out"
@@ -166,14 +166,14 @@ assert_has "dry-run reports bridge not running" "bridge not running" "$out"
 # 3b. RED 9 (HIMMEL-2754): plugin confirmation names user-scope reach.
 mk_state
 out=$(TELEGRAM_CHANNEL_DIR="$CHANNEL" BRIDGE_ROOT="$BRIDGE" PATH="$HBIN" \
-    bash "$CLI" --dry-run --skip-tasks --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --dry-run --skip-tasks --skip-hooks </dev/null 2>&1); rc=$?
 assert_has "RED 9: banner warns about user-scope reach" \
     "USER-SCOPE: affects every repo on this machine" "$out"
 
 # 4. --yes: removes telegram + bridge state (skips tasks/plugins/hooks)
 mk_state
 out=$(TELEGRAM_CHANNEL_DIR="$CHANNEL" BRIDGE_ROOT="$BRIDGE" PATH="$HBIN" \
-    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_rc "--yes run exits 0" 0 "$rc"
 if [ -e "$CHANNEL" ] || [ -e "$BRIDGE" ]; then
     echo "FAIL --yes run left state behind"
@@ -203,7 +203,7 @@ fi
 #    corollary of making the halt behavior real.
 mk_state
 out=$(TELEGRAM_CHANNEL_DIR="$HOME" BRIDGE_ROOT="$BRIDGE" PATH="$HBIN" \
-    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_rc "HOME-as-target run halts, exits 2" 2 "$rc"
 assert_has "refuses to rm HOME" "refusing to remove suspicious path" "$out"
 assert_not_has "guard refusal not reported as rm failure" "failed to remove" "$out"
@@ -239,7 +239,7 @@ esac
 STUB_EOF
 chmod +x "$STUB_WIN/schtasks"
 out=$(TELEGRAM_CHANNEL_DIR="$CHANNEL" BRIDGE_ROOT="$BRIDGE" PATH="$STUB_WIN:$HBIN" \
-    bash "$CLI" --dry-run --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --dry-run --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_rc "stubbed schtasks dry-run exits 0" 0 "$rc"
 assert_has "path-prefixed task name extracted" "DRY: schtasks /delete /tn HIMMEL-Resume-X /f" "$out"
 assert_has "plain task name extracted" "DRY: schtasks /delete /tn HIMMEL-Resume-Y /f" "$out"
@@ -252,7 +252,7 @@ cat > "$STUB_WIN/schtasks" <<'STUB_EOF'
 exit 1
 STUB_EOF
 out=$(TELEGRAM_CHANNEL_DIR="$CHANNEL" BRIDGE_ROOT="$BRIDGE" PATH="$STUB_WIN:$HBIN" \
-    bash "$CLI" --dry-run --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --dry-run --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_rc "query-failure dry-run halts with rc=2" 2 "$rc"
 assert_has "query failure WARNs" "WARN: schtasks /query failed (rc=1)" "$out"
 assert_not_has "query failure not masked as no-tasks" "no matching scheduled tasks found" "$out"
@@ -276,7 +276,7 @@ exit 0
 STUB_EOF
 chmod +x "$STUB_NIX/atq" "$STUB_NIX/at" "$STUB_NIX/crontab"
 out=$(TELEGRAM_CHANNEL_DIR="$CHANNEL" BRIDGE_ROOT="$BRIDGE" PATH="$STUB_NIX:$HBIN" \
-    bash "$CLI" --dry-run --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --dry-run --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_rc "stubbed at/crontab dry-run exits 0" 0 "$rc"
 assert_has "at job extracted" "DRY: atrm 5" "$out"
 assert_has "crontab strip previewed" "DRY: crontab — strip lines containing HIMMEL-Resume-" "$out"
@@ -287,7 +287,7 @@ cat > "$STUB_NIX/atq" <<'STUB_EOF'
 exit 1
 STUB_EOF
 out=$(TELEGRAM_CHANNEL_DIR="$CHANNEL" BRIDGE_ROOT="$BRIDGE" PATH="$STUB_NIX:$HBIN" \
-    bash "$CLI" --dry-run --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --dry-run --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_rc "atq-failure dry-run halts with rc=2" 2 "$rc"
 assert_has "atq failure WARNs" "WARN: atq failed (rc=1)" "$out"
 
@@ -304,7 +304,7 @@ echo 'crontab: cannot connect to cron daemon' >&2
 exit 2
 STUB_EOF
 out=$(TELEGRAM_CHANNEL_DIR="$CHANNEL" BRIDGE_ROOT="$BRIDGE" PATH="$STUB_NIX:$HBIN" \
-    bash "$CLI" --dry-run --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --dry-run --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_rc "crontab-failure dry-run halts with rc=2" 2 "$rc"
 assert_has "crontab read failure WARNs" "WARN: crontab -l failed (rc=2)" "$out"
 assert_not_has "crontab failure not masked as no-jobs" "no matching scheduled jobs found" "$out"
@@ -318,7 +318,7 @@ echo 'no crontab for fakeuser' >&2
 exit 1
 STUB_EOF
 out=$(TELEGRAM_CHANNEL_DIR="$CHANNEL" BRIDGE_ROOT="$BRIDGE" PATH="$STUB_NIX:$HBIN" \
-    bash "$CLI" --dry-run --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --dry-run --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_rc "no-crontab dry-run exits 0" 0 "$rc"
 assert_not_has "no-crontab signature not WARNed" "WARN: crontab -l failed" "$out"
 assert_has "no-crontab reports no matching jobs" "no matching scheduled jobs found" "$out"
@@ -332,7 +332,7 @@ echo 'crontab: some real error' >&2
 exit 1
 STUB_EOF
 out=$(TELEGRAM_CHANNEL_DIR="$CHANNEL" BRIDGE_ROOT="$BRIDGE" PATH="$STUB_NIX:$HBIN" \
-    bash "$CLI" --dry-run --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --dry-run --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_rc "rc1-real-stderr dry-run halts with rc=2" 2 "$rc"
 assert_has "rc1-real-stderr WARNs" "WARN: crontab -l failed (rc=1)" "$out"
 assert_not_has "rc1-real-stderr not masked as no-jobs" "no matching scheduled jobs found" "$out"
@@ -365,7 +365,7 @@ exit 1
 STUB_EOF
 chmod +x "$STUB_NIX/atq" "$STUB_NIX/crontab"
 out=$(TELEGRAM_CHANNEL_DIR="$CHANNEL" BRIDGE_ROOT="$BRIDGE" PATH="$STUB_NIX:$HBIN" \
-    bash "$CLI" --yes --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_rc "wet crontab rewrite exits 0" 0 "$rc"
 assert_has "wet rewrite reports stripped" "stripped HIMMEL-Resume-* lines from crontab" "$out"
 assert_not_has "wet rewrite does not WARN" "failed to rewrite crontab" "$out"
@@ -401,7 +401,7 @@ exit 1
 STUB_EOF
 chmod +x "$STUB_NIX/crontab"
 out=$(TELEGRAM_CHANNEL_DIR="$CHANNEL" BRIDGE_ROOT="$BRIDGE" PATH="$STUB_NIX:$HBIN" \
-    bash "$CLI" --yes --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_rc "all-matched wet rewrite exits 0" 0 "$rc"
 assert_has "all-matched rewrite reports stripped" "stripped HIMMEL-Resume-* lines from crontab" "$out"
 assert_not_has "all-matched rewrite does not WARN" "failed to rewrite crontab" "$out"
@@ -429,7 +429,7 @@ exit "\${BUN_STUB_RC:-0}"
 STUB_EOF
 chmod +x "$STUB_BUN/bun"
 out=$(TELEGRAM_CHANNEL_DIR="$CHANNEL" BRIDGE_ROOT="$BRIDGE" PATH="$STUB_BUN:$HBIN" \
-    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_rc "bridge-stop run exits 0" 0 "$rc"
 if grep -q "^BRIDGE_ROOT=$BRIDGE$" "$TMP/bun-call.log" 2>/dev/null; then
     echo "PASS BRIDGE_ROOT passed through to supervisor --kill"
@@ -452,7 +452,7 @@ fi
 mk_state
 printf '99999999\n' > "$BRIDGE/supervisor.pid"
 out=$(TELEGRAM_CHANNEL_DIR="$CHANNEL" BRIDGE_ROOT="$BRIDGE" BUN_STUB_RC=2 PATH="$STUB_BUN:$HBIN" \
-    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_rc "kill-failure run halts with rc=2" 2 "$rc"
 assert_has "kill failure WARNs" "supervisor --kill rc=2 — bridge may still be running" "$out"
 assert_has "state removal skipped while bridge may run" "SKIPPED: step 1 could not stop the bridge" "$out"
@@ -471,7 +471,7 @@ fi
 mk_state
 printf '99999999\n' > "$BRIDGE/supervisor.pid"
 out=$(TELEGRAM_CHANNEL_DIR="$CHANNEL" BRIDGE_ROOT="$BRIDGE" PATH="$HBIN" \
-    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_rc "bun-missing run halts with rc=2" 2 "$rc"
 assert_has "bun missing WARNs" "bun is not on PATH" "$out"
 assert_has "bun-missing run skips state removal" "SKIPPED: step 1 could not stop the bridge" "$out"
@@ -512,7 +512,7 @@ JSON
 # 13. [6/8] clears the wiring, preserves non-himmel keys.
 seed_settings
 out=$(TELEGRAM_CHANNEL_DIR="$TMP/none1" BRIDGE_ROOT="$TMP/none1b" PATH="$HBIN" \
-    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_rc "[6/8] run exits 0" 0 "$rc"
 assert_has "[6/8] banner present" "[6/8] Unwiring" "$out"
 assert_rc "statusLine removed"      "null"   "$(jq -r '.statusLine // "null"' "$HIMMEL_USER_SETTINGS")"
@@ -531,7 +531,7 @@ assert_rc "MCP allow preserved"     "mcp__obsidian-vault__obsidian_simple_search
 seed_settings
 before=$(cat "$HIMMEL_USER_SETTINGS")
 out=$(TELEGRAM_CHANNEL_DIR="$TMP/none2" BRIDGE_ROOT="$TMP/none2b" PATH="$HBIN" \
-    bash "$CLI" --yes --skip-settings --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-settings --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_rc "--skip-settings run exits 0" 0 "$rc"
 assert_has "--skip-settings honored" "kept (--skip-settings)" "$out"
 assert_rc "--skip-settings leaves file unchanged" "$before" "$(cat "$HIMMEL_USER_SETTINGS")"
@@ -540,7 +540,7 @@ assert_rc "--skip-settings leaves file unchanged" "$before" "$(cat "$HIMMEL_USER
 seed_settings
 before=$(cat "$HIMMEL_USER_SETTINGS")
 out=$(TELEGRAM_CHANNEL_DIR="$TMP/none3" BRIDGE_ROOT="$TMP/none3b" PATH="$HBIN" \
-    bash "$CLI" --dry-run --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --dry-run --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_rc "dry-run [6/8] exits 0" 0 "$rc"
 assert_has "dry-run prints [6/8] DRY" "DRY: unwire statusLine" "$out"
 assert_rc "dry-run leaves settings unchanged" "$before" "$(cat "$HIMMEL_USER_SETTINGS")"
@@ -563,7 +563,7 @@ jq '.hooks.PreToolUse = [range(0;10) | {matcher:"Bash",hooks:[{type:"command",co
 cp "$PROJECT/.claude/settings.json" "$TMP/project-before.json"
 project_uninstall() {
     (cd "$PROJECT" && TELEGRAM_CHANNEL_DIR="$TMP/none-project" BRIDGE_ROOT="$TMP/none-project-bridge" PATH="$TMP/project-bin:$HBIN" \
-        bash "$CLI" --skip-tasks --skip-plugins --skip-hooks "$@" </dev/null 2>&1)
+        bash "$CLI" --purge-state --skip-tasks --skip-plugins --skip-hooks "$@" </dev/null 2>&1)
 }
 out=$(project_uninstall); rc=$?
 assert_rc "SC6P no consent aborts" 2 "$rc"
@@ -605,6 +605,9 @@ SOURCE_FIXTURE="$TMP/source-checkout"
 mkdir -p "$SOURCE_FIXTURE/scripts" "$SOURCE_FIXTURE/.claude" "$TMP/project-bin"
 cp "$CLI" "$SOURCE_FIXTURE/scripts/uninstall.sh"
 ln -s "$(dirname "$REAL_CLI")/lib" "$SOURCE_FIXTURE/scripts/lib"
+# HIMMEL-3058: the uninstaller READS scripts/install/uninstall-manifest.tsv next
+# to itself and refuses to run without it — a fixture copy needs it too.
+ln -s "$(dirname "$REAL_CLI")/install" "$SOURCE_FIXTURE/scripts/install"
 link_hermetic_tool git "$TMP/project-bin"
 git init -q "$SOURCE_FIXTURE"
 cp "$TMP/project-before.json" "$SOURCE_FIXTURE/.claude/settings.json"
@@ -662,6 +665,8 @@ link_hermetic_tool git "$H_BIN"
 H_CHECKOUT="$TMP/h-checkout"
 mkdir -p "$H_CHECKOUT/scripts"
 cp "$CLI" "$H_CHECKOUT/scripts/uninstall.sh"
+# HIMMEL-3058: the uninstaller reads its manifest from scripts/install/ next to itself.
+ln -s "$(dirname "$CLI")/install" "$H_CHECKOUT/scripts/install"
 git init -q "$H_CHECKOUT"
 H_PROJECT="$TMP/h-project"
 mkdir -p "$H_PROJECT"
@@ -800,7 +805,7 @@ mkdir -p "$H_NONGIT"
 out=$(HOME="$TMP/h-home" PATH="$H_BIN5:$HBIN" \
     TELEGRAM_CHANNEL_DIR="$TMP/h-none-channel5" BRIDGE_ROOT="$TMP/h-none-bridge5" \
     HIMMELCTL_CACHE_DIR="$TMP/h-cache5" HIMMEL_UNINSTALL_REPO_ROOT="$H_NONGIT" \
-    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-settings </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-settings </dev/null 2>&1); rc=$?
 assert_rc "SC6K non-git HOOKS_REPO_ROOT exits 0" 0 "$rc"
 assert_has "SC6K skip line names the non-git work tree" \
     "skipped: $H_NONGIT is not a git work tree — no repo-local hooks to remove (run from the adopted project to remove its hooks)" "$out"
@@ -823,7 +828,7 @@ printf 'gitdir: %s/nonexistent-gitdir\n' "$TMP" > "$H_DUBIOUS/.git"
 out=$(HOME="$TMP/h-home" PATH="$H_BIN5:$HBIN" \
     TELEGRAM_CHANNEL_DIR="$TMP/h-none-channel6" BRIDGE_ROOT="$TMP/h-none-bridge6" \
     HIMMELCTL_CACHE_DIR="$TMP/h-cache6" HIMMEL_UNINSTALL_REPO_ROOT="$H_DUBIOUS" \
-    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-settings </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-settings </dev/null 2>&1); rc=$?
 assert_rc "SC6L dubious-ownership HOOKS_REPO_ROOT exits 2" 2 "$rc"
 assert_has "SC6L error names the hooks-repo git status as unresolved" \
     "could not confirm whether $H_DUBIOUS is a git work tree" "$out"
@@ -846,7 +851,7 @@ printf '#!/bin/sh\n' > "$H_CORRUPT/.git/hooks/pre-commit"
 out=$(HOME="$TMP/h-home" PATH="$H_BIN5:$HBIN" \
     TELEGRAM_CHANNEL_DIR="$TMP/h-none-channel7" BRIDGE_ROOT="$TMP/h-none-bridge7" \
     HIMMELCTL_CACHE_DIR="$TMP/h-cache7" HIMMEL_UNINSTALL_REPO_ROOT="$H_CORRUPT" \
-    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-settings </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-settings </dev/null 2>&1); rc=$?
 assert_rc "SC6M corrupted-.git HOOKS_REPO_ROOT exits 2" 2 "$rc"
 assert_has "SC6M error names the hooks-repo git status as unresolved" \
     "could not confirm whether $H_CORRUPT is a git work tree" "$out"
@@ -868,7 +873,7 @@ printf 'gitdir: %s/nonexistent-gitdir\n' "$TMP" > "$H_SUBDIR_PARENT/.git"
 out=$(HOME="$TMP/h-home" PATH="$H_BIN5:$HBIN" \
     TELEGRAM_CHANNEL_DIR="$TMP/h-none-channel8" BRIDGE_ROOT="$TMP/h-none-bridge8" \
     HIMMELCTL_CACHE_DIR="$TMP/h-cache8" HIMMEL_UNINSTALL_REPO_ROOT="$H_SUBDIR_PARENT/sub/dir" \
-    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-settings </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-settings </dev/null 2>&1); rc=$?
 assert_rc "SC6N dubious-ownership subdirectory HOOKS_REPO_ROOT exits 2" 2 "$rc"
 assert_has "SC6N error names the hooks-repo git status as unresolved" \
     "could not confirm whether $H_SUBDIR_PARENT/sub/dir is a git work tree" "$out"
@@ -890,7 +895,7 @@ printf 'gitdir: %s/nonexistent-gitdir\n' "$TMP" > "$H_RELROOT/.git"
 out=$(cd "$H_RELROOT/mid" && HOME="$TMP/h-home" PATH="$H_BIN5:$HBIN" \
     TELEGRAM_CHANNEL_DIR="$TMP/h-none-channel9" BRIDGE_ROOT="$TMP/h-none-bridge9" \
     HIMMELCTL_CACHE_DIR="$TMP/h-cache9" HIMMEL_UNINSTALL_REPO_ROOT="leaf" \
-    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-settings </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-settings </dev/null 2>&1); rc=$?
 assert_rc "SC6O relative HOOKS_REPO_ROOT exits 2" 2 "$rc"
 assert_has "SC6O error names the hooks-repo git status as unresolved" \
     "could not confirm whether leaf is a git work tree" "$out"
@@ -908,7 +913,7 @@ ln -s "$TMP/nonexistent-target" "$H_DANGLING/.git"
 out=$(HOME="$TMP/h-home" PATH="$H_BIN5:$HBIN" \
     TELEGRAM_CHANNEL_DIR="$TMP/h-none-channel11" BRIDGE_ROOT="$TMP/h-none-bridge11" \
     HIMMELCTL_CACHE_DIR="$TMP/h-cache11" HIMMEL_UNINSTALL_REPO_ROOT="$H_DANGLING" \
-    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-settings </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-settings </dev/null 2>&1); rc=$?
 assert_rc "SC6Q dangling .git symlink exits 2" 2 "$rc"
 assert_has "SC6Q error names the dangling symlink" \
     "dangling .git symlink" "$out"
@@ -934,7 +939,7 @@ else
     out=$(HOME="$TMP/h-home" PATH="$H_BIN5:$HBIN" \
         TELEGRAM_CHANNEL_DIR="$TMP/h-none-channel12" BRIDGE_ROOT="$TMP/h-none-bridge12" \
         HIMMELCTL_CACHE_DIR="$TMP/h-cache12" HIMMEL_UNINSTALL_REPO_ROOT="$H_UNREAD_ROOT/blocked/leaf" \
-        bash "$CLI" --yes --skip-tasks --skip-plugins --skip-settings </dev/null 2>&1); rc=$?
+        bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-settings </dev/null 2>&1); rc=$?
     chmod 0755 "$H_UNREAD_ROOT/blocked"
     assert_rc "SC6R inaccessible ancestor exits 2" 2 "$rc"
     assert_has "SC6R error names the inaccessible ancestor" \
@@ -981,7 +986,7 @@ mkdir -p "$EMPTY_HOME"
 out=$(HOME="$FAKE_HOME" PATH="$HBIN" \
     TELEGRAM_CHANNEL_DIR="$TMP/none7" BRIDGE_ROOT="$TMP/none7b" \
     HIMMELCTL_CACHE_DIR="$TMP/none7c" \
-    bash "$CLI" --dry-run --skip-tasks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --dry-run --skip-tasks </dev/null 2>&1); rc=$?
 assert_rc "off-PATH tools resolved: exits 0" 0 "$rc"
 assert_not_has "claude not reported missing" "claude CLI not on PATH" "$out"
 assert_not_has "pre-commit not reported missing" "pre-commit not on PATH" "$out"
@@ -995,7 +1000,7 @@ assert_has "completion reported when nothing was skipped" "Uninstall complete." 
 out=$(HOME="$EMPTY_HOME" PATH="$HBIN" \
     TELEGRAM_CHANNEL_DIR="$TMP/none8" BRIDGE_ROOT="$TMP/none8b" \
     HIMMELCTL_CACHE_DIR="$TMP/none8c" \
-    bash "$CLI" --dry-run --skip-tasks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --dry-run --skip-tasks </dev/null 2>&1); rc=$?
 assert_rc "unresolvable tools exit 2" 2 "$rc"
 assert_not_has "no false completion claim" "Uninstall complete." "$out"
 assert_has "incomplete verdict named" "Uninstall INCOMPLETE" "$out"
@@ -1009,7 +1014,7 @@ assert_has "a known install location is named" ".local/bin/claude" "$out"
 out=$(HOME="$EMPTY_HOME" PATH="$HBIN" \
     TELEGRAM_CHANNEL_DIR="$TMP/none9" BRIDGE_ROOT="$TMP/none9b" \
     HIMMELCTL_CACHE_DIR="$TMP/none9c" \
-    bash "$CLI" --dry-run --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --dry-run --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_rc "explicit --skip-plugins/--skip-hooks exits 0" 0 "$rc"
 assert_has "explicit skip still completes" "Uninstall complete." "$out"
 
@@ -1027,7 +1032,7 @@ chmod +x "$FAILHOME/.local/bin/claude"
 out=$(HOME="$FAILHOME" PATH="$HBIN" \
     TELEGRAM_CHANNEL_DIR="$TMP/none10" BRIDGE_ROOT="$TMP/none10b" \
     HIMMELCTL_CACHE_DIR="$TMP/none10c" \
-    bash "$CLI" --yes --skip-tasks --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
 assert_rc "failing claude stub exits 2" 2 "$rc"
 assert_not_has "no false completion claim (failing plugins)" "Uninstall complete." "$out"
 assert_has "incomplete verdict named (failing plugins)" "Uninstall INCOMPLETE" "$out"
@@ -1044,7 +1049,7 @@ chmod +x "$FAILHOME2/.local/bin/pre-commit"
 out=$(HOME="$FAILHOME2" PATH="$HBIN" \
     TELEGRAM_CHANNEL_DIR="$TMP/none11" BRIDGE_ROOT="$TMP/none11b" \
     HIMMELCTL_CACHE_DIR="$TMP/none11c" \
-    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-settings </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-settings </dev/null 2>&1); rc=$?
 assert_rc "failing pre-commit stub exits 2" 2 "$rc"
 assert_not_has "no false completion claim (failing hooks)" "Uninstall complete." "$out"
 assert_has "incomplete verdict named (failing hooks)" "Uninstall INCOMPLETE" "$out"
@@ -1067,7 +1072,7 @@ mk_cache() {
 mk_cache
 out=$(TELEGRAM_CHANNEL_DIR="$TMP/none10" BRIDGE_ROOT="$TMP/none10b" \
     HIMMELCTL_CACHE_DIR="$CACHE" PATH="$HBIN" \
-    bash "$CLI" --dry-run --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --dry-run --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_rc "cache dry-run exits 0" 0 "$rc"
 assert_has "dry-run previews the cache removal" "DRY: rm -rf -- $CACHE" "$out"
 assert_has "dry-run names the install profile" "install-profile.json" "$out"
@@ -1081,7 +1086,7 @@ fi
 mk_cache
 out=$(TELEGRAM_CHANNEL_DIR="$TMP/none11" BRIDGE_ROOT="$TMP/none11b" \
     HIMMELCTL_CACHE_DIR="$CACHE" PATH="$HBIN" \
-    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_rc "cache removal run exits 0" 0 "$rc"
 assert_has "cache removal reported" "removed: $CACHE" "$out"
 if [ -e "$CACHE" ]; then
@@ -1093,7 +1098,7 @@ fi
 # 21. an absent cache is not an error.
 out=$(TELEGRAM_CHANNEL_DIR="$TMP/none12" BRIDGE_ROOT="$TMP/none12b" \
     HIMMELCTL_CACHE_DIR="$TMP/no-such-cache" PATH="$HBIN" \
-    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_rc "absent cache exits 0" 0 "$rc"
 assert_has "absent cache reported, not removed" "absent, skipping: $TMP/no-such-cache" "$out"
 
@@ -1101,7 +1106,7 @@ assert_has "absent cache reported, not removed" "absent, skipping: $TMP/no-such-
 #     HIMMELCTL_CACHE_DIR at $HOME must refuse, not wipe the home directory.
 out=$(HOME="$FAKE_HOME" TELEGRAM_CHANNEL_DIR="$TMP/none13" BRIDGE_ROOT="$TMP/none13b" \
     HIMMELCTL_CACHE_DIR="$FAKE_HOME" PATH="$HBIN" \
-    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_has "suspicious cache path refused" "refusing to remove suspicious path" "$out"
 if [ -x "$FAKE_HOME/.local/bin/claude" ]; then
     echo "PASS suspicious cache path left \$HOME intact"
@@ -1114,7 +1119,7 @@ fi
 #      string compare would let it through and take the home directory with it.
 out=$(HOME="$FAKE_HOME" TELEGRAM_CHANNEL_DIR="$TMP/none14" BRIDGE_ROOT="$TMP/none14b" \
     HIMMELCTL_CACHE_DIR="$FAKE_HOME/." PATH="$HBIN" \
-    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_has "\$HOME/. alias refused as suspicious" "refusing to remove suspicious path" "$out"
 if [ -x "$FAKE_HOME/.local/bin/claude" ]; then
     echo "PASS \$HOME/. alias left \$HOME intact"
@@ -1147,7 +1152,7 @@ for _drive_spelling in 'C:/' "C:\\" 'D:/'; do
     _drive_n=$((_drive_n + 1))
     out=$(TELEGRAM_CHANNEL_DIR="$TMP/nonedr${_drive_n}" BRIDGE_ROOT="$TMP/nonedr${_drive_n}b" \
         HIMMELCTL_CACHE_DIR="$_drive_spelling" PATH="$HBIN" \
-        bash "$CLI" --dry-run --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+        bash "$CLI" --purge-state --dry-run --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
     assert_has "drive root '$_drive_spelling' refused as suspicious" "refusing to remove suspicious path" "$out"
     assert_rc "drive root '$_drive_spelling' exits 2, not 0" 2 "$rc"
     assert_not_has "drive root '$_drive_spelling' claims no completion" "Uninstall complete." "$out"
@@ -1165,7 +1170,7 @@ if [ -d "/c" ]; then
         _drive_n=$((_drive_n + 1))
         out=$(TELEGRAM_CHANNEL_DIR="$TMP/nonedrr${_drive_n}" BRIDGE_ROOT="$TMP/nonedrr${_drive_n}b" \
             HIMMELCTL_CACHE_DIR="$_drive_spelling" PATH="$HBIN" \
-            bash "$CLI" --dry-run --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+            bash "$CLI" --purge-state --dry-run --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
         assert_has "resolved drive root '$_drive_spelling' refused as suspicious" "refusing to remove suspicious path" "$out"
         assert_rc "resolved drive root '$_drive_spelling' exits 2, not 0" 2 "$rc"
         assert_not_has "resolved drive root '$_drive_spelling' claims no completion" "Uninstall complete." "$out"
@@ -1183,7 +1188,7 @@ _deep_cache="$TMP/drive-control-cache"
 mkdir -p "$_deep_cache"
 out=$(TELEGRAM_CHANNEL_DIR="$TMP/nonedc" BRIDGE_ROOT="$TMP/nonedcb" \
     HIMMELCTL_CACHE_DIR="$_deep_cache" PATH="$HBIN" \
-    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_not_has "deep cache path is NOT refused as suspicious" "refusing to remove suspicious path" "$out"
 assert_rc "deep cache path completes normally" 0 "$rc"
 
@@ -1193,7 +1198,7 @@ CACHE_FILE="$TMP/himmel-cache-file"
 printf '{"profile":"starter"}\n' > "$CACHE_FILE"
 out=$(TELEGRAM_CHANNEL_DIR="$TMP/none15" BRIDGE_ROOT="$TMP/none15b" \
     HIMMELCTL_CACHE_DIR="$CACHE_FILE" PATH="$HBIN" \
-    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_rc "cache path that is a FILE exits 0" 0 "$rc"
 assert_not_has "a file at the cache path is not reported absent" "absent, skipping: $CACHE_FILE" "$out"
 if [ -e "$CACHE_FILE" ]; then
@@ -1210,7 +1215,7 @@ CACHE_DANGLING="$TMP/himmel-cache-dangling"
 ln -sf "$TMP/himmel-cache-nonexistent-target" "$CACHE_DANGLING"
 out=$(TELEGRAM_CHANNEL_DIR="$TMP/none16" BRIDGE_ROOT="$TMP/none16b" \
     HIMMELCTL_CACHE_DIR="$CACHE_DANGLING" PATH="$HBIN" \
-    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_rc "dangling symlink cache path exits 0" 0 "$rc"
 assert_not_has "a dangling symlink is not reported absent" "absent, skipping: $CACHE_DANGLING" "$out"
 # HIMMEL-2505 gap A.3: a symlink target (dangling or not) is now unlinked via
@@ -1250,7 +1255,7 @@ mk_fence
 out=$(HOME="$FENCE_HOME" PATH="$HBIN" \
     TELEGRAM_CHANNEL_DIR="$FENCE_CHANNEL" BRIDGE_ROOT="$FENCE_BRIDGE" \
     HIMMELCTL_CACHE_DIR="$FENCE_CACHE" \
-    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
 assert_rc "fence refuses a wet run against a live-looking HOME" 3 "$rc"
 assert_has "fence names the credentials marker" ".claude/.credentials.json" "$out"
 assert_has "fence names the escape-hatch env var" "HIMMEL_UNINSTALL_REAL_HOME" "$out"
@@ -1266,7 +1271,7 @@ fi
 out=$(HOME="$FENCE_HOME" PATH="$HBIN" HIMMEL_UNINSTALL_REAL_HOME=1 \
     TELEGRAM_CHANNEL_DIR="$FENCE_CHANNEL" BRIDGE_ROOT="$FENCE_BRIDGE" \
     HIMMELCTL_CACHE_DIR="$FENCE_CACHE" \
-    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
 assert_rc "HIMMEL_UNINSTALL_REAL_HOME=1 proceeds" 0 "$rc"
 if [ -e "$FENCE_CACHE" ]; then
     echo "FAIL cache survived despite HIMMEL_UNINSTALL_REAL_HOME=1"; FAILED=$((FAILED + 1))
@@ -1280,7 +1285,7 @@ mk_fence
 out=$(HOME="$FENCE_HOME" PATH="$HBIN" \
     TELEGRAM_CHANNEL_DIR="$FENCE_CHANNEL" BRIDGE_ROOT="$FENCE_BRIDGE" \
     HIMMELCTL_CACHE_DIR="$FENCE_CACHE" \
-    bash "$CLI" --dry-run --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --dry-run --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
 assert_rc "--dry-run is never fenced" 0 "$rc"
 if [ -f "$FENCE_CHANNEL/access.json" ] && [ -f "$FENCE_BRIDGE/marker" ] \
     && [ -f "$FENCE_CACHE/install-profile.json" ]; then
@@ -1296,7 +1301,7 @@ printf 'PRIVATE KEY\n' > "$FENCE_SSH_HOME/.ssh/id_ed25519"
 out=$(HOME="$FENCE_SSH_HOME" PATH="$HBIN" \
     TELEGRAM_CHANNEL_DIR="$TMP/fence-ssh-channel" BRIDGE_ROOT="$TMP/fence-ssh-bridge" \
     HIMMELCTL_CACHE_DIR="$TMP/fence-ssh-cache" \
-    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
 assert_rc "an ssh private key alone fences a wet run" 3 "$rc"
 assert_has "fence names the ssh key marker" "id_ed25519" "$out"
 
@@ -1308,7 +1313,7 @@ mkdir -p "$FENCE_CODEX_HOME/.codex"
 out=$(HOME="$FENCE_CODEX_HOME" PATH="$HBIN" \
     TELEGRAM_CHANNEL_DIR="$TMP/fence-codex-channel" BRIDGE_ROOT="$TMP/fence-codex-bridge" \
     HIMMELCTL_CACHE_DIR="$TMP/fence-codex-cache" \
-    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
 assert_rc "a Codex-only profile (~/.codex alone) fences a wet run" 3 "$rc"
 assert_has "fence names the .codex marker" "refusing a wet uninstall — found $FENCE_CODEX_HOME/.codex" "$out"
 
@@ -1325,7 +1330,7 @@ for _ptarget in "$PHOME" "$PHOME/.claude" "/" "$PHOME/.ssh"; do
     out=$(HOME="$PHOME" PATH="$HBIN" \
         TELEGRAM_CHANNEL_DIR="$TMP/protected-none${_pn}" BRIDGE_ROOT="$TMP/protected-none${_pn}b" \
         HIMMELCTL_CACHE_DIR="$_ptarget" \
-        bash "$CLI" --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
+        bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
     assert_rc "protected ancestor '$_ptarget' exits 2" 2 "$rc"
     assert_has "protected ancestor '$_ptarget' refused" "refusing to remove suspicious path" "$out"
     assert_not_has "protected ancestor '$_ptarget' claims no completion" "Uninstall complete." "$out"
@@ -1341,7 +1346,7 @@ done
 out=$(HOME="$PHOME" PATH="$HBIN" \
     TELEGRAM_CHANNEL_DIR="$TMP/protected-ctrl-channel" BRIDGE_ROOT="$TMP/protected-ctrl-bridge" \
     HIMMELCTL_CACHE_DIR="$PHOME/.claude/himmel" \
-    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
 assert_rc "allowed cache target under \$HOME/.claude removed: exits 0" 0 "$rc"
 if [ -e "$PHOME/.claude/himmel" ]; then
     echo "FAIL allowed cache target under \$HOME/.claude survived"; FAILED=$((FAILED + 1))
@@ -1358,7 +1363,7 @@ printf 'PRIVATE KEY\n' > "$FAKE_HOME/.ssh/keys/id_ed25519"
 out=$(HOME="$FAKE_HOME" PATH="$HBIN" \
     TELEGRAM_CHANNEL_DIR="$TMP/protected-desc-channel" BRIDGE_ROOT="$TMP/protected-desc-bridge" \
     HIMMELCTL_CACHE_DIR="$FAKE_HOME/.ssh/keys" \
-    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
 assert_rc "descendant of protected \$HOME/.ssh refused: exits 2" 2 "$rc"
 assert_has "descendant of protected path refused" "refusing to remove suspicious path" "$out"
 assert_not_has "descendant refusal claims no completion" "Uninstall complete." "$out"
@@ -1404,7 +1409,7 @@ else
     out=$(HOME="$HALT_HOME" PATH="$HBIN" \
         TELEGRAM_CHANNEL_DIR="$HALT_PARENT/telegram" BRIDGE_ROOT="$HALT_BRIDGE" \
         HIMMELCTL_CACHE_DIR="$HALT_CACHE" \
-        bash "$CLI" --yes --skip-plugins --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
+        bash "$CLI" --purge-state --yes --skip-plugins --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
     chmod 0755 "$HALT_PARENT"
     assert_rc "a failed step-2 removal halts the run: exits 2" 2 "$rc"
     assert_has "step 8 reports the halted-skip" "skipped (halted after an earlier failure)" "$out"
@@ -1446,7 +1451,7 @@ ln -s "$SC12_REAL" "$SC12_HOME/.claude/himmel"
 out=$(HOME="$SC12_HOME" PATH="$HBIN" \
     TELEGRAM_CHANNEL_DIR="$TMP/sc12-channel" BRIDGE_ROOT="$TMP/sc12-bridge" \
     HIMMELCTL_CACHE_DIR="$SC12_HOME/.claude/himmel" \
-    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
 assert_rc "leaf-symlinked allowed target refused: exits 2" 2 "$rc"
 assert_has "leaf-symlinked allowed target refused" "refusing to remove suspicious path" "$out"
 assert_not_has "leaf-symlinked refusal claims no completion" "Uninstall complete." "$out"
@@ -1473,7 +1478,7 @@ ln -s "$SC12B_REAL" "$SC12B_HOME/.claude/himmel"
 out=$(HOME="$SC12B_HOME" PATH="$HBIN" \
     TELEGRAM_CHANNEL_DIR="$TMP/sc12b-channel" BRIDGE_ROOT="$TMP/sc12b-bridge" \
     HIMMELCTL_CACHE_DIR="$SC12B_HOME/.claude/himmel/" \
-    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
 assert_rc "leaf-symlinked allowed target with trailing slash refused: exits 2" 2 "$rc"
 assert_has "trailing-slash leaf-symlinked target refused" "refusing to remove suspicious path" "$out"
 assert_not_has "trailing-slash refusal claims no completion" "Uninstall complete." "$out"
@@ -1502,7 +1507,7 @@ ln -s "$SC13_HOME/Documents" "$SC13_HOME/.claude/channels"
 out=$(HOME="$SC13_HOME" PATH="$HBIN" \
     TELEGRAM_CHANNEL_DIR="$SC13_HOME/.claude/channels/telegram" BRIDGE_ROOT="$TMP/sc13-bridge" \
     HIMMELCTL_CACHE_DIR="$TMP/sc13-cache" \
-    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
 assert_rc "symlinked-parent telegram override refused: exits 2" 2 "$rc"
 assert_has "symlinked-parent override refused" "refusing to remove suspicious path" "$out"
 assert_not_has "symlinked-parent refusal claims no completion" "Uninstall complete." "$out"
@@ -1524,7 +1529,7 @@ ln -s "$TMP/sc14-elsewhere" "$SC14_HOME/.claude/channels"
 out=$(HOME="$SC14_HOME" PATH="$HBIN" \
     TELEGRAM_CHANNEL_DIR="$SC14_HOME/.claude/channels/telegram" BRIDGE_ROOT="$TMP/sc14-bridge" \
     HIMMELCTL_CACHE_DIR="$TMP/sc14-cache" \
-    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
 assert_rc "symlinked-parent-outside-HOME telegram override refused: exits 2" 2 "$rc"
 assert_has "symlinked-parent-outside-HOME override refused" "refusing to remove suspicious path" "$out"
 assert_not_has "symlinked-parent-outside-HOME refusal claims no completion" "Uninstall complete." "$out"
@@ -1565,7 +1570,7 @@ scope_case() {
     HOME="$SC15_HOME" PATH="$HBIN" \
         TELEGRAM_CHANNEL_DIR="$TMP/sc15-$1-none" BRIDGE_ROOT="$TMP/sc15-$1-noneb" \
         HIMMELCTL_CACHE_DIR="$SC15_CACHE" \
-        bash "$CLI" --yes --skip-tasks --skip-hooks --skip-settings </dev/null >/dev/null 2>&1
+        bash "$CLI" --purge-state --yes --skip-tasks --skip-hooks --skip-settings </dev/null >/dev/null 2>&1
 }
 
 # 15a. a project-scope install: EVERY plugin uninstall carries --scope project,
@@ -1670,7 +1675,7 @@ u_fixture() {
 u_run() {
     out=$(HOME="$U_HOME" PATH="$U_BIN:$HBIN" HIMMEL_UNINSTALL_REPO_ROOT="$U_REPO" \
         TELEGRAM_CHANNEL_DIR="$CHANNEL" BRIDGE_ROOT="$BRIDGE" HIMMELCTL_CACHE_DIR="$U_CACHE" \
-        bash "$CLI" --yes --skip-tasks "$@" </dev/null 2>&1); rc=$?
+        bash "$CLI" --purge-state --yes --skip-tasks "$@" </dev/null 2>&1); rc=$?
     calls=$(cat "$CLAUDE_CALL_LOG")
 }
 
@@ -1852,7 +1857,7 @@ u_fixture u5
 printf 'invalid JSON\n' > "$HIMMEL_USER_SETTINGS"
 out=$(HOME="$U_HOME" PATH="$U_BIN:$HBIN" HIMMEL_UNINSTALL_REPO_ROOT="$U_REPO" \
     TELEGRAM_CHANNEL_DIR="$CHANNEL" BRIDGE_ROOT="$BRIDGE" HIMMELCTL_CACHE_DIR="$U_CACHE" \
-    bash "$CLI" --yes --skip-tasks --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-hooks </dev/null 2>&1); rc=$?
 assert_rc 'U5 invalid settings halt teardown' 2 "$rc"
 assert_has 'U5 first failure is settings' 'Halted at: [6/8]' "$out"
 assert_not_has 'U5 marketplaces untouched' 'plugin marketplace remove' "$(cat "$CLAUDE_CALL_LOG")"
@@ -1863,7 +1868,7 @@ u_fixture u6
 STUB_FAIL_IDS='himmel'
 out=$(HOME="$U_HOME" PATH="$U_BIN:$HBIN" HIMMEL_UNINSTALL_REPO_ROOT="$U_REPO" \
     TELEGRAM_CHANNEL_DIR="$CHANNEL" BRIDGE_ROOT="$BRIDGE" HIMMELCTL_CACHE_DIR="$U_CACHE" \
-    bash "$CLI" --yes --skip-tasks --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-hooks </dev/null 2>&1); rc=$?
 assert_rc 'U6 failed marketplace halts teardown' 2 "$rc"
 assert_has 'U6 first failure is marketplaces' 'Halted at: [7/8]' "$out"
 if [ -f "$U_CACHE/install-profile.json" ]; then echo 'PASS U6 retry profile survives'
@@ -1873,7 +1878,7 @@ else echo 'FAIL U6 retry profile removed'; FAILED=$((FAILED + 1)); fi
 u_fixture u7
 out=$(HOME="$U_HOME" PATH="$U_BIN:$HBIN" HIMMEL_UNINSTALL_REPO_ROOT="$U_REPO" \
     TELEGRAM_CHANNEL_DIR="$CHANNEL" BRIDGE_ROOT="$BRIDGE" HIMMELCTL_CACHE_DIR="$U_CACHE" \
-    bash "$CLI" --dry-run --yes --skip-tasks --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --dry-run --yes --skip-tasks --skip-hooks </dev/null 2>&1); rc=$?
 if [ "$rc" -eq 0 ] && ! grep -qF '[7/8] Claude marketplaces:' <<< "$out" &&
     grep -qF 'DRY: claude plugin marketplace remove himmel' <<< "$out"; then
     echo 'ok - U7 healthy dry-run completes marketplace step'
@@ -1886,7 +1891,7 @@ u_fixture u8
 jq -n --arg here "$PWD" '[{id:"handover@himmel",scope:"project",projectPath:$here}]' > "$STUB_PLUGINS_JSON"
 out=$(HOME="$U_HOME" PATH="$U_BIN:$HBIN" HIMMEL_UNINSTALL_REPO_ROOT="$U_REPO" \
     TELEGRAM_CHANNEL_DIR="$CHANNEL" BRIDGE_ROOT="$BRIDGE" HIMMELCTL_CACHE_DIR="$U_CACHE" \
-    bash "$CLI" --yes --skip-tasks --skip-hooks </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-hooks </dev/null 2>&1); rc=$?
 calls=$(cat "$CLAUDE_CALL_LOG")
 # WHY (HIMMEL-2796): plugin scopes do not reveal registration scopes, so
 # removal also tries the install-profile scope (user) alongside the
@@ -2085,7 +2090,7 @@ chmod +x "$TMP/u16-bin/cat"
 out=$(HOME="$U_HOME" PATH="$TMP/u16-bin:$U_BIN:$HBIN" U16_CAT="$U16_CAT" \
     HIMMEL_UNINSTALL_REPO_ROOT="$U_REPO" TELEGRAM_CHANNEL_DIR="$CHANNEL" \
     BRIDGE_ROOT="$BRIDGE" HIMMELCTL_CACHE_DIR="$U_CACHE" \
-    bash "$CLI" --yes --dry-run --skip-tasks --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
+    bash "$CLI" --purge-state --yes --dry-run --skip-tasks --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
 assert_rc 'RED 12: failed preview map read keeps exit 0' 0 "$rc"
 assert_has 'RED 12: failed preview map read warns with map path' \
     "WARN: could not read $U_CACHE/uninstall-scope-map" "$out"
