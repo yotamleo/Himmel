@@ -204,6 +204,16 @@
         ]
       },
       {
+        "matcher": "ScheduleWakeup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" ]; then command -p sh \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-leg-wakeup.sh\"; else node \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-leg-wakeup.sh\"; fi",
+            "timeout": 15
+          }
+        ]
+      },
+      {
         "matcher": "mcp__plugin_atlassian_atlassian__.*",
         "hooks": [
           {

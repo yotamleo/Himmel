@@ -2703,6 +2703,21 @@ identically — same `HIMMEL_CONSOLE_LEG=1`, no separate judge marker — and
 correctly so: a judge is read-only and evidence-gathering, so it has no one
 to ask either.
 
+### `guard-leg-wakeup.sh` — console-spawned-leg ScheduleWakeup deny (HIMMEL-3034)
+
+Fires on `ScheduleWakeup`, keyed on `HIMMEL_CONSOLE_LEG=1` (same gate and
+launcher export as `block-leg-askuserquestion.sh`). A leg waits with ONE
+foreground blocking command (`docs/handover/leg-preface.md`); a self-scheduled
+polling wake re-reads the leg's full context just to find "not yet" — cost
+program HIMMEL-2763. Denies with a `leg wakeup-deny: …` reason naming
+`check-ci.sh --max-wait` / a foreground until-loop / a `SendMessage` to the
+console as the replacement. Not a leg (marker unset or not `1`) or any other
+`tool_name` → exit 0 with **no output at all**, so it costs an operator or
+console session zero context. Workflow nudge, not a security fence: fails open
+on missing `jq`, malformed, or empty stdin. Claude lane only —
+`ScheduleWakeup` is a Claude Code tool, so `.codex/hooks.json` carries no twin.
+Suite: `scripts/hooks/test-guard-leg-wakeup.sh`.
+
 ### `read-clamp.sh` — read-clamp PreToolUse hook (HIMMEL-2993)
 
 Fires on `Read`/`Grep` and `Bash`, keyed on `HIMMEL_CONSOLE_LEG=1` (same gate as

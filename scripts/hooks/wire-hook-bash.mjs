@@ -102,6 +102,10 @@ export const EXPECTED_SCRIPT_ORDER = Object.freeze([
   // console-spawned leg (HIMMEL_CONSOLE_LEG=1, HIMMEL-2919's launcher export)
   // from calling AskUserQuestion — nobody answers in that window.
   'block-leg-askuserquestion.sh',
+  // PreToolUse `ScheduleWakeup` — its own matcher (HIMMEL-3034): denies a
+  // console-spawned leg (HIMMEL_CONSOLE_LEG=1) from self-scheduling a polling
+  // wakeup — each wake re-reads the leg's whole context to find "not yet".
+  'guard-leg-wakeup.sh',
   // PreToolUse, one entry each.
   'block-backend-tier.sh',
   'auto-arm-on-cap.sh',

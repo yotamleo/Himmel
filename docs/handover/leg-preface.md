@@ -24,6 +24,9 @@ console by `SendMessage`, and you confirm the console's exact session name in
 - Waiting means **one foreground blocking command**, or a foreground
   `until … done` loop. Never end a turn waiting on a background job — a leg
   whose turn ends on a background job never wakes up.
+- **Never call `ScheduleWakeup`.** Every self-scheduled wake re-reads your whole
+  context to find "not yet"; `guard-leg-wakeup.sh` denies it (HIMMEL-3034). Use
+  the one foreground blocking command above instead.
 - **A BLOCKED, a permission prompt, or a question of your own goes to the
   console FIRST**, before you improvise anything.
 
