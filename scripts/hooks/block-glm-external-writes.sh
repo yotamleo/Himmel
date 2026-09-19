@@ -497,11 +497,16 @@ if [ "$tool_is_shell" = 1 ] && [ "${HIMMEL_HOOK_INTEGRITY_BYPASS_OK:-0}" != "1" 
             # A PowerShell `u{1} escape (any zero-padded spelling) resolves to the
             # SOH byte, so it can rebuild the marker from parts without the
             # literal bytes ever appearing in the command: refuse it too.
+            # known-findings [grep-q-pipe-under-pipefail]: a bash regex match, not a
+            # `printf | grep -q` pipe -- under `set -euo pipefail` grep exits on the
+            # first hit, printf takes SIGPIPE on a large command, and the pipeline
+            # reads as no match: the guard would fail open exactly when it matters.
             nul_marker_hit=0
+            pin_soh_re='`u\{0*1\}'
             case "$pin_cmd$tool_cwd" in
                 *$'\001NUL\001'*) nul_marker_hit=1 ;;
             esac
-            if [ "$nul_marker_hit" = 0 ] && printf '%s' "$pin_cmd" | grep -Eq '`u\{0*1\}'; then
+            if [ "$nul_marker_hit" = 0 ] && [[ "$pin_cmd" =~ $pin_soh_re ]]; then
                 nul_marker_hit=1
             fi
             if [ "$nul_marker_hit" = 1 ]; then
