@@ -3,8 +3,9 @@
 # targets, the code-vs-state class that gates --purge-state, the printed
 # footprint and the post-run read-back all come from here, so a path cannot be
 # touched without being listed (a re-derived list is how paths get missed).
-# scripts/uninstall.ps1 keeps its own targets and is held to this file by
-# scripts/test-uninstall-ux.sh.
+# scripts/uninstall.ps1 keeps its own targets and does NOT read this file; only
+# its -PurgeState gating is checked (source-level) by scripts/test-uninstall-ux.sh
+# P1 — keep the two in step by hand until it reads the manifest.
 #
 # Columns, TAB-separated ('-' = not applicable; blank/# lines ignored):
 #   id       stable name, referenced by uninstall.sh

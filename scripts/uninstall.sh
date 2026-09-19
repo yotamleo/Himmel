@@ -235,6 +235,28 @@ HIMMEL_CACHE_DIR="$(strip_trailing_slash "$(m_path "$_ix_cache")")"
 # purge flag above.
 state_removed() { [ "$PURGE_STATE" -eq 1 ] && [ "$KEEP_TELEGRAM_STATE" -eq 0 ]; }
 
+# class_removes <row-index> — does this run delete the row's target? The
+# manifest CLASS decides (code: yes; state: only when state_removed; keep:
+# never), so the printed footprint and the deletion cannot disagree.
+class_removes() {
+  case "${M_CLASS[$1]}" in
+    code)  return 0 ;;
+    state) state_removed ;;
+    *)     return 1 ;;
+  esac
+}
+
+# step_skipped <step> — is the manifest step turned off by a --skip-* flag?
+step_skipped() {
+  case "$1" in
+    3)   [ "$SKIP_TASKS" -eq 1 ] ;;
+    4|7) [ "$SKIP_PLUGINS" -eq 1 ] ;;
+    5)   [ "$SKIP_HOOKS" -eq 1 ] ;;
+    6)   [ "$SKIP_SETTINGS" -eq 1 ] ;;
+    *)   return 1 ;;
+  esac
+}
+
 # WHY (HIMMEL-2694): `claude plugin list --json` is the primary source for
 # each installed plugin's scope. The profile supplies only the child's
 # fallback --scope when enumeration is unavailable, and the marketplace-only
@@ -965,14 +987,16 @@ echo ""
 
 # Footprint — every manifest row with its disposition, so the operator sees the
 # code-vs-state split and what is never touched before confirming. REMOVE =
-# himmel code (default), KEEP = operator state without --purge-state, NEVER =
-# not uninstall's to touch. Per-step --skip-* flags are shown in the list above.
+# himmel code (default), KEEP = operator state without --purge-state, SKIP =
+# switched off by a --skip-* flag, NEVER = not uninstall's to touch.
 echo "Footprint (scripts/install/uninstall-manifest.tsv):"
 for _mi in "${!M_ID[@]}"; do
   case "${M_CLASS[$_mi]}" in
-    code)  _disp="REMOVE" ;;
-    state) if state_removed; then _disp="REMOVE"; else _disp="KEEP  "; fi ;;
-    *)     _disp="NEVER " ;;
+    keep) _disp="NEVER " ;;
+    *)
+      if step_skipped "${M_STEP[$_mi]}"; then _disp="SKIP  "
+      elif class_removes "$_mi"; then _disp="REMOVE"
+      else _disp="KEEP  "; fi ;;
   esac
   _mp=$(m_path "$_mi")
   [ "$_mp" = "-" ] && _mp="(${M_ID[$_mi]})"
@@ -1037,17 +1061,22 @@ echo "[2/8] Removing telegram pairing + bridge state..."
 if [ "$HALTED" -eq 1 ]; then
   echo "  SKIPPED: step 1 could not stop the bridge — halted after an earlier failure"
   STEPS_INCOMPLETE+=("[2/8] telegram pairing + bridge state: skipped — halted after an earlier failure")
-elif ! state_removed; then
+elif ! class_removes "$_ix_channel" && ! class_removes "$_ix_bridge"; then
   if [ "$KEEP_TELEGRAM_STATE" -eq 1 ]; then
     echo "  kept (--keep-telegram-state)."
   else
     echo "  kept (operator state; pass --purge-state to remove): $CHANNEL_DIR, $BRIDGE_ROOT"
   fi
 else
-  for _dir in "$CHANNEL_DIR" "$BRIDGE_ROOT"; do
+  for _ix_dir in "$_ix_channel" "$_ix_bridge"; do
+    if [ "$_ix_dir" = "$_ix_channel" ]; then _dir="$CHANNEL_DIR"; else _dir="$BRIDGE_ROOT"; fi
     if [ "$HALTED" -eq 1 ]; then
       echo "  skipped: $_dir (halted after an earlier failure)"
       STEPS_INCOMPLETE+=("[2/8] telegram pairing + bridge state: $_dir skipped — halted after an earlier failure")
+      continue
+    fi
+    if ! class_removes "$_ix_dir"; then
+      echo "  kept (manifest class ${M_CLASS[$_ix_dir]}): $_dir"
       continue
     fi
     if suspicious_rm_path "$_dir"; then
@@ -1552,6 +1581,8 @@ echo "[8/8] Removing himmelctl cache + state ($HIMMEL_CACHE_DIR)..."
 if [ "$HALTED" -eq 1 ]; then
   echo "  skipped (halted after an earlier failure)"
   STEPS_INCOMPLETE+=("[8/8] himmelctl cache: skipped — halted after an earlier failure")
+elif ! class_removes "$_ix_cache"; then
+  echo "  kept (manifest class ${M_CLASS[$_ix_cache]}): $HIMMEL_CACHE_DIR"
 elif suspicious_rm_path "$HIMMEL_CACHE_DIR"; then
   # A refusal is not a teardown: the cache is still there. Unlike step [2/8],
   # where the guard protects an OPTIONAL removal, this step is required, so a
@@ -1621,11 +1652,8 @@ if [ "$DRY_RUN" -eq 0 ]; then
   # meant to remove is checked absent on disk — the file system, not the rc.
   for _mi in "${!M_ID[@]}"; do
     [ "${M_KIND[$_mi]}" = "dir" ] || continue
-    case "${M_CLASS[$_mi]}" in
-      code) ;;
-      state) state_removed || continue ;;
-      *) continue ;;
-    esac
+    class_removes "$_mi" || continue
+    step_skipped "${M_STEP[$_mi]}" && continue
     _mp="$(strip_trailing_slash "$(m_path "$_mi")")"
     if [ -e "$_mp" ] || [ -L "$_mp" ]; then
       echo "  ERROR: $_mp is still present after uninstall" >&2

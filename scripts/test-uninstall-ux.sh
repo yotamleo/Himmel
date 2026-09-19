@@ -202,6 +202,37 @@ run_uninstall --yes --skip-tasks --skip-plugins --purge-state --keep-telegram-st
 assert_rc "S3 contradictory flags refused" 2 "$rc"
 assert_exists "S3 nothing removed on refusal" "$FX_HOME/.claude/channels/telegram/access.json"
 
+# ── K1 — deletion honours the manifest CLASS, not only the printed footprint ─
+# A manifest that re-classes himmelctl-cache as keep and telegram-channel as
+# keep must leave BOTH on disk, even with --purge-state (the footprint must not
+# say KEEP while the step deletes).
+fixture k1
+sed -e $'s/^himmelctl-cache\tcode/himmelctl-cache\tkeep/' \
+    -e $'s/^telegram-channel\tstate/telegram-channel\tkeep/' "$MANIFEST" > "$FX/keep-manifest.tsv"
+out=$(cd "$FX_PROJ" && HOME="$FX_HOME" PATH="$STUB:$HBIN" HIMMEL_UNINSTALL_MANIFEST="$FX/keep-manifest.tsv" \
+    bash "$CLI" --yes --skip-tasks --skip-plugins --purge-state </dev/null 2>&1); rc=$?
+assert_rc "K1 uninstall with a re-classed manifest" 0 "$rc"
+assert_exists "K1 himmelctl-cache class=keep is not deleted" "$FX_HOME/.claude/himmel/install-profile.json"
+assert_exists "K1 telegram-channel class=keep survives --purge-state" "$FX_HOME/.claude/channels/telegram/access.json"
+assert_absent "K1 telegram-bridge (still state) IS purged" "$FX_HOME/.claude/handover/bridge"
+# …and the reverse: a code row re-classed as state is kept without --purge-state.
+fixture k2
+sed -e $'s/^himmelctl-cache\tcode/himmelctl-cache\tstate/' "$MANIFEST" > "$FX/state-manifest.tsv"
+out=$(cd "$FX_PROJ" && HOME="$FX_HOME" PATH="$STUB:$HBIN" HIMMEL_UNINSTALL_MANIFEST="$FX/state-manifest.tsv" \
+    bash "$CLI" --yes --skip-tasks --skip-plugins </dev/null 2>&1); rc=$?
+assert_rc "K2 uninstall with the cache re-classed as state" 0 "$rc"
+assert_exists "K2 himmelctl-cache class=state is kept by default" "$FX_HOME/.claude/himmel/install-profile.json"
+
+# ── F1 — the footprint reflects --skip-* (a skipped code row is not REMOVE) ──
+fixture f1
+run_uninstall --dry-run --skip-tasks --skip-plugins --skip-hooks --skip-settings
+assert_rc "F1 dry-run with every --skip-*" 0 "$rc"
+f1_fp=$(printf '%s\n' "$out" | sed -n '/^Footprint/,/^$/p')
+assert_not_has "F1 skipped user-settings row is not REMOVE" "REMOVE  $FX_HOME/.claude/settings.json" "$f1_fp"
+assert_not_has "F1 skipped git-hooks row is not REMOVE" "REMOVE  $FX_PROJ/.git/hooks" "$f1_fp"
+assert_has "F1 skipped rows read SKIP" "SKIP" "$f1_fp"
+assert_has "F1 the un-skipped cache row is still REMOVE" "REMOVE  $FX_HOME/.claude/himmel" "$f1_fp"
+
 # ── R1 — read-back is independent of the unwire helper's own rc ────────────
 # A helper that exits 0 without removing anything must FAIL the uninstall.
 fixture r1
@@ -216,6 +247,16 @@ assert_has "R1 names the hook that is still wired" "still wired" "$out"
 assert_not_has "R1 never claims completion" "Uninstall complete." "$out"
 
 # ── H1 — himmelctl passes --purge-state and --dry-run to the executor ──────
+# The stub is an extensionless bash script; on Windows himmelctl runs
+# uninstall.ps1 instead, so this case cannot execute there. Covered on Windows
+# by scripts/himmelctl/test/test-wizard-uninstall.sh (caseB) and the nightly.
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        echo "SKIP H1 himmelctl -> uninstall.sh plumbing (Windows Git Bash: himmelctl execs uninstall.ps1; covered by test-wizard-uninstall.sh caseB)"
+        H1_SKIP=1 ;;
+    *) H1_SKIP=0 ;;
+esac
+if [ "$H1_SKIP" -eq 0 ]; then
 fixture h1
 HREPO="$FX/hrepo"
 mkdir -p "$HREPO/scripts"
@@ -240,10 +281,20 @@ h1_args=$(cat "$FX/uninstall-args.log")
 assert_has "H1 dry-run runs the executor's own --dry-run" "--dry-run" "$h1_args"
 assert_has "H1 dry-run carries --purge-state" "--purge-state" "$h1_args"
 assert_not_has "H1 dry-run never passes --yes" "--yes" "$h1_args"
+fi
 
 # ── P1 — the PowerShell twin carries the same split ────────────────────────
+# pwsh is not available on every runner, so this is a source-level check of the
+# contract: the switch exists, contradicts -KeepTelegramState, and step 2 is
+# gated on the derived $RemoveState. Execution proof is the nightly.
 if grep -q 'PurgeState' "$SCRIPTS/uninstall.ps1"; then pass "P1 uninstall.ps1 has -PurgeState"
 else fail "P1 uninstall.ps1 lacks -PurgeState"; fi
+# shellcheck disable=SC2016 # the PowerShell $-variables are literal grep patterns
+if grep -Fq '$RemoveState = $PurgeState -and (-not $KeepTelegramState)' "$SCRIPTS/uninstall.ps1"; then pass "P1 uninstall.ps1 derives RemoveState from -PurgeState"
+else fail "P1 uninstall.ps1 does not derive RemoveState from -PurgeState"; fi
+# shellcheck disable=SC2016 # the PowerShell $-variables are literal grep patterns
+if grep -Fq 'if (-not $RemoveState) {' "$SCRIPTS/uninstall.ps1"; then pass "P1 uninstall.ps1 step 2 is gated on RemoveState"
+else fail "P1 uninstall.ps1 step 2 is not gated on RemoveState"; fi
 
 # ── DOC — the install doc and the README link the command ──────────────────
 if grep -Eq 'himmelctl.*uninstall.*--dry-run|uninstall --dry-run' "$ROOT/docs/setup/install.md"; then pass "DOC install.md documents uninstall --dry-run"
