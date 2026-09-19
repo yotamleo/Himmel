@@ -121,7 +121,7 @@ PAYLOAD1=$(jq -nc --arg tp "$OPUS_TRANSCRIPT" '{tool_name:"Edit",session_id:"ses
 OUT1=$(run_hook "$PAYLOAD1" "$LOG1")
 RC1=$?
 assert_rc "fires: always exits allow" 0 "$RC1"
-assert_contains "fires: emits additionalContext nudge" "$OUT1" "orchestrating parent"
+assert_contains "fires: emits additionalContext nudge" "$OUT1" "dispatching parent"
 assert_contains "fires: log records the model" "$(cat "$LOG1" 2>/dev/null || true)" "claude-opus-4-8"
 assert_contains "fires: log records the path" "$(cat "$LOG1" 2>/dev/null || true)" "scripts/hooks/foo.sh"
 
@@ -148,7 +148,7 @@ LOG1C="$TMP/fires1c.jsonl"
 OUT1C=$(CLAUDE_CODE_CHILD_SESSION=1 run_hook "$PAYLOAD1" "$LOG1C")
 RC1C=$?
 assert_rc "parent ground truth: always exits allow" 0 "$RC1C"
-assert_contains "parent ground truth: still fires despite CLAUDE_CODE_CHILD_SESSION=1" "$OUT1C" "orchestrating parent"
+assert_contains "parent ground truth: still fires despite CLAUDE_CODE_CHILD_SESSION=1" "$OUT1C" "dispatching parent"
 
 # --- Case 2: does NOT fire on a docs path (README.md under docs/) ---
 LOG2="$TMP/fires2.jsonl"
@@ -245,7 +245,7 @@ LOG6="$TMP/fires6.jsonl"
 P6=$(budget_payload "$BUDGET_REPO" "scripts/hooks/foo.sh")
 OUT6=$(run_hook_realstate "$P6" "$LOG6" 2>"$TMP/err6"); RC6=$?
 assert_rc "budget: first qualifying edit allows" 0 "$RC6"
-assert_contains "budget: first edit advisory still names the parent" "$OUT6" "orchestrating parent"
+assert_contains "budget: first edit advisory still names the parent" "$OUT6" "dispatching parent"
 assert_contains "budget: first spend keeps the phase-1 permissionDecision allow idiom (CR glm-5)" "$OUT6" '"permissionDecision":"allow"'
 STATE6=$(spent_state "$BUDGET_REPO/.git" feat/h1791)
 assert_file_exists "budget: first edit records the exemption state" "$STATE6"
@@ -352,6 +352,7 @@ LOG9B="$TMP/fires9b.jsonl"
 P9B=$(budget_payload "$TESTS_REPO" "scripts/hooks/impl.sh")
 run_hook_realstate "$P9B" "$LOG9B" >"$TMP/out9b" 2>"$TMP/err9b"; RC9B=$?
 assert_rc "edit after a test-file spend is DENIED" 2 "$RC9B"
+assert_contains "denied edit's message names the dispatching parent (HIMMEL-3136)" "$(cat "$TMP/err9b")" "dispatching parent"
 
 # Case 10: INLINE_IMPL_OK=1 override — allowed, LOUD, logged, does not
 # overwrite the recorded spend.

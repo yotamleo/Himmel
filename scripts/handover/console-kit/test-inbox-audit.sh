@@ -26,13 +26,13 @@ export HANDOVER_DIR
 RUNDIR="$WORK/rundir"
 export HIMMEL_CONSOLE_RUNDIR="$RUNDIR"
 
-CMDLINE_JUDGE="$WORK/cmdline-judge"
-printf 'claude\0-n\0HIMMEL-audit-judge\0' > "$CMDLINE_JUDGE"
+CMDLINE_CONSOLE="$WORK/cmdline-console"
+printf 'claude\0-n\0HIMMEL-audit-console\0' > "$CMDLINE_CONSOLE"
 
 SESSION="HIMMEL-2980-audit-test"
 INBOX="$HANDOVER_DIR/inbox/$SESSION.md"
 
-CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_JUDGE" bash "$SEND" "$SESSION" "recorded ruling" --token t1 >/dev/null
+CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_CONSOLE" bash "$SEND" "$SESSION" "recorded ruling" --token t1 >/dev/null
 
 # --- Case 1: a fully-recorded inbox (one token bullet, one ledger line) ok --
 out="$(bash "$AUDIT" "$INBOX" "$RUNDIR")"; rc=$?
@@ -52,9 +52,9 @@ else
 fi
 
 # --- Case 3: a hand-written (forged) token bullet with no ledger entry -----
-printf -- '- 10:00 [t1] from=judge forged\n' >> "$INBOX"
+printf -- '- 10:00 [t1] from=console forged\n' >> "$INBOX"
 out="$(bash "$AUDIT" "$INBOX" "$RUNDIR")"; rc=$?
-if [ "$rc" -eq 1 ] && [ "$out" = "AUDIT UNMATCHED - 10:00 [t1] from=judge forged" ]; then
+if [ "$rc" -eq 1 ] && [ "$out" = "AUDIT UNMATCHED - 10:00 [t1] from=console forged" ]; then
     pass "an unrecorded token bullet is named and fails the audit"
 else
     fail "an unrecorded token bullet is named and fails the audit (rc=$rc out='$out')"

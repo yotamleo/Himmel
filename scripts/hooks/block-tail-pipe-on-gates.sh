@@ -563,7 +563,7 @@ EOF
 # printf, not echo: echo joins its arguments with a space, which would leave a
 # stray space at the head of every continuation line in this multi-line message.
 printf '%s\n' \
-  "block-tail-pipe-on-gates: DENIED — this pipes an exit-code-critical himmel gate command into tail/head. Unless the invoking shell has \`pipefail\` set (a Bash tool call cannot assume it does), \$? becomes tail's status (0) and the gate's real exit code is LOST. That misread is what made a gate orchestrator record CLEAR_RC=0 when clear-cr-marker.sh had exited 16 (HIMMEL-1696). Even under pipefail the \`| tail\` throws away the head of the output several incidents needed to diagnose." \
+  "block-tail-pipe-on-gates: DENIED — this pipes an exit-code-critical himmel gate command into tail/head. Unless the invoking shell has \`pipefail\` set (a Bash tool call cannot assume it does), \$? becomes tail's status (0) and the gate's real exit code is LOST. That misread is what made a session record CLEAR_RC=0 when clear-cr-marker.sh had exited 16 (HIMMEL-1696). Even under pipefail the \`| tail\` throws away the head of the output several incidents needed to diagnose." \
   "Offending pipeline:" \
   "    $(printf '%s' "$offender" | sed 's/^[[:space:]]*//')" \
   "Use the redirect shape instead — it keeps the exit code AND the full output you would otherwise throw away:" \

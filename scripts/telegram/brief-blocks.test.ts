@@ -26,6 +26,12 @@ test("composeRetaskBlock embeds the token and the fail-safe narrowing/expansion 
   expect(block).toMatch(/tool-permission envelope\s+never changes by message/i);
 });
 
+test("composeRetaskBlock names the console (or dispatching parent) as the sender, not a 'coordinator' (HIMMEL-3136 R3)", () => {
+  const block = composeRetaskBlock("deadbeef");
+  expect(block).toContain("Your console (or dispatching parent) may revise this brief");
+  expect(block).not.toMatch(/coordinator/i);
+});
+
 test("composeBashShapeWarning names the deny-fast behavior (HIMMEL-1378), not a hang", () => {
   const w = composeBashShapeWarning("/sess/glm-a-1/outbox.jsonl");
   expect(w).toMatch(/dontAsk/);

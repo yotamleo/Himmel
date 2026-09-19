@@ -308,15 +308,15 @@
 # failure mode; only a caller that sets HEADED_ARM_RECORDER=1 pays for the
 # extra tty layer.
 #
-# --role (HIMMEL-2975, renamed HIMMEL-3133): an optional leading `--role
-# relay|console` flag, ahead of the positionals, for the console arm path
-# only. `console` clears HIMMEL_CONSOLE_RELAY from the child env (so a
+# --role (HIMMEL-2975, renamed HIMMEL-3133; HIMMEL-3136 R1): an optional
+# leading `--role console` flag, ahead of the positionals, for the console arm
+# path only. `console` clears HIMMEL_CONSOLE_RELAY from the child env (so a
 # console session never inherits a relay marker from whatever armed it) and
-# stamps `role=console` on the `armed:` log line. `relay` refuses outright
-# (exit 2): a relay is a LEG, armed via headed-arm-leg.sh --relay (Task 25,
-# #752), never through this console-oriented launcher. Omitting --role keeps
-# today's behaviour byte-identical (`role=unsplit` on the log line, no env
-# change).
+# stamps `role=console` on the `armed:` log line. It is the ONLY accepted
+# value: a relay is a LEG, armed via headed-arm-leg.sh --relay (Task 25,
+# #752), never through this console-oriented launcher, so it is not a role
+# here. Omitting --role keeps today's behaviour byte-identical
+# (`role=unsplit` on the log line, no env change).
 #
 # --dry-run (HIMMEL-3140): prints the resolved argv this would hand to
 # konsole, plus the env it would apply, and exits 0 -- BEFORE the
@@ -331,7 +331,7 @@
 set -u
 
 usage() {
-    echo "usage: headed-arm.sh [--dry-run] [--role relay|console] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model] [context: 1m|standard]" >&2
+    echo "usage: headed-arm.sh [--dry-run] [--role console] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model] [context: 1m|standard]" >&2
 }
 
 ROLE=""
@@ -347,13 +347,9 @@ while :; do
             ROLE="$2"
             case "$ROLE" in
                 console) : ;;
-                relay)
-                    echo "headed-arm.sh: a relay is a leg: launch it with headed-arm-leg.sh --relay" >&2
-                    exit 2
-                    ;;
                 *)
                     usage
-                    echo "headed-arm.sh: --role must be relay or console, got: $ROLE" >&2
+                    echo "headed-arm.sh: --role must be console, got: $ROLE" >&2
                     exit 2
                     ;;
             esac

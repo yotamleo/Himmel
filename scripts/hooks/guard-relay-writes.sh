@@ -2,14 +2,16 @@
 # guard-relay-writes.sh — PreToolUse hook (matchers "Bash" and
 # "Edit|Write|MultiEdit|NotebookEdit"): [HIMMEL-2975] Guard D.
 #
-# HIMMEL-2975 splits a console into a Sonnet RELAY and a Fable JUDGE.
+# HIMMEL-2975 splits a console's duties: a Sonnet RELAY carries its tokenless
+# traffic, and a JUDGE only advises -- the console alone sends token-quoting
+# messages.
 # headed-arm-leg.sh --relay (Task 25, #752) exports HIMMEL_CONSOLE_RELAY=1
 # into the relay leg. Guard D denies the relay every write channel into
 # console state — the inbox dir, every leg handover doc, the console rundir
 # under /run/user or $TMPDIR — and denies the Bash shapes that would defeat
 # Guard B (env-prefix override of the identity/marker vars this leg's own
 # session-name resolution and inbox-send.sh's relay check read) and Guard C
-# (inbox-send.sh --token, reserved for the judge).
+# (inbox-send.sh --token, reserved for the console).
 #
 # Platform guard (gitbash-only): Git Bash on Windows / any POSIX bash 3.2+.
 # Not ported to native PowerShell — the console relay lane
@@ -73,7 +75,7 @@
 # e.g. `sed -n 1,20p <inbox-path>`, `grep -c address <inbox-path>` (matches
 # "dd" in "address"), `grep form <leg-doc-path>` (matches "rm" in "form"). A
 # relay that needs to read a guarded path should use cat/head/tail/grep with
-# wording that avoids these substrings, or accept the deny and ask the judge
+# wording that avoids these substrings, or accept the deny and ask the console
 # to relay the content instead — over-denying a read is the safe direction
 # for this guard and is left uncorrected rather than widening the match logic
 # further.

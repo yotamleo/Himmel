@@ -4,8 +4,8 @@
 #
 # A console is a long-running headed Claude session that holds a queue lock
 # on its own handover document, runs monitors, dispatches implementation
-# legs, rules on their questions, relays merges, and arms its own successor
-# when its context fills. This script packages what an operator used to do
+# legs, acts on the rulings on their questions, merges on GO, and arms its own
+# successor when its context fills. This script packages what an operator used to do
 # by hand:
 #   console.sh new  — write the console doc + acquire its queue lock, print
 #                     the launch line.
@@ -13,22 +13,18 @@
 #                     HANDOFF skeleton, print the launch line.
 #
 # Env seams: HANDOVER_DIR / USER_SLUG / JIRA_PROJECT_KEY (via .env, see
-# load-dotenv.sh); CONSOLE_BUCKET, CONSOLE_DOC, CONSOLE_MODEL, CONSOLE_ROLE
-# (HIMMEL-2975, renamed HIMMEL-3133: console|relay, forwarded to
-# headed-arm.sh as --role on --arm;
-# headed-arm.sh itself refuses relay -- a relay is a leg, armed via
-# headed-arm-leg.sh --relay, never through this console path),
+# load-dotenv.sh); CONSOLE_BUCKET, CONSOLE_DOC, CONSOLE_MODEL,
 # CONSOLE_FILL_PERCENT, CONSOLE_TEMPLATE_DIR, CONSOLE_WORK_DIR (default:
 # $XDG_RUNTIME_DIR/himmel-console when set and owned by this uid, else
 # ${TMPDIR:-/tmp}/himmel-console-<uid>; an override is validated the same as
 # the default — see HIMMEL-2881 below), CONSOLE_HEADED_ARM,
 # CONSOLE_ARM_FOREGROUND (test seam: run the arm in the foreground instead of
 # detaching it).
-# Flag seams: --name (both commands; on next it selects which chain to
-# continue) --arm --dry-run --model --bucket --prefix --deadline-min --doc
+# Flag seams: --name (both commands; on next it selects which console
+# succession to continue) --arm --dry-run --model --bucket --prefix --deadline-min --doc
 # --date (next only; overrides the day used for the SUCCESSOR's own name --
 # HIMMEL-2984 -- letting a 23:5x console pre-mint tomorrow's A without
-# waiting for midnight; passing --date always starts that day's chain at A,
+# waiting for midnight; passing --date always starts that day's succession at A,
 # while omitting it continues the predecessor's own bijective sequence (Z ->
 # AA -> ... -> ZZ) regardless of whether the calendar day rolled over since).
 # See `-h`/`--help` for the full surface.
@@ -81,11 +77,11 @@ usage: console.sh new  [--name <slug>] [--arm] [--dry-run] [--model <m>]
                        [--prefix <P>] [--deadline-min <n>]
        console.sh -h|--help
 
---name on next selects which chain to continue; defaults to the name
+--name on next selects which console succession to continue; defaults to the name
 implied by --doc's own basename when --doc is given and --name is not,
 else "console".
 --date on next overrides the day used for the successor's own name and
-starts that day's chain at letter A; without --date the successor
+starts that day's succession at letter A; without --date the successor
 continues the predecessor's own bijective letter sequence (rolling past Z
 into AA, AB, ... as needed) regardless of whether the calendar day has
 rolled over since.
@@ -198,34 +194,19 @@ find_free_letter() {
 # (constant for the whole invocation), not passed positionally.
 do_arm() {
     local session="$1" doc="$2" fill_signal="$3" log="$4" arm
-    local -a role_args=()
-    # HIMMEL-2975, renamed HIMMEL-3133: CONSOLE_ROLE (console) is forwarded to
-    # headed-arm.sh as a leading --role, ONLY when set. `relay` and any other
-    # value are refused HERE, before the detached launch -- headed-arm.sh
-    # itself also refuses --role relay (a relay is a leg, never armed through
-    # this console path), but that refusal happens in a background process
-    # the caller cannot see, so validating up front is what keeps a bad role
-    # from printing armed:.
-    case "${CONSOLE_ROLE:-}" in
-        "") ;;
-        console) role_args=(--role console) ;;
-        relay)
-            err "relay consoles must use headed-arm-leg.sh --relay"
-            return 2
-            ;;
-        *)
-            err "CONSOLE_ROLE must be console, got: $CONSOLE_ROLE"
-            return 2
-            ;;
-    esac
+    # HIMMEL-3136 R2: CONSOLE_ROLE is retired (its only working value was the
+    # implicit default; a relay is a leg, armed via headed-arm-leg.sh --relay,
+    # never through this console path). A console is what console.sh arms, so
+    # nothing is forwarded to headed-arm.sh's --role; a stale CONSOLE_ROLE in
+    # the environment is ignored.
     mkdir -p "$(dirname "$log")"
     arm="${CONSOLE_HEADED_ARM:-$HERE/../headed-arm.sh}"
     if [ "${CONSOLE_ARM_FOREGROUND:-0}" = "1" ]; then
-        bash "$arm" "${role_args[@]}" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model"
+        bash "$arm" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model"
     elif command -v setsid >/dev/null 2>&1; then
-        setsid nohup bash "$arm" "${role_args[@]}" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model" >/dev/null 2>&1 &
+        setsid nohup bash "$arm" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model" >/dev/null 2>&1 &
     else
-        nohup bash "$arm" "${role_args[@]}" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model" >/dev/null 2>&1 &
+        nohup bash "$arm" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model" >/dev/null 2>&1 &
     fi
     echo "armed: name=$session doc=$doc signal=$fill_signal deadline=$deadline_epoch log=$log"
     echo "arm-log: $log"

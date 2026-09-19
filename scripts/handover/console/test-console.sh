@@ -1163,11 +1163,11 @@ check "54 --date= prints a usage line" "$(printf '%s\n' "$out54" | grep -c '^usa
 out55="$(console next --bucket dateval --dry-run --date "2026-09-14" --doc "$docZval")"
 check "55 a real --date still mints the successor" "$(printf '%s\n' "$out55" | grep -c '^would-doc: .*2026-09-14A-console.md$')" "1"
 
-# --- 56/57 (HIMMEL-2975, renamed HIMMEL-3133): CONSOLE_ROLE pass-through to
-# headed-arm.sh's --role, ahead of the positionals, only when set. Each stub
-# records its FULL "$*" to a fixed path baked into the stub itself (never a
-# positional like $5) -- --role console shifts every downstream position by
-# two, so a positional-indexed record would silently read the wrong field.
+# --- 56/57 (HIMMEL-2975, renamed HIMMEL-3133; HIMMEL-3136 R2): CONSOLE_ROLE is
+# retired -- console is implicit, so do_arm never hands headed-arm.sh a
+# --role. Each stub records its FULL "$*" to a fixed path baked into the stub
+# itself (never a positional like $5), so an unexpected leading --role shows
+# up as a record line rather than a silently shifted field.
 doc56A="$root/tester/rolerepo/DEMO-nextleg-${today}A-console.md"
 record56="$tmp/role-record-56"
 cat > "$tmp/stub-arm-role-56.sh" <<STUB
@@ -1183,8 +1183,9 @@ out56b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PR
     CONSOLE_ROLE=console \
     bash "$C" next --bucket rolerepo --arm --deadline-min 0 ) )"
 check "56 next --arm reports armed" "$(printf '%s\n' "$out56b" | grep -c '^armed: ')" "1"
-check "56 CONSOLE_ROLE=console: stub record starts with --role console" \
-    "$(grep -c '^--role console ' "$record56" 2>/dev/null)" "1"
+check "56 CONSOLE_ROLE=console (retired): the stub was invoked" "$(grep -c '' "$record56" 2>/dev/null)" "1"
+check "56 CONSOLE_ROLE=console (retired): stub record has no --role" \
+    "$(grep -c -- '--role' "$record56" 2>/dev/null)" "0"
 HANDOVER_DIR="$root" bash "$QL" release "$doc56A" "$token56a" >/dev/null 2>&1
 
 doc57A="$root/tester/rolerepo2/DEMO-nextleg-${today}A-console.md"
@@ -1205,11 +1206,10 @@ check "57 no CONSOLE_ROLE: stub record has no --role" \
     "$(grep -c -- '--role' "$record57" 2>/dev/null)" "0"
 HANDOVER_DIR="$root" bash "$QL" release "$doc57A" "$token57a" >/dev/null 2>&1
 
-# --- 58/59 (HIMMEL-2975 CR round 1, PR #754): do_arm must reject relay and
-# any invalid CONSOLE_ROLE BEFORE the detached launch, not rely on
-# headed-arm.sh's own refusal -- that refusal runs in a background process
-# the caller cannot see, so without this check console.sh printed "armed:"
-# and exited 0 even though nothing started.
+# --- 58 (HIMMEL-3136 R2): a stale CONSOLE_ROLE=relay in the environment no
+# longer refuses the arm -- the retired variable is ignored, the stub IS
+# invoked and no --role reaches it. (Was 58/59: relay/bogus exited 2 before the
+# detached launch.)
 doc58A="$root/tester/rolerepo3/DEMO-nextleg-${today}A-console.md"
 record58="$tmp/role-record-58"
 cat > "$tmp/stub-arm-role-58.sh" <<STUB
@@ -1225,32 +1225,12 @@ out58b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PR
     CONSOLE_HEADED_ARM="$tmp/stub-arm-role-58.sh" CONSOLE_ARM_FOREGROUND=1 CONSOLE_WORK_DIR="$tmp/work" \
     CONSOLE_ROLE=relay \
     bash "$C" next --bucket rolerepo3 --arm --deadline-min 0 ) 2>&1 )" || rc58b=$?
-check "58 CONSOLE_ROLE=relay: exits 2" "$rc58b" "2"
-check "58 CONSOLE_ROLE=relay: no armed line" "$(printf '%s\n' "$out58b" | grep -c '^armed: ')" "0"
-check "58 CONSOLE_ROLE=relay: stub never invoked" "$([ -e "$record58" ] && echo 1 || echo 0)" "0"
+check "58 CONSOLE_ROLE=relay (retired): exits 0" "$rc58b" "0"
+check "58 CONSOLE_ROLE=relay (retired): armed line printed" "$(printf '%s\n' "$out58b" | grep -c '^armed: ')" "1"
+check "58 CONSOLE_ROLE=relay (retired): stub invoked" "$([ -e "$record58" ] && echo 1 || echo 0)" "1"
+check "58 CONSOLE_ROLE=relay (retired): stub record has no --role" \
+    "$(grep -c -- '--role' "$record58" 2>/dev/null)" "0"
 HANDOVER_DIR="$root" bash "$QL" release "$doc58A" "$token58a" >/dev/null 2>&1
-
-doc59A="$root/tester/rolerepo4/DEMO-nextleg-${today}A-console.md"
-record59="$tmp/role-record-59"
-cat > "$tmp/stub-arm-role-59.sh" <<STUB
-#!/usr/bin/env bash
-printf '%s\n' "\$*" >> "$record59"
-STUB
-chmod +x "$tmp/stub-arm-role-59.sh"
-
-out59a="$(console new --bucket rolerepo4)"
-token59a="$(token_of "$out59a")"
-rc59b=0
-out59b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
-    CONSOLE_HEADED_ARM="$tmp/stub-arm-role-59.sh" CONSOLE_ARM_FOREGROUND=1 CONSOLE_WORK_DIR="$tmp/work" \
-    CONSOLE_ROLE=bogus \
-    bash "$C" next --bucket rolerepo4 --arm --deadline-min 0 ) 2>&1 )" || rc59b=$?
-check "59 CONSOLE_ROLE=bogus: exits 2" "$rc59b" "2"
-check "59 CONSOLE_ROLE=bogus: no armed line" "$(printf '%s\n' "$out59b" | grep -c '^armed: ')" "0"
-check "59 CONSOLE_ROLE=bogus: stub never invoked" "$([ -e "$record59" ] && echo 1 || echo 0)" "0"
-check "59 CONSOLE_ROLE=bogus: error names 'console' as the valid role" \
-    "$(printf '%s\n' "$out59b" | grep -c 'CONSOLE_ROLE must be console, got: bogus')" "1"
-HANDOVER_DIR="$root" bash "$QL" release "$doc59A" "$token59a" >/dev/null 2>&1
 
 # --- 60: HIMMEL-2973 Delta 6 -- `next` copies the predecessor's
 # `## Live state` verbatim into the successor's HANDOFF `## In flight`

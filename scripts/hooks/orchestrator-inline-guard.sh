@@ -349,7 +349,7 @@ if [ "$is_default" = "1" ]; then
     # Resolved, but not a PR branch — same allow + advisory arm as an
     # unresolvable branch, and no spend recorded against the default branch.
     fire_log allow-default-branch
-    jq -nc --arg ctx "You are the orchestrating parent; this looks like implementation. Dispatch it to a worker lane (CLAUDE.md subagent policy) — one trivial CR-fix exemption per PR already spent? (branch '$branch' resolved from $branch_src is the repo's default branch, not a PR — inline budget not tracked for this edit)" \
+    jq -nc --arg ctx "You are the dispatching parent; this looks like implementation. Dispatch it to a worker lane (CLAUDE.md subagent policy) — one trivial CR-fix exemption per PR already spent? (branch '$branch' resolved from $branch_src is the repo's default branch, not a PR — inline budget not tracked for this edit)" \
         '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"allow",additionalContext:$ctx}}'
     exit 0
 fi
@@ -358,7 +358,7 @@ case "$branch" in
         # Unresolvable/detached branch — allow, but keep the phase-1 advisory
         # visible so a qualifying edit never passes in total silence.
         fire_log allow-no-branch
-        jq -nc --arg ctx "You are the orchestrating parent; this looks like implementation. Dispatch it to a worker lane (CLAUDE.md subagent policy) — one trivial CR-fix exemption per PR already spent? (branch unresolvable from $branch_src — inline budget not tracked for this edit)" \
+        jq -nc --arg ctx "You are the dispatching parent; this looks like implementation. Dispatch it to a worker lane (CLAUDE.md subagent policy) — one trivial CR-fix exemption per PR already spent? (branch unresolvable from $branch_src — inline budget not tracked for this edit)" \
             '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"allow",additionalContext:$ctx}}'
         exit 0
         ;;
@@ -449,11 +449,11 @@ if [ ! -f "$state_path" ]; then
         && [ -f "$state_path" ] && write_ok=1
     if [ "$write_ok" = "1" ]; then
         fire_log exempt-allow
-        first_ctx="You are the orchestrating parent; this looks like implementation — recorded as the ONE per-PR inline exemption for branch '$branch' (resolved from $branch_src; HIMMEL-1791). The next inline implementation edit on this branch will be DENIED: dispatch it instead via the Agent tool with an explicit model tier (CLAUDE.md subagent policy — haiku/sonnet/opus/fable, see /lanes; HIMMEL-1967: impl routes to native Claude subagents only, not scripts/telegram/dispatch-lane.sh)"
+        first_ctx="You are the dispatching parent; this looks like implementation — recorded as the ONE per-PR inline exemption for branch '$branch' (resolved from $branch_src; HIMMEL-1791). The next inline implementation edit on this branch will be DENIED: dispatch it instead via the Agent tool with an explicit model tier (CLAUDE.md subagent policy — haiku/sonnet/opus/fable, see /lanes; HIMMEL-1967: impl routes to native Claude subagents only, not scripts/telegram/dispatch-lane.sh)"
     else
         warn "cannot record inline-exemption state ($state_path) — allowing anyway (budget not spent)"
         fire_log exempt-allow-unrecorded
-        first_ctx="You are the orchestrating parent; this looks like implementation — allowed, but the per-PR inline exemption could NOT be recorded (state write failed, HIMMEL-1791): the budget was NOT spent, so later inline edits will not be denied by this gate. Dispatching remains the sanctioned path: the Agent tool with an explicit model tier (CLAUDE.md subagent policy; HIMMEL-1967: impl routes to native Claude subagents only, not scripts/telegram/dispatch-lane.sh)"
+        first_ctx="You are the dispatching parent; this looks like implementation — allowed, but the per-PR inline exemption could NOT be recorded (state write failed, HIMMEL-1791): the budget was NOT spent, so later inline edits will not be denied by this gate. Dispatching remains the sanctioned path: the Agent tool with an explicit model tier (CLAUDE.md subagent policy; HIMMEL-1967: impl routes to native Claude subagents only, not scripts/telegram/dispatch-lane.sh)"
     fi
     # permissionDecision:"allow" is the phase-1 idiom this hook shipped with
     # (052711a0: auto-approve-safe-bash.sh / guard-memory-capture.sh
@@ -502,7 +502,7 @@ case "$spent_ts" in
     [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) ;;
     *) spent_ts="earlier" ;;
 esac
-deny_msg="You are the orchestrating parent and this is implementation — DENIED. The ONE per-PR inline
+deny_msg="You are the dispatching parent and this is implementation — DENIED. The ONE per-PR inline
 exemption for branch '$branch' (resolved from $branch_src) is already spent (recorded $spent_ts; CLAUDE.md subagent policy:
 from the second CR round on, batch the remaining findings to a worker lane in shared-branch
 mode). Per PR, not per round — round counting is the drift this gate exists to stop.

@@ -1329,8 +1329,8 @@ else
   fails=$((fails+1))
 fi
 
-# --- 38 (HIMMEL-2975, renamed HIMMEL-3133). --role relay|console on the
-# console arm path -----------------------------------------------------------
+# --- 38 (HIMMEL-2975, renamed HIMMEL-3133; HIMMEL-3136 R1). --role console (the
+# only accepted value) on the console arm path --------------------------------
 # 38a. --role console unsets HIMMEL_CONSOLE_RELAY in the child env and stamps
 # role=console on the armed: log line.
 d38a="$tmp/c38a"; mk_stub "$d38a" 1 alive "HIMMEL-role38a"
@@ -1356,11 +1356,14 @@ rec38b="$(cat "$d38b/record" 2>/dev/null || true)"
 check "38b --role console with inherited HIMMEL_CONSOLE_RELAY=1: exit 0" "$rc38b" "0"
 contains "38b --role console with inherited HIMMEL_CONSOLE_RELAY=1: still cleared in the child argv" "$rec38b" "-u HIMMEL_CONSOLE_RELAY"
 
-# 38c. --role relay refuses outright: a relay is a leg, not a console arm.
+# 38c. --role relay is no longer a value at all (HIMMEL-3136 R1): it is refused
+# by the same "must be console" branch as any other unknown value, and neither
+# the error nor the usage line advertises relay as valid.
 outc38c=$(bash "$SCRIPT" --role relay "HIMMEL-role38c" "doc38c.md" "$tmp/signal-never-38c" "$PAST" "$tmp/log38c" 2>&1)
 rc38c=$?
 check "38c --role relay: exit 2" "$rc38c" "2"
-contains "38c --role relay: refuses with headed-arm-leg.sh --relay" "$outc38c" "headed-arm-leg.sh --relay"
+contains "38c --role relay: error names 'console' as the only valid role" "$outc38c" "--role must be console, got: relay"
+not_contains "38c --role relay: usage does not advertise relay as a valid role" "$outc38c" "relay|console"
 
 # 38d. --role bogus: exit 2 + usage. The unknown-role message must name the
 # new spelling (HIMMEL-3133) -- a passing exit code alone doesn't prove the
@@ -1369,7 +1372,8 @@ outd38d=$(bash "$SCRIPT" --role bogus "HIMMEL-role38d" "doc38d.md" "$tmp/signal-
 rc38d=$?
 check "38d --role bogus: exit 2" "$rc38d" "2"
 contains "38d --role bogus: usage text" "$outd38d" "usage: headed-arm.sh"
-contains "38d --role bogus: error names 'console' as the valid role" "$outd38d" "--role must be relay or console, got: bogus"
+contains "38d --role bogus: error names 'console' as the valid role" "$outd38d" "--role must be console, got: bogus"
+not_contains "38d --role bogus: error does not advertise relay as valid" "$outd38d" "relay or console"
 
 # 38e. --role with no value: exit 2.
 oute38e=$(bash "$SCRIPT" --role 2>&1)

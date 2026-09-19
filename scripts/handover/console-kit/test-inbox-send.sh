@@ -126,22 +126,22 @@ fi
 # --- HIMMEL-2975: author line + relay --token refusal -----------------------
 SESSION23="HIMMEL-2975-relay-test"
 INBOX23="$HANDOVER_DIR/inbox/$SESSION23.md"
-CMDLINE_JUDGE="$WORK/cmdline-judge"
-printf 'claude\0-n\0HIMMEL-judge-console\0' > "$CMDLINE_JUDGE"
+CMDLINE_CONSOLE="$WORK/cmdline-console"
+printf 'claude\0-n\0HIMMEL-sender-console\0' > "$CMDLINE_CONSOLE"
 
 # Case 8: a token bullet carries the sender's own session name as from=.
-out="$(CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_JUDGE" bash "$SCRIPT" "$SESSION23" hello --token t1 2>&1)"; rc=$?
+out="$(CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_CONSOLE" bash "$SCRIPT" "$SESSION23" hello --token t1 2>&1)"; rc=$?
 last="$(tail -n1 "$INBOX23" 2>/dev/null)"
-if [ "$rc" -eq 0 ] && printf '%s' "$last" | grep -Eq '^- [0-9]{2}:[0-9]{2} \[t1\] from=HIMMEL-judge-console hello$'; then
+if [ "$rc" -eq 0 ] && printf '%s' "$last" | grep -Eq '^- [0-9]{2}:[0-9]{2} \[t1\] from=HIMMEL-sender-console hello$'; then
     pass "token bullet carries from=<sender session>"
 else
     fail "token bullet carries from=<sender session> (rc=$rc last='$last' out='$out')"
 fi
 
 # Case 9: CONSOLE_SESSION_NAME is ignored -- author is process-derived only.
-out="$(CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_JUDGE" CONSOLE_SESSION_NAME=forged bash "$SCRIPT" "$SESSION23" hello2 --token t2 2>&1)"; rc=$?
+out="$(CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_CONSOLE" CONSOLE_SESSION_NAME=forged bash "$SCRIPT" "$SESSION23" hello2 --token t2 2>&1)"; rc=$?
 last="$(tail -n1 "$INBOX23" 2>/dev/null)"
-if [ "$rc" -eq 0 ] && printf '%s' "$last" | grep -Eq '^- [0-9]{2}:[0-9]{2} \[t2\] from=HIMMEL-judge-console hello2$'; then
+if [ "$rc" -eq 0 ] && printf '%s' "$last" | grep -Eq '^- [0-9]{2}:[0-9]{2} \[t2\] from=HIMMEL-sender-console hello2$'; then
     pass "CONSOLE_SESSION_NAME cannot forge the author"
 else
     fail "CONSOLE_SESSION_NAME cannot forge the author (rc=$rc last='$last' out='$out')"
@@ -159,18 +159,20 @@ fi
 
 # Case 11: a relay cannot send --token, even with a resolvable author.
 before="$(wc -c < "$INBOX23" 2>/dev/null | tr -d '[:space:]')"
-out="$(CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_JUDGE" HIMMEL_CONSOLE_RELAY=1 bash "$SCRIPT" "$SESSION23" hello4 --token t4 2>&1)"; rc=$?
+out="$(CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_CONSOLE" HIMMEL_CONSOLE_RELAY=1 bash "$SCRIPT" "$SESSION23" hello4 --token t4 2>&1)"; rc=$?
 after="$(wc -c < "$INBOX23" 2>/dev/null | tr -d '[:space:]')"
-if [ "$rc" -eq 3 ] && [ "$before" = "$after" ] && printf '%s' "$out" | grep -qi relay; then
-    pass "relay refuses --token"
+if [ "$rc" -eq 3 ] && [ "$before" = "$after" ] && printf '%s' "$out" | grep -qi relay \
+    && printf '%s' "$out" | grep -qF 'only the console sends token-quoting messages' \
+    && ! printf '%s' "$out" | grep -qi judge; then
+    pass "relay refuses --token (names the console, not the judge, as the token sender: HIMMEL-3136)"
 else
     fail "relay refuses --token (rc=$rc before=$before after=$after out='$out')"
 fi
 
 # Case 12: a relay CAN send a no-token bullet, carrying its own author.
-out="$(CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_JUDGE" HIMMEL_CONSOLE_RELAY=1 bash "$SCRIPT" "$SESSION23" halt 2>&1)"; rc=$?
+out="$(CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_CONSOLE" HIMMEL_CONSOLE_RELAY=1 bash "$SCRIPT" "$SESSION23" halt 2>&1)"; rc=$?
 last="$(tail -n1 "$INBOX23" 2>/dev/null)"
-if [ "$rc" -eq 0 ] && printf '%s' "$last" | grep -Eq '^- [0-9]{2}:[0-9]{2} from=HIMMEL-judge-console halt$'; then
+if [ "$rc" -eq 0 ] && printf '%s' "$last" | grep -Eq '^- [0-9]{2}:[0-9]{2} from=HIMMEL-sender-console halt$'; then
     pass "relay's no-token bullet carries from=<sender session>"
 else
     fail "relay's no-token bullet carries from=<sender session> (rc=$rc last='$last' out='$out')"
@@ -259,17 +261,17 @@ else
     fail "pre-existing lock directory left at $lock_mode instead of 700"
 fi
 
-# --- HIMMEL-2980: judge-side inbox sent-record -----------------------------
+# --- HIMMEL-2980: console-side inbox sent-record -----------------------------
 RUNDIR="$WORK/rundir"
 export HIMMEL_CONSOLE_RUNDIR="$RUNDIR"
-LEDGER="$RUNDIR/HIMMEL-judge-console/inbox-sent.log"
+LEDGER="$RUNDIR/HIMMEL-sender-console/inbox-sent.log"
 
 SESSION28="HIMMEL-2980-ledger-test"
 INBOX28="$HANDOVER_DIR/inbox/$SESSION28.md"
 
 # Case 14: a --token send writes exactly one ledger line whose 4th field is
 # the sha256 of the bullet as appended.
-out="$(CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_JUDGE" bash "$SCRIPT" "$SESSION28" ledgered --token lt1 2>&1)"; rc=$?
+out="$(CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_CONSOLE" bash "$SCRIPT" "$SESSION28" ledgered --token lt1 2>&1)"; rc=$?
 bullet_line="$(tail -n1 "$INBOX28" 2>/dev/null)"
 expected_sha="$(printf '%s' "$bullet_line" | sha256sum | cut -d' ' -f1)"
 ledger_lines="$(wc -l < "$LEDGER" 2>/dev/null | tr -d '[:space:]')"
@@ -304,7 +306,7 @@ fi
 
 # Case 16: a relay-refused --token send (rc 3) writes no ledger line.
 before_lines="$(wc -l < "$LEDGER" 2>/dev/null | tr -d '[:space:]')"
-out="$(CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_JUDGE" HIMMEL_CONSOLE_RELAY=1 bash "$SCRIPT" "$SESSION28" relay-toked --token lt2 2>&1)"; rc=$?
+out="$(CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_CONSOLE" HIMMEL_CONSOLE_RELAY=1 bash "$SCRIPT" "$SESSION28" relay-toked --token lt2 2>&1)"; rc=$?
 after_lines="$(wc -l < "$LEDGER" 2>/dev/null | tr -d '[:space:]')"
 if [ "$rc" -eq 3 ] && [ "$after_lines" = "$before_lines" ]; then
     pass "a relay-refused --token send writes no ledger line"
@@ -313,7 +315,7 @@ else
 fi
 
 # Case 17: the ledger directory is created at mode 700.
-ledger_mode="$(stat -c '%a' "$RUNDIR/HIMMEL-judge-console" 2>/dev/null || stat -f '%Lp' "$RUNDIR/HIMMEL-judge-console" 2>/dev/null)"
+ledger_mode="$(stat -c '%a' "$RUNDIR/HIMMEL-sender-console" 2>/dev/null || stat -f '%Lp' "$RUNDIR/HIMMEL-sender-console" 2>/dev/null)"
 if [ "$ledger_mode" = "700" ]; then
     pass "ledger directory is created at mode 700"
 else

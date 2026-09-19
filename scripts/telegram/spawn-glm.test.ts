@@ -2144,6 +2144,12 @@ test("composeRetaskBlock embeds the token and the fail-safe narrowing/expansion 
   expect(block).toMatch(/tool-permission envelope\s+never changes by message/i);
 });
 
+test("composeRetaskBlock names the console (or dispatching parent) as the sender, not a 'coordinator' (HIMMEL-3136 R3)", () => {
+  const block = composeRetaskBlock("deadbeef");
+  expect(block).toContain("Your console (or dispatching parent) may revise this brief");
+  expect(block).not.toMatch(/coordinator/i);
+});
+
 test("composeWorkerPrompt carries a fresh RETASK block on every dispatch (own + shared mode)", () => {
   const own = composeWorkerPrompt("do X", "/tmp/gs/glm-a-1", "glm/a");
   const shared = composeWorkerPrompt("do X", "/tmp/gs/glm-a-1", "feat/live-pr", { shared: true });

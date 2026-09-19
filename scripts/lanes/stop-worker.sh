@@ -8,10 +8,11 @@
 # WHY THIS EXISTS: a dispatched worker could not be stopped. `taskkill` is
 # hard-blocked by scripts/hooks/block-destructive-commands.sh (correctly -- the
 # general no-process-termination rule must stay), spawn-claudex has no in-band
-# halt channel, and no stop helper existed anywhere. A judge who discovered a
-# dispatch was redundant had to let it burn its full 45-minute timebox. The
-# house model is judge -> N lanes with the judge expected to "watchdog
-# executors"; watchdogging without a stop primitive is not watchdogging.
+# halt channel, and no stop helper existed anywhere. A console (or any
+# dispatching parent) that discovered a dispatch was redundant had to let it
+# burn its full 45-minute timebox. The house model is a dispatching parent -> N
+# lanes, the parent expected to "watchdog executors"; watchdogging without a
+# stop primitive is not watchdogging.
 #
 # AUTHORIZATION IS THE REGISTRY, NOT A SECRET. The target is resolved through
 # the lane session registry -- never a raw pid handed in by a caller -- so this
@@ -311,7 +312,7 @@ fi
 
 # annotate_halt <meta.json> <checkpoint-result> <status> -- record status/
 # exit_code/pid/stopped_at/stop_checkpoint so a later reader (census,
-# reconciliation, the judge) does not read a no-longer-running worker as
+# reconciliation, the console) does not read a no-longer-running worker as
 # "running". Shared by every exit path below that concludes a worker is gone,
 # so each one stays truthful the same way TERM_RC=3 already was. Best-effort:
 # the process is already gone either way, and failing to annotate must not
@@ -502,7 +503,7 @@ case "$TERM_RC" in
         ;;
 esac
 
-# Record the halt so a later reader (census, reconciliation, the judge) does not
+# Record the halt so a later reader (census, reconciliation, the console) does not
 # read a stopped worker as still running. TERM_RC=3 (already exited before any
 # signal was sent) is recorded as "already-exited", never "stopped-by-parent" --
 # that status must stay truthful about whether this chokepoint actually acted.

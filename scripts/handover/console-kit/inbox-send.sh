@@ -33,14 +33,14 @@
 #     leg's next tool call / resume.
 #
 # Exit 3 (HIMMEL-2975): --token refused — either the caller is a console
-# relay (HIMMEL_CONSOLE_RELAY is set; only the judge sends token-quoting
+# relay (HIMMEL_CONSOLE_RELAY is set; only the console sends token-quoting
 # bullets) or the sending session name cannot be resolved (no CLAUDE_PID /
 # -n). Nothing is written in either case. A no-token bullet always carries
 # from=<sender session>, falling back to from=unknown, and is never refused
 # on this account.
 #
 # Exit 4 (HIMMEL-2980): the inbox append succeeded and the token bullet was
-# delivered, but the judge-side sent-record ledger write that follows it
+# delivered, but the console-side sent-record ledger write that follows it
 # failed (cannot secure/create the per-sender ledger directory, or cannot
 # write the ledger line). The message is delivered either way — this is not
 # a retry cue, it is the detection gap itself: scripts/handover/console-kit/
@@ -154,7 +154,7 @@ esac
 stamp="$(date +%H:%M)"
 if [ -n "$token" ]; then
     if [ "$is_relay" -eq 1 ]; then
-        printf 'inbox-send: refusing --token from a console relay (HIMMEL-2975: only the judge sends token-quoting messages)\n' >&2
+        printf 'inbox-send: refusing --token from a console relay (HIMMEL-2975: only the console sends token-quoting messages)\n' >&2
         exit 3
     fi
     if [ -z "$author" ]; then
@@ -234,7 +234,7 @@ printf '%s\n' "$bullet" >> "$inbox" || exit 2
 # inbox that has no matching record — i.e. one this script never sent. Only
 # for token bullets: a no-token bullet carries no RETASK authority to forge,
 # so there is nothing here worth recording. Runs AFTER the inbox append
-# above: a ledger failure must never block delivery of a bullet the judge
+# above: a ledger failure must never block delivery of a bullet the console
 # already committed to sending (see exit 4 above).
 if [ -n "$token" ]; then
     ledger_base="${HIMMEL_CONSOLE_RUNDIR:-}"

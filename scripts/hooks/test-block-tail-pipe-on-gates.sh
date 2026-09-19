@@ -427,6 +427,13 @@ for needle in 'RC=$?' 'PIPESTATUS[0]' 'tail-pipe-ok:' 'clear-cr-marker.sh'; do
     fi
 done
 
+# HIMMEL-3136: the deny reason must not use "orchestrator" as a session role.
+if grep -qF -- 'made a session record CLEAR_RC=0' <<< "$msg" && ! grep -qiF -- 'orchestrator' <<< "$msg"; then
+    pass "deny reason names the session, not an 'orchestrator' role"
+else
+    fail "deny reason still uses 'orchestrator' as a role — got: $msg"
+fi
+
 # --- FAIL OPEN on anything unevaluable -------------------------------------
 assert_rc "PowerShell tool -> no decision" 0 "$(j_tool PowerShell 'bash scripts/check-ci.sh | tail')"
 assert_rc "Read tool -> no decision" 0 "$(j_tool Read 'x')"

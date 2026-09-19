@@ -37,7 +37,7 @@ OPENROUTER_ANTHROPIC_BASE_URL="${OPENROUTER_ANTHROPIC_BASE_URL:-https://openrout
 # context_length: 1000000): the 1M Claude tiers are NATIVELY 1M on OpenRouter;
 # do NOT append `:extended` (no such variant exists). Default is the judge tier.
 # Selectable without editing the launcher (OPENROUTER_MODEL env):
-#   anthropic/claude-opus-5   (default — judge/orchestrator tier, 1M)
+#   anthropic/claude-opus-5   (default — parent tier, 1M)
 #   anthropic/claude-fable-5  (the judgment/taste escalation tier)
 #   anthropic/claude-opus-5-fast
 #   anthropic/claude-sonnet-5
