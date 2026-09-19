@@ -1472,6 +1472,18 @@ case "$t60_out" in
     *NEEDS-RECONCILE*) fail "T60 a mixed failure is not labelled NEEDS-RECONCILE" "got: $t60_out" ;;
     *) pass "T60 a mixed failure is not labelled NEEDS-RECONCILE" ;;
 esac
+# T61: a report-class file that really differs still prints its plan row in
+# the same 13-column layout as the other actions (the content_equiv rewrite of
+# that branch must not shift the column).
+t53_seed t61
+mkdir -p "$T/_Templates" "$V/_Templates"
+printf 'template body\n' > "$T/_Templates/daily.md"
+printf 'vault body\n' > "$V/_Templates/daily.md"
+t61_out=$(run_upgrade --dry-run 2>&1)
+case "$t61_out" in
+    *"REPORT       _Templates/daily.md (template changed"*) pass "T61 REPORT plan row keeps its column alignment" ;;
+    *) fail "T61 REPORT plan row keeps its column alignment" "got: $t61_out" ;;
+esac
 
 echo
 if [ "$FAILED" -eq 0 ]; then echo "All upgrade tests passed."; else echo "$FAILED test(s) failed."; exit 1; fi

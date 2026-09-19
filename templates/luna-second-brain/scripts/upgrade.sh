@@ -854,7 +854,7 @@ process() {
                     PLAN+=("WRITE-NEW    $rel"); n_write=$((n_write+1))
                     [ "$execute" = 1 ] && { write_file "$src" "$dst" || WRITE_FAILURES=$((WRITE_FAILURES+1)); }
                 elif ! content_equiv "$src" "$dst" "$rel"; then
-                    PLAN+=("REPORT      $rel (template changed; review — not overwritten)"); n_report=$((n_report+1))
+                    PLAN+=("REPORT       $rel (template changed; review — not overwritten)"); n_report=$((n_report+1))
                 fi ;;
             jsonmerge|threeway) : ;;  # handled out-of-loop below
         esac

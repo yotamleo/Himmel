@@ -8,6 +8,12 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.45] — 2026-09-19
+
+### Fixed
+- `upgrade.sh` plan output: the `REPORT` row lost one space of its label
+  padding in 0.4.43 and no longer lined up with the other action rows.
+
 ## [0.4.44] — 2026-09-19
 
 ### Changed
