@@ -128,6 +128,27 @@ STUB
   fi
   echo 'exit 0' >> "$_dir/sudo"
   chmod +x "$_dir/sudo"
+  build_brew_stub "$_dir" "$_restore" 0
+}
+
+# build_brew_stub <dir> <restore_node:0|1> <rc> — bootstrap.sh's Darwin branch
+# runs `brew install node bun`, not `sudo apt-get`; on a macOS host the sudo stub
+# is never reached, so the install-calls.log contract needs a `brew` twin (same
+# log file, same node-restore switch, same exit code). Inert on Linux (HIMMEL-3177).
+build_brew_stub() {
+  local _dir="$1" _restore="$2" _rc="$3"
+  cat > "$_dir/brew" <<STUB
+#!/usr/bin/env bash
+printf 'brew: %s\n' "\$*" >> "$_dir/install-calls.log"
+STUB
+  if [ "$_restore" = "1" ]; then
+    cat >> "$_dir/brew" <<STUB
+ln -sf "$node_bin" "$_dir/node" 2>/dev/null || cp "$node_bin" "$_dir/node"
+chmod +x "$_dir/node" 2>/dev/null || true
+STUB
+  fi
+  echo "exit $_rc" >> "$_dir/brew"
+  chmod +x "$_dir/brew"
 }
 
 # build_aptget_stub <dir> — a no-op `apt-get` so bootstrap.sh's non-Darwin
@@ -254,6 +275,7 @@ printf 'sudo: %s\n' "\$*" >> "$stubG/install-calls.log"
 exit 1
 STUB
 chmod +x "$stubG/sudo"
+build_brew_stub "$stubG" 0 1
 cG=$(build_path "$stubG" uname dirname bash ln cp -- node)
 fixtureG="$work/shG-fixture"; build_bin_js_fixture "$fixtureG"
 set +e
