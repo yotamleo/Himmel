@@ -390,6 +390,9 @@ console.log(`bodies ${ok.got.length} ${ok.got.every((g, i) => g === `big${i + 1}
 console.log(`oversize ${run(500, real).calls.map((c) => c.n).join(",")}`);
 const bad = (label, cat) => console.log(`${label} ${(run(2500, cat).err || "NO-ERROR").replace(/[0-9a-f]{40}/g, "<sha>")}`);
 bad("truncated", (s, m, n) => { const r = real(s, m); return n === 2 ? { ...r, stdout: r.stdout.subarray(0, r.stdout.length - 5) } : r; });
+bad("nosep", (s, m, n) => { const r = real(s, m); return n === 2 ? { ...r, stdout: Buffer.concat([r.stdout.subarray(0, r.stdout.length - 2), r.stdout.subarray(r.stdout.length - 1)]) } : r; });
+bad("trailing", (s, m, n) => { const r = real(s, m); return n === 3 ? { ...r, stdout: Buffer.concat([r.stdout, Buffer.from("extra")]) } : r; });
+bad("badhdr", (s, m, n) => { const r = real(s, m); return n === 2 ? { ...r, stdout: Buffer.from(r.stdout.toString("latin1").replace(" 1000\n", " 1000 junk\n"), "latin1") } : r; });
 bad("badsha", (s, m, n) => { const r = real(s, m); return n === 2 ? { ...r, stdout: Buffer.concat([Buffer.from("0"), r.stdout.subarray(1)]) } : r; });
 bad("badsize", (s, m, n) => { const r = real(s, m); return n === 2 ? { ...r, stdout: Buffer.from(r.stdout.toString("latin1").replace(" 1000\n", " 999\n"), "latin1") } : r; });
 bad("failed", (s, m, n) => (n === 2 ? { status: 128, stderr: Buffer.from("boom"), stdout: Buffer.alloc(0) } : real(s, m)));
@@ -400,6 +403,9 @@ check "27 every batch buffer is smaller than the whole tree" "bounded true" "$(g
 check "27 every blob is delivered, in order, with its bytes" "bodies 5 true" "$(grep '^bodies' "$W/out27")"
 check "27 a blob over the cap gets a batch of its own" "oversize 1,1,1,1,1" "$(grep '^oversize' "$W/out27")"
 has "27 a truncated batch is refused" "cat-file output truncated at" "$W/out27"
+has "27 a body one byte short of its separator is refused" "nosep cat-file output truncated at" "$W/out27"
+has "27 surplus output after the last record is refused" "trailing unexpected trailing cat-file output" "$W/out27"
+has "27 a header with extra fields is refused" "badhdr unexpected cat-file record" "$W/out27"
 has "27 a wrong record sha is refused" "unexpected cat-file record" "$W/out27"
 has "27 a size that differs from ls-tree is refused" "!= listed" "$W/out27"
 has "27 a failed cat-file is refused" "git cat-file --batch failed" "$W/out27"

@@ -107,13 +107,17 @@ export function eachBlob(blobs, fn, { limit = BATCH_BYTES, cat = catBatch } = {}
         for (const e of batch) {
             const nl = out.indexOf(0x0a, pos);
             if (nl < 0) throw new Error(`cat-file output truncated at ${e.sha}`);
-            const [sha, type, size] = out.subarray(pos, nl).toString().split(" ");
-            if (sha !== e.sha || type !== "blob") throw new Error(`unexpected cat-file record for ${e.sha}: ${sha} ${type}`);
+            const fields = out.subarray(pos, nl).toString().split(" ");
+            const [sha, type, size] = fields;
+            if (fields.length !== 3 || sha !== e.sha || type !== "blob") throw new Error(`unexpected cat-file record for ${e.sha}: ${sha} ${type}`);
             if (Number(size) !== e.size) throw new Error(`cat-file size ${size} != listed ${e.size} at ${e.sha}`);
-            if (nl + 1 + e.size > out.length) throw new Error(`cat-file output truncated at ${e.sha}`);
-            fn(e, out.subarray(nl + 1, nl + 1 + e.size));
-            pos = nl + 1 + e.size + 1;
+            // the body must be followed by its own "\n": a short body would otherwise absorb it
+            const bodyStart = nl + 1, bodyEnd = bodyStart + e.size;
+            if (bodyEnd >= out.length || out[bodyEnd] !== 0x0a) throw new Error(`cat-file output truncated at ${e.sha}`);
+            fn(e, out.subarray(bodyStart, bodyEnd));
+            pos = bodyEnd + 1;
         }
+        if (pos !== out.length) throw new Error("unexpected trailing cat-file output");
     }
 }
 
