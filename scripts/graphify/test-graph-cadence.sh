@@ -864,10 +864,12 @@ CORPUS_SLUG4d=$(corpus_slug_of "$REPO4d")
 PRE_LOCK="$HOME4d/.claude/graph-cadence/${CORPUS_SLUG4d}.lock"
 mkdir -p "$(dirname "$PRE_LOCK")"
 mkdir "$PRE_LOCK"
-# A LIVE holder (this test shell) on this host -- a dead one is refused, not
-# skipped (HIMMEL-2654; see the stale-lock case further down).
+# A LIVE holder (this test shell, fresh heartbeat) on this host -- a dead one,
+# or a live pid with a stale heartbeat, is refused, not skipped (HIMMEL-2654,
+# HIMMEL-3237; see the stale-lock cases further down).
 echo "$$" > "$PRE_LOCK/pid"
 uname -n > "$PRE_LOCK/host"
+date -u +%s > "$PRE_LOCK/heartbeat"
 : > "$FAKE_MERGE_LOG"
 rc=0
 out=$(HOME="$HOME4d" GRAPH_CADENCE_HIMMEL_ROOT="$REPO4d" GRAPH_CADENCE_LEDGER_ROOT="$LEDGER4d" \
@@ -1050,10 +1052,9 @@ echo "TEST (HIMMEL-2654): two CONCURRENT runs -- a live (and old-looking) holder
 lock_fixture 2
 lock_run 2 b; PID_B=$LOCK_PID
 wait_for "$HOLD_L/entered.*" 3000 || fail "holder never entered the pipeline"
-# Make the live holder's lock look old by every age signal it carries.
-for _f in acquired heartbeat; do
-    [ -e "$LOCK_L/$_f" ] && echo "$(( $(date -u +%s) - 7200 ))" > "$LOCK_L/$_f"
-done
+# Make the live holder's lock look long-running: its acquired stamp is old, but
+# its heartbeat stays fresh (a stale heartbeat now reads as pid reuse, HIMMEL-3237).
+echo "$(( $(date -u +%s) - 7200 ))" > "$LOCK_L/acquired"
 lock_run 2 a; PID_A=$LOCK_PID
 wait_exit_or_resets "$PID_A" 2 3000 || true
 : > "$HOLD_L/release"
@@ -1091,6 +1092,28 @@ rm -rf "$LOCK_L"
 lock_fire 1 c
 assert_eq "after a human removes the lock, the next fire completes" "0" "$rc"
 assert_eq "...and reaches reset --hard exactly once" "1" "$(wc -l < "$RESETS_L" | tr -d ' ')"
+
+# HIMMEL-3237: a crashed holder whose pid an unrelated process reuses must not
+# read as live -- kill -0 alone cannot tell them apart, the heartbeat can.
+# $$ is a genuinely live process on this host that is NOT a holder.
+echo "TEST (HIMMEL-3237): a live pid with a STALE heartbeat (pid reuse) is refused loudly, never skipped"
+lock_fixture 6
+mkdir "$LOCK_L"
+echo "crashed-holder-pid-reused" > "$LOCK_L/owner"
+echo "$$" > "$LOCK_L/pid"
+echo "$LOCK_HOST" > "$LOCK_L/host"
+echo "$(( $(date -u +%s) - 7200 ))" > "$LOCK_L/acquired"
+echo "$(( $(date -u +%s) - 700 ))" > "$LOCK_L/heartbeat"
+lock_fire 6 a
+assert_eq "pid-reuse lock: refuses non-zero (rc 3)" "3" "$rc"
+assert_contains "pid-reuse lock: the verdict is stale and names the reused pid" "stale: holder pid $$" "$out"
+assert_contains "pid-reuse lock: the verdict names the heartbeat age" "heartbeat 70" "$out"
+ledger=$(tail -n1 "$TMP_ROOT/tl6-ledger-a/.graph-cadence/ledger.jsonl" 2>/dev/null || echo MISSING)
+assert_contains "pid-reuse lock: ledger records action=failed" '"action":"failed"' "$ledger"
+assert_contains "pid-reuse lock: ledger names the stale holder" "stale: holder pid $$" "$ledger"
+assert_eq "pid-reuse lock: nothing destructive ran" "0" "$(wc -l < "$RESETS_L" | tr -d ' ')"
+assert_eq "pid-reuse lock: left untouched for the operator" "crashed-holder-pid-reused" "$(cat "$LOCK_L/owner" 2>/dev/null)"
+rm -rf "$LOCK_L"
 
 echo "TEST (HIMMEL-2654): a stamp-less lock (holder died between mkdir and its pid write) is reported, never taken over"
 lock_fixture 5

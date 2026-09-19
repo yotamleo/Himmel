@@ -692,32 +692,45 @@ _pipeline_lock_stamp_heartbeat() {
 # _pipeline_lock_describe -- DETECTION ONLY, never acted on: sets
 # PIPELINE_LOCK_VERDICT to a description of the lock another run holds. rc 0:
 # the holder looks alive (skip). rc 1: the holder is gone (refuse loudly).
+# A same-host holder is live only when its pid is alive AND its heartbeat is
+# fresh: `kill -0` alone cannot tell a crashed holder from an unrelated process
+# that reused its pid (HIMMEL-3237).
 PIPELINE_LOCK_VERDICT=""
 _pipeline_lock_describe() {
-    local pid host stamp now hb_age="" acq_age=""
-    # mkdir and the pid write are not atomic: an empty pid may be a holder
-    # still acquiring, so re-read once after a second (qmd-cadence.sh's rule).
+    local pid host stamp now hb_age="" acq_age="" hb_raw pid_alive=0
+    # mkdir and the stamp writes are not atomic: an empty pid or heartbeat may
+    # be a holder still acquiring, so re-read once after a second
+    # (qmd-cadence.sh's rule).
     pid=$(cat "$PIPELINE_LOCK/pid" 2>/dev/null) || pid=""
-    if [ -z "$pid" ]; then
+    hb_raw=$(cat "$PIPELINE_LOCK/heartbeat" 2>/dev/null) || hb_raw=""
+    if [ -z "$pid" ] || [ -z "$hb_raw" ]; then
         sleep 1
         pid=$(cat "$PIPELINE_LOCK/pid" 2>/dev/null) || pid=""
+        hb_raw=$(cat "$PIPELINE_LOCK/heartbeat" 2>/dev/null) || hb_raw=""
     fi
     case "$pid" in ''|*[!0-9]*) pid="" ;; esac
     host=$(cat "$PIPELINE_LOCK/host" 2>/dev/null) || host=""
     now=$(date -u +%s)
-    stamp=$(cat "$PIPELINE_LOCK/heartbeat" 2>/dev/null) || stamp=""
+    stamp=$hb_raw
     case "$stamp" in ''|*[!0-9]*) ;; *) hb_age=$(( now - stamp )) ;; esac
     stamp=$(cat "$PIPELINE_LOCK/acquired" 2>/dev/null) || stamp=""
     case "$stamp" in ''|*[!0-9]*) ;; *) acq_age=$(( now - stamp )) ;; esac
     if [ -n "$pid" ] && [ "$host" = "$PIPELINE_LOCK_HOST" ] && kill -0 "$pid" 2>/dev/null; then
-        PIPELINE_LOCK_VERDICT="holder pid $pid is alive, acquired ${acq_age:-?}s ago"
-        return 0
+        pid_alive=1
+        if [ -n "$hb_age" ] && [ "$hb_age" -lt "$PIPELINE_LOCK_STALE_SECONDS" ]; then
+            PIPELINE_LOCK_VERDICT="holder pid $pid is alive, acquired ${acq_age:-?}s ago"
+            return 0
+        fi
     fi
     # Another host's pid cannot be probed; its heartbeat is the signal.
     if [ -n "$pid" ] && [ "$host" != "$PIPELINE_LOCK_HOST" ] && [ -n "$hb_age" ] \
         && [ "$hb_age" -lt "$PIPELINE_LOCK_STALE_SECONDS" ]; then
         PIPELINE_LOCK_VERDICT="holder pid $pid on host ${host:-unknown}, last heartbeat ${hb_age}s ago"
         return 0
+    fi
+    if [ "$pid_alive" -eq 1 ]; then
+        PIPELINE_LOCK_VERDICT="stale: holder pid $pid is alive but its heartbeat is not fresh (pid reused by an unrelated process? host ${host:-unknown}, acquired ${acq_age:-?}s ago, last heartbeat ${hb_age:-?}s ago)"
+        return 1
     fi
     PIPELINE_LOCK_VERDICT="stale: holder pid ${pid:-unknown} dead (host ${host:-unknown}, acquired ${acq_age:-?}s ago, last heartbeat ${hb_age:-?}s ago)"
     return 1
