@@ -18,7 +18,10 @@
 #                       excluded: a harness loop is not runtime surface; a
 #                       VENDORED.md tree is excluded too, HIMMEL-3093: it is
 #                       upstream content this repo mirrors, not himmel's own
-#                       surface -- see the corpus loop below).
+#                       surface -- see the corpus loop below). The daemon
+#                       marker skips prose -- *.md, comments, message
+#                       strings -- and matches service-creation shapes
+#                       instead (HIMMEL-3233; rules at T13(b) below).
 #   T14 locks        -- no per-token-lane wiring in shipped source; the
 #                       gemini/copilot/cursor index rows stay deferred.
 #                       (The former T14(a) claude-codex-launcher prohibition
@@ -200,7 +203,11 @@ trap 'rm -f "$SHIPPED"' EXIT
 # cancellation LESS likely, i.e. the gate stays strict.
 VENDORED_LIST="$(mktemp "${TMPDIR:-/tmp}/ws5-vendored-list.XXXXXX")" || { echo "test-ws5-invariants.sh: mktemp failed" >&2; exit 2; }
 REMOVED="$(mktemp "${TMPDIR:-/tmp}/ws5-removed.XXXXXX")" || { echo "test-ws5-invariants.sh: mktemp failed" >&2; exit 2; }
-trap 'rm -f "$SHIPPED" "$VENDORED_LIST" "$REMOVED"' EXIT
+# One line per $SHIPPED line, in lockstep: "md" when the added line came from a
+# *.md file, "code" otherwise. T13(b)'s daemon class reads it (HIMMEL-3233);
+# $SHIPPED itself stays bare lines so T14(b)'s grep cannot match a path.
+SHIPPED_KIND="$(mktemp "${TMPDIR:-/tmp}/ws5-shipped-kind.XXXXXX")" || { echo "test-ws5-invariants.sh: mktemp failed" >&2; exit 2; }
+trap 'rm -f "$SHIPPED" "$VENDORED_LIST" "$REMOVED" "$SHIPPED_KIND"' EXIT
 while IFS= read -r f; do
     [ -n "$f" ] || continue
     base="${f##*/}"
@@ -237,7 +244,7 @@ while IFS= read -r f; do
     fi
 done < <(git diff "$BASE...HEAD" --name-only)
 
-git diff "$BASE...HEAD" | awk -v vendored_file="$VENDORED_LIST" -v removed_file="$REMOVED" '
+git diff "$BASE...HEAD" | awk -v vendored_file="$VENDORED_LIST" -v removed_file="$REMOVED" -v kind_file="$SHIPPED_KIND" '
     BEGIN {
         while ((getline line < vendored_file) > 0) vendored[line] = 1
         close(vendored_file)
@@ -255,10 +262,11 @@ git diff "$BASE...HEAD" | awk -v vendored_file="$VENDORED_LIST" -v removed_file=
         # words T13(b) scans for (e.g. a setInterval-timing test).
         skip = (base ~ /^test-/) || (base ~ /\.tsv$/) \
             || (base ~ /\.test\.(ts|js|mjs|cjs)$/) || (f in vendored)
+        kind = (tolower(base) ~ /\.md$/) ? "md" : "code"
         next
     }
     skip { next }
-    /^\+/ { print }
+    /^\+/ { print; print kind > kind_file }
     /^-/ && !/^--- / { print > removed_file }
 ' > "$SHIPPED"
 
@@ -334,16 +342,66 @@ else
     # as HIMMEL-3090 renames / HIMMEL-3151 test fixtures). One removal cancels
     # ONE addition, so a moved line plus a duplicate still fails, and a marker
     # added while a DIFFERENT line is removed is never neutral.
+    #
+    # `while true` / `setInterval` match every shipped line, as they always
+    # have. The daemon class (HIMMEL-3233) used to be the bare word `daemon`
+    # on every line, so prose and diagnostics naming an EXISTING daemon failed
+    # (PR #932: a README remedy, a shell comment, a doctor message). It is now
+    # scoped to what can START one, and is never weaker on code:
+    #   - *.md is prose: the daemon class does not apply there;
+    #   - a full-line comment (#, //, /*, *, <!--) is prose: skipped;
+    #   - service-creation shapes (nohup, setsid, disown, systemctl ...
+    #     enable, launchctl load|bootstrap) count ANYWHERE else on the line,
+    #     quoted or not -- `bash -c "nohup x &"` launches one. These are new
+    #     coverage: the bare word never caught `nohup x &`;
+    #   - the word `daemon` counts outside quoted strings that hold whitespace
+    #     (a message such as "the qmd daemon is wedged"); a single-token string
+    #     ("--daemon", "ensure-qmd-daemon.sh") is an argv element or a path
+    #     and still counts, as does `daemon=True` and an unquoted `--daemon`.
+    # ponytail: the quote scanner is language-agnostic -- a heredoc body or a
+    # multi-line string reads as unquoted code (strict: can only over-count),
+    # and a C-preprocessor `#define` line reads as a comment (himmel ships no C).
     t13b_hit=0
-    t13b_count="$(awk -v removed_file="$REMOVED" '
+    t13b_count="$(awk -v removed_file="$REMOVED" -v kind_file="$SHIPPED_KIND" '
         function trim(x) { sub(/^[ \t]+/, "", x); sub(/[ \t\r]+$/, "", x); return x }
+        # Empty every quoted string whose body holds whitespace (a message);
+        # keep single-token strings verbatim. \047 is a single quote.
+        function drop_prose(x,   out, i, n, c, q, s) {
+            out = ""; i = 1; n = length(x)
+            while (i <= n) {
+                c = substr(x, i, 1)
+                if (c == "\"" || c == "\047" || c == "`") {
+                    q = c; s = ""; i++
+                    while (i <= n) {
+                        c = substr(x, i, 1)
+                        if (c == "\\" && q != "\047") { s = s c substr(x, i + 1, 1); i += 2; continue }
+                        if (c == q) break
+                        s = s c; i++
+                    }
+                    out = out q ((s ~ /[ \t]/) ? "" : s) q
+                    i++
+                    continue
+                }
+                out = out c; i++
+            }
+            return out
+        }
         BEGIN {
             while ((getline line < removed_file) > 0) removed[trim(substr(line, 2))]++
             close(removed_file)
         }
         {
+            if ((getline kind < kind_file) <= 0) kind = "code"
             t = trim(substr($0, 2))
-            if (tolower(t) ~ /while[ \t]+true|setinterval|daemon/) {
+            lt = tolower(t)
+            hit = (lt ~ /while[ \t]+true|setinterval/)
+            if (!hit && kind == "code" && lt !~ /^(#|\/\/|\/\*|\*([ \t]|$)|<!--)/) {
+                if (lt ~ /(^|[^a-z0-9_-])(nohup|setsid|disown)([^a-z0-9_-]|$)|systemctl[^|;&]*[ \t]enable([ \t]|$)|launchctl[ \t]+(load|bootstrap)([ \t]|$)/)
+                    hit = 1
+                else if (tolower(drop_prose(t)) ~ /daemon/)
+                    hit = 1
+            }
+            if (hit) {
                 if (removed[t] > 0) removed[t]--
                 else hits++
             }
