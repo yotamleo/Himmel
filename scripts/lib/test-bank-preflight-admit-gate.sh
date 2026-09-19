@@ -447,6 +447,41 @@ check "(m) A, resumed inside B's gate, does not hold it (rc 1)" 1 "$m_rc"
 check "(m) B's fence is the gate's only fence" "1 1" \
   "$([ -n "$B_FENCE" ] && [ -d "$B_FENCE" ] && echo 1 || echo 0) $(count_glob "$gate"/fence.*)"
 
+# --- (o) HIMMEL-3210: a rename that resolved its fence BEFORE the break -------
+# Panel codex-1. C holds the gate and its rename has already resolved the fence
+# (simulated by pinning the fence as this shell's cwd and renaming into it
+# RELATIVELY — renameat against a destination parent resolved in advance). C's
+# gate ages out; B breaks it, and in the window between B's `mv "$gate"` and its
+# `rm -rf` of the broken copy E takes the freed gate name, steals the stale
+# admit and holds a LIVE claim, and C's pre-resolved rename lands. With the
+# fence still alive inside B's broken copy it moves E's live claim; with the
+# break deleting fences in place first, it fails ENOENT and E keeps the lock.
+# shellcheck disable=SC2317
+_inject_e_after_break() { # E acts right after B's gate `mv`, before B's `rm -rf`
+  [ "$1" = "$admit.reclaim" ] || return 0
+  MV_INJECT=""; HOOK_FIRED=$((HOOK_FIRED + 1))
+  _fleet_steal_stale_admit "$admit" "$P_STALE"; E_RC=$?
+  builtin printf '%s\n' E > "$admit/who" 2>/dev/null
+  command mv "$admit" victim 2>/dev/null; o_rc=$? # C's rename lands, still inside B's window
+}
+P_STALE=$((NOW - 61)); E_RC=""; o_rc=""
+mk_admit "$admit" "$P_STALE" 999999
+_fleet_gate_take "$admit.reclaim"; o_take=$?; C_FENCE="${_fleet_gate_fence:-}"
+o_pwd="$PWD"; o_cd=1
+if builtin cd "$C_FENCE" 2>/dev/null; then o_cd=0; fi
+builtin printf '%s\n' "$(( $(date +%s) - 10 ))" > "$admit.reclaim/acquired"
+HOOK_FIRED=0; MV_INJECT=_inject_e_after_break
+_fleet_gate_take "$admit.reclaim"; B1_RC=$?
+MV_INJECT=""
+builtin cd "$o_pwd" || exit 1
+check "(o) precondition: C held the gate with its fence pinned" "0 0" "$o_take $o_cd"
+check "(o) the seam fired (E acted between B's gate mv and its rm)" 1 "$HOOK_FIRED"
+check "(o) precondition: E stole the stale admit" 0 "$E_RC"
+check "(o) C's pre-resolved rename fails (its fence died before the break)" 1 "$([ -n "$o_rc" ] && [ "$o_rc" -ne 0 ] && echo 1 || echo 0)"
+check "(o) E's live claim is still THE admit" E "$(cat "$admit/who" 2>/dev/null)"
+[ "$B1_RC" = 0 ] && _fleet_gate_drop "$admit.reclaim" "${_fleet_gate_fence:-}"
+rm -rf "$admit.reclaim"
+
 # --- (n) HIMMEL-3210: displaced-victim debris is pruned by age ----------------
 # End to end through the real script. Debris first seen long ago goes; debris
 # never seen before is stamped and kept (it may still be in flight); debris

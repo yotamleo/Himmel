@@ -213,15 +213,25 @@ _fleet_admit_hook() { # _fleet_admit_hook <point> <path>
 # on a successor's state. The fence is a uniquely named directory the holder
 # creates INSIDE the gate it took, and every destructive rename a holder does
 # targets a path THROUGH it (`mv "$admit" "$fence/victim"`). Breaking a gate
-# renames the whole directory away, fence included, and nothing ever puts a
-# fence back (a break's restore copies only `acquired`/`pid`), so the rename
-# itself is the fence check: it fails with ENOENT once the gate is not ours —
-# no userspace check-then-act gap for a pause to land in. Even a rename that
-# resolved the fence BEFORE the break cannot land after it: a successor exists
-# only once the breaker has `rm -rf`d the broken gate, and rename(2) locks its
-# destination parent, so it either completes first (moving the stale admit we
-# verified — nothing fresh can exist while the gate is held) or finds the fence
-# dead and fails ENOENT (Linux; probed via renameat into a removed dirfd).
+# first deletes its fences IN PLACE, then renames the gate away, and nothing
+# ever puts a fence back (a break's restore copies only `acquired`/`pid`), so
+# the rename itself is the fence check: it fails with ENOENT once the gate is
+# not ours — no userspace check-then-act gap for a pause to land in. The
+# in-place delete is what covers a rename that resolved the fence BEFORE the
+# break: the fence dies while the gate NAME is still held, so no successor can
+# exist yet, and rename(2) locks its destination parent — it either completes
+# first (moving the stale admit the breaker is replacing; nothing fresh can
+# exist while the name is held) or finds the fence dead and fails ENOENT
+# (Linux; probed via renameat into a removed dirfd). Moving the gate away with
+# its fences alive would NOT do: the name is re-takeable from that `mv` until
+# the broken copy's `rm -rf`, and a successor that steals and claims in that
+# window would have its live admit moved by the pre-resolved rename.
+# ponytail: one residual remains — a taker paused past the stale age between
+# its gate `mkdir` and its fence `mkdir`, resuming exactly between the
+# breaker's fence delete and its `mv`, passes its sole-fence check against the
+# doomed gate; a rename it then resolves before the `mv` and that the kernel
+# preempts until a successor has claimed would still land. That needs a >=5s
+# pause at one point and an in-kernel preemption at another, back to back.
 # That is why this is a
 # fence-by-path, not a generation number re-read before the mv: a re-read is
 # still followed by a separate mv, and the pause can land between them.
@@ -246,6 +256,12 @@ _fleet_gate_take() {
     esac
     [ $(( $(date +%s) - held_at )) -ge "${FLEET_ADMIT_GATE_STALE_SECS:-5}" ] || return 1
     _fleet_admit_hook gate-break "$gate"
+    # Kill the fences IN PLACE before the gate name becomes re-takeable (panel
+    # codex-1): once `mv` frees the name a third actor can take the gate, steal
+    # and claim fresh before the `rm -rf "$victim"` below, and a holder's rename
+    # that resolved its fence before the break would then move that live claim.
+    # A fence removed here is dead before any successor can exist.
+    rm -rf "$gate"/fence.* 2>/dev/null
     victim="$gate.broken.$$.$RANDOM"
     mv "$gate" "$victim" 2>/dev/null || return 1
     seen="$(cat "$victim/acquired" 2>/dev/null)" || seen=""
