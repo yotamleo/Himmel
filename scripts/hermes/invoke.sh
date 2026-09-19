@@ -160,7 +160,8 @@ done
 
 # Resolve the prompt source: --prompt-file wins, else positional, else stdin.
 tmp_prompt=""
-snapshot=""   # private copy of the gated prompt (HIMMEL-3221) — the ONLY file hermes reads
+snapdir=""    # private gate-made directory holding the gated prompt copy (HIMMEL-3221)
+snapshot=""   # <snapdir>/prompt — the ONLY file hermes reads
 # Watchdog/deny-escalation state (HIMMEL-2025), declared up front (set -u
 # safe) so the trap never trips on an early exit before they are assigned.
 watch_pid=""
@@ -170,7 +171,7 @@ scratch_log=""
 # shellcheck disable=SC2317,SC2329  # invoked indirectly via the EXIT trap (SC2329 = the renamed "function never invoked" check)
 cleanup() {
     [ -n "$tmp_prompt" ] && rm -f "$tmp_prompt"
-    [ -n "$snapshot" ] && rm -f "$snapshot"
+    [ -n "$snapdir" ] && rm -rf "$snapdir"
     if [ -n "$watch_pid" ]; then
         kill -TERM -"$watch_pid" 2>/dev/null || kill -TERM "$watch_pid" 2>/dev/null
         wait "$watch_pid" 2>/dev/null
@@ -206,15 +207,21 @@ fi
 #
 # The gate classifies by PATH, so hermes must never be handed that path again
 # (a swap / symlink retarget between the check and the read is a TOCTOU,
-# HIMMEL-3221): the gate copies the file once into a private mode-0600 snapshot
-# (mktemp, removed by the EXIT trap) and everything below reads only the snapshot.
+# HIMMEL-3221): the gate copies the file once into a private snapshot it creates
+# itself (a 0700 mktemp -d directory holding a 0600 file) and prints that
+# directory; everything below reads only the snapshot, and the EXIT trap removes
+# the directory. The caller never picks the destination.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-snapshot="$(mktemp "${TMPDIR:-/tmp}/hermes-snapshot.XXXXXX" 2>/dev/null)" || {
-    snapshot=""
-    echo "invoke.sh: cannot create the prompt snapshot (mktemp failed; TMPDIR=${TMPDIR:-<unset>}) — refusing to dispatch a prompt path that can change after the egress gate" >&2
-    exit 2
-}
-bash "$SCRIPT_DIR/egress-gate.sh" --prompt-file "$prompt_file" --snapshot "$snapshot" ${provider:+--provider "$provider"} || exit 4
+gate_out="$(bash "$SCRIPT_DIR/egress-gate.sh" --prompt-file "$prompt_file" --snapshot ${provider:+--provider "$provider"})" || exit 4
+# Trust only a directory the gate could have made: a hermes-snapshot.* leaf that
+# exists — the trap rm -rf's it, so anything else is refused, never removed.
+case "$gate_out" in */hermes-snapshot.*) ;; *) gate_out="" ;; esac
+if [ -z "$gate_out" ] || [ ! -d "$gate_out" ] || [ -L "$gate_out" ]; then
+    echo "invoke.sh: the egress gate returned no usable prompt snapshot — refusing to dispatch a prompt path that can change after the gate" >&2
+    exit 4
+fi
+snapdir="$gate_out"
+snapshot="$snapdir/prompt"
 [ -s "$snapshot" ] || { echo "invoke.sh: prompt file is empty: $prompt_file" >&2; exit 2; }
 prompt_file="$snapshot"
 

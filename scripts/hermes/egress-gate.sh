@@ -31,11 +31,15 @@
 # ~/.himmel/hermes-egress.jsonl) carrying the resolved path and its byte size;
 # a ledger that cannot be written refuses the dispatch (allow+log obligation).
 #
-# SNAPSHOT (HIMMEL-3221): with --snapshot <dest> the gate copies the classified
-# file ONCE into <dest> (a private mode-0600 file the caller created and owns —
-# anything else is refused, never created here with umask perms) and the
-# caller dispatches only that copy — never the path — so a file swapped or a
-# symlink retargeted after the gate cannot change what the interpreter reads.
+# SNAPSHOT (HIMMEL-3221): with --snapshot the gate copies the classified file
+# ONCE into a snapshot it creates itself — a fresh private mode-0700 directory
+# (mktemp -d) holding <dir>/prompt, created exclusively under umask 077 — and
+# prints that DIRECTORY on stdout on success (nothing on stdout otherwise; a
+# refusal removes it). The caller dispatches only <dir>/prompt — never the
+# path — and removes <dir> when done, so a file swapped or a symlink retargeted
+# after the gate cannot change what the interpreter reads. The caller never
+# chooses the destination, so its permissions, aliasing (the prompt itself, a
+# hard link to it) and pre-existing content cannot arise.
 # The file's identity (dev:inode:size:mtime) is taken before classification and
 # re-checked after the copy; any change, copy error or size mismatch refuses
 # (fail closed). The ledger line carries the snapshot's sha256 and byte size.
@@ -67,8 +71,9 @@
 # override hermes reads itself) are also outside this gate.
 #
 # Usage: egress-gate.sh --prompt-file <path> [--provider <hermes-provider>]
-#                       [--snapshot <dest>]
+#                       [--snapshot]
 # Exit: 0 permitted (or not a gated corpus) · 2 usage · 4 refused (fail-closed)
+# Stdout: with --snapshot and exit 0, the snapshot directory (see SNAPSHOT).
 #
 # Environment:
 #   HANDOVER_DIR / LUNA_VAULT_PATH / LUNA_VAULT   corpus roots (same as the fence)
@@ -86,15 +91,20 @@ refuse() { echo "egress-gate: REFUSED — $1" >&2; exit 4; }
 
 prompt_file=""
 provider=""
+want_snapshot=0
+snapdir=""
 snapshot=""
+keep_snapshot=0
+# Any exit that is not a permitted, emitted snapshot (refusal, usage, ledger failure)
+# removes the private snapshot directory so gated bytes never outlive a refusal.
+trap '[ "$keep_snapshot" -eq 1 ] || [ -z "$snapdir" ] || rm -rf "$snapdir"' EXIT
 while [ $# -gt 0 ]; do
     case "$1" in
         --prompt-file) [ $# -ge 2 ] || { echo "egress-gate: --prompt-file requires a value" >&2; exit 2; }
                        prompt_file="$2"; shift 2 ;;
         --provider)    [ $# -ge 2 ] || { echo "egress-gate: --provider requires a value" >&2; exit 2; }
                        provider="$2"; shift 2 ;;
-        --snapshot)    [ $# -ge 2 ] || { echo "egress-gate: --snapshot requires a value" >&2; exit 2; }
-                       snapshot="$2"; shift 2 ;;
+        --snapshot)    want_snapshot=1; shift ;;
         *) echo "egress-gate: unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -126,22 +136,21 @@ _ident() {
     printf '%s\n' "$o"
 }
 
-# take_snapshot -> copy the classified file into --snapshot (no-op without one).
-# Fail closed: a copy error, a file whose identity/size moved between the
+# take_snapshot -> copy the classified file into a snapshot this script creates
+# (no-op without --snapshot): a fresh private 0700 directory from mktemp -d
+# holding <dir>/prompt, written exclusively (noclobber) under umask 077. Fail
+# closed: a directory/copy error, a file whose identity/size moved between the
 # classification and the copy, or an unreadable size all refuse.
 take_snapshot() {
-    [ -n "$snapshot" ] || return 0
-    local after now ssize sperm
-    # The destination must already be the caller's private file: a nonexistent (or
-    # group/world-readable, or foreign-owned, or symlinked) destination would take
-    # gated bytes under umask-derived permissions or into someone else's file.
-    if [ -L "$snapshot" ] || [ ! -f "$snapshot" ]; then
-        refuse "--snapshot '$snapshot' must already exist as a regular file (not a symlink) — refusing to create it with umask-derived permissions"
+    [ "$want_snapshot" -eq 1 ] || return 0
+    local after now ssize
+    snapdir="$(umask 077; mktemp -d "${TMPDIR:-/tmp}/hermes-snapshot.XXXXXX" 2>/dev/null)" || snapdir=""
+    if [ -z "$snapdir" ] || [ ! -d "$snapdir" ]; then
+        snapdir=""
+        refuse "cannot create the private prompt snapshot directory under '${TMPDIR:-/tmp}' — refusing rather than dispatching a path that can change under us"
     fi
-    sperm="$(stat -c '%a:%u' "$snapshot" 2>/dev/null || stat -f '%Lp:%u' "$snapshot" 2>/dev/null)" || sperm=""
-    [ "$sperm" = "600:$(id -u)" ] || refuse "--snapshot '$snapshot' must be mode 0600 and owned by the caller (found '${sperm:-unreadable}') — refusing to write gated bytes into it"
-    ( umask 077; cat "$pf" > "$snapshot" ) 2>/dev/null || refuse "cannot copy '$pf' into the prompt snapshot '$snapshot' — refusing rather than dispatching a path that can change under us"
-    chmod 600 "$snapshot" 2>/dev/null || refuse "cannot restrict the prompt snapshot '$snapshot' to mode 0600"
+    snapshot="$snapdir/prompt"
+    ( umask 077; set -C; cat "$pf" > "$snapshot" ) 2>/dev/null || refuse "cannot copy '$pf' into the prompt snapshot — refusing rather than dispatching a path that can change under us"
     after="$(_ident "$pf")" || refuse "cannot re-stat '$pf' after the snapshot copy — refusing rather than trusting an unverified copy"
     [ "$after" = "$ident" ] || refuse "'$pf' changed between the egress classification and the snapshot copy (identity $ident -> $after) — refusing a swapped prompt file"
     # The identity above compares the file at $pf with ITSELF, so a symlink (final
@@ -151,6 +160,14 @@ take_snapshot() {
     [ "$now" = "$pf" ] || refuse "'$prompt_file' no longer resolves to the classified path '$pf' (now '$now') — refusing a swapped prompt file"
     ssize="$(wc -c < "$snapshot" 2>/dev/null | tr -d ' ')"
     [ "$ssize" = "$size" ] || refuse "the prompt snapshot holds ${ssize:-?} bytes but '$pf' was classified at $size — refusing a partial or changed copy"
+}
+
+# emit_snapshot -> hand the snapshot directory to the caller (no-op without
+# --snapshot). Runs only once every check, and the ledger append, has passed.
+emit_snapshot() {
+    [ "$want_snapshot" -eq 1 ] || return 0
+    keep_snapshot=1
+    printf '%s\n' "$snapdir"
 }
 
 _lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
@@ -229,7 +246,7 @@ fi
 if [ -z "$corpus" ] && [ -n "$luna_root" ] && _under "$pf" "$luna_root"; then
     if _under "$pf" "$luna_root/Clippings"; then corpus="luna-clippings"; else corpus="luna-personal"; fi
 fi
-[ -n "$corpus" ] || { take_snapshot; exit 0; }   # not a gated corpus (public code / unclassified)
+[ -n "$corpus" ] || { take_snapshot; emit_snapshot; exit 0; }   # not a gated corpus (public code / unclassified)
 
 # --- provider: hermes name -> matrix name. Unknown names pass through verbatim
 # and fall to the matrix `default: deny` (fail closed). ---
@@ -270,4 +287,5 @@ mkdir -p "$(dirname "$LEDGER")" 2>/dev/null || refuse "cannot create the egress 
 node -e 'const fs=require("fs"),c=require("crypto");const b=fs.readFileSync(process.argv[8]);process.stdout.write(JSON.stringify({ts:process.argv[1],corpus:process.argv[2],provider:process.argv[3],purpose:process.argv[4],verdict:process.argv[5],prompt:process.argv[6],bytes:Number(process.argv[7]),sha256:c.createHash("sha256").update(b).digest("hex")})+"\n")' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$corpus" "$mprov" "$PURPOSE" "$verdict" "$pf" "$size" "${snapshot:-$pf}" \
     >> "$LEDGER" 2>/dev/null || refuse "cannot append to the egress ledger '$LEDGER' — a permitted gated dispatch must leave an audit line"
+emit_snapshot
 exit 0

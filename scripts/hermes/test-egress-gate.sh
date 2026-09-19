@@ -283,53 +283,74 @@ fi
 exec "$REALSTAT" "\$@"
 EOS
 chmod +x "$STATBIN/stat"
+GTMP="$TMP/gtmp"; mkdir -p "$GTMP"
 for mode in file dir; do
-    printf 'GATED-CORPUS\n' > "$SWAPFILE"; rm -f "$TMP/stat.swapped" "$TMP/snap2.out"; : > "$TMP/snap2.out"; chmod 600 "$TMP/snap2.out"
-    err="$(SWAP_MODE=$mode PATH="$STATBIN:$PATH" bash "$GATE" --prompt-file "$SWAPFILE" --provider openai-codex --snapshot "$TMP/snap2.out" 2>&1)"; rc=$?
+    printf 'GATED-CORPUS\n' > "$SWAPFILE"; rm -f "$TMP/stat.swapped"
+    err="$(TMPDIR="$GTMP" SWAP_MODE=$mode PATH="$STATBIN:$PATH" bash "$GATE" --prompt-file "$SWAPFILE" --provider openai-codex --snapshot 2>&1)"; rc=$?
     check "snapshot: the $mode-symlink swap fired before the identity read (control)" "swapped" "$([ -e "$TMP/stat.swapped" ] && echo swapped || echo not)"
     check "snapshot: a $mode symlink swapped in after canonicalisation is refused rc 4" 4 "$rc"
     check_contains "snapshot: …and the refusal says the path no longer resolves" "no longer resolves" "$err"
     if [ "$mode" = dir ]; then rm -f "$HDIR"; mv "$HDIR.orig" "$HDIR"; else rm -f "$SWAPFILE"; fi
 done
+# the copy had already happened when those refusals fired, so an empty TMPDIR here is the
+# refusal cleanup; block C proves the gate does place its snapshot under this TMPDIR
+check "gate --snapshot: a refusal after the copy removes the snapshot directory" 0 "$(find "$GTMP" -name 'hermes-snapshot.*' 2>/dev/null | wc -l | tr -d ' ')"
 
-# C. the gate's own --snapshot + the ledger line
-printf 'GATED-CORPUS\n' > "$SWAPFILE"; : > "$HIMMEL_HERMES_EGRESS_LEDGER"; SNAP="$TMP/snap.out"
-: > "$SNAP"; chmod 600 "$SNAP"   # the caller pre-creates its private destination (invoke.sh: mktemp)
-bash "$GATE" --prompt-file "$SWAPFILE" --provider openai-codex --snapshot "$SNAP" >/dev/null 2>&1; rc=$?
+# C. the gate's own --snapshot + the ledger line. The gate creates the snapshot itself
+# (a private directory under TMPDIR) and prints the directory; the caller never names it.
+printf 'GATED-CORPUS\n' > "$SWAPFILE"; : > "$HIMMEL_HERMES_EGRESS_LEDGER"
+SNAPDIR="$(TMPDIR="$GTMP" bash "$GATE" --prompt-file "$SWAPFILE" --provider openai-codex --snapshot 2>/dev/null)"; rc=$?
+SNAP="$SNAPDIR/prompt"
 check "gate --snapshot: permitted dispatch rc 0" 0 "$rc"
+check "gate --snapshot: prints a fresh directory under TMPDIR" "yes" "$(case "$SNAPDIR" in "$GTMP"/hermes-snapshot.*) echo yes ;; *) echo "no:$SNAPDIR" ;; esac)"
+check "gate --snapshot: the directory is 0700 and the file 0600" "dir700 file600" "$(find "$SNAPDIR" -prune -type d -perm 700 | grep -q . && echo dir700 || echo dir-other) $(find "$SNAP" -prune -type f -perm 600 | grep -q . && echo file600 || echo file-other)"
 check "gate --snapshot: the snapshot holds the gated bytes" "GATED-CORPUS" "$(tr -d '\n' < "$SNAP" 2>/dev/null)"
 WANT_SHA="$(node -e 'process.stdout.write(require("crypto").createHash("sha256").update(require("fs").readFileSync(process.argv[1])).digest("hex"))' "$SNAP")"
 check "gate --snapshot: the ledger line carries the snapshot sha256 and byte size" "$WANT_SHA 13" "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n");const r=JSON.parse(l[l.length-1]);process.stdout.write(r.sha256+" "+r.bytes)' "$HIMMEL_HERMES_EGRESS_LEDGER" 2>/dev/null || echo bad)"
 # a NOT-gated file is snapshotted too (a swap could turn it into a gated one)
-: > "$SNAP"; chmod 600 "$SNAP"; bash "$GATE" --prompt-file "$TMP/code/diff.txt" --snapshot "$SNAP" >/dev/null 2>&1; rc=$?
-check "gate --snapshot: an un-gated file is snapshotted too" "0 diff" "$rc $(tr -d '\n' < "$SNAP" 2>/dev/null)"
+rm -rf "$SNAPDIR"
+SNAPDIR="$(TMPDIR="$GTMP" bash "$GATE" --prompt-file "$TMP/code/diff.txt" --snapshot 2>/dev/null)"; rc=$?
+check "gate --snapshot: an un-gated file is snapshotted too" "0 diff" "$rc $(tr -d '\n' < "$SNAPDIR/prompt" 2>/dev/null)"
+rm -rf "$SNAPDIR"
 
-# D. fail closed on any copy / mktemp error
-err="$(bash "$GATE" --prompt-file "$SWAPFILE" --provider openai-codex --snapshot "$TMP/no-such-dir/snap" 2>&1)"; rc=$?
-check "gate --snapshot: an uncopyable destination refuses rc 4" 4 "$rc"
-check_contains "gate --snapshot: …with an explicit snapshot refusal" "snapshot" "$err"
-# D2. the destination must ALREADY be a regular 0600 caller-owned file: the gate never
-# creates it (a umask-derived mode would expose the gated bytes), and never writes into
-# one that is not private. Each refusal is rc 4 and leaves the destination empty.
-GOODSNAP="$TMP/d2.good"; : > "$GOODSNAP"; chmod 600 "$GOODSNAP"
-bash "$GATE" --prompt-file "$SWAPFILE" --provider openai-codex --snapshot "$GOODSNAP" >/dev/null 2>&1; rc=$?
-check "gate --snapshot: a pre-created 0600 destination is accepted (control)" "0 GATED-CORPUS" "$rc $(tr -d '\n' < "$GOODSNAP")"
-D2NEW="$TMP/d2.new"; rm -f "$D2NEW"
-err="$(bash "$GATE" --prompt-file "$SWAPFILE" --provider openai-codex --snapshot "$D2NEW" 2>&1)"; rc=$?
-check "gate --snapshot: a destination that does not exist is refused rc 4, not created" "4 absent" "$rc $([ -e "$D2NEW" ] && echo present || echo absent)"
-check_contains "gate --snapshot: …naming the destination requirement" "must already exist" "$err"
-D2OPEN="$TMP/d2.open"; : > "$D2OPEN"; chmod 644 "$D2OPEN"
-err="$(bash "$GATE" --prompt-file "$SWAPFILE" --provider openai-codex --snapshot "$D2OPEN" 2>&1)"; rc=$?
-check "gate --snapshot: a mode-0644 destination is refused rc 4 and stays empty" "4 0" "$rc $(wc -c < "$D2OPEN" | tr -d ' ')"
-check_contains "gate --snapshot: …naming the mode requirement" "0600" "$err"
-D2LINK="$TMP/d2.link"; D2TARGET="$TMP/d2.target"; : > "$D2TARGET"; chmod 600 "$D2TARGET"; ln -sf "$D2TARGET" "$D2LINK"
-err="$(bash "$GATE" --prompt-file "$SWAPFILE" --provider openai-codex --snapshot "$D2LINK" 2>&1)"; rc=$?
-check "gate --snapshot: a symlink destination is refused rc 4 and the target stays empty" "4 0" "$rc $(wc -c < "$D2TARGET" | tr -d ' ')"
+# C2. the prompt file is never opened for writing — not even when TMPDIR is the prompt's
+# own directory, and not when a caller still passes the old `--snapshot <path>` form
+# (with <path> a hard link to the prompt, the old contract truncated it). A read-only
+# prompt makes any write-open fail; bytes, inode and mtime must also be unchanged.
+PROMPTRO="$HO/u/himmel/readonly.md"; printf 'READ-ONLY-GATED\n' > "$PROMPTRO"; chmod 400 "$PROMPTRO"; touch -t 202001010000 "$PROMPTRO"
+PBEFORE="$(ls -li "$PROMPTRO")"
+SNAPDIR="$(TMPDIR="$HO/u/himmel" bash "$GATE" --prompt-file "$PROMPTRO" --provider openai-codex --snapshot 2>/dev/null)"; rc=$?
+check "gate --snapshot: a read-only prompt is snapshotted (never opened for writing) rc 0" "0 READ-ONLY-GATED" "$rc $(tr -d '\n' < "$SNAPDIR/prompt" 2>/dev/null)"
+check "gate --snapshot: the prompt file is byte-, inode- and mtime-identical afterwards" "$PBEFORE" "$(ls -li "$PROMPTRO")"
+rm -rf "$SNAPDIR"
+PLINK="$HO/u/himmel/readonly.link"; rm -f "$PLINK"; ln "$PROMPTRO" "$PLINK"; chmod 600 "$PROMPTRO"
+err="$(bash "$GATE" --prompt-file "$PROMPTRO" --provider openai-codex --snapshot "$PLINK" 2>&1)"; rc=$?
+check "gate --snapshot <path>: the old destination form is a usage error rc 2" 2 "$rc"
+check_contains "gate --snapshot <path>: …naming the unknown argument" "unknown argument" "$err"
+check "gate --snapshot <path>: the prompt (and its hard link) keep their bytes" "READ-ONLY-GATED READ-ONLY-GATED" "$(tr -d '\n' < "$PROMPTRO") $(tr -d '\n' < "$PLINK")"
+rm -f "$PLINK" "$PROMPTRO"
+
+# D. fail closed when the snapshot directory cannot be created
+err="$(TMPDIR="$TMP/no-such-tmpdir" bash "$GATE" --prompt-file "$SWAPFILE" --provider openai-codex --snapshot 2>&1)"; rc=$?
+check "gate --snapshot: an uncreatable snapshot directory refuses rc 4" 4 "$rc"
+check_contains "gate --snapshot: …with an explicit snapshot refusal" "prompt snapshot" "$err"
 rm -f "$STUB_CAPTURE"
 err="$(TMPDIR="$TMP/no-such-tmpdir" bash "$INVOKE" --prompt-file "$SWAPFILE" --provider openai-codex 2>&1)"; rc=$?
-check "invoke.sh: a snapshot mktemp failure refuses rc 2" 2 "$rc"
-check_contains "invoke.sh: …naming the snapshot, not a later mktemp" "prompt snapshot" "$err"
+check "invoke.sh: a snapshot directory failure in the gate refuses rc 4" 4 "$rc"
+check_contains "invoke.sh: …naming the snapshot" "prompt snapshot" "$err"
 check "invoke.sh: …and the interpreter never ran" "absent" "$([ -e "$STUB_CAPTURE" ] && echo present || echo absent)"
+# invoke.sh trusts only a hermes-snapshot.* directory the gate handed back (its EXIT trap
+# rm -rf's it): a gate that prints anything else — or nothing — is refused, never removed.
+FAKEDIR="$TMP/fakeinv/hermes"; mkdir -p "$FAKEDIR"; cp "$INVOKE" "$FAKEDIR/invoke.sh"
+VICTIM="$TMP/victim"; mkdir -p "$VICTIM"; printf 'KEEP\n' > "$VICTIM/keep"
+for gout in "$VICTIM" "$TMP/no-such/hermes-snapshot.x" ""; do
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" "%s"\nexit 0\n' "$gout" > "$FAKEDIR/egress-gate.sh"
+    rm -f "$STUB_CAPTURE"
+    err="$(HERMES_PY="$SNAPSTUB" bash "$FAKEDIR/invoke.sh" --prompt-file "$SWAPFILE" --provider openai-codex 2>&1)"; rc=$?
+    check "invoke.sh: a gate returning [$gout] instead of a snapshot dir is refused rc 4, interpreter never ran" "4 absent" "$rc $([ -e "$STUB_CAPTURE" ] && echo present || echo absent)"
+    check_contains "invoke.sh: …naming the missing snapshot" "no usable prompt snapshot" "$err"
+done
+check "invoke.sh: …and the directory such a gate named was not removed" "KEEP" "$(tr -d '\n' < "$VICTIM/keep" 2>/dev/null)"
 
 # E. the snapshot is removed on every exit path (success, refusal, hermes failure)
 PTMP="$TMP/ptmp"; mkdir -p "$PTMP"
