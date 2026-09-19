@@ -576,6 +576,23 @@ if [ "$_fleet_admitted" -eq 1 ]; then
   # its owner ever finishes creating it.
   if [ "$_fleet_admitted" -eq 1 ]; then
     _fleet_now=$(date +%s)
+    # HIMMEL-3012: the first whitespace token of every PENDING (valid,
+    # unexpired) reservation — its `name` file, else its directory name — so
+    # the consume check below can tell whether a token is carried by exactly
+    # one reservation.
+    _fleet_pending_tokens=""
+    for _fleet_resv in "$SLOTS"/*/; do
+      [ -d "$_fleet_resv" ] || continue
+      _fleet_resv_name="$(basename "$_fleet_resv")"
+      [ "$_fleet_resv_name" = .admit ] && continue
+      _fleet_resv_expires="$(cat "${_fleet_resv}expires" 2>/dev/null)"
+      case "$_fleet_resv_expires" in ''|*[!0-9]*) continue ;; esac
+      [ "$_fleet_now" -lt "$_fleet_resv_expires" ] || continue
+      _fleet_resv_sname=""
+      [ -f "${_fleet_resv}name" ] && read -r _fleet_resv_sname _fleet_resv_rest <"${_fleet_resv}name" 2>/dev/null
+      _fleet_pending_tokens="$_fleet_pending_tokens
+${_fleet_resv_sname:-$_fleet_resv_name}"
+    done
     for _fleet_resv in "$SLOTS"/*/; do
       [ -d "$_fleet_resv" ] || continue
       _fleet_resv_name="$(basename "$_fleet_resv")"
@@ -608,21 +625,22 @@ if [ "$_fleet_admitted" -eq 1 ]; then
       # handover path but launches under `-n <TICKET> <name> s<N>`, so its
       # reservation never matches a live session — it is released by that
       # script's EXIT trap (_arm_fleet_release_pending) on every exit instead.
-      # A live session consumes ONE reservation: the matched name is dropped
-      # from the live list once used, so two reservations sharing one first
-      # token ("HIMMEL-1 a" and "HIMMEL-1 b") against a single live "HIMMEL-1"
-      # session leave one still counted (live + pending = 2), never both
-      # deleted (which would let an extra admission past the cap).
+      # INVARIANT: the census may OVER-count (a launch is refused for at most
+      # the TTL — safe) but must never UNDER-count (admits past the cap). A
+      # name mismatch alone only ever over-counted; matching a first token is
+      # the one path that could under-count, so it is taken only when it is
+      # unambiguous: a `name`-file match consumes ONLY when exactly one
+      # pending reservation carries that token. When two or more share it
+      # ("HIMMEL-1 a" / "HIMMEL-1 b" against one live "HIMMEL-1") the token
+      # names no particular one of them, so none is consumed by it and each
+      # falls back to the exact directory-name match alone — stateless, so
+      # every later preflight decides the same way.
       _fleet_resv_sname=""
       [ -f "${_fleet_resv}name" ] && read -r _fleet_resv_sname _fleet_resv_rest <"${_fleet_resv}name" 2>/dev/null
-      _fleet_resv_hit=""
-      if printf '%s\n' "$_fleet_live_names" | grep -qxF "$_fleet_resv_name"; then
-        _fleet_resv_hit="$_fleet_resv_name"
-      elif [ -n "$_fleet_resv_sname" ] && printf '%s\n' "$_fleet_live_names" | grep -qxF "$_fleet_resv_sname"; then
-        _fleet_resv_hit="$_fleet_resv_sname"
-      fi
-      if [ -n "$_fleet_resv_hit" ]; then
-        _fleet_live_names="$(printf '%s\n' "$_fleet_live_names" | _FLEET_DROP="$_fleet_resv_hit" awk '!d && $0 == ENVIRON["_FLEET_DROP"] {d=1; next} {print}')"
+      if printf '%s\n' "$_fleet_live_names" | grep -qxF "$_fleet_resv_name" ||
+         { [ -n "$_fleet_resv_sname" ] &&
+           [ "$(printf '%s\n' "$_fleet_pending_tokens" | grep -cxF "$_fleet_resv_sname")" -eq 1 ] &&
+           printf '%s\n' "$_fleet_live_names" | grep -qxF "$_fleet_resv_sname"; }; then
         rm -rf "$_fleet_resv" 2>/dev/null
         continue
       fi

@@ -429,10 +429,11 @@ else
 fi
 check "(n) unmatched unexpired reservation with a name file stays on disk" 1 "$(count_resv "$slots_n")"
 
-# --- (o) one live session consumes ONE reservation, not every reservation
-# sharing its first token: two pending launches "HIMMEL-9507-shared a"/"... b"
-# and ONE live `-n HIMMEL-9507-shared` is one live + one still-pending = 2, not
-# 1 (deleting both would let an extra admission slip past the cap).
+# --- (o) a first token carried by TWO pending reservations is ambiguous: one
+# live `-n HIMMEL-9507-shared` names neither "HIMMEL-9507-shared a" nor "... b",
+# so it consumes NEITHER by the name-file match — the census may over-count but
+# must never under-count. Stateless, so it must hold on every later preflight
+# too (a consume-one-per-run rule eats the sibling on the second run).
 slots_o="$(mktemp -d "$W/slots-o.XXXXXX")" || { echo "FAIL - could not create slots-o scratch dir" >&2; exit 1; }
 for sfx in a b; do
   mkdir -p "$slots_o/HIMMEL-9507-shared_$sfx"
@@ -441,14 +442,16 @@ for sfx in a b; do
   printf '%s\n' "HIMMEL-9507-shared $sfx" > "$slots_o/HIMMEL-9507-shared_$sfx/name"
 done
 po="$W/ps-o"; mk_ps_stub "$po" '9001:claude:--model claude-opus-5 -n HIMMEL-9507-shared load doc'
-: > "$W/err.log"
-run_pf "$slots_o" "$po" HIMMEL_FLEET_CAP=4 >/dev/null
-if grep -q 'FLEET native=1 claudex=0 reserved=1 total=2/4' "$W/err.log" 2>/dev/null; then
-  PASS=$((PASS+1)); echo "ok - (o) one live session consumes one of two same-first-token reservations (total=2, not 1)"
-else
-  FAIL=$((FAIL+1)); echo "FAIL - (o) one live session consumed both same-first-token reservations"; grep 'FLEET ' "$W/err.log" || true
-fi
-check "(o) the unconsumed same-first-token reservation stays on disk" 1 "$(count_resv "$slots_o")"
+for o_run in first second; do
+  : > "$W/err.log"
+  run_pf "$slots_o" "$po" HIMMEL_FLEET_CAP=4 >/dev/null
+  if grep -q 'FLEET native=1 claudex=0 reserved=2 total=3/4' "$W/err.log" 2>/dev/null; then
+    PASS=$((PASS+1)); echo "ok - (o) $o_run preflight: ambiguous first token consumes neither reservation (reserved=2, total=3)"
+  else
+    FAIL=$((FAIL+1)); echo "FAIL - (o) $o_run preflight: an ambiguous first token consumed a reservation"; grep 'FLEET ' "$W/err.log" || true
+  fi
+  check "(o) $o_run preflight: both same-first-token reservations stay on disk" 2 "$(count_resv "$slots_o")"
+done
 
 echo "--- $PASS passed, $FAIL failed ---"
 [ "$FAIL" -eq 0 ]
