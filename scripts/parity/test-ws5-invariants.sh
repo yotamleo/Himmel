@@ -359,24 +359,40 @@ else
     #     command-position case lists (`command|exec|nohup)`) and bounded
     #     detach helpers (scripts/lib/detach.sh); `nohup ... &` hits 7 lines
     #     in 4 files, each a real detached process;
-    #   - the word `daemon` counts outside quoted strings that hold whitespace
-    #     (a message such as "the qmd daemon is wedged"); a single-token string
-    #     ("--daemon", "ensure-qmd-daemon.sh") is an argv element or a path
-    #     and still counts, as does `daemon=True` and an unquoted `--daemon`.
-    #     A string that RUNS is never a message: a backtick string, a
-    #     double-quoted string carrying `$(`, and every string on a line that
-    #     hands one to a shell or exec call (`sh -c`, eval, exec, system,
-    #     popen, spawn, subprocess., shell=True) all count.
+    #   - the word `daemon` counts everywhere on a code line EXCEPT inside a
+    #     string handed to a message emitter (echo, printf, die, warn, raise,
+    #     throw, console.*, logger.*, ...: the command since the last `;`,
+    #     `&`, `|`, `{`, `}` or `)` starts with one) -- "the qmd daemon is
+    #     wedged" is a message. Any other string may run and still counts:
+    #     `cmd="qmd --daemon"`, `bash -c "..."`, system("..."). A string that
+    #     runs even inside an emitter counts too: backticks, a double-quoted
+    #     `$(`, any line piped into sh/bash/xargs/tee, and any line with a
+    #     redirect other than >&N or >/dev/null (it writes the text to a
+    #     file that may run later);
+    #   - a leading `/* ... */` or `<!-- ... -->` closed on the line is
+    #     stripped, so the code after it is checked, not skipped.
     # ponytail: the quote scanner is language-agnostic -- a heredoc body or a
-    # multi-line string reads as unquoted code (strict: can only over-count),
+    # multi-line string reads as unquoted code, and an emitter the list does
+    # not name leaves its message counted (strict: both can only over-count),
     # and a C-preprocessor `#define` line reads as a comment (himmel ships no C).
     t13b_hit=0
     t13b_count="$(awk -v removed_file="$REMOVED" -v kind_file="$SHIPPED_KIND" '
         function trim(x) { sub(/^[ \t]+/, "", x); sub(/[ \t\r]+$/, "", x); return x }
-        # Empty every quoted string whose body holds whitespace (a message);
-        # keep single-token strings verbatim. \047 is a single quote.
-        function drop_prose(x,   out, i, n, c, q, s) {
-            out = ""; i = 1; n = length(x)
+        # Empty a quoted string only when it is the argument of a message
+        # emitter (echo, printf, die, raise, console.error, ...): the text
+        # since the last command separator starts with one. Every other
+        # string -- an assignment, an argv element, a `bash -c` / system()
+        # operand -- is kept verbatim, since it may run. A backtick string,
+        # or a double-quoted one carrying `$(`, runs code: never emptied.
+        # \047 is a single quote.
+        # The line with its harmless sinks removed: /dev/null and >&N
+        # redirects, and the => arrow.
+        function sink(x) {
+            gsub(/[0-9]*>>?[ \t]*\/dev\/null|[0-9]*>&[0-9]-?|=>/, "", x)
+            return x
+        }
+        function drop_prose(x,   out, seg, i, n, c, q, s, lead) {
+            out = ""; seg = ""; i = 1; n = length(x)
             while (i <= n) {
                 c = substr(x, i, 1)
                 if (c == "\"" || c == "\047" || c == "`") {
@@ -387,14 +403,16 @@ else
                         if (c == q) break
                         s = s c; i++
                     }
-                    # A backtick string, or a double-quoted one carrying a
-                    # command substitution, runs code: never prose.
-                    if (q == "`" || (q == "\"" && s ~ /\$\(|`/)) out = out q s q
-                    else out = out q ((s ~ /[ \t]/) ? "" : s) q
+                    lead = tolower(trim(seg))
+                    if (q != "`" && !(q == "\"" && s ~ /\$\(|`/) && lead ~ /^((then|else|do|!|=>)[ \t]+)?(echo|printf|emit|warn|warning|info|note|log|die|fail|error|err|msg|say|puts|e?print(ln)?!?|throw|raise|fprintf|console\.[a-z]+|logger\.[a-z_]+|logging\.[a-z_]+|log\.[a-z_]+|sys\.std(err|out)\.write|process\.std(err|out)\.write)([ \t(]|$)/)
+                        s = ""
+                    out = out q s q; seg = seg q q
                     i++
                     continue
                 }
-                out = out c; i++
+                out = out c
+                seg = (c ~ /[;&|{})]/) ? "" : seg c
+                i++
             }
             return out
         }
@@ -407,15 +425,22 @@ else
             t = trim(substr($0, 2))
             lt = tolower(t)
             hit = (lt ~ /while[ \t]+true|setinterval/)
-            if (!hit && kind == "code" && lt !~ /^(#|\/\/|\/\*|\*([ \t]|$)|<!--)/) {
-                if (lt ~ /(^|[^a-z0-9_-])nohup[ \t].*(^|[^&<>])&([ \t]*($|[);"\047])|[ \t]+[^&> \t])|systemctl[^|;&]*[ \t]enable([ \t]|$)|launchctl[ \t]+(load|bootstrap)([ \t]|$)/)
+            # A leading /* ... */ or <!-- ... --> comment closed on the line
+            # hides nothing: the code after it is what gets checked.
+            code = lt
+            if (code ~ /^\/\*.*\*\//) code = trim(substr(code, index(code, "*/") + 2))
+            else if (code ~ /^<!--.*-->/) code = trim(substr(code, index(code, "-->") + 3))
+            if (!hit && kind == "code" && code != "" && code !~ /^(#|\/\/|\/\*|\*([ \t]|$)|<!--)/) {
+                if (code ~ /(^|[^a-z0-9_-])nohup[ \t].*(^|[^&<>])&([ \t]*($|[);"\047])|[ \t]+[^&> \t])|systemctl[^|;&]*[ \t]enable([ \t]|$)|launchctl[ \t]+(load|bootstrap)([ \t]|$)/)
                     hit = 1
-                # A line that hands a string to a shell or exec call runs it:
-                # no string on that line is prose.
-                else if (lt ~ /(^|[^a-z0-9_.-])(ba|z|da|k)?sh[ \t]+-[a-z]*c[ \t]|(^|[^a-z0-9_])(eval|exec|execsync|execfilesync|system|popen|spawn|spawnsync|check_output|check_call)([ \t]*\(|[ \t])|subprocess\.|shell[ \t]*=[ \t]*true/) {
-                    if (lt ~ /daemon/) hit = 1
+                # Text piped into a shell, or written to a file (redirect or
+                # tee), may run, message emitter or not. Only >&N, /dev/null
+                # and => (an arrow, not a redirect) are safe sinks; any
+                # other > errs strict.
+                else if (sink(code) ~ /\|[ \t]*((ba|z|da|k)?sh|xargs|tee)([ \t]|$)|[^<>=-]>>?[ \t]*[^ \t=]/) {
+                    if (code ~ /daemon/) hit = 1
                 }
-                else if (tolower(drop_prose(t)) ~ /daemon/)
+                else if (drop_prose(code) ~ /daemon/)
                     hit = 1
             }
             if (hit) {
