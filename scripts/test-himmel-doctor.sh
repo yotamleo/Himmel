@@ -161,6 +161,11 @@ TOOLS_PATH="$(tool_dirs)"
 FAKEROOT="$(mktemp -d)"; FAKEBIN="$FAKEROOT/bin"; mkdir -p "$FAKEBIN"
 printf '#!/bin/sh\necho Linux\n' > "$FAKEBIN/uname"; chmod +x "$FAKEBIN/uname"
 
+# Keep unrelated cases from probing the operator's real qmd daemon on
+# localhost:8181 for C40 (HIMMEL-3056): an absent curl seam makes C40 an INFO
+# skip. Dedicated C40 cases override this seam per invocation with a stub curl.
+export HIMMEL_DOCTOR_QMD_CURL="$FAKEROOT/no-such-curl"
+
 # Keep unrelated cases from scanning the operator's real worktree garden (and
 # making live forge calls). Dedicated C7 cases override this seam per invocation.
 DOCTOR_WT_EMPTY="$FAKEROOT/doctor-wt-empty"; mkdir -p "$DOCTOR_WT_EMPTY"
@@ -4193,6 +4198,295 @@ else
     fi
 fi
 rm -rf "$c3839_t"
+
+# --- C40 (HIMMEL-3056): qmd vector-search health ------------------------------
+# Seam: HIMMEL_DOCTOR_QMD_CURL (the curl binary C40 uses, default `curl`). The
+# stub answers by C40_MODE and logs each call's -m bound + JSON-RPC method, so a
+# case can assert the vec probe is BOUNDED (-m) and really sent a vec sub-query.
+# Every case runs the stub against the init payload first (precondition) so a
+# stub that silently failed to take effect cannot pass.
+c40_setup() {
+    c40_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c40.XXXXXX")" || { fail "C40 setup: mktemp -d failed"; exit 1; }
+    cat > "$c40_t/curl" <<'STUB'
+#!/usr/bin/env bash
+m=""; d=""
+while [ $# -gt 0 ]; do
+    case "$1" in -m) m="$2"; shift ;; -d) d="$2"; shift ;; esac
+    shift
+done
+mode="${C40_MODE:-ok}"
+# The live daemon frames every reply as an SSE event (`event: message`, then
+# `data: <json>`), not a bare JSON body -- model that by default. C40_FRAME=plain
+# gives the bare body so both framings stay covered.
+pfx() { [ "${C40_FRAME:-sse}" = sse ] && printf 'event: message\ndata: '; return 0; }
+note=""
+[ "$mode" = novec ] && note=" Note: No vector embeddings yet. Run \`qmd embed\` to enable semantic search."
+[ "$mode" = stale ] && note=" Note: 12 documents need embedding. Run \`qmd embed\`."
+case "$d" in
+    *'"method":"initialize"'*)
+        echo "init m=$m" >> "$C40_LOG"
+        case "$mode" in
+            down) exit 7 ;;
+            inithang) exit 28 ;;
+            foreign) pfx; printf '%s' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"other-server"}}}'; exit 0 ;;
+        esac
+        [ "$mode" = init_multiline ] && { printf '{\n  "result": {\n    "serverInfo": {\n      "version": "2.8.3",\n      "name": "qmd"\n    }\n  }\n}\n'; exit 0; }
+        pfx; printf '%s' "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"serverInfo\":{\"name\":\"qmd\",\"version\":\"2.8.3\"},\"instructions\":\"QMD is your local search engine.$note\"}}"
+        exit 0 ;;
+    *'"type":"vec"'*)
+        echo "vec m=$m" >> "$C40_LOG"
+        case "$mode" in
+            hang) exit 28 ;;
+            iserror) pfx; printf '%s' '{"result":{"content":[{"type":"text","text":"embedding model failed to load"}],"isError":true},"jsonrpc":"2.0","id":2}'; exit 0 ;;
+            rpcerr) pfx; printf '%s' '{"error":{"code":-32603,"message":"vector store unavailable"},"jsonrpc":"2.0","id":2}'; exit 0 ;;
+            garbage) pfx; printf '%s' 'not json at all'; exit 0 ;;
+            trunc) pfx; printf '%s' '{"jsonrpc":"2.0","id":2,"result":'; exit 0 ;;
+            truncobj) pfx; printf '%s' '{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"No res'; exit 0 ;;
+            partial) pfx; printf '%s' '{"result":{"content":[{"type":"text","text":"x"'; exit 18 ;;
+            iserror_spaced) pfx; printf '%s' '{"result": {"content": [{"type": "text", "text": "embedding model failed to load"}], "isError": true}, "jsonrpc": "2.0", "id": 2}'; exit 0 ;;
+        esac
+        pfx; printf '%s' '{"result":{"content":[{"type":"text","text":"No results found"}],"structuredContent":{"results":[]}},"jsonrpc":"2.0","id":2}'
+        exit 0 ;;
+esac
+exit 0
+STUB
+    chmod +x "$c40_t/curl"
+    : > "$c40_t/log"
+}
+c40_run() { # <mode>
+    PATH="$FAKEBIN:$PATH" C40_MODE="$1" C40_LOG="$c40_t/log" HIMMEL_DOCTOR_QMD_CURL="$c40_t/curl" \
+        CLAUDE_DIR="$c40_t/claude" HOME="$c40_t/home" bash "$DOC" --no-color 2>&1
+}
+c40_precond() { # <mode> — the stub must answer the init payload the way the mode says
+    local got rc
+    got="$(C40_MODE="$1" C40_LOG="$c40_t/log" "$c40_t/curl" -s -m 3 -d '{"method":"initialize"}' http://x)"; rc=$?
+    : > "$c40_t/log"
+    case "$1" in
+        down) [ "$rc" -eq 7 ] && [ -z "$got" ] ;;
+        inithang) [ "$rc" -eq 28 ] && [ -z "$got" ] ;;
+        *) [ "$rc" -eq 0 ] && [ -n "$got" ] ;;
+    esac
+}
+
+echo "== C40: served vec probe -> OK, probe bounded and really vec (RED) =="
+c40_setup
+if ! c40_precond ok; then fail "C40 ok: precondition — stub did not answer init"
+else
+    out="$(c40_run ok)"
+    if grepq "$out" 'OK   C40-qmd-vec' && ! grepq "$out" 'WARN C40-qmd-vec' && grep -Eq '^vec m=[0-9]+$' "$c40_t/log"; then
+        pass "C40 served vec probe -> OK; vec sub-query sent with a -m bound"
+    else
+        fail "C40 served vec probe -> $(printf '%s' "$out" | grep -A1 C40) log=$(tr '\n' ' ' < "$c40_t/log")"
+    fi
+fi
+rm -rf "$c40_t"
+
+echo "== C40: vec query hangs (curl rc 28) -> WARN naming the timeout, not OK =="
+c40_setup
+if ! c40_precond hang; then fail "C40 hang: precondition — stub did not answer init"
+else
+    out="$(c40_run hang)"
+    if grepq "$out" 'WARN C40-qmd-vec' && grepq "$out" -F 'timed out' && grepq "$out" -F 'vector' && ! grepq "$out" 'OK   C40-qmd-vec'; then
+        pass "C40 hung vec query -> WARN naming the timeout"
+    else
+        fail "C40 hung vec query -> $(printf '%s' "$out" | grep -A1 C40)"
+    fi
+fi
+rm -rf "$c40_t"
+
+echo "== C40: vec tool error -> WARN carrying the daemon's own reason =="
+c40_setup
+if ! c40_precond iserror; then fail "C40 iserror: precondition — stub did not answer init"
+else
+    out="$(c40_run iserror)"
+    if grepq "$out" 'WARN C40-qmd-vec' && grepq "$out" -F 'embedding model failed to load'; then
+        pass "C40 vec tool error -> WARN with the daemon's reason"
+    else
+        fail "C40 vec tool error -> $(printf '%s' "$out" | grep -A1 C40)"
+    fi
+fi
+rm -rf "$c40_t"
+
+echo "== C40: JSON-RPC error on the vec probe -> WARN carrying the message =="
+c40_setup
+if ! c40_precond rpcerr; then fail "C40 rpcerr: precondition — stub did not answer init"
+else
+    out="$(c40_run rpcerr)"
+    if grepq "$out" 'WARN C40-qmd-vec' && grepq "$out" -F 'vector store unavailable'; then
+        pass "C40 JSON-RPC error -> WARN with the message"
+    else
+        fail "C40 JSON-RPC error -> $(printf '%s' "$out" | grep -A1 C40)"
+    fi
+fi
+rm -rf "$c40_t"
+
+echo "== C40: unrecognised vec reply -> WARN, never a false OK =="
+c40_setup
+if ! c40_precond garbage; then fail "C40 garbage: precondition — stub did not answer init"
+else
+    out="$(c40_run garbage)"
+    if grepq "$out" 'WARN C40-qmd-vec' && ! grepq "$out" 'OK   C40-qmd-vec'; then
+        pass "C40 unrecognised reply -> WARN (a vec probe that proved nothing is not OK)"
+    else
+        fail "C40 unrecognised reply -> $(printf '%s' "$out" | grep -A1 C40)"
+    fi
+fi
+rm -rf "$c40_t"
+
+echo "== C40: index has no vector embeddings -> WARN naming qmd embed =="
+c40_setup
+if ! c40_precond novec; then fail "C40 novec: precondition — stub did not answer init"
+else
+    out="$(c40_run novec)"
+    if grepq "$out" 'WARN C40-qmd-vec' && grepq "$out" -F 'no vector index' && grepq "$out" -F 'qmd embed'; then
+        pass "C40 no vector index -> WARN with the qmd embed remedy"
+    else
+        fail "C40 no vector index -> $(printf '%s' "$out" | grep -A1 C40)"
+    fi
+fi
+rm -rf "$c40_t"
+
+echo "== C40: documents awaiting embedding -> OK plus an INFO naming the count =="
+c40_setup
+if ! c40_precond stale; then fail "C40 stale: precondition — stub did not answer init"
+else
+    out="$(c40_run stale)"
+    if grepq "$out" 'OK   C40-qmd-vec' && grepq "$out" 'INFO C40-qmd-vec' && grepq "$out" -F '12 documents'; then
+        pass "C40 documents awaiting embedding -> OK + INFO count"
+    else
+        fail "C40 documents awaiting embedding -> $(printf '%s' "$out" | grep -A1 C40)"
+    fi
+fi
+rm -rf "$c40_t"
+
+echo "== C40 (CR panel): initialize itself times out (daemon holds the port but is wedged) -> WARN, not the optional-service INFO skip =="
+c40_setup
+if ! c40_precond inithang; then fail "C40 inithang: precondition — stub did not time out on init"
+else
+    out="$(c40_run inithang)"
+    if grepq "$out" 'WARN C40-qmd-vec' && grepq "$out" -F 'did not answer' && ! grepq "$out" 'INFO C40-qmd-vec' && ! grepq "$out" 'OK   C40-qmd-vec'; then
+        pass "C40 initialize timeout -> WARN (a wedged daemon is not an absent one)"
+    else
+        fail "C40 initialize timeout -> $(printf '%s' "$out" | grep -A1 C40)"
+    fi
+fi
+rm -rf "$c40_t"
+
+echo "== C40 (CR panel): pretty-printed \"isError\": true tool error -> WARN, never a false OK =="
+c40_setup
+if ! c40_precond iserror_spaced; then fail "C40 iserror_spaced: precondition — stub did not answer init"
+else
+    out="$(c40_run iserror_spaced)"
+    if grepq "$out" 'WARN C40-qmd-vec' && grepq "$out" -F 'embedding model failed to load' && ! grepq "$out" 'OK   C40-qmd-vec'; then
+        pass "C40 spaced isError:true -> WARN with the daemon's reason"
+    else
+        fail "C40 spaced isError:true -> $(printf '%s' "$out" | grep -A1 C40)"
+    fi
+fi
+rm -rf "$c40_t"
+
+echo "== C40 (CR panel r2): pretty-printed initialize (serverInfo/name on separate lines) is still qmd -> OK, not a foreign-listener WARN =="
+c40_setup
+if ! c40_precond init_multiline; then fail "C40 init_multiline: precondition — stub did not answer init"
+else
+    out="$(c40_run init_multiline)"
+    if grepq "$out" 'OK   C40-qmd-vec' && ! grepq "$out" 'WARN C40-qmd-vec'; then
+        pass "C40 multi-line initialize reply -> recognised as qmd"
+    else
+        fail "C40 multi-line initialize reply -> $(printf '%s' "$out" | grep -A1 C40)"
+    fi
+fi
+rm -rf "$c40_t"
+
+echo "== C40 (CR panel r2): truncated vec reply (rc 0, body cut before the result object) -> WARN, never OK =="
+c40_setup
+if ! c40_precond trunc; then fail "C40 trunc: precondition — stub did not answer init"
+else
+    out="$(c40_run trunc)"
+    if grepq "$out" 'WARN C40-qmd-vec' && ! grepq "$out" 'OK   C40-qmd-vec'; then
+        pass "C40 truncated reply -> WARN"
+    else
+        fail "C40 truncated reply -> $(printf '%s' "$out" | grep -A1 C40)"
+    fi
+fi
+rm -rf "$c40_t"
+
+echo "== C40 (CR panel r3): body cut INSIDE the result object (curl rc 0, opens with {\"result\":{) -> WARN unparseable, never OK =="
+c40_setup
+if ! c40_precond truncobj; then fail "C40 truncobj: precondition — stub did not answer init"
+else
+    out="$(c40_run truncobj)"
+    if grepq "$out" 'WARN C40-qmd-vec' && grepq "$out" -F 'unparseable' && ! grepq "$out" 'OK   C40-qmd-vec'; then
+        pass "C40 body cut inside the result object -> WARN unparseable"
+    else
+        fail "C40 body cut inside the result object -> $(printf '%s' "$out" | grep -A1 C40)"
+    fi
+fi
+rm -rf "$c40_t"
+
+echo "== C40 (CR panel r3): a bare JSON reply (no SSE framing) is classified the same way =="
+c40_setup
+if ! C40_FRAME=plain c40_precond ok; then fail "C40 plain: precondition — stub did not answer init"
+else
+    out_ok="$(C40_FRAME=plain c40_run ok)"
+    out_cut="$(C40_FRAME=plain c40_run truncobj)"
+    if grepq "$out_ok" 'OK   C40-qmd-vec' && ! grepq "$out_ok" 'WARN C40-qmd-vec' \
+        && grepq "$out_cut" 'WARN C40-qmd-vec' && ! grepq "$out_cut" 'OK   C40-qmd-vec'; then
+        pass "C40 bare JSON reply -> OK when whole, WARN when cut"
+    else
+        fail "C40 bare JSON reply -> ok:[$(printf '%s' "$out_ok" | grep C40)] cut:[$(printf '%s' "$out_cut" | grep C40)]"
+    fi
+fi
+rm -rf "$c40_t"
+
+echo "== C40 (CR panel r2): vec reply cut off mid-transfer (curl rc 18 with a partial body) -> WARN, never OK =="
+c40_setup
+if ! c40_precond partial; then fail "C40 partial: precondition — stub did not answer init"
+else
+    out="$(c40_run partial)"
+    if grepq "$out" 'WARN C40-qmd-vec' && ! grepq "$out" 'OK   C40-qmd-vec'; then
+        pass "C40 mid-transfer cut-off -> WARN"
+    else
+        fail "C40 mid-transfer cut-off -> $(printf '%s' "$out" | grep -A1 C40)"
+    fi
+fi
+rm -rf "$c40_t"
+
+echo "== C40: no daemon answering -> INFO skip, no vec probe sent, no WARN =="
+c40_setup
+if ! c40_precond down; then fail "C40 down: precondition — stub did not fail init"
+else
+    out="$(c40_run down)"
+    if grepq "$out" 'INFO C40-qmd-vec' && ! grepq "$out" 'WARN C40-qmd-vec' && ! grep -q '^vec ' "$c40_t/log"; then
+        pass "C40 no daemon -> INFO skip (qmd is optional), no vec probe"
+    else
+        fail "C40 no daemon -> $(printf '%s' "$out" | grep -A1 C40) log=$(tr '\n' ' ' < "$c40_t/log")"
+    fi
+fi
+rm -rf "$c40_t"
+
+echo "== C40: foreign listener on the qmd port -> WARN, no vec probe =="
+c40_setup
+if ! c40_precond foreign; then fail "C40 foreign: precondition — stub did not answer init"
+else
+    out="$(c40_run foreign)"
+    if grepq "$out" 'WARN C40-qmd-vec' && grepq "$out" -F 'NOT qmd' && ! grep -q '^vec ' "$c40_t/log"; then
+        pass "C40 foreign listener -> WARN, vec probe not sent to a non-qmd server"
+    else
+        fail "C40 foreign listener -> $(printf '%s' "$out" | grep -A1 C40)"
+    fi
+fi
+rm -rf "$c40_t"
+
+echo "== C40: curl seam absent -> INFO skip =="
+c40_setup
+out="$(PATH="$FAKEBIN:$PATH" HIMMEL_DOCTOR_QMD_CURL="$c40_t/no-such-curl" CLAUDE_DIR="$c40_t/claude" HOME="$c40_t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C40-qmd-vec' && ! grepq "$out" 'WARN C40-qmd-vec'; then
+    pass "C40 no curl -> INFO skip"
+else
+    fail "C40 no curl -> $(printf '%s' "$out" | grep -A1 C40)"
+fi
+rm -rf "$c40_t"
 
 rm -rf "$HIMMEL_DOCTOR_NOOP_HANDOVER"
 

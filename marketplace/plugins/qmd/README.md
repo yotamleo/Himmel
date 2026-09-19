@@ -52,6 +52,15 @@ by `qmd update` immediately — no restart or watch needed. Stop the daemon with
 acceptable for a read-only index (a connect failure is loud in `/mcp`, not a
 silent empty index).
 
+A hung **vector** query is the one failure that is not loud: on 2026-09-16 every
+`vec` sub-query timed out while `lex` kept working, so an agent's semantic
+sweep silently degraded to keyword-only (HIMMEL-3056). The MCP client only sees
+a timeout, so himmel detects it instead: `bash scripts/himmel-doctor.sh`
+check `C40-qmd-vec` probes the daemon with one bounded `vec` query and names
+the reason (timed out / tool error / no vector index / foreign listener on
+8181). If a `vec` call times out, run that check — do not retry-loop the query, and
+treat a lex-only result as incomplete coverage, not a miss.
+
 ## Upstream watch
 
 The standalone `qmd` CLI installs from a local clone of upstream `tobi/qmd`

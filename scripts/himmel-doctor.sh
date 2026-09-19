@@ -2785,6 +2785,123 @@ check_c39_gtimeout_darwin() {
         "brew install coreutils (installs gtimeout; no PATH change needed — see docs/setup/new-machine.md)"
 }
 
+# --- C40: qmd vector-search health (HIMMEL-3056) --------------------------------
+# On 2026-09-16 every vec sub-query to the qmd MCP daemon timed out while lex
+# kept working -- semantic retrieval was silently down and agents reported
+# coverage they did not have. A timeout is indistinguishable from a slow query;
+# this check turns it into a named finding. It asks the daemon two things: does
+# its index have vectors at all (the initialize reply's instructions carry the
+# "No vector embeddings yet" / "N documents need embedding" notes), and does a
+# real BOUNDED vec probe come back. qmd is optional, so an unreachable daemon is
+# an INFO skip (the qmd plugin's SessionStart hook owns starting it); a foreign
+# listener or a probe that hangs / errors / returns nothing readable is a WARN.
+# The probe spans every collection and loads the embedding model on a cold
+# daemon (~6s warm on a loaded 21k-doc box), hence the 30s default.
+# Test seams: HIMMEL_DOCTOR_QMD_URL (default http://localhost:8181/mcp --
+# localhost, NOT 127.0.0.1: the daemon binds ::1 only, HIMMEL-3041),
+# HIMMEL_DOCTOR_QMD_CURL (default curl), HIMMEL_DOCTOR_QMD_VEC_TIMEOUT (seconds).
+check_c40_qmd_vec() {
+    local url="${HIMMEL_DOCTOR_QMD_URL:-http://localhost:8181/mcp}"
+    local curl_bin="${HIMMEL_DOCTOR_QMD_CURL:-curl}"
+    local vec_timeout="${HIMMEL_DOCTOR_QMD_VEC_TIMEOUT:-30}"
+    if ! command -v "$curl_bin" >/dev/null 2>&1; then
+        emit INFO C40-qmd-vec "curl not found -- qmd vector-health check skipped"
+        return
+    fi
+    if ! command -v jq >/dev/null 2>&1; then
+        emit INFO C40-qmd-vec "jq not found -- qmd vector-health check skipped (replies are classified from parsed JSON)"
+        return
+    fi
+
+    local init_payload='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"himmel-doctor","version":"1"}}}'
+    local vec_payload='{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"query","arguments":{"searches":[{"type":"vec","query":"himmel doctor vector probe"}],"limit":1,"rerank":false}}}'
+    local init init_rc
+    init="$("$curl_bin" -s -m 3 -X POST -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d "$init_payload" "$url" 2>/dev/null)"; init_rc=$?
+    if [ -z "$init" ] && [ "$init_rc" -eq 28 ]; then
+        emit WARN C40-qmd-vec "a process on $url accepted the connection but did not answer initialize within 3s -- the qmd daemon is wedged, vec search is not being served" \
+            "see the daemon log ~/.cache/qmd/mcp.log; restart the daemon (stop the 'qmd mcp' process, then start a session or run: qmd mcp --http --daemon)"
+        return
+    fi
+    if [ -z "$init" ]; then
+        emit INFO C40-qmd-vec "no qmd daemon answering on $url -- vector-health check skipped (qmd is optional)"
+        return
+    fi
+    # Classify from the PARSED reply, never a substring of the raw body: jq
+    # rejects a truncated or non-JSON body outright, and reads a pretty-printed
+    # reply exactly like qmd's compact one.
+    # qmd answers as an SSE event (`event: message` / `data: <json>`); take the
+    # data: payload when there is one, else the body as-is (a plain JSON reply).
+    local init_json server_name instr
+    init_json="$(printf '%s\n' "$init" | sed -n 's/^data:[[:space:]]*//p')"
+    [ -n "$init_json" ] || init_json="$init"
+    server_name="$(printf '%s' "$init_json" | jq -r '.result.serverInfo.name // empty' 2>/dev/null)"
+    if [ "$server_name" != "qmd" ]; then
+        emit WARN C40-qmd-vec "a process on $url answers but it is NOT qmd (initialize reply has no qmd serverInfo) -- qmd vector search cannot work" \
+            "free port 8181 (see marketplace/plugins/qmd/scripts/ensure-qmd-daemon.sh), then start a fresh session"
+        return
+    fi
+    instr="$(printf '%s' "$init_json" | jq -r '.result.instructions // ""' 2>/dev/null)"
+    case "$instr" in
+    *'No vector embeddings yet'*)
+        emit WARN C40-qmd-vec "qmd has no vector index (no embeddings) -- every vec query returns nothing, only lex works" \
+            "qmd embed"
+        return
+        ;;
+    esac
+
+    local body rc start elapsed
+    start=$SECONDS
+    body="$("$curl_bin" -s -m "$vec_timeout" -X POST -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d "$vec_payload" "$url" 2>/dev/null)"; rc=$?
+    elapsed=$((SECONDS - start))
+    local remedy="see the daemon log ~/.cache/qmd/mcp.log; restart the daemon (stop the 'qmd mcp' process, then start a session or run: qmd mcp --http --daemon)"
+    if [ "$rc" -eq 28 ]; then
+        emit WARN C40-qmd-vec "qmd daemon is up but a vector query timed out after ${vec_timeout}s -- vec search is silently down (keyword search may still work); the embedding backend is hung or cannot load its model" \
+            "$remedy"
+        return
+    fi
+    if [ "$rc" -ne 0 ]; then
+        emit WARN C40-qmd-vec "qmd daemon dropped or cut off the vector probe (curl rc=$rc) -- vec search is not being served" "$remedy"
+        return
+    fi
+    # One parse of the whole reply: "<kind>" or "<kind><TAB><reason>". Anything
+    # jq cannot parse to a complete value (a truncated body, HTML, garbage) or that
+    # is not a JSON-RPC error / CallToolResult falls to "bad".
+    local body_json cls kind reason
+    body_json="$(printf '%s\n' "$body" | sed -n 's/^data:[[:space:]]*//p')"
+    [ -n "$body_json" ] || body_json="$body"
+    cls="$(printf '%s' "$body_json" | jq -r '
+        def oneline: gsub("\\s+"; " ");
+        if type != "object" then "bad"
+        elif (.error | type) == "object" then "rpcerr\t\(.error.message // "" | tostring | oneline)"
+        elif (.result | type) == "object" and (.result.content | type) == "array" then
+            if .result.isError == true then "toolerr\t\([.result.content[] | objects | .text? | strings] | first // "" | oneline)"
+            else "ok" end
+        else "bad" end' 2>/dev/null)" || cls=bad
+    kind="${cls%%$'\t'*}"
+    reason="${cls#*$'\t'}"
+    case "$kind" in
+    toolerr)
+        emit WARN C40-qmd-vec "qmd vector query returned an error: ${reason:-unreadable tool error} -- vec search is not being served" "$remedy"
+        return
+        ;;
+    rpcerr)
+        emit WARN C40-qmd-vec "qmd vector query failed (JSON-RPC error): ${reason:-unreadable error} -- vec search is not being served" "$remedy"
+        return
+        ;;
+    ok) ;;
+    *)
+        emit WARN C40-qmd-vec "qmd vector probe returned an unparseable reply (not a complete JSON-RPC result) -- vec search health could not be confirmed" "$remedy"
+        return
+        ;;
+    esac
+    emit OK C40-qmd-vec "qmd vector search served a probe query in ${elapsed}s ($url)"
+    local pending
+    pending="$(printf '%s' "$instr" | sed -n 's/.*Note: \([0-9][0-9]*\) documents need embedding.*/\1/p' | head -1)"
+    if [ -n "$pending" ]; then
+        emit INFO C40-qmd-vec "$pending documents are not yet embedded -- invisible to vec queries until embedded" "qmd embed"
+    fi
+}
+
 # --- run ------------------------------------------------------------------------
 echo "himmel-doctor — $(uname -s 2>/dev/null || echo ?) — checkout: $REPO_ROOT"
 echo
@@ -2827,6 +2944,7 @@ check_c36_stray_tmp_git
 check_c37_vendored_skill_dupes
 check_c38_uv
 check_c39_gtimeout_darwin
+check_c40_qmd_vec
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 
