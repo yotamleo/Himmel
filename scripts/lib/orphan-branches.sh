@@ -246,13 +246,28 @@ _ob_classify() {
     if [ "$_ob_rc" -ne 0 ]; then
         printf 'uncertain: %s (forge unreachable)\n' "$branch"; return
     fi
-    local has_any=0 merged_oid="" open_num="" open_ci="" has_closed=0 num state oid ci
+    local has_any=0 merged_oid="" open_num="" open_ci="" open_rank=0 has_closed=0 num state oid ci rank
     while IFS="$(printf '\t')" read -r num state oid ci; do
         [ -n "$num" ] || continue
         has_any=1
         case "$state" in
             MERGED) [ -n "$merged_oid" ] || merged_oid="${oid:--}" ;;
-            OPEN)   open_num="$num"; open_ci="$ci" ;;
+            OPEN)
+                # `pr list --head` is not filtered by base, so one branch can carry
+                # several OPEN PRs. Keep the WORST ci (pending > failed > none >
+                # green) with its own PR number, so a green row after a pending one
+                # cannot read as ci-green. A missing/unrecognised ci reads pending
+                # — never green, never failed.
+                case "$ci" in
+                    pending) rank=4 ;;
+                    failed)  rank=3 ;;
+                    none)    rank=2 ;;
+                    green)   rank=1 ;;
+                    *)       rank=4; ci=pending ;;
+                esac
+                if [ "$rank" -gt "$open_rank" ]; then
+                    open_rank="$rank"; open_num="$num"; open_ci="$ci"
+                fi ;;
             CLOSED) has_closed=1 ;;
         esac
     done <<EOF
@@ -270,8 +285,6 @@ EOF
         return
     fi
     if [ -n "$open_num" ]; then
-        # A missing/unrecognised ci column reads pending — never green, never failed.
-        case "$open_ci" in green|none|pending|failed) ;; *) open_ci=pending ;; esac
         if [ "$open_ci" = green ]; then
             printf 'chain: ci-green %s (pr #%s)\n' "$branch" "$open_num"
         else

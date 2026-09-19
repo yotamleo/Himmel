@@ -652,6 +652,39 @@ else
 fi
 unset GH_CMD FORGE ORPHAN_BRANCH_DAYS ORPHAN_BRANCH_MAX ORPHAN_PUBLIC_CLONE
 
+# ── T28: several OPEN PRs on one head branch -> the WORST ci wins (HIMMEL-3197) --
+# `gh pr list --head <b>` is not filtered by base, so one branch can carry several
+# OPEN PRs (one per base). A green row AFTER a pending/failed row must not read as
+# ci-green (last-row-wins did): pending > failed > none > green, and the reported
+# PR number is the one that carries the winning state.
+t="$TMPDIR_ROOT/t28"; mk_repo "$t/rep"; mk_origin_main "$t/rep"
+mk_remote_branch "$t/rep" "feat/mp" 1
+mk_remote_branch "$t/rep" "feat/mf" 2
+mk_remote_branch "$t/rep" "feat/mg" 3
+mk_remote_branch "$t/rep" "feat/mn" 4
+stub="$TMPDIR_ROOT/gh-t28"
+{
+    printf '%s\n' '#!/usr/bin/env bash'
+    printf '%s\n' 'case "$4" in'
+    printf '%s\n' '  feat/mp) printf "%s\t%s\t%s\t%s\n" 11 OPEN - pending; printf "%s\t%s\t%s\t%s\n" 12 OPEN - green ;;'
+    printf '%s\n' '  feat/mf) printf "%s\t%s\t%s\t%s\n" 21 OPEN - green; printf "%s\t%s\t%s\t%s\n" 22 OPEN - failed; printf "%s\t%s\t%s\t%s\n" 23 OPEN - green ;;'
+    printf '%s\n' '  feat/mg) printf "%s\t%s\t%s\t%s\n" 31 OPEN - green; printf "%s\t%s\t%s\t%s\n" 32 OPEN - green ;;'
+    printf '%s\n' '  feat/mn) printf "%s\t%s\t%s\t%s\n" 41 OPEN - green; printf "%s\t%s\t%s\t%s\n" 42 OPEN - none ;;'
+    printf '%s\n' 'esac'
+} > "$stub"
+chmod +x "$stub"
+export FORGE=github GH_CMD="$stub" ORPHAN_BRANCH_DAYS=30 ORPHAN_BRANCH_MAX=50 ORPHAN_PUBLIC_CLONE=""
+out="$(orphan_branch_scan "$t/rep" 2>/dev/null)"
+if grepq "$out" '^chain: pr feat/mp (pr #11, ci=pending)$' \
+   && grepq "$out" '^chain: pr feat/mf (pr #22, ci=failed)$' \
+   && grepq "$out" '^chain: ci-green feat/mg (pr #31)$' \
+   && grepq "$out" '^chain: pr feat/mn (pr #42, ci=none)$'; then
+    pass "T28: several OPEN PRs on one branch -> worst ci wins, with its own PR number"
+else
+    fail "T28: multi-OPEN aggregation wrong: $(printf '%s\n' "$out" | tr '\n' '|')"
+fi
+unset GH_CMD FORGE ORPHAN_BRANCH_DAYS ORPHAN_BRANCH_MAX ORPHAN_PUBLIC_CLONE
+
 # ── summary ───────────────────────────────────────────────────────────────────
 echo ""
 echo "Results: $_pass passed, $_fail failed"
