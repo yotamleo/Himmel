@@ -32,6 +32,7 @@ LEDGER_APPEND="$SCRIPT_DIR/ledger-append.sh"
 REVIEW_ROUND="$SCRIPT_DIR/review-round.sh"
 LOCK_LIB="$SCRIPT_DIR/../lib/shared-branch-lock.sh"
 DEFAULT_BASE_LIB="$SCRIPT_DIR/../lib/cr-default-base.sh"
+FLOOR_MJS="$SCRIPT_DIR/claude-floor.mjs"
 CODEX_SKILL="$ROOT/.agents/skills/pr-check/SKILL.md"
 # shellcheck source=scripts/lib/fixture-tempdir.sh
 # shellcheck disable=SC1091
@@ -98,8 +99,16 @@ build_repo_template() {
     # HIMMEL-3107: the floor provenance check binds its base through this lib.
     cp "$DEFAULT_BASE_LIB" "$REPO_TEMPLATE/scripts/lib/cr-default-base.sh" \
         || { echo "FAIL: cp cr-default-base.sh into template failed" >&2; rm -rf "$REPO_TEMPLATE"; return 1; }
+    # HIMMEL-3220: the floor provenance check verifies the artifact's stamp here.
+    cp "$FLOOR_MJS" "$REPO_TEMPLATE/scripts/cr/claude-floor.mjs" \
+        || { echo "FAIL: cp claude-floor.mjs into template failed" >&2; rm -rf "$REPO_TEMPLATE"; return 1; }
 }
-trap '[ -n "$REPO_TEMPLATE" ] && rm -rf "$REPO_TEMPLATE"' EXIT
+# HIMMEL-3220: a throwaway floor signing key pair — never the real
+# ~/.himmel/cr-floor-key (the gate reads CR_FLOOR_KEY_DIR).
+FLOOR_KEYS=$(fixture_mktemp_dir) || { echo "FAIL: mktemp for the floor key dir failed" >&2; exit 1; }
+export CR_FLOOR_KEY_DIR="$FLOOR_KEYS/keys"
+trap '[ -n "$REPO_TEMPLATE" ] && rm -rf "$REPO_TEMPLATE"; rm -rf "$FLOOR_KEYS"' EXIT
+node "$FLOOR_MJS" init-key >/dev/null || { echo "FAIL: floor key init failed" >&2; exit 1; }
 build_repo_template || { echo "FAIL: could not build repo template fixture" >&2; exit 1; }
 
 # make_repo — a temp git repo with one commit on branch `feat/x`, copied from
@@ -143,18 +152,23 @@ avail_ok_claude() { printf '{"kind":"avail","head":"%s","model":"claude","status
 # HIMMEL-3107 — the context-free floor reviewer's row (claude-floor-review.sh
 # writes it). Same model family as "claude": never cross-model evidence.
 avail_ok_floor() { printf '{"kind":"avail","head":"%s","model":"claude-floor","status":"ok"}' "$1"; }
-# write_floor_artifact <tmp> <head> [diff-hash-override] — the provenance
-# stamp claude-floor-review.sh leaves at <git-common-dir>/cr-floor/<head>.json.
-# The diff hash is computed exactly as the gate recomputes it (main...head).
+# write_floor_artifact <tmp> <head> [diff-hash-override] [unsigned] — the
+# provenance artifact claude-floor-review.sh leaves at
+# <git-common-dir>/cr-floor/<head>.json, stamped with the test key pair (a 4th
+# argument `unsigned` leaves it as a session could hand-write it). The diff
+# hash is computed exactly as the gate recomputes it (main...head).
 write_floor_artifact() {
-    local tmp="$1" head="$2" hash="${3:-}" base
+    local tmp="$1" head="$2" hash="${3:-}" unsigned="${4:-}" base art
     # The gate binds the base to the REMOTE default branch, so publish main.
     git -C "$tmp" push -q origin main >/dev/null 2>&1
     base=$(git -C "$tmp" rev-parse --verify refs/heads/main)
     [ -n "$hash" ] || hash=$(git -C "$tmp" diff --no-color --no-ext-diff "$base...$head" | git -C "$tmp" hash-object --stdin)
     mkdir -p "$tmp/.git/cr-floor"
-    printf '{"schema":1,"head":"%s","base":"%s","diff_hash":"%s","session_id":"00000000-0000-4000-8000-000000000001","model":"claude-floor","same_model":true,"context_free":true,"findings":[]}\n' \
-        "$head" "$base" "$hash" > "$tmp/.git/cr-floor/$head.json"
+    art="$tmp/.git/cr-floor/$head.json"
+    printf '{"schema":2,"head":"%s","base":"%s","diff_hash":"%s","session_id":"00000000-0000-4000-8000-000000000001","dispatch_id":"00000000-0000-4000-8000-0000000000d1","model":"claude-floor","same_model":true,"context_free":true,"findings":[]}\n' \
+        "$head" "$base" "$hash" > "$art"
+    [ "$unsigned" = unsigned ] && return 0
+    node "$FLOOR_MJS" sign "$art" > "$art.signed" && mv "$art.signed" "$art"
 }
 # avail_reason <head> <model> <status> [reason] — HIMMEL-2128: a non-Claude
 # avail row carrying an optional --reason (HIMMEL-1176 failure classification),
@@ -2589,6 +2603,44 @@ stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
 run_clear "$tmp" 14 "5z no origin/HEAD or origin/main -> exit 14"
 if marker_exists "$tmp"; then pass; else fail "5z no remote default: marker must REMAIN"; fi
 if grepq "$LAST_CLEAR_OUT" 'default branch'; then pass; else fail "5z must name the missing default branch: $LAST_CLEAR_OUT"; fi
+rm -rf "$tmp"
+
+# 5za. HIMMEL-3220: a HAND-WRITTEN artifact — right head, right base, the
+# correct diff hash, an invented session id, no stamp — is exactly what the
+# authoring session could forge. It must not unlock the floor.
+make_repo || exit 1
+write_marker "$tmp" "$sha"
+write_floor_artifact "$tmp" "$sha" "" unsigned
+write_ledger "$tmp" "$(avail_ok_floor "$sha")" "$(avail_reason "$sha" codex unavailable quota-5h)"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 14 "5za hand-written (unstamped) floor artifact -> exit 14"
+if marker_exists "$tmp"; then pass; else fail "5za forged artifact: marker must REMAIN"; fi
+if grepq "$LAST_CLEAR_OUT" 'no ed25519 stamp'; then pass; else fail "5za must name the missing stamp: $LAST_CLEAR_OUT"; fi
+rm -rf "$tmp"
+
+# 5zb. A stamped artifact edited after signing (the session id swapped) no
+# longer verifies -> exit 14.
+make_repo || exit 1
+write_marker "$tmp" "$sha"
+write_floor_artifact "$tmp" "$sha"
+jq -c '.session_id = "forged-session"' "$tmp/.git/cr-floor/$sha.json" > "$tmp/art.tmp" && mv "$tmp/art.tmp" "$tmp/.git/cr-floor/$sha.json"
+write_ledger "$tmp" "$(avail_ok_floor "$sha")" "$(avail_reason "$sha" codex unavailable quota-5h)"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 14 "5zb stamped artifact edited after signing -> exit 14"
+if marker_exists "$tmp"; then pass; else fail "5zb tampered artifact: marker must REMAIN"; fi
+if grepq "$LAST_CLEAR_OUT" 'does not verify'; then pass; else fail "5zb must name the bad signature: $LAST_CLEAR_OUT"; fi
+rm -rf "$tmp"
+
+# 5zc. No public key provisioned -> fail CLOSED, naming the operator's init
+# command; never a silent fall-back to the unsigned check.
+make_repo || exit 1
+write_marker "$tmp" "$sha"
+write_floor_artifact "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_floor "$sha")" "$(avail_reason "$sha" codex unavailable quota-5h)"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+CR_FLOOR_KEY_DIR="$FLOOR_KEYS/absent" run_clear "$tmp" 14 "5zc no floor signing key provisioned -> exit 14"
+if marker_exists "$tmp"; then pass; else fail "5zc no key: marker must REMAIN"; fi
+if grepq "$LAST_CLEAR_OUT" -F 'claude-floor.mjs init-key'; then pass; else fail "5zc must name the init command: $LAST_CLEAR_OUT"; fi
 rm -rf "$tmp"
 unset CR_FLOOR_FALLBACK
 

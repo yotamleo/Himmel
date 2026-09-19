@@ -13,8 +13,11 @@
 #     (no CLAUDE.md, auto-memory, skills, plugins, hooks or MCP servers);
 #   - --tools Read,Grep,Glob,Write — no Bash, no web, no sub-agents;
 #   - no --resume/--continue: a new session every time.
-# It then stamps <git-common-dir>/cr-floor/<head>.json (head, base, diff hash,
-# headless session id, findings — the provenance the gate checks) and writes
+# It then writes <git-common-dir>/cr-floor/<head>.json (head, base, diff hash,
+# headless session id, the dispatch id of its registry row, findings — the
+# provenance the gate checks), signed with the floor signing key only after
+# that registry row reads completed/is_error=false (HIMMEL-3220; the trust
+# boundary is documented in scripts/cr/claude-floor.mjs), and writes
 # the findings (verdict empty: the session adjudicates them, gate 4b) plus one
 # `avail --model claude-floor --status ok` row recording same-model +
 # context-free + the lanes whose exhaustion unlocked it.
@@ -30,7 +33,9 @@
 # CR_FLOOR_FALLBACK=claude-only) and the ledger shows the floor can actually
 # unlock: no non-Claude ok row at this head, and every non-Claude lane that
 # recorded a row is exhausted (quota/rate-limit, or a vacuous CodeRabbit pass)
-# — or critics.json lists an empty panel and no lane recorded anything.
+# — or critics.json lists an empty panel and no lane recorded anything — and
+# the floor signing key is provisioned (operator, once:
+# `node scripts/cr/claude-floor.mjs init-key`).
 # An auth/404/config/timeout lane refuses here exactly as it does in the gate.
 #
 # usage: claude-floor-review.sh --branch <branch> --base <ref> [--head <sha>]
@@ -126,16 +131,21 @@ case "$unlocked" in
     OK\ *) unlocked="${unlocked#OK }" ;;
     *) echo "claude-floor-review: not eligible at ${head:0:8} — ${unlocked:-could not read the ledger at $ledger}. Nothing spent." >&2; exit 3 ;;
 esac
+# HIMMEL-3220: the gate accepts only a STAMPED artifact, so without a
+# provisioned signing key the review would be spent for nothing.
+key_err=$(node "$SCRIPT_DIR/claude-floor.mjs" key-check 2>&1) ||
+    die "not eligible: ${key_err#claude-floor: } Nothing spent." 3
 
 # --- 2. the reviewer's inputs: a snapshot of the head + the diff, nothing else ---
 work=$(mktemp -d "${TMPDIR:-/tmp}/cr-floor.XXXXXX") || die "mktemp failed" 1
 trap 'rm -rf "$work"' EXIT
 snap="$work/snap"
 mkdir -p "$snap" || die "mkdir failed" 1
-# Every tracked file at the head, via a throwaway index: `git archive` would
-# honour export-ignore and hide files the reviewer needs.
-GIT_INDEX_FILE="$work/index" git read-tree "$head" || die "reading the tree of ${head:0:8} failed" 1
-GIT_INDEX_FILE="$work/index" git --work-tree="$snap" checkout-index -a -f || die "snapshot of ${head:0:8} failed" 1
+# Every tracked file at the head, from its RAW blob (HIMMEL-3229): checkout-index
+# would apply smudge filters and eol conversion, and `git archive` would also
+# honour export-ignore — either way the reviewer would read bytes the diff
+# hash does not cover.
+node "$SCRIPT_DIR/claude-floor.mjs" snapshot "$head" "$snap" || die "snapshot of ${head:0:8} failed" 1
 git diff --no-color --no-ext-diff "$base...$head" > "$work/diff.patch" || die "git diff failed" 1
 [ -s "$work/diff.patch" ] || die "the diff $base...${head:0:8} is empty — nothing to review" 3
 diff_hash=$(git hash-object --stdin < "$work/diff.patch") || die "hashing the diff failed" 1
@@ -233,9 +243,10 @@ bash "$SCRIPT_DIR/ledger-append.sh" avail --branch "$branch" --head "$head" --mo
 mkdir -p "$git_dir/cr-floor" || die "cannot create $git_dir/cr-floor" 1
 if ! jq -n --arg head "$head" --arg base "$base" --arg diff_hash "$diff_hash" --arg session_id "$session_id" \
     --arg dispatch_id "$dispatch_id" --arg unlocked "$unlocked" --argjson findings "$findings" \
-    '{schema:1, head:$head, base:$base, diff_hash:$diff_hash, session_id:$session_id, dispatch_id:$dispatch_id,
+    '{schema:2, head:$head, base:$base, diff_hash:$diff_hash, session_id:$session_id, dispatch_id:$dispatch_id,
       model:"claude-floor", reviewer:"pr-review-toolkit-himmel:code-reviewer", same_model:true, context_free:true,
-      unlocked_by:($unlocked | split(" ")), findings:$findings}' > "$git_dir/cr-floor/$head.json.tmp" \
+      unlocked_by:($unlocked | split(" ")), findings:$findings}' > "$work/artifact.json" \
+    || ! node "$SCRIPT_DIR/claude-floor.mjs" sign "$work/artifact.json" > "$git_dir/cr-floor/$head.json.tmp" \
     || ! mv "$git_dir/cr-floor/$head.json.tmp" "$git_dir/cr-floor/$head.json"; then
     die "cannot write the floor artifact" 1
 fi

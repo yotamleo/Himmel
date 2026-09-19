@@ -640,15 +640,19 @@ exhausted_lanes=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("d
 
 # HIMMEL-3107: provenance of the context-free floor review. claude-floor-review.sh
 # stamps <git-common-dir>/cr-floor/<full-head>.json with the head, the diff base,
-# a hash of the exact diff it reviewed and the headless session id. Returns 0
-# only when that artifact exists, names THIS tip, carries a session id, and its
-# diff hash matches the diff between its base and this tip recomputed here -
-# so a review of an older push or of some other diff never unlocks the floor.
-# ponytail: this raises the cost of forging a floor, it does not prevent it -
-# a session able to run ledger-append.sh can also hand-write this JSON with a
-# correct hash and an invented session id. The gate has no way to verify the
-# session id against the live Anthropic session; closing that needs a signed
-# stamp from outside the session's reach - HIMMEL-3220.
+# a hash of the exact diff it reviewed, the headless session id and the
+# dispatch id of its claude-headless.sh registry row. Returns 0 only when that
+# artifact exists, names THIS tip, its diff hash matches the diff between its
+# base and this tip recomputed here - so a review of an older push or of some
+# other diff never unlocks the floor - AND its ed25519 stamp verifies against
+# the floor signing PUBLIC key (claude-floor.mjs verify, HIMMEL-3220), so a
+# hand-written artifact (correct hash, invented session id) is refused.
+# ponytail: the signer runs as the authoring leg's uid, so a leg that
+# deliberately reads the private key (~/.himmel/cr-floor-key/signing.key) or
+# swaps the key pair can still sign a forgery. The stamp stops the hand-written
+# artifact, not a determined same-uid forger; the real fix is a signer on a
+# separate uid legs cannot become (verification here is public-key only, so
+# that move needs no gate change). Trust boundary: scripts/cr/claude-floor.mjs.
 floor_provenance_ok() {
     local _art="$git_dir/cr-floor/$tip.json" _fields _base _want _got
     [ -s "$_art" ] || { floor_provenance_why="no floor artifact at $_art"; return 1; }
@@ -675,9 +679,15 @@ floor_provenance_ok() {
     git merge-base --is-ancestor "$_base" "$_ref" 2>/dev/null ||
         { floor_provenance_why="floor artifact base ${_base:0:8} is not on the default branch ($_ref) — the review did not cover the whole branch"; return 1; }
     _got=$(git diff --no-color --no-ext-diff "$_base...$tip" 2>/dev/null | git hash-object --stdin 2>/dev/null)
-    [ -n "$_got" ] && [ "$_got" = "$_want" ] && return 0
-    floor_provenance_why="floor artifact diff hash $_want does not match the diff $_base...${tip:0:8} ($_got)"
-    return 1
+    if [ -z "$_got" ] || [ "$_got" != "$_want" ]; then
+        floor_provenance_why="floor artifact diff hash $_want does not match the diff $_base...${tip:0:8} ($_got)"; return 1
+    fi
+    # HIMMEL-3220: the stamp. Public key only; a missing key fails closed.
+    [ -f "$SCRIPT_DIR/claude-floor.mjs" ] || { floor_provenance_why="the stamp verifier $SCRIPT_DIR/claude-floor.mjs is missing"; return 1; }
+    if ! _got=$(node "$SCRIPT_DIR/claude-floor.mjs" verify "$_art" 2>&1); then
+        floor_provenance_why="${_got#claude-floor: }"; return 1
+    fi
+    return 0
 }
 # Say what was amended BEFORE reporting the verdict it produced. An amend can be
 # the reason the gate cleared (it can re-key a blocking finding off this SHA, or
@@ -737,7 +747,7 @@ if [ "${require_cross_model:-0}" = "1" ] && [ "${non_claude_responders:-0}" -lt 
         # Roster-vs-recorded hardening for a multi-lane future is HIMMEL-2129,
         # deliberately not implemented here.
         # HIMMEL-3107: say what the floor did and did NOT cover. The review ran
-        # in a fresh headless claude session with only the diff + a git-archive snapshot of
+        # in a fresh headless claude session with only the diff + a raw-blob snapshot of
         # this head (no session transcript, no CLAUDE.md/memory/hooks), so it
         # does not share the authoring session's context. It is still the SAME
         # model family as the author: context-freshness removes the shared
