@@ -546,7 +546,7 @@ hermes wires shell hooks from the `hooks:` block of a profile `config.yaml`;
 So the end side was a **choice**, not a runtime limit: until this ticket
 `install-himmel-profile.sh` produced exactly one hook (`pre_tool_call` →
 `parity_guard.py`) and no installer path could produce an end hook at all.
-`himmel_agent` is himmel's main-tier orchestrator, not just a one-shot critic
+`himmel_agent` is himmel's main-tier parent session, not just a one-shot critic
 lane, so an interactive session there ended leaving no ledger refresh and no
 operator notification.
 

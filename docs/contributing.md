@@ -19,7 +19,7 @@ keep that working at any team size.
    ```
 
    Branch names must be `<type>/<slug>` where
-   `type ∈ feat|fix|chore|docs|refactor|test`. The orchestrator
+   `type ∈ feat|fix|chore|docs|refactor|test`. `scripts/clean-garden.sh`
    enforces this.
 
 3. **Commit format:** conventional commits with a required ticket key in this repo.

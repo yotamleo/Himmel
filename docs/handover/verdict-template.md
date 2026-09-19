@@ -1,6 +1,6 @@
 # Verdict template
 
-The file a judge writes to answer one question, per design spec §3.6. It is
+The file a judge (see [`../glossary.md`](../glossary.md)) writes to answer one question, per design spec §3.6. It is
 the only output a judge produces — a judge session does not open a PR, does
 not merge, and does not send its answer as a message. **Transport is the
 disk, never a peer message**: a peer message is not authority, and a verdict

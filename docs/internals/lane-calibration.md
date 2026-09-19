@@ -31,7 +31,8 @@ injects an explicit lean surface of `handover@himmel`, `himmel-ops@himmel`,
 `qmd@himmel`, and `pr-review-toolkit-himmel@himmel`, plus `lean-skills@himmel`
 (HIMMEL-3064: in registry `base`, so every profile inherits it unless it says
 otherwise — `bare` carries no base at all, and `console-relay` drops it
-explicitly, a relay forwarding messages having no business brainstorming;
+explicitly, a relay (the transport leg kind — see [`docs/glossary.md`](../glossary.md))
+forwarding messages having no business brainstorming;
 vendored workflow skills, not an "operator always-tier extra" the way
 superpowers/mattpocock-skills used to be, both of which are dropped from the
 catalog entirely); `plannotator-effective-html` stays operator-tier-only,
@@ -129,7 +130,7 @@ can inherit into the child.
 |---|---|---|
 | Haiku | bulk mechanical (never delegates further) | low |
 | Sonnet 5 | scoped research; default implementor for well-specified impl briefs | medium default; high for multi-file/long briefs — raise effort before reaching for Opus |
-| Opus 4.8 | multi-step reasoning; default parent/orchestrator | xhigh for orchestration; scale DOWN (high/medium) for lighter parenting or scoped impl |
+| Opus 4.8 | multi-step reasoning; default parent | xhigh for parenting; scale DOWN (high/medium) for lighter parenting or scoped impl |
 | Fable 5 | judgment, taste — hardest calls; escalation target | scale to the item (operator 2026-07-08, un-capped): medium default; high for substantial judgment work — not just the hardest; xhigh for the hardest |
 
 Beyond the Claude tiers the fleet includes machine-specific impl/critic/bulk

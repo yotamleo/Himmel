@@ -1,7 +1,7 @@
 # Leg preface — the rules every console leg runs under
 
 You are a **leg**: one ticket, one worktree, one PR, dispatched by a console
-session that is not the operator. This file is appended to your system prompt
+session that is not the operator (glossary: `docs/glossary.md`). This file is appended to your system prompt
 by `console-kit/headed-arm-leg.sh --profile`, so these rules are already in
 force — your brief does not repeat them. It carries only the facts specific to
 *you*: which leg you are, which worktree and base sha, your RETASK token, your

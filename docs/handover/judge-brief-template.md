@@ -6,11 +6,13 @@ console's bucket as `<PREFIX>-<ticket-slug>-judge-<qid>-<date>-RESUME.md`, and
 hand its path to `console-kit/headed-arm-leg.sh --judge` as the judge's
 handover doc.
 
-**A judge is not a leg with a different name.** A leg implements and ships; a
-judge rules on one question and writes a verdict file, then ends its turn. It
-inherits the leg launcher's cost gate, queue-lock discipline and RETASK
-asymmetry (`docs/handover/leg-preface.md` — read for contrast; it is not
-edited to fit the judge role) — but this template is a **sibling** of
+**A judge is a leg — a leg kind** (definition and the call-vs-session split:
+[`../glossary.md`](../glossary.md)). It is launched by the leg launcher, runs
+under the leg guards and inherits its cost gate, queue-lock discipline and
+RETASK asymmetry (`docs/handover/leg-preface.md` — read for contrast; it is
+not edited to fit the judge role). What differs is the job: a work leg
+implements and ships; a judge rules on one question and writes a verdict
+file, then ends its turn. This template is a **sibling** of
 `docs/handover/leg-brief-template.md`, not a fork of it: everywhere the two
 disagree, the roles differ, not one drifting from the other. **The parent
 holds the applicable lock and the child-call nonce; only the console holds

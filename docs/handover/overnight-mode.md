@@ -11,7 +11,7 @@ Do **not** use overnight mode when:
 - The work touches multiple independent subsystems (split into separate tickets first).
 - Destructive ops outside the worktree are required.
 
-For work that will need mid-flight decisions or will outlive one context window, run a **console** instead — it dispatches each ticket as its own session and hands itself over: [`running-a-console.md`](running-a-console.md).
+For work that will need mid-flight decisions or will outlive one context window, run a **console** instead ([`glossary.md`](../glossary.md)) — it dispatches each ticket as its own session and hands itself over: [`running-a-console.md`](running-a-console.md).
 
 ## The 11 phases (+ step 0: queue lock)
 
@@ -84,7 +84,7 @@ text — the next-session templates deliberately do not inline it (the
 previous 4-copy duplication silently drifted: the seeded `_templates/` hop
 dropped the preamble from essentially every autonomously emitted session
 for ~2 months — HIMMEL-1719). It is model-neutral by design: overnight
-impl runs on Sonnet (§ Budget), the chain parent may be Fable-5 or
+impl runs on Sonnet (§ Budget), the parent session may be Fable-5 or
 Opus-class (HIMMEL-1480), and no reliable model-identity seam exists at
 launch time. Snippets are selected, not pasted, from the official
 [Fable-5](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5)
@@ -216,11 +216,11 @@ refusal used to send legs into their own invisible wait — and a queued leg is
 then indistinguishable from a **parked** one: both present as a leg that has
 stopped reporting, and the remedies are opposite (a queued run needs
 patience, a parked worker needs a nudge). Getting it backwards is how a
-coordinator nudges a healthy worker and creates a second-writer race on its
+dispatching parent nudges a healthy worker and creates a second-writer race on its
 branch; a near-miss of exactly that shape occurred on the same shift.
 
 Use the runner's own wait instead, so the waiting shows up in the log the
-coordinator is already polling:
+dispatching parent is already polling:
 
 ```bash
 SUITE_LOCK_WAIT=7200 bash scripts/ci/run-shell-tests.sh scripts
@@ -239,7 +239,7 @@ On acquiring it says so (`ACQUIRED: … after waiting …`); if the budget runs
 out it emits the full `REFUSED` verdict and still exits 2. Default is `0` —
 refuse on sight, the historical behaviour — so this is opt-in per run.
 
-**For a coordinator:** a leg reporting a `WAITING:` line is *queued*, and the
+**For a dispatching parent:** a leg reporting a `WAITING:` line is *queued*, and the
 holder pid + elapsed are right there — no `ps`, no reading
 `/tmp/himmel-shell-suite-*.lock/owner` by hand. A leg reporting nothing at all
 is *parked*. That distinction is the point of the knob; a leg that hand-rolls
@@ -349,7 +349,7 @@ Everything else proceeds without confirmation.
 
 ## Park protocol (HIMMEL-2128)
 
-Every controllable hang class in an armed/overnight chain resolves to one of
+Every controllable hang class in an armed/overnight run resolves to one of
 two policies: **fallback** (an opt-in knob lets the gate accept a weaker-but-
 verified floor and keep going) or **park** (the gate stays closed and the item
 is set aside). Park is never a retry-loop — a leg that hits a park-policy
@@ -369,7 +369,7 @@ gate does this, and only this:
    classes, the resume command is the gate itself, e.g. re-running
    `check-ci.sh <pr>` once a stale review refreshes.
 2. **Continue with other queue items.** A park on one branch never idles the
-   rest of the chain while independent work is ready to ship.
+   rest of the queue while independent work is ready to ship.
 3. **Never re-run the same blocked gate in a loop** hoping it resolves on its
    own — park records the item once and moves on; it does not poll.
 4. **At wrap, the leg pends for cold restart** — a fresh arm/handover once the
@@ -383,7 +383,7 @@ gate does this, and only this:
 | 2 | Plugin-tool permission wall (HIMMEL-2124) | Operator allow-rules close it; **park** the blocked item if hit |
 | 3 | CodeRabbit rate-limit vs. stale review | A pure rate-limit already skips structurally (an `unavailable` avail row; freshness self-skips with no bot review posted — no action needed). A stale review anchor now exits 0 instead of 4 when a clean exact-head critic panel carries the gate (HIMMEL-2162) — no park, no retry needed. **`check-ci.sh` exit-4 itself is unchanged and still means fail-closed: it fires precisely when no such panel row exists at that head — that case still needs a park, never a blind retry** |
 | 4 | Live-worker rc=10 at arm | Wrap discipline (finish/reconcile the worker before arming) closes it in-leg; **park** if it cannot be resolved before the leg ends |
-| 5 | `ARMAUTOMERGE` unset | Pre-arm WARN only (`arm-resume.sh`, HIMMEL-2128) — the chain still deliberately stops at every green PR instead of merging; not itself a park |
+| 5 | `ARMAUTOMERGE` unset | Pre-arm WARN only (`arm-resume.sh`, HIMMEL-2128) — the run still deliberately stops at every green PR instead of merging; not itself a park |
 
 ## Telegram relaunch — always PLAIN, never `--channels` (HIMMEL-225)
 
@@ -450,7 +450,7 @@ should check **after** a shift:
    - *Post-shift check:* read the resume snapshot cold — can you reconstruct
      *why* each decision was made, or only *what* shipped? Only-what = drift.
 
-4. **Coordination overhead** — the coordinator (here, the operator reviewing N
+4. **Coordination overhead** — the person coordinating (here, the operator reviewing N
    PRs) becomes the bottleneck past some size.
    - *Mitigation:* **PARTIAL — batch the entry point + enforce a ceiling.**
      The consolidated morning report (HIMMEL-258, § Morning review) collapses

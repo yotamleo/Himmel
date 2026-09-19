@@ -1,7 +1,7 @@
 # {{LETTER}} — CONSOLE — successor to {{PREDECESSOR}} (fill signal {{FILL_PERCENT}} %)
 
 > **{{LETTER}} PREFACE.** This document IS the console's operating contract —
-> it is self-contained by design. Do not go looking for a chain of earlier
+> it is self-contained by design. Do not go looking for a trail of earlier
 > prefaces: everything a console needs is below, and anything the previous
 > console learned is in **{{PREDECESSOR_HANDOFF}}** (its handoff state), which
 > wins over this file where the two differ. Your session name is
@@ -104,7 +104,7 @@ Run these, in order, and write the result as the first bullet under
 legs: <none dispatched yet, or `N1:<nonce>:<lock-token>:<pid>`, `N2:…`>
 queue: <held queue-lock docs in launch order, or "none">
 last GO: <`<pr>:<sha>`, or "none this shift">
-acked: <escalation ids acked this shift (judge consoles only), or "none">
+acked: <relay escalation ids acked this shift (only when a relay is live), or "none">
 
 ## Compact instructions
 
@@ -210,7 +210,7 @@ own end-of-session hook still writing — it prunes on the next sweep.
   non-consent.
 - **Never assume a lane is down.** A failing lane is nearly always a local
   credential or config fault — diagnose before rerouting.
-- **Judge consoles only: ack every relay escalation with `ack <escalation
+- **When a relay is live: ack every relay escalation with `ack <escalation
   id>`.** Keep the shift's acked ids on the `acked:` line of `## Live state`
   above. An id already on that line is a duplicate — reply `duplicate <id>`
   and take no action.
@@ -231,7 +231,7 @@ At **{{FILL_PERCENT}} % fill or 90 k input in one turn**, hand over:
    doc it finds, which is the wrong one the moment another `new` has run or a
    successor already exists; without `--bucket` and `--prefix` it resolves
    those from the environment and writes the successor into the wrong bucket,
-   or under the wrong key, rather than continuing this chain; without
+   or under the wrong key, rather than continuing this succession; without
    `--model` it re-resolves the model from `CONSOLE_MODEL` or the built-in
    default instead of continuing on **{{MODEL}}**, the model this console
    itself runs on. It prints

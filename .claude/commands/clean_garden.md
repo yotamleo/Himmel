@@ -25,7 +25,7 @@ Common invocations:
 - `/clean_garden feat/bar --no-prune` — skip prune, just create.
 - `/clean_garden --prune-only` — same as no args; explicit form.
 
-Single-purpose siblings (same orchestrator, mode flag pinned):
+Single-purpose siblings (same script, mode flag pinned):
 - `/clean` — prune-only (`clean-garden.sh --prune-only`). Use when you only want to clean up merged worktrees.
 - `/worktree <branch>` — create-only (`clean-garden.sh --no-prune <branch>`). Use when starting a fresh feature without touching existing worktrees.
 

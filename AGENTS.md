@@ -207,7 +207,7 @@ these RULES (e.g. `graphify path`), the RULES win.
 
 ## WORKFLOWS
 
-### Worktree commands (one orchestrator, `scripts/clean-garden.sh`)
+### Worktree commands (one script, `scripts/clean-garden.sh`)
 `/worktree` (create), `/clean` (prune merged), `/clean_garden` (both). Branch
 must be `type/slug` (`feat|fix|chore|docs|refactor|test`).
 
@@ -266,6 +266,7 @@ Docs not already linked from a rule above (relative to `docs/`):
 | `tool-adoption/rubric.md` | community-tool eval method |
 | `tooling-catalog.md` | tools/scripts/plugins in use |
 | `commands-catalog.md` | project-local slash commands |
+| `glossary.md` | the one definition site: console, judge, relay, leg, chain, wave, arming, manual override |
 | `handover/running-a-console.md` | starting + handing over a console (`/console new\|next`), vs `/overnight-shift` |
 
 ## graphify

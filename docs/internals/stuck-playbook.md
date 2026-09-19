@@ -177,7 +177,7 @@ repo authorization file. The durable fix is to never emit an unnecessary
 ## Symptom: `/worktree` refuses the branch, or a stale worktree lingers
 
 `scripts/clean-garden.sh` (behind `/worktree`, `/clean`, `/clean_garden`) is the
-one orchestrator. Two refusals surprise people:
+one script behind all three. Two refusals surprise people:
 
 - **"PR already MERGED"** — `/worktree` refuses to re-create a worktree on a
   branch whose PR is merged, because the usual cause is a stale resume that

@@ -1,7 +1,7 @@
 # Leg brief template
 
-The document a console writes to dispatch one leg — one ticket, one worktree,
-one PR. File it in the console's bucket as
+The document a console writes to dispatch one leg (see
+[`../glossary.md`](../glossary.md)). File it in the console's bucket as
 `<PREFIX>-<ticket-slug>-leg<N>-<date>-RESUME.md`, and hand its path to
 `console-kit/headed-arm-leg.sh` as the leg's handover doc.
 

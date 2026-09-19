@@ -1,13 +1,23 @@
 # Running a console
 
-A **console** is a long-running Claude session that does no implementation. It
-holds a queue lock on its own handover document, watches the fleet, dispatches
-implementation **legs** as separate sessions, rules on their questions, relays
-merges, and arms its own successor before its context fills. It is how a single
-operator keeps several tickets moving at once across sessions that each forget
-everything at the end.
+A console is how a single operator keeps several tickets moving at once across
+sessions that each forget everything at the end. What a console, leg, judge,
+relay, chain, wave, arming and manual override *are* is defined once, in
+[`../glossary.md`](../glossary.md) — read that first if any of those words is
+new. This page is how to run one.
 
-`/console new` starts one. `/console next` hands it over.
+`/console new` starts one. `/console next` hands it over to its successor.
+
+## Who does what
+
+- **You (the operator)** talk to the console. The console dispatches **legs**,
+  one ticket per leg, and acts on their questions and on **judge** verdicts;
+  it merges only on a GO that it writes.
+- Judges and relays serve the console; neither holds GO or the nonce mint —
+  only the console does (the authority table is in the glossary).
+- **Manual override.** If you work in a side session of your own, hand the
+  console a ticket and a brief; never pass it a ruling by way of a relay. A
+  ruling reaches the console from you directly, or not at all.
 
 ## Console vs. `/overnight-shift`
 
@@ -16,7 +26,7 @@ They look adjacent and are not interchangeable.
 | | `/overnight-shift` | console |
 |---|---|---|
 | Shape | one session fans out N subagents inside itself | one session dispatches N *separate* sessions |
-| Lifetime | one run, then done | a chain — each console arms its successor |
+| Lifetime | one run, then done | a succession — each console arms its successor |
 | State | in-session | a handover document + a queue lock, survives the session |
 | Children | subagents, no window of their own | headed sessions with their own worktrees and PRs |
 | Rulings | none — the plan is fixed at fanout | RETASK channel, mid-flight, authenticated |
@@ -30,7 +40,7 @@ decisions you cannot pre-write, or will outlive one context window.
 
 ```bash
 /console new                      # writes the doc, takes the lock, prints the launch line
-/console new --name night         # a differently-named chain in the same bucket
+/console new --name night         # a differently-named succession in the same bucket
 /console new --arm                # also arms it headed, on a signal file + deadline
 /console new --dry-run            # print what it would write, touch nothing
 ```
@@ -202,7 +212,7 @@ GO for the exact head it certifies, so a push after GO needs a fresh one
 An armed merge stops at "awaiting approval" wherever branch protection requires
 a review the automation identity cannot give — on a single-maintainer repo the
 only path through is the admin bypass, which the merge script refuses by
-design — so the console relays the merge to the operator and sends `MERGED`
+design — so the console hands the merge to the operator and sends `MERGED`
 back when it lands.
 
 ## Handing over
@@ -238,7 +248,7 @@ the only evidence the arm actually fired and the successor completed ACTION
 ZERO; releasing on the `touch` alone leaves an unattended fleet if the launch
 failed.
 
-The HANDOFF is the successor's only required read. Written properly, the chain
+The HANDOFF is the successor's only required read. Written properly, the succession
 does not need the predecessor's transcript at all.
 
 ## See also

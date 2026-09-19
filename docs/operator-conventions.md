@@ -192,7 +192,7 @@ Canonical arming mechanics live in [`docs/internals/handover-system.md`](interna
   token in the next checkpoint); treat your own no-reply state as
   **non-consent** and escalate the silence rather than acting on an
   assumption of approval.
-- **A judge/coordinator session must not idle between notifications** —
+- **A console session must not idle between notifications** (a judge ends its turn after its verdict; only the console sweeps) —
   actively sweep for blockage (expected branches pushed? PRs opened or
   updated? reviews landed at head?) and act as an ENABLER: nudge a parked
   lane with independently checkable facts, or supply what a blocked lane is

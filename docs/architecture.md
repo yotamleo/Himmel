@@ -153,8 +153,8 @@ write what, who may spawn whom, and how a revision reaches a running agent.
 flowchart TD
     OP["operator"] --> CON["console session<br/>coordinates; holds no worktree"]
 
-    CON -->|"SendMessage / ListAgents"| P1["mission session<br/>one ticket · one worktree"]
-    CON -->|"SendMessage / ListAgents"| P2["mission session<br/>one ticket · one worktree"]
+    CON -->|"SendMessage / ListAgents"| P1["leg<br/>one ticket · one worktree"]
+    CON -->|"SendMessage / ListAgents"| P2["leg<br/>one ticket · one worktree"]
 
     P1 --> GD{"scripts/hooks/guard-implementor-dispatch.sh<br/>refuses native Agent dispatch<br/>when the 5h Claude bank is ≥80% used"}
     GD --> NAT["native subagents — the default fleet<br/>haiku · sonnet · opus · fable<br/>every dispatch names its model"]

@@ -3,9 +3,9 @@ description: Start a console session (new) or hand it over (next) — writes the
 argument-hint: new|next [--bucket <slug>] [--name <slug>] [--arm] [--dry-run] [--doc <path>] [--model <m>]
 ---
 
-A **console** is a long-running session that dispatches implementation legs,
-rules on their questions, relays merges and arms its successor. It does no
-implementation itself. Background + the operating contract:
+Starts or hands over a console (defined in
+[`docs/glossary.md`](../../docs/glossary.md)). Background + the operating
+contract:
 [`docs/handover/running-a-console.md`](../../docs/handover/running-a-console.md).
 
 Run:
