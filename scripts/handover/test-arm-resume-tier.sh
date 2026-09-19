@@ -76,6 +76,18 @@ assert_contains() {
     esac
 }
 
+# HIMMEL-3181: the POSIX at-body leaves the --model token bare (`--model opus `)
+# while the Windows .bat renderer wraps it (`--model "opus"`); accept whichever
+# the host's real branch renders. The flag prefix still pins the left edge and
+# the trailing space / closing quote pins the right edge, as before.
+assert_model_flag() {
+    local label="$1" model="$2" haystack="$3"
+    case "$haystack" in
+        *"--model $model "*|*"--model \"$model\""*) echo "PASS $label" ;;
+        *) echo "FAIL $label — output missing: --model $model (bare or double-quoted)"; FAILED=$((FAILED + 1)) ;;
+    esac
+}
+
 assert_not_contains() {
     local label="$1" needle="$2" haystack="$3"
     case "$haystack" in
@@ -210,7 +222,15 @@ cat > "$SCHED_STUB/powershell" <<'EOF'
 #!/usr/bin/env bash
 exit 1
 EOF
-chmod +x "$SCHED_STUB/schtasks" "$SCHED_STUB/atq" "$SCHED_STUB/at" "$SCHED_STUB/powershell"
+# HIMMEL-3181: macOS routes to _crontab_schedule and Windows to the .bat
+# branch; both REFUSE (rc=2) when `claude` does not resolve on PATH at arm
+# time, and the nightly macOS/Windows runners have no claude installed. A stub
+# keeps every dry-run arm below independent of the host's claude.
+cat > "$SCHED_STUB/claude" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$SCHED_STUB/schtasks" "$SCHED_STUB/atq" "$SCHED_STUB/at" "$SCHED_STUB/claude" "$SCHED_STUB/powershell"
 
 run_arm() {
     SCHTASKS_CMD="$SCHED_STUB/schtasks" PATH="$SCHED_STUB:$PATH" bash "$ARM" "$@"
@@ -237,7 +257,7 @@ assert_contains "a: guard line reports opus default" "arm-resume: model=opus (no
 # right boundary q_model always appends (arm-resume.sh ~5152) pins the
 # right edge (so a value that merely STARTS with the expected one, e.g. a
 # future "fable-turbo" against case c2's bare "fable", can't false-match).
-assert_contains "a: relaunch command carries --model opus" '--model opus ' "$out"
+assert_model_flag "a: relaunch command carries --model opus" opus "$out"
 assert_not_contains "a: relaunch command carries no fable token" 'fable' "$out"
 
 # ---------------------------------------------------------------------------
@@ -274,7 +294,7 @@ assert_rc "c: justified fable pin exits 0" 0 "$rc"
 assert_contains "c: guard line echoes the reason" "arm-resume: model=claude-fable-5 (fable pinned; reason: operator ruling: judgment lane)" "$out"
 # HIMMEL-2642: bare/unquoted POSIX %q rendering, trailing-space boundary --
 # see case (a)'s comment above.
-assert_contains "c: relaunch command carries the fable model" '--model claude-fable-5 ' "$out"
+assert_model_flag "c: relaunch command carries the fable model" claude-fable-5 "$out"
 
 # --fable-ok= spelling
 HO_C2=$(make_handover)
@@ -286,7 +306,7 @@ assert_rc "c2: --fable-ok= spelling exits 0" 0 "$rc"
 # satisfied by a longer value that merely STARTS with "fable" (e.g. a future
 # "fable-turbo") -- case (a)'s literal "--model " left boundary is what
 # already keeps this from matching inside "--model claude-fable-5 ".
-assert_contains "c2: relaunch command carries the fable model" '--model fable ' "$out"
+assert_model_flag "c2: relaunch command carries the fable model" fable "$out"
 
 # ---------------------------------------------------------------------------
 # (d) *-console.md handover: unpinned -> NO --model flag at all (operator
@@ -318,7 +338,7 @@ rc=$?
 assert_rc "d2: console arm with fable pin, no --fable-ok, is exempt" 0 "$rc"
 assert_contains "d2: guard line names the ruling-25 exemption" "arm-resume: model=claude-fable-5 (fable pinned; console arm -- ruling 25, exempt)" "$out"
 # HIMMEL-2642: bare/unquoted POSIX %q rendering -- see case (a) above.
-assert_contains "d2: relaunch command carries the fable model" '--model claude-fable-5 ' "$out"
+assert_model_flag "d2: relaunch command carries the fable model" claude-fable-5 "$out"
 
 # ---------------------------------------------------------------------------
 # (e) unregressed existing behavior.
@@ -328,7 +348,7 @@ out=$(run_arm --time "$(future_time)" --handover "$HO_E1" --model opus --dry-run
 rc=$?
 assert_rc "e1: explicit non-fable --model opus still passes through" 0 "$rc"
 # HIMMEL-2642: bare/unquoted POSIX %q rendering -- see case (a) above.
-assert_contains "e1: relaunch command carries --model opus" '--model opus ' "$out"
+assert_model_flag "e1: relaunch command carries --model opus" opus "$out"
 assert_contains "e1: guard line reports an explicit pin" "arm-resume: model=opus (explicitly pinned)" "$out"
 
 HO_E2=$(make_handover)
@@ -336,7 +356,7 @@ out=$(run_arm --time "$(future_time)" --handover "$HO_E2" --model sonnet --dry-r
 rc=$?
 assert_rc "e2: explicit non-fable --model sonnet still passes through" 0 "$rc"
 # HIMMEL-2642: bare/unquoted POSIX %q rendering -- see case (a) above.
-assert_contains "e2: relaunch command carries --model sonnet" '--model sonnet ' "$out"
+assert_model_flag "e2: relaunch command carries --model sonnet" sonnet "$out"
 
 HO_E3=$(make_handover)
 out=$(run_arm --time "$(future_time)" --handover "$HO_E3" --model --dry-run 2>&1)

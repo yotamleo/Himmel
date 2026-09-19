@@ -49,9 +49,20 @@ if [ "$LABEL" = "suite" ] && [ "${1:-}" = "bash" ]; then
         while [ "${SUITE_PATH#./}" != "$SUITE_PATH" ]; do
             SUITE_PATH="${SUITE_PATH#./}"
         done
+        # HIMMEL-3181: on Git-Bash git prints the toplevel in mixed form
+        # (D:/a/repo) while a caller's absolute path is POSIX (/d/a/repo);
+        # strip either. Never empty (an empty pattern would match every path).
+        REPO_TOPLEVEL_POSIX="$REPO_TOPLEVEL"
+        if command -v cygpath >/dev/null 2>&1; then
+            REPO_TOPLEVEL_POSIX=$(cygpath -u "$REPO_TOPLEVEL" 2>/dev/null) || REPO_TOPLEVEL_POSIX="$REPO_TOPLEVEL"
+            [ -n "$REPO_TOPLEVEL_POSIX" ] || REPO_TOPLEVEL_POSIX="$REPO_TOPLEVEL"
+        fi
         case "$SUITE_PATH" in
-            "$REPO_TOPLEVEL"/*)
-                SUITE_PATH="${SUITE_PATH#"$REPO_TOPLEVEL"/}"
+            "$REPO_TOPLEVEL"/*|"$REPO_TOPLEVEL_POSIX"/*)
+                case "$SUITE_PATH" in
+                    "$REPO_TOPLEVEL"/*) SUITE_PATH="${SUITE_PATH#"$REPO_TOPLEVEL"/}" ;;
+                    *) SUITE_PATH="${SUITE_PATH#"$REPO_TOPLEVEL_POSIX"/}" ;;
+                esac
                 TRACKED_MATCH=$(git -C "$REPO_TOPLEVEL" --literal-pathspecs ls-files -- "$SUITE_PATH" 2>/dev/null)
                 ;;
             *)

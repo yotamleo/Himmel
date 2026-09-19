@@ -119,12 +119,24 @@ esac
 # (C:/Users/... forward slashes), not the /c/Users/... POSIX form $WT is
 # built from -- normalize via cygpath -m before comparing (falls back to
 # the raw $WT if cygpath is unavailable, e.g. non-Windows CI).
-WT_GIT_FORM="$WT"
-command -v cygpath >/dev/null 2>&1 && WT_GIT_FORM="$(cygpath -m "$WT" 2>/dev/null || printf '%s' "$WT")"
-case "$doc_after" in
-    *"$WT_GIT_FORM"*) ok "worktree path appears in the brief" ;;
-    *) ko "worktree path missing from the brief" ;;
-esac
+# HIMMEL-3181: git also reports the RESOLVED path, so accept every form the
+# brief can legitimately carry -- the mktemp form, the symlink-resolved form
+# (macOS mktemp gives /var/..., git prints /private/var/...), the cygpath -m
+# mixed form, and its long-name expansion (a Windows runner's mktemp yields the
+# 8.3 RUNNER~1 short form, git the runneradmin long one).
+wt_seen=0
+for wt_form in "$WT" "$(cd "$WT" 2>/dev/null && pwd -P)"; do
+    [ -n "$wt_form" ] || continue
+    case "$doc_after" in *"$wt_form"*) wt_seen=1 ;; esac
+done
+if command -v cygpath >/dev/null 2>&1; then
+    for wt_flag in -m -ml; do
+        wt_form="$(cygpath "$wt_flag" "$WT" 2>/dev/null)"
+        [ -n "$wt_form" ] || continue
+        case "$doc_after" in *"$wt_form"*) wt_seen=1 ;; esac
+    done
+fi
+if [ "$wt_seen" -eq 1 ]; then ok "worktree path appears in the brief"; else ko "worktree path missing from the brief"; fi
 base_sha=$(git -C "$REPO" merge-base feat/himmel-2369-fixture origin/main)
 head_sha=$(git -C "$REPO" rev-parse feat/himmel-2369-fixture)
 case "$doc_after" in
