@@ -52,13 +52,16 @@ ck "author block-list item preserved" "grep -q '^  - \"@PawelHuryn\"' \"$clip\""
 ck "## The Idea body untouched" "grep -q 'Real body content here' \"$clip\""
 # Frontmatter parses as YAML with author still a list
 if node -e '
-  const fs=require("fs"); const yaml=require("js-yaml");
+  // js-yaml is installed under tools/ (ensure-deps.sh), not the plugin root
+  // this script cd`s to — resolve it from tools/ (HIMMEL-3196).
+  const fs=require("fs");
+  const yaml=require(require.resolve("js-yaml",{paths:[process.argv[2]]}));
   const t=fs.readFileSync(process.argv[1],"utf8").replace(/\r\n/g,"\n");
   const fm=t.slice(4, t.indexOf("\n---\n",4));
   const d=yaml.load(fm);
   if(!Array.isArray(d.author)||d.author[0]!=="@PawelHuryn"){console.error("author not a list:",JSON.stringify(d.author));process.exit(1)}
   if(!d.enriched_at){console.error("no enriched_at");process.exit(1)}
-' "$clip"; then
+' "$clip" "$PWD/tools"; then
   echo "  PASS  frontmatter parses; author is a list incl @PawelHuryn"; pass=$((pass+1))
 else
   echo "  FAIL  frontmatter parses; author is a list incl @PawelHuryn"; fail=$((fail+1))

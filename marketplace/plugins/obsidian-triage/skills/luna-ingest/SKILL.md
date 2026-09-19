@@ -1,6 +1,6 @@
 ---
 name: luna-ingest
-description: Use to ingest a github or bitbucket repo / issue / PR URL into the luna vault as a structured note. /luna-ingest.
+description: Use when ingesting a github or bitbucket.org repo / issue / PR URL into the luna vault as a note. /luna-ingest.
 ---
 
 # luna-ingest — chain-following triage (LUNA-5 Wedge B, MVP; skill conversion LUNA-9)

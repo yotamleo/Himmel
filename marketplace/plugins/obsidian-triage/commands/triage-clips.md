@@ -611,9 +611,10 @@ already happened.
        # otherwise both move, and the second silently overwrites the first
        # clip's evidence. With `-n`, whichever run loses the race finds the
        # destination occupied and refuses instead of clobbering.
-       # **Do NOT trust the exit status.** GNU coreutils `mv -n` exits 0 even
+       # **Do NOT trust the exit status.** GNU coreutils `mv -n` may exit 0 even
        # when it silently SKIPPED the move because the destination already
-       # existed — trusting rc=0 alone would read a skipped, still-in-the-inbox
+       # existed (newer coreutils exit 1 — the status varies by host, the
+       # postcondition does not) — trusting rc=0 alone would read a skipped, still-in-the-inbox
        # clip as "moved", proceed to rewrite links to a destination the file
        # never reached, and clear evidence_pending on a clip now silently
        # orphaned (worse than the bare-mv clobber this replaces: that at least

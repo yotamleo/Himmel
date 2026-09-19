@@ -286,11 +286,31 @@ assert "stale-cache outcome line correct" ok "$a"
 # --- Test 6: missing ffmpeg -> exit 2 with winget
 echo "Test 6: missing ffmpeg"
 rm "$tmp/bin/ffmpeg" "$tmp/bin/ffmpeg.bat"
-# Save original PATH and filter out ffmpeg paths
+# Hide every host ffmpeg. Dropping the PATH dir is NOT enough: ffmpeg usually
+# lives in a shared dir (/usr/bin) that also carries bash/env/python, so
+# dropping it breaks the harness (HIMMEL-3196). Instead replace each ffmpeg-
+# bearing dir with a symlink mirror of its contents minus ffmpeg*.
+hide_ffmpeg_path() {
+  local d out="" n=0 mirror
+  local IFS=:
+  for d in $PATH; do
+    case "$d" in *[Ff][Ff][Mm][Pp][Ee][Gg]*) continue ;; esac  # e.g. Gyan.FFmpeg
+    if [ -x "$d/ffmpeg" ] || [ -x "$d/ffmpeg.exe" ] || [ -x "$d/ffmpeg.bat" ]; then
+      mirror="$tmp/no-ffmpeg-path.$n"; n=$((n+1)); mkdir -p "$mirror"
+      ln -s "$d"/* "$mirror"/ 2>/dev/null
+      rm -f "$mirror"/ffmpeg "$mirror"/ffmpeg.*
+      d="$mirror"
+    fi
+    out="${out:+$out:}$d"
+  done
+  printf '%s' "$out"
+}
 original_path="$PATH"
-# Remove any paths containing "FFmpeg" or "ffmpeg"
-filtered_path=$(echo "$original_path" | tr ':' '\n' | grep -v -i ffmpeg | tr '\n' ':' | sed 's/:$//')
+filtered_path="$(hide_ffmpeg_path)"
 export PATH="$tmp/bin:$filtered_path"
+# Precondition: the hiding worked on THIS host, so a pass below is not vacuous.
+command -v ffmpeg >/dev/null 2>&1 && a=resolvable || a=hidden
+assert "ffmpeg is hidden from PATH for the missing-ffmpeg case" hidden "$a"
 run_tool "$V" >"$tmp/no-ffmpeg.out" 2>"$tmp/no-ffmpeg.err"
 rc=$?
 # Restore original PATH for remaining tests

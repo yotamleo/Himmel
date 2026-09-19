@@ -830,9 +830,9 @@ claim_nolink() {  # $1 = clip, $2 = dest; ln always fails, as on exFAT
         # concurrent claim landing between this function's own free-check
         # above and the mv call must be refused, not silently overwritten.
         # Verify the POSTCONDITION, never the exit status: GNU coreutils
-        # `mv -n` exits 0 even when it silently skipped a no-clobber refusal
-        # (proven by the direct assertions below) — trusting rc=0 would read
-        # a skipped, still-in-place clip as moved.
+        # `mv -n` may exit 0 even when it silently skipped a no-clobber refusal
+        # (older coreutils; newer ones exit 1 — the status is host-dependent)
+        # — trusting rc=0 would read a skipped, still-in-place clip as moved.
         mv -n "$1" "$2" 2>/dev/null
         if [ -e "$1" ]; then
             if [ -e "$2" ]; then echo "collision"; else echo "move-failed"; fi
@@ -859,18 +859,20 @@ assert "incumbent survives the real collision" "incumbent" \
 # Exercise `mv -n` itself directly (not the outer `[ -e ]` guard) — proves the
 # no-clobber semantic the fix actually relies on: a destination that appears
 # between a free-check and the mv call must not be silently overwritten.
-# codex-1 regression, discovered running this suite: GNU coreutils `mv -n`
-# EXITS 0 even when it silently skips a no-clobber refusal — an exit-status
-# check alone would misread a skipped move as successful (worse than the bare
-# `mv` this replaces: the clip would be left in the inbox while the runbook
-# proceeds as though it reached $dest). The postcondition — is the SOURCE
-# still there — is the only reliable signal, which is why the runbook checks
-# `[ -e "$clip" ]` after the call rather than the call's own exit status.
+# codex-1 regression, discovered running this suite: on some GNU coreutils
+# `mv -n` EXITS 0 even when it silently skips a no-clobber refusal — an
+# exit-status check alone would misread a skipped move as successful (worse than
+# the bare `mv` this replaces: the clip would be left in the inbox while the
+# runbook proceeds as though it reached $dest). Newer coreutils exit 1 on that
+# refusal instead (the ubuntu CI runner does; HIMMEL-3196), so the status is
+# HOST-DEPENDENT and is deliberately NOT asserted here. The postcondition — is
+# the SOURCE still there — is the only signal that holds on every host, which is
+# why the runbook checks `[ -e "$clip" ]` after the call rather than the call's
+# own exit status.
 printf 'raced-incumbent\n' > "$TMP/nolink/Clippings/_evidence/c.md"
 printf 'raced-challenger\n' > "$TMP/nolink/Clippings/c.md"
-if mv -n "$TMP/nolink/Clippings/c.md" "$TMP/nolink/Clippings/_evidence/c.md" 2>/dev/null; then mv_n_rc=0; else mv_n_rc=1; fi
+mv -n "$TMP/nolink/Clippings/c.md" "$TMP/nolink/Clippings/_evidence/c.md" 2>/dev/null || true
 if [ -e "$TMP/nolink/Clippings/c.md" ]; then srcstate=intact; else srcstate=moved; fi
-assert "mv -n's exit status alone is NOT reliable evidence a no-clobber refusal happened (documents the codex-1 discovery)" "0" "$mv_n_rc"
 assert "mv -n's postcondition (source still present) correctly shows the refusal" "intact" "$srcstate"
 assert "mv -n leaves the racing incumbent's content intact" "raced-incumbent" \
   "$(cat "$TMP/nolink/Clippings/_evidence/c.md")"

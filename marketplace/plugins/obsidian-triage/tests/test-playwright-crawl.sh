@@ -56,9 +56,11 @@ if [ -r "$pkg" ]; then
     assert "package.json declares playwright" "yes" "$has_pw"
     if grep -q '"js-yaml"' "$pkg"; then has_yaml=yes; else has_yaml=no; fi
     assert "package.json declares js-yaml" "yes" "$has_yaml"
-    # Pin check — playwright should be pinned to 1.58.x for stability.
-    if grep -qE '"playwright":[[:space:]]*"1\.58\.' "$pkg"; then pinned=yes; else pinned=no; fi
-    assert "package.json pins playwright 1.58.x" "yes" "$pinned"
+    # Pin check — playwright must be pinned to an EXACT version (no ^ / ~ / range)
+    # for stability. The test used to hard-code 1.58.x and went red on every
+    # legitimate bump (HIMMEL-3196); the invariant is "exact", not a version.
+    if grep -qE '"playwright":[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+"' "$pkg"; then pinned=yes; else pinned=no; fi
+    assert "package.json pins playwright to an exact version" "yes" "$pinned"
 else
     assert "package.json exists" "yes" "no"
 fi
