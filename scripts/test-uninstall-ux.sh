@@ -258,6 +258,53 @@ if [ -s "$CLAUDE_CALL_LOG" ]; then fail "K3 plugins/marketplaces class=keep stil
 else pass "K3 plugins/marketplaces class=keep made no claude call"; fi
 assert_absent "K3 the still-code cache row was removed (the run was live)" "$FX_HOME/.claude/himmel"
 
+# ── K4 — the step-2 PLAN says what the step does, per row class ────────────
+# A state row re-classed keep must not be announced as REMOVE under
+# --purge-state: the plan, the footprint and the step all read the same class.
+fixture k4
+sed -e $'s/^telegram-channel\tstate/telegram-channel\tkeep/' "$MANIFEST" > "$FX/k4-mixed.tsv"
+sed -e $'s/^telegram-channel\tstate/telegram-channel\tkeep/' \
+    -e $'s/^telegram-bridge\tstate/telegram-bridge\tkeep/' "$MANIFEST" > "$FX/k4-both.tsv"
+out=$(cd "$FX_PROJ" && HOME="$FX_HOME" PATH="$STUB:$HBIN" HIMMEL_UNINSTALL_MANIFEST="$FX/k4-mixed.tsv" \
+    bash "$CLI" --dry-run --purge-state --skip-tasks --skip-plugins </dev/null 2>&1); rc=$?
+assert_rc "K4 dry-run with one state row re-classed keep" 0 "$rc"
+k4_plan=$(printf '%s\n' "$out" | sed -n '/^This will:/,/^Footprint/p')
+assert_not_has "K4 mixed: the plan does not announce both rows as removed" "REMOVE telegram pairing + bridge state" "$k4_plan"
+assert_has "K4 mixed: the plan keeps the re-classed channel" "keep   $FX_HOME/.claude/channels/telegram" "$k4_plan"
+assert_has "K4 mixed: the plan still removes the bridge state" "REMOVE $FX_HOME/.claude/handover/bridge" "$k4_plan"
+out=$(cd "$FX_PROJ" && HOME="$FX_HOME" PATH="$STUB:$HBIN" HIMMEL_UNINSTALL_MANIFEST="$FX/k4-both.tsv" \
+    bash "$CLI" --dry-run --purge-state --skip-tasks --skip-plugins </dev/null 2>&1); rc=$?
+assert_rc "K4 dry-run with both state rows re-classed keep" 0 "$rc"
+k4_plan=$(printf '%s\n' "$out" | sed -n '/^This will:/,/^Footprint/p')
+assert_not_has "K4 both: the plan does not announce removal" "REMOVE telegram pairing" "$k4_plan"
+assert_has "K4 both: the plan says keep by manifest class" "keep telegram pairing + bridge state (manifest class keep)" "$k4_plan"
+
+# ── K5 — a kept-running bridge must not have its state deleted under it ─────
+fixture k5
+k5_man="$FX/k5-manifest.tsv"
+sed -e $'s/^bridge-process\tcode/bridge-process\tkeep/' "$MANIFEST" > "$k5_man"
+printf '99999\n' > "$FX_HOME/.claude/handover/bridge/supervisor.pid"
+out=$(cd "$FX_PROJ" && HOME="$FX_HOME" PATH="$STUB:$HBIN" HIMMEL_UNINSTALL_MANIFEST="$k5_man" \
+    bash "$CLI" --yes --skip-tasks --skip-plugins --purge-state </dev/null 2>&1); rc=$?
+if [ "$rc" -ne 0 ]; then pass "K5 kept-running bridge + --purge-state is refused (rc=$rc)"
+else fail "K5 expected a non-zero rc, got 0"; fi
+assert_has "K5 names why" "kept running but its state" "$out"
+assert_exists "K5 the running bridge's state is not deleted" "$FX_HOME/.claude/handover/bridge/supervisor.pid"
+assert_not_has "K5 never claims completion" "Uninstall complete." "$out"
+# Controls: without --purge-state the state is kept, so nothing conflicts; with
+# no supervisor.pid there is no live bridge to protect.
+fixture k5b
+printf '99999\n' > "$FX_HOME/.claude/handover/bridge/supervisor.pid"
+out=$(cd "$FX_PROJ" && HOME="$FX_HOME" PATH="$STUB:$HBIN" HIMMEL_UNINSTALL_MANIFEST="$k5_man" \
+    bash "$CLI" --yes --skip-tasks --skip-plugins </dev/null 2>&1); rc=$?
+assert_rc "K5 control: kept bridge, state kept (no --purge-state)" 0 "$rc"
+assert_exists "K5 control: state still there" "$FX_HOME/.claude/handover/bridge/supervisor.pid"
+fixture k5c
+out=$(cd "$FX_PROJ" && HOME="$FX_HOME" PATH="$STUB:$HBIN" HIMMEL_UNINSTALL_MANIFEST="$k5_man" \
+    bash "$CLI" --yes --skip-tasks --skip-plugins --purge-state </dev/null 2>&1); rc=$?
+assert_rc "K5 control: kept bridge, no supervisor.pid, --purge-state" 0 "$rc"
+assert_absent "K5 control: state purged when no live bridge exists" "$FX_HOME/.claude/handover/bridge"
+
 # ── L1 — a malformed manifest fails closed (rc=2) with a named ERROR ────────
 fixture l1
 { cat "$MANIFEST"; grep '^himmelctl-cache' "$MANIFEST"; } > "$FX/dup-manifest.tsv"

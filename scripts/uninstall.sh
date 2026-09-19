@@ -961,12 +961,25 @@ if class_removes "$_ix_bproc"; then
 else
   echo "  1. keep the telegram bun bridge running (manifest class ${M_CLASS[$_ix_bproc]})"
 fi
-if state_removed; then
+# Step 2 acts per row: the plan says REMOVE/keep for each row from the same
+# class_removes the step and the footprint read (a hand-edited manifest can
+# keep one row while --purge-state removes the other).
+if class_removes "$_ix_channel" && class_removes "$_ix_bridge"; then
   echo "  2. REMOVE telegram pairing + bridge state (--purge-state):"
   echo "       $CHANNEL_DIR   (bot-token .env + access.json)"
   echo "       $BRIDGE_ROOT   (sessions, inbox/outbox, supervisor state)"
+elif class_removes "$_ix_channel" || class_removes "$_ix_bridge"; then
+  echo "  2. telegram pairing + bridge state, per manifest class:"
+  if class_removes "$_ix_channel"; then echo "       REMOVE $CHANNEL_DIR"
+  else echo "       keep   $CHANNEL_DIR (manifest class ${M_CLASS[$_ix_channel]})"; fi
+  if class_removes "$_ix_bridge"; then echo "       REMOVE $BRIDGE_ROOT"
+  else echo "       keep   $BRIDGE_ROOT (manifest class ${M_CLASS[$_ix_bridge]})"; fi
 elif [ "$KEEP_TELEGRAM_STATE" -eq 1 ]; then
   echo "  2. keep telegram state (--keep-telegram-state)"
+elif state_removed; then
+  echo "  2. keep telegram pairing + bridge state (manifest class keep):"
+  echo "       $CHANNEL_DIR"
+  echo "       $BRIDGE_ROOT"
 else
   echo "  2. KEEP telegram pairing + bridge state (pass --purge-state to remove it):"
   echo "       $CHANNEL_DIR"
@@ -1070,6 +1083,19 @@ echo ""
 echo "[1/8] Stopping telegram bridge..."
 if ! class_removes "$_ix_bproc"; then
   echo "  kept (manifest class ${M_CLASS[$_ix_bproc]}): bridge left running."
+  # A bridge that stays running must not have its state deleted under it: the
+  # supervisor would recreate it (HIMMEL-2754) — refuse rather than half-remove.
+  if [ -f "$BRIDGE_ROOT/supervisor.pid" ] \
+      && { class_removes "$_ix_channel" || class_removes "$_ix_bridge"; }; then
+    echo "  ERROR: the bridge is kept running (manifest class ${M_CLASS[$_ix_bproc]}) but its state would be removed:" >&2
+    echo "    supervisor.pid exists under $BRIDGE_ROOT; step 2 would delete the state it is using." >&2
+    echo "    Drop --purge-state, or stop the bridge first." >&2
+    if [ "$DRY_RUN" -eq 1 ]; then
+      echo "  (dry-run) a wet run would halt here."
+    else
+      fail_step "[1/8] telegram bridge: kept running but its state would be removed"
+    fi
+  fi
 elif [ ! -f "$BRIDGE_ROOT/supervisor.pid" ]; then
   echo "  no supervisor.pid under $BRIDGE_ROOT — bridge not running, skipping."
 elif ! command -v bun >/dev/null 2>&1; then
@@ -1102,6 +1128,8 @@ if [ "$HALTED" -eq 1 ]; then
 elif ! class_removes "$_ix_channel" && ! class_removes "$_ix_bridge"; then
   if [ "$KEEP_TELEGRAM_STATE" -eq 1 ]; then
     echo "  kept (--keep-telegram-state)."
+  elif state_removed; then
+    echo "  kept (manifest class keep): $CHANNEL_DIR, $BRIDGE_ROOT"
   else
     echo "  kept (operator state; pass --purge-state to remove): $CHANNEL_DIR, $BRIDGE_ROOT"
   fi
