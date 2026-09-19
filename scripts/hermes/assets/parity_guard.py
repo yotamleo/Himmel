@@ -51,6 +51,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import urllib.parse
 
 
 def norm(p: str) -> str:
@@ -1088,7 +1089,7 @@ SCAN_TOOLS = (
     "feishu_drive_list_comment_replies", "feishu_drive_list_comments",
     "feishu_drive_reply_comment", "focus_pane", "gui_tour", "ha_call_service",
     "ha_get_state", "ha_list_entities", "ha_list_services", "image_generate",
-    "memory", "open_preview", "react_to_message", "read_preview",
+    "manage_connections", "memory", "open_preview", "react_to_message", "read_preview",
     "read_terminal", "read_window_below", "send_message", "session_search",
     "setup_mcp", "show_tip", "skill_view", "skills_list", "todo_list",
     "video_analyze", "video_generate", "vision_analyze", "web_extract",
@@ -1140,9 +1141,26 @@ def _strings(value, skip=()):
             yield from _strings(v, skip)
 
 
+FILE_URL = re.compile(r"^file:(?://(?:localhost)?)?(?=/)", re.IGNORECASE)
+
+
+def _file_url_path(v: str) -> str:
+    """A `file:` URL names a LOCAL path, so it is judged as that path: scheme
+    (any case) and an empty or `localhost` host stripped, percent-escapes
+    decoded, `/C:/x` read as `C:/x`. Any other value comes back unchanged.
+    ponytail: `file://<other-host>/share` (a UNC path) is left as it is and so
+    skipped like any remote URL — no local-path reading of it is attempted."""
+    m = FILE_URL.match(v)
+    if not m:
+        return v
+    path = urllib.parse.unquote(v[m.end():])
+    return path[1:] if re.match(r"^/[A-Za-z]:[\\/]", path) else path
+
+
 def _scan_args(args: dict) -> None:
     """The `scan` class: secret material and PHI paths in the non-text args."""
     for v in _strings(args, TEXT_KEYS):
+        v = _file_url_path(v)
         if SECRET_READ.search(norm(v)):
             block("Secret material (.env / keys / credential stores / channel "
                   "tokens) is off-limits to every tool, not just the file "

@@ -776,6 +776,13 @@ g "delegate_task: secret path in a task arg refused" block '{"tool_name":"delega
 g "send_message: benign allowed"  allow '{"tool_name":"send_message","tool_input":{"action":"send","target":"telegram","message":"done — see the .env docs"}}'
 export CLAUDE_GLM_CONFIG_DIR="$CFG_W"   # the registered PHI root list from the fence block above
 g "send_message: PHI path with spaces in a non-text arg refused" block "{\"tool_name\":\"send_message\",\"tool_input\":{\"action\":\"send\",\"target\":\"telegram\",\"media\":\"$PHI_W/case/patient records.pdf\"}}"
+# A file:// URL is a LOCAL path, not a remote one: judged as the path it names.
+g "browser_navigate: file:// URL into a PHI dir refused" block "{\"tool_name\":\"browser_navigate\",\"tool_input\":{\"url\":\"file://$PHI_W/case/pt.pdf\"}}"
+g "browser_navigate: FILE:// (mixed case) into a PHI dir refused" block "{\"tool_name\":\"browser_navigate\",\"tool_input\":{\"url\":\"FiLe://$PHI_W/case/pt.pdf\"}}"
+g "browser_navigate: file://localhost/ into a PHI dir refused" block "{\"tool_name\":\"browser_navigate\",\"tool_input\":{\"url\":\"file://localhost$PHI_W/case/pt.pdf\"}}"
+g "browser_navigate: percent-encoded file:// PHI path refused" block "{\"tool_name\":\"browser_navigate\",\"tool_input\":{\"url\":\"file://$PHI_W/case/patient%20records.pdf\"}}"
+g "browser_navigate: file:// URL outside PHI allowed" allow '{"tool_name":"browser_navigate","tool_input":{"url":"file:///usr/share/doc/readme.html"}}'
+g "browser_navigate: https URL naming a PHI-looking path allowed" allow "{\"tool_name\":\"browser_navigate\",\"tool_input\":{\"url\":\"https://example.com$PHI_W/case/pt.pdf\"}}"
 unset CLAUDE_GLM_CONFIG_DIR
 g "send_message: prose with a slash in a non-text arg allowed" allow '{"tool_name":"send_message","tool_input":{"action":"send","target":"telegram","note":"see the a/b docs"}}'
 g "web_search: allowed"           allow '{"tool_name":"web_search","tool_input":{"query":"hermes agent"}}'

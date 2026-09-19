@@ -164,9 +164,16 @@ registry.register(
 )
 registry.register(toolset="new", name='zz_single_quoted_late_name')
 EOF
+# A subpackage tool the scan must reach, and a computed name it cannot resolve.
+mkdir -p "$tmpdir/fixture-computed/tools/sub"
+cat > "$tmpdir/fixture-computed/tools/sub/c.py" <<'EOF'
+registry.register(name="zz_in_a_subpackage", toolset="sub")
+registry.register(name=PREFIX + "_computed", toolset="sub")
+EOF
 
 HERMES_HOME="$tmpdir/hermes-home" "$PY" - "$tmpdir/full.yaml" "$GUARD" \
-    "$REGISTRY_SRC" "$tmpdir/fixture-good" "$tmpdir/fixture-new" <<'PY'
+    "$REGISTRY_SRC" "$tmpdir/fixture-good" "$tmpdir/fixture-new" \
+    "$tmpdir/fixture-computed" <<'PY'
 import ast
 import glob
 import importlib.util
@@ -174,7 +181,7 @@ import os
 import re
 import sys
 
-cfg, guard_path, installed, fixture_good, fixture_new = sys.argv[1:6]
+cfg, guard_path, installed, fixture_good, fixture_new, fixture_computed = sys.argv[1:7]
 
 # The matcher exactly as hermes would read it out of the wired config.
 matcher = None
@@ -189,11 +196,16 @@ guard = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(guard)
 
 
-def registry_names(src):
-    """Tool names declared by tools/*.py: registry.register(name=...) plus the
-    schema `"name": ...` form the table-driven modules use."""
+def registry_names(src, unresolved=None):
+    """Tool names declared under tools/ (subpackages included):
+    registry.register(name=...) plus the schema `"name": ...` form the
+    table-driven modules use. A registry.register(...) whose name is not a string
+    literal cannot be read statically; `unresolved` (a list) collects those sites
+    so the caller can say the scan is not exhaustive.
+    ponytail: a computed name is REPORTED, not resolved — a tool registered that
+    way is invisible to this check, and the warning is the only trace of it."""
     names = set()
-    for path in glob.glob(os.path.join(src, "tools", "*.py")):
+    for path in glob.glob(os.path.join(src, "tools", "**", "*.py"), recursive=True):
         with open(path, encoding="utf-8", errors="replace") as f:
             text = f.read()
         # register(...) calls by AST: any quote style, `name` in any argument
@@ -204,10 +216,16 @@ def registry_names(src):
                 if (isinstance(node, ast.Call)
                         and isinstance(node.func, ast.Attribute)
                         and node.func.attr == "register"):
+                    found = False
                     for kw in node.keywords:
                         if (kw.arg == "name" and isinstance(kw.value, ast.Constant)
                                 and isinstance(kw.value.value, str)):
                             names.add(kw.value.value)
+                            found = True
+                    if (not found and unresolved is not None
+                            and isinstance(node.func.value, ast.Name)
+                            and node.func.value.id == "registry"):
+                        unresolved.append(f"{os.path.relpath(path, src)}:{node.lineno}")
         except SyntaxError:
             names.update(re.findall(
                 r'register\(\s*name\s*=\s*["\']([a-z][a-z0-9_]*)["\']', text))
@@ -275,9 +293,20 @@ check("control: unclassified new registry tools are flagged (any quote style / a
 good = problems(registry_names(fixture_good), matcher or "", guard.classify_tool)
 check("fixture registry (terminal, execute_code) fully covered", good, [])
 
+# Discovery reaches subpackages and NAMES what it cannot read.
+unres = []
+comp = registry_names(fixture_computed, unres)
+check("control: a subpackage tool is discovered", "zz_in_a_subpackage" in comp, True)
+check("control: a computed registration name is reported, not silently dropped",
+      unres, [os.path.join("tools", "sub", "c.py") + ":2"])
+
 # The installed registry: report every gap, not just the first.
 if os.path.isdir(os.path.join(installed, "tools")):
-    names = registry_names(installed)
+    installed_unres = []
+    names = registry_names(installed, installed_unres)
+    for site in installed_unres:
+        print(f"  warn: {site} registers a tool under a computed name — this "
+              "check cannot see it, so coverage is NOT exhaustive")
     check(f"installed registry sane ({len(names)} tools found)", len(names) > 20, True)
     real = problems(names, matcher or "", guard.classify_tool)
     check(f"installed hermes registry ({installed}) fully covered", real, [])
