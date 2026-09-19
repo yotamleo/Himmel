@@ -689,9 +689,9 @@ echo "== wire_parity_guard: set (insert + replace) =="
 cfg="$(wp "$TMP/c1.yaml")"
 printf 'model:\n  default: gpt-5.5\nhooks: {}\nsecurity:\n  redact_secrets: true\n' > "$cfg"
 "$PY" "$WIRE" set "$cfg" "$H/agent-hooks/parity_guard.py" "$PY" >/dev/null
-if grep -q "parity_guard.py" "$cfg" && grep -q "pre_tool_call" "$cfg" && grep -q "redact_secrets" "$cfg" && grep -q "mcp__" "$cfg"; then
-  echo "  ok: set inserted hook (matcher covers mcp__), preserved other keys"; else
-  echo "  FAIL: set did not wire correctly (mcp__ in matcher?)" >&2; fails=$((fails + 1)); fi
+if grep -q "parity_guard.py" "$cfg" && grep -q "pre_tool_call" "$cfg" && grep -q "redact_secrets" "$cfg" && grep -qxF "  - matcher: .*" "$cfg"; then
+  echo "  ok: set inserted hook (matcher is .*), preserved other keys"; else
+  echo "  FAIL: set did not wire correctly (matcher .*?)" >&2; fails=$((fails + 1)); fi
 # replace an existing luna_vault_guard block; the top-level key AFTER the hooks
 # block (here `trailing:`) MUST survive — guards against truncation.
 printf 'hooks:\n  pre_tool_call:\n  - matcher: x\n    command: luna_vault_guard.py\n    timeout: 10\ntrailing: keep-me\n' > "$cfg"
@@ -733,15 +733,100 @@ printf 'model:\n  default: gpt-5.5\nhooks:\n  post_tool_call:\n  - command: /x/o
 "$PY" "$WIRE" ensure "$cfg" "$H/agent-hooks/parity_guard.py" "$PY" >/dev/null
 if grep -q "parity_guard.py" "$cfg" && grep -q "pre_tool_call" "$cfg" \
    && grep -q "post_tool_call" "$cfg" && grep -q "other_hook.py" "$cfg" \
-   && grep -q "redact_secrets" "$cfg" && grep -q "mcp__" "$cfg"; then
+   && grep -q "redact_secrets" "$cfg" && grep -qxF "  - matcher: .*" "$cfg"; then
   echo "  ok: ensure added parity_guard, preserved unrelated hook + keys"; else
-  echo "  FAIL: ensure add clobbered other hooks/keys (mcp__ matcher?)" >&2; fails=$((fails + 1)); fi
+  echo "  FAIL: ensure add clobbered other hooks/keys (matcher .*?)" >&2; fails=$((fails + 1)); fi
 # branch 3b: fully guard-less (hooks: {}) -> parity_guard added, keys preserved
 printf 'model:\n  default: gpt-5.5\nhooks: {}\nsecurity:\n  redact_secrets: true\n' > "$cfg"
 "$PY" "$WIRE" ensure "$cfg" "$H/agent-hooks/parity_guard.py" "$PY" >/dev/null
 if grep -q "parity_guard.py" "$cfg" && grep -q "pre_tool_call" "$cfg" && grep -q "redact_secrets" "$cfg"; then
   echo "  ok: ensure wired an empty hooks:{} config"; else
   echo "  FAIL: ensure did not wire hooks:{} config" >&2; fails=$((fails + 1)); fi
+
+echo "== parity_guard: every registry tool reaches the guard (HIMMEL-2637) =="
+# The hook matcher is `.*`, so tools that used to bypass the guard entirely
+# (execute_code, delegate_task, browser_*, skill_manage, ...) now arrive here and
+# get the existing deny-guards run on their PAYLOAD — no blanket denial of a
+# working capability. execute_code & co carry command text -> the terminal
+# guards; skill_manage is gated on its action + paths; the rest are scanned for
+# secret/PHI paths in their non-content args.
+g "execute_code: rm -rf refused"     block '{"tool_name":"execute_code","tool_input":{"code":"import os\nos.system(\"rm -rf build\")"}}'
+g "execute_code: secret path refused" block '{"tool_name":"execute_code","tool_input":{"code":"print(open(\"/x/.env\").read())"}}'
+g "execute_code: guard path refused" block "{\"tool_name\":\"execute_code\",\"tool_input\":{\"code\":\"open('$H/agent-hooks/parity_guard.py','w')\"}}"
+g "execute_code: git push refused (untrusted engine)" block '{"tool_name":"execute_code","tool_input":{"code":"import subprocess\nsubprocess.run(\"git push origin x\", shell=True)"}}'
+g "execute_code: benign code allowed" allow '{"tool_name":"execute_code","tool_input":{"code":"print(sum(range(10)))"}}'
+g "browser_exec: ssh path refused" block '{"tool_name":"browser_exec","tool_input":{"code":"fetch(\"file:///x/.ssh/id_rsa\")"}}'
+g "browser_exec: benign allowed" allow '{"tool_name":"browser_exec","tool_input":{"code":"document.title"}}'
+g "browser_cdp: secret path in params refused" block '{"tool_name":"browser_cdp","tool_input":{"method":"Page.navigate","params":{"url":"file:///x/.ssh/id_rsa"}}}'
+g "process_manage: destructive data refused" block '{"tool_name":"process_manage","tool_input":{"action":"write","session_id":"s1","data":"rm -rf build\n"}}'
+g "process_manage: poll allowed"  allow '{"tool_name":"process_manage","tool_input":{"action":"poll","session_id":"s1"}}'
+g "cronjob_manage: destructive script refused" block '{"tool_name":"cronjob_manage","tool_input":{"action":"create","schedule":"every 1h","script":"rm -rf build"}}'
+g "cronjob_manage: prompt-only job allowed" allow '{"tool_name":"cronjob_manage","tool_input":{"action":"create","schedule":"every 1h","prompt":"summarise the inbox"}}'
+g "skill_manage: create allowed"  allow '{"tool_name":"skill_manage","tool_input":{"action":"create","name":"demo","content":"# demo"}}'
+g "skill_manage: absolute file_path into a repo on master refused" block "{\"tool_name\":\"skill_manage\",\"tool_input\":{\"action\":\"write_file\",\"name\":\"demo\",\"file_path\":\"$MASTR/src/foo.sh\",\"file_content\":\"x\"}}"
+g "skill_manage: absolute file_path onto a worker branch allowed" allow "{\"tool_name\":\"skill_manage\",\"tool_input\":{\"action\":\"write_file\",\"name\":\"demo\",\"file_path\":\"$FR/src/foo.sh\",\"file_content\":\"x\"}}"
+g "skill_manage: unknown action refused" block '{"tool_name":"skill_manage","tool_input":{"action":"exec","name":"demo"}}'
+g "skill_manage: missing action refused" block '{"tool_name":"skill_manage","tool_input":{"name":"demo"}}'
+g "skill_manage: file_path onto the guard refused" block "{\"tool_name\":\"skill_manage\",\"tool_input\":{\"action\":\"write_file\",\"name\":\"demo\",\"file_path\":\"$H/agent-hooks/parity_guard.py\"}}"
+g "skill_manage: batch with a bad action refused" block '{"tool_name":"skill_manage","tool_input":{"operations":[{"action":"create","name":"a"},{"action":"exec","name":"b"}]}}'
+g "skill_manage: batch guard-path write refused" block "{\"tool_name\":\"skill_manage\",\"tool_input\":{\"operations\":[{\"action\":\"write_file\",\"name\":\"a\",\"file_path\":\"$H/agent-hooks/parity_guard.py\"}]}}"
+g "skill_manage: benign batch allowed" allow '{"tool_name":"skill_manage","tool_input":{"operations":[{"action":"create","name":"a"},{"action":"patch","name":"b"}]}}'
+g "delegate_task: benign allowed" allow '{"tool_name":"delegate_task","tool_input":{"tasks":[{"goal":"read the README and summarise it"}]}}'
+g "delegate_task: secret path in a task arg refused" block '{"tool_name":"delegate_task","tool_input":{"tasks":[{"goal":"x","workdir":"/x/.env"}]}}'
+g "send_message: benign allowed"  allow '{"tool_name":"send_message","tool_input":{"action":"send","target":"telegram","message":"done — see the .env docs"}}'
+export CLAUDE_GLM_CONFIG_DIR="$CFG_W"   # the registered PHI root list from the fence block above
+g "send_message: PHI path with spaces in a non-text arg refused" block "{\"tool_name\":\"send_message\",\"tool_input\":{\"action\":\"send\",\"target\":\"telegram\",\"media\":\"$PHI_W/case/patient records.pdf\"}}"
+# A file:// URL is a LOCAL path, not a remote one: judged as the path it names.
+g "browser_navigate: file:// URL into a PHI dir refused" block "{\"tool_name\":\"browser_navigate\",\"tool_input\":{\"url\":\"file://$PHI_W/case/pt.pdf\"}}"
+g "browser_navigate: FILE:// (mixed case) into a PHI dir refused" block "{\"tool_name\":\"browser_navigate\",\"tool_input\":{\"url\":\"FiLe://$PHI_W/case/pt.pdf\"}}"
+g "browser_navigate: file://localhost/ into a PHI dir refused" block "{\"tool_name\":\"browser_navigate\",\"tool_input\":{\"url\":\"file://localhost$PHI_W/case/pt.pdf\"}}"
+g "browser_navigate: percent-encoded file:// PHI path refused" block "{\"tool_name\":\"browser_navigate\",\"tool_input\":{\"url\":\"file://$PHI_W/case/patient%20records.pdf\"}}"
+g "browser_navigate: file:// URL outside PHI allowed" allow '{"tool_name":"browser_navigate","tool_input":{"url":"file:///usr/share/doc/readme.html"}}'
+g "browser_navigate: https URL naming a PHI-looking path allowed" allow "{\"tool_name\":\"browser_navigate\",\"tool_input\":{\"url\":\"https://example.com$PHI_W/case/pt.pdf\"}}"
+# Nested structured args are scanned for EVERY tool, code tools included: only the
+# top-level text of a code arg (code/script/data) stays with the command checks.
+g "browser_cdp: Page.navigate file:// %2eenv in params refused" block '{"tool_name":"browser_cdp","tool_input":{"method":"Page.navigate","params":{"url":"file:///x/%2eenv"}}}'
+g "browser_cdp: file:// PHI path in params refused" block "{\"tool_name\":\"browser_cdp\",\"tool_input\":{\"method\":\"Page.navigate\",\"params\":{\"url\":\"file://$PHI_W/case/pt.pdf\"}}}"
+g "browser_cdp: nested list of dicts with a PHI path refused" block "{\"tool_name\":\"browser_cdp\",\"tool_input\":{\"method\":\"DOM.setFileInputFiles\",\"params\":{\"files\":[\"$PHI_W/case/pt.pdf\"]}}}"
+g "browser_cdp: https URL in params allowed" allow '{"tool_name":"browser_cdp","tool_input":{"method":"Page.navigate","params":{"url":"https://example.com/a"}}}'
+g "terminal: PHI path in a non-command arg (workdir) refused" block "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"ls\",\"workdir\":\"$PHI_W/case\"}}"
+g "delegate_task: PHI path in a nested list-of-dicts refused" block "{\"tool_name\":\"delegate_task\",\"tool_input\":{\"tasks\":[{\"goal\":\"x\",\"workdir\":\"$PHI_W/case\"}]}}"
+unset CLAUDE_GLM_CONFIG_DIR
+g "send_message: prose with a slash in a non-text arg allowed" allow '{"tool_name":"send_message","tool_input":{"action":"send","target":"telegram","note":"see the a/b docs"}}'
+g "web_search: allowed"           allow '{"tool_name":"web_search","tool_input":{"query":"hermes agent"}}'
+g "browser_navigate: allowed"     allow '{"tool_name":"browser_navigate","tool_input":{"url":"https://example.com"}}'
+g "unclassified tool fails closed" block '{"tool_name":"brand_new_tool_2099","tool_input":{}}'
+g "empty tool name fails closed"   block '{"tool_input":{}}'
+
+echo "== wire_parity_guard: ensure migrates the pre-HIMMEL-2637 matcher =="
+# A profile already on parity_guard keeps whatever matcher it was wired with, so
+# every profile wired before the fix would keep the hand-listed pattern (the
+# gap stays open there). ensure rewrites EXACTLY that legacy value to `.*`,
+# leaves a matcher the operator chose alone, and is idempotent.
+cfg="$TMP/migrate.yaml"
+OLD_MATCHER='write_file|patch|read_file|search_files|terminal|delete_file|remove_file|move_file|rename_file|mcp__.*'
+printf 'hooks:\n  pre_tool_call:\n  - matcher: %s\n    command: /x/agent-hooks/parity_guard.py\n    timeout: 10\ntrailing: keep-me\n' "$OLD_MATCHER" > "$cfg"
+"$PY" "$WIRE" ensure "$cfg" "$H/agent-hooks/parity_guard.py" "$PY" >/dev/null
+if grep -qxF "  - matcher: .*" "$cfg" && ! grep -q "delete_file" "$cfg" && grep -q "trailing: keep-me" "$cfg"; then
+  echo "  ok: ensure migrated the legacy matcher to .*"; else
+  echo "  FAIL: ensure left the legacy matcher in place" >&2; fails=$((fails + 1)); fi
+before="$(cat "$cfg")"
+"$PY" "$WIRE" ensure "$cfg" "$H/agent-hooks/parity_guard.py" "$PY" >/dev/null
+if [ "$(cat "$cfg")" = "$before" ]; then
+  echo "  ok: matcher migration is idempotent"; else
+  echo "  FAIL: matcher migration is not idempotent" >&2; fails=$((fails + 1)); fi
+printf 'hooks:\n  pre_tool_call:\n  - matcher: %s\n    command: /x/other-hook.sh\n    timeout: 5\n  - matcher: %s\n    command: /x/agent-hooks/parity_guard.py\n    timeout: 10\n' "$OLD_MATCHER" "$OLD_MATCHER" > "$cfg"
+"$PY" "$WIRE" ensure "$cfg" "$H/agent-hooks/parity_guard.py" "$PY" >/dev/null
+if [ "$(grep -c -F "matcher: $OLD_MATCHER" "$cfg")" = 1 ] && [ "$(grep -c -xF "  - matcher: .*" "$cfg")" = 1 ] \
+   && grep -B1 -F "other-hook.sh" "$cfg" | grep -qF "matcher: $OLD_MATCHER"; then
+  echo "  ok: only the parity_guard entry's matcher is migrated"; else
+  echo "  FAIL: migration touched a hook it does not own" >&2; fails=$((fails + 1)); fi
+printf 'hooks:\n  pre_tool_call:\n  - matcher: terminal|write_file\n    command: /x/agent-hooks/parity_guard.py\n    timeout: 10\n' > "$cfg"
+before="$(cat "$cfg")"
+"$PY" "$WIRE" ensure "$cfg" "$H/agent-hooks/parity_guard.py" "$PY" >/dev/null
+if [ "$(cat "$cfg")" = "$before" ]; then
+  echo "  ok: an operator-chosen matcher is left alone"; else
+  echo "  FAIL: ensure rewrote a matcher it did not own" >&2; fails=$((fails + 1)); fi
 
 echo ""
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILED" >&2; exit 1; fi
