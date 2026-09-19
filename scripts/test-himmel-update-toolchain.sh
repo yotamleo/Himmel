@@ -9,7 +9,7 @@
 #
 # Bash 3.2 compatible.
 
-set -euo pipefail
+set -uo pipefail
 
 SCRIPT="$(cd "$(dirname "$0")" && pwd)/himmel-update.sh"
 [ -f "$SCRIPT" ] || { echo "FAIL: $SCRIPT not found" >&2; exit 1; }
@@ -22,7 +22,7 @@ export HOME="$TMP/home"
 export CLAUDE_CONFIG_DIR="$TMP/no-claude-config"
 export HERMES_HOME="$TMP/no-hermes"
 export HIMMELCTL_CACHE_DIR="$TMP/himmelctl-cache"
-mkdir -p "$HOME" "$HIMMELCTL_CACHE_DIR"
+mkdir -p "$HOME" "$HIMMELCTL_CACHE_DIR" || exit 1
 unset HIMMEL_UPDATE_CHANNEL
 
 pass=0
@@ -32,17 +32,20 @@ assert_fail() { fail=$((fail + 1)); echo "  FAIL: $1"; }
 
 # Mock clone: the script resolves its ROOT from its own location.
 CLONE="$TMP/clone"
-mkdir -p "$CLONE/scripts/guardrails" "$CLONE/scripts/lib"
+mkdir -p "$CLONE/scripts/guardrails" "$CLONE/scripts/lib" || exit 1
 src_scripts="$(dirname "$SCRIPT")"
-cp "$SCRIPT" "$CLONE/scripts/himmel-update.sh"
-cp "$src_scripts/guardrails/lib.sh"        "$CLONE/scripts/guardrails/lib.sh"
-cp "$src_scripts/lib/cadence-format.sh"    "$CLONE/scripts/lib/cadence-format.sh"
-cp "$src_scripts/lib/resolve-hermes-py.sh" "$CLONE/scripts/lib/resolve-hermes-py.sh"
-cp "$src_scripts/lib/load-dotenv.sh"       "$CLONE/scripts/lib/load-dotenv.sh"
-git init --quiet "$CLONE"
+if ! { cp "$SCRIPT" "$CLONE/scripts/himmel-update.sh" \
+    && cp "$src_scripts/guardrails/lib.sh"        "$CLONE/scripts/guardrails/lib.sh" \
+    && cp "$src_scripts/lib/cadence-format.sh"    "$CLONE/scripts/lib/cadence-format.sh" \
+    && cp "$src_scripts/lib/resolve-hermes-py.sh" "$CLONE/scripts/lib/resolve-hermes-py.sh" \
+    && cp "$src_scripts/lib/load-dotenv.sh"       "$CLONE/scripts/lib/load-dotenv.sh" \
+    && git init --quiet "$CLONE"; }; then
+    echo "FAIL: mock clone setup" >&2
+    exit 1
+fi
 
 STUBS="$TMP/stubs"
-mkdir -p "$STUBS"
+mkdir -p "$STUBS" || exit 1
 # shellcheck disable=SC2016 # the stub's $STUB_NODE_VERSION must expand when the stub runs
 printf '#!/bin/sh\nprintf "%%s\\n" "$STUB_NODE_VERSION"\n' > "$STUBS/node"
 printf '#!/bin/sh\nprintf "1.0.0\\n"\n' > "$STUBS/npm"
