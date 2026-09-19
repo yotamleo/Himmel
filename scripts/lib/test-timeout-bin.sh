@@ -22,7 +22,7 @@ ok()  { pass=$((pass+1)); echo "  ok: $1"; }
 bad() { fail=$((fail+1)); echo "  FAIL: $1"; }
 eq()  { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (got [$2] want [$3])"; fi; }
 
-W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
+W="$(mktemp -d "${TMPDIR:-/tmp}/test-timeout-bin.XXXXXX")" || exit 1; trap 'rm -rf "$W"' EXIT
 
 # stub_dir <name> [tool ...] — a dir holding symlinks to just <tool>s (found on
 # the REAL path, resolved before PATH is replaced).
