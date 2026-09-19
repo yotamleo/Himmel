@@ -264,6 +264,12 @@ _fleet_gate_take() {
     # goes in FIRST: a fence created after the delete is listed by its own sole
     # check after `revoked` exists, so it refuses instead of holding a gate
     # that is about to be moved away.
+    # ponytail: neither result below is checked. A failed `mkdir revoked`
+    # (EACCES/EIO/RO fs, or EEXIST from a concurrent breaker) or a fence that
+    # survives the `rm -rf` still lets the mv proceed, and a surviving fence's
+    # pre-resolved rename can then move a successor's live admit. This needs a
+    # filesystem failure. The race path is harmless: a rename landing mid-rm
+    # already ran while the name was held. Fail-closed abort: HIMMEL-3223.
     mkdir "$gate/revoked" 2>/dev/null
     rm -rf "$gate"/fence.* 2>/dev/null
     victim="$gate.broken.$$.$RANDOM"
