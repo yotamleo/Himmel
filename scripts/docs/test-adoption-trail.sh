@@ -99,7 +99,8 @@ else
 fi
 
 text="$(tr '\n' ' ' <"$PAGE" | sed -E 's/<[^>]*>//g; s/[[:space:]]+/ /g')"
-if printf '%s' "$text" | grep -q -E 'skip-hooks.{0,120}adopt\.sh'; then
+skip_hooks_hit="$(printf '%s' "$text" | grep -o -E 'skip-hooks.{0,120}adopt\.sh')"
+if [ -n "$skip_hooks_hit" ]; then
   ok "--skip-hooks is attributed to scripts/adopt.sh"
 else
   bad "--skip-hooks is an adopt.sh flag; himmelctl install rejects unknown flags, page must say where it lives"
