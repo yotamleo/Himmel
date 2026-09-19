@@ -27,8 +27,17 @@ BASH_ABS=$(command -v bash)
 # The fixture path is pid-derived (digits only), NOT a random mktemp suffix: the
 # guard matches write verbs over the whole command text, and a random suffix can
 # spell one (HIMMEL-3202: `...guard.mVddVZ` contains "dd"). Verb-free = the
-# fixture can never be the cause of a row's result.
-TMP="${TMPDIR:-/tmp}/himmel-relay-guard-fixture.$$"
+# fixture can never be the cause of a row's result. The inherited $TMPDIR is
+# not ours to name either (a macOS `/var/folders/dd/...` has a whole `dd`
+# component), so ask the guard itself whether a read under that base is
+# allowed and fall back to /tmp when it is not — no second copy of the verb
+# list to drift.
+FIXTURE_BASE="${TMPDIR:-/tmp}"
+if ! jq -nc --arg c "cat $FIXTURE_BASE/x/inbox/X.md" '{tool_name:"Bash", tool_input:{command:$c}}' \
+    | env HANDOVER_DIR=/nonexistent HIMMEL_CONSOLE_RELAY=1 "$BASH_ABS" "$HOOK" >/dev/null 2>&1; then
+    FIXTURE_BASE=/tmp
+fi
+TMP="$FIXTURE_BASE/himmel-relay-guard-fixture.$$"
 mkdir "$TMP" || { echo "FATAL: mkdir $TMP failed" >&2; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 
