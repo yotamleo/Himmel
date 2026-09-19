@@ -18,10 +18,16 @@
 # Without a pid the session is the nearest ancestor of this script whose argv0
 # is `claude`. The subtree is every descendant of that session EXCEPT this
 # script's own chain (its tool-call wrapper, itself, and its own children) and
-# harness MCP servers: a non-shell-wrapper process whose first two argv tokens
-# match WRAP_SUBTREE_HARNESS_RE (ERE, default `mcp|qmd`), plus anything beneath
-# one. A shell-tool wrapper (`<shell> -c source …/shell-snapshots/snapshot-…`)
-# is never harness, whatever its command text says.
+# harness MCP servers: a non-shell-wrapper process whose full argv matches
+# WRAP_SUBTREE_HARNESS_RE (ERE; default: an `mcp-server*` path/word, or a
+# `…qmd[.ext] mcp` invocation), plus anything beneath one. A shell-tool wrapper
+# (`<shell> -c source …/shell-snapshots/snapshot-…`) is never harness, whatever
+# its command text says. The session pid must itself be a `claude` process: an
+# arbitrary live pid (a leaf, another tool) is refused, never called CLOSABLE.
+# ponytail: the default harness match is a heuristic over argv, so a leaked
+# process literally named like an MCP server (`node …/mcp-server-x/y.js`) would
+# be exempt; the leak class this gate exists for is a tool-call shell, which
+# is never exempt.
 #
 # READ-ONLY: this script never signals a process. Bash 3.2-compatible.
 # WRAP_SUBTREE_SELF overrides the pid treated as "this script" (test seam).
@@ -41,7 +47,8 @@ esac
 [ "$#" -le 1 ] || { printf 'usage: wrap-subtree-check.sh [<claude-pid>]\n' >&2; exit 2; }
 
 self="${WRAP_SUBTREE_SELF:-$$}"
-harness_re="${WRAP_SUBTREE_HARNESS_RE:-mcp|qmd}"
+# No backslashes: the value crosses awk -v, which processes escape sequences.
+harness_re="${WRAP_SUBTREE_HARNESS_RE:-(^|[ /])(mcp-server[^ ]*|[^ ]*qmd([.][a-z]+)? mcp)( |\$)}"
 
 ps_out="$(ps -eo pid=,ppid=,etime=,args= 2>/dev/null)" || ps_out=""
 if [ -z "$ps_out" ]; then
@@ -58,11 +65,9 @@ function isclaude(a,   t, n, b) {
     n = split(t[1], b, "/")
     return b[n] == "claude"
 }
-function isharness(p,   t, s) {
+function isharness(p) {
     if (iswrap(arg[p])) return 0
-    split(arg[p], t, " ")
-    s = t[1] " " t[2]
-    return s ~ hre
+    return arg[p] ~ hre
 }
 {
     pid = $1; ppid[pid] = $2; et[pid] = $3
@@ -81,6 +86,7 @@ END {
         }
     }
     if (root == "" || !(root in ppid)) { print "NOROOT"; exit }
+    if (!isclaude(arg[root])) { print "NOTCLAUDE"; exit }
     # This script'"'"'s own chain: itself and every ancestor below the session.
     p = self
     for (h = 0; h < 64 && p != "" && p != 0 && p != root; h++) { chain[p] = 1; p = ppid[p] }
@@ -112,6 +118,9 @@ case "$result" in
         else
             printf 'WITHHELD: no claude session found above this script — pass the session pid; not declaring CLOSABLE\n'
         fi
+        exit 2 ;;
+    NOTCLAUDE*)
+        printf 'WITHHELD: pid %s is not a claude session — pass the session pid; not declaring CLOSABLE\n' "$root"
         exit 2 ;;
 esac
 

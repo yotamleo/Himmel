@@ -60,6 +60,8 @@ FIX
   204   101    00:40 /usr/bin/bash -c source /home/u/.claude/shell-snapshots/snapshot-bash-3-c.sh && eval 'echo mcp; sleep 999'
   205   203       00:10 sleep 10
   206   900    00:04 sleep 999
+  207   101    01:00:00 /home/u/.bun/bin/bun /opt/qmd/dist/cli/qmd.js update
+  208   101    01:00:00 node /repo/mcp-project/build.js --watch
 FIX
 } > "$W/dirty.txt"
 
@@ -78,7 +80,9 @@ contains 'walk-up names the session it found' "$out" 'CLOSABLE: no non-harness p
 
 out="$(run "$W/dirty.txt" 101 2>&1)"; rc=$?
 eq 'dirty subtree: rc 1' 1 "$rc"
-contains 'dirty subtree withholds CLOSABLE' "$out" 'WITHHELD: 4 process(es) still alive under claude pid 101'
+contains 'dirty subtree withholds CLOSABLE' "$out" 'WITHHELD: 6 process(es) still alive under claude pid 101'
+contains 'a qmd command that is not the MCP server is NOT exempt (codex-1)' "$out" 'pid=207'
+contains 'a process merely under an mcp-named path is NOT exempt (codex-1)' "$out" 'pid=208'
 lacks 'a withheld run never prints the CLOSABLE banner' "$out" 'CLOSABLE:'
 contains 'lists the orphaned poll loop' "$out" 'pid=203 ppid=101 etime=02:10:05'
 contains 'lists a wrapper whose command text contains mcp (wrappers are never harness)' "$out" 'pid=204'
@@ -102,6 +106,13 @@ contains 'an unreadable table says WITHHELD' "$out" 'WITHHELD: cannot read the p
 out="$(run "$W/clean.txt" 555 2>&1)"; rc=$?
 eq 'a pid that is not in the process table fails closed: rc 2' 2 "$rc"
 lacks 'unknown pid never prints CLOSABLE' "$out" 'CLOSABLE:'
+
+out="$(run "$W/clean.txt" 110 2>&1)"; rc=$?
+eq 'a live pid that is not a claude session fails closed: rc 2 (codex-2)' 2 "$rc"
+lacks 'a non-claude pid never prints CLOSABLE' "$out" 'CLOSABLE:'
+contains 'a non-claude pid says so' "$out" 'is not a claude session'
+out="$(run "$W/clean.txt" 111 2>&1)"; rc=$?
+eq 'a leaf pid (no children) is refused, not called CLOSABLE (codex-2)' 2 "$rc"
 
 out="$(PATH="$W/bin:$PATH" PS_FIXTURE="$W/clean.txt" WRAP_SUBTREE_SELF=999 bash "$SUT" 2>&1)"; rc=$?
 eq 'no claude session above self and no pid given fails closed: rc 2' 2 "$rc"
