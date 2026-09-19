@@ -497,6 +497,24 @@ assert_has "K6 state with --purge-state: the plan removes" "8. REMOVE the himmel
 k6_run "$MANIFEST"
 assert_has "K6 control: the shipped code-class cache row is removed" "8. REMOVE the himmelctl cache + state" "$k6_plan"
 
+# ── K7 — the step-2 PLAN, without --purge-state, says per row what step 2 does ─
+# A row re-classed keep is never touched, so the plan must not tell the operator
+# that --purge-state would remove it (the old else-branch did, for both rows).
+sed -e $'s/^telegram-channel\tstate/telegram-channel\tkeep/' "$MANIFEST" > "$FX/k7-mixed.tsv"
+sed -e $'s/^telegram-channel\tstate/telegram-channel\tkeep/' \
+    -e $'s/^telegram-bridge\tstate/telegram-bridge\tkeep/' "$MANIFEST" > "$FX/k7-keep.tsv"
+k6_run "$FX/k7-mixed.tsv"
+assert_rc "K7 dry-run with the channel row re-classed keep" 0 "$rc"
+assert_has "K7 mixed: the keep row is named as never touched" "keep   $FX_HOME/.claude/channels/telegram (manifest class keep)" "$k6_plan"
+assert_has "K7 mixed: the state row is named as removed by --purge-state" "keep   $FX_HOME/.claude/handover/bridge (manifest class state; --purge-state removes it)" "$k6_plan"
+assert_not_has "K7 mixed: no blanket claim that --purge-state removes both" "pass --purge-state to remove it" "$k6_plan"
+k6_run "$FX/k7-keep.tsv"
+assert_has "K7 both keep: the channel row says keep by class" "keep   $FX_HOME/.claude/channels/telegram (manifest class keep)" "$k6_plan"
+assert_has "K7 both keep: the bridge row says keep by class" "keep   $FX_HOME/.claude/handover/bridge (manifest class keep)" "$k6_plan"
+assert_not_has "K7 both keep: --purge-state is not offered as a way to remove them" "pass --purge-state to remove it" "$k6_plan"
+k6_run "$MANIFEST"
+assert_has "K7 control: the shipped state rows still offer --purge-state" "2. KEEP telegram pairing + bridge state (pass --purge-state to remove it):" "$k6_plan"
+
 # ── DOC2 — a guarded --purge-state is documented as conditional ────────────
 if [ "$(grep -c 'still running' "$ROOT/docs/setup/updating.md")" -ge 2 ]; then pass "DOC2 updating.md qualifies --purge-state at both sites"
 else fail "DOC2 updating.md does not qualify --purge-state with the running-supervisor guard at both sites"; fi

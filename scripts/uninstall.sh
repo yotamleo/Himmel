@@ -1008,10 +1008,21 @@ elif state_removed; then
   echo "  2. keep telegram pairing + bridge state (manifest class keep):"
   echo "       $CHANNEL_DIR"
   echo "       $BRIDGE_ROOT"
-else
+elif [ "${M_CLASS[$_ix_channel]}" = state ] && [ "${M_CLASS[$_ix_bridge]}" = state ]; then
   echo "  2. KEEP telegram pairing + bridge state (pass --purge-state to remove it):"
   echo "       $CHANNEL_DIR"
   echo "       $BRIDGE_ROOT"
+else
+  # A row re-classed keep is never removed, --purge-state or not: say so per
+  # row instead of offering --purge-state as the way to remove it.
+  echo "  2. keep telegram pairing + bridge state, per manifest class:"
+  for _ix2 in "$_ix_channel:$CHANNEL_DIR" "$_ix_bridge:$BRIDGE_ROOT"; do
+    if [ "${M_CLASS[${_ix2%%:*}]}" = state ]; then
+      echo "       keep   ${_ix2#*:} (manifest class state; --purge-state removes it)"
+    else
+      echo "       keep   ${_ix2#*:} (manifest class ${M_CLASS[${_ix2%%:*}]})"
+    fi
+  done
 fi
 if [ "$SKIP_TASKS" -eq 1 ]; then
   echo "  3. keep scheduled jobs (--skip-tasks)"
