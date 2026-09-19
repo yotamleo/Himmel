@@ -41,7 +41,13 @@
 #      (with a non-empty panel), or that failed for any other reason (auth,
 #      404, config, timeout, an unclassified rc), still refuses. `claude-floor`
 #      is the Claude model family: never cross-model evidence. Default unset
-#      (no fallback).
+#      (no fallback). Clearing THROUGH that escape is its own audited outcome
+#      (HIMMEL-3108): under the opt-in the CLEARED line carries `via=` —
+#      `via=cross-model` when a non-Claude lane reviewed the SHA,
+#      `via=claude-floor same_model=1 context_free=1 exhausted=<lanes>` when the
+#      same-model floor did — and the CR-clean message says which. So
+#      CR_REQUIRE_CROSS_MODEL keeps meaning what its name says, and the durable
+#      log answers "was this SHA reviewed by a non-Claude lane?" per clear.
 #   4. The ledger records NO blocking finding at that SHA (severity crit|imp
 #      whose verdict is anything other than `disproved` or a TRACKED `deferred`).
 #      `amend` supersede records are applied before this is judged, so a
@@ -718,6 +724,12 @@ if [ "${responders:-0}" -lt 1 ]; then
     exit 14
 fi
 
+# HIMMEL-3108 — how the marker ultimately cleared, appended to the CLEARED
+# audit line (same mechanism as carry_audit below). Empty on every refusal, so
+# a refusal never records a clearing basis.
+clear_basis=""
+cleared_via_floor=0
+
 # 3b. Cross-model floor (HIMMEL-1237, opt-in via CR_REQUIRE_CROSS_MODEL). Default
 # off => the Claude self-review floor alone satisfies gate 3 (HIMMEL-1224
 # adopter-portable behaviour). When set (himmel's own .env), a single-model
@@ -759,11 +771,29 @@ if [ "${require_cross_model:-0}" = "1" ] && [ "${non_claude_responders:-0}" -lt 
         # coverage and must never be reported as such.
         echo "clear-cr-marker: CR_FLOOR_FALLBACK=claude-only — accepting the context-free Claude floor review at ${tip:0:8}. Unlocked by: ${exhausted_lanes:-none} (every non-Claude lane recorded at this head is exhausted: quota/rate-limit, or a vacuous CodeRabbit pass; an empty panel is labelled empty-panel). COVERED: a fresh headless claude session reviewed only the diff and a snapshot of this head, with no session context. NOT COVERED: this is NOT cross-model review — the reviewer is the same model family as the author, so the shared-model blind spot remains. An auth/404/config/timeout failure on any lane still refuses — diagnose it instead of routing around it." >&2
         audit "FLOOR-FALLBACK branch=$branch sha=$tip reason=claude-only-floor-accepted exhausted=${exhausted_lanes:-none} responders=$responders same_model=1 context_free=1"
+        # HIMMEL-3108: carry that identity through to the CLEARING outcome.
+        # The FLOOR-FALLBACK note above records that gate 3b took the floor
+        # path, but gates 4-5 can still refuse after it, so it is not a record
+        # of how the marker cleared — and the terminal CLEARED line was
+        # byte-identical whether a codex lane or a same-model floor certified
+        # the head. A reader of clear-cr-marker.log could not answer "was this
+        # SHA ever reviewed by a non-Claude lane?" from the clearing record.
+        cleared_via_floor=1
+        clear_basis=" via=claude-floor same_model=1 context_free=1 exhausted=${exhausted_lanes:-none}"
     else
         echo "clear-cr-marker: CR_REQUIRE_CROSS_MODEL is set but no non-Claude 'avail ... ok' responder exists at ${tip:0:8} (${responders:-0} total responders, ${non_claude_responders:-0} non-Claude). This setup requires cross-model coverage — a codex/glm/CodeRabbit lane must actually review this SHA. Configure/retry an external critic, or unset CR_REQUIRE_CROSS_MODEL. If the diff is TRIVIAL (a one-liner or docs-only), the panel used to strip its only paid tier and leave exactly this refusal with no explanation — it now keeps ONE critic instead when this variable is set (HIMMEL-1950), so re-run the panel; CR_TRIVIALITY_OVERRIDE=full forces the whole panel. CR_FLOOR_FALLBACK=claude-only accepts a Claude-only floor ONLY once every configured non-Claude lane is verified quota/rate-limit exhausted (not merely absent or misconfigured) AND the floor is a context-free review by scripts/cr/claude-floor-review.sh (a session-written 'claude' row does not count)." >&2
         audit "REFUSED reason=no-cross-model branch=$branch sha=$tip responders=$responders non_claude=${non_claude_responders:-0}"
         exit 14
     fi
+fi
+
+# HIMMEL-3108 — the clearing basis, stated rather than inferred from the
+# ABSENCE of a floor tag (absence is exactly the silent-weakening shape this
+# ticket closes). Only under the CR_REQUIRE_CROSS_MODEL opt-in is there a
+# cross-model claim to qualify: with the knob unset the gate never claimed one,
+# so the CLEARED line stays byte-identical to the adopter-portable default.
+if [ "${require_cross_model:-0}" = "1" ] && [ "${cleared_via_floor:-0}" != "1" ]; then
+    clear_basis=" via=cross-model non_claude=${non_claude_responders:-0}"
 fi
 
 # HIMMEL-1715: is <path> one of the NUL-delimited paths in <file>? String
@@ -1322,9 +1352,15 @@ fi
 marker_claim=""
 if [ "$stale_marker" -eq 1 ]; then
     echo "clear-cr-marker: WARNING: stale marker ${marker_sha:0:8} cleared only because the ledger gates certified the current tip ${tip:0:8}." >&2
-    audit "CLEARED reason=stale-marker-superseded-by-ledger-at-tip branch=$branch marker_sha=$marker_sha tip=$tip responders=$responders${pr_num:+ pr=#$pr_num}${carry_audit:-}"
+    audit "CLEARED reason=stale-marker-superseded-by-ledger-at-tip branch=$branch marker_sha=$marker_sha tip=$tip responders=$responders${pr_num:+ pr=#$pr_num}${carry_audit:-}${clear_basis:-}"
 else
-    audit "CLEARED branch=$branch sha=$tip responders=$responders${pr_num:+ pr=#$pr_num}${carry_audit:-}"
+    audit "CLEARED branch=$branch sha=$tip responders=$responders${pr_num:+ pr=#$pr_num}${carry_audit:-}${clear_basis:-}"
 fi
-echo "clear-cr-marker: CR clean — marker cleared for $branch (${tip:0:8}). Safe to gh pr create."
+if [ "${cleared_via_floor:-0}" = "1" ]; then
+    # Same prefix as the ordinary line (pr-check.md step 5 reports it verbatim),
+    # then the part that differs: what actually certified this head.
+    echo "clear-cr-marker: CR clean — marker cleared for $branch (${tip:0:8}) ON THE SAME-MODEL FLOOR: a context-free Claude floor review cleared it, NOT a cross-model critic (unlocked by ${exhausted_lanes:-none}). The shared-model blind spot is uncovered at this SHA — say so wherever this PR's review coverage is reported. Safe to gh pr create."
+else
+    echo "clear-cr-marker: CR clean — marker cleared for $branch (${tip:0:8}). Safe to gh pr create."
+fi
 exit 0

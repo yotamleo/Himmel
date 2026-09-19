@@ -22,7 +22,13 @@ happens to fail-close:
   coverage *required* makes the Claude-alone floor insufficient — `clear-cr-marker.sh`
   gate 3b then also requires ≥1 **non-Claude** `avail … ok` at the SHA — unless
   `CR_FLOOR_FALLBACK=claude-only` and a provenance-valid claude-floor row is
-  present (HIMMEL-3107). Default off keeps the adopter-portable Claude-alone floor.
+  present (HIMMEL-3107). That escape is NOT a gate-3b pass (HIMMEL-3108): a
+  `claude-floor` row never counts as a non-Claude responder, and under this
+  opt-in the clearing record states its basis — `CLEARED … via=cross-model
+  non_claude=<n>` vs `CLEARED … via=claude-floor same_model=1 context_free=1
+  exhausted=<lanes>`, with the CR-clean line naming the same-model floor in
+  words — so `clear-cr-marker.log` distinguishes the two per clear. Default off
+  keeps the adopter-portable Claude-alone floor and an untagged `CLEARED` line.
 - `scripts/cr/pr-check-external.sh` (the Claude-FREE ship lane) → **"codex
   responded"** is the floor. A diff that changes the gate infrastructure itself
   needs a quorum of two responding cross-model reviewers, which that lane can no
@@ -487,7 +493,9 @@ ledger deduplicates availability on `(head, model)` and findings on
 
     Report the result without deleting the marker directly:
     - `0` → `CR clean — marker cleared (M/N critics responded)` using
-      `$panel_coverage`.
+      `$panel_coverage`. If the script's own line reads `… ON THE SAME-MODEL
+      FLOOR …`, report THAT verbatim instead: the floor cleared it and the SHA
+      has no cross-model coverage (HIMMEL-3108).
     - `13` → stale SHA / branch changed; marker retained, re-run `/pr-check`.
     - `14` → no responder evidence at this HEAD; marker retained.
     - `15` → blocking ledger finding; marker retained and report it.

@@ -2647,6 +2647,106 @@ rm -rf "$tmp"
 unset CR_FLOOR_FALLBACK
 
 unset CR_REQUIRE_CROSS_MODEL
+# 6a-6e. HIMMEL-3108 — the floor path gets its OWN identity at the CLEARING
+# outcome, not only in the mid-run FLOOR-FALLBACK note. Before this ticket a
+# marker cleared on the same-model floor and one cleared by a genuine codex
+# review ended with a byte-identical `CLEARED branch=... sha=... responders=1`
+# audit line and a byte-identical "CR clean" message, so the durable record in
+# clear-cr-marker.log could not answer "was this PR ever reviewed by a
+# non-Claude lane?". Gate 3b itself already tells the two apart (5o); these
+# cases pin that the ANSWER reaches the operator and the log.
+export CR_REQUIRE_CROSS_MODEL=1
+
+# 6a. A genuine non-Claude responder: the clear is tagged cross-model, and
+# nothing in it claims a floor.
+make_repo || exit 1
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok "$sha")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 0 "6a genuine codex responder + cross-model required -> exit 0"
+if grepq "$LAST_CLEAR_OUT" -F 'CLEARED branch=feat/x'; then pass; else fail "6a expected a CLEARED audit line: $LAST_CLEAR_OUT"; fi
+if grepq "$LAST_CLEAR_OUT" -F 'via=cross-model non_claude=1'; then pass; else
+    fail "6a CLEARED line must name the cross-model basis: $LAST_CLEAR_OUT"
+fi
+if grepq "$LAST_CLEAR_OUT" -F 'via=claude-floor'; then fail "6a must not claim a floor clear"; else pass; fi
+if grepq "$LAST_CLEAR_OUT" -F 'ON THE SAME-MODEL FLOOR'; then fail "6a must not claim a same-model floor"; else pass; fi
+rm -rf "$tmp"
+
+# 6b. The floor path: same rc, same marker outcome — but the CLEARED audit
+# line and the operator-facing line both SAY a same-model floor review is what
+# cleared it, and which lane failures unlocked it.
+export CR_FLOOR_FALLBACK=claude-only
+make_repo || exit 1
+write_marker "$tmp" "$sha"
+write_floor_artifact "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_floor "$sha")" "$(avail_reason "$sha" codex unavailable quota-5h)"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 0 "6b claude-floor + codex quota-5h -> exit 0"
+if marker_exists "$tmp"; then fail "6b floor accepted: marker should be GONE"; else pass; fi
+if grepq "$LAST_CLEAR_OUT" -F 'CLEARED branch=feat/x'; then pass; else fail "6b expected a CLEARED audit line: $LAST_CLEAR_OUT"; fi
+if grepq "$LAST_CLEAR_OUT" -F 'via=claude-floor same_model=1 context_free=1 exhausted=codex(reason=quota-5h)'; then pass; else
+    fail "6b CLEARED line must name the floor basis and the unlocking lane: $LAST_CLEAR_OUT"
+fi
+if grepq "$LAST_CLEAR_OUT" -F 'via=cross-model'; then fail "6b must not claim cross-model coverage"; else pass; fi
+if grepq "$LAST_CLEAR_OUT" -F 'CR clean — marker cleared for feat/x'; then pass; else
+    fail "6b the CR-clean line must keep its reported prefix: $LAST_CLEAR_OUT"
+fi
+if grepq "$LAST_CLEAR_OUT" -F 'ON THE SAME-MODEL FLOOR'; then pass; else
+    fail "6b the CR-clean line must say a same-model floor cleared it: $LAST_CLEAR_OUT"
+fi
+# The durable log, not just the transcript, carries the distinction.
+if grep -qF 'via=claude-floor same_model=1 context_free=1' "$tmp/.git/clear-cr-marker.log" 2>/dev/null; then pass; else
+    fail "6b clear-cr-marker.log must carry the floor basis: $(cat "$tmp/.git/clear-cr-marker.log" 2>/dev/null)"
+fi
+rm -rf "$tmp"
+
+# 6c. Unchanged refusal: a claude-only floor WITHOUT the fallback knob still
+# exits 14 and clears nothing, so nothing above weakened gate 3b.
+unset CR_FLOOR_FALLBACK
+make_repo || exit 1
+write_marker "$tmp" "$sha"
+write_floor_artifact "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_floor "$sha")" "$(avail_reason "$sha" codex unavailable quota-5h)"
+run_clear "$tmp" 14 "6c claude-floor + knob unset -> exit 14 (unchanged)"
+if marker_exists "$tmp"; then pass; else fail "6c knob unset: marker must REMAIN"; fi
+if grepq "$LAST_CLEAR_OUT" -F 'via='; then fail "6c a refusal records no clearing basis: $LAST_CLEAR_OUT"; else pass; fi
+rm -rf "$tmp"
+
+# 6d. The stale-marker clear carries the basis too — it is the same clearing
+# outcome, reached by the ledger-at-tip path.
+export CR_FLOOR_FALLBACK=claude-only
+make_repo || exit 1
+write_marker "$tmp" "$sha"
+(cd "$tmp" && echo x >> f.txt && git commit -qam "later reviewed work" && git push -q origin feat/x) >/dev/null 2>&1
+_tip=$(git -C "$tmp" rev-parse --verify refs/heads/feat/x)
+write_floor_artifact "$tmp" "$_tip"
+write_ledger "$tmp" "$(avail_ok_floor "$_tip")" "$(avail_reason "$_tip" codex unavailable quota-5h)"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 0 "6d stale marker superseded by the floor at tip -> exit 0"
+if grepq "$LAST_CLEAR_OUT" -F 'CLEARED reason=stale-marker-superseded-by-ledger-at-tip'; then pass; else
+    fail "6d expected the stale-marker CLEARED line: $LAST_CLEAR_OUT"
+fi
+if grepq "$LAST_CLEAR_OUT" -F 'via=claude-floor same_model=1 context_free=1'; then pass; else
+    fail "6d the stale-marker clear must carry the floor basis too: $LAST_CLEAR_OUT"
+fi
+rm -rf "$tmp"
+unset CR_FLOOR_FALLBACK
+unset CR_REQUIRE_CROSS_MODEL
+
+# 6e. Default (CR_REQUIRE_CROSS_MODEL unset): the adopter-portable Claude-only
+# floor still clears and its CLEARED line is byte-identical to before this
+# ticket — no `via=` tag, because with the opt-in off there is no cross-model
+# claim to qualify.
+make_repo || exit 1
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_claude "$sha")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 0 "6e CR_REQUIRE_CROSS_MODEL unset + claude-only floor -> exit 0"
+if grepq "$LAST_CLEAR_OUT" -F "CLEARED branch=feat/x sha=$sha responders=1"; then pass; else
+    fail "6e default CLEARED line changed shape: $LAST_CLEAR_OUT"
+fi
+if grepq "$LAST_CLEAR_OUT" -F 'via='; then fail "6e default path must carry no basis tag: $LAST_CLEAR_OUT"; else pass; fi
+rm -rf "$tmp"
 
 # 9. GraphQL budget preflight before the PR lookup (HIMMEL-3190). The fixture
 # copies scripts/lib selectively, so the shared helper is copied in explicitly
