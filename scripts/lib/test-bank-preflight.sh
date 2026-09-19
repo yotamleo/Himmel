@@ -518,8 +518,9 @@ case "$(bank_line)" in *' codex=5h?/wk14') PASS=$((PASS+1)); echo "ok - weekly-o
 S_UNMEAS="$(stub_status codex-unmeas "printf '%s\n' 'claudex unknown unmeasurable reason=\"codex bank cache stale\"'")"
 S_FAIL="$(stub_status codex-fail 'exit 7')"
 S_EMPTY="$(stub_status codex-empty 'true')"
+S_PRINTFAIL="$(stub_status codex-printfail "printf '%s\n' 'claudex funded measured 5h used=12% free=88% weekly used=14% free=86%'; exit 7")"
 S_JUNK="$(stub_status codex-junk "printf '%s\n' 'claudex funded measured weekly used=oops% free=?'")"
-for _c in "missing:$W/no-such-status-cmd" "failing:$S_FAIL" "empty:$S_EMPTY" "unmeasurable:$S_UNMEAS" "junk:$S_JUNK"; do
+for _c in "missing:$W/no-such-status-cmd" "failing:$S_FAIL" "empty:$S_EMPTY" "unmeasurable:$S_UNMEAS" "junk:$S_JUNK" "print-then-fail:$S_PRINTFAIL"; do
   _kind="${_c%%:*}"; _cmd="${_c#*:}"
   check "codex probe $_kind, healthy Claude bank -> PROCEED (rc/verdict unchanged)" PROCEED "$(native_codex_run "$_cmd")"
   case "$(bank_line)" in *' codex=?') PASS=$((PASS+1)); echo "ok - codex probe $_kind -> codex=?" ;;

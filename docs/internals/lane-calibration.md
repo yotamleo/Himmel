@@ -189,7 +189,7 @@ below already uses.
 | `codex` (paid, via hermes) | critic | — (critic pass) | 900000 — raised by operator ruling (HIMMEL-1833, 2026-08-17); pins gpt-6-astra via `critics.json` (HIMMEL-2546, 2026-09-05) — the window figure predates and is independent of the model pin; least-verified of the five raised lanes | none (dashboard-omitted); opt-in `CR_PROFILE=paid` | calibrated — CR escalation / second opinions only |
 | `copilot-cli` — GitHub Copilot CLI (free tier) | bulk | small tasks; model tier is mini-class unless the caller overrides the auto pin | unverified/varies | none (dashboard-omitted); 2,000 completions/mo bank | **not calibrated yet** — worker-spawn-matrix row UNVERIFIED (live smoke pending eval); route only for free chores / second opinions, and only through the `dispatch-copilot.sh` chokepoint |
 | `hermes-oneshot` — hermes one-shot dispatch | impl | invoke.sh wall-clock timebox (default 1800s) + Nth-identical-deny abort (HIMMEL-2025) | 900000 — re-confirmed on ox-alpha (HIMMEL-2024, 2026-08-22: 300K/600K/900K probes all accepted); previously operator-verified inside hermes v0.20.2 (2026.8.16), upstream commit `bab7be3c` (2026-08-17), superseding 350000 (hermes-agent commit 522997543, 2026-08-16) | none (dashboard-omitted) — free while ox-alpha lasts | calibrated — live-proven spawn path; see [ox-alpha](#ox-alpha--the-current-hermes-himmel_agent-default-himmel-2024) |
-| `codex-exec` — codex CLI sandbox | impl | well-scoped chunks; job registry is per-workspace | 900000 — raised by operator ruling (HIMMEL-1833, 2026-08-17) despite still pinning gpt-5.5, the same model hermes measured rejecting a 360K probe; least-verified of the five raised lanes | codex | calibrated (HIMMEL-741) |
+| `codex-exec` — codex CLI sandbox | impl | well-scoped chunks; job registry is per-workspace | 900000 — raised by operator ruling (HIMMEL-1833, 2026-08-17) despite the 360K rejection hermes measured on the gpt-5.5 pin it carried then (codex-exec now follows the `codex` critic's model, `gpt-6-astra`, HIMMEL-2811; that probe was not repeated there); least-verified of the five raised lanes | codex | calibrated (HIMMEL-741) |
 | `codex-wsl` — codex WSL lane | impl | well-scoped chunks; brief via `--brief-file` | 900000 — raised by operator ruling (HIMMEL-1833, 2026-08-17) despite still pinning gpt-5.5, the same model hermes measured rejecting a 360K probe; least-verified of the five raised lanes | codex | calibrated (HIMMEL-999) |
 | `antigravity-cli` — Antigravity CLI (Google AI Plus) | bulk | simple tasks; `--output-format` drift seen on Windows builds | unverified/varies | none (dashboard-omitted); free AI-Plus bank | **not calibrated yet** — roster + quota shape TO VERIFY at eval (HIMMEL-772); parity/guards UNVERIFIED (permission flags only, no hook surface); egress-DENIED for vault corpora, himmel-code only; route only for free-bank chores / second opinions |
 | `ollama-local` — ollama (local models) | bulk | slow, small tasks | unverified/varies | none (dashboard-omitted); free, local wall-clock | calibrated — zero-egress guarantee is structural; the only salus-eligible backend |
@@ -314,7 +314,13 @@ not re-measured it):
 > OpenAI/Tibo says GPT-6 Astra on **low** performs better than GPT-5.6 Sol on
 > **high**, and anyone who ran Sol at high should move to low or medium on Astra.
 
-The ladder stays; only its resting point moves. Astra on the claudex/codex lanes:
+The ladder stays; only its resting point moves. Mind which model each lane runs:
+`codex-exec` follows the `codex` critic in `scripts/cr/critics.json` (currently
+`gpt-6-astra`), but the `claudex` launcher's own default model is still
+`gpt-5.6-sol` (`CODEX_MODEL` in `scripts/claude-codex`, overridable) — the note
+above is about Astra, so a claudex station left on the Sol default runs the
+lower effort ahead of any model switch; export `CLAUDE_CODE_EFFORT_LEVEL=high`
+there if `medium` under-delivers. The rungs:
 
 | Effort | Use for |
 |---|---|
@@ -355,7 +361,9 @@ invented — extend this list only from a new observation):
   workspace that the dispatcher gives no way to add. Observed in practice: the
   sandbox edits the tree and the **parent commits**. Plan the chunk as
   "edit files, parent commits" (the tree must be clean at dispatch under
-  `--shared-branch`, so commit before the next handoff).
+  `--shared-branch`, so commit before the next handoff). This is a step the
+  parent takes, **not** a reason to send the chunk to Sonnet: codex-exec still
+  does the implementation.
 - **Its terminal writes are hook-fenced.** `.codex/hooks.json` wires
   `block-terminal-write-fence.sh` on Bash/PowerShell: `git push`, remote-URL
   rewrites, `gh` PR-mutations (`create`/`merge`/`comment`/…) and network CLIs

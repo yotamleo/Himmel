@@ -1044,16 +1044,19 @@ fi
 # CADENCE_BANK_CODEX_TIMEOUT (default 5s) through the repo's `timeout` resolver;
 # with no timeout binary the read is SKIPPED rather than run unbounded.
 _codex_bank_figure() {
-  local _bound="${CADENCE_BANK_CODEX_TIMEOUT:-5}" _line _c5 _cw
+  local _bound="${CADENCE_BANK_CODEX_TIMEOUT:-5}" _out _line _c5 _cw
   is_int "$_bound" && [ "$_bound" -gt 0 ] || _bound=5
   # shellcheck source=scripts/lib/timeout-bin.sh
   . "$(dirname "$0")/timeout-bin.sh" 2>/dev/null || _TIMEOUT_BIN=""
   [ -n "${_TIMEOUT_BIN:-}" ] || { printf '?'; return 0; }
   if [ -n "${CADENCE_BANK_STATUS_CMD:-}" ]; then
-    _line="$("$_TIMEOUT_BIN" -k 1 "$_bound" "$CADENCE_BANK_STATUS_CMD" </dev/null 2>/dev/null | grep -E '^claudex ' | head -1)"
+    _out="$("$_TIMEOUT_BIN" -k 1 "$_bound" "$CADENCE_BANK_STATUS_CMD" </dev/null 2>/dev/null)" || { printf '?'; return 0; }
   else
-    _line="$("$_TIMEOUT_BIN" -k 1 "$_bound" bun "$REPO/scripts/lanes/bank-status.ts" </dev/null 2>/dev/null | grep -E '^claudex ' | head -1)"
+    _out="$("$_TIMEOUT_BIN" -k 1 "$_bound" bun "$REPO/scripts/lanes/bank-status.ts" </dev/null 2>/dev/null)" || { printf '?'; return 0; }
   fi
+  # a probe that exits non-zero (failed or killed by the bound) is `?` even if
+  # it printed a row first — the exit status is checked, not just the output
+  _line="$(printf '%s\n' "$_out" | grep -E '^claudex ' | head -1)"
   _c5="$(printf '%s\n' "$_line" | sed -n 's/.*5h used=\([0-9][0-9.]*\)%.*/\1/p')"
   _cw="$(printf '%s\n' "$_line" | sed -n 's/.*weekly used=\([0-9][0-9.]*\)%.*/\1/p')"
   if [ -n "$_c5" ] || [ -n "$_cw" ]; then
