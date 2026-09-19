@@ -587,6 +587,10 @@ assert "ctl: HANDOVER_DIR=/. + any doc"             PASS "$(qd "HANDOVER_DIR=/. 
 assert "ctl: HANDOVER_DIR=/./ + any doc"            PASS "$(qd "HANDOVER_DIR=/./ $QD_S status /./etc/x.md")"
 assert "ctl: HANDOVER_DIR=/c/. + drive doc"         PASS "$(qd "HANDOVER_DIR=/c/. $QD_S status /c/./x.md")"
 assert "ctl: HANDOVER_DIR=C:/. + drive doc"         PASS "$(qd "HANDOVER_DIR=C:/. $QD_S status C:/./x.md")"
+# An INTERIOR `.` spells a root too (`/./c` is `/c`), so `*/./*` must stay refused;
+# the price is that `/tmp/./handovers` falls through (a prompt, never a wrong approve).
+assert "ctl: HANDOVER_DIR=/./c + drive doc"         PASS "$(qd "HANDOVER_DIR=/./c $QD_S status /./c/x.md")"
+assert "ctl: HANDOVER_DIR=/tmp/./h + contained doc" PASS "$(qd "HANDOVER_DIR=/tmp/./h $QD_S status /tmp/./h/x.md")"
 # `/a` is indistinguishable from the drive root `A:/` (any single letter), so it
 # is refused too (the ticket's own control: `/a` + a foreign doc falls through).
 assert "ctl: HANDOVER_DIR=/a + doc outside it"      PASS  "$(qd "HANDOVER_DIR=/a $QD_S status /tmp/anywhere-else/x.md")"
