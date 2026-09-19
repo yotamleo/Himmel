@@ -45,8 +45,23 @@
 #
 # Exit codes:
 #   0  the requested state was reached (including a no-op — already there)
-#   1  a `claude plugin` call failed, or the live state could not be read
-#   2  usage error (unknown verb/flag, unknown or ambiguous <spec>, refused spec)
+#   1  a `claude plugin` call failed, or the live state could not be read, or a
+#      write exited 0 but the post-write re-read of `claude plugin list` did not
+#      show the requested USER-scope state (or could not be re-read); also the
+#      bulk aggregate — lean/full: any per-plugin write refused (floor) or failed
+#   2  usage error (unknown verb/flag, unknown or ambiguous <spec>), or a
+#      single disable <spec> refused by the floor
+#
+# Bulk vs single: `lean`/`full` attempt every target and report "requested state
+# not fully reached" as 1; a single `disable <spec>` is refused before any attempt
+# and reports 2. Floor protection is identical either way: a floor plugin is never
+# disabled and no write is issued for it.
+#
+# Post-write verification: after each `claude plugin enable|disable` the script
+# re-reads `claude plugin list` and checks the USER-scope stanza only. It never
+# reads project/local state as user state, so "user scope changed" is a verified
+# claim about user scope alone; project/local settings may still override the
+# effective state. --dry-run performs no write and no re-read.
 #
 # Cross-platform: pure bash + jq, bash 3.2-safe (no associative arrays, no
 # mapfile) — Git-Bash on Windows runs it as-is. plugin-profile.ps1 is the
@@ -119,61 +134,68 @@ ONDEMAND_SPECS="$(jq -r '(.onDemandPlugins // {}) | keys[]' "$TEMPLATE" | tr -d 
 # Fail closed: a `plugin list` we could not run has told us NOTHING about the
 # live state, so every read below would be a guess. The pre-flight already
 # proved `claude` is on PATH, so a failure here is a real anomaly.
-if ! LIVE_RAW="$(claude plugin list 2>&1)"; then
-  echo "plugin-profile: 'claude plugin list' failed — cannot read live plugin state:" >&2
-  printf '%s\n' "$LIVE_RAW" | sed 's/^/    /' >&2
-  exit 1
-fi
-# Validate the observed CLI protocol before trusting an empty parse. Exit 0 with
-# garbage, a partial stanza, or an unknown status has proved no live state and
-# must not make lean/full report a false no-op. The supported empty response is
-# the real CLI's exact sentence; non-empty output is the observed header plus
-# complete Version/Scope/Status stanzas. tr removes native-Windows CRLF first.
-LIVE_NORMALIZED="$(printf '%s\n' "$LIVE_RAW" | tr -d '\r')"
-EMPTY_LIST_RESPONSE="No plugins installed. Use \`claude plugin install\` to install a plugin."
-if [ "$LIVE_NORMALIZED" = "$EMPTY_LIST_RESPONSE" ]; then
-  LIVE=""
-elif ! LIVE="$(printf '%s\n' "$LIVE_NORMALIZED" | awk '
-  function invalid() { bad = 1; exit 1 }
-  NR == 1 {
-    if ($0 != "Installed plugins:") invalid()
-    next
-  }
-  /^[[:space:]]*$/ {
-    if (stage != 0) invalid()
-    next
-  }
-  /^[[:space:]]*❯[[:space:]]+/ {
-    if (stage != 0 || $0 !~ /^[[:space:]]*❯[[:space:]]+[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+[[:space:]]*$/) invalid()
-    spec = $2
-    scope = ""
-    stage = 1
-    count++
-    next
-  }
-  /^[[:space:]]*Version:/ {
-    if (stage != 1 || $0 !~ /^[[:space:]]*Version:[[:space:]]+[^[:space:]]+[[:space:]]*$/) invalid()
-    stage = 2
-    next
-  }
-  /^[[:space:]]*Scope:/ {
-    if (stage != 2 || $0 !~ /^[[:space:]]*Scope:[[:space:]]+(user|project|local)[[:space:]]*$/) invalid()
-    scope = $2
-    stage = 3
-    next
-  }
-  /^[[:space:]]*Status:/ {
-    if (stage != 3 || $0 !~ /^[[:space:]]*Status:[[:space:]]+[^[:space:]]+[[:space:]]+(enabled|disabled)[[:space:]]*$/) invalid()
-    if (scope == "user") print spec "\t" $3
-    stage = 0
-    next
-  }
-  { invalid() }
-  END { if (!bad && (stage != 0 || count == 0)) exit 1 }
-' | sort -u)"; then
-  echo "plugin-profile: 'claude plugin list' returned an unrecognized response — cannot read live plugin state" >&2
-  exit 1
-fi
+#
+# load_live is also the post-write READBACK (HIMMEL-2801): apply() re-reads the
+# list after a write, so the same fail-closed parse serves both. It returns 1
+# (never exits) so the caller decides — startup exits, apply() reports unverified.
+load_live() {
+  if ! LIVE_RAW="$(claude plugin list 2>&1)"; then
+    echo "plugin-profile: 'claude plugin list' failed — cannot read live plugin state:" >&2
+    printf '%s\n' "$LIVE_RAW" | sed 's/^/    /' >&2
+    return 1
+  fi
+  # Validate the observed CLI protocol before trusting an empty parse. Exit 0 with
+  # garbage, a partial stanza, or an unknown status has proved no live state and
+  # must not make lean/full report a false no-op. The supported empty response is
+  # the real CLI's exact sentence; non-empty output is the observed header plus
+  # complete Version/Scope/Status stanzas. tr removes native-Windows CRLF first.
+  LIVE_NORMALIZED="$(printf '%s\n' "$LIVE_RAW" | tr -d '\r')"
+  EMPTY_LIST_RESPONSE="No plugins installed. Use \`claude plugin install\` to install a plugin."
+  if [ "$LIVE_NORMALIZED" = "$EMPTY_LIST_RESPONSE" ]; then
+    LIVE=""
+  elif ! LIVE="$(printf '%s\n' "$LIVE_NORMALIZED" | awk '
+    function invalid() { bad = 1; exit 1 }
+    NR == 1 {
+      if ($0 != "Installed plugins:") invalid()
+      next
+    }
+    /^[[:space:]]*$/ {
+      if (stage != 0) invalid()
+      next
+    }
+    /^[[:space:]]*❯[[:space:]]+/ {
+      if (stage != 0 || $0 !~ /^[[:space:]]*❯[[:space:]]+[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+[[:space:]]*$/) invalid()
+      spec = $2
+      scope = ""
+      stage = 1
+      count++
+      next
+    }
+    /^[[:space:]]*Version:/ {
+      if (stage != 1 || $0 !~ /^[[:space:]]*Version:[[:space:]]+[^[:space:]]+[[:space:]]*$/) invalid()
+      stage = 2
+      next
+    }
+    /^[[:space:]]*Scope:/ {
+      if (stage != 2 || $0 !~ /^[[:space:]]*Scope:[[:space:]]+(user|project|local)[[:space:]]*$/) invalid()
+      scope = $2
+      stage = 3
+      next
+    }
+    /^[[:space:]]*Status:/ {
+      if (stage != 3 || $0 !~ /^[[:space:]]*Status:[[:space:]]+[^[:space:]]+[[:space:]]+(enabled|disabled)[[:space:]]*$/) invalid()
+      if (scope == "user") print spec "\t" $3
+      stage = 0
+      next
+    }
+    { invalid() }
+    END { if (!bad && (stage != 0 || count == 0)) exit 1 }
+  ' | sort -u)"; then
+    echo "plugin-profile: 'claude plugin list' returned an unrecognized response — cannot read live plugin state" >&2
+    return 1
+  fi
+}
+load_live || exit 1
 
 live_state() {  # <spec> -> enabled | disabled | absent
   _s="$(printf '%s\n' "$LIVE" | awk -F'\t' -v k="$1" '$1 == k { print $2; exit }')"
@@ -230,7 +252,21 @@ apply() {  # <enable|disable> <spec>
     printf '%s\n' "$_out" | sed 's/^/    /' >&2
     return 1
   fi
-  echo "  user scope changed: $1 $2; project/local settings may override effective state"
+  # The CLI's exit status is not proof the write landed. Re-read the list and
+  # check the USER-scope state the caller asked for (HIMMEL-2801): an exit-0
+  # no-op or a list we cannot re-read is reported, never acknowledged. Only the
+  # user-scope stanza is compared — project/local state is never read as it.
+  _wst="enabled"; [ "$1" = "disable" ] && _wst="disabled"
+  if ! load_live; then
+    echo "plugin-profile: 'claude plugin $1 $2 --scope user' exited 0 but could not verify the change: 'claude plugin list' could not be re-read; user-scope state of $2 is unknown." >&2
+    return 1
+  fi
+  _got="$(live_state "$2")"
+  if [ "$_got" != "$_wst" ]; then
+    echo "plugin-profile: 'claude plugin $1 $2 --scope user' exited 0 but $2 is still $_got at user scope (wanted $_wst)." >&2
+    return 1
+  fi
+  echo "  user scope changed: $1 $2 (re-read: $_got); project/local settings may override effective state"
 }
 
 # ── list ─────────────────────────────────────────────────────────────────────
