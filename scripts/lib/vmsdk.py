@@ -16,7 +16,7 @@ checkout's .env (the gitignored .env is NOT copied into worktrees, so it is
 resolved via the parent of `git rev-parse --git-common-dir`, matching
 scripts/lib/load-dotenv.sh).
 
-CLI: python scripts/lib/vmsdk.py <vm> <up|down|snapshot NAME|restore NAME|
+CLI: python scripts/lib/vmsdk.py <vm> <up|down|snapshot NAME [--no-secret-scan]|restore NAME|
                                       baseline NAME|clone [REF]|provision|e2e|
                                       push FILE [DEST]|
                                       trigger HANDOVER [--at TIME] [--cwd DIR] [--long-gap] [--timeout N]>
@@ -43,6 +43,32 @@ PAT_ENV = "himmel_github_token_vm"
 # bash, whose ssh can't read a Windows key path) and as the guest's git launcher.
 GIT_BASH = r"C:\Program Files\Git\bin\bash.exe"
 _REGISTRY = Path(__file__).resolve().parent / "vms.json"
+
+# HIMMEL-2540: basename globs that must never cross host->guest (the
+# gitignored-but-present secret set). One boundary with two spellings — keep in
+# step with VM_GUEST_SECRET_GLOBS in scripts/lib/vm-guest-excludes.sh (the
+# parity test in test-vmsdk.py pins them together).
+SECRET_EXCLUDES = (".env", ".env.*", "*.local.json")
+_SCAN_PROFILES = {
+    # full: a tree staged from the host — nothing in the set may exist there.
+    "full": SECRET_EXCLUDES,
+    # env: a guest IMAGE — the guest legitimately grows its own *.local.json
+    # (claude writes .claude/settings.local.json), but a .env is the carrier.
+    "env": (".env", ".env.*"),
+}
+
+
+def secret_scan_cmd(root, profile="full"):
+    """The portable guest-side `find` that lists secret-bearing files under root
+    (byte-identical to vm_guest_scan_cmd in vm-guest-excludes.sh)."""
+    if not re.fullmatch(r"[A-Za-z0-9._/~+-]+", str(root)):
+        raise VMError(f"secret scan root {root!r}: guest-path characters only")
+    if profile not in _SCAN_PROFILES:
+        raise VMError(f"unknown secret-scan profile {profile!r} (full|env)")
+    names = " -o ".join(f"-name '{g}'" for g in _SCAN_PROFILES[profile])
+    # ! -type d: a directory named .env is a virtualenv convention, not a secret.
+    return (f"find {root} -xdev \\( {names} \\) "
+            f"! -name '.env.example' ! -type d -print")
 
 
 class VMError(RuntimeError):
@@ -269,8 +295,38 @@ class VM:
         self._require_vm("snapshots")
         return vbox.list_snapshots(self.name)
 
-    def snapshot(self, name):
+    def assert_guest_clean(self, root="~", profile="env"):
+        """Refuse (VMError) if the guest holds a secret-bearing file under
+        `root`, or cannot be scanned — an unverified guest is not a clean one.
+        HIMMEL-2540: a snapshot is durable, so it must never carry a host .env."""
+        rc, out = self.run(secret_scan_cmd(root, profile))
+        if rc != 0:
+            raise VMError(
+                f"REFUSING: could not scan {self.name}:{root} for secrets "
+                f"(find rc {rc}): {out.strip()[-200:]}")
+        hits = [ln for ln in out.splitlines() if ln.strip()]
+        if hits:
+            raise VMError(
+                f"REFUSING: secret-bearing files on {self.name} under {root}: "
+                + ", ".join(hits[:10]) + (" ..." if len(hits) > 10 else ""))
+
+    def snapshot(self, name, skip_secret_scan=False):
+        """Take a named snapshot — after asserting the guest carries no .env.
+
+        A powered-off guest cannot be scanned and is refused; bring it up first.
+        `skip_secret_scan=True` (CLI: --no-secret-scan) is the explicit, loud
+        escape for an image the operator has verified another way."""
         self._require_vm("snapshot")
+        if skip_secret_scan:
+            print(f"WARNING: snapshot {name!r} of {self.name} taken WITHOUT the "
+                  "secret scan (--no-secret-scan)", file=sys.stderr)
+        elif not vbox.is_running(self.name):
+            raise VMError(
+                f"refusing to snapshot {self.name}: it is not running, so it "
+                "cannot be scanned for host secrets (.env). Bring it up first, "
+                "or pass --no-secret-scan if you verified the image another way.")
+        else:
+            self.assert_guest_clean("~", "env")
         vbox.take_snapshot(self.name, name)
 
     def restore(self, name):
@@ -345,8 +401,7 @@ class VM:
             raise VMError(f"provision {self.name} failed (rc {r.returncode})")
 
     def sync_repo(self, local_root, dest="~/github/himmel",
-                  excludes=(".git", "node_modules", ".claude/worktrees",
-                            ".env", ".env.*")):
+                  excludes=(".git", "node_modules", ".claude/worktrees") + SECRET_EXCLUDES):
         """Stage a local checkout onto the guest via a tar-over-ssh pipe.
 
         Uses a KEY-BASED ssh subprocess (not paramiko) so the tar stream
@@ -355,7 +410,9 @@ class VM:
         """
         bash = GIT_BASH if sys.platform == "win32" else "bash"
         local_fwd = str(local_root).replace("\\", "/")
-        exclude_flags = " ".join(f"--exclude={e}" for e in excludes)
+        # shlex.quote: an unquoted --exclude=*.local.json can be glob-expanded by
+        # the pipe's own bash before tar sees it, silently dropping the exclusion.
+        exclude_flags = " ".join(shlex.quote(f"--exclude={e}") for e in excludes)
         if self.kind == "station":
             # Alias-only: hostname/port/identity come from ~/.ssh/config, same
             # as ssh()'s resolution (HIMMEL-870) — no password, no -p/-i. When
@@ -381,6 +438,12 @@ class VM:
             stderr = r.stderr.decode(errors="replace") if isinstance(r.stderr, bytes) else str(r.stderr)
             raise EnvironmentError(
                 f"sync_repo failed (rc {r.returncode}): {stderr.strip()[-200:]}")
+        # Belt and braces (HIMMEL-2540): whatever `excludes` was passed, the
+        # staged tree must hold no secret-bearing file.
+        try:
+            self.assert_guest_clean(dest, "full")
+        except VMError as e:
+            raise EnvironmentError(str(e)) from e
         return dest
 
     def install_plugin(self, marketplace_dir, plugin):
@@ -681,7 +744,7 @@ class VM:
 
 
 _USAGE = ("usage: vmsdk.py <vm> "
-          "<up|down|snapshot NAME|restore NAME|baseline NAME|clone [REF]|provision|e2e|"
+          "<up|down|snapshot NAME [--no-secret-scan]|restore NAME|baseline NAME|clone [REF]|provision|e2e|"
           "push FILE [DEST]|"
           "trigger HANDOVER [--at TIME] [--cwd DIR] [--long-gap] [--timeout N]>")
 
@@ -738,7 +801,7 @@ def main(argv):
         elif cmd == "down":
             vm.down()
         elif cmd == "snapshot" and rest:
-            vm.snapshot(rest[0])
+            vm.snapshot(rest[0], skip_secret_scan="--no-secret-scan" in rest[1:])
         elif cmd == "restore" and rest:
             vm.restore(rest[0])
         elif cmd == "baseline" and rest:

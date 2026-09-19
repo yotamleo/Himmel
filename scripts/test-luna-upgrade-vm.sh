@@ -87,7 +87,28 @@ case "$GUEST_OS" in
 esac
 echo "[detect] guest OS probe='$GUEST_OS' -> GUEST_WIN=$GUEST_WIN"
 
-# 1. stage the real template to $REMOTE_DIR (a Git-Bash path on both OSes).
+# 1. stage the real template to $REMOTE_DIR (a Git-Bash path on both OSes). Every
+#    path applies the shared secret excludes (.env, .env.*, *.local.json) and the
+#    guest is asserted clean afterwards (HIMMEL-2540); the template's public
+#    .env.example (template-owned, overwritten by the engine) is kept explicitly.
+# shellcheck source=lib/vm-guest-excludes.sh
+. "$REPO/scripts/lib/vm-guest-excludes.sh"
+RSYNC_SECRET_EXCL=(); TAR_SECRET_EXCL=()
+while IFS= read -r _x; do RSYNC_SECRET_EXCL+=("$_x"); done < <(vm_guest_rsync_excludes)
+while IFS= read -r _x; do TAR_SECRET_EXCL+=("$_x"); done < <(vm_guest_tar_excludes)
+TMPL_PARENT="$(dirname "$TEMPLATE")"; TMPL_NAME="$(basename "$TEMPLATE")"
+
+# tar-stream stage: no rsync/scp dependency, applies the excludes, then the one
+# literal public template file (tar has no include-exemption).
+stage_tar() { # $1 = ssh runner wrapper taking the remote tar command
+  tar -C "$TMPL_PARENT" --exclude='*/.git' --exclude='*/node_modules' \
+    "${TAR_SECRET_EXCL[@]}" -cf - "$TMPL_NAME" | "$1" "tar -C $REMOTE_DIR -xf -"
+  if [ -f "$TEMPLATE/.env.example" ]; then
+    tar -C "$TMPL_PARENT" -cf - "$TMPL_NAME/.env.example" | "$1" "tar -C $REMOTE_DIR -xf -"
+  fi
+}
+win_bash() { ssh_vm "bash -lc \"$1\""; }
+
 echo "[stage] copying $TEMPLATE to $REMOTE_DIR ..."
 if [ "$GUEST_WIN" -eq 1 ]; then
   # Windows guest: the default ssh shell is cmd.exe, so POSIX rm/mkdir and env-
@@ -95,22 +116,18 @@ if [ "$GUEST_WIN" -eq 1 ]; then
   # bash -lc "..." (cmd keeps the double-quoted arg intact). Stage by streaming a
   # plain tar over ssh stdin (no -z: avoids a gzip dependency; the link is
   # loopback). This dodges both scp Windows-path translation AND cmd quoting.
-  ssh_vm "bash -lc \"rm -rf $REMOTE_DIR && mkdir -p $REMOTE_DIR\""
-  # Exclude .git/node_modules for parity with the Linux rsync/scp branch (keeps
-  # the stream small + deterministic even if the template ever grows them).
-  tar -C "$(dirname "$TEMPLATE")" --exclude='*/.git' --exclude='*/node_modules' \
-    -cf - "$(basename "$TEMPLATE")" \
-    | ssh_vm "bash -lc \"tar -C $REMOTE_DIR -xf -\""
+  win_bash "rm -rf $REMOTE_DIR && mkdir -p $REMOTE_DIR"
+  stage_tar win_bash
+  vm_guest_assert_clean win_bash "$REMOTE_DIR" full || exit 1
 else
   ssh_vm "rm -rf $REMOTE_DIR && mkdir -p $REMOTE_DIR"
   if command -v rsync >/dev/null 2>&1 && ssh_vm 'command -v rsync >/dev/null 2>&1'; then
     rsync -az -e "ssh $SSH_OPTS" --exclude '.git' --exclude 'node_modules' \
-      "$TEMPLATE" "$HOSTSPEC:$REMOTE_DIR/"
+      "${RSYNC_SECRET_EXCL[@]}" "$TEMPLATE" "$HOSTSPEC:$REMOTE_DIR/"
   else
-    # shellcheck disable=SC2086
-    scp -P $PORT -i "$IDENT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -r \
-      "$TEMPLATE" "$HOSTSPEC:$REMOTE_DIR/"
+    stage_tar ssh_vm
   fi
+  vm_guest_assert_clean ssh_vm "$REMOTE_DIR" full || exit 1
 fi
 
 # 2. run the assertions on the VM. The default ssh shell differs by OS (cmd.exe

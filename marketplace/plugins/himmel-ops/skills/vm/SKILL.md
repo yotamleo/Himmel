@@ -181,14 +181,14 @@ python scripts/lib/vmsdk.py <vm> <verb>
 Full usage line from the script:
 
 ```
-usage: vmsdk.py <vm> <up|down|snapshot NAME|restore NAME|baseline NAME|clone [REF]|provision|e2e|push FILE [DEST]|trigger HANDOVER [--at TIME] [--cwd DIR] [--long-gap] [--timeout N]>
+usage: vmsdk.py <vm> <up|down|snapshot NAME [--no-secret-scan]|restore NAME|baseline NAME|clone [REF]|provision|e2e|push FILE [DEST]|trigger HANDOVER [--at TIME] [--cwd DIR] [--long-gap] [--timeout N]>
 ```
 
 | Verb | What it does |
 |---|---|
 | `up` | Power on the VM and wait for SSH |
 | `down` | Graceful power-off (pass `graceful=False` in code for hard power-off) |
-| `snapshot NAME` | Take a named VirtualBox snapshot |
+| `snapshot NAME [--no-secret-scan]` | Take a named VirtualBox snapshot. REFUSES (HIMMEL-2540) if the guest holds a `.env` / `.env.*` (fail-closed: a powered-off or unscannable guest is refused too); `--no-secret-scan` is the explicit, loud override |
 | `restore NAME` | Restore to a named snapshot (powers off + restores) |
 | `baseline NAME` | Restore `NAME` if it exists, else provision from scratch and snapshot it — idempotent clean-state shortcut |
 | `clone [REF]` | Shallow-clone the private himmel repo onto the guest (`REF` defaults to `main`) |
@@ -196,6 +196,15 @@ usage: vmsdk.py <vm> <up|down|snapshot NAME|restore NAME|baseline NAME|clone [RE
 | `e2e` | Run the install/uninstall symmetry e2e against an Ubuntu VM (delegates to `scripts/test-install-symmetry-vm.sh`) |
 | `push FILE [DEST]` | Copy one host file to the guest via SFTP (`DEST` defaults to `~/handover-inbox/<name>`; `.env*` files refused) |
 | `trigger HANDOVER [--at TIME] [--cwd DIR] [--long-gap] [--timeout N]` | Fire a claude session ON the guest from a host handover file (HIMMEL-835): pushes the handover, then either drives an immediate bounded session (default) or, with `--at`, arms the guest's own `arm-resume.sh` (at/atd backend). `--cwd` defaults to the guest's private-checkout path under `~/Documents/github/` (the ubuntu_new layout, verified 2026-07-09). `--long-gap` (HIMMEL-1475) forwards arm-resume's `--long-gap` so a far `--at TIME` (>60 min out) is not refused (rc 9) by the long-gap guard; only valid with `--at`. Single-writer: do not trigger a ticket another writer owns |
+
+**Secret boundary (HIMMEL-2540).** Every host→guest copy excludes `.env`,
+`.env.*` and `*.local.json` (incl. `.claude/settings.local.json`), and the guest
+is scanned before a snapshot — a snapshot is durable, so a leaked `.env` in one
+outlives the VM. The set lives in ONE tracked place, `scripts/lib/vm-guest-excludes.sh`
+(`vmsdk.SECRET_EXCLUDES` mirrors it; a parity test pins them). A base builder that
+rsyncs a checkout itself (the ad-hoc `m2457-rebuild.sh` style) must use it too:
+`bash scripts/lib/vm-guest-excludes.sh excludes rsync|tar` prints the flags and
+`bash scripts/lib/vm-guest-excludes.sh scan <root> [full|env]` exits non-zero on a hit.
 
 **All invocations must be from the primary checkout** (not a worktree) — the
 SDK resolves `.env` via `git rev-parse --git-common-dir`; worktrees lack `.env`.

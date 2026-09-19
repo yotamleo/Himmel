@@ -40,20 +40,31 @@ if ! ssh_vm 'echo connected' >/dev/null 2>&1; then
   exit 3
 fi
 
-# 1. stage the branch (rsync when both sides have it, else scp -r the scripts tree).
+# 1. stage the branch (rsync when both sides have it, else a tar pipe). Both apply
+#    the shared secret excludes (.env, .env.*, *.local.json) -- the host checkout's
+#    gitignored-but-present secrets must never reach the guest (HIMMEL-2540).
+# shellcheck source=lib/vm-guest-excludes.sh
+. "$REPO/scripts/lib/vm-guest-excludes.sh"
+RSYNC_SECRET_EXCL=(); TAR_SECRET_EXCL=()
+while IFS= read -r _x; do RSYNC_SECRET_EXCL+=("$_x"); done < <(vm_guest_rsync_excludes)
+while IFS= read -r _x; do TAR_SECRET_EXCL+=("$_x"); done < <(vm_guest_tar_excludes)
+
 echo "[stage] copying worktree to $REMOTE_DIR ..."
 ssh_vm "rm -rf $REMOTE_DIR && mkdir -p $REMOTE_DIR"
 if command -v rsync >/dev/null 2>&1 && ssh_vm 'command -v rsync >/dev/null 2>&1'; then
   rsync -az -e "ssh $SSH_OPTS" --exclude '.git' --exclude 'node_modules' --exclude 'dist' \
-    "$REPO/scripts" "$REPO/.env.example" "$HOSTSPEC:$REMOTE_DIR/"
+    "${RSYNC_SECRET_EXCL[@]}" "$REPO/scripts" "$REPO/.env.example" "$HOSTSPEC:$REMOTE_DIR/"
 else
-  # shellcheck disable=SC2086
-  scp -P $PORT -i "$IDENT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -r \
-    "$REPO/scripts" "$HOSTSPEC:$REMOTE_DIR/"
+  tar -C "$REPO" --exclude=.git --exclude=node_modules --exclude=dist \
+    "${TAR_SECRET_EXCL[@]}" -cf - scripts | ssh_vm "tar -C $REMOTE_DIR -xf -"
+  # .env.example is the public placeholder template (a literal file, not the tree).
   # shellcheck disable=SC2086
   scp -P $PORT -i "$IDENT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
     "$REPO/.env.example" "$HOSTSPEC:$REMOTE_DIR/" 2>/dev/null || true
 fi
+# Assert the guest is clean before anything runs there; a secret on the guest is
+# a hard stop, not a warning (HIMMEL-2540).
+vm_guest_assert_clean ssh_vm "$REMOTE_DIR" full || exit 1
 
 # 2. run the assertions on the VM. The remote body is self-contained: it runs the
 #    hermetic suites that map to each SC, the real out-of-repo auto-approve (SC2),
