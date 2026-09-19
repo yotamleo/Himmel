@@ -24,9 +24,12 @@
 #                        checked here, so it fails closed.
 #   deny / anything else / evaluator unreachable / unknown provider -> refused
 #
-# A permitted dispatch of a gated corpus appends one line to the ledger
-# (HIMMEL_HERMES_EGRESS_LEDGER, default ~/.himmel/hermes-egress.jsonl); a
-# ledger that cannot be written refuses the dispatch (allow+log obligation).
+# The gate admits exactly ONE regular file per dispatch (a directory or other
+# non-regular path is refused, as is a path under the handover root that
+# resolves outside it). A permitted dispatch of a gated corpus appends one line
+# to the ledger (HIMMEL_HERMES_EGRESS_LEDGER, default
+# ~/.himmel/hermes-egress.jsonl) carrying the resolved path and its byte size;
+# a ledger that cannot be written refuses the dispatch (allow+log obligation).
 #
 # A prompt file outside every gated corpus is NOT gated: public code
 # (himmel-code) is allowed on every lane by the matrix's own wildcard row, so
@@ -134,6 +137,19 @@ if [ -n "$handover_root" ]; then
     handover_root="$(_canon "$hr_raw")" || refuse "cannot resolve the handover root '$hr_raw' — refusing rather than classifying blind"
 fi
 
+# Brief-scoped means ONE regular file per dispatch (matrix handover-state x
+# openai-codex: "never bulk corpus runs"). A directory / device / FIFO / missing
+# path is not a brief, and a path that LOOKS handover-rooted but resolves outside
+# the root is not a handover brief either — refuse both so the ledger line
+# (resolved path + byte size) is an honest record of what left the machine.
+[ -f "$pf" ] || refuse "'$prompt_file' (resolves to '$pf') is not a regular file — the gate admits exactly ONE regular file per dispatch (a directory, device or missing path is refused)"
+case "$prompt_file" in /*|[A-Za-z]:*) lex="$prompt_file" ;; *) lex="$PWD/$prompt_file" ;; esac
+if [ -n "$handover_root" ] && _under "$lex" "$hr_raw" && ! _under "$pf" "$handover_root"; then
+    refuse "'$prompt_file' sits under the handover root but resolves to '$pf', outside the handover root — refusing a symlink/'..' escape rather than classifying it as un-gated"
+fi
+size="$(wc -c < "$pf" 2>/dev/null | tr -d ' ')"
+case "$size" in ''|*[!0-9]*) refuse "cannot read the size of '$pf' — a permitted gated dispatch must record its byte size" ;; esac
+
 corpus=""
 d="$(dirname "$pf")"
 while :; do   # .salus marker walk (PHI tree)
@@ -188,7 +204,7 @@ esac
 mkdir -p "$(dirname "$LEDGER")" 2>/dev/null || refuse "cannot create the egress ledger directory for '$LEDGER' — a permitted gated dispatch must leave an audit line"
 # JSON.stringify (node is already required above) so a path with control
 # characters, quotes or backslashes still yields one valid JSONL line.
-node -e 'process.stdout.write(JSON.stringify({ts:process.argv[1],corpus:process.argv[2],provider:process.argv[3],purpose:process.argv[4],verdict:process.argv[5],prompt:process.argv[6]})+"\n")' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$corpus" "$mprov" "$PURPOSE" "$verdict" "$pf" \
+node -e 'process.stdout.write(JSON.stringify({ts:process.argv[1],corpus:process.argv[2],provider:process.argv[3],purpose:process.argv[4],verdict:process.argv[5],prompt:process.argv[6],bytes:Number(process.argv[7])})+"\n")' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$corpus" "$mprov" "$PURPOSE" "$verdict" "$pf" "$size" \
     >> "$LEDGER" 2>/dev/null || refuse "cannot append to the egress ledger '$LEDGER' — a permitted gated dispatch must leave an audit line"
 exit 0

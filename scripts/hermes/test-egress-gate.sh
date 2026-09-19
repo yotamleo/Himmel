@@ -139,6 +139,24 @@ gate "$TABF" anthropic
 check "control-char path x anthropic allowed" 0 "$rc"
 check "control-char path yields a parseable ledger line" ok "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n");JSON.parse(l[l.length-1]);process.stdout.write("ok")' "$HIMMEL_HERMES_EGRESS_LEDGER" 2>/dev/null || echo bad)"
 
+# ── brief-scoped: exactly ONE regular file per dispatch, visible in the audit ──
+# (matrix handover-state x openai-codex is "brief-scoped ... never bulk corpus
+# runs"; the chokepoint audit is the ledger — HIMMEL-1259 round-2 ruling)
+gate "$HO/u/himmel" openai-codex
+check "a directory as the prompt refused (one regular file only)" 4 "$rc"
+check_contains "directory refusal names the regular-file rule" "regular file" "$err"
+gate "$HO/u/himmel/no-such-brief.md" openai-codex
+check "a nonexistent prompt refused (not a regular file)" 4 "$rc"
+ln -s "$TMP/code/diff.txt" "$HO/u/himmel/escape.md" 2>/dev/null
+gate "$HO/u/himmel/escape.md" anthropic
+check "symlink under the handover root resolving OUTSIDE it refused" 4 "$rc"
+check_contains "escape refusal says it resolves outside the handover root" "outside the handover root" "$err"
+ln -s "$HO/u/himmel/brief.md" "$HO/u/himmel/alias.md" 2>/dev/null
+: > "$HIMMEL_HERMES_EGRESS_LEDGER"
+gate "$HO/u/himmel/alias.md" anthropic
+check "symlink under the handover root resolving INSIDE it allowed" 0 "$rc"
+check "ledger line carries the RESOLVED path and the byte size" "$HO/u/himmel/brief.md 6" "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n");const r=JSON.parse(l[l.length-1]);process.stdout.write(r.prompt+" "+r.bytes)' "$HIMMEL_HERMES_EGRESS_LEDGER" 2>/dev/null || echo bad)"
+
 # ── unwritable ledger on a permitted gated dispatch refuses ─────────────────
 err="$(HIMMEL_HERMES_EGRESS_LEDGER="$BRIEF/x/l.jsonl" bash "$GATE" --prompt-file "$BRIEF" --provider anthropic 2>&1)"; rc=$?
 check "unwritable ledger on a permitted gated dispatch refuses" 4 "$rc"
