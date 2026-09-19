@@ -94,6 +94,7 @@ fixture() {
     printf '%s\n' "$SETTINGS_JSON" > "$FX_HOME/.claude/settings.json"
     printf '%s\n' "$SETTINGS_JSON" > "$FX_PROJ/.claude/settings.json"
     git -C "$FX_PROJ" init -q 2>/dev/null
+    mkdir -p "$FX_PROJ/.git/hooks"   # a git with no template dir (CI) creates none
     printf '#!/usr/bin/env bash\n# HIMMEL-2771: native invariant gate; lint hooks require pre-commit.\nexit 0\n' \
         > "$FX_PROJ/.git/hooks/pre-commit"
     chmod 755 "$FX_PROJ/.git/hooks/pre-commit"
