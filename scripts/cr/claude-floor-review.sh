@@ -7,7 +7,7 @@
 # about its own work. It runs the review plugin's reviewer
 # (pr-review-toolkit-himmel:code-reviewer, its agent body read from the plugin
 # at runtime, never a paraphrase) in a FRESH headless claude session whose only
-# inputs are the diff and a `git archive` snapshot of the head:
+# inputs are the diff and a snapshot of every tracked file at the head:
 #   - cwd = the snapshot (no .git, so no history, no ledger, no handovers);
 #   - --isolated = --safe-mode --strict-mcp-config --no-session-persistence
 #     (no CLAUDE.md, auto-memory, skills, plugins, hooks or MCP servers);
@@ -64,6 +64,14 @@ done
 head=$(git rev-parse --verify "${head:-HEAD}^{commit}" 2>/dev/null) || die "cannot resolve --head"
 base=$(git rev-parse --verify "$base^{commit}" 2>/dev/null) || die "cannot resolve --base"
 [ "$base" != "$head" ] || die "--base equals --head: there is no diff to review"
+# Twin of clear-cr-marker.sh floor_provenance_ok: the gate refuses an artifact
+# whose base is off the default branch (a partial range), so never spend one.
+on_default=0
+for ref in refs/remotes/origin/HEAD refs/remotes/origin/main refs/remotes/origin/master refs/heads/main refs/heads/master; do
+    git rev-parse --verify -q "$ref" >/dev/null 2>&1 || continue
+    if git merge-base --is-ancestor "$base" "$ref" 2>/dev/null; then on_default=1; break; fi
+done
+[ "$on_default" = 1 ] || die "not eligible: --base ${base:0:8} is not on the default branch, so the review would cover only part of the branch. Nothing spent." 3
 [ -r "$AGENT_MD" ] || die "reviewer agent definition not readable: $AGENT_MD"
 git_dir=$(git rev-parse --git-common-dir 2>/dev/null) || die "not in a git repository"
 ledger="${CR_LEDGER:-$git_dir/cr-critic-scores.jsonl}"
@@ -125,7 +133,10 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/cr-floor.XXXXXX") || die "mktemp failed" 1
 trap 'rm -rf "$work"' EXIT
 snap="$work/snap"
 mkdir -p "$snap" || die "mkdir failed" 1
-git archive --format=tar "$head" | tar -x -C "$snap" || die "git archive of ${head:0:8} failed" 1
+# Every tracked file at the head, via a throwaway index: `git archive` would
+# honour export-ignore and hide files the reviewer needs.
+GIT_INDEX_FILE="$work/index" git read-tree "$head" || die "reading the tree of ${head:0:8} failed" 1
+GIT_INDEX_FILE="$work/index" git --work-tree="$snap" checkout-index -a -f || die "snapshot of ${head:0:8} failed" 1
 git diff --no-color --no-ext-diff "$base...$head" > "$work/diff.patch" || die "git diff failed" 1
 [ -s "$work/diff.patch" ] || die "the diff $base...${head:0:8} is empty — nothing to review" 3
 diff_hash=$(git hash-object --stdin < "$work/diff.patch") || die "hashing the diff failed" 1
@@ -204,17 +215,9 @@ findings=$(OUT="$out_json" node -e '
       console.log(JSON.stringify(f));
   } catch (_) { process.exit(1); }' 2>/dev/null) || record_failure "malformed-output" "the reviewer did not write a valid .cr-floor-review.json"
 
-# --- 5. provenance stamp (what the gate checks) + ledger rows -----------------
-mkdir -p "$git_dir/cr-floor" || die "cannot create $git_dir/cr-floor" 1
-if ! jq -n --arg head "$head" --arg base "$base" --arg diff_hash "$diff_hash" --arg session_id "$session_id" \
-    --arg dispatch_id "$dispatch_id" --arg unlocked "$unlocked" --argjson findings "$findings" \
-    '{schema:1, head:$head, base:$base, diff_hash:$diff_hash, session_id:$session_id, dispatch_id:$dispatch_id,
-      model:"claude-floor", reviewer:"pr-review-toolkit-himmel:code-reviewer", same_model:true, context_free:true,
-      unlocked_by:($unlocked | split(" ")), findings:$findings}' > "$git_dir/cr-floor/$head.json.tmp" \
-    || ! mv "$git_dir/cr-floor/$head.json.tmp" "$git_dir/cr-floor/$head.json"; then
-    die "cannot write the floor artifact" 1
-fi
-
+# --- 5. ledger rows, then the provenance stamp (what the gate checks) ---------
+# The artifact is published LAST: if recording a repeat review fails, the
+# previous artifact stays paired with the findings the ledger actually holds.
 n=$(printf '%s' "$findings" | jq 'length')
 if [ "$n" -gt 0 ]; then
     printf '%s' "$findings" | jq -c --arg b "$branch" --arg h "$head" \
@@ -227,6 +230,16 @@ fi
 bash "$SCRIPT_DIR/ledger-append.sh" avail --branch "$branch" --head "$head" --model claude-floor --status ok \
     --detail "same-model context-free session=$session_id unlocked_by=$unlocked" >/dev/null \
     || die "recording the floor avail row failed" 1
+
+mkdir -p "$git_dir/cr-floor" || die "cannot create $git_dir/cr-floor" 1
+if ! jq -n --arg head "$head" --arg base "$base" --arg diff_hash "$diff_hash" --arg session_id "$session_id" \
+    --arg dispatch_id "$dispatch_id" --arg unlocked "$unlocked" --argjson findings "$findings" \
+    '{schema:1, head:$head, base:$base, diff_hash:$diff_hash, session_id:$session_id, dispatch_id:$dispatch_id,
+      model:"claude-floor", reviewer:"pr-review-toolkit-himmel:code-reviewer", same_model:true, context_free:true,
+      unlocked_by:($unlocked | split(" ")), findings:$findings}' > "$git_dir/cr-floor/$head.json.tmp" \
+    || ! mv "$git_dir/cr-floor/$head.json.tmp" "$git_dir/cr-floor/$head.json"; then
+    die "cannot write the floor artifact" 1
+fi
 
 echo "claude-floor-review: reviewed ${head:0:8} ($n finding(s), session $session_id). Unlocked by: $unlocked."
 echo "  COVERED: pr-review-toolkit-himmel:code-reviewer in a fresh headless claude session over the diff + a snapshot of this head only (no session context)."

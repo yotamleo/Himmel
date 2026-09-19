@@ -32,6 +32,7 @@ printf '%s\n' "$@" > "$REC/argv"
 pwd > "$REC/cwd"
 cat > "$REC/stdin"
 [ -e .git ] && echo yes > "$REC/has-git" || echo no > "$REC/has-git"
+ls -A > "$REC/ls"
 prev=""; for a in "$@"; do [ "$prev" = "--system-prompt-file" ] && cp "$a" "$REC/system.md"; prev="$a"; done
 [ -z "${FAKE_OUT:-}" ] || printf '%s' "$FAKE_OUT" > .cr-floor-review.json
 # Default in a variable: inside ${FAKE_ENV:-...} the JSON's first } would close
@@ -160,6 +161,35 @@ FAKE_ENV='{"is_error":false,"session_id":"","permission_denials":[],"num_turns":
 check "10 empty session id -> exit 1" 1 "$RC"
 check "10 reason malformed-output" malformed-output "$(jq -r 'select(.model=="claude-floor") | .reason' "$CR_LEDGER")"
 check "10 no provenance artifact" no "$([ -e "$R/.git/cr-floor/$HEAD_SHA.json" ] && echo yes || echo no)"
+
+# 11. export-ignore never hides a tracked file from the reviewer's snapshot.
+mk_repo 11
+( cd "$R" && printf 'f.txt export-ignore\n' > .gitattributes && git add .gitattributes && git commit -qm attrs ) >/dev/null 2>&1
+HEAD_SHA=$(git -C "$R" rev-parse HEAD); row codex unavailable quota
+run_sut
+check "11 export-ignore repo -> exit 0" 0 "$RC"
+check "11 snapshot still holds the export-ignored f.txt" yes "$(grep -qx f.txt "$REC/ls" 2>/dev/null && echo yes || echo no)"
+
+# 12. A base that is not on the default branch reviews a partial range the gate
+# refuses — so nothing is spent.
+mk_repo 12
+( cd "$R" && echo tip >> f.txt && git commit -qam tip ) >/dev/null 2>&1
+HEAD_SHA=$(git -C "$R" rev-parse HEAD); row codex unavailable quota
+RC=0; ( cd "$R" && bash "$SUT" --branch feat/himmel-9-x --base HEAD~1 ) > "$W/out" 2>&1 || RC=$?
+check "12 mid-branch base -> exit 3" 3 "$RC"
+check "12 claude never invoked" no "$([ -e "$REC/argv" ] && echo yes || echo no)"
+
+# 13. The artifact is published LAST: when recording a repeat review's findings
+# fails, the previous artifact stays, so the prior ok row never pairs with
+# findings the ledger does not hold.
+mk_repo 13; row codex unavailable quota
+FAKE_OUT='{"findings":[]}' run_sut
+check "13 first (clean) review -> exit 0" 0 "$RC"
+chmod a-w "$CR_LEDGER"
+run_sut
+chmod u+w "$CR_LEDGER"
+check "13 repeat review whose ledger write fails -> exit 1" 1 "$RC"
+check "13 artifact still carries the first review's findings" 0 "$(jq '.findings | length' "$R/.git/cr-floor/$HEAD_SHA.json" 2>/dev/null)"
 
 echo "claude-floor-review: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
