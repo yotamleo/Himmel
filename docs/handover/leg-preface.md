@@ -147,6 +147,14 @@ closable-window banner, and **exit**. A leg never idles: if you are gated on
 something outside your control, WRAP with a successor resume brief instead of
 waiting.
 
+**HALT / WRAP: TaskStop EVERY background task and every agent you spawned,
+then prove the process subtree is clean** (HIMMEL-2761 — TaskStop on an agent
+does not reap the background shell it started, and the console cannot kill it
+for you). The closable-window banner is the output of
+`bash scripts/handover/wrap-subtree-check.sh`: paste its `CLOSABLE:` line.
+`WITHHELD:` lists the pids still alive — TaskStop them and re-run; never type
+the banner by hand, and never send `WRAPPED` on a `WITHHELD:` result.
+
 **Context ≥ 60 %:** write `…legN<n>b-…-RESUME.md`, message the console, stop.
 Run the context-fill probe after **every** completed step, not only when you
 notice growth (ruling A1) — that is what catches the ≥60 % threshold in time.

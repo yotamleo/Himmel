@@ -110,6 +110,12 @@ your own `GO` even if you try. A judge never idles: if you are gated on
 something outside your control before your verdict is ready, WRAP with a
 successor resume brief instead of waiting.
 
+**HALT / WRAP: TaskStop EVERY background task and every agent you spawned,
+then prove the process subtree is clean** (HIMMEL-2761). The closable-window
+banner is the output of `bash scripts/handover/wrap-subtree-check.sh`: paste
+its `CLOSABLE:` line. `WITHHELD:` lists the pids still alive — TaskStop them
+and re-run; never type the banner by hand.
+
 **Context ≥ 60 %:** write `…judgeN<n>b-…-RESUME.md`, message the console, stop.
 Run the context-fill probe after **every** completed step, not only when you
 notice growth — that is what catches the ≥60 % threshold in time.
