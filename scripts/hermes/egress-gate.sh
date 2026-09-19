@@ -158,11 +158,12 @@ while :; do   # .salus marker walk (PHI tree)
     d="$(dirname "$d")"
 done
 if [ -z "$corpus" ] && [ -n "$handover_root" ] && _under "$pf" "$handover_root" \
-   && { [ -z "$luna_root" ] || ! _under "$luna_root" "$handover_root"; }; then
+   && ! { [ -n "$luna_root" ] && _under "$luna_root" "$handover_root" && _under "$pf" "$luna_root"; }; then
     # Handover state NESTED in the vault (luna/handovers) is handover-state, not
     # luna-personal: the matrix carries a brief-scoped cell for exactly worker
-    # briefs. The exception is a handover root that IS (or contains) the vault
-    # root — the vault's stricter corpus must win there.
+    # briefs. The exception is a prompt INSIDE the vault when the handover root
+    # IS (or contains) the vault root — the vault's stricter corpus must win for
+    # those files only; a handover file outside the vault stays handover-state.
     corpus="handover-state"
 fi
 if [ -z "$corpus" ] && [ -n "$luna_root" ] && _under "$pf" "$luna_root"; then

@@ -111,6 +111,18 @@ check "non-vault prompt file with no --provider passes" 0 "$rc"
 err="$(HANDOVER_DIR="$TMP/luna" bash "$GATE" --prompt-file "$TMP/luna/journal/n.md" --provider openai-codex 2>&1)"; rc=$?
 check "handover root == vault root keeps luna-personal (codex refused)" 4 "$rc"
 
+# handover root CONTAINS the vault: a handover file OUTSIDE the vault is still
+# handover-state (round 3) — only files inside the vault keep the stricter corpus
+mkdir -p "$TMP/hp/luna/journal" "$TMP/hp/other"
+printf 'n\n' > "$TMP/hp/luna/journal/n.md"
+printf 'b\n' > "$TMP/hp/other/b.md"
+err="$(HANDOVER_DIR="$TMP/hp" LUNA_VAULT_PATH="$TMP/hp/luna" bash "$GATE" --prompt-file "$TMP/hp/other/b.md" --provider deepseek 2>&1)"; rc=$?
+check "handover root containing the vault: handover file OUTSIDE the vault x deepseek refused" 4 "$rc"
+check_contains "…and classified handover-state, not un-gated" "handover-state" "$err"
+err="$(HANDOVER_DIR="$TMP/hp" LUNA_VAULT_PATH="$TMP/hp/luna" bash "$GATE" --prompt-file "$TMP/hp/luna/journal/n.md" --provider openai-codex 2>&1)"; rc=$?
+check "handover root containing the vault: file INSIDE the vault keeps luna-personal (codex refused)" 4 "$rc"
+check_contains "…and is classified luna-personal" "luna-personal" "$err"
+
 # ── fail closed when the evaluator cannot be reached ────────────────────────
 BROKEN="$TMP/broken/scripts/hermes"
 mkdir -p "$BROKEN"
