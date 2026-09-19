@@ -363,6 +363,10 @@ else
     #     (a message such as "the qmd daemon is wedged"); a single-token string
     #     ("--daemon", "ensure-qmd-daemon.sh") is an argv element or a path
     #     and still counts, as does `daemon=True` and an unquoted `--daemon`.
+    #     A string that RUNS is never a message: a backtick string, a
+    #     double-quoted string carrying `$(`, and every string on a line that
+    #     hands one to a shell or exec call (`sh -c`, eval, exec, system,
+    #     popen, spawn, subprocess., shell=True) all count.
     # ponytail: the quote scanner is language-agnostic -- a heredoc body or a
     # multi-line string reads as unquoted code (strict: can only over-count),
     # and a C-preprocessor `#define` line reads as a comment (himmel ships no C).
@@ -383,7 +387,10 @@ else
                         if (c == q) break
                         s = s c; i++
                     }
-                    out = out q ((s ~ /[ \t]/) ? "" : s) q
+                    # A backtick string, or a double-quoted one carrying a
+                    # command substitution, runs code: never prose.
+                    if (q == "`" || (q == "\"" && s ~ /\$\(|`/)) out = out q s q
+                    else out = out q ((s ~ /[ \t]/) ? "" : s) q
                     i++
                     continue
                 }
@@ -403,6 +410,11 @@ else
             if (!hit && kind == "code" && lt !~ /^(#|\/\/|\/\*|\*([ \t]|$)|<!--)/) {
                 if (lt ~ /(^|[^a-z0-9_-])nohup[ \t].*(^|[^&<>])&([ \t]*($|[);"\047])|[ \t]+[^&> \t])|systemctl[^|;&]*[ \t]enable([ \t]|$)|launchctl[ \t]+(load|bootstrap)([ \t]|$)/)
                     hit = 1
+                # A line that hands a string to a shell or exec call runs it:
+                # no string on that line is prose.
+                else if (lt ~ /(^|[^a-z0-9_.-])(ba|z|da|k)?sh[ \t]+-[a-z]*c[ \t]|(^|[^a-z0-9_])(eval|exec|execsync|execfilesync|system|popen|spawn|spawnsync|check_output|check_call)([ \t]*\(|[ \t])|subprocess\.|shell[ \t]*=[ \t]*true/) {
+                    if (lt ~ /daemon/) hit = 1
+                }
                 else if (tolower(drop_prose(t)) ~ /daemon/)
                     hit = 1
             }

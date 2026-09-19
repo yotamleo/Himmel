@@ -10,7 +10,9 @@
 #   - in any other file, full-line comments are skipped, the word `daemon`
 #     counts outside prose strings (a quoted string holding whitespace is a
 #     message; a single-token string such as "--daemon" is an argv element
-#     and still counts), and service-creation shapes (backgrounded
+#     and still counts; a string that RUNS -- backticks, "$(...)", or any
+#     string on a `sh -c` / eval / exec / system / subprocess line -- is
+#     never prose), and service-creation shapes (backgrounded
 #     `nohup ... &`, systemctl ... enable, launchctl load|bootstrap) count
 #     anywhere on the line, quoted or not. Bare nohup/setsid/disown do not
 #     (hook case lists and bounded detach helpers use them routinely).
@@ -101,6 +103,16 @@ run_case py-argv-daemon FAIL src/start.py \
     'subprocess.Popen(["qmd", "mcp", "--daemon"])'
 run_case py-thread-daemon FAIL src/start.py \
     'threading.Thread(target=poll, daemon=True).start()'
+run_case sh-bash-c-daemon FAIL scripts/start.sh \
+    'bash -c "qmd mcp --http --daemon"'
+# shellcheck disable=SC2016  # the backticks are fixture text, not expansion
+run_case sh-backtick-daemon FAIL scripts/start.sh \
+    'out=`qmd mcp --http --daemon`'
+# shellcheck disable=SC2016  # "$(...)" is fixture text, not expansion
+run_case sh-cmdsubst-in-string FAIL scripts/start.sh \
+    'echo "started: $(qmd mcp --http --daemon)"'
+run_case py-os-system-daemon FAIL src/start.py \
+    'os.system("qmd mcp --http --daemon")'
 run_case sh-systemctl-enable FAIL scripts/start.sh \
     'systemctl --user enable --now qmd.service'
 run_case sh-launchctl FAIL scripts/start.sh \
