@@ -312,7 +312,7 @@ slots_i="$W/slots-i"; mkdir -p "$slots_i/.admit.reclaim" "$slots_i/.admit.stale.
 printf '%s\n' "$NOW" > "$slots_i/.admit.reclaim/acquired"
 mkdir -p "$W/ps/proc"; printf '%s\n' '#!/usr/bin/env bash' 'true' > "$W/ps/ps"; chmod +x "$W/ps/ps"
 printf '{"five_hour":{"utilization":10},"seven_day":{"utilization":20},"primaries_refreshed_at":%s}' "$NOW" > "$W/c.json"
-env -u FLEET_ADMIT_TEST_HOOK FLEET_CAP_OK= CADENCE_BANK_LAUNCH= HIMMEL_FLEET_SLOTS="$slots_i" FLEET_PS_CMD="$W/ps/ps" FLEET_PROC="$W/ps/proc" \
+env -u FLEET_ADMIT_TEST_HOOK FLEET_ADMIT_GATE_STALE_SECS=0 FLEET_CAP_OK= CADENCE_BANK_LAUNCH= HIMMEL_FLEET_SLOTS="$slots_i" FLEET_PS_CMD="$W/ps/ps" FLEET_PROC="$W/ps/proc" \
   CADENCE_BANK_CACHE="$W/c.json" CADENCE_BANK_SKIP_REFRESH=1 CADENCE_BANK_LEDGER="$W/ledger.jsonl" HIMMEL_FLEET_CAP=4 \
   bash "$SUT" </dev/null >"$W/i.out" 2>"$W/i.err"
 if grep -q 'reserved=0 total=0/4' "$W/i.err"; then PASS=$((PASS+1)); echo "ok - (i) dot-prefixed gate/victim dirs are not counted as reservations"
@@ -327,6 +327,44 @@ printf '%s\n' '#!/usr/bin/env bash' 'echo "bank-preflight: FLEET reserved=0 tota
 bash "$W/dies.sh" </dev/null >"$W/dies.out" 2>"$W/dies.err"
 check "(i) control: census-line-then-die passes the census grep" 1 "$(grep -c 'reserved=0 total=0/4' "$W/dies.err")"
 check "(i) control: census-line-then-die yields no PROCEED verdict" "" "$(cat "$W/dies.out")"
+# CodeRabbit (PR 909): with the gate younger than the gate-stale age the child's
+# final release would retry, log the age-out message and still print PROCEED —
+# a green run hiding a failed release. The run must be free of that message.
+check "(i) the run logs no admit-lock age-out (its release took the gate)" 0 "$(grep -c 'could not take the admit-lock gate' "$W/i.err")"
+
+# --- (j) the release retry window outlasts the gate-stale age -----------------
+# CodeRabbit (PR 909): a release that meets an orphaned gate younger than
+# FLEET_ADMIT_GATE_STALE_SECS must keep retrying until the gate is breakable, or
+# it gives up and leaves `.admit` refused for the 60s admit-stale window.
+# Asserted as a RELATION over the script's own defaults (not a literal), so a
+# later change to either knob trips it.
+_dflt() { sed -n "s/.*$1:-\\([0-9][0-9.]*\\)}.*/\\1/p" "$SUT" | sort -u; }
+_j_iters="$(_dflt FLEET_ADMIT_RELEASE_ITERS)"; _j_sleep="$(_dflt FLEET_ADMIT_RETRY_SLEEP)"; _j_gate="$(_dflt FLEET_ADMIT_GATE_STALE_SECS)"
+check "(j) each knob has exactly one default in the script" "1 1 1" "$(printf '%s\n' "$_j_iters" | wc -l | tr -d ' ') $(printf '%s\n' "$_j_sleep" | wc -l | tr -d ' ') $(printf '%s\n' "$_j_gate" | wc -l | tr -d ' ')"
+check "(j) default ITERS x SLEEP exceeds the default gate-stale age" exceeds "$(awk -v i="$_j_iters" -v s="$_j_sleep" -v g="$_j_gate" 'BEGIN{print (i*s > g) ? "exceeds" : "short"}')"
+
+# --- (k) a failed release leaves the flag set, so the final cleanup retries ---
+# CodeRabbit (PR 909): the in-lock-census-failure branch used to clear
+# `_fleet_admitted` unconditionally after `_fleet_release_admit`, on the premise
+# that the lock was gone. The gated release can now FAIL (gate busy), so the flag
+# is cleared only on success; otherwise the final cleanup retries the (pid-
+# verified, therefore safe) release. End to end: the pre-lock census passes, the
+# in-lock one fails, the first release meets a busy gate and gives up
+# (ITERS=2), and the hook frees the gate during the SECOND release's retry.
+slots_k="$W/slots-k"; mkdir -p "$slots_k/.admit.reclaim" "$W/k"
+printf '%s\n' "$NOW" > "$slots_k/.admit.reclaim/acquired"
+# shellcheck disable=SC2016 # the stub bodies are literal scripts, expanded when THEY run
+printf '%s\n' '#!/usr/bin/env bash' 'c="$(cat "$0.n" 2>/dev/null || echo 0)"; echo $((c+1)) > "$0.n"' \
+  '[ "$1" = release-retry ] && [ "$c" -ge 1 ] && rm -rf "$2"' 'exit 0' > "$W/k/hook.sh"
+# shellcheck disable=SC2016
+printf '%s\n' '#!/usr/bin/env bash' 'c="$(cat "$0.n" 2>/dev/null || echo 0)"; echo $((c+1)) > "$0.n"' '[ "$c" -eq 0 ]' > "$W/k/ps.sh"
+chmod +x "$W/k/hook.sh" "$W/k/ps.sh"
+env FLEET_ADMIT_TEST_HOOK="$W/k/hook.sh" FLEET_ADMIT_RELEASE_ITERS=2 FLEET_ADMIT_RETRY_SLEEP=0.01 FLEET_CAP_OK= CADENCE_BANK_LAUNCH= \
+  HIMMEL_FLEET_SLOTS="$slots_k" FLEET_PS_CMD="$W/k/ps.sh" FLEET_PROC="$W/ps/proc" CADENCE_BANK_CACHE="$W/c.json" CADENCE_BANK_SKIP_REFRESH=1 \
+  CADENCE_BANK_LEDGER="$W/ledger.jsonl" HIMMEL_FLEET_CAP=4 bash "$SUT" </dev/null >"$W/k.out" 2>"$W/k.err"
+check "(k) the in-lock census failed (precondition)" 1 "$(grep -c 'in-lock fleet census failed' "$W/k.err")"
+check "(k) the first release met the busy gate and gave up (precondition)" 1 "$(grep -c 'could not take the admit-lock gate' "$W/k.err")"
+check "(k) the final cleanup retried and released the lock" absent "$([ -e "$slots_k/.admit" ] && echo present || echo absent)"
 
 echo "--- $PASS passed, $FAIL failed ---"
 [ "$FAIL" -eq 0 ]

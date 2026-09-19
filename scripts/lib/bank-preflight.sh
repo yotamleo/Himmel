@@ -264,7 +264,12 @@ _fleet_release_admit() {
   local admit="$1" gate="$1.reclaim" iters=0
   while ! _fleet_gate_take "$gate"; do
     iters=$((iters + 1))
-    if [ "$iters" -ge "${FLEET_ADMIT_RELEASE_ITERS:-40}" ]; then
+    # The retry window (ITERS x RETRY_SLEEP = 160 x 0.05 = 8s) must exceed
+    # FLEET_ADMIT_GATE_STALE_SECS (5s): an orphaned gate younger than that is
+    # only breakable once it ages, so a shorter window gives up on a gate that
+    # would have become breakable. test-bank-preflight-admit-gate.sh (j) asserts
+    # the relation over these defaults.
+    if [ "$iters" -ge "${FLEET_ADMIT_RELEASE_ITERS:-160}" ]; then
       echo "bank-preflight: could not take the admit-lock gate ($gate) to release $admit after $iters tries — leaving it to age out (launches are refused for up to ${FLEET_ADMIT_STALE_SECS:-60}s)" >&2
       return 1
     fi
@@ -539,15 +544,18 @@ if [ "$_fleet_admitted" -eq 1 ]; then
   # refuse-unless-bypassed treatment rather than a silent pass-through.
   if ! _fleet_census; then
     echo "bank-preflight: in-lock fleet census failed ('$_fleet_ps_cmd' exited $_fleet_ps_rc) — cannot verify the fleet is under cap; refusing rather than admit on a stale pre-lock snapshot" >&2
-    _fleet_release_admit "$SLOTS/.admit"
-    # codex-2 (HIMMEL-2774, 4th panel round): the lock is already gone above,
-    # but _fleet_admitted stayed 1 — on the bypass/informational branches
-    # below (the LAUNCH_INTENT=1 refusal branch `emit`s and exits, so it
-    # never reaches this), execution falls through to the final
-    # `[ "$_fleet_admitted" -eq 1 ] && _fleet_release_admit` cleanup, which
-    # would then delete whatever a DIFFERENT caller has legitimately claimed
-    # in the meantime. This process no longer holds anything to clean up.
-    _fleet_admitted=0
+    # codex-2 (HIMMEL-2774, 4th panel round): once the release SUCCEEDS the flag
+    # must drop — on the bypass/informational branches below (the
+    # LAUNCH_INTENT=1 refusal branch `emit`s and exits, so it never reaches
+    # this), execution falls through to the final
+    # `[ "$_fleet_admitted" -eq 1 ] && _fleet_release_admit` cleanup, which would
+    # then delete whatever a DIFFERENT caller has legitimately claimed in the
+    # meantime. CodeRabbit (HIMMEL-3019): the gated release can now FAIL (gate
+    # busy past its retries, lock left to age out), so the flag drops only on
+    # success. A failed release keeps it set: the prune pass stays gated on
+    # still holding the lock and the final cleanup retries — safe, since every
+    # release is pid-verified and cannot remove a successor's lock.
+    if _fleet_release_admit "$SLOTS/.admit"; then _fleet_admitted=0; fi
     if [ "${FLEET_CAP_OK:-}" = "1" ]; then
       echo "bank-preflight: FLEET_CAP_OK bypass in effect (launching shell only) — proceeding despite the failed in-lock census" >&2
     elif [ "$LAUNCH_INTENT" = "1" ]; then
