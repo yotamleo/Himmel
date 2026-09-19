@@ -538,6 +538,38 @@ check "(q) A's fence mkdir fails: the gate name is gone" 1 "$([ -n "$q_mk" ] && 
 check "(q) B holds the fresh gate, its fence the only one" "0 1 1" \
   "$q_rc $([ -n "$Q_FENCE" ] && [ -d "$Q_FENCE" ] && echo 1 || echo 0) $(count_glob "$gate"/fence.*)"
 [ "$q_rc" = 0 ] && _fleet_gate_drop "$gate" "$Q_FENCE"
+
+# --- (r) HIMMEL-3210: a stamp failure never removes a successor's gate --------
+# A passes its sole-fence check, then pauses past the gate age. B breaks the gate
+# (revoke, fence delete, mv), so A's stamp fails ENOENT, and a successor takes
+# the gate before A's cleanup runs. That cleanup must be fence-verified like
+# every other gate removal. A genuine stamp failure, with A's fence still in
+# place, must still remove A's own gate.
+STAMP_INJECT=""; r_succ_rc=""; R_FENCE=""
+# shellcheck disable=SC2317
+_fleet_admit_stamp_or_fail() { # overrides the SUT's stamp; (r) only
+  local inj="$STAMP_INJECT" rc; STAMP_INJECT=""
+  [ "$inj" = fail ] && return 1
+  if [ "$inj" = break ]; then
+    mkdir "$1/revoked"; command rm -rf "$1"/fence.*; command mv "$1" "$1.broken.r"; command rm -rf "$1.broken.r"
+  fi
+  date +%s > "$1/acquired" 2>/dev/null; rc=$?
+  if [ "$inj" = break ]; then _fleet_gate_take "$1"; r_succ_rc=$?; R_FENCE="${_fleet_gate_fence:-}"; fi
+  return $rc
+}
+gate="$W/.gate-r"; command rm -rf "$gate"
+STAMP_INJECT="break"; _fleet_gate_take "$gate"; r_rc=$?
+check "(r) A's take refuses after its stamp fails" 1 "$r_rc"
+check "(r) the successor took the gate in the window" 0 "$r_succ_rc"
+check "(r) A's cleanup leaves the successor's gate and fence in place" "1 1" \
+  "$([ -d "$gate" ] && echo 1 || echo 0) $([ -n "$R_FENCE" ] && [ -d "$R_FENCE" ] && echo 1 || echo 0)"
+[ "$r_succ_rc" = 0 ] && _fleet_gate_drop "$gate" "$R_FENCE"
+command rm -rf "$gate"
+STAMP_INJECT=fail; _fleet_gate_take "$gate"; r_rc=$?
+check "(r) a genuine stamp failure refuses and removes A's own gate" "1 0" \
+  "$r_rc $([ -e "$gate" ] && echo 1 || echo 0)"
+# shellcheck disable=SC1091
+. "$W/fns.sh" # restore the SUT's own stamp
 rm -rf "$gate"
 
 # --- (n) HIMMEL-3210: displaced-victim debris is pruned by age ----------------

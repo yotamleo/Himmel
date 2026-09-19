@@ -297,7 +297,11 @@ _fleet_gate_take() {
     _fleet_gate_fence="$fence"
     return 0
   fi
-  rm -rf "$gate" 2>/dev/null
+  # Fenced like every other gate removal (HIMMEL-3210): a stamp that failed
+  # because a breaker moved the gate away must not delete the successor's gate
+  # that now owns the name. A real write failure leaves our fence in place, so
+  # this still cleans up the gate we actually hold.
+  _fleet_gate_drop "$gate" "$fence"
   return 1
 }
 _fleet_gate_sole() { # _fleet_gate_sole <gate> <fence> -> 0 iff <fence> is the gate's only fence and the gate is not being broken
