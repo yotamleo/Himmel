@@ -586,7 +586,16 @@ function probeSettingsHooks(item, ctx) {
   const commands = collectHookCommands(getDotPath(data, item.probe.key));
   const found = PRETOOLUSE_MARKERS.filter((m) => commands.some((c) => c.indexOf(m) !== -1));
   if (found.length === PRETOOLUSE_MARKERS.length) {
-    return { actual: 'present', detail: filePath };
+    // HIMMEL-2757: docs/setup/settings-template.json ships no `permissions`
+    // block, so an adopter install leaves permissions.allow empty at either
+    // scope by design — the auto-approve-safe-bash hook found above is what
+    // pre-approves Bash. Say so on this row rather than leave it silent.
+    const allow = getDotPath(data, 'permissions.allow');
+    const n = Array.isArray(allow) ? allow.length : 0;
+    const allowNote = n === 0
+      ? 'permissions.allow: 0 entries — intentional (the adopter template ships none; Bash pre-approvals come from the auto-approve-safe-bash hook)'
+      : `permissions.allow: ${n} entries (not written by himmelctl)`;
+    return { actual: 'present', detail: `${filePath}; ${allowNote}` };
   }
   if (found.length === 0) {
     return { actual: 'absent', detail: `no himmel PreToolUse markers found in ${filePath}` };

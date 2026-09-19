@@ -1092,13 +1092,24 @@ function buildSummary(answers, laneRows, opts) {
       actions.push(`workspace trusted: ${o.workspaceTrust.dir} (hasTrustDialogAccepted written to ~/.claude.json)`);
     } else {
       manual.push({
-        what: `workspace trust NOT set for ${o.workspaceTrust.dir} — your permissions.allow / permissions.additionalDirectories entries are ignored until it is (${o.workspaceTrust.reason})`,
+        what: `workspace trust NOT set for ${o.workspaceTrust.dir} — any permissions.allow / permissions.additionalDirectories entries in its .claude/settings.json are ignored until it is (${o.workspaceTrust.reason})`,
         how: `run \`claude\` interactively once in ${o.workspaceTrust.dir} and accept the trust dialog`,
         note: `or set projects["${o.workspaceTrust.dir}"].hasTrustDialogAccepted: true in ~/.claude.json`,
       });
     }
   } else if (o.workspaceTrust === null) {
     actions.push('workspace trust — would run ensure-workspace-trust.sh for the install target');
+  }
+
+  // HIMMEL-2757: docs/setup/settings-template.json ships no `permissions`
+  // block, so the install writes no permissions.allow at either scope — by
+  // design: himmel's own ~93 entries are its contributor config (paths on the
+  // operator's machine), and an adopter's Bash pre-approvals come from the
+  // auto-approve-safe-bash PreToolUse hook adopt.sh wires. A fact, not an
+  // action, so it reads the same under --dry-run. profile=luna wires no
+  // settings.json at all, so there is nothing to state.
+  if (answers.profile !== 'luna') {
+    skipped.push('permissions.allow — intentionally left empty (the adopter template ships none); Bash pre-approvals come from the auto-approve-safe-bash PreToolUse hook');
   }
 
   const vaultMode = answers.vault && answers.vault.mode;

@@ -2190,4 +2190,32 @@ grepq "$atBadOut" '"reason"' \
   || fail "caseAT2: an applied:false result must carry a reason, got [$atBadOut]"
 echo "ok: caseAT the install trusts the workspace via ensure-workspace-trust.sh — success/failure both reported, --dry-run writes nothing"
 
-echo "PASS: test-wizard-adopter-profile.sh (35 cases)"
+# ── caseAU (HIMMEL-2757): an empty permissions.allow is stated, not silent ──
+# docs/setup/settings-template.json ships no `permissions` block, so an
+# adopter install writes none at either scope — Bash pre-approvals come from
+# the auto-approve-safe-bash PreToolUse hook instead. The summary must say so
+# (a skipped row, identical under --dry-run), and the workspace-trust row must
+# not claim the install wrote permissions.allow entries it never wrote.
+# shellcheck disable=SC2016
+"$node_bin" -e '
+const a = require(process.argv[1]);
+const fail = (m) => { console.error(m); process.exit(1); };
+const ans = { role:"adopter", scope:"project", vault:{mode:"none",path:""},
+              handover:{mode:"inline",path:""}, pluginSet:"lean", lanes:[], alwaysOn:false };
+const row = (s) => s.skipped.find((l) => /permissions\.allow/.test(l));
+for (const dryRun of [false, true]) {
+  const r = row(a.buildSummary(ans, [], { derived:"x", dryRun }));
+  if (!r) fail(`dryRun=${dryRun}: no skipped row states that permissions.allow is left empty`);
+  if (!/intentional/.test(r)) fail(`the row must say the emptiness is intended, got: ${r}`);
+  if (!/auto-approve-safe-bash/.test(r)) fail(`the row must name where approvals come from, got: ${r}`);
+}
+if (row(a.buildSummary(Object.assign({}, ans, { profile:"luna" }), [], { derived:"x", dryRun:false })))
+  fail("profile=luna wires no settings.json, so it must not claim anything about permissions.allow");
+const ft = a.buildSummary(ans, [], { derived:"x", dryRun:false,
+  workspaceTrust: { applied:false, dir:"/d", reason:"r" } }).manual.map((m) => m.what).join("\n");
+if (/your permissions\.allow/.test(ft)) fail(`the trust row must not claim the install wrote permissions.allow entries, got: ${ft}`);
+' "$(winpath "$repo_root/scripts/himmelctl/lib/adopter-profile.js")" \
+  || fail "caseAU: the summary does not state that an empty permissions.allow is intended"
+echo "ok: caseAU an adopter install states that permissions.allow is intentionally empty (applied + --dry-run), never on profile=luna"
+
+echo "PASS: test-wizard-adopter-profile.sh (36 cases)"
