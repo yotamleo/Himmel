@@ -207,5 +207,78 @@ grep -qi "no CodeRabbit review at head" "$TMP/err-prior-head-only-outside-not-co
 grep -qi "none carried a substantive body" "$TMP/err-two-head-all-empty-note" \
     || { echo "FAIL missing all-empty-substantive stderr note"; fail=$((fail+1)); }
 
+# ── HIMMEL-3124: per-finding outside-diff extraction ─────────────────────────
+# cr_body_outside_findings emits one TSV row per outside-diff finding:
+#   id <TAB> sev <TAB> file <TAB> line <TAB> title
+# id = cr-od-<12 hex of sha256(file US line US title)>; the LINE is the literal
+# token (a range like 80-91 stays a string); the FILE is the full path.
+# The expected ids below were computed with an independent shell recipe
+# (printf file US line US title | sha256sum | cut -c1-12), not by the reader.
+OD_BQ="$FIXDIR/pr-777-outside-diff-blockquote.body.txt"       # real #777 80d070db: > layout, Minor
+OD_RANGE="$FIXDIR/pr-777-outside-the-diff-range.body.txt"     # real #777 a9836768: plain layout, "Outside the diff (1)", range line, Major
+OD_BASENAME="$FIXDIR/pr-888-outside-diff-basename.body.txt"   # real #888 3b7cd149: basename in <summary>, full path on the path line
+OD_LEGACY="$FIXDIR/pr-1261-outside-diff-2.body.txt"           # real #1261: per-file <summary>, `7-20`: line form
+TAB=$(printf '\t')
+mk_json_from_file "$RESP_DIR/od-bq.json"       "$UID_OK" "$HEAD" "$OD_BQ"
+mk_json_from_file "$RESP_DIR/od-range.json"    "$UID_OK" "$HEAD" "$OD_RANGE"
+mk_json_from_file "$RESP_DIR/od-basename.json" "$UID_OK" "$HEAD" "$OD_BASENAME"
+mk_json_from_file "$RESP_DIR/od-legacy.json"   "$UID_OK" "$HEAD" "$OD_LEGACY"
+# The SAME finding rendered without the "> " blockquote prefix must yield the
+# same id (R12): the id keys on file/line/title, never on the layout.
+sed 's/^> \{0,1\}//' "$OD_BQ" > "$TMP/od-bq-dequoted.txt"
+mk_json_from_file "$RESP_DIR/od-bq-dequoted.json" "$UID_OK" "$HEAD" "$TMP/od-bq-dequoted.txt"
+mk_json_from_file "$RESP_DIR/od-wrong-id.json"    "$UID_WRONG" "$HEAD" "$OD_BQ"
+# Header says (2) but only one finding parses out: count mismatch = format drift.
+sed 's/Outside diff range comments (1)/Outside diff range comments (2)/' "$OD_BQ" > "$TMP/od-bq-count2.txt"
+mk_json_from_file "$RESP_DIR/od-count-mismatch.json" "$UID_OK" "$HEAD" "$TMP/od-bq-count2.txt"
+# Header present, but no finding body follows it: nothing extractable.
+mk_json_from_str "$RESP_DIR/od-header-only.json" "$UID_OK" "$HEAD" '**⚠️ Outside diff range comments (1)**
+
+nothing else survived a format change'
+# The selector is SHARED with cr_body_findings: an older head review carrying an
+# outside finding is superseded by a later substantive clean review.
+mk_two_head_reviews "$RESP_DIR/od-two-head-clean-latest.json" "$UID_OK" "$HEAD" "$(cat "$OD_BQ")" "$CLEAN_BODY"
+mk_json_from_str "$RESP_DIR/od-clean.json" "$UID_OK" "$HEAD" "$CLEAN_BODY"
+
+# to <name> <GH_STUB_MODE> <expected-rc> <expected-stdout>
+to() {
+    local name="$1" mode="$2" want="$3" want_out="$4" rc=0 out
+    export GH_STUB_MODE="$mode"
+    export GH_STUB_LOG="$TMP/calls-$name.log"; : > "$GH_STUB_LOG"
+    out=$(cr_body_outside_findings o r 42 "$HEAD" 2>"$TMP/err-$name") || rc=$?
+    if [ "$rc" != "$want" ]; then
+        fail=$((fail+1)); echo "FAIL $name (rc=$rc want=$want) out='$out'"
+        sed 's/^/  err: /' "$TMP/err-$name"
+        return
+    fi
+    if [ "$out" != "$want_out" ]; then
+        fail=$((fail+1)); echo "FAIL $name (stdout mismatch)"
+        echo "  got:  $(printf '%s' "$out" | tr '\n\t' '|~')"
+        echo "  want: $(printf '%s' "$want_out" | tr '\n\t' '|~')"
+        return
+    fi
+    pass=$((pass+1)); echo "ok   $name"
+}
+OD_BQ_ROW="cr-od-39c3193c8945${TAB}sug${TAB}.pre-commit-config.yaml${TAB}459${TAB}Keep \`context7-mcp\` in the description-cap gate."
+OD_RANGE_ROW="cr-od-2b1a31ba0692${TAB}imp${TAB}marketplace/plugins/himmel-ops/README.md${TAB}80-91${TAB}Use the installed \`lean-skills\` namespace in Minerva hand-offs."
+OD_BASENAME_ROW="cr-od-8ed0fb1cf579${TAB}imp${TAB}templates/luna-second-brain/scripts/upgrade.sh${TAB}427${TAB}Make the snapshot baseline support format equivalence."
+OD_LEGACY_ROWS="cr-od-eeba561a5fa4${TAB}sug${TAB}scripts/codex/sanitize-plugin-hooks.ps1${TAB}7-20${TAB}Qualify the legacy parser behavior by Codex version.
+cr-od-588006168ade${TAB}sug${TAB}scripts/codex/sanitize-plugin-hooks.sh${TAB}4-20${TAB}Qualify the legacy parser behavior by Codex version."
+to od-blockquote-layout        od-bq             0 "$OD_BQ_ROW"
+to od-plain-layout-same-id     od-bq-dequoted    0 "$OD_BQ_ROW"
+to od-range-line-and-the-diff  od-range          0 "$OD_RANGE_ROW"
+to od-full-path-not-basename   od-basename       0 "$OD_BASENAME_ROW"
+to od-legacy-per-file-summary  od-legacy         0 "$OD_LEGACY_ROWS"
+to od-header-count-mismatch    od-count-mismatch 2 ""
+to od-header-without-finding   od-header-only    2 ""
+to od-clean-body-no-rows       od-clean          0 ""
+to od-shared-selector-later-clean-wins od-two-head-clean-latest 0 ""
+to od-wrong-user-id-no-rows    od-wrong-id       0 ""
+to od-infra-error-rc1          error             1 ""
+# cr_body_findings itself: the header variant "Outside the diff (N)" is now
+# COUNTED (before, outside read 0 and only the markers canary caught it).
+t the-diff-header-counted      od-range          0 "outside=1 nitpick=0 additional=0 prior_outside=0 markers=1 head_reviews=1 substantive=1"
+t legacy-layout-still-counts-2 od-legacy         0 "outside=2 nitpick=0 additional=0 prior_outside=0 markers=2 head_reviews=1 substantive=1"
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

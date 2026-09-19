@@ -1800,19 +1800,70 @@ cr_body_gate() {
         _cr_body_escalate
     fi
 
+    body_outside_note=""
     if [ "$_cbg_outside" -gt 0 ]; then
-        echo "check-ci: ${ctx}CodeRabbit's review body reports $_cbg_outside outside-diff-range finding(s) on head $head0 of PR #$num — these carry no thread to resolve; address them, then re-run" >&2
-        exit 3
+        _cr_outside_gate
     fi
 
     body_nitpick="$_cbg_nitpick"
     body_additional="$_cbg_additional"
 }
 
+# _cr_outside_gate — HIMMEL-3124. An outside-diff-range finding has no thread,
+# so it used to be clearable only by a commit (which moves the head and discards
+# CodeRabbit's review, HIMMEL-1252 — a whole review slot for a Minor). Each one
+# may instead carry an explicit, adjudicated ledger disposition AT THIS EXACT
+# HEAD (cr_ledger_outside_dispositioned: deferred + tracked ticket + reason, or
+# disproved + reason; never severity-gated). ANY undispositioned finding keeps
+# the old exit 3; a list that cannot be trusted (query failure, or the header
+# count differs from what parsed) is exit 2 and prints NO recording recipe.
+# On success sets body_outside_note for _cbg_note.
+_cr_outside_gate() {
+    local rows rc id sev file line title n_ok=0 n_all=0 c=0 i=0 s=0 msg="" q
+    rows=$(cr_body_outside_findings "$owner" "$repo" "$num" "$head0")
+    rc=$?
+    case "$rc" in
+        0) ;;
+        1)
+            echo "check-ci: ${ctx}could not read the outside-diff findings of CodeRabbit's review body on head $head0 of PR #$num (query/parse failure) — cannot evaluate the gate; re-run" >&2
+            exit 2 ;;
+        2)
+            echo "check-ci: ${ctx}CodeRabbit's review body on head $head0 of PR #$num lists outside-diff findings the parser cannot fully read (format drift) — cannot evaluate the gate; check the PR body manually" >&2
+            exit 2 ;;
+        *)
+            echo "check-ci: ${ctx}cr-body-findings returned an unrecognized rc=$rc on PR #$num — cannot evaluate the gate; re-run" >&2
+            exit 2 ;;
+    esac
+    while IFS=$'\t' read -r id sev file line title; do
+        [ -n "$id" ] || continue
+        n_all=$((n_all + 1))
+        if cr_ledger_outside_dispositioned "$head0" "$id" "$file" "$line"; then
+            n_ok=$((n_ok + 1))
+            case "$sev" in crit) c=$((c + 1)) ;; imp) i=$((i + 1)) ;; *) s=$((s + 1)) ;; esac
+        else
+            # single-quote the title for the paste-ready recipe (it may hold a quote)
+            q=${title//\'/\'\\\'\'}
+            msg="$msg
+  - $id [$sev] $file:$line — $title
+      bash scripts/cr/ledger-append.sh finding --head $head0 --branch <pr-branch> --model coderabbit-outside --id $id --severity $sev --file '$file' --line '$line' --text '$q' --verdict deferred --deferred-to <TICKET> --reason \"<why>\"   (or: --verdict disproved --reason \"<why>\")"
+        fi
+    done <<<"$rows"
+    if [ "$n_all" -ne "$_cbg_outside" ]; then
+        echo "check-ci: ${ctx}CodeRabbit's review body on head $head0 of PR #$num counts $_cbg_outside outside-diff finding(s) but $n_all parsed out (format drift) — cannot evaluate the gate; check the PR body manually" >&2
+        exit 2
+    fi
+    if [ "$n_ok" -lt "$n_all" ]; then
+        echo "check-ci: ${ctx}CodeRabbit's review body reports $n_all outside-diff-range finding(s) on head $head0 of PR #$num, $((n_all - n_ok)) not dispositioned — these carry no thread to resolve; address them, or record an explicit disposition at this exact head (deferred needs a tracked ticket AND a reason; a disposition never carries to a new head), then re-run:$msg" >&2
+        exit 3
+    fi
+    body_outside_note=" (outside-diff dispositioned=$n_ok (crit=$c imp=$i sug=$s))"
+}
+
 # _cbg_note — appended to the success line when non-blocking body findings
 # exist (HIMMEL-1147: the failure mode was invisibility, not permissiveness —
 # surface the count, never block on it alone).
 _cbg_note() {
+    printf '%s' "${body_outside_note:-}"
     if [ "${body_nitpick:-0}" -gt 0 ] || [ "${body_additional:-0}" -gt 0 ]; then
         printf ' (CodeRabbit body: nitpick=%s additional=%s, non-blocking)' "${body_nitpick:-0}" "${body_additional:-0}"
     fi

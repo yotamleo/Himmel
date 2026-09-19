@@ -218,9 +218,12 @@ if [ "$cmd" = "api" ]; then
         # assertions stay exactly as they were before this gate existed.
         repos/octo/demo/pulls/42/reviews*)
             case "$GH_STUB_MODE" in
-                body-outside) echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"sha1","body":"Outside diff range comments (2)"}]' ;;
+                body-outside) echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"sha1","body":"> **⚠️ Outside diff range comments (1)**\n> \n> `stub.sh:5`\n> _x_ | _🟡 Minor_ | _y_\n> \n> **A stub outside-diff finding.**"}]' ;;
                 body-nitpick) echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"sha1","body":"Nitpick comments (1)"}]' ;;
                 body-drift)   echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"sha1","body":"Outside diff range comments were noted but the count did not survive a format change"}]' ;;
+                # HIMMEL-3124: a REAL captured review body (fixture file), one substantive
+                # bot review at the head — the per-finding outside-diff reader parses it.
+                body-file)    jq -n --rawfile b "$GH_STUB_BODY_FILE" '[{user:{id:136622811,login:"coderabbitai[bot]"},commit_id:"sha1",submitted_at:"2026-07-16T19:10:00Z",id:1,body:$b}]' ;;
                 body-error)   echo "reviews boom" >&2; exit 1 ;;
                 # Incremental-silent shape: a prior review carries outside-diff
                 # findings while the concluded current head has no review object.
@@ -240,7 +243,7 @@ if [ "$cmd" = "api" ]; then
                     if [ "$a" -eq 0 ]; then
                         echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"shaOLD","body":"Outside diff range comments (2)"}]'
                     elif [ "$GH_STUB_MODE" = "body-a2-escalate-outside" ]; then
-                        echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"shaOLD","body":"Outside diff range comments (2)"},{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"sha1","body":"Outside diff range comments (1)"}]'
+                        echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"shaOLD","body":"Outside diff range comments (2)"},{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"sha1","body":"> **⚠️ Outside diff range comments (1)**\n> \n> `stub.sh:5`\n> _x_ | _🟡 Minor_ | _y_\n> \n> **A stub outside-diff finding.**"}]'
                     else
                         echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"shaOLD","body":"Outside diff range comments (2)"},{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"sha1","body":"**Actionable comments posted: 0**"}]'
                     fi ;;
@@ -275,7 +278,7 @@ if [ "$cmd" = "api" ]; then
                     if [ "$a" -eq 0 ]; then
                         echo '[]'
                     elif [ "$GH_STUB_MODE" = "body-b2-escalate-outside" ]; then
-                        echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"sha1","body":"Outside diff range comments (1)"}]'
+                        echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"sha1","body":"> **⚠️ Outside diff range comments (1)**\n> \n> `stub.sh:5`\n> _x_ | _🟡 Minor_ | _y_\n> \n> **A stub outside-diff finding.**"}]'
                     else
                         echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"sha1","body":"**Actionable comments posted: 0**"}]'
                     fi ;;
@@ -604,7 +607,7 @@ case "$GH_STUB_MODE" in
         # verdict must turn entirely on CodeRabbit's status (HIMMEL-1072).
         if [ "$is_watch" -eq 1 ]; then echo "All checks were successful"; exit 0; fi
         exit 0 ;;
-    body-outside|body-nitpick|body-drift|body-error|body-a2|body-empty|body-a2-escalate|body-a2-marker|body-a2-timeout|body-a2-escalate-outside|body-b2-escalate|body-b2-escalate-outside|body-b2-timeout|body-b2-head-review|body-a2-escalate-empty|body-a2-empty-persisted|body-a2-postfail)
+    body-outside|body-file|body-nitpick|body-drift|body-error|body-a2|body-empty|body-a2-escalate|body-a2-marker|body-a2-timeout|body-a2-escalate-outside|body-b2-escalate|body-b2-escalate-outside|body-b2-timeout|body-b2-head-review|body-a2-escalate-empty|body-a2-empty-persisted|body-a2-postfail)
         # Checks GREEN, threads clean, CodeRabbit CONCLUDED (default statuses
         # fixture) in every one of these — the verdict must turn entirely on
         # the review-BODY findings gate (HIMMEL-1126/1147/1219).
@@ -710,6 +713,7 @@ CR_APP_OVERRIDE=1
 # so every pre-existing case runs the classifier for real and asserts, by
 # keeping its old verdict, that it changed nothing for them.
 MPR_OVERRIDE=none
+BODY_FILE_OVERRIDE=""
 
 # --- HIMMEL-1953: no real sleeping, and no unbounded case -------------------
 #
@@ -792,6 +796,7 @@ run() {
         GH_STUB_FRESHNESS="$FRESHNESS_OVERRIDE" \
         GH_STUB_FILES="$FILES_OVERRIDE" \
         GH_STUB_MPR="$MPR_OVERRIDE" \
+        GH_STUB_BODY_FILE="$BODY_FILE_OVERRIDE" \
         CHECK_CI_POLL_INTERVAL="$POLL_OVERRIDE" \
         CHECK_CI_SETTLE="$SETTLE_OVERRIDE" \
         CR_ESCALATE_WAIT="$ESCALATE_WAIT_OVERRIDE" \
@@ -812,7 +817,7 @@ run() {
     SETTLE_OVERRIDE=0; THREADS_OVERRIDE=0; POLL_OVERRIDE=0; HEAD_OVERRIDE=stable; DECISION_OVERRIDE=null
     ESCALATE_WAIT_OVERRIDE=0; ESCALATE_POLL_OVERRIDE=0; MARKERS_OVERRIDE=""; SLEEP_CMD_OVERRIDE=":"
     CR_PROFILE_OVERRIDE=""; CR_APP_OVERRIDE=1
-    FRESHNESS_OVERRIDE=fresh; FILES_OVERRIDE=README.md; CR_BOT_LOGINS_OVERRIDE=""; MPR_OVERRIDE=none
+    FRESHNESS_OVERRIDE=fresh; FILES_OVERRIDE=README.md; CR_BOT_LOGINS_OVERRIDE=""; MPR_OVERRIDE=none; BODY_FILE_OVERRIDE=""
 }
 
 run_in_repo() {
@@ -1313,7 +1318,9 @@ assert_err_has "unresolved review thread" "33 late-thread reason printed"
 
 # 35 — an outside-diff-range finding in the review body blocks, same rank as
 # an unresolved thread (rc 3), even though no thread exists for it at all.
-run body-outside
+FIXD="$SCRIPT_DIR/lib/fixtures/cr-body"
+BODY_FILE_OVERRIDE="$FIXD/pr-777-outside-diff-blockquote.body.txt"
+run_in_repo "$EMPTY_LEDGER_REPO" body-file
 assert_rc 3 "35 outside-diff body finding blocks"
 assert_err_has "outside-diff-range finding" "35 outside-diff reason printed"
 
@@ -1335,6 +1342,141 @@ assert_err_has "cannot count" "37 drift-canary reason printed"
 run body-error
 assert_rc 2 "38 body-findings query failure cannot certify"
 assert_err_has "could not read CodeRabbit's review-body findings" "38 body-query-failure reason printed"
+
+# --- HIMMEL-3124: outside-diff findings have an adjudicated-deferral path --------
+# An outside-diff finding carries no thread, so it used to have NO disposition
+# path: exit 3 until a commit moved the head — which discards CodeRabbit's
+# review (HIMMEL-1252) and burns an account-wide review slot. A finding is now
+# cleared by ONE ledger row at THIS head (recorded through ledger-append.sh's
+# existing `finding` interface): verdict deferred with a tracked ticket AND a
+# non-empty reason, or verdict disproved with a reason. Every negative below is
+# a ONE-FIELD variant of the passing R1 row (a blanket failure would otherwise
+# make every negative pass vacuously); the id is cr-od-<12 hex of sha256(file
+# US line US title)>, computed independently in the reader suite.
+OD_ROW='{"kind":"finding","ts":"2026-09-19T00:00:00Z","branch":"feat/x","head":"sha1","model":"coderabbit-outside","finding_id":"cr-od-39c3193c8945","severity":"sug","file":".pre-commit-config.yaml","line":459,"verdict":"deferred","artifact":"diff","perspective":"off","deferred_to":"HIMMEL-9001","reason":"tracked separately"}'
+mk_od_repo() { # mk_od_repo <row-json>... -> prints the repo dir
+    local d
+    d=$(mktemp -d "$STUBDIR/od-ledger.XXXXXX") || { echo "FATAL: mktemp -d failed" >&2; exit 1; }
+    git -C "$d" init --quiet
+    git -C "$d" -c user.email=t@t -c user.name=t commit --allow-empty -m seed --quiet --no-verify
+    # ONE `>` write (the ledger has a single append-site owner; /pr-check
+    # invariant 7 flags any other `>>`): every row is a call argument.
+    printf '%s\n' "$@" > "$d/.git/cr-critic-scores.jsonl"
+    printf '%s' "$d"
+}
+od_variant() { printf '%s' "$OD_ROW" | jq -c "$1"; }
+OD_BQ_BODY="$FIXD/pr-777-outside-diff-blockquote.body.txt"
+
+# R2 — no row at all: still exit 3, and the message LISTS the finding and prints
+# the exact recipe (id, file:line, title, ledger-append command).
+BODY_FILE_OVERRIDE="$OD_BQ_BODY"; run_in_repo "$EMPTY_LEDGER_REPO" body-file
+assert_rc 3 "R2 undispositioned outside-diff finding stays exit 3"
+assert_err_has "cr-od-39c3193c8945" "R2 message lists the finding id"
+assert_err_has ".pre-commit-config.yaml:459" "R2 message lists file:line"
+assert_err_has "Keep \`context7-mcp\` in the description-cap gate." "R2 message lists the title"
+assert_err_has "ledger-append.sh finding" "R2 message prints the recording recipe"
+assert_err_has "--model coderabbit-outside" "R2 recipe names the model tag"
+assert_err_has "--head sha1" "R2 recipe binds the finding to THIS head"
+assert_verdict 3 "R2 verdict line exit 3"
+
+# R1 — the passing row (deferred + tracked ticket + reason at THIS head) clears it.
+OD_REPO=$(mk_od_repo "$OD_ROW")
+BODY_FILE_OVERRIDE="$OD_BQ_BODY"; run_in_repo "$OD_REPO" body-file
+assert_rc 0 "R1 dispositioned outside-diff finding allows"
+assert_out_has "outside-diff dispositioned=1 (crit=0 imp=0 sug=1)" "R1 success line keeps the severity counts visible"
+assert_verdict 0 "R1 verdict line exit 0"
+# disproved with a reason clears it too
+OD_REPO=$(mk_od_repo "$(od_variant '.verdict="disproved" | del(.deferred_to)')")
+BODY_FILE_OVERRIDE="$OD_BQ_BODY"; run_in_repo "$OD_REPO" body-file
+assert_rc 0 "R1b disproved-with-reason clears the finding"
+
+# R3..R8 — each is R1's row with exactly ONE field changed.
+for v in \
+    'R3 different-line|.line=460' \
+    'R4 different-file|.file="other/file.yaml"' \
+    'R5 different-head|.head="sha2"' \
+    'R6 empty-reason|.reason=""' \
+    'R6b whitespace-reason|.reason="   "' \
+    'R7 deferred-without-ticket|del(.deferred_to)' \
+    'R7b deferred-bad-ticket|.deferred_to="not-a-ticket"' \
+    'R8 verdict-fixed|.verdict="fixed"' \
+    'R8b verdict-agreed|.verdict="agreed"' \
+    'R8c different-id|.finding_id="cr-od-000000000000"'; do
+    OD_NAME=${v%%|*}; OD_FILTER=${v#*|}
+    OD_REPO=$(mk_od_repo "$(od_variant "$OD_FILTER")")
+    BODY_FILE_OVERRIDE="$OD_BQ_BODY"; run_in_repo "$OD_REPO" body-file
+    assert_rc 3 "$OD_NAME does not clear the finding (exit 3)"
+done
+
+# R9 — two findings, only one dispositioned: still exit 3, and the message names
+# ONLY the other one.
+OD_LEGACY_BODY="$FIXD/pr-1261-outside-diff-2.body.txt"
+OD_REPO=$(mk_od_repo "$(od_variant '.finding_id="cr-od-eeba561a5fa4" | .file="scripts/codex/sanitize-plugin-hooks.ps1" | .line="7-20"')")
+BODY_FILE_OVERRIDE="$OD_LEGACY_BODY"; run_in_repo "$OD_REPO" body-file
+assert_rc 3 "R9 one of two findings dispositioned stays exit 3"
+assert_err_has "cr-od-588006168ade" "R9 message names the undispositioned finding"
+if printf '%s' "$ERR" | grep -F "cr-od-eeba561a5fa4" >/dev/null; then fail "R9 message must not list the dispositioned finding" "listed"; else pass "R9 message lists only the undispositioned finding"; fi
+OD_REPO=$(mk_od_repo \
+    "$(od_variant '.finding_id="cr-od-eeba561a5fa4" | .file="scripts/codex/sanitize-plugin-hooks.ps1" | .line="7-20"')" \
+    "$(od_variant '.finding_id="cr-od-588006168ade" | .file="scripts/codex/sanitize-plugin-hooks.sh" | .line="4-20"')")
+BODY_FILE_OVERRIDE="$OD_LEGACY_BODY"; run_in_repo "$OD_REPO" body-file
+assert_rc 0 "R9b both findings dispositioned allows"
+assert_out_has "outside-diff dispositioned=2 (crit=0 imp=0 sug=2)" "R9b success line counts both"
+
+# Range line (#777): the LINE is the literal token 80-91, compared as a string;
+# the header is the "Outside the diff (N)" variant, counted now (it used to read
+# outside=0 and trip the markers canary by accident).
+OD_RANGE_BODY="$FIXD/pr-777-outside-the-diff-range.body.txt"
+BODY_FILE_OVERRIDE="$OD_RANGE_BODY"; run_in_repo "$EMPTY_LEDGER_REPO" body-file
+assert_rc 3 "R13 Outside-the-diff header is counted and blocks (exit 3, not the drift exit 2)"
+assert_err_has "marketplace/plugins/himmel-ops/README.md:80-91" "R13 message shows the range line"
+OD_REPO=$(mk_od_repo "$(od_variant '.finding_id="cr-od-2b1a31ba0692" | .severity="imp" | .file="marketplace/plugins/himmel-ops/README.md" | .line="80-91"')")
+BODY_FILE_OVERRIDE="$OD_RANGE_BODY"; run_in_repo "$OD_REPO" body-file
+assert_rc 0 "R13b range-line disposition clears (string match)"
+assert_out_has "(crit=0 imp=1 sug=0)" "R13b Major finding counted as imp on the success line"
+OD_REPO=$(mk_od_repo "$(od_variant '.finding_id="cr-od-2b1a31ba0692" | .file="marketplace/plugins/himmel-ops/README.md" | .line=80')")
+BODY_FILE_OVERRIDE="$OD_RANGE_BODY"; run_in_repo "$OD_REPO" body-file
+assert_rc 3 "R13c a disposition at the range START alone does not clear the range"
+
+# Full path, not the summary basename (#888 layout).
+BODY_FILE_OVERRIDE="$FIXD/pr-888-outside-diff-basename.body.txt"
+OD_REPO=$(mk_od_repo "$(od_variant '.finding_id="cr-od-8ed0fb1cf579" | .severity="imp" | .file="templates/luna-second-brain/scripts/upgrade.sh" | .line=427')")
+run_in_repo "$OD_REPO" body-file
+assert_rc 0 "R14 disposition keyed on the FULL path clears (not the basename)"
+BODY_FILE_OVERRIDE="$FIXD/pr-888-outside-diff-basename.body.txt"
+OD_REPO=$(mk_od_repo "$(od_variant '.finding_id="cr-od-8ed0fb1cf579" | .severity="imp" | .file="upgrade.sh" | .line=427')")
+run_in_repo "$OD_REPO" body-file
+assert_rc 3 "R14b a basename-keyed disposition does not clear"
+
+# R10 — header count != extracted findings = format drift: exit 2 (cannot
+# certify), NOT a recipe for findings that never parsed. The pre-existing
+# count-only body ("Outside diff range comments (2)", no finding bodies) is
+# exactly that shape.
+printf '%s' 'Outside diff range comments (2)' > "$STUBDIR/od-hdronly.txt"
+BODY_FILE_OVERRIDE="$STUBDIR/od-hdronly.txt"; run body-file
+assert_rc 2 "R10 header count without parseable findings cannot certify"
+assert_err_has "check the PR body manually" "R10 tells the operator to check manually"
+if printf '%s' "$ERR" | grep -F "ledger-append.sh" >/dev/null; then fail "R10 must not print a recipe" "recipe printed"; else pass "R10 no recipe for findings that did not parse"; fi
+sed 's/Outside diff range comments (1)/Outside diff range comments (2)/' "$OD_BQ_BODY" > "$STUBDIR/od-count2.txt"
+OD_REPO=$(mk_od_repo "$OD_ROW")
+BODY_FILE_OVERRIDE="$STUBDIR/od-count2.txt"; run_in_repo "$OD_REPO" body-file
+assert_rc 2 "R10b real body with header (2) but one finding cannot certify, even with a row"
+
+# Gate integrity: the ledger is read from the FIXED per-repo path. An ambient
+# CR_LEDGER pointing at a forged ledger must not clear the finding.
+FORGED_LEDGER="$STUBDIR/forged-ledger.jsonl"; printf '%s\n' "$OD_ROW" > "$FORGED_LEDGER"
+export CR_LEDGER="$FORGED_LEDGER"
+BODY_FILE_OVERRIDE="$OD_BQ_BODY"; run_in_repo "$EMPTY_LEDGER_REPO" body-file
+unset CR_LEDGER
+assert_rc 3 "R15 an env-pointed forged ledger does not clear the finding"
+
+# No silent inheritance: an amend --set head= must not re-key a cr-od row onto
+# a later head. The row was written at sha0 and amended to sha1 (the head here).
+OD_REPO=$(mk_od_repo \
+    "$(od_variant '.head="sha0"')" \
+    '{"kind":"amend","ts":"2026-09-19T00:00:01Z","target_head":"sha0","finding_id":"cr-od-39c3193c8945","artifact":"diff","perspective":"off","set":{"head":"sha1"},"reason":"re-key"}')
+BODY_FILE_OVERRIDE="$OD_BQ_BODY"; run_in_repo "$OD_REPO" body-file
+assert_rc 3 "R16 amend --set head= does not carry a disposition to the new head"
 
 # 39 — incremental-silent: CodeRabbit concluded on sha1 but emitted no review
 # object there, while a prior head carries outside-diff findings. This is the
@@ -2512,5 +2654,5 @@ unset CR_CLI_MARKER
 
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 155 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 155"; exit 1; fi
+if [ "$COUNT" -ne 179 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 179"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1

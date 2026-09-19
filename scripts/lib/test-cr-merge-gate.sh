@@ -146,6 +146,8 @@ case "$1 $2" in
       body-outside) echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"abc123","body":"Outside diff range comments (2)"}]' ;;
       body-nitpick) echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"abc123","body":"Nitpick comments (1)"}]' ;;
       body-drift)   echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"abc123","body":"Outside diff range comments were noted but the count did not survive a format change"}]' ;;
+      # HIMMEL-3124: a REAL captured review body (fixture file) at the head.
+      body-file)    jq -n --rawfile b "$GH_STUB_BODY_FILE" '[{user:{id:136622811,login:"coderabbitai[bot]"},commit_id:"abc123",submitted_at:"2026-07-16T19:10:00Z",id:1,body:$b}]' ;;
       body-error)   exit 1 ;;
       *)            echo '[]' ;;
     esac ;;
@@ -436,7 +438,10 @@ GH_STUB_MODE=body-drift   t body-drift-canary-blocks 2
 # mirroring cr_degraded — a broken query is not evidence.
 GH_STUB_MODE=body-error   t body-infra-error-fails-open 0
 
-grep -qi "outside-diff-range finding" "$TMP/out-body-outside-diff-blocks" || { echo "FAIL body-outside block reason missing"; fail=$((fail+1)); }
+# The count-only stub ("Outside diff range comments (2)", no parseable finding
+# bodies) is header/extraction MISMATCH — format drift, so it BLOCKS (HIMMEL-3124)
+# as unparseable, not as a listed finding.
+grep -qi "format drift\|cannot count" "$TMP/out-body-outside-diff-blocks" || { echo "FAIL body-outside block reason missing"; fail=$((fail+1)); }
 # the note rides stderr, NOT stdout (codex CR round): block-unresolved-
 # cr-merge.sh only captures+prints `reason=$(cr_merge_gate ...)` on a BLOCK
 # (rc 2) — a stdout echo on the allow path would be captured into $reason
@@ -445,6 +450,55 @@ grep -qi "nitpick=1" "$TMP/err-body-nitpick-allows-with-note" || { echo "FAIL bo
 [ -s "$TMP/out-body-nitpick-allows-with-note" ] && { echo "FAIL body-nitpick note leaked onto stdout"; fail=$((fail+1)); }
 grep -qi "format drift\|cannot count" "$TMP/out-body-drift-canary-blocks" || { echo "FAIL body-drift block reason missing"; fail=$((fail+1)); }
 grep -qi "degraded" "$TMP/err-body-infra-error-fails-open" || { echo "FAIL body-infra degradation note missing"; fail=$((fail+1)); }
+
+# ── HIMMEL-3124: an outside-diff finding can be DISPOSITIONED (a ledger row at
+# THIS head: deferred + tracked ticket + reason, or disproved + reason) instead
+# of costing a commit + a discarded CodeRabbit review. The passing row is R11's
+# control; every negative is ONE field of it changed (a blanket failure would
+# otherwise make every block pass vacuously). ─────────────────────────────────
+FIXD="$SCRIPT_DIR/fixtures/cr-body"
+OD_LEDGER="$(git rev-parse --git-common-dir)/cr-critic-scores.jsonl"
+OD_ROW='{"kind":"finding","ts":"2026-09-19T00:00:00Z","branch":"feat/x","head":"abc123","model":"coderabbit-outside","finding_id":"cr-od-39c3193c8945","severity":"sug","file":".pre-commit-config.yaml","line":459,"verdict":"deferred","artifact":"diff","perspective":"off","deferred_to":"HIMMEL-9001","reason":"tracked separately"}'
+od_ledger() { printf '%s\n' "$@" > "$OD_LEDGER"; }
+od_variant() { printf '%s' "$OD_ROW" | jq -c "$1"; }
+export GH_STUB_BODY_FILE="$FIXD/pr-777-outside-diff-blockquote.body.txt"
+
+rm -f "$OD_LEDGER"
+GH_STUB_MODE=body-file t od-undispositioned-blocks 2
+grep -qi "outside-diff-range finding" "$TMP/out-od-undispositioned-blocks" || { echo "FAIL od-undispositioned block reason missing"; fail=$((fail+1)); }
+grep -q "cr-od-39c3193c8945" "$TMP/out-od-undispositioned-blocks" || { echo "FAIL od-undispositioned block does not list the finding id"; fail=$((fail+1)); }
+grep -q ".pre-commit-config.yaml:459" "$TMP/out-od-undispositioned-blocks" || { echo "FAIL od-undispositioned block does not list file:line"; fail=$((fail+1)); }
+
+od_ledger "$OD_ROW"
+GH_STUB_MODE=body-file t od-dispositioned-allows 0
+grep -qi "dispositioned=1" "$TMP/err-od-dispositioned-allows" || { echo "FAIL od-dispositioned ALLOW note missing on stderr"; fail=$((fail+1)); }
+od_ledger "$(od_variant '.verdict="disproved" | del(.deferred_to)')"
+GH_STUB_MODE=body-file t od-disproved-with-reason-allows 0
+
+for v in \
+    'od-different-line|.line=460' \
+    'od-different-file|.file="other/file.yaml"' \
+    'od-different-head|.head="zzz999"' \
+    'od-empty-reason|.reason=""' \
+    'od-deferred-no-ticket|del(.deferred_to)' \
+    'od-verdict-fixed|.verdict="fixed"' \
+    'od-different-id|.finding_id="cr-od-000000000000"'; do
+    od_ledger "$(od_variant "${v#*|}")"
+    GH_STUB_MODE=body-file t "${v%%|*}-blocks" 2
+done
+
+# header (2) but ONE finding parses out: format drift, blocks even WITH a row.
+sed 's/Outside diff range comments (1)/Outside diff range comments (2)/' "$GH_STUB_BODY_FILE" > "$TMP/od-count2.txt"
+od_ledger "$OD_ROW"
+GH_STUB_BODY_FILE="$TMP/od-count2.txt" GH_STUB_MODE=body-file t od-header-count-mismatch-blocks 2
+grep -qi "format drift\|cannot count" "$TMP/out-od-header-count-mismatch-blocks" || { echo "FAIL od-mismatch block reason missing"; fail=$((fail+1)); }
+
+# gate integrity: the ledger path is fixed; an env-pointed forged ledger is ignored.
+rm -f "$OD_LEDGER"
+printf '%s\n' "$OD_ROW" > "$TMP/forged-ledger.jsonl"
+CR_LEDGER="$TMP/forged-ledger.jsonl" GH_STUB_MODE=body-file t od-env-forged-ledger-ignored-blocks 2
+rm -f "$OD_LEDGER"
+export -n GH_STUB_BODY_FILE; unset GH_STUB_BODY_FILE
 
 # ── HIMMEL-1181: review-FRESHNESS (B2) — checks/threads/body all clean
 # (GH_STUB_MODE=clean), so these exercise the freshness gate in isolation ───

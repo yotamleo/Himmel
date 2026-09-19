@@ -207,3 +207,86 @@ cr_ledger_carries_gate() {
     printf '%s\n' "${reason:-not-carried}"
     return 1
 }
+
+# cr_ledger_outside_dispositioned <full-sha> <id> <file> <line> — HIMMEL-3124.
+# Has ONE outside-diff CodeRabbit finding (id from cr_body_outside_findings) been
+# explicitly ADJUDICATED at this exact head? Outside-diff findings live only in a
+# review BODY (no thread to resolve), so the ledger row is the sole disposition
+# path. rc 0 = dispositioned; rc 1 = not (or the evidence cannot be read reliably:
+# no git dir / no node / unreadable ledger / malformed line — fail closed).
+# Same fixed ledger path and same atHead resolution as cr_ledger_carries_gate;
+# a caller-pointed ledger is never read. A disposition row is accepted ONLY when:
+#   kind=finding, finding_id == <id>, head is THIS commit (the ORIGINAL row head:
+#   an amend --set head / file / line is IGNORED for these rows, so a disposition
+#   can never be re-keyed onto another head or finding), file and line equal the
+#   parsed ones as STRINGS (a range like 80-91 is a literal token), AND
+#   verdict deferred + tracked ticket + non-empty reason, OR verdict disproved +
+#   non-empty reason (the clear-cr-marker gate 4 rule). fixed|agreed|unaddressed|
+#   conflict or an empty verdict never dispose of it. Severity is NOT consulted:
+#   an explicit disposition suffices at every severity (the operator ruling).
+cr_ledger_outside_dispositioned() {
+    local full_sha="${1:-}" id="${2:-}" file="${3:-}" line="${4:-}"
+    [ -n "$full_sha" ] && [ -n "$id" ] && [ -n "$file" ] && [ -n "$line" ] || return 1
+    local git_dir
+    git_dir=$(git rev-parse --git-common-dir 2>/dev/null || true)
+    [ -n "$git_dir" ] || return 1
+    local ledger="$git_dir/cr-critic-scores.jsonl"
+    command -v node >/dev/null 2>&1 || return 1
+
+    # Single-quoted block: NO apostrophes / backticks / dollar-braces inside.
+    local out
+    out=$(LEDGER="$ledger" FULL_SHA="$full_sha" OD_ID="$id" OD_FILE="$file" OD_LINE="$line" node -e '
+      const fs = require("fs"), cp = require("child_process"), e = process.env;
+      if (!fs.existsSync(e.LEDGER)) { process.stdout.write("no"); process.exit(0); }
+      const lines = fs.readFileSync(e.LEDGER, "utf8").split("\n").filter(Boolean);
+      const HEX = "0123456789abcdef";
+      const isHex = (s) => s.length >= 7 && s.length <= 40 &&
+          s.split("").every((c) => HEX.indexOf(c) >= 0);
+      const resolve = (h) => {
+          try {
+              return cp.execFileSync("git",
+                  ["rev-parse", "--verify", "--quiet", h + "^{commit}"],
+                  { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || null;
+          } catch { return null; }
+      };
+      const atHead = (h) => {
+          h = String(h || "");
+          if (e.FULL_SHA === h) return true;
+          if (!isHex(h) || !e.FULL_SHA.startsWith(h)) return false;
+          return resolve(h) === e.FULL_SHA;
+      };
+      const SEP = String.fromCharCode(31);
+      const amends = new Map();
+      let malformed = 0;
+      for (const l of lines) {
+          let a;
+          try { a = JSON.parse(l); } catch { malformed++; continue; }
+          if (a.kind !== "amend" || !a.set || typeof a.set !== "object") continue;
+          const k = [a.target_head, a.finding_id, a.artifact || "diff", a.perspective || "off"].join(SEP);
+          const set = Object.assign({}, a.set);
+          // A disposition is bound to its ORIGINAL head/file/line: never re-keyed.
+          delete set.head; delete set.file; delete set.line;
+          amends.set(k, Object.assign({}, amends.get(k) || {}, set));
+      }
+      if (malformed > 0) { process.stdout.write("no"); process.exit(0); }
+      // Like clear-cr-marker gate 4: ANY row for this finding at this head that
+      // is not a valid disposition blocks (a later unaddressed row is not
+      // outvoted by an earlier deferral — correct it with an amend).
+      let ok = false, bad = false;
+      for (const l of lines) {
+          let o = JSON.parse(l);
+          if (o.kind !== "finding" || o.finding_id !== e.OD_ID) continue;
+          const k = [o.head, o.finding_id, o.artifact || "diff", o.perspective || "off"].join(SEP);
+          if (amends.has(k)) o = Object.assign({}, o, amends.get(k));
+          if (!atHead(o.head)) continue;
+          if (String(o.file) !== e.OD_FILE || String(o.line) !== e.OD_LINE) continue;
+          const why = typeof o.reason === "string" ? o.reason.trim() : "";
+          const ticket = typeof o.deferred_to === "string" ? o.deferred_to.trim() : "";
+          if ((o.verdict === "deferred" && /^[A-Z][A-Z0-9]*-[0-9]+$/.test(ticket) && why) ||
+              (o.verdict === "disproved" && why)) ok = true;
+          else bad = true;
+      }
+      process.stdout.write(ok && !bad ? "yes" : "no");
+    ' 2>/dev/null) || return 1
+    [ "$out" = "yes" ]
+}

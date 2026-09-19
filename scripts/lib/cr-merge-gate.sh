@@ -419,6 +419,7 @@ cr_merge_gate() {
     # (HIMMEL-1147: the failure was invisibility, not permissiveness —
     # blocking Trivial-severity findings tanks the loop).
     local body_line body_rc outside nitpick body_degraded=0 body_nitpick=0 tok
+    local od_rows od_rc od_id od_file od_line od_n od_ok od_list
     body_line=$(cr_body_findings "$owner" "$name" "$num" "$head")
     body_rc=$?
     case "$body_rc" in
@@ -452,8 +453,43 @@ cr_merge_gate() {
             if [ "$_body_bad" -eq 1 ]; then
                 body_degraded=1
             elif [ "$outside" -gt 0 ]; then
-                echo "BLOCK: CodeRabbit's review body reports $outside outside-diff-range finding(s) on head $head of PR #$num — these carry no thread to resolve. Fix + address them, or bypass with CR_MERGE_GATE_OK=1 in the launching shell if already adjudicated."
-                return 2
+                # HIMMEL-3124: each outside-diff finding may carry an explicit
+                # ledger disposition AT THIS EXACT HEAD (deferred + tracked
+                # ticket + reason, or disproved + reason) — same reader and rule
+                # as check-ci.sh. Anything undispositioned, or a list that cannot
+                # be read/trusted, BLOCKS (a known outside>0 is never failed open).
+                od_rows=$(cr_body_outside_findings "$owner" "$name" "$num" "$head")
+                od_rc=$?
+                case "$od_rc" in
+                    0) ;;
+                    2)
+                        echo "BLOCK: CodeRabbit's review body on head $head of PR #$num lists outside-diff findings the parser cannot fully read (format drift, cannot count) — check the PR body manually, or bypass with CR_MERGE_GATE_OK=1."
+                        return 2 ;;
+                    *)
+                        echo "BLOCK: CodeRabbit's review body reports $outside outside-diff-range finding(s) on head $head of PR #$num but the per-finding read failed — cannot check for a disposition; re-run."
+                        return 2 ;;
+                esac
+                od_n=0; od_ok=0; od_list=""
+                while IFS=$'\t' read -r od_id _ od_file od_line _; do
+                    [ -n "$od_id" ] || continue
+                    od_n=$((od_n + 1))
+                    if cr_ledger_outside_dispositioned "$head" "$od_id" "$od_file" "$od_line"; then
+                        od_ok=$((od_ok + 1))
+                    else
+                        od_list="$od_list [$od_id $od_file:$od_line]"
+                    fi
+                done <<<"$od_rows"
+                if [ "$od_n" -ne "$outside" ]; then
+                    echo "BLOCK: CodeRabbit's review body on head $head of PR #$num counts $outside outside-diff finding(s) but $od_n parsed out (format drift, cannot count) — check the PR body manually, or bypass with CR_MERGE_GATE_OK=1."
+                    return 2
+                fi
+                if [ "$od_ok" -lt "$od_n" ]; then
+                    echo "BLOCK: CodeRabbit's review body reports $od_n outside-diff-range finding(s) on head $head of PR #$num, $((od_n - od_ok)) not dispositioned:$od_list — these carry no thread to resolve. Fix them, or record an explicit disposition at this exact head (ledger-append.sh finding --model coderabbit-outside --verdict deferred --deferred-to <TICKET> --reason <why>; check-ci.sh prints the full recipe), or bypass with CR_MERGE_GATE_OK=1 in the launching shell if already adjudicated."
+                    return 2
+                fi
+                # stderr, like every ALLOW-path note here (stdout is dropped on allow).
+                echo "ALLOW: PR #$num — CodeRabbit's review body reports outside-diff dispositioned=$od_ok (each has an explicit ledger disposition at head $head)." >&2
+                body_nitpick="$nitpick"
             else
                 body_nitpick="$nitpick"
             fi

@@ -79,9 +79,16 @@ Act on the exit code:
   blocks certification even if the checks themselves look green — re-run.
 - `3` — checks green but the review state blocks the merge: unresolved
   review threads remain, a review requests changes, or (when CodeRabbit is
-  armed) its review body reports an outside-diff-range finding. Address each
-  comment, resolve its thread (always resolve the thread when fixing a CR
-  finding), then re-run.
+  armed) its review body reports an outside-diff-range finding that has no
+  ledger disposition at this head. Address each comment, resolve its thread
+  (always resolve the thread when fixing a CR finding), then re-run. An
+  outside-diff finding has no thread; besides a fix (a new commit, so a new
+  review), it can be cleared by an explicit disposition at this exact head
+  (HIMMEL-3124): the exit-3 message prints the `ledger-append.sh finding …
+  --model coderabbit-outside` recipe — `--verdict deferred` needs a tracked
+  `--deferred-to <TICKET>` AND `--reason`, `--verdict disproved` needs
+  `--reason`; any severity. It never carries to a new head. A header count the
+  parser cannot match to findings is exit `2` (check the PR body manually).
 - `4` — (when CodeRabbit is armed) either the latest bot review is anchored
   to a commit OTHER than the head SHA — the head was never re-reviewed, and
   GitHub auto-resolving threads on a later commit can mask this

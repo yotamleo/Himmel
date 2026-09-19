@@ -16,7 +16,11 @@
 # what this reader closes: it parses the review BODY TEXT itself, the only
 # place these findings are recorded.
 #   - HIMMEL-1126: "outside diff range" findings are real, un-actioned
-#     defects the thread gate never saw. Callers treat outside>0 as BLOCKING.
+#     defects the thread gate never saw. Callers treat outside>0 as BLOCKING
+#     UNLESS every one carries an adjudicated disposition in the CR ledger at
+#     this exact head (HIMMEL-3124: cr_body_outside_findings below lists them
+#     per finding; cr-ledger-evidence.sh's cr_ledger_outside_dispositioned is
+#     the reader). Undispositioned, they still block.
 #   - HIMMEL-1147: "nitpick" findings are lower-severity by CodeRabbit's own
 #     classification. Callers treat nitpick>0 as SURFACED / non-blocking
 #     (report it, do not deny the merge on it alone).
@@ -146,12 +150,12 @@ _cbf_gh() { "${GH_CMD:-gh}" "$@"; }
 # literal paren would need to survive an extra layer of escaping for no
 # benefit; the bracket form is a plain single character class instead.
 # shellcheck disable=SC2016  # this is a jq program, not a shell variable
-_CBF_JQ_PROGRAM='
-def outside_re: "[Oo]utside diff range comments? [(]([0-9]+)[)]";
+_CBF_JQ_DEFS='
+def outside_re: "[Oo]utside (?:diff range comments?|the diff) [(]([0-9]+)[)]";
 def nitpick_re: "[Nn]itpick comments? [(]([0-9]+)[)]";
 def additional_re: "[Aa]dditional comments? [(]([0-9]+)[)]";
 def marker_re: "cr-comment:v1:[A-Za-z0-9]+";
-def loose_outside_re: "[Oo]utside diff";
+def loose_outside_re: "[Oo]utside (?:diff|the diff)";
 def loose_nitpick_re: "[Nn]itpick comments?";
 def loose_additional_re: "[Aa]dditional comments?";
 def sum_matches(re):
@@ -159,15 +163,25 @@ def sum_matches(re):
 def count_matches(re):
   ( [ scan(re) ] | length );
 def has_content: test("\\S");
-( [ .[] | select(.user.id == $uid) ] ) as $bot
-| ( [ $bot[] | select(.commit_id == $head) ] ) as $headr
-| ( [ $bot[] | select(.commit_id != $head) ] ) as $priorr
+'
+
+# The review SELECTOR, shared by the count program and the per-finding
+# extractor (HIMMEL-3124) so both read the SAME review by construction.
 # HIMMEL-1582: derive at-head counts from the LATEST SUBSTANTIVE head review,
 # not a sum over every head review. $sub = head reviews whose body has any
 # non-whitespace; $chosen = the latest such body (greatest submitted_at, ties
 # by greatest id), or "" when none is substantive. See header for the why.
+# shellcheck disable=SC2016  # this is a jq program, not a shell variable
+_CBF_JQ_SELECT='
+( [ .[] | select(.user.id == $uid) ] ) as $bot
+| ( [ $bot[] | select(.commit_id == $head) ] ) as $headr
+| ( [ $bot[] | select(.commit_id != $head) ] ) as $priorr
 | ( [ $headr[] | select((.body // "") | has_content) ] ) as $sub
 | ( $sub | sort_by(.submitted_at, .id) | .[-1] | (.body // "") ) as $chosen
+'
+
+# shellcheck disable=SC2016  # this is a jq program, not a shell variable
+_CBF_JQ_COUNTS='
 | ( [ $priorr[] | (.body // "") ] ) as $pb
 | {
     outside:       ( $chosen | sum_matches(outside_re) ),
@@ -182,16 +196,51 @@ def has_content: test("\\S");
     substantive: ($sub | length)
   }
 '
+_CBF_JQ_PROGRAM="$_CBF_JQ_DEFS$_CBF_JQ_SELECT$_CBF_JQ_COUNTS"
 
-cr_body_findings() {
-    local owner="$1" name="$2" num="$3" head="$4"
-    local uid
-    uid=$(cr_signal_bot_id)
+# HIMMEL-3124: per-finding extractor over the chosen body. Three real layouts
+# (all captured in scripts/lib/fixtures/cr-body/): a "> " blockquote prefix or
+# none, a `path:line` line then a severity line then a **bold title** (the
+# current layouts, path is the FULL path, line may be a RANGE like 80-91), and
+# the older per-file <summary>file (N)</summary> with a `7-20`: line form. The
+# outside-diff region ends at the next "... comments (N)" section header, a
+# "Prompt ... review comments" block, or a rule. A finding is only recorded
+# once its bold title is seen; the caller compares the count against the header
+# (N) and treats ANY mismatch as format drift, so a boundary mistake here fails
+# closed instead of silently dropping or inventing a finding.
+# shellcheck disable=SC2016  # this is a jq program, not a shell variable
+_CBF_JQ_OUTSIDE='
+| def stripq: sub("^(?:>[ ]?)+"; "") | sub("^[ ]+"; "");
+def hdr_re: "Outside (?:diff range comments?|the diff) [(](?<n>[0-9]+)[)]";
+def sev_of($t): if ($t|test("Critical")) then "crit" elif ($t|test("Major")) then "imp" elif ($t|test("Minor|Trivial")) then "sug" else "imp" end;
+( $chosen | split("\n") | map(stripq) ) as $L
+| reduce $L[] as $l ({on:false, hdr:0, file:null, cur:null, items:[]};
+    if ($l | test(hdr_re)) then
+        .on = true | .hdr += ($l | capture(hdr_re).n | tonumber) | .file = null | .cur = null
+    elif (.on and ( ($l | test("comments? [(][0-9]+[)]")) or ($l | test("Prompt (?:for all|to fix) review comments")) or ($l | test("^---+[ ]*$")) )) then
+        .on = false | .cur = null
+    elif (.on | not) then .
+    elif ($l | test("^<summary>[^<]*comments")) then .
+    elif ($l | test("^<summary>[^<]+ [(][0-9]+[)]</summary>")) then
+        .file = ($l | capture("^<summary>(?<f>[^<]+) [(][0-9]+[)]</summary>").f)
+    elif ($l | test("^`[^`]+:[0-9]+(?:-[0-9]+)?`[ ]*$")) then
+        ($l | capture("^`(?<f>[^`]+):(?<l>[0-9]+(?:-[0-9]+)?)`[ ]*$")) as $m
+        | .cur = {file: $m.f, line: $m.l, sev: null}
+    elif ($l | test("^`[0-9]+(?:-[0-9]+)?`:[ ]*_")) then
+        ($l | capture("^`(?<l>[0-9]+(?:-[0-9]+)?)`:[ ]*(?<rest>.*)$")) as $m
+        | .cur = {file: .file, line: $m.l, sev: (($m.rest | capture("[|][ ]*_(?<s>[^_]+)_") // {s: ""}).s)}
+    elif (.cur != null and .cur.sev == null and ($l | test("^_[^|]*_[ ]*[|][ ]*_[^_]+_"))) then
+        .cur.sev = ($l | capture("^_[^|]*_[ ]*[|][ ]*_(?<s>[^_]+)_").s)
+    elif (.cur != null and ($l | test("^\\*\\*.+\\*\\*[ ]*$"))) then
+        .items += [ .cur + {title: ($l | capture("^\\*\\*(?<t>.+)\\*\\*[ ]*$").t | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; ""))} ] | .cur = null
+    else . end )
+| { hdr: .hdr, items: [ .items[] | select(.file != null) | {file, line, sev: sev_of(.sev // ""), title} ] }
+'
 
-    if [ -z "$owner" ] || [ -z "$name" ] || [ -z "$num" ] || [ -z "$head" ]; then return 1; fi
-    case "$uid" in ''|*[!0-9]*) return 1 ;; esac
-    case "$num" in ''|*[!0-9]*) return 1 ;; esac
-
+# _cbf_reviews_json <owner> <name> <num> — the PR's review list as ONE flat
+# JSON array on stdout; rc 1 when the query fails or the payload is not an array.
+_cbf_reviews_json() {
+    local owner="$1" name="$2" num="$3"
     # `--paginate` emits ONE top-level JSON array per page when a PR has more
     # reviews than fit on one page (>30) — NOT one pre-merged array. Capture
     # the raw multi-document stream first (with gh's own failure still
@@ -215,6 +264,21 @@ cr_body_findings() {
     local kind
     kind=$(printf '%s' "$json" | jq -r 'if type=="array" then "array" else empty end' 2>/dev/null || true)
     [ "$kind" = "array" ] || return 1
+
+    printf '%s' "$json"
+}
+
+cr_body_findings() {
+    local owner="$1" name="$2" num="$3" head="$4"
+    local uid
+    uid=$(cr_signal_bot_id)
+
+    if [ -z "$owner" ] || [ -z "$name" ] || [ -z "$num" ] || [ -z "$head" ]; then return 1; fi
+    case "$uid" in ''|*[!0-9]*) return 1 ;; esac
+    case "$num" in ''|*[!0-9]*) return 1 ;; esac
+
+    local json
+    json=$(_cbf_reviews_json "$owner" "$name" "$num") || return 1
 
     local result
     result=$(printf '%s' "$json" | jq -c --argjson uid "$uid" --arg head "$head" \
@@ -252,5 +316,74 @@ cr_body_findings() {
 
     printf 'outside=%s nitpick=%s additional=%s prior_outside=%s markers=%s head_reviews=%s substantive=%s\n' \
         "$outside" "$nitpick" "$additional" "$prior_outside" "$markers" "$head_count" "$substantive"
+    return 0
+}
+
+# _cbf_sha256_12 — first 12 hex of sha256(stdin). GNU coreutils, macOS/BSD
+# shasum, or openssl, whichever exists; none -> rc 1 (cannot key a finding).
+_cbf_sha256_12() {
+    local h
+    if command -v sha256sum >/dev/null 2>&1; then h=$(sha256sum) || return 1
+    elif command -v shasum >/dev/null 2>&1; then h=$(shasum -a 256) || return 1
+    elif command -v openssl >/dev/null 2>&1; then h=$(openssl dgst -sha256 -r) || return 1
+    else return 1
+    fi
+    [ -n "$h" ] || return 1
+    h=${h%% *}
+    printf '%s' "${h:0:12}"
+}
+
+# cr_body_outside_findings <owner> <name> <num> <head> — HIMMEL-3124.
+# One TSV row per outside-diff finding in the SAME review cr_body_findings reads
+# (the shared $_CBF_JQ_SELECT selector: the latest substantive bot review at the
+# head):
+#     id <TAB> sev <TAB> file <TAB> line <TAB> title
+#   id    cr-od-<first 12 hex of sha256(file US line US title)> (US = 0x1f),
+#         the disposition key check-ci / cr-merge-gate look up in the CR ledger
+#   sev   crit|imp|sug from Critical|Major|Minor,Trivial (unparseable -> imp)
+#   file  the FULL path from the finding (never a summary basename)
+#   line  the LITERAL token — a range such as 80-91 stays a string
+# rc 0 = determined (zero rows when there is no outside-diff section);
+# rc 1 = infrastructure (query/parse failure, or no sha256 tool);
+# rc 2 = format drift: the header count (N) differs from the number of findings
+#        that parsed out, so the list cannot be trusted. Callers must NOT print
+#        a recording recipe for a list that did not parse.
+cr_body_outside_findings() {
+    local owner="$1" name="$2" num="$3" head="$4"
+    local uid
+    uid=$(cr_signal_bot_id)
+
+    if [ -z "$owner" ] || [ -z "$name" ] || [ -z "$num" ] || [ -z "$head" ]; then return 1; fi
+    case "$uid" in ''|*[!0-9]*) return 1 ;; esac
+    case "$num" in ''|*[!0-9]*) return 1 ;; esac
+
+    local json
+    json=$(_cbf_reviews_json "$owner" "$name" "$num") || return 1
+
+    local result
+    result=$(printf '%s' "$json" | jq -c --argjson uid "$uid" --arg head "$head" \
+        "$_CBF_JQ_DEFS$_CBF_JQ_SELECT$_CBF_JQ_OUTSIDE" 2>/dev/null || true)
+    [ -n "$result" ] || return 1
+
+    local hdr n rows
+    hdr=$(printf '%s' "$result" | jq -r '.hdr' 2>/dev/null || true)
+    n=$(printf '%s' "$result" | jq -r '.items | length' 2>/dev/null || true)
+    case "$hdr$n" in ''|*[!0-9]*) return 1 ;; esac
+    if [ "$hdr" -ne "$n" ]; then
+        echo "cr-body-findings: outside-diff header says $hdr finding(s) but $n parsed out for PR #$num at head $head (format drift)" >&2
+        return 2
+    fi
+    [ "$n" -gt 0 ] || return 0
+
+    # US-separated (not @tsv, which would escape a backslash in a title and so
+    # change the id); the title is whitespace-normalised, so it holds no US/tab.
+    rows=$(printf '%s' "$result" | jq -r '.items[] | [.file, .line, .sev, .title] | join("\u001f")' 2>/dev/null || true)
+    [ -n "$rows" ] || return 1
+    local file line sev title id
+    while IFS=$'\037' read -r file line sev title; do
+        id=$(printf '%s\037%s\037%s' "$file" "$line" "$title" | _cbf_sha256_12) || return 1
+        [ -n "$id" ] || return 1
+        printf 'cr-od-%s\t%s\t%s\t%s\t%s\n' "$id" "$sev" "$file" "$line" "$title"
+    done <<<"$rows"
     return 0
 }
