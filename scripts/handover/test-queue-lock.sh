@@ -2224,6 +2224,100 @@ QUEUE_LOCK_SESSION_SCOPE="" CLAUDE_CODE_SESSION_ID="" \
     XDG_RUNTIME_DIR="$S_XDG" HANDOVER_DIR="$S_ROOT" QUEUE_LOCK_FORCE_RELEASE=1 \
     bash "$LIB" release "$S_DOC" >/dev/null 2>&1
 
+# --- T70: `status` / `status --sweep` reject extra operands (HIMMEL-2409) ---
+# An unquoted path containing a space arrives as TWO operands; the old parse
+# read only the first, so `status --sweep /tmp/my dir` swept `/tmp/my` and
+# printed a confident (wrong-root) result, rc 0. Both halves are asserted:
+# the extra operand is refused (rc=1, usage on stderr, NO sweep/status
+# output on stdout) AND the zero-arg / one-arg forms are unchanged.
+X_ROOT="$TMPDIR_ROOT/2409-sweep-root"
+mkdir -p "$X_ROOT/.locks/queue/HIMMEL-2409-test__fresh.lock"
+x_hb="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+printf '{"session":"x-fresh","host":"h","handover":"f.md","started":"%s","heartbeat":"%s"}\n' \
+    "$x_hb" "$x_hb" > "$X_ROOT/.locks/queue/HIMMEL-2409-test__fresh.lock/owner.json"
+x_resolved=$(HANDOVER_DIR="$X_ROOT" bash -c '. "$1"; handover_root_ensure' _ "$SCRIPT_DIR/../lib/handover-path.sh")
+if [ "$x_resolved" = "$X_ROOT" ]; then
+    pass "T70: fixture root actually resolves as the handover root (not real state)"
+else
+    fail "T70: handover_root_ensure resolved '$x_resolved', expected '$X_ROOT' -- refusing to proceed"
+fi
+# The failing state is only meaningful if the one-arg form really does sweep
+# this fixture (positive control -- output names the slug, rc 0).
+out="$(HANDOVER_DIR="$X_ROOT" bash "$LIB" status --sweep "$X_ROOT" 2>&1)"
+rc=$?
+if [ "$rc" -eq 0 ] && grepq "$out" "slug=HIMMEL-2409-test__fresh session=x-fresh"; then
+    pass "T70: one-arg 'status --sweep <root>' unchanged -- sweeps that root, rc=0"
+else
+    fail "T70: one-arg sweep regressed (rc=$rc out=$out)"
+fi
+out="$(HANDOVER_DIR="$X_ROOT" bash "$LIB" status --sweep 2>&1)"
+rc=$?
+if [ "$rc" -eq 0 ] && grepq "$out" "slug=HIMMEL-2409-test__fresh session=x-fresh"; then
+    pass "T70: zero-arg 'status --sweep' unchanged -- sweeps HANDOVER_DIR, rc=0"
+else
+    fail "T70: zero-arg sweep regressed (rc=$rc out=$out)"
+fi
+# Extra operand: a REAL root as $1 plus a stray word (the unquoted-space
+# shape). Old code sweeps $1 and exits 0; it must refuse with rc=1 and print
+# NO sweep line on stdout.
+x_out="$(HANDOVER_DIR="$X_ROOT" bash "$LIB" status --sweep "$X_ROOT" b 2>"$TMPDIR_ROOT/2409-err")"
+rc=$?
+x_err="$(cat "$TMPDIR_ROOT/2409-err")"
+if [ "$rc" -eq 1 ] && [ -z "$x_out" ] && grepq "$x_err" 'Usage:'; then
+    pass "T70: 'status --sweep <root> <extra>' -> rc=1, usage on stderr, NO sweep output on stdout"
+else
+    fail "T70: extra operand must be refused with rc=1 and empty stdout (rc=$rc stdout=$x_out stderr=$x_err)"
+fi
+# The literal reported shape: an unquoted path with a space (word-split by
+# the shell) -- NOT a doctored argv, the actual expansion a caller would get.
+x_space="$X_ROOT/with space"
+# shellcheck disable=SC2086  # deliberate: the unquoted expansion IS the bug shape under test
+x_out="$(HANDOVER_DIR="$X_ROOT" bash "$LIB" status --sweep $x_space 2>/dev/null)"
+rc=$?
+if [ "$rc" -eq 1 ] && [ -z "$x_out" ]; then
+    pass "T70: unquoted space-in-path sweep operand (word-split into two) -> rc=1, no sweep output"
+else
+    fail "T70: word-split sweep operand must be refused (rc=$rc stdout=$x_out)"
+fi
+# The refusal is distinct from the sweep's own exit table: a FLAGGED root
+# still gives 20, so rc=1 can never be confused with 0 (clean) or 20.
+mkdir -p "$X_ROOT/.locks/queue/HIMMEL-2409-test__old.lock"
+printf '{"session":"x-old","host":"h","handover":"o.md","started":"2020-01-01T00:00:00Z","heartbeat":"2020-01-01T00:00:00Z"}\n' \
+    > "$X_ROOT/.locks/queue/HIMMEL-2409-test__old.lock/owner.json"
+out="$(HANDOVER_DIR="$X_ROOT" bash "$LIB" status --sweep "$X_ROOT" 2>&1)"
+rc=$?
+if [ "$rc" -eq 20 ] && grepq "$out" "HIMMEL-2409-test__old.*IDLE-HELD"; then
+    pass "T70: one-arg sweep of a flagged root still exits 20 (unchanged)"
+else
+    fail "T70: flagged one-arg sweep should still be rc=20 (rc=$rc out=$out)"
+fi
+x_out="$(HANDOVER_DIR="$X_ROOT" bash "$LIB" status --sweep "$X_ROOT" b 2>/dev/null)"
+rc=$?
+if [ "$rc" -eq 1 ] && [ -z "$x_out" ]; then
+    pass "T70: extra operand on a FLAGGED root -> rc=1 (not 20), still no sweep output"
+else
+    fail "T70: extra operand on a flagged root must be rc=1 with empty stdout (rc=$rc stdout=$x_out)"
+fi
+# Plain `status <path> <extra>` had the same hole (the second operand was
+# silently dropped): same fix, same commit.
+X_DOC="$TMPDIR_ROOT/2409-doc.md"
+out="$(HANDOVER_DIR="$X_ROOT" bash "$LIB" status "$X_DOC" 2>&1)"
+rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "free" ]; then
+    pass "T70: one-arg 'status <path>' unchanged -- free, rc=0"
+else
+    fail "T70: one-arg status regressed (rc=$rc out=$out)"
+fi
+x_out="$(HANDOVER_DIR="$X_ROOT" bash "$LIB" status "$X_DOC" extra 2>"$TMPDIR_ROOT/2409-err")"
+rc=$?
+x_err="$(cat "$TMPDIR_ROOT/2409-err")"
+if [ "$rc" -eq 1 ] && [ -z "$x_out" ] && grepq "$x_err" 'Usage:'; then
+    pass "T70: 'status <path> <extra>' -> rc=1, usage on stderr, no status output"
+else
+    fail "T70: plain status extra operand must be refused (rc=$rc stdout=$x_out stderr=$x_err)"
+fi
+rm -rf "$X_ROOT"
+
 echo "---"
 echo "PASSED=$PASSED FAILED=$FAILED"
 [ "$FAILED" = 0 ]

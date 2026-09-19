@@ -126,7 +126,8 @@
 #                 is a cleaner, and its callers loop over locks that may
 #                 already be gone.
 #   status:    0  free
-#              1  usage error / environment failure
+#              1  usage error / environment failure (HIMMEL-2409: incl. more
+#                 than one operand -- an unquoted path with a space)
 #              11 held, FRESH (owner.json printed to stdout; a CORRUPT
 #                 lock dir -- owner.json missing/unreadable -- also
 #                 reports 11, fail-closed, and SAYS it is corrupt)
@@ -140,6 +141,8 @@
 #                 UNKNOWN (owner.json parsed but its heartbeat did not) -- a
 #                 tick script can check this rc alone and not miss a flag
 #                 even if it never scans stdout
+#              1  usage error (HIMMEL-2409: more than one operand); distinct
+#                 from 0 / 20, nothing on stdout
 #
 # CONVENTIONS: bash 3.2-safe (no associative arrays, no ${var,,}, no
 # mapfile). `set -uo pipefail`, not -e -- callers care about specific exit
@@ -1439,10 +1442,26 @@ queue_lock_status() {
     # handover ROOT (not a single handover path) -- see
     # queue_lock_status_sweep's own header comment. Dispatched here (rather
     # than a new top-level verb) since the CLI shape is `status --sweep`.
+    #
+    # HIMMEL-2409: more than one operand is a usage error (rc=1, nothing on
+    # stdout) for both shapes. An unquoted path containing a space arrives as
+    # TWO operands; reading only the first swept the wrong root and printed a
+    # confident "no held locks" (rc 0) -- the rc=1 is distinct from the
+    # sweep's own 0 / 20.
     if [ "$ho" = "--sweep" ]; then
         shift
+        if [ "$#" -gt 1 ]; then
+            echo "queue-lock: status --sweep takes at most one <handover-dir> operand (got $#) -- quote a path containing spaces" >&2
+            _ql_usage >&2
+            return 1
+        fi
         queue_lock_status_sweep "${1:-}"
         return $?
+    fi
+    if [ "$#" -gt 1 ]; then
+        echo "queue-lock: status takes exactly one <handover-path> operand (got $#) -- quote a path containing spaces" >&2
+        _ql_usage >&2
+        return 1
     fi
     if [ -z "$ho" ]; then
         _ql_usage >&2
