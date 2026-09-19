@@ -16,7 +16,7 @@ INVOKE="$SCRIPT_DIR/invoke.sh"
 WRAP="$SCRIPT_DIR/dispatch-trusted.sh"
 FAILED=0
 
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/egress-gate-test.XXXXXX")"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/egress-gate-test.XXXXXX")" || { echo "FAIL mktemp"; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 
 check() { # label expected actual
@@ -120,6 +120,24 @@ cp "$SCRIPT_DIR/../lib/handover-path.sh" "$TMP/broken/scripts/lib/"
 err="$(bash "$BROKEN/egress-gate.sh" --prompt-file "$BRIEF" --provider anthropic 2>&1)"; rc=$?
 check "evaluator missing -> refused, never allowed" 4 "$rc"
 check_contains "evaluator-missing refusal is explicit" "egress-matrix" "$err"
+
+# handover-path.sh missing: the handover root cannot be resolved, so a handover
+# brief could ride the un-gated exit — refuse instead (HIMMEL-1259 review round 1)
+NOLIB="$TMP/nolib/scripts/hermes"
+mkdir -p "$NOLIB" "$TMP/nolib/scripts/guardrails"
+cp "$GATE" "$NOLIB/egress-gate.sh"
+cp "$SCRIPT_DIR/../guardrails/egress-matrix-eval.mjs" "$SCRIPT_DIR/../guardrails/egress-matrix.json" "$TMP/nolib/scripts/guardrails/"
+err="$(bash "$NOLIB/egress-gate.sh" --prompt-file "$BRIEF" --provider anthropic 2>&1)"; rc=$?
+check "handover-path.sh missing -> refused (root unresolvable), never un-gated" 4 "$rc"
+check_contains "handover-path refusal is explicit" "handover-path" "$err"
+
+# a prompt path carrying control characters must still yield a valid JSONL line
+TABF="$(printf '%s/u/himmel/ta\tb.md' "$HO")"
+printf 'x\n' > "$TABF"
+: > "$HIMMEL_HERMES_EGRESS_LEDGER"
+gate "$TABF" anthropic
+check "control-char path x anthropic allowed" 0 "$rc"
+check "control-char path yields a parseable ledger line" ok "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n");JSON.parse(l[l.length-1]);process.stdout.write("ok")' "$HIMMEL_HERMES_EGRESS_LEDGER" 2>/dev/null || echo bad)"
 
 # ── unwritable ledger on a permitted gated dispatch refuses ─────────────────
 err="$(HIMMEL_HERMES_EGRESS_LEDGER="$BRIEF/x/l.jsonl" bash "$GATE" --prompt-file "$BRIEF" --provider anthropic 2>&1)"; rc=$?

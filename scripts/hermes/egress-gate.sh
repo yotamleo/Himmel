@@ -107,19 +107,31 @@ _under() {
 pf="$(_canon "$prompt_file")" || refuse "cannot resolve the prompt file path '$prompt_file' (symlink loop / unreadable) — refusing rather than classifying it blind"
 
 # --- corpus classification (most restrictive first; mirrors the fence's order) ---
+# A root that EXISTS but cannot be resolved is refused, never skipped: skipping it
+# would let a prompt under that tree ride the un-gated exit below. A root that
+# does not exist (or is unset) holds no prompt file, so there is nothing to gate.
 luna_root=""
 for v in "${LUNA_VAULT:-}" "${LUNA_VAULT_PATH:-}"; do
-    [ -n "$v" ] && { luna_root="$(_canon "$v")" || luna_root=""; break; }
+    if [ -n "$v" ]; then
+        if [ -d "$v" ]; then
+            luna_root="$(_canon "$v")" || refuse "cannot resolve the luna vault root '$v' — refusing rather than classifying blind"
+        fi
+        break
+    fi
 done
 
 handover_root=""
 HANDOVER_LIB="$SCRIPT_DIR/../lib/handover-path.sh"
-if [ -f "$HANDOVER_LIB" ]; then
-    # shellcheck source=../lib/handover-path.sh
-    # shellcheck disable=SC1091
-    . "$HANDOVER_LIB"
-    handover_root="$(handover_root 2>/dev/null || true)"
-    [ -n "$handover_root" ] && { handover_root="$(_canon "$handover_root")" || handover_root=""; }
+[ -f "$HANDOVER_LIB" ] || refuse "handover-path.sh not found ($HANDOVER_LIB) — the handover root cannot be resolved, so a handover brief could not be recognised"
+# shellcheck source=../lib/handover-path.sh
+# shellcheck disable=SC1091
+. "$HANDOVER_LIB"
+# handover_root fails only when no handover tree exists (HANDOVER_DIR unset or not
+# a directory, no inline handovers/) — then no prompt file can be under one.
+handover_root="$(handover_root 2>/dev/null || true)"
+if [ -n "$handover_root" ]; then
+    hr_raw="$handover_root"
+    handover_root="$(_canon "$hr_raw")" || refuse "cannot resolve the handover root '$hr_raw' — refusing rather than classifying blind"
 fi
 
 corpus=""
@@ -173,9 +185,10 @@ case "$verdict" in
 esac
 
 # --- audit line for a permitted gated dispatch; unwritable => refuse ---
-esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 mkdir -p "$(dirname "$LEDGER")" 2>/dev/null || refuse "cannot create the egress ledger directory for '$LEDGER' — a permitted gated dispatch must leave an audit line"
-printf '{"ts":"%s","corpus":"%s","provider":"%s","purpose":"%s","verdict":"%s","prompt":"%s"}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$corpus" "$(esc "$mprov")" "$PURPOSE" "$verdict" "$(esc "$pf")" \
+# JSON.stringify (node is already required above) so a path with control
+# characters, quotes or backslashes still yields one valid JSONL line.
+node -e 'process.stdout.write(JSON.stringify({ts:process.argv[1],corpus:process.argv[2],provider:process.argv[3],purpose:process.argv[4],verdict:process.argv[5],prompt:process.argv[6]})+"\n")' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$corpus" "$mprov" "$PURPOSE" "$verdict" "$pf" \
     >> "$LEDGER" 2>/dev/null || refuse "cannot append to the egress ledger '$LEDGER' — a permitted gated dispatch must leave an audit line"
 exit 0
