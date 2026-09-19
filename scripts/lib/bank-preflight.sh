@@ -226,22 +226,22 @@ _fleet_admit_hook() { # _fleet_admit_hook <point> <path>
 # its fences alive would NOT do: the name is re-takeable from that `mv` until
 # the broken copy's `rm -rf`, and a successor that steals and claims in that
 # window would have its live admit moved by the pre-resolved rename.
-# ponytail: one residual remains — a taker paused past the stale age between
-# its gate `mkdir` and its fence `mkdir`, resuming exactly between the
-# breaker's fence delete and its `mv`, passes its sole-fence check against the
-# doomed gate; a rename it then resolves before the `mv` and that the kernel
-# preempts until a successor has claimed would still land. That needs a >=5s
-# pause at one point and an in-kernel preemption at another, back to back.
 # That is why this is a
 # fence-by-path, not a generation number re-read before the mv: a re-read is
 # still followed by a separate mv, and the pause can land between them.
 # The one gap left is creating the fence itself: a holder paused between its
 # `mkdir "$gate"` and its `mkdir "$fence"` can resume after its gate was broken
-# and drop its fence into a SUCCESSOR's gate. Hence the sole-fence check: after
-# creating its fence each actor lists the gate, and holds only if its own fence
-# is the only one there. Two actors in one gate each create-then-list, so the
-# one that creates second always sees both — at most one ever passes (both
-# failing is fine: a refusal, and the gate ages out).
+# and drop its fence into a SUCCESSOR's gate, or into the doomed gate after the
+# breaker's fence delete. Hence the sole-fence check: after creating its fence
+# each actor lists the gate, and holds only if its own fence is the only one
+# there AND the gate carries no `revoked` marker. Two actors in one gate each
+# create-then-list, so the one that creates second always sees both — at most
+# one ever passes (both failing is fine: a refusal, and the gate ages out). A
+# breaker writes `revoked` BEFORE deleting the fences, so a fence created in
+# the doomed gate after that delete sees `revoked` and refuses; one created
+# after the `mv` lands in a successor's gate (two fences, refuses) or nowhere
+# (ENOENT); a sole check that passed before `revoked` existed had its fence
+# deleted, so its rename fails ENOENT. Every branch refuses: over-count only.
 # ponytail: `_fleet_gate_drop` is still check-then-remove — a holder paused
 # between its fence check and its `rm -rf` can delete a successor's gate. That
 # only ever REMOVES a successor's fence, so the successor's fenced rename fails
@@ -260,7 +260,11 @@ _fleet_gate_take() {
     # codex-1): once `mv` frees the name a third actor can take the gate, steal
     # and claim fresh before the `rm -rf "$victim"` below, and a holder's rename
     # that resolved its fence before the break would then move that live claim.
-    # A fence removed here is dead before any successor can exist.
+    # A fence removed here is dead before any successor can exist. `revoked`
+    # goes in FIRST: a fence created after the delete is listed by its own sole
+    # check after `revoked` exists, so it refuses instead of holding a gate
+    # that is about to be moved away.
+    mkdir "$gate/revoked" 2>/dev/null
     rm -rf "$gate"/fence.* 2>/dev/null
     victim="$gate.broken.$$.$RANDOM"
     mv "$gate" "$victim" 2>/dev/null || return 1
@@ -290,8 +294,9 @@ _fleet_gate_take() {
   rm -rf "$gate" 2>/dev/null
   return 1
 }
-_fleet_gate_sole() { # _fleet_gate_sole <gate> <fence> -> 0 iff <fence> is the gate's only fence
+_fleet_gate_sole() { # _fleet_gate_sole <gate> <fence> -> 0 iff <fence> is the gate's only fence and the gate is not being broken
   local f
+  [ ! -e "$1/revoked" ] || return 1
   for f in "$1"/fence.*; do
     [ "$f" = "$2" ] || return 1
   done

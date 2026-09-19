@@ -118,6 +118,12 @@ _inject_paused_taker() { # A is PAUSED between its gate mkdir and its fence mkdi
 # this — the pre-fix script has no hook points at all, and this is how the SAME
 # interleaving is forced against it (D claims straight after the rename).
 mv() { command mv "$@"; local rc=$?; [ -n "$MV_INJECT" ] && "$MV_INJECT" "${1:-}"; return $rc; }
+# `rm` shadow, same shape: RM_INJECT fires after a `rm` whose arguments name a
+# fence of RM_GATE (the breaker's in-place fence delete) — the one point
+# between that delete and the breaker's gate `mv`.
+RM_INJECT=""; RM_GATE=""
+# shellcheck disable=SC2317
+rm() { command rm "$@"; local rc=$?; case " $* " in *" $RM_GATE/fence."*) [ -n "$RM_INJECT" ] && "$RM_INJECT" ;; esac; return $rc; }
 PRINTF_FAIL=0
 # shellcheck disable=SC2317,SC2059
 printf() { if [ "$PRINTF_FAIL" = 1 ] && [ "${1:-}" = '%s\n' ] && [ "${2:-}" = "$$" ]; then return 1; fi; builtin printf "$@"; }
@@ -481,6 +487,58 @@ check "(o) C's pre-resolved rename fails (its fence died before the break)" 1 "$
 check "(o) E's live claim is still THE admit" E "$(cat "$admit/who" 2>/dev/null)"
 [ "$B1_RC" = 0 ] && _fleet_gate_drop "$admit.reclaim" "${_fleet_gate_fence:-}"
 rm -rf "$admit.reclaim"
+
+# --- (p) HIMMEL-3210: a late fence created in the doomed gate ----------------
+# Panel round-2 codex-1, case (i). A took the gate and paused before its fence
+# mkdir; the gate aged out. B breaks it, and A resumes exactly between B's
+# in-place fence delete and B's gate `mv`: A creates its fence in the doomed
+# gate and runs its sole-fence check. It is the only fence there, so without
+# the `revoked` marker A passes and holds a gate that is about to be moved
+# away; with it, A refuses.
+# shellcheck disable=SC2317
+_inject_late_fence() { # A's fence mkdir + sole check, inside B's delete->mv window
+  RM_INJECT=""; HOOK_FIRED=$((HOOK_FIRED + 1))
+  p_fence="$RM_GATE/fence.A.1"
+  mkdir "$p_fence" 2>/dev/null; p_mk=$?
+  _fleet_gate_sole "$RM_GATE" "$p_fence"; p_sole=$?
+  [ "$p_sole" = 0 ] || command rm -rf "$p_fence"
+}
+gate="$W/.gate-p"; rm -rf "$gate"; mkdir "$gate"
+builtin printf '%s\n' "$(( $(date +%s) - 10 ))" > "$gate/acquired"
+p_mk=""; p_sole=""; p_fence=""; HOOK_FIRED=0
+RM_GATE="$gate"; RM_INJECT=_inject_late_fence
+_fleet_gate_take "$gate"; p_rc=$?; P_FENCE="${_fleet_gate_fence:-}"
+RM_INJECT=""; RM_GATE=""
+check "(p) the seam fired (A resumed between B's fence delete and its mv)" 1 "$HOOK_FIRED"
+check "(p) precondition: A's fence was created in the doomed gate" 0 "$p_mk"
+check "(p) A's sole-fence check refuses the doomed gate (rc 1)" 1 "$p_sole"
+check "(p) B broke the aged gate and holds a fresh one, its fence the only one" "0 1 1" \
+  "$p_rc $([ -n "$P_FENCE" ] && [ -d "$P_FENCE" ] && echo 1 || echo 0) $(count_glob "$gate"/fence.*)"
+[ "$p_rc" = 0 ] && _fleet_gate_drop "$gate" "$P_FENCE"
+rm -rf "$gate"
+
+# --- (q) HIMMEL-3210: a late fence created after the doomed gate's mv --------
+# Case (ii), first half: A resumes after B's gate `mv` and before B re-creates
+# the gate — its fence mkdir finds no parent (ENOENT) and A refuses. The second
+# half (A's fence lands in the successor's fenced gate and the sole check sees
+# two fences) is (m). Neither half depends on the `revoked` marker.
+# shellcheck disable=SC2317
+_inject_fence_after_mv() {
+  [ "$1" = "$gate" ] || return 0
+  MV_INJECT=""; HOOK_FIRED=$((HOOK_FIRED + 1))
+  mkdir "$gate/fence.A.2" 2>/dev/null; q_mk=$?
+}
+gate="$W/.gate-q"; rm -rf "$gate"; mkdir "$gate"
+builtin printf '%s\n' "$(( $(date +%s) - 10 ))" > "$gate/acquired"
+q_mk=""; HOOK_FIRED=0; MV_INJECT=_inject_fence_after_mv
+_fleet_gate_take "$gate"; q_rc=$?; Q_FENCE="${_fleet_gate_fence:-}"
+MV_INJECT=""
+check "(q) the seam fired (A resumed between B's gate mv and its re-mkdir)" 1 "$HOOK_FIRED"
+check "(q) A's fence mkdir fails: the gate name is gone" 1 "$([ -n "$q_mk" ] && [ "$q_mk" -ne 0 ] && echo 1 || echo 0)"
+check "(q) B holds the fresh gate, its fence the only one" "0 1 1" \
+  "$q_rc $([ -n "$Q_FENCE" ] && [ -d "$Q_FENCE" ] && echo 1 || echo 0) $(count_glob "$gate"/fence.*)"
+[ "$q_rc" = 0 ] && _fleet_gate_drop "$gate" "$Q_FENCE"
+rm -rf "$gate"
 
 # --- (n) HIMMEL-3210: displaced-victim debris is pruned by age ----------------
 # End to end through the real script. Debris first seen long ago goes; debris
