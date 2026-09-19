@@ -58,9 +58,15 @@ grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
 node_bin=$(command -v node)
 
-work=$(mktemp -d "${TMPDIR:-/tmp}/wizard-himmel-clone-target.XXXXXX") || exit 1
-cleanup() { chmod -R u+w "$work" 2>/dev/null || true; command rm -rf -- "$work"; }
+work_raw=$(mktemp -d "${TMPDIR:-/tmp}/wizard-himmel-clone-target.XXXXXX") || exit 1
+cleanup() { chmod -R u+w "$work_raw" 2>/dev/null || true; command rm -rf -- "$work_raw"; }
 trap cleanup EXIT
+# HIMMEL-3179: bin.js names the checkout by the path node sees for its cwd — the
+# PHYSICAL, native spelling (macOS /private/var/..., Git Bash C:/Users/...) —
+# and macOS TMPDIR ("/var/folders/../T/") is a symlink with a trailing slash.
+# Build every fixture path from that one spelling, not the raw mktemp one.
+. "$repo_root/scripts/lib/canon-path.sh"
+work=$(canon_path_native "$work_raw") || fail "cannot canonicalise $work_raw"
 
 STATUS_REPORT_LIB="$(winpath "$status_report_lib")"
 export STATUS_REPORT_LIB

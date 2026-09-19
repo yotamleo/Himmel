@@ -28,10 +28,10 @@
 # the Windows .bat path"). On a real Windows host arm-resume.sh takes the
 # schtasks/.bat branch instead, where `cadence_cmd_escape` double-quotes
 # BOTH operands (`--model "opus[1m]"`, `--autocompact "auto"`) rather than
-# %q-quoting them bare -- neither needle in this suite matches that
-# rendering, so a failure THERE is an assertion-scope mismatch, not
-# evidence arm-resume.sh is broken on Windows. No .ps1 twin (project
-# convention: a documented platform guard suffices for a test harness).
+# %q-quoting them bare. HIMMEL-3181: the positive command-rendering
+# assertions therefore go through assert_contains_either and accept either
+# rendering. No .ps1 twin (project convention: a documented platform guard
+# suffices for a test harness).
 set -uo pipefail
 
 ARM="$(cd "$(dirname "$0")" && pwd)/arm-resume.sh"
@@ -93,6 +93,19 @@ assert_contains() {
     case "$haystack" in
         *"$needle"*) echo "PASS $label" ;;
         *) echo "FAIL $label — output missing: $needle"; FAILED=$((FAILED + 1)) ;;
+    esac
+}
+
+# HIMMEL-3181: the POSIX at-body leaves the operands bare (`--model opus `,
+# `--autocompact auto`) while the Windows .bat renderer double-quotes them
+# (`--model "opus"`, `--autocompact "auto"`, see the platform-guard note above);
+# accept whichever the host's real branch renders. Each needle still pins its
+# flag and value, so a dropped flag or a wrong value still fails.
+assert_contains_either() {
+    local label="$1" bare="$2" quoted="$3" haystack="$4"
+    case "$haystack" in
+        *"$bare"*|*"$quoted"*) echo "PASS $label" ;;
+        *) echo "FAIL $label — output missing: $bare (or, on the Windows .bat: $quoted)"; FAILED=$((FAILED + 1)) ;;
     esac
 }
 
@@ -200,7 +213,15 @@ cat > "$SCHED_STUB/powershell" <<'EOF'
 #!/usr/bin/env bash
 exit 1
 EOF
-chmod +x "$SCHED_STUB/schtasks" "$SCHED_STUB/atq" "$SCHED_STUB/at" "$SCHED_STUB/powershell"
+# HIMMEL-3181: macOS routes to _crontab_schedule and Windows to the .bat
+# branch; both REFUSE (rc=2) when `claude` does not resolve on PATH at arm
+# time, and the nightly macOS/Windows runners have no claude installed. A stub
+# keeps every dry-run arm below independent of the host's claude.
+cat > "$SCHED_STUB/claude" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$SCHED_STUB/schtasks" "$SCHED_STUB/atq" "$SCHED_STUB/at" "$SCHED_STUB/claude" "$SCHED_STUB/powershell"
 
 run_arm() {
     SCHTASKS_CMD="$SCHED_STUB/schtasks" PATH="$SCHED_STUB:$PATH" bash "$ARM" "$@"
@@ -246,7 +267,7 @@ out=$(run_arm --time "$(future_time)" --handover "$HO_B" --context standard --dr
 rc=$?
 assert_rc "b: standard non-console arm exits 0" 0 "$rc"
 assert_contains "b: guard line reports standard, explicit source" 'context=standard (explicit --context)' "$out"
-assert_contains "b: relaunch command carries --autocompact 200000" '--autocompact 200000' "$out"
+assert_contains_either "b: relaunch command carries --autocompact 200000" '--autocompact 200000' '--autocompact "200000"' "$out"
 assert_not_contains "b: no [1m] suffix anywhere in output" '[1m]' "$out"
 
 # ---------------------------------------------------------------------------
@@ -262,8 +283,8 @@ out=$(run_arm --time "$(future_time)" --handover "$HO_C" --model opus --context 
 rc=$?
 assert_rc "c: 1m + --model opus exits 0" 0 "$rc"
 assert_contains "c: guard line reports the suffixed model" 'context=1m (explicit --context); model=opus[1m]' "$out"
-assert_contains "c: relaunch command carries --autocompact auto" '--autocompact auto' "$out"
-assert_contains "c: relaunch command carries the suffixed model (escaped)" 'opus\[1m\]' "$out"
+assert_contains_either "c: relaunch command carries --autocompact auto" '--autocompact auto' '--autocompact "auto"' "$out"
+assert_contains_either "c: relaunch command carries the suffixed model (escaped)" 'opus\[1m\]' '"opus[1m]"' "$out"
 assert_not_contains "c: relaunch command carries no --autocompact 200000" '--autocompact 200000' "$out"
 
 # ---------------------------------------------------------------------------
@@ -279,7 +300,7 @@ out=$(run_arm --time "$(future_time)" --handover "$HO_D" --model claude-fable-5-
 rc=$?
 assert_rc "d: 1m + Fable-family model exits 0" 0 "$rc"
 assert_contains "d: guard line explains the Fable no-op" 'model=claude-fable-5-1 is Fable-family -- the CLI silently strips a [1m] suffix there, so it is NOT applied' "$out"
-assert_contains "d: relaunch command still carries --autocompact auto" '--autocompact auto' "$out"
+assert_contains_either "d: relaunch command still carries --autocompact auto" '--autocompact auto' '--autocompact "auto"' "$out"
 # RED CONTROL: no spelling of the model WITH a [1m] suffix attached anywhere
 # in the output, escaped or not -- this is the assertion that catches a
 # future blind-append regression. (A blanket "no literal [1m] anywhere"
@@ -301,7 +322,7 @@ out=$(run_arm --time "$(future_time)" --handover "$HO_E1" --dry-run 2>&1)
 rc=$?
 assert_rc "e1: console handover, no --context, exits 0" 0 "$rc"
 assert_contains "e1: guard line defaults console to standard (HIMMEL-2975)" 'context=standard (no --context given; console arms default to standard -- HIMMEL-2975)' "$out"
-assert_contains "e1: relaunch command carries --autocompact 200000" '--autocompact 200000' "$out"
+assert_contains_either "e1: relaunch command carries --autocompact 200000" '--autocompact 200000' '--autocompact "200000"' "$out"
 assert_not_contains "e1: no [1m] suffix anywhere in output" '[1m]' "$out"
 
 HO_E2=$(make_handover)
@@ -309,7 +330,7 @@ out=$(run_arm --time "$(future_time)" --handover "$HO_E2" --dry-run 2>&1)
 rc=$?
 assert_rc "e2: non-console handover, no --context, exits 0" 0 "$rc"
 assert_contains "e2: guard line defaults non-console to standard" 'context=standard (no --context given; non-console arms default to standard -- HIMMEL-2658)' "$out"
-assert_contains "e2: relaunch command carries --autocompact 200000" '--autocompact 200000' "$out"
+assert_contains_either "e2: relaunch command carries --autocompact 200000" '--autocompact 200000' '--autocompact "200000"' "$out"
 
 # ---------------------------------------------------------------------------
 # (e3) HIMMEL-2975: CONSOLE_CONTEXT=1m keeps the 1M opt-in reachable now
@@ -332,7 +353,7 @@ out=$(CONSOLE_CONTEXT=1m run_arm --time "$(future_time)" --handover "$HO_E3" --d
 rc=$?
 assert_rc "e3: console handover, CONSOLE_CONTEXT=1m, no --context, exits 0" 0 "$rc"
 assert_contains "e3: guard line resolves 1m" 'context=1m (' "$out"
-assert_contains "e3: relaunch command carries --autocompact auto" '--autocompact auto' "$out"
+assert_contains_either "e3: relaunch command carries --autocompact auto" '--autocompact auto' '--autocompact "auto"' "$out"
 
 # ---------------------------------------------------------------------------
 # (f) --context standard strips an operator-typed [1m] suffix from --model.
@@ -346,7 +367,7 @@ assert_contains "f: guard line names the stripped suffix" 'stripped an operator-
 # Linux station's POSIX `at` branch renders bare/unquoted via printf '%q',
 # with a trailing space as its right boundary (same shape test-arm-resume-
 # tier.sh's case (a) asserts on --model opus).
-assert_contains "f: relaunch command carries the plain model" '--model opus ' "$out"
+assert_contains_either "f: relaunch command carries the plain model" '--model opus ' '--model "opus"' "$out"
 # Same reasoning as case (d)'s RED CONTROL: --model's OWN pre-resolution
 # MODEL_REASON guard line legitimately echoes the operator-typed value
 # verbatim ("model=opus[1m] (explicitly pinned)"), so a blanket
@@ -379,7 +400,7 @@ HO_H1=$(make_handover)
 out=$(run_arm --time "$(future_time)" --handover "$HO_H1" --tier leg --context standard --dry-run 2>&1)
 rc=$?
 assert_rc "h1: --tier leg + standard exits 0" 0 "$rc"
-assert_contains "h1: leg argv carries the exact ceiling" '--autocompact 200000' "$out"
+assert_contains_either "h1: leg argv carries the exact ceiling" '--autocompact 200000' '--autocompact "200000"' "$out"
 
 HO_H2=$(make_handover)
 out=$(run_arm --time "$(future_time)" --handover "$HO_H2" --tier leg --context 1m --dry-run 2>&1)
@@ -425,14 +446,25 @@ exit 1
 EOF
 chmod +x "$REAL_SCHED/at" "$REAL_SCHED/atq" "$REAL_SCHED/powershell"
 
-HO_I=$(make_handover)
-out=$(FLEET_CAP_OK=1 ARM_WITH_LIVE_WORKERS=1 SCHTASKS_CMD="$REAL_SCHED/schtasks" PATH="$REAL_SCHED:$PATH" \
-  bash "$ARM" --time "$(future_time)" --handover "$HO_I" --tier leg --context standard 2>&1)
-rc=$?
-assert_rc "i: --tier leg real non-dry arm succeeds through scheduler stubs" 0 "$rc"
-job_body="$(cat "$REAL_SCHED/job.body" 2>/dev/null || true)"
-assert_contains "i: scheduled job body carries exact leg ceiling" '--autocompact 200000' "$job_body"
-assert_contains "i: success is post-verify earned" 'RESUME ARMED for' "$out"
+# HIMMEL-3181: the stub above backs the POSIX `at` path only. macOS arms via
+# crontab and Windows via schtasks, so on those hosts a real arm here would
+# touch the runner's REAL crontab (or fail rc=2 for want of a schtasks stub) --
+# SKIP with a stdout line the runner counts, never a silent pass.
+case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
+    linux*|Linux*)
+        HO_I=$(make_handover)
+        out=$(FLEET_CAP_OK=1 ARM_WITH_LIVE_WORKERS=1 SCHTASKS_CMD="$REAL_SCHED/schtasks" PATH="$REAL_SCHED:$PATH" \
+          bash "$ARM" --time "$(future_time)" --handover "$HO_I" --tier leg --context standard 2>&1)
+        rc=$?
+        assert_rc "i: --tier leg real non-dry arm succeeds through scheduler stubs" 0 "$rc"
+        job_body="$(cat "$REAL_SCHED/job.body" 2>/dev/null || true)"
+        assert_contains "i: scheduled job body carries exact leg ceiling" '--autocompact 200000' "$job_body"
+        assert_contains "i: success is post-verify earned" 'RESUME ARMED for' "$out"
+        ;;
+    *)
+        echo "SKIP i: real non-dry arm needs the at/atq backend (OSTYPE=${OSTYPE:-$(uname -s 2>/dev/null)}; macOS arms via crontab, Windows via schtasks)"
+        ;;
+esac
 
 echo "---"
 echo "Run scripts/handover/test-arm-resume-tier.sh separately for the --model/"

@@ -2025,12 +2025,32 @@ else
 fi
 
 # 23e: every quarantined templates/marketplace suite is a visible [SKIP] whose
-# reason names a ticket — never a silent drop (HIMMEL-3193 plan (b)).
+# reason names a ticket — never a silent drop (HIMMEL-3193 plan (b)). Zero
+# quarantined suites is valid: HIMMEL-3196 un-quarantined the last ones, so the
+# check must not assume one exists.
+q23_ok() { [ -z "$1" ] || ! grep -qvE 'HIMMEL-[0-9]+' <<< "$1"; }
 q23=$(grep -E '^\[SKIP\] (marketplace|templates)/' <<< "$o23")
-if [ -n "$q23" ] && ! grep -qvE 'HIMMEL-[0-9]+' <<< "$q23"; then
-  pass "23e: quarantined marketplace/templates suites are [SKIP]s that each name a ticket"
+if q23_ok "$q23"; then
+  pass "23e: quarantined marketplace/templates suites (if any) are [SKIP]s that each name a ticket"
 else
-  fail "23e: expected >=1 marketplace/templates [SKIP] and every reason to name a HIMMEL-N; got: ${q23:-none}"
+  fail "23e: every marketplace/templates [SKIP] must name a HIMMEL-N; got: $q23"
+fi
+# 23e-control: the predicate can fail. A ticketless [SKIP] must be rejected, a
+# ticketed one and an empty set accepted.
+if ! q23_ok $'[SKIP] marketplace/plugins/x/test-a.sh  # no ticket named here'; then
+  pass "23e-control: a marketplace [SKIP] with no ticket is rejected"
+else
+  fail "23e-control: a ticketless marketplace [SKIP] was accepted"
+fi
+if ! q23_ok $'[SKIP] marketplace/plugins/x/test-a.sh  # HIMMEL-1: ok\n[SKIP] templates/y/test-b.sh  # missing'; then
+  pass "23e-control: one ticketless line among ticketed ones is rejected"
+else
+  fail "23e-control: a mixed set with one ticketless [SKIP] was accepted"
+fi
+if q23_ok $'[SKIP] marketplace/plugins/x/test-a.sh  # HIMMEL-1: ok' && q23_ok ""; then
+  pass "23e-control: a ticketed [SKIP] and an empty set are accepted"
+else
+  fail "23e-control: a ticketed [SKIP] or the empty set was rejected"
 fi
 
 # 23f: the workflow wiring. The shards run with root `.`, and the
@@ -2129,6 +2149,56 @@ else
   fail "24c: expected rc=1, FAIL: 1, skipped=2; rc=$rc24c output: $out24c"
 fi
 rm -rf "$sb24"
+fi
+
+# --------------------------------------------------------------------------
+# Case 25 — SKIP_LIST_NON_LINUX (HIMMEL-3203): scripts/test-adopt.sh runs on
+#   Linux and stays [SKIP]ped off-Linux. The real table entry is driven with a
+#   sentinel-writing stub at scripts/test-adopt.sh; `uname` is stubbed on PATH
+#   so every host exercises the Darwin / MINGW branches deterministically.
+#     a. uname -s = Linux   -> [PASS] scripts/test-adopt.sh, stub ran
+#     b. uname -s = Darwin  -> [SKIP] with the HIMMEL-3203 reason, stub never ran
+#     c. uname -s = MINGW64_NT-10.0 -> same skip
+# --------------------------------------------------------------------------
+echo "== Case 25 (HIMMEL-3203): test-adopt.sh runs on Linux, skipped off-Linux =="
+sb25=$(mktemp -d "${TMPDIR:-/tmp}/rst-case25.XXXXXX") || { fail "25: mktemp failed"; sb25=""; }
+fakebin25=$(mktemp -d "${TMPDIR:-/tmp}/rst-case25-fakebin.XXXXXX") || { fail "25: fakebin mktemp failed"; fakebin25=""; }
+[ -n "$sb25" ] && [ -z "$fakebin25" ] && { rm -rf "$sb25"; sb25=""; }
+[ -z "$sb25" ] && [ -n "$fakebin25" ] && { rm -rf "$fakebin25"; fakebin25=""; }
+if [ -n "$sb25" ] && [ -n "$fakebin25" ]; then
+mkdir -p "$sb25/scripts"
+cat > "$sb25/scripts/test-adopt.sh" <<'SHEOF'
+#!/usr/bin/env bash
+touch "$(dirname "$0")/adopt-ran.sentinel"
+exit 0
+SHEOF
+chmod +x "$sb25/scripts/test-adopt.sh"
+sentinel25="$sb25/scripts/adopt-ran.sentinel"
+
+for os25 in Linux Darwin MINGW64_NT-10.0; do
+  cat > "$fakebin25/uname" <<SHEOF
+#!/usr/bin/env bash
+echo "$os25"
+SHEOF
+  chmod +x "$fakebin25/uname"
+  rm -f "$sentinel25"
+  out25=$(HIMMEL_RUNTIME_PREFLIGHT=0 PATH="$fakebin25:$PATH" bash "$RUNNER" "$sb25/scripts" 2>&1); rc25=$?
+  if [ "$os25" = "Linux" ]; then
+    if [ -f "$sentinel25" ] && grepq "$out25" -F '[PASS] ' && grepq "$out25" -F 'test-adopt.sh' && ! grepq "$out25" -F '[SKIP]'; then
+      pass "25a: uname=Linux -> scripts/test-adopt.sh RUNS and passes"
+    else
+      fail "25a: uname=Linux -> expected test-adopt.sh to run; rc=$rc25 sentinel=$([ -f "$sentinel25" ] && echo yes || echo no); out: $out25"
+    fi
+  else
+    # rc is 1 by design: the only suite in the sandbox is skipped, so nothing ran.
+    if [ ! -f "$sentinel25" ] && grepq "$out25" -F '[SKIP] ' && grepq "$out25" -F 'HIMMEL-3203'; then
+      pass "25b: uname=$os25 -> scripts/test-adopt.sh SKIPped with the HIMMEL-3203 reason, not run"
+    else
+      fail "25b: uname=$os25 -> expected loud HIMMEL-3203 skip; rc=$rc25 sentinel=$([ -f "$sentinel25" ] && echo yes || echo no); out: $out25"
+    fi
+  fi
+done
+rm -rf "$sb25" "$fakebin25"
 fi
 
 rst_tally

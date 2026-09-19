@@ -156,7 +156,15 @@ cat > "$SCHED_STUB/powershell" <<'EOF'
 #!/usr/bin/env bash
 exit 1
 EOF
-chmod +x "$SCHED_STUB/schtasks" "$SCHED_STUB/atq" "$SCHED_STUB/at" "$SCHED_STUB/powershell"
+# HIMMEL-3181: macOS routes to _crontab_schedule and Windows to the .bat
+# branch; both REFUSE (rc=2) when `claude` does not resolve on PATH at arm
+# time, and the nightly macOS/Windows runners have no claude installed. A stub
+# keeps every dry-run arm below independent of the host's claude.
+cat > "$SCHED_STUB/claude" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$SCHED_STUB/schtasks" "$SCHED_STUB/atq" "$SCHED_STUB/at" "$SCHED_STUB/claude" "$SCHED_STUB/powershell"
 
 # ---------------------------------------------------------------------------
 # gh stub — base-status.sh (the REAL production script, called by

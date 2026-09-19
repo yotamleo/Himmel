@@ -117,8 +117,16 @@ bad() { echo "FAIL - $1" >&2; fails=$((fails + 1)); }
 if bash -n "$CHECK"; then ok "check script syntax (bash -n)"; else bad "check script syntax"; fi
 if bash -n "$INSTALL"; then ok "install script syntax (bash -n)"; else bad "install script syntax"; fi
 
-BASE="$(mktemp -d "${TMPDIR:-/tmp}/himmel-mainref-test.XXXXXX")" || { echo "FAIL - mktemp -d base"; exit 1; }
-trap 'rm -rf "$BASE"; cleanup_hermetic_home' EXIT
+# shellcheck source=../lib/canon-path.sh
+# shellcheck disable=SC1091
+. "$ROOT/scripts/lib/canon-path.sh"
+BASE_RAW="$(mktemp -d "${TMPDIR:-/tmp}/himmel-mainref-test.XXXXXX")" || { echo "FAIL - mktemp -d base"; exit 1; }
+# HIMMEL-3179: the installer bakes its own `cd && pwd` spelling into git config
+# and git reports worktrees physically; macOS TMPDIR ("/var/folders/../T/", a
+# symlink, trailing slash) makes the raw mktemp spelling differ from both. Every
+# case builds its paths from the one physical spelling.
+BASE="$(canon_path "$BASE_RAW")" || { rm -rf "$BASE_RAW"; echo "FAIL - cannot canonicalise $BASE_RAW"; exit 1; }
+trap 'rm -rf "$BASE_RAW"; cleanup_hermetic_home' EXIT
 
 # mk_sandbox NAME -- creates $BASE/NAME-origin.git (bare) + $BASE/NAME-work
 # (a clone, on main, one seed commit already pushed and fetched). Echoes the

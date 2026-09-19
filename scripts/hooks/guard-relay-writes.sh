@@ -34,10 +34,12 @@
 #     SESSION_NAME_CMDLINE_FILE, CLAUDE_PID or CONSOLE_SESSION_NAME (an
 #     env-prefix override, `unset`, or `env -u` of an identity/marker
 #     variable); or contains "inbox-send" AND "--token"; or contains a
-#     write-shaped verb (">", "tee",
-#     "cp", "mv", "rm", "rsync", "dd", "truncate", "sed", "install", "chmod",
-#     "chown") AND text naming "/inbox/", "himmel-console", or both "-legN"
-#     and "-RESUME.md".
+#     write-shaped verb (">", or the command WORD "tee", "cp", "cpio", "mv",
+#     "rm", "rmdir", "rsync", "dd", "ddrescue", "truncate", "sed", "install",
+#     "chmod", "chown" —
+#     a word is bounded by the string edge or any char outside [[:alnum:]_])
+#     AND text naming "/inbox/", "himmel-console", or both "-legN" and
+#     "-RESUME.md".
 #
 # DEFAULT ACTION: with the marker unset this hook is a silent no-op — the
 # marker check is the FIRST statement, before stdin is even read, so it costs
@@ -68,17 +70,18 @@
 # is not denied. Left open deliberately this round rather than widening the
 # hook a further time on the same seam; track under HIMMEL-2975.
 #
-# RESIDUAL (false-deny, fail-safe direction, not fixed here): the write-verb
-# glob (*cp*|*mv*|*rm*|*dd*|*sed*|...) matches as an unanchored SUBSTRING, not
-# a shell word, so a pure READ command whose text happens to contain one of
-# those letter sequences is denied too when it also names a guarded path —
-# e.g. `sed -n 1,20p <inbox-path>`, `grep -c address <inbox-path>` (matches
-# "dd" in "address"), `grep form <leg-doc-path>` (matches "rm" in "form"). A
-# relay that needs to read a guarded path should use cat/head/tail/grep with
-# wording that avoids these substrings, or accept the deny and ask the console
-# to relay the content instead — over-denying a read is the safe direction
-# for this guard and is left uncorrected rather than widening the match logic
-# further.
+# RESIDUAL (false-deny, fail-safe direction): the write verb is matched as a
+# command WORD (HIMMEL-3202 — it was an unanchored substring, which denied
+# `grep -c address <inbox-path>` on "dd" and a read under a random mktemp dir
+# whose name spelled a verb). A verb that is a whole word anywhere in the text
+# still counts, whether or not it is in command position, so a pure READ that
+# names a guarded path and carries the verb as a standalone word is denied:
+# `sed -n 1,20p <inbox-path>` (sed IS the verb), or a path with a whole
+# component `/rm/` or `/dd/` (e.g. a macOS $TMPDIR `/var/folders/dd/...`).
+# Over-denying a read is the safe direction; ask the console to relay the
+# content instead. The opposite direction is unchanged and still open: a verb
+# glued into a longer command name (`gsed`, `gdd`, a wrapper `mycp`) is not a
+# word here — same fixed-vocabulary residual (R2) as an uncommon utility.
 #
 # Bash 3.2-compatible. Exit codes: 0 allow (no output); 2 deny (JSON
 # hookSpecificOutput with permissionDecision "deny" on stdout,
@@ -204,20 +207,36 @@ case "$tool" in
                 ;;
         esac
 
+        # A write verb counts only as a command WORD: not embedded in a longer
+        # alphanumeric word (HIMMEL-3202 — "address", "form", a mktemp suffix
+        # like "mVddVZ"). The boundary is "any char that is not [[:alnum:]_]"
+        # (or the string edge), so `/bin/rm`, `sudo rm`, `xargs rm`, `(cp`,
+        # `;mv` and a newline-separated `rm` all still match. Kept in a variable:
+        # bash 3.2 needs the ERE unquoted on the right of =~. `rmdir`, `cpio`
+        # and `ddrescue` are listed because each is a real write utility whose
+        # name STARTS with a listed verb and so used to be caught only as a
+        # substring of it — the word boundary would otherwise flip them to allow.
+        write_verb_re='(^|[^[:alnum:]_])(tee|cp|cpio|mv|rm|rmdir|rsync|dd|ddrescue|truncate|sed|install|chmod|chown)([^[:alnum:]_]|$)'
+        write_shaped=0
         case "$cmd" in
-            *'>'* | *tee* | *cp* | *mv* | *rm* | *rsync* | *dd* | *truncate* | *sed* | *install* | *chmod* | *chown*)
-                case "$cmd" in
-                    *"/inbox"* | *himmel-console*) deny "redirect-into-console-state" "$cmd" ;;
-                esac
-                case "$cmd" in
-                    *-legN*)
-                        case "$cmd" in
-                            *-RESUME.md*) deny "redirect-into-console-state" "$cmd" ;;
-                        esac
-                        ;;
-                esac
-                ;;
+            *'>'*) write_shaped=1 ;;
         esac
+        if [ "$write_shaped" = "0" ] && [[ "$cmd" =~ $write_verb_re ]]; then
+            write_shaped=1
+        fi
+
+        if [ "$write_shaped" = "1" ]; then
+            case "$cmd" in
+                *"/inbox"* | *himmel-console*) deny "redirect-into-console-state" "$cmd" ;;
+            esac
+            case "$cmd" in
+                *-legN*)
+                    case "$cmd" in
+                        *-RESUME.md*) deny "redirect-into-console-state" "$cmd" ;;
+                    esac
+                    ;;
+            esac
+        fi
 
         exit 0
         ;;

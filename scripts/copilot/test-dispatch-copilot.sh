@@ -9,6 +9,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DISPATCH="$SCRIPT_DIR/dispatch-copilot.sh"
+# shellcheck source=../lib/canon-path.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/canon-path.sh"
 
 fails=0
 pass() { echo "  ok: $1"; }
@@ -17,8 +20,11 @@ assert_rc() {  # assert_rc <expected> <ok-name> <fail-detail>
   if [ "$RC" -eq "$1" ]; then pass "$2"; else fail "$3"; fi
 }
 
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+TMP_RAW="$(mktemp -d "${TMPDIR:-/tmp}/dispatch-copilot.XXXXXX")" || { echo "FAIL: mktemp -d" >&2; exit 1; }
+trap 'rm -rf "$TMP_RAW"' EXIT
+# dispatch-copilot.sh reports the worktree as `pwd -P`; build $WT from the same
+# physical spelling (macOS /var -> /private/var, Git Bash /tmp -> /c/Users/..).
+TMP="$(canon_path "$TMP_RAW")" || { echo "FAIL: cannot canonicalise $TMP_RAW" >&2; exit 1; }
 
 WT="$TMP/.claude/worktrees/wt"
 mkdir -p "$WT"

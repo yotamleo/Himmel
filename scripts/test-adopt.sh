@@ -914,6 +914,7 @@ STUB
       chmod +x "$nbin/python3"
     fi
     if [ "$native_case" = unwritable ]; then
+      mkdir -p "$ntarget/.git/hooks"
       chmod a-w "$ntarget/.git/hooks"
       [ ! -w "$ntarget/.git/hooks" ] || fail "HIMMEL-2771 unwritable: fixture requires an unprivileged user"
     fi
@@ -1030,6 +1031,7 @@ done
 crtarget1="$work/cr2771-foreign"; crbin1="$work/cr2771-foreign-bin"
 mkdir -p "$crtarget1" "$crbin1"
 HOME="$pchome" git -C "$crtarget1" init -q
+mkdir -p "$crtarget1/.git/hooks"
 foreign_hook_content='#!/usr/bin/env bash
 echo "ADOPTER OWN HOOK -- do not clobber me"
 '
@@ -1103,6 +1105,7 @@ echo "ok: HIMMEL-2771 CR hookspath-outside refuses to write into a shared/absolu
 crtarget4="$work/cr2771-backup-exists"; crbin4="$work/cr2771-backup-exists-bin"
 mkdir -p "$crtarget4" "$crbin4"
 HOME="$pchome" git -C "$crtarget4" init -q
+mkdir -p "$crtarget4/.git/hooks"
 prior_backup_content='#!/usr/bin/env bash
 echo "THE ADOPTERS REAL ORIGINAL -- never destroy me"
 '
@@ -1277,6 +1280,7 @@ crtarget13="$work/cr2771r5-symlink-dangling"; crbin13="$work/cr2771r5-symlink-da
 croutside13="$work/cr2771r5-symlink-dangling-outside"
 mkdir -p "$crtarget13" "$crbin13" "$croutside13"
 HOME="$pchome" git -C "$crtarget13" init -q
+mkdir -p "$crtarget13/.git/hooks"
 ln -s "$croutside13/pwned" "$crtarget13/.git/hooks/commit-msg"
 set +e
 out=$(PATH="$crbin13:$work/bin:$native_free_path" HOME="$pchome" bash "$adopt" \
@@ -1306,6 +1310,7 @@ crtarget14="$work/cr2771r5-symlink-marker"; crbin14="$work/cr2771r5-symlink-mark
 croutside14="$work/cr2771r5-symlink-marker-outside.sh"
 mkdir -p "$crtarget14" "$crbin14"
 HOME="$pchome" git -C "$crtarget14" init -q
+mkdir -p "$crtarget14/.git/hooks"
 sentinel14='echo "SENTINEL cr2771r5-symlink-marker: outside file must not be truncated"'
 cat > "$croutside14" <<OUTSIDEHOOK
 #!/usr/bin/env bash
@@ -1418,6 +1423,7 @@ echo "ok: HIMMEL-2771 CR6 dir-is-empty-dangling: dir_is_empty sees a dangling sy
 crtarget7="$work/cr2771r2-chain-fails"; crbin7="$work/cr2771r2-chain-fails-bin"
 mkdir -p "$crtarget7" "$crbin7"
 HOME="$pchome" git -C "$crtarget7" init -q
+mkdir -p "$crtarget7/.git/hooks"
 HOME="$pchome" git -C "$crtarget7" checkout -q -b feat/native-test
 cat > "$crtarget7/.git/hooks/commit-msg" <<'FOREIGNHOOK'
 #!/usr/bin/env bash
@@ -1450,6 +1456,7 @@ echo "ok: HIMMEL-2771 CR2 chain-fails: a chained backup hook can still fail the 
 crtarget8="$work/cr2771r2-chain-passes"; crbin8="$work/cr2771r2-chain-passes-bin"
 mkdir -p "$crtarget8" "$crbin8"
 HOME="$pchome" git -C "$crtarget8" init -q
+mkdir -p "$crtarget8/.git/hooks"
 HOME="$pchome" git -C "$crtarget8" checkout -q -b feat/native-test
 cat > "$crtarget8/.git/hooks/commit-msg" <<FOREIGNHOOK2
 #!/usr/bin/env bash
@@ -1498,6 +1505,7 @@ crremote9="$work/cr2771r2-push-block-remote.git"
 mkdir -p "$crtarget9" "$crbin9"
 HOME="$pchome" git init -q --bare "$crremote9"
 HOME="$pchome" git -C "$crtarget9" init -q
+mkdir -p "$crtarget9/.git/hooks"
 HOME="$pchome" git -C "$crtarget9" checkout -q -b feat/native-test
 out=$(PATH="$crbin9:$work/bin:$native_free_path" HOME="$pchome" bash "$adopt" \
   --profile core --scope project --target "$crtarget9" 2>&1); rc=$?

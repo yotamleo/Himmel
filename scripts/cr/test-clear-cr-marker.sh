@@ -2311,6 +2311,68 @@ if marker_exists "$tmp"; then fail "5j floor-fallback accepted: marker should be
 rm -rf "$tmp"
 unset CR_FLOOR_FALLBACK
 
+# 5k-5m (HIMMEL-3120). The ticket claimed the floor + CR_FLOOR_FALLBACK were
+# "jointly unsatisfiable"; gate 3b in fact already accepts a verified exhaustion
+# row (5a/5j). These cases pin the two things the suite above left implicit, so
+# the claim cannot silently become true: the AUTH-FAULT RED control, and the row
+# shape a real codex 429 leaves in the live ledger.
+export CR_FLOOR_FALLBACK=claude-only
+
+# 5k. Every reason failure-classify.sh (and the panel's own config/deselect
+# vocabulary) can record that is NOT a verified-exhaustion class must still keep
+# the marker CLOSED with the floor on and the knob set — an auth fault (401/403),
+# a 404/4xx, a 5xx, a malformed or empty reply, a config error, an unclassified
+# rc. Never routed around: it must be diagnosed. Uses a FULL 40-char head, as
+# the live ledger does.
+for _r in auth http-4xx http-5xx malformed-output empty-response config generic-rc-1; do
+    make_repo || exit 1
+    write_marker "$tmp" "$sha"
+    write_ledger "$tmp" "$(avail_ok_claude "$sha")" "$(avail_reason "$sha" codex unavailable "$_r")"
+    run_clear "$tmp" 14 "5k codex unavailable reason=$_r + claude ok + floor on + knob set -> exit 14"
+    if marker_exists "$tmp"; then pass; else fail "5k reason=$_r: marker must REMAIN"; fi
+    if grepq "$LAST_CLEAR_OUT" 'FLOOR-FALLBACK'; then
+        fail "5k reason=$_r must NOT report a floor-fallback acceptance"
+    else
+        pass
+    fi
+    rm -rf "$tmp"
+done
+unset _r
+
+# 5l. The shape a real codex HTTP 429 leaves in the live ledger (2026-09-19
+# rows; the detail text here is representative, not verbatim): full 40-char
+# head, branch/ts/artifact/perspective, reason=quota-5h and a provider detail
+# line, next to the Claude ok row. Floor on + knob set -> the
+# marker clears, and the audit line names the full head and the exhausted lane.
+make_repo || exit 1
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_claude "$sha")" \
+    "$(printf '{"kind":"avail","ts":"2026-09-19T00:50:19Z","branch":"feat/x","head":"%s","model":"codex","status":"unavailable","artifact":"diff","perspective":"off","reason":"quota-5h","detail":"ChatGPT or Codex Subscription rate-limited every one of 3 attempts: HTTP 429: The usage limit has been reached"}' "$sha")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 0 "5l real codex quota-5h row (full head + detail) + claude ok + floor on + knob set -> exit 0"
+if marker_exists "$tmp"; then fail "5l real-shape floor-fallback accepted: marker should be GONE"; else pass; fi
+if grepq "$LAST_CLEAR_OUT" -F "FLOOR-FALLBACK branch=feat/x sha=$sha reason=claude-only-floor-accepted exhausted=codex(reason=quota-5h)"; then pass; else
+    fail "5l audit line must name the full head and the exhausted lane: $LAST_CLEAR_OUT"
+fi
+rm -rf "$tmp"
+
+# 5m. Head scoping: the SAME real quota-5h row recorded at a DIFFERENT head (an
+# earlier push) must not cover the tip. At the tip only the Claude row exists, so
+# there is no non-Claude attempt at this head -> exit 14, marker stays.
+make_repo || exit 1
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_claude "$sha")" \
+    "$(avail_reason "0000000000000000000000000000000000000000" codex unavailable quota-5h)"
+run_clear "$tmp" 14 "5m quota-5h row at a DIFFERENT head + claude ok at tip + knob set -> exit 14"
+if marker_exists "$tmp"; then pass; else fail "5m other-head exhaustion: marker must REMAIN"; fi
+if grepq "$LAST_CLEAR_OUT" 'FLOOR-FALLBACK'; then
+    fail "5m must NOT accept another head's exhaustion row"
+else
+    pass
+fi
+rm -rf "$tmp"
+unset CR_FLOOR_FALLBACK
+
 unset CR_REQUIRE_CROSS_MODEL
 
 # 9. GraphQL budget preflight before the PR lookup (HIMMEL-3190). The fixture

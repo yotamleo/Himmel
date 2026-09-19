@@ -16,6 +16,9 @@
 set -uo pipefail
 
 SWEEP="$(cd "$(dirname "$0")" && pwd)/tmp-sweep.sh"
+# shellcheck source=../lib/canon-path.sh
+# shellcheck disable=SC1091
+. "$(dirname "$SWEEP")/../lib/canon-path.sh"
 
 failures=0
 skips=0
@@ -54,7 +57,10 @@ make_fixture() {
     done
 }
 
-TMPROOT="${TMPDIR:-/tmp}"
+# tmp-sweep.sh reports its root as `pwd -P`, and Case F's rm stub matches on the
+# root's text: build the fixture roots from the physical spelling (macOS
+# TMPDIR=/var/folders/../T/ is /private/var/.. to the script — HIMMEL-3179).
+TMPROOT=$(canon_path "${TMPDIR:-/tmp}") || { echo "FAIL: cannot canonicalise ${TMPDIR:-/tmp}"; exit 1; }
 
 echo "test-tmp-sweep.sh"
 

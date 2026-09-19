@@ -255,8 +255,31 @@ echo "HKEY_CURRENT_USER\\Control Panel\\International"
 echo "    sShortDate    REG_SZ    M/d/yyyy"
 exit 0
 EOF
-chmod +x "$SCHED_STUB/schtasks" "$SCHED_STUB/atq" "$SCHED_STUB/at" \
-    "$SCHED_STUB/powershell" "$SCHED_STUB/reg"
+# HIMMEL-3181: macOS routes to _crontab_schedule and Windows to the .bat
+# branch; both REFUSE (rc=2) when `claude` does not resolve on PATH at arm
+# time, and the nightly macOS/Windows runners have no claude installed. A stub
+# keeps every dry-run arm below independent of the host's claude.
+cat > "$SCHED_STUB/claude" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+# HIMMEL-3181: macOS arms via crontab, never `at`. Without this stub the real
+# arms below (T3, T8-T22) write the runner's REAL crontab and then collide with
+# each other's leftovers at the same future_time (rc=6). File-backed so the
+# post-arm verify finds its entry; the schedule fields are rewritten to a fixed
+# 09:00, the same way the atq stub above reports a fixed time, so back-to-back
+# arms never share an exact minute.
+cat > "$SCHED_STUB/crontab" <<EOF
+#!/usr/bin/env bash
+store="$TMP/sched-stub.crontab"
+case "\${1:-}" in
+    -l) [ -s "\$store" ] && { cat "\$store"; exit 0; }; exit 1 ;;
+    -)  sed 's/^[0-9][0-9]* [0-9][0-9]* /00 09 /' > "\$store" ;;
+    *)  exit 0 ;;
+esac
+EOF
+chmod +x "$SCHED_STUB/schtasks" "$SCHED_STUB/atq" "$SCHED_STUB/at" "$SCHED_STUB/crontab" \
+    "$SCHED_STUB/claude" "$SCHED_STUB/powershell" "$SCHED_STUB/reg"
 export PATH="$SCHED_STUB:$PATH"
 
 # --- T1: no lock, no registry -> plain dry-run arm succeeds -----------------
@@ -551,9 +574,11 @@ HO15_ALT="$HANDOVER_DIR/HIMMEL-856-test/../HIMMEL-856-test/next-session-15.md"
 # schtasks stub. On POSIX (ubuntu/macOS CI) arm-resume's dedup check queries
 # atq, which reads sched-stub.atdir -- a leftover job file there still names
 # the same derived task, so the second arm hit a real (if here unwanted)
-# same-task dedup refusal (rc=3). Clear both stores.
+# same-task dedup refusal (rc=3). Clear both stores. On macOS the dedup reads
+# the crontab stub instead (HIMMEL-3181), so clear that store too.
 : > "$TMP/sched-stub.tasks"
 rm -rf "$TMP/sched-stub.atdir"
+rm -f "$TMP/sched-stub.crontab"
 out=$(bash "$ARM" --time "$(future_time)" --handover "$HO15_ALT" 2>&1)
 rc=$?
 assert_rc "T15: second real arm under another spelling succeeds" 0 "$rc"
@@ -637,9 +662,10 @@ rc=$?
 assert_rc "T19: first arm with a backslash path succeeds" 0 "$rc"
 # Same reason as T15: clear the (now registering) stub scheduler so the re-arm
 # is not refused as its own duplicate. arms.jsonl stays -- it is what is under test.
-# HIMMEL-2964: both stores, same reason as T15.
+# HIMMEL-2964: both stores, same reason as T15 (plus the macOS crontab stub).
 : > "$TMP/sched-stub.tasks"
 rm -rf "$TMP/sched-stub.atdir"
+rm -f "$TMP/sched-stub.crontab"
 out=$(bash "$ARM" --time "$(future_time)" --handover "$HO19" 2>&1)
 rc=$?
 assert_rc "T19: second arm (re-arm) with a backslash path succeeds" 0 "$rc"

@@ -654,12 +654,25 @@ scripts/handover/test-arm-resume.sh  # HIMMEL-3132: superseded by its two --only
 scripts/luna/test-pipeline-cadence.sh  # integration: drives a live 'claude' (--settings fragment) — VM e2e covers it
 scripts/statusline/test-usage-fetch-scheduled.sh  # needs network + OAuth credential; GATE probe run manually (HIMMEL-1841)
 scripts/test-plugin-test.sh          # integration: self-bootstraps a plugin's deps over npm/network — VM e2e covers it
-scripts/test-adopt.sh                # timing-heavy full adoption matrix exceeds the hermetic runner's per-suite cap on Windows (600s default since HIMMEL-2233; the exceedance was last measured against the older 180s cap and has not been re-measured); runnable individually, no VM e2e coverage
 scripts/handover/test-arm-resume-probe.sh  # MEASUREMENT tool, not an assertion suite — times a dry-run/real arm and reports python3 spawn counts; always exits 0, so collecting it would spend ~20s per full run to assert nothing (HIMMEL-2125)
 scripts/test-check-ci-forks-probe.sh  # MEASUREMENT tool, not an assertion suite — re-runs the full test-check-ci.sh suite instrumented to report gh-stub fork counts + wall time per case; always exits 0 and duplicates the suite's own run, so collecting it would double the extended-tier cost to assert nothing (HIMMEL-2169)
-marketplace/plugins/handover/scripts/test-skill-e2e.sh  # HIMMEL-3196: real bug — asserts status/roadmap/tech-debt/counter.md under handovers/hbtest-PID that nothing creates, plus a jira npm build+test that fails (5 FAIL of 13); quarantined when HIMMEL-3193 turned the marketplace root on
-marketplace/plugins/telegram-himmel/tests/test-telegram-poller-gate.sh  # HIMMEL-3196: real bug — reads bot.pid after killing the server, which removes bot.pid on shutdown (server.ts:684), so the owner case always reads NO_PID
 "
+
+# Off-Linux skips (HIMMEL-3203): same format as SKIP_LIST, but appended to it
+# only when `uname -s` is not Linux (macOS "Darwin", Git-Bash "MINGW*"), so a
+# suite that is fine on the Linux CI runner is not blanket-quarantined
+# everywhere. test-adopt.sh measured ~61-62s on Linux (twice, 2026-09-19)
+# against the 600s per-suite cap; while it sat in SKIP_LIST CI never ran it,
+# which is how the HIMMEL-3201 fixture drift (rc=123) went unnoticed. The
+# non-Linux reason is unchanged from its SKIP_LIST days.
+SKIP_LIST_NON_LINUX="
+scripts/test-adopt.sh                # HIMMEL-3203: skipped off-Linux only — timing-heavy full adoption matrix exceeds the hermetic runner's per-suite cap on Windows (600s default since HIMMEL-2233; the exceedance was last measured against the older 180s cap and has not been re-measured); runs on Linux CI (~62s); runnable individually, no VM e2e coverage
+"
+case "$(uname -s 2>/dev/null || echo unknown)" in
+  Linux) ;;
+  *) SKIP_LIST="$SKIP_LIST
+$SKIP_LIST_NON_LINUX" ;;
+esac
 
 # Conditional suites (HIMMEL-1589). Unlike SKIP_LIST (always skipped), a
 # conditional suite runs by default and is only held back when --changed-since

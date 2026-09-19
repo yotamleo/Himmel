@@ -14,6 +14,9 @@ REPO_ROOT="$SCRIPT_DIR/../.."
 # shellcheck source=scripts/lib/fixture-tempdir.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/../lib/fixture-tempdir.sh"
+# shellcheck source=scripts/lib/canon-path.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/canon-path.sh"
 
 PASS=0
 FAIL=0
@@ -43,9 +46,9 @@ is_mingw() {
 }
 
 TMP_ROOT=$(fixture_mktemp_dir) || exit 1
-if command -v cygpath >/dev/null 2>&1; then
-    TMP_ROOT=$(cygpath -m "$TMP_ROOT")
-fi
+# git and node report the physical, native spelling (macOS /private/var, Git
+# Bash C:/Users/runneradmin): build every fixture path from that one (HIMMEL-3179).
+TMP_ROOT=$(canon_path_native "$TMP_ROOT") || exit 1
 
 # HERMETIC GIT CONFIG (HIMMEL-2035 CR round 1). Without this the fixtures
 # inherit the OPERATOR's global git config — which on a himmel box sets

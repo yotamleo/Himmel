@@ -179,13 +179,24 @@ distinguishes from self-verification).
   the clean clone first (a read-only run — no edits — so this is the one
   explicit exception to "never build in the clone itself" above; it needs no
   worktree), redirected (never piped through `tee` — that makes
-  `$?` tee's exit code and can mask a failing gate): `<gate-cmd> >
-  <scratchpad>/<name>.log 2>&1; rc=$?`, writing the log to the scratchpad,
-  NEVER into the clone (release tooling and CI reject dirty trees). A non-zero
-  baseline `rc` must be recorded and compared against the post-change `rc` —
-  never masked. After the change, run the same gates the same way. **Parity
-  rule: no test that passed on baseline fails after; added tests are listed
-  explicitly.**
+  `$?` tee's exit code and can mask a failing gate): `bash
+  "<primary-checkout>/scripts/upstream/run-target-tests.sh" --cwd <dir> --
+  <gate-cmd> > <scratchpad>/<name>.log 2>&1; rc=$?`, writing the log to the
+  scratchpad, NEVER into the clone (release tooling and CI reject dirty
+  trees). A non-zero baseline `rc` must be recorded and compared against the
+  post-change `rc` — never masked. After the change, run the same gates the
+  same way (`--cwd` = the linked worktree). **Parity rule: no test that
+  passed on baseline fails after; added tests are listed explicitly.**
+- **Every gate/test run goes through `run-target-tests.sh` — never the bare
+  command** (HIMMEL-3053). It runs the command under a throwaway
+  `HERMES_HOME` (removed afterwards), scrubs every inherited `HERMES_*`
+  variable, and REFUSES (rc=2, loud) if that home would land in the live one
+  (`$HERMES_HOME` or `~/.hermes`). A bare pytest from a hermes clone once
+  inherited the live `HERMES_HOME` and wrote a stale `gateway_state.json`
+  into the live install. `--cwd` replaces `cd` (the wrapper changes directory
+  itself). rc=2 is also the wrapper's usage/refusal status — read its
+  stderr before trusting an rc=2 as the target's own. The isolation is the
+  script's job; do not re-describe it in a hand-typed `env` prefix.
 - Regenerate any hash/manifest artifacts with the repo's own tooling if it has
   them; run the same commands its CI runs.
 - Arm himmel's own CR gate on the throwaway clone once (HIMMEL-2035):

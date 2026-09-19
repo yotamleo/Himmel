@@ -9,6 +9,9 @@ LIB="$(cd "$(dirname "$0")" && pwd)/load-dotenv.sh"
 # shellcheck source=load-dotenv.sh
 # shellcheck disable=SC1091
 . "$LIB"
+# shellcheck source=canon-path.sh
+# shellcheck disable=SC1091
+. "$(dirname "$LIB")/canon-path.sh"
 
 FAILED=0
 assert_eq() {
@@ -126,8 +129,9 @@ assert_eq "T14 --root no .env no-op" "<unset>|0" "$out"
 # pinned --root — the claude-codex path. A launcher invoked from a worktree copy
 # of itself has <parent> = worktree root (no .env); the helper resolves the
 # primary and reads .env there. canonicalize() compares paths by their resolved
-# form (avoids macOS /tmp → /private/tmp and drive-form mismatches).
-canon() { ( cd "$1" 2>/dev/null && pwd ); }
+# form (avoids macOS /var → /private/var and MSYS /tmp vs C:/… mismatches; a bare
+# `cd && pwd` is the LOGICAL path and canonicalises neither — HIMMEL-3179).
+canon() { canon_path_native "$1" 2>/dev/null; }
 PFREPO="$TMP/pf-repo"; mkdir -p "$PFREPO"; git -C "$PFREPO" init --quiet
 git -C "$PFREPO" config user.email t@example.com
 git -C "$PFREPO" config user.name tester

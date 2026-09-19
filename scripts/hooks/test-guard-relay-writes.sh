@@ -24,8 +24,21 @@ HOOK="$SCRIPT_DIR/guard-relay-writes.sh"
 BASH_ABS=$(command -v bash)
 [ -n "$BASH_ABS" ] || { echo "FATAL: cannot resolve bash on PATH" >&2; exit 1; }
 
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/himmel-relay-writes-guard.XXXXXX")"
-[ -n "$TMP" ] || { echo "FATAL: mktemp -d failed" >&2; exit 1; }
+# The fixture path is pid-derived (digits only), NOT a random mktemp suffix: the
+# guard matches write verbs over the whole command text, and a random suffix can
+# spell one (HIMMEL-3202: `...guard.mVddVZ` contains "dd"). Verb-free = the
+# fixture can never be the cause of a row's result. The inherited $TMPDIR is
+# not ours to name either (a macOS `/var/folders/dd/...` has a whole `dd`
+# component), so ask the guard itself whether a read under that base is
+# allowed and fall back to /tmp when it is not — no second copy of the verb
+# list to drift.
+FIXTURE_BASE="${TMPDIR:-/tmp}"
+if ! jq -nc --arg c "cat $FIXTURE_BASE/x/inbox/X.md" '{tool_name:"Bash", tool_input:{command:$c}}' \
+    | env HANDOVER_DIR=/nonexistent HIMMEL_CONSOLE_RELAY=1 "$BASH_ABS" "$HOOK" >/dev/null 2>&1; then
+    FIXTURE_BASE=/tmp
+fi
+TMP="$FIXTURE_BASE/himmel-relay-guard-fixture.$$"
+mkdir "$TMP" || { echo "FATAL: mkdir $TMP failed" >&2; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 
 ROOT="$TMP/root"
@@ -112,7 +125,9 @@ SYMLINK_INTO_INBOX="$TMP/looks-safe.md"
 ln -s "$INBOX_X" "$SYMLINK_INTO_INBOX"
 
 # name|json|expect_rc_relay|expect_rc_norelay
-ROWS_NAME=(row1 row2 row3 row4 row5 row6 row7 row8 row9 row10a row10b row10c row10d row11 row12 row13 row14 row15 row16 row17 row18 row19 row20)
+ROWS_NAME=(row1 row2 row3 row4 row5 row6 row7 row8 row9 row10a row10b row10c row10d row11 row12 row13 row14 row15 row16 row17 row18 row19 row20
+    read-tee read-cp read-mv read-rm read-rsync read-dd read-truncate read-sed read-install read-chmod read-chown read-address read-legdoc-form
+    write-dd write-abs-rm write-sudo-rm write-rmdir write-cpio write-ddrescue write-xargs-rm write-paren-cp write-semi-mv write-sed-i write-tee write-install write-rsync write-chown write-chmod write-truncate write-newline-rm)
 ROWS_JSON=(
     "$(write_payload Write "$INBOX_X")"
     "$(write_payload Edit "$LEG_DOC")"
@@ -137,8 +152,46 @@ ROWS_JSON=(
     "$(write_payload Write "$SYMLINK_INTO_INBOX")"
     "$(bash_payload "rm -rf $ROOT/inbox")"
     "$(bash_payload "mv $ROOT/inbox /tmp/saved")"
+    # HIMMEL-3202: a READ of a guarded path whose TEXT merely contains a write
+    # verb letter-sequence INSIDE a longer word (teeny/acpx/xmvx/form/…) must
+    # allow — the verb match is a command WORD, not a substring.
+    "$(bash_payload "cat $ROOT/inbox/teeny.md")"
+    "$(bash_payload "cat $ROOT/inbox/acpx.md")"
+    "$(bash_payload "cat $ROOT/inbox/xmvx.md")"
+    "$(bash_payload "cat $ROOT/inbox/form.md")"
+    "$(bash_payload "cat $ROOT/inbox/rsyncx.md")"
+    "$(bash_payload "cat $ROOT/inbox/guard.mVddVZ.md")"
+    "$(bash_payload "cat $ROOT/inbox/truncatex.md")"
+    "$(bash_payload "cat $ROOT/inbox/used.md")"
+    "$(bash_payload "cat $ROOT/inbox/installx.md")"
+    "$(bash_payload "cat $ROOT/inbox/chmodx.md")"
+    "$(bash_payload "cat $ROOT/inbox/chownx.md")"
+    "$(bash_payload "grep -c address $ROOT/inbox/X.md")"
+    "$(bash_payload "cat $ROOT/yotamleo/himmel/HIMMEL-1-form-legN9-2026-09-12-RESUME.md")"
+    # ...while a REAL verb stays denied in every shape a command word can take
+    # (bare, absolute path, after sudo/xargs, in a subshell, after ; or a newline).
+    "$(bash_payload "dd of=$ROOT/inbox/X.md if=/dev/null")"
+    "$(bash_payload "/bin/rm $ROOT/inbox/X.md")"
+    "$(bash_payload "sudo rm -f $ROOT/inbox/X.md")"
+    "$(bash_payload "rmdir $ROOT/inbox")"
+    "$(bash_payload "echo x | cpio -p $ROOT/inbox")"
+    "$(bash_payload "ddrescue x $ROOT/inbox/X.md")"
+    "$(bash_payload "ls | xargs rm $ROOT/inbox/X.md")"
+    "$(bash_payload "(cp x $ROOT/inbox/X.md)")"
+    "$(bash_payload "true;mv x $ROOT/inbox/X.md")"
+    "$(bash_payload "sed -i s/a/b/ $ROOT/inbox/X.md")"
+    "$(bash_payload "printf x | tee $ROOT/inbox/X.md")"
+    "$(bash_payload "install -m 600 x $ROOT/inbox/X.md")"
+    "$(bash_payload "rsync x $ROOT/inbox/")"
+    "$(bash_payload "chown u $ROOT/inbox/X.md")"
+    "$(bash_payload "chmod 000 $ROOT/inbox/X.md")"
+    "$(bash_payload "truncate -s0 $ROOT/inbox/X.md")"
+    "$(bash_payload "cat $ROOT/inbox/X.md
+rm $ROOT/inbox/Y.md")"
 )
-ROWS_EXPECT=(2 2 2 0 2 2 0 2 2 2 2 2 2 0 2 2 2 2 2 2 2 2 2)
+ROWS_EXPECT=(2 2 2 0 2 2 0 2 2 2 2 2 2 0 2 2 2 2 2 2 2 2 2
+    0 0 0 0 0 0 0 0 0 0 0 0 0
+    2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2)
 
 echo "=== marker set (HIMMEL_CONSOLE_RELAY=1) ==="
 i=0

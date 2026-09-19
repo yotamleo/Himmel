@@ -232,6 +232,28 @@ fleet_slots_shield "$TMP" || exit 1
 export ARM_RESUME_LOG_DIR="$TMP/arm-logs"
 export ARM_RUNNER_DIR="$TMP/arm-runners"
 
+# HIMMEL-3181: macOS (crontab) and Windows (.bat) arms REFUSE rc=2 when `claude`
+# does not resolve on PATH at arm time, and the nightly macOS/Windows runners
+# have no claude installed -- so nearly every section below fails there. When
+# the host has none, put a no-op stub first on PATH for the whole suite (a
+# section that builds its own stub PATH still prepends to this one). A host
+# that has claude is left untouched, so dev machines run exactly as before.
+if ! command -v claude >/dev/null 2>&1; then
+    mkdir -p "$TMP/no-claude-host-stub"
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$TMP/no-claude-host-stub/claude"
+    chmod +x "$TMP/no-claude-host-stub/claude"
+    export PATH="$TMP/no-claude-host-stub:$PATH"
+fi
+# HIMMEL-3181: the sections below drive the at/atq backend with stubs (`at -t`
+# stamps, atq dedup, at job bodies). arm-resume.sh dispatches on OSTYPE, and on
+# macOS that is the crontab backend -- so every at-shaped assertion fails there.
+# Pin the linux (at) branch for this suite on a darwin host; the macOS crontab
+# branch has its own suite (test-arm-resume-cron.sh). Windows keeps its native
+# branch, and a section that passes OSTYPE per invocation still overrides this.
+case "${OSTYPE:-}" in
+    darwin*) export OSTYPE=linux-gnu ;;
+esac
+
 # Fleet-census shield (HIMMEL-2968): all real arms use scheduler stubs, so
 # the host's live session count must not refuse them at the fleet preflight.
 # Match test-arm-resume-queue-lock.sh's empty process-table fixture.
