@@ -170,10 +170,24 @@ cat > "$tmpdir/fixture-computed/tools/sub/c.py" <<'EOF'
 registry.register(name="zz_in_a_subpackage", toolset="sub")
 registry.register(name=PREFIX + "_computed", toolset="sub")
 EOF
+# A tool file that does not parse: the AST cannot read it, so the scan falls
+# back to a regex. Registrations sit in every shape the fallback must reach
+# (name= not first, name= after a nested call, name as the first positional),
+# plus a name= in a call that is NOT a registration, which must stay uncollected.
+mkdir -p "$tmpdir/fixture-broken/tools"
+cat > "$tmpdir/fixture-broken/tools/broken.py" <<'EOF'
+registry.register(toolset="x", name="zz_broken_kw_late")
+registry.register("zz_broken_positional", "x", {}, handler)
+registry.register(
+    toolset="x", schema=dict(a=(1, 2)), name='zz_broken_after_nested',
+)
+other_call(name="zz_not_a_registration")
+def oops(:
+EOF
 
 HERMES_HOME="$tmpdir/hermes-home" "$PY" - "$tmpdir/full.yaml" "$GUARD" \
     "$REGISTRY_SRC" "$tmpdir/fixture-good" "$tmpdir/fixture-new" \
-    "$tmpdir/fixture-computed" <<'PY'
+    "$tmpdir/fixture-computed" "$tmpdir/fixture-broken" <<'PY'
 import ast
 import glob
 import importlib.util
@@ -181,7 +195,8 @@ import os
 import re
 import sys
 
-cfg, guard_path, installed, fixture_good, fixture_new, fixture_computed = sys.argv[1:7]
+cfg, guard_path, installed, fixture_good, fixture_new, fixture_computed, \
+    fixture_broken = sys.argv[1:8]
 
 # The matcher exactly as hermes would read it out of the wired config.
 matcher = None
@@ -196,12 +211,36 @@ guard = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(guard)
 
 
-def registry_names(src, unresolved=None):
+def regex_register_names(text):
+    """Fallback for a file the AST cannot parse: the string-literal names in every
+    `register(...)` call, `name=` in any argument position or the first positional.
+    ponytail: the call's extent is found by counting parentheses, so a paren inside
+    a string literal can end it early or late; the result can over-collect (a
+    nested call's name=, cleared by classifying the string) or miss a name past
+    such a paren — which is why the file is also reported PARTIAL."""
+    names = set()
+    for m in re.finditer(r"\bregister\s*\(", text):
+        depth, end = 1, m.end()
+        while end < len(text) and depth:
+            depth += {"(": 1, ")": -1}.get(text[end], 0)
+            end += 1
+        body = text[m.end():end]
+        names.update(re.findall(
+            r'\bname\s*=\s*["\']([a-z][a-z0-9_]*)["\']', body))
+        first = re.match(r'\s*["\']([a-z][a-z0-9_]*)["\']\s*[,)]', body)
+        if first:
+            names.add(first.group(1))
+    return names
+
+
+def registry_names(src, unresolved=None, unparsed=None):
     """Tool names declared under tools/ (subpackages included):
     registry.register(name=...) plus the schema `"name": ...` form the
     table-driven modules use. A registry.register(...) whose name is not a string
     literal cannot be read statically; `unresolved` (a list) collects those sites
-    so the caller can say the scan is not exhaustive.
+    so the caller can say the scan is not exhaustive. A file that does not parse
+    is read by regex_register_names instead and its path is appended to
+    `unparsed`, so the caller can say that file's coverage is PARTIAL.
     ponytail: a computed name is REPORTED, not resolved — a tool registered that
     way is invisible to this check, and the warning is the only trace of it."""
     names = set()
@@ -227,8 +266,9 @@ def registry_names(src, unresolved=None):
                             and node.func.value.id == "registry"):
                         unresolved.append(f"{os.path.relpath(path, src)}:{node.lineno}")
         except SyntaxError:
-            names.update(re.findall(
-                r'register\(\s*name\s*=\s*["\']([a-z][a-z0-9_]*)["\']', text))
+            names.update(regex_register_names(text))
+            if unparsed is not None:
+                unparsed.append(os.path.relpath(path, src))
         # The schema `"name": ...` form the table-driven modules use.
         # ponytail: this also collects a "name" key that is NOT a tool's name, so
         # the check can only over-report (a false red names the string and is
@@ -300,10 +340,28 @@ check("control: a subpackage tool is discovered", "zz_in_a_subpackage" in comp, 
 check("control: a computed registration name is reported, not silently dropped",
       unres, [os.path.join("tools", "sub", "c.py") + ":2"])
 
+# A file that does not parse is NAMED, and the regex fallback still reaches the
+# registrations the AST could not.
+unparsed = []
+broken = registry_names(fixture_broken, None, unparsed)
+check("control: an unparseable tool file is reported as PARTIAL coverage",
+      unparsed, [os.path.join("tools", "broken.py")])
+for want in ("zz_broken_kw_late", "zz_broken_positional", "zz_broken_after_nested"):
+    check(f"control: fallback reaches {want}", want in broken, True)
+check("control: fallback ignores a name= outside a register() call",
+      "zz_not_a_registration" in broken, False)
+clean = []
+registry_names(fixture_good, None, clean)
+check("control: a parseable tool file is not reported as PARTIAL", clean, [])
+
 # The installed registry: report every gap, not just the first.
 if os.path.isdir(os.path.join(installed, "tools")):
     installed_unres = []
-    names = registry_names(installed, installed_unres)
+    installed_unparsed = []
+    names = registry_names(installed, installed_unres, installed_unparsed)
+    for rel in installed_unparsed:
+        print(f"  warn: {rel} did not parse — read by regex only, so coverage "
+              "of it is PARTIAL")
     for site in installed_unres:
         print(f"  warn: {site} registers a tool under a computed name — this "
               "check cannot see it, so coverage is NOT exhaustive")
