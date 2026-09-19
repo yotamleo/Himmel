@@ -35,6 +35,8 @@ cat > "$BIN/pytest" <<'STUB'
 pwd -P > "$REC/cwd"
 if [ -d "${HERMES_HOME:-/nonexistent}" ]; then echo yes > "$REC/home-existed"; else echo no > "$REC/home-existed"; fi
 [ -n "${STUB_TERM:-}" ] && kill -TERM "$PPID"
+# STUB_HANG: a long-running target — record its pid, then become `sleep`.
+[ -n "${STUB_HANG:-}" ] && { echo $$ > "$REC/pid"; exec sleep 30; }
 exit "${STUB_RC:-0}"
 STUB
 chmod +x "$BIN/pytest"
@@ -106,6 +108,10 @@ else
     fail "args/cwd" "args='$got_args' cwd='$got_cwd' want cwd='$want_cwd'"
 fi
 
+echo "TEST: the caller's stdin reaches the target (the target runs as an async child)"
+got=$(printf 'piped-in' | run_wrapped bash "$WRAP" cat 2>/dev/null)
+if [ "$got" = "piped-in" ]; then pass "stdin passed through"; else fail "stdin" "got '$got'"; fi
+
 echo "TEST: the target's exit status is propagated"
 reset_rec
 run_wrapped STUB_RC=7 bash "$WRAP" pytest >/dev/null 2>&1; rc=$?
@@ -119,6 +125,28 @@ if [ "$rc" -eq 143 ] && [ -z "$(ls -A "$SANDBOX_TMP")" ]; then
     pass "rc=143, no leftover sandbox"
 else
     fail "TERM cleanup" "rc=$rc left='$(ls -A "$SANDBOX_TMP")'"
+fi
+
+echo "TEST: a TERM sent ONLY to the wrapper reaches a still-running target, then cleans up"
+reset_rec
+# Not via run_wrapped: a backgrounded function is a subshell, and $! must be the
+# wrapper's own pid (env execs bash) for the TERM to hit the wrapper alone.
+env HERMES_HOME="$LIVE" HOME="$FAKE_HOME" TMPDIR="$SANDBOX_TMP" REC="$REC" PATH="$BIN:$PATH" \
+    STUB_HANG=1 bash "$WRAP" pytest >/dev/null 2>&1 &
+wpid=$!
+for _ in $(seq 1 50); do [ -s "$REC/pid" ] && break; sleep 0.1; done
+tpid=$(cat "$REC/pid" 2>/dev/null || true)
+t0=$SECONDS
+kill -TERM "$wpid" 2>/dev/null
+wait "$wpid" 2>/dev/null; rc=$?
+took=$((SECONDS - t0))
+# The stub sleeps 30s: a wrapper that only defers its trap until the target
+# ends still exits 143 and cleans up — just ~30s late — so the bound is the test.
+if [ -n "$tpid" ] && [ "$rc" -eq 143 ] && [ "$took" -lt 10 ] && ! kill -0 "$tpid" 2>/dev/null && [ -z "$(ls -A "$SANDBOX_TMP")" ]; then
+    pass "rc=143 in ${took}s, target pid $tpid gone, no leftover sandbox"
+else
+    fail "TERM forwarding" "rc=$rc took=${took}s (want <10) target='$tpid' alive=$(kill -0 "${tpid:-0}" 2>/dev/null && echo yes || echo no) left='$(ls -A "$SANDBOX_TMP")'"
+    [ -n "$tpid" ] && kill -KILL "$tpid" 2>/dev/null
 fi
 
 echo "TEST: REFUSES when the sandbox would land inside the caller's live HERMES_HOME"

@@ -63,8 +63,23 @@ cleanup() {
     return 0
 }
 trap cleanup EXIT
-trap 'cleanup; exit 130' INT
-trap 'cleanup; exit 143' TERM
+# The target runs as a background child that we `wait` on, so a signal sent
+# only to this wrapper interrupts the wait at once (a foreground command would
+# defer the trap until the target finished) and is forwarded to the target.
+# TERM is forwarded for INT too: an async child of a non-interactive shell
+# starts with SIGINT ignored, so forwarding INT itself would be a no-op.
+child=""
+# shellcheck disable=SC2329,SC2317  # invoked via traps
+on_signal() {
+    if [ -n "$child" ]; then
+        kill -TERM "$child" 2>/dev/null
+        wait "$child" 2>/dev/null
+    fi
+    cleanup
+    exit "$1"
+}
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
 
 if [ -n "$cwd" ]; then
     cd "$cwd" || { echo "run-target-tests: cannot cd to '$cwd'" >&2; exit 2; }
@@ -95,6 +110,10 @@ done < <(env | sed -n 's/^\(HERMES_[A-Za-z0-9_]*\)=.*/\1/p')
 
 echo "run-target-tests: HERMES_HOME=$sandbox (live home not inherited; $(( ${#unset_args[@]} / 2 )) inherited HERMES_* vars scrubbed)" >&2
 
-env ${unset_args[@]+"${unset_args[@]}"} HERMES_HOME="$sandbox" "$@"
+# `<&0` keeps the caller's stdin: an async command otherwise reads /dev/null.
+env ${unset_args[@]+"${unset_args[@]}"} HERMES_HOME="$sandbox" "$@" <&0 &
+child=$!
+wait "$child"
 rc=$?
+child=""
 exit "$rc"
