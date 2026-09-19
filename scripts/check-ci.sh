@@ -101,7 +101,11 @@
 #       a "completed" review with nothing to be incremental to (HIMMEL-1374)
 #   3 — checks green but the review state blocks the merge: unresolved review
 #       threads remain, a review requests changes, or CodeRabbit's review body
-#       reports an outside-diff-range finding — address, resolve, re-run
+#       reports an outside-diff-range finding with no exact-head ledger
+#       disposition (HIMMEL-3124) — address, resolve, or record the disposition
+#       recipe the message prints (deferred needs a tracked ticket AND a reason,
+#       disproved needs a reason; a disposition never carries to a new head),
+#       then re-run
 #   4 — (when armed) either: CodeRabbit concluded incrementally on the head but
 #       posted no review object there while a prior head had outside-diff
 #       findings (request @coderabbitai full review, or opt in with --escalate);
@@ -168,7 +172,9 @@ exit codes: 0 = checks green + all review threads resolved
                 the review COMPLETED but the PR carries no CodeRabbit review object at any head and no
                 walkthrough certifies this head — nothing to be incremental to, HIMMEL-1374),
             3 = checks green but unresolved review threads remain, a review requests changes, or (if armed)
-                CodeRabbit's review body reports an outside-diff-range finding,
+                CodeRabbit's review body reports an outside-diff-range finding with no exact-head ledger
+                disposition (HIMMEL-3124; the message prints the deferred/disproved recipe, and a
+                disposition never carries to a new head),
             4 = (if armed) CodeRabbit concluded incrementally but posted no review object at the head while a
                 prior head had outside-diff findings (request @coderabbitai full review or use --escalate); or
                 the latest bot review is anchored to a NON-head commit and no clean exact-head panel carries it
