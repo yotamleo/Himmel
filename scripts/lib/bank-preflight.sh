@@ -597,7 +597,23 @@ if [ "$_fleet_admitted" -eq 1 ]; then
       # relaunch as a duplicate (line ~356) for up to the full TTL after the
       # session that consumed it has already exited, with no live session left
       # to justify the refusal.
-      if printf '%s\n' "$_fleet_live_names" | grep -qxF "$_fleet_resv_name"; then
+      #
+      # HIMMEL-3012: matched on the directory name (every reservation, incl.
+      # ones written by an older copy of this script that has no `name` file)
+      # OR the first whitespace token of the raw leg name in `name` — the same
+      # tokenization the census applies to a live `-n` value — so a name with
+      # a space, or one hashed into its directory key ('/', a leading '.',
+      # over NAME_MAX), is consumed instead of double-counted until its TTL.
+      # BY DESIGN not matched: arm-resume.sh reserves under the flattened
+      # handover path but launches under `-n <TICKET> <name> s<N>`, so its
+      # reservation never matches a live session — it is released by that
+      # script's EXIT trap (_arm_fleet_release_pending) on every exit instead.
+      # ponytail: two reservations sharing one first token ("HIMMEL-1 a" and
+      # "HIMMEL-1 b") are both consumed by a single live "HIMMEL-1" session.
+      _fleet_resv_sname=""
+      [ -f "${_fleet_resv}name" ] && read -r _fleet_resv_sname _fleet_resv_rest <"${_fleet_resv}name" 2>/dev/null
+      if printf '%s\n' "$_fleet_live_names" | grep -qxF "$_fleet_resv_name" ||
+         { [ -n "$_fleet_resv_sname" ] && printf '%s\n' "$_fleet_live_names" | grep -qxF "$_fleet_resv_sname"; }; then
         rm -rf "$_fleet_resv" 2>/dev/null
         continue
       fi
@@ -666,6 +682,13 @@ elif [ "$LAUNCH_INTENT" = "1" ] && [ -n "$LEG" ] && [ "$LEG" != unknown ]; then
     if mkdir "$dir" 2>/dev/null; then    # 3 metadata write failed
       if printf '%s\n' "$(( $(date +%s) + ${FLEET_RESERVE_TTL:-1800} ))" > "$dir/expires" 2>/dev/null &&
          printf '%s\n' "${CADENCE_BANK_CALLER_PID:-$$}" > "$dir/pid" 2>/dev/null; then
+        # HIMMEL-3012: the raw leg name, for the consume check in the prune
+        # pass — the directory name is a hash whenever $LEG cannot be one
+        # directory component, and the census only ever sees the FIRST
+        # whitespace token of a live `-n` value. Best-effort by design: it
+        # only WIDENS what consumes the reservation, so a failed write falls
+        # back to today's dir-name match rather than refusing the launch.
+        printf '%s\n' "$LEG" > "$dir/name" 2>/dev/null || true
         return 0
       fi
       rm -rf "$dir" 2>/dev/null
