@@ -240,6 +240,60 @@ check "HIMMEL-1871: dropped findings do not inflate member accuracy (no all-drop
 check "HIMMEL-1871: citation guard reaches the ledger as exactly one blocking finding" "$(printf '%s\n' "$ad_ledger" | sed -n 's/^guard-blockers=//p')" "1"
 check "HIMMEL-1871: responding member still records availability" "$(printf '%s\n' "$ad_ledger" | sed -n 's/^avail-ok=//p')" "1"
 
+# HIMMEL-2554: the guard row must be self-describing. It used to carry no
+# `text`, so the dropped findings' substance lived only in that run's stdout
+# and a later leg adjudicating from the ledger could not recover it. The row's
+# text is the same drop_blocking string the id is digested from (flattened to
+# one line, secret-scrubbed + capped by ledger-append.sh like any finding row).
+# finding_id is the (head, id) dedup key and must NOT move: pinned to the id the
+# pre-fix code minted for this exact fixture.
+ad_guard="$(python3 - "$AD_LEDGER" <<'PYEOF'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+g = [r for r in rows if r.get('kind') == 'finding' and r.get('model') == 'citation-guard']
+print('n=' + str(len(g)))
+print('id=' + (g[0].get('finding_id', '') if g else ''))
+print('sev=' + (g[0].get('severity', '') if g else ''))
+print('has-text=' + ('yes' if g and g[0].get('text') else 'no'))
+print('text=' + (g[0].get('text', '') if g else ''))
+PYEOF
+)"
+ad_guard_text="$(printf '%s\n' "$ad_guard" | sed -n 's/^text=//p')"
+check "HIMMEL-2554: guard row still exactly one" "$(printf '%s\n' "$ad_guard" | sed -n 's/^n=//p')" "1"
+check "HIMMEL-2554: guard severity stays crit (fail-closed unchanged)" "$(printf '%s\n' "$ad_guard" | sed -n 's/^sev=//p')" "crit"
+check "HIMMEL-2554: guard finding_id UNCHANGED (dedup key must not move)" "$(printf '%s\n' "$ad_guard" | sed -n 's/^id=//p')" "citation-guard-6bd86d6b048c3229"
+check "HIMMEL-2554: guard row carries a text field" "$(printf '%s\n' "$ad_guard" | sed -n 's/^has-text=//p')" "yes"
+check_contains "HIMMEL-2554: guard text has the first dropped citation verbatim" "$ad_guard_text" "missing rollback guard [foo-script.sh:3]"
+check_contains "HIMMEL-2554: guard text has the second dropped citation verbatim" "$ad_guard_text" "unbounded retry [foo.sh:999]"
+
+# HIMMEL-2554: a dropped citation can quote a credential straight out of the
+# reviewed diff (the HIMMEL-2549 example did). The guard row's text must go
+# through the same scrub path ordinary finding rows use.
+cat > "$AD_STUB_PY" <<'PYEOF'
+print("## Critical Issues (1 found)")
+print("- [CRITIC-1]: hardcoded secret=abcdefghij0123456789 and Bearer abcdefghijklmnopqrstuv in probe env [foo-script.sh:3]")  # gitleaks:allow (synthetic fixture value)
+print("## Important Issues (0 found)")
+print("## Suggestions (0 found)")
+PYEOF
+SCRUB_LEDGER="$tmp/guard-scrub-ledger.jsonl"; : > "$SCRUB_LEDGER"
+scrub_rc=0
+HERMES_PY="$AD_PY" CR_LEDGER="$SCRUB_LEDGER" CRITIC_LEDGER_APPEND="$HERE/ledger-append.sh" \
+    CRITICS_JSON="$AD_JSON" CRITIC_FIRST_PASS="$HERE/critic-first-pass.sh" \
+    bash "$PANEL" <<< "$DIFF" > "$tmp/scrub-out" 2> "$tmp/scrub-err" || scrub_rc=$?
+check "HIMMEL-2554: credential-quoting drop still exits 0" "$scrub_rc" "0"
+scrub_text="$(python3 - "$SCRUB_LEDGER" <<'PYEOF'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+g = [r for r in rows if r.get('kind') == 'finding' and r.get('model') == 'citation-guard']
+print(g[0].get('text', '') if g else '')
+PYEOF
+)"
+check_contains "HIMMEL-2554: guard text still names the dropped finding" "$scrub_text" "hardcoded"
+check_contains "HIMMEL-2554: guard text has secret= value redacted" "$scrub_text" "secret=[REDACTED]"
+check_contains "HIMMEL-2554: guard text has Bearer value redacted" "$scrub_text" "Bearer [REDACTED]"
+check "HIMMEL-2554: guard text does not leak the raw secret= value" "$(grepq "$scrub_text" -F -- 'abcdefghij0123456789' && echo leaked || echo clean)" "clean"
+check "HIMMEL-2554: guard text does not leak the raw Bearer value" "$(grepq "$scrub_text" -F -- 'abcdefghijklmnopqrstuv' && echo leaked || echo clean)" "clean"
+
 # Round 3: one invalid Critical plus one valid Suggestion. The surviving
 # Suggestion is non-blocking and must not suppress the citation guard on either
 # published surface. The rejected Critical stays out of member accuracy; the
@@ -384,7 +438,7 @@ check "HIMMEL-1871: suggestion-only drops keep panel rc 0" "$sugd_rc" "0"
 check_contains "HIMMEL-1871: suggestion-only drops add no synthetic Critical" "$sugd_out" "## Critical Issues (0 found)"
 check_contains "HIMMEL-1871: suggestion-only drops stay readable" "$sugd_out" "## Dropped Citations (2 dropped)"
 check "HIMMEL-1871: suggestion-only drops queue no guard row" \
-    "$(grep -c 'citation-guard' "$SUGD_LEDGER" || true)" "0"
+    "$(grep -c '"model":"citation-guard"' "$SUGD_LEDGER" || true)" "0"
 
 # Round 4, seam 2: the guard's identity derives from the rejected blocking
 # evidence itself. ledger-append.sh dedups findings on (head, finding_id); a
@@ -597,7 +651,7 @@ slashs_out="$(cat "$tmp/slash-sug-out")"
 check "HIMMEL-1871 round 6: slash-slug suggestion-only drop keeps rc 0" "$slashs_rc" "0"
 check_contains "HIMMEL-1871 round 6: slash-slug suggestion-only drop adds no synthetic Critical" "$slashs_out" "## Critical Issues (0 found)"
 check "HIMMEL-1871 round 6: slash-slug suggestion-only drop queues no guard row" \
-    "$(grep -c 'citation-guard' "$SLASHS_LEDGER" || true)" "0"
+    "$(grep -c '"model":"citation-guard"' "$SLASHS_LEDGER" || true)" "0"
 
 # Round 7: digest failure fails CLOSED. command -v checked tool EXISTENCE
 # only; a present-but-FAILING sha256sum left the digest empty, and
@@ -640,7 +694,7 @@ PATH="$FAKEBIN:$PATH" HERMES_PY="$AD_PY" CR_LEDGER="$DIGF_LEDGER" CRITIC_LEDGER_
     bash "$PANEL" <<< "$DIFF" > "$tmp/digf-out-b" 2> "$tmp/digf-err-b" || digf_rc_b=$?
 check "HIMMEL-1871 round 7: second distinct-evidence run also refuses (exit 6)" "$digf_rc_b" "6"
 check "HIMMEL-1871 round 7: distinct same-head drops share NO ledger key (no guard rows)" \
-    "$(grep -c 'citation-guard' "$DIGF_LEDGER" || true)" "0"
+    "$(grep -c '"model":"citation-guard"' "$DIGF_LEDGER" || true)" "0"
 # HIMMEL-3104: the critic DID answer on both refused runs, so CFP keeps the
 # raw response and records one `score` row each (audit evidence the panel
 # refused to certify, not a verdict). Everything else stays out of the ledger.
