@@ -177,22 +177,129 @@ _fleet_lane_of() {
 _fleet_admit_stamp_or_fail() { # _fleet_admit_stamp_or_fail <admit-dir>
   date +%s > "$1/acquired" 2>/dev/null
 }
-_fleet_steal_stale_admit() { # _fleet_steal_stale_admit <admit-dir> <expected-acquired-stamp>
+# HIMMEL-3019: a rename displaces WHATEVER currently occupies "$admit", not the
+# stale entry the reclaimer observed, so mv-then-verify alone leaves `.admit`
+# absent between a mismatched reclaimer's rename and its restore — a fourth
+# party's ordinary `mkdir` claim wins that window and two callers hold the lock
+# at once. Every actor that can DISPLACE an existing "$admit" (a steal, or a
+# release) therefore serialises on a gate, "$admit.reclaim" (an atomic-mkdir
+# mutex, this file's one primitive), and the stamp check runs UNDER the gate
+# BEFORE any rename: a mismatched reclaimer returns without touching "$admit".
+# Fresh claims never take the gate — they only ever succeed on an ABSENT admit.
+# The gate is dot-prefixed on purpose: the reservation census/prune pass below
+# globs "$SLOTS"/*/ with no dotglob, and that is the ONLY thing keeping a gate
+# (or any `.admit.*` debris) from being counted as a fleet reservation.
+# FLEET_ADMIT_TEST_HOOK (test seam, default unset = off): a single command word
+# invoked as `<hook> <point> <path>` at named interleaving points, so a suite
+# can force the exact race deterministically; production never sets it.
+_fleet_admit_hook() { # _fleet_admit_hook <point> <path>
+  [ -n "${FLEET_ADMIT_TEST_HOOK:-}" ] && "$FLEET_ADMIT_TEST_HOOK" "$1" "$2"
+  return 0
+}
+# _fleet_gate_take <gate> -> 0 held (stamped + pid recorded), 1 busy/refused.
+# The gate is held for milliseconds, so it is breakable by AGE alone
+# (FLEET_ADMIT_GATE_STALE_SECS, default 5) — deliberately NOT by `kill -0` on
+# its pid: a reused pid must not wedge every reclaim and every release. An
+# unreadable stamp (a crash between the mkdir and the stamp write) is stamped
+# in place and reported busy once so it ages out. A break follows the same
+# rename-then-verify discipline as the steal below: rename the orphan to a
+# private path, then re-read ITS stamp — if a concurrent breaker already
+# replaced it with a fresh gate, our rename just displaced THAT live gate, so
+# put it back (create-based, never a nesting mv) and lose.
+# ponytail: this closes the 4-party race for every actor that runs THIS code,
+# but a gate break is still a rename-then-verify, not a compare-and-swap: with
+# >=3 actors racing one CRASHED gate, a slow breaker's rename can displace a
+# faster breaker's fresh gate, and the create-based restore is best-effort — so
+# two gate holders can briefly coexist (only ever for one gate-hold's few
+# milliseconds, and only after a gate holder died mid-hold). No CAS primitive
+# (link/renameat2) is portable across bash 3.2 / macOS / Git-Bash; the
+# defence-in-depth restore in the steal keeps a displaced live claim alive.
+_fleet_gate_take() {
+  local gate="$1" held_at victim seen
+  if ! mkdir "$gate" 2>/dev/null; then
+    held_at="$(cat "$gate/acquired" 2>/dev/null)" || held_at=""
+    case "$held_at" in
+      ''|*[!0-9]*) date +%s > "$gate/acquired" 2>/dev/null; return 1 ;;
+    esac
+    [ $(( $(date +%s) - held_at )) -ge "${FLEET_ADMIT_GATE_STALE_SECS:-5}" ] || return 1
+    _fleet_admit_hook gate-break "$gate"
+    victim="$gate.broken.$$.$RANDOM"
+    mv "$gate" "$victim" 2>/dev/null || return 1
+    seen="$(cat "$victim/acquired" 2>/dev/null)" || seen=""
+    if [ "$seen" != "$held_at" ]; then
+      if mkdir "$gate" 2>/dev/null; then
+        cp -p "$victim/acquired" "$gate/acquired" 2>/dev/null
+        cp -p "$victim/pid" "$gate/pid" 2>/dev/null
+      fi
+      rm -rf "$victim" 2>/dev/null
+      return 1
+    fi
+    rm -rf "$victim" 2>/dev/null
+    mkdir "$gate" 2>/dev/null || return 1
+  fi
+  if _fleet_admit_stamp_or_fail "$gate" && printf '%s\n' "$$" > "$gate/pid" 2>/dev/null; then
+    return 0
+  fi
+  rm -rf "$gate" 2>/dev/null
+  return 1
+}
+# Drop only a gate this process still holds (its pid reads back as ours): a
+# gate aged out from under a very slow holder now belongs to someone else.
+_fleet_gate_drop() { # _fleet_gate_drop <gate>
+  [ "$(cat "$1/pid" 2>/dev/null)" = "$$" ] && rm -rf "$1" 2>/dev/null
+  return 0
+}
+# _fleet_release_admit <admit-dir>: the ONE way this script gives up its own
+# admission lock (HIMMEL-3019). Gated, so it cannot land between a reclaimer's
+# verification and its rename; pid-verified, so a caller whose lock was
+# legitimately reclaimed (a holder only PRESUMED dead) never deletes its
+# successor's live one. Waits a bounded few dozen retries for the gate; if it
+# cannot get it, the lock is left to age out (a REFUSED launch — SKIPPED-FLEET —
+# for up to FLEET_ADMIT_STALE_SECS) and that is logged, never silent.
+_fleet_release_admit() {
+  local admit="$1" gate="$1.reclaim" iters=0
+  while ! _fleet_gate_take "$gate"; do
+    iters=$((iters + 1))
+    if [ "$iters" -ge "${FLEET_ADMIT_RELEASE_ITERS:-40}" ]; then
+      echo "bank-preflight: could not take the admit-lock gate ($gate) to release $admit after $iters tries — leaving it to age out (launches are refused for up to ${FLEET_ADMIT_STALE_SECS:-60}s)" >&2
+      return 1
+    fi
+    _fleet_admit_hook release-retry "$gate"
+    sleep "${FLEET_ADMIT_RETRY_SLEEP:-0.05}"
+  done
+  [ "$(cat "$admit/pid" 2>/dev/null)" = "$$" ] && rm -rf "$admit" 2>/dev/null
+  _fleet_gate_drop "$gate"
+  return 0
+}
+_fleet_steal_stale_admit_gated() { # runs UNDER the gate — see _fleet_steal_stale_admit below
   local admit="$1" expected_at="$2" victim stolen_at
+  # The verification the rename below cannot do for itself: is what occupies
+  # "$admit" NOW still the stale entry the caller observed? Nothing can change
+  # that between here and the rename (fresh claims need an absent admit,
+  # steals/releases need the gate we hold), so a mismatch is a clean refusal —
+  # no rename, no restore, no empty window.
+  stolen_at="$(cat "$admit/acquired" 2>/dev/null)" || stolen_at=""
+  [ "$stolen_at" = "$expected_at" ] || return 1
+  _fleet_admit_hook post-verify "$admit"
   victim="$admit.stale.$$.$RANDOM"
   mv "$admit" "$victim" 2>/dev/null || return 1
+  _fleet_admit_hook post-rename "$admit"
   stolen_at="$(cat "$victim/acquired" 2>/dev/null)" || stolen_at=""
   if [ "$stolen_at" != "$expected_at" ]; then
-    # Wrong victim: a fresh, legitimate claim made after we read the stale
-    # stamp but before our mv landed. Put it back rather than clobber it —
-    # but only if the slot is still empty. codex-1 (this round): if a THIRD
-    # party has since claimed "$admit" (because our own mv vacated it for the
-    # instant between here and the check), `mv victim admit` onto an
+    # Defence in depth, unreachable while every displacer holds the gate:
+    # arm-resume.sh resolves the preflight relative to ITSELF, so an arm
+    # launched from a worktree runs an OLDER, ungated copy against the same
+    # slot dir, and such an actor can still swap a fresh claim in after our
+    # check above. If our rename displaced one, put it back rather than
+    # clobber it — but only if the slot is still empty. codex-1 (this round):
+    # if a THIRD party has since claimed "$admit" (because our own mv vacated
+    # it for the instant between here and the check), `mv victim admit` onto an
     # existing directory nests the displaced fresh claim inside it (POSIX
     # mv-into-directory semantics) instead of restoring it — corrupting both.
-    # Leaving the victim as an orphaned `.stale.` dir is safe: it has no
-    # `expires` file, so the next admission's reservation-prune pass removes
-    # it same as any other corrupt reservation.
+    # Leaving the victim as an orphaned `.admit.stale.*` dir is harmless to
+    # exclusion (it holds no lock), but it is NOT pruned: the reservation
+    # prune pass globs "$SLOTS"/*/, which skips dot-dirs, so such victims
+    # accumulate in tmpfs until reboot (follow-up on HIMMEL-3019).
     # codex-2 (HIMMEL-2774, 2nd panel round): a plain `[ -e ] || mv` here is
     # itself a check-then-act race — a FOURTH party's `mkdir "$admit"` can
     # land in the instant between the `[ -e ]` test and the `mv`, and `mv`
@@ -231,13 +338,25 @@ _fleet_steal_stale_admit() { # _fleet_steal_stale_admit <admit-dir> <expected-ac
       # `rmdir`, on the fallback below — redirection into "$admit/acquired"
       # creates that file before `date` runs, so a `date` failure can leave
       # a non-empty (if zero-byte) directory that a bare `rmdir` cannot remove,
-      # wedging this reclaim attempt's own cleanup.
-      printf '%s\n' "$$" > "$admit/pid" 2>/dev/null
-      return 0
+      # wedging this reclaim attempt's own cleanup. HIMMEL-3019: the pid write
+      # fails CLOSED too — every release is now pid-verified, so a pid-less
+      # claim could never be released by its owner and would wedge admission
+      # until it aged out.
+      if printf '%s\n' "$$" > "$admit/pid" 2>/dev/null; then
+        return 0
+      fi
     fi
     rm -rf "$admit" 2>/dev/null
   fi
   return 1
+}
+_fleet_steal_stale_admit() { # _fleet_steal_stale_admit <admit-dir> <expected-acquired-stamp>
+  local gate="$1.reclaim" rc
+  _fleet_gate_take "$gate" || return 1
+  _fleet_steal_stale_admit_gated "$@"
+  rc=$?
+  _fleet_gate_drop "$gate"
+  return "$rc"
 }
 _fleet_claim_admit() { # _fleet_claim_admit <admit-dir>
   local admit="$1" held_at age
@@ -254,10 +373,14 @@ _fleet_claim_admit() { # _fleet_claim_admit <admit-dir>
       # pause) -- not the launcher's pid, which is what the RESERVATION's
       # own pid file (below) tracks for a different purpose (whether the
       # launcher that created it is still around to own a release).
-      printf '%s\n' "$$" > "$admit/pid" 2>/dev/null
-      return 0
+      # HIMMEL-3019: fails CLOSED like the stamp below — releases are
+      # pid-verified now, so a claim whose pid write failed could never be
+      # released by its owner and would wedge admission until it aged out.
+      if printf '%s\n' "$$" > "$admit/pid" 2>/dev/null; then
+        return 0
+      fi
     fi
-    # codex-2 (this round): the stamp write itself failed (disk full,
+    # codex-2 (this round): the stamp (or pid) write itself failed (disk full,
     # permissions) — don't return success over an unstamped claim nobody can
     # ever age out. codex-5 (4th panel round): NOT still empty — `>` opens
     # and creates "$admit/acquired" before `date` runs, so a `date` failure
@@ -412,12 +535,12 @@ if [ "$_fleet_admitted" -eq 1 ]; then
   # refuse-unless-bypassed treatment rather than a silent pass-through.
   if ! _fleet_census; then
     echo "bank-preflight: in-lock fleet census failed ('$_fleet_ps_cmd' exited $_fleet_ps_rc) — cannot verify the fleet is under cap; refusing rather than admit on a stale pre-lock snapshot" >&2
-    rm -rf "$SLOTS/.admit" 2>/dev/null
+    _fleet_release_admit "$SLOTS/.admit"
     # codex-2 (HIMMEL-2774, 4th panel round): the lock is already gone above,
     # but _fleet_admitted stayed 1 — on the bypass/informational branches
     # below (the LAUNCH_INTENT=1 refusal branch `emit`s and exits, so it
     # never reaches this), execution falls through to the final
-    # `[ "$_fleet_admitted" -eq 1 ] && rm -rf "$SLOTS/.admit"` cleanup, which
+    # `[ "$_fleet_admitted" -eq 1 ] && _fleet_release_admit` cleanup, which
     # would then delete whatever a DIFFERENT caller has legitimately claimed
     # in the meantime. This process no longer holds anything to clean up.
     _fleet_admitted=0
@@ -492,7 +615,7 @@ elif [ "$fleet_n" -ge "$FLEET_CAP" ]; then
     echo "bank-preflight: fleet at/over cap ($fleet_n/$FLEET_CAP) — FLEET_CAP_OK bypass in effect (launching shell only), proceeding" >&2
   elif [ "$LAUNCH_INTENT" = "1" ]; then
     echo "bank-preflight: fleet at/over cap ($fleet_n/$FLEET_CAP) — skipping leg=$LEG (bypass: FLEET_CAP_OK=1 in the LAUNCHING shell)" >&2
-    rm -rf "$SLOTS/.admit" 2>/dev/null
+    _fleet_release_admit "$SLOTS/.admit"
     emit SKIPPED-FLEET
   else
     echo "bank-preflight: fleet at/over cap ($fleet_n/$FLEET_CAP) — not a declared launch (CADENCE_BANK_LAUNCH unset), reporting only" >&2
@@ -547,7 +670,7 @@ elif [ "$LAUNCH_INTENT" = "1" ] && [ -n "$LEG" ] && [ "$LEG" != unknown ]; then
   # shellcheck source=scripts/lib/fleet-reservation-key.sh
   . "$(dirname "$0")/fleet-reservation-key.sh" 2>/dev/null || {
     echo "bank-preflight: cannot source $(dirname "$0")/fleet-reservation-key.sh — refusing rather than launch without a countable reservation" >&2
-    rm -rf "$SLOTS/.admit" 2>/dev/null
+    _fleet_release_admit "$SLOTS/.admit"
     emit SKIPPED-FLEET
   }
   _fleet_resv_key="$(fleet_reservation_key "$LEG")"
@@ -569,12 +692,12 @@ elif [ "$LAUNCH_INTENT" = "1" ] && [ -n "$LEG" ] && [ "$LEG" != unknown ]; then
     0) : ;;
     2)
       echo "bank-preflight: a fleet reservation for leg=$LEG already exists — refusing as a duplicate declared launch" >&2
-      rm -rf "$SLOTS/.admit" 2>/dev/null
+      _fleet_release_admit "$SLOTS/.admit"
       emit SKIPPED-FLEET
       ;;
     3)
       echo "bank-preflight: failed to write reservation metadata (expires/pid) for leg=$LEG — refusing admission rather than proceed with an unprotected slot" >&2
-      rm -rf "$SLOTS/.admit" 2>/dev/null
+      _fleet_release_admit "$SLOTS/.admit"
       emit SKIPPED-FLEET
       ;;
     *)
@@ -587,18 +710,16 @@ elif [ "$LAUNCH_INTENT" = "1" ] && [ -n "$LEG" ] && [ "$LEG" != unknown ]; then
       # its siblings instead of silently proceeding on filesystem/permission
       # failures that mkdir cannot otherwise distinguish from "already taken".
       echo "bank-preflight: could not create a fleet reservation directory for leg=$LEG even under a hashed key — refusing rather than proceed without a reservation" >&2
-      rm -rf "$SLOTS/.admit" 2>/dev/null
+      _fleet_release_admit "$SLOTS/.admit"
       emit SKIPPED-FLEET
       ;;
   esac
 fi
 # codex-1 (HIMMEL-2774, 5th panel round): unconditional release here can
-# delete a DIFFERENT owner's lock. _fleet_steal_stale_admit's mv-then-verify
-# genuinely frees .admit for the instant between its mv and its restore/
-# reclaim mkdir; if the original holder is only PRESUMED dead (its pid file
-# was unreadable/corrupt, so the liveness check above could not confirm
-# either way) and is in fact still alive and working, it reaches this same
-# release line later never knowing it was stolen from — and a bare
+# delete a DIFFERENT owner's lock. If the original holder is only PRESUMED
+# dead (its pid file was unreadable/corrupt, so the liveness check above could
+# not confirm either way) and is in fact still alive and working, it reaches
+# this same release line later never knowing it was stolen from — and a bare
 # unconditional rm -rf would then delete whatever a THIRD party has since
 # legitimately claimed. Every claim path ($$-stamped at
 # _fleet_claim_admit/_fleet_steal_stale_admit, both above) writes ITS OWN pid
@@ -607,9 +728,12 @@ fi
 # arm-resume.sh's own _arm_fleet_release_pending already uses for its
 # reservation release, applied here to the admission lock itself: a mismatch
 # means someone else now legitimately owns .admit, and this process has
-# nothing left to release.
+# nothing left to release. HIMMEL-3019: that check now lives in
+# _fleet_release_admit (gated, so it cannot land between a reclaimer's
+# verification and its rename) and EVERY release site — the early-exit
+# refusals above as well as this final one — goes through it.
 if [ "$_fleet_admitted" -eq 1 ]; then
-  [ "$(cat "$SLOTS/.admit/pid" 2>/dev/null)" = "$$" ] && rm -rf "$SLOTS/.admit" 2>/dev/null
+  _fleet_release_admit "$SLOTS/.admit"
 fi
 
 # HIMMEL-2782: claudex lane parks on the codex weekly bank instead of the
