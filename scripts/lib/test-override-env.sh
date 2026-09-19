@@ -142,6 +142,14 @@ else
   else
     fail "padded bracket read not caught: [$wsout]"
   fi
+  # A name that merely STARTS with an _OK token inside the quotes is a different variable (codex-1 round 2).
+  printf 'const v = process.env["FEATURE_OK-extra"];\n' > "$sb5/hook-bracket-ext.js"
+  extout=$(override_env_undeclared "$sb5/hook-bracket-ext.js")
+  if [ -z "$extout" ]; then
+    pass "process.env[\"FEATURE_OK-extra\"] not reported as FEATURE_OK"
+  else
+    fail "bracket read with a trailing suffix wrongly reported: [$extout]"
+  fi
   # Control: a dynamic read names no literal variable, so nothing to report.
   printf 'const v = process.env[name];\n' > "$sb5/hook-bracket-dyn.js"
   dynout=$(override_env_undeclared "$sb5/hook-bracket-dyn.js")

@@ -72,7 +72,7 @@ override_env_undeclared() {
   local _f _v
   for _f in "$@"; do
     [ -f "$_f" ] || continue
-    grep -ohE '(\$\{?|env\.|env\[[[:space:]]*["'"'"'])[A-Z][A-Z0-9_]*_OK([^A-Za-z0-9_]|$)' "$_f" 2>/dev/null
+    grep -ohE '(\$\{?|env\.)[A-Z][A-Z0-9_]*_OK([^A-Za-z0-9_]|$)|env\[[[:space:]]*["'"'"'][A-Z][A-Z0-9_]*_OK["'"'"']' "$_f" 2>/dev/null
   done | sed -E 's/^(\$\{?|env\.|env\[[[:space:]]*.)//; s/[^A-Za-z0-9_]$//' | sort -u | while IFS= read -r _v; do
     case " $HIMMEL_OVERRIDE_ENV_OK_VARS $HIMMEL_OVERRIDE_ENV_MARKERS $HIMMEL_OVERRIDE_ENV_INTERNAL " in
       *[[:space:]]"$_v"[[:space:]]*) ;;
