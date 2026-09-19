@@ -327,6 +327,17 @@ if [ -n "$detail" ]; then
   detail="$(printf '%s' "$detail" | cut -c1-200)"
 fi
 
+# HIMMEL-3209: --reason is free text too (since HIMMEL-3124 legs write whole
+# dispositions into it) and is mirrored into handover notes, so it takes the
+# same flatten -> scrub as --detail. NOT capped: unlike a provider error
+# fragment a disposition is legitimately long, and the cap only ever mattered
+# to a secret cut in half AFTER the scrub had already missed it. --deferred-to
+# is validated as a ticket key above, so it cannot carry a secret.
+if [ -n "$reason" ]; then
+  reason="$(printf '%s' "$reason" | tr '\n\r' '  ')"
+  reason="$(scrub_secrets "$reason")"
+fi
+
 # Fingerprints use the complete scrubbed claim before the persisted display
 # text is capped. Only the digest is retained; the uncapped value never reaches
 # the ledger.
@@ -417,6 +428,12 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
     const flat=scrubSecrets(s.replace(/[\r\n]/g," "));
     return flat.length>500?flat.slice(0,500):flat;
   };
+  // HIMMEL-3209: flatten -> scrub for the free-text reason/deferred_to fields a
+  // batch spec (and an amend --set reason=) carries straight from caller-built
+  // input; the shell twin above does the same for argv --reason. No cap (see
+  // the shell block): a ticket key like HIMMEL-1234 matches no pattern, so it
+  // passes through byte-identical.
+  const cleanFree=(s)=>scrubSecrets(String(s).replace(/[\r\n]/g," "));
   const existing=fs.existsSync(led)?fs.readFileSync(led,"utf8").split("\n").filter(Boolean):[];
   const parsed=existing.map(l=>{try{return JSON.parse(l);}catch{return null;}}).filter(Boolean);
   // Resolve-then-compare head matching (codex-1/2, HIMMEL-2020 round 5) -
@@ -561,11 +578,11 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
                  finding_id:sid,severity:spec.severity,file:spec.file,
                  line:Number(spec.line)||spec.line,verdict:spec.verdict,artifact,perspective};
       if(spec.responding_model) rec.responding_model=spec.responding_model;
-      if(spec.reason) rec.reason=spec.reason;
+      if(spec.reason) rec.reason=cleanFree(spec.reason);
       // HIMMEL-3207: same flatten -> scrub -> 200-char cap the shell applies to
       // argv --detail (:325-327); a batch spec used to store it raw.
       if(spec.detail) rec.detail=scrubSecrets(String(spec.detail).replace(/[\r\n]/g," ")).slice(0,200);
-      if(spec.deferred_to) rec.deferred_to=spec.deferred_to;
+      if(spec.deferred_to) rec.deferred_to=cleanFree(spec.deferred_to);
       if(spec.round) rec.round=Number(spec.round);
       if(spec.disposition_round) rec.disposition_round=Number(spec.disposition_round);
       else if(spec.verdict&&spec.round) rec.disposition_round=Number(spec.round);
@@ -704,6 +721,7 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
       let v=p.slice(i+1);
       const k=p.slice(0,i);
       if(k==="line") v=Number(v)||v;
+      if(k==="reason") v=cleanFree(v);
       set[k]=v;
     }
     // HIMMEL-2909: --branch is not required on amend (unlike finding/avail/

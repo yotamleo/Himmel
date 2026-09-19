@@ -1176,4 +1176,57 @@ check "control: batch spec.detail with no secret is byte-identical" "$(crlf_bdet
 check "batch spec.detail is capped at 200 like argv --detail" "$(crlf_bdetail cd-4 | tr -d '\n' | wc -c | tr -d ' ')" "200"
 check "batch spec.detail flattens an embedded newline like argv --detail" "$(crlf_bdetail cd-5)" "line one line two"
 
+# ── HIMMEL-3209: reason / deferred_to were the free-text fields #899 left raw ─
+# Since HIMMEL-3124 legs write free-text dispositions into `reason` and
+# `deferred_to` routinely, and the ledger is mirrored into handover notes. Every
+# entry point that stores either field now takes the same flatten -> scrub as
+# --detail. Entry points: batch spec.reason, batch spec.deferred_to, argv
+# finding --reason, argv amend --reason, argv amend --set reason=, argv avail
+# --reason, argv delegation --reason. (argv --deferred-to / --set deferred_to=
+# are validated as a ticket key, so they cannot carry a secret.)
+RSL="$tmp/reason-scrub.jsonl"; : > "$RSL"
+RSH=$(printf '%040d' 3209)
+# rs_field <kind> <finding_id|-> <field>: the LAST matching row's field (amend
+# rows carry the field under .set for `reason=`, top-level otherwise).
+rs_field(){ L="$RSL" K="$1" I="$2" F="$3" node -e 'const e=process.env;const rs=require("fs").readFileSync(e.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).filter(r=>r.kind===e.K&&(e.I==="-"||r.finding_id===e.I));const r=rs[rs.length-1];const v=e.F.startsWith("set.")?(r.set||{})[e.F.slice(4)]:r[e.F];console.log(v)'; }
+CT="$_c_tok" CH="$RSH" node -e 'const e=process.env;const row=(id,x)=>JSON.stringify(Object.assign({branch:"b",head:e.CH,model:"codex",id,severity:"imp",file:"f",line:1,verdict:"deferred"},x))+"\n";process.stdout.write(
+  row("rb-1",{reason:"out of diff, tracked Bearer "+e.CT,deferred_to:"HIMMEL-1234"})
+ +row("rb-2",{reason:"out of diff Bearer\r\n"+e.CT,deferred_to:"HIMMEL-1234"})
+ +row("rb-3",{reason:"ok",deferred_to:"see Bearer "+e.CT})
+ +row("rb-4",{reason:"ok",deferred_to:"see Bearer\r\n"+e.CT})
+ +row("rb-5",{reason:"a  double  space reason, Bearer  short",deferred_to:"HIMMEL-1234"})
+ +row("rb-6",{reason:"line one\nline two",deferred_to:"HIMMEL-1234"})
+ +row("rb-7",{reason:"x".repeat(600),deferred_to:"HIMMEL-1234"}))' > "$tmp/reason-batch.jsonl"
+CR_LEDGER="$RSL" bash "$LA" finding --batch-file "$tmp/reason-batch.jsonl"
+check "batch spec.reason: Bearer<tok> is redacted" "$(rs_field finding rb-1 reason)" "out of diff, tracked Bearer [REDACTED]"
+check "batch spec.reason: Bearer<CRLF><tok> is redacted" "$(rs_field finding rb-2 reason)" "out of diff Bearer [REDACTED]"
+check "batch spec.deferred_to: Bearer<tok> is redacted" "$(rs_field finding rb-3 deferred_to)" "see Bearer [REDACTED]"
+check "batch spec.deferred_to: Bearer<CRLF><tok> is redacted" "$(rs_field finding rb-4 deferred_to)" "see Bearer [REDACTED]"
+check "control: batch spec.deferred_to ticket key survives untouched" "$(rs_field finding rb-1 deferred_to)" "HIMMEL-1234"
+check "control: batch spec.reason with no secret keeps its double spaces byte-identical" "$(rs_field finding rb-5 reason)" "a  double  space reason, Bearer  short"
+check "batch spec.reason flattens an embedded newline like --detail" "$(rs_field finding rb-6 reason)" "line one line two"
+check "control: batch spec.reason is NOT capped (a long disposition is kept whole)" "$(rs_field finding rb-7 reason | tr -d '\n' | wc -c | tr -d ' ')" "600"
+# argv paths
+CR_LEDGER="$RSL" bash "$LA" finding --branch b --head "$RSH" --model m --id ra-1 --severity imp --file f --line 1 --verdict deferred --deferred-to HIMMEL-1234 --reason "tracked Bearer $_c_tok"
+check "argv finding --reason: Bearer<tok> is redacted" "$(rs_field finding ra-1 reason)" "tracked Bearer [REDACTED]"
+CR_LEDGER="$RSL" bash "$LA" finding --branch b --head "$RSH" --model m --id ra-2 --severity imp --file f --line 1 --verdict deferred --deferred-to HIMMEL-1234 --reason "tracked Bearer"$'\r\n'"$_c_tok"
+check "argv finding --reason: Bearer<CRLF><tok> is redacted" "$(rs_field finding ra-2 reason)" "tracked Bearer [REDACTED]"
+CR_LEDGER="$RSL" bash "$LA" finding --branch b --head "$RSH" --model m --id ra-3 --severity imp --file f --line 1 --verdict deferred --deferred-to HIMMEL-1234 --reason "plain  reason with two  spaces"
+check "control: argv finding --reason with no secret is byte-identical" "$(rs_field finding ra-3 reason)" "plain  reason with two  spaces"
+CR_LEDGER="$RSL" bash "$LA" amend --head "$RSH" --id rb-5 --set severity=sug --reason "why Bearer $_c_tok"
+check "argv amend --reason: Bearer<tok> is redacted" "$(rs_field amend rb-5 reason)" "why Bearer [REDACTED]"
+CR_LEDGER="$RSL" bash "$LA" amend --head "$RSH" --id rb-6 --set severity=sug --set reason="set Bearer $_c_tok" --reason "why"
+check "argv amend --set reason=: Bearer<tok> is redacted" "$(rs_field amend rb-6 set.reason)" "set Bearer [REDACTED]"
+# SET_PAIRS is newline-delimited, so an LF inside a --set value is refused as a
+# malformed pair (no row written); a lone CR survives the split and must scrub.
+CR_LEDGER="$RSL" bash "$LA" amend --head "$RSH" --id rb-7 --set severity=sug --set reason="set Bearer"$'\r'"$_c_tok" --reason "why"
+check "argv amend --set reason=: Bearer<CR><tok> is redacted" "$(rs_field amend rb-7 set.reason)" "set Bearer [REDACTED]"
+CR_LEDGER="$RSL" bash "$LA" amend --head "$RSH" --id ra-3 --set severity=sug --set reason="plain  set reason" --reason "why"
+check "control: argv amend --set reason= with no secret is byte-identical" "$(rs_field amend ra-3 set.reason)" "plain  set reason"
+CR_LEDGER="$RSL" bash "$LA" avail --branch b --head "$RSH" --model m --status unavailable --reason "auth Bearer $_c_tok"
+check "argv avail --reason: Bearer<tok> is redacted" "$(rs_field avail - reason)" "auth Bearer [REDACTED]"
+CR_LEDGER="$RSL" bash "$LA" delegation --branch b --head "$RSH" --reason "handed off Bearer $_c_tok"
+check "argv delegation --reason: Bearer<tok> is redacted" "$(rs_field delegation - reason)" "handed off Bearer [REDACTED]"
+check "no raw token reached the ledger file at any entry point" "$(grep -c "$_c_tok" "$RSL")" "0"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }
