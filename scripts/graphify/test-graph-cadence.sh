@@ -1107,7 +1107,7 @@ echo "$(( $(date -u +%s) - 700 ))" > "$LOCK_L/heartbeat"
 lock_fire 6 a
 assert_eq "pid-reuse lock: refuses non-zero (rc 3)" "3" "$rc"
 assert_contains "pid-reuse lock: the verdict is stale and names the reused pid" "stale: holder pid $$" "$out"
-assert_contains "pid-reuse lock: the verdict names the heartbeat age" "heartbeat 70" "$out"
+assert_contains "pid-reuse lock: the verdict says the heartbeat is not fresh" "alive but its heartbeat is not fresh" "$out"
 ledger=$(tail -n1 "$TMP_ROOT/tl6-ledger-a/.graph-cadence/ledger.jsonl" 2>/dev/null || echo MISSING)
 assert_contains "pid-reuse lock: ledger records action=failed" '"action":"failed"' "$ledger"
 assert_contains "pid-reuse lock: ledger names the stale holder" "stale: holder pid $$" "$ledger"
