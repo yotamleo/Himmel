@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+# scripts/hermes/egress-gate.sh — egress-matrix gate for the Hermes dispatch
+# chokepoint (HIMMEL-1259). Called by invoke.sh (which dispatch-trusted.sh execs)
+# BEFORE hermes is spawned.
+#
+# WHY: scripts/guardrails/egress-matrix.json is the one corpus x provider x
+# purpose policy, but the Hermes chokepoint never evaluated it — so a handover-
+# or vault-backed prompt could still reach a provider the matrix denies
+# (Alibaba/qwen, DeepSeek, Z.ai/GLM: de-listed by HIMMEL-1257 / HIMMEL-2224)
+# while graphify and claude-openrouter both honored the same deny.
+#
+# What it does: classifies the --prompt-file by PATH (physical path — symlinks
+# and `..` resolved) into salus / luna-personal / luna-clippings /
+# handover-state, maps the --provider to its matrix provider name, and asks
+# scripts/guardrails/egress-matrix-eval.mjs (the shared first-match-wins
+# evaluator; nothing re-implemented here) for the verdict at purpose=inference.
+#
+#   allow / allow+log -> permitted
+#   conditional       -> permitted ONLY for the one cell this gate can verify:
+#                        handover-state x openai-codex (brief-scoped — one
+#                        prompt file per dispatch, through this chokepoint).
+#                        Any other conditional cell (salus x local-ollama's
+#                        per-run opt-in) is refused: the condition cannot be
+#                        checked here, so it fails closed.
+#   deny / anything else / evaluator unreachable / unknown provider -> refused
+#
+# A permitted dispatch of a gated corpus appends one line to the ledger
+# (HIMMEL_HERMES_EGRESS_LEDGER, default ~/.himmel/hermes-egress.jsonl); a
+# ledger that cannot be written refuses the dispatch (allow+log obligation).
+#
+# A prompt file outside every gated corpus is NOT gated: public code
+# (himmel-code) is allowed on every lane by the matrix's own wildcard row, so
+# qwen/alibaba stays a legitimate --model for code work.
+#
+# --provider is REQUIRED for a gated corpus: without it hermes routes by its own
+# profile default / model alias, which this gate cannot see, so an unresolvable
+# provider is refused rather than assumed sanctioned.
+#
+# ponytail: classification is by the prompt FILE's path only. A brief handed over
+# as positional text or stdin (or copied out of the vault into /tmp first)
+# carries no path and is NOT recognised as handover-derived; only a
+# --prompt-file under the handover root / luna vault / a .salus tree is gated.
+# The salus check is the `.salus` marker walk only — the phi-roots /
+# egress-denylist lists are enforced by parity_guard's read-fence, not here.
+# Provider names hermes routes to WITHOUT a matching --provider (e.g. an env
+# override hermes reads itself) are also outside this gate.
+#
+# Usage: egress-gate.sh --prompt-file <path> [--provider <hermes-provider>]
+# Exit: 0 permitted (or not a gated corpus) · 2 usage · 4 refused (fail-closed)
+#
+# Environment:
+#   HANDOVER_DIR / LUNA_VAULT_PATH / LUNA_VAULT   corpus roots (same as the fence)
+#   HIMMEL_HERMES_EGRESS_LEDGER                   ledger path override (tests)
+#
+# Bash 3.2 safe (macOS / Git Bash on Windows).
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+EVAL="$SCRIPT_DIR/../guardrails/egress-matrix-eval.mjs"
+LEDGER="${HIMMEL_HERMES_EGRESS_LEDGER:-$HOME/.himmel/hermes-egress.jsonl}"
+PURPOSE="inference"
+
+refuse() { echo "egress-gate: REFUSED — $1" >&2; exit 4; }
+
+prompt_file=""
+provider=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --prompt-file) [ $# -ge 2 ] || { echo "egress-gate: --prompt-file requires a value" >&2; exit 2; }
+                       prompt_file="$2"; shift 2 ;;
+        --provider)    [ $# -ge 2 ] || { echo "egress-gate: --provider requires a value" >&2; exit 2; }
+                       provider="$2"; shift 2 ;;
+        *) echo "egress-gate: unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
+[ -n "$prompt_file" ] || { echo "egress-gate: --prompt-file is required" >&2; exit 2; }
+
+# _canon <path> -> physical absolute path (symlinks + `..` resolved); rc 1 if it
+# cannot be resolved (fail closed at the call site). POSIX readlink/cd/pwd only —
+# no GNU realpath (absent on stock macOS).
+_canon() {
+    local p="$1" n d i=0
+    while [ -L "$p" ] && [ "$i" -lt 40 ]; do
+        n="$(readlink "$p")" || return 1
+        case "$n" in /*|[A-Za-z]:*) p="$n" ;; *) p="$(dirname "$p")/$n" ;; esac
+        i=$((i + 1))
+    done
+    [ "$i" -lt 40 ] || return 1
+    if [ -d "$p" ]; then ( cd -P "$p" 2>/dev/null && pwd -P ); return; fi
+    d="$(cd -P "$(dirname "$p")" 2>/dev/null && pwd -P)" || return 1
+    printf '%s/%s\n' "${d%/}" "$(basename "$p")"
+}
+
+_lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# _under <path> <root> -> rc 0 iff <path> is <root> or inside it (case-folded:
+# over-matching on a case-insensitive FS is the stricter, safe direction).
+_under() {
+    local p r
+    p="$(_lc "$1")"; r="$(_lc "${2%/}")"
+    [ -n "$r" ] || return 1
+    [ "$p" = "$r" ] && return 0
+    case "$p" in "$r"/*) return 0 ;; esac
+    return 1
+}
+
+pf="$(_canon "$prompt_file")" || refuse "cannot resolve the prompt file path '$prompt_file' (symlink loop / unreadable) — refusing rather than classifying it blind"
+
+# --- corpus classification (most restrictive first; mirrors the fence's order) ---
+luna_root=""
+for v in "${LUNA_VAULT:-}" "${LUNA_VAULT_PATH:-}"; do
+    [ -n "$v" ] && { luna_root="$(_canon "$v")" || luna_root=""; break; }
+done
+
+handover_root=""
+HANDOVER_LIB="$SCRIPT_DIR/../lib/handover-path.sh"
+if [ -f "$HANDOVER_LIB" ]; then
+    # shellcheck source=../lib/handover-path.sh
+    # shellcheck disable=SC1091
+    . "$HANDOVER_LIB"
+    handover_root="$(handover_root 2>/dev/null || true)"
+    [ -n "$handover_root" ] && { handover_root="$(_canon "$handover_root")" || handover_root=""; }
+fi
+
+corpus=""
+d="$(dirname "$pf")"
+while :; do   # .salus marker walk (PHI tree)
+    if [ -e "$d/.salus" ]; then corpus="salus"; break; fi
+    [ "$d" = "/" ] || [ "$d" = "." ] || [ "$(dirname "$d")" = "$d" ] && break
+    d="$(dirname "$d")"
+done
+if [ -z "$corpus" ] && [ -n "$handover_root" ] && _under "$pf" "$handover_root" \
+   && { [ -z "$luna_root" ] || ! _under "$luna_root" "$handover_root"; }; then
+    # Handover state NESTED in the vault (luna/handovers) is handover-state, not
+    # luna-personal: the matrix carries a brief-scoped cell for exactly worker
+    # briefs. The exception is a handover root that IS (or contains) the vault
+    # root — the vault's stricter corpus must win there.
+    corpus="handover-state"
+fi
+if [ -z "$corpus" ] && [ -n "$luna_root" ] && _under "$pf" "$luna_root"; then
+    if _under "$pf" "$luna_root/Clippings"; then corpus="luna-clippings"; else corpus="luna-personal"; fi
+fi
+[ -n "$corpus" ] || exit 0   # not a gated corpus (public code / unclassified)
+
+# --- provider: hermes name -> matrix name. Unknown names pass through verbatim
+# and fall to the matrix `default: deny` (fail closed). ---
+[ -n "$provider" ] || refuse "prompt file is in corpus \"$corpus\" but no --provider was given — hermes would route by its own profile default / model alias, which this gate cannot see. Pass an explicit --provider (sanctioned for this corpus per scripts/guardrails/egress-matrix.json)."
+case "$(_lc "$provider")" in
+    alibaba-coding-plan) mprov="alibaba" ;;
+    zai)                 mprov="zai-glm" ;;
+    ollama)              mprov="local-ollama" ;;
+    gemini)              mprov="google-gemini" ;;
+    *)                   mprov="$(_lc "$provider")" ;;
+esac
+
+# --- evaluate through the shared evaluator (fail closed on ANY problem) ---
+[ -f "$EVAL" ] || refuse "egress-matrix evaluator not found ($EVAL) — cannot evaluate corpus \"$corpus\" x provider \"$mprov\""
+command -v node >/dev/null 2>&1 || refuse "node not found — cannot run the egress-matrix evaluator"
+line="$(node "$EVAL" "$corpus" "$mprov" "$PURPOSE" 2>/dev/null)" || refuse "egress-matrix evaluator failed for corpus \"$corpus\" x provider \"$mprov\""
+verdict="${line%%$'\t'*}"
+note="${line#*$'\t'}"
+
+case "$verdict" in
+    allow|allow+log) : ;;
+    conditional)
+        # Brief-scoped cell: task briefs through the guarded dispatch chokepoint,
+        # one prompt file per run. This gate IS that chokepoint and the prompt is
+        # always a single file, so the condition holds — but only for this cell.
+        if [ "$corpus" != "handover-state" ] || [ "$mprov" != "openai-codex" ]; then
+            refuse "corpus \"$corpus\" x provider \"$mprov\" is conditional (${note}) and this gate cannot verify that condition — refusing"
+        fi ;;
+    *) refuse "corpus \"$corpus\" x provider \"$mprov\" x purpose \"$PURPOSE\" is \"$verdict\" in the egress matrix (${note}). Sanctioned providers for this corpus are listed in scripts/guardrails/egress-matrix.json; for public code, pass a prompt file outside the vault/handover trees." ;;
+esac
+
+# --- audit line for a permitted gated dispatch; unwritable => refuse ---
+esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+mkdir -p "$(dirname "$LEDGER")" 2>/dev/null || refuse "cannot create the egress ledger directory for '$LEDGER' — a permitted gated dispatch must leave an audit line"
+printf '{"ts":"%s","corpus":"%s","provider":"%s","purpose":"%s","verdict":"%s","prompt":"%s"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$corpus" "$(esc "$mprov")" "$PURPOSE" "$verdict" "$(esc "$pf")" \
+    >> "$LEDGER" 2>/dev/null || refuse "cannot append to the egress ledger '$LEDGER' — a permitted gated dispatch must leave an audit line"
+exit 0

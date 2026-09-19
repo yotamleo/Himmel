@@ -27,6 +27,12 @@
 #
 # No retries. Exits with hermes' return code, UNLESS the watchdog below fires.
 #
+# Egress gate (HIMMEL-1259): before hermes is spawned, a --prompt-file under the
+# handover root / luna vault / a .salus tree is checked against the egress
+# matrix (scripts/hermes/egress-gate.sh -> scripts/guardrails/egress-matrix-eval.mjs)
+# and REFUSED with rc 4 when the --provider is de-listed or unresolvable. Such a
+# prompt needs an explicit --provider. Public-code prompts are not gated.
+#
 # Watchdog + deny-escalation (HIMMEL-2025): a parity_guard pre_tool_call DENY
 # is not terminal to hermes — hermes' tool_executor.py feeds the block back to
 # the model as an ordinary tool result and the agent may retry the same/an
@@ -189,11 +195,19 @@ else
     prompt_file="$tmp_prompt"
 fi
 
+# Egress-matrix gate (HIMMEL-1259): evaluate scripts/guardrails/egress-matrix.json
+# for a handover/vault-backed --prompt-file BEFORE anything is spawned or
+# ledgered, so a de-listed provider is refused fail-closed at the chokepoint the
+# matrix never reached. Pure-shell gate that reuses egress-matrix-eval.mjs; see
+# egress-gate.sh for the corpus/provider rules and its stated limits (a prompt
+# passed as text/stdin carries no path and is not classified). rc 4 = refused.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+bash "$SCRIPT_DIR/egress-gate.sh" --prompt-file "$prompt_file" ${provider:+--provider "$provider"} || exit 4
+
 # Resolve the hermes interpreter at RUNTIME via the shared resolver (HIMMEL-613):
 # HERMES_PY overrides (tests stub through it) ONLY when it still points at an
 # executable, else probe the venv — a moved/rebuilt venv re-resolves instead of
 # breaking on a stale path.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/resolve-hermes-py.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/../lib/resolve-hermes-py.sh"
