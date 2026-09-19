@@ -14,6 +14,16 @@ fails=0
 pass() { echo "  ok: $1"; }
 fail() { echo "  FAIL: $1" >&2; fails=$((fails + 1)); }
 
+# _TIMEOUT_BIN -- GNU `timeout` is absent on a stock macOS (homebrew coreutils
+# installs `gtimeout`). Resolve once, same pattern as
+# scripts/himmelctl/test/test-wizard-save-profile.sh: the bound below is a safety
+# net for the HIMMEL-840 hang, so without either binary run unbounded and say so.
+_TIMEOUT_BIN=""
+if command -v timeout >/dev/null 2>&1; then _TIMEOUT_BIN="timeout"
+elif command -v gtimeout >/dev/null 2>&1; then _TIMEOUT_BIN="gtimeout"
+else echo "test-reap-mcp-fleet.sh: no 'timeout'/'gtimeout' found -- hang protection disabled for this run" >&2
+fi
+
 # shellcheck source=scripts/codex/reap-mcp-fleet.sh
 . "$SCRIPT_DIR/reap-mcp-fleet.sh"
 
@@ -90,7 +100,7 @@ fi
 # confirmed rc=124 under `timeout` before the fix. Invokes the real script as
 # a subprocess, wrapped in `timeout`, so a regression here would show up as
 # rc=124 rather than hanging the whole test run.)
-out="$(timeout 5 bash "$SCRIPT_DIR/reap-mcp-fleet.sh" --root-pid 2>&1)"
+out="$(${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" 5} bash "$SCRIPT_DIR/reap-mcp-fleet.sh" --root-pid 2>&1)"
 rc=$?
 if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then
   pass "missing --root-pid value fails fast (rc=$rc, not a hang)"
@@ -102,7 +112,7 @@ case "$out" in
   *) fail "missing --root-pid value message: $out" ;;
 esac
 
-out="$(timeout 5 bash "$SCRIPT_DIR/reap-mcp-fleet.sh" --root-pid 123 --started-at 2>&1)"
+out="$(${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" 5} bash "$SCRIPT_DIR/reap-mcp-fleet.sh" --root-pid 123 --started-at 2>&1)"
 rc=$?
 if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then
   pass "missing --started-at value fails fast (rc=$rc, not a hang)"

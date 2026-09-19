@@ -46,6 +46,14 @@ assert() {
   fi
 }
 
+# _TIMEOUT_BIN -- resolved ONCE to an absolute path: the exec-loop cases below
+# override PATH for the command, and `PATH=... timeout` looks `timeout` up in that
+# NEW PATH. GNU `timeout` is absent on a stock macOS (coreutils installs
+# `gtimeout`); without either, run unbounded -- the bound only turns a guard
+# regression into a failure instead of a hang (HIMMEL-3177).
+_TIMEOUT_BIN="$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)"
+[ -n "$_TIMEOUT_BIN" ] || echo "test-fix-qmd-stub.sh: no 'timeout'/'gtimeout' found -- hang protection disabled for this run" >&2
+
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
@@ -357,7 +365,7 @@ assert "second version dir patched" grep -q 'himmel-qmd-stub-patch' "$verdir3/bi
 # */plugins/cache/qmd/* glob exists to break (BIN_DIR self-compare alone
 # would exec the sibling, which would exec back: infinite loop). timeout
 # turns a guard regression into a test failure instead of a hang.
-output="$(HOME="$tmpdir" BUN_INSTALL='' PATH="$verdir/bin:$verdir3/bin:$tmpdir/bin2:/usr/bin:/bin" timeout 10 "$verdir/bin/qmd" --version)"
+output="$(HOME="$tmpdir" BUN_INSTALL='' PATH="$verdir/bin:$verdir3/bin:$tmpdir/bin2:/usr/bin:/bin" ${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" 10} "$verdir/bin/qmd" --version)"
 assert "skips sibling version dir, falls through to non-plugin qmd" grep -q '^PATH-QMD --version' <<<"$output"
 
 echo "[test-fix-qmd-stub] patched stub — relocated cache root (no plugins/cache segment), two patched siblings: no exec loop"
@@ -380,17 +388,17 @@ done
 bash "$FIXER" --cache-root "$relroot" >/dev/null
 assert "relocated 0.1.0 patched" grep -q 'himmel-qmd-stub-patch' "$rverdir1/bin/qmd"
 assert "relocated 0.2.0 patched" grep -q 'himmel-qmd-stub-patch' "$rverdir2/bin/qmd"
-output="$(HOME="$tmpdir" BUN_INSTALL='' PATH="$rverdir1/bin:$rverdir2/bin:$tmpdir/bin2:/usr/bin:/bin" timeout 10 "$rverdir1/bin/qmd" --version)"
+output="$(HOME="$tmpdir" BUN_INSTALL='' PATH="$rverdir1/bin:$rverdir2/bin:$tmpdir/bin2:/usr/bin:/bin" ${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" 10} "$rverdir1/bin/qmd" --version)"
 assert "relocated siblings skipped (marker guard), falls through to non-plugin qmd" grep -q '^PATH-QMD --version' <<<"$output"
 # Same shape from the OTHER sibling (B leads with A ahead of it on PATH).
-output="$(HOME="$tmpdir" BUN_INSTALL='' PATH="$rverdir2/bin:$rverdir1/bin:$tmpdir/bin2:/usr/bin:/bin" timeout 10 "$rverdir2/bin/qmd" --version)"
+output="$(HOME="$tmpdir" BUN_INSTALL='' PATH="$rverdir2/bin:$rverdir1/bin:$tmpdir/bin2:/usr/bin:/bin" ${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" 10} "$rverdir2/bin/qmd" --version)"
 assert "relocated siblings skipped from the other direction too" grep -q '^PATH-QMD --version' <<<"$output"
 
 echo "[test-fix-qmd-stub] patched stub — spaced cache root (glob defeated) falls through"
 # $spaced_cache has no plugins/cache segment, so the glob does NOT match:
 # the marker guard (and, behind it, the BIN_DIR self-compare) must handle a
 # PATH entry containing a space.
-output="$(HOME="$tmpdir" BUN_INSTALL='' PATH="$sverdir/bin:$tmpdir/bin2:/usr/bin:/bin" timeout 10 "$sverdir/bin/qmd" --version)"
+output="$(HOME="$tmpdir" BUN_INSTALL='' PATH="$sverdir/bin:$tmpdir/bin2:/usr/bin:/bin" ${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" 10} "$sverdir/bin/qmd" --version)"
 assert "spaced-path stub falls through to next PATH qmd" grep -q '^PATH-QMD --version' <<<"$output"
 
 echo "[test-fix-qmd-stub] patched stub — nothing available => rc=127 + hint"
