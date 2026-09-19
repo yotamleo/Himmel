@@ -118,7 +118,7 @@ ln -s "$INBOX_X" "$SYMLINK_INTO_INBOX"
 # name|json|expect_rc_relay|expect_rc_norelay
 ROWS_NAME=(row1 row2 row3 row4 row5 row6 row7 row8 row9 row10a row10b row10c row10d row11 row12 row13 row14 row15 row16 row17 row18 row19 row20
     read-tee read-cp read-mv read-rm read-rsync read-dd read-truncate read-sed read-install read-chmod read-chown read-address read-legdoc-form
-    write-dd write-abs-rm write-sudo-rm write-rmdir write-xargs-rm write-paren-cp write-semi-mv write-sed-i write-tee write-install write-rsync write-chown write-chmod write-truncate write-newline-rm)
+    write-dd write-abs-rm write-sudo-rm write-rmdir write-cpio write-ddrescue write-xargs-rm write-paren-cp write-semi-mv write-sed-i write-tee write-install write-rsync write-chown write-chmod write-truncate write-newline-rm)
 ROWS_JSON=(
     "$(write_payload Write "$INBOX_X")"
     "$(write_payload Edit "$LEG_DOC")"
@@ -165,6 +165,8 @@ ROWS_JSON=(
     "$(bash_payload "/bin/rm $ROOT/inbox/X.md")"
     "$(bash_payload "sudo rm -f $ROOT/inbox/X.md")"
     "$(bash_payload "rmdir $ROOT/inbox")"
+    "$(bash_payload "echo x | cpio -p $ROOT/inbox")"
+    "$(bash_payload "ddrescue x $ROOT/inbox/X.md")"
     "$(bash_payload "ls | xargs rm $ROOT/inbox/X.md")"
     "$(bash_payload "(cp x $ROOT/inbox/X.md)")"
     "$(bash_payload "true;mv x $ROOT/inbox/X.md")"
@@ -180,7 +182,7 @@ rm $ROOT/inbox/Y.md")"
 )
 ROWS_EXPECT=(2 2 2 0 2 2 0 2 2 2 2 2 2 0 2 2 2 2 2 2 2 2 2
     0 0 0 0 0 0 0 0 0 0 0 0 0
-    2 2 2 2 2 2 2 2 2 2 2 2 2 2 2)
+    2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2)
 
 echo "=== marker set (HIMMEL_CONSOLE_RELAY=1) ==="
 i=0

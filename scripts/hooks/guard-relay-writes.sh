@@ -34,8 +34,9 @@
 #     SESSION_NAME_CMDLINE_FILE, CLAUDE_PID or CONSOLE_SESSION_NAME (an
 #     env-prefix override, `unset`, or `env -u` of an identity/marker
 #     variable); or contains "inbox-send" AND "--token"; or contains a
-#     write-shaped verb (">", or the command WORD "tee", "cp", "mv", "rm",
-#     "rmdir", "rsync", "dd", "truncate", "sed", "install", "chmod", "chown" —
+#     write-shaped verb (">", or the command WORD "tee", "cp", "cpio", "mv",
+#     "rm", "rmdir", "rsync", "dd", "ddrescue", "truncate", "sed", "install",
+#     "chmod", "chown" —
 #     a word is bounded by the string edge or any char outside [[:alnum:]_])
 #     AND text naming "/inbox/", "himmel-console", or both "-legN" and
 #     "-RESUME.md".
@@ -211,9 +212,11 @@ case "$tool" in
         # like "mVddVZ"). The boundary is "any char that is not [[:alnum:]_]"
         # (or the string edge), so `/bin/rm`, `sudo rm`, `xargs rm`, `(cp`,
         # `;mv` and a newline-separated `rm` all still match. Kept in a variable:
-        # bash 3.2 needs the ERE unquoted on the right of =~. `rmdir` is listed
-        # because it used to be caught only as a substring of "rm".
-        write_verb_re='(^|[^[:alnum:]_])(tee|cp|mv|rm|rmdir|rsync|dd|truncate|sed|install|chmod|chown)([^[:alnum:]_]|$)'
+        # bash 3.2 needs the ERE unquoted on the right of =~. `rmdir`, `cpio`
+        # and `ddrescue` are listed because each is a real write utility whose
+        # name STARTS with a listed verb and so used to be caught only as a
+        # substring of it — the word boundary would otherwise flip them to allow.
+        write_verb_re='(^|[^[:alnum:]_])(tee|cp|cpio|mv|rm|rmdir|rsync|dd|ddrescue|truncate|sed|install|chmod|chown)([^[:alnum:]_]|$)'
         write_shaped=0
         case "$cmd" in
             *'>'*) write_shaped=1 ;;
