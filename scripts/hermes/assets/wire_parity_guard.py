@@ -207,14 +207,30 @@ def do_add(cfg_path: str, guard: str, interp: str) -> None:
 
 
 def migrate_matcher(cfg_path: str) -> None:
-    """Rewrite the pre-HIMMEL-2637 hand-listed matcher to MATCHER (idempotent)."""
+    """Rewrite the pre-HIMMEL-2637 hand-listed matcher to MATCHER (idempotent).
+
+    Only an entry whose own `command:` runs parity_guard.py is touched: another
+    hook that happens to carry the same pattern keeps it, so it is not widened
+    to every tool."""
     with open(cfg_path, "r", encoding="utf-8") as f:
-        text = f.read()
+        lines = f.readlines()
     old = f"- matcher: {LEGACY_MATCHER}\n"
-    if old not in text:
+    changed = False
+    for i, ln in enumerate(lines):
+        if ln.lstrip() != old:
+            continue
+        # the entry's own keys: up to the next list item or the end of the block
+        j = i + 1
+        while j < len(lines) and lines[j].strip() and not lines[j].lstrip().startswith("- ") \
+                and lines[j][:1].isspace():
+            j += 1
+        if any("parity_guard.py" in body for body in lines[i + 1:j]):
+            lines[i] = ln.replace(old, f"- matcher: {MATCHER}\n")
+            changed = True
+    if not changed:
         return
     with open(cfg_path, "w", encoding="utf-8", newline="\n") as f:
-        f.write(text.replace(old, f"- matcher: {MATCHER}\n"))
+        f.writelines(lines)
     print(f"migrated the legacy parity_guard matcher to {MATCHER} in {cfg_path}")
 
 

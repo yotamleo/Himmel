@@ -1176,7 +1176,7 @@ def _skill_check(payload: dict, args: dict) -> None:
                 name = os.path.basename(str(op.get("name") or "x"))
                 fp = os.path.normpath(os.path.join(HERMES_HOME, "skills", name, fp))
             check_write_path(norm(fp))
-            reason = phi_egress_reason(fp)
+            reason = phi_egress_reason(fp) or _edit_on_main_reason(fp)
             if reason:
                 block(reason)
 

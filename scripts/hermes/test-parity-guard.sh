@@ -763,6 +763,8 @@ g "process_manage: poll allowed"  allow '{"tool_name":"process_manage","tool_inp
 g "cronjob_manage: destructive script refused" block '{"tool_name":"cronjob_manage","tool_input":{"action":"create","schedule":"every 1h","script":"rm -rf build"}}'
 g "cronjob_manage: prompt-only job allowed" allow '{"tool_name":"cronjob_manage","tool_input":{"action":"create","schedule":"every 1h","prompt":"summarise the inbox"}}'
 g "skill_manage: create allowed"  allow '{"tool_name":"skill_manage","tool_input":{"action":"create","name":"demo","content":"# demo"}}'
+g "skill_manage: absolute file_path into a repo on master refused" block "{\"tool_name\":\"skill_manage\",\"tool_input\":{\"action\":\"write_file\",\"name\":\"demo\",\"file_path\":\"$MASTR/src/foo.sh\",\"file_content\":\"x\"}}"
+g "skill_manage: absolute file_path onto a worker branch allowed" allow "{\"tool_name\":\"skill_manage\",\"tool_input\":{\"action\":\"write_file\",\"name\":\"demo\",\"file_path\":\"$FR/src/foo.sh\",\"file_content\":\"x\"}}"
 g "skill_manage: unknown action refused" block '{"tool_name":"skill_manage","tool_input":{"action":"exec","name":"demo"}}'
 g "skill_manage: missing action refused" block '{"tool_name":"skill_manage","tool_input":{"name":"demo"}}'
 g "skill_manage: file_path onto the guard refused" block "{\"tool_name\":\"skill_manage\",\"tool_input\":{\"action\":\"write_file\",\"name\":\"demo\",\"file_path\":\"$H/agent-hooks/parity_guard.py\"}}"
@@ -794,6 +796,12 @@ before="$(cat "$cfg")"
 if [ "$(cat "$cfg")" = "$before" ]; then
   echo "  ok: matcher migration is idempotent"; else
   echo "  FAIL: matcher migration is not idempotent" >&2; fails=$((fails + 1)); fi
+printf 'hooks:\n  pre_tool_call:\n  - matcher: %s\n    command: /x/other-hook.sh\n    timeout: 5\n  - matcher: %s\n    command: /x/agent-hooks/parity_guard.py\n    timeout: 10\n' "$OLD_MATCHER" "$OLD_MATCHER" > "$cfg"
+"$PY" "$WIRE" ensure "$cfg" "$H/agent-hooks/parity_guard.py" "$PY" >/dev/null
+if [ "$(grep -c -F "matcher: $OLD_MATCHER" "$cfg")" = 1 ] && [ "$(grep -c -xF "  - matcher: .*" "$cfg")" = 1 ] \
+   && grep -B1 -F "other-hook.sh" "$cfg" | grep -qF "matcher: $OLD_MATCHER"; then
+  echo "  ok: only the parity_guard entry's matcher is migrated"; else
+  echo "  FAIL: migration touched a hook it does not own" >&2; fails=$((fails + 1)); fi
 printf 'hooks:\n  pre_tool_call:\n  - matcher: terminal|write_file\n    command: /x/agent-hooks/parity_guard.py\n    timeout: 10\n' > "$cfg"
 before="$(cat "$cfg")"
 "$PY" "$WIRE" ensure "$cfg" "$H/agent-hooks/parity_guard.py" "$PY" >/dev/null
