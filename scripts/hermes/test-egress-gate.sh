@@ -204,5 +204,91 @@ rm -f "$STUB_CAPTURE"
 bash "$INVOKE" --prompt-file "$TMP/code/diff.txt" --provider alibaba-coding-plan --model qwen3-coder-plus >/dev/null 2>&1; rc=$?
 check "invoke.sh: public-code prompt x alibaba still dispatches (qwen stays a himmel-code option)" 0 "$rc"
 
+# ── HIMMEL-3221: hermes is dispatched an immutable SNAPSHOT of the gated file ──
+# The gate classifies the prompt by path; invoke.sh used to hand hermes that same
+# path afterwards, so a file swapped in between (check-then-use) reached the
+# interpreter unclassified. The gate now copies the file once into a private
+# 0600 snapshot (identity re-checked around the copy) and invoke.sh dispatches
+# only the snapshot. The swaps below are driven by PATH stubs: `hostname` runs
+# inside invoke.sh AFTER the gate and BEFORE the interpreter spawn; `node` runs
+# the evaluator INSIDE the gate, between classification and the copy.
+REALNODE="$(command -v node)"
+HOSTBIN="$TMP/hostbin"; NODEBIN="$TMP/nodebin"; mkdir -p "$HOSTBIN" "$NODEBIN"
+cat > "$TMP/do-swap.sh" <<'EOS'
+#!/usr/bin/env bash
+[ -e "${SWAP_DONE:?}" ] && exit 0
+: > "$SWAP_DONE"
+printf 'SWAPPED-CORPUS\n' > "${SWAP_TARGET:?}.new" && mv -f "$SWAP_TARGET.new" "$SWAP_TARGET"
+EOS
+cat > "$HOSTBIN/hostname" <<EOS
+#!/usr/bin/env bash
+bash "$TMP/do-swap.sh"
+echo swaphost
+EOS
+cat > "$NODEBIN/node" <<EOS
+#!/usr/bin/env bash
+case "\${1:-}" in *egress-matrix-eval.mjs) bash "$TMP/do-swap.sh" ;; esac
+exec "$REALNODE" "\$@"
+EOS
+chmod +x "$TMP/do-swap.sh" "$HOSTBIN/hostname" "$NODEBIN/node"
+SNAPSTUB="$TMP/fake-python-snap"
+cat > "$SNAPSTUB" <<'EOS'
+#!/usr/bin/env bash
+cat "${HERMES_PROMPT_FILE:?}" > "${STUB_CAPTURE:?}"
+echo "$HERMES_PROMPT_FILE" > "$STUB_CAPTURE.path"
+ls -l "$HERMES_PROMPT_FILE" | cut -c1-10 > "$STUB_CAPTURE.mode"
+printf 'stub-ok'
+EOS
+chmod +x "$SNAPSTUB"
+SWAPFILE="$HO/u/himmel/swap.md"
+export SWAP_TARGET="$SWAPFILE" SWAP_DONE="$TMP/swap.done"
+
+# A. file swapped AFTER the gate, BEFORE the interpreter: hermes gets the gated bytes
+printf 'GATED-CORPUS\n' > "$SWAPFILE"; rm -f "$SWAP_DONE" "$STUB_CAPTURE" "$STUB_CAPTURE".path "$STUB_CAPTURE".mode
+HERMES_PY="$SNAPSTUB" PATH="$HOSTBIN:$PATH" bash "$INVOKE" --prompt-file "$SWAPFILE" --provider openai-codex >/dev/null 2>&1; rc=$?
+check "snapshot: the swap fired between the gate and the spawn (control)" "SWAPPED-CORPUS" "$(tr -d '\n' < "$SWAPFILE")"
+check "snapshot: swapped-after-gate dispatch still succeeds" 0 "$rc"
+check "snapshot: the interpreter receives the GATED bytes, not the swapped file" "GATED-CORPUS" "$(tr -d '\n' < "$STUB_CAPTURE" 2>/dev/null)"
+check "snapshot: the interpreter reads a private path, not the gated path" "no" "$([ "$(cat "$STUB_CAPTURE.path" 2>/dev/null)" = "$SWAPFILE" ] && echo yes || echo no)"
+check "snapshot: the snapshot is mode 0600" "-rw-------" "$(cat "$STUB_CAPTURE.mode" 2>/dev/null)"
+
+# B. file swapped INSIDE the gate (classified, then replaced before the copy):
+# the identity re-check refuses — the swapped bytes must never be dispatched
+printf 'GATED-CORPUS\n' > "$SWAPFILE"; rm -f "$SWAP_DONE" "$STUB_CAPTURE" "$STUB_CAPTURE".path "$STUB_CAPTURE".mode
+err="$(HERMES_PY="$SNAPSTUB" PATH="$NODEBIN:$PATH" bash "$INVOKE" --prompt-file "$SWAPFILE" --provider openai-codex 2>&1)"; rc=$?
+check "snapshot: the swap fired inside the gate (control)" "SWAPPED-CORPUS" "$(tr -d '\n' < "$SWAPFILE")"
+check "snapshot: a file replaced mid-gate is refused rc 4" 4 "$rc"
+check "snapshot: …and the interpreter never ran" "absent" "$([ -e "$STUB_CAPTURE" ] && echo present || echo absent)"
+check_contains "snapshot: …and the refusal names the change" "changed" "$err"
+
+# C. the gate's own --snapshot + the ledger line
+printf 'GATED-CORPUS\n' > "$SWAPFILE"; : > "$HIMMEL_HERMES_EGRESS_LEDGER"; SNAP="$TMP/snap.out"
+bash "$GATE" --prompt-file "$SWAPFILE" --provider openai-codex --snapshot "$SNAP" >/dev/null 2>&1; rc=$?
+check "gate --snapshot: permitted dispatch rc 0" 0 "$rc"
+check "gate --snapshot: the snapshot holds the gated bytes" "GATED-CORPUS" "$(tr -d '\n' < "$SNAP" 2>/dev/null)"
+WANT_SHA="$(node -e 'process.stdout.write(require("crypto").createHash("sha256").update(require("fs").readFileSync(process.argv[1])).digest("hex"))' "$SNAP")"
+check "gate --snapshot: the ledger line carries the snapshot sha256 and byte size" "$WANT_SHA 13" "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n");const r=JSON.parse(l[l.length-1]);process.stdout.write(r.sha256+" "+r.bytes)' "$HIMMEL_HERMES_EGRESS_LEDGER" 2>/dev/null || echo bad)"
+# a NOT-gated file is snapshotted too (a swap could turn it into a gated one)
+rm -f "$SNAP"; bash "$GATE" --prompt-file "$TMP/code/diff.txt" --snapshot "$SNAP" >/dev/null 2>&1; rc=$?
+check "gate --snapshot: an un-gated file is snapshotted too" "0 diff" "$rc $(tr -d '\n' < "$SNAP" 2>/dev/null)"
+
+# D. fail closed on any copy / mktemp error
+err="$(bash "$GATE" --prompt-file "$SWAPFILE" --provider openai-codex --snapshot "$TMP/no-such-dir/snap" 2>&1)"; rc=$?
+check "gate --snapshot: an uncopyable destination refuses rc 4" 4 "$rc"
+check_contains "gate --snapshot: …with an explicit snapshot refusal" "snapshot" "$err"
+rm -f "$STUB_CAPTURE"
+err="$(TMPDIR="$TMP/no-such-tmpdir" bash "$INVOKE" --prompt-file "$SWAPFILE" --provider openai-codex 2>&1)"; rc=$?
+check "invoke.sh: a snapshot mktemp failure refuses rc 2" 2 "$rc"
+check_contains "invoke.sh: …naming the snapshot, not a later mktemp" "prompt snapshot" "$err"
+check "invoke.sh: …and the interpreter never ran" "absent" "$([ -e "$STUB_CAPTURE" ] && echo present || echo absent)"
+
+# E. the snapshot is removed on every exit path (success, refusal, hermes failure)
+PTMP="$TMP/ptmp"; mkdir -p "$PTMP"
+TMPDIR="$PTMP" HERMES_PY="$SNAPSTUB" bash "$INVOKE" --prompt-file "$SWAPFILE" --provider openai-codex >/dev/null 2>&1
+TMPDIR="$PTMP" HERMES_PY="$SNAPSTUB" bash "$INVOKE" --prompt-file "$SWAPFILE" --provider deepseek >/dev/null 2>&1
+FAILPY="$TMP/fake-python-fail"; printf '#!/usr/bin/env bash\nexit 7\n' > "$FAILPY"; chmod +x "$FAILPY"
+TMPDIR="$PTMP" HERMES_PY="$FAILPY" bash "$INVOKE" --prompt-file "$SWAPFILE" --provider openai-codex >/dev/null 2>&1
+check "snapshot: no hermes-snapshot file survives success, refusal or hermes failure" 0 "$(find "$PTMP" -name 'hermes-snapshot.*' 2>/dev/null | wc -l | tr -d ' ')"
+
 if [ "$FAILED" -gt 0 ]; then echo "---"; echo "FAIL $FAILED case(s)"; exit 1; fi
 echo "---"; echo "PASS all cases"; exit 0

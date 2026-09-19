@@ -160,6 +160,7 @@ done
 
 # Resolve the prompt source: --prompt-file wins, else positional, else stdin.
 tmp_prompt=""
+snapshot=""   # private copy of the gated prompt (HIMMEL-3221) — the ONLY file hermes reads
 # Watchdog/deny-escalation state (HIMMEL-2025), declared up front (set -u
 # safe) so the trap never trips on an early exit before they are assigned.
 watch_pid=""
@@ -169,6 +170,7 @@ scratch_log=""
 # shellcheck disable=SC2317,SC2329  # invoked indirectly via the EXIT trap (SC2329 = the renamed "function never invoked" check)
 cleanup() {
     [ -n "$tmp_prompt" ] && rm -f "$tmp_prompt"
+    [ -n "$snapshot" ] && rm -f "$snapshot"
     if [ -n "$watch_pid" ]; then
         kill -TERM -"$watch_pid" 2>/dev/null || kill -TERM "$watch_pid" 2>/dev/null
         wait "$watch_pid" 2>/dev/null
@@ -201,8 +203,20 @@ fi
 # matrix never reached. Pure-shell gate that reuses egress-matrix-eval.mjs; see
 # egress-gate.sh for the corpus/provider rules and its stated limits (a prompt
 # passed as text/stdin carries no path and is not classified). rc 4 = refused.
+#
+# The gate classifies by PATH, so hermes must never be handed that path again
+# (a swap / symlink retarget between the check and the read is a TOCTOU,
+# HIMMEL-3221): the gate copies the file once into a private mode-0600 snapshot
+# (mktemp, removed by the EXIT trap) and everything below reads only the snapshot.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-bash "$SCRIPT_DIR/egress-gate.sh" --prompt-file "$prompt_file" ${provider:+--provider "$provider"} || exit 4
+snapshot="$(mktemp "${TMPDIR:-/tmp}/hermes-snapshot.XXXXXX" 2>/dev/null)" || {
+    snapshot=""
+    echo "invoke.sh: cannot create the prompt snapshot (mktemp failed; TMPDIR=${TMPDIR:-<unset>}) — refusing to dispatch a prompt path that can change after the egress gate" >&2
+    exit 2
+}
+bash "$SCRIPT_DIR/egress-gate.sh" --prompt-file "$prompt_file" --snapshot "$snapshot" ${provider:+--provider "$provider"} || exit 4
+[ -s "$snapshot" ] || { echo "invoke.sh: prompt file is empty: $prompt_file" >&2; exit 2; }
+prompt_file="$snapshot"
 
 # Resolve the hermes interpreter at RUNTIME via the shared resolver (HIMMEL-613):
 # HERMES_PY overrides (tests stub through it) ONLY when it still points at an
