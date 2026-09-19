@@ -150,6 +150,24 @@ else
   else
     fail "bracket read with a trailing suffix wrongly reported: [$extout]"
   fi
+  # A concatenated key is a different (computed) name, and an unclosed bracket is not a read (codex-1 round 3).
+  printf 'const v = process.env["FEATURE_OK" + "-extra"];\n' > "$sb5/hook-bracket-cat.js"
+  printf 'const v = process.env["UNCLOSED_OK"\n' > "$sb5/hook-bracket-open.js"
+  catout=$(override_env_undeclared "$sb5/hook-bracket-cat.js")
+  openout=$(override_env_undeclared "$sb5/hook-bracket-open.js")
+  if [ -z "$catout" ] && [ -z "$openout" ]; then
+    pass "concatenated and unclosed bracket keys not reported"
+  else
+    fail "computed/unclosed bracket key wrongly reported: cat=[$catout] open=[$openout]"
+  fi
+  # A padded close bracket is still a literal read.
+  printf 'if (process.env[ "JS_PADCLOSE_OK" ]) process.exit(0);\n' > "$sb5/hook-bracket-pad2.js"
+  pad2out=$(override_env_undeclared "$sb5/hook-bracket-pad2.js")
+  if [ "$pad2out" = "JS_PADCLOSE_OK" ]; then
+    pass "padded close bracket read caught"
+  else
+    fail "padded close bracket read not caught: [$pad2out]"
+  fi
   # Control: a dynamic read names no literal variable, so nothing to report.
   printf 'const v = process.env[name];\n' > "$sb5/hook-bracket-dyn.js"
   dynout=$(override_env_undeclared "$sb5/hook-bracket-dyn.js")
