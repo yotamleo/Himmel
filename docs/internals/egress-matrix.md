@@ -212,7 +212,7 @@ script makes itself (cron/schtasks). Non-hook callers — currently
 dispatches — run the same evaluation directly instead of keeping a private
 copy of the provider map, matrix eval and ledger:
 
-```
+```text
 graphify-fence.sh --eval <corpus> <backend> <abs-target> <tool-label>
 ```
 
