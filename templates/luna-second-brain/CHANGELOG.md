@@ -8,6 +8,20 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.43] — 2026-09-19
+
+### Fixed
+- `upgrade.sh` read a template-owned file as a local edit — refusing the
+  version stamp for good — whenever it differed from the template only by
+  formatting. Obsidian rewrites its own `.obsidian/*.json` on every settings
+  touch, dropping the final newline and re-indenting, so `app.json`,
+  `appearance.json` and `core-plugins.json` tripped this on every upgrade
+  after the first Obsidian launch. The template-vs-vault comparison (and the
+  vault-git baseline comparison) now ignores one trailing newline and, when
+  `jq` is available, compares `.json` files as normalised JSON; without `jq`
+  it falls back to the newline rule and says so. A real difference is still
+  withheld.
+
 ## [0.4.35] — 2026-09-16
 
 ### Fixed
