@@ -15,10 +15,14 @@ repos:
       # writing-skills/graphviz-conventions.dot, making it the one file of 44
       # that no longer compared byte-identical to upstream and so the one false
       # positive any cmp-based re-vendor audit would have to explain away.
+      # HIMMEL-3113: only the VENDORED.md-listed skill dirs are exempt — the
+      # list fails CLOSED, so context7-mcp (`local=`, himmel-authored) and any
+      # skill dir added later are checked by default. Re-vendoring a new skill
+      # = add its dir to this list and to the shellcheck exclude below.
       - id: trailing-whitespace
-        exclude: '^(templates/luna-second-brain/(\.obsidian/plugins|optional/plugins)/.*\.(js|css)$|marketplace/plugins/claude-hud/|marketplace/plugins/lean-skills/skills/|graphify-out/|scripts/lanes/bench/(fixtures|runs)/)'
+        exclude: '^(templates/luna-second-brain/(\.obsidian/plugins|optional/plugins)/.*\.(js|css)$|marketplace/plugins/claude-hud/|marketplace/plugins/lean-skills/skills/(brainstorming|writing-plans|systematic-debugging|verification-before-completion|executing-plans|finishing-a-development-branch|requesting-code-review|subagent-driven-development|test-driven-development|using-git-worktrees|writing-skills|grilling)/|graphify-out/|scripts/lanes/bench/(fixtures|runs)/)'
       - id: end-of-file-fixer
-        exclude: '^(templates/luna-second-brain/(\.obsidian/plugins|optional/plugins)/.*\.(js|css)$|marketplace/plugins/claude-hud/|marketplace/plugins/lean-skills/skills/|graphify-out/|scripts/lanes/bench/(fixtures|runs)/)'
+        exclude: '^(templates/luna-second-brain/(\.obsidian/plugins|optional/plugins)/.*\.(js|css)$|marketplace/plugins/claude-hud/|marketplace/plugins/lean-skills/skills/(brainstorming|writing-plans|systematic-debugging|verification-before-completion|executing-plans|finishing-a-development-branch|requesting-code-review|subagent-driven-development|test-driven-development|using-git-worktrees|writing-skills|grilling)/|graphify-out/|scripts/lanes/bench/(fixtures|runs)/)'
       - id: check-yaml
       - id: check-json
       # HIMMEL-2508: 516 tracked scripts reached main as mode 100644 because
@@ -34,9 +38,10 @@ repos:
       # — don't lint it. marketplace/plugins/lean-skills/skills/ (HIMMEL-3064)
       # is copied VERBATIM from obra/superpowers + mattpocock/skills — same
       # reasoning: a shellcheck fix here would be a local edit VENDORED.md
-      # explicitly forbids, turning the next re-vendor into a merge.
+      # explicitly forbids, turning the next re-vendor into a merge. Vendored
+      # dirs only, same list as trailing-whitespace above (HIMMEL-3113).
       - id: shellcheck
-        exclude: '^(scripts/statusline/|scripts/lanes/bench/(fixtures|runs)/|marketplace/plugins/lean-skills/skills/)'
+        exclude: '^(scripts/statusline/|scripts/lanes/bench/(fixtures|runs)/|marketplace/plugins/lean-skills/skills/(brainstorming|writing-plans|systematic-debugging|verification-before-completion|executing-plans|finishing-a-development-branch|requesting-code-review|subagent-driven-development|test-driven-development|using-git-worktrees|writing-skills|grilling)/)'
 
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.21.2
