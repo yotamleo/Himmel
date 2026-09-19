@@ -4614,6 +4614,36 @@ else
 fi
 rm -rf "$c41_t"
 
+echo "== C41: camelCase credential flags (--accessToken/--clientSecret/--authToken) with ordinary values -> WARN =="
+c41_setup
+cat > "$c41_t/home/.claude.json" <<'EOF'
+{"mcpServers":{"camelA":{"command":"npx","args":["srv","--accessToken","notarealvalue"]},"camelB":{"command":"npx","args":["srv","--clientSecret","notarealvalue"]},"camelC":{"command":"npx","args":["srv","--authToken","notarealvalue"]}}}
+EOF
+out="$(c41_run)"
+if grepq "$out" -F "'camelA'" && grepq "$out" -F "'camelB'" && grepq "$out" -F "'camelC'" && ! grepq "$out" -F 'notarealvalue'; then
+    pass "C41 camelCase credential flags -> WARN for all three, value withheld"
+else
+    fail "C41 camelCase credential flags -> $(printf '%s' "$out" | grep -A3 C41)"
+fi
+rm -rf "$c41_t"
+
+echo "== C41: a 3-segment JWT argument, and a URL carrying ?token= (inline --flag=URL or bare) -> WARN =="
+for c41_case in \
+    'jwt|"srv","eyJNOTAREALVALUE1.eyJNOTAREALVALUE2.NOTAREALSIG-zq81x"' \
+    'inlineurl|"srv","--url=https://example.invalid/mcp?token=NOT-A-REAL-VALUE-zq81x"' \
+    'bareurl|"srv","https://example.invalid/mcp?apikey=NOT-A-REAL-VALUE-zq81x"'; do
+    c41_name="${c41_case%%|*}"; c41_args="${c41_case#*|}"
+    c41_setup
+    printf '{"mcpServers":{"%s":{"command":"npx","args":[%s]}}}\n' "$c41_name" "$c41_args" > "$c41_t/home/.claude.json"
+    out="$(c41_run)"
+    if grepq "$out" 'WARN C41-mcp-argv-key' && grepq "$out" -F "'$c41_name'" && ! grepq "$out" -F 'NOT-A-REAL-VALUE' && ! grepq "$out" -F 'NOTAREALVALUE'; then
+        pass "C41 $c41_name -> WARN, value withheld"
+    else
+        fail "C41 $c41_name -> $(printf '%s' "$out" | grep -A1 C41)"
+    fi
+    rm -rf "$c41_t"
+done
+
 echo "== C41: env-block key, --key-file <path>, --keyboard, bare --token flag -> no WARN, OK =="
 c41_setup
 cat > "$c41_t/home/.claude.json" <<'EOF'

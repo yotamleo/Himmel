@@ -2939,10 +2939,10 @@ check_c40_qmd_vec() {
 # key/token/secret). It prints the server NAME and the flag / arg index only --
 # NEVER the value.
 # ponytail: only `args` arrays are examined -- a key inside `command` (a `bash -c "... --api-key K"`
-# string) or in `env` is not; flag names split on -/_ so a one-word camelCase flag
-# (--apiKey) matches but a credential flag whose words fuse without a separator
-# (--authkey) does not. Flags ending in file/path/env/name/dir/var/id are treated as
-# pointers, not secrets.
+# string) or in `env` is not; flag names split on -/_ and camelCase humps (--api-key,
+# --accessToken) but a credential flag whose words fuse in one case (--authkey,
+# --accesstoken) does not match. Flags ending in file/path/env/name/dir/var/id are
+# treated as pointers, not secrets.
 # Test seam: HIMMEL_DOCTOR_MCP_ROOT (the <root> above, default this checkout).
 check_c41_mcp_argv_key() {
     if ! command -v jq >/dev/null 2>&1; then
@@ -2954,13 +2954,14 @@ check_c41_mcp_argv_key() {
     # The jq program is deliberately single-quoted: its $vars are jq's, not the shell's.
     # shellcheck disable=SC2016
     local program='
-        def toks: sub("^-+"; "") | ascii_downcase | split("[-_]"; null);
+        def toks: sub("^-+"; "") | gsub("(?<lo>[a-z0-9])(?<up>[A-Z])"; "\(.lo)-\(.up)") | ascii_downcase | split("[-_]"; null);
         def bareflag: test("^-{1,2}[A-Za-z][A-Za-z0-9_-]*$");
         def credflag: toks as $t
             | ($t | any(.[]; IN("key","apikey","token","secret","password","passwd","credential","credentials")))
               and (($t | last) | IN("file","path","env","name","dir","var","id") | not);
         def generic: test("^[A-Za-z0-9]{32,}$") and test("[0-9]") and test("[A-Za-z]");
-        def keyval: test("^(sk-[A-Za-z0-9_-]{20,}|fc-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[A-Za-z0-9_-]{30,}|eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,})$") or generic;
+        def keyval: test("^(sk-[A-Za-z0-9_-]{20,}|fc-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[A-Za-z0-9_-]{30,}|eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}(\\.[A-Za-z0-9_-]*)?)$") or generic;
+        def urlcred: test("[?&][A-Za-z_-]*(key|token|secret)[A-Za-z_-]*=[^&]+"; "i");
         def hits: . as $a
             | range(0; length) as $i
             | $a[$i] as $x
@@ -2971,12 +2972,13 @@ check_c41_mcp_argv_key() {
                   ($x | capture("^(?<f>-{0,2}[A-Za-z][A-Za-z0-9_-]*)=(?<v>.+)$")) as $c
                   | if ($c.f | credflag) then "flag \($c.f)"
                     elif ($c.v | keyval) then "key-shaped argument args[\($i)]"
+                    elif ($c.v | urlcred) then "URL argument args[\($i)] carrying a credential query parameter"
                     else empty end
               elif ($x | bareflag) then
                   if ($x | credflag) and (($a[$i + 1] | type) == "string") and (($a[$i + 1] | startswith("-")) | not) and ($a[$i + 1] != "")
                   then "flag \($x)" else empty end
               elif ($afterflag | not) and ($x | keyval) then "key-shaped argument args[\($i)]"
-              elif ($x | test("[?&][A-Za-z_-]*(key|token|secret)[A-Za-z_-]*=[^&]+"; "i")) then "URL argument args[\($i)] carrying a credential query parameter"
+              elif ($x | urlcred) then "URL argument args[\($i)] carrying a credential query parameter"
               else empty end;
         [ (.mcpServers | objects | to_entries[]),
           (.projects | objects | .[] | objects | .mcpServers | objects | to_entries[]) ]
