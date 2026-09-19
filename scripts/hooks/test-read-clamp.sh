@@ -149,10 +149,11 @@ fi
 # (HIMMEL-2993 CR: file_line_count restricted to regular files).
 FIFO_PATH="$WORK/fifo"
 mkfifo "$FIFO_PATH"
-# shellcheck disable=SC2086 # intentional word-splitting: LINES_ENV carries a space-separated VAR=val assignment for env
 # stock macOS ships neither timeout nor gtimeout: run unbounded there (the bound
-# only turns a would-be hang into a failure), same resolver as test-fix-qmd-stub.sh.
-_TIMEOUT_BIN="$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)"
+# only turns a would-be hang into a failure), shared resolver scripts/lib/timeout-bin.sh.
+# shellcheck source=scripts/lib/timeout-bin.sh
+. "$HERE/../lib/timeout-bin.sh"
+# shellcheck disable=SC2086 # intentional word-splitting: LINES_ENV carries a space-separated VAR=val assignment for env
 rc=$(printf '%s' "$(j_read "$FIFO_PATH" sess-fifo)" | ${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" 5} env $LINES_ENV XDG_RUNTIME_DIR="$RUNTIME_DIR" HIMMEL_CONSOLE_LEG=1 bash "$HOOK" >"$WORK/stdout" 2>"$WORK/stderr"; echo "$?")
 assert_rc "read of a FIFO allows without blocking" 0 "$rc"
 

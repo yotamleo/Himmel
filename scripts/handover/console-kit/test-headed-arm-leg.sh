@@ -64,6 +64,9 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$HERE/headed-arm-leg.sh"
 HEADED_ARM="$HERE/../headed-arm.sh"
+# shellcheck source=scripts/lib/timeout-bin.sh
+# shellcheck disable=SC1091
+. "$HERE/../../lib/timeout-bin.sh"
 # The suite owns every launcher input; an ambient leg shell must not silently
 # turn default-native cases into claudex cases.
 unset LEG_LANE LEG_CONTEXT LEG_REPO LEG_EFFORT HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER IMPL_GUARD_OK INLINE_IMPL_OK HIMMEL_CONSOLE_LEG HIMMEL_LEAN_LEG LEG_CLAUDE_BIN LEG_PROFILE LEG_PROFILE_SETTINGS LEG_PROFILE_PREFACE LEG_PROFILE_MCP_CONFIG LEG_SUPPRESS_CR_TRIGGER CR_TRIGGER_SUPPRESS 2>/dev/null || true
@@ -213,9 +216,14 @@ check "usage: --dry-run with too few positionals -> exit 2" "$rc" "2"
 
 # codex CR fix: `--lane` as the LAST arg (no value) must not hang. Bounded by
 # `timeout` so a regression fails loudly (rc=124) instead of wedging the suite.
-rc=0; out="$(timeout 5 bash "$SCRIPT" --lane 2>&1)" || rc=$?
-check "usage: --lane with no value -> exit 2 (not an infinite loop)" "$rc" "2"
-contains "usage: --lane with no value -> usage text" "$out" "usage:"
+# Hang-guard: with no GNU timeout/gtimeout the row SKIPs rather than run unbounded.
+if [ -n "$_TIMEOUT_BIN" ]; then
+    rc=0; out="$("$_TIMEOUT_BIN" 5 bash "$SCRIPT" --lane 2>&1)" || rc=$?
+    check "usage: --lane with no value -> exit 2 (not an infinite loop)" "$rc" "2"
+    contains "usage: --lane with no value -> usage text" "$out" "usage:"
+else
+    echo "SKIP - usage: --lane with no value (hang-guard row needs GNU timeout/gtimeout)"
+fi
 
 # --- 3-6. --dry-run argv -----------------------------------------------------
 # codex-1 review finding: default-context cases must not inherit an
@@ -794,8 +802,12 @@ contains "LEG_PROFILE=leg-impl is honoured like the flag" "$envprof" "profile=le
 rc=0; out="$(bash "$SCRIPT" --dry-run --profile no-such-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 "$tmp/leg.log" claude-sonnet-5 2>&1)" || rc=$?
 check "an unknown profile name is refused with exit 2" "$rc" "2"
 
-rc=0; out="$(timeout 5 bash "$SCRIPT" --profile 2>&1)" || rc=$?  # gnu-ok: bounds a usage-path regression; this suite exercises Linux/KDE-only headed-arm.sh
-check "usage: --profile with no value -> exit 2 (not an infinite loop)" "$rc" "2"
+if [ -n "$_TIMEOUT_BIN" ]; then
+    rc=0; out="$("$_TIMEOUT_BIN" 5 bash "$SCRIPT" --profile 2>&1)" || rc=$?
+    check "usage: --profile with no value -> exit 2 (not an infinite loop)" "$rc" "2"
+else
+    echo "SKIP - usage: --profile with no value (hang-guard row needs GNU timeout/gtimeout)"
+fi
 
 # 17d. HIMMEL-2962: composition must carry the profile through the claudex
 # backend, not silently select one launcher. Execute the real wrapper + shim

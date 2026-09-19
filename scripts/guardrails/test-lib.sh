@@ -303,8 +303,9 @@ big_history_repo() {
 d=$(big_history_repo 1650) || exit 1
 git -C "$d" checkout -q -b feat/big-fresh   # branch off tip, ahead=0, no commits of its own
 # stock macOS ships neither timeout nor gtimeout: run unbounded there (the bound
-# only turns a would-be hang into a failure), same resolver as test-fix-qmd-stub.sh.
-_TIMEOUT_BIN="$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)"
+# only turns a would-be hang into a failure), shared resolver scripts/lib/timeout-bin.sh.
+# shellcheck source=scripts/lib/timeout-bin.sh
+. "$REPO_ROOT/scripts/lib/timeout-bin.sh"
 # shellcheck disable=SC2016 # $1/$2 are for the inner `bash -c` script, not this shell.
 ${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" 10} bash -c '. "$1"; is_merged_into_main "$2"' _ "$LIB" "$d"
 rc=$?
@@ -612,12 +613,12 @@ if [ "$rc" -eq 0 ] && [ "$out" = "$GC_BASE_REAL/a/short-chain-target.txt" ]; the
 # subshell so a regression that reintroduces an unbounded chase fails this
 # row with a clearly-distinguished timeout message instead of wedging the
 # whole suite or being conflated with an ordinary non-zero failure.
-if ! command -v timeout >/dev/null 2>&1; then
-    echo "  SKIP guard_canon_path symlink-loop row: 'timeout' not on PATH"
+if [ -z "$_TIMEOUT_BIN" ]; then
+    echo "  SKIP guard_canon_path symlink-loop row: no 'timeout'/'gtimeout' on PATH (hang-guard: never run unbounded)"
 else
     ln -sf "$GC_BASE/a/loop-b" "$GC_BASE/a/loop-a"
     ln -sf "$GC_BASE/a/loop-a" "$GC_BASE/a/loop-b"
-    out=$(timeout 5 bash -c ". \"$LIB\"; guard_canon_path \"$GC_BASE/a/loop-a\"" 2>/dev/null); rc=$?  # gnu-ok: timeout needed to bound symlink loop; matches pre-existing bare timeout at lines 289, 302 (no _TIMEOUT_BIN resolver exists)
+    out=$("$_TIMEOUT_BIN" 5 bash -c ". \"$LIB\"; guard_canon_path \"$GC_BASE/a/loop-a\"" 2>/dev/null); rc=$?
     if [ "$rc" -eq 124 ]; then
         fail "guard_canon_path: symlink loop -> timed out (rc=124), depth cap did not fire"
     elif [ "$rc" -eq 1 ] && [ -z "$out" ]; then

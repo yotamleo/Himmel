@@ -312,6 +312,7 @@ if ! $has_stdin_rates; then
         fi
         if [ -z "$token" ] || [ "$token" = "null" ]; then
             if command -v secret-tool >/dev/null 2>&1; then
+                # gnu-ok: no timeout/gtimeout -> `timeout: command not found` (stderr suppressed), blob stays empty and the keyring lookup is SKIPPED -- never run unbounded (HIMMEL-2589)
                 blob=$(timeout 2 secret-tool lookup service "Claude Code-credentials" 2>/dev/null)
                 if [ -n "$blob" ]; then
                     token=$(echo "$blob" | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)

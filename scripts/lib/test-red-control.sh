@@ -56,6 +56,9 @@ export RED_CONTROL_TMPDIR
 # shellcheck source=scripts/lib/red-control.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/red-control.sh"
+# shellcheck source=scripts/lib/timeout-bin.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/timeout-bin.sh"
 
 # --- fixtures ---------------------------------------------------------------
 # A "script under test" that prints value=correct, and five mutants of it, one
@@ -110,6 +113,7 @@ has "T1 names the observed wrong value" "$amsg" "wrong"
 
 echo "[test-red-control] T2 crashed: a mutant that dies before the mutated line"
 run_case crash.sh
+# shellcheck disable=SC2153 # RED_CONTROL_RC is assigned by the sourced red-control.sh (pre-commit lints file-by-file, no -x).
 eq  "T2 red_control_run recorded the mutant's exit status" "$RED_CONTROL_RC" "2"
 assert_msg --label "T2" --observed "$(val "$RED_CONTROL_OUT")" \
     --expect-wrong "wrong" --correct "correct"
@@ -149,6 +153,7 @@ has "T6 names the genuinely-not-red mode" "$amsg" "genuinely-not-red"
 has "T6 says the protected assertion is vacuous" "$amsg" "vacuous"
 
 echo "[test-red-control] T7 broken: assert with no preceding run"
+# shellcheck disable=SC2034 # consumed by red_control_assert in the sourced red-control.sh (no -x under pre-commit).
 RED_CONTROL_RAN=0
 assert_msg --label "T7" --observed "wrong" --expect-wrong "wrong" --correct "correct"
 eq  "T7 returns the broken status" "$arc" "$RED_CONTROL_RC_BROKEN"
@@ -252,14 +257,20 @@ echo "[test-red-control] T16 a value-taking option with no value RETURNS, never 
 # unbounded assertion could not distinguish "returned broken" from "still
 # running". rc 124 is timeout's own kill signal. The library is sourced INSIDE
 # the timed shell -- a bare `bash -c` inherits no functions.
+# Hang-guard rows: with no GNU timeout/gtimeout (stock macOS) they SKIP, never
+# run unbounded -- a regression would wedge the suite instead of failing it.
+if [ -n "$_TIMEOUT_BIN" ]; then
 # shellcheck disable=SC2016  # \$1 is the INNER shell's positional, passed after the script name -- expanding it here is the bug.
-timeout 5 bash -c '. "$1"; red_control_run --cwd' _ "$SCRIPT_DIR/red-control.sh" >/dev/null 2>&1
+"$_TIMEOUT_BIN" 5 bash -c '. "$1"; red_control_run --cwd' _ "$SCRIPT_DIR/red-control.sh" >/dev/null 2>&1
 eq  "T16a red_control_run --cwd with no value returns broken (124 would mean it hung)" \
     "$?" "$RED_CONTROL_RC_BROKEN"
 # shellcheck disable=SC2016  # ditto -- inner positional, not ours.
-timeout 5 bash -c '. "$1"; red_control_assert --label' _ "$SCRIPT_DIR/red-control.sh" >/dev/null 2>&1
+"$_TIMEOUT_BIN" 5 bash -c '. "$1"; red_control_assert --label' _ "$SCRIPT_DIR/red-control.sh" >/dev/null 2>&1
 eq  "T16b red_control_assert --label with no value returns broken" \
     "$?" "$RED_CONTROL_RC_BROKEN"
+else
+    echo "  SKIP: T16a/T16b hang-guard rows need GNU timeout/gtimeout (macOS: brew install coreutils)"
+fi
 
 echo "[test-red-control] T17 even the unknown-option path consumes the run"
 # CR round 1 [codex-3]: the unknown-option arm returned BEFORE the run was

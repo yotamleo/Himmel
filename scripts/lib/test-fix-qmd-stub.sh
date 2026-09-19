@@ -51,8 +51,8 @@ assert() {
 # NEW PATH. GNU `timeout` is absent on a stock macOS (coreutils installs
 # `gtimeout`); without either, run unbounded -- the bound only turns a guard
 # regression into a failure instead of a hang (HIMMEL-3177).
-_TIMEOUT_BIN="$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)"
-[ -n "$_TIMEOUT_BIN" ] || echo "test-fix-qmd-stub.sh: no 'timeout'/'gtimeout' found -- hang protection disabled for this run" >&2
+# shellcheck source=scripts/lib/timeout-bin.sh
+. "$SCRIPT_DIR/timeout-bin.sh"
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT

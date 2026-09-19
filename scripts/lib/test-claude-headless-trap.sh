@@ -19,6 +19,9 @@ set -uo pipefail
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 SUT="$REPO/scripts/lib/claude-headless.sh"
 KILL_TREE_LIB="$REPO/scripts/lib/kill-tree.sh"
+# shellcheck source=scripts/lib/timeout-bin.sh
+# shellcheck disable=SC1091
+. "$REPO/scripts/lib/timeout-bin.sh"
 PASS=0; FAIL=0; SKIP=0
 # Guarded BEFORE any $W path is used and before the cleanup trap is
 # installed: an unchecked mktemp failure leaves $W empty, and every
@@ -230,7 +233,7 @@ EOF
   run_kill_tree() { # $1 = ps table, $2 = ps call-count file, $3 = root pid, rest = env
     local table="$1" count="$2" root="$3"; shift 3
     # shellcheck disable=SC2016  # single-quoted: $1/$2 are positional args to `bash -c`, not this shell's vars
-    timeout 20 env PATH="$W/fakebin:$PATH" FAKE_PS_TABLE="$table" FAKE_PS_COUNT="$count" "$@" \
+    ${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" 20} env PATH="$W/fakebin:$PATH" FAKE_PS_TABLE="$table" FAKE_PS_COUNT="$count" "$@" \
       bash -c '. "$1"; kill_tree "$2"' _ "$KILL_TREE_LIB" "$root" >/dev/null 2>&1
   }
 
@@ -478,7 +481,7 @@ EOF
   COUNT_PSFAIL="$W/ps-count-psfail.txt"; : > "$COUNT_PSFAIL"
   STDERR_PSFAIL="$W/stderr-psfail.txt"
   # shellcheck disable=SC2016  # single-quoted: $1/$2 are positional args to `bash -c`, not this shell's vars
-  timeout 20 env PATH="$W/fakebin:$PATH" FAKE_PS_TABLE="$TABLE_PSFAIL" FAKE_PS_COUNT="$COUNT_PSFAIL" FAKE_PS_FAIL=1 KILL_TREE_SWEEPS=1 \
+  ${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" 20} env PATH="$W/fakebin:$PATH" FAKE_PS_TABLE="$TABLE_PSFAIL" FAKE_PS_COUNT="$COUNT_PSFAIL" FAKE_PS_FAIL=1 KILL_TREE_SWEEPS=1 \
     bash -c '. "$1"; kill_tree "$2"' _ "$KILL_TREE_LIB" "$ROOT_PSFAIL" >/dev/null 2>"$STDERR_PSFAIL"
   sleep 1
   check "failed ps snapshot: root is still signalled" \
@@ -488,6 +491,12 @@ EOF
 
   # --- B2: a table containing a parent/child CYCLE must terminate. The old
   # shape recursed forever here (and forked a `ps` per hop while doing it).
+  # Hang-guard row: with no GNU timeout/gtimeout it SKIPs rather than run
+  # unbounded and wedge the suite.
+  if [ -z "$_TIMEOUT_BIN" ]; then
+  SKIP=$((SKIP+1))
+  echo "SKIP - cyclic table: kill_tree terminates (hang-guard needs GNU timeout/gtimeout)"
+  else
   CYC=""
   i=0
   while [ "$i" -lt 3 ]; do spawn_sleeper; CYC="$CYC $SLEEPER_PID"; i=$((i+1)); done
@@ -503,6 +512,7 @@ EOF
   for p in $CYC; do if sleeper_alive "$p"; then ALIVE_B2=$((ALIVE_B2+1)); fi; done
   check "cyclic table: kill_tree terminates (rc 124 would be the 20s timeout)" "0" "$RC_B2"
   check "cyclic table: every listed pid killed" "0" "$ALIVE_B2"
+  fi
 
   # --- B3: the depth backstop bounds the walk. With a cap of 2 on a 6-deep
   # chain, the root and its first two generations die and the rest survive —

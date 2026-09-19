@@ -36,6 +36,9 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB="$SCRIPT_DIR/gh-graphql-budget.sh"
 CHECK_CI="$SCRIPT_DIR/../check-ci.sh"
+# shellcheck source=scripts/lib/timeout-bin.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/timeout-bin.sh"
 
 PASS=0; FAIL=0
 pass() { echo "  PASS: $1"; PASS=$((PASS+1)); }
@@ -152,7 +155,7 @@ run_ci() {
     ( cd "$CASE_DIR/cwd" && \
       PATH="$BIN:$PATH" GHB_STUB_DIR="$CASE_DIR" GHB_STUB_MODE="$mode" \
       CHECK_CI_SLEEP_CMD=fakesleep CHECK_CI_SETTLE=0 CR_APP=0 CR_PROFILE=none \
-      timeout -k 5 240 bash "$CHECK_CI" "$@" >"$CASE_DIR/out" 2>"$CASE_DIR/err" )
+      ${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" -k 5 240} bash "$CHECK_CI" "$@" >"$CASE_DIR/out" 2>"$CASE_DIR/err" )
     RC=$?
     ERR=$(cat "$CASE_DIR/err")
 }

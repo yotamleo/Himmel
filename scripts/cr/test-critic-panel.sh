@@ -23,6 +23,9 @@ unset CR_PROFILE CRITIC_PANEL_TIERS CRITIC_LEDGER_APPEND CR_LEDGER \
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PANEL="$HERE/critic-panel.sh"
+# shellcheck source=scripts/lib/timeout-bin.sh
+# shellcheck disable=SC1091
+. "$HERE/../lib/timeout-bin.sh"
 tmp="$(mktemp -d -t critic-panel-test.XXXXXX)"
 # shellcheck disable=SC2064
 trap "rm -rf $tmp" EXIT
@@ -1790,8 +1793,11 @@ printf '%s' '{"panel":[
   {"slug":"paidrow","model":"vendor/paidmodel","provider":"test","tier":"paid"}
 ]}' > "$CHK_JSON"
 
-# M1: --check does not hang with no diff on stdin (times out => FAIL).
-chk_out="$(CRITICS_JSON="$CHK_JSON" CRITIC_INVOKE="$CHK_INVOKE" timeout 15 bash "$PANEL" --check </dev/null 2>&1)"; chk_rc=$?
+# M1: --check does not hang with no diff on stdin (times out => FAIL). M1-M7 all
+# ride the bounded run: with no GNU timeout/gtimeout (stock macOS) the block
+# SKIPs, never runs unbounded -- and never lets M1 pass vacuously on rc 127.
+if [ -n "$_TIMEOUT_BIN" ]; then
+chk_out="$(CRITICS_JSON="$CHK_JSON" CRITIC_INVOKE="$CHK_INVOKE" "$_TIMEOUT_BIN" 15 bash "$PANEL" --check </dev/null 2>&1)"; chk_rc=$?
 check "M1: --check terminates (not 124 timeout)" "$([ "$chk_rc" != "124" ] && echo ok)" "ok"
 # M2: ok row reported ok.
 check_contains "M2: okrow ok" "$chk_out" "row okrow: ok"
@@ -1805,12 +1811,15 @@ check "M5: dead row -> exit 1" "$chk_rc" "1"
 # M6: all-ok registry => exit 0.
 OK_JSON="$tmp/critics-check-ok.json"
 printf '%s' '{"panel":[{"slug":"okrow","model":"vendor/okmodel","provider":"test","tier":"free"}]}' > "$OK_JSON"
-CRITICS_JSON="$OK_JSON" CRITIC_INVOKE="$CHK_INVOKE" timeout 15 bash "$PANEL" --check </dev/null >/dev/null 2>&1
+CRITICS_JSON="$OK_JSON" CRITIC_INVOKE="$CHK_INVOKE" "$_TIMEOUT_BIN" 15 bash "$PANEL" --check </dev/null >/dev/null 2>&1
 check "M6: all-ok -> exit 0" "$?" "0"
 
 # M7: --all-tiers probes the paid row too (paid model is ok here => still exit 0, and reported ok not skipped).
-ALLTIER_OUT="$(CRITICS_JSON="$CHK_JSON" CRITIC_INVOKE="$CHK_INVOKE" timeout 15 bash "$PANEL" --check --all-tiers </dev/null 2>&1)"
+ALLTIER_OUT="$(CRITICS_JSON="$CHK_JSON" CRITIC_INVOKE="$CHK_INVOKE" "$_TIMEOUT_BIN" 15 bash "$PANEL" --check --all-tiers </dev/null 2>&1)"
 check_contains "M7: --all-tiers probes paid row" "$ALLTIER_OUT" "row paidrow: ok"
+else
+    for _m in M1 M2 M3 M4 M5 M6 M7; do skip "$_m: no timeout binary"; done
+fi
 
 # M8 (code-reviewer CR): unknown flag errors (exit 2), consistent with siblings.
 CRITICS_JSON="$CHK_JSON" bash "$PANEL" --bogus </dev/null >/dev/null 2>&1
