@@ -92,10 +92,17 @@ echo "[detect] guest OS probe='$GUEST_OS' -> GUEST_WIN=$GUEST_WIN"
 #    guest is asserted clean afterwards (HIMMEL-2540); the template's public
 #    .env.example (template-owned, overwritten by the engine) is kept explicitly.
 # shellcheck source=lib/vm-guest-excludes.sh
-. "$REPO/scripts/lib/vm-guest-excludes.sh"
+. "$REPO/scripts/lib/vm-guest-excludes.sh" \
+  || { echo "==> REFUSING: cannot load scripts/lib/vm-guest-excludes.sh; nothing was copied" >&2; exit 1; }
 RSYNC_SECRET_EXCL=(); TAR_SECRET_EXCL=()
 while IFS= read -r _x; do RSYNC_SECRET_EXCL+=("$_x"); done < <(vm_guest_rsync_excludes)
 while IFS= read -r _x; do TAR_SECRET_EXCL+=("$_x"); done < <(vm_guest_tar_excludes)
+# The exclude list must be in force BEFORE any copy: with no errexit a failed load
+# would leave the arrays empty and the secrets already in the guest when the
+# post-copy assert fires (HIMMEL-2540).
+if [ "${#RSYNC_SECRET_EXCL[@]}" -eq 0 ] || [ "${#TAR_SECRET_EXCL[@]}" -eq 0 ]; then
+  echo "==> REFUSING: the secret-exclusion list is empty; nothing was copied" >&2; exit 1
+fi
 TMPL_PARENT="$(dirname "$TEMPLATE")"; TMPL_NAME="$(basename "$TEMPLATE")"
 
 # tar-stream stage: no rsync/scp dependency, applies the excludes, then the one

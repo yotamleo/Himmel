@@ -187,7 +187,7 @@ run_caller() { # $1=script $2=leak-or-empty ; args after: the script's args
   : > "$WORK/stub.log"; rm -f "$WORK/stub.log.tarfail"
   # Fresh $HOME so nothing real is read; stubs win on PATH.
   PATH="$STUB:$PATH" STUB_LOG="$WORK/stub.log" STUB_LEAK="$leak" STUB_NO_GUEST_RSYNC="${STUB_NO_GUEST_RSYNC:-}" STUB_FAIL_FIRST_TAR="${STUB_FAIL_FIRST_TAR:-}" STUB_RSYNC_RC="${STUB_RSYNC_RC:-0}" HOME="$WORK/home" \
-    ${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" -k 5 60} bash "$REPO_ROOT/$script" "$@" </dev/null >"$WORK/caller.out" 2>&1
+    ${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" -k 5 60} bash "${CALLER_ROOT:-$REPO_ROOT}/$script" "$@" </dev/null >"$WORK/caller.out" 2>&1
   echo $?
 }
 mkdir -p "$WORK/home/.ssh"
@@ -254,6 +254,29 @@ for script in scripts/test-install-symmetry-vm.sh scripts/test-luna-upgrade-vm.s
   if [ "$rc" -ne 0 ] && grep -q 'STAGE FAILED' "$WORK/caller.out"; then
     pass "T7k $short stops (rc=$rc) when the rsync stage fails"
   else fail_case "T7k $short ran on past a failed rsync (rc=$rc): $(tail -2 "$WORK/caller.out")"; fi
+done
+
+# The exclusion list itself must be in force BEFORE any copy: a missing/unreadable
+# helper, or one that yields an empty list, must stop the caller with nothing copied
+# (with empty excludes the secrets would already be in the guest when the post-copy
+# assert fires). CALLER_ROOT points the caller at a private tree it derives its
+# REPO from, so the helper can be removed or blanked without touching the real one.
+for script in scripts/test-install-symmetry-vm.sh scripts/test-luna-upgrade-vm.sh; do
+  short=${script##*/}
+  for variant in missing empty; do
+    nh="$WORK/nohelper-$variant"; mkdir -p "$nh/scripts/lib"
+    cp "$REPO_ROOT/$script" "$nh/$script"
+    # luna-upgrade exits early without its template; give the private tree one so
+    # the run reaches the staging code (otherwise this control is vacuous).
+    mkdir -p "$nh/templates/luna-second-brain/scripts"; : > "$nh/templates/luna-second-brain/scripts/upgrade.sh"
+    if [ "$variant" = empty ]; then
+      printf 'vm_guest_rsync_excludes() { :; }\nvm_guest_tar_excludes() { :; }\nvm_guest_assert_clean() { return 0; }\n' > "$nh/scripts/lib/vm-guest-excludes.sh"
+    fi
+    CALLER_ROOT="$nh"; rc=$(run_caller "$script" ""); CALLER_ROOT=''
+    if [ "$rc" -ne 0 ] && ! grep -qE '^RSYNC |tar -C' "$WORK/stub.log"; then
+      pass "T7m $short stops before any copy when the exclude helper is $variant (rc=$rc)"
+    else fail_case "T7m $short copied / ran on with a $variant exclude helper (rc=$rc): $(grep -E '^RSYNC |tar -C' "$WORK/stub.log" | head -2)"; fi
+  done
 done
 
 echo

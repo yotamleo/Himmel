@@ -44,10 +44,17 @@ fi
 #    the shared secret excludes (.env, .env.*, *.local.json) -- the host checkout's
 #    gitignored-but-present secrets must never reach the guest (HIMMEL-2540).
 # shellcheck source=lib/vm-guest-excludes.sh
-. "$REPO/scripts/lib/vm-guest-excludes.sh"
+. "$REPO/scripts/lib/vm-guest-excludes.sh" \
+  || { echo "==> REFUSING: cannot load scripts/lib/vm-guest-excludes.sh; nothing was copied" >&2; exit 1; }
 RSYNC_SECRET_EXCL=(); TAR_SECRET_EXCL=()
 while IFS= read -r _x; do RSYNC_SECRET_EXCL+=("$_x"); done < <(vm_guest_rsync_excludes)
 while IFS= read -r _x; do TAR_SECRET_EXCL+=("$_x"); done < <(vm_guest_tar_excludes)
+# The exclude list must be in force BEFORE any copy: with no errexit a failed load
+# would leave the arrays empty and the secrets already in the guest when the
+# post-copy assert fires (HIMMEL-2540).
+if [ "${#RSYNC_SECRET_EXCL[@]}" -eq 0 ] || [ "${#TAR_SECRET_EXCL[@]}" -eq 0 ]; then
+  echo "==> REFUSING: the secret-exclusion list is empty; nothing was copied" >&2; exit 1
+fi
 
 echo "[stage] copying worktree to $REMOTE_DIR ..."
 ssh_vm "rm -rf $REMOTE_DIR && mkdir -p $REMOTE_DIR"
