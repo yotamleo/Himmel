@@ -31,6 +31,8 @@ if [ ! -f "$LIB" ]; then
 fi
 # shellcheck source=scripts/lib/vm-guest-excludes.sh
 . "$LIB"
+# shellcheck source=scripts/lib/timeout-bin.sh
+. "$REPO_ROOT/scripts/lib/timeout-bin.sh"
 
 # Fixture: a host checkout with STUB secrets only (values are the word STUB).
 FIX="$WORK/host"
@@ -161,7 +163,7 @@ run_caller() { # $1=script $2=leak-or-empty ; args after: the script's args
   : > "$WORK/stub.log"
   # Fresh $HOME so nothing real is read; stubs win on PATH.
   PATH="$STUB:$PATH" STUB_LOG="$WORK/stub.log" STUB_LEAK="$leak" STUB_NO_GUEST_RSYNC="${STUB_NO_GUEST_RSYNC:-}" HOME="$WORK/home" \
-    timeout 60 bash "$REPO_ROOT/$script" "$@" </dev/null >"$WORK/caller.out" 2>&1
+    ${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" -k 5 60} bash "$REPO_ROOT/$script" "$@" </dev/null >"$WORK/caller.out" 2>&1
   echo $?
 }
 mkdir -p "$WORK/home/.ssh"
