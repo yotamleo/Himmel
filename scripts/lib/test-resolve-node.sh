@@ -196,7 +196,7 @@ for _f in "$LIB" "$PLUGIN_LIB"; do
 done
 if cmp -s "$LIB" "$PLUGIN_LIB"; then pass "plugin copy byte-identical to scripts/lib copy"; else fail "plugin copy differs from scripts/lib copy"; fi
 
-tmp="$(mktemp -d)"; make_fake_node "$tmp/probe"; make_fake_node "$tmp/nvmw"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/resolve-node-test.XXXXXX")"; make_fake_node "$tmp/probe"; make_fake_node "$tmp/nvmw"
 out="$(
     # shellcheck disable=SC2317,SC2329 # the stub is what the sourced function calls
     local() { return 127; }
@@ -230,7 +230,7 @@ rm -rf "$tmp"
 
 # The unprefixed names the function used to `local`-ise must survive a
 # same-shell (non-subshell) call: with no `local`, scoping is the _rn_ prefix.
-tmp="$(mktemp -d)"; make_fake_node "$tmp/probe"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/resolve-node-test.XXXXXX")"; make_fake_node "$tmp/probe"
 d=keep-d; dirs=keep-dirs; newest=keep-newest; save_ifs=keep-ifs; nvm_root=keep-root; fnm_root=keep-fnm; fnm_newest=keep-fn; nvmw_dirs=keep-nw; nvm_symlink=keep-sym
 PATH="$UTILS_DIR" NVM_SYMLINK="" RESOLVE_NODE_NVM4W_DIR="" RESOLVE_NODE_PROBE_DIRS="$tmp/probe" RESOLVE_NODE_NVM_ROOT="$tmp/none" FNM_DIR="$tmp/none" resolve_node >/dev/null
 _got="$d $dirs $newest $save_ifs $nvm_root $fnm_root $fnm_newest $nvmw_dirs $nvm_symlink"

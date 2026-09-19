@@ -657,7 +657,7 @@ if host_symlinks_real 2>/dev/null; then
     out=$(cd "$WT" && TMPDIR="$BACKUPS" bash "$SUT" linkdir/file 2>&1); rc=$?
     (cd "$LINK/wt" && TMPDIR="$BACKUPS" bash "$SUT" linkdir/file >/dev/null 2>&1); rc_link=$?
     if [ "$rc" -ne 0 ] && [ "$rc_link" -ne 0 ] && [ "$(cat "$OUT/file")" = outside ] &&
-        printf '%s' "$out" | grep -q 'outside this worktree'; then
+        [[ $out == *'outside this worktree'* ]]; then
         pass "(ae) path through an in-repo directory symlink to outside the worktree refused"
     else
         fail "(ae) rc=$rc rc_link=$rc_link out='$out' (expected refusal 'outside this worktree')"
