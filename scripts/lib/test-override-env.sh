@@ -134,6 +134,14 @@ else
   else
     fail "single-quoted bracket read not caught: [$sqout]"
   fi
+  # Whitespace inside the brackets is still a literal read (codex-1 round 1).
+  printf 'if (process.env[ "JS_SPACED_OK" ]) process.exit(0);\n' > "$sb5/hook-bracket-ws.js"
+  wsout=$(override_env_undeclared "$sb5/hook-bracket-ws.js")
+  if [ "$wsout" = "JS_SPACED_OK" ]; then
+    pass "process.env[ \"JS_SPACED_OK\" ] (padded brackets) read caught"
+  else
+    fail "padded bracket read not caught: [$wsout]"
+  fi
   # Control: a dynamic read names no literal variable, so nothing to report.
   printf 'const v = process.env[name];\n' > "$sb5/hook-bracket-dyn.js"
   dynout=$(override_env_undeclared "$sb5/hook-bracket-dyn.js")
