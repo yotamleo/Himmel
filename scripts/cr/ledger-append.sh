@@ -346,7 +346,8 @@ ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 # `node -e '<program>'` argv — on Windows a command line is capped at 32,767
 # chars and this ~37 KB program made every ledger write die "Argument list too
 # long". Consequence: node's stdin IS the program, so nothing inside may read
-# stdin (it does not; its one child, git cat-file, is handed `input:`).
+# stdin (it does not; both child processes get an explicit stdin — git
+# cat-file is handed `input:`, git branch uses stdio "ignore").
 # shellcheck disable=SC2016  # the $-refs inside are a JS heredoc (process.env), not shell expansions
 KIND="$kind" BRANCH="$branch" HEAD_="$head" RAW_HEAD="$raw_head" MODEL="$model" RESPONDING_MODEL="$responding_model" ID="$id" SEV="$severity" \
 FILE="$file" LINE="$line" VERDICT="$verdict" STATUS="$status" BATCH_FILE="$batch_file" \
