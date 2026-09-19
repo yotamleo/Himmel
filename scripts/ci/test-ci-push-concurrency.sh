@@ -48,7 +48,8 @@ fi
 
 # The trigger set is what makes 'push' mean main: a push to any other branch
 # would share ONE group with main and cancel it.
-if awk '/^  push:/ {f=1; next} f && /branches:/ {print; exit} f && /^  [a-z_]+:/ {exit}' "$CI_YML" | grep -q 'branches: \[main\]'; then
+push_branches="$(awk '/^  push:/ {f=1; next} f && /branches:/ {print; exit} f && /^  [a-z_]+:/ {exit}' "$CI_YML")"
+if [ "${push_branches#*'branches: [main]'}" != "$push_branches" ]; then
   ok "push trigger is restricted to branches: [main]"
 else
   bad "push trigger is not restricted to branches: [main]"
