@@ -584,6 +584,112 @@ else
 fi
 reset_wt
 
+# --- (aa..ad) containment across SPELLINGS of one directory (HIMMEL-3182 slice 3).
+# The fixture root above is canonicalised on purpose, so it never exercises the
+# macOS /var -> /private/var class: bash keeps the LOGICAL $PWD after a `cd`
+# through a symlink while git reports the physical toplevel. LINK is that
+# symlink; the four cases drive the script from inside it.
+if host_symlinks_real 2>/dev/null; then
+    LINK="$TMP/link"
+    ln -s "$TMP" "$LINK"
+    EVIL="$TMP/wt-evil"   # shares the string prefix "$WT" - a boundary control
+    (cd "$PRIMARY" && git worktree add -q -b evil "$EVIL" main) || { echo "test-restore-to-head: evil worktree setup failed" >&2; exit 2; }
+
+    # --- (aa) a relative path, invoked from a symlink-spelled cwd, is INSIDE and restored
+    printf 'dirty-link\n' > "$WT/tracked.txt"
+    out=$(cd "$LINK/wt" && TMPDIR="$BACKUPS" bash "$SUT" tracked.txt 2>&1); rc=$?
+    content=$(cat "$WT/tracked.txt")
+    if [ "$rc" -eq 0 ] && [ "$content" = base ]; then
+        pass "(aa) relative path from a symlink-spelled cwd is inside the worktree and restored"
+    else
+        fail "(aa) rc=$rc content='$content' out='$out' (expected rc=0 and the file restored)"
+    fi
+    reset_wt
+
+    # --- (ab) an absolute path spelled through the symlink is inside and restored
+    printf 'dirty-link-abs\n' > "$WT/tracked.txt"
+    out=$(cd "$WT" && TMPDIR="$BACKUPS" bash "$SUT" "$LINK/wt/tracked.txt" 2>&1); rc=$?
+    content=$(cat "$WT/tracked.txt")
+    if [ "$rc" -eq 0 ] && [ "$content" = base ]; then
+        pass "(ab) symlink-spelled absolute path is inside the worktree and restored"
+    else
+        fail "(ab) rc=$rc content='$content' out='$out' (expected rc=0 and the file restored)"
+    fi
+    reset_wt
+
+    # --- (ac) controls: a sibling sharing the prefix string, and a ../ escape, stay
+    # refused and untouched - in a physical and in a symlink-spelled cwd
+    printf 'dirty-evil\n' > "$EVIL/tracked.txt"
+    ac_ok=1; ac_detail=""
+    for cwd in "$WT" "$LINK/wt"; do
+        for arg in "$EVIL/tracked.txt" "$LINK/wt-evil/tracked.txt" "../wt-evil/tracked.txt" "sub/../../wt-evil/tracked.txt"; do
+            out=$(cd "$cwd" && TMPDIR="$BACKUPS" bash "$SUT" "$arg" 2>&1); rc=$?
+            evil=$(cat "$EVIL/tracked.txt")
+            if [ "$rc" -eq 0 ] || [ "$evil" != dirty-evil ]; then
+                ac_ok=0; ac_detail="$ac_detail [cwd=$cwd arg=$arg rc=$rc evil='$evil']"
+            fi
+        done
+    done
+    if [ "$ac_ok" -eq 1 ]; then
+        pass "(ac) sibling-prefix and ../ escapes stay refused (physical and symlink-spelled cwd), sibling untouched"
+    else
+        fail "(ac) an outside path was accepted or altered:$ac_detail"
+    fi
+    (cd "$EVIL" && git checkout -q main -- .)
+
+    # --- (ad) a ../ that stays INSIDE is normalised, not refused
+    printf 'dirty-dotdot\n' > "$WT/tracked.txt"
+    out=$(cd "$WT/sub" && TMPDIR="$BACKUPS" bash "$SUT" ../tracked.txt 2>&1); rc=$?
+    content=$(cat "$WT/tracked.txt")
+    if [ "$rc" -eq 0 ] && [ "$content" = base ]; then
+        pass "(ad) ../ that resolves inside the worktree is restored"
+    else
+        fail "(ad) rc=$rc content='$content' out='$out' (expected rc=0 and the file restored)"
+    fi
+    reset_wt
+
+    # --- (ae) an in-repo DIRECTORY symlink pointing outside the worktree: the
+    # ancestor is made physical, so `linkdir/file` lands outside and is refused
+    OUT="$TMP/outside"
+    mkdir -p "$OUT"
+    printf 'outside\n' > "$OUT/file"
+    ln -s "$OUT" "$WT/linkdir"
+    out=$(cd "$WT" && TMPDIR="$BACKUPS" bash "$SUT" linkdir/file 2>&1); rc=$?
+    (cd "$LINK/wt" && TMPDIR="$BACKUPS" bash "$SUT" linkdir/file >/dev/null 2>&1); rc_link=$?
+    if [ "$rc" -ne 0 ] && [ "$rc_link" -ne 0 ] && [ "$(cat "$OUT/file")" = outside ] &&
+        printf '%s' "$out" | grep -q 'outside this worktree'; then
+        pass "(ae) path through an in-repo directory symlink to outside the worktree refused"
+    else
+        fail "(ae) rc=$rc rc_link=$rc_link out='$out' (expected refusal 'outside this worktree')"
+    fi
+    rm -f "$WT/linkdir"
+    reset_wt
+
+    # --- (af) a TRACKED SYMLINK leaf is restored as a link (leaf never resolved),
+    # from a symlink-spelled cwd
+    LREPO="$TMP/lrepo"
+    mkdir -p "$LREPO"
+    (
+        cd "$LREPO" || exit 2
+        git init -q -b main .
+        git config user.email t@t.t; git config user.name t; git config commit.gpgsign false
+        printf 'target\n' > target.txt
+        ln -s target.txt lk
+        git add target.txt lk
+        git commit -qm base
+    ) || { echo "test-restore-to-head: lrepo setup failed" >&2; exit 2; }
+    rm "$LREPO/lk"
+    ln -s elsewhere.txt "$LREPO/lk"
+    out=$(cd "$LINK/lrepo" && TMPDIR="$BACKUPS" bash "$SUT" lk 2>&1); rc=$?
+    if [ "$rc" -eq 0 ] && [ -L "$LREPO/lk" ] && [ "$(readlink "$LREPO/lk")" = target.txt ]; then
+        pass "(af) tracked symlink leaf restored as a link from a symlink-spelled cwd"
+    else
+        fail "(af) rc=$rc link='$(readlink "$LREPO/lk" 2>/dev/null)' out='$out' (expected rc=0 and lk -> target.txt)"
+    fi
+else
+    host_skip "(aa)-(af) need a real symlink (ln -s copies here); symlink-spelled containment cases not run"
+fi
+
 echo "---"
 if [ "$FAILED" -gt 0 ]; then
     echo "test-restore-to-head: $FAILED FAILURE(S)"

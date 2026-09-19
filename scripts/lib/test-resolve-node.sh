@@ -183,5 +183,59 @@ out="$(PATH="$UTILS_DIR" NVM_SYMLINK="" RESOLVE_NODE_NVM4W_DIR="" RESOLVE_NODE_P
 if [ "$rc" -eq 0 ] && [ "$out" = "$nvm/v20.5.0/bin/node" ]; then pass "nvm newest -> '$out'"; else fail "nvm newest -> rc=$rc out='$out' (want v20.5.0; lexical bug would give v8.9.0)"; fi
 rm -rf "$tmp"
 
+echo "== resolve_node: POSIX-safe scoping, no \`local\` (HIMMEL-3182 slice 3) =="
+# run-node.sh sources resolve-node.sh under whatever `sh` the hook shell has;
+# ksh93 `sh` has no `local`. dash is the only POSIX shell we can assume is
+# installed and it DOES implement `local`, so a dash run proves nothing here:
+# the guard is (1) a static check of both shipped copies and (2) a run with the
+# builtin shadowed by a no-op, i.e. a shell that cannot declare function locals.
+PLUGIN_LIB="$REPO_ROOT/marketplace/plugins/himmel-ops/hooks/resolve-node.sh"
+for _f in "$LIB" "$PLUGIN_LIB"; do
+    _hits="$(grep -nE '(^|[[:space:];&|(])local([[:space:]]|$)' "$_f" | grep -vE '^[0-9]+:[[:space:]]*#')"
+    if [ -z "$_hits" ]; then pass "no \`local\` keyword in ${_f#"$REPO_ROOT"/}"; else fail "\`local\` still used in ${_f#"$REPO_ROOT"/}: $_hits"; fi
+done
+if cmp -s "$LIB" "$PLUGIN_LIB"; then pass "plugin copy byte-identical to scripts/lib copy"; else fail "plugin copy differs from scripts/lib copy"; fi
+
+tmp="$(mktemp -d)"; make_fake_node "$tmp/probe"; make_fake_node "$tmp/nvmw"
+out="$(
+    # shellcheck disable=SC2317,SC2329 # the stub is what the sourced function calls
+    local() { return 127; }
+    set +u
+    PATH="$UTILS_DIR" NVM_SYMLINK="$tmp/nvmw" RESOLVE_NODE_NVM4W_DIR="" RESOLVE_NODE_PROBE_DIRS="" RESOLVE_NODE_NVM_ROOT="$tmp/none" FNM_DIR="$tmp/none" resolve_node
+)"; rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "$tmp/nvmw/node" ]; then pass "NVM_SYMLINK node found with the \`local\` builtin unavailable"; else fail "no-\`local\` shell, NVM_SYMLINK: rc=$rc out='$out' (want $tmp/nvmw/node)"; fi
+out="$(
+    # shellcheck disable=SC2317,SC2329 # the stub is what the sourced function calls
+    local() { return 127; }
+    set +u
+    PATH="$UTILS_DIR" NVM_SYMLINK="" RESOLVE_NODE_NVM4W_DIR="" RESOLVE_NODE_PROBE_DIRS="$tmp/probe" RESOLVE_NODE_NVM_ROOT="$tmp/none" FNM_DIR="$tmp/none" resolve_node
+)"; rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "$tmp/probe/node" ]; then pass "probe-dir node found with the \`local\` builtin unavailable"; else fail "no-\`local\` shell, probe dir: rc=$rc out='$out' (want $tmp/probe/node)"; fi
+nvm="$tmp/nvm"; make_fake_node "$nvm/v20.5.0/bin"
+out="$(
+    # shellcheck disable=SC2317,SC2329 # the stub is what the sourced function calls
+    local() { return 127; }
+    set +u
+    PATH="$UTILS_DIR" NVM_SYMLINK="" RESOLVE_NODE_NVM4W_DIR="" RESOLVE_NODE_PROBE_DIRS="" RESOLVE_NODE_NVM_ROOT="$nvm" FNM_DIR="$tmp/none" resolve_node
+)"; rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "$nvm/v20.5.0/bin/node" ]; then pass "nvm node found with the \`local\` builtin unavailable"; else fail "no-\`local\` shell, nvm: rc=$rc out='$out' (want $nvm/v20.5.0/bin/node)"; fi
+out="$(
+    # shellcheck disable=SC2317,SC2329 # the stub is what the sourced function calls
+    local() { return 127; }
+    set +u
+    PATH="$UTILS_DIR" NVM_SYMLINK="" RESOLVE_NODE_NVM4W_DIR="" RESOLVE_NODE_PROBE_DIRS="" RESOLVE_NODE_NVM_ROOT="$tmp/none" FNM_DIR="$tmp/none" resolve_node
+)"; rc=$?
+if [ "$rc" -eq 1 ] && [ -z "$out" ]; then pass "no node -> rc1 empty with the \`local\` builtin unavailable"; else fail "no-\`local\` shell, no node: rc=$rc out='$out'"; fi
+rm -rf "$tmp"
+
+# The unprefixed names the function used to `local`-ise must survive a
+# same-shell (non-subshell) call: with no `local`, scoping is the _rn_ prefix.
+tmp="$(mktemp -d)"; make_fake_node "$tmp/probe"
+d=keep-d; dirs=keep-dirs; newest=keep-newest; save_ifs=keep-ifs; nvm_root=keep-root; fnm_root=keep-fnm; fnm_newest=keep-fn; nvmw_dirs=keep-nw; nvm_symlink=keep-sym
+PATH="$UTILS_DIR" NVM_SYMLINK="" RESOLVE_NODE_NVM4W_DIR="" RESOLVE_NODE_PROBE_DIRS="$tmp/probe" RESOLVE_NODE_NVM_ROOT="$tmp/none" FNM_DIR="$tmp/none" resolve_node >/dev/null
+_got="$d $dirs $newest $save_ifs $nvm_root $fnm_root $fnm_newest $nvmw_dirs $nvm_symlink"
+if [ "$_got" = "keep-d keep-dirs keep-newest keep-ifs keep-root keep-fnm keep-fn keep-nw keep-sym" ]; then pass "caller's same-named variables untouched by an in-shell call"; else fail "caller variables clobbered: '$_got'"; fi
+rm -rf "$tmp"
+
 echo
 if [ "$failures" -eq 0 ]; then echo "ALL PASS"; exit 0; else echo "$failures FAILURE(S)"; exit 1; fi

@@ -76,18 +76,32 @@ for arg in "$@"; do
     esac
 done
 
+# Containment compares two spellings of one directory: bash's logical $PWD
+# (macOS /var/.., Git Bash /tmp/..) against git's physical toplevel
+# (/private/var/.., C:/..). Canonicalise BOTH through the shared helper; the
+# prefix test itself stays a strict `<toplevel>/` boundary (HIMMEL-3182).
+# shellcheck source=../lib/canon-path.sh
+. "$(dirname "$0")/../lib/canon-path.sh"
+TOPLEVEL_C=$(canon_path_native "$TOPLEVEL") || {
+    echo "restore-to-head: cannot resolve the worktree root '$TOPLEVEL'" >&2; exit 2; }
+
 RELS=()
 for arg in "$@"; do
     case "$arg" in
         /*) abs="$arg" ;;
         *)  abs="$PWD/$arg" ;;
     esac
+    # Deepest existing ancestor made physical; the leaf is appended verbatim so
+    # a tracked symlink is still restored as a link, and a deleted file's path
+    # (its directory gone too) still canonicalises.
+    abs=$(canon_path_partial "$abs") || {
+        echo "restore-to-head: '$arg' resolves outside this worktree ($TOPLEVEL_C)" >&2; exit 2; }
     case "$abs" in
-        "$TOPLEVEL"/*) : ;;
-        *) echo "restore-to-head: '$arg' resolves outside this worktree ($TOPLEVEL)" >&2; exit 2 ;;
+        "$TOPLEVEL_C"/*) : ;;
+        *) echo "restore-to-head: '$arg' resolves outside this worktree ($TOPLEVEL_C)" >&2; exit 2 ;;
     esac
     [ -d "$abs" ] && { echo "restore-to-head: '$arg' is a directory" >&2; exit 2; }
-    rel="${abs#"$TOPLEVEL"/}"
+    rel="${abs#"$TOPLEVEL_C"/}"
     git -C "$TOPLEVEL" ls-files --error-unmatch -- ":(literal)$rel" >/dev/null 2>&1 || {
         echo "restore-to-head: '$arg' is untracked -- refusing (never rm)" >&2; exit 2; }
     RELS+=("$rel")

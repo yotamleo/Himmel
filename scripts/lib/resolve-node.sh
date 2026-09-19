@@ -12,6 +12,9 @@
 #   node="$(resolve_node)" || { echo "no node"; exit 1; }
 # Prints the absolute path on stdout + returns 0 on success; returns 1 + empty
 # stdout if no node is found. bash 3.2-safe (no mapfile / associative arrays).
+# No `local`: run-node.sh sources this under whatever `sh` the hook shell has and
+# ksh93 rejects it (HIMMEL-3182), so function-scope variables carry a `_rn_`
+# prefix instead — they leak into a same-shell caller, but cannot collide.
 #
 # Test seams (used only by scripts/lib/test-resolve-node.sh):
 #   RESOLVE_NODE_PROBE_DIRS  colon-separated dir list that REPLACES the built-in
@@ -47,35 +50,35 @@ resolve_node() {
     #    (codex CR round on HIMMEL-2077). Backslashes → slashes so the -x
     #    probe works under Git Bash, and a drive-letter prefix (C:/x) is
     #    rewritten to MSYS form (/c/x).
-    local nvmw_dirs nvm_symlink="${NVM_SYMLINK:-}"
-    if [ -n "$nvm_symlink" ]; then
+    _rn_nvm_symlink="${NVM_SYMLINK:-}"
+    if [ -n "$_rn_nvm_symlink" ]; then
         # POSIX builtins only (no tr fork) — this runs even when no node/PATH
         # is found at all, the exact minimal-utils case this file exists to
         # survive (HIMMEL-2741: a caught-by-the-widened-gate regression).
-        local _nvmw_rest="$nvm_symlink" _nvmw_out=''
+        _rn_nvmw_rest="$_rn_nvm_symlink" _rn_nvmw_out=''
         while :; do
-            case "$_nvmw_rest" in
+            case "$_rn_nvmw_rest" in
                 *\\*)
-                    _nvmw_out="${_nvmw_out}${_nvmw_rest%%\\*}/"
-                    _nvmw_rest="${_nvmw_rest#*\\}"
+                    _rn_nvmw_out="${_rn_nvmw_out}${_rn_nvmw_rest%%\\*}/"
+                    _rn_nvmw_rest="${_rn_nvmw_rest#*\\}"
                     ;;
-                *) _nvmw_out="${_nvmw_out}${_nvmw_rest}"; break ;;
+                *) _rn_nvmw_out="${_rn_nvmw_out}${_rn_nvmw_rest}"; break ;;
             esac
         done
-        nvm_symlink="$_nvmw_out"
+        _rn_nvm_symlink="$_rn_nvmw_out"
     fi
-    case "$nvm_symlink" in
-        [A-Za-z]:/*) nvm_symlink="/$(printf '%s' "${nvm_symlink%%:*}" | tr '[:upper:]' '[:lower:]')${nvm_symlink#?:}" ;;
+    case "$_rn_nvm_symlink" in
+        [A-Za-z]:/*) _rn_nvm_symlink="/$(printf '%s' "${_rn_nvm_symlink%%:*}" | tr '[:upper:]' '[:lower:]')${_rn_nvm_symlink#?:}" ;;
     esac
-    nvmw_dirs="${nvm_symlink}:${RESOLVE_NODE_NVM4W_DIR-/c/nvm4w/nodejs}"
-    local d save_ifs="$IFS"
+    _rn_nvmw_dirs="${_rn_nvm_symlink}:${RESOLVE_NODE_NVM4W_DIR-/c/nvm4w/nodejs}"
+    _rn_save_ifs="$IFS"
     IFS=:
-    for d in $nvmw_dirs; do
-        [ -n "$d" ] || continue
-        if [ -x "$d/node" ]; then printf '%s\n' "$d/node"; IFS="$save_ifs"; return 0; fi
-        if [ -x "$d/node.exe" ]; then printf '%s\n' "$d/node.exe"; IFS="$save_ifs"; return 0; fi
+    for _rn_d in $_rn_nvmw_dirs; do
+        [ -n "$_rn_d" ] || continue
+        if [ -x "$_rn_d/node" ]; then printf '%s\n' "$_rn_d/node"; IFS="$_rn_save_ifs"; return 0; fi
+        if [ -x "$_rn_d/node.exe" ]; then printf '%s\n' "$_rn_d/node.exe"; IFS="$_rn_save_ifs"; return 0; fi
     done
-    IFS="$save_ifs"
+    IFS="$_rn_save_ifs"
 
     # 2) PATH — the common case (and what setup-time invocations see) once the
     #    operator's explicitly-chosen nvm-windows install has had first look.
@@ -88,39 +91,36 @@ resolve_node() {
     #    a PATH fallback exactly as before HIMMEL-2077 — these are generic
     #    system paths, not an operator's explicit version choice, so they stay
     #    behind PATH. The test seam replaces this list wholesale so cases stay
-    #    hermetic; `dirs` is walked with IFS=:, so a bare colon in the path
+    #    hermetic; `_rn_dirs` is walked with IFS=:, so a bare colon in the path
     #    would split it in half.
-    local dirs
     if [ "${RESOLVE_NODE_PROBE_DIRS+set}" = set ]; then
-        dirs="$RESOLVE_NODE_PROBE_DIRS"
+        _rn_dirs="$RESOLVE_NODE_PROBE_DIRS"
     else
-        dirs="/opt/homebrew/bin:/usr/local/bin:/usr/bin:${HOME:-}/.local/bin:/c/Program Files/nodejs:${LOCALAPPDATA:-}/nodejs"
+        _rn_dirs="/opt/homebrew/bin:/usr/local/bin:/usr/bin:${HOME:-}/.local/bin:/c/Program Files/nodejs:${LOCALAPPDATA:-}/nodejs"
     fi
     IFS=:
-    for d in $dirs; do
-        [ -n "$d" ] || continue
-        if [ -x "$d/node" ]; then printf '%s\n' "$d/node"; IFS="$save_ifs"; return 0; fi
-        if [ -x "$d/node.exe" ]; then printf '%s\n' "$d/node.exe"; IFS="$save_ifs"; return 0; fi
+    for _rn_d in $_rn_dirs; do
+        [ -n "$_rn_d" ] || continue
+        if [ -x "$_rn_d/node" ]; then printf '%s\n' "$_rn_d/node"; IFS="$_rn_save_ifs"; return 0; fi
+        if [ -x "$_rn_d/node.exe" ]; then printf '%s\n' "$_rn_d/node.exe"; IFS="$_rn_save_ifs"; return 0; fi
     done
-    IFS="$save_ifs"
+    IFS="$_rn_save_ifs"
 
     # 4) nvm — newest installed version. sort -V (NOT lexical: "v8" > "v20"
     #    lexically would pick an EOL node that can't run modern ESM).
-    local nvm_root="${RESOLVE_NODE_NVM_ROOT:-${HOME:-}/.nvm/versions/node}"
-    if [ -d "$nvm_root" ]; then
+    _rn_nvm_root="${RESOLVE_NODE_NVM_ROOT:-${HOME:-}/.nvm/versions/node}"
+    if [ -d "$_rn_nvm_root" ]; then
         # printf-on-glob (not `ls`) so SC2012 stays quiet; a non-matching glob
         # stays literal and fails the -x test below, so no false hit.
-        local newest
-        newest="$(printf '%s\n' "$nvm_root"/*/bin/node | sort -V | tail -1)"
-        if [ -n "$newest" ] && [ -x "$newest" ]; then printf '%s\n' "$newest"; return 0; fi
+        _rn_newest="$(printf '%s\n' "$_rn_nvm_root"/*/bin/node | sort -V | tail -1)"
+        if [ -n "$_rn_newest" ] && [ -x "$_rn_newest" ]; then printf '%s\n' "$_rn_newest"; return 0; fi
     fi
 
     # 5) fnm — newest installed version (its layout: <dir>/node-versions/*/installation/bin/node).
-    local fnm_root="${FNM_DIR:-${HOME:-}/.local/share/fnm}"
-    if [ -d "$fnm_root/node-versions" ]; then
-        local fnm_newest
-        fnm_newest="$(printf '%s\n' "$fnm_root"/node-versions/*/installation/bin/node | sort -V | tail -1)"
-        if [ -n "$fnm_newest" ] && [ -x "$fnm_newest" ]; then printf '%s\n' "$fnm_newest"; return 0; fi
+    _rn_fnm_root="${FNM_DIR:-${HOME:-}/.local/share/fnm}"
+    if [ -d "$_rn_fnm_root/node-versions" ]; then
+        _rn_fnm_newest="$(printf '%s\n' "$_rn_fnm_root"/node-versions/*/installation/bin/node | sort -V | tail -1)"
+        if [ -n "$_rn_fnm_newest" ] && [ -x "$_rn_fnm_newest" ]; then printf '%s\n' "$_rn_fnm_newest"; return 0; fi
     fi
 
     return 1
