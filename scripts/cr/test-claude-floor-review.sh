@@ -276,5 +276,15 @@ for c in err sess id; do
     has "19 refusal ($c) names the registry row" "registry row" "$W/out"
 done
 
+# 20. A non-UTF-8 path is refused, never decoded lossily into another name.
+mk_repo 20
+if ( cd "$R" && : > "$(printf 'bad\377name')" && git add -A && git commit -qm bad ) >/dev/null 2>&1; then
+    RC=0; ( cd "$R" && node "$FLOOR_MJS" snapshot HEAD "$W/snap20" ) > "$W/out" 2>&1 || RC=$?
+    check "20 non-UTF-8 path -> snapshot refused" 1 "$RC"
+    has "20 refusal names the cause" "not valid UTF-8" "$W/out"
+else
+    ok "20 SKIP: this filesystem refuses non-UTF-8 names"
+fi
+
 echo "claude-floor-review: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

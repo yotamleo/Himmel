@@ -65,8 +65,12 @@ const readArtifact = (f) => { try { return JSON.parse(fs.readFileSync(f, "utf8")
 function snapshot(head, dest) {
     const ls = git(["ls-tree", "-r", "-z", "--full-tree", head]);
     if (ls.status !== 0) die(`git ls-tree ${head} failed: ${ls.stderr}`);
+    const listing = ls.stdout.toString("utf8");
+    // A non-UTF-8 path would decode lossily (U+FFFD) and be renamed or collide
+    // in the snapshot: refuse rather than review an altered tree.
+    if (!Buffer.from(listing, "utf8").equals(ls.stdout)) die(`${head} has a path that is not valid UTF-8; the snapshot cannot reproduce it`);
     const entries = [];
-    for (const rec of ls.stdout.toString("utf8").split("\0")) {
+    for (const rec of listing.split("\0")) {
         if (!rec) continue;
         const tab = rec.indexOf("\t");
         const [mode, type, sha] = rec.slice(0, tab).split(" ");
