@@ -4424,13 +4424,57 @@ function checkUninstallCompleteness(unwireItems) {
   }
 }
 
+// HIMMEL-3244: class of each named uninstall-manifest row, read the way
+// uninstall.sh reads it (HIMMEL_UNINSTALL_MANIFEST override, else
+// scripts/install/uninstall-manifest.tsv; TAB columns id, class, ...). Returns
+// { id: class } for the requested ids, or null when the file is unreadable or
+// lacks one of them — the caller then makes no per-class claim. Deliberately
+// not a validator: uninstall.sh owns row validation and refuses a bad manifest.
+function uninstallManifestClasses(ids) {
+  try {
+    const file = process.env.HIMMEL_UNINSTALL_MANIFEST
+      || path.join(repoRoot(), 'scripts', 'install', 'uninstall-manifest.tsv');
+    const classes = {};
+    for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
+      if (!line || line.startsWith('#')) continue;
+      const cols = line.split('\t');
+      if (ids.includes(cols[0])) classes[cols[0]] = cols[1];
+    }
+    return ids.every((id) => classes[id]) ? classes : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// The pre-flight operator-state lines. Per row, mirrors uninstall.sh's step-2
+// plan: class state -> removed only by --purge-state; code -> always removed;
+// anything else (keep) -> never removed, naming the class. Both rows state (the
+// shipped manifest) keeps the original two-line wording. ponytail: win32 runs
+// uninstall.ps1, which keeps its own targets and never reads the manifest, so
+// there the shipped-default wording is what its -PurgeState gating does.
+function operatorStateBanner(purgeState) {
+  const shipped = purgeState
+    ? '  --purge-state: operator state (telegram pairing, bridge state) is REMOVED too.'
+    : '  operator state (telegram pairing, bridge state) is KEPT — pass --purge-state to remove it.';
+  if (process.platform === 'win32') return [shipped];
+  const rows = [['telegram-channel', 'telegram pairing'], ['telegram-bridge', 'bridge state']];
+  const classes = uninstallManifestClasses(rows.map((r) => r[0]));
+  if (!classes) return ['  operator state (telegram pairing, bridge state): see the plan uninstall.sh prints next (uninstall manifest unreadable).'];
+  if (rows.every((r) => classes[r[0]] === 'state')) return [shipped];
+  return ['  operator state, per manifest class:', ...rows.map(([id, label]) => {
+    const cls = classes[id];
+    const verdict = cls === 'code' ? 'REMOVED (manifest class code)'
+      : cls !== 'state' ? `KEPT (manifest class ${cls})`
+        : purgeState ? 'REMOVED (--purge-state)' : 'KEPT (manifest class state; --purge-state removes it)';
+    return `    ${label} (${id}): ${verdict}`;
+  })];
+}
+
 async function cmdUninstall(args) {
   const cmd = deriveUninstallCommand(args);
   console.log('himmelctl: this will offboard himmel from this machine —');
   console.log('  plugins, scheduled jobs, git hooks, and settings.json wiring.');
-  console.log(args.purgeState
-    ? '  --purge-state: operator state (telegram pairing, bridge state) is REMOVED too.'
-    : '  operator state (telegram pairing, bridge state) is KEPT — pass --purge-state to remove it.');
+  for (const line of operatorStateBanner(args.purgeState)) console.log(line);
   console.log(`derived: ${displayCommand(cmd)}`);
 
   // Guard the manifest load: uninstall is the "thin wrapper, always works,

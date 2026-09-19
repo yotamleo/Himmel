@@ -369,4 +369,66 @@ set -e
 grepq "$out" 'launchers left in place' || fail "caseG: expected a retry warning preserving the launchers (got: $out)"
 echo "ok: caseG failed teardown preserves marked PATH launchers + warns (no stranded machine)"
 
+# ── Case H (HIMMEL-3244): the banner's operator-state claim is DERIVED from the
+# manifest classes, the same per-row way uninstall.sh's step-2 plan is. A
+# hand-edited manifest that re-classes a telegram row keep must not be
+# described as "--purge-state removes it". posix only: uninstall.ps1 keeps its
+# own targets and does not read the manifest, so win32 keeps the shipped text.
+# banner_for <case> <purge:0|1> <sed-expr|""> — runs `uninstall --dry-run` against a
+# fixture whose uninstall-manifest.tsv is the REAL one with <sed-expr> applied
+# (empty = unedited; "none" = no manifest file at all) and prints the banner.
+banner_for() {
+  local _c="$1" _purge="$2" _sed="$3" _fx="$work/caseH-$1-fixture" _h="$work/hH-$1"
+  build_fixture "$_fx"; mkdir -p "$_h"
+  if [ "$_sed" != none ]; then
+    if [ -n "$_sed" ]; then sed -e "$_sed" "$repo_root/scripts/install/uninstall-manifest.tsv" > "$_fx/scripts/install/uninstall-manifest.tsv"
+    else cp "$repo_root/scripts/install/uninstall-manifest.tsv" "$_fx/scripts/install/uninstall-manifest.tsv"; fi
+  fi
+  local _stub="$work/caseH-$1-stub"; mkdir -p "$_stub"
+  local _p; _p=$(build_path "$_stub" bash git jq python3 npm -- )
+  local _args=(uninstall --dry-run); [ "$_purge" = 1 ] && _args+=(--purge-state)
+  PATH="$_p" HOME="$_h" USERPROFILE="$(winpath "$_h")" HIMMELCTL_CACHE_DIR="$(winpath "$_h.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$_h.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
+    HIMMELCTL_REPO_ROOT="$(winpath "$_fx")" \
+    "$node_bin" "$wizard" "${_args[@]}" </dev/null 2>&1
+}
+if ! is_win32; then
+  KEEP_CH=$'s/^telegram-channel\tstate/telegram-channel\tkeep/'
+  # H1: channel re-classed keep, no --purge-state -> named keep, never "removes it".
+  outH1=$(banner_for h1 0 "$KEEP_CH")
+  grepq "$outH1" -F 'telegram pairing (telegram-channel): KEPT (manifest class keep)' \
+    || fail "caseH1: a keep-classed telegram-channel must be named KEPT by class (got: $outH1)"
+  grepq "$outH1" -F 'bridge state (telegram-bridge): KEPT (manifest class state; --purge-state removes it)' \
+    || fail "caseH1: the state-classed bridge row must say --purge-state removes it (got: $outH1)"
+  grepq "$outH1" -F 'is KEPT — pass --purge-state to remove it' \
+    && fail "caseH1: the blanket 'pass --purge-state to remove it' claim must not survive a keep row (got: $outH1)"
+  # H2: same manifest WITH --purge-state -> the keep row is still kept, never "REMOVED too".
+  outH2=$(banner_for h2 1 "$KEEP_CH")
+  grepq "$outH2" -F 'telegram pairing (telegram-channel): KEPT (manifest class keep)' \
+    || fail "caseH2: --purge-state must not claim a keep row is removed (got: $outH2)"
+  grepq "$outH2" -F 'bridge state (telegram-bridge): REMOVED (--purge-state)' \
+    || fail "caseH2: the state row IS removed by --purge-state (got: $outH2)"
+  grepq "$outH2" -F 'is REMOVED too' \
+    && fail "caseH2: the blanket 'REMOVED too' claim must not survive a keep row (got: $outH2)"
+  # H3: a code-classed row is removed with or without --purge-state.
+  outH3=$(banner_for h3 0 $'s/^telegram-bridge\tstate/telegram-bridge\tcode/')
+  grepq "$outH3" -F 'bridge state (telegram-bridge): REMOVED (manifest class code)' \
+    || fail "caseH3: a code-classed row is always removed (got: $outH3)"
+  # H4: the shipped manifest (both state) keeps the original two banner lines.
+  outH4=$(banner_for h4 0 "")
+  grepq "$outH4" -F 'operator state (telegram pairing, bridge state) is KEPT — pass --purge-state to remove it.' \
+    || fail "caseH4: shipped default banner (no purge) changed (got: $outH4)"
+  outH4p=$(banner_for h4p 1 "")
+  grepq "$outH4p" -F -- '--purge-state: operator state (telegram pairing, bridge state) is REMOVED too.' \
+    || fail "caseH4: shipped default banner (--purge-state) changed (got: $outH4p)"
+  # H5: no readable manifest -> no per-class claim, points at the plan instead.
+  outH5=$(banner_for h5 1 none)
+  grepq "$outH5" -F 'see the plan uninstall.sh prints' \
+    || fail "caseH5: an unreadable manifest must defer to the uninstall.sh plan (got: $outH5)"
+  grepq "$outH5" -F 'is REMOVED too' \
+    && fail "caseH5: an unreadable manifest must not produce a removal claim (got: $outH5)"
+  echo "ok: caseH banner derives per-row telegram state from the manifest classes (keep/code/state/unreadable)"
+else
+  echo "ok: caseH -> (skipped: uninstall.ps1 does not read the manifest; win32 keeps the shipped banner)"
+fi
+
 echo "PASS"
