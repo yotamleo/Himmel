@@ -20,7 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ARM="$SCRIPT_DIR/arm-resume.sh"
 LIB="$SCRIPT_DIR/../lib/pty-run.sh"
 
-TMP=$(mktemp -d)
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/arm-resume-at-pty.XXXXXX") || exit 1
 trap 'rm -rf "$TMP"' EXIT
 . "$SCRIPT_DIR/../lib/fleet-slots-shield.sh"
 fleet_slots_shield "$TMP" || exit 1

@@ -75,10 +75,16 @@ _himmel_pty_run() (
     export HIMMEL_PTY_CMD
     # script's own stdout is the pty's output copy (a full TUI paint stream);
     # atd would mail it, so send it nowhere. stderr stays for script's errors.
-    if "$_hp_script" --version 2>&1 | grep -q util-linux; then
-        # shellcheck disable=SC2016  # $HIMMEL_PTY_CMD is meant to expand in the inner shell
-        "$_hp_script" -qefc 'sh -c "$HIMMEL_PTY_CMD"' /dev/null <&3 3<&- >/dev/null
-    else
-        "$_hp_script" -q /dev/null sh -c "$HIMMEL_PTY_CMD" <&3 3<&- >/dev/null
-    fi
+    # Captured, not piped into `grep -q`: no producer to SIGPIPE under a caller's
+    # pipefail, and the case works in the POSIX sh the at body runs under.
+    _hp_ver=$("$_hp_script" --version 2>&1)
+    case $_hp_ver in
+        *util-linux*)
+            # shellcheck disable=SC2016  # $HIMMEL_PTY_CMD is meant to expand in the inner shell
+            "$_hp_script" -qefc 'sh -c "$HIMMEL_PTY_CMD"' /dev/null <&3 3<&- >/dev/null
+            ;;
+        *)
+            "$_hp_script" -q /dev/null sh -c "$HIMMEL_PTY_CMD" <&3 3<&- >/dev/null
+            ;;
+    esac
 )
