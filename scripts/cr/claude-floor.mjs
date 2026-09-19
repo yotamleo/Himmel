@@ -109,7 +109,7 @@ export function eachBlob(blobs, fn, { limit = BATCH_BYTES, cat = catBatch } = {}
             if (nl < 0) throw new Error(`cat-file output truncated at ${e.sha}`);
             const fields = out.subarray(pos, nl).toString().split(" ");
             const [sha, type, size] = fields;
-            if (fields.length !== 3 || sha !== e.sha || type !== "blob") throw new Error(`unexpected cat-file record for ${e.sha}: ${sha} ${type}`);
+            if (fields.length !== 3 || !/^\d+$/.test(size) || sha !== e.sha || type !== "blob") throw new Error(`unexpected cat-file record for ${e.sha}: ${sha} ${type}`);
             if (Number(size) !== e.size) throw new Error(`cat-file size ${size} != listed ${e.size} at ${e.sha}`);
             // the body must be followed by its own "\n": a short body would otherwise absorb it
             const bodyStart = nl + 1, bodyEnd = bodyStart + e.size;

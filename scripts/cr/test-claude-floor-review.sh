@@ -393,6 +393,7 @@ bad("truncated", (s, m, n) => { const r = real(s, m); return n === 2 ? { ...r, s
 bad("nosep", (s, m, n) => { const r = real(s, m); return n === 2 ? { ...r, stdout: Buffer.concat([r.stdout.subarray(0, r.stdout.length - 2), r.stdout.subarray(r.stdout.length - 1)]) } : r; });
 bad("trailing", (s, m, n) => { const r = real(s, m); return n === 3 ? { ...r, stdout: Buffer.concat([r.stdout, Buffer.from("extra")]) } : r; });
 bad("badhdr", (s, m, n) => { const r = real(s, m); return n === 2 ? { ...r, stdout: Buffer.from(r.stdout.toString("latin1").replace(" 1000\n", " 1000 junk\n"), "latin1") } : r; });
+bad("expsize", (s, m, n) => { const r = real(s, m); return n === 2 ? { ...r, stdout: Buffer.from(r.stdout.toString("latin1").replace(" 1000\n", " 1e3\n"), "latin1") } : r; });
 bad("badsha", (s, m, n) => { const r = real(s, m); return n === 2 ? { ...r, stdout: Buffer.concat([Buffer.from("0"), r.stdout.subarray(1)]) } : r; });
 bad("badsize", (s, m, n) => { const r = real(s, m); return n === 2 ? { ...r, stdout: Buffer.from(r.stdout.toString("latin1").replace(" 1000\n", " 999\n"), "latin1") } : r; });
 bad("failed", (s, m, n) => (n === 2 ? { status: 128, stderr: Buffer.from("boom"), stdout: Buffer.alloc(0) } : real(s, m)));
@@ -406,6 +407,7 @@ has "27 a truncated batch is refused" "cat-file output truncated at" "$W/out27"
 has "27 a body one byte short of its separator is refused" "nosep cat-file output truncated at" "$W/out27"
 has "27 surplus output after the last record is refused" "trailing unexpected trailing cat-file output" "$W/out27"
 has "27 a header with extra fields is refused" "badhdr unexpected cat-file record" "$W/out27"
+has "27 a non-decimal size field (1e3) is refused" "expsize unexpected cat-file record" "$W/out27"
 has "27 a wrong record sha is refused" "badsha unexpected cat-file record" "$W/out27"
 has "27 a size that differs from ls-tree is refused" "!= listed" "$W/out27"
 has "27 a failed cat-file is refused" "git cat-file --batch failed" "$W/out27"
