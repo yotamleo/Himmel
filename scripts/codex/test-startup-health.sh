@@ -317,6 +317,30 @@ for q in '"""' "'''"; do
   want_line "himmel-ops@$MARKET" "$out" "himmel-ops inside a $q string is still reported missing"
 done
 
+# 8f3. parser fidelity (class sweep with 8f2): a comment mentioning a triple quote
+# must not hide the registrations after it; whitespace INSIDE a quoted key is part
+# of the key; a literal-quoted ('...') header is the same registration.
+for cm in '# stray """ in a full-line comment' 'x = "a" # trailing """ comment'; do
+  H="$(make_home regcomment "$NEW_TID" "$SMALL_WAW")"
+  db_noise_row "$NEW_TID" > "$H/logs_2.sqlite"
+  { printf '%s\n' "$cm"; cat "$H/config.toml"; } > "$H/config.toml.new" && mv "$H/config.toml.new" "$H/config.toml"
+  rc=0; out="$(CODEX_HOME="$H" bash "$DETECT" 2>&1)" || rc=$?
+  check_rc 0 "$rc" "triple quotes inside a comment ($cm) do not hide later registrations -> exit 0"
+done
+
+H="$(make_home regspacekey "$NEW_TID" "$SMALL_WAW")"
+db_noise_row "$NEW_TID" > "$H/logs_2.sqlite"
+sed "s/\"himmel-ops@$MARKET\"/\"himmel- ops@$MARKET\"/" "$H/config.toml" > "$H/config.toml.new" && mv "$H/config.toml.new" "$H/config.toml"
+rc=0; out="$(CODEX_HOME="$H" bash "$DETECT" 2>&1)" || rc=$?
+check_rc 1 "$rc" "whitespace inside a quoted key is not stripped -> himmel-ops reported missing"
+want_line "himmel-ops@$MARKET" "$out" "space-in-key does not satisfy himmel-ops"
+
+H="$(make_home regliteral "$NEW_TID" "$SMALL_WAW")"
+db_noise_row "$NEW_TID" > "$H/logs_2.sqlite"
+sed "s/\"himmel-ops@$MARKET\"/'himmel-ops@$MARKET'/" "$H/config.toml" > "$H/config.toml.new" && mv "$H/config.toml.new" "$H/config.toml"
+rc=0; out="$(CODEX_HOME="$H" bash "$DETECT" 2>&1)" || rc=$?
+check_rc 0 "$rc" "literal-quoted header is the same registration -> exit 0"
+
 # 8g. no session at all (no sessions dir -> no thread_id): the registration check
 # reads config only, so it must not depend on a session existing.
 H="$TMP/regnosession"; mkdir -p "$H"

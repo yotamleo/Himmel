@@ -189,8 +189,8 @@ if ($newest) {
 # [plugins."name@X"] + `enabled = true`) is parsed; a hand-written dotted-key or
 # inline-table config reads as unregistered (fail closed). A registered
 # marketplace whose `source` path has gone stale is not checked either. Multiline
-# strings are skipped by delimiter parity only: a quote escaped next to a
-# triple-quote can desync it.
+# strings are skipped by delimiter parity on the comment-stripped line only: a
+# quote escaped next to a triple-quote can still desync it.
 $pluginSetFile = Join-Path $PSScriptRoot 'himmel-plugin-set.conf'
 function Get-PluginSetField([string]$key) {
   $b = Read-SharedBytes $pluginSetFile
@@ -199,6 +199,19 @@ function Get-PluginSetField([string]$key) {
     if ($line -match "^$([regex]::Escape($key)):\s*(.*?)\s*$") { return $Matches[1] }
   }
   return ''
+}
+# The line up to its TOML comment: a `#` inside a quoted string is not a comment
+# (walks quote state; a backslash escapes the next char inside a basic string).
+function Remove-TomlComment([string]$l) {
+  $q = ''; $o = New-Object System.Text.StringBuilder
+  for ($i = 0; $i -lt $l.Length; $i++) {
+    $c = [string]$l[$i]
+    if ($q -eq '' -and $c -eq '#') { break }
+    if ($q -eq '"' -and $c -eq '\' -and ($i + 1) -lt $l.Length) { [void]$o.Append($c).Append($l[$i + 1]); $i++; continue }
+    if ($c -eq '"' -or $c -eq "'") { if ($q -eq '') { $q = $c } elseif ($q -eq $c) { $q = '' } }
+    [void]$o.Append($c)
+  }
+  return $o.ToString()
 }
 # Registered marketplaces + enabled plugin ids from config.toml. Comparisons are
 # -c (case-SENSITIVE) like the .sh twin's awk/grep: TOML keys are case-sensitive.
@@ -220,12 +233,15 @@ function Get-ConfigState([string]$cfgPath) {
     if ($line -match '^\s*\[') {
       $s = $line -replace '^\s*\[', ''
       $s = $s -replace '\][ \t]*(#.*)?$', ''
-      $s = $s -replace '["\s]', ''
+      # whitespace INSIDE a quoted key is part of the key: drop only the ends and the
+      # space around dots, then the quote characters (both kinds, like the .sh twin).
+      $s = ($s.Trim() -replace '\s*\.\s*', '.') -replace '["'']', ''
       $cur = $s
       if ($s -clike 'marketplaces.*') { $res.Markets += $s.Substring(13) }
     } elseif (($cur -clike 'plugins.*') -and ($line -cmatch '^\s*enabled\s*=\s*true\s*(#.*)?$')) { $res.Enabled += $cur.Substring(8) }
-    if (([regex]::Matches($line, '"""')).Count % 2 -eq 1) { $ml = '"""' }
-    elseif (([regex]::Matches($line, "'''")).Count % 2 -eq 1) { $ml = "'''" }
+    $t = Remove-TomlComment $line
+    if (([regex]::Matches($t, '"""')).Count % 2 -eq 1) { $ml = '"""' }
+    elseif (([regex]::Matches($t, "'''")).Count % 2 -eq 1) { $ml = "'''" }
   }
   return $res
 }

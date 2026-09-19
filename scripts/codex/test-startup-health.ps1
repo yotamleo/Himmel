@@ -244,6 +244,27 @@ try {
     if ($r.rc -eq 1 -and $r.out -match "himmel-ops@$MARKET") { Pass "himmel-ops registered only inside a $q string is still reported missing" } else { Fail "multiline $q rc=$($r.rc) out=$($r.out)" }
   }
 
+  # 8f3. parser fidelity (class sweep with 8f2)
+  $cmn = 0
+  foreach ($cm in @('# stray """ in a full-line comment', 'x = "a" # trailing """ comment')) {
+    $cmn++
+    $h = New-RegHome "regcomment$cmn" 'all'
+    $cfgPath = Join-Path $h 'config.toml'
+    Set-Content -LiteralPath $cfgPath -Value ($cm + "`n" + ((Get-Content -LiteralPath $cfgPath -Raw))) -Encoding utf8
+    $r = Run $h
+    if ($r.rc -eq 0) { Pass "triple quotes inside a comment ($cm) do not hide later registrations" } else { Fail "comment rc=$($r.rc) out=$($r.out)" }
+  }
+  $h = New-RegHome 'regspacekey' 'all'
+  $cfgPath = Join-Path $h 'config.toml'
+  (Get-Content -LiteralPath $cfgPath) -replace "`"himmel-ops@$MARKET`"", "`"himmel- ops@$MARKET`"" | Set-Content -LiteralPath $cfgPath -Encoding utf8
+  $r = Run $h
+  if ($r.rc -eq 1 -and $r.out -match "himmel-ops@$MARKET") { Pass 'whitespace inside a quoted key is not stripped' } else { Fail "spacekey rc=$($r.rc) out=$($r.out)" }
+  $h = New-RegHome 'regliteral' 'all'
+  $cfgPath = Join-Path $h 'config.toml'
+  (Get-Content -LiteralPath $cfgPath) -replace "`"himmel-ops@$MARKET`"", "'himmel-ops@$MARKET'" | Set-Content -LiteralPath $cfgPath -Encoding utf8
+  $r = Run $h
+  if ($r.rc -eq 0) { Pass 'literal-quoted header is the same registration' } else { Fail "literal rc=$($r.rc) out=$($r.out)" }
+
   # 8g. no session at all (no sessions dir -> no thread_id): config-only check
   $h = Join-Path $TMP 'regnosession'; New-Item -ItemType Directory -Force -Path $h | Out-Null
   Set-Db $h "INFO x session_loop{thread_id=$NEW}: noise padding line here"; Write-Config $h 'empty'

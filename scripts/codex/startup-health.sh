@@ -217,7 +217,8 @@ fi
 # inline-table config reads as unregistered (fail closed — the installer would
 # rewrite it in the header form). A registered marketplace whose `source` path has
 # gone stale is not checked either. Multiline strings are skipped by delimiter
-# parity only: a quote escaped next to a triple-quote (`\"""`) can desync it.
+# parity on the comment-stripped line only: a quote escaped next to a triple-quote
+# (`\"""`) can still desync it.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_SET_FILE="$SCRIPT_DIR/himmel-plugin-set.conf"
 plugin_set_field() { tr -d '\r' < "$PLUGIN_SET_FILE" 2>/dev/null | awk -F': *' -v k="$1" '$1==k{print $2; exit}'; }
@@ -226,17 +227,33 @@ plugin_set_field() { tr -d '\r' < "$PLUGIN_SET_FILE" 2>/dev/null | awk -F': *' -
 config_state() {
   # ml = the open TOML multiline-string delimiter (triple double or single quote), or ""
   # outside one: lines inside it are text, never headers or `enabled`. Tracked by
-  # delimiter parity per line (\047 = the single quote, unwritable inside this awk).
+  # delimiter parity per line, counted on the line WITHOUT its comment (nocomment
+  # walks quote state, so a `#` inside a string is not a comment). \047 = the single
+  # quote, unwritable inside this awk. Header keys keep whitespace INSIDE quotes;
+  # only whitespace around the dots and the ends is dropped.
   awk '
+    function nocomment(l,   i, n, c, q, o) {
+      n = length(l); q = ""; o = ""
+      for (i = 1; i <= n; i++) {
+        c = substr(l, i, 1)
+        if (q == "" && c == "#") break
+        if (q == "\"" && c == "\\") { o = o c substr(l, i + 1, 1); i++; continue }
+        if (c == "\"" || c == "\047") { if (q == "") q = c; else if (q == c) q = "" }
+        o = o c
+      }
+      return o
+    }
     ml != "" { t = $0; if (gsub(ml, "", t) % 2) ml = ""; next }
     /^[[:space:]]*\[/ {
       s = $0; sub(/^[[:space:]]*\[/, "", s); sub(/\][[:space:]]*(#.*)?$/, "", s)
-      gsub(/["[:space:]]/, "", s); cur = s
+      sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s)
+      gsub(/[[:space:]]*\.[[:space:]]*/, ".", s); gsub(/["\047]/, "", s); cur = s
       if (s ~ /^marketplaces\./) print "market " substr(s, 14)
     }
     !/^[[:space:]]*\[/ && cur ~ /^plugins\./ && /^[[:space:]]*enabled[[:space:]]*=[[:space:]]*true[[:space:]]*(#.*)?$/ { print "enabled " substr(cur, 9) }
-    { t = $0; if (gsub(/"""/, "", t) % 2) ml = "\"\"\""
-      else { t = $0; if (gsub(/\047\047\047/, "", t) % 2) ml = "\047\047\047" } }
+    { t = nocomment($0)
+      if (gsub(/"""/, "", t) % 2) ml = "\"\"\""
+      else { t = nocomment($0); if (gsub(/\047\047\047/, "", t) % 2) ml = "\047\047\047" } }
   ' "$1" 2>/dev/null
 }
 
