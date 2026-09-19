@@ -341,6 +341,28 @@ sed "s/\"himmel-ops@$MARKET\"/'himmel-ops@$MARKET'/" "$H/config.toml" > "$H/conf
 rc=0; out="$(CODEX_HOME="$H" bash "$DETECT" 2>&1)" || rc=$?
 check_rc 0 "$rc" "literal-quoted header is the same registration -> exit 0"
 
+# 8f4. HIMMEL-3234: a QUOTED key is ONE segment. A hand-written top-level
+# ["plugins.himmel-ops@himmel"] / ["marketplaces.himmel"] is not the nested
+# [plugins."himmel-ops@himmel"] / [marketplaces.himmel] registration, even though
+# both used to normalise to the same dotted string. Quoting a SEGMENT
+# (["plugins"."himmel-ops@himmel"]) is still the nested form and still counts.
+reg_case regqdotplug skip himmel-ops
+printf '["plugins.himmel-ops@%s"]\nenabled = true\n' "$MARKET" >> "$TMP/regqdotplug/config.toml"
+rc=0; out="$(CODEX_HOME="$TMP/regqdotplug" bash "$DETECT" 2>&1)" || rc=$?
+check_rc 1 "$rc" "quoted-dotted top-level plugin key is not a registration -> exit 1"
+want_line "himmel-ops@$MARKET" "$out" "quoted-dotted plugin key still reports himmel-ops missing"
+
+reg_case regqdotmkt nomarket
+printf '["marketplaces.%s"]\nsource_type = "local"\n' "$MARKET" >> "$TMP/regqdotmkt/config.toml"
+rc=0; out="$(CODEX_HOME="$TMP/regqdotmkt" bash "$DETECT" 2>&1)" || rc=$?
+check_rc 1 "$rc" "quoted-dotted top-level marketplace key is not a registration -> exit 1"
+want_line "marketplace '$MARKET' is not registered" "$out" "quoted-dotted marketplace key still reports the marketplace missing"
+
+reg_case regqseg skip himmel-ops
+printf '["plugins"."himmel-ops@%s"]\nenabled = true\n' "$MARKET" >> "$TMP/regqseg/config.toml"
+rc=0; out="$(CODEX_HOME="$TMP/regqseg" bash "$DETECT" 2>&1)" || rc=$?
+check_rc 0 "$rc" "quoted segments around an unquoted dot are still the nested registration -> exit 0"
+
 # 8g. no session at all (no sessions dir -> no thread_id): the registration check
 # reads config only, so it must not depend on a session existing.
 H="$TMP/regnosession"; mkdir -p "$H"

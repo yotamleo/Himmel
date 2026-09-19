@@ -230,8 +230,24 @@ config_state() {
   # delimiter parity per line, counted on the line WITHOUT its comment (nocomment
   # walks quote state, so a `#` inside a string is not a comment). \047 = the single
   # quote, unwritable inside this awk. Header keys keep whitespace INSIDE quotes;
-  # only whitespace around the dots and the ends is dropped.
+  # only whitespace around the dots and the ends is dropped. hdrkey keeps the
+  # quote boundary: a dot OUTSIDE quotes is a segment separator (rewritten to \034),
+  # a dot INSIDE quotes is part of the key, so a hand-written ["plugins.X"] never
+  # collides with the nested [plugins."X"] (HIMMEL-3234).
   awk '
+    function hdrkey(l,   i, n, c, q, o) {
+      n = length(l); q = ""; o = ""
+      for (i = 1; i <= n; i++) {
+        c = substr(l, i, 1)
+        if (q == "\"" && c == "\\") { o = o c substr(l, i + 1, 1); i++; continue }
+        if (q == "" && (c == "\"" || c == "\047")) { q = c; continue }
+        if (q != "" && c == q) { q = ""; continue }
+        if (q == "" && c == ".") { o = o "\034"; continue }
+        if (q == "" && c ~ /[[:space:]]/) continue
+        o = o c
+      }
+      return o
+    }
     function nocomment(l,   i, n, c, q, o) {
       n = length(l); q = ""; o = ""
       for (i = 1; i <= n; i++) {
@@ -246,11 +262,10 @@ config_state() {
     ml != "" { t = $0; if (gsub(ml, "", t) % 2) ml = ""; next }
     /^[[:space:]]*\[/ {
       s = $0; sub(/^[[:space:]]*\[/, "", s); sub(/\][[:space:]]*(#.*)?$/, "", s)
-      sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s)
-      gsub(/[[:space:]]*\.[[:space:]]*/, ".", s); gsub(/["\047]/, "", s); cur = s
-      if (s ~ /^marketplaces\./) print "market " substr(s, 14)
+      cur = hdrkey(s)
+      if (cur ~ /^marketplaces\034/) print "market " substr(cur, 14)
     }
-    !/^[[:space:]]*\[/ && cur ~ /^plugins\./ && /^[[:space:]]*enabled[[:space:]]*=[[:space:]]*true[[:space:]]*(#.*)?$/ { print "enabled " substr(cur, 9) }
+    !/^[[:space:]]*\[/ && cur ~ /^plugins\034/ &&/^[[:space:]]*enabled[[:space:]]*=[[:space:]]*true[[:space:]]*(#.*)?$/ { print "enabled " substr(cur, 9) }
     { t = nocomment($0)
       if (gsub(/"""/, "", t) % 2) ml = "\"\"\""
       else { t = nocomment($0); if (gsub(/\047\047\047/, "", t) % 2) ml = "\047\047\047" } }

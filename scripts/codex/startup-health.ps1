@@ -213,6 +213,24 @@ function Remove-TomlComment([string]$l) {
   }
   return $o.ToString()
 }
+# A table-header key with its quote boundary kept (HIMMEL-3234): a dot OUTSIDE quotes
+# is a segment separator ($script:KeySep, U+001C — like the .sh twin's \034), a dot
+# INSIDE quotes is part of the key, so a hand-written ["plugins.X"] never collides
+# with the nested [plugins."X"]. Whitespace inside quotes is kept; outside, dropped.
+$script:KeySep = [string][char]0x1C
+function Get-TomlHeaderKey([string]$s) {
+  $q = ''; $o = New-Object System.Text.StringBuilder
+  for ($i = 0; $i -lt $s.Length; $i++) {
+    $c = [string]$s[$i]
+    if ($q -eq '"' -and $c -eq '\' -and ($i + 1) -lt $s.Length) { [void]$o.Append($c).Append($s[$i + 1]); $i++; continue }
+    if ($q -eq '' -and ($c -eq '"' -or $c -eq "'")) { $q = $c; continue }
+    if ($q -ne '' -and $c -eq $q) { $q = ''; continue }
+    if ($q -eq '' -and $c -eq '.') { [void]$o.Append($script:KeySep); continue }
+    if ($q -eq '' -and $c -match '\s') { continue }
+    [void]$o.Append($c)
+  }
+  return $o.ToString()
+}
 # Registered marketplaces + enabled plugin ids from config.toml. Comparisons are
 # -c (case-SENSITIVE) like the .sh twin's awk/grep: TOML keys are case-sensitive.
 function Get-ConfigState([string]$cfgPath) {
@@ -233,12 +251,10 @@ function Get-ConfigState([string]$cfgPath) {
     if ($line -match '^\s*\[') {
       $s = $line -replace '^\s*\[', ''
       $s = $s -replace '\][ \t]*(#.*)?$', ''
-      # whitespace INSIDE a quoted key is part of the key: drop only the ends and the
-      # space around dots, then the quote characters (both kinds, like the .sh twin).
-      $s = ($s.Trim() -replace '\s*\.\s*', '.') -replace '["'']', ''
-      $cur = $s
-      if ($s -clike 'marketplaces.*') { $res.Markets += $s.Substring(13) }
-    } elseif (($cur -clike 'plugins.*') -and ($line -cmatch '^\s*enabled\s*=\s*true\s*(#.*)?$')) { $res.Enabled += $cur.Substring(8) }
+      # whitespace INSIDE a quoted key is part of the key; a quoted dot is not a separator.
+      $cur = Get-TomlHeaderKey $s
+      if ($cur -clike "marketplaces$($script:KeySep)*") { $res.Markets += $cur.Substring(13) }
+    } elseif (($cur -clike "plugins$($script:KeySep)*") -and ($line -cmatch '^\s*enabled\s*=\s*true\s*(#.*)?$')) { $res.Enabled += $cur.Substring(8) }
     $t = Remove-TomlComment $line
     if (([regex]::Matches($t, '"""')).Count % 2 -eq 1) { $ml = '"""' }
     elseif (([regex]::Matches($t, "'''")).Count % 2 -eq 1) { $ml = "'''" }

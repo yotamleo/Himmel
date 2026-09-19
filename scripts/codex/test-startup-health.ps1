@@ -265,6 +265,22 @@ try {
   $r = Run $h
   if ($r.rc -eq 0) { Pass 'literal-quoted header is the same registration' } else { Fail "literal rc=$($r.rc) out=$($r.out)" }
 
+  # 8f4. HIMMEL-3234: a QUOTED key is ONE segment. A hand-written top-level
+  # ["plugins.himmel-ops@himmel"] / ["marketplaces.himmel"] is not the nested
+  # registration; quoting a SEGMENT (["plugins"."himmel-ops@himmel"]) still is.
+  $h = New-RegHome 'regqdotplug' 'skip' 'himmel-ops'
+  Add-Content -LiteralPath (Join-Path $h 'config.toml') -Value "[`"plugins.himmel-ops@$MARKET`"]`nenabled = true"
+  $r = Run $h
+  if ($r.rc -eq 1 -and $r.out -match "himmel-ops@$MARKET") { Pass 'quoted-dotted top-level plugin key is not a registration' } else { Fail "qdotplug rc=$($r.rc) out=$($r.out)" }
+  $h = New-RegHome 'regqdotmkt' 'nomarket'
+  Add-Content -LiteralPath (Join-Path $h 'config.toml') -Value "[`"marketplaces.$MARKET`"]`nsource_type = `"local`""
+  $r = Run $h
+  if ($r.rc -eq 1 -and $r.out -match "marketplace '$MARKET' is not registered") { Pass 'quoted-dotted top-level marketplace key is not a registration' } else { Fail "qdotmkt rc=$($r.rc) out=$($r.out)" }
+  $h = New-RegHome 'regqseg' 'skip' 'himmel-ops'
+  Add-Content -LiteralPath (Join-Path $h 'config.toml') -Value "[`"plugins`".`"himmel-ops@$MARKET`"]`nenabled = true"
+  $r = Run $h
+  if ($r.rc -eq 0) { Pass 'quoted segments around an unquoted dot are still the nested registration' } else { Fail "qseg rc=$($r.rc) out=$($r.out)" }
+
   # 8g. no session at all (no sessions dir -> no thread_id): config-only check
   $h = Join-Path $TMP 'regnosession'; New-Item -ItemType Directory -Force -Path $h | Out-Null
   Set-Db $h "INFO x session_loop{thread_id=$NEW}: noise padding line here"; Write-Config $h 'empty'
