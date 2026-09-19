@@ -362,12 +362,17 @@ check "(k) control: a different caller pid, same shim -> PROCEED" PROCEED "$k2_o
 # name that cannot be one directory component ('/' or over NAME_MAX, so the
 # key is a hash) never matched, and the slot was counted twice until the TTL.
 # The reservation now also records the raw leg name in `name` and the consume
-# check matches the live name against the first token of it too.
+# check matches the live name against it too — but ONLY for a name with no
+# whitespace, where the census's first token IS the whole name (exact identity).
+# A name WITH whitespace is deliberately not consumed (see (l1)): the census
+# cannot tell it from another leg sharing its first token.
 count_resv() { local n=0 d; for d in "$1"/*/; do [ -d "$d" ] && n=$((n+1)); done; echo "$n"; }
-# reserve_then_live <case> <leg> <live -n value>: reserve <leg> with no live
-# session, then an informational read with one live `claude -n <live>`.
+# reserve_then_live <case> <leg> <live -n value> [counted]: reserve <leg> with
+# no live session, then an informational read with one live `claude -n <live>`.
+# Default: the live session must CONSUME the reservation. With `counted`: it
+# must NOT — the reservation stays on disk and is counted alongside the live one.
 reserve_then_live() {
-  local label="$1" leg="$2" live="$3" slots pl out
+  local label="$1" leg="$2" live="$3" mode="${4:-consumed}" slots pl out
   slots="$(mktemp -d "$W/slots-l.XXXXXX")" || { echo "FAIL - could not create slots-l scratch dir" >&2; exit 1; }
   out="$(run_pf "$slots" "$p0" CADENCE_BANK_LAUNCH=1 CADENCE_BANK_LEG="$leg" HIMMEL_FLEET_CAP=4)"
   check "($label) setup: declared launch -> PROCEED, reservation created" PROCEED "$out"
@@ -375,6 +380,15 @@ reserve_then_live() {
   pl="$(mktemp -d "$W/ps-l.XXXXXX")"; mk_ps_stub "$pl" "9001:claude:--model claude-opus-5 -n $live load doc"
   : > "$W/err.log"
   run_pf "$slots" "$pl" HIMMEL_FLEET_CAP=4 >/dev/null
+  if [ "$mode" = counted ]; then
+    if grep -q 'FLEET native=1 claudex=0 reserved=1 total=2/4' "$W/err.log" 2>/dev/null; then
+      PASS=$((PASS+1)); echo "ok - ($label) whitespace-name reservation NOT consumed by a first-token match (reserved=1, over-counts to the TTL)"
+    else
+      FAIL=$((FAIL+1)); echo "FAIL - ($label) whitespace-name reservation was consumed by a first-token match"; grep 'FLEET ' "$W/err.log" || true
+    fi
+    check "($label) unconsumed reservation directory stays on disk" 1 "$(count_resv "$slots")"
+    return 0
+  fi
   if grep -q 'FLEET native=1 claudex=0 reserved=0 total=1/4' "$W/err.log" 2>/dev/null; then
     PASS=$((PASS+1)); echo "ok - ($label) live session consumes the reservation (reserved=0, not double-counted)"
   else
@@ -382,7 +396,9 @@ reserve_then_live() {
   fi
   check "($label) consumed reservation directory removed from disk" 0 "$(count_resv "$slots")"
 }
-reserve_then_live "l1 space in name" "HIMMEL-9500-foo bar" "HIMMEL-9500-foo bar"
+# A name with whitespace is a documented over-count, not a fix: the census only
+# exposes the first token, which two different legs can share.
+reserve_then_live "l1 space in name (documented over-count)" "HIMMEL-9500-foo bar" "HIMMEL-9500-foo bar" counted
 reserve_then_live "l2 slash in name (hashed key)" "HIMMEL-9501/x" "HIMMEL-9501/x"
 l3_long="HIMMEL-9502-$(printf 'x%.0s' $(seq 1 300))"
 reserve_then_live "l3 over NAME_MAX (hashed key)" "$l3_long" "$l3_long"
@@ -431,9 +447,10 @@ check "(n) unmatched unexpired reservation with a name file stays on disk" 1 "$(
 
 # --- (o) a first token carried by TWO pending reservations is ambiguous: one
 # live `-n HIMMEL-9507-shared` names neither "HIMMEL-9507-shared a" nor "... b",
-# so it consumes NEITHER by the name-file match — the census may over-count but
-# must never under-count. Stateless, so it must hold on every later preflight
-# too (a consume-one-per-run rule eats the sibling on the second run).
+# so it consumes NEITHER — whitespace names are never consumed by the name-file
+# match; the census may over-count but must never under-count. Stateless, so it
+# must hold on every later preflight too (a consume-one-per-run rule eats the
+# sibling on the second run). Regression for the panel's first-token class.
 slots_o="$(mktemp -d "$W/slots-o.XXXXXX")" || { echo "FAIL - could not create slots-o scratch dir" >&2; exit 1; }
 for sfx in a b; do
   mkdir -p "$slots_o/HIMMEL-9507-shared_$sfx"

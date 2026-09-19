@@ -576,23 +576,6 @@ if [ "$_fleet_admitted" -eq 1 ]; then
   # its owner ever finishes creating it.
   if [ "$_fleet_admitted" -eq 1 ]; then
     _fleet_now=$(date +%s)
-    # HIMMEL-3012: the first whitespace token of every PENDING (valid,
-    # unexpired) reservation — its `name` file, else its directory name — so
-    # the consume check below can tell whether a token is carried by exactly
-    # one reservation.
-    _fleet_pending_tokens=""
-    for _fleet_resv in "$SLOTS"/*/; do
-      [ -d "$_fleet_resv" ] || continue
-      _fleet_resv_name="$(basename "$_fleet_resv")"
-      [ "$_fleet_resv_name" = .admit ] && continue
-      _fleet_resv_expires="$(cat "${_fleet_resv}expires" 2>/dev/null)"
-      case "$_fleet_resv_expires" in ''|*[!0-9]*) continue ;; esac
-      [ "$_fleet_now" -lt "$_fleet_resv_expires" ] || continue
-      _fleet_resv_sname=""
-      [ -f "${_fleet_resv}name" ] && read -r _fleet_resv_sname _fleet_resv_rest <"${_fleet_resv}name" 2>/dev/null
-      _fleet_pending_tokens="$_fleet_pending_tokens
-${_fleet_resv_sname:-$_fleet_resv_name}"
-    done
     for _fleet_resv in "$SLOTS"/*/; do
       [ -d "$_fleet_resv" ] || continue
       _fleet_resv_name="$(basename "$_fleet_resv")"
@@ -617,29 +600,27 @@ ${_fleet_resv_sname:-$_fleet_resv_name}"
       #
       # HIMMEL-3012: matched on the directory name (every reservation, incl.
       # ones written by an older copy of this script that has no `name` file)
-      # OR the first whitespace token of the raw leg name in `name` — the same
-      # tokenization the census applies to a live `-n` value — so a name with
-      # a space, or one hashed into its directory key ('/', a leading '.',
-      # over NAME_MAX), is consumed instead of double-counted until its TTL.
+      # OR the raw leg name in `name`, so a name hashed into its directory key
+      # ('/', a leading '.', over NAME_MAX) is consumed instead of
+      # double-counted until its TTL.
+      # INVARIANT: the census may OVER-count (a launch is refused for at most
+      # the TTL — safe) but must never UNDER-count (admits past the cap). The
+      # census exposes only the FIRST whitespace token of a live `-n` value,
+      # so a name CONTAINING whitespace can never be tied to one live session
+      # by identity — any token rule can consume the reservation of a
+      # different leg that shares the token. Such a reservation is therefore
+      # deliberately NOT consumed by the `name` match (a space-in-name leg
+      # over-counts until its TTL, or its owner releases it). Whitespace-free
+      # names are exact: the live first token IS the whole name.
       # BY DESIGN not matched: arm-resume.sh reserves under the flattened
       # handover path but launches under `-n <TICKET> <name> s<N>`, so its
       # reservation never matches a live session — it is released by that
       # script's EXIT trap (_arm_fleet_release_pending) on every exit instead.
-      # INVARIANT: the census may OVER-count (a launch is refused for at most
-      # the TTL — safe) but must never UNDER-count (admits past the cap). A
-      # name mismatch alone only ever over-counted; matching a first token is
-      # the one path that could under-count, so it is taken only when it is
-      # unambiguous: a `name`-file match consumes ONLY when exactly one
-      # pending reservation carries that token. When two or more share it
-      # ("HIMMEL-1 a" / "HIMMEL-1 b" against one live "HIMMEL-1") the token
-      # names no particular one of them, so none is consumed by it and each
-      # falls back to the exact directory-name match alone — stateless, so
-      # every later preflight decides the same way.
       _fleet_resv_sname=""
-      [ -f "${_fleet_resv}name" ] && read -r _fleet_resv_sname _fleet_resv_rest <"${_fleet_resv}name" 2>/dev/null
+      [ -f "${_fleet_resv}name" ] && IFS= read -r _fleet_resv_sname <"${_fleet_resv}name" 2>/dev/null
+      case "$_fleet_resv_sname" in *[[:space:]]*) _fleet_resv_sname="" ;; esac
       if printf '%s\n' "$_fleet_live_names" | grep -qxF "$_fleet_resv_name" ||
          { [ -n "$_fleet_resv_sname" ] &&
-           [ "$(printf '%s\n' "$_fleet_pending_tokens" | grep -cxF "$_fleet_resv_sname")" -eq 1 ] &&
            printf '%s\n' "$_fleet_live_names" | grep -qxF "$_fleet_resv_sname"; }; then
         rm -rf "$_fleet_resv" 2>/dev/null
         continue
