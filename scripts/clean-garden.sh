@@ -918,7 +918,7 @@ if [ "$NO_PRUNE" -eq 0 ]; then
             continue
         fi
 
-        if git -C "$PRIMARY_WORKTREE" worktree remove "${remove_args[@]}" "$wt" >/dev/null 2>&1; then
+        if git -C "$PRIMARY_WORKTREE" worktree remove ${remove_args[@]+"${remove_args[@]}"} "$wt" >/dev/null 2>&1; then
             if git -C "$PRIMARY_WORKTREE" branch -D "$br" >/dev/null 2>&1; then
                 echo "OK clean-garden: pruned $br ($wt)"
                 PRUNED=$((PRUNED+1))

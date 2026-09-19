@@ -258,7 +258,7 @@ normalize_lexical() {
     esac
   done
   local _out="" _s
-  for _s in "${_stack[@]}"; do
+  for _s in ${_stack[@]+"${_stack[@]}"}; do
     if [ -z "$_out" ]; then _out="$_s"; else _out="$_out/$_s"; fi
   done
   if [ "$_abs" -eq 1 ]; then

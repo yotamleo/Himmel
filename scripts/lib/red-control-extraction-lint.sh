@@ -91,7 +91,7 @@ for r in "${roots[@]}"; do
 done
 
 hits=0
-for f in "${files[@]}"; do
+for f in ${files[@]+"${files[@]}"}; do
     while IFS=: read -r lineno content; do
         [ -n "$lineno" ] || continue
         printf '%s:%s: %s\n' "$f" "$lineno" "$content"

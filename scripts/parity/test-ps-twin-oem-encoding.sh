@@ -179,7 +179,7 @@ PUBLIC_PROJECTION=0
 is_snapshot_preserved() {
   local target="$1" path
   [ "$PUBLIC_PROJECTION" -eq 1 ] || return 1
-  for path in "${SNAPSHOT_PRESERVED_PS1[@]}"; do
+  for path in ${SNAPSHOT_PRESERVED_PS1[@]+"${SNAPSHOT_PRESERVED_PS1[@]}"}; do
     [ "$path" = "$target" ] && return 0
   done
   return 1
@@ -193,10 +193,10 @@ if [ "$PUBLIC_PROJECTION" -eq 0 ] && [ -f "$REPO/scripts/lib/public-clone-paths.
     # shellcheck disable=SC1091
     . "$REPO/scripts/lib/public-clone-paths.sh"
     for path in $SNAPSHOT_PRESERVE; do
-      case "$path" in *.ps1) printf '%s\n' "$path" ;; esac
+      case "$path" in (*.ps1) printf '%s\n' "$path" ;; esac
     done | LC_ALL=C sort
   )"
-  expected_preserve_ps1="$(printf '%s\n' "${SNAPSHOT_PRESERVED_PS1[@]}" | LC_ALL=C sort)"
+  expected_preserve_ps1="$(printf '%s\n' ${SNAPSHOT_PRESERVED_PS1[@]+"${SNAPSHOT_PRESERVED_PS1[@]}"} | LC_ALL=C sort)"
   if [ "$preserve_ps1" != "$expected_preserve_ps1" ]; then
     echo "FAIL: SNAPSHOT_PRESERVED_PS1 differs from the propagator's SNAPSHOT_PRESERVE .ps1 entries -- reconcile the literal list in $0 with scripts/lib/public-clone-paths.sh." >&2
     FAIL=$((FAIL + 1))

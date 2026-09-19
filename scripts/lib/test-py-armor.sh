@@ -63,7 +63,7 @@ run_with_fakes() {  # [VAR=val ...] -- <snippet>
   local envs=()
   while [ "$1" != "--" ]; do envs+=("$1"); shift; done
   shift
-  env "${envs[@]}" PATH="$tmpdir/bin:$PATH" \
+  env ${envs[@]+"${envs[@]}"} PATH="$tmpdir/bin:$PATH" \
     bash -c '. "'"$SCRIPT_DIR"'/py-armor.sh"; '"$1"
 }
 
