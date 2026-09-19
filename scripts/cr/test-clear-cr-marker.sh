@@ -1466,7 +1466,7 @@ for _t in awk date rm sed grep; do
     _min_path="$_min_path:$(dirname "$(command -v "$_t")")"
 done
 if PATH="$_min_path" command -v gh >/dev/null 2>&1; then
-    echo "  SKIP: gh shares a dir with git/node — cannot simulate an absent gh here" >&2
+    echo "SKIP gh shares a dir with git/node — cannot simulate an absent gh here"
 else
     # Resolve bash ABSOLUTELY — under the minimal PATH the interpreter itself
     # would not be found (rc 127), which is not the refusal we are asserting.
