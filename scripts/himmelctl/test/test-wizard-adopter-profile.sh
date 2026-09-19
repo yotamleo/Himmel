@@ -295,6 +295,14 @@ case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) CODEX_INSTALL_HINT='winget install OpenAI.Codex' ;;
   *)                    CODEX_INSTALL_HINT='npm install -g @openai/codex' ;;
 esac
+# HIMMEL-3182: the post-install setup step is per-platform too (adopter-profile.js
+# codex `setup`: win32 = install-himmel-codex.ps1, default = install-himmel-codex.sh;
+# caseQ pins both renderings). U1/U2/V assert the ACTIVE platform's step, so a
+# Windows host is not held to the POSIX script name it correctly never prints.
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) CODEX_SETUP_STEP='install-himmel-codex.ps1' ;;
+  *)                    CODEX_SETUP_STEP='install-himmel-codex.sh' ;;
+esac
 # Negative asserts reject EVERY platform's hint — a foreign-platform leak
 # (winget on Linux) must fail too (CR round 2 [codex-adv-r2-1]).
 CODEX_ANY_HINT_RE='winget install OpenAI[.]Codex|npm install -g @openai/codex'
@@ -1417,11 +1425,11 @@ capture "$sU1" "$hU1" "$fU1" --with-codex
 ep=$(epilogue "$out")
 grepq "$ep" 'config set lanes.codex-exec on' \
   || fail "caseU1: the re-enable command must still be present: $ep"
-grepq "$ep" 'install-himmel-codex.sh' \
+grepq "$ep" -F "$CODEX_SETUP_STEP" \
   || fail "caseU1: a DISABLED lane must keep its setup step: $ep"
 # Ordering: remediation before the setup step it unblocks.
 remediation_line=$(printf '%s' "$ep" | grep -n 'config set lanes.codex-exec on' | head -1 | cut -d: -f1)
-setup_line=$(printf '%s' "$ep" | grep -n 'install-himmel-codex.sh' | tail -1 | cut -d: -f1)
+setup_line=$(printf '%s' "$ep" | grep -nF "$CODEX_SETUP_STEP" | tail -1 | cut -d: -f1)
 [ "$remediation_line" -lt "$setup_line" ] \
   || fail "caseU1: remediation should come BEFORE the setup step: $ep"
 
@@ -1436,7 +1444,7 @@ grepq "$ep" -E 'XX +codex +MISCONFIGURED' \
   || fail "caseU2: forced-on-but-absent should read MISCONFIGURED: $ep"
 grepq "$ep" -F "$CODEX_INSTALL_HINT" \
   || fail "caseU2: the install command must survive: $ep"
-grepq "$ep" 'install-himmel-codex.sh' \
+grepq "$ep" -F "$CODEX_SETUP_STEP" \
   || fail "caseU2: a MISCONFIGURED lane must keep its setup step: $ep"
 echo "ok: caseU overlay remediation preserves the setup note, ordered after the fix"
 
@@ -1460,14 +1468,14 @@ grepq "$ep" -F "$CODEX_INSTALL_HINT" \
   || fail "caseV: the install command must be listed: $ep"
 grepq "$ep" 'config set lanes.codex-exec on' \
   || fail "caseV: the overlay re-enable must ALSO be listed: $ep"
-grepq "$ep" 'install-himmel-codex.sh' \
+grepq "$ep" -F "$CODEX_SETUP_STEP" \
   || fail "caseV: the setup step must survive here too: $ep"
 grepq "$ep" 'DISABLED by scripts/lanes/lanes.local.json' \
   || fail "caseV: the row should say the overlay also blocks it: $ep"
 # Ordering: install, then re-enable, then setup.
 i_install=$(printf '%s' "$ep" | grep -nF "$CODEX_INSTALL_HINT" | head -1 | cut -d: -f1)
 i_enable=$(printf '%s' "$ep" | grep -n 'config set lanes.codex-exec on' | head -1 | cut -d: -f1)
-i_setup=$(printf '%s' "$ep" | grep -n 'install-himmel-codex.sh' | head -1 | cut -d: -f1)
+i_setup=$(printf '%s' "$ep" | grep -nF "$CODEX_SETUP_STEP" | head -1 | cut -d: -f1)
 { [ "$i_install" -lt "$i_enable" ] && [ "$i_enable" -lt "$i_setup" ]; } \
   || fail "caseV: steps must read install -> re-enable -> setup (got $i_install/$i_enable/$i_setup): $ep"
 echo "ok: caseV absent+disabled lists install, overlay re-enable, and setup in order"
@@ -2149,6 +2157,13 @@ console.log(JSON.stringify(require(process.argv[1]).applyWorkspaceTrust()));
 }
 
 # (a) fresh config -> applied:true, and the key ACTUALLY lands in the file.
+# HIMMEL-3182: the key the helper writes derives from node's process.cwd(), which
+# is the PHYSICAL path (macOS mktemp -d lives under the /var -> /private/var
+# symlink, so a logical `pwd` never matches) and, on Windows, cygpath -m form.
+# `pwd -P` (+ cygpath -m where present) is that same derivation; on a Linux host
+# with no symlinked TMPDIR it equals the old `pwd`, so nothing is loosened.
+atKey=$(cd "$atTarget" && pwd -P)
+if command -v cygpath >/dev/null 2>&1; then atKey=$(cygpath -m "$atKey"); fi
 atOut=$(probe_trust "$atCfgOk" "$atTarget") || fail "caseAT2: probe failed against a fresh config"
 grepq "$atOut" '"applied":true' \
   || fail "caseAT2: a fresh config must probe applied:true, got [$atOut]"
@@ -2157,7 +2172,7 @@ grepq "$atOut" '"applied":true' \
 const j = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
 const key = process.argv[2];
 if (!j.projects || !j.projects[key] || j.projects[key].hasTrustDialogAccepted !== true) process.exit(1);
-' "$atCfgOk" "$(cd "$atTarget" && pwd)" \
+' "$atCfgOk" "$atKey" \
   || fail "caseAT2: $atCfgOk does not carry projects[<abs target>].hasTrustDialogAccepted=true"
 
 # (b) an unwritable config dir -> applied:false, install-summary-shaped failure,

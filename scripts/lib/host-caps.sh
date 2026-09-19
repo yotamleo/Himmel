@@ -24,6 +24,9 @@
 #   host_can_deny_write       chmod 555 makes a dir refuse a new file
 #   host_symlinks_real        `ln -s` makes a real link (`-L`), not a copy
 #   host_newline_paths        a directory name may hold a literal newline (NTFS: no)
+#   host_isolated_bash_boots  a bash linked (else copied) into an otherwise EMPTY
+#                             dir starts (MSYS: a copied bash.exe cannot load
+#                             msys-2.0.dll from there -- rc 127)
 #   host_skip <reason...>     print the one stdout line `SKIP <reason> (HIMMEL-3182)`
 #
 # This file sets no shell options and leaves no globals, so it is safe to source
@@ -98,6 +101,17 @@ host_newline_paths() {
     local d rc=0
     d=$(_host_caps_scratch) || return 1
     mkdir "$d"/$'a\nb' 2>/dev/null && [ -d "$d"/$'a\nb' ] || rc=1
+    rm -rf "$d"
+    return $rc
+}
+
+host_isolated_bash_boots() {
+    local d b rc=0
+    d=$(_host_caps_scratch) || return 1
+    b=$(command -v bash) || { rm -rf "$d"; return 1; }
+    # the same ln-then-copy order hermetic-path.sh's link_hermetic_tool uses
+    ln -s "$b" "$d/bash" 2>/dev/null || cp "$b" "$d/bash" 2>/dev/null || rc=1
+    [ "$rc" -eq 0 ] && { env PATH="$d" "$d/bash" -c ':' >/dev/null 2>&1 || rc=1; }
     rm -rf "$d"
     return $rc
 }

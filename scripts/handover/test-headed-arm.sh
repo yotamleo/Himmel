@@ -40,6 +40,18 @@ unset HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER 2>/dev/nul
 # loudly rather than let that happen.
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/headed-arm-test.XXXXXX")" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
 trap 'rm -rf "$tmp"' EXIT
+# HIMMEL-3182: headed-arm.sh mkdirs its claim-lock root `-m 0700` and then
+# validates it (owner, group/world-writable bits), and most cases below (fresh
+# lock root, 0700 readback, chmod 777 refusal) assert exactly that. On a host
+# where a mode does not stick (Git Bash / NTFS) the fresh root is refused (exit
+# 5) before any case's own assertion runs, so the suite SKIPs there -- measured
+# by host_modes_stick, not uname; a Linux host still runs every case.
+# shellcheck source=../lib/host-caps.sh
+. "$HERE/../lib/host-caps.sh"
+if ! host_modes_stick; then
+  host_skip "headed-arm.sh's claim-lock root needs a chmod/mkdir -m 0700 that sticks; this host's modes do not"
+  exit 0
+fi
 fails=0
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 check()        { [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
@@ -867,7 +879,23 @@ rc20=0
 ) || rc20=$?
 stderr20="$(cat "$d20/stderr" 2>/dev/null || true)"
 check "unstampable lock: exit 8, distinct from every other outcome" "$rc20" "8"
-if [ -d "$LOCK20" ]; then
+# HIMMEL-3182: the removal below is `rm -rf` on a mode-000 directory (the lock
+# was mkdir'd under umask 0777). BSD/macOS rm cannot remove one (EACCES), so
+# there the lock is left behind whatever headed-arm.sh does -- probed by making
+# such a directory here and trying, so a host where rm can still asserts it.
+_rm_removes_mode000() {
+  local d rc=0
+  d=$(mktemp -d "${TMPDIR:-/tmp}/headed-arm-rm000.XXXXXX") || return 1
+  ( umask 0777; mkdir "$d/x" ) 2>/dev/null
+  rm -rf "$d/x" 2>/dev/null
+  [ -e "$d/x" ] && { rc=1; chmod 700 "$d/x" 2>/dev/null; }
+  rm -rf "$d"
+  return $rc
+}
+if [ -d "$LOCK20" ] && ! _rm_removes_mode000; then
+  chmod 700 "$LOCK20" 2>/dev/null; rm -rf "$LOCK20"
+  host_skip "unstampable lock: this host's rm -rf cannot remove a mode-000 directory, so the cleanup cannot be asserted"
+elif [ -d "$LOCK20" ]; then
   echo "FAIL - unstampable lock: must be removed, never held as a silent wedge"
   fails=$((fails+1))
 else

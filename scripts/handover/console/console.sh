@@ -585,7 +585,7 @@ _console_mkdir_chain_safe() {
     local target="$1" prefix="$1" p
     local -a missing=()
     while [ ! -e "$prefix" ]; do
-        missing=("$prefix" "${missing[@]}")
+        missing=("$prefix" ${missing[@]+"${missing[@]}"})
         prefix="$(dirname "$prefix")"
         [ "$prefix" = "/" ] && break
     done
@@ -602,7 +602,10 @@ _console_mkdir_chain_safe() {
         err "refusing to use work dir '$target' — its ancestor '$prefix' (or one above it) is unsafe, and appeared after the initial check ran (HIMMEL-2881)"
         exit 3
     fi
-    for p in "${missing[@]}"; do
+    # HIMMEL-3182: `${missing[@]+...}` -- `missing` is empty whenever the work
+    # dir already exists, and bash < 4.4 (macOS 3.2) aborts a bare
+    # "${missing[@]}" of an empty array under `set -u`.
+    for p in ${missing[@]+"${missing[@]}"}; do
         # shellcheck disable=SC2174
         if ! mkdir -m 0700 "$p" 2>/dev/null; then
             if [ -L "$p" ] || [ ! -d "$p" ] || _console_dir_component_unsafe "$p"; then

@@ -141,10 +141,32 @@ else
 fi
 PATH="$REAL_PATH"
 
+# --- MSYS again: `ln -s` "succeeds" by COPYING bash.exe, which then cannot load
+# msys-2.0.dll from a dir that does not hold it (rc 127, "error while loading
+# shared libraries"). Emulated with a `ln` that plants a bash that dies 127 --
+# a copied bash boots fine on Linux, so the failure has to be planted.
+if [ "$POSIX_HOST" -eq 1 ]; then
+    assert_rc "T19 an isolated bash boots on a POSIX host" 0 host_isolated_bash_boots
+else
+    host_skip "T19 isolated-bash boots assertion: this host is not POSIX (a copied bash.exe cannot load msys-2.0.dll)"
+fi
+DEADBASH="$TMP/stubs-deadbash"; mkdir -p "$DEADBASH"
+cat > "$DEADBASH/ln" <<'STUB'
+#!/bin/sh
+# usage: ln -s <src> <dest>: leave a "copy" of bash that cannot start
+printf '#!/bin/sh\nexit 127\n' > "$3"
+chmod +x "$3"
+STUB
+chmod +x "$DEADBASH/ln"
+PATH="$DEADBASH:$REAL_PATH"
+assert_rc "T20 a copied bash that cannot load its runtime: NOT bootable" 1 host_isolated_bash_boots
+PATH="$REAL_PATH"
+
 # --- scratch is always cleaned ----------------------------------------------
 # An unwritable TMPDIR must read as "not capable", never crash the sourcing suite.
 assert_rc "T16 no scratch dir: modes_stick reports incapable" 1 env TMPDIR="$TMP/no/such/dir" bash -c ". '$LIB_DIR/host-caps.sh'; host_modes_stick"
 assert_rc "T17 no scratch dir: symlinks_real reports incapable" 1 env TMPDIR="$TMP/no/such/dir" bash -c ". '$LIB_DIR/host-caps.sh'; host_symlinks_real"
+assert_rc "T21 no scratch dir: isolated_bash_boots reports incapable" 1 env TMPDIR="$TMP/no/such/dir" bash -c ". '$LIB_DIR/host-caps.sh'; host_isolated_bash_boots"
 leftover=0
 for p in "$SCRATCH"/*; do [ -e "$p" ] && leftover=$((leftover + 1)); done
 assert_eq "T18 probes leave no scratch dir behind" "0" "$leftover"

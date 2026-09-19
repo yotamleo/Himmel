@@ -7,6 +7,9 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 RUN="$REPO_ROOT/scripts/lib/run-node.sh"
 [ -f "$RUN" ] || { echo "FAIL: $RUN not found"; exit 1; }
 
+# shellcheck source=host-caps.sh
+. "$REPO_ROOT/scripts/lib/host-caps.sh"
+
 failures=0
 pass() { printf '  PASS  %s\n' "$1"; }
 fail() { printf '  FAIL  %s\n' "$1"; failures=$((failures+1)); }
@@ -299,6 +302,23 @@ EOF
             # both: drop the `sh` launcher and you stop testing the wired
             # shape; drop the direct one and the dash leg is bash in a hat.
             for launcher in "command -p sh" "$sh_cmd"; do
+                # HIMMEL-3182: a candidate shell that cannot run THIS lane at all
+                # (macOS ksh93: `command -p sh` finds no sh, and it has no `local`,
+                # which resolve-node.sh uses) fails on the shell, not on run-node.sh.
+                # Probe the exact capability the lane needs; SKIP loudly when absent.
+                # A dash/busybox/zsh/mksh host passes both probes, so nothing skips there.
+                if [ "$launcher" = "command -p sh" ]; then
+                    _lane_probe='command -p sh -c :'
+                    _lane_need="'command -p sh' to resolve a sh"
+                else
+                    _lane_probe='f() { local _x=1; }; f'
+                    _lane_need="'local' builtin (resolve-node.sh uses it; POSIX leaves it unspecified)"
+                fi
+                # shellcheck disable=SC2086  # deliberate word-split: $sh_cmd is a shell + flags
+                if ! $sh_cmd -c "$_lane_probe" >/dev/null 2>&1; then
+                    host_skip "$sh_cmd + $which copy, $launcher: this shell has no working $_lane_need"
+                    continue
+                fi
                 cmd="$launcher \"$copy\" \"$REPO_ROOT/scripts/hooks/run-hook-with-bash.js\" \"$ptmp/hooks/marker-hook.sh\""
                 # Run from a neutral cwd: when a file is sourced, `dirname $0` is
                 # ".", and a cwd that happened to hold resolve-node.sh would mask a

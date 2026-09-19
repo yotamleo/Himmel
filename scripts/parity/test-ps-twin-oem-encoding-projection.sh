@@ -9,6 +9,19 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 SUITE=scripts/parity/test-ps-twin-oem-encoding.sh
+
+# HIMMEL-3182: every case below runs the guard as `PATH="$TMP/bin" bash ...`,
+# and $TMP/bin's bash is a COPY where `ln -s` is refused (MSYS without the
+# symlink privilege); a copied bash.exe cannot load msys-2.0.dll from there, so
+# each case is rc 127 and fails for that reason, not for the control it names.
+# Probed (not keyed off uname), so a POSIX host runs every control.
+# shellcheck source=../lib/host-caps.sh
+. "$REPO/scripts/lib/host-caps.sh"
+if ! host_isolated_bash_boots; then
+  host_skip "projection controls need a bash that starts under an isolated PATH; a copied bash cannot boot on this host"
+  exit 0
+fi
+
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/oem-projection.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 FAIL=0

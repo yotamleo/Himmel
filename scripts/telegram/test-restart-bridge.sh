@@ -197,6 +197,30 @@ check() {
   if [ "$2" = "$3" ]; then pass "$1"; else fail "$1" "expected '$2', got '$3'"; fi
 }
 
+# HIMMEL-3182: capability probes, so a host that cannot express a case SKIPs it
+# (loudly, with the reason) instead of failing it. Each MEASURES the behaviour the
+# case needs -- never uname / id -u.
+# shellcheck source=../lib/host-caps.sh
+. "$REPO_ROOT/scripts/lib/host-caps.sh"
+hskip() { host_skip "$1 -- $2"; SKIP_COUNT=$((SKIP_COUNT + 1)); }
+# HOST_PS_O: per-pid `ps -o` columns. restart-bridge.sh dates a ledger pid with
+# `ps -o etimes=` / `-o lstart=` and the `run` case reads `ps -o args=`. Git Bash's
+# (Cygwin) ps has no -o at all, so every ledger entry there is undeterminable and
+# the shared-root / recycled-pid cases cannot tell a fresh entry from a stale one.
+HOST_PS_O=0
+_ps_args=$(ps -o args= -p $$ 2>/dev/null) || _ps_args=""
+_ps_et=$(ps -o etimes= -p $$ 2>/dev/null | tr -d '[:space:]') || _ps_et=""
+_ps_ls=$(ps -o lstart= -p $$ 2>/dev/null) || _ps_ls=""
+if [ -n "$_ps_args" ]; then
+  case "$_ps_et" in
+    ''|*[!0-9]*) [ -n "$_ps_ls" ] && HOST_PS_O=1 ;;
+    *) HOST_PS_O=1 ;;
+  esac
+fi
+HOST_CAN_DENY_WRITE=0
+if host_can_deny_write; then HOST_CAN_DENY_WRITE=1; fi
+HOST_PS_O_WHY="this host's ps has no working per-pid '-o' columns (etimes/lstart/args), so a process cannot be dated or its argv read"
+
 # run_with_timeout <secs> <cmd...> — bounds a call to the script under test so
 # a genuine hang never wedges the whole suite. Uses GNU `timeout` when
 # present; otherwise a portable background+poll fallback (never assumes
@@ -507,6 +531,14 @@ mutant_killed_from_stdout() {
 # sweep the other or both poll the same token. Planting BOTH decoy pids is what
 # a real supervisor records. The pidfile is written AFTER the decoy started, so
 # the entry is live, not stale.
+if [ "$HOST_PS_O" -ne 1 ]; then
+  # HIMMEL-3182: without per-pid ps -o the ledger entry's age is undeterminable, so
+  # a live ledger entry cannot be told from a recycled one -- reap the decoy this
+  # case would have stopped, so the next case starts from a clean process table.
+  hskip "shared root: a bridge recorded in OUR live ledger is swept despite a foreign cwd" "$HOST_PS_O_WHY"
+  hskip "RED control (shared root): the sweep assertion is non-vacuous" "$HOST_PS_O_WHY"
+  reap_decoys
+else
 decoy_poller=$(decoy_poller_pid)
 plant_pidfile "$decoy_pid" "$decoy_poller"
 stop_bridge >"$WORK/log-stop-sharedroot.log" 2>&1
@@ -552,6 +584,7 @@ else
   rm -f "$BRIDGE_ROOT/supervisor.pid"
   reap_decoys
 fi
+fi
 
 # ── Case: an UNDETERMINABLE freshness verdict cannot override a foreign cwd ─
 # The degrade exists so a host with neither cwd nor timestamps can still stop
@@ -570,6 +603,13 @@ mkdir -p "$STAT_STUB"
 printf '#!/usr/bin/env bash\nexit 1\n' > "$STAT_STUB/stat"
 chmod +x "$STAT_STUB/stat"
 
+if [ "$HOST_PS_O" -ne 1 ]; then
+  # HIMMEL-3182: the pair's control half ("timestamps readable -> swept") needs a
+  # ps that can date the ledger entry; this host's cannot, so neither half is a
+  # discriminating measurement.
+  hskip "undeterminable freshness: a ledger entry does NOT override a readable, foreign cwd" "$HOST_PS_O_WHY"
+  hskip "undeterminable freshness (control): with timestamps readable, the same decoy IS swept" "$HOST_PS_O_WHY"
+else
 start_decoy
 degrade_seen=$(poll_until "$DECOY_PAT" 2 30)
 check "degrade setup: a fresh decoy is alive" 2 "$degrade_seen"
@@ -602,6 +642,7 @@ fi
 degrade_control_after=$(poll_until "$DECOY_PAT" 0 15)
 check "undeterminable freshness (control): the decoy is gone" 0 "$degrade_control_after"
 rm -f "$BRIDGE_ROOT/supervisor.pid"
+fi
 
 # ── Case: the pidfile mtime is read ONCE per scan, not once per candidate ──
 # The caching half of the read-order fix, and the half that IS observable from
@@ -620,10 +661,18 @@ mkdir -p "$STAT_COUNT_DIR"
 STAT_COUNT_FILE="$WORK/stat-calls.txt"
 REAL_STAT=$(command -v stat)
 if [ -n "$REAL_STAT" ]; then
+  # HIMMEL-3182: count only the calls that SUCCEED. pidfile_mtime tries GNU
+  # `stat -c %Y` first and falls back to BSD `stat -f %m`; on a BSD host the GNU
+  # try fails (rc 1) before the read that works, so counting every invocation
+  # reported 2 for one scan. A failed try reads nothing, so it is not a read.
+  # ponytail: static-only for macOS -- no BSD stat/bash 3.2 here; Linux (GNU stat
+  # succeeds first try, so the count is unchanged) is the run evidence.
   cat > "$STAT_COUNT_DIR/stat" <<EOF
 #!/usr/bin/env bash
-printf 'call\n' >> "$STAT_COUNT_FILE"
-exec "$REAL_STAT" "\$@"
+"$REAL_STAT" "\$@"
+rc=\$?
+if [ "\$rc" -eq 0 ]; then printf 'call\n' >> "$STAT_COUNT_FILE"; fi
+exit "\$rc"
 EOF
   chmod +x "$STAT_COUNT_DIR/stat"
 
@@ -654,7 +703,14 @@ check "recycled-pid setup: a fresh decoy is alive" 2 "$recycled_seen"
 start_bridge >"$WORK/log-start-recycled.log" 2>&1
 poll_until "$POLLER_PAT" 1 30 >/dev/null
 plant_pidfile "$decoy_pid"
-if age_pidfile 300; then
+if [ "$HOST_PS_O" -ne 1 ]; then
+  # HIMMEL-3182: a recycled pid is told from a live one by the process's start
+  # time (ps -o etimes/lstart) vs the ledger's mtime; with no per-pid ps -o the
+  # two entries read the same, and the case (and its RED control) cannot tell them apart.
+  hskip "recycled pid: a ledger entry whose process started AFTER the pidfile survives" "$HOST_PS_O_WHY"
+  hskip "RED control (recycled pid): the staleness assertion is non-vacuous" "$HOST_PS_O_WHY"
+  stop_bridge >"$WORK/log-stop-recycled.log" 2>&1
+elif age_pidfile 300; then
   stop_bridge >"$WORK/log-stop-recycled.log" 2>&1
   if grep -q "stop: killed 2 bridge process(es)" "$WORK/log-stop-recycled.log"; then
     pass "recycled pid: our own bridge is still swept in the same call"
@@ -721,6 +777,14 @@ sed 's|^\( *\)\[ "\$cwd" = "\$BRIDGE_DIR_REAL" \]$|\1true|' "$SCRIPT" > "$MUTANT
 if cmp -s "$SCRIPT" "$MUTANT"; then
   fail "RED control (foreign bridge): the mutation actually applies" \
     "sed changed nothing — the ownership line '[ \"\$cwd\" = \"\$BRIDGE_DIR_REAL\" ]' was not found in $SCRIPT. A no-op mutant is a BROKEN control, not evidence."
+elif [ "$(env PATH="$PS_FENCE:$PATH" ps -ef 2>/dev/null | grep -F -- "$DECOY_PAT" | grep -vc grep)" -lt 2 ]; then
+  # HIMMEL-3182: the fenced `ps -ef` passes through only lines that spell $WORK/;
+  # on a host whose ps prints the decoy's command line in another form (Git Bash:
+  # a Windows path) the mutant sees NO candidates and "killed=0" -- the value the
+  # unmutated script also gives -- so the control could never go red. That is the
+  # fence, not the assertion; SKIP rather than report a vacuous control.
+  hskip "RED control (foreign bridge): the survival assertion is non-vacuous" \
+    "the ps fence does not pass this host's spelling of the decoy's command line through, so a mutant sees no candidates and the control cannot go red"
 else
   pass "RED control (foreign bridge): the mutation actually applies"
   red_control_run --env PATH="$PS_FENCE:$PATH" -- bash "$MUTANT" --repo "$FIXTURE_REPO" stop
@@ -880,6 +944,17 @@ case "$run_args" in
   *"$FAKE_BIN/bun"*supervisor.ts*)
     pass "run: the launcher process BECOMES the supervisor (exec preserves the pid — the MAINPID contract)"
     ;;
+  '')
+    # HIMMEL-3182: an EMPTY read is only a failure on a host whose ps can read a
+    # pid's args at all; a ps with no `-o` (Git Bash) can never say what pid
+    # $run_pid became, so the pid-identity assertion cannot be made there.
+    if [ "$HOST_PS_O" -ne 1 ]; then
+      hskip "run: the launcher process BECOMES the supervisor (exec preserves the pid — the MAINPID contract)" "$HOST_PS_O_WHY"
+    else
+      fail "run: the launcher process BECOMES the supervisor (exec preserves the pid — the MAINPID contract)" \
+        "pid $run_pid args=''; log: $(tr '\n' '|' < "$WORK/log-run.log")"
+    fi
+    ;;
   *)
     fail "run: the launcher process BECOMES the supervisor (exec preserves the pid — the MAINPID contract)" \
       "pid $run_pid args='$run_args'; log: $(tr '\n' '|' < "$WORK/log-run.log")"
@@ -897,7 +972,12 @@ if [ -d "/proc/$run_pid/fd" ]; then
     pass "run: the lock fd 200 is not leaked into the exec'd supervisor"
   fi
 elif command -v lsof >/dev/null 2>&1; then
-  if [ -n "$(lsof -p "$run_pid" -d 200 -Fn 2>/dev/null)" ]; then
+  # HIMMEL-3182: `-a` ANDs the selectors. Without it lsof ORs `-p` and `-d`, so
+  # it lists EVERY fd of the pid plus every process's fd 200 -- always non-empty
+  # on macOS, a false "leaked".
+  # ponytail: static-only -- the /proc branch above is what runs on Linux, so this
+  # lsof branch has no local run evidence; the macOS nightly is the proof.
+  if [ -n "$(lsof -a -p "$run_pid" -d 200 -Fn 2>/dev/null)" ]; then
     fail "run: the lock fd 200 is not leaked into the exec'd supervisor" "lsof still reports fd 200 open on pid $run_pid"
   else
     pass "run: the lock fd 200 is not leaked into the exec'd supervisor"
@@ -1631,6 +1711,14 @@ fi
 if PATH="$NOBUN_BIN" command -v bun >/dev/null 2>&1; then
   NOBUN_OK=0
 fi
+# HIMMEL-3182: the bash in that dir must actually START from there. Git Bash's
+# `ln -s` COPIES, and a copied bash.exe cannot load msys-2.0.dll once it is off
+# the real bin dir (rc 127), so every `env PATH="$NOBUN_BIN" bash ...` below dies
+# before restart-bridge.sh runs -- the cases would then assert on a launcher that
+# never started. Measured, not keyed off the OS.
+if [ "$NOBUN_OK" -eq 1 ] && ! env PATH="$NOBUN_BIN" "$NOBUN_BIN/bash" -c ':' >/dev/null 2>&1; then
+  NOBUN_OK=0
+fi
 
 if [ "$NOBUN_OK" -eq 1 ]; then
   nobun_marker_before=""
@@ -1662,9 +1750,9 @@ if [ "$NOBUN_OK" -eq 1 ]; then
   fi
 else
   skip "RETASK: a start failing at bun resolution exits non-zero" \
-    "could not build a bun-less PATH on this host (either 'bash' itself could not be resolved to symlink, or a real 'bun' is STILL found even on the curated command set — cannot exercise this ordering guarantee reliably)"
+    "could not build a bun-less PATH on this host (either 'bash' itself could not be resolved to symlink, or the linked/copied bash does not start from an otherwise empty dir, or a real 'bun' is STILL found even on the curated command set — cannot exercise this ordering guarantee reliably)"
   skip "RETASK: a start failing at bun resolution leaves no marker file" \
-    "could not build a bun-less PATH on this host (either 'bash' itself could not be resolved to symlink, or a real 'bun' is STILL found even on the curated command set — cannot exercise this ordering guarantee reliably)"
+    "could not build a bun-less PATH on this host (either 'bash' itself could not be resolved to symlink, or the linked/copied bash does not start from an otherwise empty dir, or a real 'bun' is STILL found even on the curated command set — cannot exercise this ordering guarantee reliably)"
 fi
 
 # ── RETASK 02H-G9-9c4e21-impl (2/2): a launcher REFUSED with rc=4 does not ──
@@ -1721,7 +1809,10 @@ fi
 # Gated on NOT running as root: root bypasses ordinary permission checks, so
 # the directory would stay effectively writable regardless of its mode bits,
 # defeating this fixture — SKIP rather than silently no-op in that case.
-if [ "$(id -u)" -ne 0 ]; then
+# HIMMEL-3182: gated on the MEASURED behaviour (host_can_deny_write: `chmod 555`
+# really makes a directory refuse a new file), not on `id -u` -- that also covers
+# Git Bash/NTFS, where chmod is a no-op for a non-root user.
+if [ "$HOST_CAN_DENY_WRITE" -eq 1 ]; then
   stop_bridge >"$WORK/log-warn-pre-stop.log" 2>&1
   poll_until "$POLLER_PAT" 0 30 >/dev/null
   poll_until "$SUPERVISOR_PAT" 0 10 >/dev/null
@@ -1762,12 +1853,12 @@ if [ "$(id -u)" -ne 0 ]; then
   poll_until "$POLLER_PAT" 0 30 >/dev/null
   poll_until "$SUPERVISOR_PAT" 0 10 >/dev/null
 else
-  skip "marker-write failure: the launch still succeeds (rc=0) despite an unwritable bridge root" \
-    "running as root — a chmod-based unwritable-directory check is defeated by root bypassing permission checks"
-  skip "marker-write failure: a named WARNING fires, naming both the marker path and the concrete handoff-disabled consequence" \
-    "see the root skip above"
-  skip "marker-write failure: the bridge itself still launches normally (one poller)" "see the root skip above"
-  skip "marker-write failure: no marker file was actually created" "see the root skip above"
+  hskip "marker-write failure: the launch still succeeds (rc=0) despite an unwritable bridge root" \
+    "chmod 555 does not make a directory refuse a new file for this user on this host (root, or a filesystem that ignores mode bits), so an unwritable bridge root cannot be built"
+  hskip "marker-write failure: a named WARNING fires, naming both the marker path and the concrete handoff-disabled consequence" \
+    "see the chmod skip above"
+  hskip "marker-write failure: the bridge itself still launches normally (one poller)" "see the chmod skip above"
+  hskip "marker-write failure: no marker file was actually created" "see the chmod skip above"
 fi
 
 # ── CR round 6 [codex-1]: a marker-REMOVE FAILURE also degrades LOUDLY ────
@@ -1790,7 +1881,8 @@ fi
 # the `rm -f` inside prune_launch_marker is exercised — write_launch_marker's
 # later overwrite of that same file, once the launch proceeds, still
 # succeeds independently, which is confirmed below rather than assumed.
-if [ "$(id -u)" -ne 0 ]; then
+# HIMMEL-3182: gated on the measured host_can_deny_write, as the round-1 case above.
+if [ "$HOST_CAN_DENY_WRITE" -eq 1 ]; then
   stop_bridge >"$WORK/log-warn2-pre-stop.log" 2>&1
   poll_until "$POLLER_PAT" 0 30 >/dev/null
   poll_until "$SUPERVISOR_PAT" 0 10 >/dev/null
@@ -1854,12 +1946,12 @@ if [ "$(id -u)" -ne 0 ]; then
     skip "marker-remove failure: write_launch_marker's later overwrite of the same file still succeeds" "see the setup skip above"
   fi
 else
-  skip "marker-remove failure: the launch still succeeds (rc=0) despite an unwritable bridge root" \
-    "running as root — a chmod-based unwritable-directory check is defeated by root bypassing permission checks"
-  skip "marker-remove failure: a named WARNING fires, naming the marker path and that it will be retried" \
-    "see the root skip above"
-  skip "marker-remove failure: the bridge itself still launches normally (one poller)" "see the root skip above"
-  skip "marker-remove failure: write_launch_marker's later overwrite of the same file still succeeds" "see the root skip above"
+  hskip "marker-remove failure: the launch still succeeds (rc=0) despite an unwritable bridge root" \
+    "chmod 555 does not make a directory refuse a new file for this user on this host (root, or a filesystem that ignores mode bits), so an unwritable bridge root cannot be built"
+  hskip "marker-remove failure: a named WARNING fires, naming the marker path and that it will be retried" \
+    "see the chmod skip above"
+  hskip "marker-remove failure: the bridge itself still launches normally (one poller)" "see the chmod skip above"
+  hskip "marker-remove failure: write_launch_marker's later overwrite of the same file still succeeds" "see the chmod skip above"
 fi
 
 # ── HIMMEL-2582: the PATH fallback finds bun under $HOME/.bun/bin ─────────

@@ -105,6 +105,18 @@ for _excluded in claude pre-commit bun crontab schtasks systemctl; do
     fi
 done
 
+# HIMMEL-3182: every case below runs `PATH=...:$HBIN bash "$CLI"`, and $HBIN's
+# bash is a COPY where `ln -s` is refused (MSYS without the symlink privilege);
+# a copied bash.exe cannot load msys-2.0.dll from $HBIN, so each of those runs
+# is rc 127 and every case fails for that reason, not for the one it names.
+# Probed (not keyed off uname), so a Linux host runs the whole suite.
+# shellcheck source=lib/host-caps.sh
+. "$(dirname "$CLI")/lib/host-caps.sh"
+if ! host_isolated_bash_boots; then
+    host_skip "uninstall.sh cases need a bash that starts under the hermetic PATH; a copied bash cannot boot on this host"
+    exit "$((FAILED > 0 ? 1 : 0))"
+fi
+
 # Redirect the [6/8] settings-unwire target away from the operator's REAL
 # ~/.claude/settings.json for the whole suite (HIMMEL-460). The dedicated SC6
 # cases re-seed this file per-test; the others simply never touch the real one.

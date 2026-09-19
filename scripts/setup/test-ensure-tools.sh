@@ -46,6 +46,19 @@ RED_CONTROL_TMPDIR="$td"
 # shellcheck source=../lib/red-control.sh
 # shellcheck disable=SC1091
 . "$here/../lib/red-control.sh"
+# shellcheck source=../lib/host-caps.sh
+# shellcheck disable=SC1091
+. "$here/../lib/host-caps.sh"
+
+# HIMMEL-3182: mk_fixture links each utility into an otherwise-empty bin dir,
+# and where `ln -s` is refused (MSYS without the symlink privilege) that is a
+# COPY -- a copied .exe cannot load its runtime DLLs from there (rc 127). The
+# probe MEASURES exactly that with bash; the awk that _ensure_pm_candidate
+# parses apt-cache's Candidate: line with is the same class of copied binary,
+# so on such a host the "candidate present" cases (C1, C3c, C5b) read every
+# probe as "no candidate", and the RED control cannot start its bash at all.
+# Those cases SKIP there; a POSIX host (real links) runs them all.
+HOST_ISOLATED_BASH=0; host_isolated_bash_boots && HOST_ISOLATED_BASH=1
 
 # ---------------------------------------------------------------------------
 # Fixture: a PATH with ONLY the utilities ensure-tools.sh touches, so a tool
@@ -178,6 +191,7 @@ FALSE_CLAIM="no known apt-get package"
 # C1 -- apt-get HAS a candidate for gh: it is installed through the same
 # privileged path unzip/shellcheck/gitleaks already use, exactly once.
 # ===========================================================================
+if [ "$HOST_ISOLATED_BASH" = 1 ]; then
 fx="$td/c1"; mk_fixture "$fx"; mk_apt_cache "$fx" "2.45.0-1ubuntu0.3"; mk_apt_get "$fx" 0
 out=$( PATH="$fx/bin" ensure_tools gh 2>&1 )
 check "C1 gh installed when apt-get has a candidate" "$(installed_in "$fx" gh)" "yes"
@@ -185,6 +199,9 @@ check "C1 exactly one apt-get install call"          "$(count_calls "$fx" '^apt-
 check "C1 the manager was actually asked"            "$(count_calls "$fx" '^apt-cache policy gh')" "1"
 check "C1 announces the install"                     "$(has "installing 'gh' via apt-get" "$out")" "yes"
 check "C1 no false no-known-package claim"           "$(has "$FALSE_CLAIM" "$out")" "no"
+else
+    host_skip "C1 candidate-present install: a copied awk/bash cannot start in the isolated fixture bin on this host"
+fi
 
 # ===========================================================================
 # C2 -- apt-get has NO candidate: the message says the manager was asked and
@@ -240,12 +257,16 @@ check "C3b no false no-known-package claim"     "$(has "$FALSE_CLAIM" "$out")" "
 # translated -- gh installs the same as C1 even under a fully German
 # LC_ALL/LANG/LANGUAGE environment.
 # ===========================================================================
+if [ "$HOST_ISOLATED_BASH" = 1 ]; then
 fx="$td/c3c"; mk_fixture "$fx"; mk_apt_cache_localized "$fx" "2.45.0-1ubuntu0.3"; mk_apt_get "$fx" 0
 out=$( PATH="$fx/bin" LC_ALL=de_DE.UTF-8 LANG=de_DE.UTF-8 LANGUAGE=de_DE.UTF-8 ensure_tools gh 2>&1 )
 check "C3c gh installed under a localized apt-cache" "$(installed_in "$fx" gh)" "yes"
 check "C3c exactly one apt-get install call"          "$(count_calls "$fx" '^apt-get install')" "1"
 check "C3c no false no-known-package claim"           "$(has "$FALSE_CLAIM" "$out")" "no"
 check "C3c no false has-no-candidate claim"           "$(has "has no candidate for 'gh'" "$out")" "no"
+else
+    host_skip "C3c localized apt-cache: a copied awk/bash cannot start in the isolated fixture bin on this host"
+fi
 
 # ===========================================================================
 # C4 -- an already-mapped tool is UNCHANGED: shellcheck installs straight
@@ -268,10 +289,14 @@ check "C5 gitleaks keeps its tarball hint"            "$(has "official release t
 
 # C5b -- a PROBED tool whose install fails keeps the manual route we already
 # know, instead of degrading to a bare "install it manually."
+if [ "$HOST_ISOLATED_BASH" = 1 ]; then
 fx="$td/c5b"; mk_fixture "$fx"; mk_apt_cache "$fx" "2.45.0-1ubuntu0.3"; mk_apt_get "$fx" 1
 out=$( PATH="$fx/bin" ensure_tools gh 2>&1 )
 check "C5b gh install failure is reported"  "$(has "'apt-get install gh' failed" "$out")" "yes"
 check "C5b gh failure still names the route" "$(has "cli.github.com" "$out")" "yes"
+else
+    host_skip "C5b probed-tool install failure: a copied awk/bash cannot start in the isolated fixture bin on this host"
+fi
 
 # ===========================================================================
 # C6 -- node is DELIBERATELY left to a bespoke installer: say so, do not probe,
@@ -350,7 +375,10 @@ check "C10 no false no-known-package claim" "$(has "$FALSE_CLAIM" "$out")" "no"
 # ===========================================================================
 mutant="$td/ensure-tools-mutant.sh"
 sed 's/^_ensure_pm_candidate() {$/_ensure_pm_candidate() { return 1;/' "$ensure" > "$mutant"
-if ! grep -Fq '_ensure_pm_candidate() { return 1;' "$mutant"; then
+if [ "$HOST_ISOLATED_BASH" != 1 ]; then
+    # the control runs the mutant under `$fx/bin/bash`, a copy that cannot start here (C1 is skipped for the same reason)
+    host_skip "C1 RED control: a copied bash cannot start in the isolated fixture bin on this host"
+elif ! grep -Fq '_ensure_pm_candidate() { return 1;' "$mutant"; then
     echo "FAIL - RED control broken: the mutation did not apply (has _ensure_pm_candidate been renamed?)"
     fails=$((fails + 1))
 else

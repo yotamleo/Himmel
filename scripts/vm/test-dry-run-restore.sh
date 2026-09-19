@@ -133,6 +133,23 @@ exit 0
 VBOXEOF
 chmod +x "$FAKE_VBOXMANAGE"
 
+# HIMMEL-3182: scripts/lib/vbox.py runs VBoxManage through python's
+# subprocess. A native-Windows CPython (Git Bash on a runner) cannot exec the
+# fake's `#!` script (WinError 193 "not a valid Win32 application"), so every
+# case that reaches VBoxManage fails on the fixture, not on dry-run-restore.sh.
+# Probe the exact call vbox.py makes; SKIP the suite loudly when it cannot run.
+# (macOS: the vm-lock.sh `declare -A` that broke T1-T8 there was removed by
+# HIMMEL-3176 -- no probe is needed for it, and adding one would SKIP a suite
+# that now runs.)
+if ! env FAKE_VBOX_STATE="$WORK/probe-state" "$PYTHON_BIN" -c \
+    'import subprocess, sys; subprocess.run([sys.argv[1], "list", "vms"], capture_output=True, check=True)' \
+    "$FAKE_VBOXMANAGE" >/dev/null 2>&1; then
+    # shellcheck source=../lib/host-caps.sh
+    . "$REPO_ROOT/scripts/lib/host-caps.sh"
+    host_skip "test-dry-run-restore: this host's python cannot exec the fake VBoxManage (a #! script -- native-Windows CPython fails with WinError 193), so no case can reach VBoxManage (cases T1-T8 not run)"
+    exit 0
+fi
+
 # start_ssh_banner_listener <port> — same trick as test-after-report.sh:
 # redirect stdout/stderr on the backgrounded listener itself, or the
 # `$(...)` capturing its pid never sees EOF and hangs forever.
