@@ -288,7 +288,7 @@ assert_rc "bypass MCP_JIRA_OK=1" 0 "$rc"
 
 # Bypass must produce ZERO stderr.
 stderr_bytes=$(printf '%s' '{"tool_name":"mcp__plugin_atlassian_atlassian__getJiraIssue","tool_input":{}}' \
-    | env "JIRA_CLI=$STUB_FULL" MCP_JIRA_OK=1 bash "$HOOK" 2>&1 >/dev/null | wc -c)
+    | env "JIRA_CLI=$STUB_FULL" MCP_JIRA_OK=1 bash "$HOOK" 2>&1 >/dev/null | wc -c | tr -d ' ')
 assert_rc "bypass silent stderr" 0 "$stderr_bytes"
 
 # --- Edge cases ---

@@ -195,7 +195,7 @@ assert_rc "T7c new file in new subdir inside a worktree allows" 0 \
 # T8: bypass on a main repo → ALLOW, and T8b: with zero stderr.
 assert_rc "T8 bypass allows" 0 "$(rc_of "$SANDBOX/mainrepo/src/foo.js" EDIT_ON_MAIN_OK=1)"
 stderr_bytes=$(printf '%s' "{\"tool_input\":{\"file_path\":\"$SANDBOX/mainrepo/src/foo.js\"}}" \
-    | env EDIT_ON_MAIN_OK=1 bash "$HOOK" 2>&1 >/dev/null | wc -c)
+    | env EDIT_ON_MAIN_OK=1 bash "$HOOK" 2>&1 >/dev/null | wc -c | tr -d ' ')
 assert_rc "T8b bypass silent stderr" 0 "$stderr_bytes"
 
 # T9: NotebookEdit uses notebook_path → BLOCK on main.
