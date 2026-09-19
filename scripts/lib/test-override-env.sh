@@ -119,6 +119,29 @@ else
   else
     fail "JS env read not caught: [$jsout]"
   fi
+  # JS bracket shapes: process.env["NAME_OK"] / process.env['NAME_OK'] (HIMMEL-3211)
+  printf 'if (process.env["JS_BRACKET_OK"]) process.exit(0);\n' > "$sb5/hook-bracket-dq.js"
+  printf "if (process.env['JS_BRACKET_SQ_OK']) process.exit(0);\n" > "$sb5/hook-bracket-sq.js"
+  dqout=$(override_env_undeclared "$sb5/hook-bracket-dq.js")
+  sqout=$(override_env_undeclared "$sb5/hook-bracket-sq.js")
+  if [ "$dqout" = "JS_BRACKET_OK" ]; then
+    pass "process.env[\"JS_BRACKET_OK\"] read caught"
+  else
+    fail "double-quoted bracket read not caught: [$dqout]"
+  fi
+  if [ "$sqout" = "JS_BRACKET_SQ_OK" ]; then
+    pass "process.env['JS_BRACKET_SQ_OK'] read caught"
+  else
+    fail "single-quoted bracket read not caught: [$sqout]"
+  fi
+  # Control: a dynamic read names no literal variable, so nothing to report.
+  printf 'const v = process.env[name];\n' > "$sb5/hook-bracket-dyn.js"
+  dynout=$(override_env_undeclared "$sb5/hook-bracket-dyn.js")
+  if [ -z "$dynout" ]; then
+    pass "dynamic process.env[name] read not reported"
+  else
+    fail "dynamic bracket read wrongly reported: [$dynout]"
+  fi
   rm -rf "$sb5"
 fi
 

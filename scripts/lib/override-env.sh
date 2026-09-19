@@ -64,15 +64,16 @@ scrub_override_env() {
 }
 
 # override_env_undeclared <file>... -- print (sorted, unique) every shell expansion or
-# JS process-env read of an _OK name in the given files that is in neither the override
+# JS process-env read (dot or quoted-bracket notation) of an _OK name in the given
+# files that is in neither the override
 # list nor the internal-flag exemptions. Empty output = the list is complete for
 # those files. Reads only; safe to run anywhere.
 override_env_undeclared() {
   local _f _v
   for _f in "$@"; do
     [ -f "$_f" ] || continue
-    grep -ohE '(\$\{?|env\.)[A-Z][A-Z0-9_]*_OK([^A-Za-z0-9_]|$)' "$_f" 2>/dev/null
-  done | sed -E 's/^\$\{?//; s/^env\.//; s/[^A-Za-z0-9_]$//' | sort -u | while IFS= read -r _v; do
+    grep -ohE '(\$\{?|env\.|env\[["'"'"'])[A-Z][A-Z0-9_]*_OK([^A-Za-z0-9_]|$)' "$_f" 2>/dev/null
+  done | sed -E 's/^(\$\{?|env\.|env\[.)//; s/[^A-Za-z0-9_]$//' | sort -u | while IFS= read -r _v; do
     case " $HIMMEL_OVERRIDE_ENV_OK_VARS $HIMMEL_OVERRIDE_ENV_MARKERS $HIMMEL_OVERRIDE_ENV_INTERNAL " in
       *[[:space:]]"$_v"[[:space:]]*) ;;
       *) printf '%s\n' "$_v" ;;
