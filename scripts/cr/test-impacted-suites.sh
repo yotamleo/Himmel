@@ -195,6 +195,26 @@ if [ "$rc" -eq 2 ] && [ -z "$out" ]; then pass "a failing sort -> rc2, empty std
 err="$( cd "$FX" && PATH="$SHIM2:$PATH" bash "$IS" "$range" --shell 2>&1 >/dev/null )"
 if grepq "$err" 'sorting the impacted list failed'; then pass "the failed step is named on stderr"; else fail "sort failure not named: $err"; fi
 
+# --- 15. a suite path containing spaces can receive a verdict (HIMMEL-3243) --
+# The verdict path is everything between "SUITE " and the FIRST " = ", so a
+# spaced path is accepted; a " = " inside the reason must not move the split.
+mkf scripts/uniq-gadget.sh
+mkf 'scripts/test-with space.sh' 'bash "$d/uniq-gadget.sh"'
+mkf 'scripts/test-a=b.sh' 'bash "$d/uniq-gadget.sh"'
+git -C "$FX" add -A
+git -C "$FX" commit -q -m "chore: add gadget + spaced suites"
+change scripts/uniq-gadget.sh
+out="$(run_is "$range" --shell)"
+if [ "$out" = "$(printf 'scripts/test-a=b.sh\nscripts/test-with space.sh')" ]; then pass "spaced suite paths are listed verbatim"; else fail "spaced suite paths not listed: $out"; fi
+SP1='SUITE scripts/test-with space.sh = PASS'
+SP2='SUITE scripts/test-a=b.sh = SKIP no gadget = here'
+( cd "$FX" && printf '%s\n%s\n' "$SP1" "$SP2" | bash "$IS" --check "$range" >/dev/null 2>&1 ); rc=$?
+if [ "$rc" -eq 0 ]; then pass "verdicts for spaced/'='-bearing suite paths -> clean (rc0)"; else fail "spaced-path verdicts refused: rc=$rc"; fi
+( cd "$FX" && printf '%s\n' "$SP2" | bash "$IS" --check "$range" >/dev/null 2>&1 ); rc=$?
+if [ "$rc" -eq 1 ]; then pass "a spaced suite without its own verdict stays missing (rc1)"; else fail "missing spaced verdict passed: rc=$rc"; fi
+( cd "$FX" && printf '%s\n%s\n' "$SP1" 'SUITE scripts/test-a=b.sh = SKIP' | bash "$IS" --check "$range" >/dev/null 2>&1 ); rc=$?
+if [ "$rc" -eq 1 ]; then pass "a reasonless SKIP on a spaced-path row is still no verdict (rc1)"; else fail "reasonless SKIP accepted on spaced path: rc=$rc"; fi
+
 echo
 if [ "$failures" -eq 0 ]; then echo "OK: all cases passed"; exit 0; fi
 echo "FAIL: $failures case(s) failed"

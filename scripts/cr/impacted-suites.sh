@@ -193,11 +193,21 @@ have="$work/have"
 blocked_raw="$work/blocked.raw"
 : > "$blocked_raw"
 awk -v blockedf="$blocked_raw" '
-    /^SUITE +[^ ]+ += +(PASS|SKIP|BLOCKED)( +.*)?$/ {
-        path = $2
-        verdict = $4
-        reason = $0
-        sub(/^SUITE +[^ ]+ += +(PASS|SKIP|BLOCKED) */, "", reason)
+    # The path is everything between "SUITE " and the FIRST " = " (a suite path
+    # may contain spaces); the verdict word and reason rules follow it.
+    /^SUITE +/ {
+        i = index($0, " = ")
+        if (i == 0) next
+        path = substr($0, 1, i - 1)
+        sub(/^SUITE +/, "", path)
+        sub(/ +$/, "", path)
+        rest = substr($0, i + 3)
+        sub(/^ +/, "", rest)
+        if (path == "" || rest !~ /^(PASS|SKIP|BLOCKED)( +.*)?$/) next
+        verdict = rest
+        sub(/[ ].*$/, "", verdict)
+        reason = rest
+        sub(/^(PASS|SKIP|BLOCKED) */, "", reason)
         if (verdict == "PASS" || reason ~ /[^ \t\r]/) {
             print path
             if (verdict == "BLOCKED") print path > blockedf
