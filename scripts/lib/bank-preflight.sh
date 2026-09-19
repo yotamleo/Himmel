@@ -213,35 +213,42 @@ _fleet_admit_hook() { # _fleet_admit_hook <point> <path>
 # on a successor's state. The fence is a uniquely named directory the holder
 # creates INSIDE the gate it took, and every destructive rename a holder does
 # targets a path THROUGH it (`mv "$admit" "$fence/victim"`). Breaking a gate
-# first deletes its fences IN PLACE, then renames the gate away, and nothing
-# ever puts a fence back (a break's restore copies only `acquired`/`pid`), so
-# the rename itself is the fence check: it fails with ENOENT once the gate is
-# not ours — no userspace check-then-act gap for a pause to land in. The
-# in-place delete is what covers a rename that resolved the fence BEFORE the
-# break: the fence dies while the gate NAME is still held, so no successor can
-# exist yet, and rename(2) locks its destination parent — it either completes
-# first (moving the stale admit the breaker is replacing; nothing fresh can
-# exist while the name is held) or finds the fence dead and fails ENOENT
-# (Linux; probed via renameat into a removed dirfd). Moving the gate away with
-# its fences alive would NOT do: the name is re-takeable from that `mv` until
-# the broken copy's `rm -rf`, and a successor that steals and claims in that
-# window would have its live admit moved by the pre-resolved rename.
+# renames it away to a private victim path, and nothing ever puts a fence back
+# (a break's restore copies only `acquired`/`pid`), so the rename itself is the
+# fence check: resolved by name it fails with ENOENT once the gate is not ours
+# — no userspace check-then-act gap for a pause to land in. What is left is a
+# rename that resolved its fence BEFORE the break (a pre-resolved rename): its
+# fence is still alive inside the victim, and from the break's `mv` the gate
+# name is re-takeable. So every holder, before it may hold, deletes every
+# `.broken.` victim of its gate — killing those fences — and refuses if any
+# survives (HIMMEL-3232). No successor can steal or claim before that, and
+# rename(2) locks its destination parent: it either completes before the
+# delete (moving the stale admit its holder verified; no successor has touched
+# the admit yet) or finds the fence dead and fails ENOENT (Linux; probed via
+# renameat into a removed dirfd). The break has ONE step that resolves the
+# gate by name (the `mv`); everything after it acts on the private victim, so
+# a breaker paused anywhere cannot act on two gate generations — a `mv` that
+# moved a younger generation than the one it aged out is caught by the stamp
+# re-read, and its fences die by the same successor-side delete. This replaces
+# HIMMEL-3210's in-place fence kill (panel R2): that kill held the name while
+# the fences died, but it resolved the gate by name in three steps, and a
+# double pause spread them over two generations. The trade: the fence kill
+# moved from the breaker to the next holder, which also sweeps a crashed
+# breaker's victim, and an undeletable victim refuses every take (fail-closed,
+# HIMMEL-3223) until it is removed.
 # That is why this is a
 # fence-by-path, not a generation number re-read before the mv: a re-read is
 # still followed by a separate mv, and the pause can land between them.
 # The one gap left is creating the fence itself: a holder paused between its
 # `mkdir "$gate"` and its `mkdir "$fence"` can resume after its gate was broken
-# and drop its fence into a SUCCESSOR's gate, or into the doomed gate after the
-# breaker's fence delete. Hence the sole-fence check: after creating its fence
-# each actor lists the gate, and holds only if its own fence is the only one
-# there AND the gate carries no `revoked` marker. Two actors in one gate each
-# create-then-list, so the one that creates second always sees both — at most
-# one ever passes (both failing is fine: a refusal, and the gate ages out). A
-# breaker writes `revoked` BEFORE deleting the fences, so a fence created in
-# the doomed gate after that delete sees `revoked` and refuses; one created
-# after the `mv` lands in a successor's gate (two fences, refuses) or nowhere
-# (ENOENT); a sole check that passed before `revoked` existed had its fence
-# deleted, so its rename fails ENOENT. Every branch refuses: over-count only.
+# and drop its fence into a SUCCESSOR's gate, or into the victim. Hence the
+# sole-fence check: after creating its fence each actor lists the gate BY NAME,
+# and holds only if its own fence is the only one there. Two actors in one
+# gate each create-then-list, so the one that creates second always sees both
+# — at most one ever passes (both failing is fine: a refusal, and the gate
+# ages out). A fence that landed in a victim is not in the named gate, so its
+# check fails; one created after the `mv` lands in a successor's gate (two
+# fences, refuses) or nowhere (ENOENT). Every branch refuses: over-count only.
 # ponytail: `_fleet_gate_drop` is still check-then-remove — a holder paused
 # between its fence check and its `rm -rf` can delete a successor's gate. That
 # only ever REMOVES a successor's fence, so the successor's fenced rename fails
@@ -256,29 +263,8 @@ _fleet_gate_take() {
     esac
     [ $(( $(date +%s) - held_at )) -ge "${FLEET_ADMIT_GATE_STALE_SECS:-5}" ] || return 1
     _fleet_admit_hook gate-break "$gate"
-    # Kill the fences IN PLACE before the gate name becomes re-takeable (panel
-    # codex-1): once `mv` frees the name a third actor can take the gate, steal
-    # and claim fresh before the `rm -rf "$victim"` below, and a holder's rename
-    # that resolved its fence before the break would then move that live claim.
-    # A fence removed here is dead before any successor can exist. `revoked`
-    # goes in FIRST: a fence created after the delete is listed by its own sole
-    # check after `revoked` exists, so it refuses instead of holding a gate
-    # that is about to be moved away.
-    # ponytail: neither result below is checked. A failed `mkdir revoked`
-    # (EACCES/EIO/RO fs, or EEXIST from a concurrent breaker) or a fence that
-    # survives the `rm -rf` still lets the mv proceed, and a surviving fence's
-    # pre-resolved rename can then move a successor's live admit. This needs a
-    # filesystem failure. The race path is harmless: a rename landing mid-rm
-    # already ran while the name was held. Fail-closed abort: HIMMEL-3223.
-    # ponytail: the three steps below resolve `$gate` by name, so a breaker that
-    # pauses between them can revoke one gate generation and then kill the
-    # fences of, and move, a successor generation that was never revoked. A
-    # taker that fences into that generation after the rm passes its sole check,
-    # and if the breaker pauses again before its victim rm, a later successor's
-    # live admit can be moved (under-count). This needs a double pause.
-    # Move-then-revoke design: HIMMEL-3232.
-    mkdir "$gate/revoked" 2>/dev/null
-    rm -rf "$gate"/fence.* 2>/dev/null
+    # The one by-name step (HIMMEL-3232): the victim's fences are killed by the
+    # next holder's sweep below, before it can hold.
     victim="$gate.broken.$$.$RANDOM"
     mv "$gate" "$victim" 2>/dev/null || return 1
     seen="$(cat "$victim/acquired" 2>/dev/null)" || seen=""
@@ -300,6 +286,15 @@ _fleet_gate_take() {
     rm -rf "$fence" 2>/dev/null
     return 1
   fi
+  # Kill every broken generation's fences before holding (HIMMEL-3232); one
+  # that survives (EACCES/EIO) refuses the take — fail-closed (HIMMEL-3223).
+  rm -rf "$gate".broken.* 2>/dev/null
+  for victim in "$gate".broken.*; do
+    if [ -e "$victim" ]; then
+      _fleet_gate_drop "$gate" "$fence"
+      return 1
+    fi
+  done
   if _fleet_admit_stamp_or_fail "$gate" && printf '%s\n' "$$" > "$gate/pid" 2>/dev/null; then
     _fleet_gate_fence="$fence"
     return 0
@@ -311,9 +306,8 @@ _fleet_gate_take() {
   _fleet_gate_drop "$gate" "$fence"
   return 1
 }
-_fleet_gate_sole() { # _fleet_gate_sole <gate> <fence> -> 0 iff <fence> is the gate's only fence and the gate is not being broken
+_fleet_gate_sole() { # _fleet_gate_sole <gate> <fence> -> 0 iff <fence> is the gate's only fence
   local f
-  [ ! -e "$1/revoked" ] || return 1
   for f in "$1"/fence.*; do
     [ "$f" = "$2" ] || return 1
   done
@@ -659,7 +653,8 @@ if [ "$_fleet_admitted" -eq 1 ]; then
     _fleet_now=$(date +%s)
     # HIMMEL-3210: displaced-victim debris — `.admit.stale.*` (steal victims of
     # older, unfenced copies of this script) and `.admit.reclaim.broken.*`
-    # (gate-break victims whose breaker died before its rm) — is dot-prefixed
+    # (gate-break victims whose breaker died before its rm and that no gate
+    # holder has swept since, HIMMEL-3232) — is dot-prefixed
     # so the reservation glob below never counts it, which also means that
     # glob never prunes it. Its own pass, aged from FIRST SIGHTING: a pass
     # stamps `seen` into an unstamped victim and removes it once that is
