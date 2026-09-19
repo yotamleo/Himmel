@@ -80,6 +80,58 @@ const LF_NOTE = [
   "",
 ].join("\n");
 
+describe("item 3 — movement compares full timestamps / OIDs; date-only evidence is its own state", () => {
+  const noteWith = (...extra) =>
+    ["---", "type: tech-ingest", "source: https://github.com/owner/repo", "stars: 5", ...extra, "---", "", "# repo", ""].join("\n");
+  const DATE_ONLY = 'trust_tier_reason: "tier 2, pushed_at=2026-09-10"';
+  const moved = (s) => [s.reposMoved, s.reposUnchanged, s.reposDateOnly];
+
+  test("two pushes on the SAME UTC day (full timestamps differ) read 'moved'", () => {
+    const r = run({
+      notes: { "a.md": noteWith(DATE_ONLY, "upstream_pushed_at: 2026-09-10T01:00:00Z") },
+      pushedAt: "2026-09-10T15:00:00Z",
+    });
+    expect(moved(r.summary)).toEqual([1, 0, 0]);
+  });
+
+  test("identical full timestamp is the confirmed-unchanged state", () => {
+    const r = run({
+      notes: { "a.md": noteWith(DATE_ONLY, "upstream_pushed_at: 2026-09-10T15:00:00Z") },
+      pushedAt: "2026-09-10T15:00:00Z",
+    });
+    expect(moved(r.summary)).toEqual([0, 1, 0]);
+  });
+
+  test("date-only evidence on the same day is reported as date-only, NOT confirmed-unchanged", () => {
+    const r = run({ notes: { "a.md": noteWith(DATE_ONLY) }, pushedAt: "2026-09-10T15:00:00Z" });
+    expect(moved(r.summary)).toEqual([0, 0, 1]);
+  });
+
+  test("date-only evidence on a different day is still a confirmed move", () => {
+    const r = run({ notes: { "a.md": noteWith(DATE_ONLY) }, pushedAt: "2026-09-12T15:00:00Z" });
+    expect(moved(r.summary)).toEqual([1, 0, 0]);
+  });
+
+  test("a differing upstream_commit OID is a move even when the timestamps match", () => {
+    const r = run({
+      notes: { "a.md": noteWith("upstream_commit: old111", "upstream_pushed_at: 2026-09-10T15:00:00Z") },
+      pushedAt: "2026-09-10T15:00:00Z",
+      oid: "abc123",
+    });
+    expect(moved(r.summary)).toEqual([1, 0, 0]);
+  });
+
+  test("a matching upstream_commit OID is confirmed-unchanged with no timestamp on the note", () => {
+    const r = run({ notes: { "a.md": noteWith("upstream_commit: abc123") }, oid: "abc123" });
+    expect(moved(r.summary)).toEqual([0, 1, 0]);
+  });
+
+  test("a note with no prior evidence at all lands in no bucket", () => {
+    const r = run({ notes: { "a.md": noteWith() } });
+    expect(moved(r.summary)).toEqual([0, 0, 0]);
+  });
+});
+
 describe("item 2 — CRLF frontmatter is detected and patched, line endings preserved byte-for-byte", () => {
   const CRLF_HEAD = "---\r\ntype: tech-ingest\r\nsource: https://github.com/owner/repo\r\nstars: 5\r\n";
   const CRLF_TAIL = "---\r\n\r\n# repo\r\n\r\nbody line with trailing spaces  \r\nlast line no newline";

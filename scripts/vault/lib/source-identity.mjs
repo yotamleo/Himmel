@@ -67,14 +67,46 @@ export function readmeSha256FromApiContent(content) {
   return createHash("sha256").update(decoded).digest("hex");
 }
 
-function formatDelta(label, oldVal, newVal) {
+function formatDelta(label, oldVal, newVal, sameLabel = "unchanged") {
   if (oldVal === null || oldVal === undefined || oldVal === "") {
     return `${label}: ${newVal} (no prior value recorded)`;
   }
   if (String(oldVal) === String(newVal)) {
-    return `${label}: ${newVal} (unchanged)`;
+    return `${label}: ${newVal} (${sameLabel})`;
   }
   return `${label}: ${oldVal}→${newVal}`;
+}
+
+const sameInstant = (a, b) => {
+  const [ta, tb] = [Date.parse(a), Date.parse(b)];
+  return Number.isNaN(ta) || Number.isNaN(tb) ? String(a) === String(b) : ta === tb;
+};
+
+/**
+ * Has the repo moved since the note's recorded evidence? Full-precision
+ * evidence wins: a commit OID and/or a full pushed_at timestamp on both sides.
+ * Any difference there is "moved"; all-equal is "unchanged" (confirmed).
+ * With no full-precision pair, calendar dates are compared: a different date
+ * is still "moved", but the SAME date is only "date-only" — two pushes on one
+ * UTC day are indistinguishable, so it must not read as confirmed-unchanged.
+ * No usable prior evidence at all -> "no-baseline".
+ */
+export function classifyMovement({
+  existingCommit,
+  newCommit,
+  existingPushedAtFull,
+  newPushedAtFull,
+  existingPushedAtDate,
+  newPushedAtDate,
+}) {
+  const compared = [];
+  if (existingCommit && newCommit) compared.push(existingCommit === newCommit);
+  if (existingPushedAtFull && newPushedAtFull) compared.push(sameInstant(existingPushedAtFull, newPushedAtFull));
+  if (compared.length > 0) return compared.includes(false) ? "moved" : "unchanged";
+  if (existingPushedAtDate && newPushedAtDate) {
+    return existingPushedAtDate === newPushedAtDate ? "date-only" : "moved";
+  }
+  return "no-baseline";
 }
 
 /**
@@ -102,7 +134,7 @@ export function buildIdentityFields({
     ? formatDelta("stars", existingStars, newStars)
     : null;
   const pushedDelta = newPushedAtDate
-    ? formatDelta("pushed_at", existingPushedAt, newPushedAtDate)
+    ? formatDelta("pushed_at", existingPushedAt, newPushedAtDate, "same day, date-only") // a calendar date cannot confirm "unchanged"
     : null;
   const deltaParts = [starsDelta, pushedDelta].filter(Boolean);
   if (deltaParts.length > 0) {

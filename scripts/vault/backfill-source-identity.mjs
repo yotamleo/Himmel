@@ -27,6 +27,7 @@ import {
   parseGithubSource,
   readmeSha256FromApiContent,
   extractFrontmatterField,
+  classifyMovement,
   groupNotesByRepo,
   applyCanonicalRenames,
   buildIdentityFields,
@@ -91,6 +92,8 @@ function loadNotes(vaultRoot) {
       content,
       existingStars: starsRaw ? parseInt(starsRaw, 10) : null,
       existingPushedAt: pushedMatch ? pushedMatch[1] : null,
+      existingCommit: extractFrontmatterField(content, "upstream_commit"),
+      existingUpstreamPushedAt: extractFrontmatterField(content, "upstream_pushed_at"),
     });
   }
   return notes;
@@ -186,6 +189,7 @@ async function main() {
   let reposChecked = 0;
   let reposMoved = 0;
   let reposUnchanged = 0;
+  let reposDateOnly = 0;
   let reposFetchFailed = 0;
   const clipOnlyRepos = [];
 
@@ -207,8 +211,7 @@ async function main() {
     const hasTechNote = entry.notes.some((n) => n.path.startsWith("30-Resources/Tech/"));
     if (!hasTechNote) clipOnlyRepos.push(canonicalKey);
 
-    let repoMoved = false;
-    let repoComparable = false;
+    const states = new Set();
     for (const note of entry.notes) {
       const fields = buildIdentityFields({
         oid,
@@ -226,20 +229,27 @@ async function main() {
       // silently clobber an edit made to the note during that window.
       const sourceContent = args.apply ? readFileSync(note.absPath, "utf8") : note.content;
       const { content, changed } = patchFrontmatter(sourceContent, fields);
-      if (note.existingPushedAt && newPushedAtDate) {
-        repoComparable = true;
-        if (note.existingPushedAt !== newPushedAtDate) repoMoved = true;
-      }
+      states.add(
+        classifyMovement({
+          existingCommit: note.existingCommit,
+          newCommit: oid,
+          existingPushedAtFull: note.existingUpstreamPushedAt,
+          newPushedAtFull: upstreamPushedAt,
+          existingPushedAtDate: note.existingPushedAt,
+          newPushedAtDate,
+        }),
+      );
       if (changed) {
         notesUpdated++;
         if (args.apply) writeFileSync(note.absPath, content, "utf8");
         else console.log(`DRY would update: ${note.path}`);
       }
     }
-    if (repoComparable) {
-      if (repoMoved) reposMoved++;
-      else reposUnchanged++;
-    }
+    // Repo-level verdict: any note showing a move wins; else any confirmed
+    // (full-precision) match; else date-only evidence, reported on its own.
+    if (states.has("moved")) reposMoved++;
+    else if (states.has("unchanged")) reposUnchanged++;
+    else if (states.has("date-only")) reposDateOnly++;
   }
 
   const summary = {
@@ -249,6 +259,7 @@ async function main() {
     reposChecked,
     reposMoved,
     reposUnchanged,
+    reposDateOnly,
     reposFetchFailed,
     notesUpdated,
     renames,

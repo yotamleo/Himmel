@@ -6,6 +6,7 @@ import {
   buildIdentityFields,
   patchFrontmatter,
   extractFrontmatterField,
+  classifyMovement,
 } from "../lib/source-identity.mjs";
 
 describe("parseGithubSource", () => {
@@ -115,6 +116,23 @@ describe("buildIdentityFields", () => {
     expect(delta).toContain("1200");
   });
 
+  test("a same-day pushed_at is labelled date-only in the delta, not 'unchanged'; stars still say unchanged", () => {
+    const fields = buildIdentityFields({
+      oid: "abc123",
+      upstreamPushedAt: "2026-09-10T15:00:00Z",
+      readmeSha256: null,
+      revalidatedAt: "2026-09-16T00:00:00Z",
+      existingStars: 5,
+      newStars: 5,
+      existingPushedAt: "2026-09-10",
+      newPushedAtDate: "2026-09-10",
+    });
+    const delta = fields.find((f) => f.key === "revalidation_delta").value;
+    expect(delta).toContain("stars: 5 (unchanged)");
+    expect(delta).toContain("pushed_at: 2026-09-10 (same day, date-only)");
+    expect(delta).not.toContain("pushed_at: 2026-09-10 (unchanged)");
+  });
+
   test("missing README omits readme_sha256 entirely rather than hashing an absent file", () => {
     const fields = buildIdentityFields({
       oid: "abc123",
@@ -207,6 +225,36 @@ describe("patchFrontmatter — additive write + idempotence", () => {
       { key: "revalidation_delta", value: 'stars: 964→1200 (+236)' },
     ]);
     expect(content).toContain('revalidation_delta: "stars: 964→1200 (+236)"');
+  });
+});
+
+describe("classifyMovement (HIMMEL-3063)", () => {
+  const none = { existingCommit: null, newCommit: null, existingPushedAtFull: null, newPushedAtFull: null, existingPushedAtDate: null, newPushedAtDate: null };
+
+  test("full timestamps: same UTC day but different instants is moved; equal instants is unchanged", () => {
+    const base = { ...none, existingPushedAtDate: "2026-09-10", newPushedAtDate: "2026-09-10" };
+    expect(classifyMovement({ ...base, existingPushedAtFull: "2026-09-10T01:00:00Z", newPushedAtFull: "2026-09-10T15:00:00Z" })).toBe("moved");
+    expect(classifyMovement({ ...base, existingPushedAtFull: "2026-09-10T15:00:00Z", newPushedAtFull: "2026-09-10T15:00:00Z" })).toBe("unchanged");
+  });
+
+  test("equal instants in different spellings (Z vs +00:00) are unchanged", () => {
+    expect(classifyMovement({ ...none, existingPushedAtFull: "2026-09-10T15:00:00Z", newPushedAtFull: "2026-09-10T15:00:00+00:00" })).toBe("unchanged");
+  });
+
+  test("OID and timestamp: any difference is moved, all-equal is unchanged", () => {
+    const same = { ...none, existingPushedAtFull: "2026-09-10T15:00:00Z", newPushedAtFull: "2026-09-10T15:00:00Z" };
+    expect(classifyMovement({ ...same, existingCommit: "a", newCommit: "b" })).toBe("moved");
+    expect(classifyMovement({ ...same, existingCommit: "a", newCommit: "a" })).toBe("unchanged");
+  });
+
+  test("date-only: same day is date-only (never unchanged), different day is moved", () => {
+    expect(classifyMovement({ ...none, existingPushedAtDate: "2026-09-10", newPushedAtDate: "2026-09-10" })).toBe("date-only");
+    expect(classifyMovement({ ...none, existingPushedAtDate: "2026-09-10", newPushedAtDate: "2026-09-11" })).toBe("moved");
+  });
+
+  test("a one-sided full timestamp falls back to the date comparison; nothing usable is no-baseline", () => {
+    expect(classifyMovement({ ...none, existingPushedAtFull: "2026-09-10T01:00:00Z", existingPushedAtDate: "2026-09-10", newPushedAtDate: "2026-09-10" })).toBe("date-only");
+    expect(classifyMovement(none)).toBe("no-baseline");
   });
 });
 
