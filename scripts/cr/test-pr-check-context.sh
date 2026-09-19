@@ -21,6 +21,9 @@ RED_CONTROL_TMPDIR="$tmp"
 # shellcheck source=scripts/lib/red-control.sh
 # shellcheck disable=SC1091
 . "$DIR/../lib/red-control.sh"
+# shellcheck source=scripts/lib/canon-path.sh
+# shellcheck disable=SC1091
+. "$DIR/../lib/canon-path.sh"
 
 # HIMMEL-2335: the script now requires HIMMEL_REPO (the trust anchor) to be
 # set, and every fixture repo below is a throwaway tmp dir unrelated to any
@@ -167,8 +170,13 @@ out7="$(cd "$wt" && bash "$SCRIPT")"
 check "$?" "0" "T7 rc"
 check "$(get_kv "$out7" branch)" "t7-wt" "T7 branch (worktree)"
 check "$(get_kv "$out7" repo)" "$(cd "$wt" && pwd)" "T7 repo is the worktree path"
-wt_git_dir_abs="$(cd "$wt" && cd "$(git rev-parse --git-common-dir)" && pwd)"
-main_git_dir_abs="$(cd "$repo" && cd "$(git rev-parse --git-common-dir)" && pwd)"
+# HIMMEL-3179: git prints the PHYSICAL, NATIVE spelling of the common dir (macOS
+# /private/var/..., Git Bash C:/Users/...) and pr-check-context.sh echoes it
+# verbatim into marker=, so the expected side must be canonicalised the same
+# way: a plain `cd && pwd` yields the LOGICAL /var/... (macOS) or /c/Users/...
+# (Git Bash) and never equals the marker there.
+wt_git_dir_abs="$(cd "$wt" && canon_path_native "$(git rev-parse --git-common-dir)")"
+main_git_dir_abs="$(cd "$repo" && canon_path_native "$(git rev-parse --git-common-dir)")"
 check "$wt_git_dir_abs" "$main_git_dir_abs" "T7 worktree git-common-dir == main repo's (sanity on the fixture)"
 marker7="$(get_kv "$out7" marker)"
 # Direct string comparison against the expected shared-path marker, NOT the
@@ -237,7 +245,7 @@ else
   # The expected per-worktree marker, computed fresh via --git-dir from $wt
   # itself - not hardcoded, since the on-disk worktree-admin-dir name is a
   # git-internal detail this test should not need to know.
-  wt_per_worktree_git_dir_abs="$(cd "$wt" && cd "$(git rev-parse --git-dir)" && pwd)"
+  wt_per_worktree_git_dir_abs="$(cd "$wt" && canon_path_native "$(git rev-parse --git-dir)")"
   red_control_assert --label "T7" \
     --observed     "$(get_kv "$RED_CONTROL_OUT" marker)" \
     --expect-wrong "$wt_per_worktree_git_dir_abs/cr-pending/t7-wt" \

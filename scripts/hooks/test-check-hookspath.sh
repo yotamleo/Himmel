@@ -16,6 +16,9 @@ HOOK="$SCRIPT_DIR/check-hookspath.sh"
 # shellcheck source=../lib/fixture-tempdir.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/../lib/fixture-tempdir.sh"
+# shellcheck source=../lib/canon-path.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/canon-path.sh"
 [ -x "$HOOK" ] || chmod +x "$HOOK"
 
 # Isolate the fixture repos from the machine's real git config (same pattern
@@ -49,6 +52,11 @@ make_repo() {
     local hooks_path_setting="$1"  # empty string = leave unset
     local dir
     dir=$(fixture_mktemp_dir) || return 1
+    # HIMMEL-3179: the cases below write "$d/..." into core.hooksPath and the hook
+    # compares it with the toplevel git reports (physical, native: macOS
+    # /private/var/..., Git Bash C:/Users/... — never the raw /tmp/... mktemp
+    # spelling). Hand the cases the one spelling git itself uses.
+    dir=$(canon_path_native "$dir") || return 1
     (
         fixture_enter_git_init_dir "$dir" || exit 1
         git init -q -b main

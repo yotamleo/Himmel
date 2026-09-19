@@ -12,6 +12,9 @@ GATE="$SCRIPT_DIR/check-oxlint-hardening.sh"
 # shellcheck source=../lib/fixture-tempdir.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/../lib/fixture-tempdir.sh"
+# shellcheck source=../lib/canon-path.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/canon-path.sh"
 
 BASH_ABS=$(command -v bash)
 case "$BASH_ABS" in
@@ -58,6 +61,9 @@ assert_says() {
 make_fixture() {
     local dir
     dir=$(fixture_mktemp_dir) || return 1
+    # The gate reports root=/cwd= as `pwd -P`; the assertion below interpolates
+    # this path, so build it from the physical spelling (HIMMEL-3179).
+    dir=$(canon_path "$dir") || return 1
     mkdir -p "$dir/scripts/lanes" "$dir/bin"
     cat > "$dir/scripts/lanes/input.mjs" <<'EOF'
 export function add(a, b) {

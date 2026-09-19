@@ -5,6 +5,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLEAN_GARDEN="$SCRIPT_DIR/clean-garden.sh"
+# shellcheck source=lib/canon-path.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/lib/canon-path.sh"
 
 PASS=0
 FAIL=0
@@ -23,6 +26,10 @@ pass() { echo "  PASS: $1"; PASS=$((PASS+1)); }
 fail() { echo "  FAIL: $1"; if [ $# -ge 2 ]; then printf '    %s\n' "$2"; fi; FAIL=$((FAIL+1)); }
 
 TMP_ROOT=$(mktemp -d)
+# git reports a worktree by its physical path (macOS /var -> /private/var), and
+# the registered-worktree case greps `git worktree list` for the fixture's own
+# spelling: build it from the physical one (HIMMEL-3179).
+TMP_ROOT=$(canon_path "$TMP_ROOT")
 TMP_ROOT_UNIX="$TMP_ROOT"
 if command -v cygpath >/dev/null 2>&1; then
     TMP_ROOT=$(cygpath -m "$TMP_ROOT")
