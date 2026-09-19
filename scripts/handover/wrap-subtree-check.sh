@@ -24,6 +24,13 @@
 # (`<shell> -c source …/shell-snapshots/snapshot-…`) is never harness, whatever
 # its command text says. The session pid must itself be a `claude` process: an
 # arbitrary live pid (a leaf, another tool) is refused, never called CLOSABLE.
+# ponytail: only DESCENDANTS of the session are seen. A shell reparented to
+# init/systemd (an intermediate process died first) is not attributed to the
+# session and does not withhold CLOSABLE; attributing it would mean reading
+# /proc/<pid>/environ, which is credential-adjacent, so it is deliberately not
+# done. Tool-call shells are direct children of the session (the N35 leak
+# class), so they stay visible; the complementary check is tick's orphans=
+# field (console-kit/orphan-loops.sh), which lists such shells as owner `orphan`.
 # ponytail: the default harness match is a heuristic over argv, so a leaked
 # process literally named like an MCP server (`node …/mcp-server-x/y.js`) would
 # be exempt; the leak class this gate exists for is a tool-call shell, which

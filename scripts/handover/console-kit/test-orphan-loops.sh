@@ -88,6 +88,23 @@ out="$(PS_FAIL=1 run)"; rc=$?
 eq 'a failing ps reads orphans=? and never fails the caller' 'orphans=?' "$out"
 eq 'a failing ps: rc 0' 0 "$rc"
 
+# A failed or empty session census cannot say who owns a wrapper: it must read
+# `orphans=?`, never label session-owned wrappers `orphan` (codex-2, round 3).
+mkdir -p "$W/bin-empty" "$W/bin-broken"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$W/bin-empty/pgrep"
+printf '#!/usr/bin/env bash\nexit 2\n' > "$W/bin-broken/pgrep"
+chmod +x "$W/bin-empty/pgrep" "$W/bin-broken/pgrep"
+out="$(CLAUDE_SESSIONS_PGREP="$W/bin-empty/pgrep" run)"; rc=$?
+eq 'an empty census reads orphans=? (no mislabelled orphan)' 'orphans=?' "$out"
+eq 'an empty census: rc 0' 0 "$rc"
+out="$(CLAUDE_SESSIONS_PGREP="$W/bin-broken/pgrep" run)"
+eq 'a failed census (pgrep rc 2) reads orphans=?' 'orphans=?' "$out"
+out="$(CLAUDE_SESSIONS_PGREP="$W/bin-broken/pgrep" run --list)"
+lacks '--list under a failed census never names an owner orphan' "$out" 'owner=orphan'
+contains '--list under a failed census marks the owner unknown' "$out" 'pid=201 owner=? age=130m'
+out="$(CLAUDE_SESSIONS_PGREP="$W/bin-empty/pgrep" TICK_ORPHAN_MIN=99999 run)"
+eq 'an empty census with no old wrapper still reads none' 'orphans=none' "$out"
+
 run --bogus >/dev/null 2>&1; rc=$?
 eq 'an unknown flag is a usage error' 2 "$rc"
 

@@ -55,7 +55,13 @@ case "$min" in ''|*[!0-9]*) min=30 ;; esac
 
 # pid=name pairs for every live claude session; names sanitized so they can
 # neither break the pair encoding nor forge an output field.
-sessmap="$(claude_sessions 2>/dev/null | awk -F'\t' '
+#
+# A failed or empty census cannot tell a session-owned wrapper from an orphan:
+# known=0 then reads every unresolved owner as `?`, never `orphan`.
+known=1
+census="$(claude_sessions 2>/dev/null)" || known=0
+[ -n "$census" ] || known=0
+sessmap="$(printf '%s\n' "$census" | awk -F'\t' '
 $1 ~ /^#/ || $1 == "" { next }
 {
     name = $2
@@ -70,7 +76,7 @@ if [ -z "$ps_out" ]; then
     exit 0
 fi
 
-printf '%s\n' "$ps_out" | awk -v sessmap="$sessmap" -v min="$min" -v list="$list" '
+printf '%s\n' "$ps_out" | awk -v sessmap="$sessmap" -v min="$min" -v list="$list" -v known="$known" '
 function mins(e,   d, t, n, x) {
     d = 0
     if (index(e, "-")) { split(e, x, "-"); d = x[1]; e = x[2] }
@@ -97,7 +103,7 @@ END {
     for (i = 1; i <= nw; i++) {
         pid = wrap[i]
         if (age[pid] < min) continue
-        owner = "orphan"; p = pid
+        owner = (known ? "orphan" : "?"); p = pid
         for (hops = 0; hops < 64; hops++) {
             p = ppid[p]
             if (p == "" || p == 0) break
@@ -109,6 +115,7 @@ END {
         if (age[pid] > oldest[owner]) oldest[owner] = age[pid]
     }
     if (list) exit
+    if ("?" in cnt) { print "orphans=?"; exit }
     out = ""
     for (i = 1; i <= no; i++) out = out (i > 1 ? "," : "") order[i] ":" cnt[order[i]] "/" oldest[order[i]] "m"
     print "orphans=" (out == "" ? "none" : out)
