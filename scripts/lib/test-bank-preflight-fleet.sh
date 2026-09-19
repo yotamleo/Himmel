@@ -554,6 +554,15 @@ printf '%s\n' "$((NOW + 600))" > "$slots_p7/4242/expires"; printf '%s\n' "$$" > 
 printf '%s\n%s\n' "HIMMEL-9610/x" "other" > "$slots_p7/4242/name"
 p_live "$slots_p7" "HIMMEL-9610/x" "HIMMEL-9610/x"
 p_expect "p7 multi-line name file" "$slots_p7" kept
+# p7b: extra trailing blank lines in a name file must not be normalised away
+# ($(cat) strips ALL trailing newlines): only the single LF the writer emits is
+# part of the file format, anything more is a multi-line identity.
+slots_p7b="$(mktemp -d "$W/slots-p7b.XXXXXX")" || { echo "FAIL - could not create slots-p7b scratch dir" >&2; exit 1; }
+mkdir -p "$slots_p7b/4243"
+printf '%s\n' "$((NOW + 600))" > "$slots_p7b/4243/expires"; printf '%s\n' "$$" > "$slots_p7b/4243/pid"
+printf '%s\n\n' "HIMMEL-9611-x" > "$slots_p7b/4243/name"
+p_live "$slots_p7b" "HIMMEL-9611-x" "HIMMEL-9611-x"
+p_expect "p7b name file with extra trailing blank lines" "$slots_p7b" kept
 
 echo "--- $PASS passed, $FAIL failed ---"
 [ "$FAIL" -eq 0 ]

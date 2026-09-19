@@ -750,8 +750,11 @@ if [ "$_fleet_admitted" -eq 1 ]; then
       _fleet_resv_sname=""
       # The whole file, not its first line: a name file with a second line
       # (HIMMEL-3216 — a forged or hand-edited one; `_fleet_reserve` writes one
-      # line) has no single identity, so it matches nothing.
-      [ -f "${_fleet_resv}name" ] && _fleet_resv_sname="$(cat "${_fleet_resv}name" 2>/dev/null)"
+      # line) has no single identity, so it matches nothing. `read -d ''` keeps
+      # every trailing newline (`$(cat)` would strip them all, turning
+      # "name<LF><LF>" back into "name"); only the writer's one LF is dropped.
+      [ -f "${_fleet_resv}name" ] && IFS= read -r -d '' _fleet_resv_sname <"${_fleet_resv}name" 2>/dev/null
+      _fleet_resv_sname="${_fleet_resv_sname%$'\n'}"
       case "$_fleet_resv_sname" in *[[:cntrl:]]*) _fleet_resv_sname="" ;; esac
       if printf '%s\n' "$_fleet_live_names" | grep -qxF "$_fleet_resv_name" ||
          { [ -n "$_fleet_resv_sname" ] &&
