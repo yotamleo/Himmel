@@ -405,7 +405,7 @@ scrub_opaque_tokens() {
     function is_opaque(tok,    n) {
         n = length(tok)
         if (n < 20) return 0
-        if (tok !~ /^[A-Za-z0-9_./+=-]+$/) return 0
+        if (tok !~ /^[A-Za-z0-9_.\/+=-]+$/) return 0
         if (tok !~ /[a-z]/ || tok !~ /[A-Z]/) return 0
         if (shannon_entropy(tok) < 3.8) return 0
         return 1
