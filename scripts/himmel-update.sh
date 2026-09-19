@@ -1468,7 +1468,7 @@ report_toolchain() {
         node_ver="$(node --version 2>/dev/null)"
         verdict="$(_node_vs_pin "$node_ver" "$pin")"
         if [ "$verdict" = "unknown" ]; then
-            echo "    node $node_ver — the .nvmrc pin ($pin) is not a plain version number; cannot compare (report only)."
+            echo "    node $node_ver vs .nvmrc pin ($pin) — one of them is not a plain version number; cannot compare (report only)."
         elif [ "$verdict" = "ahead" ]; then
             echo "    node $node_ver is ahead of pin (.nvmrc $pin) — report only; the pin was not moved."
         elif [ "$verdict" = "behind" ]; then

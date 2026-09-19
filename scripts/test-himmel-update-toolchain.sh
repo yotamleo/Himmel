@@ -80,6 +80,7 @@ run_case "v-prefixed pin v20.11.0 vs 20.1.0"       "v20.11.0" "v20.1.0" "behind 
 run_case "numeric compare, not lexical (20.9 vs 20.10)" "20.10" "v20.9.0" "behind pin"
 run_case "lts/* pin → plain report, no crash"      "lts/*"   "v22.3.0"  "not a plain version" "behind pin"
 run_case "lts/iron pin → plain report, no crash"   "lts/iron" "v20.1.0" "not a plain version"
+run_case "nightly node vs numeric pin → plain report, pin not blamed" "20" "v22.0.0-nightly20240101" "one of them is not a plain version" "behind pin"
 
 echo ""
 echo "Results: $pass passed, $fail failed"
