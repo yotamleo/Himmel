@@ -92,7 +92,8 @@ run --bogus >/dev/null 2>&1; rc=$?
 eq 'an unknown flag is a usage error' 2 "$rc"
 
 # Read-only: the SUT must not signal anything.
-if grep -v '^[[:space:]]*#' "$SUT" | grep -Eq '(^|[[:space:];&|(])(kill|pkill|killall)[[:space:]]'; then
+kill_hits="$(grep -v '^[[:space:]]*#' "$SUT" | grep -E '(^|[[:space:];&|(])(kill|pkill|killall)[[:space:]]')"
+if [ -n "$kill_hits" ]; then
     fail 'orphan-loops.sh must be read-only (found a kill)'
 else
     pass 'orphan-loops.sh contains no kill'

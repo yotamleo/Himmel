@@ -128,7 +128,8 @@ for f in leg-preface.md leg-brief-template.md; do
     fi
 done
 
-if grep -v '^[[:space:]]*#' "$SUT" | grep -Eq '(^|[[:space:];&|(])(kill|pkill|killall)[[:space:]]'; then
+kill_hits="$(grep -v '^[[:space:]]*#' "$SUT" | grep -E '(^|[[:space:];&|(])(kill|pkill|killall)[[:space:]]')"
+if [ -n "$kill_hits" ]; then
     fail 'wrap-subtree-check.sh must be read-only (found a kill)'
 else
     pass 'wrap-subtree-check.sh contains no kill'
