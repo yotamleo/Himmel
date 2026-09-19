@@ -215,9 +215,14 @@ _fleet_admit_hook() { # _fleet_admit_hook <point> <path>
 # targets a path THROUGH it (`mv "$admit" "$fence/victim"`). Breaking a gate
 # renames the whole directory away, fence included, and nothing ever puts a
 # fence back (a break's restore copies only `acquired`/`pid`), so the rename
-# itself is the fence check: its destination parent resolves in the SAME
-# syscall that moves the admit, and fails with ENOENT once the gate is not
-# ours — no check-then-act gap for a pause to land in. That is why this is a
+# itself is the fence check: it fails with ENOENT once the gate is not ours —
+# no userspace check-then-act gap for a pause to land in. Even a rename that
+# resolved the fence BEFORE the break cannot land after it: a successor exists
+# only once the breaker has `rm -rf`d the broken gate, and rename(2) locks its
+# destination parent, so it either completes first (moving the stale admit we
+# verified — nothing fresh can exist while the gate is held) or finds the fence
+# dead and fails ENOENT (Linux; probed via renameat into a removed dirfd).
+# That is why this is a
 # fence-by-path, not a generation number re-read before the mv: a re-read is
 # still followed by a separate mv, and the pause can land between them.
 # The one gap left is creating the fence itself: a holder paused between its
