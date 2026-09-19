@@ -5,7 +5,9 @@
 # A newer push to main must cancel the superseded push-to-main run (they piled
 # the Actions queue up to 5+ on 2026-09-19), but a PR, schedule or dispatch run
 # must never be cancelled by -- or queue behind -- another run. Pure text
-# assertions over the workflow file: no yq/python dependency, no network.
+# assertions over the workflow file (trailing YAML comments stripped, so a
+# comment cannot satisfy a policy check); where PyYAML is importable the parsed
+# values are asserted too. No network.
 #
 # Usage: bash scripts/ci/test-ci-push-concurrency.sh
 # Exit codes: 0 -- all cases passed; 1 -- at least one failed.
@@ -19,7 +21,7 @@ bad() { echo "FAIL - $1" >&2; fails=$((fails + 1)); }
 
 # The workflow-level block: a column-0 `concurrency:` up to the next column-0 key.
 # (The bun-suites job's concurrency is indented, so column 0 is unambiguous.)
-block="$(awk '/^concurrency:/ {f=1; print; next} f && /^[^ #]/ {f=0} f' "$CI_YML")"
+block="$(awk '/^concurrency:/ {f=1; print; next} f && /^[^ #]/ {f=0} f' "$CI_YML" | sed 's/[[:space:]][[:space:]]*#.*$//')"
 
 if [ -n "$block" ]; then ok "ci.yml has a workflow-level concurrency: block"
 else bad "ci.yml has no workflow-level concurrency: block"; fi
@@ -50,11 +52,34 @@ fi
 # even if the trigger widens; but widening it would make every branch push start
 # cancelling its own predecessor, so the comments/docs claim "push means main"
 # only holds while the trigger stays restricted to main.
-push_branches="$(awk '/^  push:/ {f=1; next} f && /branches:/ {print; exit} f && /^  [a-z_]+:/ {exit}' "$CI_YML")"
+push_branches="$(awk '/^  push:/ {f=1; next} f && /branches:/ {print; exit} f && /^  [a-z_]+:/ {exit}' "$CI_YML" | sed 's/[[:space:]][[:space:]]*#.*$//')"
 if [ "${push_branches#*'branches: [main]'}" != "$push_branches" ]; then
   ok "push trigger is restricted to branches: [main]"
 else
   bad "push trigger is not restricted to branches: [main]"
+fi
+
+# Parsed assertion: the text checks above are comment-stripped but still lexical.
+# PyYAML is not guaranteed on every runner (the nightly adds windows/macOS), so
+# this runs only where importable and reports a skip otherwise.
+if python3 -c 'import yaml' >/dev/null 2>&1; then
+  parsed="$(python3 - "$CI_YML" <<'PY'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+c = d.get("concurrency") or {}
+on = d.get("on", d.get(True)) or {}
+print(c.get("group"))
+print(c.get("cancel-in-progress"))
+print((on.get("push") or {}).get("branches"))
+PY
+)"
+  want="ci-\${{ github.event_name == 'push' && github.ref || github.run_id }}
+\${{ github.event_name == 'push' }}
+['main']"
+  if [ "$parsed" = "$want" ]; then ok "parsed YAML: group, cancel-in-progress and push branches match"
+  else bad "parsed YAML mismatch; got: $parsed"; fi
+else
+  echo "skip - PyYAML not importable; parsed-YAML assertion not run"
 fi
 
 [ "$fails" -eq 0 ] && { echo "all passed"; exit 0; }
