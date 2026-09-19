@@ -146,6 +146,15 @@ if [ -r "$LIB" ]; then
             echo "PASS Q2 no arg was executed"
         fi
     fi
+    if [ "$HAVE_SCRIPT" -eq 1 ]; then
+        # The fifo is the session's stdin: create it owner-only, whatever the umask.
+        MKF_STUB="$TMP/mkfifo-stub"; mkdir -p "$MKF_STUB"
+        REAL_MKFIFO=$(command -v mkfifo)
+        printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/mkfifo.args"\nexec "%s" "$@"\n' "$TMP" "$REAL_MKFIFO" > "$MKF_STUB/mkfifo"
+        chmod +x "$MKF_STUB/mkfifo"
+        (umask 000; PATH="$MKF_STUB:$PATH" _himmel_pty_run claude one </dev/null)
+        assert_contains "Q4 the pty fifo is created mode 600 regardless of umask" "-m 600" "$(cat "$TMP/mkfifo.args" 2>/dev/null)"
+    fi
     : > "$ARGS_REC"
     HIMMEL_PTY_SCRIPT_CMD="$TMP/no-such-script" _himmel_pty_run claude one 'two words' </dev/null 2>"$TMP/fb.err"; rc=$?
     assert_eq "Q3 no script(1): claude still launches bare, rc passes through" "0" "$rc"

@@ -52,7 +52,7 @@ _himmel_pty_run() (
     _hp_f=
     if command -v "$_hp_script" >/dev/null 2>&1 \
         && _hp_f=$(mktemp -u "${TMPDIR:-/tmp}/himmel-pty.XXXXXX" 2>/dev/null) \
-        && mkfifo "$_hp_f" 2>/dev/null; then
+        && mkfifo -m 600 "$_hp_f" 2>/dev/null; then
         :
     else
         echo "WARN pty-run: script(1)/mkfifo unavailable -- launching $1 WITHOUT a pty; an idle cross-session message will end this session (HIMMEL-2534)" >&2
