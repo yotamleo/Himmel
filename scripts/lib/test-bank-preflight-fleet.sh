@@ -429,5 +429,26 @@ else
 fi
 check "(n) unmatched unexpired reservation with a name file stays on disk" 1 "$(count_resv "$slots_n")"
 
+# --- (o) one live session consumes ONE reservation, not every reservation
+# sharing its first token: two pending launches "HIMMEL-9507-shared a"/"... b"
+# and ONE live `-n HIMMEL-9507-shared` is one live + one still-pending = 2, not
+# 1 (deleting both would let an extra admission slip past the cap).
+slots_o="$(mktemp -d "$W/slots-o.XXXXXX")" || { echo "FAIL - could not create slots-o scratch dir" >&2; exit 1; }
+for sfx in a b; do
+  mkdir -p "$slots_o/HIMMEL-9507-shared_$sfx"
+  printf '%s\n' "$((NOW + 600))" > "$slots_o/HIMMEL-9507-shared_$sfx/expires"
+  printf '%s\n' "$$" > "$slots_o/HIMMEL-9507-shared_$sfx/pid"
+  printf '%s\n' "HIMMEL-9507-shared $sfx" > "$slots_o/HIMMEL-9507-shared_$sfx/name"
+done
+po="$W/ps-o"; mk_ps_stub "$po" '9001:claude:--model claude-opus-5 -n HIMMEL-9507-shared load doc'
+: > "$W/err.log"
+run_pf "$slots_o" "$po" HIMMEL_FLEET_CAP=4 >/dev/null
+if grep -q 'FLEET native=1 claudex=0 reserved=1 total=2/4' "$W/err.log" 2>/dev/null; then
+  PASS=$((PASS+1)); echo "ok - (o) one live session consumes one of two same-first-token reservations (total=2, not 1)"
+else
+  FAIL=$((FAIL+1)); echo "FAIL - (o) one live session consumed both same-first-token reservations"; grep 'FLEET ' "$W/err.log" || true
+fi
+check "(o) the unconsumed same-first-token reservation stays on disk" 1 "$(count_resv "$slots_o")"
+
 echo "--- $PASS passed, $FAIL failed ---"
 [ "$FAIL" -eq 0 ]

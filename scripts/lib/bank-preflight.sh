@@ -608,12 +608,21 @@ if [ "$_fleet_admitted" -eq 1 ]; then
       # handover path but launches under `-n <TICKET> <name> s<N>`, so its
       # reservation never matches a live session — it is released by that
       # script's EXIT trap (_arm_fleet_release_pending) on every exit instead.
-      # ponytail: two reservations sharing one first token ("HIMMEL-1 a" and
-      # "HIMMEL-1 b") are both consumed by a single live "HIMMEL-1" session.
+      # A live session consumes ONE reservation: the matched name is dropped
+      # from the live list once used, so two reservations sharing one first
+      # token ("HIMMEL-1 a" and "HIMMEL-1 b") against a single live "HIMMEL-1"
+      # session leave one still counted (live + pending = 2), never both
+      # deleted (which would let an extra admission past the cap).
       _fleet_resv_sname=""
       [ -f "${_fleet_resv}name" ] && read -r _fleet_resv_sname _fleet_resv_rest <"${_fleet_resv}name" 2>/dev/null
-      if printf '%s\n' "$_fleet_live_names" | grep -qxF "$_fleet_resv_name" ||
-         { [ -n "$_fleet_resv_sname" ] && printf '%s\n' "$_fleet_live_names" | grep -qxF "$_fleet_resv_sname"; }; then
+      _fleet_resv_hit=""
+      if printf '%s\n' "$_fleet_live_names" | grep -qxF "$_fleet_resv_name"; then
+        _fleet_resv_hit="$_fleet_resv_name"
+      elif [ -n "$_fleet_resv_sname" ] && printf '%s\n' "$_fleet_live_names" | grep -qxF "$_fleet_resv_sname"; then
+        _fleet_resv_hit="$_fleet_resv_sname"
+      fi
+      if [ -n "$_fleet_resv_hit" ]; then
+        _fleet_live_names="$(printf '%s\n' "$_fleet_live_names" | _FLEET_DROP="$_fleet_resv_hit" awk '!d && $0 == ENVIRON["_FLEET_DROP"] {d=1; next} {print}')"
         rm -rf "$_fleet_resv" 2>/dev/null
         continue
       fi
