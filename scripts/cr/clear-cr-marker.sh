@@ -650,7 +650,10 @@ exhausted_lanes=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("d
 # ponytail: the signer runs as the authoring leg's uid, so any same-uid process
 # can still sign a forgery: run `claude-floor.mjs sign` with a registry row it
 # wrote itself, read the private key (~/.himmel/cr-floor-key/signing.key), or
-# swap the key pair. The stamp stops the hand-written
+# swap the key pair. Even the headless reviewer is kept from the key only by
+# Claude Code's cwd permission model (no grant outside its snapshot under
+# acceptEdits), not by OS isolation, and that is unproven without a live
+# run. The stamp stops the hand-written
 # artifact, not a determined same-uid forger; the real fix is a signer on a
 # separate uid legs cannot become (verification here is public-key only, so
 # that move needs no gate change). Trust boundary: scripts/cr/claude-floor.mjs.

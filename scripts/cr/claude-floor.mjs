@@ -27,8 +27,12 @@
 // Key dir: $CR_FLOOR_KEY_DIR, default ~/.himmel/cr-floor-key — outside every
 // worktree, git dir and review snapshot. Tests point it at a temp dir.
 //
-// Trust boundary. The headless reviewer (tools Read/Grep/Glob/Write, cwd = the
-// snapshot, no Bash) cannot reach the key dir, so it cannot mint a stamp. The
+// Trust boundary. The headless reviewer runs with tools Read/Grep/Glob/Write,
+// cwd = the snapshot, no Bash, under --permission-mode acceptEdits. What keeps
+// it out of the key dir is Claude Code's working-directory permission model: a
+// read or write outside cwd needs a grant the non-interactive session is never
+// given. That is NOT OS isolation (the process could open the file), and it is
+// unproven here: no test runs a live headless review. The
 // signer signs only after reading its own claude-headless.sh registry row
 // (completed, is_error=false, a session id), and the payload binds that row's
 // dispatch id and session id. The verifier needs only the public key, so the
