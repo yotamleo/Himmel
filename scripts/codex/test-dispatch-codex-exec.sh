@@ -20,8 +20,16 @@ assert_rc() {  # assert_rc <expected> <ok-name> <fail-detail>
   if [ "$RC" -eq "$1" ]; then pass "$2"; else fail "$3"; fi
 }
 
+# shellcheck source=scripts/lib/canon-path.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/canon-path.sh"
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+# HIMMEL-3179: dispatch-codex-exec.sh resolves the worktree with `pwd -P`, so the
+# fixture root must be the physical spelling too (macOS TMPDIR sits behind the
+# /var -> /private/var link).
+TMP="$(canon_path "$TMP")" || { echo "setup: canon_path failed for the fixture root" >&2; exit 1; }
 
 WT="$TMP/.claude/worktrees/wt"
 mkdir -p "$WT"

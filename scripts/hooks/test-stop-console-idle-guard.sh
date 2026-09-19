@@ -44,7 +44,15 @@ ok()   { pass=$((pass+1)); printf '  ok   %s\n' "$1"; }
 bad()  { fail=$((fail+1)); printf '  FAIL %s\n' "$1"; }
 skip() { printf '  SKIP %s\n' "$1"; }
 
+# shellcheck source=scripts/lib/canon-path.sh
+# shellcheck disable=SC1091
+. "$HOOKS/../lib/canon-path.sh"
+
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/stop-console-idle-guard-test.XXXXXX")" || { echo "setup: mktemp -d failed" >&2; exit 1; }
+# HIMMEL-3179: queue-lock.sh derives the lock slug from the handover doc's path
+# under the CANONICAL handover root, so the fixture root must be canonical too
+# (macOS TMPDIR = /var/folders/../T/ - trailing "/" and the /var -> /private/var link).
+TMP="$(canon_path "$TMP")" || { echo "setup: canon_path failed for the fixture root" >&2; exit 1; }
 HANDOVER_DIR="$TMP/handover"
 XDG_RUNTIME_DIR="$TMP/xdg"
 mkdir -p "$HANDOVER_DIR" "$XDG_RUNTIME_DIR"

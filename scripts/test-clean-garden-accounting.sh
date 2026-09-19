@@ -32,6 +32,13 @@ pass() { echo "  PASS: $1"; PASS=$((PASS+1)); }
 fail() { echo "  FAIL: $1"; if [ $# -ge 2 ]; then printf '    %s\n' "$2"; fi; FAIL=$((FAIL+1)); }
 
 TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/himmel-clean-accounting.XXXXXX")
+# HIMMEL-3179: `git worktree list` reports the physical path, so the fixture root
+# must be the physical spelling before any worktree path is built from it (macOS
+# TMPDIR sits behind the /var -> /private/var link).
+# shellcheck source=scripts/lib/canon-path.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/lib/canon-path.sh"
+TMP_ROOT=$(canon_path "$TMP_ROOT") || { echo "setup: canon_path failed for the fixture root" >&2; exit 1; }
 TMP_ROOT_UNIX="$TMP_ROOT"
 if command -v cygpath >/dev/null 2>&1; then
     TMP_ROOT=$(cygpath -m "$TMP_ROOT")

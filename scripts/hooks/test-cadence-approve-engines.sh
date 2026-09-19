@@ -30,6 +30,9 @@ grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
 HOOK="$(cd "$(dirname "$0")" && pwd)/cadence-approve-engines.sh"
 [ -x "$HOOK" ] || chmod +x "$HOOK"
+# shellcheck source=scripts/lib/canon-path.sh
+# shellcheck disable=SC1091
+. "$(dirname "$HOOK")/../lib/canon-path.sh"
 
 FAILED=0
 
@@ -56,6 +59,10 @@ ABS_WRONG_ROOT="C:/tmp/evil/${ENG}"
 # any one operator's actual vault path. Cleaned up alongside the other
 # mktemp fixtures via the trap set further down.
 VAULT_FIXTURE=$(mktemp -d "${TMPDIR:-/tmp}/cadence-vault.XXXXXX")
+# HIMMEL-3179: the hook resolves the vault arg and the session cwd through
+# `cd && pwd`, so hand it the canonical spelling of the fixture (macOS TMPDIR
+# ends in "/" and sits behind /var -> /private/var).
+VAULT_FIXTURE=$(canon_path "$VAULT_FIXTURE") || { echo "setup: canon_path failed for the vault fixture" >&2; exit 1; }
 if command -v cygpath >/dev/null 2>&1; then
     VAULT_FIXTURE_MIXED=$(cygpath -m "$VAULT_FIXTURE" 2>/dev/null || printf '%s' "$VAULT_FIXTURE")
 else
@@ -154,7 +161,7 @@ mkdir -p "$SPACED_ROOT/scripts/hooks"
 # in the hook then never matches, rejecting the spaced-checkout assertions
 # below regardless of the fix under test. Canonicalize before deriving
 # SPACED_ROOT_MIXED/SPACED_ABS from it so both sides compare equal.
-SPACED_ROOT=$(cd "$SPACED_ROOT" && pwd)
+SPACED_ROOT=$(canon_path "$SPACED_ROOT") || { echo "setup: canon_path failed for the spaced root" >&2; exit 1; }
 cp "$HOOK" "$SPACED_ROOT/scripts/hooks/cadence-approve-engines.sh"
 SPACED_HOOK="$SPACED_ROOT/scripts/hooks/cadence-approve-engines.sh"
 if command -v cygpath >/dev/null 2>&1; then
@@ -493,6 +500,7 @@ assert "gh api endpoint with an embedded quoted separator -> still judged consis
 # there. A fake HOME fixture stands in for the cache tree; decide_with_hook_home
 # invokes the hook with that HOME so PLUGIN_CACHE_BASE resolves into it.
 FAKE_HOME=$(mktemp -d "${TMPDIR:-/tmp}/cadence-fake-home.XXXXXX")
+FAKE_HOME=$(canon_path "$FAKE_HOME") || { echo "setup: canon_path failed for the fake HOME" >&2; exit 1; }
 mkdir -p "$FAKE_HOME/.claude/plugins/cache/himmel/obsidian-triage/0.9.9/tools/lib"
 mkdir -p "$FAKE_HOME/.claude/plugins/cache/himmel/obsidian-triage/0.9.9/skills/vault-lint"
 touch "$FAKE_HOME/.claude/plugins/cache/himmel/obsidian-triage/0.9.9/tools/harvest-clip-body-batch.py"

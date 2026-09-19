@@ -27,7 +27,15 @@ command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not on PATH"; exit 0; }
 command -v git >/dev/null 2>&1 || { echo "SKIP: git not on PATH"; exit 0; }
 command -v node >/dev/null 2>&1 || { echo "SKIP: node not on PATH"; exit 0; }
 
+# shellcheck source=scripts/lib/canon-path.sh
+# shellcheck disable=SC1091
+. "$HOOKS_DIR/../lib/canon-path.sh"
+
+# HIMMEL-3179: canonicalise the fixture root so a path the rows BUILD compares
+# equal to the one the hooks REPORT (macOS TMPDIR ends in "/" and lives behind
+# the /var -> /private/var symlink).
 T="$(mktemp -d "${TMPDIR:-/tmp}/himmel-hook-rewrite-integrity.XXXXXX")"
+T="$(canon_path "$T")" || { echo "setup: canon_path failed for the fixture root" >&2; exit 1; }
 trap 'rm -rf "$T"' EXIT
 PROJECT="$T/project"
 OUT_DIR="$T/out"
