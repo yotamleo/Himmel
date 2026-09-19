@@ -1000,8 +1000,10 @@ _promote_lock_acquire() {
 _scratch_cleanup() {
   local rc=$?
   if [ "$rc" -ne 0 ] && [ -d "$SCRATCH/$GRAPHIFY_OUT_NAME" ] && [ -f "$SCRATCH/$GRAPHIFY_OUT_NAME/graph.json" ]; then
-    local qdir="${SCRATCH}.quarantine"
-    rm -rf "$qdir" 2>/dev/null || true
+    # HIMMEL-1414: never overwrite an older quarantine (it may hold another
+    # run's paid artifact) -- pick the first free name instead of rm -rf'ing.
+    local qdir="${SCRATCH}.quarantine" qn=0
+    while [ -e "$qdir" ]; do qn=$((qn + 1)); qdir="${SCRATCH}.$qn.quarantine"; done
     if mv "$SCRATCH/$GRAPHIFY_OUT_NAME" "$qdir" 2>/dev/null; then
       echo "refresh-graph-map: promote did not complete -- preserved the extracted $GRAPHIFY_OUT_NAME (graph.json, GRAPH_REPORT.md, semantic cache) at $qdir for inspection/reuse; nothing under $CORPUS_ROOT was touched" >&2
     else
@@ -1060,6 +1062,19 @@ PYEOF
   return $?
 }
 
+# _report_leftover_scratches -- HIMMEL-1414. Name (never delete) every earlier
+# run's scratch workdir or quarantine dir under $SCRATCH_PARENT for THIS --name
+# that still holds a finished graph.json: an orphaned unpromoted extraction is
+# the expensive artifact, and the operator needs to know it is there.
+_report_leftover_scratches() {
+  local d
+  for d in "$SCRATCH_PARENT/graphify-refresh-$NAME-"*; do
+    if [ -f "$d/graphify-out/graph.json" ] || { [ -f "$d/graph.json" ] && [ "${d%.quarantine}" != "$d" ]; }; then
+      echo "refresh-graph-map: NOTE leftover extraction artifact from an earlier run at $d holds a graph.json -- left untouched (not deleted); recover it before removing it" >&2
+    fi
+  done
+}
+
 if [ "$DO_UPDATE" -eq 1 ]; then
   command -v "$GRAPHIFY_MAP" >/dev/null 2>&1 || { echo "refresh-graph-map: '$GRAPHIFY_MAP' not on PATH (needed for --update; use --no-update to publish from an existing report)" >&2; exit 2; }
   # F3 (HIMMEL-907): python3 writes the freshness manifest (see stamp step
@@ -1067,16 +1082,23 @@ if [ "$DO_UPDATE" -eq 1 ]; then
   # BEFORE the scratch copy / paid extraction — never after promoting a new graph.
   command -v python3 >/dev/null 2>&1 || { echo "refresh-graph-map: python3 not found (needed to write manifest.json for freshness verification)" >&2; exit 2; }
   # Fence-safe incremental refresh on a scratchpad COPY (never the live corpus).
-  # Always work inside a uniquely-named, launcher-OWNED subdir (PID-suffixed) so
+  # Always work inside a uniquely-named, launcher-OWNED subdir (mktemp-suffixed) so
   # we never rm -rf an operator-supplied --scratch that may point at an existing
   # directory holding unrelated data (codex-adv [codex-1]). --scratch names only
   # the PARENT under which the owned workdir is created.
   SCRATCH_PARENT="${SCRATCH:-${TMPDIR:-/tmp}}"
   mkdir -p "$SCRATCH_PARENT" || { echo "refresh-graph-map: cannot create scratch parent: $SCRATCH_PARENT" >&2; exit 1; }
-  SCRATCH="$SCRATCH_PARENT/graphify-refresh-$NAME-$$"
-  rm -rf "$SCRATCH"; mkdir -p "$SCRATCH"
+  # HIMMEL-1414: the workdir is created by mktemp -d (unguessable suffix, made
+  # exclusively by THIS run) -- never "$$" plus a startup rm -rf. PIDs recycle,
+  # so a later run whose PID matched an earlier run's suffix used to rm -rf that
+  # run's finished-but-unpromoted graph (live loss 2026-07-31). Nothing that
+  # already exists under the parent is ever deleted at startup; leftovers that
+  # hold a graph.json are only NAMED on stderr so the operator can recover them.
+  _report_leftover_scratches
+  SCRATCH="$(mktemp -d "$SCRATCH_PARENT/graphify-refresh-$NAME-XXXXXX")" \
+    || { echo "refresh-graph-map: cannot create a scratch workdir under $SCRATCH_PARENT" >&2; exit 1; }
   # Clean the owned subdir on ANY exit — a graphify/cluster-only failure (exit 2)
-  # otherwise leaks it (CR suggestion). Scoped to the PID-owned dir only.
+  # otherwise leaks it (CR suggestion). Scoped to the mktemp-owned dir only.
   # _scratch_cleanup (HIMMEL-1406) quarantines the extracted graphify-out
   # instead of deleting it when the exit is a FAILURE and extraction had
   # already produced one — see its definition above.
@@ -2118,7 +2140,7 @@ if [ "$DO_UPDATE" -eq 1 ]; then
   done
   # HIMMEL-1134: sanitize the scratch report's HEADER, before promotion.
   # graphify titles GRAPH_REPORT.md by the EXTRACTION path -- here that's
-  # $SCRATCH, a PID-suffixed scratchpad dir = the operator's home dir +
+  # $SCRATCH, a mktemp-suffixed scratchpad dir = the operator's home dir +
   # username -- and that header would otherwise land in a TRACKED,
   # public-mirrored artifact (graphify-out/ went tracked in HIMMEL-1123).
   # Rewrite line 1 to carry the corpus NAME instead, preserving a trailing
