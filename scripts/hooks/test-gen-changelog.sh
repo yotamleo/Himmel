@@ -73,14 +73,19 @@ _failures=0
 
 run_test() {
   local name="$1" body="$2"
-  local rc=0
-  ( eval "$body" ) 2>/dev/null || rc=$?
+  local rc=0 errf
+  errf=$(mktemp "${TMPDIR:-/tmp}/test-gen-changelog-err.XXXXXX") || errf=/dev/null
+  ( eval "$body" ) 2>"$errf" || rc=$?
   if [ "$rc" -eq 0 ]; then
     printf '  PASS  %s\n' "$name"
   else
     printf '  FAIL  %s (subshell rc=%s)\n' "$name" "$rc"
+    # A bare "subshell rc=N" hid why every generation failed on the macOS
+    # nightly (HIMMEL-3177); show the body's stderr so the next run says why.
+    sed -n '1,20s/^/        stderr: /p' "$errf"
     _failures=$((_failures + 1))
   fi
+  [ "$errf" = /dev/null ] || rm -f -- "$errf"
 }
 
 # ---------------------------------------------------------------------------
