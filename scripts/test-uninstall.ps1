@@ -308,9 +308,12 @@ function Unregister-ScheduledTask {
         $env:PATH = $SavedPath
         Remove-Item Env:\BUN_STUB_RC -ErrorAction SilentlyContinue
     }
-    Assert-Rc 'kill-failure run still exits 0' 0 $script:Rc
+    # -PurgeState was asked for and skipped: an INCOMPLETE run (exit 2), never "complete".
+    Assert-Rc 'kill-failure run is INCOMPLETE (exit 2)' 2 $script:Rc
     Assert-Has 'kill failure WARNs' 'supervisor --kill rc=2 -- bridge may still be running' $out
     Assert-Has 'state removal skipped while bridge may run' 'SKIPPED: step 1 could not stop the bridge' $out
+    Assert-Has 'kill-failure run names the not-purged step' '[2/7] telegram pairing + bridge state: not purged' $out
+    Assert-Has 'kill-failure run reports Uninstall INCOMPLETE' 'Uninstall INCOMPLETE' $out
     if ((Test-Path (Join-Path $Channel 'access.json')) -and (Test-Path (Join-Path $Bridge 'sessions\S1\inbox.jsonl'))) {
         Write-Host 'PASS state preserved while bridge may be running'
     } else {
@@ -333,9 +336,12 @@ function Unregister-ScheduledTask {
         } else {
             $out = Invoke-Uninstall @('-Yes', '-PurgeState', '-SkipTasks', '-SkipPlugins', '-SkipHooks')
             $env:PATH = $SavedPath
-            Assert-Rc 'bun-missing run still exits 0' 0 $script:Rc
+            # Same contract as test 8: a skipped -PurgeState is INCOMPLETE (exit 2).
+            Assert-Rc 'bun-missing run is INCOMPLETE (exit 2)' 2 $script:Rc
             Assert-Has 'bun missing WARNs' 'bun is not on PATH' $out
             Assert-Has 'bun-missing run skips state removal' 'SKIPPED: step 1 could not stop the bridge' $out
+            Assert-Has 'bun-missing run names the not-purged step' '[2/7] telegram pairing + bridge state: not purged' $out
+            Assert-Has 'bun-missing run reports Uninstall INCOMPLETE' 'Uninstall INCOMPLETE' $out
             if (Test-Path (Join-Path $Channel 'access.json')) {
                 Write-Host 'PASS state preserved when bridge cannot be stopped'
             } else {

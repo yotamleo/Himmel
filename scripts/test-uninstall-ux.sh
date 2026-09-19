@@ -407,6 +407,24 @@ if grep -Fq '$SavedCacheDir = $env:HIMMELCTL_CACHE_DIR' "$SCRIPTS/test-uninstall
     pass "P2 test-uninstall.ps1 redirects the cache dir under \$Tmp and restores the operator's value"
 else fail "P2 test-uninstall.ps1 lets the wet default runs inherit the operator's HIMMELCTL_CACHE_DIR"; fi
 
+# ── P3 — the ps1 suite expects the new incomplete-purge exit (tests 8 + 9) ──
+# A -PurgeState run that skips the purge because the bridge may still be
+# running now exits 2 with an INCOMPLETE summary; the suite must say so, not
+# assert the old exit 0. Source-level (no pwsh here); the nightly is the proof.
+# shellcheck disable=SC2016 # the PowerShell $-variables are literal grep patterns
+if grep -Fq "Assert-Rc 'kill-failure run is INCOMPLETE (exit 2)' 2 \$script:Rc" "$SCRIPTS/test-uninstall.ps1" \
+    && grep -Fq "Assert-Rc 'bun-missing run is INCOMPLETE (exit 2)' 2 \$script:Rc" "$SCRIPTS/test-uninstall.ps1"; then
+    pass "P3 test-uninstall.ps1 tests 8 + 9 expect exit 2 for a skipped purge"
+else fail "P3 test-uninstall.ps1 still asserts exit 0 for a purge skipped under a possibly-running bridge"; fi
+if [ "$(grep -Fc '[2/7] telegram pairing + bridge state: not purged' "$SCRIPTS/test-uninstall.ps1")" -ge 2 ] \
+    && [ "$(grep -Fc 'Uninstall INCOMPLETE' "$SCRIPTS/test-uninstall.ps1")" -ge 2 ]; then
+    pass "P3 test-uninstall.ps1 tests 8 + 9 assert the not-purged and INCOMPLETE lines"
+else fail "P3 test-uninstall.ps1 tests 8 + 9 do not assert the not-purged / INCOMPLETE output"; fi
+if ! grep -Fq "Assert-Rc 'kill-failure run still exits 0'" "$SCRIPTS/test-uninstall.ps1" \
+    && ! grep -Fq "Assert-Rc 'bun-missing run still exits 0'" "$SCRIPTS/test-uninstall.ps1"; then
+    pass "P3 the stale 'still exits 0' assertions are gone"
+else fail "P3 test-uninstall.ps1 keeps a stale 'still exits 0' assertion for tests 8/9"; fi
+
 # ── L2 — the loader checks each required row's structural contract ─────────
 # Kind/step each valid on their own is not enough: a cache row of path '-' and
 # step '-' targets the literal '-' and reports the real cache absent.
