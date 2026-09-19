@@ -80,6 +80,40 @@ const LF_NOTE = [
   "",
 ].join("\n");
 
+describe("item 2 — CRLF frontmatter is detected and patched, line endings preserved byte-for-byte", () => {
+  const CRLF_HEAD = "---\r\ntype: tech-ingest\r\nsource: https://github.com/owner/repo\r\nstars: 5\r\n";
+  const CRLF_TAIL = "---\r\n\r\n# repo\r\n\r\nbody line with trailing spaces  \r\nlast line no newline";
+  const CRLF_NOTE = CRLF_HEAD + CRLF_TAIL;
+
+  test("a CRLF note is patched (skipped today) and every original byte outside the appended block is kept", () => {
+    const r = run({ notes: { "Clippings/crlf.md": CRLF_NOTE }, readme: Buffer.from("hi\n") });
+    const out = r.read("Clippings/crlf.md").toString("latin1");
+    expect(r.summary.notesUpdated).toBe(1);
+    // Original frontmatter lines, closing fence and body are verbatim, in order.
+    expect(out.startsWith(CRLF_HEAD)).toBe(true);
+    expect(out.endsWith(CRLF_TAIL)).toBe(true);
+    // The appended lines carry the note's own CRLF ending: no bare LF anywhere.
+    const appended = out.slice(CRLF_HEAD.length, out.length - CRLF_TAIL.length);
+    expect(appended).toContain("upstream_commit: abc123\r\n");
+    expect(appended).toContain("readme_sha256: ");
+    expect(appended.replace(/\r\n/g, "")).not.toMatch(/[\r\n]/);
+  });
+
+  test("re-running on an already-patched CRLF note is a no-op (bytes identical)", () => {
+    const first = run({ notes: { "Clippings/crlf.md": CRLF_NOTE }, readme: Buffer.from("hi\n") });
+    expect(first.summary.notesUpdated).toBe(1);
+    const once = first.read("Clippings/crlf.md");
+    const second = run({ notes: {}, readme: Buffer.from("hi\n") });
+    expect(second.summary.notesUpdated).toBe(0);
+    expect(second.read("Clippings/crlf.md").equals(once)).toBe(true);
+  });
+
+  test("an LF note is unchanged in behaviour: appended lines use LF", () => {
+    const r = run({ notes: { "Clippings/lf.md": LF_NOTE }, readme: Buffer.from("hi\n") });
+    expect(r.read("Clippings/lf.md").toString()).not.toContain("\r");
+  });
+});
+
 describe("item 1 — README hash comes from the authenticated README API, same bytes as luna-ingest", () => {
   // Non-ASCII + CRLF + trailing bytes: enough structure that any re-encoding or
   // newline normalisation would change the hash.

@@ -26,6 +26,7 @@ import { execFileSync } from "node:child_process";
 import {
   parseGithubSource,
   readmeSha256FromApiContent,
+  extractFrontmatterField,
   groupNotesByRepo,
   applyCanonicalRenames,
   buildIdentityFields,
@@ -63,19 +64,6 @@ function walkMarkdownFiles(root) {
     }
   }
   return out;
-}
-
-/** Extract a top-level `key: value` line's value from WITHIN the frontmatter block only. */
-function extractFrontmatterField(content, key) {
-  const lines = content.split("\n");
-  if (lines[0] !== "---") return null;
-  const closeIdx = lines.indexOf("---", 1);
-  if (closeIdx === -1) return null;
-  for (const line of lines.slice(1, closeIdx)) {
-    const m = line.match(new RegExp(`^${key}:\\s*(.*)$`));
-    if (m) return m[1].trim().replace(/^["']|["']$/g, "");
-  }
-  return null;
 }
 
 function loadNotes(vaultRoot) {

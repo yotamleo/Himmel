@@ -111,6 +111,24 @@ export function buildIdentityFields({
   return fields;
 }
 
+// Frontmatter fences are matched CR-tolerantly: a CRLF note splits on "\n" into
+// lines that still end in "\r", and must not be mistaken for a fence-less note.
+const isFence = (line) => line !== undefined && line.replace(/\r$/, "") === "---";
+const closingFenceIndex = (lines) => lines.findIndex((line, i) => i > 0 && isFence(line));
+
+/** Extract a top-level `key: value` line's value from WITHIN the frontmatter block only. */
+export function extractFrontmatterField(content, key) {
+  const lines = content.split("\n");
+  if (!isFence(lines[0])) return null;
+  const closeIdx = closingFenceIndex(lines);
+  if (closeIdx === -1) return null;
+  for (const line of lines.slice(1, closeIdx)) {
+    const m = line.replace(/\r$/, "").match(new RegExp(`^${key}:\\s*(.*)$`));
+    if (m) return m[1].trim().replace(/^["']|["']$/g, "");
+  }
+  return null;
+}
+
 /** A plain YAML scalar is unsafe once it contains ": " (colon-space) or starts with a special char. */
 function yamlScalar(value) {
   const str = String(value);
@@ -130,10 +148,10 @@ function yamlScalar(value) {
  */
 export function patchFrontmatter(content, fields) {
   const lines = content.split("\n");
-  if (lines[0] !== "---") {
+  if (!isFence(lines[0])) {
     throw new Error("patchFrontmatter: content does not start with a frontmatter fence");
   }
-  const closeIdx = lines.indexOf("---", 1);
+  const closeIdx = closingFenceIndex(lines);
   if (closeIdx === -1) {
     throw new Error("patchFrontmatter: no closing frontmatter fence found");
   }
@@ -151,7 +169,10 @@ export function patchFrontmatter(content, fields) {
     return { content, changed: false };
   }
 
-  const appended = toAppend.map((f) => `${f.key}: ${yamlScalar(f.value)}`);
+  // Split on "\n" leaves a CRLF note's "\r" on every original line, so those
+  // round-trip untouched; the appended lines take the opening fence's ending.
+  const cr = lines[0].endsWith("\r") ? "\r" : "";
+  const appended = toAppend.map((f) => `${f.key}: ${yamlScalar(f.value)}${cr}`);
   const newLines = [...frontmatterLines, ...appended, ...rest];
   return { content: newLines.join("\n"), changed: true };
 }

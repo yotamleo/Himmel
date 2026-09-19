@@ -5,6 +5,7 @@ import {
   applyCanonicalRenames,
   buildIdentityFields,
   patchFrontmatter,
+  extractFrontmatterField,
 } from "../lib/source-identity.mjs";
 
 describe("parseGithubSource", () => {
@@ -206,5 +207,33 @@ describe("patchFrontmatter — additive write + idempotence", () => {
       { key: "revalidation_delta", value: 'stars: 964→1200 (+236)' },
     ]);
     expect(content).toContain('revalidation_delta: "stars: 964→1200 (+236)"');
+  });
+});
+
+describe("CRLF frontmatter (HIMMEL-3063)", () => {
+  const crlf = "---\r\ntype: tech-ingest\r\nsource: https://github.com/owner/repo\r\nstars: 5\r\ntrust_tier_reason: \"pushed_at=2026-05-21\"\r\n---\r\n\r\n# repo\r\n";
+
+  test("extractFrontmatterField reads a value off a CRLF line without the trailing CR", () => {
+    expect(extractFrontmatterField(crlf, "source")).toBe("https://github.com/owner/repo");
+    expect(extractFrontmatterField(crlf, "stars")).toBe("5");
+  });
+
+  test("extractFrontmatterField still ignores a key that only appears in the body, and a fence-less note", () => {
+    expect(extractFrontmatterField("---\r\ntype: x\r\n---\r\nsource: https://github.com/a/b\r\n", "source")).toBeNull();
+    expect(extractFrontmatterField("no frontmatter\r\nsource: x\r\n", "source")).toBeNull();
+  });
+
+  test("patchFrontmatter appends CRLF-terminated lines and leaves every original byte in place", () => {
+    const { content, changed } = patchFrontmatter(crlf, [{ key: "upstream_commit", value: "abc123" }]);
+    expect(changed).toBe(true);
+    const at = crlf.indexOf("---\r\n\r\n# repo");
+    expect(content).toBe(crlf.slice(0, at) + "upstream_commit: abc123\r\n" + crlf.slice(at));
+  });
+
+  test("patchFrontmatter on a CRLF note is idempotent", () => {
+    const first = patchFrontmatter(crlf, [{ key: "upstream_commit", value: "abc123" }]);
+    const second = patchFrontmatter(first.content, [{ key: "upstream_commit", value: "abc123" }]);
+    expect(second.changed).toBe(false);
+    expect(second.content).toBe(first.content);
   });
 });
