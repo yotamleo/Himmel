@@ -1400,6 +1400,28 @@ sync_marketplaces() {
     return 0
 }
 
+# _node_vs_pin <node-version> <pin> — prints match|behind|ahead|unknown.
+# Compares only as many dot-components as the pin gives (20 = major, 20.11 =
+# major.minor, 20.11.0 = major.minor.patch); a leading "v" is ignored on both.
+# A pin or version that is not plain digits-and-dots (lts/*, a -nightly build)
+# is "unknown" — reported, never an error (HIMMEL-3088).
+_node_vs_pin() {
+    local have="${1#v}" pin="${2#v}"
+    case "$pin"  in ''|*[!0-9.]*|.*|*.|*..*|*.*.*.*) echo unknown; return 0 ;; esac
+    case "$have" in ''|*[!0-9.]*|.*|*.|*..*)          echo unknown; return 0 ;; esac
+    local p_rest="$pin" h_rest="$have" p h
+    while [ -n "$p_rest" ]; do
+        p="${p_rest%%.*}"
+        if [ "$p_rest" = "$p" ]; then p_rest=""; else p_rest="${p_rest#*.}"; fi
+        h="${h_rest%%.*}"
+        if [ "$h_rest" = "$h" ]; then h_rest=""; else h_rest="${h_rest#*.}"; fi
+        [ -n "$h" ] || h=0
+        if [ $((10#$h)) -lt $((10#$p)) ]; then echo behind; return 0; fi
+        if [ $((10#$h)) -gt $((10#$p)) ]; then echo ahead; return 0; fi
+    done
+    echo match
+}
+
 # ─── node/npm/bun toolchain (HIMMEL-3068) ────────────────────────────────────
 # Installers pin Node from .nvmrc ONCE, at install time (ubuntu.sh/win11.ps1/
 # macos.sh), and this script consumes node/npm/bun throughout (jira_cli,
@@ -1438,16 +1460,19 @@ report_toolchain() {
         echo "    skip: .nvmrc not found."
         return 0
     fi
-    local pin pin_major
+    local pin
     pin="$(tr -d '[:space:]' < "$nvmrc")"
-    pin_major="${pin#v}"; pin_major="${pin_major%%.*}"
 
     if command -v node >/dev/null 2>&1; then
-        local node_ver node_major
+        local node_ver verdict
         node_ver="$(node --version 2>/dev/null)"
-        node_major="${node_ver#v}"; node_major="${node_major%%.*}"
-        if [ -n "$pin_major" ] && [ "$node_major" != "$pin_major" ]; then
-            echo "    node $node_ver is behind the .nvmrc pin ($pin) — NOT moving it automatically."
+        verdict="$(_node_vs_pin "$node_ver" "$pin")"
+        if [ "$verdict" = "unknown" ]; then
+            echo "    node $node_ver — the .nvmrc pin ($pin) is not a plain version number; cannot compare (report only)."
+        elif [ "$verdict" = "ahead" ]; then
+            echo "    node $node_ver is ahead of pin (.nvmrc $pin) — report only; the pin was not moved."
+        elif [ "$verdict" = "behind" ]; then
+            echo "    node $node_ver is behind pin (.nvmrc $pin) — NOT moving it automatically."
             if [ -f "$HOME/.nvm/nvm.sh" ]; then
                 echo "    fix (nvm): . \"\$HOME/.nvm/nvm.sh\" && nvm install $pin && nvm alias default $pin"
             elif command -v fnm >/dev/null 2>&1; then

@@ -270,7 +270,9 @@ unconditional rather than drift-driven:
   termination an agent may not perform. The step prints the operator commands;
   it never kills anything.
 - **node/npm/bun toolchain** (HIMMEL-3068) — reports node against the pinned
-  `.nvmrc` (never moves it — a live lane is very likely running on the
+  `.nvmrc` at the pin's own granularity (major, major.minor or
+  major.minor.patch) as match / behind pin / ahead of pin, and a non-numeric
+  pin such as `lts/*` as a plain report (HIMMEL-3088; never moves it — a live lane is very likely running on the
   current node the instant this runs; prints the `nvm`/`fnm` fix instead) and
   self-upgrades npm/bun in place via their own built-in updaters. If `bun` is
   missing entirely, the qmd fork step's "skipped" status gets a loud
