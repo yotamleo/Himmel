@@ -562,7 +562,9 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
                  line:Number(spec.line)||spec.line,verdict:spec.verdict,artifact,perspective};
       if(spec.responding_model) rec.responding_model=spec.responding_model;
       if(spec.reason) rec.reason=spec.reason;
-      if(spec.detail) rec.detail=spec.detail;
+      // HIMMEL-3207: same flatten -> scrub -> 200-char cap the shell applies to
+      // argv --detail (:325-327); a batch spec used to store it raw.
+      if(spec.detail) rec.detail=scrubSecrets(String(spec.detail).replace(/[\r\n]/g," ")).slice(0,200);
       if(spec.deferred_to) rec.deferred_to=spec.deferred_to;
       if(spec.round) rec.round=Number(spec.round);
       if(spec.disposition_round) rec.disposition_round=Number(spec.disposition_round);

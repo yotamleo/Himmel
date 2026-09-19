@@ -1163,4 +1163,17 @@ check "control: prose mentioning Bearer / a bare numeric id is byte-identical" "
 crlf_add CN4 "a"$'\r\n'"b"$'\n\n'"c"
 check "control: a plain CRLF/LF run still flattens per character (no re-spacing)" "$(crlf_text CN4)" "a  b  c"
 
+# ── HIMMEL-3207 (2nd site): batch spec.detail took no scrub/flatten/cap ─────
+# The batch producer path stored spec.detail raw, while argv --detail is
+# flattened -> scrubbed -> capped at 200. Same treatment now, JS twin of the shell.
+CRDH=$(printf '%040d' 32071); CRDF="$tmp/crlf-batch-detail.jsonl"
+CT="$_c_tok" CH="$CRDH" node -e 'const e=process.env;const row=(id,d)=>JSON.stringify({branch:"b",head:e.CH,model:"codex",id,severity:"imp",file:"f",line:1,verdict:"",detail:d})+"\n";process.stdout.write(row("cd-1","auth failed Bearer "+e.CT)+row("cd-2","auth failed Bearer\r\n"+e.CT)+row("cd-3","plain provider error  with two  spaces")+row("cd-4","x".repeat(300))+row("cd-5","line one\nline two"))' > "$CRDF"
+CR_LEDGER="$CRL" bash "$LA" finding --batch-file "$CRDF"
+crlf_bdetail(){ H="$CRDH" I="$1" L="$CRL" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.head===process.env.H&&r.finding_id===process.env.I);console.log(o.detail)'; }
+check "batch spec.detail: Bearer<tok> is redacted" "$(crlf_bdetail cd-1)" "auth failed Bearer [REDACTED]"
+check "batch spec.detail: Bearer<CRLF><tok> is redacted" "$(crlf_bdetail cd-2)" "auth failed Bearer [REDACTED]"
+check "control: batch spec.detail with no secret is byte-identical" "$(crlf_bdetail cd-3)" "plain provider error  with two  spaces"
+check "batch spec.detail is capped at 200 like argv --detail" "$(crlf_bdetail cd-4 | tr -d '\n' | wc -c | tr -d ' ')" "200"
+check "batch spec.detail flattens an embedded newline like argv --detail" "$(crlf_bdetail cd-5)" "line one line two"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }
