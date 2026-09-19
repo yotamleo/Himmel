@@ -175,14 +175,55 @@ HIMMEL_VM_LOCK_QUIET=0
 #   boundary — a delimited string is the same "exported string" shape the
 #   original design already relied on, generalised from one slot to a set.
 #
-#   _VM_LOCK_GEN — a bash associative array, dir -> the EXACT raw owner-file
-#   content THIS process itself read at the moment it won the lock. Never
-#   exported (cannot be, and must not be: only the process that actually
-#   performed the acquire may release, exactly mirroring the original
-#   suite_lock_owned scalar gate — generalised per name here since more
-#   than one name can be genuinely owned by this process at once). Consumed
-#   by vm_lock_release's CAS-protected drop (codex-8, see that function).
-declare -A _VM_LOCK_GEN
+#   _VM_LOCK_GEN_DIRS / _VM_LOCK_GEN_VALS — parallel indexed arrays forming a
+#   dir -> the EXACT raw owner-file content THIS process itself read at the
+#   moment it won the lock. (Not `declare -A`: macOS ships bash 3.2, which has
+#   no associative arrays; the set is a handful of entries, so a linear scan
+#   is fine.) Never exported (cannot be, and must not be: only the process
+#   that actually performed the acquire may release, exactly mirroring the
+#   original suite_lock_owned scalar gate — generalised per name here since
+#   more than one name can be genuinely owned by this process at once).
+#   Consumed by vm_lock_release's CAS-protected drop (codex-8, see that
+#   function). Accessors: _vm_lock_gen_set / _get / _unset.
+_VM_LOCK_GEN_DIRS=()
+_VM_LOCK_GEN_VALS=()
+
+_vm_lock_gen_set() {  # <dir> <raw>
+    local i n=${#_VM_LOCK_GEN_DIRS[@]}
+    for ((i = 0; i < n; i++)); do
+        if [ "${_VM_LOCK_GEN_DIRS[$i]}" = "$1" ]; then
+            _VM_LOCK_GEN_VALS[i]="$2"
+            return 0
+        fi
+    done
+    _VM_LOCK_GEN_DIRS[n]="$1"
+    _VM_LOCK_GEN_VALS[n]="$2"
+}
+
+_vm_lock_gen_get() {  # <dir> — prints the remembered raw content, nothing if none
+    local i n=${#_VM_LOCK_GEN_DIRS[@]}
+    for ((i = 0; i < n; i++)); do
+        if [ "${_VM_LOCK_GEN_DIRS[$i]}" = "$1" ]; then
+            printf '%s' "${_VM_LOCK_GEN_VALS[$i]}"
+            return 0
+        fi
+    done
+    return 0
+}
+
+_vm_lock_gen_unset() {  # <dir> — shift the tail down so the arrays stay dense
+    local i j n=${#_VM_LOCK_GEN_DIRS[@]}
+    for ((i = 0; i < n; i++)); do
+        [ "${_VM_LOCK_GEN_DIRS[$i]}" = "$1" ] || continue
+        for ((j = i; j < n - 1; j++)); do
+            _VM_LOCK_GEN_DIRS[j]="${_VM_LOCK_GEN_DIRS[$((j + 1))]}"
+            _VM_LOCK_GEN_VALS[j]="${_VM_LOCK_GEN_VALS[$((j + 1))]}"
+        done
+        unset "_VM_LOCK_GEN_DIRS[$((n - 1))]" "_VM_LOCK_GEN_VALS[$((n - 1))]"
+        return 0
+    done
+    return 0
+}
 
 _vm_lock_is_held() {
     case ":${HIMMEL_VM_LOCK_HELD:-}:" in
@@ -198,7 +239,7 @@ _vm_lock_mark_held() {
     local dir="$1"
     _vm_lock_is_held "$dir" || HIMMEL_VM_LOCK_HELD="${HIMMEL_VM_LOCK_HELD:+$HIMMEL_VM_LOCK_HELD:}$dir"
     export HIMMEL_VM_LOCK_HELD
-    _VM_LOCK_GEN["$dir"]="$(_vm_lock_owner_raw "$dir")"
+    _vm_lock_gen_set "$dir" "$(_vm_lock_owner_raw "$dir")"
 }
 
 # _vm_lock_unmark_held <dir> — remove <dir> from the held-set and forget its
@@ -215,7 +256,7 @@ _vm_lock_unmark_held() {
     done
     HIMMEL_VM_LOCK_HELD="$new"
     export HIMMEL_VM_LOCK_HELD
-    unset "_VM_LOCK_GEN[$dir]"
+    _vm_lock_gen_unset "$dir"
 }
 
 _vm_lock_path() { printf '%s/himmel-vm-lock-%s' "$HIMMEL_VM_LOCK_DIR" "$1"; }
@@ -824,14 +865,14 @@ _vm_lock_release_cas() {
 
 # vm_lock_release <name> — safe to call unconditionally (from a trap, or on
 # a name this process never held): only a name THIS process itself recorded
-# acquiring (present in _VM_LOCK_GEN — never exported, so a re-entrant CHILD
+# acquiring (present in _VM_LOCK_GEN_DIRS/_VALS — never exported, so a re-entrant CHILD
 # that only inherited the HELD-set string never attempts a release it does
 # not own, same gate shape as the original's `suite_lock_owned` scalar,
 # generalised per lock name) is ever a candidate for deletion, and even then
 # only via the CAS-protected drop above.
 vm_lock_release() {
     local name="$1" dir; dir=$(_vm_lock_path "$name")
-    local gen="${_VM_LOCK_GEN[$dir]:-}"
+    local gen; gen=$(_vm_lock_gen_get "$dir")
     if [ -n "$gen" ]; then
         _vm_lock_release_cas "$dir" "$gen"
     fi
