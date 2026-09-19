@@ -318,7 +318,7 @@ pathD=$(build_path "$stubD" bash jq python3 npm --)
 homeD="$work/homeD"; mkdir -p "$homeD"
 
 set +e
-outD=$(PATH="$pathD" HOME="$homeD" USERPROFILE="$(winpath "$homeD")" HIMMELCTL_CACHE_DIR="$(winpath "$homeD.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$homeD.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 \
+outD=$(PATH="$pathD" HOME="$homeD" USERPROFILE="$(winpath "$homeD")" HIMMELCTL_CACHE_DIR="$(winpath "$homeD.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$homeD.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 HIMMELCTL_CADENCE_PLATFORM=win32 \
   "$node_bin" "$wizard" install --dry-run 2>&1 <<INPUT
 starter
 project
@@ -353,6 +353,37 @@ grepq "$outD" -F -- '"pull-cadence":' \
   && fail "case d: pull-cadence must stay genuinely absent from cadences (requires env:GOOGLE_HEALTH_REFRESH_TOKEN, unset here) (got: $outD)"
 echo "ok: case d — vault=none + codex lane still asks cadences, offering codex-sweep + the three requires:'none' rows; arming codex-sweep records the rest off, with the vault- and env-requiring rows genuinely absent"
 
+# case d2 (HIMMEL-3086): the non-Windows twin of case d above, which pins
+# HIMMELCTL_CADENCE_PLATFORM=win32 (repo-sync is requires:'platform:windows').
+# Same vault=none + codex run on a linux host: repo-sync is genuinely absent.
+stubD2="$work/stubD2"; mkdir -p "$stubD2"
+pathD2=$(build_path "$stubD2" bash jq python3 npm --)
+homeD2="$work/homeD2"; mkdir -p "$homeD2"
+
+set +e
+outD2=$(PATH="$pathD2" HOME="$homeD2" USERPROFILE="$(winpath "$homeD2")" HIMMELCTL_CACHE_DIR="$(winpath "$homeD2.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$homeD2.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 HIMMELCTL_CADENCE_PLATFORM=linux \
+  "$node_bin" "$wizard" install --dry-run 2>&1 <<INPUT
+starter
+project
+none
+inline
+lean
+codex
+no
+1
+no
+INPUT
+); rcD2=$?
+set -e
+[ "$rcD2" -eq 0 ] || fail "case d2: vault=none + codex lane run on linux should succeed (got rc=$rcD2): $outD2"
+grepq "$outD2" -F -- '? cadences — recurring scheduled jobs to arm now [codex-sweep,drift-fix,upstream-watch|none] (default: none)' \
+  || fail "case d2: on linux, vault=none + codex should offer codex-sweep + drift-fix + upstream-watch but NOT repo-sync (got: $outD2)"
+grepq "$outD2" -F -- '"codex-sweep": "armed"' \
+  || fail "case d2: selecting codex-sweep should record it armed (got: $outD2)"
+grepq "$outD2" -F -- 'repo-sync' \
+  && fail "case d2: repo-sync must be genuinely absent (menu and answers) on a linux host (got: $outD2)"
+echo "ok: case d2 — the linux twin of case d: repo-sync is genuinely absent, the rest of the menu is unchanged"
+
 # ═══════════════════════════════════════════════════════════════════════════
 # case e (interactive, installer v1 spec-deviation fix -- narrowed by
 # HIMMEL-3068): vault=none + NO codex lane -> the vault- and lane:codex-
@@ -371,7 +402,7 @@ pathE=$(build_path "$stubE" bash jq python3 npm --)
 homeE="$work/homeE"; mkdir -p "$homeE"
 
 set +e
-outE=$(PATH="$pathE" HOME="$homeE" USERPROFILE="$(winpath "$homeE")" HIMMELCTL_CACHE_DIR="$(winpath "$homeE.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$homeE.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 \
+outE=$(PATH="$pathE" HOME="$homeE" USERPROFILE="$(winpath "$homeE")" HIMMELCTL_CACHE_DIR="$(winpath "$homeE.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$homeE.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 HIMMELCTL_CADENCE_PLATFORM=win32 \
   "$node_bin" "$wizard" install --dry-run 2>&1 <<INPUT
 starter
 project
@@ -401,6 +432,55 @@ grepq "$outE" -F -- '"pipeline":' \
 grepq "$outE" -F -- '"pull-cadence":' \
   && fail "case e: pull-cadence must stay genuinely absent from cadences (requires env:GOOGLE_HEALTH_REFRESH_TOKEN, unset here) (got: $outE)"
 echo "ok: case e — vault=none without the codex lane still asks cadences (the three requires:'none' rows always qualify); declining them all records every offered row off, with the vault-/lane-/env-gated rows genuinely absent"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# case e2 (HIMMEL-3086; also the linux twin of case e, which pins win32): platform eligibility. repo-sync carries
+# requires:'platform:windows' (schtasks only, no crontab arm path), so the
+# vault=none + no-codex menu of case e must offer it ONLY on a Windows host.
+# The host is a seam (HIMMELCTL_CADENCE_PLATFORM, process.platform vocabulary),
+# so all three platforms are proven from any CI OS. Controls: the two
+# `requires:'none'` rows (drift-fix/upstream-watch) are offered on all three,
+# and a pinned-Windows run records repo-sync as an honest 'off', while a
+# Linux/macOS run leaves it genuinely absent (never asked, never fabricated).
+# ═══════════════════════════════════════════════════════════════════════════
+
+for platE2 in linux darwin win32; do
+  stubE2="$work/stubE2-$platE2"; mkdir -p "$stubE2"
+  pathE2=$(build_path "$stubE2" bash jq python3 npm --)
+  homeE2="$work/homeE2-$platE2"; mkdir -p "$homeE2"
+  set +e
+  outE2=$(PATH="$pathE2" HOME="$homeE2" USERPROFILE="$(winpath "$homeE2")" HIMMELCTL_CACHE_DIR="$(winpath "$homeE2.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$homeE2.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 HIMMELCTL_CADENCE_PLATFORM="$platE2" \
+    "$node_bin" "$wizard" install --dry-run 2>&1 <<INPUT
+starter
+project
+none
+inline
+lean
+
+no
+
+no
+INPUT
+  ); rcE2=$?
+  set -e
+  [ "$rcE2" -eq 0 ] || fail "case e2($platE2): run should succeed (got rc=$rcE2): $outE2"
+  if [ "$platE2" = "win32" ]; then
+    grepq "$outE2" -F -- '? cadences — recurring scheduled jobs to arm now [drift-fix,upstream-watch,repo-sync|none] (default: none)' \
+      || fail "case e2(win32): a Windows host must be offered repo-sync (got: $outE2)"
+    grepq "$outE2" -F -- '"repo-sync": "off"' \
+      || fail "case e2(win32): declining repo-sync should record off (got: $outE2)"
+  else
+    grepq "$outE2" -F -- '? cadences — recurring scheduled jobs to arm now [drift-fix,upstream-watch|none] (default: none)' \
+      || fail "case e2($platE2): a non-Windows host must NOT be offered repo-sync (got: $outE2)"
+    grepq "$outE2" -F -- 'repo-sync' \
+      && fail "case e2($platE2): repo-sync must be genuinely absent (menu and answers) on a non-Windows host (got: $outE2)"
+  fi
+  grepq "$outE2" -F -- '"drift-fix": "off"' \
+    || fail "case e2($platE2): drift-fix (requires:'none') must stay offered on every platform (got: $outE2)"
+  grepq "$outE2" -F -- '"upstream-watch": "off"' \
+    || fail "case e2($platE2): upstream-watch (requires:'none') must stay offered on every platform (got: $outE2)"
+done
+echo "ok: case e2 — repo-sync (requires:'platform:windows') is offered on a win32 host and genuinely absent on linux/darwin; the requires:'none' rows are offered on all three"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # case f (HIMMEL-2302 CR round 1 Fix 1, documented consent asymmetry): a

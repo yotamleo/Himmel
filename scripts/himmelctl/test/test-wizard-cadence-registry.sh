@@ -21,6 +21,11 @@
 #   b. NEGATIVE CONTROL (HIMMEL-2320, mandatory): a synthetic registry naming
 #      a script missing cmd_disarm() -> the SAME lint logic fails, naming the
 #      row and the missing function.
+#   d/e (HIMMEL-3086): platform eligibility — a `requires:'platform:<name>'`
+#      row is offered only on its own host (repo-sync = windows only); every
+#      other row's offered-ness is platform-invariant; the tag vocabulary is
+#      pinned on a fixture registry (unknown tag still offered; unknown
+#      platform name matches no host).
 #   c. every registry id is unique (a duplicate id would let one row's
 #      disposition silently shadow another's in bin.js's dispositions map).
 
@@ -119,5 +124,56 @@ console.log(dups.join(','));
 ")
 [ -z "$dupCheck" ] || fail "case c: duplicate cadence registry id(s): $dupCheck"
 echo "ok: case c — every cadence-registry.json id is unique"
+
+# ── case d (HIMMEL-3086): platform eligibility filters the OFFERED set ─────
+# offeredCadenceRows(lanes, vaultMode, platform, registry) is bin.js's pure
+# per-row filter. Every real row is exercised on all three hosts (the env:
+# row is dropped — it reads the operator's real .env, not a platform fact).
+# repo-sync (requires:'platform:windows') must be offered on win32 ONLY, and
+# every OTHER row's offered-ness must be identical across the three platforms.
+offeredD=$("$node_bin" -e "
+const { offeredCadenceRows } = require(process.argv[1]);
+const reg = require(process.argv[2]).cadences.filter((r) => String(r.requires).indexOf('env:') !== 0);
+const out = {};
+for (const p of ['linux', 'darwin', 'win32']) {
+  out[p] = offeredCadenceRows(['codex'], 'default-template', p, reg).map((r) => r.id).sort();
+}
+console.log(JSON.stringify(out));
+" "$repo_root/scripts/himmelctl/bin.js" "$registry")
+"$node_bin" -e "
+const o = JSON.parse(process.argv[1]);
+const rest = (p) => o[p].filter((id) => id !== 'repo-sync').join(',');
+const problems = [];
+if (o.linux.includes('repo-sync')) problems.push('repo-sync offered on linux');
+if (o.darwin.includes('repo-sync')) problems.push('repo-sync offered on darwin');
+if (!o.win32.includes('repo-sync')) problems.push('repo-sync NOT offered on win32');
+if (rest('linux') !== rest('darwin') || rest('darwin') !== rest('win32')) problems.push('a non-repo-sync row differs across platforms: ' + JSON.stringify(o));
+if (rest('linux') === '') problems.push('control vacuous: no other row offered');
+if (problems.length) { console.error(problems.join('; ')); process.exit(1); }
+" "$offeredD" || fail "case d: platform eligibility of the real registry is wrong (offered sets: $offeredD)"
+echo "ok: case d — repo-sync (platform:windows) is offered on win32 only; every other real row's offered-ness is identical on linux/darwin/win32"
+
+# ── case e (HIMMEL-3086): tag vocabulary controls on a fixture registry ────
+# An unknown requires tag still falls through to 'offered' (unchanged
+# behavior); a platform tag naming an UNKNOWN platform matches no host.
+offeredE=$("$node_bin" -e "
+const { offeredCadenceRows } = require(process.argv[1]);
+const reg = [
+  { id: 'plain', requires: 'none' },
+  { id: 'unknown-tag', requires: 'bogus' },
+  { id: 'win-only', requires: 'platform:windows' },
+  { id: 'mac-only', requires: 'platform:macos' },
+  { id: 'lin-only', requires: 'platform:linux' },
+  { id: 'unknown-platform', requires: 'platform:beos' },
+];
+const out = {};
+for (const p of ['linux', 'darwin', 'win32']) {
+  out[p] = offeredCadenceRows([], 'none', p, reg).map((r) => r.id).join(',');
+}
+console.log(JSON.stringify(out));
+" "$repo_root/scripts/himmelctl/bin.js")
+[ "$offeredE" = '{"linux":"plain,unknown-tag,lin-only","darwin":"plain,unknown-tag,mac-only","win32":"plain,unknown-tag,win-only"}' ] \
+  || fail "case e: platform tag vocabulary on a fixture registry is wrong (got: $offeredE)"
+echo "ok: case e — platform:windows|macos|linux each match only their own host; an unknown requires tag is still offered; platform:<unknown> matches no host"
 
 echo "PASS"

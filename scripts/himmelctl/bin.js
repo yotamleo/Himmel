@@ -1272,12 +1272,29 @@ async function askLanes(ask, defaultLanes) {
 // source config get/set already read from. None of these is ever asked
 // otherwise — the answer stays genuinely undefined, the same round-8 "not
 // asked ≠ answered off" discipline every other section in this file follows.
-function offeredCadenceRows(lanes, vaultMode) {
-  return CADENCE_REGISTRY.filter((r) => {
+// A 'requires:platform:<windows|macos|linux>' row (HIMMEL-3086 — repo-sync is
+// schtasks-only) is offered only when the host matches; the host is
+// cadencePlatform(), a hermetic-test seam over process.platform. An
+// unrecognised `requires` string is still offered (the pre-existing
+// fall-through); an unrecognised platform NAME matches no host, so it is never.
+const CADENCE_PLATFORM_NAMES = { win32: 'windows', darwin: 'macos', linux: 'linux' };
+
+// HIMMELCTL_CADENCE_PLATFORM is a hermetic-test seam (process.platform
+// vocabulary: win32|darwin|linux); normal runs use the real process platform.
+function cadencePlatform() {
+  return process.env.HIMMELCTL_CADENCE_PLATFORM || process.platform;
+}
+
+function offeredCadenceRows(lanes, vaultMode, platform, registry) {
+  const host = CADENCE_PLATFORM_NAMES[platform || cadencePlatform()];
+  return (registry || CADENCE_REGISTRY).filter((r) => {
     if (r.requires === 'lane:codex') return (lanes || []).indexOf('codex') !== -1;
     if (r.requires === 'vault') return vaultMode !== 'none';
     if (typeof r.requires === 'string' && r.requires.indexOf('env:') === 0) {
       return readEnvVarFile(r.requires.slice(4)) !== '';
+    }
+    if (typeof r.requires === 'string' && r.requires.indexOf('platform:') === 0) {
+      return host !== undefined && r.requires.slice(9) === host;
     }
     return true;
   });
@@ -7525,4 +7542,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { augmentPathForRun, gitGateHooksState, userSlugState, applyWorkspaceTrust };
+module.exports = { augmentPathForRun, gitGateHooksState, userSlugState, applyWorkspaceTrust, offeredCadenceRows };

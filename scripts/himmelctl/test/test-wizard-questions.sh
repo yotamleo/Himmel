@@ -142,8 +142,9 @@ set -e
 [ "$rc" -eq 0 ] || fail "case1: starter-profile run should succeed (got rc=$rc)"
 qs=$(count_questions "$out")
 # HIMMEL-3068: vault=none + no codex lane no longer means zero cadence rows
-# qualify — drift-fix/upstream-watch/repo-sync are requires:'none' and always
-# offered, so the cadences question is now asked (+1), and closed stdin
+# qualify — drift-fix/upstream-watch are requires:'none' and always offered
+# (repo-sync is requires:'platform:windows', HIMMEL-3086), so the cadences
+# question is now asked (+1), and closed stdin
 # declines all three, which triggers the disarm-consent follow-up (+1) —
 # 7 main questions + those 2 = 9. See test-wizard-cadence-per-unit.sh case e
 # for the row-level coverage of this exact scenario.
@@ -202,7 +203,7 @@ stub2b="$work/case2b"; mkdir -p "$stub2b"
 c2bpath=$(build_path "$stub2b" bash jq python3 npm -- )
 h2b="$work/h2b"; mkdir -p "$h2b"
 set +e
-outOp=$(PATH="$c2bpath" HOME="$h2b" USERPROFILE="$(winpath "$h2b")" HIMMELCTL_CACHE_DIR="$(winpath "$h2b.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$h2b.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 \
+outOp=$(PATH="$c2bpath" HOME="$h2b" USERPROFILE="$(winpath "$h2b")" HIMMELCTL_CACHE_DIR="$(winpath "$h2b.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$h2b.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 HIMMELCTL_CADENCE_PLATFORM=win32 \
       "$node_bin" "$wizard" install --dry-run 2>&1 <<< "operator"); rcOp=$?
 set -e
 [ "$rcOp" -eq 0 ] || fail "case2(operator): should succeed (got rc=$rcOp): $outOp"
@@ -214,6 +215,19 @@ grepq "$outOp" -F '(default: yes)' \
   || fail "case2(operator): should seed alwaysOn default=yes (got: $outOp)"
 grepq "$outOp" -F '? cadences — recurring scheduled jobs to arm now [pipeline,qmd,graphmap,drift-fix,upstream-watch,repo-sync|none] (default: pipeline,qmd,graphmap)' \
   || fail "case2(operator): should seed cadences default=pipeline,qmd,graphmap, offering the HIMMEL-3068 requires:'none' rows too (got: $outOp)"
+# HIMMEL-3086: the run above pins HIMMELCTL_CADENCE_PLATFORM=win32 because
+# repo-sync is requires:'platform:windows'. The non-Windows twin: same
+# preset, linux host -> the same menu MINUS repo-sync, defaults unchanged.
+stub2c="$work/case2c"; mkdir -p "$stub2c"
+c2cpath=$(build_path "$stub2c" bash jq python3 npm -- )
+h2c="$work/h2c"; mkdir -p "$h2c"
+set +e
+outOpLinux=$(PATH="$c2cpath" HOME="$h2c" USERPROFILE="$(winpath "$h2c")" HIMMELCTL_CACHE_DIR="$(winpath "$h2c.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$h2c.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 HIMMELCTL_CADENCE_PLATFORM=linux \
+      "$node_bin" "$wizard" install --dry-run 2>&1 <<< "operator"); rcOpLinux=$?
+set -e
+[ "$rcOpLinux" -eq 0 ] || fail "case2(operator, linux): should succeed (got rc=$rcOpLinux): $outOpLinux"
+grepq "$outOpLinux" -F '? cadences — recurring scheduled jobs to arm now [pipeline,qmd,graphmap,drift-fix,upstream-watch|none] (default: pipeline,qmd,graphmap)' \
+  || fail "case2(operator, linux): the operator preset on a linux host must offer the cadences menu WITHOUT repo-sync (got: $outOpLinux)"
 grepq "$outOp" -F '? configure the telegram bridge (voice/text ingestion)? [off|on] (default: on)' \
   || fail "case2(operator): should seed bridge default=on (got: $outOp)"
 # HIMMEL-2346: the operator preset seeds whisperModel=ggml-large-v3-turbo.bin
