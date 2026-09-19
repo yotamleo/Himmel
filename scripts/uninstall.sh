@@ -179,6 +179,17 @@ load_manifest() {
       code|state|keep) ;;
       *) echo "ERROR: row '$_id' has class '$_class' (want code|state|keep) in $MANIFEST_FILE" >&2; return 1 ;;
     esac
+    case "$_kind" in
+      dir|settings|githooks|process|jobs|plugins|marketplaces|file) ;;
+      *) echo "ERROR: row '$_id' has kind '$_kind' in $MANIFEST_FILE" >&2; return 1 ;;
+    esac
+    case "$_step" in
+      [1-8]|-) ;;
+      *) echo "ERROR: row '$_id' has step '$_step' (want 1-8 or -) in $MANIFEST_FILE" >&2; return 1 ;;
+    esac
+    case " ${M_ID[*]:-} " in
+      *" $_id "*) echo "ERROR: duplicate manifest id '$_id' in $MANIFEST_FILE" >&2; return 1 ;;
+    esac
     M_ID+=("$_id"); M_CLASS+=("$_class"); M_KIND+=("$_kind"); M_ENV+=("$_env")
     M_PATH+=("$_path"); M_STEP+=("$_step"); M_WHAT+=("$_what")
   done < "$MANIFEST_FILE"
@@ -218,6 +229,11 @@ _ix_bridge=$(m_index telegram-bridge) || exit 2
 _ix_settings=$(m_index user-settings) || exit 2
 _ix_cache=$(m_index himmelctl-cache) || exit 2
 _ix_pset=$(m_index project-settings) || exit 2
+_ix_bproc=$(m_index bridge-process) || exit 2
+_ix_jobs=$(m_index scheduled-jobs) || exit 2
+_ix_plug=$(m_index plugins) || exit 2
+_ix_ghooks=$(m_index git-hooks) || exit 2
+_ix_mkt=$(m_index marketplaces) || exit 2
 
 CHANNEL_DIR="$(strip_trailing_slash "$(m_path "$_ix_channel")")"
 BRIDGE_ROOT="$(strip_trailing_slash "$(m_path "$_ix_bridge")")"
@@ -940,7 +956,11 @@ fi
 echo "==> himmel uninstall (offboard)"
 echo ""
 echo "This will:"
-echo "  1. stop the telegram bun bridge (if running)"
+if class_removes "$_ix_bproc"; then
+  echo "  1. stop the telegram bun bridge (if running)"
+else
+  echo "  1. keep the telegram bun bridge running (manifest class ${M_CLASS[$_ix_bproc]})"
+fi
 if state_removed; then
   echo "  2. REMOVE telegram pairing + bridge state (--purge-state):"
   echo "       $CHANNEL_DIR   (bot-token .env + access.json)"
@@ -952,33 +972,49 @@ else
   echo "       $CHANNEL_DIR"
   echo "       $BRIDGE_ROOT"
 fi
-if [ "$SKIP_TASKS" -eq 0 ]; then
-  echo "  3. remove HIMMEL-Resume-* scheduled jobs (+ HimmelTelegramBridge logon task)"
-else
+if [ "$SKIP_TASKS" -eq 1 ]; then
   echo "  3. keep scheduled jobs (--skip-tasks)"
+elif ! class_removes "$_ix_jobs"; then
+  echo "  3. keep scheduled jobs (manifest class ${M_CLASS[$_ix_jobs]})"
+else
+  echo "  3. remove HIMMEL-Resume-* scheduled jobs (+ HimmelTelegramBridge logon task)"
 fi
-if [ "$SKIP_PLUGINS" -eq 0 ]; then
+if [ "$SKIP_PLUGINS" -eq 1 ]; then
+  echo "  4. keep Claude plugins (--skip-plugins)"
+elif ! class_removes "$_ix_plug"; then
+  echo "  4. keep Claude plugins (manifest class ${M_CLASS[$_ix_plug]})"
+else
   echo "  4. uninstall installed Claude plugins from himmel-owned marketplaces"
   echo "     (project/local: current project only; USER-SCOPE: affects every repo on this machine; fallback scope: $PLUGIN_SCOPE)"
-else
-  echo "  4. keep Claude plugins (--skip-plugins)"
 fi
-if [ "$SKIP_HOOKS" -eq 0 ]; then
-  echo "  5. uninstall this repo's git hooks (pre-commit/pre-push/commit-msg)"
-else
+if [ "$SKIP_HOOKS" -eq 1 ]; then
   echo "  5. keep git hooks (--skip-hooks)"
-fi
-if [ "$SKIP_SETTINGS" -eq 0 ]; then
-  echo "  6. unwire ~/.claude/settings.json (statusLine, HIMMEL_REPO,"
-  echo "     LUNA_VAULT_PATH, HANDOVER_DIR, UNIVERSAL hooks — non-himmel keys untouched)"
-  echo "     and current-project settings: $PWD/.claude/settings.json (himmel's own checkout excluded)"
+elif ! class_removes "$_ix_ghooks"; then
+  echo "  5. keep git hooks (manifest class ${M_CLASS[$_ix_ghooks]})"
 else
+  echo "  5. uninstall this repo's git hooks (pre-commit/pre-push/commit-msg)"
+fi
+if [ "$SKIP_SETTINGS" -eq 1 ]; then
   echo "  6. keep user- and current-project settings.json wiring (--skip-settings)"
-fi
-if [ "$SKIP_PLUGINS" -eq 0 ]; then
-  echo "  7. remove Claude marketplaces with no remaining installed plugins"
 else
+  if class_removes "$_ix_settings"; then
+    echo "  6. unwire ~/.claude/settings.json (statusLine, HIMMEL_REPO,"
+    echo "     LUNA_VAULT_PATH, HANDOVER_DIR, UNIVERSAL hooks — non-himmel keys untouched)"
+  else
+    echo "  6. keep ~/.claude/settings.json (manifest class ${M_CLASS[$_ix_settings]})"
+  fi
+  if class_removes "$_ix_pset"; then
+    echo "     and current-project settings: $PWD/.claude/settings.json (himmel's own checkout excluded)"
+  else
+    echo "     keep current-project settings (manifest class ${M_CLASS[$_ix_pset]})"
+  fi
+fi
+if [ "$SKIP_PLUGINS" -eq 1 ]; then
   echo "  7. keep Claude marketplaces (--skip-plugins)"
+elif ! class_removes "$_ix_mkt"; then
+  echo "  7. keep Claude marketplaces (manifest class ${M_CLASS[$_ix_mkt]})"
+else
+  echo "  7. remove Claude marketplaces with no remaining installed plugins"
 fi
 echo "  8. REMOVE the himmelctl cache + state: $HIMMEL_CACHE_DIR"
 echo "     (install-profile.json, state.json — a re-install would otherwise"
@@ -1032,7 +1068,9 @@ echo ""
 # WHY (HIMMEL-2754): halt if the bridge may still be live — removing state
 # would recreate it (and on Windows, locked files make removal fail partway).
 echo "[1/8] Stopping telegram bridge..."
-if [ ! -f "$BRIDGE_ROOT/supervisor.pid" ]; then
+if ! class_removes "$_ix_bproc"; then
+  echo "  kept (manifest class ${M_CLASS[$_ix_bproc]}): bridge left running."
+elif [ ! -f "$BRIDGE_ROOT/supervisor.pid" ]; then
   echo "  no supervisor.pid under $BRIDGE_ROOT — bridge not running, skipping."
 elif ! command -v bun >/dev/null 2>&1; then
   echo "  WARN: supervisor.pid exists but bun is not on PATH — cannot stop the bridge." >&2
@@ -1122,6 +1160,8 @@ if [ "$HALTED" -eq 1 ]; then
   STEPS_INCOMPLETE+=("[3/8] scheduled jobs: skipped — halted after an earlier failure")
 elif [ "$SKIP_TASKS" -eq 1 ]; then
   echo "  kept (--skip-tasks)."
+elif ! class_removes "$_ix_jobs"; then
+  echo "  kept (manifest class ${M_CLASS[$_ix_jobs]})."
 elif command -v schtasks >/dev/null 2>&1; then
   # MSYS_NO_PATHCONV=1 per call (HIMMEL-125): gitbash otherwise mangles
   # /query-style flags into Windows paths before schtasks sees them.
@@ -1237,7 +1277,7 @@ echo ""
 # teardown so a retry can remove marketplaces at their original scopes.
 # Successful teardown removes the handoff with the cache in the last step.
 _scope_map=""
-if [ "$HALTED" -eq 0 ] && [ "$SKIP_PLUGINS" -eq 0 ]; then
+if [ "$HALTED" -eq 0 ] && [ "$SKIP_PLUGINS" -eq 0 ] && { class_removes "$_ix_plug" || class_removes "$_ix_mkt"; }; then
   if [ "$DRY_RUN" -eq 1 ]; then
     if _scope_map=$(mktemp "${TMPDIR:-/tmp}/himmel-uninstall-scope-map.XXXXXX"); then
       trap 'rm -f "$_scope_map"' EXIT
@@ -1283,6 +1323,8 @@ if [ "$HALTED" -eq 1 ]; then
   STEPS_INCOMPLETE+=("[4/8] Claude plugins: skipped — halted after an earlier failure")
 elif [ "$SKIP_PLUGINS" -eq 1 ]; then
   echo "  kept (--skip-plugins)."
+elif ! class_removes "$_ix_plug"; then
+  echo "  kept (manifest class ${M_CLASS[$_ix_plug]})."
 elif ! _claude_bin=$(resolve_tool claude); then
   report_unresolved "[4/8] Claude plugins" claude
 else
@@ -1308,6 +1350,8 @@ if [ "$HALTED" -eq 1 ]; then
   STEPS_INCOMPLETE+=("[5/8] git hooks: skipped — halted after an earlier failure")
 elif [ "$SKIP_HOOKS" -eq 1 ]; then
   echo "  kept (--skip-hooks)."
+elif ! class_removes "$_ix_ghooks"; then
+  echo "  kept (manifest class ${M_CLASS[$_ix_ghooks]})."
 elif command -v git >/dev/null 2>&1 && ! _hooks_git_probe=$(LC_ALL=C git -C "$HOOKS_REPO_ROOT" rev-parse --is-inside-work-tree 2>&1); then
   # HIMMEL-2854: a `--scope user` offboard run from a plain (non-git) $PWD has
   # no repo-local hooks to remove — the native-gate scan and every
@@ -1513,13 +1557,17 @@ if [ "$HALTED" -eq 1 ]; then
 elif [ "$SKIP_SETTINGS" -eq 1 ]; then
   echo "  kept (--skip-settings)."
 else
-  if [ -f "$_user_settings" ]; then
+  if ! class_removes "$_ix_settings"; then
+    echo "  kept (manifest class ${M_CLASS[$_ix_settings]}): $_user_settings"
+  elif [ -f "$_user_settings" ]; then
     unwire_settings "$_user_settings"
   else
     echo "  no $_user_settings — nothing to unwire."
   fi
   if [ "$HALTED" -eq 1 ]; then
     echo "  project settings: skipped (halted after an earlier failure)"
+  elif ! class_removes "$_ix_pset"; then
+    echo "  project settings: kept (manifest class ${M_CLASS[$_ix_pset]}): $_project_settings"
   elif [ ! -e "$_project_settings" ] && [ ! -L "$_project_settings" ]; then
     echo "  project settings: none found"
   else
@@ -1554,6 +1602,8 @@ if [ "$HALTED" -eq 1 ]; then
   STEPS_INCOMPLETE+=("[7/8] Claude marketplaces: skipped — halted after an earlier failure")
 elif [ "$SKIP_PLUGINS" -eq 1 ]; then
   echo "  kept (--skip-plugins)."
+elif ! class_removes "$_ix_mkt"; then
+  echo "  kept (manifest class ${M_CLASS[$_ix_mkt]})."
 elif ! _claude_bin=$(resolve_tool claude); then
   report_unresolved "[7/8] Claude marketplaces" claude
 else

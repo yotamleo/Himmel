@@ -13,6 +13,13 @@ CLI="$SCRIPTS/uninstall.sh"
 BIN_JS="$SCRIPTS/himmelctl/bin.js"
 MANIFEST="$SCRIPTS/install/uninstall-manifest.tsv"
 
+# The uninstaller reads path overrides from the environment; an operator's own
+# (e.g. TELEGRAM_CHANNEL_DIR pointing at the live channel) must never steer a
+# fixture run at a real directory (HIMMEL-2502 class). Cases that want an
+# override set it per command.
+unset TELEGRAM_CHANNEL_DIR BRIDGE_ROOT HIMMEL_USER_SETTINGS HIMMELCTL_CACHE_DIR \
+      HIMMEL_UNINSTALL_MANIFEST HIMMEL_UNINSTALL_REPO_ROOT HIMMEL_UNINSTALL_REAL_HOME
+
 FAILED=0
 pass() { echo "PASS $1"; }
 fail() { echo "FAIL $*"; FAILED=$((FAILED + 1)); }
@@ -222,6 +229,48 @@ out=$(cd "$FX_PROJ" && HOME="$FX_HOME" PATH="$STUB:$HBIN" HIMMEL_UNINSTALL_MANIF
     bash "$CLI" --yes --skip-tasks --skip-plugins </dev/null 2>&1); rc=$?
 assert_rc "K2 uninstall with the cache re-classed as state" 0 "$rc"
 assert_exists "K2 himmelctl-cache class=state is kept by default" "$FX_HOME/.claude/himmel/install-profile.json"
+
+# ── K3 — EVERY step honours its row's class, not just steps 2 and 8 ─────────
+# Re-class the seven non-directory rows as keep: no step may act on them (no
+# --skip-* here, so only the manifest class can hold them back), each says so,
+# and the code row still removed (himmelctl-cache) proves the run was live.
+fixture k3
+sed -e $'s/^bridge-process\tcode/bridge-process\tkeep/' \
+    -e $'s/^scheduled-jobs\tcode/scheduled-jobs\tkeep/' \
+    -e $'s/^plugins\tcode/plugins\tkeep/' \
+    -e $'s/^git-hooks\tcode/git-hooks\tkeep/' \
+    -e $'s/^user-settings\tcode/user-settings\tkeep/' \
+    -e $'s/^project-settings\tcode/project-settings\tkeep/' \
+    -e $'s/^marketplaces\tcode/marketplaces\tkeep/' "$MANIFEST" > "$FX/k3-manifest.tsv"
+out=$(cd "$FX_PROJ" && HOME="$FX_HOME" PATH="$STUB:$HBIN" HIMMEL_UNINSTALL_MANIFEST="$FX/k3-manifest.tsv" \
+    bash "$CLI" --yes --purge-state </dev/null 2>&1); rc=$?
+assert_rc "K3 uninstall with every step row re-classed keep" 0 "$rc"
+assert_has "K3 step 1 keeps the bridge running" "kept (manifest class keep): bridge left running" "$out"
+assert_has "K3 step 6 keeps the user settings" "kept (manifest class keep): $FX_HOME/.claude/settings.json" "$out"
+assert_has "K3 step 6 keeps the project settings" "project settings: kept (manifest class keep): $FX_PROJ/.claude/settings.json" "$out"
+k3_kept=$(printf '%s\n' "$out" | grep -c 'kept (manifest class keep)')
+if [ "$k3_kept" -eq 7 ]; then pass "K3 exactly the seven re-classed steps report kept (manifest class keep)"
+else fail "K3 expected 7 'kept (manifest class keep)' lines, got $k3_kept"; fi
+assert_has "K3 user settings: himmel hook still wired" "$HOOK_PRE" "$(cat "$FX_HOME/.claude/settings.json")"
+assert_has "K3 project settings: himmel hook still wired" "$HOOK_PRE" "$(cat "$FX_PROJ/.claude/settings.json")"
+assert_exists "K3 git-hooks class=keep leaves the native hook" "$FX_PROJ/.git/hooks/pre-commit"
+if [ -s "$CLAUDE_CALL_LOG" ]; then fail "K3 plugins/marketplaces class=keep still called claude: $(cat "$CLAUDE_CALL_LOG")"
+else pass "K3 plugins/marketplaces class=keep made no claude call"; fi
+assert_absent "K3 the still-code cache row was removed (the run was live)" "$FX_HOME/.claude/himmel"
+
+# ── L1 — a malformed manifest fails closed (rc=2) with a named ERROR ────────
+fixture l1
+{ cat "$MANIFEST"; grep '^himmelctl-cache' "$MANIFEST"; } > "$FX/dup-manifest.tsv"
+sed -e $'s/^himmelctl-cache\tcode\thimmelctl\tdir/himmelctl-cache\tcode\thimmelctl\tbogus/' "$MANIFEST" > "$FX/kind-manifest.tsv"
+sed -e $'s/\t8\thimmelctl install-profile/\t9\thimmelctl install-profile/' "$MANIFEST" > "$FX/step-manifest.tsv"
+for l1_case in "dup:duplicate manifest id 'himmelctl-cache'" "kind:has kind 'bogus'" "step:has step '9'"; do
+    l1_key="${l1_case%%:*}"; l1_want="${l1_case#*:}"
+    out=$(cd "$FX_PROJ" && HOME="$FX_HOME" PATH="$STUB:$HBIN" HIMMEL_UNINSTALL_MANIFEST="$FX/$l1_key-manifest.tsv" \
+        bash "$CLI" --dry-run </dev/null 2>&1); rc=$?
+    assert_rc "L1 $l1_key: malformed manifest refused" 2 "$rc"
+    assert_has "L1 $l1_key: names the defect" "$l1_want" "$out"
+done
+assert_exists "L1 nothing removed on refusal" "$FX_HOME/.claude/himmel/install-profile.json"
 
 # ── F1 — the footprint reflects --skip-* (a skipped code row is not REMOVE) ──
 fixture f1
