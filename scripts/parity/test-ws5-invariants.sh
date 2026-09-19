@@ -19,9 +19,9 @@
 #                       VENDORED.md tree is excluded too, HIMMEL-3093: it is
 #                       upstream content this repo mirrors, not himmel's own
 #                       surface -- see the corpus loop below). The daemon
-#                       marker skips prose -- *.md, comments, message
-#                       strings -- and matches service-creation shapes
-#                       instead (HIMMEL-3233; rules at T13(b) below).
+#                       marker skips prose -- *.md and comment lines --
+#                       and adds service-creation shapes (HIMMEL-3233;
+#                       rules at T13(b) below).
 #   T14 locks        -- no per-token-lane wiring in shipped source; the
 #                       gemini/copilot/cursor index rows stay deferred.
 #                       (The former T14(a) claude-codex-launcher prohibition
@@ -345,77 +345,33 @@ else
     #
     # `while true` / `setInterval` match every shipped line, as they always
     # have. The daemon class (HIMMEL-3233) used to be the bare word `daemon`
-    # on every line, so prose and diagnostics naming an EXISTING daemon failed
-    # (PR #932: a README remedy, a shell comment, a doctor message). It is now
-    # scoped to what can START one, and is never weaker on code:
+    # on every line, so prose naming an EXISTING daemon failed (PR #932: a
+    # README remedy, a shell comment). It now skips prose only, and is never
+    # weaker on code:
     #   - *.md is prose: the daemon class does not apply there;
-    #   - a full-line comment (#, //, /*, *, <!--) is prose: skipped;
-    #   - service-creation shapes (`nohup ... &` backgrounded -- a lone `&`,
-    #     not `&&` or a `2>&1` redirect -- `systemctl ... enable`, `launchctl
-    #     load|bootstrap`) count ANYWHERE else on the line, quoted or not --
-    #     `bash -c "nohup x &"` launches one. These are new coverage: the bare
-    #     word never caught `nohup x &`. Bare nohup/setsid/disown are NOT
-    #     shapes: measured on main 2026-09-19 they hit 31 lines, mostly hook
-    #     command-position case lists (`command|exec|nohup)`) and bounded
-    #     detach helpers (scripts/lib/detach.sh); `nohup ... &` hits 7 lines
-    #     in 4 files, each a real detached process;
-    #   - the word `daemon` counts everywhere on a code line EXCEPT inside a
-    #     string handed to a message emitter (echo, printf, die, warn, raise,
-    #     throw, console.*, logger.*, ...: the command since the last `;`,
-    #     `&`, `|`, `{`, `}` or `)` starts with one) -- "the qmd daemon is
-    #     wedged" is a message. Any other string may run and still counts:
-    #     `cmd="qmd --daemon"`, `bash -c "..."`, system("..."). A string that
-    #     runs even inside an emitter counts too: backticks, a double-quoted
-    #     `$(`, any line piped into sh/bash/xargs/tee, and any line with a
-    #     redirect other than >&N or >/dev/null (it writes the text to a
-    #     file that may run later);
-    #   - a leading `/* ... */` or `<!-- ... -->` closed on the line is
-    #     stripped, so the code after it is checked, not skipped.
-    # ponytail: the quote scanner is language-agnostic -- a heredoc body or a
-    # multi-line string reads as unquoted code, and an emitter the list does
-    # not name leaves its message counted (strict: both can only over-count),
-    # and a C-preprocessor `#define` line reads as a comment (himmel ships no C).
+    #   - a full-line comment (#, //, /*, *, <!--) is prose: skipped. A
+    #     leading `/* ... */` or `<!-- ... -->` closed on the line is
+    #     stripped first, so the code after it is still checked;
+    #   - on every other line the bare word `daemon` still counts, quoted or
+    #     not. Known limit: a message string naming a daemon (a doctor
+    #     `emit "the qmd daemon is wedged"`) still trips the gate -- telling a
+    #     message from an argv/`bash -c` string is not a regex's job (three
+    #     review rounds each found a new shape that hid a real daemon).
+    #     Workaround: name the daemon in a comment line, or say "service";
+    #   - service-creation shapes count too, which the bare word never
+    #     caught: `nohup ... &` backgrounded (a lone `&`, not `&&` or a
+    #     `2>&1` redirect), `systemctl ... enable`, `launchctl
+    #     load|bootstrap`. Bare nohup/setsid/disown are NOT shapes: measured
+    #     on main 2026-09-19 they hit 31 lines, mostly hook command-position
+    #     case lists (`command|exec|nohup)`) and bounded detach helpers
+    #     (scripts/lib/detach.sh); `nohup ... &` hits 7 lines in 4 files,
+    #     each a real detached process.
+    # ponytail: a heredoc body or multi-line string holding `#` at line start
+    # reads as a comment, and a C-preprocessor `#define` line likewise
+    # (himmel ships no C).
     t13b_hit=0
     t13b_count="$(awk -v removed_file="$REMOVED" -v kind_file="$SHIPPED_KIND" '
         function trim(x) { sub(/^[ \t]+/, "", x); sub(/[ \t\r]+$/, "", x); return x }
-        # Empty a quoted string only when it is the argument of a message
-        # emitter (echo, printf, die, raise, console.error, ...): the text
-        # since the last command separator starts with one. Every other
-        # string -- an assignment, an argv element, a `bash -c` / system()
-        # operand -- is kept verbatim, since it may run. A backtick string,
-        # or a double-quoted one carrying `$(`, runs code: never emptied.
-        # \047 is a single quote.
-        # The line with its harmless sinks removed: /dev/null and >&N
-        # redirects, and the => arrow.
-        function sink(x) {
-            gsub(/[0-9]*>>?[ \t]*\/dev\/null|[0-9]*>&[0-9]-?|=>/, "", x)
-            return x
-        }
-        function drop_prose(x,   out, seg, i, n, c, q, s, lead) {
-            out = ""; seg = ""; i = 1; n = length(x)
-            while (i <= n) {
-                c = substr(x, i, 1)
-                if (c == "\"" || c == "\047" || c == "`") {
-                    q = c; s = ""; i++
-                    while (i <= n) {
-                        c = substr(x, i, 1)
-                        if (c == "\\" && q != "\047") { s = s c substr(x, i + 1, 1); i += 2; continue }
-                        if (c == q) break
-                        s = s c; i++
-                    }
-                    lead = tolower(trim(seg))
-                    if (q != "`" && !(q == "\"" && s ~ /\$\(|`/) && lead ~ /^((then|else|do|!|=>)[ \t]+)?(echo|printf|emit|warn|warning|info|note|log|die|fail|error|err|msg|say|puts|e?print(ln)?!?|throw|raise|fprintf|console\.[a-z]+|logger\.[a-z_]+|logging\.[a-z_]+|log\.[a-z_]+|sys\.std(err|out)\.write|process\.std(err|out)\.write)([ \t(]|$)/)
-                        s = ""
-                    out = out q s q; seg = seg q q
-                    i++
-                    continue
-                }
-                out = out c
-                seg = (c ~ /[;&|{})]/) ? "" : seg c
-                i++
-            }
-            return out
-        }
         BEGIN {
             while ((getline line < removed_file) > 0) removed[trim(substr(line, 2))]++
             close(removed_file)
@@ -425,24 +381,12 @@ else
             t = trim(substr($0, 2))
             lt = tolower(t)
             hit = (lt ~ /while[ \t]+true|setinterval/)
-            # A leading /* ... */ or <!-- ... --> comment closed on the line
-            # hides nothing: the code after it is what gets checked.
             code = lt
             if (code ~ /^\/\*.*\*\//) code = trim(substr(code, index(code, "*/") + 2))
             else if (code ~ /^<!--.*-->/) code = trim(substr(code, index(code, "-->") + 3))
-            if (!hit && kind == "code" && code != "" && code !~ /^(#|\/\/|\/\*|\*([ \t]|$)|<!--)/) {
-                if (code ~ /(^|[^a-z0-9_-])nohup[ \t].*(^|[^&<>])&([ \t]*($|[);"\047])|[ \t]+[^&> \t])|systemctl[^|;&]*[ \t]enable([ \t]|$)|launchctl[ \t]+(load|bootstrap)([ \t]|$)/)
-                    hit = 1
-                # Text piped into a shell, or written to a file (redirect or
-                # tee), may run, message emitter or not. Only >&N, /dev/null
-                # and => (an arrow, not a redirect) are safe sinks; any
-                # other > errs strict.
-                else if (sink(code) ~ /\|[ \t]*((ba|z|da|k)?sh|xargs|tee)([ \t]|$)|[^<>=-]>>?[ \t]*[^ \t=]/) {
-                    if (code ~ /daemon/) hit = 1
-                }
-                else if (drop_prose(code) ~ /daemon/)
-                    hit = 1
-            }
+            if (!hit && kind == "code" && code != "" && code !~ /^(#|\/\/|\/\*|\*([ \t]|$)|<!--)/ &&
+                code ~ /daemon|(^|[^a-z0-9_-])nohup[ \t].*(^|[^&<>])&([ \t]*($|[);"\047])|[ \t]+[^&> \t])|systemctl[^|;&]*[ \t]enable([ \t]|$)|launchctl[ \t]+(load|bootstrap)([ \t]|$)/)
+                hit = 1
             if (hit) {
                 if (removed[t] > 0) removed[t]--
                 else hits++

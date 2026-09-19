@@ -9,16 +9,12 @@
 #   - the daemon class does not apply to *.md (prose);
 #   - in any other file, full-line comments are skipped (a leading inline
 #     /* ... */ is stripped first, so the code after it is still checked);
-#     the word `daemon` counts everywhere EXCEPT inside a string handed to a
-#     message emitter (echo, printf, die, raise, console.*, ...). Any other
-#     string -- an assignment, an argv element, a `bash -c` / system()
-#     operand -- may run and still counts, and so does an emitter's text
-#     when it runs anyway: backticks, a double-quoted "$(...)", a pipe into
-#     sh/bash/xargs/tee, or a redirect to a file (not >&N or /dev/null);
+#     every other line still counts the bare word `daemon`, quoted or not.
+#     Known limit: a message string naming a daemon still fails (pinned by
+#     sh-diagnostic-known-limit below);
 #   - service-creation shapes (backgrounded `nohup ... &`, systemctl ...
-#     enable, launchctl load|bootstrap) count anywhere on the line, quoted
-#     or not. Bare nohup/setsid/disown do not (hook case lists and bounded
-#     detach helpers use them routinely).
+#     enable, launchctl load|bootstrap) count too. Bare nohup/setsid/disown
+#     do not (hook case lists and bounded detach helpers use them routinely).
 #
 # End-to-end against real fixture repos: each case commits a base and a feature
 # commit into a throwaway git repo carrying a COPY of the real ws5 script, then
@@ -82,28 +78,20 @@ run_case() {
     fi
 }
 
-echo "== T13(b): prose and diagnostics naming an existing daemon PASS =="
+echo "== T13(b): prose (*.md, comment lines) naming an existing daemon PASS =="
 # shellcheck disable=SC2016  # the backticks are literal markdown, not expansion
 run_case md-prose PASS docs/qmd.md \
     'Restart the qmd daemon with `qmd mcp --http --daemon` if vec search hangs.'
 run_case sh-comment PASS scripts/doctor.sh \
     "# Keep unrelated cases from probing the operator's real qmd daemon."
-run_case sh-diagnostic PASS scripts/doctor.sh \
-    'emit WARN C40 "the qmd daemon is wedged; restart it: qmd mcp --http --daemon"'
 run_case js-comment PASS src/probe.ts \
     '// the daemon frames every reply as an SSE event'
 
-# shellcheck disable=SC2016  # "$sock" is fixture text, not expansion
-run_case sh-die-diagnostic PASS scripts/doctor.sh \
-    '[ -S "$sock" ] || die "the qmd daemon socket is missing"'
-run_case py-raise-message PASS src/probe.py \
-    'raise RuntimeError("qmd daemon did not answer")'
-run_case sh-echo-stderr PASS scripts/doctor.sh \
-    'echo "the qmd daemon is down" >&2'
-run_case js-arrow-message PASS src/probe.ts \
-    'p.catch((e) => console.error("qmd daemon did not answer", e))'
-
 echo "== T13(b): real new always-on surface still FAILS =="
+# Known limit (console ruling, HIMMEL-3233): a message naming a daemon still
+# fails -- the bare word counts on every code line, quoted or not.
+run_case sh-diagnostic-known-limit FAIL scripts/doctor.sh \
+    'emit WARN C40 "the qmd daemon is wedged; restart it: qmd mcp --http --daemon"'
 run_case sh-nohup FAIL scripts/start.sh \
     'nohup qmd mcp >/dev/null 2>&1 &'
 run_case sh-nohup-in-string FAIL scripts/start.sh \
@@ -118,24 +106,8 @@ run_case py-thread-daemon FAIL src/start.py \
     'threading.Thread(target=poll, daemon=True).start()'
 run_case sh-bash-c-daemon FAIL scripts/start.sh \
     'bash -c "qmd mcp --http --daemon"'
-# shellcheck disable=SC2016  # the backticks are fixture text, not expansion
-run_case sh-backtick-daemon FAIL scripts/start.sh \
-    'out=`qmd mcp --http --daemon`'
-# shellcheck disable=SC2016  # "$(...)" is fixture text, not expansion
-run_case sh-cmdsubst-in-string FAIL scripts/start.sh \
-    'echo "started: $(qmd mcp --http --daemon)"'
-run_case py-os-system-daemon FAIL src/start.py \
-    'os.system("qmd mcp --http --daemon")'
-# shellcheck disable=SC2016  # fixture text, not expansion
 run_case sh-assign-daemon FAIL scripts/start.sh \
     'cmd="qmd mcp --http --daemon"'
-run_case sh-echo-pipe-sh FAIL scripts/start.sh \
-    'echo "qmd mcp --http --daemon" | sh'
-# shellcheck disable=SC2016  # "$HOME" is fixture text, not expansion
-run_case sh-echo-redirect-file FAIL scripts/start.sh \
-    'echo "qmd mcp --http --daemon" >> "$HOME/.bashrc"'
-run_case sh-echo-tee FAIL scripts/start.sh \
-    'echo "qmd mcp --http --daemon" | tee -a start.sh'
 run_case js-inline-comment-code FAIL src/probe.ts \
     '/* start worker */ daemon.start()'
 run_case sh-systemctl-enable FAIL scripts/start.sh \
