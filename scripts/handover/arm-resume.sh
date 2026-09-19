@@ -6009,7 +6009,24 @@ fi"
                     at_safety_child="${at_safety_child}export HIMMEL_CONSOLE_DOC=$(printf '%q' "$CONSOLE_PRECOMPACT_DOC") HIMMEL_CONSOLE_WORKDIR=$(printf '%q' "$CONSOLE_PRECOMPACT_WORKDIR")
 "
                 fi
-                launch_lines="${at_safety_child}_flow_run_id=\$($q_flow_lib --append-start armed-resume \"\" \"\" claude \"\" $q_task \"\" \"\$\$\" 2>/dev/null) || _flow_run_id=
+                # HIMMEL-2534: atd runs the job with stdin=/dev/null and no tty,
+                # and a claude launched that way exits at the first idle
+                # cross-session message. Shadow `claude` with a function that
+                # runs the real one under a pty with stdin held open
+                # (scripts/lib/pty-run.sh). The launch text below is
+                # untouched -- env prefixes (ARMAUTOMERGE=1 claude ...) reach
+                # the function -- and a missing lib degrades to the old bare
+                # launch with a WARN rather than killing the arm.
+                local q_pty_lib at_pty_prelude
+                q_pty_lib=$(printf '%q' "$SCRIPT_DIR/../lib/pty-run.sh")
+                at_pty_prelude="if [ -r $q_pty_lib ]; then
+    . $q_pty_lib
+    claude() { _himmel_pty_run claude \"\$@\"; }
+else
+    echo \"WARN arm-resume: $q_pty_lib missing -- claude launches WITHOUT a pty (HIMMEL-2534)\" >&2
+fi
+"
+                launch_lines="${at_pty_prelude}${at_safety_child}_flow_run_id=\$($q_flow_lib --append-start armed-resume \"\" \"\" claude \"\" $q_task \"\" \"\$\$\" 2>/dev/null) || _flow_run_id=
 _flow_rc=0
 $launch_lines || _flow_rc=\$?
 _flow_outcome=\$($q_flow_lib --classify \"\$_flow_rc\" \"\" 2>/dev/null) || _flow_outcome=complete
