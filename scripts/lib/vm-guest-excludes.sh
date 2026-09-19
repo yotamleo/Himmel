@@ -72,8 +72,8 @@ vm_guest_rsync_excludes() {
 vm_guest_scan_cmd() {
   local root="$1" prof="${2:-full}" globs
   case "$root" in
-    ''|*[!A-Za-z0-9._/~+-]*)
-      echo "vm_guest_scan_cmd: unsafe root '$root' (guest-path characters only)" >&2
+    ''|-*|*[!A-Za-z0-9._/~+-]*)
+      echo "vm_guest_scan_cmd: unsafe root '$root' (guest-path characters only, no leading '-')" >&2
       return 2 ;;
   esac
   case "$prof" in

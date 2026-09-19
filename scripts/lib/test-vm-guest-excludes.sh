@@ -133,6 +133,11 @@ else fail_case "T5b unsafe root accepted"; fi
 if ! vm_guest_scan "$GT" bogus >/dev/null 2>&1; then
   pass "T5c unknown profile refused"
 else fail_case "T5c unknown profile accepted"; fi
+# A leading-hyphen root becomes a find EXPRESSION (-quit scans nothing, -delete deletes).
+hy_ok=1
+for r in -quit -delete -H; do vm_guest_scan_cmd "$r" env >/dev/null 2>&1 && hy_ok=0; done
+if [ "$hy_ok" -eq 1 ]; then pass "T5d leading-hyphen scan roots refused"
+else fail_case "T5d a leading-hyphen scan root was accepted (find option injection)"; fi
 
 # --- T6 vm_guest_assert_clean via a runner (the guest stand-in is a local bash)
 # shellcheck disable=SC2317,SC2329  # invoked indirectly by vm_guest_assert_clean
@@ -159,6 +164,7 @@ cat > "$STUB/ssh" <<'EOS'
 printf 'SSH %s\n' "$*" >> "$STUB_LOG"
 cat > /dev/null 2>&1 < /dev/stdin || true
 case "$*" in
+  *"tar -C"*) if [ -n "${STUB_FAIL_FIRST_TAR:-}" ] && [ ! -e "$STUB_LOG.tarfail" ]; then : > "$STUB_LOG.tarfail"; exit 1; fi; exit 0 ;;
   *"command -v rsync"*) [ -n "${STUB_NO_GUEST_RSYNC:-}" ] && exit 1; exit 0 ;;
   *"find "*) [ -n "${STUB_LEAK:-}" ] && echo "$STUB_LEAK"; exit 0 ;;
 esac
@@ -167,7 +173,7 @@ EOS
 cat > "$STUB/rsync" <<'EOS'
 #!/usr/bin/env bash
 printf 'RSYNC %s\n' "$*" >> "$STUB_LOG"
-exit 0
+exit "${STUB_RSYNC_RC:-0}"
 EOS
 cat > "$STUB/scp" <<'EOS'
 #!/usr/bin/env bash
@@ -178,9 +184,9 @@ chmod +x "$STUB"/ssh "$STUB"/rsync "$STUB"/scp
 
 run_caller() { # $1=script $2=leak-or-empty ; args after: the script's args
   local script="$1" leak="$2"; shift 2
-  : > "$WORK/stub.log"
+  : > "$WORK/stub.log"; rm -f "$WORK/stub.log.tarfail"
   # Fresh $HOME so nothing real is read; stubs win on PATH.
-  PATH="$STUB:$PATH" STUB_LOG="$WORK/stub.log" STUB_LEAK="$leak" STUB_NO_GUEST_RSYNC="${STUB_NO_GUEST_RSYNC:-}" HOME="$WORK/home" \
+  PATH="$STUB:$PATH" STUB_LOG="$WORK/stub.log" STUB_LEAK="$leak" STUB_NO_GUEST_RSYNC="${STUB_NO_GUEST_RSYNC:-}" STUB_FAIL_FIRST_TAR="${STUB_FAIL_FIRST_TAR:-}" STUB_RSYNC_RC="${STUB_RSYNC_RC:-0}" HOME="$WORK/home" \
     ${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" -k 5 60} bash "$REPO_ROOT/$script" "$@" </dev/null >"$WORK/caller.out" 2>&1
   echo $?
 }
@@ -235,6 +241,20 @@ if [ "$rc" -ne 0 ] && grep -q 'REFUSING' "$WORK/caller.out"; then
 else
   fail_case "T7e luna-upgrade script ran on a leaked guest (rc=$rc)"
 fi
+
+# A failed stage transfer must STOP the run (set -uo pipefail has no errexit, and
+# a later succeeding pipeline used to mask an earlier failed one).
+for script in scripts/test-install-symmetry-vm.sh scripts/test-luna-upgrade-vm.sh; do
+  short=${script##*/}
+  STUB_NO_GUEST_RSYNC=1 STUB_FAIL_FIRST_TAR=1; rc=$(run_caller "$script" ""); STUB_NO_GUEST_RSYNC='' STUB_FAIL_FIRST_TAR=''
+  if [ "$rc" -ne 0 ] && grep -q 'STAGE FAILED' "$WORK/caller.out"; then
+    pass "T7i $short stops (rc=$rc) when a tar stage transfer fails"
+  else fail_case "T7i $short ran on past a failed tar transfer (rc=$rc): $(tail -2 "$WORK/caller.out")"; fi
+  STUB_RSYNC_RC=1; rc=$(run_caller "$script" ""); STUB_RSYNC_RC=''
+  if [ "$rc" -ne 0 ] && grep -q 'STAGE FAILED' "$WORK/caller.out"; then
+    pass "T7k $short stops (rc=$rc) when the rsync stage fails"
+  else fail_case "T7k $short ran on past a failed rsync (rc=$rc): $(tail -2 "$WORK/caller.out")"; fi
+done
 
 echo
 if [ "$FAILED" -eq 0 ]; then echo "RESULT: all passed"; exit 0; fi

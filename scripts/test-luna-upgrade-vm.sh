@@ -102,11 +102,12 @@ TMPL_PARENT="$(dirname "$TEMPLATE")"; TMPL_NAME="$(basename "$TEMPLATE")"
 # literal public template file (tar has no include-exemption).
 stage_tar() { # $1 = ssh runner wrapper taking the remote tar command
   tar -C "$TMPL_PARENT" --exclude='*/.git' --exclude='*/node_modules' \
-    "${TAR_SECRET_EXCL[@]}" -cf - "$TMPL_NAME" | "$1" "tar -C $REMOTE_DIR -xf -"
+    "${TAR_SECRET_EXCL[@]}" -cf - "$TMPL_NAME" | "$1" "tar -C $REMOTE_DIR -xf -" || return 1
   if [ -f "$TEMPLATE/.env.example" ]; then
-    tar -C "$TMPL_PARENT" -cf - "$TMPL_NAME/.env.example" | "$1" "tar -C $REMOTE_DIR -xf -"
+    tar -C "$TMPL_PARENT" -cf - "$TMPL_NAME/.env.example" | "$1" "tar -C $REMOTE_DIR -xf -" || return 1
   fi
 }
+stage_failed() { echo "==> STAGE FAILED ($1): the copy to the guest did not complete; refusing to run on a partial tree" >&2; exit 1; }
 win_bash() { ssh_vm "bash -lc \"$1\""; }
 
 echo "[stage] copying $TEMPLATE to $REMOTE_DIR ..."
@@ -117,15 +118,15 @@ if [ "$GUEST_WIN" -eq 1 ]; then
   # plain tar over ssh stdin (no -z: avoids a gzip dependency; the link is
   # loopback). This dodges both scp Windows-path translation AND cmd quoting.
   win_bash "rm -rf $REMOTE_DIR && mkdir -p $REMOTE_DIR"
-  stage_tar win_bash
+  stage_tar win_bash || stage_failed tar
   vm_guest_assert_clean win_bash "$REMOTE_DIR" full || exit 1
 else
   ssh_vm "rm -rf $REMOTE_DIR && mkdir -p $REMOTE_DIR"
   if command -v rsync >/dev/null 2>&1 && ssh_vm 'command -v rsync >/dev/null 2>&1'; then
     rsync -az -e "ssh $SSH_OPTS" --exclude '.git' --exclude 'node_modules' \
-      "${RSYNC_SECRET_EXCL[@]}" "$TEMPLATE" "$HOSTSPEC:$REMOTE_DIR/"
+      "${RSYNC_SECRET_EXCL[@]}" "$TEMPLATE" "$HOSTSPEC:$REMOTE_DIR/" || stage_failed rsync
   else
-    stage_tar ssh_vm
+    stage_tar ssh_vm || stage_failed tar
   fi
   vm_guest_assert_clean ssh_vm "$REMOTE_DIR" full || exit 1
 fi

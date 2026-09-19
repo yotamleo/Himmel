@@ -685,6 +685,32 @@ class TestSecretBoundary(unittest.TestCase):
                     self.assertEqual(vmsdk.main(["ubuntu_new", "snapshot", "b"]), 0)
                     snap.assert_called_once_with("b", skip_secret_scan=False)
 
+    def test_scan_root_cannot_be_a_find_option(self):
+        """A leading-hyphen root becomes a find EXPRESSION: -quit scans nothing
+        (rc 0) and -delete deletes. Both spellings must refuse it."""
+        for bad in ("-quit", "-delete", "-H"):
+            for prof in ("full", "env"):
+                with self.assertRaises(vmsdk.VMError):
+                    vmsdk.secret_scan_cmd(bad, prof)
+
+    def test_push_file_refuses_the_whole_secret_set(self):
+        """push_file guarded only a .env* basename, so a *.local.json crossed the
+        boundary through the push CLI."""
+        vm = self._vm()
+        for name in ("settings.local.json", "x.local.json", ".env", ".env.prod"):
+            with self.assertRaises(vmsdk.VMError) as cm:
+                vm.push_file(name, "~/inbox/" + name, data=b"stub")
+            self.assertIn("refusing", str(cm.exception))
+
+    def test_assert_guest_clean_wraps_a_run_exception(self):
+        """An ssh failure during the scan must surface as the VMError contract
+        (REFUSING), not a raw exception out of the CLI handlers."""
+        vm = self._vm()
+        with mock.patch.object(vm, "run", side_effect=OSError("ssh down")):
+            with self.assertRaises(vmsdk.VMError) as cm:
+                vm.assert_guest_clean("~", "env")
+        self.assertIn("REFUSING", str(cm.exception))
+
     def test_scan_follows_a_symlinked_root(self):
         """find without -H lists only the link itself, so a root that is a
         symlink to the checkout would scan as clean."""

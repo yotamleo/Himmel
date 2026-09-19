@@ -22,6 +22,7 @@ CLI: python scripts/lib/vmsdk.py <vm> <up|down|snapshot NAME [--no-secret-scan]|
                                       trigger HANDOVER [--at TIME] [--cwd DIR] [--long-gap] [--timeout N]>
 """
 import hashlib
+import fnmatch
 import io
 import json
 import os
@@ -68,7 +69,7 @@ _SCAN_PROFILES = {
 def secret_scan_cmd(root, profile="full"):
     """The portable guest-side `find` that lists secret-bearing files under root
     (byte-identical to vm_guest_scan_cmd in vm-guest-excludes.sh)."""
-    if not re.fullmatch(r"[A-Za-z0-9._/~+-]+", str(root)):
+    if not re.fullmatch(r"[A-Za-z0-9._/~+][A-Za-z0-9._/~+-]*", str(root)):
         raise VMError(f"secret scan root {root!r}: guest-path characters only")
     if profile not in _SCAN_PROFILES:
         raise VMError(f"unknown secret-scan profile {profile!r} (full|env)")
@@ -307,7 +308,13 @@ class VM:
         """Refuse (VMError) if the guest holds a secret-bearing file under
         `root`, or cannot be scanned — an unverified guest is not a clean one.
         HIMMEL-2540: a snapshot is durable, so it must never carry a host .env."""
-        rc, out = self.run(secret_scan_cmd(root, profile))
+        try:
+            rc, out = self.run(secret_scan_cmd(root, profile))
+        except VMError:
+            raise
+        except Exception as e:  # noqa: BLE001 - any transport failure = unverified guest
+            raise VMError(
+                f"REFUSING: could not scan {self.name}:{root} for secrets: {e!r}") from e
         if rc != 0:
             raise VMError(
                 f"REFUSING: could not scan {self.name}:{root} for secrets "
@@ -589,8 +596,11 @@ class VM:
         lp = Path(local)
         if data is None and not lp.is_file():
             raise VMError(f"push_file: local file not found: {local}")
-        if lp.name.startswith(".env"):
-            raise VMError("push_file: refusing to push a .env* file to the guest")
+        if lp.name.startswith(".env") or any(
+                fnmatch.fnmatchcase(lp.name, g) for g in SECRET_EXCLUDES):
+            raise VMError(
+                "push_file: refusing to push a secret-bearing file "
+                f"({'/'.join(SECRET_EXCLUDES)}) to the guest")
         self._safe_guest_path(remote, "push_file: remote")
         remote_dir, _, remote_name = str(remote).rpartition("/")
         if not remote_dir:

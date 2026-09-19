@@ -53,10 +53,12 @@ echo "[stage] copying worktree to $REMOTE_DIR ..."
 ssh_vm "rm -rf $REMOTE_DIR && mkdir -p $REMOTE_DIR"
 if command -v rsync >/dev/null 2>&1 && ssh_vm 'command -v rsync >/dev/null 2>&1'; then
   rsync -az -e "ssh $SSH_OPTS" --exclude '.git' --exclude 'node_modules' --exclude 'dist' \
-    "${RSYNC_SECRET_EXCL[@]}" "$REPO/scripts" "$REPO/.env.example" "$HOSTSPEC:$REMOTE_DIR/"
+    "${RSYNC_SECRET_EXCL[@]}" "$REPO/scripts" "$REPO/.env.example" "$HOSTSPEC:$REMOTE_DIR/" \
+    || { echo "==> STAGE FAILED (rsync): the copy to the guest did not complete" >&2; exit 1; }
 else
   tar -C "$REPO" --exclude=.git --exclude=node_modules --exclude=dist \
-    "${TAR_SECRET_EXCL[@]}" -cf - scripts | ssh_vm "tar -C $REMOTE_DIR -xf -"
+    "${TAR_SECRET_EXCL[@]}" -cf - scripts | ssh_vm "tar -C $REMOTE_DIR -xf -" \
+    || { echo "==> STAGE FAILED (tar): the copy to the guest did not complete" >&2; exit 1; }
   # .env.example is the public placeholder template (a literal file, not the tree).
   # shellcheck disable=SC2086
   scp -P $PORT -i "$IDENT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \

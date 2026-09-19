@@ -194,7 +194,7 @@ usage: vmsdk.py <vm> <up|down|snapshot NAME [--no-secret-scan]|restore NAME|base
 | `clone [REF]` | Shallow-clone the private himmel repo onto the guest (`REF` defaults to `main`) |
 | `provision` | Run the per-OS provisioner (`ubuntu-vm-setup.py` or `windows-vm-setup.py`) |
 | `e2e` | Run the install/uninstall symmetry e2e against an Ubuntu VM (delegates to `scripts/test-install-symmetry-vm.sh`) |
-| `push FILE [DEST]` | Copy one host file to the guest via SFTP (`DEST` defaults to `~/handover-inbox/<name>`; `.env*` files refused) |
+| `push FILE [DEST]` | Copy one host file to the guest via SFTP (`DEST` defaults to `~/handover-inbox/<name>`; `.env*`, `*.local.json` and any other secret-set file refused) |
 | `trigger HANDOVER [--at TIME] [--cwd DIR] [--long-gap] [--timeout N]` | Fire a claude session ON the guest from a host handover file (HIMMEL-835): pushes the handover, then either drives an immediate bounded session (default) or, with `--at`, arms the guest's own `arm-resume.sh` (at/atd backend). `--cwd` defaults to the guest's private-checkout path under `~/Documents/github/` (the ubuntu_new layout, verified 2026-07-09). `--long-gap` (HIMMEL-1475) forwards arm-resume's `--long-gap` so a far `--at TIME` (>60 min out) is not refused (rc 9) by the long-gap guard; only valid with `--at`. Single-writer: do not trigger a ticket another writer owns |
 
 **Secret boundary (HIMMEL-2540).** Every host→guest copy excludes `.env`,
