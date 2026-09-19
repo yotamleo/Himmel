@@ -482,4 +482,83 @@ check "claudex lane, CADENCE_BANK_STATUS_CMD path contains a space -> SKIPPED-BA
      FLEET_PS_CMD="$NO_FLEET" CADENCE_BANK_LANE=claudex CADENCE_BANK_STATUS_CMD="$SPACE_STUB" \
        bash "$SUT" </dev/null 2>"$W/err.log")"
 
+# --- HIMMEL-2772: the native path's bank line carries the codex bank too -----
+# native_codex_run <status-cmd> [cache-json] - the DEFAULT (native) lane with
+# CADENCE_BANK_STATUS_CMD pointed at a stub; the stdout verdict is returned and
+# stderr lands in $W/err.log. The codex figure rides the existing
+# `leg=... five_hour=... seven_day=... extra_usage=... age=...` line as
+# `codex=5h<n>/wk<n>` (tick.sh's own spelling) or `codex=?`.
+# shellcheck source=scripts/lib/timeout-bin.sh
+. "$REPO/scripts/lib/timeout-bin.sh"
+native_codex_run() {
+  printf '%s' "${2:-$HEALTHY_CACHE}" > "$W/c.json"
+  CADENCE_BANK_CACHE="$W/c.json" CADENCE_BANK_SKIP_REFRESH=1 \
+  CADENCE_BANK_LEDGER="$W/ledger.jsonl" CADENCE_BANK_LEG=testleg \
+  FLEET_PS_CMD="$NO_FLEET" CADENCE_BANK_STATUS_CMD="$1" \
+    ${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" -k 2 20} bash "$SUT" </dev/null 2>"$W/err.log"
+}
+bank_line() { grep -E '^bank-preflight: leg=' "$W/err.log" | head -1; }
+stub_status() { # stub_status <name> <body-line...> -> path of an executable stub
+  local p="$W/$1.sh"; shift
+  printf '%s\n' '#!/usr/bin/env bash' "$@" > "$p"; chmod +x "$p"; printf '%s' "$p"
+}
+
+S_BOTH="$(stub_status codex-both "printf '%s\n' 'haiku funded measured 5h used=26% free=74%; weekly used=13% free=87%' 'claudex funded measured 5h used=12% free=88%; weekly used=34% free=66% resets=2026-09-20T00:00:00Z'")"
+check "native lane, codex funded -> PROCEED (verdict untouched)" PROCEED "$(native_codex_run "$S_BOTH")"
+check "bank line prints BOTH banks: Claude five_hour/seven_day AND codex=5h12/wk34" \
+  "bank-preflight: leg=testleg five_hour=10 seven_day=20 extra_usage=n/a age=0s codex=5h12/wk34" "$(bank_line | sed 's/age=[0-9]*s/age=0s/')"
+
+S_WK="$(stub_status codex-wk "printf '%s\n' 'claudex funded measured weekly used=14% free=86%'")"
+native_codex_run "$S_WK" >/dev/null
+case "$(bank_line)" in *' codex=5h?/wk14') PASS=$((PASS+1)); echo "ok - weekly-only codex reading -> codex=5h?/wk14" ;;
+  *) FAIL=$((FAIL+1)); echo "FAIL - weekly-only codex reading: '$(bank_line)'" ;; esac
+
+# The codex figure DEGRADES: missing / failing / empty / unmeasurable / hung
+# probe -> `codex=?`, and the verdict is exactly what the Claude bank says.
+S_UNMEAS="$(stub_status codex-unmeas "printf '%s\n' 'claudex unknown unmeasurable reason=\"codex bank cache stale\"'")"
+S_FAIL="$(stub_status codex-fail 'exit 7')"
+S_EMPTY="$(stub_status codex-empty 'true')"
+S_JUNK="$(stub_status codex-junk "printf '%s\n' 'claudex funded measured weekly used=oops% free=?'")"
+for _c in "missing:$W/no-such-status-cmd" "failing:$S_FAIL" "empty:$S_EMPTY" "unmeasurable:$S_UNMEAS" "junk:$S_JUNK"; do
+  _kind="${_c%%:*}"; _cmd="${_c#*:}"
+  check "codex probe $_kind, healthy Claude bank -> PROCEED (rc/verdict unchanged)" PROCEED "$(native_codex_run "$_cmd")"
+  case "$(bank_line)" in *' codex=?') PASS=$((PASS+1)); echo "ok - codex probe $_kind -> codex=?" ;;
+    *) FAIL=$((FAIL+1)); echo "FAIL - codex probe $_kind: '$(bank_line)'" ;; esac
+  check "codex probe $_kind, Claude bank at threshold -> SKIPPED-BANK (refusal unchanged)" SKIPPED-BANK \
+    "$(native_codex_run "$_cmd" "{\"five_hour\":{\"utilization\":90},\"seven_day\":{\"utilization\":20},\"primaries_refreshed_at\":$NOW}")"
+done
+check "codex funded but Claude bank at threshold -> SKIPPED-BANK (the codex figure never rescues a spent Claude bank)" SKIPPED-BANK \
+  "$(native_codex_run "$S_BOTH" "{\"five_hour\":{\"utilization\":90},\"seven_day\":{\"utilization\":20},\"primaries_refreshed_at\":$NOW}")"
+
+# A HUNG probe must not hang the preflight: bounded by CADENCE_BANK_CODEX_TIMEOUT,
+# and the grandchild it forked (a `sleep` holding the stdout pipe) must not keep
+# the command substitution open. A row whose assertion IS "this terminates" must
+# not run unbounded without a timeout binary (scripts/lib/timeout-bin.sh).
+S_HANG="$(stub_status codex-hang 'sleep 30' 'echo unreachable')"
+if [ -n "$_TIMEOUT_BIN" ]; then
+  _t0=$(date +%s)
+  _hung_verdict="$(CADENCE_BANK_CODEX_TIMEOUT=1 native_codex_run "$S_HANG")"
+  _elapsed=$(( $(date +%s) - _t0 ))
+  check "hung codex probe -> PROCEED (bounded, verdict unchanged)" PROCEED "$_hung_verdict"
+  if [ "$_elapsed" -lt 10 ]; then PASS=$((PASS+1)); echo "ok - hung codex probe bounded (${_elapsed}s < 10s)"
+  else FAIL=$((FAIL+1)); echo "FAIL - hung codex probe took ${_elapsed}s"; fi
+  case "$(bank_line)" in *' codex=?') PASS=$((PASS+1)); echo "ok - hung codex probe -> codex=?" ;;
+    *) FAIL=$((FAIL+1)); echo "FAIL - hung codex probe: '$(bank_line)'" ;; esac
+else
+  echo "skip - hung codex probe: no timeout binary"
+fi
+
+# No timeout binary at all -> the codex read is skipped (codex=?), never unbounded.
+NOTO_BIN="$W/no-timeout-bin"; mkdir -p "$NOTO_BIN"
+for _t in bash env cat grep head sed awk date jq mkdir dirname tr rm ps printf sleep; do
+  _p="$(command -v "$_t" 2>/dev/null)"; case "$_p" in /*) ln -sf "$_p" "$NOTO_BIN/$_t" ;; esac
+done
+printf '%s' "$HEALTHY_CACHE" > "$W/c.json"
+_noto_verdict="$(PATH="$NOTO_BIN" CADENCE_BANK_CACHE="$W/c.json" CADENCE_BANK_SKIP_REFRESH=1 \
+  CADENCE_BANK_LEDGER="$W/ledger.jsonl" CADENCE_BANK_LEG=testleg FLEET_PS_CMD="$NO_FLEET" \
+  CADENCE_BANK_STATUS_CMD="$S_BOTH" "$NOTO_BIN/bash" "$SUT" </dev/null 2>"$W/err.log")"
+check "no timeout binary -> PROCEED, codex read skipped (never unbounded)" PROCEED "$_noto_verdict"
+case "$(bank_line)" in *' codex=?') PASS=$((PASS+1)); echo "ok - no timeout binary -> codex=?" ;;
+  *) FAIL=$((FAIL+1)); echo "FAIL - no timeout binary: '$(bank_line)'" ;; esac
+
 echo "passed=$PASS failed=$FAIL"; [ "$FAIL" -eq 0 ]

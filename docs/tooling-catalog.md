@@ -759,10 +759,12 @@ encoded where the lane runs (the launcher default + `lanes.json`), not just as
 vault prose (HIMMEL-195); the full mechanics live in luna
 `30-Resources/Tech/CLIProxyAPI.md`.
 
-- **Effort ladder — default `high`, `xhigh` rare, never `ultra`/`max`.** The
-  launcher now pins `CLAUDE_CODE_EFFORT_LEVEL=high` when unset (it was an implicit
+- **Effort ladder — default `medium`, `low` first for mechanical chunks, `xhigh`
+  rare, never `ultra`/`max`.** The launcher pins `CLAUDE_CODE_EFFORT_LEVEL=medium`
+  when unset (HIMMEL-2772; it was `high`, and before HIMMEL-1001 an implicit
   `xhigh` — theo's "rare" over-spend tier); override per dispatch for a
-  harder/cheaper task. `ultra` is unreachable (see Effort mapping above); `max` is
+  harder/cheaper task (calibration: `docs/internals/lane-calibration.md`,
+  "Effort calibration"). `ultra` is unreachable (see Effort mapping above); `max` is
   reachable but its codex juice is undocumented — avoid it.
 - **Lane's declared window raised to 900k (HIMMEL-1833, 2026-08-17 operator
   ruling) — the launcher's own `CODEX_CONTEXT_WINDOW` default stays 272000,
@@ -878,7 +880,7 @@ dispatch). WARNs to stderr at `CLAUDEX_BANK_WARN_PCT` (default `80`);
 capped worker dies mid-run, so the tree survives but the work is lost.
 
 **Effort (HIMMEL-1001):** `--effort` is optional; unset lets the launcher's
-own `${CLAUDE_CODE_EFFORT_LEVEL:-high}` default apply. `spawn-claudex.ts`
+own `${CLAUDE_CODE_EFFORT_LEVEL:-medium}` default apply. `spawn-claudex.ts`
 REFUSES `--effort max` (undocumented codex juice) and `--effort ultra`
 (unreachable — Claude Code silently falls back to `xhigh`) at parse time,
 pointing back at this section.

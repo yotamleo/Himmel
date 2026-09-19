@@ -114,3 +114,16 @@ template_version: 3
   makes the window closable." The console cannot kill a leg's orphaned
   background shell (HIMMEL-2761); tick's `orphans=` field shows one that a
   leg left behind.
+- (f) **Bank-scarcity routing (HIMMEL-2772).** While the Claude weekly bank is
+  the scarce bucket, an Opus leg (or console) that fans implementation chunks
+  out sends them to **codex-exec first** (`scripts/codex/dispatch-codex-exec.sh`,
+  Astra at `--reasoning-effort medium`, `low` for a mechanical chunk) and to a
+  **Sonnet child only where codex-exec cannot act**. Today that means: a chunk
+  that must **commit inside a git worktree** (the sandbox is pinned
+  `workspace-write` with `--add-dir`/`-C` refused, and a worktree's `.git` is a
+  pointer file outside it, so the parent commits), or that must **push, open a
+  PR or hit the network** (the codex hook fence,
+  `block-terminal-write-fence.sh`, denies those without
+  `CODEX_EXTERNAL_WRITES_OK=1`). Put the routing in the brief's Contract so the
+  leg does not have to infer it; the full rule and its evidence live in
+  [`../internals/lane-calibration.md`](../internals/lane-calibration.md#bank-scarcity-routing-rule-himmel-2772).

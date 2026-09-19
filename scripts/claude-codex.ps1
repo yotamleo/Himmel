@@ -849,13 +849,15 @@ $env:CLAUDE_CODE_SUBAGENT_MODEL     = $CodexSubagentModel
 $env:CLAUDE_CODE_ALWAYS_ENABLE_EFFORT = '1'
 $env:CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY = '3'
 $env:ENABLE_TOOL_SEARCH             = 'false'
-# HIMMEL-1001 effort default (twin of the bash launcher's ${VAR:-high}): pin the
-# per-dispatch effort to 'high' when unset — theo's Codex ladder (medium/high
-# default, xhigh rare, NEVER ultra). HIMMEL-1002 verified the effort reaches
-# gpt-5.6-sol verbatim and the unset default is xhigh. OVERRIDABLE: an explicit
-# $env:CLAUDE_CODE_EFFORT_LEVEL wins (-not is true for $null AND '', matching :-).
+# HIMMEL-1001 effort default (twin of the bash launcher's ${VAR:-medium}): pin the
+# per-dispatch effort to 'medium' when unset (HIMMEL-2772: was 'high' — Astra on
+# low/medium beats the previous model on high; 'low' is the first lever for a
+# mechanical chunk) — theo's Codex ladder (medium/high default, xhigh rare, NEVER
+# ultra). HIMMEL-1002 verified the effort reaches the codex model verbatim and the
+# unset default is xhigh. OVERRIDABLE: an explicit $env:CLAUDE_CODE_EFFORT_LEVEL
+# wins (-not is true for $null AND '', matching :-).
 # Avoid 'max' — reachable but undocumented codex juice.
-if (-not $env:CLAUDE_CODE_EFFORT_LEVEL) { $env:CLAUDE_CODE_EFFORT_LEVEL = 'high' }
+if (-not $env:CLAUDE_CODE_EFFORT_LEVEL) { $env:CLAUDE_CODE_EFFORT_LEVEL = 'medium' }
 $env:CLAUDE_CONFIG_DIR              = $ConfigDir
 if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
   [Console]::Error.WriteLine("claude-codex: 'claude' not found on PATH")

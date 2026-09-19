@@ -1034,7 +1034,37 @@ if [ "$age" -lt 0 ] || [ "$age" -gt "$MAX_AGE" ]; then
 fi
 
 [ "$usable" -eq 2 ] || echo "bank-preflight: degraded — one primary unusable" >&2
-echo "bank-preflight: leg=$LEG five_hour=${fh:-n/a} seven_day=${sd:-n/a} extra_usage=${xu:-n/a} age=${age}s" >&2
+
+# HIMMEL-2772: print the codex bank on the same line, so a console tick shows
+# which bucket is scarce. Informational ONLY — nothing below reads it, so no
+# codex state (missing, stale, failing, hung) can change a verdict or the rc.
+# Same source and spelling as tick.sh's `codex=` field: the cache-only claudex
+# row of scripts/lanes/bank-status.ts (it reads what codex-bank-probe.ts wrote
+# and never spawns the probe itself), as `5h<n>/wk<n>`, else `?`. Bounded by
+# CADENCE_BANK_CODEX_TIMEOUT (default 5s) through the repo's `timeout` resolver;
+# with no timeout binary the read is SKIPPED rather than run unbounded.
+_codex_bank_figure() {
+  local _bound="${CADENCE_BANK_CODEX_TIMEOUT:-5}" _line _c5 _cw
+  is_int "$_bound" && [ "$_bound" -gt 0 ] || _bound=5
+  # shellcheck source=scripts/lib/timeout-bin.sh
+  . "$(dirname "$0")/timeout-bin.sh" 2>/dev/null || _TIMEOUT_BIN=""
+  [ -n "${_TIMEOUT_BIN:-}" ] || { printf '?'; return 0; }
+  if [ -n "${CADENCE_BANK_STATUS_CMD:-}" ]; then
+    _line="$("$_TIMEOUT_BIN" -k 1 "$_bound" "$CADENCE_BANK_STATUS_CMD" </dev/null 2>/dev/null | grep -E '^claudex ' | head -1)"
+  else
+    _line="$("$_TIMEOUT_BIN" -k 1 "$_bound" bun "$REPO/scripts/lanes/bank-status.ts" </dev/null 2>/dev/null | grep -E '^claudex ' | head -1)"
+  fi
+  _c5="$(printf '%s\n' "$_line" | sed -n 's/.*5h used=\([0-9][0-9.]*\)%.*/\1/p')"
+  _cw="$(printf '%s\n' "$_line" | sed -n 's/.*weekly used=\([0-9][0-9.]*\)%.*/\1/p')"
+  if [ -n "$_c5" ] || [ -n "$_cw" ]; then
+    printf '5h%s/wk%s' "${_c5:-?}" "${_cw:-?}"
+  else
+    printf '?'
+  fi
+}
+codex_fig="$(_codex_bank_figure 2>/dev/null)" || codex_fig=""
+[ -n "$codex_fig" ] || codex_fig='?'
+echo "bank-preflight: leg=$LEG five_hour=${fh:-n/a} seven_day=${sd:-n/a} extra_usage=${xu:-n/a} age=${age}s codex=${codex_fig}" >&2
 
 over() { is_num "$1" && awk -v a="$1" -v b="$MAX_PCT" 'BEGIN{exit !(a>=b)}'; }
 if over "$fh" || over "$sd"; then

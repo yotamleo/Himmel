@@ -755,13 +755,16 @@ export CLAUDE_CODE_SUBAGENT_MODEL="$CODEX_SUBAGENT_MODEL"
 export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1
 export CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY=3
 export ENABLE_TOOL_SEARCH=false
-# HIMMEL-1001 effort default: pin the per-dispatch effort to `high` when unset —
-# theo's Codex ladder is medium/high default, xhigh rare, NEVER ultra. HIMMEL-1002
-# verified the effort reaches gpt-5.6-sol VERBATIM and the UNSET default is xhigh
-# (the "rare"/over-spend tier), so pin it down. UNLIKE the forced values above this
-# one is OVERRIDABLE per dispatch: `CLAUDE_CODE_EFFORT_LEVEL=<low|medium|high|xhigh>
-# cc-codex` still wins (the env sweeps above deliberately leave it untouched). Avoid
-# `max` — reachable but its codex juice is undocumented. Keep in sync with the .ps1 twin.
-export CLAUDE_CODE_EFFORT_LEVEL="${CLAUDE_CODE_EFFORT_LEVEL:-high}"
+# HIMMEL-1001 effort default: pin the per-dispatch effort when unset — theo's Codex
+# ladder is medium/high default, xhigh rare, NEVER ultra. HIMMEL-1002 verified the
+# effort reaches the codex model VERBATIM and the UNSET default is xhigh (the
+# "rare"/over-spend tier), so pin it down. HIMMEL-2772: the pin is `medium` (was
+# `high`) — Astra on low/medium beats the previous model on high; `low` is the first
+# lever for a mechanical chunk (docs/internals/lane-calibration.md, "Effort
+# calibration"). UNLIKE the forced values above this one is OVERRIDABLE per dispatch:
+# `CLAUDE_CODE_EFFORT_LEVEL=<low|medium|high|xhigh> cc-codex` still wins (the env
+# sweeps above deliberately leave it untouched). Avoid `max` — reachable but its
+# codex juice is undocumented. Keep in sync with the .ps1 twin.
+export CLAUDE_CODE_EFFORT_LEVEL="${CLAUDE_CODE_EFFORT_LEVEL:-medium}"
 export CLAUDE_CONFIG_DIR="$CONFIG_DIR"
 exec claude "$@"

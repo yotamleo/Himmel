@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # test-launcher-context-env-parity.sh — the claude-codex twins must BOTH feed
 # the context-window env pair from the CODEX_CONTEXT_WINDOW variable
-# (HIMMEL-1887).
+# (HIMMEL-1887), and BOTH default the per-dispatch effort to `medium`, the value
+# lanes.json declares (HIMMEL-2772).
 #
 # test-launcher-twin-parity.sh compares only embedded node JS between twins —
 # by its own design — so it is blind to a plain export: a .ps1 twin missing
@@ -25,9 +26,10 @@ HERE="$(cd "$(dirname "$0")" && pwd)"          # scripts/parity
 SCRIPTS="$(cd "$HERE/.." && pwd)"              # scripts/
 BASH_TWIN="$SCRIPTS/claude-codex"
 PS_TWIN="$SCRIPTS/claude-codex.ps1"
+LANES_JSON="$SCRIPTS/lanes/lanes.json"
 
 fails=0
-for f in "$BASH_TWIN" "$PS_TWIN"; do
+for f in "$BASH_TWIN" "$PS_TWIN" "$LANES_JSON"; do
   if [ ! -f "$f" ]; then
     echo "FAIL: missing twin $f"
     fails=$((fails + 1))
@@ -54,6 +56,23 @@ check 'claude-codex exports CLAUDE_CODE_AUTO_COMPACT_WINDOW="$CODEX_CONTEXT_WIND
   "$BASH_TWIN" '^export CLAUDE_CODE_AUTO_COMPACT_WINDOW="\$CODEX_CONTEXT_WINDOW"'
 check 'claude-codex.ps1 sets $env:CLAUDE_CODE_AUTO_COMPACT_WINDOW = $CodexContextWindow' \
   "$PS_TWIN" '^\$env:CLAUDE_CODE_AUTO_COMPACT_WINDOW[[:space:]]*=[[:space:]]*\$CodexContextWindow'
+
+# 5. HIMMEL-2772: the per-dispatch effort default is `medium` (Astra on low/medium
+#    beats the old high pin; `low` is the first lever for mechanical chunks), in
+#    BOTH twins and in the lanes.json prose that documents it. Still overridable:
+#    the bash default stays the `${VAR:-x}` form, the ps1 the `-not $env:VAR` form.
+check 'claude-codex defaults CLAUDE_CODE_EFFORT_LEVEL to medium (overridable)' \
+  "$BASH_TWIN" '^export CLAUDE_CODE_EFFORT_LEVEL="\$\{CLAUDE_CODE_EFFORT_LEVEL:-medium\}"'
+check 'claude-codex.ps1 defaults $env:CLAUDE_CODE_EFFORT_LEVEL to medium (overridable)' \
+  "$PS_TWIN" '^if \(-not \$env:CLAUDE_CODE_EFFORT_LEVEL\) \{ \$env:CLAUDE_CODE_EFFORT_LEVEL = .medium. \}'
+check 'lanes.json claudex row says the launcher defaults effort to medium' \
+  "$LANES_JSON" 'launcher defaults effort to medium'
+if grep -qE 'launcher defaults effort to high' "$LANES_JSON" 2>/dev/null; then
+  echo 'FAIL: lanes.json still says the launcher defaults effort to high'
+  fails=$((fails + 1))
+else
+  echo 'ok: lanes.json no longer claims a high launcher default'
+fi
 
 echo
 if [ "$fails" -eq 0 ]; then

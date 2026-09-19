@@ -303,6 +303,76 @@ point a reader would check it
 HIMMEL-2586). Same audit's safeguard-false-positive mitigations:
 [`safeguard-false-positives.md`](safeguard-false-positives.md).
 
+### GPT-6 Astra — the claudex launcher defaults to `medium`, `low` first (HIMMEL-2772)
+
+The `claudex` launcher (`scripts/claude-codex` / `.ps1`, documented in
+`scripts/lanes/lanes.json`) defaulted `CLAUDE_CODE_EFFORT_LEVEL` to `high`. It
+now defaults to **`medium`** (an explicitly exported value still wins). The
+reason is a vendor calibration note, recorded on the ticket as reported (we have
+not re-measured it):
+
+> OpenAI/Tibo says GPT-6 Astra on **low** performs better than GPT-5.6 Sol on
+> **high**, and anyone who ran Sol at high should move to low or medium on Astra.
+
+The ladder stays; only its resting point moves. Astra on the claudex/codex lanes:
+
+| Effort | Use for |
+|---|---|
+| `low` | the **first lever** for a mechanical chunk — rename, fan-out edit, fixture/doc sync, a change whose acceptance check is a single command |
+| `medium` | **default** — a well-specified single-leg implementation brief |
+| `high` | a multi-file or long-running brief where `medium` measurably under-delivers |
+| `xhigh` | rare; a hard reasoning call, not a default |
+
+Raise effort per dispatch, not per station: a fleet-wide `high` default spends
+codex-bank tokens on every leg for a quality gain the note above says Astra does
+not need. What is **not** in this change: the measured before/after (an effort
+sweep on real briefs) that the ticket also asks for — it belongs to the
+HIMMEL-2764 attribution table, which this change leaves untouched.
+
+## Bank-scarcity routing rule (HIMMEL-2772)
+
+While the **Claude weekly bank is the scarce bucket** (`bank-preflight.sh` now
+prints both banks on its one line — `five_hour=… seven_day=… codex=5h<n>/wk<n>`,
+`codex=?` when the codex figure is missing, stale or the probe fails, and never
+a refusal on that account), an **Opus parent routes implementation chunks
+codex-exec first**:
+
+1. **codex-exec** (`scripts/codex/dispatch-codex-exec.sh`; Astra — the wrapper's
+   default model is the `codex` critic in `scripts/cr/critics.json`, currently
+   `gpt-6-astra` — at **`--reasoning-effort medium`**, `low` for a mechanical
+   chunk) — the default home of a well-specified implementation chunk, because
+   it draws the codex bank rather than the Claude one.
+2. **A Sonnet child** — only where the codex lane **cannot act**.
+
+**Where codex-exec cannot act today** (from the wrapper and the harness docs, not
+invented — extend this list only from a new observation):
+
+- **It cannot commit in a git worktree.** The dispatcher pins
+  `--sandbox workspace-write` and refuses `--add-dir` / `-C` / `--cd` and every
+  sandbox-widening flag (`dispatch-codex-exec.sh` invariant 4), and a linked
+  worktree's `.git` is a *file* pointing at `<primary>/.git/worktrees/<name>`
+  (`harness-compat.md`, worktree note) — a location outside the sandboxed
+  workspace that the dispatcher gives no way to add. Observed in practice: the
+  sandbox edits the tree and the **parent commits**. Plan the chunk as
+  "edit files, parent commits" (the tree must be clean at dispatch under
+  `--shared-branch`, so commit before the next handoff).
+- **Its terminal writes are hook-fenced.** `.codex/hooks.json` wires
+  `block-terminal-write-fence.sh` on Bash/PowerShell: `git push`, remote-URL
+  rewrites, `gh` PR-mutations (`create`/`merge`/`comment`/…) and network CLIs
+  (`curl`, `wget`, `iwr`/`irm`) are denied unless `CODEX_EXTERNAL_WRITES_OK=1`.
+  Edit/Write are fenced by `block-edit-on-main.sh`, and lesson-enforcement paths
+  by `block-lesson-enforcement-writes.sh`. A chunk that must push, open a PR or
+  call a network API is a Sonnet child's (or the parent's) job.
+- **One writer per shared branch.** `--shared-branch <branch>` takes the
+  repo-wide single-writer lock and refuses `main`/`master` and a dirty tree
+  (exit 2), and exit 4 when another writer holds the lock — parallel codex-exec
+  chunks onto one branch are serial by construction.
+
+Everything else — editing files inside the worktree, running a scoped suite —
+is codex-exec's. This rule is the **routing default**, not a measurement: the
+measured before/after of the Claude-bank saving is deliberately left to the
+HIMMEL-2764 attribution table (out of scope here, and unchanged).
+
 ## Context mode — an arming-time choice, not a station default (HIMMEL-2658)
 
 Context mode used to be set once, station-wide, by a `[1m]` suffix on the
