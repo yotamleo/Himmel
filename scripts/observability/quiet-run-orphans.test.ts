@@ -109,6 +109,16 @@ test("a follower of a deleted log has no writer", () => {
   expect(scanQuietRunOrphans(root).tail).toBe(1);
 });
 
+// HIMMEL-3235: the follower's argv names the pathname, but its fd is what pins
+// the inode. A writer of a NEW file at the same pathname must not shield it.
+test("a follower on a deleted log stays orphaned when a writer recreated the same pathname", () => {
+  addProc(1, { comm: "systemd", ppid: 0, args: ["/sbin/init"] });
+  addProc(60, { comm: "bash", ppid: 1, args: ["bash"] });
+  addProc(200, tail(60, undefined, `${LOG} (deleted)`)); // argv still says LOG
+  addProc(201, { comm: "bash", ppid: 60, args: ["bash", "scripts/test-a.sh"], fds: [{ n: 1, target: LOG, flags: O_WRONLY }] });
+  expect(scanQuietRunOrphans(root).tail).toBe(1);
+});
+
 test("tail shapes that are not a quiet-run follower are ignored", () => {
   addProc(1, { comm: "systemd", ppid: 0, args: ["/sbin/init"] });
   addProc(200, tail(1, ["tail", "-n", "20", LOG])); // no follow flag
