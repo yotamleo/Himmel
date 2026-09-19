@@ -653,7 +653,16 @@ diff_row() {  # diff_row <leak|noleak> <label> <payload with @P@ = the chokepoin
         echo "FAIL $label -- oracle: the stub chokepoint never ran (row cannot discriminate)"
         return
     fi
-    if [ "$kind" = "leak" ]; then
+    if [ "$kind" = "residual" ]; then
+        # A documented gap: real bash DOES clear a seam and the guard ALLOWS it.
+        # Pinned so a future fix flips the row deliberately (change it to `leak`).
+        if [ "$line" = "$ORACLE_EXPECT" ]; then
+            CASES=$((CASES + 1)); FAILED=$((FAILED + 1))
+            echo "FAIL $label -- oracle: real bash did NOT clear a seam (vacuous residual row)"
+            return
+        fi
+        assert_allow "$label [oracle: leaks; documented residual, ALLOW pinned]" "$(j "$payload")"
+    elif [ "$kind" = "leak" ]; then
         if [ "$line" = "$ORACLE_EXPECT" ]; then
             CASES=$((CASES + 1)); FAILED=$((FAILED + 1))
             echo "FAIL $label -- oracle: real bash did NOT clear a seam (vacuous leak row)"
@@ -764,6 +773,14 @@ diff_row noleak "\$(( )) read of the seam as the chokepoint argument" '@P@ $(( H
 diff_row noleak "\$(( )) == comparison as the chokepoint argument"   '@P@ $(( HIMMEL_CONSOLE_LEG == 1 ))'
 # shellcheck disable=SC2016 # literal $(( )) payload, must not expand
 diff_row noleak "non-seam \$(( )) assignment as the chokepoint argument" '@P@ $(( x = 0 ))'
+# --- HIMMEL-3195 DOCUMENTED RESIDUAL (operator ruling 2026-09-19: accept as a
+# gap, no structural fix). A bare variable in `(( ))` has its VALUE evaluated as
+# arithmetic, so `x=SEAM=0; (( x ))` assigns the seam through a value the static
+# fold cannot follow (the value could equally come from a file, `read` or the
+# env). Real bash clears the seam; the guard ALLOWS. Same class as the header's
+# string-reconstruction residual. If a future change closes this, flip the row
+# to `leak` deliberately. ---
+diff_row residual "indirect: x=SEAM=0; (( x )) assigns via the VALUE (HIMMEL-3195)" 'x=HIMMEL_CONSOLE_LEG=0; (( x )); @P@'
 rm -rf "$ORACLE_DIR"
 
 # --- ALLOWED: fail-open proofs ---

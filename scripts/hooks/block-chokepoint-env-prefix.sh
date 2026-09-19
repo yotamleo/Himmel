@@ -341,6 +341,13 @@ arith_body() {
 # the name. Whitespace anywhere between the tokens is allowed -- the spaced
 # spelling is the one the no-space assignment-WORD path never saw. Anywhere in
 # the body counts (comma lists, ternary arms, grouping parens).
+# ponytail: the fold is STATIC -- it only sees a seam NAME written in the body.
+# A bare variable in `(( ))` has its VALUE evaluated as arithmetic, so
+# `x=SEAM=0; (( x ))` assigns the seam through a value this fold cannot follow
+# (the value could equally come from a file, `read` or the environment), and
+# the guard ALLOWS it. HIMMEL-3195: accepted as a documented residual (operator
+# ruling 2026-09-19), same class as the header's string-reconstruction note;
+# the test suite pins it as a known ALLOW.
 arith_fold() {
     local body="$1" flat='' n re c i=0 k=0 d=0 ins='' nb=${#1}
     local -a spans
