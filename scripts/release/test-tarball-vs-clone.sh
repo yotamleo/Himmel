@@ -158,7 +158,7 @@ bash "$CONV" --a-home "$tmp/cs1/home" --a-prefix "$tmp/cs1/prefix" --b-home "$tm
 [ "$rc" -eq 1 ] && ok "T7 RED: a sibling <prefix>-old path is NOT masked as the prefix (rc 1)" || bad "T7 sibling path masked" "rc=$rc"
 # Git hooks that are SYMLINKS count: present on one side only -> DIVERGED; dangling -> UNREADABLE.
 mk_side "$tmp/cg1" "bash $tmp/cg1/prefix/g.sh"; mk_side "$tmp/cg2" "bash $tmp/cg2/prefix/g.sh"
-for s in cg1 cg2; do git init -q "$tmp/$s/repo" 2>/dev/null; done
+for s in cg1 cg2; do git init -q "$tmp/$s/repo" 2>/dev/null; mkdir -p "$tmp/$s/repo/.git/hooks"; done
 printf '#!/bin/sh\nexit 0\n' > "$tmp/cg1/real-hook.sh"; chmod 755 "$tmp/cg1/real-hook.sh"
 ln -s "$tmp/cg1/real-hook.sh" "$tmp/cg1/repo/.git/hooks/pre-commit"
 bash "$CONV" --a-home "$tmp/cg1/home" --a-prefix "$tmp/cg1/prefix" --a-target "$tmp/cg1/repo" \
@@ -172,7 +172,7 @@ bash "$CONV" --a-home "$tmp/cg1/home" --a-prefix "$tmp/cg1/prefix" --a-target "$
 # Each install has its OWN target repo; a project settings.json naming its own target is location, not state.
 mk_side "$tmp/ct1" "bash $tmp/ct1/prefix/g.sh"; mk_side "$tmp/ct2" "bash $tmp/ct2/prefix/g.sh"
 for s in ct1 ct2; do
-  git init -q "$tmp/$s/repo" 2>/dev/null; mkdir -p "$tmp/$s/repo/.claude"
+  git init -q "$tmp/$s/repo" 2>/dev/null; mkdir -p "$tmp/$s/repo/.claude" "$tmp/$s/repo/.git/hooks"
   printf '{"cwd":"%s/repo/work"}\n' "$tmp/$s" > "$tmp/$s/repo/.claude/settings.json"
   printf '#!/bin/sh\nexit 0\n' > "$tmp/$s/repo/.git/hooks/pre-commit"; chmod 755 "$tmp/$s/repo/.git/hooks/pre-commit"
 done
