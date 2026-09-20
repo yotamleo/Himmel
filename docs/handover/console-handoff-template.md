@@ -23,7 +23,7 @@ do not treat them as yours. Only then send **`{{LETTER}} LIVE`** to that
 session so it releases its lock and wraps — or, for a leg that stays silent,
 send it with that leg named as one that did not quote back, and why (ACTION
 ZERO step 9), rather than waiting on it indefinitely. `LIVE` first strands
-every leg that has not rotated (HIMMEL-3254).
+every leg that has not been re-briefed (HIMMEL-3254).
 
 ## In flight
 

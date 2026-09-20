@@ -159,6 +159,32 @@ contains 'retask-channel.md: the chain path says the named-sender check no longe
 contains 'console-template.md: step 9 asks the predecessor to name the successor in its relay' "$step9" 'naming you'
 contains 'console-template.md: handing over says the relay names the successor' "$handing" 'naming the successor'
 
+RETASK_TEXT="$(cat "$RETASK")"
+# A relay MAY keep the leg's token (HIMMEL-3082, round 7): an unrotated relay is
+# valid and terminal, the fresh token adds no authentication, and only the chain
+# still needs both tokens. Prose the leg reasons from, so pin each claim.
+contains 'preface: a relay with no fresh token is complete and valid' "$succ" 'complete and valid'
+contains 'preface: with no fresh token the leg keeps the one it holds' "$succ" 'keep the one you hold'
+contains 'preface: the leg is fully authenticated without rotating' "$succ" 'fully authenticated'
+contains 'preface: a fresh token adds no authentication, so its absence is no gap' "$succ" 'its absence is not a gap'
+contains 'preface: the chain still always carries a fresh token' "$succ" 'always carries a fresh token'
+contains 'S1 quotes: the fresh token is optional' "$(cell_of S1 4)" 'fresh one is optional'
+contains 'S1 verdict: keep your token if none came' "$(cell_of S1 6)" 'keep your token'
+contains 'retask-channel.md: the relay definition makes the fresh token optional' "$RETASK_TEXT" 'fresh one is optional'
+
+# No doc may still assert the retired field state: the tick cannot observe
+# strandedness, so a doc that says it reads `nonces=STRANDED` describes a
+# tick that no longer exists.
+stale=""
+for f in "$PREFACE" "$CONSOLE" "$RUNNING" "$HANDOFF" "$RETASK"; do
+    hit="$(grep -F -- 'nonces=STRANDED' "$f" | head -n 1)"
+    [ -n "$hit" ] && stale="$stale $f"
+done
+if [ -z "$stale" ]; then pass 'no succession doc still names nonces=STRANDED'; else fail "docs still name nonces=STRANDED:$stale"; fi
+contains 'console-template Live state: names the RELAYED and UNCONFIRMED reads' "$live" 'nonces=RELAYED'
+contains 'running-a-console: an unrotated relay that the leg accepted reads RELAYED, not an incident' "$running" 'RELAYED'
+contains 'retask-channel.md: the tick reads the leg own bullet, never asserts strandedness' "$retask" 'never asserts'
+
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-succession-docs.sh'
     exit 0

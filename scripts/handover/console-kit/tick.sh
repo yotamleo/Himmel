@@ -52,11 +52,18 @@ orphan-loops.sh; orphans=none when clean, orphans=? when the process table
 cannot be read. A leg whose lock is FREE / tail WRAPPED but which still owns a
 wrapper here left a background loop running -- tell the leg to TaskStop it.
 
-nonces=<ok|STRANDED:<leg,...>|unknown|skip> (HIMMEL-3254) closes the line: a held
-leg in this console doc's `## Live state` whose nonce does not start with this
-console's own letter (`<LETTER>-<leg>-<hex>`) was never rotated after a console
-succession and can only verify a message from the console its brief names --
-rotate it (quote both tokens, see leg-preface.md "Console succession").
+nonces=<ok|RELAYED:<leg,...>|UNCONFIRMED:<leg,...>|unknown|skip> (HIMMEL-3254)
+closes the line. It reads, for each HELD leg in this console doc's `## Live
+state`, whether the nonce starts with this console's own letter
+(`<LETTER>-<leg>-<hex>`). A leg whose nonce carries a PREVIOUS console's letter
+is not rotated, which is a valid state: a relay may keep the leg's token. So the
+leg's own handover doc decides: a `- ... SUCCESSION accepted:` Results bullet
+naming this console = RELAYED (the leg took this console over, informational,
+nothing to do); no such bullet = UNCONFIRMED (this console cannot tell whether
+the leg was re-briefed -- ask the leg for its quote-back, or have the
+predecessor relay it, which is the stronger form; a chain, see leg-preface.md
+"Console succession", is only for a predecessor that is gone and never replaces
+an accepted relay). UNCONFIRMED wins the field when both occur.
 unknown = the doc name carries no console letter or has no `legs:` line.
 
 --burn adds a per-leg context-burn field (first-turn/avg-ctx, via
@@ -167,6 +174,7 @@ LEGS_SPLIT="${LEGS//,/ }"
 
 legs_summary=""
 tails_summary=""
+leg_docmap=""
 # HIMMEL-3145: the census names the -n session the console actually passed
 # to `claude`, which is the leg doc's stem minus a -RESUME suffix (the same
 # string the --burn loop below matches on) -- collect it here so procs=/
@@ -203,6 +211,7 @@ for leg in $LEGS_SPLIT; do
     fi
     legs_summary="$(csv_add "$legs_summary" "$label:$lock_status")"
     tails_summary="$(csv_add "$tails_summary" "$label:$tail_status")"
+    leg_docmap="$leg_docmap $label=$leg_doc"
 done
 [ -n "$legs_summary" ] || legs_summary=none
 [ -n "$tails_summary" ] || tails_summary=none
@@ -254,25 +263,32 @@ if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
         else
             livestate_summary=ok
         fi
-        # HIMMEL-3254: nonces=STRANDED:<leg> -- a HELD leg whose Live-state
-        # nonce (`<LETTER>-<leg>-<hex>`) still carries a previous console's
-        # letter was never rotated onto THIS console, so it can only verify
-        # a message from the console its brief names. The letter is this
-        # console doc's own (`<prefix>-nextleg-<date><LETTER>-<name>.md`); a
-        # wrapped leg (lock not held) has nothing to rotate. The leg-side rule
-        # is docs/handover/leg-preface.md "Console succession".
-        # ponytail: this reads THIS doc's Live state, so it sees "not rotated
-        # in the state the console keeps", not "the leg accepted the
-        # rotation" -- a console that rewrites a leg's Live-state nonce
-        # before that leg's quote-back reads ok while the leg is still
-        # stranded. The console template therefore says: update the nonce
-        # only AFTER the quote-back. A doc name with no parseable letter
-        # reads unknown, never a guess.
+        # HIMMEL-3254: a HELD leg whose Live-state nonce (`<LETTER>-<leg>-<hex>`)
+        # still carries a previous console's letter is NOT necessarily
+        # stranded: a relay may keep the leg's token (leg-preface.md "Console
+        # succession"), so an unrotated nonce is the common, valid state. The
+        # leg's own handover doc says which it is -- the leg writes
+        # `- <time> SUCCESSION accepted: <console> replaces <old>` under
+        # Results when it takes a console over. That bullet naming THIS
+        # console = RELAYED (informational); none = UNCONFIRMED (this
+        # console cannot tell whether the leg was re-briefed). The letter is
+        # this console doc's own (`<prefix>-nextleg-<date><LETTER>-<name>.md`)
+        # and the console name in the bullet is that doc's stem; a wrapped leg
+        # (lock not held) has nothing to rotate.
+        # ponytail: both reads are self-reported state, not proof. A leg that
+        # accepted but has not yet written its bullet reads UNCONFIRMED for a
+        # moment, and a console that rewrites a leg's Live-state nonce before
+        # that leg's quote-back reads ok while the leg is still unverified
+        # (the console template says: update the nonce only AFTER the
+        # quote-back). A doc name with no parseable letter reads unknown,
+        # never a guess.
         console_letter="$(printf '%s\n' "${console_doc##*/}" | sed -n -E 's/.*-nextleg-[0-9]{4}-[0-9]{2}-[0-9]{2}([A-Z]{1,2})-.*/\1/p')"
+        console_stem="${console_doc##*/}"; console_stem="${console_stem%.md}"
         if [ -z "$console_letter" ]; then
             nonces_summary=unknown
         else
-            stranded_csv=""
+            unconfirmed_csv=""
+            relayed_csv=""
             # shellcheck disable=SC2016  # backtick span pattern, not a shell expansion
             for span in $(printf '%s\n' "$legs_line" | grep -oE '`[A-Za-z0-9_]+:[^`]*`' | tr -d '`'); do
                 span_leg="${span%%:*}"
@@ -281,12 +297,26 @@ if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
                 # shellcheck disable=SC2086  # word-split on purpose: list_has takes "$@"
                 list_has "$span_leg" $held_legs || continue
                 case "$span_nonce" in
-                    "$console_letter"-*) ;;
-                    *) stranded_csv="$(csv_add "$stranded_csv" "$span_leg")" ;;
+                    "$console_letter"-*) continue ;;
                 esac
+                span_doc=""
+                for pair in $leg_docmap; do
+                    [ "${pair%%=*}" = "$span_leg" ] && span_doc="${pair#*=}"
+                done
+                accepted=""
+                if [ -n "$span_doc" ] && [ -f "$span_doc" ]; then
+                    accepted="$(grep -E '^- .*SUCCESSION accepted:' "$span_doc" 2>/dev/null | grep -F -- "$console_stem" | head -n 1)"
+                fi
+                if [ -n "$accepted" ]; then
+                    relayed_csv="$(csv_add "$relayed_csv" "$span_leg")"
+                else
+                    unconfirmed_csv="$(csv_add "$unconfirmed_csv" "$span_leg")"
+                fi
             done
-            if [ -n "$stranded_csv" ]; then
-                nonces_summary="STRANDED:${stranded_csv}"
+            if [ -n "$unconfirmed_csv" ]; then
+                nonces_summary="UNCONFIRMED:${unconfirmed_csv}"
+            elif [ -n "$relayed_csv" ]; then
+                nonces_summary="RELAYED:${relayed_csv}"
             else
                 nonces_summary=ok
             fi

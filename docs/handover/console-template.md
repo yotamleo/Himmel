@@ -83,7 +83,8 @@ Run these, in order, and write the result as the first bullet under
    When every inherited leg has quoted back — or you have named the ones that
    did not, and why — send **`{{LETTER}} LIVE`** to the predecessor so it can
    release its lock and wrap. Sending `LIVE` first lets the predecessor leave
-   before the legs have rotated; the tick then reads `nonces=STRANDED:<leg>`.
+   before the legs have been re-briefed; the tick then reads
+   `nonces=UNCONFIRMED:<leg>`.
 10. **Arm the `tick` monitor now** (HIMMEL-3144 D2). Of the four `## Monitors`
     below, `tick` is the only one that fires unconditionally (the other three
     are change-filtered and can go silent for hours with nothing wrong) — it
@@ -109,9 +110,12 @@ Run these, in order, and write the result as the first bullet under
 > held. Update this section on every dispatch, ruling, wrap and GO — not only
 > at handover; `console.sh next` copies it verbatim into the successor's
 > HANDOFF, so a stale line here is a stale line there too. A leg's nonce is
-> updated **only after** that leg's quote-back of the fresh one: until then
-> the line still names the predecessor's, which is what
-> `nonces=STRANDED:<leg>` in the tick reads (HIMMEL-3254).
+> updated **only after** that leg's quote-back of a fresh one: until then
+> the line still names the predecessor's. A relay may hand out no fresh token,
+> so a leg can stay on the predecessor's nonce for good and be fully
+> authenticated; the tick tells that apart from a leg that never accepted
+> (`nonces=RELAYED:<leg>` needs the leg's own `SUCCESSION accepted` bullet,
+> else `UNCONFIRMED:<leg>`; HIMMEL-3254).
 >
 > **Every nonce and lock token is a single backtick span, one per leg, with no
 > trailing punctuation inside or directly after the span** — bare

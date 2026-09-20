@@ -252,7 +252,9 @@ answers with a quote-back of the fresh one.
 A successor that arrives after you have left can prove itself only with the
 two-token chain form; a leg that cannot verify that is stranded (it keeps
 working and can still be merged, but cannot be re-scoped). The successor's
-tick reads `nonces=STRANDED:<leg>` until every leg has rotated.
+tick reads `nonces=UNCONFIRMED:<leg>` until each leg's own `SUCCESSION
+accepted` bullet names the successor (`RELAYED:<leg>`, a relay that kept the
+leg's token, is valid) or the leg has rotated.
 
 **Release your lock only after the successor reports `LIVE`.** It sends that
 only after the quote-backs — or with the legs that did not quote back named,

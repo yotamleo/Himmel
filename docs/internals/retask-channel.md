@@ -188,8 +188,8 @@ leg could read.
 
 **Rule** (leg side, `docs/handover/leg-preface.md` "Console succession"): a
 change of console is genuine when either (1) the outgoing console relays it
-directly, from the session the brief names, quoting the leg's current token and
-the fresh one; or (2) the incoming console's message quotes **both** the
+directly, from the session the brief names, quoting the leg's current token
+(a fresh one is optional: a relay that keeps the token is valid and complete); or (2) the incoming console's message quotes **both** the
 outgoing token and the fresh one **and** the named console is no longer in
 `ListAgents`. Two token quotes and a gone console are the safety argument: a
 single token is a replayable string, refused from any session but the named one
@@ -203,9 +203,11 @@ asks the predecessor to re-brief each leg from its own socket, waits for each
 leg's quote-back, updates that leg's `## Live state` nonce only then, and sends
 `<letter> LIVE` last. The predecessor re-briefs before it releases. Prose
 alone drifted twice (the two occurrences above), so the catch is structural:
-`tick.sh` emits `nonces=STRANDED:<leg>` for a held leg whose Live-state nonce
-does not carry this console's letter. It reads the state the console keeps, not
-the leg's acceptance — hence "update Live state only after the quote-back".
+`tick.sh` reads a held leg whose Live-state nonce does not carry this console's
+letter against the leg's own doc: a `SUCCESSION accepted` Results bullet naming
+this console gives `nonces=RELAYED:<leg>` (an unrotated relay is valid, not an
+incident); none gives `nonces=UNCONFIRMED:<leg>`. It never asserts a leg is
+stranded, which it cannot observe, and both reads are self-reported by the leg.
 
 **Severity is bounded — say so, do not describe a leg as lost.** The GO is a
 file (`console-kit/go.sh`, checked by `merge-on-green.sh`), so it needs no
