@@ -725,7 +725,15 @@ rerun_command() {
   local cmd
   cmd="HIMMEL_UNINSTALL_REAL_HOME=1 bash $(printf '%q' "$SCRIPT_DIR/uninstall.sh") --yes"
   [ "$PURGE_STATE" -eq 1 ] && cmd="$cmd --purge-state"
-  [ -n "${1:-}" ] && cmd="$cmd $1"
+  # Carry every --skip-* the operator already passed: a rerun that dropped one
+  # would remove what they chose to keep. The remedy flag is added once.
+  [ "$SKIP_PLUGINS" -eq 1 ] && cmd="$cmd --skip-plugins"
+  [ "$SKIP_TASKS" -eq 1 ] && cmd="$cmd --skip-tasks"
+  [ "$SKIP_HOOKS" -eq 1 ] && cmd="$cmd --skip-hooks"
+  [ "$SKIP_SETTINGS" -eq 1 ] && cmd="$cmd --skip-settings"
+  if [ -n "${1:-}" ]; then
+    case " $cmd " in *" $1 "*) ;; *) cmd="$cmd $1" ;; esac
+  fi
   printf '%s\n' "$cmd"
 }
 

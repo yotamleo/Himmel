@@ -1954,8 +1954,10 @@ else
 fi
 
 # U4k — RED 3250: a genuine halt names the file that tripped the check and
-# prints a command that WORKS. The printed line is extracted and run (with
-# --skip-tasks appended: the fixture must never reach the scheduler).
+# prints a command that WORKS. The printed line is extracted and run AS PRINTED:
+# u_run passed --purge-state --skip-tasks, so the command must carry both — a
+# rerun that dropped the operator's own --skip-* would remove what they chose
+# to keep (and here would reach the scheduler).
 u_backup_fixture u4k
 u_hooks_reset
 printf '# pre-commit managed hook\n' > "$U_REPO/.git/hooks/commit-msg"
@@ -1966,12 +1968,14 @@ assert_not_has 'U4k no login-shell advice' 'login shell' "$out"
 assert_not_has 'U4k no bash -l advice' 'bash -l' "$out"
 u4k_cmd=$(printf '%s\n' "$out" | grep -m1 '^    HIMMEL_UNINSTALL_REAL_HOME=1 bash ' | sed 's/^    //')
 assert_has 'U4k printed command skips hooks' '--skip-hooks' "$u4k_cmd"
+assert_has 'U4k printed command keeps the operator --skip-tasks' '--skip-tasks' "$u4k_cmd"
+assert_has 'U4k printed command keeps --purge-state' '--purge-state' "$u4k_cmd"
 assert_has 'U4k printed command uses the absolute script path' "$CLI" "$u4k_cmd"
 rm -f "$U_REPO/.git/hooks/commit-msg"
 if [ -n "$u4k_cmd" ]; then
     u4k_out=$(HOME="$U_HOME" PATH="$U_BIN:$HBIN" HIMMEL_UNINSTALL_REPO_ROOT="$U_REPO" \
         TELEGRAM_CHANNEL_DIR="$CHANNEL" BRIDGE_ROOT="$BRIDGE" HIMMELCTL_CACHE_DIR="$U_CACHE" \
-        bash -c "$u4k_cmd --skip-tasks" </dev/null 2>&1); u4k_rc=$?
+        bash -c "$u4k_cmd" </dev/null 2>&1); u4k_rc=$?
 else
     u4k_out=''; u4k_rc=99
 fi
