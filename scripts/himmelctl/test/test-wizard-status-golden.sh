@@ -35,7 +35,7 @@
 #      the STATE itself, not just the query, carries the six golden reds
 #      PLUS (HIMMEL-2349) the additive overlay's own recorded-install-profile
 #      coverage of 8 more manifest items: summary is
-#      {red:13,degraded:1,green:0,na:manifestCount-14} (pre-commit is
+#      {red:11,degraded:1,green:0,na:manifestCount-12} (pre-commit is
 #      actively scrubbed from PATH, so this holds regardless of whether the
 #      host running the suite has pre-commit installed) - see the bonus
 #      check's own comment, right where it's asserted, for the
@@ -290,7 +290,7 @@ outAFull=$(run_status_full)
 # the machine running the suite happened to have pre-commit.exe on PATH.
 echo "$outAFull" | jq -e --argjson n "$manifestCount" \
   '(.items | length) == $n and .summary.red == 11 and .summary.degraded == 1 and .summary.green == 0 and .summary.na == ($n - 12)' >/dev/null \
-  || fail "case a (bonus): expected the full $manifestCount-item run to read {red:11, degraded:1, green:0, na:$((manifestCount - 12))} - the six golden reds PLUS the 6 red/1 degraded of the 8 items the recorded install-profile additively covers (got: $(echo "$outAFull" | jq -c '.summary'))"
+  || fail "case a (bonus): expected the full $manifestCount-item run to read {red:11, degraded:1, green:0, na:$((manifestCount - 12))} - the six golden reds PLUS the 5 red/1 degraded/2 opt-in n/a of the 8 items the recorded install-profile additively covers (got: $(echo "$outAFull" | jq -c '.summary'))"
 echo "ok: case a (bonus) - a --items-less run against the same state confirms six golden reds PLUS the additive overlay's 8 recorded-profile-covered items (5 red, 1 degraded, 2 opt-in n/a, 0 green), against the whole manifest"
 
 # ── case (b): six discrimination flips, each restored after ────────────────
