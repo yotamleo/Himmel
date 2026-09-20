@@ -174,6 +174,7 @@ mk_side "$tmp/ct1" "bash $tmp/ct1/prefix/g.sh"; mk_side "$tmp/ct2" "bash $tmp/ct
 for s in ct1 ct2; do
   git init -q "$tmp/$s/repo" 2>/dev/null; mkdir -p "$tmp/$s/repo/.claude"
   printf '{"cwd":"%s/repo/work"}\n' "$tmp/$s" > "$tmp/$s/repo/.claude/settings.json"
+  printf '#!/bin/sh\nexit 0\n' > "$tmp/$s/repo/.git/hooks/pre-commit"; chmod 755 "$tmp/$s/repo/.git/hooks/pre-commit"
 done
 bash "$CONV" --a-home "$tmp/ct1/home" --a-prefix "$tmp/ct1/prefix" --a-target "$tmp/ct1/repo" \
   --b-home "$tmp/ct2/home" --b-prefix "$tmp/ct2/prefix" --b-target "$tmp/ct2/repo" >/dev/null 2>&1; rc=$?
@@ -182,6 +183,17 @@ printf '{"cwd":"%s/elsewhere"}\n' "$tmp/ct2" > "$tmp/ct2/repo/.claude/settings.j
 bash "$CONV" --a-home "$tmp/ct1/home" --a-prefix "$tmp/ct1/prefix" --a-target "$tmp/ct1/repo" \
   --b-home "$tmp/ct2/home" --b-prefix "$tmp/ct2/prefix" --b-target "$tmp/ct2/repo" >/dev/null 2>&1; rc=$?
 [ "$rc" -eq 1 ] && ok "T7 RED: a genuinely different project setting is still DIVERGED (rc 1)" || bad "T7 target normalization hid a real difference" "rc=$rc"
+# Targets supplied but NEITHER repo has a git hook: both project installs did nothing -> VACUOUS.
+mk_side "$tmp/cv1" "bash $tmp/cv1/prefix/g.sh"; mk_side "$tmp/cv2" "bash $tmp/cv2/prefix/g.sh"
+for s in cv1 cv2; do git init -q "$tmp/$s/repo" 2>/dev/null; done
+bash "$CONV" --a-home "$tmp/cv1/home" --a-prefix "$tmp/cv1/prefix" --a-target "$tmp/cv1/repo" \
+  --b-home "$tmp/cv2/home" --b-prefix "$tmp/cv2/prefix" --b-target "$tmp/cv2/repo" >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 3 ] && ok "T7 RED: two project installs that wired no git hook are VACUOUS (rc 3)" || bad "T7 hook-less project installs accepted" "rc=$rc"
+# A rejected sibling (<prefix>-old) must survive the LATER home mask when the prefix sits under HOME.
+mk_side "$tmp/cn1" "bash $tmp/cn1/home/himmel-old/g.sh"; mk_side "$tmp/cn2" "bash $tmp/cn2/home/himmel-old/g.sh"
+mkdir -p "$tmp/cn1/home/himmel" "$tmp/cn2/home/himmel"
+bash "$CONV" --a-home "$tmp/cn1/home" --a-prefix "$tmp/cn1/home/himmel" --b-home "$tmp/cn2/home" --b-prefix "$tmp/cn2/home/himmel" >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 1 ] && ok "T7 RED: a sibling of a prefix nested under HOME is not re-masked as {HOME} (rc 1)" || bad "T7 nested sibling masked by the home pass" "rc=$rc"
 
 # --- T9 RED: the published pair does not verify -> the body stops, fail closed --
 # The README chain never reaches tar on a bad hash; the body must not extract or

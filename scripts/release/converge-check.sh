@@ -15,7 +15,8 @@
 # path that is neither prefix (a leaked third location) is NOT masked.
 #
 # VACUOUS GUARD: a snapshot with no settings.json hooks proves nothing (two empty
-# homes are "identical"), so that is refused (exit 3) rather than passed.
+# homes are "identical"), so that is refused (exit 3) rather than passed. The same
+# for --a-target/--b-target when NEITHER repo has a git hook.
 #
 # USAGE:
 #   converge-check.sh --a-home <d> --a-prefix <d> --b-home <d> --b-prefix <d> \
@@ -49,7 +50,9 @@ mask() {
   while [[ "$rest" == *"$needle"* ]]; do
     out+="${rest%%"$needle"*}"
     rest="${rest#*"$needle"}"
-    case "$rest" in [A-Za-z0-9._-]*) out+="$needle" ;; *) out+="$token" ;; esac
+    # A rejected sibling keeps a \001 after its first char, so a LATER mask (home is
+    # usually a parent of the prefix) cannot re-match it; norm() strips the marks.
+    case "$rest" in [A-Za-z0-9._-]*) out+="${needle:0:1}"$'\001'"${needle:1}" ;; *) out+="$token" ;; esac
   done
   REPLY="$out$rest"
 }
@@ -63,7 +66,7 @@ norm() {
     mask "$line" "$prefix" '{PREFIX}'
     [ -n "$target" ] && mask "$REPLY" "$target" '{TARGET}'
     mask "$REPLY" "$home" '{HOME}'
-    printf '%s\n' "$REPLY"
+    printf '%s\n' "${REPLY//$'\001'/}"
   done
 }
 
@@ -129,6 +132,17 @@ for side in a b; do
     exit 3
   fi
 done
+
+# Vacuous gates: with targets supplied, two installs that wired NO git hook anywhere
+# have not "converged" on the project gates, they have both done nothing. (One side
+# having a hook and the other not is a real difference -- the diff below reports it.)
+if [ -n "$at" ]; then
+  na="$(grep -c '^# hook: ' "$tmp/a.txt")"; nb="$(grep -c '^# hook: ' "$tmp/b.txt")"
+  if [ "$na" -eq 0 ] && [ "$nb" -eq 0 ]; then
+    echo "converge-check: VACUOUS -- neither target repo has a git hook; a project install that wired no gate cannot 'converge'" >&2
+    exit 3
+  fi
+fi
 
 # Unusable snapshot guard: a file that would not parse is not state to compare.
 for side in a b; do
