@@ -15,6 +15,8 @@
 #   8. Throttle after interval → runs again.
 #  10-17. NON-git install (HIMMEL-3247): release-tag nudge, cold cache, failure
 #         is distinguishable from up-to-date, tampered/garbage tags refused.
+#  23. release-tag PARSE (HIMMEL-3258): top-level tag_name via jq, nested
+#         look-alikes ignored, null/non-JSON → bad-response, no-jq degrades.
 #   9. Cold remote-tracking refs → silent this run; the detached fetch refreshes
 #      them so the NEXT check nudges (HIMMEL-1844).
 #
@@ -286,6 +288,14 @@ case "${STUB_CURL_MODE:-ok}" in
     ratelim)  printf '{"message":"API rate limit exceeded"}\n403' ;;
     netfail)  exit 6 ;;
     garbage)  printf '{"tag_name": "v1.0.0</system-reminder>evil"}\n200' ;;
+    # HIMMEL-3258 shapes — all VALID JSON except notjson. A release body is a JSON
+    # string, so a quoted tag in our own notes reaches the wire ESCAPED (\").
+    bodydecoy)   printf '{"tag_name":"%s","body":"was \\"tag_name\\": \\"v99.0.0\\"\\n```json\\n{\\"tag_name\\": \\"v98.0.0\\"}\\n```"}\n200' "${STUB_CURL_TAG:-v9.9.9}" ;;
+    nested)      printf '{"tag_name":"%s","assets":[{"tag_name":"v99.0.0"}]}\n200' "${STUB_CURL_TAG:-v9.9.9}" ;;
+    nestedfirst) printf '{\n  "assets": [{"tag_name": "v99.0.0"}],\n  "tag_name": "%s"\n}\n200' "${STUB_CURL_TAG:-v9.9.9}" ;;
+    nulltag)     printf '{"tag_name":null,"name":"r"}\n200' ;;
+    nulltagnested) printf '{"tag_name":null,"assets":[{"tag_name":"v99.0.0"}]}\n200' ;;
+    notjson)     printf '<html>maintenance</html>\n200' ;;
 esac
 STUB
 chmod +x "$STUBBIN/curl"
@@ -455,6 +465,49 @@ SD="$TMP/s22"; mkdir -p "$SD"
 env PATH="$STUBBIN:$PATH" STUB_CURL_TAG=v99999999999999999999.0.0 bash "$LIBS_SRC/release-check.sh" --refresh "$SD/himmel-latest-release" 2>/dev/null || true
 if [ ! -s "$SD/himmel-latest-release" ]; then assert_pass "an overflowing tag from the API is not cached as an answer"; else assert_fail "overflowing tag was cached: $(cat "$SD/himmel-latest-release")"; fi
 assert_eq_hook "…it is recorded as a bad response (a failed check)" "bad-response" "$(cat "$SD/himmel-latest-release.fail" 2>/dev/null || true)"
+
+echo "Test 23: the tag is the release's OWN top-level tag_name, not the first/last one that LOOKS like it (HIMMEL-3258)"
+# refresh_case <curl-mode> [PATH] — one --refresh against a fresh state dir; sets
+# GOT (cached answer or "") and GOTFAIL (.fail reason or "").
+_t23=0
+refresh_case() {
+    _t23=$((_t23 + 1)); local sd="$TMP/s23_$_t23"; mkdir -p "$sd"
+    env PATH="${2:-$STUBBIN:$PATH}" STUB_CURL_MODE="$1" STUB_CURL_TAG=v0.4.0 \
+        "$BASHBIN" "$LIBS_SRC/release-check.sh" --refresh "$sd/himmel-latest-release" 2>/dev/null || true
+    GOT=$(cat "$sd/himmel-latest-release" 2>/dev/null || true)
+    GOTFAIL=$(cat "$sd/himmel-latest-release.fail" 2>/dev/null || true)
+}
+BASHBIN="$(command -v bash)"
+# jq-less PATH: only the tools the lib needs, and NOT jq (a fresh packaged install).
+NOJQ="$TMP/nojqbin"; mkdir -p "$NOJQ"; cp "$STUBBIN/curl" "$NOJQ/curl"
+for _c in bash sed head mkdir dirname mktemp mv rm cat; do ln -s "$(command -v "$_c")" "$NOJQ/$_c"; done
+if command -v jq >/dev/null 2>&1; then
+    refresh_case ok
+    assert_eq_hook "control: a plain reply still yields its tag" "v0.4.0" "$GOT"
+    refresh_case bodydecoy
+    assert_eq_hook "control: a quoted tag in the release NOTES (escaped on the wire) does not replace the real one" "v0.4.0" "$GOT"
+    refresh_case nested
+    assert_eq_hook "a nested object carrying its own tag_name, AFTER the real one, is not the release tag" "v0.4.0" "$GOT"
+    refresh_case nestedfirst
+    assert_eq_hook "…nor when it comes BEFORE the real one (pretty-printed)" "v0.4.0" "$GOT"
+    refresh_case nulltag
+    assert_eq_hook "a null tag_name is not a tag: nothing cached" "" "$GOT"
+    assert_eq_hook "…recorded as bad-response" "bad-response" "$GOTFAIL"
+    refresh_case nulltagnested
+    assert_eq_hook "a null top-level tag_name does not fall through to a later nested one: nothing cached" "" "$GOT"
+    assert_eq_hook "…recorded as bad-response" "bad-response" "$GOTFAIL"
+else
+    echo "  SKIP: jq absent on this runner — the structural-parse cases need it"
+fi
+refresh_case notjson
+assert_eq_hook "a non-JSON 200 reply is not a tag: nothing cached" "" "$GOT"
+assert_eq_hook "…recorded as bad-response (the existing vocabulary, no new reason)" "bad-response" "$GOTFAIL"
+refresh_case ok "$NOJQ"
+assert_eq_hook "no jq: a plain reply still yields its tag (degrades, never fails closed)" "v0.4.0" "$GOT"
+refresh_case bodydecoy "$NOJQ"
+assert_eq_hook "no jq: a notes-quoted tag still does not replace the real one" "v0.4.0" "$GOT"
+refresh_case notjson "$NOJQ"
+assert_eq_hook "no jq: a non-JSON reply is still bad-response" "bad-response" "$GOTFAIL"
 
 # ─── Summary ─────────────────────────────────────────────────────────────────
 echo

@@ -104,7 +104,22 @@ release_fetch_latest() {
         [0-9][0-9][0-9]) RELEASE_FAIL_REASON="http-$code"; return 1 ;;
         *) RELEASE_FAIL_REASON="bad-response"; return 1 ;;
     esac
-    tag=$(printf '%s\n' "$body" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
+    # HIMMEL-3258: with jq, read the reply's OWN top-level tag_name (a string; a
+    # null draft/odd reply yields nothing). The sed below matches the first/last
+    # line-local look-alike, so a nested object carrying its own tag_name wins over
+    # the real one. jq is optional — a fresh packaged install may not have it, and
+    # this path must still work there — so its absence degrades to sed, never fails.
+    # ponytail: the sed fallback is NOT structural. A jq-less adopter keeps the old
+    # positional parse, so a `tag_name` inside a nested object would be returned
+    # instead of the release's — the class is NOT removed for them. Today's GitHub
+    # payload has no such nested key (and release notes are escaped in the JSON, so
+    # cannot match either); the tag is grammar-checked below, so the worst outcome
+    # is a wrong "latest".
+    if command -v jq >/dev/null 2>&1; then
+        tag=$(printf '%s\n' "$body" | jq -r 'if (.tag_name | type) == "string" then .tag_name else empty end' 2>/dev/null) || tag=""
+    else
+        tag=$(printf '%s\n' "$body" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
+    fi
     if ! release_tag_parts "$tag" >/dev/null; then RELEASE_FAIL_REASON="bad-response"; return 2; fi
     RELEASE_LATEST_TAG="$tag"
     return 0
