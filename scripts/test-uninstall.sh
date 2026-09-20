@@ -2358,10 +2358,15 @@ u_same 'U19 text above and below the block is untouched' "$U_HOME/.claude/CLAUDE
 u_residue_fixture u20
 { cat "$U_HOME/.claude/CLAUDE.md"; printf '%s\n' "$U17_BEGIN"; } > "$TMP/u20-doubled"
 cp "$TMP/u20-doubled" "$U_HOME/.claude/CLAUDE.md"
+cp "$U_HOME/.codex/AGENTS.md" "$TMP/u20-agents"
+cp "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u20-hud"
 u_run_fx
 assert_rc 'U20 doubled marker halts the run' 2 "$rc"
 u_same 'U20 doubled-marker file left byte-identical' "$U_HOME/.claude/CLAUDE.md" "$TMP/u20-doubled"
 assert_has 'U20 refusal names the file' "$U_HOME/.claude/CLAUDE.md" "$out"
+# the halt is honoured inside the step: later files are not touched after it
+u_same 'U20 AGENTS.md not touched after the halt' "$U_HOME/.codex/AGENTS.md" "$TMP/u20-agents"
+u_same 'U20 hud config not touched after the halt' "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u20-hud"
 u_residue_fixture u20b
 printf 'notes mention HIMMEL:working-principles in prose only\n' > "$U_HOME/.claude/CLAUDE.md"
 cp "$U_HOME/.claude/CLAUDE.md" "$TMP/u20b-prose"

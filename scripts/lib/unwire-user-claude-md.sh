@@ -15,7 +15,11 @@
 # Exit codes: 0 = block removed, or there was none (no marker, no file);
 # 1 = the markers are not exactly one BEGIN followed by one END -- the file is
 # left untouched, because guessing which range is himmel's would eat the
-# operator's own text. Source it to call unwire_user_claude_md directly.
+# operator's own text -- OR a temp-file / write / remove step failed (disk full,
+# read-only target); a failed write-through can leave the target truncated,
+# since it is written in place to keep a symlink and the mode (ponytail: no
+# atomic rename); 2 = wrong argument count. Source it to call
+# unwire_user_claude_md directly.
 set -euo pipefail
 
 _UNWIRE_UCM_MARKER="HIMMEL:working-principles"

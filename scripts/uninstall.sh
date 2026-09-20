@@ -1762,6 +1762,8 @@ unwire_user_files() {
   local _ix _p _dry=0
   [ "$DRY_RUN" -eq 1 ] && _dry=1
   for _ix in "$_ix_ucm" "$_ix_uam" "$_ix_hud"; do
+    # A failure on one file halts the step: never edit the next file after it.
+    [ "$HALTED" -eq 0 ] || return 0
     _p="$(m_path "$_ix")"
     if ! class_removes "$_ix"; then
       echo "  kept (manifest class ${M_CLASS[$_ix]}): $_p"
