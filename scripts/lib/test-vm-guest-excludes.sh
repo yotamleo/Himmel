@@ -173,8 +173,13 @@ must_trip "g a free-text value in the allowlist (credential-shaped id)" \
   "$(lane_fixture badid '{"lanes": [], "profileAllowlist": ["sk-live-0123456789abcdef"], "profileAllowlistScope": ["codex-exec"]}')"
 must_trip "h an id outside the closed vocabulary in a lane entry" \
   "$(lane_fixture badentry '{"lanes": [{"id": "haiku", "probe": {"kind": "never"}}]}')"
-must_trip "i a probe carrying an extra field" \
-  "$(lane_fixture badprobe '{"lanes": [{"id": "codex-exec", "probe": {"kind": "env", "name": "STUB"}}]}')"
+# i: each fixture differs from the accepted base (p4: id codex-exec, kind "always", no extra
+# field) by EXACTLY ONE thing — a fixture carrying two invalid properties would keep tripping
+# on the other one if the scanner were loosened on the property under test (HIMMEL-3259).
+must_trip "i1 an invalid probe kind alone (\"env\", no extra field)" \
+  "$(lane_fixture badkind '{"lanes": [{"id": "codex-exec", "probe": {"kind": "env"}}]}')"
+must_trip "i2 a VALID probe kind (\"always\") plus an extra field" \
+  "$(lane_fixture badprobe '{"lanes": [{"id": "codex-exec", "probe": {"kind": "always", "name": "STUB"}}]}')"
 must_trip "j an empty / non-JSON file" "$(lane_fixture empty '')"
 # k: the SAME inert bytes at any other path are still a hit — the exemption is path-exact.
 K1="$WORK/lanes-otherpath"; mkdir -p "$K1/.claude" "$K1/scripts/lanes"
@@ -210,6 +215,8 @@ must_pass "p2 indent-2 multi-line inert profile" \
   "$(lane_fixture multiline "$(printf '{\n  "lanes": [\n    {\n      "id": "codex-exec",\n      "probe": {\n        "kind": "always"\n      }\n    }\n  ],\n  "profileAllowlist": [\n    "codex-exec"\n  ]\n}')")"
 must_pass "p3 CRLF line endings" \
   "$(lane_fixture crlf "$(printf '{\r\n  "lanes": [],\r\n  "profileAllowlist": []\r\n}')")"
+must_pass "p4 the base of the i1/i2 pair: a lane entry with a valid probe and no extra field" \
+  "$(lane_fixture okprobe '{"lanes": [{"id": "codex-exec", "probe": {"kind": "always"}}]}')"
 # n: the env profile is untouched (still ignores every *.local.json).
 if vm_guest_scan "$(lane_fixture envprof '{"lanes": [], "token": "STUB"}')" env >/dev/null 2>&1; then
   pass "TLn env profile still ignores *.local.json"; else fail_case "TLn env profile changed"; fi
