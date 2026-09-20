@@ -26,7 +26,9 @@ fails=0
 pass() { printf 'ok - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 contains() {  # contains <label> <haystack> <needle>  (case-insensitive, fixed)
-    if printf '%s\n' "$2" | grep -qiF -- "$3"; then pass "$1"; else fail "$1 (missing '$3')"; fi
+    local hit
+    hit="$(printf '%s\n' "$2" | grep -iF -- "$3" | head -n 1)"
+    if [ -n "$hit" ]; then pass "$1"; else fail "$1 (missing '$3')"; fi
 }
 # before <label> <haystack> <first> <second> -- <first> appears, and earlier than <second>
 before() {
