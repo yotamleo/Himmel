@@ -1112,8 +1112,10 @@ out43a="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PR
     CONSOLE_MODEL=envdefault-model \
     bash "$C" new --bucket modelbucket --model custom-model-x ) )"
 token43a="$(token_of "$out43a")"
-check "43 new's own rendered handover line carries --model <given>" "$(grep -c -- '--model custom-model-x' "$doc43A")" "1"
-check "43 new's rendered handover line does not carry CONSOLE_MODEL instead" "$(grep -c -- '--model envdefault-model' "$doc43A")" "0"
+# HIMMEL-3287: the value is single-quoted in the rendered line -- an unquoted
+# claude-opus-5[1m] is a zsh glob and fails at the exact moment of handover.
+check "43 new's own rendered handover line carries --model <given>" "$(grep -c -- "--model 'custom-model-x'" "$doc43A")" "1"
+check "43 new's rendered handover line does not carry CONSOLE_MODEL instead" "$(grep -c -e '--model envdefault-model' -e "--model 'envdefault-model'" "$doc43A")" "0"
 
 # next, invoked the way the line above actually instructs (no --model of its
 # own is available to a copy-pasting operator/console unless THIS fix put
@@ -1125,8 +1127,8 @@ doc43B="$root/tester/modelbucket/DEMO-nextleg-${today}B-console.md"
 ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
     CONSOLE_MODEL=envdefault-model \
     bash "$C" next --bucket modelbucket --model custom-model-x ) >/dev/null
-check "43 next's rendered successor doc carries --model <given>" "$(grep -c -- '--model custom-model-x' "$doc43B")" "1"
-check "43 next's rendered successor doc does not carry CONSOLE_MODEL instead" "$(grep -c -- '--model envdefault-model' "$doc43B")" "0"
+check "43 next's rendered successor doc carries --model <given>" "$(grep -c -- "--model 'custom-model-x'" "$doc43B")" "1"
+check "43 next's rendered successor doc does not carry CONSOLE_MODEL instead" "$(grep -c -e '--model envdefault-model' -e "--model 'envdefault-model'" "$doc43B")" "0"
 HANDOVER_DIR="$root" bash "$QL" release "$doc43A" "$token43a" >/dev/null 2>&1
 
 # --- 44: same-day rollover past Z (HIMMEL-2984) --------------------------

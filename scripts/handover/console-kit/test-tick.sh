@@ -974,6 +974,52 @@ contains 'a live session under an underivable name reads procs=unknown (HIMMEL-3
 # ...but a leg that is NOT held (wrapped) expects no process: 0 is a real count.
 contains 'a wrapped (FREE) leg with no session is a real procs=0 (HIMMEL-3277)' "$(PATH="$W/bin-3277-none:$PATH" bash "$SUT" --legs 'HIMMEL-7-N77-wrapped-2026-09-20-RESUME' 2>/dev/null)" 'procs=0'
 
+# --- HIMMEL-3287: the console template's own legs: placeholder must not parse.
+# The doc under test is the REAL docs/handover/console-template.md, not a fixture
+# copy of its line: the template shipped `legs: <none dispatched yet, or
+# `N1:<nonce>:<lock-token>:<pid>`, `N2:…`>`, whose two backtick spans are exactly
+# the entry shape HIMMEL-3280/3281/3284 taught the parser to read. RED control
+# (pre-fix template, this fixture, a console that has dispatched nothing):
+#   livestate=MALFORMED:N2;DRIFT:N1
+tpl3287="$HERE/../../../docs/handover/console-template.md"
+awk '/^## Live state$/ { keep = 1 } /^## Compact instructions$/ { keep = 0 } keep' "$tpl3287" > "$W/handover/console.md"
+contains 'the template Live state section was extracted (HIMMEL-3287 precondition)' "$(cat "$W/handover/console.md")" 'legs: '
+o3287="$(bash "$SUT" --legs '')"
+contains 'the console template'"'"'s own legs: placeholder reads livestate=ok on a console with no legs (HIMMEL-3287)' "$o3287" 'livestate=ok '
+case "$o3287" in
+    *MALFORMED*|*DRIFT*) fail "the template placeholder must read neither MALFORMED nor DRIFT (HIMMEL-3287) ($o3287)" ;;
+    *) pass 'the template placeholder must read neither MALFORMED nor DRIFT (HIMMEL-3287)' ;;
+esac
+# The template's other three defects, pinned against its own text. (b) the
+# Monitor tool caps timeout_ms at 1800000 (30 min) and silently clamps; (c) a
+# bare --legs name resolves against the handover ROOT and reads NOTFOUND; (d)
+# an unquoted --model {{MODEL}} is a zsh glob (claude-opus-5[1m]).
+tick3287="$(grep -F '| tick |' "$tpl3287")"
+step3287="$(awk '/^10\. \*\*Arm the `tick` monitor now/ { keep = 1 } /^## Live state$/ { keep = 0 } keep' "$tpl3287")"
+contains 'the tick row states the 30 min Monitor cap (HIMMEL-3287)' "$tick3287" '| tick | 30 min |'
+contains 'the tick row names the 1800000 ms cap and the silent clamp (HIMMEL-3287)' "$tick3287" 'silently clamps anything larger'
+contains 'the tick row says to re-arm on each expiry notice (HIMMEL-3287)' "$tick3287" 're-arms on each expiry notice'
+contains 'ACTION ZERO step 10 states the same 30 min cap (HIMMEL-3287)' "$step3287" 'silently clamps anything larger'
+case "$tick3287$step3287" in
+    *'60 min'*) fail 'neither the tick row nor step 10 may still say 60 min (HIMMEL-3287)' ;;
+    *) pass 'neither the tick row nor step 10 may still say 60 min (HIMMEL-3287)' ;;
+esac
+contains 'the --legs example uses absolute paths (HIMMEL-3287)' "$tick3287" '--legs "{{STATE_DIR}}/<leg1>.md {{STATE_DIR}}/<leg2>.md"'
+contains 'the row says why bare leg doc names fail (HIMMEL-3287)' "$tick3287" 'resolves against the handover ROOT'
+# A leg doc lives in the console's bucket, one level under the handover root:
+# the absolute path resolves, the bare name the template used to show does not.
+mkdir -p "$W/handover/bucket3287"
+l3287='HIMMEL-3287-N287-bucketed-2026-09-20-RESUME.md'
+printf '%s\n' '# leg' '- LIVE — working' > "$W/handover/bucket3287/$l3287"
+contains 'an absolute --legs path to a bucketed leg doc resolves, not NOTFOUND (HIMMEL-3287)' "$(bash "$SUT" --legs "$W/handover/bucket3287/$l3287")" 'legs=N287:FREE'
+contains 'a bare --legs name of a bucketed leg doc reads NOTFOUND (HIMMEL-3287)' "$(bash "$SUT" --legs "$l3287" 2>/dev/null)" 'legs=N287:NOTFOUND'
+next3287="$(grep -F '/console next --arm' "$tpl3287")"
+contains "the /console next line quotes --model (HIMMEL-3287)" "$next3287" "--model '{{MODEL}}'"
+case "$next3287" in
+    *'--model {{MODEL}}'*) fail 'the /console next line must not carry an unquoted --model {{MODEL}} (HIMMEL-3287)' ;;
+    *) pass 'the /console next line must not carry an unquoted --model {{MODEL}} (HIMMEL-3287)' ;;
+esac
+
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-tick.sh'
     exit 0

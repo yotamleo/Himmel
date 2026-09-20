@@ -95,7 +95,10 @@ Run these, in order, and write the result as the first bullet under
     are change-filtered and can go silent for hours with nothing wrong) — it
     is your one guaranteed periodic wake-up, and a console that never arms it
     has no structural reason to ever turn again on its own. Call `Monitor`
-    with the `tick` row's command (60 min) and **record the confirmation in
+    with the `tick` row's command (30 min — the `Monitor` tool caps
+    `timeout_ms` at `1800000` and silently clamps anything larger, so a 60-min
+    arm is a 30-min one that then goes dark; arm it as a loop that emits on arm
+    and re-arms on each expiry notice) and **record the confirmation in
     your first bullet** — the monitor id/handle it returns. `tick.sh`'s own
     output always carries a `tick=` field; today it can only ever read
     `UNKNOWN` (see the `ponytail:` comment in `tick.sh` for why an armed
@@ -160,7 +163,7 @@ Run these, in order, and write the result as the first bullet under
 > never starts with a list marker, so a marker ends the block, but prose
 > written straight under `legs:` without one is read as part of it.
 
-legs: <none dispatched yet, or `N1:<nonce>:<lock-token>:<pid>`, `N2:…`>
+legs: <none dispatched yet — else one entry per leg, in the format above>
 queue: <held queue-lock docs in launch order, or "none">
 last GO: <`<pr>:<sha>`, or "none this shift">
 acked: <relay escalation ids acked this shift (only when a relay is live), or "none">
@@ -185,7 +188,7 @@ filters to terminal-state changes and emits nothing otherwise.
 
 | Monitor | Cadence | What it is |
 |---|---|---|
-| tick | 60 min | **Armed in ACTION ZERO step 10, not here** — the only unconditional monitor of the four, so its absence is the one that goes structurally unnoticed. `bash "{{KIT}}/tick.sh" --doc "<this file>" --token <your token> --legs "N1.md N2.md"` (or `--legs "N1.md,N2.md"` — `--legs` accepts space- **and** comma-separated docs, both spellings produce identical output) — one batched line: heartbeat, leg locks, leg processes, armed jobs, suite locks, open PRs, bank. Per-leg lock status is one of **`FRESH`** (held, heartbeat current), **`STALE`** (held, heartbeat aged), **`FREE`** (the literal token `tick.sh` emits when the lock is gone — reclaim it; its own comments call this state "MISSING" as a concept, but `FREE` is what actually appears in `legs=`), or **`NOTFOUND`** (the leg doc did not resolve — a warning about a typo'd/nonexistent path, *not* a dead lock; never mistake it for a released lock) |
+| tick | 30 min | **Armed in ACTION ZERO step 10, not here** — the only unconditional monitor of the four, so its absence is the one that goes structurally unnoticed. The `Monitor` tool caps `timeout_ms` at `1800000` (30 min) and silently clamps anything larger, so arm it as a loop that emits on arm and re-arms on each expiry notice — never as one long-timeout arm. `bash "{{KIT}}/tick.sh" --doc "<this file>" --token <your token> --legs "{{STATE_DIR}}/<leg1>.md {{STATE_DIR}}/<leg2>.md"` (or comma-separated — `--legs` accepts space- **and** comma-separated docs, both spellings produce identical output; use absolute paths, because a bare leg doc name resolves against the handover ROOT, not your bucket, and reads `NOTFOUND`) — one batched line: heartbeat, leg locks, leg processes, armed jobs, suite locks, open PRs, bank. Per-leg lock status is one of **`FRESH`** (held, heartbeat current), **`STALE`** (held, heartbeat aged), **`FREE`** (the literal token `tick.sh` emits when the lock is gone — reclaim it; its own comments call this state "MISSING" as a concept, but `FREE` is what actually appears in `legs=`), or **`NOTFOUND`** (the leg doc did not resolve — a warning about a typo'd/nonexistent path, *not* a dead lock; never mistake it for a released lock) |
 | bank | 300 s | poll `bank-preflight.sh`, emit only when the state word changes (headroom → park → weekly-ceiling) |
 | CI | 600 s | poll `gh run list -R <owner/repo> --limit 20 --json databaseId,status`, emit only newly-completed runs |
 | notes repo | 300 s | if you keep a second repo for handover state, emit only on STALL (dirty files older than the commit cadence) or PUSH-LAG |
@@ -293,7 +296,7 @@ own end-of-session hook still writing — it prunes on the next sweep.
 
 At **{{FILL_PERCENT}} % fill or 90 k input in one turn**, hand over:
 
-1. `/console next --arm --doc "{{STATE_DIR}}/{{SESSION_NAME}}.md" --bucket {{BUCKET}} --prefix {{PREFIX}} --model {{MODEL}}`
+1. `/console next --arm --doc "{{STATE_DIR}}/{{SESSION_NAME}}.md" --bucket {{BUCKET}} --prefix {{PREFIX}} --model '{{MODEL}}'`
    — writes the successor stub, writes this console's `-HANDOFF.md` skeleton,
    and arms the successor. **Name your own document, bucket, prefix and model
    explicitly.** Without `--doc`, `next` hands over from the highest-lettered
