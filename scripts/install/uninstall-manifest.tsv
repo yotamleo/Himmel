@@ -31,7 +31,7 @@ user-claude-md	code	claude-user-rules	file	-	{HOME}/.claude/CLAUDE.md	6	the HIMM
 user-agents-md	code	codex-user-rules	file	-	{HOME}/.codex/AGENTS.md	6	the same working-principles block in Codex's user-scope rules (STRIPPED the same way)
 hud-config	code	claude-settings	file	-	{HOME}/.claude/plugins/claude-hud/config.json	6	the claude-hud config himmel wrote for its statusLine (removed only while its customLineCommand is himmel's)
 marketplaces	code	claude-plugins	marketplaces	-	-	7	Claude marketplaces with no remaining installed plugins
-himmelctl-cache	code	himmelctl	dir	HIMMELCTL_CACHE_DIR	{HOME}/.claude/himmel	8	himmelctl install-profile.json + state.json (himmel's own cache)
+himmelctl-cache	code	himmelctl	dir	HIMMELCTL_CACHE_DIR	{HOME}/.claude/himmel	8	himmelctl install-profile.json + state.json, and the session-start update check's stamps and release cache (himmel-update-check-*, himmel-latest-release*) — himmel's own cache
 handover-registry	keep	handover	file	-	{HOME}/.claude/handover/registry.json	-	handover registry and handover state outside the bridge root
 workspace-trust	keep	claude-settings	file	-	{HOME}/.claude.json	-	Claude Code's workspace-trust entry (hasTrustDialogAccepted) for the adopted project — Claude's own state that may predate himmel; revoke it in Claude Code if you want it gone
 adopter-scripts	keep	project-repo	dir	-	{PWD}/scripts	-	himmel scripts copied into a project-scope adopter's scripts/ — copied over in place with no record of which files or edits are himmel's, so they are not removed; drop them with git if unwanted

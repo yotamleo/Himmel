@@ -1095,6 +1095,46 @@ else
     echo "PASS himmelctl cache removed"
 fi
 
+# 20b. HIMMEL-3260: the session-start update check keeps its stamps + release
+#      cache in this same dir (so they survive a reboot). A dry-run must NAME them
+#      — the operator sees what an uninstall will take — and a wet run removes
+#      them with the dir: leaving one behind is the HIMMEL-3251 residue bug. The
+#      files are written by the REAL hook (not hand-made), pointed at the cache
+#      the same way uninstall reads it, so the two cannot drift onto two paths.
+mk_cache
+HOOK_SH="$(cd "$(dirname "$0")" && pwd)/hooks/check-update-available.sh"
+NG="$TMP/nongit-install"; rm -rf "$NG"; mkdir -p "$NG/scripts/hooks" "$NG/scripts/lib"
+cp "$HOOK_SH" "$NG/scripts/hooks/"
+cp "$(dirname "$HOOK_SH")/../lib/detach.sh" "$(dirname "$HOOK_SH")/../lib/release-check.sh" "$NG/scripts/lib/"
+printf '0.3.0\n' > "$NG/VERSION"
+printf 'detach_run() { "$@" || true; }\n' > "$NG/scripts/lib/detach.sh"
+NGBIN="$TMP/ngbin"; mkdir -p "$NGBIN"
+printf '#!/usr/bin/env bash\nexit 6\n' > "$NGBIN/curl"; chmod +x "$NGBIN/curl"
+env -u CLAUDE_PROJECT_DIR -u UPDATE_CHECK_STATE_DIR HIMMELCTL_CACHE_DIR="$CACHE" PATH="$NGBIN:$PATH" \
+    UPDATE_CHECK_INTERVAL=0 bash "$NG/scripts/hooks/check-update-available.sh" >/dev/null 2>&1 || true
+for f in himmel-update-check-last himmel-update-check-first himmel-latest-release.fail; do
+    if [ -f "$CACHE/$f" ]; then echo "PASS the update-check hook wrote $f into the himmelctl cache dir"
+    else echo "FAIL the update-check hook did not write $f into \$HIMMELCTL_CACHE_DIR"; FAILED=$((FAILED + 1)); fi
+done
+out=$(TELEGRAM_CHANNEL_DIR="$TMP/none11c" BRIDGE_ROOT="$TMP/none11d" \
+    HIMMELCTL_CACHE_DIR="$CACHE" PATH="$HBIN" \
+    bash "$CLI" --purge-state --dry-run --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+assert_rc "update-check state dry-run exits 0" 0 "$rc"
+assert_has "dry-run names the update-check stamp" "contains: $CACHE/himmel-update-check-first" "$out"
+assert_has "dry-run names the throttle stamp" "contains: $CACHE/himmel-update-check-last" "$out"
+assert_has "dry-run names the failure reason" "contains: $CACHE/himmel-latest-release.fail" "$out"
+if [ -f "$CACHE/himmel-update-check-first" ]; then echo "PASS dry-run left the update-check state in place"
+else echo "FAIL dry-run removed the update-check state"; FAILED=$((FAILED + 1)); fi
+out=$(TELEGRAM_CHANNEL_DIR="$TMP/none11e" BRIDGE_ROOT="$TMP/none11f" \
+    HIMMELCTL_CACHE_DIR="$CACHE" PATH="$HBIN" \
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+assert_rc "update-check state removal run exits 0" 0 "$rc"
+if [ -e "$CACHE/himmel-update-check-first" ] || [ -e "$CACHE/himmel-update-check-last" ] || [ -e "$CACHE" ]; then
+    echo "FAIL update-check state survived uninstall"; FAILED=$((FAILED + 1))
+else
+    echo "PASS update-check state removed with the cache"
+fi
+
 # 21. an absent cache is not an error.
 out=$(TELEGRAM_CHANNEL_DIR="$TMP/none12" BRIDGE_ROOT="$TMP/none12b" \
     HIMMELCTL_CACHE_DIR="$TMP/no-such-cache" PATH="$HBIN" \

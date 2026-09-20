@@ -1907,8 +1907,12 @@ elif [ -L "$HIMMEL_CACHE_DIR" ]; then
     fail_step "[8/8] himmelctl cache: $HIMMEL_CACHE_DIR could not be removed"
   fi
 else
-  # Name the known state files before removing, so --dry-run is auditable.
-  for _cache_file in install-profile.json state.json; do
+  # Name the known state files before removing, so --dry-run is auditable. The
+  # last four are the session-start update check's (check-update-available.sh,
+  # HIMMEL-3260): it keeps its throttle stamp, first-attempt stamp and release
+  # cache in this same dir so they survive a reboot — and go with it here.
+  for _cache_file in install-profile.json state.json \
+    himmel-update-check-last himmel-update-check-first himmel-latest-release himmel-latest-release.fail; do
     [ -f "$HIMMEL_CACHE_DIR/$_cache_file" ] && echo "  contains: $HIMMEL_CACHE_DIR/$_cache_file"
   done
   if run rm -rf -- "$HIMMEL_CACHE_DIR"; then

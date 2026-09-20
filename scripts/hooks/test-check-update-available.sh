@@ -17,10 +17,12 @@
 #         is distinguishable from up-to-date, tampered/garbage tags refused.
 #  23. release-tag PARSE (HIMMEL-3258): top-level tag_name via jq, nested
 #         look-alikes ignored, null/non-JSON → bad-response, no-jq degrades.
+#  24. state lives under ~/.claude/himmel, survives a reboot (HIMMEL-3260): offline
+#      past the window still says so, online stays quiet, /tmp leftovers ignored.
 #   9. Cold remote-tracking refs → silent this run; the detached fetch refreshes
 #      them so the NEXT check nudges (HIMMEL-1844).
 #
-# Uses UPDATE_CHECK_STATE_DIR to keep all state in a throwaway tmpdir.
+# Uses UPDATE_CHECK_STATE_DIR (or, for Test 24, a throwaway HOME) to keep all state in a tmpdir.
 # Creates a local bare "upstream" repo and a clone with commits ahead
 # to simulate "behind N" without any real network dependency.
 
@@ -508,6 +510,83 @@ refresh_case bodydecoy "$NOJQ"
 assert_eq_hook "no jq: a notes-quoted tag still does not replace the real one" "v0.4.0" "$GOT"
 refresh_case notjson "$NOJQ"
 assert_eq_hook "no jq: a non-JSON reply is still bad-response" "bad-response" "$GOTFAIL"
+
+echo "Test 24: the state survives a reboot — it lives under the user's home, not /tmp (HIMMEL-3260)"
+# The "could not check" line measures from the FIRST attempt when no check ever
+# succeeded. That timestamp defaulted to /tmp/claude, which a reboot clears, so a
+# machine that reboots more often than the stale window and stays offline never
+# reached the threshold and stayed SILENT — the state HIMMEL-3247 exists to end.
+# These cases do NOT pass UPDATE_CHECK_STATE_DIR: the DEFAULT location is the
+# thing under test. HOME is a throwaway; HIMMELCTL_CACHE_DIR is unset (the same
+# override himmelctl and uninstall.sh read, so the three agree on one dir).
+# run_home <home> [ENV=val ...] — the hook against $PHOOK, default state dir.
+run_home() {
+    local h="$1"; shift
+    env -u CLAUDE_PROJECT_DIR -u UPDATE_CHECK_STATE_DIR -u HIMMELCTL_CACHE_DIR \
+        HOME="$h" PATH="$STUBBIN:$PATH" "$@" bash "$PHOOK" 2>/dev/null || true
+}
+# simulate_reboot — what a reboot does to /tmp, limited to this hook's own four
+# files: never the directory (the statusline's usage cache lives in it too).
+simulate_reboot() {
+    local f
+    for f in himmel-update-check-last himmel-update-check-first himmel-latest-release himmel-latest-release.fail; do
+        rm -f "/tmp/claude/$f"
+    done
+}
+# A synchronous refresh (as Test 18) keeps the reading deterministic: no waiting
+# on a detached job before the next run.
+sync_prefix() { make_nongit_prefix "0.3.0"; printf 'detach_run() { "$@" || true; }\n' > "$PFX/scripts/lib/detach.sh"; }
+
+# 24a. offline across a reboot: still says so once the window is exceeded.
+sync_prefix
+H="$TMP/home24a"; S="$H/.claude/himmel"; mkdir -p "$H"
+simulate_reboot
+out=$(run_home "$H" STUB_CURL_MODE=netfail UPDATE_CHECK_INTERVAL=0)
+assert_empty "24a: first offline run is inside the window — silent" "$out"
+if [ -f "$S/himmel-update-check-first" ]; then assert_pass "24a: the first-attempt stamp is under \$HOME/.claude/himmel"; else assert_fail "24a: no first-attempt stamp under \$HOME/.claude/himmel"; fi
+mkdir -p "$S"; touch -t 200001010000 "$S/himmel-update-check-first"   # ...and a week+ of offline days go by
+simulate_reboot
+out=$(run_home "$H" STUB_CURL_MODE=netfail UPDATE_CHECK_INTERVAL=0)
+assert_contains "24a: after a reboot, still offline past the window → 'could not check'" "could not check for updates" "$out"
+assert_contains "24a: …with the reason of the failed refresh" "last error: network" "$out"
+simulate_reboot
+
+# 24b. positive control: a healthy online install stays QUIET across a reboot —
+# the fix must not make the warning appear more often.
+sync_prefix
+H="$TMP/home24b"; S="$H/.claude/himmel"; mkdir -p "$H"
+out=$(run_home "$H" STUB_CURL_TAG=v0.3.0 UPDATE_CHECK_INTERVAL=0)
+assert_empty "24b: online, up to date — silent" "$out"
+assert_eq_hook "24b: the definite answer is cached under \$HOME/.claude/himmel" "v0.3.0" "$(cat "$S/himmel-latest-release" 2>/dev/null || true)"
+simulate_reboot
+out=$(run_home "$H" STUB_CURL_MODE=netfail UPDATE_CHECK_INTERVAL=0)
+assert_empty "24b: a reboot, then a failing refresh — still silent (the last answer is fresh)" "$out"
+simulate_reboot
+
+# 24c. migration: a leftover /tmp/claude stamp from before this change is IGNORED
+# (never read, never deleted) — the window simply starts fresh under the new dir.
+sync_prefix
+H="$TMP/home24c"; mkdir -p "$H" /tmp/claude
+touch -t 200001010000 /tmp/claude/himmel-update-check-first
+out=$(run_home "$H" STUB_CURL_MODE=netfail UPDATE_CHECK_INTERVAL=0)
+assert_empty "24c: a stale legacy /tmp first-attempt stamp does not trigger the warning" "$out"
+if [ -f /tmp/claude/himmel-update-check-first ]; then assert_pass "24c: …and it is left where it was (never deleted)"; else assert_fail "24c: the legacy stamp was deleted"; fi
+simulate_reboot
+
+# 24d. the override every other himmel surface reads picks the directory, and the
+# older UPDATE_CHECK_STATE_DIR seam still wins over it.
+sync_prefix
+H="$TMP/home24d"; mkdir -p "$H"; CC="$TMP/cc24d"; SEAM="$TMP/seam24d"
+run_home "$H" HIMMELCTL_CACHE_DIR="$CC" STUB_CURL_MODE=netfail UPDATE_CHECK_INTERVAL=0 >/dev/null
+if [ -f "$CC/himmel-update-check-first" ] && [ ! -e "$H/.claude/himmel" ]; then assert_pass "24d: HIMMELCTL_CACHE_DIR chooses the state dir"; else assert_fail "24d: HIMMELCTL_CACHE_DIR was not honoured"; fi
+run_home "$H" HIMMELCTL_CACHE_DIR="$CC" UPDATE_CHECK_STATE_DIR="$SEAM" STUB_CURL_MODE=netfail UPDATE_CHECK_INTERVAL=0 >/dev/null
+if [ -f "$SEAM/himmel-update-check-first" ]; then assert_pass "24d: UPDATE_CHECK_STATE_DIR still overrides it (test seam)"; else assert_fail "24d: UPDATE_CHECK_STATE_DIR seam no longer wins"; fi
+
+# 24e. the git path's throttle stamp moves with it — ONE location, not two.
+make_repo_behind 0
+H="$TMP/home24e"; mkdir -p "$H"
+env -u UPDATE_CHECK_STATE_DIR -u HIMMELCTL_CACHE_DIR HOME="$H" CLAUDE_PROJECT_DIR="$CHECKOUT_DIR" bash "$HOOK" >/dev/null 2>&1 || true
+if [ -f "$H/.claude/himmel/himmel-update-check-last" ]; then assert_pass "24e: git path: the throttle stamp is under \$HOME/.claude/himmel"; else assert_fail "24e: git path: no throttle stamp under \$HOME/.claude/himmel"; fi
 
 # ─── Summary ─────────────────────────────────────────────────────────────────
 echo

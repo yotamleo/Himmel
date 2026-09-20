@@ -479,7 +479,9 @@ if (Test-SuspiciousRemovePath $HimmelCacheDir) {
     Write-Host "  absent, skipping: $HimmelCacheDir"
 } else {
     # Name the known state files before removing, so -DryRun is auditable.
-    foreach ($f in @('install-profile.json', 'state.json')) {
+    # The last four are the session-start update check's stamps + release cache
+    # (check-update-available.sh, HIMMEL-3260) — same dir, removed with it.
+    foreach ($f in @('install-profile.json', 'state.json', 'himmel-update-check-last', 'himmel-update-check-first', 'himmel-latest-release', 'himmel-latest-release.fail')) {
         $p = Join-Path $HimmelCacheDir $f
         if (Test-Path -LiteralPath $p -PathType Leaf) { Write-Host "  contains: $p" }
     }

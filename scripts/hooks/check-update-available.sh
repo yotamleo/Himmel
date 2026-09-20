@@ -21,8 +21,15 @@
 # seconds the nudge says so, with the reason.
 #
 # Throttle model (mirrors auto-arm-on-cap.sh):
-#   - State dir: UPDATE_CHECK_STATE_DIR (default /tmp/claude), same as the
-#     rest of himmel's tmp state.
+#   - State dir: UPDATE_CHECK_STATE_DIR, else the himmelctl cache dir
+#     (HIMMELCTL_CACHE_DIR, default ~/.claude/himmel — the same resolution
+#     himmelctl and scripts/uninstall.sh use, so uninstall removes what this
+#     writes). NOT /tmp/claude (HIMMEL-3260): the non-git "could not check" line
+#     below measures from a first-attempt stamp, and a reboot clears /tmp — an
+#     offline machine that reboots inside the stale window would never reach it
+#     and would stay silent, which is the state this check exists to end. A
+#     stamp left in /tmp/claude by an older version is ignored (never read, never
+#     deleted): the window simply starts fresh here.
 #   - Stamp file: <state-dir>/himmel-update-check-last  (mtime = last check).
 #   - Interval: UPDATE_CHECK_INTERVAL seconds (default 14400 = 4 h).
 #   - IMPORTANT: stamp is written / touch'd BEFORE the network fetch so a
@@ -37,7 +44,8 @@
 # Env knobs (all optional):
 #   UPDATE_CHECK_DISABLE=1           kill switch
 #   UPDATE_CHECK_INTERVAL            seconds between checks (default 14400)
-#   UPDATE_CHECK_STATE_DIR           state dir override (test seam; default /tmp/claude)
+#   UPDATE_CHECK_STATE_DIR           state dir override (test seam; default
+#                                    $HIMMELCTL_CACHE_DIR or ~/.claude/himmel)
 #   UPDATE_CHECK_STALE               non-git only: seconds without a successful release
 #                                    check before saying so (default 604800 = 7 days)
 #
@@ -56,7 +64,7 @@ trap 'exit 0' ERR
 [ "${UPDATE_CHECK_DISABLE:-0}" = "1" ] && exit 0
 
 # ─── config ─────────────────────────────────────────────────────────────────
-STATE_DIR="${UPDATE_CHECK_STATE_DIR:-/tmp/claude}"
+STATE_DIR="${UPDATE_CHECK_STATE_DIR:-${HIMMELCTL_CACHE_DIR:-${HOME:-/tmp}/.claude/himmel}}"
 INTERVAL="${UPDATE_CHECK_INTERVAL:-14400}"
 case "$INTERVAL" in ''|*[!0-9]*) INTERVAL=14400 ;; esac
 STALE="${UPDATE_CHECK_STALE:-604800}"
@@ -112,8 +120,9 @@ if [ -n "$SELF_ROOT" ] && [ ! -e "$SELF_ROOT/.git" ]; then
     # below): a fast refresh would otherwise replace the answer, its age and the
     # failure reason before this run reads them, so what a run reports would
     # depend on who won the race. This run reports the PREVIOUS check's result.
-    # Re-validate what was cached: STATE_DIR defaults to a shared /tmp path, and
-    # only a strict release tag may ever reach the emitted context.
+    # Re-validate what was cached: STATE_DIR is an overridable path (the seam can
+    # point at a shared one), and only a strict release tag may ever reach the
+    # emitted context.
     latest=""; cache_ref=""; reason=""
     if [ -s "$CACHE" ]; then
         IFS= read -r latest < "$CACHE" || true
