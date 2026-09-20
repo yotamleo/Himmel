@@ -140,10 +140,11 @@ check_exit "malformed: a skipped transcript still exits 0" "$MALFORMED_EXIT" "0"
 # (HIMMEL-3269 CR round 1: title_of suppresses read errors, so an empty title
 # looked like a non-leg session). Skipped when chmod cannot make a file
 # unreadable (running as root).
-UNR_DIR=$(mktemp -d "${TMPDIR:-/tmp}/lod-unreadable.XXXXXX")
-cp "$HERE"/fixtures/leg-over-by-day/boundary/*.jsonl "$UNR_DIR"/
+UNR_DIR=$(mktemp -d "${TMPDIR:-/tmp}/lod-unreadable.XXXXXX") || { echo "FAIL - unreadable: mktemp -d"; exit 1; }
+cp "$HERE"/fixtures/leg-over-by-day/boundary/*.jsonl "$UNR_DIR"/ || { echo "FAIL - unreadable: cp fixture"; exit 1; }
 UNR_FILE=$(find "$UNR_DIR" -name '*.jsonl' | sort | head -1)
-chmod 000 "$UNR_FILE"
+[ -n "$UNR_FILE" ] || { echo "FAIL - unreadable: no fixture file copied"; exit 1; }
+chmod 000 "$UNR_FILE" || { echo "FAIL - unreadable: chmod 000"; exit 1; }
 if [ -r "$UNR_FILE" ]; then
     echo "ok - unreadable: SKIPPED (chmod 000 leaves the file readable, e.g. running as root)"
 else

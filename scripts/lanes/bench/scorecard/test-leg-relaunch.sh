@@ -136,10 +136,11 @@ check "portability: leg-relaunch.sh does not use GNU-only sort -V" "$SORT_V_COUN
 # --- (o) unreadable: a listed-but-unreadable doc is named `unreadable` in the
 # coverage line, not counted as parsed with a default run count (HIMMEL-3269 CR
 # round 1). Skipped when chmod cannot make a file unreadable (running as root).
-UNR_DIR=$(mktemp -d "${TMPDIR:-/tmp}/relaunch-unreadable.XXXXXX")
-cp "$HERE"/fixtures/leg-relaunch/main/* "$UNR_DIR"/
+UNR_DIR=$(mktemp -d "${TMPDIR:-/tmp}/relaunch-unreadable.XXXXXX") || { echo "FAIL - unreadable: mktemp -d"; exit 1; }
+cp "$HERE"/fixtures/leg-relaunch/main/* "$UNR_DIR"/ || { echo "FAIL - unreadable: cp fixture"; exit 1; }
 UNR_FILE=$(find "$UNR_DIR" -type f | sort | head -1)
-chmod 000 "$UNR_FILE"
+[ -n "$UNR_FILE" ] || { echo "FAIL - unreadable: no fixture file copied"; exit 1; }
+chmod 000 "$UNR_FILE" || { echo "FAIL - unreadable: chmod 000"; exit 1; }
 if [ -r "$UNR_FILE" ]; then
     echo "ok - unreadable: SKIPPED (chmod 000 leaves the file readable, e.g. running as root)"
 else
