@@ -42,6 +42,9 @@ expect 'HIMMEL-3277-tick-leg-identity-legN194-2026-09-20-RESUME.md' \
     'N194' 'HIMMEL-3277-tick-leg-identity-legN194-2026-09-20,HIMMEL-3277-tick-leg-identity-legN194,HIMMEL-3277-N194-tick-leg-identity'
 expect 'HIMMEL-9-leg3-2026-09-20-RESUME.md' \
     'N3' 'HIMMEL-9-leg3-2026-09-20,HIMMEL-9-leg3,HIMMEL-9-N3'
+# Legacy with the slug AFTER the leg token: it survives into the derived session.
+expect 'HIMMEL-9-legN3-worker-2026-09-20-RESUME.md' \
+    'N3' 'HIMMEL-9-legN3-worker-2026-09-20,HIMMEL-9-legN3-worker,HIMMEL-9-N3-worker'
 # Anything else: the whole stem is its own label and joins to no session.
 expect 'HIMMEL-9-odd-name-2026-09-20-RESUME.md' \
     'HIMMEL-9-odd-name-2026-09-20-RESUME' 'HIMMEL-9-odd-name-2026-09-20,HIMMEL-9-odd-name'

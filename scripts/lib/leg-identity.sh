@@ -33,7 +33,7 @@ LEG_LABEL_CLASS='A-Za-z0-9_.-'
 # -RESUME, the same without its trailing date, and the derived session for a
 # legacy-family doc); a census row matching any of them belongs to this leg.
 leg_identity() {
-    local stem="$1" session undated derived="" label=""
+    local stem="$1" session undated sfx derived="" label=""
     local re_canon='^[A-Za-z][A-Za-z]*-[0-9]+-(N[0-9]+)(-.*)?$'
     local re_legacy='^([A-Za-z][A-Za-z]*-[0-9]+)(-(.*))?-leg(N?)([0-9]+)(-.*)?$'
     stem="${stem##*/}"
@@ -44,7 +44,11 @@ leg_identity() {
         label="${BASH_REMATCH[1]}"
     elif [[ $stem =~ $re_legacy ]]; then
         label="N${BASH_REMATCH[5]}"
-        derived="${BASH_REMATCH[1]}-${label}${BASH_REMATCH[3]:+-${BASH_REMATCH[3]}}"
+        # A slug AFTER the leg token (-legN3-worker-<date>) belongs in the session
+        # too; the trailing -RESUME and -<date> do not.
+        sfx="${BASH_REMATCH[6]%-RESUME}"
+        sfx="$(printf '%s' "$sfx" | sed -E 's/-[0-9]{4}-[0-9]{2}-[0-9]{2}$//')"
+        derived="${BASH_REMATCH[1]}-${label}${BASH_REMATCH[3]:+-${BASH_REMATCH[3]}}${sfx}"
     else
         label="$stem"
     fi
