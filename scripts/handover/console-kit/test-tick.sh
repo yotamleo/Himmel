@@ -178,7 +178,7 @@ mkdir -p "$W/console-work/chain"
 # The default stub reset epoch, rendered the way tick.sh renders it (local HH:MM).
 gql_hm="$(date -d @1790000000 +%H:%M 2>/dev/null || date -r 1790000000 +%H:%M)"
 out="$(bash "$SUT")"; rc=$?
-expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7 gql=4321/'"$gql_hm"' orphans=none'
+expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7 gql=4321/'"$gql_hm"' orphans=none nonces=skip'
 lines="$(printf '%s\n' "$out" | wc -l | tr -d '[:space:]')"
 if [ "$rc" -eq 0 ] && [ "$lines" = 1 ] && [ "$out" = "$expected" ]; then
     pass 'default run emits exactly the expected one batched line'
@@ -265,7 +265,49 @@ no_section_out="$(bash "$SUT")"; rc=$?
 if [ "$rc" -eq 0 ]; then pass 'livestate=unknown run exits 0'; else fail "livestate=unknown run exits 0 (rc=$rc)"; fi
 contains 'a doc with no Live state section reports unknown, not ok' "$no_section_out" 'livestate=unknown'
 
-rm -f "$W/handover/console.md"
+# --- HIMMEL-3254: nonces=STRANDED:<leg> ------------------------------------
+# A leg whose lock is held but whose Live-state nonce still carries a PREVIOUS
+# console's letter prefix was never rotated by this console (nonce shape
+# `<LETTER>-<leg>-<hex>`; the letter is the console doc's own, parsed from
+# `<prefix>-nextleg-<date><LETTER>-<name>.md`). Only N61 is held (stub above).
+kdoc="$W/handover/HIMMEL-nextleg-2026-09-20K-console.md"
+# shellcheck disable=SC2016  # backtick leg span, literal fixture text
+printf '%s\n' '# K' '' '## Live state' '' \
+    'legs: `N61:J-N61-0a1b2c:tok-61:111`' 'queue: none' 'last GO: none' 'acked: none' > "$kdoc"
+stranded_out="$(DOC="$kdoc" bash "$SUT")"; rc=$?
+if [ "$rc" -eq 0 ]; then pass 'nonces=STRANDED run exits 0'; else fail "nonces=STRANDED run exits 0 (rc=$rc)"; fi
+contains 'a held leg still on the predecessor J prefix is STRANDED under console K' "$stranded_out" 'nonces=STRANDED:N61'
+contains '--verbose labels the nonce census' "$(DOC="$kdoc" bash "$SUT" --verbose)" 'nonces: STRANDED:N61'
+
+# shellcheck disable=SC2016  # backtick leg span, literal fixture text
+printf '%s\n' '# K' '' '## Live state' '' \
+    'legs: `N61:K-N61-9f8e7d:tok-61:111`' 'queue: none' 'last GO: none' 'acked: none' > "$kdoc"
+rotated_out="$(DOC="$kdoc" bash "$SUT")"
+contains 'a held leg rotated onto the K prefix reads nonces=ok' "$rotated_out" 'nonces=ok'
+case "$rotated_out" in
+    *STRANDED*) fail 'a rotated leg must not report STRANDED' ;;
+    *) pass 'a rotated leg must not report STRANDED' ;;
+esac
+
+# shellcheck disable=SC2016  # backtick leg span, literal fixture text
+printf '%s\n' '# K' '' '## Live state' '' \
+    'legs: `N61:K-N61-9f8e7d:tok-61:111`, `N65:J-N65-aa11bb:tok-65:222`' 'queue: none' 'last GO: none' 'acked: none' > "$kdoc"
+contains 'a wrapped (FREE-lock) leg on an old prefix is not STRANDED -- nothing to rotate' "$(DOC="$kdoc" bash "$SUT")" 'nonces=ok'
+
+# `AA` must not read as a prefix of `A`: the boundary is the dash.
+aadoc="$W/handover/HIMMEL-nextleg-2026-09-20AA-console.md"
+# shellcheck disable=SC2016  # backtick leg span, literal fixture text
+printf '%s\n' '# AA' '' '## Live state' '' \
+    'legs: `N61:A-N61-0a1b2c:tok-61:111`' 'queue: none' 'last GO: none' 'acked: none' > "$aadoc"
+contains 'letter A is not letter AA (prefix boundary is the dash)' "$(DOC="$aadoc" bash "$SUT")" 'nonces=STRANDED:N61'
+
+# A doc whose name carries no console letter cannot be judged: unknown, never a guess.
+# shellcheck disable=SC2016  # backtick leg span, literal fixture text
+printf '%s\n' '# console' '' '## Live state' '' \
+    'legs: `N61:J-N61-0a1b2c:tok-61:111`' 'queue: none' 'last GO: none' 'acked: none' > "$W/handover/console.md"
+contains 'a console doc name with no parseable letter reads nonces=unknown' "$(bash "$SUT")" 'nonces=unknown'
+
+rm -f "$W/handover/console.md" "$kdoc" "$aadoc"
 
 # HIMMEL-2999: /proc absent (CLAUDE_SESSIONS_PROC pointing nowhere) falls back
 # to the old flattened `pgrep -af` parse, kept byte-identical, plus a
@@ -573,7 +615,7 @@ gql_verbose="$(bash "$SUT" --verbose)"
 contains '--verbose labels the graphql budget (HIMMEL-3197)' "$gql_verbose" "gql: 4321/$gql_hm"
 gql_burn="$(bash "$SUT" --burn --legs 'HIMMEL-111-legN61')"
 case "$gql_burn" in
-    *' burn=N61:'*" capacity=UNDERFILLED:7 gql=4321/$gql_hm orphans=none") pass 'gql= keeps its slot under --burn, orphans= trails it (HIMMEL-3197, HIMMEL-2761)' ;;
+    *' burn=N61:'*" capacity=UNDERFILLED:7 gql=4321/$gql_hm orphans=none nonces="*) pass 'gql= keeps its slot under --burn, orphans= trails it, nonces= closes the line (HIMMEL-3197, HIMMEL-2761, HIMMEL-3254)' ;;
     *) fail "gql=/orphans= order under --burn (out='$gql_burn')" ;;
 esac
 

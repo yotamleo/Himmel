@@ -52,6 +52,13 @@ orphan-loops.sh; orphans=none when clean, orphans=? when the process table
 cannot be read. A leg whose lock is FREE / tail WRAPPED but which still owns a
 wrapper here left a background loop running -- tell the leg to TaskStop it.
 
+nonces=<ok|STRANDED:<leg,...>|unknown|skip> (HIMMEL-3254) closes the line: a held
+leg in this console doc's `## Live state` whose nonce does not start with this
+console's own letter (`<LETTER>-<leg>-<hex>`) was never rotated after a console
+succession and can only verify a message from the console its brief names --
+rotate it (quote both tokens, see leg-preface.md "Console succession").
+unknown = the doc name carries no console letter or has no `legs:` line.
+
 --burn adds a per-leg context-burn field (first-turn/avg-ctx, via
 scripts/lanes/leg-burn.sh) for every doc in --legs. OPT-IN because it scans
 the Claude Code transcript root, which a plain tick must never do: a tick runs
@@ -217,6 +224,7 @@ list_has() {  # list_has <needle> <word> [word...]
 }
 
 livestate_summary=skip
+nonces_summary=skip
 if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
     live_state_body="$(awk '
         $0 == "## Live state" { f = 1; next }
@@ -246,8 +254,46 @@ if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
         else
             livestate_summary=ok
         fi
+        # HIMMEL-3254: nonces=STRANDED:<leg> -- a HELD leg whose Live-state
+        # nonce (`<LETTER>-<leg>-<hex>`) still carries a previous console's
+        # letter was never rotated onto THIS console, so it can only verify
+        # a message from the console its brief names. The letter is this
+        # console doc's own (`<prefix>-nextleg-<date><LETTER>-<name>.md`); a
+        # wrapped leg (lock not held) has nothing to rotate. The leg-side rule
+        # is docs/handover/leg-preface.md "Console succession".
+        # ponytail: this reads THIS doc's Live state, so it sees "not rotated
+        # in the state the console keeps", not "the leg accepted the
+        # rotation" -- a console that rewrites a leg's Live-state nonce
+        # before that leg's quote-back reads ok while the leg is still
+        # stranded. The console template therefore says: update the nonce
+        # only AFTER the quote-back. A doc name with no parseable letter
+        # reads unknown, never a guess.
+        console_letter="$(printf '%s\n' "${console_doc##*/}" | sed -n -E 's/.*-nextleg-[0-9]{4}-[0-9]{2}-[0-9]{2}([A-Z]{1,2})-.*/\1/p')"
+        if [ -z "$console_letter" ]; then
+            nonces_summary=unknown
+        else
+            stranded_csv=""
+            # shellcheck disable=SC2016  # backtick span pattern, not a shell expansion
+            for span in $(printf '%s\n' "$legs_line" | grep -oE '`[A-Za-z0-9_]+:[^`]*`' | tr -d '`'); do
+                span_leg="${span%%:*}"
+                span_rest="${span#*:}"
+                span_nonce="${span_rest%%:*}"
+                # shellcheck disable=SC2086  # word-split on purpose: list_has takes "$@"
+                list_has "$span_leg" $held_legs || continue
+                case "$span_nonce" in
+                    "$console_letter"-*) ;;
+                    *) stranded_csv="$(csv_add "$stranded_csv" "$span_leg")" ;;
+                esac
+            done
+            if [ -n "$stranded_csv" ]; then
+                nonces_summary="STRANDED:${stranded_csv}"
+            else
+                nonces_summary=ok
+            fi
+        fi
     else
         livestate_summary=unknown
+        nonces_summary=unknown
     fi
 fi
 
@@ -572,17 +618,18 @@ if [ "$verbose" -eq 1 ]; then
     printf 'capacity: %s\n' "$capacity"
     printf 'gql: %s\n' "$gql"
     printf 'orphans: %s\n' "$orphans"
+    printf 'nonces: %s\n' "$nonces_summary"
 else
     # `tick=` is always appended (HIMMEL-3144); `burn=` stays APPENDED only
     # under --burn, after it. `fleet=`/`capacity=` (HIMMEL-3167) are appended
     # after everything else, so a consumer keyed on the existing fields and
     # their order sees them only as a tail. `gql=` (HIMMEL-3197) follows them, and
-    # `orphans=` (HIMMEL-2761) is last.
+    # `orphans=` (HIMMEL-2761) follows, and `nonces=` (HIMMEL-3254) is last.
     if [ "$burn" -eq 1 ]; then
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s gql=%s orphans=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity" "$gql" "$orphans"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary"
     else
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s gql=%s orphans=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity" "$gql" "$orphans"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary"
     fi
 fi

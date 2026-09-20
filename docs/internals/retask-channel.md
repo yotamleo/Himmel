@@ -172,6 +172,60 @@ like a bus message would.
 - **Document mirroring (HIMMEL-2795):** `--doc` writers serialize on a canonical-path hash lock in a private user directory under `${TMPDIR:-/tmp}`; other doc writers must use the same lock to participate, and missing/failed `flock` aborts before mirroring or inbox append.
 - **Sent-record + audit (HIMMEL-2980):** every `--token` send records a `sha256` of the delivered bullet in a per-sender ledger (`${HIMMEL_CONSOLE_RUNDIR:-<console.sh convention>}/<sender>/inbox-sent.log`); `scripts/handover/console-kit/inbox-audit.sh <inbox-file> <sent-log-dir>` names any token-quoting bullet in an inbox with no matching ledger line — a forged bullet, or one lost to an `inbox-send.sh` exit-4 ledger-write failure.
 
+## 3a. Console succession (HIMMEL-3082, HIMMEL-3254)
+
+The nonce authenticates a revision *to one console*. Consoles hand over, so the
+rule "only the session my brief names" has, on its own, no path by which the
+named console can legitimately change — and a correct leg's one safe move is to
+refuse. It bit twice: **2026-09-16 (A→B)**, four legs re-briefed, three
+accepted and N4 refused *correctly* (the three were more permissive than the
+rule they carried), unblocked only by A hand-relaying from a session about to
+close; **2026-09-20 (J→K)**, where K's rotation was already the two-token shape
+below and N173 still refused, because the preface it carried had no succession
+rule and J had already left. The second case is the proof the fix is the
+*rule*, not the console's care: a correct message failed for want of a rule the
+leg could read.
+
+**Rule** (leg side, `docs/handover/leg-preface.md` "Console succession"): a
+change of console is genuine when either (1) the outgoing console relays it
+directly, from the session the brief names, quoting the leg's current token and
+the fresh one; or (2) the incoming console's message quotes **both** the
+outgoing token and the fresh one **and** the named console is no longer in
+`ListAgents`. Two token quotes and a gone console are the safety argument: a
+single token is a replayable string, refused from any session but the named one
+(S2); the two-token form replaces the sender check with possession of the
+retiring console's state; and requiring the named console to be gone means a
+live console must relay for itself. The decision table there is the fixture set
+(`scripts/handover/test-succession-docs.sh`), refuse and accept both pinned.
+
+**Order** (console side, HIMMEL-3254): the successor mints the fresh tokens and
+asks the predecessor to re-brief each leg from its own socket, waits for each
+leg's quote-back, updates that leg's `## Live state` nonce only then, and sends
+`<letter> LIVE` last. The predecessor re-briefs before it releases. Prose
+alone drifted twice (the two occurrences above), so the catch is structural:
+`tick.sh` emits `nonces=STRANDED:<leg>` for a held leg whose Live-state nonce
+does not carry this console's letter. It reads the state the console keeps, not
+the leg's acceptance — hence "update Live state only after the quote-back".
+
+**Severity is bounded — say so, do not describe a leg as lost.** The GO is a
+file (`console-kit/go.sh`, checked by `merge-on-green.sh`), so it needs no
+nonce, and halt/narrowing need none by design. A stranded leg can be finished
+and merged; only EXPANSION and REDIRECT are lost, so it cannot be re-scoped.
+The preface says a stranded leg keeps working, keeps accepting halt/narrowing
+and a GO file, declines EXPANSION/REDIRECT out loud (a message to the claimant
+and a `FINDING succession-unverified` bullet the tick tails show), and never
+parks.
+
+**Residual risk (priced).** Possession of the retiring token is the whole
+proof, and the predecessor's tokens live in its `## Live state` and in the
+successor's HANDOFF — so anyone who can read that document can chain. That is
+the same trust boundary as vector 2/3 (a compromised sibling or parent), no
+wider than the token was already, and bounded by the named console having to be
+gone from `ListAgents` and by the leg's own capability envelope, which no
+message widens. **Unchanged:** the EXPANSION/REDIRECT/narrowing semantics
+themselves, and every rule in §1–§3; this adds a succession path, it does not
+renegotiate the threat model.
+
 ## 4. What this does NOT do (residual risk, priced)
 
 - **Compromised parent (vector 3) is unmitigated by the channel, by design.**
