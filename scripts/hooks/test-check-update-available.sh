@@ -436,6 +436,19 @@ SD="$TMP/s21"; mkdir -p "$SD"; CURLLOG="$TMP/curl21.log"; : > "$CURLLOG"
 env PATH="$STUBBIN:$PATH" STUB_CURL_LOG="$CURLLOG" STUB_CURL_TAG=v0.6.0 bash "$LIBS_SRC/release-check.sh" --refresh "$SD/himmel-latest-release" 2>/dev/null || true
 assert_eq_hook "curl's first argument is -q" "-q" "$(head -n 1 "$CURLLOG" | cut -d' ' -f1)"
 
+echo "Test 22: a tag whose numbers overflow the integer compare is invalid — a failed check, never 'up to date'"
+# `[ -lt ]` errors past the integer range, so release_is_older would answer "not
+# older" for a huge tag and the check would call an out-of-date install current.
+if ( . "$LIBS_SRC/release-check.sh"; release_tag_parts v99999999999999999999.0.0 >/dev/null 2>&1 ); then
+    assert_fail "an over-long version number was accepted as a release tag"
+else
+    assert_pass "an over-long version number is not a release tag"
+fi
+SD="$TMP/s22"; mkdir -p "$SD"
+env PATH="$STUBBIN:$PATH" STUB_CURL_TAG=v99999999999999999999.0.0 bash "$LIBS_SRC/release-check.sh" --refresh "$SD/himmel-latest-release" 2>/dev/null || true
+if [ ! -s "$SD/himmel-latest-release" ]; then assert_pass "an overflowing tag from the API is not cached as an answer"; else assert_fail "overflowing tag was cached: $(cat "$SD/himmel-latest-release")"; fi
+assert_eq_hook "…it is recorded as a bad response (a failed check)" "bad-response" "$(cat "$SD/himmel-latest-release.fail" 2>/dev/null || true)"
+
 # ─── Summary ─────────────────────────────────────────────────────────────────
 echo
 echo "RESULTS: $pass passed, $fail failed"

@@ -38,10 +38,13 @@ HIMMEL_RELEASES_PAGE="https://github.com/yotamleo/Himmel/releases"
 
 # release_tag_parts <tag-or-version> — echoes "<maj> <min> <pat> <pre>" (pre is
 # NONE for a stable release); rc 1 if it is not vX.Y.Z / X.Y.Z[-pre.N]. The same
-# grammar as himmel-update.sh's release-channel seam (_channel_tag_parts).
+# shape as himmel-update.sh's release-channel seam (_channel_tag_parts), but each
+# number is capped at 9 digits: release_is_older compares with `[ -lt ]`, which
+# errors past the integer range and would read as "not older" — a false
+# "up to date". An over-long number is therefore an invalid tag (a failed check).
 release_tag_parts() {
     local v="${1#v}"
-    if [[ "$v" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)(-pre\.([0-9]+))?$ ]]; then
+    if [[ "$v" =~ ^([0-9]{1,9})\.([0-9]{1,9})\.([0-9]{1,9})(-pre\.([0-9]{1,9}))?$ ]]; then
         echo "${BASH_REMATCH[1]} ${BASH_REMATCH[2]} ${BASH_REMATCH[3]} ${BASH_REMATCH[5]:-NONE}"
         return 0
     fi
