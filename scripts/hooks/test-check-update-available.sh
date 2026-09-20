@@ -377,8 +377,15 @@ if grepq "$out" 'evil'; then assert_fail "tampered cache leaked into the nudge: 
 make_nongit_prefix "0.3.0"
 SD="$TMP/s16b"; mkdir -p "$SD"; CURLLOG="$TMP/curl16.log"; : > "$CURLLOG"
 run_nongit "$SD" STUB_CURL_MODE=garbage >/dev/null
-sleep 3
-if [ ! -s "$SD/himmel-latest-release" ]; then assert_pass "garbage tag_name from the API is refused, not cached"; else assert_fail "garbage tag_name was cached: $(cat "$SD/himmel-latest-release")"; fi
+i=0
+while [ "$i" -lt 20 ] && [ ! -s "$SD/himmel-latest-release.fail" ]; do sleep 1; i=$((i + 1)); done
+if [ ! -s "$SD/himmel-latest-release.fail" ]; then
+    assert_fail "garbage response was not processed"
+elif [ ! -s "$SD/himmel-latest-release" ]; then
+    assert_pass "garbage tag_name from the API is refused, not cached"
+else
+    assert_fail "garbage tag_name was cached: $(cat "$SD/himmel-latest-release")"
+fi
 
 echo "Test 17: non-git, cache holds 'up to date' but is older than the stale window → says so"
 make_nongit_prefix "0.3.0"

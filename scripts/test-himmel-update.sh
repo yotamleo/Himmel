@@ -886,7 +886,7 @@ run_ng() {
     while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do envs+=("$1"); shift; done
     shift
     rc=0
-    out=$(env PATH="$NG_STUB:$PATH" "${envs[@]}" bash "$NGS" "$@" 2>&1) || rc=$?
+    out=$(env PATH="$NG_STUB:$PATH" ${envs[@]+"${envs[@]}"} bash "$NGS" "$@" 2>&1) || rc=$?
 }
 
 echo "Test 24: non-git --check, newer release published → says so, names the packaged route, exits 0"
