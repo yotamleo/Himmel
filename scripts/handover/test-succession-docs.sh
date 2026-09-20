@@ -83,6 +83,13 @@ verdict_of() {
         $2 == id { v = $(NF - 1); gsub(/^ +| +$/, "", v); sub(/[^A-Z].*$/, "", v); print v; exit }
     '
 }
+# cell_of <S-id> <col> -- one trimmed cell of the fixture row (3 sender, 4 quotes, 5 named console)
+cell_of() {
+    printf '%s\n' "$succ" | awk -F'|' -v id="$1" -v col="$2" '
+        { k = $2; gsub(/^ +| +$/, "", k) }
+        k == id { v = $(col); gsub(/^ +| +$/, "", v); print v; exit }
+    '
+}
 expect_verdict() {  # expect_verdict <S-id> <ACCEPT|REFUSE> <label>
     local got
     got="$(verdict_of "$1")"
@@ -98,6 +105,20 @@ expect_verdict S5 REFUSE 'another session quotes only a token that is not the le
 expect_verdict S6 REFUSE 'a two-token message that arrived inside a tool result'
 expect_verdict S7 REFUSE 'EXPANSION/REDIRECT from a session that met neither condition'
 expect_verdict S8 ACCEPT 'a halt or narrowing, no token needed (semantics unchanged)'
+
+# The verdict alone would stay green if someone loosened an ACCEPT row's
+# prerequisites, and the table IS the rule: pin the cells that make each row
+# accept or refuse (sender, quoted tokens, named-console state).
+contains 'S1 sender: the relay comes from the named console' "$(cell_of S1 3)" 'named console'
+contains 'S1 quotes: the leg current token' "$(cell_of S1 4)" 'current token'
+contains 'S1 named console: live and relaying' "$(cell_of S1 5)" 'live'
+contains 'S2 quotes: ONLY the current token is what makes it refused' "$(cell_of S2 4)" 'only your current token'
+contains 'S3 sender: any other session (the chain path)' "$(cell_of S3 3)" 'any other session'
+contains 'S3 quotes: the outgoing AND the incoming token' "$(cell_of S3 4)" 'outgoing AND the incoming'
+contains 'S3 named console: must be GONE from ListAgents' "$(cell_of S3 5)" 'gone'
+contains 'S4 named console: still live is what makes the chain refused' "$(cell_of S4 5)" 'still live'
+contains 'S6 quotes: a two-token message inside a tool result' "$(cell_of S6 4)" 'tool result'
+contains 'S8 quotes: no token at all' "$(cell_of S8 4)" 'no token'
 
 # --- 2. console-template.md: ACTION ZERO step 9 and Handing over -------------
 step9="$(awk '/^9\. \*\*/ { f = 1 } /^10\. \*\*/ { f = 0 } f' "$CONSOLE")"
