@@ -77,7 +77,7 @@ tgz="$art/himmel-9.9.9-linux.tar.gz"
 run_body() { # run_body <label> [ENV=val ...] -- prints nothing; sets $out (log) and $rc
   local label="$1"; shift
   out="$tmp/$label.log"
-  env "$@" bash "$BODY" --work "$tmp/w-$label" --tarball "$tgz" --bundle "$art/fx.bundle" >"$out" 2>&1
+  env "$@" bash "$BODY" --work "$tmp/w-$label" --tarball "$tgz" --bundle "$art/fx.bundle" --prebuilt VERSION >"$out" 2>&1
   rc=$?
 }
 has() { grep -qE -- "$2" "$1"; }
@@ -217,6 +217,47 @@ has "$out" 'FAIL  RED control could not build a corrupted copy' && ok "T10 the f
 printf '#!/bin/sh\nexit 7\n' > "$tmp/pybin/python3"
 run_body pyfail STUB_MODE= "PATH=$tmp/pybin:$PATH"
 has "$out" 'python3 rc=7' && ok "T10 a failing python3 is reported with its rc" || bad "T10 python3 rc not reported"
+
+# --- T11 RED: an unusable --work stops the run (rc 2), never falls to / paths --
+# A --work under a regular file cannot be created. Unguarded, `work` went empty and
+# every "$work/..." became an absolute path at the filesystem root (/dl, /prefix-*).
+: > "$tmp/w-notdir-file"
+env STUB_MODE= bash "$BODY" --work "$tmp/w-notdir-file/sub" --tarball "$tgz" --bundle "$art/fx.bundle" >"$tmp/notdir.log" 2>&1; rc=$?
+[ "$rc" -eq 2 ] && ok "T11 RED: an unusable --work exits 2 (usage), not a run against / paths" || bad "T11 unusable --work not refused" "rc=$rc"
+has "$tmp/notdir.log" "--work '.*w-notdir-file/sub' cannot be created or entered" && ok "T11 the refusal names the bad --work" || bad "T11 wrong refusal message"
+! has "$tmp/notdir.log" 'PASS  sha256sum -c' && ok "T11 nothing ran past the guard" || bad "T11 the run continued past an unusable --work"
+
+# --- T12 no-npm control: the tarball must CARRY the built outputs -------------
+# The prebuilt tarball's headline claim is that an adopter never runs npm. The stub
+# fixture is --no-build, so it lacks the real defaults (jira/bitbucket dist + node_modules):
+# RED. A copy with them added is GREEN; a copy whose node_modules is EMPTY is RED again.
+craft() { # craft <label> <bitbucket-node_modules-content: file|empty> -- builds art-<label>/ with a re-hashed tarball
+  local d="$tmp/craft-$1" a="$tmp/art-$1"
+  mkdir -p "$d" "$a"
+  tar -xzf "$tgz" -C "$d" || return 1
+  mkdir -p "$d/himmel-9.9.9/scripts/jira/dist" "$d/himmel-9.9.9/scripts/jira/node_modules/dep" \
+           "$d/himmel-9.9.9/scripts/bitbucket/dist" "$d/himmel-9.9.9/scripts/bitbucket/node_modules"
+  echo 'console.log(1)' > "$d/himmel-9.9.9/scripts/jira/dist/index.js"
+  echo 'console.log(2)' > "$d/himmel-9.9.9/scripts/bitbucket/dist/index.js"
+  echo '{}' > "$d/himmel-9.9.9/scripts/jira/node_modules/dep/package.json"
+  [ "$2" = file ] && echo '{}' > "$d/himmel-9.9.9/scripts/bitbucket/node_modules/.package-lock.json"
+  tar -czf "$a/himmel-9.9.9-linux.tar.gz" -C "$d" himmel-9.9.9 || return 1
+  ( cd "$a" && sha256sum himmel-9.9.9-linux.tar.gz > himmel-9.9.9-linux.tar.gz.sha256 )
+}
+if craft built file && craft emptynm empty; then
+  env STUB_MODE= bash "$BODY" --work "$tmp/w-built" --tarball "$tmp/art-built/himmel-9.9.9-linux.tar.gz" --bundle "$art/fx.bundle" >"$tmp/built.log" 2>&1; rc=$?
+  [ "$rc" -eq 0 ] && ok "T12 GREEN: a tarball carrying the built outputs passes the no-npm control (default paths)" || bad "T12 built tarball rejected" "rc=$rc: $(grep -E '^FAIL' "$tmp/built.log" | tr '\n' '|')"
+  has "$tmp/built.log" 'PASS  tarball carries prebuilt scripts/jira/dist/index.js' && has "$tmp/built.log" 'PASS  tarball carries prebuilt scripts/bitbucket/node_modules' \
+    && ok "T12 the control checked the real default paths, not a stand-in" || bad "T12 default paths were not checked"
+  env STUB_MODE= bash "$BODY" --work "$tmp/w-nobuild" --tarball "$tgz" --bundle "$art/fx.bundle" >"$tmp/nobuild.log" 2>&1; rc=$?
+  [ "$rc" -ne 0 ] && has "$tmp/nobuild.log" 'FAIL  tarball lacks prebuilt scripts/jira/dist/index.js \(adopter would need npm\)' \
+    && ok "T12 RED: a --no-build tarball (no dist/, no node_modules/) FAILS the no-npm control" || bad "T12 no-build tarball accepted" "rc=$rc"
+  env STUB_MODE= bash "$BODY" --work "$tmp/w-emptynm" --tarball "$tmp/art-emptynm/himmel-9.9.9-linux.tar.gz" --bundle "$art/fx.bundle" >"$tmp/emptynm.log" 2>&1; rc=$?
+  [ "$rc" -ne 0 ] && has "$tmp/emptynm.log" 'FAIL  tarball lacks prebuilt scripts/bitbucket/node_modules ' && ! has "$tmp/emptynm.log" 'FAIL  tarball lacks prebuilt scripts/jira' \
+    && ok "T12 RED: an EMPTY node_modules/ FAILS, and only that path is named" || bad "T12 empty node_modules accepted or misreported" "rc=$rc"
+else
+  bad "T12 could not build the crafted tarballs (controls would be vacuous)"
+fi
 
 # --- T8 the VM driver: unreachable guest fails SOFT (rc 3), and is wired ------
 bash -n "$DRIVER" && ok "T8 driver parses (bash -n)" || bad "T8 driver syntax"
