@@ -382,7 +382,7 @@ while IFS=$'\t' read -r m_label m_status m_cands; do
     held_n=$((held_n + 1))
     m_hit=0
     for m_cand in ${m_cands//,/ }; do
-        if printf '%s\n' "$census_names" | grep -Fxq -- "$m_cand"; then
+        if grep -Fxq -- "$m_cand" <<< "$census_names"; then
             m_hit=1
             break
         fi

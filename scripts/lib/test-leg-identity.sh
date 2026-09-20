@@ -58,7 +58,7 @@ fi
 for stem in 'HIMMEL-3269-N191-scorecard-discovery-2026-09-20-RESUME.md' \
             'HIMMEL-9-odd-name-2026-09-20-RESUME.md' 'weird stem!'; do
     lbl="$(leg_label "$stem")"
-    if printf '%s' "$lbl" | grep -Eq "^[$LEG_LABEL_CLASS]+\$"; then
+    if grep -Eq "^[$LEG_LABEL_CLASS]+\$" <<< "$lbl"; then
         ok "label of '$stem' fits LEG_LABEL_CLASS"
     else
         bad "label of '$stem' escapes LEG_LABEL_CLASS: $lbl"
