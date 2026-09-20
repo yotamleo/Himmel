@@ -521,10 +521,13 @@ refusing after a signal/deadline wait. Bypass: `FLEET_CAP_OK=1` in the
 *launching* shell only (a per-call prefix is refused by
 `block-chokepoint-env-prefix.sh`, `scripts/chokepoints.json`).
 
-A worktree used as `HEADED_ARM_REPO` has no `.env`, so a leg launched from it
-falls to the default cap of 4 and refuses the fifth leg with a full-looking
-census. Export `HIMMEL_FLEET_CAP` in every leg launcher's environment rather
-than relying on the file.
+`load_dotenv` resolves the PRIMARY checkout's `.env` even when
+`HEADED_ARM_REPO` is a linked worktree (the gitignored file lives only in the
+primary), but only a value actually set there counts: if the launcher's
+environment does not export `HIMMEL_FLEET_CAP` and the primary `.env` does
+not set it, the cap falls to 4 and the fifth leg is refused with a
+full-looking census. Put `HIMMEL_FLEET_CAP` on the launcher line itself
+rather than relying on the file.
 
 **Why 4, not some other number.** 4 is a provisional operational cap, not a
 derived sustainability figure — no session's own measured burn rate or duty

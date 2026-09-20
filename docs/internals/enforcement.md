@@ -2165,8 +2165,9 @@ gate. Non-machine PRs keep today's fail-closed behaviour byte-unchanged.
 walkthrough with nothing actionable mints no review object and `check-ci.sh`
 says so verbatim ("App evidence, not a carry") — gate MET. The other three are
 vacuous: `pass … Review rate limited`, `success :: Review completed` with zero
-review objects (rc 4; a `full review` re-trigger does not clear it), and zero
-objects with zero threads at the head — all three mean the review never ran,
+review objects (rc 4; a `full review` re-trigger does not clear it), and a
+review object at the head with `bodylen=0` and zero threads (an empty
+carrier) — all three mean nothing was actually reviewed,
 and "0 unresolved threads" is then the arithmetic of a review that did not
 happen. `bodylen=0` objects **with** threads are inline carriers and count.
 The allowance is **account-wide over a rolling 7 days**, roughly one included

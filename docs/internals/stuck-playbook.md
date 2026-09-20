@@ -545,17 +545,20 @@ reads the session narrative (a merge just happened), not only the payload.
 
 ---
 
-## Symptom: `check-ci.sh --pr N` prints usage and exits 0 — no gate ran
+## Symptom: `check-ci.sh --pr N` prints usage and stops — no gate ran
 
 `scripts/check-ci.sh` takes the PR number **positionally**; an unknown flag
-(`--pr`, `--watch`) makes it print usage and exit 0, which reads as a pass.
-The watcher flag is `--max-wait`, not `--watch`. Exit 0 also does not mean the
+(`--pr`, `--watch`) makes it print usage and exit 2 (cannot evaluate), and a
+caller that reads only the printed usage, or swallows the rc, treats that as
+a gate that ran. The watcher flag is `--max-wait`, not `--watch`. A genuine
+exit 0 also does not mean the
 CodeRabbit App reviewed the head — the artifact is a review object with
 `bodylen>0` at the head SHA (see the CodeRabbit gate in
 [`enforcement.md`](enforcement.md)).
 
-**What to do:** `bash scripts/check-ci.sh <pr>`; a fast rc=0 from a command
-you expected to block is the red flag, not the reassurance.
+**What to do:** `bash scripts/check-ci.sh <pr>` and read its `verdict exit=`
+line; a fast, quiet return from a command you expected to block is the red
+flag, not the reassurance.
 
 ## Symptom: a large heredoc is denied by the chokepoint guard, and nothing ran
 

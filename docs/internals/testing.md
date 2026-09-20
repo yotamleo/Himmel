@@ -233,13 +233,15 @@ Three suites ship under HIMMEL-2931:
    `/plugin-eval`'s own preflight, not by a separate installed-version check
    elsewhere.
 
-## `test-ws5-invariants.sh` T13(b) is rename-blind (HIMMEL-3090)
+## `test-ws5-invariants.sh` and renames (HIMMEL-3090, HIMMEL-3125)
 
-T13(b) diffs without `-M` and lists added files with `--diff-filter=A`, so a
-pure `git mv` shows up as a brand-new file and re-fires every added-file
-heuristic (attestation, paired-doc, platform guard). It is not a CI gate; a
-rename-only commit that trips it locally is not evidence of a real violation —
-read the assertion, then decide.
+T13(b) is **not** rename-blind: its corpus is one full-tree
+`git diff "$BASE...HEAD"` (since #776/#777), so rename pairing applies — a
+pure `git mv` passes, a rename that also adds a trigger line still fails. The
+earlier false positive came from a per-file pathspec that has been replaced.
+The residual is T15: its new-script list is `--diff-filter=A` limited to
+`scripts/`, so a rename from OUTSIDE `scripts/` reads as an addition — but T15
+is advisory (`WARN`, never a CI gate). Read the assertion, then decide.
 
 ## What counts as CI evidence
 
