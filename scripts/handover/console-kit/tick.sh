@@ -16,6 +16,8 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../../lib/handover-path.sh
 . "$HERE/../../lib/handover-path.sh"
+# shellcheck source=../../lib/leg-identity.sh
+. "$HERE/../../lib/leg-identity.sh"
 
 usage() {
     cat <<'USAGE'
@@ -118,31 +120,11 @@ resolve_doc() {
     esac
 }
 
-leg_label() {
-    # HIMMEL-3145: two label spellings share this one namespace. Legacy
-    # consoles (archived docs) named a leg <TICKET>-legN<k>-<slug>; every
-    # console since HIMMEL-2975 names one <TICKET>-N<k>-<slug> (no "-leg"
-    # substring at all -- docs/handover/console-template.md:104 is the
-    # contract, and this must extract the same N<k> token the template
-    # tells a console to write in its `## Live state` legs: line, or
-    # livestate= below compares two namespaces that never intersect.
-    local stem="$1" label
-    stem="${stem##*/}"
-    stem="${stem%.md}"
-    label="$(printf '%s\n' "$stem" | sed -n 's/.*-leg\(N[0-9][0-9]*\).*/\1/p')"
-    if [ -z "$label" ]; then
-        label="$(printf '%s\n' "$stem" | sed -n 's/^[A-Za-z][A-Za-z]*-[0-9][0-9]*-\(N[0-9][0-9]*\).*/\1/p')"
-    fi
-    [ -n "$label" ] || label="$stem"
-    printf '%s' "$label" | tr -c 'A-Za-z0-9_.-' '_'
-}
-
-# HIMMEL-3167: a leg doc is <TICKET>-N<k>-<slug>-<YYYY-MM-DD>[-RESUME].md but
-# headed-arm-leg.sh names the session <TICKET>-N<k>-<slug> (no date), so the
-# doc stem alone matched nothing and a live leg read procs=0.
-undated_stem() {
-    printf '%s' "$1" | sed -E 's/-[0-9]{4}-[0-9]{2}-[0-9]{2}$//'
-}
+# HIMMEL-3277: a leg doc's label (N<k>) and the session names it may run under
+# come from ONE derivation, scripts/lib/leg-identity.sh (sourced above). The two
+# used to be separate local regexes -- leg_label() here, undated_stem() -- that
+# no test ever tried against a name the harness produced, so a doc filed per
+# leg-brief-template.md joined to neither a session nor a legs: label.
 
 csv_add() {
     if [ -n "$1" ]; then
@@ -175,6 +157,8 @@ LEGS_SPLIT="${LEGS//,/ }"
 legs_summary=""
 tails_summary=""
 leg_docmap=""
+# label<TAB>lock status<TAB>candidate session names, one line per leg (procs= below).
+leg_candmap=""
 # HIMMEL-3145: the census names the -n session the console actually passed
 # to `claude`, which is the leg doc's stem minus a -RESUME suffix (the same
 # string the --burn loop below matches on) -- collect it here so procs=/
@@ -183,11 +167,12 @@ leg_docmap=""
 leg_names=""
 for leg in $LEGS_SPLIT; do
     leg_doc="$(resolve_doc "$leg")"
-    label="$(leg_label "$leg")"
-    leg_stem="${leg##*/}"; leg_stem="${leg_stem%.md}"; leg_stem="${leg_stem%-RESUME}"
-    leg_names="$(csv_add "$leg_names" "$leg_stem")"
-    leg_undated="$(undated_stem "$leg_stem")"
-    [ "$leg_undated" = "$leg_stem" ] || leg_names="$(csv_add "$leg_names" "$leg_undated")"
+    ident="$(leg_identity "$leg")"
+    label="${ident%%$'\t'*}"
+    leg_cands="${ident#*$'\t'}"
+    for cand in ${leg_cands//,/ }; do
+        leg_names="$(csv_add "$leg_names" "$cand")"
+    done
     # HIMMEL-3130: NOTFOUND (file does not resolve) is a distinct status from
     # MISSING. MISSING means "the lock is gone" -- exactly the signal a
     # console reads as "reclaim this leg's lock" -- and must never be used for
@@ -212,6 +197,7 @@ for leg in $LEGS_SPLIT; do
     legs_summary="$(csv_add "$legs_summary" "$label:$lock_status")"
     tails_summary="$(csv_add "$tails_summary" "$label:$tail_status")"
     leg_docmap="$leg_docmap$label=$leg_doc"$'\n'
+    leg_candmap="$leg_candmap$label"$'\t'"$lock_status"$'\t'"$leg_cands"$'\n'
 done
 [ -n "$legs_summary" ] || legs_summary=none
 [ -n "$tails_summary" ] || tails_summary=none
@@ -232,6 +218,13 @@ list_has() {  # list_has <needle> <word> [word...]
     return 1
 }
 
+# legs_line_spans <legs: line> -- each `<label>:<nonce>:<lock-token>:<pid>` span
+# on the line, backticks stripped, one per line.
+legs_line_spans() {
+    # shellcheck disable=SC2016  # backtick span pattern, not a shell expansion
+    printf '%s\n' "$1" | grep -oE "\`[$LEG_LABEL_CLASS]+:[^\`]*\`" | tr -d '`'
+}
+
 livestate_summary=skip
 nonces_summary=skip
 if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
@@ -244,9 +237,14 @@ if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
     if [ -n "$legs_line" ]; then
         # Each leg is one backtick span `<label>:<nonce>:<lock-token>:<pid>`
         # (Delta 2's format) -- take the label, the text before the first
-        # colon inside the span.
-        # shellcheck disable=SC2016  # backtick span pattern, not a shell expansion
-        live_legs="$(printf '%s\n' "$legs_line" | grep -oE '`[A-Za-z0-9_]+:[^`]*`' | sed -E 's/^`([A-Za-z0-9_]+):.*`$/\1/')"
+        # colon inside the span. The label class is leg-identity.sh's own
+        # (LEG_LABEL_CLASS, which includes "-" and "."): a narrower class here
+        # rejected every hyphenated label, so a span naming a leg by anything
+        # but a bare N<k> never parsed and read as absent (HIMMEL-3277).
+        # Trailing prose on the line is harmless: only a span shaped
+        # `<label>:...` counts, so a backticked token with no colon is skipped.
+        live_spans="$(legs_line_spans "$legs_line")"
+        live_legs="$(printf '%s\n' "$live_spans" | sed -E 's/:.*$//')"
         held_legs="$(printf '%s\n' "$legs_summary" | tr ',' '\n' | awk -F: '$2 == "FRESH" || $2 == "STALE" { print $1 }')"
         drift_csv=""
         for l in $live_legs; do
@@ -289,8 +287,7 @@ if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
         else
             unconfirmed_csv=""
             relayed_csv=""
-            # shellcheck disable=SC2016  # backtick span pattern, not a shell expansion
-            for span in $(printf '%s\n' "$legs_line" | grep -oE '`[A-Za-z0-9_]+:[^`]*`' | tr -d '`'); do
+            for span in $live_spans; do
                 span_leg="${span%%:*}"
                 span_rest="${span#*:}"
                 span_nonce="${span_rest%%:*}"
@@ -361,8 +358,51 @@ fi
 # HIMMEL-3145: count sessions the console actually dispatched (leg_names,
 # built from --legs above) against the census name, not a "-leg" spelling
 # guess -- a filter that silently matches nothing must never render as 0.
+#
+# HIMMEL-3277: that guard only asked whether the filter EXISTS. A well-formed
+# leg_names that cannot match anything (a doc named one way, a session named
+# another) still rendered a confident 0 beside two live, lock-holding legs. The
+# test is population-level, over the HELD legs (FRESH/STALE lock): a wrapped or
+# missing leg expects no process, so its absence is a real zero, not a suspicion.
+#   - no held leg matches any census row -> the derivation itself is suspect:
+#     procs=/models= read unknown, exactly like a failed census;
+#   - some do -> the derivation demonstrably works, so the rest are genuinely
+#     not running: count the live ones and name the rest as unmatched=<a>+<b>
+#     instead of blanking the whole field.
+# ponytail: a degraded census (rc=3, unreadable=<n>) can hide a live leg's row,
+# so an unmatched= name may be a leg whose cmdline was unreadable -- the
+# appended unreadable= flag is that caveat; unmatched= is not suppressed by it.
+census_names="$(printf '%s\n' "$sessions_out" | awk -F'\t' '$1 !~ /^#/ && NF >= 4 && $2 != "" { print $2 }')"
+held_n=0
+matched_n=0
+unmatched_csv=""
+while IFS=$'\t' read -r m_label m_status m_cands; do
+    [ -n "$m_label" ] || continue
+    case "$m_status" in FRESH|STALE) ;; *) continue ;; esac
+    held_n=$((held_n + 1))
+    m_hit=0
+    for m_cand in ${m_cands//,/ }; do
+        if printf '%s\n' "$census_names" | grep -Fxq -- "$m_cand"; then
+            m_hit=1
+            break
+        fi
+    done
+    if [ "$m_hit" -eq 1 ]; then
+        matched_n=$((matched_n + 1))
+    elif [ -n "$unmatched_csv" ]; then
+        unmatched_csv="$unmatched_csv+$m_label"
+    else
+        unmatched_csv="$m_label"
+    fi
+done <<< "$leg_candmap"
 leg_names_wrapped=",${leg_names},"
+filter_unusable=0
 if [ "$census_failed" -eq 1 ] || [ -z "$leg_names" ]; then
+    filter_unusable=1
+elif [ "$held_n" -gt 0 ] && [ "$matched_n" -eq 0 ]; then
+    filter_unusable=1
+fi
+if [ "$filter_unusable" -eq 1 ]; then
     # A field that cannot be computed must say so (HIMMEL-3130 NOTFOUND-vs-
     # MISSING, HIMMEL-3002 unreadable=): procs=0 and procs=unknown must be
     # distinguishable, or a real scan failure reads as "no legs running".
@@ -387,6 +427,7 @@ END { print n+0 }')"
     # above -- append how many pids it could NOT read so the console sees
     # the table is incomplete rather than reading procs= as a clean, complete
     # count.
+    [ -z "$unmatched_csv" ] || procs="${procs},unmatched=${unmatched_csv}"
     [ "$unreadable_n" -gt 0 ] && procs="${procs},unreadable=${unreadable_n}"
 fi
 
@@ -401,7 +442,7 @@ fi
 # HIMMEL-3145: same dispatched-name filter as procs= above, same
 # unknown-vs-empty distinction on a real census failure or an empty
 # dispatch set (no --legs -- see procs= above).
-if [ "$census_failed" -eq 1 ] || [ -z "$leg_names" ]; then
+if [ "$filter_unusable" -eq 1 ]; then
     models_summary=unknown
 else
     models_summary="$(printf '%s\n' "$sessions_out" | awk -F'\t' -v names="$leg_names_wrapped" '
@@ -608,10 +649,16 @@ if [ "$burn" -eq 1 ]; then
         burn_label="$(leg_label "$leg")"
         burn_line="$(bash "$REPO/scripts/lanes/leg-burn.sh" "$stem" 2>/dev/null)" || burn_line=""
         if [ -z "$burn_line" ]; then
-            # HIMMEL-3167: the session name has no -YYYY-MM-DD suffix (see
-            # undated_stem above); retry with the name headed-arm-leg.sh used.
-            burn_undated="$(undated_stem "$stem")"
-            [ "$burn_undated" = "$stem" ] || burn_line="$(bash "$REPO/scripts/lanes/leg-burn.sh" "$burn_undated" 2>/dev/null)" || burn_line=""
+            # HIMMEL-3167/3277: the session name has no -YYYY-MM-DD suffix, and a
+            # legacy-spelled doc's session is the derived <TICKET>-N<k> name; try
+            # every candidate leg_identity names until one has a transcript.
+            burn_ident="$(leg_identity "$leg")"
+            burn_cands="${burn_ident#*$'\t'}"
+            for burn_cand in ${burn_cands//,/ }; do
+                [ "$burn_cand" = "$stem" ] && continue
+                burn_line="$(bash "$REPO/scripts/lanes/leg-burn.sh" "$burn_cand" 2>/dev/null)" || burn_line=""
+                [ -z "$burn_line" ] || break
+            done
         fi
         if [ -n "$burn_line" ]; then
             burn_ft="$(printf '%s\n' "$burn_line" | sed -n 's/.*first-turn=\([^ ]*\).*/\1/p')"

@@ -69,7 +69,7 @@ Session names carry the role, and tooling reads it back:
 |---|---|
 | `-console` | a console (`<PREFIX>-nextleg-<date><letter>-console`) |
 | `-relay` | a relay leg |
-| `legN` | a leg (also in the leg document name, `…-leg<N>-…-RESUME.md`) |
+| `-N<k>-` | a leg (session `<TICKET>-N<k>-<slug>`, doc `<TICKET>-N<k>-<slug>-<date>-RESUME.md`, label `N<k>`; the legacy `…-leg[N]<k>-…` doc spelling is still read — `scripts/lib/leg-identity.sh`) |
 | `-judge-<qid>` | a judge session (`HIMMEL-<ticket>-judge-<qid>`) |
 
 The scorecard classifiers (`scripts/lanes/bench/scorecard/`) key on the

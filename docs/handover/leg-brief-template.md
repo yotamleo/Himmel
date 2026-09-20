@@ -2,8 +2,16 @@
 
 The document a console writes to dispatch one leg (see
 [`../glossary.md`](../glossary.md)). File it in the console's bucket as
-`<PREFIX>-<ticket-slug>-leg<N>-<date>-RESUME.md`, and hand its path to
-`console-kit/headed-arm-leg.sh` as the leg's handover doc.
+`<TICKET>-N<k>-<slug>-<date>-RESUME.md` (e.g.
+`HIMMEL-3269-N191-scorecard-discovery-2026-09-20-RESUME.md`), and hand its path
+to `console-kit/headed-arm-leg.sh` as the leg's handover doc with the session
+name `<TICKET>-N<k>-<slug>` — the doc name minus `-<date>-RESUME.md`. The leg's
+**label** is `N<k>`: it is what a console writes in its `## Live state`
+`legs:` line and what `tick.sh` prints. One derivation owns the mapping between
+the three, [`scripts/lib/leg-identity.sh`](../../scripts/lib/leg-identity.sh);
+it also accepts the legacy `<TICKET>-<slug>-leg[N]<k>-<date>-RESUME.md` spelling
+older buckets carry (HIMMEL-3277). Never rename a live doc to conform — a leg
+holds its queue lock on that exact path.
 
 A leg inherits **nothing** from the console's context. Everything it needs is
 in this file: if it is not written here, it does not exist.

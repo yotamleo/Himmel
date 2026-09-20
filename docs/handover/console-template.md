@@ -127,6 +127,12 @@ Run these, in order, and write the result as the first bullet under
 > token-shaped text stalls the vault's gitleaks pre-commit scanners. Format:
 > `` `<leg>:<nonce>:<lock-token>:<pid>` ``. Anything comparing these values
 > strips backticks before comparing.
+>
+> **`<leg>` is the leg's label, `N<k>`** (`N191` for
+> `HIMMEL-3269-N191-scorecard-discovery-…`; HIMMEL-3277) — the same label
+> `tick.sh` prints in `legs=`. A label may contain letters, digits, `_`, `.`
+> and `-`, so a full doc stem also parses; anything after the closing backtick
+> on the line is prose and is ignored.
 
 legs: <none dispatched yet, or `N1:<nonce>:<lock-token>:<pid>`, `N2:…`>
 queue: <held queue-lock docs in launch order, or "none">

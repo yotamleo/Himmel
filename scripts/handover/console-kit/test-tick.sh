@@ -58,7 +58,7 @@ cat > "$W/repo/scripts/handover/queue-lock.sh" <<'STUB'
 case "$1" in
   heartbeat) exit 0 ;;
   status)
-    case "$2" in *N61*|*-N1-*|*-N2-*) printf '%s\n' 'status: FRESH'; exit 11 ;; *) printf '%s\n' free; exit 0 ;; esac ;;
+    case "$2" in *N61*|*-N1-*|*-N2-*|*-N191-*|*-leg192-*|*-legN194-*|*odd-name*) printf '%s\n' 'status: FRESH'; exit 11 ;; *) printf '%s\n' free; exit 0 ;; esac ;;
 esac
 exit 2
 STUB
@@ -692,6 +692,93 @@ fi
 contains '--verbose labels the orphan inventory (HIMMEL-2761)' "$(PS_FIXTURE="$W/ps-orphan.txt" bash "$SUT" --verbose)" 'orphans: HIMMEL-111-legN61:1/130m'
 : > "$W/ps-empty.txt"
 contains 'an unreadable process table reads orphans=? and never fails the tick (HIMMEL-2761)' "$(PS_FIXTURE="$W/ps-empty.txt" bash "$SUT")" ' orphans=?'
+
+# --- HIMMEL-3277: one leg identity, used by every tick consumer ---------------
+# Names here are the ones the harness really produces, not ones invented to fit
+# the parser. Doc = docs/handover/leg-brief-template.md's stated pattern; session
+# = the <TICKET>-N<k>-<slug> the console passes headed-arm-leg.sh (this shift's
+# own pair: HIMMEL-3269-N191-scorecard-discovery, HIMMEL-3273-N192-stop-queue-race).
+# RED control (pre-fix tick.sh, this fixture): the old-template doc read
+# legs=<full stem>:FRESH, procs=0 and livestate=DRIFT with two live, held legs.
+l191='HIMMEL-3269-N191-scorecard-discovery-2026-09-20-RESUME'
+l192='HIMMEL-3273-stop-queue-race-leg192-2026-09-20-RESUME'
+printf '%s\n' '# leg' '- LIVE — working' > "$W/handover/$l191.md"
+printf '%s\n' '# leg' '- LIVE — working' > "$W/handover/$l192.md"
+mkcmdline 120 claude --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-3269-N191-scorecard-discovery work
+mkcmdline 121 claude --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-3273-N192-stop-queue-race work
+mk_pgrep_x "$W/bin-3277" 120 121
+t3277() { PATH="$W/bin-3277:$PATH" bash "$SUT" --legs "$1"; }
+
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+printf '%s\n' '# console' '' '## Live state' '' \
+    'legs: `N191:J-N191-0a1b2c:tok-191:120`, `N192:J-N192-3d4e5f:tok-192:121`' 'queue: none' 'last GO: none' 'acked: none' \
+    > "$W/handover/console.md"
+o3277="$(t3277 "$l191 $l192")"
+contains 'a template-pattern doc and a canonical doc both resolve to N<k> (HIMMEL-3277)' "$o3277" 'legs=N191:FRESH,N192:FRESH'
+contains 'both live legs are counted in procs= (HIMMEL-3277)' "$o3277" 'procs=2'
+contains 'both live legs are bucketed in models= (HIMMEL-3277)' "$o3277" 'models=sonnet:2'
+contains 'a legs: line written per console-template.md reports no drift (HIMMEL-3277)' "$o3277" 'livestate=ok'
+case "$o3277" in
+    *DRIFT*|*'procs=0'*) fail 'the shift-N pair must read neither DRIFT nor procs=0 (HIMMEL-3277)' ;;
+    *) pass 'the shift-N pair must read neither DRIFT nor procs=0 (HIMMEL-3277)' ;;
+esac
+contains 'each doc counts only its own session (HIMMEL-3277)' "$(t3277 "$l192")" 'procs=1'
+
+# The console's disproved workaround: hyphenated full-stem labels plus a trailing
+# parenthetical of its own backticked tokens. The parser's label class used to
+# stop at the first hyphen, so no such span ever parsed and DRIFT named the stems.
+printf '%s\n' '# leg' '- LIVE — working' > "$W/handover/HIMMEL-9-odd-name-2026-09-20-RESUME.md"
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+printf '%s\n' '# console' '' '## Live state' '' \
+    'legs: `HIMMEL-9-odd-name-2026-09-20-RESUME:n:t:1` (odd doc, see `HIMMEL-9-odd-name`)' 'queue: none' 'last GO: none' 'acked: none' \
+    > "$W/handover/console.md"
+contains 'a hyphenated label span parses, trailing backticked prose and all (HIMMEL-3277)' "$(t3277 'HIMMEL-9-odd-name-2026-09-20-RESUME')" 'livestate=ok'
+
+# A genuinely stale Live state still fires: N199 is named but holds no lock, N192
+# is held but unnamed. The fix must not make the check unable to fire.
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+printf '%s\n' '# console' '' '## Live state' '' \
+    'legs: `N191:J-N191-0a1b2c:tok-191:120`, `N199:J-N199-aaaaaa:tok-199:1`' 'queue: none' 'last GO: none' 'acked: none' \
+    > "$W/handover/console.md"
+contains 'a genuinely stale Live state still reports DRIFT (HIMMEL-3277)' "$(t3277 "$l191 $l192")" 'livestate=DRIFT:N192,N199'
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+printf '%s\n' '# console' '' '## Live state' '' \
+    'legs: `HIMMEL-9-odd-name-2026-09-20-RESUME:n:t:1`, `HIMMEL-8-gone-2026-09-20-RESUME:n:t:2`' 'queue: none' 'last GO: none' 'acked: none' \
+    > "$W/handover/console.md"
+contains 'a stale hyphenated label is still DRIFT, not silently dropped (HIMMEL-3277)' "$(t3277 'HIMMEL-9-odd-name-2026-09-20-RESUME')" 'livestate=DRIFT:HIMMEL-8-gone-2026-09-20-RESUME'
+
+# procs=/models= guard: a HELD leg that matches no census row cannot be told
+# apart from a filter that cannot match, so it must read unknown, never 0/none.
+mk_pgrep_x "$W/bin-3277-none" 103
+g3277="$(PATH="$W/bin-3277-none:$PATH" bash "$SUT" --legs "$l191 $l192")"
+contains 'held legs matching no census row read procs=unknown (HIMMEL-3277)' "$g3277" 'procs=unknown'
+contains 'held legs matching no census row read models=unknown (HIMMEL-3277)' "$g3277" 'models=unknown'
+case "$g3277" in
+    *'procs=0'*|*'models=none'*) fail 'a matched-nothing filter must not render procs=0 / models=none (HIMMEL-3277)' ;;
+    *) pass 'a matched-nothing filter must not render procs=0 / models=none (HIMMEL-3277)' ;;
+esac
+# Population-level, not per-leg (console ruling): when SOME held legs match, the
+# derivation demonstrably works, so the ones that do not are genuinely not
+# running -- count the live ones and NAME the unmatched. One dead leg must never
+# blank the field for the live ones.
+mk_pgrep_x "$W/bin-3277-half" 120
+half3277="$(PATH="$W/bin-3277-half:$PATH" bash "$SUT" --legs "$l191 $l192")"
+contains 'one live + one dead held leg reads a count plus the named unmatched leg (HIMMEL-3277)' "$half3277" 'procs=1,unmatched=N192 '
+contains 'one live + one dead held leg still buckets the live model (HIMMEL-3277)' "$half3277" 'models=sonnet:1 '
+# The legacy -legN<k>- spelling, with a slug that itself contains "-leg-" (N194's own doc).
+l194='HIMMEL-3277-tick-leg-identity-legN194-2026-09-20-RESUME'
+printf '%s\n' '# leg' '- LIVE — working' > "$W/handover/$l194.md"
+mkcmdline 123 claude --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-3277-N194-tick-leg-identity work
+mk_pgrep_x "$W/bin-3277-194" 123
+o194="$(PATH="$W/bin-3277-194:$PATH" bash "$SUT" --legs "$l194")"
+contains 'a -legN<k>- doc with -leg- in its slug resolves to N<k> and its session is counted (HIMMEL-3277)' "$o194" 'legs=N194:FRESH'
+contains 'a -legN<k>- doc is counted in procs= against the <TICKET>-N<k>-<slug> session (HIMMEL-3277)' "$o194" 'procs=1 '
+# A leg whose session is live under a name no derivation yields is the same case.
+mkcmdline 122 claude --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-3269-worker-of-scorecard work
+mk_pgrep_x "$W/bin-3277-odd" 122
+contains 'a live session under an underivable name reads procs=unknown (HIMMEL-3277)' "$(PATH="$W/bin-3277-odd:$PATH" bash "$SUT" --legs "$l191")" 'procs=unknown'
+# ...but a leg that is NOT held (wrapped) expects no process: 0 is a real count.
+contains 'a wrapped (FREE) leg with no session is a real procs=0 (HIMMEL-3277)' "$(PATH="$W/bin-3277-none:$PATH" bash "$SUT" --legs 'HIMMEL-7-N77-wrapped-2026-09-20-RESUME' 2>/dev/null)" 'procs=0'
 
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-tick.sh'
