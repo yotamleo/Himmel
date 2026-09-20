@@ -1868,6 +1868,64 @@ if [ "${1:-}" = "--plugins-check" ]; then
     exit 0
 fi
 
+# ─── non-git install: a packaged / tarball install has no upstream (HIMMEL-3247) ─
+# P1 of HIMMEL-3059. Everything below this block is built on `git`: pull,
+# fetch, rev-list. An install with no .git of its own (a release tarball, or a
+# native package under /usr/share) has nothing to pull — and because git walks
+# UP, `git pull` there would act on whatever repo happens to ENCLOSE the install
+# dir. So this block owns that case, keyed on this script's own root, exactly as
+# the session-start nudge (check-update-available.sh) is:
+#   --check / --dry-run   a release-tag lookup (scripts/lib/release-check.sh);
+#                         exit 0 always, but a lookup that FAILED is reported as
+#                         such — never as "up to date"
+#   --only pull / update  REFUSE (rc 1) and name the packaged update route; no
+#                         network, no git, no silent no-op
+#   --plugins-check, and the other --only items, need no git and run unchanged.
+# ponytail: the update itself is deferred, not attempted — there is no in-place
+# self-update of a tarball install; the route is the package manager (pacman),
+# or a manual download + sha256 verify + re-extract of the next release tarball.
+if [ ! -e "$ROOT/.git" ] && { [ "${1:-}" != "--plugins-check" ] && { [ "${1:-}" != "--only" ] || [ "${2:-}" = "pull" ]; }; }; then
+    NONGIT_ROUTE="update through the package manager that installed it (Arch: pacman -Syu himmel), or download the next release tarball from the releases page, verify its sha256 checksum and re-extract it over $ROOT"
+    if [ "${1:-}" != "--check" ] && [ "${1:-}" != "--dry-run" ]; then
+        echo "update: $ROOT is not a git checkout (no .git), so there is no upstream to pull — nothing was changed." >&2
+        echo "        To update it, $NONGIT_ROUTE." >&2
+        exit 1
+    fi
+    echo "install:  $ROOT (not a git checkout)"
+    # shellcheck source=lib/release-check.sh
+    # shellcheck disable=SC1091
+    if ! { [ -r "$ROOT/scripts/lib/release-check.sh" ] && . "$ROOT/scripts/lib/release-check.sh"; } 2>/dev/null; then
+        echo "status:   could not check for a newer release — $ROOT/scripts/lib/release-check.sh is missing or unreadable (broken install)."
+        echo "          To update it, $NONGIT_ROUTE."
+        exit 0
+    fi
+    if ! nongit_installed=$(release_installed_version "$ROOT"); then
+        echo "status:   could not check for a newer release — no readable VERSION file in $ROOT, so the installed version is unknown."
+        echo "          To update it, $NONGIT_ROUTE."
+        exit 0
+    fi
+    echo "version:  $nongit_installed"
+    nongit_rc=0
+    release_fetch_latest || nongit_rc=$?
+    case "$nongit_rc" in
+        0)
+            echo "latest:   $RELEASE_LATEST_TAG"
+            if release_is_older "$nongit_installed" "$RELEASE_LATEST_TAG"; then
+                echo "status:   $RELEASE_LATEST_TAG is available (installed $nongit_installed). /himmel-update cannot pull this install — $NONGIT_ROUTE."
+            else
+                echo "status:   up to date — nothing newer than $RELEASE_LATEST_TAG has been released."
+            fi ;;
+        3)
+            echo "latest:   none"
+            echo "status:   no release has been published yet — nothing to update to." ;;
+        *)
+            echo "latest:   unknown"
+            echo "status:   could not check for a newer release (${RELEASE_FAIL_REASON:-unknown}) — nothing was confirmed either way, so this is NOT a statement that the install is current. Retry, or see $HIMMEL_RELEASES_PAGE."
+            echo "          To update it, $NONGIT_ROUTE." ;;
+    esac
+    exit 0
+fi
+
 # ─── --only <item> mode (HIMMEL-2134) ────────────────────────────────────────
 # Run ONE step and stop. The point is re-running a single step after it was the
 # one thing that did not land — an operator who has just restarted the qmd

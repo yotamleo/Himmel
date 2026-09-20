@@ -220,6 +220,38 @@ guarantee as the unset-channel path — it does fetch tags from `origin` first
 (writing Git objects/refs, same as any `git fetch`), but never switches,
 pulls, or otherwise changes what you're on.
 
+## Installs without a git checkout (HIMMEL-3247)
+
+A release-tarball or native-package install (for example under
+`/usr/share/himmel`) has no `.git`, so there is no upstream to pull. himmel
+tells that case apart by the install's own root having no `.git`, and:
+
+- **`bash scripts/himmel-update.sh --check`** (or `--dry-run`) compares the
+  install's `VERSION` file with the latest published release tag and prints one
+  of: a newer release is available, up to date, no release published yet, or
+  **could not check** with the reason (`network`, `http-403` for a rate limit,
+  `no-curl`, `bad-response`; a missing `VERSION` is reported too). A failed
+  check is never reported as "up to date". `--check` still exits `0` either way.
+- **`bash scripts/himmel-update.sh`** and **`--only pull`** refuse (exit `1`),
+  change nothing, and name the update route. They never run `git pull`, so an
+  install nested inside some other repository cannot pull *that* repository by
+  accident.
+- **The session-start nudge** does the same release-tag comparison and tells you
+  when a newer release exists. It never waits on the network: the lookup runs
+  detached and the nudge reads what the previous one left. If no lookup has
+  succeeded for 7 days (`UPDATE_CHECK_STALE`, seconds) it says the check could
+  not run, with the last error, instead of staying silent.
+
+To actually update such an install, use the route it came from: the package
+manager (Arch: `pacman -Syu himmel`), or download the next release tarball from
+the [releases page](https://github.com/yotamleo/Himmel/releases), verify its
+sha256 checksum, and re-extract it over the install. There is no in-place
+self-update of a tarball install.
+
+The only thing the check fetches is the latest release tag, from a fixed HTTPS
+URL that no environment variable can redirect; nothing is downloaded or
+executed.
+
 ## After upgrading
 
 A pull that moves you to a new release — whether the plain branch pull or a

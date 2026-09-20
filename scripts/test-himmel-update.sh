@@ -848,6 +848,119 @@ assert_contains "git-status-fails: refuses to pull into a dirty tree" "refusing 
 head_after=$(git -C "$CHECKOUT_DIR" rev-parse HEAD)
 assert_eq "git-status-fails: HEAD unchanged — never pulled" "$head_before" "$head_after"
 
+# ─── Non-git install (HIMMEL-3247, P1 of HIMMEL-3059) ────────────────────────
+# A tarball / native-package install has no .git, so `git pull` has nothing to
+# pull. himmel-update.sh must either update it or REFUSE with an accurate message
+# naming the packaged route — never a silent no-op, and never a `git pull` aimed
+# at whatever repo happens to enclose the install dir. The install root is a
+# COPY of the script + its libs in a .git-less prefix; the network is a PATH
+# `curl` stub (a suite must never hit the live releases API).
+NG_STUB="$TMP/ng-stubbin"; mkdir -p "$NG_STUB"
+cat > "$NG_STUB/curl" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${STUB_CURL_LOG:-/dev/null}"
+case "${STUB_CURL_MODE:-ok}" in
+    ok)       printf '{\n  "tag_name": "%s"\n}\n200' "${STUB_CURL_TAG:-v9.9.9}" ;;
+    notfound) printf '{"message":"Not Found"}\n404' ;;
+    ratelim)  printf '{"message":"API rate limit exceeded"}\n403' ;;
+    netfail)  exit 6 ;;
+esac
+STUB
+chmod +x "$NG_STUB/curl"
+
+_ng_counter=0
+# make_nongit_install <version|""> [parent-dir] — sets NG (install root) and NGS (script).
+make_nongit_install() {
+    _ng_counter=$((_ng_counter + 1))
+    NG="${2:-$TMP/ng_$_ng_counter}"
+    mkdir -p "$NG/scripts"
+    cp "$SCRIPT" "$NG/scripts/himmel-update.sh"
+    cp -R "$(dirname "$SCRIPT")/guardrails" "$NG/scripts/guardrails"
+    cp -R "$(dirname "$SCRIPT")/lib" "$NG/scripts/lib"
+    [ -z "$1" ] || printf '%s\n' "$1" > "$NG/VERSION"
+    NGS="$NG/scripts/himmel-update.sh"
+}
+# run_ng [ENV=val ...] -- args... — the copied script with curl stubbed. Sets rc.
+run_ng() {
+    local envs=()
+    while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do envs+=("$1"); shift; done
+    shift
+    rc=0
+    out=$(env PATH="$NG_STUB:$PATH" "${envs[@]}" bash "$NGS" "$@" 2>&1) || rc=$?
+}
+
+echo "Test 24: non-git --check, newer release published → says so, names the packaged route, exits 0"
+make_nongit_install "0.3.0"
+NGLOG="$TMP/ng24.log"; : > "$NGLOG"
+run_ng STUB_CURL_LOG="$NGLOG" STUB_CURL_TAG=v0.4.0 -- --check
+assert_eq "non-git --check newer: rc 0" "0" "$rc"
+assert_contains "non-git --check newer: names the installed version" "0\.3\.0" "$out"
+assert_contains "non-git --check newer: names the latest release" "v0\.4\.0" "$out"
+assert_contains "non-git --check newer: says it is not a git checkout" "not a git checkout" "$out"
+assert_contains "non-git --check newer: names the pacman route" "pacman -Syu himmel" "$out"
+assert_contains "non-git --check newer: names the tarball route" "tarball" "$out"
+assert_contains "non-git --check newer: asked only the fixed releases URL" "https://api.github.com/repos/yotamleo/Himmel/releases/latest" "$(cat "$NGLOG")"
+if grepq "$out" "up to date"; then assert_fail "non-git --check newer: must not say 'up to date'"; else assert_pass "non-git --check newer: does not say 'up to date'"; fi
+
+echo "Test 25: non-git --check, already on the latest release → up to date"
+make_nongit_install "0.4.0"
+run_ng STUB_CURL_TAG=v0.4.0 -- --dry-run
+assert_eq "non-git --dry-run current: rc 0" "0" "$rc"
+assert_contains "non-git --dry-run current: reports up to date" "up to date" "$out"
+
+echo "Test 26: non-git --check, the release check FAILED → distinguishable from 'up to date', still exit 0"
+for mode in netfail ratelim; do
+    make_nongit_install "0.3.0"
+    run_ng STUB_CURL_MODE=$mode -- --check
+    assert_eq "non-git --check $mode: rc 0 (non-blocking)" "0" "$rc"
+    assert_contains "non-git --check $mode: says the check could not run" "could not check" "$out"
+    if grepq "$out" "up to date"; then assert_fail "non-git --check $mode: a failed check must NOT read as 'up to date'"; else assert_pass "non-git --check $mode: a failed check does not read as 'up to date'"; fi
+done
+make_nongit_install "0.3.0"; run_ng STUB_CURL_MODE=netfail -- --check
+assert_contains "non-git --check netfail: names the reason" "network" "$out"
+make_nongit_install "0.3.0"; run_ng STUB_CURL_MODE=ratelim -- --check
+assert_contains "non-git --check ratelim: names the reason" "http-403" "$out"
+make_nongit_install "0.3.0"; run_ng STUB_CURL_MODE=notfound -- --check
+assert_contains "non-git --check 404: says no release is published (definite answer)" "no release" "$out"
+make_nongit_install ""; run_ng STUB_CURL_TAG=v0.4.0 -- --check
+assert_eq "non-git --check, no VERSION file: rc 0" "0" "$rc"
+assert_contains "non-git --check, no VERSION file: says so" "VERSION" "$out"
+
+echo "Test 27: non-git real update / --only pull → refuse (rc 1), name both routes, touch no network"
+for args in "" "--only pull"; do
+    make_nongit_install "0.3.0"
+    NGLOG="$TMP/ng27.log"; : > "$NGLOG"
+    # shellcheck disable=SC2086  # $args is a fixed literal, intentionally split
+    run_ng STUB_CURL_LOG="$NGLOG" STUB_CURL_TAG=v0.4.0 -- $args
+    assert_eq "non-git update '$args': refuses (rc 1)" "1" "$rc"
+    assert_contains "non-git update '$args': says it is not a git checkout" "not a git checkout" "$out"
+    assert_contains "non-git update '$args': names the pacman route" "pacman -Syu himmel" "$out"
+    assert_contains "non-git update '$args': names the tarball route" "tarball" "$out"
+    assert_eq "non-git update '$args': refusal made no network call" "0" "$(wc -l < "$NGLOG" | tr -d ' ')"
+    if grepq "$out" "git pull"; then assert_fail "non-git update '$args': must not run or advertise a git pull"; else assert_pass "non-git update '$args': no git pull"; fi
+done
+
+echo "Test 28: non-git install NESTED inside another git repo never pulls the enclosing repo"
+make_repo_behind 1
+PARENT_BEFORE=$(git -C "$CHECKOUT_DIR" rev-parse HEAD)
+make_nongit_install "0.3.0" "$CHECKOUT_DIR/vendor/himmel"
+run_ng -- --only pull
+assert_eq "nested --only pull: refuses (rc 1)" "1" "$rc"
+run_ng --
+assert_eq "nested full update: refuses (rc 1)" "1" "$rc"
+assert_eq "nested: the enclosing repo's HEAD did not move" "$PARENT_BEFORE" "$(git -C "$CHECKOUT_DIR" rev-parse HEAD)"
+
+echo "Test 29: the git-checkout path is unchanged (and never talks about a non-git install)"
+make_repo_behind 1
+rc=0
+out=$(bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check 2>&1) || rc=$?
+assert_eq "git checkout --check: rc 0" "0" "$rc"
+assert_contains "git checkout --check: still reports the behind count" "behind:   1" "$out"
+if grepq "$out" "not a git checkout"; then assert_fail "git checkout --check: must not claim to be a non-git install"; else assert_pass "git checkout --check: no non-git wording"; fi
+make_nongit_install "0.3.0"
+run_ng -- --plugins-check
+assert_eq "non-git --plugins-check: still exits 0 (no git needed)" "0" "$rc"
+
 # ─── Summary ─────────────────────────────────────────────────────────────────
 echo
 echo "RESULTS: $pass passed, $fail failed"
