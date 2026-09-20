@@ -57,9 +57,10 @@ _UNWIRE_UCM_MARKER="HIMMEL:working-principles"
 # _ucm_scan <file> -- one awk pass; prints "nb ne lb le crlf openfence fm":
 # nb/ne = exact BEGIN/END lines outside fenced code, lb/le = line of the first
 # of each (0 = none), crlf = marker lines carrying a trailing CR, openfence = 1
-# when a fence is still open at EOF, fm = marker lines seen INSIDE a fence (only
-# meaningful with openfence: a real block below an unclosed fence looks quoted,
-# and reading it as "nothing to strip" would leave the operator silently wired).
+# when a fence is still open at EOF, fm = marker lines inside THAT unclosed fence
+# (reset when a fence closes, so an earlier balanced quote does not count: a
+# real block below an unclosed fence looks quoted, and reading it as "nothing
+# to strip" would leave the operator silently wired).
 # rc 2 when the file cannot be read.
 # Fences follow CommonMark far enough for a rule file: up to three leading
 # spaces, three or more of the same backtick/tilde, closed by a run of the same
@@ -73,7 +74,7 @@ _ucm_scan() {
         run = substr($0, RSTART, RLENGTH); sub(/^ */, "", run)
         ch = substr(run, 1, 1); n = length(run); rest = substr($0, RSTART + RLENGTH)
         if (fc == "") { if (ch == "~" || rest !~ /`/) { fc = ch; fl = n; next } }
-        else if (ch == fc && n >= fl && rest ~ /^[ \t\r]*$/) { fc = ""; fl = 0; next }
+        else if (ch == fc && n >= fl && rest ~ /^[ \t\r]*$/) { fc = ""; fl = 0; fm = 0; next }
       }
       if (fc != "") { if ($0 == b || $0 == e || $0 == b "\r" || $0 == e "\r") fm++; next }
       if ($0 == b) { nb++; if (!lb) lb = NR; next }

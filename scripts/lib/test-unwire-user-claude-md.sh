@@ -17,7 +17,7 @@ same() { cmp -s "$2" "$3" && ok "$1" || { bad "$1: bytes differ"; diff "$2" "$3"
 gone() { [ ! -e "$2" ] && [ ! -L "$2" ] && ok "$1" || bad "$1: still present: $2"; }
 there(){ [ -e "$2" ] && ok "$1" || bad "$1: missing: $2"; }
 has()  { case "$3" in *"$2"*) ok "$1" ;; *) bad "$1: output lacks [$2]"; printf '%s\n' "$3" | head -5 ;; esac; }
-td="$(mktemp -d "${TMPDIR:-/tmp}/unwire-ucm-suite.XXXXXX")"
+td="$(mktemp -d "${TMPDIR:-/tmp}/unwire-ucm-suite.XXXXXX")" || { echo "cannot create a scratch dir -- not running against /" >&2; exit 1; }
 trap 'chmod -R u+rw "$td" 2>/dev/null; rm -rf "$td"' EXIT
 export TMPDIR="$td/tmp"; mkdir -p "$TMPDIR"
 
@@ -131,6 +131,15 @@ printf 'docs:\n\n```\n%s\n%s\n```\nafter\n' "$B" "$E" > "$td/fenced-plus-real.ex
 run "$td/fenced-plus-real.md"; check "fenced-plus-real: rc 0" "$rc" 0
 same "fenced-plus-real: quoted copy intact, real block gone" "$td/fenced-plus-real.md" "$td/fenced-plus-real.expect"
 bash "$uw" --probe "$td/fenced-plus-real.md" >/dev/null 2>&1; check "fenced-plus-real: probe reads the result as clean" "$?" 0
+# A balanced quote followed by an unrelated fence that never closes: the quoted
+# markers belong to the CLOSED fence, so this is neither wired nor ambiguous.
+printf 'docs:\n\n```\n%s\n%s\n```\n\n```sh\necho never closed\n' "$B" "$E" > "$td/fenced-then-open.md"
+cp "$td/fenced-then-open.md" "$td/fenced-then-open.before"
+run "$td/fenced-then-open.md"; check "fenced-then-open: rc 0" "$rc" 0
+has "fenced-then-open: nothing to strip" "nothing to strip" "$out"
+same "fenced-then-open: byte-identical" "$td/fenced-then-open.md" "$td/fenced-then-open.before"
+gone "fenced-then-open: no backup" "$td/fenced-then-open.md.himmel-uninstall-backup"
+bash "$uw" --probe "$td/fenced-then-open.md" >/dev/null 2>&1; check "fenced-then-open: probe 0" "$?" 0
 
 # ── file absent / unreadable / symlink ──────────────────────────────────────
 run "$td/absent/CLAUDE.md"; check "absent: rc 0" "$rc" 0; has "absent: says so" "nothing to strip" "$out"

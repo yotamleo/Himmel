@@ -1771,7 +1771,7 @@ project_is_himmel_checkout() {
 # code block -- or a file that merely quotes the block would read as still wired.
 HIMMEL_HUD_PAT="$( . "$SCRIPT_DIR/lib/unwire-hud-config.sh" >/dev/null 2>&1; printf '%s' "${_UNWIRE_HUD_PAT:-}" )"
 unwire_user_files() {
-  local _ix _p _dry=0
+  local _ix _p _dry=0 _probe_rc
   [ "$DRY_RUN" -eq 1 ] && _dry=1
   for _ix in "$_ix_ucm" "$_ix_uam" "$_ix_hud"; do
     # A failure on one file halts the step: never edit the next file after it.
@@ -1792,10 +1792,18 @@ unwire_user_files() {
     else
       if ! bash "$SCRIPT_DIR/lib/unwire-user-claude-md.sh" "$_p" "$_dry"; then
         fail_step "[6/8] user rule file: could not strip himmel's block from $_p"
-      elif [ "$_dry" -eq 0 ] && [ -f "$_p" ] &&
-          { bash "$SCRIPT_DIR/lib/unwire-user-claude-md.sh" --probe "$_p" >/dev/null 2>&1; [ "$?" -eq 3 ]; }; then
-        echo "  STILL WIRED: himmel working-principles block  [$_p]" >&2
-        fail_step "[6/8] read-back: himmel working-principles block still in $_p"
+      elif [ "$_dry" -eq 0 ] && [ -f "$_p" ]; then
+        # 0 = clean; 3 = a marker is still there; anything else = the probe
+        # itself failed, which is NOT a verified-clean file (HIMMEL-3333).
+        _probe_rc=0
+        bash "$SCRIPT_DIR/lib/unwire-user-claude-md.sh" --probe "$_p" >/dev/null 2>&1 || _probe_rc=$?
+        if [ "$_probe_rc" -eq 3 ]; then
+          echo "  STILL WIRED: himmel working-principles block  [$_p]" >&2
+          fail_step "[6/8] read-back: himmel working-principles block still in $_p"
+        elif [ "$_probe_rc" -ne 0 ]; then
+          echo "  UNVERIFIED: could not re-read $_p after the strip (probe rc $_probe_rc)" >&2
+          fail_step "[6/8] read-back: could not verify $_p (probe rc $_probe_rc)"
+        fi
       fi
     fi
   done
