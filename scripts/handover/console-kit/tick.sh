@@ -56,9 +56,11 @@ wrapper here left a background loop running -- tell the leg to TaskStop it.
 orphans= lists only wrappers older than that, so a live leg without one never
 shows here: procs=...,unwatched= (below) is what names a live leg the arm omits.
 
-legs= reads a leg's lock as FRESH/STALE/IDLE-HELD (held), WRAPPED (lock released
-and the tail says WRAPPED -- the normal end of a leg), FREE (lock released while
-the tail does not say WRAPPED -- a lost lock), MISSING or NOTFOUND.
+legs= reads a leg's lock as FRESH or STALE (held; an idle-warned lock still reads
+FRESH/STALE here -- the IDLE-HELD? flag belongs to the sweep and the exit code),
+WRAPPED (lock released and the tail says WRAPPED -- the normal end of a leg),
+FREE (lock released while the tail does not say WRAPPED -- a lost lock),
+CORRUPT, UNKNOWN (queue-lock status unreadable) or NOTFOUND (no such doc).
 
 legset=<ok|STALE:unarmed=A+B;unlisted=C|unknown|skip> (HIMMEL-3293) compares
 this console's `## Live state` legs with the --legs arm. unarmed = listed in
