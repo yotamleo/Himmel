@@ -2536,6 +2536,50 @@ else
     fail "T78: release of the N211b-shape lock failed (rc=$rc): $out"
 fi
 
+# --- T79: a stale legacy lock never hides a fresh one (pr-check codex-1) -----
+# Acquire and status used to look only at the FIRST lock the scan returned, so
+# a stale first match (or a stale lock at the canonical key, which skipped the
+# scan entirely) let a second writer take a doc another leg still held.
+M_DOC_E="$M_BUCKET/HIMMEL-3290-TE-RESUME.md"
+M_DOC_F="$M_BUCKET/HIMMEL-3290-TF-RESUME.md"
+: > "$M_DOC_E"; : > "$M_DOC_F"
+# m_lock_at <lockdir> <session> <handover-field> <root-marker> <heartbeat-iso>
+m_lock_at() {
+    mkdir -p "$1"
+    printf '%s' "$2" > "$1/owner"
+    printf '{"session":"%s","host":"h","handover":"%s","started":"%s","heartbeat":"%s"}\n' \
+        "$2" "$3" "$5" "$5" > "$1/owner.json"
+    printf '%s\n' "$4" > "$1/root"
+}
+m_now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+M_LEG_E1="$M_ROOT/.locks/queue/aaa-stale-E.lock"
+M_LEG_E2="$M_ROOT/.locks/queue/zzz-fresh-E.lock"
+m_lock_at "$M_LEG_E1" legOldE "$M_DOC_E" "$M_ROOT" "2020-01-01T00:00:00Z"
+m_lock_at "$M_LEG_E2" legFreshE "$M_DOC_E" "$M_ROOT" "$m_now"
+out="$(m_run "$M_PRIMARY" "$M_ROOT" acquire "$M_DOC_E" tokX)"; rc=$?
+if [ "$rc" -eq 2 ] && [ ! -d "$M_ROOT/.locks/queue/$(m_key HIMMEL-3290-TE-RESUME)" ] \
+   && [ -f "$M_LEG_E2/owner.json" ]; then
+    pass "T79: acquire refuses when a STALE legacy lock sorts before a FRESH one (rc=2)"
+else
+    fail "T79: a stale first legacy lock let a second writer in (rc=$rc): $out"
+fi
+out="$(m_run "$M_PRIMARY" "$M_ROOT" status "$M_DOC_E")"; rc=$?
+if grepq "$out" 'legFreshE' && ! grepq "$out" 'legOldE'; then
+    pass "T79: status reports the FRESH legacy holder, not the stale one that sorts first"
+else
+    fail "T79: status reported the wrong legacy holder (rc=$rc): $out"
+fi
+M_CANON_F="$M_ROOT/.locks/queue/$(m_key HIMMEL-3290-TF-RESUME)"
+M_LEG_F="$M_ROOT/.locks/queue/HIMMEL-3290-TF-RESUME.lock"
+m_lock_at "$M_CANON_F" legOldF "$M_DOC_F" "$M_ROOT" "2020-01-01T00:00:00Z"
+m_lock_at "$M_LEG_F" legFreshF "$M_DOC_F" "$M_ROOT" "$m_now"
+out="$(m_run "$M_PRIMARY" "$M_ROOT" acquire "$M_DOC_F" tokY)"; rc=$?
+if [ "$rc" -eq 2 ] && grepq "$(cat "$M_CANON_F/owner" 2>/dev/null)" 'legOldF' && [ -f "$M_LEG_F/owner.json" ]; then
+    pass "T79: a stale lock at the canonical key is not taken over while a fresh legacy lock holds the doc"
+else
+    fail "T79: stale-canonical takeover ran over a fresh legacy lock (rc=$rc owner=$(cat "$M_CANON_F/owner" 2>/dev/null)): $out"
+fi
+
 echo "---"
 echo "PASSED=$PASSED FAILED=$FAILED"
 [ "$FAILED" = 0 ]

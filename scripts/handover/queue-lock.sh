@@ -738,6 +738,30 @@ _ql_lock_is_fresh() {
     [ $((now_epoch - hb_epoch)) -lt "$ttl" ]
 }
 
+# _ql_scan_pick <canonical-doc> [skip-lockdir] -- print the lock dir that
+# answers "who holds this doc": the first FRESH one _ql_scan_locks finds, else
+# the first at all. A stale lock that sorts before a fresh one must not hide
+# it, or a second writer is admitted over a live holder. [skip-lockdir] (the
+# canonical key, when the caller is about to act on it) is left out. Reading
+# only.
+_ql_scan_pick() {
+    local lk first="" skip="${2:-}"
+    while IFS= read -r lk; do
+        [ -n "$lk" ] || continue
+        if [ -n "$skip" ] && { [ "$lk" = "$skip" ] || [ "$lk" -ef "$skip" ]; }; then
+            continue
+        fi
+        [ -n "$first" ] || first="$lk"
+        if _ql_lock_is_fresh "$lk"; then
+            printf '%s' "$lk"
+            return 0
+        fi
+    done <<EOF
+$(_ql_scan_locks "$1")
+EOF
+    printf '%s' "$first"
+}
+
 # PER-SESSION TOKEN PERSISTENCE (HIMMEL-2813) -------------------------------
 #
 # WHY: the release token exists in exactly one place -- the line `acquire`
@@ -1284,15 +1308,14 @@ queue_lock_acquire() {
     # HIMMEL-3290: ONE DOC, ONE LOCK. A lock for this doc under a legacy
     # (mis-keyed) key is invisible to the mkdir below, so a second writer
     # would take the doc while the first still holds it (the HIMMEL-856
-    # class). Refuse while such a lock is fresh; a stale one is no obstacle.
-    if [ ! -d "$lockdir" ]; then
-        local legacy_lk
-        legacy_lk=$(_ql_scan_locks "$ho" | sed -n 1p)
-        if [ -n "$legacy_lk" ] && _ql_lock_is_fresh "$legacy_lk"; then
-            echo "queue-lock: held (FRESH) under a non-canonical key by session=$(_ql_json_field "$legacy_lk/owner.json" session) host=$(_ql_json_field "$legacy_lk/owner.json" host) -- $legacy_lk"
-            echo "Work is owned elsewhere: one doc, one lock. Its owner releases it by token (release <doc> <token>); check with: queue-lock.sh status <doc>"
-            return 2
-        fi
+    # class). Refuse while ANY such lock is fresh -- also when the canonical
+    # key holds a stale lock about to be taken over; a stale one is no obstacle.
+    local legacy_lk
+    legacy_lk=$(_ql_scan_pick "$ho" "$lockdir")
+    if [ -n "$legacy_lk" ] && _ql_lock_is_fresh "$legacy_lk"; then
+        echo "queue-lock: held (FRESH) under a non-canonical key by session=$(_ql_json_field "$legacy_lk/owner.json" session) host=$(_ql_json_field "$legacy_lk/owner.json" host) -- $legacy_lk"
+        echo "Work is owned elsewhere: one doc, one lock. Its owner releases it by token (release <doc> <token>); check with: queue-lock.sh status <doc>"
+        return 2
     fi
 
     # Check the parent mkdir explicitly so a permission failure reports its
@@ -1763,7 +1786,7 @@ queue_lock_status() {
         # lock under a legacy (mis-keyed) key is HELD -- answering `free` for
         # it is what let a console read a live leg's lock as reclaimable.
         local legacy_lk
-        legacy_lk=$(_ql_scan_locks "$ho" | sed -n 1p)
+        legacy_lk=$(_ql_scan_pick "$ho")
         if [ -z "$legacy_lk" ]; then
             echo "free"
             return 0
