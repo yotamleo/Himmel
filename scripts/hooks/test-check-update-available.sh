@@ -527,10 +527,26 @@ run_home() {
 }
 # simulate_reboot — what a reboot does to /tmp, limited to this hook's own four
 # files: never the directory (the statusline's usage cache lives in it too).
+LEGACY_FILES="himmel-update-check-last himmel-update-check-first himmel-latest-release himmel-latest-release.fail"
 simulate_reboot() {
     local f
-    for f in himmel-update-check-last himmel-update-check-first himmel-latest-release himmel-latest-release.fail; do
+    for f in $LEGACY_FILES; do
         rm -f "/tmp/claude/$f"
+    done
+}
+# The old default really was the real /tmp/claude, and the migration case must
+# prove the hook no longer reads it — so these cases DO touch that path. Never
+# destroy what a concurrent session (one still on the old hook) keeps there:
+# snapshot the four files first (mtime preserved) and put them back at the end.
+LEGACY_BAK="$TMP/legacy24-bak"; mkdir -p "$LEGACY_BAK"
+for f in $LEGACY_FILES; do
+    if [ -f "/tmp/claude/$f" ]; then cp -p "/tmp/claude/$f" "$LEGACY_BAK/$f"; fi
+done
+restore_legacy() {
+    local f
+    for f in $LEGACY_FILES; do
+        rm -f "/tmp/claude/$f"
+        if [ -f "$LEGACY_BAK/$f" ]; then cp -p "$LEGACY_BAK/$f" "/tmp/claude/$f"; fi
     done
 }
 # A synchronous refresh (as Test 18) keeps the reading deterministic: no waiting
@@ -587,6 +603,7 @@ make_repo_behind 0
 H="$TMP/home24e"; mkdir -p "$H"
 env -u UPDATE_CHECK_STATE_DIR -u HIMMELCTL_CACHE_DIR HOME="$H" CLAUDE_PROJECT_DIR="$CHECKOUT_DIR" bash "$HOOK" >/dev/null 2>&1 || true
 if [ -f "$H/.claude/himmel/himmel-update-check-last" ]; then assert_pass "24e: git path: the throttle stamp is under \$HOME/.claude/himmel"; else assert_fail "24e: git path: no throttle stamp under \$HOME/.claude/himmel"; fi
+restore_legacy
 
 # ─── Summary ─────────────────────────────────────────────────────────────────
 echo
