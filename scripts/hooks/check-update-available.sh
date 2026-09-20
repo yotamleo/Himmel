@@ -11,6 +11,15 @@
 # Fail OPEN on everything: no git repo, no upstream, offline, git error, stat
 # error, any other unexpected state → exit 0, empty stdout. Never block.
 #
+# NON-GIT INSTALLS (HIMMEL-3247): a tarball / native-package install has no .git
+# for the checks above to read, and used to fall out at "no git repo" — silent,
+# so the install rotted unannounced. When THIS script's own install root has no
+# .git, it compares VERSION against the latest release tag instead (see
+# scripts/lib/release-check.sh) using the same cache-then-detached-refresh shape.
+# Still fail OPEN — never blocks — but "the check could not run" is NOT allowed to
+# look like "up to date": once no check has succeeded for UPDATE_CHECK_STALE
+# seconds the nudge says so, with the reason.
+#
 # Throttle model (mirrors auto-arm-on-cap.sh):
 #   - State dir: UPDATE_CHECK_STATE_DIR (default /tmp/claude), same as the
 #     rest of himmel's tmp state.
@@ -29,6 +38,8 @@
 #   UPDATE_CHECK_DISABLE=1           kill switch
 #   UPDATE_CHECK_INTERVAL            seconds between checks (default 14400)
 #   UPDATE_CHECK_STATE_DIR           state dir override (test seam; default /tmp/claude)
+#   UPDATE_CHECK_STALE               non-git only: seconds without a successful release
+#                                    check before saying so (default 604800 = 7 days)
 #
 # Stdout contract (SessionStart):
 #   Exit 0 + any stdout → injected as additional context for Claude.
@@ -48,6 +59,8 @@ trap 'exit 0' ERR
 STATE_DIR="${UPDATE_CHECK_STATE_DIR:-/tmp/claude}"
 INTERVAL="${UPDATE_CHECK_INTERVAL:-14400}"
 case "$INTERVAL" in ''|*[!0-9]*) INTERVAL=14400 ;; esac
+STALE="${UPDATE_CHECK_STALE:-604800}"
+case "$STALE" in ''|*[!0-9]*) STALE=604800 ;; esac
 
 STAMP="$STATE_DIR/himmel-update-check-last"
 
@@ -76,6 +89,77 @@ fi
 # Write stamp BEFORE network fetch so a hang doesn't wedge future checks.
 mkdir -p "$STATE_DIR" 2>/dev/null || true
 touch "$STAMP" 2>/dev/null || true
+
+# ─── non-git install: compare VERSION against the latest release (HIMMEL-3247) ─
+# Keyed on THIS script's own install root, not CLAUDE_PROJECT_DIR (that is the
+# operator's current project, which is usually some other git repo).
+SELF_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd) || SELF_ROOT=""
+if [ -n "$SELF_ROOT" ] && [ ! -e "$SELF_ROOT/.git" ]; then
+    ROUTE="update through the package manager that installed it (Arch: pacman -Syu himmel), or download the next release tarball, verify its checksum and re-extract it over $SELF_ROOT"
+    FIRST="$STATE_DIR/himmel-update-check-first"   # mtime = the first check ever made here
+    CACHE="$STATE_DIR/himmel-latest-release"      # mtime = last DEFINITE answer; one line
+    [ -f "$FIRST" ] || touch "$FIRST" 2>/dev/null || true
+
+    # shellcheck source=scripts/lib/release-check.sh disable=SC1091
+    if ! { [ -r "$SELF_ROOT/scripts/lib/release-check.sh" ] && . "$SELF_ROOT/scripts/lib/release-check.sh"; } 2>/dev/null; then
+        printf '<system-reminder>\nhimmel could not check for updates: %s/scripts/lib/release-check.sh is missing or unreadable (broken install). This install is not a git checkout — %s.\n</system-reminder>\n' "$SELF_ROOT" "$ROUTE"
+        exit 0
+    fi
+    # shellcheck source=scripts/lib/detach.sh disable=SC1091
+    . "$SELF_ROOT/scripts/lib/detach.sh" 2>/dev/null || true
+
+    # Refresh OUT OF BAND, unconditionally (same reasoning as the git path: a
+    # gate on "behind" would let a current-looking install never look again). The
+    # answer this run reads is the one the PREVIOUS check left in $CACHE.
+    if command -v detach_run >/dev/null 2>&1; then
+        detach_run bash "$SELF_ROOT/scripts/lib/release-check.sh" --refresh "$CACHE"
+    fi
+
+    installed=$(release_installed_version "$SELF_ROOT") || installed=""
+    if [ -z "$installed" ]; then
+        printf '<system-reminder>\nhimmel could not check for updates: no readable VERSION file in %s. This install is not a git checkout — %s.\n</system-reminder>\n' "$SELF_ROOT" "$ROUTE"
+        exit 0
+    fi
+
+    # Re-validate what was cached: STATE_DIR defaults to a shared /tmp path, and
+    # only a strict release tag may ever reach the emitted context.
+    latest=""
+    if [ -s "$CACHE" ]; then
+        IFS= read -r latest < "$CACHE" || true
+        if [ "$latest" != "none" ] && ! release_tag_parts "$latest" >/dev/null 2>&1; then latest=""; fi
+    fi
+
+    if [ -n "$latest" ] && [ "$latest" != "none" ] && release_is_older "$installed" "$latest"; then
+        cat <<EOF
+<system-reminder>
+himmel $installed is behind the latest release $latest. This install is not a git checkout, so /himmel-update cannot pull it — $ROUTE.
+(This check won't repeat for another ${INTERVAL}s.)
+</system-reminder>
+EOF
+        exit 0
+    fi
+
+    # No newer release known. That is only "up to date" if the answer is FRESH: age
+    # of the last definite answer, or — if there never was one — of our first try.
+    if [ -n "$latest" ]; then ref=$(_mtime "$CACHE"); else ref=$(_mtime "$FIRST"); fi
+    case "$ref" in ''|*[!0-9]*) exit 0 ;; esac
+    age=$((now - ref))
+    if [ "$age" -gt "$STALE" ]; then
+        reason=""
+        if [ -f "$CACHE.fail" ] && [ -r "$CACHE.fail" ]; then IFS= read -r reason < "$CACHE.fail" || true; fi
+        case "$reason" in
+            no-curl|network|bad-response|http-[0-9][0-9][0-9]) ;;
+            *) reason="unknown" ;;
+        esac
+        cat <<EOF
+<system-reminder>
+himmel could not check for updates: no successful release check in $((age / 86400)) day(s) (last error: $reason). This install is not a git checkout, so the git-based nudge does not apply — check $HIMMEL_RELEASES_PAGE, or $ROUTE.
+(This check won't repeat for another ${INTERVAL}s.)
+</system-reminder>
+EOF
+    fi
+    exit 0
+fi
 
 # ─── locate repo root ────────────────────────────────────────────────────────
 # Prefer CLAUDE_PROJECT_DIR (set by the harness), fall back to git discovery
