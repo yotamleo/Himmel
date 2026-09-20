@@ -82,6 +82,10 @@ for pair in "console-template.md Merges:$CONSOLE" "running-a-console.md Merges:$
     contains "$label names completes-ticket" "$merges" 'completes-ticket'
     contains "$label names --jira-transition" "$merges" '--jira-transition'
     contains "$label keeps the post-merge re-read of a multi-key PR" "$merges" 're-read'
+    # The MERGED hand-off sentence just above the rule must not tell the leg to
+    # close its ticket unconditionally, or it contradicts completes-ticket: no.
+    absent "$label does not tell the leg to close out its ticket unconditionally" "$merges" 'close out its ticket'
+    absent "$label does not say the leg closes out its ticket unconditionally" "$merges" 'closes out its ticket'
 done
 
 # --- 5. the initiative runbook's merge step (a fifth site, console ruling) ---

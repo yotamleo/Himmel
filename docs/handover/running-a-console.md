@@ -209,7 +209,8 @@ presence, verbatim, is the pass signal for 2973). Open HIMMEL-2977's comments
 and find that citation's line verbatim: a missing citation or a line not
 found is not READY; for the general `GATE ... <status> <date>` shape (every
 ticket except 2973), a found line whose status is not PASS is also not READY.
-The console pulls the primary and the leg closes out its ticket.
+The console pulls the primary and the leg wraps (closing its ticket only if the
+brief's `completes-ticket: yes` says the PR completes it).
 The console sends GO by first running `bash scripts/handover/console-kit/go.sh
 <pr> <full head sha>` — the file IS the GO, the SendMessage is the
 notification: a leg launched by `headed-arm-leg.sh` carries
