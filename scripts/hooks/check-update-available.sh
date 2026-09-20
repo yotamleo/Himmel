@@ -108,9 +108,23 @@ if [ -n "$SELF_ROOT" ] && [ ! -e "$SELF_ROOT/.git" ]; then
     # shellcheck source=scripts/lib/detach.sh disable=SC1091
     . "$SELF_ROOT/scripts/lib/detach.sh" 2>/dev/null || true
 
+    # Take the reading BEFORE the refresh is spawned (same reason as the git path
+    # below): a fast refresh would otherwise replace the answer, its age and the
+    # failure reason before this run reads them, so what a run reports would
+    # depend on who won the race. This run reports the PREVIOUS check's result.
+    # Re-validate what was cached: STATE_DIR defaults to a shared /tmp path, and
+    # only a strict release tag may ever reach the emitted context.
+    latest=""; cache_ref=""; reason=""
+    if [ -s "$CACHE" ]; then
+        IFS= read -r latest < "$CACHE" || true
+        if [ "$latest" != "none" ] && ! release_tag_parts "$latest" >/dev/null 2>&1; then latest=""; fi
+        cache_ref=$(_mtime "$CACHE")
+    fi
+    first_ref=$(_mtime "$FIRST")
+    if [ -f "$CACHE.fail" ] && [ -r "$CACHE.fail" ]; then IFS= read -r reason < "$CACHE.fail" || true; fi
+
     # Refresh OUT OF BAND, unconditionally (same reasoning as the git path: a
-    # gate on "behind" would let a current-looking install never look again). The
-    # answer this run reads is the one the PREVIOUS check left in $CACHE.
+    # gate on "behind" would let a current-looking install never look again).
     if command -v detach_run >/dev/null 2>&1; then
         detach_run bash "$SELF_ROOT/scripts/lib/release-check.sh" --refresh "$CACHE"
     fi
@@ -119,14 +133,6 @@ if [ -n "$SELF_ROOT" ] && [ ! -e "$SELF_ROOT/.git" ]; then
     if [ -z "$installed" ]; then
         printf '<system-reminder>\nhimmel could not check for updates: no readable VERSION file in %s. This install is not a git checkout — %s.\n</system-reminder>\n' "$SELF_ROOT" "$ROUTE"
         exit 0
-    fi
-
-    # Re-validate what was cached: STATE_DIR defaults to a shared /tmp path, and
-    # only a strict release tag may ever reach the emitted context.
-    latest=""
-    if [ -s "$CACHE" ]; then
-        IFS= read -r latest < "$CACHE" || true
-        if [ "$latest" != "none" ] && ! release_tag_parts "$latest" >/dev/null 2>&1; then latest=""; fi
     fi
 
     if [ -n "$latest" ] && [ "$latest" != "none" ] && release_is_older "$installed" "$latest"; then
@@ -141,12 +147,10 @@ EOF
 
     # No newer release known. That is only "up to date" if the answer is FRESH: age
     # of the last definite answer, or — if there never was one — of our first try.
-    if [ -n "$latest" ]; then ref=$(_mtime "$CACHE"); else ref=$(_mtime "$FIRST"); fi
+    if [ -n "$latest" ]; then ref="$cache_ref"; else ref="$first_ref"; fi
     case "$ref" in ''|*[!0-9]*) exit 0 ;; esac
     age=$((now - ref))
     if [ "$age" -gt "$STALE" ]; then
-        reason=""
-        if [ -f "$CACHE.fail" ] && [ -r "$CACHE.fail" ]; then IFS= read -r reason < "$CACHE.fail" || true; fi
         case "$reason" in
             no-curl|network|bad-response|http-[0-9][0-9][0-9]) ;;
             *) reason="unknown" ;;

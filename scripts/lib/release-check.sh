@@ -110,7 +110,7 @@ release_fetch_latest() {
 #   no definite answer                         → cache LEFT ALONE (an old answer beats
 #                                                 a blank one), reason written to .fail
 release_refresh() {
-    local cache="$1" rc=0 answer tmp
+    local cache="$1" rc=0 answer
     [ -n "$cache" ] || return 2
     mkdir -p "$(dirname "$cache")" 2>/dev/null || return 1
     release_fetch_latest || rc=$?
@@ -118,12 +118,25 @@ release_refresh() {
         0) answer="$RELEASE_LATEST_TAG" ;;
         3) answer="none" ;;
         *)
-            printf '%s\n' "${RELEASE_FAIL_REASON:-network}" > "$cache.fail" 2>/dev/null || true
+            _release_put "${RELEASE_FAIL_REASON:-network}" "$cache.fail" || true
             return 1 ;;
     esac
-    tmp="$cache.tmp.$$"
-    if printf '%s\n' "$answer" > "$tmp" 2>/dev/null && mv -f "$tmp" "$cache" 2>/dev/null; then
+    if _release_put "$answer" "$cache"; then
         rm -f "$cache.fail" 2>/dev/null || true
+        return 0
+    fi
+    return 1
+}
+
+# _release_put <line> <dest>: write <dest> atomically WITHOUT following a link
+# already sitting at that path. The state dir defaults to a shared /tmp path, so
+# a redirect straight onto "$cache" / "$cache.fail" would write through a planted
+# symlink; mktemp creates a fresh O_EXCL file and mv replaces the destination
+# entry itself (a link included) instead of its target.
+_release_put() {
+    local tmp
+    tmp=$(mktemp "$2.XXXXXX" 2>/dev/null) || return 1
+    if printf '%s\n' "$1" > "$tmp" 2>/dev/null && mv -f "$tmp" "$2" 2>/dev/null; then
         return 0
     fi
     rm -f "$tmp" 2>/dev/null || true

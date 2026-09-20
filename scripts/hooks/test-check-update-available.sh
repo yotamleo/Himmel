@@ -387,6 +387,38 @@ touch -t 200001010000 "$SD/himmel-latest-release" "$SD/himmel-update-check-first
 out=$(run_nongit "$SD" STUB_CURL_MODE=netfail)
 assert_contains "old 'up to date' cache is not trusted forever" "could not check for updates" "$out"
 
+echo "Test 18: non-git, a refresh that finishes FIRST must not change what this run reports"
+# Force the worst interleaving deterministically: the prefix's detach_run runs
+# the refresh SYNCHRONOUSLY, so it has replaced the cache (and cleared .fail)
+# before the hook gets to read either. This run must still report the PREVIOUS
+# check's state — the reading is taken before the refresh is spawned.
+make_nongit_prefix "0.3.0"
+printf 'detach_run() { "$@"; }\n' > "$PFX/scripts/lib/detach.sh"
+SD="$TMP/s18a"; mkdir -p "$SD"; printf 'v0.2.0\n' > "$SD/himmel-latest-release"
+out=$(run_nongit "$SD" STUB_CURL_TAG=v9.9.9)
+assert_empty "refresh finishing first does not leak its newer tag into this run" "$out"
+assert_eq_hook "…but the refresh really did run and update the cache (control)" "v9.9.9" "$(cat "$SD/himmel-latest-release" 2>/dev/null || true)"
+make_nongit_prefix "0.3.0"
+printf 'detach_run() { "$@"; }\n' > "$PFX/scripts/lib/detach.sh"
+SD="$TMP/s18b"; mkdir -p "$SD"; printf 'v0.3.0\n' > "$SD/himmel-latest-release"; printf 'http-403\n' > "$SD/himmel-latest-release.fail"
+touch -t 200001010000 "$SD/himmel-latest-release" "$SD/himmel-update-check-first"
+out=$(run_nongit "$SD" STUB_CURL_TAG=v0.3.0)
+assert_contains "a refresh that succeeds first does not erase the previous failure this run reports" "last error: http-403" "$out"
+if [ ! -e "$SD/himmel-latest-release.fail" ]; then assert_pass "…and it did clear .fail afterwards (control)"; else assert_fail "control: refresh did not clear .fail"; fi
+
+echo "Test 19: non-git, the refresh never writes THROUGH a symlink planted in the state dir"
+SD="$TMP/s19"; mkdir -p "$SD"; VICTIM="$TMP/victim19"; printf 'keep\n' > "$VICTIM"
+ln -s "$VICTIM" "$SD/himmel-latest-release.fail"
+env PATH="$STUBBIN:$PATH" STUB_CURL_MODE=netfail bash "$LIBS_SRC/release-check.sh" --refresh "$SD/himmel-latest-release" 2>/dev/null || true
+assert_eq_hook "failure reason: the file a planted .fail link pointed at is untouched" "keep" "$(cat "$VICTIM")"
+if [ -f "$SD/himmel-latest-release.fail" ] && [ ! -L "$SD/himmel-latest-release.fail" ]; then assert_pass "…and .fail is now a regular file"; else assert_fail ".fail is still a link or missing"; fi
+assert_eq_hook "…holding the failure reason" "network" "$(cat "$SD/himmel-latest-release.fail" 2>/dev/null || true)"
+rm -f "$SD/himmel-latest-release.fail"; ln -s "$VICTIM" "$SD/himmel-latest-release"
+env PATH="$STUBBIN:$PATH" STUB_CURL_TAG=v0.5.0 bash "$LIBS_SRC/release-check.sh" --refresh "$SD/himmel-latest-release" 2>/dev/null || true
+assert_eq_hook "answer: the file a planted cache link pointed at is untouched" "keep" "$(cat "$VICTIM")"
+assert_eq_hook "…and the cache is a regular file holding the tag" "v0.5.0" "$(cat "$SD/himmel-latest-release" 2>/dev/null || true)"
+if [ ! -L "$SD/himmel-latest-release" ]; then assert_pass "…not a link"; else assert_fail "cache is still a link"; fi
+
 # ─── Summary ─────────────────────────────────────────────────────────────────
 echo
 echo "RESULTS: $pass passed, $fail failed"
