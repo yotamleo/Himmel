@@ -268,7 +268,9 @@ At **{{FILL_PERCENT}} % fill or 90 k input in one turn**, hand over:
    and the fresh one. A leg's brief names *you* and only you can relay for
    it — a successor arriving after you have left can prove itself only by
    quoting both tokens, and a leg that cannot verify that is stranded. Then
-   wait for each leg's quote-back.
+   wait for each leg's quote-back — or for the successor's `LIVE` to name the
+   legs that did not quote back, and why (ACTION ZERO step 9 permits that
+   exception, so the two ends agree on when you may release).
 5. **Wait for the successor's `LIVE` message before you release your lock and
    stop.** It is sent only after the quote-backs, and it is the only
    confirmation that the successor actually launched and completed ACTION

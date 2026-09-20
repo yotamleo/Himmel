@@ -120,6 +120,8 @@ if [ -n "$retask" ]; then pass 'retask-channel.md records the succession case'; 
 contains 'retask-channel.md: the two-token form and why replay of one token fails' "$retask" 'replay'
 contains 'retask-channel.md: residual risk is named (the HANDOFF holds the old token)' "$retask" 'HANDOFF'
 contains 'retask-channel.md: EXPANSION/REDIRECT/narrowing semantics are untouched' "$retask" 'unchanged'
+contains 'retask-channel.md: the chain path prices persistent authority, not one revision' "$retask" 'persistent authority'
+contains 'retask-channel.md: the accepted amplification is tracked' "$retask" 'HIMMEL-3257'
 
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-succession-docs.sh'

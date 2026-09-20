@@ -81,10 +81,12 @@ cannot produce it. Requiring the named console to be gone closes the rest: a
 still-live console relays for itself (1), so a chain message while it lives is
 refused until it does.
 
-On accepting, adopt the incoming token as your token and the sender as your
-console, write `- SUCCESSION accepted: <new console session> replaces <old>`
-under `## Results`, and quote the new token back to the new console — its
-`LIVE` waits on that reply. Tokens go in backticks, never in prose.
+On accepting, adopt the incoming token as your token and the **incoming
+console** as your console — on a relay (1) that is the successor the relay
+names (the sender is the outgoing console, which is leaving), on a chain (2)
+it is the sender. Write `- SUCCESSION accepted: <new console session> replaces
+<old>` under `## Results`, and quote the new token back to the new console —
+its `LIVE` waits on that reply. Tokens go in backticks, never in prose.
 
 | # | Sender (`from`) | Quotes | Named console | Verdict |
 |---|---|---|---|---|
