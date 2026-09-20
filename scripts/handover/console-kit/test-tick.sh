@@ -871,10 +871,12 @@ wrap_case 'a span after the blank line is not an entry (detail bullets may quote
 wrap_case 'a span on the next field: line is not an entry' 'livestate=DRIFT:N192 ' \
     'legs: `N191:J-N191-0a1b2c:tok-191:120`' \
     'queue: HIMMEL-1 (`N192:J-N192-3d4e5f:tok-192:121`)' 'last GO: none' 'acked: none'
-# A bullet written IMMEDIATELY under the legs: line (no blank between) is inside
-# the block, so its backtick spans reach the classifier. Realistic detail-bullet
-# spans -- a file:line cite, a worktree path, a bare sha, a tick.sh:line cite --
-# must not become entries or MALFORMED labels.
+# A bullet written IMMEDIATELY under the legs: line (no blank between) ends the
+# block at the list marker, so its backtick spans never reach the classifier.
+# Realistic detail-bullet spans -- a file:line cite, a worktree path, a bare sha,
+# a tick.sh:line cite -- must not become entries or MALFORMED labels. This pins
+# the block terminator, not the classifier (the same cite on the legs: line
+# itself still reads MALFORMED, HIMMEL-3284).
 # shellcheck disable=SC2016  # backtick leg spans, literal fixture text
 wrap_case 'prose bullets directly under legs: (no blank line) are not entries or MALFORMED' 'livestate=ok ' \
     'legs: `N191:J-N191-0a1b2c:tok-191:120`, `N192:J-N192-3d4e5f:tok-192:121`' \
