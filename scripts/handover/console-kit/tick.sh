@@ -53,6 +53,27 @@ name (`orphan` = no live claude session above it), read-only via
 orphan-loops.sh; orphans=none when clean, orphans=? when the process table
 cannot be read. A leg whose lock is FREE / tail WRAPPED but which still owns a
 wrapper here left a background loop running -- tell the leg to TaskStop it.
+orphans= lists only wrappers older than that, so a live leg without one never
+shows here: procs=...,unwatched= (below) is what names a live leg the arm omits.
+
+legs= reads a leg's lock as FRESH/STALE/IDLE-HELD (held), WRAPPED (lock released
+and the tail says WRAPPED -- the normal end of a leg), FREE (lock released while
+the tail does not say WRAPPED -- a lost lock), MISSING or NOTFOUND.
+
+legset=<ok|STALE:unarmed=A+B;unlisted=C|unknown|skip> (HIMMEL-3293) compares
+this console's `## Live state` legs with the --legs arm. unarmed = listed in
+Live state but not in the arm; unlisted = in the arm, not held, and absent from
+Live state. STALE means the arm is out of date -- re-arm the tick with the
+current leg docs (absolute paths) -- and is never leg trouble. livestate=DRIFT
+names only a leg the arm covers (a not-held one Live state still lists, or a
+held one it omits); a Live-state leg the arm omits is reported as unarmed
+here, not as DRIFT. legset=unknown when
+livestate=unknown, skip when there is no --doc.
+
+procs=<n>,...,unwatched=<A+B> also names a live claude session, in the process
+census, whose leg label (N<digits><letters>) the arm does not name -- a leg the
+tick is not watching. It reads the whole census, so with several consoles on
+one host another console's legs can appear here.
 
 nonces=<ok|RELAYED:<leg,...>|UNCONFIRMED:<leg,...>|unknown|skip> (HIMMEL-3254)
 closes the line. It reads, for each HELD leg in this console doc's `## Live
@@ -118,6 +139,11 @@ resolve_doc() {
         *.md) printf '%s/%s\n' "$root" "$1" ;;
         *) printf '%s/%s.md\n' "$root" "$1" ;;
     esac
+}
+
+# uniq_join <sep> <comma list> -- sorted, de-duplicated, re-joined with <sep>.
+uniq_join() {
+    printf '%s\n' "$2" | tr ',' '\n' | awk 'NF' | sort -u | tr '\n' "$1" | sed 's/.$//'
 }
 
 # HIMMEL-3277: a leg doc's label (N<k>) and the session names it may run under
@@ -191,6 +217,16 @@ for leg in $LEGS_SPLIT; do
         tail_status="$(grep -E '^- .*(LIVE|FINDING|READY|BLOCKED|HALTED|WRAPPED)' "$leg_doc" 2>/dev/null \
             | tail -n 1 | grep -Eo '(LIVE|FINDING|READY|BLOCKED|HALTED|WRAPPED)' | head -n 1)" || tail_status=""
         [ -n "$tail_status" ] || tail_status="?"
+        # HIMMEL-3293: FREE used to cover both "released cleanly at wrap" and "the
+        # lock vanished while the leg worked", and only the second is a reason to
+        # act. A released lock whose doc's LAST status bullet is WRAPPED is the
+        # clean wrap: it reads WRAPPED (tails= already says so); FREE is left to
+        # mean a lock that is gone with no wrap behind it (lost, or never acquired).
+        # ponytail: WRAPPED is the leg's own last bullet, self-reported -- a leg
+        # that wrote WRAPPED and is somehow still working reads WRAPPED, not FREE.
+        if [ "$lock_status" = FREE ] && [ "$tail_status" = WRAPPED ]; then
+            lock_status=WRAPPED
+        fi
     else
         printf 'tick: no such leg doc: %s\n' "$leg_doc" >&2
     fi
@@ -270,6 +306,7 @@ legs_line_spans() {
 
 livestate_summary=skip
 nonces_summary=skip
+legset_summary=skip
 if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
     live_state_body="$(awk '
         $0 == "## Live state" { f = 1; next }
@@ -310,11 +347,48 @@ if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
         live_legs="$(printf '%s\n' "$live_spans" | sed -E 's/:.*$//')"
         malformed_legs="$(legs_line_spans malformed "$legs_line")"
         held_legs="$(printf '%s\n' "$legs_summary" | tr ',' '\n' | awk -F: '$2 == "FRESH" || $2 == "STALE" { print $1 }')"
+        # HIMMEL-3293: the leg set this tick watches is the --legs arm, and Live
+        # state is the console's own record; the two are supplied separately and
+        # can disagree. A leg Live state names that the arm does not is UNARMED --
+        # this tick has no lock for it, so it can say nothing about its health --
+        # and is reported under legset= as an input problem, never as DRIFT (which
+        # blamed a healthy leg for the console's stale arm). DRIFT keeps the two
+        # cases the tick CAN judge: an armed leg whose lock is not held that Live
+        # state still names, and a held leg Live state omits.
+        # Why not derive the leg set from Live state alone (the ticket's preferred
+        # shape)? A span is `<label>:<nonce>:<lock-token>:<pid>` -- it names no doc,
+        # so a label cannot be joined to a lock or a tail without trusting the
+        # self-reported token or pid, and a wrong one would read as a lost lock.
+        # ponytail: the arm still decides which legs get lock/tail/nonce checks;
+        # an unarmed held leg is named but not verified until the console re-arms.
+        armed_legs="$(printf '%s' "$leg_candmap" | awk -F'\t' 'NF { print $1 }')"
         drift_csv=""
+        unarmed_csv=""
         for l in $live_legs; do
             # shellcheck disable=SC2086  # word-split on purpose: list_has takes "$@"
-            list_has "$l" $held_legs || drift_csv="$(csv_add "$drift_csv" "$l")"
+            if list_has "$l" $held_legs; then
+                continue
+            fi
+            # shellcheck disable=SC2086  # word-split on purpose: list_has takes "$@"
+            if list_has "$l" $armed_legs; then
+                drift_csv="$(csv_add "$drift_csv" "$l")"
+            else
+                unarmed_csv="$(csv_add "$unarmed_csv" "$l")"
+            fi
         done
+        # An armed leg that holds no lock and is not in Live state is a wrapped leg
+        # the console already dropped: harmless, but the arm still names it.
+        unlisted_csv=""
+        for l in $armed_legs; do
+            # shellcheck disable=SC2086  # word-split on purpose: list_has takes "$@"
+            list_has "$l" $held_legs $live_legs $malformed_legs || unlisted_csv="$(csv_add "$unlisted_csv" "$l")"
+        done
+        legset_summary=""
+        [ -z "$unarmed_csv" ] || legset_summary="unarmed=$(uniq_join + "$unarmed_csv")"
+        if [ -n "$unlisted_csv" ]; then
+            legset_summary="${legset_summary:+$legset_summary;}unlisted=$(uniq_join + "$unlisted_csv")"
+        fi
+        if [ -n "$legset_summary" ]; then legset_summary="STALE:$legset_summary"; else legset_summary=ok; fi
         for l in $held_legs; do
             # A malformed span still NAMES its leg (badly): it reads MALFORMED,
             # not also "held but unnamed".
@@ -390,6 +464,7 @@ if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
     else
         livestate_summary=unknown
         nonces_summary=unknown
+        legset_summary=unknown
     fi
 fi
 
@@ -464,6 +539,28 @@ while IFS=$'\t' read -r m_label m_status m_cands; do
     fi
 done <<< "$leg_candmap"
 leg_names_wrapped=",${leg_names},"
+# HIMMEL-3293: procs= counts only the sessions THIS arm names, so a live leg the
+# arm does not name (dispatched after it, or another console's) was dropped
+# without a word -- an unwatched leg is the state this instrument must never hide.
+# Every leg-shaped census row (a session whose name derives an N<k> label, which
+# excludes consoles and other non-leg sessions) that is not one of the arm's
+# candidate names is named here by label. orphans= cannot cover this: it lists
+# shell-tool wrappers older than TICK_ORPHAN_MIN minutes per owning session, so a
+# session with no aged wrapper never appears in it at all.
+# ponytail: with several consoles on one box another console's legs read here too;
+# the census carries no owner, so a label in neither this console's Live state nor
+# its arm is another console's or a leg this console lost track of -- the tick
+# cannot say which.
+unwatched_csv=""
+re_unwatched_label='^N[0-9]+[a-z]*$'
+while IFS= read -r u_name; do
+    [ -n "$u_name" ] || continue
+    case "$leg_names_wrapped" in *",$u_name,"*) continue ;; esac
+    u_label="$(leg_label "$u_name")"
+    [[ $u_label =~ $re_unwatched_label ]] || continue
+    unwatched_csv="$(csv_add "$unwatched_csv" "$u_label")"
+done <<< "$census_names"
+unwatched_plus="$(uniq_join + "$unwatched_csv")"
 filter_unusable=0
 if [ "$census_failed" -eq 1 ] || [ -z "$leg_names" ]; then
     filter_unusable=1
@@ -480,6 +577,7 @@ if [ "$filter_unusable" -eq 1 ]; then
     # 0), not a real count. procs= is only ever a count of the dispatched
     # set; without one, it cannot be computed either.
     procs=unknown
+    [ -z "$unwatched_plus" ] || procs="${procs},unwatched=${unwatched_plus}"
 else
     procs="$(printf '%s\n' "$sessions_out" | awk -F'\t' -v names="$leg_names_wrapped" '
 $1 ~ /^#/ { next }
@@ -496,6 +594,7 @@ END { print n+0 }')"
     # the table is incomplete rather than reading procs= as a clean, complete
     # count.
     [ -z "$unmatched_csv" ] || procs="${procs},unmatched=${unmatched_csv}"
+    [ -z "$unwatched_plus" ] || procs="${procs},unwatched=${unwatched_plus}"
     [ "$unreadable_n" -gt 0 ] && procs="${procs},unreadable=${unreadable_n}"
 fi
 
@@ -765,17 +864,19 @@ if [ "$verbose" -eq 1 ]; then
     printf 'gql: %s\n' "$gql"
     printf 'orphans: %s\n' "$orphans"
     printf 'nonces: %s\n' "$nonces_summary"
+    printf 'leg set: %s\n' "$legset_summary"
 else
     # `tick=` is always appended (HIMMEL-3144); `burn=` stays APPENDED only
     # under --burn, after it. `fleet=`/`capacity=` (HIMMEL-3167) are appended
     # after everything else, so a consumer keyed on the existing fields and
     # their order sees them only as a tail. `gql=` (HIMMEL-3197) follows them, and
-    # `orphans=` (HIMMEL-2761) follows, and `nonces=` (HIMMEL-3254) is last.
+    # `orphans=` (HIMMEL-2761) follows, `nonces=` (HIMMEL-3254) follows it, and
+    # `legset=` (HIMMEL-3293) is last.
     if [ "$burn" -eq 1 ]; then
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary"
     else
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary"
     fi
 fi

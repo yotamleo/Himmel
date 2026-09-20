@@ -58,7 +58,7 @@ cat > "$W/repo/scripts/handover/queue-lock.sh" <<'STUB'
 case "$1" in
   heartbeat) exit 0 ;;
   status)
-    case "$2" in *N61*|*-N1-*|*-N2-*|*-N191-*|*-leg192-*|*-legN194-*|*odd-name*) printf '%s\n' 'status: FRESH'; exit 11 ;; *) printf '%s\n' free; exit 0 ;; esac ;;
+    case "$2" in *N61*|*-N1-*|*-N2-*|*-N191-*|*-leg192-*|*-legN194-*|*odd-name*|*-N301-*|*-N302-*|*-N303-*) printf '%s\n' 'status: FRESH'; exit 11 ;; *) printf '%s\n' free; exit 0 ;; esac ;;
 esac
 exit 2
 STUB
@@ -178,7 +178,7 @@ mkdir -p "$W/console-work/chain"
 # The default stub reset epoch, rendered the way tick.sh renders it (local HH:MM).
 gql_hm="$(date -d @1790000000 +%H:%M 2>/dev/null || date -r 1790000000 +%H:%M)"
 out="$(bash "$SUT")"; rc=$?
-expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7 gql=4321/'"$gql_hm"' orphans=none nonces=skip'
+expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1,unwatched=N9 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7 gql=4321/'"$gql_hm"' orphans=none nonces=skip legset=skip'
 lines="$(printf '%s\n' "$out" | wc -l | tr -d '[:space:]')"
 if [ "$rc" -eq 0 ] && [ "$lines" = 1 ] && [ "$out" = "$expected" ]; then
     pass 'default run emits exactly the expected one batched line'
@@ -734,18 +734,23 @@ printf '%s\n' '# console' '' '## Live state' '' \
     > "$W/handover/console.md"
 contains 'a hyphenated label span parses, trailing backticked prose and all (HIMMEL-3277)' "$(t3277 'HIMMEL-9-odd-name-2026-09-20-RESUME')" 'livestate=ok'
 
-# A genuinely stale Live state still fires: N199 is named but holds no lock, N192
-# is held but unnamed. The fix must not make the check unable to fire.
+# A genuinely stale Live state still fires: N192 is held but unnamed (DRIFT). N199
+# is named but the arm does not cover it, so it reads legset=unarmed (HIMMEL-3293),
+# not DRIFT -- the tick has no lock for it. The fix must not make the check unable to fire.
 # shellcheck disable=SC2016  # backtick leg spans, literal fixture text
 printf '%s\n' '# console' '' '## Live state' '' \
     'legs: `N191:J-N191-0a1b2c:tok-191:120`, `N199:J-N199-aaaaaa:tok-199:1`' 'queue: none' 'last GO: none' 'acked: none' \
     > "$W/handover/console.md"
-contains 'a genuinely stale Live state still reports DRIFT (HIMMEL-3277)' "$(t3277 "$l191 $l192")" 'livestate=DRIFT:N192,N199'
+contains 'a genuinely stale Live state still reports DRIFT (HIMMEL-3277)' "$(t3277 "$l191 $l192")" 'livestate=DRIFT:N192 '
+contains 'a Live-state leg the arm omits reads legset=unarmed, not DRIFT (HIMMEL-3293)' "$(t3277 "$l191 $l192")" 'legset=STALE:unarmed=N199'
 # shellcheck disable=SC2016  # backtick leg spans, literal fixture text
 printf '%s\n' '# console' '' '## Live state' '' \
     'legs: `HIMMEL-9-odd-name-2026-09-20-RESUME:n:t:1`, `HIMMEL-8-gone-2026-09-20-RESUME:n:t:2`' 'queue: none' 'last GO: none' 'acked: none' \
     > "$W/handover/console.md"
-contains 'a stale hyphenated label is still DRIFT, not silently dropped (HIMMEL-3277)' "$(t3277 'HIMMEL-9-odd-name-2026-09-20-RESUME')" 'livestate=DRIFT:HIMMEL-8-gone-2026-09-20-RESUME'
+# The stale leg is ARMED here (HIMMEL-3293: an unarmed one is legset=, not DRIFT): a
+# doc with no lock, so its lock is gone while Live state still names it.
+printf '%s\n' '# leg' '- LIVE — working' > "$W/handover/HIMMEL-8-gone-2026-09-20-RESUME.md"
+contains 'a stale hyphenated label is still DRIFT, not silently dropped (HIMMEL-3277)' "$(t3277 'HIMMEL-9-odd-name-2026-09-20-RESUME HIMMEL-8-gone-2026-09-20-RESUME')" 'livestate=DRIFT:HIMMEL-8-gone-2026-09-20-RESUME'
 
 # --- HIMMEL-3280: the legs: line is read for ENTRIES, not for every backtick span.
 # The console's own explanatory parenthetical named the token `legs:` in
@@ -784,7 +789,8 @@ esac
 printf '%s\n' '# console' '' '## Live state' '' \
     'legs: `N191:J-N191-0a1b2c:tok-191:120`, `N199:J-N199-aaaaaa:tok-199:1` (the `legs:` key)' 'queue: none' 'last GO: none' 'acked: none' \
     > "$W/handover/console.md"
-contains 'a stale Live state with prose on the line is DRIFT naming only real legs (HIMMEL-3280)' "$(t3277 "$l191 $l192")" 'livestate=DRIFT:N192,N199 '
+contains 'a stale Live state with prose on the line is DRIFT naming only real legs (HIMMEL-3280)' "$(t3277 "$l191 $l192")" 'livestate=DRIFT:N192 '
+contains 'the unarmed leg is named, with no phantom leg beside it (HIMMEL-3280)' "$(t3277 "$l191 $l192")" 'legset=STALE:unarmed=N199'
 
 # A malformed-but-entry-shaped span must be REPORTED, never dropped: dropping it
 # trades a phantom for a disappearance (HIMMEL-3277's failure facing the other
@@ -816,7 +822,7 @@ done
 printf '%s\n' '# console' '' '## Live state' '' \
     'legs: `N191:J-N191-0a1b2c:tok-191`, `N199:J-N199-aaaaaa:tok-199:1`' 'queue: none' 'last GO: none' 'acked: none' \
     > "$W/handover/console.md"
-contains 'a malformed span and a stale leg both surface (HIMMEL-3280)' "$(t3277 "$l191 $l192")" 'livestate=MALFORMED:N191;DRIFT:N192,N199 '
+contains 'a malformed span and a stale leg both surface (HIMMEL-3280)' "$(t3277 "$l191 $l192")" 'livestate=MALFORMED:N191;DRIFT:N192 '
 
 # --- HIMMEL-3281: the legs: BLOCK is read, not just its first line ------------
 # The block is the legs: line(s) plus lines wrapped directly under them, up to
@@ -856,7 +862,7 @@ wrap_case 'a malformed span on a continuation line reads MALFORMED' 'livestate=M
     'legs: `N191:J-N191-0a1b2c:tok-191:120`' \
     '  `N192:J-N192-3d4e5f:tok-192`' 'queue: none' 'last GO: none' 'acked: none'
 # shellcheck disable=SC2016  # backtick leg spans, literal fixture text
-wrap_case 'a stale leg on a continuation line reads DRIFT' 'livestate=DRIFT:N199 ' \
+wrap_case 'a leg on a continuation line the arm omits reads legset=unarmed' 'legset=STALE:unarmed=N199' \
     'legs: `N191:J-N191-0a1b2c:tok-191:120`, `N192:J-N192-3d4e5f:tok-192:121`' \
     '  `N199:J-N199-aaaaaa:tok-199:1`' 'queue: none' 'last GO: none' 'acked: none'
 # The block has an END, and that end reads loudly, not silently: a held leg whose
@@ -1019,6 +1025,72 @@ case "$next3287" in
     *'--model {{MODEL}}'*) fail 'the /console next line must not carry an unquoted --model {{MODEL}} (HIMMEL-3287)' ;;
     *) pass 'the /console next line must not carry an unquoted --model {{MODEL}} (HIMMEL-3287)' ;;
 esac
+
+# --- HIMMEL-3293: one leg set -- a stale --legs arm is an INPUT problem, never
+# leg drift. The ticket's own fixture: a Live state naming THREE legs, a --legs
+# naming TWO, one of them wrapped. N301 is held and armed; N302 and N303 are held
+# and live but were dispatched after the arm (not in --legs); N300 is wrapped (its
+# lock released, its last bullet WRAPPED) and is armed but already gone from Live
+# state. RED control (pre-fix tick.sh, this fixture) read:
+#   legs=N300:FREE,N301:FRESH livestate=DRIFT:N302,N303 procs=1 models=sonnet:1
+# -- a false DRIFT on two healthy legs, procs=1 beside three live legs, N302/N303
+# absent from legs=, and the wrapped leg indistinguishable from a lost lock.
+w3293="HIMMEL-3300-N300-wrapped-2026-09-20-RESUME"
+a3293="HIMMEL-3301-N301-alpha-2026-09-20-RESUME"
+printf '%s\n' '# leg' '- 12:00 LIVE — working' '- 12:30 WRAPPED — released' > "$W/handover/$w3293.md"
+printf '%s\n' '# leg' '- 12:00 LIVE — working' > "$W/handover/$a3293.md"
+mkcmdline 130 claude --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-3301-N301-alpha work
+mkcmdline 131 claude --model claude-opus-5 --autocompact 200000 -n HIMMEL-3302-N302-beta work
+mkcmdline 132 claude --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-3303-N303-gamma work
+mkcmdline 133 claude --model claude-opus-5 -n HIMMEL-nextleg-2026-09-20R-console work
+mk_pgrep_x "$W/bin-3293" 130 131 132 133
+t3293() { PATH="$W/bin-3293:$PATH" bash "$SUT" --legs "$1"; }
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+printf '%s\n' '# console' '' '## Live state' '' \
+    'legs: `N301:J-N301-0a1b2c:tok-301:130`, `N302:J-N302-3d4e5f:tok-302:131`, `N303:J-N303-6a7b8c:tok-303:132`' 'queue: none' 'last GO: none' 'acked: none' \
+    > "$W/handover/console.md"
+o3293="$(t3293 "$W/handover/$w3293.md $W/handover/$a3293.md")"
+contains 'a leg dispatched after the arm is not livestate=DRIFT (HIMMEL-3293)' "$o3293" 'livestate=ok '
+case "$o3293" in
+    *DRIFT*) fail "a stale arm must not read as leg DRIFT (HIMMEL-3293) ($o3293)" ;;
+    *) pass 'a stale arm must not read as leg DRIFT (HIMMEL-3293)' ;;
+esac
+contains 'the disagreement is reported as an input problem, both directions (HIMMEL-3293)' "$o3293" 'legset=STALE:unarmed=N302+N303;unlisted=N300'
+contains 'live legs outside the arm are surfaced in procs=, not dropped (HIMMEL-3293)' "$o3293" 'procs=1,unwatched=N302+N303 '
+contains 'a wrapped leg reads WRAPPED, distinct from a lost lock (HIMMEL-3293)' "$o3293" 'legs=N300:WRAPPED,N301:FRESH '
+p3293="$(printf '%s\n' "$o3293" | sed -E 's/.* procs=([^ ]*) .*/\1/')"
+case "$p3293" in
+    *N301*|*N300*|*nextleg*|*console*) fail "the armed leg and the console must not read unwatched (HIMMEL-3293) ($p3293)" ;;
+    *) pass 'the armed leg and the console session are not unwatched (HIMMEL-3293)' ;;
+esac
+# The check must still fire on real drift: an ARMED leg whose lock is gone but
+# that Live state still names (N300, wrapped), and a HELD leg Live state omits.
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+printf '%s\n' '# console' '' '## Live state' '' \
+    'legs: `N300:J-N300-aaaaaa:tok-300:1`, `N302:J-N302-3d4e5f:tok-302:131`' 'queue: none' 'last GO: none' 'acked: none' \
+    > "$W/handover/console.md"
+d3293="$(t3293 "$W/handover/$w3293.md $W/handover/$a3293.md")"
+contains 'an armed wrapped leg Live state still names is DRIFT (HIMMEL-3293)' "$d3293" 'livestate=DRIFT:N300,N301 '
+contains 'a Live-state leg outside the arm is unarmed, not drift, beside real drift (HIMMEL-3293)' "$d3293" 'legset=STALE:unarmed=N302'
+# A tick armed with no --legs at all (the Monitors row's own example) can see no
+# lock: every Live-state leg is unarmed, none is drift, and every live leg surfaces.
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+printf '%s\n' '# console' '' '## Live state' '' \
+    'legs: `N301:J-N301-0a1b2c:tok-301:130`, `N302:J-N302-3d4e5f:tok-302:131`, `N303:J-N303-6a7b8c:tok-303:132`' 'queue: none' 'last GO: none' 'acked: none' \
+    > "$W/handover/console.md"
+n3293="$(PATH="$W/bin-3293:$PATH" bash "$SUT" --legs '')"
+contains 'no --legs: every Live-state leg is unarmed, none is DRIFT (HIMMEL-3293)' "$n3293" 'livestate=ok '
+contains 'no --legs: legset names all three as unarmed (HIMMEL-3293)' "$n3293" 'legset=STALE:unarmed=N301+N302+N303'
+contains 'no --legs: procs=unknown still surfaces the live legs (HIMMEL-3293)' "$n3293" 'procs=unknown,unwatched=N301+N302+N303 '
+# An arm that agrees with Live state reports legset=ok; no Live state section is unknown.
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+printf '%s\n' '# console' '' '## Live state' '' \
+    'legs: `N301:J-N301-0a1b2c:tok-301:130`' 'queue: none' 'last GO: none' 'acked: none' \
+    > "$W/handover/console.md"
+contains 'an arm that agrees with Live state reads legset=ok (HIMMEL-3293)' "$(t3293 "$W/handover/$a3293.md")" 'legset=ok'
+contains 'an agreeing arm still surfaces the live legs outside it (HIMMEL-3293)' "$(t3293 "$W/handover/$a3293.md")" 'procs=1,unwatched=N302+N303 '
+printf '%s\n' '# console' '' 'no Live state section in this doc at all' > "$W/handover/console.md"
+contains 'a console doc with no Live state section reads legset=unknown (HIMMEL-3293)' "$(t3293 "$W/handover/$a3293.md")" 'legset=unknown'
 
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-tick.sh'

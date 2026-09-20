@@ -108,6 +108,18 @@ Run these, in order, and write the result as the first bullet under
     was available, rather than silently assuming one of the other fields
     would have caught the gap.
 
+    **Re-arm the tick on every dispatch and every wrap, with absolute leg doc
+    paths** (HIMMEL-3293). The tick judges only the legs `--legs` names; a leg
+    you dispatched after arming is not in it. The tick says so rather than
+    guessing: `legset=STALE:unarmed=<leg,…>` (in `## Live state`, not in the
+    arm) and `procs=<n>,unwatched=<leg,…>` (a live leg session the arm does not
+    name) both mean **your arm is out of date, not that a leg is in trouble** —
+    re-arm with the current leg docs. `legset=STALE:…;unlisted=<leg,…>` is the
+    reverse: an armed leg that is no longer held and not in `## Live state`,
+    i.e. a wrapped leg to drop from the arm. `unwatched=` reads the whole
+    process census, so with more than one console on the host it can name
+    another console's legs.
+
 ## Live state
 
 > **Authority-bearing state — not a summary.** Per-leg RETASK nonces, lock
@@ -188,7 +200,7 @@ filters to terminal-state changes and emits nothing otherwise.
 
 | Monitor | Cadence | What it is |
 |---|---|---|
-| tick | 30 min | **Armed in ACTION ZERO step 10, not here** — the only unconditional monitor of the four, so its absence is the one that goes structurally unnoticed. The `Monitor` tool caps `timeout_ms` at `1800000` (30 min) and silently clamps anything larger, so arm it as a loop that emits on arm and re-arms on each expiry notice — never as one long-timeout arm. `bash "{{KIT}}/tick.sh" --doc "<this file>" --token <your token> --legs "{{STATE_DIR}}/<leg1>.md {{STATE_DIR}}/<leg2>.md"` (or comma-separated — `--legs` accepts space- **and** comma-separated docs, both spellings produce identical output; use absolute paths, because a bare leg doc name resolves against the handover ROOT, not your bucket, and reads `NOTFOUND`) — one batched line: heartbeat, leg locks, leg processes, armed jobs, suite locks, open PRs, bank. Per-leg lock status is one of **`FRESH`** (held, heartbeat current), **`STALE`** (held, heartbeat aged), **`FREE`** (the literal token `tick.sh` emits when the lock is gone — reclaim it; its own comments call this state "MISSING" as a concept, but `FREE` is what actually appears in `legs=`), or **`NOTFOUND`** (the leg doc did not resolve — a warning about a typo'd/nonexistent path, *not* a dead lock; never mistake it for a released lock) |
+| tick | 30 min | **Armed in ACTION ZERO step 10, not here** — the only unconditional monitor of the four, so its absence is the one that goes structurally unnoticed. The `Monitor` tool caps `timeout_ms` at `1800000` (30 min) and silently clamps anything larger, so arm it as a loop that emits on arm and re-arms on each expiry notice — never as one long-timeout arm. `bash "{{KIT}}/tick.sh" --doc "<this file>" --token <your token> --legs "{{STATE_DIR}}/<leg1>.md {{STATE_DIR}}/<leg2>.md"` (or comma-separated — `--legs` accepts space- **and** comma-separated docs, both spellings produce identical output; use absolute paths, because a bare leg doc name resolves against the handover ROOT, not your bucket, and reads `NOTFOUND`) — one batched line: heartbeat, leg locks, leg processes, armed jobs, suite locks, open PRs, bank. Per-leg lock status is one of **`FRESH`** (held, heartbeat current), **`STALE`** (held, heartbeat aged), **`WRAPPED`** (lock released and the leg's last status bullet says `WRAPPED` — the normal end of a leg, nothing to reclaim; HIMMEL-3293), **`FREE`** (the literal token `tick.sh` emits when the lock is gone while the leg has *not* wrapped — a lost lock, reclaim it; its own comments call this state "MISSING" as a concept, but `FREE` is what actually appears in `legs=`), or **`NOTFOUND`** (the leg doc did not resolve — a warning about a typo'd/nonexistent path, *not* a dead lock; never mistake it for a released lock). The line also ends `legset=<ok\|STALE:unarmed=…;unlisted=…\|unknown\|skip>` — see ACTION ZERO step 10: `STALE` means re-arm, not leg trouble |
 | bank | 300 s | poll `bank-preflight.sh`, emit only when the state word changes (headroom → park → weekly-ceiling) |
 | CI | 600 s | poll `gh run list -R <owner/repo> --limit 20 --json databaseId,status`, emit only newly-completed runs |
 | notes repo | 300 s | if you keep a second repo for handover state, emit only on STALL (dirty files older than the commit cadence) or PUSH-LAG |
