@@ -1602,6 +1602,48 @@ test('a paused lock release cannot delete a lock another worker has taken', () =
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+// [HIMMEL-3275 round 4, codex-1] The eviction reads the gate's AGE, then its
+// OWNER, and those are two reads of two different things. A worker adopting in
+// the gap between them installs its ownership with one rename — which is the
+// point of the single-step adoption — but the pid that says it is alive lived
+// in the marker's CONTENT, and a rename cannot carry new content. So the
+// contender resumes, finds the new owner's marker holding the PREVIOUS owner's
+// dead pid, calls it dead and evicts a live worker. Liveness has to be readable
+// from the same atomic step that installs ownership, which means the pid
+// belongs in the NAME.
+test('a gate adopted in the age-check gap is not evicted on the previous owner’s pid', () => {
+  const dir = scratch();
+  try {
+    mkdirSync(join(dir, 'worker.lock'), { recursive: true });
+    writeFileSync(join(dir, 'worker.lock', 'pid'), '0');
+    assert.equal(lockIsStale(dir), true, 'precondition: the seeded lock must read stale');
+    const gate = join(dir, 'worker.lock.reclaim');
+    mkdirSync(gate);
+    // The gate's owner is genuinely dead: pid 0, in the name AND in the body,
+    // so the eviction is entitled to fire until the adoption below happens.
+    writeFileSync(join(gate, 'own.0.9f1c2b40'), '0');
+    const old = new Date(Date.now() - 5 * 60 * 1000);
+    utimesSync(gate, old, old);
+    assert.equal(Date.now() - statSync(gate).mtimeMs > 30 * 1000, true,
+      'precondition: the gate must read older than RECLAIM_STALE_MS');
+    const taken = `own.${process.pid}.5b0e7c12`;
+    let seam = false;
+    acquireLock(dir, {
+      afterGateAgeCheck: () => {
+        seam = true;
+        // A faster worker adopts in ONE rename, carrying its live pid — the
+        // whole adoption, with no second step to be caught between.
+        renameSync(join(gate, 'own.0.9f1c2b40'), join(gate, taken));
+      },
+    });
+    assert.equal(seam, true, 'the takeover never reached the age check');
+    assert.equal(existsSync(join(gate, taken)), true,
+      'the eviction took a gate whose live owner adopted it in the age-check gap');
+    assert.equal(readdirSync(gate).filter((n) => n.startsWith('own.')).length, 1,
+      'two ownership markers exist — both workers believe they hold the gate');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 // [codex-1 r13] Overlaying the snapshot is not enough: ABSENCE is data. Session
 // A sets a gate, session B does not, and B's job would inherit A's value from
 // the worker and fire something B had switched off. The snapshot is

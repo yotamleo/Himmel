@@ -595,14 +595,25 @@ export function workerIsLive(dir) {
 // looking at an instance that is no longer the one it judged. (HIMMEL-3275)
 const OWN_PREFIX = 'own.';
 
+// The pid lives in the NAME, `own.<pid>.<uuid>`, and not in the marker's body.
+// A rename installs ownership in one step but cannot carry new CONTENT with it,
+// so a body-borne pid always describes the PREVIOUS owner for as long as it
+// takes the new one to write — and a contender reading in that gap calls a live
+// worker dead and evicts it. Putting the pid in the name makes the single step
+// that installs ownership the same single step that publishes liveness, and it
+// removes the follow-up write a loser could otherwise use to resurrect a marker
+// it had already been claimed out of. (HIMMEL-3275)
+function ownId() {
+  return `${process.pid}.${randomUUID()}`;
+}
+
 function readOwner(objDir) {
   let names = [];
   try { names = readdirSync(objDir); } catch { return null; }
   const name = names.filter((n) => n.startsWith(OWN_PREFIX)).sort()[0];
   if (!name) return null;
-  let pid = 0;
-  try { pid = Number(readFileSync(join(objDir, name), 'utf8').trim()) || 0; } catch { /* unreadable */ }
-  return { id: name.slice(OWN_PREFIX.length), pid };
+  const id = name.slice(OWN_PREFIX.length);
+  return { id, pid: Number(id.split('.')[0]) || 0 };
 }
 
 // The CAS. Exactly one caller can move a given marker; everyone else gets
@@ -620,14 +631,14 @@ function claimOwner(objDir, id) {
 // live gate belonging to an older worker with no age check and no CAS at all.
 // mkdir refuses any existing directory, empty or not.
 function createOwned(target, extra = {}) {
-  const id = randomUUID();
+  const id = ownId();
   try { mkdirSync(target, { mode: 0o700 }); } catch { return null; }
   try {
     // Identity first: the gap between the mkdir and this write is the only
     // instant the object has none, and it is covered by age (a gate younger
     // than RECLAIM_STALE_MS is respected; a lock with no readable pid is not
     // stale for a minute).
-    writeFileSync(join(target, `${OWN_PREFIX}${id}`), String(process.pid), { mode: 0o600 });
+    writeFileSync(join(target, `${OWN_PREFIX}${id}`), '', { mode: 0o600 });
     for (const [name, body] of Object.entries(extra)) {
       writeFileSync(join(target, name), body, { mode: 0o600 });
     }
@@ -681,9 +692,9 @@ export function acquireLock(dir, hooks = {}) {
         // whose creator died in the instant before its first write. Adopt it
         // here, under the gate, where no other takeover can be running — so
         // the removal below is identity-keyed like every other.
-        const adopted = randomUUID();
+        const adopted = ownId();
         try {
-          writeFileSync(join(p.lock, `${OWN_PREFIX}${adopted}`), String(process.pid), { mode: 0o600, flag: 'wx' });
+          writeFileSync(join(p.lock, `${OWN_PREFIX}${adopted}`), '', { mode: 0o600, flag: 'wx' });
         } catch { continue; }
         owner = { id: adopted };
       }
@@ -748,20 +759,22 @@ function takeReclaimGate(p, hooks = {}) {
     let age;
     try { age = Date.now() - statSync(gate).mtimeMs; } catch { continue; }
     if (age <= RECLAIM_STALE_MS) return null;   // a takeover is in progress
+    if (hooks.afterGateAgeCheck) hooks.afterGateAgeCheck();
     const owner = readOwner(gate);
     if (!owner) {
       try { rmdirSync(gate); continue; } catch { /* not empty — see below */ }
-      // Not empty, yet nothing owns it: a reclaimer died between winning the
-      // CAS and writing its adopted marker, or inside releaseGate, leaving only
-      // the moved marker behind. mkdir refuses the directory because it exists
+      // Not empty, yet nothing owns it: a releaser died inside releaseGate,
+      // between the CAS that moved the marker and the rmdir, leaving only the
+      // moved marker behind. mkdir refuses the directory because it exists
       // and rmdir because it is not empty, so recovery would wedge here
       // PERMANENTLY. Recover it the way everything else here is recovered —
       // by CAS, not by a path-keyed removal: renaming a residue marker to
       // `own.<id>` elects exactly one winner AND installs its ownership in the
       // same atomic step, so nothing is removed and there is no instant when a
       // slower worker could take out a gate a faster one has just adopted.
-      // The rename also touches the directory, so the age clock restarts and
-      // the pid below is re-stamped inside that window.
+      // The rename also touches the directory, so the age clock restarts, and
+      // it carries this worker's pid in the name it renames TO — one step, no
+      // window in which the gate reads owned-by-someone-dead.
       if (hooks.beforeResidueRead) hooks.beforeResidueRead();
       // Only a RESIDUE is recoverable. The directory is read after the decision
       // that it has no owner, so a faster worker can install its ownership in
@@ -774,11 +787,8 @@ function takeReclaimGate(p, hooks = {}) {
         residue = readdirSync(gate).filter((n) => !n.startsWith(OWN_PREFIX)).sort()[0];
       } catch { return null; }
       if (!residue) continue;                   // owned or emptied under us
-      const adopted = randomUUID();
+      const adopted = ownId();
       try { renameSync(join(gate, residue), join(gate, `${OWN_PREFIX}${adopted}`)); } catch { return null; }
-      try {
-        writeFileSync(join(gate, `${OWN_PREFIX}${adopted}`), String(process.pid), { mode: 0o600 });
-      } catch { return null; }
       return { dir: gate, id: adopted };
     }
     if (pidAlive(owner.pid)) return null;       // stopped, not dead — still its gate
@@ -786,15 +796,14 @@ function takeReclaimGate(p, hooks = {}) {
     // The SAME single-step adoption the recovery above uses, and for the same
     // reason: claiming the marker and then writing our own left the gate
     // ownerless in between, which is precisely the state that recovery adopts.
-    // One rename elects exactly one winner AND installs its ownership, so the
-    // gate never has an instant with no owner and leaves no residue behind.
-    const adopted = randomUUID();
+    // One rename elects exactly one winner AND installs its ownership — pid in
+    // the name, so this worker's liveness is published by the same step — so
+    // the gate never has an instant with no owner, nothing is left over, and
+    // there is no follow-up write for a loser to resurrect its marker with.
+    const adopted = ownId();
     try {
       renameSync(join(gate, `${OWN_PREFIX}${owner.id}`), join(gate, `${OWN_PREFIX}${adopted}`));
     } catch { return null; }                    // another worker took it over
-    try {
-      writeFileSync(join(gate, `${OWN_PREFIX}${adopted}`), String(process.pid), { mode: 0o600 });
-    } catch { return null; }
     return { dir: gate, id: adopted };
   }
   return null;
