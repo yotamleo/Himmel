@@ -152,6 +152,23 @@ chmod 755 "$tmp/cx1/home/.local/bin/himmelctl"; chmod 644 "$tmp/cx2/home/.local/
 bash "$CONV" --a-home "$tmp/cx1/home" --a-prefix "$tmp/cx1/prefix" --b-home "$tmp/cx2/home" --b-prefix "$tmp/cx2/prefix" >"$tmp/cx.log" 2>&1; rc=$?
 [ "$rc" -eq 1 ] && ok "T7 RED: an executable launcher vs a non-executable one is DIVERGED (rc 1)" || bad "T7 exec-bit difference accepted" "rc=$rc"
 has "$tmp/cx.log" 'NOT executable' && ok "T7 the diff names the missing exec bit" || bad "T7 diff lacks the exec-bit line"
+# A sibling location that merely STARTS with the prefix (<prefix>-old) is a different place: not masked.
+mk_side "$tmp/cs1" "bash $tmp/cs1/prefix-old/g.sh"; mk_side "$tmp/cs2" "bash $tmp/cs2/prefix-old/g.sh"
+bash "$CONV" --a-home "$tmp/cs1/home" --a-prefix "$tmp/cs1/prefix" --b-home "$tmp/cs2/home" --b-prefix "$tmp/cs2/prefix" >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 1 ] && ok "T7 RED: a sibling <prefix>-old path is NOT masked as the prefix (rc 1)" || bad "T7 sibling path masked" "rc=$rc"
+# Git hooks that are SYMLINKS count: present on one side only -> DIVERGED; dangling -> UNREADABLE.
+mk_side "$tmp/cg1" "bash $tmp/cg1/prefix/g.sh"; mk_side "$tmp/cg2" "bash $tmp/cg2/prefix/g.sh"
+for s in cg1 cg2; do git init -q "$tmp/$s/repo" 2>/dev/null; done
+printf '#!/bin/sh\nexit 0\n' > "$tmp/cg1/real-hook.sh"; chmod 755 "$tmp/cg1/real-hook.sh"
+ln -s "$tmp/cg1/real-hook.sh" "$tmp/cg1/repo/.git/hooks/pre-commit"
+bash "$CONV" --a-home "$tmp/cg1/home" --a-prefix "$tmp/cg1/prefix" --a-target "$tmp/cg1/repo" \
+  --b-home "$tmp/cg2/home" --b-prefix "$tmp/cg2/prefix" --b-target "$tmp/cg2/repo" >"$tmp/cg.log" 2>&1; rc=$?
+[ "$rc" -eq 1 ] && ok "T7 RED: a symlinked git hook on one side only is DIVERGED (rc 1)" || bad "T7 symlink hook omitted from the snapshot" "rc=$rc"
+has "$tmp/cg.log" 'hook: pre-commit' && ok "T7 the diff names the symlinked hook" || bad "T7 diff lacks the symlinked hook"
+rm -f "$tmp/cg1/real-hook.sh"
+bash "$CONV" --a-home "$tmp/cg1/home" --a-prefix "$tmp/cg1/prefix" --a-target "$tmp/cg1/repo" \
+  --b-home "$tmp/cg2/home" --b-prefix "$tmp/cg2/prefix" --b-target "$tmp/cg2/repo" >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 3 ] && ok "T7 RED: a dangling hook symlink is UNREADABLE (rc 3)" || bad "T7 dangling hook symlink accepted" "rc=$rc"
 
 # --- T9 RED: the published pair does not verify -> the body stops, fail closed --
 # The README chain never reaches tar on a bad hash; the body must not extract or

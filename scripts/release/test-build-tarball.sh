@@ -118,16 +118,19 @@ check "GREEN: build-complete -- scripts/jira/node_modules/ is IN the tarball" gr
 check_not "no .git directory in the tarball" grep -Eq '(^|/)\.git(/|$)' "$list"
 
 # RED control for "build-complete": the same tree built with --no-build must LACK dist/.
-bash "$BUILD" --version 1.2.3 --src "$fx" --out "$tmp/out-nobuild" --no-build >/dev/null 2>&1
-tar -tzf "$tmp/out-nobuild/himmel-1.2.3-linux.tar.gz" > "$tmp/list-nobuild.txt"
+bash "$BUILD" --version 1.2.3 --src "$fx" --out "$tmp/out-nobuild" --no-build >/dev/null 2>&1 \
+  && tar -tzf "$tmp/out-nobuild/himmel-1.2.3-linux.tar.gz" > "$tmp/list-nobuild.txt" 2>/dev/null
+# The absence assertion below is only meaningful against a control that really built.
+check "the --no-build control built and lists the tracked tree" grep -Fxq 'himmel-1.2.3/VERSION' "$tmp/list-nobuild.txt"
 check_not "RED: a --no-build tarball does NOT contain scripts/jira/dist/index.js" \
   grep -Fxq 'himmel-1.2.3/scripts/jira/dist/index.js' "$tmp/list-nobuild.txt"
 
 # --- T4: tracked-only -- a dirty working tree cannot leak into the artifact ---
 echo "SECRET=1" > "$fx/leak.env"                      # untracked
 echo "tampered" > "$fx/VERSION"                        # modified, uncommitted
-bash "$BUILD" --version 1.2.4 --src "$fx" --out "$tmp/out-dirty" >/dev/null 2>&1
-tar -tzf "$tmp/out-dirty/himmel-1.2.4-linux.tar.gz" > "$tmp/list-dirty.txt"
+bash "$BUILD" --version 1.2.4 --src "$fx" --out "$tmp/out-dirty" >/dev/null 2>&1 \
+  && tar -tzf "$tmp/out-dirty/himmel-1.2.4-linux.tar.gz" > "$tmp/list-dirty.txt" 2>/dev/null
+check "the dirty-tree build succeeded and lists the tracked tree" grep -Fxq 'himmel-1.2.4/VERSION' "$tmp/list-dirty.txt"
 check_not "untracked file is NOT packaged" grep -Fq 'leak.env' "$tmp/list-dirty.txt"
 [ "$(tar -xzOf "$tmp/out-dirty/himmel-1.2.4-linux.tar.gz" himmel-1.2.4/VERSION)" = "1.2.3" ] \
   && ok "packages the COMMITTED VERSION, not the dirty working copy" || bad "dirty working copy leaked into the tarball"

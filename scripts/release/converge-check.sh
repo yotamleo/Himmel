@@ -41,14 +41,27 @@ done
 { [ -z "$at" ] && [ -n "$bt" ]; } && usage
 command -v jq >/dev/null 2>&1 || { echo "converge-check: jq is required" >&2; exit 2; }
 
+# mask <line> <path> <token> -- sets REPLY: every occurrence of <path> that ends on
+# a path boundary becomes <token>. A longer sibling (<path>-old, <path>.bak) is a
+# DIFFERENT location and must stay visible, or a leak into it would be masked.
+mask() {
+  local rest="$1" needle="$2" token="$3" out=""
+  while [[ "$rest" == *"$needle"* ]]; do
+    out+="${rest%%"$needle"*}"
+    rest="${rest#*"$needle"}"
+    case "$rest" in [A-Za-z0-9._-]*) out+="$needle" ;; *) out+="$token" ;; esac
+  done
+  REPLY="$out$rest"
+}
+
 # norm <home> <prefix> -- stdin -> stdout, own paths masked (prefix first: it is
 # usually nested under home).
 norm() {
   local home="$1" prefix="$2" line
   while IFS= read -r line || [ -n "$line" ]; do
-    line="${line//"$prefix"/\{PREFIX\}}"
-    line="${line//"$home"/\{HOME\}}"
-    printf '%s\n' "$line"
+    mask "$line" "$prefix" '{PREFIX}'
+    mask "$REPLY" "$home" '{HOME}'
+    printf '%s\n' "$REPLY"
   done
 }
 
@@ -82,10 +95,10 @@ snapshot() {
       hooks="$(git -C "$target" rev-parse --git-path hooks 2>/dev/null)"
       case "$hooks" in /*) ;; *) hooks="$target/$hooks" ;; esac
       if [ -d "$hooks" ]; then
-        for f in $(find "$hooks" -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort); do  # gnu-ok: only ever runs on the Linux guest (the tarball is Linux-only), where find -printf is findutils' own
+        for f in $(find "$hooks" -maxdepth 1 \( -type f -o -type l \) -printf '%f\n' | LC_ALL=C sort); do  # gnu-ok: only ever runs on the Linux guest (the tarball is Linux-only), where find -printf is findutils' own
           case "$f" in *.sample) continue ;; esac
           echo "# hook: $f"
-          cat "$hooks/$f"
+          cat "$hooks/$f" 2>/dev/null || echo "(unreadable: hook $f)"
           if [ -x "$hooks/$f" ]; then echo "# mode: executable"; else echo "# mode: NOT executable (git ignores it)"; fi
         done
       else
