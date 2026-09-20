@@ -69,6 +69,12 @@ XDG_RUNTIME_DIR="$TMPDIR_ROOT/xdg"
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 export XDG_RUNTIME_DIR
+# HIMMEL-3290: the cross-root search and `status --sweep` read the handover
+# registry, so the default $HOME registry (the operator's real vault) must
+# never be read by this suite either. A nonexistent file = no candidate roots;
+# tests that need a registry pass their own HANDOVER_REGISTRY per call.
+HANDOVER_REGISTRY="$TMPDIR_ROOT/no-registry.json"
+export HANDOVER_REGISTRY
 QUEUE_LOCK_SESSION_SCOPE="test-queue-lock-suite"
 export QUEUE_LOCK_SESSION_SCOPE
 unset QUEUE_LOCK_TAKEOVER QUEUE_LOCK_TTL_SECONDS
@@ -1607,16 +1613,14 @@ if [ ! -d "$X_LOCKDIR" ]; then
 else
     fail "T46b: the lock under the acquire-time root is STILL HELD -- the release looked in the wrong root ($out)"
 fi
-if grepq "$out" '^WARN queue-lock: cwd resolves root ' \
-    && grepq "$out" -F "$X_WT/handovers" && grepq "$out" -F "$X_ROOT"; then
-    pass "T46b: ONE WARN names both the cwd-resolved root and the recorded root"
+# HIMMEL-3290: the key is a property of the DOC (the deepest known root that
+# contains it), not of the cwd, so this release no longer has a cwd/recorded
+# root divergence to warn about. Pinned here: it finds the lock directly (no
+# WARN), and says what it released.
+if ! grepq "$out" '^WARN queue-lock: cwd resolves root '; then
+    pass "T46b: no cwd-vs-recorded-root WARN -- the doc's key does not depend on the cwd (HIMMEL-3290)"
 else
-    fail "T46b: WARN missing or does not name both roots: $out"
-fi
-if [ "$(printf '%s\n' "$out" | grep -c '^WARN queue-lock: cwd resolves root ')" -eq 1 ]; then
-    pass "T46b: the cross-root WARN is printed exactly once"
-else
-    fail "T46b: the cross-root WARN is not printed exactly once: $out"
+    fail "T46b: a cwd-vs-recorded-root WARN fired although the key is doc-derived: $out"
 fi
 
 # --- T47: heartbeat resolves across roots the same way ---------------------
@@ -1689,28 +1693,30 @@ else
     fail "T51: acquire's last stdout line is not the release-token line (got: $out)"
 fi
 
-# --- T52: the force-release path is unchanged -- cwd root only, rc=0 -------
-# QUEUE_LOCK_FORCE_RELEASE has no token, so it gets no cross-root search
-# (nothing would prove the foreign lock is the caller's); it still exits 0
-# on nothing-found, which is what the console's sweep-and-force loop reads.
+# --- T52: force-release from another cwd (HIMMEL-3290 changes the expectation)
+# Was: cwd-root-only, so a force-release from the worktree cwd found nothing
+# and left the lock held. The key is now a property of the DOC (the deepest
+# known root containing it), so the same force-release resolves to the doc's
+# own lock: it releases exactly THAT lock and logs it. Still rc=0 on
+# nothing-found, which is what the console's sweep-and-force loop reads.
 out="$(
     cd "$X_WT" || exit 9
     unset HANDOVER_DIR
     QUEUE_LOCK_FORCE_RELEASE=1 HANDOVER_REGISTRY="$X_REG" bash "$LIB" release "$X_DOC" 2>&1
 )"
 rc=$?
-if [ "$rc" -eq 0 ] && [ -f "$X_LOCKDIR/owner.json" ]; then
-    pass "T52: force-release stays cwd-root-only and rc=0 on nothing-found (unchanged)"
+if [ "$rc" -eq 0 ] && [ ! -d "$X_LOCKDIR" ] \
+    && grepq "$(cat "$X_ROOT/.locks/queue/takeovers.log" 2>/dev/null)" 'FORCED RELEASE of session=last-line'; then
+    pass "T52: force-release from a worktree cwd releases the DOC's lock (key is doc-derived) and logs to takeovers.log"
 else
-    fail "T52: force-release path changed (rc=$rc, lock=$([ -f "$X_LOCKDIR/owner.json" ] && echo held || echo GONE): $out)"
+    fail "T52: force-release from a worktree cwd did not release the doc's lock (rc=$rc, lock=$([ -d "$X_LOCKDIR" ] && echo held || echo GONE): $out)"
 fi
 out="$(HANDOVER_DIR="$X_ROOT" QUEUE_LOCK_FORCE_RELEASE=1 bash "$LIB" release "$X_DOC" 2>&1)"
 rc=$?
-if [ "$rc" -eq 0 ] && [ ! -d "$X_LOCKDIR" ] \
-    && grepq "$(cat "$X_ROOT/.locks/queue/takeovers.log" 2>/dev/null)" 'FORCED RELEASE of session=last-line'; then
-    pass "T52: force-release under the right root still releases and logs to takeovers.log"
+if [ "$rc" -eq 0 ] && [ ! -d "$X_LOCKDIR" ]; then
+    pass "T52: force-release with nothing left to release is still rc=0"
 else
-    fail "T52: force-release under the right root regressed (rc=$rc: $out)"
+    fail "T52: force-release on nothing-found regressed (rc=$rc: $out)"
 fi
 
 # --- T53: a COMPACT single-line registry yields EVERY repo, not just the ---
@@ -2317,6 +2323,218 @@ else
     fail "T70: plain status extra operand must be refused (rc=$rc stdout=$x_out stderr=$x_err)"
 fi
 rm -rf "$X_ROOT"
+
+# --- T71-T78: one doc path yields ONE lock key; sweep/status cannot miss a --
+# --- held lock (HIMMEL-3290) ---------------------------------------------
+# Two live legs held locks under the WRONG key on 2026-09-20 and `status`
+# answered `free` for both: N211b ran with HANDOVER_DIR naming the vault's
+# PARENT (root recorded = the vault, slug absorbed `handovers__`), N212 passed
+# a bare filename from the primary's cwd (right root, unprefixed slug). Both
+# are caller spelling the script honoured literally. The fix derives the key
+# from the DOC (deepest known handover root containing it, canonical path),
+# and makes status/sweep/release find the two legacy key shapes.
+#
+# Hermetic fixture, never the real vault: a vault repo carrying `.single-writer`
+# (the shape of the real one), a registry naming it, a primary repo standing in
+# for the cwd N212 ran from. Every assertion below asserts its fixture
+# precondition first, so a RED cannot be the fixture failing.
+M_BASE="$TMPDIR_ROOT/3290"
+M_VAULT="$M_BASE/vault"
+M_ROOT="$M_VAULT/handovers"
+M_BUCKET="$M_ROOT/yotamleo/himmel"
+M_PRIMARY="$M_BASE/primary"
+mkdir -p "$M_BUCKET" "$M_ROOT/yotamleo/other" "$M_PRIMARY/handovers"
+git -C "$M_VAULT" init -q >/dev/null 2>&1
+: > "$M_VAULT/.single-writer"
+git -C "$M_PRIMARY" init -q >/dev/null 2>&1
+M_VAULT="$(cd "$M_VAULT" && pwd)"; M_ROOT="$(cd "$M_ROOT" && pwd)"
+M_BUCKET="$(cd "$M_BUCKET" && pwd)"; M_PRIMARY="$(cd "$M_PRIMARY" && pwd)"
+M_REG="$M_BASE/registry.json"
+printf '{"repos":{"vault":{"path":"%s","user":"yotamleo","branch_prefix":"handover/"}}}\n' "$M_VAULT" > "$M_REG"
+M_DOC_A="$M_BUCKET/HIMMEL-3290-TA-RESUME.md"
+M_DOC_B="$M_BUCKET/HIMMEL-3290-TB-RESUME.md"
+M_DOC_C="$M_BUCKET/HIMMEL-3290-TC-RESUME.md"
+M_DOC_D="$M_BUCKET/HIMMEL-3290-TD-RESUME.md"
+: > "$M_DOC_A"; : > "$M_DOC_B"; : > "$M_DOC_C"; : > "$M_DOC_D"
+: > "$M_BUCKET/HIMMEL-3290-DUP-RESUME.md"; : > "$M_ROOT/yotamleo/other/HIMMEL-3290-DUP-RESUME.md"
+m_key() { printf 'yotamleo__himmel__%s.lock' "$1"; }
+
+if [ -d "$M_VAULT/.git" ] && [ -f "$M_VAULT/.single-writer" ] && [ -d "$M_PRIMARY/.git" ] && [ -f "$M_DOC_A" ] && [ -f "$M_REG" ]; then
+    pass "T71: setup -- vault repo + .single-writer + registry + primary cwd + docs exist"
+else
+    fail "T71: setup -- fixture incomplete (vault/.single-writer/primary/doc/registry)"
+fi
+
+# m_run <cwd> <HANDOVER_DIR|-> <args...> -- one queue-lock call as a leg would
+# issue it: from <cwd>, HANDOVER_DIR exported (or unset for `-`), stdout+stderr.
+m_run() {
+    local cwd="$1" hd="$2"
+    shift 2
+    (
+        cd "$cwd" || exit 9
+        if [ "$hd" = "-" ]; then unset HANDOVER_DIR; else export HANDOVER_DIR="$hd"; fi
+        HANDOVER_REGISTRY="$M_REG" bash "$LIB" "$@" 2>&1
+    )
+}
+# m_legacy_lock <lockdir> <session> <handover-field> <root-marker> -- a lock
+# dir exactly as the pre-fix script wrote it (owner, owner.json, root).
+m_legacy_lock() {
+    local _now
+    _now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    mkdir -p "$1"
+    printf '%s' "$2" > "$1/owner"
+    printf '{"session":"%s","host":"h","handover":"%s","started":"%s","heartbeat":"%s"}\n' \
+        "$2" "$3" "$_now" "$_now" > "$1/owner.json"
+    printf '%s\n' "$4" > "$1/root"
+}
+
+# --- T72: symptom (a) -- HANDOVER_DIR names the vault's PARENT (N211b) ------
+# Pre-fix: the lock lands under the vault root with `handovers__` absorbed
+# into the slug and the vault recorded as its root. Post-fix: the doc belongs
+# to the deepest handover root containing it (the registered vault/handovers),
+# the key is the same one every other spelling yields, and stderr says the
+# collapse happened.
+out="$(m_run "$M_PRIMARY" "$M_VAULT" acquire "$M_DOC_A" tokTA)"
+if [ -f "$M_ROOT/.locks/queue/$(m_key HIMMEL-3290-TA-RESUME)/owner.json" ] \
+   && [ "$(cat "$M_ROOT/.locks/queue/$(m_key HIMMEL-3290-TA-RESUME)/root" 2>/dev/null)" = "$M_ROOT" ] \
+   && [ ! -d "$M_VAULT/.locks/queue" ]; then
+    pass "T72: HANDOVER_DIR=<vault parent> keys the lock under the registered root $M_ROOT (root marker recorded there)"
+else
+    fail "T72: HANDOVER_DIR=<vault parent> mis-keyed: $(find "$M_BASE" -name '*.lock' -path '*TA*' 2>/dev/null | tr '\n' ' ') :: $out"
+fi
+if grepq "$out" 'ancestor'; then
+    pass "T72: the collapse of a too-shallow HANDOVER_DIR is stated on stderr"
+else
+    fail "T72: no stderr note that HANDOVER_DIR was an ancestor of the keying root: $out"
+fi
+out="$(m_run "$M_PRIMARY" - release "$M_DOC_A" tokTA)"; rc=$?
+if [ "$rc" -eq 0 ] && [ ! -d "$M_ROOT/.locks/queue/$(m_key HIMMEL-3290-TA-RESUME)" ]; then
+    pass "T72: release from a cwd with HANDOVER_DIR unset finds and releases it"
+else
+    fail "T72: release of the collapsed-root lock failed (rc=$rc): $out"
+fi
+
+# --- T73: symptom (b) -- a bare filename from the primary's cwd (N212) ------
+# Pre-fix: right root, UNPREFIXED slug. Post-fix: the bare name resolves to the
+# one doc under the root and yields the canonical prefixed slug; every spelling
+# of that doc is then the SAME queue (status held, second acquire refused).
+out="$(m_run "$M_PRIMARY" "$M_ROOT" acquire "HIMMEL-3290-TB-RESUME.md" tokTB)"
+if [ -f "$M_ROOT/.locks/queue/$(m_key HIMMEL-3290-TB-RESUME)/owner.json" ] \
+   && [ ! -d "$M_ROOT/.locks/queue/HIMMEL-3290-TB-RESUME.lock" ]; then
+    pass "T73: a bare filename acquires under the canonical prefixed slug, not an unprefixed one"
+else
+    fail "T73: bare filename mis-keyed: $(find "$M_ROOT/.locks/queue" -mindepth 1 -maxdepth 1 2>/dev/null | tr '\n' ' ') :: $out"
+fi
+out="$(m_run "$M_ROOT" - status "yotamleo/himmel/HIMMEL-3290-TB-RESUME.md")"; rc=$?
+if [ "$rc" -eq 11 ]; then
+    pass "T73: the relative spelling of the same doc sees it HELD (rc=11)"
+else
+    fail "T73: relative spelling did not see the held lock (rc=$rc): $out"
+fi
+out="$(m_run "$M_PRIMARY" "$M_ROOT" acquire "$M_DOC_B" tokOTHER)"; rc=$?
+if [ "$rc" -eq 2 ]; then
+    pass "T73: a second acquire under the absolute spelling is refused (rc=2) -- one doc, one lock"
+else
+    fail "T73: a second writer acquired the same doc under another spelling (rc=$rc): $out"
+fi
+out="$(m_run "$M_ROOT" - release "yotamleo/himmel/HIMMEL-3290-TB-RESUME.md" tokTB)"; rc=$?
+if [ "$rc" -eq 0 ] && [ ! -d "$M_ROOT/.locks/queue/$(m_key HIMMEL-3290-TB-RESUME)" ]; then
+    pass "T73: release under the relative spelling releases what the bare spelling acquired"
+else
+    fail "T73: cross-spelling release failed (rc=$rc): $out"
+fi
+
+# --- T74: an ambiguous bare name is refused, never guessed ------------------
+m_before="$(find "$M_ROOT/.locks/queue" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l | tr -d ' ')"
+out="$(m_run "$M_PRIMARY" "$M_ROOT" acquire "HIMMEL-3290-DUP-RESUME.md" tokDUP)"; rc=$?
+m_after="$(find "$M_ROOT/.locks/queue" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$rc" -eq 1 ] && [ "$m_before" = "$m_after" ] && grepq "$out" -i 'ambiguous'; then
+    pass "T74: a bare name matching two docs is refused (rc=1), no lock created, ambiguity named"
+else
+    fail "T74: ambiguous bare name not refused cleanly (rc=$rc before=$m_before after=$m_after): $out"
+fi
+
+# --- T75-T78: the two LEGACY key shapes are found, and stay releasable -----
+# N211b's exact shape: wrong root (the vault), `handovers__` absorbed, the doc
+# recorded absolute. N212's exact shape: right root, unprefixed slug, the doc
+# recorded as the bare filename. Both must (1) read HELD from status, (2) show
+# in a sweep, (3) refuse a second writer, (4) release for their OWN token
+# under the canonical spelling, and (5) never for anyone else.
+M_LEG_C="$M_VAULT/.locks/queue/handovers__yotamleo__himmel__HIMMEL-3290-TC-RESUME.lock"
+M_LEG_D="$M_ROOT/.locks/queue/HIMMEL-3290-TD-RESUME.lock"
+m_legacy_lock "$M_LEG_C" legN211b "$M_DOC_C" "$M_VAULT"
+m_legacy_lock "$M_LEG_D" legN212 "HIMMEL-3290-TD-RESUME.md" "$M_ROOT"
+if [ -f "$M_LEG_C/owner.json" ] && [ -f "$M_LEG_D/owner.json" ] \
+   && [ ! -d "$M_ROOT/.locks/queue/$(m_key HIMMEL-3290-TC-RESUME)" ] \
+   && [ ! -d "$M_ROOT/.locks/queue/$(m_key HIMMEL-3290-TD-RESUME)" ]; then
+    pass "T75: setup -- both legacy locks exist and NEITHER sits at its canonical key"
+else
+    fail "T75: setup -- legacy fixtures wrong"
+fi
+
+out="$(m_run "$M_PRIMARY" "$M_ROOT" status "$M_DOC_C")"; rc=$?
+if [ "$rc" -eq 11 ] && grepq "$out" 'legN211b'; then
+    pass "T75: status <doc> finds the N211b-shape lock (wrong root + absorbed prefix): held, rc=11"
+else
+    fail "T75: status answered rc=$rc for a doc held under the N211b key shape: $out"
+fi
+out="$(m_run "$M_PRIMARY" "$M_ROOT" status "$M_DOC_D")"; rc=$?
+if [ "$rc" -eq 11 ] && grepq "$out" 'legN212'; then
+    pass "T75: status <doc> finds the N212-shape lock (right root + unprefixed slug): held, rc=11"
+else
+    fail "T75: status answered rc=$rc for a doc held under the N212 key shape: $out"
+fi
+out="$(m_run "$M_PRIMARY" "$M_ROOT" status --sweep)"
+if grepq "$out" 'session=legN211b' && grepq "$out" 'session=legN212'; then
+    pass "T76: a sweep with no operand enumerates BOTH mis-keyed live locks"
+else
+    fail "T76: sweep missed a held lock: $out"
+fi
+out="$(m_run "$M_PRIMARY" "$M_ROOT" acquire "$M_DOC_D" tokOTHER)"; rc=$?
+if [ "$rc" -eq 2 ] && [ ! -d "$M_ROOT/.locks/queue/$(m_key HIMMEL-3290-TD-RESUME)" ]; then
+    pass "T76: acquire refuses a second writer on a doc held under a legacy key (rc=2)"
+else
+    fail "T76: a second writer acquired over a legacy-keyed lock (rc=$rc): $out"
+fi
+m_err="$TMPDIR_ROOT/3290-sweep-err"
+m_out="$(HANDOVER_DIR="$M_ROOT" HANDOVER_REGISTRY="$M_REG" bash "$LIB" status --sweep "$M_ROOT" 2>"$m_err")"
+if grepq "$(cat "$m_err")" "$M_ROOT"; then
+    pass "T76: an explicit-root sweep says which root it read"
+else
+    fail "T76: explicit-root sweep is silent about the root it read: stderr=$(cat "$m_err") stdout=$m_out"
+fi
+
+# T77: ownership -- nothing but the owner's token, for the owner's doc, ever moves a lock.
+out="$(m_run "$M_PRIMARY" "$M_ROOT" release "$M_DOC_C" wrongTok)"; rc=$?
+if [ "$rc" -ne 0 ] && [ -f "$M_LEG_C/owner.json" ] && [ -f "$M_LEG_D/owner.json" ]; then
+    pass "T77: a wrong token releases nothing (rc=$rc), both legacy locks intact"
+else
+    fail "T77: wrong token released or damaged a lock (rc=$rc): $out"
+fi
+out="$(m_run "$M_PRIMARY" "$M_ROOT" release "$M_DOC_D" legN211b)"; rc=$?
+if [ "$rc" -ne 0 ] && [ -f "$M_LEG_C/owner.json" ] && [ -f "$M_LEG_D/owner.json" ]; then
+    pass "T77: N211b's token on N212's doc releases nothing (rc=$rc) -- token AND doc must both match"
+else
+    fail "T77: a token released a lock for a DIFFERENT doc (rc=$rc): $out"
+fi
+out="$(m_run "$M_PRIMARY" - heartbeat "$M_DOC_C" legN211b)"; rc=$?
+if [ "$rc" -eq 0 ] && [ -f "$M_LEG_C/owner.json" ]; then
+    pass "T77: the owner's heartbeat reaches its legacy-keyed lock (rc=0)"
+else
+    fail "T77: heartbeat of the legacy-keyed lock failed (rc=$rc): $out"
+fi
+out="$(m_run "$M_PRIMARY" "$M_ROOT" release "$M_DOC_D" legN212)"; rc=$?
+if [ "$rc" -eq 0 ] && [ ! -d "$M_LEG_D" ] && [ -f "$M_LEG_C/owner.json" ]; then
+    pass "T78: N212's token + canonical spelling releases ONLY its unprefixed lock; N211b's survives intact"
+else
+    fail "T78: release of the N212-shape lock (rc=$rc D=$([ -d "$M_LEG_D" ] && echo held || echo gone) C=$([ -f "$M_LEG_C/owner.json" ] && echo held || echo GONE)): $out"
+fi
+out="$(m_run "$M_PRIMARY" - release "$M_DOC_C" legN211b)"; rc=$?
+if [ "$rc" -eq 0 ] && [ ! -d "$M_LEG_C" ]; then
+    pass "T78: N211b's token + canonical spelling releases its wrong-root lock, HANDOVER_DIR unset"
+else
+    fail "T78: release of the N211b-shape lock failed (rc=$rc): $out"
+fi
 
 echo "---"
 echo "PASSED=$PASSED FAILED=$FAILED"

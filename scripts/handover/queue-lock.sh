@@ -64,6 +64,18 @@
 # get DIFFERENT slugs on purpose -- this lock catches the SAME-queue
 # double-fire, not all epic parallelism.
 #
+# ONE DOC, ONE KEY (HIMMEL-3290): the root and slug are properties of the DOC,
+# not of how the caller spelled it or what HANDOVER_DIR / the cwd said. The
+# doc argument is canonicalized (a bare or relative name is found under the
+# known roots, an ambiguous one is refused) and keyed under the DEEPEST known
+# handover root that contains it, so `<root>/x/y.md`, `y.md` and an ancestor
+# HANDOVER_DIR all name one lock. `status` and `status --sweep` look under
+# every known root (and each root's parent, one level), so a lock recorded
+# under a legacy key is still reported held, never FREE; `acquire` refuses
+# over a FRESH one. A wrong-keyed lock is never moved or deleted by this
+# script -- its owner releases it by token as before. See the ONE DOC, ONE KEY
+# block below for the derivation.
+#
 # TTL / STALE TAKEOVER: a lock whose heartbeat is older than
 # QUEUE_LOCK_TTL_SECONDS (default 21600 = 6 h -- sized to cover the 3-4 h
 # overnight-run budget with margin, HIMMEL-856 CR C2; heartbeat refreshes
@@ -396,16 +408,6 @@ _ql_write_owner() {
     return 0
 }
 
-# _ql_lockdir <handover-path> -- print the absolute lock dir path, or
-# nothing (rc 1) if the handover root can't be resolved.
-_ql_lockdir() {
-    local ho="$1" root=""
-    root=$(handover_root_ensure 2>/dev/null) || return 1
-    local slug
-    slug=$(_ql_slug "$ho")
-    printf '%s/.locks/queue/%s.lock' "$root" "$slug"
-}
-
 # CROSS-ROOT LOCK RESOLUTION (HIMMEL-2861) ----------------------------------
 #
 # WHY: `acquire` runs with the queue's handover root in scope (in Mode B,
@@ -504,6 +506,236 @@ _ql_search_roots() {
 $(_ql_candidate_roots)
 EOF
     return 1
+}
+
+# ONE DOC, ONE KEY (HIMMEL-3290) --------------------------------------------
+#
+# WHY: the key used to be a function of how the CALLER spelled things. Two live
+# legs held locks under the wrong key on 2026-09-20 and `status` answered
+# `free` for both -- which the console reads as "reclaim it": N211b ran with
+# HANDOVER_DIR naming the vault's PARENT (recorded root = the vault, `handovers__`
+# absorbed into the slug), N212 passed a bare filename from the primary's cwd
+# (right root, unprefixed slug). Neither leg reasoned badly; the script honoured
+# both spellings literally.
+#
+# THE PRINCIPLE: a doc belongs to exactly one handover root -- the MOST SPECIFIC
+# known root that contains it -- so the key <root, slug> is a property of the
+# DOC, not of the cwd, the env or the spelling. "Known" = HANDOVER_DIR, the
+# cwd-resolved root, and every registry root (_ql_candidate_roots, the ONE
+# cross-root resolution -- there is no second copy). A HANDOVER_DIR that
+# CONTAINS the doc still keys there unless a deeper known root does too; when it
+# is an ANCESTOR of the keying root (N211b) the collapse is said on stderr,
+# never silent. A HANDOVER_DIR that contains a doc and has nothing deeper under
+# it is honoured exactly as before (that is every scratch-root test).
+#
+# A relative or bare doc arg is canonicalised first: cwd-relative if that file
+# exists, else the ONE file of that name under a known root; two candidates are
+# REFUSED (rc 1), never guessed -- a guess would put the defect one layer up.
+
+# _ql_roots_all -- the known handover roots, one per line, deduplicated: the
+# candidates plus the cwd-resolved root (which is Mode A's inline dir when no
+# HANDOVER_DIR is exported).
+_ql_roots_all() {
+    {
+        _ql_candidate_roots
+        handover_root 2>/dev/null
+    } | awk 'NF && !seen[$0]++'
+}
+
+# _ql_lock_roots -- _ql_roots_all plus each root's PARENT. The parent step is a
+# MIGRATION-ERA DISCOVERY AFFORDANCE for the N211b class (a lock recorded under
+# the vault dir one level above the registered root), bounded to exactly one
+# level: it is never an upward walk toward "/". Reads only; nothing here moves
+# or deletes a lock.
+_ql_lock_roots() {
+    {
+        _ql_roots_all
+        _ql_roots_all | while IFS= read -r _r; do dirname "$_r"; done
+    } | awk 'NF && !seen[$0]++'
+}
+
+# _ql_find_doc <name> -- print every file under a known root named <name>(.md),
+# excluding lock dirs. ponytail: depth-capped at 6 (root/<user>/<bucket>/... is
+# 3-4) and a name with glob characters is matched as a glob by find -path.
+_ql_find_doc() {
+    local name="${1%.md}" root
+    while IFS= read -r root; do
+        [ -d "$root" ] || continue
+        find "$root" -maxdepth 6 -type f -path "*/$name.md" \
+            -not -path '*/.locks/*' -not -path '*/.git/*' 2>/dev/null
+    done <<EOF
+$(_ql_roots_all)
+EOF
+}
+
+# _ql_canon_doc <doc-arg> -- set _QL_DOC to the canonical absolute path of the
+# doc (backslashes folded, directory part normalised through `cd && pwd` -- the
+# same normalisation _ql_candidate_roots applies, so containment compares like
+# with like). rc 0 ok; rc 2 ambiguous bare name (message on stderr). An arg that
+# resolves to nothing is kept as given: the pre-3290 behaviour for a doc that
+# does not exist yet.
+_QL_DOC=""
+_ql_canon_doc() {
+    local d="${1//\\//}" abs=0 hits n dir base
+    case "$d" in /*|[A-Za-z]:/*) abs=1 ;; esac
+    if [ "$abs" -eq 0 ]; then
+        if [ -f "$d" ]; then
+            d="$PWD/$d"; abs=1
+        elif [ -f "$d.md" ]; then
+            d="$PWD/$d.md"; abs=1
+        else
+            hits=$(_ql_find_doc "$d" | sort -u)
+            n=$(printf '%s' "$hits" | grep -c .)
+            if [ "$n" -eq 1 ]; then
+                d="$hits"; abs=1
+            elif [ "$n" -gt 1 ]; then
+                {
+                    echo "queue-lock: '$1' is ambiguous -- $n docs under the known handover roots have that name; pass an unambiguous path:"
+                    printf '%s\n' "$hits" | sed 's/^/  /'
+                } >&2
+                return 2
+            fi
+        fi
+    fi
+    if [ "$abs" -eq 1 ]; then
+        dir="${d%/*}"; base="${d##*/}"
+        if [ -n "$dir" ] && [ -d "$dir" ]; then
+            dir=$(cd "$dir" 2>/dev/null && pwd) && d="$dir/$base"
+        fi
+    fi
+    _QL_DOC="$d"
+    return 0
+}
+
+# _ql_key_root <canonical-doc> -- set _QL_ROOT to the root the doc is keyed
+# under (see THE PRINCIPLE above). No known root contains it -> handover_root
+# as before (creating Mode A's inline dir).
+_QL_ROOT=""
+_ql_key_root() {
+    local doc="$1" root best="" hd=""
+    while IFS= read -r root; do
+        [ -n "$root" ] || continue
+        case "$doc" in
+            "$root"/*) [ "${#root}" -gt "${#best}" ] && best="$root" ;;
+        esac
+    done <<EOF
+$(_ql_roots_all)
+EOF
+    if [ -z "$best" ]; then
+        _QL_ROOT=$(handover_root_ensure 2>/dev/null) || return 1
+        return 0
+    fi
+    _QL_ROOT="$best"
+    if [ -n "${HANDOVER_DIR:-}" ] && [ -d "$HANDOVER_DIR" ]; then
+        hd=$(cd "$HANDOVER_DIR" 2>/dev/null && pwd) || hd=""
+        case "$best" in
+            "$hd"/*)
+                echo "queue-lock: HANDOVER_DIR=$hd is an ancestor of the registered handover root $best, which contains this doc; keying under the latter (a doc belongs to exactly one handover root: the most specific one containing it)" >&2
+                ;;
+        esac
+    fi
+    return 0
+}
+
+# _ql_enter <doc-arg> <root-failure-message> -- resolve the key once for a verb:
+# sets _QL_DOC (canonical doc), _QL_ROOT, _QL_SLUG, _QL_LOCKDIR. rc 1 on failure
+# with a message on stderr.
+_QL_SLUG=""
+_QL_LOCKDIR=""
+_ql_enter() {
+    _ql_canon_doc "$1" || return 1
+    if ! _ql_key_root "$_QL_DOC"; then
+        echo "$2" >&2
+        return 1
+    fi
+    _QL_SLUG=$(_ql_slug_for_root "$_QL_DOC" "$_QL_ROOT")
+    _QL_LOCKDIR="$_QL_ROOT/.locks/queue/$_QL_SLUG.lock"
+    return 0
+}
+
+# _ql_doc_matches <lock's recorded handover field> <canonical doc> -- rc 0 when
+# the two name the same doc: equal, or one ends in "/" + the other (a legacy
+# lock recorded the doc as the caller spelled it -- a bare filename or a
+# root-relative path). ponytail: a suffix match is by BASENAME, so two docs
+# sharing a basename across buckets match each other; status reports (fail-
+# closed: "held" over "free") and release/heartbeat additionally need the token.
+_ql_doc_matches() {
+    local h="${1//\\//}" d="${2//\\//}"
+    h="${h%.md}"; d="${d%.md}"
+    [ -n "$h" ] && [ -n "$d" ] || return 1
+    [ "$h" = "$d" ] && return 0
+    case "$d" in */"$h") return 0 ;; esac
+    case "$h" in */"$d") return 0 ;; esac
+    return 1
+}
+
+# _ql_scan_locks <canonical-doc> -- print every lock dir, under any known root
+# or one level above one, whose owner.json records this doc: exact recorded
+# match first, suffix matches after. Reading only.
+_ql_scan_locks() {
+    local doc="$1" root lk h exact="" loose=""
+    while IFS= read -r root; do
+        [ -n "$root" ] || continue
+        for lk in "$root"/.locks/queue/*.lock; do
+            [ -f "$lk/owner.json" ] || continue
+            h=$(_ql_json_field "$lk/owner.json" handover)
+            _ql_doc_matches "$h" "$doc" || continue
+            if [ "${h//\\//}" = "$doc" ]; then
+                exact="$exact$lk"$'\n'
+            else
+                loose="$loose$lk"$'\n'
+            fi
+        done
+    done <<EOF
+$(_ql_lock_roots)
+EOF
+    printf '%s%s' "$exact" "$loose" | awk 'NF && !seen[$0]++'
+}
+
+# _ql_find_owned <canonical-doc> <token> -- token-gated: print the ONE lock
+# dir that records this doc AND is owned by <token>. The recovery path for a
+# lock held under a legacy (mis-keyed) key: it widens WHERE a lock is looked
+# for, never WHOSE lock may be touched. rc 0 found, 1 none, 2 ambiguous (two
+# equally good locks -- refused, never guessed).
+_ql_find_owned() {
+    local doc="$1" token="$2" lk h exact="" loose="" ne=0 nl=0 pick=""
+    [ -n "$token" ] || return 1
+    while IFS= read -r lk; do
+        [ -n "$lk" ] || continue
+        _ql_owner_matches "$lk" "$token" || continue
+        h=$(_ql_json_field "$lk/owner.json" handover)
+        if [ "${h//\\//}" = "$doc" ]; then
+            exact="$lk"; ne=$((ne + 1))
+        else
+            loose="$lk"; nl=$((nl + 1))
+        fi
+    done <<EOF
+$(_ql_scan_locks "$doc")
+EOF
+    if [ "$ne" -eq 1 ]; then
+        pick="$exact"
+    elif [ "$ne" -eq 0 ] && [ "$nl" -eq 1 ]; then
+        pick="$loose"
+    elif [ $((ne + nl)) -gt 1 ]; then
+        echo "queue-lock: $((ne + nl)) locks owned by this token record this doc -- refusing to guess which to touch (list: queue-lock.sh status --sweep)" >&2
+        return 2
+    else
+        return 1
+    fi
+    echo "WARN queue-lock: the lock for this doc is keyed at $pick, not at its canonical key $_QL_LOCKDIR (a pre-HIMMEL-3290 mis-keyed lock) -- using it; nothing is moved" >&2
+    printf '%s' "$pick"
+}
+
+# _ql_lock_is_fresh <lockdir> -- rc 0 when the lock's heartbeat is inside the
+# TTL. An unparsable heartbeat is FRESH (fail-closed), as in `status`.
+_ql_lock_is_fresh() {
+    local ttl="${QUEUE_LOCK_TTL_SECONDS:-21600}" hb hb_epoch now_epoch
+    case "$ttl" in ''|*[!0-9]*) ttl=21600 ;; esac
+    hb=$(_ql_json_field "$1/owner.json" heartbeat)
+    hb_epoch=$(_ql_epoch_of_iso "$hb")
+    now_epoch=$(_ql_now_epoch)
+    [ -n "$hb_epoch" ] && [ -n "$now_epoch" ] || return 0
+    [ $((now_epoch - hb_epoch)) -lt "$ttl" ]
 }
 
 # PER-SESSION TOKEN PERSISTENCE (HIMMEL-2813) -------------------------------
@@ -750,7 +982,7 @@ _ql_write_root_marker() {
     printf '%s\n' "$2" > "$1/root" 2>/dev/null || true
 }
 
-# _ql_arms_registry_retire_fired <handover-path> -- HIMMEL-882 registry
+# _ql_arms_registry_retire_fired <handover-path> [<root>] -- HIMMEL-882 registry
 # lifecycle: on a SUCCESSFUL acquire, CONSUME (drop) every still-pending
 # <handover-root>/.locks/arms.jsonl record for THIS host + this handover.
 # arms.jsonl (scripts/handover/arm-resume.sh, HIMMEL-856) is append-only
@@ -789,12 +1021,15 @@ _ql_write_root_marker() {
 _ql_arms_registry_retire_fired() {
     local ho="$1" root registry_root reg key host tmp tok cur line l_host host_esc changed=0 failed=0 stolen=0 wfail_err=""
     # handover_root failure here would require an external race (the root
-    # deleted out from under us mid-acquire): _ql_lockdir already resolved
+    # deleted out from under us mid-acquire): _ql_enter already resolved
     # this same root moments earlier via handover_root_ensure, so this is
     # structurally can't-happen on this call path -- silent return is
     # intentional, not an oversight (unlike every other failure branch
     # below, which WARNs).
-    root=$(handover_root 2>/dev/null) || return 0
+    # HIMMEL-3290: acquire passes the root the lock was keyed under ($2) so the
+    # consume looks in the SAME root as the lock, not the cwd's.
+    root="${2:-}"
+    [ -n "$root" ] || root=$(handover_root 2>/dev/null) || return 0
     [ -n "$root" ] || return 0
     reg="$root/.locks/arms.jsonl"
     [ -f "$reg" ] || return 0
@@ -1016,6 +1251,15 @@ _ql_takeover_claim_release() {
     return 0
 }
 
+# _ql_arms_retire_both <canonical> <raw> <root> -- an arms.jsonl record may
+# carry the doc as the arm wrote it (raw, e.g. a backslash or odd path) or as
+# the canonical key (HIMMEL-1344), so consume under both spellings; the second
+# pass is a no-op when the first already dropped the record.
+_ql_arms_retire_both() {
+    _ql_arms_registry_retire_fired "$1" "$3"
+    [ "$1" = "$2" ] || _ql_arms_registry_retire_fired "$2" "$3"
+}
+
 queue_lock_acquire() {
     local ho="${1:-}" session="${2:-}"
     if [ -z "$ho" ]; then
@@ -1023,18 +1267,33 @@ queue_lock_acquire() {
         return 1
     fi
     local lockdir
-    if ! lockdir=$(_ql_lockdir "$ho"); then
-        echo "queue-lock: could not resolve handover root (HANDOVER_DIR unset and no inline handovers/ dir?)" >&2
-        return 1
-    fi
+    # HIMMEL-3290: the key is derived from the DOC (canonical path, deepest
+    # known root containing it), so `ho` from here on is the canonical path --
+    # what owner.json records and what the token file is keyed on.
+    local ho_raw="$ho"
+    _ql_enter "$ho" "queue-lock: could not resolve handover root (HANDOVER_DIR unset and no inline handovers/ dir?)" || return 1
+    lockdir="$_QL_LOCKDIR"
+    ho="$_QL_DOC"
     session="${session:-$(_ql_default_session)}"
     local host now lock_root
     host=$(_ql_hostname)
     now=$(_ql_now_iso)
-    # _ql_lockdir succeeded, so handover_root resolves too (its _ensure
-    # variant created the Mode A dir if it was missing). HIMMEL-2861: this
-    # is the root the lock is about to live under, recorded inside it.
-    lock_root=$(handover_root 2>/dev/null) || lock_root=""
+    # HIMMEL-2861: the root the lock is about to live under, recorded inside it.
+    lock_root="$_QL_ROOT"
+
+    # HIMMEL-3290: ONE DOC, ONE LOCK. A lock for this doc under a legacy
+    # (mis-keyed) key is invisible to the mkdir below, so a second writer
+    # would take the doc while the first still holds it (the HIMMEL-856
+    # class). Refuse while such a lock is fresh; a stale one is no obstacle.
+    if [ ! -d "$lockdir" ]; then
+        local legacy_lk
+        legacy_lk=$(_ql_scan_locks "$ho" | sed -n 1p)
+        if [ -n "$legacy_lk" ] && _ql_lock_is_fresh "$legacy_lk"; then
+            echo "queue-lock: held (FRESH) under a non-canonical key by session=$(_ql_json_field "$legacy_lk/owner.json" session) host=$(_ql_json_field "$legacy_lk/owner.json" host) -- $legacy_lk"
+            echo "Work is owned elsewhere: one doc, one lock. Its owner releases it by token (release <doc> <token>); check with: queue-lock.sh status <doc>"
+            return 2
+        fi
+    fi
 
     # Check the parent mkdir explicitly so a permission failure reports its
     # true cause instead of surfacing later as a misleading lock-mkdir
@@ -1058,7 +1317,7 @@ queue_lock_acquire() {
             _ql_write_root_marker "$lockdir" "$lock_root"
             _ql_token_persist "$ho" "$session"
             echo "queue-lock: acquired (session=$session host=$host)"
-            _ql_arms_registry_retire_fired "$ho"
+            _ql_arms_retire_both "$ho" "$ho_raw" "$_QL_ROOT"
             echo "release-token: \`$session\`"
             return 0
         elif [ ! -e "$lockdir/owner" ]; then
@@ -1231,7 +1490,7 @@ queue_lock_acquire() {
             _ql_takeover_claim_release "$claim" "$claim_token" || true
             echo "queue-lock: took over ($reason) -- previous holder: session=$o_session host=$o_host" >&2
             echo "queue-lock: acquired (session=$session host=$host)"
-            _ql_arms_registry_retire_fired "$ho"
+            _ql_arms_retire_both "$ho" "$ho_raw" "$_QL_ROOT"
             echo "release-token: \`$session\`"
             return 0
         fi
@@ -1262,17 +1521,17 @@ queue_lock_heartbeat() {
         _ql_usage >&2
         return 1
     fi
-    local lockdir
-    if ! lockdir=$(_ql_lockdir "$ho"); then
-        echo "queue-lock: could not resolve handover root" >&2
-        return 1
-    fi
+    local lockdir ho_raw="$ho"
+    _ql_enter "$ho" "queue-lock: could not resolve handover root" || return 1
+    lockdir="$_QL_LOCKDIR"
+    ho="$_QL_DOC"
     # HIMMEL-2813: no token on argv -- try the per-session file before
     # refusing. An argv token always wins (this only runs when there is
     # none), and a recall that finds nothing falls through to the unchanged
-    # refusal below.
+    # refusal below. HIMMEL-3290: the file may be keyed on the doc as a
+    # pre-fix acquire spelled it, so the raw spelling is tried too.
     if [ -z "$session" ]; then
-        session=$(_ql_token_recall "$ho") || session=""
+        session=$(_ql_token_recall "$ho") || session=$(_ql_token_recall "$ho_raw") || session=""
     fi
     # C1: the token is MANDATORY -- a token-less heartbeat could refresh
     # (and keep alive) another session's lock.
@@ -1296,12 +1555,21 @@ queue_lock_heartbeat() {
     # slug, and refusing on the local stranger's lock would leave OUR lock in
     # the other root unrefreshed until its TTL expired.
     if ! _ql_owner_matches "$lockdir" "$session"; then
-        local hb_found
+        local hb_found hb_rc
         if hb_found=$(_ql_search_roots "$ho" "$session"); then
             lockdir="$hb_found"
-        elif [ ! -d "$lockdir" ] || [ ! -f "$lockdir/owner.json" ]; then
-            echo "queue-lock: no lock held for this queue -- nothing to heartbeat" >&2
-            return 2
+        else
+            # HIMMEL-3290: a lock recorded under a legacy (mis-keyed) key --
+            # token AND doc must both match (see _ql_find_owned).
+            hb_found=$(_ql_find_owned "$ho" "$session"); hb_rc=$?
+            if [ "$hb_rc" -eq 0 ]; then
+                lockdir="$hb_found"
+            elif [ "$hb_rc" -eq 2 ]; then
+                return 2
+            elif [ ! -d "$lockdir" ] || [ ! -f "$lockdir/owner.json" ]; then
+                echo "queue-lock: no lock held for this queue -- nothing to heartbeat" >&2
+                return 2
+            fi
         fi
         # else: a lock IS held here, by someone else, and no lock of ours
         # lives in any other root -- fall through to the holder check below
@@ -1334,11 +1602,10 @@ queue_lock_release() {
         _ql_usage >&2
         return 1
     fi
-    local lockdir
-    if ! lockdir=$(_ql_lockdir "$ho"); then
-        echo "queue-lock: could not resolve handover root" >&2
-        return 1
-    fi
+    local lockdir ho_raw="$ho"
+    _ql_enter "$ho" "queue-lock: could not resolve handover root" || return 1
+    lockdir="$_QL_LOCKDIR"
+    ho="$_QL_DOC"
     # Emergency override (C1): releases regardless of token -- loud on
     # stderr AND logged to the queue-level takeovers.log (the lock's own
     # takeovers.log dies with the dir, so the trail lives one level up).
@@ -1368,7 +1635,7 @@ queue_lock_release() {
     # always wins. A recall that finds nothing falls through to the
     # unchanged refusal below.
     if [ -z "$session" ]; then
-        session=$(_ql_token_recall "$ho") || session=""
+        session=$(_ql_token_recall "$ho") || session=$(_ql_token_recall "$ho_raw") || session=""
     fi
     # C1: the token is MANDATORY -- a token-less release would rm another
     # session's LIVE lock (the exact incident class this script prevents).
@@ -1395,16 +1662,35 @@ queue_lock_release() {
     # went unnoticed six times on 2026-09-09, and rc=0 is what every leg and
     # the console read as "released cleanly".
     if ! _ql_owner_matches "$lockdir" "$session"; then
-        local rel_found
+        local rel_found rel_rc
         if rel_found=$(_ql_search_roots "$ho" "$session"); then
             lockdir="$rel_found"
-        elif [ ! -d "$lockdir" ]; then
-            {
-                echo "queue-lock: no lock held for this queue in any known handover root -- nothing was released"
-                echo "searched: $(_ql_candidate_roots | tr '\n' ' ')"
-                echo "If a lock IS held elsewhere, re-run with the acquiring root exported: HANDOVER_DIR=<root> queue-lock.sh release <handover-path> <token>"
-            } >&2
-            return 3
+        else
+            # HIMMEL-3290: a lock recorded under a legacy (mis-keyed) key --
+            # token AND doc must both match (see _ql_find_owned).
+            rel_found=$(_ql_find_owned "$ho" "$session"); rel_rc=$?
+            if [ "$rel_rc" -eq 0 ]; then
+                lockdir="$rel_found"
+            elif [ "$rel_rc" -eq 2 ]; then
+                return 2
+            elif [ ! -d "$lockdir" ]; then
+                # HIMMEL-3290: nothing of OURS anywhere, but a lock for this
+                # doc may be held by someone else under a legacy key. Say so
+                # (rc=2, the same refusal as a stranger at the canonical key)
+                # rather than "nothing held" -- and touch nothing.
+                local rel_other
+                rel_other=$(_ql_scan_locks "$ho" | sed -n 1p)
+                if [ -n "$rel_other" ] && [ -f "$rel_other/owner.json" ]; then
+                    echo "queue-lock: release refused -- held by session=$(_ql_json_field "$rel_other/owner.json" session), not '$session' (recorded under a non-canonical key: $rel_other; nothing was released)" >&2
+                    return 2
+                fi
+                {
+                    echo "queue-lock: no lock held for this queue in any known handover root -- nothing was released"
+                    echo "searched: $(_ql_lock_roots | tr '\n' ' ')"
+                    echo "If a lock IS held elsewhere, re-run with the acquiring root exported: HANDOVER_DIR=<root> queue-lock.sh release <handover-path> <token>"
+                } >&2
+                return 3
+            fi
         fi
         # else: a lock IS held here, by someone else, and no lock of ours
         # lives in any other root -- fall through to the holder check below
@@ -1432,6 +1718,7 @@ queue_lock_release() {
         return 1
     fi
     _ql_token_forget "$ho" "$session"
+    [ "$ho_raw" = "$ho" ] || _ql_token_forget "$ho_raw" "$session"
     _ql_emit_close_evidence
     return 0
 }
@@ -1468,13 +1755,21 @@ queue_lock_status() {
         return 1
     fi
     local lockdir
-    if ! lockdir=$(_ql_lockdir "$ho"); then
-        echo "queue-lock: could not resolve handover root" >&2
-        return 1
-    fi
+    _ql_enter "$ho" "queue-lock: could not resolve handover root" || return 1
+    lockdir="$_QL_LOCKDIR"
+    ho="$_QL_DOC"
     if [ ! -d "$lockdir" ]; then
-        echo "free"
-        return 0
+        # HIMMEL-3290: `free` only when NO lock anywhere records this doc. A
+        # lock under a legacy (mis-keyed) key is HELD -- answering `free` for
+        # it is what let a console read a live leg's lock as reclaimable.
+        local legacy_lk
+        legacy_lk=$(_ql_scan_locks "$ho" | sed -n 1p)
+        if [ -z "$legacy_lk" ]; then
+            echo "free"
+            return 0
+        fi
+        echo "WARN queue-lock: the lock for this doc is keyed at $legacy_lk, not at its canonical key $lockdir (a pre-HIMMEL-3290 mis-keyed lock) -- reporting it; nothing is moved" >&2
+        lockdir="$legacy_lk"
     fi
     if [ ! -f "$lockdir/owner.json" ]; then
         # Distinguish corruption from a live holder in the OUTPUT (a
@@ -1633,19 +1928,65 @@ _ql_sweep_field() {
     printf '%.200s' "$v"
 }
 
+# _ql_sweep_path <path> -- like _ql_sweep_field but keeps "/" so a root reads
+# as a path. Same forgery-proofing: every other odd byte, newline included,
+# becomes "_", and the value is length-capped.
+_ql_sweep_path() {
+    local v
+    v=$(printf '%s' "$1" | tr -c 'A-Za-z0-9_.:@+/-' '_')
+    printf '%.300s' "$v"
+}
+
+# HIMMEL-3290: a sweep that reads ONE root misses a live lock held under
+# another (N211b's sat one level above the registered root, and `sweep: no
+# held locks` was the answer). With NO operand the sweep now enumerates the
+# resolved root plus every known root and each one's parent (_ql_lock_roots --
+# the one cross-root resolution, parent step bounded to one level, a
+# migration-era affordance). A lock found under any root but the primary one
+# carries a trailing ` root=<that root>` field; a primary-root line is byte-
+# identical to before, so existing parsers are undisturbed. With an EXPLICIT
+# <root> operand the caller asked for that root: it is swept alone, and stderr
+# says so -- "no held locks" then means "none under THIS root", stated.
 queue_lock_status_sweep() {
-    local root="${1:-}"
-    if [ -z "$root" ]; then
+    local root="${1:-}" r
+    _QL_SW_FOUND=0
+    _QL_SW_FLAGGED=0
+    if [ -n "$root" ]; then
+        echo "sweep: read only $root (explicit root operand; locks under other handover roots are not listed -- omit the operand for a sweep of every known root)" >&2
+        _ql_sweep_one_root "$root" ""
+    else
         if ! root=$(handover_root_ensure 2>/dev/null); then
             echo "queue-lock: could not resolve handover root (HANDOVER_DIR unset and no inline handovers/ dir?)" >&2
             return 1
         fi
+        _ql_sweep_one_root "$root" ""
+        while IFS= read -r r; do
+            [ -n "$r" ] || continue
+            [ "$r" = "$root" ] && continue
+            _ql_sweep_one_root "$r" " root=$(_ql_sweep_path "$r")"
+        done <<EOF
+$(_ql_lock_roots)
+EOF
     fi
-    local qdir="$root/.locks/queue"
-    if [ ! -d "$qdir" ]; then
+    if [ "$_QL_SW_FOUND" -eq 0 ]; then
         echo "sweep: no held locks"
         return 0
     fi
+    if [ "$_QL_SW_FLAGGED" -eq 1 ]; then
+        return 20
+    fi
+    return 0
+}
+
+# _ql_sweep_one_root <root> <line-suffix> -- report every lock dir under
+# <root>/.locks/queue, appending <line-suffix> to each line; accumulates into
+# _QL_SW_FOUND / _QL_SW_FLAGGED (one bad lock never aborts the rest).
+_QL_SW_FOUND=0
+_QL_SW_FLAGGED=0
+_ql_sweep_one_root() {
+    local root="$1" sfx="$2"
+    local qdir="$root/.locks/queue"
+    [ -d "$qdir" ] || return 0
     local idle_warn now_epoch
     idle_warn=$(_ql_idle_warn_threshold)
     now_epoch=$(_ql_now_epoch)
@@ -1672,9 +2013,9 @@ queue_lock_status_sweep() {
                 mtime_ok=1
             fi
             if [ "$mtime_ok" -eq 1 ] && [ "$dir_age" -lt "$_QL_SWEEP_CORRUPT_GRACE_SECS" ]; then
-                echo "slug=$slug status=INDETERMINATE reason=owner.json-missing-recent age=${dir_age}s"
+                echo "slug=$slug status=INDETERMINATE reason=owner.json-missing-recent age=${dir_age}s$sfx"
             else
-                echo "slug=$slug status=CORRUPT reason=owner.json-missing"
+                echo "slug=$slug status=CORRUPT reason=owner.json-missing$sfx"
                 flagged=1
             fi
             continue
@@ -1687,7 +2028,7 @@ queue_lock_status_sweep() {
         o_session=$(_ql_sweep_field "$o_session")
         o_host=$(_ql_sweep_field "$o_host")
         if [ -z "$o_session" ] && [ -z "$o_host" ] && [ -z "$o_heartbeat" ]; then
-            echo "slug=$slug status=CORRUPT reason=owner.json-unparsable"
+            echo "slug=$slug status=CORRUPT reason=owner.json-unparsable$sfx"
             flagged=1
             continue
         fi
@@ -1707,26 +2048,21 @@ queue_lock_status_sweep() {
             fi
         fi
         if [ "$age" -ge 0 ] && [ "$age" -ge "$idle_warn" ]; then
-            echo "slug=$slug session=${o_session:-unknown} host=${o_host:-unknown} age=${age}s status=IDLE-HELD?"
+            echo "slug=$slug session=${o_session:-unknown} host=${o_host:-unknown} age=${age}s status=IDLE-HELD?$sfx"
             flagged=1
         elif [ "$age" -ge 0 ]; then
-            echo "slug=$slug session=${o_session:-unknown} host=${o_host:-unknown} age=${age}s status=OK"
+            echo "slug=$slug session=${o_session:-unknown} host=${o_host:-unknown} age=${age}s status=OK$sfx"
         else
             # Heartbeat missing or present-but-unparsable (codex-1, HIMMEL-2369
             # CR round-1): fail-closed -- flagged, not a clean OK. See the
             # header comment above for why this can't mirror the single-queue
             # status path's "treat as FRESH".
-            echo "slug=$slug session=${o_session:-unknown} host=${o_host:-unknown} age=unknown status=UNKNOWN"
+            echo "slug=$slug session=${o_session:-unknown} host=${o_host:-unknown} age=unknown status=UNKNOWN$sfx"
             flagged=1
         fi
     done
-    if [ "$found" -eq 0 ]; then
-        echo "sweep: no held locks"
-        return 0
-    fi
-    if [ "$flagged" -eq 1 ]; then
-        return 20
-    fi
+    [ "$found" -eq 1 ] && _QL_SW_FOUND=1
+    [ "$flagged" -eq 1 ] && _QL_SW_FLAGGED=1
     return 0
 }
 
