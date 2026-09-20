@@ -876,11 +876,57 @@ wrap_case 'a span on the next field: line is not an entry' 'livestate=DRIFT:N192
 # Realistic detail-bullet spans -- a file:line cite, a worktree path, a bare sha,
 # a tick.sh:line cite -- must not become entries or MALFORMED labels. This pins
 # the block terminator, not the classifier (the same cite on the legs: line
-# itself still reads MALFORMED, HIMMEL-3284).
+# itself is pinned in the HIMMEL-3284 cases below).
 # shellcheck disable=SC2016  # backtick leg spans, literal fixture text
 wrap_case 'prose bullets directly under legs: (no blank line) are not entries or MALFORMED' 'livestate=ok ' \
     'legs: `N191:J-N191-0a1b2c:tok-191:120`, `N192:J-N192-3d4e5f:tok-192:121`' \
     '- **N192** BLOCKED — see `stuck-playbook.md:408`, `tick.sh:234`, worktree `.claude/worktrees/fix+himmel-3273-stop-queue-race`, head `798a4bda26487e04140d0b7aee715be51c7e7247`' \
+    'queue: none' 'last GO: none' 'acked: none'
+# --- HIMMEL-3284: a `<name>.md:<line>` cite ON the legs: line is prose. RED
+# control (pre-fix tick.sh, first fixture below): both locks held
+# (legs=N191:FRESH,N192:FRESH, asserted by wrap_case) and
+# livestate=MALFORMED:stuck-playbook.md -- leg_label reduces the doc stem
+# `stuck-playbook.md` to `stuck-playbook`, so the cite read as a label-shaped
+# first field with a colon, an invented leg. The four shapes N199 pinned; only
+# the .md cite leaked.
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+wrap_case 'a .md:line cite on the legs: line is prose, not a malformed leg' 'livestate=ok ' \
+    'legs: `N191:J-N191-0a1b2c:tok-191:120`, `N192:J-N192-3d4e5f:tok-192:121` (see `stuck-playbook.md:408`)' \
+    'queue: none' 'last GO: none' 'acked: none'
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+wrap_case 'a .sh:line cite on the legs: line is prose' 'livestate=ok ' \
+    'legs: `N191:J-N191-0a1b2c:tok-191:120`, `N192:J-N192-3d4e5f:tok-192:121` (see `tick.sh:234`)' \
+    'queue: none' 'last GO: none' 'acked: none'
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+wrap_case 'a worktree path and a bare sha on the legs: line are prose' 'livestate=ok ' \
+    'legs: `N191:J-N191-0a1b2c:tok-191:120`, `N192:J-N192-3d4e5f:tok-192:121` (worktree `.claude/worktrees/fix+himmel-3273-stop-queue-race`, head `798a4bda26487e04140d0b7aee715be51c7e7247`)' \
+    'queue: none' 'last GO: none' 'acked: none'
+# A leg doc cited by its file name is the same shape (a stem that reduces to N<k>).
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+wrap_case 'a leg-doc .md:line cite on the legs: line is prose' 'livestate=ok ' \
+    'legs: `N191:J-N191-0a1b2c:tok-191:120`, `N192:J-N192-3d4e5f:tok-192:121` (see `HIMMEL-3273-N192-stop-queue-race-2026-09-20-RESUME.md:12`)' \
+    'queue: none' 'last GO: none' 'acked: none'
+# All four cite shapes together, one line -- a console's real explanatory note.
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+wrap_case 'all four cite shapes together on the legs: line are prose' 'livestate=ok ' \
+    'legs: `N191:J-N191-0a1b2c:tok-191:120`, `N192:J-N192-3d4e5f:tok-192:121` (`stuck-playbook.md:408`, `tick.sh:234`, `.claude/worktrees/fix+himmel-3273-stop-queue-race`, `798a4bda26487e04140d0b7aee715be51c7e7247`)' \
+    'queue: none' 'last GO: none' 'acked: none'
+# NEGATIVE CONTROL, and the point of the ticket: the real signal survives. A
+# truncated entry (three fields) under a real leg label still reads MALFORMED by
+# label -- with the cites on the same line, and without them. Quieting the false
+# positive by quieting the label test would read this `ok` (a leg that vanishes).
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+wrap_case 'a truncated entry under a real label still reads MALFORMED beside a .md cite' 'livestate=MALFORMED:N199 ' \
+    'legs: `N191:J-N191-0a1b2c:tok-191:120`, `N192:J-N192-3d4e5f:tok-192:121`, `N199:O-N199-9a03e6f1:120` (see `stuck-playbook.md:408`)' \
+    'queue: none' 'last GO: none' 'acked: none'
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+wrap_case 'a truncated entry under a real label reads MALFORMED with no cite on the line' 'livestate=MALFORMED:N199 ' \
+    'legs: `N191:J-N191-0a1b2c:tok-191:120`, `N192:J-N192-3d4e5f:tok-192:121`, `N199:O-N199-9a03e6f1:120`' \
+    'queue: none' 'last GO: none' 'acked: none'
+# Every leg-label spelling that reads MALFORMED today still does, .md in the line or not.
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+wrap_case 'a truncated entry under a lettered successor label still reads MALFORMED' 'livestate=MALFORMED:N38b ' \
+    'legs: `N191:J-N191-0a1b2c:tok-191:120`, `N192:J-N192-3d4e5f:tok-192:121`, `N38b:O-N38b-9a03e6f1:120` (see `console-template.md:105`)' \
     'queue: none' 'last GO: none' 'acked: none'
 # Every list-marker spelling ends the block: a leg span in the bullet is not an
 # entry, so the held leg it names reads DRIFT (loud), never absent-and-quiet.

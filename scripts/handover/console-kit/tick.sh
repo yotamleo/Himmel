@@ -223,9 +223,14 @@ list_has() {  # list_has <needle> <word> [word...]
 # canonical N<k>[letters], or the stem of a leg doc (which the derivation
 # reduces to its N<k>, so its label differs from the stem). A token that
 # derivation leaves alone and that is not N<k> (`legs`, `procs`, `bank`) is prose.
+# A file name is a cite, never a label (HIMMEL-3284): leg_label strips `.md` from
+# a doc path, so `stuck-playbook.md` "reduces" to `stuck-playbook` and a
+# `stuck-playbook.md:408` cite read as a label-shaped span with a colon -- a
+# MALFORMED leg that never existed. A label leg_label emits never ends in `.md`.
 legs_label_shaped() {
     local re_canon='^N[0-9]+[a-z]*$'
     [[ $1 =~ $re_canon ]] && return 0
+    case "$1" in *.md) return 1 ;; esac
     [ "$(leg_label "$1")" != "$1" ]
 }
 
