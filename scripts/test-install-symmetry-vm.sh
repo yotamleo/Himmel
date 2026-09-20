@@ -56,15 +56,30 @@ if [ "${#RSYNC_SECRET_EXCL[@]}" -eq 0 ] || [ "${#TAR_SECRET_EXCL[@]}" -eq 0 ]; t
   echo "==> REFUSING: the secret-exclusion list is empty; nothing was copied" >&2; exit 1
 fi
 
+# The ONE list of repo-relative paths staged onto the guest; BOTH copy paths below
+# consume it, so they cannot drift apart (HIMMEL-3261: each spelled its own sources,
+# and neither carried the three non-scripts/ inputs scripts/test-uninstall.sh reads
+# relative to the repo root -- SC6 then failed 80 assertions on a clean guest).
+# Extend it when a suite run below reads another repo-root path; the drift guard in
+# scripts/lib/test-vm-guest-excludes.sh (T7n/T7o) pins test-uninstall.sh's reads to it.
+# Every entry still passes through the secret excludes above (HIMMEL-2540).
+STAGE_PATHS=(scripts
+  docs/setup/settings-template.json
+  docs/setup/user-scope-claude-md-template.md
+  marketplace/plugins/claude-hud/config/himmel-config.json)
+
 echo "[stage] copying worktree to $REMOTE_DIR ..."
 ssh_vm "rm -rf $REMOTE_DIR && mkdir -p $REMOTE_DIR"
 if command -v rsync >/dev/null 2>&1 && ssh_vm 'command -v rsync >/dev/null 2>&1'; then
-  rsync -az -e "ssh $SSH_OPTS" --exclude '.git' --exclude 'node_modules' --exclude 'dist' \
-    "${RSYNC_SECRET_EXCL[@]}" "$REPO/scripts" "$REPO/.env.example" "$HOSTSPEC:$REMOTE_DIR/" \
+  # -R + the `/./` marker keeps each path's directories under the guest root (plain
+  # rsync would flatten the file entries into it).
+  RSYNC_SRC=(); for _p in "${STAGE_PATHS[@]}" .env.example; do RSYNC_SRC+=("$REPO/./$_p"); done
+  rsync -azR -e "ssh $SSH_OPTS" --exclude '.git' --exclude 'node_modules' --exclude 'dist' \
+    "${RSYNC_SECRET_EXCL[@]}" "${RSYNC_SRC[@]}" "$HOSTSPEC:$REMOTE_DIR/" \
     || { echo "==> STAGE FAILED (rsync): the copy to the guest did not complete" >&2; exit 1; }
 else
   tar -C "$REPO" --exclude=.git --exclude=node_modules --exclude=dist \
-    "${TAR_SECRET_EXCL[@]}" -cf - scripts | ssh_vm "tar -C $REMOTE_DIR -xf -" \
+    "${TAR_SECRET_EXCL[@]}" -cf - "${STAGE_PATHS[@]}" | ssh_vm "tar -C $REMOTE_DIR -xf -" \
     || { echo "==> STAGE FAILED (tar): the copy to the guest did not complete" >&2; exit 1; }
   # .env.example is the public placeholder template (a literal file, not the tree).
   # shellcheck disable=SC2086

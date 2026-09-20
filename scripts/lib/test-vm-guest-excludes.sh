@@ -405,7 +405,8 @@ STUB="$WORK/stubbin"; mkdir -p "$STUB"
 cat > "$STUB/ssh" <<'EOS'
 #!/usr/bin/env bash
 printf 'SSH %s\n' "$*" >> "$STUB_LOG"
-cat > /dev/null 2>&1 < /dev/stdin || true
+# The tar-extract side keeps what the host's tar piped in, so a test can list it.
+case "$*" in *"tar -C"*) cat > "$STUB_LOG.tar" 2>/dev/null || true ;; *) cat > /dev/null 2>&1 < /dev/stdin || true ;; esac
 case "$*" in
   *"tar -C"*) if [ -n "${STUB_FAIL_FIRST_TAR:-}" ] && [ ! -e "$STUB_LOG.tarfail" ]; then : > "$STUB_LOG.tarfail"; exit 1; fi; exit 0 ;;
   *"command -v rsync"*) [ -n "${STUB_NO_GUEST_RSYNC:-}" ] && exit 1; exit 0 ;;
@@ -427,7 +428,7 @@ chmod +x "$STUB"/ssh "$STUB"/rsync "$STUB"/scp
 
 run_caller() { # $1=script $2=leak-or-empty ; args after: the script's args
   local script="$1" leak="$2"; shift 2
-  : > "$WORK/stub.log"; rm -f "$WORK/stub.log.tarfail"
+  : > "$WORK/stub.log"; rm -f "$WORK/stub.log.tarfail" "$WORK/stub.log.tar"
   # Fresh $HOME so nothing real is read; stubs win on PATH.
   PATH="$STUB:$PATH" STUB_LOG="$WORK/stub.log" STUB_LEAK="$leak" STUB_NO_GUEST_RSYNC="${STUB_NO_GUEST_RSYNC:-}" STUB_FAIL_FIRST_TAR="${STUB_FAIL_FIRST_TAR:-}" STUB_RSYNC_RC="${STUB_RSYNC_RC:-0}" HOME="$WORK/home" \
     ${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" -k 5 60} bash "${CALLER_ROOT:-$REPO_ROOT}/$script" "$@" </dev/null >"$WORK/caller.out" 2>&1
@@ -461,6 +462,36 @@ if [ "$rc" -eq 0 ] && ! grep -q '^SCP .* -r ' "$WORK/stub.log" && grep -qE '^SSH
 else
   fail_case "T7f no-rsync fallback failed or still unfiltered (rc=$rc): $(grep -E '^(SCP|SSH .*tar)' "$WORK/stub.log")"
 fi
+# T7n (HIMMEL-3261) BOTH staging paths carry the repo-root inputs scripts/test-uninstall.sh
+# reads, not just scripts/ -- without them SC6 failed 80 assertions on a clean guest.
+# The tar listing is what the host's real tar piped to the (stub) guest; the rsync
+# check reads the sources it was handed. The secret excludes must stay in force on both.
+STAGE_NEED="scripts docs/setup/settings-template.json docs/setup/user-scope-claude-md-template.md marketplace/plugins/claude-hud/config/himmel-config.json"
+rc=$(run_caller scripts/test-install-symmetry-vm.sh "")
+rs_miss=""; for p in $STAGE_NEED; do grep -qF "/./$p" <<< "$(grep '^RSYNC' "$WORK/stub.log")" || rs_miss="$rs_miss $p"; done
+if [ "$rc" -eq 0 ] && [ -z "$rs_miss" ] && grep -qE '^RSYNC -[a-z]*R' "$WORK/stub.log"; then
+  pass "T7n rsync path stages every SC6 input with -R (paths keep their directories)"
+else fail_case "T7n rsync path missing:${rs_miss:- (or no -R)} (rc=$rc): $(grep '^RSYNC' "$WORK/stub.log")"; fi
+STUB_NO_GUEST_RSYNC=1; rc=$(run_caller scripts/test-install-symmetry-vm.sh ""); STUB_NO_GUEST_RSYNC=
+tar_list=$(tar -tf "$WORK/stub.log.tar" 2>/dev/null)
+tar_miss=""; for p in $STAGE_NEED; do
+  case "$p" in scripts) want='^scripts/test-uninstall\.sh$' ;; *) want="^$p\$" ;; esac
+  grep -qE "$want" <<< "$tar_list" || tar_miss="$tar_miss $p"
+done
+tar_secret=$(grep -E '(^|/)(\.env|\.env\..*|[^/]*\.local\.json)$' <<< "$tar_list")
+if [ "$rc" -eq 0 ] && [ -z "$tar_miss" ] && [ -z "$tar_secret" ]; then
+  pass "T7n tar fallback stages every SC6 input too, and no secret-set file"
+else fail_case "T7n tar fallback missing:${tar_miss:- none} secrets=[$tar_secret] (rc=$rc)"; fi
+# T7o drift guard: every repo-root docs/ or marketplace/ path scripts/test-uninstall.sh
+# reads via `../` is in the driver's STAGE_PATHS -- a new read there turns this red
+# instead of silently failing SC6 on the next guest run. (Vacuity floor: >=3 found.)
+u_reads=$(grep -oE '\.\./(docs|marketplace)/[A-Za-z0-9._/-]+' "$REPO_ROOT/scripts/test-uninstall.sh" | sed 's#^\.\./##' | sort -u)
+u_n=$(grep -c . <<< "$u_reads"); u_miss=""
+staged=$(sed -n '/^STAGE_PATHS=(/,/)$/p' "$REPO_ROOT/scripts/test-install-symmetry-vm.sh" | sed 's/^STAGE_PATHS=(//; s/)$//' | tr -s ' ' '\n')
+for p in $u_reads; do grep -qxF "$p" <<< "$staged" || u_miss="$u_miss $p"; done
+if [ "$u_n" -ge 3 ] && [ -z "$u_miss" ]; then
+  pass "T7o all $u_n repo-root reads of test-uninstall.sh are staged by the driver"
+else fail_case "T7o test-uninstall.sh reads $u_n repo-root path(s); not staged:${u_miss:- none}"; fi
 
 # luna-upgrade: run against the real template dir (it exists in-repo)
 TMPL_ARGS=()
