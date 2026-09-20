@@ -218,11 +218,49 @@ list_has() {  # list_has <needle> <word> [word...]
     return 1
 }
 
-# legs_line_spans <legs: line> -- each `<label>:<nonce>:<lock-token>:<pid>` span
-# on the line, backticks stripped, one per line.
+# legs_label_shaped <token> -- is this the first field of an attempted entry
+# rather than a prose token? A label is what leg-identity.sh derives: the
+# canonical N<k>[letters], or the stem of a leg doc (which the derivation
+# reduces to its N<k>, so its label differs from the stem). A token that
+# derivation leaves alone and that is not N<k> (`legs`, `procs`, `bank`) is prose.
+legs_label_shaped() {
+    local re_canon='^N[0-9]+[a-z]*$'
+    [[ $1 =~ $re_canon ]] && return 0
+    [ "$(leg_label "$1")" != "$1" ]
+}
+
+# legs_line_spans <entries|malformed> <legs: line> -- classify every backtick
+# span on the line (HIMMEL-3280). `entries` prints each well-formed
+# `<label>:<nonce>:<lock-token>:<pid>` span, one per line, backticks stripped
+# (exactly four non-empty fields, first one all LEG_LABEL_CLASS). `malformed`
+# prints the LABEL of each label-shaped span that has a colon but is not that
+# (a truncated or padded real entry) -- the label only, since the span carries a
+# nonce and a lock token. Everything else is prose and is ignored: a span with
+# whitespace, a first field outside the label class or not label-shaped, or no
+# colon at all (`N191` mentioned in a note).
 legs_line_spans() {
+    local mode="$1" span f1 colons entry
     # shellcheck disable=SC2016  # backtick span pattern, not a shell expansion
-    printf '%s\n' "$1" | grep -oE "\`[$LEG_LABEL_CLASS]+:[^\`]*\`" | tr -d '`'
+    printf '%s\n' "$2" | grep -oE '`[^`]*`' | tr -d '`' | while IFS= read -r span; do
+        case "$span" in
+            ''|*[[:space:]]*) continue ;;
+        esac
+        f1="${span%%:*}"
+        [ "$f1" != "$span" ] || continue
+        case "$f1" in
+            ''|*[!$LEG_LABEL_CLASS]*) continue ;;
+        esac
+        colons="${span//[!:]/}"
+        entry=0
+        if [ "${#colons}" -eq 3 ]; then
+            case ":$span:" in *::*) ;; *) entry=1 ;; esac
+        fi
+        if [ "$entry" -eq 1 ]; then
+            [ "$mode" = entries ] && printf '%s\n' "$span"
+        elif [ "$mode" = malformed ] && legs_label_shaped "$f1"; then
+            printf '%s\n' "$f1"
+        fi
+    done
 }
 
 livestate_summary=skip
@@ -241,10 +279,16 @@ if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
         # (LEG_LABEL_CLASS, which includes "-" and "."): a narrower class here
         # rejected every hyphenated label, so a span naming a leg by anything
         # but a bare N<k> never parsed and read as absent (HIMMEL-3277).
-        # Trailing prose on the line is harmless: only a span shaped
-        # `<label>:...` counts, so a backticked token with no colon is skipped.
-        live_spans="$(legs_line_spans "$legs_line")"
+        # Prose on the line is tolerated (HIMMEL-3280): a backticked token is
+        # an entry only if it is four non-empty fields under a label
+        # (legs_line_spans), so `legs:` in a note is not a leg. A span that
+        # LOOKS like an entry (label-shaped first field, a colon) but is not
+        # four fields is reported MALFORMED by label, never dropped: dropping
+        # it would read the leg as absent and DRIFT would then blame the
+        # console for a leg that was written, just wrongly.
+        live_spans="$(legs_line_spans entries "$legs_line")"
         live_legs="$(printf '%s\n' "$live_spans" | sed -E 's/:.*$//')"
+        malformed_legs="$(legs_line_spans malformed "$legs_line")"
         held_legs="$(printf '%s\n' "$legs_summary" | tr ',' '\n' | awk -F: '$2 == "FRESH" || $2 == "STALE" { print $1 }')"
         drift_csv=""
         for l in $live_legs; do
@@ -252,15 +296,19 @@ if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
             list_has "$l" $held_legs || drift_csv="$(csv_add "$drift_csv" "$l")"
         done
         for l in $held_legs; do
+            # A malformed span still NAMES its leg (badly): it reads MALFORMED,
+            # not also "held but unnamed".
             # shellcheck disable=SC2086  # word-split on purpose: list_has takes "$@"
-            list_has "$l" $live_legs || drift_csv="$(csv_add "$drift_csv" "$l")"
+            list_has "$l" $live_legs $malformed_legs || drift_csv="$(csv_add "$drift_csv" "$l")"
         done
         drift_csv="$(printf '%s\n' "$drift_csv" | tr ',' '\n' | awk 'NF' | sort -u | tr '\n' ',' | sed 's/,$//')"
+        malformed_csv="$(printf '%s\n' "$malformed_legs" | awk 'NF' | sort -u | tr '\n' ',' | sed 's/,$//')"
+        livestate_summary=""
+        [ -z "$malformed_csv" ] || livestate_summary="MALFORMED:${malformed_csv}"
         if [ -n "$drift_csv" ]; then
-            livestate_summary="DRIFT:${drift_csv}"
-        else
-            livestate_summary=ok
+            livestate_summary="${livestate_summary:+$livestate_summary;}DRIFT:${drift_csv}"
         fi
+        [ -n "$livestate_summary" ] || livestate_summary=ok
         # HIMMEL-3254: a HELD leg whose Live-state nonce (`<LETTER>-<leg>-<hex>`)
         # still carries a previous console's letter is NOT necessarily
         # stranded: a relay may keep the leg's token (leg-preface.md "Console

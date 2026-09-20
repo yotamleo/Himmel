@@ -184,6 +184,10 @@ if [ -z "$stale" ]; then pass 'no succession doc still names nonces=STRANDED'; e
 contains 'console-template Live state: names the RELAYED and UNCONFIRMED reads' "$live" 'nonces=RELAYED'
 contains 'running-a-console: an unrotated relay that the leg accepted reads RELAYED, not an incident' "$running" 'RELAYED'
 contains 'retask-channel.md: the tick reads the leg own bullet, never asserts strandedness' "$retask" 'never asserts'
+# HIMMEL-3280: the template states whether prose is allowed on the legs: line and
+# what a malformed entry reads as, so the doc and tick.sh's parser agree.
+contains 'console-template Live state: prose on the legs: line is permitted and read as prose' "$live" 'Prose is permitted on the'
+contains 'console-template Live state: a malformed entry reads livestate=MALFORMED, never dropped' "$live" 'livestate=MALFORMED:<label>'
 
 # --- 6. HIMMEL-3266: the console-side text agrees with the preface ------------
 # console.sh next copies console-template.md into the successor stub and

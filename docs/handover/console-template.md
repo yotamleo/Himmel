@@ -112,7 +112,7 @@ Run these, in order, and write the result as the first bullet under
 > in this context window: `SessionStart:compact` (HIMMEL-2973 S1) re-injects
 > exactly this section after an autocompact, and `{{KIT}}/tick.sh` flags
 > `livestate=DRIFT:<leg>[,…]` when it disagrees with the leg locks actually
-> held. Update this section on every dispatch, ruling, wrap and GO — not only
+> held (and `livestate=MALFORMED:<leg>[,…]` for a malformed entry, below). Update this section on every dispatch, ruling, wrap and GO — not only
 > at handover; `console.sh next` copies it verbatim into the successor's
 > HANDOFF, so a stale line here is a stale line there too. A leg's nonce is
 > updated **only after** that leg's quote-back (of the fresh nonce, when one
@@ -131,8 +131,22 @@ Run these, in order, and write the result as the first bullet under
 > **`<leg>` is the leg's label, `N<k>`** (`N191` for
 > `HIMMEL-3269-N191-scorecard-discovery-…`; HIMMEL-3277) — the same label
 > `tick.sh` prints in `legs=`. A label may contain letters, digits, `_`, `.`
-> and `-`, so a full doc stem also parses; anything after the closing backtick
-> on the line is prose and is ignored.
+> and `-`, so a full doc stem also parses.
+>
+> **Prose is permitted on the `legs:` line, and the tick reads it as prose**
+> (HIMMEL-3280). Only a backtick span of exactly four non-empty colon-separated
+> fields under a label is an entry. A span with whitespace, no colon, or a first
+> field that is not a leg label (`` `legs:` ``, `` `procs:2` ``,
+> `` `livestate=DRIFT:N192` ``, `` `N191` ``) is ignored, so a note may quote
+> tick fields and name legs freely. **A span that looks like an entry but is not
+> one** — a label (`N<k>` or a leg doc stem) with a colon and not four non-empty
+> fields (`` `N191:<nonce>:<lock-token>` ``, a trailing or doubled colon) — is
+> never dropped: the tick reads `livestate=MALFORMED:<label>[,…]` (by label
+> only; the span carries a nonce and a lock token), and any real drift on the
+> same line follows as `;DRIFT:<leg>[,…]`. Fix the span, or if it was meant as
+> prose, drop the colon. A label that is neither `N<k>` nor a leg doc stem is
+> treated as prose even when malformed, so a truncated entry under such a label
+> reads as absent (`DRIFT`) rather than `MALFORMED`.
 
 legs: <none dispatched yet, or `N1:<nonce>:<lock-token>:<pid>`, `N2:…`>
 queue: <held queue-lock docs in launch order, or "none">

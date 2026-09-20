@@ -747,6 +747,77 @@ printf '%s\n' '# console' '' '## Live state' '' \
     > "$W/handover/console.md"
 contains 'a stale hyphenated label is still DRIFT, not silently dropped (HIMMEL-3277)' "$(t3277 'HIMMEL-9-odd-name-2026-09-20-RESUME')" 'livestate=DRIFT:HIMMEL-8-gone-2026-09-20-RESUME'
 
+# --- HIMMEL-3280: the legs: line is read for ENTRIES, not for every backtick span.
+# The console's own explanatory parenthetical named the token `legs:` in
+# backticks; the span pattern only asked for "label chars, a colon, anything",
+# so it matched and read as a phantom leg named "legs" (RED control, pre-fix
+# tick.sh, first fixture below: livestate=DRIFT:legs on two real, held legs).
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+printf '%s\n' '# console' '' '## Live state' '' \
+    'legs: `N191:J-N191-0a1b2c:tok-191:120`, `N192:J-N192-3d4e5f:tok-192:121` (each entry is `<leg>:<nonce>:<lock-token>:<pid>`; the `legs:` key, see `HIMMEL-9`, and `see: this` are prose)' 'queue: none' 'last GO: none' 'acked: none' \
+    > "$W/handover/console.md"
+o3280="$(t3277 "$l191 $l192")"
+contains 'a backticked non-entry token on the legs: line is not a phantom leg (HIMMEL-3280)' "$o3280" 'livestate=ok'
+case "$o3280" in
+    *DRIFT*|*MALFORMED*) fail "prose tokens on the legs: line must read neither DRIFT nor MALFORMED (HIMMEL-3280) ($o3280)" ;;
+    *) pass 'prose tokens on the legs: line must read neither DRIFT nor MALFORMED (HIMMEL-3280)' ;;
+esac
+
+# Consoles quote tick fields and leg names in notes on this line all the time:
+# a colon-then-text span whose first field is NOT a leg label (`procs:2`,
+# `livestate=DRIFT:N192`, `bank:5h30`) is prose, and so is a bare `N191`
+# mention with no colon. Pre-fix, `procs:2` read as a phantom leg "procs".
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+printf '%s\n' '# console' '' '## Live state' '' \
+    'legs: `N191:J-N191-0a1b2c:tok-191:120`, `N192:J-N192-3d4e5f:tok-192:121` (last tick `procs:2`, `bank:5h30`, was `livestate=DRIFT:N192`; `N191` reported LIVE)' 'queue: none' 'last GO: none' 'acked: none' \
+    > "$W/handover/console.md"
+q3280="$(t3277 "$l191 $l192")"
+contains 'quoted tick fields on the legs: line are prose, not entries (HIMMEL-3280)' "$q3280" 'livestate=ok'
+case "$q3280" in
+    *DRIFT*|*MALFORMED*) fail "a non-label colon span must read neither DRIFT nor MALFORMED (HIMMEL-3280) ($q3280)" ;;
+    *) pass 'a non-label colon span must read neither DRIFT nor MALFORMED (HIMMEL-3280)' ;;
+esac
+
+# A genuinely stale Live state still fires with the same prose on the line, and
+# the drift names the stale legs only -- no `legs` phantom among them.
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+printf '%s\n' '# console' '' '## Live state' '' \
+    'legs: `N191:J-N191-0a1b2c:tok-191:120`, `N199:J-N199-aaaaaa:tok-199:1` (the `legs:` key)' 'queue: none' 'last GO: none' 'acked: none' \
+    > "$W/handover/console.md"
+contains 'a stale Live state with prose on the line is DRIFT naming only real legs (HIMMEL-3280)' "$(t3277 "$l191 $l192")" 'livestate=DRIFT:N192,N199 '
+
+# A malformed-but-entry-shaped span must be REPORTED, never dropped: dropping it
+# trades a phantom for a disappearance (HIMMEL-3277's failure facing the other
+# way). Reported by label only -- the span carries a nonce and a lock token.
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+printf '%s\n' '# console' '' '## Live state' '' \
+    'legs: `N191:J-N191-0a1b2c:tok-191`, `N192:J-N192-3d4e5f:tok-192:121`' 'queue: none' 'last GO: none' 'acked: none' \
+    > "$W/handover/console.md"
+m3280="$(t3277 "$l191 $l192")"
+contains 'a 3-field span reads MALFORMED naming its leg (HIMMEL-3280)' "$m3280" 'livestate=MALFORMED:N191 '
+case "$m3280" in
+    *'livestate=ok'*|*DRIFT*) fail "a malformed span must read neither ok nor DRIFT (HIMMEL-3280) ($m3280)" ;;
+    *) pass 'a malformed span must read neither ok nor DRIFT (HIMMEL-3280)' ;;
+esac
+case "$m3280" in
+    *J-N191-0a1b2c*|*tok-191*) fail 'MALFORMED must not print the span, which carries a nonce and lock token (HIMMEL-3280)' ;;
+    *) pass 'MALFORMED must not print the span, which carries a nonce and lock token (HIMMEL-3280)' ;;
+esac
+# Every other wrong arity / empty field is the same signal.
+for bad in 'N191:' 'N191:J-N191-0a1b2c' 'N191:J-N191-0a1b2c:tok-191:120:extra' 'N191::tok-191:120' 'N191:J-N191-0a1b2c:tok-191:'; do
+    printf '%s\n' '# console' '' '## Live state' '' \
+        "legs: \`$bad\`, \`N192:J-N192-3d4e5f:tok-192:121\`" 'queue: none' 'last GO: none' 'acked: none' \
+        > "$W/handover/console.md"
+    contains "malformed span '$bad' reads MALFORMED, not ok (HIMMEL-3280)" "$(t3277 "$l191 $l192")" 'livestate=MALFORMED:N191 '
+done
+# Malformed AND stale both surface; the malformed leg is named, so it is not
+# double-reported as a held-but-unnamed DRIFT.
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+printf '%s\n' '# console' '' '## Live state' '' \
+    'legs: `N191:J-N191-0a1b2c:tok-191`, `N199:J-N199-aaaaaa:tok-199:1`' 'queue: none' 'last GO: none' 'acked: none' \
+    > "$W/handover/console.md"
+contains 'a malformed span and a stale leg both surface (HIMMEL-3280)' "$(t3277 "$l191 $l192")" 'livestate=MALFORMED:N191;DRIFT:N192,N199 '
+
 # procs=/models= guard: a HELD leg that matches no census row cannot be told
 # apart from a filter that cannot match, so it must read unknown, never 0/none.
 mk_pgrep_x "$W/bin-3277-none" 103
