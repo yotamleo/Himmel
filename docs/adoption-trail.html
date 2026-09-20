@@ -645,8 +645,10 @@ node ~/himmel/scripts/himmelctl/bin.js uninstall</pre>
 sudo apt-get install -y nodejs npm git jq python3
 curl -fsSL https://claude.ai/install.sh | bash</pre>
           <p>If <span class="mono">claude</span> is not found afterwards,
-          open a new terminal. Recommended, so the full commit checks
-          install:</p>
+          open a new terminal. Optional: the installer's own list treats
+          <span class="mono">pre-commit</span> as recommended, but a starter
+          install gives its git hooks no checks to run either way (item 3 of
+          <a href="#before">Before you install</a>):</p>
           <pre class="cmd">curl -LsSf https://astral.sh/uv/install.sh | sh
 ~/.local/bin/uv tool install pre-commit</pre>
           <p>Later, for GitHub pull requests, the overnight scheduler and
