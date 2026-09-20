@@ -16,6 +16,22 @@
 #
 # Secret set (basename globs, matched at ANY depth):
 #   .env   .env.*   *.local.json      (covers .claude/settings.local.json)
+# The ONE content exemption (HIMMEL-3252): himmelctl's own lane-profile persistence writes
+# scripts/lanes/lanes.local.json during an install, so a guest that has ever been
+# through one would fail every `full` scan of the clone on the NAME alone. The full
+# scan therefore lets a REGULAR file at */scripts/lanes/lanes.local.json through only
+# when it is <=1 KiB and its whitespace-stripped bytes match an anchored ERE naming
+# exactly the keys lanes / profileAllowlist / profileAllowlistScope, with every string
+# value from a CLOSED vocabulary (the wizard-owned lane ids + the probe kinds
+# always|never). This is an allowlist of an inert shape, not a hunt for secrets: any
+# other key, any free-text value, any other path or a symlink is still a hit, and an
+# unreadable file (no tr/grep) is a hit. The vocabulary is pinned to
+# PROFILE_LANE_REGISTRY_IDS in scripts/himmelctl/lib/adopter-profile.js by test.
+# ponytail: the vocabulary is ONLY the wizard-owned ids, so a lanes.local.json that
+# also names another lane (`himmelctl config lanes.haiku never`, a hand-authored
+# overlay) is still a hit and the operator inspects it — a wider vocabulary would be a
+# list to keep in step with lanes.json for a case no round trip has needed.
+#
 # .env.example is a public placeholder template, not a secret (the luna template
 # ships one as a template-owned file the upgrade engine overwrites): the scan
 # exempts it. rsync keeps it via a leading --include; tar cannot express an
@@ -75,6 +91,22 @@
 # Keep in step with SECRET_EXCLUDES in scripts/lib/vmsdk.py (parity-tested).
 VM_GUEST_SECRET_GLOBS='.env .env.* *.local.json'
 
+# The inert-lanes-profile exemption (see the header): the find sub-expression that is
+# TRUE for a file the full scan may let through. It runs inside `sh -c '...'` on the
+# guest, so the ERE's JSON quotes are \" (that inner script's double quotes) and the
+# whole ERE is one word there. Byte-identical to _inert_lanes_test in vmsdk.py
+# (parity-tested); every vocabulary term is spelled out in both.
+_vm_guest_inert_lanes_test() {
+  local Q='\"' id ids entry ere sq="'"
+  id='(codex-exec|hermes-oneshot)'
+  ids="(${Q}${id}${Q}(,${Q}${id}${Q})*)?"
+  entry="\\{${Q}id${Q}:${Q}${id}${Q},${Q}probe${Q}:\\{${Q}kind${Q}:${Q}(always|never)${Q}\\}\\}"
+  ere="^\\{${Q}lanes${Q}:\\[(${entry}(,${entry})*)?\\]"
+  ere="${ere}(,${Q}profileAllowlist${Q}:\\[${ids}\\]"
+  ere="${ere}(,${Q}profileAllowlistScope${Q}:\\[${ids}\\])?)?\\}"'\$'
+  printf '%s' "-type f -path ${sq}*/scripts/lanes/lanes.local.json${sq} -size -3 -exec sh -c ${sq}tr -d \" \\n\\t\\r\" <\"\$1\" | grep -Eq \"${ere}\"${sq} _ {} \;"
+}
+
 vm_guest_tar_excludes() {
   # Subshell: the noglob needed to split the unexpanded globs must not leak into
   # (or clobber) the caller's own `set -f` state.
@@ -127,7 +159,7 @@ vm_guest_scan_cmd() {
   local root="$1" prof="${2:-full}" globs q
   q=$(vm_guest_quote_root "$root") || return 2
   case "$prof" in
-    full) globs="-name '.env' -o -name '.env.*' -o -name '*.local.json'" ;;
+    full) globs="-name '.env' -o -name '.env.*' -o \( -name '*.local.json' ! \( $(_vm_guest_inert_lanes_test) \) \)" ;;
     env)  globs="-name '.env' -o -name '.env.*'" ;;
     *) echo "vm_guest_scan_cmd: unknown profile '$prof' (full|env)" >&2; return 2 ;;
   esac

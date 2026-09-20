@@ -123,6 +123,77 @@ else
   fail_case "T4c a symlinked scan root passed as clean (secret hidden behind the link)"
 fi
 
+# --- TL0..TLn HIMMEL-3252: himmelctl's own lane-profile file must not fail a full scan,
+# and the exemption must stay an allowlist of an inert shape (a fix that merely stopped
+# scanning *.local.json would pass TL1 and fail every control below).
+STUB_PROFILE='{"lanes": [], "profileAllowlist": [], "profileAllowlistScope": ["codex-exec","hermes-oneshot"]}'
+lane_fixture() {  # <name> <content> -> a clone-shaped root holding scripts/lanes/lanes.local.json
+  local d="$WORK/lanes-$1"; mkdir -p "$d/scripts/lanes"
+  printf '%s\n' "$2" > "$d/scripts/lanes/lanes.local.json"
+  printf '%s' "$d"
+}
+D=$(lane_fixture stub "$STUB_PROFILE")
+# TL0: the fixture is the file that used to trip — the NAME alone flags it (RED control:
+# the pre-fix scan was exactly this find).
+if [ -n "$(find "$D" -name '*.local.json' ! -type d -print)" ]; then
+  pass "TL0 control: the 117-byte inert profile is flagged by the NAME-only scan (the pre-fix behaviour)"
+else fail_case "TL0 fixture is not a *.local.json"; fi
+if vm_guest_scan "$D" full >/dev/null 2>&1; then
+  pass "TL1 GREEN: the inert lanes profile himmelctl writes no longer trips the full scan"
+else fail_case "TL1 the inert lanes profile still trips the full scan: $(vm_guest_scan "$D" full 2>&1)"; fi
+
+# T4e: the REAL producers (set-lane-override.mjs) emit shapes the scan accepts.
+if command -v node >/dev/null 2>&1; then
+  PD="$WORK/lanes-producer"; mkdir -p "$PD/scripts/lanes"
+  ( cd "$REPO_ROOT" && node --input-type=module -e '
+      const w = await import("./scripts/lanes/set-lane-override.mjs");
+      const f = process.argv[1];
+      w.writeProfileAllowlist(f, ["codex-exec"], ["codex-exec", "hermes-oneshot"]);
+      ' "$PD/scripts/lanes/lanes.local.json" ) >/dev/null 2>&1
+  if [ -s "$PD/scripts/lanes/lanes.local.json" ] && vm_guest_scan "$PD" full >/dev/null 2>&1; then
+    pass "TL2 the wizard's own writer output ($(wc -c < "$PD/scripts/lanes/lanes.local.json") bytes) passes the full scan"
+  else fail_case "TL2 writer output missing or flagged: $(cat "$PD/scripts/lanes/lanes.local.json" 2>&1)"; fi
+  # T4e2: pin — the closed vocabulary IS the set of wizard-owned registry ids.
+  want=$(cd "$REPO_ROOT" && node -e 'console.log(require("./scripts/himmelctl/lib/adopter-profile.js").V1_LANES.map((l)=>l.registryId).sort().join(" "))' 2>&1)
+  have=$(_vm_guest_inert_lanes_test | grep -o '(codex-exec|[a-z|-]*)' | head -1 | tr -d '()' | tr '|' '\n' | sort | tr '\n' ' ')
+  if [ "$want " = "$have" ]; then pass "TL3 scan vocabulary == PROFILE_LANE_REGISTRY_IDS ($want)"
+  else fail_case "TL3 scan vocabulary [$have] drifted from the wizard's registry ids [$want] — update both spellings"; fi
+else
+  echo "SKIP TL2/TL3 (no node on PATH — the producer + vocabulary pins were NOT verified)"
+fi
+
+# TLf..: controls that VARY the suspected cause — each still trips the full scan.
+must_trip() {  # <label> <root>
+  if vm_guest_scan "$2" full >/dev/null 2>&1; then fail_case "TL$1 passed as clean (must trip the full scan)"
+  else pass "TL$1 still trips the full scan"; fi
+}
+must_trip "f a key outside the profile shape (\"token\")" \
+  "$(lane_fixture extrakey '{"lanes": [], "token": "STUB"}')"
+must_trip "g a free-text value in the allowlist (credential-shaped id)" \
+  "$(lane_fixture badid '{"lanes": [], "profileAllowlist": ["sk-live-0123456789abcdef"], "profileAllowlistScope": ["codex-exec"]}')"
+must_trip "h an id outside the closed vocabulary in a lane entry" \
+  "$(lane_fixture badentry '{"lanes": [{"id": "haiku", "probe": {"kind": "never"}}]}')"
+must_trip "i a probe carrying an extra field" \
+  "$(lane_fixture badprobe '{"lanes": [{"id": "codex-exec", "probe": {"kind": "env", "name": "STUB"}}]}')"
+must_trip "j an empty / non-JSON file" "$(lane_fixture empty '')"
+# k: the SAME inert bytes at any other path are still a hit — the exemption is path-exact.
+K1="$WORK/lanes-otherpath"; mkdir -p "$K1/.claude" "$K1/scripts/lanes"
+printf '%s\n' "$STUB_PROFILE" > "$K1/.claude/settings.local.json"
+must_trip "k1 inert bytes at .claude/settings.local.json" "$K1"
+K2="$WORK/lanes-othername"; mkdir -p "$K2/scripts/lanes"
+printf '%s\n' "$STUB_PROFILE" > "$K2/scripts/lanes/other.local.json"
+must_trip "k2 inert bytes at scripts/lanes/other.local.json" "$K2"
+# l: a symlink named lanes.local.json is not a regular file.
+L1="$WORK/lanes-symlink"; mkdir -p "$L1/scripts/lanes"
+printf '%s\n' "$STUB_PROFILE" > "$L1/real.json"; ln -s ../../real.json "$L1/scripts/lanes/lanes.local.json"
+must_trip "l a symlink named lanes.local.json" "$L1"
+# m: the size cap — an accepted shape padded past 1 KiB is refused, not parsed.
+M1=$(lane_fixture big "$STUB_PROFILE"); head -c 2048 /dev/zero | tr '\0' ' ' >> "$M1/scripts/lanes/lanes.local.json"
+must_trip "m an inert shape padded past 1 KiB" "$M1"
+# n: the env profile is untouched (still ignores every *.local.json).
+if vm_guest_scan "$(lane_fixture envprof '{"lanes": [], "token": "STUB"}')" env >/dev/null 2>&1; then
+  pass "TLn env profile still ignores *.local.json"; else fail_case "TLn env profile changed"; fi
+
 # shellcheck disable=SC2317,SC2329  # invoked indirectly by vm_guest_assert_clean
 local_runner_early() { bash -c "$1"; }
 # --- T4d a root containing a SPACE is quoted, scanned, and still flags a leak (HIMMEL-3228)

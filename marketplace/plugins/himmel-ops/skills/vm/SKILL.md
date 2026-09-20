@@ -208,6 +208,15 @@ rsyncs a checkout itself (the ad-hoc `m2457-rebuild.sh` style) must use it too:
 `bash scripts/lib/vm-guest-excludes.sh excludes rsync|tar` prints the flags and
 `bash scripts/lib/vm-guest-excludes.sh scan <root> [full|env]` exits non-zero on a hit.
 
+The `full` scan has ONE content exemption (HIMMEL-3252): himmelctl's own
+`scripts/lanes/lanes.local.json` (written during an install) passes only when it is
+a regular file ≤1 KiB whose keys and values match a closed inert shape (lane-profile
+keys, the wizard-owned lane ids, probe kinds `always|never`). Any other key or
+value, any other path, a symlink or an oversize file is still a hit — so an
+install → uninstall round trip on the guest can be closed with the documented
+BEFORE/AFTER `full` assert. A hand-authored overlay naming another lane still
+refuses; inspect it by hand.
+
 **All invocations must be from the primary checkout** (not a worktree) — the
 SDK resolves `.env` via `git rev-parse --git-common-dir`; worktrees lack `.env`.
 
