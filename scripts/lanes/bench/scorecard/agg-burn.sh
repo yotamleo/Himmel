@@ -66,9 +66,26 @@ ts_of() { grep -o '"timestamp":"[0-9TZ:.-]*"' "$1" 2>/dev/null | "$2" -1 | cut -
 
 ROWS=$(mktemp "${TMPDIR:-/tmp}/agg-burn-rows.XXXXXX") || { echo "agg-burn: mktemp failed" >&2; exit 1; }
 FAILS=$(mktemp "${TMPDIR:-/tmp}/agg-burn-fails.XXXXXX") || { echo "agg-burn: mktemp failed" >&2; exit 1; }
-trap 'rm -f "$ROWS" "$FAILS"' EXIT
+FILES=$(mktemp "${TMPDIR:-/tmp}/agg-burn-files.XXXXXX") || { echo "agg-burn: mktemp failed" >&2; exit 1; }
+DISC_ERR=$(mktemp "${TMPDIR:-/tmp}/agg-burn-discerr.XXXXXX") || { echo "agg-burn: mktemp failed" >&2; exit 1; }
+UNREADABLE=$(mktemp "${TMPDIR:-/tmp}/agg-burn-unreadable.XXXXXX") || { echo "agg-burn: mktemp failed" >&2; exit 1; }
+trap 'rm -f "$ROWS" "$FAILS" "$FILES" "$DISC_ERR" "$UNREADABLE"' EXIT
 
-find "$PROJECTS" -name '*.jsonl' -type f 2>/dev/null | while IFS= read -r f; do
+# HIMMEL-2977: discovery errors must not vanish. `find ... 2>/dev/null | while`
+# lost both find's permission errors and its exit status, so an unreadable
+# subtree gave exit 0 and a TOTAL that silently omitted it - a number that
+# looks complete and is not. Capture find's stderr + status and fail loudly
+# (exit 1, no table) rather than emit a partial total.
+if ! find "$PROJECTS" -name '*.jsonl' -type f >"$FILES" 2>"$DISC_ERR"; then
+    echo "agg-burn: transcript discovery failed under $PROJECTS - refusing to print a partial total:" >&2
+    cat "$DISC_ERR" >&2
+    exit 1
+fi
+
+while IFS= read -r f; do
+    # a listed-but-unreadable file would otherwise fall out at the empty-timestamp
+    # `continue` below (grep's error is silenced) and vanish from the total
+    if [ ! -r "$f" ]; then echo "$f" >> "$UNREADABLE"; continue; fi
     first_ts=$(ts_of "$f" head)
     [ -n "$first_ts" ] || continue
     last_ts=$(ts_of "$f" tail)
@@ -100,7 +117,13 @@ find "$PROJECTS" -name '*.jsonl' -type f 2>/dev/null | while IFS= read -r f; do
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$role" "$prole" "${model:-unknown}" "$calls" "$(kn "$avg")" "$(kn "$first")" "$comp" "$txt" \
         "${out:-0}" "${cr:-0}" "${cc:-0}" "${inp:-0}" >> "$ROWS"
-done
+done < "$FILES"
+
+if [ -s "$UNREADABLE" ]; then
+    echo "agg-burn: $(wc -l < "$UNREADABLE" | tr -d ' ') unreadable transcript(s) - refusing to print a partial total:" >&2
+    cat "$UNREADABLE" >&2
+    exit 1
+fi
 
 printf 'role\tmodel\tsessions\tcalls\tavg_ctx_k(call-wtd)\tmax_session_avg_k\tavg_first_k\tcompactions\ttext_only\ttext_only_ratio\tctx_x_calls_Mtok\n'
 awk -F'\t' '
