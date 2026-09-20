@@ -299,6 +299,97 @@ standing workaround to normalize.
 
 ---
 
+## Symptom: every `git` call is refused — "runs rtk with a git command among its operands" — for the rest of one leg's session (HIMMEL-3283)
+
+A worktree-pinned leg that has been running `git` normally can reach a state
+where its `git` Bash calls are refused. Observed 2026-09-20, leg N198
+(HIMMEL-3279). The text as recorded — both `...` are elisions in the record (the
+full message was not preserved), and the worktree path is the leg's own:
+
+```text
+This session is isolated in the worktree .../fix+himmel-3279-durable-launch-context, but this command runs rtk with a git command among its operands: what runs it, and from which directory or root, cannot be read here ... Refusing to run it
+```
+
+String-match on `runs rtk with a git command among its operands`. `git grep`
+finds no himmel-authored match for this text, so it is not one of
+`scripts/hooks/*.sh`; the component that emits it is not identified.
+Observed refused: `git diff -U0 <file>`, `git diff -U0 -- <file>` and a bare
+`git status --short`. Earlier in the same session `git grep` and `git log` ran
+fine — **partial function is not evidence against this symptom**: a leg where
+`git log` works while `git status` / `diff` / `commit` are refused has it.
+
+**Why it is possible (not why it fires).** The rtk PreToolUse hook rewrites
+`git …` to `rtk git …`, and a classifier cannot establish the executable behind
+`rtk git`. `scripts/hooks/rtk-hook-guard.sh` suppresses that rewrite (HIMMEL-2953)
+only in the claudex lane, so a native leg gets `rtk git` forwarded. That makes
+the refusal possible; it does not say why it fires in one native session and not
+another.
+
+**It is session-scoped — established by elimination, not by diagnosis.** Two
+controls, the second the strong one:
+
+- N197b ran a bare `git status --short` at rc=0 in a *different* worktree and
+  branch, and went on to commit, push and open PR #986. (N197 had committed
+  `4b27fcf73fe6f31654f596f8ee70488243f62f28` the same hour, same station,
+  same profile.)
+- N198b ran bare `git` (`status`, `log`, `merge-base`, `commit`, `push`) at rc=0
+  in the **same worktree, on the same branch, with the same uncommitted tree**
+  where N198 was refused everything, and shipped that tree to PR #987 without
+  touching the implementation.
+
+Holding worktree, branch, tree state, profile, station and launcher constant and
+varying only the session rules all of those out and leaves the session. It does
+**not** identify what in the session. One candidate — the auto-mode classifier
+reads the session narrative, and N198's had dwelt on launch-record directories
+and cache roots, the vocabulary the refusal cites ("from which directory or
+root") — leads only because the alternatives are gone; it has had no positive
+test. Do not act on it as if it were the cause.
+
+**What to do — the leg:**
+
+- Stop at the **first** refusal carrying this text. Unlike the entries above, do
+  not wait for a second: N198 tried three spellings and none cleared it, and
+  nothing shows a spelling can.
+- This playbook's first-principle rule applies as-is: do NOT reshape the
+  command, and do not hunt for a spelling, a wrapper or another tool that slips
+  the same operation past the scan. That is not a recovery and must not become a
+  standing recipe.
+- `BLOCKED` to the console by `SendMessage` (it needs no git). The work is
+  safe **only** on disk in the worktree — uncommitted, unpushed, held nowhere
+  else — so touch nothing further and do not prune or remove the worktree.
+- **Preserve what the diff cannot carry** in that message *before* you wrap:
+  the decisions and why, the alternatives you rejected, each suite run with its
+  count and any pasted RED, claims you have not verified, the ship steps still
+  owed, your worktree path, branch and base sha, and your queue-lock doc and
+  release token (in backticks). Your own handover doc is under your lock, so the
+  console cannot write there — the message is the channel.
+
+**What to do — the console:**
+
+- **Never run the leg's refused git command on its behalf.** That is permission
+  laundering, exactly as for `[Out-of-Place Publication]` above.
+- Write the leg's message to a **console-owned** file in the state repo (the
+  N198 record, `HIMMEL-3279-N198-BLOCKED-state-2026-09-20.md`, is the shape) so
+  the reasoning survives the leg's transcript.
+- Recover by **re-dispatching a fresh leg onto the identical worktree**: same
+  path, branch and base, the state file in its brief. Release the stale lock
+  with the leg's token first, and close the stuck leg's window (it still holds a
+  fleet slot). The fresh leg faces the same guards, so this is a re-dispatch,
+  not a dodge — a new session is the one thing that varied in the controls. It
+  has been exercised end to end: N198 → N198b → PR #987. Have the fresh leg
+  re-run the verification it will attest to; the prior leg's greens are a report,
+  not evidence in the new session.
+- **If a fresh leg on the same worktree is refused with the same text, the
+  session-scoped reading is wrong** — that is structural. Stop, note it on
+  HIMMEL-3283, and take it to the operator.
+
+**Not settled:** whether the HIMMEL-2953 suppression should extend beyond the
+claudex lane (deferred — see the `rtk-hook-guard.sh` header), and whether a
+blocked ship tail has a recovery cheaper than a full re-dispatch. Both stay open
+on HIMMEL-3283.
+
+---
+
 ## Symptom: a late fix after `pre-commit run` gets gated against stale (pre-edit) content
 
 Plain `pre-commit run <hook>` (no `--all-files`, no `--files`) stashes

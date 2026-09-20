@@ -47,6 +47,17 @@ out=$(printf '%s' "$payload" | rtk hook claude 2>/dev/null) || exit 0
 # CLAUDE_CONFIG_DIR is exported by claude-codex, including non-headed launches.
 # Scan conservatively before extraction so missing jq / output-shape drift
 # cannot resurrect the wrapper. A false positive only loses token savings.
+#
+# HIMMEL-3283: this suppression is claudex-only deliberately, not by omission —
+# native was considered. A native worktree-pinned session gets `rtk git`
+# forwarded and hit the same opacity (leg N198, 2026-09-20: `git status` /
+# `git diff` refused as "runs rtk with a git command among its operands"). It is
+# not extended here because that refusal is session-scoped: the same worktree,
+# branch and tree ran bare git unrefused under a fresh session (N198b), so its
+# trigger is still unknown. Suppressing the rewrite for native sessions would
+# mitigate a symptom we cannot yet explain — and would stop anyone finding the
+# trigger. The decision is deferred to HIMMEL-3283; the leg-side recovery is in
+# docs/internals/stuck-playbook.md.
 config_dir="${CLAUDE_CONFIG_DIR:-}"
 while [ "$config_dir" != "/" ] && [ "${config_dir%/}" != "$config_dir" ]; do
     config_dir="${config_dir%/}"
