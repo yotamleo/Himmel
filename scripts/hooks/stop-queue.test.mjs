@@ -21,7 +21,7 @@ import { makeTmpDir } from '../lib/test-tmpdir.mjs';
 import {
   DEFAULT_TTL_MS, DEFAULT_JOB_TIMEOUT_MS, MAX_ATTEMPTS, MAX_PAYLOAD_BYTES,
   queueDir, sanitizeKey, entryKey, enqueue, drain, work, isExpired,
-  lockIsStale, workerIsLive, acquireLock, status, parseEnqueueArgs, snapshotEnv, scrubSecrets, jobEnv, redactSecrets,
+  lockIsStale, workerIsLive, acquireLock, releaseLock, STALE_LOCK_MS, status, parseEnqueueArgs, snapshotEnv, scrubSecrets, jobEnv, redactSecrets,
   snapshotOwns,
 } from './stop-queue.mjs';
 
@@ -1562,6 +1562,43 @@ test('a paused gate release cannot delete a gate another worker has adopted', ()
     assert.equal(seam, true, 'the release never reached the removal');
     assert.equal(existsSync(join(gate, 'own.5b0e7c12')), true,
       'the resumed release deleted the gate the adopting worker holds');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// [HIMMEL-3275 round 3, codex-1] The same class again, in the one release the
+// round-2 sweep cleared on a reason that does not hold: releaseLock's removal
+// was said to be safe because a takeover adopts an ownerless lock only after
+// lockIsStale calls its holder dead, and the holder here is the live releaser.
+// But lockIsStale returns true on heartbeat AGE regardless of pid liveness
+// (`now - mtime > STALE_LOCK_MS`), so a live holder whose heartbeat has aged
+// out reads stale — the takeover adopts, removes, and a replacement is taken,
+// which the resumed release then deletes by path. A pid proves nothing here;
+// the removal has to be one the kernel refuses.
+test('a paused lock release cannot delete a lock another worker has taken', () => {
+  const dir = scratch();
+  try {
+    const lock = join(dir, 'worker.lock');
+    assert.equal(acquireLock(dir), true, 'precondition: this process must hold the lock');
+    const old = new Date(Date.now() - STALE_LOCK_MS - 60_000);
+    utimesSync(join(lock, 'pid'), old, old);
+    assert.equal(lockIsStale(dir), true,
+      'precondition: an aged heartbeat must read stale even though the holder is alive');
+    assert.equal(readFileSync(join(lock, 'pid'), 'utf8').trim(), String(process.pid),
+      'precondition: the stale-reading lock is still held by this live process');
+    let seam = false;
+    releaseLock(dir, {
+      beforeLockRemove: () => {
+        seam = true;
+        // A takeover adopts the now-ownerless lock, judges it stale, removes it...
+        rmSync(lock, { recursive: true, force: true });
+        // ...and a replacement worker takes a fresh lock before the release resumes.
+        assert.equal(acquireLock(dir), true, 'precondition: the replacement must take the lock');
+      },
+    });
+    assert.equal(seam, true, 'the release never reached the removal');
+    assert.equal(existsSync(lock), true, 'the resumed release deleted the replacement lock');
+    assert.equal(readdirSync(lock).filter((n) => n.startsWith('own.')).length, 1,
+      'the replacement lock lost its ownership marker to the resumed release');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

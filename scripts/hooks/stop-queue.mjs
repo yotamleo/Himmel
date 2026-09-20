@@ -726,13 +726,19 @@ export function acquireLock(dir, hooks = {}) {
 // owner, not that it needs recovering. So no path here removes a gate or a lock
 // without first winning the CAS on it, or without the kernel confirming the
 // directory is empty.
-// ponytail: one gap in that rule is left, and it is the one POSIX cannot close
-// without an flock: releaseGate unlinks the marker it won and then rmdirs, and
-// a release stopped BETWEEN those two calls can rmdir a gate that a new worker
-// has created but not yet marked — the same mkdir-to-first-write instant
-// createOwned names above, now reachable from a second direction. Both sides
-// are two adjacent syscalls, and unlike every other window here age cannot
-// cover it, because the object it would judge is younger than any threshold.
+// ponytail: one gap in that rule is left (HIMMEL-3294), and it is the one POSIX
+// cannot close without an flock: releaseGate — and releaseLock, which removes
+// by the same identity-keyed unlink-then-rmdir — unlinks the marker it won and
+// then rmdirs, and a release stopped BETWEEN those two calls can rmdir a gate
+// or a lock that a new worker has created but not yet marked: the same
+// mkdir-to-first-write instant createOwned names above, now reachable from a
+// second direction. Both sides are two adjacent syscalls, and unlike every
+// other window here age cannot cover it, because the object it would judge is
+// younger than any threshold. releaseLock's heartbeat unlink is a third
+// instance of the shape and the only benign one: lose the CAS after it and the
+// unlink has removed a replacement's `pid`, which costs that replacement 60 s
+// of protection under the no-readable-pid rule and is rewritten by the next
+// heartbeat — a transient that cannot end with two workers draining.
 const RECLAIM_STALE_MS = 30 * 1000;
 function takeReclaimGate(p, hooks = {}) {
   const gate = `${p.lock}.reclaim`;
@@ -809,15 +815,32 @@ function releaseGate(gate, hooks = {}) {
   try { rmdirSync(gate.dir); } catch { /* not empty — it belongs to whoever is in it */ }
 }
 
-function releaseLock(dir) {
+export function releaseLock(dir, hooks = {}) {
   const id = heldLockId;
   heldLockId = null;
   if (!id) return;
+  const lock = paths(dir).lock;
+  // Drop the heartbeat BEFORE the CAS, because a lock is judged stale on the
+  // AGE of that heartbeat and not on our liveness (`lockIsStale`): a worker
+  // still running but starved past STALE_LOCK_MS reads dead to everyone else.
+  // Between the CAS below and the removal after it, the lock is ownerless, and
+  // an ownerless lock that reads stale is exactly what a reclaimer adopts. With
+  // no `pid` to age, `lockIsStale` falls back to the lock DIRECTORY's mtime —
+  // which this unlink just refreshed — so the reclaimer backs off for 60 s
+  // instead of removing a lock whose holder is very much alive.
+  try { unlinkSync(paths(dir).lockPid); } catch { /* already gone */ }
   // The same CAS a takeover uses. Losing it means a takeover has already
   // claimed this lock, and the directory is then ITS to remove: removing it
   // here would destroy whatever that worker put at the path next.
-  if (!claimOwner(paths(dir).lock, id)) return;
-  try { rmSync(paths(dir).lock, { recursive: true, force: true }); } catch { /* best effort */ }
+  if (!claimOwner(lock, id)) return;
+  if (hooks.beforeLockRemove) hooks.beforeLockRemove();
+  // Winning the CAS authorises the removal, but — exactly as in `releaseGate`
+  // — the removal happens AFTER it and nothing bounds the gap. So remove by
+  // IDENTITY, not by path: unlink only the marker we just won and let the
+  // kernel refuse the `rmdir` the moment anyone else has put a lock there. A
+  // recursive removal by path would take that worker's lock with it.
+  try { unlinkSync(join(lock, `dead.${id}`)); } catch { /* taken over meanwhile */ }
+  try { rmdirSync(lock); } catch { /* not empty — it is whoever is in it's */ }
 }
 
 function heartbeat(dir) {
