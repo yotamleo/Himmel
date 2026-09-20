@@ -12,6 +12,8 @@
 #   until-window: first_epoch >= UNTIL_EPOCH is the exclusive upper edge
 #   role_of(): console / relay / leg / other, with relay taking precedence
 #     over a title that also matches *legN* (role-relay fixture)
+#   role_of() derives a leg from leg-identity.sh (a leg named ...-console-...
+#     is a leg) and an untitled session is `unattributed` (HIMMEL-3286)
 #   subagent parent-role lookup via ${f%/subagents/*}.jsonl
 #   leg-burn.sh failure -> FAILS + WARNING on stderr, run still exits 0
 #   unreadable transcript subtree/file -> exit 1 + stderr, no partial TOTAL
@@ -241,6 +243,21 @@ export SCORECARD_PROJECTS_DIR="$HERE/fixtures/agg-burn/since-edge"
 SKIP_OUT=$("$AGG_BURN" --since 2026-09-05T00:00:00Z 2>/dev/null)
 check_contains "coverage: an out-of-window transcript is counted as skipped with its reason" \
     "$(printf '%s\n' "$SKIP_OUT" | grep '^coverage:')" "out-of-window="
+
+# --- (h) HIMMEL-3286: role_of derives a leg from leg-identity.sh, and an untitled
+# session is its own `unattributed` row, not folded into `other`. Reuses
+# test-scorecard.sh's role-console-slug fixture (a real leg name whose slug
+# contains `console`, a genuine console, an untitled and a titled non-participant).
+export SCORECARD_PROJECTS_DIR="$HERE/fixtures/role-console-slug"
+RCS_OUT=$("$AGG_BURN" --since 2026-01-01T00:00:00Z 2>/dev/null)
+check "role-console-slug: the leg with 'console' in its slug is a leg row, not console" \
+    "$(session_count "$RCS_OUT" leg)" "1"
+check "role-console-slug: only the genuine console is a console row" \
+    "$(session_count "$RCS_OUT" console)" "1"
+check "role-console-slug: the untitled session is an unattributed row" \
+    "$(session_count "$RCS_OUT" unattributed)" "1"
+check "role-console-slug: the titled non-participant is the only other row" \
+    "$(session_count "$RCS_OUT" other)" "1"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

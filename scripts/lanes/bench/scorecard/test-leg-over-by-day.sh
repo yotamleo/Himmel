@@ -112,6 +112,16 @@ check "exclusion: coverage names what was skipped and why" \
     "$(printf '%s\n' "$EXCLUSION_OUT" | grep '^coverage:')" \
     "coverage: roots=1 discovered=6 parsed=2 skipped=4 (not-leg=3 subagent=1)"
 
+# --- (h2) HIMMEL-3286: a leg whose slug contains `console` is bucketed as a leg,
+# and an untitled session is named `unattributed`, not folded into `not-leg`.
+# Reuses test-scorecard.sh's role-console-slug fixture: the N186 leg is the one
+# parsed session; the genuine console and the titled non-participant are not-leg.
+export SCORECARD_PROJECTS_DIR="$HERE/fixtures/role-console-slug"
+RCS_OUT=$("$OVER_BY_DAY" --since 2026-01-01T00:00:00Z 2>/dev/null)
+check "role-console-slug: coverage counts the console-slug leg as parsed and the untitled as unattributed" \
+    "$(printf '%s\n' "$RCS_OUT" | grep '^coverage:')" \
+    "coverage: roots=1 discovered=4 parsed=1 skipped=3 (not-leg=2 unattributed=1)"
+
 # --- (i) since-edge: last_epoch >= SINCE_EPOCH is inclusive
 export SCORECARD_PROJECTS_DIR="$HERE/fixtures/leg-over-by-day/since-edge"
 SINCE_OUT=$("$OVER_BY_DAY" --since 2026-08-05T00:00:00Z 2>/dev/null)

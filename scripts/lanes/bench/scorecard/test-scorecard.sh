@@ -188,6 +188,26 @@ ROLE_RELAY_OUT=$("$POSTPIN" --since 2026-01-01T00:00:00Z --role leg 2>/dev/null)
 check "role-relay: a legN+relay title is not counted into the leg cohort" \
     "$(session_count "$ROLE_RELAY_OUT" leg)" "0"
 
+# --- (e1) role-console-slug (HIMMEL-3286): role attribution derives from
+# scripts/lib/leg-identity.sh, not a substring race. Four sessions:
+#   1111  HIMMEL-3266-N186-console-stub-nonce-text  a REAL leg name from the
+#         2026-09-20 corpus whose slug contains `console`  -> leg (was console)
+#   2222  HIMMEL-nextleg-2026-09-20K-console        a genuine console -> console
+#   3333  no customTitle                             -> unattributed, counted by name
+#   4444  HIMMEL-3299-scratch-notes                  titled non-participant -> other-role
+export SCORECARD_PROJECTS_DIR="$HERE/fixtures/role-console-slug"
+unset SCORECARD_LAUNCH_LOG_DIR
+
+RCS_LEG=$("$POSTPIN" --since 2026-01-01T00:00:00Z --role leg 2>/dev/null)
+check "role-console-slug: a leg whose slug contains 'console' is counted as a leg (was console)" \
+    "$(session_count "$RCS_LEG" leg)" "1"
+RCS_CONSOLE=$("$POSTPIN" --since 2026-01-01T00:00:00Z --role console 2>/dev/null)
+check "role-console-slug: only the genuine console is counted as a console" \
+    "$(session_count "$RCS_CONSOLE" console)" "1"
+check "role-console-slug: coverage names the untitled session as unattributed, apart from other-role" \
+    "$(printf '%s\n' "$RCS_LEG" | grep '^coverage:')" \
+    "coverage: roots=1 discovered=4 parsed=1 skipped=3 (other-role=1 role-filter=1 unattributed=1)"
+
 # --- (e) exit-contract: a successful run (zero leg-burn failures) must exit 0
 # (HIMMEL-2977 /pr-check round-3 codex-1/codex-4 fix: `[ cond ] && echo` as the
 # last statement made a clean run's own exit code depend on the warning firing).

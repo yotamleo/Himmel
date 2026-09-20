@@ -72,9 +72,11 @@ Session names carry the role, and tooling reads it back:
 | `-N<k>-` | a leg (session `<TICKET>-N<k>-<slug>`, doc `<TICKET>-N<k>-<slug>-<date>-RESUME.md`, label `N<k>`, a successor `N<k>b` is a distinct session; the legacy `…-leg[N]<k>-…` doc spelling is still read — `scripts/lib/leg-identity.sh`) |
 | `-judge-<qid>` | a judge session (`HIMMEL-<ticket>-judge-<qid>`) |
 
-The scorecard classifiers (`scripts/lanes/bench/scorecard/`) key on the
-`-console`, `-relay` and `legN` substrings, and `verdict-template.md` on
-`-judge-<qid>`; renaming a suffix silently misclassifies burn data.
+The scorecard classifiers (`scripts/lanes/bench/scorecard/`) read a leg from
+`scripts/lib/leg-identity.sh` (so a leg whose slug says `console` is still a
+leg), key a console and a relay on the `-console` and `-relay` substrings, and
+count an untitled session as `unattributed`; `verdict-template.md` keys on
+`-judge-<qid>`. Renaming a suffix silently misclassifies burn data.
 
 ## Lane
 

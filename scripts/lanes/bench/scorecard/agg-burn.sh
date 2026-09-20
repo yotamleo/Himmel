@@ -7,8 +7,9 @@
 #
 # Copied from the HIMMEL-2977 baseline Appendix B (burn-sweep.sh + agg-burn.sh,
 # leg N207, 2026-09-12) and folded into one self-contained script: walks
-# Claude Code transcripts, tags each session by role (console/leg/relay/other)
-# + parent role for subagents + dominant model, runs leg-burn.sh over it, and
+# Claude Code transcripts, tags each session by role (console/leg/relay/other,
+# or `unattributed` for an untitled session: its own row, never folded into
+# other; HIMMEL-3286) + parent role for subagents + dominant model, runs leg-burn.sh over it, and
 # aggregates by role x model. The baseline hardcoded a 7-day mtime window over
 # one project's transcripts; this reads --since/--until against each
 # session's own timestamp span instead (a session with any activity inside

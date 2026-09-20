@@ -167,6 +167,8 @@ while IFS= read -r f; do
     [ -r "$f" ] || { sc_cov unreadable; continue; }
     case "$f" in */subagents/*) sc_cov subagent; continue ;; esac
     name=$(title_of "$f"); role=$(role_of "$name")
+    # an untitled session is counted by name, never folded into other-role
+    [ "$role" != unattributed ] || { sc_cov unattributed; continue; }
     case "$role" in leg|console) ;; *) sc_cov other-role; continue ;; esac
     if [ -n "$ROLE_FILTER" ] && [ "$role" != "$ROLE_FILTER" ]; then sc_cov role-filter; continue; fi
 

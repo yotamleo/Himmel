@@ -9,13 +9,17 @@
 # transcript reader must agree on, because a copy that drifts is how a metric
 # ends up reported over an input set it never had (HIMMEL-3269):
 #   1. which transcript roots a default run reads       (sc_transcript_roots)
-#   2. which session title is a leg / relay / console   (role_of)
+#   2. which session title is a leg / relay / console   (role_of, leg identity
+#      derived from scripts/lib/leg-identity.sh; untitled = unattributed)
 #   3. how much of the discovered input a number covers (sc_cov / sc_cov_line)
 #
 # Users: agg-burn.sh, agg-postpin.sh, extra-metrics.sh, leg-over-by-day.sh
 # (all three parts); leg-relaunch.sh, ready-go-latency.sh (part 3 only).
 # ledger-metrics.sh and merged-count.sh read `gh`/git, not transcripts, and print
 # their own `coverage:` lines in the same shape.
+
+# shellcheck source=../../../../lib/leg-identity.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../../../../lib/leg-identity.sh"
 
 # The transcript roots, one per line; the FIRST is the one that must exist.
 #
@@ -64,21 +68,51 @@ EOF
 
 title_of() { grep -o '"customTitle":"[^"]*"' "$1" 2>/dev/null | tail -1 | sed 's/.*:"//; s/"$//'; }
 
-# Session title -> role. A leg's title has been minted two ways: the early
-# `...legN<k>...` scheme and the current `<TICKET>-N<k>-<slug>` scheme
-# (e.g. HIMMEL-3270-N189-launch-logs-writer). The `legN` pattern alone matched
-# 0 of the current legs, so `--role leg` returned a header row and no sessions.
-# console and relay win over both (a `...legN..-relay` title is a relay).
+# Session title -> role. A leg's identity is scripts/lib/leg-identity.sh's call
+# (HIMMEL-3277), not a substring guess here: a title that leg_identity reads as
+# a leg is a leg whatever its slug contains, so a leg working on console tooling
+# (HIMMEL-3266-N186-console-stub-nonce-text) is never counted into the console
+# cohort (HIMMEL-3286). Only titles it does NOT recognise reach the substring
+# arms below, which is where a genuine console (`<PREFIX>-nextleg-<date>-console`)
+# lands.
+#
+# An empty title (a session that was never named) is `unattributed`, not `other`:
+# `other` is a titled non-participant, and folding the unattributable into it
+# hides how much of the input no role could be assigned to. Callers count it by
+# name (sc_cov unattributed).
+#
+# The two leg-title schemes are the early `...legN<k>...` and the current
+# `<TICKET>-N<k>-<slug>` (e.g. HIMMEL-3270-N189-launch-logs-writer); the arms
+# below still cover the shapes leg_identity does not, so no title that was a leg
+# before is one no longer. A recognised leg keeps the relay precedence it always
+# had (a `...legN..-relay` title is a relay).
 #
 # ponytail: the older `leg<Letter><k>` titles (legG3, legS1 ...) still fall to
 # `other`; widening to them would move the 2026-09-05 control window's numbers.
+# ponytail: a leg-shaped title leg_identity does not recognise still races on the
+# substring arms, and `-relay` keeps its precedence over a recognised leg - so a
+# work leg whose slug says `relay` (HIMMEL-3202-N82-relay-guard-verb-substring)
+# is still counted as a relay, the same defect class HIMMEL-3286 removed for
+# `console`, left alone here because no relay has a canonical identity to derive.
 role_of() {
+    [ -n "$1" ] || { echo unattributed; return 0; }
+    if _sc_is_leg_title "$1"; then
+        case "$1" in *-relay*) echo relay ;; *) echo leg ;; esac
+        return 0
+    fi
     case "$1" in
         *-console*) echo console ;;
         *-relay*) echo relay ;;
         *legN*) echo leg ;;
         *) if [[ $1 =~ -N[0-9]+- ]]; then echo leg; else echo other; fi ;;
     esac
+}
+
+# _sc_is_leg_title <title>: true when leg_identity reads the title as a leg.
+# leg_identity's contract is a label of the shape N<k>[<letters>] for a leg and
+# the whole (sanitised) stem for anything else, so the label shape is the test.
+_sc_is_leg_title() {
+    [[ $(leg_label "$1") =~ ^N[0-9]+[a-z]*$ ]]
 }
 
 # sc_launch_context <launch-log-dir> <session-title>: prints the launch context

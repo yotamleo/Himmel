@@ -79,7 +79,9 @@ while IFS= read -r f; do
     [ -r "$f" ] || { sc_cov unreadable; continue; }
     case "$f" in */subagents/*) sc_cov subagent; continue ;; esac
     name=$(title_of "$f")
-    [ "$(role_of "$name")" = leg ] || { sc_cov not-leg; continue; }
+    role=$(role_of "$name")
+    [ "$role" != unattributed ] || { sc_cov unattributed; continue; }
+    [ "$role" = leg ] || { sc_cov not-leg; continue; }
 
     first_ts=$(ts_of "$f" head)
     [ -n "$first_ts" ] || { sc_cov no-timestamp; continue; }

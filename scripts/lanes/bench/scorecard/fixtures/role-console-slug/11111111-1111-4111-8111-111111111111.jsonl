@@ -1,0 +1,1 @@
+{"type":"assistant","timestamp":"2026-09-20T10:00:00.000Z","customTitle":"HIMMEL-3266-N186-console-stub-nonce-text","message":{"id":"msg_1","model":"claude-sonnet-5-20260115","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":100,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":10}}}
