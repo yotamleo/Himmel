@@ -183,7 +183,7 @@ leg_tail_status() {  # leg_tail_status <leg doc> -- prints the marker, or nothin
     line="$(grep -E '^- (.*[^A-Za-z0-9_])?(WRAPPED|READY|RESOLVED|BLOCKED|HALTED|FINDING|LIVE)([^A-Za-z0-9_]|$)' "$doc" 2>/dev/null \
         | tail -n 1)" || return 0
     for m in $LEG_TAIL_MARKERS; do
-        if printf '%s\n' "$line" | grep -Eq "(^|[^A-Za-z0-9_])$m([^A-Za-z0-9_]|\$)"; then
+        if grep -Eq "(^|[^A-Za-z0-9_])$m([^A-Za-z0-9_]|\$)" <<< "$line"; then
             printf '%s' "$m"
             return 0
         fi
