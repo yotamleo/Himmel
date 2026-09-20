@@ -170,6 +170,22 @@ check "6 next writes predecessor HANDOFF" "$([ -f "$handoff6A" ] && echo yes)" "
 check "6 successor stub names the predecessor" "$(grep -c "DEMO-nextleg-${today}A-console.md" "$doc6B")" "1"
 check "6 successor has no surviving placeholder" "$(grep -c '{{' "$doc6B" 2>/dev/null)" "0"
 check "6 handoff has no surviving placeholder" "$(grep -c '{{' "$handoff6A" 2>/dev/null)" "0"
+
+# --- 6c (HIMMEL-3266): the GENERATED stub and HANDOFF must not tell the
+# successor to mint and rotate a fresh nonce per leg -- leg-preface.md (the
+# authority) says a relay MAY keep the leg's token. Asserted on the emitted
+# files, not the templates: this is what every console hand-patched.
+stale6c='mint a fresh|rotate nonces to|hands you a fresh token per leg'
+check "6c control: the stale-rotation pattern matches the pre-#967 wording" \
+    "$(printf '%s\n' 'So, per leg: mint a fresh B-<leg>-<hex> token, hand it to the predecessor' | grep -icE "$stale6c")" "1"
+check "6c successor stub carries no mint-and-rotate instruction" \
+    "$(tr '\n' ' ' < "$doc6B" | tr -s ' ' | grep -icE "$stale6c")" "0"
+check "6c HANDOFF carries no mint-and-rotate instruction" \
+    "$(tr '\n' ' ' < "$handoff6A" | tr -s ' ' | grep -icE "$stale6c")" "0"
+check "6c successor stub says rotation is not a precondition of succession" \
+    "$(tr '\n' ' ' < "$doc6B" | tr -s ' ' | grep -c 'rotation is not a precondition')" "1"
+check "6c HANDOFF says a relay MAY keep the leg's token" \
+    "$(tr '\n' ' ' < "$handoff6A" | tr -s ' ' | grep -c 'MAY keep')" "1"
 HANDOVER_DIR="$root" bash "$QL" release "$doc6A" "$token6a" >/dev/null 2>&1
 
 # --- 6b: --doc outside the successor's own state dir --------------------

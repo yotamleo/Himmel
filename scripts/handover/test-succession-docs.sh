@@ -185,6 +185,48 @@ contains 'console-template Live state: names the RELAYED and UNCONFIRMED reads' 
 contains 'running-a-console: an unrotated relay that the leg accepted reads RELAYED, not an incident' "$running" 'RELAYED'
 contains 'retask-channel.md: the tick reads the leg own bullet, never asserts strandedness' "$retask" 'never asserts'
 
+# --- 6. HIMMEL-3266: the console-side text agrees with the preface ------------
+# console.sh next copies console-template.md into the successor stub and
+# console-handoff-template.md into the HANDOFF, so wording that still told the
+# successor to mint and rotate a fresh nonce per leg (the pre-#967 rule) was
+# reproduced into every stub and hand-patched by each console in turn. Pin the
+# stale shapes ABSENT and the preface's rule (a relay MAY keep the leg's token;
+# rotation is optional) PRESENT.
+absent() {  # absent <label> <haystack> <regex>  (case-insensitive, whitespace-normalised)
+    local hit
+    hit="$(printf '%s\n' "$2" | tr '\n' ' ' | tr -s ' ' | grep -iE -- "$3" | head -n 1)"
+    if [ -z "$hit" ]; then pass "$1"; else fail "$1 (stale text matches '$3')"; fi
+}
+flat() { printf '%s\n' "$1" | tr '\n' ' ' | tr -s ' '; }
+
+# Control: the pattern must be able to fire on the retired wording, or every
+# `absent` below is vacuous.
+retired_step9='So, per leg: mint a fresh B-<leg>-<hex> token, hand it to the predecessor, and ask it'
+retired_starts='Rotate nonces to B-<leg>-<hex>, quoting each A token verbatim'
+retired_step4='The successor hands you a fresh token per leg (ACTION ZERO step 9)'
+stale_rotate='mint a fresh|rotate nonces to|hands you a fresh token per leg'
+for r in "step9:$retired_step9" "starts:$retired_starts" "step4:$retired_step4"; do
+    absent_hit="$(printf '%s\n' "${r#*:}" | grep -icE -- "$stale_rotate")"
+    if [ "$absent_hit" = 1 ]; then pass "control: the stale-rotation pattern matches the retired ${r%%:*} wording"; else fail "control: the stale-rotation pattern misses the retired ${r%%:*} wording"; fi
+done
+
+absent 'ACTION ZERO step 9 does not tell the successor to mint a fresh token per leg' "$step9" "$stale_rotate"
+contains 'ACTION ZERO step 9: a relay MAY carry a fresh token but need not' "$(flat "$step9")" 'MAY also carry a fresh'
+contains 'ACTION ZERO step 9: rotation is not a precondition of succession' "$(flat "$step9")" 'rotation is not a precondition'
+contains 'ACTION ZERO step 9 defers to the preface as the authority' "$step9" 'leg-preface.md'
+contains 'ACTION ZERO step 9: only the chain form always rotates' "$(flat "$step9")" 'the chain always rotates'
+
+step4="$(printf '%s\n' "$handing" | awk '/^4\. \*\*/ { f = 1 } /^5\. \*\*/ { f = 0 } f')"
+absent 'Handing over step 4 does not say the successor always hands over a fresh token' "$step4" "$stale_rotate"
+contains 'Handing over step 4: the fresh token is quoted only when the successor issued one' "$(flat "$step4")" 'if the successor issued one'
+
+absent 'running-a-console Handing over does not say the successor always hands over a fresh token' "$running" "$stale_rotate"
+contains 'running-a-console Handing over: the fresh token is optional' "$(flat "$running")" 'optional'
+
+absent 'handoff "How starts" does not tell the successor to rotate nonces' "$starts" "$stale_rotate"
+contains 'handoff "How starts": a relay MAY keep the leg token' "$(flat "$starts")" 'MAY keep'
+contains 'handoff "How starts": a leg is the successor only once it has quoted back' "$(flat "$starts")" 'only once it has quoted back'
+
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-succession-docs.sh'
     exit 0
