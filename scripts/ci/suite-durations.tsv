@@ -429,6 +429,7 @@ scripts/lib/test-shared-branch-lock.sh	1
 scripts/lib/test-telemetry.sh	0
 scripts/lib/test-unwire-pretooluse-hooks.sh	0
 scripts/lib/test-unwire-singlekey.sh	0
+scripts/lib/test-unwire-user-claude-md.sh	0
 scripts/lib/test-vault-resolve.sh	1
 scripts/lib/test-vbox-path.sh	0
 scripts/lib/test-watch-loop.sh	9

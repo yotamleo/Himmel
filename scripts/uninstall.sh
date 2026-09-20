@@ -1766,7 +1766,9 @@ project_is_himmel_checkout() {
 # row, each row's class deciding whether it acts; the helpers come from THIS
 # script's own lib dir (see the HIMMEL-3058 note above) and the read-back
 # re-reads the files rather than trusting a helper's rc. --dry-run flows through.
-HIMMEL_UCM_MARKER="$( . "$SCRIPT_DIR/lib/unwire-user-claude-md.sh" >/dev/null 2>&1; printf '%s' "${_UNWIRE_UCM_MARKER:-}" )"
+# The rule-file read-back is the helper's own `--probe` (HIMMEL-3333): it must
+# agree with the strip about what a marker IS -- a whole line outside a fenced
+# code block -- or a file that merely quotes the block would read as still wired.
 HIMMEL_HUD_PAT="$( . "$SCRIPT_DIR/lib/unwire-hud-config.sh" >/dev/null 2>&1; printf '%s' "${_UNWIRE_HUD_PAT:-}" )"
 unwire_user_files() {
   local _ix _p _dry=0
@@ -1790,8 +1792,8 @@ unwire_user_files() {
     else
       if ! bash "$SCRIPT_DIR/lib/unwire-user-claude-md.sh" "$_p" "$_dry"; then
         fail_step "[6/8] user rule file: could not strip himmel's block from $_p"
-      elif [ "$_dry" -eq 0 ] && [ -f "$_p" ] && [ -n "$HIMMEL_UCM_MARKER" ] &&
-          grep -qxF "<!-- BEGIN $HIMMEL_UCM_MARKER -->" "$_p"; then
+      elif [ "$_dry" -eq 0 ] && [ -f "$_p" ] &&
+          { bash "$SCRIPT_DIR/lib/unwire-user-claude-md.sh" --probe "$_p" >/dev/null 2>&1; [ "$?" -eq 3 ]; }; then
         echo "  STILL WIRED: himmel working-principles block  [$_p]" >&2
         fail_step "[6/8] read-back: himmel working-principles block still in $_p"
       fi

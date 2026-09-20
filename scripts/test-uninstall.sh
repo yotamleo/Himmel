@@ -2593,6 +2593,42 @@ rc=0; PATH="$TMP/u25-bin:$PATH" bash "$U17_SCRIPTS/lib/unwire-user-claude-md.sh"
 assert_rc 'U25 failed head halts the strip' 1 "$rc"
 u_same 'U25 target left byte-identical when head fails' "$TMP/u25-rules" "$TMP/u25-before"
 
+# U27 (HIMMEL-3333) — a CLAUDE.md that merely QUOTES the block inside a code
+# fence is a file about himmel, not a wired one: the strip leaves it
+# byte-identical and the read-back (the helper's own --probe) agrees, so the run
+# completes instead of halting on a false STILL WIRED.
+u_residue_fixture u27
+# shellcheck disable=SC2016 # the fence and $U17_BEGIN are literal fixture text
+printf '# my notes\n\nhimmel appends this:\n\n```\n%s\n## Working principles\n<!-- END HIMMEL:working-principles -->\n```\n\nmine.\n' "$U17_BEGIN" > "$U_HOME/.claude/CLAUDE.md"
+cp "$U_HOME/.claude/CLAUDE.md" "$TMP/u27-fenced"
+u_run_fx
+assert_rc 'U27 quoted-block file completes' 0 "$rc"
+u_same 'U27 quoted-block file left byte-identical' "$U_HOME/.claude/CLAUDE.md" "$TMP/u27-fenced"
+assert_not_has 'U27 no false STILL WIRED on a quoted block' 'STILL WIRED' "$out"
+u_absent 'U27 the wired AGENTS.md after it is still stripped' "$U_HOME/.codex/AGENTS.md"
+
+# U28 (HIMMEL-3333) — CRLF markers (an editor converted the file) are refused,
+# not read as "no block": the run halts, the file is byte-identical, and the
+# next file is not touched after the halt.
+u_residue_fixture u28
+sed 's/$/\r/' "$U_HOME/.claude/CLAUDE.md" > "$TMP/u28-crlf"
+cp "$TMP/u28-crlf" "$U_HOME/.claude/CLAUDE.md"
+cp "$U_HOME/.codex/AGENTS.md" "$TMP/u28-agents"
+u_run_fx
+assert_rc 'U28 CRLF markers halt the run' 2 "$rc"
+u_same 'U28 CRLF file left byte-identical' "$U_HOME/.claude/CLAUDE.md" "$TMP/u28-crlf"
+assert_has 'U28 refusal says CRLF' 'CRLF' "$out"
+u_same 'U28 AGENTS.md not touched after the halt' "$U_HOME/.codex/AGENTS.md" "$TMP/u28-agents"
+
+# U29 (HIMMEL-3333) — the edit path keeps a copy of the file as found beside it;
+# the install-created AGENTS.md (nothing of the operator's) leaves no backup.
+u_residue_fixture u29
+u_run_fx
+assert_rc 'U29 wet run completes' 0 "$rc"
+u_same 'U29 backup of CLAUDE.md is the file as found' "$U_HOME/.claude/CLAUDE.md.himmel-uninstall-backup" "$TMP/u17-claude-md-full"
+u_absent 'U29 no backup for the install-created AGENTS.md' "$U_HOME/.codex/AGENTS.md.himmel-uninstall-backup"
+assert_has 'U29 output names the backup' "$U_HOME/.claude/CLAUDE.md.himmel-uninstall-backup" "$out"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "ALL PASS"
