@@ -133,6 +133,23 @@ check "sort-order: legs are ordered numerically by leg number, not lexicographic
 SORT_V_COUNT=$(grep -c 'sort -V' "$RELAUNCH")
 check "portability: leg-relaunch.sh does not use GNU-only sort -V" "$SORT_V_COUNT" "0"
 
+# --- (o) unreadable: a listed-but-unreadable doc is named `unreadable` in the
+# coverage line, not counted as parsed with a default run count (HIMMEL-3269 CR
+# round 1). Skipped when chmod cannot make a file unreadable (running as root).
+UNR_DIR=$(mktemp -d "${TMPDIR:-/tmp}/relaunch-unreadable.XXXXXX")
+cp "$HERE"/fixtures/leg-relaunch/main/* "$UNR_DIR"/
+UNR_FILE=$(find "$UNR_DIR" -type f | sort | head -1)
+chmod 000 "$UNR_FILE"
+if [ -r "$UNR_FILE" ]; then
+    echo "ok - unreadable: SKIPPED (chmod 000 leaves the file readable, e.g. running as root)"
+else
+    export SCORECARD_HANDOVER_DIR="$UNR_DIR"
+    UNR_OUT=$("$RELAUNCH" --since 2026-01-01T00:00:00Z 2>/dev/null)
+    check "unreadable: the coverage line names the unreadable doc and does not count it parsed" \
+        "$(printf '%s\n' "$UNR_OUT" | grep '^coverage:')" "coverage: discovered=2 parsed=1 skipped=1 (unreadable=1)"
+fi
+chmod 600 "$UNR_FILE"; rm -rf "$UNR_DIR"
+
 echo "---"
 if [ "$fails" -eq 0 ]; then
     echo "PASS - test-leg-relaunch.sh: 0 failures"

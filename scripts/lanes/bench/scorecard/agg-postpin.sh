@@ -135,6 +135,9 @@ if ! sc_discover "$FILES" "$DISC_ERR"; then
 fi
 
 while IFS= read -r f; do
+    # title_of silences read errors: without this an unreadable file reads as an
+    # empty title and is misfiled as an intentional other-role exclusion
+    [ -r "$f" ] || { sc_cov unreadable; continue; }
     case "$f" in */subagents/*) sc_cov subagent; continue ;; esac
     name=$(title_of "$f"); role=$(role_of "$name")
     case "$role" in leg|console) ;; *) sc_cov other-role; continue ;; esac

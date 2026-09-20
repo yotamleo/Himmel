@@ -112,6 +112,9 @@ if ! sc_discover "$FILES" "$DISC_ERR"; then
 fi
 
 while IFS= read -r f; do
+    # title_of silences read errors: an unreadable file would read as an empty
+    # title and be misfiled as an intentional not-console exclusion
+    [ -r "$f" ] || { sc_cov unreadable; continue; }
     case "$f" in */subagents/*) sc_cov subagent; continue ;; esac
     name=$(title_of "$f")
     case "$name" in *-console*) ;; *) sc_cov not-console; continue ;; esac

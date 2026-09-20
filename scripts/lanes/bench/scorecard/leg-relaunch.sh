@@ -91,6 +91,9 @@ while IFS= read -r path; do
     doc_epoch=$(to_epoch "$doc_date") || { sc_cov bad-date; continue; }
     [ "$doc_epoch" -ge "$SINCE_EPOCH" ] || { sc_cov out-of-window; continue; }
     if [ -n "$UNTIL_EPOCH" ] && [ "$doc_epoch" -ge "$UNTIL_EPOCH" ]; then sc_cov out-of-window; continue; fi
+    # the greps below silence read errors: an unreadable doc would be counted
+    # parsed with a default run count instead of being named as a loss
+    [ -r "$H/$f" ] || { sc_cov unreadable; continue; }
     sc_cov parsed
 
     leg=$(printf '%s' "$f" | grep -oE 'legN[0-9]+')

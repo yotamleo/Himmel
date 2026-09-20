@@ -135,6 +135,25 @@ check_contains "malformed: a leg-burn.sh failure prints a skip WARNING" \
     "$MALFORMED_ERR" "WARNING: 1 transcript(s) skipped due to leg-burn.sh failure"
 check_exit "malformed: a skipped transcript still exits 0" "$MALFORMED_EXIT" "0"
 
+# --- (l) unreadable: a listed-but-unreadable transcript is named `unreadable` in
+# the coverage line, not misfiled as an intentional `not-leg` exclusion
+# (HIMMEL-3269 CR round 1: title_of suppresses read errors, so an empty title
+# looked like a non-leg session). Skipped when chmod cannot make a file
+# unreadable (running as root).
+UNR_DIR=$(mktemp -d "${TMPDIR:-/tmp}/lod-unreadable.XXXXXX")
+cp "$HERE"/fixtures/leg-over-by-day/boundary/*.jsonl "$UNR_DIR"/
+UNR_FILE=$(find "$UNR_DIR" -name '*.jsonl' | sort | head -1)
+chmod 000 "$UNR_FILE"
+if [ -r "$UNR_FILE" ]; then
+    echo "ok - unreadable: SKIPPED (chmod 000 leaves the file readable, e.g. running as root)"
+else
+    export SCORECARD_PROJECTS_DIR="$UNR_DIR"
+    UNR_OUT=$("$OVER_BY_DAY" --since 2026-01-01T00:00:00Z 2>/dev/null)
+    check_contains "unreadable: the coverage line names the unreadable transcript" \
+        "$(printf '%s\n' "$UNR_OUT" | grep '^coverage:')" "unreadable=1"
+fi
+chmod 600 "$UNR_FILE"; rm -rf "$UNR_DIR"
+
 echo "---"
 if [ "$fails" -eq 0 ]; then
     echo "PASS - test-leg-over-by-day.sh: 0 failures"
