@@ -192,7 +192,7 @@ unr_case() {
     check "$label control: both sessions counted" \
         "$(session_count "$CONTROL_OUT" TOTAL)" "2"
     chmod 000 "$lock"
-    if [ -r "$lock" ] && [ -x "$lock" ]; then
+    if [ -r "$lock" ]; then
         echo "SKIP - $label: chmod 000 does not bind this user (uid $(id -u)); precondition not met"
         chmod u+rwx "$lock"; return 0
     fi
