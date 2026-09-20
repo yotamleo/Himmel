@@ -1092,6 +1092,53 @@ contains 'an agreeing arm still surfaces the live legs outside it (HIMMEL-3293)'
 printf '%s\n' '# console' '' 'no Live state section in this doc at all' > "$W/handover/console.md"
 contains 'a console doc with no Live state section reads legset=unknown (HIMMEL-3293)' "$(t3293 "$W/handover/$a3293.md")" 'legset=unknown'
 
+# --- HIMMEL-3305: a resolved FINDING must read differently from an open one.
+# The ticket's case (leg N219, 2026-09-20): a leg raised a FINDING, the console
+# accepted it the same minute, and tails= kept reading FINDING for the 23 minutes
+# the leg spent doing the authorised work. The vocabulary had no word to retire a
+# finding with, and the derivation took the FIRST marker on the last marker-bearing
+# line, so word order decided the status. RED control (pre-fix tick.sh, the
+# `resolved` case below): tails=N305:FINDING -- for a bullet that says the finding
+# is settled. Fix: RESOLVED joins the vocabulary and the bullet's status is its
+# highest-precedence marker (WRAPPED > READY > RESOLVED > BLOCKED > HALTED >
+# FINDING > LIVE), matched as a whole word.
+d3305="$W/handover/HIMMEL-3305-N305-resolved-2026-09-20-RESUME.md"
+tail3305() {  # tail3305 <bullet>... -- the tails= entry of a leg doc holding these bullets
+    printf '%s\n' '# leg' '- 19:40 LIVE — working' "$@" > "$d3305"
+    bash "$SUT" --legs "$d3305" 2>/dev/null | sed -E 's/.* tails=([^ ]*) .*/\1/'
+}
+open3305='- 19:51 FINDING premises refuted (the console has not answered yet)'
+res3305='- 19:52 RESOLVED — FINDING accepted by the console, back to work'
+contains 'an open FINDING still reads FINDING (HIMMEL-3305)' "$(tail3305 "$open3305")" 'N305:FINDING'
+contains 'a resolved FINDING reads RESOLVED, not FINDING (HIMMEL-3305)' "$(tail3305 "$open3305" "$res3305")" 'N305:RESOLVED'
+# The newest marker-bearing bullet still wins: work after the ruling reads as work,
+# and a new finding after a resolved one reads as open again.
+contains 'a LIVE bullet after the resolution reads LIVE (HIMMEL-3305)' "$(tail3305 "$open3305" "$res3305" '- 20:05 LIVE — PR open, CI running')" 'N305:LIVE'
+contains 'a second FINDING after a resolved one reads FINDING (HIMMEL-3305)' "$(tail3305 "$open3305" "$res3305" '- 20:20 FINDING the base moved under the diff')" 'N305:FINDING'
+# Word order must not decide the status (the ticket's two bullets, with the marker
+# that retires the finding). Each permutation reads the same.
+contains 'RESOLVED before FINDING and LIVE reads RESOLVED (HIMMEL-3305)' "$(tail3305 '- 20:10 RESOLVED FINDING, back to LIVE')" 'N305:RESOLVED'
+contains 'RESOLVED after FINDING and LIVE reads RESOLVED (HIMMEL-3305)' "$(tail3305 '- 20:10 LIVE again, FINDING RESOLVED')" 'N305:RESOLVED'
+contains 'READY beats a BLOCKED it mentions, marker first (HIMMEL-3305)' "$(tail3305 '- 20:30 READY 999 abc GREEN (was BLOCKED)')" 'N305:READY'
+contains 'READY beats a BLOCKED it mentions, marker last (HIMMEL-3305)' "$(tail3305 '- 20:30 BLOCKED cleared, now READY 999 abc GREEN')" 'N305:READY'
+contains 'WRAPPED beats the READY it mentions (HIMMEL-3305)' "$(tail3305 '- 21:00 WRAPPED — merged after READY and GO')" 'N305:WRAPPED'
+# A marker is a whole word: UNRESOLVED (a routine CR-thread count) is not RESOLVED.
+contains 'UNRESOLVED is not the RESOLVED marker (HIMMEL-3305)' "$(tail3305 '- 20:00 LIVE — 2 UNRESOLVED threads')" 'N305:LIVE'
+# SHIPPED and MERGED stay OUT of the vocabulary: a bullet carrying only a coined
+# word has no marker, so the tick reads the last real one. leg-preface.md tells a
+# leg between GREEN and READY to report LIVE for exactly this reason.
+contains 'a coined SHIPPED bullet is invisible to the tick (HIMMEL-3305)' "$(tail3305 "$open3305" '- 20:05 SHIPPED to PR 999')" 'N305:FINDING'
+contains 'a LIVE bullet is how a leg between GREEN and READY reports (HIMMEL-3305)' "$(tail3305 "$open3305" '- 20:05 LIVE — SHIPPED to PR 999, watching CI')" 'N305:LIVE'
+# The tick's regex and the documented vocabulary change TOGETHER: a marker legs
+# are not told to write is not a fix, and one the tick does not parse is worse.
+repo3305="$(cd "$HERE/../../.." && pwd)"
+for pref3305 in leg-preface.md leg-preface-claudex.md; do
+    # shellcheck disable=SC2016  # backtick-quoted marker, literal doc text
+    contains "$pref3305 tells a leg to report RESOLVED (HIMMEL-3305)" "$(cat "$repo3305/docs/handover/$pref3305")" '`RESOLVED`'
+done
+# shellcheck disable=SC2016  # backtick-quoted markers, literal doc text
+contains 'leg-preface.md says SHIPPED and MERGED are not markers (HIMMEL-3305)' "$(cat "$repo3305/docs/handover/leg-preface.md")" '`SHIPPED` and `MERGED` are deliberately not in the'
+
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-tick.sh'
     exit 0

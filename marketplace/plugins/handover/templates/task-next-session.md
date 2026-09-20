@@ -16,7 +16,7 @@ gets rulings the normal way, via a direct `SendMessage`. Either way, this
 doc's own **## Console Rulings** section (appended below as rulings land) is
 the record — check it, don't wait on it.
 
-report at MILESTONES only (LIVE, FINDING, READY, BLOCKED, HALTED, WRAPPED); no progress chatter; acks to a rotation are one line.
+report at MILESTONES only (LIVE, FINDING, RESOLVED, READY, BLOCKED, HALTED, WRAPPED); no progress chatter; acks to a rotation are one line.
 
 ## Leg Handover Threshold
 

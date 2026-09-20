@@ -162,6 +162,34 @@ csv_add() {
     fi
 }
 
+# HIMMEL-3305: a leg's tails= status is the marker on its newest marker-bearing
+# `- ` bullet. The vocabulary (docs/handover/leg-preface.md -- change the two
+# together) is LIVE / FINDING / RESOLVED / READY / BLOCKED / HALTED / WRAPPED.
+# RESOLVED retires a FINDING the console has answered: without it FINDING stayed
+# the newest marker for the whole window the leg spent doing the authorised work,
+# and a console could not tell "answer me" from "you answered me half an hour ago".
+# A bullet may name more than one marker ("RESOLVED -- FINDING accepted, back to
+# LIVE"); the status is the highest-PRECEDENCE one, never the first or last in
+# reading order: a bullet that closes a state outranks the state it mentions, so
+# WRAPPED > READY > RESOLVED > BLOCKED > HALTED > FINDING > LIVE. A marker is a
+# whole word (UNRESOLVED is a CR-thread count, not RESOLVED). SHIPPED / MERGED are
+# deliberately NOT markers -- a leg between GREEN and READY reports LIVE.
+# ponytail: precedence is per bullet, so a bullet that merely MENTIONS a
+# higher-precedence marker in prose ("LIVE -- send READY at green") reads as that
+# marker; the preface tells a leg to name one marker per bullet.
+LEG_TAIL_MARKERS="WRAPPED READY RESOLVED BLOCKED HALTED FINDING LIVE"
+leg_tail_status() {  # leg_tail_status <leg doc> -- prints the marker, or nothing
+    local doc="$1" line m
+    line="$(grep -E '^- (.*[^A-Za-z0-9_])?(WRAPPED|READY|RESOLVED|BLOCKED|HALTED|FINDING|LIVE)([^A-Za-z0-9_]|$)' "$doc" 2>/dev/null \
+        | tail -n 1)" || return 0
+    for m in $LEG_TAIL_MARKERS; do
+        if printf '%s\n' "$line" | grep -Eq "(^|[^A-Za-z0-9_])$m([^A-Za-z0-9_]|\$)"; then
+            printf '%s' "$m"
+            return 0
+        fi
+    done
+}
+
 clock="$(date +%H:%M 2>/dev/null)" || clock="??:??"
 
 hb=skip
@@ -216,8 +244,7 @@ for leg in $LEGS_SPLIT; do
             *CORRUPT*) lock_status=CORRUPT ;;
             *) lock_status=UNKNOWN ;;
         esac
-        tail_status="$(grep -E '^- .*(LIVE|FINDING|READY|BLOCKED|HALTED|WRAPPED)' "$leg_doc" 2>/dev/null \
-            | tail -n 1 | grep -Eo '(LIVE|FINDING|READY|BLOCKED|HALTED|WRAPPED)' | head -n 1)" || tail_status=""
+        tail_status="$(leg_tail_status "$leg_doc")"
         [ -n "$tail_status" ] || tail_status="?"
         # HIMMEL-3293: FREE used to cover both "released cleanly at wrap" and "the
         # lock vanished while the leg worked", and only the second is a reason to

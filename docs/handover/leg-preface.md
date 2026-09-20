@@ -30,10 +30,28 @@ console by `SendMessage`, and you confirm the console's exact session name in
 - **A BLOCKED, a permission prompt, or a question of your own goes to the
   console FIRST**, before you improvise anything.
 
-Report as `LIVE` / `FINDING` / `READY <pr> <full head> GREEN` / `BLOCKED` /
-`WRAPPED`, **and** as `- ` bullets under `## Results` at the end of your
-handover doc. Report at **milestones only** — a leg narrating every step burns
-the console's context as fast as its own.
+Report as `LIVE` / `FINDING` / `RESOLVED` / `READY <pr> <full head> GREEN` /
+`BLOCKED` / `WRAPPED`, **and** as `- ` bullets under `## Results` at the end of
+your handover doc. Report at **milestones only** — a leg narrating every step
+burns the console's context as fast as its own.
+
+The console's tick reads the marker on your **newest marker-bearing bullet**
+(`tails=`), so that vocabulary is a contract, not a style:
+
+- **Name one marker per bullet** — the word that says where you are now. If a
+  bullet names several, the tick reads the highest of `WRAPPED` > `READY` >
+  `RESOLVED` > `BLOCKED` > `HALTED` > `FINDING` > `LIVE`, whatever their order
+  in the sentence; a marker word in prose you did not mean as your status
+  (`LIVE — send READY at green`) reads as that marker.
+- **A `FINDING` stays your status until you retire it.** When the console has
+  ruled on it, write `- HH:MM RESOLVED — <what was ruled>` as soon as you act
+  on the ruling. Until then the console reads `FINDING` and must assume it owes
+  you an answer; it cannot tell a ruling you have already received from one
+  still pending. Raise a fresh `FINDING` for the next question.
+- **Do not coin markers.** `SHIPPED` and `MERGED` are deliberately not in the
+  vocabulary, and a bullet carrying only such a word is invisible to the tick.
+  Between GREEN and `READY` (PR open, CI and review running) you are `LIVE`:
+  `- HH:MM LIVE — PR <n> open, watching CI`. After the merge you are `WRAPPED`.
 
 Stamp every Results bullet from an actual `date +%H:%M` command; never type a
 time. A bullet containing a literal `%` goes through the Write tool, never
