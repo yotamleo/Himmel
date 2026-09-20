@@ -122,6 +122,9 @@ contains 'retask-channel.md: residual risk is named (the HANDOFF holds the old t
 contains 'retask-channel.md: EXPANSION/REDIRECT/narrowing semantics are untouched' "$retask" 'unchanged'
 contains 'retask-channel.md: the chain path prices persistent authority, not one revision' "$retask" 'persistent authority'
 contains 'retask-channel.md: the accepted amplification is tracked' "$retask" 'HIMMEL-3257'
+contains 'retask-channel.md: the chain path says the named-sender check no longer binds' "$retask" 'no longer binds'
+contains 'console-template.md: step 9 asks the predecessor to name the successor in its relay' "$step9" 'naming you'
+contains 'console-template.md: handing over says the relay names the successor' "$handing" 'naming the successor'
 
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-succession-docs.sh'

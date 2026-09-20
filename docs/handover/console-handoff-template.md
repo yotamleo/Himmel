@@ -16,8 +16,8 @@ Run ACTION ZERO from `{{SUCCESSOR_DOC}}` unchanged. Expect at the root sweep:
 Rotate nonces to `{{LETTER}}-<leg>-<hex>`, quoting each
 {{PREDECESSOR_LETTER}} token verbatim; the live ones are listed below. Ask the
 {{PREDECESSOR_LETTER}} console session (`{{PREDECESSOR}}` minus the `.md`) to
-re-brief each inherited leg from its own socket, quoting the leg's token and
-your fresh one, and wait for each leg's quote-back — **the nonces in the list
+re-brief each inherited leg from its own socket, naming you and quoting the
+leg's token and your fresh one, and wait for each leg's quote-back — **the nonces in the list
 below are the predecessor's and are dead to you until a leg has quoted back**;
 do not treat them as yours. Only then send **`{{LETTER}} LIVE`** to that
 session so it releases its lock and wraps. `LIVE` first strands every leg

@@ -219,22 +219,28 @@ parks.
 **Residual risk (priced).** Possession of the retiring token is the whole
 proof, and the predecessor's tokens live in its `## Live state` and in the
 successor's HANDOFF — so anyone who can read that document can chain. That is
-the same trust boundary as vector 2/3 (a compromised sibling or parent), no
-wider than the token was already, and bounded by the named console having to be
-gone from `ListAgents` and by the leg's own capability envelope, which no
-message widens.
+the same trust boundary as vector 2/3 (a compromised sibling or parent), bounded
+by the named console having to be gone from `ListAgents` and by the leg's own
+capability envelope, which no message widens.
 
-**The chain path amplifies the consequence of that exposure, not the exposure
-itself.** Forging with a stolen single token yields ONE revision. Forging the
-chain yields *persistent authority*: the forger issues the fresh token, so every
-later revision to that leg is theirs, not merely the one. That is accepted, for
-three reasons: the weakness is not new (the single-token path has the same root
-— a session that can read a leg's current token can already forge an EXPANSION,
-no succession involved); the only stronger authenticator is the relay, which is
-unavailable in exactly the case the chain path exists to serve; and refusing the
-chain keeps every succession stranded. It is tracked as HIMMEL-3257, the
-recorded disposition of the panel finding that raised it (`deferred`, not
-`disproved` — the finding is correct).
+**On the chain path the named-sender check no longer binds.** The ordinary
+rule needs the named console as sender *and* the token; the chain path drops the
+sender half, so possession of the retiring token alone (plus the named console
+being absent) is enough. A reader of that token who the sender check used to
+stop is no longer stopped. That is a real widening on this path, not a
+restatement of the old exposure, and it is priced here rather than papered over.
+
+**The chain path also amplifies the consequence, not only the reach.** Forging
+with a stolen single token yields ONE revision, and only from the named console.
+Forging the chain yields *persistent authority*: the forger issues the fresh
+token, so every later revision to that leg is theirs, not merely the one. That
+is accepted, for two reasons: the only stronger authenticator is the relay,
+which is unavailable in exactly the case the chain path exists to serve; and
+refusing the chain keeps every succession stranded. The exposure is bounded, not
+removed: the token sits in plaintext in `## Live state` and the HANDOFF, readable
+by any same-uid session. It is tracked as HIMMEL-3257, the recorded disposition
+of the panel finding that raised it (`deferred`, not `disproved` — the finding
+is correct).
 
 **Unchanged:** the EXPANSION/REDIRECT/narrowing semantics
 themselves, and every rule in §1–§3; this adds a succession path, it does not

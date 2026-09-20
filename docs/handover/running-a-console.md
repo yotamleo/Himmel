@@ -246,9 +246,9 @@ that `next --arm` printed and hand your live legs over by name.
 **Re-brief your live legs before you release** (HIMMEL-3082, HIMMEL-3254). Each
 leg's brief names *you* as its console, and a successor is a different session
 on a different socket: the successor hands you a fresh token per leg during its
-ACTION ZERO, you send each leg — from your own session — a message quoting the
-leg's current token and the fresh one, and each leg answers with a quote-back
-of the fresh one.
+ACTION ZERO, you send each leg — from your own session — a message naming the
+successor and quoting the leg's current token and the fresh one, and each leg
+answers with a quote-back of the fresh one.
 A successor that arrives after you have left can prove itself only with the
 two-token chain form; a leg that cannot verify that is stranded (it keeps
 working and can still be merged, but cannot be re-scoped). The successor's

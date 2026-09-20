@@ -74,7 +74,8 @@ Run these, in order, and write the result as the first bullet under
    only refuse you, and once the predecessor has released and left there is
    nobody who can relay for you. So, per leg: mint a fresh
    `{{LETTER}}-<leg>-<hex>` token, hand it to the predecessor, and ask it to
-   re-brief that leg **from its own socket**, quoting the leg's current token
+   re-brief that leg **from its own socket**, naming you (your session name, so
+   the leg knows who the relay hands it to) and quoting the leg's current token
    and your fresh one. If the predecessor is already gone, send the leg the
    chain form yourself — a message quoting **both** tokens (see
    `docs/handover/leg-preface.md`, "Console succession"). **Wait for each leg's
@@ -264,10 +265,12 @@ At **{{FILL_PERCENT}} % fill or 90 k input in one turn**, hand over:
    legs to the successor by name.
 4. **Re-brief every live leg yourself, before you release** (HIMMEL-3254). The
    successor hands you a fresh token per leg (ACTION ZERO step 9); send each
-   leg, from **your own session**, a message quoting the leg's current token
-   and the fresh one. A leg's brief names *you* and only you can relay for
-   it — a successor arriving after you have left can prove itself only by
-   quoting both tokens, and a leg that cannot verify that is stranded. Then
+   leg, from **your own session**, a message naming the successor (its session
+   name — the leg adopts the session the relay names, not the sender, which is
+   you and leaving) and quoting the leg's current token and the fresh one. A
+   leg's brief names *you* and only you can relay for it — a successor
+   arriving after you have left can prove itself only by quoting both tokens,
+   and a leg that cannot verify that is stranded. Then
    wait for each leg's quote-back — or for the successor's `LIVE` to name the
    legs that did not quote back, and why (ACTION ZERO step 9 permits that
    exception, so the two ends agree on when you may release).
