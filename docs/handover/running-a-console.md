@@ -255,7 +255,8 @@ working and can still be merged, but cannot be re-scoped). The successor's
 tick reads `nonces=STRANDED:<leg>` until every leg has rotated.
 
 **Release your lock only after the successor reports `LIVE`.** It sends that
-only after the quote-backs, and it is the only evidence the arm actually fired
+only after the quote-backs — or with the legs that did not quote back named,
+and why (ACTION ZERO step 9) — and it is the only evidence the arm actually fired
 and the successor completed ACTION ZERO; releasing on the `touch` alone leaves
 an unattended fleet if the launch failed.
 

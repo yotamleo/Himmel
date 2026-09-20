@@ -275,7 +275,8 @@ At **{{FILL_PERCENT}} % fill or 90 k input in one turn**, hand over:
    legs that did not quote back, and why (ACTION ZERO step 9 permits that
    exception, so the two ends agree on when you may release).
 5. **Wait for the successor's `LIVE` message before you release your lock and
-   stop.** It is sent only after the quote-backs, and it is the only
+   stop.** It is sent only after the quote-backs — or with the legs that
+   did not quote back named, and why (step 9) — and it is the only
    confirmation that the successor actually launched and completed ACTION
    ZERO; releasing on the `touch` alone leaves an unattended fleet if the arm
    failed.

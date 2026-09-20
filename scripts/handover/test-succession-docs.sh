@@ -62,6 +62,14 @@ contains 'succession is genuine when the outgoing console relays it directly' "$
 contains 'or when the incoming message quotes BOTH tokens' "$succ" 'quotes **both**'
 contains 'the security argument (replay) is preserved in the wording' "$succ" 'replay'
 contains 'the old token is the proof: only the leg and the outgoing console held it' "$succ" 'only the leg and the outgoing console'
+contains 'the chain explanation says the named-sender check no longer binds (HIMMEL-3257)' "$succ" 'no longer binds'
+contains 'the chain explanation names the residual: a token reader can name a replacement' "$succ" 'can name a replacement'
+overclaim="$(printf '%s\n' "$succ" | tr '\n' ' ' | grep -iF -- 'cannot produce it')"
+if [ -n "$overclaim" ]; then
+    fail 'leg-preface.md must not claim a session without the outgoing state cannot produce the chain (false: the token alone suffices)'
+else
+    pass 'leg-preface.md does not claim the chain proves the sender was ever handed the outgoing state'
+fi
 contains 'a stranded leg keeps working' "$succ" 'keep working'
 contains 'a stranded leg still accepts halt and narrowing' "$succ" 'halt or narrowing'
 contains 'a stranded leg honours a GO only through the GO file' "$succ" 'GO file'
@@ -107,6 +115,9 @@ contains 'Live state: a nonce is updated only AFTER the leg quote-back' "$live" 
 # --- 3. running-a-console.md: the mirror --------------------------------------
 running="$(section "$RUNNING" '^## Handing over')"
 contains 'running-a-console Handing over: the outgoing console re-briefs the legs' "$running" 're-brief'
+contains 'running-a-console Handing over: the LIVE release rule keeps the did-not-quote-back exception' "$running" 'did not quote back'
+step5="$(printf '%s\n' "$handing" | awk '/^5\. \*\*/ { f = 1 } f')"
+contains 'template Handing over step 5: the LIVE release rule keeps the did-not-quote-back exception' "$step5" 'did not quote back'
 before 'running-a-console Handing over: quote-backs are collected BEFORE the lock is released' "$running" 'quote-back' 'release your lock'
 
 # --- 4. handoff template: the successor's start order -------------------------
