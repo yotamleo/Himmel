@@ -20,6 +20,16 @@
 # for it: <TICKET>-N<k>[-<slug>]. Anything else falls back to the whole stem as
 # its own label, which is self-consistent but joins to no session.
 #
+# A SUCCESSOR leg carries its letters (HIMMEL-3278): N38b is a different session
+# from N38, so the label keeps them -- a label that dropped them would let
+# tick.sh's livestate=/procs= conflate two live sessions. The base an instrument
+# that counts relaunches of ONE leg groups by is leg_base, below.
+# HIMMEL-3278: a legacy doc's ticket key is <KEY>-<digits>, or -- for the
+# handful of drift/gh-named legs -- a bare UPPERCASE <KEY> alone, and then only
+# with the N spelling (HIMMEL-drift-graphify-0955-legN5). Lowercase prose
+# ("next-session-leg5") and an N-less fleet series (HIMMEL-linux-fleet-...-leg1,
+# a different numbering that would collide with the real N1) stay fallbacks.
+#
 # Source this file; it defines functions and one constant, runs nothing.
 # Bash 3.2-compatible (no arrays beyond BASH_REMATCH, no mapfile).
 
@@ -34,19 +44,20 @@ LEG_LABEL_CLASS='A-Za-z0-9_.-'
 # legacy-family doc); a census row matching any of them belongs to this leg.
 leg_identity() {
     local stem="$1" session undated sfx derived="" label=""
-    local re_canon='^[A-Za-z][A-Za-z]*-[0-9]+-(N[0-9]+)(-.*)?$'
-    local re_legacy='^([A-Za-z][A-Za-z]*-[0-9]+)(-(.*))?-leg(N?)([0-9]+)(-.*)?$'
+    local re_canon='^[A-Za-z][A-Za-z]*-[0-9]+-(N[0-9]+[a-z]*)(-.*)?$'
+    local re_legacy='^([A-Za-z][A-Za-z]*-[0-9]+)(-(.*))?-leg(N?)([0-9]+)([a-z]*)(-.*)?$'
+    local re_legacy_key='^([A-Z][A-Z]*)(-(.*))?-leg(N)([0-9]+)([a-z]*)(-.*)?$'
     stem="${stem##*/}"
     stem="${stem%.md}"
     session="${stem%-RESUME}"
     undated="$(printf '%s' "$session" | sed -E 's/-[0-9]{4}-[0-9]{2}-[0-9]{2}$//')"
     if [[ $stem =~ $re_canon ]]; then
         label="${BASH_REMATCH[1]}"
-    elif [[ $stem =~ $re_legacy ]]; then
-        label="N${BASH_REMATCH[5]}"
+    elif [[ $stem =~ $re_legacy ]] || [[ $stem =~ $re_legacy_key ]]; then
+        label="N${BASH_REMATCH[5]}${BASH_REMATCH[6]}"
         # A slug AFTER the leg token (-legN3-worker-<date>) belongs in the session
         # too; the trailing -RESUME and -<date> do not.
-        sfx="${BASH_REMATCH[6]%-RESUME}"
+        sfx="${BASH_REMATCH[7]%-RESUME}"
         sfx="$(printf '%s' "$sfx" | sed -E 's/-[0-9]{4}-[0-9]{2}-[0-9]{2}$//')"
         derived="${BASH_REMATCH[1]}-${label}${BASH_REMATCH[3]:+-${BASH_REMATCH[3]}}${sfx}"
     else
@@ -64,4 +75,19 @@ leg_label() {
     local ident
     ident="$(leg_identity "$1")"
     printf '%s' "${ident%%$'\t'*}"
+}
+
+# leg_base <leg doc path or stem> -- the leg a successor continues: the label with
+# a trailing successor suffix dropped (N38b -> N38). A label with no suffix, and the
+# whole-stem fallback of a non-leg doc, come back unchanged. This is the metric's
+# grouping key, never an identity: two live sessions N38 and N38b share a base and
+# must not share a label.
+leg_base() {
+    local label
+    label="$(leg_label "$1")"
+    if [[ $label =~ ^(N[0-9]+)[a-z]+$ ]]; then
+        printf '%s' "${BASH_REMATCH[1]}"
+    else
+        printf '%s' "$label"
+    fi
 }

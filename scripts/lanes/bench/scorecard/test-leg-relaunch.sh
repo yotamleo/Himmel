@@ -16,7 +16,8 @@
 #   doc_date = the LAST YYYY-MM-DD substring in the filename (not the first)
 #   since/until are day-truncated; since is inclusive, until is exclusive
 #   TOTAL row aggregates n/relaunches(+mean)/blocked(+mean)/wrapped
-#   the handover-doc glob ignores filenames with no legN token or no date
+#   the handover-doc glob ignores undated filenames; a dated doc leg-identity.sh
+#     does not call a leg is skipped as no-leg-token (HIMMEL-3278)
 #
 # Platform guard: no .ps1 twin, by design. POSIX bash 3.2+; it runs under
 # git bash unchanged.
@@ -112,12 +113,31 @@ check_contains "until-edge: the surviving doc is the one before the boundary" "$
 export SCORECARD_HANDOVER_DIR="$HERE/fixtures/leg-relaunch/ignore-nonmatching"
 IGNORE_OUT=$("$RELAUNCH" --since 2026-01-01T00:00:00Z 2>/dev/null)
 check_exit "ignore-nonmatching: exits 0" "$?" "0"
-check "ignore-nonmatching: a filename with no legN token/date is not picked up" \
-    "$(printf '%s\n' "$IGNORE_OUT" | grep -c '^legN')" "1"
-# HIMMEL-3269: a dated doc the metric does not read (current `<TICKET>-N<k>-`
-# naming) is counted as skipped with its reason, not silently absent
-check "ignore-nonmatching: the unread doc shows up in the coverage triple with its reason" \
-    "$(printf '%s\n' "$IGNORE_OUT" | grep '^coverage:')" "coverage: discovered=2 parsed=1 skipped=1 (no-leg-token=1)"
+check "ignore-nonmatching: an undated filename is not picked up, and both leg spellings are" \
+    "$(printf '%s\n' "$IGNORE_OUT" | grep -c '^legN')" "2"
+# HIMMEL-3278: the current `<TICKET>-N<k>-` naming is a leg doc, counted parsed;
+# only the undated file stays outside the discovered set
+check "ignore-nonmatching: the coverage triple counts the current-scheme doc as parsed" \
+    "$(printf '%s\n' "$IGNORE_OUT" | grep '^coverage:')" "coverage: discovered=2 parsed=2 skipped=0"
+
+# --- (p) HIMMEL-3278: every spelling of a leg doc the harness produces is parsed
+# via scripts/lib/leg-identity.sh, and a doc that is not a leg doc stays skipped
+# with a named reason. canonical <TICKET>-N<k>-, no-N -leg<k>-, legacy -legN<k>-.
+export SCORECARD_HANDOVER_DIR="$HERE/fixtures/leg-relaunch/leg-spellings"
+SPELL_OUT=$("$RELAUNCH" --since 2026-01-01T00:00:00Z 2>/dev/null)
+check_exit "leg-spellings: exits 0" "$?" "0"
+check_contains "leg-spellings: canonical <TICKET>-N<k>- doc parsed (RUN 3 NOTE -> runs=3, blocked=1)" \
+    "$SPELL_OUT" "$(printf 'legN9500\t3\t2\t1\t0\t')"
+check_contains "leg-spellings: -leg<k>- doc with no N parsed" \
+    "$SPELL_OUT" "$(printf 'legN9501\t1\t0\t0\t0\t')"
+check_contains "leg-spellings: legacy -legN<k>- doc parsed (wrapped_blocked=1)" \
+    "$SPELL_OUT" "$(printf 'legN9502\t2\t1\t0\t1\t')"
+check "leg-spellings: the non-leg doc is not a row" \
+    "$(printf '%s\n' "$SPELL_OUT" | grep -c 'mission-relaunch')" "0"
+check_contains "leg-spellings: a drift-keyed legacy doc (no <KEY>-<digits>) parsed" \
+    "$SPELL_OUT" "$(printf 'legN9503\t1\t0\t0\t0\t')"
+check "leg-spellings: parsed rises to 4 and the non-leg doc is still skipped with a named reason" \
+    "$(printf '%s\n' "$SPELL_OUT" | grep '^coverage:')" "coverage: discovered=5 parsed=4 skipped=1 (no-leg-token=1)"
 
 # --- (m) leg numbers of differing digit counts sort numerically, not
 # lexicographically (legN9 < legN10 < legN207 < legN1000)

@@ -50,6 +50,59 @@ expect 'HIMMEL-9-odd-name-2026-09-20-RESUME.md' \
     'HIMMEL-9-odd-name-2026-09-20-RESUME' 'HIMMEL-9-odd-name-2026-09-20,HIMMEL-9-odd-name'
 expect 'weird stem!' 'weird_stem_' 'weird stem!'
 
+# HIMMEL-3278: a successor (`b`, `c`, ...) is a DIFFERENT session from its base leg,
+# so the letters stay in the label -- N38b is not N38. Every row below is a name
+# the live handover bucket carries.
+expect 'HIMMEL-2733-lean-profile-v2-legN38b-2026-09-07-RESUME.md' \
+    'N38b' 'HIMMEL-2733-lean-profile-v2-legN38b-2026-09-07,HIMMEL-2733-lean-profile-v2-legN38b,HIMMEL-2733-N38b-lean-profile-v2'
+expect 'HIMMEL-2743-oem-parity-projection-legN52b-claudex-2026-09-07-RESUME.md' \
+    'N52b' 'HIMMEL-2743-oem-parity-projection-legN52b-claudex-2026-09-07,HIMMEL-2743-oem-parity-projection-legN52b-claudex,HIMMEL-2743-N52b-oem-parity-projection-claudex'
+expect 'HIMMEL-1899-public-ci-shell-reds-legN3c-2026-09-06.md' \
+    'N3c' 'HIMMEL-1899-public-ci-shell-reds-legN3c-2026-09-06,HIMMEL-1899-public-ci-shell-reds-legN3c,HIMMEL-1899-N3c-public-ci-shell-reds'
+# The canonical successor a console's own brief mandates ("hand off to an N196b").
+expect 'HIMMEL-3278-N196b-leg-relaunch-2026-09-20-RESUME.md' \
+    'N196b' 'HIMMEL-3278-N196b-leg-relaunch-2026-09-20,HIMMEL-3278-N196b-leg-relaunch'
+# A ticket key that is not <KEY>-<digits>: the leg token still parses.
+expect 'HIMMEL-drift-graphify-0955-legN5-2026-09-06.md' \
+    'N5' 'HIMMEL-drift-graphify-0955-legN5-2026-09-06,HIMMEL-drift-graphify-0955-legN5,HIMMEL-N5-drift-graphify-0955'
+expect 'HIMMEL-gh627-luna-upgrade-bash32-legN189-2026-09-12-RESUME.md' \
+    'N189' 'HIMMEL-gh627-luna-upgrade-bash32-legN189-2026-09-12,HIMMEL-gh627-luna-upgrade-bash32-legN189,HIMMEL-N189-gh627-luna-upgrade-bash32'
+# ...but only an UPPERCASE project key is trusted without digits: prose that merely
+# contains "-leg<digits>" is not a leg doc, and neither is a console/mission doc.
+expect 'next-session-leg5-2026-09-06.md' \
+    'next-session-leg5-2026-09-06' 'next-session-leg5-2026-09-06,next-session-leg5'
+expect 'HIMMEL-nextleg-2026-09-20N-console.md' \
+    'HIMMEL-nextleg-2026-09-20N-console' 'HIMMEL-nextleg-2026-09-20N-console'
+# A bare-key doc is a leg only when it says legN<k>: `-leg1` in a fleet/cadence
+# series is a different numbering that would collide with the real N1.
+expect 'HIMMEL-linux-fleet-2026-09-04-leg1.md' \
+    'HIMMEL-linux-fleet-2026-09-04-leg1' 'HIMMEL-linux-fleet-2026-09-04-leg1'
+expect 'HIMMEL-v1-installer-cadence-2026-09-05-leg2-evidence.md' \
+    'HIMMEL-v1-installer-cadence-2026-09-05-leg2-evidence' 'HIMMEL-v1-installer-cadence-2026-09-05-leg2-evidence'
+expect 'HIMMEL-1899-public-propagation-legG10-2026-09-05.md' \
+    'HIMMEL-1899-public-propagation-legG10-2026-09-05' 'HIMMEL-1899-public-propagation-legG10-2026-09-05,HIMMEL-1899-public-propagation-legG10'
+
+# leg_base: the leg a successor continues. The label keeps N38 and N38b apart;
+# the base is what a metric that counts relaunches of ONE leg groups by.
+check_base() {
+    local got
+    got="$(leg_base "$1")"
+    if [ "$got" = "$2" ]; then ok "leg_base $1 -> $2"; else bad "leg_base $1: got [$got] want [$2]"; fi
+}
+check_base 'HIMMEL-2733-lean-profile-v2-legN38b-2026-09-07-RESUME.md' 'N38'
+check_base 'HIMMEL-2733-lean-profile-v2-legN38-2026-09-07-RESUME.md' 'N38'
+check_base 'HIMMEL-3278-N196b-leg-relaunch-2026-09-20-RESUME.md' 'N196'
+check_base 'HIMMEL-3278-N196-leg-relaunch-2026-09-20-RESUME.md' 'N196'
+check_base 'HIMMEL-9-odd-name-2026-09-20-RESUME.md' 'HIMMEL-9-odd-name-2026-09-20-RESUME'
+# The property that matters: distinct labels, one base.
+l38="$(leg_label 'HIMMEL-2733-x-legN38-2026-09-07-RESUME.md')"
+l38b="$(leg_label 'HIMMEL-2733-x-legN38b-2026-09-07-RESUME.md')"
+if [ "$l38" != "$l38b" ] && [ "$(leg_base 'HIMMEL-2733-x-legN38-2026-09-07-RESUME.md')" = "$(leg_base 'HIMMEL-2733-x-legN38b-2026-09-07-RESUME.md')" ]; then
+    ok 'N38 and N38b: distinct labels, same base'
+else
+    bad "N38 and N38b: labels [$l38] [$l38b] must differ, bases must match"
+fi
+
 # leg_label is exactly the label column.
 if [ "$(leg_label 'HIMMEL-3269-N191-scorecard-discovery-2026-09-20-RESUME.md')" = 'N191' ]; then
     ok 'leg_label prints the label alone'

@@ -67,13 +67,19 @@ if [ -n "$UNTIL" ]; then
 fi
 
 # HIMMEL-3269 coverage: "discovered" is every dated doc in the handover dir, not
-# just the ones the metric reads - so a doc whose name carries no `legN<k>` token
-# (the current `<TICKET>-N<k>-<slug>` scheme among them) is counted as skipped
-# with its reason instead of being silently absent from the discovered set.
-# ponytail: the leg token is still `legN<k>`; docs named `<TICKET>-N<k>-...` are
-# reported as no-leg-token, not measured.
+# just the ones the metric reads - so a doc that is not a leg doc (a console
+# mission, a status note) is counted as skipped with its reason instead of being
+# silently absent from the discovered set.
+# HIMMEL-3278: which docs ARE leg docs is scripts/lib/leg-identity.sh's call (the
+# one derivation, shared with tick.sh), not a local regex: a doc whose leg_label
+# is not N<k> fell back to its whole stem and is skipped as no-leg-token. A
+# successor (legN38b) is the SAME leg relaunched: the metric groups by leg_base,
+# while the parser keeps N38b and N38 apart as the distinct sessions they are.
 # shellcheck source=lib/scorecard-lib.sh
 . "$SCRIPT_DIR/lib/scorecard-lib.sh"
+# shellcheck source=../../../lib/leg-identity.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../../../lib/leg-identity.sh"
 LIST=""
 trap 'rm -f "$LIST" "$SC_COV"' EXIT
 LIST=$(mktemp "${TMPDIR:-/tmp}/leg-relaunch-list.XXXXXX") || { echo "leg-relaunch: mktemp failed" >&2; exit 1; }
@@ -85,7 +91,8 @@ done
 printf 'leg\truns\trelaunches\tblocked_bullets\twrapped_blocked\tfile\n'
 while IFS= read -r path; do
     f=$(basename "$path")
-    case "$f" in *legN[0-9]*) ;; *) sc_cov no-leg-token; continue ;; esac
+    leg_id=$(leg_base "$f")
+    [[ $leg_id =~ ^N[0-9]+$ ]] || { sc_cov no-leg-token; continue; }
     doc_date=$(printf '%s' "$f" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | tail -1)
     [ -n "$doc_date" ] || { sc_cov no-date; continue; }
     doc_epoch=$(to_epoch "$doc_date") || { sc_cov bad-date; continue; }
@@ -96,7 +103,7 @@ while IFS= read -r path; do
     [ -r "$H/$f" ] || { sc_cov unreadable; continue; }
     sc_cov parsed
 
-    leg=$(printf '%s' "$f" | grep -oE 'legN[0-9]+')
+    leg="leg$leg_id"
     runs=$(grep -oE '^> \*\*RUN [0-9]+ NOTE' "$H/$f" | grep -oE '[0-9]+' | sort -n | tail -1)
     runs=${runs:-1}
     b=$(grep -cE '^- ([0-9]{2}:[0-9]{2} )?BLOCKED' "$H/$f")
