@@ -245,6 +245,15 @@ holder pid + elapsed are right there — no `ps`, no reading
 is *parked*. That distinction is the point of the knob; a leg that hand-rolls
 its own sleep loop throws it away.
 
+**A leg that ends its turn on a background job never wakes.** The harness
+backgrounds any Bash call that runs past ~120 s, and a leg whose turn ends
+waiting on that job gets no wake-up — it sits "working" forever while the
+console reads its silence as progress. The brief therefore **names the scoped
+suites** the leg runs (each under the 120 s budget or explicitly foreground),
+and forbids "I'll wait for the notification": waiting is one foreground
+blocking command or a foreground `until … done` loop, never a turn that ends
+on a background task.
+
 ## Base verification — arming on a fence, and syncing across legs (HIMMEL-2383)
 
 Console ruling 66 (prompted by #2080 merging while its own after-report suite

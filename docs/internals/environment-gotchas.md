@@ -1202,6 +1202,11 @@ both:
    (i.e. non-zero-length) process value still wins over the file, in both
    loaders.
 
+The corollary bites in leg launchers: `arm-resume` re-exports `.env` into
+every leg, so an operator who sets `CR_FLOOR_FALLBACK=` (empty) to decline a
+fallback declines nothing — the file value wins over the empty process value.
+Decline with a non-empty sentinel the reader treats as "off".
+
 **`load_dotenv` takes the KEY NAMES as arguments.** A bare `load_dotenv` loads
 only its defaults (`HANDOVER_DIR USER_SLUG`) and returns 0, so a presence check
 written as

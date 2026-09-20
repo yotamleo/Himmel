@@ -143,6 +143,17 @@ against live legs and open PRs, and launch up to `<slack>` legs.
 `capacity=unknown` (`fleet=?`) means the census could not be read, not that
 capacity is fine.
 
+**Reading leg locks and the tick.** `tick.sh --legs` takes **absolute**
+handover-doc paths on ONE `legs:` line; a relative path drops the bucket
+prefix out of the lock key and the leg reads `free` while it is live. The
+queue-lock owner pid is the launcher **wrapper**, so every owner reads dead
+while its leg is alive, and the release token a leg pasted into its LIVE
+bullet can be wrong — recover the real one from
+`${XDG_RUNTIME_DIR}/himmel-queue-lock/` before calling a lock stale.
+`IDLE-HELD?` is heartbeat age, not death: a leg inside a long foreground suite
+makes no tool calls. Verify with `pgrep` against the leg's session name;
+never force-release on the flag alone.
+
 ## Claudex legs: the inbox is the only channel
 
 A `--lane claudex` leg (`headed-arm-leg.sh`, HIMMEL-2782) runs under

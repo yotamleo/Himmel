@@ -521,6 +521,11 @@ refusing after a signal/deadline wait. Bypass: `FLEET_CAP_OK=1` in the
 *launching* shell only (a per-call prefix is refused by
 `block-chokepoint-env-prefix.sh`, `scripts/chokepoints.json`).
 
+A worktree used as `HEADED_ARM_REPO` has no `.env`, so a leg launched from it
+falls to the default cap of 4 and refuses the fifth leg with a full-looking
+census. Export `HIMMEL_FLEET_CAP` in every leg launcher's environment rather
+than relying on the file.
+
 **Why 4, not some other number.** 4 is a provisional operational cap, not a
 derived sustainability figure — no session's own measured burn rate or duty
 cycle has been isolated (codex review findings, twice: the bucket-count

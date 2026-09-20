@@ -1534,6 +1534,17 @@ is skipped (`grep -f --file=.env` opens a file literally named
 
 ### `guard-memory-capture.sh` — auto-memory capture guard (HIMMEL-570 / HIMMEL-1088)
 
+**Ceiling and a known gap (HIMMEL-3313 / HIMMEL-3314).** Besides the ≤200-char
+line rule the guard holds an absolute ceiling of `MEMORY_LINE_CEIL` (default
+60) pointer lines, so a compound pass that only shortens lines cannot land on
+an index that is over the ceiling — it must consolidate (HIMMEL-3313 went 115 →
+56 lines, every dropped line folded verbatim into its theme file). HIMMEL-3314
+records an **unexamined** gap: the capture log showed `line-ceiling` /
+`line-too-long` denies on 2026-09-18/19 while the index still grew from 74 to
+134 lines, so some capture path writes the index without passing through this
+guard. That is a deduction from the deny log plus the growth, not an identified
+mechanism; the writer has not been traced.
+
 Fires on Edit/Write/MultiEdit/NotebookEdit, scoped to the Claude Code
 auto-memory store (`*/.claude/projects/*/memory/*`). The always-loaded
 `MEMORY.md` index is O(themes), not O(facts): it carries one ≤200-char
@@ -2149,6 +2160,19 @@ and only silence.** Everything else still gates it, unchanged: a `failure` /
 outside-diff-range body findings, `review_freshness_gate`, the checks-green
 watch, the `CHANGES_REQUESTED` blocker, and the paginated unresolved-thread
 gate. Non-machine PRs keep today's fail-closed behaviour byte-unchanged.
+
+**Four zero-review-object shapes at a head, three of them bad.** A clean
+walkthrough with nothing actionable mints no review object and `check-ci.sh`
+says so verbatim ("App evidence, not a carry") — gate MET. The other three are
+vacuous: `pass … Review rate limited`, `success :: Review completed` with zero
+review objects (rc 4; a `full review` re-trigger does not clear it), and zero
+objects with zero threads at the head — all three mean the review never ran,
+and "0 unresolved threads" is then the arithmetic of a review that did not
+happen. `bodylen=0` objects **with** threads are inline carriers and count.
+The allowance is **account-wide over a rolling 7 days**, roughly one included
+review at a time: with several PRs open, sequence the contending PRs
+furthest-along-first, and never post `@coderabbitai review` from a leg — the
+console allocates the slot, and a losing re-trigger burns an attempt.
 
 > The first cut set `CR_ARMED=0` instead — the same thing an operator does by
 > hand with `CR_APP=0`. That also silenced `cr_body_gate`, so on the day the App

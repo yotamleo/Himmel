@@ -545,6 +545,53 @@ reads the session narrative (a merge just happened), not only the payload.
 
 ---
 
+## Symptom: `check-ci.sh --pr N` prints usage and exits 0 — no gate ran
+
+`scripts/check-ci.sh` takes the PR number **positionally**; an unknown flag
+(`--pr`, `--watch`) makes it print usage and exit 0, which reads as a pass.
+The watcher flag is `--max-wait`, not `--watch`. Exit 0 also does not mean the
+CodeRabbit App reviewed the head — the artifact is a review object with
+`bodylen>0` at the head SHA (see the CodeRabbit gate in
+[`enforcement.md`](enforcement.md)).
+
+**What to do:** `bash scripts/check-ci.sh <pr>`; a fast rc=0 from a command
+you expected to block is the red flag, not the reassurance.
+
+## Symptom: a large heredoc is denied by the chokepoint guard, and nothing ran
+
+A ~15 KB marker-dense heredoc (a doc body, a PR body) can exhaust the hook's
+evaluation budget; the guard fails closed, so the deny means **nothing ran**,
+not that part of it did. A related shape: `cd <worktree> && sed -i <relative>`
+resolves the relative path against the **primary** checkout, because the guard
+reads the payload cwd, not the `cd`.
+
+**What to do:** write the content to a file with the Write tool and run ONE
+short literal command against it (`--body-file`, `python3 <script>`); for
+edits, use absolute paths or a script file, never `cd &&` with a relative path.
+
+## Symptom: `wrap-subtree-check.sh` prints `WITHHELD:` although every task is stopped
+
+`WITHHELD:` lists live pids under the session. When the only survivors are the
+harness's own MCP servers (qmd, browser bridges) the subtree is clean — those
+are not yours to TaskStop and they do not block `WRAPPED`. Re-run and paste the
+`CLOSABLE:` line once nothing of yours remains. Related: `headed-arm.sh` polls
+only for the handover doc's **existence** — a placeholder file satisfies it,
+so an arm that "went through" is not evidence the brief was in place.
+
+## Symptom: a background task "stopped because the system is running low on memory" at zero pressure
+
+Observed only in leg sessions: the same command exits 0 from the console and
+dies in the leg (HIMMEL-3097). All-zero `/proc/pressure/memory` (including
+`total=`) and `oom_kill 0` in the session cgroup's `memory.events` mean there
+is **no evidence of contention**; the kill is unexplained, not explained by
+memory. The leg preface carries the exact reading recipe.
+
+**What to do:** stop retrying in the background, run the suite in the
+foreground, report `BLOCKED` with those numbers, and never name a cause you
+have not controlled for.
+
+---
+
 ## Why this is a playbook, not a `CLAUDE.md` rule
 
 Root `CLAUDE.md` is **state, not a prompt** — frame-shaping invariants only, paid
