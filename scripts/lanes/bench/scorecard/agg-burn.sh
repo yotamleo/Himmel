@@ -64,12 +64,14 @@ role_of() {
 }
 ts_of() { grep -o '"timestamp":"[0-9TZ:.-]*"' "$1" 2>/dev/null | "$2" -1 | cut -d'"' -f4; }
 
+ROWS=""; FAILS=""; FILES=""; DISC_ERR=""; UNREADABLE=""
+# trap first: a later mktemp failing must not leak the files already created
+trap 'rm -f "$ROWS" "$FAILS" "$FILES" "$DISC_ERR" "$UNREADABLE"' EXIT
 ROWS=$(mktemp "${TMPDIR:-/tmp}/agg-burn-rows.XXXXXX") || { echo "agg-burn: mktemp failed" >&2; exit 1; }
 FAILS=$(mktemp "${TMPDIR:-/tmp}/agg-burn-fails.XXXXXX") || { echo "agg-burn: mktemp failed" >&2; exit 1; }
 FILES=$(mktemp "${TMPDIR:-/tmp}/agg-burn-files.XXXXXX") || { echo "agg-burn: mktemp failed" >&2; exit 1; }
 DISC_ERR=$(mktemp "${TMPDIR:-/tmp}/agg-burn-discerr.XXXXXX") || { echo "agg-burn: mktemp failed" >&2; exit 1; }
 UNREADABLE=$(mktemp "${TMPDIR:-/tmp}/agg-burn-unreadable.XXXXXX") || { echo "agg-burn: mktemp failed" >&2; exit 1; }
-trap 'rm -f "$ROWS" "$FAILS" "$FILES" "$DISC_ERR" "$UNREADABLE"' EXIT
 
 # HIMMEL-2977: discovery errors must not vanish. `find ... 2>/dev/null | while`
 # lost both find's permission errors and its exit status, so an unreadable
