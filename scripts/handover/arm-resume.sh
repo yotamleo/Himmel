@@ -990,6 +990,13 @@ echo "arm-resume: $MODEL_REASON"
 if [ -z "$CONTEXT_MODE" ]; then
     console_context_default "$_arm_is_console" "${CONSOLE_CONTEXT:-}"
     CONTEXT_MODE="$CONSOLE_CONTEXT_RESOLVED_MODE"
+    # ponytail: unlike headed-arm.sh (HIMMEL-3279), this console-class arm
+    # writes NO durable launch-context record - the mode it resolves here is
+    # only in this arm's own log, so a console armed through the Windows
+    # schtasks backend (arm-resume.sh, not headed-arm.sh) is still
+    # unattributable after a reboot, and agg-postpin.sh --context reads it as
+    # `unknown`. The string below also still differs from headed-arm.sh's
+    # `context=1m (explicit)` that spec 2973 sec 2.4 keys on.
     if [ "$_arm_is_console" -eq 1 ] && [ "$CONSOLE_CONTEXT_RESOLVED_SOURCE" = "console-context-env" ]; then
         CONTEXT_REASON="context=1m (CONSOLE_CONTEXT=1m; console arm -- HIMMEL-2975)"
     elif [ "$_arm_is_console" -eq 1 ]; then

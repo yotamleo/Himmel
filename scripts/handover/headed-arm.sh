@@ -386,12 +386,15 @@ NAME="$1"; DOC="$2"; SIGNAL="$3"; DEADLINE="$4"; LOG="$5"; MODEL="${6:-claude-op
 # it has no non-console callers, unlike arm-resume.sh's handover-name test.
 if [ "$#" -ge 7 ]; then
     CONTEXT="$7"
-    _headed_context_source="positional"
+    _headed_context_source="explicit"
 else
     console_context_default 1 "${CONSOLE_CONTEXT:-}"
     CONTEXT="$CONSOLE_CONTEXT_RESOLVED_MODE"
+    # HIMMEL-3279: spec 2973 sec 2.4 keys on `context=1m (explicit)`, so an
+    # env opt-in spells `explicit` too - the mechanism is not lost, a 1m arm
+    # here is always CONSOLE_CONTEXT=1m-gated (the refusal above).
     if [ "$CONSOLE_CONTEXT_RESOLVED_SOURCE" = "console-context-env" ]; then
-        _headed_context_source="CONSOLE_CONTEXT=1m"
+        _headed_context_source="explicit"
     else
         _headed_context_source="default"
     fi
@@ -1096,6 +1099,31 @@ else
         >> "$LOG" 2>&1 &
 fi
 KPID=$!
+
+# HIMMEL-3279: the arm log ($LOG) lives on tmpfs under /run/user and is gone
+# at the next reboot, and it is the only place a console's launch context was
+# recorded - so the attribution HIMMEL-2973 needs was unrecoverable for every
+# console before the last boot. Write the mode durably, at launch (retention
+# on a timer would still lose whatever was written since its last copy), as a
+# row in the HIMMEL-3270 launch record dir (btrfs, already the cost cohort's
+# source, already removed by uninstall): one more line format in the same
+# per-session file, keyed `headed-arm:` so it cannot read as a leg's
+# `headed-arm-leg:` profile line. Console arms only - a leg's own record is
+# headed-arm-leg.sh's, and it is always `standard`. Best-effort like that
+# one: a record that cannot be written is noted in $LOG, never stops the
+# launch (the reader then says `unknown`, never a proxy).
+# ponytail: arm-resume.sh also arms console-class sessions and its context
+# line still lives only in its own log; it writes no durable row here.
+if [ "$ROLE" = "console" ]; then
+    _ll_cache="${HIMMELCTL_CACHE_DIR:-}"
+    [ -z "$_ll_cache" ] && [ -n "${HOME:-}" ] && _ll_cache="$HOME/.claude/himmel"
+    if [ -z "$_ll_cache" ] || ! ( umask 077 && mkdir -p "$_ll_cache/launch-logs" && \
+        printf 'headed-arm: role=console session=%s context=%s source=%s autocompact=%s launched=%s\n' \
+            "$NAME" "$CONTEXT" "$_headed_context_source" "$AUTOCOMPACT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            >> "$_ll_cache/launch-logs/$NAME.log" ) 2>/dev/null; then
+        echo "$(date +%F_%T) WARN context record NOT written under ${_ll_cache:-<no cache dir>}/launch-logs (this console's launch context is unrecoverable after a reboot)" >> "$LOG"
+    fi
+fi
 
 # codex-1: settle briefly, then note whether the process still looks alive
 # - see the header CR-fixes note.

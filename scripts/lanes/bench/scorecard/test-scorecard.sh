@@ -110,6 +110,48 @@ check "cohort-nscheme: a missing launch-log dir excludes everything (no profile 
     "coverage: roots=1 discovered=5 parsed=0 skipped=5 (no-launch-record=5)"
 unset HIMMELCTL_CACHE_DIR
 
+# --- (b4) context-record (HIMMEL-3279): a console's launch context comes from
+# the DURABLE launch record, never a proxy. Four console sessions:
+#   9201  record: context=standard                          -> standard
+#   9202  record: context=1m                                -> 1m
+#   9203  NO record (the tmpfs arm log is gone after a reboot) -> unknown
+#   9204  two records that DISAGREE (standard, then 1m)     -> unknown
+export SCORECARD_PROJECTS_DIR="$HERE/fixtures/context-record/projects"
+unset SCORECARD_LAUNCH_LOG_DIR
+export HIMMELCTL_CACHE_DIR="$HERE/fixtures/context-record/cache"
+CTX_LOGS="$HERE/fixtures/context-record/cache/launch-logs"
+
+# preconditions: all four sessions are discovered without the filter, the
+# fixture really has a record for 9201 and none for 9203 (so the cases below
+# fail for the attribution, not for a missing fixture)
+CTX_ALL=$("$POSTPIN" --since 2026-01-01T00:00:00Z --role console 2>/dev/null)
+check "context-record: precondition, all four consoles are counted without --context" \
+    "$(session_count "$CTX_ALL" console)" "4"
+check "context-record: precondition, 9201 has a durable record" \
+    "$(grep -c 'context=standard' "$CTX_LOGS/HIMMEL-9201-fixture-console-2026-09-20.log")" "1"
+check "context-record: precondition, 9203 has no record" \
+    "$([ -e "$CTX_LOGS/HIMMEL-9203-fixture-console-2026-09-20.log" ] && echo present || echo absent)" "absent"
+
+CTX_STD=$("$POSTPIN" --since 2026-01-01T00:00:00Z --role console --context standard 2>/dev/null)
+check "context-record: --context standard attributes 1 session FROM its record" \
+    "$(session_count "$CTX_STD" console)" "1"
+CTX_1M=$("$POSTPIN" --since 2026-01-01T00:00:00Z --role console --context 1m 2>/dev/null)
+check "context-record: --context 1m attributes 1 session FROM its record" \
+    "$(session_count "$CTX_1M" console)" "1"
+CTX_UNK=$("$POSTPIN" --since 2026-01-01T00:00:00Z --role console --context unknown 2>/dev/null)
+check "context-record: --context unknown reports the record-less and the ambiguous session (2), not a proxy" \
+    "$(session_count "$CTX_UNK" console)" "2"
+check "context-record: an attributed session is not silently proxied into a mode (coverage names the unknowns)" \
+    "$(printf '%s\n' "$CTX_STD" | grep '^coverage:')" \
+    "coverage: roots=1 discovered=4 parsed=1 skipped=3 (context-unknown=2 other-context=1)"
+check "context-record: the output labels its attribution source" \
+    "$(printf '%s\n' "$CTX_STD" | grep '^context:')" \
+    "context: filter=standard source=launch-record (no proxy; a session with no usable record is unknown)"
+
+"$POSTPIN" --since 2026-01-01T00:00:00Z --context bogus >/dev/null 2>&1
+check_exit "context-record: a bad --context value exits 2" "$?" "2"
+unset HIMMELCTL_CACHE_DIR
+
 # --- (c) shift: 60 Fable + 50 Sonnet console-role calls -> counted_shifts=1
 export SCORECARD_PROJECTS_DIR="$HERE/fixtures/shift"
 unset SCORECARD_LAUNCH_LOG_DIR

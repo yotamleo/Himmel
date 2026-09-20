@@ -1,0 +1,2 @@
+headed-arm: role=console session=HIMMEL-9204-fixture-console-2026-09-20 context=standard source=default autocompact=200000 launched=2026-09-20T00:00:00Z
+headed-arm: role=console session=HIMMEL-9204-fixture-console-2026-09-20 context=1m source=explicit autocompact=auto launched=2026-09-20T00:05:00Z

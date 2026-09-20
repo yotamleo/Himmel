@@ -278,7 +278,10 @@ check "CONSOLE_CONTEXT=1m: exit 0" "$rc1b" "0"
 contains     "CONSOLE_CONTEXT=1m: passes autocompact auto"   "$rec1b" "--autocompact auto"
 not_contains "CONSOLE_CONTEXT=1m: no autocompact 200000"     "$rec1b" "--autocompact 200000"
 log1b="$(cat "$d1b/log" 2>/dev/null || true)"
-contains "CONSOLE_CONTEXT=1m: log names the opt-in source" "$log1b" "CONSOLE_CONTEXT=1m"
+# HIMMEL-3279: spec §2.4 keys on `context=1m (explicit)`; the emitter used to
+# say `(CONSOLE_CONTEXT=1m)`. One spelling, the spec's.
+contains     "CONSOLE_CONTEXT=1m: log spells the source (explicit)" "$log1b" "context=1m (explicit)"
+not_contains "CONSOLE_CONTEXT=1m: log no longer spells the mechanism as the source" "$log1b" "(CONSOLE_CONTEXT=1m)"
 
 # --- 1c (HIMMEL-2973). positional 1m WITHOUT the env is refused up front ----
 d1c="$tmp/c1c"; mk_stub "$d1c" 1 alive "HIMMEL-9999c-leg"
@@ -300,6 +303,56 @@ wait_record "$d1d" || true
 rec1d="$(cat "$d1d/record" 2>/dev/null || true)"
 check "positional 1m with env: exit 0" "$rc1d" "0"
 contains "positional 1m with env: passes autocompact auto" "$rec1d" "--autocompact auto"
+
+# --- 1e (HIMMEL-3279). a console arm records its launch context DURABLY, at
+# launch, in the HIMMEL-3270 launch-logs dir (btrfs) - the tmpfs arm log
+# ($LOG) is cleared at every reboot. A non-console arm writes nothing here
+# (headed-arm-leg.sh owns a leg's own one-line record in the same file).
+run_console_arm() {
+  local stubdir="$1" name="$2"; shift 2
+  env "$@" KONSOLE_CMD="$stubdir/konsole" PGREP_CMD="$stubdir/pgrep" HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$stubdir/locks" HEADED_ARM_PROC="$stubdir/proc" HIMMELCTL_CACHE_DIR="$stubdir/cache" \
+    bash "$SCRIPT" --role console "$name" "some/handover-doc.md" "$stubdir/signal-never" "$PAST" "$stubdir/log"
+}
+d1e="$tmp/c1e"; mk_stub "$d1e" 1 alive "HIMMEL-9999e-console"; mkdir -p "$d1e/cache"
+rc1e=0
+run_console_arm "$d1e" "HIMMEL-9999e-console" -u CONSOLE_CONTEXT >/dev/null 2>&1 || rc1e=$?
+wait_record "$d1e" || true
+check "durable record, default: exit 0 (precondition: the launch happened)" "$rc1e" "0"
+if [ -s "$d1e/record" ]; then echo "ok - durable record, default: konsole IS invoked (precondition)"
+else echo "FAIL - durable record, default: konsole IS invoked (precondition)"; fails=$((fails+1)); fi
+rec1e="$(cat "$d1e/cache/launch-logs/HIMMEL-9999e-console.log" 2>/dev/null || true)"
+contains "durable record, default: names the role"    "$rec1e" "headed-arm: role=console session=HIMMEL-9999e-console "
+contains "durable record, default: records the mode"  "$rec1e" " context=standard "
+contains "durable record, default: records the source" "$rec1e" " source=default "
+contains "durable record, default: records autocompact" "$rec1e" " autocompact=200000 "
+
+d1f="$tmp/c1f"; mk_stub "$d1f" 1 alive "HIMMEL-9999f-console"; mkdir -p "$d1f/cache"
+rc1f=0
+run_console_arm "$d1f" "HIMMEL-9999f-console" CONSOLE_CONTEXT=1m >/dev/null 2>&1 || rc1f=$?
+wait_record "$d1f" || true
+check "durable record, 1m opt-in: exit 0 (precondition: the launch happened)" "$rc1f" "0"
+rec1f="$(cat "$d1f/cache/launch-logs/HIMMEL-9999f-console.log" 2>/dev/null || true)"
+contains "durable record, 1m opt-in: records the mode"   "$rec1f" " context=1m "
+contains "durable record, 1m opt-in: records the source" "$rec1f" " source=explicit "
+contains "durable record, 1m opt-in: records autocompact" "$rec1f" " autocompact=auto "
+
+# a non-console arm (no --role) writes no durable context record
+d1g="$tmp/c1g"; mk_stub "$d1g" 1 alive "HIMMEL-9999g-leg"; mkdir -p "$d1g/cache"
+rc1g=0
+env -u CONSOLE_CONTEXT KONSOLE_CMD="$d1g/konsole" PGREP_CMD="$d1g/pgrep" HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$d1g/locks" HEADED_ARM_PROC="$d1g/proc" HIMMELCTL_CACHE_DIR="$d1g/cache" \
+    bash "$SCRIPT" "HIMMEL-9999g-leg" "some/handover-doc.md" "$d1g/signal-never" "$PAST" "$d1g/log" >/dev/null 2>&1 || rc1g=$?
+wait_record "$d1g" || true
+check "no --role: exit 0 (precondition: the launch happened)" "$rc1g" "0"
+if [ -e "$d1g/cache/launch-logs/HIMMEL-9999g-leg.log" ]; then echo "FAIL - no --role: a non-console arm wrote a durable context record"; fails=$((fails+1))
+else echo "ok - no --role: a non-console arm writes no durable context record"; fi
+
+# a launch record that cannot be written never stops the launch, and says so
+d1h="$tmp/c1h"; mk_stub "$d1h" 1 alive "HIMMEL-9999h-console"; : > "$d1h/cache"
+rc1h=0
+run_console_arm "$d1h" "HIMMEL-9999h-console" -u CONSOLE_CONTEXT >/dev/null 2>&1 || rc1h=$?
+wait_record "$d1h" || true
+check "unwritable launch-logs: launch still exits 0" "$rc1h" "0"
+contains "unwritable launch-logs: WARN names the gap in the arm log" "$(cat "$d1h/log" 2>/dev/null || true)" "WARN context record NOT written"
 
 # --- 2. explicit model overrides the default -----------------------------
 d2="$tmp/c2"; mk_stub "$d2" 1 alive "HIMMEL-leg2"

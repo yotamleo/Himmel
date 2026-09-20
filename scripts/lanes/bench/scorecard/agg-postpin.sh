@@ -12,7 +12,8 @@
 # hardcoded its window; this takes --since/--until.
 #
 # Usage: agg-postpin.sh --since <ISO8601> [--until <ISO8601>] [--role <role>]
-#                        [--cohort <name>] [--exclude-straddle <ISO8601>]
+#                        [--cohort <name>] [--context <1m|standard|unknown>]
+#                        [--exclude-straddle <ISO8601>]
 #
 # --role <leg|console>       restrict to one role (default: both)
 # --cohort <name>            restrict to sessions launched under
@@ -39,6 +40,15 @@
 #
 # The last stdout line is `coverage: roots=R discovered=D parsed=P skipped=K
 # (reason=n ...)` - how much of the discovered input the table above covers.
+# --context <1m|standard|unknown>
+#                             restrict to sessions by the launch context they
+#                             RECEIVED (HIMMEL-3279), read from the durable
+#                             console launch record headed-arm.sh writes into
+#                             the same launch-logs dir. `unknown` selects the
+#                             sessions with no usable record (gone, absent,
+#                             ambiguous) - they are never proxied from token
+#                             counts into a mode. The output carries a
+#                             `context:` line naming that source.
 # --exclude-straddle <ISO>   drop sessions whose first timestamp precedes
 #                             <ISO> but whose last timestamp is >= <ISO>
 #                             (spec §2.3: a session straddling a lever-merge
@@ -54,22 +64,27 @@
 set -u
 
 usage() {
-    echo "usage: agg-postpin.sh --since <ISO8601> [--until <ISO8601>] [--role <leg|console>] [--cohort <name>] [--exclude-straddle <ISO8601>]" >&2
+    echo "usage: agg-postpin.sh --since <ISO8601> [--until <ISO8601>] [--role <leg|console>] [--cohort <name>] [--context <1m|standard|unknown>] [--exclude-straddle <ISO8601>]" >&2
 }
 
-SINCE=""; UNTIL=""; ROLE_FILTER=""; COHORT=""; STRADDLE=""
+SINCE=""; UNTIL=""; ROLE_FILTER=""; COHORT=""; CONTEXT_FILTER=""; STRADDLE=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --since) SINCE="${2:?--since needs a value}"; shift 2 ;;
         --until) UNTIL="${2:?--until needs a value}"; shift 2 ;;
         --role) ROLE_FILTER="${2:?--role needs a value}"; shift 2 ;;
         --cohort) COHORT="${2:?--cohort needs a value}"; shift 2 ;;
+        --context) CONTEXT_FILTER="${2:?--context needs a value}"; shift 2 ;;
         --exclude-straddle) STRADDLE="${2:?--exclude-straddle needs a value}"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "agg-postpin: unknown argument: $1" >&2; usage; exit 2 ;;
     esac
 done
 [ -n "$SINCE" ] || { usage; exit 2; }
+case "$CONTEXT_FILTER" in
+    ""|1m|standard|unknown) ;;
+    *) echo "agg-postpin: --context must be 1m, standard or unknown, got: $CONTEXT_FILTER" >&2; usage; exit 2 ;;
+esac
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 LEG_BURN="$HERE/../../leg-burn.sh"
@@ -116,6 +131,18 @@ cohort_ok() {
     [ "$profiles" = "profile=$COHORT" ] || { COHORT_WHY=other-cohort; return 1; }
 }
 
+# context_ok <session-title>: --context selects by the durable launch record.
+# Sets CONTEXT_WHY to the skip reason on failure.
+CONTEXT_WHY=""
+context_ok() {
+    CONTEXT_WHY=""
+    [ -z "$CONTEXT_FILTER" ] && return 0
+    got=$(sc_launch_context "$LAUNCH_LOG_DIR" "$1")
+    [ "$got" = "$CONTEXT_FILTER" ] && return 0
+    if [ "$got" = unknown ]; then CONTEXT_WHY=context-unknown; else CONTEXT_WHY=other-context; fi
+    return 1
+}
+
 ROWS=""; FAILS=""; FILES=""; DISC_ERR=""
 # trap first: a later mktemp failing must not leak the files already created
 trap 'rm -f "$ROWS" "$FAILS" "$FILES" "$DISC_ERR" "$SC_COV"' EXIT
@@ -153,6 +180,7 @@ while IFS= read -r f; do
     if [ -n "$STRADDLE_EPOCH" ] && [ "$first_epoch" -lt "$STRADDLE_EPOCH" ] && [ "$last_epoch" -ge "$STRADDLE_EPOCH" ]; then sc_cov straddle; continue; fi
 
     cohort_ok "$name" || { sc_cov "$COHORT_WHY"; continue; }
+    context_ok "$name" || { sc_cov "$CONTEXT_WHY"; continue; }
 
     line=$(bash "$LEG_BURN" "$f" 2>/dev/null) || { echo "$f" >> "$FAILS"; sc_cov leg-burn-failed; continue; }
     sc_cov parsed
@@ -175,6 +203,7 @@ function add(k){ n[k]++; c[k]+=$3; ctx[k]+=$3*$4; fsum[k]+=$5; cp[k]+=$6; cs[k]+
 END{
   for(k in n) printf "%s\t%d\t%d\t%.1f\t%.1f\t%.1f\t%d\t%.1f\t%d\n", k, n[k], c[k], (c[k]?ctx[k]/c[k]:0), pk[k], fsum[k]/n[k], cp[k], ctx[k]/1000, cs[k]
 }' "$ROWS" | sort
+[ -z "$CONTEXT_FILTER" ] || echo "context: filter=$CONTEXT_FILTER source=launch-record (no proxy; a session with no usable record is unknown)"
 sc_cov_line "$(wc -l < "$FILES" | tr -d ' ')" "$SC_ROOT_COUNT"
 
 n_fail=$(wc -l < "$FAILS")
