@@ -947,7 +947,7 @@ new_repoM() {
 }
 run_m() {  # run_m <fixture repo> <answers json | null> [extra env assignments...]
   local repo="$1" answers="$2"; shift 2
-  (cd "$targetM" && env -u HANDOVER_DIR "$@" HOME="$homeM" USERPROFILE="$(winpath "$homeM")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheM")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheM")-luna-config.json" HIMMELCTL_REPO_ROOT="$(winpath "$repo")" M_ANSWERS="$answers" HIMMELCTL_PROBE_TIMEOUT_SECS=180 "$node_bin" -e "
+  (cd "$targetM" && env -u HANDOVER_DIR -u FORGE "$@" HOME="$homeM" USERPROFILE="$(winpath "$homeM")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheM")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheM")-luna-config.json" HIMMELCTL_REPO_ROOT="$(winpath "$repo")" M_ANSWERS="$answers" HIMMELCTL_PROBE_TIMEOUT_SECS=180 "$node_bin" -e "
 const { statusReport } = require(process.env.STATUS_REPORT_LIB);
 const manifest = JSON.parse(require('fs').readFileSync(process.env.MANIFEST_M_PATH, 'utf8'));
 const answers = JSON.parse(process.env.M_ANSWERS) || undefined;
@@ -1000,6 +1000,23 @@ repoM3=$(new_repoM 3); mkdir -p "$repoM3/scripts/bitbucket/dist"; : > "$repoM3/s
 outM3=$(run_m "$repoM3" "$answersM_inline")
 [ "$(sev_m "$outM3" bitbucket-cli-build)" = green ] || fail "case m3: a built bitbucket CLI must read green (got: $outM3)"
 echo "ok: case m3 — a built bitbucket CLI reads green"
+
+# m3b: the downgrade is for a target that does NOT use Bitbucket. A Bitbucket
+# Cloud origin (or an explicit FORGE=bitbucket) needs the CLI, so an unbuilt one
+# stays red; a GitHub origin reads n/a.
+repoM3b=$(new_repoM 3b)
+git -C "$targetM" remote add origin https://github.com/acme/widgets.git
+outM3g=$(run_m "$repoM3b" "$answersM_inline")
+[ "$(sev_m "$outM3g" bitbucket-cli-build)" = n/a ] || fail "case m3b: an unbuilt bitbucket CLI on a GitHub origin must read n/a (got: $outM3g)"
+outM3f=$(run_m "$repoM3b" "$answersM_inline" FORGE=bitbucket)
+[ "$(sev_m "$outM3f" bitbucket-cli-build)" = red ] || fail "case m3b: FORGE=bitbucket with an unbuilt CLI must stay red (got: $outM3f)"
+git -C "$targetM" remote set-url origin git@bitbucket.org:acme/widgets.git
+outM3b=$(run_m "$repoM3b" "$answersM_inline")
+[ "$(sev_m "$outM3b" bitbucket-cli-build)" = red ] || fail "case m3b: a Bitbucket Cloud origin with an unbuilt CLI must stay red (got: $outM3b)"
+[ "$(doctor_bad_m "$outM3b")" = "red/bitbucket-cli-build" ] || fail "case m3b: the doctor's C16 selector must surface it (got: $(doctor_bad_m "$outM3b"))"
+git -C "$targetM" remote remove origin
+echo "ok: case m3b — an unbuilt bitbucket CLI is red for a Bitbucket origin or FORGE=bitbucket, n/a for a GitHub origin"
+
 
 # m4: handover-wiring stays red for every case that is NOT 'inline dir not yet
 # created': a HANDOVER_DIR pointing nowhere, an external-mode profile with the

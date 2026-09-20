@@ -244,7 +244,9 @@ in particular reports a Windows `AppData` path on Linux
 `graphify`, `rtk`, and `telegram-bridge` simply mean those
 optional pieces are not set up; none of them blocks the core loop. A clean
 starter install's optional Jira (`jira-env-keys`) and Bitbucket
-(`bitbucket-cli-build`) rows, and a not-yet-created inline `handovers/` dir
+(`bitbucket-cli-build`, unless the repo's `origin` is on Bitbucket Cloud or
+`FORGE=bitbucket`, where an unbuilt CLI stays red) rows, and a not-yet-created
+inline `handovers/` dir
 (`handover-wiring`), read `n/a`, not red
 ([HIMMEL-3307](https://yotamleo.atlassian.net/browse/HIMMEL-3307)); the
 `himmelctl status` count line says how many `n/a` rows were wanted but not set
