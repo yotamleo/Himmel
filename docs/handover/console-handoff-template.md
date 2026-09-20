@@ -20,8 +20,10 @@ re-brief each inherited leg from its own socket, naming you and quoting the
 leg's token and your fresh one, and wait for each leg's quote-back — **the nonces in the list
 below are the predecessor's and are dead to you until a leg has quoted back**;
 do not treat them as yours. Only then send **`{{LETTER}} LIVE`** to that
-session so it releases its lock and wraps. `LIVE` first strands every leg
-that has not rotated (HIMMEL-3254).
+session so it releases its lock and wraps — or, for a leg that stays silent,
+send it with that leg named as one that did not quote back, and why (ACTION
+ZERO step 9), rather than waiting on it indefinitely. `LIVE` first strands
+every leg that has not rotated (HIMMEL-3254).
 
 ## In flight
 

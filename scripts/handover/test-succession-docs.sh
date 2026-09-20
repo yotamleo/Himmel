@@ -113,6 +113,7 @@ before 'running-a-console Handing over: quote-backs are collected BEFORE the loc
 starts="$(section "$HANDOFF" '^## How .* starts')"
 contains 'handoff "How starts": asks the predecessor to re-brief' "$starts" 're-brief'
 before 'handoff "How starts": LIVE is sent only after the quote-backs' "$starts" 'quote-back' '{{LETTER}} LIVE'
+contains 'handoff "How starts": LIVE may name the legs that did not quote back (matches ACTION ZERO step 9)' "$starts" 'did not quote back'
 
 # --- 5. threat model ------------------------------------------------------------
 retask="$(section "$RETASK" '^## .*[Ss]uccession')"
