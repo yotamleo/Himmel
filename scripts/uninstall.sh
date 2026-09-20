@@ -201,6 +201,7 @@ load_manifest() {
       scheduled-jobs)   _want="jobs - 3" ;;
       plugins)          _want="plugins - 4" ;;
       git-hooks)        _want="githooks path 5" ;;
+      git-hook-backups) _want="githooks path 5" ;;
       user-settings)    _want="settings path 6" ;;
       project-settings) _want="settings path 6" ;;
       marketplaces)     _want="marketplaces - 7" ;;
@@ -261,6 +262,7 @@ _ix_bproc=$(m_index bridge-process) || exit 2
 _ix_jobs=$(m_index scheduled-jobs) || exit 2
 _ix_plug=$(m_index plugins) || exit 2
 _ix_ghooks=$(m_index git-hooks) || exit 2
+_ix_hbak=$(m_index git-hook-backups) || exit 2
 _ix_mkt=$(m_index marketplaces) || exit 2
 
 CHANNEL_DIR="$(strip_trailing_slash "$(m_path "$_ix_channel")")"
@@ -713,12 +715,30 @@ EOF
   return 1
 }
 
-# report_unresolved <step-label> <tool>: record the gap and say where we looked.
+# rerun_command [skip-flag] — the exact command that re-runs this uninstall,
+# runnable as printed (HIMMEL-3250). It bypasses himmelctl on purpose:
+# `himmelctl uninstall` forwards only --dry-run/--yes/--purge-state, so a
+# --skip-* remedy is not reachable through it. HIMMEL_UNINSTALL_REAL_HOME=1 is
+# what himmelctl's own spawn sets past the wet-run fence below; the absolute
+# script path works from any cwd.
+rerun_command() {
+  local cmd
+  cmd="HIMMEL_UNINSTALL_REAL_HOME=1 bash $(printf '%q' "$SCRIPT_DIR/uninstall.sh") --yes"
+  [ "$PURGE_STATE" -eq 1 ] && cmd="$cmd --purge-state"
+  [ -n "${1:-}" ] && cmd="$cmd $1"
+  printf '%s\n' "$cmd"
+}
+
+# report_unresolved <step-label> <tool> <skip-flag>: record the gap and say where
+# we looked. The skip flag is remembered for the footer's runnable advice.
+HALT_SKIP_FLAG=""
 report_unresolved() {
   local step="$1" tool="$2"
   echo "  ERROR: \`$tool\` not found — this step did NOT run." >&2
   echo "  looked in: $(tool_candidates "$tool" | tr '\n' ' ')" >&2
-  echo "  Re-run from a login shell (bash -l), or put $tool on PATH." >&2
+  [ "$tool" = pre-commit ] && [ -n "${FRAMEWORK_HOOK_TRIGGER:-}" ] && echo "  triggered by: $FRAMEWORK_HOOK_TRIGGER (looks like a pre-commit framework hook)" >&2
+  echo "  Put $tool on PATH and re-run, or skip this step (command below)." >&2
+  [ -z "$HALT_SKIP_FLAG" ] && HALT_SKIP_FLAG="${3:-}"
   fail_step "$step: \`$tool\` not found"
 }
 
@@ -739,7 +759,7 @@ repo_has_framework_hooks() {
   local hooks_path f grep_rc hooks_dir="" resolved_hooks_dir hooks_resolved=0 hooks_unreadable=0
   if command -v git >/dev/null 2>&1; then
     hooks_path="$(git -C "$HOOKS_REPO_ROOT" config --get core.hooksPath 2>/dev/null)" || hooks_path=""
-    [ -n "$hooks_path" ] && return 0
+    if [ -n "$hooks_path" ]; then FRAMEWORK_HOOK_TRIGGER="core.hooksPath=$hooks_path"; return 0; fi
     if resolved_hooks_dir="$(git -C "$HOOKS_REPO_ROOT" rev-parse --git-path hooks 2>/dev/null)"; then
       hooks_resolved=1
       hooks_dir="$resolved_hooks_dir"
@@ -764,6 +784,11 @@ repo_has_framework_hooks() {
   fi
   for f in "$hooks_dir"/*; do
     case "$f" in *.sample) continue ;; esac
+    # HIMMEL-3248: `<hook>.himmel-backup` is the ADOPTER's own hook, displaced by
+    # adopt.sh's install_native_hooks — never one the framework installed, and
+    # marker-free, so its text (often naming pre-commit) must not read as one.
+    # [5/8] restores it (restore_hook_backups); it is not this scan's business.
+    case "$f" in *.himmel-backup) continue ;; esac
     if [ ! -f "$f" ]; then continue; fi
     if [ ! -r "$f" ]; then hooks_unreadable=1; continue; fi
     # HIMMEL-2841: a native gate (HIMMEL-2771) is never a framework hook, even
@@ -773,7 +798,7 @@ repo_has_framework_hooks() {
     grep_rc=0
     grep -q 'pre-commit' "$f" || grep_rc=$?
     case "$grep_rc" in
-      0) return 0 ;;
+      0) FRAMEWORK_HOOK_TRIGGER="$f"; return 0 ;;
       1) continue ;;
       *) hooks_unreadable=1 ;;
     esac
@@ -930,6 +955,58 @@ remove_native_gate_hooks() {
   return "$rc"
 }
 
+# restore_hook_backups — give the adopter back the hook adopt.sh's
+# install_native_hooks displaced to <hook>.himmel-backup (HIMMEL-3249). Only the
+# three names adopt.sh ever backs up are considered, and a backup is only ever
+# MOVED to its own name, never deleted or copied over anything: when <hook>
+# exists and is not a himmel gate (no $NATIVE_GATE_MARKER, or a symlink) the
+# backup stays where it is and the row says so — the adopter loses nothing
+# either way. A target that still carries the marker is restored over: under
+# --dry-run the gate has not been removed yet, and in a wet run it is already
+# gone, so the two runs report the same row. Prints "restored: <hook> (from
+# <backup>)" / "DRY: would restore: …" / "kept (not restored): …" per backup.
+# rc 0 = every backup restored or deliberately kept; rc 1 = a move failed or a
+# target could not be read to classify it.
+restore_hook_backups() {
+  local hooks_dir hook backup target grep_rc rc=0
+  hooks_dir="$(resolve_native_hooks_dir)"
+  [ -d "$hooks_dir" ] || return 0
+  for hook in commit-msg pre-commit pre-push; do
+    backup="$hooks_dir/$hook.himmel-backup"
+    target="$hooks_dir/$hook"
+    { [ -e "$backup" ] || [ -L "$backup" ]; } || continue
+    if [ -L "$target" ]; then
+      echo "  kept (not restored): $target exists and is not a himmel gate — your hook stays at $backup"
+      continue
+    fi
+    if [ -e "$target" ]; then
+      grep_rc=0
+      grep -qF "$NATIVE_GATE_MARKER" "$target" 2>/dev/null || grep_rc=$?
+      case "$grep_rc" in
+        0) ;;
+        1)
+          echo "  kept (not restored): $target exists and is not a himmel gate — your hook stays at $backup"
+          continue
+          ;;
+        *)
+          echo "  ERROR: could not read $target to tell whether it is a himmel gate — leaving $backup in place" >&2
+          rc=1
+          continue
+          ;;
+      esac
+    fi
+    if [ "$DRY_RUN" -eq 1 ]; then
+      echo "  DRY: would restore: $target (from $hook.himmel-backup)"
+    elif mv -f -- "$backup" "$target"; then
+      echo "  restored: $target (from $hook.himmel-backup)"
+    else
+      echo "  ERROR: could not restore $backup to $target" >&2
+      rc=1
+    fi
+  done
+  return "$rc"
+}
+
 # HIMMEL-2503: `. scripts/uninstall.sh --source-only` loads everything above —
 # the suspicious_rm_path guard in particular — and stops HERE, before the
 # banner, the prompt and every step. It exists so a suite can assert the
@@ -1045,6 +1122,11 @@ elif ! class_removes "$_ix_ghooks"; then
   echo "  5. keep git hooks (manifest class ${M_CLASS[$_ix_ghooks]})"
 else
   echo "  5. uninstall this repo's git hooks (pre-commit/pre-push/commit-msg)"
+  if class_removes "$_ix_hbak"; then
+    echo "     and restore any of your own hooks himmel displaced (<hook>.himmel-backup -> <hook>)"
+  else
+    echo "     keep displaced hook backups (manifest class ${M_CLASS[$_ix_hbak]})"
+  fi
 fi
 if [ "$SKIP_SETTINGS" -eq 1 ]; then
   echo "  6. keep user- and current-project settings.json wiring (--skip-settings)"
@@ -1087,7 +1169,9 @@ for _mi in "${!M_ID[@]}"; do
     keep) _disp="NEVER " ;;
     *)
       if step_skipped "${M_STEP[$_mi]}"; then _disp="SKIP  "
-      elif class_removes "$_mi"; then _disp="REMOVE"
+      elif class_removes "$_mi"; then
+        _disp="REMOVE"
+        [ "${M_ID[$_mi]}" = "git-hook-backups" ] && _disp="RESTORE"
       else _disp="KEEP  "; fi ;;
   esac
   _mp=$(m_path "$_mi")
@@ -1397,7 +1481,7 @@ elif [ "$SKIP_PLUGINS" -eq 1 ]; then
 elif ! class_removes "$_ix_plug"; then
   echo "  kept (manifest class ${M_CLASS[$_ix_plug]})."
 elif ! _claude_bin=$(resolve_tool claude); then
-  report_unresolved "[4/8] Claude plugins" claude
+  report_unresolved "[4/8] Claude plugins" claude --skip-plugins
 else
   echo "  using: $_claude_bin (fallback scope: $PLUGIN_SCOPE)"
   _plug_args=(--plugins-only --scope "$PLUGIN_SCOPE" --scope-map "$_scope_map")
@@ -1502,7 +1586,7 @@ else
   if ! _precommit_bin=$(resolve_tool pre-commit); then
     repo_has_framework_hooks; _rc=$?
     if [ "$_rc" -eq 0 ]; then
-      report_unresolved "[5/8] git hooks" pre-commit
+      report_unresolved "[5/8] git hooks" pre-commit --skip-hooks
     elif [ "$_rc" -eq 2 ]; then
       echo "  ERROR: cannot determine whether this repo carries framework hooks — the hooks directory did not resolve." >&2
       echo "  Put git on PATH and re-run." >&2
@@ -1525,6 +1609,16 @@ else
         fail_step "[5/8] git hooks: pre-commit uninstall $_label failed"
       fi
     done
+  fi
+  # HIMMEL-3249: hand the adopter's displaced hooks back. Runs LAST and only when
+  # nothing above failed — a restored hook is marker-free, so restoring before
+  # the framework check above would let it trip that check within this same run.
+  if [ "$HALTED" -eq 0 ]; then
+    if ! class_removes "$_ix_hbak"; then
+      echo "  kept displaced hook backups (manifest class ${M_CLASS[$_ix_hbak]})."
+    elif ! restore_hook_backups; then
+      fail_step "[5/8] git hooks: could not restore your displaced hook(s) (<hook>.himmel-backup left in place)"
+    fi
   fi
 fi
 echo ""
@@ -1675,7 +1769,7 @@ elif [ "$SKIP_PLUGINS" -eq 1 ]; then
 elif ! class_removes "$_ix_mkt"; then
   echo "  kept (manifest class ${M_CLASS[$_ix_mkt]})."
 elif ! _claude_bin=$(resolve_tool claude); then
-  report_unresolved "[7/8] Claude marketplaces" claude
+  report_unresolved "[7/8] Claude marketplaces" claude --skip-plugins
 else
   echo "  using: $_claude_bin (fallback scope: $PLUGIN_SCOPE)"
   _plug_args=(--marketplaces-only --scope "$PLUGIN_SCOPE" --scope-map "$_scope_map")
@@ -1757,11 +1851,18 @@ if [ "${#STEPS_INCOMPLETE[@]}" -gt 0 ]; then
       echo "No later step ran — the machine is unchanged past that point."
       echo ""
     fi
-    echo "Nothing was removed by those steps. Re-run from a login shell"
-    echo "(bash -l -c 'bash scripts/uninstall.sh --yes'), or pass"
-    echo "--skip-plugins / --skip-hooks to accept the gap deliberately."
+    echo "Nothing was removed by those steps."
+    if [ -n "$HALT_SKIP_FLAG" ]; then
+      echo "To accept that gap deliberately and finish the rest, run (from the"
+      echo "adopted project directory; \`himmelctl uninstall\` does not forward --skip-* flags):"
+      echo "    $(rerun_command "$HALT_SKIP_FLAG")"
+      echo "Or fix the cause first and re-run:"
+    else
+      echo "Fix the cause and re-run:"
+    fi
+    echo "    $(rerun_command)"
     echo "ANY failed step halts every later one (HIMMEL-2754). Re-running"
-    echo "uninstall.sh --yes is safe and repairs a half-torn-down machine:"
+    echo "is safe and repairs a half-torn-down machine:"
     echo "it re-adds any marketplace its still-installed plugins need."
   } >&2
   exit 2

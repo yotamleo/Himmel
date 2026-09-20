@@ -384,7 +384,8 @@ on Windows) — a symmetric eight-step teardown of what `setup.sh`/`adopt` onboa
 stops the Telegram bridge, removes its pairing + bridge state (only with
 `--purge-state`, and never while the bridge is still running), deletes the
 `HIMMEL-Resume-*` scheduled jobs, uninstalls the installed Claude plugins at
-their own scope, uninstalls the repo's git hooks, unwires the user-scope
+their own scope, uninstalls the repo's git hooks (and restores any hook of
+your own that install displaced to `<hook>.himmel-backup`), unwires the user-scope
 `~/.claude/settings.json` keys himmel added, removes the Claude marketplaces
 (only those no installed plugin still needs), and removes the himmelctl
 cache + state dir. It is destructive and fail-closed

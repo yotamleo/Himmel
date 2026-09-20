@@ -1851,6 +1851,151 @@ else
     rm -f "$U_REPO/.git/hooks/commit-msg"
 fi
 
+# U4f..U4l — HIMMEL-3248/3249/3250: the adopter's own hook that install displaced
+# to <hook>.himmel-backup. Foreign hook text deliberately names `pre-commit` (the
+# round-A shape from the HIMMEL-2457 VM round trip): under the old code the
+# backup file tripped repo_has_framework_hooks, [5/8] halted rc=2 with steps 6-8
+# skipped, and a re-run halted identically.
+ADOPTER_HOOK_TEXT=$'#!/bin/sh\n# my own gate; runs pre-commit run --all-files when it is installed\nexit 0\n'
+NATIVE_GATE_TEXT=$'#!/usr/bin/env bash\n# HIMMEL-2771: native invariant gate; lint hooks require pre-commit.\nexit 0\n'
+u_hooks_reset() { find "$U_REPO/.git/hooks" -mindepth 1 ! -name '*.sample' -delete; }
+# u_backup_fixture <name> — native gates at all three names, the adopter's own
+# pre-commit displaced to pre-commit.himmel-backup (executable, as install leaves it).
+u_backup_fixture() {
+    u_fixture "$1"
+    u_hooks_reset
+    for hook in commit-msg pre-commit pre-push; do
+        printf '%s' "$NATIVE_GATE_TEXT" > "$U_REPO/.git/hooks/$hook"
+        chmod 755 "$U_REPO/.git/hooks/$hook"
+    done
+    printf '%s' "$ADOPTER_HOOK_TEXT" > "$U_REPO/.git/hooks/pre-commit.himmel-backup"
+    chmod 755 "$U_REPO/.git/hooks/pre-commit.himmel-backup"
+}
+u_hook_is_adopters() {   # <label> — pre-commit is byte-identical to the pre-install hook, executable, backup gone
+    local got
+    got=$(cat "$U_REPO/.git/hooks/pre-commit" 2>/dev/null; echo x)
+    if [ "$got" = "${ADOPTER_HOOK_TEXT}x" ] && [ -x "$U_REPO/.git/hooks/pre-commit" ] &&
+        [ ! -e "$U_REPO/.git/hooks/pre-commit.himmel-backup" ]; then
+        echo "PASS $1 adopter hook restored byte-identical, backup consumed"
+    else
+        echo "FAIL $1 adopter hook not restored (or backup left behind)"; FAILED=$((FAILED + 1))
+    fi
+}
+
+# U4f — RED 3248: marker-free backup naming pre-commit, pre-commit absent: 8/8.
+u_backup_fixture u4f
+u_run
+assert_rc 'U4f backup naming pre-commit completes' 0 "$rc"
+assert_has 'U4f completion reported' 'Uninstall complete.' "$out"
+assert_not_has 'U4f no halted steps' 'skipped — halted' "$out"
+assert_not_has 'U4f no pre-commit-not-found halt' 'not found — this step did NOT run' "$out"
+# RED 3249: the adopter's hook ends restored, not lost.
+assert_has 'U4f restore row reported' "restored: $U_REPO/.git/hooks/pre-commit (from pre-commit.himmel-backup)" "$out"
+u_hook_is_adopters 'U4f'
+for hook in commit-msg pre-push; do
+    if [ ! -e "$U_REPO/.git/hooks/$hook" ]; then echo "PASS U4f native $hook removed"
+    else echo "FAIL U4f native $hook survived"; FAILED=$((FAILED + 1)); fi
+done
+
+# U4g — --dry-run lists the restore, mutates nothing, and the wet run above
+# reported the same row (row-for-row parity on the restore).
+u_backup_fixture u4g
+U4G_BEFORE="$TMP/u4g-hooks-before.txt"
+(cd "$U_REPO/.git/hooks" && cksum -- * | sort) > "$U4G_BEFORE"
+u_run --dry-run
+assert_rc 'U4g dry-run completes' 0 "$rc"
+assert_not_has 'U4g no halted steps' 'skipped — halted' "$out"
+assert_has 'U4g dry-run plans the restore' "DRY: would restore: $U_REPO/.git/hooks/pre-commit (from pre-commit.himmel-backup)" "$out"
+assert_has 'U4g plan lists the restore' 'restore any of your own hooks' "$out"
+U4G_AFTER="$TMP/u4g-hooks-after.txt"
+(cd "$U_REPO/.git/hooks" && cksum -- * | sort) > "$U4G_AFTER"
+cmp -s "$U4G_BEFORE" "$U4G_AFTER"; same=$?
+assert_rc 'U4g hooks byte-identical across dry-run' 0 "$same"
+
+# U4h — RED 3248 re-run: the state the OLD code left after its halt (gates and
+# payload already removed, backup still there, steps 6-8 never ran) must
+# complete on a re-run instead of halting identically.
+u_backup_fixture u4h
+rm -f "$U_REPO/.git/hooks/commit-msg" "$U_REPO/.git/hooks/pre-commit" "$U_REPO/.git/hooks/pre-push"
+u_run
+assert_rc 'U4h re-run after the old halt completes' 0 "$rc"
+assert_not_has 'U4h no halted steps' 'skipped — halted' "$out"
+u_hook_is_adopters 'U4h'
+if [ ! -e "$U_CACHE" ]; then echo 'PASS U4h step 8 ran on the re-run'
+else echo 'FAIL U4h step 8 left cache'; FAILED=$((FAILED + 1)); fi
+
+# U4i — never overwrite: a hook now at the name that is NOT a himmel gate keeps
+# its place and the backup stays put (both preserved), reported per row.
+u_backup_fixture u4i
+printf '#!/bin/sh\necho later hook\n' > "$U_REPO/.git/hooks/pre-commit"
+chmod 755 "$U_REPO/.git/hooks/pre-commit"
+u_run
+assert_rc 'U4i foreign hook at the name completes' 0 "$rc"
+assert_has 'U4i keep row reported' "kept (not restored): $U_REPO/.git/hooks/pre-commit exists and is not a himmel gate" "$out"
+if [ "$(cat "$U_REPO/.git/hooks/pre-commit")" = '#!/bin/sh
+echo later hook' ] && [ "$(cat "$U_REPO/.git/hooks/pre-commit.himmel-backup"; echo x)" = "${ADOPTER_HOOK_TEXT}x" ]; then
+    echo 'PASS U4i both hooks preserved'
+else
+    echo 'FAIL U4i a hook was overwritten or lost'; FAILED=$((FAILED + 1))
+fi
+
+# U4j — the manifest decides: git-hook-backups class keep leaves the backup where
+# it is (native gates still go) and says so per row.
+sed -e $'s/^git-hook-backups\tcode/git-hook-backups\tkeep/' \
+    "$(dirname "$CLI")/install/uninstall-manifest.tsv" > "$TMP/u4j-manifest.tsv"
+u_backup_fixture u4j
+HIMMEL_UNINSTALL_MANIFEST="$TMP/u4j-manifest.tsv" u_run
+assert_rc 'U4j class keep completes' 0 "$rc"
+assert_has 'U4j keep row reported' 'keep displaced hook backups (manifest class keep)' "$out"
+if [ ! -e "$U_REPO/.git/hooks/pre-commit" ] && [ "$(cat "$U_REPO/.git/hooks/pre-commit.himmel-backup"; echo x)" = "${ADOPTER_HOOK_TEXT}x" ]; then
+    echo 'PASS U4j backup kept in place, gate removed'
+else
+    echo 'FAIL U4j class keep did not leave the backup alone'; FAILED=$((FAILED + 1))
+fi
+
+# U4k — RED 3250: a genuine halt names the file that tripped the check and
+# prints a command that WORKS. The printed line is extracted and run (with
+# --skip-tasks appended: the fixture must never reach the scheduler).
+u_backup_fixture u4k
+u_hooks_reset
+printf '# pre-commit managed hook\n' > "$U_REPO/.git/hooks/commit-msg"
+u_run
+assert_rc 'U4k framework-looking hook halts' 2 "$rc"
+assert_has 'U4k halt names the file that tripped' "$U_REPO/.git/hooks/commit-msg" "$out"
+assert_not_has 'U4k no login-shell advice' 'login shell' "$out"
+assert_not_has 'U4k no bash -l advice' 'bash -l' "$out"
+u4k_cmd=$(printf '%s\n' "$out" | grep -m1 '^    HIMMEL_UNINSTALL_REAL_HOME=1 bash ' | sed 's/^    //')
+assert_has 'U4k printed command skips hooks' '--skip-hooks' "$u4k_cmd"
+assert_has 'U4k printed command uses the absolute script path' "$CLI" "$u4k_cmd"
+rm -f "$U_REPO/.git/hooks/commit-msg"
+if [ -n "$u4k_cmd" ]; then
+    u4k_out=$(HOME="$U_HOME" PATH="$U_BIN:$HBIN" HIMMEL_UNINSTALL_REPO_ROOT="$U_REPO" \
+        TELEGRAM_CHANNEL_DIR="$CHANNEL" BRIDGE_ROOT="$BRIDGE" HIMMELCTL_CACHE_DIR="$U_CACHE" \
+        bash -c "$u4k_cmd --skip-tasks" </dev/null 2>&1); u4k_rc=$?
+else
+    u4k_out=''; u4k_rc=99
+fi
+assert_rc 'U4k the printed command runs to completion' 0 "$u4k_rc"
+assert_has 'U4k printed command kept the hooks step' 'kept (--skip-hooks).' "$u4k_out"
+assert_has 'U4k printed command finished the teardown' 'Uninstall complete.' "$u4k_out"
+
+# U4l — HIMMEL-3253 residual: an adopter hook that merely mentions pre-commit,
+# with pre-commit absent, is a HALT with runnable advice — never data loss: the
+# hook is byte-identical afterwards.
+u_backup_fixture u4l
+u_hooks_reset
+printf '%s' "$ADOPTER_HOOK_TEXT" > "$U_REPO/.git/hooks/pre-commit"
+u_run
+assert_rc 'U4l residual is a halt' 2 "$rc"
+assert_has 'U4l residual names the file' "$U_REPO/.git/hooks/pre-commit" "$out"
+assert_has 'U4l residual carries runnable advice' 'HIMMEL_UNINSTALL_REAL_HOME=1 bash ' "$out"
+if [ "$(cat "$U_REPO/.git/hooks/pre-commit"; echo x)" = "${ADOPTER_HOOK_TEXT}x" ]; then
+    echo 'PASS U4l adopter hook untouched by the halt'
+else
+    echo 'FAIL U4l adopter hook changed'; FAILED=$((FAILED + 1))
+fi
+u_hooks_reset
+
 # WHY (HIMMEL-2754): settings and marketplace failures must preserve the
 # retry profile too — the same halt rule applies past the plugin/hook steps.
 u_fixture u5

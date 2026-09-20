@@ -24,6 +24,7 @@ telegram-bridge	state	telegram-bridge	dir	BRIDGE_ROOT	{HOME}/.claude/handover/br
 scheduled-jobs	code	scheduler	jobs	-	-	3	HIMMEL-Resume-* scheduled jobs + the HimmelTelegramBridge logon task
 plugins	code	claude-plugins	plugins	-	-	4	Claude plugins from himmel-owned marketplaces (USER-SCOPE plugins affect every repo)
 git-hooks	code	project-repo	githooks	-	{HOOKS_REPO_ROOT}/.git/hooks	5	himmel's pre-commit/pre-push/commit-msg git hooks in the current repo
+git-hook-backups	code	project-repo	githooks	-	{HOOKS_REPO_ROOT}/.git/hooks	5	the adopter's own hooks himmel displaced to <hook>.himmel-backup at install — RESTORED to <hook>, never deleted
 user-settings	code	claude-settings	settings	HIMMEL_USER_SETTINGS	{HOME}/.claude/settings.json	6	himmel statusLine, env.HIMMEL_REPO/LUNA_VAULT_PATH/HANDOVER_DIR and UNIVERSAL hooks (other keys untouched)
 project-settings	code	claude-settings	settings	-	{PWD}/.claude/settings.json	6	same wiring in the current project's settings.json (himmel's own checkout excluded)
 marketplaces	code	claude-plugins	marketplaces	-	-	7	Claude marketplaces with no remaining installed plugins
