@@ -275,7 +275,10 @@ outAFull=$(run_status_full)
 # this sandbox -> degraded (a REAL probe failure, not the opt-in/absent n/a
 # downgrade - that downgrade only applies to a 'red' probe.actual, and
 # 'degraded' is a different actual entirely, so it never re-suppresses back
-# to n/a here). Net: red 6->13, degraded 0->1, green 0->0, na 42->34 - items
+# to n/a here). HIMMEL-3307: two of those 7 reds (bitbucket-cli-build,
+# jira-env-keys) are optional integrations a clean starter never set up and now
+# read n/a (opt-in) instead of red. Net: red 6->11, degraded 0->1, green 0->0,
+# na 42->34 (8 moved out of n/a, 2 moved back in) - items
 # moving FROM n/a TO a real severity is exactly the additive overlay's
 # intended direction (an item the record covers but the persisted
 # state.json hadn't enabled is no longer silently invisible), and every one
@@ -286,9 +289,9 @@ outAFull=$(run_status_full)
 # HIMMEL-2349 codex-3: previously this assertion held green==1 ONLY because
 # the machine running the suite happened to have pre-commit.exe on PATH.
 echo "$outAFull" | jq -e --argjson n "$manifestCount" \
-  '(.items | length) == $n and .summary.red == 13 and .summary.degraded == 1 and .summary.green == 0 and .summary.na == ($n - 14)' >/dev/null \
-  || fail "case a (bonus): expected the full $manifestCount-item run to read {red:13, degraded:1, green:0, na:$((manifestCount - 14))} - the six golden reds PLUS the 8 items the recorded install-profile additively covers (got: $(echo "$outAFull" | jq -c '.summary'))"
-echo "ok: case a (bonus) - a --items-less run against the same state confirms six golden reds PLUS the additive overlay's 8 recorded-profile-covered items (7 red, 1 degraded, 0 green), against the whole manifest"
+  '(.items | length) == $n and .summary.red == 11 and .summary.degraded == 1 and .summary.green == 0 and .summary.na == ($n - 12)' >/dev/null \
+  || fail "case a (bonus): expected the full $manifestCount-item run to read {red:11, degraded:1, green:0, na:$((manifestCount - 12))} - the six golden reds PLUS the 6 red/1 degraded of the 8 items the recorded install-profile additively covers (got: $(echo "$outAFull" | jq -c '.summary'))"
+echo "ok: case a (bonus) - a --items-less run against the same state confirms six golden reds PLUS the additive overlay's 8 recorded-profile-covered items (5 red, 1 degraded, 2 opt-in n/a, 0 green), against the whole manifest"
 
 # ── case (b): six discrimination flips, each restored after ────────────────
 

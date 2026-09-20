@@ -434,8 +434,15 @@ function probeSettingsKey(item, ctx) {
   let raw;
   try {
     raw = fs.readFileSync(filePath, 'utf8');
-  } catch (_e) {
-    return { actual: 'absent', detail: `cannot read ${filePath}` };
+  } catch (e) {
+    // HIMMEL-3307: a missing .env is the ordinary "never configured" state for
+    // an optional integration (jira-env-keys on a starter install) — flag it
+    // so status-report can read it as opt-in rather than red. ENOENT ONLY: an
+    // .env that exists but cannot be read (EACCES, EISDIR) is a real fault.
+    const clean = item.probe.file === '.env' && e && e.code === 'ENOENT';
+    return clean
+      ? { actual: 'absent', detail: `cannot read ${filePath}`, cleanAbsence: true }
+      : { actual: 'absent', detail: `cannot read ${filePath}` };
   }
   let data;
   try {
@@ -460,7 +467,14 @@ function probeSettingsKey(item, ctx) {
   const keys = item.probe.keys || [item.probe.key];
   const missing = keys.filter((k) => !nonEmpty(getVal(k)));
   if (missing.length === 0) return { actual: 'present', detail: filePath };
-  return { actual: 'absent', detail: `missing/empty key(s) in ${filePath}: ${missing.join(', ')}` };
+  const detail = `missing/empty key(s) in ${filePath}: ${missing.join(', ')}`;
+  // HIMMEL-3307: an .env that DEFINES none of the required keys (not even as
+  // an empty `KEY=`) was never set up for this integration; one that defines
+  // some, or defines a key empty, is a half-finished setup and stays a real red.
+  if (item.probe.file === '.env' && keys.every((k) => data[k] === undefined)) {
+    return { actual: 'absent', detail, cleanAbsence: true };
+  }
+  return { actual: 'absent', detail };
 }
 
 // ── telegram-access — formal JSON-schema extension (HIMMEL-2176 Task 6) ───
@@ -951,7 +965,21 @@ function probeHandoverDir(item, ctx) {
   if (!r.error && r.status === 0 && r.stdout && r.stdout.trim()) {
     return { actual: 'present', detail: r.stdout.trim() };
   }
-  return { actual: 'absent', detail: (r.stderr || '').trim() || 'handover_root did not resolve' };
+  const detail = (r.stderr || '').trim() || 'handover_root did not resolve';
+  // HIMMEL-3307: with HANDOVER_DIR unset the resolver falls back to the
+  // repo-local <repo>/handovers, which handover_root_ensure creates lazily on
+  // the first handover write — so its absence right after an install is the
+  // ordinary state, not a fault. Flag exactly that: no explicit HANDOVER_DIR
+  // AND the resolver's "inline default '...' does not exist" refusal. A
+  // HANDOVER_DIR that points nowhere, or a non-git cwd, never carries the flag.
+  // ponytail: keys on the resolver's stderr wording (handover-path.sh has no
+  // machine-readable code for this rc=2 case); the probe suite pins the
+  // message against the real resolver so a rewording fails loud, not quiet.
+  const env = ctx.env || process.env;
+  if (!env.HANDOVER_DIR && /inline default '.*' does not exist/.test(detail)) {
+    return { actual: 'absent', detail, cleanAbsence: true };
+  }
+  return { actual: 'absent', detail };
 }
 
 // ── dep ──────────────────────────────────────────────────────────────────

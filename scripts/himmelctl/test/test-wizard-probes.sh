@@ -634,6 +634,37 @@ echo "$outSK3a" | jq -e '.detail | contains("JIRA_API_TOKEN")' >/dev/null \
   || fail "settings-key .env absent detail should name the missing key JIRA_API_TOKEN (got: $outSK3a)"
 echo "ok: settings-key .env ALL-keys-required (jira-env-keys), resolves against repoRoot for both scopes"
 
+# HIMMEL-3307: `cleanAbsence` marks a jira-env-keys that was NEVER set up (no
+# .env at all, or an .env defining none of the four keys) so status-report can
+# read it as opt-in. A half-filled .env, a key defined but empty, and an .env
+# that exists but cannot be read are real faults and must NOT carry the flag.
+sk3_none="$work/sk3-none"; mkdir -p "$sk3_none"                 # no .env at all
+sk3_unrelated="$work/sk3-unrelated"; mkdir -p "$sk3_unrelated"  # .env, none of the keys
+printf 'FOO=bar\n# JIRA_EMAIL=commented\n' > "$sk3_unrelated/.env"
+sk3_emptykey="$work/sk3-emptykey"; mkdir -p "$sk3_emptykey"     # a key defined but empty
+printf 'JIRA_EMAIL=\n' > "$sk3_emptykey/.env"
+sk3_unreadable="$work/sk3-unreadable"; mkdir -p "$sk3_unreadable/.env"  # .env is a directory (EISDIR)
+sk3_clean_flag() {  # sk3_clean_flag <repo dir> -> prints the probe JSON
+  "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'jira-env-keys');
+const ctx = { repoRoot: '$(winpath "$1")', targetPath: '$repo_root_w', scope: 'project', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+"
+}
+for d in sk3_none sk3_unrelated; do
+  out=$(sk3_clean_flag "$work/${d//_/-}")
+  echo "$out" | jq -e '.actual == "absent" and .cleanAbsence == true' >/dev/null \
+    || fail "HIMMEL-3307: jira-env-keys never set up ($d) must be absent + cleanAbsence (got: $out)"
+done
+for d in sk3-repo-missing sk3-emptykey sk3-unreadable; do
+  out=$(sk3_clean_flag "$work/$d")
+  echo "$out" | jq -e '.actual == "absent" and (has("cleanAbsence") | not)' >/dev/null \
+    || fail "HIMMEL-3307: jira-env-keys $d is a real fault and must NOT carry cleanAbsence (got: $out)"
+done
+echo "ok: HIMMEL-3307 jira-env-keys cleanAbsence — never-set-up only; partial/empty/unreadable .env stay a plain absent"
+
 # ── settings-hooks: present (3/3) / degraded (1/3) / absent (0) ────────────
 sh_present="$work/sh-present"; mkdir -p "$sh_present/.claude"
 cat > "$sh_present/.claude/settings.json" <<'JSON'
@@ -1130,6 +1161,43 @@ console.log(JSON.stringify(runProbe(item, ctx)));
 echo "$outHDa" | jq -e '.actual == "absent"' >/dev/null \
   || fail "handover-dir absent (HANDOVER_DIR unset, cwd not a git repo, no inline handovers/): (got: $outHDa)"
 echo "ok: handover-dir (handover-wiring) present/absent, exercising ctx.env pass-through"
+
+# HIMMEL-3307: `cleanAbsence` marks ONLY "no HANDOVER_DIR, inside a git repo,
+# and the lazily-created repo-local handovers/ does not exist yet" — the
+# resolver's own 'inline default ... does not exist' refusal, run for real here
+# so a rewording of that message fails this test rather than quietly turning
+# the flag off. A HANDOVER_DIR pointing nowhere and a non-git cwd are real
+# faults and must not carry it.
+hd_clean_repo="$work/hd-clean-inline-repo"; mkdir -p "$hd_clean_repo"; git -C "$hd_clean_repo" init -q -b main
+hd_probe() {  # hd_probe <cwd> [HANDOVER_DIR value; omit to leave it unset]
+  HD_SET="${2-__unset__}" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'handover-wiring');
+const env = Object.assign({}, process.env, { HIMMELCTL_PROBE_TIMEOUT_SECS: '180' });
+delete env.HANDOVER_DIR;
+if (process.env.HD_SET !== '__unset__') env.HANDOVER_DIR = process.env.HD_SET;
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$(winpath "$1")', scope: 'project', env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+"
+}
+outHDc=$(hd_probe "$hd_clean_repo")
+echo "$outHDc" | jq -e '.actual == "absent" and .cleanAbsence == true' >/dev/null \
+  || fail "HIMMEL-3307: handover-dir with HANDOVER_DIR unset in a git repo lacking handovers/ must be absent + cleanAbsence (got: $outHDc)"
+outHDe=$(hd_probe "$hd_clean_repo" "")
+echo "$outHDe" | jq -e '.actual == "absent" and .cleanAbsence == true' >/dev/null \
+  || fail "HIMMEL-3307: an EMPTY HANDOVER_DIR is the same as unset (got: $outHDe)"
+outHDm=$(hd_probe "$hd_clean_repo" "$work/hd-does-not-exist")
+echo "$outHDm" | jq -e '.actual == "absent" and (has("cleanAbsence") | not)' >/dev/null \
+  || fail "HIMMEL-3307: HANDOVER_DIR pointing at a missing dir is a real fault, no cleanAbsence (got: $outHDm)"
+outHDn=$(hd_probe "$hd_absent_cwd")
+echo "$outHDn" | jq -e '.actual == "absent" and (has("cleanAbsence") | not)' >/dev/null \
+  || fail "HIMMEL-3307: HANDOVER_DIR unset outside any git repo is a real fault, no cleanAbsence (got: $outHDn)"
+mkdir -p "$hd_clean_repo/handovers"
+outHDx=$(hd_probe "$hd_clean_repo")
+echo "$outHDx" | jq -e '.actual == "present"' >/dev/null \
+  || fail "HIMMEL-3307: once <repo>/handovers exists the probe must read present (got: $outHDx)"
+echo "ok: HIMMEL-3307 handover-dir cleanAbsence — only 'unset + git repo + inline dir not created yet'; missing HANDOVER_DIR / non-git stay a plain absent"
 
 # ── dep: single-cmd (rtk) ────────────────────────────────────────────────────
 dep_present_stub="$work/dep-present-bin"; mkdir -p "$dep_present_stub"

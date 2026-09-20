@@ -241,8 +241,14 @@ and `himmelctl status` goes green on them.
 lists rows for opt-in capabilities that were never selected — `hermes-checkout`
 in particular reports a Windows `AppData` path on Linux
 ([HIMMEL-2437](https://yotamleo.atlassian.net/browse/HIMMEL-2437)). Reds for
-`graphify`, `rtk`, `jira-env-keys`, and `telegram-bridge` simply mean those
-optional pieces are not set up; none of them blocks the core loop.
+`graphify`, `rtk`, and `telegram-bridge` simply mean those
+optional pieces are not set up; none of them blocks the core loop. A clean
+starter install's optional Jira (`jira-env-keys`) and Bitbucket
+(`bitbucket-cli-build`) rows, and a not-yet-created inline `handovers/` dir
+(`handover-wiring`), read `n/a`, not red
+([HIMMEL-3307](https://yotamleo.atlassian.net/browse/HIMMEL-3307)); the
+`himmelctl status` count line says how many `n/a` rows were wanted but not set
+up.
 
 **The installer places these hooks by default**
 ([HIMMEL-2441](https://yotamleo.atlassian.net/browse/HIMMEL-2441)); pass

@@ -4936,7 +4936,12 @@ async function cmdStatus(args) {
     return byGroup !== 0 ? byGroup : (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   });
   for (const r of printed) console.log(`${r.severity}  ${r.id}  ${r.detail}`);
-  console.log(`${report.summary.red} red, ${report.summary.degraded} degraded, ${report.summary.green} green, ${report.summary.na} n/a`);
+  // HIMMEL-3307: an n/a row is either "not wanted here" (desired:false) or a
+  // wanted item downgraded from red because it is optional/not initialized yet
+  // (desired:true). "0 red" alone hides that second kind, so name it. Text
+  // only — the --json summary shape above is byte-stable.
+  const notSetUp = report.items.filter((r) => r.desired === true && r.severity === 'n/a').length;
+  console.log(`${report.summary.red} red, ${report.summary.degraded} degraded, ${report.summary.green} green, ${report.summary.na} n/a${notSetUp > 0 ? ` (${notSetUp} of them desired but not set up: see the n/a rows above)` : ''}`);
   return 0;
 }
 

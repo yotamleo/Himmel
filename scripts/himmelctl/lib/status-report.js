@@ -388,6 +388,37 @@ function statusReport({ manifest, scope, targetPath, answers, itemIds, state: pa
         severity = 'n/a';
         detail = `${probe.detail} — opt-in (npm install -g @google/gemini-cli)`;
       }
+      // HIMMEL-3307: three items a clean STARTER install left red although
+      // nothing was wrong. Each is downgraded ONLY on a probe-flagged clean
+      // absence (or, for bitbucket-cli-build, a plain absence: its probe is a
+      // file-exists check with nothing finer to flag) — a half-filled .env, a
+      // HANDOVER_DIR pointing nowhere, or an external-handover profile with the
+      // var unset never carries the flag and stays a loud red.
+      //   jira-env-keys        — Jira is optional; a starter install never
+      //                          writes <himmel>/.env.
+      //   bitbucket-cli-build  — adopt never builds scripts/bitbucket; only a
+      //                          Bitbucket Cloud origin needs it (setup.sh
+      //                          tolerates a failed build for the same reason).
+      //   handover-wiring      — inline handover keeps state in <repo>/handovers,
+      //                          created lazily on the first handover write, so
+      //                          there is nothing to "wire" yet. Distinct wording
+      //                          (not "opt-in": the handover system IS in use,
+      //                          its directory just does not exist yet). Gated
+      //                          on the recorded profile saying `inline`; with
+      //                          no answers to consult it fails open to red.
+      if (item.id === 'jira-env-keys' && probe.cleanAbsence) {
+        severity = 'n/a';
+        detail = `${probe.detail} — opt-in (Jira integration: add JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN, JIRA_PROJECT_KEY to <himmel>/.env to use the Jira CLI)`;
+      }
+      if (item.id === 'bitbucket-cli-build') {
+        severity = 'n/a';
+        detail = `${probe.detail} — opt-in (Bitbucket CLI: needed only when the repo origin is a Bitbucket Cloud remote; build with: cd scripts/bitbucket && npm install && npm run build)`;
+      }
+      if (item.id === 'handover-wiring' && probe.cleanAbsence
+          && answers && typeof answers === 'object' && answers.handover && answers.handover.mode === 'inline') {
+        severity = 'n/a';
+        detail = `${probe.detail} — not initialized yet (inline handover: the repo-local handovers/ dir is created on the first handover write; nothing to wire; turns green once it exists)`;
+      }
       // HIMMEL-2176 Task 7: cadence-armed's/engine-allowlist's/bridge-health's
       // OWN probes (probes.js) each mark the ordinary "never turned on"
       // absence with an additive `cleanAbsence` field (cadence-armed:

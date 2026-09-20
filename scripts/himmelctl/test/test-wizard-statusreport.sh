@@ -919,6 +919,102 @@ echo "$outK" | jq -e '.items[0].severity == "n/a"' >/dev/null \
   || fail "case k: user-scoped-item should then NOT be probed (severity:n/a) — proving it wasn't wrongly enabled by the overlay (got: $outK)"
 echo "ok: case k — the recordedDesired() additive overlay honors the explicit scope argument, not answers.scope"
 
+# ── case m (HIMMEL-3307): a clean STARTER install's three post-install reds ─
+# A starter install never creates <himmel>/.env (Jira is optional), never
+# builds scripts/bitbucket (needed only for a Bitbucket origin), and the inline
+# handover dir <proj>/handovers is created lazily on the first handover write.
+# Each read RED on a machine nothing was wrong with. They now read n/a with a
+# DISTINCT one-line reason; a GENUINE problem (a half-filled .env, a HANDOVER_DIR
+# pointing nowhere, an external handover with the var unset) must keep reading
+# red — the downgrade fires on clean absence only. Real manifest items, fixture repoRoot + target, ambient
+# HANDOVER_DIR stripped (`env -u`) so the operator's own dir cannot green it.
+manifestM="$work/manifestM.json"
+jq '{schemaVersion, harness, items: [.items[] | select(.id | IN("jira-env-keys","bitbucket-cli-build","handover-wiring"))]}' \
+  "$repo_root/scripts/install/manifest.json" > "$manifestM"
+[ "$(jq '.items | length' "$manifestM")" = 3 ] || fail "case m: fixture manifest must carry the 3 real items (got: $(cat "$manifestM"))"
+MANIFEST_M_PATH="$(winpath "$manifestM")"
+export MANIFEST_M_PATH
+homeM="$work/homeM"; mkdir -p "$homeM"
+cacheM="$work/cacheM"; mkdir -p "$cacheM"
+targetM="$work/targetM"; mkdir -p "$targetM"; git -C "$targetM" init -q -b main
+answersM_inline='{"role":"adopter","tier":"standard","scope":"project","vault":{"mode":"none","path":""},"handover":{"mode":"inline","path":""},"pluginSet":"lean","lanes":[],"alwaysOn":false}'
+answersM_external='{"role":"adopter","tier":"standard","scope":"project","vault":{"mode":"none","path":""},"handover":{"mode":"external","path":"/nowhere"},"pluginSet":"lean","lanes":[],"alwaysOn":false}'
+
+new_repoM() {
+  local d="$work/repoM-$1"; mkdir -p "$d/scripts/lib"
+  cp "$repo_root/scripts/lib/handover-path.sh" "$d/scripts/lib/handover-path.sh"
+  echo "$d"
+}
+run_m() {  # run_m <fixture repo> <answers json | null> [extra env assignments...]
+  local repo="$1" answers="$2"; shift 2
+  (cd "$targetM" && env -u HANDOVER_DIR "$@" HOME="$homeM" USERPROFILE="$(winpath "$homeM")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheM")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheM")-luna-config.json" HIMMELCTL_REPO_ROOT="$(winpath "$repo")" M_ANSWERS="$answers" HIMMELCTL_PROBE_TIMEOUT_SECS=180 "$node_bin" -e "
+const { statusReport } = require(process.env.STATUS_REPORT_LIB);
+const manifest = JSON.parse(require('fs').readFileSync(process.env.MANIFEST_M_PATH, 'utf8'));
+const answers = JSON.parse(process.env.M_ANSWERS) || undefined;
+console.log(JSON.stringify(statusReport({ manifest, scope: 'project', targetPath: process.cwd(), answers })));
+")
+}
+sev_m() { echo "$1" | jq -r --arg id "$2" '.items[] | select(.id==$id) | .severity'; }
+
+# m1: nothing configured, inline handover -> all three n/a, 0 red.
+repoM1=$(new_repoM 1)
+outM1=$(run_m "$repoM1" "$answersM_inline")
+echo "$outM1" | jq -e '.summary.red == 0 and .summary.na == 3' >/dev/null \
+  || fail "case m1: a clean starter (no .env, no bitbucket build, no handovers/ yet) must read 0 red / 3 n/a (got: $(echo "$outM1" | jq -c '.summary + {items: [.items[] | {id, severity}]}'))"
+echo "$outM1" | jq -e '.items[] | select(.id=="jira-env-keys") | .detail | test("opt-in.*Jira"; "i")' >/dev/null \
+  || fail "case m1: jira-env-keys n/a detail must name it opt-in Jira (got: $outM1)"
+echo "$outM1" | jq -e '.items[] | select(.id=="bitbucket-cli-build") | .detail | test("opt-in.*Bitbucket"; "i")' >/dev/null \
+  || fail "case m1: bitbucket-cli-build n/a detail must name it opt-in Bitbucket (got: $outM1)"
+echo "$outM1" | jq -e '.items[] | select(.id=="handover-wiring") | .detail | test("not initialized yet"; "i")' >/dev/null \
+  || fail "case m1: handover-wiring n/a detail must say the inline dir is not initialized yet (got: $outM1)"
+echo "ok: case m1 — clean starter: jira-env-keys, bitbucket-cli-build, handover-wiring all read n/a (0 red)"
+
+# m1 --json shape (scripts/himmel-doctor.sh C16-status reads this same JSON):
+# the three rows keep desired:true (still probed, flip green once set up) with
+# severity n/a, and C16's own selector must find nothing to warn about.
+doctor_bad_m() { echo "$1" | jq -r '.items[]? | select(.desired == true and (.severity == "red" or .severity == "degraded")) | "\(.severity)/\(.id)"'; }
+echo "$outM1" | jq -e '[.items[] | select(.severity == "n/a") | {id, desired}] | sort_by(.id) == [{id:"bitbucket-cli-build",desired:true},{id:"handover-wiring",desired:true},{id:"jira-env-keys",desired:true}]' >/dev/null \
+  || fail "case m1 --json: the three rows must be desired:true + severity n/a (got: $(echo "$outM1" | jq -c '[.items[] | {id, desired, severity}]'))"
+[ -z "$(doctor_bad_m "$outM1")" ] \
+  || fail "case m1 --json: himmel-doctor C16's selector must find no red/degraded desired item on a clean starter (got: $(doctor_bad_m "$outM1"))"
+echo "ok: case m1 --json — desired:true + n/a for all three; the doctor's C16 selector reports nothing"
+
+# m2: a half-filled .env is a REAL problem -> jira-env-keys stays red; a full
+# one reads green. An unreadable .env (a directory) is not "never configured".
+repoM2=$(new_repoM 2)
+printf 'JIRA_BASE_URL=https://example.atlassian.net\nJIRA_EMAIL=me@example.com\nJIRA_PROJECT_KEY=HIMMEL\n' > "$repoM2/.env"
+outM2=$(run_m "$repoM2" "$answersM_inline")
+[ "$(sev_m "$outM2" jira-env-keys)" = red ] || fail "case m2: a partly-filled .env (missing JIRA_API_TOKEN) must stay red (got: $outM2)"
+printf 'JIRA_BASE_URL=https://example.atlassian.net\nJIRA_EMAIL=me@example.com\nJIRA_API_TOKEN=tok\nJIRA_PROJECT_KEY=HIMMEL\n' > "$repoM2/.env"
+outM2g=$(run_m "$repoM2" "$answersM_inline")
+[ "$(sev_m "$outM2g" jira-env-keys)" = green ] || fail "case m2: a complete .env must read green (got: $outM2g)"
+repoM2d=$(new_repoM 2d); mkdir -p "$repoM2d/.env"
+outM2d=$(run_m "$repoM2d" "$answersM_inline")
+[ "$(sev_m "$outM2d" jira-env-keys)" = red ] || fail "case m2: an .env that exists but cannot be read (a directory) must stay red, not read as never-configured (got: $outM2d)"
+[ "$(doctor_bad_m "$outM2")" = "red/jira-env-keys" ] \
+  || fail "case m2 --json: the doctor's C16 selector must still surface a half-filled .env (got: $(doctor_bad_m "$outM2"))"
+echo "ok: case m2 — half-filled and unreadable .env stay red (and stay visible to the doctor's C16); a complete .env is green"
+
+# m3: a built bitbucket CLI reads green (the downgrade never masks a real green).
+repoM3=$(new_repoM 3); mkdir -p "$repoM3/scripts/bitbucket/dist"; : > "$repoM3/scripts/bitbucket/dist/index.js"
+outM3=$(run_m "$repoM3" "$answersM_inline")
+[ "$(sev_m "$outM3" bitbucket-cli-build)" = green ] || fail "case m3: a built bitbucket CLI must read green (got: $outM3)"
+echo "ok: case m3 — a built bitbucket CLI reads green"
+
+# m4: handover-wiring stays red for every case that is NOT 'inline dir not yet
+# created': a HANDOVER_DIR pointing nowhere, an external-mode profile with the
+# var unset.
+repoM4=$(new_repoM 4)
+outM4a=$(run_m "$repoM4" "$answersM_inline" HANDOVER_DIR="$work/does-not-exist")
+[ "$(sev_m "$outM4a" handover-wiring)" = red ] || fail "case m4: HANDOVER_DIR set to a missing dir must stay red (got: $outM4a)"
+outM4b=$(run_m "$repoM4" "$answersM_external")
+[ "$(sev_m "$outM4b" handover-wiring)" = red ] || fail "case m4: external handover with HANDOVER_DIR unset must stay red (got: $outM4b)"
+mkdir -p "$targetM/handovers"
+outM4d=$(run_m "$repoM4" "$answersM_inline")
+[ "$(sev_m "$outM4d" handover-wiring)" = green ] || fail "case m4: once <proj>/handovers exists it must read green (got: $outM4d)"
+rmdir "$targetM/handovers"
+echo "ok: case m4 — handover-wiring downgrades ONLY for an inline profile whose repo-local dir is not created yet; misconfig stays red, an existing dir is green"
+
 # ── case l (HIMMEL-2642): expandHome() itself, direct unit coverage ────────
 # Regression guard for the `~\` (Windows-style separator) branch. Before this
 # case, the ONLY thing exercising it was probePhiCoherence's own `~\`-prefixed
