@@ -167,7 +167,61 @@
   .pclose:hover { border-color: var(--path); color: var(--ink); }
   .pclose:focus-visible { outline: 2px solid var(--path); outline-offset: 2px; }
 
+  /* plain-language front matter: three answers, first 5 minutes, platforms, glossary */
+  nav.jump { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 20px;
+    margin: 18px 0 0; font-size: 14.5px; }
+  dfn { font-style: normal; font-weight: 600; color: var(--ink);
+    border-bottom: 1px dotted var(--path); }
+  .doc { margin: 40px 0 0; }
+  .doc h2 { font-family: "Zilla Slab", Georgia, serif; font-weight: 600; font-size: 28px;
+    letter-spacing: -.005em; margin: 0 0 6px; text-wrap: balance; }
+  .doc > .sub { color: var(--muted); margin: 0 0 18px; }
+  .answers { display: grid; gap: 16px; }
+  .answer { background: var(--surface); border: 1px solid var(--line);
+    border-radius: 12px; padding: 18px 22px 20px; }
+  .answer .qno { display: inline-block; font-size: 11.5px; font-weight: 700;
+    letter-spacing: .09em; text-transform: uppercase; color: var(--chip-ink);
+    background: var(--chip-bg); border-radius: 999px; padding: 1px 10px 2px; }
+  .answer h3 { font-family: "Zilla Slab", Georgia, serif; font-weight: 600;
+    font-size: 22px; margin: 8px 0 8px; }
+  .answer h4 { font-size: 12px; font-weight: 700; letter-spacing: .07em;
+    text-transform: uppercase; color: var(--chip-ink); margin: 16px 0 4px; }
+  .answer p { margin: 8px 0; }
+  .answer ul { margin: 6px 0; padding-left: 20px; }
+  .answer li { margin: 4px 0; }
+  pre.cmd { background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px 14px; overflow-x: auto; margin: 10px 0;
+    font-family: "IBM Plex Mono", monospace; font-size: 13px; line-height: 1.6;
+    color: var(--ink); white-space: pre; }
+  ol.steps { margin: 14px 0 0; padding-left: 0; list-style: none; counter-reset: step; }
+  ol.steps > li { counter-increment: step; position: relative; margin: 0 0 18px;
+    padding-left: 44px; }
+  ol.steps > li::before { content: counter(step); position: absolute; left: 0; top: 0;
+    width: 30px; height: 30px; border-radius: 50%; border: 2px solid var(--path);
+    color: var(--path); font-weight: 600; display: flex; align-items: center;
+    justify-content: center; font-size: 14px; }
+  ol.steps > li > p { margin: 0 0 4px; }
+  .os { border: 1px solid var(--line); border-left: 4px solid var(--done);
+    border-radius: 8px; background: var(--surface); padding: 12px 18px 14px; margin: 14px 0; }
+  .os.alpha { border-left-color: var(--path); }
+  .os h3 { font-size: 16px; margin: 0 0 4px; font-weight: 600; }
+  .os .tier { font-size: 11px; font-weight: 700; letter-spacing: .07em;
+    text-transform: uppercase; color: var(--note-ink); margin-left: 6px; }
+  .os.alpha .tier { color: var(--chip-ink); }
+  .os p { margin: 6px 0; font-size: 15px; }
+  .os ul { margin: 6px 0; padding-left: 20px; font-size: 15px; }
+  dl.gloss { margin: 12px 0 0; display: grid; grid-template-columns: max-content 1fr;
+    gap: 8px 18px; }
+  dl.gloss dt { font-weight: 600; color: var(--ink); }
+  dl.gloss dd { margin: 0; color: var(--muted); }
+  .trailintro { max-width: 62ch; margin: 44px auto 0; text-align: center; }
+  .trailintro h2 { font-family: "Zilla Slab", Georgia, serif; font-weight: 600;
+    font-size: 28px; margin: 0 0 6px; }
+  .trailintro p { color: var(--muted); margin: 0; }
+
   @media (max-width: 720px) {
+    dl.gloss { grid-template-columns: 1fr; gap: 2px; }
+    dl.gloss dd { margin-bottom: 8px; }
     .level, .level:nth-child(even) { grid-template-columns: 64px 1fr; }
     .rail { left: 31px; transform: none; }
     .knot { grid-column: 1; grid-row: 1; width: 50px; height: 50px; }
@@ -205,11 +259,374 @@
 <div class="wrap">
   <header class="top">
     <h1>The Himmel Adoption Trail</h1>
-    <p class="lede">Eight levels from a fresh machine to a fleet that
-    ships while you sleep. Climb as far as suits you — every level is
-    optional, honest about what it changes, and reversible. Click any chip
-    for its detail.</p>
+    <p class="lede">Himmel adds safety rails and helpers to Claude Code,
+    Anthropic's AI coding assistant. This page answers three questions
+    first, gives you a five-minute way to try it on a throwaway project, and
+    then lays out the full trail for going further.</p>
+    <nav class="jump" aria-label="On this page">
+      <a href="#start">The three questions</a>
+      <a href="#first-5">First 5 minutes</a>
+      <a href="#full-trail">The full trail</a>
+      <a href="#glossary">Glossary</a>
+    </nav>
   </header>
+
+  <section class="doc" id="start">
+    <h2>Start here: three questions</h2>
+    <p class="sub">In the order you would ask them. Nothing on this page
+    changes your machine until you run a command yourself.</p>
+
+    <div class="answers">
+      <div class="answer" id="what-is-this">
+        <span class="qno">Question 1</span>
+        <h3>What is this?</h3>
+        <p>Himmel is a set of add-ons for Claude Code &mdash; Anthropic's AI
+        coding assistant, which you run in a terminal &mdash; that makes the
+        assistant safer and more repeatable to work with. It does this with
+        small scripts that fire automatically and refuse risky actions
+        (editing your main branch, reading your secret files, pushing
+        unreviewed work), so the rules hold even when nobody remembers them.
+        Around that it adds helpers for the routine work: a separate working
+        folder for every task, pull-request review, and written notes so a
+        job can carry on in a later session.</p>
+        <p>Four words you will see straight away. A <dfn>hook</dfn> is a
+        small script Claude Code runs automatically before or after it uses a
+        tool, and it can refuse the action. A <dfn>gate</dfn> is a check that
+        must pass before a commit, a push or a merge is allowed. A
+        <dfn>worktree</dfn> is a second working folder on its own git branch
+        that shares your repository's history &mdash; the &ldquo;separate
+        working folder&rdquo; above. A <dfn>handover</dfn> is a written note
+        that lets a later session pick up where an earlier one stopped.</p>
+        <h4>Who it is for</h4>
+        <p>Developers who already use git and a terminal and want Claude Code
+        to work with guardrails on. You do not need to know Claude Code or
+        himmel beforehand; you do need to be comfortable running commands in
+        a terminal. Linux and macOS are supported. Windows is an early
+        alpha &mdash; see the boxes in the
+        <a href="#first-5">first 5 minutes</a>. Try it on one throwaway
+        project before you point it at anything you care about.</p>
+      </div>
+
+      <div class="answer" id="what-it-does">
+        <span class="qno">Question 2</span>
+        <h3>What will it do to my machine?</h3>
+        <p>Run from a project folder, the starter install
+        (<span class="mono">--scope project</span>) makes exactly the
+        changes below. Add <span class="mono">--dry-run</span> to any install
+        command and it prints this plan and writes nothing.</p>
+        <h4>In the project folder you run it from</h4>
+        <ul>
+          <li>Copies about a dozen helper scripts into the project's
+          <span class="mono">scripts/</span> folder (the hooks and the
+          worktree commands).</li>
+          <li>Adds to the project's
+          <span class="mono">.claude/settings.json</span>: three hook entries
+          (they refuse edits on your default branch, refuse reading secret
+          files such as <span class="mono">.env</span>, and auto-approve a
+          short list of safe shell commands), a status line, and a
+          <span class="mono">HIMMEL_REPO</span> setting that points back at
+          the himmel download.</li>
+          <li>Places three git hooks in <span class="mono">.git/hooks</span>
+          &mdash; one before a commit, one on the commit message, one before
+          a push. If you already had git hooks, each is saved next to it as
+          <span class="mono">&lt;hook&gt;.himmel-backup</span> and put back
+          on uninstall. If the <span class="mono">pre-commit</span> tool that
+          installs them is missing, the installer tries to install it; if
+          that fails it falls back to plain git hooks without the lint
+          checks and says so.</li>
+          <li>Installs a set of Claude Code plugins (add-on packs of slash
+          commands and skills) for this project, from four plugin
+          marketplaces it registers first. The dry-run lists every one.</li>
+        </ul>
+        <h4>In your home folder</h4>
+        <ul>
+          <li>Appends a marked block of four short working principles
+          (think before coding, simplicity first, surgical changes,
+          goal-driven execution) to <span class="mono">~/.claude/CLAUDE.md</span>
+          and <span class="mono">~/.codex/AGENTS.md</span>. It creates the
+          file if it is absent, skips it if the block or those principles
+          are already there, and never overwrites what you wrote.</li>
+          <li>Writes a small <span class="mono">himmelctl</span> launcher to
+          <span class="mono">~/.local/bin</span> and keeps its own cache in
+          <span class="mono">~/.claude/himmel</span>.</li>
+          <li>Records in <span class="mono">~/.claude.json</span> that you
+          trust this project folder, so Claude Code does not ignore the
+          settings the install just wrote. If it cannot write that entry,
+          the install summary says so and you accept the trust prompt the
+          first time you run <span class="mono">claude</span> there.</li>
+        </ul>
+        <h4>Inside the himmel download</h4>
+        <ul>
+          <li>Builds himmel's Jira command-line tool
+          (<span class="mono">npm install</span> then
+          <span class="mono">npm run build</span>). This needs the network.</li>
+        </ul>
+        <h4>Only if <span class="mono">bun</span> is installed</h4>
+        <ul>
+          <li>Installs the <span class="mono">qmd</span> search tool,
+          downloads about 2.1&nbsp;GB of search models, and indexes the
+          himmel download. Without <span class="mono">bun</span> this whole
+          step is skipped.</li>
+        </ul>
+        <h4>Left alone</h4>
+        <p>The starter install does not touch your notes
+        <dfn>vault</dfn> (a folder of Markdown notes, usually opened in
+        Obsidian), does not arm any <dfn>cadence</dfn> (a recurring
+        scheduled job that himmel sets up with your operating system's
+        scheduler), does not set up the Telegram bridge, and leaves the
+        optional review <dfn>lanes</dfn> off. A lane is a backend &mdash; an
+        AI model plus its tooling &mdash; that himmel can run work on; the
+        review lanes give a second opinion on your changes, and without them
+        review runs on Claude alone.</p>
+        <h4>What changes about how you work</h4>
+        <ul>
+          <li>Inside a Claude Code session, editing a file while you are on
+          the default branch is refused; you make a worktree first with the
+          <span class="mono">/worktree</span> command. That refusal is the
+          point.</li>
+          <li>Commits in that project must have a conventional message
+          (<span class="mono">feat: add a thing</span>) and a ticket
+          reference &mdash; a pointer to an issue in your tracker, such as
+          <span class="mono">#123</span>. Setting
+          <span class="mono">TICKET_ID_REQUIRED=0</span> drops the ticket
+          half; the message-shape check stays.</li>
+        </ul>
+        <p>Prefer to gate every project on the machine instead of one? Use
+        <span class="mono">--scope user</span>, which wires the same hooks
+        into <span class="mono">~/.claude/settings.json</span> so they apply
+        to every project you open &mdash; including ones you did not mean to
+        gate. Try project scope first.</p>
+      </div>
+
+      <div class="answer" id="undo">
+        <span class="qno">Question 3</span>
+        <h3>How do I undo it?</h3>
+        <p>Run the uninstaller from the same project folder you installed
+        into. It prints what it is about to touch and asks
+        <span class="mono">Proceed? [y/N]</span>; anything but
+        <span class="mono">y</span> stops it, and with no terminal attached
+        and no <span class="mono">--yes</span> it refuses rather than guess.
+        If a step cannot finish it says so and exits non-zero instead of
+        claiming success. The commands assume himmel is downloaded to
+        <span class="mono">~/himmel</span>, which is what step 3 of the
+        first-5-minutes path below does.</p>
+        <pre class="cmd"># preview only: prints the footprint and changes nothing
+node ~/himmel/scripts/himmelctl/bin.js uninstall --dry-run
+# the real thing (asks before it acts)
+node ~/himmel/scripts/himmelctl/bin.js uninstall</pre>
+        <h4>Removed</h4>
+        <ul>
+          <li>The three git hooks (your own, if any, are restored).</li>
+          <li>Himmel's wiring in the project's
+          <span class="mono">.claude/settings.json</span> and in
+          <span class="mono">~/.claude/settings.json</span>; your own
+          settings keys are left as they are.</li>
+          <li>The plugins from himmel's marketplaces &mdash; this includes
+          any of them you also enabled for your whole account &mdash; and
+          then the marketplaces that have no plugins left.</li>
+          <li>The working-principles block in
+          <span class="mono">~/.claude/CLAUDE.md</span> and
+          <span class="mono">~/.codex/AGENTS.md</span> (only that block),
+          himmel's status-line config, the scheduled jobs it armed to
+          resume sessions (none, unless you armed some), the
+          Telegram bridge process if one is running, its cache in
+          <span class="mono">~/.claude/himmel</span>, and, once everything
+          else succeeded, the <span class="mono">himmelctl</span> launcher in
+          <span class="mono">~/.local/bin</span>.</li>
+        </ul>
+        <h4>Kept on purpose</h4>
+        <ul>
+          <li>Your Telegram pairing and bridge state &mdash; add
+          <span class="mono">--purge-state</span> to remove them too.</li>
+          <li>The himmel download itself, its <span class="mono">.env</span>
+          file, your worktrees and your handover notes.</li>
+          <li>Claude Code's own trust entry for the project, which may
+          predate himmel &mdash; revoke it in Claude Code if you want it
+          gone.</li>
+          <li>The helper scripts copied into the project's
+          <span class="mono">scripts/</span> folder. They were copied over
+          in place with no record of which files or edits are himmel's, so
+          the uninstaller will not guess; delete them with git if you do not
+          want them.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="doc" id="first-5">
+    <h2>First 5 minutes</h2>
+    <p class="sub">The shortest safe path: a throwaway project, one install,
+    one refusal to watch. The install downloads plugins, so how long it
+    takes depends on your connection. Every command below assumes only what
+    the steps before it set up.</p>
+
+    <ol class="steps">
+      <li>
+        <p><b>Install the tools himmel needs.</b> You need
+        <span class="mono">git</span>, <span class="mono">node</span> with
+        <span class="mono">npm</span>, <span class="mono">jq</span>,
+        <span class="mono">python3</span> and the
+        <span class="mono">claude</span> command (Claude Code). The installer
+        stops and tells you if git, bash, jq, python3 or npm/bun is missing.
+        The command-line tool <span class="mono">gh</span> is not needed to
+        try himmel; it is used later, for GitHub pull requests. Pick your
+        system:</p>
+
+        <div class="os" id="os-linux">
+          <h3>Linux <span class="tier">Supported</span></h3>
+          <p>Debian or Ubuntu shown; on other distributions install the same
+          tools with your package manager. Ubuntu's <span class="mono">nodejs</span>
+          package ships without <span class="mono">npm</span>, hence the
+          separate name. Needs <span class="mono">sudo</span>.</p>
+          <pre class="cmd">sudo apt-get update
+sudo apt-get install -y nodejs npm git jq python3
+curl -fsSL https://claude.ai/install.sh | bash</pre>
+          <p>If <span class="mono">claude</span> is not found afterwards,
+          open a new terminal. Recommended, so the full commit checks
+          install:</p>
+          <pre class="cmd">curl -LsSf https://astral.sh/uv/install.sh | sh
+~/.local/bin/uv tool install pre-commit</pre>
+          <p>Later, for GitHub pull requests, the overnight scheduler and
+          the extra lint checks (on Ubuntu 24.04 or newer; older releases do
+          not package <span class="mono">gh</span>):</p>
+          <pre class="cmd">sudo apt-get install -y gh shellcheck gitleaks at
+sudo systemctl enable --now atd
+sudo npm install -g npm@11</pre>
+          <p>The last line matters only when you start pushing:
+          Ubuntu's packaged npm is too old for the push check
+          (its registry signing key has expired). The tested end-to-end
+          Linux walkthrough is in
+          <a href="setup/new-machine.md">setup/new-machine.md</a>.</p>
+        </div>
+
+        <div class="os" id="os-macos">
+          <h3>macOS <span class="tier">Supported</span></h3>
+          <p>Assumes <a href="https://brew.sh">Homebrew</a>. The system
+          <span class="mono">bash</span> and <span class="mono">python3</span>
+          that macOS ships are too old for some himmel scripts, hence
+          installing newer ones. These commands come from
+          <a href="setup/new-machine.md">setup/new-machine.md</a>; the
+          end-to-end walkthrough there was run on Linux.</p>
+          <pre class="cmd">brew install node git jq python bash uv
+curl -fsSL https://claude.ai/install.sh | bash
+uv tool install pre-commit</pre>
+          <p>If <span class="mono">claude</span> is not found afterwards,
+          open a new terminal.</p>
+        </div>
+
+        <div class="os alpha" id="os-windows">
+          <h3>Windows with Git Bash <span class="tier">Alpha</span></h3>
+          <p>Experimental. The code paths exist, but they are best effort:
+          they are not tested on every change, and there is no guarantee that
+          an install and an uninstall round-trip cleanly. Expect quoting and
+          path differences from Linux, and report what breaks. PowerShell
+          versions of the scripts exist but are outside the support claim;
+          PowerShell alone is not enough &mdash; run everything on this page
+          in <b>Git Bash</b>.</p>
+          <ul>
+            <li>Install Git for Windows (it includes Git Bash) from
+            <a href="https://git-scm.com">git-scm.com</a>, then Node.js
+            (with npm), <span class="mono">jq</span> and Python 3 with your
+            usual installer.</li>
+            <li>Install Claude Code from PowerShell:
+            <span class="mono">irm https://claude.ai/install.ps1 | iex</span></li>
+            <li>Scheduled jobs use Windows Task Scheduler
+            (<span class="mono">schtasks</span>) instead of
+            <span class="mono">at</span>.</li>
+          </ul>
+        </div>
+
+        <div class="os alpha" id="os-wsl">
+          <h3>Windows with WSL <span class="tier">Alpha</span></h3>
+          <p>Same alpha caveats. Install Claude Code and himmel <em>inside</em>
+          a WSL distribution such as Ubuntu and follow the Linux box above.
+          Keep your projects on the Linux side (under <span class="mono">~</span>),
+          never under <span class="mono">/mnt/c</span>, which is very slow.
+          Running Windows-native Claude Code with a WSL shell is not
+          possible.</p>
+        </div>
+      </li>
+
+      <li>
+        <p><b>Make a throwaway project.</b> Do this <em>before</em> the
+        install: once himmel is in place, its commit check would reject a
+        plain first commit. If git says it does not know who you are, first
+        run <span class="mono">git config --global user.name "Your Name"</span>
+        and <span class="mono">git config --global user.email
+        "you@example.com"</span>.</p>
+        <pre class="cmd">mkdir ~/himmel-trial
+cd ~/himmel-trial
+git init -b main
+git commit --allow-empty -m "chore: initial commit"</pre>
+      </li>
+
+      <li>
+        <p><b>Download himmel</b> once, next to your projects rather than
+        inside one:</p>
+        <pre class="cmd">git clone https://github.com/yotamleo/himmel ~/himmel</pre>
+      </li>
+
+      <li>
+        <p><b>Preview the install.</b> Run it from the project, not from the
+        download. <span class="mono">--dry-run</span> prints the plan and
+        writes nothing; compare it with the
+        <a href="#what-it-does">answer to question 2</a>. The
+        <span class="mono">himmelctl</span> command only lands on your PATH
+        once an install has run, so the first call goes through
+        <span class="mono">node</span>.</p>
+        <pre class="cmd">cd ~/himmel-trial
+node ~/himmel/scripts/himmelctl/bin.js install --scope project --dry-run</pre>
+      </li>
+
+      <li>
+        <p><b>Install.</b> The same command without
+        <span class="mono">--dry-run</span>. It asks no questions; the
+        answers are the starter preset described above.</p>
+        <pre class="cmd">node ~/himmel/scripts/himmelctl/bin.js install --scope project</pre>
+      </li>
+
+      <li>
+        <p><b>Watch a guardrail work.</b> Start Claude Code in the project
+        (the first run asks you to sign in):</p>
+        <pre class="cmd">claude</pre>
+        <p>Ask it to create a file called <span class="mono">hello.txt</span>.
+        The edit is refused because you are on the default branch &mdash; that
+        refusal is the success signal. Then type
+        <span class="mono">/worktree feat/try-himmel</span> (a
+        <em>slash command</em>: a command you type inside a Claude Code
+        session, starting with <span class="mono">/</span>) and ask again;
+        the edit now goes through in the new worktree. Leave with
+        <span class="mono">/exit</span>.</p>
+      </li>
+
+      <li>
+        <p><b>Check the result.</b> Back in the terminal, in the same
+        project folder:</p>
+        <pre class="cmd">node ~/himmel/scripts/himmelctl/bin.js status</pre>
+        <p>It reports what is installed against what himmel expects. For one
+        real working loop after this, see
+        <a href="getting-started.md#3-your-first-loop-5-minutes">getting-started.md</a>.
+        The full install reference is
+        <a href="setup/install.md">setup/install.md</a>.</p>
+      </li>
+
+      <li>
+        <p><b>Undo it whenever you like</b> with the two commands under
+        <a href="#undo">question 3</a>. The throwaway project and the
+        download are yours to delete.</p>
+      </li>
+    </ol>
+  </section>
+
+  <div class="trailintro" id="full-trail">
+    <h2>The full trail</h2>
+    <p>Eight levels from a fresh install to a fleet that ships while you
+    sleep. Climb as far as suits you &mdash; every level is optional, says
+    what it changes, and is reversible. Click a level marker to remember
+    where you are (kept on this device only) and any chip for its
+    detail. Terms are explained the first time they appear and again in the
+    <a href="#glossary">glossary</a>.</p>
+  </div>
 
   <div class="progress" id="progress" aria-live="polite"></div>
 
@@ -223,29 +640,32 @@
       <div class="card">
         <span class="lvl-tag">LEVEL 0</span>
         <h2>Install &amp; stay current</h2>
-        <p>Clone <span class="mono">github.com/yotamleo/himmel</span>,
-        <em>then run the installer from inside the clone</em> —
-        <span class="mono">himmelctl</span> only lands on your PATH once the
-        install has run, so the first invocation is
-        <span class="mono">node scripts/himmelctl/bin.js install</span>. It
-        reads your machine first, asks
+        <p>This is what the <a href="#first-5">first 5 minutes</a> already
+        did: clone <span class="mono">github.com/yotamleo/himmel</span> once,
+        then run its installer <em>from the project you want to adopt</em> &mdash;
+        not from inside the clone &mdash; with
+        <span class="mono">node ~/himmel/scripts/himmelctl/bin.js install
+        --scope project</span>. Leave off <span class="mono">--scope</span>
+        and the installer instead reads your machine, asks
         <button class="textlink" data-detail="questions">a handful of
         questions</button> — Enter always takes the safe default — and
         shows the full plan with <span class="mono">--dry-run</span>
-        before touching anything. Later,
+        before touching anything. Once an install has run,
+        <span class="mono">himmelctl</span> is on your PATH (if
+        <span class="mono">~/.local/bin</span> is), so you can shorten
+        <span class="mono">node ~/himmel/scripts/himmelctl/bin.js</span> to
+        <span class="mono">himmelctl</span>. Later,
         <span class="mono">/himmel-update</span> keeps everything current,
         including the pinned tools it manages for you. One manifest covers
         the whole install: dependencies, wiring, schedulers, lanes,
         plugins, vault and hooks.</p>
-        <p class="note">Before you clone: install
-        <span class="mono">git</span>, <span class="mono">node</span> <em>and</em>
-        <span class="mono">npm</span> (or <span class="mono">bun</span>),
-        <span class="mono">jq</span>, <span class="mono">python3</span>,
-        <span class="mono">gh</span>, <span class="mono">pre-commit</span> and
-        the <span class="mono">claude</span> CLI. The installer hard-stops on
-        the ones it cannot work without (bash, git, jq, python3, and npm or
-        bun) and lists the rest in its plan. On an interactive terminal it
-        will <em>offer</em> to install a missing hard requirement, but only
+        <p class="note">Tools to have first: the per-system boxes in the
+        first 5 minutes list them. The installer hard-stops on the ones it
+        cannot work without (bash, git, jq, python3, and npm or bun) and
+        lists the rest in its plan; <span class="mono">gh</span> and
+        <span class="mono">pre-commit</span> are recommended rather than
+        required to install. On an interactive terminal it will
+        <em>offer</em> to install a missing hard requirement, but only
         after you say yes; with <span class="mono">--dry-run</span> or no
         terminal it just tells you what is missing. On
         Debian/Ubuntu note that the <span class="mono">nodejs</span> package
@@ -274,7 +694,7 @@
         elsewhere</span>
           <ul class="chips">
             <li><button class="chip" data-detail="gh">gh CLI
-            (required)</button></li>
+            (for GitHub PRs)</button></li>
             <li><button class="chip" data-detail="superpowers">superpowers</button></li>
             <li><button class="chip" data-detail="graphify">graphify
             (pinned)</button></li>
@@ -307,11 +727,22 @@
         <span class="lvl-tag">LEVEL 1</span>
         <h2>Ship with guardrails</h2>
         <p>Turn on the development overlay: commit gates, ticket
-        discipline, attested pushes and a review loop that runs before
-        anything merges — on GitHub via the required
-        <span class="mono">gh</span> CLI, or Bitbucket via the bundled
+        discipline, <dfn>attested</dfn> pushes and a review loop that runs before
+        anything merges — on GitHub via GitHub's <span class="mono">gh</span>
+        command-line tool, or Bitbucket via the bundled
         Bitbucket CLI (the <span class="mono">himmel-gh</span> plugin routes
-        to whichever your repo uses).</p>
+        to whichever your repo uses). Two terms you will meet here: an
+        <em>attestation</em> (hence &ldquo;attested&rdquo;) is proof written
+        into the commit message itself, as trailer lines such as
+        <span class="mono">Platforms tested: linux</span> and
+        <span class="mono">Security reviewed: manual</span>, which the push
+        gate checks; and <dfn>CR</dfn> is short for CodeRabbit, an automated
+        pull-request review app &mdash; himmel's docs also say &ldquo;CR
+        findings&rdquo; for the comments any reviewer leaves on a pull
+        request. Review of a change is run by a <dfn>panel</dfn>: the group
+        of reviewers &mdash; Claude, plus any review lane you switched on
+        (Level 4) &mdash; that the <span class="mono">/pr-check</span>
+        command asks to look at the same diff.</p>
         <ul class="guard">
           <li><b>Worktree isolation</b> — feature work never edits your
           main branch directly</li>
@@ -347,10 +778,11 @@
         <span class="mono">himmelctl install</span>, so use it if you manage
         git hooks yourself. Ticket discipline is <em>on by
         default</em> once they are placed: the commit-msg gate wants a
-        <span class="mono">PROJECT-123</span> reference when you set
+        ticket reference built from your project key (the key, a dash and a
+        number, as in your tracker's ticket IDs) when you set
         <span class="mono">JIRA_PROJECT_KEY</span> (or your own
-        <span class="mono">TICKET_ID_PATTERN</span>), and himmel's own
-        <span class="mono">#123</span> numbering when you have no Jira at all.
+        <span class="mono">TICKET_ID_PATTERN</span>), and a
+        <span class="mono">#123</span>-style number when you have no Jira at all.
         <span class="mono">TICKET_ID_REQUIRED=0</span> opts out of the ticket
         half; the conventional-commit shape check stays on either way. See
         <a href="setup/new-machine.md">setup/new-machine.md</a>.</p>
@@ -376,10 +808,15 @@
       <div class="card">
         <span class="lvl-tag">LEVEL 2</span>
         <h2>Second brain</h2>
-        <p>Connect a vault — start from the bundled
+        <p>Connect a vault — the folder of Markdown notes defined at the top
+        of this page. Start from the bundled
         <button class="textlink" data-detail="luna-template">luna-second-brain
-        template</button> or point at the notes you already have — and
-        pick which of the eight <b>cadences</b> to arm: the content
+        template</button>, or connect a vault you already made from it;
+        an arbitrary folder of notes is not enough (see
+        <button class="textlink" data-detail="vault">what a vault must
+        be</button>). Then
+        pick which of the eight <b>cadences</b> to arm — the recurring
+        scheduled jobs defined at the top of this page: the content
         pipeline (harvest, synthesize, health), the search reindex, the
         knowledge-graph refresh, a cleanup sweep (if you took the codex
         lane), the upstream drift-fix and upstream watch, and — only where
@@ -606,6 +1043,67 @@
     </ul>
   </section>
 
+  <section class="doc" id="glossary">
+    <h2>Glossary</h2>
+    <p class="sub">The words this page leans on, in one place. Fleet terms
+    (leg, console, and the rest) are defined once, in the project's
+    <a href="glossary.md">glossary</a>; the entries below agree with it.</p>
+    <dl class="gloss">
+      <dt>attestation</dt>
+      <dd>Proof of testing and review written into a commit message as
+      trailer lines, for example <span class="mono">Platforms tested:
+      linux</span>. The push gate checks for them.</dd>
+      <dt>cadence</dt>
+      <dd>A recurring scheduled job that himmel arms with your operating
+      system's scheduler &mdash; a nightly search reindex, say. Level 2 lists
+      the eight; you pick which to arm.</dd>
+      <dt>CR</dt>
+      <dd>Short for CodeRabbit, an automated pull-request review app. Also
+      used loosely for the review comments (&ldquo;CR findings&rdquo;) a
+      pull request collects from any reviewer.</dd>
+      <dt>console</dt>
+      <dd>The one session you keep in front of you when running several at
+      once; it reviews the others and holds the authority to release a
+      merge. See the <a href="glossary.md">glossary</a>.</dd>
+      <dt>gate</dt>
+      <dd>A check that must pass before a commit, a push or a merge is
+      allowed. Git gates run as git hooks; a refusal stops the step.</dd>
+      <dt>handover</dt>
+      <dd>A written note that lets a later session pick up where an earlier
+      one stopped, so work survives any single session.</dd>
+      <dt>hook</dt>
+      <dd>A small script Claude Code runs automatically before or after it
+      uses a tool. A hook can refuse the action, which is how himmel blocks
+      an edit on your main branch. (Git has its own, separate hooks; himmel
+      uses those for its gates.)</dd>
+      <dt>lane</dt>
+      <dd>A backend &mdash; an AI model and its tooling &mdash; that himmel
+      can run work on. The optional review lanes (codex, hermes) give a
+      second opinion on your diff. The <span class="mono">/lanes</span>
+      command lists the ones available to you.</dd>
+      <dt>leg</dt>
+      <dd>One work session that owns exactly one ticket, in its own
+      worktree. See the <a href="glossary.md">glossary</a>.</dd>
+      <dt>panel</dt>
+      <dd>The group of reviewers &mdash; Claude, plus any review lane you
+      switched on &mdash; that the <span class="mono">/pr-check</span>
+      command asks to look at the same diff.</dd>
+      <dt>plugin</dt>
+      <dd>An add-on pack for Claude Code: slash commands, skills and hooks
+      installed from a plugin marketplace.</dd>
+      <dt>slash command</dt>
+      <dd>A command you type inside a Claude Code session, starting with
+      <span class="mono">/</span>, such as <span class="mono">/worktree</span>.</dd>
+      <dt>vault</dt>
+      <dd>A folder of Markdown notes, usually opened in Obsidian. Himmel's
+      second-brain level works on a vault made from its bundled template.</dd>
+      <dt>worktree</dt>
+      <dd>A second working folder for the same repository, on its own git
+      branch and sharing its history. Himmel does feature work in worktrees
+      so your main branch is never edited directly.</dd>
+    </dl>
+  </section>
+
   <footer class="tips">
     Your answers are cached: <span class="mono">himmelctl ensure</span>
     replays them, the wizard can be
@@ -699,7 +1197,7 @@
     '<p><b>Installed is not the same as enabled.</b> A reconciler keeps only a lean set ' +
     'enabled, so your context window stays small even when the roster grows.</p>' +
     '<p><b>Off is not gone.</b> Several capabilities reach your sessions through other doors ' +
-    'entirely: context7, graphify and your vault connect as MCP servers, gh is a CLI, ' +
+    'entirely: context7, graphify and your vault connect as MCP servers (Claude Code’s standard way to plug in outside tools), gh is a CLI, ' +
     'CodeRabbit reviews through its GitHub App, and the HUD renders as your statusline. ' +
     'Turning a plugin off removes its skills from your context, not the capability’s other routes.</p>';
 
@@ -709,12 +1207,12 @@
       '<p><b>Always asked:</b></p><ul>' +
       '<li><b>profile</b> — starter | luna | operator | custom, default starter. A preset only <i>seeds</i> the default answer at each question below — it never skips one.</li>' +
       '<li><b>scope</b> — this project, or your user account</li>' +
-      '<li><b>vault</b> — none | the bundled template | your existing vault</li>' +
+      '<li><b>vault</b> — none | the bundled template | an existing vault (one made from the bundled template)</li>' +
       '<li><b>handover</b> — inline, or an external state directory</li>' +
       '<li><b>pluginSet</b> — <span class="mono">lean</span>, currently the only option</li>' +
       '<li><b>lanes</b> — the review lanes: codex and hermes (each opt-in), or none</li>' +
       '<li><b>alwaysOn</b> — unattended-machine hardening, yes or no</li></ul>' +
-      '<p><b>Conditional</b>, up to fifteen more: vault and handover paths, the per-cadence pick-list and a follow-up asking whether to tear down any cadence you declined, a PHI declaration, a separate personal/medical-vault declaration with its path and an optional <span class="mono">.salus</span> marker, an optional secrets walk, the Telegram bridge on or off with its env path, whisper CLI and model paths (plus a custom model filename), and bridge reboot persistence.</p>' +
+      '<p><b>Conditional</b>, up to fifteen more: vault and handover paths, the per-cadence pick-list and a follow-up asking whether to tear down any cadence you declined, a PHI (protected health information) declaration, a separate personal/medical-vault declaration with its path and an optional <span class="mono">.salus</span> marker, an optional secrets walk, the Telegram bridge on or off with its env path, whisper CLI and model paths (plus a custom model filename), and bridge reboot persistence.</p>' +
       '<p>The secrets walk and the later status nags filter by what you actually selected, so a feature you declined never nags you again.</p>' +
       '<p>Every question has a safe default. <span class="mono">--dry-run</span> shows the whole plan first.</p>' },
     'jira-cli': { t: 'Jira CLI', s: 'ship', h:
@@ -734,11 +1232,11 @@
     'luna-correlate': { t: 'luna-correlate', s: 'ship', h:
       '<p>A bundled plugin for correlating vault content — surfacing connections across notes that the nightly synthesis builds on.</p>' },
     'bitbucket': { t: 'Bitbucket CLI', s: 'ship', h:
-      '<p>himmel <b>brings</b> a Bitbucket command-line client (built by the installer), so teams on Bitbucket get the same PR flow. The <span class="mono">himmel-gh</span> plugin routes each operation to it on a Bitbucket repo and to the required <span class="mono">gh</span> CLI on a GitHub one.</p>' },
+      '<p>himmel <b>brings</b> a Bitbucket command-line client (built by the installer), so teams on Bitbucket get the same PR flow. The <span class="mono">himmel-gh</span> plugin routes each operation to it on a Bitbucket repo and to the <span class="mono">gh</span> CLI on a GitHub one.</p>' },
     'doctor': { t: 'himmel-doctor', s: 'ship', h:
       '<p>The environment doctor: probes your tools, config and wiring, and reports honest per-item verdicts. A check that cannot run reports as unknown — never as a pass.</p>' },
     'gh': { t: 'gh CLI', s: 'ship', h:
-      '<p>GitHub’s official CLI — a <b>required</b> toolchain dependency for GitHub repos; the installer probes it and lists it in its plan. All GitHub operations (PRs, checks, merges) route through it.</p>' },
+      '<p>GitHub’s official command-line tool. You do not need it to install himmel, but the GitHub pull-request flow needs it: the installer probes for it and lists it in its plan, and all GitHub operations (PRs, checks, merges) route through it.</p>' },
     'graphify': { t: 'graphify', s: 'ship', h:
       '<p>A knowledge-graph tool himmel <b>installs from upstream, version-pinned</b> — not a fork. It builds a queryable graph of your codebase (<span class="mono">graphify query</span>, <span class="mono">graphify explain</span>) and refreshes on a schedule. <span class="mono">/himmel-update</span> rolls the pin.</p>' },
     'plugins': { t: 'The plugin roster', s: 'ship', h: PLUGINS },
@@ -755,7 +1253,7 @@
       '<p><b>Roadmap.</b> Declare how much git autonomy the agent gets — e.g. never-push, never-merge, or no-agent-commits — as a per-user ceiling the harness enforces, below the structural PR-only floor that exists today.</p>' +
       '<p>The pieces exist now, but live in environment configuration set at launch. The roadmap item is exactly this promotion: from environment knobs to a <b>profile-declared ceiling</b> the installer records and every session honors.</p>' },
     'luna-template': { t: 'luna-second-brain template', s: 'ship', h:
-      '<p>The bundled vault template — notes structure, a clipper inbox, maps of content, and a daily flow — also published as a standalone repository. Start from it, or keep your own vault and let himmel work inside it.</p>' },
+      '<p>The bundled vault template — notes structure, a clipper inbox, maps of content, and a daily flow — also published as a standalone repository. Start from it; a vault made from it can be connected again later as an existing vault.</p>' },
     'obsidian-triage': { t: 'obsidian-triage skills', s: 'ship', h:
       '<p>Bundled vault skills: triage new clippings, harvest links, synthesize themes across notes, run vault health checks. They are what the nightly cadences execute.</p>' },
     'cadences': { t: 'Cadences (8, pick-list)', s: 'ship', h:
@@ -774,11 +1272,11 @@
     'cadence-codex-sweep': { t: 'Codex sweep cadence', s: 'ship', h:
       '<p>One of the cadences: a cleanup sweep for orphaned codex broker processes. It is offered only if you selected the codex lane.</p>' },
     'qmd': { t: 'qmd vault search', s: 'ship', h:
-      '<p>himmel’s <b>fork of tobi’s qmd</b> search tool. <b>Installed by setup</b>: the CLI is installed and your vault registered as a collection, so semantic search works immediately. The <b>nightly reindex</b> is its own cadence in the pick-list — arm it separately from the pipeline, or search goes stale.</p>' },
+      '<p>himmel’s <b>fork of tobi’s qmd</b> search tool. <b>Installed by setup when <span class="mono">bun</span> is present</b>: the CLI is installed and your vault registered as a collection, so semantic search works immediately. The <b>nightly reindex</b> is its own cadence in the pick-list — arm it separately from the pipeline, or search goes stale.</p>' },
     'luna-sources': { t: 'Source connectors', s: 'ship', h:
       '<p>Offered alongside the vault question: connectors the installer can wire up so sources feed the pipeline, rather than being copy-pasted in by hand.</p>' },
     'vault': { t: 'Your Obsidian vault', s: 'ship', h:
-      '<p>Any Obsidian vault works — point the wizard at it. himmel adds notes and structure through its skills; extraction runs on copies, never destructively on your live notes.</p>' },
+      '<p>A <b>vault</b> is a folder of Markdown notes, usually opened in Obsidian. himmel does not work with just any folder of notes: the “existing vault” answer expects a vault that carries himmel’s luna template stamp, which a vault made from the bundled template has. To start fresh, choose the bundled template instead. himmel adds notes and structure through its skills; extraction runs on copies, never destructively on your live notes.</p>' },
     'bridge': { t: 'telegram-himmel bridge', s: 'ship', h:
       '<p>himmel’s <b>fork of Anthropic’s Telegram plugin</b>: a small always-on service connecting your Telegram to the system — messages in, alerts and reports out. The wizard collects the bot token and env path, and asks — naming the exact artifact it would create (a Windows scheduled task or a Linux systemd unit) — whether to install reboot persistence.</p>' },
     'bridge-health': { t: 'Bridge health checks', s: 'ship', h:
