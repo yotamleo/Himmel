@@ -232,7 +232,10 @@ Run those and name them with their counts.
 
 After merge: pull the primary checkout, re-read the ticket, and post the PR
 number and merge sha on it — transitioning it yourself only if the PR completes
-it and `--jira-transition` did not (its `jira-transition=` result was not `ok`). Then
+it and `--jira-transition` did not (its `jira-transition=` result was `failed`
+or a `skip=` for a missing tool or config). Never close it by hand when the
+result was `skip=never-touch-type` (an Epic or Story is never auto-closed) or
+`skip=cannot-verify-type`: report it to the console instead. Then
 release the lock (paste the line), send `WRAPPED`, print the
 closable-window banner, and **exit**. A leg never idles: if you are gated on
 something outside your control, WRAP with a successor resume brief instead of
