@@ -93,6 +93,29 @@ tools. See
 [`docs/setup/new-machine.md`](docs/setup/new-machine.md) for the per-platform
 shell-and-package install (Linux / macOS / Windows Git Bash).
 
+**Linux — from the release tarball (checksummed, pre-built, no clone, no `npm install`):**
+
+```bash
+V=X.Y.Z   # a release that ships the tarball: https://github.com/yotamleo/Himmel/releases
+curl -fsSLO "https://github.com/yotamleo/Himmel/releases/download/v$V/himmel-$V-linux.tar.gz"
+curl -fsSLO "https://github.com/yotamleo/Himmel/releases/download/v$V/himmel-$V-linux.tar.gz.sha256"
+sha256sum -c "himmel-$V-linux.tar.gz.sha256" \
+  && mkdir -p ~/.local/share/himmel \
+  && tar -xzf "himmel-$V-linux.tar.gz" -C ~/.local/share/himmel --strip-components=1 \
+  && node ~/.local/share/himmel/scripts/himmelctl/bin.js install --scope user
+```
+
+The `&&` chain is the point: a tarball whose bytes do not match the published
+`.sha256` fails `sha256sum -c` and nothing is extracted or installed. The tree
+lands in the user-owned `~/.local/share/himmel` (no root); `himmelctl install`
+then does the per-user wiring and puts a `himmelctl` launcher in
+`~/.local/bin`. The tarball is built by CI on each `v*` tag
+([`release.yml`](.github/workflows/release.yml)); the checksum is of that exact
+built asset. No release carries it until the first tag cut after HIMMEL-3059
+slice 1 — until then use the clone path below.
+
+**Any platform — from a clone:**
+
 ```bash
 git clone https://github.com/yotamleo/Himmel himmel
 cd himmel
@@ -147,6 +170,15 @@ as verified.
 |---|---|---|
 | **Supported** | Linux, macOS | Linux is CI-gated on every PR (required check) — [green `bun-suites` run on `main`](https://github.com/yotamleo/Himmel/actions/runs/35175771338); adopter round trip verified on both. macOS CI runs nightly/dispatch only (same trigger as Alpha below, see [`ci.yml`](.github/workflows/ci.yml)) — not yet a per-PR required check. |
 | **Alpha** | Windows (Git Bash), WSL | Code paths present, best effort, not CI-gated per-PR — a nightly `schedule` run, or a manual `workflow_dispatch` with `force_all_os=true` (a plain dispatch alone stays `ubuntu-latest`-only). Bug reports welcome; no round-trip guarantee. |
+
+**Install channels (HIMMEL-3059):**
+
+| Channel | Status |
+|---|---|
+| Release tarball (`himmel-<version>-linux.tar.gz` + `.sha256`) | **Supported** (Linux) — the four-step path above. The end-to-end fresh-guest run of it is not yet recorded: it is gated on HIMMEL-3252. |
+| `git clone` + `himmelctl install` | **Supported** (Linux, macOS) |
+| AUR | Pending (HIMMEL-3059 slice 2) |
+| brew, nix, deb, rpm | Not supported |
 
 New shell scripts target bash (still bash 3.2-safe, for macOS); a `.ps1`
 Windows twin is now optional, added only when someone is actually working the

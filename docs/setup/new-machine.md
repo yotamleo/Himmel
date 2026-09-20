@@ -13,6 +13,8 @@ Complete checklist for getting a new machine to full working state.
 | **Supported** | Linux, macOS | Linux is CI-gated on every PR (required check) — [green `bun-suites` run on `main`](https://github.com/yotamleo/Himmel/actions/runs/35175771338); adopter round trip verified on both. macOS CI runs nightly/dispatch only (same trigger as Alpha below), not yet a per-PR required check. |
 | **Alpha** | Windows (Git Bash), WSL | Code paths present, best effort, not CI-gated per-PR — a nightly `schedule` run, or a manual `workflow_dispatch` with `force_all_os=true` (a plain dispatch alone stays `ubuntu-latest`-only). Bug reports welcome; no round-trip guarantee. |
 
+**Install channels (HIMMEL-3059):** release tarball (`himmel-<version>-linux.tar.gz` + `.sha256`, Linux) — **supported**, steps in the [README](../../README.md#quickstart); `git clone` + `himmelctl install` — supported; AUR — pending (slice 2); brew / nix / deb / rpm — not supported. The tarball's fresh-guest run is not yet recorded (gated on HIMMEL-3252).
+
 Windows sections below stay accurate for the alpha tier, but nothing in them
 is CI-verified per-PR. See [`docs/internals/harness-compat.md`](../internals/harness-compat.md)
 for the same tiering applied to hook/skill/agent compatibility.

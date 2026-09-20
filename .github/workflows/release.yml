@@ -1,0 +1,59 @@
+name: Release
+
+# HIMMEL-3059 slice 1: on a version tag, build the pre-built himmel tarball and
+# publish it with its SHA256 as release assets. Tag-only -- never runs on a PR,
+# so it adds nothing to PR CI time. The build + hash live in
+# scripts/release/build-tarball.sh (tested by scripts/release/test-build-tarball.sh,
+# which also asserts THIS file uploads both assets).
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  tarball:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create the release if absent + upload assets
+    env:
+      TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Build tarball + sha256
+        run: |
+          ver="${TAG#v}"
+          bash scripts/release/build-tarball.sh --version "$ver" --out dist-release
+
+      - name: Ensure the release exists
+        run: |
+          # A tag with a `-` (v0.3.0-pre.4) is a prerelease, matching the existing releases.
+          flags=()
+          case "$TAG" in *-*) flags+=(--prerelease) ;; esac
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes "${flags[@]}"
+
+      - name: Upload both assets
+        run: |
+          ver="${TAG#v}"
+          gh release upload "$TAG" --clobber \
+            "dist-release/himmel-${ver}-linux.tar.gz" \
+            "dist-release/himmel-${ver}-linux.tar.gz.sha256"
+
+      # What an adopter does: download the PUBLISHED assets and verify with the
+      # published hash. Fails the job if the uploaded pair does not verify.
+      - name: Verify the published pair
+        run: |
+          ver="${TAG#v}"
+          d="$(mktemp -d)"
+          cd "$d"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern "himmel-${ver}-linux.tar.gz" \
+            --pattern "himmel-${ver}-linux.tar.gz.sha256"
+          sha256sum -c "himmel-${ver}-linux.tar.gz.sha256"
