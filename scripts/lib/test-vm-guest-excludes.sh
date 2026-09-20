@@ -190,6 +190,26 @@ must_trip "l a symlink named lanes.local.json" "$L1"
 # m: the size cap — an accepted shape padded past 1 KiB is refused, not parsed.
 M1=$(lane_fixture big "$STUB_PROFILE"); head -c 2048 /dev/zero | tr '\0' ' ' >> "$M1/scripts/lanes/lanes.local.json"
 must_trip "m an inert shape padded past 1 KiB" "$M1"
+# o: whitespace is allowed BETWEEN tokens only — inside a closed-vocabulary string it is
+# not (the panel's codex-1: stripping every space would let "codex- exec" read as "codex-exec").
+must_trip "o1 a space inside a vocabulary string (\"codex- exec\")" \
+  "$(lane_fixture innerspace '{"lanes": [], "profileAllowlist": ["codex- exec"]}')"
+must_trip "o2 a tab inside a vocabulary string" \
+  "$(lane_fixture innertab "$(printf '{"lanes": [], "profileAllowlist": ["codex\texec"]}')")"
+must_trip "o3 a space padding a vocabulary string (\" codex-exec\")" \
+  "$(lane_fixture padspace '{"lanes": [], "profileAllowlist": [" codex-exec"]}')"
+# p: the formatting variants the real consumers/writers produce still pass (no regression
+# from making the whitespace structural): compact, indent-2 multi-line, CRLF.
+must_pass() {  # <label> <root>
+  if vm_guest_scan "$2" full >/dev/null 2>&1; then pass "TL$1 passes the full scan"
+  else fail_case "TL$1 flagged: $(vm_guest_scan "$2" full 2>&1)"; fi
+}
+must_pass "p1 compact (no whitespace) inert profile" \
+  "$(lane_fixture compact '{"lanes":[],"profileAllowlist":["codex-exec"],"profileAllowlistScope":["codex-exec","hermes-oneshot"]}')"
+must_pass "p2 indent-2 multi-line inert profile" \
+  "$(lane_fixture multiline "$(printf '{\n  "lanes": [\n    {\n      "id": "codex-exec",\n      "probe": {\n        "kind": "always"\n      }\n    }\n  ],\n  "profileAllowlist": [\n    "codex-exec"\n  ]\n}')")"
+must_pass "p3 CRLF line endings" \
+  "$(lane_fixture crlf "$(printf '{\r\n  "lanes": [],\r\n  "profileAllowlist": []\r\n}')")"
 # n: the env profile is untouched (still ignores every *.local.json).
 if vm_guest_scan "$(lane_fixture envprof '{"lanes": [], "token": "STUB"}')" env >/dev/null 2>&1; then
   pass "TLn env profile still ignores *.local.json"; else fail_case "TLn env profile changed"; fi

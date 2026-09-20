@@ -117,21 +117,22 @@ def _inert_lanes_test():
     scan may let through -- himmelctl's own lane-profile persistence writes
     scripts/lanes/lanes.local.json during an install, so a guest that has ever been
     through one would otherwise fail every full scan of the clone on the NAME alone.
-    A regular file there, <=1 KiB, whose whitespace-stripped bytes match an anchored
+    A regular file there, <=1 KiB, whose bytes (newline/tab/CR read as spaces) match an anchored
     ERE naming exactly lanes / profileAllowlist / profileAllowlistScope with every
     string value from a CLOSED vocabulary (an allowlist of an inert shape, not a hunt
     for secrets). Runs inside `sh -c '...'`, so the JSON quotes are \\" there.
     Byte-identical to _vm_guest_inert_lanes_test in vm-guest-excludes.sh."""
     q = '\\"'
+    s = " *"  # structural whitespace only; tr maps \n \t \r to spaces first, so a space INSIDE a quoted string can never match
     lane = "(codex-exec|hermes-oneshot)"
-    ids = f"({q}{lane}{q}(,{q}{lane}{q})*)?"
-    entry = (f"\\{{{q}id{q}:{q}{lane}{q},{q}probe{q}:"
-             f"\\{{{q}kind{q}:{q}(always|never){q}\\}}\\}}")
-    ere = (f"^\\{{{q}lanes{q}:\\[({entry}(,{entry})*)?\\]"
-           f"(,{q}profileAllowlist{q}:\\[{ids}\\]"
-           f"(,{q}profileAllowlistScope{q}:\\[{ids}\\])?)?\\}}\\$")
+    ids = f"({q}{lane}{q}({s},{s}{q}{lane}{q})*)?"
+    entry = (f"\\{{{s}{q}id{q}{s}:{s}{q}{lane}{q}{s},{s}{q}probe{q}{s}:{s}"
+             f"\\{{{s}{q}kind{q}{s}:{s}{q}(always|never){q}{s}\\}}{s}\\}}")
+    ere = (f"^{s}\\{{{s}{q}lanes{q}{s}:{s}\\[{s}({entry}({s},{s}{entry})*)?{s}\\]"
+           f"({s},{s}{q}profileAllowlist{q}{s}:{s}\\[{s}{ids}{s}\\]"
+           f"({s},{s}{q}profileAllowlistScope{q}{s}:{s}\\[{s}{ids}{s}\\])?)?{s}\\}}{s}\\$")
     return ("-type f -path '*/scripts/lanes/lanes.local.json' -size -3 "
-            "-exec sh -c 'tr -d \" \\n\\t\\r\" <\"$1\" | "
+            "-exec sh -c 'tr \"\\n\\t\\r\" \"   \" <\"$1\" | "
             f"grep -Eq \"{ere}\"' _ {{}} \\;")
 
 

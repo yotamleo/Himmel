@@ -20,7 +20,8 @@
 # scripts/lanes/lanes.local.json during an install, so a guest that has ever been
 # through one would fail every `full` scan of the clone on the NAME alone. The full
 # scan therefore lets a REGULAR file at */scripts/lanes/lanes.local.json through only
-# when it is <=1 KiB and its whitespace-stripped bytes match an anchored ERE naming
+# when it is <=1 KiB and its bytes (newline/tab/CR read as spaces; whitespace allowed
+# BETWEEN tokens only, never inside a quoted string) match an anchored ERE naming
 # exactly the keys lanes / profileAllowlist / profileAllowlistScope, with every string
 # value from a CLOSED vocabulary (the wizard-owned lane ids + the probe kinds
 # always|never). This is an allowlist of an inert shape, not a hunt for secrets: any
@@ -97,14 +98,17 @@ VM_GUEST_SECRET_GLOBS='.env .env.* *.local.json'
 # whole ERE is one word there. Byte-identical to _inert_lanes_test in vmsdk.py
 # (parity-tested); every vocabulary term is spelled out in both.
 _vm_guest_inert_lanes_test() {
-  local Q='\"' id ids entry ere sq="'"
+  # S = structural whitespace only: tr maps \n \t \r to spaces first, so a space INSIDE a
+  # quoted string can never match (a closed-vocabulary value may not be padded).
+  local Q='\"' S=' *' id ids entry ere sq="'"
   id='(codex-exec|hermes-oneshot)'
-  ids="(${Q}${id}${Q}(,${Q}${id}${Q})*)?"
-  entry="\\{${Q}id${Q}:${Q}${id}${Q},${Q}probe${Q}:\\{${Q}kind${Q}:${Q}(always|never)${Q}\\}\\}"
-  ere="^\\{${Q}lanes${Q}:\\[(${entry}(,${entry})*)?\\]"
-  ere="${ere}(,${Q}profileAllowlist${Q}:\\[${ids}\\]"
-  ere="${ere}(,${Q}profileAllowlistScope${Q}:\\[${ids}\\])?)?\\}"'\$'
-  printf '%s' "-type f -path ${sq}*/scripts/lanes/lanes.local.json${sq} -size -3 -exec sh -c ${sq}tr -d \" \\n\\t\\r\" <\"\$1\" | grep -Eq \"${ere}\"${sq} _ {} \;"   # pipefail-ok: emitted text for the guest's plain sh -c (no pipefail), stdin capped at 1 KiB by -size -3
+  ids="(${Q}${id}${Q}(${S},${S}${Q}${id}${Q})*)?"
+  entry="\\{${S}${Q}id${Q}${S}:${S}${Q}${id}${Q}${S},${S}${Q}probe${Q}${S}:${S}"
+  entry="${entry}\\{${S}${Q}kind${Q}${S}:${S}${Q}(always|never)${Q}${S}\\}${S}\\}"
+  ere="^${S}\\{${S}${Q}lanes${Q}${S}:${S}\\[${S}(${entry}(${S},${S}${entry})*)?${S}\\]"
+  ere="${ere}(${S},${S}${Q}profileAllowlist${Q}${S}:${S}\\[${S}${ids}${S}\\]"
+  ere="${ere}(${S},${S}${Q}profileAllowlistScope${Q}${S}:${S}\\[${S}${ids}${S}\\])?)?${S}\\}${S}"'\$'
+  printf '%s' "-type f -path ${sq}*/scripts/lanes/lanes.local.json${sq} -size -3 -exec sh -c ${sq}tr \"\\n\\t\\r\" \"   \" <\"\$1\" | grep -Eq \"${ere}\"${sq} _ {} \;"   # pipefail-ok: emitted text for the guest's plain sh -c (no pipefail), stdin capped at 1 KiB by -size -3
 }
 
 vm_guest_tar_excludes() {
