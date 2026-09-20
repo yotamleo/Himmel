@@ -2441,6 +2441,26 @@ else
   assert_has 'U24 error names the preserved temp file' "unwire-ucm." "$out"
 fi
 
+# U26 — an unreadable rule file is a failure, never "no block": grep's read error
+# (rc 2) used to be swallowed by `|| true` and read as zero markers. Skipped as
+# root, for whom chmod 000 stops nothing.
+printf 'mine\n' > "$TMP/u26-rules"
+wire_user_claude_md "$U17_TEMPLATE" "$TMP/u26-rules" >/dev/null
+cp "$TMP/u26-rules" "$TMP/u26-before"
+chmod 000 "$TMP/u26-rules"
+if [ -r "$TMP/u26-rules" ]; then
+  echo 'SKIP U26 a chmod 000 file is still readable here (running as root) -- unreadable-target case not exercised'
+else
+  for u26_dry in 1 0; do
+    rc=0; out="$(bash "$U17_SCRIPTS/lib/unwire-user-claude-md.sh" "$TMP/u26-rules" "$u26_dry" 2>&1)" || rc=$?
+    assert_rc "U26 unreadable target fails (dry_run=$u26_dry)" 1 "$rc"
+    assert_has "U26 error says it cannot read the file (dry_run=$u26_dry)" "cannot read" "$out"
+  done
+  chmod 644 "$TMP/u26-rules"
+  u_same 'U26 unreadable target left byte-identical' "$TMP/u26-rules" "$TMP/u26-before"
+fi
+chmod 644 "$TMP/u26-rules"
+
 # U25 — the temp-file build checks BOTH halves: a failing `head` with a
 # succeeding `tail` (no text after END) must not read as a good result and
 # delete the target as "empty".
