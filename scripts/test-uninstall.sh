@@ -1983,6 +1983,25 @@ assert_rc 'U4k the printed command runs to completion' 0 "$u4k_rc"
 assert_has 'U4k printed command kept the hooks step' 'kept (--skip-hooks).' "$u4k_out"
 assert_has 'U4k printed command finished the teardown' 'Uninstall complete.' "$u4k_out"
 
+# U4m — the printed command mirrors EVERY mode flag the run was given, not just
+# --purge-state/--skip-*: a dry run's advice stays a dry run (it must never turn
+# a preview into a wet teardown), and --keep-telegram-state survives the rerun.
+u_backup_fixture u4m
+u_hooks_reset
+printf '# pre-commit managed hook\n' > "$U_REPO/.git/hooks/commit-msg"
+u_run --dry-run
+assert_rc 'U4m dry-run halt' 2 "$rc"
+u4m_cmd=$(printf '%s\n' "$out" | grep -m1 '^    HIMMEL_UNINSTALL_REAL_HOME=1 bash ' | sed 's/^    //')
+assert_has 'U4m dry-run advice stays a dry run' '--dry-run' "$u4m_cmd"
+u4m_out=$(HOME="$U_HOME" PATH="$U_BIN:$HBIN" HIMMEL_UNINSTALL_REPO_ROOT="$U_REPO" \
+    TELEGRAM_CHANNEL_DIR="$CHANNEL" BRIDGE_ROOT="$BRIDGE" HIMMELCTL_CACHE_DIR="$U_CACHE" \
+    bash "$CLI" --keep-telegram-state --yes --skip-tasks </dev/null 2>&1); u4m_rc=$?
+assert_rc 'U4m keep-telegram-state halt' 2 "$u4m_rc"
+u4m_kcmd=$(printf '%s\n' "$u4m_out" | grep -m1 '^    HIMMEL_UNINSTALL_REAL_HOME=1 bash ' | sed 's/^    //')
+assert_has 'U4m advice keeps --keep-telegram-state' '--keep-telegram-state' "$u4m_kcmd"
+assert_not_has 'U4m keep-telegram-state advice is not a dry run' '--dry-run' "$u4m_kcmd"
+rm -f "$U_REPO/.git/hooks/commit-msg"
+
 # U4l — HIMMEL-3253 residual: an adopter hook that merely mentions pre-commit,
 # with pre-commit absent, is a HALT with runnable advice — never data loss: the
 # hook is byte-identical afterwards.

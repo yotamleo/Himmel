@@ -724,9 +724,13 @@ EOF
 rerun_command() {
   local cmd
   cmd="HIMMEL_UNINSTALL_REAL_HOME=1 bash $(printf '%q' "$SCRIPT_DIR/uninstall.sh") --yes"
+  # Mirror EVERY mode flag the run was given (all but --yes, always printed, and
+  # --source-only, a test seam): a rerun that dropped one would remove what the
+  # operator chose to keep, or turn a dry run into a wet teardown. The remedy
+  # flag is added once.
+  [ "$DRY_RUN" -eq 1 ] && cmd="$cmd --dry-run"
   [ "$PURGE_STATE" -eq 1 ] && cmd="$cmd --purge-state"
-  # Carry every --skip-* the operator already passed: a rerun that dropped one
-  # would remove what they chose to keep. The remedy flag is added once.
+  [ "$KEEP_TELEGRAM_STATE" -eq 1 ] && cmd="$cmd --keep-telegram-state"
   [ "$SKIP_PLUGINS" -eq 1 ] && cmd="$cmd --skip-plugins"
   [ "$SKIP_TASKS" -eq 1 ] && cmd="$cmd --skip-tasks"
   [ "$SKIP_HOOKS" -eq 1 ] && cmd="$cmd --skip-hooks"
