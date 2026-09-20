@@ -49,6 +49,11 @@
 # The unsafe direction needs a leg-spawned process that is a non-wrapper direct
 # child forked inside the window — i.e. a Bash tool call with no shell-snapshot
 # wrapper AND a first tool call within seconds of session start; not observed.
+# The same hole opens if a shell wrapper exec()s its command inside the window:
+# pid, ppid and etime stay put but argv stops matching iswrap, so the replacement
+# process and everything beneath it would read as harness (false CLOSABLE). Real
+# wrappers keep the shell as parent of the command (a `source … && eval …` list
+# is not exec-optimised), so it was not observed either; nothing here detects it.
 # The launcher's own argv (the configured MCP commands) or the supervisor were
 # not used: claude spawns MCP servers itself (ppid = the session, no
 # supervisor), and the config that names them (~/.claude.json) holds tokens.
