@@ -86,7 +86,9 @@ release_fetch_latest() {
     local out code body tag
     RELEASE_LATEST_TAG=""; RELEASE_FAIL_REASON=""
     if ! command -v curl >/dev/null 2>&1; then RELEASE_FAIL_REASON="no-curl"; return 1; fi
-    if ! out=$(curl -sS --proto '=https' --proto-redir '=https' -L --max-redirs 3 --max-time 10 \
+    # -q must be curl's FIRST option: it stops ~/.curlrc from adding URLs or
+    # output files to a lookup whose whole contract is one fixed endpoint.
+    if ! out=$(curl -q -sS --proto '=https' --proto-redir '=https' -L --max-redirs 3 --max-time 10 \
         -H 'Accept: application/vnd.github+json' \
         -w '\n%{http_code}' "$HIMMEL_RELEASES_API" 2>/dev/null); then
         RELEASE_FAIL_REASON="network"; return 1
@@ -132,9 +134,16 @@ release_refresh() {
 # already sitting at that path. The state dir defaults to a shared /tmp path, so
 # a redirect straight onto "$cache" / "$cache.fail" would write through a planted
 # symlink; mktemp creates a fresh O_EXCL file and mv replaces the destination
-# entry itself (a link included) instead of its target.
+# entry instead of writing through it. mv itself would treat a destination that
+# is a directory — or a link to one — as "move INTO it", so a link there is
+# removed first and a real directory is refused outright.
+# ponytail: that check-then-mv is not atomic. Losing the race can only drop one
+# 0600 file (random name; content = a validated tag or a fixed-vocabulary
+# reason) into a directory the racing actor already controls.
 _release_put() {
     local tmp
+    if [ -L "$2" ]; then rm -f "$2" 2>/dev/null || return 1
+    elif [ -d "$2" ]; then return 1; fi
     tmp=$(mktemp "$2.XXXXXX" 2>/dev/null) || return 1
     if printf '%s\n' "$1" > "$tmp" 2>/dev/null && mv -f "$tmp" "$2" 2>/dev/null; then
         return 0

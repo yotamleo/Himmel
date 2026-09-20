@@ -419,6 +419,23 @@ assert_eq_hook "answer: the file a planted cache link pointed at is untouched" "
 assert_eq_hook "…and the cache is a regular file holding the tag" "v0.5.0" "$(cat "$SD/himmel-latest-release" 2>/dev/null || true)"
 if [ ! -L "$SD/himmel-latest-release" ]; then assert_pass "…not a link"; else assert_fail "cache is still a link"; fi
 
+echo "Test 20: non-git, a link (or real dir) AT the destination is replaced/refused — never 'moved into'"
+# mv onto a symlink-to-directory moves the temp file INTO that directory and
+# reports success, leaving the cache entry unchanged and a stray file behind.
+SD="$TMP/s20"; mkdir -p "$SD"; DIR20="$TMP/dir20"; mkdir -p "$DIR20"
+ln -s "$DIR20" "$SD/himmel-latest-release"
+env PATH="$STUBBIN:$PATH" STUB_CURL_TAG=v0.6.0 bash "$LIBS_SRC/release-check.sh" --refresh "$SD/himmel-latest-release" 2>/dev/null || true
+assert_eq_hook "dir-link cache: the cache is now a regular file holding the tag" "v0.6.0" "$(cat "$SD/himmel-latest-release" 2>/dev/null || true)"
+assert_eq_hook "dir-link cache: nothing was dropped into the linked directory" "0" "$(find "$DIR20" -mindepth 1 | wc -l | tr -d ' ')"
+rm -f "$SD/himmel-latest-release"; mkdir -p "$SD/himmel-latest-release.fail"
+env PATH="$STUBBIN:$PATH" STUB_CURL_MODE=netfail bash "$LIBS_SRC/release-check.sh" --refresh "$SD/himmel-latest-release" 2>/dev/null || true
+assert_eq_hook "real dir at .fail: refused, nothing dropped into it" "0" "$(find "$SD/himmel-latest-release.fail" -mindepth 1 | wc -l | tr -d ' ')"
+
+echo "Test 21: the lookup runs curl with -q FIRST so a ~/.curlrc cannot add URLs or outputs"
+SD="$TMP/s21"; mkdir -p "$SD"; CURLLOG="$TMP/curl21.log"; : > "$CURLLOG"
+env PATH="$STUBBIN:$PATH" STUB_CURL_LOG="$CURLLOG" STUB_CURL_TAG=v0.6.0 bash "$LIBS_SRC/release-check.sh" --refresh "$SD/himmel-latest-release" 2>/dev/null || true
+assert_eq_hook "curl's first argument is -q" "-q" "$(head -n 1 "$CURLLOG" | cut -d' ' -f1)"
+
 # ─── Summary ─────────────────────────────────────────────────────────────────
 echo
 echo "RESULTS: $pass passed, $fail failed"
