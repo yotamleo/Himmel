@@ -86,13 +86,15 @@ role_of() {
 # console launch record (headed-arm.sh, HIMMEL-3279) - or `unknown`. Never a
 # proxy from the session's own token counts (a pinned session that never grew
 # past 175k and an unpinned one look identical). `unknown` covers no record,
-# an unreadable one, a record with no usable context= field, and records that
-# DISAGREE on the mode (the log is append-only with no attempt id, same reason
-# as agg-postpin.sh's MULTI-LINE RULE: neither first nor last is provable).
+# an unreadable one, ANY headed-arm row with no usable context= field (a torn
+# append is evidence of trouble, so it is never dropped in favour of a valid
+# row beside it), and records that DISAGREE on the mode (the log is
+# append-only with no attempt id, same reason as agg-postpin.sh's MULTI-LINE
+# RULE: neither first nor last is provable).
 sc_launch_context() {
     case "$2" in ""|*/*) echo unknown; return 0 ;; esac
     [ -r "$1/$2.log" ] || { echo unknown; return 0; }
-    _sc_modes=$(awk '/^headed-arm:/ {for(i=1;i<=NF;i++) if($i ~ /^context=(1m|standard)$/) print substr($i, 9)}' "$1/$2.log" | sort -u)
+    _sc_modes=$(awk '/^headed-arm:/ {m="bad"; for(i=1;i<=NF;i++) if($i ~ /^context=(1m|standard)$/) m=substr($i, 9); print m}' "$1/$2.log" | sort -u)
     case "$_sc_modes" in
         1m|standard) echo "$_sc_modes" ;;
         *) echo unknown ;;

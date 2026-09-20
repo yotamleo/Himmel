@@ -116,17 +116,21 @@ unset HIMMELCTL_CACHE_DIR
 #   9202  record: context=1m                                -> 1m
 #   9203  NO record (the tmpfs arm log is gone after a reboot) -> unknown
 #   9204  two records that DISAGREE (standard, then 1m)     -> unknown
+#   9205  a valid standard record + a TORN one (context=1)  -> unknown
 export SCORECARD_PROJECTS_DIR="$HERE/fixtures/context-record/projects"
 unset SCORECARD_LAUNCH_LOG_DIR
 export HIMMELCTL_CACHE_DIR="$HERE/fixtures/context-record/cache"
 CTX_LOGS="$HERE/fixtures/context-record/cache/launch-logs"
 
-# preconditions: all four sessions are discovered without the filter, the
-# fixture really has a record for 9201 and none for 9203 (so the cases below
-# fail for the attribution, not for a missing fixture)
+# preconditions: all five sessions are discovered without the filter, the
+# fixture really has a record for 9201 and none for 9203, and 9205 really holds
+# one valid row beside one malformed row (so the cases below fail for the
+# attribution, not for a missing fixture)
 CTX_ALL=$("$POSTPIN" --since 2026-01-01T00:00:00Z --role console 2>/dev/null)
-check "context-record: precondition, all four consoles are counted without --context" \
-    "$(session_count "$CTX_ALL" console)" "4"
+check "context-record: precondition, all five consoles are counted without --context" \
+    "$(session_count "$CTX_ALL" console)" "5"
+check "context-record: precondition, 9205 has a valid standard row AND a malformed headed-arm row" \
+    "$(grep -c '^headed-arm:' "$CTX_LOGS/HIMMEL-9205-fixture-console-2026-09-20.log") $(grep -c 'context=standard ' "$CTX_LOGS/HIMMEL-9205-fixture-console-2026-09-20.log") $(grep -c 'context=1$' "$CTX_LOGS/HIMMEL-9205-fixture-console-2026-09-20.log")" "2 1 1"
 check "context-record: precondition, 9201 has a durable record" \
     "$(grep -c 'context=standard' "$CTX_LOGS/HIMMEL-9201-fixture-console-2026-09-20.log")" "1"
 check "context-record: precondition, 9203 has no record" \
@@ -139,11 +143,11 @@ CTX_1M=$("$POSTPIN" --since 2026-01-01T00:00:00Z --role console --context 1m 2>/
 check "context-record: --context 1m attributes 1 session FROM its record" \
     "$(session_count "$CTX_1M" console)" "1"
 CTX_UNK=$("$POSTPIN" --since 2026-01-01T00:00:00Z --role console --context unknown 2>/dev/null)
-check "context-record: --context unknown reports the record-less and the ambiguous session (2), not a proxy" \
-    "$(session_count "$CTX_UNK" console)" "2"
+check "context-record: --context unknown reports the record-less, the disagreeing and the torn-record session (3), not a proxy" \
+    "$(session_count "$CTX_UNK" console)" "3"
 check "context-record: an attributed session is not silently proxied into a mode (coverage names the unknowns)" \
     "$(printf '%s\n' "$CTX_STD" | grep '^coverage:')" \
-    "coverage: roots=1 discovered=4 parsed=1 skipped=3 (context-unknown=2 other-context=1)"
+    "coverage: roots=1 discovered=5 parsed=1 skipped=4 (context-unknown=3 other-context=1)"
 check "context-record: the output labels its attribution source" \
     "$(printf '%s\n' "$CTX_STD" | grep '^context:')" \
     "context: filter=standard source=launch-record (no proxy; a session with no usable record is unknown)"
