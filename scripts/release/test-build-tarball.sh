@@ -87,6 +87,10 @@ b = bytearray(open(sys.argv[1], 'rb').read())
 b[len(b) // 2] ^= 0xFF
 open(sys.argv[2], 'wb').write(b)
 PY
+# A missing/failing python3 leaves no copy, and "sha256sum -c fails" would then be a
+# MISSING FILE, not a hash mismatch -- require a real, different, same-size copy first.
+check "the flipped-byte copy exists, differs and keeps its size" \
+  bash -c "[ -s '$bad_dir/himmel-1.2.3-linux.tar.gz' ] && ! cmp -s '$tgz' '$bad_dir/himmel-1.2.3-linux.tar.gz' && [ \"\$(stat -c %s '$tgz')\" = \"\$(stat -c %s '$bad_dir/himmel-1.2.3-linux.tar.gz')\" ]"  # gnu-ok: this suite runs on Linux only (the tarball is Linux-only), where stat -c is coreutils'
 check_not "RED: a tarball with one flipped byte FAILS sha256sum -c" \
   bash -c "cd '$bad_dir' && sha256sum -c himmel-1.2.3-linux.tar.gz.sha256"
 # (b) intact tarball, but a hash for different bytes.
@@ -94,12 +98,15 @@ wrong_dir="$tmp/wronghash"; mkdir -p "$wrong_dir"
 cp "$tgz" "$wrong_dir/"
 printf '%s  himmel-1.2.3-linux.tar.gz\n' "$(printf 'not this file' | sha256sum | cut -d' ' -f1)" \
   > "$wrong_dir/himmel-1.2.3-linux.tar.gz.sha256"
+check "the wrong-hash case holds the intact tarball" cmp -s "$tgz" "$wrong_dir/himmel-1.2.3-linux.tar.gz"
 check_not "RED: an intact tarball vs a wrong published hash FAILS sha256sum -c" \
   bash -c "cd '$wrong_dir' && sha256sum -c himmel-1.2.3-linux.tar.gz.sha256"
 # (c) truncated download.
 trunc_dir="$tmp/trunc"; mkdir -p "$trunc_dir"
 cp "$sum" "$trunc_dir/"
 head -c 100 "$tgz" > "$trunc_dir/himmel-1.2.3-linux.tar.gz"
+check "the truncated copy exists and differs from the original" \
+  bash -c "[ -s '$trunc_dir/himmel-1.2.3-linux.tar.gz' ] && ! cmp -s '$tgz' '$trunc_dir/himmel-1.2.3-linux.tar.gz'"
 check_not "RED: a truncated tarball FAILS sha256sum -c" \
   bash -c "cd '$trunc_dir' && sha256sum -c himmel-1.2.3-linux.tar.gz.sha256"
 # (d) the README chain must STOP at a failed verify: a `&&` chain never reaches tar.

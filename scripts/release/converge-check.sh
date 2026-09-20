@@ -54,12 +54,14 @@ mask() {
   REPLY="$out$rest"
 }
 
-# norm <home> <prefix> -- stdin -> stdout, own paths masked (prefix first: it is
-# usually nested under home).
+# norm <home> <prefix> <target> -- stdin -> stdout, own paths masked (prefix first:
+# it is usually nested under home). The two installs use different target repos, so
+# the target's own path is location, not state -- masked like the others.
 norm() {
-  local home="$1" prefix="$2" line
+  local home="$1" prefix="$2" target="$3" line
   while IFS= read -r line || [ -n "$line" ]; do
     mask "$line" "$prefix" '{PREFIX}'
+    [ -n "$target" ] && mask "$REPLY" "$target" '{TARGET}'
     mask "$REPLY" "$home" '{HOME}'
     printf '%s\n' "$REPLY"
   done
@@ -70,6 +72,7 @@ snapshot() {
   local home="$1" prefix="$2" target="$3" f
   home="$(cd -- "$home" 2>/dev/null && pwd -P)" || home="$1"
   prefix="$(cd -- "$prefix" 2>/dev/null && pwd -P)" || prefix="$2"
+  if [ -n "$target" ]; then target="$(cd -- "$target" 2>/dev/null && pwd -P)" || target="$3"; fi
   {
     echo "## settings"
     # A jq failure prints a sentinel, never jq's own diagnostic: identical
@@ -82,6 +85,9 @@ snapshot() {
     f="$home/.claude/plugins/installed_plugins.json"
     if [ -f "$f" ]; then jq -S '[(.plugins // .) | keys[]]' "$f" 2>/dev/null || echo "(unreadable: installed_plugins.json)"; else echo "(absent)"; fi
     echo "## seed"
+    # ponytail: the seed is compared by FILE LIST only, not contents -- seeded files may carry
+    # timestamps or ids that would false-diverge, and the real seed shape is unknown until the
+    # guest run (gated on HIMMEL-3252) has produced one; tighten to normalized contents then.
     if [ -d "$home/.claude/himmel" ]; then ( cd "$home/.claude/himmel" && find . -type f | LC_ALL=C sort ); else echo "(absent)"; fi
     echo "## launcher"
     f="$home/.local/bin/himmelctl"
@@ -107,7 +113,7 @@ snapshot() {
       echo "## target-settings"
       if [ -f "$target/.claude/settings.json" ]; then jq -S . "$target/.claude/settings.json" 2>/dev/null || echo "(unreadable: target settings.json)"; else echo "(absent)"; fi
     fi
-  } | norm "$home" "$prefix"
+  } | norm "$home" "$prefix" "$target"
 }
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/himmel-converge.XXXXXX")" || { echo "converge-check: cannot create a scratch dir" >&2; exit 2; }

@@ -169,6 +169,19 @@ rm -f "$tmp/cg1/real-hook.sh"
 bash "$CONV" --a-home "$tmp/cg1/home" --a-prefix "$tmp/cg1/prefix" --a-target "$tmp/cg1/repo" \
   --b-home "$tmp/cg2/home" --b-prefix "$tmp/cg2/prefix" --b-target "$tmp/cg2/repo" >/dev/null 2>&1; rc=$?
 [ "$rc" -eq 3 ] && ok "T7 RED: a dangling hook symlink is UNREADABLE (rc 3)" || bad "T7 dangling hook symlink accepted" "rc=$rc"
+# Each install has its OWN target repo; a project settings.json naming its own target is location, not state.
+mk_side "$tmp/ct1" "bash $tmp/ct1/prefix/g.sh"; mk_side "$tmp/ct2" "bash $tmp/ct2/prefix/g.sh"
+for s in ct1 ct2; do
+  git init -q "$tmp/$s/repo" 2>/dev/null; mkdir -p "$tmp/$s/repo/.claude"
+  printf '{"cwd":"%s/repo/work"}\n' "$tmp/$s" > "$tmp/$s/repo/.claude/settings.json"
+done
+bash "$CONV" --a-home "$tmp/ct1/home" --a-prefix "$tmp/ct1/prefix" --a-target "$tmp/ct1/repo" \
+  --b-home "$tmp/ct2/home" --b-prefix "$tmp/ct2/prefix" --b-target "$tmp/ct2/repo" >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 0 ] && ok "T7 a target repo's own path differing by location is CONVERGED (rc 0)" || bad "T7 target path not normalized" "rc=$rc"
+printf '{"cwd":"%s/elsewhere"}\n' "$tmp/ct2" > "$tmp/ct2/repo/.claude/settings.json"
+bash "$CONV" --a-home "$tmp/ct1/home" --a-prefix "$tmp/ct1/prefix" --a-target "$tmp/ct1/repo" \
+  --b-home "$tmp/ct2/home" --b-prefix "$tmp/ct2/prefix" --b-target "$tmp/ct2/repo" >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 1 ] && ok "T7 RED: a genuinely different project setting is still DIVERGED (rc 1)" || bad "T7 target normalization hid a real difference" "rc=$rc"
 
 # --- T9 RED: the published pair does not verify -> the body stops, fail closed --
 # The README chain never reaches tar on a bad hash; the body must not extract or
@@ -201,6 +214,8 @@ PATH="$tmp/sshbin:$PATH" bash "$DRIVER" nobody@nowhere 2 /nonexistent >/dev/null
 [ "$rc" -eq 3 ] && ok "T8 unreachable VM exits 3 (not a code failure)" || bad "T8 unreachable VM rc"
 grep -q 'tarball-vs-clone.sh' "$DRIVER" && grep -q 'vm_guest_assert_clean' "$DRIVER" && grep -q 'build-tarball.sh' "$DRIVER" \
   && ok "T8 driver builds the tarball, asserts the guest clean, runs the acceptance body" || bad "T8 driver is missing a step"
+grep -q 'REMOTE_DIR="/tmp/himmel-tarball-vm-\$\$' "$DRIVER" && ! grep -q "rm -rf \\\$REMOTE_DIR" "$DRIVER" \
+  && ok "T8 the guest dir is unique per run and never pre-deleted (no cross-run clobbering)" || bad "T8 driver reuses or deletes a shared guest dir"
 grep -q 'sha256sum -c' "$BODY" && grep -q 'converge-check.sh' "$BODY" && ok "T8 the body verifies the checksum and asserts convergence" || bad "T8 body missing sha256sum -c / converge-check"
 
 echo

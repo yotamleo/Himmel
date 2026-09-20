@@ -29,7 +29,8 @@ PORT="${2:-2222}"
 IDENT="${3:-$HOME/.ssh/id_ed25519}"
 SSH_OPTS="-p $PORT -i $IDENT -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
 REPO="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-REMOTE_DIR="/tmp/himmel-tarball-vm"
+# Unique per run: two drivers against one guest must not delete each other's artifacts.
+REMOTE_DIR="/tmp/himmel-tarball-vm-$$-$RANDOM"
 VERSION="0.0.0-acceptance"
 
 # shellcheck disable=SC2086,SC2029
@@ -60,7 +61,7 @@ rm -f "$stage/build.log"
 # shellcheck source=lib/vm-guest-excludes.sh
 . "$REPO/scripts/lib/vm-guest-excludes.sh" \
   || { echo "==> REFUSING: cannot load scripts/lib/vm-guest-excludes.sh; nothing was copied" >&2; exit 1; }
-ssh_vm "rm -rf $REMOTE_DIR && mkdir -p $REMOTE_DIR" || { echo "==> STAGE FAILED (mkdir)" >&2; exit 1; }
+ssh_vm "mkdir $REMOTE_DIR" || { echo "==> STAGE FAILED (mkdir $REMOTE_DIR; it must not already exist)" >&2; exit 1; }
 tar -C "$stage" -cf - . | ssh_vm "tar -C $REMOTE_DIR -xf -" \
   || { echo "==> STAGE FAILED: the copy to the guest did not complete" >&2; exit 1; }
 vm_guest_assert_clean ssh_vm "$REMOTE_DIR" full || exit 1
