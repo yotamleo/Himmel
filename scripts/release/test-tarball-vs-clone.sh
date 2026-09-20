@@ -8,8 +8,8 @@
 # installs end identically and FAILS when they differ, when a path leaks, when an
 # install fails, when the checksum control is neutered, and when the snapshot is
 # vacuous. What it does NOT prove: that the REAL `himmelctl install` converges on
-# a bare guest -- that is the guest run (scripts/test-tarball-install-vm.sh),
-# deferred and gated on HIMMEL-3252.
+# a bare guest -- that is the guest run (scripts/test-tarball-install-vm.sh), green
+# at 0aacaa42 (HIMMEL-3262).
 # shellcheck disable=SC2015  # A && pass || fail is the intentional test-assert idiom (pass/fail echo, always rc 0)
 set -uo pipefail
 

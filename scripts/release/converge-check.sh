@@ -89,8 +89,8 @@ snapshot() {
     if [ -f "$f" ]; then jq -S '[(.plugins // .) | keys[]]' "$f" 2>/dev/null || echo "(unreadable: installed_plugins.json)"; else echo "(absent)"; fi
     echo "## seed"
     # ponytail: the seed is compared by FILE LIST only, not contents -- seeded files may carry
-    # timestamps or ids that would false-diverge, and the real seed shape is unknown until the
-    # guest run (gated on HIMMEL-3252) has produced one; tighten to normalized contents then.
+    # timestamps or ids that would false-diverge; the guest run (green at 0aacaa42, HIMMEL-3262)
+    # converged on file lists, so tightening to normalized contents is a follow-up, not a gate.
     if [ -d "$home/.claude/himmel" ]; then ( cd "$home/.claude/himmel" && find . -type f | LC_ALL=C sort ); else echo "(absent)"; fi
     echo "## launcher"
     f="$home/.local/bin/himmelctl"

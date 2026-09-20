@@ -6,13 +6,15 @@
 # steps AND via a clone of the same commit, then assert the two END STATES
 # CONVERGE (ADR Q3) -- not merely that both installs exited 0.
 #
-# STATUS: WRITTEN, NOT YET RUN ON A GUEST. Its hermetic halves are tested
+# STATUS: RUN ON A GUEST, GREEN (HIMMEL-3262). At 0aacaa42 on a guest restored from
+# suite-ready-v4 this exits 0 -- "clone and tarball installs CONVERGED" (314 snapshot
+# lines identical after path normalization); the vm_guest_assert_clean false positive
+# that used to gate it (HIMMEL-3252) is fixed. Its hermetic halves are tested
 # (scripts/release/test-tarball-vs-clone.sh: the convergence assertion against a
 # stub himmelctl, with a divergent RED control; this driver's fail-soft path).
-# The guest run is gated on HIMMEL-3252 (the vm_guest_assert_clean false positive
-# in step 2) and on the guest being up; the first real run may need adjustments to
-# what `himmelctl install` needs on a bare guest (claude CLI, network, npm for the
-# clone path's own jira build) -- see docs/setup/vms.md.
+# ponytail: both installs go into a fake HOME under /tmp, and there is no uninstall
+# leg nor a vm_guest_assert_clean AFTER the run -- the real-HOME uninstall round trip
+# is covered by the clone path (scripts/test-install-symmetry-vm.sh), not here.
 #
 # Guest needs: bash, git, node+npm, jq, python3, sha256sum, tar.
 #

@@ -88,8 +88,8 @@ mkdir -p "$prefix_b"
   && step_ok "tarball extracts into the prefix" || step_fail "tarball extract"
 [ -f "$prefix_b/$CTL" ] && step_ok "tarball carries $CTL" || step_fail "tarball lacks $CTL"
 # The prebuilt tarball's headline claim: no npm install on the adopter's machine.
-# Asserted statically -- the built outputs are IN the extracted tree -- since the
-# guest run that would prove it end to end is deferred (HIMMEL-3252).
+# Asserted statically -- the built outputs are IN the extracted tree; the guest run
+# (scripts/test-tarball-install-vm.sh, green at 0aacaa42, HIMMEL-3262) exercises it end to end.
 for p in "${prebuilt[@]}"; do
   present "$prefix_b/$p" && step_ok "tarball carries prebuilt $p (no npm needed)" || step_fail "tarball lacks prebuilt $p (adopter would need npm)"
 done
