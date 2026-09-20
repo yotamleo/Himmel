@@ -767,8 +767,12 @@ fi
 # written is noted in $LOG and never stops the launch.
 # ponytail: this records the launch ATTEMPT that reached the exec below;
 # headed-arm.sh can still refuse it (duplicate session name, missing pin).
-# A refused launch has no transcript, so a reader that joins to a session
-# transcript never counts it.
+# A refused launch of a NEW name has no transcript, so a reader joining on
+# the session name never counts it - but a refused DUPLICATE of a live
+# session's name does match that session's transcript, and its line (which
+# may carry a different profile) sits beside the original: the log is
+# append-only and carries no attempt id, so the reader must not assume one
+# line per session (it is not decided here - HIMMEL-3269 owns the reader).
 # ponytail: with no HIMMELCTL_CACHE_DIR and no HOME nothing is written -
 # falling back to /tmp would leave a file uninstall cannot find (HIMMEL-3260's
 # accepted HOME-unset divergence, not repeated here).
