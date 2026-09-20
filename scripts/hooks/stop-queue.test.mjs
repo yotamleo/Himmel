@@ -13,7 +13,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync, spawn } from 'node:child_process';
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync, utimesSync } from 'node:fs';
 import { join, dirname, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { makeTmpDir } from '../lib/test-tmpdir.mjs';
@@ -21,7 +21,7 @@ import { makeTmpDir } from '../lib/test-tmpdir.mjs';
 import {
   DEFAULT_TTL_MS, DEFAULT_JOB_TIMEOUT_MS, MAX_ATTEMPTS, MAX_PAYLOAD_BYTES,
   queueDir, sanitizeKey, entryKey, enqueue, drain, work, isExpired,
-  lockIsStale, workerIsLive, status, parseEnqueueArgs, snapshotEnv, scrubSecrets, jobEnv, redactSecrets,
+  lockIsStale, workerIsLive, acquireLock, status, parseEnqueueArgs, snapshotEnv, scrubSecrets, jobEnv, redactSecrets,
   snapshotOwns,
 } from './stop-queue.mjs';
 
@@ -1271,6 +1271,66 @@ test('two workers racing the same stale lock cannot both drain', async () => {
     // Nobody leaves a lock or a parked stale directory behind.
     assert.equal(existsSync(join(dir, 'worker.lock')), false);
     assert.deepEqual(readdirSync(dir).filter((f) => f.startsWith('worker.lock')), []);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// [HIMMEL-3273] The rename above closes "two workers both DELETE the lock", but
+// not "a worker renames a lock that is no longer the one it judged stale": the
+// rename is keyed on the PATH, so a worker that saw the stale lock and then lost
+// the CPU renames away whatever sits there when it wakes — including the live
+// lock the faster worker just created — and both proceed. The real-process case
+// above only hits that under load. This one forces the interleaving: worker B
+// has decided the lock is stale, and worker A runs its whole takeover in the
+// gap before B's rename.
+test('a worker that judged the lock stale cannot remove the lock another worker took meanwhile', () => {
+  const dir = scratch();
+  try {
+    mkdirSync(join(dir, 'worker.lock'), { recursive: true });
+    writeFileSync(join(dir, 'worker.lock', 'pid'), '0');
+    let holders = 0;
+    const b = acquireLock(dir, {
+      afterStaleCheck: () => { if (acquireLock(dir)) holders += 1; },
+    });
+    if (b) holders += 1;
+    assert.equal(holders, 1, `ran ${holders}, expected 1 — two workers hold the same lock`);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// [HIMMEL-3273] Two workers reach the takeover together: one is mid-takeover
+// (holds the reclaim gate) when the other arrives. The second must back off, not
+// take the lock over from under the first.
+test('a worker arriving mid-takeover backs off instead of taking the lock over', () => {
+  const dir = scratch();
+  try {
+    mkdirSync(join(dir, 'worker.lock'), { recursive: true });
+    writeFileSync(join(dir, 'worker.lock', 'pid'), '0');
+    let holders = 0;
+    let reached = false;
+    const b = acquireLock(dir, {
+      insideGate: () => { reached = true; if (acquireLock(dir)) holders += 1; },
+    });
+    if (b) holders += 1;
+    assert.equal(reached, true, 'the takeover never went through the reclaim gate');
+    assert.equal(holders, 1, `ran ${holders}, expected 1 — two workers hold the same lock`);
+    assert.equal(b, true, 'the worker that held the gate should have taken the lock');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// A worker that dies inside the takeover leaves its gate behind; the queue must
+// not stay wedged on it.
+test('a reclaim gate left by a dead worker does not wedge the lock', () => {
+  const dir = scratch();
+  try {
+    mkdirSync(join(dir, 'worker.lock'), { recursive: true });
+    writeFileSync(join(dir, 'worker.lock', 'pid'), '0');
+    const gate = join(dir, 'worker.lock.reclaim');
+    mkdirSync(gate);
+    // A FRESH gate is a takeover in progress — respected.
+    assert.equal(acquireLock(dir), false, 'a fresh gate was ignored');
+    const old = new Date(Date.now() - 5 * 60 * 1000);
+    utimesSync(gate, old, old);
+    assert.equal(acquireLock(dir), true, 'a dead worker gate wedged the lock');
+    assert.equal(existsSync(gate), false, 'the gate was left behind');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

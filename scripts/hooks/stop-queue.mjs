@@ -586,7 +586,9 @@ export function workerIsLive(dir) {
   return existsSync(paths(dir).lock) && !lockIsStale(dir);
 }
 
-function acquireLock(dir) {
+// `hooks` is a test seam: it lets a test park one worker between two steps of
+// the takeover and run a second worker in the gap, deterministically.
+export function acquireLock(dir, hooks = {}) {
   const p = paths(dir);
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
@@ -596,22 +598,65 @@ function acquireLock(dir) {
     } catch (e) {
       if (e.code !== 'EEXIST') return false;
       if (!lockIsStale(dir)) return false;      // a live worker owns it — this is the bound
-      // Clearing a stale lock by rmSync is RACY, and racy here means two
-      // workers draining at once — the one thing the lock exists to prevent.
-      // Both can see the same stale lock; the slower one then deletes the lock
-      // the faster one has just legitimately created, and both proceed. RENAME
-      // it away instead: exactly one process can rename a given directory, so
-      // the loser fails here and retries against whatever the winner leaves.
-      const parked = `${p.lock}.stale-${randomUUID().slice(0, 8)}`;
+      if (hooks.afterStaleCheck) hooks.afterStaleCheck();
+      // Removing a stale lock has to be ATOMIC WITH the judgement that it is
+      // stale, and neither rmSync nor rename is: both act on the PATH, not on
+      // the lock that was judged. A worker that saw the stale lock and then
+      // lost the CPU removes whatever sits at that path when it wakes — the
+      // live lock the faster worker just created — and both proceed, which is
+      // two workers draining at once, the one thing the lock exists to prevent
+      // (HIMMEL-3273). So takeovers are serialised behind a reclaim gate, and
+      // staleness is decided again INSIDE it: while we hold the gate no other
+      // worker can remove the lock, and nobody can create one over an existing
+      // directory, so what we judged is what we remove.
+      const gate = takeReclaimGate(p);
+      if (!gate) return false;   // another worker is mid-takeover; the lock is its to take
       try {
-        renameSync(p.lock, parked);
-      } catch {
-        continue;   // someone else cleared or replaced it; look again
+        if (hooks.insideGate) hooks.insideGate();
+        if (!existsSync(p.lock)) continue;      // cleared meanwhile — just create it
+        if (!lockIsStale(dir)) return false;    // replaced by a live worker — leave it
+        const parked = `${p.lock}.stale-${randomUUID().slice(0, 8)}`;
+        try {
+          renameSync(p.lock, parked);
+        } catch {
+          continue;   // gone between the check and the rename; look again
+        }
+        try { rmSync(parked, { recursive: true, force: true }); } catch { /* best effort */ }
+      } finally {
+        try { rmSync(gate, { recursive: true, force: true }); } catch { /* best effort */ }
       }
-      try { rmSync(parked, { recursive: true, force: true }); } catch { /* best effort */ }
     }
   }
   return false;
+}
+
+// The reclaim gate is a directory created with mkdir, so exactly one worker
+// holds it. It is held for a handful of syscalls, so a gate older than
+// RECLAIM_STALE_MS was left by a worker that died inside the takeover, and is
+// cleared so it cannot wedge the queue.
+// ponytail: clearing a dead gate is itself a path-keyed removal, so two workers
+// clearing the SAME dead gate can both end up holding a fresh one. That needs a
+// worker to die mid-takeover AND two more to wake in the same instant.
+// A stale lock whose holder is still alive (age cap, or a reused pid) and
+// releases between the in-gate check and the rename is the other: releaseLock
+// does not take the gate. Both are far narrower than the window this closes,
+// and neither is closed here.
+const RECLAIM_STALE_MS = 30 * 1000;
+function takeReclaimGate(p) {
+  const gate = `${p.lock}.reclaim`;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      mkdirSync(gate, { mode: 0o700 });
+      return gate;
+    } catch (e) {
+      if (e.code !== 'EEXIST') return null;
+      let age;
+      try { age = Date.now() - statSync(gate).mtimeMs; } catch { continue; }
+      if (age <= RECLAIM_STALE_MS) return null;
+      try { rmSync(gate, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+  }
+  return null;
 }
 
 function releaseLock(dir) {
