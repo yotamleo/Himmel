@@ -209,6 +209,13 @@ set -e
 [ "$rc" -eq 0 ] || fail "caseA: dry-run should exit 0 (got rc=$rc): $out"
 grepq "$out" -F 'himmel-owned wiring & repo-local artifacts' \
   || fail "caseA: expected the owned/unwire plan header (got: $out)"
+# HIMMEL-3251: the header must not tell a project-scope adopter that repo-local
+# artifacts vanish with the clone — adopt copies scripts/ into THEIR repo, and
+# deleting the himmel clone never touches that.
+grepq "$out" -F "what adopt copied into a project-scope adopter's own repo (scripts/)" \
+  || fail "caseA: expected the header to say adopter-repo copies stay (got: $out)"
+grepq "$out" -F 'STAY until you remove them' \
+  || fail "caseA: expected the header to say what stays (got: $out)"
 grepq "$out" -F 'fixture-owned' \
   || fail "caseA: expected fixture-owned in the owned/unwire plan (got: $out)"
 grepq "$out" -F "Shared tools himmel installed or requires (NOT removed" \

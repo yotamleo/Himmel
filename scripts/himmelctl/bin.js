@@ -4319,12 +4319,15 @@ function partitionOffboard(manifest) {
 // (jira-cli-dist-build, guardrail-scope, doc-guard-map, hermes-lanes,
 // telegram-bridge, ...) are repo-local files/artifacts uninstall.sh
 // deliberately leaves in place (its own "NOT touched" footer: "the himmel
-// clone itself") — they go away when the clone itself is deleted, not
-// because uninstall.sh removed them one by one. The header below must not
-// claim otherwise; it states what uninstall.sh's machine-level steps do
-// and lets the repo-local disposition apply to everything else in the list.
+// clone itself") — those that live in the himmel clone go away when the clone
+// itself is deleted, not because uninstall.sh removed them one by one. That is
+// NOT true of what a project-scope adopt copied into the ADOPTER's repo
+// (scripts/) or of Claude's workspace-trust entry (HIMMEL-3251): deleting a
+// clone never touches those, and uninstall.sh names them as kept in its own
+// footer. The header below must not claim otherwise; it states what
+// uninstall.sh's machine-level steps do and where the rest stays.
 function printOffboardPlan(unwireItems, adviseItems, keepItems) {
-  console.log(`himmel-owned wiring & repo-local artifacts (${unwireItems.length}) — uninstall.sh removes himmel's machine-level wiring (settings.json hooks/statusline, scheduled jobs, plugins, git hooks, telegram bridge); repo-local files/artifacts in this list go away when the clone is deleted: ${unwireItems.map((i) => i.id).join(', ')}`);
+  console.log(`himmel-owned wiring & repo-local artifacts (${unwireItems.length}) — uninstall.sh removes himmel's machine-level wiring (settings.json hooks/statusline, working-principles rule-file blocks, hud config, scheduled jobs, plugins, git hooks, telegram bridge); artifacts in this list that live in the himmel clone go away when the clone is deleted, but what adopt copied into a project-scope adopter's own repo (scripts/) and Claude's workspace-trust entry STAY until you remove them — uninstall.sh lists them under "NOT touched": ${unwireItems.map((i) => i.id).join(', ')}`);
   console.log("Shared tools himmel installed or requires (NOT removed — remove any you don't use elsewhere):");
   console.log(`  ${adviseItems.map((i) => i.id).join(', ')}`);
   console.log(`left untouched (your data): ${keepItems.map((i) => i.id).join(', ')}`);

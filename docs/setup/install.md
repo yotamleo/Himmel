@@ -215,14 +215,21 @@ conservative one:
 
 - **Code** (removed by default): the Claude plugins and marketplaces himmel
   added, the repo's git hooks, the himmel keys in `~/.claude/settings.json`
-  (hooks and `env`), the `HIMMEL-Resume-*` scheduled jobs, the Telegram bridge
-  process and the himmelctl cache.
+  (hooks and `env`), the `HIMMEL:working-principles` block install appended to
+  `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` (only that block is stripped;
+  a file left empty by it is removed), the claude-hud config himmel wrote, the
+  `HIMMEL-Resume-*` scheduled jobs, the Telegram bridge process and the
+  himmelctl cache.
 - **State** (kept unless you pass `--purge-state`): your Telegram pairing
   (`~/.claude/channels/telegram`) and the bridge state directory. A purge is
   refused (non-zero exit) rather than run while the bridge is still running,
   so state can remain after a guarded purge; stop the bridge and re-run.
 - **Never touched**: the himmel clone, your `.env`, worktrees, handover state,
-  and any `settings.json` key himmel did not add.
+  and any `settings.json` key himmel did not add. Also left in place, and named
+  in the footprint: Claude Code's workspace-trust entry in `~/.claude.json`, and
+  the himmel scripts a project-scope install copied into your repo's `scripts/`
+  — deleting the himmel clone does not remove them; drop them with git if you
+  no longer want them.
 
 Every change is printed with its exact path and line (`removing hook
 PreToolUse: …`). After the settings step it re-reads the file and prints

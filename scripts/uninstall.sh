@@ -204,6 +204,9 @@ load_manifest() {
       git-hook-backups) _want="githooks path 5" ;;
       user-settings)    _want="settings path 6" ;;
       project-settings) _want="settings path 6" ;;
+      user-claude-md)   _want="file path 6" ;;
+      user-agents-md)   _want="file path 6" ;;
+      hud-config)       _want="file path 6" ;;
       marketplaces)     _want="marketplaces - 7" ;;
       himmelctl-cache)  _want="dir path 8" ;;
       *)                _want="" ;;
@@ -264,6 +267,9 @@ _ix_plug=$(m_index plugins) || exit 2
 _ix_ghooks=$(m_index git-hooks) || exit 2
 _ix_hbak=$(m_index git-hook-backups) || exit 2
 _ix_mkt=$(m_index marketplaces) || exit 2
+_ix_ucm=$(m_index user-claude-md) || exit 2
+_ix_uam=$(m_index user-agents-md) || exit 2
+_ix_hud=$(m_index hud-config) || exit 2
 
 CHANNEL_DIR="$(strip_trailing_slash "$(m_path "$_ix_channel")")"
 BRIDGE_ROOT="$(strip_trailing_slash "$(m_path "$_ix_bridge")")"
@@ -1141,7 +1147,7 @@ else
   fi
 fi
 if [ "$SKIP_SETTINGS" -eq 1 ]; then
-  echo "  6. keep user- and current-project settings.json wiring (--skip-settings)"
+  echo "  6. keep user- and current-project settings.json wiring, the working-principles blocks and the hud config (--skip-settings)"
 else
   if class_removes "$_ix_settings"; then
     echo "  6. unwire ~/.claude/settings.json (statusLine, HIMMEL_REPO,"
@@ -1153,6 +1159,18 @@ else
     echo "     and current-project settings: $PWD/.claude/settings.json (himmel's own checkout excluded)"
   else
     echo "     keep current-project settings (manifest class ${M_CLASS[$_ix_pset]})"
+  fi
+  for _ix2 in "$_ix_ucm" "$_ix_uam"; do
+    if class_removes "$_ix2"; then
+      echo "     and strip himmel's working-principles block from $(m_path "$_ix2") (your own text untouched)"
+    else
+      echo "     keep $(m_path "$_ix2") (manifest class ${M_CLASS[$_ix2]})"
+    fi
+  done
+  if class_removes "$_ix_hud"; then
+    echo "     and remove himmel's claude-hud config: $(m_path "$_ix_hud")"
+  else
+    echo "     keep the claude-hud config (manifest class ${M_CLASS[$_ix_hud]})"
   fi
 fi
 if [ "$SKIP_PLUGINS" -eq 1 ]; then
@@ -1184,6 +1202,7 @@ for _mi in "${!M_ID[@]}"; do
       elif class_removes "$_mi"; then
         _disp="REMOVE"
         [ "${M_ID[$_mi]}" = "git-hook-backups" ] && _disp="RESTORE"
+        case "${M_ID[$_mi]}" in user-claude-md|user-agents-md) _disp="STRIP " ;; esac
       else _disp="KEEP  "; fi ;;
   esac
   _mp=$(m_path "$_mi")
@@ -1681,7 +1700,13 @@ unwire_settings() {
     done
   fi
   if [ "$DRY_RUN" -eq 1 ]; then
-    echo "DRY: unwire statusLine (himmel), env.HIMMEL_REPO, env.LUNA_VAULT_PATH, env.HANDOVER_DIR from $settings"
+    # One row per helper, the same five the wet loop below runs (the hooks
+    # helper prints its own DRY row), so a preview never shows fewer removals
+    # than the real run makes.
+    echo "DRY: unwire statusLine (himmel) from $settings"
+    echo "DRY: unwire env.HIMMEL_REPO from $settings"
+    echo "DRY: unwire env.LUNA_VAULT_PATH from $settings"
+    echo "DRY: unwire env.HANDOVER_DIR from $settings"
     if ! bash "$REPO_ROOT/scripts/lib/unwire-pretooluse-hooks.sh" "$settings" 1; then
       fail_step "[6/8] settings unwire: unwire-pretooluse-hooks dry-run failed"
     fi
@@ -1725,6 +1750,43 @@ project_is_himmel_checkout() {
   [ "$project_common" -ef "$source_common" ]
 }
 
+# unwire_user_files — the user-scope files install writes beside settings.json
+# (HIMMEL-3251): the working-principles block in ~/.claude/CLAUDE.md and
+# ~/.codex/AGENTS.md, and the claude-hud config. One helper call per manifest
+# row, each row's class deciding whether it acts; the helpers come from THIS
+# script's own lib dir (see the HIMMEL-3058 note above) and the read-back
+# re-reads the files rather than trusting a helper's rc. --dry-run flows through.
+HIMMEL_UCM_MARKER="$( . "$SCRIPT_DIR/lib/unwire-user-claude-md.sh" >/dev/null 2>&1; printf '%s' "${_UNWIRE_UCM_MARKER:-}" )"
+HIMMEL_HUD_PAT="$( . "$SCRIPT_DIR/lib/unwire-hud-config.sh" >/dev/null 2>&1; printf '%s' "${_UNWIRE_HUD_PAT:-}" )"
+unwire_user_files() {
+  local _ix _p _dry=0
+  [ "$DRY_RUN" -eq 1 ] && _dry=1
+  for _ix in "$_ix_ucm" "$_ix_uam" "$_ix_hud"; do
+    _p="$(m_path "$_ix")"
+    if ! class_removes "$_ix"; then
+      echo "  kept (manifest class ${M_CLASS[$_ix]}): $_p"
+      continue
+    fi
+    if [ "$_ix" = "$_ix_hud" ]; then
+      if ! bash "$SCRIPT_DIR/lib/unwire-hud-config.sh" "$_p" "$_dry"; then
+        fail_step "[6/8] hud config: could not remove $_p"
+      elif [ "$_dry" -eq 0 ] && [ -e "$_p" ] && [ -n "$HIMMEL_HUD_PAT" ] &&
+          jq -e --arg re "$HIMMEL_HUD_PAT" '((.display.customLineCommand? // "") | tostring | test($re))' "$_p" >/dev/null 2>&1; then
+        echo "  STILL WIRED: himmel hud config  [$_p]" >&2
+        fail_step "[6/8] read-back: himmel hud config still present at $_p"
+      fi
+    else
+      if ! bash "$SCRIPT_DIR/lib/unwire-user-claude-md.sh" "$_p" "$_dry"; then
+        fail_step "[6/8] user rule file: could not strip himmel's block from $_p"
+      elif [ "$_dry" -eq 0 ] && [ -f "$_p" ] && [ -n "$HIMMEL_UCM_MARKER" ] &&
+          grep -qxF "<!-- BEGIN $HIMMEL_UCM_MARKER -->" "$_p"; then
+        echo "  STILL WIRED: himmel working-principles block  [$_p]" >&2
+        fail_step "[6/8] read-back: himmel working-principles block still in $_p"
+      fi
+    fi
+  done
+}
+
 _user_settings="$USER_SETTINGS"
 _project_settings="$(m_path "$_ix_pset")"
 if [ "$HALTED" -eq 1 ]; then
@@ -1740,6 +1802,7 @@ else
   else
     echo "  no $_user_settings — nothing to unwire."
   fi
+  [ "$HALTED" -eq 1 ] || unwire_user_files
   if [ "$HALTED" -eq 1 ]; then
     echo "  project settings: skipped (halted after an earlier failure)"
   elif ! class_removes "$_ix_pset"; then
