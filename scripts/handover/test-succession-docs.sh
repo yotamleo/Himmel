@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# test-succession-docs.sh — HIMMEL-3082 / HIMMEL-3254. Pins the console
-# succession rule where a leg and a console actually read it.
+# test-succession-docs.sh — HIMMEL-3082 / HIMMEL-3254 / HIMMEL-3291. Pins the
+# console succession rule where a leg and a console actually read it, and (§7)
+# that the preface lock instruction never asks a leg to type its own root.
 #
 # The leg-side rule is prose read by a model, so it cannot be executed here;
 # what CAN be pinned is (a) the decision table the preface ships — each
@@ -17,6 +18,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 DOCS="${DOCS:-$HERE/../../docs}"
 PREFACE="$DOCS/handover/leg-preface.md"
+JUDGE="$DOCS/handover/judge-preface.md"
 CONSOLE="$DOCS/handover/console-template.md"
 RUNNING="$DOCS/handover/running-a-console.md"
 HANDOFF="$DOCS/handover/console-handoff-template.md"
@@ -50,7 +52,7 @@ section() {
     ' "$1"
 }
 
-for f in "$PREFACE" "$CONSOLE" "$RUNNING" "$HANDOFF" "$RETASK"; do
+for f in "$PREFACE" "$JUDGE" "$CONSOLE" "$RUNNING" "$HANDOFF" "$RETASK"; do
     [ -r "$f" ] || { printf 'FAIL - unreadable %s\n' "$f"; exit 1; }
 done
 
@@ -236,6 +238,37 @@ contains 'running-a-console Handing over: the fresh token is optional' "$(flat "
 absent 'handoff "How starts" does not tell the successor to rotate nonces' "$starts" "$stale_rotate"
 contains 'handoff "How starts": a relay MAY keep the leg token' "$(flat "$starts")" 'MAY keep'
 contains 'handoff "How starts": a leg is the successor only once it has quoted back' "$(flat "$starts")" 'only once it has quoted back'
+
+# --- 7. HIMMEL-3291: the preface lock instruction is not a fill-in-the-blank --
+# The prefaces once told every leg to run
+# `HANDOVER_DIR=<root> bash <repo>/scripts/handover/queue-lock.sh acquire <doc>`.
+# Two of four legs filled `<root>` or `<doc>` wrongly and their locks landed
+# under a key `status`/`--sweep` cannot see. The launcher already exports the
+# right HANDOVER_DIR into every leg, so a leg-facing lock instruction must not
+# invite a prefix or an unfilled `<root>`, and must say <doc> is absolute.
+# Scope: an env-prefixed queue-lock.sh INVOCATION, not any mention of the
+# variable (the preface explains why it is not typed). console-template.md is
+# excluded from the prefix check on purpose: it substitutes and quotes the
+# root and only runs the read-only `status`.
+prefix_shape='HANDOVER_DIR=[^ ]+ +bash +[^ ]*queue-lock\.sh'
+# shellcheck disable=SC2016  # literal backticks: the retired preface text, verbatim
+retired_lock='`HANDOVER_DIR=<root> bash <repo>/scripts/handover/queue-lock.sh acquire <doc>`'
+if [ "$(printf '%s\n' "$retired_lock" | grep -icE -- "$prefix_shape")" = 1 ]; then
+    pass 'control: the prefix pattern matches the retired lock instruction'
+else
+    fail 'control: the prefix pattern misses the retired lock instruction'
+fi
+for pf in "$PREFACE" "$JUDGE"; do
+    name="$(basename "$pf")"
+    absent "$name lock instruction carries no HANDOVER_DIR= prefix" "$(cat "$pf")" "$prefix_shape"
+    lock1="$(section "$pf" '^## Before you start' | awk '/^1\. / { f = 1 } /^2\. / { f = 0 } f')"
+    contains "$name step 1 uses the exported HANDOVER_DIR, not a typed one" "$(flat "$lock1")" 'already exported'
+    contains "$name step 1 says <doc> is the absolute path" "$(flat "$lock1")" '**absolute**'
+    contains "$name step 1 says why a bare doc name breaks the key" "$(flat "$lock1")" 'not relativized'
+done
+for f in "$PREFACE" "$JUDGE" "$CONSOLE"; do
+    absent "$(basename "$f") has no queue-lock.sh line with an unfilled <root>" "$(grep -F 'queue-lock.sh' "$f")" '<root>'
+done
 
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-succession-docs.sh'

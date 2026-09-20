@@ -124,10 +124,16 @@ for a relay that is not coming.
 
 ## Before you start
 
-1. Acquire the queue lock on your own handover doc:
-   `HANDOVER_DIR=<root> bash <repo>/scripts/handover/queue-lock.sh acquire <doc>`,
-   and write the printed release-token into your LIVE bullet **in backticks**.
-   Release it at WRAP with the same `HANDOVER_DIR` exported.
+1. Acquire the queue lock on your own handover doc. The launcher has already
+   exported `HANDOVER_DIR` into your environment, so type no `HANDOVER_DIR=`
+   prefix and fill in no root:
+   `bash <repo>/scripts/handover/queue-lock.sh acquire <doc>`, where `<doc>` is
+   the **absolute** path to your handover doc. A bare filename is not
+   relativized against the root, so the bucket prefix drops out of the lock's
+   key and `status` reads `free` for a live leg. Write the printed
+   release-token into your LIVE bullet **in backticks**. Release it at WRAP the
+   same way, still with no prefix. A root other than the launcher's reaches you
+   in your brief as a per-leg deviation; it is never yours to choose.
 2. Paste `git log -1 --format=%H` and the base-ancestor check
    (`git merge-base --is-ancestor <base sha> HEAD`). A leg cut from the wrong
    base ships a PR that silently reverts someone's merge.
