@@ -84,7 +84,20 @@ for pair in "console-template.md Merges:$CONSOLE" "running-a-console.md Merges:$
     contains "$label keeps the post-merge re-read of a multi-key PR" "$merges" 're-read'
 done
 
-# --- 5. sweep: the claudex preface must not fork the rule -------------------
+# --- 5. the initiative runbook's merge step (a fifth site, console ruling) ---
+# It says to run merge-on-green.sh "exactly, to match the standing allow-rule",
+# so it asserts the runbook mirrors the standing invocation; silent on the
+# conditional flag it would be a false equivalence. A .md, so hook-integrity
+# (scripts/hooks/*.sh only) does not pin it.
+RUNBOOK="$HERE/../hooks/initiative-runbook.md"
+[ -r "$RUNBOOK" ] || { printf 'FAIL - unreadable %s\n' "$RUNBOOK"; exit 1; }
+runbook="$(cat "$RUNBOOK")"
+contains 'initiative runbook names --jira-transition' "$runbook" '--jira-transition'
+contains 'initiative runbook: completes-ticket: yes -> pass the flag' "$runbook" 'completes-ticket: yes'
+contains 'initiative runbook: completes-ticket: no -> omit the flag' "$runbook" 'completes-ticket: no'
+contains 'initiative runbook says which mechanism applies when (the ticket step stays for what the flag cannot serve)' "$runbook" 'what the flag cannot serve'
+
+# --- 6. sweep: the claudex preface must not fork the rule -------------------
 # It is concatenated after leg-preface.md (headed-arm-leg.sh), overriding only
 # the coordination channel, so it must neither restate nor contradict the rule.
 absent 'claudex preface does not restate the flag (leg-preface.md is the one site)' "$(cat "$CLAUDEX")" '--jira-transition'

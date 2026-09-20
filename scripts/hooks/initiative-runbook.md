@@ -61,6 +61,14 @@ Steps run in this canonical order; only the tokens on the pointer's
   time, so a merge refused for want of an approval is the rule working — leave
   the PR open and report it. `scripts/handover/pr-merge.sh` (plain-first)
   remains the alternative. Advisory — branch protection still applies.
+  Jira close at merge (HIMMEL-3271): pass `--jira-transition` when this PR
+  completes the cited ticket (`completes-ticket: yes`); omit the flag when the
+  ticket spans further PRs (`completes-ticket: no`) — never a default. It closes
+  only the first `[KEY]` of the PR title. The separate **ticket** step above
+  stays for what the flag cannot serve (a multi-key PR, a ticket completed by
+  something other than this merge): the flag is the merge-time close, that step
+  the fallback — never both for one ticket. Same rule as
+  `docs/handover/leg-preface.md` § Shipping.
   `merge-on-green.sh` exits 17 (`policy-refused`) on a fresh pre-merge `BLOCKED` + `REVIEW_REQUIRED` policy read after green checks or an explicit GitHub base-branch policy rejection at merge time; if no automation identity can satisfy the required review, the merge is a human admin action (HIMMEL-2887).
   A blocked gate on this branch parks it and moves to the next queue item —
   never retry-loop;
