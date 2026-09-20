@@ -2579,6 +2579,12 @@ if [ "$rc" -eq 2 ] && grepq "$(cat "$M_CANON_F/owner" 2>/dev/null)" 'legOldF' &&
 else
     fail "T79: stale-canonical takeover ran over a fresh legacy lock (rc=$rc owner=$(cat "$M_CANON_F/owner" 2>/dev/null)): $out"
 fi
+out="$(m_run "$M_PRIMARY" "$M_ROOT" status "$M_DOC_F")"; rc=$?
+if [ "$rc" -eq 11 ] && grepq "$out" 'legFreshF' && grepq "$out" 'status: FRESH'; then
+    pass "T79: status reports the FRESH legacy holder over a STALE canonical lock (rc=11 held, not 12 STALE)"
+else
+    fail "T79: status answered STALE/wrong holder over a fresh legacy lock (rc=$rc): $out"
+fi
 
 echo "---"
 echo "PASSED=$PASSED FAILED=$FAILED"

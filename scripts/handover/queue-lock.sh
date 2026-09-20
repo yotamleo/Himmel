@@ -1793,6 +1793,15 @@ queue_lock_status() {
         fi
         echo "WARN queue-lock: the lock for this doc is keyed at $legacy_lk, not at its canonical key $lockdir (a pre-HIMMEL-3290 mis-keyed lock) -- reporting it; nothing is moved" >&2
         lockdir="$legacy_lk"
+    elif ! _ql_lock_is_fresh "$lockdir"; then
+        # A STALE canonical lock must not hide a FRESH legacy-keyed holder: the
+        # answer would be `STALE` (reclaimable) while a live leg holds the doc.
+        local legacy_fresh
+        legacy_fresh=$(_ql_scan_pick "$ho" "$lockdir")
+        if [ -n "$legacy_fresh" ] && _ql_lock_is_fresh "$legacy_fresh"; then
+            echo "WARN queue-lock: the canonical lock $lockdir is STALE but a FRESH lock for this doc is keyed at $legacy_fresh (a pre-HIMMEL-3290 mis-keyed lock) -- reporting it; nothing is moved" >&2
+            lockdir="$legacy_fresh"
+        fi
     fi
     if [ ! -f "$lockdir/owner.json" ]; then
         # Distinguish corruption from a live holder in the OUTPUT (a
