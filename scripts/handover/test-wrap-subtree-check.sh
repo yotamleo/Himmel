@@ -72,7 +72,7 @@ run() { # run <fixture> [args...] — SUT under the hermetic seams, self = 901
 
 out="$(run "$W/clean.txt" 101 2>&1)"; rc=$?
 eq 'clean subtree (explicit pid): rc 0' 0 "$rc"
-eq 'clean subtree: exact CLOSABLE line' 'CLOSABLE: no non-harness process under claude pid 101' "$out"
+contains 'clean subtree: CLOSABLE line, harness children counted' "$out" 'CLOSABLE: no non-harness process under claude pid 101 (3 harness-owned children ignored)'
 
 out="$(run "$W/clean.txt" 2>&1)"; rc=$?
 eq 'clean subtree (session found by walking up from self): rc 0' 0 "$rc"
@@ -88,14 +88,14 @@ contains 'lists the orphaned poll loop' "$out" 'pid=203 ppid=101 etime=02:10:05'
 contains 'lists a wrapper whose command text contains mcp (wrappers are never harness)' "$out" 'pid=204'
 contains 'lists the loop'"'"'s child' "$out" 'pid=205'
 contains 'lists a sibling started from the same tool call as the check' "$out" 'pid=206'
-lacks 'harness MCP server 110 is exempt' "$out" 'pid=110'
-lacks 'a child of a harness process is exempt' "$out" 'pid=111'
-lacks 'the qmd MCP server is exempt' "$out" 'pid=112'
+lacks 'harness MCP server 110 is exempt' "$out" '  pid=110 ppid='
+lacks 'a child of a harness process is exempt' "$out" '  pid=111 ppid='
+lacks 'the qmd MCP server is exempt' "$out" '  pid=112 ppid='
 lacks 'the check'"'"'s own wrapper/script/ps are exempt' "$out" '  pid=90'
 lacks 'another session'"'"'s process is outside the subtree' "$out" 'pid=999'
 
-out="$(WRAP_SUBTREE_HARNESS_RE='zzz-no-such-server' run "$W/clean.txt" 101 2>&1)"; rc=$?
-eq 'a narrowed WRAP_SUBTREE_HARNESS_RE stops exempting MCP servers: rc 1' 1 "$rc"
+out="$(WRAP_SUBTREE_START_WINDOW=0 WRAP_SUBTREE_HARNESS_RE='zzz-no-such-server' run "$W/clean.txt" 101 2>&1)"; rc=$?
+eq 'a narrowed WRAP_SUBTREE_HARNESS_RE (with the start-time rule off) stops exempting MCP servers: rc 1' 1 "$rc"
 contains 'narrowed regex lists all three former harness pids' "$out" 'WITHHELD: 3 process(es)'
 
 out="$(PS_FAIL=1 run "$W/clean.txt" 101 2>&1)"; rc=$?
@@ -140,6 +140,140 @@ out="$(PATH="$W/bin:$PATH" PS_FIXTURE="$W/deep.txt" WRAP_SUBTREE_SELF=4066 bash 
 eq 'a process beyond the old 64-hop budget is still withheld: rc 1 (codex-1 r2)' 1 "$rc"
 contains 'only the deep sibling is listed; the check'"'"'s own 67-deep chain is exempt' "$out" 'WITHHELD: 1 process(es)'
 contains 'the deep sibling is named' "$out" 'pid=5000'
+
+# HIMMEL-3265: harness-owned MCP servers that match no name pattern. The shapes
+# are the real ones read off a live station (mcp-obsidian under `uv tool uvx`,
+# graphify-mcp, an `uv run … server.py`, each with its python child): direct
+# children of the session, forked within ~1s of it. 101's etime is 05:00:00, so
+# an etime of 04:59:59 is "started 1s after the session".
+cat > "$W/base.txt" <<'FIX'
+    1     0 40-00:00:01 /sbin/init
+  101     1    05:00:00 claude --model claude-sonnet-5 -n HIMMEL-111-N61 work
+  900   101       00:05 /usr/bin/zsh -c source /home/u/.claude/shell-snapshots/snapshot-zsh-9-z.sh && eval 'bash scripts/handover/wrap-subtree-check.sh'
+  901   900       00:00 bash scripts/handover/wrap-subtree-check.sh
+  902   901       00:00 ps -eo pid=,ppid=,etime=,args=
+FIX
+cat > "$W/mcp-children.txt" <<'FIX'
+  120   101    04:59:59 /usr/bin/uv tool uvx --with mcp==1.28.1 mcp-obsidian
+  121   120    04:59:59 /home/u/.cache/uv/archive-v0/x/bin/python /home/u/.cache/uv/archive-v0/x/bin/mcp-obsidian
+  122   101    04:59:59 /home/u/.local/share/uv/tools/graphifyy/bin/python /home/u/.local/bin/graphify-mcp
+  123   101    04:59:59 uv run --no-project --with mcp<2 python /home/u/.claude/skills/obsidian-second-brain/integrations/obsidian-mcp-server/server.py
+  124   123    04:59:59 /home/u/.cache/uv/builds-v0/.tmp/bin/python /home/u/.claude/skills/obsidian-second-brain/integrations/obsidian-mcp-server/server.py
+FIX
+cat "$W/base.txt" "$W/mcp-children.txt" > "$W/mcp-only.txt"
+# The same session, but the leg also left work behind: 203/205 a poll loop and
+# its sleep (a tool-call wrapper, late), 208 a NON-wrapper direct child forked
+# hours after the session, 209 a tool-call wrapper forked 2s after the session
+# (inside the window — a wrapper is never harness, whenever it started).
+{
+    cat "$W/mcp-only.txt"
+    cat <<'FIX'
+  203   101    02:10:05 /usr/bin/zsh -c source /home/u/.claude/shell-snapshots/snapshot-zsh-1-a.sh 2>/dev/null || true && eval 'until tail -1 x | grep OK; do sleep 10; done'
+  205   203       00:10 sleep 10
+  208   101    01:00:00 node /repo/loop.js --watch
+  209   101    04:59:58 /usr/bin/zsh -c source /home/u/.claude/shell-snapshots/snapshot-zsh-2-b.sh && eval 'sleep 999'
+FIX
+} > "$W/mixed.txt"
+
+MCP_PIDS='120 121 122 123 124'
+LEG_PIDS='203 205 208 209'
+names_all() { # names_all <out> <label> <pid…>: every pid is a withheld row
+    local o="$1" p; shift
+    for p in "$@"; do case "$o" in *"  pid=$p ppid="*) ;; *) return 1 ;; esac; done
+}
+names_none() { # names_none <out> <pid…>: no pid is a withheld row
+    local o="$1" p; shift
+    for p in "$@"; do case "$o" in *"  pid=$p ppid="*) return 1 ;; esac; done
+}
+
+out="$(run "$W/mcp-only.txt" 101 2>&1)"; rc=$?
+eq 'session whose only children are MCP servers: rc 0 (3265)' 0 "$rc"
+contains 'CLOSABLE is reachable for an MCP-attached session (3265)' "$out" 'CLOSABLE: no non-harness process under claude pid 101'
+contains 'the CLOSABLE line counts what it ignored (3265)' "$out" '(5 harness-owned children ignored)'
+lacks 'a CLOSABLE run never prints WITHHELD' "$out" 'WITHHELD:'
+for p in $MCP_PIDS; do contains "ignored MCP pid $p is reported, not hidden (3265)" "$out" "ignored pid=$p "; done
+contains 'an ignored child says why' "$out" 'why=session-start'
+contains 'a grandchild of a session-started MCP launcher is ignored transitively (uvx child)' "$out" 'ignored pid=121 ppid=120 etime=04:59:59 why=session-start via=120 '
+contains 'a grandchild of a session-started MCP launcher is ignored transitively (uv run child)' "$out" 'ignored pid=124 ppid=123 etime=04:59:59 why=session-start via=123 '
+
+# THE CONTROL: one run, harness-shaped and leg-spawned children side by side.
+out="$(run "$W/mixed.txt" 101 2>&1)"; rc=$?
+eq 'mixed run (MCP servers + leg-left loop): rc 1 (3265)' 1 "$rc"
+contains 'mixed run withholds exactly the four leg-spawned processes (3265)' "$out" 'WITHHELD: 4 process(es) still alive under claude pid 101'
+lacks 'a withheld run never prints CLOSABLE (3265)' "$out" 'CLOSABLE:'
+# shellcheck disable=SC2086 # the pid lists are space-separated words on purpose
+if names_all "$out" $LEG_PIDS; then pass 'mixed run names the leg-left loop, its child, the late direct child and the early wrapper'; else fail "mixed run must name every leg-spawned pid ($LEG_PIDS): $out"; fi
+# shellcheck disable=SC2086 # the pid lists are space-separated words on purpose
+if names_none "$out" $MCP_PIDS; then pass 'mixed run does not list any MCP server as a withheld process'; else fail "mixed run listed a harness MCP server as withheld: $out"; fi
+for p in $MCP_PIDS; do contains "mixed run still reports ignored MCP pid $p" "$out" "ignored pid=$p "; done
+contains 'the WITHHELD text says never to stop a process the leg did not start (3265)' "$out" 'did not start'
+
+# The exemption comes from the start-time rule, not from somewhere else: switch
+# it off and the same MCP-only table is withheld.
+out="$(WRAP_SUBTREE_START_WINDOW=0 run "$W/mcp-only.txt" 101 2>&1)"; rc=$?
+eq 'start-time rule off: the MCP-only table is withheld, rc 1 (3265)' 1 "$rc"
+contains 'start-time rule off lists all five' "$out" 'WITHHELD: 5 process(es)'
+
+# Window edge (default 10s): forked at +10s is harness-shaped, +11s is not.
+{
+    cat "$W/base.txt"
+    cat <<'FIX'
+  210   101    04:59:50 node /x/late-server.js
+  211   101    04:59:49 node /x/later-server.js
+FIX
+} > "$W/edge.txt"
+out="$(run "$W/edge.txt" 101 2>&1)"; rc=$?
+eq 'window edge: only the +11s child withholds, rc 1' 1 "$rc"
+contains 'window edge: +11s child is named' "$out" '  pid=211 ppid='
+lacks 'window edge: +10s child is exempt' "$out" '  pid=210 ppid='
+
+# Fail closed: a bad window value, and an etime the rule cannot read, never
+# produce CLOSABLE.
+out="$(WRAP_SUBTREE_START_WINDOW=ten run "$W/mcp-only.txt" 101 2>&1)"; rc=$?
+eq 'a non-numeric WRAP_SUBTREE_START_WINDOW fails closed: rc 2' 2 "$rc"
+lacks 'a bad window never prints CLOSABLE' "$out" 'CLOSABLE:'
+sed 's/04:59:59 \/usr\/bin\/uv tool/??:?? \/usr\/bin\/uv tool/' "$W/mcp-only.txt" > "$W/bad-etime.txt"
+out="$(run "$W/bad-etime.txt" 101 2>&1)"; rc=$?
+eq 'an unreadable child etime is not exempted (fails toward WITHHELD): rc 1' 1 "$rc"
+contains 'the unreadable-etime child and the python child beneath it both withhold' "$out" 'WITHHELD: 2 process(es)'
+contains 'the unreadable-etime child is pid 120' "$out" '  pid=120 ppid='
+# A child that appears to predate the session (negative delta) is not exempt.
+sed 's/04:59:59 \/home\/u\/.local\/share\/uv\/tools\/graphifyy/05:00:09 \/home\/u\/.local\/share\/uv\/tools\/graphifyy/' "$W/mcp-only.txt" > "$W/pre-session.txt"
+out="$(run "$W/pre-session.txt" 101 2>&1)"; rc=$?
+eq 'a child older than its session is not exempt: rc 1' 1 "$rc"
+contains 'the older-than-session child is pid 122' "$out" '  pid=122 ppid='
+
+# Weakening controls (HIMMEL-3265, contract item 3). Each weakened check must RUN
+# and lose the leg-left loop for the specific reason — a check that merely
+# crashes would "fail" every assertion and prove nothing.
+# shellcheck disable=SC2086 # the pid lists are space-separated words on purpose
+leg_loop_kept() { names_all "$1" $LEG_PIDS && ! case "$1" in *'CLOSABLE:'*) true ;; *) false ;; esac; }
+out="$(run "$W/mixed.txt" 101 2>&1)"; rc=$?
+if [ "$rc" -eq 1 ] && leg_loop_kept "$out"; then pass 'control baseline: the real check keeps the leg-left loop'; else fail 'control baseline broken'; fi
+
+# (a) A start window wide enough to swallow the late direct child (208) drops it
+# — and only it: the wrappers (203 205 209) stay, so the check RAN.
+out="$(WRAP_SUBTREE_START_WINDOW=99999999 run "$W/mixed.txt" 101 2>&1)"; rc=$?
+if [ "$rc" -eq 1 ] && names_all "$out" 203 205 209 && names_none "$out" 208; then
+    pass 'control (a): an over-wide start window loses the late direct child, and only it'
+else
+    fail "control (a) did not fail for the predicted reason (rc=$rc): $out"
+fi
+if leg_loop_kept "$out"; then fail 'control (a): the leg-loop assertion could not catch an over-wide window'; else pass 'control (a): the leg-loop assertion catches an over-wide window'; fi
+
+# (b) A check that never counts anything prints CLOSABLE over the same table.
+sed 's/^        n++$/        n += 0/' "$SUT" > "$W/never-counts.sh"
+if cmp -s "$SUT" "$W/never-counts.sh"; then
+    fail 'control (b): mutation did not apply (n++ line moved) — the control is vacuous'
+else
+    out="$(PATH="$W/bin:$PATH" PS_FIXTURE="$W/mixed.txt" WRAP_SUBTREE_SELF=901 bash "$W/never-counts.sh" 101 2>&1)"; rc=$?
+    if [ "$rc" -eq 0 ] && case "$out" in 'CLOSABLE: no non-harness process'*) true ;; *) false ;; esac; then
+        pass 'control (b): a never-counting check runs and prints CLOSABLE over the mixed table'
+    else
+        fail "control (b) did not fail for the predicted reason (rc=$rc): $out"
+    fi
+    if leg_loop_kept "$out"; then fail 'control (b): the leg-loop assertion could not catch an always-CLOSABLE check'; else pass 'control (b): the leg-loop assertion catches an always-CLOSABLE check'; fi
+fi
 
 # The wrap step points every leg/judge at this script instead of a hand-typed
 # banner (HIMMEL-2761): pin the three docs that carry the HALT/WRAP line.
