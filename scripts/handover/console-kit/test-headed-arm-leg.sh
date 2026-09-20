@@ -56,6 +56,10 @@
 #       console-like cwd, then go_gate resolved from a DIFFERENT cwd
 #       (simulating the leg's linked worktree) using ONLY the exported
 #       HANDOVER_DIR, finds it.
+#   28. HIMMEL-3270: a REAL launch (never --dry-run) appends one metadata line
+#       to <himmelctl-cache>/launch-logs/<session>.log - profile / lane /
+#       model / role / session / launched, no env values - and a write failure
+#       or an unresolvable cache dir never blocks the launch.
 #
 # Platform guard (gitbash-only): POSIX bash 3.2+, same as headed-arm.sh
 # itself (konsole is Linux/KDE-only) - no .ps1 twin.
@@ -84,6 +88,10 @@ trap 'rm -rf "$tmp"' EXIT
 export HANDOVER_DIR="$tmp/pinned-handover-root"
 export HIMMEL_FLEET_SLOTS="$tmp/pinned-fleet-slots"
 export XDG_RUNTIME_DIR="$tmp/pinned-xdg-runtime"
+# HIMMEL-3270: every real launch appends a launch record under the himmelctl
+# cache dir; pinned so this suite never writes into the operator's real
+# ~/.claude/himmel (the HIMMEL-3260 lesson: a suite must not touch shared state).
+export HIMMELCTL_CACHE_DIR="$tmp/pinned-himmelctl-cache"
 mkdir -p "$HANDOVER_DIR" "$HIMMEL_FLEET_SLOTS" "$XDG_RUNTIME_DIR"
 fails=0
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
@@ -1347,6 +1355,90 @@ rc=0; out="$(bash "$SCRIPT" --dry-run --lane claudex HIMMEL-9999-leg some/doc.md
 check "27h --lane claudex, no profile, no opt-out: refused with exit 2" "$rc" "2"
 rc=0; out="$(bash "$SCRIPT" --dry-run --lane claudex --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
 check "27h --lane claudex --no-profile: launches" "$rc" "0"
+
+# --- 28. HIMMEL-3270: the launch record ---------------------------------------
+# The cost program's cohort metric identifies `leg-impl` sessions from a launch
+# record; nothing wrote one. Every REAL launch appends one line to
+# $HIMMELCTL_CACHE_DIR/launch-logs/<session>.log (the dir uninstall already
+# removes wholesale); --dry-run writes nothing.
+LL_DIR="$HIMMELCTL_CACHE_DIR/launch-logs"
+ll_line() { cat "$LL_DIR/$1.log" 2>/dev/null || true; }
+
+check "28a no launch record exists for a session that was never launched" "$([ -e "$LL_DIR/HIMMEL-3270-N1-dry.log" ] && echo present || echo none)" "none"
+
+rc=0; out="$(bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-3270-N1-dry "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "28b --dry-run exits 0" "$rc" "0"
+check "28b --dry-run writes no launch record" "$([ -e "$LL_DIR/HIMMEL-3270-N1-dry.log" ] && echo present || echo none)" "none"
+
+d28="$tmp/c28"; mk_launch_stubs "$d28" "HIMMEL-3270-N2-real"; mkdir -p "$tmp/repo28"
+rc=0
+CANARY_SECRET=hunter2-canary ANTHROPIC_API_KEY=sk-canary-not-real \
+  run_leg "$d28" "$tmp/repo28" "HIMMEL-3270-N2-real" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d28" || true
+check "28c real --profile leg-impl launch: exit 0" "$rc" "0"
+rec28="$(ll_line HIMMEL-3270-N2-real)"
+check "28c launch record is exactly one line" "$(ll_line HIMMEL-3270-N2-real | wc -l | tr -d '[:space:]')" "1"
+# The reader (agg-postpin.sh cohort_ok) matches a whitespace-delimited field
+# exactly equal to profile=<name>, so the field must stand alone.
+check "28c record carries the profile field the cohort reader matches" "$(printf '%s\n' "$rec28" | awk '{for(i=1;i<=NF;i++) if($i=="profile=leg-impl"){f=1}} END{print f+0}')" "1"
+contains "28c record names the session" "$rec28" " session=HIMMEL-3270-N2-real "
+contains "28c record names the role" "$rec28" " role=leg "
+contains "28c record names the lane" "$rec28" " lane=native "
+contains "28c record names the model" "$rec28" " model=claude-sonnet-5 "
+check "28c record ends with an ISO-8601 UTC launch time" "$(printf '%s\n' "$rec28" | grep -Ec ' launched=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$')" "1"
+# No secrets: launch metadata only - never an env value.
+not_contains "28c record holds no env value (canary secret)" "$rec28" "hunter2-canary"
+not_contains "28c record holds no env value (canary key)" "$rec28" "sk-canary-not-real"
+check "28c record carries only the fixed launch-metadata keys" "$(printf '%s\n' "$rec28" | tr ' ' '\n' | sed 1d | cut -d= -f1 | paste -sd, -)" "profile,lane,model,role,session,launched"
+
+d28b="$tmp/c28b"; mk_launch_stubs "$d28b" "HIMMEL-3270-N3-noprof"; mkdir -p "$tmp/repo28b"
+RUN_LEG_ARGS='--no-profile' run_leg "$d28b" "$tmp/repo28b" "HIMMEL-3270-N3-noprof" "claude-sonnet-5" >/dev/null 2>&1 || true
+wait_record "$d28b" || true
+rec28b="$(ll_line HIMMEL-3270-N3-noprof)"
+contains "28d --no-profile launch is recorded as profile=none" "$rec28b" " profile=none "
+contains "28d --no-profile launch is still role=leg" "$rec28b" " role=leg "
+
+d28c="$tmp/c28c"; mk_launch_stubs "$d28c" "HIMMEL-3270-N4-relay"; mkdir -p "$tmp/repo28c"
+RUN_LEG_ARGS='--relay' run_leg "$d28c" "$tmp/repo28c" "HIMMEL-3270-N4-relay" >/dev/null 2>&1 || true
+wait_record "$d28c" || true
+rec28c="$(ll_line HIMMEL-3270-N4-relay)"
+contains "28e --relay launch is recorded with its forced profile" "$rec28c" " profile=console-relay "
+contains "28e --relay launch is recorded role=relay" "$rec28c" " role=relay "
+
+d28d="$tmp/c28d"; mk_launch_stubs "$d28d" "HIMMEL-3270-N5-judge"; mkdir -p "$tmp/repo28d"
+RUN_LEG_ARGS='--judge' run_leg "$d28d" "$tmp/repo28d" "HIMMEL-3270-N5-judge" "claude-sonnet-5" >/dev/null 2>&1 || true
+wait_record "$d28d" || true
+rec28d="$(ll_line HIMMEL-3270-N5-judge)"
+contains "28f --judge launch is recorded with its forced profile" "$rec28d" " profile=console-judge "
+contains "28f --judge launch is recorded role=judge" "$rec28d" " role=judge "
+
+# A relaunch of the same session name appends, never replaces: the record is
+# history, and a replaced line would erase what the first launch really was.
+d28e="$tmp/c28e"; mk_launch_stubs "$d28e" "HIMMEL-3270-N2-real"; mkdir -p "$tmp/repo28e"
+run_leg "$d28e" "$tmp/repo28e" "HIMMEL-3270-N2-real" "claude-sonnet-5" >/dev/null 2>&1 || true
+wait_record "$d28e" || true
+check "28g a relaunch of the same session appends a second line" "$(ll_line HIMMEL-3270-N2-real | wc -l | tr -d '[:space:]')" "2"
+
+# Best-effort: a record that cannot be written must not stop the launch, and
+# must say so in the launch log rather than fail silently.
+d28f="$tmp/c28f"; mk_launch_stubs "$d28f" "HIMMEL-3270-N6-blocked"; mkdir -p "$tmp/repo28f"
+: > "$tmp/not-a-dir"
+rc=0
+HIMMELCTL_CACHE_DIR="$tmp/not-a-dir" run_leg "$d28f" "$tmp/repo28f" "HIMMEL-3270-N6-blocked" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d28f" || true
+check "28h an unwritable record dir does not stop the launch (exit 0)" "$rc" "0"
+check "28h ... and the launch still reached konsole" "$([ -s "$d28f/record" ] && echo launched || echo none)" "launched"
+contains "28h ... and the launch log says the record was not written" "$(cat "$d28f/log" 2>/dev/null || true)" "launch record NOT written"
+
+# With no resolvable cache dir (HOME empty, no HIMMELCTL_CACHE_DIR) nothing is
+# written at all: falling back to /tmp would leave residue uninstall cannot find
+# (the accepted HIMMEL-3260 HOME-unset divergence, not repeated here).
+d28g="$tmp/c28g"; mk_launch_stubs "$d28g" "HIMMEL-3270-N7-nohome"; mkdir -p "$tmp/repo28g"
+rc=0
+HOME='' HIMMELCTL_CACHE_DIR='' run_leg "$d28g" "$tmp/repo28g" "HIMMEL-3270-N7-nohome" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d28g" || true
+check "28i no resolvable cache dir: launch still exits 0" "$rc" "0"
+check "28i no resolvable cache dir: nothing written under /tmp/.claude" "$([ -e /tmp/.claude/himmel/launch-logs/HIMMEL-3270-N7-nohome.log ] && echo wrote || echo none)" "none"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

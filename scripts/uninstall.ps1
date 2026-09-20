@@ -485,6 +485,13 @@ if (Test-SuspiciousRemovePath $HimmelCacheDir) {
         $p = Join-Path $HimmelCacheDir $f
         if (Test-Path -LiteralPath $p -PathType Leaf) { Write-Host "  contains: $p" }
     }
+    # headed-arm-leg.sh (Linux/konsole only, HIMMEL-3270) keeps its launch
+    # records in launch-logs\ here; named as a count, like uninstall.sh.
+    $launchDir = Join-Path $HimmelCacheDir 'launch-logs'
+    if (Test-Path -LiteralPath $launchDir -PathType Container) {
+        $launchN = @(Get-ChildItem -LiteralPath $launchDir -Filter '*.log' -File).Count
+        Write-Host "  contains: $launchDir\ ($launchN launch record(s), *.log)"
+    }
     if ($DryRun) {
         Write-Host "DRY: Remove-Item -Recurse -Force -LiteralPath $HimmelCacheDir"
     } else {

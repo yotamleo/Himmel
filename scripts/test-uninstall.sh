@@ -1135,6 +1135,38 @@ else
     echo "PASS update-check state removed with the cache"
 fi
 
+# 20c. HIMMEL-3270: headed-arm-leg.sh appends one launch record per leg launch
+#      to launch-logs/<session>.log in this same dir (the cost cohort's source).
+#      Like 20b: the file is written by the REAL launcher (a stubbed target, no
+#      konsole), pointed at the cache the same way uninstall reads it, so the
+#      two cannot drift onto two paths. A dry-run must NAME the location, and a
+#      wet run must remove it with the dir - a survivor is HIMMEL-3251 residue.
+mk_cache
+LEG_SH="$(cd "$(dirname "$0")" && pwd)/handover/console-kit/headed-arm-leg.sh"
+LLD="$TMP/launch20c"; mkdir -p "$LLD"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$LLD/target.sh"; printf '#!/usr/bin/env bash\necho PROCEED\n' > "$LLD/preflight.sh"
+chmod +x "$LLD/target.sh" "$LLD/preflight.sh"; echo doc > "$LLD/doc.md"
+HIMMEL_FLEET_SLOTS="$LLD/slots" HEADED_ARM_LEG_TARGET="$LLD/target.sh" HEADED_ARM_LEG_PREFLIGHT="$LLD/preflight.sh" \
+    HIMMELCTL_CACHE_DIR="$CACHE" bash "$LEG_SH" --no-profile HIMMEL-3270-u1 "$LLD/doc.md" "$LLD/sig" 99999999999 "$LLD/log" claude-sonnet-5 >/dev/null 2>&1 || true
+if [ -f "$CACHE/launch-logs/HIMMEL-3270-u1.log" ]; then echo "PASS the launcher wrote its launch record into the himmelctl cache dir"
+else echo "FAIL the launcher did not write launch-logs/HIMMEL-3270-u1.log into \$HIMMELCTL_CACHE_DIR"; FAILED=$((FAILED + 1)); fi
+out=$(TELEGRAM_CHANNEL_DIR="$TMP/none11g" BRIDGE_ROOT="$TMP/none11h" \
+    HIMMELCTL_CACHE_DIR="$CACHE" PATH="$HBIN" \
+    bash "$CLI" --purge-state --dry-run --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+assert_rc "launch-record dry-run exits 0" 0 "$rc"
+assert_has "dry-run names the launch-record dir with its count" "contains: $CACHE/launch-logs/ (1 launch record(s), *.log)" "$out"
+if [ -f "$CACHE/launch-logs/HIMMEL-3270-u1.log" ]; then echo "PASS dry-run left the launch record in place"
+else echo "FAIL dry-run removed the launch record"; FAILED=$((FAILED + 1)); fi
+out=$(TELEGRAM_CHANNEL_DIR="$TMP/none11i" BRIDGE_ROOT="$TMP/none11j" \
+    HIMMELCTL_CACHE_DIR="$CACHE" PATH="$HBIN" \
+    bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
+assert_rc "launch-record removal run exits 0" 0 "$rc"
+if [ -e "$CACHE/launch-logs" ] || [ -e "$CACHE" ]; then
+    echo "FAIL the launch record survived uninstall"; FAILED=$((FAILED + 1))
+else
+    echo "PASS the launch record was removed with the cache"
+fi
+
 # 21. an absent cache is not an error.
 out=$(TELEGRAM_CHANNEL_DIR="$TMP/none12" BRIDGE_ROOT="$TMP/none12b" \
     HIMMELCTL_CACHE_DIR="$TMP/no-such-cache" PATH="$HBIN" \

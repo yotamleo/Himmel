@@ -1915,6 +1915,16 @@ else
     himmel-update-check-last himmel-update-check-first himmel-latest-release himmel-latest-release.fail; do
     [ -f "$HIMMEL_CACHE_DIR/$_cache_file" ] && echo "  contains: $HIMMEL_CACHE_DIR/$_cache_file"
   done
+  # HIMMEL-3270: headed-arm-leg.sh appends one launch record per leg launch to
+  # launch-logs/<session>.log here (the cost cohort's source). One line naming
+  # the dir + a count, not one line per leg: a long-lived machine has hundreds.
+  if [ -d "$HIMMEL_CACHE_DIR/launch-logs" ]; then
+    _launch_n=0
+    for _launch_rec in "$HIMMEL_CACHE_DIR"/launch-logs/*.log; do
+      [ -f "$_launch_rec" ] && _launch_n=$((_launch_n + 1))
+    done
+    echo "  contains: $HIMMEL_CACHE_DIR/launch-logs/ ($_launch_n launch record(s), *.log)"
+  fi
   if run rm -rf -- "$HIMMEL_CACHE_DIR"; then
     [ "$DRY_RUN" -eq 0 ] && echo "  removed: $HIMMEL_CACHE_DIR"
   else
