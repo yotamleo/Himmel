@@ -1436,6 +1436,65 @@ test('creating a lock or a gate never replaces an existing empty directory', () 
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+// [HIMMEL-3275 codex-1] The third window, found by the panel on this branch's
+// own diff: inside the gate, staleness was judged BEFORE the lock's identity
+// was read. A holder that releases in that gap — and a third worker that takes
+// a fresh lock in it — leave the takeover reading the FRESH worker's marker,
+// which it then claims and deletes. The identity check is only worth anything
+// if the generation is captured before the judgement that acts on it, so a
+// replacement lands on the check rather than on the removal.
+test('a worker cannot remove a lock that was replaced before it read the owner', () => {
+  const dir = scratch();
+  try {
+    mkdirSync(join(dir, 'worker.lock'), { recursive: true });
+    writeFileSync(join(dir, 'worker.lock', 'pid'), '0');
+    assert.equal(lockIsStale(dir), true, 'precondition: the seeded lock must read stale');
+    let holders = 0;
+    let seam = false;
+    const a = acquireLock(dir, {
+      beforeOwnerRead: () => {
+        seam = true;
+        // The holder is alive and releases...
+        rmSync(join(dir, 'worker.lock'), { recursive: true, force: true });
+        // ...and a third worker takes a fresh lock before the takeover resumes.
+        if (acquireLock(dir)) holders += 1;
+      },
+    });
+    if (a) holders += 1;
+    assert.equal(seam, true, 'the takeover never reached the owner read');
+    assert.equal(holders, 1, `${holders} workers hold the lock`);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// [HIMMEL-3275 codex-2] The identity marker is moved, not deleted, so a
+// reclaimer that dies between winning the CAS and writing its adopted marker
+// leaves a gate holding only `dead.<id>`: nothing owns it, mkdir refuses it
+// because it exists, and rmdir refuses it because it is not empty. Stale-lock
+// recovery would be wedged PERMANENTLY — every later worker walks the same
+// three refusals. An ownerless gate must therefore be recoverable, and
+// recoverable the same way everything else here is: by CAS, never by a
+// path-keyed removal.
+test('a reclaim gate orphaned by a death mid-takeover does not wedge recovery forever', () => {
+  const dir = scratch();
+  try {
+    mkdirSync(join(dir, 'worker.lock'), { recursive: true });
+    writeFileSync(join(dir, 'worker.lock', 'pid'), '0');
+    assert.equal(lockIsStale(dir), true, 'precondition: the seeded lock must read stale');
+    const gate = join(dir, 'worker.lock.reclaim');
+    mkdirSync(gate);
+    writeFileSync(join(gate, 'dead.9f1c2b40'), '0');   // the marker its CAS moved
+    const old = new Date(Date.now() - 5 * 60 * 1000);
+    utimesSync(gate, old, old);
+    assert.equal(readdirSync(gate).length, 1, 'precondition: the orphaned gate is NOT empty');
+    assert.equal(readdirSync(gate).filter((n) => n.startsWith('own.')).length, 0,
+      'precondition: the orphaned gate carries no owner marker');
+    assert.equal(Date.now() - statSync(gate).mtimeMs > 30 * 1000, true,
+      'precondition: the gate must read older than RECLAIM_STALE_MS');
+    assert.equal(acquireLock(dir), true,
+      'the stale lock could not be reclaimed — the orphaned gate wedged recovery');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 // [codex-1 r13] Overlaying the snapshot is not enough: ABSENCE is data. Session
 // A sets a gate, session B does not, and B's job would inherit A's value from
 // the worker and fire something B had switched off. The snapshot is

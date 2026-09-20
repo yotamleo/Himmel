@@ -668,7 +668,13 @@ export function acquireLock(dir, hooks = {}) {
     try {
       if (hooks.insideGate) hooks.insideGate();
       if (!existsSync(p.lock)) continue;      // cleared meanwhile — just create it
-      if (!lockIsStale(dir)) return false;    // replaced by a live worker — leave it
+      if (hooks.beforeOwnerRead) hooks.beforeOwnerRead();
+      // Capture the GENERATION before judging it. Read the owner AFTER the
+      // staleness check and a release-and-reacquire in that gap hands this
+      // takeover the FRESH worker's marker, which it then claims and deletes —
+      // acting on a judgement made about a lock that is already gone. With the
+      // read first, a replacement lands on the check below instead: the new
+      // lock is live, so the takeover stops.
       let owner = readOwner(p.lock);
       if (!owner) {
         // No marker: a lock this code did not create (an older worker), or one
@@ -681,6 +687,7 @@ export function acquireLock(dir, hooks = {}) {
         } catch { continue; }
         owner = { id: adopted };
       }
+      if (!lockIsStale(dir)) return false;    // replaced by a live worker — leave it
       if (hooks.beforeReclaimRename) hooks.beforeReclaimRename();
       if (!claimOwner(p.lock, owner.id)) continue;   // no longer the lock we judged
       try { rmSync(p.lock, { recursive: true, force: true }); } catch { /* best effort */ }
@@ -709,10 +716,14 @@ export function acquireLock(dir, hooks = {}) {
 // or whose pid has been reused by an unrelated live process — is never taken
 // over, so no takeover happens until that process exits. A stalled takeover is
 // the safe failure here; two workers draining at once is not.
-// The other residual is an older worker's gate, which carries no
-// marker: it is empty, and an empty gate that has aged out is cleared with
-// rmdir, which the kernel refuses on a populated one — so it can never remove a
-// gate this code created, only one from before HIMMEL-3275.
+// The other residual is a gate that carries no marker at all, in two shapes,
+// and neither is cleared on age: an older worker's gate is EMPTY, so rmdir
+// clears it and the kernel refuses that call on any populated one — it can
+// never remove a gate this code created; and a gate orphaned by a death
+// mid-takeover holds only a moved marker, which is CAS-renamed into this
+// worker's own ownership rather than removed. So no path here removes a gate
+// or a lock without first winning the CAS on it, or without the kernel
+// confirming the directory is empty.
 const RECLAIM_STALE_MS = 30 * 1000;
 function takeReclaimGate(p, hooks = {}) {
   const gate = `${p.lock}.reclaim`;
@@ -724,8 +735,27 @@ function takeReclaimGate(p, hooks = {}) {
     if (age <= RECLAIM_STALE_MS) return null;   // a takeover is in progress
     const owner = readOwner(gate);
     if (!owner) {
-      try { rmdirSync(gate); } catch { return null; }   // refused unless genuinely empty
-      continue;
+      try { rmdirSync(gate); continue; } catch { /* not empty — see below */ }
+      // Not empty, yet nothing owns it: a reclaimer died between winning the
+      // CAS and writing its adopted marker, or inside releaseGate, leaving only
+      // the moved marker behind. mkdir refuses the directory because it exists
+      // and rmdir because it is not empty, so recovery would wedge here
+      // PERMANENTLY. Recover it the way everything else here is recovered —
+      // by CAS, not by a path-keyed removal: renaming a residue marker to
+      // `own.<id>` elects exactly one winner AND installs its ownership in the
+      // same atomic step, so nothing is removed and there is no instant when a
+      // slower worker could take out a gate a faster one has just adopted.
+      // The rename also touches the directory, so the age clock restarts and
+      // the pid below is re-stamped inside that window.
+      let residue;
+      try { residue = readdirSync(gate).sort()[0]; } catch { return null; }
+      if (!residue) continue;                   // emptied under us — try the mkdir again
+      const adopted = randomUUID();
+      try { renameSync(join(gate, residue), join(gate, `${OWN_PREFIX}${adopted}`)); } catch { return null; }
+      try {
+        writeFileSync(join(gate, `${OWN_PREFIX}${adopted}`), String(process.pid), { mode: 0o600 });
+      } catch { return null; }
+      return { dir: gate, id: adopted };
     }
     if (pidAlive(owner.pid)) return null;       // stopped, not dead — still its gate
     if (hooks.beforeGateEvict) hooks.beforeGateEvict();
