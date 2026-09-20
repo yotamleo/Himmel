@@ -41,7 +41,12 @@
 #   --skip-hooks        Opt out of placing the git gate hooks (pre-commit,
 #                       commit-msg, pre-push) in --target. On by default
 #                       (HIMMEL-2441) so a fresh adopt is gated from its first
-#                       commit; mirrors uninstall.sh's own --skip-hooks.
+#                       commit; mirrors uninstall.sh's own --skip-hooks. A
+#                       target with its own .pre-commit-config.yaml gets the
+#                       pre-commit framework hooks (config untouched); one
+#                       without gets himmel's native gates directly, since the
+#                       framework's hooks would skip without a config
+#                       (HIMMEL-3306).
 #
 # Idempotent: re-running adds nothing already present.
 set -euo pipefail
@@ -593,7 +598,7 @@ install_native_hooks() {
   local common_dir common_dir_canon payload_dir payload_file hooks_path_configured
   marker='# HIMMEL-2771: native invariant gate; lint hooks require pre-commit.'
   if [[ $DRY_RUN -eq 1 ]]; then
-    echo "DRY: place executable native commit-msg, pre-commit, pre-push hooks in $TARGET (fallback if pre-commit is unavailable or fails)"
+    echo "DRY: place executable native commit-msg, pre-commit, pre-push hooks in $TARGET (used when the target has no .pre-commit-config.yaml, or pre-commit is unavailable or fails)"
     echo "DRY: copy native gate scripts and guardrails/lib.sh into $TARGET if needed"
     return 0
   fi
@@ -891,12 +896,11 @@ install_precommit_hooks() {
   # HIMMEL-2441: place the git gate hooks by default so an adopter's FIRST
   # commit is actually gated -- mirrors setup.sh's own [1/9]/[2/9] steps
   # (install pre-commit if missing, then wire all three hook types), against
-  # $TARGET. --allow-missing-config keeps this safe for a genuine external
-  # adopt target with no .pre-commit-config.yaml of its own: the hook wires
-  # in but no-ops on every commit until the adopter's own config exists,
-  # rather than hard-failing every commit (measured: a bare `pre-commit
-  # install` + commit with zero config exits 1; --allow-missing-config exits
-  # 0 and starts gating the moment a config is added, no re-install needed).
+  # $TARGET. --allow-missing-config keeps the wired hooks from hard-failing
+  # every commit if the adopter's own config is deleted later (measured: a
+  # bare `pre-commit install` + commit with zero config exits 1;
+  # --allow-missing-config exits 0). It no longer covers a target that never
+  # had a config: that case takes the native gates (HIMMEL-3306, below).
   if [[ $SKIP_HOOKS -eq 1 ]]; then
     echo "  git hooks: skipped (--skip-hooks)"
     return 0
@@ -904,6 +908,21 @@ install_precommit_hooks() {
   if [[ ! -e "$TARGET/.git" ]]; then
     echo "  git hooks: skipping ($TARGET is not a git repo)"
     return 0
+  fi
+  # HIMMEL-3306: the pre-commit framework gates only what a
+  # .pre-commit-config.yaml wires, and adopt ships none -- so without the
+  # adopter's own config the stubs above skipped on every commit and push
+  # (--allow-missing-config exits 0), while the native gates that DO work sat
+  # unused behind the "pre-commit failed" branch: following the recommended
+  # path was weaker than ignoring it. No config of the adopter's own means no
+  # framework: place the native gates directly, no pre-commit install needed.
+  # An adopter WITH a config keeps the framework path below, their config
+  # untouched.
+  if [[ ! -f "$TARGET/.pre-commit-config.yaml" ]]; then
+    echo "──── Installing git gate hooks ($TARGET) ────"
+    echo "  no .pre-commit-config.yaml in $TARGET — placing the native gates (the pre-commit framework would skip every run without one)"
+    install_native_hooks
+    return $?
   fi
   local precommit_bin="pre-commit"
   if ! command -v pre-commit >/dev/null 2>&1; then

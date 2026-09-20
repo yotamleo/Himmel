@@ -265,10 +265,21 @@ without `--install-hooks` places the hooks but leaves their environments to be
 built on first use; `scripts/setup.sh` does the whole thing for you inside a
 himmel clone.)
 
-**Placement is still changing.** The operator has approved making the installer
-place these hooks by default ([HIMMEL-2441](https://yotamleo.atlassian.net/browse/HIMMEL-2441));
-until that lands you place them yourself with the command above. Ticket
-discipline itself is already default-on
+**The installer places these hooks by default**
+([HIMMEL-2441](https://yotamleo.atlassian.net/browse/HIMMEL-2441)); pass
+`--skip-hooks` to opt out. What it places depends on whether the target repo
+already has a `.pre-commit-config.yaml`
+([HIMMEL-3306](https://yotamleo.atlassian.net/browse/HIMMEL-3306)):
+
+- **Your own config present:** the installer runs `pre-commit install` and leaves
+  your config untouched — the hooks run whatever you configured.
+- **No config:** the pre-commit framework's hooks would skip on every commit and
+  push ("config file not found"), so the installer writes himmel's native
+  `commit-msg`, `pre-push` and `pre-commit` gates directly instead. Those gate
+  without any config file.
+
+`himmelctl status` reports `pre-commit-hooks` as red when the installed hooks are
+framework stubs with no config to run. Ticket discipline itself is default-on
 ([HIMMEL-2442](https://yotamleo.atlassian.net/browse/HIMMEL-2442)).
 
 Two things to know once they are placed:
