@@ -345,6 +345,11 @@ and cache roots, the vocabulary the refusal cites ("from which directory or
 root") — leads only because the alternatives are gone; it has had no positive
 test. Do not act on it as if it were the cause.
 
+**It is rare.** On 2026-09-20 one session was refused against four other native
+legs running `git` unrefused (N197, N197b, N198b, N200) — a day's sample, not a
+rate. A leg that hits it has hit something uncommon, not a routine gate; the
+cause is not identified, so do not spend the session diagnosing your own conduct.
+
 **What to do — the leg:**
 
 - Stop at the **first** refusal carrying this text. Unlike the entries above, do
