@@ -818,6 +818,64 @@ printf '%s\n' '# console' '' '## Live state' '' \
     > "$W/handover/console.md"
 contains 'a malformed span and a stale leg both surface (HIMMEL-3280)' "$(t3277 "$l191 $l192")" 'livestate=MALFORMED:N191;DRIFT:N192,N199 '
 
+# --- HIMMEL-3281: the legs: BLOCK is read, not just its first line ------------
+# The block is the legs: line(s) plus lines wrapped directly under them, up to
+# the first blank line or the next `field:` line. RED control (pre-fix tick.sh,
+# first fixture below): both legs' locks held (legs=N191:FRESH,N192:FRESH, same
+# output line) and livestate=DRIFT:N192 -- the second line was never parsed.
+# The precondition is asserted on every fixture: a "DRIFT" from a lock that was
+# never held would be a vacuous control.
+wrap_case() {  # wrap_case <desc> <expected livestate=...> <console doc line>...
+    local desc="$1" want="$2" out
+    shift 2
+    printf '%s\n' '# console' '' '## Live state' '' "$@" > "$W/handover/console.md"
+    out="$(t3277 "$l191 $l192")"
+    contains "$desc: both locks are held (precondition)" "$out" 'legs=N191:FRESH,N192:FRESH'
+    contains "$desc (HIMMEL-3281)" "$out" "$want"
+}
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+wrap_case 'a second legs: line is read' 'livestate=ok ' \
+    'legs: `N191:J-N191-0a1b2c:tok-191:120`' \
+    'legs: `N192:J-N192-3d4e5f:tok-192:121`' 'queue: none' 'last GO: none' 'acked: none'
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+wrap_case 'an indented continuation line is read' 'livestate=ok ' \
+    'legs: `N191:J-N191-0a1b2c:tok-191:120`' \
+    '  `N192:J-N192-3d4e5f:tok-192:121`' 'queue: none' 'last GO: none' 'acked: none'
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+wrap_case 'an unindented continuation line is read' 'livestate=ok ' \
+    'legs: `N191:J-N191-0a1b2c:tok-191:120`,' \
+    '`N192:J-N192-3d4e5f:tok-192:121` (wrapped by hand)' 'queue: none' 'last GO: none' 'acked: none'
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+wrap_case 'a wrapped block ended by a blank line is read' 'livestate=ok ' \
+    'legs: `N191:J-N191-0a1b2c:tok-191:120`' \
+    '  `N192:J-N192-3d4e5f:tok-192:121`' '' 'queue: none' 'last GO: none' 'acked: none'
+# A wrapped span is judged like any other: malformed reads MALFORMED (by label),
+# a leg named but not held reads DRIFT.
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+wrap_case 'a malformed span on a continuation line reads MALFORMED' 'livestate=MALFORMED:N192 ' \
+    'legs: `N191:J-N191-0a1b2c:tok-191:120`' \
+    '  `N192:J-N192-3d4e5f:tok-192`' 'queue: none' 'last GO: none' 'acked: none'
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+wrap_case 'a stale leg on a continuation line reads DRIFT' 'livestate=DRIFT:N199 ' \
+    'legs: `N191:J-N191-0a1b2c:tok-191:120`, `N192:J-N192-3d4e5f:tok-192:121`' \
+    '  `N199:J-N199-aaaaaa:tok-199:1`' 'queue: none' 'last GO: none' 'acked: none'
+# The block has an END, and that end reads loudly, not silently: a held leg whose
+# span sits past the blank line (a per-leg detail bullet) or on another field's
+# line is not named BY the block, so it is DRIFT -- the console's own record was
+# never in the legs block.
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+wrap_case 'a span after the blank line is not an entry (detail bullets may quote one)' 'livestate=DRIFT:N192 ' \
+    'legs: `N191:J-N191-0a1b2c:tok-191:120`' '' \
+    '- N192 detail: `N192:J-N192-3d4e5f:tok-192:121`' 'queue: none' 'last GO: none' 'acked: none'
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+wrap_case 'a span on the next field: line is not an entry' 'livestate=DRIFT:N192 ' \
+    'legs: `N191:J-N191-0a1b2c:tok-191:120`' \
+    'queue: HIMMEL-1 (`N192:J-N192-3d4e5f:tok-192:121`)' 'last GO: none' 'acked: none'
+# One-line behaviour is untouched: prose, MALFORMED and DRIFT read as HIMMEL-3280 left them.
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+wrap_case 'a one-line block with prose still reads ok' 'livestate=ok ' \
+    'legs: `N191:J-N191-0a1b2c:tok-191:120`, `N192:J-N192-3d4e5f:tok-192:121` (the `legs:` key)' 'queue: none' 'last GO: none' 'acked: none'
+
 # procs=/models= guard: a HELD leg that matches no census row cannot be told
 # apart from a filter that cannot match, so it must read unknown, never 0/none.
 mk_pgrep_x "$W/bin-3277-none" 103

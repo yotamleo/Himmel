@@ -271,7 +271,19 @@ if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
         f && /^## / { exit }
         f { print }
     ' "$console_doc")"
-    legs_line="$(printf '%s\n' "$live_state_body" | grep '^legs:' | head -n 1)"
+    # The legs: BLOCK (HIMMEL-3281), not just the first `legs:` line: every
+    # `legs:` line plus the lines wrapped directly under it, up to the first blank
+    # line or the next `field:` line (`queue:`, `last GO:`, `acked:`). Reading the
+    # first line only made every span on a wrapped line invisible -- not MALFORMED,
+    # not FREE, just absent -- so a held leg read DRIFT and a stale one read ok.
+    # ponytail: the block ENDS at a blank line or a `word:` line, so a leg span
+    # past either (a per-leg detail bullet, another field) is not an entry; a held
+    # leg named only there reads DRIFT, which is true -- the block never named it.
+    legs_line="$(printf '%s\n' "$live_state_body" | awk '
+        /^legs:/ { f = 1; print; next }
+        f && (/^[[:space:]]*$/ || /^[A-Za-z][A-Za-z ]*:/) { f = 0 }
+        f { print }
+    ')"
     if [ -n "$legs_line" ]; then
         # Each leg is one backtick span `<label>:<nonce>:<lock-token>:<pid>`
         # (Delta 2's format) -- take the label, the text before the first

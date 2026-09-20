@@ -188,6 +188,10 @@ contains 'retask-channel.md: the tick reads the leg own bullet, never asserts st
 # what a malformed entry reads as, so the doc and tick.sh's parser agree.
 contains 'console-template Live state: prose on the legs: line is permitted and read as prose' "$live" "Prose is permitted on the \`legs:\` line"
 contains 'console-template Live state: a malformed entry reads livestate=MALFORMED, never dropped' "$live" 'livestate=MALFORMED:<label>'
+# HIMMEL-3281: the template states that the legs: block may wrap and where it
+# ends, in the words tick.sh's awk enforces (first blank line or next field: line).
+contains 'console-template Live state: the legs: block may wrap' "$live" "The \`legs:\` block may wrap"
+contains 'console-template Live state: the block ends at the first blank line or the next field: line' "$live" "up to the first blank line or the next \`field:\` line"
 
 # --- 6. HIMMEL-3266: the console-side text agrees with the preface ------------
 # console.sh next copies console-template.md into the successor stub and
