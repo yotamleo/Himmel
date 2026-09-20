@@ -244,27 +244,6 @@ in particular reports a Windows `AppData` path on Linux
 `graphify`, `rtk`, `jira-env-keys`, and `telegram-bridge` simply mean those
 optional pieces are not set up; none of them blocks the core loop.
 
-**The git gates are a separate, manual step — the install does not place
-them.** `himmelctl install` wires the Claude-session hooks into
-`~/.claude/settings.json` and prints the pre-commit gates as "(optional)". Until
-you run
-
-```bash
-pre-commit install --install-hooks \
-  --hook-type pre-commit --hook-type commit-msg --hook-type pre-push
-```
-
-`.git/hooks/` holds nothing but samples and **every commit is ungated** — a
-docs commit with no ticket reference and no attestation trailers will succeed
-silently. Verified on the guest: the first commit of this very PR was made
-before the hooks existed and no gate ran. (This is the same manual step the
-"Provisioning gaps" table above lists under *pre-commit hooks* with its
-HIMMEL-966 note — spelled out here because on a fresh adopter box it is the
-difference between having the git gates and only believing you do. `--hook-type`
-without `--install-hooks` places the hooks but leaves their environments to be
-built on first use; `scripts/setup.sh` does the whole thing for you inside a
-himmel clone.)
-
 **The installer places these hooks by default**
 ([HIMMEL-2441](https://yotamleo.atlassian.net/browse/HIMMEL-2441)); pass
 `--skip-hooks` to opt out. What it places depends on whether the target repo
