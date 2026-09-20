@@ -75,10 +75,19 @@
 # from scripts/lanes/plugin-profiles.json to the launched leg, plus the leg
 # preface (docs/handover/leg-preface.md) and the lean-SessionStart switch. Also
 # settable as LEG_PROFILE in the launching shell; the flag wins if both are
-# given, same precedence as --lane. Omitted, NOTHING changes: no settings file
-# is written, no env is exported, and the argv handed to headed-arm.sh is
-# byte-identical to what it was before this flag existed (a suite case pins
-# exactly that). Given, three things happen:
+# given, same precedence as --lane. A launch that supplies NO profile (no
+# --profile, no LEG_PROFILE, and neither --relay nor --judge, which force one)
+# is REFUSED with exit 2 unless --no-profile is passed (HIMMEL-3267): an
+# unprofiled leg silently runs without the standing preface and without the
+# lean plugin set, its launch log indistinguishable from a profiled one, and
+# it cannot know what it was not given. --no-profile is the explicit opt-out
+# for a brief that carries the preface pasted in itself; it conflicts (exit 2)
+# with any resolved profile (--profile, LEG_PROFILE, --relay, --judge) rather
+# than silently dropping one, and the real launch records it in the launch
+# log. Under --no-profile NOTHING else changes: no settings file is written,
+# no env is exported, and the argv handed to headed-arm.sh is byte-identical
+# to what it was before --profile existed (a suite case pins exactly that).
+# Given a profile, three things happen:
 #   1. plugin-profiles.mjs resolves the name to an enabledPlugins map, written
 #      as a settings JSON next to the launch log (the per-uid console work dir
 #      the console already owns), and HEADED_ARM_LAUNCHER is pointed at
@@ -154,12 +163,13 @@
 set -u
 
 usage() {
-    echo "usage: headed-arm-leg.sh [--dry-run] [--lane native|claudex] [--profile <name>] [--relay] [--judge] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
+    echo "usage: headed-arm-leg.sh [--dry-run] [--lane native|claudex] (--profile <name> | --no-profile) [--relay] [--judge] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
 }
 
 DRY_RUN=0
 RELAY=0
 JUDGE=0
+NO_PROFILE=0
 LANE="${LEG_LANE:-native}"
 PROFILE="${LEG_PROFILE:-}"
 while :; do
@@ -167,6 +177,7 @@ while :; do
         --dry-run) DRY_RUN=1; shift ;;
         --relay) RELAY=1; shift ;;
         --judge) JUDGE=1; shift ;;
+        --no-profile) NO_PROFILE=1; shift ;;
         --lane)
             # codex CR fix: `--lane` as the LAST arg leaves only 1 positional,
             # so `shift 2` fails (rc=1) and shifts NOTHING under `set -u`
@@ -217,6 +228,15 @@ if [ "$JUDGE" -eq 1 ]; then
     PROFILE="console-judge"
 fi
 
+# --no-profile (HIMMEL-3267) is the deliberate opt-out; a profile from ANY
+# source (flag, LEG_PROFILE, or the one --relay/--judge just forced) is a real
+# conflict, not one to resolve by silently dropping either side.
+if [ "$NO_PROFILE" -eq 1 ] && [ -n "$PROFILE" ]; then
+    usage
+    echo "headed-arm-leg: --no-profile conflicts with the profile requested via --profile, LEG_PROFILE, --relay or --judge (got: $PROFILE)" >&2
+    exit 2
+fi
+
 case "$LANE" in
     native|claudex) ;;
     *)
@@ -232,6 +252,17 @@ if [ "$#" -lt 5 ]; then
 fi
 
 NAME="$1"; DOC="$2"; SIGNAL="$3"; DEADLINE="$4"; LOG="$5"; MODEL="${6:-}"
+
+# HIMMEL-3267: same stance as the Tier-line refusal below - this wrapper
+# refuses an under-specified dispatch rather than launching it. No profile and
+# no explicit --no-profile would launch a leg with no standing preface and no
+# lean plugin set, silently (see the --profile header comment). Runs before the
+# --dry-run exit so a dry-run exercises the very decision it is predicting.
+if [ -z "$PROFILE" ] && [ "$NO_PROFILE" -eq 0 ]; then
+    usage
+    echo "headed-arm-leg: refusing an unprofiled launch: pass --profile <name> (or set LEG_PROFILE; names: \`node scripts/lanes/plugin-profiles.mjs --list\`) so the leg gets docs/handover/leg-preface.md and the lean plugin set. Pass --no-profile only when the brief itself carries the preface pasted in." >&2
+    exit 2
+fi
 
 # --relay defaults MODEL to the Sonnet relay's own default (an explicit model
 # still wins, same precedence as --lane/--profile above); LEG_EFFORT defaults
@@ -710,6 +741,12 @@ if [ -f "$BANK_PREFLIGHT" ]; then
         echo "$(date +%F_%T) headed-arm-leg: refusing to launch $NAME - $LANE lane bank exhausted (park and retry later; see bank-preflight.sh for the parked lane's own bank status)" >> "$LOG"
         exit 11
     fi
+fi
+
+# HIMMEL-3267: a deliberate --no-profile launch looks exactly like a profiled
+# one in headed-arm.sh's own log lines, so record the opt-out here.
+if [ "$NO_PROFILE" -eq 1 ]; then
+    echo "$(date +%F_%T) headed-arm-leg: WARN --no-profile: docs/handover/leg-preface.md NOT injected and no plugin profile applied (the brief must carry the preface)" >> "$LOG"
 fi
 
 # HIMMEL-2976: this wrapper execs into headed-arm.sh below, so its own

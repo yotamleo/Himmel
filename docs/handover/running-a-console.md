@@ -108,7 +108,7 @@ The console writes a brief from
 [`leg-brief-template.md`](leg-brief-template.md) and launches it headed:
 
 ```bash
-setsid nohup bash scripts/handover/console-kit/headed-arm-leg.sh \
+setsid nohup bash scripts/handover/console-kit/headed-arm-leg.sh --profile leg-impl \
   <session-name> <brief> <signal-file> <deadline-epoch> <log> <model> \
   >/dev/null 2>&1 &
 ```

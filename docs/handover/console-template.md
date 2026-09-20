@@ -169,10 +169,13 @@ ordinary Bash call.
    writer, never two legs at one artifact.
 3. **Name an explicit model** on every dispatch, and raise *effort* before
    tier. An unnamed model burns the scarcer parent quota.
-4. Launch: `setsid nohup bash "{{KIT}}/headed-arm-leg.sh" <session-name> "<brief>"
-   <signal-file> <deadline-epoch> <log> <model> >/dev/null 2>&1 &`. Headed,
-   because a session launched without a TTY exits at the first idle
-   cross-session message.
+4. Launch: `setsid nohup bash "{{KIT}}/headed-arm-leg.sh" --profile leg-impl
+   <session-name> "<brief>" <signal-file> <deadline-epoch> <log> <model>
+   >/dev/null 2>&1 &`. Headed, because a session launched without a TTY exits
+   at the first idle cross-session message. `--profile` is required: it injects
+   the standing preface and the lean plugin set, and the launcher refuses
+   (exit 2) an unprofiled launch. `--no-profile` is the explicit opt-out for a
+   brief that pastes the preface itself.
 5. Record the launch log path — the leg's window pid is in it, and that is how
    you close the window after it wraps.
 

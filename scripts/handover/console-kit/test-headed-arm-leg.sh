@@ -191,6 +191,13 @@ printf '%s\n' '#!/usr/bin/env bash' \
   'echo SKIPPED-BANK' > "$SKIPPED_BANK_PREFLIGHT"
 chmod 755 "$SKIPPED_BANK_PREFLIGHT"
 
+# RUN_LEG_ARGS (HIMMEL-3267): the leading profile flags. Default is a REAL
+# profile - a launch that no longer exists unprofiled is the shape a console
+# dispatches - and only a case whose subject IS the unprofiled path sets
+# RUN_LEG_ARGS=--no-profile. Set-but-empty deliberately means "no flag at all"
+# (case 27b, the refusal).
+RUN_LEG_DEFAULT_ARGS="--profile leg-impl"
+# shellcheck disable=SC2086  # deliberately word-split: zero, one or several flags.
 run_leg() {
   local stubdir="$1" repo="$2" name="$3" model="${4:-}" preflight="${5:-$PROCEED_PREFLIGHT}"
   # codex-1 (round 7): clear any IMPL_GUARD_OK inherited from the launching
@@ -203,7 +210,7 @@ run_leg() {
   HEADED_ARM_LEG_PREFLIGHT="$preflight" \
   KONSOLE_CMD="$stubdir/konsole" PGREP_CMD="$stubdir/pgrep" \
   LEG_REPO="$repo" HEADED_ARM_LOCK_DIR="$stubdir/locks" HEADED_ARM_PROC="$stubdir/proc" \
-    bash "$SCRIPT" "$name" "some/doc.md" "$stubdir/signal-never" "$PAST" "$stubdir/log" "$model"
+    bash "$SCRIPT" ${RUN_LEG_ARGS-$RUN_LEG_DEFAULT_ARGS} "$name" "$some_doc" "$stubdir/signal-never" "$PAST" "$stubdir/log" "$model"
 }
 
 # --- 1-2. usage/arg-shape ---------------------------------------------------
@@ -230,7 +237,7 @@ fi
 # operator's own LEG_CONTEXT/LEG_REPO from the launching shell - explicitly
 # clear both (empty is equivalent to unset for this wrapper's own checks)
 # rather than relying on ambient env happening to be clean.
-rc=0; out="$(LEG_CONTEXT='' LEG_REPO='' bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+rc=0; out="$(LEG_CONTEXT='' LEG_REPO='' bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 check "dry-run default: exit 0" "$rc" "0"
 ends_with "dry-run default: context=standard, no LEG_CONTEXT" "$out" "standard"
 not_contains "dry-run default: no [1m] suffix in the would-exec line" "$out" "[1m]"
@@ -249,22 +256,22 @@ contains "dry-run default: scrub list names CONSOLE_CONTEXT" "$out" "scrub=CONSO
 # below. Enumerates the expected scrub set explicitly (not merely "non-empty")
 # so a future console-only knob added without a matching scrub here fails
 # this exact assertion, not a vaguer one.
-rc=0; out="$(CONSOLE_CONTEXT=1m LEG_CONTEXT='' LEG_REPO='' bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+rc=0; out="$(CONSOLE_CONTEXT=1m LEG_CONTEXT='' LEG_REPO='' bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 check "dry-run, ambient CONSOLE_CONTEXT=1m: exit 0 (a leg is unaffected by it)" "$rc" "0"
 contains "dry-run, ambient CONSOLE_CONTEXT=1m: scrubbed to <unset> in the wrapper's own env" "$out" "scrub=CONSOLE_CONTEXT CONSOLE_CONTEXT=<unset>"
 not_contains "dry-run, ambient CONSOLE_CONTEXT=1m: never reported as still set" "$out" "CONSOLE_CONTEXT=1m"
 
-rc=0; out="$(LEG_CONTEXT=1m bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+rc=0; out="$(LEG_CONTEXT=1m bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 check "dry-run LEG_CONTEXT=1m: refused with exit 2" "$rc" "2"
 contains "dry-run LEG_CONTEXT=1m: refusal names the required ceiling" "$out" "--autocompact 200000"
 contains "dry-run LEG_CONTEXT=1m: refusal points to the standard leg setting" "$out" "unset LEG_CONTEXT"
 
-rc=0; out="$(LEG_CONTEXT=1m bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-fable-5-1 2>&1)" || rc=$?
+rc=0; out="$(LEG_CONTEXT=1m bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-fable-5-1 2>&1)" || rc=$?
 check "dry-run LEG_CONTEXT=1m, Fable model: refused with exit 2" "$rc" "2"
 contains "dry-run LEG_CONTEXT=1m, Fable model: still checks autocompact, not the model suffix" "$out" "--autocompact 200000"
 
 for off in "standard" "yes" "true" "1M" ""; do
-  rc=0; out="$(LEG_CONTEXT="$off" bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+  rc=0; out="$(LEG_CONTEXT="$off" bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
   ends_with "dry-run LEG_CONTEXT=[$off]: stays on standard (fail toward the cheaper default)" "$out" "standard"
 done
 
@@ -340,15 +347,15 @@ check "dry-run --judge --relay: refused with exit 2" "$rc" "2"
 contains "dry-run --judge --relay: refusal names console-judge" "$out" "console-judge"
 
 # --- 7. LEG_REPO folded into HEADED_ARM_REPO --------------------------------
-rc=0; out="$(LEG_REPO=/some/other/repo bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+rc=0; out="$(LEG_REPO=/some/other/repo bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 contains "dry-run: LEG_REPO folded into HEADED_ARM_REPO" "$out" "HEADED_ARM_REPO=/some/other/repo"
 
 # --- 7b (HIMMEL-3141). LEG_SUPPRESS_CR_TRIGGER folded into CR_TRIGGER_SUPPRESS
-rc=0; out="$(LEG_SUPPRESS_CR_TRIGGER=1 bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+rc=0; out="$(LEG_SUPPRESS_CR_TRIGGER=1 bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 contains "dry-run: LEG_SUPPRESS_CR_TRIGGER folded into CR_TRIGGER_SUPPRESS" "$out" "CR_TRIGGER_SUPPRESS=1"
 
 # --- 7c (HIMMEL-3141). unset LEG_SUPPRESS_CR_TRIGGER -> stays <unset> (default ON)
-rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+rc=0; out="$(bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 contains "dry-run: unset LEG_SUPPRESS_CR_TRIGGER leaves CR_TRIGGER_SUPPRESS unset (default ON)" "$out" "CR_TRIGGER_SUPPRESS=<unset>"
 
 # --- 8-9, 11. full (non-dry) launch: proves the non-dry path builds the SAME
@@ -356,7 +363,7 @@ contains "dry-run: unset LEG_SUPPRESS_CR_TRIGGER leaves CR_TRIGGER_SUPPRESS unse
 # seam. ----------------------------------------------------------------------
 d8="$tmp/c8"; mk_launch_stubs "$d8" "HIMMEL-9999-leg"; mkdir -p "$tmp/repo8"
 rc=0
-LEG_CONTEXT='' run_leg "$d8" "$tmp/repo8" "HIMMEL-9999-leg" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+LEG_CONTEXT='' RUN_LEG_ARGS=--no-profile run_leg "$d8" "$tmp/repo8" "HIMMEL-9999-leg" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
 wait_record "$d8" || true
 rec8="$(cat "$d8/record" 2>/dev/null || true)"
 check "full launch, default context: exit 0" "$rc" "0"
@@ -380,7 +387,7 @@ contains "full launch: LEG_REPO folds into HEADED_ARM_REPO, reaches --workdir" "
 # suite.
 d8b="$tmp/c8b"; mk_launch_stubs "$d8b" "HIMMEL-7777-leg"; mkdir -p "$tmp/repo8b"
 rc=0
-LEG_CONTEXT='' run_leg "$d8b" "$tmp/repo8b" "HIMMEL-7777-leg" "claude-sonnet-5[1m]" >/dev/null 2>&1 || rc=$?
+LEG_CONTEXT='' RUN_LEG_ARGS=--no-profile run_leg "$d8b" "$tmp/repo8b" "HIMMEL-7777-leg" "claude-sonnet-5[1m]" >/dev/null 2>&1 || rc=$?
 wait_record "$d8b" || true
 rec8b="$(cat "$d8b/record" 2>/dev/null || true)"
 check "full launch, default context, pre-suffixed model: exit 0" "$rc" "0"
@@ -389,7 +396,7 @@ not_contains "full launch, default context, pre-suffixed model: suffix stripped 
 
 d9="$tmp/c9"; mk_launch_stubs "$d9" "HIMMEL-8888-leg"; mkdir -p "$tmp/repo9"
 rc=0
-LEG_CONTEXT=1m run_leg "$d9" "$tmp/repo9" "HIMMEL-8888-leg" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+LEG_CONTEXT=1m RUN_LEG_ARGS=--no-profile run_leg "$d9" "$tmp/repo9" "HIMMEL-8888-leg" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
 rec9="$(cat "$d9/record" 2>/dev/null || true)"
 check "full launch, LEG_CONTEXT=1m: refused with exit 2" "$rc" "2"
 check "full launch, LEG_CONTEXT=1m: headed-arm was never invoked" "$rec9" ""
@@ -410,7 +417,7 @@ not_contains "full launch: internal autocompact requirement does not leak into t
 # own suite already trusts, not a live /proc read.
 d10b="$tmp/c10b"; mk_launch_stubs "$d10b" "HIMMEL-3139-leg"; mkdir -p "$tmp/repo10b"
 rc=0
-CONSOLE_CONTEXT=1m LEG_CONTEXT='' run_leg "$d10b" "$tmp/repo10b" "HIMMEL-3139-leg" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+CONSOLE_CONTEXT=1m LEG_CONTEXT='' RUN_LEG_ARGS=--no-profile run_leg "$d10b" "$tmp/repo10b" "HIMMEL-3139-leg" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
 wait_record "$d10b" || true
 env10b="$(cat "$d10b/env-record" 2>/dev/null || true)"
 check "full launch, ambient CONSOLE_CONTEXT=1m: exit 0 (a leg is unaffected by it)" "$rc" "0"
@@ -433,7 +440,7 @@ mrc=0
 mout="$(IMPL_GUARD_OK='' HEADED_ARM_LEG_TARGET="$mutant" HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
   KONSOLE_CMD="$d12/konsole" PGREP_CMD="$d12/pgrep" LEG_REPO="$tmp/repo12" \
   HEADED_ARM_LOCK_DIR="$d12/locks" HEADED_ARM_PROC="$d12/proc" \
-  bash "$SCRIPT" "HIMMEL-4444-leg" "some/doc.md" "$d12/signal-never" "$PAST" "$d12/log" "claude-sonnet-5" 2>&1)" || mrc=$?
+  bash "$SCRIPT" --no-profile "HIMMEL-4444-leg" "some/doc.md" "$d12/signal-never" "$PAST" "$d12/log" "claude-sonnet-5" 2>&1)" || mrc=$?
 check "RED control: renderer without --autocompact is refused on full launch path" "$mrc" "2"
 contains "RED control: refusal names the missing resolved argv pair" "$mout" "resolved argv lacks --autocompact 200000"
 check "RED control: konsole was never invoked" "$(cat "$d12/record" 2>/dev/null || true)" ""
@@ -497,7 +504,7 @@ check "unknown lane via LEG_LANE: exit 2" "$rc" "2"
 
 # --- 15 (HIMMEL-2782). --dry-run --lane claudex: resolved launcher + env,
 # default model gpt-6-astra, --lane wins over LEG_LANE. ---------------------
-rc=0; out="$(LEG_LANE=native LEG_REPO='' bash "$SCRIPT" --dry-run --lane claudex HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+rc=0; out="$(LEG_LANE=native LEG_REPO='' bash "$SCRIPT" --dry-run --no-profile --lane claudex HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
 check "dry-run --lane claudex: exit 0 (flag wins over LEG_LANE=native)" "$rc" "0"
 contains "dry-run --lane claudex: reports lane=claudex" "$out" "lane=claudex"
 contains "dry-run --lane claudex: resolved launcher names claude-codex" "$out" "claude-codex"
@@ -505,14 +512,14 @@ contains "dry-run --lane claudex: env carries CLAUDEX_LANE_OK=1" "$out" "CLAUDEX
 contains "dry-run --lane claudex: env carries CLAUDE_CODE_EFFORT_LEVEL=medium default" "$out" "CLAUDE_CODE_EFFORT_LEVEL=medium"
 contains "dry-run --lane claudex: MODEL defaults to gpt-6-astra" "$out" "gpt-6-astra"
 
-rc=0; out="$(LEG_EFFORT=high bash "$SCRIPT" --dry-run --lane claudex HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+rc=0; out="$(LEG_EFFORT=high bash "$SCRIPT" --dry-run --no-profile --lane claudex HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
 contains "dry-run --lane claudex: LEG_EFFORT overrides the medium default" "$out" "CLAUDE_CODE_EFFORT_LEVEL=high"
 
-rc=0; out="$(bash "$SCRIPT" --dry-run --lane claudex HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+rc=0; out="$(bash "$SCRIPT" --dry-run --no-profile --lane claudex HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 contains "dry-run --lane claudex: an explicit model is NOT overridden" "$out" "claude-sonnet-5"
 not_contains "dry-run --lane claudex: an explicit model is NOT overridden" "$out" "gpt-6-astra"
 
-rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+rc=0; out="$(bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 contains "dry-run, no --lane: reports lane=native" "$out" "lane=native"
 not_contains "dry-run, no --lane: no claude-codex launcher" "$out" "claude-codex"
 
@@ -536,7 +543,7 @@ HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
 HEADED_ARM_LEG_CLAUDEX_BIN="$claudex_stub" \
 KONSOLE_CMD="$d16/konsole" PGREP_CMD="$d16/pgrep" \
 LEG_REPO="$tmp/repo16" HEADED_ARM_LOCK_DIR="$d16/locks" HEADED_ARM_PROC="$d16/proc" \
-  bash "$SCRIPT" --lane claudex "HIMMEL-5555-leg" "some/doc.md" "$d16/signal-never" "$PAST" "$d16/log" >/dev/null 2>&1 || rc=$?
+  bash "$SCRIPT" --lane claudex --no-profile "HIMMEL-5555-leg" "some/doc.md" "$d16/signal-never" "$PAST" "$d16/log" >/dev/null 2>&1 || rc=$?
 wait_record "$d16" || true
 rec16="$(cat "$d16/record" 2>/dev/null || true)"
 check "full launch, --lane claudex: exit 0" "$rc" "0"
@@ -757,7 +764,7 @@ env8b="$(cat "$d8/env-record" 2>/dev/null || true)"
 not_contains "no --profile: launcher is unchanged (no shim)" "$rec8" "leg-claude-launcher.sh"
 not_contains "no --profile: no HIMMEL_LEAN_LEG in the launched environment" "$env8b" "HIMMEL_LEAN_LEG=1"
 
-noprof="$(LEG_PROFILE='' bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)"
+noprof="$(LEG_PROFILE='' bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)"
 noprof_lines="$(printf '%s\n' "$noprof" | wc -l | tr -d '[:space:]')"
 check "no --profile: dry-run report is still exactly three lines" "$noprof_lines" "3"
 not_contains "no --profile: dry-run report has no profile line" "$noprof" "profile="
@@ -879,7 +886,7 @@ check "composition: both prefaces, all profile flags, argv order and gate settin
 rc=0
 HEADED_ARM_LEG_TARGET="$composed/headed" HEADED_ARM_LEG_CLAUDEX_BIN="$composed/claude-codex" \
 HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
-  bash "$SCRIPT" --lane claudex HIMMEL-unprofiled "some/doc.md" "$composed/signal" "$PAST" "$composed/log" >/dev/null 2>&1 || rc=$?
+  bash "$SCRIPT" --lane claudex --no-profile HIMMEL-unprofiled "some/doc.md" "$composed/signal" "$PAST" "$composed/log" >/dev/null 2>&1 || rc=$?
 check "unprofiled claudex: launcher succeeds" "$rc" "0"
 rc=0
 node - "$composed" "$HERE/../../../docs/handover/leg-preface-claudex.md" <<'NODE' || rc=$?
@@ -1035,7 +1042,7 @@ printf '%s\n' '# fixture brief' '> **Tier:** opus — design: multi-step design'
 doc_tier_fable="$tmp/tier-doc-fable.md"
 printf '%s\n' '# fixture brief' '> **Tier:** fable — tier-return: a Sonnet leg returned the work as above its tier' > "$doc_tier_fable"
 
-rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_no_tier" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
+rc=0; out="$(bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg "$doc_no_tier" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
 check "tier gate: opus without a Tier line is refused with exit 2" "$rc" "2"
 contains "tier gate: refusal names the CLAUDE.md sentence" "$out" "raise effort before tier"
 contains "tier gate: refusal names reason 1 (multi-step design)" "$out" "multi-step design"
@@ -1043,29 +1050,29 @@ contains "tier gate: refusal names reason 2 (unverifiable FINDING)" "$out" "a FI
 contains "tier gate: refusal names reason 3 (above-tier return)" "$out" "a Sonnet leg returned the work as above its tier"
 contains "tier gate: refusal names the three category tags" "$out" "design|unverified-finding|tier-return"
 
-rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_no_tier" /tmp/nosig 99999999999 /tmp/leg.log "claude-opus-5[1m]" 2>&1)" || rc=$?
+rc=0; out="$(bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg "$doc_no_tier" /tmp/nosig 99999999999 /tmp/leg.log "claude-opus-5[1m]" 2>&1)" || rc=$?
 check "tier gate: a [1m] suffix does not dodge the opus match" "$rc" "2"
 contains "tier gate: [1m]-suffixed refusal still names the sentence" "$out" "raise effort before tier"
 
-rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_no_tier" /tmp/nosig 99999999999 /tmp/leg.log claude-fable-5-1 2>&1)" || rc=$?
+rc=0; out="$(bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg "$doc_no_tier" /tmp/nosig 99999999999 /tmp/leg.log claude-fable-5-1 2>&1)" || rc=$?
 check "tier gate: fable without a Tier line is refused with exit 2" "$rc" "2"
 contains "tier gate: fable refusal names the CLAUDE.md sentence" "$out" "raise effort before tier"
 
-rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_tier_opus" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
+rc=0; out="$(bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg "$doc_tier_opus" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
 check "tier gate: opus with a design: Tier line proceeds (dry-run exit 0)" "$rc" "0"
 contains "tier gate: dry-run report carries tier-category=design for opus" "$out" "tier-category=design"
 contains "tier gate: dry-run report carries tier-reason= for opus" "$out" "tier-reason=multi-step design"
 
-rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_tier_fable" /tmp/nosig 99999999999 /tmp/leg.log claude-fable-5-1 2>&1)" || rc=$?
+rc=0; out="$(bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg "$doc_tier_fable" /tmp/nosig 99999999999 /tmp/leg.log claude-fable-5-1 2>&1)" || rc=$?
 check "tier gate: fable with a tier-return: Tier line proceeds (dry-run exit 0)" "$rc" "0"
 contains "tier gate: dry-run report carries tier-category=tier-return for fable" "$out" "tier-category=tier-return"
 contains "tier gate: dry-run report carries tier-reason= for fable" "$out" "tier-reason=a Sonnet leg returned the work as above its tier"
 
-rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_no_tier" /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+rc=0; out="$(bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg "$doc_no_tier" /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 check "tier gate: sonnet without a Tier line is unaffected (dry-run exit 0)" "$rc" "0"
 not_contains "tier gate: sonnet dry-run report carries no tier-reason=" "$out" "tier-reason="
 
-rc=0; out="$(bash "$SCRIPT" --dry-run --lane claudex HIMMEL-9999-leg "$doc_no_tier" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+rc=0; out="$(bash "$SCRIPT" --dry-run --profile leg-impl --lane claudex HIMMEL-9999-leg "$doc_no_tier" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
 check "tier gate: --lane claudex is unaffected (dry-run exit 0)" "$rc" "0"
 
 # codex-1 (HIMMEL-2976 round 1 CR): a Tier line whose reason is whitespace-only
@@ -1075,38 +1082,38 @@ check "tier gate: --lane claudex is unaffected (dry-run exit 0)" "$rc" "0"
 doc_tier_opus_blank="$tmp/tier-doc-opus-blank.md"
 printf '%s\n' '# fixture brief' '> **Tier:** opus —    ' > "$doc_tier_opus_blank"
 
-rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_tier_opus_blank" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
+rc=0; out="$(bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg "$doc_tier_opus_blank" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
 check "tier gate: a whitespace-only Tier reason is refused with exit 2" "$rc" "2"
 contains "tier gate: whitespace-only refusal names the CLAUDE.md sentence" "$out" "raise effort before tier"
 
 # --- HIMMEL-2997 (a)-(f): the reason must open with a closed category tag --
 doc_tier_opus_bare="$tmp/tier-doc-opus-bare.md"
 printf '%s\n' '# fixture brief' '> **Tier:** opus — because I prefer it' > "$doc_tier_opus_bare"
-rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_tier_opus_bare" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
+rc=0; out="$(bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg "$doc_tier_opus_bare" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
 check "tier gate (a): bare free text with no category tag is refused with exit 2" "$rc" "2"
 contains "tier gate (a): refusal names the three category tags" "$out" "design|unverified-finding|tier-return"
 
 doc_tier_opus_finding="$tmp/tier-doc-opus-finding.md"
 printf '%s\n' '# fixture brief' '> **Tier:** opus — unverified-finding: a memory leak the console could not repro at Sonnet' > "$doc_tier_opus_finding"
-rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_tier_opus_finding" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
+rc=0; out="$(bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg "$doc_tier_opus_finding" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
 check "tier gate (c): unverified-finding: Tier line proceeds (dry-run exit 0)" "$rc" "0"
 contains "tier gate (c): dry-run report carries tier-category=unverified-finding" "$out" "tier-category=unverified-finding"
 
 doc_tier_opus_return="$tmp/tier-doc-opus-return.md"
 printf '%s\n' '# fixture brief' '> **Tier:** opus — tier-return: a Sonnet leg returned the work as above its tier' > "$doc_tier_opus_return"
-rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_tier_opus_return" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
+rc=0; out="$(bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg "$doc_tier_opus_return" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
 check "tier gate (d): tier-return: Tier line proceeds (dry-run exit 0)" "$rc" "0"
 contains "tier gate (d): dry-run report carries tier-category=tier-return" "$out" "tier-category=tier-return"
 
 doc_tier_opus_wrongcase="$tmp/tier-doc-opus-wrongcase.md"
 printf '%s\n' '# fixture brief' '> **Tier:** opus — Design: multi-step design' > "$doc_tier_opus_wrongcase"
-rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_tier_opus_wrongcase" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
+rc=0; out="$(bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg "$doc_tier_opus_wrongcase" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
 check "tier gate (e): wrong-case category tag (Design:) is refused with exit 2" "$rc" "2"
 contains "tier gate (e): refusal names the three category tags" "$out" "design|unverified-finding|tier-return"
 
 doc_tier_opus_emptytext="$tmp/tier-doc-opus-emptytext.md"
 printf '%s\n' '# fixture brief' '> **Tier:** opus — design:' > "$doc_tier_opus_emptytext"
-rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_tier_opus_emptytext" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
+rc=0; out="$(bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg "$doc_tier_opus_emptytext" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
 check "tier gate (f): a category tag with empty free text is refused with exit 2" "$rc" "2"
 contains "tier gate (f): refusal names the empty-text problem" "$out" "no free text after"
 
@@ -1115,7 +1122,7 @@ contains "tier gate (f): refusal names the empty-text problem" "$out" "no free t
 # literal colon present, so this must be refused explicitly.
 doc_tier_opus_notag_colon="$tmp/tier-doc-opus-notag-colon.md"
 printf '%s\n' '# fixture brief' '> **Tier:** opus — design' > "$doc_tier_opus_notag_colon"
-rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_tier_opus_notag_colon" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
+rc=0; out="$(bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg "$doc_tier_opus_notag_colon" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
 check "tier gate (g): a bare sanctioned tag with no colon is refused with exit 2" "$rc" "2"
 contains "tier gate (g): refusal names the three category tags" "$out" "design|unverified-finding|tier-return"
 
@@ -1143,7 +1150,7 @@ TTL_RECORD_OUT="$ttl_out24a" IMPL_GUARD_OK='' \
 HEADED_ARM_LEG_TARGET="$HEADED_ARM" HEADED_ARM_LEG_PREFLIGHT="$TTL_RECORD_PREFLIGHT" \
 KONSOLE_CMD="$d24a/konsole" PGREP_CMD="$d24a/pgrep" \
 LEG_REPO="$tmp/repo24a" HEADED_ARM_LOCK_DIR="$d24a/locks" HEADED_ARM_PROC="$d24a/proc" \
-  bash "$SCRIPT" "HIMMEL-1111-ttl" "some/doc.md" "$d24a/signal-now" "$future24" "$d24a/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+  bash "$SCRIPT" --profile leg-impl "HIMMEL-1111-ttl" "$some_doc" "$d24a/signal-now" "$future24" "$d24a/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
 wait_record "$d24a" || true
 ttl_seen24a="$(cat "$ttl_out24a" 2>/dev/null || echo NONE)"
 check "TTL export: full launch, future deadline: exit 0" "$rc" "0"
@@ -1166,7 +1173,7 @@ TTL_RECORD_OUT="$ttl_out24b" IMPL_GUARD_OK='' \
 HEADED_ARM_LEG_TARGET="$HEADED_ARM" HEADED_ARM_LEG_PREFLIGHT="$TTL_RECORD_PREFLIGHT" \
 KONSOLE_CMD="$d24b/konsole" PGREP_CMD="$d24b/pgrep" \
 LEG_REPO="$tmp/repo24b" HEADED_ARM_LOCK_DIR="$d24b/locks" HEADED_ARM_PROC="$d24b/proc" \
-  bash "$SCRIPT" "HIMMEL-2222-ttlfloor" "some/doc.md" "$d24b/signal-never" "$PAST" "$d24b/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+  bash "$SCRIPT" --profile leg-impl "HIMMEL-2222-ttlfloor" "$some_doc" "$d24b/signal-never" "$PAST" "$d24b/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
 wait_record "$d24b" || true
 check "TTL export: past deadline floors to 60" "$(cat "$ttl_out24b" 2>/dev/null || echo NONE)" "60"
 
@@ -1216,7 +1223,7 @@ rc=0
   HEADED_ARM_LEG_TARGET="$HEADED_ARM" HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
   KONSOLE_CMD="$d26/konsole" PGREP_CMD="$d26/pgrep" \
   LEG_REPO="$tmp/repo26" HEADED_ARM_LOCK_DIR="$d26/locks" HEADED_ARM_PROC="$d26/proc" \
-    bash "$SCRIPT" "HIMMEL-3155-leg" "some/doc.md" "$d26/signal-never" "$PAST" "$d26/log" "claude-sonnet-5" \
+    bash "$SCRIPT" --profile leg-impl "HIMMEL-3155-leg" "$some_doc" "$d26/signal-never" "$PAST" "$d26/log" "claude-sonnet-5" \
 ) >/dev/null 2>&1 || rc=$?
 wait_record "$d26" || true
 env26="$(cat "$d26/env-record" 2>/dev/null || true)"
@@ -1261,6 +1268,85 @@ rc2=0
 ( cd "$worktree26" && HANDOVER_DIR="$leg_handover_dir26" bash "$gate_script26" ) >/dev/null 2>&1 || rc2=$?
 check "HANDOVER_DIR e2e: go.sh wrote the GO from the console cwd" "$go_out26" "$primary26/handovers/.locks/go/26260.$sha26"
 check "HANDOVER_DIR e2e: go_gate resolved from a linked worktree (HANDOVER_DIR only) finds the GO" "$rc2" "0"
+
+# --- 27 (HIMMEL-3267). An unprofiled launch is REFUSED, not silently launched
+# preface-less. Both the dry-run seam AND the real (non-dry) stubbed path are
+# driven: the refusal sits before the --dry-run exit, so the dry-run cases
+# exercise the decision itself, and the real-path case proves nothing reaches
+# konsole. Every shape that supplies a profile (flag, LEG_PROFILE, --relay,
+# --judge) or opts out (--no-profile) must still launch.
+args27=(HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5)
+rc=0; out="$(bash "$SCRIPT" --dry-run "${args27[@]}" 2>&1)" || rc=$?
+check "27a no profile, no opt-out (dry-run): refused with exit 2" "$rc" "2"
+contains "27a refusal names --profile" "$out" "--profile"
+contains "27a refusal names the --no-profile opt-out" "$out" "--no-profile"
+not_contains "27a nothing would exec" "$out" "would exec"
+
+d27="$tmp/c27"; mk_launch_stubs "$d27" "HIMMEL-2727-leg"; mkdir -p "$tmp/repo27"
+rc=0
+RUN_LEG_ARGS='' run_leg "$d27" "$tmp/repo27" "HIMMEL-2727-leg" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+check "27b no profile, no opt-out (real launch): refused with exit 2" "$rc" "2"
+sleep 0.3
+check "27b refused launch never reached konsole" "$([ -e "$d27/record" ] && echo launched || echo none)" "none"
+check "27b refused launch wrote no settings file" "$([ -e "$d27/HIMMEL-2727-leg.leg-settings.json" ] && echo wrote || echo none)" "none"
+
+# shellcheck disable=SC2086
+rc=0; out="$(bash "$SCRIPT" --dry-run --no-profile "${args27[@]}" 2>&1)" || rc=$?
+check "27c --no-profile: launches (dry-run exit 0)" "$rc" "0"
+check "27c --no-profile: dry-run report is exactly three lines" "$(printf '%s\n' "$out" | wc -l | tr -d '[:space:]')" "3"
+not_contains "27c --no-profile: no profile line" "$out" "profile="
+
+d27c="$tmp/c27c"; mk_launch_stubs "$d27c" "HIMMEL-2728-leg"; mkdir -p "$tmp/repo27c"
+rc=0
+RUN_LEG_ARGS='--no-profile' run_leg "$d27c" "$tmp/repo27c" "HIMMEL-2728-leg" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d27c" || true
+check "27d --no-profile (real launch): exit 0" "$rc" "0"
+contains "27d --no-profile records the deliberate opt-out in the launch log" "$(cat "$d27c/log" 2>/dev/null || true)" "--no-profile"
+not_contains "27d --no-profile: no preface flag reached claude" "$(cat "$d27c/record" 2>/dev/null || true)" "--append-system-prompt-file"
+
+# shellcheck disable=SC2086
+rc=0; out="$(bash "$SCRIPT" --dry-run --no-profile --profile leg-impl "${args27[@]}" 2>&1)" || rc=$?
+check "27e --no-profile with --profile: refused with exit 2" "$rc" "2"
+# shellcheck disable=SC2086
+rc=0; out="$(LEG_PROFILE=leg-impl bash "$SCRIPT" --dry-run --no-profile "${args27[@]}" 2>&1)" || rc=$?
+check "27e --no-profile with LEG_PROFILE: refused with exit 2" "$rc" "2"
+rc=0; out="$(bash "$SCRIPT" --dry-run --no-profile --relay HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "27e --no-profile with --relay: refused with exit 2" "$rc" "2"
+rc=0; out="$(bash "$SCRIPT" --dry-run --no-profile --judge HIMMEL-9999-leg "$doc_tier_judge" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "27e --no-profile with --judge: refused with exit 2" "$rc" "2"
+contains "27e --no-profile with --judge: the refusal names --no-profile (not the Tier gate)" "$out" "--no-profile"
+
+# Every profile-supplying shape must NOT trip the refusal.
+# shellcheck disable=SC2086
+rc=0; out="$(bash "$SCRIPT" --dry-run --profile leg-impl "${args27[@]}" 2>&1)" || rc=$?
+check "27f --profile leg-impl: launches" "$rc" "0"
+# shellcheck disable=SC2086
+rc=0; out="$(LEG_PROFILE=leg-impl bash "$SCRIPT" --dry-run "${args27[@]}" 2>&1)" || rc=$?
+check "27f LEG_PROFILE=leg-impl (env seam, no flag): launches" "$rc" "0"
+contains "27f LEG_PROFILE=leg-impl: profile applied" "$out" "profile=leg-impl"
+# shellcheck disable=SC2086
+rc=0; out="$(LEG_PROFILE=leg-impl bash "$SCRIPT" --dry-run --profile bare "${args27[@]}" 2>&1)" || rc=$?
+contains "27f flag wins over LEG_PROFILE" "$out" "profile=bare"
+rc=0; out="$(bash "$SCRIPT" --dry-run --relay HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "27f --relay alone (forces console-relay): launches" "$rc" "0"
+contains "27f --relay: forced profile applied" "$out" "profile=console-relay"
+rc=0; out="$(bash "$SCRIPT" --dry-run --judge HIMMEL-9999-leg "$doc_tier_judge" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "27f --judge alone (forces console-judge): launches" "$rc" "0"
+contains "27f --judge: forced profile applied" "$out" "profile=console-judge"
+
+# Empty values are not a profile.
+# shellcheck disable=SC2086
+rc=0; out="$(LEG_PROFILE='' bash "$SCRIPT" --dry-run "${args27[@]}" 2>&1)" || rc=$?
+check "27g empty LEG_PROFILE is not a profile: refused with exit 2" "$rc" "2"
+# shellcheck disable=SC2086
+rc=0; out="$(bash "$SCRIPT" --dry-run --profile '' "${args27[@]}" 2>&1)" || rc=$?
+check "27g --profile '' is not a profile: refused with exit 2" "$rc" "2"
+
+# claudex lane: the coordination preface alone is not the standing preface.
+rc=0; out="$(bash "$SCRIPT" --dry-run --lane claudex HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "27h --lane claudex, no profile, no opt-out: refused with exit 2" "$rc" "2"
+rc=0; out="$(bash "$SCRIPT" --dry-run --lane claudex --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "27h --lane claudex --no-profile: launches" "$rc" "0"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

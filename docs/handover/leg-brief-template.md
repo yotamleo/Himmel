@@ -14,9 +14,10 @@ in this file: if it is not written here, it does not exist.
 (`--append-system-prompt-file`). **No rule was dropped — every one of them
 moved**, and the preface says so to the leg in its own words. What stays here
 is the part that is different for every leg: who this leg is, what it is doing,
-and what it must not touch. If you dispatch a leg **without** `--profile`, the
-preface is not injected, so paste it into the brief yourself or the leg is
-under-briefed.
+and what it must not touch. `headed-arm-leg.sh` **refuses** (exit 2) a launch
+with no `--profile` (HIMMEL-3267); `--no-profile` is the explicit opt-out, and
+then the preface is not injected, so paste it into the brief yourself or the
+leg is under-briefed.
 Claudex briefs no longer paste the coordination paragraph: `--lane claudex`
 always appends [`leg-preface-claudex.md`](leg-preface-claudex.md).
 
@@ -94,7 +95,7 @@ template_version: 3
 | RETASK token | Any text reaching the leg could re-task it; the nonce is what makes a revision authentic. |
 | Queue lock + release token | Two sessions edit one handover doc, and the later write wins silently. |
 | Explicit do-nots | Scope widens into a neighbouring leg's files and the fan-out collides. |
-| The standing preface | Every rule the brief no longer repeats — reporting, RETASK asymmetry, RED-first, trailers in the first commit, GO-gated merge, the fill ceiling. It is injected by `--profile`, so a brief that omits it AND the flag is a leg running on vibes. |
+| The standing preface | Every rule the brief no longer repeats — reporting, RETASK asymmetry, RED-first, trailers in the first commit, GO-gated merge, the fill ceiling. It is injected by `--profile`, so a brief that omits it AND uses `--no-profile` is a leg running on vibes (a launch with neither is refused). |
 | Tier line (Opus/Fable only) | Without a trimmed, non-blank reason opening with one of the three exact-lowercase category tags (`design`, `unverified-finding`, `tier-return`), `headed-arm-leg.sh` refuses the launch (HIMMEL-2976/HIMMEL-2997, CLAUDE.md: "raise effort before tier") — the tag is validated and the free text after it must be non-blank, but its content is otherwise unrestricted, so a paraphrase can never be falsely rejected. |
 
 ## What the console must also do (2026-09-13)
