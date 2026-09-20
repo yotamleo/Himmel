@@ -212,6 +212,36 @@ unr_case "unreadable-subtree" "$UNR_ROOT/other" "other"
 # (k2) an unreadable transcript FILE: find lists it, grep on it fails silently.
 unr_case "unreadable-file" "$UNR_ROOT/other/session-b.jsonl" "session-b.jsonl"
 
+# --- (l) HIMMEL-3269 F1: the DEFAULT scope must union the worktree project dirs.
+# Legs run in worktrees, each with its own `<primary>--claude-worktrees-<slug>`
+# project dir, so a primary-only default silently drops the very session class
+# the program measures (253 dirs / 21-29 % of ctx x calls on 2026-09-20).
+# Fixture: one leg in the primary dir, one in a worktree dir, and one in a
+# sibling `...himmelfoo` dir that only shares a name PREFIX (a decoy: the union
+# is `<primary>` + `<primary>--claude-worktrees-*`, never `<primary>*`).
+# SCORECARD_PROJECTS_DIR is unset so the default-root path is what runs.
+WT_CFG="$HERE/fixtures/agg-burn/worktree-union/config"
+WT_OUT=$(env -u SCORECARD_PROJECTS_DIR CLAUDE_CONFIG_DIR="$WT_CFG" "$AGG_BURN" --since 2026-01-01T00:00:00Z 2>/dev/null)
+check_exit "worktree-union: exits 0" "$?" "0"
+check "worktree-union: default scope counts the primary leg AND the worktree leg (decoy excluded)" \
+    "$(session_count "$WT_OUT" leg)" "2"
+check "worktree-union: coverage triple states the two roots and both sessions parsed" \
+    "$(printf '%s\n' "$WT_OUT" | grep '^coverage:')" \
+    "coverage: roots=2 discovered=2 parsed=2 skipped=0"
+
+# An explicit SCORECARD_PROJECTS_DIR is an explicit scope choice and stays a
+# single root - it must NOT quietly widen to sibling worktree dirs.
+EXPLICIT_OUT=$(SCORECARD_PROJECTS_DIR="$WT_CFG/projects/-home-overlord-Documents-github-himmel" "$AGG_BURN" --since 2026-01-01T00:00:00Z 2>/dev/null)
+check "worktree-union: an explicit SCORECARD_PROJECTS_DIR stays exactly that one root" \
+    "$(printf '%s\n' "$EXPLICIT_OUT" | grep '^coverage:')" \
+    "coverage: roots=1 discovered=1 parsed=1 skipped=0"
+
+# Skip reasons are itemised, so a skip can be told from an honest exclusion.
+export SCORECARD_PROJECTS_DIR="$HERE/fixtures/agg-burn/since-edge"
+SKIP_OUT=$("$AGG_BURN" --since 2026-09-05T00:00:00Z 2>/dev/null)
+check_contains "coverage: an out-of-window transcript is counted as skipped with its reason" \
+    "$(printf '%s\n' "$SKIP_OUT" | grep '^coverage:')" "out-of-window="
+
 echo "---"
 if [ "$fails" -eq 0 ]; then
     echo "PASS - test-agg-burn.sh: 0 failures"

@@ -16,8 +16,13 @@
 #
 # Usage: agg-burn.sh --since <ISO8601> [--until <ISO8601>]
 #
-# SCORECARD_PROJECTS_DIR overrides the transcript root (default: this
-# machine's himmel project dir) so tests can point it at a fixture tree.
+# SCORECARD_PROJECTS_DIR is an explicit scope: exactly that one transcript root
+# (tests point it at a fixture tree). The default is the primary himmel project
+# dir UNION its `--claude-worktrees-*` siblings - see lib/scorecard-lib.sh
+# (HIMMEL-3269 F1: a primary-only default dropped the worktree legs).
+#
+# The last stdout line is `coverage: roots=R discovered=D parsed=P skipped=K
+# (reason=n ...)` - how much of the discovered input the numbers above cover.
 set -u
 
 usage() { echo "usage: agg-burn.sh --since <ISO8601> [--until <ISO8601>]" >&2; }
@@ -37,8 +42,9 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 LEG_BURN="$HERE/../../leg-burn.sh"
 # shellcheck source=../../lib/burn-weights.sh
 . "$HERE/../../lib/burn-weights.sh"
-PROJECTS="${SCORECARD_PROJECTS_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/-home-overlord-Documents-github-himmel}"
-[ -d "$PROJECTS" ] || { echo "agg-burn: transcript root not found: $PROJECTS" >&2; exit 2; }
+# shellcheck source=lib/scorecard-lib.sh
+. "$HERE/lib/scorecard-lib.sh"
+sc_roots_check agg-burn || exit 2
 
 # GNU `date -d` first; BSD/macOS `date -j -f` fallback (same convention as
 # leg-burn.sh's backdate()/transcript_mtime GNU-first/BSD-fallback comment).
@@ -53,33 +59,25 @@ if [ -n "$UNTIL" ]; then
 fi
 
 kn() { case "$1" in *k) awk -v n="${1%k}" 'BEGIN{printf "%.3f", n}';; *) awk -v n="$1" 'BEGIN{printf "%.3f", n/1000}';; esac; }
-title_of() { grep -o '"customTitle":"[^"]*"' "$1" 2>/dev/null | tail -1 | sed 's/.*:"//; s/"$//'; }
-role_of() {
-    case "$1" in
-        *-console*) echo console ;;
-        *-relay*) echo relay ;;
-        *legN*) echo leg ;;
-        *) echo other ;;
-    esac
-}
 ts_of() { grep -o '"timestamp":"[0-9TZ:.-]*"' "$1" 2>/dev/null | "$2" -1 | cut -d'"' -f4; }
 
 ROWS=""; FAILS=""; FILES=""; DISC_ERR=""; UNREADABLE=""
 # trap first: a later mktemp failing must not leak the files already created
-trap 'rm -f "$ROWS" "$FAILS" "$FILES" "$DISC_ERR" "$UNREADABLE"' EXIT
+trap 'rm -f "$ROWS" "$FAILS" "$FILES" "$DISC_ERR" "$UNREADABLE" "$SC_COV"' EXIT
 ROWS=$(mktemp "${TMPDIR:-/tmp}/agg-burn-rows.XXXXXX") || { echo "agg-burn: mktemp failed" >&2; exit 1; }
 FAILS=$(mktemp "${TMPDIR:-/tmp}/agg-burn-fails.XXXXXX") || { echo "agg-burn: mktemp failed" >&2; exit 1; }
 FILES=$(mktemp "${TMPDIR:-/tmp}/agg-burn-files.XXXXXX") || { echo "agg-burn: mktemp failed" >&2; exit 1; }
 DISC_ERR=$(mktemp "${TMPDIR:-/tmp}/agg-burn-discerr.XXXXXX") || { echo "agg-burn: mktemp failed" >&2; exit 1; }
 UNREADABLE=$(mktemp "${TMPDIR:-/tmp}/agg-burn-unreadable.XXXXXX") || { echo "agg-burn: mktemp failed" >&2; exit 1; }
+sc_cov_init || exit 1
 
 # HIMMEL-2977: discovery errors must not vanish. `find ... 2>/dev/null | while`
 # lost both find's permission errors and its exit status, so an unreadable
 # subtree gave exit 0 and a TOTAL that silently omitted it - a number that
 # looks complete and is not. Capture find's stderr + status and fail loudly
 # (exit 1, no table) rather than emit a partial total.
-if ! find "$PROJECTS" -name '*.jsonl' -type f >"$FILES" 2>"$DISC_ERR"; then
-    echo "agg-burn: transcript discovery failed under $PROJECTS - refusing to print a partial total:" >&2
+if ! sc_discover "$FILES" "$DISC_ERR"; then
+    echo "agg-burn: transcript discovery failed under the transcript root(s) - refusing to print a partial total:" >&2
     cat "$DISC_ERR" >&2
     exit 1
 fi
@@ -87,16 +85,17 @@ fi
 while IFS= read -r f; do
     # a listed-but-unreadable file would otherwise fall out at the empty-timestamp
     # `continue` below (grep's error is silenced) and vanish from the total
-    if [ ! -r "$f" ]; then echo "$f" >> "$UNREADABLE"; continue; fi
+    if [ ! -r "$f" ]; then echo "$f" >> "$UNREADABLE"; sc_cov unreadable; continue; fi
     first_ts=$(ts_of "$f" head)
-    [ -n "$first_ts" ] || continue
+    [ -n "$first_ts" ] || { sc_cov no-timestamp; continue; }
     last_ts=$(ts_of "$f" tail)
-    first_epoch=$(to_epoch "$first_ts") || continue
-    last_epoch=$(to_epoch "${last_ts:-$first_ts}") || continue
-    [ "$last_epoch" -ge "$SINCE_EPOCH" ] || continue
-    if [ -n "$UNTIL_EPOCH" ] && [ "$first_epoch" -ge "$UNTIL_EPOCH" ]; then continue; fi
+    first_epoch=$(to_epoch "$first_ts") || { sc_cov bad-timestamp; continue; }
+    last_epoch=$(to_epoch "${last_ts:-$first_ts}") || { sc_cov bad-timestamp; continue; }
+    [ "$last_epoch" -ge "$SINCE_EPOCH" ] || { sc_cov out-of-window; continue; }
+    if [ -n "$UNTIL_EPOCH" ] && [ "$first_epoch" -ge "$UNTIL_EPOCH" ]; then sc_cov out-of-window; continue; fi
 
-    line=$(bash "$LEG_BURN" --raw "$f" 2>/dev/null) || { echo "$f" >> "$FAILS"; continue; }
+    line=$(bash "$LEG_BURN" --raw "$f" 2>/dev/null) || { echo "$f" >> "$FAILS"; sc_cov leg-burn-failed; continue; }
+    sc_cov parsed
     calls=$(printf '%s' "$line" | grep -o 'calls=[0-9]*' | cut -d= -f2)
     avg=$(printf '%s' "$line" | grep -o 'avg-ctx=[^ ]*' | cut -d= -f2)
     first=$(printf '%s' "$line" | grep -o 'first-turn=[^ ]*' | cut -d= -f2)
@@ -146,6 +145,8 @@ END{
   costeq = inp*wi + cr*wcr + cc*wcc + out*wo
   printf "TOTAL cache-read=%.1fk cache-create=%.1fk input=%.1fk output=%.1fk cost-eq=%.1fk\n", cr/1000, cc/1000, inp/1000, out/1000, costeq/1000
 }' "$ROWS"
+
+sc_cov_line "$(wc -l < "$FILES" | tr -d ' ')" "$SC_ROOT_COUNT"
 
 n_fail=$(wc -l < "$FAILS")
 if [ "$n_fail" -gt 0 ]; then

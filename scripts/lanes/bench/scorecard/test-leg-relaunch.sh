@@ -79,6 +79,8 @@ check_contains "main: a RUN 2 NOTE block yields runs=2, relaunches=1" \
     "$MAIN_OUT" "$(printf 'legN9200\t2\t1\t0\t1\t')"
 check_contains "main: TOTAL row aggregates n/relaunches/blocked/wrapped across both docs" \
     "$MAIN_OUT" "$(printf 'TOTAL(n=2)\t-\t1 (mean 0.50)\t1 (mean 0.50)\t1\t-')"
+check_contains "main: coverage triple beside the TOTAL row" \
+    "$MAIN_OUT" "coverage: discovered=2 parsed=2 skipped=0"
 
 # --- (i) doc_date is the LAST YYYY-MM-DD substring in the filename, not the
 # first: a --since after the (wrong) first date but before the (right) last
@@ -112,6 +114,10 @@ IGNORE_OUT=$("$RELAUNCH" --since 2026-01-01T00:00:00Z 2>/dev/null)
 check_exit "ignore-nonmatching: exits 0" "$?" "0"
 check "ignore-nonmatching: a filename with no legN token/date is not picked up" \
     "$(printf '%s\n' "$IGNORE_OUT" | grep -c '^legN')" "1"
+# HIMMEL-3269: a dated doc the metric does not read (current `<TICKET>-N<k>-`
+# naming) is counted as skipped with its reason, not silently absent
+check "ignore-nonmatching: the unread doc shows up in the coverage triple with its reason" \
+    "$(printf '%s\n' "$IGNORE_OUT" | grep '^coverage:')" "coverage: discovered=2 parsed=1 skipped=1 (no-leg-token=1)"
 
 # --- (m) leg numbers of differing digit counts sort numerically, not
 # lexicographically (legN9 < legN10 < legN207 < legN1000)

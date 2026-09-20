@@ -24,7 +24,12 @@
 #
 # Usage: ready-go-latency.sh --doc <console-or-relay-doc> --since <ISO8601> [--until <ISO8601>]
 # Prints: events=<n> median_min=<m> missed=<k>, then one
-#         `MISSED <pr> <sha7> <HH:MM>` line per miss.
+#         `MISSED <pr> <sha7> <HH:MM>` line per miss, then (HIMMEL-3269) a
+#         `coverage: discovered=<READY events> parsed=<paired+missed> skipped=<k>
+#         (reason=n ...)` line: the READYs the metric did not count (out of
+#         window, resolved by a HOLD, still inside their 60 min) are named.
+# ponytail: "discovered" is one READY per PR (the last one; an earlier READY a
+# later round superseded is dropped in the awk pass and is not counted).
 set -u
 
 usage() { echo "usage: ready-go-latency.sh --doc <doc> [--since <ISO8601>] [--until <ISO8601>]" >&2; }
@@ -115,13 +120,19 @@ PARSED=$(awk '
     }
 ' "$DOC")
 
+# shellcheck source=lib/scorecard-lib.sh
+. "$HERE/lib/scorecard-lib.sh"
+trap 'rm -f "$SC_COV"' EXIT
+sc_cov_init || exit 1
+READY_TOTAL=0
 EVENTS=0; MISSED=0; LATS=""; MISSED_LINES=""
 while read -r pr sha stamp day held; do
     [ -n "$pr" ] || continue
+    READY_TOTAL=$((READY_TOTAL + 1))
     ready_date=$(add_days "$BASE_DATE" "$day") || { echo "ready-go-latency: cannot add $day day(s) to $BASE_DATE" >&2; exit 2; }
     ready_epoch=$(local_epoch "$ready_date" "$stamp") || { echo "ready-go-latency: cannot parse $ready_date $stamp" >&2; exit 2; }
-    if [ -n "$SINCE_EPOCH" ] && [ "$ready_epoch" -lt "$SINCE_EPOCH" ]; then continue; fi
-    if [ -n "$UNTIL_EPOCH" ] && [ "$ready_epoch" -ge "$UNTIL_EPOCH" ]; then continue; fi
+    if [ -n "$SINCE_EPOCH" ] && [ "$ready_epoch" -lt "$SINCE_EPOCH" ]; then sc_cov out-of-window; continue; fi
+    if [ -n "$UNTIL_EPOCH" ] && [ "$ready_epoch" -ge "$UNTIL_EPOCH" ]; then sc_cov out-of-window; continue; fi
 
     # The bullet's sha is a prefix: two GO files behind one prefix are
     # ambiguous (refuse to guess), and a GO older than the READY stamp is a
@@ -140,15 +151,17 @@ while read -r pr sha stamp day held; do
     fi
 
     if [ -n "$go_mtime" ]; then
-        EVENTS=$((EVENTS + 1))
+        EVENTS=$((EVENTS + 1)); sc_cov parsed
         LATS="$LATS$((go_mtime - ready_epoch))
 "
     elif [ "$held" = 1 ]; then
-        :
+        sc_cov held
     elif [ "$NOW" -gt $((ready_epoch + 3600)) ]; then
-        MISSED=$((MISSED + 1))
+        MISSED=$((MISSED + 1)); sc_cov parsed
         MISSED_LINES="${MISSED_LINES}MISSED $pr $sha $stamp
 "
+    else
+        sc_cov pending
     fi
 done <<EOF
 $PARSED
@@ -163,4 +176,5 @@ else
 fi
 echo "events=$EVENTS median_min=$MEDIAN missed=$MISSED"
 printf '%s' "$MISSED_LINES"
+sc_cov_line "$READY_TOTAL"
 exit 0

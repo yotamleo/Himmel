@@ -170,6 +170,11 @@ EXIT=$?
 check_exit "main: exits 0" "$EXIT" "0"
 check_contains "main: two merged branches, both with ledger rows" \
     "$OUT" "merged_branches=2 with_ledger_rows=2"
+# HIMMEL-3269: the stats say what they were computed over
+check_contains "main: branch coverage beside the stats (both branches joined a ledger row)" \
+    "$OUT" "coverage: merged-branches discovered=2 parsed=2 skipped=0 (no-ledger-rows=0)"
+check_contains "main: PR coverage names the PRs the window filter dropped" \
+    "$OUT" "coverage: prs discovered="
 check_contains "main: crit stat excludes the artifact=code row (feat/alpha=1, fix/beta=2)" \
     "$OUT" "crit: n=2 sum=3 mean=1.50 median=1.5 max=2"
 check_contains "main: imp stat" "$OUT" "imp:  n=2 sum=2 mean=1.00 median=1.0 max=1"

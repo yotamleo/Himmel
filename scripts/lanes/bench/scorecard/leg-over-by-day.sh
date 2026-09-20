@@ -30,8 +30,9 @@ done
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 LEG_BURN="$HERE/../../leg-burn.sh"
-PROJECTS="${SCORECARD_PROJECTS_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/-home-overlord-Documents-github-himmel}"
-[ -d "$PROJECTS" ] || { echo "leg-over-by-day: transcript root not found: $PROJECTS" >&2; exit 2; }
+# shellcheck source=lib/scorecard-lib.sh
+. "$HERE/lib/scorecard-lib.sh"
+sc_roots_check leg-over-by-day || exit 2
 
 # GNU `date -d` first; BSD/macOS `date -j -f` fallback (same convention as
 # leg-burn.sh's backdate()/transcript_mtime GNU-first/BSD-fallback comment).
@@ -53,31 +54,40 @@ case "$THRESHOLD_K" in
 esac
 THRESHOLD=$((THRESHOLD_K * 1000))
 
-title_of() { grep -o '"customTitle":"[^"]*"' "$1" 2>/dev/null | tail -1 | sed 's/.*:"//; s/"$//'; }
 ts_of() { grep -o '"timestamp":"[0-9TZ:.-]*"' "$1" 2>/dev/null | "$2" -1 | cut -d'"' -f4; }
 day_of() { printf '%s' "$1" | cut -c1-10; }
 
+FAILS=""; FILES=""; DISC_ERR=""; DAYS=""
+# trap first: a later mktemp failing must not leak the files already created
+trap 'rm -f "$FAILS" "$FILES" "$DISC_ERR" "$DAYS" "$SC_COV"' EXIT
 FAILS=$(mktemp "${TMPDIR:-/tmp}/leg-over-by-day-fails.XXXXXX") || { echo "leg-over-by-day: mktemp failed" >&2; exit 1; }
-trap 'rm -f "$FAILS"' EXIT
+FILES=$(mktemp "${TMPDIR:-/tmp}/leg-over-by-day-files.XXXXXX") || { echo "leg-over-by-day: mktemp failed" >&2; exit 1; }
+DISC_ERR=$(mktemp "${TMPDIR:-/tmp}/leg-over-by-day-discerr.XXXXXX") || { echo "leg-over-by-day: mktemp failed" >&2; exit 1; }
+DAYS=$(mktemp "${TMPDIR:-/tmp}/leg-over-by-day-days.XXXXXX") || { echo "leg-over-by-day: mktemp failed" >&2; exit 1; }
+sc_cov_init || exit 1
 
-find "$PROJECTS" -name '*.jsonl' -type f 2>/dev/null | while IFS= read -r f; do
-    case "$f" in */subagents/*) continue ;; esac
+# A discovery error must not vanish (the agg-burn.sh HIMMEL-2977 rule).
+if ! sc_discover "$FILES" "$DISC_ERR"; then
+    echo "leg-over-by-day: transcript discovery failed under the transcript root(s) - refusing to print a partial table:" >&2
+    cat "$DISC_ERR" >&2
+    exit 1
+fi
+
+while IFS= read -r f; do
+    case "$f" in */subagents/*) sc_cov subagent; continue ;; esac
     name=$(title_of "$f")
-    case "$name" in
-        *-console*|*-relay*) continue ;;
-        *legN*) ;;
-        *) continue ;;
-    esac
+    [ "$(role_of "$name")" = leg ] || { sc_cov not-leg; continue; }
 
     first_ts=$(ts_of "$f" head)
-    [ -n "$first_ts" ] || continue
+    [ -n "$first_ts" ] || { sc_cov no-timestamp; continue; }
     last_ts=$(ts_of "$f" tail)
-    first_epoch=$(to_epoch "$first_ts") || continue
-    last_epoch=$(to_epoch "${last_ts:-$first_ts}") || continue
-    [ "$last_epoch" -ge "$SINCE_EPOCH" ] || continue
-    if [ -n "$UNTIL_EPOCH" ] && [ "$first_epoch" -ge "$UNTIL_EPOCH" ]; then continue; fi
+    first_epoch=$(to_epoch "$first_ts") || { sc_cov bad-timestamp; continue; }
+    last_epoch=$(to_epoch "${last_ts:-$first_ts}") || { sc_cov bad-timestamp; continue; }
+    [ "$last_epoch" -ge "$SINCE_EPOCH" ] || { sc_cov out-of-window; continue; }
+    if [ -n "$UNTIL_EPOCH" ] && [ "$first_epoch" -ge "$UNTIL_EPOCH" ]; then sc_cov out-of-window; continue; fi
 
-    line=$(bash "$LEG_BURN" "$f" 2>/dev/null) || { echo "$f" >> "$FAILS"; continue; }
+    line=$(bash "$LEG_BURN" "$f" 2>/dev/null) || { echo "$f" >> "$FAILS"; sc_cov leg-burn-failed; continue; }
+    sc_cov parsed
     avg=$(printf '%s' "$line" | grep -o 'avg-ctx=[^ ]*' | cut -d= -f2)
     case "$avg" in
         *k) avg_n=$(awk -v n="${avg%k}" 'BEGIN{printf "%d", n*1000}') ;;
@@ -85,8 +95,10 @@ find "$PROJECTS" -name '*.jsonl' -type f 2>/dev/null | while IFS= read -r f; do
     esac
     cls="under"
     [ "${avg_n:-0}" -gt "$THRESHOLD" ] && cls="over"
-    printf '%s %s\n' "$(day_of "$first_ts")" "$cls"
-done | sort | uniq -c
+    printf '%s %s\n' "$(day_of "$first_ts")" "$cls" >> "$DAYS"
+done < "$FILES"
+sort "$DAYS" | uniq -c
+sc_cov_line "$(wc -l < "$FILES" | tr -d ' ')" "$SC_ROOT_COUNT"
 
 n_fail=$(wc -l < "$FAILS")
 if [ "$n_fail" -gt 0 ]; then

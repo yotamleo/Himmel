@@ -76,6 +76,17 @@ END {
 }' "$RUN/merged-branches.txt" "$RUN/ledger-rows.tsv" | sort > "$RUN/ledger-per-branch.tsv"
 
 echo "merged_branches=$(wc -l < "$RUN/merged-branches.txt") with_ledger_rows=$(wc -l < "$RUN/ledger-per-branch.tsv")"
+# HIMMEL-3269 coverage: the two inputs behind the stats below. PRs: every fetched
+# PR is in the window or out of it (a bad mergedAt fails the jq above); the
+# --limit cut is the one silent way that input is incomplete. Branches: a merged
+# branch with no ledger rows contributes nothing to crit/imp/sug/rounds, so the
+# stats describe only the branches the ledger knows.
+win_count=$(jq 'length' "$RUN/merged.json")
+pr_truncated=no; [ "${merged_count:-0}" -ge 1000 ] && pr_truncated=yes
+echo "coverage: prs discovered=$merged_count parsed=$win_count skipped=$((merged_count - win_count)) (out-of-window=$((merged_count - win_count)) limit=1000 truncated=$pr_truncated)"
+br_total=$(wc -l < "$RUN/merged-branches.txt" | tr -d ' ')
+br_joined=$(wc -l < "$RUN/ledger-per-branch.tsv" | tr -d ' ')
+echo "coverage: merged-branches discovered=$br_total parsed=$br_joined skipped=$((br_total - br_joined)) (no-ledger-rows=$((br_total - br_joined)))"
 stat() {
   cut -f"$1" "$RUN/ledger-per-branch.tsv" | sort -n | awk '{a[NR]=$1; s+=$1} END{ if(NR==0){print "n=0"; exit}
     med=(NR%2)?a[(NR+1)/2]:(a[NR/2]+a[NR/2+1])/2; printf "n=%d sum=%d mean=%.2f median=%.1f max=%d\n", NR, s, s/NR, med, a[NR] }'

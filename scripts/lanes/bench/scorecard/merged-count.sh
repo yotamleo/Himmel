@@ -67,15 +67,20 @@ fetch_public() {
     if [ "${pr_total:-0}" -ge 1000 ]; then
         echo "merged-count: WARNING: gh pr list returned $pr_total merged PRs (== --limit 1000); older history may be truncated" >&2
     fi
+    # HIMMEL-3269: stdout is the bare count (callers capture it), so the coverage
+    # of the PR list behind it goes to stderr.
+    pr_win=$(jq --argjson s "$1" --argjson u "$2" '
+      [.[] | select((.mergedAt | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) >= $s and (.mergedAt | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) < $u)] | length' "$RUN/public.json") || return 1
+    pr_count="$pr_win"
     if [ "$3" -eq 1 ]; then
-        jq --argjson s "$1" --argjson u "$2" '
+        pr_count=$(jq --argjson s "$1" --argjson u "$2" '
           [.[] | select((.mergedAt | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) >= $s and (.mergedAt | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) < $u)
            | select((.title | test("^chore\\(propagate\\)")) | not)
-           | select(((.author.login? // "") | test("dependabot"; "i")) | not)] | length' "$RUN/public.json"
-    else
-        jq --argjson s "$1" --argjson u "$2" '
-          [.[] | select((.mergedAt | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) >= $s and (.mergedAt | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) < $u)] | length' "$RUN/public.json"
+           | select(((.author.login? // "") | test("dependabot"; "i")) | not)] | length' "$RUN/public.json") || return 1
     fi
+    pr_trunc=no; [ "${pr_total:-0}" -ge 1000 ] && pr_trunc=yes
+    echo "merged-count: coverage: prs discovered=$pr_total parsed=$pr_count skipped=$((pr_total - pr_count)) (out-of-window=$((pr_total - pr_win)) excluded=$((pr_win - pr_count)) limit=1000 truncated=$pr_trunc)" >&2
+    echo "$pr_count"
 }
 
 if [ "$SINCE_EPOCH" -lt "$CUTOVER_EPOCH" ] && [ "$REPO" = "$ARCHIVE_REPO" ]; then
@@ -86,6 +91,8 @@ if [ "$SINCE_EPOCH" -lt "$CUTOVER_EPOCH" ] && [ "$REPO" = "$ARCHIVE_REPO" ]; the
     git clone --bare -q "$BUNDLE" "$CLONE" 2>/dev/null || { echo "merged-count: could not clone private bundle $BUNDLE" >&2; exit 1; }
     bundle_log=$(git -C "$CLONE" log --first-parent --since="$SINCE" --until="$BUNDLE_UNTIL" --format=%s main 2>/dev/null) || { echo "merged-count: git log on private bundle failed" >&2; exit 1; }
     bundle_count=$(printf '%s\n' "$bundle_log" | grep -cE '\(#[0-9]+\)$')
+    bundle_lines=$(printf '%s\n' "$bundle_log" | grep -c .)
+    echo "merged-count: coverage: bundle-commits discovered=$bundle_lines parsed=$bundle_count skipped=$((bundle_lines - bundle_count)) (no-pr-suffix=$((bundle_lines - bundle_count)))" >&2
     public_count=$(fetch_public "$CUTOVER_EPOCH" "$UNTIL_EPOCH" 1) || { echo "merged-count: could not fetch public PR count" >&2; exit 1; }
     echo $((bundle_count + public_count))
 else

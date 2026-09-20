@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-10-01T10:10:00Z","message":{"role":"user","content":"Decide which of two conflicting readings of the spec to implement."}}
+{"type":"assistant","timestamp":"2026-10-01T10:15:00Z","message":{"id":"msg_n2","model":"claude-opus-5-20260115","content":[{"type":"text","text":"Reading B is right; implemented it."}]}}

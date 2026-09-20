@@ -41,6 +41,11 @@ export SCORECARD_PROJECTS_DIR="$HERE/fixtures/operator-window"
 OUT=$("$SCRIPT" --since 2026-01-15T00:00:00Z --repo yotamleo/Himmel 2>/dev/null)
 check_contains "operator-window: pre-window message excluded from operator_msgs" \
     "$OUT" "console_sessions=1 operator_msgs=1 per_session=1.0"
+# HIMMEL-3269: each metric is followed by the coverage of the input it read
+check_contains "operator-window: transcript coverage triple beside the operator count" \
+    "$OUT" "coverage: roots=1 discovered=1 parsed=1 skipped=0"
+check_contains "operator-window: PR coverage beside the followups metric" \
+    "$OUT" "coverage: prs discovered=0 parsed=0 skipped=0 (limit=1000 truncated=no)"
 
 # --- operator-window-fractional: an in-window user message whose timestamp
 # carries fractional seconds must still be counted (HIMMEL-2977 /pr-check
@@ -62,6 +67,8 @@ ERR_OUT=$(mktemp "${TMPDIR:-/tmp}/test-extra-metrics-stderr.XXXXXX")
 OUT=$("$SCRIPT" --since 2026-01-15T00:00:00Z --repo yotamleo/Himmel 2>"$ERR_OUT")
 check_contains "operator-window-malformed: malformed transcript excluded rather than silently mismeasured" \
     "$OUT" "console_sessions=0 operator_msgs=0 per_session=0.0"
+check_contains "operator-window-malformed: the excluded transcript is counted as skipped, with its reason" \
+    "$OUT" "coverage: roots=1 discovered=1 parsed=0 skipped=1 (jq-failed=1)"
 check_contains "operator-window-malformed: jq failure is warned rather than swallowed" \
     "$(cat "$ERR_OUT")" "WARNING: 1 transcript(s) skipped due to jq failure"
 rm -f "$ERR_OUT"

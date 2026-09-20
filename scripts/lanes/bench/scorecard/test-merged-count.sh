@@ -97,12 +97,25 @@ EXIT=$?
 check_exit "straddling: exits 0" "$EXIT" "0"
 check_eq "straddling: bundle(3) + public-excl-propagate(2) = 5" "$OUT" "5"
 
+# --- (a2) HIMMEL-3269: both inputs behind the 5 report their coverage on
+# stderr (stdout stays the bare number). The bundle holds 4 first-parent
+# commits, 3 with a "(#N)" suffix; the public list holds 3 PRs, all in the
+# window, 1 of them excluded as chore(propagate).
+ERR=$("$SCRIPT" --since 2026-09-01T00:00:00Z --until 2026-09-12T00:00:00Z --bundle "$BUNDLE" 2>&1 >/dev/null)
+check_contains "straddling: bundle coverage names the commit that is not a squash-merge" \
+    "$ERR" "coverage: bundle-commits discovered=4 parsed=3 skipped=1 (no-pr-suffix=1)"
+check_contains "straddling: public coverage names the excluded propagate PR" \
+    "$ERR" "coverage: prs discovered=3 parsed=2 skipped=1 (out-of-window=0 excluded=1 limit=1000 truncated=no)"
+
 # --- (b) post-cutover-only window (since after the propagate PR's mergedAt):
 # no exclusion needed, no bundle read, count=2 by date filtering alone.
 OUT=$("$SCRIPT" --since 2026-09-09T12:00:00Z --until 2026-09-12T00:00:00Z --bundle /nonexistent/does-not-exist.bundle 2>/dev/null)
 EXIT=$?
 check_exit "post-cutover: exits 0" "$EXIT" "0"
 check_eq "post-cutover: 2 PRs, bundle never opened (bundle path is bogus)" "$OUT" "2"
+ERR=$("$SCRIPT" --since 2026-09-09T12:00:00Z --until 2026-09-12T00:00:00Z --bundle /nonexistent/does-not-exist.bundle 2>&1 >/dev/null)
+check_contains "post-cutover: the PR that merged before --since is reported as out-of-window" \
+    "$ERR" "coverage: prs discovered=3 parsed=2 skipped=1 (out-of-window=1 excluded=0 limit=1000 truncated=no)"
 
 # --- (c) missing bundle on a straddling window -> exit 2, names the env var
 # and the default path

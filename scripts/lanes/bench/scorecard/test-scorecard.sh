@@ -74,6 +74,42 @@ SUBSTRING_COHORT=$("$POSTPIN" --since 2026-01-01T00:00:00Z --role leg --cohort l
 check "cohort-substring: other-profile=leg-impl does not false-positive match --cohort leg-impl" \
     "$(session_count "$SUBSTRING_COHORT" leg)" "0"
 
+# --- (b3) cohort-nscheme (HIMMEL-3269 items 1-4): the REAL leg titles
+# (<TICKET>-N<k>-<slug>), UUID-named transcripts, and launch logs in the real
+# HIMMEL-3270 line format under the himmelctl cache dir. Five sessions:
+#   single    one profile=leg-impl line                    -> in the cohort
+#   agree     two lines, both profile=leg-impl             -> in the cohort
+#   ambiguous two lines, profile=leg-impl then profile=none -> excluded
+#   unlogged  no launch-log file                           -> excluded
+#   noprofile profile=none                                 -> excluded
+export SCORECARD_PROJECTS_DIR="$HERE/fixtures/cohort-nscheme/projects"
+unset SCORECARD_LAUNCH_LOG_DIR
+export HIMMELCTL_CACHE_DIR="$HERE/fixtures/cohort-nscheme/cache"
+
+NS_ALL=$("$POSTPIN" --since 2026-01-01T00:00:00Z --role leg 2>/dev/null)
+check "cohort-nscheme: --role leg counts the N-scheme titles (was 0: role_of matched only legN)" \
+    "$(session_count "$NS_ALL" leg)" "5"
+
+NS_COHORT=$("$POSTPIN" --since 2026-01-01T00:00:00Z --role leg --cohort leg-impl 2>/dev/null)
+check "cohort-nscheme: join is by session title on a UUID-named transcript, default dir via HIMMELCTL_CACHE_DIR" \
+    "$(session_count "$NS_COHORT" leg)" "2"
+check "cohort-nscheme: coverage triple names every exclusion (ambiguous, unlogged, other profile)" \
+    "$(printf '%s\n' "$NS_COHORT" | grep '^coverage:')" \
+    "coverage: roots=1 discovered=5 parsed=2 skipped=3 (ambiguous-profile=1 no-launch-record=1 other-cohort=1)"
+
+# an explicit SCORECARD_LAUNCH_LOG_DIR still wins over the cache-dir default
+NS_EXPLICIT=$(HIMMELCTL_CACHE_DIR=/nonexistent SCORECARD_LAUNCH_LOG_DIR="$HERE/fixtures/cohort-nscheme/cache/launch-logs" \
+    "$POSTPIN" --since 2026-01-01T00:00:00Z --role leg --cohort leg-impl 2>/dev/null)
+check "cohort-nscheme: explicit SCORECARD_LAUNCH_LOG_DIR overrides the cache-dir default" \
+    "$(session_count "$NS_EXPLICIT" leg)" "2"
+
+# an absent launch-log dir must read as "no record", not as an empty-cohort success
+COH_OUT_NOLOG=$(HIMMELCTL_CACHE_DIR=/nonexistent "$POSTPIN" --since 2026-01-01T00:00:00Z --role leg --cohort leg-impl 2>/dev/null)
+check "cohort-nscheme: a missing launch-log dir excludes everything (no profile on record)" \
+    "$(printf '%s\n' "$COH_OUT_NOLOG" | grep '^coverage:')" \
+    "coverage: roots=1 discovered=5 parsed=0 skipped=5 (no-launch-record=5)"
+unset HIMMELCTL_CACHE_DIR
+
 # --- (c) shift: 60 Fable + 50 Sonnet console-role calls -> counted_shifts=1
 export SCORECARD_PROJECTS_DIR="$HERE/fixtures/shift"
 unset SCORECARD_LAUNCH_LOG_DIR
@@ -164,6 +200,8 @@ mkgo "$RGL_TMP/g1" 78 ccccccc 202610011030
 mkgo "$RGL_TMP/g1" 83 7654321 202610011130
 G1_OUT=$(TZ=UTC HANDOVER_DIR="$RGL_TMP/g1" READY_GO_NOW=1790856000 "$RGL" --doc "$RGL_TMP/g1/console-2026-10-01.md" --since 2026-10-01T00:00:00Z 2>&1)
 check "rgl g1: events/median/missed summary" "$(printf '%s\n' "$G1_OUT" | head -1)" "events=4 median_min=22.5 missed=1"
+check "rgl g1: coverage names the READYs that were neither paired nor missed (HIMMEL-3269)" \
+    "$(printf '%s\n' "$G1_OUT" | grep '^coverage:')" "coverage: discovered=7 parsed=5 skipped=2 (held=1 pending=1)"
 check "rgl g1: exactly one MISSED line (80 eeeeeee 10:20)" "$(printf '%s\n' "$G1_OUT" | grep '^MISSED')" "MISSED 80 eeeeeee 10:20"
 
 # g2: midnight crossing, READY_GO_NOW = 2026-10-02T03:00:00Z
@@ -178,11 +216,17 @@ mkgo "$RGL_TMP/g2" 91 1111111 202610020010
 G2_DOC="$RGL_TMP/g2/console-2026-10-01.md"
 G2_SINCE=$(TZ=UTC HANDOVER_DIR="$RGL_TMP/g2" READY_GO_NOW=1790910000 "$RGL" --doc "$G2_DOC" --since 2026-10-01T23:00:00Z 2>&1)
 check "rgl g2: --since 23:00Z excludes READY 90" "$(printf '%s\n' "$G2_SINCE" | head -1)" "events=1 median_min=30 missed=1"
+check "rgl g2: --since coverage names the out-of-window READY" \
+    "$(printf '%s\n' "$G2_SINCE" | grep '^coverage:')" "coverage: discovered=3 parsed=2 skipped=1 (out-of-window=1)"
 G2_ALL=$(TZ=UTC HANDOVER_DIR="$RGL_TMP/g2" READY_GO_NOW=1790910000 "$RGL" --doc "$G2_DOC" 2>&1)
 check "rgl g2: no --since counts both GO'd READYs" "$(printf '%s\n' "$G2_ALL" | head -1)" "events=2 median_min=20 missed=1"
+check "rgl g2: no --since -> nothing skipped" \
+    "$(printf '%s\n' "$G2_ALL" | grep '^coverage:')" "coverage: discovered=3 parsed=3 skipped=0"
 check "rgl g2: reconstructed MISSED stamp is 00:30" "$(printf '%s\n' "$G2_ALL" | grep '^MISSED')" "MISSED 92 2222222 00:30"
 G2_UNTIL=$(TZ=UTC HANDOVER_DIR="$RGL_TMP/g2" READY_GO_NOW=1790910000 "$RGL" --doc "$G2_DOC" --until 2026-10-01T23:00:00Z 2>&1)
 check "rgl g2: --until 23:00Z keeps only READY 90" "$(printf '%s\n' "$G2_UNTIL" | head -1)" "events=1 median_min=10 missed=0"
+check "rgl g2: --until coverage names the two out-of-window READYs" \
+    "$(printf '%s\n' "$G2_UNTIL" | grep '^coverage:')" "coverage: discovered=3 parsed=1 skipped=2 (out-of-window=2)"
 
 # g3: real GO files carry the full 40-char sha; a 7-char READY matches by prefix
 mkdir -p "$RGL_TMP/g3"
@@ -191,13 +235,14 @@ mkgo "$RGL_TMP/g3" 93 abcdef1234567890abcdef1234567890abcdef12 202610010915
 mkgo "$RGL_TMP/g3" 94 fedcba9234567890abcdef1234567890abcdef12 202610010915
 G3_OUT=$(TZ=UTC HANDOVER_DIR="$RGL_TMP/g3" READY_GO_NOW=1790856000 "$RGL" --doc "$RGL_TMP/g3/console-2026-10-01.md" --since 2026-10-01T00:00:00Z 2>&1)
 check "rgl g3: 40-char GO matches a 7-char READY; a different-prefix GO does not" \
-    "$(printf '%s\n' "$G3_OUT" | tr '\n' '|')" "events=1 median_min=15 missed=1|MISSED 94 abcdef1 09:05|"
+    "$(printf '%s\n' "$G3_OUT" | tr '\n' '|')" "events=1 median_min=15 missed=1|MISSED 94 abcdef1 09:05|coverage: discovered=2 parsed=2 skipped=0|"
 
 # g4: no bullets -> zero events, and missing --doc is a usage error (rc 2)
 mkdir -p "$RGL_TMP/g4"
 printf '%s\n' '# nothing to see' > "$RGL_TMP/g4/console-2026-10-01.md"
 G4_OUT=$(TZ=UTC HANDOVER_DIR="$RGL_TMP/g4" READY_GO_NOW=1790856000 "$RGL" --doc "$RGL_TMP/g4/console-2026-10-01.md" --since 2026-10-01T00:00:00Z 2>&1)
-check "rgl g4: no READY bullets -> events=0" "$G4_OUT" "events=0 median_min=n/a missed=0"
+check "rgl g4: no READY bullets -> events=0, and the coverage line says nothing was discovered" \
+    "$(printf '%s\n' "$G4_OUT" | tr '\n' '|')" "events=0 median_min=n/a missed=0|coverage: discovered=0 parsed=0 skipped=0|"
 HANDOVER_DIR="$RGL_TMP/g4" "$RGL" --since 2026-10-01T00:00:00Z >/dev/null 2>&1
 check_exit "rgl g4: missing --doc exits 2" "$?" "2"
 
@@ -206,7 +251,8 @@ mkdir -p "$RGL_TMP/g5"
 printf '%s\n' '* 09:00 READY 95 abcdef1' > "$RGL_TMP/g5/console-2026-10-01.md"
 mkgo "$RGL_TMP/g5" 95 abcdef1 202610010915
 G5_OUT=$(TZ=UTC HANDOVER_DIR="$RGL_TMP/g5" READY_GO_NOW=1790856000 "$RGL" --doc "$RGL_TMP/g5/console-2026-10-01.md" 2>&1)
-check "rgl g5: a '*' bullet is ignored (strict '- HH:MM' grammar)" "$G5_OUT" "events=0 median_min=n/a missed=0"
+check "rgl g5: a '*' bullet is ignored (strict '- HH:MM' grammar)" \
+    "$(printf '%s\n' "$G5_OUT" | tr '\n' '|')" "events=0 median_min=n/a missed=0|coverage: discovered=0 parsed=0 skipped=0|"
 
 # g6: a GO older than the READY stamp is a stale file from an earlier round,
 # not the answer to this READY -> unpaired (MISSED once 60 min pass)
@@ -215,7 +261,7 @@ printf '%s\n' '- 09:00 READY 96 abcdef1' > "$RGL_TMP/g6/console-2026-10-01.md"
 mkgo "$RGL_TMP/g6" 96 abcdef1234567890abcdef1234567890abcdef12 202610010850
 G6_OUT=$(TZ=UTC HANDOVER_DIR="$RGL_TMP/g6" READY_GO_NOW=1790856000 "$RGL" --doc "$RGL_TMP/g6/console-2026-10-01.md" 2>&1)
 check "rgl g6: a GO older than its READY is not paired" \
-    "$(printf '%s\n' "$G6_OUT" | tr '\n' '|')" "events=0 median_min=n/a missed=1|MISSED 96 abcdef1 09:00|"
+    "$(printf '%s\n' "$G6_OUT" | tr '\n' '|')" "events=0 median_min=n/a missed=1|MISSED 96 abcdef1 09:00|coverage: discovered=1 parsed=1 skipped=0|"
 
 # g7: a 7-char prefix matching two distinct GO shas is ambiguous -> unpaired
 mkdir -p "$RGL_TMP/g7"
@@ -224,7 +270,7 @@ mkgo "$RGL_TMP/g7" 97 abcdef1234567890abcdef1234567890abcdef12 202610010915
 mkgo "$RGL_TMP/g7" 97 abcdef1fedcba0987654321fedcba0987654321f 202610010930
 G7_OUT=$(TZ=UTC HANDOVER_DIR="$RGL_TMP/g7" READY_GO_NOW=1790856000 "$RGL" --doc "$RGL_TMP/g7/console-2026-10-01.md" 2>/dev/null)
 check "rgl g7: an ambiguous 7-char prefix pairs with neither GO" \
-    "$(printf '%s\n' "$G7_OUT" | tr '\n' '|')" "events=0 median_min=n/a missed=1|MISSED 97 abcdef1 09:00|"
+    "$(printf '%s\n' "$G7_OUT" | tr '\n' '|')" "events=0 median_min=n/a missed=1|MISSED 97 abcdef1 09:00|coverage: discovered=1 parsed=1 skipped=0|"
 
 # g8: the day offset is a CALENDAR day, not 86400 s - across the 2026-11-01
 # DST end in New_York the 03:00 bullet (past midnight) is 03:00 EST = 08:00Z

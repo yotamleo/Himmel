@@ -663,11 +663,22 @@ are where a top-tier parent quietly burns its scarce weekly quota on mechanical
 edits, and because a worker lane on a shared branch can absorb several findings
 per dispatch instead of one round-trip each.
 
-### Tier-return marker (HIMMEL-2977, G10)
+### Tier-return marker (retired, HIMMEL-3269; was HIMMEL-2977 G10)
 
-A child returning work as above its tier — "return it" from the escalation
-rule above, made machine-countable — ends its final message with
-`> **Tier-return:** <reason>`. `scripts/lanes/tier-return-sweep.mjs --since
-<ISO>` walks subagent transcripts, takes each one's model from its first
-assistant message, and reports `<model> <returned>/<dispatched>` per model;
-G10 (escalations: Sonnet dispatches returned as above tier) reads its output.
+The `> **Tier-return:** <reason>` marker and its counter,
+`scripts/lanes/tier-return-sweep.mjs`, are **retired**. The sweep counted
+subagent transcripts ending in the marker, but nothing ever instructed a child
+to emit it: `leg-preface.md` is read by headed top-level legs, the sweep only
+counts `subagents/` transcripts, and no injection reaches a dispatched child.
+It read `sonnet 0/77` whatever the escalation rate, so G10 could not fail. The
+script now exits non-zero and prints no counts; a counter wired to nothing is
+worse than none.
+
+The launch-time `> **Tier:** … — tier-return: <reason>` category tag that
+`headed-arm-leg.sh` validates (HIMMEL-2976) is a different thing and stays.
+
+An escalation is measured as an **observed** re-dispatch, not a declared one: a
+Sonnet subagent whose task the parent then dispatched again at a higher tier.
+That is the input a replacement G10 gate should read (HIMMEL-2976); until one
+exists, escalation rate is unmeasured, and a report must say so rather than
+print zero.

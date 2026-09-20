@@ -19,12 +19,26 @@
 #                             --profile <name> (HIMMEL-2977 Task 3: the only
 #                             defined cohort today is "leg-impl"). Matched
 #                             against SCORECARD_LAUNCH_LOG_DIR (default:
-#                             $HOME/.claude/launch-logs), one file per
-#                             session basename, containing the
-#                             "headed-arm-leg: profile=<name> ..." line
-#                             (see scripts/handover/console-kit/headed-arm-leg.sh).
-#                             A session with no matching launch-log entry is
-#                             excluded under --cohort (no profile on record).
+#                             ${HIMMELCTL_CACHE_DIR:-$HOME/.claude/himmel}/launch-logs),
+#                             one file per session NAME - the transcript's
+#                             customTitle, the one key a launcher knows at
+#                             launch time (a session UUID it cannot) -
+#                             <name>.log, holding one appended
+#                             "headed-arm-leg: profile=<name> ... session=<name>"
+#                             line per launch attempt (HIMMEL-3270 writer:
+#                             scripts/handover/console-kit/headed-arm-leg.sh).
+#                             A session with no launch-log entry is excluded
+#                             under --cohort (no profile on record).
+#                             MULTI-LINE RULE (HIMMEL-3269): the log is append-only
+#                             with no attempt id, so a refused duplicate of a live
+#                             session's name can add a line beside the original.
+#                             Lines that agree on profile= are one record; lines
+#                             that DISAGREE make the session ambiguous and it is
+#                             excluded (counted as ambiguous-profile) - neither
+#                             first- nor last-write-wins is provable from the log.
+#
+# The last stdout line is `coverage: roots=R discovered=D parsed=P skipped=K
+# (reason=n ...)` - how much of the discovered input the table above covers.
 # --exclude-straddle <ISO>   drop sessions whose first timestamp precedes
 #                             <ISO> but whose last timestamp is >= <ISO>
 #                             (spec §2.3: a session straddling a lever-merge
@@ -34,8 +48,9 @@
 # - a console/relay shift counts iff it has >=100 console-role calls of any
 # model; legs are not shifts and always report counted_shifts=sessions).
 #
-# SCORECARD_PROJECTS_DIR overrides the transcript root (default: this
-# machine's himmel project dir) so tests can point it at a fixture tree.
+# SCORECARD_PROJECTS_DIR is an explicit scope: exactly that one transcript root
+# (tests point it at a fixture tree). The default is the primary himmel project
+# dir UNION its `--claude-worktrees-*` siblings - see lib/scorecard-lib.sh.
 set -u
 
 usage() {
@@ -58,9 +73,10 @@ done
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 LEG_BURN="$HERE/../../leg-burn.sh"
-PROJECTS="${SCORECARD_PROJECTS_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/-home-overlord-Documents-github-himmel}"
-[ -d "$PROJECTS" ] || { echo "agg-postpin: transcript root not found: $PROJECTS" >&2; exit 2; }
-LAUNCH_LOG_DIR="${SCORECARD_LAUNCH_LOG_DIR:-$HOME/.claude/launch-logs}"
+# shellcheck source=lib/scorecard-lib.sh
+. "$HERE/lib/scorecard-lib.sh"
+sc_roots_check agg-postpin || exit 2
+LAUNCH_LOG_DIR="${SCORECARD_LAUNCH_LOG_DIR:-${HIMMELCTL_CACHE_DIR:-$HOME/.claude/himmel}/launch-logs}"
 
 # GNU `date -d` first; BSD/macOS `date -j -f` fallback (same convention as
 # leg-burn.sh's backdate()/transcript_mtime GNU-first/BSD-fallback comment).
@@ -79,47 +95,64 @@ if [ -n "$STRADDLE" ]; then
 fi
 
 kn() { case "$1" in *k) awk -v n="${1%k}" 'BEGIN{printf "%.3f", n}';; *) awk -v n="$1" 'BEGIN{printf "%.3f", n/1000}';; esac; }
-title_of() { grep -o '"customTitle":"[^"]*"' "$1" 2>/dev/null | tail -1 | sed 's/.*:"//; s/"$//'; }
-role_of() {
-    case "$1" in
-        *-console*) echo console ;;
-        *-relay*) echo relay ;;
-        *legN*) echo leg ;;
-        *) echo other ;;
-    esac
-}
 ts_of() { grep -o '"timestamp":"[0-9TZ:.-]*"' "$1" 2>/dev/null | "$2" -1 | cut -d'"' -f4; }
 
+# cohort_ok <session-title>: the join key is the session NAME (customTitle), not
+# the transcript's UUID basename. Sets COHORT_WHY to the skip reason on failure.
+COHORT_WHY=""
 cohort_ok() {
+    COHORT_WHY=""
     [ -z "$COHORT" ] && return 0
-    base=$(basename "$1" .jsonl)
-    log="$LAUNCH_LOG_DIR/$base.log"
-    [ -f "$log" ] || return 1
-    awk -v c="profile=$COHORT" '{for(i=1;i<=NF;i++) if($i==c){f=1;exit}} END{exit !f}' "$log"
+    # a title is a filename component: never let one walk out of the log dir
+    case "$1" in ""|*/*) COHORT_WHY=no-launch-record; return 1 ;; esac
+    log="$LAUNCH_LOG_DIR/$1.log"
+    [ -f "$log" ] || { COHORT_WHY=no-launch-record; return 1; }
+    # whole fields only: `other-profile=leg-impl` must not read as profile=leg-impl
+    profiles=$(awk '/^headed-arm-leg:/ {for(i=1;i<=NF;i++) if($i ~ /^profile=/) print $i}' "$log" | sort -u)
+    [ -n "$profiles" ] || { COHORT_WHY=no-launch-record; return 1; }
+    if [ "$(printf '%s\n' "$profiles" | wc -l | tr -d ' ')" -gt 1 ]; then
+        COHORT_WHY=ambiguous-profile; return 1
+    fi
+    [ "$profiles" = "profile=$COHORT" ] || { COHORT_WHY=other-cohort; return 1; }
 }
 
+ROWS=""; FAILS=""; FILES=""; DISC_ERR=""
+# trap first: a later mktemp failing must not leak the files already created
+trap 'rm -f "$ROWS" "$FAILS" "$FILES" "$DISC_ERR" "$SC_COV"' EXIT
 ROWS=$(mktemp "${TMPDIR:-/tmp}/agg-postpin-rows.XXXXXX") || { echo "agg-postpin: mktemp failed" >&2; exit 1; }
 FAILS=$(mktemp "${TMPDIR:-/tmp}/agg-postpin-fails.XXXXXX") || { echo "agg-postpin: mktemp failed" >&2; exit 1; }
-trap 'rm -f "$ROWS" "$FAILS"' EXIT
+FILES=$(mktemp "${TMPDIR:-/tmp}/agg-postpin-files.XXXXXX") || { echo "agg-postpin: mktemp failed" >&2; exit 1; }
+DISC_ERR=$(mktemp "${TMPDIR:-/tmp}/agg-postpin-discerr.XXXXXX") || { echo "agg-postpin: mktemp failed" >&2; exit 1; }
+sc_cov_init || exit 1
 
-find "$PROJECTS" -name '*.jsonl' -type f 2>/dev/null | while IFS= read -r f; do
-    case "$f" in */subagents/*) continue ;; esac
+# A discovery error must not vanish (the agg-burn.sh HIMMEL-2977 rule): `find
+# 2>/dev/null | while` lost both find's errors and its status, so the coverage
+# line's `discovered=` would have counted a silently truncated file list.
+if ! sc_discover "$FILES" "$DISC_ERR"; then
+    echo "agg-postpin: transcript discovery failed under the transcript root(s) - refusing to print a partial table:" >&2
+    cat "$DISC_ERR" >&2
+    exit 1
+fi
+
+while IFS= read -r f; do
+    case "$f" in */subagents/*) sc_cov subagent; continue ;; esac
     name=$(title_of "$f"); role=$(role_of "$name")
-    case "$role" in leg|console) ;; *) continue ;; esac
-    [ -n "$ROLE_FILTER" ] && [ "$role" != "$ROLE_FILTER" ] && continue
+    case "$role" in leg|console) ;; *) sc_cov other-role; continue ;; esac
+    if [ -n "$ROLE_FILTER" ] && [ "$role" != "$ROLE_FILTER" ]; then sc_cov role-filter; continue; fi
 
     first_ts=$(ts_of "$f" head)
-    [ -n "$first_ts" ] || continue
+    [ -n "$first_ts" ] || { sc_cov no-timestamp; continue; }
     last_ts=$(ts_of "$f" tail)
-    first_epoch=$(to_epoch "$first_ts") || continue
-    last_epoch=$(to_epoch "${last_ts:-$first_ts}") || continue
-    [ "$last_epoch" -ge "$SINCE_EPOCH" ] || continue
-    if [ -n "$UNTIL_EPOCH" ] && [ "$first_epoch" -ge "$UNTIL_EPOCH" ]; then continue; fi
-    if [ -n "$STRADDLE_EPOCH" ] && [ "$first_epoch" -lt "$STRADDLE_EPOCH" ] && [ "$last_epoch" -ge "$STRADDLE_EPOCH" ]; then continue; fi
+    first_epoch=$(to_epoch "$first_ts") || { sc_cov bad-timestamp; continue; }
+    last_epoch=$(to_epoch "${last_ts:-$first_ts}") || { sc_cov bad-timestamp; continue; }
+    [ "$last_epoch" -ge "$SINCE_EPOCH" ] || { sc_cov out-of-window; continue; }
+    if [ -n "$UNTIL_EPOCH" ] && [ "$first_epoch" -ge "$UNTIL_EPOCH" ]; then sc_cov out-of-window; continue; fi
+    if [ -n "$STRADDLE_EPOCH" ] && [ "$first_epoch" -lt "$STRADDLE_EPOCH" ] && [ "$last_epoch" -ge "$STRADDLE_EPOCH" ]; then sc_cov straddle; continue; fi
 
-    cohort_ok "$f" || continue
+    cohort_ok "$name" || { sc_cov "$COHORT_WHY"; continue; }
 
-    line=$(bash "$LEG_BURN" "$f" 2>/dev/null) || { echo "$f" >> "$FAILS"; continue; }
+    line=$(bash "$LEG_BURN" "$f" 2>/dev/null) || { echo "$f" >> "$FAILS"; sc_cov leg-burn-failed; continue; }
+    sc_cov parsed
     calls=$(printf '%s' "$line" | grep -o 'calls=[0-9]*' | cut -d= -f2)
     avg=$(printf '%s' "$line" | grep -o 'avg-ctx=[^ ]*' | cut -d= -f2)
     first=$(printf '%s' "$line" | grep -o 'first-turn=[^ ]*' | cut -d= -f2)
@@ -130,7 +163,7 @@ find "$PROJECTS" -name '*.jsonl' -type f 2>/dev/null | while IFS= read -r f; do
     if [ "$role" = "console" ] && [ "${calls:-0}" -lt 100 ]; then counted=0; fi
 
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$role" "${model:-unknown}" "$calls" "$(kn "$avg")" "$(kn "$first")" "$comp" "$counted" >> "$ROWS"
-done
+done < "$FILES"
 
 printf 'role\tmodel\tsessions\tcalls\tavg_ctx_k(call-wtd)\tmax_session_avg_k\tavg_first_k\tcompactions\tctx_x_calls_Mtok\tcounted_shifts\n'
 awk -F'\t' '
@@ -139,6 +172,7 @@ function add(k){ n[k]++; c[k]+=$3; ctx[k]+=$3*$4; fsum[k]+=$5; cp[k]+=$6; cs[k]+
 END{
   for(k in n) printf "%s\t%d\t%d\t%.1f\t%.1f\t%.1f\t%d\t%.1f\t%d\n", k, n[k], c[k], (c[k]?ctx[k]/c[k]:0), pk[k], fsum[k]/n[k], cp[k], ctx[k]/1000, cs[k]
 }' "$ROWS" | sort
+sc_cov_line "$(wc -l < "$FILES" | tr -d ' ')" "$SC_ROOT_COUNT"
 
 n_fail=$(wc -l < "$FAILS")
 if [ "$n_fail" -gt 0 ]; then

@@ -66,15 +66,32 @@ if [ -n "$UNTIL" ]; then
     UNTIL_EPOCH=$(to_epoch "$(printf '%s' "$UNTIL" | cut -c1-10)") || { echo "leg-relaunch: bad --until: $UNTIL" >&2; exit 2; }
 fi
 
+# HIMMEL-3269 coverage: "discovered" is every dated doc in the handover dir, not
+# just the ones the metric reads - so a doc whose name carries no `legN<k>` token
+# (the current `<TICKET>-N<k>-<slug>` scheme among them) is counted as skipped
+# with its reason instead of being silently absent from the discovered set.
+# ponytail: the leg token is still `legN<k>`; docs named `<TICKET>-N<k>-...` are
+# reported as no-leg-token, not measured.
+# shellcheck source=lib/scorecard-lib.sh
+. "$SCRIPT_DIR/lib/scorecard-lib.sh"
+LIST=""
+trap 'rm -f "$LIST" "$SC_COV"' EXIT
+LIST=$(mktemp "${TMPDIR:-/tmp}/leg-relaunch-list.XXXXXX") || { echo "leg-relaunch: mktemp failed" >&2; exit 1; }
+sc_cov_init || exit 1
+for path in "$H"/*[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*; do
+    [ -f "$path" ] && printf '%s\n' "$path" >> "$LIST"
+done
+
 printf 'leg\truns\trelaunches\tblocked_bullets\twrapped_blocked\tfile\n'
-for path in "$H"/*legN[0-9]*-*[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*; do
-    [ -f "$path" ] || continue
+while IFS= read -r path; do
     f=$(basename "$path")
+    case "$f" in *legN[0-9]*) ;; *) sc_cov no-leg-token; continue ;; esac
     doc_date=$(printf '%s' "$f" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | tail -1)
-    [ -n "$doc_date" ] || continue
-    doc_epoch=$(to_epoch "$doc_date") || continue
-    [ "$doc_epoch" -ge "$SINCE_EPOCH" ] || continue
-    if [ -n "$UNTIL_EPOCH" ] && [ "$doc_epoch" -ge "$UNTIL_EPOCH" ]; then continue; fi
+    [ -n "$doc_date" ] || { sc_cov no-date; continue; }
+    doc_epoch=$(to_epoch "$doc_date") || { sc_cov bad-date; continue; }
+    [ "$doc_epoch" -ge "$SINCE_EPOCH" ] || { sc_cov out-of-window; continue; }
+    if [ -n "$UNTIL_EPOCH" ] && [ "$doc_epoch" -ge "$UNTIL_EPOCH" ]; then sc_cov out-of-window; continue; fi
+    sc_cov parsed
 
     leg=$(printf '%s' "$f" | grep -oE 'legN[0-9]+')
     runs=$(grep -oE '^> \*\*RUN [0-9]+ NOTE' "$H/$f" | grep -oE '[0-9]+' | sort -n | tail -1)
@@ -82,4 +99,5 @@ for path in "$H"/*legN[0-9]*-*[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*; do
     b=$(grep -cE '^- ([0-9]{2}:[0-9]{2} )?BLOCKED' "$H/$f")
     w=$(grep -cE '^- ([0-9]{2}:[0-9]{2} )?WRAPPED .*BLOCKED' "$H/$f")
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$leg" "$runs" "$((runs-1))" "$b" "$w" "$f"
-done | sort -t "$(printf '\t')" -k1.5,1n | awk -F'\t' -v OFS='\t' '{print} NR>0{r+=$3; b+=$4; w+=$5; n++} END{if(n>0) printf "TOTAL(n=%d)\t-\t%d (mean %.2f)\t%d (mean %.2f)\t%d\t-\n", n, r, r/n, b, b/n, w}'
+done < "$LIST" | sort -t "$(printf '\t')" -k1.5,1n | awk -F'\t' -v OFS='\t' '{print} NR>0{r+=$3; b+=$4; w+=$5; n++} END{if(n>0) printf "TOTAL(n=%d)\t-\t%d (mean %.2f)\t%d (mean %.2f)\t%d\t-\n", n, r, r/n, b, b/n, w}'
+sc_cov_line "$(wc -l < "$LIST" | tr -d ' ')"

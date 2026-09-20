@@ -93,17 +93,24 @@ check_contains "boundary: avg strictly above threshold classifies over" \
 CUSTOM_LOW=$("$OVER_BY_DAY" --since 2026-01-01T00:00:00Z --threshold-k 199 2>/dev/null)
 check_exit "threshold-k custom: exits 0" "$?" "0"
 check "threshold-k custom: both sessions now over, none under" \
-    "$(printf '%s\n' "$CUSTOM_LOW" | awk '{$1=$1; print}' | sort)" "2 2026-08-01 over"
+    "$(printf '%s\n' "$CUSTOM_LOW" | grep -v '^coverage:' | awk '{$1=$1; print}' | sort)" "2 2026-08-01 over"
+check "threshold-k custom: coverage triple sits beside the table (HIMMEL-3269)" \
+    "$(printf '%s\n' "$CUSTOM_LOW" | grep '^coverage:')" "coverage: roots=1 discovered=2 parsed=2 skipped=0"
 
 # --- (h) exclusion: console/relay/other-titled and subagent transcripts are
-# never bucketed; only the one leg-titled transcript survives
+# never bucketed; the two leg-titled transcripts survive - one in the old
+# `...legN<k>...` scheme, one in the current `<TICKET>-N<k>-<slug>` scheme
+# (HIMMEL-3269: the legN pattern alone matched 0 of the current legs)
 export SCORECARD_PROJECTS_DIR="$HERE/fixtures/leg-over-by-day/exclusion"
 EXCLUSION_OUT=$("$OVER_BY_DAY" --since 2026-01-01T00:00:00Z 2>/dev/null)
 check_exit "exclusion: exits 0" "$?" "0"
-check "exclusion: only the leg-titled, non-subagent transcript is bucketed" \
-    "$(printf '%s\n' "$EXCLUSION_OUT" | awk '{s+=$1} END{print s+0}')" "1"
-check_contains "exclusion: the surviving row is the leg session's day/class" \
+check "exclusion: only the leg-titled (both schemes), non-subagent transcripts are bucketed" \
+    "$(printf '%s\n' "$EXCLUSION_OUT" | awk '{s+=$1} END{print s+0}')" "2"
+check_contains "exclusion: the surviving row is the leg sessions' day/class" \
     "$EXCLUSION_OUT" "2026-08-10 under"
+check "exclusion: coverage names what was skipped and why" \
+    "$(printf '%s\n' "$EXCLUSION_OUT" | grep '^coverage:')" \
+    "coverage: roots=1 discovered=6 parsed=2 skipped=4 (not-leg=3 subagent=1)"
 
 # --- (i) since-edge: last_epoch >= SINCE_EPOCH is inclusive
 export SCORECARD_PROJECTS_DIR="$HERE/fixtures/leg-over-by-day/since-edge"

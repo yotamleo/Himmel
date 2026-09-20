@@ -1,0 +1,2 @@
+headed-arm-leg: profile=leg-impl lane=native model=claude-sonnet-5 role=leg session=HIMMEL-9103-N903-fixture-ambiguous launched=2026-09-19T00:00:00Z
+headed-arm-leg: profile=none lane=native model=claude-sonnet-5 role=leg session=HIMMEL-9103-N903-fixture-ambiguous launched=2026-09-19T00:05:00Z
