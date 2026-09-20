@@ -59,17 +59,23 @@ snapshot() {
   prefix="$(cd -- "$prefix" 2>/dev/null && pwd -P)" || prefix="$2"
   {
     echo "## settings"
-    if [ -f "$home/.claude/settings.json" ]; then jq -S . "$home/.claude/settings.json" 2>&1; else echo "(absent)"; fi
+    # A jq failure prints a sentinel, never jq's own diagnostic: identical
+    # malformed files on both sides must not compare as "converged".
+    if [ -f "$home/.claude/settings.json" ]; then jq -S . "$home/.claude/settings.json" 2>/dev/null || echo "(unreadable: settings.json)"; else echo "(absent)"; fi
     echo "## marketplaces"
     f="$home/.claude/plugins/known_marketplaces.json"
-    if [ -f "$f" ]; then jq -S 'with_entries(.value |= {source})' "$f" 2>&1; else echo "(absent)"; fi
+    if [ -f "$f" ]; then jq -S 'with_entries(.value |= {source})' "$f" 2>/dev/null || echo "(unreadable: known_marketplaces.json)"; else echo "(absent)"; fi
     echo "## plugins"
     f="$home/.claude/plugins/installed_plugins.json"
-    if [ -f "$f" ]; then jq -S '[(.plugins // .) | keys[]]' "$f" 2>&1; else echo "(absent)"; fi
+    if [ -f "$f" ]; then jq -S '[(.plugins // .) | keys[]]' "$f" 2>/dev/null || echo "(unreadable: installed_plugins.json)"; else echo "(absent)"; fi
     echo "## seed"
     if [ -d "$home/.claude/himmel" ]; then ( cd "$home/.claude/himmel" && find . -type f | LC_ALL=C sort ); else echo "(absent)"; fi
     echo "## launcher"
-    if [ -f "$home/.local/bin/himmelctl" ]; then cat "$home/.local/bin/himmelctl"; else echo "(absent)"; fi
+    f="$home/.local/bin/himmelctl"
+    if [ -f "$f" ]; then
+      cat "$f"
+      if [ -x "$f" ]; then echo "# mode: executable"; else echo "# mode: NOT executable"; fi
+    else echo "(absent)"; fi
     if [ -n "$target" ]; then
       echo "## gates"
       local hooks
@@ -80,12 +86,13 @@ snapshot() {
           case "$f" in *.sample) continue ;; esac
           echo "# hook: $f"
           cat "$hooks/$f"
+          if [ -x "$hooks/$f" ]; then echo "# mode: executable"; else echo "# mode: NOT executable (git ignores it)"; fi
         done
       else
         echo "(no hooks dir)"
       fi
       echo "## target-settings"
-      if [ -f "$target/.claude/settings.json" ]; then jq -S . "$target/.claude/settings.json" 2>&1; else echo "(absent)"; fi
+      if [ -f "$target/.claude/settings.json" ]; then jq -S . "$target/.claude/settings.json" 2>/dev/null || echo "(unreadable: target settings.json)"; else echo "(absent)"; fi
     fi
   } | norm "$home" "$prefix"
 }
@@ -100,6 +107,15 @@ for side in a b; do
   home="$ah"; [ "$side" = b ] && home="$bh"
   if ! jq -e '(.hooks // {}) | length > 0' "$home/.claude/settings.json" >/dev/null 2>&1; then
     echo "converge-check: VACUOUS -- side $side has no hooks in $home/.claude/settings.json; an install that wired nothing cannot 'converge'" >&2
+    exit 3
+  fi
+done
+
+# Unusable snapshot guard: a file that would not parse is not state to compare.
+for side in a b; do
+  if grep -q '^(unreadable' "$tmp/$side.txt"; then
+    echo "converge-check: UNREADABLE -- side $side has a JSON file jq could not parse; a broken install cannot 'converge':" >&2
+    grep '^(unreadable' "$tmp/$side.txt" >&2
     exit 3
   fi
 done

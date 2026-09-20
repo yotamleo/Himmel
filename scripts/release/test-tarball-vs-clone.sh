@@ -139,6 +139,42 @@ bash "$CONV" --a-home "$tmp/ce1/home" --a-prefix "$tmp/ce1/prefix" --b-home "$tm
 [ "$rc" -eq 3 ] && ok "T7 RED: two empty installs are VACUOUS (rc 3), not 'identical'" || bad "T7 vacuous snapshot accepted"
 bash "$CONV" --a-home "$tmp/ca/home" >/dev/null 2>&1; rc=$?
 [ "$rc" -eq 2 ] && ok "T7 missing arguments is a usage error (rc 2)" || bad "T7 usage rc"
+# Identical MALFORMED plugin JSON on both sides (hooks fine) is a broken install, not convergence.
+mk_side "$tmp/cm1" "bash $tmp/cm1/prefix/g.sh"; mk_side "$tmp/cm2" "bash $tmp/cm2/prefix/g.sh"
+for s in cm1 cm2; do mkdir -p "$tmp/$s/home/.claude/plugins"; echo '{not json' > "$tmp/$s/home/.claude/plugins/installed_plugins.json"; done
+bash "$CONV" --a-home "$tmp/cm1/home" --a-prefix "$tmp/cm1/prefix" --b-home "$tmp/cm2/home" --b-prefix "$tmp/cm2/prefix" >"$tmp/cm.log" 2>&1; rc=$?
+[ "$rc" -eq 3 ] && ok "T7 RED: identical malformed JSON on both sides is UNREADABLE (rc 3), not CONVERGED" || bad "T7 malformed JSON accepted" "rc=$rc"
+has "$tmp/cm.log" 'UNREADABLE' && ok "T7 the refusal names the unreadable snapshot" || bad "T7 no UNREADABLE line"
+# Same launcher bytes, one executable and one not: an unusable install must DIVERGE.
+mk_side "$tmp/cx1" "bash $tmp/cx1/prefix/g.sh"; mk_side "$tmp/cx2" "bash $tmp/cx2/prefix/g.sh"
+for s in cx1 cx2; do mkdir -p "$tmp/$s/home/.local/bin"; printf '#!/bin/sh\nexit 0\n' > "$tmp/$s/home/.local/bin/himmelctl"; done
+chmod 755 "$tmp/cx1/home/.local/bin/himmelctl"; chmod 644 "$tmp/cx2/home/.local/bin/himmelctl"
+bash "$CONV" --a-home "$tmp/cx1/home" --a-prefix "$tmp/cx1/prefix" --b-home "$tmp/cx2/home" --b-prefix "$tmp/cx2/prefix" >"$tmp/cx.log" 2>&1; rc=$?
+[ "$rc" -eq 1 ] && ok "T7 RED: an executable launcher vs a non-executable one is DIVERGED (rc 1)" || bad "T7 exec-bit difference accepted" "rc=$rc"
+has "$tmp/cx.log" 'NOT executable' && ok "T7 the diff names the missing exec bit" || bad "T7 diff lacks the exec-bit line"
+
+# --- T9 RED: the published pair does not verify -> the body stops, fail closed --
+# The README chain never reaches tar on a bad hash; the body must not extract or
+# install the rejected tarball either.
+mkdir -p "$tmp/art-tamper"
+cp "$tgz" "$tmp/art-tamper/"
+printf '%064d  %s\n' 0 "himmel-9.9.9-linux.tar.gz" > "$tmp/art-tamper/himmel-9.9.9-linux.tar.gz.sha256"
+bash "$BODY" --work "$tmp/w-tamper" --tarball "$tmp/art-tamper/himmel-9.9.9-linux.tar.gz" --bundle "$art/fx.bundle" >"$tmp/tamper.log" 2>&1; rc=$?
+[ "$rc" -ne 0 ] && ok "T9 RED: a published pair that does not verify FAILS the run" || bad "T9 tampered .sha256 accepted" "rc=$rc"
+has "$tmp/tamper.log" 'FAIL  sha256sum -c rejects the published pair' && ok "T9 it failed on the checksum step" || bad "T9 wrong failure reason"
+{ [ ! -d "$tmp/w-tamper/prefix-tarball" ] && [ ! -d "$tmp/w-tamper/home-tarball" ]; } && ok "T9 nothing was extracted or installed after the rejection" || bad "T9 the rejected tarball was used"
+
+# --- T10 RED: the corruption fixture cannot be built -> not a passed control --
+# A python3 that does nothing (or fails) leaves no corrupted copy; the resulting
+# "sha256sum -c fails" is a MISSING FILE, and must not be scored as a held control.
+mkdir -p "$tmp/pybin"
+printf '#!/bin/sh\nexit 0\n' > "$tmp/pybin/python3"; chmod +x "$tmp/pybin/python3"
+run_body nopy STUB_MODE= "PATH=$tmp/pybin:$PATH"
+[ "$rc" -ne 0 ] && ok "T10 RED: an unbuilt corruption fixture FAILS the run" || bad "T10 missing fixture scored as a held control" "rc=$rc"
+has "$out" 'FAIL  RED control could not build a corrupted copy' && ok "T10 the fixture failure is named" || bad "T10 wrong failure reason"
+printf '#!/bin/sh\nexit 7\n' > "$tmp/pybin/python3"
+run_body pyfail STUB_MODE= "PATH=$tmp/pybin:$PATH"
+has "$out" 'python3 rc=7' && ok "T10 a failing python3 is reported with its rc" || bad "T10 python3 rc not reported"
 
 # --- T8 the VM driver: unreachable guest fails SOFT (rc 3), and is wired ------
 bash -n "$DRIVER" && ok "T8 driver parses (bash -n)" || bad "T8 driver syntax"

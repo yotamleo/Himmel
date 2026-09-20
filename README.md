@@ -112,7 +112,9 @@ then does the per-user wiring and puts a `himmelctl` launcher in
 `~/.local/bin`. The tarball is built by CI on each `v*` tag
 ([`release.yml`](.github/workflows/release.yml)); the checksum is of that exact
 built asset. No release carries it until the first tag cut after HIMMEL-3059
-slice 1 — until then use the clone path below.
+slice 1 — until then use the clone path below. To upgrade, extract the new
+release into a fresh directory (or remove the old `~/.local/share/himmel`
+first): extracting over an existing tree keeps files the new release deleted.
 
 **Any platform — from a clone:**
 

@@ -45,11 +45,16 @@ cp "$tarball" "$tarball.sha256" "$work/dl/"
 if ( cd "$work/dl" && sha256sum -c "$name.sha256" >/dev/null ); then
   step_ok "sha256sum -c accepts the published pair"
 else
+  # Fail closed, like the README's `&&` chain: a pair that does not verify is
+  # never extracted or installed.
   step_fail "sha256sum -c rejects the published pair"
+  echo "RESULT: FAIL (the published pair did not verify; stopping before extraction, as the README chain does)"
+  exit 1
 fi
 
 # RED control: same published hash, one flipped byte -- must FAIL, and the
-# `&&` chain must never reach tar.
+# `&&` chain must never reach tar. The corrupted copy must really exist and
+# really differ, or the "rejected" result below would be a missing file, not a hash mismatch.
 mkdir -p "$work/dl-bad"
 cp "$tarball.sha256" "$work/dl-bad/"
 python3 - "$tarball" "$work/dl-bad/$name" <<'PY'
@@ -58,7 +63,10 @@ b = bytearray(open(sys.argv[1], 'rb').read())
 b[len(b) // 2] ^= 0xFF
 open(sys.argv[2], 'wb').write(b)
 PY
-if ( cd "$work/dl-bad" && sha256sum -c "$name.sha256" >/dev/null 2>&1 && mkdir -p extracted && tar -xzf "$name" -C extracted ); then
+py_rc=$?
+if [ "$py_rc" -ne 0 ] || [ ! -s "$work/dl-bad/$name" ] || cmp -s "$tarball" "$work/dl-bad/$name"; then
+  step_fail "RED control could not build a corrupted copy (python3 rc=$py_rc)"
+elif ( cd "$work/dl-bad" && sha256sum -c "$name.sha256" >/dev/null 2>&1 && mkdir -p extracted && tar -xzf "$name" -C extracted ); then
   step_fail "RED: a corrupted tarball passed verification"
 elif [ -d "$work/dl-bad/extracted" ]; then
   step_fail "RED: a corrupted tarball was extracted"
