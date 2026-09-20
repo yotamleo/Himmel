@@ -266,7 +266,7 @@ HO_B=$(make_handover)
 out=$(run_arm --time "$(future_time)" --handover "$HO_B" --context standard --dry-run 2>&1)
 rc=$?
 assert_rc "b: standard non-console arm exits 0" 0 "$rc"
-assert_contains "b: guard line reports standard, explicit source" 'context=standard (explicit --context)' "$out"
+assert_contains "b: guard line reports standard, explicit source" 'context=standard (explicit)' "$out"
 assert_contains_either "b: relaunch command carries --autocompact 200000" '--autocompact 200000' '--autocompact "200000"' "$out"
 assert_not_contains "b: no [1m] suffix anywhere in output" '[1m]' "$out"
 
@@ -282,7 +282,7 @@ HO_C=$(make_handover)
 out=$(run_arm --time "$(future_time)" --handover "$HO_C" --model opus --context 1m --dry-run 2>&1)
 rc=$?
 assert_rc "c: 1m + --model opus exits 0" 0 "$rc"
-assert_contains "c: guard line reports the suffixed model" 'context=1m (explicit --context); model=opus[1m]' "$out"
+assert_contains "c: guard line reports the suffixed model" 'context=1m (explicit); model=opus[1m]' "$out"
 assert_contains_either "c: relaunch command carries --autocompact auto" '--autocompact auto' '--autocompact "auto"' "$out"
 assert_contains_either "c: relaunch command carries the suffixed model (escaped)" 'opus\[1m\]' '"opus[1m]"' "$out"
 assert_not_contains "c: relaunch command carries no --autocompact 200000" '--autocompact 200000' "$out"
@@ -321,7 +321,7 @@ HO_E1=$(make_handover "arm-context-console.md")
 out=$(run_arm --time "$(future_time)" --handover "$HO_E1" --dry-run 2>&1)
 rc=$?
 assert_rc "e1: console handover, no --context, exits 0" 0 "$rc"
-assert_contains "e1: guard line defaults console to standard (HIMMEL-2975)" 'context=standard (no --context given; console arms default to standard -- HIMMEL-2975)' "$out"
+assert_contains "e1: guard line defaults console to standard (HIMMEL-2975)" 'context=standard (default)' "$out"
 assert_contains_either "e1: relaunch command carries --autocompact 200000" '--autocompact 200000' '--autocompact "200000"' "$out"
 assert_not_contains "e1: no [1m] suffix anywhere in output" '[1m]' "$out"
 
@@ -329,7 +329,7 @@ HO_E2=$(make_handover)
 out=$(run_arm --time "$(future_time)" --handover "$HO_E2" --dry-run 2>&1)
 rc=$?
 assert_rc "e2: non-console handover, no --context, exits 0" 0 "$rc"
-assert_contains "e2: guard line defaults non-console to standard" 'context=standard (no --context given; non-console arms default to standard -- HIMMEL-2658)' "$out"
+assert_contains "e2: guard line defaults non-console to standard" 'context=standard (default)' "$out"
 assert_contains_either "e2: relaunch command carries --autocompact 200000" '--autocompact 200000' '--autocompact "200000"' "$out"
 
 # ---------------------------------------------------------------------------
@@ -463,6 +463,112 @@ case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
         ;;
     *)
         echo "SKIP i: real non-dry arm needs the at/atq backend (OSTYPE=${OSTYPE:-$(uname -s 2>/dev/null)}; macOS arms via crontab, Windows via schtasks)"
+        ;;
+esac
+
+# ---------------------------------------------------------------------------
+# (j) HIMMEL-3282: a console arm through arm-resume.sh (the Windows schtasks
+#     station's path) records its resolved launch context DURABLY, in the same
+#     row shape headed-arm.sh writes (HIMMEL-3279), so the scorecard reader
+#     attributes it after the tmpfs arm log is gone. RED before the fix: no
+#     record existed, sc_launch_context said `unknown` for an arm-resume
+#     console. The scheduler stub is the at/atq one above, so this runs the
+#     record-writing and string-emitting SHELL, not the Windows scheduling path
+#     (that one only the schtasks .bat body exercises, and only on Windows).
+# ---------------------------------------------------------------------------
+# shellcheck source=lanes/bench/scorecard/lib/scorecard-lib.sh
+. "$(dirname "$ARM")/../lanes/bench/scorecard/lib/scorecard-lib.sh"
+
+# job_title <job.body>: the `-n <title>` the relaunched session carries -- read
+# from the launch command itself, never from the record under test.
+job_title() { sed -n 's/^claude -n \([^ ]*\) .*/\1/p' "$1" | head -1; }
+
+# arm_j <cache-dir> <handover> [VAR=val...] -- real non-dry arm through the stub.
+rc_of() { "$@" 2>/dev/null; echo $?; }
+
+arm_j() {
+    local cache="$1" ho="$2"; shift 2
+    env HIMMELCTL_CACHE_DIR="$cache" FLEET_CAP_OK=1 ARM_WITH_LIVE_WORKERS=1 "$@" \
+        SCHTASKS_CMD="$REAL_SCHED/schtasks" PATH="$REAL_SCHED:$PATH" \
+        bash "$ARM" --time "$(future_time)" --handover "$ho" 2>&1
+}
+
+case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
+    linux*|Linux*)
+        CACHE_J="$TMP/cache-j"
+        mkdir -p "$CACHE_J/launch-logs"
+        # precondition: the record dir IS writable, so an absent record below is
+        # the code not writing one, not a fixture that could never hold it
+        assert_rc "j: precondition, the record dir is writable" 0 "$(rc_of test -w "$CACHE_J/launch-logs")"
+
+        HO_J1=$(make_handover "arm-context-console.md")
+        rm -f "$REAL_SCHED/job.body"
+        out=$(arm_j "$CACHE_J" "$HO_J1")
+        rc=$?
+        assert_rc "j1: console arm exits 0" 0 "$rc"
+        assert_contains "j1: success is post-verify earned" 'RESUME ARMED for' "$out"
+        TITLE_J1=$(job_title "$REAL_SCHED/job.body")
+        assert_contains "j1: precondition, the launch command names the session" 'arm-context-console' "$TITLE_J1"
+        assert_contains "j1: the reason line spells the source like headed-arm.sh" 'context=standard (default)' "$out"
+        assert_not_contains "j1: the old prose reason is gone" 'no --context given' "$out"
+        assert_rc "j1: sc_launch_context attributes the arm from its record, not unknown" 0 \
+            "$(rc_of test "$(sc_launch_context "$CACHE_J/launch-logs" "$TITLE_J1")" = standard)"
+        ROW_J1=$(cat "$CACHE_J/launch-logs/$TITLE_J1.log" 2>/dev/null)
+        case "$ROW_J1" in
+            "headed-arm: role=console session=$TITLE_J1 context=standard source=default autocompact=200000 launched="[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z)
+                echo "PASS j1: the row is headed-arm.sh's shape (same prefix and field names)" ;;
+            *) echo "FAIL j1: row is not headed-arm.sh's shape: '$ROW_J1'"; FAILED=$((FAILED + 1)) ;;
+        esac
+
+        # env opt-in reads `explicit`, exactly as headed-arm.sh spells it
+        HO_J2=$(make_handover "arm-context-1m-console.md")
+        rm -f "$REAL_SCHED/job.body"
+        out=$(arm_j "$CACHE_J" "$HO_J2" CONSOLE_CONTEXT=1m)
+        rc=$?
+        assert_rc "j2: CONSOLE_CONTEXT=1m console arm exits 0" 0 "$rc"
+        TITLE_J2=$(job_title "$REAL_SCHED/job.body")
+        assert_contains "j2: the reason line spells the env opt-in (explicit)" 'context=1m (explicit)' "$out"
+        assert_rc "j2: 1m is attributed from the record" 0 \
+            "$(rc_of test "$(sc_launch_context "$CACHE_J/launch-logs" "$TITLE_J2")" = 1m)"
+        assert_contains "j2: the row carries source=explicit autocompact=auto" "session=$TITLE_J2 context=1m source=explicit autocompact=auto " "$(cat "$CACHE_J/launch-logs/$TITLE_J2.log" 2>/dev/null)"
+
+        # an explicit --context reads `explicit` too
+        HO_J3=$(make_handover "arm-context-explicit-console.md")
+        rm -f "$REAL_SCHED/job.body"
+        out=$(FLEET_CAP_OK=1 ARM_WITH_LIVE_WORKERS=1 HIMMELCTL_CACHE_DIR="$CACHE_J" SCHTASKS_CMD="$REAL_SCHED/schtasks" PATH="$REAL_SCHED:$PATH" \
+            bash "$ARM" --time "$(future_time)" --handover "$HO_J3" --context standard 2>&1)
+        TITLE_J3=$(job_title "$REAL_SCHED/job.body")
+        assert_contains "j3: explicit --context spells (explicit)" 'context=standard (explicit)' "$out"
+        assert_contains "j3: the row carries source=explicit" "session=$TITLE_J3 context=standard source=explicit " "$(cat "$CACHE_J/launch-logs/$TITLE_J3.log" 2>/dev/null)"
+
+        # a non-console arm and a dry-run console arm write NO record
+        CACHE_J4="$TMP/cache-j4"
+        mkdir -p "$CACHE_J4"
+        HO_J4=$(make_handover)
+        rm -f "$REAL_SCHED/job.body"
+        out=$(arm_j "$CACHE_J4" "$HO_J4")
+        rc=$?
+        assert_rc "j4: precondition, the non-console real arm succeeds" 0 "$rc"
+        assert_contains "j4: a non-console arm writes no record" "absent" "$([ -e "$CACHE_J4/launch-logs" ] && echo present || echo absent)"
+        HO_J5=$(make_handover "arm-context-dry-console.md")
+        out=$(HIMMELCTL_CACHE_DIR="$CACHE_J4" run_arm --time "$(future_time)" --handover "$HO_J5" --dry-run 2>&1)
+        rc=$?
+        assert_rc "j5: precondition, the console dry-run succeeds" 0 "$rc"
+        assert_contains "j5: a dry-run arm writes no record" "absent" "$([ -e "$CACHE_J4/launch-logs" ] && echo present || echo absent)"
+
+        # best-effort: an unwritable record dir never fails the arm, and says so
+        printf 'x' > "$TMP/not-a-dir"
+        HO_J6=$(make_handover "arm-context-nowrite-console.md")
+        rm -f "$REAL_SCHED/job.body"
+        assert_rc "j6: precondition, a path under a regular file cannot be created" 1 "$(mkdir -p "$TMP/not-a-dir/x" 2>/dev/null; echo $?)"
+        out=$(arm_j "$TMP/not-a-dir/x" "$HO_J6")
+        rc=$?
+        assert_rc "j6: an unwritable record dir does not fail the arm" 0 "$rc"
+        assert_contains "j6: the arm still reports armed" 'RESUME ARMED for' "$out"
+        assert_contains "j6: the lost record is named, not silent" 'context record NOT written' "$out"
+        ;;
+    *)
+        echo "SKIP j: real non-dry arm needs the at/atq backend (OSTYPE=${OSTYPE:-$(uname -s 2>/dev/null)}); this harness stubs at/atq only"
         ;;
 esac
 

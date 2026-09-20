@@ -990,23 +990,16 @@ echo "arm-resume: $MODEL_REASON"
 if [ -z "$CONTEXT_MODE" ]; then
     console_context_default "$_arm_is_console" "${CONSOLE_CONTEXT:-}"
     CONTEXT_MODE="$CONSOLE_CONTEXT_RESOLVED_MODE"
-    # ponytail: unlike headed-arm.sh (HIMMEL-3279), this console-class arm
-    # writes NO durable launch-context record - the mode it resolves here is
-    # only in this arm's own log, so a console armed through the Windows
-    # schtasks backend (arm-resume.sh, not headed-arm.sh) is still
-    # unattributable after a reboot, and agg-postpin.sh --context reads it as
-    # `unknown`. The string below also still differs from headed-arm.sh's
-    # `context=1m (explicit)` that spec 2973 sec 2.4 keys on.
-    if [ "$_arm_is_console" -eq 1 ] && [ "$CONSOLE_CONTEXT_RESOLVED_SOURCE" = "console-context-env" ]; then
-        CONTEXT_REASON="context=1m (CONSOLE_CONTEXT=1m; console arm -- HIMMEL-2975)"
-    elif [ "$_arm_is_console" -eq 1 ]; then
-        CONTEXT_REASON="context=standard (no --context given; console arms default to standard -- HIMMEL-2975)"
-    else
-        CONTEXT_REASON="context=standard (no --context given; non-console arms default to standard -- HIMMEL-2658)"
-    fi
+    # HIMMEL-3282: the source word is the one headed-arm.sh emits and spec
+    # 2973 sec 2.4 keys on (`context=1m (explicit)`), from the shared
+    # resolver. It used to be prose per case (HIMMEL-2975 console default,
+    # HIMMEL-2658 non-console default, the CONSOLE_CONTEXT=1m opt-in) that no
+    # reader could match; the provenance is in those tickets, not the string.
+    _arm_context_source=$(console_context_source_label 0)
 else
-    CONTEXT_REASON="context=$CONTEXT_MODE (explicit --context)"
+    _arm_context_source=$(console_context_source_label 1)
 fi
+CONTEXT_REASON="context=$CONTEXT_MODE ($_arm_context_source)"
 
 # Strip any [1m] suffix the operator may have typed directly into --model
 # (e.g. --model 'opus[1m]') so the two levers below reapply it exactly once,
@@ -6241,6 +6234,20 @@ if [ "${_ARM_CONSUMED:-0}" -ne 1 ]; then
         exit 2
     fi
     unset _arm_verify_found _arm_verify_marker _arm_verify_lead _arm_verify_now
+fi
+
+# HIMMEL-3282: a console-class arm records the context it resolved DURABLY.
+# headed-arm.sh does this for the Linux/KDE path (HIMMEL-3279); this is the
+# other arming path (the Windows schtasks backend), and without it a console
+# armed here is unattributable for HIMMEL-2973 the moment the arm log is gone.
+# Here, not at the top: the arm has been verified, so no `NOT armed` exit above
+# leaves a row for a session that never launches -- and before the CONSUMED
+# exit below, because a consumed arm DID launch with this mode. Best-effort
+# like headed-arm.sh's: a lost record is named and never fails the arm. The row
+# is written by THIS shell at arm time (the mode is resolved and fixed now),
+# not by the schtasks .bat body, so it needs no Windows-side code.
+if [ "$_arm_is_console" -eq 1 ] && ! console_context_write_record "$SESSION_NAME" "$CONTEXT_MODE" "$_arm_context_source" "$AUTOCOMPACT"; then
+    echo "WARN arm-resume: context record NOT written under ${CONSOLE_CONTEXT_RECORD_DIR:-<no cache dir>} (this console's launch context is unrecoverable after a reboot)" >&2
 fi
 
 # A CONSUMED arm exits HERE -- before the HIMMEL-1304 force-replace reap and

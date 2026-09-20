@@ -83,7 +83,10 @@ role_of() {
 
 # sc_launch_context <launch-log-dir> <session-title>: prints the launch context
 # mode the session actually received, `1m` or `standard`, read from the DURABLE
-# console launch record (headed-arm.sh, HIMMEL-3279) - or `unknown`. Never a
+# console launch record (written by headed-arm.sh, HIMMEL-3279, and by
+# arm-resume.sh, HIMMEL-3282, both via console_context_write_record; the shared
+# `headed-arm:` prefix is deliberate - this asks what the SESSION received, not
+# which launcher armed it) - or `unknown`. Never a
 # proxy from the session's own token counts (a pinned session that never grew
 # past 175k and an unpinned one look identical). `unknown` covers no record,
 # an unreadable one, ANY headed-arm row that does not carry exactly one usable

@@ -386,18 +386,13 @@ NAME="$1"; DOC="$2"; SIGNAL="$3"; DEADLINE="$4"; LOG="$5"; MODEL="${6:-claude-op
 # it has no non-console callers, unlike arm-resume.sh's handover-name test.
 if [ "$#" -ge 7 ]; then
     CONTEXT="$7"
-    _headed_context_source="explicit"
+    _headed_context_source=$(console_context_source_label 1)
 else
     console_context_default 1 "${CONSOLE_CONTEXT:-}"
     CONTEXT="$CONSOLE_CONTEXT_RESOLVED_MODE"
-    # HIMMEL-3279: spec 2973 sec 2.4 keys on `context=1m (explicit)`, so an
-    # env opt-in spells `explicit` too - the mechanism is not lost, a 1m arm
-    # here is always CONSOLE_CONTEXT=1m-gated (the refusal above).
-    if [ "$CONSOLE_CONTEXT_RESOLVED_SOURCE" = "console-context-env" ]; then
-        _headed_context_source="explicit"
-    else
-        _headed_context_source="default"
-    fi
+    # HIMMEL-3279/3282: the source word (an env opt-in spells `explicit` too)
+    # is the shared one arm-resume.sh emits, so the two paths cannot disagree.
+    _headed_context_source=$(console_context_source_label 0)
 fi
 if ! console_context_valid "$CONTEXT"; then
     usage
@@ -1111,17 +1106,13 @@ KPID=$!
 # `headed-arm-leg:` profile line. Console arms only - a leg's own record is
 # headed-arm-leg.sh's, and it is always `standard`. Best-effort like that
 # one: a record that cannot be written is noted in $LOG, never stops the
-# launch (the reader then says `unknown`, never a proxy).
-# ponytail: arm-resume.sh also arms console-class sessions and its context
-# line still lives only in its own log; it writes no durable row here.
+# launch (the reader then says `unknown`, never a proxy). The row itself comes
+# from console_context_write_record (scripts/lib/console-context.sh), the same
+# function arm-resume.sh calls (HIMMEL-3282), so the two arming paths write one
+# shape.
 if [ "$ROLE" = "console" ]; then
-    _ll_cache="${HIMMELCTL_CACHE_DIR:-}"
-    [ -z "$_ll_cache" ] && [ -n "${HOME:-}" ] && _ll_cache="$HOME/.claude/himmel"
-    if [ -z "$_ll_cache" ] || ! ( umask 077 && mkdir -p "$_ll_cache/launch-logs" && \
-        printf 'headed-arm: role=console session=%s context=%s source=%s autocompact=%s launched=%s\n' \
-            "$NAME" "$CONTEXT" "$_headed_context_source" "$AUTOCOMPACT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            >> "$_ll_cache/launch-logs/$NAME.log" ) 2>/dev/null; then
-        echo "$(date +%F_%T) WARN context record NOT written under ${_ll_cache:-<no cache dir>}/launch-logs (this console's launch context is unrecoverable after a reboot)" >> "$LOG"
+    if ! console_context_write_record "$NAME" "$CONTEXT" "$_headed_context_source" "$AUTOCOMPACT"; then
+        echo "$(date +%F_%T) WARN context record NOT written under ${CONSOLE_CONTEXT_RECORD_DIR:-<no cache dir>} (this console's launch context is unrecoverable after a reboot)" >> "$LOG"
     fi
 fi
 
