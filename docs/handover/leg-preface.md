@@ -213,11 +213,27 @@ Run those and name them with their counts.
   present. They are not. Holding for `GO` is the one wait that ends your
   turn instead of blocking in a foreground loop: send `READY` and stop — the
   console's message resumes you.
+- **Closing the ticket at merge (HIMMEL-3271).** The merge is
+  `bash scripts/handover/merge-on-green.sh`. It closes nothing on its own: the
+  Jira transition is opt-in (`--jira-transition`, HIMMEL-3143), so a bare run
+  merges and only prints `jira-transition=would-transition` — a finished ticket
+  left open. Read the `completes-ticket:` line in your brief's Ship contract; if
+  it is absent, decide it yourself: does this PR finish the cited ticket?
+  - **`completes-ticket: yes`** → pass the flag:
+    `bash scripts/handover/merge-on-green.sh --jira-transition`.
+  - **`completes-ticket: no`** (the ticket spans further PRs, sibling slices, or
+    work owed outside any PR) → omit the flag. Never turn it on by default:
+    closing a sliced ticket on its first slice is the HIMMEL-3059 regression.
+  - The flag closes only the ticket in the **first** `[KEY]` of the PR title, so
+    a PR citing two tickets still needs the other one checked by hand. Whichever
+    branch you took, re-read the ticket after merge and report its state.
 
 ## Wrapping up
 
-After merge: pull the primary checkout, close the ticket out with the PR number
-and merge sha, release the lock (paste the line), send `WRAPPED`, print the
+After merge: pull the primary checkout, re-read the ticket, and post the PR
+number and merge sha on it — transitioning it yourself only if the PR completes
+it and `--jira-transition` did not (its `jira-transition=` result was not `ok`). Then
+release the lock (paste the line), send `WRAPPED`, print the
 closable-window banner, and **exit**. A leg never idles: if you are gated on
 something outside your control, WRAP with a successor resume brief instead of
 waiting.

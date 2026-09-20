@@ -74,7 +74,10 @@ template_version: 3
 >    `ad-hoc` in place of `manual`). The PR body carries one line
 >    `leg-burn: calls= avg-ctx= first-turn= compactions=` from
 >    `bash scripts/lanes/leg-burn.sh <your session name>`, run just before
->    opening the PR. <Anything else unusual: a PR body that must carry other
+>    opening the PR. **`completes-ticket: yes|no`** — does this PR finish the
+>    cited ticket? `yes` → the leg merges with `--jira-transition`; `no` (the
+>    ticket spans further PRs, sibling slices, or work owed outside any PR) →
+>    it omits the flag. <Anything else unusual: a PR body that must carry other
 >    specific numbers, a public-CI wait, a second ticket to comment on but
 >    leave open.>
 
@@ -96,6 +99,7 @@ template_version: 3
 | Queue lock + release token | Two sessions edit one handover doc, and the later write wins silently. |
 | Explicit do-nots | Scope widens into a neighbouring leg's files and the fan-out collides. |
 | The standing preface | Every rule the brief no longer repeats — reporting, RETASK asymmetry, RED-first, trailers in the first commit, GO-gated merge, the fill ceiling. It is injected by `--profile`, so a brief that omits it AND uses `--no-profile` is a leg running on vibes (a launch with neither is refused). |
+| `completes-ticket:` line | `merge-on-green.sh` closes the ticket only on `--jira-transition` (opt-in, HIMMEL-3143, because a default closes multi-PR tickets early). Without the line every leg guesses whether its PR finishes the ticket: in one shift six merges printed `would-transition` and five were closed by hand (HIMMEL-3271). It is a per-brief decision, never a default. |
 | Tier line (Opus/Fable only) | Without a trimmed, non-blank reason opening with one of the three exact-lowercase category tags (`design`, `unverified-finding`, `tier-return`), `headed-arm-leg.sh` refuses the launch (HIMMEL-2976/HIMMEL-2997, CLAUDE.md: "raise effort before tier") — the tag is validated and the free text after it must be non-blank, but its content is otherwise unrestricted, so a paraphrase can never be falsely rejected. |
 
 ## What the console must also do (2026-09-13)
