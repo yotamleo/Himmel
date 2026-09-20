@@ -1717,7 +1717,9 @@ check "39b --dry-run placeholder name 'session': exit 2" "$rcc39b" "2"
 real_ll="${HOME:-}/.claude/himmel/launch-logs"
 polluted=""
 if [ -n "${HOME:-}" ] && [ -d "$real_ll" ]; then
-  polluted="$(find "$real_ll" -maxdepth 1 \( -name 'HIMMEL-role*.log' -o -name 'HIMMEL-9999*.log' -o -name 'HIMMEL-red*.log' \) -newer "$tmp/suite-start-marker" 2>/dev/null | sort | tr '\n' ' ')"
+  for f in "$real_ll"/HIMMEL-role*.log "$real_ll"/HIMMEL-9999*.log "$real_ll"/HIMMEL-red*.log; do
+    [ -e "$f" ] && [ "$f" -nt "$tmp/suite-start-marker" ] && polluted="$polluted$f "
+  done
 fi
 check "40a no HIMMEL-role*/9999*/red* launch record was written into the real launch-record dir" "$polluted" ""
 # The rows did land somewhere: the suite's pinned dir. Without this a suite that
