@@ -2967,7 +2967,11 @@ release tag through `scripts/lib/release-check.sh` instead (HIMMEL-3247), on
 the same detached-refresh shape; a check that could not complete is reported
 as "could not check for updates" once no check has succeeded for
 `UPDATE_CHECK_STALE` (default 7 days), never as "up to date"
-([`docs/setup/updating.md`](../setup/updating.md)). A third
+([`docs/setup/updating.md`](../setup/updating.md)). Both paths keep their
+throttle stamps, the first-attempt stamp and the release cache in the himmelctl
+cache dir (`$HIMMELCTL_CACHE_DIR`, default `~/.claude/himmel`; `--purge-state`
+removes it) rather than `/tmp`, so a machine that reboots inside the stale window
+still reaches it (HIMMEL-3260). A third
 SessionStart hook, `inject-where-are-we.sh` (HIMMEL-516, plugin-delivered via
 the himmel-ops `hooks.json`), injects the relevant slice of the where-are-we
 ledger; opt-in behind `HIMMEL_WHERE_ARE_WE`, fail-open and advisory.
