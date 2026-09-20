@@ -57,10 +57,10 @@ closes the line. It reads, for each HELD leg in this console doc's `## Live
 state`, whether the nonce starts with this console's own letter
 (`<LETTER>-<leg>-<hex>`). A leg whose nonce carries a PREVIOUS console's letter
 is not rotated, which is a valid state: a relay may keep the leg's token. So the
-leg's own handover doc decides: a `- ... SUCCESSION accepted:` Results bullet
-naming this console = RELAYED (the leg took this console over, informational,
-nothing to do); no such bullet = UNCONFIRMED (this console cannot tell whether
-the leg was re-briefed -- ask the leg for its quote-back, or have the
+leg's own handover doc decides: its LATEST `- ... SUCCESSION accepted:` Results
+bullet naming this console as the incoming session = RELAYED (the leg took this
+console over, informational, nothing to do); no such bullet = UNCONFIRMED (this
+console cannot tell whether the leg was re-briefed -- ask the leg for its quote-back, or have the
 predecessor relay it, which is the stronger form; a chain, see leg-preface.md
 "Console succession", is only for a predecessor that is gone and never replaces
 an accepted relay). UNCONFIRMED wins the field when both occur.
@@ -211,7 +211,7 @@ for leg in $LEGS_SPLIT; do
     fi
     legs_summary="$(csv_add "$legs_summary" "$label:$lock_status")"
     tails_summary="$(csv_add "$tails_summary" "$label:$tail_status")"
-    leg_docmap="$leg_docmap $label=$leg_doc"
+    leg_docmap="$leg_docmap$label=$leg_doc"$'\n'
 done
 [ -n "$legs_summary" ] || legs_summary=none
 [ -n "$tails_summary" ] || tails_summary=none
@@ -299,15 +299,16 @@ if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
                 case "$span_nonce" in
                     "$console_letter"-*) continue ;;
                 esac
-                span_doc=""
-                for pair in $leg_docmap; do
-                    [ "${pair%%=*}" = "$span_leg" ] && span_doc="${pair#*=}"
-                done
+                # one `label=path` per line, so a path with spaces stays whole
+                span_doc="$(printf '%s' "$leg_docmap" | awk -v k="$span_leg" 'index($0, k "=") == 1 { print substr($0, length(k) + 2); exit }')"
                 accepted=""
                 if [ -n "$span_doc" ] && [ -f "$span_doc" ]; then
-                    accepted="$(grep -E '^- .*SUCCESSION accepted:' "$span_doc" 2>/dev/null | grep -F -- "$console_stem" | head -n 1)"
+                    # The LATEST acceptance bullet's INCOMING session (the first
+                    # name after the colon, not the one after `replaces`) must
+                    # be exactly this console.
+                    accepted="$(sed -n -E 's/^- .*SUCCESSION accepted:[^A-Za-z0-9]*([A-Za-z0-9_.-]+).*/\1/p' "$span_doc" 2>/dev/null | tail -n 1)"
                 fi
-                if [ -n "$accepted" ]; then
+                if [ -n "$accepted" ] && [ "$accepted" = "$console_stem" ]; then
                     relayed_csv="$(csv_add "$relayed_csv" "$span_leg")"
                 else
                     unconfirmed_csv="$(csv_add "$unconfirmed_csv" "$span_leg")"

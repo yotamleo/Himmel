@@ -204,8 +204,8 @@ leg's quote-back, updates that leg's `## Live state` nonce only then, and sends
 `<letter> LIVE` last. The predecessor re-briefs before it releases. Prose
 alone drifted twice (the two occurrences above), so the catch is structural:
 `tick.sh` reads a held leg whose Live-state nonce does not carry this console's
-letter against the leg's own doc: a `SUCCESSION accepted` Results bullet naming
-this console gives `nonces=RELAYED:<leg>` (an unrotated relay is valid, not an
+letter against the leg's own doc: a latest `SUCCESSION accepted` Results bullet
+naming this console as the incoming session gives `nonces=RELAYED:<leg>` (an unrotated relay is valid, not an
 incident); none gives `nonces=UNCONFIRMED:<leg>`. It never asserts a leg is
 stranded, which it cannot observe, and both reads are self-reported by the leg.
 
