@@ -2434,6 +2434,22 @@ if [ -n "$u24_kept" ] && [ "$(cat "$u24_kept")" = "mine" ]; then echo 'PASS U24 
 else echo 'FAIL U24 no recoverable temp file with the operator text'; FAILED=$((FAILED + 1)); fi
 assert_has 'U24 error names the preserved temp file' "unwire-ucm." "$out"
 
+# U25 — the temp-file build checks BOTH halves: a failing `head` with a
+# succeeding `tail` (no text after END) must not read as a good result and
+# delete the target as "empty".
+mkdir -p "$TMP/u25-bin"
+# Fails only the temp-file build (head -n <start-1>); the `head -n 1` marker-line
+# lookups still work, so the run reaches the write it is meant to poison.
+# shellcheck disable=SC2016 # the stub's own $2/$@ must stay literal
+printf '#!/bin/sh\n[ "$2" = 1 ] && exec %s "$@"\nexit 1\n' "$(command -v head)" > "$TMP/u25-bin/head"
+chmod +x "$TMP/u25-bin/head"
+printf 'one\ntwo\n' > "$TMP/u25-rules"
+wire_user_claude_md "$U17_TEMPLATE" "$TMP/u25-rules" >/dev/null
+cp "$TMP/u25-rules" "$TMP/u25-before"
+rc=0; PATH="$TMP/u25-bin:$PATH" bash "$U17_SCRIPTS/lib/unwire-user-claude-md.sh" "$TMP/u25-rules" >/dev/null 2>&1 || rc=$?
+assert_rc 'U25 failed head halts the strip' 1 "$rc"
+u_same 'U25 target left byte-identical when head fails' "$TMP/u25-rules" "$TMP/u25-before"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "ALL PASS"
