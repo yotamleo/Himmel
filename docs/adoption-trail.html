@@ -260,16 +260,164 @@
   <header class="top">
     <h1>The Himmel Adoption Trail</h1>
     <p class="lede">Himmel adds safety rails and helpers to Claude Code,
-    Anthropic's AI coding assistant. This page answers three questions
-    first, gives you a five-minute way to try it on a throwaway project, and
-    then lays out the full trail for going further.</p>
+    Anthropic's AI coding assistant. Before anything else this page tells
+    you what you need and what the install does that you cannot easily take
+    back; it then answers three questions, gives you a five-minute way to
+    try it on a throwaway project, and lays out the full trail for going
+    further.</p>
     <nav class="jump" aria-label="On this page">
+      <a href="#before">Before you install</a>
       <a href="#start">The three questions</a>
       <a href="#first-5">First 5 minutes</a>
       <a href="#full-trail">The full trail</a>
       <a href="#glossary">Glossary</a>
     </nav>
   </header>
+
+  <section class="doc" id="before">
+    <h2>Before you install</h2>
+    <p class="sub">Six things that decide whether to run the install at all.
+    Each is here, not further down, because you cannot easily take it back
+    afterwards. Question 2 below has the full list of changes.</p>
+
+    <div class="answers">
+      <div class="answer">
+        <h4>1. You need a way to sign in to Claude Code</h4>
+        <p>Claude Code only runs once you are signed in. Anthropic's
+        documentation lists a Claude subscription (Pro, Max, Team or
+        Enterprise), a Claude Console account, or a supported cloud provider
+        such as Amazon Bedrock. It does not say whether a free claude.ai plan
+        is enough, so check <a href="https://code.claude.com/docs/en/authentication">Anthropic's
+        sign-in page</a> before you start. The first time you run
+        <span class="mono">claude</span> it opens a browser to sign in. Step 1
+        of the first 5 minutes ends by asking you to do that, so a sign-in
+        problem shows up before himmel is involved.</p>
+      </div>
+
+      <div class="answer">
+        <h4>2. The install overwrites files in your project's scripts folder</h4>
+        <p>The starter install copies 13 helper scripts into the project's
+        <span class="mono">scripts/</span> folder:
+        <span class="mono">hooks/auto-approve-safe-bash.sh</span>,
+        <span class="mono">hooks/block-edit-on-main.sh</span>,
+        <span class="mono">hooks/block-read-secrets.sh</span>,
+        <span class="mono">hooks/check-commit-msg.sh</span>,
+        <span class="mono">hooks/check-worktree-isolation.sh</span>,
+        <span class="mono">hooks/check-push-target.sh</span>,
+        <span class="mono">guardrails/lib.sh</span>,
+        <span class="mono">guardrails/guard-gh.sh</span>,
+        <span class="mono">lib/py-armor.sh</span>,
+        <span class="mono">clean-garden.sh</span>,
+        <span class="mono">worktree.sh</span>,
+        <span class="mono">clean.sh</span> and
+        <span class="mono">_new-worktree.sh</span>. If a file with one of
+        those names is already there, it is replaced in place: no backup is
+        made, and no record is kept of which files were yours. In a test, a
+        committed <span class="mono">scripts/worktree.sh</span> was replaced
+        by himmel's version. Run the install in a project where
+        <span class="mono">git status</span> shows nothing uncommitted, so
+        git can bring anything back. The same install also replaces the
+        project's <span class="mono">statusLine</span> setting (item 6).</p>
+      </div>
+
+      <div class="answer">
+        <h4>3. The git checks may not check anything</h4>
+        <p>The install places three git hooks: one before a commit, one on the
+        commit message and one before a push. With the
+        <span class="mono">pre-commit</span> tool present, those hooks run
+        whatever checks your project lists in a
+        <span class="mono">.pre-commit-config.yaml</span> file, and the
+        starter install does not create one. In a test of a starter install,
+        a commit whose message was neither conventional nor carried a ticket
+        reference succeeded, and so did a push to <span class="mono">main</span>.
+        So do not count on the install to refuse a push to
+        <span class="mono">main</span> or to check commit messages. If
+        <span class="mono">pre-commit</span> cannot be installed, the
+        installer places plain git hooks instead; this page has not verified
+        what those enforce. What does work in a starter install is the
+        Claude Code side: inside a Claude Code session, editing a file on the
+        default branch is refused.</p>
+      </div>
+
+      <div class="answer">
+        <h4>4. Commit trailers belong to himmel's own repository</h4>
+        <p>Himmel's own repository asks that a change's first commit end with
+        two <em>trailer</em> lines (extra lines at the end of a commit
+        message), <span class="mono">Platforms tested: linux</span> and
+        <span class="mono">Security reviewed: manual</span>, and checks them
+        when you push. Those checks live in himmel's own
+        <span class="mono">.pre-commit-config.yaml</span>. A starter install
+        neither copies nor enables them, so your project is not asked for
+        trailers. You will meet them if you contribute a change to himmel
+        itself; Level 1 says more.</p>
+      </div>
+
+      <div class="answer">
+        <h4>5. Minimum versions</h4>
+        <p>The installer checks that the tools are present, not which
+        version. Older versions can fail later. The minimums himmel documents
+        (from <a href="setup/new-machine.md">setup/new-machine.md</a>):
+        <span class="mono">git</span> 2.30, <span class="mono">bash</span>
+        3.2, <span class="mono">python3</span> 3.10,
+        <span class="mono">jq</span> 1.6, <span class="mono">node</span> 18 to
+        build (20.17 to push), <span class="mono">npm</span> 11 (only for
+        pushing), <span class="mono">pre-commit</span> 3.5, and the latest
+        <span class="mono">claude</span>. Check what you have:</p>
+        <pre class="cmd">git --version
+node --version
+npm --version
+jq --version
+python3 --version
+claude --version</pre>
+        <p>Each prints a version number. On one Linux machine
+        <span class="mono">claude --version</span> printed
+        <span class="mono">2.1.278 (Claude Code)</span>: a version followed by
+        <span class="mono">(Claude Code)</span>. Where a step below lists no
+        expected output, we did not capture one.</p>
+      </div>
+
+      <div class="answer">
+        <h4>6. What Claude Code does with the files the install writes</h4>
+        <p>Four Claude Code behaviours the install relies on, none of them
+        himmel's own:</p>
+        <ul>
+          <li><b>Workspace trust.</b> In an interactive session Claude Code
+          holds back hooks from every settings file until you accept its
+          trust dialog for the folder. The install records that trust in
+          <span class="mono">~/.claude.json</span> for the project folder;
+          if it cannot, it says so and you accept the dialog the first time
+          you run <span class="mono">claude</span> there. Until then the
+          hooks it wrote do nothing.</li>
+          <li><b>Settings files and scope.</b> Claude Code reads
+          <span class="mono">~/.claude/settings.json</span> (yours, for every
+          project), <span class="mono">.claude/settings.json</span> in the
+          project (meant to be committed and shared) and
+          <span class="mono">.claude/settings.local.json</span> (personal,
+          kept out of git). List settings and hooks from several files are
+          combined; a single-value setting set in more than one file takes
+          the more specific one (local, then project, then yours).
+          <span class="mono">--scope project</span> writes the shared project
+          file, and the install puts machine-specific paths in it (the status
+          line command and <span class="mono">HIMMEL_REPO</span> point at your
+          himmel download), so think before you commit that file. See
+          <a href="https://code.claude.com/docs/en/settings">Anthropic's
+          settings page</a>.</li>
+          <li><b>One status line.</b> <span class="mono">statusLine</span> is a
+          single setting, not a list. Himmel's install sets it in the project
+          file and overwrites any <span class="mono">statusLine</span> that
+          file already had.</li>
+          <li><b>Marketplaces.</b> A plugin marketplace is a catalog of
+          plugins. Using one takes two steps: add the marketplace, then
+          install plugins from it. The install registers four marketplaces
+          (Claude Code keeps that list once per user, not per project) and
+          installs 14 plugins for the project: 5 left on, 9 installed but
+          off until you enable them. Anthropic's documentation warns that
+          plugins can run arbitrary code with your user privileges, so
+          install from marketplaces you trust.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
 
   <section class="doc" id="start">
     <h2>Start here: three questions</h2>
@@ -312,20 +460,29 @@
         <h3>What will it do to my machine?</h3>
         <p>Run from a project folder, the starter install
         (<span class="mono">--scope project</span>) makes exactly the
-        changes below. Add <span class="mono">--dry-run</span> to any install
-        command and it prints this plan and writes nothing.</p>
+        changes below. Adding <span class="mono">--dry-run</span> to the
+        <span class="mono">himmelctl install</span> command prints only a
+        one-line summary and writes nothing; it does not list the files.
+        To preview the file-level plan, run the installer script it wraps
+        (from the project folder, with himmel downloaded to
+        <span class="mono">~/himmel</span> as in the first 5 minutes):</p>
+        <pre class="cmd">bash ~/himmel/scripts/adopt.sh --profile core --scope project --dry-run</pre>
         <h4>In the project folder you run it from</h4>
         <ul>
-          <li>Copies about a dozen helper scripts into the project's
+          <li>Copies 13 helper scripts into the project's
           <span class="mono">scripts/</span> folder (the hooks and the
-          worktree commands).</li>
+          worktree commands), <b>overwriting any file of the same name</b>
+          &mdash; see item 2 of
+          <a href="#before">Before you install</a> for the list.</li>
           <li>Adds to the project's
           <span class="mono">.claude/settings.json</span>: three hook entries
           (they refuse edits on your default branch, refuse reading secret
           files such as <span class="mono">.env</span>, and auto-approve a
-          short list of safe shell commands), a status line, and a
+          short list of safe shell commands), a status line (replacing any
+          <span class="mono">statusLine</span> already set there), and a
           <span class="mono">HIMMEL_REPO</span> setting that points back at
-          the himmel download.</li>
+          the himmel download, plus one more environment setting the status
+          line needs (<span class="mono">CLAUDE_HUD_ALLOW_EXTRA_CMD</span>).</li>
           <li>Places three git hooks in <span class="mono">.git/hooks</span>
           &mdash; one before a commit, one on the commit message, one before
           a push. If you already had git hooks, each is saved next to it as
@@ -333,10 +490,13 @@
           on uninstall. If the <span class="mono">pre-commit</span> tool that
           installs them is missing, the installer tries to install it; if
           that fails it falls back to plain git hooks without the lint
-          checks and says so.</li>
-          <li>Installs a set of Claude Code plugins (add-on packs of slash
+          checks and says so. <b>Placing the hooks is not the same as
+          enforcing anything:</b> see item 3 of
+          <a href="#before">Before you install</a>.</li>
+          <li>Installs 14 Claude Code plugins (add-on packs of slash
           commands and skills) for this project, from four plugin
-          marketplaces it registers first. The dry-run lists every one.</li>
+          marketplaces it registers first. Five are switched on and nine are
+          installed but left off until you enable them.</li>
         </ul>
         <h4>In your home folder</h4>
         <ul>
@@ -349,6 +509,9 @@
           <li>Writes a small <span class="mono">himmelctl</span> launcher to
           <span class="mono">~/.local/bin</span> and keeps its own cache in
           <span class="mono">~/.claude/himmel</span>.</li>
+          <li>Writes the status line's settings file,
+          <span class="mono">~/.claude/plugins/claude-hud/config.json</span>,
+          replacing one that is already there.</li>
           <li>Records in <span class="mono">~/.claude.json</span> that you
           trust this project folder, so Claude Code does not ignore the
           settings the install just wrote. If it cannot write that entry,
@@ -384,12 +547,12 @@
           the default branch is refused; you make a worktree first with the
           <span class="mono">/worktree</span> command. That refusal is the
           point.</li>
-          <li>Commits in that project must have a conventional message
-          (<span class="mono">feat: add a thing</span>) and a ticket
-          reference &mdash; a pointer to an issue in your tracker, such as
-          <span class="mono">#123</span>. Setting
-          <span class="mono">TICKET_ID_REQUIRED=0</span> drops the ticket
-          half; the message-shape check stays.</li>
+          <li>Nothing else about committing or pushing changes by
+          default. The git hooks are in place, but when the
+          <span class="mono">pre-commit</span> tool is present a starter
+          install gives them no checks to run (item 3 of
+          <a href="#before">Before you install</a>), so commit-message and
+          push-to-<span class="mono">main</span> rules are yours to add.</li>
         </ul>
         <p>Prefer to gate every project on the machine instead of one? Use
         <span class="mono">--scope user</span>, which wires the same hooks
@@ -545,12 +708,22 @@ uv tool install pre-commit</pre>
           Running Windows-native Claude Code with a WSL shell is not
           possible.</p>
         </div>
+
+        <p>When the installs finish, check your versions against the
+        minimums in <a href="#before">Before you install</a>
+        (<span class="mono">git --version</span>,
+        <span class="mono">node --version</span> and so on). Then sign in:
+        run <span class="mono">claude</span>, finish the sign-in in the
+        browser it opens, and leave with <span class="mono">/exit</span>.
+        Doing it now means an account problem shows up before himmel is
+        involved. <span class="mono">claude --version</span> should print a
+        version followed by <span class="mono">(Claude Code)</span>.</p>
       </li>
 
       <li>
         <p><b>Make a throwaway project.</b> Do this <em>before</em> the
-        install: once himmel is in place, its commit check would reject a
-        plain first commit. If git says it does not know who you are, first
+        install, so your first commit does not depend on whatever git checks
+        the install places. If git says it does not know who you are, first
         run <span class="mono">git config --global user.name "Your Name"</span>
         and <span class="mono">git config --global user.email
         "you@example.com"</span>.</p>
@@ -558,40 +731,71 @@ uv tool install pre-commit</pre>
 cd ~/himmel-trial
 git init -b main
 git commit --allow-empty -m "chore: initial commit"</pre>
+        <p>Expected: <span class="mono">git init</span> prints
+        <span class="mono">Initialized empty Git repository in</span> and the
+        path of the new folder; the commit prints a summary line for the new
+        commit. (We captured the first of those, not the second.)</p>
       </li>
 
       <li>
         <p><b>Download himmel</b> once, next to your projects rather than
         inside one:</p>
         <pre class="cmd">git clone https://github.com/yotamleo/himmel ~/himmel</pre>
+        <p>Expected: git prints <span class="mono">Cloning into</span> and the
+        path, and ends without an error. We captured this from a local copy,
+        not from GitHub itself.</p>
       </li>
 
       <li>
         <p><b>Preview the install.</b> Run it from the project, not from the
-        download. <span class="mono">--dry-run</span> prints the plan and
-        writes nothing; compare it with the
+        download. Both commands below write nothing. The first is the
+        <span class="mono">himmelctl</span> dry run, which prints only a
+        summary; the second is the installer script it wraps, which lists
+        every file and setting it would touch, so compare that one with the
         <a href="#what-it-does">answer to question 2</a>. The
         <span class="mono">himmelctl</span> command only lands on your PATH
         once an install has run, so the first call goes through
         <span class="mono">node</span>.</p>
         <pre class="cmd">cd ~/himmel-trial
-node ~/himmel/scripts/himmelctl/bin.js install --scope project --dry-run</pre>
+node ~/himmel/scripts/himmelctl/bin.js install --scope project --dry-run
+bash ~/himmel/scripts/adopt.sh --profile core --scope project --dry-run</pre>
+        <p>Expected from the first: a line
+        <span class="mono">would install (--dry-run &mdash; NOTHING below was
+        executed):</span> followed by
+        <span class="mono">+ himmel (profile=starter, scope=project)</span>
+        and the <span class="mono">adopt.sh</span> command it would run. It
+        may also warn that the Jira command-line tool is not built yet; the
+        install builds it. From the second: one line per planned action, each
+        starting <span class="mono">DRY:</span>.</p>
       </li>
 
       <li>
-        <p><b>Install.</b> The same command without
-        <span class="mono">--dry-run</span>. It asks no questions; the
-        answers are the starter preset described above.</p>
+        <p><b>Install.</b> The same <span class="mono">himmelctl</span>
+        command without <span class="mono">--dry-run</span>. It asks no
+        questions; the answers are the starter preset described above.</p>
         <pre class="cmd">node ~/himmel/scripts/himmelctl/bin.js install --scope project</pre>
+        <p>Expected: it ends with an <span class="mono">install summary</span>
+        whose <span class="mono">installed:</span> list has a line
+        <span class="mono">+ himmel (profile=starter, scope=project)</span>
+        and a line beginning <span class="mono">+ workspace trusted:</span>.
+        Before the summary it may tell you that
+        <span class="mono">~/.local/bin</span> is not on your PATH (add the
+        line it prints to your shell profile) and, without
+        <span class="mono">bun</span>, that it is skipping the search-tool
+        wiring. We did not record how long it takes or its exit status.</p>
       </li>
 
       <li>
         <p><b>Watch a guardrail work.</b> Start Claude Code in the project
-        (the first run asks you to sign in):</p>
+        (you signed in at step 1; if the trust dialog appears, accept it):</p>
         <pre class="cmd">claude</pre>
         <p>Ask it to create a file called <span class="mono">hello.txt</span>.
         The edit is refused because you are on the default branch &mdash; that
-        refusal is the success signal. Then type
+        refusal is the success signal. The refusal message contains
+        <span class="mono">block-edit-on-main: refusing to edit</span> (we
+        captured that by running the hook directly, not inside a live Claude
+        Code session, and did not capture what
+        <span class="mono">/worktree</span> prints). Then type
         <span class="mono">/worktree feat/try-himmel</span> (a
         <em>slash command</em>: a command you type inside a Claude Code
         session, starting with <span class="mono">/</span>) and ask again;
@@ -603,7 +807,13 @@ node ~/himmel/scripts/himmelctl/bin.js install --scope project --dry-run</pre>
         <p><b>Check the result.</b> Back in the terminal, in the same
         project folder:</p>
         <pre class="cmd">node ~/himmel/scripts/himmelctl/bin.js status</pre>
-        <p>It reports what is installed against what himmel expects. For one
+        <p>It prints one row for each thing himmel checks. Read the rows
+        rather than expecting a clean board, and treat a green row as
+        &ldquo;found&rdquo;, not &ldquo;working&rdquo;: for example, the row
+        for the git hooks reports that the hook files exist, not that they
+        check anything (item 3 of
+        <a href="#before">Before you install</a>). We have no
+        expected result to give you for this command. For one
         real working loop after this, see
         <a href="getting-started.md#3-your-first-loop-5-minutes">getting-started.md</a>.
         The full install reference is
@@ -621,7 +831,9 @@ node ~/himmel/scripts/himmelctl/bin.js install --scope project --dry-run</pre>
   <div class="trailintro" id="full-trail">
     <h2>The full trail</h2>
     <p>Eight levels from a fresh install to a fleet that ships while you
-    sleep. Climb as far as suits you &mdash; every level is optional, says
+    sleep. Levels 0 and 1 are guardrails for Claude Code in any project;
+    Levels 2 to 7 describe one operator's personal setup on top of that.
+    Climb as far as suits you &mdash; every level is optional, says
     what it changes, and is reversible. Click a level marker to remember
     where you are (kept on this device only) and any chip for its
     detail. Terms are explained the first time they appear and again in the
@@ -726,12 +938,20 @@ node ~/himmel/scripts/himmelctl/bin.js install --scope project --dry-run</pre>
       <div class="card">
         <span class="lvl-tag">LEVEL 1</span>
         <h2>Ship with guardrails</h2>
-        <p>Turn on the development overlay: commit gates, ticket
-        discipline, <dfn>attested</dfn> pushes and a review loop that runs before
-        anything merges — on GitHub via GitHub's <span class="mono">gh</span>
-        command-line tool, or Bitbucket via the bundled
-        Bitbucket CLI (the <span class="mono">himmel-gh</span> plugin routes
-        to whichever your repo uses). Two terms you will meet here: an
+        <p>The git-side discipline himmel's own repository runs on: commit
+        checks, ticket references, <dfn>attested</dfn> pushes and a review
+        loop that runs before anything merges — on GitHub via GitHub's
+        <span class="mono">gh</span> command-line tool, or Bitbucket via the
+        bundled Bitbucket CLI (the <span class="mono">himmel-gh</span> plugin
+        routes to whichever your repo uses). <b>A starter install does not
+        turn this level on for your project:</b> it places the git hooks but
+        not the checks they would run (item 3 of
+        <a href="#before">Before you install</a>). The installer's
+        <span class="mono">--contribute</span> flag, the &ldquo;development
+        overlay&rdquo;, layers himmel's own contributor setup script on top of
+        the normal install; it is meant for working on himmel itself, and this
+        page has not verified what it changes in another project. Two terms
+        you will meet here: an
         <em>attestation</em> (hence &ldquo;attested&rdquo;) is proof written
         into the commit message itself, as trailer lines such as
         <span class="mono">Platforms tested: linux</span> and
@@ -743,16 +963,23 @@ node ~/himmel/scripts/himmelctl/bin.js install --scope project --dry-run</pre>
         of reviewers &mdash; Claude, plus any review lane you switched on
         (Level 4) &mdash; that the <span class="mono">/pr-check</span>
         command asks to look at the same diff.</p>
+        <p>Wired by a starter install, on the Claude Code side:</p>
         <ul class="guard">
-          <li><b>Worktree isolation</b> — feature work never edits your
-          main branch directly</li>
+          <li><b>Worktree isolation</b> — inside Claude Code, edits on
+          your default branch are refused</li>
+          <li><b>Secret-file protection</b> — Claude Code is refused
+          reading files such as <span class="mono">.env</span></li>
+        </ul>
+        <p>What himmel's own repository adds on top; none of it is in a
+        starter install:</p>
+        <ul class="guard">
           <li><b>Dangerous-command blocking</b> — destructive shell
           operations are refused, not regretted</li>
-          <li><b>Secret egress fences</b> — credentials and private data
-          are stopped before they reach any outside service</li>
-          <li><b>Corpus routing</b> — a ratified matrix decides which body
-          of data may reach which backend at all; health data fails
-          closed</li>
+          <li><b>Secret leak fences</b> — credentials and private data
+          are stopped before they are sent to any outside service</li>
+          <li><b>Data routing</b> — a written policy table decides which
+          kinds of data may be sent to which outside AI service at all; health
+          data is refused by default</li>
           <li><b>Attested pushes</b> — a push carries proof of testing and
           review, or it doesn't leave</li>
           <li><b>Review gates</b> — a merge needs a clean review verdict
@@ -761,43 +988,45 @@ node ~/himmel/scripts/himmelctl/bin.js install --scope project --dry-run</pre>
           ticket refs, feature work only in worktrees, and a runbook that
           drives execute → review → PR → ticket → merge → handover
           end-to-end</li>
-          <li><b>Spend guards</b> — unattended runs draw the same
-          subscription bank as you do; they are gated, never silent</li>
+          <li><b>Usage guards</b> — unattended Claude runs use up the same
+          5-hour and weekly usage allowance as your own sessions, so they
+          check it first and are gated, never silent</li>
           <li><b>Scheduler safety</b> — raw scheduled-task mutation is
           blocked; only vetted scripts arm or disarm</li>
         </ul>
-        <p>None of this is advice. Each guard above is wiring — hooks and
-        gates that fire whether or not anyone remembers them.</p>
-        <p class="note">The Claude-session guards (worktree isolation,
-        dangerous-command blocking, the egress fences) and the <em>git</em>
-        gates (pre-commit, commit-msg, pre-push) are both wired by the
-        install &mdash; the opt-out,
+        <p>None of this is advice: each guard is wiring &mdash; hooks and
+        gates that fire whether or not anyone remembers them &mdash; but only
+        where the wiring is installed.</p>
+        <p class="note">The <em>git</em> hooks (pre-commit, commit-msg,
+        pre-push) are placed by the install &mdash; the opt-out,
         <span class="mono">--skip-hooks</span> (<span class="mono">-SkipHooks</span>
         on Windows), is a flag of <span class="mono">scripts/adopt.sh</span>
         / <span class="mono">adopt.ps1</span>, not of
         <span class="mono">himmelctl install</span>, so use it if you manage
-        git hooks yourself. Ticket discipline is <em>on by
-        default</em> once they are placed: the commit-msg gate wants a
-        ticket reference built from your project key (the key, a dash and a
-        number, as in your tracker's ticket IDs) when you set
-        <span class="mono">JIRA_PROJECT_KEY</span> (or your own
-        <span class="mono">TICKET_ID_PATTERN</span>), and a
+        git hooks yourself. What they check is up to the project's own
+        <span class="mono">.pre-commit-config.yaml</span>. When the
+        commit-msg check does run, it wants a ticket reference built from your
+        project key (the key, a dash and a number, as in your tracker's ticket
+        IDs) when you set <span class="mono">JIRA_PROJECT_KEY</span> (or your
+        own <span class="mono">TICKET_ID_PATTERN</span>), and a
         <span class="mono">#123</span>-style number when you have no Jira at all.
         <span class="mono">TICKET_ID_REQUIRED=0</span> opts out of the ticket
         half; the conventional-commit shape check stays on either way. See
         <a href="setup/new-machine.md">setup/new-machine.md</a>.</p>
-        <p>Today the git flow is structurally <b>PR-only</b>: no direct
-        push to main, one sanctioned merge path, auto-merge only when you
-        opt in.</p>
+        <p>In himmel's own repository the git flow is structurally
+        <b>PR-only</b>: its pre-push check refuses a push to main, there is
+        one sanctioned merge path, and auto-merge is on only when you opt in.
+        A starter install does not set that up for your project.</p>
         <ul class="chips">
           <li><button class="chip" data-detail="git-flow">PR-only git
           flow</button></li>
           <li><button class="chip roadmap" data-detail="rm-autonomy">Git
           autonomy ceiling</button></li>
         </ul>
-        <p class="impact"><b>Impact:</b> nothing lands unreviewed or
-        unattested. The workflow enforces itself, so discipline stops
-        depending on memory at 2am.</p>
+        <p class="impact"><b>Impact:</b> in himmel's own repository, nothing
+        lands unreviewed or unattested and the workflow enforces itself, so
+        discipline stops depending on memory at 2am. In your project you get
+        that only for what you wire up yourself.</p>
       </div>
     </section>
 
@@ -808,6 +1037,12 @@ node ~/himmel/scripts/himmelctl/bin.js install --scope project --dry-run</pre>
       <div class="card">
         <span class="lvl-tag">LEVEL 2</span>
         <h2>Second brain</h2>
+        <p class="note"><b>The subject changes here.</b> Levels 0 and 1 are
+        about using Claude Code safely in any project. From Level 2 the trail
+        describes one operator's personal setup around himmel: a notes vault,
+        scheduled jobs, phone messaging and a health-data pull. It is
+        optional, and nothing in Levels 0 and 1 depends on it. If you only
+        want guardrails, you can stop at Level 1.</p>
         <p>Connect a vault — the folder of Markdown notes defined at the top
         of this page. Start from the bundled
         <button class="textlink" data-detail="luna-template">luna-second-brain
@@ -940,7 +1175,8 @@ node ~/himmel/scripts/himmelctl/bin.js install --scope project --dry-run</pre>
             runs with budget guard</button></li>
           </ul></div>
         <p class="impact"><b>Impact:</b> quota exhaustion stops being a
-        3pm surprise. Heavy work checks the bank first; every session can
+        3pm surprise. Heavy work checks your remaining usage allowance
+        first; every session can
         read its own context fill instead of guessing.</p>
       </div>
     </section>
