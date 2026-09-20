@@ -760,13 +760,22 @@ report_unresolved() {
   fail_step "$step: \`$tool\` not found"
 }
 
+# HIMMEL-3253: pre_commit/commands/install_uninstall.py's is_our_script() —
+# CURRENT_HASH then PRIOR_HASHES. `pre-commit install` writes exactly one of
+# these into every hook it owns, and `pre-commit uninstall` removes a hook only
+# when the file carries one; match all six, since an adopter on an older
+# pre-commit is exactly who this path exists for.
+FRAMEWORK_HOOK_HASHES='138fd403232d2ddd5efb44317e38bf03 4d9958c90bc262f47553e2c073f14cfe d8ee923c46731b42cd95cc869add4062 49fd668cb42069aa1b6048464be5d395 79f09a650522a87b0da915d0d983b2de e358c9dae00eac5d06b38dfdb1e33a8c'
+
 # repo_has_framework_hooks — rc 0 iff this repo actually carries hooks that
 # `pre-commit uninstall` would have to remove (HIMMEL-2754): a set
-# core.hooksPath, or a non-.sample file in the resolved hooks directory whose text names
-# pre-commit. HIMMEL-2841: a file carrying $NATIVE_GATE_MARKER is a HIMMEL-2771
-# native gate, never a framework hook, even though the marker text itself
-# contains the substring "pre-commit" — checked and skipped before that
-# substring test. rc 1 = definitely none, including a missing directory resolved
+# core.hooksPath, or a non-.sample file in the resolved hooks directory that
+# carries one of the framework's own identity hashes (HIMMEL-3253, below) —
+# the framework's is_our_script() test, so an adopter's own hook that merely
+# mentions pre-commit is not one (`pre-commit uninstall` could never remove it).
+# HIMMEL-2841: a file carrying $NATIVE_GATE_MARKER is a HIMMEL-2771
+# native gate, never a framework hook — checked and skipped before the hash
+# test. rc 1 = definitely none, including a missing directory resolved
 # by git; rc 2 = missing directory whose location could not be resolved
 # because git was absent or rev-parse failed, or an existing hook file that
 # could not be read (including a grep error), or a hooks directory that exists but cannot be read or searched.
@@ -774,7 +783,9 @@ report_unresolved() {
 # do — a note, not a halt (a plain adopter install without uv/pipx never
 # places framework hooks at all; see HIMMEL-2771).
 repo_has_framework_hooks() {
-  local hooks_path f grep_rc hooks_dir="" resolved_hooks_dir hooks_resolved=0 hooks_unreadable=0
+  local hooks_path f grep_rc hooks_dir="" resolved_hooks_dir hooks_resolved=0 hooks_unreadable=0 h
+  local -a hash_args=()
+  for h in $FRAMEWORK_HOOK_HASHES; do hash_args+=(-e "$h"); done
   if command -v git >/dev/null 2>&1; then
     hooks_path="$(git -C "$HOOKS_REPO_ROOT" config --get core.hooksPath 2>/dev/null)" || hooks_path=""
     if [ -n "$hooks_path" ]; then FRAMEWORK_HOOK_TRIGGER="core.hooksPath=$hooks_path"; return 0; fi
@@ -809,12 +820,11 @@ repo_has_framework_hooks() {
     case "$f" in *.himmel-backup) continue ;; esac
     if [ ! -f "$f" ]; then continue; fi
     if [ ! -r "$f" ]; then hooks_unreadable=1; continue; fi
-    # HIMMEL-2841: a native gate (HIMMEL-2771) is never a framework hook, even
-    # though its own marker text contains the substring "pre-commit" below —
-    # check for it FIRST so it can never be misidentified as a framework hook.
+    # HIMMEL-2841: a native gate (HIMMEL-2771) is never a framework hook —
+    # check for it FIRST so it can never be misidentified as one.
     grep -qF "$NATIVE_GATE_MARKER" "$f" 2>/dev/null && continue
     grep_rc=0
-    grep -q 'pre-commit' "$f" || grep_rc=$?
+    grep -qF "${hash_args[@]}" "$f" || grep_rc=$?
     case "$grep_rc" in
       0) FRAMEWORK_HOOK_TRIGGER="$f"; return 0 ;;
       1) continue ;;
