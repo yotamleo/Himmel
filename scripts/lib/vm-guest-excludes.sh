@@ -104,7 +104,7 @@ _vm_guest_inert_lanes_test() {
   ere="^\\{${Q}lanes${Q}:\\[(${entry}(,${entry})*)?\\]"
   ere="${ere}(,${Q}profileAllowlist${Q}:\\[${ids}\\]"
   ere="${ere}(,${Q}profileAllowlistScope${Q}:\\[${ids}\\])?)?\\}"'\$'
-  printf '%s' "-type f -path ${sq}*/scripts/lanes/lanes.local.json${sq} -size -3 -exec sh -c ${sq}tr -d \" \\n\\t\\r\" <\"\$1\" | grep -Eq \"${ere}\"${sq} _ {} \;"
+  printf '%s' "-type f -path ${sq}*/scripts/lanes/lanes.local.json${sq} -size -3 -exec sh -c ${sq}tr -d \" \\n\\t\\r\" <\"\$1\" | grep -Eq \"${ere}\"${sq} _ {} \;"   # pipefail-ok: emitted text for the guest's plain sh -c (no pipefail), stdin capped at 1 KiB by -size -3
 }
 
 vm_guest_tar_excludes() {
