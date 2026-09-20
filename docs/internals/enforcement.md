@@ -2961,7 +2961,13 @@ session starts. Stdout on exit 0 is injected as additional context.
 behind-count is read from the LOCAL remote-tracking refs and the `git fetch`
 that refreshes them is DETACHED, so an offline or slow remote can no longer
 stall — or time out — session start (HIMMEL-1844; a fresh clone is therefore
-silent on its first check, and nudges on the next one). A third
+silent on its first check, and nudges on the next one). On an install with no
+`.git` (a tarball or native package) it compares `VERSION` with the latest
+release tag through `scripts/lib/release-check.sh` instead (HIMMEL-3247), on
+the same detached-refresh shape; a check that could not complete is reported
+as "could not check for updates" once no check has succeeded for
+`UPDATE_CHECK_STALE` (default 7 days), never as "up to date"
+([`docs/setup/updating.md`](../setup/updating.md)). A third
 SessionStart hook, `inject-where-are-we.sh` (HIMMEL-516, plugin-delivered via
 the himmel-ops `hooks.json`), injects the relevant slice of the where-are-we
 ledger; opt-in behind `HIMMEL_WHERE_ARE_WE`, fail-open and advisory.
