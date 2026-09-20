@@ -634,13 +634,17 @@ export function acquireLock(dir, hooks = {}) {
 // holds it. It is held for a handful of syscalls, so a gate older than
 // RECLAIM_STALE_MS was left by a worker that died inside the takeover, and is
 // cleared so it cannot wedge the queue.
-// ponytail: clearing a dead gate is itself a path-keyed removal, so two workers
-// clearing the SAME dead gate can both end up holding a fresh one. That needs a
-// worker to die mid-takeover AND two more to wake in the same instant.
+// ponytail: clearing an aged-out gate is itself a path-keyed removal, so two
+// workers that judge the SAME gate aged-out can both clear it, and the slower
+// one removes the gate the faster one just took. The age alone decides, so a
+// live holder paused inside the takeover for over RECLAIM_STALE_MS (SIGSTOP, a
+// starved host) loses its gate the same way. Either needs a worker stuck or
+// dead mid-takeover AND two more to wake in the same instant.
 // A stale lock whose holder is still alive (age cap, or a reused pid) and
 // releases between the in-gate check and the rename is the other: releaseLock
 // does not take the gate. Both are far narrower than the window this closes,
-// and neither is closed here.
+// and neither is closed here — a directory alone cannot make removing "the
+// gate I judged" atomic, which is the same gap this gate exists to close.
 const RECLAIM_STALE_MS = 30 * 1000;
 function takeReclaimGate(p) {
   const gate = `${p.lock}.reclaim`;
