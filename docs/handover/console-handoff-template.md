@@ -13,13 +13,14 @@
 
 Run ACTION ZERO from `{{SUCCESSOR_DOC}}` unchanged. Expect at the root sweep:
 `<the locks the successor should find>`. Kit is in-tree at `{{KIT}}`.
-Rotate nonces to `{{LETTER}}-<leg>-<hex>`, quoting each
-{{PREDECESSOR_LETTER}} token verbatim; the live ones are listed below. Ask the
-{{PREDECESSOR_LETTER}} console session (`{{PREDECESSOR}}` minus the `.md`) to
-re-brief each inherited leg from its own socket, naming you and quoting the
-leg's token and your fresh one, and wait for each leg's quote-back — **the nonces in the list
-below are the predecessor's and are dead to you until a leg has quoted back**;
-do not treat them as yours. Only then send **`{{LETTER}} LIVE`** to that
+The live legs and their tokens are listed below. A relay MAY keep a
+leg's token, so rotating it to `{{LETTER}}-<leg>-<hex>` is optional, not a
+precondition of succession. Ask the {{PREDECESSOR_LETTER}} console session
+(`{{PREDECESSOR}}` minus the `.md`) to re-brief each inherited leg from its own
+socket, naming you and quoting the leg's current token (plus your fresh one only
+if you chose to issue one), and wait for each leg's quote-back — **the tokens in
+the list below are the predecessor's, and a leg is yours only once it has quoted
+back**; until then do not treat them as yours. Only then send **`{{LETTER}} LIVE`** to that
 session so it releases its lock and wraps — or, for a leg that stays silent,
 send it with that leg named as one that did not quote back, and why (ACTION
 ZERO step 9), rather than waiting on it indefinitely. `LIVE` first strands
