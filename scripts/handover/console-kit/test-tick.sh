@@ -178,7 +178,7 @@ mkdir -p "$W/console-work/chain"
 # The default stub reset epoch, rendered the way tick.sh renders it (local HH:MM).
 gql_hm="$(date -d @1790000000 +%H:%M 2>/dev/null || date -r 1790000000 +%H:%M)"
 out="$(bash "$SUT")"; rc=$?
-expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7 gql=4321/'"$gql_hm"' orphans=none'
+expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7 gql=4321/'"$gql_hm"' orphans=none nonces=skip'
 lines="$(printf '%s\n' "$out" | wc -l | tr -d '[:space:]')"
 if [ "$rc" -eq 0 ] && [ "$lines" = 1 ] && [ "$out" = "$expected" ]; then
     pass 'default run emits exactly the expected one batched line'
@@ -265,7 +265,104 @@ no_section_out="$(bash "$SUT")"; rc=$?
 if [ "$rc" -eq 0 ]; then pass 'livestate=unknown run exits 0'; else fail "livestate=unknown run exits 0 (rc=$rc)"; fi
 contains 'a doc with no Live state section reports unknown, not ok' "$no_section_out" 'livestate=unknown'
 
-rm -f "$W/handover/console.md"
+# --- HIMMEL-3254: nonces=<ok|RELAYED|UNCONFIRMED> -----------------------------
+# A HELD leg whose Live-state nonce still carries a PREVIOUS console's letter
+# prefix (nonce shape `<LETTER>-<leg>-<hex>`; the letter is the console doc's
+# own, parsed from `<prefix>-nextleg-<date><LETTER>-<name>.md`) is not rotated.
+# That is a VALID state -- a relay may keep the leg's token -- so the leg's own
+# handover doc decides: a `SUCCESSION accepted:` Results bullet naming this
+# console = RELAYED, none = UNCONFIRMED. Only N61 is held (stub above).
+kdoc="$W/handover/HIMMEL-nextleg-2026-09-20K-console.md"
+n61doc="$W/handover/HIMMEL-111-legN61.md"
+# shellcheck disable=SC2016  # backtick leg span, literal fixture text
+printf '%s\n' '# K' '' '## Live state' '' \
+    'legs: `N61:J-N61-0a1b2c:tok-61:111`' 'queue: none' 'last GO: none' 'acked: none' > "$kdoc"
+unconfirmed_out="$(DOC="$kdoc" bash "$SUT")"; rc=$?
+if [ "$rc" -eq 0 ]; then pass 'nonces=UNCONFIRMED run exits 0'; else fail "nonces=UNCONFIRMED run exits 0 (rc=$rc)"; fi
+contains 'a held leg on the predecessor J prefix with no acceptance bullet is UNCONFIRMED under console K' "$unconfirmed_out" 'nonces=UNCONFIRMED:N61'
+contains '--verbose labels the nonce census' "$(DOC="$kdoc" bash "$SUT" --verbose)" 'nonces: UNCONFIRMED:N61'
+case "$unconfirmed_out" in
+    *STRANDED*) fail 'the field never asserts STRANDED: it cannot observe that' ;;
+    *) pass 'the field never asserts STRANDED: it cannot observe that' ;;
+esac
+
+# The state that occurs in practice: the outgoing console relayed the leg
+# WITHOUT rotating its token, and the leg accepted and wrote its bullet. The
+# Live-state nonce still carries J, and that is correct -- not an incident.
+# shellcheck disable=SC2016  # backtick spans, literal fixture text
+printf '%s\n' '# leg' '- LIVE — working' \
+    '- 04:17 SUCCESSION accepted: `HIMMEL-nextleg-2026-09-20K-console` replaces `HIMMEL-nextleg-2026-09-19J-console`' > "$n61doc"
+relayed_out="$(DOC="$kdoc" bash "$SUT")"
+contains 'an unrotated leg that accepted this console reads nonces=RELAYED (relay without rotation is valid)' "$relayed_out" 'nonces=RELAYED:N61'
+case "$relayed_out" in
+    *UNCONFIRMED*|*STRANDED*) fail 'an unrotated leg that accepted this console must not read as an incident' ;;
+    *) pass 'an unrotated leg that accepted this console must not read as an incident' ;;
+esac
+contains 'the tails census is unchanged by the acceptance bullet' "$relayed_out" 'tails=N61:LIVE'
+
+# A bullet that names ANOTHER console does not confirm THIS one.
+# shellcheck disable=SC2016  # backtick spans, literal fixture text
+printf '%s\n' '# leg' '- LIVE — working' \
+    '- 04:17 SUCCESSION accepted: `HIMMEL-nextleg-2026-09-19J-console` replaces `HIMMEL-nextleg-2026-09-18I-console`' > "$n61doc"
+contains 'an acceptance bullet naming a different console does not confirm this one' "$(DOC="$kdoc" bash "$SUT")" 'nonces=UNCONFIRMED:N61'
+
+# Only the INCOMING session counts: a leg that accepted a LATER console L (which
+# replaces K) names K after `replaces`, and that must not confirm K.
+# shellcheck disable=SC2016  # backtick spans, literal fixture text
+printf '%s\n' '# leg' '- LIVE — working' \
+    '- 04:17 SUCCESSION accepted: `HIMMEL-nextleg-2026-09-20L-console` replaces `HIMMEL-nextleg-2026-09-20K-console`' > "$n61doc"
+contains 'a stem after the word replaces is the OUTGOING console and confirms nothing' "$(DOC="$kdoc" bash "$SUT")" 'nonces=UNCONFIRMED:N61'
+
+# The LATEST acceptance wins: accepted K, then moved on to L -> not K's leg.
+# shellcheck disable=SC2016  # backtick spans, literal fixture text
+printf '%s\n' '# leg' '- LIVE — working' \
+    '- 04:17 SUCCESSION accepted: `HIMMEL-nextleg-2026-09-20K-console` replaces `HIMMEL-nextleg-2026-09-19J-console`' \
+    '- 05:02 SUCCESSION accepted: `HIMMEL-nextleg-2026-09-20L-console` replaces `HIMMEL-nextleg-2026-09-20K-console`' > "$n61doc"
+contains 'a later acceptance of another console supersedes an earlier one' "$(DOC="$kdoc" bash "$SUT")" 'nonces=UNCONFIRMED:N61'
+
+# A handover root whose path contains a space keeps its leg doc whole.
+# shellcheck disable=SC2016  # backtick spans, literal fixture text
+printf '%s\n' '# leg' '- LIVE — working' \
+    '- 04:17 SUCCESSION accepted: `HIMMEL-nextleg-2026-09-20K-console` replaces `HIMMEL-nextleg-2026-09-19J-console`' > "$n61doc"
+ln -s "$W/handover" "$W/hand over"
+contains 'a leg doc path containing a space is read whole (RELAYED, not UNCONFIRMED)' "$(HANDOVER_DIR="$W/hand over" DOC="$kdoc" bash "$SUT")" 'nonces=RELAYED:N61'
+rm -f "$W/hand over"
+
+# Prose that merely mentions the phrase (not a Results bullet) confirms nothing.
+printf '%s\n' '# leg' '- LIVE — working' \
+    'note: SUCCESSION accepted: HIMMEL-nextleg-2026-09-20K-console replaces J (prose, not a bullet)' > "$n61doc"
+contains 'a non-bullet line mentioning SUCCESSION accepted confirms nothing' "$(DOC="$kdoc" bash "$SUT")" 'nonces=UNCONFIRMED:N61'
+printf '%s\n' '# leg' '- LIVE — working' > "$n61doc"
+
+# shellcheck disable=SC2016  # backtick leg span, literal fixture text
+printf '%s\n' '# K' '' '## Live state' '' \
+    'legs: `N61:K-N61-9f8e7d:tok-61:111`' 'queue: none' 'last GO: none' 'acked: none' > "$kdoc"
+rotated_out="$(DOC="$kdoc" bash "$SUT")"
+contains 'a held leg rotated onto the K prefix reads nonces=ok' "$rotated_out" 'nonces=ok'
+case "$rotated_out" in
+    *UNCONFIRMED*|*RELAYED*|*STRANDED*) fail 'a rotated leg reports neither UNCONFIRMED nor RELAYED' ;;
+    *) pass 'a rotated leg reports neither UNCONFIRMED nor RELAYED' ;;
+esac
+
+# shellcheck disable=SC2016  # backtick leg span, literal fixture text
+printf '%s\n' '# K' '' '## Live state' '' \
+    'legs: `N61:K-N61-9f8e7d:tok-61:111`, `N65:J-N65-aa11bb:tok-65:222`' 'queue: none' 'last GO: none' 'acked: none' > "$kdoc"
+contains 'a wrapped (FREE-lock) leg on an old prefix is not flagged -- nothing to rotate' "$(DOC="$kdoc" bash "$SUT")" 'nonces=ok'
+
+# `AA` must not read as a prefix of `A`: the boundary is the dash.
+aadoc="$W/handover/HIMMEL-nextleg-2026-09-20AA-console.md"
+# shellcheck disable=SC2016  # backtick leg span, literal fixture text
+printf '%s\n' '# AA' '' '## Live state' '' \
+    'legs: `N61:A-N61-0a1b2c:tok-61:111`' 'queue: none' 'last GO: none' 'acked: none' > "$aadoc"
+contains 'letter A is not letter AA (prefix boundary is the dash)' "$(DOC="$aadoc" bash "$SUT")" 'nonces=UNCONFIRMED:N61'
+
+# A doc whose name carries no console letter cannot be judged: unknown, never a guess.
+# shellcheck disable=SC2016  # backtick leg span, literal fixture text
+printf '%s\n' '# console' '' '## Live state' '' \
+    'legs: `N61:J-N61-0a1b2c:tok-61:111`' 'queue: none' 'last GO: none' 'acked: none' > "$W/handover/console.md"
+contains 'a console doc name with no parseable letter reads nonces=unknown' "$(bash "$SUT")" 'nonces=unknown'
+
+rm -f "$W/handover/console.md" "$kdoc" "$aadoc"
 
 # HIMMEL-2999: /proc absent (CLAUDE_SESSIONS_PROC pointing nowhere) falls back
 # to the old flattened `pgrep -af` parse, kept byte-identical, plus a
@@ -573,7 +670,7 @@ gql_verbose="$(bash "$SUT" --verbose)"
 contains '--verbose labels the graphql budget (HIMMEL-3197)' "$gql_verbose" "gql: 4321/$gql_hm"
 gql_burn="$(bash "$SUT" --burn --legs 'HIMMEL-111-legN61')"
 case "$gql_burn" in
-    *' burn=N61:'*" capacity=UNDERFILLED:7 gql=4321/$gql_hm orphans=none") pass 'gql= keeps its slot under --burn, orphans= trails it (HIMMEL-3197, HIMMEL-2761)' ;;
+    *' burn=N61:'*" capacity=UNDERFILLED:7 gql=4321/$gql_hm orphans=none nonces="*) pass 'gql= keeps its slot under --burn, orphans= trails it, nonces= closes the line (HIMMEL-3197, HIMMEL-2761, HIMMEL-3254)' ;;
     *) fail "gql=/orphans= order under --burn (out='$gql_burn')" ;;
 esac
 

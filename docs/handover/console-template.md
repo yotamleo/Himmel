@@ -68,7 +68,23 @@ Run these, in order, and write the result as the first bullet under
    — `held` by that session is the expected, correct state. Only if it reports
    `free` (an earlier console released it) do you acquire one yourself, and
    then record the new token instead.
-9. **Tell the predecessor you are live** so it can release its lock and wrap.
+9. **Re-brief every inherited leg BEFORE you announce yourself** (HIMMEL-3082,
+   HIMMEL-3254). Each inherited leg holds a brief naming the predecessor, and
+   you are a different session: until a leg has verified the succession it can
+   only refuse you, and once the predecessor has released and left there is
+   nobody who can relay for you. So, per leg: mint a fresh
+   `{{LETTER}}-<leg>-<hex>` token, hand it to the predecessor, and ask it to
+   re-brief that leg **from its own socket**, naming you (your session name, so
+   the leg knows who the relay hands it to) and quoting the leg's current token
+   and your fresh one. If the predecessor is already gone, send the leg the
+   chain form yourself — a message quoting **both** tokens (see
+   `docs/handover/leg-preface.md`, "Console succession"). **Wait for each leg's
+   quote-back**, and only then write that leg's new nonce into `## Live state`.
+   When every inherited leg has quoted back — or you have named the ones that
+   did not, and why — send **`{{LETTER}} LIVE`** to the predecessor so it can
+   release its lock and wrap. Sending `LIVE` first lets the predecessor leave
+   before the legs have been re-briefed; the tick then reads
+   `nonces=UNCONFIRMED:<leg>`.
 10. **Arm the `tick` monitor now** (HIMMEL-3144 D2). Of the four `## Monitors`
     below, `tick` is the only one that fires unconditionally (the other three
     are change-filtered and can go silent for hours with nothing wrong) — it
@@ -93,7 +109,13 @@ Run these, in order, and write the result as the first bullet under
 > `livestate=DRIFT:<leg>[,…]` when it disagrees with the leg locks actually
 > held. Update this section on every dispatch, ruling, wrap and GO — not only
 > at handover; `console.sh next` copies it verbatim into the successor's
-> HANDOFF, so a stale line here is a stale line there too.
+> HANDOFF, so a stale line here is a stale line there too. A leg's nonce is
+> updated **only after** that leg's quote-back of a fresh one: until then
+> the line still names the predecessor's. A relay may hand out no fresh token,
+> so a leg can stay on the predecessor's nonce for good and be fully
+> authenticated; the tick tells that apart from a leg that never accepted
+> (`nonces=RELAYED:<leg>` needs the leg's own `SUCCESSION accepted` bullet,
+> else `UNCONFIRMED:<leg>`; HIMMEL-3254).
 >
 > **Every nonce and lock token is a single backtick span, one per leg, with no
 > trailing punctuation inside or directly after the span** — bare
@@ -245,9 +267,22 @@ At **{{FILL_PERCENT}} % fill or 90 k input in one turn**, hand over:
    tail** — write it as the successor's only required read.
 3. `touch` the signal path step 1 printed to fire the arm, and hand your live
    legs to the successor by name.
-4. **Wait for the successor's `LIVE` message before you release your lock and
-   stop.** It is the only confirmation that the successor actually launched
-   and completed ACTION ZERO; releasing on the `touch` alone leaves an
-   unattended fleet if the arm failed.
+4. **Re-brief every live leg yourself, before you release** (HIMMEL-3254). The
+   successor hands you a fresh token per leg (ACTION ZERO step 9); send each
+   leg, from **your own session**, a message naming the successor (its session
+   name — the leg adopts the session the relay names, not the sender, which is
+   you and leaving) and quoting the leg's current token and the fresh one. A
+   leg's brief names *you* and only you can relay for it — a successor
+   arriving after you have left can prove itself only by quoting both tokens,
+   and a leg that cannot verify that is stranded. Then
+   wait for each leg's quote-back — or for the successor's `LIVE` to name the
+   legs that did not quote back, and why (ACTION ZERO step 9 permits that
+   exception, so the two ends agree on when you may release).
+5. **Wait for the successor's `LIVE` message before you release your lock and
+   stop.** It is sent only after the quote-backs — or with the legs that
+   did not quote back named, and why (step 9) — and it is the only
+   confirmation that the successor actually launched and completed ACTION
+   ZERO; releasing on the `touch` alone leaves an unattended fleet if the arm
+   failed.
 
 ## Results (newest at the bottom)

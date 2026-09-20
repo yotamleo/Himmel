@@ -243,10 +243,24 @@ head, what is in flight leg by leg with nonces and lock tokens, rulings made,
 the held queue in launch order, what wrapped — then `touch` the signal path
 that `next --arm` printed and hand your live legs over by name.
 
-**Release your lock only after the successor reports `LIVE`.** That message is
-the only evidence the arm actually fired and the successor completed ACTION
-ZERO; releasing on the `touch` alone leaves an unattended fleet if the launch
-failed.
+**Re-brief your live legs before you release** (HIMMEL-3082, HIMMEL-3254). Each
+leg's brief names *you* as its console, and a successor is a different session
+on a different socket: the successor hands you a fresh token per leg during its
+ACTION ZERO, you send each leg — from your own session — a message naming the
+successor and quoting the leg's current token and the fresh one, and each leg
+answers with a quote-back of the fresh one.
+A successor that arrives after you have left can prove itself only with the
+two-token chain form; a leg that cannot verify that is stranded (it keeps
+working and can still be merged, but cannot be re-scoped). The successor's
+tick reads `nonces=UNCONFIRMED:<leg>` until each leg's own `SUCCESSION
+accepted` bullet names the successor (`RELAYED:<leg>`, a relay that kept the
+leg's token, is valid) or the leg has rotated.
+
+**Release your lock only after the successor reports `LIVE`.** It sends that
+only after the quote-backs — or with the legs that did not quote back named,
+and why (ACTION ZERO step 9) — and it is the only evidence the arm actually fired
+and the successor completed ACTION ZERO; releasing on the `touch` alone leaves
+an unattended fleet if the launch failed.
 
 The HANDOFF is the successor's only required read. Written properly, the succession
 does not need the predecessor's transcript at all.
