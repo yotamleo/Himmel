@@ -871,6 +871,23 @@ wrap_case 'a span after the blank line is not an entry (detail bullets may quote
 wrap_case 'a span on the next field: line is not an entry' 'livestate=DRIFT:N192 ' \
     'legs: `N191:J-N191-0a1b2c:tok-191:120`' \
     'queue: HIMMEL-1 (`N192:J-N192-3d4e5f:tok-192:121`)' 'last GO: none' 'acked: none'
+# A bullet written IMMEDIATELY under the legs: line (no blank between) is inside
+# the block, so its backtick spans reach the classifier. Realistic detail-bullet
+# spans -- a file:line cite, a worktree path, a bare sha, a tick.sh:line cite --
+# must not become entries or MALFORMED labels.
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+wrap_case 'prose bullets directly under legs: (no blank line) are not entries or MALFORMED' 'livestate=ok ' \
+    'legs: `N191:J-N191-0a1b2c:tok-191:120`, `N192:J-N192-3d4e5f:tok-192:121`' \
+    '- **N192** BLOCKED — see `stuck-playbook.md:408`, `tick.sh:234`, worktree `.claude/worktrees/fix+himmel-3273-stop-queue-race`, head `798a4bda26487e04140d0b7aee715be51c7e7247`' \
+    'queue: none' 'last GO: none' 'acked: none'
+# Every list-marker spelling ends the block: a leg span in the bullet is not an
+# entry, so the held leg it names reads DRIFT (loud), never absent-and-quiet.
+for marker in '- ' '* ' '+ ' '1. ' '  - ' '> ' '# '; do
+    # shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+    wrap_case "a '$marker' line ends the block" 'livestate=DRIFT:N192 ' \
+        'legs: `N191:J-N191-0a1b2c:tok-191:120`' \
+        "${marker}N192 detail: \`N192:J-N192-3d4e5f:tok-192:121\`" 'queue: none' 'last GO: none' 'acked: none'
+done
 # One-line behaviour is untouched: prose, MALFORMED and DRIFT read as HIMMEL-3280 left them.
 # shellcheck disable=SC2016  # backtick leg spans, literal fixture text
 wrap_case 'a one-line block with prose still reads ok' 'livestate=ok ' \

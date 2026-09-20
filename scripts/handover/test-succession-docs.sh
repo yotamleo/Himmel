@@ -192,6 +192,8 @@ contains 'console-template Live state: a malformed entry reads livestate=MALFORM
 # ends, in the words tick.sh's awk enforces (first blank line or next field: line).
 contains 'console-template Live state: the legs: block may wrap' "$live" "The \`legs:\` block may wrap"
 contains 'console-template Live state: the block ends at the first blank line or the next field: line' "$live" "up to the first blank line or the next \`field:\` line"
+contains 'console-template Live state: a list-marker line also ends the block' "$live" 'or the first list-marker'
+contains 'console-template Live state: the blank line before the detail is load-bearing' "$live" 'the blank line before the per-leg detail is load-bearing'
 
 # --- 6. HIMMEL-3266: the console-side text agrees with the preface ------------
 # console.sh next copies console-template.md into the successor stub and

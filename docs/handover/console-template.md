@@ -151,11 +151,14 @@ Run these, in order, and write the result as the first bullet under
 > **The `legs:` block may wrap** (HIMMEL-3281). The tick reads the whole block:
 > every line that starts with `legs:`, plus the lines wrapped directly under it,
 > up to the first blank line or the next `field:` line (`queue:`, `last GO:`,
-> `acked:` — any line starting with a word and a colon). A span anywhere in that
-> block is an entry, judged exactly as above. **A span past the block's end is
-> not an entry** — a per-leg detail bullet after a blank line may quote a span
-> freely — so a held leg named only there reads `DRIFT`. Put every leg's span in
-> the block; put the per-leg detail after a blank line.
+> `acked:` — any line starting with a word and a colon) or the first list-marker
+> line (`- `, `* `, `+ `, `1. `, or a line starting `>` or `#`). A span anywhere
+> in that block is an entry, judged exactly as above. **A span past the block's
+> end is not an entry** — a per-leg detail bullet may quote a span freely — so a
+> held leg named only there reads `DRIFT`. Put every leg's span in the block;
+> **the blank line before the per-leg detail is load-bearing**: a wrapped line
+> never starts with a list marker, so a marker ends the block, but prose
+> written straight under `legs:` without one is read as part of it.
 
 legs: <none dispatched yet, or `N1:<nonce>:<lock-token>:<pid>`, `N2:…`>
 queue: <held queue-lock docs in launch order, or "none">
