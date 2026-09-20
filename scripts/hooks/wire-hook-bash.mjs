@@ -139,6 +139,10 @@ export const EXPECTED_SCRIPT_ORDER = Object.freeze([
   'inject-initiative.sh',
   'qmd-staleness-notice.sh',
   'graphify-freshness-advisory.sh',
+  // HIMMEL-3314: reads MEMORY.md's real state (pointer-line ceiling, 200-char
+  // lines) so the memory form rules hold whichever tool wrote the file — the
+  // PreToolUse guard above only sees Write/Edit. Advisory, fails open.
+  'memory-index-state-notice.sh',
   // LAST SessionStart chain member (HIMMEL-2788): the resume-time mirror of
   // claudex-inbox-hook.sh above — same cursor file, so a bullet delivered by
   // one is never re-delivered by the other.

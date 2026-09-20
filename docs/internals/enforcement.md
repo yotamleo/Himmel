@@ -1534,16 +1534,34 @@ is skipped (`grep -f --file=.env` opens a file literally named
 
 ### `guard-memory-capture.sh` — auto-memory capture guard (HIMMEL-570 / HIMMEL-1088)
 
-**Ceiling and a known gap (HIMMEL-3313 / HIMMEL-3314).** Besides the ≤200-char
-line rule the guard holds an absolute ceiling of `MEMORY_LINE_CEIL` (default
-60) pointer lines, so a compound pass that only shortens lines cannot land on
-an index that is over the ceiling — it must consolidate (HIMMEL-3313 went 115 →
-56 lines, every dropped line folded verbatim into its theme file). HIMMEL-3314
-records an **unexamined** gap: the capture log showed `line-ceiling` /
+**Ceiling, and the gap the guard cannot close alone (HIMMEL-3313 / HIMMEL-3314).**
+Besides the ≤200-char line rule the guard holds an absolute ceiling of
+`MEMORY_LINE_CEIL` (default 60) pointer lines, so a compound pass that only
+shortens lines cannot land on an index that is over the ceiling — it must
+consolidate (HIMMEL-3313 went 115 → 56 lines, every dropped line folded
+verbatim into its theme file). The capture log showed `line-ceiling` /
 `line-too-long` denies on 2026-09-18/19 while the index still grew from 74 to
-134 lines, so some capture path writes the index without passing through this
-guard. That is a deduction from the deny log plus the growth, not an identified
-mechanism; the writer has not been traced.
+134 lines. The mechanism is not one rogue writer: the guard is registered only
+on `Edit|Write|MultiEdit|NotebookEdit`, and the default way of working in
+auto-mode is a heredoc, `sed -i` or a short script — a Bash command line is
+opaque to a payload-inspecting guard, and gating Bash would be both leaky and
+noisy. The denies were the guard working on the path it can see.
+
+**The state check — `memory-index-state-notice.sh`.** A SessionStart advisory
+(last-but-one member of the `--chain --lifecycle` group) that reads
+`MEMORY.md` itself: it reports `line-ceiling` (pointer lines > `MEMORY_LINE_CEIL`)
+and `line-too-long` (any pointer line > `MEMORY_LINE_MAX` chars), whichever tool
+wrote the file, at the moment the harm lands — an over-long index is cut at
+session load, dropping its newest routing lines. Same rules, knobs and defaults
+as the guard (a suite case pins that they do not drift); whole-file rather than
+diff-scoped, so a legacy violation keeps ringing until the file is fixed. **It
+detects and reports; it does not prevent the write.** Residual gap: a
+non-Write/Edit writer can still break the ceiling within a session and is
+caught at the next session start, not at the write. Silent when healthy, and it
+**fails open** — every error path exits 0, because it runs on every session
+start including consoles and legs. Cost: one `git rev-parse` and one `awk` pass
+over at most the first 256 KiB of the index. Tests live in
+`test-guard-memory-capture.sh` (S/F/D/W cases).
 
 Fires on Edit/Write/MultiEdit/NotebookEdit, scoped to the Claude Code
 auto-memory store (`*/.claude/projects/*/memory/*`). The always-loaded

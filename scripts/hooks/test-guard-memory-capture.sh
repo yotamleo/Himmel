@@ -275,4 +275,192 @@ newcontent_emdash="$legacy_emdash
 payload Write "$MEM/MEMORY.md" "$newcontent_emdash" | bash "$HOOK" >/dev/null 2>&1
 assert_rc "an em-dash-heavy pre-existing over-length line does not block a new compliant append" 0 "$?"
 
+# ---------------------------------------------------------------------------
+# HIMMEL-3314: the ceiling / line-length rules as a STATE check.
+#
+# The PreToolUse guard above only ever sees a Write/Edit payload. MEMORY.md grew
+# 74 -> 134 pointer lines against a ceiling of 60 because the default way of
+# working in auto-mode is a heredoc / `cat >>` / `sed -i` / a script, and Bash
+# is (deliberately) not in the guard's matcher. memory-index-state-notice.sh
+# reads the FILE at SessionStart instead, so it cannot care how it was written.
+STATE_HOOK="$(cd "$(dirname "$0")" && pwd)/memory-index-state-notice.sh"
+[ -x "$STATE_HOOK" ] || chmod +x "$STATE_HOOK"
+
+# $1 = number of ` - ` pointer lines; header + trailing prose are NOT pointers.
+mk_index() {
+    local n="$1" i=1
+    printf '# Memory index\n\nThis index routes.\n\n' > "$MEM/MEMORY.md"
+    while [ "$i" -le "$n" ]; do
+        printf -- '- theme %s -> luna [[theme-%s]]\n' "$i" "$i" >> "$MEM/MEMORY.md"
+        i=$((i + 1))
+    done
+    printf '\nprose tail, not a pointer line\n' >> "$MEM/MEMORY.md"
+}
+run_state() { # sets $out / $rc; MEMDIR points the hook at the fixture
+    out="$(MEMDIR="$MEM" bash "$STATE_HOOK" </dev/null 2>&1)"; rc=$?
+}
+assert_contains() { # $1=name $2=needle
+    case "$out" in *"$2"*) echo "PASS $1" ;; *) echo "FAIL $1 (missing '$2' in: $out)"; FAILED=1 ;; esac
+}
+assert_silent() { # $1=name
+    if [ -z "$out" ] && [ "$rc" = 0 ]; then echo "PASS $1 (silent, rc=0)"
+    else echo "FAIL $1 (rc=$rc out: $out)"; FAILED=1; fi
+}
+deny_rows() { grep -c '"event":"deny"' "$MEMORY_CAPTURE_LOG" 2>/dev/null || true; }
+
+# S1 (control — the fixture is sound and the watched path IS gated): a Write
+#    payload that would take a 60-pointer index to 61 is denied line-ceiling.
+mk_index 60
+over61="$(cat "$MEM/MEMORY.md")
+- one more -> luna [[n]]"
+payload Write "$MEM/MEMORY.md" "$over61" | bash "$HOOK" >/dev/null 2>&1
+assert_rc "S1 control: Write past the ceiling is denied by the PreToolUse guard" 2 "$?"
+
+# S2 (the reproduced defect): the SAME append through the ungated path lands,
+#    and the guard logs no deny — it was never invoked.
+mk_index 60
+before_deny="$(deny_rows)"
+cat >> "$MEM/MEMORY.md" <<'EOF'
+- one more, via a heredoc append -> luna [[n]]
+EOF
+n_ptr="$(awk '/^- /{n++} END{print n+0}' "$MEM/MEMORY.md")"
+if [ "$n_ptr" = 61 ] && [ "$(deny_rows)" = "$before_deny" ]; then
+    echo "PASS S2 repro: heredoc append reached 61 pointer lines with no deny row logged"
+else echo "FAIL S2 repro (pointers=$n_ptr deny_rows before=$before_deny after=$(deny_rows))"; FAILED=1; fi
+
+# S3 (the fix): the state check names the ceiling on the file S2 produced.
+run_state
+assert_contains "S3 state check flags the ungated append (line-ceiling)" "line-ceiling"
+assert_contains "S3 names the pointer-line count" "61 pointer lines"
+assert_contains "S3 names the ceiling" "ceiling 60"
+assert_rc "S3 advisory never fails the session" 0 "$rc"
+
+# S4 (false-positive control): an index AT the ceiling, with a header and a
+#    prose tail that must not count as pointers, is silent.
+mk_index 60
+run_state
+assert_silent "S4 60 pointer lines (at the ceiling) is not flagged"
+
+# S5: env override is honoured (same knob the guard reads).
+mk_index 6
+out="$(MEMDIR="$MEM" MEMORY_LINE_CEIL=5 bash "$STATE_HOOK" </dev/null 2>&1)"; rc=$?
+assert_contains "S5 MEMORY_LINE_CEIL=5 flags 6 pointer lines" "line-ceiling"
+
+# S6: line-too-long is evaded identically — an over-length line appended via
+#    the ungated path is named, with its line number.
+mk_index 10
+printf -- '- %s -> luna [[n]]\n' "$(repeat_char x 250)" >> "$MEM/MEMORY.md"
+run_state
+assert_contains "S6 over-length line appended via cat is flagged" "line-too-long"
+assert_contains "S6 names the offending line number (4 header + 10 pointers + blank + prose tail = line 17)" "line 17"
+
+# S7: the 200-char boundary is chars, not bytes — exactly 200 is fine, 201 is not.
+mk_index 3
+printf -- '- %s\n' "$(repeat_char x 198)" >> "$MEM/MEMORY.md"
+run_state
+assert_silent "S7 a 200-char pointer line is not flagged"
+printf -- '- %s\n' "$(repeat_char x 199)" >> "$MEM/MEMORY.md"
+run_state
+assert_contains "S7 a 201-char pointer line IS flagged" "line-too-long"
+
+# S8: 20 em-dashes (3 bytes each) in a 199-CHAR line: bytes > 200, chars < 200.
+mk_index 3
+printf -- '%s\n' "$emdash_199" >> "$MEM/MEMORY.md"
+run_state
+assert_silent "S8 199-char em-dash line is not flagged (chars, not bytes)"
+
+# S9: a CRLF index must not push a 200-char line to 201.
+mk_index 3
+printf -- '- %s\r\n' "$(repeat_char x 198)" >> "$MEM/MEMORY.md"
+run_state
+assert_silent "S9 a 200-char CRLF line is not flagged"
+
+# S10: no MEMORY.md at all (adopter with no auto-memory) -> silent, rc=0.
+rm -f "$MEM/MEMORY.md"
+run_state
+assert_silent "S10 missing MEMORY.md is silent"
+
+# S11: both rules at once are both reported in one block.
+mk_index 62
+printf -- '- %s\n' "$(repeat_char x 250)" >> "$MEM/MEMORY.md"
+run_state
+assert_contains "S11 reports the ceiling" "line-ceiling"
+assert_contains "S11 reports line-too-long alongside it" "line-too-long"
+
+# S12: the state check and the guard must not drift — they read the same knobs
+#    with the same defaults.
+for knob in MEMORY_LINE_CEIL MEMORY_LINE_MAX; do
+    g="$(grep -o "\${$knob:-[0-9]*}" "$HOOK" | head -1)"
+    s="$(grep -o "\${$knob:-[0-9]*}" "$STATE_HOOK" | head -1)"
+    if [ -n "$g" ] && [ "$g" = "$s" ]; then echo "PASS S12 $knob default agrees ($g)"
+    else echo "FAIL S12 $knob default drifted (guard='$g' state='$s')"; FAILED=1; fi
+done
+
+# --- FAIL-OPEN: the state check runs on EVERY session start (consoles and legs
+#     included). Whatever is wrong with the memory dir, the hook exits 0 and
+#     stays silent — a memory advisory must never stop a session from starting.
+#     Each fixture below is OVER the ceiling where it can be, so silence is the
+#     failure path working, not a healthy file.
+mk_index 70
+
+# F1: MEMORY.md is a directory (unreadable as a file).
+rm -f "$MEM/MEMORY.md"; mkdir "$MEM/MEMORY.md"
+run_state
+assert_silent "F1 fail-open: MEMORY.md is a directory"
+rmdir "$MEM/MEMORY.md"
+
+# F2: MEMORY.md is a dangling symlink.
+ln -s "$SB/does-not-exist" "$MEM/MEMORY.md"
+run_state
+assert_silent "F2 fail-open: MEMORY.md is a dangling symlink"
+rm -f "$MEM/MEMORY.md"
+
+# F3: no read permission (skipped as root, where chmod cannot deny the read).
+mk_index 70
+chmod 000 "$MEM/MEMORY.md"
+if [ -r "$MEM/MEMORY.md" ]; then echo "SKIP F3 (this uid can read a mode-000 file)"
+else run_state; assert_silent "F3 fail-open: MEMORY.md is not readable"; fi
+chmod 644 "$MEM/MEMORY.md"
+
+# F4: a garbage env knob must not crash or block the session.
+out="$(MEMDIR="$MEM" MEMORY_LINE_CEIL=abc bash "$STATE_HOOK" </dev/null 2>&1)"; rc=$?
+assert_silent "F4 fail-open: non-numeric MEMORY_LINE_CEIL"
+
+# F5: awk itself fails (a stub that exits 3 ahead of the real one on PATH).
+mkdir -p "$SB/badbin"; printf '#!/bin/sh\nexit 3\n' > "$SB/badbin/awk"; chmod +x "$SB/badbin/awk"
+out="$(PATH="$SB/badbin:$PATH" MEMDIR="$MEM" bash "$STATE_HOOK" </dev/null 2>&1)"; rc=$?
+assert_silent "F5 fail-open: awk exits non-zero"
+
+# F6: no MEMDIR and no git repo at all -> cannot derive a memory dir -> silent.
+mkdir -p "$SB/not-a-repo"
+out="$(env -u MEMDIR CLAUDE_PROJECT_DIR="$SB/not-a-repo" GIT_CEILING_DIRECTORIES="$SB" bash "$STATE_HOOK" </dev/null 2>&1)"; rc=$?
+assert_silent "F6 fail-open: MEMDIR unset and not inside a git repo"
+
+# --- MEMDIR derivation: memory lives under the PRIMARY checkout's slug, also
+#     when the session starts in a linked worktree.
+mk_index 61
+REPO="$SB/repo"; mkdir -p "$REPO"
+git -C "$REPO" init -q 2>/dev/null
+git -C "$REPO" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init 2>/dev/null
+git -C "$REPO" worktree add -q "$SB/wt" -b wt 2>/dev/null
+slug="$(printf '%s' "$REPO" | sed 's/[^A-Za-z0-9]/-/g')"
+mkdir -p "$SB/.claude/projects/$slug/memory"; cp "$MEM/MEMORY.md" "$SB/.claude/projects/$slug/memory/MEMORY.md"
+out="$(env -u MEMDIR CLAUDE_PROJECT_DIR="$REPO" bash "$STATE_HOOK" </dev/null 2>&1)"; rc=$?
+assert_contains "D1 derives the memory dir from the primary checkout" "line-ceiling"
+out="$(env -u MEMDIR CLAUDE_PROJECT_DIR="$SB/wt" bash "$STATE_HOOK" </dev/null 2>&1)"; rc=$?
+assert_contains "D2 a session started in a worktree still finds the primary's memory" "line-ceiling"
+
+# --- Wired shape: through the SAME --chain --lifecycle runner settings.json
+#     uses, the advisory reaches stdout and the runner exits 0.
+if command -v node >/dev/null 2>&1; then
+    RUNNER="$(cd "$(dirname "$0")" && pwd)/run-hook-with-bash.js"
+    mk_index 61
+    out="$(MEMDIR="$MEM" node "$RUNNER" --chain --lifecycle "$STATE_HOOK" </dev/null 2>&1)"; rc=$?
+    assert_contains "W1 advisory is delivered through the lifecycle chain runner" "line-ceiling"
+    assert_rc "W1 chain runner exits 0" 0 "$rc"
+    mk_index 60
+    out="$(MEMDIR="$MEM" node "$RUNNER" --chain --lifecycle "$STATE_HOOK" </dev/null 2>&1)"; rc=$?
+    assert_silent "W2 a healthy index is silent through the chain runner"
+else echo "SKIP W1/W2 (node not on PATH)"; fi
+
 exit "$FAILED"
