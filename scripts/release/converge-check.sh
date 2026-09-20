@@ -76,7 +76,7 @@ snapshot() {
       hooks="$(git -C "$target" rev-parse --git-path hooks 2>/dev/null)"
       case "$hooks" in /*) ;; *) hooks="$target/$hooks" ;; esac
       if [ -d "$hooks" ]; then
-        for f in $(find "$hooks" -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort); do
+        for f in $(find "$hooks" -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort); do  # gnu-ok: only ever runs on the Linux guest (the tarball is Linux-only), where find -printf is findutils' own
           case "$f" in *.sample) continue ;; esac
           echo "# hook: $f"
           cat "$hooks/$f"
@@ -90,7 +90,7 @@ snapshot() {
   } | norm "$home" "$prefix"
 }
 
-tmp="$(mktemp -d)"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/himmel-converge.XXXXXX")" || { echo "converge-check: cannot create a scratch dir" >&2; exit 2; }
 trap 'rm -rf "$tmp"' EXIT
 snapshot "$ah" "$ap" "$at" > "$tmp/a.txt"
 snapshot "$bh" "$bp" "$bt" > "$tmp/b.txt"

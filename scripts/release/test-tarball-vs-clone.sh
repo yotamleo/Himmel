@@ -24,7 +24,7 @@ ok()  { pass=$((pass+1)); echo "PASS  $1"; }
 bad() { fail=$((fail+1)); echo "FAIL  $1"; [ -n "${2:-}" ] && printf '      %s\n' "$2"; }
 
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR
-tmp="$(mktemp -d)"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/himmel-tvc-test.XXXXXX")" || { echo "cannot create a scratch dir" >&2; exit 1; }
 trap 'rm -rf "$tmp"' EXIT
 
 # --- fixture: a source repo with a STUB himmelctl ------------------------------

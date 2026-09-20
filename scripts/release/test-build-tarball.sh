@@ -31,7 +31,7 @@ check_not() { # check_not <label> <command...> -- passes when the command exits 
 
 # Fixture must not inherit an outer git context (a leg runs inside a worktree).
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR
-tmp="$(mktemp -d)"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/himmel-buildtb-test.XXXXXX")" || { echo "cannot create a scratch dir" >&2; exit 1; }
 trap 'rm -rf "$tmp"' EXIT
 
 # --- fixture: a tiny git repo shaped like himmel's build surface -------------
@@ -110,7 +110,7 @@ check_not "RED: verify-then-extract chain stops before tar on a bad hash" \
 # --- T3: content -- pre-built, tracked-only, single top-level dir ------------
 list="$tmp/list.txt"
 tar -tzf "$tgz" > "$list"
-check "tree sits under one top-level himmel-<v>/ dir" bash -c "! grep -v '^himmel-1.2.3/' '$list' | grep -q ."
+check "tree sits under one top-level himmel-<v>/ dir" bash -c "! grep -v '^himmel-1.2.3/' '$list' | grep -q ."  # pipefail-ok: the child bash -c does not set pipefail, and the listing is a few KiB
 check "carries the tracked tree (VERSION, scripts/lib/hello.sh)" \
   bash -c "grep -Fxq 'himmel-1.2.3/VERSION' '$list' && grep -Fxq 'himmel-1.2.3/scripts/lib/hello.sh' '$list'"
 check "GREEN: build-complete -- scripts/jira/dist/index.js is IN the tarball" grep -Fxq 'himmel-1.2.3/scripts/jira/dist/index.js' "$list"
@@ -149,15 +149,15 @@ workflow_ok() {
   grep -Eq "^[[:space:]]+tags:[[:space:]]*\[[[:space:]]*'v\*'[[:space:]]*\]" "$f" || return 1
   grep -Fq 'scripts/release/build-tarball.sh' "$f" || return 1
   step="$(awk '/- name: Upload both assets/{on=1;next} on&&/- name:/{on=0} on' "$f")"
-  printf '%s' "$step" | grep -Fq 'gh release upload' || return 1
-  printf '%s' "$step" | grep -Fq -- '-linux.tar.gz"' || return 1
-  printf '%s' "$step" | grep -Fq -- '-linux.tar.gz.sha256"' || return 1
+  grep -Fq 'gh release upload' <<< "$step" || return 1
+  grep -Fq -- '-linux.tar.gz"' <<< "$step" || return 1
+  grep -Fq -- '-linux.tar.gz.sha256"' <<< "$step" || return 1
   grep -Fq 'sha256sum -c' "$f" || return 1
   return 0
 }
 check "workflow: tag-triggered, builds, uploads BOTH assets, verifies" workflow_ok "$WORKFLOW"
 check "workflow: contents:write is scoped to the job, top level stays read" \
-  bash -c "awk '/^permissions:/{getline; print; exit}' '$WORKFLOW' | grep -Fq 'contents: read' && awk '/^    permissions:/{getline; print; exit}' '$WORKFLOW' | grep -Fq 'contents: write'"
+  bash -c "awk '/^permissions:/{getline; print; exit}' '$WORKFLOW' | grep -Fq 'contents: read' && awk '/^    permissions:/{getline; print; exit}' '$WORKFLOW' | grep -Fq 'contents: write'"  # pipefail-ok: the child bash -c does not set pipefail; awk prints one line and exits
 check_not "workflow: does not run on pull_request" grep -Eq '^[[:space:]]*pull_request:' "$WORKFLOW"
 # shellcheck disable=SC2016  # the single quotes are deliberate: a literal ${{ to grep for
 check_not "workflow: no \${{ secrets.* }} interpolation (check-no-secrets rail)" grep -Fq '${{ secrets.' "$WORKFLOW"

@@ -70,7 +70,7 @@ out="$(cd -- "$out" && pwd)"
 
 name="himmel-${version}-linux.tar.gz"
 top="himmel-${version}"
-stage="$(mktemp -d)"
+stage="$(mktemp -d "${TMPDIR:-/tmp}/himmel-tarball.XXXXXX")" || { echo "build-tarball: cannot create a staging dir" >&2; exit 1; }
 trap 'rm -rf "$stage"' EXIT
 
 git -C "$src" archive --format=tar --prefix="$top/" HEAD | tar -x -C "$stage"

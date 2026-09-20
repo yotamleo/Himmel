@@ -46,7 +46,7 @@ fi
 
 # 1. build the two artifacts from the SAME commit: the release tarball (with the
 #    real node builds) and a bundle for the clone path.
-stage="$(mktemp -d)"
+stage="$(mktemp -d "${TMPDIR:-/tmp}/himmel-tarball-vm.XXXXXX")" || { echo "test-tarball-install-vm: cannot create a staging dir" >&2; exit 1; }
 trap 'rm -rf "$stage"' EXIT
 bash "$REPO/scripts/release/build-tarball.sh" --version "$VERSION" --src "$REPO" --out "$stage" >"$stage/build.log" 2>&1 \
   || { echo "==> BUILD FAILED:" >&2; cat "$stage/build.log" >&2; exit 1; }
