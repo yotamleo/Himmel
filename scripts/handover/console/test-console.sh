@@ -41,6 +41,12 @@ tmp="$(mktemp -d "${TMPDIR:-/tmp}/console-test.XXXXXX")" || { echo "test-console
 tmp="$(cd "$tmp" && pwd -P)"
 trap 'rm -rf "$tmp"' EXIT
 
+# HIMMEL-3299: console.sh records the launch context of the console it prints a
+# launch line for, under ${HIMMELCTL_CACHE_DIR:-$HOME/.claude/himmel}/launch-logs.
+# Pin that dir under $tmp for the WHOLE suite so no case can leave a fixture row
+# (session DEMO-nextleg-...) in the operator's real launch-record directory.
+export HIMMELCTL_CACHE_DIR="$tmp/himmelctl-cache"
+
 fails=0
 check() { [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
 
@@ -155,7 +161,7 @@ check "5d launch line forces session persistence" \
 # The env prefix must precede the binary, not trail it -- `claude ... env -u X`
 # would pass the flags to claude as arguments instead of scrubbing anything.
 check "5d env prefix precedes the claude binary" \
-    "$(printf '%s\n' "$out5b" | grep -c -E '^(would-)?launch: env( -u [A-Z_]+)+ CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 claude ')" "1"
+    "$(printf '%s\n' "$out5b" | grep -c -E '^(would-)?launch: bash [^ ]*record-launch.sh [^;]*; env( -u [A-Z_]+)+ CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 claude ')" "1"
 
 # --- 6: next writes the successor stub + predecessor HANDOFF ----------
 doc6A="$root/tester/nextrepo/DEMO-nextleg-${today}A-console.md"
@@ -1396,5 +1402,80 @@ HANDOVER_DIR="$root" bash "$QL" release "$root/tester/modeldefault/DEMO-nextleg-
 # ponytail: static proof only -- the real bash 3.2 run is the macOS nightly.
 check "62 console.sh expands the possibly-empty 'missing' array only via the [@]+ guard" \
     "$(grep -v '^[[:space:]]*#' "$C" | grep -cE '[^+]"\$\{missing\[@\]\}"')" "0"
+
+# --- 63 (HIMMEL-3299): a console started from the printed launch line leaves a
+# launch record. That line is PASTED by an operator, so no launcher runs and the
+# HIMMEL-3279/3282 writers in headed-arm.sh / arm-resume.sh never fire -- every
+# real console read `context-unknown` while the only role=console rows in the
+# durable dir were another suite's fixtures. The row must exist if and only if
+# the console starts, so it is written by the pasted command, never at print
+# time (a row for a line nobody pasted would be a fabricated console).
+LL63="$HIMMELCTL_CACHE_DIR/launch-logs"
+stub63="$tmp/stub63bin"
+mkdir -p "$stub63"
+cat > "$stub63/claude" <<STUB
+#!/usr/bin/env bash
+# Records its argv and whether the launch row already existed when it started.
+printf '%s\n' "\$*" > "$tmp/claude-argv-63"
+for f in "$LL63"/*.log; do [ -e "\$f" ] && printf 'row-existed\n' >> "$tmp/claude-argv-63"; done
+exit 0
+STUB
+chmod +x "$stub63/claude"
+# run_launch_line <output containing a `launch:` line> -- executes that line the
+# way the operator's shell does (bash -c), with the stub claude first on PATH.
+run_launch_line() {
+    local line
+    line="$(printf '%s\n' "$1" | sed -n 's/^launch: //p')"
+    ( cd "$tmp" && PATH="$stub63:$PATH" bash -c "$line" )
+}
+
+S63="DEMO-nextleg-${today}A-rec63a"
+out63a="$(console new --bucket rec63a --name rec63a)"
+token63a="$(token_of "$out63a")"
+check "63a printing the launch line writes no row (a line nobody pastes is no console)" "$([ -e "$LL63/$S63.log" ] && echo present || echo absent)" "absent"
+rm -f "$tmp/claude-argv-63"
+run_launch_line "$out63a"
+row63a="$(cat "$LL63/$S63.log" 2>/dev/null || true)"
+case "$row63a" in
+    "headed-arm: role=console session=$S63 context=standard source=default autocompact=200000 launched="[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) r63a=match ;;
+    *) r63a="nomatch: [$row63a]" ;;
+esac
+check "63a running the pasted line writes one console row: context, source, autocompact, launched" "$r63a" "match"
+argv63a="$(cat "$tmp/claude-argv-63" 2>/dev/null || true)"
+contains() { case "$1" in *"$2"*) echo "ok - $3" ;; *) echo "FAIL - $3: [$1] lacks [$2]"; fails=$((fails+1)) ;; esac; }
+contains "$argv63a" "--autocompact 200000 -n $S63" "63a the row's autocompact is the value claude was launched with"
+contains "$argv63a" "row-existed" "63a the row was already there when claude started"
+HANDOVER_DIR="$root" bash "$QL" release "$root/tester/rec63a/$S63.md" "$token63a" >/dev/null 2>&1
+
+# 63b. CONSOLE_CONTEXT=1m is the one opt-in: the row says so, as the arm paths do.
+S63b="DEMO-nextleg-${today}A-rec63b"
+out63b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO CONSOLE_WORK_DIR="$tmp/defaultwork" \
+    CONSOLE_CONTEXT=1m bash "$C" new --bucket rec63b --name rec63b ) )"
+token63b="$(token_of "$out63b")"
+run_launch_line "$out63b"
+check "63b CONSOLE_CONTEXT=1m: the row is context=1m source=explicit autocompact=auto" \
+    "$(grep -c "^headed-arm: role=console session=$S63b context=1m source=explicit autocompact=auto launched=" "$LL63/$S63b.log" 2>/dev/null || true)" "1"
+HANDOVER_DIR="$root" bash "$QL" release "$root/tester/rec63b/$S63b.md" "$token63b" >/dev/null 2>&1
+
+# 63c. next records the SUCCESSOR's session (the console its line launches).
+out63c="$(console new --bucket rec63c --name rec63c)"
+token63c="$(token_of "$out63c")"
+out63c2="$(console next --bucket rec63c --name rec63c)"
+run_launch_line "$out63c2"
+check "63c next: the successor's line writes a row for the successor session" "$(grep -c "^headed-arm: role=console session=DEMO-nextleg-${today}B-rec63c " "$LL63/DEMO-nextleg-${today}B-rec63c.log" 2>/dev/null || true)" "1"
+check "63c next: the predecessor's session got no row (its line was never run)" "$([ -e "$LL63/DEMO-nextleg-${today}A-rec63c.log" ] && echo present || echo absent)" "absent"
+HANDOVER_DIR="$root" bash "$QL" release "$root/tester/rec63c/DEMO-nextleg-${today}A-rec63c.md" "$token63c" >/dev/null 2>&1
+
+# 63d. --dry-run shows the SAME command it would print, and running nothing
+# writes nothing.
+out63d="$(console new --bucket rec63d --name rec63d --dry-run)"
+check "63d --dry-run: would-launch names the recorder" "$(printf '%s\n' "$out63d" | grep -c '^would-launch: .*record-launch.sh ')" "1"
+check "63d --dry-run: writes no row" "$([ -e "$LL63/DEMO-nextleg-${today}A-rec63d.log" ] && echo present || echo absent)" "absent"
+
+# 63e. a launch-record dir that cannot be written never stops the console: the
+# recorder warns and claude still starts.
+rm -f "$tmp/claude-argv-63"
+( cd "$tmp" && HIMMELCTL_CACHE_DIR="$tmp/not-a-dir-63" PATH="$stub63:$PATH" bash -c "touch $tmp/not-a-dir-63; $(printf '%s\n' "$out63a" | sed -n 's/^launch: //p')" ) >/dev/null 2>&1
+check "63e unwritable record dir: claude still started" "$([ -s "$tmp/claude-argv-63" ] && echo started || echo not-started)" "started"
 
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

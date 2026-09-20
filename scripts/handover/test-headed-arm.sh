@@ -40,6 +40,15 @@ unset HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER 2>/dev/nul
 # loudly rather than let that happen.
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/headed-arm-test.XXXXXX")" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
 trap 'rm -rf "$tmp"' EXIT
+# HIMMEL-3299: marker for the end-of-suite check that no case left a launch
+# record in the operator's real launch-record dir (see case 40).
+: > "$tmp/suite-start-marker"
+# headed-arm.sh writes a console arm's launch row to
+# ${HIMMELCTL_CACHE_DIR:-$HOME/.claude/himmel}/launch-logs. Pin it under $tmp for
+# the whole suite, as console-kit/test-headed-arm-leg.sh does, so a --role console
+# case that forgets its own dir (38a-38l did) lands here, not in production data.
+# Cases 1e-1h still pass a per-case dir, which overrides this.
+export HIMMELCTL_CACHE_DIR="$tmp/pinned-himmelctl-cache"
 # HIMMEL-3182: headed-arm.sh mkdirs its claim-lock root `-m 0700` and then
 # validates it (owner, group/world-writable bits), and most cases below (fresh
 # lock root, 0700 readback, chmod 777 refusal) assert exactly that. On a host
@@ -1695,5 +1704,25 @@ check "39b --dry-run placeholder name '<session-name>': exit 2" "$rcb39b" "2"
 bash "$SCRIPT" --dry-run "session" "doc.md" "$tmp/signal-never" "$PAST" "$tmp/log39b" >/dev/null 2>&1
 rcc39b=$?
 check "39b --dry-run placeholder name 'session': exit 2" "$rcc39b" "2"
+
+# --- 40 (HIMMEL-3299). the --role console cases must not write into the
+# operator's real launch-record dir. headed-arm.sh records every console arm in
+# ${HIMMELCTL_CACHE_DIR:-$HOME/.claude/himmel}/launch-logs, and the 38a-38l
+# cases pass no HIMMELCTL_CACHE_DIR, so each run left HIMMEL-role38* rows there:
+# role=console lines with a plausible context=standard autocompact=200000 that
+# no real console wrote -- the only console rows in the production dataset.
+# The read is of the default dir ($HOME-derived, HIMMELCTL_CACHE_DIR ignored) and
+# is limited to the session-name families this suite uses, so a real leg
+# launching meanwhile cannot trip it.
+real_ll="${HOME:-}/.claude/himmel/launch-logs"
+polluted=""
+if [ -n "${HOME:-}" ] && [ -d "$real_ll" ]; then
+  polluted="$(find "$real_ll" -maxdepth 1 \( -name 'HIMMEL-role*.log' -o -name 'HIMMEL-9999*.log' -o -name 'HIMMEL-red*.log' \) -newer "$tmp/suite-start-marker" 2>/dev/null | sort | tr '\n' ' ')"
+fi
+check "40a no HIMMEL-role*/9999*/red* launch record was written into the real launch-record dir" "$polluted" ""
+# The rows did land somewhere: the suite's pinned dir. Without this a suite that
+# stopped writing them at all would pass 40a.
+check "40b the --role console rows landed in the suite's pinned record dir" \
+  "$(grep -c '^headed-arm: role=console session=HIMMEL-role38a ' "${HIMMELCTL_CACHE_DIR:-/nonexistent}/launch-logs/HIMMEL-role38a.log" 2>/dev/null || true)" "1"
 
 [ "$fails" -eq 0 ] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILED"; exit 1; }

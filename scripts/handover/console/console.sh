@@ -380,6 +380,21 @@ fill_percent="${CONSOLE_FILL_PERCENT:-45}"
 console_context_default 1 "${CONSOLE_CONTEXT:-}"
 console_autocompact="$(console_context_autocompact "$CONSOLE_CONTEXT_RESOLVED_MODE")"
 
+# launch_cmd <session> <doc> -- the command line printed for an operator to
+# paste. HIMMEL-3299: no launcher runs for it, so the console's durable launch
+# row is written by the command itself (record-launch.sh, then claude), never
+# when the line is merely printed -- a row for a console nobody started would
+# be indistinguishable from a real one. The row carries the mode/source/
+# autocompact resolved above, the same values the claude flags below carry.
+# `;` not `&&`: a row that cannot be written must not stop the console.
+# An --arm console is launched by headed-arm.sh, which writes its own row; the
+# line printed beside it is informational and is not pasted.
+launch_cmd() {
+    printf 'bash %q %s %s %s %s; %s claude --model %s --autocompact %s -n %s "load %s and continue"' \
+        "$HERE/record-launch.sh" "$1" "$CONSOLE_CONTEXT_RESOLVED_MODE" "$(console_context_source_label 0)" "$console_autocompact" \
+        "$CONSOLE_LAUNCH_ENV" "$model" "$console_autocompact" "$1" "$2"
+}
+
 # _console_sha256_8 <string> -- first 8 hex chars of sha256(<string>). Small
 # per-script helper, matching the repo's own convention of duplicating this
 # rather than centralizing it (already inlined the same way in
@@ -691,7 +706,7 @@ cmd_new() {
         echo "would-doc: $doc"
         echo "would-session: $session"
         echo "would-kit: $kit"
-        echo "would-launch: $CONSOLE_LAUNCH_ENV claude --model $model --autocompact $console_autocompact -n $session \"load $doc and continue\""
+        echo "would-launch: $(launch_cmd "$session" "$doc")"
         if [ "$ARM" -eq 1 ]; then
             echo "would-armed: name=$session doc=$doc signal=$fill_signal deadline=$deadline_epoch log=$log"
             echo "would-arm-log: $log"
@@ -789,7 +804,7 @@ cmd_new() {
 
     printf '%s\n' "$lock_out"
 
-    echo "launch: $CONSOLE_LAUNCH_ENV claude --model $model --autocompact $console_autocompact -n $session \"load $doc and continue\""
+    echo "launch: $(launch_cmd "$session" "$doc")"
 
     if [ "$ARM" -eq 1 ]; then
         do_arm "$session" "$doc" "$fill_signal" "$log"
@@ -957,7 +972,7 @@ cmd_next() {
         else
             echo "would-handoff: $predecessor_handoff"
         fi
-        echo "would-launch: $CONSOLE_LAUNCH_ENV claude --model $model --autocompact $console_autocompact -n $session \"load $doc and continue\""
+        echo "would-launch: $(launch_cmd "$session" "$doc")"
         if [ "$ARM" -eq 1 ]; then
             echo "would-armed: name=$session doc=$doc signal=$fill_signal deadline=$deadline_epoch log=$log"
             echo "would-arm-log: $log"
@@ -1051,7 +1066,7 @@ cmd_next() {
     fi
     trap - EXIT
 
-    echo "launch: $CONSOLE_LAUNCH_ENV claude --model $model --autocompact $console_autocompact -n $session \"load $doc and continue\""
+    echo "launch: $(launch_cmd "$session" "$doc")"
 
     if [ "$ARM" -eq 1 ]; then
         do_arm "$session" "$doc" "$fill_signal" "$log"
