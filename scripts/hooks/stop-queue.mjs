@@ -68,7 +68,7 @@
 
 import { spawn } from 'node:child_process';
 import {
-  mkdirSync, writeFileSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync,
+  mkdirSync, writeFileSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, unlinkSync,
   openSync, closeSync, writeSync, statSync, existsSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
@@ -692,7 +692,7 @@ export function acquireLock(dir, hooks = {}) {
       if (!claimOwner(p.lock, owner.id)) continue;   // no longer the lock we judged
       try { rmSync(p.lock, { recursive: true, force: true }); } catch { /* best effort */ }
     } finally {
-      releaseGate(gate);
+      releaseGate(gate, hooks);
     }
   }
   return false;
@@ -721,9 +721,18 @@ export function acquireLock(dir, hooks = {}) {
 // clears it and the kernel refuses that call on any populated one — it can
 // never remove a gate this code created; and a gate orphaned by a death
 // mid-takeover holds only a moved marker, which is CAS-renamed into this
-// worker's own ownership rather than removed. So no path here removes a gate
-// or a lock without first winning the CAS on it, or without the kernel
-// confirming the directory is empty.
+// worker's own ownership rather than removed, and only ever a marker that is
+// NOT an `own.*` — an ownership marker appearing there means the gate has an
+// owner, not that it needs recovering. So no path here removes a gate or a lock
+// without first winning the CAS on it, or without the kernel confirming the
+// directory is empty.
+// ponytail: one gap in that rule is left, and it is the one POSIX cannot close
+// without an flock: releaseGate unlinks the marker it won and then rmdirs, and
+// a release stopped BETWEEN those two calls can rmdir a gate that a new worker
+// has created but not yet marked — the same mkdir-to-first-write instant
+// createOwned names above, now reachable from a second direction. Both sides
+// are two adjacent syscalls, and unlike every other window here age cannot
+// cover it, because the object it would judge is younger than any threshold.
 const RECLAIM_STALE_MS = 30 * 1000;
 function takeReclaimGate(p, hooks = {}) {
   const gate = `${p.lock}.reclaim`;
@@ -747,9 +756,18 @@ function takeReclaimGate(p, hooks = {}) {
       // slower worker could take out a gate a faster one has just adopted.
       // The rename also touches the directory, so the age clock restarts and
       // the pid below is re-stamped inside that window.
+      if (hooks.beforeResidueRead) hooks.beforeResidueRead();
+      // Only a RESIDUE is recoverable. The directory is read after the decision
+      // that it has no owner, so a faster worker can install its ownership in
+      // that gap — and renaming THAT is not a recovery, it is a theft that puts
+      // two workers in one gate. An `own.*` here means the gate has an owner
+      // after all and there is nothing to recover; drop back to the top, where
+      // the rename it just did has already reset the age clock.
       let residue;
-      try { residue = readdirSync(gate).sort()[0]; } catch { return null; }
-      if (!residue) continue;                   // emptied under us — try the mkdir again
+      try {
+        residue = readdirSync(gate).filter((n) => !n.startsWith(OWN_PREFIX)).sort()[0];
+      } catch { return null; }
+      if (!residue) continue;                   // owned or emptied under us
       const adopted = randomUUID();
       try { renameSync(join(gate, residue), join(gate, `${OWN_PREFIX}${adopted}`)); } catch { return null; }
       try {
@@ -759,19 +777,36 @@ function takeReclaimGate(p, hooks = {}) {
     }
     if (pidAlive(owner.pid)) return null;       // stopped, not dead — still its gate
     if (hooks.beforeGateEvict) hooks.beforeGateEvict();
-    if (!claimOwner(gate, owner.id)) return null;   // another worker took it over
+    // The SAME single-step adoption the recovery above uses, and for the same
+    // reason: claiming the marker and then writing our own left the gate
+    // ownerless in between, which is precisely the state that recovery adopts.
+    // One rename elects exactly one winner AND installs its ownership, so the
+    // gate never has an instant with no owner and leaves no residue behind.
     const adopted = randomUUID();
     try {
-      writeFileSync(join(gate, `${OWN_PREFIX}${adopted}`), String(process.pid), { mode: 0o600, flag: 'wx' });
+      renameSync(join(gate, `${OWN_PREFIX}${owner.id}`), join(gate, `${OWN_PREFIX}${adopted}`));
+    } catch { return null; }                    // another worker took it over
+    try {
+      writeFileSync(join(gate, `${OWN_PREFIX}${adopted}`), String(process.pid), { mode: 0o600 });
     } catch { return null; }
     return { dir: gate, id: adopted };
   }
   return null;
 }
 
-function releaseGate(gate) {
+function releaseGate(gate, hooks = {}) {
   if (!claimOwner(gate.dir, gate.id)) return;   // not ours any more — not ours to remove
-  try { rmSync(gate.dir, { recursive: true, force: true }); } catch { /* best effort */ }
+  if (hooks.beforeGateRemove) hooks.beforeGateRemove();
+  // Winning the CAS authorises the removal, but the removal happens AFTER it
+  // and nothing bounds the gap: a releaser stopped here past RECLAIM_STALE_MS
+  // leaves an ownerless gate, which is exactly what the recovery above adopts.
+  // A gate carries no pid to prove its holder is alive, so instead of a
+  // recursive removal by path — which would take that worker's gate with it —
+  // unlink only the marker we just won and let the KERNEL decide: rmdir is
+  // refused the moment anyone else has put anything there. We then leave
+  // empty-handed, which is the safe failure; deleting a live gate is not.
+  try { unlinkSync(join(gate.dir, `dead.${gate.id}`)); } catch { /* adopted meanwhile */ }
+  try { rmdirSync(gate.dir); } catch { /* not empty — it belongs to whoever is in it */ }
 }
 
 function releaseLock(dir) {
