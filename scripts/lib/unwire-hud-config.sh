@@ -18,7 +18,11 @@
 set -euo pipefail
 
 # Also read by uninstall.sh's read-back so the two cannot drift.
-_UNWIRE_HUD_PAT='scripts/statusline/hud-custom-lines[.]sh'
+# Anchored to the exact command shape wire-statusline.sh writes (the template's
+# `bash "<path>/scripts/statusline/hud-custom-lines.sh"`, optionally behind the
+# HIMMEL-3157 HIMMEL_STATUSLINE_ECON=<alnum> prefix), so an operator command that
+# merely MENTIONS the script is never taken for himmel's.
+_UNWIRE_HUD_PAT='^(HIMMEL_STATUSLINE_ECON=[A-Za-z0-9]+ )?bash "[^"]*/scripts/statusline/hud-custom-lines[.]sh"$'
 
 unwire_hud_config() {
   local cfg="$1" dry="${2:-0}"

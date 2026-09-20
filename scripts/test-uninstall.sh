@@ -2383,6 +2383,20 @@ u_run_fx
 assert_rc 'U21 wet run completes' 0 "$rc"
 u_same 'U21 operator hud config kept byte-identical' "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21-hud"
 assert_has 'U21 kept hud config is explained' "not himmel's" "$out"
+# An operator command that merely MENTIONS himmel's script is not himmel's.
+u_residue_fixture u21b
+printf '{"display":{"customLineCommand":"echo scripts/statusline/hud-custom-lines.sh"}}\n' > "$U_HOME/.claude/plugins/claude-hud/config.json"
+cp "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21b-hud"
+u_run_fx
+assert_rc 'U21b wet run completes' 0 "$rc"
+u_same 'U21b mention-only hud config kept byte-identical' "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21b-hud"
+# ...while himmel's own command behind the ECON prefix is still recognised.
+u_residue_fixture u21c
+printf '{"display":{"customLineCommand":"HIMMEL_STATUSLINE_ECON=off bash \\"/x/scripts/statusline/hud-custom-lines.sh\\""}}\n' > "$U_HOME/.claude/plugins/claude-hud/config.json"
+u_run_fx
+assert_rc 'U21c wet run completes' 0 "$rc"
+if [ ! -e "$U_HOME/.claude/plugins/claude-hud/config.json" ]; then echo 'PASS U21c ECON-prefixed himmel hud config removed'
+else echo 'FAIL U21c ECON-prefixed himmel hud config still present'; FAILED=$((FAILED + 1)); fi
 
 # U22 — dry and wet print the SAME number of user-settings unwire rows: one per
 # helper (statusLine, HIMMEL_REPO, LUNA_VAULT_PATH, HANDOVER_DIR, hooks).
@@ -2403,6 +2417,22 @@ assert_rc 'U23 --skip-settings completes' 0 "$rc"
 u_same 'U23 --skip-settings keeps CLAUDE.md' "$U_HOME/.claude/CLAUDE.md" "$TMP/u23-claude-md-full"
 if [ -f "$U_HOME/.claude/plugins/claude-hud/config.json" ]; then echo 'PASS U23 --skip-settings keeps the hud config'
 else echo 'FAIL U23 hud config removed under --skip-settings'; FAILED=$((FAILED + 1)); fi
+
+# U24 — a failed write-through never destroys the only copy of the operator's
+# text: the stripped content is kept in a temp file the error names.
+mkdir -p "$TMP/u24tmp"
+printf 'mine\n' > "$TMP/u24-rules"
+wire_user_claude_md "$U17_TEMPLATE" "$TMP/u24-rules" >/dev/null
+cp "$TMP/u24-rules" "$TMP/u24-before"
+chmod 444 "$TMP/u24-rules"
+rc=0; out="$(TMPDIR="$TMP/u24tmp" bash "$U17_SCRIPTS/lib/unwire-user-claude-md.sh" "$TMP/u24-rules" 2>&1)" || rc=$?
+chmod 644 "$TMP/u24-rules"
+assert_rc 'U24 unwritable target fails' 1 "$rc"
+u_same 'U24 unwritable target left byte-identical' "$TMP/u24-rules" "$TMP/u24-before"
+u24_kept="$(find "$TMP/u24tmp" -name 'unwire-ucm.*' | head -n 1)"
+if [ -n "$u24_kept" ] && [ "$(cat "$u24_kept")" = "mine" ]; then echo 'PASS U24 stripped content kept in the temp file'
+else echo 'FAIL U24 no recoverable temp file with the operator text'; FAILED=$((FAILED + 1)); fi
+assert_has 'U24 error names the preserved temp file' "unwire-ucm." "$out"
 
 echo ""
 if [ "$FAILED" -eq 0 ]; then

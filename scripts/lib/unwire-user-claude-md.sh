@@ -18,7 +18,8 @@
 # operator's own text -- OR a temp-file / write / remove step failed (disk full,
 # read-only target); a failed write-through can leave the target truncated,
 # since it is written in place to keep a symlink and the mode (ponytail: no
-# atomic rename); 2 = wrong argument count. Source it to call
+# atomic rename) -- the stripped content is then kept in the temp file the
+# error names, never deleted; 2 = wrong argument count. Source it to call
 # unwire_user_claude_md directly.
 set -euo pipefail
 
@@ -62,7 +63,12 @@ unwire_user_claude_md() {
   fi
   # Write THROUGH the path (not mv over it): a dotfile manager's symlink and the
   # file's mode survive.
-  cat "$tmp" > "$target" || { rm -f "$tmp"; return 1; }
+  # A failed write can leave $target truncated, so on failure $tmp -- the file
+  # minus himmel's block, i.e. all of the operator's text -- is KEPT and named.
+  if ! cat "$tmp" > "$target"; then
+    echo "unwire-user-claude-md: could not write $target -- the stripped content is preserved at $tmp; copy it over $target by hand" >&2
+    return 1
+  fi
   rm -f "$tmp"
   echo "  stripped working-principles block from $target"
 }
