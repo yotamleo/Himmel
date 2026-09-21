@@ -190,7 +190,9 @@ printf '#!/usr/bin/env bash\n%s=1-extra bash uninstall.sh --yes\n' "$V" > "$fx/s
 # NOT pinned, since they cannot be must-flag without a matcher change: an unquoted
 # redirect after the value (1>/dev/null), the value spelled $'1', ${V:=1}, ${X:-1}, \1
 # or ""1, and a HOME that reaches the real HOME through a second dirname, a dotdot, a
-# literal /home dirname or an unquoted $HOME-in-scratch-ref. Follow-up ticket owns them.
+# literal /home dirname or an unquoted $HOME-in-scratch-ref. HIMMEL-3394 owns them: it
+# inverts the matcher to an allow-list of provably-scratch values. Do not pin them here as
+# "passes": an assertion that a lift passes would enshrine the hole.
 pinned=()
 RH=/ho"me"/someone   # @H@ in a fixture: a literal real home dir, spelled apart so the leak gate skips this source
 pin() {   # pin <file> <line>... -- write one must-flag fixture under scripts/
