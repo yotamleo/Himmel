@@ -377,7 +377,9 @@ ri_run() {
     git -C "$_ri_repo" remote remove origin 2>/dev/null
     git -C "$_ri_repo" remote add origin "$1"
     # shellcheck disable=SC2016  # the script text is meant to expand in the child shell
-    ( cd "$_ri_repo" && env -u FORGE -u HIMMEL_DOCTOR_ISSUE_REPO ${2:+FORGE="$2"} REPO_ROOT="$REPO_ROOT" bash -c \
+    # GIT_CONFIG_GLOBAL/SYSTEM=/dev/null: an operator's url.<base>.insteadOf would rewrite the
+    # scp-like origins under test (git@github.com: -> https://github.com/) before they are read.
+    ( cd "$_ri_repo" && env -u FORGE -u HIMMEL_DOCTOR_ISSUE_REPO GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null ${2:+FORGE="$2"} REPO_ROOT="$REPO_ROOT" bash -c \
         'set -uo pipefail; REPO_FLAG=""; '"$_ri_body"'; if r="$(resolve_issue_repo)"; then printf "%s\n" "$r"; else echo none; fi' 2>/dev/null )
 }
 _ri_n=0
@@ -418,6 +420,8 @@ none	git@bitbucket.org:github.com/x/y.git
 none	/srv/git/github.com/o/r.git
 none	file:///srv/git/github.com/o/r.git
 none	github.com/o/r.git
+none	git@github.com:o/r.git://y
+none	https://github.com/o/r.git://y
 none	https://github.com/o
 ROWS
 if [ "$_ri_n" -ge 30 ]; then pass "issue repo origin table was read ($_ri_n cases)"; else fail "issue repo origin table was read: only $_ri_n cases"; fi

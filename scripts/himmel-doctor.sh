@@ -695,6 +695,8 @@ resolve_issue_repo() {
     owner="${path%%/*}"
     name="${path#*/}"; name="${name%%/*}"; name="${name%.git}"
     [ "$owner" != "$path" ] && [ -n "$owner" ] && [ -n "$name" ] || return 1
+    # A GitHub owner/repo is [A-Za-z0-9._-]: `git@github.com:o/r.git://y` is no repo.
+    case "$owner$name" in *[!A-Za-z0-9._-]*) return 1 ;; esac
     printf '%s/%s\n' "$owner" "$name"
 }
 
