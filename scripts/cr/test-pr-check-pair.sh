@@ -321,12 +321,12 @@ for f in "$CLAUDE_RUNBOOK" "$CODEX_SKILL"; do
     # the trust root.
     cr_touch_check=$(printf '%s\n' "$calls" | grep -c -E '^[[:space:]]*git diff --name-only origin/main -- scripts/cr/[[:space:]]*$')
     if [ "$cr_touch_check" -eq 1 ] \
-       && grep -q 'ONLY when that check prints nothing' "$f" \
+       && grep -q 'ONLY when that check exits 0 and prints nothing' "$f" \
        && grep -q 'use the canonical fence above' "$f" \
        && grep -q 'defense in depth, not the trust root' "$f"; then
         pass "$n: (ii) himmel-lane step 0 is gated on a diff that touches no scripts/cr/ file (HIMMEL-3359 ruling)"
     else
-        fail "$n: (ii) himmel-lane step 0 is not gated on the scripts/cr/ condition -- expected exactly one \`git diff --name-only origin/main -- scripts/cr/\` code line (found $cr_touch_check) plus the prose 'ONLY when that check prints nothing', 'use the canonical fence above' and 'defense in depth, not the trust root' (HIMMEL-3359 console ruling)"
+        fail "$n: (ii) himmel-lane step 0 is not gated on the scripts/cr/ condition -- expected exactly one \`git diff --name-only origin/main -- scripts/cr/\` code line (found $cr_touch_check) plus the prose 'ONLY when that check exits 0 and prints nothing', 'use the canonical fence above' and 'defense in depth, not the trust root' (HIMMEL-3359 console ruling)"
     fi
 
     # (iii) the HIMMEL-2034 armed-repo predicate still guards the ONE

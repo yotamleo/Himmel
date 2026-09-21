@@ -133,12 +133,14 @@ uncommitted edits count and a main-side change only over-reports):
 
     git diff --name-only origin/main -- scripts/cr/
 
-Use the bare literal below ONLY when that check prints nothing — it is the one
-shape a leg's allow rule can match:
+Use the bare literal below ONLY when that check exits 0 and prints nothing — a
+failed check (e.g. `origin/main` does not resolve: git exits non-zero with empty
+stdout) proves nothing and counts as a `scripts/cr/` diff. It is the one shape
+a leg's allow rule can match:
 
     bash scripts/cr/pr-check-context.sh
 
-If the check prints any path, use the canonical fence above — and if that
+If the check prints any path or fails, use the canonical fence above — and if that
 fence is refused, stop and report BLOCKED; never fall back to the bare
 literal. On such a diff an allow-listed literal would auto-run the branch's own
 bytes, which may have deleted their own hand-off (console ruling on
