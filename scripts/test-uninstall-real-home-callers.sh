@@ -105,8 +105,8 @@ home_is_scratch() {
 # `1` opened by a quote ends only at that same quote plus such a terminator, so `"1"x`
 # (value `1x`) is not a lift; a bare `1` followed by a quote (`V=1"x"`, also `1x`) still
 # is, because the quote may close an enclosing string (a false flag), and so is a
-# closing quote followed by an expansion (`"1"$y`, `"1""$y"`), which is `1` when y is
-# empty. It will NOT catch a fence lift spelled another way (a computed
+# closing quote followed by an expansion (`"1"$y`, `"1""$y"`) or an empty string of the
+# same kind (`"1"""`), which are `1` when y or the string is empty. It will NOT catch a fence lift spelled another way (a computed
 # variable name, `Set-Item Env:`, `[Environment]::SetEnvironmentVariable`, a
 # `process.env` object built from a variable name) or the value carried in a
 # variable (`v=1; ... $v`). "Scratch HOME" is home_is_scratch above, with its own
@@ -120,8 +120,9 @@ scan_callers() {
   local sq="'" dq='"' bt='`'
   local pre="(^|[^A-Za-z0-9_])${V}[]'\"}]*[[:space:]]*[:=][[:space:]]*"
   local end_u="[][:space:];&|,)}${sq}${dq}${bt}]" end_d="[][:space:];&|,)}${sq}${bt}]" end_s="[][:space:];&|,)}${dq}${bt}]"
-  # A closing quote followed by an expansion (`"1"$y`, `"1""$y"`) stays a lift: y may be empty.
-  local set_re="${pre}(1(${end_u}|\$)|${dq}1${dq}(${end_d}|\\\\\$|\\\$|${dq}\\\$|\$)|${sq}1${sq}(${end_s}|\\\\\$|\\\$|\$))"
+  # A closing quote followed by an expansion (`"1"$y`, `"1""$y"`) or an empty string of the
+  # same kind (`"1"""`) stays a lift: both leave the value 1.
+  local set_re="${pre}(1(${end_u}|\$)|${dq}1${dq}(${end_d}|\\\\\$|\\\$|${dq}\\\$|${dq}${dq}|\$)|${sq}1${sq}(${end_s}|\\\\\$|\\\$|${sq}${sq}|\$))"
   local f rel a allowed rc list
   # A failed traversal (unreadable subtree) is reported, not scanned around.
   list="$(find "$root/scripts" -path '*/node_modules' -prune -o -type f \
@@ -189,6 +190,9 @@ printf '#!/usr/bin/env bash\n%s="1""x" bash uninstall.sh --yes\n' "$V" > "$fx/sc
 printf '#!/usr/bin/env bash\n%s="1"$y bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-concat-dq-var.sh"
 printf '#!/usr/bin/env bash\n%s="1""$y" bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-concat-dq-dq-var.sh"
 printf "#!/usr/bin/env bash\n%s='1'\$y bash uninstall.sh --yes\n" "$V" > "$fx/scripts/test-concat-sq-var.sh"
+# ... as does a quoted 1 followed by an empty string of the same kind (value 1).
+printf '#!/usr/bin/env bash\n%s="1""" bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-concat-dq-empty.sh"
+printf "#!/usr/bin/env bash\n%s='1''' bash uninstall.sh --yes\n" "$V" > "$fx/scripts/test-concat-sq-empty.sh"
 # ... and a real lift of the same quoted shape stays flagged.
 printf '#!/usr/bin/env bash\n%s="1" bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-quoted-dq-space.sh"
 printf "#!/usr/bin/env bash\n%s='1' bash uninstall.sh --yes\n" "$V" > "$fx/scripts/test-quoted-sq-space.sh"
@@ -266,6 +270,10 @@ check "\"1\"\"\$y\" is still flagged (an empty y leaves the value 1)" \
   "$(printf '%s' "$got" | grep -c 'scripts/test-concat-dq-dq-var.sh')" "1"
 check "'1'\$y is still flagged (an empty y leaves the value 1)" \
   "$(printf '%s' "$got" | grep -c 'scripts/test-concat-sq-var.sh')" "1"
+check "\"1\"\"\" (an empty string after the 1, value 1) is still flagged" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-concat-dq-empty.sh')" "1"
+check "'1''' (an empty string after the 1, value 1) is still flagged" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-concat-sq-empty.sh')" "1"
 check "\"1\" followed by a space is still a fence lift (flagged)" \
   "$(printf '%s' "$got" | grep -c 'scripts/test-quoted-dq-space.sh')" "1"
 check "'1' followed by a space is still a fence lift (flagged)" \
