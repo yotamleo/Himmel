@@ -267,21 +267,6 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HIMMEL_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-# Fail closed if HIMMEL_ROOT does not look like a himmel checkout - every
-# later step (sourcing lib.sh, calling write-verdicts.sh) depends on it.
-if [ ! -f "$HIMMEL_ROOT/scripts/cr/critic-panel.sh" ]; then
-    echo "pr-check-context: cannot find $HIMMEL_ROOT/scripts/cr/critic-panel.sh - HIMMEL_ROOT resolved wrong, aborting" >&2
-    exit 2
-fi
-
-# guardrails/lib.sh gives default_branch (main OR master, HIMMEL-297).
-# shellcheck source=../guardrails/lib.sh
-# shellcheck disable=SC1091
-if ! . "$HIMMEL_ROOT/scripts/guardrails/lib.sh" 2>/dev/null; then
-    echo "pr-check-context: cannot source guardrails/lib.sh - aborting" >&2
-    exit 2
-fi
-
 # HIMMEL-2335 - the trust anchor. Read from THIS script's own environment,
 # never re-derived from cwd or a repo-supplied file (HIMMEL-2226 Finding 1) -
 # a crafted repo under review must never be able to steer where himmel's
@@ -306,30 +291,50 @@ fi
 # anchor's never decides anything: it hands straight to the anchor's copy,
 # which then makes the lane + delegation decision and writes the delegation
 # row exactly as the canonical entry does, delegating back here with a
-# capability when the diff touches scripts/cr/. The one run that skips the
-# hand-off is a delegate whose PR_CHECK_ANCHOR_DELEGATED names THIS anchor
-# (the capability itself is verified further down; a stray value naming
-# another path, or a bare `1`, hands off like no value at all). A missing
-# anchor copy fails closed rather than letting this copy decide for itself.
+# capability when the diff touches scripts/cr/. The hand-off runs HERE, before
+# this copy sources anything of the branch's own (guardrails/lib.sh is sourced
+# only further down): a branch that edits only lib.sh is not a scripts/cr/
+# diff, so the bare literal is permitted on it, and its lib.sh must never get
+# a chance to reassign HIMMEL_REPO or print a forged context first. The only
+# run allowed past this point is one whose PR_CHECK_ANCHOR_DELEGATED has the
+# full anchor|branch|head|nonce shape and names THIS anchor, and that run
+# still hands off below (after the capability check, before lib.sh) unless
+# it is the FULLY verified delegate. A stray value, a bare anchor path or a
+# bare `1` hands off like no value at all. A missing anchor copy fails closed
+# rather than letting this copy decide for itself.
 # ponytail: this guard is defense in depth, NOT the trust root. It lives in
 # the branch's own bytes, so a branch that deletes it also deletes the
 # hand-off. The trust root is the runbook condition (console ruling): the bare
-# literal is permitted only on a diff that touches no scripts/cr/ file, and a
-# branch that could delete this guard is exactly such a scripts/cr/ diff, which
-# must enter by the canonical absolute fence.
+# literal is permitted only on a diff that touches no scripts/cr/ file (nor
+# scripts/guardrails/lib.sh), and a branch that could delete this guard is
+# exactly such a diff, which must enter by the canonical absolute fence.
+hand_off_to_anchor() {
+    if [ ! -f "$anchor/scripts/cr/pr-check-context.sh" ]; then
+        echo "pr-check-context: entered through a non-anchor copy ($SCRIPT_DIR) and the anchor carries no scripts/cr/pr-check-context.sh ($anchor) - refusing to let this copy decide; fix HIMMEL_REPO, then re-run" >&2
+        exit 2
+    fi
+    echo "pr-check-context: entered through a non-anchor copy ($SCRIPT_DIR) - handing off to the anchor's copy ($anchor/scripts/cr/pr-check-context.sh)" >&2
+    exec bash "$anchor/scripts/cr/pr-check-context.sh"
+}
 if ! [ "$HIMMEL_ROOT" -ef "$anchor" ]; then
     guard_anchor="${PR_CHECK_ANCHOR_DELEGATED:-}"
+    case "$guard_anchor" in
+        *'|'*'|'*'|'*) ;;
+        *) hand_off_to_anchor ;;
+    esac
     guard_anchor="${guard_anchor%|*}"
     guard_anchor="${guard_anchor%|*}"
     guard_anchor="${guard_anchor%|*}"
     if ! { [ -n "$guard_anchor" ] && [ "$guard_anchor" -ef "$anchor" ]; }; then
-        if [ ! -f "$anchor/scripts/cr/pr-check-context.sh" ]; then
-            echo "pr-check-context: entered through a non-anchor copy ($SCRIPT_DIR) and the anchor carries no scripts/cr/pr-check-context.sh ($anchor) - refusing to let this copy decide; fix HIMMEL_REPO, then re-run" >&2
-            exit 2
-        fi
-        echo "pr-check-context: entered through a non-anchor copy ($SCRIPT_DIR) - handing off to the anchor's copy ($anchor/scripts/cr/pr-check-context.sh)" >&2
-        exec bash "$anchor/scripts/cr/pr-check-context.sh"
+        hand_off_to_anchor
     fi
+fi
+
+# Fail closed if HIMMEL_ROOT does not look like a himmel checkout - every
+# later step (sourcing lib.sh, calling write-verdicts.sh) depends on it.
+if [ ! -f "$HIMMEL_ROOT/scripts/cr/critic-panel.sh" ]; then
+    echo "pr-check-context: cannot find $HIMMEL_ROOT/scripts/cr/critic-panel.sh - HIMMEL_ROOT resolved wrong, aborting" >&2
+    exit 2
 fi
 
 repo="$PWD"
@@ -410,10 +415,6 @@ head=$(git rev-parse HEAD)
 # invoked from a different worktree.
 git_dir=$(git rev-parse --git-common-dir)
 marker="$git_dir/cr-pending/$branch"
-# Same fallback the old step-0 fence used: default_branch already always
-# prints a non-empty name on its own, this is defense in depth only.
-base=$(default_branch "$repo")
-[ -n "$base" ] || base=main
 
 # HIMMEL-2335 round 4 (CR panel [codex-2]) / HIMMEL-2378 - identity handshake
 # bound to (branch, head) and one-time, not a bare boolean and not merely
@@ -516,6 +517,35 @@ if [ -n "$guard_val" ]; then
         ;;
     esac
 fi
+
+# HIMMEL-3359 - a non-anchor copy that reached here carried a capability of
+# the right shape, but only the FULLY verified delegate may run on: anything
+# else (a stale or forged value that merely names this anchor) hands off to
+# the anchor now, before this copy sources the branch's lib.sh or can elect
+# itself into the delegation block below. One hop only: if the anchor this
+# copy already handed off to delegates back with a capability that still
+# fails, the anchor is broken (it logged a row for a capability it never
+# wrote) and a second hand-off would loop forever - fail closed instead.
+if ! [ "$HIMMEL_ROOT" -ef "$anchor" ] && [ "$verified_delegate" = no ]; then
+    if [ -n "${PR_CHECK_ANCHOR_HANDED_OFF:-}" ]; then
+        echo "pr-check-context: the anchor ($anchor) delegated to this copy ($SCRIPT_DIR) again with a capability it cannot verify - refusing rather than hand off in a loop" >&2
+        exit 2
+    fi
+    export PR_CHECK_ANCHOR_HANDED_OFF=1
+    hand_off_to_anchor
+fi
+
+# guardrails/lib.sh gives default_branch (main OR master, HIMMEL-297).
+# shellcheck source=../guardrails/lib.sh
+# shellcheck disable=SC1091
+if ! . "$HIMMEL_ROOT/scripts/guardrails/lib.sh" 2>/dev/null; then
+    echo "pr-check-context: cannot source guardrails/lib.sh - aborting" >&2
+    exit 2
+fi
+# Same fallback the old step-0 fence used: default_branch already always
+# prints a non-empty name on its own, this is defense in depth only.
+base=$(default_branch "$repo")
+[ -n "$base" ] || base=main
 
 # HIMMEL-2335 - deliberate delegation. himmel lane ONLY: the trusted anchor
 # decides whether execution hands off to the branch's own copy of this

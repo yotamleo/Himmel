@@ -125,18 +125,28 @@ exactly as it accepted the bare form (probed directly in an
 EnterWorktree-isolated session).
 
 **Himmel-lane spelling of step 0 (HIMMEL-3359) — run this INSTEAD of the
-fence above, never both, and ONLY on a diff that touches no `scripts/cr/`
-file.** When the session's cwd is a worktree of the himmel checkout
-`HIMMEL_REPO` names, first list the branch's `scripts/cr/` changes
-(always origin/main, even on a stacked PR — the branch runs its parent's
-`scripts/cr/` bytes too, and a diff against a stacked base would hide them;
-two-dot against the working tree, so uncommitted edits count and a main-side
-change only over-reports):
+fence above, never both, and ONLY in a himmel checkout on a diff that touches
+no `scripts/cr/` file and not `scripts/guardrails/lib.sh` (which
+`pr-check-context.sh` sources).** First prove the lane — the allow rule is
+emitted for every leg profile whatever its cwd, so the relative path is
+trusted only once the cwd shares `HIMMEL_REPO`'s git dir:
 
-    git diff --name-only origin/main -- scripts/cr/
+    git rev-parse --path-format=absolute --git-common-dir; printenv HIMMEL_REPO
+
+Go on ONLY if its first line equals its second line followed by `/.git` (a
+string compare: a differently spelled path only sends you to the fence, the
+safe direction); anything else, an empty second line included, means use the
+canonical fence above. Then list the branch's changes to the files step 0 runs
+(always against refs/remotes/origin/main, even on a stacked PR — the branch
+runs its parent's bytes too, and a diff against a stacked base would hide
+them; spelled in full because a local branch named `origin/main` would shadow
+the bare name; two-dot against the working tree, so uncommitted edits count
+and a main-side change only over-reports):
+
+    git diff --name-only refs/remotes/origin/main -- scripts/cr/ scripts/guardrails/lib.sh
 
 Use the bare literal below ONLY when that check exits 0 and prints nothing — a
-failed check (e.g. `origin/main` does not resolve: git exits non-zero with empty
+failed check (e.g. `refs/remotes/origin/main` does not resolve: git exits non-zero with empty
 stdout) proves nothing and counts as a `scripts/cr/` diff. It is the one shape
 a leg's allow rule can match:
 
@@ -148,8 +158,8 @@ literal. On such a diff an allow-listed literal would auto-run the branch's own
 bytes, which may have deleted their own hand-off (console ruling on
 HIMMEL-3359). The in-script hand-off is defense in depth, not the trust root:
 run from a copy that is not the anchor's, `pr-check-context.sh` reads
-`HIMMEL_REPO` itself and `exec`s the ANCHOR's copy before deciding anything,
-so the lane decision, the delegation and its `delegation` ledger row are still
+`HIMMEL_REPO` itself and `exec`s the ANCHOR's copy before deciding anything
+or sourcing any branch file, so the lane decision, the delegation and its `delegation` ledger row are still
 the anchor's. An anchor with no copy exits 2; an unset or empty `HIMMEL_REPO`
 exits 2 (a relative path cannot collapse to `/scripts/...`). Never use it
 outside a himmel checkout — in an adopter repo the relative path names the
