@@ -52,6 +52,75 @@ const SECRETS_MANIFEST = require('./lib/secrets-manifest.json');
 // wizard enumerates cadence UNITS from here, never a hardcoded list.
 const CADENCE_REGISTRY = require('./lib/cadence-registry.json').cadences;
 
+// HIMMEL-3332 S5: install provenance (lib/provenance.js; contract in
+// docs/internals/install-provenance.md). Recording is best-effort — a ledger
+// failure warns on stderr and never fails the install or the command.
+// ponytail: provStep names only the plan step in flight, so install-end's
+// failed_step is the step that RETURNED non-zero, not a finer-grained cause.
+const provLib = require('./lib/provenance.js');
+let provStep = '';
+
+function provWarn(e) {
+  console.error(`himmelctl: WARN: provenance ledger not updated (${e && e.message ? e.message : e})`);
+}
+
+// Open this process's session (a no-op under --dry-run, or when a parent
+// already exported HIMMEL_PROVENANCE_IID). provBegin exports the iid, so every
+// child runSpawn() starts inherits the session.
+function provOpen(args) {
+  try {
+    provLib.provBegin(['--writer', 'himmelctl', '--target', process.cwd(), '--root', repoRoot(),
+      ...(args && args.dryRun ? ['--dry-run'] : []), '--', ...process.argv.slice(2)]);
+  } catch (e) { provWarn(e); }
+}
+
+// Close the session this process opened (provEnd is a no-op for one it did not).
+function provClose(rc) {
+  try {
+    provLib.provEnd(rc === 0 ? 'ok' : 'failed', rc === 0 ? '' : provStep);
+  } catch (e) { provWarn(e); }
+  provStep = '';
+}
+
+// Run fn (a command body) and end whichever session it opened, ok on rc 0.
+async function provSession(fn) {
+  let rc;
+  try {
+    rc = await fn();
+    return rc;
+  } finally {
+    provClose(rc);
+  }
+}
+
+// One artifact row: prov(['create', 'file', path, ...flags]). Prints the DRY:
+// line a --dry-run flag yields.
+function prov(recArgs) {
+  try {
+    const dry = provLib.provRecord(recArgs);
+    if (dry) console.log(dry);
+  } catch (e) { provWarn(e); }
+}
+
+// Snapshot a file's pre-write state; call the returned function AFTER the
+// write to record it (create when it was absent, replace when not). A replace
+// keeps a ledger backup of the prior bytes — except class keep, which uninstall
+// never restores (and which includes the clone's .env, so a copy would only
+// spread its secrets into the ledger dir).
+function provBefore(p, spec) {
+  let pre;
+  try {
+    pre = fs.existsSync(p)
+      ? { op: 'replace', flags: ['--pre-text', fs.readFileSync(p, 'utf8'), ...(spec.cls === 'keep' ? [] : ['--backup'])] }
+      : { op: 'create', flags: ['--pre-absent'] };
+  } catch (e) {
+    provWarn(e);
+    return () => {};
+  }
+  return () => prov([pre.op, spec.kind || 'file', p, ...pre.flags, '--post-file', p,
+    '--scope', spec.scope, '--class', spec.cls, ...(spec.row ? ['--row', spec.row] : [])]);
+}
+
 // Tools every himmel adopter needs before any question makes sense — mirrors
 // adopt.sh require_tools (bash/git/jq/python3) PLUS at least one JS package
 // manager (npm or bun). npm is the recommended install when both are absent.
@@ -1629,7 +1698,9 @@ function cachePath() {
 // fresh HOME/cache dir just works.
 function writeCache(answers) {
   fs.mkdirSync(cacheDir(), { recursive: true });
+  const recorded = provBefore(cachePath(), { scope: 'user', cls: 'code', row: 'himmelctl-cache' });
   fs.writeFileSync(cachePath(), serialize(answers) + '\n');
+  recorded();
 }
 
 // Hard-error exit for a profile that fails schema validation: clear stderr
@@ -2118,11 +2189,13 @@ async function offerSaveProfile(answers) {
   // old lstat-then-open('w') shape had is closed, not just narrowed.
   const tmpDest = path.join(dir, `.${name}.install-profile.json.${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
   let tmpCreated = false;
+  const recorded = provBefore(dest, { scope: 'user', cls: 'keep' });
   try {
     fs.writeFileSync(tmpDest, bytes, { flag: 'wx' });
     tmpCreated = true;
     fs.renameSync(tmpDest, dest);
     tmpCreated = false; // renamed away — nothing left at tmpDest to clean up
+    recorded();
     console.log(`himmelctl: saved profile to ${dest}`);
   } catch (e) {
     console.warn(`himmelctl: could not save profile: ${e.message}`);
@@ -2420,12 +2493,14 @@ function writeHandoverDir(p) {
     console.error(`himmelctl: failed to create handover dir ${target}: ${e.message}`);
     return false;
   }
+  const recorded = provBefore(envFile, { scope: 'clone', cls: 'keep' });
   const r = spawnSync(resolveBash(), [toBashPath(script), target, '--env-file', toBashPath(envFile)], { encoding: 'utf8' });
   if (r.error || r.status !== 0) {
     const detail = (r.stderr || (r.error && r.error.message) || '').trim();
     console.error(`himmelctl: failed to write HANDOVER_DIR via ${script}${detail ? `: ${detail}` : ''}`);
     return false;
   }
+  recorded();
   console.log(`HANDOVER_DIR -> ${target} (written to ${envFile})`);
   return true;
 }
@@ -3018,6 +3093,8 @@ function mergePhiRoot(root) {
     try { fs.unlinkSync(tmp); } catch (_e) { /* best-effort tmp cleanup */ }
     throw e;
   }
+  prov(['append', 'line', file, '--unit', root, '--post-text', root, '--scope', 'user', '--class', 'state',
+    '--field', `file_created=${mode === null}`]);
   return { file: file, added: true };
 }
 
@@ -3263,6 +3340,7 @@ function applyLunaSectionsStep(answers) {
             // ([ -e "$d/.salus" ]), so an existing marker needs no rewrite.
             try {
               fs.writeFileSync(markerPath, '', { flag: 'wx' });
+              prov(['create', 'file', markerPath, '--pre-absent', '--post-file', markerPath, '--scope', 'user', '--class', 'keep']);
               console.log(`himmelctl: created ${markerPath}`);
             } catch (e) {
               if (e.code === 'EEXIST') {
@@ -3664,11 +3742,28 @@ function applyWorkspaceTrust() {
   if (!fs.existsSync(script)) {
     return { applied: false, dir: dir, reason: 'scripts/lib/ensure-workspace-trust.sh not found' };
   }
+  // HIMMEL-3332 S5: learn BEFORE the helper runs whether the key was already
+  // true — afterwards the two cases are indistinguishable. The helper's own
+  // config path: $WORKSPACE_TRUST_CONFIG, else $HOME/.claude.json.
+  const trustCfg = process.env.WORKSPACE_TRUST_CONFIG || path.join(process.env.HOME || process.env.USERPROFILE || os.homedir(), '.claude.json');
+  let preexisted = false;
+  try {
+    const cfg = JSON.parse(fs.readFileSync(trustCfg, 'utf8'));
+    preexisted = Boolean(cfg && cfg.projects && cfg.projects[dir] && cfg.projects[dir].hasTrustDialogAccepted === true);
+  } catch (_e) {
+    // absent or unreadable config: the key did not pre-exist
+  }
   const r = spawnSync(resolveBash(), [toBashPath(script), dir], { encoding: 'utf8' });
   if (r.error || r.status !== 0) {
     const why = r.error ? r.error.message : (r.stderr || `exited rc=${r.status}`).trim();
     return { applied: false, dir: dir, reason: why };
   }
+  // ponytail: a key that pre-existed as `false` is recorded as absent (the
+  // helper flips it to true either way); only "already true" reads preexisted.
+  prov([preexisted ? 'noop' : 'create', 'json-key', trustCfg,
+    '--unit', `/projects/${dir.replace(/~/g, '~0').replace(/\//g, '~1')}/hasTrustDialogAccepted`,
+    ...(preexisted ? ['--pre-json', 'true'] : ['--pre-absent']), '--post-json', 'true',
+    '--scope', 'user', '--class', 'keep', '--row', 'workspace-trust', '--field', `preexisted=${preexisted}`]);
   return { applied: true, dir: dir };
 }
 
@@ -3818,7 +3913,9 @@ async function applyLaneProfileStep(answers) {
     return true;
   }
   try {
+    const recorded = provBefore(path.join(repoRoot(), 'scripts', 'lanes', 'lanes.local.json'), { scope: 'clone', cls: 'keep' });
     const { ids, preservedLegacyGlobal } = await adopterProfileLib.persistProfileLaneAllowlist(answers.lanes || [], repoRoot());
+    recorded();
     console.log(`lane profile: allowlisted ${ids.length > 0 ? ids.join(', ') : '(none)'}; unselected adopter-profile lanes are suppressed-by-profile`);
     if (preservedLegacyGlobal) console.log('lane profile: preserved legacy global allowlist semantics');
     return true;
@@ -3973,6 +4070,7 @@ async function runPlan(answers, args) {
   // Fail before any installer/wire/plugin mutation when lane-profile
   // persistence or the relevant target settings.json cannot be written, so a
   // predictable consent-boundary failure never lands after the core install.
+  provStep = 'preflight';
   if (!await preflightLaneProfileStep(answers)) return 1;
   if (!settingsTargetsWritable(answers)) return 1;
 
@@ -3980,6 +4078,8 @@ async function runPlan(answers, args) {
   // inline → no-op (adopt.sh's/setup.sh's own inline handovers/ default).
   // Fail-closed: a failed write must abort BEFORE the core install shell-out
   // rather than silently proceed with an unwired handover destination.
+  provOpen(args); // HIMMEL-3332 S5: idempotent — cmdInstall already opened the session
+  provStep = 'handover';
   if (!applyHandoverStep(answers)) return 1;
 
   // CR round 11 [codex-adv-r10-2], NARROWED. The occupied-vault gate above
@@ -4020,6 +4120,7 @@ async function runPlan(answers, args) {
 
   // T4: execute the derived command VERBATIM; propagate its rc (skip the
   // post-install enable step if the core install itself failed).
+  provStep = 'adopt';
   const rc = runSpawn(cmd);
   // HIMMEL-2836: write the PATH shim BEFORE checking adopt.sh's rc — a failed
   // core install (e.g. a plugin SSH-clone failure, same shape as HIMMEL-549)
@@ -4034,17 +4135,21 @@ async function runPlan(answers, args) {
   // HIMMEL-2460: the T5b wire/apply plan runs AFTER adopt.sh succeeds, as an
   // additional step — never instead of it.
   if (existingVaultPlan) {
+    provStep = 'wire';
     const wireRc = runSpawn(existingVaultPlan.wire);
     if (wireRc !== 0) return wireRc;
+    provStep = 'apply';
     const applyRc = runSpawn(existingVaultPlan.apply);
     if (applyRc !== 0) return applyRc;
   }
   // HIMMEL-2308: the dev overlay's setup.sh/setup.ps1 runs AFTER adopt.sh
   // succeeds, as an additional idempotent mutation step — never instead of it.
   if (overlayCmd) {
+    provStep = 'overlay';
     const overlayRc = runSpawn(overlayCmd);
     if (overlayRc !== 0) return overlayRc;
   }
+  provStep = 'lane-profile';
   if (!await applyLaneProfileStep(answers)) return 1;
 
   // T4.5: pluginSet=full → the documented per-plugin enable step. lean → no-op
@@ -4054,7 +4159,9 @@ async function runPlan(answers, args) {
   await printContributorProfile(answers, overlayCmd ? displayCommand(overlayCmd) : undefined, args.dryRun);
   await printAdopterEpilogue(answers, displayCommand(cmd), args.dryRun, pluginResult, vaultScaffolded, lunaResult);
   printUninstallFooter();
-  return pluginResult.rc || lunaResult.rc || (shimOk ? 0 : 1);
+  const finalRc = pluginResult.rc || lunaResult.rc || (shimOk ? 0 : 1);
+  if (finalRc !== 0) provStep = pluginResult.rc ? 'plugins' : lunaResult.rc ? 'luna' : 'shim';
+  return finalRc;
 }
 
 // `install` subcommand handler. T1: the preflight-first gate runs BEFORE any
@@ -4212,6 +4319,10 @@ async function cmdInstall(args) {
         }
       }
     }
+    // HIMMEL-3332 S5: the session opens here, before the first mutation (the
+    // cache write), so the cache row and the saved-profile row join the same
+    // session as runPlan's rows; runPlan's own provOpen is then a no-op.
+    provOpen(args);
     writeCache(answers);
   }
 
@@ -4703,10 +4814,12 @@ function writeMarkedLauncher(dest, contents, mode) {
     }
   }
   const tmp = path.join(path.dirname(dest), `.${path.basename(dest)}.${process.pid}.tmp`);
+  const recorded = provBefore(dest, { kind: 'shim', scope: 'user', cls: 'code' });
   try {
     fs.writeFileSync(tmp, contents, 'utf8');
     if (mode !== undefined) fs.chmodSync(tmp, mode);
     fs.renameSync(tmp, dest);
+    recorded();
   } catch (e) {
     try { fs.unlinkSync(tmp); } catch (_e) { /* best-effort tmp cleanup */ }
     throw e;
@@ -4736,6 +4849,7 @@ function applyHimmelctlPathShim(args) {
   const target = path.join(primaryCheckoutRoot(), 'scripts', 'himmelctl', 'bin.js');
   if (args.dryRun) {
     console.log(`DRY: himmelctl launcher -> ${target} (would write to ${binDir})`);
+    prov(['create', 'shim', path.join(binDir, platform === 'win32' ? 'himmelctl.js' : 'himmelctl'), '--scope', 'user', '--class', 'code', '--dry-run']);
     printHimmelctlPathInstruction(binDir, platform);
     return true;
   }
@@ -4828,6 +4942,8 @@ async function cmdUpdate(args) {
     applyHimmelctlPathShim(args);
     return 0;
   }
+  provOpen(args);
+  provStep = 'update';
   const rc = runSpawn(cmd);
   if (rc !== 0) return rc;
   // The PATH launcher is a best-effort rider on a successful update
@@ -5950,6 +6066,8 @@ async function cmdEnsure(args) {
   // an operator who declined above, or was refused above for lacking --yes
   // non-interactively, must never have reached this line. Still gated
   // behind !args.dryRun (dry-run's zero-mutation guarantee is unconditional).
+  provOpen(args); // HIMMEL-3332 S5: past every no-op/refusal return, before the first mutation
+  provStep = 'ensure';
   if (stateChanged && !args.dryRun) stateLib.save(state);
 
   // Step 4: toward-disabled dispatch (A5b) — per-item `removable` check.
@@ -6434,6 +6552,9 @@ async function cmdScopeSet(args) {
     return 1;
   }
 
+  provOpen(args); // HIMMEL-3332 S5: past the dry-run and fail-closed returns, before Step 3's unwire
+  provStep = 'scope-set';
+
   // Consent granted (--yes or an interactive confirm). The re-keyed state is
   // held IN MEMORY here (reconcileTarget already added the new target entry
   // above) and is NOT persisted yet: the delete-old + save is deferred to
@@ -6562,7 +6683,7 @@ async function cmdScope(args) {
     console.error("Run 'himmelctl --help' for usage.");
     return 2;
   }
-  return cmdScopeSet(args);
+  return provSession(() => cmdScopeSet(args));
 }
 
 // ── trust ledger wiring (HIMMEL-1551) ───────────────────────────────────────
@@ -7573,19 +7694,19 @@ async function main() {
     return 0;
   }
   if (args.subcommand === 'install') {
-    return await cmdInstall(args);
+    return await provSession(() => cmdInstall(args));
   }
   if (args.subcommand === 'uninstall') {
     return await cmdUninstall(args);
   }
   if (args.subcommand === 'update') {
-    return await cmdUpdate(args);
+    return await provSession(() => cmdUpdate(args));
   }
   if (args.subcommand === 'status') {
     return await cmdStatus(args);
   }
   if (args.subcommand === 'ensure') {
-    return await cmdEnsure(args);
+    return await provSession(() => cmdEnsure(args));
   }
   if (args.subcommand === 'gaps') {
     return await cmdGaps(args);

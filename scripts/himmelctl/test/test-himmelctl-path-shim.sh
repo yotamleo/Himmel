@@ -515,4 +515,29 @@ outJ=$("$binJ/himmelctl" --help 2>&1); rcJ=$?
 grepq "$outJ" 'guarded main ran' || fail "caseJ: generated launcher did not run the guarded main() (got: $outJ)"
 echo "ok: caseJ generated launcher re-execs bin.js so the require.main===module guard (HIMMEL-2438) still fires"
 
+# ── K: HIMMEL-3332 S5 — update opens a provenance session and the launcher
+# writer records its shim rows into it (class code): create on a fresh bin dir,
+# replace (with a backup of the prior marked launcher) on the re-run. A private
+# ledger dir per case, so nothing here can reach the operator's real ledger.
+if command -v jq >/dev/null 2>&1; then
+  fixtureK="$work/caseK-checkout"; binK="$work/caseK-bin"; provK="$work/caseK-prov"; mkdir -p "$binK"
+  build_update_fixture "$fixtureK"
+  HIMMEL_PROVENANCE_DIR="$(winpath "$provK")" run_update "$fixtureK" "$binK" linux "$(winpath "$binK"):$PATH" >/dev/null
+  ledK="$provK/provenance.jsonl"
+  [ -f "$ledK" ] || fail "caseK: no ledger written at $ledK"
+  [ "$(jq -rs '.[0].op' "$ledK")" = "install-begin" ] || fail "caseK: first row is not install-begin"
+  [ "$(jq -rs '.[-1] | .op + " " + .status' "$ledK")" = "install-end ok" ] || fail "caseK: session did not end ok"
+  [ "$(jq -rs '[.[] | select(.kind=="shim" and .op=="create" and .class=="code")] | length' "$ledK")" = "2" ] \
+    || fail "caseK: expected two shim create rows (himmelctl.js + himmelctl)"
+  HIMMEL_PROVENANCE_DIR="$(winpath "$provK")" run_update "$fixtureK" "$binK" linux "$(winpath "$binK"):$PATH" >/dev/null
+  [ "$(jq -rs '[.[] | select(.kind=="shim" and .op=="replace" and .class=="code")] | length' "$ledK")" = "2" ] \
+    || fail "caseK: the re-run should record two shim replace rows"
+  [ "$(jq -rs '[.[] | select(.op=="install-begin")] | length' "$ledK")" = "2" ] || fail "caseK: each run should be its own session"
+  [ -n "$(find "$provK/provenance-backups" -type f -name '*himmelctl*' 2>/dev/null | head -1)" ] \
+    || fail "caseK: a replaced launcher should have a backup in the ledger dir"
+  echo "ok: caseK update opens a session and records its launcher shim rows (create, then replace with backup)"
+else
+  echo "skip: caseK needs jq"
+fi
+
 echo "PASS"
