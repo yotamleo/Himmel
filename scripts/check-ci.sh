@@ -96,6 +96,9 @@
 #       only by a check run from THAT app — a same-named check from another app
 #       reads as never reported — and an unreadable check-runs read ("producers
 #       unreadable") fails closed too; an entry with no id stays a name match. A
+#       pinned check the app publishes as a commit STATUS reads as never
+#       reported too (a status carries no app id to verify, HIMMEL-3391); the
+#       refusal names that "status-only producer" cause. A
 #       required check that is FAILED exits 1, as any red does. Each of these prints one MERGE-BLOCKED
 #       line naming the rule and sends ONE operator DM per (repo, PR, head)
 #       (scripts/lib/merge-block-alert.sh); a delivery failure never changes the
@@ -470,6 +473,30 @@ _required_status() {
     done <<<"$1"
 }
 
+# _status_only <required status rows> — HIMMEL-3391: of the MISSING producer-pinned
+# labels ("<name> (app <id>)"), the ones a commit STATUS by that name exists for,
+# comma-joined ("" when none, or when the status read fails — no cause is guessed).
+# Naming the cause is all this does: a missing check stays missing either way.
+#
+# ponytail: a commit status carries no app id — the REST payload has none and
+# GraphQL StatusContext exposes only `creator`, a login, not the app — so a
+# producer-pinned check published as a status can never be verified here. It is
+# NEVER accepted by name alone (a false pass); a pinned check whose app publishes
+# statuses stays refused (exit 5) until the pin is dropped or the app publishes a
+# check run. himmel's own required checks are all GitHub Actions (app 15368) check
+# runs, so this fires only on another repo's pin.
+_status_only() {
+    local ctx label name hit=""
+    ctx=$(gh api "repos/$owner/$repo/commits/$head0/status?per_page=100" --paginate \
+        --jq '.statuses[].context' 2>/dev/null) || return 0
+    while IFS= read -r label; do
+        name=${label% (app *)}
+        [ "$name" != "$label" ] || continue
+        if printf '%s\n' "$ctx" | grep -qxF -- "$name"; then hit="${hit:+$hit, }$label"; fi
+    done < <(printf '%s\n' "$1" | awk -F'\t' '$1 == "missing" { print $2 }')
+    printf '%s' "$hit"
+}
+
 _join_by_status() { printf '%s\n' "$2" | awk -F'\t' -v s="$1" '$1 == s { print $2 }' | paste -sd, - | sed 's/,/, /g'; }
 
 # required_gate <wait> — 1 = a missing required check may register within
@@ -478,7 +505,7 @@ _join_by_status() { printf '%s\n' "$2" | awk -F'\t' -v s="$1" '$1 == s { print $
 # window, refuse now. Runs BEFORE the watch (fail fast) and after
 # the settle round.
 required_gate() {
-    local wait_ok="$1" reqs rows prows="" st missing failed req_start tries=0 max_tries
+    local wait_ok="$1" reqs rows prows="" st missing status_only failed req_start tries=0 max_tries
     # Backstop beside the SECONDS bound: a no-op sleep seam (CHECK_CI_SLEEP_CMD=:)
     # or a POLL of 0 must not turn the bounded wait into a spin.
     max_tries=$(( GRACE / (POLL > 0 ? POLL : 1) + 1 ))
@@ -520,6 +547,11 @@ required_gate() {
         tries=$((tries + 1))
         if [ "$wait_ok" -ne 1 ] || [ $((SECONDS - req_start)) -ge "$GRACE" ] || [ "$tries" -ge "$max_tries" ]; then
             echo "check-ci: BLOCKED — required check(s) never reported within ${GRACE}s: $missing. GitHub will refuse this merge; is the workflow configured for this branch, or did it not trigger? (HIMMEL-3381, exit 5)" >&2
+            status_only=$(_status_only "$st")
+            if [ -n "$status_only" ]; then
+                echo "check-ci: BLOCKED — status-only producer: $status_only exist only as a commit status, not a check run. A commit status carries no app id, so the app this requirement pins cannot be verified; refusing rather than matching by name alone (HIMMEL-3391, exit 5)" >&2
+                missing="$missing (status-only, producer unverifiable: $status_only)"
+            fi
             _alert "required check(s) never reported within ${GRACE}s: $missing — GitHub will refuse this merge"
             exit 5
         fi
