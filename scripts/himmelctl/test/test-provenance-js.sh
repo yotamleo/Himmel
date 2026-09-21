@@ -42,7 +42,7 @@ jsw="$(winpath "$repo/scripts/himmelctl/lib/provenance.js")"
 b_begin() { prov_begin "$@"; }
 b_rec() { prov_record "$@"; }
 b_end() { prov_end "$@"; }
-n_begin() { "$node_bin" "$jsw" begin "$@"; }
+n_begin() { "$node_bin" "$jsw" begin "$@" >/dev/null; }
 n_rec() { "$node_bin" "$jsw" record "$@"; }
 n_end() { "$node_bin" "$jsw" end "$@"; }
 
@@ -140,6 +140,46 @@ val='{"b":1,"a":[2,{"d":1,"c":null}],"s":"é\u007f\n"}'
 rm -rf "$tmp/pu"
 PATH="$tmp/nodeonly" "$tmp/nodeonly/node" "$jsw" record replace json-key "$w/s.json" --post-json "$val" --pre-json "$val" >/dev/null 2>&1
 check "node without jq: post.sha matches jq -cS" "$(grep -v install- "$tmp/pu/provenance.jsonl" | jq -r .post.sha)" "$(printf '%s' "$val" | jq -cS . | tr -d '\n' | sha256sum | awk '{print $1}')"
+
+# review fixes: the CLI begin prints the iid; one-document values; atomic backups; retryable end
+rm -rf "$tmp/pu"
+iid=$("$node_bin" "$jsw" begin --writer cli)
+check "node: CLI begin prints a generated iid" "$(printf '%s' "$iid" | grep -cE '^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$')" "1"
+check "node: the printed iid is the row's iid" "$(jq -r .iid "$tmp/pu/provenance.jsonl")" "$iid"
+check "node: CLI begin --iid prints it back" "$("$node_bin" "$jsw" begin --iid FIXED --writer cli)" "FIXED"
+rm -rf "$tmp/pu"
+"$node_bin" "$jsw" record create file "$w/x" --field 'k=1 2' 2>/dev/null; check "node: multi-document --field → rc 2" "$?" "2"
+"$node_bin" "$jsw" record create file "$w/x" --post-json '1 2' 2>/dev/null; check "node: multi-document post JSON → rc 1" "$?" "1"
+"$node_bin" "$jsw" record create file "$w/x" --post-json '' 2>/dev/null; check "node: empty post JSON → rc 1" "$?" "1"
+check "node: multi-document refusals wrote nothing" "$([ -e "$tmp/pu" ] && echo yes || echo no)" "no"
+
+pids=""
+for k in 1 2 3 4 5 6 7 8; do
+    printf 'v%s\n' "$k" > "$w/c$k.snap"
+    HIMMEL_PROVENANCE_IID=C1 "$node_bin" "$jsw" record replace file "$w/same.txt" --pre-file "$w/c$k.snap" --backup --post-file "$w/c$k.snap" >/dev/null &
+    pids="$pids $!"
+done
+for pid in $pids; do wait "$pid"; done
+set -- "$tmp/pu/provenance-backups/C1"/*
+check "node: 8 concurrent backups → 8 distinct files" "$#" "8"
+check "node: 8 concurrent backups → 8 distinct backup paths in the ledger" "$(jq -r '.pre.backup // empty' "$tmp/pu/provenance.jsonl" | sort -u | wc -l | tr -d ' ')" "8"
+
+rm -rf "$tmp/pu"
+cat > "$tmp/retry.js" <<'RETRY_EOF'
+const fs = require('fs'); const p = require(process.argv[2]);
+const led = process.env.HIMMEL_PROVENANCE_DIR + '/provenance.jsonl';
+p.provBegin(['--iid', 'E1', '--writer', 'retry']);
+fs.renameSync(led, led + '.bak'); fs.mkdirSync(led);
+let threw = false;
+try { p.provEnd('ok'); } catch (_) { threw = true; }
+console.log('threw=' + threw, 'open=' + (process.env.HIMMEL_PROVENANCE_IID || 'unset'));
+fs.rmdirSync(led); fs.renameSync(led + '.bak', led);
+p.provEnd('ok');
+console.log('closed=' + (process.env.HIMMEL_PROVENANCE_IID || 'unset'));
+RETRY_EOF
+check "node: a failed provEnd throws, keeps the session, and the retry closes it" \
+    "$(HIMMEL_PROVENANCE_DIR="$tmp/pu" "$node_bin" "$(winpath "$tmp/retry.js")" "$jsw" | paste -sd' ' -)" "threw=true open=E1 closed=unset"
+check "node: retry wrote install-end" "$(tail -n1 "$tmp/pu/provenance.jsonl" | jq -c '[.op,.iid,.status]')" '["install-end","E1","ok"]'
 
 echo "$passes passed, $fails failed"
 [ "$fails" -eq 0 ]

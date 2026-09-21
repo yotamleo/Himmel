@@ -72,7 +72,9 @@ line; line = the line without its terminator.
 `--backup` copies the pre-state into `provenance-backups/<iid>/<seq>-<basename>`
 (`<seq>` is a three-digit counter): the file itself for `--pre-file` (mode kept),
 `.prior.json` for `--pre-json` (canonical, no trailing newline), `.prior.txt` for
-`--pre-text`. The backup's sha256 always equals `pre.sha`.
+`--pre-text`. The backup's sha256 always equals `pre.sha`. The sequence number
+is reserved with an exclusive create, so concurrent writers sharing one `iid`
+never collide on a name.
 
 ## Calling contract
 
@@ -99,9 +101,13 @@ prov_end ok
   failures rc 1, with `provenance: <why>` on stderr. The PowerShell functions
   throw the same message. Whether a failed record is fatal is the caller's call.
 - `prov_end` closes only a session **this process opened**; a child that merely
-  inherited `HIMMEL_PROVENANCE_IID` is a silent no-op. (The node CLI's `end`
-  closes the exported session unconditionally, since each CLI call is its own
-  process.)
+  inherited `HIMMEL_PROVENANCE_IID` is a silent no-op, and a failed append leaves
+  the session open so the call can be retried. (The node CLI is one process per
+  call, so `begin` **prints the session id** for the caller to export as
+  `HIMMEL_PROVENANCE_IID`, and `end` closes the exported session
+  unconditionally.)
+- Every JSON value (`--pre-json`, `--post-json`, `--field`) must be exactly one
+  JSON document; an empty value or `1 2` is refused (rc 1 / rc 2 for `--field`).
 
 Test seams: `HIMMEL_PROVENANCE_NOW` fixes `t`; `prov_begin --iid` fixes the
 session id; `HIMMEL_PROVENANCE_DIR` relocates the ledger. Every test runs under a

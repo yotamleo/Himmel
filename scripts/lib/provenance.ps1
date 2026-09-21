@@ -109,7 +109,11 @@ function _ProvJqCanon([string]$Text) {
         [void]$p.StandardError.ReadToEnd()
         $p.WaitForExit()
         if ($p.ExitCode -ne 0) { return $null }
-        return $out.TrimEnd("`n")
+        # CRLF-safe (jq.exe on Windows may end lines with \r\n); one JSON document only:
+        # jq -c prints a line per document ('1 2' -> two lines), so more than one line is refused
+        $out = $out.TrimEnd([char]13, [char]10)
+        if ($out -eq '' -or $out.Contains("`n")) { return $null }
+        return $out
     }
     try { return (_ProvSorted (ConvertFrom-Json -InputObject $Text)) } catch { return $null }
 }
@@ -266,9 +270,10 @@ function Prov-End {
     if (_ProvIsDry) { return }
     $iid = $env:HIMMEL_PROVENANCE_IID
     if (-not $iid -or $script:ProvOwns -ne $iid) { return }
+    _ProvAppend (_ProvEndRow $iid $Status $FailedStep)
+    # close ownership only once the end row is on disk, so a failed append can be retried
     $env:HIMMEL_PROVENANCE_IID = $null
     $script:ProvOwns = $null
-    _ProvAppend (_ProvEndRow $iid $Status $FailedStep)
 }
 
 # ── artifact rows ───────────────────────────────────────────────────────
@@ -298,11 +303,14 @@ function _ProvBackup([string]$Iid, [string]$UPath, [string]$Type, [string]$Val) 
             $name = ([string]$n).PadLeft(3, '0') + '-' + $UPath.Substring($UPath.LastIndexOf('/') + 1)
             if ($Type -eq 'json') { $name += '.prior.json' } elseif ($Type -eq 'text') { $name += '.prior.txt' }
             $dest = $bdir + '/' + $name
-            if (-not (Test-Path -LiteralPath $dest)) { break }
+            # reserve the name atomically (CreateNew = O_EXCL) so two writers sharing an
+            # iid cannot both pick the same sequence number
+            try { [System.IO.File]::Open($dest, [System.IO.FileMode]::CreateNew).Dispose(); break }
+            catch [System.IO.IOException] { if (-not (Test-Path -LiteralPath $dest)) { throw } }
             $n++
         }
         if ($Type -eq 'file') {
-            [System.IO.File]::Copy($Val, $dest)
+            [System.IO.File]::Copy($Val, $dest, $true)
             if (-not $script:ProvIsWin) { [System.IO.File]::SetUnixFileMode($dest, [System.IO.File]::GetUnixFileMode($Val)) }
         }
         else {

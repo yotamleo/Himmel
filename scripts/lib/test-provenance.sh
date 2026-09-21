@@ -190,6 +190,39 @@ check "torn line: torn row is its own line" "$(head -n1 "$ledger")" '{"t":"2026'
 check "no HOME → rc 1" "$(cat "$tmp/rc")" "rc=1"
 check "no HOME → says why" "$(grep -c 'HOME is unset' "$tmp/err")" "1"
 
+# ── review fixes: one-document values, atomic backups, retryable end ───────
+rm -rf "$HIMMEL_PROVENANCE_DIR"
+prov_record create file "$w/x" --field 'k=1 2' 2>/dev/null; check "multi-document --field → rc 2" "$?" "2"
+prov_record create file "$w/x" --post-json '1 2' 2>/dev/null; check "multi-document post JSON → rc 1" "$?" "1"
+prov_record create file "$w/x" --post-json '' 2>/dev/null; check "empty post JSON → rc 1" "$?" "1"
+check "multi-document refusals wrote nothing" "$([ -e "$ledger" ] && echo yes || echo no)" "no"
+
+# concurrent --backup calls in ONE session must get distinct sequence numbers
+rm -rf "$HIMMEL_PROVENANCE_DIR"
+prov_begin --iid C1 --writer conc
+pids=""
+for k in 1 2 3 4 5 6 7 8; do
+    printf 'v%s\n' "$k" > "$w/c$k.snap"
+    prov_record replace file "$w/same.txt" --pre-file "$w/c$k.snap" --backup --post-file "$w/c$k.snap" >/dev/null &
+    pids="$pids $!"
+done
+for pid in $pids; do wait "$pid"; done
+prov_end ok
+set -- "$HIMMEL_PROVENANCE_DIR/provenance-backups/C1"/*
+check "8 concurrent backups → 8 distinct files" "$#" "8"
+check "8 concurrent backups → 8 distinct backup paths in the ledger" "$(jq -r '.pre.backup // empty' "$ledger" | sort -u | wc -l | tr -d ' ')" "8"
+
+# a failed end-row append must leave the session open so prov_end can be retried
+rm -rf "$HIMMEL_PROVENANCE_DIR"
+prov_begin --iid E1 --writer retry
+mv "$ledger" "$ledger.bak"; mkdir "$ledger"
+prov_end ok 2>/dev/null; check "prov_end with an unwritable ledger → rc 1" "$?" "1"
+check "failed prov_end keeps the session open" "${HIMMEL_PROVENANCE_IID:-unset}" "E1"
+rmdir "$ledger"; mv "$ledger.bak" "$ledger"
+prov_end ok; check "prov_end retry succeeds" "$?" "0"
+check "retry wrote install-end" "$(lastraw | jq -c '[.op,.iid,.status]')" '["install-end","E1","ok"]'
+check "retry closed the session" "${HIMMEL_PROVENANCE_IID:-unset}" "unset"
+
 # ── pwsh twin: same scenario, same bytes ─────────────────────────────────
 if command -v pwsh >/dev/null 2>&1; then
     rm -rf "$HIMMEL_PROVENANCE_DIR" "$tmp/prov-ps"
@@ -206,7 +239,9 @@ if command -v pwsh >/dev/null 2>&1; then
         Prov-End ok" >"$tmp/ps.out" 2>&1
     check "pwsh: ran" "$?" "0"
     # backup paths embed the ledger dir; normalise it before comparing bytes
-    norm() { sed "s#$1#PROV#g" "$2"; }
+    # PowerShell omits "mode" on Windows (no POSIX modes there), so drop it from both sides
+    case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) nomode='s/,"mode":"[0-9]*"//g' ;; *) nomode='s/^//' ;; esac
+    norm() { sed -e "s#$1#PROV#g" -e "$nomode" "$2"; }
     check "pwsh: rows byte-identical to bash" "$(norm "$tmp/prov-ps" "$tmp/prov-ps/provenance.jsonl" | sha256sum)" "$(norm "$HIMMEL_PROVENANCE_DIR" "$ledger" | sha256sum)"
 else
     echo "SKIP - pwsh not installed: provenance.ps1 twin NOT exercised here (run: pwsh scenario in this file on a host with pwsh)"

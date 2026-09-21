@@ -94,6 +94,9 @@ prov_sha_text() { printf '%s' "$1" | _prov_sha_stdin; }
 _prov_json_canon() {
     local out
     out=$(printf '%s' "$1" | jq -cS . 2>/dev/null) || return 1
+    # A value must be ONE JSON document: jq -c prints one line per document, so
+    # '1 2' would otherwise become a two-line "canonical" value and corrupt the row.
+    case "$out" in ''|*$'\n'*) return 1 ;; esac
     printf '%s' "$out"
 }
 
@@ -204,8 +207,9 @@ prov_end() {
     _prov_dry && return 0
     [ -n "$iid" ] && [ "${_PROV_OWNS:-}" = "$iid" ] || return 0
     _prov_need || return 1
+    # close ownership only once the end row is on disk, so a failed append can be retried
+    _prov_append "$(_prov_end_row "$iid" "$status" "$step")" || return 1
     unset HIMMEL_PROVENANCE_IID _PROV_OWNS
-    _prov_append "$(_prov_end_row "$iid" "$status" "$step")"
 }
 
 # _prov_body <side> <kind> <src-type> <src-val> -- the sha/size/mode (files) /
@@ -243,7 +247,9 @@ _prov_backup() {
         name=$(printf '%03d-%s' "$n" "${upath##*/}")
         case "$stype" in json) name="$name.prior.json" ;; text) name="$name.prior.txt" ;; esac
         dest="$bdir/$name"
-        [ -e "$dest" ] || break
+        # reserve the name atomically (noclobber = O_EXCL) so two writers sharing
+        # an iid cannot both pick the same sequence number
+        ( umask 077; set -C; : > "$dest" ) 2>/dev/null && break
         n=$((n + 1))
     done
     case "$stype" in

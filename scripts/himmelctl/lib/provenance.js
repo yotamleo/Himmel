@@ -53,7 +53,9 @@ function jqCanon(text) {
     if (!r.error) {
       jqOk = true;
       if (r.status !== 0) return null;
-      return r.stdout.replace(/\n$/, '');
+      const out = r.stdout.replace(/\n$/, '');
+      // one JSON document only: jq -c prints a line per document ('1 2' -> two lines)
+      return out === '' || out.includes('\n') ? null : out;
     }
     jqOk = false;
   }
@@ -210,6 +212,7 @@ function provBegin(args) {
   append(beginRow(iid, writer, target, root, argv));
   process.env.HIMMEL_PROVENANCE_IID = iid;
   owned = iid;
+  return iid;
 }
 
 function provEnd(status, step, opts) {
@@ -218,9 +221,10 @@ function provEnd(status, step, opts) {
   const iid = process.env.HIMMEL_PROVENANCE_IID || '';
   if (!iid) return;
   if (!(opts && opts.force) && owned !== iid) return;
+  append(endRow(iid, status, step || ''));
+  // close ownership only once the end row is on disk, so a failed append can be retried
   delete process.env.HIMMEL_PROVENANCE_IID;
   owned = null;
-  append(endRow(iid, status, step || ''));
 }
 
 // ── artifact rows ───────────────────────────────────────────────────────
@@ -249,14 +253,16 @@ function backup(iid, upath, type, val) {
       if (type === 'json') name += '.prior.json';
       else if (type === 'text') name += '.prior.txt';
       dest = bdir + '/' + name;
-      if (!fs.existsSync(dest)) break;
+      // reserve the name atomically (O_EXCL) so two writers sharing an iid
+      // cannot both pick the same sequence number
+      try { fs.closeSync(fs.openSync(dest, 'wx', 0o600)); break; } catch (e) { if (e.code !== 'EEXIST') throw e; }
       n++;
     }
     if (type === 'file') {
       fs.copyFileSync(val, dest);
       fs.chmodSync(dest, fs.statSync(val).mode & 0o7777);
     } else {
-      fs.writeFileSync(dest, type === 'json' ? canonOrThrow(val, 1) : val, { mode: 0o600 });
+      fs.writeFileSync(dest, type === 'json' ? canonOrThrow(val, 1) : val);
     }
     return dest;
   } catch (e) {
@@ -357,7 +363,7 @@ module.exports = {
 if (require.main === module) {
   const [cmd, ...rest] = process.argv.slice(2);
   try {
-    if (cmd === 'begin') provBegin(rest);
+    if (cmd === 'begin') { const id = provBegin(rest); if (id) process.stdout.write(id + '\n'); }
     else if (cmd === 'record') { const d = provRecord(rest); if (d) process.stdout.write(d + '\n'); }
     else if (cmd === 'end') provEnd(rest[0], rest[1], { force: true });
     else throw usage('usage: provenance.js begin|record|end ...');
