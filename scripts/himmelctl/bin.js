@@ -3747,11 +3747,14 @@ function applyWorkspaceTrust() {
   // config path: $WORKSPACE_TRUST_CONFIG, else $HOME/.claude.json.
   const trustCfg = process.env.WORKSPACE_TRUST_CONFIG || path.join(process.env.HOME || process.env.USERPROFILE || os.homedir(), '.claude.json');
   let preexisted = false;
+  let preKnown = true;
   try {
     const cfg = JSON.parse(fs.readFileSync(trustCfg, 'utf8'));
     preexisted = Boolean(cfg && cfg.projects && cfg.projects[dir] && cfg.projects[dir].hasTrustDialogAccepted === true);
-  } catch (_e) {
-    // absent or unreadable config: the key did not pre-exist
+  } catch (e) {
+    // an absent config means the key did not pre-exist; an unreadable or
+    // invalid one has an unknown pre-state, so no row is recorded for it
+    if (!(e && e.code === 'ENOENT')) preKnown = false;
   }
   const r = spawnSync(resolveBash(), [toBashPath(script), dir], { encoding: 'utf8' });
   if (r.error || r.status !== 0) {
@@ -3760,7 +3763,7 @@ function applyWorkspaceTrust() {
   }
   // ponytail: a key that pre-existed as `false` is recorded as absent (the
   // helper flips it to true either way); only "already true" reads preexisted.
-  prov([preexisted ? 'noop' : 'create', 'json-key', trustCfg,
+  if (preKnown) prov([preexisted ? 'noop' : 'create', 'json-key', trustCfg,
     '--unit', `/projects/${dir.replace(/~/g, '~0').replace(/\//g, '~1')}/hasTrustDialogAccepted`,
     ...(preexisted ? ['--pre-json', 'true'] : ['--pre-absent']), '--post-json', 'true',
     '--scope', 'user', '--class', 'keep', '--row', 'workspace-trust', '--field', `preexisted=${preexisted}`]);

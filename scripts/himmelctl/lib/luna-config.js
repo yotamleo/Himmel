@@ -450,8 +450,15 @@ function save(doc) {
 
   const existed = fs.existsSync(p);
   let prior = null;
+  // an existing file that cannot be read as a JSON object has an unknown
+  // pre-state: recording its sections as created would claim ownership of
+  // user state this save replaces, so record nothing for it
+  let preKnown = true;
   if (existed) {
-    try { prior = JSON.parse(fs.readFileSync(p, 'utf8')); } catch (_e) { prior = null; }
+    try {
+      prior = JSON.parse(fs.readFileSync(p, 'utf8'));
+      if (prior === null || typeof prior !== 'object' || Array.isArray(prior)) { prior = null; preKnown = false; }
+    } catch (_e) { prior = null; preKnown = false; }
     backupExisting(p);
   }
 
@@ -532,7 +539,7 @@ function save(doc) {
     removeTempBestEffort(tmp);
     throw new Error(`luna-config: refusing to save ${p} — rename from ${tmp} failed: ${err.message} (HIMMEL-2176)`);
   }
-  recordSections(p, prior, doc, !existed);
+  if (preKnown) recordSections(p, prior, doc, !existed);
 }
 
 module.exports = { load, save, migrate, validateConfig, defaultConfig, configPath, CURRENT_VERSION };

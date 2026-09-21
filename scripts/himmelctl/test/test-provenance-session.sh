@@ -129,5 +129,14 @@ check "D second save: the replace row is not a file_created row" \
 check "D second save: a ledger backup of the prior section exists" \
     "$(find "$provD/provenance-backups" -type f 2>/dev/null | wc -l | tr -d ' ')" "1"
 
+# an existing config that is not valid JSON has an unknown pre-state: it is
+# replaced but no section row is recorded (that would claim ownership of it)
+rowsD3_before="$(jq -rs 'length' "$ledD" 2>/dev/null)"
+printf 'not json\n' > "$cfgD"
+outD3=$(run_save 0); rcD3=$?
+check "D corrupt-config save rc" "$rcD3" "0"
+[ "$rcD3" -eq 0 ] || echo "note: save output: $outD3"
+check "D corrupt-config save records no rows" "$(jq -rs 'length' "$ledD" 2>/dev/null)" "$rowsD3_before"
+
 echo "passes=$passes fails=$fails"
 [ "$fails" -eq 0 ]
