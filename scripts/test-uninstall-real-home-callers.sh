@@ -43,8 +43,9 @@ ALLOW_WHY=(
 # tokens. It will NOT follow a HOME set through a helper function, a sourced file,
 # `read` / `printf -v` / `declare -n`, or an env block passed as a variable; it
 # ignores order, so a scratch variable reassigned to something real AFTER the trace
-# still passes; and a mktemp buried past the first inner quote of a quoted `$(...)`
-# is missed (a false flag, never a false pass). It wants `mktemp` as a bare command
+# still passes; and a quoted `$(...)` is read only up to its first `)"`, so a mktemp or
+# scratch variable past that point (`"$(a "$(b)" "$td")"`) is missed (a false flag,
+# never a false pass). It wants `mktemp` as a bare command
 # word, so /usr/bin/mktemp is a false flag; but it does not prove the word is
 # INVOKED, so `HOME="$(echo mktemp)"` still passes. A scratch variable counts only as a
 # plain `$v` / `${v}`, and a value carrying ANY `${x<op>...}` expansion is never
@@ -56,7 +57,8 @@ ALLOW_WHY=(
 home_is_scratch() {
   local file="$1" line rest name rhs nocmd v changed is_scratch ref_re home_ok=0
   local dq='"[^"]*"' sq="'[^']*'" cs='\$\([^)]*\)' bare='[^[:space:]]*'
-  local assign_re="(^|[^A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)=($dq|$sq|$cs|$bare)"
+  local dqcs='"\$\([^)]*\)"'   # a whole quoted command substitution, whose own inner quotes ("$td") a plain $dq would cut at
+  local assign_re="(^|[^A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)=($dqcs|$dq|$sq|$cs|$bare)"
   local mk_re='(^|[^A-Za-z0-9_./-])mktemp([[:space:])"`]|$)'   # mktemp as a command word, not a path part like /opt/mktemp-user
   local xp_re='\$\{[A-Za-z_][A-Za-z0-9_]*[^A-Za-z0-9_}]'   # a parameter expansion with an operator
   local scratch=" " lines=()
@@ -98,8 +100,9 @@ home_is_scratch() {
 # closing quote/bracket, `=` or `:`, an optional opening quote, and exactly `1`
 # followed by whitespace, a quote, or one of `;&|,)}]` and backtick (no `10` /
 # `1x` / `1.5` / `1-x`; a `1` ended by any other character is a false negative). A
-# closing quote counts as the end of the value, so shell concatenation (`"1"x`, whose
-# value is `1x`) is a false flag. It will NOT catch a fence lift spelled another way (a computed
+# `1` opened by a quote ends only at that same quote plus such a terminator, so `"1"x`
+# (value `1x`) is not a lift; a bare `1` followed by a quote (`V=1"x"`, also `1x`) still
+# is, because the quote may close an enclosing string (a false flag). It will NOT catch a fence lift spelled another way (a computed
 # variable name, `Set-Item Env:`, `[Environment]::SetEnvironmentVariable`, a
 # `process.env` object built from a variable name) or the value carried in a
 # variable (`v=1; ... $v`). "Scratch HOME" is home_is_scratch above, with its own
@@ -107,7 +110,13 @@ home_is_scratch() {
 # that friction is the point.
 scan_callers() {
   local root="$1"; shift
-  local set_re="(^|[^A-Za-z0-9_])${V}[]'\"}]*[[:space:]]*[:=][[:space:]]*['\"]?1([][:space:];&|,)}'\"\`]|\$)"
+  # A 1 the value opened with a quote ends only at that quote plus a real terminator, so
+  # `"1"x` / `"1""x"` (shell concatenation) are not lifts; the OTHER quote kind may still
+  # follow, as the close of an enclosing string (`sh -c "V='1' cmd"`).
+  local sq="'" dq='"' bt='`'
+  local pre="(^|[^A-Za-z0-9_])${V}[]'\"}]*[[:space:]]*[:=][[:space:]]*"
+  local end_u="[][:space:];&|,)}${sq}${dq}${bt}]" end_d="[][:space:];&|,)}${sq}${bt}]" end_s="[][:space:];&|,)}${dq}${bt}]"
+  local set_re="${pre}(1(${end_u}|\$)|${dq}1${dq}(${end_d}|\\\\\$|\$)|${sq}1${sq}(${end_s}|\\\\\$|\$))"
   local f rel a allowed rc list
   # A failed traversal (unreadable subtree) is reported, not scanned around.
   list="$(find "$root/scripts" -path '*/node_modules' -prune -o -type f \
@@ -167,6 +176,25 @@ printf '#!/usr/bin/env bash\n%s=10 bash uninstall.sh --yes\n' "$V" > "$fx/script
 printf '#!/usr/bin/env bash\n%s=1x bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-value-1x.sh"
 printf '#!/usr/bin/env bash\n%s=1.5 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-value-1dot5.sh"
 printf '#!/usr/bin/env bash\n%s=1-extra bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-value-1dash.sh"
+# HIMMEL-3345: a quoted 1 that the shell concatenates to something longer is not a lift...
+printf '#!/usr/bin/env bash\n%s="1"x bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-concat-dq-word.sh"
+printf "#!/usr/bin/env bash\n%s='1'x bash uninstall.sh --yes\n" "$V" > "$fx/scripts/test-concat-sq-word.sh"
+printf '#!/usr/bin/env bash\n%s="1""x" bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-concat-dq-dq.sh"
+printf '#!/usr/bin/env bash\n%s="1"$y bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-concat-dq-var.sh"
+# ... while a real lift of the same quoted shape stays flagged.
+printf '#!/usr/bin/env bash\n%s="1" bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-quoted-dq-space.sh"
+printf "#!/usr/bin/env bash\n%s='1' bash uninstall.sh --yes\n" "$V" > "$fx/scripts/test-quoted-sq-space.sh"
+printf '#!/usr/bin/env bash\nexport %s="1"\n' "$V" > "$fx/scripts/test-quoted-dq-eol.sh"
+printf '#!/usr/bin/env bash\n%s="1";bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-quoted-dq-semi.sh"
+printf '#!/usr/bin/env bash\n%s="1"\\\n  bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-quoted-dq-continued.sh"
+# the value's own quote sits inside an enclosing string of the other kind.
+printf '#!/usr/bin/env bash\nsh -c "%s='"'1'"' bash uninstall.sh --yes"\n' "$V" > "$fx/scripts/test-quoted-in-enclosing.sh"
+# HIMMEL-3345: dirname of a mktemp variable, and its negative controls.
+printf '#!/usr/bin/env bash\ntd=$(mktemp -d /tmp/x.XXXXXX)\nHOME=$(dirname "$td") %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-dirname-scratch.sh"
+printf '#!/usr/bin/env bash\ntd=$(mktemp -d /tmp/x.XXXXXX)\nHOME="$(dirname "$td")" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-dirname-scratch-dq.sh"
+printf '#!/usr/bin/env bash\nother=/somewhere/real\nHOME=$(dirname "$other") %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-dirname-other.sh"
+printf '#!/usr/bin/env bash\ntd=$(mktemp -d /tmp/x.XXXXXX)\nHOME=$(dirname "$HOME") %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-dirname-real-home.sh"
+printf '#!/usr/bin/env bash\ntd=$(mktemp -d /tmp/x.XXXXXX)\nHOME=$(dirname "${td:+$HOME}") %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-dirname-operator.sh"
 # HIMMEL-3344 (CodeRabbit): a longer identifier ending in the name is not the name.
 printf '#!/usr/bin/env bash\nNOT_%s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-prefixed-name.sh"
 # a JS operator-path caller, on the allowlist below.
@@ -218,6 +246,36 @@ check "=1-extra is not a fence lift (not flagged)" \
   "$(printf '%s' "$got" | grep -c 'scripts/test-value-1dash.sh')" "0"
 check "a longer identifier ending in the name is not a fence lift (not flagged)" \
   "$(printf '%s' "$got" | grep -c 'scripts/test-prefixed-name.sh')" "0"
+check "\"1\"x (shell concatenation, value 1x) is not a fence lift (not flagged)" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-concat-dq-word.sh')" "0"
+check "'1'x (shell concatenation, value 1x) is not a fence lift (not flagged)" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-concat-sq-word.sh')" "0"
+check "\"1\"\"x\" (shell concatenation, value 1x) is not a fence lift (not flagged)" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-concat-dq-dq.sh')" "0"
+check "\"1\"\$y (shell concatenation) is not a fence lift (not flagged)" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-concat-dq-var.sh')" "0"
+check "\"1\" followed by a space is still a fence lift (flagged)" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-quoted-dq-space.sh')" "1"
+check "'1' followed by a space is still a fence lift (flagged)" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-quoted-sq-space.sh')" "1"
+check "\"1\" at the end of the line is still a fence lift (flagged)" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-quoted-dq-eol.sh')" "1"
+check "\"1\"; is still a fence lift (flagged)" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-quoted-dq-semi.sh')" "1"
+check "\"1\" ending in a line-continuation backslash is still a fence lift (flagged)" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-quoted-dq-continued.sh')" "1"
+check "'1' closed inside an enclosing double-quoted string is still a fence lift (flagged)" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-quoted-in-enclosing.sh')" "1"
+check "HOME=\$(dirname \"\$td\") of a mktemp variable passes" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-dirname-scratch.sh')" "0"
+check "HOME=\"\$(dirname \"\$td\")\" of a mktemp variable passes" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-dirname-scratch-dq.sh')" "0"
+check "HOME=\$(dirname \"\$other\") of a non-mktemp variable is flagged" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-dirname-other.sh')" "1"
+check "HOME=\$(dirname \"\$HOME\") is flagged even with an unrelated mktemp variable" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-dirname-real-home.sh')" "1"
+check "an expansion operator inside a dirname command substitution is flagged" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-dirname-operator.sh')" "1"
 check "allowlisted file passes" \
   "$(printf '%s' "$got" | grep -c 'scripts/wizard.js')" "0"
 check "file that only unsets/reads the var passes" \
