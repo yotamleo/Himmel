@@ -61,6 +61,7 @@ STUB_DIR="$TMP/bin"
 mkdir -p "$STUB_DIR"
 cat > "$STUB_DIR/claude" <<'STUB'
 #!/usr/bin/env bash
+[ -n "${STUB_LOG:-}" ] && echo "$*" >> "$STUB_LOG"
 cfg="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 scope=""; prev=""
 for arg in "$@"; do
@@ -295,19 +296,52 @@ assert_eq "14 valid registry without the plugin: preexisted false" false \
 assert_eq "14 valid registry without the marketplace: preexisted false" false \
     "$(field "$(row marketplace claude-plugins-official)" .preexisted)"
 
-# ── Case 15: a wrong-SHAPE settings file reads as pre-existing (unknown = keep) ─
-# HIMMEL-3353: valid JSON whose section is not an object makes the jq probe ERROR
-# (exit 5), which is not the same as "key absent" (exit 1) — ownership is unknown.
-fresh_env wrongshape-settings
+# ── Case 15: a wrong-SHAPE settings file is refused up front, untouched ──────
+# HIMMEL-3392 (supersedes HIMMEL-3353's case here, which recorded ledger rows for a
+# run that then aborted mid-run in the force-enable step with jq rc 5): valid JSON
+# whose enabledPlugins / extraKnownMarketplaces is not an object is refused with
+# exit 3 BEFORE any claude call or ledger row, naming the file and the key, and the
+# operator's file is left byte-identical (never overwritten with a fixed shape).
+# refuse_case <label> <settings-json> <expected-key> [extra install args...]
+refuse_case() {
+    local label="$1" json="$2" key="$3" sha_before sha_after
+    shift 3
+    fresh_env "wrongshape-$label"
+    mkdir -p "$HOME/.claude"
+    printf '%s\n' "$json" > "$HOME/.claude/settings.json"
+    sha_before=$(sha256sum "$HOME/.claude/settings.json" | cut -d' ' -f1)
+    export STUB_LOG="$CASE/claude.log"
+    out=$(run_install --scope user "$@"); rc=$?
+    unset STUB_LOG
+    sha_after=$(sha256sum "$HOME/.claude/settings.json" | cut -d' ' -f1)
+    assert_eq "15 $label: exit code" 3 "$rc"
+    case "$out" in *"$HOME/.claude/settings.json"*) pass "15 $label: message names the file" ;; *) fail "15 $label: message does not name the file: $out" ;; esac
+    case "$out" in *"\"$key\""*) pass "15 $label: message names the key" ;; *) fail "15 $label: message does not name \"$key\": $out" ;; esac
+    assert_eq "15 $label: settings file byte-identical" "$sha_before" "$sha_after"
+    assert_eq "15 $label: no claude call made" absent "$([ -e "$CASE/claude.log" ] && echo present || echo absent)"
+    assert_eq "15 $label: no install rows" 0 "$(jq -c 'select(.op == "register")' "$LEDGER" 2>/dev/null | wc -l | tr -d ' ')"
+}
+refuse_case enabledplugins-string '{ "enabledPlugins": "invalid" }' enabledPlugins
+refuse_case marketplaces-string '{ "extraKnownMarketplaces": "invalid" }' extraKnownMarketplaces
+refuse_case both-string '{ "enabledPlugins": "invalid", "extraKnownMarketplaces": "invalid" }' enabledPlugins
+refuse_case enabledplugins-false '{ "enabledPlugins": false }' enabledPlugins
+refuse_case enabledplugins-array '{ "enabledPlugins": [] }' enabledPlugins
+refuse_case dry-run '{ "enabledPlugins": "invalid" }' enabledPlugins --dry-run
+
+# A wrong-shape --settings override is refused too (it is the file the jq patches write).
+fresh_env wrongshape-override
 mkdir -p "$HOME/.claude"
-echo '{ "enabledPlugins": "invalid", "extraKnownMarketplaces": "invalid" }' > "$HOME/.claude/settings.json"
-# (rc is not asserted: the later force-enable step's own jq errors on this shape
-# and aborts the run after the rows are written — a separate concern from the probe.)
-out=$(run_install --scope user)
-assert_eq "15 wrong-shape enabledPlugins: plugin reads preexisted" true \
-    "$(field "$(row plugin himmel-ops@himmel)" .preexisted)"
-assert_eq "15 wrong-shape extraKnownMarketplaces: marketplace reads preexisted" true \
-    "$(field "$(row marketplace himmel)" .preexisted)"
+echo '{ "enabledPlugins": "invalid" }' > "$CASE/override.json"
+out=$(run_install --scope user --settings "$CASE/override.json"); rc=$?
+assert_eq "15 --settings override: exit code" 3 "$rc"
+case "$out" in *"$CASE/override.json"*) pass "15 --settings override: message names the override" ;; *) fail "15 --settings override: message does not name it: $out" ;; esac
+
+# Control: null sections (absent, in jq's eyes) and well-formed files still install.
+fresh_env nullsections
+mkdir -p "$HOME/.claude"
+echo '{ "enabledPlugins": null }' > "$HOME/.claude/settings.json"
+out=$(run_install --scope user); rc=$?
+assert_eq "15 null enabledPlugins is not a wrong shape: install rc" 0 "$rc"
 
 # ── Case 16: a wrong-SHAPE CLI registry reads as pre-existing (unknown = keep) ──
 fresh_env wrongshape-registry

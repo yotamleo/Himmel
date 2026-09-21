@@ -34,6 +34,15 @@
 #                        (used by the marketplace autoUpdate patch and the
 #                        force-enable step below; a hermetic-test seam,
 #                        mirrors reconcile-enabled-plugins.sh's own flag).
+#
+# Exit codes:
+#   0  installed (or --dry-run completed)
+#   1  install failure (missing prerequisite, marketplace/plugin step failed,
+#      or a settings file that is not valid JSON)
+#   2  usage error (unknown flag, invalid --scope)
+#   3  refused: a settings file parses but its enabledPlugins /
+#      extraKnownMarketplaces is not a JSON object (HIMMEL-3392) — checked before
+#      any install work, and the file is left untouched
 set -euo pipefail
 
 # ── Resolve script + repo paths ─────────────────────────────────────────────
@@ -151,6 +160,36 @@ case "$SCOPE" in
 esac
 PROV_SETTINGS_FILE="$SETTINGS_FILE"   # the file `claude plugin install --scope` writes; --settings never redirects the CLI
 [[ -n "$SETTINGS" ]] && SETTINGS_FILE="$SETTINGS"
+
+# ── Refuse a wrong-shape settings file up front (HIMMEL-3392) ────────────────
+# Every step below reads or patches these two sections as JSON objects. A file that
+# parses but holds another shape (`"enabledPlugins": "invalid"`, `false`, `[]`, a
+# non-object top level) used to abort mid-run with a raw jq exit 5 AFTER the
+# registrations were made — or, for `false` and a wrong-shape marketplaces section,
+# be silently overwritten with a fixed one. The operator's value is never ours to
+# replace: refuse before any `claude` call or ledger row, leave the file untouched,
+# name the file and the key, and exit 3 (distinct from 1 = install failure, 2 = usage).
+# `null` counts as absent (jq's `//` reads it so, and replacing it loses nothing).
+# A file that does not parse at all keeps its existing per-step "not valid JSON"
+# handling. Both the CLI's file and a --settings override are checked: the CLI
+# writes the first, the jq patches write the second.
+bad_settings_shape() {   # <file> — prints the first offending key (or "<top level>") on a wrong shape
+  [[ -f "$1" ]] || return 0
+  jq empty "$1" >/dev/null 2>&1 || return 0
+  jq -r 'first(
+    if type != "object" then "<top level>"
+    else ("enabledPlugins", "extraKnownMarketplaces") as $k
+         | select(.[$k] != null and (.[$k] | type) != "object") | $k
+    end)' "$1" | tr -d '\r'
+}
+for SHAPE_FILE in "$PROV_SETTINGS_FILE" "$SETTINGS_FILE"; do
+  SHAPE_BAD=$(bad_settings_shape "$SHAPE_FILE")
+  if [[ -n "$SHAPE_BAD" ]]; then
+    echo "ERROR: $SHAPE_FILE has a wrong-shape \"$SHAPE_BAD\" (expected a JSON object) — refusing to install; nothing was changed." >&2
+    echo "       Fix or remove that key, then re-run." >&2
+    exit 3
+  fi
+done
 
 # ── Pre-existence probes for the provenance records (HIMMEL-3332 S3) ─────────
 # Read BEFORE the CLI call that could create the thing: `claude plugin install`
