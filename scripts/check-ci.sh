@@ -549,7 +549,7 @@ required_gate() {
             echo "check-ci: BLOCKED — required check(s) never reported within ${GRACE}s: $missing. GitHub will refuse this merge; is the workflow configured for this branch, or did it not trigger? (HIMMEL-3381, exit 5)" >&2
             status_only=$(_status_only "$st")
             if [ -n "$status_only" ]; then
-                echo "check-ci: BLOCKED — status-only producer: $status_only exist only as a commit status, not a check run. A commit status carries no app id, so the app this requirement pins cannot be verified; refusing rather than matching by name alone (HIMMEL-3391, exit 5)" >&2
+                echo "check-ci: BLOCKED — status-only producer: $status_only appear as a commit status but not as a check run from the pinned app. A commit status carries no app id, so the app this requirement pins cannot be verified; refusing rather than matching by name alone (HIMMEL-3391, exit 5)" >&2
                 missing="$missing (status-only, producer unverifiable: $status_only)"
             fi
             _alert "required check(s) never reported within ${GRACE}s: $missing — GitHub will refuse this merge"
