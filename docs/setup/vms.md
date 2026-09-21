@@ -94,6 +94,75 @@ posture* only — the *functional* smoke ("is claude installed, is the vault
 present" — the `vm-probe*.py` `$TEMP` scripts) is a separate, still-needed
 concern and is NOT replaced by this tool.
 
+### Install-provenance round trip (HIMMEL-3332)
+
+`bash scripts/vm/provenance-roundtrip.sh <ref> [--expect-red] [--purge-state] [--profile core|all]`
+checks that an uninstall removes exactly what the install brought. It runs on
+the `himmel-ar-N` clone of `ubuntu_new`. It first takes a clone slot and the
+`vm-lock.sh` lock, then restores the clone to `suite-ready-v4` and stages the
+repo at `<ref>` into the guest. On the guest it then:
+
+1. seeds a HOME with the user's own state (`scripts/vm/lib/seed-provenance.sh`);
+2. takes inventory A;
+3. installs at project scope, then at user scope;
+4. takes inventory B;
+5. uninstalls through `himmelctl uninstall --yes`;
+6. takes inventory C;
+7. runs the semantic checks (`scripts/vm/lib/assert-provenance.sh`).
+
+Each install and the uninstall run under a fixed `env -i`. The harness prints
+that environment on its `[env]` line.
+
+On exit it always powers the clone off, restores the snapshot and releases the
+lock. That covers success, failure and interrupts.
+
+The uninstall step goes through `himmelctl`, not a bare `scripts/uninstall.sh`,
+for two reasons:
+
+- The seeded `~/.claude.json` is the uninstaller's live-operator marker.
+- The harness never sets the real-HOME override.
+
+Every CHECK line is tagged with a direction:
+
+- **too-much**: user state the uninstall removed or changed.
+- **too-little**: himmel state it left behind.
+- **identity** / **ledger**: neutral.
+
+Every summary and `RED complete` line names its variant
+(`profile=… uninstall=plain|purge-state`), because the two uninstall forms
+remove different state. Run both.
+
+A failed uninstall is itself a result, not a harness failure. The harness:
+
+- prints `uninstall-exit rc=<n> halted-at=[N/8]` on its own line;
+- still takes inventory C and runs the checks;
+- tags each FAIL as `pre-halt` or `post-halt`.
+
+A check is post-halt when the only uninstall step that could remove its item
+never ran. Only pre-halt FAILs count toward the two directions.
+
+If the uninstall fails and prints no `Halted at:` line, that stays a harness
+failure (exit `2`).
+
+Under `--profile all`, the cadence-crontab direction prints as `UNOBSERVABLE`:
+`suite-ready-v4` ships neither qmd nor graphify, so arming those cadences
+fails, and the install exits 1 before any crontab line exists.
+
+Exit codes:
+
+- Normal mode: `0` means every check passed, `1` means any FAIL.
+- `--expect-red`: `0` means both directions failed (`RED complete`), which is
+  the pre-fix proof. `1` prints `RED incomplete: <direction> direction missing`.
+- `2` in either mode: a usage error, a failed guest step or a failed
+  precondition.
+
+`VBOXMANAGE_PATH` (or `HIMMEL_VM_AR_LIVE=1`) must be set explicitly
+(HIMMEL-2623).
+
+**STATION-ONLY**: it needs a real VM, so it never runs in CI. Its hermetic
+twin, `scripts/vm/test-provenance-roundtrip-dry.sh`, fakes `VBoxManage`,
+python and `ssh`, and does run in CI.
+
 ---
 
 ## Ubuntu VM
