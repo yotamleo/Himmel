@@ -67,7 +67,9 @@ _UNWIRE_UCM_MARKER="HIMMEL:working-principles"
 # (reset when a fence closes, so an earlier balanced quote does not count: a
 # real block below an unclosed fence looks quoted, and reading it as "nothing
 # to strip" would leave the operator silently wired).
-# rc 2 when the file cannot be read.
+# rc 1 when the file cannot be read. The file goes in by redirect, never as an
+# awk operand: awk parses a relative name shaped var=value as an assignment and
+# reads stdin, a silent "no block" (HIMMEL-3342).
 # Fences follow CommonMark far enough for a rule file: up to three leading
 # spaces, three or more of the same backtick/tilde, closed by a run of the same
 # char at least as long with nothing but whitespace after it; a backtick
@@ -88,7 +90,7 @@ _ucm_scan() {
       if ($0 == b "\r" || $0 == e "\r") crlf++
     }
     END { printf "%d %d %d %d %d %d %d\n", nb, ne, lb, le, crlf, (fc != ""), fm }
-  ' "$1"
+  ' < "$1"
 }
 
 unwire_ucm_probe() {
@@ -116,8 +118,7 @@ unwire_user_claude_md() {
     return 0
   fi
   backup="$target.himmel-uninstall-backup"
-  # awk exits 2 on a read failure: an unreadable file must fail, not read as
-  # "no block".
+  # A failed read (the redirect in _ucm_scan) must fail, not read as "no block".
   if ! scan=$(_ucm_scan "$target" 2>/dev/null); then
     echo "unwire-user-claude-md: cannot read $target -- left untouched" >&2
     return 1

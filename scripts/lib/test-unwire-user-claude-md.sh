@@ -196,6 +196,27 @@ else
   gone "unreadable: no backup" "$td/unreadable.md.himmel-uninstall-backup"
 fi
 chmod 644 "$td/unreadable.md"
+# HIMMEL-3342: a RELATIVE name shaped like an awk assignment (var=value) was
+# parsed by awk as an assignment, so it read stdin and reported "no block": a
+# silent under-removal. Run from inside the dir on a bare relative name, stdin
+# closed so a regression reads nothing rather than hanging.
+mkdir -p "$td/rel"
+printf 'mine\n\n%s\nafter\n' "$BLOCK" > "$td/rel/rules=notes.md"; cp "$td/rel/rules=notes.md" "$td/rel/rules=notes.before"; printf 'mine\nafter\n' > "$td/rel/rules=notes.expect"
+( cd "$td/rel" && bash "$uw" --probe "rules=notes.md" </dev/null >/dev/null 2>&1 ); check "assignment-shaped name: probe 3 before" "$?" 3
+out="$( cd "$td/rel" && bash "$uw" "rules=notes.md" </dev/null 2>&1 )"; rc=$?
+check "assignment-shaped name: rc 0" "$rc" 0
+same  "assignment-shaped name: block stripped, surrounding bytes identical" "$td/rel/rules=notes.md" "$td/rel/rules=notes.expect"
+same  "assignment-shaped name: backup is the file as found" "$td/rel/rules=notes.md.himmel-uninstall-backup" "$td/rel/rules=notes.before"
+( cd "$td/rel" && bash "$uw" --probe "rules=notes.md" </dev/null >/dev/null 2>&1 ); check "assignment-shaped name: probe 0 after" "$?" 0
+# control: the redirect must still fail closed on an unreadable file
+printf 'mine\n\n%s\n' "$BLOCK" > "$td/rel/rules=locked.md"; chmod 000 "$td/rel/rules=locked.md"
+if [ -r "$td/rel/rules=locked.md" ]; then echo "SKIP - assignment-shaped unreadable: chmod 000 is still readable here (root); case not exercised"
+else
+  out="$( cd "$td/rel" && bash "$uw" "rules=locked.md" </dev/null 2>&1 )"; rc=$?
+  check "assignment-shaped unreadable: rc 1" "$rc" 1; has "assignment-shaped unreadable: says cannot read" "cannot read" "$out"
+  ( cd "$td/rel" && bash "$uw" --probe "rules=locked.md" </dev/null >/dev/null 2>&1 ); check "assignment-shaped unreadable: probe 1" "$?" 1
+fi
+chmod 644 "$td/rel/rules=locked.md"
 # symlink: the link survives, its target is written through, the backup sits
 # beside the LINK path (that is the path the operator knows)
 mkdir -p "$td/dots"; printf 'mine\n\n%s\n' "$BLOCK" > "$td/dots/CLAUDE.md"; cp "$td/dots/CLAUDE.md" "$td/symlink.before"
