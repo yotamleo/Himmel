@@ -1128,6 +1128,17 @@ per-call prefix does not reach the guard. Recovery once locked out: plain-copy
 the affected file(s) back to `HEAD`, relaunch with the bypass set, then
 re-apply the intended edit and commit it in the same step.
 
+**Scope (HIMMEL-3384).** The launcher honours the bypass only when the
+session's cwd is inside a **linked worktree** and the hook script it lets
+through resolves inside that same worktree; in the primary checkout (or for a
+hook path outside the worktree) it is ignored and the normal deny stands. Each
+use that overrides a deny appends one JSON line — `ts`, `session`,
+`session_id`, `cwd`, `worktree`, `hook_paths` — to
+`<git-common-dir>/hook-integrity-bypass.jsonl`; if that append fails, the
+bypass is refused. The command-text fences in `block-glm-external-writes.sh`
+read the same variable and are not scoped this way. So do the hook edit in a
+worktree, with the session's cwd inside it.
+
 ## pre-commit: `run --commit-msg-filename` reports Passed for a message the hook rejects
 
 Verifying a commit-msg gate without making a commit looks like this:

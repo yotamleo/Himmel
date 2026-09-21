@@ -102,17 +102,34 @@ else
   bad "tampered guard: expected rc=2 with a DENY message, got rc=$rc_after err=$(cat "$T/after.err")"
 fi
 
-# The documented single-run bypass still lets a legitimate mid-session edit
-# through.
+# HIMMEL-3384: the documented bypass is worktree-only and audited. In the
+# PRIMARY checkout (cwd = $PROJECT) it is not honoured, so the tampered guard
+# is still denied ...
 BYPASS_OUT="$T/bypass.out"
 BYPASS_ERR="$T/bypass.err"
-printf '%s' "$PAYLOAD" | CLAUDE_PROJECT_DIR="$PROJECT" HIMMEL_HOOK_INTEGRITY_DIR="$OUT_DIR" HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 \
-  node "$LAUNCHER" --optional "$GUARD" >"$BYPASS_OUT" 2>"$BYPASS_ERR"
+(cd "$PROJECT" && printf '%s' "$PAYLOAD" | CLAUDE_PROJECT_DIR="$PROJECT" HIMMEL_HOOK_INTEGRITY_DIR="$OUT_DIR" HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 \
+  node "$LAUNCHER" --optional "$GUARD" >"$BYPASS_OUT" 2>"$BYPASS_ERR")
 rc_bypass=$?
-if [ "$rc_bypass" -eq 0 ]; then
-  ok "HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 lets the tampered guard run"
+if [ "$rc_bypass" -eq 2 ] && grep -q 'linked git worktree' "$BYPASS_ERR"; then
+  ok "HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 is NOT honoured in the primary checkout (and the deny names the scope)"
 else
-  bad "bypass: expected rc=0, got rc=$rc_bypass err=$(cat "$BYPASS_ERR")"
+  bad "primary bypass: expected rc=2 naming the worktree scope, got rc=$rc_bypass err=$(cat "$BYPASS_ERR")"
+fi
+
+# ... while in a LINKED worktree, with the guard inside it, the bypass lets the
+# tampered guard run and appends exactly one audit line.
+WT="$T/wt"
+git -C "$PROJECT" worktree add -q -b bypass-wt "$WT"
+cp "$GUARD" "$WT/scripts/hooks/fake-guard.sh"
+BYPASS_AUDIT="$PROJECT/.git/hook-integrity-bypass.jsonl"
+(cd "$WT" && printf '%s' "$PAYLOAD" | CLAUDE_PROJECT_DIR="$WT" HIMMEL_HOOK_INTEGRITY_DIR="$OUT_DIR" HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 \
+  node "$LAUNCHER" --optional "$WT/scripts/hooks/fake-guard.sh" >"$BYPASS_OUT" 2>"$BYPASS_ERR")
+rc_wt=$?
+audit_lines=$(wc -l <"$BYPASS_AUDIT" 2>/dev/null || echo missing)
+if [ "$rc_wt" -eq 0 ] && [ "$(printf '%s' "$audit_lines" | tr -d ' ')" = "1" ] && grep -q '"worktree"' "$BYPASS_AUDIT"; then
+  ok "HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 lets the tampered guard run in a linked worktree, with one audit line"
+else
+  bad "worktree bypass: expected rc=0 + 1 audit line, got rc=$rc_wt lines=$audit_lines err=$(cat "$BYPASS_ERR")"
 fi
 
 # A session with no pin file at all (e.g. record-hook-integrity.sh never ran,

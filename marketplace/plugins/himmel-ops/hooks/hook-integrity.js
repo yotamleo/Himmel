@@ -61,7 +61,9 @@ function normalize(candidate) {
 // HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1, set in the LAUNCHING shell (this repo's
 // standard bypass model — see scripts/hooks/CLAUDE.md), is the documented
 // escape hatch for a legitimate mid-session hook edit (an operator actively
-// developing a hook).
+// developing a hook). HIMMEL-3384: it is honoured only inside a linked
+// worktree, only for hook scripts that resolve inside that worktree, and every
+// use is audited (see the HIMMEL-3384 block above verifyProjectHookIntegrity).
 //
 // HONEST RESIDUALS:
 // (a) the pin file itself lives in an ordinary user-writable directory; a
@@ -861,9 +863,79 @@ function resolveMismatchInner(context) {
   }
 }
 
+// ------------------------------------------------------------- HIMMEL-3384
+//
+// The bypass is honoured only where the operator's own work lives and only
+// where it leaves a trace. It is consulted AFTER the normal check, so a session
+// that sets it pays nothing (and logs nothing) on a hook that verifies clean;
+// a "use" is a call where the bypass turned a deny into an allow. Honoured
+// only when ALL of these hold — anything else falls back to the normal deny:
+//   (1) the session's cwd is inside a LINKED worktree (git dir != common dir),
+//       so the primary checkout — where the live hooks run — stays enforced;
+//   (2) the hook script's real path resolves inside THAT worktree, so the
+//       bypass cannot vouch for a script from the primary or a sibling;
+//   (3) one JSON line is appended to <git-common-dir>/hook-integrity-bypass.jsonl
+//       (the same convention as cr-critic-scores.jsonl). A failed write refuses
+//       the bypass: an override that cannot be recorded is not granted.
+// Residual: HIMMEL_HOOK_INTEGRITY_BYPASS_OK is shared with the command-text
+// fences in block-glm-external-writes.sh, which this does NOT scope.
+const BYPASS_AUDIT_FILE = 'hook-integrity-bypass.jsonl';
+const BYPASS_SCOPE = 'The bypass is honoured only when the session cwd is inside a linked git worktree and the '
+  + 'hook script resolves inside that same worktree (it is ignored in the primary checkout); each use is appended to '
+  + `<git-common-dir>/${BYPASS_AUDIT_FILE}, and a failed audit write refuses it.`;
+
+// The `-n <name>` of the claude process (same seam as scripts/lib/session-name.sh,
+// /proc is Linux-only). null, never a guess, when it cannot be resolved.
+function sessionNameFromProc() {
+  try {
+    const pid = process.env.CLAUDE_PID;
+    if (!pid || !/^[0-9]+$/.test(pid)) return null;
+    const argv = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0');
+    const at = argv.indexOf('-n');
+    return at >= 0 && argv[at + 1] ? argv[at + 1] : null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+function isInside(root, candidate) {
+  const rel = path.relative(root, candidate);
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
+}
+
+function honourBypass(scriptPath, sessionId) {
+  try {
+    const cwd = process.cwd();
+    const probe = runGit(['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-dir', '--git-common-dir'], cwd);
+    if (!probe || probe.status !== 0) return false;
+    const lines = probe.stdout.replace(/\r?\n$/, '').split(/\r?\n/);
+    if (lines.length !== 3) return false;
+    const [top, gitDir, commonDir] = lines.map((p) => fs.realpathSync(p));
+    if (gitDir === commonDir) return false; // the primary checkout, or not a worktree at all
+    const hook = fs.realpathSync(scriptPath);
+    if (!isInside(top, hook)) return false;
+    fs.appendFileSync(path.join(commonDir, BYPASS_AUDIT_FILE), `${JSON.stringify({
+      ts: new Date().toISOString(),
+      session: sessionNameFromProc(),
+      session_id: sessionId || null,
+      cwd,
+      worktree: top,
+      hook_paths: [hook],
+    })}\n`);
+    return true;
+  } catch (_e) {
+    return false;
+  }
+}
+
 function verifyProjectHookIntegrity(scriptPath, sessionId) {
+  const result = verifyIntegrityUnbypassed(scriptPath, sessionId);
+  if (result.ok || process.env.HIMMEL_HOOK_INTEGRITY_BYPASS_OK !== '1') return result;
+  return honourBypass(scriptPath, sessionId) ? { ok: true } : result;
+}
+
+function verifyIntegrityUnbypassed(scriptPath, sessionId) {
   // ---- FAST PATH: strictly git-free, no child process, on every hook call ----
-  if (process.env.HIMMEL_HOOK_INTEGRITY_BYPASS_OK === '1') return { ok: true };
   const projectDir = process.env.CLAUDE_PROJECT_DIR;
   if (!projectDir) return { ok: true };
   const normScript = normalize(scriptPath).toLowerCase();
@@ -903,7 +975,7 @@ function denyIntegrityMismatch(scriptPath, relPath, reason) {
       + 'and allow, which is how a reader in this window skipped verification entirely. Retry once the '
       + 'publishing process has finished; if it died, the incumbent record is beside the missing one as '
       + 'a .old-* file. Legitimate mid-session hook edit: rerun with HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 '
-      + 'set in the LAUNCHING shell.\n',
+      + `set in the LAUNCHING shell. ${BYPASS_SCOPE}\n`,
     );
     return;
   }
@@ -912,7 +984,8 @@ function denyIntegrityMismatch(scriptPath, relPath, reason) {
     + `git-committed version pinned at session start (${relPath}). A guard that fails this check cannot `
     + 'be trusted to run tampered, so the tool call it would have evaluated is refused instead. '
     + (reason ? `Re-pin refused: ${reason}. ` : '')
-    + 'Legitimate mid-session hook edit: rerun with HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 set in the LAUNCHING shell.\n',
+    + 'Legitimate mid-session hook edit: rerun with HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 set in the LAUNCHING shell. '
+    + `${BYPASS_SCOPE}\n`,
   );
 }
 
