@@ -47,8 +47,13 @@ ALLOW_WHY=(
 scan_callers() {
   local root="$1"; shift
   local set_re="${V}(=1|[[:space:]]*[:=][[:space:]]*['\"]1['\"])"
-  local f rel a allowed rc
+  local f rel a allowed rc list
+  # A failed traversal (unreadable subtree) is reported, not scanned around.
+  list="$(find "$root/scripts" -path '*/node_modules' -prune -o -type f \
+    \( -name '*.sh' -o -name '*.js' -o -name '*.mjs' -o -name '*.ts' -o -name '*.ps1' \) -print)" \
+    || { printf 'scripts (find failed under %s)\n' "$root"; return 0; }
   while IFS= read -r f; do
+    [ -n "$f" ] || continue
     grep -Eq "$set_re" "$f"; rc=$?
     [ "$rc" -eq 1 ] && continue
     rel="${f#"$root"/}"
@@ -61,13 +66,12 @@ scan_callers() {
       continue
     fi
     printf '%s\n' "$rel"
-  done < <(find "$root/scripts" -path '*/node_modules' -prune -o -type f \
-    \( -name '*.sh' -o -name '*.js' -o -name '*.mjs' -o -name '*.ts' -o -name '*.ps1' \) -print)
+  done <<< "$list"
 }
 
 echo "== fixtures =="
 td="$(mktemp -d "${TMPDIR:-/tmp}/real-home-callers.XXXXXX")" || { echo "test-uninstall-real-home-callers: mktemp failed" >&2; exit 2; }
-trap 'rm -rf "$td"' EXIT
+trap 'chmod -R u+rwx "$td" 2>/dev/null; rm -rf "$td"' EXIT
 fx="$td/tree"; mkdir -p "$fx/scripts"
 
 # pre-#1015 shape: fence lifted, HOME never reassigned.
@@ -102,6 +106,10 @@ check "file that only unsets/reads the var passes" \
 if [ "$(id -u)" -ne 0 ]; then
   check "an unreadable file is flagged, not passed as a non-match" \
     "$(printf '%s' "$got" | grep -c 'scripts/test-unreadable.sh (unreadable')" "1"
+  # a separate tree: a failed traversal returns early, so it would mask the checks above.
+  mkdir -p "$td/locked/scripts/sub"; chmod 000 "$td/locked/scripts/sub"
+  check "an unreadable subtree is flagged, not scanned around" \
+    "$(scan_callers "$td/locked" 2>/dev/null | grep -c 'find failed')" "1"
 else
   echo "ok - unreadable-file control skipped (running as root)"
 fi
