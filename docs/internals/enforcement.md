@@ -1808,8 +1808,12 @@ candidate inside a compound command, behind a wrapper (`env`, `timeout`,
 rewrite the checked bytes before the script runs (`cp x
 scripts/cr/pr-check-context.sh; bash …`), a wrapper's operands can hide the
 word it runs, and `BASH_ENV=` runs a file first. A glob or brace list is
-matched against the guarded names, so `scripts/c[r]/pr-chec[k]-context.sh`
-counts too. The
+matched against the guarded names, in any case, so `scripts/c[r]/pr-chec[k]-context.sh`
+counts too. Any word naming a path through `cr/` (any case) that the shell
+rewrites before it runs (a `$` expansion, a `$( )` or backtick substitution, a
+glob, a brace list, a `~`) denies. So does a relative one with an uppercase
+letter, which a case-insensitive filesystem folds. `busybox` and `toybox`
+count as shells. The
 canonical anchored fence is exempt only in its exact shape; only its echo text
 may vary. Classification uses bash builtins only, so a missing tool cannot turn
 it into a no-op. Text classification has limits, and the hook's `ponytail:` names them.
@@ -1818,7 +1822,11 @@ it into a no-op. Text classification has limits, and the hook's `ponytail:` name
 bytes, never `refs/remotes/origin/main`. Refs live in the common git dir, which
 a leg can write (`git update-ref`), so a ref-based base could be moved onto the
 edit. The anchor is the primary checkout, which `block-edit-on-main` keeps legs
-from editing. Trade-off: a primary lagging behind main, or ahead of the branch's
+from editing. A git write can still reach its working tree (`git -C <primary>
+checkout <branch> -- <path>`, a detached HEAD), so the anchor must be on
+`refs/heads/main` and its guarded paths must equal main's committed tree
+(`git ls-tree`, which runs no filter). The check runs at match time only, so a
+swap between the check and the exec is not covered. Trade-off: a primary lagging behind main, or ahead of the branch's
 base, differs from a clean branch, so the hook denies and the anchored fence is
 the remedy. That is the safe direction.
 

@@ -120,8 +120,9 @@ case "$tool" in Bash|"") ;; *) exit 0 ;; esac
 flat=${cmd//$'\\\n'/}
 flat=${flat//[\'\"\\]/}
 # A glob or brace list can spell a guarded name without either substring
-# (scripts/c[r]/pr-chec[k]-context.sh), so it passes on to classification.
-case "$flat" in *pr-check*|*/cr/*|*[][*?]*|*'{'*) ;; *) exit 0 ;; esac
+# (scripts/c[r]/pr-chec[k]-context.sh), so it passes on to classification;
+# so does any case of the names, which a case-insensitive filesystem folds.
+case "$flat" in *[pP][rR]-[cC][hH][eE][cC][kK]*|*[cC][rR]/*|*[][*?]*|*'{'*) ;; *) exit 0 ;; esac
 
 # The canonical fence runs the anchor's copy through $himmel_repo, so it is
 # exempt - but only in its exact shape. Anything added to it (a second
@@ -151,16 +152,18 @@ norm() {
     printf '%s' "${out[*]-}"
 }
 
-is_target() { # is_target <basename> - names, or globs onto, a guarded script
-    local t
+is_target() { # is_target <basename> - names, or globs onto, a guarded script, in any case
+    local t rc=1
+    shopt -s nocasematch
     for t in $TARGETS; do
-        [ "$1" = "$t" ] && return 0
+        case "$1" in "$t") rc=0 ;; esac
         # shellcheck disable=SC2254 # $1 IS the pattern: a glob operand
         case "$1" in
-            *[][*?]*) case "$t" in $1) return 0 ;; esac ;;
+            *[][*?]*) case "$t" in $1) rc=0 ;; esac ;;
         esac
     done
-    return 1
+    shopt -u nocasematch
+    return "$rc"
 }
 
 # Anything that runs a named file: an interpreter, `source`/`.`, `eval`, or
@@ -192,7 +195,7 @@ while IFS= read -r line; do
     [ "$i" -lt "${#w[@]}" ] || continue
     cw=${w[$i]}
     case "${cw##*/}" in
-        bash|sh|zsh|dash|ksh|mksh|source|.|eval) runs=1 ;;
+        bash|sh|zsh|dash|ksh|mksh|busybox|toybox|source|.|eval) runs=1 ;;
         cd|pushd|popd) chdir=1 ;;
     esac
     case "$cw" in */*|pr-check*) runs=1 ;; esac
@@ -208,11 +211,25 @@ done <<<"$simple"
 # permission layer: no allow rule matches them, and the runbook's
 # <himmel_dir> spelling is one.
 # ponytail: text classification, so a name the shell assembles from pieces the
-# text never spells (hex escapes, concatenated variables with no "pr-check" in
-# sight) is not seen. The branch can run arbitrary code through any other
+# text never spells (a variable holding the whole path, with neither "cr/" nor
+# "pr-check" in sight) is not seen. The branch can run arbitrary code through any other
 # allow-listed scripts/ path anyway; this hook closes the two named scripts.
 hit=0
 unresolved=""
+# A whole word that names a path through cr/ (any case) is read by its text
+# alone, so a word the shell rewrites first - an expansion, a substitution, a
+# glob, a brace list, a tilde - is unresolvable, and so is a relative one a
+# case-insensitive filesystem folds. Whole words, before any split: a
+# substitution ($(pwd)/scripts/cr/...) only looks absolute once split.
+# Absolute words keep their case (an adopter's /Users/... anchor path).
+for word in $flat; do
+    case "$word" in *[cC][rR]/*) ;; *) continue ;; esac
+    case "$word" in
+        *[][*?~\$\(\`]*|*'{'*|*'}'*) hit=1; unresolved=$word ;;
+        /*) ;;
+        *[[:upper:]]*) hit=1; unresolved=$word ;;
+    esac
+done
 for tok in ${flat//[;&|()<>\`=]/$'\n'}; do
     case "$tok" in /*|'~'*) continue ;; esac
     case "$tok" in
@@ -308,10 +325,15 @@ prefix=$(gitq rev-parse --show-prefix 2>/dev/null) \
 # commands that can also normalise an edit back to the base) and skips paths
 # flagged assume-unchanged/skip-worktree. hash-object --no-filters runs no
 # filter and reads no index; an extra file on either side is an extra line.
-# ponytail: trusts the anchor's working tree - legs are kept off the primary
-# checkout by block-edit-on-main / block-write-into-main-checkout, not by this
-# hook - and denies (the safe direction) whenever the primary has not been
+# The anchor's working tree is itself one git write away (checkout <branch> --
+# <path>, a detached HEAD), so it must be on refs/heads/main with the guarded
+# paths equal to main's committed tree - compared by ls-tree, which runs no
+# filter. Denies (the safe direction) whenever the primary has not been
 # pulled to the branch's base, or is ahead of it.
+# ponytail: refs/heads/main is trusted as the anchor's commit - a leg that
+# moves main itself (update-ref) is fenced by the git-write guards, not here.
+# ponytail: checked at match time only - a background job or another session
+# can swap the bytes between this check and the exec (TOCTOU), not closed here.
 manifest() { # manifest <root> - "<mode> <blob-id> <path>" per regular file, sorted
     local root=$1 odd files execs oids modes
     # shellcheck disable=SC2086 # $GUARDED is a fixed, space-free word list
@@ -334,6 +356,17 @@ if ! want=$(manifest "$repo") || [ -z "$want" ]; then
     deny "the HIMMEL_REPO anchor's scripts/cr/ and sourced libs ($repo) cannot be read and hashed."
 fi
 case "$want" in ODD\ *) deny "the HIMMEL_REPO anchor carries a non-regular file or a control-character name under the guarded paths: ${want#ODD }" ;; esac
+anchorq() { git --no-replace-objects -C "$repo" -c core.fsmonitor=false -c core.quotePath=false "$@"; }
+head_ref=$(anchorq symbolic-ref -q HEAD 2>/dev/null) || head_ref=""
+[ "$head_ref" = refs/heads/main ] \
+    || deny "the HIMMEL_REPO anchor ($repo) is not on refs/heads/main (its HEAD is '${head_ref:-detached}'), so its bytes are not main's."
+# shellcheck disable=SC2086 # $GUARDED is a fixed, space-free word list
+if ! committed=$(anchorq ls-tree -r --full-tree refs/heads/main -- $GUARDED 2>/dev/null \
+    | awk -F'\t' '{ split($1, m, " "); print m[1] " " m[3] " " $2 }' | LC_ALL=C sort) || [ -z "$committed" ]; then
+    deny "refs/heads/main's guarded paths in the HIMMEL_REPO anchor ($repo) cannot be listed."
+fi
+[ "$want" = "$committed" ] \
+    || deny "the HIMMEL_REPO anchor's working tree ($repo) under the guarded paths is not refs/heads/main's committed bytes, so it cannot serve as the base."
 if ! have=$(manifest "$cwd") || [ -z "$have" ]; then
     deny "the worktree's scripts/cr/ and sourced libs cannot be read and hashed."
 fi

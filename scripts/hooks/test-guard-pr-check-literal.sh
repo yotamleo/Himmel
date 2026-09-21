@@ -179,6 +179,22 @@ need_in_err "deny names the changed file" "scripts/cr/pr-check-context.sh"
 need_in_err "deny names the canonical anchored fence" 'bash "$himmel_repo/scripts/cr/pr-check-context.sh"'
 run "branch-edited + surrounding whitespace -> deny" 2 "$(payload "  $LITERAL  " "$WT")" "$HR"
 
+# ---- review C1: the anchor's working tree is forgeable by a git write -------
+# A leg can copy its edit into the primary (checkout <branch> -- <path>, a
+# detached HEAD, another branch); the anchor then equals the branch, so the
+# anchor must itself be main's committed bytes.
+g -C "$PRIMARY" checkout -q feat/x -- scripts/cr/pr-check-context.sh
+run "anchor working tree forged from the branch -> deny" 2 "$(payload "$LITERAL" "$WT")" "$HR"
+need_in_err "deny names the anchor's uncommitted bytes" "not refs/heads/main's committed"
+g -C "$PRIMARY" checkout -q HEAD -- scripts/cr/pr-check-context.sh
+g -C "$PRIMARY" checkout -q --detach feat/x
+run "anchor on a detached HEAD at the branch -> deny" 2 "$(payload "$LITERAL" "$WT")" "$HR"
+need_in_err "deny names the anchor's HEAD" "refs/heads/main"
+g -C "$PRIMARY" checkout -q -b forged
+run "anchor on another branch at the branch's commit -> deny" 2 "$(payload "$LITERAL" "$WT")" "$HR"
+g -C "$PRIMARY" checkout -q main
+g -C "$PRIMARY" branch -q -D forged
+
 # ---- C1: spelling variants the Bash(bash scripts/*) allow rule also matches --
 # Classified by the script they run, not by the text: each runs the branch's
 # edited pr-check-context.sh / pr-check-env.sh, so each must deny.
@@ -223,6 +239,21 @@ bash scripts/c{r,}/pr-chec{k,}-context.sh
 bash scripts/c{r,{x,y}}/pr-chec{k,{x,y}}-context.sh
 f=pr-check-context.sh; bash scripts/cr/$f
 bash scripts/cr/$(echo pr-check-context.sh)
+bash scripts/cr/pr-che{c,}k-context.sh
+bash scripts/cr/pr-{check-context,}.sh
+bash scripts/cr/pr-che{c..c}k-context.sh
+bash -c "bash scripts/cr/pr-che{c,}k-context.sh"
+bash scripts/cr/pr-che$'\x63'k-context.sh
+bash scripts/cr/pr-che${X:-c}k-context.sh
+bash scripts/cr/$X
+bash ~+/scripts/cr/pr-check-context.sh
+bash `pwd`/scripts/cr/pr-check-context.sh
+bash $(pwd)/scripts/cr/pr-check-context.sh
+bash scripts/cr/PR-CHECK-CONTEXT.SH
+bash SCRIPTS/CR/PR-CHECK-CONTEXT.SH
+bash scripts/C?/PR-CHECK-*.SH
+busybox sh scripts/cr/pr-check-context.sh
+toybox sh scripts/cr/pr-check-context.sh
 VARIANTS
 run "a line continuation inside the name on an edited branch -> deny" 2 \
     "$(payload "bash scripts/cr/pr-check-con\\
