@@ -205,6 +205,17 @@ expect "7: rc=0" "$out" rc_is "$out" 0
 expect "7: clean.sh --only pruned the target" "$out" is_gone "$WT_D"
 expect "7: sibling feat/b survived" "$out" is_dir "$WT_B"
 
+# ── case 8: an ambiguous target (path of one worktree, branch of another) ────
+echo "CASE 8: ambiguous target"
+mkdir -p "$REPO/feat"
+git -C "$REPO" worktree add -q "$REPO/feat/amb" -b feat/amb-holder >/dev/null 2>&1
+WT_AMB_BR=$(mk_wt wt-amb-br feat/amb)   # branch feat/amb; the other one's PATH is repo/feat/amb
+out=$(run_clean "$CLEAN_GARDEN" --only feat/amb)
+expect "8: ambiguous target refused non-zero" "$out" rc_nonzero "$out"
+expect "8: message names the ambiguity" "$out" grepq "$out" "matches 2 worktrees"
+expect "8: path-matched worktree kept" "$out" is_dir "$REPO/feat/amb"
+expect "8: branch-matched worktree kept" "$out" is_dir "$WT_AMB_BR"
+
 # ── control: the plain (fleet-wide) run still prunes every merged sibling ────
 echo "CONTROL: plain --prune-only"
 out=$(run_clean "$CLEAN_GARDEN" --prune-only)

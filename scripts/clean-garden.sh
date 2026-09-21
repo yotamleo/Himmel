@@ -839,6 +839,22 @@ PARTIAL=0
 SKIPPED=0
 FAILED=0
 ONLY_MATCHED=0
+# --only must name exactly ONE worktree: a value that is one worktree's path and
+# another's branch name would otherwise prune both. Count before any removal.
+if [ -n "$ONLY_TARGET" ]; then
+    only_norm=$(cd "$ONLY_TARGET" 2>/dev/null && pwd || echo "$ONLY_TARGET")
+    only_hits=0
+    for i in "${!WT_PATHS[@]}"; do
+        wt_norm=$(cd "${WT_PATHS[$i]}" 2>/dev/null && pwd || echo "${WT_PATHS[$i]}")
+        if [ "$wt_norm" = "$only_norm" ] || [ "${WT_BRANCHES[$i]}" = "$ONLY_TARGET" ]; then
+            only_hits=$((only_hits+1))
+        fi
+    done
+    if [ "$only_hits" -gt 1 ]; then
+        echo "ERR clean-garden: --only $ONLY_TARGET matches $only_hits worktrees (by path or branch) — nothing pruned; pass the full worktree path" >&2
+        exit 1
+    fi
+fi
 if [ "$NO_PRUNE" -eq 0 ]; then
     log "clean-garden: prune phase — scanning ${#WT_PATHS[@]} worktrees"
     for i in "${!WT_PATHS[@]}"; do
