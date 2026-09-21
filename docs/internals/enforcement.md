@@ -3629,6 +3629,16 @@ forwarded — forwarding it would resurrect the original bug); extraction
 failure on non-find output → forwarded verbatim (nothing the guard
 screens).
 
+**Git in a worktree (HIMMEL-3283; claudex lane HIMMEL-2953).** Claude
+Code's own worktree-isolation screen refuses a command that runs `rtk` with
+git among its operands, and the rewrite hands it exactly that. Nothing
+hook-visible marks a session as `EnterWorktree`-pinned, so the guard
+forwards no rewrite that names git as a word when the payload cwd is inside
+`.claude/worktrees/` — the harness sees plain `git`. Cost: rtk's git
+compression is lost in unpinned worktree sessions too; a worktree outside
+`.claude/worktrees/` keeps the rewrite. Evidence and the leg-side recovery:
+[`stuck-playbook.md`](stuck-playbook.md).
+
 **Wiring:** `docs/setup/settings-template.json` registers the guard
 (`<himmel-path>` placeholder, resolved by the setup scripts), and
 `scripts/machine-setup/win11.ps1` + `ubuntu.sh` swap every bare

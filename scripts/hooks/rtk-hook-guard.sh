@@ -48,16 +48,6 @@ out=$(printf '%s' "$payload" | rtk hook claude 2>/dev/null) || exit 0
 # Scan conservatively before extraction so missing jq / output-shape drift
 # cannot resurrect the wrapper. A false positive only loses token savings.
 #
-# HIMMEL-3283: this suppression is claudex-only deliberately, not by omission —
-# native was considered. A native worktree-pinned session gets `rtk git`
-# forwarded and hit the same opacity (leg N198, 2026-09-20: `git status` /
-# `git diff` refused as "runs rtk with a git command among its operands"). It is
-# not extended here because that refusal is session-scoped: the same worktree,
-# branch and tree ran bare git unrefused under a fresh session (N198b), so its
-# trigger is still unknown. Suppressing the rewrite for native sessions would
-# mitigate a symptom we cannot yet explain — and would stop anyone finding the
-# trigger. The decision is deferred to HIMMEL-3283; the leg-side recovery is in
-# docs/internals/stuck-playbook.md.
 config_dir="${CLAUDE_CONFIG_DIR:-}"
 while [ "$config_dir" != "/" ] && [ "${config_dir%/}" != "$config_dir" ]; do
     config_dir="${config_dir%/}"
@@ -67,6 +57,45 @@ if [ "${config_dir##*/}" = ".claude-codex" ]; then
         *'"rtk git '*) exit 0 ;;
     esac
 fi
+
+# HIMMEL-3283: Claude Code's own worktree-isolation screen refuses a command
+# that runs `rtk` with git among its operands ("what runs it ... cannot be read
+# here"), and this rewrite hands it exactly that. Measured over the local
+# transcripts: 0 of 8701 rtk-rewritten git calls refused in unpinned sessions,
+# 112 of 391 in EnterWorktree-pinned ones — and inconsistently within a single
+# session, so the trigger cannot be keyed on. Nothing hook-visible marks a
+# session as pinned (no env var; the payload carries only cwd + transcript_path),
+# so the guard keys on the payload cwd sitting inside a `.claude/worktrees/`
+# tree and leaves a rewrite that names git as a word unrewritten there. Scans
+# the whole output (no jq needed, drift-proof); the word test also catches
+# `rtk gh`/`rtk ssh` with git in their text, which the screen refuses the same
+# way. A false positive only loses token savings — plain git on the session's
+# own worktree is never refused.
+# ponytail: `.claude/worktrees/` is the only worktree root recognised — a
+# worktree elsewhere (`git worktree add ../x`) keeps the rewrite, so a pinned
+# session there can still be refused.
+case "$out" in
+*git*)
+    wt_cwd=""
+    if command -v jq >/dev/null 2>&1; then
+        wt_cwd=$(printf '%s' "$payload" | jq -r '.cwd // empty' 2>/dev/null) || wt_cwd=""
+    fi
+    if [ -z "$wt_cwd" ]; then
+        wt_cwd=$(printf '%s' "$payload" \
+            | grep -oE '"cwd"[[:space:]]*:[[:space:]]*"[^"]*"' 2>/dev/null \
+            | head -n 1 \
+            | sed 's/^"cwd"[[:space:]]*:[[:space:]]*"//; s/"$//') || wt_cwd=""
+    fi
+    case "$wt_cwd" in
+    */.claude/worktrees/*)
+        # Here-string, not a pipe: `grep -q` under pipefail SIGPIPEs the producer.
+        if grep -Eq '(^|[^[:alnum:]_])git($|[^[:alnum:]_])' <<< "$out" 2>/dev/null; then
+            exit 0
+        fi
+        ;;
+    esac
+    ;;
+esac
 
 # Extract the rewritten command VALUE and scan only that (HIMMEL-264).
 # Scanning rtk's whole JSON output was brittle to output-shape drift: a

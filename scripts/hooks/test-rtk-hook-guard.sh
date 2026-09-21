@@ -93,7 +93,11 @@ payload=$(cat)
 cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty')
 case "$cmd" in
     *\|*) ;; # real rtk leaves piped/compound shell commands alone
-    find\ *|git\ *|ls\ *|sort\ *)
+    cd\ *\ \&\&\ git\ *) # real rtk rewrites the git leg of an && chain in place
+        jq -nc --arg cmd "${cmd/ git / rtk git }" \
+            '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecisionReason:"RTK auto-rewrite",updatedInput:{command:$cmd},permissionDecision:"allow"}}'
+        ;;
+    find\ *|git\ *|ls\ *|sort\ *|gh\ *)
         jq -nc --arg cmd "rtk $cmd" \
             '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecisionReason:"RTK auto-rewrite",updatedInput:{command:$cmd},permissionDecision:"allow"}}'
         ;;
@@ -179,6 +183,79 @@ if grepq "$out" '"rtk ls -a /tmp"'; then
 else
     assert_fail "expected claudex non-git rewrite, got: $out"
 fi
+
+# HIMMEL-3283: the harness's worktree-isolation screen refuses a command that
+# runs `rtk` with git among its operands (it cannot read what rtk runs), and
+# the rtk rewrite hands it exactly that. No hook-visible signal says a session
+# is worktree-pinned, so the guard keys on the payload cwd sitting inside a
+# `.claude/worktrees/` tree: git in a worktree keeps its original, unwrapped
+# form. A false positive only loses token savings.
+run_hook_cwd() { # $1 = payload cwd, $2 = command (JSON-escaped)
+    printf '{"session_id":"s","cwd":"%s","tool_name":"Bash","tool_input":{"command":"%s"}}' "$1" "$2" \
+        | PATH="$stub_dir:$PATH" bash "$hook"
+}
+wt_cwd='/home/u/himmel/.claude/worktrees/fix+x'
+echo "Test 3c: git in a worktree cwd is not rewritten to rtk"
+for cwd in "$wt_cwd" "$wt_cwd/scripts/hooks"; do
+    for cmd in 'git fetch origin' 'git push -u origin fix/x' 'cd /tmp && git status' \
+        'gh pr create --body \"git push\"'; do
+        out=$(run_hook_cwd "$cwd" "$cmd")
+        if [ -z "$out" ]; then
+            assert_pass "worktree cwd, rewrite suppressed: $cmd ($cwd)"
+        else
+            assert_fail "expected empty output for '$cmd' in $cwd, got: $out"
+        fi
+    done
+done
+echo "Test 3d: outside a worktree, or with no git operand, the rewrite is kept"
+for cwd in '/home/u/himmel' '/home/u/himmel/.claude/worktrees' \
+    '/home/u/himmel/.claude/worktrees-old/x' '/home/u/.claude-worktrees/x'; do
+    out=$(run_hook_cwd "$cwd" 'git fetch origin')
+    if grepq "$out" '"rtk git fetch origin"'; then
+        assert_pass "git rewrite preserved: $cwd"
+    else
+        assert_fail "expected rtk git rewrite in $cwd, got: $out"
+    fi
+done
+for cmd in 'ls -a /home/u/github/himmel' 'gh pr view 12'; do
+    out=$(run_hook_cwd "$wt_cwd" "$cmd")
+    if grepq "$out" '"rtk '; then
+        assert_pass "worktree cwd, no git operand, rewrite preserved: $cmd"
+    else
+        assert_fail "expected rtk rewrite for '$cmd' in a worktree, got: $out"
+    fi
+done
+out=$(run_hook 'git fetch origin')
+if grepq "$out" '"rtk git fetch origin"'; then
+    assert_pass "payload without cwd: git rewrite preserved"
+else
+    assert_fail "expected rtk git rewrite without a payload cwd, got: $out"
+fi
+# The no-jq fallback must reach the same verdict (cwd extracted by grep+sed).
+gitwt_dir=$(mktemp -d)
+printf '#!/usr/bin/env bash\nexit 1\n' > "$gitwt_dir/jq"
+cat > "$gitwt_dir/rtk" <<'STUB'
+#!/usr/bin/env bash
+[ "${1:-}" = "hook" ] && [ "${2:-}" = "claude" ] || exit 1
+cat >/dev/null
+printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecisionReason":"RTK auto-rewrite","updatedInput":{"command":"rtk git status"},"permissionDecision":"allow"}}'
+STUB
+chmod +x "$gitwt_dir/jq" "$gitwt_dir/rtk"
+out=$(printf '{"session_id":"s","cwd":"%s","tool_name":"Bash","tool_input":{"command":"git status"}}' "$wt_cwd" \
+    | PATH="$gitwt_dir:$PATH" bash "$hook")
+if [ -z "$out" ]; then
+    assert_pass "no-jq fallback: worktree git rewrite suppressed"
+else
+    assert_fail "expected empty output via the no-jq fallback in a worktree, got: $out"
+fi
+out=$(printf '{"session_id":"s","cwd":"/home/u/himmel","tool_name":"Bash","tool_input":{"command":"git status"}}' \
+    | PATH="$gitwt_dir:$PATH" bash "$hook")
+if grepq "$out" '"rtk git status"'; then
+    assert_pass "no-jq fallback: primary-checkout git rewrite preserved"
+else
+    assert_fail "expected rtk git rewrite via the no-jq fallback outside a worktree, got: $out"
+fi
+rm -rf "$gitwt_dir"
 
 # ---------- 4. rtk silent (compound shell command) ----------
 echo "Test 4: rtk emits nothing → guard emits nothing"
