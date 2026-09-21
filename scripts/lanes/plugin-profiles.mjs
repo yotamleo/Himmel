@@ -24,7 +24,11 @@ const ID_RE = /^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$/;
 // HIMMEL-2959: positive rule shapes, not a generic Bash allowlist. In a
 // quiet-run rule the label AND directory are literal; a wildcard before the
 // suite basename can absorb a different executed program plus a fake tail.
-const GATE_SCRIPT_RE = /^Bash\(bash scripts\/(?:handover\/(?:merge-on-green|queue-lock)|handover\/console-kit\/inbox-send|cr\/(?:write-verdicts|clear-cr-marker|panel-first-pass|ledger-append)|check-ci)\.sh:\*\)$/;
+const GATE_SCRIPT_RE = /^Bash\(bash scripts\/(?:handover\/(?:merge-on-green|queue-lock)|handover\/console-kit\/inbox-send|cr\/(?:write-verdicts|clear-cr-marker|panel-first-pass|docs-audit-panel|ledger-append)|check-ci)\.sh:\*\)$/;
+// HIMMEL-3338: the /pr-check external-critic steps that take no arguments (or
+// exactly `--diff`) are exact literals — no `:*` tail, so nothing can be
+// appended to them.
+const GATE_EXACT_RE = /^Bash\(bash scripts\/cr\/(?:(?:codex-adv-kickoff|codex-adv-harvest|doc-freshness-advisory)\.sh|known-findings\.sh --diff)\)$/;
 const GATE_SUITE_RE = /^Bash\((?:SUITE_LOCK_WAIT=60 )?bash scripts\/quiet-run\.sh suite -- bash (?:scripts\/(?:handover\/console-kit\/|(?:handover|cr|git|hooks|guardrails|lib|luna|ci)\/)?|templates\/luna-second-brain\/scripts\/)test-\*\.sh\)$/;
 const LEG_PROFILES = new Set(['lane-impl', 'leg-impl', 'lane-review', 'lane-content', 'console-relay']);
 
@@ -37,7 +41,7 @@ function validateGateAllow(errors, rules) {
   for (const rule of rules) {
     if (typeof rule !== 'string' || /[\r\n]/.test(rule)
       || ['--force', '--no-verify', '--amend', 'reset --hard', 'origin main', '..', '$'].some((s) => rule.includes(s))
-      || ![GATE_SCRIPT_RE, GATE_SUITE_RE].some((re) => re.test(rule))) {
+      || ![GATE_SCRIPT_RE, GATE_EXACT_RE, GATE_SUITE_RE].some((re) => re.test(rule))) {
       errors.push(`gateAllow rule ${JSON.stringify(rule)} must name a guarded himmel gate or a literal-directory test-* suite`);
     }
   }
