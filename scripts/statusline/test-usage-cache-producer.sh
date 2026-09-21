@@ -216,7 +216,7 @@ run_test "(8) seven_day-only rate_limits still mirrors (CR codex-1), five_hour p
 '
 
 run_test "(9) HIMMEL-3364: both stdin windows stamp primaries_refreshed_at=now, and bank-preflight PROCEEDs on the result" '
-  W=$(mktemp -d); export HOME="$W/home"; mkdir -p "$HOME";
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-producer-9.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
   export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
   unset USAGE_OAUTH_CMD;
   before=$(date +%s);
@@ -231,7 +231,7 @@ run_test "(9) HIMMEL-3364: both stdin windows stamp primaries_refreshed_at=now, 
 '
 
 run_test "(9b) HIMMEL-3364: both stdin windows refresh a stale prior stamp" '
-  W=$(mktemp -d); export HOME="$W/home"; mkdir -p "$HOME";
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-producer-9b.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
   export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
   unset USAGE_OAUTH_CMD; export USAGE_CACHE_TTL=0;
   printf "%s" "{\"five_hour\":{\"utilization\":1},\"seven_day\":{\"utilization\":1},\"extra_usage\":{},\"primaries_refreshed_at\":1234567890}" > "$CLAUDE_USAGE_CACHE";
@@ -241,7 +241,7 @@ run_test "(9b) HIMMEL-3364: both stdin windows refresh a stale prior stamp" '
 '
 
 run_test "(9c) HIMMEL-3364: one stdin window carries the prior stamp; with no prior stamp none is invented" '
-  W=$(mktemp -d); export HOME="$W/home"; mkdir -p "$HOME";
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-producer-9c.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
   export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
   unset USAGE_OAUTH_CMD; export USAGE_CACHE_TTL=0;
   printf "%s" "{\"five_hour\":{\"utilization\":33},\"seven_day\":{\"utilization\":1},\"extra_usage\":{},\"primaries_refreshed_at\":1234567890}" > "$CLAUDE_USAGE_CACHE";
