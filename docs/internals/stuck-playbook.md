@@ -548,9 +548,12 @@ reads the session narrative (a merge just happened), not only the payload.
 ## Symptom: `check-ci.sh --pr N` prints usage and stops — no gate ran
 
 `scripts/check-ci.sh` takes the PR number **positionally**; an unknown flag
-(`--pr`, `--watch`) makes it print usage and exit 2 (cannot evaluate), and a
-caller that reads only the printed usage, or swallows the rc, treats that as
-a gate that ran. The watcher flag is `--max-wait`, not `--watch`. A genuine
+(`--pr`, `--watch`) makes it print usage and exit **64** (`EX_USAGE`, HIMMEL-3317 —
+it used to share exit 2 with a genuine cannot-evaluate, so a caller reading only
+`$?` recorded a gate result for a gate that never ran), and it prints the
+`check-ci: verdict exit=64` marker line. A caller that swallows the rc (a pipe
+gives the pipeline's rc) must read that marker, not the usage text, before
+calling it a gate that ran. The watcher flag is `--max-wait`, not `--watch`. A genuine
 exit 0 also does not mean the
 CodeRabbit App reviewed the head — the artifact is a review object with
 `bodylen>0` at the head SHA (see the CodeRabbit gate in

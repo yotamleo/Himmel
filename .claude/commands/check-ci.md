@@ -66,13 +66,19 @@ Act on the exit code:
   within seconds, suspect a GitHub Actions billing/permissions block rather
   than the code — check the run annotations first. Read bulky CI failure
   logs in a subagent, not the parent context.
+- `64` — usage error (sysexits `EX_USAGE`, HIMMEL-3317): an unknown flag, a flag
+  missing its value, a non-numeric `--grace`/`--settle`/`--max-wait`, or two PR
+  selectors. **No gate ran** — do not record it as a gate result. The PR number
+  is POSITIONAL (`check-ci.sh 1003`, not `--pr 1003`); the watcher bound is
+  `--max-wait`, there is no `--watch`. The `check-ci: verdict exit=64` line still
+  prints; only `--help` (exit 0) stays clean.
 - `2` — cannot evaluate: no PR for this branch, checks never registered
   within the grace window (default 180s — pass `--grace <sec>` to widen),
   gh errored on the probe or during the watch (auth/network/cancellation —
   never reported as a red check), the thread-state query failed or returned
   a malformed page, the PR head moved during the run (the green verdict is
-  bound to the watched head SHA — a concurrent push invalidates it), or
-  usage error. Also (when CodeRabbit is armed) when its status says the
+  bound to the watched head SHA — a concurrent push invalidates it). Also
+  (when CodeRabbit is armed) when its status says the
   review COMPLETED while the PR carries **no CodeRabbit review object at
   any head, ever**, and no walkthrough certifies this head: a "completed"
   review with nothing to be incremental to is not evidence of a review

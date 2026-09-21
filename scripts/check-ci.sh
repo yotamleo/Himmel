@@ -88,7 +88,13 @@
 #       non-blocking)
 #   1 — at least one check failed (--fail-fast: returns on the first red), or —
 #       when armed — CodeRabbit's own status is failure/error
-#   2 — cannot evaluate: usage error / no PR found / no checks registered
+#   64 — usage error (sysexits EX_USAGE, HIMMEL-3317): an unknown flag, a flag
+#       missing its value, a non-numeric --grace/--settle/--max-wait, or more
+#       than one PR selector. NO gate ran, so it is deliberately not 2 — a caller
+#       reading only `$?` cannot mistake a mistyped command line (e.g.
+#       `--pr 1003`; the PR number is POSITIONAL) for a verdict. --help is not a
+#       usage error: it exits 0.
+#   2 — cannot evaluate: no PR found / no checks registered
 #       within --grace / gh error on the probe or the watch / thread-state
 #       query failed or returned a malformed page / PR head moved during the run
 #       / (when armed) CodeRabbit's status is absent or still pending on the head
@@ -150,8 +156,9 @@
 # never once fired. Reading the status directly makes it moot.
 #
 # Un-maskable verdict (HIMMEL-974): every exit path additionally prints
-# "check-ci: verdict exit=N" to STDOUT via an EXIT trap installed after arg
-# parsing (--help / usage errors stay clean). A caller that pipes the run
+# "check-ci: verdict exit=N" to STDOUT via an EXIT trap installed before arg
+# parsing, so usage errors (exit 64) carry it too (HIMMEL-3317); only --help,
+# which is not a gate result, stays clean. A caller that pipes the run
 # (`check-ci.sh | tail`) gets the PIPE's exit code, not this script's — the
 # verdict line keeps the real status readable in any captured output.
 set -uo pipefail
@@ -166,7 +173,9 @@ exit codes: 0 = checks green + all review threads resolved
                 + the latest bot review is anchored to the head SHA, or a clean exact-head panel
                   carries an ordinary stale-anchor diff,
             1 = a check failed, or (if armed) CodeRabbit's status is failure/error,
-            2 = cannot evaluate (usage / no PR / no checks within --grace / thread query failed / PR head moved
+            64 = usage error — bad flag / missing or non-numeric value / two PR selectors; NO gate ran (the PR
+                number is POSITIONAL: `check-ci.sh 1003`, not `--pr 1003`),
+            2 = cannot evaluate (no PR / no checks within --grace / thread query failed / PR head moved
                 / (if armed) CodeRabbit's status absent or still pending on the head SHA / body-findings
                 reader failed / review-freshness query failed or indeterminate "paged" / the status says
                 the review COMPLETED but the PR carries no CodeRabbit review object at any head and no
@@ -259,38 +268,46 @@ case "$POLL" in
         POLL=10 ;;
 esac
 
+# Un-maskable verdict line (HIMMEL-974) — installed BEFORE arg parsing
+# (HIMMEL-3317) so a usage error (exit 64) prints its marker too: a caller that
+# read only `$?` used to record a gate result for a gate that never ran. Prints
+# on EVERY exit path but --help: a piped caller's pipeline exit code is the LAST
+# command's, not this script's, so the numeric verdict must survive in the
+# output text. --help clears the trap below — asking for help is not a gate result.
+trap 'echo "check-ci: verdict exit=$?"' EXIT
+
 selector=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --grace)
-            if [ $# -lt 2 ]; then echo "check-ci: --grace needs a value" >&2; usage; exit 2; fi
+            if [ $# -lt 2 ]; then echo "check-ci: --grace needs a value" >&2; usage; exit 64; fi
             GRACE="$2"; shift 2 ;;
         --settle)
-            if [ $# -lt 2 ]; then echo "check-ci: --settle needs a value" >&2; usage; exit 2; fi
+            if [ $# -lt 2 ]; then echo "check-ci: --settle needs a value" >&2; usage; exit 64; fi
             SETTLE="$2"; shift 2 ;;
         --max-wait)
-            if [ $# -lt 2 ]; then echo "check-ci: --max-wait needs a value" >&2; usage; exit 2; fi
+            if [ $# -lt 2 ]; then echo "check-ci: --max-wait needs a value" >&2; usage; exit 64; fi
             MAX_WAIT="$2"; shift 2 ;;
         --threads-only)
             THREADS_ONLY=1; shift ;;
         --escalate)
             ESCALATE=1; shift ;;
-        -h|--help) usage; exit 0 ;;
-        -*) echo "check-ci: unknown option: $1" >&2; usage; exit 2 ;;
+        -h|--help) trap - EXIT; usage; exit 0 ;;
+        -*) echo "check-ci: unknown option: $1" >&2; usage; exit 64 ;;
         *)
-            if [ -n "$selector" ]; then echo "check-ci: only one PR selector allowed (got '$selector' and '$1')" >&2; usage; exit 2; fi
+            if [ -n "$selector" ]; then echo "check-ci: only one PR selector allowed (got '$selector' and '$1')" >&2; usage; exit 64; fi
             selector="$1"; shift ;;
     esac
 done
 
 case "$GRACE" in
-    ''|*[!0-9]*) echo "check-ci: --grace must be a non-negative integer, got '$GRACE'" >&2; exit 2 ;;
+    ''|*[!0-9]*) echo "check-ci: --grace must be a non-negative integer, got '$GRACE'" >&2; exit 64 ;;
 esac
 case "$SETTLE" in
-    ''|*[!0-9]*) echo "check-ci: --settle must be a non-negative integer, got '$SETTLE'" >&2; exit 2 ;;
+    ''|*[!0-9]*) echo "check-ci: --settle must be a non-negative integer, got '$SETTLE'" >&2; exit 64 ;;
 esac
 case "$MAX_WAIT" in
-    ''|*[!0-9]*) echo "check-ci: --max-wait must be a non-negative integer, got '$MAX_WAIT'" >&2; exit 2 ;;
+    ''|*[!0-9]*) echo "check-ci: --max-wait must be a non-negative integer, got '$MAX_WAIT'" >&2; exit 64 ;;
 esac
 
 # Escalation is an explicit write path, never a default gate side effect: both
@@ -326,12 +343,6 @@ if [ "$ESCALATE" -eq 1 ]; then
         CR_ESCALATE_POLL=120
     fi
 fi
-
-# Un-maskable verdict line (HIMMEL-974) — installed only now, after arg
-# parsing, so --help and usage errors above stay clean. Prints on EVERY later
-# exit path: a piped caller's pipeline exit code is the LAST command's, not
-# this script's, so the numeric verdict must survive in the output text.
-trap 'echo "check-ci: verdict exit=$?"' EXIT
 
 if ! command -v gh >/dev/null 2>&1; then
     echo "check-ci: gh CLI not found on PATH" >&2

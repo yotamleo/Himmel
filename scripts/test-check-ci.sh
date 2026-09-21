@@ -18,19 +18,21 @@
 #       0 unresolved threads                 → rc 0
 #   3.  checks registered, watch red         → rc 1, FAILED + fast-red hint
 #   4.  checks never register, --grace 0     → rc 2, "no checks registered"
-#   5.  unknown option                       → rc 2, usage, no verdict line
+#   5.  unknown option                       → rc 64, usage, verdict line (HIMMEL-3317)
 #   5b. --help                               → rc 0, usage, no verdict line
+#   5c. `--pr <n>` (the real-world mistake)  → rc 64 + verdict; a genuine
+#       cannot-evaluate (case 1/4) still rc 2 — the false-positive control
 #   (1/2/3/11 additionally assert exactly one exact-match
 #   "check-ci: verdict exit=N" line — HIMMEL-974)
-#   6.  --grace non-numeric                  → rc 2
-#   7.  two positional selectors             → rc 2
+#   6.  --grace non-numeric                  → rc 64
+#   7.  two positional selectors             → rc 64
 #   8.  selector is passed through to gh as an exact token
 #   9.  settle round catches a late red (green watch 1, red watch 2) → rc 1
 #   10. settle round green twice             → rc 0, exactly 2 watch calls
 #   11. checks green, 2 unresolved threads   → rc 3
 #   12. checks green, thread query fails     → rc 2 (fail-closed gate)
 #   13. non-numeric CHECK_CI_POLL_INTERVAL   → warns, falls back, still runs
-#   14. --settle non-numeric                 → rc 2
+#   14. --settle non-numeric                 → rc 64
 #   15. --threads-only + unresolved threads  → rc 3, and NO gh pr checks calls
 #   16. unresolved thread on page TWO        → rc 3 (pagination, codex round 2)
 #   17. probe gh error (auth/network)        → rc 2, never a fake red (codex round 3)
@@ -876,12 +878,29 @@ assert_verdict 1 "3 un-maskable verdict line (HIMMEL-974)"
 run never-register --grace 0
 assert_rc 2 "4 never-register rc 2"
 assert_err_has "no checks registered within 0s" "4 grace-timeout message"
+assert_verdict 2 "4 a genuine cannot-evaluate still exits 2 WITH its verdict (HIMMEL-3317 false-positive control)"
 
-# 5 — unknown option (pre-trap usage error: NO verdict line)
+# 5 — unknown option: a usage error is rc 64 (EX_USAGE), NOT 2, and it carries the
+# un-maskable verdict line too — no gate ran, so a caller must be able to tell (HIMMEL-3317)
 run red --bogus
-assert_rc 2 "5 unknown option rc 2"
+assert_rc 64 "5 unknown option rc 64"
 assert_err_has "usage" "5 usage on stderr"
-assert_no_verdict "5 no verdict line on usage errors"
+assert_verdict 64 "5 verdict line on usage errors (HIMMEL-3317)"
+
+# 5c — `--pr <n>`: the plausible-but-wrong spelling (the PR number is POSITIONAL) that
+# recorded a gate result for a gate that never ran. Distinct code AND a marker line.
+run red --pr 1003
+assert_rc 64 "5c --pr <n> rc 64, distinct from cannot-evaluate (2)"
+assert_err_has "unknown option: --pr" "5c names the rejected flag"
+assert_verdict 64 "5c --pr <n> prints its verdict line"
+
+# 5d — a value-taking flag with no value is a usage error too (--grace / --settle)
+run red --grace
+assert_rc 64 "5d --grace with no value rc 64"
+assert_verdict 64 "5d verdict line on a missing --grace value"
+run red --settle
+assert_rc 64 "5d --settle with no value rc 64"
+assert_verdict 64 "5d verdict line on a missing --settle value"
 
 # 5b — --help exits 0 pre-trap: usage only, NO verdict line
 run red --help
@@ -891,13 +910,15 @@ assert_no_verdict "5b no verdict line on --help"
 
 # 6 — non-numeric grace
 run red --grace soon
-assert_rc 2 "6 non-numeric grace rc 2"
+assert_rc 64 "6 non-numeric grace rc 64"
 assert_err_has "non-negative integer" "6 grace validation message"
+assert_verdict 64 "6 verdict line on a bad flag value"
 
 # 7 — two selectors
 run red 12 34
-assert_rc 2 "7 two selectors rc 2"
+assert_rc 64 "7 two selectors rc 64"
 assert_err_has "only one PR selector" "7 selector message"
+assert_verdict 64 "7 verdict line on two selectors"
 
 # 8 — selector passed through to gh as an exact token (not a prefix match)
 run red 123
@@ -946,7 +967,7 @@ assert_err_has "CHECK_CI_POLL_INTERVAL" "13 poll fallback warning"
 
 # 14 — non-numeric settle
 run red --settle later
-assert_rc 2 "14 non-numeric settle rc 2"
+assert_rc 64 "14 non-numeric settle rc 64"
 assert_err_has "--settle must be a non-negative integer" "14 settle validation message"
 
 # 15 — --threads-only: thread gate runs, checks watch does not
@@ -2095,13 +2116,15 @@ fi
 
 # 94 — --max-wait validation: non-integer
 run red --max-wait soon
-assert_rc 2 "94 non-numeric --max-wait rc 2"
+assert_rc 64 "94 non-numeric --max-wait rc 64"
 assert_err_has "--max-wait must be a non-negative integer" "94 max-wait validation message"
+assert_verdict 64 "94 verdict line on a bad --max-wait"
 
 # 95 — --max-wait validation: no value
 run red --max-wait
-assert_rc 2 "95 --max-wait with no value rc 2"
+assert_rc 64 "95 --max-wait with no value rc 64"
 assert_err_has "--max-wait needs a value" "95 max-wait needs-a-value message"
+assert_verdict 64 "95 verdict line on a missing --max-wait value"
 
 # 96 — early exit: the watch would otherwise block (the stub's --watch arm
 # sleeps), but --json bucket,name reports only a CodeRabbit-named row still
@@ -2664,5 +2687,5 @@ unset CR_CLI_MARKER
 
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 180 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 180"; exit 1; fi
+if [ "$COUNT" -ne 183 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 183"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1
