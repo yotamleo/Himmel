@@ -468,6 +468,12 @@ marker may be cleared only from evidence persisted by
    out of scope>'`. `--set reason=` is a different field from the `--reason`
    above — the gate reads the finding's `reason`, `--reason` only records why
    the ledger row changed.
+   A `disproved` verdict on a finding whose text names a shell or platform
+   (dash, bash, zsh, busybox, macOS, git-bash, ...) is refused with the generic
+   `--reason` alone: it needs your OWN measurement, written yourself, naming
+   each such shell with a version — `--set 'reason=measured on <shell>
+   <version>: <what it showed>'`. Run the check on the real binary; the
+   refusal prints this form.
 
    **An `amend` refusal is a real signal — never fall back to `finding`.** It
    exits non-zero when no matching row exists at that head, which means the

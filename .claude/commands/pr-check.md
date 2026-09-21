@@ -506,6 +506,12 @@ Steps:
    reads (`--set verdict=deferred --set deferred_to=HIMMEL-<n> --set
    'reason=<why out of scope>'`) — see the deferral paragraph below, whose
    `--set reason=` is a different field from `amend`'s own `--reason`.
+   A `disproved` verdict on a finding whose text names a shell or platform
+   (dash, bash, zsh, busybox, macOS, git-bash, ...) is refused with the generic
+   `--reason` alone: it needs your OWN measurement, written yourself, naming
+   each such shell with a version — `--set 'reason=measured on <shell>
+   <version>: <what it showed>'`. Run the check on the real binary; the
+   refusal prints this form.
 
    **`amend` refusing is a real signal — do not fall back to `finding`.** It
    exits non-zero when no matching finding exists at that head, which means the
