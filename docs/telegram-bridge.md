@@ -64,7 +64,8 @@ trigger one of these commands.
 running — it does not start a session. The bridge appends one line to that
 console's inbox file, `<bridge root>/consoles/<session-name>.md` (default
 `~/.claude/handover/bridge/consoles/`), and the console watches the file with
-a `Monitor` armed in its ACTION ZERO. Use the console's exact session name
+a `Monitor` armed in its ACTION ZERO (`console-kit/inbox-follow.sh`, which keeps
+a read cursor beside the file so a line is never lost across a re-arm). Use the console's exact session name
 (`ListAgents`, or the name it printed at launch).
 
 - **Who:** only the `allowFrom` operator, in an allowed chat, with a typed (not

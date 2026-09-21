@@ -75,33 +75,46 @@ const safe = (s, n = Infinity) => esc(clip(redact(String(s)), n));
 // ---------------------------------------------------------------- console doc
 const docText = readFileSync(docPath, 'utf8');
 const docLines = docText.split('\n');
-const section = (title) => {
+// A section runs from its heading to the next `## ` heading -- never past it. The
+// tick reads `## Live state` by exact heading, so `exact` mirrors that.
+const sectionOf = (lines, title, exact = false) => {
     const out = [];
     let on = false;
-    for (const l of docLines) {
+    for (const l of lines) {
         if (on && /^## /.test(l)) break;
         if (on) out.push(l);
-        if (l === title || l.startsWith(`${title} `)) on = true;
+        if (l === title || (!exact && l.startsWith(`${title} `))) on = true;
     }
     return out;
 };
-const live = section('## Live state');
+const section = (title, exact) => sectionOf(docLines, title, exact);
+const live = section('## Live state', true);
 const liveField = (key) => {
     const l = live.find((x) => x.startsWith(`${key}:`));
     return l ? l.slice(key.length + 1).trim() : '';
 };
-// The legs: BLOCK -- the `legs:` line plus the lines wrapped under it, up to the
-// first blank line or the next `word:` field. Only the leg LABEL is kept.
-const liveLabels = [];
+// The legs: BLOCK, read by tick.sh's own grammar (HIMMEL-3366): every `legs:` line
+// plus the lines wrapped under it, up to the first blank line, the next `word:`
+// field, or a list-marker / `>` / `#` line (a detail bullet may quote a span
+// freely). An entry is a backtick span of exactly four non-empty colon fields
+// `<label>:<nonce>:<lock-token>:<pid>`, no whitespace, the label all
+// LEG_LABEL_CLASS (scripts/lib/leg-identity.sh: letters, digits, `_`, `.`, `-`),
+// so a leg doc stem parses too. Only the label and the nonce are kept: the nonce
+// picks the leg's doc among docs sharing a label, and is never rendered.
+// ponytail: a malformed span (tick reports it MALFORMED by label) is not an entry
+// here, so a leg named only by one is missing from the board's Live-state set.
+const LEG_LABEL_CLASS = /^[A-Za-z0-9_.-]+$/;
+const liveEntries = [];
 {
     let inBlock = false;
     for (const l of live) {
         if (/^legs:/.test(l)) inBlock = true;
-        else if (inBlock && (l.trim() === '' || /^[A-Za-z][A-Za-z ]*:/.test(l))) inBlock = false;
+        else if (inBlock && (/^\s*$/.test(l) || /^[A-Za-z][A-Za-z ]*:/.test(l) || /^\s*([-*+]|\d+[.)])\s/.test(l) || /^\s*[>#]/.test(l))) inBlock = false;
         if (!inBlock) continue;
-        for (const m of l.matchAll(/`([^`]+)`/g)) {
-            const label = m[1].split(':')[0];
-            if (/^N\d+[a-z]*$/.test(label) && !liveLabels.includes(label)) liveLabels.push(label);
+        for (const m of l.matchAll(/`([^`]*)`/g)) {
+            const f = m[1].split(':');
+            if (/\s/.test(m[1]) || f.length !== 4 || f.some((x) => !x) || !LEG_LABEL_CLASS.test(f[0])) continue;
+            liveEntries.push({ stem: f[0], nonce: f[1] });
         }
     }
 }
@@ -115,30 +128,56 @@ const lastGo = liveField('last GO').replace(/`/g, '');
 const consoleResults = section('## Results').filter((l) => l.startsWith('- ')).slice(-8);
 
 // ---------------------------------------------------------------- leg docs
-const labelOf = (file) => (/-(N\d+[a-z]*)-/.exec(basename(file)) || [])[1];
+// A leg's label comes from leg-identity.sh, the ONE derivation the tick uses for
+// leg docs and its own legs= (a local regex here is how the two drift). One bash
+// call labels every name.
+const LEGID = join(HERE, '..', '..', 'lib', 'leg-identity.sh');
+const legLabel = new Map();
+const primeLabels = (names) => {
+    const todo = [...new Set(names)].filter((n) => !legLabel.has(n));
+    if (!todo.length) return;
+    let out = '';
+    try {
+        out = execFileSync('bash', ['-c', 'source "$1" || exit 1; shift; for s in "$@"; do leg_label "$s"; printf "\\n"; done', 'bash', LEGID, ...todo],
+            { encoding: 'utf8', timeout: 30000, stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch { /* no labels: the docs read as unlabelled and are skipped */ }
+    const lines = out.split('\n');
+    todo.forEach((n, i) => legLabel.set(n, lines[i] || ''));
+};
+const labelOf = (name) => legLabel.get(name) || '';
 const ticketOf = (file) => (/^([A-Z][A-Z0-9]*-\d+)/.exec(basename(file)) || [])[1] || '';
 const newer = (a, b) => (statSync(a).mtimeMs >= statSync(b).mtimeMs ? a : b);
 let legFiles;
 if (opt.legs !== undefined) {
     legFiles = opt.legs.split(/[\s,]+/).filter(Boolean).map((f) => resolve(f));
+    primeLabels([...liveEntries.map((e) => e.stem), ...legFiles.map((f) => basename(f))]);
 } else {
+    const docs = readdirSync(bucket).filter((f) => f.endsWith('-RESUME.md'));
+    primeLabels([...liveEntries.map((e) => e.stem), ...docs]);
+    // One doc per Live-state entry, from the leg's identity: the doc its stem names,
+    // else -- among docs sharing the label -- the one holding the entry's nonce,
+    // else the newest by mtime (a label alone cannot tell two consoles' N1 apart).
     const byLabel = new Map();
-    for (const f of readdirSync(bucket)) {
-        if (!f.endsWith('-RESUME.md')) continue;
-        const label = labelOf(f);
-        if (!label || !liveLabels.includes(label)) continue;
-        const full = join(bucket, f);
-        byLabel.set(label, byLabel.has(label) ? newer(byLabel.get(label), full) : full);
+    for (const e of liveEntries) {
+        const label = labelOf(e.stem);
+        if (!label || byLabel.has(label)) continue;
+        const exact = docs.find((f) => f === `${e.stem}.md` || f === `${e.stem}-RESUME.md`);
+        const cands = docs.filter((f) => labelOf(f) === label).map((f) => join(bucket, f));
+        // The nonce must stand alone as a token: a longer token that merely starts with it is another leg's.
+        const tokenRe = new RegExp(`(?<![A-Za-z0-9_.-])${e.nonce.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_.-])`);
+        const holders = cands.filter((f) => tokenRe.test(readFileSync(f, 'utf8')));
+        const pool = holders.length ? holders : cands;
+        const doc = exact ? join(bucket, exact) : (pool.length ? pool.reduce(newer) : null);
+        if (doc) byLabel.set(label, doc);
     }
     legFiles = [...byLabel.values()];
 }
+const liveLabels = [...new Set(liveEntries.map((e) => labelOf(e.stem)).filter(Boolean))];
 const legInfo = new Map();
 for (const f of legFiles) {
-    const label = labelOf(f);
+    const label = labelOf(basename(f));
     if (!label || !existsSync(f)) continue;
-    const lines = readFileSync(f, 'utf8').split('\n');
-    const i = lines.findIndex((l) => /^## Results/.test(l));
-    const bullets = lines.slice(i < 0 ? lines.length : i + 1).filter((l) => l.startsWith('- '));
+    const bullets = sectionOf(readFileSync(f, 'utf8').split('\n'), '## Results').filter((l) => l.startsWith('- '));
     let pr = null;
     for (const b of bullets) {
         const m = /\bPR\s*#?(\d{2,})\b/.exec(b) || /\bREADY\s+#?(\d{2,})\s+[0-9a-f]{7,}/.exec(b)
@@ -179,12 +218,14 @@ const fleetOk = Number.isFinite(fleetLive) && Number.isFinite(fleetCap) && fleet
 const idle = fleetOk ? Math.max(0, fleetCap - fleetLive) : 0;
 
 // ---------------------------------------------------------------- gh
-const gh = (ghArgs) => {
+const ghJson = (ghArgs) => {
     try {
-        const out = execFileSync('gh', ghArgs, { cwd: repo, encoding: 'utf8', timeout: 45000, stdio: ['ignore', 'pipe', 'ignore'] });
-        const v = JSON.parse(out);
-        return Array.isArray(v) ? v : null;
+        return JSON.parse(execFileSync('gh', ghArgs, { cwd: repo, encoding: 'utf8', timeout: 45000, stdio: ['ignore', 'pipe', 'ignore'] }));
     } catch { return null; }
+};
+const gh = (ghArgs) => {
+    const v = ghJson(ghArgs);
+    return Array.isArray(v) ? v : null;
 };
 const openPrs = gh(['pr', 'list', '--state', 'open', '--limit', '100', '--json', 'number,title,headRefName,isDraft,statusCheckRollup']);
 const since = new Date(Date.now() - 86400e3).toISOString().slice(0, 19) + 'Z';
@@ -196,6 +237,8 @@ const epics = epicsDeclared.map((e) => {
 });
 const ciOf = (pr) => {
     const rollup = (pr && pr.statusCheckRollup) || [];
+    // No checks reported yet is not a green build: it reads pending.
+    if (!rollup.length) return 'pending';
     // A rollup mixes CheckRuns (status + conclusion) and StatusContexts (state only).
     const verdict = (c) => c.conclusion || c.state || '';
     if (rollup.some((c) => ['FAILURE', 'ERROR', 'TIMED_OUT', 'CANCELLED', 'STARTUP_FAILURE'].includes(verdict(c)))) return 'failing';
@@ -203,7 +246,16 @@ const ciOf = (pr) => {
     return 'green';
 };
 const openByNum = new Map((openPrs || []).map((p) => [p.number, p]));
+// Merge state is asked of each PR a leg names (`gh pr view`), not read off the
+// 24 h merged panel: a leg whose PR merged yesterday must still read MERGED.
+// ponytail: a PR gh cannot answer for (gh down, not a PR of this repo) reads not
+// merged, so its leg falls back to LIVE / READY.
 const mergedNums = new Set((mergedPrs || []).map((p) => p.number));
+for (const n of new Set([...legInfo.values()].map((i) => i.pr).filter(Boolean))) {
+    if (openByNum.has(n) || mergedNums.has(n)) continue;
+    const v = ghJson(['pr', 'view', String(n), '--json', 'state']);
+    if (v && v.state === 'MERGED') mergedNums.add(n);
+}
 
 // ---------------------------------------------------------------- phases
 const LADDER = ['LIVE', 'READY-TO-OPEN', 'PR open', 'READY', 'BLOCKED', 'MERGED', 'WRAPPED'];
@@ -238,9 +290,10 @@ const legCard = (l) => `<li class="leg" data-label="${esc(l.label)}" data-phase=
 const ladder = LADDER.map((p) => `<li data-ladder="${esc(p)}" data-count="${legs.filter((l) => l.phase === p).length}"><span>${esc(p)}</span><b>${legs.filter((l) => l.phase === p).length}</b></li>`).join('\n');
 const needRows = legs.filter((l) => l.needs).map((l) => {
     const why = l.phase === 'READY' ? `READY${l.prNum ? ` · PR #${l.prNum}` : ''} — awaiting GO`
-        : l.phase === 'BLOCKED' ? 'BLOCKED — needs a ruling'
-            : l.tail === 'FINDING' ? 'FINDING — needs a ruling'
-                : `lock ${l.lock} — lost or stale`;
+        : l.phase === 'READY-TO-OPEN' ? 'READY-TO-OPEN — awaiting PR open'
+            : l.phase === 'BLOCKED' ? 'BLOCKED — needs a ruling'
+                : l.tail === 'FINDING' ? 'FINDING — needs a ruling'
+                    : `lock ${l.lock} — lost or stale`;
     return `<li data-need="${esc(l.label)}"><b>${esc(l.label)}</b> ${esc(why)}<div class="leg-last">${safe(l.last, 160)}</div></li>`;
 }).join('\n');
 const epicRows = epics.map((e) => {

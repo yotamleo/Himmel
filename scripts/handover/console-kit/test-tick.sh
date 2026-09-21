@@ -1204,6 +1204,30 @@ if command -v node >/dev/null 2>&1; then
     # A leg tail change (READY) is a phase change: republish.
     printf '%s\n' '- 12:30 READY 1023 abc GREEN' >> "$W/handover/$b3361.md"
     contains 'a leg phase change stales the board (HIMMEL-3361)' "$(t3361)" ' board=STALE:'
+    # --- HIMMEL-3366: one Live-state block, read by tick.sh and by board.mjs, names
+    # the same legs. RED control (pre-fix board.mjs): its own parser accepted a
+    # three-field span (N4), an empty-field span (N5), a span in a `>` line (N8) and
+    # a detail bullet (N6), and rejected a label with _ . - (N3_x.y-z). The tick
+    # reads no --legs here, so every Live-state entry is `unarmed=` and the board,
+    # given no leg docs, lists exactly its Live-state labels.
+    # shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+    printf '%s\n' '# console' '' '## Live state' '' \
+        'legs: `N1:J-N1-0a1b2c9d:cachyos-x8664-pid1001:1001` a note `procs:2` `N2b:J-N2b-0a1b2c9d:cachyos-x8664-pid1002:1002`' \
+        '  `N3_x.y-z:J-N3-0a1b2c9d:cachyos-x8664-pid1003:1003` `N4:J-N4-0a1b2c9d:cachyos-x8664-pid1004` `N5::J-N5-0a1b2c9d:1005`' \
+        '> quoted `N8:J-N8-0a1b2c9d:cachyos-x8664-pid1008:1008` after a > terminator' \
+        'legs: `N7:J-N7-0a1b2c9d:cachyos-x8664-pid1007:1007`' \
+        '- detail `N6:J-N6-0a1b2c9d:cachyos-x8664-pid1006:1006` under the block' \
+        'queue: none' 'last GO: none' 'acked: none' '' '## Results' '- 12:00 DISPATCH' \
+        > "$W/handover/console.md"
+    tickset3366="$(PATH="$W/bin-3361:$PATH" bash "$SUT" --doc "$W/handover/console.md" | sed -n 's/.* legset=STALE:unarmed=\([^ ;]*\).*/\1/p' | tr '+' '\n' | sort)"
+    PATH="$W/bin-3361:$PATH" BOARD_TICK="$SUT" node "$HERE/board.mjs" --doc "$W/handover/console.md" --repo "$REPO" >/dev/null 2>&1
+    boardset3366="$(grep -o 'data-label="[^"]*"' "$W/handover/console-board.html" | sed 's/^data-label="//; s/"$//' | sort)"
+    contains 'the tick reads a label with _ . - as a leg (HIMMEL-3366)' "$tickset3366" 'N3_x.y-z'
+    if [ -n "$tickset3366" ] && [ "$tickset3366" = "$boardset3366" ]; then
+        pass 'tick.sh and board.mjs read one Live-state block as the same leg set (HIMMEL-3366)'
+    else
+        fail "tick.sh and board.mjs read different leg sets (tick: $(printf '%s' "$tickset3366" | tr '\n' ' ') board: $(printf '%s' "$boardset3366" | tr '\n' ' '))"
+    fi
 else
     printf 'SKIP - board round-trip (node not installed)\n'
 fi

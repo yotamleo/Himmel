@@ -1106,8 +1106,11 @@ replays your wizard answers on a `--from-profile` run; this one is the
 runtime config document the luna/bridge subsystems themselves read. Writes
 are atomic (write-to-temp, validate, rename) and keep one timestamped `.bak`.
 
-Schema v1 — every object node is a **closed shape** (an unknown key is a
-validation error); only a schedule's `day` is optional:
+Schema v1 — these are the fields himmelctl manages; only a schedule's `day`
+is optional. A key **not** in this table (top level or nested) is yours: an
+install keeps it untouched and prints one `WARN` naming it — it never fails
+the install (HIMMEL-3349). A value of the **wrong type** for a field below is
+still refused:
 
 | field | type | default |
 |---|---|---|
@@ -1135,6 +1138,18 @@ unsupplied section (a contributor run, or an adopter who answered
 `vault=none` and so never saw these questions) is left exactly as loaded on
 disk, never coerced to a default; the write is skipped entirely when nothing
 changed.
+
+**Older or hand-trimmed files are migrated, not rejected** (HIMMEL-3349). If
+the file lacks any field in the table, the install fills each missing field
+from the default above (or from this run's own wizard answer, where it asked),
+after backing the file up byte-exact to `config.json.bak-<timestamp>` and
+recording that backup in the install provenance ledger. It prints one
+`himmelctl: migrated ~/.himmel/config.json: <field> = <value> (default | wizard answer)`
+line per field. A value you set is never dropped or rewritten, known key or
+not. A second run finds nothing missing, so it writes nothing and makes no
+second backup; `--dry-run` reports the migration and writes nothing. A file
+that is not valid JSON is refused and left untouched — the error names the
+hand-fix command (`cp <file> <file>.hand-fix.bak && $EDITOR <file>`).
 
 **Precedence** (governs `WHISPER_CLI` / `WHISPER_MODEL` / `TELEGRAM_ENV`): a
 process environment variable overrides the configured value, which overrides

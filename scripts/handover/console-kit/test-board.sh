@@ -43,10 +43,12 @@ printf '%s\n' 'board-fp=deadbeefdeadbeef'
 STUB
 chmod +x "$W/bin/tick-stub"
 
-# gh stub: open PRs, merged PRs (this shift, and the per-epic search) from files.
+# gh stub: open PRs, merged PRs (this shift, and the per-epic search) and per-PR
+# `pr view` state from files.
 cat > "$W/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 case "$*" in
+    "pr view "*) [ -f "$GH_VIEW/$3.json" ] && cat "$GH_VIEW/$3.json" || exit 1 ;;
     *"--state open"*) cat "$GH_OPEN" ;;
     *"--state merged"*"in:title"*) cat "$GH_EPIC" ;;
     *"--state merged"*) cat "$GH_MERGED" ;;
@@ -60,7 +62,8 @@ cat > "$W/open.json" <<'JSON'
  {"number":2001,"title":"feat(x): [HIMMEL-3332] slice S3","headRefName":"feat/himmel-3332-s3","isDraft":false,
   "statusCheckRollup":[{"conclusion":"SUCCESS","status":"COMPLETED"},{"conclusion":"SUCCESS","status":"COMPLETED"},{"state":"SUCCESS"}]},
  {"number":2002,"title":"feat(y): [HIMMEL-3340] verdict bar","headRefName":"feat/himmel-3340-bar","isDraft":false,
-  "statusCheckRollup":[{"conclusion":"FAILURE","status":"COMPLETED"},{"conclusion":"","status":"IN_PROGRESS"}]}
+  "statusCheckRollup":[{"conclusion":"FAILURE","status":"COMPLETED"},{"conclusion":"","status":"IN_PROGRESS"}]},
+ {"number":2003,"title":"feat(v): [HIMMEL-3380] no checks yet","headRefName":"feat/himmel-3380","isDraft":false,"statusCheckRollup":[]}
 ]
 JSON
 cat > "$W/merged.json" <<'JSON'
@@ -77,6 +80,12 @@ cat > "$W/epic.json" <<'JSON'
 ]
 JSON
 
+# `gh pr view` answers for PRs the merged-this-shift panel does not list: 1700 merged
+# long ago (outside the 24 h window), 1701 closed unmerged.
+mkdir -p "$W/view"
+printf '%s\n' '{"state":"MERGED"}' > "$W/view/1700.json"
+printf '%s\n' '{"state":"CLOSED"}' > "$W/view/1701.json"
+
 # Leg docs: the ticket key is the doc's leading token, the label its N<k>.
 mkleg() {  # mkleg <name> <bullet>...
     local name="$1"; shift
@@ -85,12 +94,28 @@ mkleg() {  # mkleg <name> <bullet>...
 # A lock token that straddles the 220-char clip must not survive as a fragment.
 pad190="$(printf '%190s' '' | tr ' ' x)"
 mkleg HIMMEL-3340-N1-alpha "- 12:00 LIVE — working ${pad190:0:176} lock cachyos-x8664-pid424242 after"
-mkleg HIMMEL-3340-N2-beta '- 12:00 LIVE — PR 2002 open, watching CI'
+# A later section's bullet naming another (merged) PR must not overwrite the leg's PR.
+printf '%s\n' '# leg' '## Results' '- 12:00 LIVE — PR 2002 open, watching CI' '' '## Notes' \
+    '- 13:00 unrelated later-section bullet: see PR 1990 merged' \
+    > "$B/HIMMEL-3340-N2-beta-2026-09-21-RESUME.md"
 mkleg HIMMEL-3332-N3-gamma '- 12:00 LIVE — building' '- 12:10 READY 2001 0123456789abcdef GREEN'
 mkleg HIMMEL-3348-N4-delta '- 12:00 LIVE — PR 1995 was merged'
 mkleg HIMMEL-3300-N5-eps '- 12:00 WRAPPED — released'
 mkleg HIMMEL-3350-N6-zeta '- 12:00 READY-TO-OPEN — /pr-check clean, not opened'
 mkleg HIMMEL-3351-N7-eta '- 12:00 BLOCKED — the push was refused <script>alert(1)</script>'
+mkleg HIMMEL-3370-N8-theta '- 12:00 LIVE — PR 1700 open, watching CI'
+mkleg HIMMEL-3371-N9-iota '- 12:00 LIVE — PR 1701 open, watching CI'
+# Two docs share a label; Live state names one by doc stem (N18) or by nonce (N19).
+# The newer-by-mtime doc is the wrong one in both.
+mkleg HIMMEL-3375-N18-iota '- 12:00 LIVE — the right doc'
+mkleg HIMMEL-9998-N18-other '- 12:00 LIVE — a previous shift reused this label'
+# shellcheck disable=SC2016  # backtick token, literal fixture text
+printf '%s\n' '# leg' '> RETASK token `V-N19-cafe1919`' '## Results' '- 12:00 LIVE — the right doc' \
+    > "$B/HIMMEL-3376-N19-kappa-2026-09-21-RESUME.md"
+# The wrong doc quotes a LONGER token that merely starts with the entry nonce.
+# shellcheck disable=SC2016  # backtick token, literal fixture text
+mkleg HIMMEL-9997-N19-old '- 12:00 LIVE — a previous shift reused this label, token `V-N19-cafe1919zz`'
+touch -d '2 hours ago' "$B/HIMMEL-3375-N18-iota-2026-09-21-RESUME.md" "$B/HIMMEL-3376-N19-kappa-2026-09-21-RESUME.md"  # gnu-ok: console kit is Linux-only
 
 # The console doc: legs carry nonces + lock tokens (which must never reach the
 # board); a Results bullet quotes both again in prose.
@@ -104,6 +129,14 @@ printf '%s\n' '# console' '' '## Live state' '' \
     '  `N5:V-N5-9999aaaa:cachyos-x8664-pid555555:555`' \
     '  `N6:V-N6-eeee5555:cachyos-x8664-pid666666:666`' \
     '  `N7:V-N7-ffff6666:cachyos-x8664-pid777777:777`' \
+    '  `N8:V-N8-aaaa0808:cachyos-x8664-pid808080:808`' \
+    '  `N9:V-N9-bbbb0909:cachyos-x8664-pid909090:909`' \
+    '  `N16_x.y-z:V-N16-aaaa1616:cachyos-x8664-pid161616:1616`' \
+    '  `N15:V-N15-aaaa1515:cachyos-x8664-pid151515`' \
+    '  `N17:V-N17-aaaa1717::1717`' \
+    '  `HIMMEL-3375-N18-iota-2026-09-21-RESUME:V-N18-aaaa1818:cachyos-x8664-pid181818:1818`' \
+    '  `N19:V-N19-cafe1919:cachyos-x8664-pid191919:1919`' \
+    '- detail `N13:V-N13-aaaa1313:cachyos-x8664-pid131313:1313` is under the block, not in it' \
     'queue: N1 (3340), N2 (3340)' \
     'last GO: `1022:a87f5d946d8b4002ae9641864f82cffb1ac8a4b7`' \
     'acked: none' \
@@ -118,7 +151,7 @@ printf '%s\n' '# console' '' '## Live state' '' \
 
 run() {  # run <extra args...> -- prints board.mjs stdout; rc in $rc
     PATH="$W/bin:$PATH" BOARD_TICK="$W/bin/tick-stub" TICK_ARGV_LOG="$W/argv.log" \
-        GH_OPEN="$W/open.json" GH_MERGED="$W/merged.json" GH_EPIC="$W/epic.json" \
+        GH_OPEN="$W/open.json" GH_MERGED="$W/merged.json" GH_EPIC="$W/epic.json" GH_VIEW="$W/view" \
         node "$SUT" --doc "$DOC" --repo "$W/repo" "$@" 2>"$W/stderr.log"
 }
 
@@ -132,7 +165,7 @@ fi
 html="$(cat "$board" 2>/dev/null)"
 
 # --- secrets: a board is published to a URL, so no nonce or lock token may reach it
-for secret in aaaa1111 bbbb2222 cccc3333 dddd4444 eeee5555 ffff6666 pid111111 pid222222 pid333333 pid830420 pid4242 'V-N1-' 'x8664' abcdef12 cafe0123 'AA-N1-'; do
+for secret in aaaa1111 bbbb2222 cccc3333 dddd4444 eeee5555 ffff6666 pid111111 pid222222 pid333333 pid830420 pid4242 'V-N1-' 'x8664' abcdef12 cafe0123 'AA-N1-' aaaa0808 bbbb0909 aaaa1616 aaaa1313 aaaa1818 cafe1919 pid808080 pid181818; do
     lacks "no nonce/lock-token text in the board: $secret" "$html" "$secret"
 done
 contains 'the legs are named by label' "$html" 'data-label="N3"'
@@ -188,6 +221,27 @@ out="$(TICK_STUB_FAIL=1 run)"; rc=$?
 contains 'a failing tick still renders a board (rc 0)' "rc=$rc" 'rc=0'
 contains 'and says the tick was unavailable' "$(cat "$board")" 'tick unavailable'
 lacks 'and embeds no fingerprint that would read ok' "$(cat "$board")" 'name="console-board-fp" content="deadbeef'
+
+# --- HIMMEL-3366: the follow-ups deferred from the first board
+# Results parse is section-bounded: a later section's bullet is not the leg's Results.
+lacks "a later section's bullet is not the leg's last Results bullet" "$html" 'unrelated later-section'
+# Merged detection reads the PR itself, not the 24 h merged panel.
+contains 'a PR merged outside the 24 h panel still reads MERGED (gh pr view)' "$html" 'data-label="N8" data-phase="MERGED"'
+contains 'a closed-unmerged PR does not read MERGED' "$html" 'data-label="N9" data-phase="LIVE"'
+# READY-TO-OPEN says what it is waiting for, not "lost lock".
+contains 'a READY-TO-OPEN leg is explained as awaiting the PR open' "$html" 'awaiting PR open'
+lacks 'a READY-TO-OPEN leg with a fresh lock is not called lost or stale' "$html" 'lock FRESH — lost or stale'
+# A PR with no checks yet is not green.
+contains 'an empty check rollup reads pending, not green' "$html" '<li data-ci="pending"><b>#2003</b>'
+# The legs: block reads exactly as tick.sh's grammar: four non-empty fields, the
+# tick's label class, every terminator.
+contains 'a label with _ . - is a leg (tick label class)' "$html" 'data-label="N16_x.y-z"'
+lacks 'a detail bullet under the block adds no phantom leg' "$html" 'data-label="N13"'
+lacks 'a three-field span is not an entry' "$html" 'data-label="N15"'
+lacks 'a span with an empty field is not an entry' "$html" 'data-label="N17"'
+# Leg-doc discovery follows the leg's identity, not label + mtime alone.
+contains 'a doc stem in Live state resolves that exact doc' "$html" '<b>N18</b> <span class="tk">HIMMEL-3375</span>'
+contains 'a reused label resolves to the doc holding the entry nonce' "$html" '<b>N19</b> <span class="tk">HIMMEL-3376</span>'
 
 # --- usage
 PATH="$W/bin:$PATH" node "$SUT" >/dev/null 2>&1; rc=$?
