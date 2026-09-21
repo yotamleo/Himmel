@@ -105,6 +105,9 @@ rest="${result#*$'\n'}"
 cwd_json="${rest%%$'\n'*}"
 cwd_json="${cwd_json%$'\r'}"
 cmd="${rest#*$'\n'}"
+# A CR is never part of a path a leg means to type: a CRLF payload would glue
+# one onto the script name and hide it from the classifier.
+cmd="${cmd//$'\r'/}"
 
 case "$tool" in Bash|"") ;; *) exit 0 ;; esac
 
