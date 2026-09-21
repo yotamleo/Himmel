@@ -1599,7 +1599,8 @@ literal_replace "$DIR/pr-check-context.sh" "$wt35/scripts/cr/pr-check-context.sh
   cd "$wt35" || exit 1
   git add -A
   git commit -q -m "weaken the branch's own scripts/cr/pr-check-context.sh"
-)
+) || { echo "FAIL: T35 could not commit the weakened copy"; fail=1; }
+check "$(cd "$wt35" && git diff --name-only main HEAD)" "scripts/cr/pr-check-context.sh" "T35 diff touches only the weakened pr-check-context.sh"
 head35="$(cd "$wt35" && git rev-parse HEAD)"
 wt35_toplevel="$(cd "$wt35" && git rev-parse --show-toplevel)"
 out35="$(cd "$wt35" && HIMMEL_REPO="$anchor35" bash scripts/cr/pr-check-context.sh 2>"$tmp/t35.err")"
@@ -1647,7 +1648,8 @@ wt35c="$tmp/fake-himmel-relative-clean"
   printf 'x\n' > notes.txt
   git add -A
   git commit -q -m "no scripts/cr change"
-)
+) || { echo "FAIL: T35c could not commit the setup change"; fail=1; }
+check "$(cd "$wt35c" && git diff --name-only main HEAD)" "notes.txt" "T35c diff touches only notes.txt"
 out35c="$(cd "$wt35c" && HIMMEL_REPO="$anchor35" bash scripts/cr/pr-check-context.sh 2>/dev/null)"
 check "$?" "0" "T35c rc (relative entry, clean diff)"
 check "$(get_kv "$out35c" delegated)" "no" "T35c delegated=no"
@@ -1681,7 +1683,7 @@ wt35e="$tmp/fake-himmel-libsh-wt"
   git add -A
   git commit -q -m "lib.sh reassigns HIMMEL_REPO"
 ) || { echo "FAIL: T35e could not commit the lib.sh edit"; fail=1; }
-check "$(cd "$wt35e" && git diff --name-only main)" "scripts/guardrails/lib.sh" "T35e diff touches only lib.sh"
+check "$(cd "$wt35e" && git diff --name-only main HEAD)" "scripts/guardrails/lib.sh" "T35e diff touches only lib.sh"
 out35e="$(cd "$wt35e" && HIMMEL_REPO="$anchor35e" bash scripts/cr/pr-check-context.sh 2>"$tmp/t35e.err")"
 check "$?" "0" "T35e rc (relative entry, lib.sh-only diff)"
 check "$(get_kv "$out35e" anchor_lane)" "himmel" "T35e anchor_lane=himmel - HIMMEL_REPO still names the anchor"
