@@ -3,9 +3,10 @@
 # test-e2e-symmetry.sh -- END-TO-END install -> uninstall roundtrip for the
 # settings.json wiring (HIMMEL-469). Unlike the hermetic unit suites (which test
 # one helper in isolation), this drives the REAL setup `[9/10]` wire sequence and
-# the REAL `uninstall.sh [6/8]` against a sandbox settings.json, then asserts the
-# round trip leaves it byte-clean of himmel wiring while preserving the operator's
-# own keys.
+# the REAL `uninstall.sh [6/8]` against a sandbox HOME (a scratch dir the suite
+# makes and exports as $HOME -- never the operator's), then asserts the round trip
+# leaves its settings.json byte-clean of himmel wiring while preserving the
+# operator's own keys.
 #
 # jq-only (no git / node / bun) -- runs on a bare test VM and in CI, not just on a
 # full himmel install. This is the foundation the VM harness uses for uninstall
@@ -24,8 +25,19 @@ command -v jq >/dev/null 2>&1 || { echo "test-e2e-symmetry: jq required" >&2; ex
 td="$(mktemp -d)"
 trap 'rm -rf "$td"' EXIT
 HIMMEL_FAKE="C:/fake/himmel"             # stand-in clone path (string only)
-SETTINGS="$td/home/.claude/settings.json"
-mkdir -p "$(dirname "$SETTINGS")"
+# HIMMEL-3336: a scratch HOME for the whole run. The uninstall manifest rows for
+# ~/.claude/CLAUDE.md, ~/.codex/AGENTS.md and the claude-hud config carry no
+# override env var -- they resolve {HOME} -- so redirecting HIMMEL_USER_SETTINGS
+# alone left them pointing at the operator's real files, and a wet [6/8] deleted
+# them. CLAUDE_CONFIG_DIR is unset because the wire scripts honour it while
+# uninstall ignores it: left ambient it would split the two phases across homes.
+# The cwd moves too, so uninstall's {PWD} project-settings row cannot act on the
+# checkout the suite was launched from.
+export HOME="$td/home"
+unset CLAUDE_CONFIG_DIR
+SETTINGS="$HOME/.claude/settings.json"
+mkdir -p "$(dirname "$SETTINGS")" "$td/cwd"
+cd "$td/cwd" || exit 2
 
 # Seed a realistic pre-existing settings.json: the operator's OWN rtk guard +
 # a custom MCP allow that MUST survive the whole round trip.
@@ -57,16 +69,19 @@ check "install: rtk guard preserved" "$(jq -r '[.hooks.PreToolUse[].hooks[].comm
 check "install: MCP allow preserved" "$(jq -r '.permissions.allow[0]' "$SETTINGS")" "mcp__obsidian-vault__obsidian_simple_search"
 
 echo "==== PHASE UNINSTALL (the real uninstall.sh [6/8]) ===="
-# Drive the REAL uninstall.sh with the settings target redirected to the sandbox,
-# everything else skipped + non-interactive. Telegram/bridge/cache point at empty
-# temp dirs so steps 1-2-7 no-op — EVERY removal target lives under $td, never the
-# real $HOME (HIMMELCTL_CACHE_DIR was missing this before HIMMEL-2505 and would
-# have pointed [7/7] at the real ~/.claude/himmel). This runs against the real,
-# unspoofed $HOME (no HOME= override, unlike the hermetic unit suites), so it must
-# also pass HIMMEL_UNINSTALL_REAL_HOME=1 or uninstall.sh's own wet-run fence would
-# refuse it whenever this box's $HOME looks like a live operator profile.
+# Drive the REAL uninstall.sh against the sandbox HOME (set above), everything
+# else skipped + non-interactive. Telegram/bridge/cache point at empty temp dirs
+# so steps 1-2-7 no-op — EVERY removal target lives under $td, never the
+# operator's real $HOME (HIMMELCTL_CACHE_DIR was missing this before HIMMEL-2505
+# and would have pointed [7/7] at the real ~/.claude/himmel). HIMMEL_USER_SETTINGS
+# is still passed explicitly, but the sandbox HOME is what confines the rest of
+# [6/8]. HIMMEL_UNINSTALL_REAL_HOME is deliberately NOT set: the sandbox carries
+# no live-operator marker, so uninstall.sh's own wet-run fence stays armed as a
+# second layer — if HOME here ever named a real profile, the run is refused
+# (rc=3) and the "[6/8] ran" check below fails instead of deleting anything.
+# scripts/test-e2e-symmetry-isolation.sh proves this against an operator-shaped HOME.
 out=$(HIMMEL_USER_SETTINGS="$SETTINGS" TELEGRAM_CHANNEL_DIR="$td/none" BRIDGE_ROOT="$td/noneb" \
-  HIMMELCTL_CACHE_DIR="$td/nonec" HIMMEL_UNINSTALL_REAL_HOME=1 \
+  HIMMELCTL_CACHE_DIR="$td/nonec" \
   bash "$repo_root/scripts/uninstall.sh" --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1) || true
 
 printf '%s\n' "$out" | grep -q '\[6/8\] Unwiring' && check "uninstall: [6/8] ran" yes yes || check "uninstall: [6/8] ran" no yes
