@@ -58,9 +58,10 @@ if [ "$gone" -eq 1 ] && [ "$came" -eq 1 ] && grep -q "sub/b.txt" <<< "$shadiff";
 else fail_case "T2 home.sha differs by -$gone/+$came line(s): $shadiff"; fi
 
 out=$(INVDIFF_BASE=/tmp python3 "$DIFF" "$LA" "$LB" 2>&1)
+changed=$(sed -n '/CONTENT-CHANGED/,/^$/p' <<< "$out")   # captured, not piped into grep -q (pipefail)
 if grep -q 'added=0 removed=0 content-changed=1' <<< "$out" \
-   && sed -n '/CONTENT-CHANGED/,/^$/p' <<< "$out" | grep -qF "$FIXHOME/sub/b.txt" \
-   && ! sed -n '/CONTENT-CHANGED/,/^$/p' <<< "$out" | grep -qE 'a\.txt|c\.txt'; then
+   && grep -qF "$FIXHOME/sub/b.txt" <<< "$changed" \
+   && ! grep -qE 'a\.txt|c\.txt' <<< "$changed"; then
     pass "T3 invdiff.py names that one path (and only it) as content-changed"
 else fail_case "T3 invdiff output: $out"; fi
 
