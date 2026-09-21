@@ -129,6 +129,8 @@ summary() {
 
 TMP_ROOT=$(mktemp -d)
 if command -v cygpath >/dev/null 2>&1; then TMP_ROOT=$(cygpath -m "$TMP_ROOT"); fi
+# HIMMEL-3332 S8: arms record a provenance row; never into the operator's ledger.
+export HIMMEL_PROVENANCE_DIR="$TMP_ROOT/provenance"
 setup_dotenv_root
 
 # Shared fixtures ------------------------------------------------------------
@@ -506,6 +508,13 @@ assert_contains "himmel entry marker-tagged" "# HIMMEL-GraphMap-Himmel" "$tab"
 assert_contains "luna entry fires the runner"   "graphmap-luna.sh"   "$tab"
 assert_contains "himmel entry fires the runner" "graphmap-himmel.sh" "$tab"
 assert_contains "unrelated entry preserved" "keep-me" "$tab"
+# HIMMEL-3332 S8: every armed entry is recorded as a `job register` row.
+jobs=$( . "$SCRIPT_DIR/../lib/provenance.sh" && . "$SCRIPT_DIR/../lib/provenance-read.sh" && prov_read_load >/dev/null && prov_read_units --kind job | jq -r '"\(.unit) ours=\(.ours) scheduler=\(.fields.scheduler)"' | LC_ALL=C sort )
+assert_contains "arm recorded all four graphmap jobs (ours, cron)" \
+    "HIMMEL-GraphMap-Himmel ours=true scheduler=cron
+HIMMEL-GraphMap-Luna ours=true scheduler=cron
+HIMMEL-GraphMapAst-Himmel ours=true scheduler=cron
+HIMMEL-GraphMapAst-Luna ours=true scheduler=cron" "$jobs"
 assert_registry "cron arm registers both weekly graphmap flows" '[.flows[] | select((.name == "graphmap-luna" or .name == "graphmap-himmel") and .cadence_seconds == 604800)] | length == 2'
 assert_registry "cron arm registers both expected task names" '[.expected_tasks[] | select(. == "HIMMEL-GraphMap-Luna" or . == "HIMMEL-GraphMap-Himmel")] | length == 2'
 assert_registry "cron arm registers both ast graphmap flows" '[.flows[] | select(.name == "graphmap-ast-luna" or .name == "graphmap-ast-himmel")] | length == 2'

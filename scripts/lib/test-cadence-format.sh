@@ -230,6 +230,27 @@ else
 fi
 rm -rf "$_wsh_tmp"
 
+# HIMMEL-3332 S8: cadence_prov_record records a `job register` row (ours,
+# scheduler cron) and never fails an arm when the ledger cannot be written.
+_prov_tmp=$(mktemp -d)
+HIMMEL_PROVENANCE_DIR="$_prov_tmp/ledger" cadence_prov_record HIMMEL-Fmt-Probe; _prc=$?
+_prow=$(grep '"op":"register"' "$_prov_tmp/ledger/provenance.jsonl" 2>/dev/null)
+if [ "$_prc" -eq 0 ] && printf '%s' "$_prow" | grep -q '"unit":"HIMMEL-Fmt-Probe"' \
+    && printf '%s' "$_prow" | grep -q '"kind":"job"' && printf '%s' "$_prow" | grep -q '"scheduler":"cron"' \
+    && printf '%s' "$_prow" | grep -q '"preexisted":false'; then
+  pass=$((pass + 1)); echo "  ok: cadence_prov_record writes a job register row (cron, preexisted=false)"
+else
+  fail=$((fail + 1)); echo "  FAIL: cadence_prov_record row wrong (rc=$_prc): $_prow"
+fi
+: > "$_prov_tmp/blocker"
+_pwarn=$(HIMMEL_PROVENANCE_DIR="$_prov_tmp/blocker/ledger" cadence_prov_record HIMMEL-Fmt-Probe 2>&1 >/dev/null); _prc=$?
+if [ "$_prc" -eq 0 ] && printf '%s' "$_pwarn" | grep -q 'could not record provenance for HIMMEL-Fmt-Probe'; then
+  pass=$((pass + 1)); echo "  ok: cadence_prov_record warns but returns 0 when the ledger is unwritable"
+else
+  fail=$((fail + 1)); echo "  FAIL: cadence_prov_record must WARN and return 0 on an unwritable ledger (rc=$_prc, stderr: $_pwarn)"
+fi
+rm -rf "$_prov_tmp"
+
 echo
 echo "[test-cadence-format] pass=$pass fail=$fail"
 [ "$fail" -eq 0 ] || exit 1

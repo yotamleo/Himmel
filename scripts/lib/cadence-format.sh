@@ -522,3 +522,26 @@ cadence_runner_stamp() {
     printf '%s' "$min"
     return 0
 }
+
+# cadence_prov_record <task-marker>
+# HIMMEL-3332 S8: record a `job register` provenance row for the cron entry an
+# arm just installed, so a ledger-mode uninstall can remove exactly that line
+# (matched by its trailing ` # <marker>`) and nothing else. Call it only AFTER
+# the arm's cron_install succeeded. Best effort by design: an unwritable ledger
+# must never fail an arm, so it WARNs and returns 0. Runs in a subshell so
+# provenance.sh's functions and shell options never leak into the arm script.
+# ponytail: a --force re-arm over a crontab line the operator already had under
+# this same marker records preexisted=false, so uninstall will remove it; the
+# arms cannot tell a himmel-written line from a hand-written one of that name.
+cadence_prov_record() {
+    local marker="$1" lib
+    lib="$(dirname "${BASH_SOURCE[0]}")/provenance.sh"
+    [ -r "$lib" ] || return 0
+    # shellcheck source=scripts/lib/provenance.sh
+    if ! ( . "$lib" \
+            && prov_record register job - --unit "$marker" --scope user --class code \
+                --writer cadence-arm --field 'scheduler="cron"' --field preexisted=false ) >/dev/null 2>&1; then
+        echo "WARN cadence: could not record provenance for $marker (uninstall will not remove it)" >&2
+    fi
+    return 0
+}

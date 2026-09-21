@@ -2142,6 +2142,9 @@ cron_arm() {
     mv -f "$tmp_synth"  "$CRON_RUNNER_SYNTH"
     mv -f "$tmp_health" "$CRON_RUNNER_HEALTH"
     mv -f "$tmp_settings" "$SETTINGS_FRAGMENT"
+    for _t in "$TASK_FETCH_HEALTH" "$TASK_HARVEST" "$TASK_SYNTH" "$TASK_HEALTH"; do
+        cadence_prov_record "$_t"
+    done
 
     cat <<EOF
 

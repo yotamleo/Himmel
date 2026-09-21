@@ -1077,6 +1077,8 @@ cron_arm() {
         exit 4
     fi
     rm -rf "$snap_dir"
+    cadence_prov_record "$LEG_DRIFT"
+    cadence_prov_record "$LEG_RESYNC"
     arm_summary "crontab entry"
 }
 

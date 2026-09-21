@@ -1430,6 +1430,7 @@ cron_arm() {
         exit 4
     fi
     mv -f "$tmp_runner" "$CRON_RUNNER"
+    cadence_prov_record "$TASK_REINDEX"
 
     cat <<EOF
 
