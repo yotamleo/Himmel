@@ -205,27 +205,41 @@ fi
 # string handed to node as DISPROVAL_JS - the writer stays a single file.
 # ponytail: a bare name is refused even when it is not itself a measurement
 # ("the bash builtin `read`" beside "measured on bash 5.3"); the caller rewords
-# or versions it. The claim check compares NAMES, not versions: a finding about
-# bash 3.2 answered by "bash 5.3.15" passes, because the writer cannot tell
-# which version the claim was about.
+# or versions it.
+#
+# HIMMEL-3373: the claim check also compares VERSIONS. When the finding text
+# names a version for a shell, the evidence covers it iff it names the same
+# shell with a version whose major.minor equals the finding's (bash 3.2 <=
+# bash 3.2.57); a finding naming only a major (bash 3, bash 3.x) is covered by
+# any 3.x. Otherwise the evidence must carry an explicit `version-irrelevant:
+# <reason>`. Every version a finding names must be covered. A finding naming no
+# version keeps the name-only rule. scan() reports each occurrence's version as
+# `vers`: [major, minor] for a major.minor, [major, null] for a major alone.
+# ponytail: a major-only version is read from "<shell> 3" / "<shell> v3" /
+# "<shell> version 3" only, so "bash 3 times" reads as bash 3 - the caller
+# rewords or waives with version-irrelevant. Non-shell tools (git, grep) are
+# still out of reach.
 # shellcheck disable=SC2016  # JS source, not shell expansions
 DISPROVAL_JS='
   const NAMES = ["busybox ash","busybox sh","git-bash","busybox","freebsd","openbsd","netbsd","macos","darwin","bsd","msys","mingw","wsl","alpine","zsh","ksh","mksh","yash","posh","dash","bash","ash"];
-  const VER = "[^A-Za-z0-9]{0,3}(?:v|version )?[0-9]+\\.[0-9]+", PRE = "(?<![A-Za-z0-9_-])";
+  const VER = "[^A-Za-z0-9]{0,3}(?:v|version )?([0-9]+)\\.([0-9]+)", PRE = "(?<![A-Za-z0-9_-])";
+  const MAJOR = "(?:[ \\t]{1,2}(?:v|version )?([0-9]+)(?![0-9]|\\.[0-9]))?";
   const measured = (t) => /measured|probed|reproduc|empiric|re-?verified|tested (on|under|against)|(on|under) (a )?real/i.test(t);
   const scan = (t) => {
-    let rest = String(t || ""); const named = [], bare = [], versioned = [];
+    let rest = String(t || ""); const named = [], bare = [], versioned = [], vers = {};
     for (const n of NAMES) {
       const nm = n.replace(/ /g, "\\s+");
-      const re = new RegExp("(" + PRE + nm + VER + ")|(" + PRE + nm + "(?![A-Za-z0-9_-]))", "gi");
-      rest = rest.replace(re, (m, v) => {
+      const re = new RegExp("(" + PRE + nm + VER + ")|(" + PRE + nm + "(?![A-Za-z0-9_-])" + MAJOR + ")", "gi");
+      rest = rest.replace(re, (m, v, maj, min, b, bmaj) => {
         if (!named.includes(n)) named.push(n);
         const into = v ? versioned : bare;
         if (!into.includes(n)) into.push(n);
+        const ver = v ? [Number(maj), Number(min)] : (bmaj ? [Number(bmaj), null] : null);
+        if (ver) (vers[n] = vers[n] || []).push(ver);
         return " ";
       });
     }
-    return { named, bare, versioned };
+    return { named, bare, versioned, vers };
   };
 '
 disproval_bar_ok() {
@@ -818,12 +832,27 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
     if(set.verdict==="disproved"&&target.text){
       const claim=scan(target.text).named;
       if(claim.length){
-        const ev=scan(String(e.REASON||"")+" "+String(set.reason||""));
+        const evText=String(e.REASON||"")+" "+String(set.reason||"");
+        const ev=scan(evText);
         const missing=claim.filter(n=>!ev.versioned.includes(n)||ev.bare.includes(n));
         if(missing.length){
           process.stderr.write("ledger-append.sh: finding "+e.ID+" names "+claim.join(", ")+"; a disproved verdict on it must carry evidence naming each of them with a version - missing: "+missing.join(", ")
             +". Pass it in the evidence, e.g. --set 'reason=measured on "+missing[0]+" <version>: <what it showed>' (the generic --reason 'adjudicated by /pr-check step 4.5' is not evidence). NOTHING was written.\n");
           process.exit(2);
+        }
+        // HIMMEL-3373: a version the finding names must be covered by the evidence
+        // (same major.minor; a major-only finding version by any version of that
+        // major) unless the evidence states, with a reason, that it is irrelevant.
+        if(!/version-irrelevant:\s*\S/i.test(evText)){
+          const cf=scan(target.text), uncovered=[];
+          for(const n of claim) for(const [maj,min] of (cf.vers[n]||[])){
+            const ok=(ev.vers[n]||[]).some(([em,en])=>en!==null&&em===maj&&(min===null||en===min));
+            if(!ok) uncovered.push(n+" "+maj+(min===null?"":"."+min));
+          }
+          if(uncovered.length){
+            process.stderr.write("ledger-append.sh: finding "+e.ID+" names "+uncovered.join(", ")+"; a disproved verdict on it must carry evidence naming that shell at the same version (same major.minor) - evidence for a different version does not answer it. Measure the version the finding names, or state why it does not matter with 'version-irrelevant: <reason>' in the evidence. NOTHING was written.\n");
+            process.exit(2);
+          }
         }
       }
     }
