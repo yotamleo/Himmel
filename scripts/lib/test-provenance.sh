@@ -299,5 +299,15 @@ case "$(uname -s)" in
         ;;
 esac
 
+# a pre-existing group/world-readable ledger is tightened to 0600 by the next append
+rm -rf "$HIMMEL_PROVENANCE_DIR"; mkdir -p "$HIMMEL_PROVENANCE_DIR"; : > "$ledger"; chmod 644 "$ledger"
+prov_record register mcp - --unit m --post-json '"x"'
+check "existing 0644 ledger is tightened to 0600" "$(fmode "$ledger")" "600"
+
+# a symlink input records the TARGET's mode, like its sha and size (node follows it too)
+rm -rf "$HIMMEL_PROVENANCE_DIR"; printf 'abc' > "$w/tgt"; chmod 640 "$w/tgt"; ln -s "$w/tgt" "$w/lnk"
+prov_record create file "$w/dst" --post-file "$w/lnk"
+check "symlink --post-file records the target's mode" "$(last | jq -r .post.mode)" "0640"
+
 echo "$passes passed, $fails failed"
 [ "$fails" -eq 0 ]

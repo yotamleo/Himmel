@@ -84,7 +84,9 @@ function canonOrThrow(text, code) {
 
 const shaBuf = (b) => crypto.createHash('sha256').update(b).digest('hex');
 const shaText = (s) => shaBuf(Buffer.from(String(s), 'utf8'));
-const shaFile = (f) => shaBuf(fs.readFileSync(f));
+function shaFile(f) {
+  try { return shaBuf(fs.readFileSync(f)); } catch (e) { throw fail(`cannot read ${f}: ${e.message}`); }
+}
 const shaJson = (text) => shaText(canonOrThrow(text, 1));
 
 // ── paths ───────────────────────────────────────────────────────────────
@@ -155,8 +157,11 @@ function append(line) {
   try {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     let torn = false;
-    try {
-      const st = fs.statSync(file);
+    let st = null;
+    try { st = fs.statSync(file); } catch (_) { /* no ledger yet */ }
+    if (st) {
+      // the ledger holds pre/post values: a pre-existing group/world-readable one is tightened
+      if (process.platform !== 'win32' && (st.mode & 0o077)) fs.chmodSync(file, 0o600);
       if (st.size > 0) {
         const fd = fs.openSync(file, 'r');
         const b = Buffer.alloc(1);
@@ -164,7 +169,7 @@ function append(line) {
         fs.closeSync(fd);
         torn = b[0] !== 0x0a;
       }
-    } catch (_) { /* no ledger yet */ }
+    }
     fs.appendFileSync(file, (torn ? '\n' : '') + line + '\n', { mode: 0o600 });
   } catch (e) {
     throw fail(`cannot append to ${file}: ${e.message}`);

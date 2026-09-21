@@ -142,7 +142,7 @@ _prov_size() { wc -c < "$1" | tr -d ' '; }
 # _prov_mode <file> -- four-digit octal ("0644"), GNU stat first, then BSD.
 _prov_mode() {
     local m
-    m=$(stat -c %a "$1" 2>/dev/null) || m=$(stat -f %Lp "$1" 2>/dev/null) || return 1  # gnu-ok: BSD stat -f paired on the same line
+    m=$(stat -L -c %a "$1" 2>/dev/null) || m=$(stat -L -f %Lp "$1" 2>/dev/null) || return 1  # gnu-ok: BSD stat -f paired on the same line
     while [ "${#m}" -lt 4 ]; do m="0$m"; done
     printf '%s' "$m"
 }
@@ -166,6 +166,10 @@ _prov_append() {
     dir=$(prov_dir) || return 1
     ledger="$dir/provenance.jsonl"
     ( umask 077; mkdir -p "$dir" ) || { _prov_err "cannot create $dir"; return 1; }
+    # the ledger holds pre/post values: a pre-existing group/world-readable one is tightened
+    if [ -e "$ledger" ]; then
+        chmod 600 "$ledger" 2>/dev/null || { _prov_err "cannot restrict $ledger to 0600"; return 1; }
+    fi
     if [ -s "$ledger" ] && [ -n "$(tail -c1 "$ledger")" ]; then
         ( umask 077; printf '\n' >> "$ledger" ) || return 1
     fi

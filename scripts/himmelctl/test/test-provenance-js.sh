@@ -232,5 +232,34 @@ case "$(uname -s)" in
         ;;
 esac
 
+# a pre-existing group/world-readable ledger is tightened to 0600 by the next append
+rm -rf "$tmp/pu"; mkdir -p "$tmp/pu"; : > "$tmp/pu/provenance.jsonl"; chmod 644 "$tmp/pu/provenance.jsonl"
+"$node_bin" "$jsw" record register mcp - --unit m --post-json '"x"'
+check "node: existing 0644 ledger is tightened to 0600" "$(fmode "$tmp/pu/provenance.jsonl")" "600"
+
+# a symlink input records the TARGET's mode, like its sha and size (bash follows it too)
+rm -rf "$tmp/pu"; printf 'abc' > "$w/tgt"; chmod 640 "$w/tgt"; ln -s "$w/tgt" "$w/lnk"
+"$node_bin" "$jsw" record create file "$w/dst" --post-file "$w/lnk"
+check "node: symlink --post-file records the target's mode" "$(grep -v install- "$tmp/pu/provenance.jsonl" | jq -r .post.mode)" "0640"
+rm -rf "$tmp/sb" "$tmp/sn"
+( export HIMMEL_PROVENANCE_DIR="$tmp/sb"; cd "$w" && b_rec create file "$w/dst" --post-file "$w/lnk" )
+( export HIMMEL_PROVENANCE_DIR="$tmp/sn"; cd "$w" && n_rec create file "$w/dst" --post-file "$w/lnk" )
+check "bash-vs-node: symlink rows are byte-identical" "$(sed 's#"iid":"[^"]*"#"iid":"X"#' "$tmp/sn/provenance.jsonl" | sha256sum)" "$(sed 's#"iid":"[^"]*"#"iid":"X"#' "$tmp/sb/provenance.jsonl" | sha256sum)"
+
+# an existing but unreadable file is a provenance: diagnostic (rc 1), not a stack trace
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) echo "SKIP - Windows: chmod 000 does not block reads here" ;;
+    *)
+        if [ "$(id -u)" = 0 ]; then echo "SKIP - root reads a mode-000 file"; else
+            rm -rf "$tmp/pu"; printf 'x' > "$w/unread"; chmod 000 "$w/unread"
+            out=$("$node_bin" "$jsw" record create file "$w/dst" --post-file "$w/unread" 2>&1); rc=$?
+            check "node: unreadable --post-file → rc 1" "$rc" "1"
+            check "node: unreadable --post-file is a provenance: diagnostic" "${out%%:*}" "provenance"
+            check "node: unreadable --post-file leaves no stack trace" "$(printf '%s' "$out" | grep -c 'node:internal')" "0"
+            chmod 600 "$w/unread"
+        fi
+        ;;
+esac
+
 echo "$passes passed, $fails failed"
 [ "$fails" -eq 0 ]
