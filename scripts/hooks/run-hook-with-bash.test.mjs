@@ -1369,6 +1369,23 @@ test('bypass from a sibling worktree cwd is refused when CLAUDE_PROJECT_DIR is t
   }
 });
 
+test('bypass is honoured in a linked worktree whose path git C-quotes in `worktree list` (a newline)', { skip: process.platform === 'win32' }, () => {
+  const fx = makeBypassFixture();
+  try {
+    const odd = join(fx.root, 'wt\nq');
+    gitOk(fx.primary, 'worktree', 'add', '-q', '-b', 'wt-odd', odd);
+    const oddScript = join(odd, 'scripts', 'hooks', 'guard.sh');
+    writeFileSync(oddScript, 'echo tampered\n');
+    withEnv(bypassEnv(fx, odd), () => {
+      const result = withCwd(odd, () => verifyProjectHookIntegrity(oddScript, 's1'));
+      assert.equal(result.ok, true);
+    });
+    assert.equal(auditLines(fx.audit).length, 1);
+  } finally {
+    rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
 test('bypass is refused for a legacy record with no git_dir (nothing to validate the worktree against)', () => {
   const fx = makeBypassFixture();
   try {

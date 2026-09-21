@@ -922,13 +922,14 @@ function isInside(root, candidate) {
 function isLinkedWorktreeOf(commonDir, top) {
   const own = gitStdout(gitInRecordedRepo(commonDir, ['rev-parse', '--path-format=absolute', '--git-common-dir']));
   if (!own || fs.realpathSync(own) !== commonDir) return false; // not a common dir
-  const listed = gitInRecordedRepo(commonDir, ['worktree', 'list', '--porcelain']);
+  const listed = gitInRecordedRepo(commonDir, ['worktree', 'list', '--porcelain', '-z']);
   if (!listed || listed.status !== 0) return false;
-  // Entry 0 is the main worktree (the primary checkout, or a bare repo) — never linked.
-  const linked = listed.stdout.split(/\r?\n\r?\n/).filter(Boolean).slice(1).some((entry) => {
-    const m = /^worktree (.+)/.exec(entry);
+  // -z: without it git C-quotes a path with a newline, which realpath would not resolve.
+  // Fields are NUL-terminated; the first `worktree` field is the main worktree (the
+  // primary checkout, or a bare repo) — never linked.
+  const linked = listed.stdout.split('\0').filter((f) => f.startsWith('worktree ')).slice(1).some((field) => {
     try {
-      return Boolean(m) && fs.realpathSync(m[1]) === top;
+      return fs.realpathSync(field.slice('worktree '.length)) === top;
     } catch (_e) {
       return false; // a listed worktree that is gone
     }
