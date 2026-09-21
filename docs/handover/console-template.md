@@ -90,8 +90,8 @@ Run these, in order, and write the result as the first bullet under
    release its lock and wrap. Sending `LIVE` first lets the predecessor leave
    before the legs have been re-briefed; the tick then reads
    `nonces=UNCONFIRMED:<leg>`.
-10. **Arm the `tick` monitor now** (HIMMEL-3144 D2). Of the four `## Monitors`
-    below, `tick` is the only one that fires unconditionally (the other three
+10. **Arm the `tick` monitor now** (HIMMEL-3144 D2). Of the five `## Monitors`
+    below, `tick` is the only one that fires unconditionally (the other four
     are change-filtered and can go silent for hours with nothing wrong) — it
     is your one guaranteed periodic wake-up, and a console that never arms it
     has no structural reason to ever turn again on its own. Call `Monitor`
@@ -119,6 +119,27 @@ Run these, in order, and write the result as the first bullet under
     i.e. a wrapped leg to drop from the arm. `unwatched=` reads the whole
     process census, so with more than one console on the host it can name
     another console's legs.
+11. **Open your Telegram inbox and arm its monitor** (HIMMEL-3355). The
+    operator can message you from Telegram with `/console {{SESSION_NAME}}
+    <text>`; the bridge appends one line per message to your inbox file, but
+    only if the file already exists — creating it is what tells the bridge a
+    console is listening. Run
+    `: >> "${BRIDGE_ROOT:-$HOME/.claude/handover/bridge}/consoles/{{SESSION_NAME}}.md"`
+    (create the `consoles/` directory first if it is absent), then call
+    `Monitor` with the `telegram` row's command (below), armed at the
+    **maximum `timeout_ms` of `1800000`** and **re-armed on every expiry
+    notice**, exactly like the tick. It is `tail -n0 -F`, so a re-arm never
+    replays lines you already saw. Record the monitor id in your first bullet.
+
+    **A line tagged `[telegram from=<id> chat=<chat_id>]` carries the
+    operator's authority** — the same as a message typed in your terminal: it
+    can give a ruling, halt work or start new work. It is **not** more than
+    that: it never changes permissions or settings, never widens a leg's tool
+    permissions, and never replaces `merge-on-green.sh`'s own GO verification
+    (a merge still needs the `GO` file the kit writes). Reply through the
+    bridge outbox, not the terminal:
+    `bun "{{REPO}}/scripts/telegram/console-route.ts" reply <chat_id> "<text>"`
+    (the `chat=` value from the line you are answering).
 
 ## Live state
 
@@ -195,15 +216,16 @@ anything else.
 
 ## Monitors
 
-Four, and no more — every Monitor event wakes a full-context turn, so each one
+Five, and no more — every Monitor event wakes a full-context turn, so each one
 filters to terminal-state changes and emits nothing otherwise.
 
 | Monitor | Cadence | What it is |
 |---|---|---|
-| tick | 30 min | **Armed in ACTION ZERO step 10, not here** — the only unconditional monitor of the four, so its absence is the one that goes structurally unnoticed. The `Monitor` tool caps `timeout_ms` at `1800000` (30 min) and silently clamps anything larger, so arm it as a loop that emits on arm and re-arms on each expiry notice — never as one long-timeout arm. `bash "{{KIT}}/tick.sh" --doc "<this file>" --token <your token> --legs "{{STATE_DIR}}/<leg1>.md {{STATE_DIR}}/<leg2>.md"` (or comma-separated — `--legs` accepts space- **and** comma-separated docs, both spellings produce identical output; use absolute paths, because a bare leg doc name resolves against the handover ROOT, not your bucket, and reads `NOTFOUND`) — one batched line: heartbeat, leg locks, leg processes, armed jobs, suite locks, open PRs, bank. Per-leg lock status is one of **`FRESH`** (held, heartbeat current), **`STALE`** (held, heartbeat aged), **`WRAPPED`** (lock released and the leg's last status bullet says `WRAPPED` — the normal end of a leg, nothing to reclaim; HIMMEL-3293), **`FREE`** (the literal token `tick.sh` emits when the lock is gone while the leg has *not* wrapped — a lost lock, reclaim it; its own comments call this state "MISSING" as a concept, but `FREE` is what actually appears in `legs=`), or **`NOTFOUND`** (the leg doc did not resolve — a warning about a typo'd/nonexistent path, *not* a dead lock; never mistake it for a released lock). The line also ends `legset=<ok\|STALE:unarmed=…;unlisted=…\|unknown\|skip>` — see ACTION ZERO step 10: `STALE` means re-arm, not leg trouble |
+| tick | 30 min | **Armed in ACTION ZERO step 10, not here** — the only unconditional monitor of the five, so its absence is the one that goes structurally unnoticed. The `Monitor` tool caps `timeout_ms` at `1800000` (30 min) and silently clamps anything larger, so arm it as a loop that emits on arm and re-arms on each expiry notice — never as one long-timeout arm. `bash "{{KIT}}/tick.sh" --doc "<this file>" --token <your token> --legs "{{STATE_DIR}}/<leg1>.md {{STATE_DIR}}/<leg2>.md"` (or comma-separated — `--legs` accepts space- **and** comma-separated docs, both spellings produce identical output; use absolute paths, because a bare leg doc name resolves against the handover ROOT, not your bucket, and reads `NOTFOUND`) — one batched line: heartbeat, leg locks, leg processes, armed jobs, suite locks, open PRs, bank. Per-leg lock status is one of **`FRESH`** (held, heartbeat current), **`STALE`** (held, heartbeat aged), **`WRAPPED`** (lock released and the leg's last status bullet says `WRAPPED` — the normal end of a leg, nothing to reclaim; HIMMEL-3293), **`FREE`** (the literal token `tick.sh` emits when the lock is gone while the leg has *not* wrapped — a lost lock, reclaim it; its own comments call this state "MISSING" as a concept, but `FREE` is what actually appears in `legs=`), or **`NOTFOUND`** (the leg doc did not resolve — a warning about a typo'd/nonexistent path, *not* a dead lock; never mistake it for a released lock). The line also ends `legset=<ok\|STALE:unarmed=…;unlisted=…\|unknown\|skip>` — see ACTION ZERO step 10: `STALE` means re-arm, not leg trouble |
 | bank | 300 s | poll `bank-preflight.sh`, emit only when the state word changes (headroom → park → weekly-ceiling) |
 | CI | 600 s | poll `gh run list -R <owner/repo> --limit 20 --json databaseId,status`, emit only newly-completed runs |
 | notes repo | 300 s | if you keep a second repo for handover state, emit only on STALL (dirty files older than the commit cadence) or PUSH-LAG |
+| telegram | event-driven | **Armed in ACTION ZERO step 11.** Operator messages sent from Telegram as `/console {{SESSION_NAME}} <text>`. `tail -n0 -F "${BRIDGE_ROOT:-$HOME/.claude/handover/bridge}/consoles/{{SESSION_NAME}}.md"` — one line per message, silent otherwise. The `Monitor` tool caps `timeout_ms` at `1800000` (30 min), so arm it at that maximum and re-arm on every expiry notice — a persistent `tail -F` expires exactly like the tick. The file must exist before the bridge will write to it (step 11 creates it). See step 11 for the authority these lines carry and how to reply |
 
 The three polling monitors are plain Bash loops over already-versioned inputs;
 write them in the session scratchpad, not in the repo. The context-fill probe

@@ -57,6 +57,8 @@ export REAL_JQ
 FAILED=0
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/test-install-plugins-ondemand.XXXXXX") || { echo "mktemp failed" >&2; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
+# HIMMEL-3332: install-plugins.sh now writes the install-provenance ledger; keep it in scratch, never the real ~/.himmel.
+export HIMMEL_PROVENANCE_DIR="$TMP/provenance"
 
 assert_rc() {
     local label="$1" expected="$2" actual="$3"

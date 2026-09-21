@@ -95,6 +95,15 @@ it records the lock token `new` printed — confirming with `queue-lock.sh
 status` that the lock is held, and acquiring one only if it reports `free` —
 and tells its predecessor it is live.
 
+It also opens a **Telegram inbox** (HIMMEL-3355): it creates
+`<bridge root>/consoles/<session>.md` and arms a `Monitor` on
+`tail -n0 -F` of it, so the operator's `/console <session> <text>` from
+Telegram reaches the running console with the operator's authority — rulings,
+halts, new work — but never a permission or settings change and never a
+skipped GO verification. The console replies with
+`bun scripts/telegram/console-route.ts reply <chat_id> <text>`. Operator-side
+usage: [`../telegram-bridge.md`](../telegram-bridge.md#messaging-a-running-console).
+
 ## Dispatching legs
 
 When drafting the brief's **Ship:** item, spell the attestation trailers'

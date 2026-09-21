@@ -11,7 +11,8 @@
       "deps": [],
       "probe": { "type": "git-hooks", "hooks": ["pre-commit", "commit-msg", "pre-push"] },
       "install": { "type": "adopt" },
-      "removable": "full-offboard-only"
+      "removable": "full-offboard-only",
+      "provenance": { "kinds": ["git-hook"] }
     },
     {
       "id": "wiring-pretooluse",
@@ -22,7 +23,8 @@
       "probe": { "type": "settings-hooks", "file": ".claude/settings.json", "key": "hooks.PreToolUse" },
       "install": { "type": "wire", "target": "pretooluse-hooks" },
       "unwire": { "type": "wire", "target": "pretooluse-hooks" },
-      "removable": "per-item"
+      "removable": "per-item",
+      "provenance": { "kinds": ["json-elem"] }
     },
     {
       "id": "wiring-statusline",
@@ -33,7 +35,8 @@
       "probe": { "type": "settings-key", "file": ".claude/settings.json", "key": "statusLine.command" },
       "install": { "type": "wire", "target": "statusline" },
       "unwire": { "type": "wire", "target": "statusline" },
-      "removable": "per-item"
+      "removable": "per-item",
+      "provenance": { "kinds": ["json-key", "file"] }
     },
     {
       "id": "jira-cli-dist-build",
@@ -44,7 +47,8 @@
       "deps": [],
       "probe": { "type": "file-exists", "path": "scripts/jira/dist/index.js" },
       "install": { "type": "build", "target": "jira-cli" },
-      "removable": "full-offboard-only"
+      "removable": "full-offboard-only",
+      "provenance": { "kinds": ["file"] }
     },
     {
       "id": "jira-env-keys",
@@ -54,7 +58,8 @@
       "deps": [],
       "probe": { "type": "settings-key", "file": ".env", "keys": ["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN", "JIRA_PROJECT_KEY"] },
       "install": { "type": "config", "keys": ["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN", "JIRA_PROJECT_KEY"] },
-      "removable": "full-offboard-only"
+      "removable": "full-offboard-only",
+      "provenance": { "kinds": ["file"] }
     },
     {
       "id": "bitbucket-cli-build",
@@ -65,7 +70,8 @@
       "deps": [],
       "probe": { "type": "file-exists", "path": "scripts/bitbucket/dist/index.js" },
       "install": { "type": "build", "target": "bitbucket-cli" },
-      "removable": "full-offboard-only"
+      "removable": "full-offboard-only",
+      "provenance": { "kinds": ["file"] }
     },
     {
       "id": "qmd-binary",
@@ -86,7 +92,8 @@
       "deps": ["qmd-binary"],
       "probe": { "type": "qmd-index", "collections": ["himmel", "luna"] },
       "install": { "type": "qmd" },
-      "removable": "full-offboard-only"
+      "removable": "full-offboard-only",
+      "provenance": { "kinds": ["collection"] }
     },
     {
       "id": "graphify-mcp",
@@ -95,7 +102,8 @@
       "profiles": ["luna", "all"],
       "deps": [],
       "probe": { "type": "mcp-registered", "server": "graphify" },
-      "removable": "full-offboard-only"
+      "removable": "full-offboard-only",
+      "provenance": { "kinds": ["mcp"] }
     },
     {
       "id": "luna-vault-scaffold",
@@ -138,7 +146,8 @@
       "deps": [],
       "probe": { "type": "handover-dir", "resolver": "scripts/lib/handover-path.sh" },
       "install": { "type": "config", "key": "HANDOVER_DIR" },
-      "removable": "full-offboard-only"
+      "removable": "full-offboard-only",
+      "provenance": { "kinds": ["json-key"] }
     },
     {
       "id": "scheduler-backend",
@@ -159,7 +168,8 @@
       "deps": [],
       "probe": { "type": "file-exists", "path": "scripts/guardrails/lib.sh" },
       "install": { "type": "adopt" },
-      "removable": "full-offboard-only"
+      "removable": "full-offboard-only",
+      "provenance": { "kinds": ["file"] }
     },
     {
       "id": "hermes-checkout",
@@ -178,7 +188,8 @@
       "profiles": ["core", "all"],
       "deps": ["hermes-checkout"],
       "probe": { "type": "cmd:has_hermes", "resolver": "scripts/lib/resolve-hermes-py.sh" },
-      "removable": "full-offboard-only"
+      "removable": "full-offboard-only",
+      "provenance": { "kinds": ["tool"] }
     },
     {
       "id": "telegram-bridge",
@@ -187,7 +198,8 @@
       "profiles": ["core", "all"],
       "deps": [],
       "probe": { "type": "telegram-access", "envFile": ".claude/channels/telegram/.env", "tokenKey": "TELEGRAM_BOT_TOKEN", "accessFile": ".claude/channels/telegram/access.json" },
-      "removable": "full-offboard-only"
+      "removable": "full-offboard-only",
+      "provenance": { "kinds": ["file", "unit"] }
     },
     {
       "id": "rtk",
@@ -340,7 +352,8 @@
       "deps": [],
       "probe": { "type": "cmd:is_himmel_dev", "resolver": "scripts/guardrails/lib.sh" },
       "install": { "type": "adopt" },
-      "removable": "full-offboard-only"
+      "removable": "full-offboard-only",
+      "provenance": { "kinds": ["file"] }
     },
     {
       "id": "codex-cli",
@@ -390,7 +403,8 @@
       "deps": [],
       "probe": { "type": "cmd:guardrail_block_status", "script": "scripts/hooks/guardrail-block.mjs" },
       "install": { "type": "wire", "target": "guardrail-block-global" },
-      "removable": "full-offboard-only"
+      "removable": "full-offboard-only",
+      "provenance": { "kinds": ["json-elem"] }
     },
     {
       "id": "obsidian-second-brain",

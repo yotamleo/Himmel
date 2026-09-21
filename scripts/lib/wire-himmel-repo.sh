@@ -17,6 +17,44 @@
 # Requires jq. Invoked via bash, never sourced.
 set -euo pipefail
 
+# HIMMEL-3332: record the settings write in the install-provenance ledger
+# (docs/internals/install-provenance.md). Runs after the mv with the PRE-write
+# JSON in $2: a new key is `create`, the same value is `noop`, a different one
+# is `replace` with the prior value backed up. A wire that had to create `.env`
+# also records `/env`, so uninstall may drop the emptied parent.
+# shellcheck source=scripts/lib/provenance.sh
+. "$(dirname "${BASH_SOURCE[0]}")/provenance.sh"
+
+# user when the settings file sits in the Claude config dir, else project.
+_wire_himmel_repo_scope() {
+  local d c
+  d="$(cd "$(dirname "$1")" && pwd -P)"
+  for c in "${CLAUDE_CONFIG_DIR:-}" "$HOME/.claude"; do
+    if [ -n "$c" ] && [ "$d" = "$(cd "$c" 2>/dev/null && pwd -P)" ]; then echo user; return 0; fi
+  done
+  echo project
+}
+
+# _wire_himmel_repo_record <settings> <pre-write settings JSON> <env key> <value>
+_wire_himmel_repo_record() {
+  local settings="$1" base="$2" key="$3" val="$4" scope new old op had_env
+  local -a pre
+  scope="$(_wire_himmel_repo_scope "$settings")" || return 1
+  new="$(jq -nc --arg v "$val" '$v')"
+  had_env="$(printf '%s' "$base" | jq -r 'if .env == null then "0" else "1" end')"
+  old="$(printf '%s' "$base" | jq -c --arg k "$key" 'select((.env | type == "object") and (.env | has($k))) | .env[$k]')"
+  if [ -z "$old" ]; then op=create; pre=(--pre-absent)
+  elif [ "$(printf '%s' "$old" | jq -cS .)" = "$new" ]; then op=noop; pre=(--pre-json "$old")
+  else op=replace; pre=(--pre-json "$old" --backup); fi
+  if [ "$had_env" = 0 ]; then
+    prov_record create json-key "$settings" --unit /env --scope "$scope" --class code \
+      --row "$scope-settings" --writer wire-himmel-repo.sh --pre-absent \
+      --post-json "$(jq -c .env "$settings")" || return 1
+  fi
+  prov_record "$op" json-key "$settings" --unit "/env/$key" --scope "$scope" --class code \
+    --row "$scope-settings" --writer wire-himmel-repo.sh "${pre[@]}" --post-json "$new"
+}
+
 wire_himmel_repo() {
   local settings="$1" himmel="$2"
   command -v jq >/dev/null 2>&1 || { echo "wire-himmel-repo: jq required" >&2; return 1; }
@@ -39,9 +77,14 @@ wire_himmel_repo() {
     fi
   fi
 
-  printf '%s' "$base" | jq --arg repo "$himmel_fwd" \
+  if printf '%s' "$base" | jq --arg repo "$himmel_fwd" \
     '.env = ((.env // {}) + { HIMMEL_REPO: $repo })' \
-    > "$settings.himmelrepo.tmp" && mv "$settings.himmelrepo.tmp" "$settings"
+    > "$settings.himmelrepo.tmp" && mv "$settings.himmelrepo.tmp" "$settings"; then
+    _wire_himmel_repo_record "$settings" "$base" HIMMEL_REPO "$himmel_fwd" \
+      || echo "wire-himmel-repo: warning: provenance record failed (env.HIMMEL_REPO is wired; uninstall will keep it)" >&2
+  else
+    return 1   # the write failed: never echo success (matches the pre-record `&&` under set -e)
+  fi
   echo "  set env.HIMMEL_REPO -> $settings"
 }
 

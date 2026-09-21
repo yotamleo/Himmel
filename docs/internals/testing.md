@@ -243,6 +243,15 @@ The residual is T15: its new-script list is `--diff-filter=A` limited to
 `scripts/`, so a rename from OUTSIDE `scripts/` reads as an addition — but T15
 is advisory (`WARN`, never a CI gate). Read the assertion, then decide.
 
+## VM round trip — station-only, never CI (HIMMEL-3332)
+
+`VBOXMANAGE_PATH=/usr/bin/VBoxManage bash scripts/vm/provenance-roundtrip.sh <ref> [--expect-red] [--purge-state] [--profile core|all]`
+runs a seeded install/uninstall round trip on a real VirtualBox clone. The
+details are in `docs/setup/vms.md`. The script is deliberately not named
+`test-*.sh`, so neither `run-shell-tests.sh` nor the impacted map ever picks it
+up. Its header carries the `STATION-ONLY: never run from CI` marker. CI runs
+only the hermetic `scripts/vm/test-provenance-roundtrip-dry.sh`.
+
 ## What counts as CI evidence
 
 Public CI runs the suite jobs on every PR, so a green **`shell-unit`**

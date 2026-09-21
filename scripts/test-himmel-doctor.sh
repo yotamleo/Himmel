@@ -329,6 +329,42 @@ out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME=
 if grepq "$out" 'WARN C3-luna'; then pass "C3 -> WARN (dirty single-writer)"; else fail "C3 -> $(printf '%s' "$out" | grep C3)"; fi
 rm -rf "$t"
 
+echo "== C4: forge decided on the origin's HOST, not a URL substring (fixtures/forge-origins.tsv) =="
+# HIMMEL-3337: check_c4 is run in isolation (the whole doctor is ~12 s a run) with a
+# stub emit, once per row of the answer table forge.sh's and status-report's suites
+# read. INFO C4-forge must fire exactly when forge_detect says bitbucket.
+_c4_body="$(awk '/^check_c4\(\)/{found=1} found{print} found && /^\}$/{exit}' "$DOC")"
+_c4_tsv="$REPO_ROOT/scripts/lib/fixtures/forge-origins.tsv"
+_c4_repo="$(mktemp -d "${TMPDIR:-/tmp}/c4-forge.XXXXXX")" || { echo "mktemp failed" >&2; exit 1; }
+git init -q "$_c4_repo"
+# c4_run <origin> [FORGE value] — echoes the "<sev> <id>" line check_c4 emits, if any.
+c4_run() {
+    git -C "$_c4_repo" remote remove origin 2>/dev/null
+    git -C "$_c4_repo" remote add origin "$1"
+    # shellcheck disable=SC2016  # the script text is meant to expand in the child shell
+    ( cd "$_c4_repo" && env -u FORGE ${2:+FORGE="$2"} REPO_ROOT="$REPO_ROOT" bash -c \
+        'set -uo pipefail; emit() { printf "%s %s\n" "$1" "$2"; }; '"$_c4_body"'; check_c4' 2>&1 )
+}
+_c4_n=0
+while IFS=$'\t' read -r _c4_want _c4_url; do
+    case "$_c4_want" in ''|'#'*) continue ;; esac
+    _c4_got="$(c4_run "$_c4_url")"
+    # shellcheck disable=SC2016  # $1 expands in the child shell
+    _c4_fd="$(cd "$_c4_repo" && env -u FORGE bash -c '. "$1/scripts/lib/forge.sh"; forge_detect 2>/dev/null' _ "$REPO_ROOT")" || true
+    [ -n "$_c4_fd" ] || _c4_fd=none
+    if [ "$_c4_want" = bitbucket ]; then _c4_exp="INFO C4-forge"; else _c4_exp=""; fi
+    if [ "$_c4_got" = "$_c4_exp" ]; then pass "C4 '$_c4_url' ($_c4_want) -> '${_c4_got:-nothing}'"; else fail "C4 '$_c4_url' ($_c4_want) -> expected '${_c4_exp:-nothing}', got '$_c4_got'"; fi
+    if [ "$_c4_fd" != "$_c4_want" ]; then fail "C4 '$_c4_url': forge_detect says '$_c4_fd', fixture says '$_c4_want'"; fi
+    _c4_n=$((_c4_n+1))
+done < "$_c4_tsv"
+if [ "$_c4_n" -ge 30 ]; then pass "C4 origin table was read ($_c4_n cases)"; else fail "C4 origin table was read: only $_c4_n cases from $_c4_tsv"; fi
+# An inherited FORGE overrides forge_detect but says nothing about the ORIGIN C4 reports on.
+_c4_got="$(c4_run 'https://bitbucket.org/t/r.git' github)"
+if [ "$_c4_got" = "INFO C4-forge" ]; then pass "C4 ignores an inherited FORGE (bitbucket origin still reported)"; else fail "C4 ignores an inherited FORGE -> '$_c4_got'"; fi
+_c4_got="$(c4_run 'https://github.com/o/r.git' bitbucket)"
+if [ -z "$_c4_got" ]; then pass "C4 ignores an inherited FORGE (github origin stays quiet)"; else fail "C4 ignores an inherited FORGE (github origin) -> '$_c4_got'"; fi
+rm -rf "$_c4_repo"
+
 echo "== C26: no salus vault -> OK skipped =="
 t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c26.XXXXXX")"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
 out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"

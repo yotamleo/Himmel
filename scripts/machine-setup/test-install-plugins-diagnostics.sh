@@ -21,6 +21,8 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SUT="$SCRIPT_DIR/install-plugins.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+# HIMMEL-3332: install-plugins.sh now writes the install-provenance ledger; keep it in scratch, never the real ~/.himmel.
+export HIMMEL_PROVENANCE_DIR="$TMP/provenance"
 
 # Minimal template: one marketplace (autoUpdate:false so the script never patches
 # a real settings.json) and one enabled plugin.

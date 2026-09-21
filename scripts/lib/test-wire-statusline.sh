@@ -12,6 +12,8 @@ HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 HELPER="$HERE/wire-statusline.sh"
 REPO_ROOT="$(cd -- "$HERE/../.." && pwd)"
 TMP="$(mktemp -d)"
+# HIMMEL-3332: the wire writes provenance rows; keep them out of the real ~/.himmel.
+export HIMMEL_PROVENANCE_DIR="$TMP/prov"
 trap 'rm -rf "$TMP"' EXIT
 fail() { echo "FAIL: $1" >&2; exit 1; }
 

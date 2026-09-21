@@ -123,6 +123,52 @@ WIRE_PRETOOLUSE_MERGE_JQ='
   | .hooks.PreToolUse = (reduce $specs[] as $spec ((.hooks.PreToolUse // []); wire($spec)))
 '
 
+# HIMMEL-3332: record each wired hook element in the install-provenance ledger
+# (docs/internals/install-provenance.md). Called after the mv with the PRE-write
+# settings JSON; recording is best-effort -- a failed record warns and never
+# fails the wire. ponytail: the pre-state of an element is the FIRST pre-existing
+# counterpart (same matcher for the trio; same command basename for SessionStart),
+# so a duplicate the merge strips is not backed up, and the `hooks` parent object
+# the wire may create is not recorded (the container_created field covers only
+# the PreToolUse / SessionStart array itself).
+# shellcheck source=scripts/lib/provenance.sh
+. "$(dirname "${BASH_SOURCE[0]}")/provenance.sh"
+
+# user when the settings file sits in the Claude config dir, else project.
+_wire_hooks_scope() {
+  local d c
+  d="$(cd "$(dirname "$1")" && pwd -P)"
+  for c in "${CLAUDE_CONFIG_DIR:-}" "$HOME/.claude"; do
+    if [ -n "$c" ] && [ "$d" = "$(cd "$c" 2>/dev/null && pwd -P)" ]; then echo user; return 0; fi
+  done
+  echo project
+}
+
+# _wire_hooks_record <settings> <unit> <rows>: <rows> is JSONL of
+# {op: insert|noop|replace, pre: <old element|null>, post: <element>, cc: <bool>}.
+_wire_hooks_record() {
+  local settings="$1" unit="$2" rows="$3" scope r op old new cc
+  local -a pre
+  scope="$(_wire_hooks_scope "$settings")" || return 1
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    op="$(printf '%s' "$r" | jq -r .op)"
+    old="$(printf '%s' "$r" | jq -c .pre)"
+    new="$(printf '%s' "$r" | jq -c .post)"
+    cc="$(printf '%s' "$r" | jq -r .cc)"
+    case "$op" in
+      insert)  pre=(--pre-absent) ;;
+      noop)    pre=(--pre-json "$old") ;;
+      *)       pre=(--pre-json "$old" --backup) ;;
+    esac
+    prov_record "$op" json-elem "$settings" --unit "$unit" --scope "$scope" --class code \
+      --row "$scope-settings" --writer wire-pretooluse-hooks.sh \
+      --field "container_created=$cc" \
+      --field "elem_sha=$(jq -nc --arg s "$(prov_sha_json "$new")" '$s')" \
+      "${pre[@]}" --post-json "$new" || return 1
+  done <<< "$rows"
+}
+
 wire_pretooluse_hooks() {
   local settings="$1" prefix="$2" dry_run="${3:-0}"
   command -v jq >/dev/null 2>&1 || { echo "wire-pretooluse-hooks: jq required" >&2; return 1; }
@@ -163,8 +209,29 @@ wire_pretooluse_hooks() {
     return 1
   fi
   [ -z "$(printf '%s' "$base" | tr -d '[:space:]')" ] && base="{}"
-  printf '%s' "$base" | jq --argjson specs "$specs" "$WIRE_PRETOOLUSE_MERGE_JQ" \
-    > "$settings.wirehooks.tmp" && mv "$settings.wirehooks.tmp" "$settings"
+  if printf '%s' "$base" | jq --argjson specs "$specs" "$WIRE_PRETOOLUSE_MERGE_JQ" \
+    > "$settings.wirehooks.tmp" && mv "$settings.wirehooks.tmp" "$settings"; then
+    local rows
+    # One row per stanza that now carries a himmel hook (deduped when two specs
+    # share a stanza), paired with the pre-write stanza of the same matcher.
+    # shellcheck disable=SC2016  # a jq program: $pre/$specs/$spec/$st/$old are jq bindings
+    rows=$(jq -c --argjson pre "$base" --argjson specs "$specs" '
+      def carries($spec): (.hooks // []) | any(.[]; ((.command // "") | test($spec.pat)));
+      ($pre.hooks.PreToolUse // []) as $pre_arr
+      | ($pre.hooks.PreToolUse == null) as $cc
+      | (.hooks.PreToolUse // []) as $post_arr
+      | [ $specs[] as $spec
+          | $post_arr[] | select(carries($spec)) as $st
+          | ($pre_arr | map(select(carries($spec) and (.matcher == $st.matcher))) | .[0]) as $old
+          | { pre: $old, post: $st, cc: $cc,
+              op: (if $old == null then "insert" elif $old == $st then "noop" else "replace" end) } ]
+      | unique_by(.post) | .[]
+    ' "$settings") \
+      && _wire_hooks_record "$settings" /hooks/PreToolUse "$rows" \
+      || echo "wire-pretooluse-hooks: warning: provenance record failed (the hooks are wired; uninstall will keep them)" >&2
+  else
+    return 1   # the write failed: never echo success (matches the pre-record `&&` under set -e)
+  fi
   echo "  wired PreToolUse hooks -> $settings"
 }
 
@@ -209,7 +276,7 @@ wire_sessionstart_hook() {
   # RAW, unescaped basename, which $needle alone cannot match, so $legacy
   # widens the dedup to also catch and replace that older text.
   # shellcheck disable=SC2016  # a jq program: $pfx/$hook/$cmd are jq bindings
-  printf '%s' "$base" | jq --arg pfx "$pfx" --arg hook "$basename" \
+  if printf '%s' "$base" | jq --arg pfx "$pfx" --arg hook "$basename" \
     "$WIRE_HOOK_CMD_JQ"'
     hookcmd($pfx; $hook) as $cmd
     | ("scripts/hooks/" + shesc($hook)) as $needle
@@ -224,7 +291,26 @@ wire_sessionstart_hook() {
       then .hooks.SessionStart += [{"hooks":[{"type":"command","command":$cmd}]}]
       else .hooks.SessionStart[$idx].hooks += [{"type":"command","command":$cmd}]
       end
-  ' > "$settings.wirehooks.tmp" && mv "$settings.wirehooks.tmp" "$settings"
+  ' > "$settings.wirehooks.tmp" && mv "$settings.wirehooks.tmp" "$settings"; then
+    local rows
+    # shellcheck disable=SC2016  # a jq program: $pre/$pfx/$hook/$cmd/$old/$new are jq bindings
+    rows=$(jq -c --argjson pre "$base" --arg pfx "$pfx" --arg hook "$basename" \
+      "$WIRE_HOOK_CMD_JQ"'
+      def objs($doc): [($doc.hooks.SessionStart // [])[] | (.hooks // [])[]];
+      hookcmd($pfx; $hook) as $cmd
+      | ("scripts/hooks/" + shesc($hook)) as $needle
+      | ("scripts/hooks/" + $hook) as $legacy
+      | (objs($pre) | map(select((.command // "") | (contains($needle) or contains($legacy)))) | .[0]) as $old
+      | (objs(.) | map(select(.command == $cmd)) | .[0]) as $new
+      | select($new != null)
+      | { pre: $old, post: $new, cc: ($pre.hooks.SessionStart == null),
+          op: (if $old == null then "insert" elif $old == $new then "noop" else "replace" end) }
+    ' "$settings") \
+      && _wire_hooks_record "$settings" /hooks/SessionStart "$rows" \
+      || echo "wire-pretooluse-hooks: warning: provenance record failed (the hook is wired; uninstall will keep it)" >&2
+  else
+    return 1   # the write failed: never echo success (matches the pre-record `&&` under set -e)
+  fi
   echo "  wired SessionStart $basename -> $settings"
 }
 

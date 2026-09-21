@@ -11,6 +11,8 @@ fails=0
 check(){ [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
 
 td="$(mktemp -d)"
+# HIMMEL-3332: the wire writes provenance rows; keep them out of the real ~/.himmel.
+export HIMMEL_PROVENANCE_DIR="$td/prov"
 
 # 1. missing file -> creates the 3 PreToolUse stanzas, forward-slashed + quoted.
 s1="$td/s1.json"

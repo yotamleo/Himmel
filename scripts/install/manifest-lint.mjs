@@ -28,6 +28,11 @@
 //       keep) — HIMMEL-755 sub-ticket E. Optional; absent defaults to
 //       'unwire' at the himmelctl consumer, so no biconditional here (unlike
 //       removable<=>unwire) — offboard has no paired descriptor to agree with.
+//   (l) provenance, optional object { kinds: [...] } (HIMMEL-3332 S11): the
+//       ledger kinds the item's writers record (PROVENANCE_KINDS, the
+//       vocabulary of scripts/lib/provenance.sh). REQUIRED — non-empty —
+//       on every item whose effective offboard is 'unwire'; closed shape and
+//       checked wherever it appears.
 //
 // Per-type probe descriptor shape contract (single normative source — the
 // probe interpreter (HIMMEL-756 T1.3) MUST consume descriptors that satisfy
@@ -221,7 +226,7 @@ const ITEM_KEYS = ['id', 'kind', 'scopes', 'profiles', 'deps', 'probe'];
 // CONTRIBUTOR record only (state.js's itemMembership: answers.devOverlay).
 // Additive — never a substitute for `scopes`, and its entries obey the same
 // SCOPES_ENUM.
-const OPTIONAL_ITEM_KEYS = ['install', 'unwire', 'removable', 'offboard', 'contributorScopes'];
+const OPTIONAL_ITEM_KEYS = ['install', 'unwire', 'removable', 'offboard', 'contributorScopes', 'provenance'];
 const INSTALL_TYPES = ['adopt', 'setup', 'wire', 'plugins', 'qmd', 'dep', 'build', 'config', 'observability'];
 const UNWIRE_TYPES = ['wire'];
 const SCOPES_ENUM = ['project', 'user'];
@@ -231,6 +236,12 @@ const REMOVABLE_VALUES = ['per-item', 'full-offboard-only'];
 // 'unwire' (himmel-owned, uninstall.sh tears it down) is the DEFAULT when
 // the field is absent — see scripts/himmelctl/bin.js's partitionOffboard().
 const OFFBOARD_VALUES = ['unwire', 'advise', 'keep'];
+// HIMMEL-3332 S11: the ledger kinds an item's writers record. Same vocabulary
+// as _PROV_KINDS in scripts/lib/provenance.sh (test-wizard-manifest-v2.sh case
+// t fails if the two drift), so a kind named here is one prov_record accepts.
+const PROVENANCE_KINDS = ['file', 'tree', 'json-key', 'json-elem', 'block', 'line', 'plugin', 'marketplace',
+  'job', 'unit', 'shim', 'symlink', 'git-hook', 'mcp', 'collection', 'tool'];
+const PROVENANCE_KEYS = ['kinds'];
 
 function resolveManifestPath() {
   const argPath = process.argv[2];
@@ -238,6 +249,32 @@ function resolveManifestPath() {
   if (process.env.MANIFEST_PATH) return path.resolve(process.env.MANIFEST_PATH);
   const here = path.dirname(fileURLToPath(import.meta.url));
   return path.join(here, 'manifest.json');
+}
+
+function checkProvenanceShape(it, label, errors) {
+  if (!Object.prototype.hasOwnProperty.call(it, 'provenance')) {
+    if ((it.offboard || 'unwire') === 'unwire') {
+      errors.push(`${label}: an offboard 'unwire' item must carry provenance.kinds (the ledger kinds its writers record)`);
+    }
+    return;
+  }
+  const p = it.provenance;
+  if (p === null || typeof p !== 'object' || Array.isArray(p)) {
+    errors.push(`${label}: provenance must be an object { kinds: [...] }`);
+    return;
+  }
+  for (const k of Object.keys(p)) {
+    if (!PROVENANCE_KEYS.includes(k)) errors.push(`${label}: provenance has unknown key '${k}' (allowed: [${PROVENANCE_KEYS.join(', ')}])`);
+  }
+  if (!isNonEmptyStringArray(p.kinds)) {
+    errors.push(`${label}: provenance.kinds must be a non-empty array of strings`);
+    return;
+  }
+  for (const kind of p.kinds) {
+    if (!PROVENANCE_KINDS.includes(kind)) {
+      errors.push(`${label}: provenance.kinds entry '${kind}' not in [${PROVENANCE_KINDS.join(', ')}]`);
+    }
+  }
 }
 
 function isNonEmptyStringArray(v) {
@@ -791,6 +828,11 @@ function lint(manifest) {
     if (Object.prototype.hasOwnProperty.call(it, 'offboard') && !OFFBOARD_VALUES.includes(it.offboard)) {
       errors.push(`${label}: offboard '${it.offboard}' not in [${OFFBOARD_VALUES.join(', ')}]`);
     }
+
+    // (l) provenance.kinds — HIMMEL-3332 S11. Required on every item whose
+    // effective offboard is 'unwire' (absent defaults to it, as bin.js's
+    // partitionOffboard() reads it); shape-checked wherever it appears.
+    checkProvenanceShape(it, label, errors);
 
     // (i) value-enums: scopes ⊆ [project, user], profiles ⊆ [core, luna, all].
     // A non-array scopes/profiles is a lint error in its own right (not
