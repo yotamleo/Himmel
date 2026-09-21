@@ -1331,6 +1331,42 @@ scoped to.
 
 Spec: `scripts/hooks/test-block-write-into-main-checkout.sh`.
 
+**Git subcommands aimed at a protected checkout (HIMMEL-3401).** A git
+command rewrites a checkout's tree, index, HEAD, refs or config without naming
+a file (`git -C <primary> checkout <leg-branch> -- f`, `restore --source=`,
+`merge`, `pull . <leg>`, `read-tree -u -m`), so arm (g) classifies the
+SUBCOMMAND on an allowlist. A read-only subcommand is never examined. Every
+other subcommand, including unknown aliases, has its target's REPO ROOT put
+through `main_checkout_verdict`. The target covers:
+
+- cumulative `-C`
+- `--git-dir` / `--work-tree`
+- `GIT_DIR` / `GIT_WORK_TREE` / `GIT_INDEX_FILE` set as a prefix, through
+  `env`, or by an earlier `export`
+- the cwd set by an earlier `cd` / `pushd` / `env -C`
+
+Checking the repo root closes the `-C <primary>/handovers` and
+`-C <primary>/<ignored-dir>` exemption holes. An unresolvable cwd or target on
+a write fails closed.
+
+The console's wrap flow is carved out by shape:
+
+- `pull` is allowed only with `--ff-only`, flags from a closed list, and
+  operands limited to none, `<remote-name>`, or `<remote-name> main|master`.
+  `pull --ff-only . <leg>` is denied.
+- `fetch` is allowed unless it uses `-u`, `--upload-pack` or `--refmap`, names
+  a `.`/path/URL repository, or passes a `<src>:<dst>` refspec.
+
+The configured upstream is protected too: `config`, `remote` and
+`branch -u|-f` writes on the primary are denied. The bypass is the same as for
+every arm: `EDIT_ON_MAIN_OK=1` in the launching shell, or `.single-writer`.
+
+Named residual: config, remote and ref writes that land in the primary's
+SHARED common dir from a LINKED worktree's cwd: (a) `config` / `remote` /
+`branch -u` writes to the shared `$GIT_COMMON_DIR/config`, and (b)
+`update-ref` / `symbolic-ref` on `refs/heads/main`. Follow-up HIMMEL-3407 covers
+them. Spec: `scripts/hooks/test-block-primary-git-writes.sh`.
+
 **KNOWN FAIL-OPEN SHAPES — CLOSED by HIMMEL-2592.** This section previously
 listed TWO open shapes; HIMMEL-2526's sixth and final CR round found four
 more, so the real residual was **six** instances of one class — a gap between

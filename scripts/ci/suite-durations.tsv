@@ -267,6 +267,7 @@ scripts/hooks/test-block-lesson-enforcement-writes.sh	0
 scripts/hooks/test-block-mcp-when-plugin-exists.sh	3
 scripts/hooks/test-block-merged-pr-commit.sh	2
 scripts/hooks/test-block-pr-check-args.sh	1
+scripts/hooks/test-block-primary-git-writes.sh	25
 scripts/hooks/test-block-read-secrets.sh	3
 scripts/hooks/test-block-rogue-claude-schedule.sh	0
 scripts/hooks/test-block-rogue-codex-exec.sh	1

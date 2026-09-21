@@ -90,6 +90,14 @@
 # _bwimc_mode_for_operand.
 #
 # Known limitations:
+#   - Arm (g) (HIMMEL-3401, git subcommands that rewrite a protected
+#     checkout — see its own header for the allowlist + the pull/fetch
+#     carve-out) targets the repo a git command is AIMED at. Writes that land
+#     in the primary's SHARED common dir from a LINKED worktree's cwd are not
+#     modelled: `git config`/`remote set-url`/`branch -u` (shared
+#     $GIT_COMMON_DIR/config) and `update-ref`/`symbolic-ref` on
+#     refs/heads/main (the ref the primary's HEAD names). Named residual,
+#     follow-up HIMMEL-3407.
 #   - Command-text scanning, not a shell parser. A verb displaced from
 #     command position (env-prefix, sudo/xargs/timeout wrappers) is missed,
 #     same residual as block-terminal-write-fence.sh's class (a). The `tee`
@@ -823,7 +831,7 @@ _bwimc_deny() {
         primary-feature) why="its repo is the PRIMARY checkout on a feature branch" ;;
         unreadable) why="its repo's branch state could not be read (failing closed)" ;;
         cannot-canonicalise) why="the target path could not be canonicalised (failing closed)" ;;
-        unresolved-git-target) why="a git -C/--git-dir/--work-tree value could not be resolved (failing closed)" ;;
+        unresolved-git-target) why="a git -C/--git-dir/--work-tree/GIT_* env or cd target could not be resolved (failing closed)" ;;
     esac
     {
         echo "⛔ block-write-into-main-checkout: refusing a write-shaped command — $why."
@@ -831,6 +839,11 @@ _bwimc_deny() {
         echo "    (target token: $raw)"
         echo "    (resolved target: $resolved)"
         [ -n "$repo_root" ] && echo "    (repo: $repo_root)"
+        if [ -n "${_BWIMC_GIT_SUB:-}" ]; then
+            echo "    (git subcommand: $_BWIMC_GIT_SUB — rewrites a protected checkout's tree, index, HEAD,"
+            echo "     refs or config; HIMMEL-3401. Allowed there: read-only git, fetch <remote>,"
+            echo "     pull --ff-only [<remote> [main|master]].)"
+        fi
         echo ""
         echo "    Feature work belongs in a worktree per CLAUDE.md, not a write into the"
         echo "    PRIMARY checkout from a Bash/PowerShell-mediated command (HIMMEL-2526) —"
@@ -1369,6 +1382,420 @@ while IFS= read -r _bwimc_rclause; do
             _bwimc_ri=$((_bwimc_ri+1))
         fi
     done
+done < <(_bwimc_split_clauses "$_bwimc_hb")
+
+# ---- (g) HIMMEL-3401: git commands that rewrite a PROTECTED checkout ----
+#
+# WHY: every arm above resolves a FILE operand. A git subcommand writes the
+# working tree, index, HEAD, refs or config of whatever repository it is
+# aimed at without naming a single file — `git -C <primary> checkout
+# <leg-branch> -- f`, `restore --source=…`, `merge`, `pull . <leg>`,
+# `read-tree -u -m` — so a worktree-pinned leg could rewrite the PRIMARY
+# checkout (the trust anchor: /pr-check hand-off, HIMMEL-3383's byte compare
+# and the live hooks all run from it) and every guard returned rc 0.
+#
+# RULE: an ALLOWLIST, not a denylist. A git clause whose subcommand is
+# read-only (below) is never examined. Every OTHER subcommand — the write set
+# the ticket names, plus anything unknown, aliases included (`git co`), since
+# an alias can expand to any write — has its target resolved and checked with
+# the same main_checkout_verdict every other arm uses, applied to the target's
+# REPO ROOT (not the -C directory: `-C <primary>/handovers` or `-C
+# <primary>/<ignored-dir>` still rewrites the whole primary, while the verdict
+# exempts those paths as FILES).
+#
+# TARGETS: the repository (cumulative -C from the effective cwd, then
+# --git-dir / GIT_DIR resolved against the final -C dir, per git(1)), plus
+# the work tree (--work-tree / GIT_WORK_TREE) and GIT_INDEX_FILE when given —
+# `--work-tree=<primary>` from a leg's own repo writes the primary's files
+# even though HEAD moves in the leg's repo. The effective cwd MODELS `cd` /
+# `pushd` / `env -C` for THIS arm only (the file-operand arms still resolve
+# against the payload cwd, per the header's Known limitations): `cd
+# <primary> && git checkout <sha>` is one of the ticket's shapes. A `cd` or
+# env value that does not resolve statically (`cd "$X"`, `cd -`, `popd`)
+# fails CLOSED for a write-shaped git clause after it, like an unresolved -C.
+# Env assignments are read from the clause prefix (`GIT_DIR=… git`, `env
+# GIT_DIR=… git`) and from an earlier `export` in the same command.
+#
+# CARVE-OUT (the console's wrap flow, `git -C <primary> pull --ff-only` +
+# `fetch`), shape-bounded so it cannot be steered at a leg's commits:
+#   pull  — read only with `--ff-only`, flags from a closed list (no
+#           --rebase/--autostash), and operands: none (the configured
+#           upstream), `<remote>`, or `<remote> main|master`, where <remote>
+#           is a bare remote NAME (not `.`, a path or a URL).
+#           `pull --ff-only . <leg>` and `pull --ff-only origin <leg-branch>`
+#           fast-forward the anchor onto leg commits, so both deny.
+#   fetch — read unless -u/--update-head-ok, --upload-pack, --refmap, a
+#           non-name repository (`.`, a path, a URL) or a `<src>:<dst>`
+#           refspec (which could repoint refs/remotes/origin/main).
+# The configured upstream is itself protected: `branch -u/--set-upstream-to`,
+# `config` writes and `remote add|set-url|…` are write-shaped here, so the
+# console's bare `pull --ff-only` cannot be redirected first.
+#
+# Mode parity: destination-based in BOTH lanes (main_checkout_verdict), like
+# every file-operand arm — EXCEPT `commit` on the sourced/codex lane, which
+# keeps HIMMEL-745's is_on_main predicate (CODEX-LANE PARITY, header) and now
+# gets the modelled target instead of the payload cwd.
+#
+# Bypass: EDIT_ON_MAIN_OK=1 in the launching shell, or a repo-root
+# `.single-writer` (both honoured inside main_checkout_verdict).
+#
+# ponytail: command-text scanning, not a shell parser — a git invocation
+# displaced behind a wrapper this arm does not strip (sudo, xargs, timeout,
+# `sh -c '…'`, an interpreter body) is missed, the same residual as every
+# other arm. A `cd` inside a conditional (`false && cd <primary>`) is assumed
+# to have run (fails toward MORE denies). `git -c alias.x=…` and repo-level
+# hooks are code execution in the leg's own process, not a primary-state
+# write, and are out of scope. `worktree move|remove` of the primary is left
+# to git itself, which refuses to move or remove a main working tree.
+# `git clone`/`init` into a path INSIDE the primary from a leg cwd, and a
+# `push` into the primary's repository, are not modelled.
+
+_bwimc_unq() {
+    local t="$1"
+    t="${t//\"/}"
+    t="${t//\'/}"
+    t="${t//\`/}"
+    printf '%s' "$t"
+}
+
+# A bare remote NAME — not `.`/`..`, a path or a URL.
+_bwimc_remote_name_ok() {
+    case "$1" in
+        ""|.*|*/*|*:*|*\\*) return 1 ;;
+        *[!A-Za-z0-9._-]*) return 1 ;;
+    esac
+    return 0
+}
+
+# _bwimc_git_sub_is_read SUB ARG... — 0 = read-only (skip the clause),
+# 1 = write-shaped (check its targets). Args are unquoted, redirects removed.
+_bwimc_git_sub_is_read() {
+    local sub="$1"; shift
+    local a npos=0 first="" second="" ff=0 skipval=0
+    case "$sub" in
+        ""|status|log|diff|show|rev-parse|rev-list|ls-files|ls-tree|ls-remote|\
+        cat-file|blame|annotate|grep|describe|shortlog|whatchanged|for-each-ref|\
+        merge-base|name-rev|show-ref|show-branch|cherry|range-diff|diff-tree|\
+        diff-files|diff-index|var|version|help|check-ignore|check-attr|\
+        check-mailmap|check-ref-format|count-objects|fsck|verify-commit|\
+        verify-tag|tag|reflog|worktree|push|gc|prune|repack|pack-refs|\
+        maintenance|commit-graph|multi-pack-index)
+            return 0 ;;
+        stash)
+            case "${1:-}" in list|show) return 0 ;; esac
+            return 1 ;;
+        submodule)
+            case "${1:-}" in status|summary) return 0 ;; esac
+            return 1 ;;
+        bisect)
+            case "${1:-}" in log|view|visualize) return 0 ;; esac
+            return 1 ;;
+        notes)
+            case "${1:-}" in list|show) return 0 ;; esac
+            return 1 ;;
+        remote)
+            case "${1:-}" in ""|-v|--verbose|show|get-url) return 0 ;; esac
+            return 1 ;;
+        branch)
+            for a in "$@"; do
+                case "$a" in
+                    -u|--set-upstream-to|--set-upstream-to=*|--set-upstream|--unset-upstream|\
+                    -t|--track|--track=*|-f|--force|-m|-M|--move|-c|-C|--copy|--edit-description)
+                        return 1 ;;
+                esac
+            done
+            return 0 ;;
+        symbolic-ref)
+            for a in "$@"; do
+                if [ "$skipval" = 1 ]; then skipval=0; continue; fi
+                case "$a" in
+                    -d|--delete) return 1 ;;
+                    -m) skipval=1 ;;
+                    -*) ;;
+                    *) npos=$((npos+1)) ;;
+                esac
+            done
+            [ "$npos" -le 1 ]; return ;;
+        config)
+            case "${1:-}" in
+                get|list) return 0 ;;
+                set|unset|rename-section|remove-section|edit) return 1 ;;
+            esac
+            for a in "$@"; do
+                if [ "$skipval" = 1 ]; then skipval=0; continue; fi
+                case "$a" in
+                    --get|--get-all|--get-regexp|--get-urlmatch|--get-color|--get-colorbool|-l|--list)
+                        return 0 ;;
+                    --add|--unset|--unset-all|--replace-all|--rename-section|--remove-section|-e|--edit)
+                        return 1 ;;
+                    -f|--file|--blob|--type|--default|--comment) skipval=1 ;;
+                    -*) ;;
+                    *) npos=$((npos+1)) ;;
+                esac
+            done
+            [ "$npos" -le 1 ]; return ;;
+        fetch)
+            for a in "$@"; do
+                case "$a" in
+                    -u|--update-head-ok|--upload-pack|--upload-pack=*|--refmap|--refmap=*) return 1 ;;
+                    -*) ;;
+                    *)
+                        npos=$((npos+1))
+                        if [ "$npos" = 1 ]; then
+                            _bwimc_remote_name_ok "$a" || return 1
+                        else
+                            case "$a" in *:*) return 1 ;; esac
+                        fi
+                        ;;
+                esac
+            done
+            return 0 ;;
+        pull)
+            for a in "$@"; do
+                case "$a" in
+                    --ff-only) ff=1 ;;
+                    -q|--quiet|-v|--verbose|--prune|--no-rebase|--tags|--no-tags|\
+                    --stat|--no-stat|-n|--progress|--no-progress) ;;
+                    -*) return 1 ;;
+                    *)
+                        npos=$((npos+1))
+                        case "$npos" in
+                            1) first="$a" ;;
+                            2) second="$a" ;;
+                            *) return 1 ;;
+                        esac
+                        ;;
+                esac
+            done
+            [ "$ff" = 1 ] || return 1
+            if [ -n "$first" ]; then
+                _bwimc_remote_name_ok "$first" || return 1
+            fi
+            case "$second" in ""|main|master) return 0 ;; esac
+            return 1 ;;
+    esac
+    return 1
+}
+
+# _bwimc_git_check_path PATH LABEL — the repo-ROOT verdict for one target.
+_bwimc_git_check_path() {
+    local path="$1" label="$2" canon root
+    canon=$(guard_canon_path "$path" 2>/dev/null) || canon=""
+    if [ -z "$canon" ]; then
+        _bwimc_deny "cannot-canonicalise" "$label" "$path" ""
+    fi
+    root=$(repo_root_for_path "$canon" 2>/dev/null) || return 0
+    [ -n "$root" ] || return 0
+    if [ "$_bwimc_sourced" = 1 ] && [ "$_BWIMC_GIT_SUB" = commit ]; then
+        _bwimc_cwd_check_sourced "$root"
+    else
+        _bwimc_check_canon "$root" "$label" "$path"
+    fi
+}
+
+# _bwimc_git_clause CLAUSE_SP — per-clause state machine for arm (g). Reads
+# and updates the command-wide _bwimc_gcwd / _bwimc_gcwd_unres /
+# _bwimc_genv_* globals; must be called as a plain statement (never `$(…)`).
+_bwimc_git_clause() {
+    local toks=() t tu i n start v r
+    local dir gitdir="" wtree="" idx="" unres=0 sub="" args=()
+    local e_dir="$_bwimc_genv_dir" e_wt="$_bwimc_genv_wt" e_idx="$_bwimc_genv_idx"
+    local cwd="$_bwimc_gcwd"
+    while IFS= read -r t; do toks+=("$t"); done < <(_bwimc_tokenize "$1")
+    n=${#toks[@]}
+    # Grouping punctuation and compound-command keywords the clause splitter
+    # leaves attached (`if cd <p>; then git merge x; fi`).
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        case "$(_bwimc_unq "${toks[$i]}")" in
+            "{"|"!"|"("|""|if|then|else|elif|do|while|until|builtin) i=$((i+1)) ;;
+            *) break ;;
+        esac
+    done
+    if [ "$n" -gt 0 ]; then
+        t="${toks[$((n-1))]}"
+        case "$t" in
+            "}"|")") n=$((n-1)) ;;
+            *")") toks[n-1]="${t%)}" ;;
+        esac
+    fi
+    [ "$i" -lt "$n" ] || return 0
+    tu=$(_bwimc_unq "${toks[$i]}")
+
+    # cd / pushd / popd: move the modelled cwd for later clauses.
+    case "$tu" in
+        cd|pushd)
+            i=$((i+1))
+            while [ "$i" -lt "$n" ]; do
+                case "$(_bwimc_unq "${toks[$i]}")" in -L|-P|-e|-@) i=$((i+1)) ;; *) break ;; esac
+            done
+            if [ "$i" -ge "$n" ]; then
+                [ -n "${HOME:-}" ] && { _bwimc_gcwd="$HOME"; _bwimc_gcwd_unres=0; } || _bwimc_gcwd_unres=1
+            elif [ "$(_bwimc_unq "${toks[$i]}")" = "-" ]; then
+                _bwimc_gcwd_unres=1
+            elif r=$(_bwimc_resolve_abs "${toks[$i]}" "$cwd"); then
+                _bwimc_gcwd="$r"; _bwimc_gcwd_unres=0
+            else
+                _bwimc_gcwd_unres=1
+            fi
+            return 0 ;;
+        popd) _bwimc_gcwd_unres=1; return 0 ;;
+        export|unset)
+            local op="$tu"
+            i=$((i+1))
+            while [ "$i" -lt "$n" ]; do
+                t=$(_bwimc_unq "${toks[$i]}")
+                if [ "$op" = unset ]; then
+                    case "$t" in
+                        GIT_DIR) _bwimc_genv_dir="" ;;
+                        GIT_WORK_TREE) _bwimc_genv_wt="" ;;
+                        GIT_INDEX_FILE) _bwimc_genv_idx="" ;;
+                    esac
+                else
+                    case "${toks[$i]}" in
+                        GIT_DIR=*) _bwimc_genv_dir="${toks[$i]#GIT_DIR=}" ;;
+                        GIT_WORK_TREE=*) _bwimc_genv_wt="${toks[$i]#GIT_WORK_TREE=}" ;;
+                        GIT_INDEX_FILE=*) _bwimc_genv_idx="${toks[$i]#GIT_INDEX_FILE=}" ;;
+                    esac
+                fi
+                i=$((i+1))
+            done
+            return 0 ;;
+    esac
+
+    # Prefix: VAR=value assignments, `env [-i] [-u N] [-C DIR] [VAR=v]…`,
+    # and the transparent `command`/`exec`/`nohup`/`time` words.
+    while [ "$i" -lt "$n" ]; do
+        t="${toks[$i]}"
+        case "$t" in
+            GIT_DIR=*) e_dir="${t#GIT_DIR=}" ;;
+            GIT_WORK_TREE=*) e_wt="${t#GIT_WORK_TREE=}" ;;
+            GIT_INDEX_FILE=*) e_idx="${t#GIT_INDEX_FILE=}" ;;
+            [A-Za-z_]*=*) ;;
+            *)
+                case "$(_bwimc_unq "$t")" in
+                    env)
+                        i=$((i+1))
+                        while [ "$i" -lt "$n" ]; do
+                            t="${toks[$i]}"
+                            case "$t" in
+                                -u|--unset) i=$((i+1)) ;;
+                                -C|--chdir)
+                                    i=$((i+1))
+                                    if r=$(_bwimc_resolve_abs "${toks[$i]:-}" "$cwd"); then cwd="$r"; else unres=1; fi ;;
+                                --chdir=*)
+                                    if r=$(_bwimc_resolve_abs "${t#--chdir=}" "$cwd"); then cwd="$r"; else unres=1; fi ;;
+                                GIT_DIR=*) e_dir="${t#GIT_DIR=}" ;;
+                                GIT_WORK_TREE=*) e_wt="${t#GIT_WORK_TREE=}" ;;
+                                GIT_INDEX_FILE=*) e_idx="${t#GIT_INDEX_FILE=}" ;;
+                                -*|[A-Za-z_]*=*) ;;
+                                *) break ;;
+                            esac
+                            i=$((i+1))
+                        done
+                        continue ;;
+                    command|exec|nohup|time) ;;
+                    *) break ;;
+                esac
+                ;;
+        esac
+        i=$((i+1))
+    done
+    [ "$i" -lt "$n" ] || return 0
+    tu=$(_bwimc_unq "${toks[$i]}")
+    case "${tu##*/}" in
+        git|git.exe|GIT|GIT.EXE|Git.exe) ;;
+        *) return 0 ;;
+    esac
+    start=$((i+1))
+
+    # Global options, then the subcommand. Pass 1: cumulative -C.
+    dir="$cwd"
+    [ "$_bwimc_gcwd_unres" = 1 ] && unres=1
+    i=$start
+    while [ "$i" -lt "$n" ]; do
+        t=$(_bwimc_unq "${toks[$i]}")
+        case "$t" in
+            -C)
+                i=$((i+1))
+                if r=$(_bwimc_resolve_abs "${toks[$i]:-}" "$dir"); then dir="$r"; else unres=1; fi ;;
+            -c|--git-dir|--work-tree|--namespace|--config-env|--super-prefix) i=$((i+1)) ;;
+            -*) ;;
+            *) break ;;
+        esac
+        i=$((i+1))
+    done
+    # Pass 2: --git-dir / --work-tree (resolved against the FINAL -C dir).
+    i=$start
+    while [ "$i" -lt "$n" ]; do
+        t=$(_bwimc_unq "${toks[$i]}")
+        case "$t" in
+            -C|-c|--namespace|--config-env|--super-prefix) i=$((i+1)) ;;
+            --git-dir=*) gitdir="${toks[$i]#*=}" ;;
+            --git-dir) i=$((i+1)); gitdir="${toks[$i]:-}" ;;
+            --work-tree=*) wtree="${toks[$i]#*=}" ;;
+            --work-tree) i=$((i+1)); wtree="${toks[$i]:-}" ;;
+            -*) ;;
+            *) sub="$t"; break ;;
+        esac
+        i=$((i+1))
+    done
+    i=$((i+1))
+    while [ "$i" -lt "$n" ]; do
+        t="${toks[$i]}"
+        if _bwimc_redirect_op_of "$t"; then
+            [ -n "$_bwimc_op_rest" ] || i=$((i+1))
+        else
+            args+=("$(_bwimc_unq "$t")")
+        fi
+        i=$((i+1))
+    done
+
+    if [ "${#args[@]}" -gt 0 ]; then
+        _bwimc_git_sub_is_read "$sub" "${args[@]}" && return 0
+    else
+        _bwimc_git_sub_is_read "$sub" && return 0
+    fi
+
+    _BWIMC_GIT_SUB="$sub"
+    [ -n "$gitdir" ] || gitdir="$e_dir"
+    [ -n "$wtree" ] || wtree="$e_wt"
+    idx="$e_idx"
+    if [ "$unres" = 1 ]; then
+        _bwimc_deny "unresolved-git-target" "$1" "$dir" ""
+    fi
+    if [ -n "$gitdir" ]; then
+        r=$(_bwimc_resolve_abs "$gitdir" "$dir") || _bwimc_deny "unresolved-git-target" "$gitdir" "$dir" ""
+        _bwimc_git_check_path "$r" "git-dir $gitdir"
+    else
+        _bwimc_git_check_path "$dir" "repo $dir"
+    fi
+    if [ -n "$wtree" ]; then
+        r=$(_bwimc_resolve_abs "$wtree" "$dir") || _bwimc_deny "unresolved-git-target" "$wtree" "$dir" ""
+        _bwimc_git_check_path "$r" "work-tree $wtree"
+    fi
+    if [ -n "$idx" ]; then
+        r=$(_bwimc_resolve_abs "$idx" "$dir") || _bwimc_deny "unresolved-git-target" "$idx" "$dir" ""
+        _bwimc_git_check_path "$r" "index-file $idx"
+    fi
+    _BWIMC_GIT_SUB=""
+}
+
+_BWIMC_GIT_SUB=""
+_bwimc_gcwd="$_bwimc_cwd"
+_bwimc_gcwd_unres=0
+_bwimc_genv_dir=""
+_bwimc_genv_wt=""
+_bwimc_genv_idx=""
+while IFS= read -r _bwimc_clause; do
+    [ -n "$(printf '%s' "$_bwimc_clause" | tr -d '[:space:]')" ] || continue
+    # A backtick substitution's body is its own command (`$(` is already a
+    # clause break). Split quote-blind: a literal backtick inside quotes only
+    # yields an extra fragment to classify (toward MORE denies, never fewer).
+    _bwimc_gclause=$(_bwimc_space_before_redirects "$_bwimc_clause")
+    while IFS= read -r _bwimc_gfrag; do
+        _bwimc_git_clause "$_bwimc_gfrag"
+    done < <(printf '%s\n' "${_bwimc_gclause//\`/$'\n'}")
 done < <(_bwimc_split_clauses "$_bwimc_hb")
 
 # ---- (b)/(e) per-clause verb scan, command-position anchored ----
