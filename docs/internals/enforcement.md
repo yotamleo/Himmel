@@ -1803,10 +1803,13 @@ adopter lane depends on them. A candidate that does not resolve to exactly
 kernel resolves after following symlinks), or a command that changes directory
 (`cd`, `pushd`, `env -C`), denies outright: the conditions
 are checked in the cwd, so they prove nothing about another copy. So does a
-candidate inside a compound command or behind a wrapper (`env`, `timeout`,
-`xargs`, ...): another command in the same call can rewrite the checked bytes
-before the script runs (`cp x scripts/cr/pr-check-context.sh; bash …`), and a
-wrapper's operands can hide the word it runs. The
+candidate inside a compound command, behind a wrapper (`env`, `timeout`,
+`xargs`, ...) or after a `VAR=` prefix: another command in the same call can
+rewrite the checked bytes before the script runs (`cp x
+scripts/cr/pr-check-context.sh; bash …`), a wrapper's operands can hide the
+word it runs, and `BASH_ENV=` runs a file first. A glob or brace list is
+matched against the guarded names, so `scripts/c[r]/pr-chec[k]-context.sh`
+counts too. The
 canonical anchored fence is exempt only in its exact shape; only its echo text
 may vary. Classification uses bash builtins only, so a missing tool cannot turn
 it into a no-op. Text classification has limits, and the hook's `ponytail:` names them.

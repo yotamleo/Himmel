@@ -149,6 +149,10 @@ run "cp over the script; the literal, clean root -> deny" 2 \
 need_in_err "deny names the compound" "not one simple command"
 run "timeout 60 and the literal, clean root -> deny" 2 \
     "$(payload "timeout 60 $LITERAL" "$WT")" "$HR"
+# Round 11: BASH_ENV (or any VAR= prefix) runs code before the checked bytes.
+run "BASH_ENV= and the literal, clean root -> deny" 2 \
+    "$(payload "BASH_ENV=$TMP/x.sh $LITERAL" "$WT")" "$HR"
+need_in_err "deny names the VAR= prefix" "VAR= prefix"
 echo doc2 >"$WT/docs/a.md"
 run "an unrelated (docs) diff -> allow" 0 "$(payload "$LITERAL" "$WT")" "$HR"
 g -C "$WT" checkout -q -- docs/a.md
