@@ -203,7 +203,8 @@ hasnt "plain profile: no armed-at-B check" 'cadence-crontab-armed-at-B'
 
 # ---- 8. seed-provenance.sh: the stubs, the telegram + bridge state, refusals.
 seed() {  # <RT_PROFILE> — run the seed step from the scratch copy against the scratch HOME
-    OUT=$(HOME="$H" PATH="$FAKEBIN:$PATH" HIMMEL_RT_GUEST=1 RT_PROFILE="$1" bash "$LB/seed-provenance.sh" 2>&1); RC=$?
+    # GIT_TEMPLATE_DIR points nowhere: `git init` then creates no .git/hooks, as on the GitHub runners
+    OUT=$(HOME="$H" PATH="$FAKEBIN:$PATH" GIT_TEMPLATE_DIR=/nonexistent-git-template HIMMEL_RT_GUEST=1 RT_PROFILE="$1" bash "$LB/seed-provenance.sh" 2>&1); RC=$?
 }
 fresh; rm -rf "$H"; mkdir -p "$H"
 seed all

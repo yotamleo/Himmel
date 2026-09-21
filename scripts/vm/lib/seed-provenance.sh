@@ -144,6 +144,7 @@ echo "seed project" >"$P/README.md"
 git -C "$P" init -q
 git -C "$P" add -A
 git -C "$P" -c user.name=seed -c user.email=seed@invalid commit -qm "seed"
+mkdir -p "$P/.git/hooks"  # a git with no template dir (GitHub runners) creates none
 printf '#!/bin/sh\necho USER-PRECOMMIT\nexit 0\n' >"$P/.git/hooks/pre-commit"
 chmod 755 "$P/.git/hooks/pre-commit"
 rec proj/scripts/worktree.sh proj/scripts/hooks/check-commit-msg.sh proj/.claude/settings.json proj/README.md proj/.git/hooks/pre-commit
