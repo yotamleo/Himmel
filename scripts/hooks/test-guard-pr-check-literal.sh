@@ -213,6 +213,10 @@ cd scripts/cr && bash pr-check-context.sh
 bash scripts/cr/pr-check-*.sh
 bash scripts/cr/pr-check-{context,env}.sh
 bash scripts/cr/*
+bash scripts/c[r]/pr-chec[k]-context.sh
+bash scripts/c?/pr-*-context.sh
+bash scripts/c{r,}/pr-chec{k,}-context.sh
+bash scripts/c{r,{x,y}}/pr-chec{k,{x,y}}-context.sh
 f=pr-check-context.sh; bash scripts/cr/$f
 bash scripts/cr/$(echo pr-check-context.sh)
 VARIANTS

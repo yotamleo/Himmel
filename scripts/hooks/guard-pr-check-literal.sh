@@ -119,7 +119,9 @@ case "$tool" in Bash|"") ;; *) exit 0 ;; esac
 # A backslash-newline is a line continuation: the shell joins it away first.
 flat=${cmd//$'\\\n'/}
 flat=${flat//[\'\"\\]/}
-case "$flat" in *pr-check*|*/cr/*) ;; *) exit 0 ;; esac
+# A glob or brace list can spell a guarded name without either substring
+# (scripts/c[r]/pr-chec[k]-context.sh), so it passes on to classification.
+case "$flat" in *pr-check*|*/cr/*|*[][*?]*|*'{'*) ;; *) exit 0 ;; esac
 
 # The canonical fence runs the anchor's copy through $himmel_repo, so it is
 # exempt - but only in its exact shape. Anything added to it (a second
@@ -216,6 +218,15 @@ for tok in ${flat//[;&|()<>\`=]/$'\n'}; do
         *'$'[A-Za-z_'{']*) case "$flat" in *pr-check*) hit=1; unresolved=$tok ;; esac ;;
     esac
     case "$tok" in *pr-check*'{'*|*pr-check*'}'*) hit=1; unresolved=$tok ;; esac
+    # A brace list reads as a glob that matches every word it could expand to,
+    # innermost group first; a pair it cannot reduce is unresolvable.
+    while :; do
+        case "$tok" in *'{'*) ;; *) break ;; esac
+        rest=${tok##*'{'}
+        case "$rest" in *'}'*) ;; *) break ;; esac
+        tok=${tok%'{'*}'*'${rest#*'}'}
+    done
+    case "$tok" in *'{'*'}'*) hit=1; unresolved=$tok ;; esac
     rel=$(norm "$tok")
     if is_target "${rel##*/}"; then
         hit=1
