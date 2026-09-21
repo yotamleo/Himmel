@@ -112,6 +112,7 @@ printf '%s\n' '# console' '' '## Live state' '' \
     '' '## Results (newest at the bottom)' \
     '- DISPATCH N1 — token `V-N1-aaaa1111`, lock `cachyos-x8664-pid111111`, window 5' \
     '- lock cachyos-x8664-pid830420 was released at wrap; the console doc alone keeps it' \
+    '- DISPATCH AA-N1 — nonce AA-N1-abcdef12, stem form AB-HIMMEL-3340-N1-alpha-cafe0123 (two-letter consoles)' \
     '- RULING <b>bold</b> & ampersand' \
     > "$DOC"
 
@@ -131,7 +132,7 @@ fi
 html="$(cat "$board" 2>/dev/null)"
 
 # --- secrets: a board is published to a URL, so no nonce or lock token may reach it
-for secret in aaaa1111 bbbb2222 cccc3333 dddd4444 eeee5555 ffff6666 pid111111 pid222222 pid333333 pid830420 pid4242 'V-N1-' 'x8664'; do
+for secret in aaaa1111 bbbb2222 cccc3333 dddd4444 eeee5555 ffff6666 pid111111 pid222222 pid333333 pid830420 pid4242 'V-N1-' 'x8664' abcdef12 cafe0123 'AA-N1-'; do
     lacks "no nonce/lock-token text in the board: $secret" "$html" "$secret"
 done
 contains 'the legs are named by label' "$html" 'data-label="N3"'
