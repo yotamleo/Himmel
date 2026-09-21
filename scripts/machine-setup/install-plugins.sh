@@ -46,6 +46,7 @@ SCOPE="user"
 TEMPLATE="$REPO_ROOT/docs/setup/settings-template.json"
 HIMMEL_PATH="$REPO_ROOT"
 SETTINGS=""
+ORIG_ARGS=("$@")
 
 # ── Parse args ──────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -73,6 +74,27 @@ esac
 [[ -f "$TEMPLATE" ]] || { echo "ERROR: template missing: $TEMPLATE" >&2; exit 1; }
 command -v jq      >/dev/null || { echo "ERROR: jq required" >&2; exit 1; }
 command -v claude  >/dev/null || { echo "ERROR: claude CLI required on PATH" >&2; exit 1; }
+
+# ── Install provenance (HIMMEL-3332 S3) ─────────────────────────────────────
+# Records what this run registered — and whether it was already the operator's —
+# so an uninstall removes exactly what himmel brought. Under an adopt/himmelctl
+# session HIMMEL_PROVENANCE_IID is already exported and prov_begin is a no-op,
+# so these rows join that session; run by hand, this script opens its own.
+# A ledger failure is a warning, never an install failure: an unrecorded
+# registration reads as pre-existing at uninstall, which keeps it (residue over
+# breakage). ponytail: install-plugins.ps1 records nothing — the PowerShell
+# helpers are tracked in HIMMEL-3346.
+# shellcheck source=../lib/provenance.sh
+. "$REPO_ROOT/scripts/lib/provenance.sh"
+PROV_STEP="preflight"
+prov_finish() {
+  local rc=$?
+  if [[ $rc -eq 0 ]]; then prov_end ok || true; else prov_end failed "$PROV_STEP" || true; fi
+}
+trap prov_finish EXIT
+prov_begin --writer install-plugins.sh --target "$PWD" -- ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"} \
+  || echo "  warn: provenance session not opened (non-fatal)" >&2
+prov_note() { prov_record "$@" || echo "  warn: provenance record failed (non-fatal)" >&2; }
 
 # ── Helper: run-or-print ────────────────────────────────────────────────────
 run() {
@@ -118,23 +140,77 @@ run_step() {
 # ── Expand <himmel-path> in template ─────────────────────────────────────────
 EXPANDED=$(sed "s|<himmel-path>|$HIMMEL_PATH|g" "$TEMPLATE")
 
+# ── Resolve the scope's settings file (used from here on) ────────────────────
+case "$SCOPE" in
+  # HIMMEL-2353: honor CLAUDE_CONFIG_DIR like the sibling reconcile-enabled-plugins.sh:81
+  # idiom — a hermetic-test seam, not a per-call-site flag (a bare $HOME/.claude
+  # here is what let a test suite reach the operator's real settings.json).
+  user)    SETTINGS_FILE="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" ;;
+  project) SETTINGS_FILE="$PWD/.claude/settings.json" ;;
+  local)   SETTINGS_FILE="$PWD/.claude/settings.local.json" ;;
+esac
+[[ -n "$SETTINGS" ]] && SETTINGS_FILE="$SETTINGS"
+
+# ── Pre-existence probes for the provenance records (HIMMEL-3332 S3) ─────────
+# Read BEFORE the CLI call that could create the thing: `claude plugin install`
+# writes enabledPlugins[<spec>]=true itself, so afterwards "already there" and
+# "just installed" are indistinguishable. A `false` value still counts — the
+# operator declared it. A settings file that exists but cannot be parsed reads
+# as "declared": a wrong "no" would let uninstall remove the operator's own
+# entry, a wrong "yes" only leaves residue.
+PROV_CFG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+PROV_SCOPE="$SCOPE"; [[ "$SCOPE" == local ]] && PROV_SCOPE=project   # the ledger has no `local` scope; cli_scope keeps it
+
+settings_declares() {   # <section> <key> — key present in this scope's settings file
+  [[ -f "$SETTINGS_FILE" ]] || return 1
+  jq -e --arg s "$1" --arg k "$2" '(.[$s] // {}) | has($k)' "$SETTINGS_FILE" >/dev/null 2>&1 && return 0
+  jq -e . "$SETTINGS_FILE" >/dev/null 2>&1 && return 1
+  return 0
+}
+plugin_preexisted() {   # <spec> — the scope's enabledPlugins, or (user scope) the plugin's cache dir / install record
+  settings_declares enabledPlugins "$1" && return 0
+  [[ "$SCOPE" == user ]] || return 1
+  [[ -d "$PROV_CFG_DIR/plugins/cache/${1##*@}/${1%@*}" ]] && return 0
+  [[ -f "$PROV_CFG_DIR/plugins/installed_plugins.json" ]] \
+    && jq -e --arg k "$1" '(.plugins // {}) | has($k)' "$PROV_CFG_DIR/plugins/installed_plugins.json" >/dev/null 2>&1
+}
+marketplace_preexisted() {   # <name> — this scope's settings, or the CLI's user-level registry (a marketplace is global)
+  settings_declares extraKnownMarketplaces "$1" && return 0
+  [[ -d "$PROV_CFG_DIR/plugins/marketplaces/$1" ]] && return 0
+  [[ -f "$PROV_CFG_DIR/plugins/known_marketplaces.json" ]] \
+    && jq -e --arg k "$1" 'has($k)' "$PROV_CFG_DIR/plugins/known_marketplaces.json" >/dev/null 2>&1
+}
+# prov_register <kind> <unit> <preexisted true|false> [--field K=JSON ...]
+prov_register() {
+  local kind="$1" unit="$2" pre="$3" row=plugins
+  shift 3
+  [[ "$kind" == marketplace ]] && row=marketplaces
+  prov_note register "$kind" "$SETTINGS_FILE" --unit "$unit" --scope "$PROV_SCOPE" --class code --row "$row" \
+    --field "cli_scope=\"$SCOPE\"" --field "preexisted=$pre" --writer install-plugins.sh "$@"
+}
+
 # ── Register marketplaces ───────────────────────────────────────────────────
 echo "──── Registering marketplaces ────"
+PROV_STEP="marketplaces"
 # Materialize first so a jq error cannot silently look like an empty loop, and
 # keep accounting in this shell rather than the old pipeline's subshell.
+# Each line is `<template key><TAB><source>`: the key is the marketplace name
+# the provenance record is filed under.
 SOURCES=$(echo "$EXPANDED" | jq -r '
   .extraKnownMarketplaces
   | to_entries[]
-  | .value.source
-  | if .source == "github"    then .repo
-    elif .source == "directory" then .path
-    elif .source == "url"       then .url
-    else "UNKNOWN:" + (.|tostring)
-    end
+  | .key + "\t" + (.value.source
+    | if .source == "github"    then .repo
+      elif .source == "directory" then .path
+      elif .source == "url"       then .url
+      else "UNKNOWN:" + (.|tostring)
+      end)
 ' | tr -d '\r')
 FAILED_MARKETPLACES=()
-while IFS= read -r SRC; do
+while IFS= read -r MKT_LINE; do
+  MKT_NAME="${MKT_LINE%%$'\t'*}"; SRC="${MKT_LINE#*$'\t'}"
   [[ -z "$SRC" || "$SRC" == UNKNOWN:* ]] && { echo "  skip: $SRC"; continue; }
+  MKT_PRE=false; marketplace_preexisted "$MKT_NAME" && MKT_PRE=true
   echo "  marketplace add: $SRC"
   if ! run_step claude plugin marketplace add "$SRC" --scope "$SCOPE"; then
     echo "  marketplace retry in 2 seconds: $SRC" >&2
@@ -145,6 +221,7 @@ while IFS= read -r SRC; do
       continue
     fi
   fi
+  prov_register marketplace "$MKT_NAME" "$MKT_PRE"
   if [[ $DRY_RUN -eq 0 ]]; then echo "  marketplace registered: $SRC"; fi
 done <<< "$SOURCES"
 if [[ ${#FAILED_MARKETPLACES[@]} -gt 0 ]]; then
@@ -163,16 +240,6 @@ fi
 # file, for every template entry flagged autoUpdate:true. Patch only entries that
 # already exist there, so a marketplace-name vs template-key mismatch can't
 # create an orphan entry.
-case "$SCOPE" in
-  # HIMMEL-2353: honor CLAUDE_CONFIG_DIR like the sibling reconcile-enabled-plugins.sh:81
-  # idiom — a hermetic-test seam, not a per-call-site flag (a bare $HOME/.claude
-  # here is what let a test suite reach the operator's real settings.json).
-  user)    SETTINGS_FILE="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" ;;
-  project) SETTINGS_FILE="$PWD/.claude/settings.json" ;;
-  local)   SETTINGS_FILE="$PWD/.claude/settings.local.json" ;;
-esac
-[[ -n "$SETTINGS" ]] && SETTINGS_FILE="$SETTINGS"
-
 echo "──── Enabling marketplace auto-update ($SETTINGS_FILE) ────"
 # tr -d '\r': jq emits CRLF on Windows; a trailing \r would corrupt the name key.
 AUTO_NAMES=$(echo "$EXPANDED" | jq -r '
@@ -256,6 +323,7 @@ fi
 
 # ── Install plugins ─────────────────────────────────────────────────────────
 echo "──── Installing plugins ($SCOPE scope) ────"
+PROV_STEP="install"
 # tr -d '\r': jq emits CRLF on Windows; a trailing \r would corrupt both the
 # install spec and the later presence comparison (INSTALLED_SPECS is \r-free).
 # HIMMEL-2733 two-tier profile: the install set is enabledPlugins-true (the
@@ -272,7 +340,12 @@ SPECS=$(echo "$EXPANDED" | jq -r '
 while IFS= read -r SPEC; do
   [[ -z "$SPEC" ]] && continue
   echo "  install: $SPEC"
-  run_step claude plugin install "$SPEC" --scope "$SCOPE" || true
+  PLUGIN_PRE=false; plugin_preexisted "$SPEC" && PLUGIN_PRE=true
+  # A failed install registered nothing, so it records nothing (the presence
+  # verify below owns the failure).
+  if run_step claude plugin install "$SPEC" --scope "$SCOPE"; then
+    prov_register plugin "$SPEC" "$PLUGIN_PRE" --field "marketplace=$(jq -nc --arg v "${SPEC##*@}" '$v')"
+  fi
 done <<< "$SPECS"
 
 # ── Verify (post-install presence check, HIMMEL-361) ─────────────────────────
@@ -346,6 +419,7 @@ if [[ "$ONDEMAND_KEYS_COUNT" -gt 0 && -f "$SETTINGS_FILE" ]]; then
 fi
 
 echo "──── Verifying installed plugins ────"
+PROV_STEP="verify"
 # Fail closed: a verify step that cannot run has confirmed NOTHING, so it must
 # not report success — that silent pass is the exact bug HIMMEL-361 kills. The
 # pre-flight already proved `claude` is on PATH, so a `list` failure here is a
