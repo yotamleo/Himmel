@@ -250,7 +250,7 @@ run_test "(9c) HIMMEL-3364: one stdin window carries the prior stamp; with no pr
   [ "$(jq -r ".primaries_refreshed_at" "$CLAUDE_USAGE_CACHE")" = "1234567890" ] || exit 1;
   printf "%s" "{\"five_hour\":{\"utilization\":33},\"seven_day\":{\"utilization\":1},\"extra_usage\":{}}" > "$CLAUDE_USAGE_CACHE";
   printf "%s" "{\"rate_limits\":{\"seven_day\":{\"utilization\":21.5}}}" | bash "$PRODUCER";
-  jq -e ".primaries_refreshed_at" "$CLAUDE_USAGE_CACHE" >/dev/null && exit 1;
+  jq -e "has(\"primaries_refreshed_at\") | not" "$CLAUDE_USAGE_CACHE" >/dev/null || exit 1;
   exit 0;
 '
 
