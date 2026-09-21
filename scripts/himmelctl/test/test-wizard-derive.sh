@@ -616,7 +616,7 @@ hintOut=$(cd "$hG2" && PATH="$cG2" HOME="$hG2" USERPROFILE="$(winpath "$hG2")" H
       HIMMELCTL_REPO_ROOT="$(winpath "$fixtureG2")" \
       bash -c "$hint --dry-run" </dev/null 2>&1); hintRc=$?
 set -e
-printf '%s' "$hintOut" | grep -q 'himmelctl: this will offboard' \
+grep -q 'himmelctl: this will offboard' <<< "$hintOut" \
   || fail "caseG2 (HIMMEL-3327): the printed uninstall command does not resolve from another cwd / a spaced path (footer: $hint; rc=$hintRc; got: $hintOut)"
 echo "ok: caseG2 the printed uninstall command resolves from an unrelated cwd, with a space in the clone path"
 
