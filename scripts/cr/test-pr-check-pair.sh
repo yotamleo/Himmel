@@ -262,6 +262,13 @@ for f in "$CLAUDE_RUNBOOK" "$CODEX_SKILL"; do
     lane_entry_pattern='^[[:space:]]*bash scripts/cr/pr-check-context\.sh[[:space:]]*$'
     lane_entry_count=$(printf '%s\n' "$ii_calls" | grep -c -E "$lane_entry_pattern")
     ii_calls=$(printf '%s\n' "$ii_calls" | grep -v -E "$lane_entry_pattern")
+    # HIMMEL-3375: the same carve-out for pr-check-env's one fixed var-set, the
+    # bare literal `bash scripts/cr/pr-check-env.sh CR_CLAUDE_AGENTS` (full
+    # exact line). Its count and its conditions are pinned by the HIMMEL-3375
+    # block below.
+    env_lane_pattern='^[[:space:]]*bash scripts/cr/pr-check-env\.sh CR_CLAUDE_AGENTS[[:space:]]*$'
+    env_lane_count=$(printf '%s\n' "$ii_calls" | grep -c -E "$env_lane_pattern")
+    ii_calls=$(printf '%s\n' "$ii_calls" | grep -v -E "$env_lane_pattern")
     # The step-0 diff check NAMES scripts/guardrails/lib.sh as a pathspec and
     # invokes nothing, so it is not a himmel-script invocation line; its exact
     # line is pinned once per twin below.
@@ -345,6 +352,32 @@ for f in "$CLAUDE_RUNBOOK" "$CODEX_SKILL"; do
         pass "$n: (ii) himmel-lane step 0 is gated on the himmel lane and on a diff that touches no scripts/cr/ file (HIMMEL-3359 ruling)"
     else
         fail "$n: (ii) himmel-lane step 0 is not gated on the lane and scripts/cr/ conditions -- expected exactly one \`git diff --name-only refs/remotes/origin/main -- scripts/cr/ scripts/guardrails/lib.sh\` code line (found $cr_touch_check), exactly one \`git rev-parse --path-format=absolute --git-common-dir; printenv HIMMEL_REPO; git rev-parse --show-prefix\` code line (found $lane_check), plus the prose 'ONLY when that check exits 0 and prints nothing', 'ONLY if its first line equals its second line followed by', 'and its third line is empty', 'use the canonical fence above', 'always against refs/remotes/origin/main, even on a stacked PR' and 'defense in depth, not the trust root' (HIMMEL-3359 console ruling)"
+    fi
+
+    # HIMMEL-3375: pr-check-env.sh steers gate policy, so its bare literal
+    # (the one shape a leg's allow rule can match) is permitted only under
+    # step 0's own conditions. Every anchored `"<himmel_dir>/scripts/cr/
+    # pr-check-env.sh" CR_CLAUDE_AGENTS` call must have exactly one bare
+    # alternative, no other pr-check-env spelling may appear in code, and each
+    # bare literal must sit under a line saying it is used ONLY when step 0
+    # itself ran by the himmel-lane spelling (so step 0's lane proof and its
+    # scripts/cr/ diff check already passed). The Claude runbook must carry
+    # the call at all (anti-vacuity); the Codex twin never calls it (0 = 0).
+    # ponytail: the phrase pin is a substring grep -- it proves the phrase is
+    # present on as many lines as there are bare literals, not that each one
+    # sits directly above its fence (HIMMEL-3382).
+    env_anchor_count=$(printf '%s\n' "$calls" | grep -c -E '^[[:space:]]*bash "<himmel_dir>/scripts/cr/pr-check-env\.sh" CR_CLAUDE_AGENTS[[:space:]]*$')
+    env_all_calls=$(printf '%s\n' "$calls" | grep -c 'scripts/cr/pr-check-env\.sh')
+    env_phrase=$(grep -c 'ONLY when step 0 itself ran by the himmel-lane spelling' "$f")
+    env_need_calls=0
+    [ "$f" = "$CLAUDE_RUNBOOK" ] && env_need_calls=1
+    if [ "$env_lane_count" -eq "$env_anchor_count" ] \
+       && [ "$env_all_calls" -eq $((env_anchor_count + env_lane_count)) ] \
+       && [ "$env_phrase" -ge "$env_lane_count" ] \
+       && { [ "$env_need_calls" -eq 0 ] || [ "$env_anchor_count" -gt 0 ]; }; then
+        pass "$n: (ii) pr-check-env.sh: $env_anchor_count anchored call(s), each with exactly one himmel-lane literal gated on step 0's conditions (HIMMEL-3375)"
+    else
+        fail "$n: (ii) pr-check-env.sh himmel-lane literals are not gated on step 0's conditions -- found $env_anchor_count anchored call(s), $env_lane_count bare \`bash scripts/cr/pr-check-env.sh CR_CLAUDE_AGENTS\` line(s) (must be equal; the Claude runbook must carry at least one), $env_all_calls pr-check-env.sh code line(s) in all (no other spelling allowed), and $env_phrase line(s) saying 'ONLY when step 0 itself ran by the himmel-lane spelling' (need at least as many as bare literals) (HIMMEL-3375)"
     fi
 
     # (iii) the HIMMEL-2034 armed-repo predicate still guards the ONE

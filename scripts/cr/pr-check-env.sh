@@ -36,12 +36,56 @@
 # Process env wins over .env - load_dotenv is non-clobbering, so a value
 # already live in the environment is never overwritten.
 #
+# A copy that is not $HIMMEL_REPO's hands off to the anchor's copy first
+# (HIMMEL-3375, below).
+#
 # Exit: 0 = resolved (even when every variable is unset); 2 = an argument is
-# not a plausible env var name (^[A-Za-z_][A-Za-z0-9_]*$).
+# not a plausible env var name (^[A-Za-z_][A-Za-z0-9_]*$), or the anchor
+# hand-off failed closed (HIMMEL_REPO unset/empty, no anchor copy, or a
+# second hand-off).
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HIMMEL_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# HIMMEL-3375 - the himmel-lane RELATIVE entry. A leg may run this as the
+# fixed literal `bash scripts/cr/pr-check-env.sh CR_CLAUDE_AGENTS` (the one
+# shape a permission allow rule can match), which runs THIS copy - the
+# branch's. What it prints steers gate policy (CR_REQUIRE_CROSS_MODEL,
+# CR_PROFILE, CR_CLAUDE_AGENTS), so a copy that is not the trusted anchor's
+# never decides anything: it hands straight to the anchor's copy, with the
+# same arguments. HIMMEL_REPO is read from this process's own environment,
+# never derived from cwd or a file the branch supplies (HIMMEL-2226 Finding 1;
+# the same anchor pr-check-context.sh uses). The hand-off runs HERE, before
+# this copy sources or runs any other file of the branch's own (load-dotenv.sh
+# is sourced only further down). An unset or empty HIMMEL_REPO, or an anchor
+# with no copy of this script, fails closed rather than letting this copy
+# decide. One hop only: a hand-off that lands on a copy which is still not the
+# anchor would loop forever, so it refuses instead.
+# ponytail: this guard is defense in depth, NOT the trust root. It lives in
+# the branch's own bytes, so a branch that deletes it also deletes the
+# hand-off. The trust root is the runbook condition (HIMMEL-3359 ruling): the
+# bare literal is permitted only in a himmel checkout at its worktree root and
+# on a diff that touches no scripts/cr/ file; anything else enters by the
+# anchored "<himmel_dir>/scripts/cr/pr-check-env.sh" spelling.
+anchor="${HIMMEL_REPO:-}"
+if [ -z "$anchor" ]; then
+    echo "pr-check-env: HIMMEL_REPO is unset or empty - refusing to let this copy ($SCRIPT_DIR) decide; adopt/setup wires it into settings.json env, or export it non-empty in the launching shell, then re-run" >&2
+    exit 2
+fi
+if ! [ "$HIMMEL_ROOT" -ef "$anchor" ]; then
+    if [ ! -f "$anchor/scripts/cr/pr-check-env.sh" ]; then
+        echo "pr-check-env: entered through a non-anchor copy ($SCRIPT_DIR) and the anchor carries no scripts/cr/pr-check-env.sh ($anchor) - refusing to let this copy decide; fix HIMMEL_REPO, then re-run" >&2
+        exit 2
+    fi
+    if [ -n "${PR_CHECK_ENV_HANDED_OFF:-}" ]; then
+        echo "pr-check-env: already handed off once and still not the anchor's copy ($SCRIPT_DIR vs $anchor) - refusing rather than hand off in a loop" >&2
+        exit 2
+    fi
+    export PR_CHECK_ENV_HANDED_OFF=1
+    echo "pr-check-env: entered through a non-anchor copy ($SCRIPT_DIR) - handing off to the anchor's copy ($anchor/scripts/cr/pr-check-env.sh)" >&2
+    exec bash "$anchor/scripts/cr/pr-check-env.sh" "$@"
+fi
 
 usage() {
     cat <<'EOF'

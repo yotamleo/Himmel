@@ -44,6 +44,9 @@ const GATE_RULES = [
   // HIMMEL-3359: the himmel-lane step-0 entry. Exact literal — the script
   // resolves HIMMEL_REPO and hands off to the anchor's copy itself.
   'Bash(bash scripts/cr/pr-check-context.sh)',
+  // HIMMEL-3375: the one fixed var-set the runbook spells (steps 2.5 / 3.5).
+  // Exact literal — the script hands a non-anchor copy off to the anchor's.
+  'Bash(bash scripts/cr/pr-check-env.sh CR_CLAUDE_AGENTS)',
   'Bash(bash scripts/cr/ledger-append.sh:*)',
   'Bash(bash scripts/check-ci.sh:*)',
 ];
@@ -151,7 +154,12 @@ const BAD_GATE_RULES = [
   ['known-findings without --diff', 'Bash(bash scripts/cr/known-findings.sh)'],
   ['known-findings gains a wildcard', 'Bash(bash scripts/cr/known-findings.sh --diff:*)'],
   ['known-findings blanket prefix', 'Bash(bash scripts/cr/known-findings.sh:*)'],
-  ['pr-check-env stays out', 'Bash(bash scripts/cr/pr-check-env.sh:*)'],
+  // HIMMEL-3375: pr-check-env is admitted as ONE exact var-set literal only.
+  ['pr-check-env gains a wildcard', 'Bash(bash scripts/cr/pr-check-env.sh:*)'],
+  ['pr-check-env no-arg (the full default set)', 'Bash(bash scripts/cr/pr-check-env.sh)'],
+  ['pr-check-env widened var set', 'Bash(bash scripts/cr/pr-check-env.sh CR_CLAUDE_AGENTS CR_PROFILE)'],
+  ['pr-check-env wildcard var tail', 'Bash(bash scripts/cr/pr-check-env.sh CR_CLAUDE_AGENTS:*)'],
+  ['pr-check-env other var', 'Bash(bash scripts/cr/pr-check-env.sh CR_PROFILE)'],
   ['claude-floor-review stays out', 'Bash(bash scripts/cr/claude-floor-review.sh:*)'],
   // HIMMEL-3359: the step-0 entry is admitted as an exact literal only.
   ['pr-check-context gains a wildcard', 'Bash(bash scripts/cr/pr-check-context.sh:*)'],
