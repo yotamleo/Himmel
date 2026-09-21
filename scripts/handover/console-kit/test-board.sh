@@ -82,7 +82,9 @@ mkleg() {  # mkleg <name> <bullet>...
     local name="$1"; shift
     printf '%s\n' '# leg' '## Results' "$@" > "$B/$name-2026-09-21-RESUME.md"
 }
-mkleg HIMMEL-3340-N1-alpha '- 12:00 LIVE — working'
+# A lock token that straddles the 220-char clip must not survive as a fragment.
+pad190="$(printf '%190s' '' | tr ' ' x)"
+mkleg HIMMEL-3340-N1-alpha "- 12:00 LIVE — working ${pad190:0:176} lock cachyos-x8664-pid424242 after"
 mkleg HIMMEL-3340-N2-beta '- 12:00 LIVE — PR 2002 open, watching CI'
 mkleg HIMMEL-3332-N3-gamma '- 12:00 LIVE — building' '- 12:10 READY 2001 0123456789abcdef GREEN'
 mkleg HIMMEL-3348-N4-delta '- 12:00 LIVE — PR 1995 was merged'
@@ -129,7 +131,7 @@ fi
 html="$(cat "$board" 2>/dev/null)"
 
 # --- secrets: a board is published to a URL, so no nonce or lock token may reach it
-for secret in aaaa1111 bbbb2222 cccc3333 dddd4444 eeee5555 ffff6666 pid111111 pid222222 pid333333 pid830420 'V-N1-' 'x8664'; do
+for secret in aaaa1111 bbbb2222 cccc3333 dddd4444 eeee5555 ffff6666 pid111111 pid222222 pid333333 pid830420 pid4242 'V-N1-' 'x8664'; do
     lacks "no nonce/lock-token text in the board: $secret" "$html" "$secret"
 done
 contains 'the legs are named by label' "$html" 'data-label="N3"'

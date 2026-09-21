@@ -65,8 +65,10 @@ const redact = (s) => s
 const esc = (s) => String(s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-const safe = (s) => esc(redact(String(s)));
 const clip = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+// Redact BEFORE clipping: a clip that cuts a lock token in half would leave a
+// fragment the patterns no longer match.
+const safe = (s, n = Infinity) => esc(clip(redact(String(s)), n));
 
 // ---------------------------------------------------------------- console doc
 const docText = readFileSync(docPath, 'utf8');
@@ -227,7 +229,7 @@ const consoleName = basename(docPath, '.md');
 
 const legCard = (l) => `<li class="leg" data-label="${esc(l.label)}" data-phase="${esc(l.phase)}"${l.ci ? ` data-ci="${l.ci}"` : ''}>
   <div class="leg-head"><b>${esc(l.label)}</b> <span class="tk">${esc(l.ticket)}</span> <span class="ph">${esc(l.phase)}</span>${l.prNum ? ` <span class="pr">PR #${l.prNum}${l.ci ? ` · ${l.ci}` : ''}</span>` : ''}</div>
-  <div class="leg-last">${l.last ? safe(clip(l.last, 220)) : '<i>no handover bullet yet</i>'}</div>
+  <div class="leg-last">${l.last ? safe(l.last, 220) : '<i>no handover bullet yet</i>'}</div>
 </li>`;
 const ladder = LADDER.map((p) => `<li data-ladder="${esc(p)}" data-count="${legs.filter((l) => l.phase === p).length}"><span>${esc(p)}</span><b>${legs.filter((l) => l.phase === p).length}</b></li>`).join('\n');
 const needRows = legs.filter((l) => l.needs).map((l) => {
@@ -235,15 +237,15 @@ const needRows = legs.filter((l) => l.needs).map((l) => {
         : l.phase === 'BLOCKED' ? 'BLOCKED — needs a ruling'
             : l.tail === 'FINDING' ? 'FINDING — needs a ruling'
                 : `lock ${l.lock} — lost or stale`;
-    return `<li data-need="${esc(l.label)}"><b>${esc(l.label)}</b> ${esc(why)}<div class="leg-last">${safe(clip(l.last, 160))}</div></li>`;
+    return `<li data-need="${esc(l.label)}"><b>${esc(l.label)}</b> ${esc(why)}<div class="leg-last">${safe(l.last, 160)}</div></li>`;
 }).join('\n');
 const epicRows = epics.map((e) => {
     const pct = e.merged === '?' ? 0 : Math.min(100, Math.round((e.merged / Math.max(1, e.total)) * 100));
     return `<li data-epic="${esc(e.key)}" data-merged="${e.merged}" data-total="${e.total}"><b>${esc(e.key)}</b> ${e.merged}/${e.total}<div class="bar"><i style="width:${pct}%"></i></div></li>`;
 }).join('\n');
-const prRows = (openPrs || []).map((p) => `<li data-ci="${ciOf(p)}"><b>#${p.number}</b> ${safe(clip(p.title, 90))} <span class="pr">${ciOf(p)}${p.isDraft ? ' · draft' : ''}</span></li>`).join('\n');
-const mergedRows = (mergedPrs || []).map((p) => `<li><b>#${p.number}</b> ${safe(clip(p.title, 90))}</li>`).join('\n');
-const logRows = consoleResults.map((l) => `<li>${safe(clip(l.slice(2), 200))}</li>`).join('\n');
+const prRows = (openPrs || []).map((p) => `<li data-ci="${ciOf(p)}"><b>#${p.number}</b> ${safe(p.title, 90)} <span class="pr">${ciOf(p)}${p.isDraft ? ' · draft' : ''}</span></li>`).join('\n');
+const mergedRows = (mergedPrs || []).map((p) => `<li><b>#${p.number}</b> ${safe(p.title, 90)}</li>`).join('\n');
+const logRows = consoleResults.map((l) => `<li>${safe(l.slice(2), 200)}</li>`).join('\n');
 const panel = (title, body, empty) => `<section><h2>${title}</h2>${body ? `<ul>${body}</ul>` : `<p class="none">${empty}</p>`}</section>`;
 
 const html = `<!doctype html>
