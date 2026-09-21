@@ -1022,57 +1022,110 @@ cr_body_gate() {
 
     _cr_body_read
 
-    # HIMMEL-3360: CodeRabbit is best effort — an incrementally-silent pass
-    # (a prior head's outside-diff findings with no substantive review at this
-    # head) is no longer itself a block; _cr_outside_gate below still blocks
-    # on any UNDISPOSITIONED outside-diff finding at THIS head. The prior
-    # head's count is surfaced as a NOTE (HIMMEL-1147: the failure mode is
-    # invisibility, not permissiveness): dispositions are keyed to the exact
-    # head and a finding the new commit fixed has no ledger row, so gating on
-    # the prior list without a review at this head would be the retired
-    # exit-4 hold under another name.
+    # HIMMEL-3360 operator ruling (2026-09-21): best effort covers ABSENCE
+    # only — a rate-limited/silent/not-yet-posted CodeRabbit never waits or
+    # re-triggers. It does NOT cover a finding CodeRabbit already POSTED: when
+    # this head carries no review of its own (substantive=0, outside=0) but a
+    # prior head DOES carry outside-diff findings (prior_outside>0), that
+    # prior review still GOVERNS the gate — it must be dispositioned exactly
+    # like a finding at this head, just keyed to the head that actually
+    # carries it.
     if [ "$_cbg_prior_outside" -gt 0 ] && [ "$_cbg_substantive" -eq 0 ] && [ "$_cbg_outside" -eq 0 ]; then
-        echo "check-ci: NOTE — CodeRabbit posted no substantive review at head $head0 of PR #$num while a prior head carried $_cbg_prior_outside outside-diff finding(s): best effort (HIMMEL-3360), not gating; confirm each is fixed or dispositioned before merging." >&2
+        local _ph
+        _ph=$(_cr_governing_prior_head)
+        [ -n "$_ph" ] || exit 2
+        _cr_outside_gate "$_ph" ""
+        echo "check-ci: NOTE — CodeRabbit posted no review at head $head0 of PR #$num; its latest review (head $_ph) outside-diff findings are all dispositioned (best effort, HIMMEL-3360: no wait, no re-trigger)" >&2
     fi
 
     body_outside_note=""
     if [ "$_cbg_outside" -gt 0 ]; then
-        _cr_outside_gate
+        _cr_outside_gate "$head0" "$_cbg_outside"
     fi
 
     body_nitpick="$_cbg_nitpick"
     body_additional="$_cbg_additional"
 }
 
-# _cr_outside_gate — HIMMEL-3124. An outside-diff-range finding has no thread,
-# so it used to be clearable only by a commit (which moves the head and discards
-# CodeRabbit's review, HIMMEL-1252 — an entire re-review over a Minor). Each one
-# may instead carry an explicit, adjudicated ledger disposition AT THIS EXACT
-# HEAD (cr_ledger_outside_dispositioned: deferred + tracked ticket + reason, or
-# disproved + reason; never severity-gated). ANY undispositioned finding keeps
-# the old exit 3; a list that cannot be trusted (query failure, or the header
-# count differs from what parsed) is exit 2 and prints NO recording recipe.
-# On success sets body_outside_note for _cbg_note.
+# _cr_governing_prior_head — HIMMEL-3360 operator ruling: which prior head
+# carries CodeRabbit's latest review, when this head (head0) carries none of
+# its own? The latest SUBSTANTIVE bot review not at head0 (by submitted_at,
+# ties by id) — same review cr_body_findings/cr_body_outside_findings would
+# select if called with that head. Prints the commit_id on stdout. `exit 2`
+# here only exits the command-substitution SUBSHELL the caller reads from, not
+# the parent script — so the caller must capture stdout and re-check for
+# empty, re-exiting itself in that case (the error is already on stderr).
+_cr_governing_prior_head() {
+    local uid json ph
+    uid=$(cr_signal_bot_id)
+    case "$uid" in
+        ''|*[!0-9]*)
+            echo "check-ci: ${ctx}could not resolve which prior head carries CodeRabbit's latest review on PR #$num (query/parse failure) — cannot evaluate the gate; re-run" >&2
+            exit 2 ;;
+    esac
+    json=$(_cbf_reviews_json "$owner" "$repo" "$num") || {
+        echo "check-ci: ${ctx}could not resolve which prior head carries CodeRabbit's latest review on PR #$num (query/parse failure) — cannot evaluate the gate; re-run" >&2
+        exit 2
+    }
+    ph=$(printf '%s' "$json" | jq -r --argjson uid "$uid" --arg head "$head0" \
+        '[ .[] | select(.user.id == $uid and .commit_id != $head and ((.body // "") | test("\\S"))) ] | sort_by(.submitted_at, .id) | .[-1] | .commit_id // ""' \
+        2>/dev/null || true)
+    if [ -z "$ph" ]; then
+        echo "check-ci: ${ctx}could not resolve which prior head carries CodeRabbit's latest review on PR #$num (query/parse failure) — cannot evaluate the gate; re-run" >&2
+        exit 2
+    fi
+    printf '%s' "$ph"
+}
+
+# _cr_outside_gate <gate_head> <expected_count> — HIMMEL-3124. An outside-diff-
+# range finding has no thread, so it used to be clearable only by a commit
+# (which moves the head and discards CodeRabbit's review, HIMMEL-1252 — an
+# entire re-review over a Minor). Each one may instead carry an explicit,
+# adjudicated ledger disposition AT THIS EXACT HEAD (cr_ledger_outside_
+# dispositioned: deferred + tracked ticket + reason, or disproved + reason;
+# never severity-gated). ANY undispositioned finding keeps the old exit 3; a
+# list that cannot be trusted (query failure, or the header count differs from
+# what parsed) is exit 2 and prints NO recording recipe.
+#
+# <gate_head> is head0 at the call site above, OR the governing PRIOR head
+# _cr_governing_prior_head resolved (HIMMEL-3360 operator ruling: best effort
+# covers ABSENCE at head0 only, not a finding CodeRabbit already posted at a
+# prior head). <expected_count> is the reader's own header count, used for a
+# format-drift cross-check; empty skips that check — on the prior-head path
+# cr_body_outside_findings's own header-vs-parsed check (inside the reader)
+# already covers it. On success sets body_outside_note for _cbg_note.
 _cr_outside_gate() {
-    local rows rc id sev file line title n_ok=0 n_all=0 c=0 i=0 s=0 msg="" q qf
-    rows=$(cr_body_outside_findings "$owner" "$repo" "$num" "$head0")
+    local gate_head="$1" expected="$2"
+    local rows rc id sev file line title n_ok=0 n_all=0 c=0 i=0 s=0 msg="" q qf extra use_head0=0 dispositioned
+    rows=$(cr_body_outside_findings "$owner" "$repo" "$num" "$gate_head")
     rc=$?
     case "$rc" in
         0) ;;
         1)
-            echo "check-ci: ${ctx}could not read the outside-diff findings of CodeRabbit's review body on head $head0 of PR #$num (query/parse failure) — cannot evaluate the gate; re-run" >&2
+            echo "check-ci: ${ctx}could not read the outside-diff findings of CodeRabbit's review body on head $gate_head of PR #$num (query/parse failure) — cannot evaluate the gate; re-run" >&2
             exit 2 ;;
         2)
-            echo "check-ci: ${ctx}CodeRabbit's review body on head $head0 of PR #$num lists outside-diff findings the parser cannot fully read (format drift) — cannot evaluate the gate; check the PR body manually" >&2
+            echo "check-ci: ${ctx}CodeRabbit's review body on head $gate_head of PR #$num lists outside-diff findings the parser cannot fully read (format drift) — cannot evaluate the gate; check the PR body manually" >&2
             exit 2 ;;
         *)
             echo "check-ci: ${ctx}cr-body-findings returned an unrecognized rc=$rc on PR #$num — cannot evaluate the gate; re-run" >&2
             exit 2 ;;
     esac
+    extra=""
+    if [ "$gate_head" != "$head0" ]; then
+        extra='   (or: --verdict fixed --reason "fixed in <sha>")'
+        use_head0=1
+    fi
     while IFS=$'\t' read -r id sev file line title; do
         [ -n "$id" ] || continue
         n_all=$((n_all + 1))
-        if cr_ledger_outside_dispositioned "$head0" "$id" "$file" "$line"; then
+        dispositioned=1
+        if [ "$use_head0" -eq 1 ]; then
+            cr_ledger_outside_dispositioned "$gate_head" "$id" "$file" "$line" "$head0" && dispositioned=0
+        else
+            cr_ledger_outside_dispositioned "$gate_head" "$id" "$file" "$line" && dispositioned=0
+        fi
+        if [ "$dispositioned" -eq 0 ]; then
             n_ok=$((n_ok + 1))
             case "$sev" in crit) c=$((c + 1)) ;; imp) i=$((i + 1)) ;; *) s=$((s + 1)) ;; esac
         else
@@ -1082,15 +1135,19 @@ _cr_outside_gate() {
             qf=${file//\'/\'\\\'\'}
             msg="$msg
   - $id [$sev] $file:$line — $title
-      bash scripts/cr/ledger-append.sh finding --head $head0 --branch <pr-branch> --model coderabbit-outside --id $id --severity $sev --file '$qf' --line '$line' --text '$q' --verdict deferred --deferred-to <TICKET> --reason \"<why>\"   (or: --verdict disproved --reason \"<why>\")"
+      bash scripts/cr/ledger-append.sh finding --head $gate_head --branch <pr-branch> --model coderabbit-outside --id $id --severity $sev --file '$qf' --line '$line' --text '$q' --verdict deferred --deferred-to <TICKET> --reason \"<why>\"   (or: --verdict disproved --reason \"<why>\")$extra"
         fi
     done <<<"$rows"
-    if [ "$n_all" -ne "$_cbg_outside" ]; then
-        echo "check-ci: ${ctx}CodeRabbit's review body on head $head0 of PR #$num counts $_cbg_outside outside-diff finding(s) but $n_all parsed out (format drift) — cannot evaluate the gate; check the PR body manually" >&2
+    if [ -n "$expected" ] && [ "$n_all" -ne "$expected" ]; then
+        echo "check-ci: ${ctx}CodeRabbit's review body on head $gate_head of PR #$num counts $expected outside-diff finding(s) but $n_all parsed out (format drift) — cannot evaluate the gate; check the PR body manually" >&2
         exit 2
     fi
     if [ "$n_ok" -lt "$n_all" ]; then
-        echo "check-ci: ${ctx}CodeRabbit's review body reports $n_all outside-diff-range finding(s) on head $head0 of PR #$num, $((n_all - n_ok)) not dispositioned — these carry no thread to resolve; address them, or record an explicit disposition at this exact head (deferred needs a tracked ticket AND a reason; a disposition never carries to a new head), then re-run:$msg" >&2
+        local prefix=""
+        if [ "$gate_head" != "$head0" ]; then
+            prefix="this head $head0 carries no CodeRabbit review (best effort, HIMMEL-3360: nothing waits or re-triggers), so the gate reads CodeRabbit's latest review, at head $gate_head: "
+        fi
+        echo "check-ci: ${ctx}${prefix}CodeRabbit's review body reports $n_all outside-diff-range finding(s) on head $gate_head of PR #$num, $((n_all - n_ok)) not dispositioned — these carry no thread to resolve; address them, or record an explicit disposition at head $gate_head (deferred needs a tracked ticket AND a reason; a disposition never carries to a new head), then re-run:$msg" >&2
         exit 3
     fi
     body_outside_note=" (outside-diff dispositioned=$n_ok (crit=$c imp=$i sug=$s))"

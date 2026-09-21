@@ -148,6 +148,13 @@ case "$1 $2" in
       body-drift)   echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"abc123","body":"Outside diff range comments were noted but the count did not survive a format change"}]' ;;
       # HIMMEL-3124: a REAL captured review body (fixture file) at the head.
       body-file)    jq -n --rawfile b "$GH_STUB_BODY_FILE" '[{user:{id:136622811,login:"coderabbitai[bot]"},commit_id:"abc123",submitted_at:"2026-07-16T19:10:00Z",id:1,body:$b}]' ;;
+      # HIMMEL-3360: a REAL captured review body at a PRIOR head (shaOLD, not
+      # abc123) — the governing-prior-head branch reads this via
+      # cr_body_outside_findings called with head=shaOLD.
+      body-a2-file) jq -n --rawfile b "$GH_STUB_BODY_FILE" '[{user:{id:136622811,login:"coderabbitai[bot]"},commit_id:"shaOLD",submitted_at:"2026-07-16T19:10:00Z",id:1,body:$b}]' ;;
+      # Same shape, unparseable: a header count with no per-finding items —
+      # format drift, at the prior head.
+      body-a2-drift) echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"shaOLD","body":"Outside diff range comments (2)"}]' ;;
       body-error)   exit 1 ;;
       *)            echo '[]' ;;
     esac ;;
@@ -486,6 +493,34 @@ rm -f "$OD_LEDGER"
 printf '%s\n' "$OD_ROW" > "$TMP/forged-ledger.jsonl"
 CR_LEDGER="$TMP/forged-ledger.jsonl" GH_STUB_MODE=body-file t od-env-forged-ledger-ignored-blocks 2
 rm -f "$OD_LEDGER"
+export -n GH_STUB_BODY_FILE; unset GH_STUB_BODY_FILE
+
+# ── HIMMEL-3360 operator ruling (2026-09-21): best effort covers ABSENCE
+# only. This head (abc123) carries no CodeRabbit review of its own, but a
+# PRIOR head (shaOLD) carries a real outside-diff finding CodeRabbit DID
+# post — that finding still blocks until dispositioned; the gate reads the
+# governing prior review instead of the silent current head. ───────────────
+export GH_STUB_BODY_FILE="$FIXD/pr-777-outside-diff-blockquote.body.txt"
+
+rm -f "$OD_LEDGER"
+GH_STUB_MODE=body-a2-file t a2-prior-head-undispositioned-blocks 2
+grep -qi "not dispositioned" "$TMP/out-a2-prior-head-undispositioned-blocks" || { echo "FAIL a2-prior-head-undispositioned block reason missing 'not dispositioned'"; fail=$((fail+1)); }
+grep -q "shaOLD" "$TMP/out-a2-prior-head-undispositioned-blocks" || { echo "FAIL a2-prior-head-undispositioned block does not name the governing prior head"; fail=$((fail+1)); }
+grep -q "cr-od-39c3193c8945" "$TMP/out-a2-prior-head-undispositioned-blocks" || { echo "FAIL a2-prior-head-undispositioned block does not list the finding id"; fail=$((fail+1)); }
+
+od_ledger "$(od_variant '.head="shaOLD"')"
+GH_STUB_MODE=body-a2-file t a2-dispositioned-at-prior-head-allows 0
+grep -qi "dispositioned=1" "$TMP/err-a2-dispositioned-at-prior-head-allows" || { echo "FAIL a2-dispositioned-at-prior-head ALLOW note missing on stderr"; fail=$((fail+1)); }
+
+# the SAME finding disposed at the WRONG head (abc123, the certified head that
+# carries no review) instead of the governing prior head (shaOLD): still blocks.
+od_ledger "$(od_variant '.head="abc123"')"
+GH_STUB_MODE=body-a2-file t a2-dispositioned-at-wrong-head-blocks 2
+
+rm -f "$OD_LEDGER"
+GH_STUB_MODE=body-a2-drift t a2-unparseable-prior-body-blocks 2
+grep -qi "format drift" "$TMP/out-a2-unparseable-prior-body-blocks" || { echo "FAIL a2-unparseable-prior-body block reason missing 'format drift'"; fail=$((fail+1)); }
+
 export -n GH_STUB_BODY_FILE; unset GH_STUB_BODY_FILE
 
 # HIMMEL-3360: the review-FRESHNESS mechanism (HIMMEL-1181, cr_review_freshness

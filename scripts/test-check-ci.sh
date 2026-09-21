@@ -45,8 +45,9 @@
 #   24. non-adjacent A→B→A cursor cycle      → rc 2 via the 50-page cap (codex follow-up)
 #   25. watch exits non-1 with empty stderr  → rc 2, only gh rc 1 is a red check (CR follow-up)
 #   26. watch rc 1 but zero checks in the fail bucket → rc 2 (structured red confirm, codex)
-#   39. incremental-silent body shape       → rc 0 (HIMMEL-3360: plain pass,
-#       the review-object-absent/panel-carry/exit-4 machinery is retired)
+#   39. a posted prior-head outside-diff finding still blocks (operator
+#       ruling 2026-09-21: best effort covers ABSENCE only, not a posted
+#       finding) → rc 3; dispositioned at the governing prior head → rc 0
 #   43. zero head reviews, no prior finding → rc 0 (PR #1321 benign shape)
 #   89. "Review completed" + a PR-wide review present → rc 0 (no false block)
 #
@@ -204,6 +205,11 @@ if [ "$cmd" = "api" ]; then
                 # HIMMEL-3124: a REAL captured review body (fixture file), one substantive
                 # bot review at the head — the per-finding outside-diff reader parses it.
                 body-file)    jq -n --rawfile b "$GH_STUB_BODY_FILE" '[{user:{id:136622811,login:"coderabbitai[bot]"},commit_id:"sha1",submitted_at:"2026-07-16T19:10:00Z",id:1,body:$b}]' ;;
+                # HIMMEL-3360: a REAL captured review body at a PRIOR head
+                # (shaOLD, not the certified sha1) — the governing-prior-head
+                # gate reads this via cr_body_outside_findings called with
+                # head=shaOLD.
+                body-a2-file) jq -n --rawfile b "$GH_STUB_BODY_FILE" '[{user:{id:136622811,login:"coderabbitai[bot]"},commit_id:"shaOLD",submitted_at:"2026-07-16T19:10:00Z",id:1,body:$b}]' ;;
                 body-error)   echo "reviews boom" >&2; exit 1 ;;
                 # Incremental-silent shape: a prior review carries outside-diff
                 # findings while the concluded current head has no review object.
@@ -587,7 +593,7 @@ case "$GH_STUB_MODE" in
         # verdict must turn entirely on CodeRabbit's status (HIMMEL-1072).
         if [ "$is_watch" -eq 1 ]; then echo "All checks were successful"; exit 0; fi
         exit 0 ;;
-    body-outside|body-file|body-nitpick|body-drift|body-error|body-a2|body-empty|body-a2-escalate|body-a2-marker|body-a2-timeout|body-a2-escalate-outside|body-b2-escalate|body-b2-escalate-outside|body-b2-timeout|body-b2-head-review|body-a2-escalate-empty|body-a2-empty-persisted|body-a2-postfail)
+    body-outside|body-file|body-a2-file|body-nitpick|body-drift|body-error|body-a2|body-empty|body-a2-escalate|body-a2-marker|body-a2-timeout|body-a2-escalate-outside|body-b2-escalate|body-b2-escalate-outside|body-b2-timeout|body-b2-head-review|body-a2-escalate-empty|body-a2-empty-persisted|body-a2-postfail)
         # Checks GREEN, threads clean, CodeRabbit CONCLUDED (default statuses
         # fixture) in every one of these — the verdict must turn entirely on
         # the review-BODY findings gate (HIMMEL-1126/1147/1219).
@@ -1389,24 +1395,53 @@ OD_REPO=$(mk_od_repo \
 BODY_FILE_OVERRIDE="$OD_BQ_BODY"; run_in_repo "$OD_REPO" body-file
 assert_rc 3 "R16 amend --set head= does not carry a disposition to the new head"
 
-# 39 — incremental-silent: CodeRabbit concluded on sha1 but emitted no review
-# object there, while a prior head carries outside-diff findings. HIMMEL-3360
-# retired the review-object-absent/panel-carry machinery entirely (exit 4 is
-# gone, see cr_body_gate): the current head has no outside-diff findings of
-# its own, so this shape passes — rc 0 — but the prior head's count is
-# surfaced as a NOTE (CR round 1: the failure mode is invisibility, not
-# permissiveness, HIMMEL-1147), nothing to carry.
-run_in_repo "$EMPTY_LEDGER_REPO" body-a2
-assert_rc 0 "39 incremental-silent body state is a plain pass now (HIMMEL-3360)"
-assert_verdict 0 "39 un-maskable exit 0 verdict line"
-assert_err_has "NOTE — CodeRabbit posted no substantive review" "39 incremental-silent prior outside-diff findings are surfaced as a NOTE (HIMMEL-3360 CR round 1)"
-assert_err_has "prior head carried 2 outside-diff finding" "39 the NOTE names the prior-head outside-diff count"
+# 39 — operator ruling (2026-09-21): best effort covers ABSENCE only. CodeRabbit
+# concluded on sha1 but emitted no review object there, while a PRIOR head
+# (shaOLD) carries a real outside-diff finding CodeRabbit DID post. That
+# finding still blocks until dispositioned — the gate now reads the governing
+# prior review (shaOLD) instead of the silent current head.
+BODY_FILE_OVERRIDE="$OD_BQ_BODY"; run_in_repo "$EMPTY_LEDGER_REPO" body-a2-file
+assert_rc 3 "39 a posted prior-head outside-diff finding still blocks (HIMMEL-3360 operator ruling)"
+assert_err_has "not dispositioned" "39 message reports the finding as not dispositioned"
+assert_err_has "latest review, at head shaOLD" "39 message names the governing prior head"
+assert_err_has "--head shaOLD" "39 recipe binds the finding to the governing prior head"
+assert_err_has "cr-od-39c3193c8945" "39 message lists the finding id"
 
-# 39b — same shape in a repo with ledger evidence: still just a plain pass,
-# since cr_body_gate no longer reads panel/ledger evidence for this shape at
-# all (there is no gate left for it to carry).
-run_in_repo "$LEDGER_REPO" body-a2
-assert_rc 0 "39b incremental-silent body state is a plain pass regardless of ledger contents (HIMMEL-3360)"
+# 39a — the prior body is unparseable (header count present, no per-finding
+# items) — format drift, cannot certify, same as any other cannot-count shape.
+run_in_repo "$EMPTY_LEDGER_REPO" body-a2
+assert_rc 2 "39a unparseable prior body cannot certify (format drift)"
+assert_err_has "format drift" "39a message names format drift"
+
+# 39b — the SAME prior-head finding, but with a ledger disposition recorded at
+# the governing prior head (shaOLD, not sha1): allows, and the NOTE explains
+# why the current head carries no review of its own.
+OD_REPO=$(mk_od_repo "$(od_variant '.head="shaOLD"')")
+BODY_FILE_OVERRIDE="$OD_BQ_BODY"; run_in_repo "$OD_REPO" body-a2-file
+assert_rc 0 "39b a disposition at the governing prior head allows"
+assert_verdict 0 "39b un-maskable exit 0 verdict line"
+assert_err_has "NOTE — CodeRabbit posted no review at head sha1" "39b NOTE explains the absent current-head review"
+assert_err_has "all dispositioned" "39b NOTE confirms the prior review is fully dispositioned"
+
+# 39b2 — a `fixed` row whose sha cannot be verified against this head (stub
+# head sha1 is not a commit) stays blocked; the positive fixed-disposition
+# path (a reason sha that resolves and is an ancestor of the current head) is
+# covered in scripts/lib/test-cr-ledger-evidence.sh, not here.
+OD_REPO=$(mk_od_repo "$(od_variant '.head="shaOLD" | .verdict="fixed" | .reason="fixed in deadbeef1234"')")
+BODY_FILE_OVERRIDE="$OD_BQ_BODY"; run_in_repo "$OD_REPO" body-a2-file
+assert_rc 3 "39b2 a fixed row whose sha cannot be verified against this head stays blocked"
+
+# 39b3 — the disposition sits at the WRONG head (sha1, the certified head that
+# carries no review) instead of the governing prior head (shaOLD): still blocks.
+OD_REPO=$(mk_od_repo "$(od_variant '.head="sha1"')")
+BODY_FILE_OVERRIDE="$OD_BQ_BODY"; run_in_repo "$OD_REPO" body-a2-file
+assert_rc 3 "39b3 a disposition at the wrong head does not clear the finding"
+
+# 39d — an unrelated ledger (LEDGER_REPO carries only an avail row, no finding
+# for this id) does not disposition the finding either.
+BODY_FILE_OVERRIDE="$OD_BQ_BODY"; run_in_repo "$LEDGER_REPO" body-a2-file
+assert_rc 3 "39d unrelated ledger rows do not disposition the finding"
+BODY_FILE_OVERRIDE=
 
 # 39c — unresolved threads still block this same body shape; the thread gate
 # is untouched by HIMMEL-3360 and stays orthogonal to CodeRabbit's status.
@@ -2124,5 +2159,5 @@ unset CR_CLI_MARKER
 
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 128 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 128"; exit 1; fi
+if [ "$COUNT" -ne 132 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 132"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1

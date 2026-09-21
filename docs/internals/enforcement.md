@@ -2286,7 +2286,11 @@ the opens"; that was the second drift, so the rule became a gate.
    threads, and that gate is NOT availability-keyed — it is generic and blocks on
    any reviewer's unresolved thread, human included. A CodeRabbit finding that
    EXISTS — a thread, or an undisposed outside-diff body finding
-   (`cr_body_gate`) — blocks exactly like a human's.
+   (`cr_body_gate`), including one posted at a PRIOR head when the current
+   head carries no review at all — blocks exactly like a human's. Best effort
+   covers absence only (HIMMEL-3360): a review that is rate-limited, silent or
+   not yet posted never holds the gate; a finding that was posted always does,
+   until it is dispositioned in the CR ledger at the head it was posted at.
 2. **Its commit status is informational.** CodeRabbit posts a commit
    **status**, never a check-run (verified live on five PRs — see
    `scripts/lib/cr-signal.sh`), so it is matched by creator id, not display name.

@@ -95,11 +95,15 @@ Act on the exit code:
 - `3` — checks green but the review state blocks the merge: unresolved
   review threads remain, a review requests changes, or (when CodeRabbit is
   armed) its review body reports an outside-diff-range finding that has no
-  ledger disposition at this head. Address each comment, resolve its thread
-  (always resolve the thread when fixing a CR finding), then re-run. An
-  outside-diff finding has no thread; besides a fix (a new commit, so a new
-  review), it can be cleared by an explicit disposition at this exact head
-  (HIMMEL-3124): the exit-3 message prints the `ledger-append.sh finding …
+  ledger disposition. The body read is CodeRabbit's latest review: the one at
+  this head, or — when this head carries no review (best effort, HIMMEL-3360:
+  nothing waits or re-triggers) — the latest one at a prior head, and a
+  finding posted there blocks exactly the same way. Address each comment,
+  resolve its thread (always resolve the thread when fixing a CR finding),
+  then re-run. An outside-diff finding has no thread; besides a fix (a new
+  commit, so a new review), it can be cleared by an explicit disposition at
+  the exact head the finding was posted at (HIMMEL-3124; the recipe names it)
+  — the exit-3 message prints the `ledger-append.sh finding …
   --model coderabbit-outside` recipe — `--verdict deferred` needs a tracked
   `--deferred-to <TICKET>` AND `--reason`, `--verdict disproved` needs
   `--reason`; any severity. It never carries to a new head. A header count the
