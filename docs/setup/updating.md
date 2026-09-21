@@ -421,7 +421,12 @@ install displaced to `<hook>.himmel-backup` when its target is free; otherwise
 it keeps both the current hook and the backup), unwires the user-scope
 `~/.claude/settings.json` keys himmel added, removes the Claude marketplaces
 (only those no installed plugin still needs), and removes the himmelctl
-cache + state dir. It is destructive and fail-closed
+cache + state dir. A provenance ledger, when install wrote one, decides
+ownership of the six overwrite-prone rows — your own pre-existing statusLine,
+`env.HANDOVER_DIR`, plugins, marketplaces, the claude-hud config and
+adopter-script copies are kept with a printed hand command rather than
+guessed at by template; with no ledger, uninstall falls back to that
+template guess. It is destructive and fail-closed
 (a non-interactive run aborts without `--yes`). Invoke `uninstall.sh` directly
 for the manual or CI path — preview any run with `--dry-run`, and skip
 individual steps with `--skip-plugins` / `--skip-hooks` / `--skip-tasks` /
@@ -430,7 +435,8 @@ individual steps with `--skip-plugins` / `--skip-hooks` / `--skip-tasks` /
 ```bash
 bash scripts/uninstall.sh --dry-run    # preview; nothing is executed
 bash scripts/uninstall.sh --yes        # remove code wiring, keep operator state
-bash scripts/uninstall.sh --yes --purge-state   # ...and remove operator state too
+bash scripts/uninstall.sh --yes --purge-state   # ...and remove operator state + the provenance ledger too
+bash scripts/uninstall.sh --yes --purge-state --keep-backups   # ...but keep the ledger's backup copies
 ```
 
 The paths it acts on are listed in

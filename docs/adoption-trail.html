@@ -586,7 +586,10 @@ node ~/himmel/scripts/himmelctl/bin.js uninstall</pre>
           settings keys are left as they are.</li>
           <li>The plugins from himmel's marketplaces &mdash; this includes
           any of them you also enabled for your whole account &mdash; and
-          then the marketplaces that have no plugins left.</li>
+          then the marketplaces that have no plugins left. If install kept a
+          record of which ones were actually its own (its provenance
+          ledger), that record decides; without it, uninstall falls back to
+          guessing by its own template.</li>
           <li>The working-principles block in
           <span class="mono">~/.claude/CLAUDE.md</span> and
           <span class="mono">~/.codex/AGENTS.md</span> (only that block),
@@ -597,20 +600,30 @@ node ~/himmel/scripts/himmelctl/bin.js uninstall</pre>
           else succeeded, the <span class="mono">himmelctl</span> launcher in
           <span class="mono">~/.local/bin</span>.</li>
         </ul>
+        <p>A status line or <span class="mono">env.HANDOVER_DIR</span> key
+        that install's own record does not recognize as its own is left
+        alone, with a command printed for removing it by hand yourself
+        &mdash; that record is what tells apart something himmel wrote from
+        something you already had.</p>
         <h4>Kept on purpose</h4>
         <ul>
           <li>Your Telegram pairing and bridge state &mdash; add
           <span class="mono">--purge-state</span> to remove them too.</li>
+          <li>Install's own record of what it did (its provenance ledger)
+          &mdash; also removed by <span class="mono">--purge-state</span>;
+          add <span class="mono">--keep-backups</span> on top of that to
+          keep its backup copies even then.</li>
           <li>The himmel download itself, its <span class="mono">.env</span>
           file, your worktrees and your handover notes.</li>
           <li>Claude Code's own trust entry for the project, which may
           predate himmel &mdash; revoke it in Claude Code if you want it
           gone.</li>
-          <li>The helper scripts copied into the project's
-          <span class="mono">scripts/</span> folder. They were copied over
-          in place with no record of which files or edits are himmel's, so
-          the uninstaller will not guess; delete them with git if you do not
-          want them.</li>
+          <li>Helper scripts copied into the project's
+          <span class="mono">scripts/</span> folder that install's own
+          record does not recognize as its own &mdash; a copy made before
+          that record existed cannot be told apart from your own edits, so
+          it is left in place; delete it with git if you do not want it.
+          (Copies the record does recognize are removed.)</li>
           <li>Caches other tools wrote while himmel ran &mdash; npm's
           <span class="mono">~/.npm/_cacache</span>, node-gyp's
           <span class="mono">~/.cache/node-gyp</span>, bun's

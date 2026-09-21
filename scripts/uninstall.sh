@@ -44,8 +44,16 @@
 #
 # Usage:
 #   bash scripts/uninstall.sh [--dry-run] [--yes]
-#        [--purge-state] [--skip-plugins] [--skip-tasks] [--skip-hooks]
-#        [--skip-settings]
+#        [--purge-state] [--keep-backups] [--skip-plugins] [--skip-tasks]
+#        [--skip-hooks] [--skip-settings]
+#
+# Provenance ledger (HIMMEL-3332 S6): when scripts/lib/provenance.sh recorded
+# what install/adopt actually wrote (docs/internals/install-provenance.md),
+# [4/8], [6/8] and [7/8] use it to tell a pre-existing plugin/marketplace/
+# statusLine/env.HANDOVER_DIR/hud-config/adopter-script from one himmel itself
+# put there — the former is kept or restored from its recorded backup, never
+# blindly removed. With no readable ledger for this $HOME those six rows are
+# kept with a hand command instead (the conservative pre-S6 behaviour).
 #
 # Flags:
 #   --dry-run              Print actions instead of running them.
@@ -54,6 +62,12 @@
 #                          (bot token + access.json) and the bridge state.
 #                          Without it that state is kept (the conservative
 #                          default); the bridge process is stopped either way.
+#                          Also removes the provenance ledger + its backups,
+#                          last.
+#   --keep-backups         Keep provenance-backups/ after a clean, ledger-
+#                          driven run instead of pruning it (backups are kept
+#                          on a halt regardless; moot under --purge-state,
+#                          which removes the whole ledger directory anyway).
 #   --keep-telegram-state  Accepted for compatibility; state is already kept by
 #                          default. Contradicts --purge-state (rc=2).
 #   --skip-plugins         Keep Claude plugins + marketplaces installed.
@@ -115,17 +129,23 @@ DRY_RUN=0
 YES=0
 KEEP_TELEGRAM_STATE=0
 PURGE_STATE=0
+KEEP_BACKUPS=0
 SKIP_PLUGINS=0
 SKIP_TASKS=0
 SKIP_HOOKS=0
 SKIP_SETTINGS=0
 SOURCE_ONLY=0
+# HIMMEL-3332 S6: the ledger-load block below needs the argv this script was
+# actually invoked with (prov_read_session_begin records it for audit) — the
+# flag-parsing loop consumes "$@", so it must be snapshotted before that loop.
+_ORIG_ARGV=("$@")
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run)             DRY_RUN=1 ;;
     --yes)                 YES=1 ;;
     --keep-telegram-state) KEEP_TELEGRAM_STATE=1 ;;
     --purge-state)         PURGE_STATE=1 ;;
+    --keep-backups)        KEEP_BACKUPS=1 ;;
     --skip-plugins)       SKIP_PLUGINS=1 ;;
     --skip-tasks)          SKIP_TASKS=1 ;;
     --skip-hooks)          SKIP_HOOKS=1 ;;
@@ -550,13 +570,21 @@ protected_path() {
     "$HOME/.cache" "$HOME/.bashrc" "$HOME/.profile" "$HOME/.zshrc" "$HOME/Documents"
     "/etc" "/usr" "/bin" "/var" "/opt"
   )
-  # The three documented removal targets are descendants of protected
-  # $HOME/.claude by design and must stay allowed no matter what the
+  # The documented removal targets are descendants of protected $HOME (or
+  # $HOME/.claude) by design and must stay allowed no matter what the
   # descendant check below would otherwise do to them — but only when BOTH
   # conditions in the header comment hold (lexical identity AND no symlinked
   # component). Neither check alone is enough (HIMMEL-2505 gap A).
+  # ponytail (HIMMEL-3332 S6): ".himmel" is provenance.sh's own documented
+  # default (`${HIMMEL_PROVENANCE_DIR:-$HOME/.himmel}/provenance.jsonl`) —
+  # this exemption covers only that bare default location. An operator who
+  # points HIMMEL_PROVENANCE_DIR somewhere else still hits the "$HOME is
+  # protected, therefore its descendants are protected" refusal at [8/8]'s
+  # --purge-state step; that's the same fail-closed trade the other three
+  # exemptions accept, not a new gap this slice introduces.
   local _allowed_suffixes=(
     ".claude/himmel" ".claude/channels/telegram" ".claude/handover/bridge"
+    ".himmel"
   )
   if [ -n "$_t_lexical" ]; then
     for _suffix in "${_allowed_suffixes[@]}"; do
@@ -1086,6 +1114,54 @@ if [ "$DRY_RUN" -eq 0 ] && [ "${HIMMEL_UNINSTALL_REAL_HOME:-0}" != "1" ]; then
   fi
 fi
 
+# --- Provenance ledger load (HIMMEL-3332 S6) ---------------------------------
+# HIMMEL-3058: source THIS script's own lib dir, never $REPO_ROOT (a
+# HIMMEL_UNINSTALL_REPO_ROOT fixture can point at a different checkout).
+# Read-only, safe under --dry-run and before the confirm prompt; runs before
+# the plan printout below so the preview reflects what the ledger decided.
+LEDGER_OK=0
+if command -v jq >/dev/null 2>&1; then
+  # shellcheck source=lib/provenance-read.sh
+  . "$SCRIPT_DIR/lib/provenance-read.sh"
+  prov_read_load
+  # HIMMEL-3332 S6 fix: this trap must NOT rm -f "$_scope_map" -- $_scope_map
+  # is not yet assigned here (it is set well below) and, on a real (non-dry)
+  # run, it is later pointed at the PERSISTENT $HIMMEL_CACHE_DIR/uninstall-scope-map
+  # file, which HIMMEL-2754 deliberately leaves in place across a halt so a
+  # retry can recover the original removal scopes. An EXIT trap that always
+  # rm -f's whatever "$_scope_map" currently holds would delete that
+  # persistent handoff on every exit (including a halt), silently breaking
+  # HIMMEL-2754's retry contract. Only the later, ephemeral-only scope-map
+  # branches (mktemp'd for --dry-run or an unusable cache dir) re-install a
+  # trap that also cleans up "$_scope_map" -- correctly, since by then it
+  # really is a throwaway tempfile.
+  trap 'prov_read_cleanup; rm -f "${_ledger_owned:-}"' EXIT
+  _prov_ledger_path="$(prov_ledger_path 2>/dev/null || true)"
+  case "$PROV_READ_STATE" in
+    ok)
+      LEDGER_OK=1
+      echo "provenance: ledger $_prov_ledger_path — $PROV_READ_ROWS rows ($PROV_READ_BAD_ROWS skipped)"
+      if [ "$PROV_READ_PARTIAL" -eq 1 ]; then
+        echo "provenance: the last install did not finish (no install-end); proceeding"
+      fi
+      ;;
+    *)
+      echo "provenance: no ledger at $_prov_ledger_path; pre-existing units cannot be told from himmel's — the six overwrite-prone rows are kept"
+      case "$PROV_READ_STATE" in
+        unparsable|foreign) echo "  ($PROV_READ_REASON)" ;;
+      esac
+      ;;
+  esac
+else
+  # ponytail: provenance-read.sh is jq-only by design (see its header) — with
+  # no jq on PATH the ledger cannot be read at all, so this run falls back to
+  # the same no-ledger keep path as a missing ledger rather than failing the
+  # whole uninstall over an optional dependency.
+  _prov_ledger_path="${HIMMEL_PROVENANCE_DIR:-$HOME/.himmel}/provenance.jsonl"
+  echo "provenance: no ledger at $_prov_ledger_path; pre-existing units cannot be told from himmel's — the six overwrite-prone rows are kept"
+  echo "  (jq is not installed; the ledger cannot be read)"
+fi
+
 echo "==> himmel uninstall (offboard)"
 echo ""
 echo "This will:"
@@ -1197,6 +1273,9 @@ if class_removes "$_ix_cache"; then
 else
   echo "  8. keep the himmelctl cache + state (manifest class ${M_CLASS[$_ix_cache]}): $HIMMEL_CACHE_DIR"
 fi
+if [ "$LEDGER_OK" -eq 1 ] && [ "$PURGE_STATE" -eq 1 ]; then
+  echo "  9. (--purge-state) also REMOVE the provenance ledger + its backups: $(prov_dir 2>/dev/null || true)"
+fi
 echo ""
 
 # Footprint — every manifest row with its disposition, so the operator sees the
@@ -1241,6 +1320,20 @@ elif [ "$YES" -ne 1 ]; then
   fi
 fi
 echo ""
+
+# HIMMEL-3332 S6: begin the uninstall session AFTER a declined run has
+# already exited above (a decline writes nothing). No-op when the ledger
+# did not load (prov_read_session_begin checks PROV_READ_STATE itself).
+if [ "$LEDGER_OK" -eq 1 ]; then
+  # bash 3.2: "${arr[@]}" on an EMPTY array errors under `set -u` — the
+  # "${arr[@]+...}" guard is this script's existing idiom for that (see
+  # _plug_args below).
+  if [ "$DRY_RUN" -eq 1 ]; then
+    prov_read_session_begin dry ${_ORIG_ARGV[@]+"${_ORIG_ARGV[@]}"}
+  else
+    prov_read_session_begin wet ${_ORIG_ARGV[@]+"${_ORIG_ARGV[@]}"}
+  fi
+fi
 
 # --- [1/8] stop the bridge -------------------------------------------------
 # Uses the documented cross-platform lever (supervisor.pid under the bridge
@@ -1473,10 +1566,28 @@ echo ""
 # teardown so a retry can remove marketplaces at their original scopes.
 # Successful teardown removes the handoff with the cache in the last step.
 _scope_map=""
+# HIMMEL-3332 S6: --ledger-owned handoff for uninstall-plugins.sh — a TSV of
+# the plugin/marketplace register units the fold says himmel itself installed
+# (prov_read_owned). Only built when the ledger loaded; [4/8]/[7/8] pass it
+# through so a pre-existing plugin/marketplace is told apart from himmel's own.
+_ledger_owned=""
+if [ "$LEDGER_OK" -eq 1 ] && [ "$HALTED" -eq 0 ] && [ "$SKIP_PLUGINS" -eq 0 ] &&
+   { class_removes "$_ix_plug" || class_removes "$_ix_mkt"; }; then
+  if _ledger_owned=$(mktemp "${TMPDIR:-/tmp}/himmel-uninstall-ledger-owned.XXXXXX"); then
+    # Same fix as the earlier ledger-load trap: never rm -f "$_scope_map" here
+    # -- it is not assigned yet, and by the time it is (below), a real run
+    # points it at the PERSISTENT cache-dir handoff that must survive a halt.
+    trap 'prov_read_cleanup; rm -f "${_ledger_owned:-}"' EXIT
+    prov_read_owned "$_ledger_owned"
+  else
+    _ledger_owned=""
+    fail_step "[4/8] Claude plugins: could not create the ledger-owned handoff file"
+  fi
+fi
 if [ "$HALTED" -eq 0 ] && [ "$SKIP_PLUGINS" -eq 0 ] && { class_removes "$_ix_plug" || class_removes "$_ix_mkt"; }; then
   if [ "$DRY_RUN" -eq 1 ]; then
     if _scope_map=$(mktemp "${TMPDIR:-/tmp}/himmel-uninstall-scope-map.XXXXXX"); then
-      trap 'rm -f "$_scope_map"' EXIT
+      trap 'prov_read_cleanup; rm -f "${_scope_map:-}" "${_ledger_owned:-}"' EXIT
       if [ -d "$HIMMEL_CACHE_DIR" ] && [ ! -L "$HIMMEL_CACHE_DIR" ] &&
          ! suspicious_rm_path "$HIMMEL_CACHE_DIR" &&
          [ -f "$HIMMEL_CACHE_DIR/uninstall-scope-map" ] &&
@@ -1498,7 +1609,7 @@ if [ "$HALTED" -eq 0 ] && [ "$SKIP_PLUGINS" -eq 0 ] && { class_removes "$_ix_plu
        { [ -e "$HIMMEL_CACHE_DIR" ] && [ ! -d "$HIMMEL_CACHE_DIR" ]; }; then
       echo "WARN: using ephemeral scope-map handoff; removal scopes will not survive a halt because the cache path is not a usable directory for the handoff." >&2
       if _scope_map=$(mktemp "${TMPDIR:-/tmp}/himmel-uninstall-scope-map.XXXXXX"); then
-        trap 'rm -f "$_scope_map"' EXIT
+        trap 'prov_read_cleanup; rm -f "${_scope_map:-}" "${_ledger_owned:-}"' EXIT
       else
         _scope_map=""
         fail_step "[4/8] Claude plugins: could not create the scope-map handoff file"
@@ -1512,6 +1623,127 @@ if [ "$HALTED" -eq 0 ] && [ "$SKIP_PLUGINS" -eq 0 ] && { class_removes "$_ix_plu
   fi
 fi
 
+# ledger_report_preexisted_units <plugin|marketplace> — for every fold unit of
+# this register kind with ours=false, print "kept (was already yours)" and
+# write its outcome row. Shared by [4/8] and [7/8] (HIMMEL-3332 S6).
+ledger_report_preexisted_units() {
+  local _kind="$1" _units _unit_json _unit
+  _units=$(prov_read_units --kind "$_kind")
+  while IFS= read -r _unit_json; do
+    [ -z "$_unit_json" ] && continue
+    [ "$(printf '%s' "$_unit_json" | jq -r '.ours')" = "false" ] || continue
+    _unit=$(printf '%s' "$_unit_json" | jq -r '.unit')
+    echo "  kept (was already yours): $_unit"
+    prov_read_outcome kept "$_unit_json" preexisted
+  done <<EOF
+$_units
+EOF
+}
+
+# ledger_owned_hand_command <kind: plugins|marketplaces> — the single hand
+# command both [4/8] and [7/8] point at when there is no ledger to decide
+# ownership (HIMMEL-3332 S6, spec §4/§8 case 3).
+ledger_owned_hand_command() {
+  printf '    remove by hand: bash %q --scope %q\n' \
+    "$REPO_ROOT/scripts/machine-setup/uninstall-plugins.sh" "$PLUGIN_SCOPE"
+}
+
+# ledger_apply_unit <unit-json> — the ledger-driven per-unit action shared by
+# [6/8]'s settings/adopter-scripts/hud-config passes (HIMMEL-3332 S6):
+# computes prov_read_verdict, then removes/restores/keeps and writes the
+# outcome row. rc 1 means the unit is PROTECTED (kept or restored — the
+# caller must mask it out of any read-back and skip the matching today's
+# helper); rc 0 means removed, skipped, heuristic, or an already-reported
+# failure. Appends every PROTECTED unit's pointer/path to the global
+# _LEDGER_PROTECTED (newline-separated; the caller resets it before its loop).
+ledger_apply_unit() {
+  local u="$1" verdict action reason unit backup _ans _apply_args
+  verdict=$(prov_read_verdict "$u") || { fail_step "[6/8] ledger verdict: could not read current state for a unit"; return 0; }
+  action="${verdict%% *}"; reason="${verdict#* }"
+  unit=$(printf '%s' "$u" | jq -r '.unit // .path // "?"')
+  _apply_args=()
+  [ "$DRY_RUN" -eq 1 ] && _apply_args=(--dry-run)
+  case "$action" in
+    skip|heuristic)
+      # Not uninstall's ledger call — class-state (untouched by uninstall) or
+      # an ungoverned unit the caller's own default logic decides instead.
+      return 0 ;;
+    remove)
+      if prov_read_apply "$u" remove ${_apply_args[@]+"${_apply_args[@]}"}; then
+        [ "$DRY_RUN" -eq 0 ] && echo "  removed $unit"
+        prov_read_outcome removed "$u" "$reason"
+      else
+        echo "  WARN: could not remove $unit" >&2
+        fail_step "[6/8] ledger remove: $unit"
+        prov_read_outcome failed "$u" "step-failed"
+      fi
+      return 0 ;;
+    restore)
+      backup=$(printf '%s' "$u" | jq -r '.eff_pre.backup // empty')
+      if prov_read_apply "$u" restore ${_apply_args[@]+"${_apply_args[@]}"}; then
+        [ "$DRY_RUN" -eq 0 ] && echo "  restored $unit (from $backup)"
+        prov_read_outcome restored "$u" "$reason" "$backup"
+      else
+        echo "  WARN: could not restore $unit" >&2
+        fail_step "[6/8] ledger restore: $unit"
+        prov_read_outcome failed "$u" "step-failed" "$backup"
+      fi
+      _LEDGER_PROTECTED="$_LEDGER_PROTECTED
+$unit"
+      return 1 ;;
+    *)
+      if [ "$DRY_RUN" -eq 1 ]; then
+        echo "DRY: would keep $unit ($reason)"
+      else
+        echo "  kept $unit ($reason)"
+        # ponytail: the [k]eep/[r]estore-or-[d]elete override for a
+        # user-modified unit only ever offers itself on a real TTY with no
+        # --yes — a scripted/CI/--yes run always takes the safe default
+        # (keep) rather than prompting into a pipe.
+        if [ "$reason" = "user-modified" ] && [ "$YES" -ne 1 ] && [ -t 0 ] && [ -t 1 ]; then
+          backup=$(printf '%s' "$u" | jq -r '.eff_pre.backup // empty')
+          if [ -n "$backup" ] && [ -r "$backup" ]; then
+            printf "  %s changed since install -- [k]eep / [r]estore himmel's backup? [k] " "$unit"
+            read -r _ans
+            case "$_ans" in
+              [rR]*)
+                if prov_read_apply "$u" restore; then
+                  echo "  restored $unit (from $backup)"
+                  prov_read_outcome restored "$u" "user-modified" "$backup"
+                else
+                  echo "  WARN: could not restore $unit" >&2
+                  fail_step "[6/8] ledger restore: $unit"
+                  prov_read_outcome failed "$u" "step-failed" "$backup"
+                fi
+                _LEDGER_PROTECTED="$_LEDGER_PROTECTED
+$unit"
+                return 1 ;;
+            esac
+          else
+            printf "  %s changed since install -- [k]eep / [d]elete anyway? [k] " "$unit"
+            read -r _ans
+            case "$_ans" in
+              [dD]*)
+                if prov_read_apply "$u" remove; then
+                  echo "  removed $unit"
+                  prov_read_outcome removed "$u" "user-modified"
+                else
+                  echo "  WARN: could not remove $unit" >&2
+                  fail_step "[6/8] ledger remove: $unit"
+                  prov_read_outcome failed "$u" "step-failed"
+                fi
+                return 0 ;;
+            esac
+          fi
+        fi
+      fi
+      prov_read_outcome kept "$u" "$reason"
+      _LEDGER_PROTECTED="$_LEDGER_PROTECTED
+$unit"
+      return 1 ;;
+  esac
+}
+
 # --- [4/8] uninstall plugins ------------------------------------------------
 echo "[4/8] Uninstalling Claude plugins..."
 if [ "$HALTED" -eq 1 ]; then
@@ -1523,17 +1755,58 @@ elif ! class_removes "$_ix_plug"; then
   echo "  kept (manifest class ${M_CLASS[$_ix_plug]})."
 elif ! _claude_bin=$(resolve_tool claude); then
   report_unresolved "[4/8] Claude plugins" claude --skip-plugins
+elif [ "$LEDGER_OK" -ne 1 ]; then
+  # ponytail (HIMMEL-3332 S6, spec §4): with no ledger to tell a pre-existing
+  # plugin apart from himmel's own template plugins, this run keeps ALL of
+  # them rather than risk removing one the operator installed themselves.
+  echo "  kept (no ledger): himmel's template plugins"
+  ledger_owned_hand_command
+  if [ "$DRY_RUN" -ne 1 ] && [ "$YES" -ne 1 ] && [ -t 0 ] && [ -t 1 ]; then
+    printf "  remove himmel's template plugins anyway? [y/N] "
+    read -r _ans
+    case "$_ans" in
+      [yY]|[yY][eE][sS])
+        echo "  using: $_claude_bin (fallback scope: $PLUGIN_SCOPE)"
+        _plug_args=(--plugins-only --scope "$PLUGIN_SCOPE" --scope-map "$_scope_map")
+        if ! PATH="$(dirname "$_claude_bin"):$PATH" \
+            bash "$REPO_ROOT/scripts/machine-setup/uninstall-plugins.sh" ${_plug_args[@]+"${_plug_args[@]}"}; then
+          echo "  WARN: uninstall-plugins.sh reported failures — re-run it directly to inspect." >&2
+          fail_step "[4/8] Claude plugins: uninstall-plugins.sh reported failures"
+        fi
+        ;;
+      *) : ;;
+    esac
+  fi
 else
   echo "  using: $_claude_bin (fallback scope: $PLUGIN_SCOPE)"
-  _plug_args=(--plugins-only --scope "$PLUGIN_SCOPE" --scope-map "$_scope_map")
+  ledger_report_preexisted_units plugin
+  _plug_ours_units=$(prov_read_units --kind plugin | { while IFS= read -r _u; do
+    [ -n "$_u" ] || continue
+    [ "$(printf '%s' "$_u" | jq -r '.ours')" = "true" ] && printf '%s\n' "$_u"
+  done; })
+  _plug_args=(--plugins-only --scope "$PLUGIN_SCOPE" --scope-map "$_scope_map" --ledger-owned "$_ledger_owned")
   [ "$DRY_RUN" -eq 1 ] && _plug_args+=(--dry-run)
   # uninstall-plugins.sh does its own `command -v claude` and hard-exits when
   # it fails, so the resolved directory has to be on the CHILD's PATH — passing
   # the path alone would leave the child just as blind as this script was.
-  if ! PATH="$(dirname "$_claude_bin"):$PATH" \
+  if PATH="$(dirname "$_claude_bin"):$PATH" \
       bash "$REPO_ROOT/scripts/machine-setup/uninstall-plugins.sh" ${_plug_args[@]+"${_plug_args[@]}"}; then
+    _plug_outcome="removed"; _plug_reason="ours"
+  else
     echo "  WARN: uninstall-plugins.sh reported failures — re-run it directly to inspect." >&2
     fail_step "[4/8] Claude plugins: uninstall-plugins.sh reported failures"
+    _plug_outcome="failed"; _plug_reason="step-failed"
+  fi
+  # ponytail: the step's rc is the finest grain uninstall-plugins.sh reports —
+  # a partial failure (one plugin removed, another blocked) still marks every
+  # himmel-owned unit "failed" here rather than tracking per-plugin results.
+  if [ -n "$_plug_ours_units" ]; then
+    while IFS= read -r _u; do
+      [ -z "$_u" ] && continue
+      prov_read_outcome "$_plug_outcome" "$_u" "$_plug_reason"
+    done <<EOF
+$_plug_ours_units
+EOF
   fi
 fi
 echo ""
@@ -1684,56 +1957,167 @@ HIMMEL_HOOK_PAT="$( . "$SCRIPT_DIR/lib/unwire-pretooluse-hooks.sh" >/dev/null 2>
 [ "$HIMMEL_HOOK_PAT" = "|" ] && HIMMEL_HOOK_PAT=""
 HIMMEL_SL_PAT="$( . "$SCRIPT_DIR/lib/unwire-statusline.sh" >/dev/null 2>&1; printf '%s' "${_UNWIRE_SL_PAT:-}" )"
 
-# himmel_wiring_lines <settings> — one "<what>" line per himmel wiring currently
-# in the file: each himmel hook command, the himmel statusLine and each of the
-# three himmel env keys (env.CLAUDE_HUD_ALLOW_EXTRA_CMD is intentionally kept by
-# the statusline helper and is not listed). Not suppressing: a jq failure is a
+# himmel_wiring_lines <settings> [mask_hooks mask_sl mask_repo mask_vault
+# mask_hd] — one "<what>" line per himmel wiring currently in the file: each
+# himmel hook command, the himmel statusLine and each of the three himmel env
+# keys (env.CLAUDE_HUD_ALLOW_EXTRA_CMD is intentionally kept by the
+# statusline helper and is not listed). Not suppressing: a jq failure is a
 # non-zero rc, so the read-back cannot mistake "could not read" for "clean".
+# The five mask_* flags (HIMMEL-3332 S6, all default 0 = unmasked when
+# omitted) exclude a category the ledger explicitly kept or restored — a
+# PROTECTED unit must never read back as "STILL WIRED", it is wired on
+# purpose.
 himmel_wiring_lines() {
-  jq -r --arg pat "$HIMMEL_HOOK_PAT" --arg sl "$HIMMEL_SL_PAT" '
+  local settings="$1" mask_hooks="${2:-0}" mask_sl="${3:-0}" mask_repo="${4:-0}" mask_vault="${5:-0}" mask_hd="${6:-0}"
+  # HIMMEL-3332 S6 fix: jq's --argjson hands these in as JSON NUMBERS (0/1),
+  # and jq truthiness treats 0 as truthy (only `false`/`null` are falsy) — so
+  # a `($mX|not)` test was always false regardless of the mask value, which
+  # silently excluded EVERY hook/statusLine/env row from both the dry-run
+  # preview (D1/S1: hook command lines never appeared) and, far more
+  # seriously, the post-removal read-back verification, which could then
+  # never report "STILL WIRED" no matter what a broken helper left behind
+  # (R1/R2: a no-op unwire falsely completed instead of halting). Compare the
+  # mask against 0 numerically instead of relying on jq boolean coercion.
+  jq -r --arg pat "$HIMMEL_HOOK_PAT" --arg sl "$HIMMEL_SL_PAT" \
+      --argjson mhooks "$mask_hooks" --argjson msl "$mask_sl" \
+      --argjson mrepo "$mask_repo" --argjson mvault "$mask_vault" --argjson mhd "$mask_hd" '
     ((.hooks // {}) | to_entries[] | .key as $ev | (.value // [])[]? | (.hooks // [])[]?
-      | (.command // "") | select(test($pat)) | "hook \($ev): \(.)"),
-    ((.statusLine.command? // "") | select(test($sl)) | "statusLine: \(.)"),
-    ((.env // {}) | to_entries[] | select(.key | IN("HIMMEL_REPO","LUNA_VAULT_PATH","HANDOVER_DIR"))
+      | (.command // "") | select(($mhooks==0) and test($pat)) | "hook \($ev): \(.)"),
+    ((.statusLine.command? // "") | select(($msl==0) and test($sl)) | "statusLine: \(.)"),
+    ((.env // {}) | to_entries[]
+      | select(.key | IN("HIMMEL_REPO","LUNA_VAULT_PATH","HANDOVER_DIR"))
+      | select(
+          (.key=="HIMMEL_REPO" and ($mrepo==0)) or
+          (.key=="LUNA_VAULT_PATH" and ($mvault==0)) or
+          (.key=="HANDOVER_DIR" and ($mhd==0)))
       | "env.\(.key)=\(.value)")
-  ' "$1"
+  ' "$settings"
 }
 
 unwire_settings() {
-  local settings="$1" helper _line _left
-  # Print exactly what is about to change (dry-run: what WOULD change).
+  local settings="$1" helper _line _left _units _u
+  local _mask_hooks=0 _mask_sl=0 _mask_repo=0 _mask_vault=0 _mask_hd=0
+  _LEDGER_PROTECTED=""
+  if [ "$LEDGER_OK" -eq 1 ]; then
+    # Ledger-driven per-unit pass (HIMMEL-3332 S6): every json-key/json-elem
+    # fold unit recorded at THIS settings path gets its own verdict —
+    # removed, restored from its recorded backup, or kept (already-absent,
+    # preexisted, user-modified since install, or no backup to restore
+    # from). A key/unit the ledger never recorded (predates per-key
+    # recording) is untouched here — the mask flags below only ever protect
+    # a key the ledger EXPLICITLY kept or restored, so today's helper loop
+    # further down still runs for anything the ledger stayed silent on.
+    _units="$(prov_read_units --path "$settings" --kind json-key)
+$(prov_read_units --path "$settings" --kind json-elem)"
+    while IFS= read -r _u; do
+      [ -n "$_u" ] || continue
+      # F3 (parent review): the /env container unit's recorded post sha goes
+      # stale the moment a second /env/KEY is added, so it would always read
+      # user-modified here — skip it with no print/outcome row;
+      # prov_read_drop_env_if_ours (below, after the helper loop) drops the
+      # now-empty container once its /env/<KEY> units are handled.
+      [ "$(printf '%s' "$_u" | jq -r '.unit // ""')" = "/env" ] && continue
+      ledger_apply_unit "$_u"
+    done <<EOF
+$_units
+EOF
+    case "$_LEDGER_PROTECTED" in *$'\n''/statusLine'*)          _mask_sl=1 ;; esac
+    case "$_LEDGER_PROTECTED" in *$'\n''/env/HIMMEL_REPO'*)     _mask_repo=1 ;; esac
+    case "$_LEDGER_PROTECTED" in *$'\n''/env/LUNA_VAULT_PATH'*) _mask_vault=1 ;; esac
+    case "$_LEDGER_PROTECTED" in *$'\n''/env/HANDOVER_DIR'*)    _mask_hd=1 ;; esac
+    case "$_LEDGER_PROTECTED" in *$'\n''/hooks/'*)              _mask_hooks=1 ;; esac
+    # HIMMEL-3332 S6 fix: no early return here for DRY_RUN. ledger_apply_unit
+    # above already printed its own per-unit DRY line for anything the
+    # ledger DID track, but a key/unit the ledger never recorded (predates
+    # per-key recording) is untouched by it -- the shared preview block
+    # below (same one the no-ledger branch uses) is what falls through to
+    # preview those, mirroring the WET helper loop further down, which
+    # already unconditionally re-runs every non-masked helper regardless of
+    # whether the ledger already handled it. Without this fall-through, a
+    # --dry-run under a ledger silently under-reported HIMMEL_REPO /
+    # LUNA_VAULT_PATH / hook removals the wet run still performs (caught by
+    # U22: 5 rows expected, only the hooks line was printed).
+  else
+    # ponytail (HIMMEL-3332 S6, spec §4 six rows): with no ledger for this
+    # $HOME, a pre-existing statusLine or env.HANDOVER_DIR cannot be told
+    # from himmel's own — both are kept and reported with a hand command
+    # instead of letting today's unwire-*.sh helpers remove them blindly.
+    if [ -n "$HIMMEL_SL_PAT" ] && jq -e --arg sl "$HIMMEL_SL_PAT" \
+        '((.statusLine.command? // "") | test($sl))' "$settings" >/dev/null 2>&1; then
+      if [ "$DRY_RUN" -eq 1 ]; then echo "DRY: would keep (no ledger) statusLine  [$settings]"
+      else echo "  kept (no ledger): statusLine  [$settings] — remove by hand: bash $REPO_ROOT/scripts/lib/unwire-statusline.sh $settings"
+      fi
+      _mask_sl=1
+    fi
+    if jq -e '((.env.HANDOVER_DIR? // "") | length) > 0' "$settings" >/dev/null 2>&1; then
+      if [ "$DRY_RUN" -eq 1 ]; then echo "DRY: would keep (no ledger) env.HANDOVER_DIR  [$settings]"
+      else echo "  kept (no ledger): env.HANDOVER_DIR  [$settings] — remove by hand: bash $REPO_ROOT/scripts/lib/unwire-handover-dir.sh $settings"
+      fi
+      _mask_hd=1
+    fi
+  fi
+  # Print exactly what is about to change (dry-run: what WOULD change) or, on
+  # a wet run, narrate it -- masking out anything either branch above already
+  # protected. HIMMEL-3332 S6 fix: shared by the ledger and no-ledger paths,
+  # since a key/unit neither branch masked still needs this preview whether
+  # the ledger stayed silent on it (predates per-key recording) or there is
+  # no ledger at all -- mirroring the WET helper loop below, which already
+  # unconditionally re-runs every non-masked helper regardless of LEDGER_OK.
   # Preview only: an unreadable file is reported by the helpers / the read-back.
   if [ -n "$HIMMEL_HOOK_PAT" ] && [ -n "$HIMMEL_SL_PAT" ]; then
-    { himmel_wiring_lines "$settings" 2>/dev/null || true; } | while IFS= read -r _line; do
+    { himmel_wiring_lines "$settings" 0 "$_mask_sl" 0 0 "$_mask_hd" 2>/dev/null || true; } | while IFS= read -r _line; do
       if [ "$DRY_RUN" -eq 1 ]; then echo "DRY: would remove $_line  [$settings]"
       else echo "  removing $_line  [$settings]"; fi
     done
   fi
   if [ "$DRY_RUN" -eq 1 ]; then
-    # One row per helper, the same five the wet loop below runs (the hooks
-    # helper prints its own DRY row), so a preview never shows fewer removals
-    # than the real run makes.
-    echo "DRY: unwire statusLine (himmel) from $settings"
-    echo "DRY: unwire env.HIMMEL_REPO from $settings"
-    echo "DRY: unwire env.LUNA_VAULT_PATH from $settings"
-    echo "DRY: unwire env.HANDOVER_DIR from $settings"
-    if ! bash "$REPO_ROOT/scripts/lib/unwire-pretooluse-hooks.sh" "$settings" 1; then
+    # One row per still-unmasked helper (the hooks helper prints its own
+    # DRY row), so a preview never shows fewer removals than the real run.
+    # HIMMEL-3332 S6 fix: statusLine/HANDOVER_DIR need this same unconditional
+    # row too -- the pre-S6 baseline always printed all four (regardless of
+    # whether the key was actually present, since the helpers are idempotent
+    # no-ops), and the no-ledger branch's "kept (no ledger)" checks above only
+    # fire when the value IS present, leaving an absent-and-unmasked case with
+    # no preview line at all otherwise (caught by U22: 3 rows instead of 5).
+    [ "$_mask_sl" -eq 0 ]    && echo "DRY: unwire statusLine (himmel) from $settings"
+    [ "$_mask_repo" -eq 0 ]  && echo "DRY: unwire env.HIMMEL_REPO from $settings"
+    [ "$_mask_vault" -eq 0 ] && echo "DRY: unwire env.LUNA_VAULT_PATH from $settings"
+    [ "$_mask_hd" -eq 0 ]    && echo "DRY: unwire env.HANDOVER_DIR from $settings"
+    if [ "$_mask_hooks" -eq 0 ] && ! bash "$REPO_ROOT/scripts/lib/unwire-pretooluse-hooks.sh" "$settings" 1; then
       fail_step "[6/8] settings unwire: unwire-pretooluse-hooks dry-run failed"
     fi
     return
   fi
   for helper in unwire-statusline unwire-himmel-repo unwire-luna-vault unwire-handover-dir unwire-pretooluse-hooks; do
+    case "$helper" in
+      unwire-statusline)   [ "$_mask_sl" -eq 1 ]    && continue ;;
+      unwire-himmel-repo)  [ "$_mask_repo" -eq 1 ]  && continue ;;
+      unwire-luna-vault)   [ "$_mask_vault" -eq 1 ] && continue ;;
+      unwire-handover-dir) [ "$_mask_hd" -eq 1 ]    && continue ;;
+      unwire-pretooluse-hooks)
+        # ponytail: any PROTECTED hook chain at this path skips the WHOLE
+        # helper rather than surgically re-running it for only the
+        # ungoverned entries — an ungoverned himmel hook could survive
+        # alongside a kept/restored one at the same event.
+        [ "$_mask_hooks" -eq 1 ] && continue ;;
+    esac
     if ! bash "$REPO_ROOT/scripts/lib/$helper.sh" "$settings"; then
       echo "  WARN: $helper reported a problem; setup-state may remain." >&2
       fail_step "[6/8] settings unwire: $helper failed"
     fi
   done
   [ "$HALTED" -eq 0 ] || return 0
-  # Positive read-back: the file itself, not the helpers' exit codes.
+  if [ "$LEDGER_OK" -eq 1 ] && ! prov_read_drop_env_if_ours "$settings"; then
+    echo "  WARN: could not drop the now-empty /env from $settings" >&2
+    fail_step "[6/8] ledger: could not drop the now-empty /env from $settings"
+  fi
+  # Positive read-back: the file itself, not the helpers' exit codes. A
+  # PROTECTED key/hook is masked out here too — it is meant to still be
+  # wired, so it must never read back as "STILL WIRED".
   if [ -z "$HIMMEL_HOOK_PAT" ] || [ -z "$HIMMEL_SL_PAT" ]; then
     echo "  ERROR: cannot verify $settings — hook/statusLine patterns unavailable" >&2
     fail_step "[6/8] read-back: cannot verify $settings (hook/statusLine patterns unavailable)"
-  elif ! _left="$(himmel_wiring_lines "$settings")"; then
+  elif ! _left="$(himmel_wiring_lines "$settings" "$_mask_hooks" "$_mask_sl" "$_mask_repo" "$_mask_vault" "$_mask_hd")"; then
     echo "  ERROR: could not read $settings back" >&2
     fail_step "[6/8] read-back: could not read $settings back"
   elif [ -n "$_left" ]; then
@@ -1771,7 +2155,7 @@ project_is_himmel_checkout() {
 # code block -- or a file that merely quotes the block would read as still wired.
 HIMMEL_HUD_PAT="$( . "$SCRIPT_DIR/lib/unwire-hud-config.sh" >/dev/null 2>&1; printf '%s' "${_UNWIRE_HUD_PAT:-}" )"
 unwire_user_files() {
-  local _ix _p _dry=0 _probe_rc
+  local _ix _p _dry=0 _probe_rc _hud_units _hu _fc_args _block_unit _fc
   [ "$DRY_RUN" -eq 1 ] && _dry=1
   for _ix in "$_ix_ucm" "$_ix_uam" "$_ix_hud"; do
     # A failure on one file halts the step: never edit the next file after it.
@@ -1782,7 +2166,25 @@ unwire_user_files() {
       continue
     fi
     if [ "$_ix" = "$_ix_hud" ]; then
-      if ! bash "$SCRIPT_DIR/lib/unwire-hud-config.sh" "$_p" "$_dry"; then
+      if [ "$LEDGER_OK" -ne 1 ]; then
+        # ponytail (HIMMEL-3332 S6, spec §4 six rows): no ledger to tell a
+        # pre-existing claude-hud config from himmel's own — kept, with a
+        # hand command, instead of the unconditional strip below.
+        echo "  kept (no ledger): $_p — remove by hand: bash $SCRIPT_DIR/lib/unwire-hud-config.sh $_p"
+        continue
+      fi
+      _hud_units="$(prov_read_units --path "$_p" --kind file)"
+      if [ -n "$_hud_units" ]; then
+        while IFS= read -r _hu; do
+          [ -n "$_hu" ] || continue
+          ledger_apply_unit "$_hu"
+        done <<EOF
+$_hud_units
+EOF
+      # ponytail: the ledger loaded but never recorded THIS hud-config path
+      # (predates per-file recording) — fall back to today's unconditional
+      # strip, the same behaviour as before S6.
+      elif ! bash "$SCRIPT_DIR/lib/unwire-hud-config.sh" "$_p" "$_dry"; then
         fail_step "[6/8] hud config: could not remove $_p"
       elif [ "$_dry" -eq 0 ] && [ -e "$_p" ] && [ -n "$HIMMEL_HUD_PAT" ] &&
           jq -e --arg re "$HIMMEL_HUD_PAT" '((.display.customLineCommand? // "") | tostring | test($re))' "$_p" >/dev/null 2>&1; then
@@ -1790,7 +2192,22 @@ unwire_user_files() {
         fail_step "[6/8] read-back: himmel hud config still present at $_p"
       fi
     else
-      if ! bash "$SCRIPT_DIR/lib/unwire-user-claude-md.sh" "$_p" "$_dry"; then
+      _fc_args=()
+      if [ "$LEDGER_OK" -eq 1 ]; then
+        # HIMMEL-3332 S6: pass the ledger's recorded file_created straight
+        # through, overriding the helper's own blank-line guess (see its
+        # header). No governed block unit recorded for this path (predates
+        # per-file recording) -> _fc_args stays empty, same as before S6.
+        _block_unit="$(prov_read_units --path "$_p" --kind block | head -n1)"
+        if [ -n "$_block_unit" ] && [ "$(printf '%s' "$_block_unit" | jq -r '.governed')" = "true" ]; then
+          _fc="$(printf '%s' "$_block_unit" | jq -r '.fields.file_created // empty')"
+          case "$_fc" in
+            true|yes) _fc_args=(--file-created yes) ;;
+            false|no) _fc_args=(--file-created no) ;;
+          esac
+        fi
+      fi
+      if ! bash "$SCRIPT_DIR/lib/unwire-user-claude-md.sh" ${_fc_args[@]+"${_fc_args[@]}"} "$_p" "$_dry"; then
         fail_step "[6/8] user rule file: could not strip himmel's block from $_p"
       elif [ "$_dry" -eq 0 ] && [ -f "$_p" ]; then
         # 0 = clean; 3 = a marker is still there; anything else = the probe
@@ -1854,6 +2271,26 @@ else
     fi
   fi
 fi
+# adopter-scripts (HIMMEL-3332 S6): a project-scope script install replaced,
+# ledger-restorable — new with S6 (the manifest's `adopter-scripts` row was
+# class=keep/step='-' before, listed for completeness only, never acted on).
+# Runs independently of --skip-settings: a different surface ({PWD}/scripts
+# files, not settings.json), gated only on HALTED like every other sub-step.
+if [ "$HALTED" -eq 0 ] && [ "$LEDGER_OK" -eq 1 ]; then
+  _adopter_units="$(prov_read_units --row adopter-scripts)"
+  while IFS= read -r _au; do
+    [ -n "$_au" ] || continue
+    ledger_apply_unit "$_au"
+  done <<EOF
+$_adopter_units
+EOF
+fi
+# ponytail (HIMMEL-3332 S6, spec §4 six rows): with no ledger, a replaced
+# adopter script cannot be told apart from the operator's own edit — nothing
+# under {PWD}/scripts is touched, and no candidate files can even be
+# enumerated without the ledger, so this prints no per-run line; the
+# manifest's own `adopter-scripts` row already states the policy in the
+# footprint printed before the run.
 echo ""
 
 # --- [7/8] remove marketplaces ----------------------------------------------
@@ -1867,17 +2304,58 @@ elif ! class_removes "$_ix_mkt"; then
   echo "  kept (manifest class ${M_CLASS[$_ix_mkt]})."
 elif ! _claude_bin=$(resolve_tool claude); then
   report_unresolved "[7/8] Claude marketplaces" claude --skip-plugins
+elif [ "$LEDGER_OK" -ne 1 ]; then
+  # ponytail (HIMMEL-3332 S6, spec §4/§8 case 3): same no-ledger fallback as
+  # [4/8]; the hand command there removes marketplaces too, so it is only
+  # printed once, at step 4, rather than repeated here.
+  echo "  kept (no ledger): himmel's template marketplaces"
+  echo "    (remove by hand: see step 4's command above — it removes marketplaces too)"
+  if [ "$DRY_RUN" -ne 1 ] && [ "$YES" -ne 1 ] && [ -t 0 ] && [ -t 1 ]; then
+    printf "  remove himmel's template marketplaces anyway? [y/N] "
+    read -r _ans
+    case "$_ans" in
+      [yY]|[yY][eE][sS])
+        echo "  using: $_claude_bin (fallback scope: $PLUGIN_SCOPE)"
+        _plug_args=(--marketplaces-only --scope "$PLUGIN_SCOPE" --scope-map "$_scope_map")
+        if ! PATH="$(dirname "$_claude_bin"):$PATH" \
+            bash "$REPO_ROOT/scripts/machine-setup/uninstall-plugins.sh" ${_plug_args[@]+"${_plug_args[@]}"}; then
+          echo "  WARN: uninstall-plugins.sh reported failures or blocked removals — re-run it directly to inspect." >&2
+          fail_step "[7/8] Claude marketplaces: uninstall-plugins.sh reported failures or blocked removals"
+        fi
+        ;;
+      *) : ;;
+    esac
+  fi
 else
   echo "  using: $_claude_bin (fallback scope: $PLUGIN_SCOPE)"
-  _plug_args=(--marketplaces-only --scope "$PLUGIN_SCOPE" --scope-map "$_scope_map")
+  ledger_report_preexisted_units marketplace
+  _mkt_ours_units=$(prov_read_units --kind marketplace | { while IFS= read -r _u; do
+    [ -n "$_u" ] || continue
+    [ "$(printf '%s' "$_u" | jq -r '.ours')" = "true" ] && printf '%s\n' "$_u"
+  done; })
+  _plug_args=(--marketplaces-only --scope "$PLUGIN_SCOPE" --scope-map "$_scope_map" --ledger-owned "$_ledger_owned")
   [ "$DRY_RUN" -eq 1 ] && _plug_args+=(--dry-run)
   # uninstall-plugins.sh does its own `command -v claude` and hard-exits when
   # it fails, so the resolved directory has to be on the CHILD's PATH — passing
   # the path alone would leave the child just as blind as this script was.
-  if ! PATH="$(dirname "$_claude_bin"):$PATH" \
+  # ponytail: same coarse rc-based outcome as [4/8] — a marketplace kept
+  # installed by uninstall-plugins.sh's own remaining-plugin check still
+  # reads "removed" here rather than "kept" per-marketplace.
+  if PATH="$(dirname "$_claude_bin"):$PATH" \
       bash "$REPO_ROOT/scripts/machine-setup/uninstall-plugins.sh" ${_plug_args[@]+"${_plug_args[@]}"}; then
+    _mkt_outcome="removed"; _mkt_reason="ours"
+  else
     echo "  WARN: uninstall-plugins.sh reported failures or blocked removals — re-run it directly to inspect." >&2
     fail_step "[7/8] Claude marketplaces: uninstall-plugins.sh reported failures or blocked removals"
+    _mkt_outcome="failed"; _mkt_reason="step-failed"
+  fi
+  if [ -n "$_mkt_ours_units" ]; then
+    while IFS= read -r _u; do
+      [ -z "$_u" ] && continue
+      prov_read_outcome "$_mkt_outcome" "$_u" "$_mkt_reason"
+    done <<EOF
+$_mkt_ours_units
+EOF
   fi
 fi
 echo ""
@@ -1945,6 +2423,37 @@ else
   fi
 fi
 echo ""
+
+# HIMMEL-3332 S6: close the ledger session. On a halt, keep everything —
+# backups and (with --purge-state) the ledger itself — so a retry has the
+# recorded pre-state to work from; only a clean end may purge.
+if [ "$LEDGER_OK" -eq 1 ]; then
+  if [ "$HALTED" -eq 1 ]; then
+    prov_read_session_end halted
+  else
+    prov_read_session_end ok
+    if [ "$PURGE_STATE" -eq 1 ]; then
+      _prov_base_dir="$(prov_dir 2>/dev/null || true)"
+      if [ -z "$_prov_base_dir" ] || suspicious_rm_path "$_prov_base_dir"; then
+        echo "WARN: refusing to purge the provenance ledger — suspicious path: '$_prov_base_dir'" >&2
+        fail_step "[8/8] provenance ledger: refused a suspicious ledger directory ('$_prov_base_dir')"
+      else
+        _prov_backups_dir="$_prov_base_dir/provenance-backups"
+        _prov_ledger_file="$_prov_base_dir/provenance.jsonl"
+        # HIMMEL-2505 gap A.3: a symlinked backups dir is unlinked, never
+        # `rm -rf`'d through into whatever it points at.
+        if [ -L "$_prov_backups_dir" ]; then
+          run rm -f -- "$_prov_backups_dir"
+        else
+          run rm -rf -- "$_prov_backups_dir"
+        fi
+        run rm -f -- "$_prov_ledger_file"
+      fi
+    elif [ "$KEEP_BACKUPS" -ne 1 ]; then
+      prov_read_prune_backups
+    fi
+  fi
+fi
 
 # A step that HAD to run and could not is not a completed uninstall. Saying so
 # — and exiting non-zero — is the whole point of HIMMEL-2458: a caller reading

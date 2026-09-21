@@ -11,6 +11,7 @@
 # Usage:
 #   bash uninstall-plugins.sh [--dry-run] [--scope SCOPE] [--template PATH]
 #        [--plugins-only | --marketplaces-only] [--scope-map PATH]
+#        [--ledger-owned FILE]
 #
 # Flags:
 #   --dry-run            Print commands instead of running them.
@@ -25,6 +26,17 @@
 #                        identify exact removals for marketplaces-only previews.
 #                        --dry-run writes this file too: use an ephemeral path,
 #                        never a persisted retry cache.
+#   --ledger-owned FILE  Ownership comes from the provenance ledger's rows
+#                        instead of the template (HIMMEL-3332 S6). TAB-separated
+#                        lines `plugin\t<id>\t<cli_scope>` or
+#                        `marketplace\t<name>\t<cli_scope>`; blank and #-lines
+#                        are ignored; any other first field, or an unreadable
+#                        file, is a usage error (exit 2). An empty file is
+#                        valid and means himmel owns nothing. The marketplace
+#                        phase then iterates only the listed marketplaces,
+#                        removing each at its recorded cli_scope in addition to
+#                        the scopes it would use anyway. Without this flag,
+#                        behaviour is unchanged.
 #
 # Exit codes: 0 = clean; 1 = failed call or blocked removal; 2 = bad usage.
 set -euo pipefail
@@ -40,6 +52,7 @@ MARKETPLACES_ONLY=0
 SCOPE="user"
 SCOPE_MAP=""
 TEMPLATE="$REPO_ROOT/docs/setup/settings-template.json"
+LEDGER_OWNED=""
 
 # ── Parse args ──────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -54,6 +67,7 @@ while [[ $# -gt 0 ]]; do
     # ephemeral mktemp handoff and removes it on EXIT; callers must give a
     # dry run an ephemeral map, never the wet cache path.
     --scope-map)     [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 2; }; SCOPE_MAP="$2"; shift 2 ;;
+    --ledger-owned)  [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 2; }; LEDGER_OWNED="$2"; shift 2 ;;
     -h|--help)
       sed -n '2,/^set -e/p' "$0" | sed 's/^# \{0,1\}//' | head -n -1
       exit 0
@@ -130,47 +144,93 @@ persist_scope_map() {
   fi
 }
 
-# WHY (HIMMEL-2694): the template names ownership, not the installed set.
-# Capture keys before the loops so counters stay in this shell.
-OWNED_MARKETPLACES="$(jq -r '.extraKnownMarketplaces | keys[]' "$TEMPLATE")"
-# WHY (HIMMEL-2733): fallback mirrors install's ALWAYS + ON-DEMAND union.
-TEMPLATE_SPECS="$(jq -r '
-  ((.enabledPlugins | to_entries[] | select(.value == true) | .key)),
-  ((.onDemandPlugins // {}) | keys[])
-' "$TEMPLATE" | sort -u)"
-# WHY (HIMMEL-2694 r4): every template KEY is owned, including plugins an
-# older himmel enabled that are now disabled in the template.
-# On-demand-only keys are also owned (HIMMEL-2733).
-OWNED_SPECS="$(jq -r '
-  (.enabledPlugins | keys[]), ((.onDemandPlugins // {}) | keys[])
-' "$TEMPLATE" | sort -u)"
-# WHY (HIMMEL-2694 r4): a `directory` marketplace rooted in this repo is
-# ours whatever the template's enabledPlugins currently say — an older
-# himmel may have installed from it. A `github` marketplace is SHARED
-# (claude-plugins-official is Anthropic's), so there only the plugin IDs
-# our template names are ours to remove.
-# WHY (HIMMEL-2694): a textual prefix admits `..`; enforce the bound on segments.
-EXCLUSIVE_MARKETPLACES="$(jq -r --arg root "$REPO_ROOT" '
-  .extraKnownMarketplaces | to_entries[]
-  | select(.value.source.source == "directory")
-  | (.value.source.path | split("<himmel-path>") | join($root)) as $path
-  | select($path == $root or ($path | startswith($root + "/")))
-  | select(($path | split("/") | index("..")) == null)
-  | .key' "$TEMPLATE")"
+LEDGER_MKT_SCOPES=""
+if [[ -n "$LEDGER_OWNED" ]]; then
+  # WHY (HIMMEL-3332 S6): the provenance ledger names exactly what himmel
+  # registered, so ownership no longer has to be inferred from the
+  # template's marketplace/exclusive shape.
+  [[ -r "$LEDGER_OWNED" ]] || { echo "ERROR: cannot read --ledger-owned file: $LEDGER_OWNED" >&2; exit 2; }
+  _LEDGER_PLUGIN_IDS=""
+  _LEDGER_MARKETPLACES=""
+  _ledger_line_no=0
+  while IFS=$'\t' read -r _lk _lname _lscope || [[ -n "$_lk" ]]; do
+    _ledger_line_no=$((_ledger_line_no + 1))
+    [[ -n "$_lk" ]] || continue
+    case "$_lk" in
+      \#*) continue ;;
+      plugin)
+        _LEDGER_PLUGIN_IDS="${_LEDGER_PLUGIN_IDS}${_lname}"$'\n'
+        ;;
+      marketplace)
+        case $'\n'"$_LEDGER_MARKETPLACES" in
+          *$'\n'"$_lname"$'\n'*) ;;
+          *) _LEDGER_MARKETPLACES="${_LEDGER_MARKETPLACES}${_lname}"$'\n' ;;
+        esac
+        LEDGER_MKT_SCOPES="${LEDGER_MKT_SCOPES}${_lname}"$'\t'"${_lscope}"$'\n'
+        ;;
+      *)
+        echo "ERROR: --ledger-owned $LEDGER_OWNED:$_ledger_line_no: unknown row kind \"$_lk\" (want plugin or marketplace)" >&2
+        exit 2
+        ;;
+    esac
+  done < "$LEDGER_OWNED"
+  OWNED_MARKETPLACES="$(printf '%s' "$_LEDGER_MARKETPLACES" | sort -u)"
+  TEMPLATE_SPECS="$(printf '%s' "$_LEDGER_PLUGIN_IDS" | sort -u)"
+  OWNED_SPECS="$TEMPLATE_SPECS"
+  EXCLUSIVE_MARKETPLACES=""
+else
+  # WHY (HIMMEL-2694): the template names ownership, not the installed set.
+  # Capture keys before the loops so counters stay in this shell.
+  OWNED_MARKETPLACES="$(jq -r '.extraKnownMarketplaces | keys[]' "$TEMPLATE")"
+  # WHY (HIMMEL-2733): fallback mirrors install's ALWAYS + ON-DEMAND union.
+  TEMPLATE_SPECS="$(jq -r '
+    ((.enabledPlugins | to_entries[] | select(.value == true) | .key)),
+    ((.onDemandPlugins // {}) | keys[])
+  ' "$TEMPLATE" | sort -u)"
+  # WHY (HIMMEL-2694 r4): every template KEY is owned, including plugins an
+  # older himmel enabled that are now disabled in the template.
+  # On-demand-only keys are also owned (HIMMEL-2733).
+  OWNED_SPECS="$(jq -r '
+    (.enabledPlugins | keys[]), ((.onDemandPlugins // {}) | keys[])
+  ' "$TEMPLATE" | sort -u)"
+  # WHY (HIMMEL-2694 r4): a `directory` marketplace rooted in this repo is
+  # ours whatever the template's enabledPlugins currently say — an older
+  # himmel may have installed from it. A `github` marketplace is SHARED
+  # (claude-plugins-official is Anthropic's), so there only the plugin IDs
+  # our template names are ours to remove.
+  # WHY (HIMMEL-2694): a textual prefix admits `..`; enforce the bound on segments.
+  EXCLUSIVE_MARKETPLACES="$(jq -r --arg root "$REPO_ROOT" '
+    .extraKnownMarketplaces | to_entries[]
+    | select(.value.source.source == "directory")
+    | (.value.source.path | split("<himmel-path>") | join($root)) as $path
+    | select($path == $root or ($path | startswith($root + "/")))
+    | select(($path | split("/") | index("..")) == null)
+    | .key' "$TEMPLATE")"
+fi
 
 # WHY (HIMMEL-2694 r4): selection, foreign notes and remaining dependencies
 # must agree on ownership, including the outer template-marketplace bound.
+# WHY (HIMMEL-3332 S6): in ledger mode ownership is the ledger's plugin ids
+# alone — marketplace membership no longer gates it.
 ownership_jq() {
   local filter="$1"
   shift
-  jq --arg owned "$OWNED_MARKETPLACES" --arg specs "$OWNED_SPECS" \
-    --arg exclusive "$EXCLUSIVE_MARKETPLACES" "$@" '
-    def owned_row:
-      .id as $id | (.id | split("@") | last) as $m
-      | (($owned | split("\n") | index($m)) != null
-        and (($specs | split("\n") | index($id)) != null
-          or ($exclusive | split("\n") | index($m)) != null));
-    '"$filter"
+  if [[ -n "$LEDGER_OWNED" ]]; then
+    jq --arg owned "$OWNED_MARKETPLACES" --arg specs "$OWNED_SPECS" "$@" '
+      def owned_row:
+        .id as $id
+        | (($specs | split("\n") | index($id)) != null);
+      '"$filter"
+  else
+    jq --arg owned "$OWNED_MARKETPLACES" --arg specs "$OWNED_SPECS" \
+      --arg exclusive "$EXCLUSIVE_MARKETPLACES" "$@" '
+      def owned_row:
+        .id as $id | (.id | split("@") | last) as $m
+        | (($owned | split("\n") | index($m)) != null
+          and (($specs | split("\n") | index($id)) != null
+            or ($exclusive | split("\n") | index($m)) != null));
+      '"$filter"
+  fi
 }
 marketplace_source() {
   local name="$1" source_type source
@@ -300,7 +360,11 @@ EOF_SPECS
       | [$id, $m] | @tsv' -r)"
     while IFS=$'\t' read -r ID M; do
       [[ -n "$ID" ]] || continue
-      echo "  note: $ID — installed from $M but not named by himmel's template; left installed"
+      if [[ -n "$LEDGER_OWNED" ]]; then
+        echo "  note: $ID — installed from $M but no ledger row claims it; left installed"
+      else
+        echo "  note: $ID — installed from $M but not named by himmel's template; left installed"
+      fi
     done <<EOF_FOREIGN
 $FOREIGN_ROWS
 EOF_FOREIGN
@@ -518,10 +582,28 @@ $REMOVED_SCOPES
 EOF_SCOPES
     # WHY (HIMMEL-2796): plugin scopes do not reveal registration scopes;
     # include the install profile even when inferred candidates are nonempty.
+    # ponytail: this join runs even in ledger mode (LEDGER_OWNED set) — a
+    # pre-existing marketplace of the same name registered at the fallback
+    # $SCOPE would also be removed, since we don't check LEDGER_MKT_SCOPES
+    # before adding $SCOPE here.
     case $'\n'"$MKT_SCOPES" in
       *$'\n'"$SCOPE"$'\n'*) ;;
       *) MKT_SCOPES="${MKT_SCOPES}${SCOPE}"$'\n' ;;
     esac
+    # WHY (HIMMEL-3332 S6): the ledger recorded exactly which cli_scope this
+    # marketplace was registered at; add it even if nothing else inferred it.
+    if [[ -n "$LEDGER_OWNED" ]]; then
+      while IFS=$'\t' read -r _lm _lscope; do
+        [[ "$_lm" == "$M" ]] || continue
+        [[ -n "$_lscope" ]] || continue
+        case $'\n'"$MKT_SCOPES" in
+          *$'\n'"$_lscope"$'\n'*) ;;
+          *) MKT_SCOPES="${MKT_SCOPES}${_lscope}"$'\n' ;;
+        esac
+      done <<EOF_LEDGER_MKT_SCOPES
+$LEDGER_MKT_SCOPES
+EOF_LEDGER_MKT_SCOPES
+    fi
     echo "  marketplace remove: $M"
     while IFS= read -r MKT_SCOPE; do
       [[ -n "$MKT_SCOPE" ]] || continue

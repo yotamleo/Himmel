@@ -34,13 +34,19 @@ HIMMEL_FAKE="C:/fake/himmel"             # stand-in clone path (string only)
 # The cwd moves too, so uninstall's {PWD} project-settings row cannot act on the
 # checkout the suite was launched from.
 export HOME="$td/home"
+# HIMMEL-3332 S6: a scratch provenance dir alongside the scratch HOME, so the
+# install-phase wire-*.sh calls below record real ledger rows (RED1/RED2 need
+# a ledger to exist for the future ledger-aware restore to have anything to
+# read) without ever touching the operator's real ~/.himmel.
+export HIMMEL_PROVENANCE_DIR="$td/prov"
 unset CLAUDE_CONFIG_DIR
 SETTINGS="$HOME/.claude/settings.json"
 mkdir -p "$(dirname "$SETTINGS")" "$td/cwd"
 cd "$td/cwd" || exit 2
 
-# Seed a realistic pre-existing settings.json: the operator's OWN rtk guard +
-# a custom MCP allow that MUST survive the whole round trip.
+# Seed a realistic pre-existing settings.json: the operator's OWN rtk guard,
+# a custom MCP allow, a custom statusLine and a custom env.HANDOVER_DIR -- all
+# of which MUST survive the whole round trip (HIMMEL-3332 S6: RED1/RED2).
 cat > "$SETTINGS" <<'JSON'
 {
   "hooks": {
@@ -48,9 +54,15 @@ cat > "$SETTINGS" <<'JSON'
       {"matcher":"Bash","hooks":[{"type":"command","command":"bash /opt/rtk-hook-guard.sh"}]}
     ]
   },
-  "permissions": {"allow":["mcp__obsidian-vault__obsidian_simple_search"]}
+  "permissions": {"allow":["mcp__obsidian-vault__obsidian_simple_search"]},
+  "statusLine": {"type":"command","command":"bash /opt/my-status.sh"},
+  "env": {"HANDOVER_DIR": "/srv/my-handovers"}
 }
 JSON
+# Canonical form of the user's OWN pre-existing statusLine, captured straight
+# from the seed file so RED1 compares against the literal bytes rather than a
+# hand-duplicated JSON literal that could drift from the heredoc above.
+USER_STATUSLINE_CANON=$(jq -cS .statusLine "$SETTINGS")
 
 echo "==== PHASE INSTALL (the setup [9/10] wire sequence) ===="
 # Exactly what setup.sh [9/10] runs, by subprocess (no set -e leak).
@@ -58,6 +70,11 @@ bash "$lib/wire-statusline.sh"        "$SETTINGS" "$HIMMEL_FAKE" >/dev/null
 bash "$lib/wire-himmel-repo.sh"       "$SETTINGS" "$HIMMEL_FAKE" >/dev/null
 bash "$lib/wire-pretooluse-hooks.sh"  "$SETTINGS" "$HIMMEL_FAKE" >/dev/null
 bash "$lib/wire-pretooluse-hooks.sh"  --sessionstart "$SETTINGS" "$HIMMEL_FAKE" "inject-initiative.sh" >/dev/null
+# HIMMEL-3332 S6: also wire HANDOVER_DIR (a value distinct from the user's
+# seeded /srv/my-handovers), exactly like wire-statusline.sh already does for
+# .statusLine above -- so uninstall has both a himmel-owned overwrite AND a
+# ledger row recording what it replaced.
+bash "$lib/wire-handover-dir.sh"      "$SETTINGS" "$td/himmel-handover" >/dev/null
 
 check "install: 3 PreToolUse himmel hooks present" \
   "$(jq -r '[.hooks.PreToolUse[].hooks[].command | select(test("scripts/hooks/(auto-approve-safe-bash|block-edit-on-main|block-read-secrets)"))] | length' "$SETTINGS")" "3"
@@ -81,7 +98,7 @@ echo "==== PHASE UNINSTALL (the real uninstall.sh [6/8]) ===="
 # (rc=3) and the "[6/8] ran" check below fails instead of deleting anything.
 # scripts/test-e2e-symmetry-isolation.sh proves this against an operator-shaped HOME.
 out=$(HIMMEL_USER_SETTINGS="$SETTINGS" TELEGRAM_CHANNEL_DIR="$td/none" BRIDGE_ROOT="$td/noneb" \
-  HIMMELCTL_CACHE_DIR="$td/nonec" \
+  HIMMELCTL_CACHE_DIR="$td/nonec" HIMMEL_PROVENANCE_DIR="$HIMMEL_PROVENANCE_DIR" \
   bash "$repo_root/scripts/uninstall.sh" --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1) || true
 
 printf '%s\n' "$out" | grep -q '\[6/8\] Unwiring' && check "uninstall: [6/8] ran" yes yes || check "uninstall: [6/8] ran" no yes
@@ -89,7 +106,14 @@ check "uninstall: PreToolUse himmel hooks gone" \
   "$(jq -r '[.hooks.PreToolUse[].hooks[].command | select(test("scripts/hooks/(auto-approve-safe-bash|block-edit-on-main|block-read-secrets)"))] | length' "$SETTINGS")" "0"
 check "uninstall: SessionStart inject-initiative gone" \
   "$(jq -r '[.hooks.SessionStart[]?.hooks[]?.command // empty | select(test("inject-initiative"))] | length' "$SETTINGS")" "0"
-check "uninstall: statusLine removed"      "$(jq -r 'has("statusLine")' "$SETTINGS")" "false"
+# HIMMEL-3332 S6: the user's OWN statusLine and env.HANDOVER_DIR were both
+# pre-existing (seeded above) before install overwrote them -- a ledger-aware
+# uninstall must RESTORE them, not blindly strip the key (which is all
+# today's unwire-statusline.sh / unwire-handover-dir.sh do).
+check "RED1 uninstall: user statusLine byte-identical after round trip" \
+  "$(jq -cS .statusLine "$SETTINGS")" "$USER_STATUSLINE_CANON"
+check "RED2 uninstall: user env.HANDOVER_DIR survives" \
+  "$(jq -r '.env.HANDOVER_DIR // "ABSENT"' "$SETTINGS")" "/srv/my-handovers"
 check "uninstall: env.HIMMEL_REPO removed"  "$(jq -r '.env.HIMMEL_REPO // "ABSENT"' "$SETTINGS")" "ABSENT"
 check "uninstall: rtk guard SURVIVED"       "$(jq -r '[.hooks.PreToolUse[].hooks[].command | select(test("rtk-hook-guard"))] | length' "$SETTINGS")" "1"
 check "uninstall: MCP allow SURVIVED"       "$(jq -r '.permissions.allow[0]' "$SETTINGS")" "mcp__obsidian-vault__obsidian_simple_search"

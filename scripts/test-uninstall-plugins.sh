@@ -404,6 +404,71 @@ assert_rc "P12 both scopes exit 0" 0 "$rc"
 assert_rc "P12 marketplace removed once at project scope" 1 "$(grep -xcF 'plugin marketplace remove m1 --scope project' "$CLAUDE_CALL_LOG")"
 assert_rc "P12 marketplace removed once at user scope" 1 "$(grep -xcF 'plugin marketplace remove m1 --scope user' "$CLAUDE_CALL_LOG")"
 
+# L — HIMMEL-3332 S6: --ledger-owned FILE replaces template-derived ownership
+# with the provenance ledger's own rows.
+TEMPLATE="$TMP/template.json"
+run_case_ledger() {
+    local ledger="$1"; shift
+    out=$(bash "$CLI" --template "$TEMPLATE" --ledger-owned "$ledger" "$@" 2>&1); rc=$?
+    calls=$(cat "$CLAUDE_CALL_LOG")
+}
+
+# L1 — RED: ownership is the ledger's plugin rows, not the template's keys.
+LEDGER1="$TMP/ledger1.tsv"
+printf 'plugin\thimmel-ops@himmel\tuser\n' > "$LEDGER1"
+reset_case
+printf '[{"id":"context7@claude-plugins-official","scope":"user"},{"id":"himmel-ops@himmel","scope":"user"}]\n' > "$STUB_PLUGINS_JSON"
+run_case_ledger "$LEDGER1" --plugins-only
+assert_rc "L1 ledger-owned run exits 0" 0 "$rc"
+assert_has "L1 listed plugin uninstalled" 'plugin uninstall himmel-ops@himmel --scope user' "$calls"
+assert_not_has "L1 unlisted template plugin kept" 'plugin uninstall context7@claude-plugins-official' "$calls"
+
+# L2 — the foreign-plugin note names the ledger, not the template.
+LEDGER2="$TMP/ledger2.tsv"
+printf 'plugin\thimmel-ops@himmel\tuser\nmarketplace\tclaude-plugins-official\tuser\n' > "$LEDGER2"
+reset_case
+printf '[{"id":"context7@claude-plugins-official","scope":"user"},{"id":"himmel-ops@himmel","scope":"user"}]\n' > "$STUB_PLUGINS_JSON"
+printf '[{"name":"claude-plugins-official"}]\n' > "$STUB_MARKETPLACES_JSON"
+run_case_ledger "$LEDGER2" --plugins-only
+assert_rc "L2 ledger-owned run exits 0" 0 "$rc"
+assert_has "L2 foreign note reads 'no ledger row claims it'" "note: context7@claude-plugins-official — installed from claude-plugins-official but no ledger row claims it; left installed" "$out"
+
+# L3 — the marketplace phase iterates only listed marketplaces and removes at
+# the recorded cli_scope; a template marketplace absent from the ledger is kept.
+LEDGER3="$TMP/ledger3.tsv"
+printf 'plugin\thimmel-ops@himmel\tuser\nmarketplace\thimmel\tproject\n' > "$LEDGER3"
+reset_case
+printf '[{"id":"himmel-ops@himmel","scope":"user"}]\n' > "$STUB_PLUGINS_JSON"
+printf '[{"name":"himmel"},{"name":"obsidian-skills"}]\n' > "$STUB_MARKETPLACES_JSON"
+run_case_ledger "$LEDGER3"
+assert_rc "L3 ledger-owned run exits 0" 0 "$rc"
+assert_has "L3 listed marketplace removed at recorded cli_scope" 'plugin marketplace remove himmel --scope project' "$calls"
+assert_not_has "L3 unlisted template marketplace kept" 'plugin marketplace remove obsidian-skills' "$calls"
+
+# L4 — an empty ledger file is valid and owns nothing.
+LEDGER_EMPTY="$TMP/ledger-empty.tsv"
+: > "$LEDGER_EMPTY"
+reset_case
+printf '[{"id":"handover@himmel","scope":"user"}]\n' > "$STUB_PLUGINS_JSON"
+printf '[{"name":"himmel"}]\n' > "$STUB_MARKETPLACES_JSON"
+run_case_ledger "$LEDGER_EMPTY"
+assert_rc "L4 empty ledger exits 0" 0 "$rc"
+assert_not_has "L4 empty ledger uninstalls nothing" 'plugin uninstall' "$calls"
+assert_not_has "L4 empty ledger removes no marketplace" 'plugin marketplace remove' "$calls"
+
+# L5 — a row kind other than plugin/marketplace is a hard usage error.
+LEDGER_BAD="$TMP/ledger-bad.tsv"
+printf 'widget\tfoo\tuser\n' > "$LEDGER_BAD"
+run_case_ledger "$LEDGER_BAD"
+assert_rc "L5 bad ledger row kind exits 2" 2 "$rc"
+
+# L6 — no --ledger-owned: template-derived ownership is unchanged (pin).
+reset_case
+printf '[{"id":"handover@himmel","scope":"user"},{"id":"ops@himmel","scope":"user"}]\n' > "$STUB_PLUGINS_JSON"
+run_case
+assert_rc "L6 no-flag behaviour unchanged (rc)" 0 "$rc"
+assert_has "L6 no-flag behaviour unchanged (uninstalls)" 'plugin uninstall handover@himmel --scope user' "$calls"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then echo 'ALL PASS'; else echo "$FAILED FAILURE(S)"; fi
 exit $((FAILED > 0))

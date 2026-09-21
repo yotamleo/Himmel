@@ -68,7 +68,14 @@ ctl_out=$( cd "$td/cwd" && env -u CLAUDE_CONFIG_DIR HOME="$ctl" HIMMEL_UNINSTALL
   HIMMELCTL_CACHE_DIR="$td/nonec" \
   bash "$repo_root/scripts/uninstall.sh" --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1 ) || true
 printf '%s\n' "$ctl_out" | grep -q '\[6/8\] Unwiring' && check "control: [6/8] ran against the fixture" yes yes || check "control: [6/8] ran against the fixture" no yes
-check "control: hud config removed from the fixture HOME"        "$([ -e "$ctl/.claude/plugins/claude-hud/config.json" ] && echo present || echo gone)" "gone"
+# HIMMEL-3332 S6: hud config is one of the six ledger-decided rows. This
+# fixture's hud config is a hand copy (seed_home never calls a ledger-aware
+# writer -- there isn't one yet), so a wet uninstall with no ledger now KEEPS
+# it with a hand command instead of stripping it unconditionally like before
+# S6; assert the new (kept) behaviour, and that it fired on purpose rather
+# than vacuously (the hand-command line actually printed).
+check "control: hud config kept (no ledger)" "$([ -e "$ctl/.claude/plugins/claude-hud/config.json" ] && echo present || echo gone)" "present"
+printf '%s\n' "$ctl_out" | grep -q 'kept (no ledger).*unwire-hud-config\.sh' && check "control: hud config hand-command printed" yes yes || check "control: hud config hand-command printed" no yes
 check "control: AGENTS.md (block only) removed from the fixture" "$([ -e "$ctl/.codex/AGENTS.md" ] && echo present || echo gone)" "gone"
 check "control: CLAUDE.md block stripped, operator text kept"    "$(cat "$ctl/.claude/CLAUDE.md" 2>/dev/null)" "my own rules"
 
@@ -79,7 +86,9 @@ check "e2e suite exits 0"                    "$suite_rc" "0"
 printf '%s\n' "$suite_out" | grep -q '^E2E ALL PASS' && check "e2e suite reports ALL PASS" yes yes || check "e2e suite reports ALL PASS" no yes
 # Not vacuous: the suite still drives the real [6/8] and asserts its own result.
 printf '%s\n' "$suite_out" | grep -q '^ok - uninstall: \[6/8\] ran' && check "e2e suite still runs uninstall [6/8]" yes yes || check "e2e suite still runs uninstall [6/8]" no yes
-printf '%s\n' "$suite_out" | grep -q '^ok - uninstall: statusLine removed' && check "e2e suite still asserts the unwire" yes yes || check "e2e suite still asserts the unwire" no yes
+# HIMMEL-3332 S6: with a ledger, a pre-existing statusLine is now RESTORED,
+# not stripped -- the renamed RED1 check is this suite's unwire assertion now.
+printf '%s\n' "$suite_out" | grep -q '^ok - RED1 uninstall: user statusLine byte-identical after round trip' && check "e2e suite still asserts the unwire" yes yes || check "e2e suite still asserts the unwire" no yes
 
 same "hud config (~/.claude/plugins/claude-hud/config.json) survived" "$td/before/hud-config.json" "$opshome/.claude/plugins/claude-hud/config.json"
 same "user CLAUDE.md (~/.claude/CLAUDE.md) survived"                  "$td/before/CLAUDE.md"       "$opshome/.claude/CLAUDE.md"

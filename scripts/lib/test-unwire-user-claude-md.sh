@@ -74,6 +74,38 @@ has   "was-empty: says it was empty before install" "empty again" "$out"
 # the operator's file was a lone newline: that newline is theirs and stays
 strip was-newline '\n\n%s\n' '\n'
 
+# ── --file-created override (HIMMEL-3332 S6) ────────────────────────────────
+# yes: a file left empty is deleted even where the heuristic (a blank line
+# before BEGIN) would have kept it -- the ledger, not the guess, decides.
+f="$td/fc-yes.md"; printf '\n%s\n' "$BLOCK" > "$f"
+run --file-created yes "$f"
+check "fc-yes: rc 0" "$rc" 0
+gone "fc-yes: deleted despite the leading blank line (ledger says install created it)" "$f"
+gone "fc-yes: no backup for a file install created" "$f.himmel-uninstall-backup"
+has  "fc-yes: says why it was removed" "install created it" "$out"
+
+# no: a file left empty is written back empty even where the heuristic (no
+# blank line before BEGIN) would have deleted it.
+f="$td/fc-no.md"; printf '%s\n' "$BLOCK" > "$f"
+run --file-created no "$f"
+check "fc-no: rc 0" "$rc" 0
+there "fc-no: file kept, never deleted" "$f"
+check "fc-no: and is empty" "$(wc -c < "$f")" 0
+there "fc-no: backup taken" "$f.himmel-uninstall-backup"
+has  "fc-no: says empty again" "empty again" "$out"
+
+# symlink + yes: the link itself is never deleted even with --file-created yes.
+mkdir -p "$td/fc-dots"; printf '%s\n' "$BLOCK" > "$td/fc-dots/CLAUDE.md"
+ln -s "$td/fc-dots/CLAUDE.md" "$td/fc-symlink.md"
+run --file-created yes "$td/fc-symlink.md"
+check "fc-symlink-yes: rc 0" "$rc" 0
+[ -L "$td/fc-symlink.md" ] && ok "fc-symlink-yes: link preserved" || bad "fc-symlink-yes: link deleted"
+check "fc-symlink-yes: target emptied" "$(wc -c < "$td/fc-dots/CLAUDE.md")" 0
+
+# invalid value -> usage exit 2, before any file is touched
+run --file-created bogus "$td/fc-invalid-target.md"
+check "fc-invalid: rc 2" "$rc" 2
+
 # ── exactness: text before / after / both, with and without install's blank ─
 strip before        'top\n\n%s\n'          'top\n'
 strip before-noblank 'top\n%s\n'           'top\n'

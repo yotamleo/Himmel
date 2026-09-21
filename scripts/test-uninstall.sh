@@ -123,6 +123,41 @@ fi
 export HIMMEL_USER_SETTINGS="$TMP/user-settings.json"
 printf '{}\n' > "$HIMMEL_USER_SETTINGS"
 
+# HIMMEL-3332 S6: seeds a completed provenance ledger session at a fixture's
+# OWN $HOME, recording plugin/marketplace units as himmel-installed
+# (preexisted=false -> ours=true), via the same prov_record primitive
+# install-plugins.sh's real writer uses (pattern shared with RED3 in
+# scripts/test-uninstall-provenance.sh). This is what turns [4/8]/[7/8]'s
+# active ledger-owned removal branch back on for a fixture that needs to
+# exercise real plugin/marketplace removal, instead of the no-ledger "kept"
+# default this suite otherwise exercises everywhere else.
+# shellcheck source=lib/provenance.sh
+. "$(dirname "$CLI")/lib/provenance.sh"
+seed_plugin_ledger() {
+    local seed_home="$1" plugins="$2" markets="$3" _id _m
+    (
+        # shellcheck disable=SC2030 # confined to this subshell; never leaks
+        # to the parent script (shellcheck's SC2031 hits below, at unrelated
+        # $HOME reads elsewhere in this file, are false positives from that).
+        export HOME="$seed_home"
+        unset HIMMEL_PROVENANCE_DIR CLAUDE_CONFIG_DIR
+        prov_begin --writer install-plugins.sh -- seed >/dev/null
+        IFS=','
+        for _id in $plugins; do
+            [ -n "$_id" ] || continue
+            prov_record register plugin - --unit "$_id" --scope machine --class code \
+                --writer install-plugins.sh --row plugins --field 'cli_scope="user"' --field preexisted=false >/dev/null
+        done
+        for _m in $markets; do
+            [ -n "$_m" ] || continue
+            prov_record register marketplace - --unit "$_m" --scope machine --class code \
+                --writer install-plugins.sh --row marketplaces --field 'cli_scope="user"' --field preexisted=false >/dev/null
+        done
+        unset IFS
+        prov_end ok >/dev/null
+    )
+}
+
 mk_state() {
     CHANNEL="$TMP/channels/telegram"
     BRIDGE="$TMP/bridge"
@@ -202,6 +237,9 @@ fi
 #    place than guessed past), so this exits 2/INCOMPLETE, not 0 — the
 #    corollary of making the halt behavior real.
 mk_state
+# shellcheck disable=SC2031 # false positive: seed_plugin_ledger's HOME export
+# is confined to its own subshell (see its definition above) and never
+# reaches this $HOME, which is the suite's real top-level one.
 out=$(TELEGRAM_CHANNEL_DIR="$HOME" BRIDGE_ROOT="$BRIDGE" PATH="$HBIN" \
     bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_rc "HOME-as-target run halts, exits 2" 2 "$rc"
@@ -209,6 +247,7 @@ assert_has "refuses to rm HOME" "refusing to remove suspicious path" "$out"
 assert_not_has "guard refusal not reported as rm failure" "failed to remove" "$out"
 assert_not_has "guard refusal does not suggest manual removal" "residue remains" "$out"
 assert_has "guard refusal halts later steps" "Uninstall INCOMPLETE" "$out"
+# shellcheck disable=SC2031 # same false positive as above.
 if [ -d "$HOME" ]; then
     echo "PASS HOME survived"
 else
@@ -515,10 +554,16 @@ out=$(TELEGRAM_CHANNEL_DIR="$TMP/none1" BRIDGE_ROOT="$TMP/none1b" PATH="$HBIN" \
     bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_rc "[6/8] run exits 0" 0 "$rc"
 assert_has "[6/8] banner present" "[6/8] Unwiring" "$out"
-assert_rc "statusLine removed"      "null"   "$(jq -r '.statusLine // "null"' "$HIMMEL_USER_SETTINGS")"
+# HIMMEL-3332 S6: with no ledger for this $HOME, statusLine and
+# env.HANDOVER_DIR are two of the six overwrite-prone rows -- kept (not
+# removed) with a hand command, since a pre-existing value can't be told
+# apart from himmel's own without a ledger.
+assert_rc "statusLine kept (no ledger)" "present" "$(jq -r 'if .statusLine == null then "null" else "present" end' "$HIMMEL_USER_SETTINGS")"
+assert_has "statusLine kept hand-command printed" "kept (no ledger): statusLine" "$out"
 assert_rc "HIMMEL_REPO removed"     "null"   "$(jq -r '.env.HIMMEL_REPO // "null"' "$HIMMEL_USER_SETTINGS")"
 assert_rc "LUNA_VAULT_PATH removed" "null"   "$(jq -r '.env.LUNA_VAULT_PATH // "null"' "$HIMMEL_USER_SETTINGS")"
-assert_rc "HANDOVER_DIR removed"    "null"   "$(jq -r '.env.HANDOVER_DIR // "null"' "$HIMMEL_USER_SETTINGS")"
+assert_rc "HANDOVER_DIR kept (no ledger)" "C:/v/handovers" "$(jq -r '.env.HANDOVER_DIR // "null"' "$HIMMEL_USER_SETTINGS")"
+assert_has "HANDOVER_DIR kept hand-command printed" "kept (no ledger): env.HANDOVER_DIR" "$out"
 assert_rc "non-himmel env kept"     "1"      "$(jq -r '.env.KEEP_ME' "$HIMMEL_USER_SETTINGS")"
 assert_rc "UNIVERSAL hook removed"  "0"      "$(jq -r '[.hooks.PreToolUse[].hooks[].command|select(test("auto-approve-safe-bash"))]|length' "$HIMMEL_USER_SETTINGS")"
 assert_rc "rtk guard preserved"     "1"      "$(jq -r '[.hooks.PreToolUse[].hooks[].command|select(test("rtk-hook-guard"))]|length' "$HIMMEL_USER_SETTINGS")"
@@ -542,7 +587,8 @@ before=$(cat "$HIMMEL_USER_SETTINGS")
 out=$(TELEGRAM_CHANNEL_DIR="$TMP/none3" BRIDGE_ROOT="$TMP/none3b" PATH="$HBIN" \
     bash "$CLI" --purge-state --dry-run --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_rc "dry-run [6/8] exits 0" 0 "$rc"
-assert_has "dry-run prints [6/8] DRY" "DRY: unwire statusLine" "$out"
+# HIMMEL-3332 S6: no ledger -- statusLine is previewed as kept, not unwired.
+assert_has "dry-run prints [6/8] DRY" "DRY: would keep (no ledger) statusLine" "$out"
 assert_rc "dry-run leaves settings unchanged" "$before" "$(cat "$HIMMEL_USER_SETTINGS")"
 
 # SC6P (HIMMEL-2776): project scope resolves from the install invocation's CWD,
@@ -552,12 +598,13 @@ PROJECT="$TMP/adopted project"
 mkdir -p "$PROJECT/.claude"
 seed_settings
 cp "$HIMMEL_USER_SETTINGS" "$TMP/user-before.json"
-# Hand-derived surviving user keys, formatted as the existing jq writers emit.
-jq -n '{env:{KEEP_ME:"1"},hooks:{PreToolUse:[
-    {matcher:"Bash",hooks:[{type:"command",command:"bash /opt/rtk-hook-guard.sh"}]},
-    {matcher:"*",hooks:[{type:"command",command:"bash C:/h/scripts/hooks/auto-arm-on-cap.sh"}]}
-  ],SessionStart:[{hooks:[{type:"command",command:"bash C:/h/scripts/hooks/check-update-available.sh"}]}]},
-  permissions:{allow:["mcp__obsidian-vault__obsidian_simple_search"]}}' > "$TMP/user-expected.json"
+# Surviving user keys, derived from the seeded fixture itself by deleting
+# exactly what [6/8] removes with no ledger (statusLine and env.HANDOVER_DIR
+# are two of the six overwrite-prone rows -- HIMMEL-3332 S6 -- and stay put),
+# so the expected file's key order matches the real jq-processed output.
+jq 'del(.hooks.PreToolUse[0].hooks[0]) | del(.hooks.SessionStart[0].hooks[1]) |
+    del(.env.HIMMEL_REPO) | del(.env.LUNA_VAULT_PATH)' \
+    "$TMP/user-before.json" > "$TMP/user-expected.json"
 jq '.hooks.PreToolUse = [range(0;10) | {matcher:"Bash",hooks:[{type:"command",command:"bash $CLAUDE_PROJECT_DIR/scripts/hooks/block-edit-on-main.sh"}]}]' \
     "$HIMMEL_USER_SETTINGS" > "$PROJECT/.claude/settings.json"
 cp "$PROJECT/.claude/settings.json" "$TMP/project-before.json"
@@ -578,7 +625,11 @@ assert_rc "SC6P skip preserves project" "$(cat "$TMP/project-before.json")" "$(c
 out=$(project_uninstall --yes); rc=$?
 assert_rc "SC6P project unwire exits 0" 0 "$rc"
 assert_has "SC6P project outcome" "project settings: unwired $PROJECT/.claude/settings.json" "$out"
-assert_rc "SC6P project residue is zero" 0 "$(jq '[.statusLine, .env.HIMMEL_REPO, .env.LUNA_VAULT_PATH, .env.HANDOVER_DIR, .hooks.PreToolUse[].hooks[]] | map(select(. != null)) | length' "$PROJECT/.claude/settings.json")"
+assert_rc "SC6P project residue is zero" 0 "$(jq '[.env.HIMMEL_REPO, .env.LUNA_VAULT_PATH, .hooks.PreToolUse[].hooks[]] | map(select(. != null)) | length' "$PROJECT/.claude/settings.json")"
+# HIMMEL-3332 S6: statusLine and env.HANDOVER_DIR are two of the six
+# overwrite-prone rows -- kept with no ledger, not swept into the residue check.
+assert_rc "SC6P project statusLine kept (no ledger)" "command" "$(jq -r '.statusLine.type // "null"' "$PROJECT/.claude/settings.json")"
+assert_rc "SC6P project HANDOVER_DIR kept (no ledger)" "C:/v/handovers" "$(jq -r '.env.HANDOVER_DIR // "null"' "$PROJECT/.claude/settings.json")"
 assert_rc "SC6P preserves unrelated env" 1 "$(jq -r '.env.KEEP_ME' "$PROJECT/.claude/settings.json")"
 cmp -s "$TMP/user-expected.json" "$HIMMEL_USER_SETTINGS"; rc=$?
 assert_rc "SC6P user behavior byte-identical" 0 "$rc"
@@ -665,8 +716,11 @@ link_hermetic_tool git "$H_BIN"
 H_CHECKOUT="$TMP/h-checkout"
 mkdir -p "$H_CHECKOUT/scripts"
 cp "$CLI" "$H_CHECKOUT/scripts/uninstall.sh"
-# HIMMEL-3058: the uninstaller reads its manifest from scripts/install/ next to itself.
+# HIMMEL-3058: the uninstaller reads its manifest from scripts/install/ next to
+# itself, and (HIMMEL-3332 S6) unconditionally sources scripts/lib/provenance-read.sh
+# for the ledger load before any step runs -- a fixture copy needs both siblings.
 ln -s "$(dirname "$CLI")/install" "$H_CHECKOUT/scripts/install"
+ln -s "$(dirname "$CLI")/lib" "$H_CHECKOUT/scripts/lib"
 git init -q "$H_CHECKOUT"
 H_PROJECT="$TMP/h-project"
 mkdir -p "$H_PROJECT"
@@ -970,6 +1024,11 @@ for _t in claude pre-commit; do
     chmod +x "$FAKE_HOME/.local/bin/$_t"
 done
 printf '#!/usr/bin/env bash\necho "[]"\n' > "$FAKE_HOME/.local/bin/claude"
+# HIMMEL-3332 S6: [4/8]'s "using: $_claude_bin" resolution line (test 16,
+# below) only prints on the ledger-owned branch; a bare ledger session (no
+# plugin/marketplace units) is enough to turn it on without changing which
+# plugins get targeted (there are none to target here).
+seed_plugin_ledger "$FAKE_HOME" "" ""
 EMPTY_HOME="$TMP/emptyhome"
 mkdir -p "$EMPTY_HOME"
 
@@ -1029,6 +1088,10 @@ FAILHOME="$TMP/failhome"
 mkdir -p "$FAILHOME/.local/bin"
 printf '#!/usr/bin/env bash\necho "STUB claude (failing) $*"\nexit 1\n' > "$FAILHOME/.local/bin/claude"
 chmod +x "$FAILHOME/.local/bin/claude"
+# HIMMEL-3332 S6: this test's premise is the ACTIVE removal branch actually
+# attempting a plugin removal and failing -- with no ledger, [4/8] would take
+# the no-ledger "kept" no-op instead and this whole test would fail vacuously.
+seed_plugin_ledger "$FAILHOME" "test-plugin@himmel" ""
 out=$(HOME="$FAILHOME" PATH="$HBIN" \
     TELEGRAM_CHANNEL_DIR="$TMP/none10" BRIDGE_ROOT="$TMP/none10b" \
     HIMMELCTL_CACHE_DIR="$TMP/none10c" \
@@ -1639,6 +1702,11 @@ scope_case() {
     if [ -n "$2" ]; then
         printf '%s\n' "$2" > "$SC15_CACHE/install-profile.json"
     fi
+    # HIMMEL-3332 S6: a ledger-owned plugin unit is what turns [4/8]'s active
+    # removal branch (the one that forwards --scope) back on; the stub's
+    # `plugin list --json` prints nothing, so the fallback-by-ledger-template
+    # loop is what actually calls `claude plugin uninstall <id> --scope ...`.
+    seed_plugin_ledger "$SC15_HOME" "sc15-plugin@himmel" ""
     HOME="$SC15_HOME" PATH="$HBIN" \
         TELEGRAM_CHANNEL_DIR="$TMP/sc15-$1-none" BRIDGE_ROOT="$TMP/sc15-$1-noneb" \
         HIMMELCTL_CACHE_DIR="$SC15_CACHE" \
@@ -1743,6 +1811,11 @@ u_fixture() {
     printf '[{"id":"handover@himmel","scope":"user"}]\n' > "$STUB_PLUGINS_JSON"
     printf '[{"name":"himmel"},{"name":"obsidian-skills"},{"name":"claude-plugins-official"}]\n' > "$STUB_MARKETPLACES_JSON"
     STUB_FAIL_IDS=""
+    # HIMMEL-3332 S6: without a ledger row for handover@himmel/himmel, [4/8]
+    # and [7/8] now take the no-ledger "kept" no-op instead of ever calling
+    # `claude plugin uninstall`/`marketplace remove` -- seed exactly the
+    # plugin/marketplace this fixture's stub already carries as himmel's own.
+    seed_plugin_ledger "$U_HOME" "handover@himmel" "himmel"
 }
 u_run() {
     out=$(HOME="$U_HOME" PATH="$U_BIN:$HBIN" HIMMEL_UNINSTALL_REPO_ROOT="$U_REPO" \
@@ -2240,6 +2313,11 @@ JSON
 jq -n --arg here "$PWD" '[{id:"a@m1",scope:"project",projectPath:$here}]' > "$STUB_PLUGINS_JSON"
 printf '[{"name":"m1"},{"name":"m2"}]\n' > "$STUB_MARKETPLACES_JSON"
 framework_hook_text > "$U_REPO/.git/hooks/commit-msg"
+# HIMMEL-3332 S6: u_fixture's default seed only records handover@himmel/himmel
+# as ledger-owned -- this test exercises a@m1/b@m2/m1/m2 instead, so those
+# need their own ledger-owned rows or [4/8]/[7/8] treat them as untracked
+# (kept, never call `claude plugin uninstall`/`marketplace remove` on them).
+seed_plugin_ledger "$U_HOME" "a@m1,b@m2" "m1,m2"
 u_run
 assert_rc 'U11 first run halts after project plugin removal' 2 "$rc"
 assert_has 'U11 first failure is hooks' 'Halted at: [5/8]' "$out"
@@ -2335,6 +2413,10 @@ JSON
 jq -n --arg here "$PWD" '[{id:"a@m1",scope:"project",projectPath:$here}]' > "$STUB_PLUGINS_JSON"
 printf '[{"name":"m1"},{"name":"m2"}]\n' > "$STUB_MARKETPLACES_JSON"
 framework_hook_text > "$U_REPO/.git/hooks/commit-msg"
+# HIMMEL-3332 S6: same reseed as U11 -- this test exercises a@m1/b@m2/m1/m2,
+# not u_fixture's default handover@himmel/himmel, so they need their own
+# ledger-owned rows or [4/8]/[7/8] treat them as untracked (kept).
+seed_plugin_ledger "$U_HOME" "a@m1,b@m2" "m1,m2"
 u_run
 assert_rc 'U15 first run halts after project plugin removal' 2 "$rc"
 assert_has 'U15 first failure is hooks' 'Halted at: [5/8]' "$out"
@@ -2359,6 +2441,10 @@ fi
 u_fixture u16
 printf '[]\n' > "$STUB_PLUGINS_JSON"
 printf '[{"name":"m1"}]\n' > "$STUB_MARKETPLACES_JSON"
+# HIMMEL-3332 S6: u_fixture's default seed only records the himmel marketplace
+# as ledger-owned -- this test exercises m1, so it needs its own ledger-owned
+# row or [7/8] treats it as untracked (kept, never previews its removal).
+seed_plugin_ledger "$U_HOME" "" "m1"
 printf 'm1\tproject\t%s\n' "$PWD" > "$U_CACHE/uninstall-scope-map"
 U16_CAT=$(command -v cat)
 mkdir -p "$TMP/u16-bin"

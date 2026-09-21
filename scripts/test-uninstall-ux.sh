@@ -171,6 +171,74 @@ m1_steps=$(grep -v '^#' "$MANIFEST" 2>/dev/null | awk -F'\t' '$2!="keep"{print $
 if [ "$m1_steps" = "1 2 3 4 5 6 7 8 " ]; then pass "M1 every uninstall step 1-8 is covered by a manifest row"
 else fail "M1 manifest covers steps '$m1_steps', expected 1..8"; fi
 
+# ── W1 — S11 writer-presence: every recorded row has a writer, or a named gap ──
+# A row's `record` column (M1) says install WRITES that ledger kind for it; W1
+# checks that a writer actually exists, so the column cannot drift into
+# documentation of something no code does. For each row with record != none,
+# either a colon-separated list of source files that contain a
+# provenance-writing call, or PENDING(<slice/ticket/reason>) when no writer
+# was found anywhere in the tree (a real gap, not this row's to fix).
+# ponytail: the file check greps for ANY provenance-writing call in the named
+# file, not a call that specifically emits THIS row's kind — a file wired for
+# an unrelated row would false-pass. Tightening this to a per-kind/per-row
+# match would mean parsing bash and JS call sites structurally; out of scope
+# for a regression guard whose job is to catch a row losing its writer
+# entirely (the file deleted, renamed, or never grep-matching again).
+w1_map_ids=""
+w1_writer() { # <id> <PENDING(...)|file[:file...]>
+    w1_map_ids="$w1_map_ids $1"
+    case "$2" in
+        PENDING\(*\))
+            pass "W1 $1: no writer found — $2"
+            ;;
+        *)
+            w1_ok=1
+            for w1_f in $(printf '%s' "$2" | tr ':' ' '); do
+                if [ ! -f "$ROOT/$w1_f" ]; then
+                    fail "W1 $1: writer file missing: $w1_f"; w1_ok=0; continue
+                fi
+                if ! grep -q "prov_record\|prov_note\|provRecord\|provBefore\|provenance\.jsonl" "$ROOT/$w1_f"; then
+                    fail "W1 $1: $w1_f has no provenance-writing call"; w1_ok=0
+                fi
+            done
+            [ "$w1_ok" -eq 1 ] && pass "W1 $1: recorded by $2"
+            ;;
+    esac
+}
+w1_writer bridge-unit scripts/himmelctl/lib/bridge-persistence.js
+w1_writer telegram-channel "PENDING(no writer found; gap predates S6, unfiled)"
+w1_writer telegram-bridge "PENDING(no writer found; gap predates S6, unfiled)"
+w1_writer scheduled-jobs "PENDING(no writer found; gap predates S6, unfiled)"
+w1_writer cadence-jobs "PENDING(HIMMEL-3332 S8)"
+w1_writer plugins scripts/machine-setup/install-plugins.sh
+w1_writer git-hooks "PENDING(no writer found; gap predates S6, unfiled)"
+w1_writer git-hook-backups "PENDING(no writer found; gap predates S6, unfiled)"
+w1_writer user-settings scripts/lib/wire-statusline.sh:scripts/lib/wire-handover-dir.sh:scripts/lib/wire-himmel-repo.sh:scripts/lib/wire-luna-vault.sh:scripts/lib/wire-pretooluse-hooks.sh
+w1_writer project-settings scripts/lib/wire-statusline.sh:scripts/lib/wire-handover-dir.sh:scripts/lib/wire-himmel-repo.sh:scripts/lib/wire-luna-vault.sh:scripts/lib/wire-pretooluse-hooks.sh
+w1_writer user-claude-md "PENDING(no writer found; gap predates S6, unfiled)"
+w1_writer user-agents-md "PENDING(no writer found; gap predates S6, unfiled)"
+w1_writer hud-config scripts/lib/wire-statusline.sh
+w1_writer phi-roots scripts/himmelctl/bin.js
+w1_writer graphify-wiring "PENDING(design doc D5 — separate ticket, not yet filed)"
+w1_writer marketplaces scripts/machine-setup/install-plugins.sh
+w1_writer himmelctl-cache scripts/himmelctl/bin.js
+w1_writer qmd-fork "PENDING(no writer found; gap predates S6, unfiled)"
+w1_writer provenance-ledger scripts/lib/provenance.sh
+w1_writer workspace-trust scripts/himmelctl/bin.js
+w1_writer adopter-scripts scripts/adopt.sh
+w1_writer himmel-clone scripts/himmelctl/bin.js
+# Coverage: a manifest row added later with record != none and no w1_writer
+# call above must fail here, not pass silently by never being checked.
+w1_missing=""
+while IFS=$'\t' read -r w1_id _ _ _ _ _ _ _ w1_record w1_extra; do
+    case "$w1_id" in ''|'#'*) continue ;; esac
+    [ "$w1_record" = none ] && continue
+    case " $w1_map_ids " in *" $w1_id "*) ;; *) w1_missing="$w1_missing $w1_id" ;; esac
+    _unused="$w1_extra"
+done < "$MANIFEST"
+if [ -z "$w1_missing" ]; then pass "W1 every recorded manifest row has a writer-presence entry"
+else fail "W1 rows with no writer-presence entry:$w1_missing"; fi
+
 # ── M2 — the uninstaller READS the manifest (a fixture manifest re-points it)
 fixture m2
 ALT="$FX/alt-channel"
@@ -494,7 +562,10 @@ assert_exists "L2 nothing removed on refusal" "$FX_HOME/.claude/himmel/install-p
 
 # ── R2 — read-back covers statusLine and env, not only hooks ───────────────
 # Every unwire helper is a no-op (rc=0). The settings hold a himmel statusLine
-# and the three himmel env keys but no hook: the read-back must still refuse.
+# and the three himmel env keys but no hook: the read-back must still refuse
+# (HIMMEL-3332 S6: via the always-checked env.HIMMEL_REPO/LUNA_VAULT_PATH
+# rows -- statusLine and env.HANDOVER_DIR are two of the six overwrite-prone
+# rows and, with no ledger here, are KEPT rather than attempted).
 fixture r2
 R2REPO="$FX/repo"
 mkdir -p "$R2REPO/scripts/lib" "$R2REPO/scripts/machine-setup"
@@ -508,17 +579,25 @@ printf '{}\n' > "$FX_PROJ/.claude/settings.json"
 out=$(cd "$FX_PROJ" && HOME="$FX_HOME" PATH="$STUB:$HBIN" HIMMEL_UNINSTALL_REPO_ROOT="$R2REPO" \
     bash "$CLI" --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
 assert_rc "R2 no-op unwire leaving statusLine + env fails the uninstall" 2 "$rc"
-assert_has "R2 names the leftover statusLine" "STILL WIRED: statusLine" "$out"
+# HIMMEL-3332 S6: with no ledger for this $HOME, statusLine and
+# env.HANDOVER_DIR are two of the six overwrite-prone rows -- they are KEPT
+# on purpose (masked out of the read-back) rather than attempted and then
+# caught still-wired; the no-op helper still leaves env.HIMMEL_REPO
+# (untouched by the six-row protection) genuinely wired, which is what
+# still fails this run.
+assert_has "R2 names the leftover statusLine as kept (no ledger)" "kept (no ledger): statusLine" "$out"
 assert_has "R2 names the leftover env.HIMMEL_REPO" "STILL WIRED: env.HIMMEL_REPO" "$out"
-assert_has "R2 names the leftover env.HANDOVER_DIR" "STILL WIRED: env.HANDOVER_DIR" "$out"
+assert_has "R2 names the leftover env.HANDOVER_DIR as kept (no ledger)" "kept (no ledger): env.HANDOVER_DIR" "$out"
 assert_not_has "R2 the intentionally retained env key is not flagged" "CLAUDE_HUD_ALLOW_EXTRA_CMD" "$out"
 assert_not_has "R2 never claims completion" "Uninstall complete." "$out"
-# Control: the real helpers remove them, the retained key survives, rc=0.
+# Control: the real (non-no-op) helpers clear env.HIMMEL_REPO/LUNA_VAULT_PATH;
+# with no ledger, statusLine/env.HANDOVER_DIR are still kept on purpose, the
+# retained key survives either way, and the run still completes rc=0.
 fixture r2b
 printf '%s\n' "$R2_JSON" > "$FX_HOME/.claude/settings.json"
 printf '{}\n' > "$FX_PROJ/.claude/settings.json"
 run_uninstall --yes --skip-tasks --skip-plugins --skip-hooks
-assert_rc "R2 control: real helpers clear statusLine + env" 0 "$rc"
+assert_rc "R2 control: real helpers clear env.HIMMEL_REPO/LUNA_VAULT_PATH" 0 "$rc"
 assert_has "R2 control: verified line printed" "verified: no himmel wiring left in $FX_HOME/.claude/settings.json" "$out"
 assert_has "R2 control: the retained env key survives" "CLAUDE_HUD_ALLOW_EXTRA_CMD" "$(cat "$FX_HOME/.claude/settings.json")"
 

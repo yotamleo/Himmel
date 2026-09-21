@@ -1866,16 +1866,22 @@ reported by `claude plugin list --json`, with project-scope rows limited to
 the current project; the recorded install profile supplies only a fallback
 scope when enumeration is unavailable (HIMMEL-2694),
 (5) `pre-commit uninstall` ×3 hook types,
-(6) unwire `~/.claude/settings.json` — remove the statusLine, `env.HIMMEL_REPO`,
-`env.LUNA_VAULT_PATH`, and the UNIVERSAL hooks that setup/adopt wired (each
-helper removes ONLY its own key/stanza; non-himmel keys — your own hooks, MCP
-config, the rtk guard — are preserved; HIMMEL-460), (7) remove the Claude
-marketplaces (only those no installed plugin still needs), (8) remove the
-himmelctl cache + state dir. Partial offboard via
-`--keep-telegram-state` / `--skip-plugins` / `--skip-tasks` / `--skip-hooks` /
-`--skip-settings` (PS: `-KeepTelegramState` etc.). Not touched: the himmel
-clone + `.env`, your non-himmel `~/.claude/settings.json` keys, handover
-state outside the bridge root.
+(6) unwire `~/.claude/settings.json` — remove `env.HIMMEL_REPO`,
+`env.LUNA_VAULT_PATH`, and the UNIVERSAL hooks that setup/adopt wired
+unconditionally (each helper removes ONLY its own key/stanza; non-himmel keys
+— your own hooks, MCP config, the rtk guard — are preserved; HIMMEL-460),
+(7) remove the Claude marketplaces (only those no installed plugin still
+needs), (8) remove the himmelctl cache + state dir. A provenance ledger,
+when install wrote one, decides ownership of the six overwrite-prone rows —
+your own pre-existing statusLine, `env.HANDOVER_DIR`, plugins (4), the
+claude-hud config, marketplaces (7) and adopter-script copies are kept with a
+printed hand command instead of being guessed at by template; with no
+ledger, uninstall falls back to that template guess (HIMMEL-3332). Partial
+offboard via `--keep-telegram-state` / `--skip-plugins` / `--skip-tasks` /
+`--skip-hooks` / `--skip-settings` (PS: `-KeepTelegramState` etc.).
+`--purge-state` also removes the provenance ledger (`--keep-backups` spares
+its backup copies). Not touched: the himmel clone + `.env`, your non-himmel
+`~/.claude/settings.json` keys, handover state outside the bridge root.
 
 ---
 

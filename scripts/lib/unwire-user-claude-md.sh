@@ -5,8 +5,14 @@
 # ~/.codex/AGENTS.md.
 #
 # Usage:
-#   bash unwire-user-claude-md.sh <rule-file-path> [dry_run]
+#   bash unwire-user-claude-md.sh [--file-created yes|no] <rule-file-path> [dry_run]
 #   bash unwire-user-claude-md.sh --probe <rule-file-path>
+#
+# --file-created yes|no overrides the "left empty" decision below with the
+# provenance ledger's own record instead of the blank-line guess (HIMMEL-3332
+# S6): yes deletes a file left empty (no blank-line guess); no always writes
+# it back empty and never deletes. Omit the flag for today's heuristic. A
+# symlink is never deleted either way.
 #
 # Removes ONLY the marker range (the exact BEGIN line through the exact END
 # line) plus the one blank line install put in front of it when it appended to
@@ -96,8 +102,15 @@ unwire_ucm_probe() {
 }
 
 unwire_user_claude_md() {
-  local target="$1" dry="${2:-0}"
-  local scan nb ne lb le crlf openfence fm start tmp backup _ucm_links
+  local target="$1" dry="${2:-0}" file_created="${3:-}"
+  local scan nb ne lb le crlf openfence fm start tmp backup _ucm_links _ucm_delete_empty
+  case "$file_created" in
+    ""|yes|no) ;;
+    *)
+      echo "unwire-user-claude-md: invalid --file-created value: $file_created (want yes or no)" >&2
+      return 2
+      ;;
+  esac
   if [ ! -f "$target" ]; then
     echo "  no $target -- nothing to strip"
     return 0
@@ -142,9 +155,19 @@ unwire_user_claude_md() {
   # && not ;: a group's status is its LAST command's, so a failed head must not
   # hide behind a succeeding tail and pass a short temp file off as the result.
   { head -n $((start - 1)) "$target" && tail -n +$((le + 1)) "$target"; } > "$tmp" || { rm -f "$tmp"; return 1; }
-  if [ ! -s "$tmp" ] && [ ! -L "$target" ] && [ "$start" -eq "$lb" ]; then
-    # No blank line before BEGIN: install CREATED this file (see header). It
-    # held nothing of the operator's, so there is nothing to back up.
+  # WHY (HIMMEL-3332 S6): --file-created overrides the blank-line guess below
+  # with the ledger's own record of whether install created this file.
+  _ucm_delete_empty=0
+  if [ ! -s "$tmp" ] && [ ! -L "$target" ]; then
+    case "$file_created" in
+      yes) _ucm_delete_empty=1 ;;
+      no)  _ucm_delete_empty=0 ;;
+      *)   [ "$start" -eq "$lb" ] && _ucm_delete_empty=1 ;;
+    esac
+  fi
+  if [ "$_ucm_delete_empty" -eq 1 ]; then
+    # No blank line before BEGIN (or the ledger says install created this
+    # file): it held nothing of the operator's, so there is nothing to back up.
     rm -f "$tmp"
     rm -f -- "$target" || return 1
     echo "  stripped working-principles block; removed $target (install created it and it held nothing else)"
@@ -214,9 +237,20 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     unwire_ucm_probe "$2"
     exit $?
   fi
+  _ucm_cli_file_created=""
+  if [ "${1:-}" = "--file-created" ]; then
+    case "${2:-}" in
+      yes|no) _ucm_cli_file_created="$2" ;;
+      *)
+        echo "usage: unwire-user-claude-md.sh [--file-created yes|no] <rule-file-path> [dry_run]" >&2
+        exit 2
+        ;;
+    esac
+    shift 2
+  fi
   if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
-    echo "usage: unwire-user-claude-md.sh <rule-file-path> [dry_run]" >&2
+    echo "usage: unwire-user-claude-md.sh [--file-created yes|no] <rule-file-path> [dry_run]" >&2
     exit 2
   fi
-  unwire_user_claude_md "$@"
+  unwire_user_claude_md "$1" "${2:-0}" "$_ucm_cli_file_created"
 fi
