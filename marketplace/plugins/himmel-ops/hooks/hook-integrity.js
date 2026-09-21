@@ -1005,11 +1005,15 @@ function verifyProjectHookIntegrity(scriptPath, sessionId) {
 const ESCAPES_PROJECT_DENY = 'escapes-project: ';
 
 function resolveReal(candidate) {
-  const abs = path.resolve(String(candidate));
+  const raw = String(candidate);
+  // realpath(3) walks the string in kernel order, so `link/..` leaves the link's
+  // target; the JS realpathSync (and path.resolve) collapse `..` lexically first.
+  try { return fs.realpathSync.native(raw); } catch (_e) { /* absent: resolve what exists */ }
+  const abs = path.resolve(raw);
   const tail = [];
   for (let cur = abs; ;) {
     try {
-      return path.join(fs.realpathSync(cur), ...tail);
+      return path.join(fs.realpathSync.native(cur), ...tail);
     } catch (_e) {
       const up = path.dirname(cur);
       if (up === cur) return abs;
@@ -1043,24 +1047,40 @@ function verifyIntegrityUnbypassed(scriptPath, sessionId) {
   if (denyReason) return { ok: false, relPath, reason: denyReason };
   const pins = recordPins(record);
   if (!pins) return { ok: true };
-  const expected = pins[relPath];
-  if (typeof expected !== 'string' || !expected) return { ok: true }; // unpinned script
+  // Every identity the path claims is checked: the resolved target's, and the
+  // spelled path's own (`..` collapsed, links NOT followed). A pinned hook swapped
+  // for a link to an unpinned sibling keeps the spelled identity's pin binding.
+  const spelled = normalize(path.resolve(String(scriptPath)));
+  const spelledProject = normalize(path.resolve(projectDir));
+  const keys = [relPath];
+  if (spelled.toLowerCase().startsWith(`${spelledProject.toLowerCase()}/`)) {
+    const spelledRel = spelled.slice(spelledProject.length + 1);
+    if (spelledRel !== relPath) keys.push(spelledRel);
+  }
   let actual;
-  try {
-    actual = gitBlobSha1(fs.readFileSync(scriptPath));
-  } catch (_e) {
-    return { ok: true }; // unreadable/missing — the DELETE vector, already covered by --fail-closed-when
+  for (const key of keys) {
+    const expected = pins[key];
+    if (typeof expected !== 'string' || !expected) continue; // unpinned script
+    if (actual === undefined) {
+      try {
+        actual = gitBlobSha1(fs.readFileSync(scriptPath));
+      } catch (_e) {
+        return { ok: true }; // unreadable/missing — the DELETE vector, already covered by --fail-closed-when
+      }
+    }
+    if (actual === expected) continue;
+    // -------------------------------- MISMATCH: HIMMEL-2528 re-pin or deny ---
+    try {
+      const verdict = resolveMismatch({ projectDir, relPath: key, actual, record, sessionId });
+      if (!verdict.ok) return verdict;
+    } catch (_e) {
+      // Any unforeseen failure on the mismatch path denies, exactly as before
+      // this ticket — a crash here must never become an allow, and must never
+      // spill a stack trace into the session transcript.
+      return { ok: false, relPath: key, reason: null };
+    }
   }
-  if (actual === expected) return { ok: true };
-  // ---------------------------------- MISMATCH: HIMMEL-2528 re-pin or deny ---
-  try {
-    return resolveMismatch({ projectDir, relPath, actual, record, sessionId });
-  } catch (_e) {
-    // Any unforeseen failure on the mismatch path denies, exactly as before
-    // this ticket — a crash here must never become an allow, and must never
-    // spill a stack trace into the session transcript.
-    return { ok: false, relPath, reason: null };
-  }
+  return { ok: true };
 }
 
 function denyIntegrityMismatch(scriptPath, relPath, reason) {

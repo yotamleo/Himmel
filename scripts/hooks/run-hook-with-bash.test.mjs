@@ -1199,6 +1199,41 @@ test('HIMMEL-3390: a symlinked in-project path resolves like its target; one tha
   }
 });
 
+test('HIMMEL-3390: a pinned hook swapped for a symlink to an unpinned in-project file is still denied', () => {
+  const fx = dotdotFixture();
+  try {
+    writeFileSync(join(fx.dir, 'scripts', 'hooks', 'other.sh'), 'echo unpinned sibling\n');
+    withEnv(fx.env, () => {
+      assert.equal(verifyProjectHookIntegrity(fx.scriptPath, 's1').ok, true);
+      fx.fs.rmSync(fx.scriptPath);
+      fx.fs.symlinkSync(join(fx.dir, 'scripts', 'hooks', 'other.sh'), fx.scriptPath);
+      const result = verifyProjectHookIntegrity(fx.scriptPath, 's1');
+      assert.equal(result.ok, false); // the pin of the spelled path must still bind, not only the target's
+      assert.equal(result.relPath, fx.scriptRel);
+    });
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('HIMMEL-3390: `link/..` follows the link (kernel order), not a lexical collapse', () => {
+  const fx = dotdotFixture();
+  try {
+    // <dir>/hop -> <outside>/deep, so <dir>/hop/../scripts/hooks/guard.sh executes
+    // <outside>/scripts/hooks/guard.sh, though a lexical collapse reads <dir>/scripts/hooks/guard.sh.
+    fx.fs.mkdirSync(join(fx.outside, 'deep'));
+    fx.fs.symlinkSync(join(fx.outside, 'deep'), join(fx.dir, 'hop'));
+    const viaHop = `${fx.dir}/hop/../scripts/hooks/guard.sh`;
+    withEnv(fx.env, () => {
+      const result = verifyProjectHookIntegrity(viaHop, 's1');
+      assert.equal(result.ok, false);
+      assert.match(result.reason, /outside/);
+    });
+  } finally {
+    fx.cleanup();
+  }
+});
+
 test('HIMMEL-3390: a foreign path with no `..` stays allowed, and a missing project-local hook is not mistaken for an escape', () => {
   const fx = dotdotFixture();
   try {
