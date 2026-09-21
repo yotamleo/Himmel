@@ -104,5 +104,30 @@ check "C dry-run wrote no ledger" "$([ -e "$homeC/.himmel/provenance.jsonl" ] &&
 check "C dry-run wrote no ledger dir" "$([ -e "$homeC/.himmel" ] && echo yes || echo no)" "no"
 check "C dry-run prints a DRY: shim record line" "$(printf '%s\n' "$outC" | grep -c '^DRY: record create shim ')" "1"
 
+# ── D: luna-config save() records one json-key row per top-level section it
+# created or changed (an unchanged section records nothing) ─────────────────
+provD="$work/d-prov"; cfgD="$work/d-cfg/config.json"
+lunacfg="$(winpath "$repo/scripts/himmelctl/lib/luna-config.js")"
+run_save() { # <edit-luna-vaultPath: 0|1>
+    HIMMEL_PROVENANCE_DIR="$(winpath "$provD")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cfgD")" \
+        "$node_bin" -e "const l=require(process.argv[1]);const d=l.defaultConfig();if(process.argv[2]==='1')d.luna.vaultPath='/tmp/other-vault';l.save(d);" "$lunacfg" "$1" 2>&1
+}
+outD1=$(run_save 0); rcD1=$?
+check "D first save rc" "$rcD1" "0"
+[ "$rcD1" -eq 0 ] || echo "note: save output: $outD1"
+ledD="$provD/provenance.jsonl"
+check "D first save: a create row per section (version, luna, bridge)" \
+    "$(jq -rs '[.[] | select(.kind=="json-key" and .op=="create" and .class=="state" and .file_created==true) | .unit] | sort | join(",")' "$ledD" 2>/dev/null)" \
+    "/bridge,/luna,/version"
+outD2=$(run_save 1); rcD2=$?
+check "D second save rc" "$rcD2" "0"
+[ "$rcD2" -eq 0 ] || echo "note: save output: $outD2"
+check "D second save: only the changed section (luna) is a replace row" \
+    "$(jq -rs '[.[] | select(.kind=="json-key" and .op=="replace") | .unit] | join(",")' "$ledD" 2>/dev/null)" "/luna"
+check "D second save: the replace row is not a file_created row" \
+    "$(jq -rs '[.[] | select(.kind=="json-key" and .op=="replace")][0].file_created' "$ledD" 2>/dev/null)" "false"
+check "D second save: a ledger backup of the prior section exists" \
+    "$(find "$provD/provenance-backups" -type f 2>/dev/null | wc -l | tr -d ' ')" "1"
+
 echo "passes=$passes fails=$fails"
 [ "$fails" -eq 0 ]
