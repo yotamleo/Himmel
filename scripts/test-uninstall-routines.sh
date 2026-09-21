@@ -58,6 +58,8 @@ EOF
 cat > "$SUITE_TMP/bin/systemctl" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FAKE_SYSTEMCTL_LOG"
+# FAKE_SYSTEMCTL_FAIL_ON=<substring> fails only the calls whose argv contains it.
+case "$*" in *"${FAKE_SYSTEMCTL_FAIL_ON:-@@none@@}"*) exit 1 ;; esac
 exit "${FAKE_SYSTEMCTL_RC:-0}"
 EOF
 cat > "$SUITE_TMP/bin/loginctl" <<'EOF'
@@ -260,6 +262,53 @@ seed_unit false replace
 run_uninstall "${BASE_FLAGS[@]}" >/dev/null
 check "B5 operator's unit bytes back" "$(grep -c operators-own "$UNIT" 2>/dev/null)" "1"
 check "B5 no disable --now" "$(grep -c 'disable --now' "$SYSTEMCTL_LOG")" "0"
+
+# run_uninstall_tty <keystrokes> <flags...>: the same run under a pty with the
+# keystrokes typed, so the interactive [d]elete override is reachable.
+run_uninstall_tty() {
+  local keys="$1"; shift
+  local cmd
+  cmd=$(printf '%q ' bash "$repo_root/scripts/uninstall.sh" "$@")
+  ( cd "$CASE_DIR/cwd" && \
+    HIMMEL_USER_SETTINGS="$CASE_SETTINGS" \
+    TELEGRAM_CHANNEL_DIR="$CASE_DIR/no-telegram" BRIDGE_ROOT="$CASE_DIR/no-bridge" \
+    HIMMELCTL_CACHE_DIR="$CASE_DIR/no-cache" \
+    HIMMELCTL_SYSTEMD_USER_UNIT_DIR="$UNIT_DIR" \
+    HIMMEL_PROVENANCE_DIR="$HIMMEL_PROVENANCE_DIR" \
+    FAKE_CRON_FILE="$CRON" FAKE_CRON_LOG="$CRON_LOG" \
+    FAKE_SYSTEMCTL_LOG="$SYSTEMCTL_LOG" FAKE_LOGINCTL_LOG="$LOGINCTL_LOG" \
+    FAKE_SYSTEMCTL_FAIL_ON="${FAKE_SYSTEMCTL_FAIL_ON:-}" \
+    FAKE_AT_DIR="$CASE_DIR/at" FAKE_AT_LOG="$AT_LOG" \
+    PATH="$SUITE_TMP/bin:$PATH" USER=tester \
+    script -qec "$cmd" /dev/null < <(printf '%b' "$keys") 2>&1 )
+}
+TTY_FLAGS=(--keep-telegram-state --skip-plugins --skip-hooks --skip-settings)
+
+echo "==== B7: user-modified unit + accepted interactive delete -> disabled before it is gone ===="
+new_case b7
+seed_unit false
+printf '[Service]\nExecStart=/bin/edited-by-user\n' > "$UNIT"
+run_uninstall_tty 'y\nd\n' "${TTY_FLAGS[@]}" >/dev/null
+check "B7 edited unit removed by the accepted override" "$([ -f "$UNIT" ] && echo present || echo gone)" "gone"
+check "B7 systemctl disable --now called" "$(grep -c '^--user disable --now telegram-bridge.service$' "$SYSTEMCTL_LOG")" "1"
+check "B7 daemon-reload called" "$(grep -c '^--user daemon-reload$' "$SYSTEMCTL_LOG")" "1"
+check "B7 disable-linger tester (linger_preexisted=false)" "$(grep -c '^disable-linger tester$' "$LOGINCTL_LOG")" "1"
+
+echo "==== B8: user-modified unit + [k]eep default -> nothing disabled ===="
+new_case b8
+seed_unit false
+printf '[Service]\nExecStart=/bin/edited-by-user\n' > "$UNIT"
+run_uninstall_tty 'y\nk\n' "${TTY_FLAGS[@]}" >/dev/null
+check "B8 edited unit kept" "$(grep -c edited-by-user "$UNIT")" "1"
+check "B8 no systemctl call" "$(grep -c . "$SYSTEMCTL_LOG")" "0"
+
+echo "==== B9: a failing daemon-reload marks the step incomplete ===="
+new_case b9
+seed_unit true
+out=$(FAKE_SYSTEMCTL_FAIL_ON=daemon-reload run_uninstall "${BASE_FLAGS[@]}"); rc=$?
+check "B9 unit removed" "$([ -f "$UNIT" ] && echo present || echo gone)" "gone"
+check "B9 nonzero rc" "$([ "$rc" -ne 0 ] && echo nonzero || echo zero)" "nonzero"
+has "B9 names the daemon-reload failure" "daemon-reload" "$out"
 
 echo "==== B6: dry-run changes nothing ===="
 new_case b6
