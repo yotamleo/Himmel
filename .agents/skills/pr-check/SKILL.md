@@ -127,9 +127,11 @@ EnterWorktree-isolated session).
 **Himmel-lane spelling of step 0 (HIMMEL-3359) — run this INSTEAD of the
 fence above, never both, and ONLY on a diff that touches no `scripts/cr/`
 file.** When the session's cwd is a worktree of the himmel checkout
-`HIMMEL_REPO` names, first list the branch's `scripts/cr/` changes (against the
-PR base, `origin/main` unless stacked; two-dot against the working tree, so
-uncommitted edits count and a main-side change only over-reports):
+`HIMMEL_REPO` names, first list the branch's `scripts/cr/` changes
+(always origin/main, even on a stacked PR — the branch runs its parent's
+`scripts/cr/` bytes too, and a diff against a stacked base would hide them;
+two-dot against the working tree, so uncommitted edits count and a main-side
+change only over-reports):
 
     git diff --name-only origin/main -- scripts/cr/
 
