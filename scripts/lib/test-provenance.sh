@@ -363,7 +363,9 @@ check "large row: the ledger row parses" "$(last | jq -r '.big | length')" "2000
 rowbytes=$(last | wc -c | tr -d ' ')
 ddbs=$(sed -n 's/.*bs=\([0-9][0-9]*\).*/\1/p' "$tmp/dd.calls" 2>/dev/null | sort -n | tail -n1)
 check "large row: appended by one dd whose block covers the whole row" "$([ -n "$ddbs" ] && [ "$ddbs" -ge "$rowbytes" ] && echo yes || echo "no (bs=${ddbs:-none} row=$rowbytes)")" "yes"
-check "large row: no temp file left behind" "$(find "$HIMMEL_PROVENANCE_DIR" -maxdepth 1 -name '.append.*' | wc -l | tr -d ' ')" "0"
+leftover=0
+for f in "$HIMMEL_PROVENANCE_DIR"/.append.*; do [ -e "$f" ] && leftover=$((leftover + 1)); done
+check "large row: no temp file left behind" "$leftover" "0"
 rm -rf "$HIMMEL_PROVENANCE_DIR"; mkdir -p "$HIMMEL_PROVENANCE_DIR"
 pad=$(head -c 30000 /dev/zero | tr '\0' y)
 for wn in 1 2 3 4 5 6 7 8; do
