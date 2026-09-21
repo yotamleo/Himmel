@@ -131,10 +131,12 @@ printf '{}\n' > "$HIMMEL_USER_SETTINGS"
 # active ledger-owned removal branch back on for a fixture that needs to
 # exercise real plugin/marketplace removal, instead of the no-ledger "kept"
 # default this suite otherwise exercises everywhere else.
+# HIMMEL-3378: an item may carry `:<cli_scope>` (default user) -- the ledger's
+# own recorded scope, which ledger-mode removal now honours.
 # shellcheck source=lib/provenance.sh
 . "$(dirname "$CLI")/lib/provenance.sh"
 seed_plugin_ledger() {
-    local seed_home="$1" plugins="$2" markets="$3" _id _m
+    local seed_home="$1" plugins="$2" markets="$3" _id _m _sc
     (
         # shellcheck disable=SC2030 # confined to this subshell; never leaks
         # to the parent script (shellcheck's SC2031 hits below, at unrelated
@@ -145,13 +147,15 @@ seed_plugin_ledger() {
         IFS=','
         for _id in $plugins; do
             [ -n "$_id" ] || continue
+            _sc=user; case "$_id" in *:*) _sc="${_id#*:}"; _id="${_id%%:*}" ;; esac
             prov_record register plugin - --unit "$_id" --scope machine --class code \
-                --writer install-plugins.sh --row plugins --field 'cli_scope="user"' --field preexisted=false >/dev/null
+                --writer install-plugins.sh --row plugins --field "cli_scope=\"$_sc\"" --field preexisted=false >/dev/null
         done
         for _m in $markets; do
             [ -n "$_m" ] || continue
+            _sc=user; case "$_m" in *:*) _sc="${_m#*:}"; _m="${_m%%:*}" ;; esac
             prov_record register marketplace - --unit "$_m" --scope machine --class code \
-                --writer install-plugins.sh --row marketplaces --field 'cli_scope="user"' --field preexisted=false >/dev/null
+                --writer install-plugins.sh --row marketplaces --field "cli_scope=\"$_sc\"" --field preexisted=false >/dev/null
         done
         unset IFS
         prov_end ok >/dev/null
@@ -1684,7 +1688,8 @@ fi
 # the call it describes. Each case gets its own fake HOME so the stubs above
 # are untouched, and its own cache dir so profiles cannot leak between cases.
 scope_case() {
-    # $1 = case slug, $2 = the install-profile.json body (empty = write none)
+    # $1 = case slug, $2 = the install-profile.json body (empty = write none),
+    # $3 = the cli_scope the seeded ledger row records (default user)
     SC15_HOME="$TMP/sc15-$1-home"
     SC15_CACHE="$TMP/sc15-$1-cache"
     SC15_LOG="$TMP/sc15-$1-argv.log"
@@ -1706,7 +1711,7 @@ scope_case() {
     # removal branch (the one that forwards --scope) back on; the stub's
     # `plugin list --json` prints nothing, so the fallback-by-ledger-template
     # loop is what actually calls `claude plugin uninstall <id> --scope ...`.
-    seed_plugin_ledger "$SC15_HOME" "sc15-plugin@himmel" ""
+    seed_plugin_ledger "$SC15_HOME" "sc15-plugin@himmel:${3:-user}" ""
     HOME="$SC15_HOME" PATH="$HBIN" \
         TELEGRAM_CHANNEL_DIR="$TMP/sc15-$1-none" BRIDGE_ROOT="$TMP/sc15-$1-noneb" \
         HIMMELCTL_CACHE_DIR="$SC15_CACHE" \
@@ -1715,7 +1720,7 @@ scope_case() {
 
 # 15a. a project-scope install: EVERY plugin uninstall carries --scope project,
 #      and none silently falls back to the `user` default.
-scope_case project '{"profile":"starter","scope":"project"}'
+scope_case project '{"profile":"starter","scope":"project"}' project
 sc15_log="$(cat "$TMP/sc15-project-argv.log")"
 assert_has "SC15a project profile -> plugin uninstall invoked" \
     "plugin uninstall" "$sc15_log"
@@ -1815,7 +1820,7 @@ u_fixture() {
     # and [7/8] now take the no-ledger "kept" no-op instead of ever calling
     # `claude plugin uninstall`/`marketplace remove` -- seed exactly the
     # plugin/marketplace this fixture's stub already carries as himmel's own.
-    seed_plugin_ledger "$U_HOME" "handover@himmel" "himmel"
+    seed_plugin_ledger "$U_HOME" "handover@himmel:${2:-user}" "himmel:${2:-user}"
 }
 u_run() {
     out=$(HOME="$U_HOME" PATH="$U_BIN:$HBIN" HIMMEL_UNINSTALL_REPO_ROOT="$U_REPO" \
@@ -2244,17 +2249,17 @@ else
 fi
 
 # WHY (HIMMEL-2754): installed scope must survive the split child processes.
-u_fixture u8
+u_fixture u8 project
 jq -n --arg here "$PWD" '[{id:"handover@himmel",scope:"project",projectPath:$here}]' > "$STUB_PLUGINS_JSON"
 out=$(HOME="$U_HOME" PATH="$U_BIN:$HBIN" HIMMEL_UNINSTALL_REPO_ROOT="$U_REPO" \
     TELEGRAM_CHANNEL_DIR="$CHANNEL" BRIDGE_ROOT="$BRIDGE" HIMMELCTL_CACHE_DIR="$U_CACHE" \
     bash "$CLI" --purge-state --yes --skip-tasks --skip-hooks </dev/null 2>&1); rc=$?
 calls=$(cat "$CLAUDE_CALL_LOG")
-# WHY (HIMMEL-2796): plugin scopes do not reveal registration scopes, so
-# removal also tries the install-profile scope (user) alongside the
-# preserved project scope — the persisted project scope must still survive.
+# WHY (HIMMEL-3378): the ledger records the marketplace at project scope, so
+# only that registration is removed; the install-profile scope (user) is not
+# tried in ledger mode — a same-named user-scope registration is not himmel's.
 if [ "$rc" -eq 0 ] && grep -qxF 'plugin marketplace remove himmel --scope project' <<< "$calls" &&
-    grep -qxF 'plugin marketplace remove himmel --scope user' <<< "$calls"; then
+    ! grep -qxF 'plugin marketplace remove himmel --scope user' <<< "$calls"; then
     echo 'ok - U8 marketplace removal retains project scope across children'
 else
     echo 'FAIL - U8: marketplace removal lost project scope between children'; FAILED=$((FAILED + 1))
@@ -2262,7 +2267,7 @@ fi
 
 
 # U9 — a halt after project plugin removal must preserve scopes for a retry.
-u_fixture u9
+u_fixture u9 project
 jq -n --arg here "$PWD" '[{id:"handover@himmel",scope:"project",projectPath:$here}]' > "$STUB_PLUGINS_JSON"
 framework_hook_text > "$U_REPO/.git/hooks/commit-msg"
 u_run
@@ -2279,9 +2284,8 @@ rm "$U_REPO/.git/hooks/commit-msg"
 u_run
 assert_rc 'U9 retry completes teardown' 0 "$rc"
 assert_has 'U9 retry removes marketplace at preserved project scope' 'plugin marketplace remove himmel --scope project' "$calls"
-# WHY (HIMMEL-2796): also tries the install-profile scope (user) — plugin
-# scopes alone do not prove where a marketplace is registered.
-assert_has 'U9 retry also tries install-profile user scope for himmel' 'plugin marketplace remove himmel --scope user' "$calls"
+# WHY (HIMMEL-3378): ledger mode never adds the install-profile scope (user).
+assert_not_has 'U9 retry never tries install-profile user scope for himmel' 'plugin marketplace remove himmel --scope user' "$calls"
 if [ ! -e "$U_CACHE" ]; then
     echo 'PASS U9 successful retry removes cache and handoff'
 else
@@ -2317,7 +2321,7 @@ framework_hook_text > "$U_REPO/.git/hooks/commit-msg"
 # as ledger-owned -- this test exercises a@m1/b@m2/m1/m2 instead, so those
 # need their own ledger-owned rows or [4/8]/[7/8] treat them as untracked
 # (kept, never call `claude plugin uninstall`/`marketplace remove` on them).
-seed_plugin_ledger "$U_HOME" "a@m1,b@m2" "m1,m2"
+seed_plugin_ledger "$U_HOME" "a@m1:project,b@m2" "m1:project,m2"
 u_run
 assert_rc 'U11 first run halts after project plugin removal' 2 "$rc"
 assert_has 'U11 first failure is hooks' 'Halted at: [5/8]' "$out"
@@ -2328,9 +2332,9 @@ rm "$U_REPO/.git/hooks/commit-msg"
 u_run
 assert_rc 'U11 retry completes teardown' 0 "$rc"
 assert_has 'U11 retry removes m1 marketplace at project scope' 'plugin marketplace remove m1 --scope project' "$calls"
-# WHY (HIMMEL-2796): also tries the install-profile scope (user) for m1 —
-# plugin scopes alone do not prove where a marketplace is registered.
-assert_has 'U11 retry also tries m1 at install-profile user scope' 'plugin marketplace remove m1 --scope user' "$calls"
+# WHY (HIMMEL-3378): ledger mode never adds the install-profile scope (user)
+# for m1; the ledger recorded it at project only.
+assert_not_has 'U11 retry never tries m1 at install-profile user scope' 'plugin marketplace remove m1 --scope user' "$calls"
 assert_has 'U11 retry removes m2 marketplace at user scope' 'plugin marketplace remove m2 --scope user' "$calls"
 
 # U12 — a symlinked cache gets an ephemeral handoff and leaves its target alone.
@@ -2416,7 +2420,7 @@ framework_hook_text > "$U_REPO/.git/hooks/commit-msg"
 # HIMMEL-3332 S6: same reseed as U11 -- this test exercises a@m1/b@m2/m1/m2,
 # not u_fixture's default handover@himmel/himmel, so they need their own
 # ledger-owned rows or [4/8]/[7/8] treat them as untracked (kept).
-seed_plugin_ledger "$U_HOME" "a@m1,b@m2" "m1,m2"
+seed_plugin_ledger "$U_HOME" "a@m1:project,b@m2" "m1:project,m2"
 u_run
 assert_rc 'U15 first run halts after project plugin removal' 2 "$rc"
 assert_has 'U15 first failure is hooks' 'Halted at: [5/8]' "$out"
@@ -2428,9 +2432,9 @@ rm "$U_REPO/.git/hooks/commit-msg"
 u_run --dry-run
 assert_rc 'U15 dry retry completes preview' 0 "$rc"
 assert_has 'U15 dry retry previews m1 marketplace at project scope' 'DRY: claude plugin marketplace remove m1 --scope project' "$out"
-# WHY (HIMMEL-2796): the preview also covers the install-profile scope
-# (user) — plugin scopes alone do not prove where a marketplace is registered.
-assert_has 'U15 dry retry also previews m1 at install-profile user scope' 'DRY: claude plugin marketplace remove m1 --scope user' "$out"
+# WHY (HIMMEL-3378): ledger mode never previews the install-profile scope (user)
+# for m1; the ledger recorded it at project only.
+assert_not_has 'U15 dry retry never previews m1 at install-profile user scope' 'DRY: claude plugin marketplace remove m1 --scope user' "$out"
 if [ -f "$U_CACHE/uninstall-scope-map" ] && cmp -s "$TMP/u15-scope-map-before" "$U_CACHE/uninstall-scope-map"; then
     echo 'PASS U15 persisted scope map survives byte-identical'
 else

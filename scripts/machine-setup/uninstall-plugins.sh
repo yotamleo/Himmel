@@ -34,8 +34,10 @@
 #                        file, is a usage error (exit 2). An empty file is
 #                        valid and means himmel owns nothing. The marketplace
 #                        phase then iterates only the listed marketplaces,
-#                        removing each at its recorded cli_scope in addition to
-#                        the scopes it would use anyway. Without this flag,
+#                        removing each only at its recorded cli_scope. A plugin
+#                        is likewise owned only at its recorded cli_scope (a row
+#                        without one owns nothing); the same id at another scope
+#                        is left installed (HIMMEL-3378). Without this flag,
 #                        behaviour is unchanged.
 #
 # Exit codes: 0 = clean; 1 = failed call or blocked removal; 2 = bad usage.
@@ -151,6 +153,7 @@ if [[ -n "$LEDGER_OWNED" ]]; then
   # template's marketplace/exclusive shape.
   [[ -r "$LEDGER_OWNED" ]] || { echo "ERROR: cannot read --ledger-owned file: $LEDGER_OWNED" >&2; exit 2; }
   _LEDGER_PLUGIN_IDS=""
+  _LEDGER_PLUGIN_PAIRS=""
   _LEDGER_MARKETPLACES=""
   _ledger_line_no=0
   while IFS=$'\t' read -r _lk _lname _lscope || [[ -n "$_lk" ]]; do
@@ -160,6 +163,9 @@ if [[ -n "$LEDGER_OWNED" ]]; then
       \#*) continue ;;
       plugin)
         _LEDGER_PLUGIN_IDS="${_LEDGER_PLUGIN_IDS}${_lname}"$'\n'
+        # WHY (HIMMEL-3378): ownership is the recorded (id, cli_scope) pair; a
+        # row with no cli_scope names no pair.
+        [[ -z "$_lscope" ]] || _LEDGER_PLUGIN_PAIRS="${_LEDGER_PLUGIN_PAIRS}${_lname}"$'\t'"${_lscope}"$'\n'
         ;;
       marketplace)
         case $'\n'"$_LEDGER_MARKETPLACES" in
@@ -176,7 +182,7 @@ if [[ -n "$LEDGER_OWNED" ]]; then
   done < "$LEDGER_OWNED"
   OWNED_MARKETPLACES="$(printf '%s' "$_LEDGER_MARKETPLACES" | sort -u)"
   TEMPLATE_SPECS="$(printf '%s' "$_LEDGER_PLUGIN_IDS" | sort -u)"
-  OWNED_SPECS="$TEMPLATE_SPECS"
+  OWNED_SPECS="$(printf '%s' "$_LEDGER_PLUGIN_PAIRS" | sort -u)"
   EXCLUSIVE_MARKETPLACES=""
 else
   # WHY (HIMMEL-2694): the template names ownership, not the installed set.
@@ -211,15 +217,16 @@ fi
 # WHY (HIMMEL-2694 r4): selection, foreign notes and remaining dependencies
 # must agree on ownership, including the outer template-marketplace bound.
 # WHY (HIMMEL-3332 S6): in ledger mode ownership is the ledger's plugin ids
-# alone — marketplace membership no longer gates it.
+# alone — marketplace membership no longer gates it. HIMMEL-3378: OWNED_SPECS
+# then holds "<id>\t<cli_scope>" pairs and a row is owned only at that scope.
 ownership_jq() {
   local filter="$1"
   shift
   if [[ -n "$LEDGER_OWNED" ]]; then
     jq --arg owned "$OWNED_MARKETPLACES" --arg specs "$OWNED_SPECS" "$@" '
       def owned_row:
-        .id as $id
-        | (($specs | split("\n") | index($id)) != null);
+        (.id + "\t" + (.scope // "")) as $pair
+        | (($specs | split("\n") | index($pair)) != null);
       '"$filter"
   else
     jq --arg owned "$OWNED_MARKETPLACES" --arg specs "$OWNED_SPECS" \
@@ -322,12 +329,18 @@ if [[ $MARKETPLACES_ONLY -eq 0 ]]; then
   TARGETS=""
   if ! printf '%s\n' "$INSTALLED_JSON" | jq -e 'type == "array"' >/dev/null 2>&1; then
     echo "WARN: \`claude plugin list --json\` unavailable — falling back to the template set at scope $SCOPE (HIMMEL-2694)" >&2
-    while IFS= read -r SPEC; do
-      [[ -n "$SPEC" ]] || continue
-      TARGETS="${TARGETS}${SPEC}"$'\t'"${SCOPE}"$'\n'
-    done <<EOF_SPECS
+    if [[ -n "$LEDGER_OWNED" ]]; then
+      # WHY (HIMMEL-3378): the ledger already names each pair's scope; the
+      # fallback --scope would remove the id at a scope himmel never installed to.
+      TARGETS="$OWNED_SPECS"$'\n'
+    else
+      while IFS= read -r SPEC; do
+        [[ -n "$SPEC" ]] || continue
+        TARGETS="${TARGETS}${SPEC}"$'\t'"${SCOPE}"$'\n'
+      done <<EOF_SPECS
 $TEMPLATE_SPECS
 EOF_SPECS
+    fi
   else
     if ! TARGETS="$(select_targets "$INSTALLED_JSON")"; then
       echo "ERROR: could not determine which installed plugins are ours — halting before anything is removed or unwired (HIMMEL-2754)" >&2
@@ -582,14 +595,18 @@ $REMOVED_SCOPES
 EOF_SCOPES
     # WHY (HIMMEL-2796): plugin scopes do not reveal registration scopes;
     # include the install profile even when inferred candidates are nonempty.
-    # ponytail: this join runs even in ledger mode (LEDGER_OWNED set) — a
-    # pre-existing marketplace of the same name registered at the fallback
-    # $SCOPE would also be removed, since we don't check LEDGER_MKT_SCOPES
-    # before adding $SCOPE here.
-    case $'\n'"$MKT_SCOPES" in
-      *$'\n'"$SCOPE"$'\n'*) ;;
-      *) MKT_SCOPES="${MKT_SCOPES}${SCOPE}"$'\n' ;;
-    esac
+    # WHY (HIMMEL-3378): in ledger mode neither the plugin scopes nor the
+    # fallback $SCOPE prove a registration is ours — a pre-existing marketplace
+    # of the same name at such a scope would be removed too. Only the scopes
+    # the ledger recorded for this marketplace are.
+    if [[ -n "$LEDGER_OWNED" ]]; then
+      MKT_SCOPES=""
+    else
+      case $'\n'"$MKT_SCOPES" in
+        *$'\n'"$SCOPE"$'\n'*) ;;
+        *) MKT_SCOPES="${MKT_SCOPES}${SCOPE}"$'\n' ;;
+      esac
+    fi
     # WHY (HIMMEL-3332 S6): the ledger recorded exactly which cli_scope this
     # marketplace was registered at; add it even if nothing else inferred it.
     if [[ -n "$LEDGER_OWNED" ]]; then
@@ -607,7 +624,15 @@ EOF_LEDGER_MKT_SCOPES
     echo "  marketplace remove: $M"
     while IFS= read -r MKT_SCOPE; do
       [[ -n "$MKT_SCOPE" ]] || continue
-      run claude plugin marketplace remove "$M" --scope "$MKT_SCOPE" || true
+      _mrc=0
+      run claude plugin marketplace remove "$M" --scope "$MKT_SCOPE" || _mrc=$?
+      # WHY (HIMMEL-3378): every ledger-mode scope is a recorded registration, so
+      # a failed removal is real; the list carries no scope, so the post-check
+      # below cannot tell it from a registration that is not ours.
+      if [[ -n "$LEDGER_OWNED" && $_mrc -ne 0 ]]; then
+        echo "    WARN: marketplace $M — removal at recorded scope $MKT_SCOPE failed (rc=$_mrc)" >&2
+        FAILURES=$((FAILURES + 1))
+      fi
     done <<EOF_MKT_SCOPES
 $MKT_SCOPES
 EOF_MKT_SCOPES
@@ -618,7 +643,9 @@ EOF_MKT_SCOPES
     # project's remaining scopes. User scope is never swept unless it is the
     # fallback: it is machine-wide, and a --scope project run must not touch it.
     # A preview cannot re-read the effects of commands it never executed.
-    if [[ $DRY_RUN -eq 0 ]] &&
+    # WHY (HIMMEL-3378): ledger mode has no unnamed scope to sweep; a scope the
+    # ledger did not record is not ours.
+    if [[ $DRY_RUN -eq 0 && -z "$LEDGER_OWNED" ]] &&
         SWEEP_MKT_JSON="$(claude plugin marketplace list --json 2>/dev/null)" &&
         printf '%s\n' "$SWEEP_MKT_JSON" | jq -e --arg m "$M" 'any(.[]; .name == $m)' >/dev/null 2>&1; then
       for SWEEP_SCOPE in project local; do
@@ -636,8 +663,12 @@ EOF_MKT_SCOPES
         echo "    WARN: cannot verify marketplace $M removal — marketplace enumeration unavailable" >&2
         FAILURES=$((FAILURES + 1))
       elif printf '%s\n' "$AFTER_MKT_JSON" | jq -e --arg m "$M" 'any(.[]; .name == $m)' >/dev/null; then
-        echo "    WARN: marketplace $M is still registered after removal attempts" >&2
-        FAILURES=$((FAILURES + 1))
+        if [[ -n "$LEDGER_OWNED" ]]; then
+          echo "    note: marketplace $M is still registered — a registration at a scope the ledger did not record is not himmel's; left in place (HIMMEL-3378)"
+        else
+          echo "    WARN: marketplace $M is still registered after removal attempts" >&2
+          FAILURES=$((FAILURES + 1))
+        fi
       fi
     fi
   done <<EOF_MARKETPLACES

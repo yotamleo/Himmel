@@ -74,7 +74,9 @@ case "$*" in
     'plugin marketplace remove '* )
         [ "$#" -eq 6 ] && [ "$5" = '--scope' ] || exit 2
         if grep -qxF -- "$4" <<< "${STUB_FAIL_IDS:-}"; then exit 1; fi
-        jq --arg name "$4" '[.[] | select(.name != $name)]' \
+        # WHY (HIMMEL-3378): a row may carry a scope; only that scope's row is
+        # removed. Rows without a scope keep the older remove-by-name behaviour.
+        jq --arg name "$4" --arg scope "$6" '[.[] | select(.name != $name or (.scope // $scope) != $scope)]' \
             "$STUB_MARKETPLACES_JSON" > "$STUB_MARKETPLACES_JSON.next"
         mv "$STUB_MARKETPLACES_JSON.next" "$STUB_MARKETPLACES_JSON"
         ;;
@@ -468,6 +470,57 @@ printf '[{"id":"handover@himmel","scope":"user"},{"id":"ops@himmel","scope":"use
 run_case
 assert_rc "L6 no-flag behaviour unchanged (rc)" 0 "$rc"
 assert_has "L6 no-flag behaviour unchanged (uninstalls)" 'plugin uninstall handover@himmel --scope user' "$calls"
+
+# L7 — RED HIMMEL-3378: a project-scope ledger row must not authorise removing
+# the operator's pre-existing user-scope copy of the same plugin id.
+LEDGER7="$TMP/ledger7.tsv"
+printf 'plugin\thimmel-ops@himmel\tproject\nmarketplace\thimmel\tproject\n' > "$LEDGER7"
+reset_case
+jq -n --arg p "$(pwd -P)" '[{id:"himmel-ops@himmel",scope:"user"},{id:"himmel-ops@himmel",scope:"project",projectPath:$p}]' > "$STUB_PLUGINS_JSON"
+run_case_ledger "$LEDGER7" --plugins-only
+assert_rc "L7 exits 0" 0 "$rc"
+assert_has "L7 recorded project-scope plugin uninstalled" 'plugin uninstall himmel-ops@himmel --scope project' "$calls"
+assert_not_has "L7 pre-existing user-scope plugin kept" 'plugin uninstall himmel-ops@himmel --scope user' "$calls"
+assert_has "L7 user-scope copy noted as unclaimed" "note: himmel-ops@himmel — installed from himmel but no ledger row claims it; left installed" "$out"
+
+# L8 — a ledger row with no recorded cli_scope names no (id, scope) pair, so it
+# owns nothing rather than falling back to every scope.
+LEDGER8="$TMP/ledger8.tsv"
+printf 'plugin\thimmel-ops@himmel\t\n' > "$LEDGER8"
+reset_case
+printf '[{"id":"himmel-ops@himmel","scope":"user"}]\n' > "$STUB_PLUGINS_JSON"
+run_case_ledger "$LEDGER8" --plugins-only
+assert_rc "L8 exits 0" 0 "$rc"
+assert_not_has "L8 scope-less ledger row uninstalls nothing" 'plugin uninstall' "$calls"
+
+# L9 — when `plugin list --json` is unavailable the fallback removes the
+# ledger's own (id, cli_scope) pair, not the id at the fallback --scope.
+reset_case
+printf 'DEGRADED\n' > "$STUB_PLUGINS_JSON"
+run_case_ledger "$LEDGER7" --plugins-only
+assert_has "L9 degraded list falls back to the recorded scope" 'plugin uninstall himmel-ops@himmel --scope project' "$calls"
+assert_not_has "L9 degraded list never uses the fallback scope" 'plugin uninstall himmel-ops@himmel --scope user' "$calls"
+
+# L10 — RED HIMMEL-3378: a marketplace recorded at project scope is removed
+# there only; the operator's pre-existing user-scope registration survives.
+LEDGER10="$TMP/ledger10.tsv"
+printf 'marketplace\thimmel\tproject\n' > "$LEDGER10"
+reset_case
+printf '[{"name":"himmel","scope":"user"},{"name":"himmel","scope":"project"}]\n' > "$STUB_MARKETPLACES_JSON"
+run_case_ledger "$LEDGER10" --marketplaces-only
+assert_rc "L10 exits 0" 0 "$rc"
+assert_has "L10 recorded project-scope marketplace removed" 'plugin marketplace remove himmel --scope project' "$calls"
+assert_not_has "L10 fallback user scope never removed" 'plugin marketplace remove himmel --scope user' "$calls"
+assert_not_has "L10 no sweep of scopes the ledger did not record" 'trying' "$out"
+assert_has "L10 user-scope registration survives" '"scope": "user"' "$(jq '.' "$STUB_MARKETPLACES_JSON")"
+assert_not_has "L10 project-scope registration gone" '"scope": "project"' "$(jq '.' "$STUB_MARKETPLACES_JSON")"
+
+# L11 — a failed removal at a recorded scope is still a failure in ledger mode.
+reset_case
+printf '[{"name":"himmel","scope":"project"}]\n' > "$STUB_MARKETPLACES_JSON"
+STUB_FAIL_IDS='himmel'
+run_case_ledger "$LEDGER10" --marketplaces-only
+assert_rc "L11 failed recorded-scope removal exits 1" 1 "$rc"
 
 echo ""
 if [ "$FAILED" -eq 0 ]; then echo 'ALL PASS'; else echo "$FAILED FAILURE(S)"; fi
