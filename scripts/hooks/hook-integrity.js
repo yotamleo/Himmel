@@ -995,14 +995,50 @@ function verifyProjectHookIntegrity(scriptPath, sessionId) {
   return honourBypass(scriptPath, sessionId) ? { ok: true } : result;
 }
 
+// HIMMEL-3390. normalize() above only flips slashes; it does not collapse `..`
+// or follow a symlink, so `<project>/scripts/../scripts/hooks/guard.sh` was
+// project-local yet keyed a pin lookup by that spelling (`scripts/../scripts/…`,
+// never pinned) and skipped verification of a tampered file. Both the
+// project-local decision and the pin key now come from the RESOLVED path:
+// path.resolve collapses `..`, realpath follows links — through the deepest
+// ancestor that exists, so a missing script still resolves beside its siblings.
+const ESCAPES_PROJECT_DENY = 'escapes-project: ';
+
+function resolveReal(candidate) {
+  const abs = path.resolve(String(candidate));
+  const tail = [];
+  for (let cur = abs; ;) {
+    try {
+      return path.join(fs.realpathSync(cur), ...tail);
+    } catch (_e) {
+      const up = path.dirname(cur);
+      if (up === cur) return abs;
+      tail.unshift(path.basename(cur));
+      cur = up;
+    }
+  }
+}
+
 function verifyIntegrityUnbypassed(scriptPath, sessionId) {
   // ---- FAST PATH: strictly git-free, no child process, on every hook call ----
   const projectDir = process.env.CLAUDE_PROJECT_DIR;
   if (!projectDir) return { ok: true };
-  const normScript = normalize(scriptPath).toLowerCase();
-  const normProject = normalize(projectDir).toLowerCase();
-  if (!normScript.startsWith(`${normProject}/`)) return { ok: true }; // not project-local
-  const relPath = normalize(scriptPath).slice(normalize(projectDir).length + 1);
+  const resolvedScript = normalize(resolveReal(scriptPath));
+  const resolvedProject = normalize(resolveReal(projectDir));
+  if (!resolvedScript.toLowerCase().startsWith(`${resolvedProject.toLowerCase()}/`)) {
+    // Resolves outside the project. A path that never claimed to be inside it is
+    // simply foreign (not this check's business); one that spelled itself
+    // `<project>/…` but leaves it via `..` or a link is neither project-local nor
+    // vouched for by any pin, so it is refused, and the bypass cannot rescue it
+    // (honourBypass wants the resolved script inside the worktree).
+    if (!normalize(scriptPath).toLowerCase().startsWith(`${normalize(projectDir).toLowerCase()}/`)) return { ok: true };
+    return {
+      ok: false,
+      relPath: normalize(scriptPath).slice(normalize(projectDir).length + 1),
+      reason: `${ESCAPES_PROJECT_DENY}resolves to ${resolvedScript}, outside the project`,
+    };
+  }
+  const relPath = resolvedScript.slice(resolvedProject.length + 1);
   const { record, denyReason } = loadRecordAcrossPublish(sessionId);
   if (denyReason) return { ok: false, relPath, reason: denyReason };
   const pins = recordPins(record);
@@ -1037,6 +1073,14 @@ function denyIntegrityMismatch(scriptPath, relPath, reason) {
       + 'publishing process has finished; if it died, the incumbent record is beside the missing one as '
       + 'a .old-* file. Legitimate mid-session hook edit: rerun with HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 '
       + `set in the LAUNCHING shell. ${BYPASS_SCOPE}\n`,
+    );
+    return;
+  }
+  if (typeof reason === 'string' && reason.indexOf(ESCAPES_PROJECT_DENY) === 0) {
+    process.stderr.write(
+      `run-hook-with-bash: DENY ${path.basename(scriptPath)} — the hook path is spelled inside the project `
+      + `(${relPath}) but ${reason.slice(ESCAPES_PROJECT_DENY.length)}, so no session pin can vouch for it. `
+      + 'Point the hook at a script inside the project; HIMMEL_HOOK_INTEGRITY_BYPASS_OK does not apply to a path that leaves it.\n',
     );
     return;
   }

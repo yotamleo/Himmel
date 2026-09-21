@@ -1121,6 +1121,107 @@ test('verifyProjectHookIntegrity denies a pinned script whose on-disk content dr
   }
 });
 
+// HIMMEL-3390: `..` segments and symlinks are resolved BEFORE the project-local
+// and pin decisions. Fixture: a pinned guard under <dir>/scripts/hooks, a
+// tampered copy of it, and a sibling directory outside the project.
+function dotdotFixture() {
+  const fs = require('node:fs');
+  const dir = makeTmpDir('hook-integrity-dotdot-');
+  const integrityDir = makeTmpDir('hook-integrity-dotdot-pins-');
+  const scriptRel = 'scripts/hooks/guard.sh';
+  const scriptPath = join(dir, ...scriptRel.split('/'));
+  fs.mkdirSync(dirname(scriptPath), { recursive: true });
+  writeFileSync(scriptPath, 'echo original\n');
+  writeFileSync(
+    join(integrityDir, 's1.json'),
+    JSON.stringify({ session_id: 's1', pins: { [scriptRel]: gitBlobSha1(readFileSync(scriptPath)) } }),
+  );
+  const outside = makeTmpDir('hook-integrity-dotdot-outside-');
+  fs.mkdirSync(join(outside, 'scripts', 'hooks'), { recursive: true });
+  writeFileSync(join(outside, 'scripts', 'hooks', 'guard.sh'), 'echo unpinned foreign\n');
+  const env = { CLAUDE_PROJECT_DIR: dir, HIMMEL_HOOK_INTEGRITY_DIR: integrityDir, HIMMEL_HOOK_INTEGRITY_BYPASS_OK: undefined };
+  const cleanup = () => {
+    for (const d of [dir, integrityDir, outside]) rmSync(d, { recursive: true, force: true });
+  };
+  return { fs, dir, outside, scriptRel, scriptPath, env, cleanup };
+}
+
+test('HIMMEL-3390: a `..` alias of a pinned, tampered hook is checked against the pin of its resolved path', () => {
+  const fx = dotdotFixture();
+  try {
+    const alias = `${fx.dir}/scripts/../scripts/hooks/guard.sh`;
+    withEnv(fx.env, () => {
+      assert.equal(verifyProjectHookIntegrity(alias, 's1').ok, true); // untouched: verifies like the plain path
+      writeFileSync(fx.scriptPath, 'echo tampered\n');
+      const result = verifyProjectHookIntegrity(alias, 's1');
+      assert.equal(result.ok, false);
+      assert.equal(result.relPath, fx.scriptRel);
+      assert.equal(verifyProjectHookIntegrity(fx.scriptPath, 's1').ok, false); // control: the plain path still denies
+    });
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('HIMMEL-3390: a `..` path that leaves the project is denied, and the bypass does not rescue it', () => {
+  const fx = dotdotFixture();
+  try {
+    const escaping = `${fx.dir}/scripts/../../${fx.outside.split('/').pop()}/scripts/hooks/guard.sh`;
+    withEnv(fx.env, () => {
+      const result = verifyProjectHookIntegrity(escaping, 's1');
+      assert.equal(result.ok, false);
+      assert.match(result.reason, /outside/);
+    });
+    withEnv({ ...fx.env, HIMMEL_HOOK_INTEGRITY_BYPASS_OK: '1' }, () => {
+      assert.equal(verifyProjectHookIntegrity(escaping, 's1').ok, false);
+    });
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('HIMMEL-3390: a symlinked in-project path resolves like its target; one that leaves the project is denied', () => {
+  const fx = dotdotFixture();
+  try {
+    fx.fs.symlinkSync(join(fx.dir, 'scripts', 'hooks'), join(fx.dir, 'alias-hooks'));
+    fx.fs.symlinkSync(join(fx.outside, 'scripts', 'hooks'), join(fx.dir, 'foreign-hooks'));
+    withEnv(fx.env, () => {
+      const viaLink = join(fx.dir, 'alias-hooks', 'guard.sh');
+      assert.equal(verifyProjectHookIntegrity(viaLink, 's1').ok, true);
+      writeFileSync(fx.scriptPath, 'echo tampered\n');
+      const result = verifyProjectHookIntegrity(viaLink, 's1');
+      assert.equal(result.ok, false);
+      assert.equal(result.relPath, fx.scriptRel);
+      assert.equal(verifyProjectHookIntegrity(join(fx.dir, 'foreign-hooks', 'guard.sh'), 's1').ok, false);
+    });
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('HIMMEL-3390: a foreign path with no `..` stays allowed, and a missing project-local hook is not mistaken for an escape', () => {
+  const fx = dotdotFixture();
+  try {
+    withEnv(fx.env, () => {
+      assert.equal(verifyProjectHookIntegrity(join(fx.outside, 'scripts', 'hooks', 'guard.sh'), 's1').ok, true);
+      assert.equal(verifyProjectHookIntegrity(join(fx.dir, 'scripts', 'hooks', 'missing.sh'), 's1').ok, true);
+    });
+    const linkedProject = `${fx.dir}-link`;
+    fx.fs.symlinkSync(fx.dir, linkedProject);
+    try {
+      withEnv({ ...fx.env, CLAUDE_PROJECT_DIR: linkedProject }, () => {
+        assert.equal(verifyProjectHookIntegrity(join(linkedProject, 'scripts', 'hooks', 'missing.sh'), 's1').ok, true);
+        writeFileSync(fx.scriptPath, 'echo tampered\n');
+        assert.equal(verifyProjectHookIntegrity(join(linkedProject, 'scripts', 'hooks', 'guard.sh'), 's1').ok, false);
+      });
+    } finally {
+      rmSync(linkedProject, { force: true });
+    }
+  } finally {
+    fx.cleanup();
+  }
+});
+
 // HIMMEL-3384: the bypass is worktree-only and audited. The old "always
 // allows" contract is gone — a bypass with no linked worktree around it is no
 // bypass at all, and every use that DOES override a deny leaves one audit line.
