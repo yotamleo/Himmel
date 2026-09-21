@@ -185,10 +185,14 @@ for (const f of legFiles) {
     if (!label || !existsSync(f)) continue;
     const bullets = sectionOf(readFileSync(f, 'utf8').split('\n'), '## Results').filter((l) => l.startsWith('- '));
     let pr = null;
+    // A leg's PR comes only from the canonical grammar, anchored at the bullet's own
+    // marker: `LIVE — PR <n> open`, `READY <pr> <head>`, `MERGED #<n>`. A FINDING or
+    // prose that merely cites a PR (`#1039`, `PR 1039 merged`, a /pull/ URL) owns none.
+    // ponytail: a leg that opened a PR without ever writing one of these bullets has no
+    // PR here; the board does not join open PRs on headRefName to recover it.
     for (const b of bullets) {
-        const m = /\bPR\s*#?(\d{2,})\b/.exec(b) || /\bREADY\s+#?(\d{2,})\s+[0-9a-f]{7,}/.exec(b)
-            || /\/pull\/(\d+)/.exec(b) || /(?:^|[\s(])#(\d{2,})\b/.exec(b);
-        if (m) pr = Number(m[1]);
+        const m = /^- (?:\d{1,2}:\d{2}\s+)?(?:LIVE\s*[-–—:]?\s*PR\s*#?(\d{2,})\s+open\b|READY\s+#?(\d{2,})\s+[0-9a-f]{7,}|MERGED\s+#(\d{2,})\b)/.exec(b);
+        if (m) pr = Number(m[1] || m[2] || m[3]);
     }
     legInfo.set(label, { file: f, ticket: ticketOf(f), last: bullets.length ? bullets[bullets.length - 1].slice(2) : '', pr });
 }

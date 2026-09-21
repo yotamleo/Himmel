@@ -99,12 +99,17 @@ printf '%s\n' '# leg' '## Results' '- 12:00 LIVE — PR 2002 open, watching CI' 
     '- 13:00 unrelated later-section bullet: see PR 1990 merged' \
     > "$B/HIMMEL-3340-N2-beta-2026-09-21-RESUME.md"
 mkleg HIMMEL-3332-N3-gamma '- 12:00 LIVE — building' '- 12:10 READY 2001 0123456789abcdef GREEN'
-mkleg HIMMEL-3348-N4-delta '- 12:00 LIVE — PR 1995 was merged'
+mkleg HIMMEL-3348-N4-delta '- 12:00 MERGED #1995 → 0123abc'
 mkleg HIMMEL-3300-N5-eps '- 12:00 WRAPPED — released'
 mkleg HIMMEL-3350-N6-zeta '- 12:00 READY-TO-OPEN — /pr-check clean, not opened'
 mkleg HIMMEL-3351-N7-eta '- 12:00 BLOCKED — the push was refused <script>alert(1)</script>'
 mkleg HIMMEL-3370-N8-theta '- 12:00 LIVE — PR 1700 open, watching CI'
 mkleg HIMMEL-3371-N9-iota '- 12:00 LIVE — PR 1701 open, watching CI'
+# HIMMEL-3374: a bullet that merely CITES a PR is not the leg's PR. N10 has no PR of
+# its own, so it keeps its phase; a citation in any form (#n, PR #n, PR n merged, a
+# /pull/ URL) attributes nothing.
+mkleg HIMMEL-3377-N10-lambda '- 12:00 LIVE — working' '- 12:20 FINDING scope-shrunk — #1995 (HIMMEL-3348, in the base) already shipped; see PR #1995 merged, PR 1995 merged, https://github.com/o/r/pull/1995'
+mkleg HIMMEL-3378-N11-mu '- 12:00 LIVE — building; PR 1995 merged upstream, so #1995 is in the base'
 # Two docs share a label; Live state names one by doc stem (N18) or by nonce (N19).
 # The newer-by-mtime doc is the wrong one in both.
 mkleg HIMMEL-3375-N18-iota '- 12:00 LIVE — the right doc'
@@ -131,6 +136,8 @@ printf '%s\n' '# console' '' '## Live state' '' \
     '  `N7:V-N7-ffff6666:cachyos-x8664-pid777777:777`' \
     '  `N8:V-N8-aaaa0808:cachyos-x8664-pid808080:808`' \
     '  `N9:V-N9-bbbb0909:cachyos-x8664-pid909090:909`' \
+    '  `N10:V-N10-aaaa1010:cachyos-x8664-pid101010:1010`' \
+    '  `N11:V-N11-bbbb1111:cachyos-x8664-pid111011:1011`' \
     '  `N16_x.y-z:V-N16-aaaa1616:cachyos-x8664-pid161616:1616`' \
     '  `N15:V-N15-aaaa1515:cachyos-x8664-pid151515`' \
     '  `N17:V-N17-aaaa1717::1717`' \
@@ -183,6 +190,8 @@ contains 'no PR, no marker: LIVE' "$html" 'data-label="N1" data-phase="LIVE"'
 contains 'an open PR the leg names: PR open' "$html" 'data-label="N2" data-phase="PR open"'
 contains 'READY tail + open PR: READY' "$html" 'data-label="N3" data-phase="READY"'
 contains 'the leg names a merged PR: MERGED' "$html" 'data-label="N4" data-phase="MERGED"'
+contains 'a FINDING bullet citing a merged PR keeps its phase and gets no PR (HIMMEL-3374)' "$html" '<b>N10</b> <span class="tk">HIMMEL-3377</span> <span class="ph">LIVE</span></div>'
+contains 'a LIVE bullet citing a merged PR gets no PR either (HIMMEL-3374)' "$html" '<b>N11</b> <span class="tk">HIMMEL-3378</span> <span class="ph">LIVE</span></div>'
 contains 'lock released + WRAPPED tail: WRAPPED' "$html" 'data-label="N5" data-phase="WRAPPED"'
 contains 'READY tail with no PR anywhere: READY-TO-OPEN' "$html" 'data-label="N6" data-phase="READY-TO-OPEN"'
 contains 'a CI-red PR is flagged on its leg' "$html" 'data-ci="failing"'
