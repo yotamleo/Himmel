@@ -320,9 +320,14 @@ clean as evidence — query that PR yourself.
 ## Wrapping a leg
 
 On `WRAPPED`: confirm the lock is free at the ROOT sweep, close the leg's
-window (`kill <pid>` from its launch log), and prune its worktree once the PR
-is merged. A worktree reported "in use" immediately after a wrap is the leg's
-own end-of-session hook still writing — it prunes on the next sweep.
+window (`kill <pid>` from its launch log), and prune ITS worktree once the PR
+is merged: `bash scripts/clean.sh --only <leg-worktree-path>`. Never run the
+bare `clean.sh` sweep for one leg — it is fleet-wide and removes every merged
+worktree, including another leg's that has merged but not yet wrapped (a live
+`claude` process's cwd is the primary checkout, so nothing marks that
+worktree as in use). `--only` exits non-zero when the target is not a prune
+candidate. A worktree reported "in use" immediately after a wrap is the leg's
+own end-of-session hook still writing — re-run `--only` on it shortly.
 
 ## Standing rules
 

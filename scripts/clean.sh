@@ -6,7 +6,7 @@
 # scripts and the orchestrator (`clean-garden.sh`) stays the single
 # source of truth for prune logic.
 #
-# Forwards all args (--dry-run, --verbose). --no-install has no effect
+# Forwards all args (--only <path|branch>, --dry-run, --verbose). --no-install has no effect
 # in prune-only mode (silently ignored — create phase is skipped before
 # install runs); --no-prune is rejected by the orchestrator as
 # mutually exclusive with --prune-only.

@@ -47,6 +47,10 @@ USAGE_TEXT='Usage: clean-garden.sh [branch-name] [flags]
 
 Flags:
   --prune-only          Prune only; skip create even if branch-name given.
+  --only <path|branch>  Prune exactly ONE worktree (implies --prune-only), still
+                        subject to every prune gate. Exits non-zero when the
+                        target is not a prune candidate. Skips the fleet-wide
+                        stray/checkpoint/marker sweeps.
   --no-prune            Skip prune; only create.
   --no-install          Forward to _new-worktree.sh (skip jira install).
   --dry-run             Show plan; do nothing.
@@ -68,6 +72,7 @@ print_help() {
 
 BRANCH=""
 PRUNE_ONLY=0
+ONLY_TARGET=""
 NO_PRUNE=0
 NO_INSTALL=0
 DRY_RUN=0
@@ -75,6 +80,12 @@ VERBOSE=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --prune-only) PRUNE_ONLY=1; shift ;;
+        --only)
+            if [ $# -lt 2 ] || [ -z "$2" ]; then
+                echo "ERR clean-garden: --only needs a worktree path or branch name" >&2
+                usage_err
+            fi
+            ONLY_TARGET="$2"; PRUNE_ONLY=1; shift 2 ;;
         --no-prune)   NO_PRUNE=1; shift ;;
         --no-install) NO_INSTALL=1; shift ;;
         --dry-run)           DRY_RUN=1; shift ;;
@@ -94,6 +105,10 @@ done
 
 if [ "$NO_PRUNE" -eq 1 ] && [ "$PRUNE_ONLY" -eq 1 ]; then
     echo "ERR clean-garden: --no-prune and --prune-only are mutually exclusive" >&2
+    exit 1
+fi
+if [ -n "$ONLY_TARGET" ] && { [ "$NO_PRUNE" -eq 1 ] || [ -n "$BRANCH" ]; }; then
+    echo "ERR clean-garden: --only prunes one worktree; it cannot be combined with --no-prune or a create branch-name" >&2
     exit 1
 fi
 if [ "$NO_PRUNE" -eq 1 ] && [ -z "$BRANCH" ]; then
@@ -823,6 +838,7 @@ PRUNED=0
 PARTIAL=0
 SKIPPED=0
 FAILED=0
+ONLY_MATCHED=0
 if [ "$NO_PRUNE" -eq 0 ]; then
     log "clean-garden: prune phase — scanning ${#WT_PATHS[@]} worktrees"
     for i in "${!WT_PATHS[@]}"; do
@@ -832,6 +848,16 @@ if [ "$NO_PRUNE" -eq 0 ]; then
 
         # Normalize path comparison (Windows can return /c/ vs C:/ variants).
         wt_norm=$(cd "$wt" 2>/dev/null && pwd || echo "$wt")
+        # HIMMEL-3297 — --only narrows the sweep to ONE worktree (matched by
+        # path or branch). Everything below is unchanged, so the target still
+        # passes every prune gate; a sibling is never even considered.
+        if [ -n "$ONLY_TARGET" ]; then
+            only_norm=$(cd "$ONLY_TARGET" 2>/dev/null && pwd || echo "$ONLY_TARGET")
+            if [ "$wt_norm" != "$only_norm" ] && [ "$br" != "$ONLY_TARGET" ]; then
+                continue
+            fi
+            ONLY_MATCHED=1
+        fi
         if [ "$wt_norm" = "$PRIMARY_WORKTREE" ]; then
             log "  skip primary: $wt"
             continue
@@ -948,6 +974,22 @@ if [ "$NO_PRUNE" -eq 0 ]; then
         fi
     done
     echo "clean-garden: prune summary — $PRUNED pruned, $PARTIAL partial, $SKIPPED skipped, $FAILED failed"
+
+    # HIMMEL-3297 — --only is a one-worktree prune: report and exit here so the
+    # fleet-wide stray-husk sweep, marker sweep and checkpoint prune below never
+    # run. Non-zero unless the one target was actually pruned (or, under
+    # --dry-run, would be).
+    if [ -n "$ONLY_TARGET" ]; then
+        if [ "$ONLY_MATCHED" -eq 0 ]; then
+            echo "ERR clean-garden: --only $ONLY_TARGET is not a registered worktree (match by path or branch; see git worktree list)" >&2
+            exit 1
+        fi
+        if [ "$PRUNED" -ne 1 ] || [ "$PARTIAL" -ne 0 ] || [ "$FAILED" -ne 0 ]; then
+            echo "ERR clean-garden: --only $ONLY_TARGET is not a prune candidate — nothing pruned (reason above; needs a merged PR whose head is the branch tip, no uncommitted work, no live process inside)" >&2
+            exit 1
+        fi
+        exit 0
+    fi
 
     STRAY_HOME="$PRIMARY_WORKTREE/.claude/worktrees"
     if [ -d "$STRAY_HOME" ]; then
