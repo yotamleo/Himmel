@@ -136,12 +136,14 @@ printf '{}\n' > "$HIMMEL_USER_SETTINGS"
 # shellcheck source=lib/provenance.sh
 . "$(dirname "$CLI")/lib/provenance.sh"
 seed_plugin_ledger() {
-    local seed_home="$1" plugins="$2" markets="$3" _id _m _sc
+    # The seeded HOME comes in as SEED_HOME (a command prefix), not an argument: the
+    # real-home caller scan traces it to a scratch dir, and it cannot trace an argument.
+    local plugins="$1" markets="$2" _id _m _sc
     (
         # shellcheck disable=SC2030 # confined to this subshell; never leaks
         # to the parent script (shellcheck's SC2031 hits below, at unrelated
         # $HOME reads elsewhere in this file, are false positives from that).
-        export HOME="$seed_home"
+        export HOME="$SEED_HOME"
         unset HIMMEL_PROVENANCE_DIR CLAUDE_CONFIG_DIR
         prov_begin --writer install-plugins.sh -- seed >/dev/null
         IFS=','
@@ -1032,7 +1034,7 @@ printf '#!/usr/bin/env bash\necho "[]"\n' > "$FAKE_HOME/.local/bin/claude"
 # below) only prints on the ledger-owned branch; a bare ledger session (no
 # plugin/marketplace units) is enough to turn it on without changing which
 # plugins get targeted (there are none to target here).
-seed_plugin_ledger "$FAKE_HOME" "" ""
+SEED_HOME="$FAKE_HOME" seed_plugin_ledger "" ""
 EMPTY_HOME="$TMP/emptyhome"
 mkdir -p "$EMPTY_HOME"
 
@@ -1095,7 +1097,7 @@ chmod +x "$FAILHOME/.local/bin/claude"
 # HIMMEL-3332 S6: this test's premise is the ACTIVE removal branch actually
 # attempting a plugin removal and failing -- with no ledger, [4/8] would take
 # the no-ledger "kept" no-op instead and this whole test would fail vacuously.
-seed_plugin_ledger "$FAILHOME" "test-plugin@himmel" ""
+SEED_HOME="$FAILHOME" seed_plugin_ledger "test-plugin@himmel" ""
 out=$(HOME="$FAILHOME" PATH="$HBIN" \
     TELEGRAM_CHANNEL_DIR="$TMP/none10" BRIDGE_ROOT="$TMP/none10b" \
     HIMMELCTL_CACHE_DIR="$TMP/none10c" \
@@ -1690,7 +1692,7 @@ fi
 scope_case() {
     # $1 = case slug, $2 = the install-profile.json body (empty = write none),
     # $3 = the cli_scope the seeded ledger row records (default user)
-    SC15_HOME="$TMP/sc15-$1-home"
+    SC15_HOME=$(mktemp -d "$TMP/sc15-home.XXXXXX") || exit 1
     SC15_CACHE="$TMP/sc15-$1-cache"
     SC15_LOG="$TMP/sc15-$1-argv.log"
     mkdir -p "$SC15_HOME/.local/bin" "$SC15_CACHE"
@@ -1711,7 +1713,7 @@ scope_case() {
     # removal branch (the one that forwards --scope) back on; the stub's
     # `plugin list --json` prints nothing, so the fallback-by-ledger-template
     # loop is what actually calls `claude plugin uninstall <id> --scope ...`.
-    seed_plugin_ledger "$SC15_HOME" "sc15-plugin@himmel:${3:-user}" ""
+    SEED_HOME="$SC15_HOME" seed_plugin_ledger "sc15-plugin@himmel:${3:-user}" ""
     HOME="$SC15_HOME" PATH="$HBIN" \
         TELEGRAM_CHANNEL_DIR="$TMP/sc15-$1-none" BRIDGE_ROOT="$TMP/sc15-$1-noneb" \
         HIMMELCTL_CACHE_DIR="$SC15_CACHE" \
@@ -1806,7 +1808,7 @@ STUB_EOF
 chmod 755 "$U_BIN/claude"
 u_fixture() {
     mk_state
-    U_HOME="$TMP/u-$1-home"
+    U_HOME=$(mktemp -d "$TMP/u-home.XXXXXX") || exit 1
     U_CACHE="$TMP/u-$1-cache"
     mkdir -p "$U_HOME" "$U_CACHE"
     printf '{"scope":"user"}\n' > "$U_CACHE/install-profile.json"
@@ -1820,7 +1822,7 @@ u_fixture() {
     # and [7/8] now take the no-ledger "kept" no-op instead of ever calling
     # `claude plugin uninstall`/`marketplace remove` -- seed exactly the
     # plugin/marketplace this fixture's stub already carries as himmel's own.
-    seed_plugin_ledger "$U_HOME" "handover@himmel:${2:-user}" "himmel:${2:-user}"
+    SEED_HOME="$U_HOME" seed_plugin_ledger "handover@himmel:${2:-user}" "himmel:${2:-user}"
 }
 u_run() {
     out=$(HOME="$U_HOME" PATH="$U_BIN:$HBIN" HIMMEL_UNINSTALL_REPO_ROOT="$U_REPO" \
@@ -2321,7 +2323,7 @@ framework_hook_text > "$U_REPO/.git/hooks/commit-msg"
 # as ledger-owned -- this test exercises a@m1/b@m2/m1/m2 instead, so those
 # need their own ledger-owned rows or [4/8]/[7/8] treat them as untracked
 # (kept, never call `claude plugin uninstall`/`marketplace remove` on them).
-seed_plugin_ledger "$U_HOME" "a@m1:project,b@m2" "m1:project,m2"
+SEED_HOME="$U_HOME" seed_plugin_ledger "a@m1:project,b@m2" "m1:project,m2"
 u_run
 assert_rc 'U11 first run halts after project plugin removal' 2 "$rc"
 assert_has 'U11 first failure is hooks' 'Halted at: [5/8]' "$out"
@@ -2420,7 +2422,7 @@ framework_hook_text > "$U_REPO/.git/hooks/commit-msg"
 # HIMMEL-3332 S6: same reseed as U11 -- this test exercises a@m1/b@m2/m1/m2,
 # not u_fixture's default handover@himmel/himmel, so they need their own
 # ledger-owned rows or [4/8]/[7/8] treat them as untracked (kept).
-seed_plugin_ledger "$U_HOME" "a@m1:project,b@m2" "m1:project,m2"
+SEED_HOME="$U_HOME" seed_plugin_ledger "a@m1:project,b@m2" "m1:project,m2"
 u_run
 assert_rc 'U15 first run halts after project plugin removal' 2 "$rc"
 assert_has 'U15 first failure is hooks' 'Halted at: [5/8]' "$out"
@@ -2448,7 +2450,7 @@ printf '[{"name":"m1"}]\n' > "$STUB_MARKETPLACES_JSON"
 # HIMMEL-3332 S6: u_fixture's default seed only records the himmel marketplace
 # as ledger-owned -- this test exercises m1, so it needs its own ledger-owned
 # row or [7/8] treats it as untracked (kept, never previews its removal).
-seed_plugin_ledger "$U_HOME" "" "m1"
+SEED_HOME="$U_HOME" seed_plugin_ledger "" "m1"
 printf 'm1\tproject\t%s\n' "$PWD" > "$U_CACHE/uninstall-scope-map"
 U16_CAT=$(command -v cat)
 mkdir -p "$TMP/u16-bin"

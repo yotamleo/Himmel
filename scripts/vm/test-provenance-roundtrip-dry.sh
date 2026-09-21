@@ -203,7 +203,7 @@ run_rt "$BOTH" f73a62f1 --expect-red --purge-state
 un=$(grep '^SSH ' "$LOG" | grep 'bin.js uninstall')
 if [[ "$un" == *'bin.js uninstall --yes --purge-state'* ]] \
    && ! grep -q 'HIMMEL_UNINSTALL_REAL_HOME' "$LOG" \
-   && ! grep -q 'HIMMEL_UNINSTALL_REAL_HOME=' "$SCRIPT"; then
+   && ! grep -qE 'HIMMEL_UNINSTALL_REAL_HOME[=]' "$SCRIPT"; then
     pass "D7 uninstall runs 'himmelctl uninstall --yes --purge-state'; HIMMEL_UNINSTALL_REAL_HOME never set by the harness"
 else
     fail_case "D7 uninstall step: '$un'"; dump
