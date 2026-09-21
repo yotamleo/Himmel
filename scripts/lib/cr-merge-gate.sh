@@ -31,32 +31,40 @@
 
 _cmg_degrade() { echo "cr-merge-gate: degraded ($*) - failing open" >&2; }
 
-# _cmg_governing_prior_head — HIMMEL-3360 operator ruling: when the PR's real
-# head carries no CodeRabbit review of its own, which PRIOR head carries its
-# latest one? The latest SUBSTANTIVE bot review not at $head (by submitted_at,
-# ties by id) — same review cr_body_outside_findings would select if called
-# with that head. Prints the commit_id on stdout; rc 1 on any resolution
-# failure (bot id, query, or an empty result). Reads $owner/$name/$num/$head
-# from the caller (cr_merge_gate), same dynamic-scoping convention as every
-# other _cmg_* helper here.
-_cmg_governing_prior_head() {
-    local uid json ph
-    uid=$(cr_signal_bot_id)
-    case "$uid" in ''|*[!0-9]*) return 1 ;; esac
-    json=$(_cbf_reviews_json "$owner" "$name" "$num") || return 1
-    ph=$(printf '%s' "$json" | jq -r --argjson uid "$uid" --arg head "$head" \
-        '[ .[] | select(.user.id == $uid and .commit_id != $head and ((.body // "") | test("\\S"))) ] | sort_by(.submitted_at, .id) | .[-1] | .commit_id // ""' \
-        2>/dev/null || true)
-    [ -n "$ph" ] || return 1
-    printf '%s' "$ph"
+# _cmg_prior_outside_block — HIMMEL-3360 operator ruling + HIMMEL-3379: the
+# PR's real head carries no CodeRabbit review of its own, but prior head(s)
+# carry posted outside-diff findings. EVERY such head governs
+# (cr_body_prior_outside_heads), each finding dispositioned at the head that
+# raised it — a newer prior review must not mask an older head's finding
+# (mirrors check-ci's _cr_prior_outside_gate, HIMMEL-3365). Every blocking
+# head's reason is printed on stdout; rc 2 if any blocks. Reads
+# $owner/$name/$num/$head from the caller (cr_merge_gate), same dynamic-scoping
+# convention as every other _cmg_* helper here.
+_cmg_prior_outside_block() {
+    local heads ph out msg="" rc=0
+    heads=$(cr_body_prior_outside_heads "$owner" "$name" "$num" "$head") || heads=""
+    if [ -z "$heads" ]; then
+        echo "BLOCK: could not resolve which prior heads carry CodeRabbit's outside-diff findings on PR #$num — cannot check for a disposition; re-run."
+        return 2
+    fi
+    while IFS= read -r ph; do
+        [ -n "$ph" ] || continue
+        if ! out=$(_cmg_outside_block "$ph" ""); then
+            rc=2
+            msg="${msg:+$msg
+}$out"
+        fi
+    done <<<"$heads"
+    [ "$rc" -eq 0 ] || echo "$msg"
+    return "$rc"
 }
 
 # _cmg_outside_block <gate_head> <expected_count> — HIMMEL-3124/HIMMEL-3360.
 # Reads + dispositions the outside-diff findings CodeRabbit posted AT
-# <gate_head> — either the PR's real head, or (HIMMEL-3360) the governing
-# PRIOR head _cmg_governing_prior_head resolved, when the real head carries
-# no review of its own (best effort covers ABSENCE at that head only, never a
-# finding CodeRabbit already posted at a prior one). <expected_count> is the
+# <gate_head> — either the PR's real head, or (HIMMEL-3360/3379) a PRIOR head
+# _cmg_prior_outside_block walks, when the real head carries no review of its
+# own (best effort covers ABSENCE at that head only, never a finding
+# CodeRabbit already posted at a prior one). <expected_count> is the
 # reader's own header count for a format-drift cross-check; empty skips it
 # (the prior-head path's own header-vs-parsed check inside the reader already
 # covers it). rc 0 = allow (ALLOW note on stderr); rc 2 = block (BLOCK reason
@@ -101,7 +109,7 @@ _cmg_outside_block() {
     fi
     if [ "$od_ok" -lt "$od_n" ]; then
         if [ "$gate_head" != "$head" ]; then
-            prefix="head $head of PR #$num carries no CodeRabbit review (best effort, HIMMEL-3360: nothing waits or re-triggers); its latest review, at head $gate_head, "
+            prefix="head $head of PR #$num carries no CodeRabbit review (best effort, HIMMEL-3360: nothing waits or re-triggers); a prior review, at head $gate_head, "
         else
             prefix="CodeRabbit's review body "
         fi
@@ -303,7 +311,6 @@ cr_merge_gate() {
     # (HIMMEL-1147: the failure was invisibility, not permissiveness —
     # blocking Trivial-severity findings tanks the loop).
     local body_line body_rc outside nitpick prior_outside substantive body_degraded=0 body_nitpick=0 tok
-    local _ph
     body_line=$(cr_body_findings "$owner" "$name" "$num" "$head")
     body_rc=$?
     case "$body_rc" in
@@ -340,15 +347,10 @@ cr_merge_gate() {
                 body_degraded=1
             elif [ "$prior_outside" -gt 0 ] && [ "$substantive" -eq 0 ] && [ "$outside" -eq 0 ]; then
                 # HIMMEL-3360 operator ruling (2026-09-21): best effort covers
-                # ABSENCE at THIS head only — a prior head's ALREADY-POSTED
+                # ABSENCE at THIS head only — every prior head's ALREADY-POSTED
                 # outside-diff findings still govern the gate, keyed to the
-                # head that actually carries them.
-                _ph=$(_cmg_governing_prior_head) || _ph=""
-                if [ -z "$_ph" ]; then
-                    echo "BLOCK: could not resolve which prior head carries CodeRabbit's latest review on PR #$num — cannot check for a disposition; re-run."
-                    return 2
-                fi
-                _cmg_outside_block "$_ph" "" || return 2
+                # head that actually carries them (HIMMEL-3379).
+                _cmg_prior_outside_block || return 2
                 body_nitpick="$nitpick"
             elif [ "$outside" -gt 0 ]; then
                 # HIMMEL-3124: each outside-diff finding may carry an explicit

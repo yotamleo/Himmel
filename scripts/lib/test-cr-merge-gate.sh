@@ -152,6 +152,10 @@ case "$1 $2" in
       # abc123) — the governing-prior-head branch reads this via
       # cr_body_outside_findings called with head=shaOLD.
       body-a2-file) jq -n --rawfile b "$GH_STUB_BODY_FILE" '[{user:{id:136622811,login:"coderabbitai[bot]"},commit_id:"shaOLD",submitted_at:"2026-07-16T19:10:00Z",id:1,body:$b}]' ;;
+      # HIMMEL-3379: TWO prior heads, each carrying its own REAL captured review
+      # body — shaOLD (older, GH_STUB_BODY_FILE) and shaOLD2 (newer,
+      # GH_STUB_BODY_FILE2); nothing at abc123.
+      body-a3-file) jq -n --rawfile b "$GH_STUB_BODY_FILE" --rawfile c "$GH_STUB_BODY_FILE2" '[{user:{id:136622811,login:"coderabbitai[bot]"},commit_id:"shaOLD",submitted_at:"2026-07-16T19:10:00Z",id:1,body:$b},{user:{id:136622811,login:"coderabbitai[bot]"},commit_id:"shaOLD2",submitted_at:"2026-07-16T19:20:00Z",id:2,body:$c}]' ;;
       # Same shape, unparseable: a header count with no per-finding items —
       # format drift, at the prior head.
       body-a2-drift) echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"shaOLD","body":"Outside diff range comments (2)"}]' ;;
@@ -521,6 +525,39 @@ rm -f "$OD_LEDGER"
 GH_STUB_MODE=body-a2-drift t a2-unparseable-prior-body-blocks 2
 grep -qi "format drift" "$TMP/out-a2-unparseable-prior-body-blocks" || { echo "FAIL a2-unparseable-prior-body block reason missing 'format drift'"; fail=$((fail+1)); }
 
+# HIMMEL-3379: TWO prior heads carry outside-diff findings (shaOLD older,
+# shaOLD2 newer; abc123 has no review). Every prior head governs, each finding
+# dispositioned at the head that raised it — the newer prior review must never
+# mask the older one's finding (mirrors check-ci's 39e..39h, HIMMEL-3365).
+export GH_STUB_BODY_FILE2="$FIXD/pr-777-outside-the-diff-range.body.txt"
+OD_A3_ROW_OLD=$(od_variant '.head="shaOLD"')
+OD_A3_ROW_NEW=$(od_variant '.finding_id="cr-od-2b1a31ba0692" | .severity="imp" | .file="marketplace/plugins/himmel-ops/README.md" | .line="80-91" | .head="shaOLD2"')
+
+rm -f "$OD_LEDGER"
+GH_STUB_MODE=body-a3-file t a3-two-prior-heads-nothing-dispositioned-blocks 2
+grep -q "cr-od-39c3193c8945" "$TMP/out-a3-two-prior-heads-nothing-dispositioned-blocks" || { echo "FAIL a3-nothing-dispositioned block does not list the older head's finding"; fail=$((fail+1)); }
+grep -q "cr-od-2b1a31ba0692" "$TMP/out-a3-two-prior-heads-nothing-dispositioned-blocks" || { echo "FAIL a3-nothing-dispositioned block does not list the newer head's finding"; fail=$((fail+1)); }
+grep -q "shaOLD2" "$TMP/out-a3-two-prior-heads-nothing-dispositioned-blocks" || { echo "FAIL a3-nothing-dispositioned block does not name the newer prior head"; fail=$((fail+1)); }
+
+# the RED case: only the NEWER prior head dispositioned — the older head's
+# finding must still block (at base the gate reads only the latest prior head
+# and allows this).
+od_ledger "$OD_A3_ROW_NEW"
+GH_STUB_MODE=body-a3-file t a3-only-newer-prior-head-dispositioned-blocks 2
+grep -q "cr-od-39c3193c8945" "$TMP/out-a3-only-newer-prior-head-dispositioned-blocks" || { echo "FAIL a3-only-newer block does not name the older head's undispositioned finding"; fail=$((fail+1)); }
+grep -q "shaOLD" "$TMP/out-a3-only-newer-prior-head-dispositioned-blocks" || { echo "FAIL a3-only-newer block does not name the older prior head"; fail=$((fail+1)); }
+grep -q "cr-od-2b1a31ba0692" "$TMP/out-a3-only-newer-prior-head-dispositioned-blocks" && { echo "FAIL a3-only-newer block lists the dispositioned newer finding"; fail=$((fail+1)); }
+
+od_ledger "$OD_A3_ROW_OLD"
+GH_STUB_MODE=body-a3-file t a3-only-older-prior-head-dispositioned-blocks 2
+grep -q "cr-od-2b1a31ba0692" "$TMP/out-a3-only-older-prior-head-dispositioned-blocks" || { echo "FAIL a3-only-older block does not name the newer head's undispositioned finding"; fail=$((fail+1)); }
+
+od_ledger "$OD_A3_ROW_OLD" "$OD_A3_ROW_NEW"
+GH_STUB_MODE=body-a3-file t a3-both-prior-heads-dispositioned-allows 0
+grep -qi "dispositioned=" "$TMP/err-a3-both-prior-heads-dispositioned-allows" || { echo "FAIL a3-both-dispositioned ALLOW note missing on stderr"; fail=$((fail+1)); }
+
+rm -f "$OD_LEDGER"
+export -n GH_STUB_BODY_FILE2; unset GH_STUB_BODY_FILE2
 export -n GH_STUB_BODY_FILE; unset GH_STUB_BODY_FILE
 
 # HIMMEL-3360: the review-FRESHNESS mechanism (HIMMEL-1181, cr_review_freshness
