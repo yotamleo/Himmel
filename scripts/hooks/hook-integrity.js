@@ -1023,6 +1023,24 @@ function resolveReal(candidate) {
   }
 }
 
+// Every project-relative identity `candidate` passes through on its way to the
+// file that runs: for each hop of the leaf's symlink chain, the parents resolved
+// (kernel order) plus the unfollowed leaf. A pinned hook swapped for a link to an
+// unpinned sibling is then still checked under its own pin, whichever directory
+// alias it was reached through. Bounded, so a link loop cannot spin.
+function leafChain(candidate) {
+  const hops = [];
+  let cur = String(candidate);
+  for (let i = 0; i < 40; i++) {
+    const hop = path.join(resolveReal(path.dirname(cur)), path.basename(cur));
+    hops.push(normalize(hop));
+    let target;
+    try { target = fs.readlinkSync(hop); } catch (_e) { break; }
+    cur = path.isAbsolute(target) ? target : `${path.dirname(hop)}/${target}`;
+  }
+  return hops;
+}
+
 function verifyIntegrityUnbypassed(scriptPath, sessionId) {
   // ---- FAST PATH: strictly git-free, no child process, on every hook call ----
   const projectDir = process.env.CLAUDE_PROJECT_DIR;
@@ -1047,16 +1065,19 @@ function verifyIntegrityUnbypassed(scriptPath, sessionId) {
   if (denyReason) return { ok: false, relPath, reason: denyReason };
   const pins = recordPins(record);
   if (!pins) return { ok: true };
-  // Every identity the path claims is checked: the resolved target's, and the
-  // spelled path's own (`..` collapsed, links NOT followed). A pinned hook swapped
-  // for a link to an unpinned sibling keeps the spelled identity's pin binding.
+  // Every identity the path claims is checked: the resolved target's, the spelled
+  // path's own (`..` collapsed, links NOT followed) and each hop of the leaf's link
+  // chain. A pinned hook swapped for a link to an unpinned sibling keeps its pin.
   const spelled = normalize(path.resolve(String(scriptPath)));
   const spelledProject = normalize(path.resolve(projectDir));
   const keys = [relPath];
-  if (spelled.toLowerCase().startsWith(`${spelledProject.toLowerCase()}/`)) {
-    const spelledRel = spelled.slice(spelledProject.length + 1);
-    if (spelledRel !== relPath) keys.push(spelledRel);
-  }
+  const claim = (abs, root) => {
+    if (!abs.toLowerCase().startsWith(`${root.toLowerCase()}/`)) return;
+    const rel = abs.slice(root.length + 1);
+    if (!keys.includes(rel)) keys.push(rel);
+  };
+  claim(spelled, spelledProject);
+  for (const hop of leafChain(scriptPath)) claim(hop, resolvedProject);
   let actual;
   for (const key of keys) {
     const expected = pins[key];

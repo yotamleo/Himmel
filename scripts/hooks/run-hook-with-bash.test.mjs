@@ -1216,6 +1216,27 @@ test('HIMMEL-3390: a pinned hook swapped for a symlink to an unpinned in-project
   }
 });
 
+test('HIMMEL-3390: the pin of a swapped leaf still binds when the hook is reached through a directory alias or a link chain', () => {
+  const fx = dotdotFixture();
+  try {
+    const hooks = join(fx.dir, 'scripts', 'hooks');
+    writeFileSync(join(hooks, 'other.sh'), 'echo unpinned sibling\n');
+    fx.fs.symlinkSync(hooks, join(fx.dir, 'alias-hooks'));
+    fx.fs.symlinkSync(join(hooks, 'other.sh'), join(hooks, 'mid.sh'));
+    fx.fs.rmSync(fx.scriptPath);
+    fx.fs.symlinkSync(join(hooks, 'mid.sh'), fx.scriptPath); // guard.sh -> mid.sh -> other.sh
+    withEnv(fx.env, () => {
+      for (const spelled of [join(fx.dir, 'alias-hooks', 'guard.sh'), join(hooks, 'guard.sh')]) {
+        const result = verifyProjectHookIntegrity(spelled, 's1');
+        assert.equal(result.ok, false, spelled);
+        assert.equal(result.relPath, fx.scriptRel);
+      }
+    });
+  } finally {
+    fx.cleanup();
+  }
+});
+
 test('HIMMEL-3390: `link/..` follows the link (kernel order), not a lexical collapse', () => {
   const fx = dotdotFixture();
   try {
