@@ -29,7 +29,9 @@ const GATE_SCRIPT_RE = /^Bash\(bash scripts\/(?:handover\/(?:merge-on-green|queu
 // exactly `--diff`) are exact literals — no `:*` tail, so nothing can be
 // appended to them. HIMMEL-3359 adds step 0's himmel-lane entry
 // (pr-check-context), which hands a non-anchor copy off to the anchor itself.
-const GATE_EXACT_RE = /^Bash\(bash scripts\/cr\/(?:(?:codex-adv-kickoff|codex-adv-harvest|doc-freshness-advisory|pr-check-context)\.sh|known-findings\.sh --diff)\)$/;
+// HIMMEL-3375 adds the one var-set the runbook spells for pr-check-env
+// (CR_CLAUDE_AGENTS, steps 2.5 / 3.5), which hands off the same way.
+const GATE_EXACT_RE = /^Bash\(bash scripts\/cr\/(?:(?:codex-adv-kickoff|codex-adv-harvest|doc-freshness-advisory|pr-check-context)\.sh|known-findings\.sh --diff|pr-check-env\.sh CR_CLAUDE_AGENTS)\)$/;
 const GATE_SUITE_RE = /^Bash\((?:SUITE_LOCK_WAIT=60 )?bash scripts\/quiet-run\.sh suite -- bash (?:scripts\/(?:handover\/console-kit\/|(?:handover|cr|git|hooks|guardrails|lib|luna|ci)\/)?|templates\/luna-second-brain\/scripts\/)test-\*\.sh\)$/;
 const LEG_PROFILES = new Set(['lane-impl', 'leg-impl', 'lane-review', 'lane-content', 'console-relay']);
 

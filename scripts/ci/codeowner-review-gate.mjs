@@ -73,6 +73,9 @@ function globBody(p) {
 //   dir/        the directory and everything below it
 //   no wildcard in the last segment -> also matches everything below it
 //   docs/*      direct children only (GitHub's CODEOWNERS is not gitignore here)
+// The `s` flag makes `.` match a newline: a newline is an ordinary filename
+// character, and without it a directory rule's `.*` would stop at one and let the
+// path fall through to an earlier (global) rule's owner.
 export function patternToRegExp(raw) {
   let p = raw;
   const dirOnly = p.endsWith('/');
@@ -83,7 +86,7 @@ export function patternToRegExp(raw) {
   const wildLast = /[*?]/.test(lastSegment);
   const prefix = anchored ? '^' : '^(?:.*/)?';
   const suffix = dirOnly ? '/.*' : (wildLast ? '' : '(?:/.*)?');
-  return new RegExp(`${prefix}${globBody(p)}${suffix}$`);
+  return new RegExp(`${prefix}${globBody(p)}${suffix}$`, 's');
 }
 
 // CODEOWNERS text -> [{ re, owners }] in file order (last match wins).

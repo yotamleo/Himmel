@@ -126,6 +126,10 @@ Steps:
    ```bash
    bash "<himmel_dir>/scripts/cr/pr-check-env.sh" CR_CLAUDE_AGENTS
    ```
+   **Himmel-lane spelling (HIMMEL-3375) — run this INSTEAD of the anchored line above, never both, and ONLY when step 0 itself ran by the himmel-lane spelling** — that is, its lane proof (line 1 equals line 2 followed by `/.git`, line 3 empty) and its `scripts/cr/` diff check both passed on this diff, and the branch has not changed since. If step 0 used the canonical fence, or its diff check printed a path or failed, use the anchored line above. What this script prints steers gate policy (`CR_REQUIRE_CROSS_MODEL`, `CR_CLAUDE_AGENTS`), so the same console ruling as step 0 applies: the bare literal is the one shape a leg's allow rule (`gateAllow` in `scripts/lanes/plugin-profiles.json`) can match, and on a diff that touches `scripts/cr/` an allow-listed literal would auto-run the branch's own copy, which may have deleted its own hand-off. The in-script hand-off (a non-anchor copy `exec`s `$HIMMEL_REPO`'s copy before it sources anything) is defense in depth, not the trust root:
+   ```bash
+   bash scripts/cr/pr-check-env.sh CR_CLAUDE_AGENTS
+   ```
    Default (HIMMEL-926): apply the docs charter below YOURSELF, inline in this session — read the changed docs, grep/read the cited repo claims — and dispatch NO reviewer agent. Only when `CR_CLAUDE_AGENTS=1`, dispatch ONE `pr-review-toolkit:code-reviewer` Agent (upstream type + the HIMMEL-178 directive prepended, same as step 3.5) with the docs charter instead. Either way it is the docs charter and NOTHING else unless `CR_REQUIRE_CROSS_MODEL` is truthy (HIMMEL-2026): then the lane must also run the existing critic-panel path below so `clear-cr-marker.sh` gate 3b gets a real non-Claude responder. Do NOT set `CR_TRIVIALITY_OVERRIDE=full` here; HIMMEL-1950 already makes `critic-panel.sh` keep exactly one external critic on a trivial paid-only diff when `CR_REQUIRE_CROSS_MODEL` is set. (The panel's ordinary charter is code review, not docs — it runs here solely to give gate 3b a real non-Claude responder; adjudicate its findings against the diff as usual, same as step 3.2 phase A, not against the docs charter above. The Codex `pr-check` skill's docs-audit lane still declines the panel entirely and defers to this Claude runbook — that split is intentional, not a drift.)
 
    > **Docs-audit charter (HIMMEL-299/303) — audit ONLY these five dimensions, nothing else (no prose-style nitpicks):** (1) factual accuracy of every repo claim (hooks/gates/flags/paths/commands) vs the actual code/config; (2) every markdown link resolves; (3) no stale file/flag/ticket references; (4) example blocks have correct paths + flags + syntax; (5) internal consistency. Return findings tagged `[ACCURACY|DEAD-LINK|STALE|EXAMPLE|CONSISTENCY]` with file:line + fix; say `DOCS-AUDIT CLEAN` if none. (`CLAUDE.md` diffs: prefer `/claude-md-audit` for the rubric pass; this charter still applies for accuracy.)
@@ -304,6 +308,10 @@ Steps:
    Resolve the flag deterministically (same bridge as `CR_PROFILE`; a live-env value wins) — through `scripts/cr/pr-check-env.sh`, for the same reason step 2.5 does (HIMMEL-2226: the fence sourced `load-dotenv.sh` through a runtime-determined path, which the worktree-isolation guard refuses). An unset flag prints the runbook's own placeholder, `<unset: inline adjudication, no Claude reviewer agents>`:
    ```bash
    bash "<himmel_dir>/scripts/cr/pr-check-env.sh" CR_CLAUDE_AGENTS
+   ```
+   **Himmel-lane spelling (HIMMEL-3375):** the same rule as step 2.5 — run this INSTEAD of the anchored line, and ONLY when step 0 itself ran by the himmel-lane spelling (both of its checks passed on this diff and the branch has not changed since); otherwise use the anchored line:
+   ```bash
+   bash scripts/cr/pr-check-env.sh CR_CLAUDE_AGENTS
    ```
 
    **Opt-in (`CR_CLAUDE_AGENTS=1`): ALSO dispatch the per-agent matrix below** (the pre-HIMMEL-926 default). All dispatches use the upstream `pr-review-toolkit:*` agent types — the himmel fork's `pr-review-toolkit-himmel:code-reviewer` is NOT registered as an Agent-tool type (verified HIMMEL-283; dispatching it errors `Agent type ... not found`). The HIMMEL-178 verify-before-critical rule is carried by prepending the directive below to EVERY agent prompt, code-reviewer included.
