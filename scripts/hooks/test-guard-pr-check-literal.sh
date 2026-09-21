@@ -16,6 +16,7 @@ set -uo pipefail
 
 HOOK="$(cd "$(dirname "$0")" && pwd)/guard-pr-check-literal.sh"
 LITERAL='bash scripts/cr/pr-check-context.sh'
+ENV_LITERAL='bash scripts/cr/pr-check-env.sh CR_CLAUDE_AGENTS'
 
 # A suite run from inside a git hook inherits GIT_DIR/GIT_INDEX_FILE, which
 # would point every fixture git call at the outer repo.
@@ -32,10 +33,13 @@ g() { git -c user.name=t -c user.email=t@t -c init.defaultBranch=main -c commit.
 ORIGIN="$TMP/origin"
 PRIMARY="$TMP/himmel"
 WT="$TMP/wt"
-mkdir -p "$ORIGIN/scripts/cr" "$ORIGIN/scripts/guardrails" "$ORIGIN/docs"
+mkdir -p "$ORIGIN/scripts/cr" "$ORIGIN/scripts/guardrails" "$ORIGIN/scripts/lib" "$ORIGIN/docs"
 g init -q "$ORIGIN"
 echo 'echo anchor' >"$ORIGIN/scripts/cr/pr-check-context.sh"
 echo ': lib' >"$ORIGIN/scripts/guardrails/lib.sh"
+echo 'echo env' >"$ORIGIN/scripts/cr/pr-check-env.sh"
+echo ': dotenv' >"$ORIGIN/scripts/lib/load-dotenv.sh"
+echo ': other lib' >"$ORIGIN/scripts/lib/other.sh"
 echo 'doc' >"$ORIGIN/docs/a.md"
 g -C "$ORIGIN" add -A
 g -C "$ORIGIN" commit -qm base
@@ -82,6 +86,10 @@ HR="HIMMEL_REPO=$PRIMARY"
 # ---- allow: every condition holds -----------------------------------------
 run "clean himmel-lane worktree root, no cr/lib diff -> allow" 0 "$(payload "$LITERAL" "$WT")" "$HR"
 [ -z "$LAST_ERR" ] || { echo "FAIL allow is silent - stderr: $LAST_ERR"; FAILED=$((FAILED + 1)); }
+run "pr-check-env literal on a clean root -> allow" 0 "$(payload "$ENV_LITERAL" "$WT")" "$HR"
+echo ': edited' >>"$WT/scripts/lib/other.sh"
+run "an unguarded scripts/lib/ diff -> allow" 0 "$(payload "$LITERAL" "$WT")" "$HR"
+g -C "$WT" checkout -q -- scripts/lib/other.sh
 run "primary checkout root -> allow" 0 "$(payload "$LITERAL" "$PRIMARY")" "$HR"
 run "HIMMEL_REPO with a trailing slash -> allow" 0 "$(payload "$LITERAL" "$WT")" "HIMMEL_REPO=$PRIMARY/"
 echo doc2 >"$WT/docs/a.md"
@@ -112,6 +120,15 @@ run "lib.sh-only uncommitted diff -> deny" 2 "$(payload "$LITERAL" "$WT")" "$HR"
 need_in_err "deny names lib.sh" "scripts/guardrails/lib.sh"
 g -C "$WT" checkout -q -- scripts/guardrails/lib.sh
 
+# ---- deny: a load-dotenv.sh-only diff (pr-check-env.sh sources it) ---------
+echo ': edited' >>"$WT/scripts/lib/load-dotenv.sh"
+run "load-dotenv.sh-only diff, pr-check-env literal -> deny" 2 "$(payload "$ENV_LITERAL" "$WT")" "$HR"
+need_in_err "deny names load-dotenv.sh" "scripts/lib/load-dotenv.sh"
+need_in_err "env deny names its own canonical spelling" 'scripts/cr/pr-check-env.sh" CR_CLAUDE_AGENTS'
+run "load-dotenv.sh-only diff, pr-check-context literal -> deny" 2 "$(payload "$LITERAL" "$WT")" "$HR"
+g -C "$WT" checkout -q -- scripts/lib/load-dotenv.sh
+run "pr-check-env literal with another argument -> no-op" 0 "$(payload "bash scripts/cr/pr-check-env.sh CR_PROFILE" "$TMP")"
+
 # ---- deny: index flags that hide a working-tree edit from git diff ----------
 g -C "$WT" update-index --assume-unchanged scripts/cr/pr-check-context.sh
 echo 'echo hidden' >"$WT/scripts/cr/pr-check-context.sh"
@@ -124,6 +141,29 @@ run "skip-worktree edit to lib.sh -> deny" 2 "$(payload "$LITERAL" "$WT")" "$HR"
 g -C "$WT" update-index --no-skip-worktree scripts/guardrails/lib.sh
 g -C "$WT" checkout -q -- scripts/guardrails/lib.sh
 run "flags cleared again -> allow" 0 "$(payload "$LITERAL" "$WT")" "$HR"
+
+# ---- deny: a clean filter that normalises an edit back to the base ----------
+# git diff would run the filter (executing repo-configured commands) and see
+# no change; the hook must hash raw bytes and never run it.
+printf '%s\n' 'scripts/cr/*.sh filter=hide' >"$WT/.gitattributes"
+g -C "$WT" config filter.hide.clean "touch '$TMP/filter-ran'; sed s/branch/anchor/"
+echo 'echo branch' >"$WT/scripts/cr/pr-check-context.sh"
+run "clean-filter-hidden edit to pr-check-context.sh -> deny" 2 "$(payload "$LITERAL" "$WT")" "$HR"
+if [ -e "$TMP/filter-ran" ]; then
+    echo "FAIL the hook ran a repo-configured clean filter"
+    FAILED=$((FAILED + 1))
+else
+    echo "PASS the hook runs no repo-configured clean filter"
+fi
+g -C "$WT" config --unset filter.hide.clean
+rm -f "$WT/.gitattributes" "$TMP/filter-ran"
+g -C "$WT" checkout -q -- scripts/cr/pr-check-context.sh
+
+# ---- deny: a symlink under scripts/cr/ -------------------------------------
+ln -s pr-check-context.sh "$WT/scripts/cr/link.sh"
+run "symlink under scripts/cr/ -> deny" 2 "$(payload "$LITERAL" "$WT")" "$HR"
+rm -f "$WT/scripts/cr/link.sh"
+run "tree restored after filter/symlink cases -> allow" 0 "$(payload "$LITERAL" "$WT")" "$HR"
 
 # ---- deny: a cwd carrying a newline must not shift the command field --------
 run "cwd with an embedded newline -> deny, not a no-op" 2 "$(payload "$LITERAL" "$WT"$'\n'"x")" "$HR"
