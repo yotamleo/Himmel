@@ -252,6 +252,29 @@ The only thing the check fetches is the latest release tag, from a fixed HTTPS
 URL that no environment variable can redirect; nothing is downloaded or
 executed.
 
+## Is this station up to date? (HIMMEL-3400)
+
+```bash
+himmelctl --version         # himmel 0.3.0 + git describe string + commit
+himmelctl --version --all   # ... plus one line per updatable component
+bash scripts/himmel-update.sh --versions   # the same report, without himmelctl
+```
+
+`--version` prints the `VERSION` file, the `git describe --tags` string
+(`v0.3.0-pre.6` exactly on a tag, `v0.3.0-pre.6-N-g<sha>` when N commits past it)
+and the full commit. A checkout that is not itself a git root prints `unknown`
+for both rather than reading an enclosing repository.
+
+`--all` (`himmel-update.sh --versions`) prints one row per component — the himmel
+checkout, marketplace plugins, jira CLI build, qmd fork, hermes, luna template,
+cli-proxy pin, and node / npm / bun — with the installed value, the available
+one, and `current`, `behind`, `unknown` or `n/a` (not installed here; never
+counted). node is compared with `.nvmrc`; npm and bun have no pin and are shown
+as `info`. The report is **read-only** and runs the same probes as `--check`
+(it pulls, rebuilds and restarts nothing). Exit code: `1` when any component is
+behind, `3` when none is behind but one could not be determined (for example
+offline), `0` otherwise.
+
 ## After upgrading
 
 A pull that moves you to a new release — whether the plain branch pull or a

@@ -147,7 +147,13 @@ commands:
                           scripts/himmel-update.sh (same engine as
                           /himmel-update): full dependency-chain check/update
                           with per-item status + abort-on-first-failure
-  profile                 inspect/toggle the two-tier plugin profile — thin
+  --version [--all]       print the himmel version, git describe string and
+                          commit; --all also prints one line per updatable
+                          component (himmel checkout, plugins, jira CLI, qmd,
+                          hermes, luna template, cli-proxy pin, node/npm/bun)
+                          with installed vs available — read-only; exit 1 when
+                          any is behind, 3 when none is but one is unknown
+  profile              inspect/toggle the two-tier plugin profile — thin
                           wrapper around scripts/machine-setup/plugin-profile.sh
                           (same engine as /profile):
                             profile list [--json]
@@ -7678,15 +7684,35 @@ async function main() {
   // NEVER throws: an unreadable or absent VERSION prints `himmel unknown` and
   // still exits 0. `--version` failing loudly would make a diagnostic command
   // the thing that breaks the diagnosis.
+  //
+  // HIMMEL-3400: also prints the git describe string (`v0.3.0-pre.6` on a tag,
+  // `v0.3.0-pre.6-N-g<sha>` past it) and the full commit — VERSION alone cannot
+  // tell an operator whether the checkout is the release or something after it.
+  // `--version --all` then runs the read-only ecosystem report
+  // (himmel-update.sh --versions — the SAME probes `--check` uses) and returns
+  // its rc: 1 when any component is behind, 3 when none is but one is unknown.
   if (argv.indexOf('--version') !== -1) {
+    const root = repoRoot();
     let version = 'unknown';
     try {
-      version = fs.readFileSync(path.join(repoRoot(), 'VERSION'), 'utf8').trim() || 'unknown';
+      version = fs.readFileSync(path.join(root, 'VERSION'), 'utf8').trim() || 'unknown';
     } catch {
       // fall through to 'unknown'
     }
+    const git = (...gitArgs) => {
+      // Only a root that is itself a checkout: without this an install dir
+      // nested in some other repo would report THAT repo's describe/commit.
+      if (!fs.existsSync(path.join(root, '.git'))) return 'unknown';
+      const r = spawnSync('git', ['-C', root, ...gitArgs], { encoding: 'utf8' });
+      const out = r.status === 0 && typeof r.stdout === 'string' ? r.stdout.trim() : '';
+      return out || 'unknown';
+    };
     console.log(`himmel ${version}`);
-    return 0;
+    console.log(`describe: ${git('describe', '--tags', '--always')}`);
+    console.log(`commit: ${git('rev-parse', 'HEAD')}`);
+    if (argv.indexOf('--all') === -1) return 0;
+    const script = toBashPath(path.join(root, 'scripts', 'himmel-update.sh'));
+    return runSpawn({ argv: [resolveBash(), script, '--versions'] });
   }
   // `config` owns its OWN positional grammar (get/set <path> [<value>]) that
   // the shared flag-only parseArgs()/ALLOWED_OPTIONS machinery below has no
