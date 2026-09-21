@@ -324,8 +324,13 @@ wf_violations() {
   # triggers and job name
   grep -qE '^  pull_request:' "$s" || echo "no pull_request trigger"
   grep -qE '^  pull_request_review:' "$s" || echo "no pull_request_review trigger"
-  grep -qE 'types: *\[opened, synchronize, reopened, ready_for_review\]' "$s" || echo "pull_request types wrong"
+  # `edited` covers a retarget: the new base carries its own CODEOWNERS and base sha.
+  grep -qE 'types: *\[opened, synchronize, reopened, ready_for_review, edited\]' "$s" || echo "pull_request types wrong"
   grep -qE 'types: *\[submitted, dismissed, edited\]' "$s" || echo "pull_request_review types wrong"
+  # A missing script may only pass as the bootstrap on the default branch.
+  # shellcheck disable=SC2016  # the literal `$BASE_REF` text is the pattern
+  unconfined=$(grep -F 'HTTP 404' "$s" | grep -vF '"$BASE_REF" = "$DEFAULT_BRANCH"' || true)
+  [ -z "$unconfined" ] || echo "404 bootstrap is not confined to the default branch"
   grep -qE '^    name: codeowner-review-gate$' "$s" || echo "job name is not codeowner-review-gate"
   return 0
 }
@@ -343,7 +348,7 @@ cat > "$GOOD" <<'YAML'
 name: codeowner-review-gate
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
   pull_request_review:
     types: [submitted, dismissed, edited]
 permissions:
@@ -382,6 +387,8 @@ mutate "expression in a run block"   "interpolated in run" 's|echo "\$BASE_SHA"|
 mutate "expression in a one-line run" "interpolated in run" 's|^        run: \|$|        run: echo ${{ github.head_ref }}|'
 mutate "a wrong job name"            "job name"            's/^    name: codeowner-review-gate$/    name: gate/'
 mutate "a missing review trigger"    "pull_request_review" 's/^  pull_request_review:/  issue_comment:/'
+mutate "a dropped edited trigger"    "pull_request types"  '/ready_for_review/s/, edited\]$/]/'
+mutate "an unconfined 404 bootstrap" "404 bootstrap"       's|^    steps:|    steps:\n      - run: grep -q "HTTP 404" err|'
 
 echo
 if [ "$failures" -eq 0 ]; then

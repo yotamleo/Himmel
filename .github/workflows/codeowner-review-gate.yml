@@ -26,7 +26,7 @@ name: codeowner-review-gate
 #     a `${{ }}` expression inside `run:`.
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
   pull_request_review:
     types: [submitted, dismissed, edited]
 
@@ -52,6 +52,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           script="$RUNNER_TEMP/codeowner-review-gate.mjs"
@@ -60,9 +62,10 @@ jobs:
                "repos/$REPO/contents/scripts/ci/codeowner-review-gate.mjs?ref=$BASE_SHA" \
                > "$script" 2> "$err"; then
             echo "present=true" >> "$GITHUB_OUTPUT"
-          elif grep -q "HTTP 404" "$err"; then
-            # Only before this workflow's own introducing PR has merged: the base
-            # has no script yet and the check is not required yet either.
+          elif grep -q "HTTP 404" "$err" && [ "$BASE_REF" = "$DEFAULT_BRANCH" ]; then
+            # Only before this workflow's own introducing PR has merged: the
+            # default branch has no script yet and the check is not required yet
+            # either. A missing script on any other base fails closed below.
             echo "::notice title=codeowner-review-gate::gate script is not on base $BASE_SHA yet (bootstrap); nothing to enforce"
             echo "present=false" >> "$GITHUB_OUTPUT"
           else
