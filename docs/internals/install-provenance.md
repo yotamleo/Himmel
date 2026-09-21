@@ -123,6 +123,12 @@ scratch `HOME` and never touches the real `~/.himmel`.
   canonicaliser that diverges from `jq -cS` on non-canonical number literals
   (`1.0`, `1E+2`, integers past 2^53) and non-BMP key order. Every install host
   already requires jq, so this is a fallback, not a supported mode.
+- Appends are one `write` only for rows that fit a stdio buffer (~4 KiB, bash
+  dialect); an `install-begin` row with a very large `argv` can interleave with a
+  concurrent writer's row. Artifact rows are far smaller. A reader skips a line
+  that does not parse, so the cost is one lost row.
+- A backslash in a path is a separator only on Windows; on POSIX it is a legal
+  filename character and is recorded as given.
 - The PowerShell dialect could not be executed where it was written; it is held
   to the same rows by construction and by the pwsh-gated test block. On Windows
   it omits `mode` and does not resolve symlinked parents or 8.3 short names.

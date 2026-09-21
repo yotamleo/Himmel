@@ -211,5 +211,15 @@ HIMMEL_PROVENANCE_IID='../evil' "$node_bin" "$jsw" record replace file "$w/f1" -
 check "node: unsafe iid + --backup → rc 1" "$?" "1"
 check "node: unsafe iid wrote no backup outside the ledger dir" "$([ -e "$tmp/pu/evil" ] && echo yes || echo no)" "no"
 
+# a POSIX filename may contain a backslash; only Windows treats it as a separator
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) echo "SKIP - Windows: a backslash is a path separator here" ;;
+    *)
+        rm -rf "$tmp/pu"
+        "$node_bin" "$jsw" record create file "$w"'/a\b' --post-json '"x"'
+        check "node: POSIX backslash filename is recorded as given" "$(grep -v install- "$tmp/pu/provenance.jsonl" | jq -r .path)" "$w"'/a\b'
+        ;;
+esac
+
 echo "$passes passed, $fails failed"
 [ "$fails" -eq 0 ]

@@ -41,7 +41,9 @@ $script:ProvReserved = @('t', 'iid', 'op', 'kind', 'path', 'unit', 'scope', 'cla
 $script:ProvUtf8 = [System.Text.UTF8Encoding]::new($false)
 $script:ProvOwns = $null
 $script:ProvIsWin = ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)
-$script:ProvRoot = ((Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '../..')).ProviderPath) -replace '\\', '/'
+# a backslash is a separator on Windows only; on POSIX (PowerShell Core) it is a legal filename character
+function _ProvFwd([string]$p) { if ($script:ProvIsWin) { return ($p -replace '\\', '/') } else { return $p } }
+$script:ProvRoot = _ProvFwd ((Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '../..')).ProviderPath)
 
 function _ProvFail([string]$Msg) { throw "provenance: $Msg" }
 
@@ -134,7 +136,7 @@ function _ProvShaFile([string]$f) { return (_ProvShaBytes ([System.IO.File]::Rea
 # ── paths ───────────────────────────────────────────────────────────────
 function _ProvCanonPartial([string]$p) {
     if (-not $p) { _ProvFail 'cannot resolve an empty path' }
-    $p = $p -replace '\\', '/'
+    $p = _ProvFwd $p
     $rest = ''
     while (-not (Test-Path -LiteralPath $p -PathType Container)) {
         $i = $p.LastIndexOf('/')
@@ -143,12 +145,12 @@ function _ProvCanonPartial([string]$p) {
         $p = $p.Substring(0, $i)
         if (-not $p) { $p = '/' }
     }
-    $real = ((Resolve-Path -LiteralPath $p).ProviderPath) -replace '\\', '/'
+    $real = _ProvFwd ((Resolve-Path -LiteralPath $p).ProviderPath)
     return $real.TrimEnd('/') + $rest
 }
 function _ProvAbs([string]$p) {
-    $p = $p -replace '\\', '/'
-    if (-not ($p.StartsWith('/') -or $p -match '^[A-Za-z]:/')) { $p = ((Get-Location).ProviderPath -replace '\\', '/') + '/' + $p }
+    $p = _ProvFwd $p
+    if (-not ($p.StartsWith('/') -or $p -match '^[A-Za-z]:/')) { $p = (_ProvFwd (Get-Location).ProviderPath) + '/' + $p }
     while ($p.Length -gt 1 -and $p.EndsWith('/')) { $p = $p.Substring(0, $p.Length - 1) }
     $i = $p.LastIndexOf('/')
     $base = $p.Substring($i + 1)
@@ -163,7 +165,7 @@ function Get-ProvLedgerDir {
     $d = $env:HIMMEL_PROVENANCE_DIR
     if (-not $d) {
         if (-not $HOME) { _ProvFail 'HOME is unset and HIMMEL_PROVENANCE_DIR is not given' }
-        $d = ($HOME -replace '\\', '/') + '/.himmel'
+        $d = (_ProvFwd $HOME) + '/.himmel'
     }
     return (_ProvCanonPartial $d)
 }
@@ -237,8 +239,8 @@ function _ProvBeginRow([string]$Iid, [string]$Writer, [string]$Target, [string]$
     $version = ''
     $vf = Join-Path $Root 'VERSION'
     if (Test-Path -LiteralPath $vf -PathType Leaf) { $version = (Get-Content -LiteralPath $vf -Raw) -replace '[ \r\n]', '' }
-    $home_ = $HOME -replace '\\', '/'
-    try { $home_ = ((Resolve-Path -LiteralPath $HOME).ProviderPath) -replace '\\', '/' } catch { }
+    $home_ = _ProvFwd $HOME
+    try { $home_ = _ProvFwd ((Resolve-Path -LiteralPath $HOME).ProviderPath) } catch { }
     $cfgRaw = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { $home_ + '/.claude' }
     $cfg = $cfgRaw
     try { $cfg = _ProvCanonPartial $cfgRaw } catch { }

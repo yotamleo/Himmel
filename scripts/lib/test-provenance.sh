@@ -259,6 +259,22 @@ prov_record replace file "$w/a.txt" --pre-file "$w/a.snap" --backup --post-file 
 check "unsafe iid wrote no backup outside the ledger dir" "$([ -e "$HIMMEL_PROVENANCE_DIR/evil" ] && echo yes || echo no)" "no"
 unset HIMMEL_PROVENANCE_IID _PROV_OWNS
 
+# a POSIX filename may contain a backslash; only Windows treats it as a separator
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) echo "SKIP - Windows: a backslash is a path separator here" ;;
+    *)
+        rm -rf "$HIMMEL_PROVENANCE_DIR"
+        prov_record create file "$w"'/a\b' --post-json '"x"'
+        check "POSIX backslash filename is recorded as given" "$(last | jq -r .path)" "$w"'/a\b'
+        ;;
+esac
+
+# op / kind are exact tokens, not substrings of the vocabulary list
+rm -rf "$HIMMEL_PROVENANCE_DIR"
+prov_record "create replace" file "$w/a.txt" 2>/dev/null; check "quoted two-word op → rc 2" "$?" "2"
+prov_record create "file tree" "$w/a.txt" 2>/dev/null; check "quoted two-word kind → rc 2" "$?" "2"
+check "rejected op/kind wrote nothing" "$([ -e "$ledger" ] && echo yes || echo no)" "no"
+
 # a record at the filesystem root keeps its path
 rm -rf "$HIMMEL_PROVENANCE_DIR"
 prov_record register mcp / --unit m --post-json '"x"'

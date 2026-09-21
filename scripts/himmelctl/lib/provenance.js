@@ -28,7 +28,9 @@ const KINDS = ['file', 'tree', 'json-key', 'json-elem', 'block', 'line', 'plugin
 const SCOPES = ['user', 'project', 'clone', 'machine'];
 const CLASSES = ['code', 'state', 'keep'];
 const RESERVED = ['t', 'iid', 'op', 'kind', 'path', 'unit', 'scope', 'class', 'pre', 'post', 'writer', 'manifest_row'];
-const ROOT = path.resolve(__dirname, '..', '..', '..').replace(/\\/g, '/');
+// a backslash is a separator on Windows only; on POSIX it is a legal filename character
+const fwd = (p) => (process.platform === 'win32' ? p.replace(/\\/g, '/') : p);
+const ROOT = fwd(path.resolve(__dirname, '..', '..', '..'));
 
 let owned = null; // the iid this process opened (provEnd closes only its own)
 
@@ -85,7 +87,6 @@ const shaFile = (f) => shaBuf(fs.readFileSync(f));
 const shaJson = (text) => shaText(canonOrThrow(text, 1));
 
 // ── paths ───────────────────────────────────────────────────────────────
-const fwd = (p) => p.replace(/\\/g, '/');
 const isDir = (p) => { try { return fs.statSync(p).isDirectory(); } catch (_) { return false; } };
 
 // realpath of the deepest existing ancestor, the missing tail appended

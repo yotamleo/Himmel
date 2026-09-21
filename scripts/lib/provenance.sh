@@ -72,7 +72,8 @@ prov_ledger_path() {
 # short names), the basename left as given so a link is recorded as the link.
 _prov_abs_path() {
     local p="$1" dir base
-    case "$p" in *[\\]*) p=${p//\\//} ;; esac
+    # a backslash is a separator on Windows only; on POSIX it is a legal filename character
+    case "$p" in *[\\]*) if [ "$(_prov_platform)" = win32 ]; then p=${p//\\//}; fi ;; esac
     case "$p" in /*|[A-Za-z]:/*) ;; *) p="$PWD/$p" ;; esac
     while [ "${#p}" -gt 1 ] && [ "${p%/}" != "$p" ]; do p="${p%/}"; done
     base="${p##*/}"
@@ -141,6 +142,9 @@ _prov_append() {
     if [ -s "$ledger" ] && [ -n "$(tail -c1 "$ledger")" ]; then
         ( umask 077; printf '\n' >> "$ledger" ) || return 1
     fi
+    # ponytail: the printf builtin issues one write(2) only while the row fits its stdio buffer
+    # (~4 KiB); a longer row (an install-begin with a huge argv) can interleave with a concurrent
+    # writer's row and is not serialized here. Every realistic artifact row is far below that.
     ( umask 077; printf '%s\n' "$row" >> "$ledger" ) || { _prov_err "cannot append to $ledger"; return 1; }
 }
 
@@ -288,6 +292,9 @@ prov_record() {
     local pre_t="" pre_v="" post_t="" post_v="" backup=0 dry=0 fields='{}' k v cpath="" iid implicit=0
     local pre='null' post='null' bk='null' body
     shift 3
+    # one exact token: a quoted "create replace" must not match the space-delimited list
+    case "$op" in ''|*[[:space:]]*) _prov_err "prov_record: unknown op '$op'"; return 2 ;; esac
+    case "$kind" in ''|*[[:space:]]*) _prov_err "prov_record: unknown kind '$kind'"; return 2 ;; esac
     case "$_PROV_OPS" in *" $op "*) ;; *) _prov_err "prov_record: unknown op '$op'"; return 2 ;; esac
     case "$_PROV_KINDS" in *" $kind "*) ;; *) _prov_err "prov_record: unknown kind '$kind'"; return 2 ;; esac
     while [ $# -gt 0 ]; do
