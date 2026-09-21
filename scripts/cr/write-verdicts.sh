@@ -38,6 +38,14 @@
 # Zero verdict lines is a VALID input (the runbook's own fail-open
 # "no candidates" state) and writes an empty file, rc=0.
 #
+# HIMMEL-3357: a bare `disproved` line carries no evidence, and that is by
+# design - these scratch files feed orphan-check.sh's counts and never reach the
+# CR ledger. The evidentiary bar for `disproved` (a shell/platform measurement
+# must name the binary and version; a finding that names a shell needs evidence
+# naming it) is enforced where the verdict enters the ledger, in
+# scripts/cr/ledger-append.sh (`amend`, `finding`, `finding --batch-file`), so
+# this grammar stays unchanged.
+#
 # TRUNCATE-then-write only, matching the heredocs it replaces (both runbook
 # fences REPLACE the file's contents every run) — no append mode; YAGNI, the
 # runbook never needs one.
