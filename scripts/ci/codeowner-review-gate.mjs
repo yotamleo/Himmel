@@ -205,6 +205,17 @@ function parseFiles(text) {
   return t.split(/\r?\n/).map((l) => l.trim()).filter((l) => l !== '');
 }
 
+const MAX_LISTED_FILES = 3000;
+
+// One JSON string per line (jq `@json`): paths kept byte-exact.
+function parseJsonStrings(text, what) {
+  return text.split('\n').filter((l) => l !== '').map((l) => {
+    const v = parseJson(l, what);
+    if (typeof v !== 'string') throw new GateError(`${what} entry is not a string`);
+    return v;
+  });
+}
+
 // `gh api` via execFile: no shell, so no value here can be interpreted as one.
 function gh(args) {
   try {
@@ -244,10 +255,15 @@ function loadLive({ repo, pr, base }) {
   }
 
   out.reviews = parseJsonList(gh(['--paginate', `repos/${repo}/pulls/${pr}/reviews?per_page=100`, '--jq', '.[]']), 'reviews');
-  out.files = parseFiles(gh(['--paginate', `repos/${repo}/pulls/${pr}/files?per_page=100`,
-    '--jq', '.[] | .filename, (.previous_filename // empty)']));
-  // ponytail: the pulls/files API stops at 3000 files, so a larger PR is judged
-  // on its first 3000 paths only; such a PR would need review anyway.
+  // The pulls/files API stops at 3000 files, so at or beyond that the list is
+  // incomplete and an owner of an omitted path could be skipped: fail closed.
+  if (Number(prData.changed_files) >= MAX_LISTED_FILES) {
+    throw new GateError(`PR changes ${prData.changed_files} files, at or over the ${MAX_LISTED_FILES}-file API listing cap; the changed-file list would be incomplete`);
+  }
+  // Each path travels as a JSON string (@json), so newlines and edge whitespace
+  // in a filename reach CODEOWNERS matching exactly as git recorded them.
+  out.files = parseJsonStrings(gh(['--paginate', `repos/${repo}/pulls/${pr}/files?per_page=100`,
+    '--jq', '.[] | (.filename, (.previous_filename // empty)) | @json']), 'files');
   out.codeowners = gh(['-H', 'Accept: application/vnd.github.raw',
     `repos/${repo}/contents/.github/CODEOWNERS?ref=${base}`]);
   return out;

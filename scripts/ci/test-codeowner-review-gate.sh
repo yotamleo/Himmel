@@ -40,16 +40,20 @@ if [ -f "$GATE" ]; then pass "gate script exists"; else fail "gate script exists
 if [ -f "$WF" ]; then pass "workflow exists"; else fail "workflow exists ($WF)"; fi
 
 # ---------------------------------------------------------------- part 1
-RV_N=0
+echo 0 > "$TMP/rv_n"
 # rv <login> <STATE> <commit> — one review object; submitted_at climbs per call.
+# The counter lives in a file: rv runs inside $(...), so a shell variable would
+# never advance and every review would share one timestamp.
 rv() {
-  RV_N=$((RV_N+1))
+  local n
+  n=$(( $(cat "$TMP/rv_n") + 1 ))
+  echo "$n" > "$TMP/rv_n"
   printf '{"user":{"login":"%s"},"state":"%s","commit_id":"%s","submitted_at":"2026-09-21T10:%02d:00Z"}' \
-    "$1" "$2" "$3" "$RV_N"
+    "$1" "$2" "$3" "$n"
 }
 
 reset_fx() {
-  RV_N=0
+  echo 0 > "$TMP/rv_n"
   FX_AUTHOR=outsider; FX_TYPE=User; FX_SHA=head111
   FX_PERM='{"permission":"read","role_name":"read"}'
   FX_REVIEWS='[]'
@@ -115,6 +119,14 @@ run_gate; expect "APPROVED then CHANGES_REQUESTED -> fail" fail "@yotamleo"
 
 reset_fx; FX_REVIEWS="[$(rv yotamleo CHANGES_REQUESTED head111),$(rv yotamleo APPROVED head111)]"
 run_gate; expect "CHANGES_REQUESTED then APPROVED at head -> pass" pass
+
+# Order comes from submitted_at, not array position: the later CHANGES_REQUESTED
+# is listed FIRST, so an index-only reading would wrongly take the APPROVED.
+reset_fx; FX_REVIEWS='[{"user":{"login":"yotamleo"},"state":"CHANGES_REQUESTED","commit_id":"head111","submitted_at":"2026-09-21T10:30:00Z"},{"user":{"login":"yotamleo"},"state":"APPROVED","commit_id":"head111","submitted_at":"2026-09-21T10:10:00Z"}]'
+run_gate; expect "later CHANGES_REQUESTED listed first still wins by submitted_at -> fail" fail "@yotamleo"
+
+reset_fx; FX_REVIEWS='[{"user":{"login":"yotamleo"},"state":"APPROVED","commit_id":"head111","submitted_at":"2026-09-21T10:30:00Z"},{"user":{"login":"yotamleo"},"state":"CHANGES_REQUESTED","commit_id":"head111","submitted_at":"2026-09-21T10:10:00Z"}]'
+run_gate; expect "later APPROVED listed first still wins by submitted_at -> pass" pass
 
 reset_fx; FX_REVIEWS="[$(rv randomperson APPROVED head111)]"
 run_gate; expect "approval from a non-owner -> fail" fail "@yotamleo"
@@ -224,11 +236,11 @@ chmod +x "$TMP/bin/gh"
 live_case() {
   local a="$1" t="$2" p="$3" r="${4:-}"
   rm -f "$TMP/stub/perm-404" "$TMP/stub/reviews-fail" "$TMP/stub/calls.log"
-  printf '{"user":{"login":"%s","type":"%s"},"head":{"sha":"headsha111"}}\n' "$a" "$t" > "$TMP/stub/pr.json"
+  printf '{"user":{"login":"%s","type":"%s"},"head":{"sha":"headsha111"},"changed_files":%s}\n' "$a" "$t" "${LIVE_CHANGED:-1}" > "$TMP/stub/pr.json"
   printf '%s\n' "$p" > "$TMP/stub/permission.json"
   printf '%s\n' "$r" > "$TMP/stub/reviews.ndjson"
-  printf 'README.md\n' > "$TMP/stub/files.txt"
-  printf '* @yotamleo\n' > "$TMP/stub/CODEOWNERS"
+  printf '%s\n' "${LIVE_FILES:-\"README.md\"}" > "$TMP/stub/files.txt"
+  printf '%b\n' "${LIVE_OWNERS:-* @yotamleo}" > "$TMP/stub/CODEOWNERS"
   OUT=$(STUB_DIR="$TMP/stub" PATH="$TMP/bin:$PATH" node "$GATE" --repo o/r --pr-number 7 --base-sha ba5e999 2>&1)
   RC=$?
   CALLS=$(cat "$TMP/stub/calls.log" 2>/dev/null || true)
@@ -257,6 +269,19 @@ live_case outsider User '{"permission":"read","role_name":"read"}'
 touch "$TMP/stub/reviews-fail"
 OUT=$(STUB_DIR="$TMP/stub" PATH="$TMP/bin:$PATH" node "$GATE" --repo o/r --pr-number 7 --base-sha ba5e999 2>&1); RC=$?
 expect "live: a non-404 gh failure -> ERROR rc 2 (never a pass)" error
+
+# A PR at the API's 3000-file listing cap has an incomplete file list: never a pass.
+LIVE_CHANGED=3000 live_case outsider User '{"permission":"read","role_name":"read"}' "$APPROVED_HEAD"
+expect "live: a PR at the 3000-file listing cap -> ERROR (fail closed)" error
+LIVE_CHANGED=2999 live_case outsider User '{"permission":"read","role_name":"read"}' "$APPROVED_HEAD"
+expect "live: a PR just under the cap is still judged -> pass" pass
+
+# Filenames travel as JSON: trailing whitespace must not be trimmed into a
+# different CODEOWNERS match ("pad.md " is NOT /pad.md, so the global @other applies).
+LIVE_FILES='"pad.md "' LIVE_OWNERS='* @other\n/pad.md @yotamleo' live_case outsider User '{"permission":"read","role_name":"read"}' "$APPROVED_HEAD"
+expect "live: a filename with trailing whitespace is matched byte-exact -> fail" fail "@other"
+LIVE_FILES='"pad.md"' LIVE_OWNERS='* @other\n/pad.md @yotamleo' live_case outsider User '{"permission":"read","role_name":"read"}' "$APPROVED_HEAD"
+expect "live: the same name without the space matches /pad.md -> pass" pass
 
 # ---------------------------------------------------------------- part 3
 echo "== part 3: workflow static assertions =="
