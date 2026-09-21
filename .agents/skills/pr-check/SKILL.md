@@ -129,14 +129,17 @@ fence above, never both, and ONLY in a himmel checkout on a diff that touches
 no `scripts/cr/` file and not `scripts/guardrails/lib.sh` (which
 `pr-check-context.sh` sources).** First prove the lane — the allow rule is
 emitted for every leg profile whatever its cwd, so the relative path is
-trusted only once the cwd shares `HIMMEL_REPO`'s git dir:
+trusted only once the cwd shares `HIMMEL_REPO`'s git dir AND is the worktree
+root (from a subdirectory the relative path would name a local file there,
+not himmel's):
 
-    git rev-parse --path-format=absolute --git-common-dir; printenv HIMMEL_REPO
+    git rev-parse --path-format=absolute --git-common-dir; printenv HIMMEL_REPO; git rev-parse --show-prefix
 
 Go on ONLY if its first line equals its second line followed by `/.git` (a
 string compare: a differently spelled path only sends you to the fence, the
-safe direction); anything else, an empty second line included, means use the
-canonical fence above. Then list the branch's changes to the files step 0 runs
+safe direction) and its third line is empty (the cwd is the worktree root);
+anything else, an empty second line included, means use the canonical fence
+above. Then list the branch's changes to the files step 0 runs
 (always against refs/remotes/origin/main, even on a stacked PR — the branch
 runs its parent's bytes too, and a diff against a stacked base would hide
 them; spelled in full because a local branch named `origin/main` would shadow

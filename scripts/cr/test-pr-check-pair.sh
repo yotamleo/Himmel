@@ -324,8 +324,9 @@ for f in "$CLAUDE_RUNBOOK" "$CODEX_SKILL"; do
     # which pr-check-context.sh sources) -- on one that does, an allow-listed
     # bare literal would auto-run branch bytes that may have deleted their own
     # hand-off, so step 0 must stay the anchored fence. And only in a himmel
-    # checkout: the lane check proves the cwd shares HIMMEL_REPO's git dir
-    # before the relative path is trusted to name himmel's file. Each twin
+    # checkout at its root: the lane check proves the cwd shares HIMMEL_REPO's
+    # git dir AND is the worktree root (an empty --show-prefix) before the
+    # relative path is trusted to name himmel's file. Each twin
     # must carry both checks as ONE runnable line each (exactly once) and
     # state the conditions in prose; the in-script hand-off is defense in
     # depth, not the trust root.
@@ -333,16 +334,17 @@ for f in "$CLAUDE_RUNBOOK" "$CODEX_SKILL"; do
     # is present somewhere in the twin, not that it sits in the step-0
     # paragraph or is not negated nearby (HIMMEL-3382).
     cr_touch_check=$(printf '%s\n' "$calls" | grep -c -E "$cr_touch_pattern")
-    lane_check=$(printf '%s\n' "$calls" | grep -c -E '^[[:space:]]*git rev-parse --path-format=absolute --git-common-dir; printenv HIMMEL_REPO[[:space:]]*$')
+    lane_check=$(printf '%s\n' "$calls" | grep -c -E '^[[:space:]]*git rev-parse --path-format=absolute --git-common-dir; printenv HIMMEL_REPO; git rev-parse --show-prefix[[:space:]]*$')
     if [ "$cr_touch_check" -eq 1 ] && [ "$lane_check" -eq 1 ] \
        && grep -q 'ONLY when that check exits 0 and prints nothing' "$f" \
        && grep -q 'ONLY if its first line equals its second line followed by' "$f" \
+       && grep -q 'and its third line is empty' "$f" \
        && grep -q 'use the canonical fence above' "$f" \
        && grep -q 'always against refs/remotes/origin/main, even on a stacked PR' "$f" \
        && grep -q 'defense in depth, not the trust root' "$f"; then
         pass "$n: (ii) himmel-lane step 0 is gated on the himmel lane and on a diff that touches no scripts/cr/ file (HIMMEL-3359 ruling)"
     else
-        fail "$n: (ii) himmel-lane step 0 is not gated on the lane and scripts/cr/ conditions -- expected exactly one \`git diff --name-only refs/remotes/origin/main -- scripts/cr/ scripts/guardrails/lib.sh\` code line (found $cr_touch_check), exactly one \`git rev-parse --path-format=absolute --git-common-dir; printenv HIMMEL_REPO\` code line (found $lane_check), plus the prose 'ONLY when that check exits 0 and prints nothing', 'ONLY if its first line equals its second line followed by', 'use the canonical fence above', 'always against refs/remotes/origin/main, even on a stacked PR' and 'defense in depth, not the trust root' (HIMMEL-3359 console ruling)"
+        fail "$n: (ii) himmel-lane step 0 is not gated on the lane and scripts/cr/ conditions -- expected exactly one \`git diff --name-only refs/remotes/origin/main -- scripts/cr/ scripts/guardrails/lib.sh\` code line (found $cr_touch_check), exactly one \`git rev-parse --path-format=absolute --git-common-dir; printenv HIMMEL_REPO; git rev-parse --show-prefix\` code line (found $lane_check), plus the prose 'ONLY when that check exits 0 and prints nothing', 'ONLY if its first line equals its second line followed by', 'and its third line is empty', 'use the canonical fence above', 'always against refs/remotes/origin/main, even on a stacked PR' and 'defense in depth, not the trust root' (HIMMEL-3359 console ruling)"
     fi
 
     # (iii) the HIMMEL-2034 armed-repo predicate still guards the ONE
