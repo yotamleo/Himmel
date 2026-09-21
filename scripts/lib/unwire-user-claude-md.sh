@@ -152,12 +152,22 @@ unwire_user_claude_md() {
   fi
   # Everything from here edits a file the operator had: copy it as found first.
   # The backup path must be ours to write: cp follows a symlink sitting there
-  # and would overwrite whatever it points at, and a directory cannot take the
-  # copy. Refuse rather than remove what the operator (or an earlier tool) put
-  # there; a regular file at that path is a previous run's backup and is replaced.
+  # and would overwrite whatever it points at, a directory cannot take the
+  # copy, and a HARD-LINKED regular file shares its inode with another name, so
+  # cp would overwrite that twin too (HIMMEL-3341). Refuse all three rather than
+  # remove what the operator (or an earlier tool) put there; a singly-linked
+  # regular file at that path is a previous run's backup and is replaced.
+  # ponytail: check-then-copy is not atomic -- a link planted at $backup between
+  # this test and the cp below is not caught; the fence is against what is
+  # already there, not against a concurrent writer.
   if [ -L "$backup" ] || { [ -e "$backup" ] && [ ! -f "$backup" ]; }; then
     rm -f "$tmp"
     echo "unwire-user-claude-md: $backup already exists and is not a regular file (a symlink or a directory), so the backup cannot be written there without touching something else -- refusing; move it aside and re-run, or remove the block by hand. $target left untouched" >&2
+    return 1
+  fi
+  if [ -f "$backup" ] && [ -n "$(find "$backup" -prune -links +1 2>/dev/null)" ]; then
+    rm -f "$tmp"
+    echo "unwire-user-claude-md: $backup already exists and is a hard link to another file, so writing the backup there would overwrite that file as well -- refusing; move it aside and re-run, or remove the block by hand. $target left untouched" >&2
     return 1
   fi
   if ! cp -p -- "$target" "$backup"; then

@@ -189,6 +189,21 @@ run "$td/bk-dir.md"
 check "backup-dir: rc 1" "$rc" 1
 same  "backup-dir: file byte-identical" "$td/bk-dir.md" "$td/bk-dir.before"
 [ -d "$td/bk-dir.md.himmel-uninstall-backup" ] && ok "backup-dir: directory kept" || bad "backup-dir: directory gone"
+# a HARD-LINKED regular file at the backup path passes -f, but cp would write
+# through the shared inode and overwrite the link's twin: refused, both kept
+# (HIMMEL-3341). Control: the plain regular-file case below is still replaced.
+printf 'mine\n\n%s\n' "$BLOCK" > "$td/bk-hardlink.md"; cp "$td/bk-hardlink.md" "$td/bk-hardlink.before"
+printf 'twin sentinel\n' > "$td/bk-twin"; ln "$td/bk-twin" "$td/bk-hardlink.md.himmel-uninstall-backup"
+run "$td/bk-hardlink.md"
+check "backup-hardlink: rc 1" "$rc" 1
+has   "backup-hardlink: names the backup path" "bk-hardlink.md.himmel-uninstall-backup" "$out"
+has   "backup-hardlink: says hard link" "hard link" "$out"
+has   "backup-hardlink: says untouched" "left untouched" "$out"
+same  "backup-hardlink: file byte-identical" "$td/bk-hardlink.md" "$td/bk-hardlink.before"
+check "backup-hardlink: twin untouched" "$(cat "$td/bk-twin")" "twin sentinel"
+check "backup-hardlink: planted link still the twin" "$(cat "$td/bk-hardlink.md.himmel-uninstall-backup")" "twin sentinel"
+[ "$td/bk-twin" -ef "$td/bk-hardlink.md.himmel-uninstall-backup" ] && ok "backup-hardlink: link count intact (same inode)" || bad "backup-hardlink: link broken or replaced"
+bash "$uw" --probe "$td/bk-hardlink.md" >/dev/null 2>&1; check "backup-hardlink: probe 3 (still wired)" "$?" 3
 # a REGULAR file at the backup path (a previous run's backup) is replaced
 printf 'mine\n\n%s\n' "$BLOCK" > "$td/bk-file.md"; cp "$td/bk-file.md" "$td/bk-file.before"; printf 'older backup\n' > "$td/bk-file.md.himmel-uninstall-backup"
 run "$td/bk-file.md"
