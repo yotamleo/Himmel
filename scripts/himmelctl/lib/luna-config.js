@@ -24,7 +24,9 @@
 //   - A schedule is canonically {time: "HH:MM" local, day?: MON..SUN} —
 //     weekly when `day` is present, daily otherwise (design A9).
 //
-// API: load() (read + validate + migrate), save() (write-to-temp ->
+// API: load() (read + migrate + validate; a required field the file lacks is
+// filled from its default in memory, an unknown key is kept — inspect() also
+// reports both), save() (write-to-temp ->
 // validate -> atomic rename -> keep ONE timestamped .bak), migrate() (pure
 // vN->vN+1 functions; an unknown FUTURE version throws loudly and writes
 // nothing).
@@ -77,10 +79,10 @@ function defaultConfig() {
 // ── Schema (table-driven validator, no JSON-schema dependency) ─────────────
 //
 // checkNode() walks `value` against a declarative SCHEMA tree, pushing one
-// message per violation into `errors`. Every 'object' node is CLOSED — an
-// extra key not named in its `fields` is a validation error, the same
-// closed-shape treatment manifest-lint.mjs applies to manifest items/probes.
-// Every field is required unless `optional: true` (the only optional field
+// message per violation into `errors`. An extra key not named in an 'object'
+// node's `fields` is NOT an error (HIMMEL-3349: it is the user's own key —
+// kept untouched and reported through `unknown`). Every named field is
+// required unless `optional: true` (the only optional field
 // in the whole v1 document is a schedule's `day` — daily-vs-weekly, A9).
 
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -157,7 +159,10 @@ function isPlainObject(v) {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
-function checkNode(value, spec, label, errors) {
+// HIMMEL-3349: a key the schema does not name is the USER'S own, not an error —
+// it is collected into `unknown` (a dotted path per key, no `$.` prefix) so a
+// caller can warn about it, and it is never dropped or rewritten.
+function checkNode(value, spec, label, errors, unknown) {
   switch (spec.type) {
     case 'object': {
       if (!isPlainObject(value)) {
@@ -171,10 +176,11 @@ function checkNode(value, spec, label, errors) {
           if (!fieldSpec.optional) errors.push(`${label}.${key}: missing required field`);
           continue;
         }
-        checkNode(value[key], fieldSpec, `${label}.${key}`, errors);
+        checkNode(value[key], fieldSpec, `${label}.${key}`, errors, unknown);
       }
-      const extra = Object.keys(value).filter((k) => !allowed.includes(k));
-      if (extra.length > 0) errors.push(`${label}: unexpected field(s) [${extra.join(', ')}]`);
+      for (const k of Object.keys(value)) {
+        if (!allowed.includes(k)) unknown.push(`${label}.${k}`.replace(/^\$\./, ''));
+      }
       break;
     }
     case 'string':
@@ -206,8 +212,53 @@ function checkNode(value, spec, label, errors) {
 // means (load()/save() both turn it into a thrown Error naming the file).
 function validateConfig(doc) {
   const errors = [];
-  checkNode(doc, SCHEMA, '$', errors);
+  checkNode(doc, SCHEMA, '$', errors, []);
   return errors;
+}
+
+// The keys of `doc` the schema does not name, as dotted paths ("userKey",
+// "luna.note"). Never an error — see checkNode().
+function unknownKeys(doc) {
+  const unknown = [];
+  checkNode(doc, SCHEMA, '$', [], unknown);
+  return unknown;
+}
+
+// ── Pre-schema fill (HIMMEL-3349) ────────────────────────────────────────
+//
+// A config that predates a required v1 field (hand-edited, or written by an
+// older build) is completed IN MEMORY from defaultConfig(): an absent field
+// takes its documented default, and a present field is never touched — a
+// wrong-typed value stays wrong so validation still refuses it rather than
+// this rewriting a user's value. An absent optional field (a schedule's
+// `day`) stays absent. Returns { doc, filled } where `doc` is a new object
+// and `filled` lists every leaf that was added as { path, value }.
+function collectLeaves(value, prefix, out) {
+  if (isPlainObject(value)) {
+    for (const key of Object.keys(value)) collectLeaves(value[key], `${prefix}.${key}`, out);
+  } else {
+    out.push({ path: prefix.replace(/^\./, ''), value });
+  }
+}
+
+function fillNode(value, dflt, spec, prefix, filled) {
+  for (const key of Object.keys(spec.fields)) {
+    const fieldSpec = spec.fields[key];
+    if (!Object.prototype.hasOwnProperty.call(value, key)) {
+      if (fieldSpec.optional) continue;
+      value[key] = JSON.parse(JSON.stringify(dflt[key]));
+      collectLeaves(value[key], `${prefix}.${key}`, filled);
+    } else if (fieldSpec.type === 'object' && isPlainObject(value[key]) && isPlainObject(dflt[key])) {
+      fillNode(value[key], dflt[key], fieldSpec, `${prefix}.${key}`, filled);
+    }
+  }
+}
+
+function fillDefaults(doc) {
+  const filled = [];
+  const copy = JSON.parse(JSON.stringify(doc));
+  fillNode(copy, defaultConfig(), SCHEMA, '', filled);
+  return { doc: copy, filled };
 }
 
 // ── Migration ────────────────────────────────────────────────────────────
@@ -267,25 +318,36 @@ function migrate(doc, filePath) {
 // silently resetting to default — this is the adopter's own artifact, and a
 // corrupt copy should be investigated, not discarded (mirrors lib/state.js's
 // load() policy for state.json). Never writes.
-function load() {
+//
+// HIMMEL-3349: a required field absent from the file is filled from its
+// documented default IN MEMORY and an unknown key is kept as-is; inspect()
+// reports both so the one caller that persists (the install step) can back up,
+// migrate and warn. Nothing here writes.
+function inspect() {
   const p = configPath();
-  if (!fs.existsSync(p)) return defaultConfig();
+  if (!fs.existsSync(p)) return { doc: defaultConfig(), existed: false, filled: [], unknown: [] };
 
   const raw = fs.readFileSync(p, 'utf8');
   let doc;
   try {
     doc = JSON.parse(raw);
   } catch (err) {
-    throw new Error(`luna-config: malformed JSON in ${p}: ${err.message} (HIMMEL-2176)`);
+    // the file is the user's and is left exactly as it is: the fix is theirs
+    throw new Error(`luna-config: malformed JSON in ${p}: ${err.message} (HIMMEL-2176) — the file was NOT touched; `
+      + `hand-fix: cp "${p}" "${p}.hand-fix.bak" && "\${EDITOR:-vi}" "${p}", then re-run himmelctl`);
   }
 
-  const migrated = migrate(doc, p);
+  const { doc: filledDoc, filled } = fillDefaults(migrate(doc, p));
 
-  const errors = validateConfig(migrated);
+  const errors = validateConfig(filledDoc);
   if (errors.length > 0) {
     throw new Error(`luna-config: ${p} fails schema validation (HIMMEL-2176):\n  - ${errors.join('\n  - ')}`);
   }
-  return migrated;
+  return { doc: filledDoc, existed: true, filled, unknown: unknownKeys(filledDoc) };
+}
+
+function load() {
+  return inspect().doc;
 }
 
 // Keep exactly ONE timestamped .bak of the file currently at `p` (design:
@@ -542,4 +604,4 @@ function save(doc) {
   if (preKnown) recordSections(p, prior, doc, !existed);
 }
 
-module.exports = { load, save, migrate, validateConfig, defaultConfig, configPath, CURRENT_VERSION };
+module.exports = { load, inspect, save, migrate, validateConfig, unknownKeys, defaultConfig, configPath, CURRENT_VERSION };

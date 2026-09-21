@@ -2970,6 +2970,23 @@ function lunaConfigLoadFailureWarning(e) {
   return `himmelctl: WARN: could not read ~/.himmel/config.json (${e.message}) — luna cadence/secrets/bridge sections skipped`;
 }
 
+// HIMMEL-3349: the ONE wording for keys in ~/.himmel/config.json that
+// himmelctl does not manage — a warning, never a failure.
+function lunaConfigUnknownKeysWarning(unknown) {
+  return `himmelctl: WARN: ~/.himmel/config.json carries key(s) himmelctl does not manage: ${unknown.join(', ')} — kept untouched`;
+}
+
+// HIMMEL-3349: one line per field a pre-schema config gained. `filled` is what
+// luna-config.js added from the defaults; a value the wizard then set from this
+// run's own answer says so instead of claiming the default.
+function lunaConfigMigrationLines(filled, doc) {
+  return filled.map(({ path: p, value }) => {
+    const now = p.split('.').reduce((o, k) => (o === undefined || o === null ? undefined : o[k]), doc);
+    const answered = JSON.stringify(now) !== JSON.stringify(value);
+    return `himmelctl: migrated ~/.himmel/config.json: ${p} = ${JSON.stringify(answered ? now : value)} (${answered ? 'wizard answer' : 'default'})`;
+  });
+}
+
 // HIMMEL-2347: phi-roots location, mirroring graph-refresh.sh:75/refresh-
 // graph-map.sh's own $HOME/.config/claude-glm — CLAUDE_GLM_CONFIG_DIR
 // overrides (graph-refresh.sh honors it; refresh-graph-map.sh hardcodes
@@ -3174,8 +3191,10 @@ function previewLunaSections(answers) {
     const secretsWalk = answers.secretsWalk || 'skip';
     const bridge = answers.bridge || {};
     let doc;
+    let cfg;
     try {
-      doc = lunaConfigLib.load();
+      cfg = lunaConfigLib.inspect();
+      doc = cfg.doc;
     } catch (e) {
       // CR fix: applyLunaSectionsStep refuses ALL cadence/secrets/bridge
       // work on a load failure (see its own early return) — manufacturing a
@@ -3184,6 +3203,11 @@ function previewLunaSections(answers) {
       // same refusal instead and stop, exactly like the apply path does.
       console.error(lunaConfigLoadFailureWarning(e));
       return { configLoadFailed: true };
+    }
+    // HIMMEL-3349: what the apply step would do to a pre-schema / extended file.
+    if (cfg.unknown.length > 0) console.log(`DRY: ${lunaConfigUnknownKeysWarning(cfg.unknown)}`);
+    if (cfg.filled.length > 0) {
+      console.log(`DRY: ~/.himmel/config.json would be migrated (backed up first): ${cfg.filled.length} missing field(s) filled — ${cfg.filled.map((f) => f.path).join(', ')}`);
     }
     const vaultPath = (answers.vault && answers.vault.mode !== 'none' && answers.vault.path)
       ? expandHome(answers.vault.path)
@@ -3270,8 +3294,10 @@ function applyLunaSectionsStep(answers) {
   const result = { rc: 0 };
 
   let doc;
+  let cfg;
   try {
-    doc = lunaConfigLib.load();
+    cfg = lunaConfigLib.inspect();
+    doc = cfg.doc;
   } catch (e) {
     console.error(lunaConfigLoadFailureWarning(e));
     result.rc = 1;
@@ -3293,6 +3319,9 @@ function applyLunaSectionsStep(answers) {
   // removed), so a plain JSON.stringify comparison is exact — no need for a
   // deep-equal dependency for a shape this controlled.
   const originalDocJson = JSON.stringify(doc);
+  // HIMMEL-3349: a key the user added is theirs — kept untouched (a save below
+  // re-serializes it as loaded), named once here, never a failure.
+  if (cfg.unknown.length > 0) console.error(lunaConfigUnknownKeysWarning(cfg.unknown));
 
   if (answers.vault && answers.vault.mode !== 'none' && answers.vault.path) {
     doc.luna.vaultPath = expandHome(answers.vault.path);
@@ -3419,13 +3448,18 @@ function applyLunaSectionsStep(answers) {
   // because-unchanged write: nothing failed, there is simply nothing to
   // record that the on-disk document doesn't already say — downstream steps
   // proceed exactly as if the (unnecessary) save had succeeded.
-  const docChanged = JSON.stringify(doc) !== originalDocJson;
+  // HIMMEL-3349: a file that lacked a required field is rewritten (backed up
+  // first, by save()) even when this run supplied nothing; once written it is
+  // complete, so the next run finds nothing to migrate and writes nothing.
+  const migrating = cfg.filled.length > 0;
+  const docChanged = migrating || JSON.stringify(doc) !== originalDocJson;
   let configSaveOk = true;
   if (!docChanged) {
     console.log('himmelctl: ~/.himmel/config.json unchanged — nothing to write');
   } else {
     try {
       lunaConfigLib.save(doc);
+      if (migrating) for (const line of lunaConfigMigrationLines(cfg.filled, doc)) console.log(line);
       console.log('himmelctl: wrote ~/.himmel/config.json (luna.vaultPath'
         + (dispositions.pipeline !== undefined ? ', luna.cadence.enabled' : '')
         + (lunaSupplied ? ', luna.phi.declared' : '')

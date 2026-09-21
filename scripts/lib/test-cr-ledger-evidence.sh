@@ -21,6 +21,8 @@ git -C "$REPO" -c user.email=t@t -c user.name=t commit --allow-empty -m one --qu
 H=$(git -C "$REPO" rev-parse HEAD)
 git -C "$REPO" -c user.email=t@t -c user.name=t commit --allow-empty -m two --quiet --no-verify
 H2=$(git -C "$REPO" rev-parse HEAD)
+# H3: a commit that EXISTS but is not an ancestor of H2 (a side commit off H).
+H3=$(git -C "$REPO" -c user.email=t@t -c user.name=t commit-tree "$H^{tree}" -p "$H" -m side)
 LEDGER="$REPO/.git/cr-critic-scores.jsonl"
 
 ID=cr-od-39c3193c8945
@@ -31,10 +33,11 @@ TITLE='Keep `context7-mcp` in the description-cap gate.'
 
 pass=0; fail=0
 # chk <name> <want-rc> <head> <id> <file> <line>
+# chk <name> <want-rc> <head> <id> <file> <line> [current-head]
 chk() {
-    local name="$1" want="$2" head="$3" id="$4" file="$5" line="$6" rc=0 out
+    local name="$1" want="$2" head="$3" id="$4" file="$5" line="$6" cur="${7:-}" rc=0 out
     out=$(cd "$REPO" && . "$SCRIPT_DIR/cr-ledger-evidence.sh" \
-        && cr_ledger_outside_dispositioned "$head" "$id" "$file" "$line" 2>&1) || rc=$?
+        && cr_ledger_outside_dispositioned "$head" "$id" "$file" "$line" "$cur" 2>&1) || rc=$?
     if [ "$rc" = "$want" ]; then pass=$((pass+1)); echo "ok   $name"
     else fail=$((fail+1)); echo "FAIL $name (rc=$rc want=$want) out='$out'"; fi
 }
@@ -87,6 +90,29 @@ for v in fixed agreed unaddressed conflict; do
 done
 fresh; write_row disproved "" "the exclusion is intentional"
 variant '.reason=""';                          chk d10-disproved-empty-reason-refused 1 "$H" "$ID" "$FILE" "$LINE"
+
+# --- HIMMEL-3360: `fixed` disposes a PRIOR-head finding, on evidence only -----
+# The prior-head path (5th arg = the CURRENT head, which differs from the row's
+# head) accepts verdict fixed when the reason names a sha that resolves, is an
+# ancestor of (or is) the current head, and is not the prior head itself. The
+# at-head path (no 5th arg, or current == head) never accepts fixed: a fix at
+# the same head is impossible.
+fresh; write_row fixed "" "fixed in $H2"
+chk f1-fixed-ancestor-sha-clears-prior-head      0 "$H" "$ID" "$FILE" "$LINE" "$H2"
+chk f2-fixed-at-head-path-still-refused          1 "$H" "$ID" "$FILE" "$LINE"
+chk f2b-fixed-current-equals-head-refused        1 "$H" "$ID" "$FILE" "$LINE" "$H"
+fresh; write_row fixed "" "fixed in $H3"
+chk f3-fixed-non-ancestor-sha-refused            1 "$H" "$ID" "$FILE" "$LINE" "$H2"
+fresh; write_row fixed "" "fixed"
+chk f4-fixed-without-sha-refused                 1 "$H" "$ID" "$FILE" "$LINE" "$H2"
+fresh; write_row fixed "" "fixed in deadbeefdeadbeef"
+chk f5-fixed-unresolvable-sha-refused            1 "$H" "$ID" "$FILE" "$LINE" "$H2"
+fresh; write_row fixed "" "fixed in $H"
+chk f6-fixed-naming-the-prior-head-refused       1 "$H" "$ID" "$FILE" "$LINE" "$H2"
+fresh; write_row fixed "" "fixed in ${H2:0:10}"
+chk f7-fixed-abbreviated-ancestor-sha-clears     0 "$H" "$ID" "$FILE" "$LINE" "$H2"
+fresh; write_row deferred HIMMEL-9001 "pre-existing, tracked separately"
+chk f8-deferred-still-clears-on-prior-head-path  0 "$H" "$ID" "$FILE" "$LINE" "$H2"
 
 # --- range line: the LINE is a literal token compared as a string --------------
 fresh

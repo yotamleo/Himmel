@@ -190,24 +190,65 @@ fi
 # shells) and multi-word names are ONE name, longest first, so "busybox ash 1.36"
 # is a single versioned name. Prints the unversioned names and returns 1.
 # ponytail: a text heuristic. It proves a version was NAMED, not that the
-# measurement ran against it; bare `sh`, non-shell tools (git, grep), the generic
-# step-4.5 reason (write-verdicts.sh VERDICT lines carry no reason) and the
-# `finding --batch-file` spec path are out of its reach.
-disproval_bar_ok() {
-  local unver
-  unver=$(EVIDENCE="$1" node -e '
-    const t = process.env.EVIDENCE || "";
-    if (!/measured|probed|reproduc|empiric|re-?verified|tested (on|under|against)|(on|under) (a )?real/i.test(t)) process.exit(0);
-    const NAMES = ["busybox ash","busybox sh","git-bash","busybox","freebsd","openbsd","netbsd","macos","darwin","bsd","msys","mingw","wsl","alpine","zsh","ksh","mksh","yash","posh","dash","bash","ash"];
-    const VER = "[^A-Za-z0-9]{0,3}(?:v|version )?[0-9]+\\.[0-9]+", PRE = "(?<![A-Za-z0-9_-])";
-    let rest = t; const bad = [];
+# measurement ran against it; bare `sh` and non-shell tools (git, grep) are out
+# of its reach. write-verdicts.sh VERDICT lines never reach the ledger (they are
+# scratch for orphan-check.sh), so the bar is enforced here, not there.
+#
+# HIMMEL-3357: the version check is per OCCURRENCE, not per name ("measured on
+# bash 5.3 locally; reproduced on bash remotely" names bash twice and only the
+# first carries a version, so it is refused; so is a bare name closing a list,
+# "dash 0.5.13 and bash"). A version line for one occurrence no longer vouches
+# for the rest. The same text test serves three callers: the bash function
+# below (single-row finding, amend), the batch loop in the node block, and the
+# amend claim check (a disproved amend whose FINDING names a shell/platform must
+# carry evidence naming each such shell with a version), so it lives in ONE
+# string handed to node as DISPROVAL_JS - the writer stays a single file.
+# ponytail: a bare name is refused even when it is not itself a measurement
+# ("the bash builtin `read`" beside "measured on bash 5.3"); the caller rewords
+# or versions it.
+#
+# HIMMEL-3373: the claim check also compares VERSIONS. When the finding text
+# names a version for a shell, the evidence covers it iff it names the same
+# shell with a version whose major.minor equals the finding's (bash 3.2 <=
+# bash 3.2.57); a finding naming only a major (bash 3, bash 3.x) is covered by
+# any 3.x. Otherwise the evidence must carry an explicit `version-irrelevant:
+# <reason>`. Every version a finding names must be covered. A finding naming no
+# version keeps the name-only rule. scan() reports each occurrence's version as
+# `vers`: [major, minor] for a major.minor, [major, null] for a major alone.
+# ponytail: a major-only version is read from "<shell> 3" / "<shell> v3" /
+# "<shell> version 3" only, so "bash 3 times" reads as bash 3 - the caller
+# rewords or waives with version-irrelevant. Non-shell tools (git, grep) are
+# still out of reach.
+# shellcheck disable=SC2016  # JS source, not shell expansions
+DISPROVAL_JS='
+  const NAMES = ["busybox ash","busybox sh","git-bash","busybox","freebsd","openbsd","netbsd","macos","darwin","bsd","msys","mingw","wsl","alpine","zsh","ksh","mksh","yash","posh","dash","bash","ash"];
+  const VER = "[^A-Za-z0-9]{0,3}(?:v|version )?([0-9]+)\\.([0-9]+)", PRE = "(?<![A-Za-z0-9_-])";
+  const MAJOR = "(?:[ \\t]{1,2}(?:v|version )?([0-9]+)(?![0-9]|\\.[0-9]))?";
+  const measured = (t) => /measured|probed|reproduc|empiric|re-?verified|tested (on|under|against)|(on|under) (a )?real/i.test(t);
+  const scan = (t) => {
+    let rest = String(t || ""); const named = [], bare = [], versioned = [], vers = {};
     for (const n of NAMES) {
       const nm = n.replace(/ /g, "\\s+");
-      const ver = PRE + nm + VER, word = PRE + nm + "(?![A-Za-z0-9_-])";
-      if (!new RegExp(ver + "|" + word, "i").test(rest)) continue;
-      if (!new RegExp(ver, "i").test(rest)) bad.push(n);
-      rest = rest.replace(new RegExp(ver, "gi"), " ").replace(new RegExp(word, "gi"), " ");
+      const re = new RegExp("(" + PRE + nm + VER + ")|(" + PRE + nm + "(?![A-Za-z0-9_-])" + MAJOR + ")", "gi");
+      rest = rest.replace(re, (m, v, maj, min, b, bmaj) => {
+        if (!named.includes(n)) named.push(n);
+        const into = v ? versioned : bare;
+        if (!into.includes(n)) into.push(n);
+        const ver = v ? [Number(maj), Number(min)] : (bmaj ? [Number(bmaj), null] : null);
+        if (ver) (vers[n] = vers[n] || []).push(ver);
+        return " ";
+      });
     }
+    return { named, bare, versioned, vers };
+  };
+'
+disproval_bar_ok() {
+  local unver
+  unver=$(EVIDENCE="$1" DISPROVAL_JS="$DISPROVAL_JS" node -e '
+    const { measured, scan } = new Function(process.env.DISPROVAL_JS + "; return { measured, scan };")();
+    const t = process.env.EVIDENCE || "";
+    if (!measured(t)) process.exit(0);
+    const bad = scan(t).bare;
     if (bad.length) { process.stdout.write(bad.join(", ")); process.exit(1); }
   ') && return 0
   echo "ledger-append.sh: a disproved verdict resting on a shell/platform measurement must name the binary and version it ran against (e.g. 'measured on dash 0.5.13.4-1.1'); no version given for: $unver" >&2
@@ -416,8 +457,10 @@ FILE="$file" LINE="$line" VERDICT="$verdict" STATUS="$status" BATCH_FILE="$batch
 PROMPT_CHARS="$prompt_chars" RESPONSE_CHARS="$response_chars" TS="$ts" LEDGER="$ledger" ARTIFACT="$artifact" PERSPECTIVE="$perspective" \
 ATTEMPT_NUM="$attempt_num" DURATION_SECS="$duration_secs" ROUND="$round" DISPOSITION_ROUND="$disposition_round" \
 CRIT_N="$crit_n" IMP_N="$imp_n" SUG_N="$sug_n" DROPPED_N="$dropped_n" RAW_PATH="$raw_path" \
-REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TEXT="$raw_text" SET_PAIRS="$set_pairs" node - <<'JS'
+REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TEXT="$raw_text" SET_PAIRS="$set_pairs" DISPROVAL_JS="$DISPROVAL_JS" node - <<'JS'
   const fs=require("fs"), cp=require("child_process"), crypto=require("crypto"), e=process.env;
+  // HIMMEL-3357: the disproved-verdict bar's text test (see DISPROVAL_JS above).
+  const {measured,scan}=new Function(e.DISPROVAL_JS+"; return {measured,scan};")();
   // Keep this small inline copy in parity with finding-fingerprint.js. The
   // writer is intentionally standalone: anchor/fixture flows copy this one
   // script without adjacent JS files. test-ledger-append.sh locks single/batch
@@ -616,6 +659,19 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
           +invalidRoundFields.map(f=>f+"="+JSON.stringify(spec[f])).join(",")+") - refusing this row.\n");
         anyFail=true; continue;
       }
+      // HIMMEL-3357: the same bar the single-row path applies in bash. A refused
+      // row is skipped like any other refusal (exit 3, siblings still written).
+      // ponytail: only the measurement half of the bar runs here; the claim check
+      // on spec.text (amend, below) does not. Panel and harvest batch rows carry an
+      // empty verdict, so a disproved batch row is a hand-built spec that supplies
+      // its own reason - a batch row naming a shell with a generic reason passes.
+      if(spec.verdict==="disproved"&&measured(String(spec.reason||""))){
+        const unver=scan(String(spec.reason)).bare;
+        if(unver.length){
+          process.stderr.write("ledger-append.sh: batch row "+sid+": a disproved verdict resting on a shell/platform measurement must name the binary and version it ran against (e.g. 'measured on dash 0.5.13.4-1.1'); no version given for: "+unver.join(", ")+" - refusing this row.\n");
+          anyFail=true; continue;
+        }
+      }
       const keyRow=(o)=>o.kind==="finding"&&headsMatch(o.head,shead)&&o.finding_id===sid
           &&(o.artifact||"diff")===artifact&&(o.perspective||"off")===perspective;
       const rec={kind:"finding",ts:spec.ts||e.TS,branch:spec.branch,head:shead,model:spec.model,
@@ -767,6 +823,38 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
       if(k==="line") v=Number(v)||v;
       if(k==="reason") v=cleanFree(v);
       set[k]=v;
+    }
+    // HIMMEL-3357: the generic /pr-check step-4.5 reason carries no measurement,
+    // so the text test in the bash pre-check never fires on it. When the FINDING
+    // itself names a shell/platform, the disproving evidence must name each such
+    // shell with a version - a claim about dash is not answered by "busybox ash
+    // 1.36.1", and "adjudicated by /pr-check step 4.5" answers nothing.
+    if(set.verdict==="disproved"&&target.text){
+      const claim=scan(target.text).named;
+      if(claim.length){
+        const evText=String(e.REASON||"")+" "+String(set.reason||"");
+        const ev=scan(evText);
+        const missing=claim.filter(n=>!ev.versioned.includes(n)||ev.bare.includes(n));
+        if(missing.length){
+          process.stderr.write("ledger-append.sh: finding "+e.ID+" names "+claim.join(", ")+"; a disproved verdict on it must carry evidence naming each of them with a version - missing: "+missing.join(", ")
+            +". Pass it in the evidence, e.g. --set 'reason=measured on "+missing[0]+" <version>: <what it showed>' (the generic --reason 'adjudicated by /pr-check step 4.5' is not evidence). NOTHING was written.\n");
+          process.exit(2);
+        }
+        // HIMMEL-3373: a version the finding names must be covered by the evidence
+        // (same major.minor; a major-only finding version by any version of that
+        // major) unless the evidence states, with a reason, that it is irrelevant.
+        if(!/version-irrelevant:\s*\S/i.test(evText)){
+          const cf=scan(target.text), uncovered=[];
+          for(const n of claim) for(const [maj,min] of (cf.vers[n]||[])){
+            const ok=(ev.vers[n]||[]).some(([em,en])=>en!==null&&em===maj&&(min===null||en===min));
+            if(!ok) uncovered.push(n+" "+maj+(min===null?"":"."+min));
+          }
+          if(uncovered.length){
+            process.stderr.write("ledger-append.sh: finding "+e.ID+" names "+uncovered.join(", ")+"; a disproved verdict on it must carry evidence naming that shell at the same version (same major.minor) - evidence for a different version does not answer it. Measure the version the finding names, or state why it does not matter with 'version-irrelevant: <reason>' in the evidence. NOTHING was written.\n");
+            process.exit(2);
+          }
+        }
+      }
     }
     // HIMMEL-2909: --branch is not required on amend (unlike finding/avail/
     // usage), so a caller that omits it used to write branch:"" — a

@@ -1283,4 +1283,113 @@ CR_LEDGER="$DB" bash "$LA" finding --branch b --head DBG2 --model codex --id cod
 check "control: finding --verdict disproved naming dash 0.5.13.4-1.1 is accepted" "$?" "0"
 check "the amend rows that were accepted are exactly the 13 controls" "$(db_rows)" "13"
 
+# ── HIMMEL-3357: follow-ups to the bar. (1) the version check is per OCCURRENCE,
+# not per name; (3) a `finding --batch-file` spec row is held to the same bar; (2)
+# an `amend` to disproved whose FINDING names a shell/platform must carry evidence
+# naming each such shell with a version - the generic step-4.5 reason no longer
+# passes for it.
+PO="$tmp/disproval-occurrence.jsonl"; : > "$PO"
+for _i in 1 2 3 4 5 6; do
+  CR_LEDGER="$PO" bash "$LA" finding --branch b --head POH --model codex --id "codex-$_i" --severity imp --file f --line 3 --verdict ""
+done
+po_rows() { grep -c '"kind":"amend"' "$PO" | tr -d ' '; }
+po_amend() { _n="$1"; shift; CR_LEDGER="$PO" bash "$LA" amend --head POH --id "codex-$_n" --set verdict=disproved --reason "$*" 2>"$tmp/po.err"; }
+po_amend 1 "measured on bash 5.3 locally; reproduced on bash remotely"
+check "per occurrence: a second, unversioned 'bash' is refused although the first carries 5.3" "$?" "2"
+check "per-occurrence refusal wrote no row" "$(po_rows)" "0"
+check "per-occurrence refusal names bash" "$(grep -c 'no version given for: bash' "$tmp/po.err")" "1"
+po_amend 1 "measured on dash 0.5.13 and bash"
+check "per occurrence: a bare name at the end of a list is refused" "$?" "2"
+po_amend 1 "measured on busybox ash 1.36.1; ash was also probed"
+check "per occurrence: a bare 'ash' after 'busybox ash 1.36.1' is refused" "$?" "2"
+po_amend 1 "measured on dash 0.5.13 and bash 5.3.15"
+check "control: every occurrence versioned is accepted" "$?" "0"
+po_amend 2 "measured on bash 5.3, then bash 5.3 again"
+check "control: the same versioned name twice is accepted" "$?" "0"
+po_amend 3 "tested on busybox ash 1.36.1 (busybox ash 1.36.1 build 2)"
+check "control: a multi-word name versioned twice is accepted" "$?" "0"
+
+# (3) --batch-file: a refused row is skipped, exit 3, siblings still written.
+PB="$tmp/disproval-batch.jsonl"; : > "$PB"
+PBH=$(printf 'b%.0s' $(seq 1 40))
+PBF="$tmp/disproval-batch-spec.jsonl"
+_pb_row() { printf '{"id":"%s","head":"%s","branch":"b","model":"codex","severity":"imp","file":"f","line":3,"verdict":"%s","reason":"%s"}\n' "$1" "$PBH" "$2" "$3"; }
+{ _pb_row bat-1 disproved "measured on busybox ash: count=2"
+  _pb_row bat-2 disproved "measured on dash 0.5.13.4-1.1: count=0"
+  _pb_row bat-3 agreed "measured on busybox ash: count=2"
+  _pb_row bat-4 disproved "measured on bash 5.3 locally; reproduced on bash remotely"
+  _pb_row bat-5 disproved "adjudicated by /pr-check step 4.5"; } > "$PBF"
+CR_LEDGER="$PB" bash "$LA" finding --batch-file "$PBF" 2>"$tmp/pb.err"
+check "batch: a refused disproved row makes the batch exit 3" "$?" "3"
+check "batch: the unversioned busybox ash disproval is not written" "$(grep -c '"finding_id":"bat-1"' "$PB")" "0"
+check "batch: the per-occurrence violation is not written" "$(grep -c '"finding_id":"bat-4"' "$PB")" "0"
+check "batch: both refusals name the missing version" "$(grep -c 'binary and version' "$tmp/pb.err")" "2"
+check "batch: control - the versioned dash disproval is written" "$(grep -c '"finding_id":"bat-2"' "$PB")" "1"
+check "batch: control - an agreed row with the same text is written" "$(grep -c '"finding_id":"bat-3"' "$PB")" "1"
+check "batch: control - the generic (no measurement) disproval is written" "$(grep -c '"finding_id":"bat-5"' "$PB")" "1"
+
+# (2) amend whose FINDING names a shell/platform.
+PA="$tmp/disproval-claim.jsonl"; : > "$PA"
+for _n in 1 2; do
+  CR_LEDGER="$PA" bash "$LA" finding --branch b --head PAH --model codex --id "codex-$_n" --severity imp --file f --line 3 --verdict "" --text "dash drops operands passed to the dot builtin"
+done
+CR_LEDGER="$PA" bash "$LA" finding --branch b --head PAH --model codex --id codex-3 --severity imp --file f --line 3 --verdict "" --text "the loop never terminates on an empty list"
+CR_LEDGER="$PA" bash "$LA" finding --branch b --head PAH --model codex --id codex-4 --severity imp --file f --line 3 --verdict "" --text "dash and bash both drop them"
+pa_rows() { grep -c '"kind":"amend"' "$PA" | tr -d ' '; }
+CR_LEDGER="$PA" bash "$LA" amend --head PAH --id codex-1 --set verdict=disproved --reason "adjudicated by /pr-check step 4.5" 2>"$tmp/pa.err"
+check "amend disproved on a finding that names dash, generic reason: refused" "$?" "2"
+check "the refusal names the shell the finding names" "$(grep -c 'names dash' "$tmp/pa.err")" "1"
+check "the refusal tells the caller the exact --set reason= form" "$(grep -c "set 'reason=" "$tmp/pa.err")" "1"
+check "the refused amend wrote no row" "$(pa_rows)" "0"
+CR_LEDGER="$PA" bash "$LA" amend --head PAH --id codex-1 --set verdict=disproved --reason "measured on busybox ash 1.36.1: count=2" 2>"$tmp/pa.err"
+check "evidence naming a DIFFERENT shell than the finding (busybox ash for dash): refused" "$?" "2"
+CR_LEDGER="$PA" bash "$LA" amend --head PAH --id codex-1 --set verdict=disproved --set reason="measured on dash 0.5.13.4-1.1: count=0" --reason "adjudicated by /pr-check step 4.5" 2>"$tmp/pa.err"
+check "control: --set reason= naming dash with a version is accepted" "$?" "0"
+CR_LEDGER="$PA" bash "$LA" amend --head PAH --id codex-2 --set verdict=disproved --reason "dash 0.5.13.4-1.1: count=0" 2>"$tmp/pa.err"
+check "control: --reason naming dash with a version is accepted" "$?" "0"
+CR_LEDGER="$PA" bash "$LA" amend --head PAH --id codex-3 --set verdict=disproved --reason "adjudicated by /pr-check step 4.5" 2>"$tmp/pa.err"
+check "control: a finding that names no shell keeps the generic reason path" "$?" "0"
+CR_LEDGER="$PA" bash "$LA" amend --head PAH --id codex-4 --set verdict=disproved --reason "dash 0.5.13.4-1.1: count=0" 2>"$tmp/pa.err"
+check "every shell the finding names needs a version in the evidence (dash + bash, only dash given)" "$?" "2"
+CR_LEDGER="$PA" bash "$LA" amend --head PAH --id codex-4 --set verdict=agreed --reason "adjudicated by /pr-check step 4.5" 2>"$tmp/pa.err"
+check "control: agreed on a finding that names a shell keeps the generic reason" "$?" "0"
+
+# ── HIMMEL-3373: the claim check compares VERSIONS, not just names. A finding
+# that names bash 3.2 is not answered by evidence measured on bash 5.3.
+PV="$tmp/disproval-version.jsonl"; : > "$PV"
+pv_finding() { CR_LEDGER="$PV" bash "$LA" finding --branch b --head PVH --model codex --id "codex-$1" --severity imp --file f --line 3 --verdict "" --text "$2"; }
+pv_amend() { _n="$1"; shift; CR_LEDGER="$PV" bash "$LA" amend --head PVH --id "codex-$_n" --set verdict=disproved --reason "$*" 2>"$tmp/pv.err"; }
+pv_rows() { grep -c '"kind":"amend"' "$PV" | tr -d ' '; }
+pv_finding 1 "bash 3.2 drops operands passed to the dot builtin"
+pv_finding 2 "bash 3.2 drops operands passed to the dot builtin"
+pv_finding 3 "bash 3.2 drops operands passed to the dot builtin"
+pv_finding 4 "bash 3 drops operands passed to the dot builtin"
+pv_finding 5 "bash drops operands passed to the dot builtin"
+pv_finding 6 "bash 3.2 and bash 5.3 both drop operands"
+pv_finding 7 "dash 0.5.13 drops operands passed to the dot builtin"
+pv_finding 8 "bash 3.2 drops operands passed to the dot builtin"
+pv_amend 1 "measured on bash 5.3.15: count=0"
+check "version: finding names bash 3.2, evidence measured on bash 5.3.15: refused" "$?" "2"
+check "version: the refusal names the version the finding carries" "$(grep -c 'bash 3.2' "$tmp/pv.err")" "1"
+check "version: the refusal tells the caller the version-irrelevant escape" "$(grep -c 'version-irrelevant:' "$tmp/pv.err")" "1"
+check "version: the refused amend wrote no row" "$(pv_rows)" "0"
+pv_amend 2 "measured on bash 3.2.57: count=0"
+check "version: control - bash 3.2 finding vs bash 3.2.57 evidence is accepted" "$?" "0"
+pv_amend 3 "measured on bash 5.3.15: count=0; version-irrelevant: the dot builtin parses operands the same since 2.0"
+check "version: control - bash 5.3 evidence + an explicit version-irrelevant reason is accepted" "$?" "0"
+pv_amend 8 "measured on bash 5.3.15: count=0; version-irrelevant:"
+check "version: an empty version-irrelevant: does not waive the cover" "$?" "2"
+pv_amend 4 "measured on bash 5.3.15: count=0"
+check "version: a finding naming only a major (bash 3) is not covered by bash 5.3" "$?" "2"
+pv_amend 4 "measured on bash 3.2.57: count=0"
+check "version: control - a major-only finding (bash 3) is covered by any 3.x" "$?" "0"
+pv_amend 5 "measured on bash 5.3.15: count=0"
+check "version: control - a finding naming no version keeps today's name-only rule" "$?" "0"
+pv_amend 6 "measured on bash 5.3.15: count=0"
+check "version: a finding naming two versions of a shell needs both covered" "$?" "2"
+pv_amend 6 "measured on bash 3.2.57 and bash 5.3.15: count=0"
+check "version: control - both named versions covered is accepted" "$?" "0"
+pv_amend 7 "measured on dash 0.5.13.4-1.1: count=0"
+check "version: control - dash 0.5.13 finding vs dash 0.5.13.4-1.1 evidence (same major.minor) is accepted" "$?" "0"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

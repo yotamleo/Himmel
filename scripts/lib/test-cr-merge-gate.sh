@@ -69,7 +69,7 @@ case "$1 $2" in
       # pageInfo mirrors the real API: the gate's query requests it, so GitHub
       # always returns it (HIMMEL-994 — fixtures without it hit the 980-r3
       # page-completeness BLOCK and mis-fail the allow cases).
-      unresolved|cr-degraded-unresolved) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"coderabbitai"}}]}}]}}}}}' ;;
+      unresolved|cr-degraded-unresolved|cr-absent-unresolved) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"coderabbitai"}}]}}]}}}}}' ;;
       other-author) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"someuser"}}]}}]}}}}}' ;;
       paged) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":true},"nodes":[{"isResolved":true,"comments":{"nodes":[{"author":{"login":"coderabbitai"}}]}}]}}}}}' ;;
       *) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[{"isResolved":true,"comments":{"nodes":[{"author":{"login":"coderabbitai"}}]}}]}}}}}' ;;
@@ -93,7 +93,7 @@ case "$1 $2" in
       # short-circuit past that evidence (codex-1).
       cr-degraded-unresolved) echo "statuses boom" >&2; exit 1 ;;
       inflight) echo '[{"context":"CodeRabbit","state":"pending","created_at":"2026-07-16T19:08:46Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
-      cr-absent) echo '[]' ;;
+      cr-absent|cr-absent-unresolved) echo '[]' ;;
       # HIMMEL-1317: what a repo with automatic reviews DISABLED posts on every
       # untriggered PR — state=success, refusal only in .description. Reading
       # .state alone made a declined review identical to a clean one, and this
@@ -148,6 +148,13 @@ case "$1 $2" in
       body-drift)   echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"abc123","body":"Outside diff range comments were noted but the count did not survive a format change"}]' ;;
       # HIMMEL-3124: a REAL captured review body (fixture file) at the head.
       body-file)    jq -n --rawfile b "$GH_STUB_BODY_FILE" '[{user:{id:136622811,login:"coderabbitai[bot]"},commit_id:"abc123",submitted_at:"2026-07-16T19:10:00Z",id:1,body:$b}]' ;;
+      # HIMMEL-3360: a REAL captured review body at a PRIOR head (shaOLD, not
+      # abc123) — the governing-prior-head branch reads this via
+      # cr_body_outside_findings called with head=shaOLD.
+      body-a2-file) jq -n --rawfile b "$GH_STUB_BODY_FILE" '[{user:{id:136622811,login:"coderabbitai[bot]"},commit_id:"shaOLD",submitted_at:"2026-07-16T19:10:00Z",id:1,body:$b}]' ;;
+      # Same shape, unparseable: a header count with no per-finding items —
+      # format drift, at the prior head.
+      body-a2-drift) echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"shaOLD","body":"Outside diff range comments (2)"}]' ;;
       body-error)   exit 1 ;;
       *)            echo '[]' ;;
     esac ;;
@@ -213,71 +220,55 @@ GH_STUB_MODE=other-author t other-author-unresolved-allows 0
 # zero unresolved on page one + hasNextPage:true = threads the single-page
 # query never counted -> BLOCK, not a pass (980-r3)
 GH_STUB_MODE=paged        t incomplete-page-blocks 2
-# CodeRabbit's signal on the head SHA (HIMMEL-1072). It is a commit STATUS —
-# the check-run these cases used to mock never existed.
-GH_STUB_MODE=inflight      t cr-status-pending-blocks 2
-# The regression that got #1243 merged: no CodeRabbit signal at all read as a
-# pass. An unreviewed head must BLOCK, not allow.
-GH_STUB_MODE=cr-absent     t cr-status-absent-blocks 2
-# HIMMEL-1317: a DECLINED review must block for the same reason an absent one
-# does. Paired with its positive control so the block cannot be satisfied by
-# breaking `success` outright. Runs before any ledger fixture is written, so it
-# is also the no-panel-evidence negative control for the HIMMEL-1760 carry below.
-GH_STUB_MODE=cr-skipped    t cr-status-skipped-blocks 2
+# HIMMEL-3360 (operator ruling 2026-09-21): CodeRabbit's commit-status state is
+# advisory only — every state below (pending/absent/skipped/failure/paged/an
+# identity mismatch reading as absent) prints a NOTE and ALLOWS; only the
+# thread + body-findings gates below can still BLOCK.
+GH_STUB_MODE=inflight      t cr-status-pending-allows 0
+grep -q "^NOTE: CodeRabbit pending" "$TMP/out-cr-status-pending-allows" || { echo "FAIL cr-status-pending NOTE missing"; fail=$((fail+1)); }
+# (a) RED case: no CodeRabbit signal at all + 0 threads must now ALLOW (was
+# the #1243 regression fixture; HIMMEL-3360 supersedes HIMMEL-1072's stance).
+GH_STUB_MODE=cr-absent     t cr-status-absent-allows 0
+grep -q "^NOTE: CodeRabbit absent" "$TMP/out-cr-status-absent-allows" || { echo "FAIL cr-status-absent NOTE missing"; fail=$((fail+1)); }
+grep -q "^BLOCK:" "$TMP/out-cr-status-absent-allows" && { echo "FAIL cr-status-absent-allows unexpectedly BLOCKed"; fail=$((fail+1)); }
+GH_STUB_MODE=cr-skipped    t cr-status-skipped-allows 0
 GH_STUB_MODE=cr-completed  t cr-status-completed-allows 0
 # glm-1 (round 2): mirror check-ci's 34d near-miss guard here. Both gates read
 # the same cr-signal.sh, so a loosened skip regex must fail in BOTH suites —
 # and this is the gate that actually stops a merge.
 GH_STUB_MODE=cr-nearmiss   t cr-status-skipish-wording-allows 0
-GH_STUB_MODE=cr-failure    t cr-status-failure-blocks 2
+GH_STUB_MODE=cr-failure    t cr-status-failure-allows 0
 # Identity, not display name (HIMMEL-1058): a status carrying the CodeRabbit
-# context + login but a foreign creator.id must NOT satisfy the gate.
-GH_STUB_MODE=cr-spoofed    t cr-status-wrong-creator-id-blocks 2
+# context + login but a foreign creator.id reads as absent (no identity match)
+# — advisory only, same as any other absent read.
+GH_STUB_MODE=cr-spoofed    t cr-status-wrong-creator-id-allows 0
 # Newest-first ordering: an older pending superseded by success is a pass.
 GH_STUB_MODE=cr-superseded t cr-status-superseded-pending-allows 0
-# coderabbit-2: a full page with no CodeRabbit on it is INDETERMINATE — its
-# verdict may be on page two. Must block, not read as absent-but-degraded.
-GH_STUB_MODE=cr-paged       t cr-status-page-limit-blocks 2
-# ...but a match ON the full page is the newest by construction -> allow.
+# coderabbit-2: a full page with no CodeRabbit on it used to be treated as
+# indeterminate and BLOCK; now it is advisory too.
+GH_STUB_MODE=cr-paged       t cr-status-page-limit-allows 0
+# ...and a match ON the full page is unaffected — still success, still allow.
 GH_STUB_MODE=cr-paged-found t cr-status-found-on-full-page-allows 0
-# HIMMEL-1465: a rate-limited decline with NO panel evidence in this repo's CR
-# ledger keeps the block — evidence-gated, never a free pass.
-GH_STUB_MODE=cr-ratelimited t cr-status-ratelimited-no-panel-blocks 2
-# ...and the SAME decline with a clean panel avail-ok recorded at the head is
-# panel-carried: it falls through to the thread + body gates (clean here) and
-# allows. Head "abc123" is 6 chars — below atHead's 7-char isHex floor — so it
-# matches ONLY by atHead's equality-first check, never by prefix resolution.
-printf '%s\n' '{"kind":"avail","ts":"2026-08-03T00:00:00Z","branch":"feat/x","head":"abc123","model":"codex","status":"ok","artifact":"diff","perspective":"off","responding_model":"gpt-5.5"}' > "$TMP/repo/.git/cr-critic-scores.jsonl"
-GH_STUB_MODE=cr-ratelimited t cr-status-ratelimited-panel-carried-allows 0
-# HIMMEL-1760: the SAME evidence bar for the OTHER skip wording. check-ci.sh
-# carries every skip-classified description on a clean exact-head panel
-# (HIMMEL-1506); this gate carried only the rate-limit shape, so the
-# adaptive-limit lockout presentation ("automatic reviews are disabled")
-# hard-blocked merges check-ci had already certified. Parity, not relaxation —
-# the two gates must accept and refuse the same shapes.
-GH_STUB_MODE=cr-skipped t cr-status-autoreviews-disabled-panel-carried-allows 0
-# ...and a wording in NEITHER label arm behaves identically — the verdict comes
-# from the exact-head panel, never from the description (codex-1, panel r2).
-GH_STUB_MODE=cr-skipped-other t cr-status-other-skip-wording-panel-carried-allows 0
-# scrub the scratch ledger so no later case inherits the carry evidence
-rm -f "$TMP/repo/.git/cr-critic-scores.jsonl"
-GH_STUB_MODE=cr-skipped-other t cr-status-other-skip-wording-no-panel-blocks 2
-# ...and the evidence must be at the EXACT head: a clean panel recorded on a
-# DIFFERENT commit is not evidence about this one, so the block stands. (Both
-# heads are 6 chars — below atHead's 7-char isHex floor — so "def456" cannot
-# match "abc123" by prefix resolution either.)
-printf '%s\n' '{"kind":"avail","ts":"2026-08-03T00:00:00Z","branch":"feat/x","head":"def456","model":"codex","status":"ok","artifact":"diff","perspective":"off","responding_model":"gpt-5.5"}' > "$TMP/repo/.git/cr-critic-scores.jsonl"
-GH_STUB_MODE=cr-skipped     t cr-status-autoreviews-disabled-panel-other-head-blocks 2
-GH_STUB_MODE=cr-ratelimited t cr-status-ratelimited-panel-other-head-blocks 2
-rm -f "$TMP/repo/.git/cr-critic-scores.jsonl"
+# (b) RED case: a rate-limited decline (skip-classified description mentions
+# "rate limit") with NO ledger/panel evidence at all + 0 threads must ALLOW —
+# the panel-carry lookup that used to gate this is gone entirely (HIMMEL-3360
+# deletes cr_ledger_carries_gate from this file; no ledger fixture is written
+# anywhere in this block, proving the read no longer happens).
+GH_STUB_MODE=cr-ratelimited t cr-status-ratelimited-allows 0
+grep -q "^NOTE: CodeRabbit skipped" "$TMP/out-cr-status-ratelimited-allows" || { echo "FAIL cr-status-ratelimited NOTE missing"; fail=$((fail+1)); }
+grep -q "^BLOCK:" "$TMP/out-cr-status-ratelimited-allows" && { echo "FAIL cr-status-ratelimited-allows unexpectedly BLOCKed"; fail=$((fail+1)); }
+# ...same for the other skip wordings (auto-reviews-disabled, and an
+# unenumerated one) — the state collapses to `skipped` regardless of wording,
+# and wording no longer decides the verdict at all (advisory either way).
+GH_STUB_MODE=cr-skipped       t cr-status-autoreviews-disabled-allows 0
+GH_STUB_MODE=cr-skipped-other t cr-status-other-skip-wording-allows 0
 
-# ORDER: the verdict must be read BEFORE the thread query (coderabbit-10).
-# Threads-first loses a race — snapshot threads (clean) -> CodeRabbit posts
-# findings and flips to success -> read verdict (success) -> pass over threads
-# never seen. Assert the ORDER on the gh call log, not just the rc: a
-# threads-first gate returns the SAME rc on every fixture here, so only the
-# call sequence can catch a regression.
-GH_STUB_MODE=inflight t cr-order-probe 2
+# ORDER: the verdict must still be read BEFORE the thread query (coderabbit-10)
+# — once CodeRabbit has concluded, the thread set the query below sees is
+# final. Assert the ORDER on the gh call log, not just the rc: pair it with an
+# unresolved thread so the run still BLOCKs, exercising the order check on a
+# non-trivial path.
+GH_STUB_MODE=unresolved t cr-order-probe 2
 statuses_ln=$(grep -n 'commits/abc123/statuses' "$TMP/calls-cr-order-probe.log" | head -1 | cut -d: -f1)
 graphql_ln=$(grep -n 'api graphql' "$TMP/calls-cr-order-probe.log" | head -1 | cut -d: -f1)
 if [ -n "$statuses_ln" ] && { [ -z "$graphql_ln" ] || [ "$statuses_ln" -lt "$graphql_ln" ]; }; then
@@ -285,6 +276,10 @@ if [ -n "$statuses_ln" ] && { [ -z "$graphql_ln" ] || [ "$statuses_ln" -lt "$gra
 else
   fail=$((fail+1)); echo "FAIL cr-verdict-read-before-threads (statuses@${statuses_ln:-none} graphql@${graphql_ln:-none})"
 fi
+# (d) RED case: absent CR status + ONE unresolved CodeRabbit thread must still
+# BLOCK — the advisory NOTE never suppresses positive thread evidence.
+GH_STUB_MODE=cr-absent-unresolved t cr-status-absent-with-unresolved-thread-still-blocks 2
+grep -qi "unresolved" "$TMP/out-cr-status-absent-with-unresolved-thread-still-blocks" || { echo "FAIL absent+unresolved-thread block reason missing"; fail=$((fail+1)); }
 # pr view itself fails -> rc=3 (selector unresolvable; still an allow, but
 # lets the hook retry with a better anchor - codex-1/codex-adv-1 CR round)
 GH_STUB_MODE=error        t gh-error-selector-unresolvable 3
@@ -500,82 +495,42 @@ CR_LEDGER="$TMP/forged-ledger.jsonl" GH_STUB_MODE=body-file t od-env-forged-ledg
 rm -f "$OD_LEDGER"
 export -n GH_STUB_BODY_FILE; unset GH_STUB_BODY_FILE
 
-# ── HIMMEL-1181: review-FRESHNESS (B2) — checks/threads/body all clean
-# (GH_STUB_MODE=clean), so these exercise the freshness gate in isolation ───
-GH_STUB_MODE=clean GH_STUB_FRESHNESS=stale t freshness-stale-blocks 2
-# HIMMEL-2162: a clean exact-head critic panel carries a stale-anchor freshness
-# review too — parity with check-ci.sh's twin arm (HIMMEL-1718/2162), and the
-# DEFAULT behavior now (no knob needed). Same ledger fixture shape as the
-# ratelimited-panel-carried case below.
-printf '%s\n' '{"kind":"avail","ts":"2026-08-03T00:00:00Z","branch":"feat/x","head":"abc123","model":"codex","status":"ok","artifact":"diff","perspective":"off","responding_model":"gpt-5.5"}' > "$TMP/repo/.git/cr-critic-scores.jsonl"
-GH_STUB_MODE=clean GH_STUB_FRESHNESS=stale t freshness-stale-panel-carried-allows 0
-grep -qi "carries the gate" "$TMP/err-freshness-stale-panel-carried-allows" || { echo "FAIL freshness-stale panel-carry ALLOW-note missing"; fail=$((fail+1)); }
-rm -f "$TMP/repo/.git/cr-critic-scores.jsonl"
-# ...and evidence recorded at a DIFFERENT commit is not evidence about THIS
-# head — the block stands (fail-closed preserved).
-printf '%s\n' '{"kind":"avail","ts":"2026-08-03T00:00:00Z","branch":"feat/x","head":"def456","model":"codex","status":"ok","artifact":"diff","perspective":"off","responding_model":"gpt-5.5"}' > "$TMP/repo/.git/cr-critic-scores.jsonl"
-GH_STUB_MODE=clean GH_STUB_FRESHNESS=stale t freshness-stale-panel-other-head-blocks 2
-rm -f "$TMP/repo/.git/cr-critic-scores.jsonl"
-GH_STUB_MODE=clean GH_STUB_FRESHNESS=paged t freshness-paged-blocks 2
-# none = zero bot reviews on the PR at all, at any head, ever.
-#
-# HIMMEL-1374 — this used to be an unconditional self-skip ("absence of a bot
-# review is not evidence of staleness"), which is what let PR #1463 read clean
-# while the App's status said "Review completed" over a PR nobody had reviewed.
-# With a genuine `success` status (GH_STUB_MODE=clean posts one) and no
-# walkthrough, the two signals contradict each other: BLOCK.
-GH_STUB_MODE=clean GH_STUB_FRESHNESS=none  t freshness-none-with-completed-status-blocks 2
-grep -qi "no CodeRabbit review object at any head" "$TMP/out-freshness-none-with-completed-status-blocks" || { echo "FAIL freshness-none block reason missing the zero-reviews-ever shape"; fail=$((fail+1)); }
-# ...but the three shapes that legitimately reach `none` still allow:
-#  1. HIMMEL-1824 — a CLEAN pass mints no review object and reports through the
-#     walkthrough instead, so zero-reviews-PR-wide is the NORMAL shape there.
-#     Needs a real >=7-hex head: the walkthrough reader will not accept a
-#     commit token shorter than git's own abbreviation floor.
-GH_STUB_MODE=clean GH_STUB_FRESHNESS=none GH_STUB_WALKTHROUGH=clean \
-  GH_STUB_HEAD=abc123def4567890abc123def4567890abc123de t freshness-none-clean-walkthrough-allows 0
-#  2. HIMMEL-1465 — a RATE-LIMITED App never claims a completed review, so the
-#     clean exact-head critic panel still carries it (the live 2026-08-20 shape
-#     on PRs #1759/#1760). Ledger head matches this suite's default head.
-printf '%s\n' '{"kind":"avail","ts":"2026-08-03T00:00:00Z","branch":"feat/x","head":"abc123","model":"codex","status":"ok","artifact":"diff","perspective":"off","responding_model":"gpt-5.5"}' > "$TMP/repo/.git/cr-critic-scores.jsonl"
-GH_STUB_MODE=cr-ratelimited GH_STUB_FRESHNESS=none t freshness-none-ratelimited-panel-carried-allows 0
-rm -f "$TMP/repo/.git/cr-critic-scores.jsonl"
-#  3. a DEGRADED status read is not evidence of anything — this gate's stated
-#     fail-open contract for infrastructure failures survives the new arm.
-GH_STUB_MODE=cr-degraded-clean GH_STUB_FRESHNESS=none t freshness-none-degraded-status-fails-open 0
-# rc 1 infrastructure failure (the reviews query itself errors) fails OPEN,
-# mirroring cr_degraded/body_degraded — a broken query is not evidence.
-GH_STUB_MODE=clean GH_STUB_FRESHNESS=fail  t freshness-infra-error-fails-open 0
+# ── HIMMEL-3360 operator ruling (2026-09-21): best effort covers ABSENCE
+# only. This head (abc123) carries no CodeRabbit review of its own, but a
+# PRIOR head (shaOLD) carries a real outside-diff finding CodeRabbit DID
+# post — that finding still blocks until dispositioned; the gate reads the
+# governing prior review instead of the silent current head. ───────────────
+export GH_STUB_BODY_FILE="$FIXD/pr-777-outside-diff-blockquote.body.txt"
 
-grep -qi "anchored to shaOLD" "$TMP/out-freshness-stale-blocks" || { echo "FAIL freshness-stale block reason missing anchor"; fail=$((fail+1)); }
-grep -qi "never re-reviewed" "$TMP/out-freshness-stale-blocks" || { echo "FAIL freshness-stale block reason missing remediation"; fail=$((fail+1)); }
-grep -qi "one query window" "$TMP/out-freshness-paged-blocks" || { echo "FAIL freshness-paged block reason missing"; fail=$((fail+1)); }
-grep -qi "degraded" "$TMP/err-freshness-infra-error-fails-open" || { echo "FAIL freshness-infra degradation note missing"; fail=$((fail+1)); }
+rm -f "$OD_LEDGER"
+GH_STUB_MODE=body-a2-file t a2-prior-head-undispositioned-blocks 2
+grep -qi "not dispositioned" "$TMP/out-a2-prior-head-undispositioned-blocks" || { echo "FAIL a2-prior-head-undispositioned block reason missing 'not dispositioned'"; fail=$((fail+1)); }
+grep -q "shaOLD" "$TMP/out-a2-prior-head-undispositioned-blocks" || { echo "FAIL a2-prior-head-undispositioned block does not name the governing prior head"; fail=$((fail+1)); }
+grep -q "cr-od-39c3193c8945" "$TMP/out-a2-prior-head-undispositioned-blocks" || { echo "FAIL a2-prior-head-undispositioned block does not list the finding id"; fail=$((fail+1)); }
 
-# Regression guard for the ordering fix this gate required: an INDEPENDENT
-# freshness-reader failure must NOT suppress the body-findings reader's own
-# valid nitpick ALLOW note (they are two separate readers — see
-# cr-review-freshness.sh header). Before the fix, folding fr_degraded into
-# the SAME early-return as cr_degraded/body_degraded made this note vanish
-# whenever the (unrelated) freshness query failed.
-GH_STUB_MODE=body-nitpick GH_STUB_FRESHNESS=fail t freshness-degrade-does-not-suppress-nitpick-note 0
-grep -qi "nitpick=1" "$TMP/err-freshness-degrade-does-not-suppress-nitpick-note" || { echo "FAIL nitpick note suppressed by an unrelated freshness degrade"; fail=$((fail+1)); }
+od_ledger "$(od_variant '.head="shaOLD"')"
+GH_STUB_MODE=body-a2-file t a2-dispositioned-at-prior-head-allows 0
+grep -qi "dispositioned=1" "$TMP/err-a2-dispositioned-at-prior-head-allows" || { echo "FAIL a2-dispositioned-at-prior-head ALLOW note missing on stderr"; fail=$((fail+1)); }
 
-# order: verdict -> freshness -> threads (1.5 sits between the two, per spec)
-# — a stale freshness call still resolves the CodeRabbit status first
-# (coderabbit-10's ordering rationale extends to this new step).
-GH_STUB_MODE=clean GH_STUB_FRESHNESS=stale t freshness-order-probe 2
-fr_statuses_ln=$(grep -n 'commits/abc123/statuses' "$TMP/calls-freshness-order-probe.log" | head -1 | cut -d: -f1)
-fr_reviews_ln=$(grep -n 'reviews(last:' "$TMP/calls-freshness-order-probe.log" | head -1 | cut -d: -f1)
-if [ -n "$fr_statuses_ln" ] && [ -n "$fr_reviews_ln" ] && [ "$fr_statuses_ln" -lt "$fr_reviews_ln" ]; then
-  pass=$((pass+1)); echo "ok   freshness-read-after-verdict"
-else
-  fail=$((fail+1)); echo "FAIL freshness-read-after-verdict (statuses@${fr_statuses_ln:-none} reviews@${fr_reviews_ln:-none})"
-fi
+# the SAME finding disposed at the WRONG head (abc123, the certified head that
+# carries no review) instead of the governing prior head (shaOLD): still blocks.
+od_ledger "$(od_variant '.head="abc123"')"
+GH_STUB_MODE=body-a2-file t a2-dispositioned-at-wrong-head-blocks 2
 
-# bypass short-circuits BEFORE any gh call, so a stale freshness never runs
-GH_STUB_MODE=clean GH_STUB_FRESHNESS=stale CR_MERGE_GATE_OK=1 t freshness-bypass-env-allows 0
-[ -s "$TMP/calls-freshness-bypass-env-allows.log" ] && { echo "FAIL freshness bypass called gh"; fail=$((fail+1)); }
-unset CR_MERGE_GATE_OK
+rm -f "$OD_LEDGER"
+GH_STUB_MODE=body-a2-drift t a2-unparseable-prior-body-blocks 2
+grep -qi "format drift" "$TMP/out-a2-unparseable-prior-body-blocks" || { echo "FAIL a2-unparseable-prior-body block reason missing 'format drift'"; fail=$((fail+1)); }
+
+export -n GH_STUB_BODY_FILE; unset GH_STUB_BODY_FILE
+
+# HIMMEL-3360: the review-FRESHNESS mechanism (HIMMEL-1181, cr_review_freshness
+# / cr_review_walkthrough in cr-review-freshness.sh) is removed from this gate
+# entirely — CodeRabbit's verdict, including a stale-anchored review object, is
+# advisory only. Regression pin: a "stale" freshness fixture has zero effect
+# (allow, not block) and — the stronger claim — the freshness endpoint itself
+# is never even queried anymore.
+GH_STUB_MODE=clean GH_STUB_FRESHNESS=stale t freshness-stale-no-longer-blocks 0
+grep -qi "reviews(last:" "$TMP/calls-freshness-stale-no-longer-blocks.log" && { echo "FAIL freshness-stale-no-longer-blocks still queries the removed freshness endpoint"; fail=$((fail+1)); }
 
 # block reason lands on stdout
 grep -qi "unresolved" "$TMP/out-unresolved-cr-thread-blocks" || { echo "FAIL block reason missing"; fail=$((fail+1)); }

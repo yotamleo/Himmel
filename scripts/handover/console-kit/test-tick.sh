@@ -178,7 +178,7 @@ mkdir -p "$W/console-work/chain"
 # The default stub reset epoch, rendered the way tick.sh renders it (local HH:MM).
 gql_hm="$(date -d @1790000000 +%H:%M 2>/dev/null || date -r 1790000000 +%H:%M)"
 out="$(bash "$SUT")"; rc=$?
-expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1,unwatched=N9 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7 gql=4321/'"$gql_hm"' orphans=none nonces=skip legset=skip'
+expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1,unwatched=N9 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7 gql=4321/'"$gql_hm"' orphans=none nonces=skip legset=skip board=skip'
 lines="$(printf '%s\n' "$out" | wc -l | tr -d '[:space:]')"
 if [ "$rc" -eq 0 ] && [ "$lines" = 1 ] && [ "$out" = "$expected" ]; then
     pass 'default run emits exactly the expected one batched line'
@@ -1138,6 +1138,99 @@ for pref3305 in leg-preface.md leg-preface-claudex.md; do
 done
 # shellcheck disable=SC2016  # backtick-quoted markers, literal doc text
 contains 'leg-preface.md says SHIPPED and MERGED are not markers (HIMMEL-3305)' "$(cat "$repo3305/docs/handover/leg-preface.md")" '`SHIPPED` and `MERGED` are deliberately not in the'
+
+# --- HIMMEL-3361: board=<ok|STALE:<age>|MISSING|skip> -- the console's progress
+# board (console-board.html, written by board.mjs next to the console doc) must be
+# structurally checked, not remembered. RED control (pre-fix tick.sh): the line
+# carries no board= field at all, so a console that never rendered one, or whose
+# board is days old, is invisible to its own tick. The freshness reference is a
+# fingerprint of the state a board shows (legs, tails, open PRs, queue, last GO),
+# embedded in the board by board.mjs and recomputed here -- not the doc's mtime,
+# which every Results bullet bumps and would read STALE all day.
+b3361="HIMMEL-3361-N361-board-2026-09-21-RESUME"
+printf '%s\n' '# leg' '- 12:00 LIVE — working' > "$W/handover/$b3361.md"
+mkcmdline 361 claude --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-3361-N361-board work
+mk_pgrep_x "$W/bin-3361" 361
+board3361="$W/handover/console-board.html"
+rm -f "$board3361"
+# shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+write_console3361() {  # write_console3361 <last GO value> [extra Results bullet]
+    printf '%s\n' '# console' '' '## Live state' '' \
+        'legs: `N361:J-N361-0a1b2c9d:cachyos-x8664-pid361:361`' 'queue: N361 (3361)' "last GO: $1" 'acked: none' ${3:+"$3"} '' \
+        '## Results (newest at the bottom)' '- 12:00 DISPATCH N361' ${2:+"$2"} \
+        > "$W/handover/console.md"
+}
+t3361() { PATH="$W/bin-3361:$PATH" bash "$SUT" --legs "$W/handover/$b3361.md" "$@"; }
+write_console3361 none
+contains 'a console with no board file reads board=MISSING (HIMMEL-3361)' "$(t3361)" ' board=MISSING'
+# The default fixture has no console doc at all: nothing to check, like legset=skip.
+contains 'no console doc reads board=skip (HIMMEL-3361)' "$out" ' board=skip'
+contains '--verbose labels the board (HIMMEL-3361)' "$(t3361 --verbose)" 'board: MISSING'
+# --emit-fp is the seam board.mjs reads: the tick line, then the fingerprint.
+fp3361="$(t3361 --emit-fp | sed -n '2p')"
+case "$fp3361" in
+    board-fp=[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) pass '--emit-fp prints the fingerprint on line 2 (HIMMEL-3361)' ;;
+    *) fail "--emit-fp line 2 is not board-fp=<16 hex> ('$fp3361')" ;;
+esac
+# A board whose fingerprint is not the current one is STALE, aged by its mtime.
+printf '%s\n' '<meta name="console-board-fp" content="0000000000000000">' > "$board3361"
+touch -d '3 hours ago' "$board3361"  # gnu-ok: console kit is Linux-only
+contains 'a board with another fingerprint reads board=STALE:<age> (HIMMEL-3361)' "$(t3361)" ' board=STALE:3h'
+touch -d '12 minutes ago' "$board3361"  # gnu-ok: console kit is Linux-only
+contains 'a young stale board ages in minutes (HIMMEL-3361)' "$(t3361)" ' board=STALE:12m'
+# The real generator's output is fresh under the real tick: one derivation. The
+# stubs on PATH answer gh/bank/atq for both, so the two runs see the same state.
+if command -v node >/dev/null 2>&1; then
+    bpath3361="$(PATH="$W/bin-3361:$PATH" BOARD_TICK="$SUT" node "$HERE/board.mjs" --doc "$W/handover/console.md" --legs "$W/handover/$b3361.md" --repo "$REPO" 2>&1)"
+    if [ "$bpath3361" = "$board3361" ] && [ -f "$board3361" ]; then
+        pass 'board.mjs writes console-board.html next to the console doc (HIMMEL-3361)'
+    else
+        fail "board.mjs did not write the board ($bpath3361)"
+    fi
+    contains 'a board rendered from the current state reads board=ok (HIMMEL-3361)' "$(t3361)" ' board=ok'
+    # A Results bullet is not a state change: the board stays ok.
+    write_console3361 none '- 12:05 RULING nothing about state'
+    contains 'a Results bullet does not stale the board (HIMMEL-3361)' "$(t3361)" ' board=ok'
+    # A GO is: republish.
+    # shellcheck disable=SC2016  # backtick span, literal fixture text
+    write_console3361 '`1023:abc`'
+    contains 'a new last GO stales the board (HIMMEL-3361)' "$(t3361)" ' board=STALE:'
+    # The epics: and decisions: lines are rendered panels: editing them is a republish.
+    write_console3361 none '' 'epics: HIMMEL-3332=5'
+    contains 'a new epics: line stales the board (HIMMEL-3361)' "$(t3361)" ' board=STALE:'
+    write_console3361 none '' 'decisions: widen the fleet cap?'
+    contains 'a new decisions: line stales the board (HIMMEL-3361)' "$(t3361)" ' board=STALE:'
+    write_console3361 none
+    # A leg tail change (READY) is a phase change: republish.
+    printf '%s\n' '- 12:30 READY 1023 abc GREEN' >> "$W/handover/$b3361.md"
+    contains 'a leg phase change stales the board (HIMMEL-3361)' "$(t3361)" ' board=STALE:'
+    # --- HIMMEL-3366: one Live-state block, read by tick.sh and by board.mjs, names
+    # the same legs. RED control (pre-fix board.mjs): its own parser accepted a
+    # three-field span (N4), an empty-field span (N5), a span in a `>` line (N8) and
+    # a detail bullet (N6), and rejected a label with _ . - (N3_x.y-z). The tick
+    # reads no --legs here, so every Live-state entry is `unarmed=` and the board,
+    # given no leg docs, lists exactly its Live-state labels.
+    # shellcheck disable=SC2016  # backtick leg spans, literal fixture text
+    printf '%s\n' '# console' '' '## Live state' '' \
+        'legs: `N1:J-N1-0a1b2c9d:cachyos-x8664-pid1001:1001` a note `procs:2` `N2b:J-N2b-0a1b2c9d:cachyos-x8664-pid1002:1002`' \
+        '  `N3_x.y-z:J-N3-0a1b2c9d:cachyos-x8664-pid1003:1003` `N4:J-N4-0a1b2c9d:cachyos-x8664-pid1004` `N5::J-N5-0a1b2c9d:1005`' \
+        '> quoted `N8:J-N8-0a1b2c9d:cachyos-x8664-pid1008:1008` after a > terminator' \
+        'legs: `N7:J-N7-0a1b2c9d:cachyos-x8664-pid1007:1007`' \
+        '- detail `N6:J-N6-0a1b2c9d:cachyos-x8664-pid1006:1006` under the block' \
+        'queue: none' 'last GO: none' 'acked: none' '' '## Results' '- 12:00 DISPATCH' \
+        > "$W/handover/console.md"
+    tickset3366="$(PATH="$W/bin-3361:$PATH" bash "$SUT" --doc "$W/handover/console.md" | sed -n 's/.* legset=STALE:unarmed=\([^ ;]*\).*/\1/p' | tr '+' '\n' | sort)"
+    PATH="$W/bin-3361:$PATH" BOARD_TICK="$SUT" node "$HERE/board.mjs" --doc "$W/handover/console.md" --repo "$REPO" >/dev/null 2>&1
+    boardset3366="$(grep -o 'data-label="[^"]*"' "$W/handover/console-board.html" | sed 's/^data-label="//; s/"$//' | sort)"
+    contains 'the tick reads a label with _ . - as a leg (HIMMEL-3366)' "$tickset3366" 'N3_x.y-z'
+    if [ -n "$tickset3366" ] && [ "$tickset3366" = "$boardset3366" ]; then
+        pass 'tick.sh and board.mjs read one Live-state block as the same leg set (HIMMEL-3366)'
+    else
+        fail "tick.sh and board.mjs read different leg sets (tick: $(printf '%s' "$tickset3366" | tr '\n' ' ') board: $(printf '%s' "$boardset3366" | tr '\n' ' '))"
+    fi
+else
+    printf 'SKIP - board round-trip (node not installed)\n'
+fi
 
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-tick.sh'

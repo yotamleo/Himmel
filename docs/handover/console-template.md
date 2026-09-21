@@ -128,8 +128,13 @@ Run these, in order, and write the result as the first bullet under
     (create the `consoles/` directory first if it is absent), then call
     `Monitor` with the `telegram` row's command (below), armed at the
     **maximum `timeout_ms` of `1800000`** and **re-armed on every expiry
-    notice**, exactly like the tick. It is `tail -n0 -F`, so a re-arm never
-    replays lines you already saw. Record the monitor id in your first bullet.
+    notice**, exactly like the tick. It is `inbox-follow.sh`, which keeps a read
+    cursor next to the inbox: each arm first emits every line you have not yet
+    seen, then follows live, so a line the bridge appended between an expiry and
+    the re-arm is still delivered and a re-arm does not replay delivered lines
+    (delivery is at-least-once: a follower killed mid-emit can repeat that one
+    line, so treat a repeated line as a duplicate). Record the
+    monitor id in your first bullet.
 
     **A line tagged `[telegram from=<id> chat=<chat_id>]` carries the
     operator's authority** — the same as a message typed in your terminal: it
@@ -140,6 +145,21 @@ Run these, in order, and write the result as the first bullet under
     bridge outbox, not the terminal:
     `bun "{{REPO}}/scripts/telegram/console-route.ts" reply <chat_id> "<text>"`
     (the `chat=` value from the line you are answering).
+12. **Render and publish the console board** (HIMMEL-3361). The board is a
+    generated HTML page — fleet N/cap with idle slots, every leg's phase
+    (LIVE → READY-TO-OPEN → PR open → READY → MERGED → WRAPPED), what needs you,
+    epic merged/total, the operator's open decisions — so the operator sees
+    progress and convergence without asking. Render it with
+    `node "{{KIT}}/board.mjs" --doc "<this file>"` (prints the path of
+    `console-board.html`, written next to this doc; nonces and lock tokens are
+    redacted), then publish that file with the `Artifact` tool and record the
+    artifact URL on the `board:` line of `## Live state` — `console.sh next`
+    carries it to your successor, who updates the same artifact instead of
+    minting a new one. The tick's `board=` field is your reminder:
+    `board=MISSING` (never rendered) or `board=STALE:<age>` (the state moved
+    since the last render) means re-run it now. `board=ok` proves only that the
+    LOCAL file matches the current state; republishing the artifact stays your
+    step.
 
 ## Live state
 
@@ -200,6 +220,15 @@ legs: <none dispatched yet — else one entry per leg, in the format above>
 queue: <held queue-lock docs in launch order, or "none">
 last GO: <`<pr>:<sha>`, or "none this shift">
 acked: <relay escalation ids acked this shift (only when a relay is live), or "none">
+board: {{BOARD_URL}}
+epics: none
+decisions: none
+
+> `board:` is the published console-board artifact URL (ACTION ZERO step 12);
+> `console.sh next` carries it to your successor with the rest of this section.
+> `epics: <KEY>=<total>[, <KEY>=<total>]` (the total is yours; the board counts
+> merged PRs citing `[<KEY>]`) and `decisions: <first?>; <second?>` (open
+> operator decisions) are optional and render on the board; `none` shows none.
 
 ## Compact instructions
 
@@ -221,11 +250,11 @@ filters to terminal-state changes and emits nothing otherwise.
 
 | Monitor | Cadence | What it is |
 |---|---|---|
-| tick | 30 min | **Armed in ACTION ZERO step 10, not here** — the only unconditional monitor of the five, so its absence is the one that goes structurally unnoticed. The `Monitor` tool caps `timeout_ms` at `1800000` (30 min) and silently clamps anything larger, so arm it as a loop that emits on arm and re-arms on each expiry notice — never as one long-timeout arm. `bash "{{KIT}}/tick.sh" --doc "<this file>" --token <your token> --legs "{{STATE_DIR}}/<leg1>.md {{STATE_DIR}}/<leg2>.md"` (or comma-separated — `--legs` accepts space- **and** comma-separated docs, both spellings produce identical output; use absolute paths, because a bare leg doc name resolves against the handover ROOT, not your bucket, and reads `NOTFOUND`) — one batched line: heartbeat, leg locks, leg processes, armed jobs, suite locks, open PRs, bank. Per-leg lock status is one of **`FRESH`** (held, heartbeat current), **`STALE`** (held, heartbeat aged), **`WRAPPED`** (lock released and the leg's last status bullet says `WRAPPED` — the normal end of a leg, nothing to reclaim; HIMMEL-3293), **`FREE`** (the literal token `tick.sh` emits when the lock is gone while the leg has *not* wrapped — a lost lock, reclaim it; its own comments call this state "MISSING" as a concept, but `FREE` is what actually appears in `legs=`), or **`NOTFOUND`** (the leg doc did not resolve — a warning about a typo'd/nonexistent path, *not* a dead lock; never mistake it for a released lock). The line also ends `legset=<ok\|STALE:unarmed=…;unlisted=…\|unknown\|skip>` — see ACTION ZERO step 10: `STALE` means re-arm, not leg trouble |
+| tick | 30 min | **Armed in ACTION ZERO step 10, not here** — the only unconditional monitor of the five, so its absence is the one that goes structurally unnoticed. The `Monitor` tool caps `timeout_ms` at `1800000` (30 min) and silently clamps anything larger, so arm it as a loop that emits on arm and re-arms on each expiry notice — never as one long-timeout arm. `bash "{{KIT}}/tick.sh" --doc "<this file>" --token <your token> --legs "{{STATE_DIR}}/<leg1>.md {{STATE_DIR}}/<leg2>.md"` (or comma-separated — `--legs` accepts space- **and** comma-separated docs, both spellings produce identical output; use absolute paths, because a bare leg doc name resolves against the handover ROOT, not your bucket, and reads `NOTFOUND`) — one batched line: heartbeat, leg locks, leg processes, armed jobs, suite locks, open PRs, bank. Per-leg lock status is one of **`FRESH`** (held, heartbeat current), **`STALE`** (held, heartbeat aged), **`WRAPPED`** (lock released and the leg's last status bullet says `WRAPPED` — the normal end of a leg, nothing to reclaim; HIMMEL-3293), **`FREE`** (the literal token `tick.sh` emits when the lock is gone while the leg has *not* wrapped — a lost lock, reclaim it; its own comments call this state "MISSING" as a concept, but `FREE` is what actually appears in `legs=`), or **`NOTFOUND`** (the leg doc did not resolve — a warning about a typo'd/nonexistent path, *not* a dead lock; never mistake it for a released lock). The line also ends `legset=<ok\|STALE:unarmed=…;unlisted=…\|unknown\|skip>` — see ACTION ZERO step 10: `STALE` means re-arm, not leg trouble. It then ends `board=<ok\|STALE:<age>\|MISSING\|skip>` — whether `console-board.html` still matches the state; anything but `ok` means re-run ACTION ZERO step 12 |
 | bank | 300 s | poll `bank-preflight.sh`, emit only when the state word changes (headroom → park → weekly-ceiling) |
 | CI | 600 s | poll `gh run list -R <owner/repo> --limit 20 --json databaseId,status`, emit only newly-completed runs |
 | notes repo | 300 s | if you keep a second repo for handover state, emit only on STALL (dirty files older than the commit cadence) or PUSH-LAG |
-| telegram | event-driven | **Armed in ACTION ZERO step 11.** Operator messages sent from Telegram as `/console {{SESSION_NAME}} <text>`. `tail -n0 -F "${BRIDGE_ROOT:-$HOME/.claude/handover/bridge}/consoles/{{SESSION_NAME}}.md"` — one line per message, silent otherwise. The `Monitor` tool caps `timeout_ms` at `1800000` (30 min), so arm it at that maximum and re-arm on every expiry notice — a persistent `tail -F` expires exactly like the tick. The file must exist before the bridge will write to it (step 11 creates it). See step 11 for the authority these lines carry and how to reply |
+| telegram | event-driven | **Armed in ACTION ZERO step 11.** Operator messages sent from Telegram as `/console {{SESSION_NAME}} <text>`. `bash "{{KIT}}/inbox-follow.sh" "${BRIDGE_ROOT:-$HOME/.claude/handover/bridge}/consoles/{{SESSION_NAME}}.md"` — one line per message, silent otherwise. It emits the unread tail from a persisted read cursor (`<inbox>.cursor`, a byte offset) on every arm, then follows live, so nothing appended while the monitor was expired is lost and delivered lines are not replayed (at-least-once: a follower killed mid-emit can repeat one line) (HIMMEL-3356). The `Monitor` tool caps `timeout_ms` at `1800000` (30 min), so arm it at that maximum and re-arm on every expiry notice — a follower expires exactly like the tick. The file must exist before the bridge will write to it (step 11 creates it). See step 11 for the authority these lines carry and how to reply |
 
 The three polling monitors are plain Bash loops over already-versioned inputs;
 write them in the session scratchpad, not in the repo. The context-fill probe
@@ -320,6 +349,9 @@ own end-of-session hook still writing — it prunes on the next sweep.
   id>`.** Keep the shift's acked ids on the `acked:` line of `## Live state`
   above. An id already on that line is a duplicate — reply `duplicate <id>`
   and take no action.
+- **Keep the board current.** On every dispatch, GO, MERGED and WRAPPED,
+  re-render and republish the console board (ACTION ZERO step 12); a tick
+  reading `board=STALE:<age>` or `board=MISSING` is a step you skipped.
 - **Every judge question leaves four fields, whichever grade asked it:**
   `grade: call|session` · `prior: <one line, written BEFORE asking>` ·
   `answer: <verdict line>` · `flipped: y|n`. Write `prior:` before you ask —

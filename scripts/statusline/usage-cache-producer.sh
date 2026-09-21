@@ -128,20 +128,29 @@ if [ -n "$stdin_five" ] || [ -n "$stdin_seven" ]; then
     fi
   fi
 
-  new_cache=$(jq -n --argjson prev "$prev" \
+  new_cache=$(jq -n --argjson prev "$prev" --argjson ts "$now_epoch" \
     --arg fh "$stdin_five" --arg fhr "$stdin_five_reset" \
     --arg sh "$stdin_seven" --arg shr "$stdin_seven_reset" '
     ($prev // {}) as $p |
+    (if $fh == "" then null else ($fh | tonumber? // null) end) as $fhn |
+    (if $sh == "" then null else ($sh | tonumber? // null) end) as $shn |
     {
       five_hour: (if $fh == "" then ($p.five_hour // {})
-                  else { utilization: ($fh | tonumber? // null),
+                  else { utilization: $fhn,
                          resets_at: (if $fhr == "" then null else $fhr end) } end),
       seven_day: (if $sh == "" then ($p.seven_day // {})
-                  else { utilization: ($sh | tonumber? // null),
+                  else { utilization: $shn,
                          resets_at: (if $shr == "" then null else $shr end) } end),
       extra_usage: ($p.extra_usage // {}),
       oauth_checked_at: ($p.oauth_checked_at // null)
-    }' 2>/dev/null)
+    }
+    # HIMMEL-3364: same provenance rule as Branch B — stamp only when BOTH
+    # stdin windows carry a numeric utilization; a one-window payload carries
+    # the prior stamp so the carried-forward window keeps aging honestly.
+    + (if ($fhn != null and $shn != null) then {primaries_refreshed_at: $ts}
+       elif ($p.primaries_refreshed_at != null) then {primaries_refreshed_at: $p.primaries_refreshed_at}
+       else {} end)
+    ' 2>/dev/null)
 
   if [ -z "$new_cache" ]; then
     echo "WARN usage-cache-producer: failed to build cache from stdin rates" >&2

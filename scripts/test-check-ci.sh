@@ -45,40 +45,19 @@
 #   24. non-adjacent A→B→A cursor cycle      → rc 2 via the 50-page cap (codex follow-up)
 #   25. watch exits non-1 with empty stderr  → rc 2, only gh rc 1 is a red check (CR follow-up)
 #   26. watch rc 1 but zero checks in the fail bucket → rc 2 (structured red confirm, codex)
-#   39. incremental-silent body shape       → rc 4 + full-review instruction
+#   39. a posted prior-head outside-diff finding still blocks (operator
+#       ruling 2026-09-21: best effort covers ABSENCE only, not a posted
+#       finding) → rc 3; dispositioned at the governing prior head → rc 0
 #   43. zero head reviews, no prior finding → rc 0 (PR #1321 benign shape)
-#   44. --escalate posts once, head review appears → rc 0
-#   45. --escalate sees per-head marker      → rc 0, no duplicate post
-#   46. --escalate budget expires            → rc 4 + DO-NOT-MERGE
-#   47. malformed wait + zero escalation poll → warn + fallback, still evaluates
-#   48. escalated review has outside finding → rc 3 (normal evaluation preserved)
-#   49. escalated review creates new thread → rc 3 (thread re-check preserved)
-#   50. positive wait + zero escalation poll → rc 4, at most 3 body reads
-#   51. leading-zero wait 08 (octal crash)  → normalized to 8, rc 4, no arithmetic error
-#   52. leading-zero wait 007 (silent octal) → normalized to decimal 7, rc 0
-#   77. B2 --escalate refreshes stale anchor → rc 0, full-review marker posted
-#   78. B2 escalated review stays stale      → rc 4, STILL not anchored
-#   79. B2 escalation budget expires         → rc 4, DO-NOT-MERGE timeout
-#   80. B2 without --escalate                → rc 4, zero comment posts
-#   81. B2 contradictory head review         → rc 4, zero comment posts
-#   82. B2 escalated outside finding         → rc 3, body gate still blocks
-#   83. B2 escalation with a concluded head status → rc 0 (unchanged), stderr
-#       carries the HIMMEL-1698 benign-anchor NOTE
-#   84. --escalate sees only an EMPTY review object → rc 4 (HIMMEL-1959)
-#   85. persisted EMPTY review object still escalates → rc 4 (HIMMEL-1959)
-#   86. persisted EMPTY review object refuses read-only → rc 4 (HIMMEL-1959)
-#   87. "Review completed" + ZERO CodeRabbit reviews PR-wide → rc 2 (HIMMEL-1374)
-#   88. rate-limited + zero PR-wide reviews + clean panel → rc 0 (carry intact)
 #   89. "Review completed" + a PR-wide review present → rc 0 (no false block)
-#   90. a competing claim with a lower id wins → 0 requests from the loser (HIMMEL-1964)
-#   91. stranded attempt 1 → one bounded re-request as attempt 2, rc 4
-#   92. stranded attempt 2 → rc 4 STRANDED, no third request
-#   93. full-review POST fails after the claim → claim rolled back, rc 2
-#   3152-a/b. skip-classified WITHOUT vs WITH --escalate → both rc 2, but WITH
-#       must differ: names --escalate inapplicable + the HIMMEL-1506 panel-carry
-#       route instead of silently no-op'ing (HIMMEL-3152, PR #804)
-#   3152-c. rate-limited skip WITH --escalate → rc 2, same inapplicable note
-#   3152-d. panel-carried skip WITH --escalate → rc 0, no spurious note
+#
+#   HIMMEL-3360 retired --escalate, review_freshness_gate's stale-anchor
+#   escalation, the review-object-absent panel-carry gate (exit 4), and the
+#   PR-wide-review-freshness gate — CodeRabbit's status/review state is
+#   advisory-only now (thread + body-findings gates still certify the merge).
+#   The former cases 44-52, 77-93 and 3152-a/b/c/d all exercised that removed
+#   machinery and are gone, not renumbered; see cases 27-34f, 3360d, 3360e,
+#   39, 39b, 39c below for their HIMMEL-3360 replacements.
 set -uo pipefail
 
 # HIMMEL-1495 — an --automerge-armed launching shell carries ARMAUTOMERGE=1 +
@@ -226,6 +205,11 @@ if [ "$cmd" = "api" ]; then
                 # HIMMEL-3124: a REAL captured review body (fixture file), one substantive
                 # bot review at the head — the per-finding outside-diff reader parses it.
                 body-file)    jq -n --rawfile b "$GH_STUB_BODY_FILE" '[{user:{id:136622811,login:"coderabbitai[bot]"},commit_id:"sha1",submitted_at:"2026-07-16T19:10:00Z",id:1,body:$b}]' ;;
+                # HIMMEL-3360: a REAL captured review body at a PRIOR head
+                # (shaOLD, not the certified sha1) — the governing-prior-head
+                # gate reads this via cr_body_outside_findings called with
+                # head=shaOLD.
+                body-a2-file) jq -n --rawfile b "$GH_STUB_BODY_FILE" '[{user:{id:136622811,login:"coderabbitai[bot]"},commit_id:"shaOLD",submitted_at:"2026-07-16T19:10:00Z",id:1,body:$b}]' ;;
                 body-error)   echo "reviews boom" >&2; exit 1 ;;
                 # Incremental-silent shape: a prior review carries outside-diff
                 # findings while the concluded current head has no review object.
@@ -609,7 +593,7 @@ case "$GH_STUB_MODE" in
         # verdict must turn entirely on CodeRabbit's status (HIMMEL-1072).
         if [ "$is_watch" -eq 1 ]; then echo "All checks were successful"; exit 0; fi
         exit 0 ;;
-    body-outside|body-file|body-nitpick|body-drift|body-error|body-a2|body-empty|body-a2-escalate|body-a2-marker|body-a2-timeout|body-a2-escalate-outside|body-b2-escalate|body-b2-escalate-outside|body-b2-timeout|body-b2-head-review|body-a2-escalate-empty|body-a2-empty-persisted|body-a2-postfail)
+    body-outside|body-file|body-a2-file|body-nitpick|body-drift|body-error|body-a2|body-empty|body-a2-escalate|body-a2-marker|body-a2-timeout|body-a2-escalate-outside|body-b2-escalate|body-b2-escalate-outside|body-b2-timeout|body-b2-head-review|body-a2-escalate-empty|body-a2-empty-persisted|body-a2-postfail)
         # Checks GREEN, threads clean, CodeRabbit CONCLUDED (default statuses
         # fixture) in every one of these — the verdict must turn entirely on
         # the review-BODY findings gate (HIMMEL-1126/1147/1219).
@@ -1065,31 +1049,35 @@ run red-liar
 assert_rc 2 "26 red-liar rc 2"
 assert_err_has "no check is in the fail bucket" "26 structured-confirm message"
 
-# --- HIMMEL-1072: the CodeRabbit signal is REQUIRED, not evaluated-if-present ---
-# The old cases 27-32 here exercised the HIMMEL-980 "zombie check-run override".
-# That override keyed off a CodeRabbit CHECK-RUN — which CodeRabbit has never
-# posted (it posts a commit STATUS; verified on 5 consecutive live PRs). The
-# override was unreachable and these fixtures were the only place its trigger
-# shape existed. Both are gone; the status is read directly instead.
+# --- HIMMEL-3360: CodeRabbit is best effort — its own commit STATUS is
+# advisory only, never a block. The old cases 27-30 here pinned exit 2/1 on
+# absent/pending/failure/spoofed; they now pin the advisory NOTE + exit 0
+# instead. (The HIMMEL-980 "zombie check-run override" this section used to
+# also cover keyed off a CodeRabbit CHECK-RUN — which CodeRabbit has never
+# posted [it posts a commit STATUS] — and was already unreachable; gone.)
 
-# 27 — the regression that merged #1243: checks green, threads clean, but
-# CodeRabbit never posted on this head. Absent is NOT green.
+# 27 — the regression that merged #1243 used to require an absent status to
+# block. HIMMEL-3360 reversed that: checks green, threads clean, CodeRabbit
+# never posted on this head — advisory NOTE, still green.
 run cr-absent
-assert_rc 2 "27 absent CodeRabbit status rc 2"
-assert_err_has "has posted NO status" "27 absent reports the missing review"
+assert_rc 0 "27 absent CodeRabbit status is advisory only, not a block (HIMMEL-3360)"
+assert_err_has "check-ci: NOTE — CodeRabbit absent on head" "27 absent prints the advisory NOTE"
 
-# 28 — CodeRabbit still reviewing the head: not green YET (re-run), never 0.
+# 28 — CodeRabbit still reviewing the head: advisory NOTE, never a block.
 run cr-pending
-assert_rc 2 "28 pending CodeRabbit status rc 2"
+assert_rc 0 "28 pending CodeRabbit status is advisory only, not a block (HIMMEL-3360)"
+assert_err_has "check-ci: NOTE — CodeRabbit pending on head" "28 pending prints the advisory NOTE"
 
-# 29 — CodeRabbit's own status failed/errored → a failed check (rc 1).
+# 29 — CodeRabbit's own status failed/errored: advisory NOTE, never a block.
 run cr-failure
-assert_rc 1 "29 failed CodeRabbit status rc 1"
+assert_rc 0 "29 failed CodeRabbit status is advisory only, not a block (HIMMEL-3360)"
+assert_err_has "check-ci: NOTE — CodeRabbit failure on head" "29 failure prints the advisory NOTE"
 
 # 30 — identity, not display name (HIMMEL-1058): a success status carrying the
-# CodeRabbit context but a foreign creator.id must not satisfy the gate.
+# CodeRabbit context but a foreign creator.id does not satisfy the identity
+# check, so cr_signal_state reads it as absent — advisory NOTE, not a block.
 run cr-spoofed
-assert_rc 2 "30 spoofed creator.id does not satisfy the gate"
+assert_rc 0 "30 spoofed creator.id reads as absent, which is advisory only (HIMMEL-3360)"
 
 # 31 — a repo with no CodeRabbit opts out explicitly rather than being blocked
 # forever: CR_PROFILE=none skips the required-signal gate.
@@ -1097,28 +1085,31 @@ CR_PROFILE_OVERRIDE=none
 run cr-absent
 assert_rc 0 "31 CR_PROFILE=none allows an absent CodeRabbit"
 
-# 32 — the status query itself failing is cannot-evaluate, never a pass.
+# 32 — HIMMEL-3360: the status query itself failing is the same advisory NOTE
+# as an absent status (state=unreadable), never a block — an unreadable
+# advisory signal cannot be a gate outcome. Threads + body findings still gate.
 run cr-query-error
-assert_rc 2 "32 CodeRabbit status query error rc 2"
+assert_rc 0 "32 CodeRabbit status query error is a NOTE, rc 0"
+assert_err_has "NOTE — CodeRabbit unreadable" "32 unreadable-status NOTE"
 
-# 34 — coderabbit-2: a FULL page of unrelated statuses with no CodeRabbit among
-# them is indeterminate (its verdict may be on page two), not absent — and
-# certainly not green. (Numbered 34: a "33" already exists further down.)
+# 34 — coderabbit-2 / HIMMEL-3360: a FULL page of unrelated statuses with no
+# CodeRabbit among them ("paged") is indeterminate, and indeterminate is
+# advisory too — a NOTE, rc 0. (Numbered 34: a "33" already exists further down.)
 run cr-paged
-assert_rc 2 "34 full status page without CodeRabbit rc 2"
-assert_err_has "more commit statuses than one API page" "34 page-limit reason"
+assert_rc 0 "34 full status page without CodeRabbit is a NOTE, rc 0"
+assert_err_has "NOTE — CodeRabbit paged" "34 paged NOTE"
 
-# 34b/34c — HIMMEL-1317: a SKIPPED review is not a clean one. With automatic
-# reviews disabled CodeRabbit posts state=success on every untriggered PR and
-# puts the refusal in .description alone, so reading only .state certified exit 0
-# on a PR nobody had reviewed (reproduced on PR #1429, 2026-07-27) — and
-# merge-on-green, which gates solely on check-ci:0, would have squash-merged it.
-# The pair is deliberate: 34b proves the skip BLOCKS, 34c proves an ordinary
-# review still PASSES, so the fix cannot be satisfied by breaking `success`.
+# 34b/34c — HIMMEL-1317: a SKIPPED review (state=success, refusal only in
+# .description — automatic reviews disabled) used to fail CLOSED; HIMMEL-3360
+# made every CodeRabbit-status shape advisory. cr_signal_state's own
+# classification (scripts/lib/cr-signal.sh) still projects this payload to
+# state=skipped — cr_signal_gate no longer branches on it, it just prints the
+# advisory NOTE. 34b proves the skip stays green with the NOTE, 34c proves an
+# ordinary review still passes too, so the fix cannot be satisfied by breaking
+# `success`.
 run cr-skipped
-assert_rc 2 "34b skipped CodeRabbit review is not certifiable"
-assert_err_has "SKIPPED the review" "34b skip reason surfaced"
-assert_err_has "@coderabbitai review" "34b skip names the remedy"
+assert_rc 0 "34b skipped CodeRabbit review is advisory only, not a block (HIMMEL-3360)"
+assert_err_has "check-ci: NOTE — CodeRabbit skipped on head" "34b skip prints the advisory NOTE"
 
 run cr-completed
 assert_rc 0 "34c a genuinely completed review still certifies"
@@ -1131,31 +1122,21 @@ assert_rc 0 "34c a genuinely completed review still certifies"
 run cr-nearmiss
 assert_rc 0 "34d skip-ish wording on a COMPLETED review does not block"
 
-# 34e/34f — HIMMEL-1354, the SECOND drift of the 34b class. HIMMEL-1317 closed
-# the "automatic reviews are disabled" wording with a DENY-LIST of known-bad
-# descriptions. On 2026-07-28 CodeRabbit declined for RATE LIMITING and said so
-# in a wording that matched none of those alternatives, so it classified as a
-# clean success: `gh pr checks` bucketed it `pass` and check-ci printed
-# "all checks green" + "verdict exit=0" on PR #1456 @ 46358386 — a head whose
-# own cr-body-findings line, printed one line earlier, said there was NO
-# CodeRabbit review. A missed skip does not "degrade to yesterday": it certifies
-# unreviewed code as merge-ready.
-#
-# 34e pins that exact payload. 34f is the structural half and matters more: it
-# asserts the behaviour on a wording NOBODY enumerated. A deny-list is silent on
-# the unknown case by construction and passes it as clean; the allow-list fails
-# it closed. Without 34f this fix would be one more entry in a list that leaks
-# again the next time CodeRabbit invents a phrase.
-# Pin the DEFAULT allow/deny lists for 34e/34f. Both assert cr-signal.sh's
-# built-in fail-closed behaviour, so an ambient CR_OK_DESC_RE / CR_SKIP_DESC_RE
-# in the operator's shell must not leak in and decide the result — a
-# permissive inherited value would let these pass without exercising the
-# default at all. (CR review of this branch, 2026-07-28.)
+# 34e/34f — HIMMEL-1354, the SECOND drift of the 34b class, now retired by
+# HIMMEL-3360: a rate-limited decline (34e) and a wholly UNENUMERATED success
+# wording (34f) both project to the same state=skipped as 34b (cr-signal.sh's
+# classification is unchanged; only cr_signal_gate's reaction to it is), so
+# both now print the identical advisory NOTE and stay green — enumerated or
+# not, CodeRabbit's status never blocks. Pin the DEFAULT allow/deny lists: an
+# ambient CR_OK_DESC_RE / CR_SKIP_DESC_RE in the operator's shell must not
+# leak into cr-signal.sh's classification of $state.
 unset CR_OK_DESC_RE CR_SKIP_DESC_RE
 
-# Exact-head ledger fixtures for every panel-carry shape below. The empty repo
-# proves no rows preserve the existing fail-closed verdict; the clean repo has
-# one responder at the fixture head and no blocking finding.
+# Exact-head ledger fixtures — still consumed by the HIMMEL-3124 outside-diff
+# disposition cases below. The panel-carry mechanism that used to consume
+# them here (rate-limited/absent/skip signal carry) was removed by
+# HIMMEL-3360: CodeRabbit's status is advisory on its own now, with no panel
+# evidence needed to carry it.
 EMPTY_LEDGER_REPO=$(mktemp -d "$STUBDIR/empty-ledger.XXXXXX") || { echo "FATAL: mktemp -d failed"; exit 1; }
 git -C "$EMPTY_LEDGER_REPO" init --quiet
 git -C "$EMPTY_LEDGER_REPO" -c user.email=t@t -c user.name=t commit --allow-empty -m seed --quiet --no-verify
@@ -1192,138 +1173,43 @@ git -C "$CR_YAML_UNARMED_REPO" init --quiet
 printf 'reviews:\n  profile: chill\n' > "$CR_YAML_UNARMED_REPO/.coderabbit.yaml"
 git -C "$CR_YAML_UNARMED_REPO" add .coderabbit.yaml
 git -C "$CR_YAML_UNARMED_REPO" -c user.email=t@t -c user.name=t commit --quiet --no-verify -m seed
-DIRTY_LEDGER_REPO=$(mktemp -d "$STUBDIR/dirty-ledger.XXXXXX") || { echo "FATAL: mktemp -d failed"; exit 1; }
-git -C "$DIRTY_LEDGER_REPO" init --quiet
-git -C "$DIRTY_LEDGER_REPO" -c user.email=t@t -c user.name=t commit --allow-empty -m seed --quiet --no-verify
-printf '%s\n' \
-    '{"kind":"avail","ts":"2026-08-03T00:00:00Z","branch":"feat/x","head":"sha1","model":"codex","status":"ok","artifact":"diff","perspective":"off","responding_model":"gpt-5.5"}' \
-    '{"kind":"finding","ts":"2026-08-03T00:00:01Z","branch":"feat/x","head":"sha1","finding_id":"H1506-test","severity":"crit","verdict":"confirmed","artifact":"diff","perspective":"off"}' \
-    > "$DIRTY_LEDGER_REPO/.git/cr-critic-scores.jsonl"
 
-# HIMMEL-1506: automatic-reviews-disabled wording is panel-carriable at the
-# exact head, but an explicitly empty ledger preserves the existing exit-2
-# message and remedy.
-run_in_repo "$EMPTY_LEDGER_REPO" cr-skipped
-assert_rc 2 "34b2 disabled wording with no ledger rows stays blocked"
-assert_err_has "@coderabbitai review" "34b2 disabled-wording remedy is unchanged"
-run_in_repo "$LEDGER_REPO" cr-skipped
-assert_rc 0 "34b3 disabled wording with a clean exact-head panel is carried"
-assert_out_has "reports automatic reviews are disabled" "34b3 distinct disabled-signal carry line surfaced"
-assert_out_has "carried responders=1 models=codex" "34b3 carry evidence surfaced"
-
-# A description read failure is also an absent App signal: clean exact-head
-# panel evidence carries it; no ledger rows keep the prior cannot-evaluate path.
-run_in_repo "$EMPTY_LEDGER_REPO" cr-desc-error
-assert_rc 2 "34b4 unreadable description with no ledger rows stays blocked"
-assert_err_has "description could not be read" "34b4 unreadable-description message is unchanged"
-run_in_repo "$LEDGER_REPO" cr-desc-error
-assert_rc 0 "34b5 unreadable description with a clean exact-head panel is carried"
-assert_out_has "description is unreadable" "34b5 distinct unreadable-description carry line surfaced"
-assert_out_has "carried responders=1 models=codex" "34b5 carry evidence surfaced"
-
+# 34e — HIMMEL-3360 required case (b): CI green + 0 threads + CR rate-limited,
+# no ledger/panel evidence at all — the exact fixture the old panel-carry
+# mechanism needed evidence to certify. It is advisory on its own now.
 run_in_repo "$EMPTY_LEDGER_REPO" cr-ratelimited
-assert_rc 2 "34e rate-limited CodeRabbit review with no panel evidence is not certifiable"
-assert_err_has "rate-limited" "34e rate-limit reason surfaced"
-assert_err_has "did NOT carry the gate" "34e names the missing panel evidence (HIMMEL-1465)"
+assert_rc 0 "34e rate-limited CodeRabbit status is advisory only, no panel evidence needed (HIMMEL-3360)"
+assert_err_has "check-ci: NOTE — CodeRabbit skipped on head" "34e rate-limited (state=skipped) prints the advisory NOTE"
 
-# 34e2 (HIMMEL-1465) — the SAME rate-limited decline, but a CLEAN critic panel
-# recorded at the head in the CR ledger: the panel carries the gate and the
-# verdict certifies. The exact audit line is pinned byte-for-byte.
-run_in_repo "$LEDGER_REPO" cr-ratelimited
-assert_rc 0 "34e2 rate-limited App with a clean panel at the head is panel-carried (HIMMEL-1465)"
-assert_out_has "check-ci: CodeRabbit is rate-limited on head sha1 of PR #42; the critic panel carries the gate (carried responders=1 models=codex) — not failing the verdict on the App (HIMMEL-1465)." "34e2 existing rate-limit carry line is byte-identical"
-
+# 34f — the structural half: a wording NOBODY enumerated. Under the retired
+# allow-list this failed closed; HIMMEL-3360 made the status advisory
+# regardless of wording, enumerated or not.
 run cr-unknownword
-assert_rc 2 "34f an UNENUMERATED success wording fails closed, not open"
-assert_err_has "does not say the review completed" "34f allow-list reason surfaced"
-run_in_repo "$LEDGER_REPO" cr-unknownword
-assert_rc 0 "34f2 unenumerated skip wording with a clean exact-head panel is carried"
-assert_out_has "posted skip-classified wording" "34f2 distinct generic-skip carry line surfaced"
+assert_rc 0 "34f an UNENUMERATED success wording is advisory only, not a block (HIMMEL-3360)"
 
-# 3152-a/b — HIMMEL-3152. --escalate is documented as the remedy for an absent
-# or stale-anchored review, but cr_signal_gate's skip-classified branch exits
-# BEFORE review_freshness_gate (the only --escalate call site) ever runs — so
-# on PR #804 `--escalate` against a skip-classified status produced output
-# byte-identical to the same run without it: the flag was accepted and did
-# nothing. 3152-a pins the WITHOUT-flag baseline (no inapplicable-note text);
-# 3152-b is the SAME fixture WITH --escalate and must differ — a RED control
-# built on a stub that always agrees with itself would prove nothing.
-run_in_repo "$EMPTY_LEDGER_REPO" cr-skipped
-assert_rc 2 "3152-a skip-classified without --escalate: baseline refusal"
-if printf '%s' "$ERR" | grep -iF -- "--escalate does not apply" >/dev/null; then
-    fail "3152-a baseline carries no escalate-inapplicable note" "ERR: $ERR"
-else
-    pass "3152-a baseline carries no escalate-inapplicable note"
-fi
-run_in_repo "$EMPTY_LEDGER_REPO" cr-skipped --escalate
-assert_rc 2 "3152-b skip-classified WITH --escalate: same rc, but the output must differ from 3152-a"
-assert_err_has "--escalate does not apply here" "3152-b names --escalate as inapplicable, not silently ignored"
-assert_err_has "HIMMEL-1506" "3152-b names the sanctioned panel-carry route"
-assert_err_has "run /pr-check on this HEAD" "3152-b names the concrete remedy"
+# 3152-a/b/c/d (--escalate against a skip-classified/rate-limited status) and
+# 34g/34h/34i (the CR_OK_DESC_RE allow-list, its anchoring, and the adversarial
+# substring-match follow-ups) are gone: --escalate no longer exists
+# (scripts/check-ci.sh brief item 1) and cr_signal_gate no longer reads
+# CR_OK_DESC_RE/CR_SKIP_DESC_RE or calls cr_signal_description at all — every
+# one of those cases exercised machinery HIMMEL-3360 removed.
 
-# 3152-c — the rate-limited sub-case has its own exit-2 message (a distinct
-# call site from the shared skip message 3152-a/b exercises); it needs the
-# same note.
-run_in_repo "$EMPTY_LEDGER_REPO" cr-ratelimited --escalate
-assert_rc 2 "3152-c rate-limited skip WITH --escalate is also refused"
-assert_err_has "--escalate does not apply here" "3152-c rate-limited path names --escalate as inapplicable too"
+# HIMMEL-3360 required case (e): the removed --escalate flag is now an
+# unrecognized flag, sysexits EX_USAGE.
+run cr-completed --escalate
+assert_rc 64 "3360e --escalate is a removed flag, exit 64 usage (HIMMEL-3360)"
 
-# 3152-d — negative control: when the panel DOES carry the gate, --escalate
-# must not spuriously print the inapplicable note (the note lives on the
-# refusal path only, after the carry check has already returned 0).
-run_in_repo "$LEDGER_REPO" cr-skipped --escalate
-assert_rc 0 "3152-d panel-carried skip-classified state stays green with --escalate set"
-if printf '%s' "$OUT$ERR" | grep -iF -- "--escalate does not apply" >/dev/null; then
-    fail "3152-d carried path prints no inapplicable note" "OUT+ERR: $OUT$ERR"
-else
-    pass "3152-d carried path prints no inapplicable note"
-fi
-
-# 34g — the escape hatch that makes the allow-list safe to ship. If CodeRabbit
-# renames its success description, every PR blocks at once; the operator must be
-# able to clear that without a code change. Widening CR_OK_DESC_RE re-certifies
-# the otherwise-unknown wording from 34f.
-# Set + export explicitly rather than `VAR=x run ...`: `run` is a shell
-# function, and a prefix assignment on a function has version-dependent
-# persistence in bash. cr-signal.sh reads CR_OK_DESC_RE at SOURCE time in the
-# child, so it must be exported before the child starts.
-export CR_OK_DESC_RE='review completed|review deferred for reasons'
-run cr-unknownword
-assert_rc 0 "34g CR_OK_DESC_RE widens the allow-list without a code change"
-unset CR_OK_DESC_RE
-
-# 34h — CR follow-up (HIMMEL-1354 R2): the allow-list is consumed via jq's
-# test(), which is an UNANCHORED search, not a full-string match. A future
-# decline wording that merely CONTAINS an allow-listed phrase — e.g. "No
-# review completed" contains "review completed" — would substring-match the
-# allow-list and read as a clean success, reopening the exact hole this file
-# exists to close. Pins that the built-in DEFAULT is anchored (^...$) so only
-# an exact allow-listed description passes; CR_OK_DESC_RE (34g) stays a
-# free-form operator override, unaffected by anchoring the default.
-unset CR_OK_DESC_RE CR_SKIP_DESC_RE
-run cr-substrmatch
-assert_rc 2 "34h a description merely CONTAINING an allow-listed phrase fails closed"
-assert_err_has "SKIPPED the review" "34h substring-match reason surfaced"
-assert_err_has "does not say the review completed" "34h allow-list reason surfaced"
-
-# 34i — codex adversarial follow-up (HIMMEL-1354 R2): anchoring only the
-# built-in DEFAULT (34h) left the escape hatch itself unanchored, and
-# CR_OK_DESC_RE REPLACES the default's regex verbatim — so an operator who
-# widens the allow-list during an outage using the OLD documented recipe
-# (no anchors) re-admits the exact substring hole 34h just closed, on the
-# recovery path most likely to be exercised during that same drift. The
-# documented recipe (scripts/lib/cr-signal.sh's OUTAGE ESCAPE HATCH block) is
-# fixed here to carry its own ^(...)$ anchors; CR_OK_DESC_RE stays unanchored
-# IN CODE — forcing
-# an anchor there would break 34g's already-shipped loose partial-phrase
-# widening (a bare keyword matching an unenumerated FULL sentence), so the
-# anchors live in the recipe operators copy, not in code. Pins that following
-# the CURRENT documented recipe verbatim still fails closed on a description
-# that merely contains an allow-listed phrase.
-export CR_OK_DESC_RE='^(review completed|no review changes requested|review finished)$'
-run cr-substrmatch
-assert_rc 2 "34i the anchored documented recipe still fails closed on a substring match"
-unset CR_OK_DESC_RE
+# HIMMEL-3360 required case (d): CI green + ONE unresolved coderabbitai
+# thread + CR status absent — the thread gate still blocks even though the
+# CodeRabbit status gate is advisory-only; the two gates are independent.
+# The unconditional review_state_gate call at the top of the script (before
+# the watch, before cr_signal_gate ever runs) is what catches this constant
+# thread count, so cr_signal_gate's advisory NOTE never gets a chance to
+# print here — only a LATE-arriving thread (case 33) reaches it after.
+THREADS_OVERRIDE=1
+run cr-absent
+assert_rc 3 "3360d an unresolved thread still blocks with CR status absent"
+assert_err_has "unresolved review thread" "3360d thread-gate reason printed"
 
 # 33 — an unresolved thread landing DURING the watch (head SHA unmoved) is
 # caught by the post-watch review-state re-verification, not certified from
@@ -1509,29 +1395,61 @@ OD_REPO=$(mk_od_repo \
 BODY_FILE_OVERRIDE="$OD_BQ_BODY"; run_in_repo "$OD_REPO" body-file
 assert_rc 3 "R16 amend --set head= does not carry a disposition to the new head"
 
-# 39 — incremental-silent: CodeRabbit concluded on sha1 but emitted no review
-# object there, while a prior head carries outside-diff findings. This is the
-# resolvable rc 4 state, not the genuinely unreadable rc 2 state.
-run_in_repo "$EMPTY_LEDGER_REPO" body-a2
-assert_rc 4 "39 incremental-silent body state rc 4"
-assert_err_has "@coderabbitai full review" "39 full-review resolution printed"
-assert_verdict 4 "39 un-maskable exit 4 verdict line"
+# 39 — operator ruling (2026-09-21): best effort covers ABSENCE only. CodeRabbit
+# concluded on sha1 but emitted no review object there, while a PRIOR head
+# (shaOLD) carries a real outside-diff finding CodeRabbit DID post. That
+# finding still blocks until dispositioned — the gate now reads the governing
+# prior review (shaOLD) instead of the silent current head.
+BODY_FILE_OVERRIDE="$OD_BQ_BODY"; run_in_repo "$EMPTY_LEDGER_REPO" body-a2-file
+assert_rc 3 "39 a posted prior-head outside-diff finding still blocks (HIMMEL-3360 operator ruling)"
+assert_err_has "not dispositioned" "39 message reports the finding as not dispositioned"
+assert_err_has "latest review, at head shaOLD" "39 message names the governing prior head"
+assert_err_has "--head shaOLD" "39 recipe binds the finding to the governing prior head"
+assert_err_has "cr-od-39c3193c8945" "39 message lists the finding id"
 
-# HIMMEL-1502/1506: when the current-head review object is the ONLY missing
-# signal, resolved threads + a clean exact-head panel carry the gate. Either
-# unresolved threads or absent panel evidence preserves the prior block.
-run_in_repo "$LEDGER_REPO" body-a2
-assert_rc 0 "39b absent head review object with resolved threads and clean panel is carried"
-assert_out_has "check-ci: review object absent at head sha1 of PR #42; threads resolved; panel carries — HIMMEL-1502/1506 (carried responders=1 models=codex)." "39b exit-4 carry line byte-identical"
-assert_out_has "carried responders=1 models=codex" "39b exit-4 carry evidence surfaced"
+# 39a — the prior body is unparseable (header count present, no per-finding
+# items) — format drift, cannot certify, same as any other cannot-count shape.
+run_in_repo "$EMPTY_LEDGER_REPO" body-a2
+assert_rc 2 "39a unparseable prior body cannot certify (format drift)"
+assert_err_has "format drift" "39a message names format drift"
+
+# 39b — the SAME prior-head finding, but with a ledger disposition recorded at
+# the governing prior head (shaOLD, not sha1): allows, and the NOTE explains
+# why the current head carries no review of its own.
+OD_REPO=$(mk_od_repo "$(od_variant '.head="shaOLD"')")
+BODY_FILE_OVERRIDE="$OD_BQ_BODY"; run_in_repo "$OD_REPO" body-a2-file
+assert_rc 0 "39b a disposition at the governing prior head allows"
+assert_verdict 0 "39b un-maskable exit 0 verdict line"
+assert_err_has "NOTE — CodeRabbit posted no review at head sha1" "39b NOTE explains the absent current-head review"
+assert_err_has "all dispositioned" "39b NOTE confirms the prior review is fully dispositioned"
+
+# 39b2 — a `fixed` row whose sha cannot be verified against this head (stub
+# head sha1 is not a commit) stays blocked; the positive fixed-disposition
+# path (a reason sha that resolves and is an ancestor of the current head) is
+# covered in scripts/lib/test-cr-ledger-evidence.sh, not here.
+OD_REPO=$(mk_od_repo "$(od_variant '.head="shaOLD" | .verdict="fixed" | .reason="fixed in deadbeef1234"')")
+BODY_FILE_OVERRIDE="$OD_BQ_BODY"; run_in_repo "$OD_REPO" body-a2-file
+assert_rc 3 "39b2 a fixed row whose sha cannot be verified against this head stays blocked"
+
+# 39b3 — the disposition sits at the WRONG head (sha1, the certified head that
+# carries no review) instead of the governing prior head (shaOLD): still blocks.
+OD_REPO=$(mk_od_repo "$(od_variant '.head="sha1"')")
+BODY_FILE_OVERRIDE="$OD_BQ_BODY"; run_in_repo "$OD_REPO" body-a2-file
+assert_rc 3 "39b3 a disposition at the wrong head does not clear the finding"
+
+# 39d — an unrelated ledger (LEDGER_REPO carries only an avail row, no finding
+# for this id) does not disposition the finding either.
+BODY_FILE_OVERRIDE="$OD_BQ_BODY"; run_in_repo "$LEDGER_REPO" body-a2-file
+assert_rc 3 "39d unrelated ledger rows do not disposition the finding"
+BODY_FILE_OVERRIDE=
+
+# 39c — unresolved threads still block this same body shape; the thread gate
+# is untouched by HIMMEL-3360 and stays orthogonal to CodeRabbit's status.
 THREADS_OVERRIDE=2
 run_in_repo "$LEDGER_REPO" body-a2
-assert_rc 3 "39c unresolved threads still block despite clean panel evidence"
+assert_rc 3 "39c unresolved threads still block despite an incremental-silent body"
 assert_err_has "2 unresolved review thread(s)" "39c unresolved-thread reason is unchanged"
 THREADS_OVERRIDE=
-run_in_repo "$DIRTY_LEDGER_REPO" body-a2
-assert_rc 4 "39d a blocking panel finding keeps the absent-review-object arm blocked"
-assert_err_has "@coderabbitai full review" "39d dirty-ledger exit-4 remedy is unchanged"
 
 # 40 — --threads-only now ALSO runs the body gate (previously skipped head
 # binding entirely, S1 was invisible here too): an outside-diff finding
@@ -1579,143 +1497,16 @@ run body-empty
 assert_rc 0 "43 benign zero-head-review shape stays green"
 assert_out_has "all checks green + all review threads resolved" "43 benign shape reaches normal success"
 
-# 87 (HIMMEL-1374) — the PR #1463 shape: CodeRabbit's status says "Review
-# completed" while the PR carries ZERO CodeRabbit reviews, at any head, ever
-# (freshness `none`), and no walkthrough certifies the head. "Completed" cannot
-# be incremental when there is nothing to be incremental TO, so the two signals
-# contradict each other: cannot evaluate (2), never the exit 0 this certified
-# before. This is the HIMMEL-1354 class one layer up — each component was
-# individually right, and nothing asked "was there ever a review at all?".
-FRESHNESS_OVERRIDE=none
-run cr-completed
-assert_rc 2 "87 completed status with zero PR-wide reviews cannot be evaluated (HIMMEL-1374)"
-assert_err_has "no CodeRabbit review object at any head" "87 refusal names the zero-reviews-ever shape"
-assert_err_has "full review" "87 refusal names the remedy"
+# 87/88 (HIMMEL-1374/HIMMEL-1465) are gone: both exercised
+# review_freshness_gate's `none` (zero-reviews-ever) discrimination, which
+# HIMMEL-3360 removed along with the rest of the freshness gate — a
+# "completed" status with zero PR-wide reviews is now advisory the same as
+# every other shape, cannot-evaluate no longer applies.
 
-# 88 — the composition guard the fix must NOT break (HIMMEL-1465, live on PRs
-# #1759/#1760 on 2026-08-20): a RATE-LIMITED App also has zero reviews PR-wide,
-# but it never claimed a completed review — cr_signal_gate leaves that shape
-# through the panel carry, not through `success` — so the clean exact-head
-# critic panel still carries the gate and the verdict certifies.
-FRESHNESS_OVERRIDE=none
-run_in_repo "$LEDGER_REPO" cr-ratelimited
-assert_rc 0 "88 rate-limited App with zero PR-wide reviews is still panel-carried"
-assert_out_has "the critic panel carries the gate" "88 rate-limit carry line still surfaced"
-
-# 89 — the discriminator's negative control: the SAME "Review completed" status
-# and the SAME zero review objects at the head (the REST reviews fixture is
-# empty), but a bot review DOES exist on the PR (freshness `fresh`). That is
-# the ordinary incremental case — there IS something to be incremental to — so
-# it must stay green. Without this, case 87 could be satisfied by blocking
-# every zero-at-head PR, which is the false-BLOCK half of the same failure.
+# 89 — a "Review completed" status stays green regardless of PR-wide review
+# history (the freshness discrimination 87/88 used to add is gone).
 run cr-completed
 assert_rc 0 "89 completed status with a PR-wide review present stays green"
-
-# 44 — opt-in escalation CLAIMS the head, wins (no competing claim), and then
-# posts exactly one full-review request; a clean review object appears on the
-# immediate bounded re-read. Two comments now, not one (HIMMEL-1964): the claim
-# marker is its own comment posted BEFORE the request, which is what makes the
-# request single-flight.
-run_in_repo "$EMPTY_LEDGER_REPO" body-a2-escalate --escalate
-assert_rc 0 "44 escalation resolves incremental-silent state"
-posts=$(cat "$STUBDIR/comments" 2>/dev/null); posts=${posts:-0}
-if [ "$posts" -eq 2 ]; then pass "44 escalation posts one claim + one request"; else fail "44 escalation posts one claim + one request" "posts=$posts want 2"; fi
-claim_ln=$(grep -n -F -- '<!-- himmel:cr-escalate:sha1 attempt=1 -->' "$STUBDIR/args.log" | head -1 | cut -d: -f1)
-req_ln=$(grep -n -F -- 'body=@coderabbitai full review' "$STUBDIR/args.log" | head -1 | cut -d: -f1)
-if [ -n "$claim_ln" ] && [ -n "$req_ln" ] && [ "$claim_ln" -lt "$req_ln" ]; then
-    pass "44 claim marker is posted BEFORE the full-review request"
-else
-    fail "44 claim marker is posted BEFORE the full-review request" "args.log: $(cat "$STUBDIR/args.log")"
-fi
-
-# 45 — a retry on the same head sees the exact marker and waits without
-# posting again; the subsequent read can still complete the normal gate.
-run_in_repo "$EMPTY_LEDGER_REPO" body-a2-marker --escalate
-assert_rc 0 "45 existing marker still evaluates the refreshed review"
-posts=$(cat "$STUBDIR/comments" 2>/dev/null); posts=${posts:-0}
-if [ "$posts" -eq 0 ]; then pass "45 existing marker suppresses duplicate post"; else fail "45 existing marker suppresses duplicate post" "posts=$posts want 0"; fi
-assert_err_has "already requested" "45 existing marker path is surfaced"
-# The fixture marker is the PRE-HIMMEL-1964 shape (no attempt= field); it must
-# read as attempt 1 so an in-flight head from an older check-ci keeps its one
-# remaining retry rather than starting the pair over.
-assert_err_has "(attempt 1)" "45 legacy attempt-less marker reads as attempt 1"
-
-# 46 — bounded escalation never turns a missing review object into success.
-# A zero-second budget makes the timeout immediate and hermetic.
-run_in_repo "$EMPTY_LEDGER_REPO" body-a2-timeout --escalate
-assert_rc 4 "46 escalation timeout rc 4"
-assert_err_has "DO-NOT-MERGE" "46 timeout is loud and merge-blocking"
-assert_verdict 4 "46 timeout prints exit 4 verdict"
-
-# 47 — tuning knobs are not gate inputs: a malformed wait warns and falls back
-# at the case-guard, and a zero poll against the resulting positive wait budget
-# is caught by the cross-check, while the immediate refreshed review still
-# reaches normal evaluation. CR_ESCALATE_POLL=0 (no sleep between re-reads) is
-# what makes the case exercise this validation path fast rather than waiting on
-# the fallen-back 120s poll (HIMMEL-1219).
-ESCALATE_WAIT_OVERRIDE=soon
-ESCALATE_POLL_OVERRIDE=0
-run_in_repo "$EMPTY_LEDGER_REPO" body-a2-escalate --escalate
-assert_rc 0 "47 invalid escalation tuning still evaluates"
-assert_err_has "CR_ESCALATE_WAIT='soon'" "47 invalid wait warns + falls back"
-assert_err_has "CR_ESCALATE_POLL=0 is invalid" "47 zero poll vs positive wait warns + falls back"
-
-# 48 — escalation resolves only unreadability. A refreshed review carrying a
-# real outside-diff finding still flows through the normal rc 3 body gate.
-run_in_repo "$EMPTY_LEDGER_REPO" body-a2-escalate-outside --escalate
-assert_rc 3 "48 escalated outside-diff finding still blocks"
-assert_err_has "outside-diff-range finding" "48 refreshed finding reaches normal evaluation"
-
-# 49 — a full review may also create inline threads after the normal thread
-# snapshot. Escalation must re-run that gate before it can certify success.
-THREADS_OVERRIDE=escalatethread
-run_in_repo "$EMPTY_LEDGER_REPO" body-a2-escalate --escalate
-assert_rc 3 "49 escalated inline finding still blocks"
-assert_err_has "unresolved review thread" "49 full-review thread re-check runs"
-
-# 50 — zero is not a valid poll interval for a positive wait budget: it falls
-# back before the loop, so the stale-review fixture gets no API-hammering burst.
-ESCALATE_WAIT_OVERRIDE=1
-ESCALATE_POLL_OVERRIDE=0
-# The one case that opts back into a REAL sleep (HIMMEL-1953): the read count
-# below is reads-per-interval, which only means anything against an interval
-# that passes. The budget is 1 second, so that is all this costs.
-SLEEP_CMD_OVERRIDE="sleep"
-run_in_repo "$EMPTY_LEDGER_REPO" body-a2-timeout --escalate
-assert_rc 4 "50 zero escalation poll still times out"
-assert_err_has "CR_ESCALATE_POLL=0 is invalid" "50 zero escalation poll warns + falls back"
-reads=$(cat "$STUBDIR/reviews" 2>/dev/null); reads=${reads:-0}
-if [ "$reads" -ge 2 ] && [ "$reads" -le 3 ]; then
-    pass "50 zero escalation poll bounds body reads"
-else
-    fail "50 zero escalation poll bounds body reads" "reads=$reads want 2..3"
-fi
-
-# 51 — leading-zero waits PASS the all-digits guard but crash the budget
-# arithmetic: bash reads a leading 0 as OCTAL in $(( )), so without the
-# base-10 normalization $((08 - elapsed)) aborts with "value too great for
-# base". body-a2-timeout drives the loop through that arithmetic, so this
-# case proves 08 reaches a normal rc 4 timeout instead of erroring (HIMMEL-1219).
-ESCALATE_WAIT_OVERRIDE=08
-ESCALATE_POLL_OVERRIDE=0
-run_in_repo "$EMPTY_LEDGER_REPO" body-a2-timeout --escalate
-assert_rc 4 "51 leading-zero wait 08 evaluates (no octal crash)"
-assert_err_has "waiting up to 8s" "51 wait 08 normalized to decimal 8"
-if printf '%s' "$ERR" | grep -F -- "value too great for base" >/dev/null; then
-    fail "51 wait 08 did not crash the budget arithmetic" "stderr leaked a bash arithmetic error"
-else
-    pass "51 wait 08 did not crash the budget arithmetic"
-fi
-
-# 52 — 007 carries no 8/9 digit so it never crashes, yet read as octal it is
-# silently 7 — coincidentally right for 007, wrong for any 01x value. The
-# base-10 normalization forces decimal interpretation, so the budget reports
-# 7s rather than the literal "007s" (HIMMEL-1219).
-ESCALATE_WAIT_OVERRIDE=007
-ESCALATE_POLL_OVERRIDE=0
-run_in_repo "$EMPTY_LEDGER_REPO" body-a2-escalate --escalate
-assert_rc 0 "52 leading-zero wait 007 still evaluates"
-assert_err_has "waiting up to 7s" "52 wait 007 normalized to decimal 7 (not octal)"
 
 # ── HIMMEL-1125: the availability gate ────────────────────────────────────────
 # CR_APP=0 stubs "CodeRabbit is not configured for this repo" (no CLI, no App),
@@ -1772,345 +1563,14 @@ fi
 # insensitivity so a future change wiring either var into check-ci.sh fails
 # HERE (the block-case reads rc 0) rather than failing every block-case open.
 # The startup unset above is the matching defense-in-depth.
+# HIMMEL-3360: cr-absent no longer blocks (CodeRabbit status is advisory), so
+# it can no longer serve as this canary's block-case; a thread-query failure
+# (cannot-evaluate, rc 2) is orthogonal to CR status and still blocks.
 export ARMAUTOMERGE=1 CR_MERGE_GATE_OK=1
-run cr-absent
+THREADS_OVERRIDE=fail
+run register-then-green
 assert_rc 2 "58 armed bypass env does not open a block-case (HIMMEL-1495)"
 unset ARMAUTOMERGE CR_MERGE_GATE_OK
-
-# ── HIMMEL-1181 (B2): review-freshness gate — checks/threads/body all clean
-# on every mode below (body-empty: watch green, CR status success, 0
-# unresolved threads, no body findings), so these exercise the freshness
-# gate in isolation. Base mode is body-empty rather than the earlier cr-*
-# modes because the freshness READER itself is driven by GH_STUB_FRESHNESS,
-# independent of GH_STUB_MODE — any clean base mode works. ──────────────────
-
-# 59 — threads-only, fresh: rc 0, success line names the anchored review.
-FRESHNESS_OVERRIDE=fresh
-run body-empty --threads-only
-assert_rc 0 "59 threads-only fresh review: rc 0"
-assert_out_has "fresh coderabbitai review @ sha1" "59 success line names the fresh anchor"
-
-# 59b — HIMMEL-3123: the only bot object at the head is a body-empty thread
-# reply (comments=1). The verdict is UNCHANGED (rc 0 — the state stays fresh),
-# but the summary must not claim a fresh REVIEW: it says thread activity only.
-FRESHNESS_OVERRIDE=threadsonly
-run body-empty --threads-only
-assert_rc 0 "59b threads-only fresh, body-empty reply at head: rc 0 (verdict unchanged)"
-assert_out_has "fresh thread activity only by coderabbitai @ sha1" "59b summary says thread activity only"
-if printf '%s' "$OUT" | grep -iF -- "fresh coderabbitai review" >/dev/null; then
-    fail "59b summary must not claim a fresh coderabbitai review at a head with no review body"
-else
-    pass "59b summary does not claim a fresh coderabbitai review"
-fi
-
-# 60 — threads-only, stale: rc 4, remedy names both the stale and head SHAs
-# and is DISTINCT wording from rc 3 (no thread to resolve here).
-FRESHNESS_OVERRIDE=stale
-run body-empty --threads-only
-assert_rc 4 "60 threads-only stale review: rc 4"
-assert_err_has "shaOLD" "60 stale reason names the stale anchor"
-assert_err_has "sha1" "60 stale reason names the head"
-assert_err_has "never re-reviewed" "60 stale reason names the remedy"
-
-# 61 — full mode: freshness blocks even when the checks + CR status gates
-# both already passed (the exact PR #1273 shape — "green" was not enough).
-FRESHNESS_OVERRIDE=stale
-run body-empty
-assert_rc 4 "61 full mode stale review blocks after checks+status pass"
-
-# 62 — threads-only, none (zero bot reviews on the whole PR, at any head,
-# ever). HIMMEL-1374: this used to self-skip to rc 0, which is precisely the
-# PR #1463 defect — `body-empty` posts a genuine "review completed" status, so
-# a self-skip here certifies a PR nobody ever reviewed. With no walkthrough to
-# certify the head either, the two signals contradict: rc 2. The self-skip
-# survives only where nothing CLAIMS a review happened (case 88, the
-# panel-carried rate-limit). --threads-only runs the same gate, so /pr-check
-# step 4.8 gets the same protection as the full run.
-FRESHNESS_OVERRIDE=none
-run body-empty --threads-only
-assert_rc 2 "62 threads-only zero-reviews-ever with a completed status: rc 2 (HIMMEL-1374)"
-assert_err_has "no CodeRabbit review object at any head" "62 refusal names the zero-reviews-ever shape"
-
-# 63 — threads-only, the freshness query itself fails: fail CLOSED, rc 2.
-FRESHNESS_OVERRIDE=fail
-run body-empty --threads-only
-assert_rc 2 "63 threads-only freshness query failure: rc 2 (fail-closed)"
-
-# 64 — threads-only, paged (>100 reviews, no bot match in the newest 100):
-# indeterminate, fail CLOSED, rc 2 — never silently "none".
-FRESHNESS_OVERRIDE=paged
-run body-empty --threads-only
-assert_rc 2 "64 threads-only paged freshness window: rc 2 (fail-closed)"
-
-# 65 — CR_PROFILE=none skips the freshness gate together with the other
-# CodeRabbit gates: a stale fixture must not block, and no reviews(last:)
-# call should even be made (fully skipped, not merely tolerated).
-FRESHNESS_OVERRIDE=stale
-CR_PROFILE_OVERRIDE=none
-run body-empty --threads-only
-assert_rc 0 "65 CR_PROFILE=none skips the freshness gate too"
-if grep -q "reviews(last:" "$STUBDIR/args.log" 2>/dev/null; then
-    fail "65 CR_PROFILE=none still queried review freshness"
-else
-    pass "65 CR_PROFILE=none made no reviews(last:) call"
-fi
-if grep -q -- "--json changedFiles" "$STUBDIR/args.log" 2>/dev/null \
-   || grep -q -- "--paginate repos/octo/demo/pulls/42/files" "$STUBDIR/args.log" 2>/dev/null; then
-    fail "65 CR_PROFILE=none still queried the changed-file list"
-else
-    pass "65 CR_PROFILE=none made no changed-file-list call"
-fi
-
-# 66 — CR_BOT_LOGINS honors a configured non-default bot login.
-FRESHNESS_OVERRIDE=mybot
-CR_BOT_LOGINS_OVERRIDE=mybot
-run body-empty --threads-only
-assert_rc 0 "66 CR_BOT_LOGINS=mybot: configured bot recognized as fresh"
-
-# 67 — CR_BOT_LOGINS normalizes case AND a trailing [bot] suffix: the fixture
-# itself is unchanged (still the default 'coderabbitai' fresh shape); only
-# the configured spelling varies.
-FRESHNESS_OVERRIDE=fresh
-CR_BOT_LOGINS_OVERRIDE="CodeRabbitAI[bot]"
-run body-empty --threads-only
-assert_rc 0 "67 CR_BOT_LOGINS normalizes case + [bot] suffix"
-
-# 68 — a review with a null/empty commit anchor cannot be certified fresh OR
-# stale: fail CLOSED, rc 2 (distinct from 'none' — a review object EXISTS,
-# it just cannot be anchored).
-FRESHNESS_OVERRIDE=nulloid
-run body-empty --threads-only
-assert_rc 2 "68 threads-only unanchored (null oid) review: rc 2 (fail-closed)"
-
-# 69 — thread gate wins over freshness: unresolved threads AND a stale
-# review both hold, but rc 3 (fix the thread) is the reported remedy, not
-# rc 4 (the thread gate runs before the freshness gate in both modes).
-FRESHNESS_OVERRIDE=stale
-THREADS_OVERRIDE=2
-run body-empty --threads-only
-assert_rc 3 "69 unresolved threads + stale review: rc 3 (thread gate first)"
-
-# ── HIMMEL-1718/2162: a stale review is carried by the EXISTING exact-head
-# ledger evidence — the DEFAULT for this shape regardless of risk classification
-# (HIMMEL-2162 retired the interim CHECK_CI_FRESHNESS_CARRY_HIGH_RISK knob: it
-# only ever gated whether a high-risk diff could reach the panel-carry check,
-# never bypassed the need for real panel evidence, so making the check
-# unconditional left it with no remaining job). FAIL-CLOSED PRESERVED: no
-# panel row at THIS head still exits 4, high-risk or not. ────────────────────
-
-# 70 — no panel evidence preserves exit 4 and names the exact full-review remedy.
-FRESHNESS_OVERRIDE=stale
-run_in_repo "$EMPTY_LEDGER_REPO" body-empty --threads-only
-assert_rc 4 "70 stale review + empty ledger stays rc 4"
-assert_err_has "shaOLD" "70 stale refusal names the stale anchor"
-assert_err_has "sha1" "70 stale refusal names the head"
-assert_err_has "@coderabbitai full review" "70 stale refusal names the full-review remedy"
-
-# 71 — ordinary diff + clean exact-head panel carries freshness, with provenance.
-FRESHNESS_OVERRIDE=stale
-FILES_OVERRIDE=README.md
-run_in_repo "$LEDGER_REPO" body-empty --threads-only
-assert_rc 0 "71 stale review + clean panel + ordinary diff is carried"
-assert_out_has "FRESHNESS panel carry stale_anchor=shaOLD head=sha1" "71 freshness carry names stale and head anchors"
-assert_out_has "responders=1 models=codex" "71 freshness carry surfaces responders and models"
-assert_out_has "freshness panel-carried stale shaOLD -> head sha1" "71 success line names the freshness carry"
-
-# 72 — a HIGH-RISK diff is carried too, by DEFAULT (HIMMEL-2162 — no knob
-# needed). The suite's top-level unset proves no ambient operator value
-# decides this; the loud line still names the risk classification for audit.
-FRESHNESS_OVERRIDE=stale
-FILES_OVERRIDE=scripts/hooks/foo.sh
-run_in_repo "$LEDGER_REPO" body-empty --threads-only
-assert_rc 0 "72 stale review + high-risk diff is carried by default"
-assert_out_has "LOUD" "72 high-risk carry is loudly audited"
-assert_out_has "scripts/hooks/foo.sh" "72 loud carry line names the high-risk path"
-assert_out_has "HIMMEL-2162" "72 loud carry line cites the ticket"
-
-# 73 — blocking ledger evidence never carries an otherwise ordinary diff.
-FRESHNESS_OVERRIDE=stale
-FILES_OVERRIDE=README.md
-run_in_repo "$DIRTY_LEDGER_REPO" body-empty --threads-only
-assert_rc 4 "73 stale review + dirty panel stays rc 4"
-assert_err_has "blocking:" "73 dirty-panel refusal surfaces the ledger reason"
-
-# 74 — an unreadable file-list classification (query failure) no longer
-# blocks the carry: risk classification is diagnostic only now (HIMMEL-2162).
-FRESHNESS_OVERRIDE=stale
-FILES_OVERRIDE=fail
-run_in_repo "$LEDGER_REPO" body-empty --threads-only
-assert_rc 0 "74 unreadable changed-file list is carried by a clean panel"
-assert_out_has "LOUD" "74 unreadable-classification carry is loudly audited"
-
-# 75 — gh silently caps files at 100; a truncated changedFiles list is
-# likewise diagnostic-only now, not a block, when the panel carries.
-FRESHNESS_OVERRIDE=stale
-FILES_OVERRIDE=truncated
-run_in_repo "$LEDGER_REPO" body-empty --threads-only
-assert_rc 0 "75 truncated changed-file list is carried by a clean panel"
-assert_out_has "LOUD" "75 truncated-classification carry is loudly audited"
-
-# ── HIMMEL-1698: B2 stale-anchor escalation ───────────────────────────────────
-
-# 77 — --escalate posts the full-review request once, then the independent
-# body + freshness re-reads both expose a review anchored at the head.
-FRESHNESS_OVERRIDE=staleflip
-run_in_repo "$EMPTY_LEDGER_REPO" body-b2-escalate --threads-only --escalate
-assert_rc 0 "77 B2 escalation refreshes the stale anchor"
-if grep -F -- '@coderabbitai full review' "$STUBDIR/args.log" >/dev/null \
-    && grep -F -- '<!-- himmel:cr-escalate:sha1 attempt=1 -->' "$STUBDIR/args.log" >/dev/null; then
-    pass "77 B2 escalation body carries command + head claim marker"
-else
-    fail "77 B2 escalation body carries command + head claim marker" "args.log: $(cat "$STUBDIR/args.log")"
-fi
-assert_out_has "(escalated)" "77 success line identifies the escalated freshness review"
-
-# 78 — a review object can land at the head while the freshness reader still
-# reports a stale latest anchor. That contradiction stays fail-closed.
-FRESHNESS_OVERRIDE=stale
-run_in_repo "$EMPTY_LEDGER_REPO" body-b2-escalate --threads-only --escalate
-assert_rc 4 "78 B2 escalated review still stale rc 4"
-assert_err_has "STILL not anchored" "78 stale post-escalation anchor is explicit"
-
-# 79 — if no review object lands inside the budget, reuse the helper's existing
-# loud timeout rather than falling through to stale-anchor tolerance.
-FRESHNESS_OVERRIDE=stale
-ESCALATE_WAIT_OVERRIDE=0
-run_in_repo "$EMPTY_LEDGER_REPO" body-b2-timeout --threads-only --escalate
-assert_rc 4 "79 B2 escalation timeout rc 4"
-assert_err_has "DO-NOT-MERGE — no substantive CodeRabbit review is visible" "79 B2 timeout uses the existing merge-blocking message"
-
-# 80 — without explicit opt-in, B2 remains a read-only observer.
-FRESHNESS_OVERRIDE=stale
-run_in_repo "$EMPTY_LEDGER_REPO" body-empty --threads-only
-assert_rc 4 "80 B2 without escalation stays rc 4"
-posts=$(cat "$STUBDIR/comments" 2>/dev/null); posts=${posts:-0}
-if [ "$posts" -eq 0 ]; then pass "80 B2 default path posts no comments"; else fail "80 B2 default path posts no comments" "posts=$posts want 0"; fi
-
-# 81 — a body review already exists at the head while freshness calls another
-# review latest: escalation cannot repair that contradiction, so spend nothing.
-FRESHNESS_OVERRIDE=stale
-run_in_repo "$EMPTY_LEDGER_REPO" body-b2-head-review --threads-only --escalate
-assert_rc 4 "81 B2 contradictory head review stays rc 4"
-posts=$(cat "$STUBDIR/comments" 2>/dev/null); posts=${posts:-0}
-if [ "$posts" -eq 0 ]; then pass "81 contradictory B2 shape posts no comments"; else fail "81 contradictory B2 shape posts no comments" "posts=$posts want 0"; fi
-
-# 82 — the full review can reveal a body-only outside-diff finding. The explicit
-# cr_body_gate re-run must preserve its rc 3 block before freshness can certify.
-FRESHNESS_OVERRIDE=staleflip
-run_in_repo "$EMPTY_LEDGER_REPO" body-b2-escalate-outside --threads-only --escalate
-assert_rc 3 "82 B2 escalated outside-diff finding blocks"
-assert_err_has "outside-diff-range finding" "82 refreshed B2 finding reaches the body gate"
-
-# 83 — HIMMEL-1698: cr_signal_gate concludes success on head sha1 (the stub's
-# default statuses shape, same as case 77), so a B2 escalation on that head
-# must surface the benign-stale-anchor NOTE on stderr — DIAGNOSTIC ONLY, the
-# escalation still fires and the exit code stays the rc 0 case 77 already
-# pins (a NOTE that changed the verdict would be exactly the gate-condition
-# regression the header on review_freshness_gate forbids).
-FRESHNESS_OVERRIDE=staleflip
-run_in_repo "$EMPTY_LEDGER_REPO" body-b2-escalate --threads-only --escalate
-assert_rc 0 "83 B2 escalation with concluded head status stays rc 0"
-assert_err_has "NOTE — CodeRabbit's status on head sha1 already reads a completed review" "83 benign-stale-anchor note is emitted"
-
-# 84 — HIMMEL-1959: an EMPTY review object at the head is review evidence, but
-# it is not the full review the escalation asked for. Before the fix the poll
-# exited on head_reviews>0 and this returned rc 0 — a false GREEN certified off
-# a review that said nothing, while the requested full review was still pending
-# or had failed. The race is pre-existing in the A2 path (HIMMEL-1126); B2
-# (HIMMEL-1698) widens exposure to it rather than introducing it.
-ESCALATE_WAIT_OVERRIDE=1
-ESCALATE_POLL_OVERRIDE=0
-run_in_repo "$EMPTY_LEDGER_REPO" body-a2-escalate-empty --escalate
-assert_rc 4 "84 empty review object at head does not satisfy the escalation"
-assert_err_has "an empty incremental review is not the full review that was requested" \
-    "84 refusal names the empty-object shape"
-
-# 85 — HIMMEL-1959 CR round 1: the empty review object PERSISTS across
-# invocations. Case 84 covers one run; this covers the next one, where that
-# object is already at the head on the first read. Keying A2's entry on
-# head_reviews made run 2 skip escalation, read outside=0 from a body that does
-# not exist, and let the freshness gate certify the empty object as
-# head-anchored — exit 0 on a full review that never arrived. Entry is keyed on
-# `substantive` so both ends of the guard agree on what counts as a review.
-ESCALATE_WAIT_OVERRIDE=1
-ESCALATE_POLL_OVERRIDE=0
-run_in_repo "$EMPTY_LEDGER_REPO" body-a2-empty-persisted --escalate
-assert_rc 4 "85 persisted empty review still triggers escalation"
-
-# 86 — the same persisted state without --escalate stays a read-only rc 4
-# rather than falling through to a green verdict.
-run_in_repo "$EMPTY_LEDGER_REPO" body-a2-empty-persisted
-assert_rc 4 "86 persisted empty review refuses without escalation"
-assert_err_has "none carrying a body" \
-    "86 refusal names the empty-object shape"
-
-# ── HIMMEL-1964: single-flight claim + bounded retry ──────────────────────────
-
-# 90 — TWO callers, ONE request. Our claim lands (id 1001) and the re-read of
-# the claims at this attempt exposes a competing claim with a LOWER id (1000) —
-# the caller that got there first. The loser must NOT spend a second full
-# review out of account-wide CodeRabbit capacity; it drops straight into the
-# poll and rides the winner's review, which is what makes the two-caller
-# outcome identical to the one-caller outcome.
-MARKERS_OVERRIDE="race:1000:1"
-run_in_repo "$EMPTY_LEDGER_REPO" body-a2-escalate --escalate
-assert_rc 0 "90 losing claimant still evaluates the winner's review"
-posts=$(cat "$STUBDIR/comments" 2>/dev/null); posts=${posts:-0}
-if [ "$posts" -eq 1 ]; then pass "90 losing claimant posts its claim and nothing else"; else fail "90 losing claimant posts its claim and nothing else" "posts=$posts want 1"; fi
-if grep -F -- 'body=@coderabbitai full review' "$STUBDIR/args.log" >/dev/null; then
-    fail "90 losing claimant never posts the full-review request" "args.log: $(cat "$STUBDIR/args.log")"
-else
-    pass "90 losing claimant never posts the full-review request"
-fi
-assert_err_has "claim #1000 beats #1001" "90 lost race names both claim ids"
-# The losing claim is WITHDRAWN: left behind it would read as a spent attempt to
-# every later invocation and cost the head one of its two requests.
-if grep -F -- '-X DELETE repos/octo/demo/issues/comments/1001' "$STUBDIR/args.log" >/dev/null; then
-    pass "90 losing claimant withdraws its claim"
-else
-    fail "90 losing claimant withdraws its claim" "args.log: $(cat "$STUBDIR/args.log")"
-fi
-
-# 91 — the STRAND, first half. A previous invocation claimed attempt 1 and its
-# request never produced a substantive review; this run's own poll window
-# expires on that claim too. Before HIMMEL-1964 the marker was permanent and
-# every later run timed out forever on the same dead request. One controlled
-# re-request is now allowed: claim attempt 2, post the command once, exit 4.
-MARKERS_OVERRIDE="seed:900:1"
-run_in_repo "$EMPTY_LEDGER_REPO" body-a2-timeout --escalate
-assert_rc 4 "91 stranded attempt 1 re-requests and stays merge-blocking"
-posts=$(cat "$STUBDIR/comments" 2>/dev/null); posts=${posts:-0}
-if [ "$posts" -eq 2 ]; then pass "91 strand retry posts one claim + one request"; else fail "91 strand retry posts one claim + one request" "posts=$posts want 2"; fi
-if grep -F -- '<!-- himmel:cr-escalate:sha1 attempt=2 -->' "$STUBDIR/args.log" >/dev/null; then
-    pass "91 strand retry claims attempt 2"
-else
-    fail "91 strand retry claims attempt 2" "args.log: $(cat "$STUBDIR/args.log")"
-fi
-assert_err_has "attempt 2" "91 strand retry names the attempt in its refusal"
-
-# 92 — the STRAND, terminal half. Attempt 2 has also gone a full window without
-# a substantive review, so the head is stranded: refuse LOUDLY, name the manual
-# remedy, and spend NOTHING — two requests per head is the cap, and a third
-# would be the unbounded loop this ticket exists to prevent.
-MARKERS_OVERRIDE="seed:900:2"
-run_in_repo "$EMPTY_LEDGER_REPO" body-a2-timeout --escalate
-assert_rc 4 "92 stranded attempt 2 stays merge-blocking"
-posts=$(cat "$STUBDIR/comments" 2>/dev/null); posts=${posts:-0}
-if [ "$posts" -eq 0 ]; then pass "92 stranded head requests no third review"; else fail "92 stranded head requests no third review" "posts=$posts want 0"; fi
-assert_err_has "STRANDED" "92 strand is named, not silently timed out"
-assert_err_has "Push a new commit" "92 strand refusal names the manual remedy"
-
-# 93 — the partial failure INSIDE the claim (codex panel r1): the claim wins,
-# then the full-review POST fails. Leaving that claim behind would consume one
-# of the two attempts while spending no request at all — this ticket's own bug,
-# one layer in — so the claim is rolled back before the fail-closed exit 2.
-run_in_repo "$EMPTY_LEDGER_REPO" body-a2-postfail --escalate
-assert_rc 2 "93 failed full-review post cannot evaluate the gate"
-if grep -F -- '-X DELETE repos/octo/demo/issues/comments/1001' "$STUBDIR/args.log" >/dev/null; then
-    pass "93 failed request rolls its claim back"
-else
-    fail "93 failed request rolls its claim back" "args.log: $(cat "$STUBDIR/args.log")"
-fi
 
 # ── HIMMEL-2062: bounded watch — early exit + --max-wait cap ─────────────────
 
@@ -2410,73 +1870,84 @@ fi
 # --- HIMMEL-2278: the machine-generated-PR class ----------------------------
 #
 # Baseline for every case here: `cr-absent` — checks green, threads clean, and
-# CodeRabbit posted NO status on the head. That is case 27's shape, and it is
-# rc 2 forever today. The class fix turns rc 2 into rc 0 for EXACTLY two PR
-# shapes and must leave it at rc 2 for everything else; the negative controls
-# below (2278-c/d/e/f/g/h/l) are the actual deliverable, not the two positives.
+# CodeRabbit posted NO status on the head. That used to be rc 2 for every PR
+# except the two machine-generated shapes a `machine_pr_gate()` classifier
+# carved out (bot-authored dependency bump, pure regenerated-artifact publish).
+#
+# HIMMEL-3360 changed the baseline itself: cr_signal_gate no longer fails
+# closed on ANY CodeRabbit status (absent/pending/failure/skipped/paged/
+# unreadable) for ANY PR, machine-generated or not — that gate is advisory-only
+# across the board, so the classifier had nothing left to decide and was
+# DELETED from check-ci.sh. The negative controls below (2278-c/d/e/f/g/h/l/m/
+# o/p), which used to prove an ORDINARY PR still fails closed where a
+# machine-classified one doesn't, now all read rc 0: there is no observable
+# difference between a machine-shaped and an ordinary PR. They are kept
+# (flipped to their true rc) as coverage that the plain `run cr-absent`/
+# `cr-failure`/`cr-pending` path is unaffected by the MPR_OVERRIDE probe
+# replies; 2278-i/j/k/q remain the real assertions of record (threads/
+# red-check/CHANGES_REQUESTED/body-findings stay armed regardless of diff shape).
 
 # 2278-a — dependabot dep bump + no App review → rc 0 (the #2013 shape).
 MPR_OVERRIDE=dependabot
 run cr-absent
 assert_rc 0 "2278-a dependabot PR passes with no CodeRabbit review"
-assert_out_has "machine-generated PR (dependabot dependency bump)" "2278-a audit line names the class"
+assert_err_has "NOTE — CodeRabbit absent" "2278-a absent status is the plain NOTE (classifier deleted, HIMMEL-3360)"
 
 # 2278-b — a graph-publish artifact PR + no App review → rc 0 (the #2035 shape).
 MPR_OVERRIDE=graph
 run cr-absent
 assert_rc 0 "2278-b graphify-artifact PR passes with no CodeRabbit review"
-assert_out_has "regenerated graphify-out artifacts only" "2278-b audit line names the diff-shape class"
+assert_err_has "NOTE — CodeRabbit absent" "2278-b absent status is the plain NOTE (classifier deleted, HIMMEL-3360)"
 
-# 2278-c — THE SPOOF CONTROL. The same two artifact paths PLUS one code path.
-# If the class were a label or a title marker this would pass; because it is
-# the diff shape, one path outside the artifact set fails closed exactly as
-# before. This is the case that carries the whole ticket's risk.
+# 2278-c — the former spoof control (artifact paths PLUS a code path). No
+# longer distinguishable from the positives at the cr_signal_gate exit code
+# (HIMMEL-3360: absent is advisory for every diff shape) — kept to pin that a
+# misclassification-prone probe reply still doesn't crash or mis-exit.
 MPR_OVERRIDE=graph-plus-code
 run cr-absent
-assert_rc 2 "2278-c artifact paths PLUS a code path still fail closed"
-assert_err_has "has posted NO status" "2278-c fails with the unchanged absent-review message"
+assert_rc 0 "2278-c artifact paths PLUS a code path — advisory now regardless of shape (HIMMEL-3360)"
 
-# 2278-d — an ordinary human code PR with no App review: byte-unchanged rc 2.
+# 2278-d — an ordinary human code PR with no App review: advisory now too.
 MPR_OVERRIDE=none
 run cr-absent
-assert_rc 2 "2278-d ordinary code PR still fails closed on an absent review"
+assert_rc 0 "2278-d ordinary code PR is advisory-only on an absent review (HIMMEL-3360)"
 
 # 2278-e — a human account whose login merely LOOKS like the bot's. is_bot is
-# GitHub's, so the impostor stays outside the class.
+# GitHub's; the impostor stays outside the class, but that no longer changes
+# the exit code either way (HIMMEL-3360).
 MPR_OVERRIDE=dep-impostor
 run cr-absent
-assert_rc 2 "2278-e dependabot login without is_bot is not the class"
+assert_rc 0 "2278-e dependabot login without is_bot — advisory regardless (HIMMEL-3360)"
 
-# 2278-f — the classifier's own probe erroring is not evidence of anything:
-# fail closed, never classify.
+# 2278-f — the classifier's own probe erroring is not evidence of anything;
+# no longer observable via cr_signal_gate's exit code (HIMMEL-3360).
 MPR_OVERRIDE=probe-fail
 run cr-absent
-assert_rc 2 "2278-f an erroring author/files probe fails closed"
+assert_rc 0 "2278-f an erroring author/files probe — advisory regardless (HIMMEL-3360)"
 
 # 2278-g — a response missing the MPR_OK sentinel must not parse as a bot
-# author with zero files (the shape an empty/garbled reply would otherwise take).
+# author with zero files; no longer observable via the exit code (HIMMEL-3360).
 MPR_OVERRIDE=garbage
 run cr-absent
-assert_rc 2 "2278-g a sentinel-less probe response fails closed"
+assert_rc 0 "2278-g a sentinel-less probe response — advisory regardless (HIMMEL-3360)"
 
 # 2278-h — a single file literally named `*`. Comparing in the wrong direction
-# (artifact list as subject, path as pattern) would glob-match it into the class.
+# would glob-match it into the class; no longer observable via the exit code.
 MPR_OVERRIDE=globname
 run cr-absent
-assert_rc 2 "2278-h a glob-named path cannot glob its way into the class"
+assert_rc 0 "2278-h a glob-named path — advisory regardless (HIMMEL-3360)"
 
-# 2278-l — an empty changed-file list is not "all paths are artifacts".
+# 2278-l — an empty changed-file list is not "all paths are artifacts"; no
+# longer observable via the exit code (HIMMEL-3360).
 MPR_OVERRIDE=empty
 run cr-absent
-assert_rc 2 "2278-l an empty file list fails closed"
+assert_rc 0 "2278-l an empty file list — advisory regardless (HIMMEL-3360)"
 
-# 2278-m — a truncated-but-rc-0 probe: it advertises 3 files but emits only the
-# two artifact paths. Every path it DID emit is an artifact, so a classifier
-# that trusted the path lines alone would let it in; the count check is what
-# makes "fail closed on an unparsable probe" true for a PARTIAL one too.
+# 2278-m — a truncated-but-rc-0 probe: it advertises 3 files but emits only
+# the two artifact paths; no longer observable via the exit code (HIMMEL-3360).
 MPR_OVERRIDE=truncated
 run cr-absent
-assert_rc 2 "2278-m a truncated file list fails closed"
+assert_rc 0 "2278-m a truncated file list — advisory regardless (HIMMEL-3360)"
 
 # --- HIMMEL-2278 CR round 2: the class tolerates SILENCE, and only silence ---
 #
@@ -2488,21 +1959,22 @@ assert_rc 2 "2278-m a truncated file list fails closed"
 # are the controls that the narrowing actually narrowed.
 
 # 2278-n — the #2035 shape verbatim: state=success with a rate-limited
-# description. Skip-classified means the App said nothing, which for this class
-# is expected. rc 0.
+# description. rc 0 — advisory for every PR now (HIMMEL-3360), not just this
+# class.
 MPR_OVERRIDE=dependabot
 run cr-ratelimited
-assert_rc 0 "2278-n a rate-limited App is expected silence for the class"
+assert_rc 0 "2278-n a rate-limited App is advisory, for every PR (HIMMEL-3360)"
 
-# 2278-o — a FAILED App status is not silence: it still blocks at rc 1.
+# 2278-o — a FAILED App status: HIMMEL-3360 made failure/error advisory-only
+# for every PR (not just this class) — rc 0, an advisory NOTE, never a block.
 MPR_OVERRIDE=dependabot
 run cr-failure
-assert_rc 1 "2278-o a failed App status still blocks a machine-generated PR"
+assert_rc 0 "2278-o a failed App status is advisory-only now, for every PR (HIMMEL-3360)"
 
-# 2278-p — nor is a PENDING one: rc 2, re-run when it concludes.
+# 2278-p — nor is a PENDING one: also advisory now, for every PR (HIMMEL-3360).
 MPR_OVERRIDE=dependabot
 run cr-pending
-assert_rc 2 "2278-p a pending App review still blocks a machine-generated PR"
+assert_rc 0 "2278-p a pending App review is advisory-only now, for every PR (HIMMEL-3360)"
 
 # 2278-q — THE codex-1 control. The App reviewed this machine PR after all and
 # posted an outside-diff-range body finding, which carries no thread to resolve.
@@ -2687,5 +2159,5 @@ unset CR_CLI_MARKER
 
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 183 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 183"; exit 1; fi
+if [ "$COUNT" -ne 132 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 132"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1

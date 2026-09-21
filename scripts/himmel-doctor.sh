@@ -673,11 +673,31 @@ check_c16() {
 resolve_issue_repo() {
     [ -n "$REPO_FLAG" ] && { printf '%s\n' "$REPO_FLAG"; return 0; }
     [ -n "${HIMMEL_DOCTOR_ISSUE_REPO:-}" ] && { printf '%s\n' "$HIMMEL_DOCTOR_ISSUE_REPO"; return 0; }
-    local url; url="$(git remote get-url origin 2>/dev/null || true)"
-    case "$url" in
-        *github.com[:/]*) printf '%s\n' "$url" | sed -E 's#.*github\.com[:/]([^/]+/[^/]+)#\1#; s#\.git$##'; return 0 ;;
+    # HIMMEL-3368: the ORIGIN's host decides, via the one matcher the rest of the
+    # harness routes on (forge_detect, as check_c4) — not a substring of the URL.
+    # FORGE is unset for the call: it overrides forge_detect but says nothing about
+    # this origin. Only then is the owner/repo cut from the URL's PATH.
+    # shellcheck source=scripts/lib/forge.sh
+    # shellcheck disable=SC1091
+    . "$REPO_ROOT/scripts/lib/forge.sh"
+    local forge; forge="$(unset FORGE; forge_detect 2>/dev/null)" || forge=""
+    [ "$forge" = github ] || return 1
+    local url path owner name
+    url="$(git remote get-url origin 2>/dev/null || true)"
+    # scheme://[userinfo@]host[:port]/path, else scp-like [userinfo@]host:path
+    # (a prefix before `://` that is not a plain scheme — `git@host:p/x://y` — is scp-like,
+    # the same split as _forge_origin_host).
+    case "${url%%://*}" in
+        ''|*[!A-Za-z0-9+.-]*) path="${url#*:}" ;;
+        *) path="${url#*://}"; path="${path#*/}" ;;
     esac
-    return 1
+    path="${path#/}"
+    owner="${path%%/*}"
+    name="${path#*/}"; name="${name%%/*}"; name="${name%.git}"
+    [ "$owner" != "$path" ] && [ -n "$owner" ] && [ -n "$name" ] || return 1
+    # A GitHub owner/repo is [A-Za-z0-9._-]: `git@github.com:o/r.git://y` is no repo.
+    case "$owner$name" in *[!A-Za-z0-9._-]*) return 1 ;; esac
+    printf '%s/%s\n' "$owner" "$name"
 }
 
 file_issue() {

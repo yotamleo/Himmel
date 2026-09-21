@@ -215,6 +215,45 @@ run_test "(8) seven_day-only rate_limits still mirrors (CR codex-1), five_hour p
   [ "$(jq -r ".five_hour.utilization" "$CLAUDE_USAGE_CACHE")" = "33" ] || exit 1;
 '
 
+run_test "(9) HIMMEL-3364: both stdin windows stamp primaries_refreshed_at=now, and bank-preflight PROCEEDs on the result" '
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-producer-9.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
+  export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
+  unset USAGE_OAUTH_CMD;
+  before=$(date +%s);
+  printf "%s" "{\"rate_limits\":{\"five_hour\":{\"utilization\":23,\"resets_at\":\"R5\"},\"seven_day\":{\"utilization\":46,\"resets_at\":\"R7\"}}}" | bash "$PRODUCER";
+  stamp=$(jq -r ".primaries_refreshed_at // empty" "$CLAUDE_USAGE_CACHE");
+  [ -n "$stamp" ] || exit 1;
+  [ "$stamp" -ge "$before" ] && [ "$stamp" -le "$(( $(date +%s) + 1 ))" ] || exit 1;
+  noflt="$W/no-fleet-ps.sh"; printf "%s\n" "#!/usr/bin/env bash" "true" > "$noflt"; chmod +x "$noflt";
+  v=$(CADENCE_BANK_CACHE="$CLAUDE_USAGE_CACHE" CADENCE_BANK_SKIP_REFRESH=1 CADENCE_BANK_LEDGER="$W/ledger.jsonl" \
+      CADENCE_BANK_LEG=test3364 FLEET_PS_CMD="$noflt" bash "$STATUSLINE_DIR/../lib/bank-preflight.sh" </dev/null 2>/dev/null | tail -n1);
+  [ "$v" = "PROCEED" ] || exit 1;
+'
+
+run_test "(9b) HIMMEL-3364: both stdin windows refresh a stale prior stamp" '
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-producer-9b.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
+  export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
+  unset USAGE_OAUTH_CMD; export USAGE_CACHE_TTL=0;
+  printf "%s" "{\"five_hour\":{\"utilization\":1},\"seven_day\":{\"utilization\":1},\"extra_usage\":{},\"primaries_refreshed_at\":1234567890}" > "$CLAUDE_USAGE_CACHE";
+  printf "%s" "{\"rate_limits\":{\"five_hour\":{\"utilization\":23},\"seven_day\":{\"utilization\":46}}}" | bash "$PRODUCER";
+  [ "$(jq -r ".primaries_refreshed_at" "$CLAUDE_USAGE_CACHE")" != "1234567890" ] || exit 1;
+  [ "$(jq -r ".primaries_refreshed_at" "$CLAUDE_USAGE_CACHE")" -gt 1234567890 ] || exit 1;
+'
+
+run_test "(9c) HIMMEL-3364: one stdin window carries the prior stamp; with no prior stamp none is invented" '
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-producer-9c.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
+  export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
+  unset USAGE_OAUTH_CMD; export USAGE_CACHE_TTL=0;
+  printf "%s" "{\"five_hour\":{\"utilization\":33},\"seven_day\":{\"utilization\":1},\"extra_usage\":{},\"primaries_refreshed_at\":1234567890}" > "$CLAUDE_USAGE_CACHE";
+  printf "%s" "{\"rate_limits\":{\"seven_day\":{\"utilization\":21.5}}}" | bash "$PRODUCER";
+  [ "$(jq -r ".seven_day.utilization" "$CLAUDE_USAGE_CACHE")" = "21.5" ] || exit 1;
+  [ "$(jq -r ".primaries_refreshed_at" "$CLAUDE_USAGE_CACHE")" = "1234567890" ] || exit 1;
+  printf "%s" "{\"five_hour\":{\"utilization\":33},\"seven_day\":{\"utilization\":1},\"extra_usage\":{}}" > "$CLAUDE_USAGE_CACHE";
+  printf "%s" "{\"rate_limits\":{\"seven_day\":{\"utilization\":21.5}}}" | bash "$PRODUCER";
+  jq -e "has(\"primaries_refreshed_at\") | not" "$CLAUDE_USAGE_CACHE" >/dev/null || exit 1;
+  exit 0;
+'
+
 # --- summary ------------------------------------------------------------------
 if [ "$_failures" -eq 0 ]; then
   echo "OK: all cases passed"

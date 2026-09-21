@@ -141,23 +141,25 @@ fi
 GH_STUB_MODE=unresolved t merge-with-unresolved-blocks   2 Bash "gh pr merge 42 --squash"
 GH_STUB_MODE=clean      t merge-clean-allows             0 Bash "gh pr merge 42 --squash"
 GH_STUB_MODE=error      t api-error-fails-open           0 Bash "gh pr merge 42 --squash"
-# HIMMEL-1072 — the CodeRabbit signal is a commit STATUS on the head SHA. The
-# removed `zombie*`/`young` cases here drove the HIMMEL-980 override off a
-# CodeRabbit CHECK-RUN that production never emits: the override could not fire,
-# and these fixtures were the only place its trigger existed.
-GH_STUB_MODE=inflight   t inflight-review-blocks         2 Bash "gh pr merge 42 --squash"
-# An unreviewed head must not merge — the #1243 regression.
-GH_STUB_MODE=cr-absent  t absent-review-blocks           2 Bash "gh pr merge 42 --squash"
-# Identity over display name (HIMMEL-1058).
-GH_STUB_MODE=cr-spoofed t spoofed-creator-id-blocks      2 Bash "gh pr merge 42 --squash"
+# HIMMEL-3360 (operator ruling 2026-09-21): CodeRabbit's commit-status state is
+# advisory only. The removed `zombie*`/`young` cases here drove the HIMMEL-980
+# override off a CodeRabbit CHECK-RUN that production never emits; the
+# HIMMEL-1072 `pending`/`absent`/identity-mismatch BLOCK cases they replaced
+# are themselves demoted below — only the thread + body-findings gates still
+# block a merge.
+GH_STUB_MODE=inflight   t inflight-review-allows         0 Bash "gh pr merge 42 --squash"
+# An unreviewed head no longer blocks a merge on its own — the #1243
+# regression fixture, but HIMMEL-3360 supersedes HIMMEL-1072's stance.
+GH_STUB_MODE=cr-absent  t absent-review-allows           0 Bash "gh pr merge 42 --squash"
+# Identity over display name (HIMMEL-1058): still resolves to `absent`, still
+# advisory only.
+GH_STUB_MODE=cr-spoofed t spoofed-creator-id-allows      0 Bash "gh pr merge 42 --squash"
 GH_STUB_MODE=other-author t other-author-thread-allows 0 Bash "gh pr merge 42 --squash"
-# ── HIMMEL-1181 (B2): review-freshness — the latest bot review's commit
-# anchor must match the head SHA, or the merge blocks even though the status
-# + thread gates above both already passed (the PR #1273 shape). ──
-GH_STUB_MODE=clean GH_STUB_FRESHNESS=stale t freshness-stale-blocks       2 Bash "gh pr merge 42 --squash"
-# a broken freshness query is not evidence — fails OPEN, same posture as the
-# status/thread/body degrades above.
-GH_STUB_MODE=clean GH_STUB_FRESHNESS=fail  t freshness-infra-fails-open   0 Bash "gh pr merge 42 --squash"
+# HIMMEL-3360: the review-FRESHNESS mechanism (HIMMEL-1181) is removed from
+# cr-merge-gate.sh entirely — a stale-anchored review object no longer blocks.
+# Regression pin: allow, and the freshness endpoint is never even queried.
+GH_STUB_MODE=clean GH_STUB_FRESHNESS=stale t freshness-stale-no-longer-blocks 0 Bash "gh pr merge 42 --squash"
+grep -qi "reviews(last:" "$TMP/calls-freshness-stale-no-longer-blocks.log" && { echo "FAIL freshness-stale-no-longer-blocks still queries the removed freshness endpoint"; fail=$((fail+1)); }
 # ── HIMMEL-1043: CI-green gate runs SECOND (after the CR gate) ──
 # ci-red: CR gate passes (resolved CodeRabbit thread + a success CodeRabbit
 # STATUS), but a non-CodeRabbit check-run ("tests") failed -> CI gate
@@ -670,14 +672,12 @@ done
 grep -qi "unresolved" "$TMP/err-merge-with-unresolved-blocks" || { echo "FAIL stderr reason missing"; fail=$((fail+1)); }
 # HIMMEL-1043: the CI gate's block surfaces with its own prefix on stderr
 grep -q "block-red-ci-merge" "$TMP/err-merge-over-red-ci-blocks" || { echo "FAIL ci-block stderr reason missing"; fail=$((fail+1)); }
-# HIMMEL-1072: an absent review must say so — "no CodeRabbit status" is the
-# actionable half; a bare "blocked" would read as a false-block and get bypassed.
-grep -qi "has not reviewed" "$TMP/err-absent-review-blocks" || { echo "FAIL absent-review reason missing"; fail=$((fail+1)); }
-# HIMMEL-1181: a stale review's block must name the stale anchor (actionable),
-# distinct wording from "has not reviewed" (absent) above.
-grep -qi "shaOLD" "$TMP/err-freshness-stale-blocks" || { echo "FAIL freshness-stale reason missing stale anchor"; fail=$((fail+1)); }
-grep -qi "never re-reviewed" "$TMP/err-freshness-stale-blocks" || { echo "FAIL freshness-stale reason missing remedy"; fail=$((fail+1)); }
-grep -q "block-unresolved-cr-merge" "$TMP/err-freshness-stale-blocks" || { echo "FAIL freshness-stale missing hook prefix"; fail=$((fail+1)); }
+# HIMMEL-3360: an absent or stale-anchored CodeRabbit review no longer blocks
+# a merge at all — the old block wording must not appear (a degrade note from
+# this stub's unstubbed body-findings/check-runs queries is expected and fine,
+# same as every other allow-case above; only the removed BLOCK reasons matter).
+grep -qi "has not reviewed" "$TMP/err-absent-review-allows" && { echo "FAIL absent-review-allows still blocks with the removed absent-review wording"; fail=$((fail+1)); }
+grep -qi "shaOLD\|never re-reviewed" "$TMP/err-freshness-stale-no-longer-blocks" && { echo "FAIL freshness-stale-no-longer-blocks still blocks with the removed stale-anchor wording"; fail=$((fail+1)); }
 
 # HIMMEL-1495 hermeticity guard — prove the startup scrub holds. Re-run this
 # suite in a subprocess EXPORTING the exact armed bypass env an
