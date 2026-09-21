@@ -20,7 +20,9 @@
 # A missing inbox is created empty (the bridge only writes to an inbox that
 # already exists). A partial line (no newline yet) is held back until complete.
 # A cursor beyond EOF (inbox truncated or replaced), a corrupt cursor file or a
-# non-canonical one (leading zero: bash would read it as octal) resets to offset 0.
+# non-canonical one (leading zero: bash would read it as octal; 16+ digits:
+# beyond shell integer range) resets to offset 0. A failed emit stops the
+# follower before the cursor moves.
 # A cursor that cannot be written stops the follower with rc 1 instead of
 # replaying the same lines on every poll.
 #
@@ -53,7 +55,8 @@ fi
 load_cursor() {
     cur=""
     [ -f "$cursor_file" ] && read -r cur < "$cursor_file"
-    case "$cur" in ''|*[!0-9]*|0?*) cur=0 ;; esac
+    # 16+ digits overflow shell integer tests (a 15-digit offset is ~1 PB)
+    case "$cur" in ''|*[!0-9]*|0?*|????????????????*) cur=0 ;; esac
 }
 
 save_cursor() {
@@ -74,7 +77,7 @@ drain() {
     # `read` returns non-zero on a final line with no newline, so a partial line
     # never reaches the body and the cursor stays before it.
     tail -c +$((cur + 1)) "$inbox" | while IFS= read -r line; do
-        printf '%s\n' "$line"
+        printf '%s\n' "$line" || exit 1
         cur=$((cur + ${#line} + 1))
         save_cursor "$cur" || exit 1
     done

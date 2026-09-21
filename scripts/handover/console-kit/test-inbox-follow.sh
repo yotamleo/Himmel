@@ -133,6 +133,25 @@ out="$(arm "$I")"; rc=$?
 check "(i) a leading-zero cursor is treated as offset 0" "$(printf 'alpha\nbeta')" "$out"
 check "(i) a leading-zero cursor does not crash the follower" "0" "$rc"
 
+# --- (j) an oversized cursor is reset, not compared as an overflowed integer --
+I="$WORK/j/consoles/c.md"
+mkdir -p "$WORK/j/consoles"; : > "$I"
+printf 'alpha\nbeta\n' >> "$I"
+printf '99999999999999999999\n' > "$I.cursor"
+check "(j) a 20-digit cursor is treated as offset 0" "$(printf 'alpha\nbeta')" "$(arm "$I")"
+
+# --- (k) a failed emit stops the follower before the cursor moves ------------
+if [ -w /dev/full ]; then
+    I="$WORK/k/consoles/c.md"
+    mkdir -p "$WORK/k/consoles"; : > "$I"
+    printf 'keep\n' >> "$I"
+    bash "$FOLLOW" --once "$I" > /dev/full 2>/dev/null; rc=$?
+    if [ "$rc" -ne 0 ]; then pass "(k) a failed emit exits non-zero (rc $rc)"; else fail "(k) a failed emit exits non-zero (rc=0)"; fi
+    check "(k) the undelivered line is still unread on the next arm" "keep" "$(arm "$I")"
+else
+    pass "(k) skipped: /dev/full not available on this host"
+fi
+
 # --- (g) usage ---------------------------------------------------------------
 bash "$FOLLOW" >/dev/null 2>&1; rc=$?
 check "(g) no argument is a usage error (rc 2)" "2" "$rc"
