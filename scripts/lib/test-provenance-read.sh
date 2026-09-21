@@ -195,6 +195,40 @@ check "HIMMEL-3363: still governed by the create" "$(field "$u" .governed)" "tru
 check "HIMMEL-3363: verdict is remove ours, not kept" "$(prov_read_verdict "$u")" "remove ours"
 prov_read_cleanup
 
+# ── HIMMEL-3363: re-adopt -- the second install's noop(preexisted=true) json-key
+#    row (adopt.sh wire_handover_dir_luna) must not override the first install's create ──
+
+reset
+HS="$w/hsettings.json"
+printf '{}\n' > "$HS"
+prov_begin --iid RA1 --writer adopt.sh
+prov_record create json-key "$HS" --unit /env/HANDOVER_DIR --pre-absent --post-json '"/h/one"' --scope user --class code --row user-settings
+prov_end ok
+printf '%s' '{"env":{"HANDOVER_DIR":"/h/one"}}' > "$HS"
+prov_begin --iid RA2 --writer adopt.sh
+prov_record noop json-key "$HS" --unit /env/HANDOVER_DIR --pre-json '"/h/one"' --post-json '"/h/one"' --field preexisted=true --scope user --class code --row user-settings
+prov_end ok
+prov_read_load
+u=$(u_for --path "$HS")
+check "HIMMEL-3363 re-adopt json-key: one unit" "$(prov_read_units --path "$HS" | wc -l | tr -d ' ')" "1"
+check "HIMMEL-3363 re-adopt json-key: governed by the first install's create" "$(field "$u" .governed)" "true"
+check "HIMMEL-3363 re-adopt json-key: not noop-preexisted-only" "$(field "$u" .preexisted_only)" "false"
+check "HIMMEL-3363 re-adopt json-key: verdict is remove ours" "$(prov_read_verdict "$u")" "remove ours"
+prov_read_cleanup
+
+# control: a lone noop(preexisted=true) json-key row (the operator chose the value) stays kept
+
+reset
+printf '%s' '{"env":{"HANDOVER_DIR":"/h/op"}}' > "$HS"
+prov_begin --iid RC1 --writer adopt.sh
+prov_record noop json-key "$HS" --unit /env/HANDOVER_DIR --pre-json '"/h/op"' --post-json '"/h/op"' --field preexisted=true --scope user --class code --row user-settings
+prov_end ok
+prov_read_load
+u=$(u_for --path "$HS")
+check "HIMMEL-3363 control: lone noop json-key is ungoverned" "$(field "$u" .governed)" "false"
+check "HIMMEL-3363 control: lone noop json-key verdict is keep noop-preexisted" "$(prov_read_verdict "$u")" "keep noop-preexisted"
+prov_read_cleanup
+
 # ── json-key remove with ~1 escaping ────────────────────────────────────────
 
 reset

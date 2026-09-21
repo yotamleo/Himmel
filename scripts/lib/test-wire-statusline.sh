@@ -614,4 +614,25 @@ CLAUDE_CONFIG_DIR="$cfg36" bash "$HELPER" "$proj36/.claude/settings.json" "$REPO
   || fail "36: a re-wire that purged nothing must not record another tree row"
 echo "ok 36 a cache purge records one tree row class state and a no-purge wire records none"
 
+# 37. HIMMEL-3363: when mktemp cannot allocate the purge listing, the purge must
+# still run, but the skipped tree-row recording is announced like every other
+# best-effort recording failure in the file (it used to be silent).
+mk_bin37="$TMP/mktemp37-bin"; mkdir -p "$mk_bin37"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$mk_bin37/mktemp"; chmod +x "$mk_bin37/mktemp"
+cfg37="$TMP/cfg37"; hud37="$cfg37/plugins/claude-hud"
+proj37="$TMP/proj37"; mkdir -p "$proj37/.claude" "$hud37"
+printf '{"display":{"showPromptCache":false}}\n' > "$hud37/config.json"
+seed_hud_cache "$hud37"
+rc37=0
+err37="$(PATH="$mk_bin37:$PATH" CLAUDE_CONFIG_DIR="$cfg37" bash "$HELPER" "$proj37/.claude/settings.json" "$REPO_ROOT" 2>&1 >/dev/null)" || rc37=$?
+[ "$rc37" -eq 0 ] || fail "37: a mktemp failure must not fail the wire (rc=$rc37): $err37"
+[ ! -e "$hud37/transcript-cache" ] || fail "37: the purge must still run when mktemp fails"
+case "$err37" in
+  *"wire-statusline: warning: provenance record skipped"*) ;;
+  *) fail "37: no warning when the purge recording was skipped for a failed mktemp: $err37" ;;
+esac
+[ "$(jq -c --arg p "cfg37/plugins/claude-hud" 'select(.kind == "tree" and (.path | endswith($p)))' "$HIMMEL_PROVENANCE_DIR/provenance.jsonl" | grep -c .)" = 0 ] \
+  || fail "37: no purge tree row can be recorded without a listing file"
+echo "ok 37 a failed mktemp warns that the purge recording was skipped and still purges"
+
 echo "ALL PASS"

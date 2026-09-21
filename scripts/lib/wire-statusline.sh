@@ -337,6 +337,9 @@ wire_statusline() {
   # retry still sees a changed wiring and purges again.
   if { [ -n "$prev_cmd" ] && [ "$prev_cmd" != "$cmd" ]; } || { [ -n "$hud_cfg" ] && [ "$prev_hud_cfg" != "$hud_cfg" ]; }; then
     local purge_list; purge_list="$(mktemp 2>/dev/null || true)"
+    # HIMMEL-3363: no listing file means no purge row — the purge itself still runs.
+    [ -n "$purge_list" ] \
+      || echo "wire-statusline: warning: provenance record skipped (no temp file for the purge listing; the hud cache is still purged, uninstall will keep it)" >&2
     _wire_statusline_purge_hud_cache "$hud_dir" "$purge_list" \
       || { rm -f "$settings.statusline.tmp" "$hud_dir/.config.json.tmp" "$purge_list"; return 1; }
     if [ -s "$purge_list" ]; then
