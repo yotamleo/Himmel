@@ -3956,10 +3956,14 @@ allowlist in `scripts/test-uninstall-real-home-callers.sh` (today
 `scripts/himmelctl/bin.js` and the remedy text in `scripts/uninstall.sh`, a reason
 each). "Sets the var to 1" covers `VAR=1`, quoted or numeric JS keys/values
 (`'VAR': 1`, `VAR: '1'`) and PowerShell `$env:VAR = 1`, and only exactly `1` (not
-`10` / `1x` / `1.5`). That suite is a text heuristic and says so — it does not follow a
-`HOME` set through a helper function or sourced file, nor an env block passed as a
-variable; adding an operator-path caller means adding it to the allowlist on
-purpose.
+`10` / `1x` / `1.5`). "Traced back to one" follows `HOME` through transitive simple
+`NAME=value` assignments (`td=$(mktemp -d)`, `ctl="$td/home"`, `HOME="$ctl"`), and a
+value carrying a `${x:-...}`-style expansion outside a `$(...)` is never scratch.
+That suite is a text heuristic and says so — it does not follow a `HOME` set through a
+helper function or sourced file, nor an env block passed as a variable, and it cannot
+tell an assignment from assignment-shaped text in a comment or quoted string (a false
+pass, tracked in HIMMEL-3345); adding an operator-path caller means adding it to the
+allowlist on purpose.
 
 Same operator ruling: wet/destructive test suites now run only inside a VM,
 never against a live station — see [`docs/setup/vms.md`](../setup/vms.md).

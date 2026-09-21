@@ -48,7 +48,11 @@ ALLOW_WHY=(
 # word, so /usr/bin/mktemp is a false flag; but it does not prove the word is
 # INVOKED, so `HOME="$(echo mktemp)"` still passes. A scratch variable counts only as a
 # plain `$v` / `${v}`, and a value carrying ANY `${x<op>...}` expansion is never
-# scratch (a false flag, never a false pass).
+# scratch (a false flag, never a false pass). It reads raw lines and cannot tell an
+# executable assignment from assignment-shaped TEXT: `HOME="$(mktemp -d)"` inside a
+# comment or a single-quoted `printf` argument (a fixture the file writes) counts as
+# one, so such a file can PASS while lifting the fence with the real HOME
+# (HIMMEL-3345; separating code from quoted text needs a parser).
 home_is_scratch() {
   local file="$1" line rest name rhs nocmd v changed is_scratch ref_re home_ok=0
   local dq='"[^"]*"' sq="'[^']*'" cs='\$\([^)]*\)' bare='[^[:space:]]*'
@@ -103,7 +107,7 @@ home_is_scratch() {
 # that friction is the point.
 scan_callers() {
   local root="$1"; shift
-  local set_re="${V}[]'\"}]*[[:space:]]*[:=][[:space:]]*['\"]?1([][:space:];&|,)}'\"\`]|\$)"
+  local set_re="(^|[^A-Za-z0-9_])${V}[]'\"}]*[[:space:]]*[:=][[:space:]]*['\"]?1([][:space:];&|,)}'\"\`]|\$)"
   local f rel a allowed rc list
   # A failed traversal (unreadable subtree) is reported, not scanned around.
   list="$(find "$root/scripts" -path '*/node_modules' -prune -o -type f \
@@ -163,6 +167,8 @@ printf '#!/usr/bin/env bash\n%s=10 bash uninstall.sh --yes\n' "$V" > "$fx/script
 printf '#!/usr/bin/env bash\n%s=1x bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-value-1x.sh"
 printf '#!/usr/bin/env bash\n%s=1.5 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-value-1dot5.sh"
 printf '#!/usr/bin/env bash\n%s=1-extra bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-value-1dash.sh"
+# HIMMEL-3344 (CodeRabbit): a longer identifier ending in the name is not the name.
+printf '#!/usr/bin/env bash\nNOT_%s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-prefixed-name.sh"
 # a JS operator-path caller, on the allowlist below.
 printf "runSpawn(cmd, { env: { ...process.env, %s: '1' } });\n" "$V" > "$fx/scripts/wizard.js"
 # only unsets / reads it.
@@ -210,6 +216,8 @@ check "=1.5 is not a fence lift (not flagged)" \
   "$(printf '%s' "$got" | grep -c 'scripts/test-value-1dot5.sh')" "0"
 check "=1-extra is not a fence lift (not flagged)" \
   "$(printf '%s' "$got" | grep -c 'scripts/test-value-1dash.sh')" "0"
+check "a longer identifier ending in the name is not a fence lift (not flagged)" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-prefixed-name.sh')" "0"
 check "allowlisted file passes" \
   "$(printf '%s' "$got" | grep -c 'scripts/wizard.js')" "0"
 check "file that only unsets/reads the var passes" \
