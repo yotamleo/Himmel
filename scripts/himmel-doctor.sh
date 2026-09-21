@@ -613,7 +613,7 @@ check_c14() {
 check_c16() {
     # Consequence first (the coverage lost), then the mechanism.
     c16_lost() { emit WARN C16-status "install/wiring findings are NOT being checked at all -- $1" "$2"; }
-    local profile="${HIMMELCTL_CACHE_DIR:-$HOME/.claude/himmel}/install-profile.json"
+    local profile="${HIMMELCTL_CACHE_DIR:-${HOME:-}/.claude/himmel}/install-profile.json"
     local node_bin
     if ! node_bin="$(resolve_node 2>/dev/null)"; then
         if [ -f "$profile" ]; then
