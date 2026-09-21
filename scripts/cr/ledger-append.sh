@@ -179,6 +179,44 @@ if [ -n "$deferred_to" ] && ! valid_ticket "$deferred_to"; then
   exit 2
 fi
 
+# HIMMEL-3340: the evidentiary bar for `disproved`. A wrong `agreed` costs a
+# wasted fix; a wrong `disproved` closes the question for good (it stops a class
+# reaching known-findings and scores the critic as wrong), so it takes a higher
+# bar. When the evidence text reports a MEASUREMENT (measured/probed/reproduced/
+# tested on...) and names a shell or platform, every such name must be paired
+# with a version ("dash 0.5.13.4-1.1", "busybox ash 1.36.1") - four rows were
+# disproved on "busybox ash" for a claim about dash, and one version line would
+# have caught it. Names match as WHOLE words (dashboard/hash/crash/flash are not
+# shells) and multi-word names are ONE name, longest first, so "busybox ash 1.36"
+# is a single versioned name. Prints the unversioned names and returns 1.
+# ponytail: a text heuristic. It proves a version was NAMED, not that the
+# measurement ran against it; bare `sh`, non-shell tools (git, grep), the generic
+# step-4.5 reason (write-verdicts.sh VERDICT lines carry no reason) and the
+# `finding --batch-file` spec path are out of its reach.
+disproval_bar_ok() {
+  local unver
+  unver=$(EVIDENCE="$1" node -e '
+    const t = process.env.EVIDENCE || "";
+    if (!/measured|probed|reproduc|empiric|re-?verified|tested (on|under|against)|(on|under) (a )?real/i.test(t)) process.exit(0);
+    const NAMES = ["busybox ash","busybox sh","git-bash","busybox","freebsd","openbsd","netbsd","macos","darwin","bsd","msys","mingw","wsl","alpine","zsh","ksh","mksh","yash","posh","dash","bash","ash"];
+    const VER = "[^A-Za-z0-9]{0,3}(?:v|version )?[0-9]+\\.[0-9]+", PRE = "(?<![A-Za-z0-9_-])";
+    let rest = t; const bad = [];
+    for (const n of NAMES) {
+      const nm = n.replace(/ /g, "\\s+");
+      const ver = PRE + nm + VER, word = PRE + nm + "(?![A-Za-z0-9_-])";
+      if (!new RegExp(ver + "|" + word, "i").test(rest)) continue;
+      if (!new RegExp(ver, "i").test(rest)) bad.push(n);
+      rest = rest.replace(new RegExp(ver, "gi"), " ").replace(new RegExp(word, "gi"), " ");
+    }
+    if (bad.length) { process.stdout.write(bad.join(", ")); process.exit(1); }
+  ') && return 0
+  echo "ledger-append.sh: a disproved verdict resting on a shell/platform measurement must name the binary and version it ran against (e.g. 'measured on dash 0.5.13.4-1.1'); no version given for: $unver" >&2
+  return 1
+}
+if [ "$kind" = "finding" ] && [ "$verdict" = "disproved" ]; then
+  disproval_bar_ok "$reason" || exit 2
+fi
+
 if [ "$kind" = "amend" ]; then
   amend_usage="usage: ledger-append.sh amend --head <sha> --id <finding-id> --set <key>=<value> [--set ...] --reason <text> [--artifact <a>] [--perspective <p>]"
   [ -n "$head" ] || { echo "ledger-append.sh: amend requires --head (the head the finding is CURRENTLY recorded at). $amend_usage" >&2; exit 2; }
@@ -186,8 +224,13 @@ if [ "$kind" = "amend" ]; then
   [ -n "$set_pairs" ] || { echo "ledger-append.sh: amend requires at least one --set <key>=<value>. $amend_usage" >&2; exit 2; }
   # A correction without a stated reason is indistinguishable from tampering.
   [ -n "$reason" ] || { echo "ledger-append.sh: amend requires --reason (why the original record was wrong). $amend_usage" >&2; exit 2; }
+  _disproving=0 _evidence="$reason"
   while IFS= read -r _pair; do
     [ -n "$_pair" ] || continue
+    case "$_pair" in
+      verdict=disproved) _disproving=1 ;;
+      reason=*) _evidence="$_evidence ${_pair#reason=}" ;;
+    esac
     case "$_pair" in
       # `reason` is amendable (glm-3). Gate 4 accepts a deferral only when the
       # FINDING carries a reason, and an amend's own --reason documents why the
@@ -245,6 +288,7 @@ if [ "$kind" = "amend" ]; then
         fi ;;
     esac
   done <<< "$set_pairs"
+  if [ "$_disproving" = 1 ]; then disproval_bar_ok "$_evidence" || exit 2; fi
 fi
 
 # attempt (HIMMEL-1500): one row per invocation ATTEMPT (primary + each
