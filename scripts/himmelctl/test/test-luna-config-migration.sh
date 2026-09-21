@@ -164,7 +164,7 @@ outD=$(run_install "$hD"); rcD=$?
 check "d invalid JSON: install still refuses (rc non-zero)" "$([ "$rcD" -ne 0 ] && echo yes || echo no)" "yes"
 check "d invalid JSON: file untouched" "$(sha "$hD/.himmel/config.json")" "$before"
 check "d invalid JSON: no backup or temp file written" "$(find "$hD/.himmel" -maxdepth 1 -name 'config.json.*' | wc -l | tr -d ' ')" "0"  # gnu-ok: BSD find supports -maxdepth
-check "d invalid JSON: names the file" "$(printf '%s\n' "$outD" | grep -c "$hD/.himmel/config.json")" "$(printf '%s\n' "$outD" | grep -c "$hD/.himmel/config.json")"
+check "d invalid JSON: names the file" "$([ "$(printf '%s\n' "$outD" | grep -c "$hD/.himmel/config.json")" -ge 1 ] && echo yes || echo no)" "yes"
 check "d invalid JSON: a hand-fix command with the backup path" \
     "$(printf '%s\n' "$outD" | grep -c "hand-fix: cp .*config.json.hand-fix.bak")" "1"
 
