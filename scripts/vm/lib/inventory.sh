@@ -8,18 +8,18 @@
 # ~/.npm/_logs, ~/.bun/install/global) on the pristine machine — the inventory was
 # contaminating the thing it measures. This one reads files and never runs a tool.
 #
-# Exit status: 2 for a bad label; 1 when a REQUIRED collection (1-4: home.meta, home.sha,
+# Exit status: 2 for a bad, empty or missing label; 1 when a REQUIRED collection (1-4: home.meta, home.sha,
 # etc.sha, sys.meta) or the MANIFEST write/readback failed — each is named on stderr and the
 # rest are still collected; else 0.
 # The probes 5-8 (/tmp, packages, sizes, processes) are deliberately fail-open: /tmp churns
 # under the walk and the tools the others call may be absent.
 set -u
 export LC_ALL=C
-label=${1:?label}
-# The label becomes a path component that is removed recursively: refuse anything that could
-# leave /tmp/inv-* BEFORE the path is built (HIMMEL-3348).
+label=${1-}
+# The label becomes a path component that is removed recursively: refuse an empty label or
+# anything that could leave /tmp/inv-* BEFORE the path is built (HIMMEL-3348).
 case $label in
-    *[!A-Za-z0-9._-]*) echo "inventory.sh: invalid label '$label' (allowed: [A-Za-z0-9._-])" >&2; exit 2 ;;
+    ''|*[!A-Za-z0-9._-]*) echo "inventory.sh: invalid label '$label' (allowed: [A-Za-z0-9._-])" >&2; exit 2 ;;
 esac
 out=/tmp/inv-$label
 rm -rf "$out"; mkdir -p "$out"

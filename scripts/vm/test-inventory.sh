@@ -95,6 +95,13 @@ for bad in 'a b' 'a;b' 'x$(id)' 'a/b' '.*/x'; do
         pass "T6b label '$bad' refused with rc 2 and no /tmp/inv-<label> created"
     else fail_case "T6b label '$bad' rc=$rc: $out"; rm -rf "/tmp/inv-$bad"; fi
 done
+# A missing or empty label is a bad label too: rc 2, not the rc 1 of a failed collection.
+out=$(HOME="$FIXHOME" PATH="$WORK/bin:$PATH" bash "$INV" 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 2 ] && grep -q 'invalid label' <<< "$out"; then pass "T6c a missing label is refused with rc 2"
+else fail_case "T6c missing label rc=$rc: $out"; fi
+out=$(HOME="$FIXHOME" PATH="$WORK/bin:$PATH" bash "$INV" '' 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 2 ] && grep -q 'invalid label' <<< "$out" && [ ! -e /tmp/inv- ]; then pass "T6c an empty label is refused with rc 2 and /tmp/inv- is not created"
+else fail_case "T6c empty label rc=$rc: $out"; fi
 
 # --- T7: a failing REQUIRED collection fails the inventory (nonzero, named on stderr); optional
 # probes stay fail-open (T7c, a control — it passes on the base too). A failed sha256sum / sudo
