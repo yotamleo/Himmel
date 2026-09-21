@@ -46,13 +46,11 @@ fi
 # shellcheck source=lib/vm-guest-excludes.sh
 . "$REPO/scripts/lib/vm-guest-excludes.sh" \
   || { echo "==> REFUSING: cannot load scripts/lib/vm-guest-excludes.sh; nothing was copied" >&2; exit 1; }
-RSYNC_SECRET_EXCL=(); TAR_SECRET_EXCL=()
-while IFS= read -r _x; do RSYNC_SECRET_EXCL+=("$_x"); done < <(vm_guest_rsync_excludes)
-while IFS= read -r _x; do TAR_SECRET_EXCL+=("$_x"); done < <(vm_guest_tar_excludes)
 # The exclude list must be in force BEFORE any copy: with no errexit a failed load
-# would leave the arrays empty and the secrets already in the guest when the
-# post-copy assert fires (HIMMEL-2540).
-if [ "${#RSYNC_SECRET_EXCL[@]}" -eq 0 ] || [ "${#TAR_SECRET_EXCL[@]}" -eq 0 ]; then
+# would leave it empty and the secrets already in the guest when the post-copy
+# assert fires (HIMMEL-2540). vm_stage_tree re-checks it; this early stop also keeps
+# the stage lib (which a caller with a broken helper tree may lack) from loading first.
+if [ -z "$(vm_guest_rsync_excludes)" ] || [ -z "$(vm_guest_tar_excludes)" ]; then
   echo "==> REFUSING: the secret-exclusion list is empty; nothing was copied" >&2; exit 1
 fi
 
@@ -68,27 +66,13 @@ STAGE_PATHS=(scripts
   docs/setup/user-scope-claude-md-template.md
   marketplace/plugins/claude-hud/config/himmel-config.json)
 
-echo "[stage] copying worktree to $REMOTE_DIR ..."
-ssh_vm "rm -rf $REMOTE_DIR && mkdir -p $REMOTE_DIR"
-if command -v rsync >/dev/null 2>&1 && ssh_vm 'command -v rsync >/dev/null 2>&1'; then
-  # -R + the `/./` marker keeps each path's directories under the guest root (plain
-  # rsync would flatten the file entries into it).
-  RSYNC_SRC=(); for _p in "${STAGE_PATHS[@]}" .env.example; do RSYNC_SRC+=("$REPO/./$_p"); done
-  rsync -azR -e "ssh $SSH_OPTS" --exclude '.git' --exclude 'node_modules' --exclude 'dist' \
-    "${RSYNC_SECRET_EXCL[@]}" "${RSYNC_SRC[@]}" "$HOSTSPEC:$REMOTE_DIR/" \
-    || { echo "==> STAGE FAILED (rsync): the copy to the guest did not complete" >&2; exit 1; }
-else
-  tar -C "$REPO" --exclude=.git --exclude=node_modules --exclude=dist \
-    "${TAR_SECRET_EXCL[@]}" -cf - "${STAGE_PATHS[@]}" | ssh_vm "tar -C $REMOTE_DIR -xf -" \
-    || { echo "==> STAGE FAILED (tar): the copy to the guest did not complete" >&2; exit 1; }
-  # .env.example is the public placeholder template (a literal file, not the tree).
-  # shellcheck disable=SC2086
-  scp -P $PORT -i "$IDENT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
-    "$REPO/.env.example" "$HOSTSPEC:$REMOTE_DIR/" 2>/dev/null || true
-fi
-# Assert the guest is clean before anything runs there; a secret on the guest is
-# a hard stop, not a warning (HIMMEL-2540).
-vm_guest_assert_clean ssh_vm "$REMOTE_DIR" full || exit 1
+# vm_stage_tree (scripts/vm/lib/vm-clone.sh) clears $REMOTE_DIR, copies STAGE_PATHS
+# (+ .env.example) by rsync when both sides have it, else a tar pipe, then asserts the
+# guest is clean; it returns non-zero on a refused/failed stage.
+# shellcheck source=vm/lib/vm-clone.sh
+. "$REPO/scripts/vm/lib/vm-clone.sh" \
+  || { echo "==> REFUSING: cannot load scripts/vm/lib/vm-clone.sh; nothing was copied" >&2; exit 1; }
+vm_stage_tree "$REPO" "$REMOTE_DIR" ssh_vm "ssh $SSH_OPTS" "$HOSTSPEC" "${STAGE_PATHS[@]}" || exit 1
 
 # 2. run the assertions on the VM. The remote body is self-contained: it runs the
 #    hermetic suites that map to each SC, the real out-of-repo auto-approve (SC2),

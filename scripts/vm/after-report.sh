@@ -232,6 +232,8 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=scripts/vm/port-alloc.sh
 . "$REPO_ROOT/scripts/vm/port-alloc.sh"
+# shellcheck source=scripts/vm/lib/vm-clone.sh
+. "$REPO_ROOT/scripts/vm/lib/vm-clone.sh"
 
 BRANCH="${1:-}"
 PR="${2:-}"
@@ -270,35 +272,15 @@ fail() {
     exit 1
 }
 
-# --- HIMMEL-2623 incident hardening: an unset VBOXMANAGE_PATH must NEVER
-# fall through to a real binary without a deliberate opt-in. The incident
-# that prompted this was exactly that: a debug invocation simply forgot to
-# set VBOXMANAGE_PATH, and nothing STRUCTURAL stood between it and the
-# station's real VirtualBox — it cloned and snapshotted a real VM. This
-# check runs BEFORE the fallback assignment below is ever evaluated: with
-# the opt-in unset, $VBOXMANAGE is never assigned the real default at all,
-# so there is nothing here for a bug two lines down to invoke.
-#
-# The real default lives in a NAMED variable (never inlined at the fallback
-# site) purely so a test can override it with a call-COUNTING fake and
-# prove zero invocations ever reach it when the guard fires — the test
-# never touches the real /usr/bin/VBoxManage to prove this; overriding this
-# variable is not something production use ever does.
-HIMMEL_VM_AR_VBOXMANAGE_DEFAULT="${HIMMEL_VM_AR_VBOXMANAGE_DEFAULT:-/usr/bin/VBoxManage}"
-if [ -z "${VBOXMANAGE_PATH:-}" ] && [ "${HIMMEL_VM_AR_LIVE:-0}" != "1" ]; then
-    fail "VBOXMANAGE_PATH is unset and HIMMEL_VM_AR_LIVE is not '1' — refusing to fall through to a real VBoxManage (HIMMEL-2623 incident hardening). Set VBOXMANAGE_PATH explicitly (a real path, or a stub for testing), or HIMMEL_VM_AR_LIVE=1 to run for real."
-fi
-VBOXMANAGE="${VBOXMANAGE_PATH:-$HIMMEL_VM_AR_VBOXMANAGE_DEFAULT}"
-export VBOXMANAGE_PATH="$VBOXMANAGE"
-command -v "$VBOXMANAGE" >/dev/null 2>&1 || [ -x "$VBOXMANAGE" ] \
-    || fail "VBoxManage not found at '$VBOXMANAGE' (set VBOXMANAGE_PATH)"
+# --- HIMMEL-2623 incident hardening: an unset VBOXMANAGE_PATH must NEVER fall
+# through to a real binary without a deliberate opt-in (the incident cloned and
+# snapshotted a real VM). The guard, the VBoxManage lookup and the venv-python
+# check live in vm_env_init (scripts/vm/lib/vm-clone.sh); it runs before any
+# VBoxManage-touching call.
+vm_env_init
 
 # shellcheck source=scripts/vm/vm-lock.sh
 . "$REPO_ROOT/scripts/vm/vm-lock.sh"
-
-HIMMEL_VM_PYTHON="${HIMMEL_VM_PYTHON:-$HOME/.himmel/vm-venv/bin/python}"
-[ -x "$HIMMEL_VM_PYTHON" ] \
-    || fail "venv python not found/executable at '$HIMMEL_VM_PYTHON' (needed to drive scripts/lib/vbox.py; set HIMMEL_VM_PYTHON)"
 
 MAX="${HIMMEL_VM_AR_MAX:-2}"
 case "$MAX" in
@@ -311,39 +293,6 @@ esac
 SOURCE_VM="${HIMMEL_VM_AR_SOURCE_VM:-ubuntu_new}"
 SNAPSHOT="${HIMMEL_VM_AR_SNAPSHOT:-suite-ready-v4}"
 VMS_JSON="$REPO_ROOT/scripts/lib/vms.json"
-
-# vbox_py <python-code> — run a vbox.py-scoped snippet through the venv
-# python; $1 is appended after `import vbox` has already been done, so
-# callers just reference `vbox.<fn>(...)`.
-# vbox_py <python-code> [argv...] — run a vbox.py-scoped snippet through the
-# venv python. CR finding codex-15 (same shape, swept here from
-# dry-run-restore.sh): <python-code> is a FIXED, trusted literal, never
-# containing a shell variable — every piece of DATA (CLONE_NAME, SNAPSHOT,
-# PORT) is passed as a trailing argv element and read via sys.argv[N], never
-# interpolated into the python SOURCE text. CLONE_NAME/PORT are
-# internally-generated and currently safe by construction, and
-# SNAPSHOT/SOURCE_VM are operator-set config, not attacker input — but the
-# INTERPOLATION PATTERN itself is what breaks the moment any future edit
-# routes less-trusted data through it, so it is removed here too rather
-# than left as a trap for the next person to trip.
-vbox_py() {
-    local code="$1"; shift
-    # $REPO_ROOT is passed through argv too (residual of codex-15 the first
-    # pass missed): it was still interpolated straight into the python
-    # SOURCE text below, and a worktree path derives from a branch name —
-    # `.claude/worktrees/feat+...` — which may legally contain an
-    # apostrophe, breaking the string literal (verified: "unterminated
-    # string literal"). `sys.argv.pop(1)` consumes it here, inside vbox_py
-    # itself, so every call site's OWN sys.argv[N] numbering for ITS data is
-    # completely unaffected.
-    "$HIMMEL_VM_PYTHON" -c "
-import sys
-_repo_root = sys.argv.pop(1)
-sys.path.insert(0, _repo_root + '/scripts/lib')
-import vbox
-$code
-" "$REPO_ROOT" "$@"
-}
 
 # --- guest user (HIMMEL-2623: ONE place — see the file header) -----------
 if [ -n "${HIMMEL_VM_AR_GUEST_USER:-}" ]; then
@@ -362,51 +311,8 @@ sys.exit(1) if not u else print(u)
 ' "$VMS_JSON" "$SOURCE_VM" 2>/dev/null) || fail "no literal 'user' set for '$SOURCE_VM' in scripts/lib/vms.json — that JSON field is the single line to fix (HIMMEL-2623)"
 fi
 
-# --- claim a clone slot (1..MAX), FIFO not required here: PR-A's host lock
-# already owns fairness for the machine-wide lock this VM path exists to
-# avoid; this is just a concurrency CAP on the clones themselves -----------
-# CodeRabbit (PR #2206): the slot loop below calls `flock -n` with no check
-# that it exists. If it is absent, EVERY slot's `flock -n "$fd"` fails the
-# same way an actually-busy slot would, so this is not a portability
-# concern on THIS linux-only runner (see the platform guard above — flock
-# is near-universal there) — it is a FAILURE-MODE one: an absent `flock`
-# reads identically to "every slot busy," and the loop then spins silently
-# against SLOT_WAIT, whose default is 7200s. A two-hour silent spin ending
-# in the same "all slots busy" message a real contention case would give
-# is a far worse failure than an immediate, correctly-attributed refusal.
-# Preflight once, before the loop, and fail loudly naming the real cause.
-command -v flock >/dev/null 2>&1 || fail "'flock' not found on PATH — required to claim a clone slot (scripts/vm/after-report.sh's platform guard assumes it; install util-linux or equivalent)"
-LOCK_DIR="${HIMMEL_VM_AR_LOCK_DIR:-/tmp}"
-mkdir -p "$LOCK_DIR" || fail "cannot create lock directory $LOCK_DIR"
-SLOT_WAIT="${HIMMEL_VM_AR_SLOT_WAIT:-7200}"
-CLONE_IDX=""
-CLONE_FD=""
-_slot_deadline=$(( $(date +%s) + SLOT_WAIT ))
-while [ -z "$CLONE_IDX" ]; do
-    i=1
-    while [ "$i" -le "$MAX" ]; do
-        lockfile="$LOCK_DIR/himmel-vm-ar-$i.lock"
-        fd=$(( 200 + i ))
-        # A literal fd number is required immediately before `>` in bash's
-        # redirection grammar (a variable there is not recognized as the fd
-        # prefix), hence eval — the path is shell-quoted via printf %q first
-        # so this never re-interprets anything in $lockfile.
-        eval "exec $fd>$(printf '%q' "$lockfile")" 2>/dev/null || fail "cannot open lock file $lockfile"
-        if flock -n "$fd"; then
-            CLONE_IDX=$i
-            CLONE_FD=$fd
-            break
-        fi
-        eval "exec $fd>&-"
-        i=$((i + 1))
-    done
-    if [ -n "$CLONE_IDX" ]; then
-        break
-    fi
-    [ "$(date +%s)" -lt "$_slot_deadline" ] || fail "all $MAX clone slot(s) busy after ${SLOT_WAIT}s (HIMMEL_VM_AR_MAX=$MAX)"
-    sleep 5
-done
-CLONE_NAME="himmel-ar-$CLONE_IDX"
+# --- claim a clone slot (sets CLONE_IDX / CLONE_FD / CLONE_NAME) -----------
+vm_slot_acquire
 
 # --- vm-lock: held around EVERY real VBoxManage-touching span for this
 # clone, without exception — clone/snapshot/restore/start/stop, the whole
@@ -500,9 +406,7 @@ except Exception as e:
     # _VM_LOCK_GEN — so no flag is needed here for the common case where
     # this lock was never taken.
     vm_lock_release "himmel-vm-registry"
-    if [ -n "$CLONE_FD" ]; then
-        eval "exec $CLONE_FD>&-" 2>/dev/null || true
-    fi
+    vm_slot_release
     exit "$rc"
 }
 trap cleanup EXIT
@@ -516,77 +420,11 @@ trap cleanup EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
 
-# --- create the clone if it does not exist yet -----------------------------
-if ! vm_ar_vm_exists "$CLONE_NAME"; then
-    # A SECOND, nested lock on a fixed sentinel name ("himmel-vm-registry",
-    # not a real VM — the vm-lock library takes any name, a VM name is just
-    # the common case) serializes port allocation + clonevm + the forward +
-    # the baseline snapshot ACROSS DIFFERENT clone names. The outer
-    # CLONE_NAME lock alone does not close this race: two slot-holders
-    # creating himmel-ar-1 and himmel-ar-2 for the FIRST time never contend
-    # on the SAME lock name, so without this they could both read "port 2231
-    # is free" and both claim it. Held only for the creation span — never
-    # needed again once a clone's own forward is on record.
-    vm_lock_acquire_waiting "himmel-vm-registry"
-    _reg_lock_rc=$?
-    case "$_reg_lock_rc" in
-        0) ;;
-        5) fail "timed out waiting for the vm-lock on 'himmel-vm-registry' while creating $CLONE_NAME" ;;
-        *) fail "could not acquire the vm-lock on 'himmel-vm-registry' while creating $CLONE_NAME" ;;
-    esac
-    PORT=$(vm_ar_next_ports 1)
-    _port_rc=$?
-    if [ "$_port_rc" -ne 0 ]; then
-        vm_lock_release "himmel-vm-registry"
-        fail "port allocation failed"
-    fi
-    if ! "$VBOXMANAGE" clonevm "$SOURCE_VM" --snapshot "$SNAPSHOT" --options link \
-            --name "$CLONE_NAME" --register; then
-        vm_lock_release "himmel-vm-registry"
-        fail "clonevm $SOURCE_VM -> $CLONE_NAME failed"
-    fi
-    if ! vbox_py 'vbox.ensure_persistent_forward(sys.argv[1], "ssh", int(sys.argv[2]), 22)' "$CLONE_NAME" "$PORT"; then
-        vm_lock_release "himmel-vm-registry"
-        fail "could not set the persistent NAT forward on $CLONE_NAME (port $PORT)"
-    fi
-    if ! "$VBOXMANAGE" snapshot "$CLONE_NAME" take "$SNAPSHOT"; then
-        vm_lock_release "himmel-vm-registry"
-        fail "could not take the baseline '$SNAPSHOT' snapshot on the new clone $CLONE_NAME"
-    fi
-    vm_lock_release "himmel-vm-registry"
-fi
+# --- create the clone if it does not exist yet (nested registry lock inside) --
+vm_clone_ensure "$SNAPSHOT"
 
-# --- restore to the clean baseline, boot, wait for ssh ---------------------
-# Verify the SNAPSHOT NAME actually exists on this clone before touching
-# anything (HIMMEL-2623): a stale-default/missing baseline — this script's
-# default has already moved once in substance (suite-ready -> suite-ready-v3
-# -> suite-ready-v4, the last via the HIMMEL-2747 delete-and-re-clone above,
-# not a rename) and will move again for a future migration — must fail with
-# a clear, specific message here, not an opaque VBoxManage error three calls
-# later.
-vbox_py '
-names = vbox.list_snapshots(sys.argv[1])
-sys.exit(1) if sys.argv[2] not in names else None
-' "$CLONE_NAME" "$SNAPSHOT" || fail "snapshot '$SNAPSHOT' does not exist on $CLONE_NAME — check HIMMEL_VM_AR_SNAPSHOT (or that the clone predates a base-snapshot rename)"
-vbox_py 'vbox.restore_snapshot(sys.argv[1], sys.argv[2])' "$CLONE_NAME" "$SNAPSHOT" \
-    || fail "restore_snapshot($CLONE_NAME, $SNAPSHOT) failed"
-
-# CR finding codex-3 (round 3): read PORT AFTER restore_snapshot, not
-# before, and for BOTH the freshly-created and the reused-clone case alike
-# — `snapshot restore` reverts MACHINE CONFIG, not just disk, so any
-# pre-restore read (including this clone's OWN forward, if an operator
-# ever hand-edited it since the baseline was taken) can go stale the
-# moment restore reinstates whatever the snapshot itself recorded.
-# CR finding codex-14: select the LOOPBACK ssh (guest port 22) rule
-# explicitly — the previous "first tcp forward, whichever it is" picked
-# an unrelated rule the moment a clone ever carried more than one (an
-# operator-added forward, or a future second port), silently ssh-ing to
-# the wrong port.
-PORT=$(vbox_py '
-fw = vbox.get_forwards(sys.argv[1])
-ssh_fwds = [f for f in fw if f[1] == "tcp" and f[5] == "22" and f[2] == "127.0.0.1"]
-sys.exit(1) if not ssh_fwds else print(ssh_fwds[0][3])
-' "$CLONE_NAME") || fail "$CLONE_NAME is registered but has no loopback ssh (tcp/22) NAT forward — remove it manually or fix scripts/vm/after-report.sh's port bookkeeping"
+# --- restore to the clean baseline (also reads PORT AFTER the restore) -----
+vm_restore "$SNAPSHOT"
 
 # CR finding codex-2: SKILL.md documents "a RAM budget (4 GB each, capped
 # via env against free host RAM)" for after-report clones — a claim with no
@@ -597,33 +435,10 @@ sys.exit(1) if not ssh_fwds else print(ssh_fwds[0][3])
 # cleanly (fails open) where /proc/meminfo does not exist — a soft resource
 # guard, not a security boundary, and this station's tooling is Linux-only
 # already (see vm-lock.sh's own header).
-HIMMEL_VM_AR_RAM_MB="${HIMMEL_VM_AR_RAM_MB:-4096}"
-if [ -r /proc/meminfo ]; then
-    _free_mb=$(awk '/^MemAvailable:/ { print int($2 / 1024) }' /proc/meminfo)
-    if [ -n "$_free_mb" ] && [ "$_free_mb" -lt "$HIMMEL_VM_AR_RAM_MB" ]; then
-        fail "only ${_free_mb}MB free host RAM, below the HIMMEL_VM_AR_RAM_MB=${HIMMEL_VM_AR_RAM_MB}MB per-clone budget — refusing to boot $CLONE_NAME"
-    fi
-fi
-
-SSH_WAIT="${HIMMEL_VM_AR_SSH_WAIT:-180}"
-vbox_py '
-vbox.ensure_running(sys.argv[1])
-print(vbox.wait_for_ssh("127.0.0.1", int(sys.argv[2]), timeout=int(sys.argv[3])))
-' "$CLONE_NAME" "$PORT" "$SSH_WAIT" >/dev/null || fail "$CLONE_NAME did not answer ssh on 127.0.0.1:$PORT after boot (waited ${SSH_WAIT}s)"
-
-# --- ssh/scp to the clone. StrictHostKeyChecking=no + a null known_hosts
-# file are load-bearing here, not cosmetic: this host's known_hosts holds
-# stale keys for [127.0.0.1]:2222 from a retired VM, so a plain ssh to a
-# freshly (re)keyed guest on a REUSED loopback port reports HOST
-# IDENTIFICATION CHANGED and refuses to connect. ---------------------------
-SSH_KEY="${HIMMEL_VM_AR_SSH_KEY:-$HOME/.ssh/id_ed25519}"
-SSH_OPTS=(-i "$SSH_KEY" -p "$PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
-          -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o BatchMode=yes)
-SCP_OPTS=(-i "$SSH_KEY" -P "$PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
-          -o ConnectTimeout=15 -o BatchMode=yes)
-# shellcheck disable=SC2029 # deliberate: the remote command string is built
-# with LOCAL variables (branch, dest, token) client-side on purpose.
-guest_ssh() { ssh "${SSH_OPTS[@]}" "${GUEST_USER}@127.0.0.1" "$@"; }
+# RAM budget check, boot, wait for ssh: vm_boot (scripts/vm/lib/vm-clone.sh).
+vm_boot
+# ssh/scp to the clone: vm_ssh / vm_scp in the same lib (they read $PORT + $GUEST_USER).
+guest_ssh() { vm_ssh "$@"; }
 
 # --- guest checkout: fetch the PR branch + refresh origin/main. The PAT is
 # never written to `git remote`/.git/config (still true, no token to strip
@@ -814,7 +629,7 @@ guest_ssh "cd $GUEST_DEST && rm -f $REMOTE_LOG && PATH=\"\$HOME/.bun/bin:\$PATH\
 guest_run_rc=$?
 [ "$guest_run_rc" -ne 255 ] || fail "ssh transport to $CLONE_NAME failed while running the suite (rc 255)"
 
-scp "${SCP_OPTS[@]}" "${GUEST_USER}@127.0.0.1:$GUEST_DEST/$REMOTE_LOG" "$LOCAL_LOG" \
+vm_scp "$GUEST_DEST/$REMOTE_LOG" "$LOCAL_LOG" \
     || fail "could not copy the after-report log back from $CLONE_NAME"
 
 SUITE_RC=$(grep -oE '^EXITCODE=[0-9]+' "$LOCAL_LOG" | tail -n1 | cut -d= -f2)
