@@ -316,7 +316,7 @@ vm_scp() {
 vm_stage_tree() {
     local repo="$1" remote_dir="$2" runner="$3" rsync_e="$4" rsync_host="$5" _x _p
     shift 5
-    local -a rsync_excl=() tar_excl=() rsync_src=()
+    local -a rsync_excl=() tar_excl=() rsync_src=() _st=()
     declare -F vm_guest_rsync_excludes >/dev/null 2>&1 \
         || . "$repo/scripts/lib/vm-guest-excludes.sh" \
         || { echo "==> REFUSING: cannot load scripts/lib/vm-guest-excludes.sh; nothing was copied" >&2; return 1; }
@@ -339,9 +339,14 @@ vm_stage_tree() {
             "${rsync_excl[@]}" "${rsync_src[@]}" "$rsync_host:$remote_dir/" \
             || { echo "==> STAGE FAILED (rsync): the copy to the guest did not complete" >&2; return 1; }
     else
+        # PIPESTATUS, not pipefail: this lib sets no shell options, so a producer failure
+        # (a requested path missing on the host) must not depend on the caller's pipefail.
         tar -C "$repo" --exclude=.git --exclude=node_modules --exclude=dist \
-            "${tar_excl[@]}" -cf - "$@" | "$runner" "tar -C $remote_dir -xf -" \
-            || { echo "==> STAGE FAILED (tar): the copy to the guest did not complete" >&2; return 1; }
+            "${tar_excl[@]}" -cf - "$@" | "$runner" "tar -C $remote_dir -xf -"
+        _st=("${PIPESTATUS[@]}")
+        if [ "${_st[0]}" -ne 0 ] || [ "${_st[1]}" -ne 0 ]; then
+            echo "==> STAGE FAILED (tar): the copy to the guest did not complete" >&2; return 1
+        fi
         # .env.example is the public placeholder template (a literal file, not the tree).
         "$runner" "cat > $remote_dir/.env.example" 2>/dev/null < "$repo/.env.example" || true
     fi

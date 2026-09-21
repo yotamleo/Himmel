@@ -159,6 +159,15 @@ if [ "$rc" -eq 1 ] && grep -q 'secret-exclusion list is empty' <<< "$out" && [ !
     pass "T4d an empty exclude list refuses BEFORE any copy (guest dir never created)"
 else fail_case "T4d rc=$rc: $out"; fi
 
+# A requested path missing on the host makes tar exit non-zero while the guest-side
+# extractor still exits 0: the stage must fail even though the caller never enabled
+# pipefail (the bash -c below sets no options), else a partial tree reads as staged.
+G4="$WORK/guest-partial"
+out=$(PATH="$BIN:$PATH" GUEST_HAS_RSYNC=0 bash -c '. "$1"; vm_stage_tree "$2" "$3" guest x host scripts no/such/path' _ "$LIB" "$FIX" "$G4" 2>&1); rc=$?
+if [ "$rc" -eq 1 ] && grep -q 'STAGE FAILED (tar)' <<< "$out"; then
+    pass "T4e a tar producer failure fails the stage without the caller's pipefail"
+else fail_case "T4e rc=$rc: $out"; fi
+
 echo
 if [ "$FAILED" -eq 0 ]; then echo "RESULT: all passed"; exit 0; fi
 echo "RESULT: $FAILED failure(s)"; exit 1
