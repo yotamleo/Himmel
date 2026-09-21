@@ -36,7 +36,7 @@ telegram-channel	state	telegram-bridge	dir	TELEGRAM_CHANNEL_DIR	{HOME}/.claude/c
 telegram-bridge	state	telegram-bridge	dir	BRIDGE_ROOT	{HOME}/.claude/handover/bridge	2	bridge sessions, inbox/outbox, supervisor state	file
 scheduled-jobs	code	scheduler	jobs	-	-	3	HIMMEL-Resume-* scheduled jobs + the HimmelTelegramBridge logon task	job
 cadence-jobs	code	scheduler	jobs	-	-	3	the cadence jobs install scheduled (removal pending HIMMEL-3332 S8)	job
-plugins	code	claude-plugins	plugins	-	-	4	Claude plugins the ledger records as himmel's (no ledger: falls back to himmel's own template plugins; USER-SCOPE plugins affect every repo)	plugin
+plugins	code	claude-plugins	plugins	-	-	4	Claude plugins the ledger records as himmel's (no ledger: kept with a hand command, never guessed by template; USER-SCOPE plugins affect every repo)	plugin
 git-hooks	code	project-repo	githooks	-	{HOOKS_REPO_ROOT}/.git/hooks	5	himmel's pre-commit/pre-push/commit-msg git hooks in the current repo	git-hook
 git-hook-backups	code	project-repo	githooks	-	{HOOKS_REPO_ROOT}/.git/hooks	5	the adopter's own hooks himmel displaced to <hook>.himmel-backup at install — RESTORED to <hook>, never deleted	git-hook
 user-settings	code	claude-settings	settings	HIMMEL_USER_SETTINGS	{HOME}/.claude/settings.json	6	himmel statusLine and env.HANDOVER_DIR (ledger-decided: kept with a hand command when there is no ledger), env.HIMMEL_REPO/LUNA_VAULT_PATH and UNIVERSAL hooks always removed (other keys untouched)	json-key,json-elem
@@ -46,7 +46,7 @@ user-agents-md	code	codex-user-rules	file	-	{HOME}/.codex/AGENTS.md	6	the same w
 hud-config	code	claude-settings	file	-	{HOME}/.claude/plugins/claude-hud/config.json	6	the claude-hud config himmel wrote for its statusLine (ledger-decided: kept with a hand command when there is no ledger; with a ledger, removed only while its customLineCommand is himmel's)	file
 phi-roots	code	claude-glm	file	-	{HOME}/.config/claude-glm/phi-roots	6	the phi-roots lines install appended (removal not yet scheduled in any HIMMEL-3332 slice)	line
 graphify-wiring	code	graphify	file	-	-	6	the graphify MCP entry, hook elements and skill symlink install wired (removal pending a separate ticket, not yet filed — HIMMEL-3332 design doc D5)	mcp,json-elem,symlink
-marketplaces	code	claude-plugins	marketplaces	-	-	7	Claude marketplaces the ledger records as himmel's, once they have no remaining installed plugins (no ledger: falls back to himmel's own template marketplaces)	marketplace
+marketplaces	code	claude-plugins	marketplaces	-	-	7	Claude marketplaces the ledger records as himmel's, once they have no remaining installed plugins (no ledger: kept with a hand command, never guessed by template)	marketplace
 himmelctl-cache	code	himmelctl	dir	HIMMELCTL_CACHE_DIR	{HOME}/.claude/himmel	8	himmelctl install-profile.json + state.json, the session-start update check's stamps and release cache (himmel-update-check-*, himmel-latest-release*), and the leg and console launch records (launch-logs/<session>.log, one line per launch) — himmel's own cache	file
 qmd-fork	code	qmd	file	-	{HOME}/.himmel/qmd-fork	8	the qmd fork checkout, its symlink and its index collection install created (removal pending HIMMEL-3311 / HIMMEL-3332 S8)	symlink,file,collection
 provenance-ledger	state	himmel-provenance	file	HIMMEL_PROVENANCE_DIR	{HOME}/.himmel	8	the install provenance ledger: only provenance.jsonl and provenance-backups/ are removed, with --purge-state (--keep-backups spares provenance-backups/), never the rest of the directory	file

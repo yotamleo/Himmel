@@ -1891,7 +1891,9 @@ when install wrote one, decides ownership of the six overwrite-prone rows —
 your own pre-existing statusLine, `env.HANDOVER_DIR`, plugins (4), the
 claude-hud config, marketplaces (7) and adopter-script copies are kept with a
 printed hand command instead of being guessed at by template; with no
-ledger, uninstall falls back to that template guess (HIMMEL-3332). Partial
+ledger, those same six rows are kept the same way (hand command, never
+guessed) while everything else still falls back to template ownership
+(HIMMEL-3332). Partial
 offboard via `--keep-telegram-state` / `--skip-plugins` / `--skip-tasks` /
 `--skip-hooks` / `--skip-settings` (PS: `-KeepTelegramState` etc.).
 `--purge-state` also removes the provenance ledger (`--keep-backups` spares

@@ -66,8 +66,9 @@
 #                          last.
 #   --keep-backups         Keep provenance-backups/ after a clean, ledger-
 #                          driven run instead of pruning it (backups are kept
-#                          on a halt regardless; moot under --purge-state,
-#                          which removes the whole ledger directory anyway).
+#                          on a halt regardless). Under --purge-state, spares
+#                          provenance-backups/ from that removal too — the
+#                          ledger file itself is still removed.
 #   --keep-telegram-state  Accepted for compatibility; state is already kept by
 #                          default. Contradicts --purge-state (rc=2).
 #   --skip-plugins         Keep Claude plugins + marketplaces installed.
@@ -2003,7 +2004,7 @@ himmel_wiring_lines() {
 }
 
 unwire_settings() {
-  local settings="$1" helper _line _left _units _u
+  local settings="$1" helper _line _left _units _u _seen_sl=0 _seen_hd=0 _kept_as
   local _mask_hooks=0 _mask_sl=0 _mask_repo=0 _mask_vault=0 _mask_hd=0
   _LEDGER_PROTECTED=""
   if [ "$LEDGER_OK" -eq 1 ]; then
@@ -2025,7 +2026,15 @@ $(prov_read_units --path "$settings" --kind json-elem)"
       # user-modified here — skip it with no print/outcome row;
       # prov_read_drop_env_if_ours (below, after the helper loop) drops the
       # now-empty container once its /env/<KEY> units are handled.
-      [ "$(printf '%s' "$_u" | jq -r '.unit // ""')" = "/env" ] && continue
+      case "$(printf '%s' "$_u" | jq -r '.unit // ""')" in
+        /env) continue ;;
+        # R2-codex4: track whether the ledger recorded a unit AT ALL for
+        # these two rows -- distinct from whether ledger_apply_unit ended up
+        # protecting it (below), so a governed-but-e.g.-removed row still
+        # counts as "seen" and does not fall into the not-in-ledger branch.
+        /statusLine)          _seen_sl=1 ;;
+        /env/HANDOVER_DIR)    _seen_hd=1 ;;
+      esac
       ledger_apply_unit "$_u"
     done <<EOF
 $_units
@@ -2046,25 +2055,39 @@ EOF
     # --dry-run under a ledger silently under-reported HIMMEL_REPO /
     # LUNA_VAULT_PATH / hook removals the wet run still performs (caught by
     # U22: 5 rows expected, only the hooks line was printed).
-  else
-    # ponytail (HIMMEL-3332 S6, spec §4 six rows): with no ledger for this
-    # $HOME, a pre-existing statusLine or env.HANDOVER_DIR cannot be told
-    # from himmel's own — both are kept and reported with a hand command
-    # instead of letting today's unwire-*.sh helpers remove them blindly.
+  fi
+  # ponytail (HIMMEL-3332 S6, spec §4 six rows): a pre-existing statusLine or
+  # env.HANDOVER_DIR cannot be told from himmel's own without a ledger unit
+  # recording it — both are kept and reported with a hand command instead of
+  # letting today's unwire-*.sh helpers remove them blindly. R2-codex4: a
+  # LOADED ledger that stayed silent about one of these two rows (predates
+  # per-key recording) must be treated exactly the same way — "kept (no
+  # ledger)" would be misleading with a real ledger present, so that case
+  # reads "kept (not in ledger)" instead; the hand command is identical.
+  if [ "$LEDGER_OK" -ne 1 ] || [ "$_seen_sl" -eq 0 ]; then
+    _kept_as="no ledger"; [ "$LEDGER_OK" -eq 1 ] && _kept_as="not in ledger"
     if [ -n "$HIMMEL_SL_PAT" ] && jq -e --arg sl "$HIMMEL_SL_PAT" \
         '((.statusLine.command? // "") | test($sl))' "$settings" >/dev/null 2>&1; then
-      if [ "$DRY_RUN" -eq 1 ]; then echo "DRY: would keep (no ledger) statusLine  [$settings]"
-      else echo "  kept (no ledger): statusLine  [$settings] — remove by hand: bash $REPO_ROOT/scripts/lib/unwire-statusline.sh $settings"
+      if [ "$DRY_RUN" -eq 1 ]; then echo "DRY: would keep ($_kept_as) statusLine  [$settings]"
+      else echo "  kept ($_kept_as): statusLine  [$settings] — remove by hand: bash $REPO_ROOT/scripts/lib/unwire-statusline.sh $settings"
       fi
       _mask_sl=1
     fi
+  fi
+  if [ "$LEDGER_OK" -ne 1 ] || [ "$_seen_hd" -eq 0 ]; then
+    _kept_as="no ledger"; [ "$LEDGER_OK" -eq 1 ] && _kept_as="not in ledger"
     if jq -e '((.env.HANDOVER_DIR? // "") | length) > 0' "$settings" >/dev/null 2>&1; then
-      if [ "$DRY_RUN" -eq 1 ]; then echo "DRY: would keep (no ledger) env.HANDOVER_DIR  [$settings]"
-      else echo "  kept (no ledger): env.HANDOVER_DIR  [$settings] — remove by hand: bash $REPO_ROOT/scripts/lib/unwire-handover-dir.sh $settings"
+      if [ "$DRY_RUN" -eq 1 ]; then echo "DRY: would keep ($_kept_as) env.HANDOVER_DIR  [$settings]"
+      else echo "  kept ($_kept_as): env.HANDOVER_DIR  [$settings] — remove by hand: bash $REPO_ROOT/scripts/lib/unwire-handover-dir.sh $settings"
       fi
       _mask_hd=1
     fi
   fi
+  # HIMMEL-3332 S6 R2-codex5: a halt mid per-unit ledger loop must stop HERE
+  # -- neither the DRY preview nor the unconditional legacy-helper loop below
+  # may run afterward (they would strip a unit the halted pass never got to
+  # verdict, or re-strip one it already restored).
+  [ "$HALTED" -eq 0 ] || return 0
   # Print exactly what is about to change (dry-run: what WOULD change) or, on
   # a wet run, narrate it -- masking out anything either branch above already
   # protected. HIMMEL-3332 S6 fix: shared by the ledger and no-ledger paths,
@@ -2074,7 +2097,10 @@ EOF
   # unconditionally re-runs every non-masked helper regardless of LEDGER_OK.
   # Preview only: an unreadable file is reported by the helpers / the read-back.
   if [ -n "$HIMMEL_HOOK_PAT" ] && [ -n "$HIMMEL_SL_PAT" ]; then
-    { himmel_wiring_lines "$settings" 0 "$_mask_sl" 0 0 "$_mask_hd" 2>/dev/null || true; } | while IFS= read -r _line; do
+    # HIMMEL-3332 S6 R2-codex8: pass every COMPUTED mask (not a literal 0 for
+    # mask_hooks/mask_repo/mask_vault) -- the DRY preview must never announce
+    # removal of a unit the ledger pass above already kept/restored.
+    { himmel_wiring_lines "$settings" "$_mask_hooks" "$_mask_sl" "$_mask_repo" "$_mask_vault" "$_mask_hd" 2>/dev/null || true; } | while IFS= read -r _line; do
       if [ "$DRY_RUN" -eq 1 ]; then echo "DRY: would remove $_line  [$settings]"
       else echo "  removing $_line  [$settings]"; fi
     done
@@ -2162,7 +2188,11 @@ project_is_himmel_checkout() {
 # The rule-file read-back is the helper's own `--probe` (HIMMEL-3333): it must
 # agree with the strip about what a marker IS -- a whole line outside a fenced
 # code block -- or a file that merely quotes the block would read as still wired.
-HIMMEL_HUD_PAT="$( . "$SCRIPT_DIR/lib/unwire-hud-config.sh" >/dev/null 2>&1; printf '%s' "${_UNWIRE_HUD_PAT:-}" )"
+# HIMMEL-3332 S6 R2-codex4: HIMMEL_HUD_PAT (the pattern used to verify a
+# post-strip hud config was really himmel's) is no longer read anywhere --
+# the pattern-matched strip below it used to guard is gone, replaced by the
+# ledger-or-kept fallback -- so the computation is dropped as an orphan of
+# that fix rather than left unused.
 unwire_user_files() {
   local _ix _p _dry=0 _probe_rc _hud_units _hu _fc_args _block_unit _fc
   [ "$DRY_RUN" -eq 1 ] && _dry=1
@@ -2191,15 +2221,12 @@ unwire_user_files() {
         done <<EOF
 $_hud_units
 EOF
-      # ponytail: the ledger loaded but never recorded THIS hud-config path
-      # (predates per-file recording) — fall back to today's unconditional
-      # strip, the same behaviour as before S6.
-      elif ! bash "$SCRIPT_DIR/lib/unwire-hud-config.sh" "$_p" "$_dry"; then
-        fail_step "[6/8] hud config: could not remove $_p"
-      elif [ "$_dry" -eq 0 ] && [ -e "$_p" ] && [ -n "$HIMMEL_HUD_PAT" ] &&
-          jq -e --arg re "$HIMMEL_HUD_PAT" '((.display.customLineCommand? // "") | tostring | test($re))' "$_p" >/dev/null 2>&1; then
-        echo "  STILL WIRED: himmel hud config  [$_p]" >&2
-        fail_step "[6/8] read-back: himmel hud config still present at $_p"
+      # R2-codex4: the ledger loaded but never recorded THIS hud-config path
+      # (predates per-file recording) -- treat it exactly like the no-ledger
+      # branch above (kept with a hand command), not an unconditional strip;
+      # "kept (no ledger)" would be misleading with a real ledger present.
+      else
+        echo "  kept (not in ledger): $_p — remove by hand: bash $SCRIPT_DIR/lib/unwire-hud-config.sh $_p"
       fi
     else
       _fc_args=()
@@ -2466,12 +2493,17 @@ if [ "$LEDGER_OK" -eq 1 ]; then
       else
         _prov_backups_dir="$_prov_base_dir/provenance-backups"
         _prov_ledger_file="$_prov_base_dir/provenance.jsonl"
-        # HIMMEL-2505 gap A.3: a symlinked backups dir is unlinked, never
-        # `rm -rf`'d through into whatever it points at.
-        if [ -L "$_prov_backups_dir" ]; then
-          run rm -f -- "$_prov_backups_dir"
-        else
-          run rm -rf -- "$_prov_backups_dir"
+        # HIMMEL-3332 S6 R2-codex6: --keep-backups spares provenance-backups/
+        # under --purge-state too -- the ledger file itself is still removed
+        # unconditionally, only the backups directory is protected.
+        if [ "$KEEP_BACKUPS" -ne 1 ]; then
+          # HIMMEL-2505 gap A.3: a symlinked backups dir is unlinked, never
+          # `rm -rf`'d through into whatever it points at.
+          if [ -L "$_prov_backups_dir" ]; then
+            run rm -f -- "$_prov_backups_dir"
+          else
+            run rm -rf -- "$_prov_backups_dir"
+          fi
         fi
         run rm -f -- "$_prov_ledger_file"
       fi

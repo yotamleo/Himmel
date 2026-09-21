@@ -437,6 +437,7 @@ individual steps with `--skip-plugins` / `--skip-hooks` / `--skip-tasks` /
 bash scripts/uninstall.sh --dry-run    # preview; nothing is executed
 bash scripts/uninstall.sh --yes        # remove code wiring, keep operator state
 bash scripts/uninstall.sh --yes --purge-state   # ...and remove operator state + the provenance ledger too
+bash scripts/uninstall.sh --yes --purge-state --keep-backups   # ...but keep the ledger's backup copies
 ```
 
 The paths it acts on are listed in

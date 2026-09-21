@@ -329,6 +329,117 @@ AFTER12B=$(cat "$DEST12B")
 check "RED12 codex-9: second adopter-scripts unit untouched after the first failed" \
   "$AFTER12B" "$B12B_INSTALLED"
 
+echo "==== RED13 (codex-4): ledger loaded but silent on statusLine/HANDOVER_DIR/hud -- kept like no-ledger, not stripped ===="
+new_case red13
+# RED7's `( HOME=… )` subshell closed long before this line; HOME here is the
+# suite's own scratch HOME, exactly as intended.
+# shellcheck disable=SC2031
+HUD13="$HOME/.claude/plugins/claude-hud/config.json"
+mkdir -p "$(dirname "$HUD13")"
+cat > "$CASE_SETTINGS" <<JSON
+{
+  "statusLine": {"type":"command","command":"bash \"$repo_root/marketplace/plugins/claude-hud/dist/index.js\""},
+  "env": {"HANDOVER_DIR": "/opt/red13-handover"}
+}
+JSON
+printf '{"display":{"customLineCommand":"bash \\"/fake/scripts/statusline/hud-custom-lines.sh\\""}}\n' \
+  > "$HUD13"
+# a REAL, loaded ledger (LEDGER_OK=1) that records only an UNRELATED unit --
+# never a json-key unit for /statusLine or /env/HANDOVER_DIR, and never a
+# file unit for the hud config path -- so every one of these six-row
+# fallbacks must trigger on "ledger loaded but silent", not "no ledger".
+( prov_begin --writer install-plugins.sh -- seed-red13 >/dev/null
+  prov_record register plugin - --unit unrelated-plugin@some-marketplace --scope machine --class code \
+    --writer install-plugins.sh --row plugins --field 'cli_scope="user"' --field preexisted=false >/dev/null
+  prov_end ok >/dev/null )
+out13=$(run_uninstall --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks)
+statusline_kept13=$(jq -r 'has("statusLine")' "$CASE_SETTINGS")
+handover_kept13=$(jq -r '.env.HANDOVER_DIR // "ABSENT"' "$CASE_SETTINGS")
+hud_kept13=$([ -f "$HUD13" ] && echo yes || echo no)
+notinledger13=$(printf '%s\n' "$out13" | grep -c 'kept (not in ledger)')
+check "RED13 codex-4: loaded-but-silent ledger keeps statusLine/HANDOVER_DIR/hud-config like the no-ledger branch" \
+  "$statusline_kept13|$handover_kept13|$hud_kept13|$notinledger13" "true|/opt/red13-handover|yes|3"
+
+echo "==== RED14 (codex-5): a halted per-unit settings loop must not fall through to the legacy helper for a unit it never reached ===="
+new_case red14
+cat > "$CASE_SETTINGS" <<JSON
+{
+  "env": {"HANDOVER_DIR": "/opt/red14-handover", "LUNA_VAULT_PATH": "/opt/red14-preexisting-vault"}
+}
+JSON
+# Two json-key units on the same settings path: /env/HANDOVER_DIR sorts
+# before /env/LUNA_VAULT_PATH (fold groups are alphabetical by unit), so
+# corrupting HANDOVER_DIR's backup forces the per-unit loop to halt on the
+# FIRST unit -- LUNA_VAULT_PATH (a "keep user-modified" verdict, since its
+# current value is the pre-existing one, not the installed one) is never
+# reached and never added to _LEDGER_PROTECTED. Without the codex-5 halt
+# check, the unconditional legacy helper loop below would still run and
+# unwire-luna-vault.sh strips env.LUNA_VAULT_PATH unconditionally.
+( prov_begin --writer adopt.sh -- seed-red14 >/dev/null
+  prov_record replace json-key "$CASE_SETTINGS" --unit /env/HANDOVER_DIR --scope user --class code \
+    --writer adopt.sh --row env --pre-json '"/opt/red14-pre-handover"' --backup --post-json '"/opt/red14-handover"' >/dev/null
+  prov_record replace json-key "$CASE_SETTINGS" --unit /env/LUNA_VAULT_PATH --scope user --class code \
+    --writer adopt.sh --row env --pre-json '"/opt/red14-preexisting-vault"' --backup --post-json '"/opt/red14-himmel-vault"' >/dev/null
+  prov_end ok >/dev/null )
+BACKUP14=$(grep -rl 'red14-pre-handover' "$(prov_dir)/provenance-backups" 2>/dev/null | head -n1)
+[ -n "$BACKUP14" ] || { echo "FAIL - RED14 setup: backup for HANDOVER_DIR not found"; fails=$((fails+1)); }
+printf '%s' '"tampered"' > "$BACKUP14"
+run_uninstall --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks >/dev/null
+vault_after14=$(jq -r '.env.LUNA_VAULT_PATH // "ABSENT"' "$CASE_SETTINGS")
+check "RED14 codex-5: LUNA_VAULT_PATH unit never reached after the halt is left untouched, not legacy-stripped" \
+  "$vault_after14" "/opt/red14-preexisting-vault"
+
+echo "==== RED15 (codex-6): --purge-state --keep-backups spares provenance-backups/ ===="
+new_case red15
+mkdir -p "$CASE_DIR/cwd/scripts"
+DEST15="$CASE_DIR/cwd/scripts/red15.sh"
+printf '#!/bin/sh\necho original-user-script\n' > "$DEST15"
+SNAP15=$(mktemp "$SUITE_TMP/SNAP15.XXXXXX") || exit 1; cp -p "$DEST15" "$SNAP15"
+printf '#!/bin/sh\necho himmel-installed-script\n' > "$DEST15"
+( prov_begin --writer adopt.sh -- seed-red15 >/dev/null
+  prov_record replace file "$DEST15" --scope project --class code --row adopter-scripts \
+    --writer adopt.sh --pre-file "$SNAP15" --backup --post-file "$DEST15" >/dev/null
+  prov_end ok >/dev/null )
+rm -f "$SNAP15"
+# the operator edits the file again after install recorded it -- verdict
+# "keep user-modified", so its backup is NOT pruned by the ordinary
+# per-unit prune (codex-1) and survives to see whether --purge-state /
+# --keep-backups treats it correctly.
+printf '#!/bin/sh\necho operator-edited-after-install\n' > "$DEST15"
+BACKUP15=$(find "$(prov_dir)/provenance-backups" -type f | head -n1)
+[ -n "$BACKUP15" ] || { echo "FAIL - RED15 setup: backup for DEST15 not found"; fails=$((fails+1)); }
+LEDGER_PATH15="$(prov_ledger_path)"
+# NOTE: --skip-settings is deliberately NOT passed here (see RED9's note
+# above): it skips unwire_settings, whose `_LEDGER_PROTECTED=""` reset the
+# adopter-scripts loop later relies on -- without it the script aborts on an
+# unset variable under `set -uo pipefail` before ever reaching the
+# provenance session-close code this RED targets.
+run_uninstall --yes --purge-state --keep-backups --skip-tasks --skip-plugins --skip-hooks >/dev/null
+ledger_gone15=$([ -f "$LEDGER_PATH15" ] && echo present || echo gone)
+backup_kept15=$([ -f "$BACKUP15" ] && echo yes || echo no)
+check "RED15 codex-6: --purge-state --keep-backups removes the ledger but keeps a kept-unit's backup" \
+  "$ledger_gone15|$backup_kept15" "gone|yes"
+
+echo "==== RED16 (R2-codex8): DRY preview never announces removing a unit the ledger pass already kept ===="
+new_case red16
+printf '{"env":{"HIMMEL_REPO":"/opt/red16-operator-value"}}\n' > "$CASE_SETTINGS"
+# A ledger unit for env.HIMMEL_REPO whose recorded post value differs from
+# the settings file's CURRENT value (the operator changed it since install)
+# -> prov_read_verdict returns "keep user-modified", so ledger_apply_unit
+# masks env.HIMMEL_REPO out of the DRY preview via _mask_repo. Before the
+# codex-8 fix, himmel_wiring_lines was always called with a literal 0 for
+# mask_repo, so the preview still announced removing it despite the ledger
+# pass one line above having just kept it.
+( prov_begin --writer install.sh -- seed-red16 >/dev/null
+  prov_record replace json-key "$CASE_SETTINGS" --unit /env/HIMMEL_REPO --scope machine --class code \
+    --writer install.sh --row env --pre-absent --post-json '"/opt/red16-himmel-value"' >/dev/null
+  prov_end ok >/dev/null )
+out16=$(run_uninstall --dry-run --yes --skip-tasks --skip-plugins --skip-hooks)
+kept_line16=$(printf '%s\n' "$out16" | grep -c 'DRY: would keep /env/HIMMEL_REPO (user-modified)')
+removed_line16=$(printf '%s\n' "$out16" | grep -c 'would remove env\.HIMMEL_REPO=')
+check "RED16 R2-codex8: masked env.HIMMEL_REPO kept once and never also previewed as removed" \
+  "$kept_line16|$removed_line16" "1|0"
+
 echo "==== REAL-LEDGER TRIPWIRE ===="
 REAL_LEDGER_AFTER=$(real_ledger_state)
 check "tripwire: operator's real ~/.himmel/provenance.jsonl untouched by this suite" \

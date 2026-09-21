@@ -462,7 +462,7 @@ prov_read_apply() {
                 if [ -f "$path" ] && [ ! -L "$path" ]; then rm -f -- "$path" || { _provread_err "cannot remove $path"; return 1; }; fi
                 return 0
             fi
-            local backup mode newsha eff_sha
+            local backup mode eff_sha
             backup=$(printf '%s' "$u" | jq -r '.eff_pre.backup // empty')
             mode=$(printf '%s' "$u" | jq -r '.eff_pre.mode // empty')
             eff_sha=$(printf '%s' "$u" | jq -r '.eff_pre.sha // empty')
@@ -470,10 +470,16 @@ prov_read_apply() {
             local tmp
             tmp="$path.provread.$$.tmp"
             cp -p "$backup" "$tmp" || { _provread_err "cannot stage restore of $path"; return 1; }
+            # HIMMEL-3332 S6 R2-codex3: verify the STAGED copy's sha BEFORE it
+            # ever replaces the target -- a corrupted backup must be caught
+            # here, not after it has already overwritten a working file.
+            if [ -n "$eff_sha" ] && [ "$(prov_sha_file "$tmp" 2>/dev/null)" != "$eff_sha" ]; then
+                _provread_err "backup for $path does not match its recorded sha"
+                rm -f "$tmp"
+                return 1
+            fi
             [ -n "$mode" ] && chmod "$mode" "$tmp" 2>/dev/null
             mv -f "$tmp" "$path" || { _provread_err "cannot restore $path"; return 1; }
-            newsha=$(prov_sha_file "$path" 2>/dev/null)
-            if [ -n "$eff_sha" ] && [ "$newsha" != "$eff_sha" ]; then _provread_err "restored $path does not match its recorded sha"; return 1; fi
             return 0
             ;;
         json-key)
@@ -483,10 +489,21 @@ prov_read_apply() {
             if [ "$action" = "remove" ]; then
                 jq --argjson p "$patharr" 'delpaths([$p])' "$path" | _provread_atomic_write "$path" || { _provread_err "cannot write $path"; return 1; }
             else
-                local backup val
+                local backup val eff_sha
                 backup=$(printf '%s' "$u" | jq -r '.eff_pre.backup // empty')
+                eff_sha=$(printf '%s' "$u" | jq -r '.eff_pre.sha // empty')
                 if [ -z "$backup" ] || [ ! -f "$backup" ]; then _provread_err "no readable backup for $ptr in $path"; return 1; fi
                 val=$(cat "$backup") || { _provread_err "cannot read backup $backup"; return 1; }
+                # HIMMEL-3332 S6 R2-codex3: verify the backup's content hash
+                # against eff_pre.sha (the writer computes it with
+                # prov_sha_json over the same pre-value, provenance.sh's
+                # _prov_body json-key case) BEFORE it is spliced into the
+                # target -- a corrupted-but-valid-JSON backup must not
+                # overwrite it.
+                if [ -n "$eff_sha" ] && [ "$(prov_sha_json "$val" 2>/dev/null)" != "$eff_sha" ]; then
+                    _provread_err "backup for $ptr in $path does not match its recorded sha"
+                    return 1
+                fi
                 jq --argjson p "$patharr" --argjson v "$val" 'setpath($p; $v)' "$path" | _provread_atomic_write "$path" || { _provread_err "cannot write $path"; return 1; }
             fi
             return 0

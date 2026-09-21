@@ -2523,20 +2523,28 @@ assert_has 'U17 footprint names the trust entry as NEVER' "NEVER   $U_HOME/.clau
 assert_has 'U17 footprint names the adopter scripts/ as NEVER' "scripts — himmel scripts copied into" "$out"
 assert_has 'U17 dry-run previews the CLAUDE.md strip' "DRY: would strip himmel working-principles block from $U_HOME/.claude/CLAUDE.md" "$out"
 assert_has 'U17 dry-run previews the AGENTS.md strip' "DRY: would strip himmel working-principles block from $U_HOME/.codex/AGENTS.md" "$out"
-assert_has 'U17 dry-run previews the hud config removal' "DRY: would remove himmel hud config $U_HOME/.claude/plugins/claude-hud/config.json" "$out"
+# HIMMEL-3332 S6 R2-codex4: u_fixture's ledger only records the plugin/
+# marketplace units (seed_plugin_ledger) -- it never records a `file` unit for
+# this hud-config path, so a loaded-but-silent ledger keeps it with a hand
+# command, the same as the no-ledger branch, instead of the round-1
+# pattern-matched strip this case used to hit.
+assert_has 'U17 dry-run shows the hud config kept (not in ledger)' "kept (not in ledger): $U_HOME/.claude/plugins/claude-hud/config.json — remove by hand: bash $U17_SCRIPTS/lib/unwire-hud-config.sh $U_HOME/.claude/plugins/claude-hud/config.json" "$out"
 u_same 'U17 dry-run left CLAUDE.md alone' "$U_HOME/.claude/CLAUDE.md" "$TMP/u17-claude-md-full"
 u_same 'U17 dry-run left AGENTS.md alone' "$U_HOME/.codex/AGENTS.md" "$TMP/u17-agents-md-full"
 u_same 'U17 dry-run left the hud config alone' "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u17-hud-full"
 
 # U18 — wet run: the block goes and the operator's own text is byte-identical;
-# an install-created file that held only the block is removed; the hud config
-# goes; the keep rows stay and the footer names them.
+# an install-created file that held only the block is removed; the hud config,
+# lacking a ledger unit, is kept with a hand command (HIMMEL-3332 S6
+# R2-codex4); the keep rows stay and the footer names them.
 u_residue_fixture u18
+cp "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u-u18-hud-before"
 u_run_fx
 assert_rc 'U18 wet run completes' 0 "$rc"
 u_same 'U18 CLAUDE.md is the operator text again, byte-identical' "$U_HOME/.claude/CLAUDE.md" "$TMP/u-u18-claude-md-before"
 u_absent 'U18 install-created AGENTS.md removed' "$U_HOME/.codex/AGENTS.md"
-u_absent 'U18 hud config removed' "$U_HOME/.claude/plugins/claude-hud/config.json"
+u_same 'U18 hud config kept (not in ledger), byte-identical' "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u-u18-hud-before"
+assert_has 'U18 footer names the hud config kept (not in ledger)' "kept (not in ledger): $U_HOME/.claude/plugins/claude-hud/config.json" "$out"
 u_same 'U18 workspace-trust entry untouched (keep)' "$U_HOME/.claude.json" "$TMP/u-u18-trust-before"
 assert_has 'U18 footer names the trust entry as not touched' "- $U_HOME/.claude.json — " "$out"
 assert_has 'U18 footer names the adopter scripts as not touched' "scripts — himmel scripts copied into" "$out"
@@ -2576,29 +2584,34 @@ u_run_fx
 assert_rc 'U20b file with no block completes' 0 "$rc"
 u_same 'U20b no-block file untouched' "$U_HOME/.claude/CLAUDE.md" "$TMP/u20b-prose"
 
-# U21 — the hud config is removed only when it is himmel's: an operator's own
-# customLineCommand keeps the file.
+# U21 — HIMMEL-3332 S6 R2-codex4: the hud config is kept, with a hand command,
+# whenever the ledger has no unit for it -- content pattern-matching alone
+# (an operator's own vs. himmel's own customLineCommand) is no longer trusted
+# to authorise a strip without ledger evidence, so all three variants below
+# (operator's own, a mention-only command, and himmel's own ECON-prefixed
+# command) are kept identically.
 u_residue_fixture u21
 printf '{"display":{"customLineCommand":"echo mine"}}\n' > "$U_HOME/.claude/plugins/claude-hud/config.json"
 cp "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21-hud"
 u_run_fx
 assert_rc 'U21 wet run completes' 0 "$rc"
 u_same 'U21 operator hud config kept byte-identical' "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21-hud"
-assert_has 'U21 kept hud config is explained' "not himmel's" "$out"
-# An operator command that merely MENTIONS himmel's script is not himmel's.
+assert_has 'U21 kept hud config is explained' "kept (not in ledger)" "$out"
+# A command that merely MENTIONS himmel's script is kept the same way.
 u_residue_fixture u21b
 printf '{"display":{"customLineCommand":"echo scripts/statusline/hud-custom-lines.sh"}}\n' > "$U_HOME/.claude/plugins/claude-hud/config.json"
 cp "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21b-hud"
 u_run_fx
 assert_rc 'U21b wet run completes' 0 "$rc"
 u_same 'U21b mention-only hud config kept byte-identical' "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21b-hud"
-# ...while himmel's own command behind the ECON prefix is still recognised.
+# ...and so is himmel's own command behind the ECON prefix, absent a ledger
+# unit for it: no more content-based removal without ledger evidence.
 u_residue_fixture u21c
 printf '{"display":{"customLineCommand":"HIMMEL_STATUSLINE_ECON=off bash \\"/x/scripts/statusline/hud-custom-lines.sh\\""}}\n' > "$U_HOME/.claude/plugins/claude-hud/config.json"
+cp "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21c-hud"
 u_run_fx
 assert_rc 'U21c wet run completes' 0 "$rc"
-if [ ! -e "$U_HOME/.claude/plugins/claude-hud/config.json" ]; then echo 'PASS U21c ECON-prefixed himmel hud config removed'
-else echo 'FAIL U21c ECON-prefixed himmel hud config still present'; FAILED=$((FAILED + 1)); fi
+u_same 'U21c ECON-prefixed himmel hud config kept (not in ledger), byte-identical' "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u21c-hud"
 
 # U22 — dry and wet print the SAME number of user-settings unwire rows: one per
 # helper (statusLine, HIMMEL_REPO, LUNA_VAULT_PATH, HANDOVER_DIR, hooks).

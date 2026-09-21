@@ -484,6 +484,49 @@ check "codex-3: restore with invalid-json backup returns non-zero" "$rc6" "1"
 check "codex-3: target settings file byte-identical after the refused restore" "$(cat "$S6")" "$BEFORE6"
 prov_read_cleanup
 
+# ── R2-codex3: a backup whose BYTES were altered (not deleted, not invalid)
+#    must be caught by an eff_pre.sha comparison before it replaces the
+#    target -- a corrupted-but-readable backup must never overwrite a
+#    working file. Two halves: kind=file (sha checked before the mv) and
+#    kind=json-key (sha checked before the setpath splice). ─────────────────
+
+reset
+prov_begin --iid FR1 --writer t
+printf 'orig\n' > "$w/fr.txt"; chmod 640 "$w/fr.txt"
+snap7=$(mktemp "$td/snap7.XXXXXX") || exit 1; cp -p "$w/fr.txt" "$snap7"
+printf 'newer\n' > "$w/fr.txt"; chmod 644 "$w/fr.txt"
+prov_record replace file "$w/fr.txt" --pre-file "$snap7" --backup --post-file "$w/fr.txt" --scope user --class code
+prov_end ok
+prov_read_load
+u=$(u_for --path "$w/fr.txt")
+bkfr=$(field "$u" '.eff_pre.backup')
+printf 'tampered\n' > "$bkfr"   # still a readable file, wrong bytes/sha
+BEFORE_FR=$(cat "$w/fr.txt")
+prov_read_apply "$u" restore
+rcfr=$?
+check "R2-codex3: file restore with corrupted (bytes-altered) backup returns non-zero" "$rcfr" "1"
+check "R2-codex3: file target untouched (not overwritten by the corrupted backup)" "$(cat "$w/fr.txt")" "$BEFORE_FR"
+prov_read_cleanup
+rm -f "$snap7"
+
+reset
+S8="$w/settings8.json"
+printf '{"env":{"K":"orig"}}\n' > "$S8"
+prov_begin --iid JK2 --writer t
+prov_record replace json-key "$S8" --unit /env/K --pre-json '"orig"' --backup --post-json '"new"' --scope user --class code
+prov_end ok
+printf '%s' '{"env":{"K":"new"}}' > "$S8"
+prov_read_load
+u=$(u_for --path "$S8")
+bkjk=$(field "$u" '.eff_pre.backup')
+printf '%s' '"tampered"' > "$bkjk"   # valid JSON, but not the recorded pre-value
+BEFORE_JK=$(cat "$S8")
+prov_read_apply "$u" restore
+rcjk=$?
+check "R2-codex3: json-key restore with corrupted (wrong-value) backup returns non-zero" "$rcjk" "1"
+check "R2-codex3: json-key target byte-identical after the refused restore" "$(cat "$S8")" "$BEFORE_JK"
+prov_read_cleanup
+
 # ── codex-11: prov_read_drop_env_if_ours requires an EXPLICIT
 #    eff_pre.state=="absent" -- a governed /env unit with NO recorded pre
 #    (eff_pre null) must NOT be treated as himmel's own and dropped. ───────
