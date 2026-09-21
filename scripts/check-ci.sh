@@ -91,8 +91,12 @@
 #       check the base branch REQUIRES (rulesets via rules/branches, unioned
 #       with classic protection contexts) never reported within --grace, or the
 #       required set itself could not be read ("required-set unreadable" — read
-#       failure fails CLOSED, never as an empty set). A required check that is
-#       FAILED exits 1, as any red does. Each of these prints one MERGE-BLOCKED
+#       failure fails CLOSED, never as an empty set). A required entry carrying a
+#       producer id (ruleset integration_id / classic app_id, HIMMEL-3385) is met
+#       only by a check run from THAT app — a same-named check from another app
+#       reads as never reported — and an unreadable check-runs read ("producers
+#       unreadable") fails closed too; an entry with no id stays a name match. A
+#       required check that is FAILED exits 1, as any red does. Each of these prints one MERGE-BLOCKED
 #       line naming the rule and sends ONE operator DM per (repo, PR, head)
 #       (scripts/lib/merge-block-alert.sh); a delivery failure never changes the
 #       exit code. Sits ABOVE 3 in severity: 3 is "fix the review state and
@@ -410,12 +414,23 @@ required_set() {
     base=$(pr_view --json baseRefName --jq .baseRefName 2>/dev/null) || return 1
     [ -n "$base" ] || return 1
     rules=$(gh api "repos/$owner/$repo/rules/branches/$base" \
-        --jq '.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]?.context' 2>&1) || return 1
+        --jq '.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]? | "\(.context)\t\(.integration_id // "")"' 2>&1) || return 1
     if ! classic=$(gh api "repos/$owner/$repo/branches/$base/protection/required_status_checks" \
-        --jq '(.contexts // [])[], ((.checks // [])[]?.context)' 2>&1); then
+        --jq '((.contexts // [])[] | "\(.)\t"), ((.checks // [])[]? | "\(.context)\t\(.app_id // "")")' 2>&1); then
         case "$classic" in *"(HTTP 404)"*) classic="" ;; *) return 1 ;; esac
     fi
-    printf '%s\n%s\n' "$rules" "$classic" | sed '/^$/d' | sort -u
+    printf '%s\n%s\n' "$rules" "$classic" | sed '/^$/d' | sort -u | _required_normalize
+}
+
+# _required_normalize — "<name>\t<producer id>" in, the same out. An id of -1 is
+# classic protection's "any source" (HIMMEL-3385), so it is no id. When a name
+# carries an id anywhere, its id-less rows drop: a producer-pinned requirement is
+# stricter, and the deprecated classic `contexts` list repeats every name id-less,
+# which must not weaken the pinned one back to a name-only match.
+_required_normalize() {
+    awk -F'\t' '
+        { n[NR] = $1; i[NR] = ($2 == "-1" ? "" : $2); if (i[NR] != "") pinned[$1] = 1 }
+        END { for (j = 1; j <= NR; j++) if (i[j] != "" || !(n[j] in pinned)) print n[j] "\t" i[j] }' | sort -u
 }
 
 # _required_rows — "<bucket>\t<name>" for every check on the PR.
@@ -423,14 +438,35 @@ _required_rows() {
     pr_checks --json bucket,name --jq '.[] | "\(.bucket)\t\(.name)"' 2>/dev/null
 }
 
-# _required_status <reqs> <rows> — "<fail|seen|missing>\t<name>" per required
-# check. A cancelled required check blocks a merge exactly as a failed one does.
+# _has_producer_ids <reqs> — true when any required entry names a producer.
+_has_producer_ids() {
+    printf '%s\n' "$1" | awk -F'\t' '$2 != "" { f = 1 } END { exit !f }'
+}
+
+# _producer_rows — "<bucket>\t<name>\t<app id>" for every check run on the head.
+# `gh pr checks --json` exposes no app id, so a producer-pinned requirement is
+# read from the check-runs API instead (HIMMEL-3385). --paginate: a busy head has
+# more than one page of runs, and an unread page would read as "missing".
+_producer_rows() {
+    gh api "repos/$owner/$repo/commits/$head0/check-runs?per_page=100" --paginate \
+        --jq '.check_runs[] | "\(if .status != "completed" then "pending" elif (.conclusion == "success" or .conclusion == "neutral" or .conclusion == "skipped") then "pass" elif .conclusion == "cancelled" then "cancel" else "fail" end)\t\(.name)\t\(.app.id // "")"' 2>/dev/null
+}
+
+# _required_status <reqs> <rows> <producer rows> — "<fail|seen|missing>\t<label>"
+# per required check. A cancelled required check blocks a merge exactly as a
+# failed one does. An entry with no id matches by name over <rows>; one with an id
+# matches name AND app id over <producer rows>.
 _required_status() {
-    local name
-    while IFS= read -r name; do
+    local name id
+    while IFS=$'\t' read -r name id; do
         [ -n "$name" ] || continue
-        printf '%s\t%s\n' "$(printf '%s\n' "$2" | awk -F'\t' -v n="$name" \
-            '$2 == n { f = 1; if ($1 == "fail" || $1 == "cancel") bad = 1 } END { print (bad ? "fail" : (f ? "seen" : "missing")) }')" "$name"
+        if [ -z "$id" ]; then
+            printf '%s\t%s\n' "$(printf '%s\n' "$2" | awk -F'\t' -v n="$name" \
+                '$2 == n { f = 1; if ($1 == "fail" || $1 == "cancel") bad = 1 } END { print (bad ? "fail" : (f ? "seen" : "missing")) }')" "$name"
+        else
+            printf '%s\t%s\n' "$(printf '%s\n' "$3" | awk -F'\t' -v n="$name" -v a="$id" \
+                '$2 == n && $3 == a { f = 1; if ($1 == "fail" || $1 == "cancel") bad = 1 } END { print (bad ? "fail" : (f ? "seen" : "missing")) }')" "$name (app $id)"
+        fi
     done <<<"$1"
 }
 
@@ -442,7 +478,7 @@ _join_by_status() { printf '%s\n' "$2" | awk -F'\t' -v s="$1" '$1 == s { print $
 # window, refuse now. Runs BEFORE the watch (fail fast) and after
 # the settle round.
 required_gate() {
-    local wait_ok="$1" reqs rows st missing failed req_start tries=0 max_tries
+    local wait_ok="$1" reqs rows prows="" st missing failed req_start tries=0 max_tries
     # Backstop beside the SECONDS bound: a no-op sleep seam (CHECK_CI_SLEEP_CMD=:)
     # or a POLL of 0 must not turn the bounded wait into a spin.
     max_tries=$(( GRACE / (POLL > 0 ? POLL : 1) + 1 ))
@@ -458,7 +494,14 @@ required_gate() {
             echo "check-ci: cannot read the PR's check rows for the required-check gate — cannot evaluate; re-run" >&2
             exit 2
         fi
-        st=$(_required_status "$reqs" "$rows")
+        # HIMMEL-3385: an unreadable producer read fails CLOSED like the set itself —
+        # falling back to the name-only rows would certify the wrong producer.
+        if _has_producer_ids "$reqs" && ! prows=$(_producer_rows); then
+            echo "check-ci: BLOCKED — required-check producers unreadable: could not read which app reported each check on this PR's head, so a required check pinned to an app cannot be verified. Refusing rather than matching by name alone; re-run once gh/API access recovers (HIMMEL-3385, exit 5)" >&2
+            _alert "required-check producers unreadable — a required check pinned to an app could not be verified; nothing was assumed"
+            exit 5
+        fi
+        st=$(_required_status "$reqs" "$rows" "$prows")
         failed=$(_join_by_status fail "$st")
         if [ -n "$failed" ]; then
             echo "check-ci: checks FAILED — required check(s) failed: $failed (HIMMEL-3381)" >&2
@@ -488,11 +531,12 @@ required_gate() {
 # failed; name which. Best effort: an unreadable set/rows sends nothing (the
 # exit-1 verdict stands either way).
 _red_alert() {
-    local reqs rows failed
+    local reqs rows prows="" failed
     reqs=$(required_set 2>/dev/null) || return 0
     [ -n "$reqs" ] || return 0
     rows=$(_required_rows) || return 0
-    failed=$(_join_by_status fail "$(_required_status "$reqs" "$rows")")
+    if _has_producer_ids "$reqs"; then prows=$(_producer_rows) || return 0; fi
+    failed=$(_join_by_status fail "$(_required_status "$reqs" "$rows" "$prows")")
     [ -z "$failed" ] || _alert "required check(s) FAILED: $failed — GitHub will refuse this merge until they pass"
 }
 

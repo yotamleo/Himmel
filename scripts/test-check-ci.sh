@@ -104,6 +104,8 @@ cat > "$STUBDIR/gh" <<'EOF'
 # echoed in the script's parsed shape: "<count> <hasNextPage> <endCursor>".
 # Args are logged to GH_STUB_ARGS.
 echo "$*" >> "$GH_STUB_ARGS"
+# HIMMEL-3385: the value of the --jq flag among the args ("" if none).
+_jq_arg() { while [ $# -gt 0 ]; do if [ "$1" = "--jq" ]; then printf '%s' "${2:-}"; return; fi; shift; done; }
 cmd="${1:-}"
 if [ "$cmd" = "api" ]; then
     case " $* " in
@@ -133,6 +135,10 @@ if [ "$cmd" = "api" ]; then
                 none) : ;;
                 fail) echo "HTTP 500: rules boom" >&2; exit 1 ;;
                 req:*) printf '%s\n' "${GH_STUB_RULES#req:}" | tr ',' '\n' ;;
+                # HIMMEL-3385: a RAW ruleset payload run through the --jq expression
+                # check-ci.sh actually passed, so a producer id the script's own
+                # expression drops stays dropped here too.
+                json:*) printf '%s' "${GH_STUB_RULES#json:}" | jq -r "$(_jq_arg "$@")" ;;
             esac
             exit 0 ;;
         repos/octo/demo/branches/main/protection/required_status_checks)
@@ -140,10 +146,18 @@ if [ "$cmd" = "api" ]; then
                 none) echo "gh: Branch not protected (HTTP 404)" >&2; exit 1 ;;
                 fail) echo "gh: Must have admin rights to Repository. (HTTP 403)" >&2; exit 1 ;;
                 ctx:*) printf '%s\n' "${GH_STUB_CLASSIC#ctx:}" | tr ',' '\n' ;;
+                json:*) printf '%s' "${GH_STUB_CLASSIC#json:}" | jq -r "$(_jq_arg "$@")" ;;
             esac
             exit 0 ;;
         repos/octo/demo/commits/sha1/check-runs*)
-            echo '{"check_runs":[]}'
+            # HIMMEL-3385: the producer read. Raw check-runs JSON through the real
+            # --jq expression; "fail" is an unreadable read; anything else keeps the
+            # old empty payload every pre-3385 caller sees.
+            case "${GH_STUB_PRODUCERS:-none}" in
+                fail) echo "HTTP 500: check-runs boom" >&2; exit 1 ;;
+                json:*) printf '%s' "${GH_STUB_PRODUCERS#json:}" | jq -r "$(_jq_arg "$@")" ;;
+                *) echo '{"check_runs":[]}' ;;
+            esac
             exit 0 ;;
         # CodeRabbit's REAL shape: a commit STATUS on the head SHA, carrying
         # creator identity (HIMMEL-1072/1058). The list endpoint is newest-first.
@@ -764,6 +778,7 @@ BODY_FILE2_OVERRIDE=""
 # HIMMEL-3381: drive the required-check stubs. Defaults = no rule, one green check.
 RULES_OVERRIDE=none
 CLASSIC_OVERRIDE=none
+PRODUCERS_OVERRIDE=none
 CHECKS_OVERRIDE="pass:unit-tests"
 KEEP_ALERT_STATE=0
 ALERT_FAIL_OVERRIDE=""
@@ -858,6 +873,7 @@ run() {
         GH_STUB_BODY_FILE2="$BODY_FILE2_OVERRIDE" \
         GH_STUB_RULES="$RULES_OVERRIDE" \
         GH_STUB_CLASSIC="$CLASSIC_OVERRIDE" \
+        GH_STUB_PRODUCERS="$PRODUCERS_OVERRIDE" \
         GH_STUB_CHECKS="$CHECKS_OVERRIDE" \
         MERGE_BLOCK_ALERT_DIR="$STUBDIR/alert-sentinels" \
         MERGE_BLOCK_ALERT_CMD="$STUBDIR/alert-sender" \
@@ -884,7 +900,7 @@ run() {
     ESCALATE_WAIT_OVERRIDE=0; ESCALATE_POLL_OVERRIDE=0; MARKERS_OVERRIDE=""; SLEEP_CMD_OVERRIDE=":"
     CR_PROFILE_OVERRIDE=""; CR_APP_OVERRIDE=1
     FRESHNESS_OVERRIDE=fresh; FILES_OVERRIDE=README.md; CR_BOT_LOGINS_OVERRIDE=""; MPR_OVERRIDE=none; BODY_FILE_OVERRIDE=""; BODY_FILE2_OVERRIDE=""
-    RULES_OVERRIDE=none; CLASSIC_OVERRIDE=none; CHECKS_OVERRIDE="pass:unit-tests"
+    RULES_OVERRIDE=none; CLASSIC_OVERRIDE=none; PRODUCERS_OVERRIDE=none; CHECKS_OVERRIDE="pass:unit-tests"
     KEEP_ALERT_STATE=0; ALERT_FAIL_OVERRIDE=""; ACCESS_OVERRIDE="$STUBDIR/access.json"
 }
 
@@ -2368,7 +2384,67 @@ run cr-completed --grace 0
 assert_rc 5 "3381-n a required check still missing after the watch exits 5"
 assert_err_has "agg" "3381-n the refusal names the missing required check"
 
+# --- 3385: a required check carrying a producer id is matched on the producer --
+# The ruleset's integration_id / classic protection's app_id say WHICH app must
+# report the check. A same-named check from another app satisfies `gh pr checks`
+# (which exposes no app id) but not GitHub. Raw payloads go through the --jq
+# expression check-ci.sh really passes, so an id its expression drops stays dropped.
+_rule_id='[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"codeowner-review-gate","integration_id":15368}]}}]'
+_rule_noid='[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"codeowner-review-gate"}]}}]'
+_runs_wrong='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"success","app":{"id":99}}]}'
+_runs_right='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"success","app":{"id":15368}}]}'
+_runs_red='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"failure","app":{"id":15368}}]}'
+_both_checks="pass:unit-tests
+pass:codeowner-review-gate"
+
+# 3385-a — the name is on the PR but the WRONG app produced it: GitHub counts the
+# required check as missing, so the gate must too (exit 5, names it, one alert).
+RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_runs_wrong"
+run cr-completed --grace 0
+assert_rc 5 "3385-a a same-named check from the wrong app does not satisfy a required check with an integration id"
+assert_err_has "codeowner-review-gate" "3385-a the refusal names the required check"
+if [ "$(alert_count)" = 1 ]; then pass "3385-a one alert for the wrong-producer refusal"; else fail "3385-a one alert for the wrong-producer refusal" "count=$(alert_count)"; fi
+
+# 3385-b — control: the RIGHT app produced it -> exit 0, no alert.
+RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_runs_right"
+run cr-completed --grace 0
+assert_rc 0 "3385-b control: the required check from the right app is satisfied"
+if [ "$(alert_count)" = 0 ]; then pass "3385-b control: no alert"; else fail "3385-b control: no alert" "count=$(alert_count)"; fi
+
+# 3385-c — control: a required entry with NO id stays a name-only match, whichever
+# app produced the check.
+RULES_OVERRIDE="json:$_rule_noid"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_runs_wrong"
+run cr-completed --grace 0
+assert_rc 0 "3385-c control: a required entry without an id still matches by name"
+
+# 3385-d — the right app's run FAILED: a failed required check, exit 1.
+RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_runs_red"
+run cr-completed --grace 0
+assert_rc 1 "3385-d a failed run from the required app exits 1"
+assert_err_has "codeowner-review-gate" "3385-d the refusal names the failed required check"
+
+# 3385-e — the producer read is unreadable: FAIL CLOSED (exit 5), one alert, never
+# a name-only fallback that would certify the wrong producer.
+RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE=fail
+run cr-completed --grace 0
+assert_rc 5 "3385-e an unreadable producer read fails closed with exit 5"
+assert_err_has "producer" "3385-e the refusal says the producer read failed"
+if [ "$(alert_count)" = 1 ]; then pass "3385-e one alert for an unreadable producer read"; else fail "3385-e one alert for an unreadable producer read" "count=$(alert_count)"; fi
+
+# 3385-f — classic protection carries the id as app_id; its deprecated `contexts`
+# list repeats the same name id-less and must not weaken it back to name-only.
+RULES_OVERRIDE=none; CLASSIC_OVERRIDE='json:{"contexts":["codeowner-review-gate"],"checks":[{"context":"codeowner-review-gate","app_id":15368}]}'
+CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_runs_wrong"
+run cr-completed --grace 0
+assert_rc 5 "3385-f a classic-protection app_id is honoured; the id-less contexts repeat does not weaken it"
+
+# 3385-g — control: classic app_id -1 means "any source" — name-only.
+RULES_OVERRIDE=none; CLASSIC_OVERRIDE='json:{"contexts":["codeowner-review-gate"],"checks":[{"context":"codeowner-review-gate","app_id":-1}]}'
+CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_runs_wrong"
+run cr-completed --grace 0
+assert_rc 0 "3385-g control: classic app_id -1 (any source) stays a name-only match"
+
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 151 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 151"; exit 1; fi
+if [ "$COUNT" -ne 158 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 158"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1

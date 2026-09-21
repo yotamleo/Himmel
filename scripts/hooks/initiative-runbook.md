@@ -69,7 +69,7 @@ Steps run in this canonical order; only the tokens on the pointer's
   something other than this merge): the flag is the merge-time close, that step
   the fallback — never both for one ticket. Same rule as
   `docs/handover/leg-preface.md` § Shipping.
-  `merge-on-green.sh` exits 17 (`policy-refused`) on a fresh pre-merge `BLOCKED` + `REVIEW_REQUIRED` policy read after green checks or an explicit GitHub base-branch policy rejection at merge time; if no automation identity can satisfy the required review, the merge is a human admin action (HIMMEL-2887).
+  `merge-on-green.sh` exits 18 (GitHub-blocked, HIMMEL-3381) on a fresh pre-merge `BLOCKED` + `REVIEW_REQUIRED` policy read after green checks, an explicit GitHub base-branch policy / required-check / ruleset rejection at merge time, or `check-ci.sh` exit 5 (a required check never reported, or the required set is unreadable) — once, with one operator DM per (repo, PR, head) and no poll or retry (exit 17 is now the console-GO refusal only); if no automation identity can satisfy the required review, the merge is a human admin action (HIMMEL-2887).
   A blocked gate on this branch parks it and moves to the next queue item —
   never retry-loop;
   see
