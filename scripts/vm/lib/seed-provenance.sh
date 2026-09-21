@@ -48,7 +48,8 @@ TARGETS=(
     proj .local/bin/mytool .config/systemd/user/mine.service
     .config/claude-glm/phi-roots .himmel/config.json
     .npm/_cacache/seed .cache/node-gyp/seed .bun/install/cache/seed
-    .claude/channels/telegram/.env .claude/channels/telegram/access.json .claude/handover/bridge/state.json
+    .claude/channels/telegram .claude/channels/telegram/.env .claude/channels/telegram/access.json
+    .claude/handover/bridge .claude/handover/bridge/state.json
 )
 [ "$PROFILE" != all ] || TARGETS+=(.local/bin/qmd .local/bin/graphify)
 hit=0

@@ -117,7 +117,7 @@ has "plain: a removed state dir is too-much" 'CHECK state too-much FAIL state-ke
 has "plain: a kept state file passes" 'CHECK state too-much PASS state-kept:~/.claude/channels/telegram/access.json '
 
 fresh; state_world; state_kept_at_c
-sed -i "s#^.*  $TG/.env\$#$(sha changed)  $TG/.env#" "$INV/inv-C/home.sha"
+sed -i "s#^.*  $TG/.env\$#$(sha changed)  $TG/.env#" "$INV/inv-C/home.sha"  # gnu-ok: linux-only suite (uname guard at the top)
 run_assert core 0
 has "plain: a changed state file is too-much" 'CHECK state too-much FAIL state-kept:~/.claude/channels/telegram/.env '
 
@@ -145,7 +145,7 @@ run_assert core 0
 has "claude.json deleted is too-much" 'CHECK identity too-much FAIL claude-json-unchanged-from-B '
 hasnt "claude.json deleted is not tagged identity" 'CHECK identity identity FAIL claude-json-unchanged-from-B '
 fresh                                                # A=B=C, then C's ~/.claude.json differs from B's
-sed -i "s#^.*  $H/.claude.json\$#$(sha other)  $H/.claude.json#" "$INV/inv-C/home.sha"
+sed -i "s#^.*  $H/.claude.json\$#$(sha other)  $H/.claude.json#" "$INV/inv-C/home.sha"  # gnu-ok: linux-only suite (uname guard at the top)
 run_assert core 0
 has "claude.json rewritten stays identity" 'CHECK identity identity FAIL claude-json-unchanged-from-B '
 
@@ -233,6 +233,12 @@ for t in .claude/channels/telegram/.env .claude/handover/bridge/state.json .clau
     fresh; rm -rf "$H"; mkdir -p "$H/$(dirname "$t")"; echo mine >"$H/$t"
     seed core
     if [ "$RC" -eq 2 ] && grep -q "refusing: $H/$t already exists" <<<"$OUT"; then pass "seed refuses an existing $t"; else fail_case "seed refuses an existing $t (rc=$RC)"; fi
+done
+# an existing (even empty) state DIRECTORY is refused too: --purge-state rm -rf's it, which would take the user's files with it.
+for d in .claude/channels/telegram .claude/handover/bridge; do
+    fresh; rm -rf "$H"; mkdir -p "$H/$d"
+    seed core
+    if [ "$RC" -eq 2 ] && grep -q "refusing: $H/$d already exists" <<<"$OUT"; then pass "seed refuses an existing $d dir"; else fail_case "seed refuses an existing $d dir (rc=$RC)"; fi
 done
 fresh; rm -rf "$H"; mkdir -p "$H/.local/bin"; echo mine >"$H/.local/bin/qmd"
 seed all
