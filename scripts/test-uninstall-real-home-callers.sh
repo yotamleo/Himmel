@@ -32,7 +32,7 @@ ALLOW_PATHS=(
 )
 ALLOW_WHY=(
   "the wizard's confirmed wet teardown spawn: it must lift the fence for the operator's real HOME"
-  "prints the operator's own re-run remedy for a refused wet run; never runs with the var itself"
+  "matches only remedy TEXT (the re-run hint printed for a refused wet run); it never sets the variable itself"
 )
 
 # scan_callers <root> [allowed-path...] -- print (root-relative) every file under
