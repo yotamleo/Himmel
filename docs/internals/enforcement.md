@@ -3950,11 +3950,16 @@ runtime refusal on "fence lifted plus a per-row override" was rejected: the
 himmelctl wizard's confirmed teardown does exactly that for an operator with a
 non-default install, and at runtime it is indistinguishable from a suite. The
 rule instead: every file under `scripts/` that sets `HIMMEL_UNINSTALL_REAL_HOME=1`
-must also assign a scratch `HOME` (`mktemp`-derived) in the same file, or be on
-the short operator-path allowlist in `scripts/test-uninstall-real-home-callers.sh`
-(today `scripts/himmelctl/bin.js` and the remedy text in `scripts/uninstall.sh`,
-a reason each). That suite is a text heuristic and says so; adding an
-operator-path caller means adding it to the allowlist on purpose.
+must also assign `HOME` from a `mktemp`-derived value in the same file (a literal
+`mktemp`, or a variable traced back to one), or be on the short operator-path
+allowlist in `scripts/test-uninstall-real-home-callers.sh` (today
+`scripts/himmelctl/bin.js` and the remedy text in `scripts/uninstall.sh`, a reason
+each). "Sets the var to 1" covers `VAR=1`, quoted or numeric JS keys/values
+(`'VAR': 1`, `VAR: '1'`) and PowerShell `$env:VAR = 1`, and only exactly `1` (not
+`10` / `1x`). That suite is a text heuristic and says so — it does not follow a
+`HOME` set through a helper function or sourced file, nor an env block passed as a
+variable; adding an operator-path caller means adding it to the allowlist on
+purpose.
 
 Same operator ruling: wet/destructive test suites now run only inside a VM,
 never against a live station — see [`docs/setup/vms.md`](../setup/vms.md).
