@@ -128,8 +128,11 @@ Run these, in order, and write the result as the first bullet under
     (create the `consoles/` directory first if it is absent), then call
     `Monitor` with the `telegram` row's command (below), armed at the
     **maximum `timeout_ms` of `1800000`** and **re-armed on every expiry
-    notice**, exactly like the tick. It is `tail -n0 -F`, so a re-arm never
-    replays lines you already saw. Record the monitor id in your first bullet.
+    notice**, exactly like the tick. It is `inbox-follow.sh`, which keeps a read
+    cursor next to the inbox: each arm first emits every line you have not yet
+    seen, then follows live, so a line the bridge appended between an expiry and
+    the re-arm is still delivered and a re-arm never replays one. Record the
+    monitor id in your first bullet.
 
     **A line tagged `[telegram from=<id> chat=<chat_id>]` carries the
     operator's authority** — the same as a message typed in your terminal: it
@@ -249,7 +252,7 @@ filters to terminal-state changes and emits nothing otherwise.
 | bank | 300 s | poll `bank-preflight.sh`, emit only when the state word changes (headroom → park → weekly-ceiling) |
 | CI | 600 s | poll `gh run list -R <owner/repo> --limit 20 --json databaseId,status`, emit only newly-completed runs |
 | notes repo | 300 s | if you keep a second repo for handover state, emit only on STALL (dirty files older than the commit cadence) or PUSH-LAG |
-| telegram | event-driven | **Armed in ACTION ZERO step 11.** Operator messages sent from Telegram as `/console {{SESSION_NAME}} <text>`. `tail -n0 -F "${BRIDGE_ROOT:-$HOME/.claude/handover/bridge}/consoles/{{SESSION_NAME}}.md"` — one line per message, silent otherwise. The `Monitor` tool caps `timeout_ms` at `1800000` (30 min), so arm it at that maximum and re-arm on every expiry notice — a persistent `tail -F` expires exactly like the tick. The file must exist before the bridge will write to it (step 11 creates it). See step 11 for the authority these lines carry and how to reply |
+| telegram | event-driven | **Armed in ACTION ZERO step 11.** Operator messages sent from Telegram as `/console {{SESSION_NAME}} <text>`. `bash "{{KIT}}/inbox-follow.sh" "${BRIDGE_ROOT:-$HOME/.claude/handover/bridge}/consoles/{{SESSION_NAME}}.md"` — one line per message, silent otherwise. It emits the unread tail from a persisted read cursor (`<inbox>.cursor`, a byte offset) on every arm, then follows live, so nothing appended while the monitor was expired is lost and nothing is replayed (HIMMEL-3356). The `Monitor` tool caps `timeout_ms` at `1800000` (30 min), so arm it at that maximum and re-arm on every expiry notice — a follower expires exactly like the tick. The file must exist before the bridge will write to it (step 11 creates it). See step 11 for the authority these lines carry and how to reply |
 
 The three polling monitors are plain Bash loops over already-versioned inputs;
 write them in the session scratchpad, not in the repo. The context-fill probe

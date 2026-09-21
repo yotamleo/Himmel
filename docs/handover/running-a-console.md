@@ -97,7 +97,9 @@ and tells its predecessor it is live.
 
 It also opens a **Telegram inbox** (HIMMEL-3355): it creates
 `<bridge root>/consoles/<session>.md` and arms a `Monitor` on
-`tail -n0 -F` of it, so the operator's `/console <session> <text>` from
+`console-kit/inbox-follow.sh` of it (a persisted read cursor: a line appended
+while the monitor was expired is delivered on the re-arm, never replayed), so
+the operator's `/console <session> <text>` from
 Telegram reaches the running console with the operator's authority — rulings,
 halts, new work — but never a permission or settings change and never a
 skipped GO verification. The console replies with

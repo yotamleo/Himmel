@@ -283,7 +283,17 @@ contains 'ACTION ZERO step 11 tells the console how to reply' "$step11" 'console
 contains 'ACTION ZERO step 11: no permission/settings change' "$(flat "$step11")" 'never changes permissions or settings'
 contains 'ACTION ZERO step 11: GO verification is never skipped' "$(flat "$step11")" 'GO verification'
 contains '## Monitors names five monitors' "$mons" 'Five, and no more'
-contains '## Monitors telegram row tails with -n0 so a re-arm replays nothing' "$mons" 'tail -n0 -F'
+contains '## Monitors telegram row arms inbox-follow.sh (persisted cursor: no gap, no replay)' "$mons" 'inbox-follow.sh'
+# shellcheck disable=SC2016  # literal doc text: the ${...} must NOT expand
+retired_tail='`tail -n0 -F "${BRIDGE_ROOT:-$HOME/.claude/handover/bridge}/consoles/{{SESSION_NAME}}.md"`'
+if [ "$(printf '%s\n' "$retired_tail" | grep -icE -- 'tail -n0 -F')" = 1 ]; then
+    pass 'control: the bare-tail pattern matches the retired telegram monitor command'
+else
+    fail 'control: the bare-tail pattern misses the retired telegram monitor command'
+fi
+absent '## Monitors telegram row no longer arms a bare tail -n0 -F (loses lines across a re-arm)' "$mons" 'tail -n0 -F'
+absent 'ACTION ZERO step 11 no longer arms a bare tail -n0 -F' "$step11" 'tail -n0 -F'
+contains 'ACTION ZERO step 11 points the monitor at the cursor-keeping follower' "$(flat "$step11")" 'inbox-follow.sh'
 contains '## Monitors telegram row states the 30-min cap and re-arm' "$(flat "$mons")" 're-arm on every expiry notice'
 absent 'console template no longer says Four monitors' "$(cat "$CONSOLE")" 'Four, and no more'
 
