@@ -51,7 +51,7 @@ join_continued() { sed -e ':a' -e '/\\$/N' -e 's/\\\n//' -e 'ta' "$1"; }
 # literal $(mktemp -d [template]), quoted or not; and the file never drops HOME
 # (`unset HOME`, `env -u HOME`, `env -i`: a child without HOME falls back to the passwd
 # home). v is scratch when EVERY assignment to it is one of the same shapes, a mktemp one
-# followed by `|| exit` / `|| return` / `|| { ...; exit ...; }` -- an unguarded failed
+# followed by `|| exit` / `|| return` / `|| { ...; exit N; }` -- an unguarded failed
 # mktemp leaves v empty, and "$v/home/<user>" is then the real HOME. The template is one
 # word: a literal, or a quoted literal after at most one `$x` / `${x}` / `${x:-/tmp}`
 # (mktemp -d prints a fresh directory or fails, whatever the template says).
@@ -72,7 +72,9 @@ home_is_scratch() {
   local tpl='([A-Za-z0-9_./%+-]+|"(\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*(:-/tmp)?\})?[A-Za-z0-9_./%+-]*")'
   local mk='\$\(mktemp -d( '"$tpl"')?\)'
   local mk_re='^('"$mk"'|"'"$mk"'")(.*)$'
-  local guard_re='^[[:space:]]*\|\|[[:space:]]*(exit|return|\{[^}]*[;[:space:]](exit|return))([^A-Za-z0-9_]|$)'
+  # the brace form must END in an unconditional exit/return: every command before it is
+  # `;`-separated with no `&&` / `||` / `&` / `|` bar a `>&N` redirect (`{ false && exit 1; }` falls through).
+  local guard_re='^[[:space:]]*\|\|[[:space:]]*((exit|return)([^A-Za-z0-9_]|$)|\{(([^};&|]|>&[0-9])*;)*[[:space:]]*(exit|return)([[:space:]]+[0-9]+)?[[:space:]]*;[[:space:]]*\})'
   local drop_re='(^|[^A-Za-z0-9_])(unset([[:space:]]+-[A-Za-z]+)*([[:space:]]+[A-Za-z_][A-Za-z0-9_]*)*[[:space:]]+HOME|env[[:space:]].*(-u[[:space:]]*|--unset=)HOME)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_])env([[:space:]]+-[A-Za-z]*i[A-Za-z]*|[[:space:]]+--ignore-environment|[[:space:]]+-)([[:space:]]|$)'
   local scratch=" " names=() vals=()
   while IFS= read -r line || [ -n "$line" ]; do
@@ -145,13 +147,18 @@ done
 # computed name (`n=...; export "$n=1"`, a name split by an EMPTY EXPANSION like `${e}`),
 # `read` / `printf -v` / `declare -n`, `Set-Item Env:`, or a JS env object built from a
 # variable key. A mention with none of `=:,` after it (`unset VAR`, a comment) is a read.
-sets_var() {
-  local file="$1" read_re site_re
+sets_var() (   # rc 0 = writes the var, 1 = does not, 2 = the file could not be scanned
+  set -o pipefail
+  local file="$1" read_re site_re st
   read_re="\\\$\\{$VCI:[-+?]"
   site_re="(^|[^A-Za-z0-9_])$VCI(\\[[^]]*\\])?[]'\"}]*[[:space:]]*([-+*/%&|^?<>!]*=|:|,)"
+  # grep without -q reads to EOF, so no producer takes SIGPIPE; any producer failure is rc 2.
   { cat -- "$file" && printf '\n' && join_continued "$file" | sed -e "s/\\\$\\([\"']\\)/\\1/g" -e "s/[\"'\\\\]//g"; } \
-    | sed -E "s/$read_re//g" | grep -Eq "$site_re"   # pipefail-ok: this file sets -u only, never pipefail
-}
+    | sed -E "s/$read_re//g" | grep -E "$site_re" >/dev/null
+  st=("${PIPESTATUS[@]}")
+  [ "${st[0]}" -eq 0 ] && [ "${st[1]}" -eq 0 ] && [ "${st[2]}" -le 1 ] || exit 2
+  exit "${st[2]}"
+)
 
 # scan_callers <root> [allowed-path...] -- print (root-relative) every file under
 # <root>/scripts that writes the var (sets_var) without a scratch HOME
@@ -159,7 +166,7 @@ sets_var() {
 # ALLOW_PATHS on purpose; that friction is the point.
 scan_callers() {
   local root="$1"; shift
-  local f rel a allowed list
+  local f rel a allowed list rc
   # A failed traversal (unreadable subtree) is reported, not scanned around.
   list="$(find "$root/scripts" -path '*/node_modules' -prune -o -type f \
     \( -name '*.sh' -o -name '*.js' -o -name '*.mjs' -o -name '*.ts' -o -name '*.ps1' \) -print)" \
@@ -169,7 +176,9 @@ scan_callers() {
     rel="${f#"$root"/}"
     # an unreadable file is reported rather than passed as a non-match.
     if [ ! -r "$f" ]; then printf '%s (unreadable)\n' "$rel"; continue; fi
-    sets_var "$f" || continue
+    sets_var "$f"; rc=$?
+    [ "$rc" -eq 1 ] && continue
+    if [ "$rc" -ne 0 ]; then printf '%s (unreadable: scan rc=%s)\n' "$rel" "$rc"; continue; fi
     allowed=0
     for a in "$@"; do [ "$rel" = "$a" ] && allowed=1; done
     [ "$allowed" -eq 1 ] && continue
@@ -339,6 +348,9 @@ pin h-home-append.sh 'HOME=$(mktemp -d)' 'HOME+=/../..' '@V@=1 bash uninstall.sh
 pin h-v-append.sh 'td=$(mktemp -d) || exit 1' 'td+=/../..' 'HOME="$td" @V@=1 bash uninstall.sh --yes'
 pin h-home-default.sh 'HOME=$(mktemp -d)' ': "${HOME:=@H@}"' '@V@=1 bash uninstall.sh --yes'
 pin h-v-subscript.sh 'td=$(mktemp -d) || exit 1' 'td[0]=@H@' 'HOME="$td" @V@=1 bash uninstall.sh --yes'
+pin h-conditional-guard.sh 'td=$(mktemp -d /nonexistent/x.XXXXXX) || { false && exit 1; }' 'HOME="$td@H@" @V@=1 bash uninstall.sh --yes'
+pin h-redirect-and-guard.sh 'td=$(mktemp -d /nonexistent/x.XXXXXX) || { echo no >&2 && exit 1; }' 'HOME="$td@H@" @V@=1 bash uninstall.sh --yes'
+pin h-guard-exit-later.sh 'td=$(mktemp -d /nonexistent/x.XXXXXX) || { exit_later=1; }' 'HOME="$td@H@" @V@=1 bash uninstall.sh --yes'
 # HIMMEL-3344 (CodeRabbit): a longer identifier ending in the name is not the name.
 printf '#!/usr/bin/env bash\nNOT_%s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-prefixed-name.sh"
 # a JS operator-path caller, on the allowlist below.
@@ -412,6 +424,7 @@ got_noallow="$(scan_callers "$fx" | tr '\n' ' ')"
 check "the same JS file is flagged when NOT allowlisted" \
   "$(printf '%s' "$got_noallow" | grep -c 'scripts/wizard.js')" "1"
 
+sets_var "$fx/scripts/no-such-file.sh" 2>/dev/null; check "a read error in sets_var is rc 2, not a non-match" "$?" "2"
 echo "== the real tree =="
 check "no un-allowlisted fence-lifting caller under scripts/" \
   "$(scan_callers "$repo_root" "${ALLOW_PATHS[@]}" | tr '\n' ' ')" ""
