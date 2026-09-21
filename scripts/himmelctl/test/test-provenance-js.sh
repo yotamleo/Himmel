@@ -181,5 +181,18 @@ check "node: a failed provEnd throws, keeps the session, and the retry closes it
     "$(HIMMEL_PROVENANCE_DIR="$tmp/pu" "$node_bin" "$(winpath "$tmp/retry.js")" "$jsw" | paste -sd' ' -)" "threw=true open=E1 closed=unset"
 check "node: retry wrote install-end" "$(tail -n1 "$tmp/pu/provenance.jsonl" | jq -c '[.op,.iid,.status]')" '["install-end","E1","ok"]'
 
+# unwritable backup name is an I/O error (rc 1), not a spin; the root path survives
+rm -rf "$tmp/pu"
+long=$(printf '%0300d' 0)
+if command -v timeout >/dev/null 2>&1; then
+    timeout 20 "$node_bin" "$jsw" record replace file "$w/$long" --pre-file "$w/f1" --backup --post-file "$w/f1" 2>/dev/null
+    check "node: unwritable backup name → rc 1" "$?" "1"
+else
+    echo "SKIP - timeout not installed: unwritable-backup-name guard not exercised"
+fi
+rm -rf "$tmp/pu"
+"$node_bin" "$jsw" record register mcp / --unit m --post-json '"x"'
+check "node: path '/' is recorded as /" "$(grep -v install- "$tmp/pu/provenance.jsonl" | jq -r .path)" "/"
+
 echo "$passes passed, $fails failed"
 [ "$fails" -eq 0 ]

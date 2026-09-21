@@ -223,6 +223,27 @@ prov_end ok; check "prov_end retry succeeds" "$?" "0"
 check "retry wrote install-end" "$(lastraw | jq -c '[.op,.iid,.status]')" '["install-end","E1","ok"]'
 check "retry closed the session" "${HIMMEL_PROVENANCE_IID:-unset}" "unset"
 
+# a failing jq must not append an empty row, and an unwritable backup name must not spin
+rm -rf "$HIMMEL_PROVENANCE_DIR"
+# a jq that works for everything except the final artifact-row build, as if it died there
+mkdir -p "$tmp/badjq"; printf '#!/bin/sh\ncase "$*" in *"--arg kind"*) exit 1 ;; esac\nexec "%s" "$@"\n' "$(command -v jq)" > "$tmp/badjq/jq"; chmod +x "$tmp/badjq/jq"
+( PATH="$tmp/badjq:$PATH"; prov_record create file "$w/a.txt" --post-file "$w/a.txt" 2>/dev/null ); check "failing jq → rc 1" "$?" "1"
+check "failing jq left no empty line in the ledger" "$(grep -c '^$' "$ledger")" "0"
+check "failing jq left no artifact row (begin only)" "$(jq -r .op "$ledger" | paste -sd, -)" "install-begin"
+long=$(printf '%0300d' 0)
+if command -v timeout >/dev/null 2>&1; then
+    # shellcheck disable=SC2016  # $1..$3 are the child shell's positional parameters
+    timeout 20 bash -c '. "$1/provenance.sh"; prov_record replace file "$2/$3" --pre-file "$2/a.txt" --backup --post-file "$2/a.txt"' _ "$here" "$w" "$long" 2>/dev/null
+    check "unwritable backup name → rc 1, not a hang" "$?" "1"
+else
+    echo "SKIP - timeout not installed: unwritable-backup-name hang guard not exercised"
+fi
+
+# a record at the filesystem root keeps its path
+rm -rf "$HIMMEL_PROVENANCE_DIR"
+prov_record register mcp / --unit m --post-json '"x"'
+check "path '/' is recorded as /" "$(last | jq -r .path)" "/"
+
 # ── pwsh twin: same scenario, same bytes ─────────────────────────────────
 if command -v pwsh >/dev/null 2>&1; then
     rm -rf "$HIMMEL_PROVENANCE_DIR" "$tmp/prov-ps"

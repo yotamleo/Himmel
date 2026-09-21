@@ -111,7 +111,7 @@ function absPath(p) {
   const i = p.lastIndexOf('/');
   const base = p.slice(i + 1);
   const dir = canonPartial(p.slice(0, i) || '/');
-  return base === '' ? dir : dir.replace(/\/$/, '') + '/' + base;
+  return base === '' ? (dir || '/') : dir.replace(/\/$/, '') + '/' + base;
 }
 
 function homeDir() {

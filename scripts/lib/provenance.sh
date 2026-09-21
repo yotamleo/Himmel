@@ -79,7 +79,7 @@ _prov_abs_path() {
     dir="${p%/*}"
     [ -n "$dir" ] || dir=/
     dir=$(canon_path_partial "$dir") || return 1
-    if [ "$base" = "" ]; then printf '%s' "$dir"; else printf '%s/%s' "${dir%/}" "$base"; fi
+    if [ "$base" = "" ]; then printf '%s' "${dir:-/}"; else printf '%s/%s' "${dir%/}" "$base"; fi
 }
 
 _prov_sha_stdin() {
@@ -130,6 +130,8 @@ _prov_platform() {
 # closed first so it costs one row, not two.
 _prov_append() {
     local dir ledger
+    # a row built in a command substitution is "" when its jq failed; never append that
+    [ -n "${1:-}" ] || { _prov_err "refusing to append an empty row"; return 1; }
     dir=$(prov_dir) || return 1
     ledger="$dir/provenance.jsonl"
     ( umask 077; mkdir -p "$dir" ) || { _prov_err "cannot create $dir"; return 1; }
@@ -249,7 +251,9 @@ _prov_backup() {
         dest="$bdir/$name"
         # reserve the name atomically (noclobber = O_EXCL) so two writers sharing
         # an iid cannot both pick the same sequence number
-        ( umask 077; set -C; : > "$dest" ) 2>/dev/null && break
+        if ( umask 077; set -C; : > "$dest" ) 2>/dev/null; then break; fi
+        # only a name that already exists is retried; any other failure is an I/O error
+        [ -e "$dest" ] || { _prov_err "cannot create backup $dest"; return 1; }
         n=$((n + 1))
     done
     case "$stype" in

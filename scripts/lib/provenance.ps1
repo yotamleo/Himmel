@@ -155,7 +155,7 @@ function _ProvAbs([string]$p) {
     $dir = $p.Substring(0, $i)
     if (-not $dir) { $dir = '/' }
     $dir = _ProvCanonPartial $dir
-    if ($base -eq '') { return $dir }
+    if ($base -eq '') { if ($dir) { return $dir } else { return '/' } }
     return $dir.TrimEnd('/') + '/' + $base
 }
 
@@ -210,12 +210,13 @@ function _ProvAppend([string]$Line) {
         if (-not $isNew) {
             $fi = [System.IO.FileInfo]::new($file)
             if ($fi.Length -gt 0) {
-                $fs = [System.IO.File]::OpenRead($file)
+                # share Read+Write: a sibling process may be appending to the same ledger
+                $fs = [System.IO.File]::Open($file, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
                 try { [void]$fs.Seek(-1, [System.IO.SeekOrigin]::End); $torn = ($fs.ReadByte() -ne 10) } finally { $fs.Dispose() }
             }
         }
         $bytes = $script:ProvUtf8.GetBytes($(if ($torn) { "`n" } else { '' }) + $Line + "`n")
-        $out = [System.IO.File]::Open($file, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
+        $out = [System.IO.File]::Open($file, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
         try { $out.Write($bytes, 0, $bytes.Length) } finally { $out.Dispose() }
         if ($isNew) { _ProvSetMode $file 0x180 }
     }
