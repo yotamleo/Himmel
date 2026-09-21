@@ -1001,7 +1001,7 @@ if [ "$NO_PRUNE" -eq 0 ]; then
             exit 1
         fi
         if [ "$PRUNED" -ne 1 ] || [ "$PARTIAL" -ne 0 ] || [ "$FAILED" -ne 0 ]; then
-            echo "ERR clean-garden: --only $ONLY_TARGET is not a prune candidate — nothing pruned (reason above; needs a merged PR whose head is the branch tip, no uncommitted work, no live process inside)" >&2
+            echo "ERR clean-garden: --only $ONLY_TARGET was not cleanly pruned — not a prune candidate, or the removal was partial (reason above; a candidate needs a merged PR whose head is the branch tip, no uncommitted work, no live process inside)" >&2
             exit 1
         fi
         exit 0

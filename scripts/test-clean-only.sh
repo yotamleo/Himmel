@@ -35,10 +35,12 @@ expect() {
     local label="$1" out="$2"; shift 2
     if "$@"; then pass "$label"; else fail "$label" "$out"; fi
 }
-# expect_not <label> <output> <command...> — pass when the command FAILS.
+# expect_not <label> <output> <command...> — pass when the command reports
+# absence (status 1); any other non-zero status is an execution error, a fail.
 expect_not() {
-    local label="$1" out="$2"; shift 2
-    if "$@"; then fail "$label" "$out"; else pass "$label"; fi
+    local label="$1" out="$2" rc=0; shift 2
+    "$@" || rc=$?
+    if [ "$rc" -eq 1 ]; then pass "$label"; else fail "$label" "status=$rc: $out"; fi
 }
 is_dir() { [ -d "$1" ]; }
 is_gone() { [ ! -d "$1" ]; }
