@@ -48,6 +48,9 @@
 #   39. a posted prior-head outside-diff finding still blocks (operator
 #       ruling 2026-09-21: best effort covers ABSENCE only, not a posted
 #       finding) → rc 3; dispositioned at the governing prior head → rc 0
+#   39e-39h. TWO prior heads carry findings (HIMMEL-3365): every prior head
+#       governs; the newer one never masks the older → rc 3 until each is
+#       dispositioned at the head that raised it, then rc 0
 #   43. zero head reviews, no prior finding → rc 0 (PR #1321 benign shape)
 #   89. "Review completed" + a PR-wide review present → rc 0 (no false block)
 #
@@ -210,6 +213,10 @@ if [ "$cmd" = "api" ]; then
                 # gate reads this via cr_body_outside_findings called with
                 # head=shaOLD.
                 body-a2-file) jq -n --rawfile b "$GH_STUB_BODY_FILE" '[{user:{id:136622811,login:"coderabbitai[bot]"},commit_id:"shaOLD",submitted_at:"2026-07-16T19:10:00Z",id:1,body:$b}]' ;;
+                # HIMMEL-3365: TWO prior heads, each carrying its own REAL captured
+                # review body — shaOLD (older, GH_STUB_BODY_FILE) and shaOLD2
+                # (newer, GH_STUB_BODY_FILE2); nothing at the certified sha1.
+                body-a3-file) jq -n --rawfile b "$GH_STUB_BODY_FILE" --rawfile c "$GH_STUB_BODY_FILE2" '[{user:{id:136622811,login:"coderabbitai[bot]"},commit_id:"shaOLD",submitted_at:"2026-07-16T19:10:00Z",id:1,body:$b},{user:{id:136622811,login:"coderabbitai[bot]"},commit_id:"shaOLD2",submitted_at:"2026-07-16T19:20:00Z",id:2,body:$c}]' ;;
                 body-error)   echo "reviews boom" >&2; exit 1 ;;
                 # Incremental-silent shape: a prior review carries outside-diff
                 # findings while the concluded current head has no review object.
@@ -593,7 +600,7 @@ case "$GH_STUB_MODE" in
         # verdict must turn entirely on CodeRabbit's status (HIMMEL-1072).
         if [ "$is_watch" -eq 1 ]; then echo "All checks were successful"; exit 0; fi
         exit 0 ;;
-    body-outside|body-file|body-a2-file|body-nitpick|body-drift|body-error|body-a2|body-empty|body-a2-escalate|body-a2-marker|body-a2-timeout|body-a2-escalate-outside|body-b2-escalate|body-b2-escalate-outside|body-b2-timeout|body-b2-head-review|body-a2-escalate-empty|body-a2-empty-persisted|body-a2-postfail)
+    body-outside|body-file|body-a2-file|body-a3-file|body-nitpick|body-drift|body-error|body-a2|body-empty|body-a2-escalate|body-a2-marker|body-a2-timeout|body-a2-escalate-outside|body-b2-escalate|body-b2-escalate-outside|body-b2-timeout|body-b2-head-review|body-a2-escalate-empty|body-a2-empty-persisted|body-a2-postfail)
         # Checks GREEN, threads clean, CodeRabbit CONCLUDED (default statuses
         # fixture) in every one of these — the verdict must turn entirely on
         # the review-BODY findings gate (HIMMEL-1126/1147/1219).
@@ -700,6 +707,7 @@ CR_APP_OVERRIDE=1
 # keeping its old verdict, that it changed nothing for them.
 MPR_OVERRIDE=none
 BODY_FILE_OVERRIDE=""
+BODY_FILE2_OVERRIDE=""
 
 # --- HIMMEL-1953: no real sleeping, and no unbounded case -------------------
 #
@@ -783,6 +791,7 @@ run() {
         GH_STUB_FILES="$FILES_OVERRIDE" \
         GH_STUB_MPR="$MPR_OVERRIDE" \
         GH_STUB_BODY_FILE="$BODY_FILE_OVERRIDE" \
+        GH_STUB_BODY_FILE2="$BODY_FILE2_OVERRIDE" \
         CHECK_CI_POLL_INTERVAL="$POLL_OVERRIDE" \
         CHECK_CI_SETTLE="$SETTLE_OVERRIDE" \
         CR_ESCALATE_WAIT="$ESCALATE_WAIT_OVERRIDE" \
@@ -803,7 +812,7 @@ run() {
     SETTLE_OVERRIDE=0; THREADS_OVERRIDE=0; POLL_OVERRIDE=0; HEAD_OVERRIDE=stable; DECISION_OVERRIDE=null
     ESCALATE_WAIT_OVERRIDE=0; ESCALATE_POLL_OVERRIDE=0; MARKERS_OVERRIDE=""; SLEEP_CMD_OVERRIDE=":"
     CR_PROFILE_OVERRIDE=""; CR_APP_OVERRIDE=1
-    FRESHNESS_OVERRIDE=fresh; FILES_OVERRIDE=README.md; CR_BOT_LOGINS_OVERRIDE=""; MPR_OVERRIDE=none; BODY_FILE_OVERRIDE=""
+    FRESHNESS_OVERRIDE=fresh; FILES_OVERRIDE=README.md; CR_BOT_LOGINS_OVERRIDE=""; MPR_OVERRIDE=none; BODY_FILE_OVERRIDE=""; BODY_FILE2_OVERRIDE=""
 }
 
 run_in_repo() {
@@ -1441,7 +1450,39 @@ assert_rc 3 "39b3 a disposition at the wrong head does not clear the finding"
 # for this id) does not disposition the finding either.
 BODY_FILE_OVERRIDE="$OD_BQ_BODY"; run_in_repo "$LEDGER_REPO" body-a2-file
 assert_rc 3 "39d unrelated ledger rows do not disposition the finding"
-BODY_FILE_OVERRIDE=
+
+# 39e..39h — HIMMEL-3365: TWO prior heads carry outside-diff findings (shaOLD
+# older, shaOLD2 newer; sha1 has no review). Every prior head governs, each
+# finding dispositioned at the head that raised it — the newer prior review
+# never masks the older one's findings.
+OD_A3_ROW_OLD=$(od_variant '.head="shaOLD"')
+OD_A3_ROW_NEW=$(od_variant '.finding_id="cr-od-2b1a31ba0692" | .severity="imp" | .file="marketplace/plugins/himmel-ops/README.md" | .line="80-91" | .head="shaOLD2"')
+BODY_FILE_OVERRIDE="$OD_BQ_BODY"; BODY_FILE2_OVERRIDE="$OD_RANGE_BODY"
+run_in_repo "$EMPTY_LEDGER_REPO" body-a3-file
+assert_rc 3 "39e two prior heads, nothing dispositioned, blocks"
+assert_err_has "cr-od-39c3193c8945" "39e message lists the older head's finding"
+assert_err_has "cr-od-2b1a31ba0692" "39e message lists the newer head's finding"
+assert_err_has "--head shaOLD --branch" "39e recipe binds the older finding to shaOLD"
+assert_err_has "--head shaOLD2 --branch" "39e recipe binds the newer finding to shaOLD2"
+
+OD_REPO=$(mk_od_repo "$OD_A3_ROW_NEW")
+BODY_FILE_OVERRIDE="$OD_BQ_BODY"; BODY_FILE2_OVERRIDE="$OD_RANGE_BODY"; run_in_repo "$OD_REPO" body-a3-file
+assert_rc 3 "39f only the newer prior head dispositioned: the older head's finding still blocks"
+assert_err_has "cr-od-39c3193c8945" "39f message names the older head's undispositioned finding"
+if printf '%s' "$ERR" | grep -F "cr-od-2b1a31ba0692" >/dev/null; then fail "39f message must not list the dispositioned newer finding" "listed"; else pass "39f message lists only the undispositioned finding"; fi
+
+OD_REPO=$(mk_od_repo "$OD_A3_ROW_OLD")
+BODY_FILE_OVERRIDE="$OD_BQ_BODY"; BODY_FILE2_OVERRIDE="$OD_RANGE_BODY"; run_in_repo "$OD_REPO" body-a3-file
+assert_rc 3 "39g only the older prior head dispositioned: the newer head's finding still blocks"
+assert_err_has "cr-od-2b1a31ba0692" "39g message names the newer head's undispositioned finding"
+
+OD_REPO=$(mk_od_repo "$OD_A3_ROW_OLD" "$OD_A3_ROW_NEW")
+BODY_FILE_OVERRIDE="$OD_BQ_BODY"; BODY_FILE2_OVERRIDE="$OD_RANGE_BODY"; run_in_repo "$OD_REPO" body-a3-file
+assert_rc 0 "39h both prior heads dispositioned allows"
+assert_verdict 0 "39h un-maskable exit 0 verdict line"
+assert_err_has "all dispositioned" "39h NOTE confirms every prior head is dispositioned"
+assert_err_has "shaOLD2" "39h NOTE names the newer prior head"
+BODY_FILE_OVERRIDE=; BODY_FILE2_OVERRIDE=
 
 # 39c — unresolved threads still block this same body shape; the thread gate
 # is untouched by HIMMEL-3360 and stays orthogonal to CodeRabbit's status.
@@ -2159,5 +2200,5 @@ unset CR_CLI_MARKER
 
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 132 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 132"; exit 1; fi
+if [ "$COUNT" -ne 136 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 136"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1

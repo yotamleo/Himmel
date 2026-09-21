@@ -280,5 +280,74 @@ to od-infra-error-rc1          error             1 ""
 t the-diff-header-counted      od-range          0 "outside=1 nitpick=0 additional=0 prior_outside=0 markers=1 head_reviews=1 substantive=1"
 t legacy-layout-still-counts-2 od-legacy         0 "outside=2 nitpick=0 additional=0 prior_outside=0 markers=2 head_reviews=1 substantive=1"
 
+# ── HIMMEL-3365: prior-head outside-diff reader ──────────────────────────────
+# cr_body_prior_outside_heads lists, one commit_id per line (oldest review
+# first), EVERY prior head (commit_id != head) whose LATEST SUBSTANTIVE bot
+# review carries an outside-diff count — the heads the prior-head disposition
+# gate must key each finding to. Same selector rule as the at-head reader.
+BQ_BODY=$(cat "$OD_BQ"); RANGE_BODY=$(cat "$OD_RANGE")
+# mk_prior_reviews <out> <uid> <commit1> <ts1> <id1> <body1> [<commit2> <ts2> <id2> <body2>]...
+mk_prior_reviews() {
+    local out="$1" uid="$2"; shift 2
+    local arr='[]' c ts id b
+    while [ "$#" -ge 4 ]; do
+        c="$1"; ts="$2"; id="$3"; b="$4"; shift 4
+        arr=$(jq -c --argjson uid "$uid" --arg c "$c" --arg ts "$ts" --argjson id "$id" --arg b "$b" \
+            '. + [{user:{id:$uid,login:"coderabbitai[bot]"},commit_id:$c,submitted_at:$ts,id:$id,body:$b}]' <<<"$arr")
+    done
+    printf '%s' "$arr" > "$out"
+}
+mk_prior_reviews "$RESP_DIR/ph-two-heads.json" "$UID_OK" \
+    shaA 2024-01-01T00:00:00Z 4001 "$BQ_BODY" \
+    shaB 2024-01-01T00:00:10Z 4002 "$RANGE_BODY" \
+    "$HEAD" 2024-01-01T00:00:20Z 4003 "$CLEAN_BODY"
+# Same list, newest-first in the payload: order comes from submitted_at.
+mk_prior_reviews "$RESP_DIR/ph-two-heads-reversed.json" "$UID_OK" \
+    shaB 2024-01-01T00:00:10Z 4002 "$RANGE_BODY" \
+    shaA 2024-01-01T00:00:00Z 4001 "$BQ_BODY"
+mk_prior_reviews "$RESP_DIR/ph-later-head-clean.json" "$UID_OK" \
+    shaA 2024-01-01T00:00:00Z 4011 "$BQ_BODY" \
+    shaB 2024-01-01T00:00:10Z 4012 "$CLEAN_BODY"
+mk_prior_reviews "$RESP_DIR/ph-superseded-at-same-head.json" "$UID_OK" \
+    shaA 2024-01-01T00:00:00Z 4021 "$BQ_BODY" \
+    shaA 2024-01-01T00:00:10Z 4022 "$CLEAN_BODY"
+mk_prior_reviews "$RESP_DIR/ph-empty-later-keeps.json" "$UID_OK" \
+    shaA 2024-01-01T00:00:00Z 4031 "$BQ_BODY" \
+    shaA 2024-01-01T00:00:10Z 4032 ""
+mk_prior_reviews "$RESP_DIR/ph-head-only.json" "$UID_OK" \
+    "$HEAD" 2024-01-01T00:00:00Z 4041 "$BQ_BODY"
+mk_prior_reviews "$RESP_DIR/ph-wrong-id.json" "$UID_WRONG" \
+    shaA 2024-01-01T00:00:00Z 4051 "$BQ_BODY"
+
+# tp <name> <GH_STUB_MODE> <expected-rc> <expected-stdout>
+tp() {
+    local name="$1" mode="$2" want="$3" want_out="$4" rc=0 out
+    export GH_STUB_MODE="$mode"
+    export GH_STUB_LOG="$TMP/calls-$name.log"; : > "$GH_STUB_LOG"
+    out=$(cr_body_prior_outside_heads o r 42 "$HEAD" 2>"$TMP/err-$name") || rc=$?
+    if [ "$rc" != "$want" ]; then
+        fail=$((fail+1)); echo "FAIL $name (rc=$rc want=$want) out='$out'"
+        sed 's/^/  err: /' "$TMP/err-$name"
+        return
+    fi
+    if [ "$out" != "$want_out" ]; then
+        fail=$((fail+1)); echo "FAIL $name (stdout mismatch)"
+        echo "  got:  $(printf '%s' "$out" | tr '\n' '|')"
+        echo "  want: $(printf '%s' "$want_out" | tr '\n' '|')"
+        return
+    fi
+    pass=$((pass+1)); echo "ok   $name"
+}
+tp ph-two-prior-heads-listed-oldest-first   ph-two-heads               0 "shaA
+shaB"
+tp ph-order-from-submitted-at-not-payload   ph-two-heads-reversed      0 "shaA
+shaB"
+tp ph-clean-later-head-omitted              ph-later-head-clean        0 "shaA"
+tp ph-superseded-at-same-head-omitted       ph-superseded-at-same-head 0 ""
+tp ph-empty-later-review-keeps-head         ph-empty-later-keeps       0 "shaA"
+tp ph-current-head-is-not-prior             ph-head-only               0 ""
+tp ph-wrong-user-id-no-heads                ph-wrong-id                0 ""
+tp ph-infra-error-rc1                       error                      1 ""
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

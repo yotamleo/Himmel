@@ -237,6 +237,22 @@ def sev_of($t): if ($t|test("Critical")) then "crit" elif ($t|test("Major")) the
 | { hdr: .hdr, items: [ .items[] | select(.file != null) | {file, line, sev: sev_of(.sev // ""), title} ] }
 '
 
+# HIMMEL-3365: the prior heads that still carry outside-diff findings. Groups the
+# NON-head bot reviews by commit_id, takes the LATEST SUBSTANTIVE one per head
+# (the same rule the at-head selector applies, so an empty later review never
+# hides a finding and a clean later review supersedes one), keeps the heads
+# whose chosen body counts outside-diff findings, oldest review first.
+# shellcheck disable=SC2016  # this is a jq program, not a shell variable
+_CBF_JQ_PRIOR_HEADS='
+| ( [ $priorr[] | select((.body // "") | has_content) ]
+    | group_by(.commit_id)
+    | map( sort_by(.submitted_at, .id) | .[-1] )
+    | map( select((.body // "") | sum_matches(outside_re) > 0) )
+    | sort_by(.submitted_at, .id)
+    | map(.commit_id) ) as $heads
+| $heads[]
+'
+
 # _cbf_reviews_json <owner> <name> <num> — the PR's review list as ONE flat
 # JSON array on stdout; rc 1 when the query fails or the payload is not an array.
 _cbf_reviews_json() {
@@ -386,4 +402,28 @@ cr_body_outside_findings() {
         printf 'cr-od-%s\t%s\t%s\t%s\t%s\n' "$id" "$sev" "$file" "$line" "$title"
     done <<<"$rows"
     return 0
+}
+
+# cr_body_prior_outside_heads <owner> <name> <num> <head> — HIMMEL-3365.
+# One commit_id per line: every PRIOR head (commit_id != <head>) whose latest
+# substantive bot review carries outside-diff findings, oldest review first.
+# prior_outside in cr_body_findings SUMS every prior review; this is the list
+# behind that sum, so a caller can disposition each finding at the head that
+# raised it (cr_body_outside_findings <head> reads that head's review). Zero
+# lines = no prior head carries one (rc 0). rc 1 = infrastructure (query/parse
+# failure). Never rc 2: the per-head reader owns the format-drift check.
+cr_body_prior_outside_heads() {
+    local owner="$1" name="$2" num="$3" head="$4"
+    local uid
+    uid=$(cr_signal_bot_id)
+
+    if [ -z "$owner" ] || [ -z "$name" ] || [ -z "$num" ] || [ -z "$head" ]; then return 1; fi
+    case "$uid" in ''|*[!0-9]*) return 1 ;; esac
+    case "$num" in ''|*[!0-9]*) return 1 ;; esac
+
+    local json
+    json=$(_cbf_reviews_json "$owner" "$name" "$num") || return 1
+
+    printf '%s' "$json" | jq -r --argjson uid "$uid" --arg head "$head" \
+        "$_CBF_JQ_DEFS$_CBF_JQ_SELECT$_CBF_JQ_PRIOR_HEADS" 2>/dev/null || return 1
 }
