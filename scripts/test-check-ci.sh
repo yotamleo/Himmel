@@ -825,6 +825,29 @@ run_in_repo() {
 assert_rc()      { if [ "$RC" -eq "$1" ]; then pass "$2"; else fail "$2" "rc=$RC want $1"; fi; }
 assert_out_has() { if printf '%s' "$OUT" | grep -iF -- "$1" >/dev/null; then pass "$2"; else fail "$2" "stdout missing: $1"; fi; }
 assert_err_has() { if printf '%s' "$ERR" | grep -iF -- "$1" >/dev/null; then pass "$2"; else fail "$2" "stderr missing: $1"; fi; }
+# Negative assertion (HIMMEL-3376): grep must find NOTHING. rc 1 (absent) passes,
+# rc 0 (present) fails with DETAIL, rc >=2 (grep itself errored: bad pattern,
+# unreadable file) FAILS — the `if grep …; then fail; else pass; fi` idiom read
+# that error as absence. Reads stdin unless GREP_ARGS carries a file operand;
+# feed a variable by here-string, NOT a pipe (a pipe runs this in a subshell and
+# drops the pass/fail counters).
+assert_grep_lacks() {
+    local name=$1 detail=$2 grc=0
+    shift 2
+    grep "$@" >/dev/null || grc=$?
+    case $grc in
+        1) pass "$name" ;;
+        0) fail "$name" "$detail" ;;
+        *) fail "$name" "grep errored (rc=$grc): grep $*" ;;
+    esac
+}
+assert_err_lacks() { local name=$1 detail=$2; shift 2; assert_grep_lacks "$name" "$detail" "$@" <<<"$ERR"; }
+# Self-test of the helper, with pass/fail captured in a subshell so the suite's
+# counters do not move: absent -> PASS, present -> FAIL, forced grep error -> FAIL.
+selftest_lacks() { ( pass() { echo PASS; }; fail() { echo FAIL; }; assert_grep_lacks n d "$@" <<<"needle" ) 2>/dev/null; }
+if [ "$(selftest_lacks -F -- absent)" = PASS ]; then pass "3376 assert_grep_lacks: absent pattern passes"; else fail "3376 assert_grep_lacks: absent pattern passes"; fi
+if [ "$(selftest_lacks -F -- needle)" = FAIL ]; then pass "3376 assert_grep_lacks: present pattern fails"; else fail "3376 assert_grep_lacks: present pattern fails"; fi
+if [ "$(selftest_lacks -E '[')" = FAIL ]; then pass "3376 assert_grep_lacks: a grep error (rc 2) fails, not passes"; else fail "3376 assert_grep_lacks: a grep error (rc 2) fails, not passes"; fi
 # Exactly ONE verdict line, exact-match to the expected code (HIMMEL-974) —
 # a substring check would pass on a double-fired trap or a wrong-code line.
 assert_verdict() {
@@ -839,11 +862,7 @@ assert_verdict() {
     fi
 }
 assert_no_verdict() {
-    if printf '%s' "$OUT$ERR" | grep -F "verdict exit=" >/dev/null; then
-        fail "$1" "verdict line leaked into a pre-trap exit"
-    else
-        pass "$1"
-    fi
+    assert_grep_lacks "$1" "verdict line leaked into a pre-trap exit" -F "verdict exit=" <<<"$OUT$ERR"
 }
 
 echo "test-check-ci.sh"
@@ -968,11 +987,7 @@ THREADS_OVERRIDE=2
 run red --threads-only
 assert_rc 3 "15 threads-only unresolved rc 3"
 assert_err_has "2 unresolved review thread(s)" "15 threads-only unresolved message"
-if grep -- 'checks' "$STUBDIR/args.log" >/dev/null; then
-    fail "15 threads-only skips gh pr checks" "args.log: $(cat "$STUBDIR/args.log")"
-else
-    pass "15 threads-only skips gh pr checks"
-fi
+assert_grep_lacks "15 threads-only skips gh pr checks" "args.log: $(cat "$STUBDIR/args.log")" -- 'checks' "$STUBDIR/args.log"
 
 # 16 — pagination: page one clean + hasNextPage, unresolved thread on page two
 THREADS_OVERRIDE=paged
@@ -1331,7 +1346,7 @@ OD_REPO=$(mk_od_repo "$(od_variant '.finding_id="cr-od-eeba561a5fa4" | .file="sc
 BODY_FILE_OVERRIDE="$OD_LEGACY_BODY"; run_in_repo "$OD_REPO" body-file
 assert_rc 3 "R9 one of two findings dispositioned stays exit 3"
 assert_err_has "cr-od-588006168ade" "R9 message names the undispositioned finding"
-if printf '%s' "$ERR" | grep -F "cr-od-eeba561a5fa4" >/dev/null; then fail "R9 message must not list the dispositioned finding" "listed"; else pass "R9 message lists only the undispositioned finding"; fi
+assert_err_lacks "R9 message lists only the undispositioned finding" "R9 message must not list the dispositioned finding: listed" -F "cr-od-eeba561a5fa4"
 OD_REPO=$(mk_od_repo \
     "$(od_variant '.finding_id="cr-od-eeba561a5fa4" | .file="scripts/codex/sanitize-plugin-hooks.ps1" | .line="7-20"')" \
     "$(od_variant '.finding_id="cr-od-588006168ade" | .file="scripts/codex/sanitize-plugin-hooks.sh" | .line="4-20"')")
@@ -1372,7 +1387,7 @@ printf '%s' 'Outside diff range comments (2)' > "$STUBDIR/od-hdronly.txt"
 BODY_FILE_OVERRIDE="$STUBDIR/od-hdronly.txt"; run body-file
 assert_rc 2 "R10 header count without parseable findings cannot certify"
 assert_err_has "check the PR body manually" "R10 tells the operator to check manually"
-if printf '%s' "$ERR" | grep -F "ledger-append.sh" >/dev/null; then fail "R10 must not print a recipe" "recipe printed"; else pass "R10 no recipe for findings that did not parse"; fi
+assert_err_lacks "R10 no recipe for findings that did not parse" "R10 must not print a recipe: recipe printed" -F "ledger-append.sh"
 sed 's/Outside diff range comments (1)/Outside diff range comments (2)/' "$OD_BQ_BODY" > "$STUBDIR/od-count2.txt"
 OD_REPO=$(mk_od_repo "$OD_ROW")
 BODY_FILE_OVERRIDE="$STUBDIR/od-count2.txt"; run_in_repo "$OD_REPO" body-file
@@ -1469,7 +1484,7 @@ OD_REPO=$(mk_od_repo "$OD_A3_ROW_NEW")
 BODY_FILE_OVERRIDE="$OD_BQ_BODY"; BODY_FILE2_OVERRIDE="$OD_RANGE_BODY"; run_in_repo "$OD_REPO" body-a3-file
 assert_rc 3 "39f only the newer prior head dispositioned: the older head's finding still blocks"
 assert_err_has "cr-od-39c3193c8945" "39f message names the older head's undispositioned finding"
-if printf '%s' "$ERR" | grep -F "cr-od-2b1a31ba0692" >/dev/null; then fail "39f message must not list the dispositioned newer finding" "listed"; else pass "39f message lists only the undispositioned finding"; fi
+assert_err_lacks "39f message lists only the undispositioned finding" "39f message must not list the dispositioned newer finding: listed" -F "cr-od-2b1a31ba0692"
 
 OD_REPO=$(mk_od_repo "$OD_A3_ROW_OLD")
 BODY_FILE_OVERRIDE="$OD_BQ_BODY"; BODY_FILE2_OVERRIDE="$OD_RANGE_BODY"; run_in_repo "$OD_REPO" body-a3-file
@@ -1499,11 +1514,7 @@ THREADS_OVERRIDE=
 run body-outside --threads-only
 assert_rc 3 "40 threads-only outside-diff body finding blocks"
 assert_err_has "outside-diff-range finding" "40 threads-only outside-diff reason printed"
-if grep -- 'checks' "$STUBDIR/args.log" >/dev/null; then
-    fail "40 threads-only still skips gh pr checks" "args.log: $(cat "$STUBDIR/args.log")"
-else
-    pass "40 threads-only still skips gh pr checks"
-fi
+assert_grep_lacks "40 threads-only still skips gh pr checks" "args.log: $(cat "$STUBDIR/args.log")" -- 'checks' "$STUBDIR/args.log"
 
 # 41 — codex CR: --threads-only must RE-verify threads AFTER CodeRabbit
 # concludes (cr_signal_gate/cr_body_gate), not just the pre-conclude snapshot
@@ -1516,11 +1527,7 @@ THREADS_OVERRIDE=latethread
 run register-then-green --threads-only
 assert_rc 3 "41 threads-only re-verifies threads after CodeRabbit concludes"
 assert_err_has "unresolved review thread" "41 threads-only late-thread reason printed"
-if grep -- 'checks' "$STUBDIR/args.log" >/dev/null; then
-    fail "41 threads-only late-thread case still skips gh pr checks" "args.log: $(cat "$STUBDIR/args.log")"
-else
-    pass "41 threads-only late-thread case still skips gh pr checks"
-fi
+assert_grep_lacks "41 threads-only late-thread case still skips gh pr checks" "args.log: $(cat "$STUBDIR/args.log")" -- 'checks' "$STUBDIR/args.log"
 
 # 42 — codex CR: --threads-only must re-bind the head before reporting
 # success — a push during this (admittedly short) run must not certify a
@@ -1592,11 +1599,7 @@ run cr-absent
 # Assert the run SUCCEEDED before reading its silence (coderabbit-6): a failing
 # run that happens not to say "CodeRabbit" would otherwise pass this case.
 assert_rc 0 "57 adopter clean run succeeds"
-if printf '%s%s' "$OUT" "$ERR" | grep -i "coderabbit" >/dev/null; then
-    fail "57 disarmed gate is silent about CodeRabbit" "output mentioned CodeRabbit: $ERR"
-else
-    pass "57 disarmed gate is silent about CodeRabbit"
-fi
+assert_grep_lacks "57 disarmed gate is silent about CodeRabbit" "output mentioned CodeRabbit: $ERR" -i "coderabbit" <<<"$OUT$ERR"
 
 # 58 — HIMMEL-1495 hermeticity canary. This certifier does not consult the
 # armed-session bypass env (ARMAUTOMERGE/CR_MERGE_GATE_OK), so a block fixture
@@ -1728,11 +1731,7 @@ fi
 run red --max-wait 5
 assert_rc 1 "102 fast red still resolves via the real-verdict path"
 assert_err_has "checks FAILED" "102 red_exit fires (rc/stderr not discarded)"
-if printf '%s' "$ERR" | grep -iF -- "watch cap reached" >/dev/null; then
-    fail "102 does not fall through to the cap path" "stderr: $ERR"
-else
-    pass "102 does not fall through to the cap path"
-fi
+assert_err_lacks "102 does not fall through to the cap path" "stderr: $ERR" -iF -- "watch cap reached"
 
 # 103 — same shape for the gh-error (cannot-evaluate) path: a near-instant
 # auth/network failure must reach exit 2 via gh's REAL stderr, not get
@@ -1740,11 +1739,7 @@ fi
 run watch-error --max-wait 5
 assert_rc 2 "103 fast gh-error still resolves via the real-verdict path"
 assert_err_has "cannot evaluate the gate" "103 real gh stderr reaches the caller"
-if printf '%s' "$ERR" | grep -iF -- "watch cap reached" >/dev/null; then
-    fail "103 does not fall through to the cap path" "stderr: $ERR"
-else
-    pass "103 does not fall through to the cap path"
-fi
+assert_err_lacks "103 does not fall through to the cap path" "stderr: $ERR" -iF -- "watch cap reached"
 
 # 104 — orphan guard: when the watch IS stopped early (cap), the real gh
 # process must actually die, not just a wrapper around it. Wrapping gh in a
@@ -1894,11 +1889,7 @@ assert_err_has "still pending (unit-tests)" "2907-b the exit-2 line names the pe
 # extend decision) — no WAITING notice, no extension.
 run blocking-cap-red --max-wait 1
 assert_rc 1 "2907-c a failed check at cap still exits 1 immediately"
-if printf '%s' "$ERR" | grep -iF -- "WAITING" >/dev/null; then
-    fail "2907-c no WAITING notice on a genuinely red cap" "stderr: $ERR"
-else
-    pass "2907-c no WAITING notice on a genuinely red cap"
-fi
+assert_err_lacks "2907-c no WAITING notice on a genuinely red cap" "stderr: $ERR" -iF -- "WAITING"
 
 # 2907-d — the default --max-wait is now 900s, covering the measured slowest
 # shell-unit shard (12m16s-12m45s) with margin.
@@ -2088,11 +2079,7 @@ assert_err_has "git config --local --unset himmel.coderabbit" \
 CR_APP_OVERRIDE=""
 run_in_repo "$EMPTY_LEDGER_REPO" cr-absent
 assert_rc 0 "2380-b real adopter (no marker, no override) is still green"
-if printf '%s%s' "$OUT" "$ERR" | grep -i "coderabbit" >/dev/null; then
-    fail "2380-b a real adopter still hears nothing about CodeRabbit" "output mentioned CodeRabbit: $ERR"
-else
-    pass "2380-b a real adopter still hears nothing about CodeRabbit"
-fi
+assert_grep_lacks "2380-b a real adopter still hears nothing about CodeRabbit" "output mentioned CodeRabbit: $ERR" -i "coderabbit" <<<"$OUT$ERR"
 
 # 2380-c — precedence, and the noise it suppresses. CR_PROFILE=none is read
 # before the marker (cr_app_state keeps cr_app_configured's order), so an
@@ -2102,11 +2089,7 @@ CR_APP_OVERRIDE=""
 CR_PROFILE_OVERRIDE=none
 run_in_repo "$BROKEN_MARKER_REPO" cr-absent
 assert_rc 0 "2380-c CR_PROFILE=none over a broken marker is still green"
-if printf '%s' "$ERR" | grep -F "himmel.coderabbit marker holds a value" >/dev/null; then
-    fail "2380-c an explicit opt-out suppresses the broken-marker warning" "warned anyway: $ERR"
-else
-    pass "2380-c an explicit opt-out suppresses the broken-marker warning"
-fi
+assert_err_lacks "2380-c an explicit opt-out suppresses the broken-marker warning" "warned anyway: $ERR" -F "himmel.coderabbit marker holds a value"
 
 # ── HIMMEL-2769: CR-UNARMED — a declared-CodeRabbit repo left unarmed fails
 # loud instead of certifying a review nobody armed. `not-configured` is the
@@ -2137,11 +2120,7 @@ assert_rc 0 "2769-b CR_APP=0 bypasses CR-UNARMED even with .coderabbit.yaml pres
 CR_APP_OVERRIDE=""
 run_in_repo "$EMPTY_LEDGER_REPO" cr-absent
 assert_rc 0 "2769-c an adopter with no .coderabbit.yaml stays default-disarmed (no CR-UNARMED)"
-if printf '%s' "$ERR" | grep -F "CR-UNARMED" >/dev/null; then
-    fail "2769-c no .coderabbit.yaml -> no CR-UNARMED line" "printed anyway: $ERR"
-else
-    pass "2769-c no .coderabbit.yaml -> no CR-UNARMED line"
-fi
+assert_err_lacks "2769-c no .coderabbit.yaml -> no CR-UNARMED line" "printed anyway: $ERR" -F "CR-UNARMED"
 
 # --- 2704: CodeRabbit is the App, and check-ci NEVER consults a CLI ----------
 # HIMMEL-2704 retired the CodeRabbit CLI. check-ci.sh was always App-only, and
