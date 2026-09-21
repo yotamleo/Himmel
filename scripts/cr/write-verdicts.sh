@@ -40,11 +40,12 @@
 #
 # HIMMEL-3357: a bare `disproved` line carries no evidence, and that is by
 # design - these scratch files feed orphan-check.sh's counts and never reach the
-# CR ledger. The evidentiary bar for `disproved` (a shell/platform measurement
-# must name the binary and version; a finding that names a shell needs evidence
-# naming it) is enforced where the verdict enters the ledger, in
-# scripts/cr/ledger-append.sh (`amend`, `finding`, `finding --batch-file`), so
-# this grammar stays unchanged.
+# CR ledger. The evidentiary bar for `disproved` is enforced where the verdict
+# enters the ledger, in scripts/cr/ledger-append.sh, so this grammar stays
+# unchanged: a shell/platform MEASUREMENT must name the binary and version on
+# every path (`amend`, `finding`, `finding --batch-file`); the stricter CLAIM
+# check (a finding whose text names a shell needs evidence naming it) runs on
+# `amend` only, the one path /pr-check step 4.5 writes a generic reason through.
 #
 # TRUNCATE-then-write only, matching the heredocs it replaces (both runbook
 # fences REPLACE the file's contents every run) — no append mode; YAGNI, the

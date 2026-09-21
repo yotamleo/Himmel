@@ -647,6 +647,10 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
       }
       // HIMMEL-3357: the same bar the single-row path applies in bash. A refused
       // row is skipped like any other refusal (exit 3, siblings still written).
+      // ponytail: only the measurement half of the bar runs here; the claim check
+      // on spec.text (amend, below) does not. Panel and harvest batch rows carry an
+      // empty verdict, so a disproved batch row is a hand-built spec that supplies
+      // its own reason - a batch row naming a shell with a generic reason passes.
       if(spec.verdict==="disproved"&&measured(String(spec.reason||""))){
         const unver=scan(String(spec.reason)).bare;
         if(unver.length){
