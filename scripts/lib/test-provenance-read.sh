@@ -561,6 +561,103 @@ check "R2-codex3: json-key restore with corrupted (wrong-value) backup returns n
 check "R2-codex3: json-key target byte-identical after the refused restore" "$(cat "$S8")" "$BEFORE_JK"
 prov_read_cleanup
 
+# ── HIMMEL-3386 (1): the json-elem restore hashes the backup against
+#    eff_pre.sha (prov_sha_json, the writer's element hasher) BEFORE the splice,
+#    exactly like the file and json-key halves above. A valid-JSON backup with
+#    the wrong element must leave the target byte-identical; an untouched
+#    backup must still restore (control -- the check may not reject the
+#    legitimate backup). ─────────────────────────────────────────────────────
+
+reset
+S9="$w/settings9.json"
+printf '{}\n' > "$S9"
+elemP='{"cmd":"pre"}'
+elemQ='{"cmd":"post"}'; shaQ=$(prov_sha_json "$elemQ")
+prov_begin --iid JE1 --writer t
+prov_record replace json-elem "$S9" --unit /hooks/PreToolUse --pre-json "$elemP" --backup --post-json "$elemQ" \
+    --field elem_sha="\"$shaQ\"" --scope user --class code
+prov_end ok
+printf '%s' '{"hooks":{"PreToolUse":[{"cmd":"post"}]}}' > "$S9"
+prov_read_load
+u=$(u_for --path "$S9")
+bkje=$(field "$u" '.eff_pre.backup')
+cp -p "$bkje" "$td/je1.bk.orig"
+printf '%s' '{"cmd":"tampered"}' > "$bkje"   # valid JSON, but not the recorded pre-element
+BEFORE_JE=$(cat "$S9")
+prov_read_apply "$u" restore
+rcje=$?
+check "HIMMEL-3386 (1): json-elem restore with corrupted (wrong-element) backup returns non-zero" "$rcje" "1"
+check "HIMMEL-3386 (1): json-elem target byte-identical after the refused restore" "$(cat "$S9")" "$BEFORE_JE"
+cp -p "$td/je1.bk.orig" "$bkje"
+prov_read_apply "$u" restore
+rcje2=$?
+check "HIMMEL-3386 (1) control: json-elem restore with the untouched backup succeeds" "$rcje2" "0"
+check "HIMMEL-3386 (1) control: json-elem target holds the pre-element after the restore" "$(jq -c . "$S9")" '{"hooks":{"PreToolUse":[{"cmd":"pre"}]}}'
+prov_read_cleanup
+rm -f "$td/je1.bk.orig"
+
+# ── HIMMEL-3386 (3): the json-elem fold ORs container_created across the
+#    chain. The insert created the container; a later replace row that does
+#    not repeat the flag must not make the removal forget it. ────────────────
+
+reset
+S10="$w/settings10.json"
+printf '{}\n' > "$S10"
+elemA='{"cmd":"a"}'; shaA=$(prov_sha_json "$elemA")
+elemB='{"cmd":"b"}'; shaB=$(prov_sha_json "$elemB")
+prov_begin --iid CC1 --writer t
+prov_record insert json-elem "$S10" --unit /hooks/PreToolUse --pre-absent --post-json "$elemA" \
+    --field container_created=true --field elem_sha="\"$shaA\"" --scope user --class code
+prov_record replace json-elem "$S10" --unit /hooks/PreToolUse --pre-json "$elemA" --backup --post-json "$elemB" \
+    --field elem_sha="\"$shaB\"" --scope user --class code
+prov_end ok
+printf '%s' '{"hooks":{"PreToolUse":[{"cmd":"b"}]}}' > "$S10"
+prov_read_load
+u=$(u_for --path "$S10")
+check "HIMMEL-3386 (3): folded chain carries container_created from the insert row" "$(field "$u" '.fields.container_created // false')" "true"
+prov_read_apply "$u" remove
+check "HIMMEL-3386 (3): remove drops the container the insert created" "$(jq -c . "$S10")" '{"hooks":{}}'
+prov_read_cleanup
+
+# control: no row in the chain set container_created -> the empty container is left alone
+
+reset
+S11="$w/settings11.json"
+printf '{}\n' > "$S11"
+prov_begin --iid CC2 --writer t
+prov_record insert json-elem "$S11" --unit /hooks/PreToolUse --pre-absent --post-json "$elemA" \
+    --field elem_sha="\"$shaA\"" --scope user --class code
+prov_record replace json-elem "$S11" --unit /hooks/PreToolUse --pre-json "$elemA" --backup --post-json "$elemB" \
+    --field elem_sha="\"$shaB\"" --scope user --class code
+prov_end ok
+printf '%s' '{"hooks":{"PreToolUse":[{"cmd":"b"}]}}' > "$S11"
+prov_read_load
+u=$(u_for --path "$S11")
+check "HIMMEL-3386 (3) control: no container_created anywhere in the chain -> flag absent" "$(field "$u" '.fields.container_created // false')" "false"
+prov_read_apply "$u" remove
+check "HIMMEL-3386 (3) control: remove leaves the empty container" "$(jq -c . "$S11")" '{"hooks":{"PreToolUse":[]}}'
+prov_read_cleanup
+
+# ── HIMMEL-3386 (4): prune_backups matches WHOLE newline-delimited entries.
+#    A finished backup `foo.bak.extra` must not authorise deleting `foo.bak`
+#    (its name is only a prefix of the finished one). ─────────────────────────
+
+reset
+prov_begin --iid PB4 --writer t
+prov_end ok
+prov_read_load
+prov_read_session_begin wet
+pbdir="$(prov_dir)/provenance-backups"
+mkdir -p "$pbdir"
+printf 'a\n' > "$pbdir/foo.bak"
+printf 'b\n' > "$pbdir/foo.bak.extra"
+prov_read_outcome restored '{}' ours "$pbdir/foo.bak.extra"
+prov_read_session_end ok
+prov_read_prune_backups
+check "HIMMEL-3386 (4): finished foo.bak.extra is deleted" "$([ -f "$pbdir/foo.bak.extra" ] && echo yes || echo no)" "no"
+check "HIMMEL-3386 (4): foo.bak (only a prefix of the finished name) survives" "$([ -f "$pbdir/foo.bak" ] && echo yes || echo no)" "yes"
+prov_read_cleanup
+
 # ── codex-11: prov_read_drop_env_if_ours requires an EXPLICIT
 #    eff_pre.state=="absent" -- a governed /env unit with NO recorded pre
 #    (eff_pre null) must NOT be treated as himmel's own and dropped. ───────
