@@ -258,6 +258,8 @@ const MEMBERS = {
   // MUST_RUN_CHAIN_MEMBERS lookup (keyed by basename) actually fires in the
   // fixture dir (HIMMEL-2060).
   'block-read-secrets.sh': `sleep 3`,
+  // HIMMEL-3383: the /pr-check literal guard is must-run too.
+  'guard-pr-check-literal.sh': `sleep 3`,
   // The LEGACY PreToolUse block spelling — valid output, and not a shape the
   // merge allowlist could carry, so it has to short-circuit.
   'deny-legacy.sh': `printf '{"decision":"block","reason":"legacy block"}'`,
@@ -594,6 +596,7 @@ test('MUST_RUN_CHAIN_MEMBERS covers exactly the deny-capable security guards', (
       'block-tail-pipe-on-gates.sh',
       'block-write-into-main-checkout.sh',
       'check-cr-marker-on-pr-create.sh',
+      'guard-pr-check-literal.sh',
     ].sort(),
   );
 });
@@ -625,6 +628,25 @@ test('a must-run member over its budget DENIES the chain instead of being skippe
     assert.equal(rows[0].member, 'block-read-secrets.sh');
     assert.equal(rows[0].budget, 500);
     assert.equal(typeof rows[0].elapsed, 'number');
+  });
+});
+
+// HIMMEL-3383: a starved guard-pr-check-literal.sh must deny, never let the
+// bare scripts/cr literal fall through to the allow rule unchecked.
+test('a starved guard-pr-check-literal.sh DENIES the chain instead of being skipped', () => {
+  withChain((dir) => {
+    const result = spawnSync(
+      process.execPath,
+      [LAUNCHER, '--chain', join(dir, 'guard-pr-check-literal.sh'), join(dir, 'allow.sh')],
+      {
+        encoding: 'utf8',
+        input: PAYLOAD,
+        env: { ...process.env, RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS: '500', RUN_HOOK_CHAIN_SKIP_LOG: join(dir, 'skips.jsonl') },
+      },
+    );
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /DENY guard-pr-check-literal\.sh \(budget=500ms/);
+    assert.equal(ran(dir, 'allow.sh'), false, 'a starved literal guard must deny, not skip past it');
   });
 });
 

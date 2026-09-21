@@ -64,7 +64,7 @@ run() {
     err="$(printf '%s' "$input" | env -u HIMMEL_REPO "$@" bash "$HOOK" 2>&1 >/dev/null)"
     rc=$?
     if [ "$rc" = "$want" ]; then
-        echo "PASS $label (rc=$rc)"
+        echo "PASS $label (rc=$rc)${err:+ - ${err%%$'\n'*}}"
     else
         echo "FAIL $label - expected rc=$want, got rc=$rc; stderr: $err"
         FAILED=$((FAILED + 1))
@@ -92,6 +92,26 @@ run "an unguarded scripts/lib/ diff -> allow" 0 "$(payload "$LITERAL" "$WT")" "$
 g -C "$WT" checkout -q -- scripts/lib/other.sh
 run "primary checkout root -> allow" 0 "$(payload "$LITERAL" "$PRIMARY")" "$HR"
 run "HIMMEL_REPO with a trailing slash -> allow" 0 "$(payload "$LITERAL" "$WT")" "HIMMEL_REPO=$PRIMARY/"
+run "a ./ spelling on a clean root -> allow" 0 "$(payload "bash ./scripts/cr/pr-check-context.sh" "$WT")" "$HR"
+
+# ---- C2: the base is the ANCHOR's working-tree bytes, not a ref ---------------
+# A primary whose scripts/cr/ differs from the worktree (lagging or ahead of
+# the branch's base) denies: the anchor's bytes are what the hand-off runs.
+echo 'echo newer' >"$PRIMARY/scripts/cr/pr-check-context.sh"
+run "anchor's scripts/cr/ differs from the worktree -> deny" 2 "$(payload "$LITERAL" "$WT")" "$HR"
+need_in_err "deny names the anchor as the base" "HIMMEL_REPO"
+g -C "$PRIMARY" checkout -q -- scripts/cr/pr-check-context.sh
+# I4: the mode is compared too - chmod +x is a change.
+chmod +x "$WT/scripts/cr/pr-check-context.sh"
+run "chmod +x on pr-check-context.sh -> deny" 2 "$(payload "$LITERAL" "$WT")" "$HR"
+chmod -x "$WT/scripts/cr/pr-check-context.sh"
+# S5: a missing tool must not collapse both sides to "" and compare equal.
+mkdir -p "$TMP/nosort-bin"
+for t in bash env jq git awk find paste wc tr comm cat realpath basename dirname grep sed; do
+    tp=$(command -v "$t") && ln -sf "$tp" "$TMP/nosort-bin/$t"
+done
+run "a PATH without sort -> deny (fail closed)" 2 "$(payload "$LITERAL" "$WT")" "$HR" "PATH=$TMP/nosort-bin"
+need_in_err "deny names the missing tool" "'sort' is not on PATH"
 echo doc2 >"$WT/docs/a.md"
 run "an unrelated (docs) diff -> allow" 0 "$(payload "$LITERAL" "$WT")" "$HR"
 g -C "$WT" checkout -q -- docs/a.md
@@ -100,8 +120,13 @@ g -C "$WT" checkout -q -- docs/a.md
 run "unrelated command, no HIMMEL_REPO -> no-op" 0 "$(payload 'git status' "$TMP")"
 [ -z "$LAST_ERR" ] || { echo "FAIL no-op is silent - stderr: $LAST_ERR"; FAILED=$((FAILED + 1)); }
 # shellcheck disable=SC2016 # the fence text, verbatim
-run "the anchored fence itself -> no-op" 0 "$(payload 'bash "$himmel_repo/scripts/cr/pr-check-context.sh"' "$TMP")"
-run "literal with an argument -> no-op (no allow rule matches it)" 0 "$(payload "$LITERAL --x" "$TMP")"
+FENCE_TEXT='if himmel_repo=$(printenv HIMMEL_REPO | grep .); then
+    bash "$himmel_repo/scripts/cr/pr-check-context.sh"
+else
+    echo "pr-check: HIMMEL_REPO is unset or empty" >&2
+    exit 2
+fi'
+run "the anchored fence itself -> no-op" 0 "$(payload "$FENCE_TEXT" "$TMP")"
 run "non-Bash tool -> no-op" 0 "$(jq -cn --arg c "$LITERAL" '{tool_name:"Read",tool_input:{command:$c},cwd:"/"}')"
 
 # ---- deny: a branch-edited pr-check-context.sh -----------------------------
@@ -112,6 +137,74 @@ need_in_err "deny names the changed file" "scripts/cr/pr-check-context.sh"
 # shellcheck disable=SC2016 # the fence text, verbatim
 need_in_err "deny names the canonical anchored fence" 'bash "$himmel_repo/scripts/cr/pr-check-context.sh"'
 run "branch-edited + surrounding whitespace -> deny" 2 "$(payload "  $LITERAL  " "$WT")" "$HR"
+
+# ---- C1: spelling variants the Bash(bash scripts/*) allow rule also matches --
+# Classified by the script they run, not by the text: each runs the branch's
+# edited pr-check-context.sh / pr-check-env.sh, so each must deny.
+while IFS= read -r v; do
+    run "variant [$v] on an edited branch -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done <<'VARIANTS'
+bash scripts/cr/pr-check-context.sh --x
+bash scripts/cr/pr-check-context.sh '' # -
+bash scripts//cr/pr-check-context.sh
+bash ./scripts/cr/pr-check-context.sh
+bash scripts/cr/./pr-check-context.sh
+bash scripts/cr/../cr/pr-check-context.sh
+bash scripts/x/../cr/pr-check-context.sh
+bash scripts/cr/pr-check-env.sh  CR_CLAUDE_AGENTS
+bash scripts/cr/pr-check-env.sh CR_CLAUDE_AGENTS extra
+bash scripts/cr/pr-check-env.sh CR_PROFILE
+bash 'scripts/cr/pr-check-context.sh'
+bash scripts/cr/pr\-check-context.sh
+bash $'scripts/cr/pr-check-context.sh'
+sh scripts/cr/pr-check-context.sh
+source scripts/cr/pr-check-context.sh
+. scripts/cr/pr-check-context.sh
+./scripts/cr/pr-check-context.sh
+scripts/cr/pr-check-context.sh
+env bash scripts/cr/pr-check-context.sh
+X=1 bash scripts/cr/pr-check-context.sh
+timeout 60 bash scripts/cr/pr-check-context.sh
+(bash scripts/cr/pr-check-context.sh)
+true && bash scripts/cr/pr-check-context.sh
+true; bash scripts/cr/pr-check-context.sh
+bash -c 'bash scripts/cr/pr-check-context.sh'
+eval bash scripts/cr/pr-check-context.sh
+echo scripts/cr/pr-check-context.sh | xargs bash
+bash < scripts/cr/pr-check-context.sh
+cd scripts/cr && bash pr-check-context.sh
+bash scripts/cr/pr-check-*.sh
+bash scripts/cr/pr-check-{context,env}.sh
+bash scripts/cr/*
+f=pr-check-context.sh; bash scripts/cr/$f
+bash scripts/cr/$(echo pr-check-context.sh)
+VARIANTS
+# Mentioning the file is not running it; the canonical forms stay usable.
+while IFS= read -r v; do
+    run "mention [$v] on an edited branch -> no-op" 0 "$(payload "$v" "$WT")" "$HR"
+done <<'MENTIONS'
+grep -n x scripts/cr/pr-check-context.sh
+git diff -- scripts/cr/pr-check-context.sh
+cat scripts/cr/pr-check-env.sh
+bash scripts/cr/test-pr-check-context.sh
+bash scripts/hooks/test-guard-pr-check-literal.sh
+bash scripts/cr/panel-first-pass.sh --x
+MENTIONS
+run "the anchored fence on an edited branch -> no-op" 0 "$(payload "$FENCE_TEXT" "$WT")" "$HR"
+run "HIMMEL_REPO re-pointed before the fence -> deny" 2 \
+    "$(payload "export HIMMEL_REPO=.; $FENCE_TEXT" "$WT")" "$HR"
+run "the anchor's absolute path on an edited branch -> no-op" 0 \
+    "$(payload "bash \"$PRIMARY/scripts/cr/pr-check-env.sh\" CR_CLAUDE_AGENTS" "$WT")" "$HR"
+# shellcheck disable=SC2016 # command text, verbatim
+run "a second himmel_repo= beside the fence -> deny" 2 \
+    "$(payload "$FENCE_TEXT"'; himmel_repo=.; bash "$himmel_repo/scripts/cr/pr-check-context.sh"' "$WT")" "$HR"
+
+# C2: a leg can move its own refs/remotes/origin/main onto the edit; the base
+# is the anchor's bytes, which that does not reach.
+base_oid=$(g -C "$WT" rev-parse refs/remotes/origin/main)
+g -C "$WT" update-ref refs/remotes/origin/main HEAD
+run "origin/main forged onto the edit -> deny" 2 "$(payload "$LITERAL" "$WT")" "$HR"
+g -C "$WT" update-ref refs/remotes/origin/main "$base_oid"
 # A local replace ref can swap origin/main's commit for the edited one; the
 # hook must read the real object, not the replacement.
 g -C "$WT" replace "$(g -C "$WT" rev-parse refs/remotes/origin/main)" HEAD
@@ -132,7 +225,7 @@ need_in_err "deny names load-dotenv.sh" "scripts/lib/load-dotenv.sh"
 need_in_err "env deny names its own canonical spelling" 'scripts/cr/pr-check-env.sh" CR_CLAUDE_AGENTS'
 run "load-dotenv.sh-only diff, pr-check-context literal -> deny" 2 "$(payload "$LITERAL" "$WT")" "$HR"
 g -C "$WT" checkout -q -- scripts/lib/load-dotenv.sh
-run "pr-check-env literal with another argument -> no-op" 0 "$(payload "bash scripts/cr/pr-check-env.sh CR_PROFILE" "$TMP")"
+run "pr-check-env with another argument outside a repo -> deny" 2 "$(payload "bash scripts/cr/pr-check-env.sh CR_PROFILE" "$TMP")" "$HR"
 
 # ---- deny: index flags that hide a working-tree edit from git diff ----------
 g -C "$WT" update-index --assume-unchanged scripts/cr/pr-check-context.sh
@@ -193,13 +286,14 @@ run "HIMMEL_REPO empty -> deny" 2 "$(payload "$LITERAL" "$WT")" "HIMMEL_REPO="
 run "cwd outside any repo -> deny" 2 "$(payload "$LITERAL" "$TMP")" "$HR"
 run "payload without cwd -> deny" 2 "$(jq -cn --arg c "$LITERAL" '{tool_name:"Bash",tool_input:{command:$c}}')" "$HR"
 
-# ---- deny: origin/main unreadable ------------------------------------------
+# ---- deny: the anchor's scripts/cr/ unreadable ------------------------------
+mv "$PRIMARY/scripts/cr" "$PRIMARY/scripts/cr.moved"
+run "the anchor has no scripts/cr/ -> deny" 2 "$(payload "$LITERAL" "$WT")" "$HR"
+need_in_err "deny names the anchor" "HIMMEL_REPO"
+mv "$PRIMARY/scripts/cr.moved" "$PRIMARY/scripts/cr"
+# origin/main plays no part any more: its absence changes nothing.
 g -C "$PRIMARY" update-ref -d refs/remotes/origin/main
-run "refs/remotes/origin/main missing -> deny" 2 "$(payload "$LITERAL" "$WT")" "$HR"
-need_in_err "deny names the missing ref" "refs/remotes/origin/main"
-# A local BRANCH named origin/main must not stand in for the remote-tracking ref.
-g -C "$PRIMARY" branch -q origin/main main
-run "local branch origin/main only -> deny" 2 "$(payload "$LITERAL" "$WT")" "$HR"
+run "refs/remotes/origin/main missing, bytes equal the anchor's -> allow" 0 "$(payload "$LITERAL" "$WT")" "$HR"
 
 # ---- deny: payload the hook cannot read ------------------------------------
 run "malformed JSON -> deny" 2 '{"tool_name":"Bash","tool_input":{"command":'
