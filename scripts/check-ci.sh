@@ -492,7 +492,7 @@ _status_only() {
     while IFS= read -r label; do
         name=${label% (app *)}
         [ "$name" != "$label" ] || continue
-        if printf '%s\n' "$ctx" | grep -qxF -- "$name"; then hit="${hit:+$hit, }$label"; fi
+        if printf '%s\n' "$ctx" | n=$name awk '$0 == ENVIRON["n"] { f = 1 } END { exit !f }'; then hit="${hit:+$hit, }$label"; fi
     done < <(printf '%s\n' "$1" | awk -F'\t' '$1 == "missing" { print $2 }')
     printf '%s' "$hit"
 }
