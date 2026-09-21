@@ -618,6 +618,20 @@ node ~/himmel/scripts/himmelctl/bin.js uninstall</pre>
           <li>Claude Code's own trust entry for the project, which may
           predate himmel &mdash; revoke it in Claude Code if you want it
           gone.</li>
+          <li>A few leftovers in the project's and your user
+          <span class="mono">settings.json</span> that install's own record
+          cannot show himmel created: the empty
+          <span class="mono">enabledPlugins</span> and
+          <span class="mono">extraKnownMarketplaces</span> objects the
+          <span class="mono">claude</span> CLI writes when plugins are
+          installed, and an empty <span class="mono">hooks</span> object
+          (an uninstall empties it but does not delete the object itself).
+          They are harmless, so delete them by hand if you want the file
+          back to exactly what it was. Also the
+          <span class="mono">env.CLAUDE_HUD_ALLOW_EXTRA_CMD</span> key of the
+          status line, when there is no record of install to say himmel wrote
+          it &mdash; with a record it is removed, and it is left beside the
+          status line it belongs to when that is left too.</li>
           <li>Helper scripts copied into the project's
           <span class="mono">scripts/</span> folder that install's own
           record does not recognize as its own &mdash; a copy made before

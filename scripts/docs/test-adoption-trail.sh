@@ -151,6 +151,22 @@ else
   ok "the git gates are not listed as roadmap work"
 fi
 
+# HIMMEL-3329: an uninstall leaves a few settings.json keys behind on purpose (the
+# claude CLI's empty enabledPlugins / extraKnownMarketplaces objects, an empty hooks
+# object, and the HUD gate key when no install record says himmel wrote it). The
+# "Removed" list says only himmel's own wiring goes, so the "Kept on purpose" list
+# must name each one — a reader cannot otherwise tell it is himmel's.
+kept="$(sed -n '/<h4>Kept on purpose<\/h4>/,/<\/ul>/p' "$PAGE" | tr '\n' ' ' | sed -E 's/<[^>]*>//g; s/[[:space:]]+/ /g')"
+kept_missing=""
+for key in CLAUDE_HUD_ALLOW_EXTRA_CMD enabledPlugins extraKnownMarketplaces 'hooks'; do
+  printf '%s' "$kept" | grep -q -F "$key" || kept_missing="$kept_missing $key"
+done
+if [ -z "$kept_missing" ]; then
+  ok "the Kept-on-purpose list names the settings.json residue an uninstall leaves"
+else
+  bad "the Kept-on-purpose list must name the settings.json residue (HIMMEL-3329)" "missing:$kept_missing"
+fi
+
 echo
 printf '%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

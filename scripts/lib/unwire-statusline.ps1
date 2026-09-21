@@ -11,7 +11,8 @@
 # With -HimmelPath -> REPOINT .statusLine.command to the bash-bar fallback
 #   (HIMMEL-718 migration rollback; the .env.CLAUDE_HUD_ALLOW_EXTRA_CMD gate is
 #   deliberately left in place, harmless when the bash bar renders — same as the
-#   bash twin). Without it -> REMOVE .statusLine (uninstall).
+#   bash twin). Without it -> REMOVE .statusLine (uninstall); the gate is still
+#   never removed here -- uninstall.sh removes it via its provenance ledger unit.
 
 [CmdletBinding()]
 param([string]$SettingsPath, [string]$HimmelPath)

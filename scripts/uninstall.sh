@@ -1969,8 +1969,9 @@ HIMMEL_SL_PAT="$( . "$SCRIPT_DIR/lib/unwire-statusline.sh" >/dev/null 2>&1; prin
 # himmel_wiring_lines <settings> [mask_hooks mask_sl mask_repo mask_vault
 # mask_hd] — one "<what>" line per himmel wiring currently in the file: each
 # himmel hook command, the himmel statusLine and each of the three himmel env
-# keys (env.CLAUDE_HUD_ALLOW_EXTRA_CMD is intentionally kept by the
-# statusline helper and is not listed). Not suppressing: a jq failure is a
+# keys (env.CLAUDE_HUD_ALLOW_EXTRA_CMD is not listed: the statusline helper
+# never removes it; only the ledger's /env/CLAUDE_HUD_ALLOW_EXTRA_CMD unit does,
+# so with no ledger it stays beside the kept statusLine). Not suppressing: a jq failure is a
 # non-zero rc, so the read-back cannot mistake "could not read" for "clean".
 # The five mask_* flags (HIMMEL-3332 S6, all default 0 = unmasked when
 # omitted) exclude a category the ledger explicitly kept or restored — a

@@ -14,6 +14,9 @@
 #   rollback -- the .env.CLAUDE_HUD_ALLOW_EXTRA_CMD gate is left in place, being
 #   harmless when the bash bar renders).
 # Without a himmel path -> REMOVE .statusLine entirely (the uninstall path).
+#   This helper never removes the .env.CLAUDE_HUD_ALLOW_EXTRA_CMD gate in either
+#   mode; uninstall.sh removes it through its install-provenance ledger unit
+#   (/env/CLAUDE_HUD_ALLOW_EXTRA_CMD), so only a run with no ledger leaves it.
 #
 # Idempotent (absent key / absent file -> no-op), atomic (temp file + mv),
 # refuses invalid JSON, preserves all sibling keys. Requires jq. Source it to
