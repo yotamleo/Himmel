@@ -1120,6 +1120,13 @@ fi
 # Read-only, safe under --dry-run and before the confirm prompt; runs before
 # the plan printout below so the preview reflects what the ledger decided.
 LEDGER_OK=0
+# codex-9 fix: ledger_apply_unit (shared by the settings/hud-config/
+# adopter-scripts loops below) reads-then-appends this on every restore/keep
+# verdict. unwire_settings() resets it before ITS loop, but --skip-settings
+# skips unwire_settings entirely -- leaving it unset for the hud-config/
+# adopter-scripts loops under `set -uo pipefail` (line 111). Initialize it
+# globally, once, so no loop order or skip combination hits an unbound var.
+_LEDGER_PROTECTED=""
 if command -v jq >/dev/null 2>&1; then
   # shellcheck source=lib/provenance-read.sh
   . "$SCRIPT_DIR/lib/provenance-read.sh"
@@ -1669,13 +1676,14 @@ ledger_apply_unit() {
       # an ungoverned unit the caller's own default logic decides instead.
       return 0 ;;
     remove)
+      backup=$(printf '%s' "$u" | jq -r '.eff_pre.backup // empty')
       if prov_read_apply "$u" remove ${_apply_args[@]+"${_apply_args[@]}"}; then
         [ "$DRY_RUN" -eq 0 ] && echo "  removed $unit"
-        prov_read_outcome removed "$u" "$reason"
+        prov_read_outcome removed "$u" "$reason" "$backup"
       else
         echo "  WARN: could not remove $unit" >&2
         fail_step "[6/8] ledger remove: $unit"
-        prov_read_outcome failed "$u" "step-failed"
+        prov_read_outcome failed "$u" "step-failed" "$backup"
       fi
       return 0 ;;
     restore)
@@ -1726,11 +1734,11 @@ $unit"
               [dD]*)
                 if prov_read_apply "$u" remove; then
                   echo "  removed $unit"
-                  prov_read_outcome removed "$u" "user-modified"
+                  prov_read_outcome removed "$u" "user-modified" "$backup"
                 else
                   echo "  WARN: could not remove $unit" >&2
                   fail_step "[6/8] ledger remove: $unit"
-                  prov_read_outcome failed "$u" "step-failed"
+                  prov_read_outcome failed "$u" "step-failed" "$backup"
                 fi
                 return 0 ;;
             esac
@@ -2010,6 +2018,7 @@ unwire_settings() {
     _units="$(prov_read_units --path "$settings" --kind json-key)
 $(prov_read_units --path "$settings" --kind json-elem)"
     while IFS= read -r _u; do
+      [ "$HALTED" -eq 0 ] || break
       [ -n "$_u" ] || continue
       # F3 (parent review): the /env container unit's recorded post sha goes
       # stale the moment a second /env/KEY is added, so it would always read
@@ -2176,6 +2185,7 @@ unwire_user_files() {
       _hud_units="$(prov_read_units --path "$_p" --kind file)"
       if [ -n "$_hud_units" ]; then
         while IFS= read -r _hu; do
+          [ "$HALTED" -eq 0 ] || break
           [ -n "$_hu" ] || continue
           ledger_apply_unit "$_hu"
         done <<EOF
@@ -2200,7 +2210,10 @@ EOF
         # per-file recording) -> _fc_args stays empty, same as before S6.
         _block_unit="$(prov_read_units --path "$_p" --kind block | head -n1)"
         if [ -n "$_block_unit" ] && [ "$(printf '%s' "$_block_unit" | jq -r '.governed')" = "true" ]; then
-          _fc="$(printf '%s' "$_block_unit" | jq -r '.fields.file_created // empty')"
+          # codex-8 fix: `// empty` coalesces an explicit `false` the same
+          # as an absent field, dropping a recorded file_created=false into
+          # the no-args (helper-guesses) case instead of --file-created no.
+          _fc="$(printf '%s' "$_block_unit" | jq -r 'if .fields.file_created == null then empty else (.fields.file_created | tostring) end')"
           case "$_fc" in
             true|yes) _fc_args=(--file-created yes) ;;
             false|no) _fc_args=(--file-created no) ;;
@@ -2278,8 +2291,21 @@ fi
 # files, not settings.json), gated only on HALTED like every other sub-step.
 if [ "$HALTED" -eq 0 ] && [ "$LEDGER_OK" -eq 1 ]; then
   _adopter_units="$(prov_read_units --row adopter-scripts)"
+  # codex-2 fix: an adopter-scripts row is written once per adopted project,
+  # not scoped to any one of them — without this filter a ledger recording
+  # several adopted projects would act on every one of them from whichever
+  # project uninstall.sh happens to run in. Restrict to units whose recorded
+  # .path (physically resolved the same way _prov_abs_path recorded it) lies
+  # under the CURRENT project root; a unit outside it is silently left alone.
+  _adopter_proj_root="$(canon_path_native "$PWD" 2>/dev/null)" || _adopter_proj_root="$PWD"
   while IFS= read -r _au; do
+    [ "$HALTED" -eq 0 ] || break
     [ -n "$_au" ] || continue
+    _adopter_path="$(printf '%s' "$_au" | jq -r '.path // ""')"
+    case "$_adopter_path" in
+      "$_adopter_proj_root"/*) ;;
+      *) continue ;;
+    esac
     ledger_apply_unit "$_au"
   done <<EOF
 $_adopter_units
@@ -2450,7 +2476,13 @@ if [ "$LEDGER_OK" -eq 1 ]; then
         run rm -f -- "$_prov_ledger_file"
       fi
     elif [ "$KEEP_BACKUPS" -ne 1 ]; then
-      prov_read_prune_backups
+      # codex-1 fix: a dry run must not delete real backup files -- only say
+      # what a wet run would do.
+      if [ "$DRY_RUN" -eq 1 ]; then
+        echo "DRY: would prune provenance-backups/"
+      else
+        prov_read_prune_backups
+      fi
     fi
   fi
 fi

@@ -204,6 +204,7 @@ check "RED6 uninstall: no ledger -> warning printed + statusLine/HANDOVER_DIR/hu
 
 echo "==== RED7: foreign ledger (recorded home != current home) -- same warning + statusLine protected ===="
 new_case red7
+# shellcheck disable=SC2030  # the foreign HOME is deliberately subshell-local
 ( HOME="$CASE_DIR/foreign-home"
   prov_begin --writer test-uninstall-provenance.sh -- seed-red7 >/dev/null
   prov_end ok >/dev/null )
@@ -230,6 +231,103 @@ last_dry8=$(printf '%s\n' "$out8" | grep '^DRY:' | tail -n 2)
 expected8=$'DRY: rm -rf -- '"$BACKUPS_DIR8"$'\n''DRY: rm -f -- '"$LEDGER_PATH8"
 check "RED8 uninstall --dry-run --purge-state: provenance cleanup is the LAST two DRY lines" \
   "$last_dry8" "$expected8"
+
+echo "==== RED9 (codex-1): --dry-run never prunes provenance-backups/ ===="
+new_case red9
+mkdir -p "$CASE_DIR/cwd/scripts"
+DEST9="$CASE_DIR/cwd/scripts/red9.sh"
+printf '#!/bin/sh\necho orig9\n' > "$DEST9"
+SNAP9=$(mktemp "$SUITE_TMP/SNAP9.XXXXXX") || exit 1; cp -p "$DEST9" "$SNAP9"
+printf '#!/bin/sh\necho himmel9\n' > "$DEST9"
+( prov_begin --writer adopt.sh -- seed-red9 >/dev/null
+  prov_record replace file "$DEST9" --scope project --class code --row adopter-scripts \
+    --writer adopt.sh --pre-file "$SNAP9" --backup --post-file "$DEST9" >/dev/null
+  prov_end ok >/dev/null )
+rm -f "$SNAP9"
+BACKUP9=$(find "$(prov_dir)/provenance-backups" -type f | head -n1)
+# NOTE: --skip-settings is deliberately NOT passed here. With it, the
+# unwire_settings loop (uninstall.sh ~2010-2023) never runs, so its
+# `_LEDGER_PROTECTED=""` reset (line 2000) never executes; the later
+# adopter-scripts loop then references `_LEDGER_PROTECTED` unset under
+# `set -uo pipefail` and the whole script aborts BEFORE reaching the
+# ledger-session-close code this RED targets -- a crash that would falsely
+# make the backup file "survive" for a reason unrelated to codex-1.
+run_uninstall --dry-run --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks >/dev/null
+check "RED9 codex-1: dry-run does not prune the backup file" \
+  "$([ -n "$BACKUP9" ] && [ -f "$BACKUP9" ] && echo yes || echo no)" "yes"
+
+echo "==== RED10 (codex-2): adopter-scripts filtered to the current project root ===="
+new_case red10
+mkdir -p "$CASE_DIR/cwd/scripts" "$CASE_DIR/sibling/scripts"
+DEST10A="$CASE_DIR/cwd/scripts/in-project.sh"
+DEST10B="$CASE_DIR/sibling/scripts/other-project.sh"
+printf '#!/bin/sh\necho a-original\n' > "$DEST10A"
+printf '#!/bin/sh\necho b-original\n' > "$DEST10B"
+SNAP10A=$(mktemp "$SUITE_TMP/SNAP10A.XXXXXX") || exit 1; cp -p "$DEST10A" "$SNAP10A"
+SNAP10B=$(mktemp "$SUITE_TMP/SNAP10B.XXXXXX") || exit 1; cp -p "$DEST10B" "$SNAP10B"
+printf '#!/bin/sh\necho a-himmel\n' > "$DEST10A"
+printf '#!/bin/sh\necho b-himmel\n' > "$DEST10B"
+B10B_INSTALLED=$(cat "$DEST10B")
+( prov_begin --writer adopt.sh -- seed-red10 >/dev/null
+  prov_record replace file "$DEST10A" --scope project --class code --row adopter-scripts \
+    --writer adopt.sh --pre-file "$SNAP10A" --backup --post-file "$DEST10A" >/dev/null
+  prov_record replace file "$DEST10B" --scope project --class code --row adopter-scripts \
+    --writer adopt.sh --pre-file "$SNAP10B" --backup --post-file "$DEST10B" >/dev/null
+  prov_end ok >/dev/null )
+rm -f "$SNAP10A" "$SNAP10B"
+run_uninstall --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks >/dev/null
+AFTER10B=$(cat "$DEST10B")
+check "RED10 codex-2: sibling-project adopter-scripts file untouched" "$AFTER10B" "$B10B_INSTALLED"
+
+echo "==== RED11 (codex-8): file_created=false ledger row passes --file-created no ===="
+new_case red11
+# RED7's `( HOME=… )` subshell closed long before this line; HOME here is the
+# suite's own scratch HOME, exactly as intended.
+# shellcheck disable=SC2031
+RULE11="$HOME/.claude/CLAUDE.md"
+printf '<!-- BEGIN HIMMEL:working-principles -->\n## Working principles\n- think first\n<!-- END HIMMEL:working-principles -->\n' > "$RULE11"
+( prov_begin --writer test-uninstall-provenance.sh -- seed-red11 >/dev/null
+  prov_record create block "$RULE11" --scope user --class code \
+    --writer test-uninstall-provenance.sh --field file_created=false --pre-absent --post-json '"x"' >/dev/null
+  prov_end ok >/dev/null )
+run_uninstall --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks >/dev/null
+check "RED11 codex-8: file_created=false keeps the rule file (not deleted)" \
+  "$([ -f "$RULE11" ] && echo yes || echo no)" "yes"
+
+echo "==== RED12 (codex-9): a failed unit in the adopter-scripts loop halts iteration ===="
+new_case red12
+mkdir -p "$CASE_DIR/cwd/scripts"
+DEST12A="$CASE_DIR/cwd/scripts/aaa-fails.sh"
+DEST12B="$CASE_DIR/cwd/scripts/zzz-second.sh"
+printf '#!/bin/sh\necho a-original\n' > "$DEST12A"
+printf '#!/bin/sh\necho b-original\n' > "$DEST12B"
+SNAP12A=$(mktemp "$SUITE_TMP/SNAP12A.XXXXXX") || exit 1; cp -p "$DEST12A" "$SNAP12A"
+SNAP12B=$(mktemp "$SUITE_TMP/SNAP12B.XXXXXX") || exit 1; cp -p "$DEST12B" "$SNAP12B"
+printf '#!/bin/sh\necho a-himmel\n' > "$DEST12A"
+printf '#!/bin/sh\necho b-himmel\n' > "$DEST12B"
+B12B_INSTALLED=$(cat "$DEST12B")
+( prov_begin --writer adopt.sh -- seed-red12 >/dev/null
+  prov_record replace file "$DEST12A" --scope project --class code --row adopter-scripts \
+    --writer adopt.sh --pre-file "$SNAP12A" --backup --post-file "$DEST12A" >/dev/null
+  prov_record replace file "$DEST12B" --scope project --class code --row adopter-scripts \
+    --writer adopt.sh --pre-file "$SNAP12B" --backup --post-file "$DEST12B" >/dev/null
+  prov_end ok >/dev/null )
+rm -f "$SNAP12A" "$SNAP12B"
+# Corrupt (not delete) DEST12A's recorded backup: prov_read_verdict only
+# checks the backup is present+readable ("restore ours"), so a MISSING
+# backup verdicts "keep no-backup" instead and never reaches
+# prov_read_apply at all -- no failure, no halt. A backup whose CONTENT no
+# longer matches the unit's recorded eff_pre.sha lets the restore copy
+# succeed mechanically but fail prov_read_apply's post-restore sha check
+# (provenance-read.sh's file-restore case), which is a real `failed`
+# outcome -> fail_step -> HALTED=1.
+BK12A=$(grep -rl "a-original" "$(prov_dir)/provenance-backups" 2>/dev/null | head -n1)
+[ -n "$BK12A" ] || { echo "FAIL - RED12 setup: backup for DEST12A not found"; fails=$((fails+1)); }
+printf '#!/bin/sh\necho corrupted-backup\n' > "$BK12A"
+run_uninstall --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks >/dev/null
+AFTER12B=$(cat "$DEST12B")
+check "RED12 codex-9: second adopter-scripts unit untouched after the first failed" \
+  "$AFTER12B" "$B12B_INSTALLED"
 
 echo "==== REAL-LEDGER TRIPWIRE ===="
 REAL_LEDGER_AFTER=$(real_ledger_state)

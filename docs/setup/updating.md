@@ -425,8 +425,9 @@ cache + state dir. A provenance ledger, when install wrote one, decides
 ownership of the six overwrite-prone rows — your own pre-existing statusLine,
 `env.HANDOVER_DIR`, plugins, marketplaces, the claude-hud config and
 adopter-script copies are kept with a printed hand command rather than
-guessed at by template; with no ledger, uninstall falls back to that
-template guess. It is destructive and fail-closed
+guessed at by template; with no ledger, those same six rows are kept the same
+way (hand command, never guessed) while everything else still falls back to
+template ownership. It is destructive and fail-closed
 (a non-interactive run aborts without `--yes`). Invoke `uninstall.sh` directly
 for the manual or CI path — preview any run with `--dry-run`, and skip
 individual steps with `--skip-plugins` / `--skip-hooks` / `--skip-tasks` /
@@ -436,7 +437,6 @@ individual steps with `--skip-plugins` / `--skip-hooks` / `--skip-tasks` /
 bash scripts/uninstall.sh --dry-run    # preview; nothing is executed
 bash scripts/uninstall.sh --yes        # remove code wiring, keep operator state
 bash scripts/uninstall.sh --yes --purge-state   # ...and remove operator state + the provenance ledger too
-bash scripts/uninstall.sh --yes --purge-state --keep-backups   # ...but keep the ledger's backup copies
 ```
 
 The paths it acts on are listed in

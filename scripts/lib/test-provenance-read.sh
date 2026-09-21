@@ -416,6 +416,89 @@ check "prune_backups: restored (clean) unit's backup removed" "$([ -f "$bk2" ] &
 prov_read_cleanup
 rm -f "$snap3" "$snap4"
 
+# ── codex-7: prune_backups deletes ONLY removed/restored-referenced backups.
+#    A kept-outcome unit's backup and a backup no outcome row this session
+#    named at all (a leftover another run still needs) both survive; a
+#    restored-outcome unit's backup is gone. ───────────────────────────────
+
+reset
+prov_begin --iid PB2 --writer t
+printf 'k1\n' > "$w/k1.txt"
+snap5=$(mktemp "$td/snap5.XXXXXX") || exit 1; cp "$w/k1.txt" "$snap5"
+printf 'k1-new\n' > "$w/k1.txt"
+prov_record replace file "$w/k1.txt" --pre-file "$snap5" --backup --post-file "$w/k1.txt" --scope user --class code
+prov_end ok
+prov_read_load
+uk1=$(u_for --path "$w/k1.txt")
+bkk1=$(field "$uk1" '.eff_pre.backup')
+unrefbk="$(prov_dir)/provenance-backups/orphan.bak"
+printf 'leftover\n' > "$unrefbk"
+prov_read_session_begin wet
+prov_read_outcome kept "$uk1" user-modified
+prov_read_session_end ok
+prov_read_prune_backups
+check "codex-7: kept-outcome unit's backup survives prune" "$([ -f "$bkk1" ] && echo yes || echo no)" "yes"
+check "codex-7: an unreferenced backup also survives prune" "$([ -f "$unrefbk" ] && echo yes || echo no)" "yes"
+prov_read_cleanup
+rm -f "$snap5"
+
+reset
+prov_begin --iid PB3 --writer t
+printf 'r1\n' > "$w/r1.txt"
+snap6=$(mktemp "$td/snap6.XXXXXX") || exit 1; cp "$w/r1.txt" "$snap6"
+printf 'r1-new\n' > "$w/r1.txt"
+prov_record replace file "$w/r1.txt" --pre-file "$snap6" --backup --post-file "$w/r1.txt" --scope user --class code
+prov_end ok
+prov_read_load
+ur1=$(u_for --path "$w/r1.txt")
+bkr1=$(field "$ur1" '.eff_pre.backup')
+prov_read_session_begin wet
+prov_read_outcome restored "$ur1" ours "$bkr1"
+prov_read_session_end ok
+prov_read_prune_backups
+check "codex-7: restored-outcome unit's backup is deleted" "$([ -f "$bkr1" ] && echo yes || echo no)" "no"
+prov_read_cleanup
+rm -f "$snap6"
+
+# ── codex-3: a failed upstream jq must not truncate the JSON target. A
+#    json-key restore whose backup holds invalid JSON makes the
+#    `jq --argjson v "$val" ...` pipeline stage fail before it ever writes to
+#    stdout; _provread_atomic_write must refuse the resulting empty stdin
+#    rather than mv it over the real file. ──────────────────────────────────
+
+reset
+S6="$w/settings6.json"
+printf '{"env":{"K":"orig"}}\n' > "$S6"
+prov_begin --iid JK1 --writer t
+prov_record replace json-key "$S6" --unit /env/K --pre-json '"orig"' --backup --post-json '"new"' --scope user --class code
+prov_end ok
+printf '%s' '{"env":{"K":"new"}}' > "$S6"
+prov_read_load
+u=$(u_for --path "$S6")
+bk=$(field "$u" '.eff_pre.backup')
+printf 'not valid json{{{' > "$bk"
+BEFORE6=$(cat "$S6")
+prov_read_apply "$u" restore
+rc6=$?
+check "codex-3: restore with invalid-json backup returns non-zero" "$rc6" "1"
+check "codex-3: target settings file byte-identical after the refused restore" "$(cat "$S6")" "$BEFORE6"
+prov_read_cleanup
+
+# ── codex-11: prov_read_drop_env_if_ours requires an EXPLICIT
+#    eff_pre.state=="absent" -- a governed /env unit with NO recorded pre
+#    (eff_pre null) must NOT be treated as himmel's own and dropped. ───────
+
+reset
+S7="$w/settings7.json"
+prov_begin --iid ENV1 --writer t
+prov_record create json-key "$S7" --unit /env --post-json '{}' --scope user --class code
+prov_end ok
+printf '%s' '{"env":{}}' > "$S7"
+prov_read_load
+prov_read_drop_env_if_ours "$S7"
+check "codex-11: /env with no recorded eff_pre.state is kept, not dropped" "$(jq -r 'has("env")' "$S7")" "true"
+prov_read_cleanup
+
 # ── F1 (parent review): a fold failure must fail closed, not leave "ok" with
 #    an empty fold. A second row on the same unit with a non-object "pre" is
 #    a valid JSON object with a string .op (passes program 1's is_row check

@@ -425,6 +425,11 @@ _provread_atomic_write() {
     local target="$1" tmp mode
     tmp="$target.provread.$$.tmp"
     cat > "$tmp" || return 1
+    if [ ! -s "$tmp" ] || ! jq -e . "$tmp" >/dev/null 2>&1; then
+        _provread_err "_provread_atomic_write: refusing empty/invalid JSON for $target"
+        rm -f "$tmp"
+        return 1
+    fi
     mode=$(_prov_mode "$target" 2>/dev/null) || mode=""
     [ -n "$mode" ] && chmod "$mode" "$tmp" 2>/dev/null
     mv -f "$tmp" "$target"
@@ -557,7 +562,7 @@ prov_read_drop_env_if_ours() {
     cpath=$(_prov_abs_path "$file" 2>/dev/null || printf '%s' "$file")
     if [ -n "${PROV_READ_FOLD:-}" ] && [ -f "$PROV_READ_FOLD" ]; then
         created=$(jq -r --arg path "$cpath" \
-            'select(.path==$path and .unit=="/env" and .governed==true and (.eff_pre.state // "absent")=="absent") | "yes"' \
+            'select(.path==$path and .unit=="/env" and .governed==true and (.eff_pre != null) and (.eff_pre.state=="absent")) | "yes"' \
             "$PROV_READ_FOLD" | head -n1)
         [ -n "$created" ] || created=no
     fi
@@ -570,7 +575,7 @@ prov_read_drop_env_if_ours() {
 #    prov_record's own private helpers -- these ops are NOT in _PROV_OPS) ──
 
 _PROV_READ_IID="" _PROV_READ_MODE="" PROV_READ_N_REMOVED=0 PROV_READ_N_RESTORED=0
-PROV_READ_N_KEPT=0 PROV_READ_N_FAILED=0 _PROV_READ_FAILED_BACKUPS=""
+PROV_READ_N_KEPT=0 PROV_READ_N_FAILED=0 _PROV_READ_FAILED_BACKUPS="" _PROV_READ_DONE_BACKUPS=""
 
 # prov_read_session_begin <wet|dry> <argv...> -- writes uninstall-begin. A
 # no-op (no append, no ledger created) unless PROV_READ_STATE is ok.
@@ -580,6 +585,7 @@ prov_read_session_begin() {
     _PROV_READ_MODE="$mode"
     PROV_READ_N_REMOVED=0 PROV_READ_N_RESTORED=0 PROV_READ_N_KEPT=0 PROV_READ_N_FAILED=0
     _PROV_READ_FAILED_BACKUPS=""
+    _PROV_READ_DONE_BACKUPS=""
     [ "${PROV_READ_STATE:-}" = "ok" ] || return 0
     _PROV_READ_IID=$(_prov_new_iid)
     [ "$mode" = "dry" ] && return 0
@@ -593,8 +599,12 @@ prov_read_session_begin() {
 # prov_read_outcome <removed|restored|kept|failed> <unit-json> <reason> [backup]
 prov_read_outcome() {
     local status="$1" u="$2" reason="$3" backup="${4:-}"
-    case "$status" in removed) PROV_READ_N_REMOVED=$((PROV_READ_N_REMOVED + 1)) ;;
-        restored) PROV_READ_N_RESTORED=$((PROV_READ_N_RESTORED + 1)) ;;
+    case "$status" in removed) PROV_READ_N_REMOVED=$((PROV_READ_N_REMOVED + 1))
+            [ -n "$backup" ] && _PROV_READ_DONE_BACKUPS="$_PROV_READ_DONE_BACKUPS
+$backup" ;;
+        restored) PROV_READ_N_RESTORED=$((PROV_READ_N_RESTORED + 1))
+            [ -n "$backup" ] && _PROV_READ_DONE_BACKUPS="$_PROV_READ_DONE_BACKUPS
+$backup" ;;
         kept) PROV_READ_N_KEPT=$((PROV_READ_N_KEPT + 1)) ;;
         failed) PROV_READ_N_FAILED=$((PROV_READ_N_FAILED + 1))
             [ -n "$backup" ] && _PROV_READ_FAILED_BACKUPS="$_PROV_READ_FAILED_BACKUPS
@@ -631,21 +641,25 @@ prov_read_session_end() {
     _PROV_READ_IID=""
 }
 
-# prov_read_prune_backups -- at a clean end: delete provenance-backups/ except
-# files a FAILED outcome row of THIS session named as its backup. Refuses a
-# symlinked backups dir.
+# prov_read_prune_backups -- at a clean end: delete ONLY backup files a
+# removed or restored outcome row of THIS session named (those units are
+# done: the file's been put back or thrown away, so backup no longer needed).
+# Everything else under provenance-backups/ -- a kept/no-backup unit's
+# backup, a unit this run never touched, one predating per-file recording --
+# is left alone; a later run may still need it. Refuses a symlinked backups
+# dir.
 prov_read_prune_backups() {
-    local dir bdir f keep
+    local dir bdir f is_done
     dir=$(prov_dir) || return 1
     bdir="$dir/provenance-backups"
     [ -e "$bdir" ] || return 0
     if [ -L "$bdir" ]; then _provread_err "refusing symlink $bdir"; return 1; fi
     while IFS= read -r f; do
         [ -n "$f" ] || continue
-        keep=0
-        case "$_PROV_READ_FAILED_BACKUPS" in *"
-$f"*) keep=1 ;; esac
-        [ "$keep" = 1 ] || rm -f -- "$f"
+        is_done=0
+        case "$_PROV_READ_DONE_BACKUPS" in *"
+$f"*) is_done=1 ;; esac
+        [ "$is_done" = 1 ] && rm -f -- "$f"
     done <<EOF
 $(find "$bdir" -type f 2>/dev/null)
 EOF
