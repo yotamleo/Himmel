@@ -15,8 +15,8 @@
 #   HOME=<scratch>/home  HIMMEL_PROVENANCE_DIR=<scratch>/prov
 #   HIMMELCTL_CACHE_DIR=<scratch>/cache  TMPDIR=<scratch>/tmp
 #   PATH=/usr/local/bin:/usr/bin:/bin
-# --keep VAR copies VAR from the caller's env when it is set there (an unset one
-#   is reported and not passed). --keep HANDOVER_DIR needs --allow-handover-dir.
+# --keep VAR copies VAR from the caller's env when it is set there, byte-exact
+#   (trailing newlines included; an unset one is reported and not passed). --keep HANDOVER_DIR needs --allow-handover-dir.
 # --scratch DIR uses DIR (created if missing, made absolute); without it a fresh mktemp dir under
 #   $TMPDIR is made. The launcher execs the command, so it cannot clean up: an
 #   auto-created scratch dir is left in place and its path is printed.
@@ -90,9 +90,14 @@ envargs=(
     "TMPDIR=$scratch/tmp"
 )
 notes=""
+nl=$'\n'
 for v in $keep; do
     if printenv "$v" >/dev/null 2>&1; then
-        envargs+=("$v=$(printenv "$v")")
+        # Byte-exact: a bare $(printenv VAR) strips trailing newlines. The x
+        # sentinel keeps them; the one newline printenv itself appends goes after.
+        val=$(printenv "$v"; printf x)
+        val=${val%x}
+        envargs+=("$v=${val%"$nl"}")
     else
         notes="$notes $v"
     fi

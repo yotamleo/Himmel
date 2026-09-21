@@ -28,8 +28,28 @@ TMP=$(mktemp -d "${TMPDIR:-/tmp}/clean-sandbox-test.XXXXXX") || { echo "FAIL cou
 trap 'rm -rf "$TMP"' EXIT
 
 real_prov="$HOME/.himmel/provenance.jsonl"
-prov_state() { if [ -e "$real_prov" ]; then sha256sum "$real_prov" 2>/dev/null | cut -d' ' -f1; else echo absent; fi; }
-PROV_BEFORE=$(prov_state)
+# sha256 of $1, or nothing when no hasher works (sha256sum on linux, shasum on
+# macOS). Builtins only, so it still runs (and reports nothing) on a bare PATH.
+file_hash() {
+    local out
+    if command -v sha256sum >/dev/null 2>&1; then
+        out=$(sha256sum "$1" 2>/dev/null) || return 0
+    elif command -v shasum >/dev/null 2>&1; then
+        out=$(shasum -a 256 "$1" 2>/dev/null) || return 0
+    else
+        return 0
+    fi
+    echo "${out%% *}"
+}
+# The file's sha256, "absent", or UNHASHABLE for a present file no hasher could
+# read - never an empty string, which two snapshots would "agree" on vacuously.
+prov_state() {
+    local h
+    [ -e "$1" ] || { echo absent; return 0; }
+    h=$(file_hash "$1")
+    if [ -n "$h" ]; then echo "$h"; else echo UNHASHABLE; fi
+}
+PROV_BEFORE=$(prov_state "$real_prov")
 
 # Caller env the launcher must NOT leak. Exported for every case below.
 export HANDOVER_DIR=/x JIRA_API_TOKEN=y
@@ -70,6 +90,19 @@ export KEEPME=bar UNKEPT=baz
 out3=$(bash "$SB" --scratch "$TMP/s3" --keep KEEPME -- env 2>/dev/null)
 assert_contains "T3 --keep KEEPME reaches the child" "KEEPME=bar" "$out3"
 assert_not_contains "T3 an unkept var stays out" "UNKEPT" "$out3"
+
+# T3b: --keep passes the value byte-exact - trailing newlines survive (HIMMEL-3367;
+# a bare $(printenv VAR) strips them). printenv adds one newline of its own, and
+# the x sentinel stops this capture from stripping the rest.
+nl=$'\n'
+export KEEPNL1="abc$nl" KEEPNL2="abc$nl$nl" KEEPMID="a${nl}b" KEEPEMPTY=""
+for c in "KEEPNL1:abc$nl" "KEEPNL2:abc$nl$nl" "KEEPMID:a${nl}b" "KEEPEMPTY:"; do
+    name=${c%%:*}
+    want="${c#*:}$nl"
+    got=$(bash "$SB" --scratch "$TMP/s3b" --keep "$name" -- printenv "$name" 2>/dev/null; printf x)
+    got=${got%x}
+    if [ "$got" = "$want" ]; then ok "T3b --keep $name arrives byte-exact"; else fail "T3b --keep $name arrives byte-exact — expected $(printf '%s' "$want" | od -An -c | tr -s ' '), got $(printf '%s' "$got" | od -An -c | tr -s ' ')"; fi
+done
 
 # T4: --keep HANDOVER_DIR refuses without --allow-handover-dir; the child never runs.
 marker="$TMP/ran-marker"
@@ -135,7 +168,37 @@ bash "$SB" --scratch "$TMP/s11" -- sh -c 'exit 7' >/dev/null 2>&1
 assert_eq "T11 child exit code propagates" 7 $?
 
 # T12: the operator's real provenance file did not move.
-assert_eq "T12 real provenance.jsonl untouched" "$PROV_BEFORE" "$(prov_state)"
+PROV_AFTER=$(prov_state "$real_prov")
+case "$PROV_BEFORE$PROV_AFTER" in
+    *UNHASHABLE*) fail "T12 real provenance.jsonl is present but no sha256 tool (sha256sum/shasum) could hash it" ;;
+    *) assert_eq "T12 real provenance.jsonl untouched" "$PROV_BEFORE" "$PROV_AFTER" ;;
+esac
+
+# T12b: the hasher fallback, on a fixture (HIMMEL-3367). Control first: a present
+# file hashes to 64 hex chars on this box, so the UNHASHABLE case below can fail.
+printf 'x\n' > "$TMP/fixture-prov"
+h_ok=$(prov_state "$TMP/fixture-prov")
+case "$h_ok" in
+    *[!0-9a-f]*|'') hex=no ;;
+    *) if [ "${#h_ok}" -eq 64 ]; then hex=yes; else hex=no; fi ;;
+esac
+assert_eq "T12b control: a present file hashes to 64 hex chars" yes "$hex"
+assert_eq "T12b an absent file reads absent" absent "$(prov_state "$TMP/no-such-file")"
+mkdir -p "$TMP/nohash-bin" "$TMP/shasum-bin"
+# shellcheck disable=SC2123 # PATH is narrowed on purpose, inside a subshell
+h_none=$(PATH="$TMP/nohash-bin"; prov_state "$TMP/fixture-prov")
+assert_eq "T12b no hasher on PATH: a present file is UNHASHABLE, not empty" UNHASHABLE "$h_none"
+# macOS shape: no sha256sum, only shasum - it must be asked for -a 256.
+# shellcheck disable=SC2016 # the fake hasher's body must stay literal
+printf '%s\n' '#!/bin/sh' '[ "$1" = "-a" ] && [ "$2" = "256" ] && echo "cafe0123  $3"' > "$TMP/shasum-bin/shasum"
+chmod +x "$TMP/shasum-bin/shasum"
+# shellcheck disable=SC2123 # as above
+h_shasum=$(PATH="$TMP/shasum-bin"; prov_state "$TMP/fixture-prov")
+assert_eq "T12b only shasum on PATH: falls back to 'shasum -a 256'" cafe0123 "$h_shasum"
+printf '%s\n' '#!/bin/sh' 'exit 1' > "$TMP/shasum-bin/shasum"
+# shellcheck disable=SC2123 # as above
+h_broken=$(PATH="$TMP/shasum-bin"; prov_state "$TMP/fixture-prov")
+assert_eq "T12b a hasher that fails on a present file is UNHASHABLE" UNHASHABLE "$h_broken"
 
 echo "----"
 echo "clean-sandbox: $PASSED passed, $FAILED failed"
