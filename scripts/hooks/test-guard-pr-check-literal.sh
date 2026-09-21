@@ -167,6 +167,9 @@ run "tree restored after filter/symlink cases -> allow" 0 "$(payload "$LITERAL" 
 
 # ---- deny: a cwd carrying a newline must not shift the command field --------
 run "cwd with an embedded newline -> deny, not a no-op" 2 "$(payload "$LITERAL" "$WT"$'\n'"x")" "$HR"
+# A trailing newline names a different directory; decoding must not strip it
+# back into the clean worktree's path.
+run "cwd with a trailing newline -> deny" 2 "$(payload "$LITERAL" "$WT"$'\n')" "$HR"
 
 # ---- deny: an untracked file under scripts/cr/ -----------------------------
 echo x >"$WT/scripts/cr/new.sh"

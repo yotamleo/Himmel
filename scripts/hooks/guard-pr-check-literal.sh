@@ -100,8 +100,11 @@ case "$cmd" in
     *) exit 0 ;;
 esac
 
-cwd=$(jq -r . <<<"$cwd_json" 2>/dev/null) \
+# A sentinel keeps trailing newlines: $( ) strips them, which would turn a
+# directory named "<worktree><newline>" into the worktree's own path.
+cwd=$(jq -r '. + "."' <<<"$cwd_json" 2>/dev/null) \
     || deny "the payload cwd cannot be decoded."
+cwd="${cwd%.}"
 case "$cwd" in
     *$'\n'*|*$'\r'*) deny "the payload cwd carries a line break, so it cannot be trusted as a path." ;;
 esac
