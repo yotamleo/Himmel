@@ -46,7 +46,8 @@ ALLOW_WHY=(
 # still passes; and a mktemp buried past the first inner quote of a quoted `$(...)`
 # is missed (a false flag, never a false pass). It wants `mktemp` as a bare command
 # word, so /usr/bin/mktemp is a false flag; but it does not prove the word is
-# INVOKED, so `HOME="$(echo mktemp)"` still passes.
+# INVOKED, so `HOME="$(echo mktemp)"` still passes. A scratch variable counts only as a
+# plain `$v` / `${v}`; any `${v<op>...}` expansion is a false flag, never a false pass.
 home_is_scratch() {
   local file="$1" line rest name rhs v changed is_scratch ref_re home_ok=0
   local dq='"[^"]*"' sq="'[^']*'" cs='\$\([^)]*\)' bare='[^[:space:]]*'
@@ -65,7 +66,7 @@ home_is_scratch() {
         if [[ "$rhs" =~ $mk_re ]]; then is_scratch=1; fi
         if [ "$is_scratch" -eq 0 ]; then
           for v in $scratch; do
-            ref_re='\$\{?'"$v"'([^A-Za-z0-9_]|$)'
+            ref_re='\$('"$v"'([^A-Za-z0-9_{]|$)|\{'"$v"'\})'   # $v or ${v}, never ${v:+...} / ${v%/*}
             if [[ "$rhs" =~ $ref_re ]]; then is_scratch=1; break; fi
           done
         fi
@@ -136,6 +137,8 @@ printf '#!/usr/bin/env bash\ntmp="$(mktemp -d /tmp/x.XXXXXX)"\nother=/somewhere/
 printf '#!/usr/bin/env bash\ntd="$(mktemp -d /tmp/x.XXXXXX)"\nctl="$td/ctlhome"\nHOME="$ctl" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-scratch-transitive.sh"
 # HIMMEL-3344: a literal mktemp on the HOME assignment passes.
 printf '#!/usr/bin/env bash\nHOME="$(mktemp -d /tmp/x.XXXXXX)" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-scratch-literal.sh"
+# HIMMEL-3344: an expansion operator can swap the scratch value for the real one.
+printf '#!/usr/bin/env bash\ntd="$(mktemp -d /tmp/x.XXXXXX)"\nHOME="${td:+$HOME}" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-scratch-operator.sh"
 # HIMMEL-3344: the word mktemp inside a path is not a mktemp call.
 printf '#!/usr/bin/env bash\nHOME=/opt/mktemp-user %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-mktemp-in-path.sh"
 # HIMMEL-3344: fence lifted through a quoted JS key + numeric value, an unquoted
@@ -173,6 +176,8 @@ check "HOME derived from mktemp through a second variable passes" \
   "$(printf '%s' "$got" | grep -c 'scripts/test-scratch-transitive.sh')" "0"
 check "a literal mktemp on the HOME assignment passes" \
   "$(printf '%s' "$got" | grep -c 'scripts/test-scratch-literal.sh')" "0"
+check "a scratch variable behind an expansion operator (\${td:+\$HOME}) is flagged" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-scratch-operator.sh')" "1"
 check "the word mktemp inside a HOME path is flagged" \
   "$(printf '%s' "$got" | grep -c 'scripts/test-mktemp-in-path.sh')" "1"
 check "quoted JS key with a numeric value is flagged" \
