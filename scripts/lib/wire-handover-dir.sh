@@ -23,6 +23,44 @@
 # (the BASH_SOURCE guard below supports both).
 set -euo pipefail
 
+# HIMMEL-3332: record the settings write in the install-provenance ledger
+# (docs/internals/install-provenance.md). Runs after the mv with the PRE-write
+# JSON in $2: a new key is `create`, the same value is `noop`, a different one
+# is `replace` with the prior value backed up. A wire that had to create `.env`
+# also records `/env`, so uninstall may drop the emptied parent.
+# shellcheck source=scripts/lib/provenance.sh
+. "$(dirname "${BASH_SOURCE[0]}")/provenance.sh"
+
+# user when the settings file sits in the Claude config dir, else project.
+_wire_handover_dir_scope() {
+  local d c
+  d="$(cd "$(dirname "$1")" && pwd -P)"
+  for c in "${CLAUDE_CONFIG_DIR:-}" "$HOME/.claude"; do
+    if [ -n "$c" ] && [ "$d" = "$(cd "$c" 2>/dev/null && pwd -P)" ]; then echo user; return 0; fi
+  done
+  echo project
+}
+
+# _wire_handover_dir_record <settings> <pre-write settings JSON> <env key> <value>
+_wire_handover_dir_record() {
+  local settings="$1" base="$2" key="$3" val="$4" scope new old op had_env
+  local -a pre
+  scope="$(_wire_handover_dir_scope "$settings")" || return 1
+  new="$(jq -nc --arg v "$val" '$v')"
+  had_env="$(printf '%s' "$base" | jq -r 'if .env == null then "0" else "1" end')"
+  old="$(printf '%s' "$base" | jq -c --arg k "$key" 'select((.env | type == "object") and (.env | has($k))) | .env[$k]')"
+  if [ -z "$old" ]; then op=create; pre=(--pre-absent)
+  elif [ "$(printf '%s' "$old" | jq -cS .)" = "$new" ]; then op=noop; pre=(--pre-json "$old")
+  else op=replace; pre=(--pre-json "$old" --backup); fi
+  if [ "$had_env" = 0 ]; then
+    prov_record create json-key "$settings" --unit /env --scope "$scope" --class code \
+      --row "$scope-settings" --writer wire-handover-dir.sh --pre-absent \
+      --post-json "$(jq -c .env "$settings")" || return 1
+  fi
+  prov_record "$op" json-key "$settings" --unit "/env/$key" --scope "$scope" --class code \
+    --row "$scope-settings" --writer wire-handover-dir.sh "${pre[@]}" --post-json "$new"
+}
+
 wire_handover_dir() {
   local settings="$1" hdir="$2"
   command -v jq >/dev/null 2>&1 || { echo "wire-handover-dir: jq required" >&2; return 1; }
@@ -45,9 +83,12 @@ wire_handover_dir() {
     fi
   fi
 
-  printf '%s' "$base" | jq --arg hdir "$hdir_fwd" \
+  if printf '%s' "$base" | jq --arg hdir "$hdir_fwd" \
     '.env = ((.env // {}) + { HANDOVER_DIR: $hdir })' \
-    > "$settings.handoverdir.tmp" && mv "$settings.handoverdir.tmp" "$settings"
+    > "$settings.handoverdir.tmp" && mv "$settings.handoverdir.tmp" "$settings"; then
+    _wire_handover_dir_record "$settings" "$base" HANDOVER_DIR "$hdir_fwd" \
+      || echo "wire-handover-dir: warning: provenance record failed (env.HANDOVER_DIR is wired; uninstall will keep it)" >&2
+  fi
   echo "  set env.HANDOVER_DIR -> $settings"
 }
 

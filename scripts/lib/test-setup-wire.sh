@@ -33,6 +33,8 @@ wire_all() {
 }
 
 td="$(mktemp -d)"
+# HIMMEL-3332: the wires write provenance rows; keep them out of the real ~/.himmel.
+export HIMMEL_PROVENANCE_DIR="$td/prov"
 s="$td/settings.json"
 # Pre-existing rtk-hook-guard in the Bash stanza + a custom SessionStart sibling.
 printf '%s' '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"bash /opt/rtk-hook-guard.sh"}]}],"SessionStart":[{"hooks":[{"type":"command","command":"bash /x/scripts/hooks/check-update-available.sh"}]}]}}' > "$s"

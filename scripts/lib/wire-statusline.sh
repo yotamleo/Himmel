@@ -36,6 +36,9 @@
 # dir created if absent). Requires jq. Paths are forward-slashed.
 set -euo pipefail
 
+# shellcheck source=scripts/lib/provenance.sh
+. "$(dirname "${BASH_SOURCE[0]}")/provenance.sh"
+
 # The Claude Code config dir — mirror of the HUD's own getClaudeConfigDir()
 # (marketplace/plugins/claude-hud/src/claude-config-dir.ts): CLAUDE_CONFIG_DIR
 # wins, with a leading `~` expanded; otherwise $HOME/.claude.
@@ -62,6 +65,50 @@ _wire_statusline_config_dir() {
     '~/'*) d="$HOME/${d#\~/}" ;;
   esac
   printf '%s\n' "$d"
+}
+
+# HIMMEL-3332: record the two settings keys this script writes (`/statusLine`
+# and `/env/CLAUDE_HUD_ALLOW_EXTRA_CMD`) in the install-provenance ledger
+# (docs/internals/install-provenance.md). Runs after the settings mv with the
+# PRE-write JSON: a new key is `create`, the same value `noop`, a different one
+# `replace` with the prior value backed up. A wire that had to create `.env`
+# also records `/env`. The hud config half is not recorded here.
+
+# user when the settings file sits in the Claude config dir, else project.
+_wire_statusline_scope() {
+  local d c
+  d="$(cd "$(dirname "$1")" && pwd -P)"
+  for c in "$(_wire_statusline_config_dir)" "$HOME/.claude"; do
+    if [ -n "$c" ] && [ "$d" = "$(cd "$c" 2>/dev/null && pwd -P)" ]; then echo user; return 0; fi
+  done
+  echo project
+}
+
+# _wire_statusline_record_key <settings> <scope> <pre-write JSON> <jq path> <unit> <new JSON>
+_wire_statusline_record_key() {
+  local settings="$1" scope="$2" base="$3" path="$4" unit="$5" new="$6" old op
+  local -a pre
+  old="$(printf '%s' "$base" | jq -c "try ($path) | select(. != null)")"
+  if [ -z "$old" ]; then op=create; pre=(--pre-absent)
+  elif [ "$(printf '%s' "$old" | jq -cS .)" = "$(printf '%s' "$new" | jq -cS .)" ]; then op=noop; pre=(--pre-json "$old")
+  else op=replace; pre=(--pre-json "$old" --backup); fi
+  prov_record "$op" json-key "$settings" --unit "$unit" --scope "$scope" --class code \
+    --row "$scope-settings" --writer wire-statusline.sh "${pre[@]}" --post-json "$new"
+}
+
+# _wire_statusline_record <settings> <pre-write JSON> <statusLine command>
+_wire_statusline_record() {
+  local settings="$1" base="$2" cmd="$3" scope
+  scope="$(_wire_statusline_scope "$settings")" || return 1
+  if [ "$(printf '%s' "$base" | jq -r 'if .env == null then "0" else "1" end')" = 0 ]; then
+    prov_record create json-key "$settings" --unit /env --scope "$scope" --class code \
+      --row "$scope-settings" --writer wire-statusline.sh --pre-absent \
+      --post-json "$(jq -c .env "$settings")" || return 1
+  fi
+  _wire_statusline_record_key "$settings" "$scope" "$base" .statusLine /statusLine \
+    "$(jq -nc --arg c "$cmd" '{type: "command", command: $c}')" || return 1
+  _wire_statusline_record_key "$settings" "$scope" "$base" .env.CLAUDE_HUD_ALLOW_EXTRA_CMD \
+    /env/CLAUDE_HUD_ALLOW_EXTRA_CMD '"1"'
 }
 
 # Drop the hud's RUNTIME cache state — everything the hud writes under its
@@ -294,6 +341,8 @@ wire_statusline() {
 
   mv "$settings.statusline.tmp" "$settings" \
     || { rm -f "$settings.statusline.tmp"; return 1; }
+  _wire_statusline_record "$settings" "$base" "$cmd" \
+    || echo "wire-statusline: warning: provenance record failed (the statusLine is wired; uninstall will keep it)" >&2
   echo "  wired statusLine → $settings"
 }
 
