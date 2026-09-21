@@ -1,8 +1,9 @@
 'use strict';
 // provenance.js -- the install-provenance ledger writer, node dialect
-// (HIMMEL-3332 S1). Twins: scripts/lib/provenance.sh and provenance.ps1 write
-// BYTE-IDENTICAL rows; scripts/himmelctl/test/test-provenance-js.sh cross-checks
-// this file against the bash one on the same input. Format, kinds, write points:
+// (HIMMEL-3332 S1). Twin: scripts/lib/provenance.sh writes BYTE-IDENTICAL rows
+// (the PowerShell dialect is tracked in HIMMEL-3346);
+// scripts/himmelctl/test/test-provenance-js.sh cross-checks this file against
+// the bash one on the same input. Format, kinds, write points:
 // docs/internals/install-provenance.md.
 //
 // API -- each function takes the SAME argv the bash function takes:
@@ -64,7 +65,7 @@ function jqCanon(text) {
   // ponytail: no jq on PATH -- this fallback sorts keys by UTF-16 code unit and
   // prints numbers through JS Number, so it diverges from `jq -cS` on non-BMP
   // key order and on non-canonical number literals (1.0, 1E+2, integers past
-  // 2^53). The hashes then differ from the bash/ps1 dialects for such values;
+  // 2^53). The hashes then differ from the bash dialect for such values;
   // every install host already has jq (deps-engine requires it).
   try { return sortedJson(JSON.parse(text)); } catch (_) { return null; }
 }

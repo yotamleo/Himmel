@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Platform guard (gitbash-only): POSIX bash 3.2+ / Git Bash on Windows, jq +
-# sha256sum|shasum only. Twins: provenance.ps1 (PowerShell) and
-# scripts/himmelctl/lib/provenance.js (node) write byte-identical rows.
+# sha256sum|shasum only. Twin: scripts/himmelctl/lib/provenance.js (node) writes
+# byte-identical rows (the PowerShell dialect is tracked in HIMMEL-3346).
 #
 # provenance.sh -- the install-provenance ledger writer (HIMMEL-3332 S1).
 # SOURCE it (it sets no shell options, defines only prov_* / _prov_* names):

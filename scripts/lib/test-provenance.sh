@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Platform guard (gitbash-only): bash + jq + sha256sum; pwsh block skips when absent.
+# Platform guard (gitbash-only): bash + jq + sha256sum.
 # test-provenance.sh -- tests for scripts/lib/provenance.sh (HIMMEL-3332 S1).
 # Everything runs under a scratch HOME / HIMMEL_PROVENANCE_DIR; the real
 # ~/.himmel is never read or written. The node twin and the bash<->node
@@ -298,30 +298,6 @@ case "$(uname -s)" in
         check "drive root 'C:/' is recorded as the root itself" "$(last | jq -r .path)" "$(cd "$tmp/drv/C:" && pwd -P)/"
         ;;
 esac
-
-# ── pwsh twin: same scenario, same bytes ─────────────────────────────────
-if command -v pwsh >/dev/null 2>&1; then
-    rm -rf "$HIMMEL_PROVENANCE_DIR" "$tmp/prov-ps"
-    printf 'p\n' > "$w/p.txt"
-    prov_begin --iid P1 --writer t --target "$w" -- a b
-    prov_record create file "$w/p.txt" --post-file "$w/p.txt" --scope project --class code --row r
-    prov_record replace json-key "$w/s.json" --unit k --pre-json '{"a":1}' --backup --post-json '{"b":[2,1]}' --field container_created=false
-    prov_end ok
-    HIMMEL_PROVENANCE_DIR="$tmp/prov-ps" pwsh -NoProfile -Command "
-        . '$here/provenance.ps1'
-        Prov-Begin -Iid P1 -Writer t -Target '$w' -Argv @('a','b')
-        Prov-Record create file '$w/p.txt' -PostFile '$w/p.txt' -Scope project -Class code -Row r
-        Prov-Record replace json-key '$w/s.json' -Unit k -PreJson '{\"a\":1}' -Backup -PostJson '{\"b\":[2,1]}' -Field @{container_created='false'}
-        Prov-End ok" >"$tmp/ps.out" 2>&1
-    check "pwsh: ran" "$?" "0"
-    # backup paths embed the ledger dir; normalise it before comparing bytes
-    # PowerShell omits "mode" on Windows (no POSIX modes there), so drop it from both sides
-    case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) nomode='s/,"mode":"[0-9]*"//g' ;; *) nomode='s/^//' ;; esac
-    norm() { sed -e "s#$1#PROV#g" -e "$nomode" "$2"; }
-    check "pwsh: rows byte-identical to bash" "$(norm "$tmp/prov-ps" "$tmp/prov-ps/provenance.jsonl" | sha256sum)" "$(norm "$HIMMEL_PROVENANCE_DIR" "$ledger" | sha256sum)"
-else
-    echo "SKIP - pwsh not installed: provenance.ps1 twin NOT exercised here (run: pwsh scenario in this file on a host with pwsh)"
-fi
 
 echo "$passes passed, $fails failed"
 [ "$fails" -eq 0 ]

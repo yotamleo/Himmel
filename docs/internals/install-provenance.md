@@ -3,17 +3,18 @@
 Every himmel writer that installs something onto a machine records what it did
 in one append-only ledger, so an uninstall can later remove exactly what himmel
 added and nothing the operator owned before. This page is the format reference
-for the helpers that write it. The helpers ship in three dialects that emit
+for the helpers that write it. The helpers ship in two dialects that emit
 **byte-identical rows**:
 
 | Dialect | File | Used by |
 |---|---|---|
 | bash | `scripts/lib/provenance.sh` | shell writers (`source` it) |
 | node | `scripts/himmelctl/lib/provenance.js` | `himmelctl` writers (`require` it, or run it as a CLI) |
-| PowerShell | `scripts/lib/provenance.ps1` | `.ps1` writers (dot-source it) |
 
-Tests: `scripts/lib/test-provenance.sh` (bash, plus a pwsh block that skips
-with a named SKIP when `pwsh` is absent) and
+The PowerShell dialect (for `.ps1` writers) is not shipped yet: it needs a
+Windows-tested lane and is tracked in HIMMEL-3346.
+
+Tests: `scripts/lib/test-provenance.sh` (bash) and
 `scripts/himmelctl/test/test-provenance-js.sh` (node, plus the bash-vs-node
 byte-identity cross-check).
 
@@ -24,9 +25,7 @@ ${HIMMEL_PROVENANCE_DIR:-$HOME/.himmel}/provenance.jsonl              # the ledg
 ${HIMMEL_PROVENANCE_DIR:-$HOME/.himmel}/provenance-backups/<iid>/     # pre-state copies, mode 0700
 ```
 
-One JSON object per line, appended with a single write (the PowerShell dialect
-holds the ledger open exclusively while it appends, retrying if another writer
-has it). A reader must skip a
+One JSON object per line, appended with a single write. A reader must skip a
 line that does not parse: a crash can leave a torn last line, and the writers
 close it with a newline before the next append so it costs one row, not two.
 
@@ -100,8 +99,7 @@ prov_end ok
 - **Dry runs** (`DRY_RUN=1`, `--dry-run`, `-DryRun`) write nothing and print
   `DRY: record <op> <kind> <path>`; `begin`/`end` stay silent.
 - **Failures**: usage errors are rc 2 (bash/node CLI) and I/O or missing-tool
-  failures rc 1, with `provenance: <why>` on stderr. The PowerShell functions
-  throw the same message. Whether a failed record is fatal is the caller's call.
+  failures rc 1, with `provenance: <why>` on stderr. Whether a failed record is fatal is the caller's call.
 - `prov_end` closes only a session **this process opened**; a child that merely
   inherited `HIMMEL_PROVENANCE_IID` is a silent no-op, and a failed append leaves
   the session open so the call can be retried. (The node CLI is one process per
@@ -119,7 +117,7 @@ scratch `HOME` and never touches the real `~/.himmel`.
 
 ## Known limits
 
-- No jq on `PATH`: the node and PowerShell dialects fall back to a pure-language
+- No jq on `PATH`: the node dialect falls back to a pure-language
   canonicaliser that diverges from `jq -cS` on non-canonical number literals
   (`1.0`, `1E+2`, integers past 2^53) and non-BMP key order. Every install host
   already requires jq, so this is a fallback, not a supported mode.
@@ -133,11 +131,11 @@ scratch `HOME` and never touches the real `~/.himmel`.
   the parent's copy set). Binding it to a pid needs `$BASHPID`, bash 4+.
 - A backslash in a path is a separator only on Windows; on POSIX it is a legal
   filename character and is recorded as given.
-- The PowerShell dialect is for Windows writers. Its exclusive append handle
-  excludes other Windows writers, but on Unix it is only an advisory lock the
-  bash and node writers ignore, so do not mix it with them on one Unix ledger.
-- The PowerShell dialect could not be executed where it was written; it is held
-  to the same rows by construction and by the pwsh-gated test block. On Windows
-  it omits `mode` and does not resolve symlinked parents or 8.3 short names.
+- The Windows-specific handling in the bash and node dialects (drive roots `C:/`,
+  backslash separators, CRLF from `jq.exe`) is tested here only through Linux
+  fixtures, not on Windows.
+- In the node dialect any error spawning jq (not only "jq is absent") selects the
+  fallback canonicaliser above. The append-size and subshell-ownership limits and
+  this one are tracked in HIMMEL-3347.
 - Backup cleanup at `install-end` and the reader that consumes the ledger belong
   to the uninstall slices; these helpers only write.
