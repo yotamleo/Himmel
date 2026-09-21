@@ -1259,7 +1259,10 @@ assert_rc "pin-dir write denied via unexpanded \$HOME default-path reference (co
 assert_rc "pin-dir write denied on the GLM lane too (new class extends it)" 2 \
     "$(run_case "$(j_bash "$PIN_WRITE_CMD")" "ANTHROPIC_BASE_URL=$GLM_URL" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
 
-assert_rc "pin-dir write allowed under the documented bypass" 0 \
+# HIMMEL-3396: the bypass is honoured only inside a linked worktree of the
+# session's recorded repo (positive controls: test-block-glm-bypass-scope.sh);
+# this suite runs from the primary/CI checkout, where it must NOT disable the fence.
+assert_rc "pin-dir write STILL denied under the bypass outside a linked worktree (HIMMEL-3396)" 2 \
     "$(run_case "$(j_bash "$PIN_WRITE_CMD")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE" "HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1")"
 
 # Scope boundary: a native worker gets ONLY the pin-dir class. The rest of
@@ -1797,8 +1800,9 @@ assert_rc "class (i) continuation: an even trailing run keeps the command bounda
 assert_rc "anchor-tamper: DENY-shaped command allowed off-lane (headed session)" 0 \
     "$(run_case "$(j_bash 'git fetch . x:origin/main')")"
 
-# CONTROL: the documented bypass lets a DENY-shaped command through.
-assert_rc "anchor-tamper: DENY-shaped command allowed under the bypass" 0 \
+# HIMMEL-3396: the bypass no longer lets a DENY-shaped command through outside a
+# linked worktree (positive controls: test-block-glm-bypass-scope.sh).
+assert_rc "anchor-tamper: DENY-shaped command STILL denied under the bypass outside a linked worktree (HIMMEL-3396)" 2 \
     "$(run_case "$(j_bash 'git fetch . x:origin/main')" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1")"
 
 if [ "$FAILED" -ne 0 ]; then

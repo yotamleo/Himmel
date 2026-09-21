@@ -111,6 +111,7 @@ export const BASH_BIN = resolveBash();
 export function glmChildEnv(): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...process.env, ...buildGlmEnv(REPO_ROOT) };
   delete env.TELEGRAM_OWN_POLLER;
+  delete env.HIMMEL_HOOK_INTEGRITY_BYPASS_OK; // HIMMEL-3396: an operator lever, never a worker's
   return env;
 }
 
@@ -155,6 +156,10 @@ export function sessionEnv(lane?: "glm", extraEnv?: Record<string, string>): Rec
   // TELEGRAM_OWN_POLLER strip above — clear first, then let extraEnv grant them.
   delete base.HERMES_BOUNDED_RUN;
   delete base.GGS_ROLE;
+  // HIMMEL-3396: the operator's hook-integrity bypass never reaches a worker —
+  // the default lane spreads process.env, so it is stripped here as well as in
+  // glmChildEnv (claudexChildEnv, spawn-claudex.ts, is the third builder).
+  delete base.HIMMEL_HOOK_INTEGRITY_BYPASS_OK;
   // NON_INTERACTIVE_EDITOR_ENV before extraEnv: a route may override an editor
   // key deliberately, but nothing ambient can reinstate an interactive one.
   return { ...base, ...NON_INTERACTIVE_EDITOR_ENV, ...(extraEnv ?? {}) };

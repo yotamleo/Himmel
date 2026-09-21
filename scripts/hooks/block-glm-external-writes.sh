@@ -154,7 +154,10 @@
 # path from characters/bytes never spelled out as that substring) is OUT OF
 # SCOPE — identical residual to every other command-text hook here. Bypass:
 # HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1, shared with run-hook-with-bash.js's own
-# mid-session-hook-edit escape hatch (the same legitimate operator situation).
+# mid-session-hook-edit escape hatch (the same legitimate operator situation) and
+# scoped exactly as HIMMEL-3384 scopes it there: honoured, and audited, only
+# inside a linked worktree of the session's recorded repo (HIMMEL-3396,
+# bypass_honoured below); the spawners also strip it from every worker child env.
 set -euo pipefail
 
 case "${ANTHROPIC_BASE_URL:-}" in
@@ -238,12 +241,112 @@ tool=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || true)
 tool_is_shell=0
 case "$tool" in Bash|PowerShell) tool_is_shell=1 ;; esac
 
+# ------------------------------------------------ HIMMEL-3396 scoped bypass
+# HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 used to switch off BOTH command-text fences
+# below (the HIMMEL-2085 pin-dir fence and the HIMMEL-2528 anchor fence) in any
+# checkout, for any worker that inherited the variable. HIMMEL-3384 scoped the
+# same variable for the hook launcher (hook-integrity.js honourBypass); this is
+# the same predicate for these fences, re-stated in bash because that function is
+# not exported and its owner keeps that file closed. It is honoured only when ALL
+# of these hold, and every leg fails CLOSED (return 1 = the fences stay ON):
+#   - CLAUDE_PROJECT_DIR is set and the session cwd is inside it;
+#   - the session's record ($HIMMEL_HOOK_INTEGRITY_DIR/<session_id>.json) carries
+#     an ABSOLUTE git_dir (a legacy record without one refuses);
+#   - that RECORDED repo lists CLAUDE_PROJECT_DIR as a NON-first (linked)
+#     worktree, and the worktree's own .git is a regular file whose gitdir
+#     pointer lands in <recorded repo>/worktrees (a rewritten pointer refuses);
+#   - this hook script resolves inside that worktree;
+#   - one audit line is appended to <recorded repo>/hook-integrity-bypass.jsonl
+#     (a symlink / non-regular sink or a failed write refuses the bypass).
+# Git calls are pinned to --git-dir=<recorded repo> with GIT_NO_REPLACE_OBJECTS=1
+# and run from the temp dir, so neither the worktree's own .git nor a replace ref
+# can steer the answer. The result is memoized: both fences share one audit line
+# per hook invocation.
+# ponytail: the audit line records that the bypass was CONSULTED and granted for
+# this call, not that a fence would have fired (the predicate cannot know), so it
+# over-reports; and the symlink/regular-file check on the sink is a
+# check-then-append (lstat, then `>>`), unlike the launcher's O_NOFOLLOW open, so
+# a link swapped in between the two survives — same-user, same-window only.
+bypass_memo=""
+bypass_canon() { (cd -P "$1" 2>/dev/null && pwd -P); }
+bypass_abs() { case "$1" in /*|[A-Za-z]:[/\\]*) return 0 ;; *) return 1 ;; esac; }
+bypass_honoured() {
+    [ "${HIMMEL_HOOK_INTEGRITY_BYPASS_OK:-0}" = "1" ] || return 1
+    if [ -n "$bypass_memo" ]; then return "$bypass_memo"; fi
+    bypass_memo=1
+    local top cwd hook_dir hook_file sid rec gd common own tmpd first found f p pc
+    local dot_git line ptr pd sink pid sess audit_line
+    [ -n "${CLAUDE_PROJECT_DIR:-}" ] || return 1
+    top=$(bypass_canon "$CLAUDE_PROJECT_DIR") || return 1
+    cwd=$(pwd -P) || return 1
+    case "$cwd/" in "$top"/*) ;; *) return 1 ;; esac
+    hook_file="${BASH_SOURCE[0]}"
+    [ -f "$hook_file" ] && [ ! -L "$hook_file" ] || return 1
+    hook_dir=$(bypass_canon "$(dirname "$hook_file")") || return 1
+    case "$hook_dir/" in "$top"/*) ;; *) return 1 ;; esac
+
+    sid=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null) || return 1
+    case "$sid" in ''|*[!A-Za-z0-9_-]*) return 1 ;; esac
+    rec="${HIMMEL_HOOK_INTEGRITY_DIR:-$HOME/.claude/himmel/hook-integrity}/$sid.json"
+    [ -f "$rec" ] || return 1
+    gd=$(jq -r '.git_dir // empty' "$rec" 2>/dev/null) || return 1
+    bypass_abs "$gd" || return 1
+    common=$(bypass_canon "$gd") || return 1
+
+    tmpd="${TMPDIR:-/tmp}"
+    own=$(GIT_NO_REPLACE_OBJECTS=1 git -C "$tmpd" --git-dir="$common" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+    [ "$(bypass_canon "$own")" = "$common" ] || return 1
+    first=1
+    found=0
+    while IFS= read -r -d '' f; do
+        case "$f" in
+            'worktree '*)
+                p=${f#worktree }
+                if [ "$first" = 1 ]; then
+                    first=0 # the main worktree is never a linked one
+                else
+                    pc=$(bypass_canon "$p") || continue
+                    if [ "$pc" = "$top" ]; then found=1; fi
+                fi
+                ;;
+        esac
+    done < <(GIT_NO_REPLACE_OBJECTS=1 git -C "$tmpd" --git-dir="$common" worktree list --porcelain -z 2>/dev/null)
+    [ "$found" = 1 ] || return 1
+
+    dot_git="$top/.git"
+    [ -f "$dot_git" ] && [ ! -L "$dot_git" ] || return 1
+    line=""
+    IFS= read -r line < "$dot_git" || [ -n "$line" ] || return 1
+    line=${line%$'\r'}
+    case "$line" in 'gitdir: '?*) ptr=${line#gitdir: } ;; *) return 1 ;; esac
+    bypass_abs "$ptr" || ptr="$top/$ptr"
+    pd=$(bypass_canon "$ptr") || return 1
+    [ "$(dirname "$pd")" = "$common/worktrees" ] || return 1
+
+    sink="$common/hook-integrity-bypass.jsonl"
+    [ ! -L "$sink" ] || return 1
+    if [ -e "$sink" ]; then [ -f "$sink" ] || return 1; fi
+    sess=""
+    pid="${CLAUDE_PID:-}"
+    case "$pid" in
+        ''|*[!0-9]*) ;;
+        *) sess=$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | awk 'prev == "-n" { print; exit } { prev = $0 }') || sess="" ;;
+    esac
+    audit_line=$(jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" --arg session "$sess" --arg sid "$sid" \
+        --arg cwd "$cwd" --arg wt "$top" --arg hook "$hook_dir/$(basename "$hook_file")" \
+        '{ts: $ts, session: (if $session == "" then null else $session end), session_id: $sid, cwd: $cwd, worktree: $wt, hook_paths: [$hook]}' 2>/dev/null) || return 1
+    [ -n "$audit_line" ] || return 1
+    ( umask 077; printf '%s\n' "$audit_line" >> "$sink" ) 2>/dev/null || return 1
+    bypass_memo=0
+    return 0
+}
+
 # ---------------------------------------------------------- HIMMEL-2085 class
 # Hook-integrity pin-dir write-fence. The ONLY class in this file that runs for
 # any worker_lane (GLM or a native lane carrying HIMMEL_WORKER=1) rather than
 # glm_lane specifically — see the header's HIMMEL-2085 GENERALIZATION note for
 # why, and for the command-text-fence residual this accepts.
-if [ "$tool_is_shell" = 1 ] && [ "${HIMMEL_HOOK_INTEGRITY_BYPASS_OK:-0}" != "1" ]; then
+if [ "$tool_is_shell" = 1 ] && ! bypass_honoured; then
     pin_cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null || true)
     if [ -n "$pin_cmd" ]; then
         pin_dir_raw="${HIMMEL_HOOK_INTEGRITY_DIR:-$HOME/.claude/himmel/hook-integrity}"
@@ -893,7 +996,9 @@ PINSCRIPTS
                 echo "    A dispatched worker's shell must never touch a pin file there — doing"
                 echo "    so could forge the HIMMEL-1666 hook-integrity check (HIMMEL-2085)."
                 echo "    Legitimate mid-session hook-integrity work: set"
-                echo "    HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 in the LAUNCHING shell."
+                echo "    HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 in the LAUNCHING shell — honoured only"
+                echo "    inside a linked worktree of the session's recorded repo, and audited"
+                echo "    (HIMMEL-3396); in the primary checkout this fence stays on."
             } >&2
             exit 2
         fi
@@ -1020,7 +1125,7 @@ join_line_continuations() {
 # content trusted by SIGNATURE, not by whatever origin/<default> currently
 # resolves to — tracked as a follow-up ticket (see enforcement.md's
 # HIMMEL-2528 section for the key).
-if [ "$tool_is_shell" = 1 ] && [ "${HIMMEL_HOOK_INTEGRITY_BYPASS_OK:-0}" != "1" ]; then
+if [ "$tool_is_shell" = 1 ] && ! bypass_honoured; then
     anchor_cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null || true)
     if [ -n "$anchor_cmd" ]; then
         # HIMMEL-2528 round 5, codex-1: line continuations, the SEVENTH axis
@@ -1447,7 +1552,9 @@ if [ "$tool_is_shell" = 1 ] && [ "${HIMMEL_HOOK_INTEGRITY_BYPASS_OK:-0}" != "1" 
                 echo "    by a plain 'git fetch origin', or packed-refs/.git/refs/remotes/ written"
                 echo "    through a path this fence never sees spelled out, are NOT caught."
                 echo "    Legitimate mid-session work: set HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 in the"
-                echo "    LAUNCHING shell."
+                echo "    LAUNCHING shell — honoured only inside a linked worktree of the session's"
+                echo "    recorded repo, and audited (HIMMEL-3396); in the primary checkout this"
+                echo "    fence stays on."
             } >&2
             exit 2
         fi
