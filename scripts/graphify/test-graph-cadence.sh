@@ -506,6 +506,25 @@ assert_not_contains "ledger action is not published for an execution failure" '"
 assert_not_contains "ledger action is not failed" '"action":"failed"' "$LEDGER_LINE3"
 
 # =============================================================================
+# Test 3c (HIMMEL-3381): merge-on-green rc=18 (GitHub-blocked: a required check
+# missing, a required review outstanding, or a ruleset refusal) needs a human and
+# was alerted once -- a LOUD failure, never the quiet "published" of a deferral.
+# =============================================================================
+echo "TEST: merge-on-green rc=18 (GitHub-blocked, not a deferral) -> action=failed, rc!=0"
+REPO3c="$TMP_ROOT/t3c-primary"; BARE3c="$TMP_ROOT/t3c-origin.git"
+HOME3c="$TMP_ROOT/t3c-home"; LEDGER3c="$TMP_ROOT/t3c-ledger"
+mkdir -p "$HOME3c" "$LEDGER3c"
+seed_repo "$REPO3c" "$BARE3c" 20
+: > "$FAKE_MERGE_LOG"
+rc=0
+out=$(HOME="$HOME3c" GRAPH_CADENCE_HIMMEL_ROOT="$REPO3c" GRAPH_CADENCE_LEDGER_ROOT="$LEDGER3c" FAKE_MERGE_RC=18 \
+      run_gc --threshold 10 2>&1) || rc=$?
+if [ "$rc" != "0" ]; then pass "GitHub-blocked merge returns non-zero rc (got $rc)"; else fail "GitHub-blocked merge returned rc=0"; fi
+LEDGER_LINE3c=$(tail -n1 "$LEDGER3c/.graph-cadence/ledger.jsonl" 2>/dev/null || echo MISSING)
+assert_contains "ledger action=failed on a GitHub-blocked merge" '"action":"failed"' "$LEDGER_LINE3c"
+assert_not_contains "ledger action is not published for a GitHub-blocked merge" '"action":"published"' "$LEDGER_LINE3c"
+
+# =============================================================================
 # Test 4: ast-update.sh fails -> action=failed, rc!=0, pipeline short-circuits
 # =============================================================================
 echo "TEST: a failing structural refresh -> action=failed, non-zero rc, no publish/merge attempted"

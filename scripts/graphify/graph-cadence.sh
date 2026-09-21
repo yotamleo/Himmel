@@ -954,7 +954,11 @@ else
     #     ARMAUTOMERGE=1 ourselves, so seeing it means something stripped our
     #     env), 11 (required tool missing), 12 (repo/base misconfigured --
     #     will not resolve with time), 13 (can't even resolve the PR/head),
-    #     16 (audit sink unwritable), or any code merge-on-green.sh does not
+    #     16 (audit sink unwritable), 17 (console-GO refusal), 18 (GitHub-
+    #     blocked, HIMMEL-3381: a required check never reported / the required
+    #     set unreadable / a required review outstanding / a ruleset refusal --
+    #     it is alerted to the operator once and needs a human, so it must NOT
+    #     read as a quiet "published"), or any code merge-on-green.sh does not
     #     document -- is a real execution/environment failure, not a deferral.
     case "$_merge_rc" in
         14|15)

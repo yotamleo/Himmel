@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# scripts/lib/merge-block-alert.sh — the ONE operator alert for "GitHub blocks
+# this merge" (HIMMEL-3381).
+#
+# WHY: a merge/CI-watch path that GitHub blocks (a required check FAILED or never
+# reported, a required review outstanding, a ruleset refusing) used to end in a
+# generic exit and silence — or, worse, a retry. Every such path now fails fast
+# and calls merge_block_alert ONCE, which prints one `MERGE-BLOCKED` line naming
+# the rule and sends ONE Telegram DM to the operator through the existing bridge
+# reply path (scripts/telegram/console-route.ts reply -> replyViaOutbox), so the
+# alert lands in the same outbox every other bridge reply uses — no new session
+# format.
+#
+#   merge_block_alert <owner/repo> <pr-number> <head-sha> <rule text...>
+#
+# Always returns 0. A delivery failure NEVER changes the caller's exit code: the
+# alert is an addition to the verdict, not part of it.
+#
+# Dedupe: one DM per (repo, PR, head). The sentinel is created atomically
+# (noclobber) BEFORE the send so two racing watchers cannot both send, and is
+# removed again if the send fails so a later run may retry — the operator still
+# receives at most one. A new head is a new PR state and alerts again.
+#
+# Seams (hermetic suites; a caller who can set these can already set PATH):
+#   MERGE_BLOCK_ALERT_DIR   sentinel directory (default <git common dir>/himmel-merge-block-alert)
+#   MERGE_BLOCK_ALERT_CMD   replaces the sender; called as `$CMD <chat_id> <text>`
+#   TELEGRAM_ACCESS_PATH    access.json to read the operator id from (gate.ts's own override)
+#
+# Under HIMMEL_TEST_FIXTURE=1 the DEFAULT sender refuses unless BRIDGE_ROOT names
+# a sandbox — a suite that reaches this by accident must not DM the operator
+# (same guard restart-bridge.sh carries, HIMMEL-2551).
+#
+# ponytail: "operator" is access.json's first positive allowFrom entry, the same
+# rule operatorChatId() in scripts/telegram/gate.ts applies; an access.json
+# whose first entry is not the person to page gets that person paged.
+
+_MBA_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+_mba_operator_chat() {
+    local access="${TELEGRAM_ACCESS_PATH:-$HOME/.claude/channels/telegram/access.json}"
+    [ -r "$access" ] && command -v jq >/dev/null 2>&1 || return 1
+    jq -r '[.allowFrom[]? | tostring | select(test("^[1-9][0-9]*$"))] | first // empty' "$access" 2>/dev/null
+}
+
+_mba_send() {
+    local chat="$1" text="$2"
+    if [ -n "${MERGE_BLOCK_ALERT_CMD:-}" ]; then
+        "$MERGE_BLOCK_ALERT_CMD" "$chat" "$text"
+        return
+    fi
+    if [ "${HIMMEL_TEST_FIXTURE:-}" = "1" ] && [ -z "${BRIDGE_ROOT:-}" ]; then
+        return 0
+    fi
+    command -v bun >/dev/null 2>&1 || return 1
+    local tmo=""
+    command -v timeout >/dev/null 2>&1 && tmo="timeout 30"
+    # shellcheck disable=SC2086  # $tmo is deliberately word-split ("" or "timeout 30")
+    $tmo bun "$_MBA_LIB_DIR/../telegram/console-route.ts" reply "$chat" "$text" >/dev/null 2>&1
+}
+
+merge_block_alert() {
+    local repo="${1:-}" pr="${2:-}" head="${3:-}"
+    shift 3 2>/dev/null || shift $#
+    local rule="$*"
+    local short="${head:0:12}"
+    echo "MERGE-BLOCKED ${repo}#${pr} @${short:-unknown-head}: ${rule}" >&2
+
+    case "$repo$pr$head" in *[!A-Za-z0-9._/-]*|'') return 0 ;; esac
+    [ -n "$repo" ] && [ -n "$pr" ] && [ -n "$head" ] || return 0
+
+    local dir="${MERGE_BLOCK_ALERT_DIR:-}"
+    if [ -z "$dir" ]; then
+        dir=$(git rev-parse --git-common-dir 2>/dev/null) || return 0
+        dir="$dir/himmel-merge-block-alert"
+    fi
+    mkdir -p "$dir" 2>/dev/null || return 0
+    local key="${repo//\//_}__${pr}__${head}"
+    # Atomic create: the loser of a race sees the file and stays silent.
+    ( set -o noclobber; : > "$dir/$key" ) 2>/dev/null || return 0
+
+    local chat
+    chat=$(_mba_operator_chat) || chat=""
+    if [ -z "$chat" ]; then
+        rm -f "$dir/$key" 2>/dev/null
+        echo "merge-block-alert: no operator chat id readable — DM not sent (the line above is the only alert)" >&2
+        return 0
+    fi
+    if ! _mba_send "$chat" "MERGE-BLOCKED ${repo}#${pr} @${short}: ${rule}"; then
+        rm -f "$dir/$key" 2>/dev/null
+        echo "merge-block-alert: DM delivery failed — exit code unchanged" >&2
+    fi
+    return 0
+}

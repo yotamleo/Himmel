@@ -201,6 +201,19 @@ mog_build_fixture() {
     # defines go_gate) while merge-on-green.sh itself stays whichever copy
     # MOG_SRC picked. Defaults to the real file.
     cp "${GO_GATE_SRC:-$SCRIPT_DIR/../lib/go-gate.sh}" "$tmp/scripts/lib/go-gate.sh"
+    # HIMMEL-3381: the GitHub-blocked alert lib (sourced next to cr-available.sh).
+    # Its sender is a stub that only logs, so the suite can never DM the operator.
+    cp "$SCRIPT_DIR/../lib/merge-block-alert.sh" "$tmp/scripts/lib/merge-block-alert.sh"
+    # SC2016 is the point: $1/$2/$STUB_ALERT_FAIL must reach the stub FILE unexpanded.
+    # shellcheck disable=SC2016
+    printf '#!/usr/bin/env bash\nprintf "%%s|%%s\\n" "$1" "$2" >> "%s/alerts.log"\n[ -z "${STUB_ALERT_FAIL:-}" ]\n' "$tmp" > "$tmp/bin/alert-sender"
+    chmod +x "$tmp/bin/alert-sender"
+    printf '{"allowFrom":["555"]}\n' > "$tmp/access.json"
+    : > "$tmp/alerts.log"
+    if [ "${STUB_ALERT_PRESEED:-0}" = "1" ]; then
+        mkdir -p "$tmp/alerts"
+        : > "$tmp/alerts/owner_repo__77__${STUB_SHA-abc123def456}"
+    fi
     if [ "${NO_CHECK_CI:-0}" != "1" ]; then
         printf '#!/usr/bin/env bash\nexit %s\n' "${STUB_CI_RC:-0}" > "$tmp/scripts/check-ci.sh"
         chmod +x "$tmp/scripts/check-ci.sh"
@@ -371,6 +384,7 @@ case "$verb" in
         ;;
     "pr merge")
         [ "${STUB_MERGE_POLICY_REFUSED:-0}" = "1" ] && { echo "Pull request $nwo#77 is not mergeable: the base branch policy prohibits the merge." >&2; exit 1; }
+        [ "${STUB_MERGE_REQUIRED_CHECK:-0}" = "1" ] && { echo "Pull request $nwo#77 is not mergeable: Required status check \"codeowner-review-gate\" is expected." >&2; exit 1; }
         [ "${STUB_MERGE_FAIL:-0}" = "1" ] && { echo "merge conflict / head moved" >&2; exit 1; }
         echo "merged"
         ;;
@@ -503,13 +517,15 @@ run_mog() {
     # a test that sleeps is a test that can hang.
     GH_LOG="$ghlog" CLEAR_LOG="$clearlog" MERGE_ON_GREEN_LOG="$audit" JIRA_LOG="$jiralog" PATH="$tmp/bin:$PATH" \
           MERGE_ON_GREEN_SLEEP_CMD=: \
+          MERGE_BLOCK_ALERT_DIR="$tmp/alerts" MERGE_BLOCK_ALERT_CMD="$tmp/bin/alert-sender" \
+          TELEGRAM_ACCESS_PATH="$tmp/access.json" STUB_ALERT_FAIL="${STUB_ALERT_FAIL:-}" \
           CR_APP="${MOG_CR_APP:-}" \
           bash -c 'cd "$1" || exit 1; shift; exec bash "$@"' _ "${MOG_CWD:-$tmp}" \
           "$tmp/scripts/handover/merge-on-green.sh" "$@" >/dev/null 2>"$tmp/err"
     rc=$?
     err=$(cat "$tmp/err" 2>/dev/null)
 
-    LAST_GH_LOG="$ghlog"; LAST_AUDIT="$audit"; LAST_CLEAR_LOG="$clearlog"; LAST_ERR="$err"; LAST_JIRA_LOG="$jiralog"
+    LAST_ALERT_LOG="$tmp/alerts.log"; LAST_GH_LOG="$ghlog"; LAST_AUDIT="$audit"; LAST_CLEAR_LOG="$clearlog"; LAST_ERR="$err"; LAST_JIRA_LOG="$jiralog"
     if [ "$rc" -eq "$expected" ]; then
         pass
     else
@@ -916,13 +932,13 @@ assert_audit_has "audit records the certified sha" "sha=feedface99"
 
 # HIMMEL-2887: removing the fresh policy guard would call merge despite an
 # outstanding review rule. The call log proves refusal happens BEFORE merge.
-STUB_MERGE_STATE=BLOCKED STUB_REVIEW_DECISION=REVIEW_REQUIRED run_mog 17 "green checks but required review → exit 17 pre-merge"
+STUB_MERGE_STATE=BLOCKED STUB_REVIEW_DECISION=REVIEW_REQUIRED run_mog 18 "green checks but required review → exit 18 pre-merge (HIMMEL-3381)"
 assert_audit_has "pre-merge policy: deterministic refusal" "REFUSED reason=policy-refused phase=premerge"
 if [ "$(grep -c '^pr merge ' "$LAST_GH_LOG")" -eq 0 ]; then pass; else fail "pre-merge policy: expected zero merge calls"; fi
 assert_audit_lacks "pre-merge policy: no merge intent" "MERGING"
 assert_gh_has "pre-merge policy: query pins resolved PR identity" "pr view 77 --repo owner/repo --json mergeStateStatus,reviewDecision"
 
-STUB_MERGE_STATE=BLOCKED STUB_REVIEW_DECISION=REVIEW_REQUIRED run_mog 17 "dry-run reports required review" -- --dry-run
+STUB_MERGE_STATE=BLOCKED STUB_REVIEW_DECISION=REVIEW_REQUIRED run_mog 18 "dry-run reports required review" -- --dry-run
 assert_gh_lacks "dry-run policy: no merge attempted" "pr merge"
 
 # Both halves matter: CLEAN with a review requirement, and BLOCKED without
@@ -1044,7 +1060,7 @@ assert_audit_lacks "unproven merge outcome is not claimed as a refusal" "REFUSED
 
 # HIMMEL-2887: an explicit base-policy rejection is definitive, not a queued
 # merge. Without the stderr classification this incorrectly exits 15 pending.
-STUB_MERGE_POLICY_REFUSED=1 STUB_POST_STATE=OPEN run_mog 17 "base branch policy prohibits the merge → exit 17"
+STUB_MERGE_POLICY_REFUSED=1 STUB_POST_STATE=OPEN run_mog 18 "base branch policy prohibits the merge → exit 18 (HIMMEL-3381)"
 assert_merge_has "policy rejection: merge was attempted" "pr merge 77 --repo owner/repo"
 assert_audit_has "policy rejection: deterministic refusal" "REFUSED reason=policy-refused"
 assert_audit_lacks "policy rejection: never pending-unconfirmed" "INDETERMINATE"
@@ -2597,6 +2613,47 @@ STUB_JIRA_BUILD=1 STUB_JIRA_COMMENT_FAIL=1 STUB_PR_TITLE="feat(jira): [HIMMEL-37
     run_mog 0 "jira: opted-in failed comment skips the transition" -- --jira-transition
 assert_audit_has "jira: failed-comment case records the skip" "jira-transition=skip=comment-failed key=HIMMEL-374"
 assert_jira_log_lacks "jira: failed-comment case makes no jira transition call" "transition"
+
+# --- HIMMEL-3381: GitHub-blocked -> exit 18, one alert, never retried -------
+alert_lines() { grep -c . "$LAST_ALERT_LOG" 2>/dev/null || true; }
+assert_alerts() {
+    local want="$1" name="$2" got; got=$(alert_lines)
+    if [ "$got" = "$want" ]; then pass; else fail "$name — expected $want alert DM(s), got ${got:-0}"; fi
+}
+
+# check-ci 5 (a required check never reported / set unreadable) is GitHub-blocked.
+STUB_CI_RC=5 run_mog 18 "3381-a: check-ci exit 5 → exit 18"
+assert_audit_has "3381-a: audit names the rule" "REFUSED reason=github-blocked phase=check-ci rule=required-check"
+assert_gh_lacks  "3381-a: no merge attempted" "pr merge"
+assert_alerts 1  "3381-a: exactly one operator DM"
+assert_err_has   "3381-a: MERGE-BLOCKED line on stderr" "MERGE-BLOCKED owner/repo#77"
+if grep -q '^555|MERGE-BLOCKED owner/repo#77' "$LAST_ALERT_LOG"; then pass; else fail "3381-a: DM goes to the operator chat with the repo#pr"; fi
+
+# A red CI stays 14 and never alerts from here (check-ci names a failed required check itself).
+STUB_CI_RC=1 run_mog 14 "3381-b: check-ci exit 1 stays exit 14"
+assert_alerts 0 "3381-b: red CI sends no DM from merge-on-green"
+
+# BLOCKED + REVIEW_REQUIRED after green: 18 + one DM naming the review rule.
+STUB_MERGE_STATE=BLOCKED STUB_REVIEW_DECISION=REVIEW_REQUIRED run_mog 18 "3381-c: BLOCKED + REVIEW_REQUIRED → exit 18"
+assert_alerts 1 "3381-c: exactly one operator DM"
+assert_audit_has "3381-c: audit names the rule" "rule=required-review"
+assert_err_has "3381-c: alert names the review rule" "a required review is outstanding"
+
+# gh itself refusing on a required check: exit 18 at once — no confirmation poll, no retry.
+STUB_MERGE_REQUIRED_CHECK=1 STUB_POST_STATE=OPEN run_mog 18 "3381-d: gh refuses on a required check → exit 18"
+assert_alerts 1 "3381-d: exactly one operator DM"
+assert_audit_has "3381-d: audit names the rule" "rule=github-refusal"
+assert_audit_lacks "3381-d: never pending-unconfirmed" "INDETERMINATE"
+if [ "$(grep -c '^pr merge ' "$LAST_GH_LOG")" -eq 1 ]; then pass; else fail "3381-d: gh pr merge must be called exactly once (no retry)"; fi
+assert_gh_lacks "3381-d: no confirmation poll after the refusal" "state,headRefOid,baseRefName"
+
+# Dedupe: the (repo, PR, head) already alerted -> the exit stays 18, no second DM.
+STUB_ALERT_PRESEED=1 STUB_CI_RC=5 run_mog 18 "3381-e: repeat block on the same head → exit 18"
+assert_alerts 0 "3381-e: no second DM for the same (repo, PR, head)"
+
+# A failed delivery never changes the exit code.
+STUB_ALERT_FAIL=1 STUB_CI_RC=5 run_mog 18 "3381-f: DM delivery failure keeps exit 18"
+assert_err_has "3381-f: says the delivery failed" "DM delivery failed"
 
 # HIMMEL-3154: guard against reintroducing extraction of a historical
 # commit's blob via `git show <sha>:<path>` — the class of fragility this

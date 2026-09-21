@@ -22,9 +22,11 @@
 #   1  usage error
 #   2  required tool missing
 #   3  not on a handover/* branch (refuses)
-#   4  gh pr merge failed
+#   4  gh pr merge failed (HIMMEL-3381: on GitHub this sends one operator DM
+#      naming gh's last error line, via scripts/lib/merge-block-alert.sh)
 #   5  blocked by the CR merge gate (unresolved CodeRabbit remarks - HIMMEL-936)
-#   6  blocked by the CI-green merge gate (head SHA not green - HIMMEL-1043)
+#   6  blocked by the CI-green merge gate (head SHA not green - HIMMEL-1043);
+#      HIMMEL-3381: also one operator DM (deduped per repo/PR/head)
 #   7  cannot read the PR head SHA, so the merge cannot be bound to the vetted
 #      commit — refuses rather than merge unbound (HIMMEL-1058)
 #
@@ -55,6 +57,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/forge.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/../lib/forge.sh"
+# HIMMEL-3381: one operator DM when GitHub blocks the merge (deduped per repo/PR/
+# head). The fallback keeps the MERGE-BLOCKED stderr line if the lib is missing.
+# shellcheck source=../lib/merge-block-alert.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/merge-block-alert.sh" 2>/dev/null || merge_block_alert() { echo "MERGE-BLOCKED ${1:-?}#${2:-?}: ${*:4}" >&2; return 0; }
+# _pm_alert <rule> — owner/repo comes from origin (no extra API call).
+_pm_alert() {
+    local nwo
+    nwo=$(git remote get-url origin 2>/dev/null | sed -E 's#^(https?://[^/]+/|git@[^:]+:|ssh://[^/]+/)##; s#\.git$##') || nwo=""
+    merge_block_alert "${nwo:-?}" "${pr_num:-?}" "${vetted_head:-}" "$@"
+}
 
 # GH_ADMIN_MERGE_OK is consumed by the github backend (gh_forge_pr_merge) — it
 # reads the env var directly, so this script no longer normalizes it.
@@ -217,6 +230,7 @@ if [ "$forge" = "github" ]; then
         _ci_reason=$(ci_green_gate "$pr_num") || _ci_rc=$?
         if [ "$_ci_rc" = "2" ]; then
             echo "pr-merge: CI gate: $_ci_reason" >&2
+            _pm_alert "CI gate blocks the merge: $_ci_reason"
             exit 6
         fi
     fi
@@ -341,11 +355,21 @@ jira_auto_transition_on_merge() {
 # maps a 400 merge-conflict (spec §5.1, atomic — nothing merged) to a distinct
 # failure. Either way: rc 0 = merged, non-zero = real failure.
 merge_rc=0
-forge_pr_merge "$pr_num" "$vetted_head" || merge_rc=$?
+merge_err=$(mktemp)
+forge_pr_merge "$pr_num" "$vetted_head" 2>"$merge_err" || merge_rc=$?
+cat "$merge_err" >&2
 if [ "$merge_rc" -eq 0 ]; then
+    rm -f "$merge_err"
     jira_auto_transition_on_merge "$pr_num"
     exit 0
 fi
+# HIMMEL-3381: a refused GitHub merge is a block — name the last gh error line as
+# the rule, alert once, and exit (this path never retries beyond the authorized
+# --admin fallback the backend already made).
+if [ "$forge" = "github" ]; then
+    _pm_alert "gh pr merge refused (exit $merge_rc): $(tail -n 1 "$merge_err" | cut -c1-200)"
+fi
+rm -f "$merge_err"
 
 # forge_pr_merge already printed the backend-specific error. Add the himmel
 # recovery guidance (forge-agnostic) and propagate the failure.

@@ -87,6 +87,16 @@
 #       disproved needs a reason; a disposition never carries to a new head),
 #       then re-run
 #   4 — retired (HIMMEL-3360) — no longer emitted.
+#   5 — GitHub will BLOCK this merge and waiting cannot fix it (HIMMEL-3381): a
+#       check the base branch REQUIRES (rulesets via rules/branches, unioned
+#       with classic protection contexts) never reported within --grace, or the
+#       required set itself could not be read ("required-set unreadable" — read
+#       failure fails CLOSED, never as an empty set). A required check that is
+#       FAILED exits 1, as any red does. Each of these prints one MERGE-BLOCKED
+#       line naming the rule and sends ONE operator DM per (repo, PR, head)
+#       (scripts/lib/merge-block-alert.sh); a delivery failure never changes the
+#       exit code. Sits ABOVE 3 in severity: 3 is "fix the review state and
+#       re-run", 5 is "a rule GitHub enforces will refuse this until it changes".
 #
 # Env:
 #   CHECK_CI_POLL_INTERVAL — seconds between grace-window probes (default 10;
@@ -143,7 +153,9 @@ exit codes: 0 = checks green + all review threads resolved
                 CodeRabbit's review body reports an outside-diff-range finding with no exact-head ledger
                 disposition (HIMMEL-3124; the message prints the deferred/disproved recipe, and a
                 disposition never carries to a new head),
-            4 = retired (HIMMEL-3360) — no longer emitted.
+            4 = retired (HIMMEL-3360) — no longer emitted,
+            5 = GitHub will block this merge (HIMMEL-3381): a required check never reported within --grace, or the
+                required-check set could not be read (fails closed). One MERGE-BLOCKED line + one operator DM.
 env: CR_PROFILE=none skips reading CodeRabbit's status + body findings entirely (repos without CodeRabbit)
      CR_APP=1|0 forces that same read on/off, overriding the automatic probe (see scripts/lib/cr-available.sh)
      CHECK_CI_SLEEP_CMD replaces the command every wall-clock wait runs (default sleep; hermetic suites set it to :)
@@ -303,6 +315,11 @@ CR_ARMED=0
 CR_STATE=$(cr_app_state "$PWD")
 [ "$CR_STATE" = armed ] && CR_ARMED=1
 
+# The ONE merge-block alert (HIMMEL-3381): a MERGE-BLOCKED line + one operator DM.
+# shellcheck source=scripts/lib/merge-block-alert.sh
+# shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
+. "$(cd "$(dirname "$0")" && pwd)/lib/merge-block-alert.sh"
+
 # The one state that must NOT stay silent (HIMMEL-2380, console ruling 88).
 # `not-configured` is the adopter and gets no line at all — "an adopter must not
 # notice it exists" (scripts/test-check-ci.sh case 57 pins that, and it still
@@ -371,12 +388,113 @@ pr_view() {
     if [ -n "$selector" ]; then gh pr view "$selector" "$@"; else gh pr view "$@"; fi
 }
 
+# HIMMEL-3381 — the required-check gate. GitHub refuses a merge while a check the
+# base branch REQUIRES is failed or has never reported; watching cannot fix
+# either, so neither is waited on past --grace. `gh pr checks --watch` knows
+# nothing about the required set, which is why a required check that never
+# registers used to read as green (or wait out --max-wait twice).
+_alert() { merge_block_alert "${owner:-?}/${repo:-?}" "${num:-?}" "${head0:-}" "$@"; }
+
+# required_set — one required check context per line. The EFFECTIVE set is the
+# union of rulesets (rules/branches/<base>, which covers protect-main's ruleset
+# checks) and classic branch protection. A failed read returns 1: the caller
+# fails CLOSED — an unreadable set must never be mistaken for an empty one. Only
+# a 404 on the classic endpoint ("Branch not protected" / "Required status
+# checks not enabled") means "no classic rule".
+#
+# ponytail: a token without admin cannot read the classic endpoint (403), so it
+# reads as unreadable and refuses every merge (exit 5) rather than guessing —
+# there is no opt-out knob; the fail-closed choice is deliberate (HIMMEL-3381).
+required_set() {
+    local base rules classic
+    base=$(pr_view --json baseRefName --jq .baseRefName 2>/dev/null) || return 1
+    [ -n "$base" ] || return 1
+    rules=$(gh api "repos/$owner/$repo/rules/branches/$base" \
+        --jq '.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]?.context' 2>&1) || return 1
+    if ! classic=$(gh api "repos/$owner/$repo/branches/$base/protection/required_status_checks" \
+        --jq '(.contexts // [])[], ((.checks // [])[]?.context)' 2>&1); then
+        case "$classic" in *"(HTTP 404)"*) classic="" ;; *) return 1 ;; esac
+    fi
+    printf '%s\n%s\n' "$rules" "$classic" | sed '/^$/d' | sort -u
+}
+
+# _required_rows — "<bucket>\t<name>" for every check on the PR.
+_required_rows() {
+    pr_checks --json bucket,name --jq '.[] | "\(.bucket)\t\(.name)"' 2>/dev/null
+}
+
+# _required_status <reqs> <rows> — "<fail|seen|missing>\t<name>" per required
+# check. A cancelled required check blocks a merge exactly as a failed one does.
+_required_status() {
+    local name
+    while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        printf '%s\t%s\n' "$(printf '%s\n' "$2" | awk -F'\t' -v n="$name" \
+            '$2 == n { f = 1; if ($1 == "fail" || $1 == "cancel") bad = 1 } END { print (bad ? "fail" : (f ? "seen" : "missing")) }')" "$name"
+    done <<<"$1"
+}
+
+_join_by_status() { printf '%s\n' "$2" | awk -F'\t' -v s="$1" '$1 == s { print $2 }' | paste -sd, - | sed 's/,/, /g'; }
+
+# required_gate <wait> — 1 = a missing required check may register within
+# --grace (the stated bound, the same one "no checks registered" already uses);
+# 0 = it had its window, refuse now. Runs BEFORE the watch (fail fast) and after
+# the settle round.
+required_gate() {
+    local wait_ok="$1" reqs rows st missing failed req_start tries=0 max_tries
+    # Backstop beside the SECONDS bound: a no-op sleep seam (CHECK_CI_SLEEP_CMD=:)
+    # or a POLL of 0 must not turn the bounded wait into a spin.
+    max_tries=$(( GRACE / (POLL > 0 ? POLL : 1) + 1 ))
+    if ! reqs=$(required_set); then
+        echo "check-ci: BLOCKED — required-set unreadable: could not list the checks GitHub requires on this PR's base branch (rules/branches or branch-protection read failed). Refusing rather than treating it as an empty set; re-run once gh/API access recovers (HIMMEL-3381, exit 5)" >&2
+        _alert "required-set unreadable — the required-check list for the base branch could not be read; nothing was assumed"
+        exit 5
+    fi
+    [ -n "$reqs" ] || return 0
+    req_start=$SECONDS
+    while :; do
+        if ! rows=$(_required_rows); then
+            echo "check-ci: cannot read the PR's check rows for the required-check gate — cannot evaluate; re-run" >&2
+            exit 2
+        fi
+        st=$(_required_status "$reqs" "$rows")
+        failed=$(_join_by_status fail "$st")
+        if [ -n "$failed" ]; then
+            echo "check-ci: checks FAILED — required check(s) failed: $failed (HIMMEL-3381)" >&2
+            _alert "required check(s) FAILED: $failed — GitHub will refuse this merge until they pass"
+            exit 1
+        fi
+        missing=$(_join_by_status missing "$st")
+        [ -n "$missing" ] || return 0
+        tries=$((tries + 1))
+        if [ "$wait_ok" -ne 1 ] || [ $((SECONDS - req_start)) -ge "$GRACE" ] || [ "$tries" -ge "$max_tries" ]; then
+            echo "check-ci: BLOCKED — required check(s) never reported within ${GRACE}s: $missing. GitHub will refuse this merge; is the workflow configured for this branch, or did it not trigger? (HIMMEL-3381, exit 5)" >&2
+            _alert "required check(s) never reported within ${GRACE}s: $missing — GitHub will refuse this merge"
+            exit 5
+        fi
+        "$CHECK_CI_SLEEP_CMD" "$POLL"
+    done
+}
+
+# _red_alert — a red watch verdict is a merge block only when a REQUIRED check
+# failed; name which. Best effort: an unreadable set/rows sends nothing (the
+# exit-1 verdict stands either way).
+_red_alert() {
+    local reqs rows failed
+    reqs=$(required_set 2>/dev/null) || return 0
+    [ -n "$reqs" ] || return 0
+    rows=$(_required_rows) || return 0
+    failed=$(_join_by_status fail "$(_required_status "$reqs" "$rows")")
+    [ -z "$failed" ] || _alert "required check(s) FAILED: $failed — GitHub will refuse this merge until they pass"
+}
+
 red_exit() {
     # $1 = gh rc, $2 = elapsed seconds of the failing watch round
     echo "check-ci: checks FAILED (gh rc=$1 after ${2}s)" >&2
     if [ "$2" -le 20 ]; then
         echo "check-ci: hint — all-red within seconds is usually a GitHub Actions billing/permissions block, not a code failure; check the run annotations before debugging the diff" >&2
     fi
+    _red_alert
     exit 1
 }
 
@@ -900,6 +1018,7 @@ review_state_gate() {
     fi
 }
 
+[ "$THREADS_ONLY" -eq 1 ] || required_gate 1
 review_state_gate
 
 # cr_signal_gate — HIMMEL-1072, the reason this file changed.
@@ -1208,6 +1327,10 @@ if [ "$SETTLE" -gt 0 ]; then
     "$CHECK_CI_SLEEP_CMD" "$SETTLE"
     watch_round
 fi
+
+# A required check that STILL has not reported after the watch + settle had its
+# window (HIMMEL-3381): refuse now rather than certify a green GitHub will block.
+required_gate 0
 
 # CodeRabbit must be PRESENT + CONCLUDED on this head (HIMMEL-1072). It runs
 # AFTER the watch/settle (that window is where a racing review posts) but BEFORE

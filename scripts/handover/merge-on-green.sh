@@ -115,13 +115,20 @@
 #       an unproven outcome is reported as pending-unconfirmed, never REFUSED)
 #   16  audit sink not writable, or the MERGING record could not be written —
 #       refused (an unauditable merge must not proceed)
-#   17  policy-refused: base branch policy explicitly prohibits the merge, or
-#       green checks still leave BLOCKED + REVIEW_REQUIRED before merging —
-#       refused; an unsatisfiable review rule needs a human admin action.
-#       HIMMEL-2919: also returned when HIMMEL_CONSOLE_LEG is truthy and the
-#       console's GO file for this PR at the certified head is missing, stale
-#       or unresolvable — checked after check-ci, before any merge call, on
-#       --dry-run too (see the console-GO gate below)
+#   17  policy-refused by the console-GO gate (HIMMEL-2919): HIMMEL_CONSOLE_LEG
+#       is truthy and the console's GO file for this PR at the certified head is
+#       missing, stale or unresolvable — checked after check-ci, before any merge
+#       call, on --dry-run too (see the console-GO gate below). Before HIMMEL-3381
+#       this code also carried the GitHub-blocked refusals now reported as 18.
+#   18  GitHub-blocked (HIMMEL-3381) — refused once, alerted once, never retried:
+#       check-ci exit 5 (a required check never reported, or the required set is
+#       unreadable), green checks that still leave BLOCKED + REVIEW_REQUIRED, or
+#       gh refusing the merge on branch policy / a required check / a ruleset.
+#       Each prints one `MERGE-BLOCKED` line and sends one operator DM per
+#       (repo, PR, head) via scripts/lib/merge-block-alert.sh; the audit line
+#       carries `rule=`. An unsatisfiable rule needs a human admin action. A red
+#       CI (check-ci 1) stays 14 — a failing required check is named in check-ci's
+#       own alert, not here.
 #
 # Environment:
 #   ARMAUTOMERGE           Must be truthy (1/true/on/yes) to enable at all.
@@ -184,6 +191,14 @@ HIMMEL_PUBLIC_ORIGIN_NWO="yotamleo/Himmel"
 # shellcheck source=scripts/lib/cr-available.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/../lib/cr-available.sh" 2>/dev/null || true
+# HIMMEL-3381 — the ONE operator alert when GitHub blocks the merge. Fixed in-repo
+# sibling like the libs above; if it is missing the fallback still prints the
+# MERGE-BLOCKED line, so a block is never silent.
+# shellcheck source=scripts/lib/merge-block-alert.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/merge-block-alert.sh" 2>/dev/null || merge_block_alert() { echo "MERGE-BLOCKED ${1:-?}#${2:-?} @${3:0:12}: ${*:4}" >&2; return 0; }
+# block_alert <rule> — one DM per (repo, PR, head); never changes an exit code.
+block_alert() { merge_block_alert "${nwo:-?}" "${pr_num:-?}" "${sha:-}" "$@"; }
 
 selector=""
 DRY_RUN=0
@@ -501,6 +516,15 @@ if [ -n "$selector" ]; then
 else
     bash "$CHECK_CI"
 fi || ci_rc=$?
+if [ "$ci_rc" -eq 5 ]; then
+    # HIMMEL-3381: check-ci exit 5 = GitHub will refuse this merge (a required
+    # check never reported, or the required set is unreadable). Not a red CI, and
+    # not something a re-run of this script fixes — fail fast, one alert.
+    echo "merge-on-green: GitHub-blocked — check-ci reported a required check missing or the required set unreadable (exit 5) — not merging." >&2
+    block_alert "a required check never reported or the required set is unreadable (check-ci exit 5)"
+    audit "REFUSED reason=github-blocked phase=check-ci rule=required-check gate=check-ci:5 repo=$nwo pr=#$pr_num sha=$sha"
+    exit 18
+fi
 if [ "$ci_rc" -ne 0 ]; then
     echo "merge-on-green: check-ci gate did not pass (exit $ci_rc) — not merging. Address the gate, then re-run." >&2
     audit "REFUSED reason=gate-not-green gate=check-ci:$ci_rc repo=$nwo pr=#$pr_num sha=$sha"
@@ -639,9 +663,10 @@ if [ "$policy_rc" -ne 0 ] || [[ "$policy" != *'|'* ]] || [ -z "${policy%%|*}" ] 
     exit 13
 fi
 if [ "$policy" = "BLOCKED|REVIEW_REQUIRED" ]; then
-    echo "merge-on-green: PR #$pr_num is BLOCKED by a required review despite green checks — policy-refused. Leave the PR open; an unsatisfiable review rule requires a human admin action, never an automated bypass." >&2
-    audit "REFUSED reason=policy-refused phase=premerge mergeStateStatus=BLOCKED reviewDecision=REVIEW_REQUIRED repo=$nwo pr=#$pr_num sha=$sha"
-    exit 17
+    echo "merge-on-green: PR #$pr_num is BLOCKED by a required review despite green checks — GitHub-blocked. Leave the PR open; an unsatisfiable review rule requires a human admin action, never an automated bypass." >&2
+    block_alert "a required review is outstanding (BLOCKED + REVIEW_REQUIRED)"
+    audit "REFUSED reason=policy-refused phase=premerge rule=required-review mergeStateStatus=BLOCKED reviewDecision=REVIEW_REQUIRED repo=$nwo pr=#$pr_num sha=$sha"
+    exit 18
 fi
 
 # 3b. Base-branch re-verification (HIMMEL-1080 CR round-1, codex-adv) — guard 2c
@@ -1259,10 +1284,16 @@ merge_out=""
 merge_out=$("$GH" pr merge "$pr_num" --repo "$nwo" --squash --match-head-commit "$sha" 2>&1) || merge_rc=$?
 # HIMMEL-2887: this explicit rejection means gh did not accept a merge request;
 # unlike a lost response, it is not a pending outcome to poll or retry.
-if [ "$merge_rc" -ne 0 ] && [[ "$merge_out" == *"base branch policy prohibits the merge"* ]]; then
-    echo "merge-on-green: base branch policy refused PR #$pr_num (gh: $merge_out). Leave the PR open; an unsatisfiable review rule requires a human admin action, never an automated bypass." >&2
-    audit "REFUSED reason=policy-refused phase=merge gh_rc=$merge_rc repo=$nwo pr=#$pr_num sha=$sha"
-    exit 17
+# HIMMEL-3381: the same holds for a required-check or ruleset refusal — GitHub said
+# no, so exit once (18), alert once, and never poll or retry.
+if [ "$merge_rc" -ne 0 ] && { [[ "$merge_out" == *"base branch policy prohibits the merge"* ]] \
+        || [[ "$merge_out" == *"equired status check"* ]] \
+        || [[ "$merge_out" == *"Repository rule violations"* ]] \
+        || [[ "$merge_out" == *"approving review is required"* ]]; }; then
+    echo "merge-on-green: GitHub refused PR #$pr_num (gh: $merge_out). Leave the PR open; an unsatisfiable review or check rule requires a human admin action, never an automated bypass." >&2
+    block_alert "GitHub refused the merge: $(printf '%s' "$merge_out" | tr '\n' ' ' | cut -c1-200)"
+    audit "REFUSED reason=policy-refused phase=merge rule=github-refusal gh_rc=$merge_rc repo=$nwo pr=#$pr_num sha=$sha"
+    exit 18
 fi
 # Other non-zero gh statuses are not authoritative: gh can merge remotely and
 # then fail afterwards (network blip, post-merge bookkeeping). Re-read the remote

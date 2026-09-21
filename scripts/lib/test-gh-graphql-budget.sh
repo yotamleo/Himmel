@@ -83,6 +83,9 @@ if [ "$cmd" = "api" ]; then
                 echo "HTTP 403: API rate limit exceeded" >&2; exit 1
             fi
             echo "0 false null"; exit 0 ;;
+        # HIMMEL-3381: the required-set reads (--jq is ignored by this stub, so emit
+        # the post-jq shape: no required contexts).
+        *rules/branches*|*protection/required_status_checks*) log 0 "$@"; exit 0 ;;
         *) log 0 "$@"; echo '[]'; exit 0 ;;
     esac
 fi

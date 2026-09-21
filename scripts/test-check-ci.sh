@@ -123,6 +123,25 @@ if [ "$cmd" = "api" ]; then
             exit 0 ;;
     esac
     case "${2:-}" in
+        # HIMMEL-3381: the EFFECTIVE required-check set. Rulesets (rules/branches)
+        # and classic protection are two separate endpoints; the default is "no
+        # rule at all" so every pre-3381 case keeps its verdict untouched.
+        repos/octo/demo/rules/branches/main)
+            case "${GH_STUB_RULES:-none}" in
+                # Like every stub here, this emits the shape AFTER check-ci's --jq
+                # (one required context per line), not the raw ruleset JSON.
+                none) : ;;
+                fail) echo "HTTP 500: rules boom" >&2; exit 1 ;;
+                req:*) printf '%s\n' "${GH_STUB_RULES#req:}" | tr ',' '\n' ;;
+            esac
+            exit 0 ;;
+        repos/octo/demo/branches/main/protection/required_status_checks)
+            case "${GH_STUB_CLASSIC:-none}" in
+                none) echo "gh: Branch not protected (HTTP 404)" >&2; exit 1 ;;
+                fail) echo "gh: Must have admin rights to Repository. (HTTP 403)" >&2; exit 1 ;;
+                ctx:*) printf '%s\n' "${GH_STUB_CLASSIC#ctx:}" | tr ',' '\n' ;;
+            esac
+            exit 0 ;;
         repos/octo/demo/commits/sha1/check-runs*)
             echo '{"check_runs":[]}'
             exit 0 ;;
@@ -473,6 +492,7 @@ if [ "$cmd" = "pr" ] && [ "${2:-}" = "view" ]; then
                 *)          printf 'MPR_OK\noctocat\nfalse\n1\nREADME.md\n' ;;
             esac
             exit 0 ;;
+        *"baseRefName"*) echo "main"; exit 0 ;;
         *"headRefOid"*)
             if [ "${GH_STUB_HEAD:-stable}" = "moving" ]; then
                 h=$(cat "$GH_STUB_HEADC" 2>/dev/null)
@@ -499,6 +519,21 @@ case " $* " in
         # "CHECKCI_OK\n<pending names>" shape.
         case " $* " in
             *"bucket,name"*)
+                # HIMMEL-3381: the required gate's own row read ("<bucket><TAB><name>").
+                # GH_STUB_CHECKS is a newline list of "<bucket>:<name>".
+                case " $* " in
+                    *'\(.bucket)\t\(.name)'*)
+                        # late:<n>     first read lacks <n>, later reads carry it green
+                        # flipfail:<n> first read has <n> pending, later reads carry it failed
+                        rq=$(cat "$(dirname "$0")/reqrows-count" 2>/dev/null); rq=${rq:-0}
+                        echo $((rq+1)) > "$(dirname "$0")/reqrows-count"
+                        case "${GH_STUB_CHECKS:-pass:unit-tests}" in
+                            late:*) printf 'pass\tunit-tests\n'; [ "$rq" -eq 0 ] || printf 'pass\t%s\n' "${GH_STUB_CHECKS#late:}" ;;
+                            flipfail:*) if [ "$rq" -eq 0 ]; then printf 'pending\t%s\n' "${GH_STUB_CHECKS#flipfail:}"; else printf 'fail\t%s\n' "${GH_STUB_CHECKS#flipfail:}"; fi ;;
+                            *) printf '%s\n' "${GH_STUB_CHECKS:-pass:unit-tests}" | while IFS=: read -r b n; do printf '%s\t%s\n' "$b" "$n"; done ;;
+                        esac
+                        exit 0 ;;
+                esac
                 # HIMMEL-2907: _pending_checks_report's --jq is a DIFFERENT
                 # shape over these SAME --json bucket,name fields —
                 # "<count>\n<names>", no CHECKCI_OK sentinel — distinguished
@@ -671,6 +706,19 @@ exec sleep "$1"
 EOF
 chmod +x "$STUBDIR/counting-sleep" || { echo "FATAL: chmod on counting-sleep stub failed"; exit 1; }
 
+# HIMMEL-3381: the merge-block alert sender (MERGE_BLOCK_ALERT_CMD). Records
+# "<chat_id> <text>" per call; ALERT_FAIL=1 in its env makes it fail like a dead
+# bridge. The operator id comes from a fixture access.json — the FIRST POSITIVE
+# allowFrom entry, so the negative group id ahead of it must be skipped.
+cat > "$STUBDIR/alert-sender" <<'EOF'
+#!/usr/bin/env bash
+printf '%s %s\n' "$1" "$2" >> "$(dirname "$0")/alerts.log"
+[ -z "${GH_STUB_ALERT_FAIL:-}" ]
+EOF
+chmod +x "$STUBDIR/alert-sender" || { echo "FATAL: chmod on alert-sender stub failed"; exit 1; }
+printf '{"allowFrom":["-100777","555"],"dmPolicy":"allowlist"}\n' > "$STUBDIR/access.json"
+alert_count() { wc -l < "$STUBDIR/alerts.log" | tr -d ' '; }
+
 OUT=""; ERR=""; RC=0
 # Per-case opt-in overrides, reset after every run:
 SETTLE_OVERRIDE=0; THREADS_OVERRIDE=0; POLL_OVERRIDE=0; HEAD_OVERRIDE=stable; DECISION_OVERRIDE=null
@@ -708,6 +756,13 @@ CR_APP_OVERRIDE=1
 MPR_OVERRIDE=none
 BODY_FILE_OVERRIDE=""
 BODY_FILE2_OVERRIDE=""
+# HIMMEL-3381: drive the required-check stubs. Defaults = no rule, one green check.
+RULES_OVERRIDE=none
+CLASSIC_OVERRIDE=none
+CHECKS_OVERRIDE="pass:unit-tests"
+KEEP_ALERT_STATE=0
+ALERT_FAIL_OVERRIDE=""
+ACCESS_OVERRIDE="$STUBDIR/access.json"
 
 # --- HIMMEL-1953: no real sleeping, and no unbounded case -------------------
 #
@@ -768,6 +823,10 @@ run() {
     : > "$STUBDIR/freshness-reads"
     : > "$STUBDIR/comments"
     : > "$STUBDIR/claims"
+    : > "$STUBDIR/reqrows-count"
+    # HIMMEL-3381: alert state resets per run unless a case sets KEEP_ALERT_STATE=1
+    # (the dedupe case runs the SAME head twice and must see ONE alert).
+    if [ "$KEEP_ALERT_STATE" -ne 1 ]; then : > "$STUBDIR/alerts.log"; rm -rf "$STUBDIR/alert-sentinels"; fi
     # SC2086: $CASE_RUNNER_ARGS must word-split — this script builds it itself
     # out of digits, and an array is not bash-3.2 safe under set -u.
     # shellcheck disable=SC2086
@@ -792,6 +851,13 @@ run() {
         GH_STUB_MPR="$MPR_OVERRIDE" \
         GH_STUB_BODY_FILE="$BODY_FILE_OVERRIDE" \
         GH_STUB_BODY_FILE2="$BODY_FILE2_OVERRIDE" \
+        GH_STUB_RULES="$RULES_OVERRIDE" \
+        GH_STUB_CLASSIC="$CLASSIC_OVERRIDE" \
+        GH_STUB_CHECKS="$CHECKS_OVERRIDE" \
+        MERGE_BLOCK_ALERT_DIR="$STUBDIR/alert-sentinels" \
+        MERGE_BLOCK_ALERT_CMD="$STUBDIR/alert-sender" \
+        TELEGRAM_ACCESS_PATH="$ACCESS_OVERRIDE" \
+        GH_STUB_ALERT_FAIL="$ALERT_FAIL_OVERRIDE" \
         CHECK_CI_POLL_INTERVAL="$POLL_OVERRIDE" \
         CHECK_CI_SETTLE="$SETTLE_OVERRIDE" \
         CR_ESCALATE_WAIT="$ESCALATE_WAIT_OVERRIDE" \
@@ -813,6 +879,8 @@ run() {
     ESCALATE_WAIT_OVERRIDE=0; ESCALATE_POLL_OVERRIDE=0; MARKERS_OVERRIDE=""; SLEEP_CMD_OVERRIDE=":"
     CR_PROFILE_OVERRIDE=""; CR_APP_OVERRIDE=1
     FRESHNESS_OVERRIDE=fresh; FILES_OVERRIDE=README.md; CR_BOT_LOGINS_OVERRIDE=""; MPR_OVERRIDE=none; BODY_FILE_OVERRIDE=""; BODY_FILE2_OVERRIDE=""
+    RULES_OVERRIDE=none; CLASSIC_OVERRIDE=none; CHECKS_OVERRIDE="pass:unit-tests"
+    KEEP_ALERT_STATE=0; ALERT_FAIL_OVERRIDE=""; ACCESS_OVERRIDE="$STUBDIR/access.json"
 }
 
 run_in_repo() {
@@ -2177,7 +2245,110 @@ fi
 rm -f "$STUBDIR/coderabbit" "$CR_CLI_MARKER"
 unset CR_CLI_MARKER
 
+# --- 3381: GitHub blocks the merge -> fail fast, distinct exit, ONE alert -----
+# A required check that never reports, a required check that FAILED, and an
+# unreadable required set are each a merge GitHub will refuse. None may be waited
+# on past a stated bound (--grace) and each must fire exactly ONE operator alert
+# per (repo, PR, head). Every case pair varies ONE thing against a green control.
+
+# 3381-a — required check absent after --grace: exit 5 naming it, one DM to the
+# FIRST POSITIVE allowFrom id (555, not the group id ahead of it).
+RULES_OVERRIDE="req:codeowner-review-gate"; CHECKS_OVERRIDE="pass:unit-tests"
+run cr-completed --grace 0
+assert_rc 5 "3381-a a required check that never reports exits 5"
+assert_verdict 5 "3381-a exactly one verdict line, exit=5"
+assert_err_has "codeowner-review-gate" "3381-a the refusal names the missing required check"
+assert_err_has "MERGE-BLOCKED" "3381-a the operator-visible MERGE-BLOCKED line is printed"
+if [ "$(alert_count)" = 1 ]; then pass "3381-a exactly one alert sent"; else fail "3381-a exactly one alert sent" "count=$(alert_count)"; fi
+if grep -q '^555 MERGE-BLOCKED octo/demo#42 @sha1: .*codeowner-review-gate' "$STUBDIR/alerts.log"; then
+    pass "3381-a the DM goes to the first positive allowFrom id and names repo/PR/head/rule"
+else
+    fail "3381-a the DM goes to the first positive allowFrom id and names repo/PR/head/rule" "$(cat "$STUBDIR/alerts.log")"
+fi
+
+# 3381-b — control: the same rule, the check IS registered and green -> exit 0, NO alert.
+RULES_OVERRIDE="req:codeowner-review-gate"; CHECKS_OVERRIDE="pass:unit-tests
+pass:codeowner-review-gate"
+run cr-completed --grace 0
+assert_rc 0 "3381-b control: the required check reported green -> exit 0"
+if [ "$(alert_count)" = 0 ]; then pass "3381-b control: no alert on a green PR"; else fail "3381-b control: no alert on a green PR" "count=$(alert_count)"; fi
+
+# 3381-c — the required set is read from BOTH endpoints: a check required only by
+# classic protection (not the ruleset) is missing too.
+RULES_OVERRIDE=none; CLASSIC_OVERRIDE="ctx:legacy-required"; CHECKS_OVERRIDE="pass:unit-tests"
+run cr-completed --grace 0
+assert_rc 5 "3381-c a classic-protection-only required check is read (union) and its absence exits 5"
+assert_err_has "legacy-required" "3381-c the refusal names the classic-protection check"
+
+# 3381-d — an unreadable ruleset endpoint FAILS CLOSED (never an empty set).
+RULES_OVERRIDE=fail
+run cr-completed --grace 0
+assert_rc 5 "3381-d an unreadable ruleset read fails closed with exit 5"
+assert_err_has "required-set unreadable" "3381-d the refusal says the required set is unreadable"
+if [ "$(alert_count)" = 1 ]; then pass "3381-d one alert for an unreadable set"; else fail "3381-d one alert for an unreadable set" "count=$(alert_count)"; fi
+
+# 3381-e — an unreadable classic endpoint (403) fails closed too; only a 404
+# "Branch not protected" means "no classic rule".
+CLASSIC_OVERRIDE=fail
+run cr-completed --grace 0
+assert_rc 5 "3381-e a 403 on classic protection fails closed (only 404 means none)"
+assert_err_has "required-set unreadable" "3381-e names the unreadable set"
+
+# 3381-f — a required check FAILED before the watch: exit 1 at once (no watch, no
+# sleep), naming the check, one alert.
+RULES_OVERRIDE="req:codeowner-review-gate"; CHECKS_OVERRIDE="pass:unit-tests
+fail:codeowner-review-gate"
+SLEEP_CMD_OVERRIDE="$STUBDIR/counting-sleep"
+run cr-completed
+assert_rc 1 "3381-f a FAILED required check exits 1"
+assert_err_has "codeowner-review-gate" "3381-f the refusal names the failed required check"
+if [ "$(wc -l < "$STUBDIR/sleepcount" | tr -d ' ')" = 0 ]; then pass "3381-f a failed required check is never slept on"; else fail "3381-f a failed required check is never slept on" "sleeps=$(wc -l < "$STUBDIR/sleepcount")"; fi
+if [ "$(alert_count)" = 1 ]; then pass "3381-f one alert for a failed required check"; else fail "3381-f one alert for a failed required check" "count=$(alert_count)"; fi
+
+# 3381-g — dedupe: the SAME head refused twice sends ONE alert; the printed line
+# still appears both times.
+KEEP_ALERT_STATE=0
+RULES_OVERRIDE="req:codeowner-review-gate"; CHECKS_OVERRIDE="pass:unit-tests"
+run cr-completed --grace 0
+KEEP_ALERT_STATE=1; RULES_OVERRIDE="req:codeowner-review-gate"; CHECKS_OVERRIDE="pass:unit-tests"
+run cr-completed --grace 0
+assert_rc 5 "3381-g the second run is refused the same way"
+assert_err_has "MERGE-BLOCKED" "3381-g the second run still prints the MERGE-BLOCKED line"
+if [ "$(alert_count)" = 1 ]; then pass "3381-g one DM per (repo, PR, head) across two runs"; else fail "3381-g one DM per (repo, PR, head) across two runs" "count=$(alert_count)"; fi
+
+# 3381-h — a dead bridge NEVER changes the exit code.
+ALERT_FAIL_OVERRIDE=1; RULES_OVERRIDE="req:codeowner-review-gate"; CHECKS_OVERRIDE="pass:unit-tests"
+run cr-completed --grace 0
+assert_rc 5 "3381-h a failing alert sender leaves the exit code at 5"
+assert_err_has "DM delivery failed" "3381-h the delivery failure is reported, not swallowed"
+
+# 3381-i — no readable operator id: no DM, exit unchanged, the printed line is the alert.
+ACCESS_OVERRIDE="$STUBDIR/does-not-exist.json"; RULES_OVERRIDE="req:codeowner-review-gate"; CHECKS_OVERRIDE="pass:unit-tests"
+run cr-completed --grace 0
+assert_rc 5 "3381-i no readable access.json leaves the exit code at 5"
+if [ "$(alert_count)" = 0 ]; then pass "3381-i no DM without an operator chat id"; else fail "3381-i no DM without an operator chat id" "count=$(alert_count)"; fi
+
+# 3381-j — a required check that registers LATE inside --grace is waited for (the
+# bound), not refused: the first row read lacks it, the next has it.
+RULES_OVERRIDE="req:codeowner-review-gate"; CHECKS_OVERRIDE="late:codeowner-review-gate"
+run cr-completed --grace 30
+assert_rc 0 "3381-j a required check that registers within --grace is not refused"
+
+# 3381-k — the wait is BOUNDED: with --grace 1 and a real 1s poll, a check that
+# never appears is refused after the bound, not looped on.
+RULES_OVERRIDE="req:codeowner-review-gate"; CHECKS_OVERRIDE="pass:unit-tests"
+SLEEP_CMD_OVERRIDE="$STUBDIR/counting-sleep"; POLL_OVERRIDE=1
+run cr-completed --grace 1
+assert_rc 5 "3381-k a never-appearing required check is refused once --grace elapses"
+if [ "$(wc -l < "$STUBDIR/sleepcount" | tr -d ' ')" -le 3 ]; then pass "3381-k the wait stayed within the grace bound"; else fail "3381-k the wait stayed within the grace bound" "sleeps=$(wc -l < "$STUBDIR/sleepcount")"; fi
+
+# 3381-l — a required check that FAILS during the watch (red_exit) alerts once too.
+RULES_OVERRIDE="req:unit-tests"; CHECKS_OVERRIDE="flipfail:unit-tests"
+run red
+assert_rc 1 "3381-l a required check failing in the watch exits 1"
+if [ "$(alert_count)" = 1 ]; then pass "3381-l one alert for a required check that failed in the watch"; else fail "3381-l one alert for a required check that failed in the watch" "count=$(alert_count)"; fi
+
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 136 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 136"; exit 1; fi
+if [ "$COUNT" -ne 149 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 149"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1

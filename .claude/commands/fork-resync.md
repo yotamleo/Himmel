@@ -181,7 +181,7 @@ Same as `/drift-fix` steps 6–9:
   refused, exit 12) or `scripts/handover/pr-merge.sh`. **The ≥1-approval rule
   applies to this cadence exactly as it does to a human PR** — green CI is
   necessary, never sufficient.
-  `merge-on-green.sh` exits 17 (`policy-refused`) on a fresh pre-merge `BLOCKED` + `REVIEW_REQUIRED` policy read after green checks or an explicit GitHub base-branch policy rejection at merge time; if no automation identity can satisfy the required review, the merge is a human admin action (HIMMEL-2887).
+  `merge-on-green.sh` exits 18 (GitHub-blocked, HIMMEL-3381) on a fresh pre-merge `BLOCKED` + `REVIEW_REQUIRED` policy read after green checks, an explicit GitHub base-branch policy / required-check / ruleset rejection at merge time, or `check-ci.sh` exit 5 (a required check never reported, or the required set is unreadable) — once, with one operator DM per (repo, PR, head) and no poll or retry (exit 17 is now the console-GO refusal only); if no automation identity can satisfy the required review, the merge is a human admin action (HIMMEL-2887).
   Never `--admin`, never a branch-protection override. A merge refused for want
   of an approval is the rule working: leave the PR open, report `awaiting
   approval`, and stop. That is a successful run — the re-sync is captured in a

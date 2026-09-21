@@ -76,6 +76,12 @@ Act on the exit code:
   within seconds, suspect a GitHub Actions billing/permissions block rather
   than the code — check the run annotations first. Read bulky CI failure
   logs in a subagent, not the parent context.
+- `5` — GitHub will block this merge (HIMMEL-3381): a check the base branch
+  REQUIRES (rulesets via `rules/branches`, unioned with classic protection) never
+  reported within `--grace`, or the required set could not be read (never treated
+  as empty). Fail-fast: it is not waited on, prints one `MERGE-BLOCKED` line and
+  sends one operator DM per (repo, PR, head). A required check that reports
+  FAILURE stays exit `1` (same alert). `merge-on-green.sh` maps `5` to its exit 18.
 - `64` — usage error (sysexits `EX_USAGE`, HIMMEL-3317): an unknown flag, a flag
   missing its value, a non-numeric `--grace`/`--settle`/`--max-wait`, or two PR
   selectors. **No gate ran** — do not record it as a gate result. The PR number

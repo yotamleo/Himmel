@@ -263,7 +263,16 @@ STUBNODE
         # github origin selects the github backend, which reproduces the exact
         # `gh pr merge` shapes (incl. --admin fallback) these asserts expect.
         git remote add origin https://github.com/test/test.git
+        # HIMMEL-3381: the merge-block alert must never reach the real bridge — its
+        # sender is a logging stub, its sentinels and operator id live in the sandbox.
+        # shellcheck disable=SC2016  # literal stub body: $1/$2 expand when the stub runs, not here
+        printf '#!/usr/bin/env bash\nprintf "%%s|%%s\\n" "$1" "$2" >> "%s/alerts.log"\n' "$tmp" > "$tmp/bin/alert-sender"
+        chmod +x "$tmp/bin/alert-sender"
+        printf '{"allowFrom":["555"]}\n' > "$tmp/access.json"
+        : > "$tmp/alerts.log"
         GH_LOG="$ghlog" \
+            MERGE_BLOCK_ALERT_DIR="$tmp/alerts" MERGE_BLOCK_ALERT_CMD="$tmp/bin/alert-sender" \
+            TELEGRAM_ACCESS_PATH="$tmp/access.json" \
             PATH="$tmp/bin:$PATH" GH_CMD=gh \
             bash "$PR_MERGE" "$@" >"$tmp/out" 2>"$tmp/err"
     )
@@ -277,6 +286,8 @@ STUBNODE
     cp "$tmp/out" "$keep/out" 2>/dev/null
     cp "$tmp/err" "$keep/err" 2>/dev/null
     cp "$jiralog" "$keep/jira.log" 2>/dev/null || : > "$keep/jira.log"
+    cp "$tmp/alerts.log" "$keep/alerts.log" 2>/dev/null || : > "$keep/alerts.log"
+    LAST_ALERT_LOG="$keep/alerts.log"
     LAST_GH_LOG="$keep/gh.log"
     LAST_OUT="$keep/out"
     LAST_ERR="$keep/err"
@@ -289,6 +300,12 @@ STUBNODE
     pass
     rm -rf "$tmp"
     return 0
+}
+
+# HIMMEL-3381: count of operator DMs the stub sender received in the LAST run_case.
+assert_alerts() {
+    local got; got=$(grep -c . "$LAST_ALERT_LOG" 2>/dev/null || true)
+    if [ "${got:-0}" = "$1" ]; then pass; else fail "$2 (expected $1 DM(s), got ${got:-0})"; fi
 }
 
 # Assert the recorded gh log contains (or not) a substring.
@@ -343,6 +360,9 @@ assert_log_has "--admin" "authorized fallback used --admin"
 STUB_PLAIN_FAIL=1 \
     run_case "handover/x-slug" 4 "plain-fail + unauthorized exits 4"
 assert_log_lacks "--admin" "unauthorized never attempts --admin"
+# HIMMEL-3381: a refused GitHub merge sends exactly one operator DM.
+assert_alerts 1 "refused merge: exactly one operator DM"
+if grep -q '^555|MERGE-BLOCKED test/test#42' "$LAST_ALERT_LOG"; then pass; else fail "refused merge: DM names owner/repo#pr (got: $(cat "$LAST_ALERT_LOG"))"; fi
 
 # --- cosmetic worktree-held branch-delete error => exit 0 (no admin retry) ---
 STUB_COSMETIC=1 \
@@ -420,6 +440,7 @@ if STUB_CI_BLOCK=1 \
     run_case "handover/x-slug" 6 "CI-gate block exits 6 before check"; then
     assert_log_lacks "pr merge" "CI-gate block does not attempt merge"
     assert_err_has    "CI gate" "CI-gate block reports CI gate on stderr"
+    assert_alerts 1 "CI-gate block: exactly one operator DM (HIMMEL-3381)"
 fi
 
 # --- HIMMEL-1058: the merge is BOUND to the vetted head SHA ---
