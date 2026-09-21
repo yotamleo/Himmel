@@ -2524,7 +2524,8 @@ function fullPluginEnable() {
 
 // A confirm that behaves safely across the three ways runPlan reaches it:
 //   - a real interactive TTY: waits for a real answer; a blank Enter (an
-//     explicit 'line' with no text) resolves '' — the [Y/n] default, proceed.
+//     explicit 'line' with no text) resolves '' — the caller applies its own
+//     default (most prompts are [Y/n], proceed; uninstall is [y/N], decline).
 //   - the tail of an interactive session whose stdin already ran out (e.g.
 //     the T2 question engine hit EOF mid-flow under a forced
 //     HIMMELCTL_INTERACTIVE=1): the stream 'close's with NO 'line' for this
@@ -4395,8 +4396,8 @@ async function cmdInstall(args) {
 
 // ── uninstall (§5.5 locked decision, operator 2026-07-11) ───────────────────
 //
-// A THIN wrapper: summary + one confirm (same blank-Enter/EOF semantics as
-// runPlan's `Proceed?`), then exec the platform uninstall script verbatim
+// A THIN wrapper: summary + one confirm (default-No, HIMMEL-3328: only y/yes
+// consents; runPlan's `Proceed?` is default-Yes), then exec the platform uninstall script verbatim
 // (win32: uninstall.ps1 via the same interpreter selection T4 uses for
 // setup.ps1). Passes through NOTHING speculative from the cached install
 // profile — uninstall.sh/.ps1's own scope flags (--skip-plugins etc.) have
@@ -4665,13 +4666,14 @@ async function cmdUninstall(args) {
       return 2;
     }
     const EOF = '\u0000himmelctl-eof';
-    const ans = await askConfirmSafe('Proceed? [Y/n] ', EOF);
+    const ans = await askConfirmSafe('Proceed? [y/N] ', EOF);
     if (ans === EOF) {
       console.error('himmelctl: ERROR: non-interactive run without --yes — aborting (fail-closed).');
       console.error('  Re-run with --yes to confirm, or --dry-run to preview.');
       return 2;
     }
-    if (/^\s*n/i.test(ans)) {
+    // Default-No (HIMMEL-3328): a bare Enter or anything but y/yes declines.
+    if (!/^\s*(y|yes)\s*$/i.test(ans)) {
       console.log('himmelctl: declined; nothing run.');
       return 3;
     }

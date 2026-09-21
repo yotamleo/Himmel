@@ -146,8 +146,48 @@ if [ "$(uname -s)" = "Linux" ] && command -v script >/dev/null 2>&1; then
     else
         confirm_failed=$((confirm_failed + 1))
     fi
+    # C13-C18 — HIMMEL-3328 (operator ruling a): the prompt is default-No,
+    # `Proceed? [y/N]`. Only y/yes (any case) consents; a bare Enter or any
+    # other answer declines with rc=3. Each runs under the scratch HOME above.
+    printf '\n' | script -qec "node \"$root/scripts/himmelctl/bin.js\" uninstall" /dev/null >"$tmp/out" 2>"$tmp/err"; rc=$? # gnu-ok: util-linux script(1), and the block is uname-gated to Linux
+    if (
+        check_rc 3 "$rc" C13
+        check_has 'Proceed? [y/N]' "$tmp/out" C13
+        check_has 'declined; nothing run' "$tmp/out" C13
+        check_not_has 'fixture-teardown' "$tmp/out" C13
+    ); then
+        echo 'ok - C13 TTY bare Enter declines with rc=3 and the prompt reads [y/N]'
+    else
+        confirm_failed=$((confirm_failed + 1))
+    fi
+
+    for confirm_answer in y Y yes YES; do
+        printf '%s\n' "$confirm_answer" | script -qec "node \"$root/scripts/himmelctl/bin.js\" uninstall" /dev/null >"$tmp/out" 2>"$tmp/err"; rc=$? # gnu-ok: util-linux script(1), and the block is uname-gated to Linux
+        if (
+            check_rc 7 "$rc" "C14 ($confirm_answer)"
+            check_has 'fixture-teardown' "$tmp/out" "C14 ($confirm_answer)"
+            check_not_has 'declined; nothing run' "$tmp/out" "C14 ($confirm_answer)"
+        ); then
+            echo "ok - C14 TTY '$confirm_answer' proceeds and propagates rc=7"
+        else
+            confirm_failed=$((confirm_failed + 1))
+        fi
+    done
+
+    for confirm_answer in n N no maybe ok; do
+        printf '%s\n' "$confirm_answer" | script -qec "node \"$root/scripts/himmelctl/bin.js\" uninstall" /dev/null >"$tmp/out" 2>"$tmp/err"; rc=$? # gnu-ok: util-linux script(1), and the block is uname-gated to Linux
+        if (
+            check_rc 3 "$rc" "C15 ($confirm_answer)"
+            check_has 'declined; nothing run' "$tmp/out" "C15 ($confirm_answer)"
+            check_not_has 'fixture-teardown' "$tmp/out" "C15 ($confirm_answer)"
+        ); then
+            echo "ok - C15 TTY '$confirm_answer' declines with rc=3"
+        else
+            confirm_failed=$((confirm_failed + 1))
+        fi
+    done
 else
-    echo 'skip - C9-C11 pty coverage needs Linux script(1)'
+    echo 'skip - C9-C15 pty coverage needs Linux script(1)'
 fi
 
 # WHY (HIMMEL-2755): --yes must actually bypass the prompt and propagate the
