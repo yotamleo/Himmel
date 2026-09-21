@@ -74,7 +74,7 @@ home_is_scratch() {
   local mk_re='^('"$mk"'|"'"$mk"'")(.*)$'
   # the brace form must END in an unconditional exit/return: every command before it is
   # `;`-separated with no `&&` / `||` / `&` / `|` bar a `>&N` redirect (`{ false && exit 1; }` falls through).
-  local guard_re='^[[:space:]]*\|\|[[:space:]]*((exit|return)([^A-Za-z0-9_]|$)|\{(([^};&|]|>&[0-9])*;)*[[:space:]]*(exit|return)([[:space:]]+[0-9]+)?[[:space:]]*;[[:space:]]*\})'
+  local guard_re='^[[:space:]]*\|\|[[:space:]]*((exit|return)([[:space:]]+[0-9]+)?[[:space:]]*([;)#]|$)|\{(([^};&|]|>&[0-9])*;)*[[:space:]]*(exit|return)([[:space:]]+[0-9]+)?[[:space:]]*;[[:space:]]*\})'
   local drop_re='(^|[^A-Za-z0-9_])(unset([[:space:]]+-[A-Za-z]+)*([[:space:]]+[A-Za-z_][A-Za-z0-9_]*)*[[:space:]]+HOME|env[[:space:]].*(-u[[:space:]]*|--unset=)HOME)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_])env([[:space:]]+-[A-Za-z]*i[A-Za-z]*|[[:space:]]+--ignore-environment|[[:space:]]+-)([[:space:]]|$)'
   local scratch=" " names=() vals=()
   while IFS= read -r line || [ -n "$line" ]; do
@@ -350,6 +350,7 @@ pin h-home-default.sh 'HOME=$(mktemp -d)' ': "${HOME:=@H@}"' '@V@=1 bash uninsta
 pin h-v-subscript.sh 'td=$(mktemp -d) || exit 1' 'td[0]=@H@' 'HOME="$td" @V@=1 bash uninstall.sh --yes'
 pin h-conditional-guard.sh 'td=$(mktemp -d /nonexistent/x.XXXXXX) || { false && exit 1; }' 'HOME="$td@H@" @V@=1 bash uninstall.sh --yes'
 pin h-redirect-and-guard.sh 'td=$(mktemp -d /nonexistent/x.XXXXXX) || { echo no >&2 && exit 1; }' 'HOME="$td@H@" @V@=1 bash uninstall.sh --yes'
+pin h-guard-exit-hyphen.sh 'td=$(mktemp -d /nonexistent/x.XXXXXX) || exit-later' 'HOME="$td@H@" @V@=1 bash uninstall.sh --yes'
 pin h-guard-exit-later.sh 'td=$(mktemp -d /nonexistent/x.XXXXXX) || { exit_later=1; }' 'HOME="$td@H@" @V@=1 bash uninstall.sh --yes'
 # HIMMEL-3344 (CodeRabbit): a longer identifier ending in the name is not the name.
 printf '#!/usr/bin/env bash\nNOT_%s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-prefixed-name.sh"
