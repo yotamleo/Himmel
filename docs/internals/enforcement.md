@@ -3941,6 +3941,21 @@ ERROR: refusing a wet uninstall — found <marker>
   Otherwise, pass --dry-run to preview without touching anything.
 ```
 
+Lifting the fence is policed at the caller, not at runtime (HIMMEL-3336). The
+manifest rows whose env column is `-` (`user-claude-md`, `user-agents-md`,
+`hud-config`) resolve `{HOME}` from `$HOME` with no per-row override, so a suite
+that lifted the fence while redirecting only *some* of `[6/8]` (the
+`HIMMEL_USER_SETTINGS`/cache/bridge vars) reached the operator's live files. A
+runtime refusal on "fence lifted plus a per-row override" was rejected: the
+himmelctl wizard's confirmed teardown does exactly that for an operator with a
+non-default install, and at runtime it is indistinguishable from a suite. The
+rule instead: every file under `scripts/` that sets `HIMMEL_UNINSTALL_REAL_HOME=1`
+must also assign a scratch `HOME` (`mktemp`-derived) in the same file, or be on
+the short operator-path allowlist in `scripts/test-uninstall-real-home-callers.sh`
+(today `scripts/himmelctl/bin.js` and the remedy text in `scripts/uninstall.sh`,
+a reason each). That suite is a text heuristic and says so; adding an
+operator-path caller means adding it to the allowlist on purpose.
+
 Same operator ruling: wet/destructive test suites now run only inside a VM,
 never against a live station — see [`docs/setup/vms.md`](../setup/vms.md).
 

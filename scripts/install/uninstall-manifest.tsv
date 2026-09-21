@@ -16,6 +16,10 @@
 #   kind     dir | settings | githooks | process | jobs | plugins | marketplaces | file
 #   env      env var that overrides the path (tests, non-default installs)
 #   path     default path; tokens {HOME} {PWD} {REPO_ROOT} {HOOKS_REPO_ROOT}
+#            ({HOME} is $HOME and {PWD} is the caller's cwd: neither has a twin
+#            root override, so a caller confines a row that has no env var by
+#            giving the run a scratch HOME / cwd — see the HIMMEL-3336 rule in
+#            docs/internals/enforcement.md)
 #   step     uninstall.sh step that acts on it (1-8; '-' for keep rows)
 #   what     one line shown in the footprint
 bridge-process	code	telegram-bridge	process	-	-	1	the telegram bun bridge supervisor (stopped, not deleted)
