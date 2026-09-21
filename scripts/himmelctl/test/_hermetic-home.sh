@@ -98,4 +98,4 @@ winpath() {
   fi
   printf '%s' "$_out"
 }
-HIMMEL_PROVENANCE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/himmel-prov.XXXXXX")"; export HIMMEL_PROVENANCE_DIR  # HIMMEL-3332: suites never write the real ledger
+HIMMEL_PROVENANCE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/himmel-prov.XXXXXX")" || { echo "hermetic-home: FATAL — no scratch dir for HIMMEL_PROVENANCE_DIR" >&2; exit 1; }; export HIMMEL_PROVENANCE_DIR  # HIMMEL-3332: suites never write the real ledger

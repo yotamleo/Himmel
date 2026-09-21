@@ -149,6 +149,7 @@ case "$SCOPE" in
   project) SETTINGS_FILE="$PWD/.claude/settings.json" ;;
   local)   SETTINGS_FILE="$PWD/.claude/settings.local.json" ;;
 esac
+PROV_SETTINGS_FILE="$SETTINGS_FILE"   # the file `claude plugin install --scope` writes; --settings never redirects the CLI
 [[ -n "$SETTINGS" ]] && SETTINGS_FILE="$SETTINGS"
 
 # ── Pre-existence probes for the provenance records (HIMMEL-3332 S3) ─────────
@@ -161,31 +162,37 @@ esac
 PROV_CFG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 PROV_SCOPE="$SCOPE"; [[ "$SCOPE" == local ]] && PROV_SCOPE=project   # the ledger has no `local` scope; cli_scope keeps it
 
-settings_declares() {   # <section> <key> — key present in this scope's settings file
-  [[ -f "$SETTINGS_FILE" ]] || return 1
-  jq -e --arg s "$1" --arg k "$2" '(.[$s] // {}) | has($k)' "$SETTINGS_FILE" >/dev/null 2>&1 && return 0
-  jq -e . "$SETTINGS_FILE" >/dev/null 2>&1 && return 1
+# json_declares <file> <jq-test> <a> [<b>] — file exists and the test (over --arg a/b) holds;
+# a file that exists but does not parse reads as "declared" (unknown = keep), an absent one does not.
+json_declares() {
+  [[ -f "$1" ]] || return 1
+  jq -e --arg a "$3" --arg b "${4:-}" "$2" "$1" >/dev/null 2>&1 && return 0
+  jq -e . "$1" >/dev/null 2>&1 && return 1
   return 0
+}
+settings_declares() {   # <section> <key> — key present in this scope's settings file
+  # shellcheck disable=SC2016  # $a/$b are jq variables (--arg), not shell expansions
+  json_declares "$PROV_SETTINGS_FILE" '(.[$a] // {}) | has($b)' "$1" "$2"
 }
 plugin_preexisted() {   # <spec> — the scope's enabledPlugins, or (user scope) the plugin's cache dir / install record
   settings_declares enabledPlugins "$1" && return 0
   [[ "$SCOPE" == user ]] || return 1
   [[ -d "$PROV_CFG_DIR/plugins/cache/${1##*@}/${1%@*}" ]] && return 0
-  [[ -f "$PROV_CFG_DIR/plugins/installed_plugins.json" ]] \
-    && jq -e --arg k "$1" '(.plugins // {}) | has($k)' "$PROV_CFG_DIR/plugins/installed_plugins.json" >/dev/null 2>&1
+  # shellcheck disable=SC2016  # $a/$b are jq variables (--arg), not shell expansions
+  json_declares "$PROV_CFG_DIR/plugins/installed_plugins.json" '(.plugins // {}) | has($a)' "$1"
 }
 marketplace_preexisted() {   # <name> — this scope's settings, or the CLI's user-level registry (a marketplace is global)
   settings_declares extraKnownMarketplaces "$1" && return 0
   [[ -d "$PROV_CFG_DIR/plugins/marketplaces/$1" ]] && return 0
-  [[ -f "$PROV_CFG_DIR/plugins/known_marketplaces.json" ]] \
-    && jq -e --arg k "$1" 'has($k)' "$PROV_CFG_DIR/plugins/known_marketplaces.json" >/dev/null 2>&1
+  # shellcheck disable=SC2016  # $a/$b are jq variables (--arg), not shell expansions
+  json_declares "$PROV_CFG_DIR/plugins/known_marketplaces.json" 'has($a)' "$1"
 }
 # prov_register <kind> <unit> <preexisted true|false> [--field K=JSON ...]
 prov_register() {
   local kind="$1" unit="$2" pre="$3" row=plugins
   shift 3
   [[ "$kind" == marketplace ]] && row=marketplaces
-  prov_note register "$kind" "$SETTINGS_FILE" --unit "$unit" --scope "$PROV_SCOPE" --class code --row "$row" \
+  prov_note register "$kind" "$PROV_SETTINGS_FILE" --unit "$unit" --scope "$PROV_SCOPE" --class code --row "$row" \
     --field "cli_scope=\"$SCOPE\"" --field "preexisted=$pre" --writer install-plugins.sh "$@"
 }
 

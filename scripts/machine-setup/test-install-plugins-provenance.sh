@@ -259,10 +259,46 @@ else
 fi
 chmod 0600 "$HOME/.himmel/provenance.jsonl" 2>/dev/null
 
+# ── Case 12: --settings redirects only the autoUpdate patch, not what the CLI writes ─
+# The stub CLI (like the real one) writes the scope's default settings, so the
+# pre-existence read and the recorded path must follow the scope's file, not the override.
+fresh_env override
+mkdir -p "$HOME/.claude"
+echo '{ "enabledPlugins": { "context7@claude-plugins-official": true } }' > "$HOME/.claude/settings.json"
+out=$(run_install --scope user --settings "$CASE/elsewhere.json"); rc=$?
+assert_eq "12 install rc" 0 "$rc"
+r=$(row plugin context7@claude-plugins-official)
+assert_eq "12 --settings override: context7 still reads preexisted" true "$(field "$r" .preexisted)"
+assert_eq "12 --settings override: path is the scope's settings file" "$HOME/.claude/settings.json" "$(field "$r" .path)"
+
+# ── Case 13: an unparseable CLI registry reads as pre-existing (unknown = keep) ─
+fresh_env badregistry
+mkdir -p "$HOME/.claude/plugins"
+echo '{ not json' > "$HOME/.claude/plugins/installed_plugins.json"
+echo '{ not json' > "$HOME/.claude/plugins/known_marketplaces.json"
+out=$(run_install --scope user); rc=$?
+assert_eq "13 install rc" 0 "$rc"
+assert_eq "13 corrupt installed_plugins.json: plugin reads preexisted" true \
+    "$(field "$(row plugin context7@claude-plugins-official)" .preexisted)"
+assert_eq "13 corrupt known_marketplaces.json: marketplace reads preexisted" true \
+    "$(field "$(row marketplace claude-plugins-official)" .preexisted)"
+
+# ── Case 14: a parseable registry without the entry reads as NOT pre-existing (control) ─
+fresh_env goodregistry
+mkdir -p "$HOME/.claude/plugins"
+echo '{ "plugins": {} }' > "$HOME/.claude/plugins/installed_plugins.json"
+echo '{}' > "$HOME/.claude/plugins/known_marketplaces.json"
+out=$(run_install --scope user); rc=$?
+assert_eq "14 install rc" 0 "$rc"
+assert_eq "14 valid registry without the plugin: preexisted false" false \
+    "$(field "$(row plugin context7@claude-plugins-official)" .preexisted)"
+assert_eq "14 valid registry without the marketplace: preexisted false" false \
+    "$(field "$(row marketplace claude-plugins-official)" .preexisted)"
+
 if [ "$(real_ledger_sha)" = "$REAL_LEDGER_BEFORE" ]; then
-    pass "12 the real ~/.himmel ledger is untouched by this suite"
+    pass "15 the real ~/.himmel ledger is untouched by this suite"
 else
-    fail "12 the real ~/.himmel ledger changed during this suite (a case leaked out of its scratch HOME)"
+    fail "15 the real ~/.himmel ledger changed during this suite (a case leaked out of its scratch HOME)"
 fi
 
 echo ""
