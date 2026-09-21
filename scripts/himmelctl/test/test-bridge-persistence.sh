@@ -704,7 +704,7 @@ process.env.BRIDGE_PERSISTENCE_STUB_STATE = STUB_STATE;
 
   const first = m.installSystemdUnit({ repoRoot: REPO_FIXTURE });
   if (!first.ok) {
-    skip('provenance: unit rows', `install did not complete on this host (${first.detail})`);
+    check('provenance: first install completes (systemctl is stubbed on PATH)', true, first.ok + ' ' + first.detail);
   } else {
     const f1 = unitRows('file');
     check('provenance: first install records one file row', f0 + 1, f1.length);
@@ -729,6 +729,20 @@ process.env.BRIDGE_PERSISTENCE_STUB_STATE = STUB_STATE;
     check('provenance: linger-no re-install ok', true, third.ok);
     const u3 = unitRows('unit');
     check('provenance: unit row carries linger_preexisted=false (loginctl said no)', false, u3[u3.length - 1].linger_preexisted);
+
+    // an unreadable existing unit has an unknown pre-state: the file is replaced
+    // but no file row is recorded (recording it as absent would claim ownership)
+    fs.chmodSync(unitPath, 0);
+    let readable = true;
+    try { fs.readFileSync(unitPath); } catch (_e) { readable = false; }
+    if (!readable) {
+      const f3 = unitRows('file').length;
+      const fourth = m.installSystemdUnit({ repoRoot: REPO_FIXTURE });
+      check('provenance: unreadable-unit re-install ok', true, fourth.ok);
+      check('provenance: unreadable pre-state records no file row', f3, unitRows('file').length);
+    } else {
+      skip('provenance: unreadable pre-state', 'chmod 000 does not block reads on this host');
+    }
   }
 }
 

@@ -186,7 +186,10 @@ function installSystemdUnit({ repoRoot, dryRun } = {}) {
   try {
     if (fs.existsSync(UNIT_PATH)) unitPre = ['replace', '--pre-text', fs.readFileSync(UNIT_PATH, 'utf8'), '--backup'];
   } catch (e) {
-    console.error(`himmelctl: WARN: provenance pre-state of ${UNIT_PATH} unreadable (${e.message}) — recording it as absent`);
+    // unknown pre-state: recording it as absent would claim ownership of bytes
+    // this run replaces without keeping them, so record nothing for the file
+    unitPre = null;
+    console.error(`himmelctl: WARN: provenance pre-state of ${UNIT_PATH} unreadable (${e.message}) — not recording the unit file`);
   }
   let lingerPre = null;
   try { lingerPre = lingerEnabled({ user: os.userInfo().username }); } catch (_e) { lingerPre = null; }
@@ -199,7 +202,7 @@ function installSystemdUnit({ repoRoot, dryRun } = {}) {
   } catch (e) {
     return { ok: false, actions: [], detail: `failed to write ${UNIT_PATH}: ${e.message}` };
   }
-  provRow([unitPre[0], 'file', UNIT_PATH, ...unitPre.slice(1), '--post-file', UNIT_PATH, '--scope', 'user', '--class', 'code']);
+  if (unitPre) provRow([unitPre[0], 'file', UNIT_PATH,...unitPre.slice(1), '--post-file', UNIT_PATH, '--scope', 'user', '--class', 'code']);
 
   // codex-1 CR fix (round 10): everything below this point runs AFTER the
   // first durable side effect (the unit file is now really on disk at
