@@ -1075,6 +1075,13 @@ grepq "$ep" -E '\-\- +codex +DISABLED' \
   || fail "caseM: an overlay-disabled lane should read DISABLED: $ep"
 grepq "$ep" 'config set lanes.codex-exec on' \
   || fail "caseM: the fix for a disabled lane is a config flip, and must be named: $ep"
+# HIMMEL-3327: the printed command must run from ANY cwd (the summary is printed
+# for the adopter's project, not the clone): the running bin.js, absolute, never
+# the clone-relative `node scripts/himmelctl/bin.js`.
+grepq "$ep" -F "node $(winpath "$wizard") config set lanes.codex-exec on" \
+  || fail "caseM: the re-enable command must name the ABSOLUTE bin.js: $ep"
+grepq "$ep" -F 'node scripts/himmelctl/bin.js' \
+  && fail "caseM: no clone-relative himmelctl command may be printed: $ep"
 # It is installed — so it must NOT be reported as something to go install.
 grepq "$ep" -E "$CODEX_ANY_HINT_RE" \
   && fail "caseM: a DISABLED-but-installed lane must not be sent back to the package manager: $ep"
@@ -1171,6 +1178,11 @@ grepq "$ep" -E 'XX +codex +MISCONFIGURED' \
   || fail "caseP1: forced-on-but-absent should read MISCONFIGURED: $ep"
 grepq "$ep" -F "$CODEX_INSTALL_HINT" \
   || fail "caseP1: the install command must survive a bogus override: $ep"
+# HIMMEL-3327: the clear-the-override command must also be absolute.
+grepq "$ep" -F "node $(winpath "$wizard") config set lanes.codex-exec off" \
+  || fail "caseP1: the clear-override command must name the ABSOLUTE bin.js: $ep"
+grepq "$ep" -F 'node scripts/himmelctl/bin.js' \
+  && fail "caseP1: no clone-relative himmelctl command may be printed: $ep"
 
 # P2 — forced ON with the binary actually there: still present, and the detail
 # must name the REAL reason, not the override ("registry probe kind=always").
@@ -1468,6 +1480,10 @@ grepq "$ep" -F "$CODEX_INSTALL_HINT" \
   || fail "caseV: the install command must be listed: $ep"
 grepq "$ep" 'config set lanes.codex-exec on' \
   || fail "caseV: the overlay re-enable must ALSO be listed: $ep"
+grepq "$ep" -F "node $(winpath "$wizard") config set lanes.codex-exec on" \
+  || fail "caseV: the overlay re-enable must name the ABSOLUTE bin.js: $ep"
+grepq "$ep" -F 'node scripts/himmelctl/bin.js' \
+  && fail "caseV: no clone-relative himmelctl command may be printed: $ep"
 grepq "$ep" -F "$CODEX_SETUP_STEP" \
   || fail "caseV: the setup step must survive here too: $ep"
 grepq "$ep" 'DISABLED by scripts/lanes/lanes.local.json' \

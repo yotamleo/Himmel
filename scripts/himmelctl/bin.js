@@ -31,7 +31,7 @@ const os = require('os');
 const path = require('path');
 const readline = require('readline');
 const { spawnSync } = require('child_process');
-const { cacheDir, profileForVault, which, resolvePowershell } = require('./lib/helpers.js');
+const { cacheDir, profileForVault, which, resolvePowershell, displayPath, shellQuote, nodeScriptCmd } = require('./lib/helpers.js');
 const stateLib = require('./lib/state.js');
 const statusReportLib = require('./lib/status-report.js');
 const installEngineLib = require('./lib/install-engine.js');
@@ -196,7 +196,8 @@ commands:
                           every consumer.) Hooks take effect on the next matching
                           event — no restart needed (measured, HIMMEL-1561).
                           Confirm with
-                          'node scripts/trust/shadow-ledger.mjs report':
+                          ${nodeScriptCmd(path.join(himmelRoot(), 'scripts/trust/shadow-ledger.mjs'))} report
+                          (an absolute path, so it runs from any directory):
                           it must show non-zero rows AND a PROVEN collection
                           line. "It is wired" is a different claim from "it is
                           recording", and both are different from "the rate can
@@ -2377,16 +2378,6 @@ function projectTargetDir() {
   return path.resolve(process.cwd());
 }
 
-// Forward-slash a path for DISPLAY in a diagnostic that tells the operator to
-// run something (HIMMEL-2892 CR round 2, [codex-1]). path.join/resolve emit
-// native separators, so on Windows the printed `bash C:\\...\\scripts\\setup.sh`
-// is not pasteable into the Git Bash shell the same line names — the shell eats
-// `\s` — and it is the same collapse wire-pretooluse-hooks.sh forward-slashes
-// its hook commands to avoid. Display only; nothing compares against this.
-function displayPath(p) {
-  return String(p).split(path.sep).join('/');
-}
-
 // realpath, falling back to the resolved path when the entry cannot be
 // stat'ed (a not-yet-created dir, a permission gap) — never throws.
 function realpathOrSelf(p) {
@@ -2435,12 +2426,6 @@ function projectTargetIsHimmelCheckout() {
   return Boolean(targetGit) && Boolean(cloneGit) && targetGit === cloneGit;
 }
 
-// Shell-quote one arg for DISPLAY only (the spawn below uses argv directly,
-// no shell — this only affects the printed `derived:` line).
-function shellQuote(a) {
-  return /\s/.test(a) ? `'${String(a).replace(/'/g, "'\\''")}'` : a;
-}
-
 function displayCommand(cmd) {
   return cmd.argv.map(shellQuote).join(' ');
 }
@@ -2455,7 +2440,7 @@ function displayCommand(cmd) {
 // operator pastes the line from whatever project the install summary was
 // printed for, where a clone-relative `scripts/himmelctl/bin.js` is not found.
 function printUninstallFooter() {
-  console.log(`To uninstall later: node ${shellQuote(displayPath(__filename))} uninstall`);
+  console.log(`To uninstall later: ${nodeScriptCmd(__filename)} uninstall`);
 }
 
 // Spawn the derived command VERBATIM (stdio inherit) and propagate its exit
@@ -5601,7 +5586,7 @@ async function cmdEnsure(args) {
           // No recorded answer, and this run cannot ask right now
           // (--dry-run, or non-interactive/piped stdin) — the one thing
           // this gate must never do is treat that silence as consent.
-          console.log(`himmelctl: guardrail-block-global has no recorded consent yet — staying manual (run 'himmelctl ensure' interactively once to decide; recommended: yes). Direct fix: node ${shellQuote(displayPath(path.join(repoRoot(), 'scripts', 'hooks', 'guardrail-block.mjs')))} install --node <ABS_NODE> --bash <ABS_BASH>`);
+          console.log(`himmelctl: guardrail-block-global has no recorded consent yet — staying manual (run 'himmelctl ensure' interactively once to decide; recommended: yes). Direct fix: ${nodeScriptCmd(path.join(repoRoot(), 'scripts/hooks/guardrail-block.mjs'))} install --node <ABS_NODE> --bash <ABS_BASH>`);
         }
       }
     }

@@ -103,4 +103,29 @@ function resolvePowershell(env) {
   return ps51;
 }
 
-module.exports = { cacheDir, profileForVault, which, resolvePowershell };
+// Forward-slash a path for DISPLAY in a diagnostic that tells the operator to
+// run something (HIMMEL-2892 CR round 2, [codex-1]). path.join/resolve emit
+// native separators, so on Windows the printed `bash C:\\...\\scripts\\setup.sh`
+// is not pasteable into the Git Bash shell the same line names — the shell eats
+// `\s` — and it is the same collapse wire-pretooluse-hooks.sh forward-slashes
+// its hook commands to avoid. Display only; nothing compares against this.
+function displayPath(p) {
+  return String(p).split(path.sep).join('/');
+}
+
+// Shell-quote one arg for DISPLAY only (the spawn below uses argv directly,
+// no shell — this only affects the printed `derived:` line).
+function shellQuote(a) {
+  return /\s/.test(a) ? `'${String(a).replace(/'/g, "'\\''")}'` : a;
+}
+
+// HIMMEL-3327: `node <script>` for a printed hint. Every printed
+// "run this" line must work from ANY cwd — the operator pastes it from the
+// project the summary was printed for, not from the himmel clone — so the
+// script path is absolute (callers pass __filename or a path joined onto the
+// clone root, never a clone-relative literal), forward-slashed and quoted.
+function nodeScriptCmd(scriptPath) {
+  return `node ${shellQuote(displayPath(scriptPath))}`;
+}
+
+module.exports = { cacheDir, profileForVault, which, resolvePowershell, displayPath, shellQuote, nodeScriptCmd };
