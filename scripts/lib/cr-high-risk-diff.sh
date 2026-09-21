@@ -21,7 +21,7 @@
 #   rc 2 = cannot determine; stdout is a short machine reason
 #
 # Env:
-#   GH_CMD  gh override (test seam, matching cr-review-freshness.sh)
+#   GH_CMD  gh override (test seam, same shape as cr-signal.sh)
 #
 # Sourceable from check-ci.sh: uses only `return`, never `exit`; does not toggle
 # set -e. bash 3.2-safe.

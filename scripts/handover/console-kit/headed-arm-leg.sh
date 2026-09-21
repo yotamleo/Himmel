@@ -156,10 +156,10 @@
 #
 # LEG_SUPPRESS_CR_TRIGGER (HIMMEL-3141): set in the launching shell to
 # suppress the CodeRabbit auto-trigger for this one leg - see the
-# LEG_REPO-style fold below for the mechanism and scripts/lib/cr-trigger-ledger.sh
-# for why a console would ever want this (sequencing the account-wide,
-# roughly-hourly CodeRabbit review slot across several open PRs). Opt-out,
-# default ON: unset changes nothing.
+# LEG_REPO-style fold below for the mechanism. CodeRabbit is best effort
+# (HIMMEL-3360): the knob exists so a console can skip the review on a PR
+# that will never get one (machine-generated class), never to ration or
+# sequence it. Opt-out, default ON: unset changes nothing.
 set -u
 
 usage() {

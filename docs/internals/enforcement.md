@@ -1045,19 +1045,13 @@ false-blocked, since the regex has no notion of quoting. The
 marker (`<git-common-dir>/cr-pending/<branch>`) is written by
 `check-cr-before-push.sh` on push and cleared through
 `scripts/cr/clear-cr-marker.sh` when `/pr-check` runs clean. For an existing PR,
-that chokepoint accepts only `check-ci.sh` exit 0. A stale CodeRabbit review
-anchor (exit 4) can reach 0 through the existing clean exact-head critic-panel
-ledger by DEFAULT now (HIMMEL-2162) — regardless of `scripts/lib/cr-high-risk-diff.sh`'s
-classification of the changed-file list; a clean panel that reviewed THIS head
-is the same evidence a fresh App review would be, high-risk diff or not. The
-interim HIMMEL-1718 knob `CHECK_CI_FRESHNESS_CARRY_HIGH_RISK` is RETIRED — it
-only ever gated whether the panel-carry check was reachable, never bypassed the
-need for real panel evidence, so making the check unconditional left it with
-no remaining job. Fail-closed is unchanged: no panel row at this head still
-exits 4. Hooks, settings, guardrails, cadence, merge/CR gate, and pre-commit
-surfaces stay blocked on that shape. A carried clear records
-`carry=freshness-panel`, stale anchor, responders, and models in
-`<git-common-dir>/clear-cr-marker.log` for durable provenance.
+that chokepoint accepts only `check-ci.sh` exit 0. CodeRabbit's own signal is
+not part of that verdict (HIMMEL-3360): a stale, absent, skipped or
+rate-limited App review prints a NOTE, and the gate is CI green + zero
+unresolved threads. The stale-anchor exit 4 and the HIMMEL-2162 "panel carry"
+that cleared it from an exact-head critic-panel row (`carry=freshness-panel`
+in `<git-common-dir>/clear-cr-marker.log`) are retired with it, as the interim
+`CHECK_CI_FRESHNESS_CARRY_HIGH_RISK` knob was before them.
 **Repo resolution is cwd-first (HIMMEL-2035).** The hook resolves the repo whose
 marker it checks in this order: the payload's `.tool_input.cwd`, else `.cwd`,
 accepted only when the path exists and is inside a git work tree; else
@@ -2009,8 +2003,9 @@ Paired artifacts: `scripts/lib/branch-shipped.sh` (predicate),
 ### `block-unresolved-cr-merge.sh` — CodeRabbit merge-remark gate (HIMMEL-936)
 
 Fires on Bash/PowerShell. Blocks a `gh pr merge` while the target PR has
-unresolved CodeRabbit review threads OR CodeRabbit's verdict on the head SHA is
-anything other than `success` — including **absent** — structural enforcement of
+unresolved CodeRabbit review threads or an undisposed outside-diff body
+finding; CodeRabbit's verdict on the head SHA is a NOTE, never a block
+(HIMMEL-3360, best effort) — structural enforcement of
 the operator's "never merge over unresolved CodeRabbit remarks" rule (HIMMEL-195:
 structural > instructional). The signal is `cr_merge_gate <pr-selector>
 [<owner/repo>]` from `scripts/lib/cr-merge-gate.sh`, which runs a GraphQL
@@ -2037,10 +2032,13 @@ display name". The zombie override is **gone**: reviving it on the status would
 wave a >90m pending review through on age alone, which is the same
 uncertainty-reads-as-green bug. `CR_ZOMBIE_CHECKRUN_MINS` is no longer read.
 
-**Posture:** deny on unresolved threads, and on a CodeRabbit status that is
-`pending`/`failure`/`error`/**absent**. Absent-blocks is a deliberate 2026-07-16
-break from the old "positive evidence only" stance: an unreviewed head reading as
-green is what merged #1243 with 6 unresolved threads (reverted in #1244).
+**Posture:** deny on unresolved threads and on undisposed outside-diff body
+findings — positive evidence only. A CodeRabbit status of
+`pending`/`failure`/`error`/`absent`/`skipped` prints a NOTE and falls
+through (HIMMEL-3360): from 2026-07-16 to 2026-09-21 absent BLOCKED, because
+an unreviewed head reading as green is what merged #1243 with 6 unresolved
+threads (reverted in #1244); the thread gate is what actually catches that
+shape, and the status arm only held finished PRs on an App that was late.
 INFRASTRUCTURE failures still fail OPEN — `gh`/`jq` missing, incomplete PR
 metadata, GraphQL/status API error, jq parse failure, and no `gh pr merge` at
 command position all exit **0**; an unresolvable selector (`gh pr view` failure)
@@ -2054,28 +2052,15 @@ thread query still runs and its evidence still blocks, because an unresolved
 thread is evidence even when the status endpoint is down (observed live — GitHub
 503'd `/commits/<sha>/statuses` on 2026-07-17).
 
-**Review freshness (HIMMEL-1181, B2) — deny on a stale review anchor.**
-Between the verdict check and the thread query, the gate also reads
-`cr_review_freshness` (`scripts/lib/cr-review-freshness.sh`, GraphQL, one
-extra call): is the *latest bot review* anchored to the head SHA, or was it
-posted on an OLDER commit? A concluded commit STATUS (the check above) is not
-the same claim — CodeRabbit can conclude an incremental run without posting a
-new review object at all, leaving the last real review sitting on a stale
-commit while GitHub auto-resolves (outdates) its threads on the intervening
-commits. That combination reads "0 unresolved threads + status success" —
-App-clean — over a head nobody actually reviewed (live instance: PR #1273).
-Deny on `stale` (names the stale commit in the block reason) and on `paged`
-(>100 reviews on the PR with no bot match in the newest 100 — indeterminate,
-not absent). `none` (zero bot reviews on the whole PR) self-skips — absence
-of a bot review is not evidence of staleness. `CR_BOT_LOGINS` (default
-`coderabbitai`, trailing `[bot]` optional) configures which review-author
-logins count as the bot for this gate specifically; it is a SEPARATE identity
-mechanism from `CR_BOT_USER_ID` (the status/body readers' REST `creator.id` —
-this gate reads GraphQL `author.login` + `author.__typename == "Bot"`
-instead, HIMMEL-1058's spoof-resistance stance). An infrastructure failure
-(query/parse error) is remembered and only fails OPEN at the very end,
-alongside the verdict and body-findings degrades — a broken query is not
-evidence.
+**Review freshness (HIMMEL-1181, B2) — retired (HIMMEL-3360).** The gate once
+denied on a *latest bot review* anchored to an older commit than the head
+(`scripts/lib/cr-review-freshness.sh`, GraphQL; live instance PR #1273: status
+success + 0 unresolved threads over a head nobody reviewed, because a clean
+incremental posts no review object and GitHub outdates the old threads).
+CodeRabbit is best effort, so a stale anchor is now the same NOTE as an
+absent review, and the reader plus its suite are deleted. What that head still
+owes is what every head owes: zero unresolved threads and the exact-head
+critic panel via `/pr-check`.
 
 **Console-GO gate (HIMMEL-2919 / HIMMEL-3142) — runs THIRD, after the CR and CI
 gates.** A console-spawned leg (`console-kit/headed-arm-leg.sh` exports
@@ -2115,7 +2100,12 @@ git config --local himmel.coderabbit true
 ```
 
 **Until you do, the CodeRabbit merge gates are a no-op there.** That is the
-deliberate trade-off below — read it before deciding it is a bug.
+deliberate trade-off below — read it before deciding it is a bug. Since
+HIMMEL-3360 the arming decides only whether CodeRabbit's signal is READ at all
+(its NOTE lines and any outside-diff body findings it posts); an unarmed repo
+and an armed repo whose App never answered both pass on CI green + zero
+unresolved threads + the panel, so arming can no longer block a merge on its
+own. The history below explains why it is a config value and not a file.
 
 **Why.** A repo without the CodeRabbit App has NO status on any head, so an
 armed gate blocks every merge there *forever*. HIMMEL-1072 shipped exactly that:
@@ -2169,29 +2159,26 @@ operator merge after a console parked on a review that was never coming:
 | Bot-authored dependency bump | **#2013** (dependabot) | CodeRabbit does not review bot-authored PRs |
 | Pure regenerated-artifact publish | **#2035** (`/graph-publish`) | zero code; a critic panel over a 17 MB regenerated `graph.json` is review theater |
 
-`check-ci.sh`'s `machine_pr_gate` classifies these and sets `MACHINE_PR_CLASS=1`,
-which is read by exactly the two `cr_signal_gate` arms that mean *the App said
-nothing* — `absent`, and the skip-classified family (`Review rate limited`,
-`automatic reviews are disabled`, …). **The class licenses tolerating SILENCE,
-and only silence.** Everything else still gates it, unchanged: a `failure` /
-`error` App status (rc 1), a `pending` one (rc 2), `cr_body_gate`'s
-outside-diff-range body findings, `review_freshness_gate`, the checks-green
-watch, the `CHANGES_REQUESTED` blocker, and the paginated unresolved-thread
-gate. Non-machine PRs keep today's fail-closed behaviour byte-unchanged.
+`check-ci.sh` once carried a `machine_pr_gate` classifier that exempted these
+two shapes from the fail-closed status gate. Since HIMMEL-3360 the App's
+SILENCE is tolerated on every PR, not only this class — `absent`, `pending`,
+`paged`, an unreadable status query and the skip-classified family (`Review
+rate limited`, `automatic reviews are disabled`, …) are all NOTEs — so the
+classifier had nothing left to decide and was deleted; the table above is
+kept as the precedent record.
+What gates every PR, machine or not: the checks-green watch, the
+`CHANGES_REQUESTED` blocker, the paginated unresolved-thread gate, and
+`cr_body_gate`'s outside-diff-range body findings whenever the App did post.
 
-**Four zero-review-object shapes at a head, three of them bad.** A clean
-walkthrough with nothing actionable mints no review object and `check-ci.sh`
-says so verbatim ("App evidence, not a carry") — gate MET. The other three are
-vacuous: `pass … Review rate limited`, `success :: Review completed` with zero
-review objects (rc 4; a `full review` re-trigger does not clear it), and a
-review object at the head with `bodylen=0` and zero threads (an empty
-carrier) — all three mean nothing was actually reviewed,
-and "0 unresolved threads" is then the arithmetic of a review that did not
-happen. `bodylen=0` objects **with** threads are inline carriers and count.
-The allowance is **account-wide over a rolling 7 days**, roughly one included
-review at a time: with several PRs open, sequence the contending PRs
-furthest-along-first, and never post `@coderabbitai review` from a leg — the
-console allocates the slot, and a losing re-trigger burns an attempt.
+**Zero-review-object shapes at a head.** A clean walkthrough with nothing
+actionable mints no review object, and neither does a rate-limited or
+skipped run, or a `success :: Review completed` status over a PR that never
+carried a review object; a review object with `bodylen=0` and zero threads is
+an empty carrier. `check-ci.sh` tells the shapes apart in its NOTE but gates
+none of them: "0 unresolved threads" over an unreviewed head is exactly the
+best-effort case, and what that head owes is the exact-head critic panel
+(`/pr-check`), which does not depend on the App. `bodylen=0` objects **with**
+threads are inline carriers and their threads count like any other.
 
 > The first cut set `CR_ARMED=0` instead — the same thing an operator does by
 > hand with `CR_APP=0`. That also silenced `cr_body_gate`, so on the day the App
@@ -2254,9 +2241,7 @@ re-sync) + a fresh session.
 Paired artifacts: `scripts/lib/cr-merge-gate.sh` (predicate),
 `scripts/lib/cr-signal.sh` (the ONE reader for CodeRabbit's verdict — shared with
 `ci-green-gate.sh` and `check-ci.sh`, so all three agree on the bot's identity by
-construction), `scripts/lib/cr-review-freshness.sh` (the ONE reader for review
-anchor freshness — shared with `check-ci.sh`, HIMMEL-1181),
-`scripts/lib/test-cr-merge-gate.sh` and
+construction), `scripts/lib/test-cr-merge-gate.sh` and
 `scripts/hooks/test-block-unresolved-cr-merge.sh` (smoke suites).
 
 ### CodeRabbit is the App, and only the App (HIMMEL-2704)
@@ -2281,11 +2266,17 @@ That is a real change in coverage for a repo with no App — such a repo now get
 no CodeRabbit signal at all, which is the accepted cost of the ruling. It does
 not weaken the merge gates above, because those were always keyed on the App.
 
-**What the App owes, and who checks it** — three things, none of them
-interchangeable, and production is not the same as enforcement. The push/PR
-hooks PRODUCE the re-trigger (3); `scripts/check-ci.sh` is the post-PR
-BACKSTOP that reads the resulting head status, thread state and review
-freshness, and it requests a full review of its own only under `--escalate`:
+**What the App owes, and who checks it** — CodeRabbit is best effort
+(HIMMEL-3360): one CI-only reviewer beside the local critic panel, never run
+locally, never waited on. The push/PR hooks PRODUCE its trigger (3);
+`scripts/check-ci.sh` is the post-PR BACKSTOP that reads the head's thread
+state and CI, and prints the App's own status as a NOTE. The structural
+backstop for the rule itself is `scripts/hooks/check-cr-best-effort.sh`
+(pre-commit): a tracked line that names CodeRabbit and schedules, queues or
+holds work on it fails the commit, with one same-line escape
+(`cr-best-effort-ok: <reason>`) for quoted history. Seven finished PRs sat ~7 h
+on 2026-09-21 because docs and memory taught "one review per hour, sequence
+the opens"; that was the second drift, so the rule became a gate.
 
 1. **Zero unresolved review THREADS. A green check-run is NOT clean.** The
    thread query is the truth. `gh pr checks` reads `statusCheckRollup`, which
@@ -2293,30 +2284,29 @@ freshness, and it requests a full review of its own only under `--escalate`:
    what CodeRabbit wrote: PR #2209 carried **six unresolved CodeRabbit threads
    under a `pass` rollup** on 2026-09-06. `check-ci.sh` exits 3 on unresolved
    threads, and that gate is NOT availability-keyed — it is generic and blocks on
-   any reviewer's unresolved thread, human included.
-2. **A CONCLUDED commit status at the head.** CodeRabbit posts a commit
+   any reviewer's unresolved thread, human included. A CodeRabbit finding that
+   EXISTS — a thread, or an undisposed outside-diff body finding
+   (`cr_body_gate`) — blocks exactly like a human's.
+2. **Its commit status is informational.** CodeRabbit posts a commit
    **status**, never a check-run (verified live on five PRs — see
    `scripts/lib/cr-signal.sh`), so it is matched by creator id, not display name.
-   `absent`, `pending`, `paged` and `skipped` all fail CLOSED; in particular a
-   `success` whose description reads `Review skipped: automatic reviews are
-   disabled` is a refusal to review, not a clean review (HIMMEL-1317). The ONE
-   exception is the MACHINE-GENERATED PR class (HIMMEL-2278, e.g. a
-   dependabot-authored bump) — the App does not review that class at all, so an
-   ABSENT status is its expected steady state and is tolerated. Only `absent`,
-   and only for that class: `pending`, `paged` and `skipped` still fail closed
-   there, as do checks-green, CHANGES_REQUESTED, unresolved threads, a FAILED
-   App status and any body findings the App does post. This gate
-   IS availability-keyed: it arms only on a repo armed per HIMMEL-1125 with
-   `git config --local himmel.coderabbit true`, so an adopter without CodeRabbit is never blocked.
-3. **A re-trigger after every push.** `auto_review` is off in
-   `.coderabbit.yaml` (a per-push auto-review burns the shared rate limit on WIP
-   commits), so the review runs on an explicit `@coderabbitai review` comment.
-   `scripts/hooks/trigger-cr-on-pr-create.sh` and `trigger-cr-on-push.sh` post it
-   structurally rather than leaving it to agent discretion — and a head move
-   DISCARDS the in-flight review, so a push without a re-trigger leaves the PR
-   reviewed at a SHA that is no longer the head. `cr_trigger_repo_armed`
+   `absent`, `pending`, `paged`, `skipped` (a `success` whose description reads
+   `Review skipped: automatic reviews are disabled`, HIMMEL-1317) and a stale
+   review anchor are all the same thing to the gate: a NOTE naming the state,
+   then the thread gate above. The reader arms only on a repo armed per
+   HIMMEL-1125 with `git config --local himmel.coderabbit true`; unarmed, it
+   is silent. A `failure` / `error` status is a NOTE too — what the App found
+   reaches the gate as threads and body findings, not as a status colour.
+3. **One trigger per head, from CI, never from a session.** `auto_review` is
+   off in `.coderabbit.yaml`, so the review runs on an explicit `@coderabbitai
+   review` comment that `scripts/hooks/trigger-cr-on-pr-create.sh` and
+   `trigger-cr-on-push.sh` post structurally — a head move DISCARDS the
+   in-flight review, so the post follows every push. `cr_trigger_repo_armed`
    (HIMMEL-2034, in `scripts/lib/cr-trigger-ledger.sh`) gates that comment so the
    harness never summons the bot onto a repo it does not own the CR gate for.
+   That post is the whole of the harness's relationship with the App's rate
+   limit: nothing counts, rations or sequences reviews, and `check-ci.sh`
+   requests none of its own (the `--escalate` full-review path is retired).
 
 **One consequence worth stating plainly.** `scripts/cr/pr-check-external.sh`
 (the Claude-free ship lane) required, per HIMMEL-1224, a quorum of TWO

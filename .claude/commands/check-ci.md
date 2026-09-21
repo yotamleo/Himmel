@@ -1,7 +1,16 @@
 ---
 description: Token-free PR merge-gate watcher — loops gh pr checks --watch, verifies threads resolved, returns one exit code.
-argument-hint: [pr-number|branch|url] [--grace <sec>] [--settle <sec>] [--max-wait <sec>] [--threads-only] [--escalate]
+argument-hint: [pr-number|branch|url] [--grace <sec>] [--settle <sec>] [--max-wait <sec>] [--threads-only]
 ---
+
+CodeRabbit is best effort (HIMMEL-3360): it is one reviewer among several, CI-only,
+never run locally, and this script neither pauses for its status to settle nor
+asks it to run again. When
+armed, its commit status is read and printed as an advisory NOTE — pending,
+failure, error, absent, skipped, or any state other than success is surfaced,
+never a block. The merge gate stays: every check green, every PR review thread
+resolved (any author, CodeRabbit included), no review requesting changes, no
+outside-diff-range CodeRabbit body finding left undispositioned.
 
 Watch the current branch's PR merge gate without an agent poll loop. All the
 waiting happens inside ONE `gh pr checks --watch --fail-fast` process (plus a
@@ -10,13 +19,10 @@ the session spends tokens only on launching the script and reading its exit
 code. Green means: every check passed, every PR review thread resolved, no
 review requesting changes, no outside-diff-range CodeRabbit body finding left
 undispositioned (an exact-head ledger `deferred`/`disproved` disposition counts,
-HIMMEL-3124 — see the exit-3 text below), and — when CodeRabbit is armed
-(HIMMEL-1125) — the latest bot review is anchored to the head SHA (HIMMEL-1181,
-B2), or a clean exact-head critic panel carries a stale anchor (HIMMEL-1718; see
-exit `4` below). An unresolved CR comment, a
-CHANGES_REQUESTED review, or a stale (never re-reviewed) head is a merge
-blocker, same as a red check. Non-blocking nitpick/additional body findings
-are surfaced in the success line, never silenced (HIMMEL-1147/1148).
+HIMMEL-3124 — see the exit-3 text below). An unresolved CR comment or a
+CHANGES_REQUESTED review is a merge blocker, same as a red check.
+Non-blocking nitpick/additional body findings are surfaced in the success
+line, never silenced (HIMMEL-1147/1148).
 
 Run it in a **background** Bash so work continues while checks run:
 
@@ -38,27 +44,31 @@ re-watch — it catches check runs that register late, so the first green
 can't certify an incomplete check set (default 30, `--settle 0` disables,
 e.g. `bash scripts/check-ci.sh 1150 --settle 60`). `--threads-only` runs
 just the review-thread gate — that's how `/pr-check` step 4.8 reuses this
-implementation. `--max-wait <sec>` (default 540, `CHECK_CI_MAX_WAIT` env,
-0 = unbounded) bounds each `gh pr checks --watch` round — CodeRabbit's
-rollup row can sit "pending" long after every other check (and its own gate
-status) is decidable, so the watch is supervised and stopped early once the
-verdict no longer depends on it, or at this cap, whichever comes first
+implementation. `--max-wait <sec>` (default 900, `CHECK_CI_MAX_WAIT` env,
+0 = unbounded) bounds each `gh pr checks --watch` round — CodeRabbit's own
+rollup CHECK can sit "pending" long after every other check, so the watch is
+supervised and stopped early once the verdict no longer depends on any
+non-CodeRabbit check still pending, or at this cap, whichever comes first
 (`check-ci: watch cap reached (Ns) — evaluating now`, HIMMEL-2062); a cap hit
 with genuine non-CodeRabbit work still pending refuses (exit 2) rather than
-certifying green over unfinished checks. `merge-on-green.sh` calls this
-script with no flags, so it inherits the same bound via `CHECK_CI_MAX_WAIT`.)
+certifying green over unfinished checks. This bound never depends on
+CodeRabbit's own commit status settling (HIMMEL-3360). `merge-on-green.sh`
+calls this script with no flags, so it inherits the same bound via
+`CHECK_CI_MAX_WAIT`.)
 
 Act on the exit code:
 
 - `0` — checks green, all review threads resolved, and no CHANGES_REQUESTED
-  review. The success line prints the certified head SHA (`… @ <sha>`). In an INTERACTIVE session with
-  merge-on-green agreed: merge pinned to that exact commit —
-  `gh pr merge <N> --squash --admin --match-head-commit <sha>` — so a push
-  landing after certification aborts the merge instead of shipping unchecked
-  code (this repo has no branch protection by design; the red-merge gate is
-  the local pre-push hook). `--match-head-commit` pins the certified commit
-  only — it is not a review-state gate; if meaningful time passed since exit
-  0, re-run /check-ci before merging (the block-unresolved-cr-merge hook,
+  review. The success line prints the certified head SHA (`… @ <sha>`). When
+  CodeRabbit is armed, any status other than success prints as an advisory
+  `check-ci: NOTE — CodeRabbit <state> …` line — it does not change this exit
+  code. In an INTERACTIVE session with merge-on-green agreed: merge pinned to
+  that exact commit — `gh pr merge <N> --squash --admin --match-head-commit <sha>`
+  — so a push landing after certification aborts the merge instead of shipping
+  unchecked code (this repo has no branch protection by design; the red-merge
+  gate is the local pre-push hook). `--match-head-commit` pins the certified
+  commit only — it is not a review-state gate; if meaningful time passed since
+  exit 0, re-run /check-ci before merging (the block-unresolved-cr-merge hook,
   HIMMEL-936, independently blocks `gh pr merge` while review threads are
   unresolved). Auto/overnight mode: stop at PR-ready — merge stays an
   operator action.
@@ -77,15 +87,11 @@ Act on the exit code:
   gh errored on the probe or during the watch (auth/network/cancellation —
   never reported as a red check), the thread-state query failed or returned
   a malformed page, the PR head moved during the run (the green verdict is
-  bound to the watched head SHA — a concurrent push invalidates it). Also
-  (when CodeRabbit is armed) when its status says the
-  review COMPLETED while the PR carries **no CodeRabbit review object at
-  any head, ever**, and no walkthrough certifies this head: a "completed"
-  review with nothing to be incremental to is not evidence of a review
-  (HIMMEL-1374 — the remedy is one `@coderabbitai full review`). A
-  rate-limited App carried by a clean exact-head critic panel is a
-  different, sanctioned shape and still certifies. Cannot-evaluate always
-  blocks certification even if the checks themselves look green — re-run.
+  bound to the watched head SHA — a concurrent push invalidates it).
+  CodeRabbit's own commit status never produces this code: a failed status
+  query, a paged status list, absent, pending and skipped are all advisory
+  NOTEs (HIMMEL-3360). Cannot-evaluate always blocks certification even if
+  the checks themselves look green — re-run.
 - `3` — checks green but the review state blocks the merge: unresolved
   review threads remain, a review requests changes, or (when CodeRabbit is
   armed) its review body reports an outside-diff-range finding that has no
@@ -98,27 +104,12 @@ Act on the exit code:
   `--deferred-to <TICKET>` AND `--reason`, `--verdict disproved` needs
   `--reason`; any severity. It never carries to a new head. A header count the
   parser cannot match to findings is exit `2` (check the PR body manually).
-- `4` — (when CodeRabbit is armed) either the latest bot review is anchored
-  to a commit OTHER than the head SHA — the head was never re-reviewed, and
-  GitHub auto-resolving threads on a later commit can mask this
-  (HIMMEL-1181, B2) — or CodeRabbit concluded incrementally but posted no
-  review object at the head while a prior head had outside-diff findings
-  (opt in with `--escalate`). Distinct remedy from `3`: there is no thread to
-  resolve here. **The remedy is `@coderabbitai full review` — the plain
-  incremental `@coderabbitai review` NO-OPS on an already-reviewed commit
-  (HIMMEL-1698).** Since HIMMEL-1718 the stale case is no longer a hard
-  block: a clean exact-head critic panel in the CR ledger CARRIES it (exit 0,
-  with the carry, the stale anchor and the responder models named on
-  stdout). As of HIMMEL-2162 this is the DEFAULT regardless of the diff's
-  risk classification — a panel that reviewed THIS head is the same evidence
-  a fresh App review would be, high-risk file list or not. FAIL-CLOSED is
-  unchanged: no panel row at this head still exits 4.
+- `4` — retired (HIMMEL-3360): no longer emitted. CodeRabbit's status being
+  absent, pending, skipped, rate-limited, or its review anchored to a
+  non-head commit is no longer a distinct exit — see `0` above.
 
-`CR_BOT_LOGINS` (default `coderabbitai`, a trailing `[bot]` suffix optional)
-sets the review-author logins the freshness gate (`4`, stale case) treats as
-the bot — for a repo whose review bot isn't CodeRabbit. `CR_PROFILE=none` /
-`CR_APP=0` skip the freshness + body-findings + status gates together (see
-`scripts/lib/cr-available.sh`).
+`CR_PROFILE=none` / `CR_APP=0` skip reading CodeRabbit's status + body
+findings together (see `scripts/lib/cr-available.sh`).
 
 **A repo that never armed hears nothing about CodeRabbit** — that silence is
 deliberate (HIMMEL-1125: nothing was configured, so nothing is missing, and an
@@ -136,7 +127,3 @@ a merge (`scripts/lib/cr-available.sh`'s `cr_app_state`).
 field on its audit line. An unattended `ARMAUTOMERGE` chain has no operator
 reading this script's output, and `gate=check-ci:0` alone cannot distinguish
 "CodeRabbit reviewed this and passed" from "there is no CodeRabbit here".
-The interim `CHECK_CI_FRESHNESS_CARRY_HIGH_RISK` knob (HIMMEL-1717/1718) is
-RETIRED: it only ever gated whether a high-risk diff could reach the
-panel-carry check at all, never bypassed the need for real panel evidence —
-now that the check is unconditional, it has no remaining job.

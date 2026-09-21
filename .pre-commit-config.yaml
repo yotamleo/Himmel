@@ -86,6 +86,13 @@ repos:
         always_run: true
         pass_filenames: false
 
+      - id: cr-best-effort
+        name: CodeRabbit is best effort - no tracked text schedules or waits on it
+        entry: bash scripts/hooks/check-cr-best-effort.sh
+        language: system
+        files: ^(docs/.*\.md|\.claude/commands/.*\.md|\.agents/skills/.*\.md|scripts/.*\.(sh|md)|CLAUDE\.md|README\.md|\.pre-commit-config\.yaml)$
+        pass_filenames: false
+
       - id: template-version
         name: template content change requires metadata.version bump (himmel-dev only)
         # HIMMEL-524

@@ -9,15 +9,11 @@
 # AND zero unresolved PR review threads (a CR comment left unresolved is a
 # merge blocker, same as a red check).
 #
-# Usage: check-ci.sh [<pr-number|branch|url>] [--grace <sec>] [--settle <sec>] [--threads-only] [--escalate]
+# Usage: check-ci.sh [<pr-number|branch|url>] [--grace <sec>] [--settle <sec>] [--threads-only]
 #   selector        optional; defaults to the PR for the current branch
 #   --threads-only  skip the checks watch entirely and run just the
 #                   review-thread gate (used by /pr-check step 4.8 so both
 #                   enforcement points share ONE implementation)
-#   --escalate      if an incremental CodeRabbit pass produced no review object
-#                   while a prior head had outside-diff findings, or the latest
-#                   bot review is stale-anchored, request ONE @coderabbitai full
-#                   review and poll for its review object
 #   --grace <sec>   how long to wait for checks to REGISTER before giving up
 #                   (default 180). Right after `git push` / `gh pr create`,
 #                   `gh pr checks` errors with "no checks reported" until the
@@ -47,47 +43,29 @@
 # session, automation) during the run means the certified commit is not the
 # mergeable one, so the script fails closed with exit 2 (re-run).
 #
-# A green verdict additionally REQUIRES CodeRabbit to have concluded on that head
-# SHA (HIMMEL-1072). An absent review is not a passing one: the watch only waits
-# on checks that already exist, so a review that registers later was never waited
-# on, and "green" got reported over a PR nobody had reviewed. See cr_signal_gate.
+# HIMMEL-3360: CodeRabbit is best effort. Its commit STATUS (cr_signal_gate)
+# is read and printed, but pending/failure/error/absent/skipped/unrecognized
+# states are advisory ONLY — never a block, never a wait. A green verdict
+# still REQUIRES zero unresolved PR review threads (any author, CodeRabbit
+# included — review_state_gate, generic, NOT availability-gated) and zero
+# undispositioned outside-diff-range CodeRabbit body findings (HIMMEL-1126/
+# 1147, S1 + HIMMEL-3124 — see cr_body_gate / _cr_outside_gate, in
+# scripts/lib/cr-body-findings.sh). Runs on BOTH the full path and
+# --threads-only (the latter binds its own head to do so).
 #
-# A green verdict ALSO requires CodeRabbit's review-BODY to carry zero
-# outside-diff-range findings (HIMMEL-1126/1147, S1): CodeRabbit posts some
-# findings only in the review body's collapsible sections, never as a
-# resolvable thread — the thread gate above is blind to them by construction.
-# See cr_body_gate (in scripts/lib/cr-body-findings.sh). Runs on BOTH the full
-# path and --threads-only (the latter now binds its own head to do so).
+# CodeRabbit's status is read only when AVAILABILITY-GATED armed (HIMMEL-1125):
+# it arms only on a repo that declares CodeRabbit (scripts/lib/cr-available.sh).
+# On a repo without it, cr_signal_gate is a silent no-op — an adopter without
+# CodeRabbit must not notice a CodeRabbit gate exists.
 #
-# A green verdict ALSO requires the latest bot REVIEW OBJECT to be anchored to
-# the head SHA (HIMMEL-1181, B2): GitHub auto-resolves (outdates) a review
-# thread when a later commit changes its lines, so "0 unresolved threads" is
-# NOT proof the head was ever reviewed — a concluded STATUS (cr_signal_gate)
-# is a different claim than an anchored REVIEW (this reader). See
-# review_freshness_gate (in scripts/lib/cr-review-freshness.sh). Runs on BOTH
-# the full path and --threads-only, same as the body-findings gate.
-#
-# That CodeRabbit requirement is AVAILABILITY-GATED (HIMMEL-1125): it arms only
-# on a repo that declares CodeRabbit (scripts/lib/cr-available.sh). On a repo
-# without it, "absent" is the permanent steady state, so the armed gate exited 2
-# on every merge forever unless the adopter discovered CR_PROFILE=none. The
-# unresolved-THREAD gate below is NOT availability-gated — it is generic (it
-# blocks on any reviewer's unresolved thread, human included) and is unchanged.
-#
-# Exit codes (the CodeRabbit clauses below apply ONLY when the signal gate is
-# ARMED — see the availability note above; on a disarmed repo they simply do not
-# fire, and the checks + thread verdicts stand on their own):
-#   0 — all checks green AND all review threads resolved AND, WHEN ARMED,
-#       CodeRabbit concluded success on the head SHA AND no outside-diff-range
-#       body finding left undispositioned (an exact-head ledger deferred/disproved
-#       disposition counts, HIMMEL-3124 — see exit 3) AND the latest bot review is
-#       anchored to the head SHA, OR
-#       a stale-anchor diff is carried by a clean exact-head critic panel —
-#       the DEFAULT for that shape regardless of risk classification, HIMMEL-2162
-#       (safe to merge; nitpick/additional body findings are surfaced,
-#       non-blocking)
-#   1 — at least one check failed (--fail-fast: returns on the first red), or —
-#       when armed — CodeRabbit's own status is failure/error
+# Exit codes:
+#   0 — all checks green AND all review threads resolved AND no outside-diff-
+#       range body finding left undispositioned (an exact-head ledger
+#       deferred/disproved disposition counts, HIMMEL-3124 — see exit 3).
+#       CodeRabbit's own status, when armed, is printed as an advisory NOTE on
+#       any state other than success — it never changes this exit code
+#       (HIMMEL-3360).
+#   1 — at least one check failed (--fail-fast: returns on the first red)
 #   64 — usage error (sysexits EX_USAGE, HIMMEL-3317): an unknown flag, a flag
 #       missing its value, a non-numeric --grace/--settle/--max-wait, or more
 #       than one PR selector. NO gate ran, so it is deliberately not 2 — a caller
@@ -97,14 +75,10 @@
 #   2 — cannot evaluate: no PR found / no checks registered
 #       within --grace / gh error on the probe or the watch / thread-state
 #       query failed or returned a malformed page / PR head moved during the run
-#       / (when armed) CodeRabbit's status is absent or still pending on the head
-#       SHA / the review-body-findings reader could not evaluate (infra failure
+#       / the review-body-findings reader could not evaluate (infra failure
 #       or an anti-drift canary — both fail closed here, see cr-body-findings.sh)
-#       / the review-freshness query failed, or the review window is
-#       indeterminate ("paged" — see cr-review-freshness.sh) / CodeRabbit's
-#       status reads a COMPLETED review while the PR carries no CodeRabbit
-#       review object at ANY head and no walkthrough certifies this head —
-#       a "completed" review with nothing to be incremental to (HIMMEL-1374)
+#       (CodeRabbit's own commit status never lands here: unreadable, paged,
+#       absent and every other non-success state are advisory, HIMMEL-3360)
 #   3 — checks green but the review state blocks the merge: unresolved review
 #       threads remain, a review requests changes, or CodeRabbit's review body
 #       reports an outside-diff-range finding with no exact-head ledger
@@ -112,12 +86,7 @@
 #       recipe the message prints (deferred needs a tracked ticket AND a reason,
 #       disproved needs a reason; a disposition never carries to a new head),
 #       then re-run
-#   4 — (when armed) either: CodeRabbit concluded incrementally on the head but
-#       posted no review object there while a prior head had outside-diff
-#       findings (request @coderabbitai full review, or opt in with --escalate);
-#       or the latest bot review is anchored to a NON-head commit and no clean
-#       exact-head critic panel carries it. FAIL-CLOSED PRESERVED: no panel row
-#       at this head still exits 4, high-risk diff or not (HIMMEL-2162).
+#   4 — retired (HIMMEL-3360) — no longer emitted.
 #
 # Env:
 #   CHECK_CI_POLL_INTERVAL — seconds between grace-window probes (default 10;
@@ -136,20 +105,14 @@
 #                            ~30 calls/min. Tests export 1.
 #   GH_BUDGET_FLOOR / GH_BUDGET_JITTER_MAX / GH_BUDGET_PREFLIGHT — the shared
 #                            GraphQL-budget preflight, see lib/gh-graphql-budget.sh
-#   CR_ESCALATE_WAIT      — --escalate total wait budget (default 600)
-#   CR_ESCALATE_POLL       — --escalate seconds between re-reads (default 120)
-#   CR_PROFILE=none        — this repo has no CodeRabbit: skip the required-signal
-#                            gate. Still honored, but no longer something an
-#                            adopter must discover — see the availability gate
-#                            below.
-#   CR_APP=1|0             — force the required-signal gate on/off, overriding
+#   CR_PROFILE=none        — this repo has no CodeRabbit: skip the CodeRabbit
+#                            status read entirely. Still honored, but no
+#                            longer something an adopter must discover — see
+#                            the availability gate below.
+#   CR_APP=1|0             — force the CodeRabbit status read on/off, overriding
 #                            the probe (see scripts/lib/cr-available.sh)
 #   CR_BOT_USER_ID         — creator.id to trust as CodeRabbit (see cr-signal.sh
 #                            and cr-body-findings.sh; REST identity)
-#   CR_BOT_LOGINS          — review-author logins that count as the bot for the
-#                            review-freshness gate only (default coderabbitai;
-#                            a trailing "[bot]" suffix is optional — see
-#                            cr-review-freshness.sh; GraphQL identity)
 #
 # The HIMMEL-980 zombie-check-run override is GONE: it keyed off a CodeRabbit
 # CHECK-RUN, which CodeRabbit never posts (it posts a commit STATUS), so it had
@@ -165,43 +128,32 @@ set -uo pipefail
 
 usage() {
     cat >&2 <<'EOF'
-usage: check-ci.sh [<pr-number|branch|url>] [--grace <sec>] [--settle <sec>] [--max-wait <sec>] [--threads-only] [--escalate]
+usage: check-ci.sh [<pr-number|branch|url>] [--grace <sec>] [--settle <sec>] [--max-wait <sec>] [--threads-only]
 exit codes: 0 = checks green + all review threads resolved
-                + (if CodeRabbit is armed) CodeRabbit concluded success on the head SHA
                 + no outside-diff-range body finding left undispositioned (an exact-head ledger
-                  deferred/disproved disposition counts, HIMMEL-3124 — see exit 3)
-                + the latest bot review is anchored to the head SHA, or a clean exact-head panel
-                  carries an ordinary stale-anchor diff,
-            1 = a check failed, or (if armed) CodeRabbit's status is failure/error,
+                  deferred/disproved disposition counts, HIMMEL-3124 — see exit 3).
+                CodeRabbit is best effort (HIMMEL-3360): if armed, its own status is read and printed
+                  as an advisory NOTE on any state other than success — it never changes this exit code,
+            1 = a check failed,
             64 = usage error — bad flag / missing or non-numeric value / two PR selectors; NO gate ran (the PR
                 number is POSITIONAL: `check-ci.sh 1003`, not `--pr 1003`),
             2 = cannot evaluate (no PR / no checks within --grace / thread query failed / PR head moved
-                / (if armed) CodeRabbit's status absent or still pending on the head SHA / body-findings
-                reader failed / review-freshness query failed or indeterminate "paged" / the status says
-                the review COMPLETED but the PR carries no CodeRabbit review object at any head and no
-                walkthrough certifies this head — nothing to be incremental to, HIMMEL-1374),
+                / body-findings reader failed — CodeRabbit's own status never produces this code),
             3 = checks green but unresolved review threads remain, a review requests changes, or (if armed)
                 CodeRabbit's review body reports an outside-diff-range finding with no exact-head ledger
                 disposition (HIMMEL-3124; the message prints the deferred/disproved recipe, and a
                 disposition never carries to a new head),
-            4 = (if armed) CodeRabbit concluded incrementally but posted no review object at the head while a
-                prior head had outside-diff findings (request @coderabbitai full review or use --escalate); or
-                the latest bot review is anchored to a NON-head commit and no clean exact-head panel carries it
-                (use --escalate for a full review; a clean panel at THIS head carries by default, HIMMEL-2162 —
-                no panel row at this head still exits 4)
-env: CR_PROFILE=none skips the required-CodeRabbit-signal + body-findings + review-freshness gates (repos
-     without CodeRabbit)
-     CR_APP=1|0 forces those same gates on/off, overriding the automatic probe (see scripts/lib/cr-available.sh)
-     CR_BOT_LOGINS sets the review-author logins the freshness gate treats as the bot (default coderabbitai)
-     CR_ESCALATE_WAIT / CR_ESCALATE_POLL tune --escalate for absent or stale-anchor reviews (defaults 600 / 120 seconds)
+            4 = retired (HIMMEL-3360) — no longer emitted.
+env: CR_PROFILE=none skips reading CodeRabbit's status + body findings entirely (repos without CodeRabbit)
+     CR_APP=1|0 forces that same read on/off, overriding the automatic probe (see scripts/lib/cr-available.sh)
      CHECK_CI_SLEEP_CMD replaces the command every wall-clock wait runs (default sleep; hermetic suites set it to :)
      CHECK_CI_MAX_WAIT sets --max-wait's default (default 900 seconds, 0 = unbounded; HIMMEL-2062, raised in HIMMEL-2907)
      CHECK_CI_WATCH_INTERVAL / CHECK_CI_PROBE_INTERVAL set the watch poll (default 30 s) and the early-stop probe (default 60 s)
        cadence — the GitHub GraphQL budget is shared by every leg on the box (HIMMEL-3190)
      GraphQL budget exhausted: check-ci sleeps until X-Ratelimit-Reset (bounded by --max-wait) instead of failing; exit
        codes keep their meaning (a reset beyond --max-wait is exit 2). GH_BUDGET_PREFLIGHT=0 skips the one preflight call.
-note: "armed" above means the required-CodeRabbit-signal + body-findings + review-freshness gates are active —
-      DISARMED by default. On a repo that has the CodeRabbit App, arm it once:  git config --local himmel.coderabbit true
+note: "armed" above means CodeRabbit's status + body findings are read at the head — DISARMED by default. On a
+      repo that has the CodeRabbit App, arm it once:  git config --local himmel.coderabbit true
       CR_APP=1|0 overrides; CR_PROFILE=none outranks both. On a disarmed repo the CodeRabbit-conditional
       clauses above simply do not apply, and exit 0 requires no CodeRabbit status at all. The
       unresolved-review-thread requirement (exit 3) is NOT keyed on this and applies to everyone.
@@ -220,12 +172,6 @@ EOF
 }
 
 THREADS_ONLY=0
-ESCALATE=0
-# HIMMEL-1698: unconditional init — cr_signal_gate is the only writer (success
-# arm), and it early-returns when CR_ARMED=0 and is skipped entirely on some
-# paths, so under `set -u` review_freshness_gate's read of this diagnostic
-# flag would otherwise trip on an unset variable.
-_cr_head_status_ok=0
 GRACE=180
 SETTLE="${CHECK_CI_SETTLE:-30}"
 # Default 900s (HIMMEL-2907): the measured slowest shell-unit shard runs
@@ -249,13 +195,8 @@ case "$PROBE_INTERVAL" in
 esac
 # Sleep seam (HIMMEL-1953). EVERY wall-clock wait below goes through this one
 # command word so a hermetic suite can inject `:` and never burn real seconds on
-# a simulated poll. That matters most for the --escalate nap: a case that leaves
-# CR_ESCALATE_POLL at 0 while CR_ESCALATE_WAIT is positive gets the 120s
-# validated fallback (see below) and used to sleep two REAL minutes — a test
-# that sleeps is a test that can hang, and a hang is indistinguishable from a
-# slow suite. Keeping the fallback's nap on this seam is the point: the
-# validation stays (0 would worsen rate-limit pressure in production), while
-# tests pay nothing for it.
+# a simulated poll — a test that sleeps is a test that can hang, and a hang is
+# indistinguishable from a slow suite.
 #
 # A single command word by design — no argument splitting, so `sleep 0.5` here
 # would not work and is not meant to. It widens no trust boundary: a caller who
@@ -290,8 +231,6 @@ while [ $# -gt 0 ]; do
             MAX_WAIT="$2"; shift 2 ;;
         --threads-only)
             THREADS_ONLY=1; shift ;;
-        --escalate)
-            ESCALATE=1; shift ;;
         -h|--help) trap - EXIT; usage; exit 0 ;;
         -*) echo "check-ci: unknown option: $1" >&2; usage; exit 64 ;;
         *)
@@ -309,40 +248,6 @@ esac
 case "$MAX_WAIT" in
     ''|*[!0-9]*) echo "check-ci: --max-wait must be a non-negative integer, got '$MAX_WAIT'" >&2; exit 64 ;;
 esac
-
-# Escalation is an explicit write path, never a default gate side effect: both
-# clear-cr-marker.sh and merge-on-green.sh call this script as pure observers.
-# These knobs are therefore read only when --escalate opts into the action.
-if [ "$ESCALATE" -eq 1 ]; then
-    CR_ESCALATE_WAIT="${CR_ESCALATE_WAIT-600}"
-    CR_ESCALATE_POLL="${CR_ESCALATE_POLL-120}"
-    case "$CR_ESCALATE_WAIT" in
-        ''|*[!0-9]*)
-            echo "check-ci: CR_ESCALATE_WAIT='$CR_ESCALATE_WAIT' is not a non-negative integer — using 600" >&2
-            CR_ESCALATE_WAIT=600 ;;
-    esac
-    case "$CR_ESCALATE_POLL" in
-        ''|*[!0-9]*)
-            echo "check-ci: CR_ESCALATE_POLL='$CR_ESCALATE_POLL' is not a non-negative integer — using 120" >&2
-            CR_ESCALATE_POLL=120 ;;
-    esac
-    # Leading-zero values like 08 / 007 PASS the all-digits guard above but
-    # poison the budget arithmetic in _cr_body_escalate: bash reads a leading
-    # 0 as OCTAL inside $(( )), so $((08 - elapsed)) throws "value too great
-    # for base" and aborts the script, while $((007 ...)) silently evaluates
-    # as octal 7 (coincidentally right for 007, wrong for any 01x value). The
-    # [ -gt ] / -ge tests happen to be base-10, but the one $(()) site is not,
-    # so normalize at the source — force base-10 and every downstream use is
-    # safe (HIMMEL-1219).
-    CR_ESCALATE_WAIT=$((10#$CR_ESCALATE_WAIT))
-    CR_ESCALATE_POLL=$((10#$CR_ESCALATE_POLL))
-    if [ "$CR_ESCALATE_WAIT" -gt 0 ] && [ "$CR_ESCALATE_POLL" -eq 0 ]; then
-        # CR_ESCALATE_WAIT=0 is the immediate-timeout lever. With a positive
-        # budget, zero would worsen the rate-limit pressure this path reduces.
-        echo "check-ci: CR_ESCALATE_POLL=0 is invalid when CR_ESCALATE_WAIT > 0 — using 120" >&2
-        CR_ESCALATE_POLL=120
-    fi
-fi
 
 if ! command -v gh >/dev/null 2>&1; then
     echo "check-ci: gh CLI not found on PATH" >&2
@@ -376,19 +281,18 @@ if ! ghb_wait_for_budget "$MAX_WAIT" "$CHECK_CI_SLEEP_CMD"; then
     echo "check-ci: GitHub GraphQL budget exhausted and the reset is beyond --max-wait (${MAX_WAIT}s) — cannot evaluate the gate; re-run after the reset" >&2
     exit 2
 fi
-# jq is needed to read CodeRabbit's status + review-body findings + review
-# freshness, so require it only when the CodeRabbit signal gate is ARMED
-# (coderabbit-7, extended by HIMMEL-1126/HIMMEL-1125, and again by
-# HIMMEL-1181): --threads-only USED to be a pure GraphQL+gh path, but it now
-# also runs cr_signal_gate + cr_body_gate + review_freshness_gate (S1/B2 — a
-# body-only finding or a stale review anchor is exactly as invisible to
-# /pr-check step 4.8's threads-only call as it is to the full run), so it
-# needs jq too whenever CodeRabbit is in play.
+# jq is needed to read CodeRabbit's status + review-body findings, so require
+# it only when the CodeRabbit signal gate is ARMED (coderabbit-7, extended by
+# HIMMEL-1126/HIMMEL-1125): --threads-only USED to be a pure GraphQL+gh path,
+# but it now also runs cr_signal_gate + cr_body_gate (S1 — a body-only finding
+# is exactly as invisible to /pr-check step 4.8's threads-only call as it is
+# to the full run), so it needs jq too whenever CodeRabbit is in play.
 # Is the CodeRabbit App configured for this repo at all (HIMMEL-1125)? The
-# signal + body + freshness gates below are armed ONLY when it is: on a repo
-# without CodeRabbit, "absent" is the permanent steady state, so an armed
-# gate exits 2 on every merge forever. Probed once here; cr_signal_gate/
-# cr_body_gate/review_freshness_gate read the result.
+# signal + body gates below are armed ONLY when it is: on a repo without
+# CodeRabbit, "absent" is the permanent steady state — but HIMMEL-3360 made
+# "absent" advisory rather than blocking, so this now only controls whether
+# the gates run at all, not a fail-closed exit. Probed once here;
+# cr_signal_gate/cr_body_gate read the result.
 # shellcheck source=scripts/lib/cr-available.sh
 # shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
 . "$(cd "$(dirname "$0")" && pwd)/lib/cr-available.sh"
@@ -442,29 +346,21 @@ if [ "$CR_ARMED" -eq 1 ]; then
     # shellcheck source=scripts/lib/cr-signal.sh
     # shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
     . "$(cd "$(dirname "$0")" && pwd)/lib/cr-signal.sh"
-    # The ONE reader for "is the latest bot REVIEW OBJECT anchored to the head
-    # SHA?" (HIMMEL-1181, B2) — independent of both the status verdict above
-    # and the body-findings reader below; see cr-review-freshness.sh header.
-    # shellcheck source=scripts/lib/cr-review-freshness.sh
-    # shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
-    . "$(cd "$(dirname "$0")" && pwd)/lib/cr-review-freshness.sh"
     # The ONE reader for CodeRabbit's review-BODY findings (HIMMEL-1126/1147) —
     # outside-diff-range / nitpick / additional comments the thread gate below
     # cannot see (S1: no thread, no isResolved, unresolvable by construction).
     # shellcheck source=scripts/lib/cr-body-findings.sh
     # shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
     . "$(cd "$(dirname "$0")" && pwd)/lib/cr-body-findings.sh"
-    # The CR-ledger evidence reader (HIMMEL-1465): tells cr_signal_gate below
-    # whether a CLEAN critic panel carried the gate at the head, so a
-    # rate-limited CodeRabbit App need not block when the panel already reviewed.
+    # The CR-ledger evidence reader (HIMMEL-3124): tells _cr_outside_gate below
+    # whether an outside-diff-range finding has a recorded exact-head
+    # disposition (deferred/disproved). HIMMEL-3360 removed this lib's OTHER
+    # function, cr_ledger_carries_gate (the rate-limited/absent-signal panel
+    # carry) — that reader is now unused, but the lib stays sourced for
+    # cr_ledger_outside_dispositioned.
     # shellcheck source=scripts/lib/cr-ledger-evidence.sh
     # shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
     . "$(cd "$(dirname "$0")" && pwd)/lib/cr-ledger-evidence.sh"
-    # Diagnostic risk classifier for the stale-anchor panel-carry audit line
-    # (HIMMEL-1718); no longer gates whether the carry applies (HIMMEL-2162).
-    # shellcheck source=scripts/lib/cr-high-risk-diff.sh
-    # shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
-    . "$(cd "$(dirname "$0")" && pwd)/lib/cr-high-risk-diff.sh"
 fi
 
 pr_checks() {
@@ -485,20 +381,17 @@ red_exit() {
 }
 
 # watch_decidable — HIMMEL-2062: is the watch's verdict already decidable
-# without waiting out CodeRabbit's pending rollup row? True only when every
-# check NOT named CodeRabbit is terminal (not in the "pending" bucket) AND,
-# when the CodeRabbit signal gate is armed, its own gate status is no longer
-# `pending`. Waiting on CodeRabbit's ROLLUP row buys nothing once its gate
-# status is terminal, because cr_signal_gate / cr_body_gate /
-# review_freshness_gate below read the status directly, not the rollup row —
-# but while the gate status genuinely reads `pending` we must KEEP waiting:
-# that window is what turns a would-be exit 2 into exit 0 today, and losing
-# it would be the regression this function must not cause.
+# without waiting out CodeRabbit's pending rollup row? True when every check
+# NOT named CodeRabbit is terminal (not in the "pending" bucket). HIMMEL-3360:
+# CodeRabbit is best effort — this never waits on CodeRabbit's own status to
+# settle either; cr_signal_gate reads whatever state the head carries when the
+# rest of the run reaches it and prints an advisory NOTE, it never blocks the
+# watch.
 #
 # Fail-SAFE by construction: any unreadable/unparsable probe returns 1 (keep
 # watching) — this can only ever shorten a wait, never fabricate a verdict.
 watch_decidable() {
-    local rows first n low state
+    local rows first n low
     rows=$(pr_checks --json bucket,name --jq '"CHECKCI_OK", (.[] | select(.bucket == "pending") | .name)' 2>/dev/null) || return 1
     first=${rows%%$'\n'*}
     [ "$first" = "CHECKCI_OK" ] || return 1
@@ -520,10 +413,6 @@ watch_decidable() {
         esac
     done <<<"$rows"
 
-    if [ "${CR_ARMED:-0}" -eq 1 ]; then
-        state=$(cr_signal_state "$owner" "$repo" "$head0" 2>/dev/null) || return 1
-        [ "$state" = pending ] && return 1
-    fi
     return 0
 }
 
@@ -923,111 +812,6 @@ owner=${nwo%%/*}
 repo_rest=${nwo#*/}
 repo=${repo_rest%%/*}
 
-# machine_pr_gate — HIMMEL-2278, the MACHINE-GENERATED PR class.
-#
-# Some PRs never receive a CodeRabbit App review at all: bot-authored
-# dependency bumps (precedent #2013) and pure regenerated-artifact publishes
-# (precedent #2035 — graphify-out/graph.json + GRAPH_REPORT.md, zero code).
-# On those, the three App gates below fail closed FOREVER on "no status /
-# no review object at head": a console parks on a review that is never
-# coming, merge-on-green exits 14, and the operator merges by hand. That
-# happened twice, so per the structural-over-instructional rule this is a
-# classifier, not stronger prose.
-#
-# WHAT IT DISARMS is exactly what an operator already disarms by hand with
-# CR_APP=0 for one run — the three CodeRabbit-App gates (cr_signal_gate,
-# cr_body_gate, review_freshness_gate), all keyed on CR_ARMED. It is NOT a
-# merge bypass and NOT a general CR bypass: the checks-green watch,
-# review_state_gate's CHANGES_REQUESTED blocker, and its paginated
-# unresolved-thread gate all run unchanged here exactly as on every other
-# PR. Every non-machine PR keeps today's fail-closed behaviour untouched —
-# the classifier's only effect on that class is to return 1.
-#
-# SPOOF RESISTANCE — why neither arm is a label, a title marker or a body
-# token. A marker an arbitrary PR author can set would be a one-line CR
-# bypass for any code PR, which is strictly worse than the drift it fixes.
-# So each arm is derived from something a code PR cannot cheaply fake:
-#   * dependabot — GitHub's own author.is_bot AND a dependabot login. A
-#     human account cannot set is_bot, and cannot open a PR as an App.
-#   * graph-publish — the DIFF SHAPE, not a marker: every changed path must
-#     be one of the two tracked graphify-out artifacts. A PR carrying any
-#     code touches at least one path outside that two-element set and is
-#     therefore never in the class, whatever it labels or titles itself.
-#     (The literal artifact paths are the case PATTERNS and $p is the
-#     subject, never the reverse — a file named `*` must not glob-match its
-#     way into the class.)
-# Fail-CLOSED throughout: an unreadable, truncated or unparsable probe
-# returns 1 and leaves the gates armed, which is today's behaviour.
-#
-# Kept in sync with GRAPH_PATH/REPORT_PATH in scripts/graphify/graph-publish.sh.
-machine_pr_class() {
-    local meta first author is_bot count paths p
-    # ONE probe. The "MPR_OK" sentinel is load-bearing: an empty response or
-    # a gh error must never parse as "no files, bot author".
-    meta=$(pr_view --json author,files --jq \
-        '"MPR_OK", (.author.login // ""), (.author.is_bot // false), ((.files // []) | length), ((.files // [])[] | .path)' 2>/dev/null) || return 1
-    first=${meta%%$'\n'*}
-    [ "$first" = "MPR_OK" ] || return 1
-    meta=${meta#*$'\n'}
-    author=${meta%%$'\n'*}
-    meta=${meta#*$'\n'}
-    is_bot=${meta%%$'\n'*}
-    meta=${meta#*$'\n'}
-    count=${meta%%$'\n'*}
-    case "$count" in
-        ''|*[!0-9]*) return 1 ;;
-    esac
-    if [ "$count" -eq 0 ]; then paths=""; else paths=${meta#*$'\n'}; fi
-
-    # Arm 1 — dependabot. is_bot is GitHub's, not the author's.
-    if [ "$is_bot" = "true" ]; then
-        case "$author" in
-            dependabot|'dependabot[bot]'|app/dependabot|\
-            dependabot-preview|'dependabot-preview[bot]'|app/dependabot-preview)
-                printf 'dependabot dependency bump'
-                return 0 ;;
-        esac
-    fi
-
-    # Arm 2 — a graph-publish artifact PR, recognized by diff shape alone.
-    # An empty file list is not evidence of anything: fail closed.
-    [ "$count" -ge 1 ] || return 1
-    # …and the path lines must actually match the advertised count (codex-1,
-    # HIMMEL-2278 CR round 1). Without this, a probe that reported 3 files but
-    # was TRUNCATED after emitting only its two artifact paths would classify
-    # as the class while the third, unseen path was code — a fail-closed gate
-    # reading a partial file list as a complete one.
-    [ "$(printf '%s\n' "$paths" | grep -c .)" -eq "$count" ] || return 1
-    while IFS= read -r p; do
-        [ -n "$p" ] || continue
-        case "$p" in
-            graphify-out/graph.json|graphify-out/GRAPH_REPORT.md) ;;
-            *) return 1 ;;
-        esac
-    done <<<"$paths"
-    printf 'regenerated graphify-out artifacts only'
-    return 0
-}
-
-machine_pr_gate() {
-    local class
-    [ "$CR_ARMED" -eq 1 ] || return 0
-    class=$(machine_pr_class) || return 0
-    # NOT `CR_ARMED=0` (codex-1, HIMMEL-2278 CR round 2). Blanket-disarming
-    # also silenced cr_body_gate and review_freshness_gate, so on the day the
-    # App DOES review a machine-class PR its outside-diff-range body findings
-    # — which carry no thread, and are therefore invisible to every other gate
-    # — would have been dropped. The class licenses tolerating an ABSENT
-    # review, nothing more: this flag is read by exactly the two cr_signal_gate
-    # arms that mean "the App said nothing" (`absent` and the skip-classified
-    # family). `pending`, `failure`/`error`, `paged`, cr_body_gate and
-    # review_freshness_gate all stay armed here exactly as on any other PR.
-    MACHINE_PR_CLASS=1
-    echo "check-ci: PR #$num is a machine-generated PR ($class) — the CodeRabbit App does not review this class, so an absent App review is the EXPECTED state for it (HIMMEL-2278; precedents #2013, #2035). Every other signal still gates: checks-green, CHANGES_REQUESTED, unresolved threads, a FAILED App status, and any body findings the App does post."
-}
-MACHINE_PR_CLASS=0
-machine_pr_gate
-
 # review_state_gate — the CHANGES_REQUESTED blocker + the paginated
 # unresolved-thread gate, as one re-runnable unit. It runs BEFORE the zombie
 # probe (fail-fast, and the override's zero-unresolved evidence) and AGAIN
@@ -1136,40 +920,6 @@ review_state_gate
 #
 # Runs AFTER the watch + settle so the normal registration race resolves itself
 # in the window that already exists; only a signal still missing by then fails.
-_cr_panel_carries_absent_signal() {
-    local absent_signal="$1" stale_anchor="${2:-}"
-    if _cr_panel_evidence=$(cr_ledger_carries_gate "$head0"); then
-        case "$absent_signal" in
-            rate-limited)
-                # Preserve the HIMMEL-1465 audit line byte-for-byte.
-                echo "check-ci: CodeRabbit is rate-limited on head $head0 of PR #$num; the critic panel carries the gate ($_cr_panel_evidence) — not failing the verdict on the App (HIMMEL-1465)." ;;
-            review-object)
-                echo "check-ci: review object absent at head $head0 of PR #$num; threads resolved; panel carries — HIMMEL-1502/1506 ($_cr_panel_evidence)." ;;
-            freshness)
-                echo "check-ci: FRESHNESS panel carry stale_anchor=$stale_anchor head=$head0 PR #$num; threads resolved; $_cr_panel_evidence (HIMMEL-1718)." ;;
-            *)
-                echo "check-ci: CodeRabbit $absent_signal on head $head0 of PR #$num; the critic panel carries the gate ($_cr_panel_evidence) — not failing the verdict on the absent App signal (HIMMEL-1506)." ;;
-        esac
-        return 0
-    fi
-    return 1
-}
-
-# _cr_escalate_note_if_inapplicable — HIMMEL-3152. --escalate's only effect
-# (_cr_body_escalate, the `@coderabbitai full review` request) is reachable
-# solely through review_freshness_gate's `stale` arm — a review OBJECT
-# anchored to an older commit. cr_signal_gate's skip-classified branch exits
-# BEFORE review_freshness_gate ever runs (there is no head review object here
-# to be stale, so escalating would not even make sense), so an explicit
-# --escalate silently did nothing on this path: same output, same exit 2,
-# flag accepted and ignored (reproduced on PR #804 — byte-identical with and
-# without the flag). Say so, and name the route that actually applies, instead
-# of letting the flag look consumed.
-_cr_escalate_note_if_inapplicable() {
-    [ "$ESCALATE" -eq 1 ] || return 0
-    echo "check-ci: --escalate does not apply here — it only re-requests a review whose OBJECT is stale-anchored (review_freshness_gate's 'stale' case), and a skip-classified STATUS with no head review object is not that shape (HIMMEL-3152). The sanctioned route for an absent/skip-classified App signal is a clean exact-head critic panel (HIMMEL-1506): run /pr-check on this HEAD." >&2
-}
-
 cr_signal_gate() {
     # Availability gate (HIMMEL-1125): no CodeRabbit App on this repo -> no-op.
     # Silent on purpose — an adopter without CodeRabbit must not notice that a
@@ -1179,297 +929,19 @@ cr_signal_gate() {
     [ "$CR_ARMED" -eq 1 ] || return 0
 
     local state
-    state=$(cr_signal_state "$owner" "$repo" "$head0") || {
-        echo "check-ci: could not read CodeRabbit's status on head $head0 — cannot evaluate the gate; re-run" >&2
-        exit 2
-    }
+    # HIMMEL-3360: CodeRabbit is best effort. Every state but success
+    # (pending, failure, error, absent, skipped, paged, anything this script
+    # does not recognize) is advisory, never a block — and so is a status
+    # read that FAILED: an unreadable advisory signal cannot be a gate
+    # outcome either. The thread gate (review_state_gate) and the
+    # body-findings gate (cr_body_gate) keep their own fail-closed reads and
+    # are what still certify the merge.
+    state=$(cr_signal_state "$owner" "$repo" "$head0") || state=unreadable
     case "$state" in
-        # HIMMEL-1698 CR round: record that the head carries a CONCLUDED review
-        # status, for the B2 escalation note in review_freshness_gate. This is
-        # DIAGNOSTIC ONLY and must never become a gate condition — see that
-        # gate's header: a concluded status does not imply a review object was
-        # posted, which is the entire HIMMEL-1181 contract.
-        success) _cr_head_status_ok=1 ;;
-        pending)
-            echo "check-ci: CodeRabbit is still reviewing head $head0 of PR #$num — not green yet; re-run when it concludes" >&2
-            exit 2 ;;
-        failure|error)
-            echo "check-ci: CodeRabbit reported '$state' on head $head0 of PR #$num — its review did not complete" >&2
-            exit 1 ;;
-        absent)
-            # HIMMEL-2278 — on a machine-generated PR (dependabot, or a diff of
-            # nothing but the tracked graphify-out artifacts) an absent status
-            # IS the steady state, not a missing review: see machine_pr_gate.
-            # This is the ONLY thing the class licenses; every other arm of this
-            # case, cr_body_gate and review_freshness_gate stay armed for it.
-            if [ "${MACHINE_PR_CLASS:-0}" -eq 1 ]; then
-                echo "check-ci: CodeRabbit posted no status on head $head0 of PR #$num — expected for a machine-generated PR (HIMMEL-2278); not failing the verdict on it."
-                return 0
-            fi
-            # Remediation names CR_APP=0, not CR_PROFILE=none (coderabbit-7):
-            # reaching this line means the gate is ARMED, so the fix is to
-            # disarm availability — and CR_PROFILE=none would ALSO silently
-            # change the critic-panel profile (it is overloaded; see
-            # .env.example). CR_APP=0 says only the thing meant here.
-            echo "check-ci: CodeRabbit has posted NO status on head $head0 of PR #$num — an unreviewed head is not a green one (HIMMEL-1072). Wait for the review and re-run; if this repo has no CodeRabbit, it should not be armed: unset it with 'git config --local --unset himmel.coderabbit' (or CR_APP=0 for this run)." >&2
-            exit 2 ;;
-        paged)
-            # Indeterminate, not absent (coderabbit-2) — see cr-signal.sh.
-            echo "check-ci: head $head0 of PR #$num has more commit statuses than one API page (100) and none is CodeRabbit's — cannot certify the review; check manually" >&2
-            exit 2 ;;
-        skipped)
-            # HIMMEL-2278 — the #2035 shape, verbatim: the App posted
-            # state=success with a skip-classified description (rate limited).
-            # Every skip wording means the App's review signal is absent, which
-            # for this class is expected rather than missing. Placed ahead of
-            # the panel-carry logic because a machine PR has no panel evidence
-            # to carry it and never will — a critic panel over a 17 MB
-            # regenerated graph.json is review theater, which is the whole
-            # reason the class exists.
-            if [ "${MACHINE_PR_CLASS:-0}" -eq 1 ]; then
-                echo "check-ci: CodeRabbit SKIPPED the review on head $head0 of PR #$num — expected for a machine-generated PR (HIMMEL-2278); not failing the verdict on it."
-                return 0
-            fi
-            # HIMMEL-1317. Distinct from `absent`: CodeRabbit DID post, and posted
-            # state=success — it just said in the description that it did not
-            # review. Until this arm existed that success was indistinguishable
-            # from a clean review, and this gate certified exit 0 on a PR nobody
-            # had looked at (reproduced on PR #1429, 2026-07-27). Actionable
-            # rather than merely closed: the operator's next move is one comment.
-            #
-            # HIMMEL-1506: every skip-classified description means the App's
-            # review signal is absent. A CLEAN critic panel (>=1 `avail ... ok`,
-            # no blocking finding) at THIS exact head carries each shape; absent
-            # or dirty evidence keeps the existing fail-closed verdict/message.
-            local skip_desc skip_low
-            if skip_desc=$(cr_signal_description "$owner" "$repo" "$head0"); then
-                skip_low=$(printf '%s' "$skip_desc" | tr '[:upper:]' '[:lower:]')
-            else
-                if _cr_panel_carries_absent_signal "description is unreadable"; then return 0; fi
-                _cr_escalate_note_if_inapplicable
-                echo "check-ci: CodeRabbit SKIPPED the review on head $head0 of PR #$num and its description could not be read to tell rate-limiting from a disabled review — cannot evaluate the panel-carried allowance; re-run. If this repo has no CodeRabbit, set CR_PROFILE=none." >&2
-                exit 2
-            fi
-            # Rate-limit vocabulary (mirrors cr-signal.sh's _CRS_SKIP_RE
-            # `rate.?limit` arm): "rate limit" / "rate-limit" / "ratelimit".
-            case "$skip_low" in
-                *rate?limit*|*ratelimit*)
-                    if _cr_panel_carries_absent_signal "rate-limited"; then return 0; fi
-                    _cr_escalate_note_if_inapplicable
-                    echo "check-ci: CodeRabbit is rate-limited on head $head0 of PR #$num and the critic panel did NOT carry the gate at this head (ledger: $_cr_panel_evidence) — a rate-limited App with no clean panel is not a green one. Wait for the App's limit to reset, or run /pr-check on this HEAD so a panel reviews it. Bypass: CR_APP=0 (or CR_PROFILE=none)." >&2
-                    exit 2 ;;
-                '')
-                    if _cr_panel_carries_absent_signal "description is absent"; then return 0; fi ;;
-                *automatic*reviews*disabled*)
-                    if _cr_panel_carries_absent_signal "reports automatic reviews are disabled"; then return 0; fi ;;
-                *)
-                    if _cr_panel_carries_absent_signal "posted skip-classified wording"; then return 0; fi ;;
-            esac
-            _cr_escalate_note_if_inapplicable
-            echo "check-ci: CodeRabbit SKIPPED the review on head $head0 of PR #$num — it posted state=success, but its description does not say the review completed. A DECLINED review is not a clean one. Known causes: automatic reviews are disabled on this repo (trigger one with a '@coderabbitai review' comment, wait for it to conclude, then re-run), or CodeRabbit is RATE LIMITED (HIMMEL-1354 — wait for the limit to reset; do NOT re-trigger in a loop, and note the CLI lane 'bash scripts/cr/coderabbit-review.sh --branch <b> --base main' is a separate, independently-limited path). A clean exact-head critic panel carries every skip-classified state (HIMMEL-1506) — run /pr-check on this HEAD if no panel evidence exists yet. If CodeRabbit merely RENAMED its success wording (an OK review misclassified as a skip), widen the OK allow-list for one run with CR_OK_DESC_RE — keep both default alternatives and the ^(...)\$ anchors (HIMMEL-1354 R2); the knob does NOT apply to genuine skip wordings. If this repo has no CodeRabbit, set CR_PROFILE=none." >&2
-            exit 2 ;;
+        success) : ;;
         *)
-            echo "check-ci: unrecognized CodeRabbit state '$state' on head $head0 — cannot evaluate the gate; re-run" >&2
-            exit 2 ;;
+            echo "check-ci: NOTE — CodeRabbit $state on head $head0 of PR #$num: best effort (HIMMEL-3360), not gating; thread + body-findings gates still apply." >&2 ;;
     esac
-}
-
-# review_freshness_gate — HIMMEL-1181 (B2 / PR #1273): bind the latest bot
-# REVIEW's commit anchor to the head SHA. "0 unresolved threads" is not proof
-# of review — GitHub auto-resolves a thread when a later commit changes its
-# lines, so a head CodeRabbit never re-reviewed can read App-clean. This is
-# INDEPENDENT of cr_signal_gate above (which certifies the bot's commit
-# STATUS concluded on this SHA) — a concluded incremental status does not
-# imply a new review OBJECT was posted.
-#
-# Runs AFTER cr_body_gate (called below) on purpose: cr_body_gate's own A2
-# case (prior_outside>0 && zero reviews AT head, HIMMEL-1126) already exits 4
-# with an escalate-eligible message for the subset it covers, and that
-# subset is a STRICT SUBSET of "stale" here (a prior outside-diff finding
-# with no head review implies the latest review is anchored elsewhere).
-# Running freshness second means A2's own message and --escalate path stay
-# reachable for that case; this gate only fires for the genuinely uncovered
-# remainder — a stale latest review that never had an outside-diff finding
-# recorded (e.g. only ordinary thread comments, later auto-resolved), the
-# exact PR #1273 shape.
-review_freshness_gate() {
-    [ "$CR_ARMED" -eq 1 ] || return 0
-    local fr state login oid
-    fr=$(cr_review_freshness "$owner" "$repo" "$num" "$head0") || {
-        echo "check-ci: ${ctx}the review-freshness query failed on PR #$num — cannot certify the review anchor; re-run" >&2
-        exit 2
-    }
-    state=${fr%% *}
-    case "$state" in
-        none)
-            # `none` = ZERO CodeRabbit reviews on the whole PR, at any head,
-            # ever (empty incremental shells do not count — see the reader).
-            #
-            # HIMMEL-1374. That is benign only while nothing else CLAIMS a
-            # review happened. When cr_signal_gate certified a genuine
-            # `success` on this head — the "Review completed" description —
-            # the two readings contradict each other: an incremental pass
-            # needs a prior review to be incremental TO, and there is none.
-            # Live instance PR #1463 @ d89dd41b (2026-07-29): status
-            # "Review completed", zero review objects at any head, and this
-            # gate self-skipped straight to exit 0 over a PR nobody had
-            # reviewed. Same class as HIMMEL-1354, one layer up: the pieces
-            # were each individually right and nothing asked "was there ever
-            # a review at all?".
-            #
-            # HOW THIS COMPOSES with the two signals it must NOT break:
-            #  1. THE PANEL CARRY. A rate-limited (or otherwise
-            #     skip-classified) App reaches here with _cr_head_status_ok=0
-            #     — cr_signal_gate sets that flag ONLY on its `success` arm,
-            #     and every skip shape leaves the gate through
-            #     _cr_panel_carries_absent_signal instead. So the sanctioned
-            #     "rate-limited App + clean exact-head critic panel" allowance
-            #     (HIMMEL-1465/1506) still self-skips here, unchanged: the
-            #     App never claimed a completed review in that shape.
-            #  2. HIMMEL-1824. A CLEAN pass mints NO review object at all and
-            #     delivers its verdict through the walkthrough comment, so a
-            #     PR whose only pass was clean legitimately has zero review
-            #     objects PR-wide. Ask that second channel before refusing —
-            #     the same reader, with the same fail-closed posture the
-            #     `stale` arm below uses (unreadable walkthrough → refuse).
-            #     Without this, every clean-first-pass PR would block.
-            if [ "$_cr_head_status_ok" -eq 1 ]; then
-                local walk
-                walk=$(cr_review_walkthrough "$owner" "$repo" "$num" "$head0" 2>/dev/null || true)
-                if [ "$walk" != "clean" ]; then
-                    echo "check-ci: ${ctx}CodeRabbit's status on head $head0 of PR #$num reads a COMPLETED review, but this PR carries NO CodeRabbit review object at any head — ever — and no walkthrough certifies this head either. A completed review with nothing to be incremental to is not evidence that a review happened; cannot evaluate the gate (HIMMEL-1374). Request '@coderabbitai full review' ONCE, wait for it to conclude, then re-run." >&2
-                    exit 2
-                fi
-                echo "check-ci: PR #$num carries no CodeRabbit review object at all, but its WALKTHROUGH certifies head $head0 was reviewed with no actionable comments — a clean pass mints no object (HIMMEL-1824). This is App evidence, not a carry; do NOT request another review for this head."
-                FRESHNESS_NOTE="no review object PR-wide; walkthrough certifies head $head0"
-            else
-                # Absence of a bot review is not evidence of staleness, and no
-                # signal here claims otherwise — self-skip, as before.
-                FRESHNESS_NOTE="no bot review — freshness self-skipped"
-            fi ;;
-        paged)
-            echo "check-ci: ${ctx}PR #$num has more reviews than one query window (100) and none of the newest 100 is the bot's — cannot certify freshness; check manually" >&2
-            exit 2 ;;
-        stale)
-            # fr = "stale <login> <oid>" — word-split is safe: the lib's
-            # output is a controlled single line (cr-review-freshness.sh).
-            # shellcheck disable=SC2086
-            set -- $fr; login=$2; oid=$3
-
-            if [ "$ESCALATE" -eq 1 ] && [ "$_cbg_head_reviews" -eq 0 ]; then
-                # Explicit --escalate spends the useful full-review attempt before
-                # the stale-anchor tolerance arms: success leaves no risk or panel
-                # carry to decide. The head-review guard protects scarce account-
-                # wide capacity; that contradictory shape is not fixable by a post.
-                # Posts `@coderabbitai full review` once per head behind its idempotency
-                # marker and polls; exits 4 itself if no review object lands in budget.
-                #
-                # HIMMEL-1698: a concluded head status is COMPATIBLE with this
-                # stale anchor — CodeRabbit posts (or edits in place) an EMPTY
-                # review object on an incremental pass and carries the real
-                # verdict in the per-SHA status instead (PR #1728: status
-                # "Review completed" at head, latest review object five commits
-                # back, body_len=0). That does not make the anchor a false
-                # positive: this gate is deliberately INDEPENDENT of the status
-                # (see the header above — HIMMEL-1181, a concluded status never
-                # implies a review object was posted), so it still escalates.
-                # This is diagnostic context for the spend about to happen, not
-                # a guard — do not let it skip the call below.
-                if [ "$_cr_head_status_ok" -eq 1 ]; then
-                    echo "check-ci: NOTE — CodeRabbit's status on head $head0 already reads a completed review, so this stale anchor may be benign incremental behaviour (it posts an empty review object on incrementals). Escalating anyway: a concluded status is not proof a review object was posted (HIMMEL-1181). This spends ONE full review, bounded by the per-head marker." >&2
-                fi
-                _cr_body_escalate
-                # The fresh review can carry outside-diff findings the earlier
-                # cr_body_gate pass could not see. Re-run it: its own A2 arm cannot
-                # re-fire (the escalation above returns only once a SUBSTANTIVE
-                # review is visible, and A2 is gated on substantive==0 —
-                # HIMMEL-1959), so this only re-enforces the body-findings block.
-                cr_body_gate
-                fr=$(cr_review_freshness "$owner" "$repo" "$num" "$head0") || {
-                    echo "check-ci: ${ctx}the review-freshness re-query failed on PR #$num after escalation — cannot certify the review anchor; re-run" >&2
-                    exit 2
-                }
-                # BOTH terminal states, not just "fresh" (CR round 3). The
-                # escalation now returns success when the walkthrough certifies
-                # the head — and in exactly that case the review OBJECT is still
-                # anchored old, so this re-query answers fresh-clean-no-object.
-                # Accepting only "fresh" made the gate cancel its own escalation
-                # and exit 4 on the head CodeRabbit had just certified: the very
-                # loop this change exists to end, moved one line down.
-                case "${fr%% *}" in
-                    fresh|fresh-clean-no-object)
-                        # shellcheck disable=SC2086
-                        set -- $fr; login=$2
-                        if [ "${4:-}" = threads-only ]; then
-                            FRESHNESS_NOTE="fresh thread activity only by $login @ $head0 (no review body at this head; escalated)"
-                        else
-                            FRESHNESS_NOTE="${fr%% *} $login review @ $head0 (escalated)"
-                        fi
-                        return 0 ;;
-                esac
-                echo "check-ci: DO-NOT-MERGE — a CodeRabbit full review landed at head $head0 of PR #$num but the latest $login review is STILL not anchored there (freshness: $fr); cannot certify" >&2
-                exit 4
-            fi
-
-            local risk_detail="" risk_rc=0 risk_text=""
-            risk_detail=$(cr_diff_is_high_risk "$owner" "$repo" "$num") || risk_rc=$?
-            case "$risk_rc" in
-                0) risk_text="the diff touches a high-risk surface: $risk_detail" ;;
-                1) risk_text="the diff is ordinary" ;;
-                2) risk_text="the diff's high-risk classification cannot be determined ($risk_detail), which is treated as high risk" ;;
-                *) risk_rc=2; risk_detail="classifier-rc"; risk_text="the diff's high-risk classification cannot be determined (classifier-rc), which is treated as high risk" ;;
-            esac
-
-            # HIMMEL-2162: exact-head panel-carry is the DEFAULT for a stale
-            # anchor now, regardless of risk classification — a clean critic
-            # panel that already reviewed THIS head is the same evidence a
-            # fresh CodeRabbit review would be, whether or not the diff LOOKS
-            # risky. The prior HIMMEL-1718 knob (CHECK_CI_FRESHNESS_CARRY_HIGH_RISK)
-            # gated only whether a high-risk diff was even ALLOWED to reach
-            # this check; it never bypassed the requirement for real panel
-            # evidence (see _cr_panel_carries_absent_signal below), so once the
-            # gate itself is unconditional the knob has no remaining job — it
-            # is retired. Fail-closed is unchanged: no panel row at this head
-            # still exits 4 below, high-risk or not.
-            if _cr_panel_carries_absent_signal "freshness" "$oid"; then
-                if [ "$risk_rc" -ne 1 ]; then
-                    echo "check-ci: LOUD — stale bot review superseded by exact-head panel despite $risk_text (HIMMEL-2162)."
-                fi
-                FRESHNESS_NOTE="freshness panel-carried stale $oid -> head $head0"
-                return 0
-            fi
-
-            echo "check-ci: ${ctx}the latest $login review on PR #$num is anchored to ${oid}, not head ${head0} — this head was NEVER re-reviewed (auto-resolved threads can mask this); $risk_text, and the critic panel did NOT carry the gate at this head (ledger: $_cr_panel_evidence). Request @coderabbitai full review ONCE, then re-run — the plain incremental \"@coderabbitai review\" NO-OPS on an already-reviewed commit, and NEVER poll a trigger: read its reply. If the walkthrough already certifies this head clean, re-requesting cannot change the verdict (HIMMEL-1824)." >&2
-            exit 4 ;;
-        fresh-clean-no-object)
-            # HIMMEL-1824. CodeRabbit reviewed THIS head and found nothing, so
-            # it minted no review object — its verdict came through the
-            # walkthrough comment instead. That is the App's own evidence about
-            # this head, not a substitute for it: no panel carry is consulted
-            # and CHECK_CI_FRESHNESS_CARRY_HIGH_RISK stays irrelevant, so this
-            # passes a high-risk diff too. Loud on stdout because a gate that
-            # passes on a second channel must say which channel it read.
-            # shellcheck disable=SC2086
-            set -- $fr; login=$2; oid=$3
-            echo "check-ci: freshness satisfied by CodeRabbit's WALKTHROUGH at head $head0 of PR #$num — the head was reviewed with no actionable comments, which mints no review object (latest object still sits at $oid). This is App evidence, not a carry; do NOT request another full review for this head."
-            FRESHNESS_NOTE="fresh-clean-no-object $login @ $head0 (walkthrough; latest object $oid)" ;;
-        fresh)
-            # fr = "fresh <login> <oid>"
-            # shellcheck disable=SC2086
-            set -- $fr; login=$2
-            # HIMMEL-3123: a `threads-only` 4th token means every bot object at
-            # the head is a body-empty thread reply — the bot touched the head
-            # but delivered no verdict at it. Same pass, honest prose.
-            if [ "${4:-}" = threads-only ]; then
-                FRESHNESS_NOTE="fresh thread activity only by $login @ $head0 (no review body at this head)"
-            else
-                FRESHNESS_NOTE="fresh $login review @ $head0"
-            fi ;;
-        *)
-            echo "check-ci: ${ctx}unrecognized freshness state '$state' — cannot evaluate; re-run" >&2
-            exit 2 ;;
-    esac
-    return 0
 }
 
 # cr_body_gate — HIMMEL-1126/1147 (S1, see cr-body-findings.sh header):
@@ -1541,246 +1013,6 @@ _cr_body_read() {
     done
 }
 
-# ── HIMMEL-1964: the escalation claim ────────────────────────────────────────
-# The per-head marker used to be BOTH the lock and the request — one comment
-# carrying `@coderabbitai full review` plus the marker — which made it neither:
-#   * NOT single-flight. The marker scan and the POST are two API calls with
-#     nothing between them, so two callers on the same head both read "no
-#     marker" and both spend a full review out of account-wide capacity.
-#   * NOT retryable. Once the POST lands the marker is permanent for that head,
-#     so a request CodeRabbit never honours (dropped, failed, rate-limited at
-#     its end) strands the head: every later run reads "already requested",
-#     polls, and times out until someone pushes a new commit.
-# The claim is now its own comment, posted FIRST, carrying `attempt=N`:
-#   * single-flight — every caller posts a claim and then re-reads the claims
-#     at its own attempt; the LOWEST comment id wins and is the only one that
-#     posts the request. GitHub allocates the ids, so the tie-break is
-#     server-side and total: no lease, no branch state, no clock.
-#   * bounded retry — attempt 1 is the first request. An invocation that
-#     entered on an EXISTING attempt-1 claim and then watched its whole poll
-#     window expire with no substantive review claims attempt 2 and re-requests
-#     ONCE; an attempt-2 window expiring is a strand, reported with its manual
-#     remedy. Never more than two requests per head, ever.
-# Markers written before this change carry no `attempt=` and read as attempt 1.
-#
-# TWO CEILINGS THIS DELIBERATELY KEEPS (codex panel r1), both pre-existing and
-# both fail-CLOSED — they cost liveness, never a bad merge:
-#   1. A claim's AUTHOR is not validated, exactly as the grep-for-marker it
-#      replaces did not. Anyone who can comment on the PR can forge a marker and
-#      suppress the automated request for that head. Filtering to the
-#      authenticated login would break the case this whole mechanism exists for
-#      — two callers running as DIFFERENT accounts would stop seeing each
-#      other's claims and would both post. The strand message names the manual
-#      remedy, so a forged marker never blocks a human.
-#   2. Claim-then-read is not atomic. If GitHub does not yet expose a
-#      concurrent claim on our re-read, both callers post. That window is the
-#      medium's, not this design's, and the worst case inside it is TWO full
-#      reviews — precisely what happened on EVERY concurrent run before this
-#      change, so the floor only rises.
-
-_cre_max=0   # highest attempt among this head's markers (0 = none)
-_cre_low=""  # lowest comment id among this head's markers at the wanted attempt
-
-# _cr_escalate_scan <wanted-attempt> — refresh _cre_max / _cre_low. Fails
-# CLOSED on an unreadable or unparseable comment list: an unknown claim state
-# must never be read as "nobody has claimed", which is the double-post.
-# The SPACE after $head0 in the scan pattern is load-bearing — without it a
-# marker for a head this one is a PREFIX of would read as a claim on this head,
-# which the exact-match grep it replaces could not do.
-_cr_escalate_scan() {
-    local want="$1" list line id rest att _cre_v
-    # shellcheck disable=SC2016  # $m is a jq variable — literal on purpose
-    list=$(gh api "repos/$owner/$repo/issues/$num/comments" --paginate \
-        --jq '.[] | ((.body // "") | [scan("<!-- himmel:cr-escalate:'"$head0"' [^>]*-->")]) as $m | select(($m | length) > 0) | "\(.id) \($m[0])"' 2>/dev/null) || {
-        echo "check-ci: ${ctx}could not scan PR #$num comments for the CodeRabbit escalation marker — cannot evaluate the gate; re-run" >&2
-        exit 2
-    }
-    _cre_max=0; _cre_low=""
-    while IFS= read -r line; do
-        [ -n "$line" ] || continue
-        id=${line%% *}
-        rest=${line#* }
-        att=1
-        case "$rest" in
-            *attempt=*) att=${rest#*attempt=}; att=${att%% *} ;;
-        esac
-        # Validate EACH field on its own, never the concatenation (the CR #1297
-        # lesson one gate down): "$id$att" would let an empty attempt hide
-        # behind a numeric id and then error in the comparisons below.
-        for _cre_v in "$id" "$att"; do
-            case "$_cre_v" in
-                ''|*[!0-9]*)
-                    echo "check-ci: ${ctx}PR #$num carries an unparseable CodeRabbit escalation marker ('$line') — cannot evaluate the gate; re-run" >&2
-                    exit 2 ;;
-            esac
-        done
-        if [ "$att" -gt "$_cre_max" ]; then _cre_max=$att; fi
-        if [ "$att" -eq "$want" ]; then
-            if [ -z "$_cre_low" ] || [ "$id" -lt "$_cre_low" ]; then _cre_low=$id; fi
-        fi
-    done <<EOF
-$list
-EOF
-}
-
-# _cr_escalate_request <attempt> — claim first, then request only if the claim
-# WON. The loser posts no request and simply waits on the winner's review, so
-# concurrent callers spend exactly one full review per (PR, head, attempt).
-_cr_escalate_request() {
-    local attempt="$1" claim_id
-    claim_id=$(gh api "repos/$owner/$repo/issues/$num/comments" \
-        -f body="<!-- himmel:cr-escalate:$head0 attempt=$attempt -->" --jq '.id' 2>/dev/null) || claim_id=""
-    case "$claim_id" in
-        ''|*[!0-9]*)
-            echo "check-ci: ${ctx}could not claim the CodeRabbit full review for head $head0 of PR #$num (attempt $attempt) — cannot evaluate the gate; re-run" >&2
-            exit 2 ;;
-    esac
-    _cr_escalate_scan "$attempt"
-    if [ -n "$_cre_low" ] && [ "$_cre_low" -lt "$claim_id" ]; then
-        # Withdraw the losing claim (codex panel r2). A loser's claim records
-        # nothing — the winner's does — but left behind it reads as a spent
-        # attempt to every later invocation, which would survive the winner's
-        # own rollback above and silently cost the head one of its two
-        # requests. Best effort, same as the rollback.
-        gh api -X DELETE "repos/$owner/$repo/issues/comments/$claim_id" >/dev/null 2>&1 || true
-        echo "check-ci: another check-ci run claimed the CodeRabbit full review for head $head0 of PR #$num first (claim #$_cre_low beats #$claim_id) — NOT requesting a second one; waiting for that review" >&2
-        return 0
-    fi
-    if ! gh api "repos/$owner/$repo/issues/$num/comments" -f body="@coderabbitai full review" >/dev/null 2>&1; then
-        # Roll the claim BACK (codex panel r1). Without this a transient POST
-        # failure consumes one of the two attempts while spending no request at
-        # all — the ticket's own "not retryable after a partial failure" bug,
-        # one layer in. Best effort: if the delete also fails the claim simply
-        # stands, which is no worse than the state before this line existed.
-        gh api -X DELETE "repos/$owner/$repo/issues/comments/$claim_id" >/dev/null 2>&1 || true
-        echo "check-ci: ${ctx}could not post @coderabbitai full review for head $head0 of PR #$num — cannot evaluate the gate; re-run" >&2
-        exit 2
-    fi
-    echo "check-ci: requested @coderabbitai full review for head $head0 of PR #$num (attempt $attempt)" >&2
-}
-
-# _cr_body_escalate — the ONLY write path in check-ci, reachable solely through
-# --escalate. CodeRabbit's normal incremental command is a no-op after it has
-# concluded, while `@coderabbitai full review` deliberately ignores incremental
-# state. The per-head claim above makes retries idempotent and bounded; the
-# bounded loop keeps a missing review object visibly fail-closed instead of
-# waiting forever.
-#
-# WHY THE POLL WAITS ON `substantive`, NOT `head_reviews` (HIMMEL-1959).
-# `head_reviews` counts EVERY bot review at the head, and CodeRabbit posts
-# EMPTY review objects on incremental passes — measured on PR #1728, where the
-# status at the merged head read "Review completed" while the latest review
-# object sat five commits back with body_len=0. One such empty object landing
-# after the escalation comment would satisfy a head_reviews>0 exit condition,
-# so the loop could return success while the requested full review was still
-# pending or had failed — and the caller would then evaluate `outside=0`
-# derived from no substantive body at all. That is a false GREEN produced by
-# an empty payload, the same shape HIMMEL-1582 fixed one layer down.
-#
-# Attribution is sound WITHOUT a recorded pre-request baseline because the
-# caller's entry condition IS the baseline: cr_body_gate reaches here only
-# when substantive==0, re-read immediately before the call. So at request time
-# there is no substantive review at this head by construction, and any
-# substantive review the loop below observes necessarily arrived after the
-# request. Empty objects may already be sitting there — which is precisely why
-# the baseline that matters is `substantive` and not a set of review IDs: an
-# empty incremental object is not the review that was asked for, whether it
-# predates the request or lands during it.
-#
-# The post-escalation re-check runs CodeRabbit's own status FIRST
-# (cr_signal_gate), so a full review that FAILED or is still concluding
-# cannot be read as a delivered review — then threads, then bodies, the same
-# concluded -> threads -> bodies order the normal path certifies in.
-_cr_body_escalate() {
-    local start elapsed remaining nap prior
-    _cr_escalate_scan 0
-    prior=$_cre_max
-    if [ "$prior" -gt 0 ]; then
-        echo "check-ci: CodeRabbit full review was already requested for head $head0 of PR #$num (attempt $prior); waiting for its review object" >&2
-    else
-        _cr_escalate_request 1
-    fi
-    echo "check-ci: waiting up to ${CR_ESCALATE_WAIT}s for a substantive review at head $head0 of PR #$num" >&2
-
-    start=$SECONDS
-    while :; do
-        _cr_body_read
-        if [ "$_cbg_substantive" -gt 0 ]; then
-            echo "check-ci: a substantive CodeRabbit review is visible at head $head0 of PR #$num; evaluating its findings" >&2
-            # Status FIRST: a full review that failed or is still concluding
-            # must not be certified as delivered just because a review object
-            # exists. Then the thread gate — the full review can create inline
-            # threads AFTER the normal pre-body thread gate ran — then refresh
-            # the body once more, preserving the normal concluded -> threads ->
-            # bodies order so escalation cannot launder any finding shape.
-            cr_signal_gate
-            review_state_gate
-            _cr_body_read
-            [ "$_cbg_substantive" -gt 0 ] && return 0
-        fi
-        # HIMMEL-1949 x HIMMEL-1824: waiting only for a substantive OBJECT is
-        # unsatisfiable when the requested review comes back CLEAN — that pass
-        # mints no object at all, so this loop burned its whole budget and then
-        # exited 4 on a head CodeRabbit had already certified. Accept the
-        # walkthrough as a terminal answer too. Read once per turn, bounded like
-        # every other call in the lib; an unreadable walkthrough just keeps
-        # waiting, so the fail-closed timeout below is untouched.
-        if [ "$(cr_review_walkthrough "$owner" "$repo" "$num" "$head0" 2>/dev/null || true)" = "clean" ]; then
-            # CR round 5: this return must certify the SAME things the object
-            # return above does, or the walkthrough becomes a cheaper door into
-            # the same success. Two holes it closed: a failure/error status
-            # posted by the escalated pass was invisible here, and the caller
-            # went on to judge $_cbg_outside from the PRE-escalation read.
-            #
-            # Status is checked with the RAW reader, never cr_signal_gate:
-            # that gate exits 2 on `pending`, which inside this loop would turn
-            # "keep waiting" into "re-run" and hand the caller a spurious
-            # failure. So: success certifies, failure/error refuses outright,
-            # and anything else (pending / absent / unreadable) falls through
-            # to keep waiting — the fail-closed timeout below is untouched.
-            _wt_st=$(cr_signal_state "$owner" "$repo" "$head0" 2>/dev/null || true)
-            case "$_wt_st" in
-                failure|error)
-                    echo "check-ci: DO-NOT-MERGE — CodeRabbit reported '$_wt_st' on head $head0 of PR #$num; its walkthrough cannot certify a review that did not complete" >&2
-                    exit 1 ;;
-                success)
-                    # Threads THEN body, the same order the object path uses:
-                    # the full review can open inline threads, and the body
-                    # re-read is what stops the caller evaluating outside-diff
-                    # findings from before the escalation.
-                    review_state_gate
-                    _cr_body_read
-                    echo "check-ci: CodeRabbit's walkthrough certifies head $head0 of PR #$num was reviewed with no actionable comments — a clean pass mints no review object, so no further object is coming. Escalation satisfied (status success, threads and body re-checked)." >&2
-                    return 0 ;;
-            esac
-        fi
-        elapsed=$((SECONDS - start))
-        if [ "$elapsed" -ge "$CR_ESCALATE_WAIT" ]; then
-            # HIMMEL-1964. A window that expires on a request THIS run just
-            # posted is an ordinary timeout — the review may still be coming.
-            # A window that expires on a claim a PREVIOUS run posted is the
-            # strand: that request had a full budget and delivered nothing.
-            # Attempt 1 stranded buys exactly one re-request; attempt 2
-            # stranded is terminal and says so, with the manual remedy.
-            if [ "$prior" -ge 2 ]; then
-                echo "check-ci: DO-NOT-MERGE — head $head0 of PR #$num is STRANDED: $prior @coderabbitai full review requests have each gone a full ${CR_ESCALATE_WAIT}s window without producing a substantive review. check-ci will not request another (two per head is the cap). Push a new commit — a new head starts a fresh pair of attempts — or request '@coderabbitai full review' by hand and check CodeRabbit's own status on this PR." >&2
-                exit 4
-            fi
-            if [ "$prior" -eq 1 ]; then
-                _cr_escalate_request 2
-                echo "check-ci: DO-NOT-MERGE — the full review requested earlier for head $head0 of PR #$num (attempt 1) never produced a substantive review, so a second one is now requested (attempt 2). Re-run to wait for it; if that window expires too the head is stranded and check-ci will say so." >&2
-                exit 4
-            fi
-            echo "check-ci: DO-NOT-MERGE — no substantive CodeRabbit review is visible at head $head0 of PR #$num after ${CR_ESCALATE_WAIT}s (${_cbg_head_reviews} review object(s) at this head, none carrying a body — an empty incremental review is not the full review that was requested, and no walkthrough certifies this head clean either); cannot certify" >&2
-            exit 4
-        fi
-        remaining=$((CR_ESCALATE_WAIT - elapsed))
-        nap=$CR_ESCALATE_POLL
-        [ "$nap" -gt "$remaining" ] && nap=$remaining
-        [ "$nap" -gt 0 ] && "$CHECK_CI_SLEEP_CMD" "$nap"
-    done
-}
-
 cr_body_gate() {
     # Availability gate (HIMMEL-1125), same posture as cr_signal_gate above:
     # cr_body_findings lives in cr-body-findings.sh, which is only SOURCED when
@@ -1790,35 +1022,10 @@ cr_body_gate() {
 
     _cr_body_read
 
-    # A2's evidence is readable but incrementally silent: CodeRabbit concluded
-    # on this head, yet its incremental pass produced no SUBSTANTIVE review
-    # while a prior head still carries outside-diff findings. That is distinct
-    # from rc 2 (the gate genuinely cannot be read) and has one known
-    # resolution: force a full review. Default observers stay read-only and
-    # return rc 4; --escalate opts into posting the command once and boundedly
-    # re-reading.
-    #
-    # Gated on `substantive`, NOT `head_reviews` (HIMMEL-1959 CR round 1).
-    # Hardening only the escalation POLL left this entry test keyed on
-    # head_reviews, which displaced the false green by exactly one invocation
-    # instead of removing it: run 1 escalates, an EMPTY review object lands at
-    # the head, the poll correctly refuses and exits 4 — but that object
-    # PERSISTS, so run 2 reads head_reviews=1 and skips A2 entirely. outside
-    # then reads 0 (no substantive body to read it from) and the freshness gate
-    # accepts the empty object as head-anchored, so the gate exits 0 while the
-    # requested full review never arrived. Both ends must agree on what counts
-    # as a review, or the guard is only as strong as its weaker test.
-    if [ "$_cbg_prior_outside" -gt 0 ] && [ "$_cbg_substantive" -eq 0 ]; then
-        # review_state_gate already proved the thread set resolved immediately
-        # before this body read. Exact-head panel evidence may therefore carry
-        # this otherwise-only missing review-object signal (HIMMEL-1502/1506).
-        if [ "$_cbg_outside" -eq 0 ] && _cr_panel_carries_absent_signal "review-object"; then return 0; fi
-        if [ "$ESCALATE" -eq 0 ]; then
-            echo "check-ci: ${ctx}PR #$num had unresolved outside-diff findings at a prior head, but CodeRabbit's incremental pass posted no substantive review at current head $head0 (${_cbg_head_reviews} review object(s) there, none carrying a body) — request @coderabbitai full review, then re-run" >&2
-            exit 4
-        fi
-        _cr_body_escalate
-    fi
+    # HIMMEL-3360: CodeRabbit is best effort — an incrementally-silent pass
+    # (a prior head's outside-diff findings with no substantive review at this
+    # head) is no longer itself a block; _cr_outside_gate below still blocks
+    # on any UNDISPOSITIONED outside-diff finding that is still outstanding.
 
     body_outside_note=""
     if [ "$_cbg_outside" -gt 0 ]; then
@@ -1831,7 +1038,7 @@ cr_body_gate() {
 
 # _cr_outside_gate — HIMMEL-3124. An outside-diff-range finding has no thread,
 # so it used to be clearable only by a commit (which moves the head and discards
-# CodeRabbit's review, HIMMEL-1252 — a whole review slot for a Minor). Each one
+# CodeRabbit's review, HIMMEL-1252 — an entire re-review over a Minor). Each one
 # may instead carry an explicit, adjudicated ledger disposition AT THIS EXACT
 # HEAD (cr_ledger_outside_dispositioned: deferred + tracked ticket + reason, or
 # disproved + reason; never severity-gated). ANY undispositioned finding keeps
@@ -1891,16 +1098,6 @@ _cbg_note() {
     fi
 }
 
-# _frn_note — appended to the success line so a "fresh" or self-skipped
-# ("none") certification is visible in the output, not just its absence of a
-# block (HIMMEL-1181). Set by review_freshness_gate; unset on every path that
-# never reached it (CR_ARMED=0), hence the default expansion.
-FRESHNESS_NOTE=""
-_frn_note() {
-    [ -n "${FRESHNESS_NOTE:-}" ] && printf '; %s' "$FRESHNESS_NOTE"
-    return 0
-}
-
 if [ "$THREADS_ONLY" -eq 1 ]; then
     # Bind + certify this path's own head (previously skipped entirely — S1
     # was invisible here too): cr_signal_gate/cr_body_gate both need a head0,
@@ -1922,26 +1119,21 @@ if [ "$THREADS_ONLY" -eq 1 ]; then
         # (before this if) must not be the one that gets certified.
         review_state_gate
 
-        # Body findings, THEN freshness (HIMMEL-1181 — see review_freshness_gate's
-        # own header for why this order, not the reverse): a body becoming
-        # visible during the thread re-verification must not slip past on a
-        # pre-refresh read, and cr_body_gate's own A2 exit-4 case must stay
-        # reachable before the broader freshness check would otherwise
-        # preempt it.
+        # Body findings (HIMMEL-3360: freshness is no longer gated here — a
+        # body becoming visible during the thread re-verification must not
+        # slip past on a pre-refresh read).
         cr_body_gate
-        review_freshness_gate
 
         # Re-read the head: the verdict this path just certified (threads +
-        # CodeRabbit concluded + body findings + review freshness) only holds
-        # for the SHA it queried — mirrors the full path's post-watch head1
-        # re-bind below.
+        # CodeRabbit concluded + body findings) only holds for the SHA it
+        # queried — mirrors the full path's post-watch head1 re-bind below.
         head1=$(pr_view --json headRefOid --jq .headRefOid 2>/dev/null)
         if [ "$head1" != "$head0" ]; then
             echo "check-ci: PR head moved during the run (${head0} → ${head1:-unreadable}) — checks certified a different commit; re-run" >&2
             exit 2
         fi
     fi
-    echo "check-ci: all review threads resolved (PR #$num)$(_cbg_note)$(_frn_note)"
+    echo "check-ci: all review threads resolved (PR #$num)$(_cbg_note)"
     exit 0
 fi
 
@@ -1970,17 +1162,13 @@ cr_signal_gate
 # snapshot would let merge-on-green proceed over fresh blocking feedback.
 review_state_gate
 
-# Body findings, THEN review freshness (HIMMEL-1126/1147, S1 + HIMMEL-1181,
-# B2): runs after the concluded + threads re-verification above, before the
-# final head re-bind (spec-ordered concluded -> threads -> bodies ->
-# freshness -> head re-bind) — a body or a stale review anchor becoming
-# visible in the same post-watch window the other gates already re-check
-# must not slip past on a stale pre-watch read. Body findings run first so
-# cr_body_gate's own A2 exit-4 case (see review_freshness_gate's header)
-# stays reachable before the broader freshness check would otherwise
-# preempt it.
+# Body findings (HIMMEL-1126/1147, S1): runs after the concluded + threads
+# re-verification above, before the final head re-bind (spec-ordered
+# concluded -> threads -> bodies -> head re-bind) — a body becoming visible
+# in the same post-watch window the other gates already re-check must not
+# slip past on a stale pre-watch read. HIMMEL-3360: review freshness is no
+# longer gated here — CodeRabbit is best effort.
 cr_body_gate
-review_freshness_gate
 
 # Re-read the head: the green verdict only holds for the SHA we watched.
 head1=$(pr_view --json headRefOid --jq .headRefOid 2>/dev/null)
@@ -1989,5 +1177,5 @@ if [ "$head1" != "$head0" ]; then
     exit 2
 fi
 
-echo "check-ci: all checks green + all review threads resolved (PR #$num @ $head0)$(_cbg_note)$(_frn_note)"
+echo "check-ci: all checks green + all review threads resolved (PR #$num @ $head0)$(_cbg_note)"
 exit 0
