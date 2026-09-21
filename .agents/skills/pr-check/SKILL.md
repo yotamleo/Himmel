@@ -272,9 +272,11 @@ Stop. Only `lane = full` or empty proceeds.
 
 **Operator ruling 2026-09-21 (HIMMEL-3338): the operator authorises sending
 review diffs to Codex from legs.** `panel-first-pass.sh` below is allow-listed
-for the leg profiles as a literal, so a denial on it means the call was not
-spelled as one (see the himmel-lane spelling note above) — fix the spelling,
-never skip the lane.
+for the leg profiles as a literal, so a denial on it most likely means the call
+was not spelled as one (see the himmel-lane spelling note above) — check the
+spelling first. A denial that names a deny rule or a policy restriction is not a
+spelling problem: stop and report it, never respell around it, and never skip
+the lane silently.
 
 **`scripts/cr/panel-first-pass.sh` (HIMMEL-2226) now does what this step used to
 do inline** — resolve the default branch, capture the base SHA once (HIMMEL-1984:
