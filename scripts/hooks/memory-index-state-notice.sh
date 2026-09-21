@@ -49,6 +49,10 @@ export LC_ALL=C   # byte locale; chars are counted explicitly below (see the gua
 LINE_MAX="${MEMORY_LINE_MAX:-200}"
 LINE_CEIL="${MEMORY_LINE_CEIL:-60}"
 case "$LINE_MAX$LINE_CEIL" in ''|*[!0-9]*) exit 0 ;; esac  # garbage knob: stay silent, never fail
+# All-digit is not enough: `[ "$n" -gt "$LINE_CEIL" ]` below prints "integer
+# expected" to stderr past the shell's integer range. Clamp — a ceiling that
+# large is "never exceeded" — so the healthy path stays silent on stderr too.
+[ "${#LINE_CEIL}" -le 9 ] || LINE_CEIL=999999999
 
 if [ -z "${MEMDIR:-}" ]; then
     # Memory lives under the PRIMARY checkout's project slug, not a worktree's:

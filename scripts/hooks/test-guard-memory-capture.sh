@@ -426,6 +426,23 @@ chmod 644 "$MEM/MEMORY.md"
 out="$(MEMDIR="$MEM" MEMORY_LINE_CEIL=abc bash "$STATE_HOOK" </dev/null 2>&1)"; rc=$?
 assert_silent "F4 fail-open: non-numeric MEMORY_LINE_CEIL"
 
+# F4b (CR, HIMMEL-3314): a NUMERIC but oversized ceiling passes the digit check
+#     and then reaches `[ "$n" -gt "$LINE_CEIL" ]`, where bash prints "integer
+#     expected" to stderr. rc stays 0 (fail-open) but the healthy path is no
+#     longer silent. 70 pointers vs an effectively infinite ceiling = healthy.
+#     run_state merges stderr into $out, so assert_silent covers both.
+for big in 999999999999999999999999 9223372036854775808; do
+    out="$(MEMDIR="$MEM" MEMORY_LINE_CEIL=$big bash "$STATE_HOOK" </dev/null 2>&1)"; rc=$?
+    assert_silent "F4b fail-open: oversized numeric MEMORY_LINE_CEIL=$big (stdout AND stderr silent)"
+done
+# ...and it must still report line-too-long, i.e. clamping the ceiling must not
+# silence the other rule.
+printf -- '- %s -> luna [[n]]\n' "$(repeat_char x 250)" >> "$MEM/MEMORY.md"
+out="$(MEMDIR="$MEM" MEMORY_LINE_CEIL=999999999999999999999999 bash "$STATE_HOOK" </dev/null 2>&1)"; rc=$?
+assert_contains "F4b an oversized ceiling still reports line-too-long" "line-too-long"
+assert_rc "F4b oversized ceiling exits 0" 0 "$rc"
+mk_index 70
+
 # F5: awk itself fails (a stub that exits 3 ahead of the real one on PATH).
 mkdir -p "$SB/badbin"; printf '#!/bin/sh\nexit 3\n' > "$SB/badbin/awk"; chmod +x "$SB/badbin/awk"
 out="$(PATH="$SB/badbin:$PATH" MEMDIR="$MEM" bash "$STATE_HOOK" </dev/null 2>&1)"; rc=$?
@@ -461,6 +478,12 @@ if command -v node >/dev/null 2>&1; then
     mk_index 60
     out="$(MEMDIR="$MEM" node "$RUNNER" --chain --lifecycle "$STATE_HOOK" </dev/null 2>&1)"; rc=$?
     assert_silent "W2 a healthy index is silent through the chain runner"
+    # W3 (measured, CR HIMMEL-3314): does the runner forward a member's stderr?
+    #    Establishes whether a stray stderr line from the advisory is visible at
+    #    all, so the "silent when healthy" claim is stated as measured.
+    printf '#!/bin/sh\necho stderr-marker-from-member >&2\nexit 0\n' > "$SB/stderr-member.sh"; chmod +x "$SB/stderr-member.sh"
+    out="$(node "$RUNNER" --chain --lifecycle "$SB/stderr-member.sh" </dev/null 2>&1 >/dev/null)"; rc=$?
+    assert_contains "W3 the lifecycle chain runner forwards a member's stderr" "stderr-marker-from-member"
 else echo "SKIP W1/W2 (node not on PATH)"; fi
 
 exit "$FAILED"
