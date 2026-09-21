@@ -365,6 +365,80 @@ _c4_got="$(c4_run 'https://github.com/o/r.git' bitbucket)"
 if [ -z "$_c4_got" ]; then pass "C4 ignores an inherited FORGE (github origin stays quiet)"; else fail "C4 ignores an inherited FORGE (github origin) -> '$_c4_got'"; fi
 rm -rf "$_c4_repo"
 
+echo "== issue repo: resolve_issue_repo decides on the origin's HOST, not a URL substring =="
+# HIMMEL-3368: resolve_issue_repo used to match `*github.com[:/]*` anywhere in the
+# origin URL. Run in isolation (it only reads REPO_FLAG, the env and the origin),
+# once per row: <expected owner/repo | none><TAB><origin url>.
+_ri_body="$(awk '/^resolve_issue_repo\(\)/{found=1} found{print} found && /^\}$/{exit}' "$DOC")"
+_ri_repo="$(mktemp -d "${TMPDIR:-/tmp}/ri-forge.XXXXXX")" || { echo "mktemp failed" >&2; exit 1; }
+git init -q "$_ri_repo"
+# ri_run <origin> [FORGE value] — echoes the resolved owner/repo, or `none` when it returns 1.
+ri_run() {
+    git -C "$_ri_repo" remote remove origin 2>/dev/null
+    git -C "$_ri_repo" remote add origin "$1"
+    # shellcheck disable=SC2016  # the script text is meant to expand in the child shell
+    ( cd "$_ri_repo" && env -u FORGE -u HIMMEL_DOCTOR_ISSUE_REPO ${2:+FORGE="$2"} REPO_ROOT="$REPO_ROOT" bash -c \
+        'set -uo pipefail; REPO_FLAG=""; '"$_ri_body"'; if r="$(resolve_issue_repo)"; then printf "%s\n" "$r"; else echo none; fi' 2>/dev/null )
+}
+_ri_n=0
+while IFS=$'\t' read -r _ri_want _ri_url; do
+    case "$_ri_want" in ''|'#'*) continue ;; esac
+    _ri_got="$(ri_run "$_ri_url")"
+    if [ "$_ri_got" = "$_ri_want" ]; then pass "issue repo '$_ri_url' -> $_ri_got"; else fail "issue repo '$_ri_url' -> expected '$_ri_want', got '$_ri_got'"; fi
+    _ri_n=$((_ri_n+1))
+done <<'ROWS'
+o/r	https://github.com/o/r.git
+o/r	https://github.com/o/r
+o/r	https://github.com/o/r/
+o/r	https://user:tok@github.com/o/r.git
+o/r	https://github.com:443/o/r.git
+o/r	ssh://git@github.com/o/r.git
+o/r	ssh://git@ssh.github.com:443/o/r.git
+o/r	git@github.com:o/r.git
+o/r	github.com:o/r.git
+O/R	https://GitHub.COM/O/R.git
+o/r	https://github.com/o/r/github.com/x
+bitbucket.org/widgets	https://github.com/bitbucket.org/widgets.git
+o/r	https://github.com./o/r.git
+o/r	https://github.com.:443/o/r.git
+o/r	ssh://git@ssh.github.com.:443/o/r.git
+o/r	git@github.com.:o/r.git
+o/r	github.com.:o/r.git
+none	https://evil.example/github.com/x/y
+none	https://user@evil.example/u@github.com:o/r.git
+none	git@evil.example:github.com/x/y.git
+none	https://notgithub.com/o/r.git
+none	git@notgithub.com:o/r.git
+none	https://github.com.example.net/o/r.git
+none	https://github.com../o/r.git
+none	https://github.example.com/o/r.git
+none	https://gitlab.com/github.com/o/r.git
+none	https://bitbucket.org/github.com/x/y
+none	git@bitbucket.org:github.com/x/y.git
+none	/srv/git/github.com/o/r.git
+none	file:///srv/git/github.com/o/r.git
+none	github.com/o/r.git
+none	https://github.com/o
+ROWS
+if [ "$_ri_n" -ge 30 ]; then pass "issue repo origin table was read ($_ri_n cases)"; else fail "issue repo origin table was read: only $_ri_n cases"; fi
+# Every row of the harness-wide forge table: a github origin resolves a repo, anything else does not.
+_ri_m=0
+while IFS=$'\t' read -r _ri_want _ri_url; do
+    case "$_ri_want" in ''|'#'*) continue ;; esac
+    _ri_got="$(ri_run "$_ri_url")"
+    if [ "$_ri_want" = github ]; then
+        case "$_ri_got" in none|'') fail "issue repo forge-table github '$_ri_url' -> '$_ri_got'" ;; *) pass "issue repo forge-table github '$_ri_url' -> $_ri_got" ;; esac
+    elif [ "$_ri_got" = none ]; then pass "issue repo forge-table $_ri_want '$_ri_url' -> none"; else fail "issue repo forge-table $_ri_want '$_ri_url' -> expected none, got '$_ri_got'"; fi
+    _ri_m=$((_ri_m+1))
+done < "$REPO_ROOT/scripts/lib/fixtures/forge-origins.tsv"
+if [ "$_ri_m" -ge 30 ]; then pass "issue repo forge table was read ($_ri_m cases)"; else fail "issue repo forge table was read: only $_ri_m cases"; fi
+# An inherited FORGE overrides forge_detect but says nothing about the ORIGIN the issue is filed on.
+_ri_got="$(ri_run 'https://github.com/o/r.git' bitbucket)"
+if [ "$_ri_got" = o/r ]; then pass "issue repo ignores an inherited FORGE (github origin)"; else fail "issue repo ignores an inherited FORGE (github origin) -> '$_ri_got'"; fi
+_ri_got="$(ri_run 'https://bitbucket.org/t/r.git' github)"
+if [ "$_ri_got" = none ]; then pass "issue repo ignores an inherited FORGE (bitbucket origin)"; else fail "issue repo ignores an inherited FORGE (bitbucket origin) -> '$_ri_got'"; fi
+rm -rf "$_ri_repo"
+
 echo "== C26: no salus vault -> OK skipped =="
 t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c26.XXXXXX")"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
 out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
