@@ -151,6 +151,10 @@ function _ProvCanonPartial([string]$p) {
         $rest = $p.Substring($i) + $rest
         $p = $p.Substring(0, $i)
         if (-not $p) { $p = '/' }
+        if ($p -match '^[A-Za-z]:$') {   # C:/x -> the drive ROOT, not the drive's cwd
+            $p += '/'
+            if (-not (Test-Path -LiteralPath $p -PathType Container)) { _ProvFail "cannot resolve $p" }
+        }
     }
     $real = _ProvFwd ((Resolve-Path -LiteralPath $p).ProviderPath)
     return $real.TrimEnd('/') + $rest
@@ -158,7 +162,8 @@ function _ProvCanonPartial([string]$p) {
 function _ProvAbs([string]$p) {
     $p = _ProvFwd $p
     if (-not ($p.StartsWith('/') -or $p -match '^[A-Za-z]:/')) { $p = (_ProvFwd (Get-Location).ProviderPath) + '/' + $p }
-    while ($p.Length -gt 1 -and $p.EndsWith('/')) { $p = $p.Substring(0, $p.Length - 1) }
+    while ($p.Length -gt 1 -and $p.EndsWith('/') -and $p -notmatch '^[A-Za-z]:/$') { $p = $p.Substring(0, $p.Length - 1) }
+    if ($p -match '^[A-Za-z]:/$') { return ((_ProvCanonPartial $p).TrimEnd('/') + '/') }   # a drive root is its own path
     $i = $p.LastIndexOf('/')
     $base = $p.Substring($i + 1)
     $dir = $p.Substring(0, $i)
@@ -293,6 +298,11 @@ function Prov-End {
 }
 
 # -- artifact rows -------------------------------------------------------
+function _ProvFileArg([string]$f) {
+    if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { _ProvFail "not a file: $f" }
+    return (Resolve-Path -LiteralPath $f).ProviderPath
+}
+
 function _ProvBody([string]$Kind, [string]$Type, [string]$Val) {
     if ($Type -eq 'file') {
         if (-not (Test-Path -LiteralPath $Val -PathType Leaf)) { _ProvFail "not a file: $Val" }
@@ -391,6 +401,11 @@ function Prov-Record {
     if ($implicit) { $iid = _ProvNewIid }
     $cpath = ''
     if ($Path -ne '-' -and $Path -ne '') { $cpath = _ProvAbs $Path }
+
+    # .NET file APIs resolve a relative name against the process cwd, not the PowerShell
+    # location: hand them the provider path Test-Path checked
+    if ($preT -eq 'file') { $preV = _ProvFileArg $preV }
+    if ($postT -eq 'file') { $postV = _ProvFileArg $postV }
 
     $pre = $null
     if ($preT -eq 'absent') { $pre = '{"state":"absent"}' }

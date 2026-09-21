@@ -127,6 +127,10 @@ scratch `HOME` and never touches the real `~/.himmel`.
   dialect); an `install-begin` row with a very large `argv` can interleave with a
   concurrent writer's row. Artifact rows are far smaller. A reader skips a line
   that does not parse, so the cost is one lost row.
+- Session ownership (bash) is a shell variable, so a subshell of the opener
+  inherits it: call `prov_begin` and `prov_end` from the same shell, not from a
+  `( ... )` or `$( ... )` (a subshell's `prov_end` closes the session but leaves
+  the parent's copy set). Binding it to a pid needs `$BASHPID`, bash 4+.
 - A backslash in a path is a separator only on Windows; on POSIX it is a legal
   filename character and is recorded as given.
 - The PowerShell dialect is for Windows writers. Its exclusive append handle

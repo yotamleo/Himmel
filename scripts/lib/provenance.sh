@@ -59,13 +59,30 @@ prov_dir() {
         [ -n "${HOME:-}" ] || { _prov_err "HOME is unset and HIMMEL_PROVENANCE_DIR is not given"; return 1; }
         d="$HOME/.himmel"
     fi
-    canon_path_partial "$d" || { _prov_err "cannot resolve $d"; return 1; }
+    _prov_canon_partial "$d" || { _prov_err "cannot resolve $d"; return 1; }
 }
 
 prov_ledger_path() {
     local d
     d=$(prov_dir) || return 1
     printf '%s/provenance.jsonl' "$d"
+}
+
+# _prov_canon_partial <path> -- canon_path_partial, except that climbing to a
+# Windows drive stops at the drive ROOT (C:/), never at the bare `C:` (= the
+# drive's current directory).
+_prov_canon_partial() {
+    local p="${1-}" rest="" head
+    [ -n "$p" ] || return 1
+    while [ ! -d "$p" ]; do
+        case "$p" in */*) ;; *) return 1 ;; esac
+        rest="/${p##*/}$rest"
+        p="${p%/*}"
+        [ -n "$p" ] || p=/
+        case "$p" in [A-Za-z]:) p="$p/"; [ -d "$p" ] || return 1 ;; esac
+    done
+    head=$(canon_path_native "$p") || return 1
+    printf '%s%s\n' "${head%/}" "$rest"
 }
 
 # _prov_abs_path <path> -- absolute, parent chain resolved (symlinks and Windows
@@ -75,12 +92,16 @@ _prov_abs_path() {
     # a backslash is a separator on Windows only; on POSIX it is a legal filename character
     case "$p" in *[\\]*) if [ "$(_prov_platform)" = win32 ]; then p=${p//\\//}; fi ;; esac
     case "$p" in /*|[A-Za-z]:/*) ;; *) p="$PWD/$p" ;; esac
-    while [ "${#p}" -gt 1 ] && [ "${p%/}" != "$p" ]; do p="${p%/}"; done
+    while [ "${#p}" -gt 1 ] && [ "${p%/}" != "$p" ]; do
+        case "$p" in [A-Za-z]:/) break ;; esac   # a drive root keeps its slash
+        p="${p%/}"
+    done
+    case "$p" in [A-Za-z]:/) dir=$(_prov_canon_partial "$p") || return 1; printf '%s/' "${dir%/}"; return 0 ;; esac
     base="${p##*/}"
     dir="${p%/*}"
     [ -n "$dir" ] || dir=/
     case "$dir" in [A-Za-z]:) dir="$dir/" ;; esac   # C:/x -> parent is the drive ROOT, not the drive's cwd
-    dir=$(canon_path_partial "$dir") || return 1
+    dir=$(_prov_canon_partial "$dir") || return 1
     if [ "$base" = "" ]; then printf '%s' "${dir:-/}"; else printf '%s/%s' "${dir%/}" "$base"; fi
 }
 
@@ -163,7 +184,7 @@ _prov_begin_row() {
     head=$(git -C "$root" rev-parse HEAD 2>/dev/null) || head=""
     [ -f "$root/VERSION" ] && version=$(tr -d ' \r\n' < "$root/VERSION")
     home=$(canon_path_native "${HOME:-}" 2>/dev/null) || home="${HOME:-}"
-    cfg=$(canon_path_partial "${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}" 2>/dev/null) || cfg="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}"
+    cfg=$(_prov_canon_partial "${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}" 2>/dev/null) || cfg="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}"
     jq -nc --arg t "$(_prov_now)" --arg iid "$iid" --arg root "$root" \
         --argjson head "$(_prov_str_or_null "$head")" \
         --argjson version "$(_prov_str_or_null "$version")" \
@@ -220,6 +241,10 @@ prov_end() {
     local status="${1-}" step="${2-}" iid="${HIMMEL_PROVENANCE_IID:-}"
     case "$status" in ok|failed|partial) ;; *) _prov_err "prov_end: status must be ok|failed|partial"; return 2 ;; esac
     _prov_dry && return 0
+    # ponytail: ownership is the shell variable _PROV_OWNS, which a bash SUBSHELL of the
+    # opener inherits, so `( prov_end ok )` closes the parent's session and the parent's
+    # copy stays set (a second install-end on its own prov_end). A pid check needs $BASHPID
+    # (bash >= 4; this lib targets 3.2), so callers open and close in the same shell.
     [ -n "$iid" ] && [ "${_PROV_OWNS:-}" = "$iid" ] || return 0
     _prov_need || return 1
     # close ownership only once the end row is on disk, so a failed append can be retried

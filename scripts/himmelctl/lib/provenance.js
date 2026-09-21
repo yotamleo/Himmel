@@ -100,6 +100,10 @@ function canonPartial(p) {
     if (i < 0) throw fail(`cannot resolve ${p}`);
     rest = p.slice(i) + rest;
     p = p.slice(0, i) || '/';
+    if (/^[A-Za-z]:$/.test(p)) { // C:/x -> the drive ROOT, not the drive's cwd
+      p += '/';
+      if (!isDir(p)) throw fail(`cannot resolve ${p}`);
+    }
   }
   return fwd(fs.realpathSync(p)).replace(/\/$/, '') + rest;
 }
@@ -108,7 +112,8 @@ function canonPartial(p) {
 function absPath(p) {
   p = fwd(p);
   if (!(p.startsWith('/') || /^[A-Za-z]:\//.test(p))) p = fwd(process.cwd()) + '/' + p;
-  while (p.length > 1 && p.endsWith('/')) p = p.slice(0, -1);
+  while (p.length > 1 && p.endsWith('/') && !/^[A-Za-z]:\/$/.test(p)) p = p.slice(0, -1);
+  if (/^[A-Za-z]:\/$/.test(p)) return canonPartial(p) + '/'; // a drive root is its own path
   const i = p.lastIndexOf('/');
   const base = p.slice(i + 1);
   let parent = p.slice(0, i) || '/';

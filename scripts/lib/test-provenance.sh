@@ -288,6 +288,17 @@ rm -rf "$HIMMEL_PROVENANCE_DIR"
 prov_record register mcp / --unit m --post-json '"x"'
 check "path '/' is recorded as /" "$(last | jq -r .path)" "/"
 
+# a Windows drive root keeps its slash and is not split into the bare "C:" (the drive's
+# cwd); fixture: a directory literally named "C:" (a real drive root needs Windows)
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) echo "SKIP - Windows: 'C:/' is a real drive root here" ;;
+    *)
+        rm -rf "$HIMMEL_PROVENANCE_DIR" "$tmp/drv"; mkdir -p "$tmp/drv/C:"
+        ( cd "$tmp/drv" && prov_record register mcp 'C:/' --unit m --post-json '"x"' )
+        check "drive root 'C:/' is recorded as the root itself" "$(last | jq -r .path)" "$(cd "$tmp/drv/C:" && pwd -P)/"
+        ;;
+esac
+
 # ── pwsh twin: same scenario, same bytes ─────────────────────────────────
 if command -v pwsh >/dev/null 2>&1; then
     rm -rf "$HIMMEL_PROVENANCE_DIR" "$tmp/prov-ps"

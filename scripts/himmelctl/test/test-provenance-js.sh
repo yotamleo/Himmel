@@ -221,5 +221,16 @@ case "$(uname -s)" in
         ;;
 esac
 
+# a Windows drive root keeps its slash and is not split into the bare "C:" (the drive's
+# cwd); fixture: a directory literally named "C:" (a real drive root needs Windows)
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) echo "SKIP - Windows: 'C:/' is a real drive root here" ;;
+    *)
+        rm -rf "$tmp/pu" "$tmp/drv"; mkdir -p "$tmp/drv/C:"
+        ( cd "$tmp/drv" && "$node_bin" "$jsw" record register mcp 'C:/' --unit m --post-json '"x"' )
+        check "node: drive root 'C:/' is recorded as the root itself" "$(grep -v install- "$tmp/pu/provenance.jsonl" | jq -r .path)" "$(cd "$tmp/drv/C:" && pwd -P)/"
+        ;;
+esac
+
 echo "$passes passed, $fails failed"
 [ "$fails" -eq 0 ]
