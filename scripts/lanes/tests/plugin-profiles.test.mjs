@@ -41,6 +41,9 @@ const GATE_RULES = [
   'Bash(bash scripts/cr/codex-adv-harvest.sh)',
   'Bash(bash scripts/cr/doc-freshness-advisory.sh)',
   'Bash(bash scripts/cr/known-findings.sh --diff)',
+  // HIMMEL-3359: the himmel-lane step-0 entry. Exact literal — the script
+  // resolves HIMMEL_REPO and hands off to the anchor's copy itself.
+  'Bash(bash scripts/cr/pr-check-context.sh)',
   'Bash(bash scripts/cr/ledger-append.sh:*)',
   'Bash(bash scripts/check-ci.sh:*)',
 ];
@@ -150,7 +153,9 @@ const BAD_GATE_RULES = [
   ['known-findings blanket prefix', 'Bash(bash scripts/cr/known-findings.sh:*)'],
   ['pr-check-env stays out', 'Bash(bash scripts/cr/pr-check-env.sh:*)'],
   ['claude-floor-review stays out', 'Bash(bash scripts/cr/claude-floor-review.sh:*)'],
-  ['pr-check-context stays out', 'Bash(bash scripts/cr/pr-check-context.sh)'],
+  // HIMMEL-3359: the step-0 entry is admitted as an exact literal only.
+  ['pr-check-context gains a wildcard', 'Bash(bash scripts/cr/pr-check-context.sh:*)'],
+  ['pr-check-context gains an argument', 'Bash(bash scripts/cr/pr-check-context.sh --head)'],
   ['absolute-path critic rule', 'Bash(bash /home/x/scripts/cr/codex-adv-kickoff.sh)'],
   ['blanket quiet-run', 'Bash(bash scripts/quiet-run.sh:*)'],
   ['wildcard before --', 'Bash(bash scripts/quiet-run.sh * -- bash scripts/test-*.sh)'],

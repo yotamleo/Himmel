@@ -299,6 +299,39 @@ if [ -z "$anchor" ]; then
     exit 2
 fi
 
+# HIMMEL-3359 - the himmel-lane RELATIVE entry. A leg may start step 0 as the
+# bare literal `bash scripts/cr/pr-check-context.sh` (the one shape a
+# permission allow rule can match; the canonical fence is a compound no rule
+# can). That runs THIS copy - the branch's - so a copy that is not the
+# anchor's never decides anything: it hands straight to the anchor's copy,
+# which then makes the lane + delegation decision and writes the delegation
+# row exactly as the canonical entry does, delegating back here with a
+# capability when the diff touches scripts/cr/. The one run that skips the
+# hand-off is a delegate whose PR_CHECK_ANCHOR_DELEGATED names THIS anchor
+# (the capability itself is verified further down; a stray value naming
+# another path, or a bare `1`, hands off like no value at all). A missing
+# anchor copy fails closed rather than letting this copy decide for itself.
+# ponytail: this guard is defense in depth, NOT the trust root. It lives in
+# the branch's own bytes, so a branch that deletes it also deletes the
+# hand-off. The trust root is the runbook condition (console ruling): the bare
+# literal is permitted only on a diff that touches no scripts/cr/ file, and a
+# branch that could delete this guard is exactly such a scripts/cr/ diff, which
+# must enter by the canonical absolute fence.
+if ! [ "$HIMMEL_ROOT" -ef "$anchor" ]; then
+    guard_anchor="${PR_CHECK_ANCHOR_DELEGATED:-}"
+    guard_anchor="${guard_anchor%|*}"
+    guard_anchor="${guard_anchor%|*}"
+    guard_anchor="${guard_anchor%|*}"
+    if ! { [ -n "$guard_anchor" ] && [ "$guard_anchor" -ef "$anchor" ]; }; then
+        if [ ! -f "$anchor/scripts/cr/pr-check-context.sh" ]; then
+            echo "pr-check-context: entered through a non-anchor copy ($SCRIPT_DIR) and the anchor carries no scripts/cr/pr-check-context.sh ($anchor) - refusing to let this copy decide; fix HIMMEL_REPO, then re-run" >&2
+            exit 2
+        fi
+        echo "pr-check-context: entered through a non-anchor copy ($SCRIPT_DIR) - handing off to the anchor's copy ($anchor/scripts/cr/pr-check-context.sh)" >&2
+        exec bash "$anchor/scripts/cr/pr-check-context.sh"
+    fi
+fi
+
 repo="$PWD"
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     echo "pr-check-context: $repo is not a git work tree - aborting" >&2

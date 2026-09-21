@@ -27,8 +27,9 @@ const ID_RE = /^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$/;
 const GATE_SCRIPT_RE = /^Bash\(bash scripts\/(?:handover\/(?:merge-on-green|queue-lock)|handover\/console-kit\/inbox-send|cr\/(?:write-verdicts|clear-cr-marker|panel-first-pass|docs-audit-panel|ledger-append)|check-ci)\.sh:\*\)$/;
 // HIMMEL-3338: the /pr-check external-critic steps that take no arguments (or
 // exactly `--diff`) are exact literals — no `:*` tail, so nothing can be
-// appended to them.
-const GATE_EXACT_RE = /^Bash\(bash scripts\/cr\/(?:(?:codex-adv-kickoff|codex-adv-harvest|doc-freshness-advisory)\.sh|known-findings\.sh --diff)\)$/;
+// appended to them. HIMMEL-3359 adds step 0's himmel-lane entry
+// (pr-check-context), which hands a non-anchor copy off to the anchor itself.
+const GATE_EXACT_RE = /^Bash\(bash scripts\/cr\/(?:(?:codex-adv-kickoff|codex-adv-harvest|doc-freshness-advisory|pr-check-context)\.sh|known-findings\.sh --diff)\)$/;
 const GATE_SUITE_RE = /^Bash\((?:SUITE_LOCK_WAIT=60 )?bash scripts\/quiet-run\.sh suite -- bash (?:scripts\/(?:handover\/console-kit\/|(?:handover|cr|git|hooks|guardrails|lib|luna|ci)\/)?|templates\/luna-second-brain\/scripts\/)test-\*\.sh\)$/;
 const LEG_PROFILES = new Set(['lane-impl', 'leg-impl', 'lane-review', 'lane-content', 'console-relay']);
 

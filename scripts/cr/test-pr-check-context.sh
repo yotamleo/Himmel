@@ -241,7 +241,9 @@ if [ "$rc_lr_t7" -ne 0 ]; then
   echo "FAIL: T7 RED - could not build the per-worktree-marker mutant - $(cat "$tmp/literal_replace.err" 2>/dev/null)"
   fail=1
 else
-  red_control_run --cwd "$wt" -- bash "$mutant_t7"
+  # HIMMEL-3359: the mutant IS its own anchor - a copy run under some other
+  # HIMMEL_REPO hands off to that anchor's copy and never computes a marker.
+  red_control_run --cwd "$wt" -- env HIMMEL_REPO="$mutant_t7_anchor" bash "$mutant_t7"
   # The expected per-worktree marker, computed fresh via --git-dir from $wt
   # itself - not hardcoded, since the on-disk worktree-admin-dir name is a
   # git-internal detail this test should not need to know.
@@ -1565,6 +1567,78 @@ cp "$SCRIPT" "$anchor32/scripts/cr/pr-check-context.sh"
 # assertions above for that.
 check "$rc20" "0" "T26-30 re-affirm: T20 rc still 0"
 check "$rc21" "0" "T26-30 re-affirm: T21 rc still 0"
+
+# --- T35: HIMMEL-3359 - the himmel-lane RELATIVE entry keeps the anchor ------
+# A leg enters step 0 as the bare literal `bash scripts/cr/pr-check-context.sh`
+# (the one shape an allow rule can match), which executes the BRANCH's copy
+# first. The branch copy must hand straight to the ANCHOR's copy, so the
+# delegation decision and its ledger row stay the anchor's. The fixture
+# branch weakens its OWN copy's decision (cr_diff_state never becomes yes):
+# if that copy decided, it would neither delegate nor log. Entered relatively,
+# the anchor must still decide, log exactly one row, and delegate back.
+anchor35="$tmp/fake-himmel-relative"
+build_fake_himmel "$anchor35"
+ledger35="$anchor35/.git/cr-critic-scores.jsonl"
+wt35="$tmp/fake-himmel-relative-wt"
+(cd "$anchor35" && git worktree add -q -b t35-relative "$wt35" main) || { echo "FAIL: T35 could not add worktree"; fail=1; }
+literal_replace "$DIR/pr-check-context.sh" "$wt35/scripts/cr/pr-check-context.sh" \
+  '                cr_diff_state=yes' \
+  '                cr_diff_state=no' \
+  || { echo "FAIL: T35 could not build the weakened branch copy"; fail=1; }
+(
+  cd "$wt35" || exit 1
+  git add -A
+  git commit -q -m "weaken the branch's own scripts/cr/pr-check-context.sh"
+)
+head35="$(cd "$wt35" && git rev-parse HEAD)"
+wt35_toplevel="$(cd "$wt35" && git rev-parse --show-toplevel)"
+out35="$(cd "$wt35" && HIMMEL_REPO="$anchor35" bash scripts/cr/pr-check-context.sh 2>"$tmp/t35.err")"
+rc35=$?
+check "$rc35" "0" "T35 rc (relative entry)"
+check "$(get_kv "$out35" delegated)" "yes" "T35 delegated=yes - the ANCHOR decided, not the branch's weakened copy"
+check "$(get_kv "$out35" head)" "$head35" "T35 head"
+check "$(get_kv "$out35" himmel_dir)" "$wt35_toplevel" "T35 himmel_dir = the branch (a logged, verified delegation)"
+rows35="$(grep -c '"kind":"delegation"' "$ledger35" 2>/dev/null || echo 0)"
+check "$rows35" "1" "T35 exactly one delegation row, written through the anchor"
+grep -q "\"head\":\"$head35\"" "$ledger35" 2>/dev/null || { echo "FAIL: T35 delegation row does not name head $head35"; fail=1; }
+grep -q 'handing off to the anchor' "$tmp/t35.err" || { echo "FAIL: T35 missing the relative-entry hand-off diagnostic"; fail=1; }
+
+# T35b. A stray PR_CHECK_ANCHOR_DELEGATED that does not name this anchor
+# must not let the branch copy skip the hand-off: the anchor still decides
+# and logs a fresh row.
+out35b="$(cd "$wt35" && HIMMEL_REPO="$anchor35" PR_CHECK_ANCHOR_DELEGATED=1 bash scripts/cr/pr-check-context.sh 2>/dev/null)"
+check "$?" "0" "T35b rc (relative entry, stray guard value)"
+check "$(get_kv "$out35b" delegated)" "yes" "T35b delegated=yes despite a stray guard value"
+rows35b="$(grep -c '"kind":"delegation"' "$ledger35" 2>/dev/null || echo 0)"
+check "$rows35b" "2" "T35b a second delegation row, written through the anchor"
+
+# T35c. Relative entry on a branch whose diff does NOT touch scripts/cr/:
+# nothing delegates, and himmel_dir stays the branch (self-review unchanged).
+wt35c="$tmp/fake-himmel-relative-clean"
+(cd "$anchor35" && git worktree add -q -b t35c-clean "$wt35c" main) || { echo "FAIL: T35c could not add worktree"; fail=1; }
+(
+  cd "$wt35c" || exit 1
+  printf 'x\n' > notes.txt
+  git add -A
+  git commit -q -m "no scripts/cr change"
+)
+out35c="$(cd "$wt35c" && HIMMEL_REPO="$anchor35" bash scripts/cr/pr-check-context.sh 2>/dev/null)"
+check "$?" "0" "T35c rc (relative entry, clean diff)"
+check "$(get_kv "$out35c" delegated)" "no" "T35c delegated=no"
+check "$(get_kv "$out35c" himmel_dir)" "$(cd "$wt35c" && git rev-parse --show-toplevel)" "T35c himmel_dir = the branch"
+rows35c="$(grep -c '"kind":"delegation"' "$ledger35" 2>/dev/null || echo 0)"
+check "$rows35c" "2" "T35c no new delegation row"
+
+# T35d. The anchor's own copy is missing: the relative entry fails CLOSED
+# (exit 2) instead of letting the branch copy decide for itself.
+anchor35d="$tmp/fake-himmel-noanchor"
+build_fake_himmel "$anchor35d"
+wt35d="$tmp/fake-himmel-noanchor-wt"
+(cd "$anchor35d" && git worktree add -q -b t35d "$wt35d" main) || { echo "FAIL: T35d could not add worktree"; fail=1; }
+rm -f "$anchor35d/scripts/cr/pr-check-context.sh"
+out35d="$(cd "$wt35d" && HIMMEL_REPO="$anchor35d" bash scripts/cr/pr-check-context.sh 2>/dev/null)"
+check "$?" "2" "T35d rc=2 when the anchor carries no pr-check-context.sh"
+check "$out35d" "" "T35d no context printed"
 
 # --- Negative-control check: perturb T3's expectation to confirm the
 # assertion genuinely fails, then restore. This is asserted directly (not by

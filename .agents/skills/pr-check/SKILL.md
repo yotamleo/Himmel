@@ -124,6 +124,33 @@ on the captured value — so the worktree-isolation guard accepts this shape
 exactly as it accepted the bare form (probed directly in an
 EnterWorktree-isolated session).
 
+**Himmel-lane spelling of step 0 (HIMMEL-3359) — run this INSTEAD of the
+fence above, never both, and ONLY on a diff that touches no `scripts/cr/`
+file.** When the session's cwd is a worktree of the himmel checkout
+`HIMMEL_REPO` names, first list the branch's `scripts/cr/` changes (against the
+PR base, `origin/main` unless stacked; two-dot against the working tree, so
+uncommitted edits count and a main-side change only over-reports):
+
+    git diff --name-only origin/main -- scripts/cr/
+
+Use the bare literal below ONLY when that check prints nothing — it is the one
+shape a leg's allow rule can match:
+
+    bash scripts/cr/pr-check-context.sh
+
+If the check prints any path, use the canonical fence above — and if that
+fence is refused, stop and report BLOCKED; never fall back to the bare
+literal. On such a diff an allow-listed literal would auto-run the branch's own
+bytes, which may have deleted their own hand-off (console ruling on
+HIMMEL-3359). The in-script hand-off is defense in depth, not the trust root:
+run from a copy that is not the anchor's, `pr-check-context.sh` reads
+`HIMMEL_REPO` itself and `exec`s the ANCHOR's copy before deciding anything,
+so the lane decision, the delegation and its `delegation` ledger row are still
+the anchor's. An anchor with no copy exits 2; an unset or empty `HIMMEL_REPO`
+exits 2 (a relative path cannot collapse to `/scripts/...`). Never use it
+outside a himmel checkout — in an adopter repo the relative path names the
+REVIEWED repo's file.
+
 **A set-but-EMPTY `HIMMEL_REPO` now takes the SAME remedy branch as unset**
 — the assignment is piped through `grep .`, which matches only a non-empty
 line. `printenv HIMMEL_REPO` on a set-but-empty var still prints (an empty
