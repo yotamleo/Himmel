@@ -161,7 +161,8 @@ step() {
 # 1. Stage the ref's tree (git archive: tracked files only) + the helpers.
 HOST_TMP=$(mktemp -d "${TMPDIR:-/tmp}/rt-src.XXXXXX") || fail "mktemp failed"
 git -C "$REPO_ROOT" archive "$SHA" | tar -x -C "$HOST_TMP" || fail "git archive $SHA failed"
-mapfile -t TOP < <(ls -A "$HOST_TMP")
+TOP=()
+while IFS= read -r f; do TOP+=("$f"); done < <(ls -A "$HOST_TMP")
 echo "[step] stage"
 rsync_e="ssh -i ${HIMMEL_VM_AR_SSH_KEY:-$HOME/.ssh/id_ed25519} -p $PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes"
 vm_stage_tree "$HOST_TMP" "$SRC" vm_ssh "$rsync_e" "$GUEST_USER@127.0.0.1" "${TOP[@]}" || fail "step stage failed"
@@ -264,7 +265,7 @@ if [ "$EXPECT_RED" = 1 ]; then
     # the exit code rests on the two directions.
     witness="context7-enabled user-statusline handover-dir hud-config worktree-sh hud-allow-extra-cmd-removed"
     for w in $witness; do
-        if printf '%s\n' "$ASSERT_OUT" | grep -qE "^CHECK [^ ]+ [^ ]+ FAIL $w "; then
+        if grep -qE "^CHECK [^ ]+ [^ ]+ FAIL $w " <<<"$ASSERT_OUT"; then
             echo "[witness] ($VARIANT) $w FAIL $(phase "$w") (predicted)"
         else
             echo "[witness] ($VARIANT) $w did not fail (predicted to)"

@@ -18,7 +18,9 @@
 # the script it covers is itself linux-only (flock, VirtualBox on the station).
 #
 # Usage: bash scripts/vm/test-provenance-roundtrip-dry.sh
-set -uo pipefail
+# No pipefail: every assert is `producer | grep -q`, and under pipefail an
+# early grep exit SIGPIPEs the producer and flips a match to a failure.
+set -u
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SCRIPT="$REPO_ROOT/scripts/vm/provenance-roundtrip.sh"
