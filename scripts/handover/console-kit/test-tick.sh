@@ -1101,7 +1101,8 @@ contains 'a console doc with no Live state section reads legset=unknown (HIMMEL-
 # `resolved` case below): tails=N305:FINDING -- for a bullet that says the finding
 # is settled. Fix: RESOLVED joins the vocabulary and the bullet's status is its
 # highest-precedence marker (WRAPPED > READY > RESOLVED > BLOCKED > HALTED >
-# FINDING > LIVE), matched as a whole word.
+# FINDING > LIVE), matched as a whole word. (HIMMEL-3393 superseded the precedence
+# half: the status is the bullet's leading marker; see the HIMMEL-3393 block below.)
 d3305="$W/handover/HIMMEL-3305-N305-resolved-2026-09-20-RESUME.md"
 tail3305() {  # tail3305 <bullet>... -- the tails= entry of a leg doc holding these bullets
     printf '%s\n' '# leg' '- 19:40 LIVE — working' "$@" > "$d3305"
@@ -1115,13 +1116,14 @@ contains 'a resolved FINDING reads RESOLVED, not FINDING (HIMMEL-3305)' "$(tail3
 # and a new finding after a resolved one reads as open again.
 contains 'a LIVE bullet after the resolution reads LIVE (HIMMEL-3305)' "$(tail3305 "$open3305" "$res3305" '- 20:05 LIVE — PR open, CI running')" 'N305:LIVE'
 contains 'a second FINDING after a resolved one reads FINDING (HIMMEL-3305)' "$(tail3305 "$open3305" "$res3305" '- 20:20 FINDING the base moved under the diff')" 'N305:FINDING'
-# Word order must not decide the status (the ticket's two bullets, with the marker
-# that retires the finding). Each permutation reads the same.
+# Word order must not decide the status: the LEADING marker does (HIMMEL-3393
+# replaced the highest-precedence-anywhere rule). RESOLVED first reads RESOLVED
+# however many other markers the sentence names; LIVE first reads LIVE.
 contains 'RESOLVED before FINDING and LIVE reads RESOLVED (HIMMEL-3305)' "$(tail3305 '- 20:10 RESOLVED FINDING, back to LIVE')" 'N305:RESOLVED'
-contains 'RESOLVED after FINDING and LIVE reads RESOLVED (HIMMEL-3305)' "$(tail3305 '- 20:10 LIVE again, FINDING RESOLVED')" 'N305:RESOLVED'
-contains 'READY beats a BLOCKED it mentions, marker first (HIMMEL-3305)' "$(tail3305 '- 20:30 READY 999 abc GREEN (was BLOCKED)')" 'N305:READY'
-contains 'READY beats a BLOCKED it mentions, marker last (HIMMEL-3305)' "$(tail3305 '- 20:30 BLOCKED cleared, now READY 999 abc GREEN')" 'N305:READY'
-contains 'WRAPPED beats the READY it mentions (HIMMEL-3305)' "$(tail3305 '- 21:00 WRAPPED — merged after READY and GO')" 'N305:WRAPPED'
+contains 'LIVE before FINDING and RESOLVED reads LIVE, the leading marker (HIMMEL-3393)' "$(tail3305 '- 20:10 LIVE again, FINDING RESOLVED')" 'N305:LIVE'
+contains 'READY first reads READY though the text names BLOCKED (HIMMEL-3305)' "$(tail3305 '- 20:30 READY 999 abc GREEN (was BLOCKED)')" 'N305:READY'
+contains 'BLOCKED first reads BLOCKED though the text names READY (HIMMEL-3393)' "$(tail3305 '- 20:30 BLOCKED cleared, now READY 999 abc GREEN')" 'N305:BLOCKED'
+contains 'WRAPPED first reads WRAPPED though the text names READY (HIMMEL-3305)' "$(tail3305 '- 21:00 WRAPPED — merged after READY and GO')" 'N305:WRAPPED'
 # A marker is a whole word: UNRESOLVED (a routine CR-thread count) is not RESOLVED.
 contains 'UNRESOLVED is not the RESOLVED marker (HIMMEL-3305)' "$(tail3305 '- 20:00 LIVE — 2 UNRESOLVED threads')" 'N305:LIVE'
 # SHIPPED and MERGED stay OUT of the vocabulary: a bullet carrying only a coined
@@ -1138,6 +1140,31 @@ for pref3305 in leg-preface.md leg-preface-claudex.md; do
 done
 # shellcheck disable=SC2016  # backtick-quoted markers, literal doc text
 contains 'leg-preface.md says SHIPPED and MERGED are not markers (HIMMEL-3305)' "$(cat "$repo3305/docs/handover/leg-preface.md")" '`SHIPPED` and `MERGED` are deliberately not in the'
+
+# --- HIMMEL-3393: a bullet's status is its LEADING token, never a word in its text.
+# The ticket's case (leg N293, 2026-09-21): the newest bullet was
+# `- 23:47 LIVE — … Judgment call, not a FINDING: …`; the derivation took the
+# highest-precedence marker anywhere in the bullet, so tails= read FINDING and the
+# board listed the leg under "Needs the console". RED control (pre-fix tick.sh, the
+# `not a FINDING` case below): tails=N393:FINDING. Fix: the status is the marker the
+# bullet STARTS with (`- [HH:MM] <MARKER>`); a bullet that does not start with one
+# is invisible, like a coined SHIPPED.
+d3393="$W/handover/HIMMEL-3393-N393-leading-token-2026-09-21-RESUME.md"
+tail3393() {  # tail3393 <bullet>... -- the tails= entry of a leg doc holding these bullets
+    printf '%s\n' '# leg' '- 23:00 LIVE — working' "$@" > "$d3393"
+    bash "$SUT" --legs "$d3393" 2>/dev/null | sed -E 's/.* tails=([^ ]*) .*/\1/'
+}
+contains 'a LIVE bullet saying "not a FINDING" reads LIVE (HIMMEL-3393)' "$(tail3393 '- 23:47 LIVE — PR 1 open. Judgment call, not a FINDING: the ticket says so')" 'N393:LIVE'
+contains 'a LIVE bullet that mentions READY reads LIVE (HIMMEL-3393)' "$(tail3393 '- 23:47 LIVE — send READY at green')" 'N393:LIVE'
+contains 'a LIVE bullet that mentions BLOCKED and WRAPPED reads LIVE (HIMMEL-3393)' "$(tail3393 '- 23:47 LIVE — was BLOCKED, then WRAPPED nothing')" 'N393:LIVE'
+contains 'a leading FINDING still reads FINDING (HIMMEL-3393)' "$(tail3393 '- 23:47 FINDING — needs a ruling')" 'N393:FINDING'
+contains 'a FINDING retired by a leading RESOLVED reads RESOLVED (HIMMEL-3393)' "$(tail3393 '- 23:47 FINDING — needs a ruling' '- 23:50 RESOLVED — ruled, back to work')" 'N393:RESOLVED'
+contains 'a leading RESOLVED that names FINDING and LIVE reads RESOLVED (HIMMEL-3393)' "$(tail3393 '- 23:50 RESOLVED — FINDING accepted, back to LIVE')" 'N393:RESOLVED'
+contains 'a bullet without a time still reads its leading marker (HIMMEL-3393)' "$(tail3393 '- FINDING — no time stamp')" 'N393:FINDING'
+contains 'a bold leading marker reads as that marker (HIMMEL-3393)' "$(tail3393 '- **WRAPPED.** merged, lock released')" 'N393:WRAPPED'
+# A bullet that leads with prose carries no status: the tick reads the last real one.
+contains 'a bullet leading with prose is invisible to the tick (HIMMEL-3393)' "$(tail3393 '- 23:47 FINDING — needs a ruling' '- 23:48 Sent the FINDING to the console, will report READY once it rules')" 'N393:FINDING'
+contains 'a marker glued to a longer word is not a marker (HIMMEL-3393)' "$(tail3393 '- 23:47 FINDINGS pending, no marker here')" 'N393:LIVE'
 
 # --- HIMMEL-3361: board=<ok|STALE:<age>|MISSING|skip> -- the console's progress
 # board (console-board.html, written by board.mjs next to the console doc) must be

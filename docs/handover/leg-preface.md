@@ -38,11 +38,12 @@ burns the console's context as fast as its own.
 The console's tick reads the marker on your **newest marker-bearing bullet**
 (`tails=`), so that vocabulary is a contract, not a style:
 
-- **Name one marker per bullet** — the word that says where you are now. If a
-  bullet names several, the tick reads the highest of `WRAPPED` > `READY` >
-  `RESOLVED` > `BLOCKED` > `HALTED` > `FINDING` > `LIVE`, whatever their order
-  in the sentence; a marker word in prose you did not mean as your status
-  (`LIVE — send READY at green`) reads as that marker.
+- **Start the bullet with its marker** — `- HH:MM <MARKER> — …`, the word that
+  says where you are now. The tick reads that leading token and nothing else, so
+  a marker word later in the text (`LIVE — not a FINDING`, `LIVE — send READY at
+  green`) is prose and changes nothing; a bullet that does not start with one of
+  `LIVE` / `FINDING` / `RESOLVED` / `READY` / `BLOCKED` / `HALTED` / `WRAPPED` is
+  invisible to the tick.
 - **A `FINDING` stays your status until you retire it.** When the console has
   ruled on it, write `- HH:MM RESOLVED — <what was ruled>` as soon as you act
   on the ruling. Until then the console reads `FINDING` and must assume it owes

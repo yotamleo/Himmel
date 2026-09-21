@@ -177,32 +177,25 @@ csv_add() {
     fi
 }
 
-# HIMMEL-3305: a leg's tails= status is the marker on its newest marker-bearing
-# `- ` bullet. The vocabulary (docs/handover/leg-preface.md -- change the two
-# together) is LIVE / FINDING / RESOLVED / READY / BLOCKED / HALTED / WRAPPED.
+# HIMMEL-3305 / HIMMEL-3393: a leg's tails= status is the marker its newest
+# status bullet STARTS with. The vocabulary (docs/handover/leg-preface.md -- change
+# the two together) is LIVE / FINDING / RESOLVED / READY / BLOCKED / HALTED / WRAPPED.
 # RESOLVED retires a FINDING the console has answered: without it FINDING stayed
-# the newest marker for the whole window the leg spent doing the authorised work,
-# and a console could not tell "answer me" from "you answered me half an hour ago".
-# A bullet may name more than one marker ("RESOLVED -- FINDING accepted, back to
-# LIVE"); the status is the highest-PRECEDENCE one, never the first or last in
-# reading order: a bullet that closes a state outranks the state it mentions, so
-# WRAPPED > READY > RESOLVED > BLOCKED > HALTED > FINDING > LIVE. A marker is a
-# whole word (UNRESOLVED is a CR-thread count, not RESOLVED). SHIPPED / MERGED are
-# deliberately NOT markers -- a leg between GREEN and READY reports LIVE.
-# ponytail: precedence is per bullet, so a bullet that merely MENTIONS a
-# higher-precedence marker in prose ("LIVE -- send READY at green") reads as that
-# marker; the preface tells a leg to name one marker per bullet.
-LEG_TAIL_MARKERS="WRAPPED READY RESOLVED BLOCKED HALTED FINDING LIVE"
+# the newest marker for the whole window the leg spent doing the authorised work.
+# A status bullet is `- [HH:MM] <MARKER> ...` (a bold `**MARKER**` also reads). The
+# status is that leading token, never a word further into the text: HIMMEL-3305
+# took the highest-precedence marker anywhere in the bullet, so `- 23:47 LIVE --
+# ... not a FINDING ...` read FINDING and the board asked the console for a ruling
+# the leg never requested. A marker is a whole word (FINDINGS / UNRESOLVED are not
+# markers). A bullet that does not start with one carries no status and is skipped:
+# SHIPPED / MERGED are deliberately NOT markers -- a leg between GREEN and READY
+# reports LIVE.
+# ponytail: a status bullet that leads with something other than the marker
+# (`- Sent READY to the console`) is invisible here; the tick reads the last bullet
+# that does lead with one.
 leg_tail_status() {  # leg_tail_status <leg doc> -- prints the marker, or nothing
-    local doc="$1" line m
-    line="$(grep -E '^- (.*[^A-Za-z0-9_])?(WRAPPED|READY|RESOLVED|BLOCKED|HALTED|FINDING|LIVE)([^A-Za-z0-9_]|$)' "$doc" 2>/dev/null \
-        | tail -n 1)" || return 0
-    for m in $LEG_TAIL_MARKERS; do
-        if grep -Eq "(^|[^A-Za-z0-9_])$m([^A-Za-z0-9_]|\$)" <<< "$line"; then
-            printf '%s' "$m"
-            return 0
-        fi
-    done
+    sed -nE 's/^- ([0-9]{1,2}:[0-9]{2}[[:space:]]+)?(\*\*)?(WRAPPED|READY|RESOLVED|BLOCKED|HALTED|FINDING|LIVE)([^A-Za-z0-9_].*)?$/\3/p' "$1" 2>/dev/null \
+        | tail -n 1 | tr -d '\n'
 }
 
 clock="$(date +%H:%M 2>/dev/null)" || clock="??:??"

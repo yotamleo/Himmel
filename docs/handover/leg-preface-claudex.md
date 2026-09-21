@@ -12,7 +12,7 @@ Your reporting channel is **your handover document**. Write every milestone
 (`LIVE` / `FINDING` / `RESOLVED` / `READY <pr> <full head> GREEN` / `BLOCKED` /
 `WRAPPED`) as a `- ` bullet at the bottom of its `## Results` section, starting
 the bullet with the milestone word. The console polls that document and acts on
-the newest bullet. Name one marker per bullet, retire a `FINDING` the console
+the newest bullet by its leading marker word. Retire a `FINDING` the console
 has ruled on with a `RESOLVED` bullet (until then it reads as unanswered), and
 coin no other marker (`SHIPPED`, `MERGED`): between GREEN and `READY` you are
 `LIVE`, after the merge `WRAPPED`. Report at milestones only. A BLOCKED, a permission prompt,
