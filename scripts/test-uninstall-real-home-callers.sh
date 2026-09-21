@@ -49,10 +49,10 @@ ALLOW_WHY=(
 # word, so /usr/bin/mktemp is a false flag; but it does not prove the word is
 # INVOKED, so `HOME="$(echo mktemp)"` still passes. A scratch variable counts only as a
 # plain `$v` / `${v}`, and a value carrying ANY `${x<op>...}` expansion is never
-# scratch (a false flag, never a false pass). A mktemp whose text mentions `$HOME`, `${HOME}`
-# or `~` is not scratch (so `HOME=$(dirname "$td")` of it is flagged); a real HOME reached
-# some other way (`TMPDIR=$HOME mktemp -d`, a path built in a variable) is not seen, so its
-# dirname passes. It reads raw lines and cannot tell an
+# scratch (a false flag, never a false pass). A value whose text mentions `$HOME`, `${HOME}`
+# or `~` is never scratch, mktemp or not (so `HOME=$(dirname "$td")` of a mktemp under
+# `$HOME` is flagged); a real HOME reached some other way (`TMPDIR=$HOME mktemp -d`,
+# `$(printenv HOME)`, a path built in a variable) is not seen, so it passes. It reads raw lines and cannot tell an
 # executable assignment from assignment-shaped TEXT: `HOME="$(mktemp -d)"` inside a
 # comment or a single-quoted `printf` argument (a fixture the file writes) counts as
 # one, so such a file can PASS while lifting the fence with the real HOME
@@ -63,7 +63,7 @@ home_is_scratch() {
   local dqcs='"\$\(([^)$]|\$[^(])*\)"'   # a whole quoted, non-nested command substitution, whose own inner quotes ("$td") a plain $dq would cut at
   local assign_re="(^|[^A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)=($dqcs|$dq|$sq|$cs|$bare)"
   local mk_re='(^|[^A-Za-z0-9_./-])mktemp([[:space:])"`]|$)'   # mktemp as a command word, not a path part like /opt/mktemp-user
-  local home_re='\$\{?HOME([^A-Za-z0-9_]|$)|~'   # a mktemp template under the real HOME: its dirname is the real HOME
+  local home_re='\$\{?HOME([^A-Za-z0-9_]|$)|~'   # the real HOME named in a value (also a mktemp template under it, whose dirname is the real HOME)
   local xp_re='\$\{[A-Za-z_][A-Za-z0-9_]*[^A-Za-z0-9_}]'   # a parameter expansion with an operator
   local scratch=" " lines=()
   while IFS= read -r line || [ -n "$line" ]; do lines+=("$line"); done < "$file"
@@ -80,7 +80,8 @@ home_is_scratch() {
         nocmd="$rhs"
         while [[ "$nocmd" =~ $cs ]]; do nocmd="${nocmd/"${BASH_REMATCH[0]}"/}"; done
         [[ "$nocmd" =~ $xp_re ]] && continue
-        if [[ "$rhs" =~ $mk_re && ! "$rhs" =~ $home_re ]]; then is_scratch=1; fi
+        [[ "$rhs" =~ $home_re ]] && continue   # the real HOME in the value: never scratch, however it is mixed with a scratch reference
+        if [[ "$rhs" =~ $mk_re ]]; then is_scratch=1; fi
         if [ "$is_scratch" -eq 0 ]; then
           for v in $scratch; do
             ref_re='\$('"$v"'([^A-Za-z0-9_{]|$)|\{'"$v"'\})'   # $v or ${v}, never ${v:+...} / ${v%/*}
@@ -215,6 +216,9 @@ printf '#!/usr/bin/env bash\ntd=$(mktemp -d ~/x.XXXXXX)\nHOME=$(dirname "$td") %
 # a scratch mktemp next to the real HOME inside one quoted substitution is not scratch.
 printf '#!/usr/bin/env bash\nHOME="$(echo "$(mktemp -d)" >/dev/null; printf %%s "$HOME")" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-quoted-nested-subst.sh"
 printf '#!/usr/bin/env bash\nHOME="$(mktemp -d >/dev/null; printf %%s "$HOME")" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-quoted-subst-real-home.sh"
+# ... and neither is a value that only mentions a scratch variable next to the real HOME.
+printf '#!/usr/bin/env bash\ntd=$(mktemp -d)\nHOME="$(printf %%s "$HOME"; : "$td")" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-quoted-subst-scratch-ref.sh"
+printf '#!/usr/bin/env bash\ntd=$(mktemp -d)\nHOME=$HOME/$td %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-scratch-ref-real-home.sh"
 # HIMMEL-3344 (CodeRabbit): a longer identifier ending in the name is not the name.
 printf '#!/usr/bin/env bash\nNOT_%s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-prefixed-name.sh"
 # a JS operator-path caller, on the allowlist below.
@@ -312,6 +316,10 @@ check "a nested substitution hiding the real HOME behind a scratch mktemp is fla
   "$(printf '%s' "$got" | grep -c 'scripts/test-quoted-nested-subst.sh')" "1"
 check "a quoted substitution that prints the real HOME after a mktemp is flagged" \
   "$(printf '%s' "$got" | grep -c 'scripts/test-quoted-subst-real-home.sh')" "1"
+check "a quoted substitution that prints the real HOME and only mentions a scratch variable is flagged" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-quoted-subst-scratch-ref.sh')" "1"
+check "a value that joins the real HOME and a scratch variable is flagged" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-scratch-ref-real-home.sh')" "1"
 check "allowlisted file passes" \
   "$(printf '%s' "$got" | grep -c 'scripts/wizard.js')" "0"
 check "file that only unsets/reads the var passes" \
