@@ -131,8 +131,11 @@ const consoleResults = section('## Results').filter((l) => l.startsWith('- ')).s
 // A leg's label comes from leg-identity.sh, the ONE derivation the tick uses for
 // leg docs and its own legs= (a local regex here is how the two drift). One bash
 // call labels every name.
-const LEGID = join(HERE, '..', '..', 'lib', 'leg-identity.sh');
+// A lookup that fails, or labels fewer names than it was given, is not an empty
+// fleet: it is reported on stderr and the board renders "leg labels unavailable".
+const LEGID = process.env.BOARD_LEGID || join(HERE, '..', '..', 'lib', 'leg-identity.sh');
 const legLabel = new Map();
+let labelFailure = '';
 const primeLabels = (names) => {
     const todo = [...new Set(names)].filter((n) => !legLabel.has(n));
     if (!todo.length) return;
@@ -140,9 +143,11 @@ const primeLabels = (names) => {
     try {
         out = execFileSync('bash', ['-c', 'source "$1" || exit 1; shift; for s in "$@"; do leg_label "$s"; printf "\\n"; done', 'bash', LEGID, ...todo],
             { encoding: 'utf8', timeout: 30000, stdio: ['ignore', 'pipe', 'ignore'] });
-    } catch { /* no labels: the docs read as unlabelled and are skipped */ }
+    } catch (e) { labelFailure ||= `the lookup failed (${e.status !== null && e.status !== undefined ? `rc=${e.status}` : e.code || e.signal || 'no exit status'})`; }
     const lines = out.split('\n');
     todo.forEach((n, i) => legLabel.set(n, lines[i] || ''));
+    const got = todo.filter((n, i) => lines[i]).length;
+    if (!labelFailure && got < todo.length) labelFailure = `the lookup returned ${got} of ${todo.length} labels`;
 };
 const labelOf = (name) => legLabel.get(name) || '';
 const ticketOf = (file) => (/^([A-Z][A-Z0-9]*-\d+)/.exec(basename(file)) || [])[1] || '';
@@ -172,6 +177,7 @@ if (opt.legs !== undefined) {
     }
     legFiles = [...byLabel.values()];
 }
+if (labelFailure) console.error(`board: warning: leg labels unavailable — ${labelFailure}; the board renders the unavailable state, not an empty fleet`);
 const liveLabels = [...new Set(liveEntries.map((e) => labelOf(e.stem)).filter(Boolean))];
 const legInfo = new Map();
 for (const f of legFiles) {
@@ -340,6 +346,7 @@ li[data-phase="BLOCKED"] .ph, li[data-ci="failing"] .pr { color:var(--bad); } li
 <h1>Console Board</h1>
 <p class="sub">${safe(consoleName)} · rendered ${stamp}${lastGo ? ` · last GO ${safe(lastGo)}` : ''}${queueLine ? ` · queue ${safe(queueLine)}` : ''}</p>
 ${fp ? '' : '<p class="banner">tick unavailable — this board has no state fingerprint and will read STALE until it is re-rendered.</p>'}
+${labelFailure ? `<p class="banner" data-banner="labels-unavailable">leg labels unavailable — ${safe(labelFailure)}; the legs below may be missing or incomplete, not an empty fleet.</p>` : ''}
 <div class="grid">
 <section>
 <h2>Fleet</h2>
@@ -357,7 +364,7 @@ ${panel('Open operator decisions', decisions.map((d) => `<li>${safe(d)}</li>`).j
 ${epics.length ? panel('Epics — merged / total', epicRows, '') : ''}
 <section class="wide">
 <h2>Legs</h2>
-${legs.length ? `<ul>${legs.map(legCard).join('\n')}</ul>` : '<p class="none">no legs</p>'}
+${legs.length ? `<ul>${legs.map(legCard).join('\n')}</ul>` : `<p class="none">${labelFailure ? 'leg labels unavailable' : 'no legs'}</p>`}
 </section>
 ${panel('Open PRs', prRows, openPrs ? 'none open' : 'gh unavailable')}
 ${panel('Merged in the last 24 hours', mergedRows, mergedPrs ? 'none' : 'gh unavailable')}

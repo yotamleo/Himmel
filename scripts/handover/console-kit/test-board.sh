@@ -163,6 +163,9 @@ else
     fail "board path (rc=$rc out='$out' stderr=$(cat "$W/stderr.log" 2>/dev/null))"
 fi
 html="$(cat "$board" 2>/dev/null)"
+# HIMMEL-3369: a healthy lookup warns of nothing (the failure cases are pinned below).
+lacks 'a healthy label lookup prints no stderr warning (HIMMEL-3369)' "$(cat "$W/stderr.log")" 'leg labels unavailable'
+lacks 'a healthy label lookup renders no unavailable banner (HIMMEL-3369)' "$html" 'labels-unavailable'
 
 # --- secrets: a board is published to a URL, so no nonce or lock token may reach it
 for secret in aaaa1111 bbbb2222 cccc3333 dddd4444 eeee5555 ffff6666 pid111111 pid222222 pid333333 pid830420 pid4242 'V-N1-' 'x8664' abcdef12 cafe0123 'AA-N1-' aaaa0808 bbbb0909 aaaa1616 aaaa1313 aaaa1818 cafe1919 pid808080 pid181818; do
@@ -242,6 +245,33 @@ lacks 'a span with an empty field is not an entry' "$html" 'data-label="N17"'
 # Leg-doc discovery follows the leg's identity, not label + mtime alone.
 contains 'a doc stem in Live state resolves that exact doc' "$html" '<b>N18</b> <span class="tk">HIMMEL-3375</span>'
 contains 'a reused label resolves to the doc holding the entry nonce' "$html" '<b>N19</b> <span class="tk">HIMMEL-3376</span>'
+
+# --- HIMMEL-3369: a failed leg-label lookup is visible, not an empty fleet. The
+# BOARD_LEGID seam points at a helper that fails, or labels fewer names than asked.
+printf '%s\n' 'return 3' > "$W/legid-fail.sh"
+BOARD_LEGID="$W/legid-fail.sh" run --out "$W/fail-board.html" >/dev/null; rc=$?
+failhtml="$(cat "$W/fail-board.html" 2>/dev/null)"
+failerr="$(cat "$W/stderr.log")"
+contains 'a failing label lookup still renders the board (rc 0)' "rc=$rc" 'rc=0'
+contains 'a failing label lookup warns on stderr' "$failerr" 'leg labels unavailable'
+contains 'a failing label lookup names why' "$failerr" 'the lookup failed'
+contains 'a failing label lookup renders the unavailable banner' "$failhtml" 'data-banner="labels-unavailable"'
+TICK_STUB_FAIL=1 BOARD_LEGID="$W/legid-fail.sh" run --out "$W/fail-empty-board.html" >/dev/null
+failemptyhtml="$(cat "$W/fail-empty-board.html" 2>/dev/null)"
+contains 'a failing lookup with no tick legs says so in the Legs panel, not "no legs"' "$failemptyhtml" '<p class="none">leg labels unavailable</p>'
+lacks 'a failing lookup with no tick legs does not claim no legs' "$failemptyhtml" 'no legs'
+
+# One label for three names: the first leg still renders, the shortfall is reported.
+# shellcheck disable=SC2016  # the helper body is literal, evaluated by the board's bash
+printf '%s\n' 'leg_label() { [ "$1" = N1 ] && printf N1; }' > "$W/legid-short.sh"
+BOARD_LEGID="$W/legid-short.sh" run --out "$W/short-board.html" >/dev/null; rc=$?
+shorthtml="$(cat "$W/short-board.html" 2>/dev/null)"
+shorterr="$(cat "$W/stderr.log")"
+contains 'a short label lookup still renders the board (rc 0)' "rc=$rc" 'rc=0'
+contains 'a short label lookup warns with the shortfall' "$shorterr" 'returned 1 of'
+contains 'a short label lookup renders the unavailable banner' "$shorthtml" 'data-banner="labels-unavailable"'
+contains 'a short label lookup keeps the legs it did label' "$shorthtml" 'data-label="N1"'
+lacks 'a short label lookup does not claim no legs' "$shorthtml" 'no legs'
 
 # --- usage
 PATH="$W/bin:$PATH" node "$SUT" >/dev/null 2>&1; rc=$?
