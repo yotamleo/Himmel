@@ -1017,6 +1017,36 @@ outM3b=$(run_m "$repoM3b" "$answersM_inline")
 git -C "$targetM" remote remove origin
 echo "ok: case m3b — an unbuilt bitbucket CLI is red for a Bitbucket origin or FORGE=bitbucket, n/a for a GitHub origin"
 
+# m3c (HIMMEL-3325): targetUsesBitbucket decides on the origin's HOST — a URL that
+# merely contains bitbucket.org in a path segment or a longer hostname is NOT a
+# Bitbucket origin, and every real Bitbucket shape still is. The SAME table
+# (scripts/lib/fixtures/forge-origins.tsv) is fed to scripts/lib/forge.sh
+# forge_detect, and the two must AGREE on every URL: they were deferred on
+# HIMMEL-3307 as a pair precisely so the status probe never disagrees with the
+# forge the rest of the harness routes to. Unbuilt CLI: red = "uses Bitbucket".
+origins_tsv="$repo_root/scripts/lib/fixtures/forge-origins.tsv"
+[ -f "$origins_tsv" ] || fail "case m3c: $origins_tsv not found"
+n_m3c=0
+while IFS=$'\t' read -r want url; do
+  case "$want" in ''|'#'*) continue ;; esac
+  git -C "$targetM" remote add origin "$url"
+  sev_c=$(sev_m "$(run_m "$repoM3b" "$answersM_inline")" bitbucket-cli-build)
+  forge_c=$(cd "$targetM" && env -u FORGE bash -c ". \"\$1/scripts/lib/forge.sh\"; forge_detect 2>/dev/null" _ "$repo_root") || true
+  git -C "$targetM" remote remove origin
+  [ -n "$forge_c" ] || forge_c=none
+  if [ "$want" = bitbucket ]; then want_sev=red; else want_sev="n/a"; fi
+  [ "$sev_c" = "$want_sev" ] \
+    || fail "case m3c: origin '$url' (a $want origin) with an unbuilt bitbucket CLI must read $want_sev (got '$sev_c')"
+  [ "$forge_c" = "$want" ] \
+    || fail "case m3c: forge_detect for '$url' must say $want (got '$forge_c')"
+  # agreement, stated on its own so a divergence names both sides
+  if [ "$want_sev" = red ] && [ "$forge_c" != bitbucket ]; then fail "case m3c: status probe says Bitbucket but forge_detect says '$forge_c' for '$url'"; fi
+  if [ "$want_sev" != red ] && [ "$forge_c" = bitbucket ]; then fail "case m3c: forge_detect says Bitbucket but status probe reads '$sev_c' for '$url'"; fi
+  n_m3c=$((n_m3c+1))
+done < "$origins_tsv"
+[ "$n_m3c" -ge 30 ] || fail "case m3c: only $n_m3c origin cases were read from $origins_tsv"
+echo "ok: case m3c — targetUsesBitbucket and forge_detect agree on all $n_m3c origin shapes (host-anchored: real Bitbucket/GitHub shapes kept, path-segment + hostname-suffix look-alikes rejected)"
+
 
 # m4: handover-wiring stays red for every case that is NOT 'inline dir not yet
 # created': a HANDOVER_DIR pointing nowhere, an external-mode profile with the

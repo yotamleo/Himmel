@@ -9,8 +9,9 @@
 # Detection precedence (spec §2, exhaustive — no ambiguity unattended):
 #   1. $FORGE (github|bitbucket) verbatim — the only disambiguator for mixed
 #      remotes and the test override.
-#   2. else `git remote get-url origin`, matched against the host regexes
-#      (https + ssh, optional trailing .git, case-insensitive host).
+#   2. else `git remote get-url origin`, its HOST (https, ssh://, scp-like; the
+#      domain or a subdomain of it, case-insensitive) matched against
+#      github.com / bitbucket.org — never a substring of the URL (HIMMEL-3325).
 #   3. else (no origin, or matches neither) → non-zero + actionable message.
 #      Never infer the forge from a non-origin remote (silent wrong-API risk).
 #
@@ -27,6 +28,29 @@ _FORGE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/forge-bitbucket.sh
 # shellcheck disable=SC1091
 . "$_FORGE_LIB_DIR/forge-bitbucket.sh"
+
+# _forge_origin_host <url> — echo the lowercased HOST of a git remote URL:
+#   scheme://[userinfo@]host[:port]/path   (https, http, ssh, git, file, …)
+#   [userinfo@]host:path                   (scp-like; no `://` before the first `/`)
+# Anything else (a local path) has no host and echoes empty. Case globs and
+# parameter expansion only — bash 3.2-safe.
+_forge_origin_host() {
+    local u rest authority scheme
+    u=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+    scheme="${u%%://*}"
+    case "$u" in
+        *://*)
+            # A real scheme is [a-z0-9+.-]+ — `git@host:p/x://y` is scp-like, not a URL.
+            case "$scheme" in
+                ''|*[!a-z0-9+.-]*) authority="${u%%[:/]*}" ;;
+                *) rest="${u#*://}"; authority="${rest%%/*}" ;;
+            esac
+            ;;
+        *) authority="${u%%[:/]*}" ;;
+    esac
+    authority="${authority##*@}"   # drop userinfo
+    printf '%s' "${authority%%:*}" # drop :port
+}
 
 forge_detect() {
     if [ -n "${FORGE:-}" ]; then
@@ -46,12 +70,17 @@ forge_detect() {
         return 3
     fi
 
-    # Lowercase the host portion for case-insensitive matching.
-    local lc
-    lc=$(printf '%s' "$origin" | tr '[:upper:]' '[:lower:]')
-    case "$lc" in
-        *github.com/*|*github.com:*)       printf 'github\n';    return 0 ;;
-        *bitbucket.org/*|*bitbucket.org:*) printf 'bitbucket\n'; return 0 ;;
+    # HIMMEL-3325: decide on the HOST, never a substring of the URL — a path
+    # segment (github.com/bitbucket.org/x) or a longer hostname (notbitbucket.org)
+    # must not win. The host is the domain itself or a subdomain of it (git's SSH
+    # over 443 is ssh.github.com). Case-insensitive.
+    # scripts/himmelctl/lib/status-report.js targetUsesBitbucket applies the same
+    # rule; scripts/lib/fixtures/forge-origins.tsv holds the shared answers.
+    local host
+    host=$(_forge_origin_host "$origin")
+    case "$host" in
+        github.com|*.github.com)       printf 'github\n';    return 0 ;;
+        bitbucket.org|*.bitbucket.org) printf 'bitbucket\n'; return 0 ;;
         *)
             echo "forge_detect: origin ($origin) is neither github.com nor bitbucket.org — set FORGE=github|bitbucket" >&2
             return 3

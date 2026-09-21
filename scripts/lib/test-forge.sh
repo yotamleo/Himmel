@@ -72,6 +72,22 @@ assert_eq "bitbucket https usr" "bitbucket" "$(detect_for 'https://user@bitbucke
 assert_eq "bitbucket ssh"      "bitbucket" "$(detect_for 'git@bitbucket.org:ws/repo.git')"
 assert_eq "uppercase host"     "github"    "$(detect_for 'https://GitHub.com/owner/repo')"
 
+# HIMMEL-3325: the forge is the URL's HOST, not a substring of the URL. Every
+# origin shape git produces still routes to its own forge, and a URL that merely
+# CONTAINS github.com / bitbucket.org in a path segment or a longer hostname does
+# not. Same table scripts/himmelctl/test/test-wizard-statusreport.sh feeds
+# targetUsesBitbucket, so the two matchers are held to one set of answers.
+echo "TEST: forge_detect anchors on the host (fixtures/forge-origins.tsv)"
+origins_tsv="$SCRIPT_DIR/fixtures/forge-origins.tsv"
+n_origins=0
+while IFS=$'\t' read -r want url; do
+    case "$want" in ''|'#'*) continue ;; esac
+    got=$(detect_for "$url"); [ -n "$got" ] || got=none
+    assert_eq "origin $url" "$want" "$got"
+    n_origins=$((n_origins+1))
+done < "$origins_tsv"
+if [ "$n_origins" -ge 30 ]; then pass "origin table was read ($n_origins cases)"; else fail "origin table was read" "only $n_origins cases from $origins_tsv"; fi
+
 echo "TEST: forge_detect fails loud on unknown / missing origin"
 git -C "$REPO" remote set-url origin "https://gitlab.com/owner/repo.git"
 rc=0; ( cd "$REPO" && forge_detect ) >/dev/null 2>&1 || rc=$?

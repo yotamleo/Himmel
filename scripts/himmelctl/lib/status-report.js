@@ -91,13 +91,27 @@ function expandHome(p) {
 // HIMMEL-3307: bitbucket-cli-build is opt-in ONLY for a target that does not
 // use Bitbucket Cloud. Same rule scripts/lib/forge.sh forge_detect applies: an
 // explicit FORGE=bitbucket, else an `origin` remote on bitbucket.org.
+// HIMMEL-3325: the origin's HOST must be bitbucket.org or a subdomain of it — a
+// URL that merely contains it in a path segment or a longer hostname is not. Same
+// host extraction as forge.sh _forge_origin_host; scripts/lib/fixtures/forge-origins.tsv
+// holds the answers both must give, and test-wizard-statusreport.sh case m3c
+// holds the two to agreement.
 // ponytail: looks at `origin` only (like forge_detect); a Bitbucket remote under
 // another name, or an origin that cannot be read (no repo, git missing, 5 s
 // timeout), reads as "not Bitbucket" and the row downgrades to n/a.
+function originHost(url) {
+  const u = String(url).trim().toLowerCase();
+  const scheme = /^([a-z0-9+.-]+):\/\/([^/]*)/.exec(u); // scheme://[userinfo@]host[:port]/…
+  const authority = scheme ? scheme[2] : u.split(/[:/]/)[0]; // else scp-like [userinfo@]host:path
+  return authority.replace(/^.*@/, '').replace(/:.*$/, '');
+}
+
 function targetUsesBitbucket(targetPath) {
   if (String(process.env.FORGE || '').toLowerCase() === 'bitbucket') return true;
   const r = spawnSync('git', ['-C', targetPath, 'remote', 'get-url', 'origin'], { encoding: 'utf8', timeout: 5000 });
-  return r.status === 0 && /bitbucket\.org[/:]/i.test(r.stdout || '');
+  if (r.status !== 0) return false;
+  const host = originHost(r.stdout || '');
+  return host === 'bitbucket.org' || host.endsWith('.bitbucket.org');
 }
 
 // The ONE place per-item probe ctx is constructed. Special case (and the

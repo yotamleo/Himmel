@@ -1,0 +1,52 @@
+# HIMMEL-3325: origin URL -> forge, one case per line: <expected><TAB><origin url>.
+# expected = github | bitbucket | none (neither: forge_detect exits 3).
+# Read by BOTH origin matchers so they are checked against the same table and
+# cannot drift apart: scripts/lib/test-forge.sh (forge_detect) and
+# scripts/himmelctl/test/test-wizard-statusreport.sh (targetUsesBitbucket).
+# The forge is decided by the URL's HOST: the domain itself or a subdomain of
+# it, never a substring of the path or of a longer hostname.
+#
+# --- true positives: bitbucket.org, every shape git produces
+bitbucket	https://bitbucket.org/t/r.git
+bitbucket	http://bitbucket.org/t/r.git
+bitbucket	https://bitbucket.org/t/r
+bitbucket	https://bitbucket.org/t/r/
+bitbucket	https://user@bitbucket.org/t/r.git
+bitbucket	https://user:tok@bitbucket.org/t/r.git
+bitbucket	https://bitbucket.org:443/t/r.git
+bitbucket	ssh://git@bitbucket.org/t/r.git
+bitbucket	ssh://git@bitbucket.org:22/t/r.git
+bitbucket	git://bitbucket.org/t/r.git
+bitbucket	git@bitbucket.org:t/r.git
+bitbucket	bitbucket.org:t/r.git
+bitbucket	https://BitBucket.ORG/T/R.git
+bitbucket	git@bitbucket.org:t/x://y.git
+# --- true positives: github.com, every shape git produces
+github	https://github.com/o/r.git
+github	http://github.com/o/r.git
+github	https://github.com/o/r
+github	https://github.com/o/r/
+github	https://user@github.com/o/r.git
+github	https://github.com:443/o/r.git
+github	ssh://git@github.com/o/r.git
+github	ssh://git@ssh.github.com:443/o/r.git
+github	git@github.com:o/r.git
+github	github.com:o/r.git
+github	https://GitHub.COM/O/R.git
+# --- the ticket's false positives: the domain is only a path segment or a hostname suffix
+github	https://github.com/bitbucket.org/widgets.git
+github	git@github.com:bitbucket.org/widgets.git
+none	https://notbitbucket.org/team/repo.git
+none	git@notbitbucket.org:team/repo.git
+none	https://user@notbitbucket.org/team/repo.git
+none	https://bitbucket.org.example.net/t/r.git
+none	https://gitlab.com/bitbucket.org/t/r.git
+none	https://example.net/u@bitbucket.org/r.git
+none	/srv/git/bitbucket.org/r.git
+none	file:///srv/git/bitbucket.org/r.git
+# --- the reverse hole: the github arm used to be tested first on a substring
+bitbucket	https://bitbucket.org/github.com/x
+bitbucket	git@bitbucket.org:github.com/x.git
+none	https://notgithub.com/o/r.git
+none	https://github.com.example.net/o/r.git
+none	https://gitlab.com/github.com/o/r.git
