@@ -47,12 +47,14 @@ ALLOW_WHY=(
 # is missed (a false flag, never a false pass). It wants `mktemp` as a bare command
 # word, so /usr/bin/mktemp is a false flag; but it does not prove the word is
 # INVOKED, so `HOME="$(echo mktemp)"` still passes. A scratch variable counts only as a
-# plain `$v` / `${v}`; any `${v<op>...}` expansion is a false flag, never a false pass.
+# plain `$v` / `${v}`, and a value carrying ANY `${x<op>...}` expansion is never
+# scratch (a false flag, never a false pass).
 home_is_scratch() {
-  local file="$1" line rest name rhs v changed is_scratch ref_re home_ok=0
+  local file="$1" line rest name rhs nocmd v changed is_scratch ref_re home_ok=0
   local dq='"[^"]*"' sq="'[^']*'" cs='\$\([^)]*\)' bare='[^[:space:]]*'
   local assign_re="(^|[^A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)=($dq|$sq|$cs|$bare)"
   local mk_re='(^|[^A-Za-z0-9_./-])mktemp([[:space:])"`]|$)'   # mktemp as a command word, not a path part like /opt/mktemp-user
+  local xp_re='\$\{[A-Za-z_][A-Za-z0-9_]*[^A-Za-z0-9_}]'   # a parameter expansion with an operator
   local scratch=" " lines=()
   while IFS= read -r line || [ -n "$line" ]; do lines+=("$line"); done < "$file"
   for _ in 1 2 3 4 5 6 7 8; do   # fixpoint: one pass per link of an assignment chain
@@ -63,6 +65,11 @@ home_is_scratch() {
         name="${BASH_REMATCH[2]}"; rhs="${BASH_REMATCH[3]}"
         rest="${rest#*"${BASH_REMATCH[0]}"}"
         is_scratch=0
+        # ${x:-...} / ${x:+...} / ${x%...} outside a $(...) may select a non-scratch value;
+        # inside one (mktemp -d "${TMPDIR:-/tmp}/x.XXXXXX") it only shapes mktemp's argument.
+        nocmd="$rhs"
+        while [[ "$nocmd" =~ $cs ]]; do nocmd="${nocmd/"${BASH_REMATCH[0]}"/}"; done
+        [[ "$nocmd" =~ $xp_re ]] && continue
         if [[ "$rhs" =~ $mk_re ]]; then is_scratch=1; fi
         if [ "$is_scratch" -eq 0 ]; then
           for v in $scratch; do
@@ -86,7 +93,9 @@ home_is_scratch() {
 # `VAR: 1`, `'VAR': '1'`, `VAR = "1"`, `$env:VAR = 1` -- the name, an optional
 # closing quote/bracket, `=` or `:`, an optional opening quote, and exactly `1`
 # followed by whitespace, a quote, or one of `;&|,)}]` and backtick (no `10` /
-# `1x` / `1.5` / `1-x`; a `1` ended by any other character is a false negative). It will NOT catch a fence lift spelled another way (a computed
+# `1x` / `1.5` / `1-x`; a `1` ended by any other character is a false negative). A
+# closing quote counts as the end of the value, so shell concatenation (`"1"x`, whose
+# value is `1x`) is a false flag. It will NOT catch a fence lift spelled another way (a computed
 # variable name, `Set-Item Env:`, `[Environment]::SetEnvironmentVariable`, a
 # `process.env` object built from a variable name) or the value carried in a
 # variable (`v=1; ... $v`). "Scratch HOME" is home_is_scratch above, with its own
@@ -139,6 +148,9 @@ printf '#!/usr/bin/env bash\ntd="$(mktemp -d /tmp/x.XXXXXX)"\nctl="$td/ctlhome"\
 printf '#!/usr/bin/env bash\nHOME="$(mktemp -d /tmp/x.XXXXXX)" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-scratch-literal.sh"
 # HIMMEL-3344: an expansion operator can swap the scratch value for the real one.
 printf '#!/usr/bin/env bash\ntd="$(mktemp -d /tmp/x.XXXXXX)"\nHOME="${td:+$HOME}" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-scratch-operator.sh"
+# ... but an operator INSIDE the mktemp command substitution is fine (test-uninstall.sh's shape).
+printf '#!/usr/bin/env bash\ntd=$(mktemp -d "${TMPDIR:-/tmp}/x.XXXXXX")\nHOME="$td/home" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-scratch-tmpdir.sh"
+printf '#!/usr/bin/env bash\ntd="$(mktemp -d /tmp/x.XXXXXX)"\nother=/somewhere/real\nHOME="${other:-$td}" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-scratch-inside-operator.sh"
 # HIMMEL-3344: the word mktemp inside a path is not a mktemp call.
 printf '#!/usr/bin/env bash\nHOME=/opt/mktemp-user %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-mktemp-in-path.sh"
 # HIMMEL-3344: fence lifted through a quoted JS key + numeric value, an unquoted
@@ -178,6 +190,10 @@ check "a literal mktemp on the HOME assignment passes" \
   "$(printf '%s' "$got" | grep -c 'scripts/test-scratch-literal.sh')" "0"
 check "a scratch variable behind an expansion operator (\${td:+\$HOME}) is flagged" \
   "$(printf '%s' "$got" | grep -c 'scripts/test-scratch-operator.sh')" "1"
+check "an expansion operator inside the mktemp command substitution still passes" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-scratch-tmpdir.sh')" "0"
+check "a scratch variable inside another variable's expansion operator is flagged" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-scratch-inside-operator.sh')" "1"
 check "the word mktemp inside a HOME path is flagged" \
   "$(printf '%s' "$got" | grep -c 'scripts/test-mktemp-in-path.sh')" "1"
 check "quoted JS key with a numeric value is flagged" \
