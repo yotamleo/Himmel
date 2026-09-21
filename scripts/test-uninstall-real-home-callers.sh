@@ -47,10 +47,13 @@ ALLOW_WHY=(
 scan_callers() {
   local root="$1"; shift
   local set_re="${V}(=1|[[:space:]]*[:=][[:space:]]*['\"]1['\"])"
-  local f rel a allowed
+  local f rel a allowed rc
   while IFS= read -r f; do
-    grep -Eq "$set_re" "$f" || continue
+    grep -Eq "$set_re" "$f"; rc=$?
+    [ "$rc" -eq 1 ] && continue
     rel="${f#"$root"/}"
+    # rc>1 is a read error: report the file rather than let it pass as a non-match.
+    if [ "$rc" -ne 0 ]; then printf '%s (unreadable: grep rc=%s)\n' "$rel" "$rc"; continue; fi
     allowed=0
     for a in "$@"; do [ "$rel" = "$a" ] && allowed=1; done
     [ "$allowed" -eq 1 ] && continue
@@ -70,15 +73,18 @@ fx="$td/tree"; mkdir -p "$fx/scripts"
 # pre-#1015 shape: fence lifted, HOME never reassigned.
 printf '#!/usr/bin/env bash\n%s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-pre1015.sh"
 # a HOME-shaped variable is not HOME.
-printf '#!/usr/bin/env bash\ntd=$(mktemp -d)\nFAKE_HOME="$td"\n%s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-fake-home.sh"
+printf '#!/usr/bin/env bash\ntd=$(mktemp -d /tmp/x.XXXXXX)\nFAKE_HOME="$td"\n%s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-fake-home.sh"
 # HOME reassigned, but not to a scratch dir.
 printf '#!/usr/bin/env bash\nHOME="$HOME"\n%s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-not-scratch.sh"
 # scratch HOME in the same file.
-printf '#!/usr/bin/env bash\ntd=$(mktemp -d)\nHOME="$td/home" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-scratch.sh"
+printf '#!/usr/bin/env bash\ntd=$(mktemp -d /tmp/x.XXXXXX)\nHOME="$td/home" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-scratch.sh"
 # a JS operator-path caller, on the allowlist below.
 printf "runSpawn(cmd, { env: { ...process.env, %s: '1' } });\n" "$V" > "$fx/scripts/wizard.js"
 # only unsets / reads it.
 printf '#!/usr/bin/env bash\nunset %s\necho "${%s:-unset}"\n' "$V" "$V" > "$fx/scripts/test-unset-only.sh"
+# a caller the scan cannot read (root reads through the mode, so it is skipped there).
+printf '#!/usr/bin/env bash\n%s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-unreadable.sh"
+chmod 000 "$fx/scripts/test-unreadable.sh"
 
 got="$(scan_callers "$fx" "scripts/wizard.js" | sort | tr '\n' ' ')"
 check "pre-#1015 shape (fence lifted, HOME not reassigned) is flagged" \
@@ -93,6 +99,12 @@ check "allowlisted file passes" \
   "$(printf '%s' "$got" | grep -c 'scripts/wizard.js')" "0"
 check "file that only unsets/reads the var passes" \
   "$(printf '%s' "$got" | grep -c 'scripts/test-unset-only.sh')" "0"
+if [ "$(id -u)" -ne 0 ]; then
+  check "an unreadable file is flagged, not passed as a non-match" \
+    "$(printf '%s' "$got" | grep -c 'scripts/test-unreadable.sh (unreadable')" "1"
+else
+  echo "ok - unreadable-file control skipped (running as root)"
+fi
 got_noallow="$(scan_callers "$fx" | tr '\n' ' ')"
 check "the same JS file is flagged when NOT allowlisted" \
   "$(printf '%s' "$got_noallow" | grep -c 'scripts/wizard.js')" "1"
