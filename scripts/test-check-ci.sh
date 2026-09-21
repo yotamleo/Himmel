@@ -1412,7 +1412,7 @@ assert_rc 3 "R16 amend --set head= does not carry a disposition to the new head"
 BODY_FILE_OVERRIDE="$OD_BQ_BODY"; run_in_repo "$EMPTY_LEDGER_REPO" body-a2-file
 assert_rc 3 "39 a posted prior-head outside-diff finding still blocks (HIMMEL-3360 operator ruling)"
 assert_err_has "not dispositioned" "39 message reports the finding as not dispositioned"
-assert_err_has "latest review, at head shaOLD" "39 message names the governing prior head"
+assert_err_has "latest review at prior head shaOLD" "39 message names the governing prior head"
 assert_err_has "--head shaOLD" "39 recipe binds the finding to the governing prior head"
 assert_err_has "cr-od-39c3193c8945" "39 message lists the finding id"
 

@@ -1141,7 +1141,7 @@ _cr_outside_gate() {
     if [ "$n_ok" -lt "$n_all" ]; then
         local prefix=""
         if [ "$gate_head" != "$head0" ]; then
-            prefix="this head $head0 carries no CodeRabbit review (best effort, HIMMEL-3360: nothing waits or re-triggers), so the gate reads CodeRabbit's latest review, at head $gate_head: "
+            prefix="this head $head0 carries no CodeRabbit review (best effort, HIMMEL-3360: nothing waits or re-triggers), so the gate reads the latest review at prior head $gate_head: "
         fi
         echo "check-ci: ${ctx}${prefix}CodeRabbit's review body reports $n_all outside-diff-range finding(s) on head $gate_head of PR #$num, $((n_all - n_ok)) not dispositioned — these carry no thread to resolve; address them, or record an explicit disposition at head $gate_head (deferred needs a tracked ticket AND a reason; a disposition never carries to a new head), then re-run:$msg" >&2
         if [ -n "$defer" ]; then _cog_blocked=1; return 0; fi
