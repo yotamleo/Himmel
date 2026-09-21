@@ -875,7 +875,7 @@ function resolveMismatchInner(context) {
 //   (2) the hook script's real path resolves inside THAT worktree, so the
 //       bypass cannot vouch for a script from the primary or a sibling;
 //   (3) one JSON line is appended to <git-common-dir>/hook-integrity-bypass.jsonl
-//       (the same convention as cr-critic-scores.jsonl). A failed write refuses
+//       (a sibling of the other per-repo audit logs there). A failed write refuses
 //       the bypass: an override that cannot be recorded is not granted.
 // Residual: HIMMEL_HOOK_INTEGRITY_BYPASS_OK is shared with the command-text
 // fences in block-glm-external-writes.sh, which this does NOT scope.
