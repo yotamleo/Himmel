@@ -206,6 +206,10 @@ To restore a tracked file to HEAD use `bash scripts/git/restore-to-head.sh
 <path>` — `git checkout -- <path>` is a settings deny and `git restore`
 prompts; the script saves the outgoing content first (a plain copy).
 
+An observation meant to be "clean" runs through `scripts/lib/clean-sandbox.sh
+[--keep VAR]... -- <cmd>` (`env -i`, prints the env it passed), never a
+hand-rolled `HOME=… cmd`, which keeps every other operator variable.
+
 **Impacted suites = every suite that references a file you touched**
 (`git grep -l` from the worktree), not the suites in the directory you edited.
 Run those and name them with their counts.
