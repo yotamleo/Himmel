@@ -15,6 +15,7 @@ export type Route =
   | { kind: "auto"; op: "arm-resume"; arg: string; time: string }
   | { kind: "auto"; op: "merge-public"; arg: string; time: string }
   | { kind: "auto"; op: "restart"; arg: string; time: string }
+  | { kind: "console"; name: string; text: string }
   | { kind: "chat"; text: string };
 
 // Structured auto-command (HIMMEL-424 B2): `/arm <ticket|path> [at HH:MM|auto|smart]`.
@@ -63,6 +64,14 @@ const MERGEPUB = /^\/mergepub\s+#?(\d{1,6})\s+([0-9a-f]{12,40})$/i;
 // time — that is rung 2.
 const RESTART = /^\/restart(?:\s+(full))?$/i;
 
+// Operator -> running console (HIMMEL-3355): `/console <session-name> <text>`.
+// Slash-prefixed and anchored on the whole message like /arm, so prose such as
+// "console output: foo" never matches. The router only checks SHAPE (name charset,
+// non-empty text); the path-safety refusal and the sender gate live downstream
+// (console-route.ts, poller.ts handleInbound), where a non-operator's match falls
+// back to ordinary chat.
+const CONSOLE = /^\/console\s+([A-Za-z0-9_.-]+)\s+([\s\S]+)$/;
+
 export function classify(raw: string): Route {
   const t = raw.trim();
   if (t === "status" || t === "sessions") return { kind: "control", verb: t as "status" | "sessions" };
@@ -82,6 +91,8 @@ export function classify(raw: string): Route {
   const restart = t.match(RESTART);
   // Bare `/restart` => rung 1 ("poller"); `/restart full` => rung 2 ("full").
   if (restart) return { kind: "auto", op: "restart", arg: restart[1] ? "full" : "poller", time: "-" };
+  const con = t.match(CONSOLE);
+  if (con) return { kind: "console", name: con[1], text: con[2] };
   const fu = t.match(/^([A-Z][A-Z0-9]+-[0-9]+):\s*([\s\S]+)$/);
   if (fu) return { kind: "followup", ticket: fu[1], text: fu[2] };
   return { kind: "chat", text: t };

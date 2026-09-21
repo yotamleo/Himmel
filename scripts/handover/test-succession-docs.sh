@@ -270,6 +270,23 @@ for f in "$PREFACE" "$JUDGE" "$CONSOLE"; do
     absent "$(basename "$f") has no queue-lock.sh line with an unfilled <root>" "$(grep -F 'queue-lock.sh' "$f")" '<root>'
 done
 
+# --- 8. HIMMEL-3355: the Telegram inbox monitor is in ACTION ZERO + Monitors --
+# A monitor that is not armed at the 30-min Monitor cap, or not re-armed, goes
+# dark exactly like an unattended tick; and a `tail -F` without -n0 replays old
+# lines on every re-arm. Pin both, plus the authority limit the operator ruled.
+step11="$(awk '/^11\. \*\*/ { f = 1 } /^## Live state/ { f = 0 } f' "$CONSOLE")"
+mons="$(section "$CONSOLE" '^## Monitors')"
+contains 'ACTION ZERO step 11 creates the inbox before the bridge will write' "$(flat "$step11")" 'consoles/{{SESSION_NAME}}.md'
+contains 'ACTION ZERO step 11 arms the monitor at the 1800000 cap' "$step11" '1800000'
+contains 'ACTION ZERO step 11 re-arms on every expiry notice' "$(flat "$step11")" 're-armed on every expiry notice'
+contains 'ACTION ZERO step 11 tells the console how to reply' "$step11" 'console-route.ts'
+contains 'ACTION ZERO step 11: no permission/settings change' "$(flat "$step11")" 'never changes permissions or settings'
+contains 'ACTION ZERO step 11: GO verification is never skipped' "$(flat "$step11")" 'GO verification'
+contains '## Monitors names five monitors' "$mons" 'Five, and no more'
+contains '## Monitors telegram row tails with -n0 so a re-arm replays nothing' "$mons" 'tail -n0 -F'
+contains '## Monitors telegram row states the 30-min cap and re-arm' "$(flat "$mons")" 're-arm on every expiry notice'
+absent 'console template no longer says Four monitors' "$(cat "$CONSOLE")" 'Four, and no more'
+
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-succession-docs.sh'
     exit 0
