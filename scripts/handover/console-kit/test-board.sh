@@ -58,7 +58,7 @@ chmod +x "$W/bin/gh"
 cat > "$W/open.json" <<'JSON'
 [
  {"number":2001,"title":"feat(x): [HIMMEL-3332] slice S3","headRefName":"feat/himmel-3332-s3","isDraft":false,
-  "statusCheckRollup":[{"conclusion":"SUCCESS","status":"COMPLETED"},{"conclusion":"SUCCESS","status":"COMPLETED"}]},
+  "statusCheckRollup":[{"conclusion":"SUCCESS","status":"COMPLETED"},{"conclusion":"SUCCESS","status":"COMPLETED"},{"state":"SUCCESS"}]},
  {"number":2002,"title":"feat(y): [HIMMEL-3340] verdict bar","headRefName":"feat/himmel-3340-bar","isDraft":false,
   "statusCheckRollup":[{"conclusion":"FAILURE","status":"COMPLETED"},{"conclusion":"","status":"IN_PROGRESS"}]}
 ]
@@ -149,12 +149,13 @@ contains 'the leg names a merged PR: MERGED' "$html" 'data-label="N4" data-phase
 contains 'lock released + WRAPPED tail: WRAPPED' "$html" 'data-label="N5" data-phase="WRAPPED"'
 contains 'READY tail with no PR anywhere: READY-TO-OPEN' "$html" 'data-label="N6" data-phase="READY-TO-OPEN"'
 contains 'a CI-red PR is flagged on its leg' "$html" 'data-ci="failing"'
-contains 'a green PR reads green' "$html" 'data-ci="green"'
+contains 'a green PR (check runs + a commit status) reads green' "$html" 'data-label="N3" data-phase="READY" data-ci="green"'
 contains 'the phase ladder counts legs per phase' "$html" 'data-ladder="READY" data-count="1"'
 
 # --- attention: what needs the console, and the operator's own decisions
 contains 'a BLOCKED leg is listed as needing the console' "$html" 'data-need="N7"'
 contains 'a READY leg awaits GO' "$html" 'data-need="N3"'
+contains 'a READY-TO-OPEN leg awaits the console' "$html" 'data-need="N6"'
 contains 'the Live-state decisions: line renders as open operator decisions' "$html" 'widen the fleet cap to 20?'
 
 # --- epics: merged/total from the declared total + the merged PRs citing the key

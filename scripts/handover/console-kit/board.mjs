@@ -194,8 +194,10 @@ const epics = epicsDeclared.map((e) => {
 });
 const ciOf = (pr) => {
     const rollup = (pr && pr.statusCheckRollup) || [];
-    if (rollup.some((c) => ['FAILURE', 'ERROR', 'TIMED_OUT', 'CANCELLED', 'STARTUP_FAILURE'].includes(c.conclusion))) return 'failing';
-    if (rollup.some((c) => c.status !== 'COMPLETED' || !c.conclusion)) return 'pending';
+    // A rollup mixes CheckRuns (status + conclusion) and StatusContexts (state only).
+    const verdict = (c) => c.conclusion || c.state || '';
+    if (rollup.some((c) => ['FAILURE', 'ERROR', 'TIMED_OUT', 'CANCELLED', 'STARTUP_FAILURE'].includes(verdict(c)))) return 'failing';
+    if (rollup.some((c) => (c.status ? c.status !== 'COMPLETED' : false) || ['', 'PENDING', 'EXPECTED'].includes(verdict(c)))) return 'pending';
     return 'green';
 };
 const openByNum = new Map((openPrs || []).map((p) => [p.number, p]));
@@ -218,7 +220,7 @@ const legs = labels.map((label) => {
     else phase = 'LIVE';
     const pr = info.pr ? openByNum.get(info.pr) : null;
     const lostLock = ['STALE', 'FREE', 'MISSING', 'CORRUPT'].includes(lock) && phase !== 'WRAPPED' && phase !== 'MERGED';
-    const needs = phase === 'READY' || phase === 'BLOCKED' || tail === 'FINDING' || lostLock;
+    const needs = phase === 'READY' || phase === 'READY-TO-OPEN' || phase === 'BLOCKED' || tail === 'FINDING' || lostLock;
     return { label, ticket: info.ticket, phase, tail, lock, prNum: info.pr, ci: pr ? ciOf(pr) : '', last: info.last, needs, lostLock };
 });
 

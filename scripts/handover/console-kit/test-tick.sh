@@ -1156,7 +1156,7 @@ rm -f "$board3361"
 # shellcheck disable=SC2016  # backtick leg spans, literal fixture text
 write_console3361() {  # write_console3361 <last GO value> [extra Results bullet]
     printf '%s\n' '# console' '' '## Live state' '' \
-        'legs: `N361:J-N361-0a1b2c9d:cachyos-x8664-pid361:361`' 'queue: N361 (3361)' "last GO: $1" 'acked: none' '' \
+        'legs: `N361:J-N361-0a1b2c9d:cachyos-x8664-pid361:361`' 'queue: N361 (3361)' "last GO: $1" 'acked: none' ${3:+"$3"} '' \
         '## Results (newest at the bottom)' '- 12:00 DISPATCH N361' ${2:+"$2"} \
         > "$W/handover/console.md"
 }
@@ -1195,6 +1195,11 @@ if command -v node >/dev/null 2>&1; then
     # shellcheck disable=SC2016  # backtick span, literal fixture text
     write_console3361 '`1023:abc`'
     contains 'a new last GO stales the board (HIMMEL-3361)' "$(t3361)" ' board=STALE:'
+    # The epics: and decisions: lines are rendered panels: editing them is a republish.
+    write_console3361 none '' 'epics: HIMMEL-3332=5'
+    contains 'a new epics: line stales the board (HIMMEL-3361)' "$(t3361)" ' board=STALE:'
+    write_console3361 none '' 'decisions: widen the fleet cap?'
+    contains 'a new decisions: line stales the board (HIMMEL-3361)' "$(t3361)" ' board=STALE:'
     write_console3361 none
     # A leg tail change (READY) is a phase change: republish.
     printf '%s\n' '- 12:30 READY 1023 abc GREEN' >> "$W/handover/$b3361.md"

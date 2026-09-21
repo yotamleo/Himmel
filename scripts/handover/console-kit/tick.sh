@@ -96,7 +96,7 @@ console's progress board, console-board.html next to the console doc (rendered
 by board.mjs -- the ACTION ZERO board step + the standing rule: on every dispatch, GO,
 MERGED and WRAPPED, re-render and republish it). ok = the board's embedded
 fingerprint equals the one recomputed here from what a board shows (leg locks,
-leg tails, open PRs, the queue: line, the last GO: line) -- NOT the doc's mtime,
+leg tails, open PRs, the queue:, last GO:, epics: and decisions: lines) -- NOT the doc's mtime,
 which every Results bullet bumps. STALE:<age> = the board shows an older state
 (age = the file's mtime); MISSING = no board was ever rendered; skip = no --doc.
 --emit-fp prints a second line, board-fp=<16 hex>, the fingerprint board.mjs
@@ -720,15 +720,21 @@ while IFS= read -r pr; do
 done <<< "$pr_out"
 [ -n "$prs" ] || prs=none
 
-# HIMMEL-3361: the board fingerprint -- what console-board.html shows: leg locks,
-# leg tails, open PRs, the queue: and last GO: lines. Not the doc mtime (every
+# HIMMEL-3361: the board fingerprint -- what console-board.html shows that the
+# console authors or a tick already reads: leg locks, leg tails, open PRs, and
+# the queue:, last GO:, epics: and decisions: lines. Not the doc mtime (every
 # Results bullet bumps that). board.mjs embeds this exact value via --emit-fp.
+# ponytail: CI colour and fleet capacity are shown on the board but deliberately
+# outside the fingerprint -- they move without a console act, so including them
+# would read STALE for changes the console cannot republish for.
 board_fp=""
 board_summary=skip
 if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
     board_queue="$(grep -m1 '^queue:' "$console_doc" 2>/dev/null)" || board_queue=""
     board_lastgo="$(grep -m1 '^last GO:' "$console_doc" 2>/dev/null)" || board_lastgo=""
-    board_fp="$(printf '%s\n%s\n%s\n%s\n%s\n' "$legs_summary" "$tails_summary" "$prs" "$board_queue" "$board_lastgo" | sha256sum | cut -c1-16)"
+    board_epics="$(grep -m1 '^epics:' "$console_doc" 2>/dev/null)" || board_epics=""
+    board_decisions="$(grep -m1 '^decisions:' "$console_doc" 2>/dev/null)" || board_decisions=""
+    board_fp="$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$legs_summary" "$tails_summary" "$prs" "$board_queue" "$board_lastgo" "$board_epics" "$board_decisions" | sha256sum | cut -c1-16)"
     board_file="${console_doc%/*}/console-board.html"
     if [ ! -f "$board_file" ]; then
         board_summary=MISSING
