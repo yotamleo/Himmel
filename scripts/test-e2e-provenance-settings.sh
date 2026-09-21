@@ -18,7 +18,7 @@ check(){ [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fa
 
 command -v jq >/dev/null 2>&1 || { echo "test-e2e-provenance-settings: jq required" >&2; exit 2; }
 
-td="$(mktemp -d)"
+td="$(mktemp -d "${TMPDIR:-/tmp}/prov-settings.XXXXXX")" || { echo "test-e2e-provenance-settings: mktemp failed" >&2; exit 2; }
 trap 'rm -rf "$td"' EXIT
 HIMMEL_FAKE="C:/fake/himmel"
 # A scratch HOME for the whole run: the ledger defaults to $HOME/.himmel, so this
