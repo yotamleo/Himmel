@@ -355,7 +355,7 @@ jira_auto_transition_on_merge() {
 # maps a 400 merge-conflict (spec §5.1, atomic — nothing merged) to a distinct
 # failure. Either way: rc 0 = merged, non-zero = real failure.
 merge_rc=0
-merge_err=$(mktemp)
+merge_err=$(mktemp "${TMPDIR:-/tmp}/pr-merge-err.XXXXXX") || exit 1
 forge_pr_merge "$pr_num" "$vetted_head" 2>"$merge_err" || merge_rc=$?
 cat "$merge_err" >&2
 if [ "$merge_rc" -eq 0 ]; then
