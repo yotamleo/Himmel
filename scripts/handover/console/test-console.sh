@@ -1375,7 +1375,7 @@ console next --bucket boarddst2 --doc "$doc60bA" >/dev/null 2>&1 || rc60b=$?
 check "60b next from a doc with no URL succeeds" "$rc60b" "0"
 check "60b no-URL predecessor yields none yet on the successor, never empty" \
     "$(grep -c '^board: none yet' "$doc60bC" 2>/dev/null)" "1"
-sed -i "s|^board: none yet.*|board: $url60b|" "$doc60bA"
+awk -v url="$url60b" '/^board: none yet/ { print "board: " url; next } { print }' "$doc60bA" > "$doc60bA.new" && mv "$doc60bA.new" "$doc60bA"
 rc60b=0
 console next --bucket boarddst --doc "$doc60bA" >/dev/null 2>&1 || rc60b=$?
 check "60b next succeeds against a doc with a published board URL" "$rc60b" "0"
