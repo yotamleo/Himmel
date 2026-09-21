@@ -597,17 +597,35 @@ check_c14() {
 # ONCE and surface its red/degraded DESIRED items as doctor findings, rather
 # than doctor re-deriving any install/wiring presence fact itself. Read-only;
 # degrades gracefully -- no install profile (rc=2), no node, or any other
-# unparsable/non-zero result is an INFO skip, never a crash or a false FAIL
+# unparsable/non-zero result never crashes the doctor or raises a false FAIL
 # (mirrors the read-only advisory stance of C7/C9-C12).
+#
+# Severity is a DISCRIMINATION, not a constant (HIMMEL-3323: a gate you could
+# not run must not be recorded as a gate that ran). Same line HIMMEL-3307 draws
+# in himmelctl's status-report.js -- n/a is a clean absence of something never
+# opted into; a probe that could not evaluate stays loud:
+#   INFO  no install profile (rc=2), or no node AND no profile: nothing was ever
+#         installed here, so there is no install/wiring truth to validate.
+#   WARN  bin.js missing, status --json exits non-zero, output unparsable or of
+#         the wrong shape, jq missing, or no node although a profile exists (an
+#         install ran, so node was there): this should have worked and did not,
+#         and the install/wiring coverage silently vanished from the report.
 check_c16() {
+    # Consequence first (the coverage lost), then the mechanism.
+    c16_lost() { emit WARN C16-status "install/wiring findings are NOT being checked at all -- $1" "$2"; }
+    local profile="${HIMMELCTL_CACHE_DIR:-$HOME/.claude/himmel}/install-profile.json"
     local node_bin
     if ! node_bin="$(resolve_node 2>/dev/null)"; then
-        emit INFO C16-status "no node found -- himmelctl status delegation skipped" "install Node.js to enable install/wiring-truth findings via himmel-doctor"
+        if [ -f "$profile" ]; then
+            c16_lost "no node found, but a himmelctl install profile exists (himmelctl install ran here, so node was present)" "install Node.js (or fix PATH) so himmel-doctor can run 'himmelctl status'"
+        else
+            emit INFO C16-status "no node found and no himmelctl install profile -- nothing to validate" "install Node.js and run 'node scripts/himmelctl/bin.js install' to enable install/wiring-truth findings via himmel-doctor"
+        fi
         return
     fi
     local bin="$REPO_ROOT/scripts/himmelctl/bin.js"
     if [ ! -f "$bin" ]; then
-        emit INFO C16-status "scripts/himmelctl/bin.js not found -- delegation skipped"
+        c16_lost "scripts/himmelctl/bin.js not found in this checkout" "restore scripts/himmelctl (re-pull or re-clone himmel)"
         return
     fi
 
@@ -616,17 +634,20 @@ check_c16() {
     case "$rc" in
         0) : ;;
         2) emit INFO C16-status "no himmelctl install profile found -- run 'node scripts/himmelctl/bin.js install' to enable install/wiring-truth findings here"; return ;;
-        *) emit INFO C16-status "himmelctl status --json unavailable (rc=$rc) -- delegation skipped"; return ;;
+        *) c16_lost "'himmelctl status --json' exited rc=$rc" "node scripts/himmelctl/bin.js status   # run it directly to see the error"; return ;;
     esac
 
     # Require the EXPECTED schema, not merely valid JSON: an object with an
     # array-valued .items. Valid JSON of the wrong shape (e.g. `{}` from a
     # future/broken status build) would otherwise pass a bare `jq -e .`, yield
     # zero items, and emit a misleading "no findings" OK — treat it as
-    # unavailable and take the delegation-skipped path instead.
-    if ! command -v jq >/dev/null 2>&1 \
-       || ! printf '%s' "$out" | jq -e 'type == "object" and (.items | type == "array")' >/dev/null 2>&1; then
-        emit INFO C16-status "himmelctl status --json output unavailable/unparsable -- delegation skipped"
+    # unavailable and take the coverage-lost path instead.
+    if ! command -v jq >/dev/null 2>&1; then
+        c16_lost "jq is not on PATH, so 'himmelctl status --json' cannot be read" "install jq"
+        return
+    fi
+    if ! printf '%s' "$out" | jq -e 'type == "object" and (.items | type == "array")' >/dev/null 2>&1; then
+        c16_lost "'himmelctl status --json' output is unparsable or not the expected {items:[...]} shape" "node scripts/himmelctl/bin.js status --json   # inspect the output"
         return
     fi
 

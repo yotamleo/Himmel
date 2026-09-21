@@ -904,6 +904,122 @@ else
     pass "C16 -> WARN (skipped: node/jq not both available on this host)"
 fi
 
+# ── C16 severity discrimination (HIMMEL-3323) ──────────────────────────────────
+# Every path on which C16's himmelctl delegation does NOT happen used to emit
+# INFO, so "the install validator is broken" read as "nothing to do". The split
+# (same n/a vs degraded line HIMMEL-3307 draws in status-report.js): a clean
+# absence of the opt-in (no install profile / no node AND no profile) stays INFO;
+# "this should have worked and did not" (bin.js missing, status exits non-zero,
+# unparsable/wrong-schema output, jq missing, no node WITH a profile) is WARN
+# naming the lost coverage. Each case runs in a FAKE repo (scripts/lib a symlink
+# to the real one, himmelctl/bin.js a stub) and is compared against a healthy
+# baseline run of the SAME fixture, so the doctor's Summary counters are
+# asserted to move by exactly one in the expected direction.
+c16_setup() {
+    c16_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c16.XXXXXX")" || { fail "C16 setup: mktemp -d failed"; exit 1; }
+    mkdir -p "$c16_t/scripts/himmelctl" "$c16_t/home" "$c16_t/claude" "$c16_t/cache"
+    ln -s "$REPO_ROOT/scripts/lib" "$c16_t/scripts/lib"
+    printf '{"role":"adopter"}' > "$c16_t/cache/install-profile.json"
+    # Stub status: like the real one, rc=2 when there is no install profile.
+    cat > "$c16_t/scripts/himmelctl/bin.js" <<'JS'
+const fs = require('fs'), path = require('path');
+if (!fs.existsSync(path.join(process.env.HIMMELCTL_CACHE_DIR, 'install-profile.json'))) process.exit(2);
+process.stdout.write(JSON.stringify({ items: [] }));
+JS
+}
+c16_run() {  # c16_run [extra env assignments...] -> the doctor's stdout
+    (cd "$c16_t" && env HIMMEL_REPO="$c16_t" HIMMELCTL_CACHE_DIR="$c16_t/cache" CLAUDE_DIR="$c16_t/claude" HOME="$c16_t/home" \
+        DOCTOR_OBSERVABILITY_SKIP=1 "$@" "$BASH" "$DOC" --no-color 2>/dev/null)
+}
+c16_warn() { printf '%s\n' "$1" | sed -n 's/^Summary: .* \([0-9][0-9]*\) WARN .*/\1/p'; }
+c16_info() { printf '%s\n' "$1" | sed -n 's/^Summary: .* \([0-9][0-9]*\) INFO.*/\1/p'; }
+# c16_expect <label> <baseline-out> <out> <WARN|INFO> <needle> [want_dw want_di]:
+# the one C16 line has the severity, names the needle, and the Summary counters
+# moved vs the baseline run of the same env by want_dw/want_di (default vs the
+# healthy OK baseline: WARN = +1 warn/+0 info, INFO = +0 warn/+1 info).
+c16_expect() {
+    local label="$1" base="$2" out="$3" sev="$4" needle="$5" dw di line want_dw="${6:-}" want_di="${7:-}"
+    dw=$(( $(c16_warn "$out") - $(c16_warn "$base") )); di=$(( $(c16_info "$out") - $(c16_info "$base") ))
+    if [ -z "$want_dw" ]; then if [ "$sev" = WARN ]; then want_dw=1 want_di=0; else want_dw=0 want_di=1; fi; fi
+    line="$(printf '%s\n' "$out" | grep 'C16-status')"
+    if [ "$(printf '%s\n' "$line" | grep -c .)" -eq 1 ] && grepq "$line" "^$sev C16-status" && grepq "$line" -F "$needle" \
+       && [ "$dw" -eq "$want_dw" ] && [ "$di" -eq "$want_di" ]; then
+        pass "C16 $label -> $sev (n_warn +$dw, n_info +$di vs baseline)"
+    else
+        fail "C16 $label -> want $sev +${want_dw}w/+${want_di}i, got +${dw}w/+${di}i; ${line}"
+    fi
+}
+
+if command -v node >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+    echo "== C16 severity: healthy install (profile, status --json ok, 0 items) -> OK, no WARN (false-positive control) =="
+    c16_setup
+    c16_base="$(c16_run)"
+    if printf '%s\n' "$c16_base" | grep -q '^OK *C16-status' && ! printf '%s\n' "$c16_base" | grep -q '^WARN *C16-status' \
+       && ! printf '%s\n' "$c16_base" | grep -q '^INFO *C16-status'; then
+        pass "C16 healthy -> OK C16-status only"
+    else
+        fail "C16 healthy baseline -> $(printf '%s' "$c16_base" | grep C16-status)"
+    fi
+    rm -rf "$c16_t"
+
+    echo "== C16 severity: rc=2 no install profile -> INFO (not applicable, never opted in) =="
+    c16_setup; rm -f "$c16_t/cache/install-profile.json"
+    c16_expect "no profile (rc=2)" "$c16_base" "$(c16_run)" INFO 'no himmelctl install profile'
+    rm -rf "$c16_t"
+
+    echo "== C16 severity: himmelctl/bin.js missing -> WARN naming the lost coverage =="
+    c16_setup; rm -f "$c16_t/scripts/himmelctl/bin.js"
+    c16_expect "bin.js missing" "$c16_base" "$(c16_run)" WARN 'NOT being checked'
+    rm -rf "$c16_t"
+
+    echo "== C16 severity: status --json exits non-zero -> WARN naming the lost coverage =="
+    c16_setup
+    printf 'process.exit(1);\n' > "$c16_t/scripts/himmelctl/bin.js"
+    c16_expect "status exits 1" "$c16_base" "$(c16_run)" WARN 'NOT being checked'
+    rm -rf "$c16_t"
+
+    echo "== C16 severity: status --json prints non-JSON -> WARN naming the lost coverage =="
+    c16_setup
+    printf 'process.stdout.write("not json at all");\n' > "$c16_t/scripts/himmelctl/bin.js"
+    c16_expect "unparsable output" "$c16_base" "$(c16_run)" WARN 'NOT being checked'
+    rm -rf "$c16_t"
+
+    echo "== C16 severity: status --json prints valid JSON of the wrong schema ({}) -> WARN, never a false OK =="
+    c16_setup
+    printf 'process.stdout.write("{}");\n' > "$c16_t/scripts/himmelctl/bin.js"
+    c16_expect "wrong schema" "$c16_base" "$(c16_run)" WARN 'NOT being checked'
+    rm -rf "$c16_t"
+
+    echo "== C16 severity: jq missing on a machine with an install profile -> WARN naming the lost coverage =="
+    c16_setup
+    C16_NOJQ="$c16_t/nojq"; mkdir -p "$C16_NOJQ"
+    for _tool in bash sh git node sort tail sed cat date mktemp mkdir dirname uname wc tr head cp rm mv chmod grep basename; do
+        _p="$(command -v "$_tool" 2>/dev/null)" && ln -sf "$_p" "$C16_NOJQ/$_tool" 2>/dev/null
+    done
+    if PATH="$C16_NOJQ" bash -c 'command -v jq >/dev/null 2>&1'; then fail "C16 no-jq: precondition -- jq is on the curated PATH"; else
+        # Baseline = the SAME curated env with no profile (INFO), so only C16 differs.
+        mv "$c16_t/cache/install-profile.json" "$c16_t/profile.bak"; c16_nojq_base="$(c16_run PATH="$C16_NOJQ")"
+        mv "$c16_t/profile.bak" "$c16_t/cache/install-profile.json"
+        c16_expect "jq missing" "$c16_nojq_base" "$(c16_run PATH="$C16_NOJQ")" WARN 'NOT being checked' 1 -1
+    fi
+    rm -rf "$c16_t"
+
+    echo "== C16 severity: no node resolvable, NO install profile -> INFO; with a profile (install ran once) -> WARN =="
+    c16_setup
+    if PATH="$NOGH" bash -c 'command -v node >/dev/null 2>&1'; then fail "C16 no-node: precondition -- node is on the curated PATH"; else
+        c16_nonode() { c16_run PATH="$NOGH" RESOLVE_NODE_PROBE_DIRS="" RESOLVE_NODE_NVM_ROOT="$c16_t/none" FNM_DIR="$c16_t/none"; }
+        mv "$c16_t/cache/install-profile.json" "$c16_t/profile.bak"; c16_nonode_np="$(c16_nonode)"
+        mv "$c16_t/profile.bak" "$c16_t/cache/install-profile.json"; c16_nonode_p="$(c16_nonode)"
+        # The two runs differ ONLY in the profile, so the counters are compared
+        # pairwise (the curated PATH adds unrelated WARNs a healthy baseline lacks).
+        c16_expect "no node, no profile" "$c16_nonode_p" "$c16_nonode_np" INFO 'no node found' -1 1
+        c16_expect "no node, profile present" "$c16_nonode_np" "$c16_nonode_p" WARN 'NOT being checked' 1 -1
+    fi
+    rm -rf "$c16_t"
+else
+    pass "C16 severity discrimination -> (skipped: node/jq not both available on this host)"
+fi
+
 # ── C17: dependency readiness -- enabled skill vs required API key (HIMMEL-1393) ──
 echo "== C17: skill not enabled -> OK (nothing to check, no false-positive) =="
 t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/claude/commands"; write_settings "$t/claude" "$WRAPPER"
