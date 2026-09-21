@@ -62,15 +62,17 @@ case "$input" in
     *[![:space:]]*) ;;
     *) echo "guard-pr-check-literal: empty/blank stdin - failing closed" >&2; exit 2 ;;
 esac
-if ! result=$(jq -r '(.tool_name // "" | tostring) + "\n" + (.cwd // "" | tostring) + "\n" + (.tool_input.command // "" | tostring)' <<<"$input" 2>/dev/null); then
+# cwd travels JSON-encoded so a newline inside it cannot shift the command
+# field (which would turn the literal into a fail-open non-match).
+if ! result=$(jq -r '(.tool_name // "" | tostring) + "\n" + (.cwd // "" | tostring | @json) + "\n" + (.tool_input.command // "" | tostring)' <<<"$input" 2>/dev/null); then
     echo "guard-pr-check-literal: malformed/truncated JSON on stdin - failing closed" >&2
     exit 2
 fi
 tool="${result%%$'\n'*}"
 tool="${tool%$'\r'}"
 rest="${result#*$'\n'}"
-cwd="${rest%%$'\n'*}"
-cwd="${cwd%$'\r'}"
+cwd_json="${rest%%$'\n'*}"
+cwd_json="${cwd_json%$'\r'}"
 cmd="${rest#*$'\n'}"
 
 case "$tool" in Bash|"") ;; *) exit 0 ;; esac
@@ -79,6 +81,12 @@ case "$tool" in Bash|"") ;; *) exit 0 ;; esac
 cmd="${cmd#"${cmd%%[![:space:]]*}"}"
 cmd="${cmd%"${cmd##*[![:space:]]}"}"
 [ "$cmd" = "$LITERAL" ] || exit 0
+
+cwd=$(jq -r . <<<"$cwd_json" 2>/dev/null) \
+    || deny "the payload cwd cannot be decoded."
+case "$cwd" in
+    *$'\n'*|*$'\r'*) deny "the payload cwd carries a line break, so it cannot be trusted as a path." ;;
+esac
 
 # Every git call below answers about the payload cwd only: no inherited
 # GIT_DIR/GIT_INDEX_FILE, no repo-configured fsmonitor or external diff.
@@ -117,6 +125,14 @@ changed=$(gitq diff --no-ext-diff --no-textconv --name-only refs/remotes/origin/
     || deny "git diff against refs/remotes/origin/main failed, so the branch's scripts/cr/ diff cannot be checked."
 untracked=$(gitq ls-files --others -- scripts/cr/ scripts/guardrails/lib.sh 2>/dev/null) \
     || deny "the untracked files under scripts/cr/ cannot be listed."
+# assume-unchanged (lowercase tag) and skip-worktree (S) index flags make git
+# diff skip the working-tree bytes of a flagged path, so any such flag on a
+# guarded path means the diff above cannot vouch for what would run.
+flags=$(gitq ls-files -v -- scripts/cr/ scripts/guardrails/lib.sh 2>/dev/null) \
+    || deny "the index flags under scripts/cr/ cannot be listed."
+hidden=$(printf '%s\n' "$flags" | awk '/^([a-z]|S) /')
+[ -z "$hidden" ] \
+    || deny "an index flag (assume-unchanged/skip-worktree) hides working-tree bytes from git diff: $(printf '%s' "$hidden" | tr '\n' ' ')"
 if [ -n "$changed$untracked" ]; then
     deny "this tree changes the bytes step 0 runs vs refs/remotes/origin/main: $(printf '%s\n%s' "$changed" "$untracked" | tr -s '\n' ' ')"
 fi

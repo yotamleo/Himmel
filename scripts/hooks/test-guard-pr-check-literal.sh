@@ -112,6 +112,22 @@ run "lib.sh-only uncommitted diff -> deny" 2 "$(payload "$LITERAL" "$WT")" "$HR"
 need_in_err "deny names lib.sh" "scripts/guardrails/lib.sh"
 g -C "$WT" checkout -q -- scripts/guardrails/lib.sh
 
+# ---- deny: index flags that hide a working-tree edit from git diff ----------
+g -C "$WT" update-index --assume-unchanged scripts/cr/pr-check-context.sh
+echo 'echo hidden' >"$WT/scripts/cr/pr-check-context.sh"
+run "assume-unchanged edit to pr-check-context.sh -> deny" 2 "$(payload "$LITERAL" "$WT")" "$HR"
+g -C "$WT" update-index --no-assume-unchanged scripts/cr/pr-check-context.sh
+g -C "$WT" checkout -q -- scripts/cr/pr-check-context.sh
+g -C "$WT" update-index --skip-worktree scripts/guardrails/lib.sh
+echo ': hidden' >>"$WT/scripts/guardrails/lib.sh"
+run "skip-worktree edit to lib.sh -> deny" 2 "$(payload "$LITERAL" "$WT")" "$HR"
+g -C "$WT" update-index --no-skip-worktree scripts/guardrails/lib.sh
+g -C "$WT" checkout -q -- scripts/guardrails/lib.sh
+run "flags cleared again -> allow" 0 "$(payload "$LITERAL" "$WT")" "$HR"
+
+# ---- deny: a cwd carrying a newline must not shift the command field --------
+run "cwd with an embedded newline -> deny, not a no-op" 2 "$(payload "$LITERAL" "$WT"$'\n'"x")" "$HR"
+
 # ---- deny: an untracked file under scripts/cr/ -----------------------------
 echo x >"$WT/scripts/cr/new.sh"
 run "untracked scripts/cr/ file -> deny" 2 "$(payload "$LITERAL" "$WT")" "$HR"
