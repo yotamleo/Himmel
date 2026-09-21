@@ -150,7 +150,7 @@ sets_var() {
   read_re="\\\$\\{$VCI:[-+?]"
   site_re="(^|[^A-Za-z0-9_])$VCI(\\[[^]]*\\])?[]'\"}]*[[:space:]]*([-+*/%&|^?<>!]*=|:|,)"
   { cat -- "$file" && printf '\n' && join_continued "$file" | sed -e "s/\\\$\\([\"']\\)/\\1/g" -e "s/[\"'\\\\]//g"; } \
-    | sed -E "s/$read_re//g" | grep -Eq "$site_re"
+    | sed -E "s/$read_re//g" | grep -Eq "$site_re"   # pipefail-ok: this file sets -u only, never pipefail
 }
 
 # scan_callers <root> [allowed-path...] -- print (root-relative) every file under

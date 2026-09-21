@@ -47,7 +47,7 @@ node_bin=$(command -v node)
 # shellcheck disable=SC1091
 . "$repo_root/scripts/lib/hermetic-path.sh"
 
-work=$(mktemp -d) || exit 1
+work=$(mktemp -d "${TMPDIR:-/tmp}/wiz-uninst.XXXXXX") || exit 1
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
 
