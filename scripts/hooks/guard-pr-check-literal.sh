@@ -110,9 +110,10 @@ case "$cwd" in
 esac
 
 # Every git call below answers about the payload cwd only: no inherited
-# GIT_DIR/GIT_INDEX_FILE, no repo-configured fsmonitor, no filter.
-unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
-gitq() { git -C "$cwd" -c core.fsmonitor=false -c core.untrackedCache=false "$@"; }
+# GIT_DIR/GIT_INDEX_FILE, no repo-configured fsmonitor, no filter, and no
+# refs/replace/ mapping standing in for origin/main's real objects.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_REPLACE_REF_BASE
+gitq() { git --no-replace-objects -C "$cwd" -c core.fsmonitor=false -c core.untrackedCache=false "$@"; }
 
 [ -n "$cwd" ] || deny "the hook payload carries no cwd, so the conditions cannot be evaluated."
 [ -d "$cwd" ] || deny "the cwd ($cwd) is not a directory."

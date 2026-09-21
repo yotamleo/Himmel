@@ -1802,7 +1802,8 @@ an unresolvable `origin/main`, or malformed stdin), it refuses and prints the
 literal's canonical spelling as the remedy.
 
 It sources and execs nothing from the checkout under review. Its git calls ignore
-inherited `GIT_*` variables, switch off fsmonitor, and run no filter. It spells
+inherited `GIT_*` variables, switch off fsmonitor and replace refs
+(`--no-replace-objects`), and run no filter. It spells
 the ref in full, so a local branch named `origin/main` cannot stand in for the
 remote-tracking ref. Fails CLOSED. There is no bypass variable, because the
 canonical spelling is always available and is the remedy. Spec:

@@ -112,6 +112,11 @@ need_in_err "deny names the changed file" "scripts/cr/pr-check-context.sh"
 # shellcheck disable=SC2016 # the fence text, verbatim
 need_in_err "deny names the canonical anchored fence" 'bash "$himmel_repo/scripts/cr/pr-check-context.sh"'
 run "branch-edited + surrounding whitespace -> deny" 2 "$(payload "  $LITERAL  " "$WT")" "$HR"
+# A local replace ref can swap origin/main's commit for the edited one; the
+# hook must read the real object, not the replacement.
+g -C "$WT" replace "$(g -C "$WT" rev-parse refs/remotes/origin/main)" HEAD
+run "branch edit hidden by a git replace of origin/main -> deny" 2 "$(payload "$LITERAL" "$WT")" "$HR"
+g -C "$WT" replace -d "$(g -C "$WT" rev-parse refs/remotes/origin/main)"
 g -C "$WT" reset -q --hard refs/remotes/origin/main
 
 # ---- deny: a lib.sh-only diff (uncommitted counts) -------------------------
