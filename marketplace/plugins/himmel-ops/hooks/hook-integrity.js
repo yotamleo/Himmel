@@ -870,19 +870,31 @@ function resolveMismatchInner(context) {
 // that sets it pays nothing (and logs nothing) on a hook that verifies clean;
 // a "use" is a call where the bypass turned a deny into an allow. Honoured
 // only when ALL of these hold — anything else falls back to the normal deny:
-//   (1) the session's cwd is inside a LINKED worktree (git dir != common dir),
-//       so the primary checkout — where the live hooks run — stays enforced;
-//   (2) the hook script's real path resolves inside THAT worktree, so the
+//   (1) the worktree is CLAUDE_PROJECT_DIR, never a directory discovered from cwd:
+//       `git rev-parse` follows the `.git` pointer FILE a worker can rewrite (the
+//       hazard gitInRecordedRepo's header names). cwd must merely lie inside it;
+//   (2) the session's RECORDED repo (record.git_dir, asked through
+//       gitInRecordedRepo) lists that directory as a LINKED, non-primary
+//       worktree and its `.git` pointer resolves back into that repo's worktrees/,
+//       so the primary checkout — where the live hooks run — stays enforced. A
+//       record with no git_dir (legacy) refuses;
+//   (3) the hook script's real path resolves inside that worktree, so the
 //       bypass cannot vouch for a script from the primary or a sibling;
-//   (3) one JSON line is appended to <git-common-dir>/hook-integrity-bypass.jsonl
-//       (a sibling of the other per-repo audit logs there). A failed write refuses
-//       the bypass: an override that cannot be recorded is not granted.
+//   (4) one JSON line is appended, in a single write, to
+//       <record.git_dir>/hook-integrity-bypass.jsonl (a sibling of the other
+//       per-repo audit logs there). A symlink or non-regular sink is refused, and
+//       so is a failed or short write: an override that cannot be recorded is
+//       not granted.
+// One line per honoured HOOK, not per tool call: a hook chain runs this launcher
+// once per member, so a call that overrides several tampered members appends one
+// line for each.
 // Residual: HIMMEL_HOOK_INTEGRITY_BYPASS_OK is shared with the command-text
 // fences in block-glm-external-writes.sh, which this does NOT scope.
 const BYPASS_AUDIT_FILE = 'hook-integrity-bypass.jsonl';
-const BYPASS_SCOPE = 'The bypass is honoured only when the session cwd is inside a linked git worktree and the '
-  + 'hook script resolves inside that same worktree (it is ignored in the primary checkout); each use is appended to '
-  + `<git-common-dir>/${BYPASS_AUDIT_FILE}, and a failed audit write refuses it.`;
+const BYPASS_SCOPE = 'The bypass is honoured only when the session cwd is inside CLAUDE_PROJECT_DIR, the '
+  + "session's recorded repo lists that directory as a linked git worktree (it is ignored in the primary "
+  + 'checkout) and the hook script resolves inside it; each honoured hook appends one line to '
+  + `<recorded-git-dir>/${BYPASS_AUDIT_FILE}, and a failed audit write refuses it.`;
 
 // The `-n <name>` of the claude process (same seam as scripts/lib/session-name.sh,
 // /proc is Linux-only). null, never a guess, when it cannot be resolved.
@@ -903,18 +915,67 @@ function isInside(root, candidate) {
   return rel !== '' && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
 }
 
+// Is `top` a LINKED worktree of the repo whose common dir is `commonDir`? Every
+// answer comes from that recorded repo (never from `top`'s own `.git`), except the
+// one pointer check below, which is exactly the comparison a rewritten pointer
+// fails.
+function isLinkedWorktreeOf(commonDir, top) {
+  const own = gitStdout(gitInRecordedRepo(commonDir, ['rev-parse', '--path-format=absolute', '--git-common-dir']));
+  if (!own || fs.realpathSync(own) !== commonDir) return false; // not a common dir
+  const listed = gitInRecordedRepo(commonDir, ['worktree', 'list', '--porcelain']);
+  if (!listed || listed.status !== 0) return false;
+  // Entry 0 is the main worktree (the primary checkout, or a bare repo) — never linked.
+  const linked = listed.stdout.split(/\r?\n\r?\n/).filter(Boolean).slice(1).some((entry) => {
+    const m = /^worktree (.+)/.exec(entry);
+    try {
+      return Boolean(m) && fs.realpathSync(m[1]) === top;
+    } catch (_e) {
+      return false; // a listed worktree that is gone
+    }
+  });
+  if (!linked) return false;
+  const dotGit = path.join(top, '.git');
+  if (!fs.lstatSync(dotGit).isFile()) return false;
+  const pointer = /^gitdir: (.+)/.exec(fs.readFileSync(dotGit, 'utf8'));
+  return Boolean(pointer)
+    && path.dirname(fs.realpathSync(path.resolve(top, pointer[1].trim()))) === path.join(commonDir, 'worktrees');
+}
+
+// One O_APPEND write of the whole line into a regular file the launcher opened
+// without following a link; false on anything less than the full line landing.
+function appendBypassAudit(commonDir, line) {
+  const file = path.join(commonDir, BYPASS_AUDIT_FILE);
+  try {
+    if (!fs.lstatSync(file).isFile()) return false; // a symlink (/dev/null), directory or device
+  } catch (e) {
+    if (e.code !== 'ENOENT') throw e;
+  }
+  const { O_APPEND, O_WRONLY, O_CREAT, O_NOFOLLOW } = fs.constants;
+  const fd = fs.openSync(file, O_APPEND | O_WRONLY | O_CREAT | (O_NOFOLLOW || 0), 0o600);
+  try {
+    if (!fs.fstatSync(fd).isFile()) return false;
+    const bytes = Buffer.from(line);
+    return fs.writeSync(fd, bytes) === bytes.length;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 function honourBypass(scriptPath, sessionId) {
   try {
+    const projectDir = process.env.CLAUDE_PROJECT_DIR;
+    if (!nonEmptyString(projectDir)) return false;
+    const record = loadIntegrityRecord(sessionId);
+    if (!record || !nonEmptyString(record.git_dir) || !path.isAbsolute(record.git_dir)) return false;
+    const top = fs.realpathSync(projectDir);
     const cwd = process.cwd();
-    const probe = runGit(['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-dir', '--git-common-dir'], cwd);
-    if (!probe || probe.status !== 0) return false;
-    const lines = probe.stdout.replace(/\r?\n$/, '').split(/\r?\n/);
-    if (lines.length !== 3) return false;
-    const [top, gitDir, commonDir] = lines.map((p) => fs.realpathSync(p));
-    if (gitDir === commonDir) return false; // the primary checkout, or not a worktree at all
+    const realCwd = fs.realpathSync(cwd);
+    if (realCwd !== top && !isInside(top, realCwd)) return false;
     const hook = fs.realpathSync(scriptPath);
     if (!isInside(top, hook)) return false;
-    fs.appendFileSync(path.join(commonDir, BYPASS_AUDIT_FILE), `${JSON.stringify({
+    const commonDir = fs.realpathSync(record.git_dir);
+    if (!isLinkedWorktreeOf(commonDir, top)) return false;
+    return appendBypassAudit(commonDir, `${JSON.stringify({
       ts: new Date().toISOString(),
       session: sessionNameFromProc(),
       session_id: sessionId || null,
@@ -922,7 +983,6 @@ function honourBypass(scriptPath, sessionId) {
       worktree: top,
       hook_paths: [hook],
     })}\n`);
-    return true;
   } catch (_e) {
     return false;
   }

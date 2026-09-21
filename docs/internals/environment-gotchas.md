@@ -1128,16 +1128,30 @@ per-call prefix does not reach the guard. Recovery once locked out: plain-copy
 the affected file(s) back to `HEAD`, relaunch with the bypass set, then
 re-apply the intended edit and commit it in the same step.
 
-**Scope (HIMMEL-3384).** The launcher honours the bypass only when the
-session's cwd is inside a **linked worktree** and the hook script it lets
-through resolves inside that same worktree; in the primary checkout (or for a
-hook path outside the worktree) it is ignored and the normal deny stands. Each
-use that overrides a deny appends one JSON line — `ts`, `session`,
-`session_id`, `cwd`, `worktree`, `hook_paths` — to
-`<git-common-dir>/hook-integrity-bypass.jsonl`; if that append fails, the
-bypass is refused. The command-text fences in `block-glm-external-writes.sh`
-read the same variable and are not scoped this way. So do the hook edit in a
-worktree, with the session's cwd inside it.
+**Scope (HIMMEL-3384).** The bypass is anchored to `CLAUDE_PROJECT_DIR`, never
+to a directory discovered from cwd (`git rev-parse` follows the `.git` pointer
+*file* a worker can rewrite). The launcher honours it only when all of these
+hold, and otherwise the normal deny stands:
+
+- the session's cwd is inside `CLAUDE_PROJECT_DIR`;
+- the session's **recorded repo** (`git_dir` in the hook-integrity record, asked
+  with `git --git-dir=<git_dir> worktree list`) lists `CLAUDE_PROJECT_DIR` as a
+  linked, non-primary worktree, and that worktree's `.git` pointer still
+  resolves back into the recorded repo's `worktrees/`. A record with no
+  `git_dir` — the pins-only shape written for a repo with no `origin` anchor —
+  refuses the bypass;
+- the hook script's real path (symlinks resolved) is inside that worktree.
+
+So the primary checkout, a sibling worktree, and a hook symlinked in from
+elsewhere are all refused. Each honoured hook appends one JSON line — `ts`,
+`session`, `session_id`, `cwd`, `worktree`, `hook_paths` — to
+`<git_dir>/hook-integrity-bypass.jsonl`, in a single `O_APPEND|O_NOFOLLOW`
+write. A hook chain runs the launcher once per member, so a tool call that
+overrides several tampered hooks writes one line per hook. A symlink or
+non-regular file in that spot, and any failed or short write, refuse the bypass.
+The command-text fences in `block-glm-external-writes.sh` read the same variable
+and are not scoped this way. So do the hook edit in a worktree, with the
+session's cwd inside it.
 
 ## pre-commit: `run --commit-msg-filename` reports Passed for a message the hook rejects
 
