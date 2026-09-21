@@ -19,8 +19,10 @@
 #
 # A missing inbox is created empty (the bridge only writes to an inbox that
 # already exists). A partial line (no newline yet) is held back until complete.
-# A cursor beyond EOF (inbox truncated or replaced) or a corrupt cursor file
-# resets to offset 0.
+# A cursor beyond EOF (inbox truncated or replaced), a corrupt cursor file or a
+# non-canonical one (leading zero: bash would read it as octal) resets to offset 0.
+# A cursor that cannot be written stops the follower with rc 1 instead of
+# replaying the same lines on every poll.
 #
 # ponytail: the cursor is a bare byte offset, so an inbox replaced by a file
 # that is already LONGER than the old cursor is indistinguishable from an
@@ -51,11 +53,14 @@ fi
 load_cursor() {
     cur=""
     [ -f "$cursor_file" ] && read -r cur < "$cursor_file"
-    case "$cur" in ''|*[!0-9]*) cur=0 ;; esac
+    case "$cur" in ''|*[!0-9]*|0?*) cur=0 ;; esac
 }
 
 save_cursor() {
-    printf '%s\n' "$1" > "$cursor_file.tmp" && mv -f "$cursor_file.tmp" "$cursor_file"
+    if ! { printf '%s\n' "$1" > "$cursor_file.tmp" && mv -f "$cursor_file.tmp" "$cursor_file"; }; then
+        echo "inbox-follow: cannot write $cursor_file" >&2
+        return 1
+    fi
 }
 
 drain() {
@@ -63,7 +68,7 @@ drain() {
     size=$(( $(wc -c < "$inbox") ))
     if [ "$cur" -gt "$size" ]; then
         cur=0
-        save_cursor 0
+        save_cursor 0 || return 1
     fi
     [ "$size" -gt "$cur" ] || return 0
     # `read` returns non-zero on a final line with no newline, so a partial line
@@ -71,13 +76,13 @@ drain() {
     tail -c +$((cur + 1)) "$inbox" | while IFS= read -r line; do
         printf '%s\n' "$line"
         cur=$((cur + ${#line} + 1))
-        save_cursor "$cur"
+        save_cursor "$cur" || exit 1
     done
 }
 
-drain
+drain || exit 1
 [ "$once" = 1 ] && exit 0
 while :; do
     sleep "$poll"
-    drain
+    drain || exit 1
 done

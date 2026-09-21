@@ -89,6 +89,12 @@ mkdir -p "$WORK/f/consoles"; : > "$I"
 printf 'backlog\n' >> "$I"
 bash "$FOLLOW" "$I" > "$OUT" 2>&1 &
 pid=$!
+# The live line must land AFTER the initial drain, or a dead poll loop still passes.
+i=0
+while [ "$i" -lt 50 ]; do
+    [ -s "$I.cursor" ] && break
+    sleep 0.1; i=$((i + 1))
+done
 printf 'live\n' >> "$I"
 i=0
 while [ "$i" -lt 50 ]; do
@@ -99,6 +105,33 @@ kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
 check "(f) a live follower emits the backlog then the new line, once each" "$(printf 'backlog\nlive')" "$(cat "$OUT")"
 check "(f) the live follower advanced the cursor to the inbox size" "$(size_of "$I")" "$(tr -d ' \n' < "$I.cursor")"
 check "(f) a re-arm after the live follower was killed replays nothing" "" "$(arm "$I")"
+
+# --- (h) a cursor that cannot be written stops the follower, it never replays -
+I="$WORK/h/consoles/c.md"
+mkdir -p "$WORK/h/consoles" "$I.cursor.tmp"; : > "$I"
+printf 'one\n' >> "$I"
+out="$(arm "$I")"; rc=$?
+if [ "$rc" -ne 0 ]; then pass "(h) --once fails (rc $rc) when the cursor cannot be written"; else fail "(h) --once fails when the cursor cannot be written (rc=0)"; fi
+bash "$FOLLOW" "$I" > "$WORK/h/out" 2>&1 &
+pid=$!
+i=0
+while [ "$i" -lt 30 ] && kill -0 "$pid" 2>/dev/null; do sleep 0.1; i=$((i + 1)); done
+if kill -0 "$pid" 2>/dev/null; then
+    fail "(h) a live follower stops when the cursor cannot be written (still running: replay loop)"
+    kill "$pid" 2>/dev/null
+else
+    pass "(h) a live follower stops when the cursor cannot be written"
+fi
+wait "$pid" 2>/dev/null
+
+# --- (i) a leading-zero cursor is reset, not read as octal -------------------
+I="$WORK/i/consoles/c.md"
+mkdir -p "$WORK/i/consoles"; : > "$I"
+printf 'alpha\nbeta\n' >> "$I"
+printf '08\n' > "$I.cursor"
+out="$(arm "$I")"; rc=$?
+check "(i) a leading-zero cursor is treated as offset 0" "$(printf 'alpha\nbeta')" "$out"
+check "(i) a leading-zero cursor does not crash the follower" "0" "$rc"
 
 # --- (g) usage ---------------------------------------------------------------
 bash "$FOLLOW" >/dev/null 2>&1; rc=$?
