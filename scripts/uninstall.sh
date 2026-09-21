@@ -167,12 +167,12 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 MANIFEST_FILE="${HIMMEL_UNINSTALL_MANIFEST:-$SCRIPT_DIR/install/uninstall-manifest.tsv}"
 M_ID=(); M_CLASS=(); M_KIND=(); M_ENV=(); M_PATH=(); M_STEP=(); M_WHAT=()
 load_manifest() {
-  local _id _class _surface _kind _env _path _step _what _extra _want _wk _wp _ws _haspath
+  local _id _class _surface _kind _env _path _step _what _record _extra _want _wk _wp _ws _haspath
   [ -r "$MANIFEST_FILE" ] || { echo "ERROR: uninstall manifest unreadable: $MANIFEST_FILE" >&2; return 1; }
-  while IFS=$'\t' read -r _id _class _surface _kind _env _path _step _what _extra; do
+  while IFS=$'\t' read -r _id _class _surface _kind _env _path _step _what _record _extra; do
     case "$_id" in ''|'#'*) continue ;; esac
     if [ -z "$_what" ] || [ -n "$_extra" ]; then
-      echo "ERROR: malformed row '$_id' in $MANIFEST_FILE (need exactly 8 tab-separated columns)" >&2
+      echo "ERROR: malformed row '$_id' in $MANIFEST_FILE (need 8 or 9 tab-separated columns)" >&2
       return 1
     fi
     case "$_class" in

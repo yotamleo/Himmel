@@ -120,10 +120,22 @@ if [ ! -f "$MANIFEST" ]; then
 else
     m1_ok=1
     m1_ids=""
-    while IFS=$'\t' read -r id class surface kind env path step what extra; do
+    # HIMMEL-3332 S11: the shipped file has 9 columns; the 9th (record) names the
+    # provenance-ledger kinds install writes for the row, drawn from provenance.sh's
+    # own vocabulary, or 'none'. (The reader still accepts the 8-column form — M2/L1.)
+    m1_kinds=$(sed -n 's/^_PROV_KINDS="\(.*\)"$/\1/p' "$SCRIPTS/lib/provenance.sh")
+    [ -n "$m1_kinds" ] || { fail "M1 could not read _PROV_KINDS from provenance.sh"; m1_ok=0; }
+    while IFS=$'\t' read -r id class surface kind env path step what record extra; do
         case "$id" in ''|'#'*) continue ;; esac
-        [ -z "$extra" ] || { fail "M1 $id: more than 8 columns"; m1_ok=0; }
-        [ -n "$what" ] || { fail "M1 $id: fewer than 8 columns"; m1_ok=0; }
+        [ -z "$extra" ] || { fail "M1 $id: more than 9 columns"; m1_ok=0; }
+        [ -n "$record" ] || { fail "M1 $id: fewer than 9 columns"; m1_ok=0; }
+        if [ "$record" = none ]; then :
+        else
+            for m1_k in $(printf '%s' "$record" | tr ',' ' '); do
+                case " $m1_kinds " in *" $m1_k "*) ;; *) fail "M1 $id: record kind '$m1_k' not in provenance.sh's vocabulary"; m1_ok=0 ;; esac
+            done
+        fi
+        case "$record" in *none*) [ "$record" = none ] || { fail "M1 $id: 'none' must stand alone in record"; m1_ok=0; } ;; esac
         case "$class" in code|state|keep) ;; *) fail "M1 $id: bad class '$class'"; m1_ok=0 ;; esac
         case "$kind" in dir|settings|githooks|process|jobs|plugins|marketplaces|file) ;; *) fail "M1 $id: bad kind '$kind'"; m1_ok=0 ;; esac
         case "$step" in [1-8]|-) ;; *) fail "M1 $id: bad step '$step'"; m1_ok=0 ;; esac
@@ -131,10 +143,29 @@ else
         [ "$class" != keep ] && [ "$step" = - ] && { fail "M1 $id: a non-keep row has no step"; m1_ok=0; }
         case " $m1_ids " in *" $id "*) fail "M1 duplicate id $id"; m1_ok=0 ;; esac
         m1_ids="$m1_ids $id"
-        _unused="$surface$env$path"
+        _unused="$surface$env$path$what"
     done < "$MANIFEST"
     [ "$m1_ok" -eq 1 ] && pass "M1 manifest rows well-formed"
 fi
+# The rows S11 adds: class, kind, env, step and record are the contract S6/S8 read.
+# m1_col <id> <field-no> — one column of one row.
+m1_col() { awk -F'\t' -v id="$1" -v n="$2" '$1==id{print $n}' "$MANIFEST"; }
+m1_want() { # <id> <class> <kind> <env> <step> <record>
+    m1_got="$(m1_col "$1" 2)/$(m1_col "$1" 4)/$(m1_col "$1" 5)/$(m1_col "$1" 7)/$(m1_col "$1" 9)"
+    if [ "$m1_got" = "$2/$3/$4/$5/$6" ]; then pass "M1 row $1 is $2/$3/$4/step $5/record $6"
+    else fail "M1 row $1: got '$m1_got', want '$2/$3/$4/$5/$6'"; fi
+}
+m1_want provenance-ledger state file HIMMEL_PROVENANCE_DIR 8 file
+m1_want cadence-jobs code jobs - 3 job
+m1_want bridge-unit code file - 1 unit,file
+m1_want third-party-caches keep file - - none
+m1_want phi-roots code file - 6 line
+m1_want graphify-wiring code file - 6 mcp,json-elem,symlink
+m1_want qmd-fork code file - 8 symlink,file,collection
+m1_want adopter-scripts keep dir - - file
+case "$(m1_col adopter-scripts 8)" in *"code for recorded files; unrecorded copies kept"*) pass "M1 adopter-scripts reason names recorded vs unrecorded copies" ;; *) fail "M1 adopter-scripts reason text not updated" ;; esac
+case "$(m1_col third-party-caches 8)" in *HIMMEL-3330*) pass "M1 third-party-caches cites HIMMEL-3330" ;; *) fail "M1 third-party-caches does not cite HIMMEL-3330" ;; esac
+case "$(m1_col qmd-fork 8)" in *HIMMEL-3311*) pass "M1 qmd-fork cites HIMMEL-3311" ;; *) fail "M1 qmd-fork does not cite HIMMEL-3311" ;; esac
 m1_steps=$(grep -v '^#' "$MANIFEST" 2>/dev/null | awk -F'\t' '$2!="keep"{print $7}' | LC_ALL=C sort -u | tr '\n' ' ')
 if [ "$m1_steps" = "1 2 3 4 5 6 7 8 " ]; then pass "M1 every uninstall step 1-8 is covered by a manifest row"
 else fail "M1 manifest covers steps '$m1_steps', expected 1..8"; fi
@@ -319,6 +350,21 @@ for l1_case in "dup:duplicate manifest id 'himmelctl-cache'" "kind:has kind 'bog
     assert_has "L1 $l1_key: names the defect" "$l1_want" "$out"
 done
 assert_exists "L1 nothing removed on refusal" "$FX_HOME/.claude/himmel/install-profile.json"
+
+# ── L2 — the reader takes an 8- OR 9-column row (HIMMEL-3332 S11), never a 10th ─
+# 8 = the pre-record layout (older fixtures), 9 = the shipped layout with `record`.
+fixture l2
+awk -F'\t' -v OFS='\t' '/^#/||NF==0{print;next}{NF=8;print}' "$MANIFEST" > "$FX/cols8-manifest.tsv"
+sed -e $'s/^himmelctl-cache\\(.*\\)$/himmelctl-cache\\1\\textra/' "$MANIFEST" > "$FX/cols10-manifest.tsv"
+for l2_case in "cols8:0" "cols10:2"; do
+    l2_key="${l2_case%%:*}"; l2_want="${l2_case#*:}"
+    out=$(cd "$FX_PROJ" && HOME="$FX_HOME" PATH="$STUB:$HBIN" HIMMEL_UNINSTALL_MANIFEST="$FX/$l2_key-manifest.tsv" \
+        bash "$CLI" --dry-run </dev/null 2>&1); rc=$?
+    assert_rc "L2 $l2_key manifest" "$l2_want" "$rc"
+done
+assert_has "L2 a 10-column row names the column rule" "8 or 9 tab-separated columns" "$out"
+out=$(cd "$FX_PROJ" && HOME="$FX_HOME" PATH="$STUB:$HBIN" bash "$CLI" --dry-run </dev/null 2>&1); rc=$?
+assert_rc "L2 the shipped 9-column manifest loads" 0 "$rc"
 
 # ── F1 — the footprint reflects --skip-* (a skipped code row is not REMOVE) ──
 fixture f1
