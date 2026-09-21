@@ -33,7 +33,7 @@ real_ledger_state() {
 }
 REAL_LEDGER_BEFORE=$(real_ledger_state)
 
-SUITE_TMP="$(mktemp -d)"
+SUITE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/uninstall-prov.XXXXXX")" || { echo "FAIL: mktemp" >&2; exit 1; }
 trap 'rm -rf "$SUITE_TMP"' EXIT
 
 fails=0
@@ -140,7 +140,7 @@ printf '#!/bin/sh\necho original-user-script\n' > "$DEST4"
 chmod 700 "$DEST4"
 ORIG4_BYTES=$(cat "$DEST4")
 ORIG4_MODE=$(_prov_mode "$DEST4")
-SNAP4=$(mktemp)
+SNAP4=$(mktemp "$SUITE_TMP/SNAP4.XXXXXX") || exit 1
 cp -p "$DEST4" "$SNAP4"
 # simulate adopt.sh's real overwrite (copy_recorded): new bytes, new mode
 printf '#!/bin/sh\necho himmel-installed-script\n' > "$DEST4"
@@ -161,7 +161,7 @@ new_case red5
 mkdir -p "$CASE_DIR/cwd/scripts"
 DEST5="$CASE_DIR/cwd/scripts/bar.sh"
 printf '#!/bin/sh\necho original-user-script\n' > "$DEST5"
-SNAP5=$(mktemp)
+SNAP5=$(mktemp "$SUITE_TMP/SNAP5.XXXXXX") || exit 1
 cp -p "$DEST5" "$SNAP5"
 printf '#!/bin/sh\necho himmel-installed-script\n' > "$DEST5"
 ( prov_begin --writer adopt.sh -- seed-red5 >/dev/null

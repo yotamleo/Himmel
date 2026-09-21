@@ -103,7 +103,7 @@ reset
 prov_begin --iid C1 --writer t
 printf 'v1\n' > "$w/f.txt"
 prov_record create file "$w/f.txt" --pre-absent --post-file "$w/f.txt" --scope user --class code
-snap1=$(mktemp); cp "$w/f.txt" "$snap1"
+snap1=$(mktemp "$td/snap1.XXXXXX") || exit 1; cp "$w/f.txt" "$snap1"
 printf 'v2\n' > "$w/f.txt"
 prov_record replace file "$w/f.txt" --pre-file "$snap1" --backup --post-file "$w/f.txt" --scope user --class code
 prov_record noop file "$w/f.txt" --scope user --class code   # must not change the fold
@@ -122,7 +122,7 @@ rm -f "$snap1"
 reset
 prov_begin --iid R1 --writer t
 printf 'orig\n' > "$w/r.txt"; chmod 640 "$w/r.txt"
-snap2=$(mktemp); cp -p "$w/r.txt" "$snap2"
+snap2=$(mktemp "$td/snap2.XXXXXX") || exit 1; cp -p "$w/r.txt" "$snap2"
 printf 'newer\n' > "$w/r.txt"; chmod 644 "$w/r.txt"
 prov_record replace file "$w/r.txt" --pre-file "$snap2" --backup --post-file "$w/r.txt" --scope user --class code
 prov_end ok
@@ -393,11 +393,11 @@ prov_read_cleanup
 reset
 prov_begin --iid PB1 --writer t
 printf 'one\n' > "$w/b1.txt"
-snap3=$(mktemp); cp "$w/b1.txt" "$snap3"
+snap3=$(mktemp "$td/snap3.XXXXXX") || exit 1; cp "$w/b1.txt" "$snap3"
 printf 'one-new\n' > "$w/b1.txt"
 prov_record replace file "$w/b1.txt" --pre-file "$snap3" --backup --post-file "$w/b1.txt" --scope user --class code
 printf 'two\n' > "$w/b2.txt"
-snap4=$(mktemp); cp "$w/b2.txt" "$snap4"
+snap4=$(mktemp "$td/snap4.XXXXXX") || exit 1; cp "$w/b2.txt" "$snap4"
 printf 'two-new\n' > "$w/b2.txt"
 prov_record replace file "$w/b2.txt" --pre-file "$snap4" --backup --post-file "$w/b2.txt" --scope user --class code
 prov_end ok
