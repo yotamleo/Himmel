@@ -232,7 +232,7 @@ else
     assert_fail "expected rtk git rewrite without a payload cwd, got: $out"
 fi
 # The no-jq fallback must reach the same verdict (cwd extracted by grep+sed).
-gitwt_dir=$(mktemp -d)
+gitwt_dir=$(mktemp -d "${TMPDIR:-/tmp}/rtk-guard-gitwt.XXXXXX")
 printf '#!/usr/bin/env bash\nexit 1\n' > "$gitwt_dir/jq"
 cat > "$gitwt_dir/rtk" <<'STUB'
 #!/usr/bin/env bash
