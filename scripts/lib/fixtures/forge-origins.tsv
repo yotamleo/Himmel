@@ -50,3 +50,5 @@ bitbucket	git@bitbucket.org:github.com/x.git
 none	https://notgithub.com/o/r.git
 none	https://github.com.example.net/o/r.git
 none	https://gitlab.com/github.com/o/r.git
+none	github.com/repo.git
+none	bitbucket.org/repo.git

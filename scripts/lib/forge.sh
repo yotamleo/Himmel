@@ -38,16 +38,22 @@ _forge_origin_host() {
     local u rest authority scheme
     u=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
     scheme="${u%%://*}"
+    authority=""
     case "$u" in
         *://*)
             # A real scheme is [a-z0-9+.-]+ — `git@host:p/x://y` is scp-like, not a URL.
             case "$scheme" in
-                ''|*[!a-z0-9+.-]*) authority="${u%%[:/]*}" ;;
+                ''|*[!a-z0-9+.-]*) ;;
                 *) rest="${u#*://}"; authority="${rest%%/*}" ;;
             esac
             ;;
-        *) authority="${u%%[:/]*}" ;;
     esac
+    if [ -z "$authority" ]; then
+        # scp-like needs a `:` before the first `/`; `github.com/r.git` is a local path.
+        case "${u%%/*}" in
+            *:*) authority="${u%%:*}" ;;
+        esac
+    fi
     authority="${authority##*@}"   # drop userinfo
     printf '%s' "${authority%%:*}" # drop :port
 }
