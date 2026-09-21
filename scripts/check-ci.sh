@@ -437,8 +437,9 @@ _required_status() {
 _join_by_status() { printf '%s\n' "$2" | awk -F'\t' -v s="$1" '$1 == s { print $2 }' | paste -sd, - | sed 's/,/, /g'; }
 
 # required_gate <wait> — 1 = a missing required check may register within
-# --grace (the stated bound, the same one "no checks registered" already uses);
-# 0 = it had its window, refuse now. Runs BEFORE the watch (fail fast) and after
+# --grace (the stated bound, the same one "no checks registered" already uses) and
+# is deferred to the watch while any check is still pending; 0 = it had its
+# window, refuse now. Runs BEFORE the watch (fail fast) and after
 # the settle round.
 required_gate() {
     local wait_ok="$1" reqs rows st missing failed req_start tries=0 max_tries
@@ -466,6 +467,13 @@ required_gate() {
         fi
         missing=$(_join_by_status missing "$st")
         [ -n "$missing" ] || return 0
+        # A required job held by `needs:` (an aggregator behind pending shards) is
+        # not listed until its dependencies finish, so "missing" while another
+        # check is still pending is not yet "never reported": leave it to the
+        # watch; the post-settle call (wait 0) is the one that refuses.
+        if [ "$wait_ok" -eq 1 ] && printf '%s\n' "$rows" | awk -F'\t' '$1 == "pending" { f = 1 } END { exit !f }'; then
+            return 0
+        fi
         tries=$((tries + 1))
         if [ "$wait_ok" -ne 1 ] || [ $((SECONDS - req_start)) -ge "$GRACE" ] || [ "$tries" -ge "$max_tries" ]; then
             echo "check-ci: BLOCKED — required check(s) never reported within ${GRACE}s: $missing. GitHub will refuse this merge; is the workflow configured for this branch, or did it not trigger? (HIMMEL-3381, exit 5)" >&2

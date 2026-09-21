@@ -525,10 +525,15 @@ case " $* " in
                     *'\(.bucket)\t\(.name)'*)
                         # late:<n>     first read lacks <n>, later reads carry it green
                         # flipfail:<n> first read has <n> pending, later reads carry it failed
+                        # pendlate:<n> first read: another check pending and <n> absent (a job
+                        #              held by needs:), later reads: all green incl. <n>
+                        # pendstuck:<n> another check pending and <n> absent on every read
                         rq=$(cat "$(dirname "$0")/reqrows-count" 2>/dev/null); rq=${rq:-0}
                         echo $((rq+1)) > "$(dirname "$0")/reqrows-count"
                         case "${GH_STUB_CHECKS:-pass:unit-tests}" in
                             late:*) printf 'pass\tunit-tests\n'; [ "$rq" -eq 0 ] || printf 'pass\t%s\n' "${GH_STUB_CHECKS#late:}" ;;
+                            pendlate:*) printf 'pass\tunit-tests\n'; if [ "$rq" -eq 0 ]; then printf 'pending\tshard-1\n'; else printf 'pass\tshard-1\npass\t%s\n' "${GH_STUB_CHECKS#pendlate:}"; fi ;;
+                            pendstuck:*) printf 'pass\tunit-tests\npending\tshard-1\n' ;;
                             flipfail:*) if [ "$rq" -eq 0 ]; then printf 'pending\t%s\n' "${GH_STUB_CHECKS#flipfail:}"; else printf 'fail\t%s\n' "${GH_STUB_CHECKS#flipfail:}"; fi ;;
                             *) printf '%s\n' "${GH_STUB_CHECKS:-pass:unit-tests}" | while IFS=: read -r b n; do printf '%s\t%s\n' "$b" "$n"; done ;;
                         esac
@@ -2348,7 +2353,22 @@ run red
 assert_rc 1 "3381-l a required check failing in the watch exits 1"
 if [ "$(alert_count)" = 1 ]; then pass "3381-l one alert for a required check that failed in the watch"; else fail "3381-l one alert for a required check that failed in the watch" "count=$(alert_count)"; fi
 
+# 3381-m — a required check GitHub has not registered YET because it is held by
+# needs: (an aggregator behind pending shards) is not refused while any other check
+# is still pending, even with --grace 0: the watch settles the shards first.
+RULES_OVERRIDE="req:agg"; CHECKS_OVERRIDE="pendlate:agg"
+run cr-completed --grace 0
+assert_rc 0 "3381-m a missing required check is not refused while another check is pending"
+if [ "$(alert_count)" = 0 ]; then pass "3381-m no alert for a check held behind pending jobs"; else fail "3381-m no alert for a check held behind pending jobs" "count=$(alert_count)"; fi
+
+# 3381-n — control: the same check STILL absent after the watch is refused (the
+# deferral never certifies a green GitHub would block).
+RULES_OVERRIDE="req:agg"; CHECKS_OVERRIDE="pendstuck:agg"
+run cr-completed --grace 0
+assert_rc 5 "3381-n a required check still missing after the watch exits 5"
+assert_err_has "agg" "3381-n the refusal names the missing required check"
+
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 149 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 149"; exit 1; fi
+if [ "$COUNT" -ne 151 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 151"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1

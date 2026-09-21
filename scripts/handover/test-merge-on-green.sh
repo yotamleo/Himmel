@@ -385,6 +385,7 @@ case "$verb" in
     "pr merge")
         [ "${STUB_MERGE_POLICY_REFUSED:-0}" = "1" ] && { echo "Pull request $nwo#77 is not mergeable: the base branch policy prohibits the merge." >&2; exit 1; }
         [ "${STUB_MERGE_REQUIRED_CHECK:-0}" = "1" ] && { echo "Pull request $nwo#77 is not mergeable: Required status check \"codeowner-review-gate\" is expected." >&2; exit 1; }
+        [ "${STUB_MERGE_BASE_MODIFIED:-0}" = "1" ] && { echo "GraphQL: Base branch was modified. Review and try the merge again. (mergePullRequest)" >&2; exit 1; }
         [ "${STUB_MERGE_FAIL:-0}" = "1" ] && { echo "merge conflict / head moved" >&2; exit 1; }
         echo "merged"
         ;;
@@ -1065,6 +1066,14 @@ assert_merge_has "policy rejection: merge was attempted" "pr merge 77 --repo own
 assert_audit_has "policy rejection: deterministic refusal" "REFUSED reason=policy-refused"
 assert_audit_lacks "policy rejection: never pending-unconfirmed" "INDETERMINATE"
 assert_err_has "policy rejection: surfaces GitHub's refusal" "base branch policy prohibits the merge"
+
+# HIMMEL-3381 (console data point, #1055): "Base branch was modified" is GitHub's
+# TRANSIENT refusal — the PR is still OPEN at the same head and a bare re-run
+# merges. It is NOT a rule, so it stays on exit 15 (indeterminate), never 18.
+STUB_MERGE_BASE_MODIFIED=1 STUB_POST_STATE=OPEN run_mog 15 "'Base branch was modified' + PR OPEN → exit 15, not a policy block (HIMMEL-3381)"
+assert_audit_has "base-modified: recorded as INDETERMINATE" "INDETERMINATE reason=merge-pending-unconfirmed"
+assert_audit_lacks "base-modified: never a policy refusal" "REFUSED"
+assert_err_lacks "base-modified: no MERGE-BLOCKED alert" "MERGE-BLOCKED"
 
 # 11b. gh exited non-zero but the PR is MERGED at the certified sha/base →
 # success (exit 0), audited with the gh exit for the record. (Historically the
