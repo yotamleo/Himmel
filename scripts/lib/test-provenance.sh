@@ -269,6 +269,14 @@ case "$(uname -s)" in
         ;;
 esac
 
+# a hasher that fails must fail the record, never write an empty sha (no pipefail in this shell)
+rm -rf "$HIMMEL_PROVENANCE_DIR"
+mkdir -p "$tmp/badsha"; printf '#!/bin/sh\nexit 1\n' > "$tmp/badsha/sha256sum"; chmod +x "$tmp/badsha/sha256sum"
+( PATH="$tmp/badsha:$PATH"; prov_record create file "$w/a.txt" --post-file "$w/a.txt" 2>/dev/null ); check "failing sha256sum on a file → rc 1" "$?" "1"
+( PATH="$tmp/badsha:$PATH"; prov_record replace json-key "$w/s.json" --unit k --post-json '{"a":1}' 2>/dev/null ); check "failing sha256sum on json → rc 1" "$?" "1"
+n=$(grep -sc '"sha":""' "$ledger"); check "failing sha256sum left no row with an empty sha" "${n:-0}" "0"
+check "failing sha256sum left no artifact row" "$(jq -r .op "$ledger" 2>/dev/null | grep -vc 'install-')" "0"
+
 # op / kind are exact tokens, not substrings of the vocabulary list
 rm -rf "$HIMMEL_PROVENANCE_DIR"
 prov_record "create replace" file "$w/a.txt" 2>/dev/null; check "quoted two-word op → rc 2" "$?" "2"

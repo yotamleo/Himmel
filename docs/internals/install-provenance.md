@@ -129,6 +129,9 @@ scratch `HOME` and never touches the real `~/.himmel`.
   that does not parse, so the cost is one lost row.
 - A backslash in a path is a separator only on Windows; on POSIX it is a legal
   filename character and is recorded as given.
+- The PowerShell dialect is for Windows writers. Its exclusive append handle
+  excludes other Windows writers, but on Unix it is only an advisory lock the
+  bash and node writers ignore, so do not mix it with them on one Unix ledger.
 - The PowerShell dialect could not be executed where it was written; it is held
   to the same rows by construction and by the pwsh-gated test block. On Windows
   it omits `mode` and does not resolve symlinked parents or 8.3 short names.

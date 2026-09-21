@@ -85,8 +85,14 @@ _prov_abs_path() {
 }
 
 _prov_sha_stdin() {
-    if command -v sha256sum >/dev/null 2>&1; then sha256sum | awk '{print $1}'
-    else shasum -a 256 | awk '{print $1}'; fi
+    # no `| awk`: a pipeline reports awk's status, so a failed hasher would yield an
+    # empty sha with rc 0 in a shell without pipefail
+    local out
+    if command -v sha256sum >/dev/null 2>&1; then out=$(sha256sum) || return 1
+    else out=$(shasum -a 256) || return 1; fi
+    out=${out%% *}
+    [ -n "$out" ] || return 1
+    printf '%s' "$out"
 }
 
 prov_sha_file() { _prov_sha_stdin < "$1"; }
@@ -232,12 +238,13 @@ _prov_body() {
             jq -nc --arg sha "$sha" --argjson size "$size" --arg mode "$mode" '{sha:$sha,size:$size,mode:$mode}'
             ;;
         text)
-            jq -nc --arg sha "$(prov_sha_text "$sval")" '{sha:$sha}'
+            sha=$(prov_sha_text "$sval") || return 1
+            jq -nc --arg sha "$sha" '{sha:$sha}'
             ;;
         json)
             c=$(_prov_json_canon "$sval") || { _prov_err "not valid JSON: $sval"; return 1; }
             case "$kind" in
-                json-key|json-elem) jq -nc --arg sha "$(prov_sha_text "$c")" '{sha:$sha}' ;;
+                json-key|json-elem) sha=$(prov_sha_text "$c") || return 1; jq -nc --arg sha "$sha" '{sha:$sha}' ;;
                 *) jq -nc --argjson v "$c" '{value:$v}' ;;
             esac
             ;;

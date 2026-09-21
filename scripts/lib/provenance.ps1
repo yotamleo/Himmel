@@ -28,6 +28,10 @@
 #     key is OMITTED from pre/post (bash on Git Bash would report an emulated one).
 #   * parent-chain path resolution is Resolve-Path only: symlinked parents and
 #     8.3 short names are not resolved (bash resolves them with pwd -P/cygpath).
+#   * the ledger append takes an exclusive FileShare.None handle: that excludes other
+#     .NET/Windows writers, but on Unix .NET only takes an advisory lock the bash and
+#     node writers never look at, so a ps1 writer is not serialised against them there.
+#     This dialect exists for Windows writers; do not mix it with bash/node on one Unix ledger.
 #   * no jq on PATH: canonicalisation falls back to ConvertFrom-Json + a sorted
 #     re-serialiser, which diverges from `jq -cS` on non-canonical number literals
 #     (1.0, 1E+2, integers past 2^63) and non-BMP key order.
@@ -47,7 +51,7 @@ $script:ProvRoot = _ProvFwd ((Resolve-Path -LiteralPath (Join-Path $PSScriptRoot
 
 function _ProvFail([string]$Msg) { throw "provenance: $Msg" }
 
-# ── encoding: exactly what `jq -c` emits ────────────────────────────────
+# -- encoding: exactly what `jq -c` emits --------------------------------
 function _ProvStr([string]$s) {
     $sb = [System.Text.StringBuilder]::new()
     [void]$sb.Append('"')
@@ -104,11 +108,14 @@ function _ProvJqCanon([string]$Text) {
         $psi.RedirectStandardError = $true
         $psi.StandardOutputEncoding = $script:ProvUtf8
         $p = [System.Diagnostics.Process]::Start($psi)
+        # drain stdout/stderr while stdin is being written, or a large input can fill jq's output pipe
+        $outTask = $p.StandardOutput.ReadToEndAsync()
+        $errTask = $p.StandardError.ReadToEndAsync()
         $bytes = $script:ProvUtf8.GetBytes($Text)
-        $p.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
-        $p.StandardInput.Close()
-        $out = $p.StandardOutput.ReadToEnd()
-        [void]$p.StandardError.ReadToEnd()
+        try { $p.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length) } catch [System.IO.IOException] { } # jq exited early on invalid input
+        try { $p.StandardInput.Close() } catch [System.IO.IOException] { }
+        $out = $outTask.GetAwaiter().GetResult()
+        [void]$errTask.GetAwaiter().GetResult()
         $p.WaitForExit()
         if ($p.ExitCode -ne 0) { return $null }
         # CRLF-safe (jq.exe on Windows may end lines with \r\n); one JSON document only:
@@ -133,7 +140,7 @@ function _ProvShaBytes([byte[]]$Bytes) {
 function _ProvShaText([string]$s) { return (_ProvShaBytes $script:ProvUtf8.GetBytes($s)) }
 function _ProvShaFile([string]$f) { return (_ProvShaBytes ([System.IO.File]::ReadAllBytes($f))) }
 
-# ── paths ───────────────────────────────────────────────────────────────
+# -- paths ---------------------------------------------------------------
 function _ProvCanonPartial([string]$p) {
     if (-not $p) { _ProvFail 'cannot resolve an empty path' }
     $p = _ProvFwd $p
@@ -171,7 +178,7 @@ function Get-ProvLedgerDir {
 }
 function Get-ProvLedgerPath { return ((Get-ProvLedgerDir) + '/provenance.jsonl') }
 
-# ── misc ────────────────────────────────────────────────────────────────
+# -- misc ----------------------------------------------------------------
 function _ProvNow {
     if ($env:HIMMEL_PROVENANCE_NOW) { return $env:HIMMEL_PROVENANCE_NOW }
     return (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ', [System.Globalization.CultureInfo]::InvariantCulture)
@@ -231,7 +238,7 @@ function _ProvAppend([string]$Line) {
     catch { _ProvFail "cannot append to ${file}: $($_.Exception.Message)" }
 }
 
-# ── rows ────────────────────────────────────────────────────────────────
+# -- rows ----------------------------------------------------------------
 function _ProvBeginRow([string]$Iid, [string]$Writer, [string]$Target, [string]$Root, [string[]]$Argv) {
     $head = ''
     $g = & git -C $Root rev-parse HEAD 2>$null
@@ -257,7 +264,7 @@ function _ProvEndRow([string]$Iid, [string]$Status, [string]$Step) {
             @('status', (_ProvStr $Status)), @('failed_step', (_ProvStrOrNull $Step))))
 }
 
-# ── sessions ────────────────────────────────────────────────────────────
+# -- sessions ------------------------------------------------------------
 function Prov-Begin {
     param([string]$Writer = '', [string]$Target = '', [string]$Root = '', [string]$Iid = '', [string[]]$Argv = @(), [switch]$DryRun)
     if ($DryRun -or (_ProvIsDry)) { return }
@@ -275,7 +282,7 @@ function Prov-Begin {
 # Closes the session THIS process opened; a no-op for a child that only inherited the id.
 function Prov-End {
     param([Parameter(Mandatory, Position = 0)][string]$Status, [Parameter(Position = 1)][string]$FailedStep = '')
-    if (@('ok', 'failed', 'partial') -notcontains $Status) { _ProvFail 'prov_end: status must be ok|failed|partial' }
+    if (@('ok', 'failed', 'partial') -cnotcontains $Status) { _ProvFail 'prov_end: status must be ok|failed|partial' }
     if (_ProvIsDry) { return }
     $iid = $env:HIMMEL_PROVENANCE_IID
     if (-not $iid -or $script:ProvOwns -ne $iid) { return }
@@ -285,7 +292,7 @@ function Prov-End {
     $script:ProvOwns = $null
 }
 
-# ── artifact rows ───────────────────────────────────────────────────────
+# -- artifact rows -------------------------------------------------------
 function _ProvBody([string]$Kind, [string]$Type, [string]$Val) {
     if ($Type -eq 'file') {
         if (-not (Test-Path -LiteralPath $Val -PathType Leaf)) { _ProvFail "not a file: $Val" }
@@ -348,16 +355,16 @@ function Prov-Record {
         [string]$PostFile, [string]$PostJson, [string]$PostText,
         [switch]$Backup, [switch]$DryRun
     )
-    if ($script:ProvOps -notcontains $Op) { _ProvFail "prov_record: unknown op '$Op'" }
-    if ($script:ProvKinds -notcontains $Kind) { _ProvFail "prov_record: unknown kind '$Kind'" }
-    if ($Scope -and $script:ProvScopes -notcontains $Scope) { _ProvFail "prov_record: bad scope '$Scope'" }
-    if ($Class -and $script:ProvClasses -notcontains $Class) { _ProvFail "prov_record: bad class '$Class'" }
+    if ($script:ProvOps -cnotcontains $Op) { _ProvFail "prov_record: unknown op '$Op'" }
+    if ($script:ProvKinds -cnotcontains $Kind) { _ProvFail "prov_record: unknown kind '$Kind'" }
+    if ($Scope -and $script:ProvScopes -cnotcontains $Scope) { _ProvFail "prov_record: bad scope '$Scope'" }
+    if ($Class -and $script:ProvClasses -cnotcontains $Class) { _ProvFail "prov_record: bad class '$Class'" }
 
     $fields = [ordered]@{}
     if ($Field) {
         foreach ($k in $Field.Keys) {
             if ($k -cnotmatch '^[a-z_][a-z0-9_]*$') { _ProvFail "prov_record: bad field key '$k'" }
-            if ($script:ProvReserved -contains $k) { _ProvFail "prov_record: field key '$k' is reserved" }
+            if ($script:ProvReserved -ccontains $k) { _ProvFail "prov_record: field key '$k' is reserved" }
             $c = _ProvJqCanon ([string]$Field[$k])
             if ($null -eq $c) { _ProvFail "prov_record: --field $k is not valid JSON" }
             $fields[$k] = $c
@@ -374,7 +381,7 @@ function Prov-Record {
     if ($bound.ContainsKey('PostFile')) { $postT = 'file'; $postV = $PostFile }
     if ($bound.ContainsKey('PostJson')) { $postT = 'json'; $postV = $PostJson }
     if ($bound.ContainsKey('PostText')) { $postT = 'text'; $postV = $PostText }
-    if ($Backup -and @('file', 'json', 'text') -notcontains $preT) {
+    if ($Backup -and @('file', 'json', 'text') -cnotcontains $preT) {
         _ProvFail 'prov_record: --backup needs -PreFile, -PreJson or -PreText'
     }
     if ($DryRun -or (_ProvIsDry)) { Write-Output "DRY: record $Op $Kind $Path"; return }
