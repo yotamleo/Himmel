@@ -27,6 +27,8 @@ command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not on PATH"; echo "$(basename
 FAILED=0
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
+# HIMMEL-3332: install-plugins.sh now writes the install-provenance ledger; keep it in scratch, never the real ~/.himmel.
+export HIMMEL_PROVENANCE_DIR="$TMP/provenance"
 
 fail() { echo "FAIL: $1"; FAILED=$((FAILED + 1)); }
 

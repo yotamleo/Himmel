@@ -90,7 +90,8 @@ base_manifest() {
       "scopes": ["project"],
       "profiles": ["core", "all"],
       "deps": [],
-      "probe": { "type": "file-exists", "path": "a.txt" }
+      "probe": { "type": "file-exists", "path": "a.txt" },
+      "provenance": { "kinds": ["file"] }
     },
     {
       "id": "b",
@@ -98,7 +99,8 @@ base_manifest() {
       "scopes": ["project"],
       "profiles": ["core", "all"],
       "deps": ["a"],
-      "probe": { "type": "file-exists", "path": "b.txt" }
+      "probe": { "type": "file-exists", "path": "b.txt" },
+      "provenance": { "kinds": ["file"] }
     }
   ]
 }
@@ -391,5 +393,74 @@ errQ3=$(run_lint "$caseQ_valid" 2>&1); rcQ3=$?
 set -e
 [ "$rcQ3" -eq 0 ] || fail "case q: a valid boolean probe.expect paired with singular 'key' should lint clean (got rc=$rcQ3): $errQ3"
 echo "ok: case q (part 3) — probe.expect:true paired with singular 'key' is accepted"
+
+# ── cases r-w: provenance.kinds (HIMMEL-3332 S11) ──────────────────────────
+# Every item uninstall would tear down (offboard 'unwire', the default when the
+# field is absent) must name the ledger kinds its writers record, so the ledger
+# reader has a manifest row to hold the writers to. advise/keep items write
+# nothing himmel removes: kinds are optional there but shape-checked when set.
+prov_kinds_sh=$(sed -n 's/^_PROV_KINDS="\(.*\)"$/\1/p' "$repo_root/scripts/lib/provenance.sh" | tr -s ' ' | sed 's/^ //;s/ $//')
+[ -n "$prov_kinds_sh" ] || fail "case r: could not read _PROV_KINDS from scripts/lib/provenance.sh"
+
+caseR="$work/case-r.json"
+mutate_base "$caseR" "delete m.items[0].provenance;"
+set +e
+errR=$(run_lint "$caseR" 2>&1); rcR=$?
+set -e
+[ "$rcR" -eq 1 ] || fail "case r: an unwire item with no provenance.kinds should exit 1 (got rc=$rcR): $errR"
+grepq "$errR" "a:" || fail "case r: error should name item 'a' (got: $errR)"
+grepq "$errR" -F "provenance.kinds" || fail "case r: error should name provenance.kinds (got: $errR)"
+echo "ok: case r — an unwire item without provenance.kinds exits 1"
+
+caseS="$work/case-s.json"
+mutate_base "$caseS" "m.items[0].provenance = { kinds: [] };"
+set +e
+errS=$(run_lint "$caseS" 2>&1); rcS=$?
+set -e
+[ "$rcS" -eq 1 ] || fail "case s: provenance.kinds:[] should exit 1 (got rc=$rcS): $errS"
+grepq "$errS" -F "provenance.kinds" || fail "case s: error should name provenance.kinds (got: $errS)"
+echo "ok: case s — an empty provenance.kinds exits 1"
+
+caseT="$work/case-t.json"
+mutate_base "$caseT" "m.items[0].provenance = { kinds: ['file', 'bogus'] };"
+set +e
+errT=$(run_lint "$caseT" 2>&1); rcT=$?
+set -e
+[ "$rcT" -eq 1 ] || fail "case t: an unknown kind should exit 1 (got rc=$rcT): $errT"
+grepq "$errT" -F "'bogus'" || fail "case t: error should name the unknown kind (got: $errT)"
+# The lint's vocabulary must equal the helper's: a kind the lint rejects but
+# prov_record accepts (or the reverse) is drift. Compare the two lists.
+lint_kinds=$(sed -n "s/.*provenance.kinds entry 'bogus' not in \[\(.*\)\].*/\1/p" <<< "$errT" | head -n 1 | tr -d ',')
+# shellcheck disable=SC2086 # the kind lists are space-separated words on purpose
+[ "$(printf '%s\n' $lint_kinds | LC_ALL=C sort | tr '\n' ' ')" = "$(printf '%s\n' $prov_kinds_sh | LC_ALL=C sort | tr '\n' ' ')" ] \
+  || fail "case t: lint's kind vocabulary [$lint_kinds] differs from scripts/lib/provenance.sh [$prov_kinds_sh]"
+echo "ok: case t — an unknown kind exits 1, and the lint vocabulary equals provenance.sh's"
+
+caseU="$work/case-u.json"
+mutate_base "$caseU" "m.items[0].provenance = { kinds: ['file'], extra: 1 };"
+set +e
+errU=$(run_lint "$caseU" 2>&1); rcU=$?
+set -e
+[ "$rcU" -eq 1 ] || fail "case u: an extra provenance key should exit 1 (got rc=$rcU): $errU"
+grepq "$errU" -F "extra" || fail "case u: error should name the extra key (got: $errU)"
+echo "ok: case u — an unknown key inside provenance exits 1 (closed shape)"
+
+# shellcheck disable=SC2086 # space-separated kind words on purpose
+kinds_js=$(printf "'%s'," $prov_kinds_sh)
+caseV="$work/case-v.json"
+mutate_base "$caseV" "m.items[0].provenance = { kinds: [$kinds_js] }; m.items[1].offboard = 'advise'; delete m.items[1].provenance;"
+set +e
+errV=$(run_lint "$caseV" 2>&1); rcV=$?
+set -e
+[ "$rcV" -eq 0 ] || fail "case v: every helper kind, plus an advise item with no provenance, should lint clean (got rc=$rcV): $errV"
+echo "ok: case v — every provenance.sh kind is accepted; an advise item needs no provenance"
+
+caseW="$work/case-w.json"
+mutate_base "$caseW" "m.items[1].offboard = 'advise'; m.items[1].provenance = { kinds: 'file' };"
+set +e
+errW=$(run_lint "$caseW" 2>&1); rcW=$?
+set -e
+[ "$rcW" -eq 1 ] || fail "case w: a malformed provenance on an advise item should still exit 1 (got rc=$rcW): $errW"
+echo "ok: case w — provenance is shape-checked wherever it appears"
 
 echo "PASS"

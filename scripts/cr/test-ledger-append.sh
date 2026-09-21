@@ -583,12 +583,12 @@ check "  ...only the first write landed (no silent overwrite)" "$(wc -l < "$TXD"
 
 # Same divergence check via the --batch-file producer path.
 TXDB="$tmp/text-diverge-batch.jsonl"; : > "$TXDB"
-TXDBF1="$tmp/text-diverge-batch-1.jsonl"
-TXDBF2="$tmp/text-diverge-batch-2.jsonl"
-printf '{"branch":"b","head":"%s","model":"coderabbit","id":"coderabbit-2","severity":"crit","file":"f.txt","line":5,"verdict":"","text":"finding A text"}\n' "$GIT_FULL" > "$TXDBF1"
-printf '{"branch":"b","head":"%s","model":"coderabbit","id":"coderabbit-2","severity":"crit","file":"f.txt","line":5,"verdict":"","text":"finding B text (different)"}\n' "$GIT_FULL" > "$TXDBF2"
-CR_LEDGER="$TXDB" bash "$LA" finding --batch-file "$TXDBF1"
-CR_LEDGER="$TXDB" bash "$LA" finding --batch-file "$TXDBF2" 2>"$tmp/txdb.err"
+TXDBG1="$tmp/text-diverge-batch-1.jsonl"
+TXDBG2="$tmp/text-diverge-batch-2.jsonl"
+printf '{"branch":"b","head":"%s","model":"coderabbit","id":"coderabbit-2","severity":"crit","file":"f.txt","line":5,"verdict":"","text":"finding A text"}\n' "$GIT_FULL" > "$TXDBG1"
+printf '{"branch":"b","head":"%s","model":"coderabbit","id":"coderabbit-2","severity":"crit","file":"f.txt","line":5,"verdict":"","text":"finding B text (different)"}\n' "$GIT_FULL" > "$TXDBG2"
+CR_LEDGER="$TXDB" bash "$LA" finding --batch-file "$TXDBG1"
+CR_LEDGER="$TXDB" bash "$LA" finding --batch-file "$TXDBG2" 2>"$tmp/txdb.err"
 check "batch mode: a second producer write with DIFFERENT text under the same id still refuses" "$?" "3"
 check "  ...only the first write landed (batch path)" "$(wc -l < "$TXDB" | tr -d ' ')" "1"
 
@@ -1228,5 +1228,59 @@ check "argv avail --reason: Bearer<tok> is redacted" "$(rs_field avail - reason)
 CR_LEDGER="$RSL" bash "$LA" delegation --branch b --head "$RSH" --reason "handed off Bearer $_c_tok"
 check "argv delegation --reason: Bearer<tok> is redacted" "$(rs_field delegation - reason)" "handed off Bearer [REDACTED]"
 check "no raw token reached the ledger file at any entry point" "$(grep -c "$_c_tok" "$RSL")" "0"
+
+# ── HIMMEL-3340: a `disproved` verdict whose evidence is a shell/platform
+# measurement must name the binary AND version it ran against. An agreed
+# verdict that is wrong costs a wasted fix; a disproved one that is wrong closes
+# the question for good (four dash-drops-dot-operands rows were disproved on a
+# busybox ash measurement, which is not a dash substitute).
+DB="$tmp/disproval-bar.jsonl"; : > "$DB"
+for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  CR_LEDGER="$DB" bash "$LA" finding --branch b --head DBH --model codex --id "codex-$_i" --severity imp --file f --line 3 --verdict ""
+done
+db_rows() { grep -c '"kind":"amend"' "$DB" | tr -d ' '; }
+# db_amend <n> <verdict> <reason...>: amend codex-<n>, print rc, rows unchanged/added left to the caller.
+db_amend() { _n="$1"; _v="$2"; shift 2; CR_LEDGER="$DB" bash "$LA" amend --head DBH --id "codex-$_n" --set "verdict=$_v" --reason "$*" 2>"$tmp/db.err"; }
+
+db_amend 1 disproved "measured on busybox ash: . probe AAA BBB -> count=2"
+check "disproved on an unversioned busybox ash measurement is refused" "$?" "2"
+check "the refused disproval wrote NO amend row" "$(db_rows)" "0"
+check "the refusal names the missing binary+version" "$(grep -c 'binary and version' "$tmp/db.err")" "1"
+db_amend 1 disproved "measured on dash 0.5.13.4-1.1 (pacman): . probe AAA BBB -> count=0"
+check "control: the same disproval naming dash 0.5.13.4-1.1 is accepted" "$?" "0"
+db_amend 2 disproved "measured on busybox ash 1.36.1: count=2"
+check "control: multi-word name 'busybox ash 1.36.1' is ONE versioned name" "$?" "0"
+db_amend 3 disproved "adjudicated by /pr-check step 4.5"
+check "control: the generic step-4.5 reason (no measurement) is accepted" "$?" "0"
+db_amend 4 agreed "measured on busybox ash: count=2"
+check "control: the same unversioned text with verdict=agreed is accepted (bar is disproved-only)" "$?" "0"
+db_amend 5 disproved "measured on bash 5.3 and busybox ash: count=2"
+check "every named shell needs a version: bash 5.3 does not cover a bare busybox ash" "$?" "2"
+db_amend 5 disproved "measured on bash under set -u, empty array"
+check "a bare 'bash' measurement is refused" "$?" "2"
+for _w in "a dashboard" "a hash table" "the crash path" "the flash step" "an ashtray"; do
+  db_amend 6 disproved "measured $_w"
+  check "control: '$_w' is not a shell name (whole-word match)" "$?" "0"
+done
+db_amend 7 disproved "verified under sh: count=2"
+check "documented limit: bare sh and 'verified' alone are not flagged" "$?" "0"
+db_amend 8 disproved "reproduced on git-bash under Windows"
+check "git-bash is ONE name: unversioned is refused" "$?" "2"
+db_amend 8 disproved "reproduced on git-bash 2.45.1 under Windows"
+check "control: git-bash 2.45.1 is accepted" "$?" "0"
+db_amend 9 disproved "probed on macOS: date -d rejected"
+check "macOS with no version is refused" "$?" "2"
+db_amend 9 disproved "probed on macOS 14.5: date -d rejected"
+check "control: macOS 14.5 is accepted" "$?" "0"
+CR_LEDGER="$DB" bash "$LA" amend --head DBH --id codex-10 --set verdict=disproved --set reason="measured on busybox ash: count=2" --reason "why" 2>"$tmp/db.err"
+check "the evidence in --set reason= is checked too" "$?" "2"
+CR_LEDGER="$DB" bash "$LA" amend --head DBH --id codex-10 --set verdict=disproved --set reason="measured on dash 0.5.13.4-1.1: count=0" --reason "why" 2>"$tmp/db.err"
+check "control: --set reason= naming dash 0.5.13.4-1.1 is accepted" "$?" "0"
+CR_LEDGER="$DB" bash "$LA" finding --branch b --head DBG1 --model codex --id codex-11 --severity imp --file f --line 3 --verdict disproved --reason "measured on busybox ash: count=2" 2>"$tmp/db.err"
+check "finding --verdict disproved with an unversioned shell measurement is refused" "$?" "2"
+check "the refused finding wrote no row" "$(grep -c '"head":"DBG1"' "$DB")" "0"
+CR_LEDGER="$DB" bash "$LA" finding --branch b --head DBG2 --model codex --id codex-12 --severity imp --file f --line 3 --verdict disproved --reason "measured on dash 0.5.13.4-1.1: count=0" 2>"$tmp/db.err"
+check "control: finding --verdict disproved naming dash 0.5.13.4-1.1 is accepted" "$?" "0"
+check "the amend rows that were accepted are exactly the 13 controls" "$(db_rows)" "13"
 
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

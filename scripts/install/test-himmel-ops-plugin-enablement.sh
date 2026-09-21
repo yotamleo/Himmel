@@ -44,6 +44,8 @@ node_bin=$(command -v node)
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
+# HIMMEL-3332: install-plugins.sh now writes the install-provenance ledger; keep it in scratch, never the real ~/.himmel.
+export HIMMEL_PROVENANCE_DIR="$work/provenance"
 
 # winpath <path> — see test-wizard-manifest-v2.sh's own header.
 winpath() {

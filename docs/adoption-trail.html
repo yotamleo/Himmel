@@ -611,6 +611,14 @@ node ~/himmel/scripts/himmelctl/bin.js uninstall</pre>
           in place with no record of which files or edits are himmel's, so
           the uninstaller will not guess; delete them with git if you do not
           want them.</li>
+          <li>Caches other tools wrote while himmel ran &mdash; npm's
+          <span class="mono">~/.npm/_cacache</span>, node-gyp's
+          <span class="mono">~/.cache/node-gyp</span>, bun's
+          <span class="mono">~/.bun/install/cache</span>, the Claude CLI's
+          <span class="mono">~/.claude/plugins/cache</span> and qmd's model
+          store. They belong to those tools and himmel never recorded them,
+          so it will not remove them; clear them with the tool that owns
+          them if you want the space back.</li>
         </ul>
       </div>
     </div>

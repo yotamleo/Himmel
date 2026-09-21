@@ -202,6 +202,17 @@ in the block that computes it. `scripts/cr/test-pr-check-pair.sh` check (ii)
 REJECTS the `"$himmel_dir/scripts/..."` spelling outright rather than
 accepting it as a legitimate alternative.
 
+**Himmel-lane spelling — drop the absolute prefix (HIMMEL-3338).** The
+`"<himmel_dir>/scripts/..."` form the blocks below show is the canonical,
+adopter-safe spelling. When step 0's printed `himmel_dir=` equals `repo=` (the
+himmel lane), drop the `"<himmel_dir>/` prefix and its closing quote and run the
+cwd-relative literal `bash scripts/cr/<script>.sh <literal args>` instead: the
+Claude twin's leg allow rules match only that relative text, and keeping the
+twins in one spelling avoids a lane-dependent runbook. When they differ (the
+adopter lane) keep the absolute spelling — a relative path there would run the
+REVIEWED repo's scripts. `scripts/lanes/tests/plugin-profiles.test.mjs` pins
+the Claude twin's calls against the `leg-impl` rules.
+
 **The step-0 fence above already ran `pr-check-context.sh` — EVERY lane,
 exactly once, no `cd` before it. Do not call it again here; carry its printed
 literals forward.** A delegating re-exec REPLACES the anchor's own process
@@ -258,6 +269,14 @@ the marker and tell the operator to run the Claude `/pr-check` for docs lanes.
 Stop. Only `lane = full` or empty proceeds.
 
 ## 3. Run the panel over the diff
+
+**Operator ruling 2026-09-21 (HIMMEL-3338): the operator authorises sending
+review diffs to Codex from legs.** `panel-first-pass.sh` below is allow-listed
+for the leg profiles as a literal, so a denial on it most likely means the call
+was not spelled as one (see the himmel-lane spelling note above) — check the
+spelling first. A denial that names a deny rule or a policy restriction is not a
+spelling problem: stop and report it, never respell around it, and never skip
+the lane silently.
 
 **`scripts/cr/panel-first-pass.sh` (HIMMEL-2226) now does what this step used to
 do inline** — resolve the default branch, capture the base SHA once (HIMMEL-1984:

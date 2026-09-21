@@ -58,6 +58,32 @@ allowlisted-operator check — see the auto-action docs in
 for what's enabled and how it's authorized. A forwarded message can never
 trigger one of these commands.
 
+## Messaging a running console
+
+`/console <session-name> <text>` delivers `<text>` to a console that is already
+running — it does not start a session. The bridge appends one line to that
+console's inbox file, `<bridge root>/consoles/<session-name>.md` (default
+`~/.claude/handover/bridge/consoles/`), and the console watches the file with
+a `Monitor` armed in its ACTION ZERO. Use the console's exact session name
+(`ListAgents`, or the name it printed at launch).
+
+- **Who:** only the `allowFrom` operator, in an allowed chat, with a typed (not
+  forwarded, not captioned) message. Anyone else's `/console …` is ordinary
+  chat, exactly as before. `access.json` remains the only sender gate.
+- **Ack:** `→ console <name>` means the line was queued — not that the console
+  has read it. `⚠️ no console "<name>" is listening` means that console never
+  armed its inbox and nothing was sent; the bridge never creates the file, so
+  a typo cannot open a mailbox nobody reads.
+- **Reply:** the console answers through the same outbox as every other bridge
+  reply (`bun scripts/telegram/console-route.ts reply <chat_id> <text>`); the
+  running poller sends it.
+- **Authority:** the line carries your authority — a ruling, a halt or new
+  work, as if typed in the console's terminal. It never changes the console's
+  permissions or settings and never bypasses `merge-on-green.sh`'s own GO
+  verification.
+- **A wrapped console leaves its file behind**, so a line to one is acked but
+  read by no one; check the console is live before relying on it.
+
 ## The one-poller-per-token trap
 
 Telegram allows exactly **one** `getUpdates` consumer per bot token. Do not

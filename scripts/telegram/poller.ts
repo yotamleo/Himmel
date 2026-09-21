@@ -4,6 +4,7 @@ import { isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
 import { appendLine, atomicWrite, bridgeRoot, ensureSession, readMeta, writeMeta, sessionDir, readNewLines, repairCursorBeyondEof, truncateFullyConsumed, type Meta, type OnCursorReset } from "./bus";
 import { classify, type Route } from "./router";
+import { routeToConsole, type ConsoleRouteGate } from "./console-route";
 import { dispatchAutoAction, describeEnabledOps, KNOWN_OPS, appendAuditLine, type RunScriptFn, type AuditFields } from "./auto-action";
 import { getUpdates, getMe, sendMessage, sendChatAction, getFile, downloadFile } from "./telegram-api";
 import { installTimestampedLogging } from "./log-timestamp";
@@ -384,7 +385,7 @@ export function mentionsBot(text: string, botUsername: string): boolean {
   return bare.test(text) || cmd.test(text);
 }
 
-export async function handleInbound(root: string, msg: DeliveredMsg, run: InboundRunFn, auto?: AutoGate, triage: TriageFn = (text, sessionLabel, fromOperator) => classifyForSpawn(text, { sessionLabel, fromOperator }), isOperator: OperatorFn = () => false, notifyChat?: NotifyChatFn, requireMention: RequireMentionFn = () => false, botUsername?: string | null): Promise<void> {
+export async function handleInbound(root: string, msg: DeliveredMsg, run: InboundRunFn, auto?: AutoGate, triage: TriageFn = (text, sessionLabel, fromOperator) => classifyForSpawn(text, { sessionLabel, fromOperator }), isOperator: OperatorFn = () => false, notifyChat?: NotifyChatFn, requireMention: RequireMentionFn = () => false, botUsername?: string | null, consoleRoute?: ConsoleRouteGate): Promise<void> {
   // OPERATOR-ONLY (CR codex-adv-3). The tag is an operator instruction, and the
   // surrounding code treats it as one — but an allow-listed group WITHOUT a
   // per-group `allowFrom` admits every member, so any member could prepend
@@ -407,7 +408,7 @@ export async function handleInbound(root: string, msg: DeliveredMsg, run: Inboun
   // BOTH of them — a pure derivation, so moving it costs nothing.
   const chatSession = msg.chat_id < 0 ? `group_${msg.chat_id}` : "__chat__";
   // A non-eligible auto-command (group / caption / disabled-op) routes as chat.
-  const session = (route.kind === "chat" || route.kind === "auto") ? chatSession : ("ticket" in route ? route.ticket : chatSession);
+  const session = (route.kind === "chat" || route.kind === "auto" || route.kind === "console") ? chatSession : ("ticket" in route ? route.ticket : chatSession);
   // REQUIRE-MENTION GATE (LUNA-158). access.json's per-group `requireMention`
   // flag (gate.ts GroupPolicy) opts a group into @mention-only mode — the
   // grow-tent groups share their chat with luna_grow_bot (a hermes gateway)
@@ -433,6 +434,17 @@ export async function handleInbound(root: string, msg: DeliveredMsg, run: Inboun
       await appendLine(join(sessionDir(root, route.ticket), "stop"), String(msg.ts ?? 0));
     }
     return; // status/sessions reporting is wired in the main loop (replies via outbox)
+  }
+  // Operator -> running console (HIMMEL-3355): `/console <name> <text>` from the
+  // allowlisted operator appends one line to that console's file inbox and NEVER
+  // spawns a cold session. Same eligibility as the auto-command below — global
+  // allowFrom sender in an allowed chat (consoleRoute.authorize), genuinely typed
+  // (caption===false), not forwarded, no leading `model:` tag — and the same
+  // fall-through: any condition false ⇒ ordinary chat, exactly today's path.
+  // gate.ts stays the sole sender gate; the branch is inert unless main() wires it.
+  if (!tagged && route.kind === "console" && consoleRoute && consoleRoute.authorize(msg.from, msg.chat_id) && msg.caption === false && !msg.forwarded) {
+    await routeToConsole(root, msg, route, consoleRoute.reply);
+    return;
   }
   // Auto-command (HIMMEL-424 B2): a message AUTHORIZED by auto.authorize(from, chat_id)
   // — the sender is the allowlisted operator (global allowFrom) AND the chat is
@@ -1936,6 +1948,10 @@ export async function main(): Promise<void> {
   // the operator in a DM or an allowlisted group arms; a non-operator group member or a
   // non-allowlisted chat is refused. Self-sufficient — re-asserts the chat gate (CR S1).
   const autoGate: AutoGate = { enabledOps, authorize: (from, chat_id) => isAllowed(access, from) && allow(from, chat_id), fire: autoFire };
+  // Operator -> console routing (HIMMEL-3355). Same authorize as /arm — global
+  // allowFrom sender AND an allowed chat — so the gate is unchanged; the ack rides
+  // the per-chat outbox like every other bridge reply.
+  const consoleGate: ConsoleRouteGate = { authorize: autoGate.authorize, reply: (chat, text) => replyViaOutbox(root, chat, text) };
   // Burst coalescing (HIMMEL-1273): handleInbound requests through this instead
   // of dispatching per message, so a burst becomes ONE run.
   const coalesce = makeBurstCoalescer(dispatch);
@@ -2025,7 +2041,7 @@ export async function main(): Promise<void> {
     // the rest of the already-consumed batch with it (HIMMEL-1296 CR).
     await handleBatch(
       fresh,
-      (i) => handleInbound(root, { from: i.from, chat_id: i.chat_id, text: i.text, ts: i.ts, sender_chat: i.sender_chat, forwarded: i.forwarded, caption: i.caption, image_path: i.image_path, document_path: i.document_path, document_name: i.document_name }, coalesce, autoGate, undefined, (from, chat_id, sender_chat) => isOperatorIdentity(access, from, chat_id, sender_chat), (chatId, text) => sendMessage(token, chatId, text).then(() => undefined), requireMentionFor, botUsername),
+      (i) => handleInbound(root, { from: i.from, chat_id: i.chat_id, text: i.text, ts: i.ts, sender_chat: i.sender_chat, forwarded: i.forwarded, caption: i.caption, image_path: i.image_path, document_path: i.document_path, document_name: i.document_name }, coalesce, autoGate, undefined, (from, chat_id, sender_chat) => isOperatorIdentity(access, from, chat_id, sender_chat), (chatId, text) => sendMessage(token, chatId, text).then(() => undefined), requireMentionFor, botUsername, consoleGate),
       // sendMessage, NOT replyViaOutbox (CR codex-adv-1 round 6): the outbox is
       // written INTO the same session directory whose failure caused the drop,
       // so on an unwritable session it fails too — and the bridge would then eat
