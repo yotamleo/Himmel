@@ -132,8 +132,14 @@ run "a ../ path out of the root, clean root -> deny" 2 \
     "$(payload "bash ../elsewhere/scripts/cr/pr-check-context.sh" "$WT")" "$HR"
 run "a path under another directory, clean root -> deny" 2 \
     "$(payload "bash docs/scripts/cr/pr-check-context.sh" "$WT")" "$HR"
-run "scripts/x/../cr/ on a clean root -> allow" 0 \
+# Round 7: .. resolves after symlinks, so it is never taken lexically.
+ln -s "$TMP/elsewhere/scripts" "$WT/scripts/x"
+run "scripts/x/../cr/ through a symlinked dir, clean root -> deny" 2 \
     "$(payload "bash scripts/x/../cr/pr-check-context.sh" "$WT")" "$HR"
+rm "$WT/scripts/x"
+run "env -C elsewhere and the literal, clean root -> deny" 2 \
+    "$(payload "env -C $TMP/elsewhere $LITERAL" "$WT")" "$HR"
+need_in_err "deny names the directory change" "changes directory"
 echo doc2 >"$WT/docs/a.md"
 run "an unrelated (docs) diff -> allow" 0 "$(payload "$LITERAL" "$WT")" "$HR"
 g -C "$WT" checkout -q -- docs/a.md

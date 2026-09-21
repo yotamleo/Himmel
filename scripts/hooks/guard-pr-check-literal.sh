@@ -130,7 +130,9 @@ fence=${fence# }
 fence=${fence% }
 [[ "$fence" =~ $FENCE_RE ]] && exit 0
 
-# norm <path> - collapse empty, . and .. segments, as the kernel resolves them.
+# norm <path> - drop empty and . segments. A .. is kept, so the path no longer
+# reads as scripts/cr/<script> and denies: the kernel resolves .. after
+# following symlinks, so scripts/x/../cr can land outside the root.
 norm() {
     local -a parts out=()
     local p
@@ -138,13 +140,6 @@ norm() {
     for p in ${parts[@]+"${parts[@]}"}; do
         case "$p" in
             ''|.) ;;
-            ..)
-                if [ "${#out[@]}" -gt 0 ] && [ "${out[${#out[@]}-1]}" != .. ]; then
-                    out=("${out[@]:0:${#out[@]}-1}")
-                else
-                    out+=(..)
-                fi
-                ;;
             *) out+=("$p") ;;
         esac
     done
@@ -179,6 +174,7 @@ while IFS= read -r line; do
         case "$x" in
             [A-Za-z_]*=*) ;;
             if|then|else|elif|do|while|until|'!'|'{'|'}'|time|command|builtin|nohup|nice|stdbuf|sudo|env|exec|timeout|xargs) skip_opts=1 ;;
+            -C*|-D*|--chdir*|--directory*) [ "$skip_opts" -eq 1 ] || break; chdir=1 ;;
             -*|[0-9]*) [ "$skip_opts" -eq 1 ] || break ;;
             *) break ;;
         esac

@@ -1793,14 +1793,15 @@ only when three conditions hold:
 **What fires it.** The hook classifies by the script a command runs, not by its
 text. It strips quotes and backslashes and splits the command into simple
 commands. A simple command counts when its command word runs a file (a shell,
-`source`, `.`, `eval`, or a path) and one of its words resolves, after
-collapsing `.`, `..` and repeated `/`, to a relative `pr-check-context.sh` or
+`source`, `.`, `eval`, or a path) and one of its words ends, after dropping
+`.` segments and repeated `/`, in a relative `pr-check-context.sh` or
 `pr-check-env.sh`, or is a glob, brace or `$var` that could. Mentions (`grep`,
 `cat`, `git diff`, the test suites) are a no-op. Absolute paths, including the
 anchor's, are a no-op too: no allow rule matches them, and the runbook's
 adopter lane depends on them. A candidate that does not resolve to exactly
-`scripts/cr/<script>` from the cwd (a glob, a variable, a path outside the
-root), or a command that changes directory, denies outright: the conditions
+`scripts/cr/<script>` from the cwd (a glob, a variable, any `..`, which the
+kernel resolves after following symlinks), or a command that changes directory
+(`cd`, `pushd`, `env -C`), denies outright: the conditions
 are checked in the cwd, so they prove nothing about another copy. The
 canonical anchored fence is exempt only in its exact shape; only its echo text
 may vary. Classification uses bash builtins only, so a missing tool cannot turn
