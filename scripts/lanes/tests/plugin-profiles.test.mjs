@@ -33,6 +33,14 @@ const GATE_RULES = [
   'Bash(bash scripts/cr/write-verdicts.sh:*)',
   'Bash(bash scripts/cr/clear-cr-marker.sh:*)',
   'Bash(bash scripts/cr/panel-first-pass.sh:*)',
+  // HIMMEL-3338 (operator ruling 2026-09-21: legs may send review diffs to
+  // Codex): the /pr-check external-critic steps. Exact literals except
+  // docs-audit-panel, which takes --head/--branch like panel-first-pass.
+  'Bash(bash scripts/cr/docs-audit-panel.sh:*)',
+  'Bash(bash scripts/cr/codex-adv-kickoff.sh)',
+  'Bash(bash scripts/cr/codex-adv-harvest.sh)',
+  'Bash(bash scripts/cr/doc-freshness-advisory.sh)',
+  'Bash(bash scripts/cr/known-findings.sh --diff)',
   'Bash(bash scripts/cr/ledger-append.sh:*)',
   'Bash(bash scripts/check-ci.sh:*)',
 ];
@@ -132,6 +140,18 @@ const BAD_GATE_RULES = [
   ['test push wildcard absorbs hook-skipping options', 'Bash(git push -u origin test/*)'],
   ['leg-written GO', 'Bash(bash scripts/handover/console-kit/go.sh:*)'],
   ['unlisted script', 'Bash(bash scripts/uninstall.sh:*)'],
+  // HIMMEL-3338: the exact-literal external-critic rules must not gain a `:*`
+  // tail, and the scripts the operator ruling left out stay out.
+  ['exact-literal kickoff gains a wildcard', 'Bash(bash scripts/cr/codex-adv-kickoff.sh:*)'],
+  ['exact-literal harvest gains a wildcard', 'Bash(bash scripts/cr/codex-adv-harvest.sh:*)'],
+  ['exact-literal doc-freshness gains a wildcard', 'Bash(bash scripts/cr/doc-freshness-advisory.sh:*)'],
+  ['known-findings without --diff', 'Bash(bash scripts/cr/known-findings.sh)'],
+  ['known-findings gains a wildcard', 'Bash(bash scripts/cr/known-findings.sh --diff:*)'],
+  ['known-findings blanket prefix', 'Bash(bash scripts/cr/known-findings.sh:*)'],
+  ['pr-check-env stays out', 'Bash(bash scripts/cr/pr-check-env.sh:*)'],
+  ['claude-floor-review stays out', 'Bash(bash scripts/cr/claude-floor-review.sh:*)'],
+  ['pr-check-context stays out', 'Bash(bash scripts/cr/pr-check-context.sh)'],
+  ['absolute-path critic rule', 'Bash(bash /home/x/scripts/cr/codex-adv-kickoff.sh)'],
   ['blanket quiet-run', 'Bash(bash scripts/quiet-run.sh:*)'],
   ['wildcard before --', 'Bash(bash scripts/quiet-run.sh * -- bash scripts/test-*.sh)'],
   ['other label', 'Bash(bash scripts/quiet-run.sh other -- bash scripts/test-*.sh)'],
@@ -961,3 +981,85 @@ test('console-judge resolves via resolveProfileByName/resolveProfile to the floo
 test('validateRegistry: the shipped registry (console-relay included) validates clean', () => {
   assert.deepEqual(validateRegistry(REG), []);
 });
+
+// ── /pr-check external-critic call shape (HIMMEL-3338) ──────────────────────
+// permissions.allow matches the LITERAL command text. The runbook spells every
+// himmel script as `bash "<himmel_dir>/scripts/cr/<x>.sh"`, and step 0 prints
+// himmel_dir as an ABSOLUTE worktree path — so a leg's real command never
+// matched the relative gateAllow rule and fell to the auto-mode classifier
+// ([Out-of-Place Publication], 47 denials over two days). On the himmel lane
+// himmel_dir == repo, and the runbook now tells the session to drop the
+// `"<himmel_dir>/` prefix there. This test applies that same substitution to
+// every external-critic call line and requires a leg-impl rule to match it.
+// The matcher below models the documented rule forms only (`X:*` = X or X plus
+// a space-separated tail; `X` = exact); it is a model, not the harness matcher.
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+const EXTERNAL_CRITICS = ['panel-first-pass', 'docs-audit-panel', 'codex-adv-kickoff', 'codex-adv-harvest', 'doc-freshness-advisory', 'known-findings'];
+const CRITIC_LINE_RE = new RegExp(`scripts/cr/(?:${EXTERNAL_CRITICS.join('|')})\\.sh`);
+
+function allowRuleMatches(rules, command) {
+  return rules.some((rule) => {
+    const body = /^Bash\((.*)\)$/.exec(rule)?.[1];
+    if (body === undefined) return false;
+    if (body.endsWith(':*')) {
+      const prefix = body.slice(0, -2);
+      return command === prefix || command.startsWith(`${prefix} `);
+    }
+    return command === body;
+  });
+}
+
+// The shell lines of a runbook: ```bash fences (Claude twin) or 4-space
+// indented blocks (Codex twin, no fences) — the same split test-pr-check-pair.sh uses.
+function runbookCodeLines(text) {
+  const lines = text.split('\n');
+  if (!lines.some((l) => /^\s*```/.test(l))) return lines.filter((l) => l.startsWith('    '));
+  const out = [];
+  let inBash = false;
+  for (const l of lines) {
+    if (/^\s*```bash\s*$/.test(l)) inBash = true;
+    else if (/^\s*```/.test(l)) inBash = false;
+    else if (inBash) out.push(l);
+  }
+  return out;
+}
+
+const criticCalls = (relPath) => runbookCodeLines(readFileSync(join(REPO_ROOT, relPath), 'utf8'))
+  .map((l) => l.trim())
+  .filter((l) => !l.startsWith('#') && CRITIC_LINE_RE.test(l));
+// The documented himmel-lane substitution: drop the `"<himmel_dir>/` prefix and
+// its closing quote, leaving the cwd-relative literal.
+const HIMMEL_LANE = (line) => line.replace(/^bash "<himmel_dir>\/(scripts\/[^"\s]+)"/, 'bash $1');
+
+test('/pr-check (Claude twin): every external-critic call matches a leg-impl allow rule on the himmel lane', () => {
+  const calls = criticCalls('.claude/commands/pr-check.md');
+  const seen = new Set(calls.map((l) => EXTERNAL_CRITICS.find((n) => l.includes(`/${n}.sh`))));
+  assert.deepEqual([...seen].sort(), [...EXTERNAL_CRITICS].sort(), 'anti-vacuity: every external critic must have a call line');
+  for (const line of calls) {
+    const command = HIMMEL_LANE(line);
+    assert.match(command, /^bash scripts\/cr\//, `substitution did not yield a relative literal: ${line}`);
+    assert.ok(allowRuleMatches(REG.gateAllow, command), `no leg-impl rule matches: ${command}`);
+  }
+});
+
+test('/pr-check (Codex twin): its external-critic calls name only scripts that have a leg-impl rule', () => {
+  // The twin wraps panel-first-pass in `panel_out=$(...)` because its harness
+  // runs each block as a separate process; Claude-side allow rules are not its
+  // gate, so only the script NAMES are pinned here.
+  const calls = criticCalls('.agents/skills/pr-check/SKILL.md');
+  assert.ok(calls.length > 0, 'anti-vacuity: expected at least the panel-first-pass call');
+  for (const line of calls) {
+    const name = EXTERNAL_CRITICS.find((n) => line.includes(`/${n}.sh`));
+    assert.ok(REG.gateAllow.some((r) => r.includes(`scripts/cr/${name}.sh`)), `no leg-impl rule names ${name}`);
+  }
+});
+
+for (const file of ['.claude/commands/pr-check.md', '.agents/skills/pr-check/SKILL.md']) {
+  test(`${file} documents the himmel-lane relative spelling and the operator ruling`, () => {
+    const text = readFileSync(join(REPO_ROOT, file), 'utf8');
+    assert.match(text, /HIMMEL-3338/, 'missing the HIMMEL-3338 marker');
+    assert.match(text, /`himmel_dir=` equals `repo=`/, 'missing the himmel-lane substitution condition');
+    assert.match(text, /bash scripts\/cr\/<script>\.sh/, 'missing the relative spelling');
+    assert.match(text, /authoris(?:es|ed)\s+sending\s+review\s+diffs\s+to\s+Codex/, 'missing the operator ruling note');
+  });
+}

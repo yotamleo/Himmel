@@ -38,6 +38,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const provLib = require('./provenance.js');
 
 const CURRENT_VERSION = 1;
 
@@ -407,6 +408,32 @@ function removeTempBestEffort(tmp) {
   }
 }
 
+// HIMMEL-3332 S5: one json-key row per top-level section the save created or
+// changed (an unchanged section records nothing), class state, so uninstall can
+// excise exactly those sections. `prior` is the parsed pre-save document, or
+// null when the file was absent. Non-fatal by design: a ledger fault must never
+// fail a config save (residue over breakage), it only warns.
+//
+// ponytail: a pre-existing config.json that does not parse is treated as
+// absent here (every section recorded as created), so an uninstall would
+// remove sections that did exist in the unreadable file.
+function recordSections(p, prior, doc, fileCreated) {
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  for (const key of Object.keys(doc)) {
+    try {
+      const had = prior !== null && Object.prototype.hasOwnProperty.call(prior, key);
+      if (had && same(prior[key], doc[key])) continue;
+      const pointer = '/' + key.replace(/~/g, '~0').replace(/\//g, '~1');
+      provLib.provRecord([had ? 'replace' : 'create', 'json-key', p, '--unit', pointer,
+        ...(had ? ['--pre-json', JSON.stringify(prior[key]), '--backup'] : ['--pre-absent']),
+        '--post-json', JSON.stringify(doc[key]), '--scope', 'user', '--class', 'state',
+        '--field', `file_created=${fileCreated}`]);
+    } catch (e) {
+      console.error(`himmelctl: WARN: provenance ledger not updated for ${p} ${key} (${e.message})`);
+    }
+  }
+}
+
 // Persist `doc`: write-to-temp -> validate -> atomic rename -> keep ONE
 // timestamped .bak. Validates what was actually SERIALIZED to the temp file
 // (re-read + re-parsed), not just the in-memory object, so a shape defect
@@ -421,7 +448,19 @@ function save(doc) {
   const dir = path.dirname(p);
   fs.mkdirSync(dir, { recursive: true });
 
-  if (fs.existsSync(p)) backupExisting(p);
+  const existed = fs.existsSync(p);
+  let prior = null;
+  // an existing file that cannot be read as a JSON object has an unknown
+  // pre-state: recording its sections as created would claim ownership of
+  // user state this save replaces, so record nothing for it
+  let preKnown = true;
+  if (existed) {
+    try {
+      prior = JSON.parse(fs.readFileSync(p, 'utf8'));
+      if (prior === null || typeof prior !== 'object' || Array.isArray(prior)) { prior = null; preKnown = false; }
+    } catch (_e) { prior = null; preKnown = false; }
+    backupExisting(p);
+  }
 
   const tmp = `${p}.tmp-${process.pid}`;
   // CR round 3 fix (HIMMEL-2176, retask stage1-build-6d2e): the write itself
@@ -500,6 +539,7 @@ function save(doc) {
     removeTempBestEffort(tmp);
     throw new Error(`luna-config: refusing to save ${p} — rename from ${tmp} failed: ${err.message} (HIMMEL-2176)`);
   }
+  if (preKnown) recordSections(p, prior, doc, !existed);
 }
 
 module.exports = { load, save, migrate, validateConfig, defaultConfig, configPath, CURRENT_VERSION };

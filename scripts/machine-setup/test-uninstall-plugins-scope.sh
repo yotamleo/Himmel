@@ -710,6 +710,38 @@ out=$(PATH="$STUB_DIR:$PATH" ARGV_LOG="$ARGV_LOG" \
       --scope-map "$TMP/scope-map-project-simulated" 2>&1); rc=$?
 assert_rc "2800: matching project handoff previews removal" 0 "$rc"
 
+# ── HIMMEL-3350: a marketplace registered at project AND user scope (an ─
+# obsidian-skills-shaped one: no plugin of its own installed at project scope,
+# so the plugin phase records no project row) must be removed at both scopes.
+for plugins in '[]' \
+    "$(jq -nc '[{id:"good-a@mp",scope:"user"}]')"; do
+    rm -f "$TMP/plugins-user.json"
+    : > "$ARGV_LOG"
+    out=$(PATH="$STUB_DIR:$PATH" ARGV_LOG="$ARGV_LOG" STUB_REGISTRATION_SCOPES=$'user\nproject' \
+          STUB_PLUGINS="$plugins" bash "$script" --template "$TEMPLATE" 2>&1); rc=$?
+    log=$(cat "$ARGV_LOG")
+    assert_rc "3350: two-scope registration exits cleanly" 0 "$rc"
+    assert_has "3350: project registration removed" "plugin marketplace remove mp --scope project" "$log"
+    assert_rc "3350: both scopes removed" 2 "$(wc -l < "$TMP/successes" 2>/dev/null | tr -d '[:space:]')"
+    assert_has "3350: no failed calls" "Done: 0 failed call(s)" "$out"
+done
+# The sweep stops at the current project: a user-scope registration is machine-wide
+# and never removed by a --scope project run.
+rm -f "$TMP/plugins-user.json"
+: > "$ARGV_LOG"
+out=$(PATH="$STUB_DIR:$PATH" ARGV_LOG="$ARGV_LOG" STUB_REGISTRATION_SCOPES=user \
+      STUB_PLUGINS='[]' bash "$script" --template "$TEMPLATE" --scope project 2>&1); rc=$?
+log=$(cat "$ARGV_LOG")
+assert_rc "3350: user-only registration under --scope project still reports it" 1 "$rc"
+assert_not_has "3350: --scope project never removes at user scope" "plugin marketplace remove mp --scope user" "$log"
+# A dry run cannot observe a registration, so it never sweeps.
+rm -f "$TMP/plugins-user.json"
+: > "$ARGV_LOG"
+out=$(PATH="$STUB_DIR:$PATH" ARGV_LOG="$ARGV_LOG" STUB_REGISTRATION_SCOPES=$'user\nproject' \
+      STUB_PLUGINS='[]' bash "$script" --template "$TEMPLATE" --dry-run 2>&1); rc=$?
+assert_rc "3350: dry run exits cleanly" 0 "$rc"
+assert_not_has "3350: dry run does not sweep" "trying project scope" "$out"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "ALL PASS"; exit 0

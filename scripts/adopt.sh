@@ -91,6 +91,13 @@ HIMMEL_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/lib/user-claude-md.sh"
 
+# Install-provenance ledger (HIMMEL-3332): copy_portable and the user-scope gate
+# copy record what they overwrite via prov_record. Recording is best-effort — a
+# failed record warns and never fails the install.
+# shellcheck source=scripts/lib/provenance.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/lib/provenance.sh"
+
 # ── Defaults ─────────────────────────────────────────────────────────────────
 PROFILE="core"
 SCOPE="project"
@@ -189,6 +196,44 @@ require_tools() {
   fi
 }
 
+# copy_recorded <path relative to both roots> [exec]
+# HIMMEL-3332: copy $HIMMEL_ROOT/<path> over $TARGET/<path> — unconditionally, as
+# copy_portable always did — and record one `file` row for it: `create` when
+# there was nothing there, `noop` when the bytes and mode did not change, else
+# `replace` with the prior bytes backed up (mode preserved) so uninstall can put
+# the user's file back. `exec` also chmod +x's the copy. The pre-state is a
+# snapshot taken BEFORE the cp, because prov_record hashes and backs up a file
+# it is handed and the destination is about to be overwritten.
+copy_recorded() {
+  local f="$1" exec="${2:-}" dest="$TARGET/$1" snap="" tmp="" rec=1 op=create
+  local -a pre=(--pre-absent)
+  run mkdir -p "$(dirname "$dest")" || return 1
+  if [ -f "$dest" ]; then
+    op=replace
+    if [[ $DRY_RUN -eq 1 ]]; then
+      snap="$dest"   # a dry run never reads it: prov_record only prints the DRY line
+    elif tmp="$(mktemp)" && cp -p "$dest" "$tmp"; then
+      snap="$tmp"
+    else
+      rm -f "$tmp"; tmp=""; rec=0
+    fi
+    [ -z "$snap" ] || pre=(--pre-file "$snap" --backup)
+  fi
+  run cp "$HIMMEL_ROOT/$f" "$dest" || { rm -f "$tmp"; return 1; }
+  if [ -n "$exec" ]; then run chmod +x "$dest" || { rm -f "$tmp"; return 1; }; fi
+  # _prov_mode is the lib's own mode reader, so this compares exactly what the row stores.
+  if [ -n "$tmp" ] && cmp -s "$tmp" "$dest" && [ "$(_prov_mode "$tmp")" = "$(_prov_mode "$dest")" ]; then
+    op=noop; pre=(--pre-file "$snap")
+  fi
+  if [ "$rec" = 1 ]; then
+    prov_record "$op" file "$dest" --scope project --class code --row adopter-scripts \
+      --writer adopt.sh "${pre[@]}" --post-file "$dest" || rec=0
+  fi
+  rm -f "$tmp"
+  [ "$rec" = 1 ] || echo "  warning: provenance record failed for $f (the copy is in place; uninstall will keep it)" >&2
+  return 0
+}
+
 copy_portable() {
   # HIMMEL-2435: an adopter cloning himmel itself and running `adopt.sh
   # --scope project` (or the wizard deriving scope=project) from inside that
@@ -208,9 +253,7 @@ copy_portable() {
   echo "──── Copying portable core into $TARGET ────"
   local f
   for f in "${PORTABLE_FILES[@]}"; do
-    run mkdir -p "$TARGET/$(dirname "$f")"
-    run cp "$HIMMEL_ROOT/$f" "$TARGET/$f"
-    run chmod +x "$TARGET/$f"
+    copy_recorded "$f" exec
     echo "  $f"
   done
 }
@@ -317,6 +360,12 @@ wire_handover_dir_luna() {
     existing="$(jq -r '.env.HANDOVER_DIR // empty' "$settings" 2>/dev/null || true)"
     if [[ -n "$existing" ]]; then
       echo "  env.HANDOVER_DIR already set in $settings ($existing) — leaving it (re-adopt reproduces, never resets; HIMMEL-839)"
+      # HIMMEL-3332: remember that this key was already here, so uninstall never
+      # claims (and removes) an operator-chosen value. Best-effort, like every record.
+      prov_record noop json-key "$settings" --unit /env/HANDOVER_DIR --scope "$SCOPE" --class code \
+        --row "$SCOPE-settings" --writer adopt.sh --field preexisted=true \
+        --pre-json "$(jq -nc --arg v "$existing" '$v')" --post-json "$(jq -nc --arg v "$existing" '$v')" \
+        || echo "  warning: provenance record failed for env.HANDOVER_DIR (left as it was)" >&2
       return
     fi
   fi
@@ -725,7 +774,7 @@ install_native_hooks() {
   # its removal too. Project scope already copied these portable files.
   if [[ "$SCOPE" == "user" && ! "$TARGET" -ef "$HIMMEL_ROOT" ]]; then
     for script in scripts/hooks/check-commit-msg.sh scripts/hooks/check-worktree-isolation.sh scripts/hooks/check-push-target.sh scripts/guardrails/lib.sh; do
-      if ! mkdir -p "$TARGET/$(dirname "$script")" || ! cp "$HIMMEL_ROOT/$script" "$TARGET/$script"; then
+      if ! copy_recorded "$script"; then
         echo "  git gate hooks — FAILED (native: cannot copy $script into $TARGET)" >&2
         return 1
       fi

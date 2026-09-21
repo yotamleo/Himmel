@@ -683,6 +683,69 @@ process.env.BRIDGE_PERSISTENCE_STUB_STATE = STUB_STATE;
   }
 }
 
+// ── HIMMEL-3332 S5: installSystemdUnit records its unit file + registration ─
+// The suite pins HIMMEL_PROVENANCE_DIR to scratch (it does not source
+// _hermetic-home.sh), so these rows never reach the operator's real ledger.
+{
+  process.env.PATH = STUB_DIR + path.delimiter + REAL_PATH;
+  for (const f of ['reload-fail', 'enable-now-fail', 'disable-fail']) fs.rmSync(path.join(STUB_STATE, f), { force: true });
+  fs.writeFileSync(path.join(STUB_STATE, 'linger-yes'), '');
+  fs.rmSync(unitPath, { force: true });
+  const provDir = process.env.HIMMEL_PROVENANCE_DIR;
+  const ledger = path.join(provDir, 'provenance.jsonl');
+  const rows = () => (fs.existsSync(ledger) ? fs.readFileSync(ledger, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
+  const unitRows = (kind) => rows().filter((x) => x.kind === kind && (kind === 'unit' ? x.unit === m.SYSTEMD_UNIT_NAME : x.path === unitPath));
+
+  // earlier cases in this file already installed the unit, so count from here
+  const f0 = unitRows('file').length, u0 = unitRows('unit').length;
+  const dry = m.installSystemdUnit({ repoRoot: REPO_FIXTURE, dryRun: true });
+  check('provenance: dry-run ok', true, dry.ok);
+  check('provenance: dry-run writes no unit rows', [f0, u0], [unitRows('file').length, unitRows('unit').length]);
+
+  const first = m.installSystemdUnit({ repoRoot: REPO_FIXTURE });
+  if (!first.ok) {
+    check('provenance: first install completes (systemctl is stubbed on PATH)', true, first.ok + ' ' + first.detail);
+  } else {
+    const f1 = unitRows('file');
+    check('provenance: first install records one file row', f0 + 1, f1.length);
+    check('provenance: first install file row is create/code/user', ['create', 'code', 'user'], [f1[f1.length - 1].op, f1[f1.length - 1].class, f1[f1.length - 1].scope]);
+    const u1 = unitRows('unit');
+    check('provenance: first install records one unit register row', u0 + 1, u1.length);
+    check('provenance: unit row is register/code', ['register', 'code'], [u1[u1.length - 1].op, u1[u1.length - 1].class]);
+    check('provenance: unit row carries linger_preexisted=true (loginctl said yes)', true, u1[u1.length - 1].linger_preexisted);
+
+    const second = m.installSystemdUnit({ repoRoot: REPO_FIXTURE });
+    check('provenance: re-install ok', true, second.ok);
+    const f2 = unitRows('file');
+    check('provenance: re-install records a replace file row', 'replace', f2[f2.length - 1].op);
+    const bdir = path.join(provDir, 'provenance-backups');
+    const haveBackup = fs.existsSync(bdir) && fs.readdirSync(bdir).some((iid) =>
+      fs.readdirSync(path.join(bdir, iid)).some((n) => n.indexOf(m.SYSTEMD_UNIT_NAME) !== -1));
+    check('provenance: the replace backed the prior unit up', true, haveBackup);
+
+    fs.rmSync(path.join(STUB_STATE, 'linger-yes'), { force: true });
+    fs.writeFileSync(path.join(STUB_STATE, 'linger-no'), '');
+    const third = m.installSystemdUnit({ repoRoot: REPO_FIXTURE });
+    check('provenance: linger-no re-install ok', true, third.ok);
+    const u3 = unitRows('unit');
+    check('provenance: unit row carries linger_preexisted=false (loginctl said no)', false, u3[u3.length - 1].linger_preexisted);
+
+    // an unreadable existing unit has an unknown pre-state: the file is replaced
+    // but no file row is recorded (recording it as absent would claim ownership)
+    fs.chmodSync(unitPath, 0);
+    let readable = true;
+    try { fs.readFileSync(unitPath); } catch (_e) { readable = false; }
+    if (!readable) {
+      const f3 = unitRows('file').length;
+      const fourth = m.installSystemdUnit({ repoRoot: REPO_FIXTURE });
+      check('provenance: unreadable-unit re-install ok', true, fourth.ok);
+      check('provenance: unreadable pre-state records no file row', f3, unitRows('file').length);
+    } else {
+      skip('provenance: unreadable pre-state', 'chmod 000 does not block reads on this host');
+    }
+  }
+}
+
 console.log('');
 if (FAIL === 0) {
   console.log(`OK test-bridge-persistence: ${PASS} passed, ${SKIP} skipped, 0 failed`);
@@ -700,5 +763,6 @@ BRIDGE_TEST_STUB_DIR="$(to_node_path "$STUB_DIR")" \
 BRIDGE_TEST_STUB_LOG="$(to_node_path "$STUB_LOG")" \
 BRIDGE_TEST_STUB_STATE="$(to_node_path "$STUB_STATE")" \
 HIMMELCTL_SYSTEMD_USER_UNIT_DIR="$(to_node_path "$UNIT_DIR")" \
+HIMMEL_PROVENANCE_DIR="$(to_node_path "$WORK/prov")" \
 node "$(to_node_path "$WORK/check.js")"
 exit $?

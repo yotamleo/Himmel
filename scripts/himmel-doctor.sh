@@ -158,12 +158,16 @@ check_c3() {
 
 # --- C4: bitbucket remote where gh-based flows fail -----------------------------
 check_c4() {
-    local url; url="$(git remote get-url origin 2>/dev/null || true)"
-    case "$url" in
-        *bitbucket.org*)
-            emit INFO C4-forge "this repo's origin is Bitbucket — /commit-push-pr hardcodes 'gh pr create' and will not open a PR here" "use the handover forge seam (scripts/handover/pr-open.sh → scripts/bitbucket/ CLI)" ;;
-        *) : ;;
-    esac
+    # HIMMEL-3337: the ORIGIN's host decides, via the one matcher the rest of the
+    # harness routes on (forge_detect) — not a substring of the URL. FORGE is unset
+    # for the call: it overrides forge_detect but says nothing about this origin.
+    # shellcheck source=scripts/lib/forge.sh
+    # shellcheck disable=SC1091
+    . "$REPO_ROOT/scripts/lib/forge.sh"
+    local forge; forge="$(unset FORGE; forge_detect 2>/dev/null)" || forge=""
+    if [ "$forge" = bitbucket ]; then
+        emit INFO C4-forge "this repo's origin is Bitbucket — /commit-push-pr hardcodes 'gh pr create' and will not open a PR here" "use the handover forge seam (scripts/handover/pr-open.sh → scripts/bitbucket/ CLI)"
+    fi
 }
 
 # --- C5: cwd repo not registered for handover-resume ----------------------------

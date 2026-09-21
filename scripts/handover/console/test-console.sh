@@ -1357,6 +1357,34 @@ check "60 the control: Compact instructions marker does not leak into the HANDOF
 check "60 successor doc itself was still written" "$([ -s "$doc60B" ] && echo yes)" "yes"
 HANDOVER_DIR="$root" bash "$QL" release "$doc60A" "$token60a" >/dev/null 2>&1
 
+# --- 60b: HIMMEL-3361 -- the console board's artifact URL rides on the
+# `board:` line of `## Live state` and `next` seeds the successor's own line
+# with it, so the successor updates the same artifact. Controls: a fresh
+# console starts at "none yet" (the RED at the base: no `board:` line at all),
+# and a predecessor with no URL yields "none yet", not an empty value.
+out60b="$(console new --bucket boardsrc)"
+token60b="$(token_of "$out60b")"
+doc60bA="$root/tester/boardsrc/DEMO-nextleg-${today}A-console.md"
+doc60bB="$root/tester/boarddst/DEMO-nextleg-${today}B-console.md"
+doc60bC="$root/tester/boarddst2/DEMO-nextleg-${today}B-console.md"
+url60b='https://claude.ai/artifact/fixture-3361-board'
+check "60b a fresh console's Live state starts the board: line at none yet" \
+    "$(grep -c '^board: none yet' "$doc60bA" 2>/dev/null)" "1"
+rc60b=0
+console next --bucket boarddst2 --doc "$doc60bA" >/dev/null 2>&1 || rc60b=$?
+check "60b next from a doc with no URL succeeds" "$rc60b" "0"
+check "60b no-URL predecessor yields none yet on the successor, never empty" \
+    "$(grep -c '^board: none yet' "$doc60bC" 2>/dev/null)" "1"
+awk -v url="$url60b" '/^board: none yet/ { print "board: " url; next } { print }' "$doc60bA" > "$doc60bA.new" && mv "$doc60bA.new" "$doc60bA"
+rc60b=0
+console next --bucket boarddst --doc "$doc60bA" >/dev/null 2>&1 || rc60b=$?
+check "60b next succeeds against a doc with a published board URL" "$rc60b" "0"
+check "60b successor doc's board: line carries the predecessor's artifact URL" \
+    "$(grep -Fxc "board: $url60b" "$doc60bB" 2>/dev/null)" "1"
+check "60b no unrendered {{BOARD_URL}} left in the successor doc" \
+    "$(grep -Fc '{{BOARD_URL}}' "$doc60bB" 2>/dev/null)" "0"
+HANDOVER_DIR="$root" bash "$QL" release "$doc60bA" "$token60b" >/dev/null 2>&1
+
 # --- 61: HIMMEL-3079 -- the console parent defaults to Opus, not Fable
 # (Opus = default parent, Fable = the escalation target; operator halt
 # 2026-09-14). The armed path has no terminal to notice a wrong default, so

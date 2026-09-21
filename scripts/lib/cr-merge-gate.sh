@@ -9,34 +9,18 @@
 #          branch) so quoted/mis-tokenized selectors cannot dodge the gate
 #          (codex-1 / codex-adv-1, HIMMEL-936 CR round). Top-level consumers
 #          treat any non-2 rc as allow.
-#   Deny on:
-#     - an unresolved PR review thread whose first comment is by coderabbitai
-#     - a CodeRabbit commit status on the head SHA that is pending/failure/error
-#     - NO CodeRabbit status on the head SHA at all ("absent")
-#     - the latest bot REVIEW is anchored to a commit other than the head SHA
-#       ("stale" — HIMMEL-1181, B2: a concluded STATUS does not mean a new
-#       review OBJECT was posted; see cr-review-freshness.sh) AND no clean
-#       exact-head critic panel carries it (HIMMEL-2162, parity with
-#       check-ci.sh's twin arm — a panel carry is the DEFAULT for this shape),
-#       or the review window is indeterminate ("paged", >100 reviews with no
-#       bot match)
-#   That last one is a deliberate break from the old "deny ONLY on positive
-#   evidence" stance (HIMMEL-1072, operator call 2026-07-16): an unreviewed head
-#   reading as green is what merged #1243 with 6 unresolved threads. Absence of a
-#   review is now positive evidence of an unreviewed head, not a pass. A repo with
-#   no CodeRabbit is detected automatically and gets a NO-OP gate (HIMMEL-1125,
-#   scripts/lib/cr-available.sh) — before that probe existed, such a repo blocked
-#   on EVERY merge until the adopter discovered CR_PROFILE=none.
+#   HIMMEL-3360 (operator ruling 2026-09-21): CodeRabbit is best effort. Deny
+#   only on an unresolved coderabbitai review thread, or an outside-diff body
+#   finding with no ledger disposition at this exact head — CodeRabbit's
+#   commit-status state (pending/absent/paged/skipped/etc.) prints an
+#   advisory NOTE and falls through; it never blocks on its own.
+#
+#   A repo with no CodeRabbit is detected automatically and gets a NO-OP gate
+#   (HIMMEL-1125, scripts/lib/cr-available.sh).
 #   INFRASTRUCTURE failures (gh missing, API error, no PR, parse failure) still
 #   fail OPEN (rc 0/3) with a "cr-merge-gate: degraded (...) - failing open" note
 #   — a broken query is not evidence of anything.
 #   CR_MERGE_GATE_OK=1 or CR_PROFILE=none skip the gate entirely (rc 0).
-#
-#   The HIMMEL-980 zombie override is GONE: it keyed off a CodeRabbit check-run
-#   that does not exist, so it had never run. Reviving it on the status would mean
-#   waving through a >90m pending review on age alone — the same "uncertainty
-#   reads as green" bug in a new coat. A genuinely stuck review blocks; use
-#   CR_MERGE_GATE_OK=1. CR_ZOMBIE_CHECKRUN_MINS is therefore no longer read.
 #
 # Sourceable from hooks and scripts: uses only `return`, never `exit`;
 # does not toggle set -e. bash 3.2-safe. Each `jq` command substitution is
@@ -47,18 +31,92 @@
 
 _cmg_degrade() { echo "cr-merge-gate: degraded ($*) - failing open" >&2; }
 
+# _cmg_governing_prior_head — HIMMEL-3360 operator ruling: when the PR's real
+# head carries no CodeRabbit review of its own, which PRIOR head carries its
+# latest one? The latest SUBSTANTIVE bot review not at $head (by submitted_at,
+# ties by id) — same review cr_body_outside_findings would select if called
+# with that head. Prints the commit_id on stdout; rc 1 on any resolution
+# failure (bot id, query, or an empty result). Reads $owner/$name/$num/$head
+# from the caller (cr_merge_gate), same dynamic-scoping convention as every
+# other _cmg_* helper here.
+_cmg_governing_prior_head() {
+    local uid json ph
+    uid=$(cr_signal_bot_id)
+    case "$uid" in ''|*[!0-9]*) return 1 ;; esac
+    json=$(_cbf_reviews_json "$owner" "$name" "$num") || return 1
+    ph=$(printf '%s' "$json" | jq -r --argjson uid "$uid" --arg head "$head" \
+        '[ .[] | select(.user.id == $uid and .commit_id != $head and ((.body // "") | test("\\S"))) ] | sort_by(.submitted_at, .id) | .[-1] | .commit_id // ""' \
+        2>/dev/null || true)
+    [ -n "$ph" ] || return 1
+    printf '%s' "$ph"
+}
+
+# _cmg_outside_block <gate_head> <expected_count> — HIMMEL-3124/HIMMEL-3360.
+# Reads + dispositions the outside-diff findings CodeRabbit posted AT
+# <gate_head> — either the PR's real head, or (HIMMEL-3360) the governing
+# PRIOR head _cmg_governing_prior_head resolved, when the real head carries
+# no review of its own (best effort covers ABSENCE at that head only, never a
+# finding CodeRabbit already posted at a prior one). <expected_count> is the
+# reader's own header count for a format-drift cross-check; empty skips it
+# (the prior-head path's own header-vs-parsed check inside the reader already
+# covers it). rc 0 = allow (ALLOW note on stderr); rc 2 = block (BLOCK reason
+# already echoed to stdout, same convention as every other block here).
+_cmg_outside_block() {
+    local gate_head="$1" expected="$2"
+    local od_rows od_rc od_id od_file od_line od_n=0 od_ok=0 od_list="" extra="" prefix=""
+    od_rows=$(cr_body_outside_findings "$owner" "$name" "$num" "$gate_head")
+    od_rc=$?
+    case "$od_rc" in
+        0) ;;
+        2)
+            echo "BLOCK: CodeRabbit's review body on head $gate_head of PR #$num lists outside-diff findings the parser cannot fully read (format drift, cannot count) — check the PR body manually, or bypass with CR_MERGE_GATE_OK=1."
+            return 2 ;;
+        *)
+            echo "BLOCK: CodeRabbit's review body reports outside-diff-range finding(s) on head $gate_head of PR #$num but the per-finding read failed — cannot check for a disposition; re-run."
+            return 2 ;;
+    esac
+    if [ "$gate_head" != "$head" ]; then
+        extra='   (or: --verdict fixed --reason "fixed in <sha>")'
+    fi
+    while IFS=$'\t' read -r od_id _ od_file od_line _; do
+        [ -n "$od_id" ] || continue
+        od_n=$((od_n + 1))
+        if [ "$gate_head" != "$head" ]; then
+            if cr_ledger_outside_dispositioned "$gate_head" "$od_id" "$od_file" "$od_line" "$head"; then
+                od_ok=$((od_ok + 1))
+            else
+                od_list="$od_list [$od_id $od_file:$od_line]"
+            fi
+        else
+            if cr_ledger_outside_dispositioned "$gate_head" "$od_id" "$od_file" "$od_line"; then
+                od_ok=$((od_ok + 1))
+            else
+                od_list="$od_list [$od_id $od_file:$od_line]"
+            fi
+        fi
+    done <<<"$od_rows"
+    if [ -n "$expected" ] && [ "$od_n" -ne "$expected" ]; then
+        echo "BLOCK: CodeRabbit's review body on head $gate_head of PR #$num counts $expected outside-diff finding(s) but $od_n parsed out (format drift, cannot count) — check the PR body manually, or bypass with CR_MERGE_GATE_OK=1."
+        return 2
+    fi
+    if [ "$od_ok" -lt "$od_n" ]; then
+        if [ "$gate_head" != "$head" ]; then
+            prefix="head $head of PR #$num carries no CodeRabbit review (best effort, HIMMEL-3360: nothing waits or re-triggers); its latest review, at head $gate_head, "
+        else
+            prefix="CodeRabbit's review body "
+        fi
+        echo "BLOCK: ${prefix}reports $od_n outside-diff-range finding(s) on head $gate_head of PR #$num, $((od_n - od_ok)) not dispositioned:$od_list — these carry no thread to resolve. Fix them, or record an explicit disposition at head $gate_head (ledger-append.sh finding --model coderabbit-outside --verdict deferred --deferred-to <TICKET> --reason <why>; check-ci.sh prints the full recipe), or --verdict fixed --reason \"fixed in <sha>\"; or bypass with CR_MERGE_GATE_OK=1 in the launching shell if already adjudicated.$extra"
+        return 2
+    fi
+    echo "ALLOW: PR #$num — CodeRabbit's review body reports outside-diff dispositioned=$od_ok (each has an explicit ledger disposition at head $gate_head)." >&2
+    return 0
+}
+
 # The ONE reader for CodeRabbit's verdict (HIMMEL-1072). Sourced relative to this
 # file so a hook can source this gate from any cwd.
 # shellcheck source=scripts/lib/cr-signal.sh
 # shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cr-signal.sh"
-
-# The ONE reader for "is the latest bot REVIEW OBJECT anchored to the head
-# SHA?" (HIMMEL-1181, B2) — independent of the status verdict above and the
-# body-findings reader below; see cr-review-freshness.sh header.
-# shellcheck source=scripts/lib/cr-review-freshness.sh
-# shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cr-review-freshness.sh"
 
 # The ONE reader for CodeRabbit's review-BODY findings (HIMMEL-1126/1147) —
 # outside-diff-range / nitpick / additional comments the thread gate below
@@ -74,9 +132,9 @@ _cmg_degrade() { echo "cr-merge-gate: degraded ($*) - failing open" >&2; }
 # shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cr-available.sh"
 
-# The CR-ledger evidence reader (HIMMEL-1465): tells the skipped arm below
-# whether a CLEAN critic panel carried the gate at the head, so a rate-limited
-# CodeRabbit App need not block a direct `gh pr merge` when the panel reviewed.
+# The CR-ledger evidence reader (HIMMEL-1465): tells the outside-diff body-
+# findings gate below (stage 3) whether a given finding carries an explicit
+# disposition at this exact head (deferred + tracked ticket, or disproved).
 # shellcheck source=scripts/lib/cr-ledger-evidence.sh
 # shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cr-ledger-evidence.sh"
@@ -156,204 +214,30 @@ cr_merge_gate() {
     name=$(printf '%s' "$url"  | sed -n 's|^https://[^/]*/[^/]*/\([^/]*\)/.*|\1|p')
     if [ -z "$owner" ] || [ -z "$name" ]; then _cmg_degrade "cannot parse owner/name from $url"; return 0; fi
 
-    # 1) CodeRabbit's verdict on the head SHA (HIMMEL-1072).
+    # 1) CodeRabbit's verdict on the head SHA is advisory only (HIMMEL-3360,
+    # operator ruling 2026-09-21: CodeRabbit is best effort). The read still
+    # happens BEFORE the thread query below (coderabbit-10) for the same
+    # ordering reason as before: once CodeRabbit has concluded (`success`),
+    # the thread set the query below sees is final. Threads-first would lose
+    # a race — snapshot threads (clean at T0) -> CodeRabbit posts findings at
+    # T0.5 and flips status to success at T1 -> the gate would pass over
+    # threads it never saw. Any state other than `success` — pending,
+    # failure/error, absent, paged, skipped (rate-limited or auto-reviews
+    # disabled), or an unrecognized state — is NEVER gating on its own; it
+    # prints one advisory NOTE and falls through to the thread + body-
+    # findings gates below, unchanged.
     #
-    # This runs BEFORE the thread query, and the order is load-bearing
-    # (coderabbit-10). Threads-first loses a race: snapshot threads (clean at
-    # T0) -> CodeRabbit posts its findings at T0.5 and flips its status to
-    # success at T1 -> read the verdict (success) -> the gate passes over
-    # threads it never saw. Reading the verdict first inverts that: once the
-    # status says success CodeRabbit has CONCLUDED, so the thread set is final
-    # and the query below sees all of it. Same principle as check-ci's
-    # post-watch re-verification (codex-adv 980-r2) — establish that the
-    # reviewer is done, THEN snapshot what it said.
-    #
-    # This block used to read `select(.name=="CodeRabbit")` over `.check_runs[]`
-    # — which matched NOTHING, on every PR, since the day it shipped: CodeRabbit
-    # publishes a commit STATUS, not a check-run (verified on 5 consecutive PRs;
-    # see scripts/lib/cr-signal.sh). So this gate had never once blocked on an
-    # in-flight review, and the HIMMEL-980 zombie override below it was
-    # unreachable. The fixtures mocked CodeRabbit as a check-run, so the suite
-    # confirmed the wrong shape rather than catching it.
-    #
-    # It now reads the real signal, identity-matched on creator.id, and treats
-    # ABSENT as a blocker: "CodeRabbit has said nothing about this SHA" is the
-    # exact state that let #1243 merge with 6 unresolved threads (HIMMEL-1072).
-    # Absence of evidence is not evidence of a pass.
-    # A FAILED status query must not return early (codex-1): doing so would skip
-    # the thread query below and fail open over positive unresolved-thread
-    # evidence the independent GraphQL call would have caught — and a transient
-    # 503 on this endpoint is real (observed live 2026-07-17). So a degraded
-    # verdict is REMEMBERED, not acted on: the threads are still read, positive
-    # evidence still blocks, and the fail-open only happens at the end when
-    # nothing blocked. Ordering is preserved for every non-degraded path.
+    # A FAILED status query must not return early (codex-1): doing so would
+    # skip the thread query below and fail open over positive unresolved-
+    # thread evidence the independent GraphQL call would have caught — and a
+    # transient 503 on this endpoint is real (observed live 2026-07-17). So a
+    # degraded verdict is REMEMBERED, not acted on: the threads are still
+    # read, positive evidence still blocks, and the fail-open only happens at
+    # the end when nothing blocked.
     local cr_state cr_degraded=0
     cr_state=$(cr_signal_state "$owner" "$name" "$head") || cr_degraded=1
-    if [ "$cr_degraded" -eq 0 ]; then
-        case "$cr_state" in
-            success)
-                : ;; # concluded — the thread set below is now final
-            pending)
-                echo "BLOCK: CodeRabbit is still reviewing head $head of PR #$num (status=pending). Wait for it, then re-check threads. Bypass: CR_MERGE_GATE_OK=1."
-                return 2 ;;
-            failure|error)
-                echo "BLOCK: CodeRabbit reported '$cr_state' on head $head of PR #$num — its review did not complete. Re-trigger it, or bypass with CR_MERGE_GATE_OK=1."
-                return 2 ;;
-            absent)
-                echo "BLOCK: CodeRabbit has not reviewed head $head of PR #$num (no status on this SHA) — an unreviewed head must not merge (HIMMEL-1072). Wait for the review; if this repo has no CodeRabbit, set CR_PROFILE=none. Bypass: CR_MERGE_GATE_OK=1."
-                return 2 ;;
-            paged)
-                # Indeterminate, not absent (coderabbit-2): page one was full and
-                # held no CodeRabbit status, so its verdict may be on an unread page.
-                # BLOCKS rather than degrades — a degrade fails OPEN, and "we could
-                # not see the review" must never merge. Same stance as the >100
-                # thread page-cap below.
-                echo "BLOCK: head $head of PR #$num has more commit statuses than one API page (100) and none of them is CodeRabbit's — cannot certify the review. Check manually, or bypass with CR_MERGE_GATE_OK=1."
-                return 2 ;;
-            skipped)
-                # HIMMEL-1317/1354: CodeRabbit posted success but SAID it did
-                # not review — either auto-reviews are disabled, or the review
-                # is rate limited. A declined review must not merge on its own,
-                # for the same reason `absent` must not. Wording aligned with
-                # check-ci.sh's twin arm so both gates agree.
-                #
-                # HIMMEL-1465/1506/1760: EVERY skip-classified description is
-                # panel-carriable, because every one of them means the same
-                # thing — the App's review signal is absent at this head. A
-                # CLEAN critic panel at this head carries the gate (operator
-                # standing rule) — the same ledger evidence clear-cr-marker.sh
-                # gates 3-4 read, evaluated by cr_ledger_carries_gate. A carried
-                # panel does NOT merge here outright: it falls through to the
-                # thread + body gates below exactly like a `success`, so "0
-                # unresolved threads" still binds. No clean panel at the EXACT
-                # head keeps the BLOCK — the PANEL is the evidence this arm
-                # requires, so an unreadable ledger falls back to the block (the
-                # default for `skipped`), never to a fail-open allow.
-                #
-                # The DESCRIPTION is not evidence, only a label: an absent or
-                # unreadable one is carriable exactly like any other skip
-                # wording, because it says the same thing (the App's signal is
-                # missing at this head) and the carry still rests entirely on
-                # the panel. That is check-ci.sh's behaviour too — its arm
-                # carries both "description is unreadable" (the read errored)
-                # and "description is absent" (empty), and only blocks when the
-                # panel does not carry. This gate collapses those two into one
-                # branch: `cr_signal_description` failing and returning empty
-                # are indistinguishable here, and both take the same verdict on
-                # both sides, so the accept/refuse sets still match.
-                #
-                # HIMMEL-1760: this arm used to carry ONLY the rate-limit
-                # wording, so the adaptive-limit lockout presentation ("Review
-                # skipped: automatic reviews are disabled", HIMMEL-1354) hard-
-                # blocked merges that check-ci.sh had already certified through
-                # its HIMMEL-1506 twin arm — three bounces on 2026-08-12, each
-                # escaped only by an operator CR_MERGE_GATE_OK. The wording set
-                # here now mirrors check-ci.sh's exactly (parity, not
-                # relaxation): the two gates must accept and refuse the same
-                # shapes, or a merge one blocks is waved through by the other.
-                local rl_desc rl_low rl_panel rl_why
-                rl_desc=$(cr_signal_description "$owner" "$name" "$head" 2>/dev/null || true)
-                rl_low=$(printf '%s' "$rl_desc" | tr '[:upper:]' '[:lower:]')
-                # Same vocabulary as check-ci.sh's skipped arm (which in turn
-                # mirrors cr-signal.sh's _CRS_SKIP_RE `rate.?limit`): the label
-                # only shapes the audit line, never the verdict.
-                case "$rl_low" in
-                    *rate?limit*|*ratelimit*)     rl_why="is rate-limited" ;;
-                    '')                           rl_why="posted a skip whose description is absent or unreadable" ;;
-                    *automatic*reviews*disabled*) rl_why="reports automatic reviews are disabled" ;;
-                    *)                            rl_why="posted skip-classified wording" ;;
-                esac
-                if rl_panel=$(cr_ledger_carries_gate "$head"); then
-                    echo "ALLOW-note: CodeRabbit $rl_why on head $head of PR #$num but the critic panel carries the gate ($rl_panel); the thread + body gates below still apply (HIMMEL-1465/1506)." >&2
-                    # fall through to the thread + body gates (like a `success`)
-                else
-                    echo "BLOCK: CodeRabbit $rl_why on head $head of PR #$num and the critic panel did NOT carry the gate at this head (ledger: $rl_panel) — a DECLINED App review with no clean panel is not a clean one. Wait for the App (rate limit: HIMMEL-1354, do NOT re-trigger in a loop; disabled auto-reviews: one '@coderabbitai review' comment), or run /pr-check on this HEAD so a panel reviews it. If this repo has no CodeRabbit, set CR_PROFILE=none. Bypass: CR_MERGE_GATE_OK=1."
-                    return 2
-                fi
-                ;;
-            *)
-                # Fail CLOSED on an unrecognised state. This case had no
-                # catch-all, so a state cr-signal.sh learns to emit LATER would
-                # fall straight through to the merge path — fail-open by
-                # omission, which is the same class of bug as the `skipped` hole
-                # above (an unhandled signal read as consent). check-ci's twin
-                # case already had this arm; this brings the two gates back into
-                # agreement, which is the whole point of a single reader.
-                echo "BLOCK: unrecognized CodeRabbit state '$cr_state' on head $head of PR #$num — cannot certify the review. Check manually, or bypass with CR_MERGE_GATE_OK=1."
-                return 2 ;;
-        esac
-    fi
-
-    # 1.5) Review freshness (HIMMEL-1181, B2 / PR #1273): the status above
-    # says the bot CONCLUDED on this head; this says the review OBJECT is
-    # anchored to it. Those are different claims — CodeRabbit can conclude an
-    # incremental status without posting a new review object at all — and
-    # auto-resolved threads on a moved head make "zero unresolved" below
-    # meaningless without this anchor check. Same remembered-degrade pattern
-    # as `cr_degraded` above: an infra failure here is not evidence, so it is
-    # remembered and only fails OPEN at the very end, after every independent
-    # positive-evidence check (threads, body findings) has had its say.
-    local fr_state fr_degraded=0
-    fr_state=$(cr_review_freshness "$owner" "$name" "$num" "$head") || fr_degraded=1
-    if [ "$fr_degraded" -eq 0 ]; then
-        case "${fr_state%% *}" in
-            stale)
-                # HIMMEL-2162: bring this arm into parity with check-ci.sh's
-                # twin (HIMMEL-1718/2162) — a clean exact-head critic panel is
-                # the same evidence a fresh App review would be, so it carries
-                # here too, by DEFAULT. Before this, check-ci.sh could exit 0
-                # on a panel-carried stale anchor while a direct `gh pr merge`
-                # still hard-blocked on the very same PR — two gates
-                # disagreeing on the identical evidence. FAIL-CLOSED
-                # preserved: no clean panel row at this head still BLOCKs.
-                local st_oid st_panel
-                st_oid=${fr_state##* }
-                if st_panel=$(cr_ledger_carries_gate "$head"); then
-                    echo "ALLOW-note: the latest bot review on PR #$num is anchored to $st_oid, not head $head, but the critic panel carries the gate ($st_panel); the thread + body gates below still apply (HIMMEL-2162)." >&2
-                    # fall through to the thread + body gates (like `fresh`)
-                else
-                    echo "BLOCK: the latest bot review on PR #$num is anchored to $st_oid, not head $head — this head was never re-reviewed (auto-resolved threads mask it), and the critic panel did NOT carry the gate at this head (ledger: $st_panel). Wait for a fresh review, run /pr-check on this HEAD, or bypass with CR_MERGE_GATE_OK=1."
-                    return 2
-                fi
-                ;;
-            paged)
-                echo "BLOCK: PR #$num has more reviews than one query window (100) and none of the newest 100 is the bot's — cannot certify review freshness. Check manually, or bypass with CR_MERGE_GATE_OK=1."
-                return 2 ;;
-            # HIMMEL-1374, the twin of check-ci.sh's `none` arm (both gates
-            # must agree, or a merge blocked by one is waved through by the
-            # other). `none` = ZERO CodeRabbit reviews on the whole PR, at any
-            # head, ever. That is a benign adopter self-skip only while
-            # nothing CLAIMS a review happened — but section 1 above passed a
-            # genuine `success`, i.e. a "Review completed" description, which
-            # cannot possibly be incremental when there is no prior review to
-            # be incremental TO. Live instance PR #1463 @ d89dd41b.
-            #
-            # Composition, same as check-ci's arm:
-            #  - the rate-limited PANEL CARRY (HIMMEL-1465) leaves cr_state as
-            #    `skipped`, never `success`, so it still self-skips here;
-            #  - a DEGRADED status read leaves cr_state empty (fail-open is
-            #    this gate's contract for infrastructure failures);
-            #  - HIMMEL-1824: a clean pass mints no review object at all and
-            #    reports through the walkthrough, so consult that channel
-            #    before blocking. Fail-closed: an unreadable walkthrough is
-            #    not a certification.
-            none)
-                if [ "$cr_degraded" -eq 0 ] && [ "$cr_state" = "success" ] &&
-                   [ "$(cr_review_walkthrough "$owner" "$name" "$num" "$head" 2>/dev/null || true)" != "clean" ]; then
-                    echo "BLOCK: CodeRabbit's status on head $head of PR #$num reads a COMPLETED review, but this PR carries NO CodeRabbit review object at any head — ever — and no walkthrough certifies this head either. A completed review with nothing to be incremental to is not evidence that a review happened (HIMMEL-1374). Request '@coderabbitai full review' ONCE and wait for it, or bypass with CR_MERGE_GATE_OK=1."
-                    return 2
-                fi
-                ;;
-            # fresh-clean-no-object (HIMMEL-1824): CodeRabbit reviewed THIS
-            # head and found nothing, so it minted no review object and said so
-            # in the walkthrough instead. That is App evidence about this head,
-            # so it proceeds exactly like `fresh` — without it this gate BLOCKS
-            # every clean-reviewed head on the catch-all below.
-            fresh|fresh-clean-no-object) : ;;
-            *)
-                echo "BLOCK: unrecognized review-freshness state '${fr_state%% *}' on head $head of PR #$num — cannot certify the review anchor. Check manually, or bypass with CR_MERGE_GATE_OK=1."
-                return 2 ;;
-        esac
+    if [ "$cr_degraded" -eq 0 ] && [ "$cr_state" != "success" ]; then
+        echo "NOTE: CodeRabbit $cr_state on head $head of PR #$num — best effort (HIMMEL-3360), not gating; the thread + body-findings gates below still apply."
     fi
 
     # 2) unresolved coderabbitai review threads — read only now that CodeRabbit
@@ -418,8 +302,8 @@ cr_merge_gate() {
     # outside>0 itself. `nitpick` is surfaced on the ALLOW note only
     # (HIMMEL-1147: the failure was invisibility, not permissiveness —
     # blocking Trivial-severity findings tanks the loop).
-    local body_line body_rc outside nitpick body_degraded=0 body_nitpick=0 tok
-    local od_rows od_rc od_id od_file od_line od_n od_ok od_list
+    local body_line body_rc outside nitpick prior_outside substantive body_degraded=0 body_nitpick=0 tok
+    local _ph
     body_line=$(cr_body_findings "$owner" "$name" "$num" "$head")
     body_rc=$?
     case "$body_rc" in
@@ -431,11 +315,13 @@ cr_merge_gate() {
             # real bug this reader-line shape invites). `case` patterns match
             # from the START of the token, so `outside=*` cannot match a
             # token that begins with `prior_outside=`.
-            outside=""; nitpick=""
+            outside=""; nitpick=""; prior_outside=""; substantive=""
             for tok in $body_line; do
                 case "$tok" in
                     outside=*) outside=${tok#outside=} ;;
                     nitpick=*) nitpick=${tok#nitpick=} ;;
+                    prior_outside=*) prior_outside=${tok#prior_outside=} ;;
+                    substantive=*) substantive=${tok#substantive=} ;;
                 esac
             done
             # Validate EACH field independently, NOT the concatenation (CR #1297):
@@ -445,50 +331,32 @@ cr_merge_gate() {
             # fail OPEN. Per-field guards fail closed (degraded) — mirrors the same
             # fix in check-ci.sh's cr_body_gate.
             _body_bad=0
-            for _v in "$outside" "$nitpick"; do
+            for _v in "$outside" "$nitpick" "$prior_outside" "$substantive"; do
                 case "$_v" in
                     ''|*[!0-9]*) _body_bad=1 ;;
                 esac
             done
             if [ "$_body_bad" -eq 1 ]; then
                 body_degraded=1
+            elif [ "$prior_outside" -gt 0 ] && [ "$substantive" -eq 0 ] && [ "$outside" -eq 0 ]; then
+                # HIMMEL-3360 operator ruling (2026-09-21): best effort covers
+                # ABSENCE at THIS head only — a prior head's ALREADY-POSTED
+                # outside-diff findings still govern the gate, keyed to the
+                # head that actually carries them.
+                _ph=$(_cmg_governing_prior_head) || _ph=""
+                if [ -z "$_ph" ]; then
+                    echo "BLOCK: could not resolve which prior head carries CodeRabbit's latest review on PR #$num — cannot check for a disposition; re-run."
+                    return 2
+                fi
+                _cmg_outside_block "$_ph" "" || return 2
+                body_nitpick="$nitpick"
             elif [ "$outside" -gt 0 ]; then
                 # HIMMEL-3124: each outside-diff finding may carry an explicit
                 # ledger disposition AT THIS EXACT HEAD (deferred + tracked
                 # ticket + reason, or disproved + reason) — same reader and rule
                 # as check-ci.sh. Anything undispositioned, or a list that cannot
                 # be read/trusted, BLOCKS (a known outside>0 is never failed open).
-                od_rows=$(cr_body_outside_findings "$owner" "$name" "$num" "$head")
-                od_rc=$?
-                case "$od_rc" in
-                    0) ;;
-                    2)
-                        echo "BLOCK: CodeRabbit's review body on head $head of PR #$num lists outside-diff findings the parser cannot fully read (format drift, cannot count) — check the PR body manually, or bypass with CR_MERGE_GATE_OK=1."
-                        return 2 ;;
-                    *)
-                        echo "BLOCK: CodeRabbit's review body reports $outside outside-diff-range finding(s) on head $head of PR #$num but the per-finding read failed — cannot check for a disposition; re-run."
-                        return 2 ;;
-                esac
-                od_n=0; od_ok=0; od_list=""
-                while IFS=$'\t' read -r od_id _ od_file od_line _; do
-                    [ -n "$od_id" ] || continue
-                    od_n=$((od_n + 1))
-                    if cr_ledger_outside_dispositioned "$head" "$od_id" "$od_file" "$od_line"; then
-                        od_ok=$((od_ok + 1))
-                    else
-                        od_list="$od_list [$od_id $od_file:$od_line]"
-                    fi
-                done <<<"$od_rows"
-                if [ "$od_n" -ne "$outside" ]; then
-                    echo "BLOCK: CodeRabbit's review body on head $head of PR #$num counts $outside outside-diff finding(s) but $od_n parsed out (format drift, cannot count) — check the PR body manually, or bypass with CR_MERGE_GATE_OK=1."
-                    return 2
-                fi
-                if [ "$od_ok" -lt "$od_n" ]; then
-                    echo "BLOCK: CodeRabbit's review body reports $od_n outside-diff-range finding(s) on head $head of PR #$num, $((od_n - od_ok)) not dispositioned:$od_list — these carry no thread to resolve. Fix them, or record an explicit disposition at this exact head (ledger-append.sh finding --model coderabbit-outside --verdict deferred --deferred-to <TICKET> --reason <why>; check-ci.sh prints the full recipe), or bypass with CR_MERGE_GATE_OK=1 in the launching shell if already adjudicated."
-                    return 2
-                fi
-                # stderr, like every ALLOW-path note here (stdout is dropped on allow).
-                echo "ALLOW: PR #$num — CodeRabbit's review body reports outside-diff dispositioned=$od_ok (each has an explicit ledger disposition at head $head)." >&2
+                _cmg_outside_block "$head" "$outside" || return 2
                 body_nitpick="$nitpick"
             else
                 body_nitpick="$nitpick"
@@ -504,18 +372,12 @@ cr_merge_gate() {
     esac
 
     # Nothing blocked. If the verdict query or the body-findings reader
-    # degraded, THIS is where we fail open (codex-1 / HIMMEL-1126) — only
-    # after the independent evidence above had its say. A broken query is not
-    # evidence; unresolved threads and outside-diff findings are. Freshness
-    # (fr_degraded) is intentionally NOT folded into this same early return
-    # (HIMMEL-1181): it is an independent reader from the body-findings one
-    # (see cr-review-freshness.sh header), so its own infra failure must not
-    # suppress a body_nitpick note the OTHER reader already read validly —
-    # checked separately below, after the note.
+    # degraded, note it (codex-1 / HIMMEL-1126) — a broken query is not
+    # evidence; unresolved threads and outside-diff findings are, and both
+    # are already checked above.
     if [ "$cr_degraded" -eq 1 ] || [ "$body_degraded" -eq 1 ]; then
         [ "$cr_degraded" -eq 1 ] && _cmg_degrade "CodeRabbit status query failed"
         [ "$body_degraded" -eq 1 ] && _cmg_degrade "cr-body-findings query/parse failed"
-        [ "$fr_degraded" -eq 1 ] && _cmg_degrade "review-freshness query failed"
         return 0
     fi
 
@@ -526,11 +388,6 @@ cr_merge_gate() {
     # what the caller does with stdout, same as every _cmg_degrade note above.
     if [ "$body_nitpick" -gt 0 ]; then
         echo "ALLOW: PR #$num — CodeRabbit's review body also reports nitpick=$body_nitpick (non-blocking)." >&2
-    fi
-
-    if [ "$fr_degraded" -eq 1 ]; then
-        _cmg_degrade "review-freshness query failed"
-        return 0
     fi
 
     return 0

@@ -384,7 +384,6 @@ scripts/lib/test-cr-body-findings.sh	1
 scripts/lib/test-cr-high-risk-diff.sh	1
 scripts/lib/test-cr-ledger-evidence.sh	1
 scripts/lib/test-cr-merge-gate.sh	4
-scripts/lib/test-cr-review-freshness.sh	42
 scripts/lib/test-detach.sh	8
 scripts/lib/test-detect-hook-dup.sh	0
 scripts/lib/test-doc-freshness.sh	0

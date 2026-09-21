@@ -127,6 +127,8 @@ Every CHECK line is tagged with a direction:
 - **too-much**: user state the uninstall removed or changed.
 - **too-little**: himmel state it left behind.
 - **identity** / **ledger**: neutral.
+- **precondition**: a harness requirement that must hold for the run to mean
+  anything. A FAIL blocks green but is in neither RED count.
 
 Every summary and `RED complete` line names its variant
 (`profile=… uninstall=plain|purge-state`), because the two uninstall forms
@@ -144,14 +146,34 @@ never ran. Only pre-halt FAILs count toward the two directions.
 If the uninstall fails and prints no `Halted at:` line, that stays a harness
 failure (exit `2`).
 
-Under `--profile all`, the cadence-crontab direction prints as `UNOBSERVABLE`:
-`suite-ready-v4` ships neither qmd nor graphify, so arming those cadences
-fails, and the install exits 1 before any crontab line exists. The harness
-prints that exit as `install-exit scope=<scope> rc=<n>` and carries on to
-inventory C and the verdict. The `UNOBSERVABLE` line comes just before the verdict
-and repeats the exit codes. Under `core`, a failed install still ends the run
-(exit `2`). Provisioning qmd and graphify in the guest is tracked in
-HIMMEL-3351.
+Under `--profile all` the seed step also drops executable stubs at
+`~/.local/bin/qmd` and `~/.local/bin/graphify`. `suite-ready-v4` ships neither
+tool, and arming the qmd and graphmap cadences needs both on `PATH`; without
+them the install exits 1 before any crontab line exists (HIMMEL-3351). With
+the stubs both installs succeed, the harness captures `crontab -l` at
+inventory B, and `cadence-crontab-armed-at-B` (direction `precondition`)
+requires a `# HIMMEL-Pipeline`, `# HIMMEL-Qmd` and `# HIMMEL-GraphMap` line
+there. A missing line fails that check, and the run cannot go green, but the
+FAIL is in neither RED direction: it means the harness cannot observe the
+cadence removal, not that the uninstall is wrong. A failed install ends the
+run (exit `2`) under both profiles.
+
+The stubs are the user's own pre-existing files, not himmel's. They are seeded
+into inventory A, so the uninstall must leave them alone:
+`user-stub-<tool>-survives` (direction `too-much`, group `stub`) fails if either
+is removed, and neither counts as himmel residue.
+
+**Limit:** the stubs prove that a cadence arms and disarms. They do not prove
+that a cadence run works, because the real qmd needs the fork build plus about
+2.1GB of models (HIMMEL-2531).
+
+The seed step also plants user state for the two `--purge-state` targets:
+`~/.claude/channels/telegram/{.env,access.json}` and
+`~/.claude/handover/bridge/state.json` (recorded in `state.list`). A plain
+uninstall must keep all of it (`state-kept:<path>`, direction `too-much`); with
+`--purge-state` it must remove all of it (`state-purged:<path>`, direction
+`too-little`). State paths never count as residue in either variant, so the two
+variants now differ.
 
 Exit codes:
 

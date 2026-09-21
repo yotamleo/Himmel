@@ -32,6 +32,7 @@ _FORGE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # _forge_origin_host <url> — echo the lowercased HOST of a git remote URL:
 #   scheme://[userinfo@]host[:port]/path   (https, http, ssh, git, file, …)
 #   [userinfo@]host:path                   (scp-like; no `://` before the first `/`)
+# One terminal DNS dot is dropped (a fully-qualified host), never more.
 # Anything else (a local path) has no host and echoes empty. Case globs and
 # parameter expansion only — bash 3.2-safe.
 _forge_origin_host() {
@@ -55,7 +56,8 @@ _forge_origin_host() {
         esac
     fi
     authority="${authority##*@}"   # drop userinfo
-    printf '%s' "${authority%%:*}" # drop :port
+    authority="${authority%%:*}"   # drop :port
+    printf '%s' "${authority%.}"   # drop ONE terminal DNS dot (HIMMEL-3358): `github.com.` is github.com
 }
 
 forge_detect() {

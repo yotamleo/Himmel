@@ -12,7 +12,9 @@
 # verdict, the uninstall step's flags, the himmelctl `--yes` / `--purge-state`
 # pass-through the uninstall step relies on, the HIMMEL-2623 VBoxManage guard,
 # cleanup (power off, snapshot restore, lock release) on success and on a
-# failed guest step, a bad ref, and seed-provenance.sh's refusals.
+# failed guest step, a bad ref, seed-provenance.sh's refusals, the profile the
+# seed step carries and the crontab capture (the guest-side helpers' own
+# behaviour is test-assert-provenance.sh).
 #
 # Platform guard (linux-only): a bash harness driving FAKE VBoxManage/ssh —
 # the script it covers is itself linux-only (flock, VirtualBox on the station).
@@ -404,20 +406,18 @@ if [ "$RC" -eq 2 ] && printf '%s\n' "$OUT" | grep -qF 'uninstall halted at [3/8]
 else
     fail_case "D14f early halt rc=$RC"; dump
 fi
+# D14e/g — HIMMEL-3351: the guest is provisioned by the seed step, so `all` no
+# longer tolerates a failed install nor prints an UNOBSERVABLE witness
 run_rt "$BOTH" f73a62f1 --expect-red --profile all
-if printf '%s\n' "$OUT" | grep -qF '[witness] cadence-crontab-removed UNOBSERVABLE: qmd and graphify are absent' \
-   && ! printf '%s\n' "$OUT" | grep -q 'cadence-crontab-removed did not fail'; then
-    pass "D14e --profile all marks the crontab direction UNOBSERVABLE, never predicts it"
+if ! printf '%s\n' "$OUT" | grep -q 'UNOBSERVABLE' && ! printf '%s\n' "$OUT" | grep -q '^install-exit '; then
+    pass "D14e --profile all: no UNOBSERVABLE witness, no tolerated install exit"
 else
-    fail_case "D14e cadence unobservable"; dump
+    fail_case "D14e cadence witness"; dump
 fi
 FAKE_FAIL_MATCH='bin.js install' run_rt "$BOTH" f73a62f1 --expect-red --profile all
-if [ "$RC" -eq 0 ] && printf '%s\n' "$OUT" | grep -qF 'install-exit scope=project rc=7' \
-   && printf '%s\n' "$OUT" | grep -qF 'install-exit scope=user rc=7' \
-   && printf '%s\n' "$OUT" | grep -qF 'UNOBSERVABLE: qmd and graphify are absent in the suite-ready-v4 guest, so no cadence crontab line can be armed (install-exit project=7 user=7)' \
-   && printf '%s\n' "$OUT" | grep -q '^RED complete: ' \
-   && grep '^SSH ' "$LOG" | grep -q 'inventory.sh C'; then
-    pass "D14g --profile all: a failed install is recorded, the run reaches inventory C and the verdict"
+if [ "$RC" -eq 2 ] && printf '%s\n' "$OUT" | grep -qF 'step install-project failed (rc=7)' \
+   && ! grep '^SSH ' "$LOG" | grep -q 'inventory.sh C'; then
+    pass "D14g --profile all: a failed install ends the run (rc 2) before inventory C"
 else
     fail_case "D14g all-profile install failure rc=$RC"; dump
 fi
@@ -426,6 +426,23 @@ if [ "$RC" -eq 2 ] && printf '%s\n' "$OUT" | grep -qF 'step install-project fail
     pass "D14h --profile core: a failed install still ends the run (rc 2)"
 else
     fail_case "D14h core install failure rc=$RC"; dump
+fi
+
+# D15 — HIMMEL-3351: the seed step carries the profile (the `all` seed puts the
+# qmd/graphify stubs on the guest); inventory B also captures the crontab the
+# armed-at-B precondition reads
+for prof in core all; do
+    run_rt "$BOTH" f73a62f1 --expect-red --profile "$prof"
+    if grep '^SSH ' "$LOG" | grep 'seed-provenance.sh' | grep -qF "HIMMEL_RT_GUEST=1 RT_PROFILE=$prof bash /tmp/rt-work/seed-provenance.sh"; then
+        pass "D15 seed step carries RT_PROFILE=$prof"
+    else
+        fail_case "D15 seed step under $prof"; dump
+    fi
+done
+if grep '^SSH ' "$LOG" | grep 'inventory.sh B' | grep -qF 'crontab -l >/tmp/rt-work/crontab-B.txt'; then
+    pass "D15b inventory B step captures crontab -l to crontab-B.txt"
+else
+    fail_case "D15b crontab capture"; dump
 fi
 
 echo

@@ -390,7 +390,7 @@ gate does this, and only this:
 |---|---|---|
 | 1 | Cross-model floor exhaustion — `CR_REQUIRE_CROSS_MODEL` set, every non-Claude critic down | `CR_FLOOR_FALLBACK=claude-only` (opt-in, HIMMEL-2128) when the exhaustion is VERIFIED quota/rate-limit — otherwise **park** the branch and continue |
 | 2 | Plugin-tool permission wall (HIMMEL-2124) | Operator allow-rules close it; **park** the blocked item if hit |
-| 3 | CodeRabbit rate-limit vs. stale review | A pure rate-limit already skips structurally (an `unavailable` avail row; freshness self-skips with no bot review posted — no action needed). A stale review anchor now exits 0 instead of 4 when a clean exact-head critic panel carries the gate (HIMMEL-2162) — no park, no retry needed. **`check-ci.sh` exit-4 itself is unchanged and still means fail-closed: it fires precisely when no such panel row exists at that head — that case still needs a park, never a blind retry** |
+| 3 | CodeRabbit rate-limit vs. stale review | Neither blocks (HIMMEL-3360): CodeRabbit is best effort, so a rate-limited, absent or stale review is a NOTE from `check-ci.sh`, never a park. The gate that remains is CI green + zero unresolved threads + the panel; an unresolved CodeRabbit thread still blocks like any other reviewer's |
 | 4 | Live-worker rc=10 at arm | Wrap discipline (finish/reconcile the worker before arming) closes it in-leg; **park** if it cannot be resolved before the leg ends |
 | 5 | `ARMAUTOMERGE` unset | Pre-arm WARN only (`arm-resume.sh`, HIMMEL-2128) — the run still deliberately stops at every green PR instead of merging; not itself a park |
 

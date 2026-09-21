@@ -312,18 +312,35 @@ This session is isolated in the worktree .../fix+himmel-3279-durable-launch-cont
 
 String-match on `runs rtk with a git command among its operands`. `git grep`
 finds no himmel-authored match for this text, so it is not one of
-`scripts/hooks/*.sh`; the component that emits it is not identified.
+`scripts/hooks/*.sh`: it is Claude Code's own worktree-isolation screen, which
+statically reads each Bash command line of an `EnterWorktree`-pinned session
+(HIMMEL-3283; the same screen emits `redirects git to the shared checkout via
+-C`, which is a correct refusal and stays one).
 Observed refused: `git diff -U0 <file>`, `git diff -U0 -- <file>` and a bare
 `git status --short`. Earlier in the same session `git grep` and `git log` ran
 fine — **partial function is not evidence against this symptom**: a leg where
 `git log` works while `git status` / `diff` / `commit` are refused has it.
 
-**Why it is possible (not why it fires).** The rtk PreToolUse hook rewrites
-`git …` to `rtk git …`, and a classifier cannot establish the executable behind
-`rtk git`. `scripts/hooks/rtk-hook-guard.sh` suppresses that rewrite (HIMMEL-2953)
-only in the claudex lane, so a native leg gets `rtk git` forwarded. That makes
-the refusal possible; it does not say why it fires in one native session and not
-another.
+**Why it happens.** The rtk PreToolUse hook rewrites `git …` to `rtk git …`,
+and the isolation screen cannot establish the executable behind `rtk git`.
+Measured over the local transcripts (HIMMEL-3283): 0 of 8701 rtk-rewritten git
+calls were refused in sessions that are not `EnterWorktree`-pinned, 112 of 391
+in pinned ones — and inconsistently *within* a pinned session (the same command
+shapes flip between ok and refused; nothing in the session state, cwd or hook
+order separates them). Plain `git` on the session's own worktree is never
+refused, and neither is `git grep`/`merge-base`/`rev-parse`, which rtk does not
+rewrite. The same screen also refuses `rtk gh` / `rtk ssh` / `rtk shellcheck`
+when git appears in their text (10 cases).
+
+**The fix (HIMMEL-3283).** `scripts/hooks/rtk-hook-guard.sh` forwards no rtk
+rewrite that names git as a word when the hook payload's cwd is inside a
+`.claude/worktrees/` tree (and, since HIMMEL-2953, in the claudex lane), so the
+harness sees plain `git`. Nothing hook-visible marks a session as pinned, hence
+the cwd proxy; the cost is that rtk's git output compression is also lost in
+*unpinned* worktree sessions. It takes effect once the checkout the user-scope
+hook runs from has this change. A leg that typed `rtk git …` or `rtk proxy git …`
+itself is refused by the same screen — type plain `git`; that removes a wrapper
+you added, it does not reshape the operation.
 
 **It is session-scoped — established by elimination, not by diagnosis.** Two
 controls, the second the strong one:
@@ -388,10 +405,19 @@ cause is not identified, so do not spend the session diagnosing your own conduct
   session-scoped reading is wrong** — that is structural. Stop, note it on
   HIMMEL-3283, and take it to the operator.
 
-**Not settled:** whether the HIMMEL-2953 suppression should extend beyond the
-claudex lane (deferred — see the `rtk-hook-guard.sh` header), and whether a
-blocked ship tail has a recovery cheaper than a full re-dispatch. Both stay open
-on HIMMEL-3283.
+**Settled (HIMMEL-3283):** the suppression now covers a native leg whose cwd is in
+`.claude/worktrees/` (see above), so a hook-produced `rtk git` no longer reaches
+the screen there. The session-scoped reading above was the right observation
+with the wrong variable: what the "session rules" varied was the `EnterWorktree`
+pin. A worktree outside `.claude/worktrees/` (`git worktree add ../x`) keeps the
+rewrite and can still hit this.
+
+**Not settled:** a blocked ship tail has no recovery cheaper than the full
+re-dispatch above — none was found, and a leg still refused after the fix means
+the hook is not the source (a stale or unwired `rtk-hook-guard.sh`, or a
+hand-typed `rtk`), which the console should check before re-dispatching. The
+screen's inconsistency inside a pinned session is Claude Code's, not himmel's,
+and is unreported upstream.
 
 ---
 

@@ -136,6 +136,27 @@ cr_ledger_carries_gate() {
       // SEP is U+001F (unit separator) via fromCharCode — no raw control byte
       // in the file, and U+001F cannot occur in a sha/slug/artifact/perspective
       // (so two tuples cannot flatten to one key and mis-route an amend).
+      const isAncestor = (a, b) => {
+          try {
+              cp.execFileSync("git", ["merge-base", "--is-ancestor", a, b],
+                  { stdio: ["ignore", "ignore", "ignore"] });
+              return true;
+          } catch { return false; }
+      };
+      // HIMMEL-3360 prior-head path: a fixed verdict disposes only when its
+      // reason names a sha that resolves, sits on the current head, is not the
+      // prior head, and is not older than the prior head.
+      const priorPath = e.CUR_HEAD !== "" && e.CUR_HEAD !== e.FULL_SHA;
+      const fixedOk = (why) => {
+          if (!priorPath) return false;
+          const m = why.match(/\b[0-9a-f]{7,40}\b/);
+          if (!m) return false;
+          const fix = resolve(m[0]);
+          if (!fix || fix === e.FULL_SHA) return false;
+          const prior = resolve(e.FULL_SHA);
+          if (prior !== null && (fix === prior || isAncestor(fix, prior))) return false;
+          return isAncestor(fix, e.CUR_HEAD);
+      };
       const SEP = String.fromCharCode(31);
       const amends = new Map();
       for (const l of lines) {
@@ -221,11 +242,20 @@ cr_ledger_carries_gate() {
 #   can never be re-keyed onto another head or finding), file and line equal the
 #   parsed ones as STRINGS (a range like 80-91 is a literal token), AND
 #   verdict deferred + tracked ticket + non-empty reason, OR verdict disproved +
-#   non-empty reason (the clear-cr-marker gate 4 rule). fixed|agreed|unaddressed|
+#   non-empty reason (the clear-cr-marker gate 4 rule). agreed|unaddressed|
 #   conflict or an empty verdict never dispose of it. Severity is NOT consulted:
 #   an explicit disposition suffices at every severity (the operator ruling).
+# Optional 5th arg <current-head> (HIMMEL-3360, the PRIOR-head path): when the
+# gate reads CodeRabbit's latest review at a prior head because the current
+# head carries no review, `fixed` is ALSO a disposition — but on evidence only:
+# the reason must name a sha (7-40 hex) that resolves, is an ancestor of (or is)
+# <current-head>, is not the prior head itself and (when the prior head
+# resolves) is not an ancestor of it. A bare "fixed", an unresolvable sha or a
+# sha off this branch never disposes. Without the 5th arg, or when it equals
+# the row's head, `fixed` is refused as before: a fix at the same head is
+# impossible.
 cr_ledger_outside_dispositioned() {
-    local full_sha="${1:-}" id="${2:-}" file="${3:-}" line="${4:-}"
+    local full_sha="${1:-}" id="${2:-}" file="${3:-}" line="${4:-}" cur_head="${5:-}"
     [ -n "$full_sha" ] && [ -n "$id" ] && [ -n "$file" ] && [ -n "$line" ] || return 1
     local git_dir
     git_dir=$(git rev-parse --git-common-dir 2>/dev/null || true)
@@ -235,7 +265,7 @@ cr_ledger_outside_dispositioned() {
 
     # Single-quoted block: NO apostrophes / backticks / dollar-braces inside.
     local out
-    out=$(LEDGER="$ledger" FULL_SHA="$full_sha" OD_ID="$id" OD_FILE="$file" OD_LINE="$line" node -e '
+    out=$(LEDGER="$ledger" FULL_SHA="$full_sha" OD_ID="$id" OD_FILE="$file" OD_LINE="$line" CUR_HEAD="$cur_head" node -e '
       const fs = require("fs"), cp = require("child_process"), e = process.env;
       if (!fs.existsSync(e.LEDGER)) { process.stdout.write("no"); process.exit(0); }
       const lines = fs.readFileSync(e.LEDGER, "utf8").split("\n").filter(Boolean);
@@ -254,6 +284,27 @@ cr_ledger_outside_dispositioned() {
           if (e.FULL_SHA === h) return true;
           if (!isHex(h) || !e.FULL_SHA.startsWith(h)) return false;
           return resolve(h) === e.FULL_SHA;
+      };
+      const isAncestor = (a, b) => {
+          try {
+              cp.execFileSync("git", ["merge-base", "--is-ancestor", a, b],
+                  { stdio: ["ignore", "ignore", "ignore"] });
+              return true;
+          } catch { return false; }
+      };
+      // HIMMEL-3360 prior-head path: a fixed verdict disposes only when its
+      // reason names a sha that resolves, sits on the current head, is not the
+      // prior head, and is not older than the prior head.
+      const priorPath = e.CUR_HEAD !== "" && e.CUR_HEAD !== e.FULL_SHA;
+      const fixedOk = (why) => {
+          if (!priorPath) return false;
+          const m = why.match(/\b[0-9a-f]{7,40}\b/);
+          if (!m) return false;
+          const fix = resolve(m[0]);
+          if (!fix || fix === e.FULL_SHA) return false;
+          const prior = resolve(e.FULL_SHA);
+          if (prior !== null && (fix === prior || isAncestor(fix, prior))) return false;
+          return isAncestor(fix, e.CUR_HEAD);
       };
       const SEP = String.fromCharCode(31);
       const amends = new Map();
@@ -283,7 +334,8 @@ cr_ledger_outside_dispositioned() {
           const why = typeof o.reason === "string" ? o.reason.trim() : "";
           const ticket = typeof o.deferred_to === "string" ? o.deferred_to.trim() : "";
           if ((o.verdict === "deferred" && /^[A-Z][A-Z0-9]*-[0-9]+$/.test(ticket) && why) ||
-              (o.verdict === "disproved" && why)) ok = true;
+              (o.verdict === "disproved" && why) ||
+              (o.verdict === "fixed" && why && fixedOk(why))) ok = true;
           else bad = true;
       }
       process.stdout.write(ok && !bad ? "yes" : "no");

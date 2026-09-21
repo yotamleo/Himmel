@@ -185,7 +185,7 @@ out1=$(
   ( for a in "${BASE_ANSWERS[@]}"; do stage "$a"; done
     stage y
     stage myprofile
-  ) | PATH="$p1" HOME="$h1" USERPROFILE="$(winpath "$h1")" HIMMELCTL_INTERACTIVE=1 \
+  ) | PATH="$p1" HIMMEL_PROVENANCE_DIR="$(winpath "$work/prov1")" HOME="$h1" USERPROFILE="$(winpath "$h1")" HIMMELCTL_INTERACTIVE=1 \
       HIMMELCTL_CACHE_DIR="$cache1_node" HIMMEL_LUNA_CONFIG_PATH="$cache1_node-luna-config.json" \
       HIMMELCTL_PROFILES_DIR="$profiles1_node" HIMMELCTL_REPO_ROOT="$(winpath "$fixture1")" \
       "$node_bin" "$wizard" install 2>&1
@@ -203,6 +203,16 @@ cache: <$(cat "$cachefile1")>
 saved: <$(cat "$savedfile1")>"
 grepq "$out1" "saved profile to" || fail "case1: expected a confirmation line naming the saved path (got: $out1)"
 echo "ok: case1 interactive install + accepted save writes a byte-identical named profile"
+# HIMMEL-3332 S5: the accepted save is recorded as a keep-class file create, in
+# the SAME session as the install (so it is inside begin..end, not a stray
+# implicit session of its own).
+ledger1="$work/prov1/provenance.jsonl"
+[ -f "$ledger1" ] || fail "case1: no provenance ledger at $ledger1"
+[ "$(jq -rs '[.[] | select(.kind=="file" and .class=="keep" and .op=="create" and (.path | endswith("myprofile.install-profile.json")))] | length' "$ledger1")" = "1" ] \
+  || fail "case1: expected one keep/create file row for the saved profile"
+[ "$(jq -rs '[.[].iid] | unique | length' "$ledger1")" = "1" ] || fail "case1: the saved-profile row must share the install's session"
+[ "$(jq -rs '.[-1].op' "$ledger1")" = "install-end" ] || fail "case1: the session must end AFTER the saved-profile row"
+echo "ok: case1 the saved profile is a keep-class file row inside the install session"
 
 # ── Case 2: save declined (empty answer) -> no file, install still exits 0 ──
 c2="$work/case2"; mkdir -p "$c2"
@@ -218,7 +228,7 @@ out2=$(
   ( for a in "${BASE_ANSWERS[@]}"; do stage "$a"; done
     stage y
     stage ""
-  ) | PATH="$p2" HOME="$h2" USERPROFILE="$(winpath "$h2")" HIMMELCTL_INTERACTIVE=1 \
+  ) | PATH="$p2" HIMMEL_PROVENANCE_DIR="$(winpath "$work/prov2")" HOME="$h2" USERPROFILE="$(winpath "$h2")" HIMMELCTL_INTERACTIVE=1 \
       HIMMELCTL_CACHE_DIR="$cache2_node" HIMMEL_LUNA_CONFIG_PATH="$cache2_node-luna-config.json" \
       HIMMELCTL_PROFILES_DIR="$profiles2_node" HIMMELCTL_REPO_ROOT="$(winpath "$fixture2")" \
       "$node_bin" "$wizard" install 2>&1
@@ -229,6 +239,9 @@ set -e
 [ ! -d "$profiles2_posix" ] || [ -z "$(ls -A "$profiles2_posix" 2>/dev/null)" ] \
   || fail "case2: no profile file should have been written on decline (found: $(ls -A "$profiles2_posix"))"
 echo "ok: case2 an empty answer declines the save; install still exits 0; nothing written"
+[ "$(jq -rs '[.[] | select(.class=="keep" and (.path // "" | endswith(".install-profile.json")))] | length' "$work/prov2/provenance.jsonl")" = "0" ] \
+  || fail "case2: a declined save must record no saved-profile row"
+echo "ok: case2 a declined save records nothing"
 
 # ── Case 3: --dry-run -> no prompt, no file (zero mutations) ────────────────
 c3="$work/case3"; mkdir -p "$c3"
@@ -240,7 +253,7 @@ profiles3_posix="$work/case3-profiles"
 profiles3_node=$(winpath "$profiles3_posix")
 fixture3="$work/case3-fixture"; make_fixture "$fixture3"
 set +e
-out3=$(PATH="$p3" HOME="$h3" USERPROFILE="$(winpath "$h3")" HIMMELCTL_INTERACTIVE=1 \
+out3=$(PATH="$p3" HIMMEL_PROVENANCE_DIR="$(winpath "$work/prov3")" HOME="$h3" USERPROFILE="$(winpath "$h3")" HIMMELCTL_INTERACTIVE=1 \
       HIMMELCTL_CACHE_DIR="$cache3_node" HIMMEL_LUNA_CONFIG_PATH="$cache3_node-luna-config.json" \
       HIMMELCTL_PROFILES_DIR="$profiles3_node" HIMMELCTL_REPO_ROOT="$(winpath "$fixture3")" \
       "$node_bin" "$wizard" install --dry-run 2>&1 <<INPUT
@@ -260,6 +273,8 @@ grepq "$out3" 'save this install profile' && fail "case3: --dry-run must NEVER o
 [ ! -d "$profiles3_posix" ] || [ -z "$(ls -A "$profiles3_posix" 2>/dev/null)" ] \
   || fail "case3: --dry-run must write nothing under the profiles dir (found: $(ls -A "$profiles3_posix"))"
 echo "ok: case3 --dry-run never offers to save and writes nothing"
+[ ! -e "$work/prov3" ] || fail "case3: --dry-run must not create a provenance ledger (found: $(ls -A "$work/prov3"))"
+echo "ok: case3 --dry-run writes no provenance ledger"
 
 # ── Case 4: --from-profile (non-interactive) -> no prompt, no hang, no file ─
 c4="$work/case4"; mkdir -p "$c4"
@@ -525,7 +540,7 @@ out8=$(
     stage existing
     sleep 1.5
     stage y
-  ) | PATH="$p8" HOME="$h8" USERPROFILE="$(winpath "$h8")" HIMMELCTL_INTERACTIVE=1 \
+  ) | PATH="$p8" HIMMEL_PROVENANCE_DIR="$(winpath "$work/prov8")" HOME="$h8" USERPROFILE="$(winpath "$h8")" HIMMELCTL_INTERACTIVE=1 \
       HIMMELCTL_CACHE_DIR="$cache8_node" HIMMEL_LUNA_CONFIG_PATH="$cache8_node-luna-config.json" \
       HIMMELCTL_PROFILES_DIR="$profiles8_node" HIMMELCTL_REPO_ROOT="$(winpath "$fixture8")" \
       "$node_bin" "$wizard" install 2>&1
@@ -538,6 +553,12 @@ grepq "$out8" 'saved profile to' || fail "case8: expected a confirmation line na
 cmp -s "$cache8_posix/install-profile.json" "$dest8" \
   || fail "case8: a confirmed overwrite must replace the old content with the byte-identical cache profile"
 echo "ok: case8 an existing regular file at the destination is overwritten once the operator confirms"
+ledger8="$work/prov8/provenance.jsonl"
+[ "$(jq -rs '[.[] | select(.kind=="file" and .class=="keep" and .op=="replace" and (.path | endswith("existing.install-profile.json")))] | length' "$ledger8")" = "1" ] \
+  || fail "case8: expected one keep/replace file row for the overwritten profile"
+[ -z "$(find "$work/prov8" -path '*provenance-backups*' -type f -name '*existing*' 2>/dev/null | head -1)" ] \
+  || fail "case8: a keep-class replace must NOT copy the operator's file into the ledger dir"
+echo "ok: case8 an overwritten saved profile is a keep-class replace row with no backup copy"
 
 # ── Case 9: a SYMLINK at the destination is refused, never written through ──
 symlink_probe="$work/symlink-probe"; mkdir -p "$symlink_probe"

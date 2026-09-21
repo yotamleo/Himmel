@@ -29,6 +29,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { which, resolvePowershell } = require('./helpers.js');
+const provLib = require('./provenance.js');
 
 const SYSTEMD_UNIT_NAME = 'telegram-bridge.service';
 const SYSTEMD_USER_UNIT_DIR = process.env.HIMMELCTL_SYSTEMD_USER_UNIT_DIR
@@ -113,6 +114,16 @@ function hasUnitFileNewline(s) {
   return /[\r\n]/.test(s);
 }
 
+// HIMMEL-3332 S5: one provenance row, never fatal — a ledger fault must not
+// fail the unit install (residue over breakage), it only warns.
+function provRow(recArgs) {
+  try {
+    provLib.provRecord(recArgs);
+  } catch (e) {
+    console.error(`himmelctl: WARN: provenance ledger not updated (${e.message})`);
+  }
+}
+
 function installSystemdUnit({ repoRoot, dryRun } = {}) {
   if (!repoRoot) return { ok: false, actions: [], detail: 'installSystemdUnit: repoRoot is required' };
   if (hasUnitFileNewline(repoRoot)) {
@@ -168,6 +179,21 @@ function installSystemdUnit({ repoRoot, dryRun } = {}) {
     return { ok: false, actions: [], detail: `'systemctl' not found on PATH — not a systemd/Linux host; ${SYSTEMD_UNIT_NAME} was NOT installed` };
   }
 
+  // HIMMEL-3332 S5: read the pre-state BEFORE the write — whether the unit file
+  // existed (a replace backs the prior bytes up) and whether linger was already
+  // on for this user (null = not determinable, recorded as such).
+  let unitPre = ['create', '--pre-absent'];
+  try {
+    if (fs.existsSync(UNIT_PATH)) unitPre = ['replace', '--pre-text', fs.readFileSync(UNIT_PATH, 'utf8'), '--backup'];
+  } catch (e) {
+    // unknown pre-state: recording it as absent would claim ownership of bytes
+    // this run replaces without keeping them, so record nothing for the file
+    unitPre = null;
+    console.error(`himmelctl: WARN: provenance pre-state of ${UNIT_PATH} unreadable (${e.message}) — not recording the unit file`);
+  }
+  let lingerPre = null;
+  try { lingerPre = lingerEnabled({ user: os.userInfo().username }); } catch (_e) { lingerPre = null; }
+
   try {
     fs.mkdirSync(SYSTEMD_USER_UNIT_DIR, { recursive: true });
     const tmp = `${UNIT_PATH}.tmp-${process.pid}`;
@@ -176,6 +202,7 @@ function installSystemdUnit({ repoRoot, dryRun } = {}) {
   } catch (e) {
     return { ok: false, actions: [], detail: `failed to write ${UNIT_PATH}: ${e.message}` };
   }
+  if (unitPre) provRow([unitPre[0], 'file', UNIT_PATH,...unitPre.slice(1), '--post-file', UNIT_PATH, '--scope', 'user', '--class', 'code']);
 
   // codex-1 CR fix (round 10): everything below this point runs AFTER the
   // first durable side effect (the unit file is now really on disk at
@@ -209,6 +236,8 @@ function installSystemdUnit({ repoRoot, dryRun } = {}) {
         : `unit file IS written at ${UNIT_PATH} and systemd IS reloaded, but systemctl --user enable --now ${SYSTEMD_UNIT_NAME} failed (rc=${enable.status}): ${(enable.stderr || '').trim()} — the unit is NOT enabled and NOT running. Remediation: fix the enable error and re-run install, or uninstall to remove the file.`
     );
   }
+  provRow(['register', 'unit', '-', '--unit', SYSTEMD_UNIT_NAME, '--scope', 'user', '--class', 'code',
+    '--field', `linger_preexisted=${JSON.stringify(lingerPre)}`]);
   return { ok: true, actions, detail: `${SYSTEMD_UNIT_NAME} installed at ${UNIT_PATH}, enabled and started` };
 }
 

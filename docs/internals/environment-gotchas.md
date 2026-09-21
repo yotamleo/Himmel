@@ -893,7 +893,7 @@ The fix is an injected sleep, not a smaller number. Every wall-clock wait in a
 script the suites drive goes through one command word the caller can replace:
 
 - `CHECK_CI_SLEEP_CMD` (`scripts/check-ci.sh`, default `sleep`) — covers the
-  grace-window probe, the `--settle` pause and the `--escalate` nap, including
+  grace-window probe and the `--settle` pause (the `--escalate` nap it once covered is retired, HIMMEL-3360), including
   the validated 120s fallback.
 - `MERGE_ON_GREEN_SLEEP_CMD` (`scripts/handover/merge-on-green.sh`, default
   `sleep`) — the post-merge confirmation poll.

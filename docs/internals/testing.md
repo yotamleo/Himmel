@@ -250,7 +250,11 @@ runs a seeded install/uninstall round trip on a real VirtualBox clone. The
 details are in `docs/setup/vms.md`. The script is deliberately not named
 `test-*.sh`, so neither `run-shell-tests.sh` nor the impacted map ever picks it
 up. Its header carries the `STATION-ONLY: never run from CI` marker. CI runs
-only the hermetic `scripts/vm/test-provenance-roundtrip-dry.sh`.
+only the hermetic `scripts/vm/test-provenance-roundtrip-dry.sh` and
+`scripts/vm/test-assert-provenance.sh`. The latter feeds `assert-provenance.sh`
+and `seed-provenance.sh` synthetic inventories through the `INV_BASE` seam (no
+VM, linux-only) and covers the state, stub, `claude.json` and
+armed-crontab checks.
 
 ## What counts as CI evidence
 
