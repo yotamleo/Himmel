@@ -84,7 +84,8 @@ home_is_scratch() {
 # ponytail: a TEXT heuristic, not a data-flow check. "Sets the var" is `VAR=1`,
 # `VAR: 1`, `'VAR': '1'`, `VAR = "1"`, `$env:VAR = 1` -- the name, an optional
 # closing quote/bracket, `=` or `:`, an optional opening quote, and exactly `1`
-# (no `10` / `1x`). It will NOT catch a fence lift spelled another way (a computed
+# followed by whitespace, a quote, or one of `;&|,)}]` and backtick (no `10` /
+# `1x` / `1.5` / `1-x`; a `1` ended by any other character is a false negative). It will NOT catch a fence lift spelled another way (a computed
 # variable name, `Set-Item Env:`, `[Environment]::SetEnvironmentVariable`, a
 # `process.env` object built from a variable name) or the value carried in a
 # variable (`v=1; ... $v`). "Scratch HOME" is home_is_scratch above, with its own
@@ -92,7 +93,7 @@ home_is_scratch() {
 # that friction is the point.
 scan_callers() {
   local root="$1"; shift
-  local set_re="${V}[]'\"}]*[[:space:]]*[:=][[:space:]]*['\"]?1([^A-Za-z0-9_]|\$)"
+  local set_re="${V}[]'\"}]*[[:space:]]*[:=][[:space:]]*['\"]?1([][:space:];&|,)}'\"\`]|\$)"
   local f rel a allowed rc list
   # A failed traversal (unreadable subtree) is reported, not scanned around.
   list="$(find "$root/scripts" -path '*/node_modules' -prune -o -type f \
@@ -145,6 +146,8 @@ printf '$env:%s = 1\n& uninstall.ps1 -Yes\n' "$V" > "$fx/scripts/ps-env.ps1"
 # HIMMEL-3343: uninstall.sh lifts the fence only for exactly 1, so =10 / =1x are not lifts.
 printf '#!/usr/bin/env bash\n%s=10 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-value-10.sh"
 printf '#!/usr/bin/env bash\n%s=1x bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-value-1x.sh"
+printf '#!/usr/bin/env bash\n%s=1.5 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-value-1dot5.sh"
+printf '#!/usr/bin/env bash\n%s=1-extra bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-value-1dash.sh"
 # a JS operator-path caller, on the allowlist below.
 printf "runSpawn(cmd, { env: { ...process.env, %s: '1' } });\n" "$V" > "$fx/scripts/wizard.js"
 # only unsets / reads it.
@@ -182,6 +185,10 @@ check "=10 is not a fence lift (not flagged)" \
   "$(printf '%s' "$got" | grep -c 'scripts/test-value-10.sh')" "0"
 check "=1x is not a fence lift (not flagged)" \
   "$(printf '%s' "$got" | grep -c 'scripts/test-value-1x.sh')" "0"
+check "=1.5 is not a fence lift (not flagged)" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-value-1dot5.sh')" "0"
+check "=1-extra is not a fence lift (not flagged)" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-value-1dash.sh')" "0"
 check "allowlisted file passes" \
   "$(printf '%s' "$got" | grep -c 'scripts/wizard.js')" "0"
 check "file that only unsets/reads the var passes" \

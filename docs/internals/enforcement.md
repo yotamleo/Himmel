@@ -3956,7 +3956,7 @@ allowlist in `scripts/test-uninstall-real-home-callers.sh` (today
 `scripts/himmelctl/bin.js` and the remedy text in `scripts/uninstall.sh`, a reason
 each). "Sets the var to 1" covers `VAR=1`, quoted or numeric JS keys/values
 (`'VAR': 1`, `VAR: '1'`) and PowerShell `$env:VAR = 1`, and only exactly `1` (not
-`10` / `1x`). That suite is a text heuristic and says so — it does not follow a
+`10` / `1x` / `1.5`). That suite is a text heuristic and says so — it does not follow a
 `HOME` set through a helper function or sourced file, nor an env block passed as a
 variable; adding an operator-path caller means adding it to the allowlist on
 purpose.
