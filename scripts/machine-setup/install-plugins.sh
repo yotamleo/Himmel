@@ -156,18 +156,21 @@ PROV_SETTINGS_FILE="$SETTINGS_FILE"   # the file `claude plugin install --scope`
 # Read BEFORE the CLI call that could create the thing: `claude plugin install`
 # writes enabledPlugins[<spec>]=true itself, so afterwards "already there" and
 # "just installed" are indistinguishable. A `false` value still counts — the
-# operator declared it. A settings file that exists but cannot be parsed reads
-# as "declared": a wrong "no" would let uninstall remove the operator's own
+# operator declared it. A settings file that exists but cannot be parsed, or
+# parses into the wrong shape, reads as "declared": a wrong "no" would let uninstall remove the operator's own
 # entry, a wrong "yes" only leaves residue.
 PROV_CFG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 PROV_SCOPE="$SCOPE"; [[ "$SCOPE" == local ]] && PROV_SCOPE=project   # the ledger has no `local` scope; cli_scope keeps it
 
 # json_declares <file> <jq-test> <a> [<b>] — file exists and the test (over --arg a/b) holds;
-# a file that exists but does not parse reads as "declared" (unknown = keep), an absent one does not.
+# a file that exists but cannot be read as that shape (unparseable, or valid JSON of the
+# wrong shape) reads as "declared" (unknown = keep), an absent one does not. Only jq -e's
+# exit 1 (test evaluated to false/null) means "not declared"; every other code is unknown.
 json_declares() {
   [[ -f "$1" ]] || return 1
-  jq -e --arg a "$3" --arg b "${4:-}" "$2" "$1" >/dev/null 2>&1 && return 0
-  jq -e . "$1" >/dev/null 2>&1 && return 1
+  local rc=0
+  jq -e --arg a "$3" --arg b "${4:-}" "$2" "$1" >/dev/null 2>&1 || rc=$?
+  [[ $rc -eq 1 ]] && return 1
   return 0
 }
 settings_declares() {   # <section> <key> — key present in this scope's settings file

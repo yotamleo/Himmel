@@ -295,10 +295,47 @@ assert_eq "14 valid registry without the plugin: preexisted false" false \
 assert_eq "14 valid registry without the marketplace: preexisted false" false \
     "$(field "$(row marketplace claude-plugins-official)" .preexisted)"
 
+# ── Case 15: a wrong-SHAPE settings file reads as pre-existing (unknown = keep) ─
+# HIMMEL-3353: valid JSON whose section is not an object makes the jq probe ERROR
+# (exit 5), which is not the same as "key absent" (exit 1) — ownership is unknown.
+fresh_env wrongshape-settings
+mkdir -p "$HOME/.claude"
+echo '{ "enabledPlugins": "invalid", "extraKnownMarketplaces": "invalid" }' > "$HOME/.claude/settings.json"
+# (rc is not asserted: the later force-enable step's own jq errors on this shape
+# and aborts the run after the rows are written — a separate concern from the probe.)
+out=$(run_install --scope user)
+assert_eq "15 wrong-shape enabledPlugins: plugin reads preexisted" true \
+    "$(field "$(row plugin himmel-ops@himmel)" .preexisted)"
+assert_eq "15 wrong-shape extraKnownMarketplaces: marketplace reads preexisted" true \
+    "$(field "$(row marketplace himmel)" .preexisted)"
+
+# ── Case 16: a wrong-SHAPE CLI registry reads as pre-existing (unknown = keep) ──
+fresh_env wrongshape-registry
+mkdir -p "$HOME/.claude/plugins"
+echo '{ "plugins": "invalid" }' > "$HOME/.claude/plugins/installed_plugins.json"
+echo '"invalid"' > "$HOME/.claude/plugins/known_marketplaces.json"
+out=$(run_install --scope user); rc=$?
+assert_eq "16 install rc" 0 "$rc"
+assert_eq "16 wrong-shape installed_plugins.json: plugin reads preexisted" true \
+    "$(field "$(row plugin himmel-ops@himmel)" .preexisted)"
+assert_eq "16 wrong-shape known_marketplaces.json: marketplace reads preexisted" true \
+    "$(field "$(row marketplace himmel)" .preexisted)"
+
+# ── Case 17: a well-shaped settings file without the key reads as NOT pre-existing (control) ─
+fresh_env goodsettings
+mkdir -p "$HOME/.claude"
+echo '{ "enabledPlugins": { "other@elsewhere": true }, "extraKnownMarketplaces": { "elsewhere": {} } }' > "$HOME/.claude/settings.json"
+out=$(run_install --scope user); rc=$?
+assert_eq "17 install rc" 0 "$rc"
+assert_eq "17 valid settings without the plugin: preexisted false" false \
+    "$(field "$(row plugin himmel-ops@himmel)" .preexisted)"
+assert_eq "17 valid settings without the marketplace: preexisted false" false \
+    "$(field "$(row marketplace himmel)" .preexisted)"
+
 if [ "$(real_ledger_sha)" = "$REAL_LEDGER_BEFORE" ]; then
-    pass "15 the real ~/.himmel ledger is untouched by this suite"
+    pass "18 the real ~/.himmel ledger is untouched by this suite"
 else
-    fail "15 the real ~/.himmel ledger changed during this suite (a case leaked out of its scratch HOME)"
+    fail "18 the real ~/.himmel ledger changed during this suite (a case leaked out of its scratch HOME)"
 fi
 
 echo ""
