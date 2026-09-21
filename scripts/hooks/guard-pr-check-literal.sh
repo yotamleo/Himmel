@@ -116,7 +116,9 @@ case "$tool" in Bash|"") ;; *) exit 0 ;; esac
 # into a no-op. Quotes and backslashes are dropped first, as the shell drops
 # them, so 'scripts/cr/x', scripts/cr/\x and $'scripts/cr/x' all read as
 # what they spell.
-flat=${cmd//[\'\"\\]/}
+# A backslash-newline is a line continuation: the shell joins it away first.
+flat=${cmd//$'\\\n'/}
+flat=${flat//[\'\"\\]/}
 case "$flat" in *pr-check*|*/cr/*) ;; *) exit 0 ;; esac
 
 # The canonical fence runs the anchor's copy through $himmel_repo, so it is

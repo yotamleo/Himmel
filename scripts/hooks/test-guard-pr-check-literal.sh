@@ -207,6 +207,9 @@ bash scripts/cr/*
 f=pr-check-context.sh; bash scripts/cr/$f
 bash scripts/cr/$(echo pr-check-context.sh)
 VARIANTS
+run "a line continuation inside the name on an edited branch -> deny" 2 \
+    "$(payload "bash scripts/cr/pr-check-con\\
+text.sh" "$WT")" "$HR"
 # Mentioning the file is not running it; the canonical forms stay usable.
 while IFS= read -r v; do
     run "mention [$v] on an edited branch -> no-op" 0 "$(payload "$v" "$WT")" "$HR"
