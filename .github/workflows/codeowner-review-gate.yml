@@ -46,35 +46,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # HIMMEL-3380: the check is required, so there is no bootstrap exemption.
+      # Any failure to fetch the script (a 404 included) fails this step, and the
+      # evaluate step below then never runs, so the job fails closed on every base.
       - name: Fetch the gate script from the base commit
-        id: fetch
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           script="$RUNNER_TEMP/codeowner-review-gate.mjs"
-          err="$RUNNER_TEMP/fetch.err"
-          if gh api -H "Accept: application/vnd.github.raw" \
-               "repos/$REPO/contents/scripts/ci/codeowner-review-gate.mjs?ref=$BASE_SHA" \
-               > "$script" 2> "$err"; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          elif grep -q "HTTP 404" "$err" && [ "$BASE_REF" = "$DEFAULT_BRANCH" ]; then
-            # Only before this workflow's own introducing PR has merged: the
-            # default branch has no script yet and the check is not required yet
-            # either. A missing script on any other base fails closed below.
-            echo "::notice title=codeowner-review-gate::gate script is not on base $BASE_SHA yet (bootstrap); nothing to enforce"
-            echo "present=false" >> "$GITHUB_OUTPUT"
-          else
-            cat "$err"
-            exit 1
-          fi
+          gh api -H "Accept: application/vnd.github.raw" \
+            "repos/$REPO/contents/scripts/ci/codeowner-review-gate.mjs?ref=$BASE_SHA" \
+            > "$script"
+          [ -s "$script" ]
 
       - name: Evaluate code-owner review
-        if: steps.fetch.outputs.present == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}

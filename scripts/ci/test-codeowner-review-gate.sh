@@ -181,6 +181,39 @@ reset_fx; FX_OWNERS=$'* @yotamleo\n/scripts/ @scriptowner'; FX_FILES='other/scri
 FX_REVIEWS="[$(rv scriptowner APPROVED head111)]"
 run_gate; expect "/dir/ is anchored to the root" fail "@yotamleo"
 
+# A newline in a filename is an ordinary character to CODEOWNERS: a directory rule
+# must still own it, never let the path fall through to the global `*` owner. The
+# files fixture is a JSON array here so the newline reaches the matcher intact.
+# shellcheck disable=SC2016  # the JSON \n escape is literal on purpose
+reset_fx; FX_OWNERS=$'* @yotamleo\n/scripts/ @scriptowner'; FX_FILES='["scripts/a\nb.sh"]'
+FX_REVIEWS="[$(rv scriptowner APPROVED head111)]"
+run_gate; expect "newline in a basename under /dir/ -> that rule's owner, not the global one -> pass" pass
+
+# shellcheck disable=SC2016
+reset_fx; FX_OWNERS=$'* @yotamleo\n/scripts/ @scriptowner'; FX_FILES='["scripts/a\nb.sh"]'
+FX_REVIEWS="[$(rv yotamleo APPROVED head111)]"
+run_gate; expect "newline under /dir/: the global owner alone does not cover it -> fail" fail "@scriptowner"
+
+# shellcheck disable=SC2016
+reset_fx; FX_OWNERS=$'* @yotamleo\n/scripts/ @scriptowner'; FX_FILES='["scripts/a\nb/c.sh"]'
+FX_REVIEWS="[$(rv scriptowner APPROVED head111)]"
+run_gate; expect "newline in a nested directory name under /dir/ -> pass" pass
+
+# shellcheck disable=SC2016
+reset_fx; FX_OWNERS=$'* @yotamleo\n/scripts @scriptowner'; FX_FILES='["scripts/a\nb.sh"]'
+FX_REVIEWS="[$(rv scriptowner APPROVED head111)]"
+run_gate; expect "newline under a slashless /dir rule -> pass" pass
+
+# shellcheck disable=SC2016
+reset_fx; FX_OWNERS=$'* @yotamleo\n/scripts/**/x.sh @scriptowner'; FX_FILES='["scripts/a\nb/x.sh"]'
+FX_REVIEWS="[$(rv scriptowner APPROVED head111)]"
+run_gate; expect "newline where ** spans directories -> pass" pass
+
+# shellcheck disable=SC2016
+reset_fx; FX_OWNERS=$'* @yotamleo\n/scripts/ @scriptowner'; FX_FILES='["other/a\nb.sh"]'
+FX_REVIEWS="[$(rv scriptowner APPROVED head111)]"
+run_gate; expect "newline outside /dir/ still falls to the global owner -> fail" fail "@yotamleo"
+
 reset_fx; FX_OWNERS=$'# comment line\n\n* @yotamleo # trailing comment'
 FX_REVIEWS="[$(rv yotamleo APPROVED head111)]"
 run_gate; expect "comments and blank lines are ignored" pass
@@ -283,6 +316,10 @@ expect "live: a filename with trailing whitespace is matched byte-exact -> fail"
 LIVE_FILES='"pad.md"' LIVE_OWNERS='* @other\n/pad.md @yotamleo' live_case outsider User '{"permission":"read","role_name":"read"}' "$APPROVED_HEAD"
 expect "live: the same name without the space matches /pad.md -> pass" pass
 
+# A newline in a filename (one @json string) under a directory rule: that rule's owner.
+LIVE_FILES='"scripts/a\nb.sh"' LIVE_OWNERS='* @other\n/scripts/ @yotamleo' live_case outsider User '{"permission":"read","role_name":"read"}' "$APPROVED_HEAD"
+expect "live: a newline filename under /scripts/ resolves to that rule's owner -> pass" pass
+
 # ---------------------------------------------------------------- part 3
 echo "== part 3: workflow static assertions =="
 
@@ -327,10 +364,10 @@ wf_violations() {
   # `edited` covers a retarget: the new base carries its own CODEOWNERS and base sha.
   grep -qE 'types: *\[opened, synchronize, reopened, ready_for_review, edited\]' "$s" || echo "pull_request types wrong"
   grep -qE 'types: *\[submitted, dismissed, edited\]' "$s" || echo "pull_request_review types wrong"
-  # A missing script may only pass as the bootstrap on the default branch.
-  # shellcheck disable=SC2016  # the literal `$BASE_REF` text is the pattern
-  unconfined=$(grep -F 'HTTP 404' "$s" | grep -vF '"$BASE_REF" = "$DEFAULT_BRANCH"' || true)
-  [ -z "$unconfined" ] || echo "404 bootstrap is not confined to the default branch"
+  # HIMMEL-3380: the check is required, so a missing gate script fails closed on
+  # EVERY base. No 404 exemption, no default-branch test, and nothing downstream
+  # may be gated on the fetch having "found" a script.
+  grep -qE 'HTTP 404|default_branch|DEFAULT_BRANCH|BASE_REF|bootstrap|present=|steps\.fetch\.outputs' "$s" && echo "has a 404/bootstrap exemption branch"
   grep -qE '^    name: codeowner-review-gate$' "$s" || echo "job name is not codeowner-review-gate"
   return 0
 }
@@ -388,7 +425,10 @@ mutate "expression in a one-line run" "interpolated in run" 's|^        run: \|$
 mutate "a wrong job name"            "job name"            's/^    name: codeowner-review-gate$/    name: gate/'
 mutate "a missing review trigger"    "pull_request_review" 's/^  pull_request_review:/  issue_comment:/'
 mutate "a dropped edited trigger"    "pull_request types"  '/ready_for_review/s/, edited\]$/]/'
-mutate "an unconfined 404 bootstrap" "404 bootstrap"       's|^    steps:|    steps:\n      - run: grep -q "HTTP 404" err|'
+mutate "a 404 bootstrap branch"      "404/bootstrap"       's|^    steps:|    steps:\n      - run: grep -q "HTTP 404" err|'
+# shellcheck disable=SC2016  # the literal $BASE_REF text must reach sed
+mutate "a default-branch exemption" "404/bootstrap"       's|^    steps:|    steps:\n      - run: test "$BASE_REF" = "$DEFAULT_BRANCH"|'
+mutate "a step gated on the fetch"   "404/bootstrap"       's|^    steps:|    steps:\n      - if: steps.fetch.outputs.present == '"'"'true'"'"'\n        run: true|'
 
 echo
 if [ "$failures" -eq 0 ]; then
