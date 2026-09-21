@@ -71,7 +71,7 @@ const e=l.validateConfig(JSON.parse(require('fs').readFileSync(process.argv[2],'
 console.log(e.length===0?'valid':'invalid: '+e.join('; '));" "$lunacfg" "$(winpath "$1")"
 }
 
-nbak() { find "$1/.himmel" -maxdepth 1 -name 'config.json.bak-*' 2>/dev/null | wc -l | tr -d ' '; }
+nbak() { find "$1/.himmel" -maxdepth 1 -name 'config.json.bak-*' 2>/dev/null | wc -l | tr -d ' '; }  # gnu-ok: BSD find supports -maxdepth
 nlines() { printf '%s\n' "$1" | grep -c "$2"; }
 
 # ── fixtures (user values are deliberately non-default) ─────────────────────
@@ -126,7 +126,7 @@ migrate_case() {
     check "b/$name: every user value kept" "$(jq -c "$jqx" "$h/.himmel/config.json")" "$wantv"
     check "b/$name: one line per filled field" "$(nlines "$out" 'migrated ~/.himmel/config.json')" "$want"
     check "b/$name: exactly one backup" "$(nbak "$h")" "1"
-    local bak; bak=$(find "$h/.himmel" -maxdepth 1 -name 'config.json.bak-*' | head -1)
+    local bak; bak=$(find "$h/.himmel" -maxdepth 1 -name 'config.json.bak-*' | head -1)  # gnu-ok: BSD find supports -maxdepth
     check "b/$name: the backup is byte-exact" "$(sha "$bak")" "$(sha "$orig")"
     check "b/$name: the ledger records the config rewrite with a backup" \
         "$(jq -rs '[.[] | select(.kind=="json-key" and .op=="replace" and (.path|endswith("config.json")))] | length >= 1' "$h/prov/provenance.jsonl" 2>/dev/null)" "true"
@@ -163,7 +163,7 @@ before=$(sha "$hD/.himmel/config.json")
 outD=$(run_install "$hD"); rcD=$?
 check "d invalid JSON: install still refuses (rc non-zero)" "$([ "$rcD" -ne 0 ] && echo yes || echo no)" "yes"
 check "d invalid JSON: file untouched" "$(sha "$hD/.himmel/config.json")" "$before"
-check "d invalid JSON: no backup or temp file written" "$(find "$hD/.himmel" -maxdepth 1 -name 'config.json.*' | wc -l | tr -d ' ')" "0"
+check "d invalid JSON: no backup or temp file written" "$(find "$hD/.himmel" -maxdepth 1 -name 'config.json.*' | wc -l | tr -d ' ')" "0"  # gnu-ok: BSD find supports -maxdepth
 check "d invalid JSON: names the file" "$(printf '%s\n' "$outD" | grep -c "$hD/.himmel/config.json")" "$(printf '%s\n' "$outD" | grep -c "$hD/.himmel/config.json")"
 check "d invalid JSON: a hand-fix command with the backup path" \
     "$(printf '%s\n' "$outD" | grep -c "hand-fix: cp .*config.json.hand-fix.bak")" "1"
