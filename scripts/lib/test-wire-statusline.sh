@@ -549,4 +549,59 @@ else
   echo "ok 32 an unenumerable hud dir fails the purge and the retry still purges"
 fi
 
+# 33-36. HIMMEL-3332 S4: the hud config drop records `file create|replace|noop`
+# (row hud-config, scope user, class code, backup on replace) and the cache purge
+# records a `tree` row class state.
+hud_rows() { jq -c --arg p "$1" 'select(.kind == "file" and (.path | endswith($p)))' "$HIMMEL_PROVENANCE_DIR/provenance.jsonl"; }
+sha_of() { sha256sum "$1" | cut -d' ' -f1; }
+cfg33="$TMP/cfg33"; hud33="$cfg33/plugins/claude-hud"
+proj33="$TMP/proj33"; mkdir -p "$proj33/.claude" "$hud33"
+s33="$proj33/.claude/settings.json"
+# a user-edited config: their own customLineCommand, plus a display key of theirs
+printf '{"display":{"customLineCommand":"echo mine","showPromptCache":false}}\n' > "$hud33/config.json"
+chmod 640 "$hud33/config.json"
+seed33="$(sha_of "$hud33/config.json")"
+CLAUDE_CONFIG_DIR="$cfg33" bash "$HELPER" "$s33" "$REPO_ROOT" >/dev/null
+row33="$(hud_rows "cfg33/plugins/claude-hud/config.json")"
+[ "$(printf '%s\n' "$row33" | grep -c .)" = 1 ] || fail "33: want exactly one hud config file row, got: $row33"
+[ "$(printf '%s' "$row33" | jq -r '[.op, .scope, .class, .manifest_row, .pre.state, .pre.sha, .pre.mode] | join(",")')" \
+  = "replace,user,code,hud-config,present,$seed33,0640" ] \
+  || fail "33: the hud config replace row is wrong: $row33"
+bk33="$(printf '%s' "$row33" | jq -r .pre.backup)"
+[ "$([ -f "$bk33" ] && sha_of "$bk33")" = "$seed33" ] || fail "33: the backup does not hold the user's prior config bytes ($bk33)"
+[ "$(printf '%s' "$row33" | jq -r .post.sha)" = "$(sha_of "$hud33/config.json")" ] \
+  || fail "33: post.sha does not match the config that was published"
+[ "$(jq -r .display.customLineCommand "$hud33/config.json")" != "echo mine" ] \
+  || fail "33: behaviour changed — the install must still overwrite the config"
+echo "ok 33 a replaced hud config is recorded and its prior bytes are backed up"
+
+cfg34="$TMP/cfg34"; hud34="$cfg34/plugins/claude-hud"
+proj34="$TMP/proj34"; mkdir -p "$proj34/.claude"
+CLAUDE_CONFIG_DIR="$cfg34" bash "$HELPER" "$proj34/.claude/settings.json" "$REPO_ROOT" >/dev/null
+row34="$(hud_rows "cfg34/plugins/claude-hud/config.json")"
+[ "$(printf '%s' "$row34" | jq -r '[.op, .pre.state, .post.sha] | join(",")')" = "create,absent,$(sha_of "$hud34/config.json")" ] \
+  || fail "34: a first drop must record create/absent: $row34"
+# 35. an unchanged re-wire is a noop, with no backup and no second purge
+CLAUDE_CONFIG_DIR="$cfg34" bash "$HELPER" "$proj34/.claude/settings.json" "$REPO_ROOT" >/dev/null
+[ "$(hud_rows "cfg34/plugins/claude-hud/config.json" | tail -n 1 | jq -r '[.op, .pre.sha == .post.sha, .pre.backup] | map(tostring) | join(",")')" = "noop,true,null" ] \
+  || fail "35: an unchanged hud config must record noop with pre.sha == post.sha and no backup"
+echo "ok 34-35 a first hud config drop records create/absent and an unchanged re-wire records noop"
+
+# 36. the purge, when the wiring changed, is one tree row class state
+cfg36="$TMP/cfg36"; hud36="$cfg36/plugins/claude-hud"
+proj36="$TMP/proj36"; mkdir -p "$proj36/.claude" "$hud36"
+printf '{"display":{"showPromptCache":false}}\n' > "$hud36/config.json"
+seed_hud_cache "$hud36"
+CLAUDE_CONFIG_DIR="$cfg36" bash "$HELPER" "$proj36/.claude/settings.json" "$REPO_ROOT" >/dev/null
+[ ! -e "$hud36/transcript-cache" ] || fail "36: precondition — the purge did not run"
+tree36="$(jq -c --arg p "cfg36/plugins/claude-hud" 'select(.kind == "tree" and (.path | endswith($p)))' "$HIMMEL_PROVENANCE_DIR/provenance.jsonl")"
+[ "$(printf '%s\n' "$tree36" | grep -c .)" = 1 ] || fail "36: want exactly one purge tree row, got: $tree36"
+[ "$(printf '%s' "$tree36" | jq -r '[.scope, .class, .manifest_row] | join(",")')" = "user,state,hud-config" ] \
+  || fail "36: the purge tree row is wrong: $tree36"
+# a wire that purged nothing records no tree row
+CLAUDE_CONFIG_DIR="$cfg36" bash "$HELPER" "$proj36/.claude/settings.json" "$REPO_ROOT" >/dev/null
+[ "$(jq -c --arg p "cfg36/plugins/claude-hud" 'select(.kind == "tree" and (.path | endswith($p)))' "$HIMMEL_PROVENANCE_DIR/provenance.jsonl" | grep -c .)" = 1 ] \
+  || fail "36: a re-wire that purged nothing must not record another tree row"
+echo "ok 36 a cache purge records one tree row class state and a no-purge wire records none"
+
 echo "ALL PASS"

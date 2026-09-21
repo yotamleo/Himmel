@@ -74,6 +74,9 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 norm() { jq -rn --arg v "$1" '$v'; }
 
 work=$(mktemp -d)
+# HIMMEL-3332: adopt.sh records what it installs; keep every run out of the real
+# ~/.himmel/provenance.jsonl (individual cases below pin their own ledger).
+export HIMMEL_PROVENANCE_DIR="$work/prov"
 
 # HIMMEL-842 CR round-2 (F1): scripts/jira/dist + scripts/jira/node_modules are
 # gitignored build artifacts that MAY already exist in this checkout (a primary
@@ -141,6 +144,12 @@ chmod +x "$work/bin/claude"
 for _tool in bash git jq python3 grep sed cat cp mv rm ln mkdir chmod diff wc tr head tail basename dirname mktemp sort cut xargs; do
   link_hermetic_tool "$_tool"
 done
+# HIMMEL-3332: adopt.sh records what it installs; provenance.sh (and copy_recorded's
+# cmp) need these under the scrubbed PATH, or every record warns instead of writing.
+for _tool in date stat uname id awk cmp find; do
+  link_hermetic_tool "$_tool"
+done
+if command -v sha256sum >/dev/null 2>&1; then link_hermetic_tool sha256sum; else link_hermetic_tool shasum; fi
 
 # Derive the expected suffix from an INDEPENDENT platform probe, never from
 # HERMETIC_EXE_SUFFIX — the very variable link_hermetic_tool writes with.
@@ -2091,6 +2100,89 @@ esac
 [ "$(jq '.hooks.PreToolUse | length' "$s2892")" = "4" ] \
   || fail "HIMMEL-2892 (d): expected 4 PreToolUse stanzas (2 seeded + the 2 genuinely-absent himmel hooks appended), got $(jq '.hooks.PreToolUse | length' "$s2892")"
 echo "ok: HIMMEL-2892 the hook block merges into an existing settings.json (foreign matcher + co-located entry + adopter matcher/timeout preserved; himmel command repointed in place)"
+
+# ── 19x. HIMMEL-3332 S4: copy_portable + the user-scope gate copies record what
+# they overwrite. Every copy into the adopter's tree is one `file` row in the
+# install-provenance ledger; an OVERWRITE keeps the user's bytes (and mode) in a
+# backup, so uninstall can put them back (HIMMEL-3310: a same-named user file was
+# silently gone at install time). Scratch HOME + scratch ledger throughout.
+prov_sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
+prov_mode() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"; }
+# prov_row <ledger> <path-suffix> — the newest `file` row whose path ends in <suffix>
+prov_row() { jq -c --arg s "$2" 'select(.kind=="file" and (.path|endswith($s)))' "$1" | tail -n 1; }
+
+p4home="$work/p4-home"; mkdir -p "$p4home"
+p4led="$work/p4-ledger"
+p4proj="$work/p4-proj"; mkdir -p "$p4proj/scripts"
+printf '#!/bin/sh\necho user-owned worktree.sh\n' > "$p4proj/scripts/worktree.sh"
+chmod 0755 "$p4proj/scripts/worktree.sh"
+p4seed_sha="$(prov_sha "$p4proj/scripts/worktree.sh")"
+HOME="$p4home" HIMMEL_PROVENANCE_DIR="$p4led" bash "$adopt" --profile core --scope project --target "$p4proj" >/dev/null
+[ -s "$p4led/provenance.jsonl" ] || fail "HIMMEL-3332 S4: copy_portable wrote no ledger"
+row="$(prov_row "$p4led/provenance.jsonl" /scripts/worktree.sh)"
+[ -n "$row" ] || fail "HIMMEL-3332 S4: no file row for the overwritten scripts/worktree.sh"
+[ "$(jq -r '[.op,.class,.scope,.manifest_row,.pre.state,.pre.sha,.pre.mode]|join(",")' <<< "$row")" = "replace,code,project,adopter-scripts,present,$p4seed_sha,0755" ] \
+  || fail "HIMMEL-3332 S4: overwritten worktree.sh row wrong: $row"
+p4bk="$(jq -r '.pre.backup' <<< "$row")"
+[ "$([ -f "$p4bk" ] && prov_sha "$p4bk")" = "$p4seed_sha" ] \
+  || fail "HIMMEL-3332 S4: the backup is missing or is not the user's original bytes ($p4bk)"
+[ "$(prov_mode "$p4bk")" = "755" ] || fail "HIMMEL-3332 S4: the backup lost the user's mode"
+[ "$(jq -r '.post.sha' <<< "$row")" = "$(prov_sha "$repo_root/scripts/worktree.sh")" ] \
+  || fail "HIMMEL-3332 S4: post.sha is not the himmel copy's sha"
+row="$(prov_row "$p4led/provenance.jsonl" /scripts/hooks/block-edit-on-main.sh)"
+[ "$(jq -r '[.op,.pre.state,.class]|join(",")' <<< "$row")" = "create,absent,code" ] \
+  || fail "HIMMEL-3332 S4: a copy into a clean target must be a create row: $row"
+[ "$(jq -sr '[.[]|select(.kind=="file" and .manifest_row=="adopter-scripts")]|length' "$p4led/provenance.jsonl")" = "13" ] \
+  || fail "HIMMEL-3332 S4: expected 13 file rows (one per PORTABLE_FILES entry)"
+echo "ok: HIMMEL-3332 S4 copy_portable records create + replace rows; the user's bytes and mode are backed up"
+
+# a re-run finds our own bytes already there: noop rows, and NO new backups
+p4bk_count="$(find "$p4led/provenance-backups" -type f | wc -l | tr -d ' ')"
+HOME="$p4home" HIMMEL_PROVENANCE_DIR="$p4led" bash "$adopt" --profile core --scope project --target "$p4proj" >/dev/null
+row="$(prov_row "$p4led/provenance.jsonl" /scripts/worktree.sh)"
+[ "$(jq -r '[.op,.pre.sha,(.pre.backup|tostring)]|join(",")' <<< "$row")" = "noop,$(jq -r .post.sha <<< "$row"),null" ] \
+  || fail "HIMMEL-3332 S4: a re-run over our own copy must record noop with no backup: $row"
+[ "$(find "$p4led/provenance-backups" -type f | wc -l | tr -d ' ')" = "$p4bk_count" ] \
+  || fail "HIMMEL-3332 S4: a noop re-run must not take another backup"
+echo "ok: HIMMEL-3332 S4 re-run records noop, takes no backup"
+
+# --dry-run writes nothing to the ledger and says what it would record
+p4dry="$work/p4-dry"; mkdir -p "$p4dry"
+p4lines="$(wc -l < "$p4led/provenance.jsonl" | tr -d ' ')"
+out=$(HOME="$p4home" HIMMEL_PROVENANCE_DIR="$p4led" bash "$adopt" --profile core --scope project --target "$p4dry" --dry-run 2>&1)
+[ "$(wc -l < "$p4led/provenance.jsonl" | tr -d ' ')" = "$p4lines" ] || fail "HIMMEL-3332 S4: --dry-run appended to the ledger"
+grepq "$out" 'DRY: record create file' || fail "HIMMEL-3332 S4: --dry-run did not say what it would record: $out"
+[ ! -e "$p4dry/scripts/worktree.sh" ] || fail "HIMMEL-3332 S4: --dry-run copied a file"
+echo "ok: HIMMEL-3332 S4 --dry-run records nothing"
+
+# P6: the user-scope gate copies (install_native_hooks) go through the same path
+p4gate="$work/p4-gate"; mkdir -p "$p4gate/scripts/hooks"
+HOME="$p4home" git -C "$p4gate" init -q
+printf '#!/bin/sh\necho user-owned gate\n' > "$p4gate/scripts/hooks/check-commit-msg.sh"
+p4gate_sha="$(prov_sha "$p4gate/scripts/hooks/check-commit-msg.sh")"
+HOME="$p4home" HIMMEL_PROVENANCE_DIR="$p4led" PATH="$work/bin:$native_free_path" \
+  bash "$adopt" --profile core --scope user --target "$p4gate" >/dev/null
+row="$(prov_row "$p4led/provenance.jsonl" "$p4gate/scripts/hooks/check-commit-msg.sh")"
+[ "$(jq -r '[.op,.class,.manifest_row,.pre.sha]|join(",")' <<< "$row")" = "replace,code,adopter-scripts,$p4gate_sha" ] \
+  || fail "HIMMEL-3332 S4: user-scope gate copy over a user file must record a replace row: $row"
+[ "$(prov_sha "$(jq -r '.pre.backup' <<< "$row")")" = "$p4gate_sha" ] \
+  || fail "HIMMEL-3332 S4: the user-scope gate copy's backup is not the user's original bytes"
+row="$(prov_row "$p4led/provenance.jsonl" "$p4gate/scripts/guardrails/lib.sh")"
+[ "$(jq -r '[.op,.pre.state]|join(",")' <<< "$row")" = "create,absent" ] \
+  || fail "HIMMEL-3332 S4: a fresh user-scope gate copy must be a create row: $row"
+echo "ok: HIMMEL-3332 S4 user-scope gate copies record create + replace rows with a backup"
+
+# wire_handover_dir_luna skips a HANDOVER_DIR the operator already chose (HIMMEL-839);
+# the ledger must say the key was theirs, or uninstall removes it anyway.
+p4hd="$work/p4-hd"; mkdir -p "$p4hd/.claude"
+printf '%s' '{"env":{"HANDOVER_DIR":"/some/operator/chosen/handovers"}}' > "$p4hd/.claude/settings.json"
+HOME="$p4home" HIMMEL_PROVENANCE_DIR="$p4led" bash "$adopt" --profile luna --target "$p4hd" >/dev/null
+row="$(jq -c 'select(.kind=="json-key" and .unit=="/env/HANDOVER_DIR")' "$p4led/provenance.jsonl" | tail -n 1)"
+[ "$(jq -r '[.op,.preexisted,.pre.state,.scope,.manifest_row,.class]|join(",")' <<< "$row")" = "noop,true,present,project,project-settings,code" ] \
+  || fail "HIMMEL-3332 S4: a skipped HANDOVER_DIR must be recorded as noop preexisted: $row"
+[ "$(jq -r '.env.HANDOVER_DIR' "$p4hd/.claude/settings.json")" = "/some/operator/chosen/handovers" ] \
+  || fail "HIMMEL-3332 S4: the recorded skip must not change the operator's HANDOVER_DIR"
+echo "ok: HIMMEL-3332 S4 a preserved HANDOVER_DIR is recorded as noop preexisted"
 
 # ── 20. HIMMEL-887 T10: himmelctl wizard + machine-setup shim suites ──────────
 # A plain `bash scripts/test-adopt.sh` run also exercises the himmelctl install

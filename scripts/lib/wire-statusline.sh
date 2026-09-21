@@ -72,7 +72,7 @@ _wire_statusline_config_dir() {
 # (docs/internals/install-provenance.md). Runs after the settings mv with the
 # PRE-write JSON: a new key is `create`, the same value `noop`, a different one
 # `replace` with the prior value backed up. A wire that had to create `.env`
-# also records `/env`. The hud config half is not recorded here.
+# also records `/env`. The hud config half is recorded separately (below).
 
 # user when the settings file sits in the Claude config dir, else project.
 _wire_statusline_scope() {
@@ -111,6 +111,44 @@ _wire_statusline_record() {
     /env/CLAUDE_HUD_ALLOW_EXTRA_CMD '"1"'
 }
 
+# HIMMEL-3332: the hud config drop is recorded too (scope user, row hud-config,
+# class code). `create` when there was no config, `noop` when the bytes are
+# unchanged, `replace` with the prior bytes backed up otherwise — the user's own
+# customLineCommand edits live in that file, and the install still overwrites it.
+
+# _wire_statusline_hud_snapshot <config.json> -- print the path of a mode-preserving
+# copy of the config's PRE-write bytes (prov_record hashes and backs up the
+# snapshot, since the destination is about to be overwritten); prints nothing
+# when there is no config yet.
+_wire_statusline_hud_snapshot() {
+  local cfg="$1" snap
+  [ -f "$cfg" ] || return 0
+  snap="$(mktemp)" || return 1
+  cp -p "$cfg" "$snap" || { rm -f "$snap"; return 1; }
+  printf '%s' "$snap"
+}
+
+# _wire_statusline_record_hud <published config.json> <pre-write snapshot | "">
+_wire_statusline_record_hud() {
+  local cfg="$1" snap="$2" op
+  local -a pre
+  if [ -z "$snap" ]; then op=create; pre=(--pre-absent)
+  elif cmp -s "$snap" "$cfg"; then op=noop; pre=(--pre-file "$snap")
+  else op=replace; pre=(--pre-file "$snap" --backup); fi
+  prov_record "$op" file "$cfg" --scope user --class code --row hud-config \
+    --writer wire-statusline.sh "${pre[@]}" --post-file "$cfg"
+}
+
+# _wire_statusline_record_purge <hud dir> <file listing the dropped entries>
+# ponytail: the vocabulary has no delete op, so a purge is a `replace` of the
+# hud dir with no backup and no post (class state: uninstall leaves it alone);
+# pre.sha hashes the dropped entry NAMES, not their bytes, which are not kept.
+_wire_statusline_record_purge() {
+  local dir="$1" list="$2"
+  prov_record replace tree "$dir" --scope user --class state --row hud-config \
+    --writer wire-statusline.sh --pre-text "$(cat "$list")"
+}
+
 # Drop the hud's RUNTIME cache state — everything the hud writes under its
 # plugin dir EXCEPT the config.json this script owns (HIMMEL-3065).
 #
@@ -133,7 +171,7 @@ _wire_statusline_record() {
 # (.config.json.tmp) precisely so the purge — which runs before either file is
 # published — cannot delete the config it is about to install.
 _wire_statusline_purge_hud_cache() {
-  local hud_dir="$1"
+  local hud_dir="$1" list="${2:-}"   # list: optional file that collects the dropped entry names
   [ -d "$hud_dir" ] || return 0
   # A dir the sweep cannot enumerate (mode 300: writable, so staging succeeded,
   # but unlistable) makes the glob below expand to zero entries — the same shape
@@ -172,6 +210,7 @@ _wire_statusline_purge_hud_cache() {
         config.json|.*) continue ;;
       esac
       rm -rf "$entry" || exit 1
+      [ -z "$list" ] || printf '%s\n' "${entry##*/}" >> "$list"
       dropped=1
     done
     [ "$dropped" -eq 1 ] && echo "  dropped stale hud cache state → $hud_dir"
@@ -309,8 +348,14 @@ wire_statusline() {
   # every subsequent run. Aborting first keeps the old wiring on disk, so the
   # retry still sees a changed wiring and purges again.
   if { [ -n "$prev_cmd" ] && [ "$prev_cmd" != "$cmd" ]; } || { [ -n "$hud_cfg" ] && [ "$prev_hud_cfg" != "$hud_cfg" ]; }; then
-    _wire_statusline_purge_hud_cache "$hud_dir" \
-      || { rm -f "$settings.statusline.tmp" "$hud_dir/.config.json.tmp"; return 1; }
+    local purge_list; purge_list="$(mktemp 2>/dev/null || true)"
+    _wire_statusline_purge_hud_cache "$hud_dir" "$purge_list" \
+      || { rm -f "$settings.statusline.tmp" "$hud_dir/.config.json.tmp" "$purge_list"; return 1; }
+    if [ -s "$purge_list" ]; then
+      _wire_statusline_record_purge "$hud_dir" "$purge_list" \
+        || echo "wire-statusline: warning: provenance record failed (the hud cache was purged; uninstall will keep it)" >&2
+    fi
+    rm -f "$purge_list"
   fi
 
   # (4) Publish. Everything above is staged and validated, so by this point the
@@ -335,8 +380,13 @@ wire_statusline() {
     # A failed rename leaves the staged file behind — clear it, and the staged
     # settings with it, so no failure path leaves either one staged (parity
     # with the ps1 twin's finally; CodeRabbit, PR #772).
+    local hud_snap="" hud_rec=1
+    if [ -f "$hud_dir/config.json" ]; then hud_snap="$(_wire_statusline_hud_snapshot "$hud_dir/config.json")" || hud_rec=0; fi
     mv "$hud_dir/.config.json.tmp" "$hud_dir/config.json" \
-      || { rm -f "$settings.statusline.tmp" "$hud_dir/.config.json.tmp"; return 1; }
+      || { rm -f "$settings.statusline.tmp" "$hud_dir/.config.json.tmp" "$hud_snap"; return 1; }
+    if [ "$hud_rec" = 1 ]; then _wire_statusline_record_hud "$hud_dir/config.json" "$hud_snap" || hud_rec=0; fi
+    [ "$hud_rec" = 1 ] || echo "wire-statusline: warning: provenance record failed (the hud config is written; uninstall will keep it)" >&2
+    rm -f "$hud_snap"
   fi
 
   mv "$settings.statusline.tmp" "$settings" \
