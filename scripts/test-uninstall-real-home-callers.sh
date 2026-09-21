@@ -43,9 +43,9 @@ ALLOW_WHY=(
 # tokens. It will NOT follow a HOME set through a helper function, a sourced file,
 # `read` / `printf -v` / `declare -n`, or an env block passed as a variable; it
 # ignores order, so a scratch variable reassigned to something real AFTER the trace
-# still passes; and a quoted `$(...)` is read only up to its first `)"`, so a mktemp or
-# scratch variable past that point (`"$(a "$(b)" "$td")"`) is missed (a false flag,
-# never a false pass). It wants `mktemp` as a bare command
+# still passes; and a quoted `$(...)` that itself nests another `$(` is not read as one
+# unit, so a mktemp or scratch variable inside it (`"$(a "$(b)" "$td")"`) is missed (a
+# false flag, never a false pass). It wants `mktemp` as a bare command
 # word, so /usr/bin/mktemp is a false flag; but it does not prove the word is
 # INVOKED, so `HOME="$(echo mktemp)"` still passes. A scratch variable counts only as a
 # plain `$v` / `${v}`, and a value carrying ANY `${x<op>...}` expansion is never
@@ -60,7 +60,7 @@ ALLOW_WHY=(
 home_is_scratch() {
   local file="$1" line rest name rhs nocmd v changed is_scratch ref_re home_ok=0
   local dq='"[^"]*"' sq="'[^']*'" cs='\$\([^)]*\)' bare='[^[:space:]]*'
-  local dqcs='"\$\([^)]*\)"'   # a whole quoted command substitution, whose own inner quotes ("$td") a plain $dq would cut at
+  local dqcs='"\$\(([^)$]|\$[^(])*\)"'   # a whole quoted, non-nested command substitution, whose own inner quotes ("$td") a plain $dq would cut at
   local assign_re="(^|[^A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)=($dqcs|$dq|$sq|$cs|$bare)"
   local mk_re='(^|[^A-Za-z0-9_./-])mktemp([[:space:])"`]|$)'   # mktemp as a command word, not a path part like /opt/mktemp-user
   local home_re='\$\{?HOME([^A-Za-z0-9_]|$)|~'   # a mktemp template under the real HOME: its dirname is the real HOME
@@ -212,6 +212,9 @@ printf '#!/usr/bin/env bash\ntd=$(mktemp -d /tmp/x.XXXXXX)\nHOME=$(dirname "${td
 # a mktemp template under the real HOME: dirname of it IS the real HOME, so it is not scratch.
 printf '#!/usr/bin/env bash\ntd=$(mktemp -d "$HOME/x.XXXXXX")\nHOME="$(dirname "$td")" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-dirname-under-home.sh"
 printf '#!/usr/bin/env bash\ntd=$(mktemp -d ~/x.XXXXXX)\nHOME=$(dirname "$td") %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-dirname-under-tilde.sh"
+# a scratch mktemp next to the real HOME inside one quoted substitution is not scratch.
+printf '#!/usr/bin/env bash\nHOME="$(echo "$(mktemp -d)" >/dev/null; printf %%s "$HOME")" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-quoted-nested-subst.sh"
+printf '#!/usr/bin/env bash\nHOME="$(mktemp -d >/dev/null; printf %%s "$HOME")" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-quoted-subst-real-home.sh"
 # HIMMEL-3344 (CodeRabbit): a longer identifier ending in the name is not the name.
 printf '#!/usr/bin/env bash\nNOT_%s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-prefixed-name.sh"
 # a JS operator-path caller, on the allowlist below.
@@ -305,6 +308,10 @@ check "dirname of a mktemp under \"\$HOME\" is flagged (it is the real HOME)" \
   "$(printf '%s' "$got" | grep -c 'scripts/test-dirname-under-home.sh')" "1"
 check "dirname of a mktemp under ~ is flagged (it is the real HOME)" \
   "$(printf '%s' "$got" | grep -c 'scripts/test-dirname-under-tilde.sh')" "1"
+check "a nested substitution hiding the real HOME behind a scratch mktemp is flagged" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-quoted-nested-subst.sh')" "1"
+check "a quoted substitution that prints the real HOME after a mktemp is flagged" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-quoted-subst-real-home.sh')" "1"
 check "allowlisted file passes" \
   "$(printf '%s' "$got" | grep -c 'scripts/wizard.js')" "0"
 check "file that only unsets/reads the var passes" \
