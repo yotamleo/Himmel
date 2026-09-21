@@ -163,10 +163,13 @@ is_target() { # is_target <basename> - names, or globs onto, a guarded script
 
 # Anything that runs a named file: an interpreter, `source`/`.`, `eval`, or
 # the file itself as the command word. Wrappers (env, timeout, xargs, ...),
-# their option words and VAR= prefixes are skipped to find that word.
+# their option words and VAR= prefixes are skipped to find that word; a
+# wrapper counts as running something itself, since its option operands
+# (env -C <dir>) hide the word that follows.
 simple=${flat//[;&|()<>\`]/$'\n'}
 runs=0
 chdir=0
+wrapped=0
 while IFS= read -r line; do
     read -r -a w <<<"$line"
     i=0
@@ -175,7 +178,8 @@ while IFS= read -r line; do
         x=${w[$i]}
         case "$x" in
             [A-Za-z_]*=*) ;;
-            if|then|else|elif|do|while|until|'!'|'{'|'}'|time|command|builtin|nohup|nice|stdbuf|sudo|env|exec|timeout|xargs) skip_opts=1 ;;
+            if|then|else|elif|do|while|until|'!'|'{'|'}') skip_opts=1 ;;
+            time|command|builtin|nohup|nice|stdbuf|sudo|env|exec|timeout|xargs) skip_opts=1; runs=1; wrapped=1 ;;
             -C*|-D*|--chdir*|--directory*) [ "$skip_opts" -eq 1 ] || break; chdir=1 ;;
             -*|[0-9]*) [ "$skip_opts" -eq 1 ] || break ;;
             *) break ;;
@@ -230,6 +234,15 @@ shown=${shown:0:200}
     || deny "'$unresolved' does not resolve to this root's scripts/cr/ by its text alone (a glob, a variable, or a path outside the root), so the bytes it runs cannot be checked."
 [ "$chdir" -eq 0 ] \
     || deny "the command changes directory, so the relative path does not resolve against the cwd the conditions are checked in."
+# Only one simple command can be checked: the conditions hold for the bytes
+# at match time, and another command in the same call (cp, a redirect, a
+# pipe) can rewrite them before the script runs; a wrapper's operands can
+# hide what it runs.
+case "$flat" in
+    *[\;\&\|\(\)\<\>\`]*|*$'\n'*) deny "the command is not one simple command, so the bytes checked at match time are not guaranteed to be the bytes that run." ;;
+esac
+[ "$wrapped" -eq 0 ] \
+    || deny "the command runs the script through a wrapper whose operands cannot be classified by text."
 
 for t in git awk sort find paste wc tr comm grep; do
     command -v "$t" >/dev/null 2>&1 \

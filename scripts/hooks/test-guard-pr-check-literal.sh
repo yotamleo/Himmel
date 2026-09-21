@@ -140,6 +140,15 @@ rm "$WT/scripts/x"
 run "env -C elsewhere and the literal, clean root -> deny" 2 \
     "$(payload "env -C $TMP/elsewhere $LITERAL" "$WT")" "$HR"
 need_in_err "deny names the directory change" "changes directory"
+# Round 9: a relative wrapper operand hides the command word, and a second
+# command can rewrite the checked bytes before the script runs.
+run "env -C with a relative dir and the literal, clean root -> deny" 2 \
+    "$(payload "env -C elsewhere $LITERAL" "$WT")" "$HR"
+run "cp over the script; the literal, clean root -> deny" 2 \
+    "$(payload "cp $TMP/x.sh scripts/cr/pr-check-context.sh; $LITERAL" "$WT")" "$HR"
+need_in_err "deny names the compound" "not one simple command"
+run "timeout 60 and the literal, clean root -> deny" 2 \
+    "$(payload "timeout 60 $LITERAL" "$WT")" "$HR"
 echo doc2 >"$WT/docs/a.md"
 run "an unrelated (docs) diff -> allow" 0 "$(payload "$LITERAL" "$WT")" "$HR"
 g -C "$WT" checkout -q -- docs/a.md

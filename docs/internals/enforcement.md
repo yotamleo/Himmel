@@ -1802,7 +1802,11 @@ adopter lane depends on them. A candidate that does not resolve to exactly
 `scripts/cr/<script>` from the cwd (a glob, a variable, any `..`, which the
 kernel resolves after following symlinks), or a command that changes directory
 (`cd`, `pushd`, `env -C`), denies outright: the conditions
-are checked in the cwd, so they prove nothing about another copy. The
+are checked in the cwd, so they prove nothing about another copy. So does a
+candidate inside a compound command or behind a wrapper (`env`, `timeout`,
+`xargs`, ...): another command in the same call can rewrite the checked bytes
+before the script runs (`cp x scripts/cr/pr-check-context.sh; bash …`), and a
+wrapper's operands can hide the word it runs. The
 canonical anchored fence is exempt only in its exact shape; only its echo text
 may vary. Classification uses bash builtins only, so a missing tool cannot turn
 it into a no-op. Text classification has limits, and the hook's `ponytail:` names them.
