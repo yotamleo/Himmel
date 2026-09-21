@@ -529,8 +529,25 @@ EOF_SCOPES
     done <<EOF_MKT_SCOPES
 $MKT_SCOPES
 EOF_MKT_SCOPES
-    # Count one unresolved outcome, not expected failures at empty scopes.
+    # WHY (HIMMEL-3350): a marketplace can be registered at a scope none of its
+    # plugin rows or the fallback scope names (install adds it at project AND
+    # user scope, but the plugin lands at one). The list output carries no
+    # scope, so a still-registered marketplace is swept at the current
+    # project's remaining scopes. User scope is never swept unless it is the
+    # fallback: it is machine-wide, and a --scope project run must not touch it.
     # A preview cannot re-read the effects of commands it never executed.
+    if [[ $DRY_RUN -eq 0 ]] &&
+        SWEEP_MKT_JSON="$(claude plugin marketplace list --json 2>/dev/null)" &&
+        printf '%s\n' "$SWEEP_MKT_JSON" | jq -e --arg m "$M" 'any(.[]; .name == $m)' >/dev/null 2>&1; then
+      for SWEEP_SCOPE in project local; do
+        case $'\n'"$MKT_SCOPES" in
+          *$'\n'"$SWEEP_SCOPE"$'\n'*) continue ;;
+        esac
+        echo "  marketplace $M still registered — trying $SWEEP_SCOPE scope (HIMMEL-3350)"
+        run claude plugin marketplace remove "$M" --scope "$SWEEP_SCOPE" || true
+      done
+    fi
+    # Count one unresolved outcome, not expected failures at empty scopes.
     if [[ $DRY_RUN -eq 0 ]]; then
       AFTER_MKT_JSON="$(claude plugin marketplace list --json 2>/dev/null)" || AFTER_MKT_JSON=""
       if ! printf '%s\n' "$AFTER_MKT_JSON" | jq -e 'type == "array"' >/dev/null 2>&1; then
