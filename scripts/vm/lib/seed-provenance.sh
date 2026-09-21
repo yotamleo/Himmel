@@ -7,9 +7,25 @@
 #
 # Writes, next to itself (the harness's /tmp/rt-work):
 #   seeded.list   every seeded path, absolute, one per line (the byte-identity set)
+#   state.list    the telegram + bridge state seeded for the --purge-state
+#                 variant (three files, their two directories): a plain uninstall
+#                 must keep them and --purge-state must remove them, so they are
+#                 NOT in seeded.list (whose paths must always survive)
 #   seed-state/   facts the checks compare against later: the crontab text,
 #                 mine.service's enabled state, and pristine copies of the
 #                 seeded JSON files
+#
+# RT_PROFILE=all (the harness's --profile all) also seeds executable stubs
+# ~/.local/bin/qmd and ~/.local/bin/graphify. They exist only so the qmd and
+# graphmap cadence arms find an absolute executable (`command -v`) and install
+# can arm its crontab lines; they are the USER's own pre-existing files, listed
+# in seeded.list, so uninstall must leave them alone and nothing counts them as
+# himmel's.
+#
+# ponytail: a stub is not a real qmd or graphify. It proves the arm and the
+# disarm of the cadence crontab lines, never that a cadence RUN works: no
+# cadence fires in the guest, and installing the real tools (the qmd fork build
+# and 2.1 GB of models, HIMMEL-2531) is not reproducible from this repo.
 #
 # Refuses (rc 2, writing nothing) unless HIMMEL_RT_GUEST=1, when any target
 # already exists (~/.bashrc excepted: the seed lines are PREPENDED to the
@@ -22,6 +38,7 @@ export LC_ALL=C
 [ "${HIMMEL_RT_GUEST:-}" = 1 ] || { echo "seed-provenance.sh: refusing: guest-only (set HIMMEL_RT_GUEST=1 on the guest)" >&2; exit 2; }
 
 H="$HOME"
+PROFILE="${RT_PROFILE:-core}"
 OUT="$(cd "$(dirname "$0")" && pwd)"
 TARGETS=(
     .claude/CLAUDE.md .claude.json .claude/settings.json
@@ -31,7 +48,9 @@ TARGETS=(
     proj .local/bin/mytool .config/systemd/user/mine.service
     .config/claude-glm/phi-roots .himmel/config.json
     .npm/_cacache/seed .cache/node-gyp/seed .bun/install/cache/seed
+    .claude/channels/telegram/.env .claude/channels/telegram/access.json .claude/handover/bridge/state.json
 )
+[ "$PROFILE" != all ] || TARGETS+=(.local/bin/qmd .local/bin/graphify)
 hit=0
 for t in "${TARGETS[@]}"; do
     if [ -e "$H/$t" ] || [ -L "$H/$t" ]; then echo "seed-provenance.sh: refusing: $H/$t already exists" >&2; hit=1; fi
@@ -42,10 +61,13 @@ command -v jq >/dev/null 2>&1 || { echo "seed-provenance.sh: jq is required" >&2
 
 set -e
 LIST="$OUT/seeded.list"
+SLIST="$OUT/state.list"
 STATE="$OUT/seed-state"
 mkdir -p "$STATE"
 : >"$LIST"
+: >"$SLIST"
 rec() { local p; for p in "$@"; do printf '%s\n' "$H/$p" >>"$LIST"; done; }
+rec_state() { local p; for p in "$@"; do printf '%s\n' "$H/$p" >>"$SLIST"; done; }
 
 # --- ~/.claude/CLAUDE.md: two headings; a fenced block quoting the working-
 # principles BEGIN marker (the #1008 case — a literal inside a fence is not a block).
@@ -136,6 +158,13 @@ mkdir -p "$H/.local/bin"
 printf '#!/bin/sh\necho "mytool $*"\n' >"$H/.local/bin/mytool"
 chmod 755 "$H/.local/bin/mytool"
 rec .local/bin/mytool
+if [ "$PROFILE" = all ]; then
+    for b in qmd graphify; do
+        printf '#!/bin/sh\n# himmel round-trip stub: the user own %s (see seed-provenance.sh)\necho "%s stub 0.0.0"\n' "$b" "$b" >"$H/.local/bin/$b"
+        chmod 755 "$H/.local/bin/$b"
+        rec ".local/bin/$b"
+    done
+fi
 rc_tail=""
 [ ! -f "$H/.bashrc" ] || rc_tail=$(cat "$H/.bashrc")
 {
@@ -179,6 +208,17 @@ echo seed >"$H/.npm/_cacache/seed"
 echo seed >"$H/.cache/node-gyp/seed"
 echo seed >"$H/.bun/install/cache/seed"
 rec .config/claude-glm/phi-roots .himmel/config.json .npm/_cacache/seed .cache/node-gyp/seed .bun/install/cache/seed
+
+# --- the telegram bridge's own state: the two locations `uninstall --purge-state`
+# removes and a plain uninstall keeps. A core install creates neither, so
+# without this seed the two variants could not differ.
+mkdir -p "$H/.claude/channels/telegram" "$H/.claude/handover/bridge"
+echo 'TELEGRAM_BOT_TOKEN=seeded-not-a-token' >"$H/.claude/channels/telegram/.env"
+chmod 600 "$H/.claude/channels/telegram/.env"
+jq -n '{allowFrom: ["seed-user"]}' >"$H/.claude/channels/telegram/access.json"
+jq -n '{seeded: true, lastUpdateId: 0}' >"$H/.claude/handover/bridge/state.json"
+rec_state .claude/channels/telegram .claude/channels/telegram/.env .claude/channels/telegram/access.json \
+    .claude/handover/bridge .claude/handover/bridge/state.json
 
 # Pristine copies of the JSON the semantic checks read back.
 cp "$H/.claude/settings.json" "$STATE/settings.json"

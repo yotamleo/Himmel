@@ -14,16 +14,22 @@
 #            [--profile core|all] [--purge-state]
 #   --expect-red   pass only when BOTH directions fail (the pre-fix RED); any
 #                  missing direction prints `RED incomplete: <dir> direction missing`
-#   --profile      the install profile (default core)
+#   --profile      the install profile (default core). `all` also arms the
+#                  pipeline, qmd and graphmap cadences: the seed step then puts
+#                  user-owned qmd/graphify stubs on the guest PATH (the arms
+#                  need an executable) and the run asserts install armed a
+#                  crontab line, so the cadence-crontab-removed direction is
+#                  observable (HIMMEL-3351)
 #   --purge-state  uninstall with --purge-state (the spec's second variant)
 # Exit: 0 green (or, with --expect-red, RED complete); 1 a FAIL (or RED
 # incomplete); 2 usage, a refused VM precondition or a failed harness step.
 #
 # Steps, all inside the guest (a himmel-ar-N linked clone, restored to its
 # snapshot first): stage the ref's tree to /tmp/rt-src; seed the user
-# environment (lib/seed-provenance.sh); inventory A; `env -i` install from
+# environment, incl. the telegram + bridge state --purge-state removes
+# (lib/seed-provenance.sh); inventory A; `env -i` install from
 # ~/proj with --scope project, then --scope user; inventory B (+ a copy of the
-# ledger); uninstall; inventory C; the named checks (lib/assert-provenance.sh).
+# ledger and the crontab); uninstall; inventory C; the named checks (lib/assert-provenance.sh).
 # The verdict is computed HERE from the guest's `CHECK <group> <direction>
 # <PASS|FAIL|SKIP> <name> — <detail>` lines.
 #
@@ -172,7 +178,7 @@ tar -C "$REPO_ROOT/scripts/vm/lib" -cf - seed-provenance.sh assert-provenance.sh
     | vm_ssh "rm -rf $WORKDIR && mkdir -p $WORKDIR && tar -C $WORKDIR -xf -" || fail "step helpers failed"
 
 # 2-3. Seed, inventory A.
-step seed "HIMMEL_RT_GUEST=1 bash $WORKDIR/seed-provenance.sh"
+step seed "HIMMEL_RT_GUEST=1 RT_PROFILE=$PROFILE bash $WORKDIR/seed-provenance.sh"
 step inventory-A "bash $WORKDIR/inventory.sh A"
 
 # 4. Install, project scope then user scope, under the printed env.
@@ -189,7 +195,6 @@ if [ "$PROFILE" = all ]; then
     done
 fi
 echo "[env] $ENV_CMD"
-INSTALL_EXITS=""
 for scope in project user; do
     INSTALL_ARGS=""
     [ "$PROFILE" != all ] || INSTALL_ARGS="--from-profile $WORKDIR/profile-all-$scope.json"
@@ -197,23 +202,11 @@ for scope in project user; do
     # not): `--scope` alone is the non-interactive adopter path, whose shipped
     # profile (starter, vault none) maps to adopt.sh --profile core.
     INSTALL_CMD="cd $GHOME/proj && $ENV_CMD node $BIN install ${INSTALL_ARGS:+$INSTALL_ARGS }--scope $scope >$WORKDIR/install-$scope.log 2>&1; rc=\$?; sed 's/^/[install-$scope-log] /' $WORKDIR/install-$scope.log; exit \$rc"
-    if [ "$PROFILE" != all ]; then
-        step "install-$scope" "$INSTALL_CMD"
-        continue
-    fi
-    # ponytail: suite-ready-v4 ships neither qmd nor graphify, so under `all`
-    # the qmd and graphmap cadence arms refuse and install exits non-zero
-    # before any crontab line exists. That exit is recorded and the run goes
-    # on (console ruling R6); provisioning the guest is S10's (HIMMEL-3351).
-    echo "[step] install-$scope"
-    vm_ssh "$INSTALL_CMD"
-    rc=$?
-    echo "install-exit scope=$scope rc=$rc"
-    INSTALL_EXITS="${INSTALL_EXITS:+$INSTALL_EXITS }$scope=$rc"
+    step "install-$scope" "$INSTALL_CMD"
 done
 
-# 5. Inventory B + the ledger as it stood after install.
-step inventory-B "bash $WORKDIR/inventory.sh B && { L=\${HIMMEL_PROVENANCE_DIR:-$GHOME/.himmel}/provenance.jsonl; [ ! -f \$L ] || cp \$L $WORKDIR/ledger-B.jsonl; }"
+# 5. Inventory B + the ledger and the crontab as they stood after install.
+step inventory-B "bash $WORKDIR/inventory.sh B && { L=\${HIMMEL_PROVENANCE_DIR:-$GHOME/.himmel}/provenance.jsonl; [ ! -f \$L ] || cp \$L $WORKDIR/ledger-B.jsonl; } && { crontab -l >$WORKDIR/crontab-B.txt 2>/dev/null; true; }"
 
 # 6. Uninstall.
 UNINSTALL_FLAGS="--yes"
@@ -272,7 +265,6 @@ FAILS=$(printf '%s\n' "$ASSERT_OUT" | grep -cE '^CHECK [^ ]+ [^ ]+ FAIL ')
 # and the --purge-state uninstall remove different state (spec §11 runs both).
 VARIANT="profile=$PROFILE uninstall=$([ "$PURGE" = 1 ] && echo purge-state || echo plain)"
 echo "[summary] variant=($VARIANT) checks=$TOTAL fail=$FAILS pre-halt too-much=$MUCH too-little=$LITTLE identity=$(count identity) ledger=$(count ledger) post-halt=$(printf '%s\n' "$PHASED" | grep -c '^post-halt ') uninstall-rc=$UN_RC"
-[ "$PROFILE" != all ] || echo "[witness] cadence-crontab-removed UNOBSERVABLE: qmd and graphify are absent in the $SNAPSHOT guest, so no cadence crontab line can be armed (install-exit $INSTALL_EXITS); S10 provisions them (HIMMEL-3351)"
 
 if [ "$EXPECT_RED" = 1 ]; then
     # The spec's predicted witnesses — informational: a missing one is reported,

@@ -9,10 +9,15 @@
 #     too-little  uninstall left something of himmel's behind
 #     identity    a seeded file differs from its seeded bytes (either cause)
 #     ledger      the install ledger is missing, incomplete or unrecording
-# Inputs: /tmp/inv-{A,B,C} (inventory.sh), and next to this script seeded.list,
-# seed-state/ (seed-provenance.sh) and ledger-B.jsonl (the harness's copy of
-# the ledger after install, absent when install wrote none). RT_PURGE=1 when
-# the uninstall ran with --purge-state.
+#     precondition  the run could not observe a direction at all (RT_PROFILE=all
+#                 only: install armed no cadence crontab line, so a leftover one
+#                 would be invisible); a FAIL is never green, and it is in
+#                 neither count of the RED verdict
+# Inputs: $INV_BASE (default /tmp)/inv-{A,B,C} (inventory.sh), and next to this
+# script seeded.list, state.list, seed-state/ (all seed-provenance.sh),
+# ledger-B.jsonl (the harness's copy of the ledger after install, absent when
+# install wrote none) and, under RT_PROFILE=all, crontab-B.txt (`crontab -l`
+# after install). RT_PURGE=1 when the uninstall ran with --purge-state.
 # Exit 0 after reporting; 2 when an input is missing (nothing is judged).
 #
 # ponytail: residue is grouped by its first three path components under HOME
@@ -27,7 +32,9 @@ H="$HOME"
 D="$(cd "$(dirname "$0")" && pwd)"
 ST="$D/seed-state"
 PURGE="${RT_PURGE:-0}"
-for f in /tmp/inv-A/home.meta /tmp/inv-B/home.meta /tmp/inv-C/home.meta /tmp/inv-A/home.sha /tmp/inv-B/home.sha /tmp/inv-C/home.sha "$D/seeded.list" "$ST/settings.json"; do
+PROFILE="${RT_PROFILE:-core}"
+INV="${INV_BASE:-/tmp}"  # the inventories' base dir; only the hermetic test sets INV_BASE
+for f in "$INV"/inv-{A,B,C}/home.{meta,sha} "$D/seeded.list" "$D/state.list" "$ST/settings.json"; do
     [ -f "$f" ] || { echo "assert-provenance.sh: missing input $f" >&2; exit 2; }
 done
 
@@ -40,8 +47,8 @@ ok() {
     if "$@" >/dev/null 2>&1; then check "$g" "$dir" PASS "$n" "ok"; else check "$g" "$dir" FAIL "$n" "$det"; fi
 }
 rel() { printf '~%s' "${1#"$H"}"; }
-sha_of() { awk -v p="$2" 'substr($0, 67) == p { print substr($0, 1, 64) }' "/tmp/inv-$1/home.sha"; }
-meta_of() { awk -F'\t' -v p="$2" '$4 == p { print $1 "\t" $2 "\t" $5 }' "/tmp/inv-$1/home.meta"; }
+sha_of() { awk -v p="$2" 'substr($0, 67) == p { print substr($0, 1, 64) }' "$INV/inv-$1/home.sha"; }
+meta_of() { awk -F'\t' -v p="$2" '$4 == p { print $1 "\t" $2 "\t" $5 }' "$INV/inv-$1/home.meta"; }
 
 S="$H/.claude/settings.json"
 SEEDS="$ST/settings.json"
@@ -52,7 +59,9 @@ while IFS= read -r p; do
     if [ "$p" = "$H/.claude.json" ]; then
         # 3309: the trust entry install adds for ~/proj is kept by design, so
         # ~/.claude.json is compared against B (after install), not A.
-        if [ "$(sha_of B "$p")" = "$(sha_of C "$p")" ]; then
+        if [ -z "$(meta_of C "$p")" ]; then
+            check identity too-much FAIL claude-json-unchanged-from-B "removed (present at B)"
+        elif [ "$(sha_of B "$p")" = "$(sha_of C "$p")" ]; then
             check identity identity PASS claude-json-unchanged-from-B "sha equal to B"
         else
             check identity identity FAIL claude-json-unchanged-from-B "sha B=$(sha_of B "$p" | cut -c1-12) C=$(sha_of C "$p" | cut -c1-12)"
@@ -175,9 +184,52 @@ if printf '%s\n' "$cron_now" | grep -qxF -f "$ST/crontab.txt"; then check path t
 else check path too-much FAIL user-crontab "the seeded crontab line is gone"; fi
 en=$(systemctl --user is-enabled mine.service 2>/dev/null)
 ok path too-much mine-service-enabled "is-enabled '$en', seeded '$(cat "$ST/mine-enabled.txt")'" test "$en" = "$(cat "$ST/mine-enabled.txt")"
-units_left=$(find "$H/.config/systemd/user" -mindepth 1 \( -type f -o -type l \) 2>/dev/null | grep -vxF -f "$D/seeded.list" | tr '\n' ' ')
+# Judged against A, not seeded.list: everything under the user's unit dir at A
+# is theirs (a unit beyond it is himmel's), whatever put it there.
+units_left=$(awk -F'\t' -v u="$H/.config/systemd/user/" 'NR == FNR { a[$4] = 1; next } ($1 == "f" || $1 == "l") && index($4, u) == 1 && !($4 in a) { printf "%s ", $4 }' \
+    "$INV/inv-A/home.meta" "$INV/inv-C/home.meta")
 if [ -n "$units_left" ]; then check removal too-little FAIL user-units-removed "left: $units_left"
-else check removal too-little PASS user-units-removed "only the seeded unit"; fi
+else check removal too-little PASS user-units-removed "nothing new since A"; fi
+
+# ============================ 6b. the seeded telegram + bridge state (state.list)
+# A plain uninstall keeps every path, byte-identical to A; --purge-state removes
+# every one of them.
+while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    mc=$(meta_of C "$p")
+    if [ "$PURGE" = 1 ]; then
+        if [ -z "$mc" ]; then check state too-little PASS "state-purged:$(rel "$p")" "gone"
+        else check state too-little FAIL "state-purged:$(rel "$p")" "still present after --purge-state"; fi
+    elif [ -z "$mc" ]; then
+        check state too-much FAIL "state-kept:$(rel "$p")" "removed by a plain uninstall (present at A)"
+    elif [ "$(sha_of A "$p")" != "$(sha_of C "$p")" ]; then
+        check state too-much FAIL "state-kept:$(rel "$p")" "content changed (sha A=$(sha_of A "$p" | cut -c1-12) C=$(sha_of C "$p" | cut -c1-12))"
+    else
+        check state too-much PASS "state-kept:$(rel "$p")" "kept, equal to A"
+    fi
+done <"$D/state.list"
+
+# ========================= 6c. --profile all: the stubs, and the armed cadences
+# The qmd and graphify stubs are the USER's own pre-existing files (seeded, in
+# seeded.list; the byte-identity loop above judges them too): uninstall removing
+# one is a too-much witness, and they are never counted as himmel's.
+if [ "$PROFILE" = all ]; then
+    for b in qmd graphify; do
+        ok stub too-much "user-stub-$b-survives" "$(rel "$H/.local/bin/$b") is gone or not executable" test -x "$H/.local/bin/$b"
+    done
+    # The too-little direction of cadence-crontab-removed is only observable when
+    # install armed a crontab line of each cadence the profile asks for.
+    CB="$D/crontab-B.txt"
+    missing=""
+    for fam in Pipeline Qmd GraphMap; do
+        [ -f "$CB" ] && grep -q "# HIMMEL-$fam" "$CB" || missing="$missing $fam"
+    done
+    if [ -z "$missing" ]; then
+        check precondition precondition PASS cadence-crontab-armed-at-B "a HIMMEL-{Pipeline,Qmd,GraphMap}* line is armed after install"
+    else
+        check precondition precondition FAIL cadence-crontab-armed-at-B "no armed line for:$missing (crontab-B.txt $([ -f "$CB" ] && echo "read" || echo absent)): cadence-crontab-removed cannot observe a leftover"
+    fi
+fi
 
 # ==================================================== 7. residue (C vs A)
 # The 3330 allowlist: caches install may fill and uninstall may keep. The ledger
@@ -191,12 +243,12 @@ paths() {
     case "$3" in
         new|gone)
             awk -F'\t' 'NR == FNR { seen[$4] = 1; next } !($4 in seen) { print $4 }' \
-                "/tmp/inv-$([ "$3" = new ] && echo "$1" || echo "$2")/home.meta" \
-                "/tmp/inv-$([ "$3" = new ] && echo "$2" || echo "$1")/home.meta" ;;
+                "$INV/inv-$([ "$3" = new ] && echo "$1" || echo "$2")/home.meta" \
+                "$INV/inv-$([ "$3" = new ] && echo "$2" || echo "$1")/home.meta" ;;
         changed)
             awk 'NR == FNR { s[substr($0, 67)] = substr($0, 1, 64); next }
                  (substr($0, 67) in s) && s[substr($0, 67)] != substr($0, 1, 64) { print substr($0, 67) }' \
-                "/tmp/inv-$1/home.sha" "/tmp/inv-$2/home.sha" ;;
+                "$INV/inv-$1/home.sha" "$INV/inv-$2/home.sha" ;;
     esac
 }
 group() { awk -v h="$H/" '{ r = substr($0, length(h) + 1); n = split(r, a, "/"); k = a[1]; for (i = 2; i <= 3 && i <= n; i++) k = k "/" a[i]; if (!(k in c)) { order[++m] = k; s[k] = $0 } c[k]++ } END { for (i = 1; i <= m; i++) print c[order[i]] "\t~/" order[i] "\t" s[order[i]] }'; }
@@ -205,7 +257,7 @@ report_groups() {  # <direction> <name-prefix> <verb> — reads paths on stdin
     while IFS=$'\t' read -r cnt key sample; do
         any=1
         check residue "$dir" FAIL "$pre:$key" "$cnt path(s) $verb, e.g. $(rel "$sample")"
-    done < <(grep -vE "$allow" | grep -vxF -f "$D/seeded.list" | group | head -n 40)
+    done < <(grep -vE "$allow" | grep -vxF -f "$D/seeded.list" -f "$D/state.list" | group | head -n 40)
     [ "$any" = 1 ] || check residue "$dir" PASS "$pre" "none outside the allowlist"
 }
 paths A C new | report_groups too-little left "left behind (not at A)"
