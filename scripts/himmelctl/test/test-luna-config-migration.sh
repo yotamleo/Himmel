@@ -34,7 +34,17 @@ trap '[ -n "${work_raw:-}" ] && [ -d "$work_raw" ] && rm -rf "$work_raw"' EXIT
 . "$repo/scripts/lib/canon-path.sh"
 work=$(canon_path_native "$work_raw") || { echo "FAIL: canon $work_raw" >&2; exit 1; }
 
-sha() { if [ -e "$1" ]; then sha256sum "$1" | cut -d' ' -f1; else echo absent; fi; }
+# sha256sum when present, else macOS's shasum -a 256; with neither, fail loudly
+# rather than compare two empty hashes (a vacuous byte-preservation check).
+if command -v sha256sum >/dev/null 2>&1; then
+  _sha256() { sha256sum "$1" | cut -d' ' -f1; }
+elif command -v shasum >/dev/null 2>&1; then
+  _sha256() { shasum -a 256 "$1" | cut -d' ' -f1; }
+else
+  echo "FAIL: sha256sum or shasum required" >&2
+  exit 1
+fi
+sha() { if [ -e "$1" ]; then _sha256 "$1"; else echo absent; fi; }
 
 # a throwaway HIMMELCTL_REPO_ROOT whose adopt.sh just exits 0
 clone="$work/clone"
