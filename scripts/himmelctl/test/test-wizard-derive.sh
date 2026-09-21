@@ -86,6 +86,15 @@ grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 repo_root=$(git rev-parse --show-toplevel)
 . "$repo_root/scripts/himmelctl/test/_hermetic-home.sh"  # HIMMEL-2350: shared winpath() -- dies loud on empty input/output instead of silently falling through to the operator's real home
 wizard="$repo_root/scripts/himmelctl/bin.js"
+# HIMMEL-3327: the printed hint single-quotes any path outside a plain charset
+# (a checkout under a spaced directory included), so the expectation is built the
+# same way instead of assuming an unquoted path.
+nodehint() {
+  case "$1" in
+    *[!A-Za-z0-9_@%+=:,./-]*) printf "node '%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")" ;;
+    *) printf 'node %s' "$1" ;;
+  esac
+}
 [ -f "$wizard" ] || { echo "FAIL: $wizard not found" >&2; exit 1; }
 command -v node >/dev/null 2>&1 || { echo "FAIL: node required" >&2; exit 1; }
 
@@ -381,7 +390,7 @@ grep -q 'hM' "$fixtureM/wire-luna-vault-calls.log" \
   || fail "caseM: user-scope wire-luna-vault.sh should target the FAKE HOME's settings.json, not the real one (got: $(cat "$fixtureM/wire-luna-vault-calls.log"))"
 grepq "$out" -F 'BACKUP' \
   || fail "caseM: expected the apply BACKUP line to be surfaced verbatim (got: $out)"
-grepq "$out" -F "To uninstall later: node $(winpath "$wizard") uninstall" \
+grepq "$out" -F "To uninstall later: $(nodehint "$(winpath "$wizard")") uninstall" \
   || fail "caseM: expected the uninstall footer after a successful stamped install (got: $out)"
 # HIMMEL-2460 (second defect): the epilogue must name the command that
 # actually installed himmel (adopt.sh), not luna-upgrade-all.sh's apply
@@ -583,7 +592,7 @@ set -e
   || fail "caseG: a blank-Enter accept should invoke adopt.sh (no adopt-calls.log; out: $out)"
 grep -q -- '--profile core --scope project' "$fixtureG/adopt-calls.log" \
   || fail "caseG: adopt.sh should have been called with --profile core --scope project (got: $(cat "$fixtureG/adopt-calls.log"))"
-grepq "$out" -F "To uninstall later: node $(winpath "$wizard") uninstall" \
+grepq "$out" -F "To uninstall later: $(nodehint "$(winpath "$wizard")") uninstall" \
   || fail "caseG: expected the uninstall footer after a successful install (got: $out)"
 echo "ok: caseG interactive confirm accept (blank Enter) -> adopt.sh invoked with the exact derived argv, footer printed"
 
@@ -619,6 +628,20 @@ set -e
 grep -q 'himmelctl: this will offboard' <<< "$hintOut" \
   || fail "caseG2 (HIMMEL-3327): the printed uninstall command does not resolve from another cwd / a spaced path (footer: $hint; rc=$hintRc; got: $hintOut)"
 echo "ok: caseG2 the printed uninstall command resolves from an unrelated cwd, with a space in the clone path"
+
+# ── Case G3 (HIMMEL-3327): the printed command is inert for a hostile path ──
+# A `$`, `;`, `&` or apostrophe in the install path must not be re-parsed when
+# the operator pastes the hint: the path is single-quoted (apostrophe -> '\'').
+# shellcheck disable=SC2016  # the JS source is deliberately single-quoted, nothing for the shell to expand
+g3=$("$node_bin" -e '
+  const { nodeScriptCmd } = require(process.argv[1]);
+  for (const p of ["/opt/h/bin.js", "/o k/bin.js", "/a$b/bin.js", "/a;b/bin.js", "/it'"'"'s/bin.js"])
+    console.log(nodeScriptCmd(p));
+' "$(winpath "$repo_root/scripts/himmelctl/lib/helpers.js")")
+g3want=$(printf '%s\n' "node /opt/h/bin.js" "node '/o k/bin.js'" "node '/a\$b/bin.js'" "node '/a;b/bin.js'" "node '/it'\\''s/bin.js'")
+[ "$g3" = "$g3want" ] \
+  || fail "caseG3 (HIMMEL-3327): nodeScriptCmd must single-quote a path with shell metacharacters (want: $g3want; got: $g3)"
+echo "ok: caseG3 nodeScriptCmd quotes paths with spaces/metacharacters, leaves a plain path bare"
 
 # ── Case P: a FAILED install shell-out (adopt.sh exits 1) -> no footer ──────
 stubP="$work/caseP"; mkdir -p "$stubP"

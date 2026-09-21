@@ -124,8 +124,13 @@ function shellQuote(a) {
 // project the summary was printed for, not from the himmel clone — so the
 // script path is absolute (callers pass __filename or a path joined onto the
 // clone root, never a clone-relative literal), forward-slashed and quoted.
+// Unlike shellQuote (whitespace only, for the display-only `derived:` line) this
+// pastes into a shell, so anything outside a plain-path charset is single-quoted:
+// a `$`, `;`, `&`, backtick or apostrophe in the install path must stay inert.
+const SHELL_SAFE_PATH = /^[A-Za-z0-9_@%+=:,./-]+$/;
 function nodeScriptCmd(scriptPath) {
-  return `node ${shellQuote(displayPath(scriptPath))}`;
+  const p = displayPath(scriptPath);
+  return `node ${SHELL_SAFE_PATH.test(p) ? p : `'${p.replace(/'/g, "'\\''")}'`}`;
 }
 
 module.exports = { cacheDir, profileForVault, which, resolvePowershell, displayPath, shellQuote, nodeScriptCmd };
