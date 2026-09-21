@@ -133,7 +133,7 @@ _wire_statusline_record_hud() {
   local cfg="$1" snap="$2" op
   local -a pre
   if [ -z "$snap" ]; then op=create; pre=(--pre-absent)
-  elif cmp -s "$snap" "$cfg"; then op=noop; pre=(--pre-file "$snap")
+  elif cmp -s "$snap" "$cfg" && [ "$(_prov_mode "$snap")" = "$(_prov_mode "$cfg")" ]; then op=noop; pre=(--pre-file "$snap")
   else op=replace; pre=(--pre-file "$snap" --backup); fi
   prov_record "$op" file "$cfg" --scope user --class code --row hud-config \
     --writer wire-statusline.sh "${pre[@]}" --post-file "$cfg"

@@ -553,7 +553,7 @@ fi
 # (row hud-config, scope user, class code, backup on replace) and the cache purge
 # records a `tree` row class state.
 hud_rows() { jq -c --arg p "$1" 'select(.kind == "file" and (.path | endswith($p)))' "$HIMMEL_PROVENANCE_DIR/provenance.jsonl"; }
-sha_of() { sha256sum "$1" | cut -d' ' -f1; }
+sha_of() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
 cfg33="$TMP/cfg33"; hud33="$cfg33/plugins/claude-hud"
 proj33="$TMP/proj33"; mkdir -p "$proj33/.claude" "$hud33"
 s33="$proj33/.claude/settings.json"
@@ -586,6 +586,16 @@ CLAUDE_CONFIG_DIR="$cfg34" bash "$HELPER" "$proj34/.claude/settings.json" "$REPO
 [ "$(hud_rows "cfg34/plugins/claude-hud/config.json" | tail -n 1 | jq -r '[.op, .pre.sha == .post.sha, .pre.backup] | map(tostring) | join(",")')" = "noop,true,null" ] \
   || fail "35: an unchanged hud config must record noop with pre.sha == post.sha and no backup"
 echo "ok 34-35 a first hud config drop records create/absent and an unchanged re-wire records noop"
+
+# 35b. same bytes, different mode: the publish resets the mode, so it is not a
+# noop — the prior mode must be recoverable from a backup (copy_recorded parity).
+mode35b="$(stat -c %a "$hud34/config.json" 2>/dev/null || stat -f %Lp "$hud34/config.json")"
+if [ "$mode35b" = 640 ]; then want35b=600; else want35b=640; fi
+chmod "$want35b" "$hud34/config.json"
+CLAUDE_CONFIG_DIR="$cfg34" bash "$HELPER" "$proj34/.claude/settings.json" "$REPO_ROOT" >/dev/null
+[ "$(hud_rows "cfg34/plugins/claude-hud/config.json" | tail -n 1 | jq -r '[.op, .pre.mode, (.pre.backup != null)] | map(tostring) | join(",")')" = "replace,0$want35b,true" ] \
+  || fail "35b: a mode-only change must record replace with a backup, not noop: $(hud_rows "cfg34/plugins/claude-hud/config.json" | tail -n 1)"
+echo "ok 35b a same-bytes hud config with a different mode records replace and a backup"
 
 # 36. the purge, when the wiring changed, is one tree row class state
 cfg36="$TMP/cfg36"; hud36="$cfg36/plugins/claude-hud"
