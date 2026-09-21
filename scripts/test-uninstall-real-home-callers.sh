@@ -124,14 +124,14 @@ printf '#!/usr/bin/env bash\nHOME="$HOME"\n%s=1 bash uninstall.sh --yes\n' "$V" 
 # scratch HOME in the same file.
 printf '#!/usr/bin/env bash\ntd=$(mktemp -d /tmp/x.XXXXXX)\nHOME="$td/home" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-scratch.sh"
 # HIMMEL-3344: an unrelated mktemp does not make HOME a scratch dir.
-printf '#!/usr/bin/env bash\ntmp="$(mktemp -d)"\nHOME="$HOME"\n%s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-unrelated-mktemp.sh"
+printf '#!/usr/bin/env bash\ntmp="$(mktemp -d /tmp/x.XXXXXX)"\nHOME="$HOME"\n%s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-unrelated-mktemp.sh"
 # HIMMEL-3344: HOME assigned from a variable that is NOT mktemp-derived.
-printf '#!/usr/bin/env bash\ntmp="$(mktemp -d)"\nother=/somewhere/real\nHOME="$other"\n%s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-home-from-other.sh"
+printf '#!/usr/bin/env bash\ntmp="$(mktemp -d /tmp/x.XXXXXX)"\nother=/somewhere/real\nHOME="$other"\n%s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-home-from-other.sh"
 # HIMMEL-3344: HOME derived from a mktemp variable through a second variable
 # (the shape of test-e2e-symmetry-isolation.sh) passes.
-printf '#!/usr/bin/env bash\ntd="$(mktemp -d)"\nctl="$td/ctlhome"\nHOME="$ctl" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-scratch-transitive.sh"
+printf '#!/usr/bin/env bash\ntd="$(mktemp -d /tmp/x.XXXXXX)"\nctl="$td/ctlhome"\nHOME="$ctl" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-scratch-transitive.sh"
 # HIMMEL-3344: a literal mktemp on the HOME assignment passes.
-printf '#!/usr/bin/env bash\nHOME="$(mktemp -d)" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-scratch-literal.sh"
+printf '#!/usr/bin/env bash\nHOME="$(mktemp -d /tmp/x.XXXXXX)" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-scratch-literal.sh"
 # HIMMEL-3344: fence lifted through a quoted JS key + numeric value, an unquoted
 # key + numeric value, and a PowerShell $env: assignment -- all uncovered pre-fix.
 printf "runSpawn(cmd, { env: { '%s': 1 } });\n" "$V" > "$fx/scripts/quoted-key.js"
