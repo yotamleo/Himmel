@@ -19,7 +19,7 @@ byte-identity cross-check).
 
 ## Where it lives
 
-```
+```text
 ${HIMMEL_PROVENANCE_DIR:-$HOME/.himmel}/provenance.jsonl              # the ledger, mode 0600
 ${HIMMEL_PROVENANCE_DIR:-$HOME/.himmel}/provenance-backups/<iid>/     # pre-state copies, mode 0700
 ```

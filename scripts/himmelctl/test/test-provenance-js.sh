@@ -14,6 +14,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$here/../../.." && pwd)"
 fails=0
 passes=0
+fmode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }  # gnu-ok: BSD stat -f paired
+modes() { ( cd "$1" && find . -type f | sort | while read -r p; do printf "%s %s\n" "$p" "$(fmode "$p")"; done | paste -sd, - ); }
 check() { # name got want
     if [ "$2" = "$3" ]; then passes=$((passes + 1)); echo "ok - $1"
     else fails=$((fails + 1)); echo "FAIL - $1: [$2] != [$3]"; fi
@@ -86,10 +88,10 @@ if cmp -s "$tmp/pb.rows" "$tmp/pn.rows"; then check "bash and node rows are byte
 else check "bash and node rows are byte-identical" differ same; diff "$tmp/pb.rows" "$tmp/pn.rows" | head -n 20; fi
 if diff -r "$tmp/pb/provenance-backups" "$tmp/pn/provenance-backups" >/dev/null 2>&1; then check "bash and node backup trees are identical" same same
 else check "bash and node backup trees are identical" differ same; diff -r "$tmp/pb/provenance-backups" "$tmp/pn/provenance-backups" | head; fi
-check "backup file modes match" "$(cd "$tmp/pb/provenance-backups" && find . -type f -exec stat -c '%n %a' {} + | sort | paste -sd, -)" \
-    "$(cd "$tmp/pn/provenance-backups" && find . -type f -exec stat -c '%n %a' {} + | sort | paste -sd, -)"
-check "ledger mode (node) 0600" "$(stat -c %a "$tmp/pn/provenance.jsonl")" "600"
-check "backups dir mode (node) 0700" "$(stat -c %a "$tmp/pn/provenance-backups/X1")" "700"
+check "backup file modes match" "$(modes "$tmp/pb/provenance-backups")" \
+    "$(modes "$tmp/pn/provenance-backups")"
+check "ledger mode (node) 0600" "$(fmode "$tmp/pn/provenance.jsonl")" "600"
+check "backups dir mode (node) 0700" "$(fmode "$tmp/pn/provenance-backups/X1")" "700"
 check "every row parses" "$(jq -c . "$tmp/pn.rows" >/dev/null 2>&1; echo $?)" "0"
 
 # a writer called with no session: implicit begin+row+end, iid normalised

@@ -109,7 +109,7 @@ _prov_size() { wc -c < "$1" | tr -d ' '; }
 # _prov_mode <file> -- four-digit octal ("0644"), GNU stat first, then BSD.
 _prov_mode() {
     local m
-    m=$(stat -c %a "$1" 2>/dev/null) || m=$(stat -f %Lp "$1" 2>/dev/null) || return 1
+    m=$(stat -c %a "$1" 2>/dev/null) || m=$(stat -f %Lp "$1" 2>/dev/null) || return 1  # gnu-ok: BSD stat -f paired on the same line
     while [ "${#m}" -lt 4 ]; do m="0$m"; done
     printf '%s' "$m"
 }
@@ -234,11 +234,11 @@ _prov_body() {
 # _prov_backup <iid> <unit-path> <src-type> <src-val> -- copy the pre-state into
 # provenance-backups/<iid>/<seq>-<basename>[.prior.json|.prior.txt]; prints the path.
 _prov_backup() {
-    local iid="$1" upath="$2" stype="$3" sval="$4" dir bdir n name dest c
+    local iid="$1" upath="$2" stype="$3" sval="$4" dir bdir n name dest c _f
     dir=$(prov_dir) || return 1
     bdir="$dir/provenance-backups/$iid"
     ( umask 077; mkdir -p "$bdir" ) || { _prov_err "cannot create $bdir"; return 1; }
-    n=$(( $(find "$bdir" -mindepth 1 -maxdepth 1 | wc -l) + 1 ))
+    n=1; for _f in "$bdir"/*; do [ -e "$_f" ] && n=$((n + 1)); done
     while :; do
         name=$(printf '%03d-%s' "$n" "${upath##*/}")
         case "$stype" in json) name="$name.prior.json" ;; text) name="$name.prior.txt" ;; esac

@@ -13,6 +13,7 @@ check() { # name got want
     if [ "$2" = "$3" ]; then passes=$((passes + 1)); echo "ok - $1"
     else fails=$((fails + 1)); echo "FAIL - $1: [$2] != [$3]"; fi
 }
+fmode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }  # gnu-ok: BSD stat -f paired
 sha() { printf '%s' "$1" | sha256sum | awk '{print $1}'; }
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/prov-test.XXXXXX") || { echo "FAIL: mktemp" >&2; exit 1; }
@@ -114,13 +115,13 @@ prov_record link symlink "$w/linkdir/lnk" --post-json '"x"'
 check "symlinked parent resolved, basename kept" "$(last | jq -r .path)" "$w/real/lnk"
 
 # ── modes ─────────────────────────────────────────────────────────────────
-check "ledger is 0600" "$(stat -c %a "$ledger")" "600"
+check "ledger is 0600" "$(fmode "$ledger")" "600"
 printf 'm\n' > "$w/m.txt"; chmod 640 "$w/m.txt"
 prov_record replace file "$w/m.txt" --pre-file "$w/m.txt" --backup --post-file "$w/m.txt"
 check "pre.mode is 4-digit octal" "$(last | jq -r .pre.mode)" "0640"
 bk=$(last | jq -r .pre.backup)
-check "backup keeps the mode (cp -p)" "$(stat -c %a "$bk")" "640"
-check "backups dir is 0700" "$(stat -c %a "$(dirname "$bk")")" "700"
+check "backup keeps the mode (cp -p)" "$(fmode "$bk")" "640"
+check "backups dir is 0700" "$(fmode "$(dirname "$bk")")" "700"
 
 # ── usage errors write nothing ────────────────────────────────────────────
 n0=$(lines)
