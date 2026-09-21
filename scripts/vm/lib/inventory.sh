@@ -9,7 +9,8 @@
 # contaminating the thing it measures. This one reads files and never runs a tool.
 #
 # Exit status: 2 for a bad label; 1 when a REQUIRED collection (1-4: home.meta, home.sha,
-# etc.sha, sys.meta) failed — each is named on stderr and the rest are still collected; else 0.
+# etc.sha, sys.meta) or the MANIFEST write/readback failed — each is named on stderr and the
+# rest are still collected; else 0.
 # The probes 5-8 (/tmp, packages, sizes, processes) are deliberately fail-open: /tmp churns
 # under the walk and the tools the others call may be absent.
 set -u

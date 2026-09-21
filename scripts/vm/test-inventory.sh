@@ -83,13 +83,13 @@ else fail_case "T5 default base rc=$rc: $out"; fi
 # --- T6: a label outside [A-Za-z0-9._-] is refused (rc 2, stderr) BEFORE any path is built or
 # removed. /tmp/inv-$LA exists, so "$LA/../<canary>" resolves to a directory OUTSIDE the inv-*
 # namespace; a canary file in it must survive (an unvalidated label reached `rm -rf`, HIMMEL-3348).
-CAN=$(mktemp -d /tmp/test-inv-canary.XXXXXX); printf 'keep\n' > "$CAN/keep"
+CAN=$(mktemp -d /tmp/test-inv-canary.XXXXXX) || exit 1; printf 'keep\n' > "$CAN/keep"
 out=$(HOME="$FIXHOME" PATH="$WORK/bin:$PATH" bash "$INV" "$LA/../$(basename "$CAN")" 2>&1 >/dev/null); rc=$?
 if [ "$rc" -eq 2 ] && [ -f "$CAN/keep" ] && grep -q 'invalid label' <<< "$out"; then
     pass "T6a a traversal label is refused (rc 2) and the canary outside /tmp/inv-* survives"
 else fail_case "T6a rc=$rc canary=$([ -f "$CAN/keep" ] && echo kept || echo DELETED): $out"; fi
 # shellcheck disable=SC2016  # 'x$(id)' is a literal label; it must NOT expand
-for bad in 'a b''a;b' 'x$(id)' 'a/b' '.*/x'; do
+for bad in 'a b' 'a;b' 'x$(id)' 'a/b' '.*/x'; do
     out=$(HOME="$FIXHOME" PATH="$WORK/bin:$PATH" bash "$INV" "$bad" 2>&1 >/dev/null); rc=$?
     if [ "$rc" -eq 2 ] && grep -q 'invalid label' <<< "$out" && [ ! -e "/tmp/inv-$bad" ]; then
         pass "T6b label '$bad' refused with rc 2 and no /tmp/inv-<label> created"
