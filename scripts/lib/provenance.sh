@@ -78,6 +78,7 @@ _prov_abs_path() {
     base="${p##*/}"
     dir="${p%/*}"
     [ -n "$dir" ] || dir=/
+    case "$dir" in [A-Za-z]:) dir="$dir/" ;; esac   # C:/x -> parent is the drive ROOT, not the drive's cwd
     dir=$(canon_path_partial "$dir") || return 1
     if [ "$base" = "" ]; then printf '%s' "${dir:-/}"; else printf '%s/%s' "${dir%/}" "$base"; fi
 }
@@ -94,6 +95,7 @@ prov_sha_text() { printf '%s' "$1" | _prov_sha_stdin; }
 _prov_json_canon() {
     local out
     out=$(printf '%s' "$1" | jq -cS . 2>/dev/null) || return 1
+    out=${out%$'\r'}   # jq.exe on Windows ends its lines with CRLF
     # A value must be ONE JSON document: jq -c prints one line per document, so
     # '1 2' would otherwise become a two-line "canonical" value and corrupt the row.
     case "$out" in ''|*$'\n'*) return 1 ;; esac
@@ -129,16 +131,17 @@ _prov_platform() {
 # _prov_append <line> -- one O_APPEND write; a torn last line (no newline) is
 # closed first so it costs one row, not two.
 _prov_append() {
-    local dir ledger
+    local dir ledger row="${1:-}"
+    row=${row%$'\r'}   # jq.exe on Windows ends its lines with CRLF; a row ends at the JSON
     # a row built in a command substitution is "" when its jq failed; never append that
-    [ -n "${1:-}" ] || { _prov_err "refusing to append an empty row"; return 1; }
+    [ -n "$row" ] || { _prov_err "refusing to append an empty row"; return 1; }
     dir=$(prov_dir) || return 1
     ledger="$dir/provenance.jsonl"
     ( umask 077; mkdir -p "$dir" ) || { _prov_err "cannot create $dir"; return 1; }
     if [ -s "$ledger" ] && [ -n "$(tail -c1 "$ledger")" ]; then
         ( umask 077; printf '\n' >> "$ledger" ) || return 1
     fi
-    ( umask 077; printf '%s\n' "$1" >> "$ledger" ) || { _prov_err "cannot append to $ledger"; return 1; }
+    ( umask 077; printf '%s\n' "$row" >> "$ledger" ) || { _prov_err "cannot append to $ledger"; return 1; }
 }
 
 # _prov_json_or_null <string> -- a JSON string, or null when empty.
@@ -241,6 +244,8 @@ _prov_body() {
 # provenance-backups/<iid>/<seq>-<basename>[.prior.json|.prior.txt]; prints the path.
 _prov_backup() {
     local iid="$1" upath="$2" stype="$3" sval="$4" dir bdir n name dest c _f
+    # the iid becomes a path component: one safe segment, never ../ or an absolute path
+    case "$iid" in ''|.|..|*[!A-Za-z0-9._-]*) _prov_err "unsafe session id '$iid'"; return 1 ;; esac
     dir=$(prov_dir) || return 1
     bdir="$dir/provenance-backups/$iid"
     ( umask 077; mkdir -p "$bdir" ) || { _prov_err "cannot create $bdir"; return 1; }

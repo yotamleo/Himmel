@@ -24,7 +24,9 @@ ${HIMMEL_PROVENANCE_DIR:-$HOME/.himmel}/provenance.jsonl              # the ledg
 ${HIMMEL_PROVENANCE_DIR:-$HOME/.himmel}/provenance-backups/<iid>/     # pre-state copies, mode 0700
 ```
 
-One JSON object per line, appended with a single write. A reader must skip a
+One JSON object per line, appended with a single write (the PowerShell dialect
+holds the ledger open exclusively while it appends, retrying if another writer
+has it). A reader must skip a
 line that does not parse: a crash can leave a torn last line, and the writers
 close it with a newline before the next append so it costs one row, not two.
 
@@ -106,6 +108,8 @@ prov_end ok
   call, so `begin` **prints the session id** for the caller to export as
   `HIMMEL_PROVENANCE_IID`, and `end` closes the exported session
   unconditionally.)
+- A session id names a backup directory, so `--backup` refuses (rc 1) an `iid`
+  that is not one safe path segment (`[A-Za-z0-9._-]+`, not `.` or `..`).
 - Every JSON value (`--pre-json`, `--post-json`, `--field`) must be exactly one
   JSON document; an empty value or `1 2` is refused (rc 1 / rc 2 for `--field`).
 

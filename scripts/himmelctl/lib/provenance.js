@@ -53,7 +53,7 @@ function jqCanon(text) {
     if (!r.error) {
       jqOk = true;
       if (r.status !== 0) return null;
-      const out = r.stdout.replace(/\n$/, '');
+      const out = r.stdout.replace(/\r?\n$/, ''); // jq.exe on Windows ends its lines with CRLF
       // one JSON document only: jq -c prints a line per document ('1 2' -> two lines)
       return out === '' || out.includes('\n') ? null : out;
     }
@@ -110,7 +110,9 @@ function absPath(p) {
   while (p.length > 1 && p.endsWith('/')) p = p.slice(0, -1);
   const i = p.lastIndexOf('/');
   const base = p.slice(i + 1);
-  const dir = canonPartial(p.slice(0, i) || '/');
+  let parent = p.slice(0, i) || '/';
+  if (/^[A-Za-z]:$/.test(parent)) parent += '/'; // C:/x -> the drive ROOT, not the drive's cwd
+  const dir = canonPartial(parent);
   return base === '' ? (dir || '/') : dir.replace(/\/$/, '') + '/' + base;
 }
 
@@ -243,6 +245,8 @@ function body(kind, type, val) {
 }
 
 function backup(iid, upath, type, val) {
+  // the iid becomes a path component: one safe segment, never ../ or an absolute path
+  if (!/^[A-Za-z0-9._-]+$/.test(iid) || iid === '.' || iid === '..') throw fail(`unsafe session id '${iid}'`);
   const bdir = ledgerDir() + '/provenance-backups/' + iid;
   try {
     fs.mkdirSync(bdir, { recursive: true, mode: 0o700 });

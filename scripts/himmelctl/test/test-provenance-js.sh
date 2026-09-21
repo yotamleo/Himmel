@@ -194,5 +194,20 @@ rm -rf "$tmp/pu"
 "$node_bin" "$jsw" record register mcp / --unit m --post-json '"x"'
 check "node: path '/' is recorded as /" "$(grep -v install- "$tmp/pu/provenance.jsonl" | jq -r .path)" "/"
 
+# a jq that ends its lines with CRLF (jq.exe on Windows) must not leak a CR into the sha or the backup
+rm -rf "$tmp/pu"
+mkdir -p "$tmp/crjq"
+# shellcheck disable=SC2016  # $@ / $0 belong to the generated wrapper script
+printf '#!/bin/sh\n"%s" "$@" | awk '"'"'{ printf "%%s\\r\\n", $0 }'"'"'\n' "$(command -v jq)" > "$tmp/crjq/jq"; chmod +x "$tmp/crjq/jq"
+PATH="$tmp/crjq:$PATH" "$node_bin" "$jsw" record replace json-key "$w/s.json" --unit k --post-json '{"b":1,"a":2}' --pre-json '{"z":[1]}' --backup >/dev/null
+check "node CRLF jq: post.sha is of the canonical bytes" "$(grep -v install- "$tmp/pu/provenance.jsonl" | jq -r .post.sha)" "$(printf '%s' '{"a":2,"b":1}' | sha256sum | awk '{print $1}')"
+check "node CRLF jq: the backup holds the canonical bytes" "$(cat "$(grep -v install- "$tmp/pu/provenance.jsonl" | jq -r .pre.backup)")" '{"z":[1]}'
+
+# a session id that is not one safe path segment never reaches the filesystem
+rm -rf "$tmp/pu"
+HIMMEL_PROVENANCE_IID='../evil' "$node_bin" "$jsw" record replace file "$w/f1" --pre-file "$w/f1" --backup --post-file "$w/f1" 2>/dev/null
+check "node: unsafe iid + --backup → rc 1" "$?" "1"
+check "node: unsafe iid wrote no backup outside the ledger dir" "$([ -e "$tmp/pu/evil" ] && echo yes || echo no)" "no"
+
 echo "$passes passed, $fails failed"
 [ "$fails" -eq 0 ]

@@ -153,7 +153,7 @@ function _ProvAbs([string]$p) {
     $i = $p.LastIndexOf('/')
     $base = $p.Substring($i + 1)
     $dir = $p.Substring(0, $i)
-    if (-not $dir) { $dir = '/' }
+    if (-not $dir) { $dir = '/' } elseif ($dir -match '^[A-Za-z]:$') { $dir += '/' }   # C:/x -> the drive ROOT, not the drive's cwd
     $dir = _ProvCanonPartial $dir
     if ($base -eq '') { if ($dir) { return $dir } else { return '/' } }
     return $dir.TrimEnd('/') + '/' + $base
@@ -205,19 +205,25 @@ function _ProvAppend([string]$Line) {
             [void][System.IO.Directory]::CreateDirectory($dir)
             if (-not $script:ProvIsWin) { [System.IO.File]::SetUnixFileMode($dir, [System.IO.UnixFileMode]0x1C0) }
         }
-        $torn = $false
         $isNew = -not (Test-Path -LiteralPath $file -PathType Leaf)
-        if (-not $isNew) {
-            $fi = [System.IO.FileInfo]::new($file)
-            if ($fi.Length -gt 0) {
-                # share Read+Write: a sibling process may be appending to the same ledger
-                $fs = [System.IO.File]::Open($file, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-                try { [void]$fs.Seek(-1, [System.IO.SeekOrigin]::End); $torn = ($fs.ReadByte() -ne 10) } finally { $fs.Dispose() }
-            }
+        # ONE handle, exclusive (FileShare.None), retried while another writer holds it:
+        # FileMode.Append does not make concurrent appends atomic, so overlapping writers
+        # serialise here instead of racing on the same end-of-file offset.
+        $out = $null
+        $lastErr = ''
+        for ($try = 0; $try -lt 100 -and $null -eq $out; $try++) {
+            try { $out = [System.IO.File]::Open($file, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None) }
+            catch [System.IO.IOException] { $lastErr = $_.Exception.Message; Start-Sleep -Milliseconds 20 }
         }
-        $bytes = $script:ProvUtf8.GetBytes($(if ($torn) { "`n" } else { '' }) + $Line + "`n")
-        $out = [System.IO.File]::Open($file, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
-        try { $out.Write($bytes, 0, $bytes.Length) } finally { $out.Dispose() }
+        if ($null -eq $out) { throw "ledger is locked by another writer: $lastErr" }
+        try {
+            $torn = $false
+            if ($out.Length -gt 0) { [void]$out.Seek(-1, [System.IO.SeekOrigin]::End); $torn = ($out.ReadByte() -ne 10) }
+            [void]$out.Seek(0, [System.IO.SeekOrigin]::End)
+            $bytes = $script:ProvUtf8.GetBytes($(if ($torn) { "`n" } else { '' }) + $Line + "`n")
+            $out.Write($bytes, 0, $bytes.Length)
+        }
+        finally { $out.Dispose() }
         if ($isNew) { _ProvSetMode $file 0x180 }
     }
     catch { _ProvFail "cannot append to ${file}: $($_.Exception.Message)" }
@@ -293,6 +299,8 @@ function _ProvBody([string]$Kind, [string]$Type, [string]$Val) {
 }
 
 function _ProvBackup([string]$Iid, [string]$UPath, [string]$Type, [string]$Val) {
+    # the iid becomes a path component: one safe segment, never ../ or an absolute path
+    if ($Iid -notmatch '^[A-Za-z0-9._-]+$' -or $Iid -eq '.' -or $Iid -eq '..') { _ProvFail "unsafe session id '$Iid'" }
     $bdir = (Get-ProvLedgerDir) + '/provenance-backups/' + $Iid
     try {
         if (-not (Test-Path -LiteralPath $bdir -PathType Container)) {
