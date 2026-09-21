@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Platform guard (gitbash-only): bash + node + jq + sha256sum.
+# Platform guard (gitbash-only): bash + node + jq + (sha256sum|shasum).
 # test-provenance-js.sh -- scripts/himmelctl/lib/provenance.js (HIMMEL-3332 S1),
 # and the bash<->node BYTE-IDENTITY cross-check: the same scenario is run
 # through scripts/lib/provenance.sh and through provenance.js into two scratch
@@ -101,7 +101,7 @@ implicit() { # <rec-fn> <dir>
 implicit b_rec "$tmp/ib"; implicit n_rec "$tmp/in"
 iid_b=$(jq -r .iid "$tmp/ib/provenance.jsonl" | head -n1); iid_n=$(jq -r .iid "$tmp/in/provenance.jsonl" | head -n1)
 check "implicit session (bash) = begin,create,end" "$(jq -r .op "$tmp/ib/provenance.jsonl" | paste -sd, -)" "install-begin,create,install-end"
-check "implicit rows byte-identical modulo the iid" "$(sed "s#$iid_n#IID#" "$tmp/in/provenance.jsonl" | sha256sum)" "$(sed "s#$iid_b#IID#" "$tmp/ib/provenance.jsonl" | sha256sum)"
+check "implicit rows byte-identical modulo the iid" "$(sed "s#$iid_n#IID#" "$tmp/in/provenance.jsonl" | _prov_sha256)" "$(sed "s#$iid_b#IID#" "$tmp/ib/provenance.jsonl" | _prov_sha256)"
 
 # ── node behaviour ───────────────────────────────────────────────────────
 export HIMMEL_PROVENANCE_DIR="$tmp/pu"
@@ -139,7 +139,7 @@ mkdir -p "$tmp/nodeonly"; ln -s "$node_bin" "$tmp/nodeonly/node"
 val='{"b":1,"a":[2,{"d":1,"c":null}],"s":"é\u007f\n"}'
 rm -rf "$tmp/pu"
 PATH="$tmp/nodeonly" "$tmp/nodeonly/node" "$jsw" record replace json-key "$w/s.json" --post-json "$val" --pre-json "$val" >/dev/null 2>&1
-check "node without jq: post.sha matches jq -cS" "$(grep -v install- "$tmp/pu/provenance.jsonl" | jq -r .post.sha)" "$(printf '%s' "$val" | jq -cS . | tr -d '\n' | sha256sum | awk '{print $1}')"
+check "node without jq: post.sha matches jq -cS" "$(grep -v install- "$tmp/pu/provenance.jsonl" | jq -r .post.sha)" "$(printf '%s' "$val" | jq -cS . | tr -d '\n' | _prov_sha256)"
 
 # review fixes: the CLI begin prints the iid; one-document values; atomic backups; retryable end
 rm -rf "$tmp/pu"
@@ -202,7 +202,7 @@ mkdir -p "$tmp/crjq"
 # shellcheck disable=SC2016  # $@ / $0 belong to the generated wrapper script
 printf '#!/bin/sh\n"%s" "$@" | awk '"'"'{ printf "%%s\\r\\n", $0 }'"'"'\n' "$(command -v jq)" > "$tmp/crjq/jq"; chmod +x "$tmp/crjq/jq"
 PATH="$tmp/crjq:$PATH" "$node_bin" "$jsw" record replace json-key "$w/s.json" --unit k --post-json '{"b":1,"a":2}' --pre-json '{"z":[1]}' --backup >/dev/null
-check "node CRLF jq: post.sha is of the canonical bytes" "$(grep -v install- "$tmp/pu/provenance.jsonl" | jq -r .post.sha)" "$(printf '%s' '{"a":2,"b":1}' | sha256sum | awk '{print $1}')"
+check "node CRLF jq: post.sha is of the canonical bytes" "$(grep -v install- "$tmp/pu/provenance.jsonl" | jq -r .post.sha)" "$(printf '%s' '{"a":2,"b":1}' | _prov_sha256)"
 check "node CRLF jq: the backup holds the canonical bytes" "$(cat "$(grep -v install- "$tmp/pu/provenance.jsonl" | jq -r .pre.backup)")" '{"z":[1]}'
 
 # a session id that is not one safe path segment never reaches the filesystem
@@ -244,7 +244,7 @@ check "node: symlink --post-file records the target's mode" "$(grep -v install- 
 rm -rf "$tmp/sb" "$tmp/sn"
 ( export HIMMEL_PROVENANCE_DIR="$tmp/sb"; cd "$w" && b_rec create file "$w/dst" --post-file "$w/lnk" )
 ( export HIMMEL_PROVENANCE_DIR="$tmp/sn"; cd "$w" && n_rec create file "$w/dst" --post-file "$w/lnk" )
-check "bash-vs-node: symlink rows are byte-identical" "$(sed 's#"iid":"[^"]*"#"iid":"X"#' "$tmp/sn/provenance.jsonl" | sha256sum)" "$(sed 's#"iid":"[^"]*"#"iid":"X"#' "$tmp/sb/provenance.jsonl" | sha256sum)"
+check "bash-vs-node: symlink rows are byte-identical" "$(sed 's#"iid":"[^"]*"#"iid":"X"#' "$tmp/sn/provenance.jsonl" | _prov_sha256)" "$(sed 's#"iid":"[^"]*"#"iid":"X"#' "$tmp/sb/provenance.jsonl" | _prov_sha256)"
 
 # an existing but unreadable file is a provenance: diagnostic (rc 1), not a stack trace
 case "$(uname -s)" in
@@ -260,6 +260,32 @@ case "$(uname -s)" in
         fi
         ;;
 esac
+
+# a symlink at the ledger is refused before any chmod or append lands in its target
+rm -rf "$tmp/pu" "$w/victim" "$w/nowhere"; mkdir -p "$tmp/pu"
+printf 'keep\n' > "$w/victim"; chmod 644 "$w/victim"; ln -s "$w/victim" "$tmp/pu/provenance.jsonl"
+err=$("$node_bin" "$jsw" record register mcp - --unit m --post-json '"x"' 2>&1 >/dev/null); rc=$?
+check "node: symlink ledger → rc 1" "$rc" "1"
+check "node: symlink ledger is a provenance: diagnostic" "${err%%:*}" "provenance"
+check "node: symlink ledger target is byte-identical" "$(cat "$w/victim")" "keep"
+check "node: symlink ledger target mode is untouched" "$(fmode "$w/victim")" "644"
+rm -f "$tmp/pu/provenance.jsonl"; ln -s "$w/nowhere" "$tmp/pu/provenance.jsonl"
+"$node_bin" "$jsw" record register mcp - --unit m --post-json '"x"' 2>/dev/null; rc=$?
+check "node: dangling symlink ledger → rc 1" "$rc" "1"
+check "node: dangling symlink ledger creates nothing through the link" "$([ -e "$w/nowhere" ] && echo yes || echo no)" "no"
+
+# a symlink at the backup dir (or its parent) is refused before anything is copied through it
+rm -rf "$tmp/pu" "$w/bkvictim"; mkdir -p "$tmp/pu/provenance-backups" "$w/bkvictim"
+printf 'pre\n' > "$w/pre.txt"; iid=20260921T000000Z-aaaaaa
+ln -s "$w/bkvictim" "$tmp/pu/provenance-backups/$iid"
+err=$(HIMMEL_PROVENANCE_IID=$iid "$node_bin" "$jsw" record replace file "$w/pre.txt" --pre-file "$w/pre.txt" --backup --post-file "$w/pre.txt" 2>&1 >/dev/null); rc=$?
+check "node: symlink backup dir → rc 1" "$rc" "1"
+check "node: symlink backup dir is a provenance: diagnostic" "${err%%:*}" "provenance"
+check "node: nothing was copied through the symlink backup dir" "$(find "$w/bkvictim" -mindepth 1 | wc -l | tr -d ' ')" "0"
+rm -rf "$tmp/pu/provenance-backups"; ln -s "$w/bkvictim" "$tmp/pu/provenance-backups"
+HIMMEL_PROVENANCE_IID=$iid "$node_bin" "$jsw" record replace file "$w/pre.txt" --pre-file "$w/pre.txt" --backup --post-file "$w/pre.txt" 2>/dev/null; rc=$?
+check "node: symlink provenance-backups parent → rc 1" "$rc" "1"
+check "node: nothing was copied through the symlink parent" "$(find "$w/bkvictim" -mindepth 1 | wc -l | tr -d ' ')" "0"
 
 echo "$passes passed, $fails failed"
 [ "$fails" -eq 0 ]

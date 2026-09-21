@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Platform guard (gitbash-only): bash + jq + sha256sum.
+# Platform guard (gitbash-only): bash + jq + (sha256sum|shasum).
 # test-provenance.sh -- tests for scripts/lib/provenance.sh (HIMMEL-3332 S1).
 # Everything runs under a scratch HOME / HIMMEL_PROVENANCE_DIR; the real
 # ~/.himmel is never read or written. The node twin and the bash<->node
@@ -15,7 +15,7 @@ check() { # name got want
     else fails=$((fails + 1)); echo "FAIL - $1: [$2] != [$3]"; fi
 }
 fmode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }  # gnu-ok: BSD stat -f paired
-sha() { printf '%s' "$1" | sha256sum | awk '{print $1}'; }
+sha() { printf '%s' "$1" | _prov_sha256; }
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/prov-test.XXXXXX") || { echo "FAIL: mktemp" >&2; exit 1; }
 trap '[ -n "${tmp:-}" ] && [ -d "$tmp" ] && rm -rf "$tmp"' EXIT
@@ -48,9 +48,9 @@ rc=$?
 check "replace+backup rc" "$rc" "0"
 bk=$(last | jq -r '.pre.backup')
 check "backup file exists" "$([ -f "$bk" ] && echo yes || echo no)" "yes"
-check "backup sha == pre bytes" "$(sha256sum "$bk" | awk '{print $1}')" "$(sha 'old-bytes
+check "backup sha == pre bytes" "$(_prov_sha256 < "$bk")" "$(sha 'old-bytes
 ')"
-check "pre.sha == backup sha" "$(last | jq -r '.pre.sha')" "$(sha256sum "$bk" | awk '{print $1}')"
+check "pre.sha == backup sha" "$(last | jq -r '.pre.sha')" "$(_prov_sha256 < "$bk")"
 check "post.sha == new bytes" "$(last | jq -r '.post.sha')" "$(sha 'new-bytes
 ')"
 check "post.size" "$(last | jq -r '.post.size')" "10"
@@ -77,7 +77,7 @@ bk=$(last | jq -r '.pre.backup')
 case "$bk" in *-settings.json.prior.json) ok=yes ;; *) ok=no ;; esac
 check "json backup is .prior.json" "$ok" "yes"
 check "json backup holds the canonical prior value, no newline" "$(cat "$bk")" '{"z":0}'
-check "json backup sha == pre.sha" "$(sha256sum "$bk" | awk '{print $1}')" "$(last | jq -r '.pre.sha')"
+check "json backup sha == pre.sha" "$(_prov_sha256 < "$bk")" "$(last | jq -r '.pre.sha')"
 check "prov_sha_json" "$(prov_sha_json "$val")" "$(sha "$canon")"
 
 # ── row shape ─────────────────────────────────────────────────────────────
@@ -308,6 +308,46 @@ check "existing 0644 ledger is tightened to 0600" "$(fmode "$ledger")" "600"
 rm -rf "$HIMMEL_PROVENANCE_DIR"; printf 'abc' > "$w/tgt"; chmod 640 "$w/tgt"; ln -s "$w/tgt" "$w/lnk"
 prov_record create file "$w/dst" --post-file "$w/lnk"
 check "symlink --post-file records the target's mode" "$(last | jq -r .post.mode)" "0640"
+
+# a symlink at the ledger is refused before any chmod or append lands in its target
+rm -rf "$HIMMEL_PROVENANCE_DIR"; mkdir -p "$HIMMEL_PROVENANCE_DIR"
+printf 'keep\n' > "$w/victim"; chmod 644 "$w/victim"; ln -s "$w/victim" "$ledger"
+err=$(prov_record register mcp - --unit m --post-json '"x"' 2>&1 >/dev/null); rc=$?
+check "symlink ledger → rc 1" "$rc" "1"
+check "symlink ledger is a provenance: diagnostic" "${err%%:*}" "provenance"
+check "symlink ledger target is byte-identical" "$(cat "$w/victim")" "keep"
+check "symlink ledger target mode is untouched" "$(fmode "$w/victim")" "644"
+rm -f "$ledger"; ln -s "$w/nowhere" "$ledger"
+prov_record register mcp - --unit m --post-json '"x"' 2>/dev/null; rc=$?
+check "dangling symlink ledger → rc 1" "$rc" "1"
+check "dangling symlink ledger creates nothing through the link" "$([ -e "$w/nowhere" ] && echo yes || echo no)" "no"
+
+# a symlink at the backup dir (or its parent) is refused before anything is copied through it
+rm -rf "$HIMMEL_PROVENANCE_DIR" "$w/bkvictim"; mkdir -p "$HIMMEL_PROVENANCE_DIR/provenance-backups" "$w/bkvictim"
+printf 'pre\n' > "$w/pre.txt"; iid=20260921T000000Z-aaaaaa
+ln -s "$w/bkvictim" "$HIMMEL_PROVENANCE_DIR/provenance-backups/$iid"
+err=$(HIMMEL_PROVENANCE_IID=$iid prov_record replace file "$w/pre.txt" --pre-file "$w/pre.txt" --backup --post-file "$w/pre.txt" 2>&1 >/dev/null); rc=$?
+check "symlink backup dir → rc 1" "$rc" "1"
+check "symlink backup dir is a provenance: diagnostic" "${err%%:*}" "provenance"
+check "nothing was copied through the symlink backup dir" "$(find "$w/bkvictim" -mindepth 1 | wc -l | tr -d ' ')" "0"
+rm -rf "$HIMMEL_PROVENANCE_DIR/provenance-backups"; ln -s "$w/bkvictim" "$HIMMEL_PROVENANCE_DIR/provenance-backups"
+HIMMEL_PROVENANCE_IID=$iid prov_record replace file "$w/pre.txt" --pre-file "$w/pre.txt" --backup --post-file "$w/pre.txt" 2>/dev/null; rc=$?
+check "symlink provenance-backups parent → rc 1" "$rc" "1"
+check "nothing was copied through the symlink parent" "$(find "$w/bkvictim" -mindepth 1 | wc -l | tr -d ' ')" "0"
+
+# the lib hashes on a host with no sha256sum (stock macOS has only shasum)
+if ! command -v shasum >/dev/null 2>&1; then echo "SKIP - no shasum to exercise the sha256sum-less path"; else
+    rm -rf "$tmp/nosha"; mkdir -p "$tmp/nosha"
+    for t in bash sh jq shasum perl git uname date stat tail wc tr cp chmod mkdir cat sed awk grep dirname basename readlink rm ls printf; do
+        p=$(command -v "$t" 2>/dev/null) && [ -x "$p" ] && ln -s "$p" "$tmp/nosha/$t"
+    done
+    check "control: the stub PATH has no sha256sum" "$(PATH="$tmp/nosha" command -v sha256sum >/dev/null 2>&1 && echo present || echo absent)" "absent"
+    check "_prov_sha256 without sha256sum returns only the digest" "$(printf 'abc' | PATH="$tmp/nosha" _prov_sha256)" "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    rm -rf "$HIMMEL_PROVENANCE_DIR"; printf 'abc' > "$w/sh.txt"
+    ( PATH="$tmp/nosha" prov_record create file "$w/sh.txt" --post-file "$w/sh.txt" ); rc=$?
+    check "prov_record without sha256sum → rc 0" "$rc" "0"
+    check "prov_record without sha256sum records the right sha" "$(last | jq -r .post.sha)" "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+fi
 
 echo "$passes passed, $fails failed"
 [ "$fails" -eq 0 ]

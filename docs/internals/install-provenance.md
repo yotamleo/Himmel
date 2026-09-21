@@ -34,8 +34,8 @@ close it with a newline before the next append so it costs one row, not two.
 A **session** is one install (or uninstall) run, identified by an `iid`
 (`<UTC yyyymmddThhmmssZ>-<6 hex>`). `prov_begin` opens it and exports
 `HIMMEL_PROVENANCE_IID`, so every child process a writer spawns appends into
-the same session. A writer that finds no session open records a one-row session
-of its own (`install-begin`, the row, `install-end ok`).
+the same session. A writer that finds no session open records a three-row session
+of its own (`install-begin`, the one artifact row, `install-end ok`).
 
 | `op` | Row | Keys, in order |
 |---|---|---|
@@ -137,5 +137,13 @@ scratch `HOME` and never touches the real `~/.himmel`.
 - In the node dialect any error spawning jq (not only "jq is absent") selects the
   fallback canonicaliser above. The append-size and subshell-ownership limits and
   this one are tracked in HIMMEL-3347.
+- A symlink at the ledger file, at `provenance-backups`, or at a session's backup
+  directory is refused (rc 1, `provenance: refusing symlink <path>`) before any
+  chmod, append or copy, so nothing is written through it into another file. A
+  symlinked ledger *directory* (`~/.himmel` itself) is still followed.
+- An existing backup directory is not tightened to 0700 (only a newly created one
+  is); tracked in HIMMEL-3347.
+- Hashing uses `sha256sum`, else `shasum -a 256` (`_prov_sha256`; stock macOS has
+  only the latter); the node dialect uses its own `crypto`.
 - Backup cleanup at `install-end` and the reader that consumes the ledger belong
   to the uninstall slices; these helpers only write.

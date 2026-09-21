@@ -105,7 +105,9 @@ _prov_abs_path() {
     if [ "$base" = "" ]; then printf '%s' "${dir:-/}"; else printf '%s/%s' "${dir%/}" "$base"; fi
 }
 
-_prov_sha_stdin() {
+# _prov_sha256 -- sha256 of stdin, digest only: sha256sum, else `shasum -a 256` (stock macOS
+# has no sha256sum). The suites use it too, so a test cannot pass where the lib would fail.
+_prov_sha256() {
     # no `| awk`: a pipeline reports awk's status, so a failed hasher would yield an
     # empty sha with rc 0 in a shell without pipefail
     local out
@@ -116,8 +118,8 @@ _prov_sha_stdin() {
     printf '%s' "$out"
 }
 
-prov_sha_file() { _prov_sha_stdin < "$1"; }
-prov_sha_text() { printf '%s' "$1" | _prov_sha_stdin; }
+prov_sha_file() { _prov_sha256 < "$1"; }
+prov_sha_text() { printf '%s' "$1" | _prov_sha256; }
 
 # _prov_json_canon <json> -- `jq -cS` of the value, no trailing newline.
 _prov_json_canon() {
@@ -156,6 +158,15 @@ _prov_platform() {
     esac
 }
 
+# _prov_refuse_symlink <path>... -- a symlink at a final ledger/backup path would make a chmod,
+# append or copy land in some OTHER file (or create one through a dangling link); lstat, not stat.
+_prov_refuse_symlink() {
+    local _p
+    for _p in "$@"; do
+        if [ -L "$_p" ]; then _prov_err "refusing symlink $_p"; return 1; fi
+    done
+}
+
 # _prov_append <line> -- one O_APPEND write; a torn last line (no newline) is
 # closed first so it costs one row, not two.
 _prov_append() {
@@ -166,6 +177,7 @@ _prov_append() {
     dir=$(prov_dir) || return 1
     ledger="$dir/provenance.jsonl"
     ( umask 077; mkdir -p "$dir" ) || { _prov_err "cannot create $dir"; return 1; }
+    _prov_refuse_symlink "$ledger" || return 1
     # the ledger holds pre/post values: a pre-existing group/world-readable one is tightened
     if [ -e "$ledger" ]; then
         chmod 600 "$ledger" 2>/dev/null || { _prov_err "cannot restrict $ledger to 0600"; return 1; }
@@ -288,6 +300,7 @@ _prov_backup() {
     case "$iid" in ''|.|..|*[!A-Za-z0-9._-]*) _prov_err "unsafe session id '$iid'"; return 1 ;; esac
     dir=$(prov_dir) || return 1
     bdir="$dir/provenance-backups/$iid"
+    _prov_refuse_symlink "$dir/provenance-backups" "$bdir" || return 1
     ( umask 077; mkdir -p "$bdir" ) || { _prov_err "cannot create $bdir"; return 1; }
     n=1; for _f in "$bdir"/*; do [ -e "$_f" ] && n=$((n + 1)); done
     while :; do

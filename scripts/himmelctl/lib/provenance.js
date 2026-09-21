@@ -151,11 +151,22 @@ function newIid() {
 const isDry = () => process.env.DRY_RUN === '1';
 const modeOf = (f) => pad((fs.statSync(f).mode & 0o7777).toString(8), 4);
 
+// A symlink at a final ledger/backup path would make a chmod, append or copy land in some OTHER
+// file (or create one through a dangling link): lstat, never stat. ENOENT is fine.
+function refuseSymlink(...paths) {
+  for (const p of paths) {
+    let st = null;
+    try { st = fs.lstatSync(p); } catch (_) { /* absent */ }
+    if (st && st.isSymbolicLink()) throw fail(`refusing symlink ${p}`);
+  }
+}
+
 function append(line) {
   const dir = ledgerDir();
   const file = dir + '/provenance.jsonl';
   try {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    refuseSymlink(file);
     let torn = false;
     let st = null;
     try { st = fs.statSync(file); } catch (_) { /* no ledger yet */ }
@@ -261,6 +272,7 @@ function backup(iid, upath, type, val) {
   if (!/^[A-Za-z0-9._-]+$/.test(iid) || iid === '.' || iid === '..') throw fail(`unsafe session id '${iid}'`);
   const bdir = ledgerDir() + '/provenance-backups/' + iid;
   try {
+    refuseSymlink(ledgerDir() + '/provenance-backups', bdir);
     fs.mkdirSync(bdir, { recursive: true, mode: 0o700 });
     let n = fs.readdirSync(bdir).length + 1;
     let dest;
