@@ -1393,11 +1393,14 @@ assert_rc 3 "R16 amend --set head= does not carry a disposition to the new head"
 # object there, while a prior head carries outside-diff findings. HIMMEL-3360
 # retired the review-object-absent/panel-carry machinery entirely (exit 4 is
 # gone, see cr_body_gate): the current head has no outside-diff findings of
-# its own, so this shape is just an ordinary clean body — rc 0, no advisory
-# text, nothing to carry.
+# its own, so this shape passes — rc 0 — but the prior head's count is
+# surfaced as a NOTE (CR round 1: the failure mode is invisibility, not
+# permissiveness, HIMMEL-1147), nothing to carry.
 run_in_repo "$EMPTY_LEDGER_REPO" body-a2
 assert_rc 0 "39 incremental-silent body state is a plain pass now (HIMMEL-3360)"
 assert_verdict 0 "39 un-maskable exit 0 verdict line"
+assert_err_has "NOTE — CodeRabbit posted no substantive review" "39 incremental-silent prior outside-diff findings are surfaced as a NOTE (HIMMEL-3360 CR round 1)"
+assert_err_has "prior head carried 2 outside-diff finding" "39 the NOTE names the prior-head outside-diff count"
 
 # 39b — same shape in a repo with ledger evidence: still just a plain pass,
 # since cr_body_gate no longer reads panel/ledger evidence for this shape at

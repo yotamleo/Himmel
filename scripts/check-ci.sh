@@ -1025,7 +1025,15 @@ cr_body_gate() {
     # HIMMEL-3360: CodeRabbit is best effort — an incrementally-silent pass
     # (a prior head's outside-diff findings with no substantive review at this
     # head) is no longer itself a block; _cr_outside_gate below still blocks
-    # on any UNDISPOSITIONED outside-diff finding that is still outstanding.
+    # on any UNDISPOSITIONED outside-diff finding at THIS head. The prior
+    # head's count is surfaced as a NOTE (HIMMEL-1147: the failure mode is
+    # invisibility, not permissiveness): dispositions are keyed to the exact
+    # head and a finding the new commit fixed has no ledger row, so gating on
+    # the prior list without a review at this head would be the retired
+    # exit-4 hold under another name.
+    if [ "$_cbg_prior_outside" -gt 0 ] && [ "$_cbg_substantive" -eq 0 ] && [ "$_cbg_outside" -eq 0 ]; then
+        echo "check-ci: NOTE — CodeRabbit posted no substantive review at head $head0 of PR #$num while a prior head carried $_cbg_prior_outside outside-diff finding(s): best effort (HIMMEL-3360), not gating; confirm each is fixed or dispositioned before merging." >&2
+    fi
 
     body_outside_note=""
     if [ "$_cbg_outside" -gt 0 ]; then

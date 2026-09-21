@@ -71,6 +71,13 @@ echo "== Case 5: missing file -> exit 2 =="
 out=$(run "$tmp/does-not-exist.md"); rc=$?
 if [ "$rc" -eq 2 ]; then pass "case 5 -> exit 2"; else fail "case 5 -> expected 2 got $rc" "$out"; fi
 
+# Case 6: a directory passes the readability check but grep fails on it -> exit 2, not a silent pass
+echo "== Case 6: directory argument -> exit 2 (grep execution error, not clean) =="
+dir="$tmp/adir"
+mkdir -p "$dir"
+out=$(run "$dir"); rc=$?
+if [ "$rc" -eq 2 ]; then pass "case 6 -> exit 2"; else fail "case 6 -> expected 2 got $rc" "$out"; fi
+
 echo
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

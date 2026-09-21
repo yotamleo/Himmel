@@ -49,10 +49,22 @@ report() {
 
 scan_file() {
     # One grep pipeline per file (a per-line fork is minutes over scripts/**).
-    local f="$1" hits n line
+    local f="$1" hits mentions n line rc
     [ -r "$f" ] || { echo "check-cr-best-effort: cannot read $f" >&2; return 2; }
+    # First stage reads the file on its own so its exit status survives (a
+    # command substitution loses PIPESTATUS): 0 = mentions found, 1 = none,
+    # anything else is a grep execution error (e.g. "$f" is a directory) —
+    # fail closed rather than silently treating it as clean.
+    mentions=$(grep -nE "$CR_RE" -- "$f"); rc=$?
+    if [ "$rc" -eq 1 ]; then
+        return 0
+    elif [ "$rc" -ne 0 ]; then
+        echo "check-cr-best-effort: cannot scan $f (grep rc=$rc)" >&2
+        return 2
+    fi
     # "merge queue" is GitHub's feature, not a CodeRabbit hold — blanked before the term match.
-    hits=$(grep -nE "$CR_RE" -- "$f" 2>/dev/null | sed 's/merge queue/merge-Q/g' | grep -iE "$SCHED_RE" | grep -vF "$MARKER") || return 0
+    # The remaining stages operate on an in-memory string with constant patterns; a non-zero here means no hits.
+    hits=$(printf '%s\n' "$mentions" | sed 's/merge queue/merge-Q/g' | grep -iE "$SCHED_RE" | grep -vF "$MARKER") || return 0
     while IFS= read -r line; do
         n="${line%%:*}"
         report "$f" "$n" "${line#*:}"
