@@ -204,6 +204,18 @@ check "backup-hardlink: twin untouched" "$(cat "$td/bk-twin")" "twin sentinel"
 check "backup-hardlink: planted link still the twin" "$(cat "$td/bk-hardlink.md.himmel-uninstall-backup")" "twin sentinel"
 [ "$td/bk-twin" -ef "$td/bk-hardlink.md.himmel-uninstall-backup" ] && ok "backup-hardlink: link count intact (same inode)" || bad "backup-hardlink: link broken or replaced"
 bash "$uw" --probe "$td/bk-hardlink.md" >/dev/null 2>&1; check "backup-hardlink: probe 3 (still wired)" "$?" 3
+# if the link-count inspection itself fails (find exits non-zero with no
+# output), the helper must refuse, not read "no output" as "not a hard link":
+# a stub find ahead of PATH stands in for the failure (HIMMEL-3341, round 5).
+mkdir -p "$td/fakebin"; printf '#!/bin/sh\nexit 1\n' > "$td/fakebin/find"; chmod +x "$td/fakebin/find"
+printf 'mine\n\n%s\n' "$BLOCK" > "$td/bk-findfail.md"; cp "$td/bk-findfail.md" "$td/bk-findfail.before"
+printf 'older backup\n' > "$td/bk-findfail.md.himmel-uninstall-backup"
+out=$(PATH="$td/fakebin:$PATH" bash "$uw" "$td/bk-findfail.md" 2>&1); rc=$?
+check "backup-findfail: rc 1" "$rc" 1
+has   "backup-findfail: says the inspection failed" "could not check" "$out"
+has   "backup-findfail: says untouched" "left untouched" "$out"
+same  "backup-findfail: file byte-identical" "$td/bk-findfail.md" "$td/bk-findfail.before"
+check "backup-findfail: older backup not replaced" "$(cat "$td/bk-findfail.md.himmel-uninstall-backup")" "older backup"
 # a REGULAR file at the backup path (a previous run's backup) is replaced
 printf 'mine\n\n%s\n' "$BLOCK" > "$td/bk-file.md"; cp "$td/bk-file.md" "$td/bk-file.before"; printf 'older backup\n' > "$td/bk-file.md.himmel-uninstall-backup"
 run "$td/bk-file.md"

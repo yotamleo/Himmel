@@ -97,7 +97,7 @@ unwire_ucm_probe() {
 
 unwire_user_claude_md() {
   local target="$1" dry="${2:-0}"
-  local scan nb ne lb le crlf openfence fm start tmp backup
+  local scan nb ne lb le crlf openfence fm start tmp backup _ucm_links
   if [ ! -f "$target" ]; then
     echo "  no $target -- nothing to strip"
     return 0
@@ -165,10 +165,20 @@ unwire_user_claude_md() {
     echo "unwire-user-claude-md: $backup already exists and is not a regular file (a symlink or a directory), so the backup cannot be written there without touching something else -- refusing; move it aside and re-run, or remove the block by hand. $target left untouched" >&2
     return 1
   fi
-  if [ -f "$backup" ] && [ -n "$(find "$backup" -prune -links +1 2>/dev/null)" ]; then
-    rm -f "$tmp"
-    echo "unwire-user-claude-md: $backup already exists and is a hard link to another file, so writing the backup there would overwrite that file as well -- refusing; move it aside and re-run, or remove the block by hand. $target left untouched" >&2
-    return 1
+  if [ -f "$backup" ]; then
+    # find prints the path only when the link count exceeds one; a find that
+    # fails outright is not "no hard link" -- an inspection we cannot trust is
+    # a backup we must not write (fail closed, like the awk scan above).
+    if ! _ucm_links=$(find "$backup" -prune -links +1 2>/dev/null); then
+      rm -f "$tmp"
+      echo "unwire-user-claude-md: could not check whether $backup is a hard link (find failed), so the backup cannot be written there safely -- refusing; move it aside and re-run, or remove the block by hand. $target left untouched" >&2
+      return 1
+    fi
+    if [ -n "$_ucm_links" ]; then
+      rm -f "$tmp"
+      echo "unwire-user-claude-md: $backup already exists and is a hard link to another file, so writing the backup there would overwrite that file as well -- refusing; move it aside and re-run, or remove the block by hand. $target left untouched" >&2
+      return 1
+    fi
   fi
   if ! cp -p -- "$target" "$backup"; then
     rm -f "$tmp"
