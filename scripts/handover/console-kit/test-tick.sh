@@ -58,7 +58,8 @@ cat > "$W/repo/scripts/handover/queue-lock.sh" <<'STUB'
 case "$1" in
   heartbeat) exit 0 ;;
   status)
-    case "$2" in *N61*|*-N1-*|*-N2-*|*-N191-*|*-leg192-*|*-legN194-*|*odd-name*|*-N301-*|*-N302-*|*-N303-*) printf '%s\n' 'status: FRESH'; exit 11 ;; *) printf '%s\n' free; exit 0 ;; esac ;;
+    case "$2" in *N61*|*-N1-*|*-N2-*|*-N191-*|*-leg192-*|*-legN194-*|*odd-name*|*-N301-*|*-N302-*|*-N303-*) printf '%s\n' 'status: FRESH'; exit 11 ;;
+    *-N380-*) printf '%s\n' 'held -- UNVERIFIED lock: /r/.locks/queue/x.lock is named for this doc but records /elsewhere/x.md, which does not resolve here'; exit 11 ;; *) printf '%s\n' free; exit 0 ;; esac ;;
 esac
 exit 2
 STUB
@@ -1165,6 +1166,14 @@ contains 'a bold leading marker reads as that marker (HIMMEL-3393)' "$(tail3393 
 # A bullet that leads with prose carries no status: the tick reads the last real one.
 contains 'a bullet leading with prose is invisible to the tick (HIMMEL-3393)' "$(tail3393 '- 23:47 FINDING — needs a ruling' '- 23:48 Sent the FINDING to the console, will report READY once it rules')" 'N393:FINDING'
 contains 'a marker glued to a longer word is not a marker (HIMMEL-3393)' "$(tail3393 '- 23:47 FINDINGS pending, no marker here')" 'N393:LIVE'
+
+# --- HIMMEL-3290: a lock queue-lock can neither attribute to this doc nor rule
+# out (status `held -- UNVERIFIED`, rc 11) reads UNVERIFIED -- never FREE, which
+# the console reads as "reclaim it", and never folded into WRAPPED by the leg's
+# own tail. RED control (pre-fix tick.sh): legs=N380:UNKNOWN.
+u3290="HIMMEL-3380-N380-unverified-2026-09-22-RESUME"
+printf '%s\n' '# leg' '- 12:00 LIVE — working' '- 12:30 WRAPPED — released' > "$W/handover/$u3290.md"
+contains 'an unattributable lock reads UNVERIFIED, not FREE/WRAPPED/UNKNOWN (HIMMEL-3290)' "$(bash "$SUT" --legs "$W/handover/$u3290.md" 2>/dev/null)" 'legs=N380:UNVERIFIED '
 
 # --- HIMMEL-3361: board=<ok|STALE:<age>|MISSING|skip> -- the console's progress
 # board (console-board.html, written by board.mjs next to the console doc) must be
