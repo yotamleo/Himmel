@@ -335,7 +335,8 @@ echo "== C4: forge decided on the origin's HOST, not a URL substring (fixtures/f
 # read. INFO C4-forge must fire exactly when forge_detect says bitbucket.
 _c4_body="$(awk '/^check_c4\(\)/{found=1} found{print} found && /^\}$/{exit}' "$DOC")"
 _c4_tsv="$REPO_ROOT/scripts/lib/fixtures/forge-origins.tsv"
-_c4_repo="$(mktemp -d)"; git init -q "$_c4_repo"
+_c4_repo="$(mktemp -d "${TMPDIR:-/tmp}/c4-forge.XXXXXX")" || { echo "mktemp failed" >&2; exit 1; }
+git init -q "$_c4_repo"
 # c4_run <origin> [FORGE value] — echoes the "<sev> <id>" line check_c4 emits, if any.
 c4_run() {
     git -C "$_c4_repo" remote remove origin 2>/dev/null
