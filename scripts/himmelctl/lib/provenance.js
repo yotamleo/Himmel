@@ -49,11 +49,18 @@ const jstr = (s) => JSON.stringify(String(s)).replace(/\x7f/g, '\\u007f');
 const jstrOrNull = (s) => (s ? jstr(s) : 'null');
 const obj = (pairs) => '{' + pairs.map(([k, v]) => jstr(k) + ':' + v).join(',') + '}';
 
+// spawnSync caps a child's output at 1 MiB by default; jq echoes its input, so the cap is explicit.
+// A value past it is an execution failure below, never a silent switch to the fallback.
+const JQ_MAX_BUFFER = 256 * 1024 * 1024;
 let jqOk = null;
 function jqCanon(text) {
   if (jqOk !== false) {
-    const r = spawnSync('jq', ['-cS', '.'], { input: text, encoding: 'utf8' });
+    const r = spawnSync('jq', ['-cS', '.'], { input: text, encoding: 'utf8', maxBuffer: JQ_MAX_BUFFER });
+    // only "jq is not installed" (ENOENT) selects the fallback; any other spawn error (EACCES,
+    // EAGAIN, ENOBUFS, a timeout) is a failed run of a jq that IS there: fail, and try jq again next call
+    if (r.error && r.error.code !== 'ENOENT') throw fail(`jq failed to run (${r.error.code || r.error.message})`);
     if (!r.error) {
+      if (r.status === null) throw fail(`jq was killed (${r.signal})`);
       jqOk = true;
       if (r.status !== 0) return null;
       const out = r.stdout.replace(/\r?\n$/, ''); // jq.exe on Windows ends its lines with CRLF

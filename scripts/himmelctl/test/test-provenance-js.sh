@@ -287,5 +287,26 @@ HIMMEL_PROVENANCE_IID=$iid "$node_bin" "$jsw" record replace file "$w/pre.txt" -
 check "node: symlink provenance-backups parent → rc 1" "$rc" "1"
 check "node: nothing was copied through the symlink parent" "$(find "$w/bkvictim" -mindepth 1 | wc -l | tr -d ' ')" "0"
 
+# HIMMEL-3347 (3): only "jq is absent" (ENOENT) selects the fallback canonicaliser. Any other spawn
+# error (a jq that is not executable) fails loudly and is retried on the next call -- never a
+# permanent silent switch to a canonicaliser that hashes 1.0 / 1E+2 differently from jq.
+mkdir -p "$tmp/badjq"; printf 'junk\n' > "$tmp/badjq/jq"; chmod 644 "$tmp/badjq/jq"
+rm -rf "$tmp/pu"
+PATH="$tmp/badjq:$tmp/nodeonly" "$tmp/nodeonly/node" "$jsw" record replace json-key "$w/s.json" --post-json '{"a":1.0}' --pre-json '{"a":1.0}' >/dev/null 2>"$tmp/err3"; rc=$?
+check "node: a jq that cannot be executed → rc 1, not the fallback" "$rc" "1"
+check "node: the diagnostic names jq and is a provenance: line" "$(head -n1 "$tmp/err3" | grep -c '^provenance: .*jq')" "1"
+check "node: nothing was appended after a jq execution failure" "$([ -e "$tmp/pu/provenance.jsonl" ] && echo ledger-written || echo none)" "none"
+export PATH_GOOD="$PATH"
+retry=$(PATH="$tmp/badjq:$tmp/nodeonly" "$node_bin" -e '
+  const p = require(process.argv[1]); const good = process.env.PATH_GOOD;
+  let bad = "none"; try { p.jqCanon("1.0"); } catch (e) { bad = "threw:" + e.code; }
+  process.env.PATH = good;
+  console.log(bad + " " + p.jqCanon("[1.0]"));' "$jsw" 2>&1)
+check "node: an exec failure throws and the NEXT call uses jq again (no permanent fallback)" "$retry" "threw:1 [1.0]"
+# an explicit maxBuffer: jq output past spawnSync's 1 MiB default is still jq's output (not the fallback's)
+check "node: a >1 MiB value still canonicalises through jq" "$("$node_bin" -e '
+  const t = "[1.0,\"" + "z".repeat(3 * 1024 * 1024) + "\"]";
+  process.stdout.write(require(process.argv[1]).jqCanon(t).slice(0, 5));' "$jsw")" '[1.0,'
+
 echo "$passes passed, $fails failed"
 [ "$fails" -eq 0 ]

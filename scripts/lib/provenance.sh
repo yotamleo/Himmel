@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Platform guard (gitbash-only): POSIX bash 3.2+ / Git Bash on Windows, jq +
-# sha256sum|shasum only. Twin: scripts/himmelctl/lib/provenance.js (node) writes
+# sha256sum|shasum + dd only. Twin: scripts/himmelctl/lib/provenance.js (node) writes
 # byte-identical rows (the PowerShell dialect is tracked in HIMMEL-3346).
 #
 # provenance.sh -- the install-provenance ledger writer (HIMMEL-3332 S1).
@@ -40,6 +40,7 @@ _prov_need() {
     command -v jq >/dev/null 2>&1 || { _prov_err "jq required"; return 1; }
     command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 \
         || { _prov_err "sha256sum or shasum required"; return 1; }
+    command -v dd >/dev/null 2>&1 || { _prov_err "dd required"; return 1; }
 }
 
 _prov_now() {
@@ -167,10 +168,10 @@ _prov_refuse_symlink() {
     done
 }
 
-# _prov_append <line> -- one O_APPEND write; a torn last line (no newline) is
-# closed first so it costs one row, not two.
+# _prov_append <line> -- one O_APPEND write(2), however long the row; a torn last line
+# (no newline) is closed first so it costs one row, not two.
 _prov_append() {
-    local dir ledger row="${1:-}"
+    local dir ledger tmp size row="${1:-}"
     row=${row%$'\r'}   # jq.exe on Windows ends its lines with CRLF; a row ends at the JSON
     # a row built in a command substitution is "" when its jq failed; never append that
     [ -n "$row" ] || { _prov_err "refusing to append an empty row"; return 1; }
@@ -185,10 +186,16 @@ _prov_append() {
     if [ -s "$ledger" ] && [ -n "$(tail -c1 "$ledger")" ]; then
         ( umask 077; printf '\n' >> "$ledger" ) || return 1
     fi
-    # ponytail: the printf builtin issues one write(2) only while the row fits its stdio buffer
-    # (~4 KiB); a longer row (an install-begin with a huge argv) can interleave with a concurrent
-    # writer's row and is not serialized here. Every realistic artifact row is far below that.
-    ( umask 077; printf '%s\n' "$row" >> "$ledger" ) || { _prov_err "cannot append to $ledger"; return 1; }
+    # The printf builtin writes a row longer than its stdio buffer (~4 KiB) in chunks, and a
+    # concurrent writer's row can land between them. So the row goes to a private temp file and
+    # `dd bs=<its size>` copies it to the O_APPEND descriptor in one read and one write(2).
+    tmp=$( umask 077; mktemp "$dir/.append.XXXXXX" ) || { _prov_err "cannot create a temp file in $dir"; return 1; }
+    if printf '%s\n' "$row" > "$tmp" && size=$(_prov_size "$tmp") && [ "${size:-0}" -gt 0 ] \
+        && ( umask 077; dd if="$tmp" bs="$size" >> "$ledger" 2>/dev/null ); then
+        rm -f "$tmp"
+    else
+        rm -f "$tmp"; _prov_err "cannot append to $ledger"; return 1
+    fi
 }
 
 # _prov_json_or_null <string> -- a JSON string, or null when empty.
@@ -240,7 +247,7 @@ prov_begin() {
     [ -n "$target" ] && target=$(_prov_abs_path "$target" 2>/dev/null || printf '%s' "$target")
     _prov_append "$(_prov_begin_row "$iid" "$writer" "$target" "$root" "$argv")" || return 1
     HIMMEL_PROVENANCE_IID="$iid"
-    _PROV_OWNS="$iid"
+    _PROV_OWNS="$iid:${BASH_SUBSHELL:-}"
     export HIMMEL_PROVENANCE_IID
 }
 
@@ -257,11 +264,9 @@ prov_end() {
     local status="${1-}" step="${2-}" iid="${HIMMEL_PROVENANCE_IID:-}"
     case "$status" in ok|failed|partial) ;; *) _prov_err "prov_end: status must be ok|failed|partial"; return 2 ;; esac
     _prov_dry && return 0
-    # ponytail: ownership is the shell variable _PROV_OWNS, which a bash SUBSHELL of the
-    # opener inherits, so `( prov_end ok )` closes the parent's session and the parent's
-    # copy stays set (a second install-end on its own prov_end). A pid check needs $BASHPID
-    # (bash >= 4; this lib targets 3.2), so callers open and close in the same shell.
-    [ -n "$iid" ] && [ "${_PROV_OWNS:-}" = "$iid" ] || return 0
+    # ownership is the session id plus the subshell depth it was opened at (BASH_SUBSHELL, bash 3.0+):
+    # a subshell inherits _PROV_OWNS but sits deeper, so `( prov_end ok )` no longer closes the parent's session
+    [ -n "$iid" ] && [ "${_PROV_OWNS:-}" = "$iid:${BASH_SUBSHELL:-}" ] || return 0
     _prov_need || return 1
     # close ownership only once the end row is on disk, so a failed append can be retried
     _prov_append "$(_prov_end_row "$iid" "$status" "$step")" || return 1

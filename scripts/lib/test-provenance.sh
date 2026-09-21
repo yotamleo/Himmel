@@ -338,7 +338,7 @@ check "nothing was copied through the symlink parent" "$(find "$w/bkvictim" -min
 # the lib hashes on a host with no sha256sum (stock macOS has only shasum)
 if ! command -v shasum >/dev/null 2>&1; then echo "SKIP - no shasum to exercise the sha256sum-less path"; else
     rm -rf "$tmp/nosha"; mkdir -p "$tmp/nosha"
-    for t in bash sh jq shasum perl git uname date stat tail wc tr cp chmod mkdir cat sed awk grep dirname basename readlink rm ls printf; do
+    for t in bash sh jq shasum perl git uname date stat tail wc tr cp chmod mkdir cat sed awk grep dirname basename readlink rm ls printf mktemp dd; do
         p=$(command -v "$t" 2>/dev/null) && [ -x "$p" ] && ln -s "$p" "$tmp/nosha/$t"
     done
     check "control: the stub PATH has no sha256sum" "$(PATH="$tmp/nosha" command -v sha256sum >/dev/null 2>&1 && echo present || echo absent)" "absent"
@@ -348,6 +348,43 @@ if ! command -v shasum >/dev/null 2>&1; then echo "SKIP - no shasum to exercise 
     check "prov_record without sha256sum → rc 0" "$rc" "0"
     check "prov_record without sha256sum records the right sha" "$(last | jq -r .post.sha)" "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
 fi
+
+# ── HIMMEL-3347 ───────────────────────────────────────────────────────────
+# (1) a row longer than a stdio buffer must still land in ONE write(2): the row goes through
+# `dd bs=<row bytes>` (one read, one write to the O_APPEND descriptor), not the printf builtin's
+# 4 KiB chunks. A dd spy pins the mechanism; the concurrent-writer run pins the behaviour.
+rm -rf "$HIMMEL_PROVENANCE_DIR" "$tmp/spy"; mkdir -p "$tmp/spy"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/dd.calls"\nexec "%s" "$@"\n' "$tmp" "$(command -v dd)" > "$tmp/spy/dd"; chmod +x "$tmp/spy/dd"
+rm -f "$tmp/dd.calls"
+bigfield=$(head -c 20000 /dev/zero | tr '\0' x)
+( PATH="$tmp/spy:$PATH"; prov_record create file "$w/a.txt" --post-file "$w/a.txt" --field "big=\"$bigfield\"" ); rc=$?
+check "large row: rc" "$rc" "0"
+check "large row: the ledger row parses" "$(last | jq -r '.big | length')" "20000"
+rowbytes=$(last | wc -c | tr -d ' ')
+ddbs=$(sed -n 's/.*bs=\([0-9][0-9]*\).*/\1/p' "$tmp/dd.calls" 2>/dev/null | sort -n | tail -n1)
+check "large row: appended by one dd whose block covers the whole row" "$([ -n "$ddbs" ] && [ "$ddbs" -ge "$rowbytes" ] && echo yes || echo "no (bs=${ddbs:-none} row=$rowbytes)")" "yes"
+check "large row: no temp file left behind" "$(find "$HIMMEL_PROVENANCE_DIR" -maxdepth 1 -name '.append.*' | wc -l | tr -d ' ')" "0"
+rm -rf "$HIMMEL_PROVENANCE_DIR"; mkdir -p "$HIMMEL_PROVENANCE_DIR"
+pad=$(head -c 30000 /dev/zero | tr '\0' y)
+for wn in 1 2 3 4 5 6 7 8; do
+    ( i=0; while [ "$i" -lt 25 ]; do _prov_append "$(jq -nc --argjson w "$wn" --argjson i "$i" --arg pad "$pad" '{w:$w,i:$i,pad:$pad}')" || exit 1; i=$((i + 1)); done ) &
+done
+wait
+check "8 concurrent writers x 25 large rows: every row landed" "$(grep -c . "$ledger")" "200"
+check "8 concurrent writers x 25 large rows: every row parses" "$(jq -c . "$ledger" >/dev/null 2>&1; echo $?)" "0"
+
+# (2) a subshell of the opener inherits _PROV_OWNS but is not the owner: its prov_end is a no-op.
+rm -rf "$HIMMEL_PROVENANCE_DIR"; unset HIMMEL_PROVENANCE_IID _PROV_OWNS
+prov_begin --writer sub --iid SUB1
+( prov_end ok ); check "subshell prov_end rc" "$?" "0"
+check "subshell prov_end wrote no install-end" "$(grep -c '"op":"install-end"' "$ledger")" "0"
+check "subshell prov_end left the session open" "${HIMMEL_PROVENANCE_IID:-unset}" "SUB1"
+: "$(prov_end failed)"
+check "command-substitution prov_end wrote no install-end" "$(grep -c '"op":"install-end"' "$ledger")" "0"
+prov_end ok; check "the opener's prov_end rc" "$?" "0"
+check "the opener's prov_end wrote exactly one install-end" "$(grep -c '"op":"install-end"' "$ledger")" "1"
+check "the opener's prov_end closed the session" "${HIMMEL_PROVENANCE_IID:-unset}" "unset"
+( prov_begin --writer own --iid SUB2; prov_end ok ); check "a subshell that opens its own session closes it" "$(grep -c '"iid":"SUB2","op":"install-end"' "$ledger")" "1"
 
 echo "$passes passed, $fails failed"
 [ "$fails" -eq 0 ]

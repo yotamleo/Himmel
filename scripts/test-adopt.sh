@@ -141,7 +141,7 @@ chmod +x "$work/bin/claude"
 
 # xargs: Arch co-locates node with coreutils in /usr/bin, so the toolchain
 # scrub drops it (same class as the HIMMEL-874 sed fix).
-for _tool in bash git jq python3 grep sed cat cp mv rm ln mkdir chmod diff wc tr head tail basename dirname mktemp sort cut xargs; do
+for _tool in bash git jq python3 grep sed cat cp mv rm ln mkdir chmod diff wc tr head tail basename dirname mktemp dd sort cut xargs; do
   link_hermetic_tool "$_tool"
 done
 # HIMMEL-3332: adopt.sh records what it installs; provenance.sh (and copy_recorded's

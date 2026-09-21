@@ -100,8 +100,10 @@ prov_end ok
   `DRY: record <op> <kind> <path>`; `begin`/`end` stay silent.
 - **Failures**: usage errors are rc 2 (bash/node CLI) and I/O or missing-tool
   failures rc 1, with `provenance: <why>` on stderr. Whether a failed record is fatal is the caller's call.
-- `prov_end` closes only a session **this process opened**; a child that merely
-  inherited `HIMMEL_PROVENANCE_IID` is a silent no-op, and a failed append leaves
+- `prov_end` closes only a session **this shell opened**: a child process, or a
+  subshell (`( ... )`, `$( ... )`, a pipeline stage) of the opener, that merely
+  inherited `HIMMEL_PROVENANCE_IID` is a silent no-op (ownership is the session id
+  plus `BASH_SUBSHELL`, the subshell depth at `prov_begin`), and a failed append leaves
   the session open so the call can be retried. (The node CLI is one process per
   call, so `begin` **prints the session id** for the caller to export as
   `HIMMEL_PROVENANCE_IID`, and `end` closes the exported session
@@ -121,22 +123,21 @@ scratch `HOME` and never touches the real `~/.himmel`.
   canonicaliser that diverges from `jq -cS` on non-canonical number literals
   (`1.0`, `1E+2`, integers past 2^53) and non-BMP key order. Every install host
   already requires jq, so this is a fallback, not a supported mode.
-- Appends are one `write` only for rows that fit a stdio buffer (~4 KiB, bash
-  dialect); an `install-begin` row with a very large `argv` can interleave with a
-  concurrent writer's row. Artifact rows are far smaller. A reader skips a line
-  that does not parse, so the cost is one lost row.
-- Session ownership (bash) is a shell variable, so a subshell of the opener
-  inherits it: call `prov_begin` and `prov_end` from the same shell, not from a
-  `( ... )` or `$( ... )` (a subshell's `prov_end` closes the session but leaves
-  the parent's copy set). Binding it to a pid needs `$BASHPID`, bash 4+.
+- Every row is appended in one `write(2)` (bash: a private temp file copied by
+  `dd bs=<row bytes>`; node: one `O_APPEND` write), so a long row cannot
+  interleave with a concurrent writer's. That is atomic on a local POSIX
+  filesystem; a network one (NFS) does not promise it. Both dialects'
+  torn-last-line check can still see a concurrent large append part-written and
+  add an empty line after it; a reader skips lines that do not parse.
 - A backslash in a path is a separator only on Windows; on POSIX it is a legal
   filename character and is recorded as given.
 - The Windows-specific handling in the bash and node dialects (drive roots `C:/`,
   backslash separators, CRLF from `jq.exe`) is tested here only through Linux
   fixtures, not on Windows.
-- In the node dialect any error spawning jq (not only "jq is absent") selects the
-  fallback canonicaliser above. The append-size and subshell-ownership limits and
-  this one are tracked in HIMMEL-3347.
+- In the node dialect only "jq is not installed" (`ENOENT`) selects the fallback
+  canonicaliser above. Any other failure to run jq (not executable, killed, output
+  past the explicit 256 MiB `maxBuffer`) is `provenance: jq failed to run ...`
+  (rc 1), and the next call tries jq again.
 - A symlink at the ledger file, at `provenance-backups`, or at a session's backup
   directory is refused (rc 1, `provenance: refusing symlink <path>`) before any
   chmod, append or copy, so nothing is written through it into another file. A
