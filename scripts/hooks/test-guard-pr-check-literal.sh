@@ -22,7 +22,7 @@ LITERAL='bash scripts/cr/pr-check-context.sh'
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY
 
 FAILED=0
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/guard-pr-check-literal.XXXXXX")" || { echo "FAIL mktemp"; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 TMP="$(cd "$TMP" && pwd -P)"
 
@@ -69,7 +69,7 @@ run() {
 }
 
 need_in_err() { # need_in_err <label> <fixed-string>
-    if printf '%s' "$LAST_ERR" | grep -qF -- "$2"; then
+    if grep -qF -- "$2" <<<"$LAST_ERR"; then
         echo "PASS $1"
     else
         echo "FAIL $1 - stderr lacks '$2': $LAST_ERR"

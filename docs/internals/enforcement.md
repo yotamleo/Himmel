@@ -1774,6 +1774,27 @@ The brief-level twin is `STASH_BAN_LINE` in the lane worker prompts. Fails
 CLOSED on missing `jq` or malformed JSON. Bypass: `GIT_STASH_OK=1` (launching
 shell, session-sticky). Spec: `scripts/hooks/test-block-git-stash.sh`.
 
+### `guard-pr-check-literal.sh` — `/pr-check` step-0 bare-literal conditions (HIMMEL-3383)
+
+Fires on Bash, and only on the exact literal `bash scripts/cr/pr-check-context.sh`
+(surrounding whitespace trimmed; every other command is a silent no-op). Every
+leg profile allow-lists that literal (HIMMEL-3359), but the runbook permits it
+only when three conditions hold: the cwd's git-common-dir is
+`$HIMMEL_REPO/.git` (the himmel lane), the cwd is the worktree root, and the
+tree has no change vs `refs/remotes/origin/main` under `scripts/cr/` or in
+`scripts/guardrails/lib.sh`. Uncommitted and untracked files count. The hook
+re-checks all three at match time. When they all hold it exits 0 silently, and
+the permission rules decide as before; the hook never emits an allow of its own,
+so it can only narrow. When any condition fails, or cannot be evaluated (no cwd,
+unset `HIMMEL_REPO`, an unresolvable `origin/main`, or malformed stdin), it
+refuses and prints the canonical anchored fence from step 0 as the remedy.
+It sources and execs nothing from the checkout under review. Its git calls ignore
+inherited `GIT_*` variables and switch off fsmonitor, external diff and
+textconv. It spells the ref in full, so a local branch named `origin/main`
+cannot stand in for the remote-tracking ref. Fails CLOSED. There is no bypass
+variable, because the fence is always available and is the remedy. Spec:
+`scripts/hooks/test-guard-pr-check-literal.sh`.
+
 ### `block-rogue-claude-schedule.sh` — raw scheduler-arm guard (HIMMEL-647)
 
 Fires on Bash/PowerShell. Refuses a tool call that registers an OS scheduler
