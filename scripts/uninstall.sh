@@ -1523,13 +1523,14 @@ ledger_job_outcome() {
 # is read from the register row. remove -> `systemctl --user disable --now`,
 # then the unit file goes, then daemon-reload; restore (the operator had their
 # own unit) -> the file comes back, nothing is disabled; keep (user-modified,
-# no backup) -> nothing is touched, unless the operator accepts the interactive
-# [d]elete override, in which case the unit is disabled and reloaded afterwards
-# like any other removal. `disable-linger` runs only when this uninstall
-# removed or restored the unit AND linger_preexisted is literally false — null
-# (unknown) and true both leave linger alone.
+# no backup) -> nothing is touched and the interactive [d]elete/[r]estore
+# override is never offered (it would swap the file under a live unit, and the
+# disable -> reload sequence only runs for a removal this function drives).
+# `disable-linger` runs only when this uninstall removed or restored the unit
+# AND linger_preexisted is literally false — null (unknown) and true both leave
+# linger alone.
 ledger_teardown_bridge_unit() {
-  local _upath _uj _verdict _act _regj _linger _steps_before _overridden=0
+  local _upath _uj _verdict _act _regj _linger _steps_before
   _upath="${HIMMELCTL_SYSTEMD_USER_UNIT_DIR:-$HOME/.config/systemd/user}/telegram-bridge.service"
   _uj=$(prov_read_units --path "$_upath" --kind file | head -n 1)
   [ -n "$_uj" ] || return 0
@@ -1539,20 +1540,18 @@ ledger_teardown_bridge_unit() {
     remove|restore) ;;
     skip|heuristic) return 0 ;;
     *)
-      _steps_before=${#STEPS_INCOMPLETE[@]}
-      ledger_apply_unit "$_uj" "[1/8]" || true
-      # Only an accepted [d]elete override on a user-modified unit removes the
-      # file here; a kept unit needs no systemctl call.
-      [ "${_verdict#* }" = "user-modified" ] && [ ! -e "$_upath" ] \
-        && [ "${#STEPS_INCOMPLETE[@]}" -eq "$_steps_before" ] || return 0
-      _overridden=1 ;;
+      YES=1 ledger_apply_unit "$_uj" "[1/8]" || true   # YES=1: report kept, never prompt
+      if [ "${_verdict#* }" = "user-modified" ] && [ -e "$_upath" ] && [ "$DRY_RUN" -ne 1 ]; then
+        echo "  hand step: systemctl --user disable --now telegram-bridge.service, then remove $_upath"
+      fi
+      return 0 ;;
   esac
   if ! command -v systemctl >/dev/null 2>&1; then
     echo "  kept $_upath (systemctl not on PATH — cannot disable the unit; disable and remove it by hand)"
     prov_read_outcome kept "$_uj" "no-systemctl"
     return 0
   fi
-  if [ "$_act" = "remove" ] || [ "$_overridden" -eq 1 ]; then
+  if [ "$_act" = "remove" ]; then
     # ponytail: only the unit himmel itself installed is disabled. A restored
     # operator unit keeps whatever enablement it has — bridge-persistence.js
     # does not record the pre-install enablement, so there is nothing to put back.
@@ -1563,11 +1562,9 @@ ledger_teardown_bridge_unit() {
       return 0
     fi
   fi
-  if [ "$_overridden" -eq 0 ]; then
-    _steps_before=${#STEPS_INCOMPLETE[@]}
-    ledger_apply_unit "$_uj" "[1/8]" || true   # rc 1 = a restore, still a done unit
-    [ "${#STEPS_INCOMPLETE[@]}" -gt "$_steps_before" ] && return 0
-  fi
+  _steps_before=${#STEPS_INCOMPLETE[@]}
+  ledger_apply_unit "$_uj" "[1/8]" || true   # rc 1 = a restore, still a done unit
+  [ "${#STEPS_INCOMPLETE[@]}" -gt "$_steps_before" ] && return 0
   if ! run systemctl --user daemon-reload; then
     echo "  WARN: systemctl --user daemon-reload failed — run it by hand." >&2
     fail_step "[1/8] telegram bridge unit: could not daemon-reload after removing the unit file"

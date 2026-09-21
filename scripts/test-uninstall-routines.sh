@@ -284,23 +284,17 @@ run_uninstall_tty() {
 }
 TTY_FLAGS=(--keep-telegram-state --skip-plugins --skip-hooks --skip-settings)
 
-echo "==== B7: user-modified unit + accepted interactive delete -> disabled before it is gone ===="
+echo "==== B7: user-modified unit under a tty -> no override offered, nothing removed or disabled ===="
 new_case b7
 seed_unit false
 printf '[Service]\nExecStart=/bin/edited-by-user\n' > "$UNIT"
-run_uninstall_tty 'y\nd\n' "${TTY_FLAGS[@]}" >/dev/null
-check "B7 edited unit removed by the accepted override" "$([ -f "$UNIT" ] && echo present || echo gone)" "gone"
-check "B7 systemctl disable --now called" "$(grep -c '^--user disable --now telegram-bridge.service$' "$SYSTEMCTL_LOG")" "1"
-check "B7 daemon-reload called" "$(grep -c '^--user daemon-reload$' "$SYSTEMCTL_LOG")" "1"
-check "B7 disable-linger tester (linger_preexisted=false)" "$(grep -c '^disable-linger tester$' "$LOGINCTL_LOG")" "1"
-
-echo "==== B8: user-modified unit + [k]eep default -> nothing disabled ===="
-new_case b8
-seed_unit false
-printf '[Service]\nExecStart=/bin/edited-by-user\n' > "$UNIT"
-run_uninstall_tty 'y\nk\n' "${TTY_FLAGS[@]}" >/dev/null
-check "B8 edited unit kept" "$(grep -c edited-by-user "$UNIT")" "1"
-check "B8 no systemctl call" "$(grep -c . "$SYSTEMCTL_LOG")" "0"
+out=$(run_uninstall_tty 'y\nd\n' "${TTY_FLAGS[@]}")
+check "B7 edited unit kept despite a typed d" "$(grep -c edited-by-user "$UNIT")" "1"
+check "B7 no systemctl call" "$(grep -c . "$SYSTEMCTL_LOG")" "0"
+check "B7 no loginctl call" "$(grep -c . "$LOGINCTL_LOG")" "0"
+has "B7 no delete prompt offered" "kept" "$out"
+check "B7 override prompt absent" "$(grep -c 'delete anyway' <<< "$out")" "0"
+has "B7 hand step names the disable command" "systemctl --user disable --now telegram-bridge.service, then remove" "$out"
 
 echo "==== B9: a failing daemon-reload marks the step incomplete ===="
 new_case b9
