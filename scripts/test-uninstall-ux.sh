@@ -131,6 +131,7 @@ else
         [ -n "$record" ] || { fail "M1 $id: fewer than 9 columns"; m1_ok=0; }
         if [ "$record" = none ]; then :
         else
+            case ",$record," in *,,*) fail "M1 $id: record '$record' has an empty kind"; m1_ok=0 ;; esac
             for m1_k in $(printf '%s' "$record" | tr ',' ' '); do
                 case " $m1_kinds " in *" $m1_k "*) ;; *) fail "M1 $id: record kind '$m1_k' not in provenance.sh's vocabulary"; m1_ok=0 ;; esac
             done
