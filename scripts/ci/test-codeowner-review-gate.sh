@@ -19,7 +19,7 @@ REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 GATE="$HERE/codeowner-review-gate.mjs"
 WF="$REPO_ROOT/.github/workflows/codeowner-review-gate.yml"
 
-TMP=$(mktemp -d)
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/codeowner-gate-test.XXXXXX") || exit 1
 trap 'rm -rf "$TMP"' EXIT
 
 failures=0
@@ -275,9 +275,8 @@ wf_violations() {
   grep -qE 'base\.sha' "$s" || echo "never reads the base sha"
 
   # every `uses:` pinned by a full 40-hex commit sha
-  if grep -E '^[[:space:]]*-?[[:space:]]*uses:' "$s" | grep -Evq '@[0-9a-f]{40}([[:space:]]|$)'; then
-    echo "an action is not pinned by full commit sha"
-  fi
+  unpinned=$(grep -E '^[[:space:]]*-?[[:space:]]*uses:' "$s" | grep -Ev '@[0-9a-f]{40}([[:space:]]|$)' || true)
+  [ -z "$unpinned" ] || echo "an action is not pinned by full commit sha"
 
   # top-level permissions block is exactly contents: read + pull-requests: read
   local perms
