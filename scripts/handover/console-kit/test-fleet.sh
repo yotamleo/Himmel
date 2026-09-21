@@ -182,13 +182,15 @@ chmod +x "$W/bin/queue-lock" "$W/bin/bank" "$W/bin/gh" "$W/bin/agents" "$W/bin/a
 cat > "$W/agents.json" <<JSON
 [{"pid":9991,"cwd":"/x","kind":"interactive","startedAt":1,"sessionId":"s1","name":"HIMMEL-9001-N1-alpha","status":"busy"},
  {"id":"abc","cwd":"/x","kind":"background","startedAt":1790000000000,"sessionId":"s2","name":"HIMMEL-9010-N10-kappa","state":"running","pid":1010},
- {"id":"def","cwd":"/x","kind":"background","startedAt":1,"sessionId":"s3","name":"HIMMEL-9007-N7-eta","state":"done"}]
+ {"id":"def","cwd":"/x","kind":"background","startedAt":1,"sessionId":"s3","name":"HIMMEL-9007-N7-eta","state":"done","pid":9999}]
 JSON
 cat > "$W/open.json" <<'JSON'
 [{"number":2001,"title":"feat(x): [HIMMEL-9006] zeta","headRefName":"feat/himmel-9006","isDraft":false,
   "statusCheckRollup":[{"conclusion":"SUCCESS","status":"COMPLETED"},{"state":"SUCCESS"}]},
  {"number":2002,"title":"feat(y): [HIMMEL-9001] alpha","headRefName":"feat/himmel-9001","isDraft":false,
-  "statusCheckRollup":[{"conclusion":"FAILURE","status":"COMPLETED"}]}]
+  "statusCheckRollup":[{"conclusion":"FAILURE","status":"COMPLETED"}]},
+ {"number":2003,"title":"feat(z): [HIMMEL-9003] gamma","headRefName":"feat/himmel-9003","isDraft":false,
+  "statusCheckRollup":[{"conclusion":"ACTION_REQUIRED","status":"COMPLETED"}]}]
 JSON
 
 # bash seam files run by `bash <path>`, gh by exec.
@@ -231,6 +233,7 @@ eq "headless leg: mode from the launch log" "$(printf '%s' "$J" | q 'L("N2").mod
 eq "headless leg: alive" "$(printf '%s' "$J" | q 'L("N2").alive')" "true"
 eq "headless leg: model" "$(printf '%s' "$J" | q 'L("N2").model')" "claude-sonnet-5"
 contains "headless leg: last session-log line shown" "$(printf '%s' "$J" | q 'L("N2").lastLine')" "wrote file"
+eq "an ACTION_REQUIRED check is not green" "$(printf '%s' "$J" | q 'L("N3").pr.number+":"+L("N3").pr.ci')" "2003:failing"
 eq "READY leg: PR from the READY bullet, CI green" "$(printf '%s' "$J" | q 'L("N6").pr.number+":"+L("N6").pr.ci')" "2001:green"
 eq "WRAPPED leg: lock state WRAPPED" "$(printf '%s' "$J" | q 'L("N7").lock.state')" "WRAPPED"
 eq "lost lock: FREE" "$(printf '%s' "$J" | q 'L("N8").lock.state')" "FREE"
@@ -344,11 +347,14 @@ for (const a of ext.slice(0, 2)) {
 kill();
 process.exit(0);
 JS
+SRV_RC=0
 SRV="$(FLEET_QUEUE_LOCK="$W/bin/queue-lock" FLEET_BANK="$W/bin/bank" FLEET_GH="$W/bin/gh" \
     FLEET_AGENTS="$W/bin/agents" AG_JSON="$W/agents.json" \
     FLEET_PROC="$W/proc" GH_OPEN="$W/open.json" HANDOVER_DIR="$ROOT" \
-    node "$W/srv-test.mjs" "$SUT" "${COMMON[@]}" 2>&1)"
+    node "$W/srv-test.mjs" "$SUT" "${COMMON[@]}" 2>&1)" || SRV_RC=$?
 printf '%s\n' "$SRV"
+# an uncaught error in the probe exits non-zero without printing FAIL; do not let that pass
+[ "$SRV_RC" -eq 0 ] || fail "server probe exited $SRV_RC"
 case "$SRV" in *FAIL*) fails=$((fails + $(printf '%s\n' "$SRV" | grep -c '^FAIL'))) ;; esac
 [ -n "$SRV" ] || fail "server probe produced output"
 

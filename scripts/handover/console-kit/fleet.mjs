@@ -171,9 +171,10 @@ const primeIdentities = async (names) => {
     const lines = r.out.split('\n');
     todo.forEach((n, i) => {
         const [label, names2] = (lines[i] || '').split('\t');
-        identities.set(n, { label: label || '', names: (names2 || '').split(',').filter(Boolean) });
+        // Cache only a successful lookup, so a transient helper failure is retried (and re-warned) next snapshot.
+        if (label) identities.set(n, { label, names: (names2 || '').split(',').filter(Boolean) });
     });
-    return r.ok && todo.every((n) => identities.get(n).label);
+    return r.ok && todo.every((n) => identities.has(n));
 };
 const idOf = (name) => identities.get(name) || { label: '', names: [] };
 
@@ -324,7 +325,7 @@ const ciOf = (pr) => {
     const rollup = (pr && pr.statusCheckRollup) || [];
     if (!rollup.length) return 'pending';
     const verdict = (c) => c.conclusion || c.state || '';
-    if (rollup.some((c) => ['FAILURE', 'ERROR', 'TIMED_OUT', 'CANCELLED', 'STARTUP_FAILURE'].includes(verdict(c)))) return 'failing';
+    if (rollup.some((c) => ['FAILURE', 'ERROR', 'TIMED_OUT', 'CANCELLED', 'STARTUP_FAILURE', 'ACTION_REQUIRED'].includes(verdict(c)))) return 'failing';
     if (rollup.some((c) => (c.status ? c.status !== 'COMPLETED' : false) || ['', 'PENDING', 'EXPECTED'].includes(verdict(c)))) return 'pending';
     return 'green';
 };
@@ -406,10 +407,11 @@ const buildSnapshot = async () => {
         const ag = agents ? (names.length ? names : [stem]).map((n) => agents.get(n)).find(Boolean) || null : null;
         const agBg = !!ag && ag.kind === 'background';
         const agPid = ag && Number.isInteger(ag.pid) ? ag.pid : null;
-        const pid = (agBg && agPid) || (entry && entry.pid) || (launch && launch.pid) || lockPid || agPid || null;
-        let proc = procInfo(pid);
-        // A finished bg row says nothing about a live process; it only hints at the mode.
+        // A finished bg row says nothing about a live process (its pid may be reused or
+        // stale); it only hints at the mode.
         const agRun = agBg && !AG_DONE.test(ag.state || '');
+        const pid = (agRun && agPid) || (entry && entry.pid) || (launch && launch.pid) || lockPid || agPid || null;
+        let proc = procInfo(pid);
         const sinceStart = ag && ag.startedAt ? Math.max(0, Math.floor((now - ag.startedAt) / 1000)) : null;
         if (agRun && !agPid) proc = { alive: true, known: true, argv: [], uptimeSec: sinceStart };
         else if (agRun && proc.alive && proc.uptimeSec === null) proc.uptimeSec = sinceStart;
