@@ -381,7 +381,7 @@ grep -q 'hM' "$fixtureM/wire-luna-vault-calls.log" \
   || fail "caseM: user-scope wire-luna-vault.sh should target the FAKE HOME's settings.json, not the real one (got: $(cat "$fixtureM/wire-luna-vault-calls.log"))"
 grepq "$out" -F 'BACKUP' \
   || fail "caseM: expected the apply BACKUP line to be surfaced verbatim (got: $out)"
-grepq "$out" -F 'To uninstall later: node scripts/himmelctl/bin.js uninstall' \
+grepq "$out" -F "To uninstall later: node $(winpath "$wizard") uninstall" \
   || fail "caseM: expected the uninstall footer after a successful stamped install (got: $out)"
 # HIMMEL-2460 (second defect): the epilogue must name the command that
 # actually installed himmel (adopt.sh), not luna-upgrade-all.sh's apply
@@ -583,9 +583,42 @@ set -e
   || fail "caseG: a blank-Enter accept should invoke adopt.sh (no adopt-calls.log; out: $out)"
 grep -q -- '--profile core --scope project' "$fixtureG/adopt-calls.log" \
   || fail "caseG: adopt.sh should have been called with --profile core --scope project (got: $(cat "$fixtureG/adopt-calls.log"))"
-grepq "$out" -F 'To uninstall later: node scripts/himmelctl/bin.js uninstall' \
+grepq "$out" -F "To uninstall later: node $(winpath "$wizard") uninstall" \
   || fail "caseG: expected the uninstall footer after a successful install (got: $out)"
 echo "ok: caseG interactive confirm accept (blank Enter) -> adopt.sh invoked with the exact derived argv, footer printed"
+
+# ── Case G2 (HIMMEL-3327): the footer's path is absolute AND quoted ─────────
+# A clone under a directory with a space: the printed command must still run
+# from an unrelated cwd. The hint is executed, not just string-matched.
+spaced="$work/sp ace clone"; mkdir -p "$spaced/scripts"
+for d in "$repo_root"/scripts/*; do
+  [ "$(basename "$d")" = himmelctl ] || ln -s "$d" "$spaced/scripts/$(basename "$d")"
+done
+cp -R "$repo_root/scripts/himmelctl" "$spaced/scripts/himmelctl"
+stubG2="$work/caseG2"; mkdir -p "$stubG2"
+cG2=$(build_path "$stubG2" bash git jq python3 npm -- )
+hG2="$work/hG2"; mkdir -p "$hG2"
+fixtureG2="$work/caseG2-fixture"; build_fixture "$fixtureG2"
+cacheG2="$work/caseG2-profile.json"
+write_cache "$cacheG2" adopter project none "" inline "" lean
+set +e
+out=$(cd "$hG2" && PATH="$cG2" HOME="$hG2" USERPROFILE="$(winpath "$hG2")" HIMMELCTL_CACHE_DIR="$(winpath "$hG2.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hG2.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 \
+      HIMMELCTL_REPO_ROOT="$(winpath "$fixtureG2")" \
+      "$node_bin" "$(winpath "$spaced/scripts/himmelctl/bin.js")" install --from-profile "$(winpath "$cacheG2")" \
+      <<<"" 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "caseG2: a clone path with a space should install (got rc=$rc): $out"
+hint=$(printf '%s\n' "$out" | sed -n 's/^To uninstall later: //p')
+[ -n "$hint" ] || fail "caseG2: no uninstall footer to check (got: $out)"
+# run the printed command from a cwd that is not the clone; --dry-run keeps it inert
+set +e
+hintOut=$(cd "$hG2" && PATH="$cG2" HOME="$hG2" USERPROFILE="$(winpath "$hG2")" HIMMELCTL_CACHE_DIR="$(winpath "$hG2.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hG2.himmelctl-cache/luna-config.json")" \
+      HIMMELCTL_REPO_ROOT="$(winpath "$fixtureG2")" \
+      bash -c "$hint --dry-run" </dev/null 2>&1); hintRc=$?
+set -e
+printf '%s' "$hintOut" | grep -q 'himmelctl: this will offboard' \
+  || fail "caseG2 (HIMMEL-3327): the printed uninstall command does not resolve from another cwd / a spaced path (footer: $hint; rc=$hintRc; got: $hintOut)"
+echo "ok: caseG2 the printed uninstall command resolves from an unrelated cwd, with a space in the clone path"
 
 # ── Case P: a FAILED install shell-out (adopt.sh exits 1) -> no footer ──────
 stubP="$work/caseP"; mkdir -p "$stubP"
