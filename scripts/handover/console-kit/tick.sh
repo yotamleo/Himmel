@@ -21,7 +21,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
     cat <<'USAGE'
-usage: tick.sh [--verbose] [--burn] [--doc PATH] [--token TOKEN]
+usage: tick.sh [--verbose] [--burn] [--emit-fp] [--doc PATH] [--token TOKEN]
                [--legs "DOC ..."] [--handover-dir DIR] [--repo DIR]
 
 env equivalents: DOC TOKEN LEGS HANDOVER_DIR REPO
@@ -91,6 +91,19 @@ predecessor relay it, which is the stronger form; a chain, see leg-preface.md
 an accepted relay). UNCONFIRMED wins the field when both occur.
 unknown = the doc name carries no console letter or has no `legs:` line.
 
+board=<ok|STALE:<age>|MISSING|skip> (HIMMEL-3361) is the freshness of the
+console's progress board, console-board.html next to the console doc (rendered
+by board.mjs -- the ACTION ZERO board step + the standing rule: on every dispatch, GO,
+MERGED and WRAPPED, re-render and republish it). ok = the board's embedded
+fingerprint equals the one recomputed here from what a board shows (leg locks,
+leg tails, open PRs, the queue: line, the last GO: line) -- NOT the doc's mtime,
+which every Results bullet bumps. STALE:<age> = the board shows an older state
+(age = the file's mtime); MISSING = no board was ever rendered; skip = no --doc.
+--emit-fp prints a second line, board-fp=<16 hex>, the fingerprint board.mjs
+embeds -- one derivation, so the generator and this field cannot disagree.
+ponytail: board=ok says the LOCAL file matches the state; tick cannot see
+whether the artifact was republished from it -- that stays the console's step.
+
 --burn adds a per-leg context-burn field (first-turn/avg-ctx, via
 scripts/lanes/leg-burn.sh) for every doc in --legs. OPT-IN because it scans
 the Claude Code transcript root, which a plain tick must never do: a tick runs
@@ -100,6 +113,7 @@ USAGE
 
 verbose=0
 burn=0
+emit_fp=0
 DOC="${DOC:-}"
 TOKEN="${TOKEN:-}"
 LEGS="${LEGS:-}"
@@ -109,6 +123,7 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --verbose) verbose=1; shift ;;
         --burn) burn=1; shift ;;
+        --emit-fp) emit_fp=1; shift ;;
         --doc|--token|--legs|--handover-dir|--repo)
             [ "$#" -ge 2 ] || { usage >&2; exit 2; }
             case "$1" in
@@ -705,6 +720,34 @@ while IFS= read -r pr; do
 done <<< "$pr_out"
 [ -n "$prs" ] || prs=none
 
+# HIMMEL-3361: the board fingerprint -- what console-board.html shows: leg locks,
+# leg tails, open PRs, the queue: and last GO: lines. Not the doc mtime (every
+# Results bullet bumps that). board.mjs embeds this exact value via --emit-fp.
+board_fp=""
+board_summary=skip
+if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
+    board_queue="$(grep -m1 '^queue:' "$console_doc" 2>/dev/null)" || board_queue=""
+    board_lastgo="$(grep -m1 '^last GO:' "$console_doc" 2>/dev/null)" || board_lastgo=""
+    board_fp="$(printf '%s\n%s\n%s\n%s\n%s\n' "$legs_summary" "$tails_summary" "$prs" "$board_queue" "$board_lastgo" | sha256sum | cut -c1-16)"
+    board_file="${console_doc%/*}/console-board.html"
+    if [ ! -f "$board_file" ]; then
+        board_summary=MISSING
+    else
+        board_have="$(sed -n 's/.*name="console-board-fp" content="\([0-9a-f]*\)".*/\1/p' "$board_file" 2>/dev/null | head -n 1)"
+        if [ -n "$board_have" ] && [ "$board_have" = "$board_fp" ]; then
+            board_summary=ok
+        else
+            board_mtime="$(stat -c %Y "$board_file" 2>/dev/null)" || board_mtime=""  # gnu-ok: console kit is Linux-only
+            board_age=0
+            case "$board_mtime" in ''|*[!0-9]*) ;; *) board_age=$(( $(date +%s) - board_mtime )) ;; esac
+            [ "$board_age" -ge 0 ] || board_age=0
+            if [ "$board_age" -ge 172800 ]; then board_summary="STALE:$((board_age / 86400))d"
+            elif [ "$board_age" -ge 3600 ]; then board_summary="STALE:$((board_age / 3600))h"
+            else board_summary="STALE:$((board_age / 60))m"; fi
+        fi
+    fi
+fi
+
 bank_cache="${TICK_BANK_CACHE_FILE:-/tmp/claude/statusline-usage-cache.json}"
 fh="$(jq -r '.five_hour.utilization | if type == "number" then floor else empty end' "$bank_cache" 2>/dev/null)" || fh=""
 wk="$(jq -r '.seven_day.utilization | if type == "number" then floor else empty end' "$bank_cache" 2>/dev/null)" || wk=""
@@ -894,18 +937,22 @@ if [ "$verbose" -eq 1 ]; then
     printf 'orphans: %s\n' "$orphans"
     printf 'nonces: %s\n' "$nonces_summary"
     printf 'leg set: %s\n' "$legset_summary"
+    printf 'board: %s\n' "$board_summary"
 else
     # `tick=` is always appended (HIMMEL-3144); `burn=` stays APPENDED only
     # under --burn, after it. `fleet=`/`capacity=` (HIMMEL-3167) are appended
     # after everything else, so a consumer keyed on the existing fields and
     # their order sees them only as a tail. `gql=` (HIMMEL-3197) follows them, and
     # `orphans=` (HIMMEL-2761) follows, `nonces=` (HIMMEL-3254) follows it, and
-    # `legset=` (HIMMEL-3293) is last.
+    # `legset=` (HIMMEL-3293) follows, and `board=` (HIMMEL-3361) is last.
     if [ "$burn" -eq 1 ]; then
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary"
     else
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary"
     fi
+fi
+if [ "$emit_fp" -eq 1 ]; then
+    printf 'board-fp=%s\n' "$board_fp"
 fi
