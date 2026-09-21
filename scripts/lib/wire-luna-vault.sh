@@ -26,12 +26,14 @@ set -euo pipefail
 # also records `/env`, so uninstall may drop the emptied parent.
 # shellcheck source=scripts/lib/provenance.sh
 . "$(dirname "${BASH_SOURCE[0]}")/provenance.sh"
+# shellcheck source=scripts/lib/claude-config-dir.sh
+. "$(dirname "${BASH_SOURCE[0]}")/claude-config-dir.sh"
 
 # user when the settings file sits in the Claude config dir, else project.
 _wire_luna_vault_scope() {
   local d c
   d="$(cd "$(dirname "$1")" && pwd -P)"
-  for c in "${CLAUDE_CONFIG_DIR:-}" "$HOME/.claude"; do
+  for c in "$(claude_config_dir)" "$HOME/.claude"; do
     if [ -n "$c" ] && [ "$d" = "$(cd "$c" 2>/dev/null && pwd -P)" ]; then echo user; return 0; fi
   done
   echo project
@@ -39,18 +41,24 @@ _wire_luna_vault_scope() {
 
 # _wire_luna_vault_record <settings> <pre-write settings JSON> <env key> <value>
 _wire_luna_vault_record() {
-  local settings="$1" base="$2" key="$3" val="$4" scope new old op had_env
+  local settings="$1" base="$2" key="$3" val="$4" scope new old op env_pre
   local -a pre
   scope="$(_wire_luna_vault_scope "$settings")" || return 1
   new="$(jq -nc --arg v "$val" '$v')"
-  had_env="$(printf '%s' "$base" | jq -r 'if .env == null then "0" else "1" end')"
+  # `.env` absent -> create; an explicit `"env": null` -> replace with the null
+  # kept as the pre-state (HIMMEL-3352); an existing object -> no /env row.
+  env_pre="$(printf '%s' "$base" | jq -c 'select(type == "object" and has("env")) | .env')"
   old="$(printf '%s' "$base" | jq -c --arg k "$key" 'select((.env | type == "object") and (.env | has($k))) | .env[$k]')"
   if [ -z "$old" ]; then op=create; pre=(--pre-absent)
   elif [ "$(printf '%s' "$old" | jq -cS .)" = "$new" ]; then op=noop; pre=(--pre-json "$old")
   else op=replace; pre=(--pre-json "$old" --backup); fi
-  if [ "$had_env" = 0 ]; then
+  if [ -z "$env_pre" ]; then
     prov_record create json-key "$settings" --unit /env --scope "$scope" --class code \
       --row "$scope-settings" --writer wire-luna-vault.sh --pre-absent \
+      --post-json "$(jq -c .env "$settings")" || return 1
+  elif [ "$env_pre" = null ]; then
+    prov_record replace json-key "$settings" --unit /env --scope "$scope" --class code \
+      --row "$scope-settings" --writer wire-luna-vault.sh --pre-json null --backup \
       --post-json "$(jq -c .env "$settings")" || return 1
   fi
   prov_record "$op" json-key "$settings" --unit "/env/$key" --scope "$scope" --class code \

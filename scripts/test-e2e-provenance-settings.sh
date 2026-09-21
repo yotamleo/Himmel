@@ -142,6 +142,62 @@ bash "$lib/wire-pretooluse-hooks.sh"  "$PSET" '$CLAUDE_PROJECT_DIR' >/dev/null
 check "project HIMMEL_REPO row scope"   "$(jq -r --arg p "$(cd "$td/proj/.claude" && pwd -P)/settings.json" 'select(.unit=="/env/HIMMEL_REPO" and .path==$p) | .scope' "$LEDGER")" "project"
 check "project PreToolUse rows scope"   "$(jq -r --arg p "$(cd "$td/proj/.claude" && pwd -P)/settings.json" 'select(.unit=="/hooks/PreToolUse" and .path==$p) | .scope' "$LEDGER" | sort -u)" "project"
 
+echo "==== AN EXPLICIT JSON null PRE-STATE IS RECORDED AS null, NOT AS ABSENT (HIMMEL-3352) ===="
+# `"statusLine": null` / `"env": null` / `"env": {"K": null}` are present-with-null:
+# the row must be pre.state=present with the sha of `null` (and a backup, since the
+# wire replaces it), so a rollback restores the null instead of deleting the key.
+NULLSHA="$(sha null)"
+# null_rows <settings dir> <unit> -- the rows one settings file wrote for one unit
+null_rows() { jq -c --arg u "$2" --arg p "$(cd "$1" && pwd -P)/settings.json" 'select(.unit==$u and .path==$p)' "$LEDGER"; }
+# null_case <label> <settings JSON> <unit> <expected op> <writer lib> <wire arg> [<key>]
+null_case() {
+  local label="$1" seed="$2" unit="$3" want_op="$4" wlib="$5" warg="$6" d r bk
+  d="$td/null-$label/.claude"; mkdir -p "$d"; printf '%s' "$seed" > "$d/settings.json"
+  bash "$lib/$wlib" "$d/settings.json" "$warg" >/dev/null
+  r="$(null_rows "$d" "$unit")"
+  check "$label: $unit op=$want_op"          "$(printf '%s' "$r" | field .op)" "$want_op"
+  check "$label: $unit pre.state=present"    "$(printf '%s' "$r" | field .pre.state)" "present"
+  check "$label: $unit pre.sha = sha(null)"  "$(printf '%s' "$r" | field .pre.sha)" "$NULLSHA"
+  bk="$(printf '%s' "$r" | field .pre.backup)"
+  check "$label: $unit backup holds null"    "$([ -f "$bk" ] && cat "$bk")" "null"
+}
+null_case sl-statusline '{"statusLine": null}'                                 /statusLine                    replace wire-statusline.sh   "$HIMMEL_FAKE"
+null_case sl-env        '{"env": null}'                                        /env                           replace wire-statusline.sh   "$HIMMEL_FAKE"
+null_case sl-envkey     '{"env": {"CLAUDE_HUD_ALLOW_EXTRA_CMD": null}}'        /env/CLAUDE_HUD_ALLOW_EXTRA_CMD replace wire-statusline.sh   "$HIMMEL_FAKE"
+null_case hr-env        '{"env": null}'                                        /env                           replace wire-himmel-repo.sh  "$HIMMEL_FAKE"
+null_case hr-envkey     '{"env": {"HIMMEL_REPO": null}}'                       /env/HIMMEL_REPO               replace wire-himmel-repo.sh  "$HIMMEL_FAKE"
+null_case lv-env        '{"env": null}'                                        /env                           replace wire-luna-vault.sh   "C:/fake/vault"
+null_case lv-envkey     '{"env": {"LUNA_VAULT_PATH": null}}'                   /env/LUNA_VAULT_PATH           replace wire-luna-vault.sh   "C:/fake/vault"
+null_case hd-env        '{"env": null}'                                        /env                           replace wire-handover-dir.sh "C:/fake/handovers"
+null_case hd-envkey     '{"env": {"HANDOVER_DIR": null}}'                      /env/HANDOVER_DIR              replace wire-handover-dir.sh "C:/fake/handovers"
+# A null-valued sibling key is not the key being wired: the wired key is still `create`.
+d="$td/null-sibling/.claude"; mkdir -p "$d"; printf '%s' '{"env": {"OTHER": null}}' > "$d/settings.json"
+bash "$lib/wire-himmel-repo.sh" "$d/settings.json" "$HIMMEL_FAKE" >/dev/null
+check "a null SIBLING key leaves the wired key a create" "$(null_rows "$d" /env/HIMMEL_REPO | field .op)" "create"
+check "a null SIBLING key leaves the wired key absent"   "$(null_rows "$d" /env/HIMMEL_REPO | field .pre.state)" "absent"
+
+echo "==== A LEADING ~ IN CLAUDE_CONFIG_DIR IS EXPANDED WHEN CLASSIFYING SCOPE (HIMMEL-3352) ===="
+# The settings file sits in the user's config dir, spelled `~/tildecfg` in
+# CLAUDE_CONFIG_DIR. Every recorder must classify it `user`, as the hud's own
+# getClaudeConfigDir() does; unexpanded, `cd '~/tildecfg'` fails and it reads `project`.
+TCFG="$HOME/tildecfg"; mkdir -p "$TCFG"
+TSET="$TCFG/settings.json"
+# shellcheck disable=SC2088  # the literal `~/` is the input under test
+TILDE='~/tildecfg'
+CLAUDE_CONFIG_DIR="$TILDE" bash "$lib/wire-statusline.sh"       "$TSET" "$HIMMEL_FAKE" >/dev/null
+CLAUDE_CONFIG_DIR="$TILDE" bash "$lib/wire-himmel-repo.sh"      "$TSET" "$HIMMEL_FAKE" >/dev/null
+CLAUDE_CONFIG_DIR="$TILDE" bash "$lib/wire-luna-vault.sh"       "$TSET" "C:/fake/vault" >/dev/null
+CLAUDE_CONFIG_DIR="$TILDE" bash "$lib/wire-handover-dir.sh"     "$TSET" "C:/fake/handovers" >/dev/null
+CLAUDE_CONFIG_DIR="$TILDE" bash "$lib/wire-pretooluse-hooks.sh" "$TSET" "$HIMMEL_FAKE" >/dev/null
+CLAUDE_CONFIG_DIR="$TILDE" bash "$lib/wire-pretooluse-hooks.sh" --sessionstart "$TSET" "$HIMMEL_FAKE" "inject-initiative.sh" >/dev/null
+for u in /statusLine /env/HIMMEL_REPO /env/LUNA_VAULT_PATH /env/HANDOVER_DIR /hooks/PreToolUse /hooks/SessionStart; do
+  check "tilde CLAUDE_CONFIG_DIR: $u scope=user" "$(null_rows "$TCFG" "$u" | field .scope | sort -u)" "user"
+done
+# Control: the tilde must not over-match -- a settings file elsewhere stays project.
+TPROJ="$td/tilde-proj/.claude"; mkdir -p "$TPROJ"
+CLAUDE_CONFIG_DIR="$TILDE" bash "$lib/wire-himmel-repo.sh" "$TPROJ/settings.json" "$HIMMEL_FAKE" >/dev/null
+check "tilde CLAUDE_CONFIG_DIR: a project settings file stays project" "$(null_rows "$TPROJ" /env/HIMMEL_REPO | field .scope)" "project"
+
 echo "==== A FAILED RECORD NEVER FAILS THE WIRE ===="
 printf 'x' > "$td/not-a-dir"
 S2="$td/s2/.claude/settings.json"

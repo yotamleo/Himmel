@@ -39,33 +39,10 @@ set -euo pipefail
 # shellcheck source=scripts/lib/provenance.sh
 . "$(dirname "${BASH_SOURCE[0]}")/provenance.sh"
 
-# The Claude Code config dir — mirror of the HUD's own getClaudeConfigDir()
-# (marketplace/plugins/claude-hud/src/claude-config-dir.ts): CLAUDE_CONFIG_DIR
-# wins, with a leading `~` expanded; otherwise $HOME/.claude.
-#
-# The value is TRIMMED first, exactly as the consumer does
-# (`process.env.CLAUDE_CONFIG_DIR?.trim()`), and a whitespace-only value is
-# therefore treated as UNSET. Without the trim the two disagree: the installer
-# would write the hud config under a padded — i.e. different — directory from
-# the one the hud reads it back from, and a whitespace-only value would make
-# bash resolve a RELATIVE directory literally named with spaces. The
-# PowerShell twin already had this via IsNullOrWhiteSpace.
-_wire_statusline_config_dir() {
-  local d="${CLAUDE_CONFIG_DIR:-}"
-  # Strip leading and trailing whitespace (bash 3.2-safe: no ${var@Q}, no =~).
-  d="${d#"${d%%[![:space:]]*}"}"
-  d="${d%"${d##*[![:space:]]}"}"
-  if [ -z "$d" ]; then
-    printf '%s\n' "$HOME/.claude"
-    return 0
-  fi
-  # shellcheck disable=SC2088  # matching/stripping a literal '~/' prefix, not expanding one
-  case "$d" in
-    '~') d="$HOME" ;;
-    '~/'*) d="$HOME/${d#\~/}" ;;
-  esac
-  printf '%s\n' "$d"
-}
+# The Claude Code config dir (HIMMEL-3352: shared with the other settings
+# recorders, so a leading `~` in CLAUDE_CONFIG_DIR is expanded in one place).
+# shellcheck source=scripts/lib/claude-config-dir.sh
+. "$(dirname "${BASH_SOURCE[0]}")/claude-config-dir.sh"
 
 # HIMMEL-3332: record the two settings keys this script writes (`/statusLine`
 # and `/env/CLAUDE_HUD_ALLOW_EXTRA_CMD`) in the install-provenance ledger
@@ -78,17 +55,21 @@ _wire_statusline_config_dir() {
 _wire_statusline_scope() {
   local d c
   d="$(cd "$(dirname "$1")" && pwd -P)"
-  for c in "$(_wire_statusline_config_dir)" "$HOME/.claude"; do
+  for c in "$(claude_config_dir)" "$HOME/.claude"; do
     if [ -n "$c" ] && [ "$d" = "$(cd "$c" 2>/dev/null && pwd -P)" ]; then echo user; return 0; fi
   done
   echo project
 }
 
-# _wire_statusline_record_key <settings> <scope> <pre-write JSON> <jq path> <unit> <new JSON>
+# _wire_statusline_record_key <settings> <scope> <pre-write JSON> <path array JSON> <unit> <new JSON>
+# The key is ABSENT only when its parent object lacks it: an explicit `null` value
+# is a present pre-state (HIMMEL-3352), recorded as `null` so a rollback restores
+# it. A parent that is not an object (`"env": null`, a string) holds no key.
 _wire_statusline_record_key() {
   local settings="$1" scope="$2" base="$3" path="$4" unit="$5" new="$6" old op
   local -a pre
-  old="$(printf '%s' "$base" | jq -c "try ($path) | select(. != null)")"
+  old="$(printf '%s' "$base" | jq -c --argjson p "$path" \
+    'try (getpath($p[:-1]) | select(type == "object" and has($p[-1])) | .[$p[-1]])')"
   if [ -z "$old" ]; then op=create; pre=(--pre-absent)
   elif [ "$(printf '%s' "$old" | jq -cS .)" = "$(printf '%s' "$new" | jq -cS .)" ]; then op=noop; pre=(--pre-json "$old")
   else op=replace; pre=(--pre-json "$old" --backup); fi
@@ -98,16 +79,23 @@ _wire_statusline_record_key() {
 
 # _wire_statusline_record <settings> <pre-write JSON> <statusLine command>
 _wire_statusline_record() {
-  local settings="$1" base="$2" cmd="$3" scope
+  local settings="$1" base="$2" cmd="$3" scope env_pre
   scope="$(_wire_statusline_scope "$settings")" || return 1
-  if [ "$(printf '%s' "$base" | jq -r 'if .env == null then "0" else "1" end')" = 0 ]; then
+  # `.env` absent -> create; an explicit `"env": null` -> replace with the null
+  # kept as the pre-state (HIMMEL-3352); an existing object -> no /env row.
+  env_pre="$(printf '%s' "$base" | jq -c 'select(type == "object" and has("env")) | .env')"
+  if [ -z "$env_pre" ]; then
     prov_record create json-key "$settings" --unit /env --scope "$scope" --class code \
       --row "$scope-settings" --writer wire-statusline.sh --pre-absent \
       --post-json "$(jq -c .env "$settings")" || return 1
+  elif [ "$env_pre" = null ]; then
+    prov_record replace json-key "$settings" --unit /env --scope "$scope" --class code \
+      --row "$scope-settings" --writer wire-statusline.sh --pre-json null --backup \
+      --post-json "$(jq -c .env "$settings")" || return 1
   fi
-  _wire_statusline_record_key "$settings" "$scope" "$base" .statusLine /statusLine \
+  _wire_statusline_record_key "$settings" "$scope" "$base" '["statusLine"]' /statusLine \
     "$(jq -nc --arg c "$cmd" '{type: "command", command: $c}')" || return 1
-  _wire_statusline_record_key "$settings" "$scope" "$base" .env.CLAUDE_HUD_ALLOW_EXTRA_CMD \
+  _wire_statusline_record_key "$settings" "$scope" "$base" '["env","CLAUDE_HUD_ALLOW_EXTRA_CMD"]' \
     /env/CLAUDE_HUD_ALLOW_EXTRA_CMD '"1"'
 }
 
@@ -231,7 +219,7 @@ wire_statusline() {
   # settings path — see (3) below. Resolved up here because the previous hud
   # config is read from it BEFORE the write, to decide whether the wiring
   # changed (4).
-  local hud_dir; hud_dir="$(_wire_statusline_config_dir)/plugins/claude-hud"
+  local hud_dir; hud_dir="$(claude_config_dir)/plugins/claude-hud"
   local prev_hud_cfg=""
   [ -f "$hud_dir/config.json" ] && prev_hud_cfg="$(cat "$hud_dir/config.json")"
 

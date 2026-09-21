@@ -29,7 +29,7 @@ param(
 )
 
 # The Claude Code config dir -- twin of the bash lib's
-# _wire_statusline_config_dir(), and of the hud's own getClaudeConfigDir()
+# claude_config_dir() (scripts/lib/claude-config-dir.sh), and of the hud's own getClaudeConfigDir()
 # (marketplace/plugins/claude-hud/src/claude-config-dir.ts): CLAUDE_CONFIG_DIR
 # wins, TRIMMED, with a leading `~` expanded; otherwise <home>/.claude.
 # IsNullOrWhiteSpace already treated a whitespace-only value as unset; the

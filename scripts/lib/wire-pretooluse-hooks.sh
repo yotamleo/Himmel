@@ -133,12 +133,14 @@ WIRE_PRETOOLUSE_MERGE_JQ='
 # the PreToolUse / SessionStart array itself).
 # shellcheck source=scripts/lib/provenance.sh
 . "$(dirname "${BASH_SOURCE[0]}")/provenance.sh"
+# shellcheck source=scripts/lib/claude-config-dir.sh
+. "$(dirname "${BASH_SOURCE[0]}")/claude-config-dir.sh"
 
 # user when the settings file sits in the Claude config dir, else project.
 _wire_hooks_scope() {
   local d c
   d="$(cd "$(dirname "$1")" && pwd -P)"
-  for c in "${CLAUDE_CONFIG_DIR:-}" "$HOME/.claude"; do
+  for c in "$(claude_config_dir)" "$HOME/.claude"; do
     if [ -n "$c" ] && [ "$d" = "$(cd "$c" 2>/dev/null && pwd -P)" ]; then echo user; return 0; fi
   done
   echo project
