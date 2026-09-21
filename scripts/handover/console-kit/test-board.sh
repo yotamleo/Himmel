@@ -112,7 +112,9 @@ mkleg HIMMEL-9998-N18-other '- 12:00 LIVE — a previous shift reused this label
 # shellcheck disable=SC2016  # backtick token, literal fixture text
 printf '%s\n' '# leg' '> RETASK token `V-N19-cafe1919`' '## Results' '- 12:00 LIVE — the right doc' \
     > "$B/HIMMEL-3376-N19-kappa-2026-09-21-RESUME.md"
-mkleg HIMMEL-9997-N19-old '- 12:00 LIVE — a previous shift reused this label'
+# The wrong doc quotes a LONGER token that merely starts with the entry nonce.
+# shellcheck disable=SC2016  # backtick token, literal fixture text
+mkleg HIMMEL-9997-N19-old '- 12:00 LIVE — a previous shift reused this label, token `V-N19-cafe1919zz`'
 touch -d '2 hours ago' "$B/HIMMEL-3375-N18-iota-2026-09-21-RESUME.md" "$B/HIMMEL-3376-N19-kappa-2026-09-21-RESUME.md"  # gnu-ok: console kit is Linux-only
 
 # The console doc: legs carry nonces + lock tokens (which must never reach the

@@ -163,7 +163,9 @@ if (opt.legs !== undefined) {
         if (!label || byLabel.has(label)) continue;
         const exact = docs.find((f) => f === `${e.stem}.md` || f === `${e.stem}-RESUME.md`);
         const cands = docs.filter((f) => labelOf(f) === label).map((f) => join(bucket, f));
-        const holders = cands.filter((f) => readFileSync(f, 'utf8').includes(e.nonce));
+        // The nonce must stand alone as a token: a longer token that merely starts with it is another leg's.
+        const tokenRe = new RegExp(`(?<![A-Za-z0-9_.-])${e.nonce.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_.-])`);
+        const holders = cands.filter((f) => tokenRe.test(readFileSync(f, 'utf8')));
         const pool = holders.length ? holders : cands;
         const doc = exact ? join(bucket, exact) : (pool.length ? pool.reduce(newer) : null);
         if (doc) byLabel.set(label, doc);
