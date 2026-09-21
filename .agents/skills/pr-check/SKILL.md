@@ -371,12 +371,16 @@ and every finding is commented on and tracked on the PR in GitHub).
 That leaves this lane with ONE finding source — the panel in step 3 — which
 is why the review floor above is `"a panel critic responded"` and why step 5
 retains the marker whenever the panel returns zero responders. The App's
-post-PR contract is enforced by `scripts/check-ci.sh`, not here: zero
-unresolved review THREADS (a green check-run is NOT clean — PR #2209 carried
-six unresolved threads under a `pass` rollup on 2026-09-06), a CONCLUDED
-CodeRabbit commit status at the head (`scripts/lib/cr-signal.sh`; `absent` /
-`pending` / `paged` / `skipped` all fail closed), and an `@coderabbitai review`
-re-trigger after every push, because a head move discards the in-flight review.
+post-PR contract is enforced by `scripts/check-ci.sh`, not here, and
+CodeRabbit is best effort (HIMMEL-3360): zero unresolved review THREADS (a
+green check-run is NOT clean — PR #2209 carried six unresolved threads under
+a `pass` rollup on 2026-09-06) and zero undispositioned outside-diff body
+findings are the gate; CodeRabbit's commit status (`scripts/lib/cr-signal.sh`;
+`absent` / `pending` / `paged` / `skipped` / rate-limited / unreadable) is
+printed as a NOTE and never blocks. The CI hooks post one `@coderabbitai
+review` trigger per new head (a head move discards the in-flight review);
+nothing schedules or holds work on the App, and
+`scripts/hooks/check-cr-best-effort.sh` gates the tracked text for that.
 
 ## 4. Record ledger evidence (HIMMEL-1171)
 
