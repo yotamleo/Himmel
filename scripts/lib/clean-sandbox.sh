@@ -17,7 +17,7 @@
 #   PATH=/usr/local/bin:/usr/bin:/bin
 # --keep VAR copies VAR from the caller's env when it is set there (an unset one
 #   is reported and not passed). --keep HANDOVER_DIR needs --allow-handover-dir.
-# --scratch DIR uses DIR (created if missing); without it a fresh mktemp dir under
+# --scratch DIR uses DIR (created if missing, made absolute); without it a fresh mktemp dir under
 #   $TMPDIR is made. The launcher execs the command, so it cannot clean up: an
 #   auto-created scratch dir is left in place and its path is printed.
 # The printed env masks the value of any name matching TOKEN|KEY|SECRET|PASS
@@ -79,6 +79,8 @@ if [ -z "$scratch" ]; then
     scratch=$(mktemp -d "${TMPDIR:-/tmp}/clean-sandbox.XXXXXX") || die "could not create a scratch dir under ${TMPDIR:-/tmp}"
 fi
 mkdir -p "$scratch/home" "$scratch/prov" "$scratch/cache" "$scratch/tmp" || die "could not create scratch subdirs under $scratch"
+# Absolute, so a child that changes directory still resolves HOME/TMPDIR here.
+scratch=$(cd "$scratch" && pwd) || die "could not resolve scratch dir '$scratch'"
 
 envargs=(
     "HOME=$scratch/home"

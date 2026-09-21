@@ -106,6 +106,13 @@ home7=$(printf '%s\n' "$out7" | sed -n 's/^HOME=//p')
 assert_eq "T7 no --scratch: an auto-created scratch home exists" yes "$([ -d "$home7" ] && echo yes || echo no)"
 assert_contains "T7 no --scratch: the auto scratch is under TMPDIR" "$TMP/" "$home7"
 
+# T7b: a relative --scratch is made absolute, so a child that changes directory
+# still resolves HOME/TMPDIR into the scratch dir (panel finding codex-1).
+mkdir -p "$TMP/relcwd"
+out7b=$(cd "$TMP/relcwd" && bash "$SB" --scratch relscratch -- env 2>/dev/null)
+assert_contains "T7b relative --scratch: HOME is absolute" "HOME=$TMP/relcwd/relscratch/home" "$out7b"
+assert_contains "T7b relative --scratch: TMPDIR is absolute" "TMPDIR=$TMP/relcwd/relscratch/tmp" "$out7b"
+
 # T8: usage errors exit 2.
 bash "$SB" --scratch "$TMP/s8" -- >/dev/null 2>&1; assert_eq "T8 no command after -- exits 2" 2 $?
 bash "$SB" --scratch "$TMP/s8" env >/dev/null 2>&1; assert_eq "T8 missing -- exits 2" 2 $?
