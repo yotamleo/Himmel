@@ -49,9 +49,10 @@ ALLOW_WHY=(
 # word, so /usr/bin/mktemp is a false flag; but it does not prove the word is
 # INVOKED, so `HOME="$(echo mktemp)"` still passes. A scratch variable counts only as a
 # plain `$v` / `${v}`, and a value carrying ANY `${x<op>...}` expansion is never
-# scratch (a false flag, never a false pass). It takes `dirname` of a scratch variable
-# as scratch too, so `td=$(mktemp -d "$HOME/x.XXXXXX")` with `HOME=$(dirname "$td")` passes
-# while HOME stays the real one (a false pass; mktemp under the real HOME is the tell). It reads raw lines and cannot tell an
+# scratch (a false flag, never a false pass). A mktemp whose text mentions `$HOME`, `${HOME}`
+# or `~` is not scratch (so `HOME=$(dirname "$td")` of it is flagged); a real HOME reached
+# some other way (`TMPDIR=$HOME mktemp -d`, a path built in a variable) is not seen, so its
+# dirname passes. It reads raw lines and cannot tell an
 # executable assignment from assignment-shaped TEXT: `HOME="$(mktemp -d)"` inside a
 # comment or a single-quoted `printf` argument (a fixture the file writes) counts as
 # one, so such a file can PASS while lifting the fence with the real HOME
@@ -62,6 +63,7 @@ home_is_scratch() {
   local dqcs='"\$\([^)]*\)"'   # a whole quoted command substitution, whose own inner quotes ("$td") a plain $dq would cut at
   local assign_re="(^|[^A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)=($dqcs|$dq|$sq|$cs|$bare)"
   local mk_re='(^|[^A-Za-z0-9_./-])mktemp([[:space:])"`]|$)'   # mktemp as a command word, not a path part like /opt/mktemp-user
+  local home_re='\$\{?HOME([^A-Za-z0-9_]|$)|~'   # a mktemp template under the real HOME: its dirname is the real HOME
   local xp_re='\$\{[A-Za-z_][A-Za-z0-9_]*[^A-Za-z0-9_}]'   # a parameter expansion with an operator
   local scratch=" " lines=()
   while IFS= read -r line || [ -n "$line" ]; do lines+=("$line"); done < "$file"
@@ -78,7 +80,7 @@ home_is_scratch() {
         nocmd="$rhs"
         while [[ "$nocmd" =~ $cs ]]; do nocmd="${nocmd/"${BASH_REMATCH[0]}"/}"; done
         [[ "$nocmd" =~ $xp_re ]] && continue
-        if [[ "$rhs" =~ $mk_re ]]; then is_scratch=1; fi
+        if [[ "$rhs" =~ $mk_re && ! "$rhs" =~ $home_re ]]; then is_scratch=1; fi
         if [ "$is_scratch" -eq 0 ]; then
           for v in $scratch; do
             ref_re='\$('"$v"'([^A-Za-z0-9_{]|$)|\{'"$v"'\})'   # $v or ${v}, never ${v:+...} / ${v%/*}
@@ -207,6 +209,9 @@ printf '#!/usr/bin/env bash\ntd=$(mktemp -d /tmp/x.XXXXXX)\nHOME="$(dirname "$td
 printf '#!/usr/bin/env bash\nother=/somewhere/real\nHOME=$(dirname "$other") %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-dirname-other.sh"
 printf '#!/usr/bin/env bash\ntd=$(mktemp -d /tmp/x.XXXXXX)\nHOME=$(dirname "$HOME") %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-dirname-real-home.sh"
 printf '#!/usr/bin/env bash\ntd=$(mktemp -d /tmp/x.XXXXXX)\nHOME=$(dirname "${td:+$HOME}") %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-dirname-operator.sh"
+# a mktemp template under the real HOME: dirname of it IS the real HOME, so it is not scratch.
+printf '#!/usr/bin/env bash\ntd=$(mktemp -d "$HOME/x.XXXXXX")\nHOME="$(dirname "$td")" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-dirname-under-home.sh"
+printf '#!/usr/bin/env bash\ntd=$(mktemp -d ~/x.XXXXXX)\nHOME=$(dirname "$td") %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-dirname-under-tilde.sh"
 # HIMMEL-3344 (CodeRabbit): a longer identifier ending in the name is not the name.
 printf '#!/usr/bin/env bash\nNOT_%s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-prefixed-name.sh"
 # a JS operator-path caller, on the allowlist below.
@@ -296,6 +301,10 @@ check "HOME=\$(dirname \"\$HOME\") is flagged even with an unrelated mktemp vari
   "$(printf '%s' "$got" | grep -c 'scripts/test-dirname-real-home.sh')" "1"
 check "an expansion operator inside a dirname command substitution is flagged" \
   "$(printf '%s' "$got" | grep -c 'scripts/test-dirname-operator.sh')" "1"
+check "dirname of a mktemp under \"\$HOME\" is flagged (it is the real HOME)" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-dirname-under-home.sh')" "1"
+check "dirname of a mktemp under ~ is flagged (it is the real HOME)" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-dirname-under-tilde.sh')" "1"
 check "allowlisted file passes" \
   "$(printf '%s' "$got" | grep -c 'scripts/wizard.js')" "0"
 check "file that only unsets/reads the var passes" \
