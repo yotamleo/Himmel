@@ -184,8 +184,10 @@ check "node: retry wrote install-end" "$(tail -n1 "$tmp/pu/provenance.jsonl" | j
 # unwritable backup name is an I/O error (rc 1), not a spin; the root path survives
 rm -rf "$tmp/pu"
 long=$(printf '%0300d' 0)
-if command -v timeout >/dev/null 2>&1; then
-    timeout 20 "$node_bin" "$jsw" record replace file "$w/$long" --pre-file "$w/f1" --backup --post-file "$w/f1" 2>/dev/null
+# shellcheck source=scripts/lib/timeout-bin.sh
+. "$repo/scripts/lib/timeout-bin.sh" 2>/dev/null
+if [ -n "${_TIMEOUT_BIN:-}" ]; then
+    "$_TIMEOUT_BIN" 20 "$node_bin" "$jsw" record replace file "$w/$long" --pre-file "$w/f1" --backup --post-file "$w/f1" 2>/dev/null
     check "node: unwritable backup name → rc 1" "$?" "1"
 else
     echo "SKIP - timeout not installed: unwritable-backup-name guard not exercised"

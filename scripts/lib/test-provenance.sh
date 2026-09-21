@@ -232,9 +232,11 @@ mkdir -p "$tmp/badjq"; printf '#!/bin/sh\ncase "$*" in *"--arg kind"*) exit 1 ;;
 check "failing jq left no empty line in the ledger" "$(grep -c '^$' "$ledger")" "0"
 check "failing jq left no artifact row (begin only)" "$(jq -r .op "$ledger" | paste -sd, -)" "install-begin"
 long=$(printf '%0300d' 0)
-if command -v timeout >/dev/null 2>&1; then
+# shellcheck source=scripts/lib/timeout-bin.sh
+. "$here/timeout-bin.sh" 2>/dev/null
+if [ -n "${_TIMEOUT_BIN:-}" ]; then
     # shellcheck disable=SC2016  # $1..$3 are the child shell's positional parameters
-    timeout 20 bash -c '. "$1/provenance.sh"; prov_record replace file "$2/$3" --pre-file "$2/a.txt" --backup --post-file "$2/a.txt"' _ "$here" "$w" "$long" 2>/dev/null
+    "$_TIMEOUT_BIN" 20 bash -c '. "$1/provenance.sh"; prov_record replace file "$2/$3" --pre-file "$2/a.txt" --backup --post-file "$2/a.txt"' _ "$here" "$w" "$long" 2>/dev/null
     check "unwritable backup name → rc 1, not a hang" "$?" "1"
 else
     echo "SKIP - timeout not installed: unwritable-backup-name hang guard not exercised"
