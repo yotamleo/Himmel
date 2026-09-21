@@ -260,7 +260,10 @@ case "$tool" in Bash|PowerShell) tool_is_shell=1 ;; esac
 #     (a symlink / non-regular sink or a failed write refuses the bypass).
 # Git calls are pinned to --git-dir=<recorded repo> with GIT_NO_REPLACE_OBJECTS=1
 # and run from the temp dir, so neither the worktree's own .git nor a replace ref
-# can steer the answer. The result is memoized: both fences share one audit line
+# can steer the answer, and each is bounded by `timeout` (the launcher's
+# HIMMEL_HOOK_INTEGRITY_GIT_TIMEOUT_MS budget): a missing `timeout`, a hung or
+# timed-out git refuses the bypass. A `C:` drive spelling counts as absolute only
+# on msys/cygwin (JS path.isAbsolute parity). The result is memoized: both fences share one audit line
 # per hook invocation.
 # ponytail: the audit line records that the bypass was CONSULTED and granted for
 # this call, not that a fence would have fired (the predicate cannot know), so it
@@ -269,12 +272,32 @@ case "$tool" in Bash|PowerShell) tool_is_shell=1 ;; esac
 # a link swapped in between the two survives — same-user, same-window only.
 bypass_memo=""
 bypass_canon() { (cd -P "$1" 2>/dev/null && pwd -P); }
-bypass_abs() { case "$1" in /*|[A-Za-z]:[/\\]*) return 0 ;; *) return 1 ;; esac; }
+# Absolute like JS path.isAbsolute: a `C:` drive spelling is absolute only where
+# the platform has drives (msys/cygwin); on POSIX `C:/g` is a RELATIVE path a
+# worker can back with a symlink under the cwd.
+bypass_abs() {
+    case "$1" in
+        /*) return 0 ;;
+        [A-Za-z]:[/\\]*) case "${OSTYPE:-}" in msys*|cygwin*) return 0 ;; esac ;;
+    esac
+    return 1
+}
+# Every git call is bounded by the same budget the launcher uses
+# (HIMMEL_HOOK_INTEGRITY_GIT_TIMEOUT_MS, default 5000, ceil'd to whole seconds for
+# `timeout`). A timeout is a non-zero exit: the caller refuses the bypass. The
+# hook ENTRY fails open on a hang, so an unbounded git here would leave both
+# fences off.
+bypass_secs=""
+bypass_tmpd=""
+bypass_common=""
+bypass_git() {
+    GIT_NO_REPLACE_OBJECTS=1 timeout "$bypass_secs" git -C "$bypass_tmpd" --git-dir="$bypass_common" "$@"
+}
 bypass_honoured() {
     [ "${HIMMEL_HOOK_INTEGRITY_BYPASS_OK:-0}" = "1" ] || return 1
     if [ -n "$bypass_memo" ]; then return "$bypass_memo"; fi
     bypass_memo=1
-    local top cwd hook_dir hook_file sid rec gd common own tmpd first found f p pc
+    local top cwd hook_dir hook_file sid rec gd common own ms first found complete f p pc
     local dot_git line ptr pd sink pid sess audit_line
     [ -n "${CLAUDE_PROJECT_DIR:-}" ] || return 1
     top=$(bypass_canon "$CLAUDE_PROJECT_DIR") || return 1
@@ -293,13 +316,21 @@ bypass_honoured() {
     bypass_abs "$gd" || return 1
     common=$(bypass_canon "$gd") || return 1
 
-    tmpd="${TMPDIR:-/tmp}"
-    own=$(GIT_NO_REPLACE_OBJECTS=1 git -C "$tmpd" --git-dir="$common" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+    command -v timeout >/dev/null 2>&1 || return 1 # unbounded git = fail open: refuse
+    ms="${HIMMEL_HOOK_INTEGRITY_GIT_TIMEOUT_MS:-}"
+    case "$ms" in ''|*[!0-9]*) ms=5000 ;; esac
+    if [ "${#ms}" -gt 9 ] || [ "$((10#$ms))" -le 0 ]; then ms=5000; fi
+    bypass_secs=$(( (10#$ms + 999) / 1000 ))
+    bypass_tmpd="${TMPDIR:-/tmp}"
+    bypass_common="$common"
+    own=$(bypass_git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
     [ "$(bypass_canon "$own")" = "$common" ] || return 1
     first=1
     found=0
+    complete=0
     while IFS= read -r -d '' f; do
         case "$f" in
+            'bypass-list-complete') complete=1 ;;
             'worktree '*)
                 p=${f#worktree }
                 if [ "$first" = 1 ]; then
@@ -310,8 +341,10 @@ bypass_honoured() {
                 fi
                 ;;
         esac
-    done < <(GIT_NO_REPLACE_OBJECTS=1 git -C "$tmpd" --git-dir="$common" worktree list --porcelain -z 2>/dev/null)
-    [ "$found" = 1 ] || return 1
+    done < <(bypass_git worktree list --porcelain -z 2>/dev/null && printf 'bypass-list-complete\0')
+    # the sentinel is printed only when git exited 0: a timed-out or killed git
+    # can leave a partial list, which is never enough
+    [ "$complete" = 1 ] && [ "$found" = 1 ] || return 1
 
     dot_git="$top/.git"
     [ -f "$dot_git" ] && [ ! -L "$dot_git" ] || return 1

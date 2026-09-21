@@ -168,6 +168,55 @@ expect_rc "audit sink is a directory: bypass refused" 2 "$(run "$WT" "$WH" "$WT"
 rmdir "$AUDIT"
 mv "$T/audit.saved" "$AUDIT"
 
+# ---- `C:/g` is a RELATIVE path on POSIX (JS path.isAbsolute parity): a forged
+# record plus a symlink under the cwd must not pass as an absolute git_dir.
+case "${OSTYPE:-}" in
+  msys*|cygwin*) : ;; # a drive spelling is absolute there; the case does not apply
+  *)
+    printf '{"git_dir":"C:/g","pins":{}}\n' > "$PINS/sess-drive.json"
+    mkdir "$WT/C:"
+    ln -s "$COMMON" "$WT/C:/g"
+    expect_refused "forged C:/g git_dir backed by a symlink under the cwd: refused on POSIX" "$PIN_CMD" "$WT" "$WH" "$WT" sess-drive
+    rm -rf "$WT/C:"
+    ;;
+esac
+
+# ---- every git call is bounded by the launcher's budget, and fails CLOSED
+# (the hook entry fails OPEN on a hang, so an unbounded git leaves both fences off).
+# The stub sleeps, then runs the real git: unbounded it would still answer and the
+# bypass would be honoured; bounded (1 s budget vs a 3 s sleep) it is refused.
+REAL_GIT="$(command -v git)"
+STUB="$T/stubbin"
+mkdir -p "$STUB"
+cat > "$STUB/git" <<EOF
+#!/bin/sh
+sleep "\${STUB_SLEEP:-0}" >/dev/null 2>&1 </dev/null
+exec "$REAL_GIT" "\$@"
+EOF
+chmod +x "$STUB/git"
+expect_rc "control: the git stub with no delay leaves the bypass honoured" 0 \
+  "$(run "$WT" "$WH" "$WT" sess-ok "$PIN_CMD" HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 PATH="$STUB:$PATH" STUB_SLEEP=0 HIMMEL_HOOK_INTEGRITY_GIT_TIMEOUT_MS=1000)"
+expect_refused "a git that outlives the ms budget refuses the bypass" "$PIN_CMD" "$WT" "$WH" "$WT" sess-ok \
+  PATH="$STUB:$PATH" STUB_SLEEP=3 HIMMEL_HOOK_INTEGRITY_GIT_TIMEOUT_MS=1000
+expect_refused "a timed-out git refuses the anchor fence's bypass too" "$ANCHOR_CMD" "$WT" "$WH" "$WT" sess-ok \
+  PATH="$STUB:$PATH" STUB_SLEEP=3 HIMMEL_HOOK_INTEGRITY_GIT_TIMEOUT_MS=1000
+# `timeout` missing from PATH: refuse, never run git unbounded. The scratch PATH
+# holds only the tools the hook needs, so the control proves it is otherwise usable.
+NOTO="$T/notimeout"
+mkdir -p "$NOTO"
+for tool in bash jq git dirname basename tr awk date cat sed grep head tail cut sort wc mktemp uname env sh printf pwd; do
+  src="$(command -v "$tool" 2>/dev/null)" && [ -x "$src" ] && ln -sf "$src" "$NOTO/$tool"
+done
+if PATH="$NOTO" command -v timeout >/dev/null 2>&1; then
+  bad "setup: timeout is still resolvable from the scratch PATH"
+else
+  expect_refused "timeout missing from PATH: bypass refused (fail closed)" "$PIN_CMD" "$WT" "$WH" "$WT" sess-ok PATH="$NOTO"
+  # control (RED for a vacuous refusal): the SAME scratch PATH plus only `timeout` honours it
+  ln -s "$(command -v timeout)" "$NOTO/timeout"
+  expect_rc "control: the same scratch PATH with timeout present honours the bypass" 0 \
+    "$(run "$WT" "$WH" "$WT" sess-ok "$PIN_CMD" HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 PATH="$NOTO")"
+fi
+
 # ---- the other shell fences' verdicts are unchanged by a bypass that is honoured
 expect_rc "an unrelated worker command is unaffected under an honoured bypass" 0 \
   "$(run "$WT" "$WH" "$WT" sess-ok 'echo hello' HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1)"
