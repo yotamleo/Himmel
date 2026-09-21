@@ -162,6 +162,29 @@ check "symlink: rc 0" "$rc" 0
 [ -L "$td/symlink.md" ] && ok "symlink: link preserved" || bad "symlink: link replaced by a file"
 check "symlink: target stripped exactly" "$(cat "$td/dots/CLAUDE.md")" mine
 same  "symlink: backup beside the link is the file as found" "$td/symlink.md.himmel-uninstall-backup" "$td/symlink.before"
+# a symlink already AT THE BACKUP PATH: cp would follow it and overwrite its
+# target, so the strip is refused and both files are left as found.
+printf 'mine\n\n%s\n' "$BLOCK" > "$td/bk-symlink.md"; cp "$td/bk-symlink.md" "$td/bk-symlink.before"
+printf 'unrelated sentinel\n' > "$td/bk-sentinel"; ln -s "$td/bk-sentinel" "$td/bk-symlink.md.himmel-uninstall-backup"
+run "$td/bk-symlink.md"
+check "backup-symlink: rc 1" "$rc" 1
+has   "backup-symlink: names the backup path" "bk-symlink.md.himmel-uninstall-backup" "$out"
+has   "backup-symlink: says untouched" "left untouched" "$out"
+same  "backup-symlink: file byte-identical" "$td/bk-symlink.md" "$td/bk-symlink.before"
+check "backup-symlink: symlink target untouched" "$(cat "$td/bk-sentinel")" "unrelated sentinel"
+[ -L "$td/bk-symlink.md.himmel-uninstall-backup" ] && ok "backup-symlink: the planted link is kept" || bad "backup-symlink: link removed or replaced"
+# a directory at the backup path is refused the same way
+printf 'mine\n\n%s\n' "$BLOCK" > "$td/bk-dir.md"; cp "$td/bk-dir.md" "$td/bk-dir.before"; mkdir "$td/bk-dir.md.himmel-uninstall-backup"
+run "$td/bk-dir.md"
+check "backup-dir: rc 1" "$rc" 1
+same  "backup-dir: file byte-identical" "$td/bk-dir.md" "$td/bk-dir.before"
+[ -d "$td/bk-dir.md.himmel-uninstall-backup" ] && ok "backup-dir: directory kept" || bad "backup-dir: directory gone"
+# a REGULAR file at the backup path (a previous run's backup) is replaced
+printf 'mine\n\n%s\n' "$BLOCK" > "$td/bk-file.md"; cp "$td/bk-file.md" "$td/bk-file.before"; printf 'older backup\n' > "$td/bk-file.md.himmel-uninstall-backup"
+run "$td/bk-file.md"
+check "backup-file: rc 0" "$rc" 0
+same  "backup-file: backup is now the file as found" "$td/bk-file.md.himmel-uninstall-backup" "$td/bk-file.before"
+check "backup-file: stripped" "$(cat "$td/bk-file.md")" mine
 # a symlinked file that held only the block is emptied, never unlinked
 printf '%s\n' "$BLOCK" > "$td/dots/AGENTS.md"; ln -s "$td/dots/AGENTS.md" "$td/symlink-only.md"; run "$td/symlink-only.md"
 check "symlink-only: rc 0" "$rc" 0

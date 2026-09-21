@@ -38,9 +38,9 @@
 # own text, and that loss is silent and unrecoverable for them.
 #
 # Exit codes: 0 = block removed, or there was none (no marker, no file);
-# 1 = refused (malformed markers, CRLF markers, open fence), OR the file cannot
-# be read, OR the backup / temp-file / write / remove step failed (disk full,
-# read-only target); a failed write-through can leave the target truncated,
+# 1 = refused (malformed markers, CRLF markers, open fence, a symlink or
+# directory already at the backup path), OR the file cannot be read, OR the
+# backup / temp-file / write / remove step failed (disk full, read-only target); a failed write-through can leave the target truncated,
 # since it is written in place to keep a symlink and the mode (ponytail: no
 # atomic rename) -- the stripped content is then kept in the temp file the
 # error names and the pre-edit copy sits in the backup, neither deleted;
@@ -149,6 +149,15 @@ unwire_user_claude_md() {
     return 0
   fi
   # Everything from here edits a file the operator had: copy it as found first.
+  # The backup path must be ours to write: cp follows a symlink sitting there
+  # and would overwrite whatever it points at, and a directory cannot take the
+  # copy. Refuse rather than remove what the operator (or an earlier tool) put
+  # there; a regular file at that path is a previous run's backup and is replaced.
+  if [ -L "$backup" ] || { [ -e "$backup" ] && [ ! -f "$backup" ]; }; then
+    rm -f "$tmp"
+    echo "unwire-user-claude-md: $backup already exists and is not a regular file (a symlink or a directory), so the backup cannot be written there without touching something else -- refusing; move it aside and re-run, or remove the block by hand. $target left untouched" >&2
+    return 1
+  fi
   if ! cp -p -- "$target" "$backup"; then
     rm -f "$tmp"
     echo "unwire-user-claude-md: could not write the backup $backup -- $target left untouched" >&2
