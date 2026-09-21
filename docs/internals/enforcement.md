@@ -1798,9 +1798,13 @@ collapsing `.`, `..` and repeated `/`, to a relative `pr-check-context.sh` or
 `pr-check-env.sh`, or is a glob, brace or `$var` that could. Mentions (`grep`,
 `cat`, `git diff`, the test suites) are a no-op. Absolute paths, including the
 anchor's, are a no-op too: no allow rule matches them, and the runbook's
-adopter lane depends on them. The canonical anchored fence is exempt only in its
-exact shape, with a single `himmel_repo=` and no `HIMMEL_REPO=` in the command.
-Text classification has limits, and the hook's `ponytail:` names them.
+adopter lane depends on them. A candidate that does not resolve to exactly
+`scripts/cr/<script>` from the cwd (a glob, a variable, a path outside the
+root), or a command that changes directory, denies outright: the conditions
+are checked in the cwd, so they prove nothing about another copy. The
+canonical anchored fence is exempt only in its exact shape; only its echo text
+may vary. Classification uses bash builtins only, so a missing tool cannot turn
+it into a no-op. Text classification has limits, and the hook's `ponytail:` names them.
 
 **Why the anchor, not a ref.** The compare base is the anchor's working-tree
 bytes, never `refs/remotes/origin/main`. Refs live in the common git dir, which
