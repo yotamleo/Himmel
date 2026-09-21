@@ -229,6 +229,8 @@ wire_pretooluse_hooks() {
     ' "$settings") \
       && _wire_hooks_record "$settings" /hooks/PreToolUse "$rows" \
       || echo "wire-pretooluse-hooks: warning: provenance record failed (the hooks are wired; uninstall will keep them)" >&2
+  else
+    return 1   # the write failed: never echo success (matches the pre-record `&&` under set -e)
   fi
   echo "  wired PreToolUse hooks -> $settings"
 }
@@ -306,6 +308,8 @@ wire_sessionstart_hook() {
     ' "$settings") \
       && _wire_hooks_record "$settings" /hooks/SessionStart "$rows" \
       || echo "wire-pretooluse-hooks: warning: provenance record failed (the hook is wired; uninstall will keep it)" >&2
+  else
+    return 1   # the write failed: never echo success (matches the pre-record `&&` under set -e)
   fi
   echo "  wired SessionStart $basename -> $settings"
 }

@@ -150,4 +150,22 @@ check "wire rc=0 when the ledger is unwritable" "$rc" "0"
 check "settings still wired"            "$(jq -r .env.HIMMEL_REPO "$S2")" "C:/fake/himmel"
 check "a warning names the record failure" "$([ "$(printf '%s' "$err" | grep -c 'provenance')" -ge 1 ] && echo yes || echo no)" "yes"
 
+echo "==== A FAILED WRITE STILL FAILS THE WIRE (never a success echo) ===="
+# A directory squatting on the temp path makes the redirect fail, so the settings
+# write itself fails. Recording must not turn that into a reported success.
+for w in himmel-repo:himmelrepo luna-vault:lunavault handover-dir:handoverdir; do
+  lib_name="${w%%:*}"; tmp_tag="${w##*:}"
+  WF="$td/wf-$lib_name/.claude/settings.json"; mkdir -p "$WF.$tmp_tag.tmp"
+  out="$(bash "$lib/wire-$lib_name.sh" "$WF" "$HIMMEL_FAKE" 2>/dev/null)"; rc=$?
+  check "wire-$lib_name rc!=0 when the settings write fails" "$([ "$rc" -ne 0 ] && echo yes || echo no)" "yes"
+  check "wire-$lib_name prints no success line"              "$(printf '%s' "$out" | grep -c 'set env')" "0"
+done
+WF="$td/wf-hooks/.claude/settings.json"; mkdir -p "$WF.wirehooks.tmp"
+out="$(bash "$lib/wire-pretooluse-hooks.sh" "$WF" "$HIMMEL_FAKE" 2>/dev/null)"; rc=$?
+check "wire-pretooluse-hooks rc!=0 when the settings write fails" "$([ "$rc" -ne 0 ] && echo yes || echo no)" "yes"
+check "wire-pretooluse-hooks prints no success line"              "$(printf '%s' "$out" | grep -c 'wired')" "0"
+out="$(bash "$lib/wire-pretooluse-hooks.sh" --sessionstart "$WF" "$HIMMEL_FAKE" inject-initiative.sh 2>/dev/null)"; rc=$?
+check "wire-sessionstart rc!=0 when the settings write fails"     "$([ "$rc" -ne 0 ] && echo yes || echo no)" "yes"
+check "wire-sessionstart prints no success line"                  "$(printf '%s' "$out" | grep -c 'wired')" "0"
+
 [ "$fails" -eq 0 ] && echo "E2E PROVENANCE-SETTINGS ALL PASS" || { echo "$fails E2E PROVENANCE-SETTINGS FAILED"; exit 1; }

@@ -88,6 +88,8 @@ wire_handover_dir() {
     > "$settings.handoverdir.tmp" && mv "$settings.handoverdir.tmp" "$settings"; then
     _wire_handover_dir_record "$settings" "$base" HANDOVER_DIR "$hdir_fwd" \
       || echo "wire-handover-dir: warning: provenance record failed (env.HANDOVER_DIR is wired; uninstall will keep it)" >&2
+  else
+    return 1   # the write failed: never echo success (matches the pre-record `&&` under set -e)
   fi
   echo "  set env.HANDOVER_DIR -> $settings"
 }

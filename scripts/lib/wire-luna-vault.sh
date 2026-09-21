@@ -84,6 +84,8 @@ wire_luna_vault() {
     > "$settings.lunavault.tmp" && mv "$settings.lunavault.tmp" "$settings"; then
     _wire_luna_vault_record "$settings" "$base" LUNA_VAULT_PATH "$vault_fwd" \
       || echo "wire-luna-vault: warning: provenance record failed (env.LUNA_VAULT_PATH is wired; uninstall will keep it)" >&2
+  else
+    return 1   # the write failed: never echo success (matches the pre-record `&&` under set -e)
   fi
   echo "  set env.LUNA_VAULT_PATH -> $settings"
 }

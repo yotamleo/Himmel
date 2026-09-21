@@ -82,6 +82,8 @@ wire_himmel_repo() {
     > "$settings.himmelrepo.tmp" && mv "$settings.himmelrepo.tmp" "$settings"; then
     _wire_himmel_repo_record "$settings" "$base" HIMMEL_REPO "$himmel_fwd" \
       || echo "wire-himmel-repo: warning: provenance record failed (env.HIMMEL_REPO is wired; uninstall will keep it)" >&2
+  else
+    return 1   # the write failed: never echo success (matches the pre-record `&&` under set -e)
   fi
   echo "  set env.HIMMEL_REPO -> $settings"
 }
