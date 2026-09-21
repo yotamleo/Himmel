@@ -44,11 +44,14 @@ ALLOW_WHY=(
 # `read` / `printf -v` / `declare -n`, or an env block passed as a variable; it
 # ignores order, so a scratch variable reassigned to something real AFTER the trace
 # still passes; and a mktemp buried past the first inner quote of a quoted `$(...)`
-# is missed (a false flag, never a false pass).
+# is missed (a false flag, never a false pass). It wants `mktemp` as a bare command
+# word, so /usr/bin/mktemp is a false flag; but it does not prove the word is
+# INVOKED, so `HOME="$(echo mktemp)"` still passes.
 home_is_scratch() {
   local file="$1" line rest name rhs v changed is_scratch ref_re home_ok=0
   local dq='"[^"]*"' sq="'[^']*'" cs='\$\([^)]*\)' bare='[^[:space:]]*'
   local assign_re="(^|[^A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)=($dq|$sq|$cs|$bare)"
+  local mk_re='(^|[^A-Za-z0-9_./-])mktemp([[:space:])"`]|$)'   # mktemp as a command word, not a path part like /opt/mktemp-user
   local scratch=" " lines=()
   while IFS= read -r line || [ -n "$line" ]; do lines+=("$line"); done < "$file"
   for _ in 1 2 3 4 5 6 7 8; do   # fixpoint: one pass per link of an assignment chain
@@ -59,7 +62,7 @@ home_is_scratch() {
         name="${BASH_REMATCH[2]}"; rhs="${BASH_REMATCH[3]}"
         rest="${rest#*"${BASH_REMATCH[0]}"}"
         is_scratch=0
-        case "$rhs" in *mktemp*) is_scratch=1 ;; esac
+        if [[ "$rhs" =~ $mk_re ]]; then is_scratch=1; fi
         if [ "$is_scratch" -eq 0 ]; then
           for v in $scratch; do
             ref_re='\$\{?'"$v"'([^A-Za-z0-9_]|$)'
@@ -132,6 +135,8 @@ printf '#!/usr/bin/env bash\ntmp="$(mktemp -d /tmp/x.XXXXXX)"\nother=/somewhere/
 printf '#!/usr/bin/env bash\ntd="$(mktemp -d /tmp/x.XXXXXX)"\nctl="$td/ctlhome"\nHOME="$ctl" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-scratch-transitive.sh"
 # HIMMEL-3344: a literal mktemp on the HOME assignment passes.
 printf '#!/usr/bin/env bash\nHOME="$(mktemp -d /tmp/x.XXXXXX)" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-scratch-literal.sh"
+# HIMMEL-3344: the word mktemp inside a path is not a mktemp call.
+printf '#!/usr/bin/env bash\nHOME=/opt/mktemp-user %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-mktemp-in-path.sh"
 # HIMMEL-3344: fence lifted through a quoted JS key + numeric value, an unquoted
 # key + numeric value, and a PowerShell $env: assignment -- all uncovered pre-fix.
 printf "runSpawn(cmd, { env: { '%s': 1 } });\n" "$V" > "$fx/scripts/quoted-key.js"
@@ -165,6 +170,8 @@ check "HOME derived from mktemp through a second variable passes" \
   "$(printf '%s' "$got" | grep -c 'scripts/test-scratch-transitive.sh')" "0"
 check "a literal mktemp on the HOME assignment passes" \
   "$(printf '%s' "$got" | grep -c 'scripts/test-scratch-literal.sh')" "0"
+check "the word mktemp inside a HOME path is flagged" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-mktemp-in-path.sh')" "1"
 check "quoted JS key with a numeric value is flagged" \
   "$(printf '%s' "$got" | grep -c 'scripts/quoted-key.js')" "1"
 check "unquoted JS key with a numeric value is flagged" \
