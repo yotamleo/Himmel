@@ -49,7 +49,9 @@ ALLOW_WHY=(
 # word, so /usr/bin/mktemp is a false flag; but it does not prove the word is
 # INVOKED, so `HOME="$(echo mktemp)"` still passes. A scratch variable counts only as a
 # plain `$v` / `${v}`, and a value carrying ANY `${x<op>...}` expansion is never
-# scratch (a false flag, never a false pass). It reads raw lines and cannot tell an
+# scratch (a false flag, never a false pass). It takes `dirname` of a scratch variable
+# as scratch too, so `td=$(mktemp -d "$HOME/x.XXXXXX")` with `HOME=$(dirname "$td")` passes
+# while HOME stays the real one (a false pass; mktemp under the real HOME is the tell). It reads raw lines and cannot tell an
 # executable assignment from assignment-shaped TEXT: `HOME="$(mktemp -d)"` inside a
 # comment or a single-quoted `printf` argument (a fixture the file writes) counts as
 # one, so such a file can PASS while lifting the fence with the real HOME
@@ -102,7 +104,9 @@ home_is_scratch() {
 # `1x` / `1.5` / `1-x`; a `1` ended by any other character is a false negative). A
 # `1` opened by a quote ends only at that same quote plus such a terminator, so `"1"x`
 # (value `1x`) is not a lift; a bare `1` followed by a quote (`V=1"x"`, also `1x`) still
-# is, because the quote may close an enclosing string (a false flag). It will NOT catch a fence lift spelled another way (a computed
+# is, because the quote may close an enclosing string (a false flag), and so is a
+# closing quote followed by an expansion (`"1"$y`, `"1""$y"`), which is `1` when y is
+# empty. It will NOT catch a fence lift spelled another way (a computed
 # variable name, `Set-Item Env:`, `[Environment]::SetEnvironmentVariable`, a
 # `process.env` object built from a variable name) or the value carried in a
 # variable (`v=1; ... $v`). "Scratch HOME" is home_is_scratch above, with its own
@@ -116,7 +120,8 @@ scan_callers() {
   local sq="'" dq='"' bt='`'
   local pre="(^|[^A-Za-z0-9_])${V}[]'\"}]*[[:space:]]*[:=][[:space:]]*"
   local end_u="[][:space:];&|,)}${sq}${dq}${bt}]" end_d="[][:space:];&|,)}${sq}${bt}]" end_s="[][:space:];&|,)}${dq}${bt}]"
-  local set_re="${pre}(1(${end_u}|\$)|${dq}1${dq}(${end_d}|\\\\\$|\$)|${sq}1${sq}(${end_s}|\\\\\$|\$))"
+  # A closing quote followed by an expansion (`"1"$y`, `"1""$y"`) stays a lift: y may be empty.
+  local set_re="${pre}(1(${end_u}|\$)|${dq}1${dq}(${end_d}|\\\\\$|\\\$|${dq}\\\$|\$)|${sq}1${sq}(${end_s}|\\\\\$|\\\$|\$))"
   local f rel a allowed rc list
   # A failed traversal (unreadable subtree) is reported, not scanned around.
   list="$(find "$root/scripts" -path '*/node_modules' -prune -o -type f \
@@ -180,8 +185,11 @@ printf '#!/usr/bin/env bash\n%s=1-extra bash uninstall.sh --yes\n' "$V" > "$fx/s
 printf '#!/usr/bin/env bash\n%s="1"x bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-concat-dq-word.sh"
 printf "#!/usr/bin/env bash\n%s='1'x bash uninstall.sh --yes\n" "$V" > "$fx/scripts/test-concat-sq-word.sh"
 printf '#!/usr/bin/env bash\n%s="1""x" bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-concat-dq-dq.sh"
+# ... while a quoted 1 followed by an expansion stays flagged (the expansion may be empty, leaving 1)...
 printf '#!/usr/bin/env bash\n%s="1"$y bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-concat-dq-var.sh"
-# ... while a real lift of the same quoted shape stays flagged.
+printf '#!/usr/bin/env bash\n%s="1""$y" bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-concat-dq-dq-var.sh"
+printf "#!/usr/bin/env bash\n%s='1'\$y bash uninstall.sh --yes\n" "$V" > "$fx/scripts/test-concat-sq-var.sh"
+# ... and a real lift of the same quoted shape stays flagged.
 printf '#!/usr/bin/env bash\n%s="1" bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-quoted-dq-space.sh"
 printf "#!/usr/bin/env bash\n%s='1' bash uninstall.sh --yes\n" "$V" > "$fx/scripts/test-quoted-sq-space.sh"
 printf '#!/usr/bin/env bash\nexport %s="1"\n' "$V" > "$fx/scripts/test-quoted-dq-eol.sh"
@@ -252,8 +260,12 @@ check "'1'x (shell concatenation, value 1x) is not a fence lift (not flagged)" \
   "$(printf '%s' "$got" | grep -c 'scripts/test-concat-sq-word.sh')" "0"
 check "\"1\"\"x\" (shell concatenation, value 1x) is not a fence lift (not flagged)" \
   "$(printf '%s' "$got" | grep -c 'scripts/test-concat-dq-dq.sh')" "0"
-check "\"1\"\$y (shell concatenation) is not a fence lift (not flagged)" \
-  "$(printf '%s' "$got" | grep -c 'scripts/test-concat-dq-var.sh')" "0"
+check "\"1\"\$y is still flagged (an empty y leaves the value 1)" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-concat-dq-var.sh')" "1"
+check "\"1\"\"\$y\" is still flagged (an empty y leaves the value 1)" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-concat-dq-dq-var.sh')" "1"
+check "'1'\$y is still flagged (an empty y leaves the value 1)" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-concat-sq-var.sh')" "1"
 check "\"1\" followed by a space is still a fence lift (flagged)" \
   "$(printf '%s' "$got" | grep -c 'scripts/test-quoted-dq-space.sh')" "1"
 check "'1' followed by a space is still a fence lift (flagged)" \
