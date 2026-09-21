@@ -2611,7 +2611,13 @@ u_absent 'U27 the wired AGENTS.md after it is still stripped' "$U_HOME/.codex/AG
 # not read as "no block": the run halts, the file is byte-identical, and the
 # next file is not touched after the halt.
 u_residue_fixture u28
-sed 's/$/\r/' "$U_HOME/.claude/CLAUDE.md" > "$TMP/u28-crlf"
+# Portable CRLF conversion: `sed 's/$/\r/'` is GNU-only (BSD/macOS sed writes a
+# literal r, leaving no CRLF and a fixture that asserts nothing). Each line gets
+# CR+LF; an unterminated last line, if any, gets a CR and stays unterminated.
+: > "$TMP/u28-crlf"
+while IFS= read -r u28_line; do printf '%s\r\n' "$u28_line" >> "$TMP/u28-crlf"; done < "$U_HOME/.claude/CLAUDE.md"
+[ -n "$u28_line" ] && printf '%s\r' "$u28_line" >> "$TMP/u28-crlf"
+grep -q "$(printf '\r')" "$TMP/u28-crlf" || { echo "U28 fixture carries no CR — the CRLF conversion did not happen"; FAILED=$((FAILED + 1)); }
 cp "$TMP/u28-crlf" "$U_HOME/.claude/CLAUDE.md"
 cp "$U_HOME/.codex/AGENTS.md" "$TMP/u28-agents"
 u_run_fx

@@ -131,6 +131,16 @@ printf 'docs:\n\n```\n%s\n%s\n```\nafter\n' "$B" "$E" > "$td/fenced-plus-real.ex
 run "$td/fenced-plus-real.md"; check "fenced-plus-real: rc 0" "$rc" 0
 same "fenced-plus-real: quoted copy intact, real block gone" "$td/fenced-plus-real.md" "$td/fenced-plus-real.expect"
 bash "$uw" --probe "$td/fenced-plus-real.md" >/dev/null 2>&1; check "fenced-plus-real: probe reads the result as clean" "$?" 0
+# A complete, unfenced block ABOVE an unrelated fence that never closes: the
+# markers sit outside the open fence, so they are unambiguous and the block is
+# stripped; only markers UNDER the unclosed fence are refused (HIMMEL-3335).
+printf 'mine\n\n%s\n\n```sh\nnever closed\n' "$BLOCK" > "$td/valid-block-then-open.md"
+cp "$td/valid-block-then-open.md" "$td/valid-block-then-open.before"
+printf 'mine\n\n```sh\nnever closed\n' > "$td/valid-block-then-open.expect"
+run "$td/valid-block-then-open.md"; check "valid-block-then-open: rc 0" "$rc" 0
+same "valid-block-then-open: block stripped, open fence kept" "$td/valid-block-then-open.md" "$td/valid-block-then-open.expect"
+same "valid-block-then-open: backup is the file as found" "$td/valid-block-then-open.md.himmel-uninstall-backup" "$td/valid-block-then-open.before"
+bash "$uw" --probe "$td/valid-block-then-open.md" >/dev/null 2>&1; check "valid-block-then-open: probe 0 after" "$?" 0
 # A balanced quote followed by an unrelated fence that never closes: the quoted
 # markers belong to the CLOSED fence, so this is neither wired nor ambiguous.
 printf 'docs:\n\n```\n%s\n%s\n```\n\n```sh\necho never closed\n' "$B" "$E" > "$td/fenced-then-open.md"

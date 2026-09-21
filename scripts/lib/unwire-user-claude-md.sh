@@ -110,9 +110,11 @@ unwire_user_claude_md() {
     return 1
   fi
   read -r nb ne lb le crlf openfence fm <<< "$scan"
-  # A marker under a fence that never closes may be the real block: refuse
-  # before it can read as "nothing to strip". Balanced fences make fm moot.
-  if [ "$openfence" -eq 1 ] && [ "$((nb + ne + crlf + fm))" -gt 0 ]; then
+  # A marker UNDER a fence that never closes may be the real block: refuse
+  # before it can read as "nothing to strip". Only fm (marker lines inside the
+  # still-open fence) is ambiguous; markers above the fence opener are ordinary
+  # and fall through to the count and CRLF checks below (HIMMEL-3335).
+  if [ "$openfence" -eq 1 ] && [ "$fm" -gt 0 ]; then
     echo "unwire-user-claude-md: $target opens a code fence that never closes, so a marker line cannot be told from quoted text -- refusing to guess; close the fence or remove the block by hand" >&2
     return 1
   fi
