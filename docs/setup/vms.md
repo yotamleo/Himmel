@@ -146,7 +146,12 @@ failure (exit `2`).
 
 Under `--profile all`, the cadence-crontab direction prints as `UNOBSERVABLE`:
 `suite-ready-v4` ships neither qmd nor graphify, so arming those cadences
-fails, and the install exits 1 before any crontab line exists.
+fails, and the install exits 1 before any crontab line exists. The harness
+prints that exit as `install-exit scope=<scope> rc=<n>` and carries on to
+inventory C and the verdict. The `UNOBSERVABLE` line comes just before the verdict
+and repeats the exit codes. Under `core`, a failed install still ends the run
+(exit `2`). Provisioning qmd and graphify in the guest is tracked in
+HIMMEL-3351.
 
 Exit codes:
 

@@ -184,22 +184,32 @@ step inventory-A "bash $WORKDIR/inventory.sh A"
 OVERLAY='.vault = {mode: "default-template", path: $v} | .cadences = {pipeline: "armed", qmd: "armed", graphmap: "armed"}'
 if [ "$PROFILE" = all ]; then
     echo "[overlay] jq --arg v $GHOME/luna '$OVERLAY' $SRC/docs/setup/profiles/adopter-<scope>.install-profile.json"
-    # ponytail: suite-ready-v4 ships neither qmd nor graphify, so the qmd and
-    # graphmap cadence arms refuse (rc=2) and install exits 1 before any
-    # crontab line exists to leave behind; provisioning them is S10's.
-    echo "[witness] cadence-crontab-removed UNOBSERVABLE: qmd and graphify are absent in the $SNAPSHOT guest, so qmd-cadence/graphmap-cadence arm exit 2 and install exits 1"
     for scope in project user; do
         step "profile-$scope" "jq --arg v $GHOME/luna '$OVERLAY' $SRC/docs/setup/profiles/adopter-$scope.install-profile.json >$WORKDIR/profile-all-$scope.json"
     done
 fi
 echo "[env] $ENV_CMD"
+INSTALL_EXITS=""
 for scope in project user; do
     INSTALL_ARGS=""
     [ "$PROFILE" != all ] || INSTALL_ARGS="--from-profile $WORKDIR/profile-all-$scope.json"
     # `install` takes no --profile/--yes (spec §11 step 4 says so; the CLI does
     # not): `--scope` alone is the non-interactive adopter path, whose shipped
     # profile (starter, vault none) maps to adopt.sh --profile core.
-    step "install-$scope" "cd $GHOME/proj && $ENV_CMD node $BIN install ${INSTALL_ARGS:+$INSTALL_ARGS }--scope $scope >$WORKDIR/install-$scope.log 2>&1; rc=\$?; sed 's/^/[install-$scope-log] /' $WORKDIR/install-$scope.log; exit \$rc"
+    INSTALL_CMD="cd $GHOME/proj && $ENV_CMD node $BIN install ${INSTALL_ARGS:+$INSTALL_ARGS }--scope $scope >$WORKDIR/install-$scope.log 2>&1; rc=\$?; sed 's/^/[install-$scope-log] /' $WORKDIR/install-$scope.log; exit \$rc"
+    if [ "$PROFILE" != all ]; then
+        step "install-$scope" "$INSTALL_CMD"
+        continue
+    fi
+    # ponytail: suite-ready-v4 ships neither qmd nor graphify, so under `all`
+    # the qmd and graphmap cadence arms refuse and install exits non-zero
+    # before any crontab line exists. That exit is recorded and the run goes
+    # on (console ruling R6); provisioning the guest is S10's (HIMMEL-3351).
+    echo "[step] install-$scope"
+    vm_ssh "$INSTALL_CMD"
+    rc=$?
+    echo "install-exit scope=$scope rc=$rc"
+    INSTALL_EXITS="${INSTALL_EXITS:+$INSTALL_EXITS }$scope=$rc"
 done
 
 # 5. Inventory B + the ledger as it stood after install.
@@ -262,6 +272,7 @@ FAILS=$(printf '%s\n' "$ASSERT_OUT" | grep -cE '^CHECK [^ ]+ [^ ]+ FAIL ')
 # and the --purge-state uninstall remove different state (spec §11 runs both).
 VARIANT="profile=$PROFILE uninstall=$([ "$PURGE" = 1 ] && echo purge-state || echo plain)"
 echo "[summary] variant=($VARIANT) checks=$TOTAL fail=$FAILS pre-halt too-much=$MUCH too-little=$LITTLE identity=$(count identity) ledger=$(count ledger) post-halt=$(printf '%s\n' "$PHASED" | grep -c '^post-halt ') uninstall-rc=$UN_RC"
+[ "$PROFILE" != all ] || echo "[witness] cadence-crontab-removed UNOBSERVABLE: qmd and graphify are absent in the $SNAPSHOT guest, so no cadence crontab line can be armed (install-exit $INSTALL_EXITS); S10 provisions them (HIMMEL-3351)"
 
 if [ "$EXPECT_RED" = 1 ]; then
     # The spec's predicted witnesses — informational: a missing one is reported,

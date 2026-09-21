@@ -411,6 +411,22 @@ if printf '%s\n' "$OUT" | grep -qF '[witness] cadence-crontab-removed UNOBSERVAB
 else
     fail_case "D14e cadence unobservable"; dump
 fi
+FAKE_FAIL_MATCH='bin.js install' run_rt "$BOTH" f73a62f1 --expect-red --profile all
+if [ "$RC" -eq 0 ] && printf '%s\n' "$OUT" | grep -qF 'install-exit scope=project rc=7' \
+   && printf '%s\n' "$OUT" | grep -qF 'install-exit scope=user rc=7' \
+   && printf '%s\n' "$OUT" | grep -qF 'UNOBSERVABLE: qmd and graphify are absent in the suite-ready-v4 guest, so no cadence crontab line can be armed (install-exit project=7 user=7)' \
+   && printf '%s\n' "$OUT" | grep -q '^RED complete: ' \
+   && grep '^SSH ' "$LOG" | grep -q 'inventory.sh C'; then
+    pass "D14g --profile all: a failed install is recorded, the run reaches inventory C and the verdict"
+else
+    fail_case "D14g all-profile install failure rc=$RC"; dump
+fi
+FAKE_FAIL_MATCH='bin.js install' run_rt "$BOTH" f73a62f1 --expect-red
+if [ "$RC" -eq 2 ] && printf '%s\n' "$OUT" | grep -qF 'step install-project failed (rc=7)'; then
+    pass "D14h --profile core: a failed install still ends the run (rc 2)"
+else
+    fail_case "D14h core install failure rc=$RC"; dump
+fi
 
 echo
 if [ "$FAILED" -eq 0 ]; then echo "ALL PASS"; exit 0; fi
