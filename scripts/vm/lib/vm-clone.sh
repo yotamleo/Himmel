@@ -347,8 +347,10 @@ vm_stage_tree() {
         if [ "${_st[0]}" -ne 0 ] || [ "${_st[1]}" -ne 0 ]; then
             echo "==> STAGE FAILED (tar): the copy to the guest did not complete" >&2; return 1
         fi
-        # .env.example is the public placeholder template (a literal file, not the tree).
-        "$runner" "cat > $remote_dir/.env.example" 2>/dev/null < "$repo/.env.example" || true
+        # .env.example is the public placeholder template (a literal file, not the tree). Like
+        # the rsync branch, which passes it as a source, a failure to stage it fails the stage.
+        "$runner" "cat > $remote_dir/.env.example" 2>/dev/null < "$repo/.env.example" \
+            || { echo "==> STAGE FAILED (tar): the copy to the guest did not complete" >&2; return 1; }
     fi
     # Assert the guest is clean before anything runs there; a secret on the guest is
     # a hard stop, not a warning (HIMMEL-2540).

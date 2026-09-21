@@ -168,6 +168,25 @@ if [ "$rc" -eq 1 ] && grep -q 'STAGE FAILED (tar)' <<< "$out"; then
     pass "T4e a tar producer failure fails the stage without the caller's pipefail"
 else fail_case "T4e rc=$rc: $out"; fi
 
+# The tar branch and the rsync branch agree on .env.example: rsync passes it as a source and
+# fails the stage when it cannot be read; the tar branch's copy used to end in `|| true`, so a
+# missing template or a failed guest-side write staged silently without it (HIMMEL-3348).
+FIX2="$WORK/repo-noenv"; mkdir -p "$FIX2/scripts/lib"; echo ok > "$FIX2/scripts/a.sh"
+cp "$REPO_ROOT/scripts/lib/vm-guest-excludes.sh" "$FIX2/scripts/lib/"
+G5="$WORK/guest-noenv"
+out=$(PATH="$BIN:$PATH" GUEST_HAS_RSYNC=0 bash -c '. "$1"; vm_stage_tree "$2" "$3" guest x host scripts' _ "$LIB" "$FIX2" "$G5" 2>&1); rc=$?
+if [ "$rc" -eq 1 ] && grep -q 'STAGE FAILED (tar)' <<< "$out"; then
+    pass "T4f tar path: a missing host .env.example fails the stage (as the rsync path does)"
+else fail_case "T4f rc=$rc: $out"; fi
+
+guest_noenv() { case "$1" in "cat >"*) return 1 ;; esac; guest "$1"; }
+export -f guest_noenv
+G6="$WORK/guest-envwrite"
+out=$(PATH="$BIN:$PATH" GUEST_HAS_RSYNC=0 bash -c '. "$1"; vm_stage_tree "$2" "$3" guest_noenv x host scripts' _ "$LIB" "$FIX" "$G6" 2>&1); rc=$?
+if [ "$rc" -eq 1 ] && grep -q 'STAGE FAILED (tar)' <<< "$out"; then
+    pass "T4g tar path: a failed guest-side .env.example write fails the stage"
+else fail_case "T4g rc=$rc: $out"; fi
+
 echo
 if [ "$FAILED" -eq 0 ]; then echo "RESULT: all passed"; exit 0; fi
 echo "RESULT: $FAILED failure(s)"; exit 1
