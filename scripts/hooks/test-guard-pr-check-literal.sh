@@ -112,6 +112,28 @@ for t in bash env jq git awk find paste wc tr comm cat realpath basename dirname
 done
 run "a PATH without sort -> deny (fail closed)" 2 "$(payload "$LITERAL" "$WT")" "$HR" "PATH=$TMP/nosort-bin"
 need_in_err "deny names the missing tool" "'sort' is not on PATH"
+# Round 6: classification itself must not need a tool - a missing tr once
+# emptied the command into a silent no-op.
+mkdir -p "$TMP/notr-bin"
+for t in bash env jq git awk find paste wc sort comm cat realpath basename dirname grep sed; do
+    tp=$(command -v "$t") && ln -sf "$tp" "$TMP/notr-bin/$t"
+done
+run "a PATH without tr -> deny (fail closed)" 2 "$(payload "$LITERAL" "$WT")" "$HR" "PATH=$TMP/notr-bin"
+need_in_err "deny names the missing tr" "'tr' is not on PATH"
+# Round 6: the path must resolve against the cwd the conditions are checked
+# in - a clean root proves nothing about the copy a cd or ../ reaches.
+mkdir -p "$TMP/elsewhere/scripts/cr"
+run "cd elsewhere && the literal, clean root -> deny" 2 \
+    "$(payload "cd $TMP/elsewhere && $LITERAL" "$WT")" "$HR"
+need_in_err "deny names the directory change" "changes directory"
+run "pushd elsewhere; the literal, clean root -> deny" 2 \
+    "$(payload "pushd $TMP/elsewhere; $LITERAL" "$WT")" "$HR"
+run "a ../ path out of the root, clean root -> deny" 2 \
+    "$(payload "bash ../elsewhere/scripts/cr/pr-check-context.sh" "$WT")" "$HR"
+run "a path under another directory, clean root -> deny" 2 \
+    "$(payload "bash docs/scripts/cr/pr-check-context.sh" "$WT")" "$HR"
+run "scripts/x/../cr/ on a clean root -> allow" 0 \
+    "$(payload "bash scripts/x/../cr/pr-check-context.sh" "$WT")" "$HR"
 echo doc2 >"$WT/docs/a.md"
 run "an unrelated (docs) diff -> allow" 0 "$(payload "$LITERAL" "$WT")" "$HR"
 g -C "$WT" checkout -q -- docs/a.md
@@ -195,6 +217,15 @@ run "HIMMEL_REPO re-pointed before the fence -> deny" 2 \
     "$(payload "export HIMMEL_REPO=.; $FENCE_TEXT" "$WT")" "$HR"
 run "the anchor's absolute path on an edited branch -> no-op" 0 \
     "$(payload "bash \"$PRIMARY/scripts/cr/pr-check-env.sh\" CR_CLAUDE_AGENTS" "$WT")" "$HR"
+# shellcheck disable=SC2016 # command text, verbatim
+run "a read himmel_repo beside the fence -> deny" 2 \
+    "$(payload "$FENCE_TEXT"'; read himmel_repo <<< .; bash "$himmel_repo/scripts/cr/pr-check-context.sh"' "$WT")" "$HR"
+# shellcheck disable=SC2016 # command text, verbatim
+run "the fence on one line with ; -> no-op" 0 \
+    "$(payload 'if himmel_repo=$(printenv HIMMEL_REPO | grep .); then bash "$himmel_repo/scripts/cr/pr-check-context.sh"; else echo "pr-check: unset" >&2; exit 2; fi' "$WT")" "$HR"
+# shellcheck disable=SC2016 # command text, verbatim
+run "the fence with a \$ in its message -> deny" 2 \
+    "$(payload 'if himmel_repo=$(printenv HIMMEL_REPO | grep .); then bash "$himmel_repo/scripts/cr/pr-check-context.sh"; else echo "$(himmel_repo=.)" >&2; exit 2; fi' "$WT")" "$HR"
 # shellcheck disable=SC2016 # command text, verbatim
 run "a second himmel_repo= beside the fence -> deny" 2 \
     "$(payload "$FENCE_TEXT"'; himmel_repo=.; bash "$himmel_repo/scripts/cr/pr-check-context.sh"' "$WT")" "$HR"

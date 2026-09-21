@@ -55,12 +55,14 @@ else
     echo "pr-check: HIMMEL_REPO is unset or empty" >&2
     exit 2
 fi'
-# shellcheck disable=SC2016 # matched as text
-FENCE_ASSIGN='himmel_repo=$(printenv HIMMEL_REPO | grep .)'
-# shellcheck disable=SC2016 # matched as text
-FENCE_TOKEN='$himmel_repo/scripts/cr/pr-check-context.sh'
+# The fence's exact shape, once whitespace runs are collapsed: its statements
+# may be split by newlines or `;`, and only the echo text may vary (no quote,
+# $, backtick or backslash in it, so it cannot expand).
+# shellcheck disable=SC2016 # a regex, matched as text
+FENCE_RE='^if himmel_repo=\$\(printenv HIMMEL_REPO \| grep \.\) ?;? then bash "\$himmel_repo/scripts/cr/pr-check-context\.sh" ?;? else echo "[^"$`\\]*" >&2 ?;? exit 2 ?;? fi ?;?$'
 
 shown=""
+flat=""
 deny() {
     {
         echo "guard-pr-check-literal: DENIED - \`$shown\` (HIMMEL-3383): $1"
@@ -107,23 +109,45 @@ cmd="${rest#*$'\n'}"
 case "$tool" in Bash|"") ;; *) exit 0 ;; esac
 
 # ---- classify: does this command run a guarded script by a relative path? ---
-# Quotes and backslashes are dropped first, as the shell drops them, so
-# 'scripts/cr/x', scripts/cr/\x and $'scripts/cr/x' all read as what they spell.
-flat=$(printf '%s' "$cmd" | tr -d "'\"\\\\")
+# Classification uses bash builtins only, so a missing tool cannot empty it
+# into a no-op. Quotes and backslashes are dropped first, as the shell drops
+# them, so 'scripts/cr/x', scripts/cr/\x and $'scripts/cr/x' all read as
+# what they spell.
+flat=${cmd//[\'\"\\]/}
 case "$flat" in *pr-check*|*/cr/*) ;; *) exit 0 ;; esac
 
-# The canonical fence runs the anchor's copy through $himmel_repo. It is
-# exempt only when it is the fence's own assignment that sets it, once, and
-# nothing in the command re-points HIMMEL_REPO.
-n_assign=$(printf '%s' "$flat" | grep -o 'himmel_repo=' | wc -l)
-case "$cmd" in
-    *"$FENCE_ASSIGN"*)
-        case "$flat" in
-            *HIMMEL_REPO=*) ;;
-            *) [ "$n_assign" -eq 1 ] && flat=${flat//"$FENCE_TOKEN"/ } ;;
+# The canonical fence runs the anchor's copy through $himmel_repo, so it is
+# exempt - but only in its exact shape. Anything added to it (a second
+# assignment, a `read himmel_repo`, an export) makes it an ordinary command.
+fence=${cmd//[$'\t\n\r']/ }
+while :; do
+    case "$fence" in *'  '*) fence=${fence//  / } ;; *) break ;; esac
+done
+fence=${fence# }
+fence=${fence% }
+[[ "$fence" =~ $FENCE_RE ]] && exit 0
+
+# norm <path> - collapse empty, . and .. segments, as the kernel resolves them.
+norm() {
+    local -a parts out=()
+    local p
+    IFS=/ read -r -a parts <<<"$1"
+    for p in ${parts[@]+"${parts[@]}"}; do
+        case "$p" in
+            ''|.) ;;
+            ..)
+                if [ "${#out[@]}" -gt 0 ] && [ "${out[${#out[@]}-1]}" != .. ]; then
+                    out=("${out[@]:0:${#out[@]}-1}")
+                else
+                    out+=(..)
+                fi
+                ;;
+            *) out+=("$p") ;;
         esac
-        ;;
-esac
+    done
+    local IFS=/
+    printf '%s' "${out[*]-}"
+}
 
 is_target() { # is_target <basename> - names, or globs onto, a guarded script
     local t
@@ -140,9 +164,9 @@ is_target() { # is_target <basename> - names, or globs onto, a guarded script
 # Anything that runs a named file: an interpreter, `source`/`.`, `eval`, or
 # the file itself as the command word. Wrappers (env, timeout, xargs, ...),
 # their option words and VAR= prefixes are skipped to find that word.
-# shellcheck disable=SC2020 # each separator char maps to a newline
-simple=$(printf '%s\n' "$flat" | tr ';&|()<>`' '\n\n\n\n\n\n\n\n')
+simple=${flat//[;&|()<>\`]/$'\n'}
 runs=0
+chdir=0
 while IFS= read -r line; do
     read -r -a w <<<"$line"
     i=0
@@ -161,42 +185,50 @@ while IFS= read -r line; do
     cw=${w[$i]}
     case "${cw##*/}" in
         bash|sh|zsh|dash|ksh|mksh|source|.|eval) runs=1 ;;
+        cd|pushd|popd) chdir=1 ;;
     esac
     case "$cw" in */*|pr-check*) runs=1 ;; esac
 done <<<"$simple"
 [ "$runs" -eq 1 ] || exit 0
 
 # A candidate operand: a relative path whose last segment names a guarded
-# script (after dropping trailing / and /. - scripts/x/../cr/... still ends in
-# the name), a glob or brace list that could, or a runtime-built word when the
-# command mentions pr-check at all. Absolute paths are left to the permission
-# layer: no allow rule matches them, and the runbook's <himmel_dir> spelling
-# is one.
+# script, a glob or brace list that could, or a runtime-built word when the
+# command mentions pr-check at all. Only a path that resolves to exactly
+# scripts/cr/<script> from the cwd can be checked; any other candidate (a glob,
+# a variable, a path outside the root, or a cd that moves what the path
+# resolves against) is unresolvable and denies. Absolute paths are left to the
+# permission layer: no allow rule matches them, and the runbook's
+# <himmel_dir> spelling is one.
 # ponytail: text classification, so a name the shell assembles from pieces the
 # text never spells (hex escapes, concatenated variables with no "pr-check" in
 # sight) is not seen. The branch can run arbitrary code through any other
 # allow-listed scripts/ path anyway; this hook closes the two named scripts.
 hit=0
-# shellcheck disable=SC2020 # as above
-for tok in $(printf '%s\n' "$flat" | tr ';&|()<>`=' '\n\n\n\n\n\n\n\n\n'); do
+unresolved=""
+for tok in ${flat//[;&|()<>\`=]/$'\n'}; do
     case "$tok" in /*|'~'*) continue ;; esac
     case "$tok" in
-        *'$'[A-Za-z_'{']*) case "$flat" in *pr-check*) hit=1 ;; esac ;;
+        *'$'[A-Za-z_'{']*) case "$flat" in *pr-check*) hit=1; unresolved=$tok ;; esac ;;
     esac
-    case "$tok" in *pr-check*'{'*|*pr-check*'}'*) hit=1 ;; esac
-    while :; do
-        case "$tok" in
-            */) tok=${tok%/} ;;
-            */.) tok=${tok%/.} ;;
-            *) break ;;
+    case "$tok" in *pr-check*'{'*|*pr-check*'}'*) hit=1; unresolved=$tok ;; esac
+    rel=$(norm "$tok")
+    if is_target "${rel##*/}"; then
+        hit=1
+        case "$rel" in
+            scripts/cr/pr-check-context.sh|scripts/cr/pr-check-env.sh) ;;
+            *) unresolved=$tok ;;
         esac
-    done
-    is_target "${tok##*/}" && hit=1
+    fi
 done
 [ "$hit" -eq 1 ] || exit 0
 
 shown=${cmd//$'\n'/ }
 shown=${shown:0:200}
+
+[ -z "$unresolved" ] \
+    || deny "'$unresolved' does not resolve to this root's scripts/cr/ by its text alone (a glob, a variable, or a path outside the root), so the bytes it runs cannot be checked."
+[ "$chdir" -eq 0 ] \
+    || deny "the command changes directory, so the relative path does not resolve against the cwd the conditions are checked in."
 
 for t in git awk sort find paste wc tr comm grep; do
     command -v "$t" >/dev/null 2>&1 \
