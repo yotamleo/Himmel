@@ -96,9 +96,11 @@ while [ "$i" -lt 50 ]; do
     sleep 0.1; i=$((i + 1))
 done
 printf 'live\n' >> "$I"
+# The follower emits BEFORE it writes the cursor, so two lines in $OUT does not mean
+# the cursor moved: kill only once the cursor has caught up with the inbox.
 i=0
 while [ "$i" -lt 50 ]; do
-    [ "$(wc -l < "$OUT" | tr -d ' ')" -ge 2 ] && break
+    [ "$(tr -d ' \n' < "$I.cursor")" = "$(size_of "$I")" ] && break
     sleep 0.1; i=$((i + 1))
 done
 kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
@@ -151,6 +153,18 @@ if [ -w /dev/full ]; then
 else
     pass "(k) skipped: /dev/full not available on this host"
 fi
+
+# --- (l) a failing tail is a visible failure, not an empty --once drain -------
+# HIMMEL-3370: `tail | while read` reports the loop's status, so a tail that failed
+# (inbox vanished, unreadable) delivered nothing and still exited 0.
+I="$WORK/l/consoles/c.md"
+mkdir -p "$WORK/l/consoles" "$WORK/l/bin"; : > "$I"
+printf 'unread\n' >> "$I"
+printf '#!/bin/sh\nexit 1\n' > "$WORK/l/bin/tail"; chmod +x "$WORK/l/bin/tail"
+out="$(PATH="$WORK/l/bin:$PATH" bash "$FOLLOW" --once "$I" 2>&1)"; rc=$?
+if [ "$rc" -ne 0 ]; then pass "(l) --once fails (rc $rc) when tail fails"; else fail "(l) --once fails when tail fails (rc=0, out='$out')"; fi
+case "$out" in *"inbox-follow:"*) pass "(l) the tail failure is reported on stderr" ;; *) fail "(l) the tail failure is reported on stderr (out='$out')" ;; esac
+check "(l) the unread line is still unread once tail works again" "unread" "$(arm "$I")"
 
 # --- (g) usage ---------------------------------------------------------------
 bash "$FOLLOW" >/dev/null 2>&1; rc=$?

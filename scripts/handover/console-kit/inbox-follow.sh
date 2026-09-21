@@ -24,7 +24,7 @@
 # beyond shell integer range) resets to offset 0. A failed emit stops the
 # follower before the cursor moves.
 # A cursor that cannot be written stops the follower with rc 1 instead of
-# replaying the same lines on every poll.
+# replaying the same lines on every poll. So does a failed read of the inbox.
 #
 # ponytail: the cursor is a bare byte offset, so an inbox replaced by a file
 # that is already LONGER than the old cursor is indistinguishable from an
@@ -75,12 +75,15 @@ drain() {
     fi
     [ "$size" -gt "$cur" ] || return 0
     # `read` returns non-zero on a final line with no newline, so a partial line
-    # never reaches the body and the cursor stays before it.
+    # never reaches the body and the cursor stays before it. pipefail: a pipeline
+    # reports its last command, so a failed `tail` would otherwise look like an
+    # empty drain (--once exiting 0 having delivered nothing).
+    set -o pipefail
     tail -c +$((cur + 1)) "$inbox" | while IFS= read -r line; do
         printf '%s\n' "$line" || exit 1
         cur=$((cur + ${#line} + 1))
         save_cursor "$cur" || exit 1
-    done
+    done || { echo "inbox-follow: cannot drain $inbox" >&2; return 1; }
 }
 
 drain || exit 1
