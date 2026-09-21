@@ -954,8 +954,8 @@ if command -v node >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
     echo "== C16 severity: healthy install (profile, status --json ok, 0 items) -> OK, no WARN (false-positive control) =="
     c16_setup
     c16_base="$(c16_run)"
-    if printf '%s\n' "$c16_base" | grep -q '^OK *C16-status' && ! printf '%s\n' "$c16_base" | grep -q '^WARN *C16-status' \
-       && ! printf '%s\n' "$c16_base" | grep -q '^INFO *C16-status'; then
+    if grepq "$c16_base" '^OK *C16-status' && ! grepq "$c16_base" '^WARN *C16-status' \
+       && ! grepq "$c16_base" '^INFO *C16-status'; then
         pass "C16 healthy -> OK C16-status only"
     else
         fail "C16 healthy baseline -> $(printf '%s' "$c16_base" | grep C16-status)"
