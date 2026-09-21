@@ -26,7 +26,7 @@ function originHost(url) {
   const u = String(url).trim().toLowerCase();
   const scheme = /^([a-z0-9+.-]+):\/\/([^/]*)/.exec(u);
   const authority = scheme ? scheme[2] : (u.split('/')[0].includes(':') ? u.split(':')[0] : '');
-  return authority.replace(/^.*@/, '').replace(/:.*$/, '');
+  return authority.replace(/^.*@/, '').replace(/:.*$/, '').replace(/\.$/, ''); // one terminal DNS dot (HIMMEL-3358)
 }
 
 export function detectForge(cwd = process.cwd(), env = process.env) {

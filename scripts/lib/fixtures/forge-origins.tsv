@@ -52,3 +52,21 @@ none	https://github.com.example.net/o/r.git
 none	https://gitlab.com/github.com/o/r.git
 none	github.com/repo.git
 none	bitbucket.org/repo.git
+# --- HIMMEL-3358: a fully-qualified host carries one terminal DNS dot; every matcher strips exactly one
+bitbucket	https://bitbucket.org./team/repo.git
+bitbucket	https://user@bitbucket.org./t/r.git
+bitbucket	https://bitbucket.org.:443/t/r.git
+bitbucket	ssh://git@bitbucket.org./t/r.git
+bitbucket	git@bitbucket.org.:t/r.git
+bitbucket	bitbucket.org.:t/r.git
+bitbucket	https://BitBucket.ORG./T/R.git
+bitbucket	https://bitbucket.org./github.com/x
+github	https://github.com./o/r.git
+github	https://github.com.:443/o/r.git
+github	ssh://git@ssh.github.com.:443/o/r.git
+github	git@github.com.:o/r.git
+github	https://github.com./bitbucket.org/widgets.git
+none	https://bitbucket.org../t/r.git
+none	https://github.com../o/r.git
+none	https://notbitbucket.org./t/r.git
+none	https://bitbucket.org.example.net./t/r.git

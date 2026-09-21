@@ -104,7 +104,7 @@ function originHost(url) {
   const scheme = /^([a-z0-9+.-]+):\/\/([^/]*)/.exec(u); // scheme://[userinfo@]host[:port]/…
   // else scp-like [userinfo@]host:path — needs a `:` before the first `/`; `host/path` is a local path
   const authority = scheme ? scheme[2] : (u.split('/')[0].includes(':') ? u.split(':')[0] : '');
-  return authority.replace(/^.*@/, '').replace(/:.*$/, '');
+  return authority.replace(/^.*@/, '').replace(/:.*$/, '').replace(/\.$/, ''); // one terminal DNS dot (HIMMEL-3358)
 }
 
 function targetUsesBitbucket(targetPath) {
