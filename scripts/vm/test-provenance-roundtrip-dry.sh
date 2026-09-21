@@ -74,6 +74,7 @@ case "$last" in
     case "${FAKE_UNINSTALL:-ok}" in
       halt) echo '[uninstall-log] Halted at: [7/8] Claude marketplaces: uninstall-plugins.sh reported failures'; exit 2 ;;
       rc3) echo '[uninstall-log] boom'; exit 3 ;;
+      early) echo '[uninstall-log] Halted at: [3/8] Claude settings: jq failed'; exit 2 ;;
     esac ;;
 esac
 exit 0
@@ -395,6 +396,13 @@ if [ "$RC" -eq 2 ] && printf '%s\n' "$OUT" | grep -qF "step uninstall failed (rc
     pass "D14d a failed uninstall with no halt line is a harness failure (rc 2)"
 else
     fail_case "D14d unexplained uninstall failure rc=$RC"; dump
+fi
+FAKE_UNINSTALL=early run_rt "$BOTH" f73a62f1 --expect-red
+if [ "$RC" -eq 2 ] && printf '%s\n' "$OUT" | grep -qF 'uninstall halted at [3/8]; the pre/post-halt owner map only resolves' \
+   && ! grep '^SSH ' "$LOG" | grep -q 'inventory.sh C'; then
+    pass "D14f a halt before [7/8] is refused (rc 2): the owner map cannot attribute it"
+else
+    fail_case "D14f early halt rc=$RC"; dump
 fi
 run_rt "$BOTH" f73a62f1 --expect-red --profile all
 if printf '%s\n' "$OUT" | grep -qF '[witness] cadence-crontab-removed UNOBSERVABLE: qmd and graphify are absent' \

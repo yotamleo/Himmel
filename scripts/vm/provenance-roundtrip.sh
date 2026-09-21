@@ -217,6 +217,9 @@ printf '%s\n' "$UN_OUT"
 # "Halted at: [7/8] ..." -> 7; empty when the uninstall ran every step.
 HALT_N=$(printf '%s\n' "$UN_OUT" | sed -n 's/^\[uninstall-log\] Halted at: \[\([0-9]*\)\/[0-9]*\].*/\1/p' | head -n 1)
 [ "$UN_RC" -eq 0 ] || [ -n "$HALT_N" ] || fail "step uninstall failed (rc=$UN_RC) with no 'Halted at:' line"
+# owner() below resolves only [8/8] and the launchers after it, so a halt
+# before [7/8] would count leftovers of unexecuted steps as pre-halt.
+[ -z "$HALT_N" ] || [ "$HALT_N" -ge 7 ] || fail "uninstall halted at [$HALT_N/8]; the pre/post-halt owner map only resolves halts at [7/8] or later"
 HALT_AT=none
 [ -z "$HALT_N" ] || HALT_AT="[$HALT_N/8]"
 echo "uninstall-exit rc=$UN_RC halted-at=$HALT_AT"

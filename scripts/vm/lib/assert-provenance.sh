@@ -183,7 +183,7 @@ else check removal too-little PASS user-units-removed "only the seeded unit"; fi
 # The 3330 allowlist: caches install may fill and uninstall may keep. The ledger
 # itself is allowed too, except after --purge-state.
 allow="^($H/\\.npm/_cacache|$H/\\.npm/_logs|$H/\\.cache/node-gyp|$H/\\.bun/install/cache|$H/\\.claude/plugins/cache|$H/\\.cache/qmd"
-[ "$PURGE" = 1 ] || allow="$allow|$H/\\.himmel/provenance"
+[ "$PURGE" = 1 ] || allow="$allow|$H/\\.himmel/provenance(\\.jsonl)?"
 allow="$allow)(/|\$)"
 # paths <a> <b> <mode>: new = in b not a; gone = in a not b; changed = regular
 # file in both with a different sha. Directories count only when new/gone.
@@ -219,14 +219,17 @@ if [ -f "$L" ]; then
     ok ledger ledger ledger-install-begin 'no install-begin row' jq -se 'map(select(.op == "install-begin")) | length > 0' "$L"
     ok ledger ledger ledger-install-end-ok 'no install-end status=ok row' jq -se 'map(select(.op == "install-end" and .status == "ok")) | length > 0' "$L"
     jq -r 'select(.path != null) | .path' "$L" 2>/dev/null | sort -u >"$D/ledger-paths.txt"
+    jq -r 'select(.path != null and .kind == "tree") | .path' "$L" 2>/dev/null | sort -u >"$D/ledger-trees.txt"
 else
     check ledger ledger FAIL ledger-exists "no provenance.jsonl after install"
     : >"$D/ledger-paths.txt"
+    : >"$D/ledger-trees.txt"
 fi
 # No unrecorded write: every path new or changed at B (outside the allowlist)
-# is a ledger row's path or lies under one (a `tree` row).
+# is a ledger row's path or lies under a `tree` row's path.
 unrec=$( { paths A B new; paths A B changed; } | grep -vE "$allow" | awk -v h="$H/" 'FILENAME == ARGV[1] { if ($0 != "") p[$0] = 1; next }
-    { x = $0; hit = 0; while (x != "") { if (x in p) { hit = 1; break } sub(/\/[^\/]*$/, "", x); if (x == "" || x "/" == h) break } if (!hit) print }' "$D/ledger-paths.txt" - )
+    FILENAME == ARGV[2] { if ($0 != "") t[$0] = 1; next }
+    { hit = ($0 in p); x = $0; while (!hit) { sub(/\/[^\/]*$/, "", x); if (x == "" || x "/" == h) break; if (x in t) hit = 1 } if (!hit) print }' "$D/ledger-paths.txt" "$D/ledger-trees.txt" - )
 n=$(printf '%s' "$unrec" | grep -c .)
 if [ "$n" -eq 0 ]; then check ledger ledger PASS no-unrecorded-write "every write at B has a ledger row"
 else check ledger ledger FAIL no-unrecorded-write "$n path(s) written with no ledger row, e.g. $(printf '%s\n' "$unrec" | head -n 3 | while IFS= read -r x; do rel "$x"; printf ' '; done)"; fi
