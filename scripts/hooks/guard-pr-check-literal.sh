@@ -135,24 +135,32 @@ unquoted_mask() {
 }
 
 # A heredoc body under a QUOTED marker (<<'EOF') is inert data for its
-# redirect target end-to-end, so it is stripped: a body line that merely
-# mentions a guarded path is never read as one of the "simple command lines"
-# below (HIMMEL-3433). A body under an UNQUOTED marker (<<EOF) still
+# redirect target end-to-end ONLY when that target is a data consumer (cat,
+# tee, a redirect into a file, ...); it is stripped there, so a body line
+# that merely mentions a guarded path is never read as one of the "simple
+# command lines" below (HIMMEL-3433). When the target is an interpreter
+# (bash, sh, ., source, eval, ...) the body IS commands the child process
+# executes, quoted marker or not - quoting only suppresses the PARENT
+# shell's own expansion of the body text, never the child interpreter's
+# execution of it - so an interpreter-targeted body is left in place for the
+# classifier below regardless of marker quoting (codex-1, round 2 of the
+# HIMMEL-3433 review). A body under an UNQUOTED marker (<<EOF) still
 # undergoes command substitution when the heredoc actually runs, so it is
-# left in place for the classifier below rather than discarded unseen
-# (codex-1, found in HIMMEL-3433 review) - the classifier's own $( )
-# extraction (below) then catches a guarded run inside it.
+# always left in place too (round 1's codex-1) - the classifier's own $( )
+# extraction (below) then catches a guarded run inside either kind of body.
 # ponytail: only the first heredoc on a line is tracked, so a rare second
 # `<<` on the same line keeps its marker text unstripped - a stray marker
 # word, never a guarded script's own text, so it cannot turn a deny into an
 # allow.
+INTERP_RE='(^|[[:space:];&|(])(bash|sh|zsh|dash|ksh|mksh|busybox|toybox|source|\.|eval)([[:space:]]|$)'
 strip_heredocs() {
-    local text=$1 out="" hline marker="" in_body=0 masked prefix rest
+    local text=$1 out="" hline marker="" in_body=0 keep_body=0 masked prefix rest
     while IFS= read -r hline || [ -n "$hline" ]; do
         if [ "$in_body" -eq 1 ]; then
             if [ "$hline" = "$marker" ] || [[ "$hline" =~ ^$'\t'*${marker}$ ]]; then
                 in_body=0
             fi
+            [ "$keep_body" -eq 1 ] && out="$out$hline"$'\n'
             continue
         fi
         out="$out$hline"$'\n'
@@ -163,6 +171,11 @@ strip_heredocs() {
             if [[ "$rest" =~ ^\<\<-?[[:space:]]*[\'\"]([A-Za-z_][A-Za-z0-9_]*)[\'\"] ]]; then
                 marker=${BASH_REMATCH[1]}
                 in_body=1
+                if [[ "$prefix" =~ $INTERP_RE ]]; then
+                    keep_body=1
+                else
+                    keep_body=0
+                fi
             fi
         fi
     done <<<"$text"
@@ -334,8 +347,15 @@ tokenize() {
 # otherwise be swallowed as one opaque token and never classified (codex-3,
 # found in HIMMEL-3433 review). An unquoted $( ) is already caught by
 # tokenize() splitting on its bare parens; extracting it here too is
-# redundant, not wrong. Depth-tracked for one level of nesting; a
-# substitution nested inside an already-extracted one is not re-scanned.
+# redundant, not wrong. Each extracted inner is itself re-scanned for a
+# further $( )/`...` span before it is unioned in, so a substitution nested
+# inside an already-extracted one is still classified (codex-2, round 2 of
+# the HIMMEL-3433 review: the one-level version left
+# `echo "$(echo "$(bash scripts/cr/x.sh)")"` unclassified, since the inner
+# extracted text `echo "$(bash scripts/cr/x.sh)"` still has its own
+# substitution sitting inside a double-quoted word, which tokenize() alone
+# never unpacks). Recursion is bounded by the input's own nesting depth, so
+# it terminates on any command line the shell itself could parse.
 extract_substitutions() {
     local text=$1
     local acc="" i=0 n=${#text} c depth inner
@@ -348,7 +368,7 @@ extract_substitutions() {
                 inner+="${text:$i:1}"
                 i=$((i + 1))
             done
-            acc+="$inner"$'\n'
+            acc+="$inner"$'\n'"$(extract_substitutions "$inner")"$'\n'
         elif [ "$c" = '$' ] && [ "${text:$((i + 1)):1}" = '(' ]; then
             i=$((i + 2))
             depth=1
@@ -362,7 +382,7 @@ extract_substitutions() {
                 esac
                 i=$((i + 1))
             done
-            acc+="$inner"$'\n'
+            acc+="$inner"$'\n'"$(extract_substitutions "$inner")"$'\n'
             continue
         fi
         i=$((i + 1))

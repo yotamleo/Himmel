@@ -314,6 +314,32 @@ run "a double-quoted command substitution running the guarded script -> deny" 2 
 # shellcheck disable=SC2016 # command text, verbatim
 run "a double-quoted command substitution running an unguarded command -> no-op" 0 \
     "$(payload 'echo "today: $(date) see scripts/cr/pr-check-context.sh"' "$WT")" "$HR"
+# A QUOTED heredoc marker's body is inert only for a data-consuming target;
+# `bash <<'EOF'` still runs its body as commands regardless of the marker's
+# quoting - only the parent shell's own expansion of the body text is
+# suppressed by the quote, not the child interpreter's execution of it
+# (codex-1, round 2 of the HIMMEL-3433 review).
+run "quoted-marker heredoc targeting bash runs its body -> deny" 2 \
+    "$(payload "bash <<'EOF'
+bash scripts/cr/pr-check-context.sh
+EOF" "$WT")" "$HR"
+# A quoted-marker heredoc into a data consumer stays inert (regression net
+# for the codex-1 round-2 fix): the target here is cat, not an interpreter.
+run "quoted-marker heredoc targeting cat stays inert -> no-op" 0 \
+    "$(payload "cat > \$S/body.md <<'EOF'
+bash scripts/cr/pr-check-context.sh
+EOF" "$WT")" "$HR"
+# shellcheck disable=SC2016 # command text, verbatim
+# An UNQUOTED outer $( ) is already caught by tokenize()'s own bare-paren
+# splitting, but the guarded run can sit inside a FURTHER nested $( ) buried
+# in a double-quoted word one level in - extract_substitutions() must
+# re-scan its own extracted text, not just the original command, to catch it
+# (codex-2, round 2 of the HIMMEL-3433 review).
+run "an unquoted substitution nesting a quoted one running the guarded script -> deny" 2 \
+    "$(payload 'echo $(echo "$(bash scripts/cr/pr-check-context.sh)")' "$WT")" "$HR"
+# shellcheck disable=SC2016 # command text, verbatim
+run "the same nested shape running an unguarded command -> no-op" 0 \
+    "$(payload 'echo $(echo "$(date)")' "$WT")" "$HR"
 run "the anchored fence on an edited branch -> no-op" 0 "$(payload "$FENCE_TEXT" "$WT")" "$HR"
 run "HIMMEL_REPO re-pointed before the fence -> deny" 2 \
     "$(payload "export HIMMEL_REPO=.; $FENCE_TEXT" "$WT")" "$HR"
