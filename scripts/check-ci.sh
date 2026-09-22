@@ -446,19 +446,28 @@ _has_producer_ids() {
     printf '%s\n' "$1" | awk -F'\t' '$2 != "" { f = 1 } END { exit !f }'
 }
 
-# _producer_rows — "<bucket>\t<name>\t<app id>" for every check run on the head.
-# `gh pr checks --json` exposes no app id, so a producer-pinned requirement is
-# read from the check-runs API instead (HIMMEL-3385). --paginate: a busy head has
-# more than one page of runs, and an unread page would read as "missing".
+# _producer_rows — "<bucket>\t<name>\t<app id>\t<started_at>\t<id>" for every
+# check run on the head. `gh pr checks --json` exposes no app id, so a
+# producer-pinned requirement is read from the check-runs API instead
+# (HIMMEL-3385). --paginate: a busy head has more than one page of runs, and an
+# unread page would read as "missing". started_at + id let the caller judge only
+# the LATEST run of a name (HIMMEL-3434): this REST list returns EVERY run ever
+# created for the sha, including ones a re-run or a close/reopen superseded.
 _producer_rows() {
     gh api "repos/$owner/$repo/commits/$head0/check-runs?per_page=100" --paginate \
-        --jq '.check_runs[] | "\(if .status != "completed" then "pending" elif (.conclusion == "success" or .conclusion == "neutral" or .conclusion == "skipped") then "pass" elif .conclusion == "cancelled" then "cancel" else "fail" end)\t\(.name)\t\(.app.id // "")"' 2>/dev/null
+        --jq '.check_runs[] | "\(if .status != "completed" then "pending" elif (.conclusion == "success" or .conclusion == "neutral" or .conclusion == "skipped") then "pass" elif .conclusion == "cancelled" then "cancel" else "fail" end)\t\(.name)\t\(.app.id // "")\t\(.started_at // "")\t\(.id)"' 2>/dev/null
 }
 
 # _required_status <reqs> <rows> <producer rows> — "<fail|seen|missing>\t<label>"
 # per required check. A cancelled required check blocks a merge exactly as a
-# failed one does. An entry with no id matches by name over <rows>; one with an id
-# matches name AND app id over <producer rows>.
+# failed one does. An entry with no id matches by name over <rows> — already
+# latest-only, since `gh pr checks` reflects GitHub's own rollup, which judges
+# only the latest check suite per name. One with an id matches name AND app id
+# over <producer rows> — the raw check-runs API, which lists every run ever
+# created for the sha — so only the LATEST matching run is judged (ordered by
+# started_at, highest id breaks a tie), not any run that ever failed
+# (HIMMEL-3434): a re-run or a close/reopen on an unchanged head must be able to
+# clear an earlier red, the same as GitHub's own merge gate does.
 _required_status() {
     local name id
     while IFS=$'\t' read -r name id; do
@@ -467,8 +476,14 @@ _required_status() {
             printf '%s\t%s\n' "$(printf '%s\n' "$2" | awk -F'\t' -v n="$name" \
                 '$2 == n { f = 1; if ($1 == "fail" || $1 == "cancel") bad = 1 } END { print (bad ? "fail" : (f ? "seen" : "missing")) }')" "$name"
         else
-            printf '%s\t%s\n' "$(printf '%s\n' "$3" | awk -F'\t' -v n="$name" -v a="$id" \
-                '$2 == n && $3 == a { f = 1; if ($1 == "fail" || $1 == "cancel") bad = 1 } END { print (bad ? "fail" : (f ? "seen" : "missing")) }')" "$name (app $id)"
+            printf '%s\t%s\n' "$(printf '%s\n' "$3" | awk -F'\t' -v n="$name" -v a="$id" '
+                $2 == n && $3 == a {
+                    f = 1
+                    if (best_ts == "" || $4 > best_ts || ($4 == best_ts && $5 + 0 > best_id + 0)) {
+                        best_ts = $4; best_id = $5; best_bucket = $1
+                    }
+                }
+                END { print (f ? ((best_bucket == "fail" || best_bucket == "cancel") ? "fail" : "seen") : "missing") }')" "$name (app $id)"
         fi
     done <<<"$1"
 }
