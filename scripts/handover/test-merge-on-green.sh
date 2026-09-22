@@ -2924,7 +2924,7 @@ fi
 mog3485_anchor() {  # mog3485_anchor <check-ci rc> -> prints a clean anchor tree
     local a; a=$(mktemp -d "${TMPDIR:-/tmp}/mog-3485-anchor.XXXXXX") || return 1
     [ -n "$a" ] && [ -d "$a" ] || return 1
-    STUB_CI_RC="$1" mog_build_fixture "$a" >/dev/null 2>&1
+    STUB_CI_RC="$1" mog_build_fixture "$a" >/dev/null || { rm -rf "$a"; return 1; }
     printf '%s' "$a"
 }
 mog3485_no_poison() {  # mog3485_no_poison <label>
