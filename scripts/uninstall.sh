@@ -2585,7 +2585,7 @@ himmel_wiring_lines() {
 }
 
 unwire_settings() {
-  local settings="$1" helper _line _left _units _u _seen_sl=0 _seen_hd=0 _kept_as
+  local settings="$1" helper _line _left _units _u _seen_sl=0 _seen_hd=0 _kept_as _prot _c
   local _mask_hooks=0 _mask_sl=0 _mask_repo=0 _mask_vault=0 _mask_hd=0
   _LEDGER_PROTECTED=""
   if ! rh_helper_ok "settings unwire" "$settings"; then
@@ -2610,9 +2610,10 @@ $(prov_read_units --path "$settings" --kind json-elem)"
       # stale the moment a second /env/KEY is added, so it would always read
       # user-modified here — skip it with no print/outcome row;
       # prov_read_drop_env_if_ours (below, after the helper loop) drops the
-      # now-empty container once its /env/<KEY> units are handled.
+      # now-empty container once its /env/<KEY> units are handled. The /hooks
+      # container (HIMMEL-3389) goes stale the same way and is dropped the same way.
       case "$(printf '%s' "$_u" | jq -r '.unit // ""')" in
-        /env) continue ;;
+        /env|/hooks) continue ;;
         # R2-codex4: track whether the ledger recorded a unit AT ALL for
         # these two rows -- distinct from whether ledger_apply_unit ended up
         # protecting it (below), so a governed-but-e.g.-removed row still
@@ -2624,11 +2625,17 @@ $(prov_read_units --path "$settings" --kind json-elem)"
     done <<EOF
 $_units
 EOF
-    case "$_LEDGER_PROTECTED" in *$'\n''/statusLine'*)          _mask_sl=1 ;; esac
-    case "$_LEDGER_PROTECTED" in *$'\n''/env/HIMMEL_REPO'*)     _mask_repo=1 ;; esac
-    case "$_LEDGER_PROTECTED" in *$'\n''/env/LUNA_VAULT_PATH'*) _mask_vault=1 ;; esac
-    case "$_LEDGER_PROTECTED" in *$'\n''/env/HANDOVER_DIR'*)    _mask_hd=1 ;; esac
-    case "$_LEDGER_PROTECTED" in *$'\n''/hooks/'*)              _mask_hooks=1 ;; esac
+    # HIMMEL-3398: whole-entry membership. The list is newline-led; the
+    # trailing newline added here closes the last entry, so a protected
+    # /statusLineX never reads as /statusLine. `/hooks/` alone is a deliberate
+    # prefix class (any protected /hooks/<Event> unit masks the hooks helper),
+    # still anchored to an entry start.
+    _prot="$_LEDGER_PROTECTED"$'\n'
+    case "$_prot" in *$'\n''/statusLine'$'\n'*)          _mask_sl=1 ;; esac
+    case "$_prot" in *$'\n''/env/HIMMEL_REPO'$'\n'*)     _mask_repo=1 ;; esac
+    case "$_prot" in *$'\n''/env/LUNA_VAULT_PATH'$'\n'*) _mask_vault=1 ;; esac
+    case "$_prot" in *$'\n''/env/HANDOVER_DIR'$'\n'*)    _mask_hd=1 ;; esac
+    case "$_prot" in *$'\n''/hooks/'*)                   _mask_hooks=1 ;; esac
     # HIMMEL-3332 S6 fix: no early return here for DRY_RUN. ledger_apply_unit
     # above already printed its own per-unit DRY line for anything the
     # ledger DID track, but a key/unit the ledger never recorded (predates
@@ -2731,10 +2738,12 @@ EOF
     fi
   done
   [ "$HALTED" -eq 0 ] || return 0
-  if [ "$LEDGER_OK" -eq 1 ] && rh_helper_ok "ledger /env drop" "$settings" && ! prov_read_drop_env_if_ours "$settings"; then
-    echo "  WARN: could not drop the now-empty /env from $settings" >&2
-    fail_step "[6/8] ledger: could not drop the now-empty /env from $settings"
-  fi
+  for _c in env hooks; do
+    if [ "$LEDGER_OK" -eq 1 ] && rh_helper_ok "ledger /$_c drop" "$settings" && ! prov_read_drop_empty_if_ours "$settings" "$_c"; then
+      echo "  WARN: could not drop the now-empty /$_c from $settings" >&2
+      fail_step "[6/8] ledger: could not drop the now-empty /$_c from $settings"
+    fi
+  done
   # Positive read-back: the file itself, not the helpers' exit codes. A
   # PROTECTED key/hook is masked out here too — it is meant to still be
   # wired, so it must never read back as "STILL WIRED".
