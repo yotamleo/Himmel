@@ -347,6 +347,31 @@ assert_rc "46 bash sed -i on worktree settings.json allows" 0 \
 assert_rc "47 powershell Set-Content on worktree settings.json allows" 0 \
     "$(powershell_rc_of "$WT2" "Set-Content -Path .claude/settings.json -Value x")"
 
+# 48 (v2 CR round 2, codex-1): `git diff --output=<file>` writes the diff to
+# a file instead of stdout, so the read-only allowlist must not wave it
+# through despite the allowlisted "diff" verb -> DENY.
+assert_rc "48 bash git diff --output into primary settings.json denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "git diff --output=.claude/settings.json")"
+
+# 49 (v2 CR round 2, codex-2): an absolute path to a WORKTREE's own
+# settings.json, nested (as worktrees usually are) under $HOME, must not be
+# mistaken for the live $HOME/.claude/ config just because $HOME is a
+# leading substring of the path -> ALLOW.
+assert_rc "49 bash absolute-path cp into worktree's own settings.json allows" 0 \
+    "$(bash_rc_of "$WT2" "cp /tmp/x.json $WT2/.claude/settings.json" HOME="$SANDBOX")"
+
+# 50 (v2 CR round 2, codex-3): a QUOTED unexpanded \$HOME (`"\$HOME"/.claude/...`)
+# must still be caught — the literal-pattern match must not require \$HOME
+# and /.claude/ to be adjacent with no quote character between them -> DENY.
+assert_rc "50 bash redirect using quoted literal \$HOME denies" 2 \
+    "$(bash_rc_of "$SANDBOX" "echo pwned > \"\$HOME\"/.claude/settings.json" HOME="$FAKEHOME")"
+
+# 51 (v2 CR round 2, codex-4): an absolute-path cp binary (`/bin/cp`) has no
+# whitespace/`;`/`&`/`|` boundary before "cp", which must not let it evade
+# the write-verb regex the way a bare `cp` would be caught -> DENY.
+assert_rc "51 bash absolute-path /bin/cp into primary .claude/ dir denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "/bin/cp -r /tmp/payload/. .claude/")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true

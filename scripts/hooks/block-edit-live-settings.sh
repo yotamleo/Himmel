@@ -399,15 +399,24 @@ resolve_repo_context() {
 # unexpanded $HOME/~ literal immediately before .claude — i.e. the mention
 # is NOT just a bare relative spelling of the current worktree's own copy.
 mentions_primary_or_home() {
-    local c="$1"
+    local c="$1" c_noquotes
     if [ -n "$primary_root_lc" ]; then
         case "$c" in *"$primary_root_lc"*) return 0 ;; esac
     fi
+    # Only the resolved $HOME's OWN .claude counts as live — matching
+    # home_root_lc as a bare substring anywhere also matched an unrelated
+    # absolute path merely nested under $HOME (e.g. a worktree's own path),
+    # over-denying that worktree's legitimate writes to its own settings.
     if [ -n "$home_root_lc" ]; then
-        case "$c" in *"$home_root_lc"*) return 0 ;; esac
+        case "$c" in *"$home_root_lc/.claude"*) return 0 ;; esac
     fi
+    # A quoted `"$HOME"/.claude/` or `'$HOME'/.claude/` interposes a quote
+    # character between the variable and the path, which the literal glob
+    # below can't span — strip quote characters before matching so the
+    # unexpanded $home/~ literal is still caught regardless of quoting.
+    c_noquotes=$(printf '%s' "$c" | tr -d "\"'")
     # shellcheck disable=SC2016 # literal unexpanded $home/${home} text, not expansion
-    case "$c" in
+    case "$c_noquotes" in
         *'~/.claude/'*|*'$home/.claude/'*|*'${home}/.claude/'*) return 0 ;;
     esac
     return 1
@@ -432,8 +441,11 @@ is_readonly_allowlisted() {
             ;;
         git)
             second=$(printf '%s' "$c" | awk '{print $2}')
-            case "$second" in diff|show|log|status|blame) return 0 ;; esac
-            return 1
+            case "$second" in diff|show|log|status|blame) ;; *) return 1 ;; esac
+            # --output/--output=<file> redirects these read-only subcommands'
+            # output to a file — writing, not reading, despite the verb.
+            case "$c" in *'--output'*) return 1 ;; esac
+            return 0
             ;;
         *) return 1 ;;
     esac
@@ -453,7 +465,7 @@ mentions_dot_claude_dir_dest() {
 # `-t`/`--target-directory` flag (rule 2's verb list).
 has_write_verb_or_target_flag() {
     local out
-    out=$(printf '%s' "$1" | grep -E '(^|[;&|[:space:]])(cp|mv|install|rsync|ln|dd|tee)([[:space:]]|$)') || true
+    out=$(printf '%s' "$1" | grep -E '(^|[;&|[:space:]/])(cp|mv|install|rsync|ln|dd|tee)([[:space:]]|$)') || true
     [ -n "$out" ] && return 0
     out=$(printf '%s' "$1" | grep -E '(^|[[:space:]])(-t|--target-directory)([[:space:]=]|$)') || true
     [ -n "$out" ] && return 0
