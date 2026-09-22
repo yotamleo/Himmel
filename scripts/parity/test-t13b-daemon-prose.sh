@@ -171,6 +171,37 @@ run_case sh-other-verb-daemon-reload FAIL scripts/uninstall.sh \
 run_case sh-daemon-reload-with-arg FAIL scripts/uninstall.sh \
     'systemctl --user daemon-reload --now qmd.service'
 
+echo "== T13(b): read-only process lookups naming a daemon PASS (HIMMEL-3432) =="
+# shellcheck disable=SC2016  # the brackets are a literal pgrep self-match idiom
+run_case sh-pgrep-bracket-c PASS scripts/start.sh \
+    "pgrep -f '[c]laude daemon run'"
+run_case sh-pgrep-af PASS scripts/start.sh \
+    "pgrep -af 'claude daemon'"
+run_case sh-ps-pipe-grep PASS scripts/start.sh \
+    "ps -eo pid,args | grep '[c]laude daemon'"
+run_case sh-pkill-dash-0 PASS scripts/start.sh \
+    "pkill -0 -f 'claude daemon'"
+
+echo "== T13(b): a lookup that ALSO starts a process still FAILS (HIMMEL-3432) =="
+run_case sh-pgrep-or-start FAIL scripts/start.sh \
+    "pgrep -f 'claude daemon run' || claude daemon run &"
+run_case sh-pgrep-and-nohup FAIL scripts/start.sh \
+    "pgrep -f 'claude daemon' && nohup claude daemon run &"
+run_case sh-pkill-without-dash-0 FAIL scripts/start.sh \
+    "pkill -f 'claude daemon'"
+run_case sh-ps-grep-then-kill FAIL scripts/start.sh \
+    "ps -eo pid,args | grep '[c]laude daemon' | xargs kill"
+
+echo "== T13(b): # t13b-ok: <reason> exempts its own line only (HIMMEL-3432) =="
+run_case sh-t13b-ok-marker PASS scripts/start.sh \
+    'nohup claude daemon run &  # t13b-ok: transient self-daemon the CLI background-run flag spawns; read-only var scrape'
+run_case sh-t13b-ok-empty-reason FAIL scripts/start.sh \
+    'nohup claude daemon run &  # t13b-ok:'
+run_case sh-t13b-ok-empty-reason-space FAIL scripts/start.sh \
+    'nohup claude daemon run &  # t13b-ok: '
+run_case sh-t13b-ok-marker-above-does-not-exempt FAIL scripts/start.sh \
+    $'# t13b-ok: reason lives on the wrong line\nnohup claude daemon run &'
+
 if [ "$failures" -ne 0 ]; then
     echo "FAIL: $failures of $cases case(s) failed"
     exit 1

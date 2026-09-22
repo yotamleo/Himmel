@@ -243,6 +243,25 @@ The residual is T15: its new-script list is `--diff-filter=A` limited to
 `scripts/`, so a rename from OUTSIDE `scripts/` reads as an addition — but T15
 is advisory (`WARN`, never a CI gate). Read the assertion, then decide.
 
+### T13(b) read-only lookup carve-out + `t13b-ok` marker (HIMMEL-3432)
+
+A read-only process lookup naming a daemon (`pgrep -f 'claude daemon run'`,
+`pkill -0 -f '...'`, `ps ... | grep '...'`) is not a daemon start — it reads
+`/proc`, nothing else. The carve-out keys on the *line's command* being one of
+those three lookup shapes with no chaining (`;`, `&&`, `||`, a backgrounding
+`&`, or an extra `|`) — never on stripping the word `daemon`, so
+`pgrep ... || claude daemon run &` still fails (the `||`/`&` disqualify the
+line as a lookup) and a bare `pkill` (no `-0`) still fails (it terminates, it
+does not merely test). Precedent: HIMMEL-3414's exact-token
+`systemctl daemon-reload` carve-out.
+
+Separately, a trailing same-line `# t13b-ok: <reason>` exempts that one line
+from T13(b) only (not T13(a), not T12/T14/T15) — the general escape hatch so
+the next legitimate case does not need its own gate PR. An empty reason
+(`# t13b-ok:` or `# t13b-ok: `) does not exempt, and the marker never reaches
+a different line (same-line only). Read cases in
+`scripts/parity/test-t13b-daemon-prose.sh`.
+
 ## VM round trip — station-only, never CI (HIMMEL-3332)
 
 `VBOXMANAGE_PATH=/usr/bin/VBoxManage bash scripts/vm/provenance-roundtrip.sh <ref> [--expect-red] [--purge-state] [--profile core|all]`

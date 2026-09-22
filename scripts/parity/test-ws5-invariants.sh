@@ -21,7 +21,11 @@
 #                       surface -- see the corpus loop below). The daemon
 #                       marker skips prose -- *.md and comment lines --
 #                       and adds service-creation shapes (HIMMEL-3233;
-#                       rules at T13(b) below).
+#                       rules at T13(b) below). A read-only process lookup
+#                       (pgrep / `pkill -0` / `ps ... | grep`) naming a
+#                       daemon does not count, and a trailing same-line
+#                       `# t13b-ok: <reason>` exempts that one line from
+#                       T13(b) only (HIMMEL-3432; rules at T13(b) below).
 #   T14 locks        -- no per-token-lane wiring in shipped source; the
 #                       gemini/copilot/cursor index rows stay deferred.
 #                       (The former T14(a) claude-codex-launcher prohibition
@@ -401,9 +405,42 @@ else
             gsub(/(^|[^a-z0-9_-])systemctl[ \t]+(--user[ \t]+)?daemon-reload[ \t]*($|[;&|)>#]|[0-9]>)/, " ", code)
             gsub(/(^|[^a-z0-9_-])systemctl[ \t]+(--user[ \t]+)?daemon-reload[ \t]*($|[;&|)>#]|[0-9]>)/, " ", code)
             code = trim(code)
+            # HIMMEL-3432: a READ-ONLY process lookup naming a daemon is not
+            # a daemon start -- it reads /proc, nothing else (found on PR
+            # #1087: headed-arm-leg.sh (headless mode) reads the environ of
+            # Claude Code own transient `claude daemon run`, which the CLI
+            # background-run flag spawns and himmel never starts or keeps). The carve-out
+            # keys on the LINE COMMAND being one of three lookup shapes
+            # (pgrep, `pkill -0`, `ps ... | grep`) with NO chaining on that
+            # line (no `;`, `&&`, `||`, backgrounding `&`, or an extra `|`)
+            # -- never on stripping the word "daemon" itself, so `pgrep ... ||
+            # claude daemon run &` still hits (the `||`/`&` disqualify it as a
+            # lookup) and bare `pkill` (no `-0`) still hits (it terminates,
+            # it does not merely test). It suppresses ONLY the bare-word
+            # "daemon" match below; a lookup line that also matches a
+            # service-start shape (nohup &, systemctl enable, launchctl load)
+            # still hits on that shape.
+            is_lookup = 0
+            if (code ~ /^pgrep([ \t]|$)/) {
+                if (code !~ /[;&|]/) is_lookup = 1
+            } else if (code ~ /^pkill[ \t]+-0([ \t]|$)/) {
+                if (code !~ /[;&|]/) is_lookup = 1
+            } else if (code ~ /^ps[ \t]/) {
+                if (code ~ /^ps[^|;&]*\|[ \t]*grep([ \t]|$)[^;&|]*$/) is_lookup = 1
+            }
+            daemon_hit = (code ~ /daemon/) && !is_lookup
+            service_hit = code ~ /(^|[^a-z0-9_-])nohup[ \t].*(^|[^&<>])&([ \t]*($|[);"\047])|[ \t]+[^&> \t])|systemctl[^|;&]*[ \t]enable([ \t]|$)|launchctl[ \t]+(load|bootstrap)([ \t]|$)/
             if (!hit && kind == "code" && code != "" && code !~ /^(#|\/\/|\/\*|\*([ \t]|$)|<!--)/ &&
-                code ~ /daemon|(^|[^a-z0-9_-])nohup[ \t].*(^|[^&<>])&([ \t]*($|[);"\047])|[ \t]+[^&> \t])|systemctl[^|;&]*[ \t]enable([ \t]|$)|launchctl[ \t]+(load|bootstrap)([ \t]|$)/)
+                (daemon_hit || service_hit))
                 hit = 1
+            # HIMMEL-3432: a trailing `# t13b-ok: <reason>` on THIS shipped
+            # line exempts it from T13(b) only -- not T13(a), not T12/T14/T15
+            # (this check lives entirely inside the T13(b) per-line loop). An
+            # empty reason (`# t13b-ok:` or `# t13b-ok: ` with nothing after)
+            # does not exempt, and the marker never reaches a DIFFERENT line
+            # (t/lt hold only this LINE own text, so a marker on the line above
+            # cannot cancel a hit here).
+            if (t ~ /#[ \t]*t13b-ok:[ \t]*[^ \t]/) hit = 0
             if (hit) {
                 if (removed[t] > 0) removed[t]--
                 else hits++
