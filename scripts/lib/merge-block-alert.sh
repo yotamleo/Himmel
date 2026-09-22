@@ -166,7 +166,10 @@ _mba_append_if_exists() {
             process.exit(1);
         }
         try {
-            fs.writeSync(fd, line + "\n");
+            // fs.writeSync can write fewer bytes than requested;
+            // appendFileSync on the same fd loops until the whole buffer
+            // is written (reuses that fd existing flags, no new O_CREAT).
+            fs.appendFileSync(fd, line + "\n");
         } finally {
             fs.closeSync(fd);
         }
