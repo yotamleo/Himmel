@@ -448,6 +448,6 @@ test("laneEffort ignores a non-tier lane and a prose effort value (HIMMEL-3482)"
   expect(laneEffort("glm-4.6", REAL_LANES)).toBeUndefined();
   expect(laneEffort("opus", { lanes: [{ id: "opus", class: "claude-tier", effort: "codex weekly bank" }] })).toBeUndefined();
 });
-test("laneEffort falls back to no effort on a registry that parses but has no lanes array (HIMMEL-3482)", () => {
-  for (const bad of [{}, null, { lanes: "x" }]) expect(laneEffort("opus", bad as never)).toBeUndefined();
+test("laneEffort falls back to no effort on a registry that parses to the wrong shape (HIMMEL-3482)", () => {
+  for (const bad of [{}, null, { lanes: "x" }, { lanes: [null] }]) expect(laneEffort("opus", bad as never)).toBeUndefined();
 });
