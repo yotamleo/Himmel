@@ -160,6 +160,9 @@ test("the baked-in default model is non-Fable (HIMMEL-671 — the whole point)",
   expect(DEFAULT_MODEL.toLowerCase()).not.toContain("fable");
   expect(DEFAULT_MODEL.length).toBeGreaterThan(0);
 });
+test("the baked-in default is pinned to claude-opus-5-5, not an alias that can move (HIMMEL-3481)", () => {
+  expect(DEFAULT_MODEL).toBe("claude-opus-5-5");
+});
 test("buildPrompt reports the SPAWN cwd (sessionCwd) but keeps the Jira path on repoCwd (cwd) — HIMMEL-578 decoupling", () => {
   const p = buildPrompt("__chat__", { inbox:"i", outbox:"o", context:"c", cwd:"/himmel", sessionCwd:"/vault" });
   expect(p).toContain("running in /vault");               // session runs in the vault cwd

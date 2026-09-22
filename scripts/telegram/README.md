@@ -626,7 +626,7 @@ For long notes (>90s of audio), medium on CPU can approach the 120s
 operator's default model (which may be Fable, whose time-limited quota is
 reserved for interactive work). `TELEGRAM_CLAUDE_MODEL` (poller env)
 overrides the model; blank/unset falls back to the baked-in default
-(`opus`). Channel-mode (`claude --channels`, operator-launched in a
+(`claude-opus-5-5`, a full id so it survives the alias moving). Channel-mode (`claude --channels`, operator-launched in a
 terminal) inherits that terminal's model and is intentionally NOT pinned.
 
 **Restart required:** all env vars above are read at poller start, not

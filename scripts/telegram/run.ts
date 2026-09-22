@@ -33,7 +33,9 @@ export type PermissionMode = "bypassPermissions" | "dontAsk";
 // filing) that warrants the reasoning tier, and the operator's standing
 // guidance is opus/haiku for dispatches. Override via TELEGRAM_CLAUDE_MODEL
 // (poller env; restart to apply); blank/whitespace falls back to the default.
-export const DEFAULT_MODEL = "opus";
+// Pinned to a full model id, not the `opus` alias (HIMMEL-3481): a pin survives
+// the alias moving to a different Opus generation.
+export const DEFAULT_MODEL = "claude-opus-5-5";
 function resolveModel(): string {
   return process.env.TELEGRAM_CLAUDE_MODEL?.trim() || DEFAULT_MODEL;
 }
