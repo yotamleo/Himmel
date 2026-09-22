@@ -1278,8 +1278,15 @@ SESSION_VISIBLE_RETRY_SLEEP=0.05
 # cover the shim's whole startup budget, THEN still allow the original 5s for
 # claude to become visible once the window is actually up. Only the shim path
 # pays this; konsole and an explicit KONSOLE_CMD keep today's 5s exactly.
+#
+# 10# is load-bearing, not decoration: the shim reads the same var in a `[ ]`
+# test, which is always decimal, while THIS is an arithmetic context, where a
+# leading zero is octal. Unnormalised, KONSOLE_MACOS_STARTUP_TICKS=0200 makes
+# this budget 128 ticks while the shim still waits 200 -- the exact drift the
+# shared var exists to prevent -- and 08/09 abort the arm outright with
+# "value too great for base".
 if [ "$KONSOLE_IS_MACOS_SHIM" = "1" ]; then
-    SESSION_VISIBLE_RETRY_ITERS=$(( ${KONSOLE_MACOS_STARTUP_TICKS:-200} * 2 + SESSION_VISIBLE_RETRY_ITERS ))
+    SESSION_VISIBLE_RETRY_ITERS=$(( 10#${KONSOLE_MACOS_STARTUP_TICKS:-200} * 2 + SESSION_VISIBLE_RETRY_ITERS ))
 fi
 claimed=0
 n=0
