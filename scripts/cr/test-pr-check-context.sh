@@ -1806,6 +1806,18 @@ cp "$SCRIPT" "$anchor13/scripts/cr/pr-check-context.sh"
 # repo must not redirect this script's own git calls (CodeRabbit security
 # item 2) - repo, branch, head, anchor_lane and the delegation decision must
 # all still resolve against the REAL cwd, never the decoy.
+#
+# Strip any ambient GIT_CONFIG_COUNT/GIT_CONFIG_KEY_N/GIT_CONFIG_VALUE_N first
+# (e.g. actions/checkout's safe.directory injection on CI, still exported for
+# the whole job): the real script clears these itself, but the RED mutant
+# below deliberately does not, so an inherited safe.directory=* combined with
+# the mismatched decoy GIT_DIR/GIT_WORK_TREE makes git's own calls abort hard
+# instead of resolving to the predicted wrong values - a CI-only failure mode
+# this fixture must not depend on ambient runner config to avoid.
+unset GIT_CONFIG_COUNT
+while IFS='=' read -r gcvar _; do
+  unset "$gcvar"
+done < <(env | grep -E '^GIT_CONFIG_(KEY|VALUE)_[0-9]+=')
 decoy38="$tmp/decoy-repo"
 mkdir -p "$decoy38"
 (
@@ -1846,7 +1858,9 @@ check "$((rows_after38 - rows_before38))" "1" "T38 exactly one new delegation le
 mutant38="$tmp/pr-check-context.mutant-t38.sh"
 literal_replace "$SCRIPT" "$mutant38" \
   'unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE \
-    GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX' \
+    GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX \
+    GIT_CONFIG GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_PARAMETERS \
+    GIT_CONFIG_COUNT' \
   ': # T38 mutant - GIT env vars intentionally left inherited'
 rc_m38=$?
 if [ "$rc_m38" -ne 0 ]; then
