@@ -1372,8 +1372,16 @@ fi
 # choosing and may never be executed by BSD script at all (every existing
 # --lane claudex case passes a recording stub), so refusing there would
 # break a launch that works.
+# The lock is already CLAIMED by this point, and this script has no EXIT
+# trap - every other refusal past the claim releases it by hand (the two
+# session_confirmed branches and the `cd "$REPO"` guard just above all do).
+# Without the release here the refusal holds $LOCK for STALE_LOCK_SECS, so
+# the re-arm that follows it -- and on a Mac --lane claudex refuses EVERY
+# time, so there always is one -- dies in the claim-retry loop as exit 6
+# "the armed successor may be lost" instead of reporting this real reason.
 if [ "$RECORDER" = "1" ] && [ "$KONSOLE_IS_RESOLVED_SHIM" = "1" ]; then
     echo "headed-arm: HEADED_ARM_RECORDER=1 is not supported on macOS - the recorder uses util-linux 'script -f/-c' syntax that BSD script rejects, so the --lane claudex tty recorder cannot run here (HIMMEL-2534)" >&2
+    rm -rf "$LOCK" 2>/dev/null
     exit 2
 fi
 if [ "$RECORDER" = "1" ]; then

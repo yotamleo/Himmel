@@ -1898,6 +1898,13 @@ check "42 macOS + RECORDER=1: exit 2" "$rc42" "2"
 contains "42 macOS + RECORDER=1: names BSD script as the reason" "$out42" "BSD script rejects"
 [ -e "$d42/bare/record" ] && { echo "FAIL - 42 macOS + RECORDER=1: refused arm must not have launched"; fails=$((fails+1)); } \
   || echo "ok - 42 macOS + RECORDER=1: nothing was launched"
+# 42c. The refusal happens AFTER the claim, and this script has no EXIT trap,
+# so it must release the lock by hand like every other post-claim refusal. It
+# did not: the lock survived for STALE_LOCK_SECS, and since --lane claudex
+# refuses every time on a Mac, the very next arm died in the claim-retry loop
+# as exit 6 "the armed successor may be lost" instead of this real reason.
+[ -e "$d42/locks/HIMMEL-rec42.lock" ] && { echo "FAIL - 42c macOS + RECORDER=1: refusal must release the claim lock it holds"; fails=$((fails+1)); } \
+  || echo "ok - 42c macOS + RECORDER=1: the refusal released its claim lock"
 
 # 42b. The other half of that gate, and the one every existing --lane claudex
 # case depends on: an explicit KONSOLE_CMD on a Mac is NOT refused. Those
