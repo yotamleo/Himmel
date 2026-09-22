@@ -872,10 +872,15 @@ done
 # silent pass.
 f6_mutate() {
     local name=$1 expr=$2 copy="$tmp/f6-$1.md"
-    sed "$expr" "$CLAUDE_RUNBOOK" > "$copy"
+    if ! sed "$expr" "$CLAUDE_RUNBOOK" > "$copy"; then
+        fail "Finding-6 RED ($name): sed failed building the mutated copy -- this fixture is vacuous"
+        return
+    fi
     [ "$name" = moved ] && printf '\nONLY when that check prints nothing at all\n' >> "$copy"
-    if cmp -s "$CLAUDE_RUNBOOK" "$copy"; then
-        fail "Finding-6 RED ($name): the mutation did not change the runbook copy -- this fixture is vacuous"
+    local cmp_rc=0
+    cmp -s "$CLAUDE_RUNBOOK" "$copy" || cmp_rc=$?
+    if [ "$cmp_rc" -ne 1 ]; then
+        fail "Finding-6 RED ($name): the mutation did not change the runbook copy (cmp rc=$cmp_rc) -- this fixture is vacuous"
         return
     fi
     f6_out=$(lane_marker_check "$copy")
@@ -888,6 +893,15 @@ f6_mutate() {
 f6_mutate negated 's/hand-off is defense in depth, not the trust root/hand-off is not defense in depth, not the trust root/'
 f6_mutate moved 's/ONLY when that check prints nothing at all/when that check prints nothing/'
 f6_mutate reordered 's|always against refs/remotes/origin/main, even on a stacked PR|always against the remote main, even on a stacked PR|; s|Go on ONLY if|always against refs/remotes/origin/main, even on a stacked PR. Go on ONLY if|'
+# The vacuity guard itself: a sed that fails (here, an unterminated
+# expression) leaves an empty copy that would red the marker check for the
+# wrong reason. f6_mutate must report it as vacuous, not as a RED. Run in a
+# subshell so its fail() does not count against this suite.
+f6_guard=$( ( f6_mutate badsed 's/unterminated' ) 2>&1 )
+case "$f6_guard" in
+    *"FAIL: Finding-6 RED (badsed): sed failed"*) pass "Finding-6 vacuity guard: a failing sed is reported as a vacuous fixture, never as a RED" ;;
+    *) fail "Finding-6 vacuity guard: a failing sed was not caught -- got: $f6_guard" ;;
+esac
 f6_ok=$(lane_marker_check "$CLAUDE_RUNBOOK")
 [ -z "$f6_ok" ] || fail "Finding-6 RED control: the UNMUTATED runbook fails the marker check ($f6_ok) -- the REDs above prove nothing"
 
