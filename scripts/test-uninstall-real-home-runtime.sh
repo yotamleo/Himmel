@@ -156,7 +156,7 @@ for _seam in "" "/"; do
     _pw=$(env HOME="$TMP/suitehome" PATH="$HBIN" bash -c '. "$1" --source-only && real_home_resolve' _ "$CLI" 2>&1)
     _rh=$(env HOME="$TMP/suitehome" PATH="$HBIN" HIMMEL_UNINSTALL_TEST_REAL_HOME="$_seam" bash -c \
         '. "$1" --source-only && real_home_protected_homes' _ "$CLI" 2>&1)
-    if [ -n "$_pw" ] && printf '%s\n' "$_rh" | grep -qxF "$_pw"; then
+    if [ -n "$_pw" ] && grep -qxF "$_pw" <<< "$_rh"; then
         pass "(s4) seam='$_seam' keeps the passwd home protected"
     else
         fail "(s4) seam='$_seam' dropped the passwd home '$_pw' — $_rh"
@@ -193,7 +193,7 @@ case "$_rh" in
     *) fail "(r) seam home missing from protected homes — $_rh" ;;
 esac
 _pw=$(env HOME="$TMP/suitehome" PATH="$HBIN" bash -c '. "$1" --source-only && real_home_resolve' _ "$CLI" 2>&1)
-if [ -n "$_pw" ] && [ "$_pw" != "$TMP/suitehome" ] && printf '%s\n' "$_rh" | grep -qxF "$_pw"; then
+if [ -n "$_pw" ] && [ "$_pw" != "$TMP/suitehome" ] && grep -qxF "$_pw" <<< "$_rh"; then
     pass "(r) passwd home resolved independently of \$HOME and still protected with the seam set"
 else
     fail "(r) passwd home '$_pw' not resolved, taken from \$HOME, or dropped when the seam is set — $_rh"
