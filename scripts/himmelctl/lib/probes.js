@@ -498,7 +498,15 @@ function normalizeProjectPath(p) {
   return windowsShaped ? resolved.replace(/\/+$/, '') : resolved;
 }
 
+// An empty/whitespace/non-string path is malformed and never matches:
+// path.resolve('') is the process cwd, so an empty ledger projectPath would
+// otherwise collide with a cwd-shaped targetPath (HIMMEL-3463).
+function isUsablePath(p) {
+  return typeof p === 'string' && p.trim() !== '';
+}
+
 function sameProjectPath(a, b) {
+  if (!isUsablePath(a) || !isUsablePath(b)) return false;
   return normalizeProjectPath(a) === normalizeProjectPath(b);
 }
 

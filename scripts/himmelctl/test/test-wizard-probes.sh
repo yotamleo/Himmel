@@ -854,7 +854,25 @@ case "$sk4_target_w" in
     ;;
 esac
 
-echo "ok: settings-key verifyPluginSet (claude-plugins-pluginSet) — trailing-separator + backslash projectPath normalization, directory-only installPath, extra-plugins-are-a-floor, mixed-separator + trailing-backslash collision guards"
+# (i) RED (HIMMEL-3463): an empty projectPath must never match — node's
+# path.resolve('') is the process cwd, so a malformed ledger entry with
+# projectPath "" would satisfy the scope check whenever the probe runs
+# from inside the target directory. Run node with cwd = the target so the
+# collision is live.
+sk4_home_i="$work/sk4-home-i"
+write_sk4_ledger "$sk4_home_i" "" "$sk4_cache_foo_w"
+outSK4i=$(cd "$sk4_target" && run_sk4 "$sk4_home_i" "$sk4_target_w")
+echo "$outSK4i" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "verifyPluginSet: an empty projectPath must NOT match a targetPath equal to the cwd (got: $outSK4i)"
+
+# (j) a whitespace-only projectPath is just as malformed and must never match.
+sk4_home_j="$work/sk4-home-j"
+write_sk4_ledger "$sk4_home_j" "   " "$sk4_cache_foo_w"
+outSK4j=$(cd "$sk4_target" && run_sk4 "$sk4_home_j" "$sk4_target_w")
+echo "$outSK4j" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "verifyPluginSet: a whitespace-only projectPath must NOT match (got: $outSK4j)"
+
+echo "ok: settings-key verifyPluginSet (claude-plugins-pluginSet) — trailing-separator + backslash projectPath normalization, directory-only installPath, extra-plugins-are-a-floor, mixed-separator + trailing-backslash collision guards, empty/whitespace projectPath never matches"
 
 # ── settings-key: .env ALL-keys-required union (jira-env-keys) ────────────
 # Resolves against repoRoot for BOTH scopes (CLAUDE.md / adopt.sh
