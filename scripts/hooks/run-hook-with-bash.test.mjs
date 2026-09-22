@@ -1396,13 +1396,76 @@ test('HIMMEL-3397: `hop/..` after a directory link claims the target-side path, 
     const writePins = (pins) => writeFileSync(join(fx.integrityDir, 's1.json'), JSON.stringify({ session_id: 's1', pins }));
     const viaHop = `${fx.dir}/scripts/hop/../guard.sh`;
     withEnv(fx.env, () => {
-      writePins({ 'scripts/guard.sh': pin('scripts/guard.sh') }); // an unrelated pin that differs
-      assert.equal(verifyProjectHookIntegrity(viaHop, 's1').ok, true);
+      // The lexical spelling is claimed too (an over-claim only ever denies), so a
+      // differing pin on scripts/guard.sh is a safe-direction deny.
+      writePins({ 'scripts/guard.sh': pin('scripts/guard.sh') });
+      assert.equal(verifyProjectHookIntegrity(viaHop, 's1').ok, false);
       writePins({ 'other/guard.sh': pin('other/guard.sh') });
       writeFileSync(join(fx.dir, 'other', 'guard.sh'), 'echo tampered\n');
       const result = verifyProjectHookIntegrity(viaHop, 's1');
       assert.equal(result.ok, false);
       assert.equal(result.relPath, 'other/guard.sh');
+    });
+  } finally {
+    fx.cleanup();
+  }
+});
+
+// A link target that is not valid UTF-8 cannot be walked faithfully (readlink and
+// realpath decode it lossily), so it fails closed rather than dropping the pin.
+const nonUtf8 = (dir, before, after) => Buffer.concat([Buffer.from(`${dir}/${before}`), Buffer.from([0xff]), Buffer.from(after)]);
+
+for (const [label, relative] of [['absolute', false], ['relative', true]]) {
+  test(`HIMMEL-3397: a hooks directory swapped for a ${label} non-UTF-8 link target fails closed`, { skip: process.platform === 'win32' }, () => {
+    const fx = dotdotFixture();
+    try {
+      const hooks = join(fx.dir, 'scripts', 'hooks');
+      const odd = nonUtf8(fx.dir, 'u', 'pinned');
+      fx.fs.mkdirSync(odd);
+      writeFileSync(Buffer.concat([odd, Buffer.from('/guard.sh')]), 'echo tampered\n');
+      fx.fs.rmSync(hooks, { recursive: true });
+      fx.fs.symlinkSync(relative ? Buffer.concat([Buffer.from('../'), odd.subarray(fx.dir.length + 1)]) : odd, hooks);
+      withEnv(fx.env, () => {
+        assert.equal(verifyProjectHookIntegrity(fx.scriptPath, 's1').ok, false);
+      });
+    } finally {
+      fx.cleanup();
+    }
+  });
+}
+
+test('HIMMEL-3397: a pinned leaf swapped for a link with a non-UTF-8 target fails closed', { skip: process.platform === 'win32' }, () => {
+  const fx = dotdotFixture();
+  try {
+    fx.fs.mkdirSync(join(fx.dir, 'u'));
+    writeFileSync(nonUtf8(fx.dir, 'u/ev', 'il.sh'), 'echo tampered\n');
+    rmSync(fx.scriptPath);
+    fx.fs.symlinkSync(Buffer.concat([Buffer.from('../../'), nonUtf8(fx.dir, 'u/ev', 'il.sh').subarray(fx.dir.length + 1)]), fx.scriptPath);
+    withEnv(fx.env, () => {
+      assert.equal(verifyProjectHookIntegrity(fx.scriptPath, 's1').ok, false);
+    });
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('HIMMEL-3397: an `X/..` spelling through a replaced X still claims the lexical pin', () => {
+  const fx = dotdotFixture();
+  try {
+    const hooks = join(fx.dir, 'scripts', 'hooks');
+    // scripts/hooks/sub -> x/y, so scripts/hooks/sub/../guard.sh runs x/guard.sh.
+    fx.fs.mkdirSync(join(fx.dir, 'x', 'y'), { recursive: true });
+    writeFileSync(join(fx.dir, 'x', 'guard.sh'), 'echo tampered\n');
+    fx.fs.symlinkSync(join(fx.dir, 'x', 'y'), join(hooks, 'sub'));
+    // scripts/hooks -> ../u, so scripts/hooks/../hooks/guard.sh runs hooks/guard.sh.
+    fx.fs.mkdirSync(join(fx.dir, 'u'));
+    fx.fs.mkdirSync(join(fx.dir, 'hooks'));
+    writeFileSync(join(fx.dir, 'hooks', 'guard.sh'), 'echo tampered\n');
+    withEnv(fx.env, () => {
+      assert.equal(verifyProjectHookIntegrity(`${fx.dir}/scripts/hooks/sub/../guard.sh`, 's1').ok, false);
+      fx.fs.rmSync(hooks, { recursive: true });
+      fx.fs.symlinkSync('../u', hooks);
+      assert.equal(verifyProjectHookIntegrity(`${fx.dir}/scripts/hooks/../hooks/guard.sh`, 's1').ok, false);
     });
   } finally {
     fx.cleanup();

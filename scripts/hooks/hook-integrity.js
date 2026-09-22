@@ -1033,8 +1033,10 @@ function resolveReal(candidate) {
 // pinned hooks DIRECTORY swapped for a link, keeps its pin whichever alias reached
 // it, and an internal `sub/..` cancels only where `sub` really was a directory.
 // The final resolved path closes the list. Bounded like the kernel's 40 links,
-// and at 64 live aliases; a loop, an alias blow-up or an unreadable component
-// returns null so the caller fails closed. A missing component ends the walk as-is.
+// and at 64 live aliases; a loop, an alias blow-up, an unreadable component, a
+// link target that is not valid UTF-8, or a missing component while a followed
+// link's identities are still pending returns null so the caller fails closed.
+// Any other missing component ends the walk as-is.
 const UNWALKABLE_DENY = 'unwalkable: ';
 const MAX_LINK_FOLLOWS = 40;
 const MAX_ALIASES = 64;
@@ -1066,6 +1068,7 @@ function walkIdentities(candidate) {
       st = fs.lstatSync(next);
     } catch (e) {
       if (!e || (e.code !== 'ENOENT' && e.code !== 'ENOTDIR')) return null;
+      if (todo.some((c) => typeof c !== 'string')) return null; // a link's identities are still pending
       const rest = todo.filter((c) => typeof c === 'string');
       return [...aliases.map((a) => a.s), resolved].map((s) => normalize(path.join(s, name, ...rest)));
     }
@@ -1078,7 +1081,11 @@ function walkIdentities(candidate) {
     const frozen = [{ s: next, d: 0 }, ...aliases.map((a) => ({ s: path.join(a.s, name), d: 0 }))];
     if (frozen.length + aliases.length > MAX_ALIASES) return null;
     let target;
-    try { target = fs.readlinkSync(next); } catch (_e) { return null; }
+    try {
+      const bytes = fs.readlinkSync(next, { encoding: 'buffer' });
+      target = bytes.toString('utf8');
+      if (!Buffer.from(target, 'utf8').equals(bytes)) return null; // not UTF-8: the walk cannot spell what the kernel runs
+    } catch (_e) { return null; }
     if (path.isAbsolute(target)) { resolved = path.parse(target).root; aliases = []; }
     todo = [...split(path.isAbsolute(target) ? target.slice(resolved.length) : target), { frozen }, ...todo];
   }
@@ -1109,14 +1116,15 @@ function verifyIntegrityUnbypassed(scriptPath, sessionId) {
   if (denyReason) return { ok: false, relPath, reason: denyReason };
   const pins = recordPins(record);
   if (!pins) return { ok: true };
-  // Every identity the path claims is checked: the resolved target's and each one
-  // the kernel-order walk passes through a link (walkIdentities), relative to the
+  // Every identity the path claims is checked: the resolved target's, the lexical
+  // spelling's, and each one the kernel-order walk passes through a link
+  // (walkIdentities), relative to the
   // resolved project or, for a link at the project root itself, its spelling.
   const walked = walkIdentities(scriptPath);
-  if (!walked) return { ok: false, relPath, reason: `${UNWALKABLE_DENY}a symlink loop or an unreadable component` };
+  if (!walked) return { ok: false, relPath, reason: `${UNWALKABLE_DENY}a symlink loop, an unreadable or non-UTF-8 link, or a dangling link` };
   const spelledProject = normalize(path.resolve(projectDir));
   const keys = [relPath];
-  for (const abs of walked) {
+  for (const abs of [normalize(path.resolve(scriptPath)), ...walked]) { // the lexical spelling too: an over-claim only denies
     for (const root of [resolvedProject, spelledProject]) {
       if (!abs.toLowerCase().startsWith(`${root.toLowerCase()}/`)) continue;
       const rel = abs.slice(root.length + 1);
