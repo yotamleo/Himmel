@@ -1042,7 +1042,8 @@ const MAX_ALIASES = 64;
 function walkIdentities(candidate) {
   const raw = String(candidate);
   const abs = path.isAbsolute(raw) ? raw : `${process.cwd()}${path.sep}${raw}`; // no lexical `..` collapse
-  const split = (p) => p.split(/[\\/]+/).filter((c) => c !== '' && c !== '.');
+  const sep = path.sep === '\\' ? /[\\/]+/ : /\/+/; // a POSIX backslash is a filename character
+  const split = (p) => p.split(sep).filter((c) => c !== '' && c !== '.');
   let resolved = path.parse(abs).root;
   let todo = split(abs.slice(resolved.length));
   let aliases = []; // { s: spelling of `resolved`, d: components below its link point }

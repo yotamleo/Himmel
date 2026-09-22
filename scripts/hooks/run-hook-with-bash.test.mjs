@@ -1343,6 +1343,25 @@ test('HIMMEL-3397: an internal `sub/..` below a swapped hooks directory still ch
   }
 });
 
+test('HIMMEL-3397: a backslash in a POSIX link target is a filename character, not a separator', { skip: process.platform === 'win32' }, () => {
+  const fx = dotdotFixture();
+  try {
+    const hooks = join(fx.dir, 'scripts', 'hooks');
+    const odd = join(fx.dir, 'un\\pinned');
+    fx.fs.mkdirSync(odd);
+    writeFileSync(join(odd, 'guard.sh'), 'echo tampered\n');
+    fx.fs.rmSync(hooks, { recursive: true });
+    fx.fs.symlinkSync(odd, hooks);
+    withEnv(fx.env, () => {
+      const result = verifyProjectHookIntegrity(fx.scriptPath, 's1');
+      assert.equal(result.ok, false);
+      assert.equal(result.relPath, fx.scriptRel);
+    });
+  } finally {
+    fx.cleanup();
+  }
+});
+
 test('HIMMEL-3397: `hop/..` after a directory link claims the target-side path, not the lexical collapse', () => {
   const fx = dotdotFixture();
   try {
