@@ -525,8 +525,10 @@ run_mog() {
     # (sourced: kills the whole gate; executed: a failing clear). Paired with
     # MOG_HIMMEL_REPO at a distinct anchor, it proves the anchor's copy runs.
     if [ -n "${MOG_POISON:-}" ]; then
-        printf '#!/usr/bin/env bash\n: > "%s/poison.ran"\nexit 42\n' "$tmp" > "$tmp/scripts/$MOG_POISON"
-        chmod +x "$tmp/scripts/$MOG_POISON"
+        if ! printf '#!/usr/bin/env bash\n: > "%s/poison.ran"\nexit 42\n' "$tmp" > "$tmp/scripts/$MOG_POISON" \
+            || ! chmod +x "$tmp/scripts/$MOG_POISON"; then
+            LAST_TMP="$tmp"; fail "$name (setup: could not plant the MOG_POISON mutant $MOG_POISON)"; return
+        fi
     fi
 
     local err rc
