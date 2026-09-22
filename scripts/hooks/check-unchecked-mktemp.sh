@@ -3,8 +3,8 @@
 # (HIMMEL-2709).
 #
 # Fail-closed. A missing or unreadable predicate library, an unresolvable
-# repo root, a failing `git diff`, a failed added-lines scan, or an unreadable
-# staged blob refuses the commit rather than waving it through -- each with
+# repo root, a failing `git diff`, a failed added-lines scan, a changed staged
+# *.sh whose diff has no hunk, or an unreadable staged blob refuses the commit rather than waving it through -- each with
 # its own distinct message so the mode is never ambiguous. `git diff`'s own
 # failure is captured and its exit status checked BEFORE its (by-then
 # known-good) output is ever read as "nothing staged" -- never
@@ -59,8 +59,9 @@
 # version of this bug: an untracked file satisfying a check that then didn't
 # land in the commit.
 #
-# Staged names come from `git diff --cached -M -z --diff-filter=AMR
-# --name-status`: `-z` NUL-delimits so a quoted path (git quotes
+# Staged names come from `git diff --cached -M -z --diff-filter=AMRT
+# --name-status` (T = a typechange, e.g. symlink -> regular file, which
+# carries new content exactly like an add): `-z` NUL-delimits so a quoted path (git quotes
 # non-ASCII/special-char names by default) is never mis-parsed by a
 # line-oriented reader, and `--name-status` (rather than `--name-only`) is
 # what makes a rename's SOURCE path available at all. A per-file `git diff
@@ -86,6 +87,15 @@ if [ "${UNCHECKED_MKTEMP_OK:-0}" = 1 ]; then
     echo "check-unchecked-mktemp: UNCHECKED_MKTEMP_OK=1 -- skipping (bypass used)" >&2
     exit 0
 fi
+
+# The added-line scoping below trusts `git diff -U0` hunk headers, so every
+# input that can reshape that output is neutralized: GIT_DIFF_OPTS overrides
+# -U0 with its own context width (context lines would then read as added),
+# and GIT_EXTERNAL_DIFF swaps in another program (also refused per call by
+# --no-ext-diff). Config and attributes are handled per call: --no-ext-diff
+# (diff.external), --text (a `-diff` binary attribute), --no-textconv (a
+# textconv driver) -- each once turned an added capture into zero hunks.
+unset GIT_DIFF_OPTS GIT_EXTERNAL_DIFF
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -123,7 +133,7 @@ trap 'rm -rf "$scratch_dir"' EXIT
 # not NUL-delimited, and merging the two streams would corrupt both).
 diff_status_file="$scratch_dir/diff-status.nul"
 diff_err_file="$scratch_dir/diff-status.err"
-if ! git diff --no-color --cached -M -z --diff-filter=AMR --name-status \
+if ! git diff --no-color --cached -M -z --diff-filter=AMRT --name-status \
         >"$diff_status_file" 2>"$diff_err_file"; then
     diff_err="$(cat "$diff_err_file" 2>/dev/null)"
     echo "FAIL: check-unchecked-mktemp: git diff --cached --name-status failed: $diff_err" >&2
@@ -170,13 +180,34 @@ done < "$diff_status_file"
 added_lines_for() {
     local path="$1" src_path="$2" out="$3" hunks rc
     if [ -n "$src_path" ]; then
-        if ! hunks="$(git diff --no-color --cached -M -U0 -- "$src_path" "$path" 2>&1)"; then
+        if ! hunks="$(git diff --no-color --no-ext-diff --text --no-textconv --cached -M -U0 -- "$src_path" "$path" 2>&1)"; then
             echo "FAIL: check-unchecked-mktemp: git diff --cached -M -U0 -- $src_path $path failed: $hunks" >&2
             return 1
         fi
     else
-        if ! hunks="$(git diff --no-color --cached -U0 -- "$path" 2>&1)"; then
+        if ! hunks="$(git diff --no-color --no-ext-diff --text --no-textconv --cached -U0 -- "$path" 2>&1)"; then
             echo "FAIL: check-unchecked-mktemp: git diff --cached -U0 -- $path failed: $hunks" >&2
+            return 1
+        fi
+    fi
+    # A changed staged blob whose diff has no hunk header at all means
+    # something reshaped the diff (a driver, an attribute, a config this gate
+    # does not know about): refuse, never read it as "nothing added". A pure
+    # rename, a mode-only change and an empty staged blob legitimately have
+    # no hunk, and all three leave the blob either unchanged or empty.
+    if ! printf '%s\n' "$hunks" | grep -q '^@@ '; then
+        local new_oid old_oid empty_oid
+        if ! new_oid="$(git rev-parse --verify -q ":$path")"; then
+            echo "FAIL: check-unchecked-mktemp: cannot resolve the staged blob of $path (fail-closed)" >&2
+            return 1
+        fi
+        old_oid="$(git rev-parse --verify -q "HEAD:${src_path:-$path}" 2>/dev/null)" || old_oid=""
+        if ! empty_oid="$(git hash-object -t blob --stdin </dev/null)"; then
+            echo "FAIL: check-unchecked-mktemp: git hash-object failed (fail-closed)" >&2
+            return 1
+        fi
+        if [ "$new_oid" != "$old_oid" ] && [ "$new_oid" != "$empty_oid" ]; then
+            echo "FAIL: check-unchecked-mktemp: $path changed but its staged diff has no hunk (fail-closed)" >&2
             return 1
         fi
     fi

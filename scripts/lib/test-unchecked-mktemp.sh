@@ -77,14 +77,24 @@ assert_eq() {
 # Section 1: unchecked_mktemp_scan direct cases.
 # ---------------------------------------------------------------------------
 
-# T0 -- the predicate library parses. Its awk program is one single-quoted
-# shell string, so an apostrophe in an awk COMMENT closes the quote and turns
-# the rest into shell syntax -- the salvaged WIP shipped exactly that (a
-# possessive "'s" in two comments, HIMMEL-2709 port) and every scan then
-# silently returned nothing.
+# T0 -- the predicate library passes `bash -n`. Its awk program is one
+# single-quoted shell string, so an apostrophe in an awk COMMENT closes the
+# quote and turns the rest into shell syntax -- the salvaged WIP shipped
+# exactly that (a possessive "'s" in two comments, HIMMEL-2709 port) and every
+# scan then silently returned nothing. `bash -n` checks SHELL syntax only; it
+# says nothing about the awk program itself, which T0b checks by running it.
 rc=0
 bash -n "$LIB_DIR/unchecked-mktemp.sh" >/dev/null 2>&1 || rc=$?
-assert_rc "T0 predicate library parses (bash -n)" 0 "$rc"
+assert_rc "T0 predicate library passes bash -n" 0 "$rc"
+
+# T0b -- the awk program parses and runs: a scan of an empty file exits 0
+# with no stderr (an awk syntax error exits 2 and prints to stderr).
+t0b_dir=$(fixture_mktemp_dir) || { echo "FAIL: T0b setup: fixture_mktemp_dir failed -- aborting suite" >&2; exit 1; }
+: > "$t0b_dir/empty.sh"
+rc=0
+t0b_err="$(unchecked_mktemp_scan "$t0b_dir/empty.sh" 2>&1 >/dev/null)" || rc=$?
+assert_rc "T0b predicate awk program runs (empty file)" 0 "$rc"
+assert_eq "T0b predicate awk program prints no error" "" "$t0b_err"
 
 scan_lines() {
     unchecked_mktemp_scan "$1" | wc -l | tr -d ' '
@@ -466,6 +476,97 @@ printf '#!/usr/bin/env bash\nT=$(mktemp -d)\necho "$T"\n' > "$R/scripts.sh"
 git -C "$R" add scripts.sh
 run_gate
 assert_rc "G11 color.ui=always, unguarded capture added -> gate refuses" 1 "$?"
+
+# G12 -- an external diff driver must not replace the -U0 hunks: with
+# diff.external (config) or GIT_EXTERNAL_DIFF (env) set to a program that
+# prints nothing, the gate saw zero added lines and passed (fail-open).
+setup_repo || { echo "FAIL: G12 setup: setup_repo failed -- aborting suite" >&2; exit 1; }
+git -C "$R" config diff.external /bin/true
+printf '#!/usr/bin/env bash\nT=$(mktemp -d)\necho "$T"\n' > "$R/scripts.sh"
+git -C "$R" add scripts.sh
+run_gate
+assert_rc "G12 diff.external=/bin/true, unguarded capture added -> gate refuses" 1 "$?"
+
+setup_repo || { echo "FAIL: G12b setup: setup_repo failed -- aborting suite" >&2; exit 1; }
+printf '#!/usr/bin/env bash\nT=$(mktemp -d)\necho "$T"\n' > "$R/scripts.sh"
+git -C "$R" add scripts.sh
+( cd "$R" && GIT_EXTERNAL_DIFF=/bin/true bash "$GATE" >/dev/null 2>&1 )
+assert_rc "G12b GIT_EXTERNAL_DIFF=/bin/true, unguarded capture added -> gate refuses" 1 "$?"
+
+# G13 -- a binary attribute or a textconv driver must not hide the hunks:
+# `-diff` yields "Binary files differ" and a textconv to /bin/true yields an
+# empty diff, both zero added lines (fail-open).
+setup_repo || { echo "FAIL: G13 setup: setup_repo failed -- aborting suite" >&2; exit 1; }
+printf '*.sh -diff\n' > "$R/.gitattributes"
+printf '#!/usr/bin/env bash\nT=$(mktemp -d)\necho "$T"\n' > "$R/scripts.sh"
+git -C "$R" add scripts.sh
+run_gate
+assert_rc "G13 .gitattributes -diff, unguarded capture added -> gate refuses" 1 "$?"
+
+setup_repo || { echo "FAIL: G13b setup: setup_repo failed -- aborting suite" >&2; exit 1; }
+printf '*.sh diff=blind\n' > "$R/.gitattributes"
+git -C "$R" config diff.blind.textconv /bin/true
+printf '#!/usr/bin/env bash\nT=$(mktemp -d)\necho "$T"\n' > "$R/scripts.sh"
+git -C "$R" add scripts.sh
+run_gate
+assert_rc "G13b textconv=/bin/true, unguarded capture added -> gate refuses" 1 "$?"
+
+# G14 -- a typechange (symlink -> regular file, status T) is a staged *.sh
+# with new content; --diff-filter=AMR skipped it entirely (fail-open).
+setup_repo || { echo "FAIL: G14 setup: setup_repo failed -- aborting suite" >&2; exit 1; }
+printf 'x\n' > "$R/target.txt"
+ln -s target.txt "$R/scripts.sh"
+git -C "$R" add target.txt scripts.sh
+git -C "$R" commit -q -m link
+rm "$R/scripts.sh"
+printf '#!/usr/bin/env bash\nT=$(mktemp -d)\necho "$T"\n' > "$R/scripts.sh"
+git -C "$R" add scripts.sh
+run_gate
+assert_rc "G14 symlink -> regular typechange, unguarded capture added -> gate refuses" 1 "$?"
+
+# G15 -- GIT_DIFF_OPTS=-u3 must not widen the -U0 hunks: context lines
+# would be read as added. A pre-existing unguarded capture next to an
+# unrelated added line stays unflagged, and an added one is still refused.
+setup_repo || { echo "FAIL: G15 setup: setup_repo failed -- aborting suite" >&2; exit 1; }
+printf '#!/usr/bin/env bash\nT=$(mktemp -d)\necho "$T"\n' > "$R/scripts.sh"
+git -C "$R" add scripts.sh
+git -C "$R" commit -q -n -m pre
+printf '#!/usr/bin/env bash\nT=$(mktemp -d)\necho "$T"\necho more\n' > "$R/scripts.sh"
+git -C "$R" add scripts.sh
+( cd "$R" && GIT_DIFF_OPTS=-u3 bash "$GATE" >/dev/null 2>&1 )
+assert_rc "G15 GIT_DIFF_OPTS=-u3, pre-existing capture, unrelated added line -> gate ok" 0 "$?"
+
+setup_repo || { echo "FAIL: G15b setup: setup_repo failed -- aborting suite" >&2; exit 1; }
+printf '#!/usr/bin/env bash\nT=$(mktemp -d)\necho "$T"\n' > "$R/scripts.sh"
+git -C "$R" add scripts.sh
+( cd "$R" && GIT_DIFF_OPTS=-u3 bash "$GATE" >/dev/null 2>&1 )
+assert_rc "G15b GIT_DIFF_OPTS=-u3, unguarded capture added -> gate refuses" 1 "$?"
+
+# G16 -- the zero-hunk fail-closed must not refuse the three staged changes
+# that legitimately have no hunk: an empty new file, a mode-only change and a
+# pure (100%) rename.
+setup_repo || { echo "FAIL: G16 setup: setup_repo failed -- aborting suite" >&2; exit 1; }
+: > "$R/scripts.sh"
+git -C "$R" add scripts.sh
+run_gate
+assert_rc "G16 empty new *.sh (no hunk) -> gate ok" 0 "$?"
+
+setup_repo || { echo "FAIL: G16b setup: setup_repo failed -- aborting suite" >&2; exit 1; }
+printf '#!/usr/bin/env bash\nT=$(mktemp -d)\n' > "$R/scripts.sh"
+git -C "$R" add scripts.sh
+git -C "$R" commit -q -n -m pre
+chmod +x "$R/scripts.sh"
+git -C "$R" add scripts.sh
+run_gate
+assert_rc "G16b mode-only change (no hunk) -> gate ok" 0 "$?"
+
+setup_repo || { echo "FAIL: G16c setup: setup_repo failed -- aborting suite" >&2; exit 1; }
+printf '#!/usr/bin/env bash\nT=$(mktemp -d)\necho "$T"\n' > "$R/scripts.sh"
+git -C "$R" add scripts.sh
+git -C "$R" commit -q -n -m pre
+git -C "$R" mv scripts.sh renamed.sh
+run_gate
+assert_rc "G16c pure rename (no hunk) -> gate ok" 0 "$?"
 
 # ---------------------------------------------------------------------------
 # Section 3: RED control (scripts/lib/red-control.sh).
