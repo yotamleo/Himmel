@@ -108,6 +108,8 @@ fi
 bash "$REPO/scripts/himmel-update.sh"                 # six-item chain + advisory steps
 bash "$REPO/scripts/himmel-update.sh" --check         # report only (behind/ahead + gaps), no pull
 bash "$REPO/scripts/himmel-update.sh" --plugins-check # just the plugin gap report, no git
+bash "$REPO/scripts/himmel-update.sh" --versions      # installed vs available per component; rc 1 if any behind
+bash "$REPO/scripts/himmel-update.sh" --help          # usage; runs nothing (an unknown flag refuses, rc 2)
 bash "$REPO/scripts/himmel-update.sh" --only <item>   # run ONE step and stop; see below
 # equivalent entry point:
 node "$REPO/scripts/himmelctl/bin.js" update          # same engine, thin wrapper

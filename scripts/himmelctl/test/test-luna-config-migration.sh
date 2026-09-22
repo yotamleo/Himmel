@@ -178,6 +178,42 @@ check "d invalid JSON: names the file" "$([ "$(printf '%s\n' "$outD" | grep -c "
 check "d invalid JSON: a hand-fix command with the backup path" \
     "$(printf '%s\n' "$outD" | grep -c "hand-fix: cp .*config.json.hand-fix.bak")" "1"
 
+# HIMMEL-3371: the printed hand-fix line is a shell command; EDITOR carries
+# arguments in the wild (`code --wait`), so it must word-split. Run the printed
+# command with an EDITOR that echoes what it was given: the argument must arrive
+# as its own word, ahead of the (still quoted) path.
+hand_fix=$(printf '%s\n' "$outD" | sed -n 's/.*hand-fix: \(cp .*\), then re-run himmelctl.*/\1/p' | head -1)
+check "d2 invalid JSON: a hand-fix command was printed" "$([ -n "$hand_fix" ] && echo yes || echo no)" "yes"
+check "d2 invalid JSON: EDITOR with arguments splits into words" \
+    "$(cd "$work" && EDITOR='echo --wait' bash -c "$hand_fix" 2>&1)" "--wait $hD/.himmel/config.json"
+# shellcheck disable=SC2016  # the literal `${EDITOR:-vi}` is what the printed line must carry
+check "d2 invalid JSON: the editor default is left to the shell" \
+    "$(printf '%s\n' "$hand_fix" | grep -cF '${EDITOR:-vi} "')" "1"
+
+# ── (g) HIMMEL-3371: a wizard answer that equals the default is still the
+# wizard's answer -- the label tracks who supplied the field, not the value.
+hG=$(new_home g); mk "$hG" '{"version":1,"luna":{"vaultPath":"/u/vault"}}'
+profG="$work/profG.json"
+cat > "$profG" <<JSON
+{
+  "role": "adopter", "tier": "standard", "scope": "user",
+  "vault": { "mode": "none", "path": "" },
+  "handover": { "mode": "inline", "path": "" },
+  "pluginSet": "lean", "lanes": [], "lanesMeaningful": true, "alwaysOn": false,
+  "luna": { "phiDeclared": false },
+  "bridge": { "enabled": false }
+}
+JSON
+outG=$(run_install "$hG" --from-profile "$(winpath "$profG")"); rcG=$?
+check "g wizard==default: rc" "$rcG" "0"
+[ "$rcG" -eq 0 ] || echo "note: $outG"
+check "g wizard==default: luna.phi.declared (answered false = the default) reads as a wizard answer" \
+    "$(nlines "$outG" 'migrated ~/.himmel/config.json: luna.phi.declared = false (wizard answer)')" "1"
+check "g wizard==default: bridge.enabled (answered false = the default) reads as a wizard answer" \
+    "$(nlines "$outG" 'migrated ~/.himmel/config.json: bridge.enabled = false (wizard answer)')" "1"
+check "g wizard==default: a field the wizard did not supply still reads as the default" \
+    "$(nlines "$outG" 'migrated ~/.himmel/config.json: luna.cadence.enabled = false (default)')" "1"
+
 # ── (f) a wrong-typed user value is still refused and never rewritten ───────
 hF=$(new_home f); mk "$hF" "$(printf '%s' "$FULL" | jq -c '.luna.cadence.enabled = "yes"')"
 before=$(sha "$hF/.himmel/config.json")

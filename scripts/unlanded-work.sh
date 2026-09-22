@@ -10,7 +10,8 @@
 # never deletes a branch, never pushes.
 #
 #   bash scripts/unlanded-work.sh [--tsv] [--age-hours N] [--no-forge]
-#                                  [--class CLASS] [--base REF] [-h|--help]
+#                                  [--class CLASS] [--base REF] [--health]
+#                                  [-h|--help]
 #
 # CLASS is one of ACTIVE | LANDED-ELSEWHERE | STALE | UNLANDED-LIVE.
 #
@@ -25,7 +26,15 @@
 # alone is not sufficient, so a ticket with an earlier PARTIAL PR still
 # surfaces its unlanded remainder as UNLANDED-LIVE (annotated "partial: ...").
 #
-# Always exits 0 (advisory/read-only). Exit 2 only on a usage error.
+# --health (HIMMEL-3405) prints ONLY alarm lines — empty output = healthy:
+#   LOST-COMMITS <branch> pr#<n> ahead=<k>   a local or remote branch whose PR is
+#       MERGED but whose tip carries <k> commits that are in neither the merged
+#       head nor main (a post-merge push that never landed)
+#   SWEEP-ERROR <branch> <cause>             this scan could not classify or
+#       check a branch (no merge base, git failure, PR listing unavailable...)
+# and exits 1 when any line was printed.
+#
+# Otherwise always exits 0 (advisory/read-only). Exit 2 only on a usage error.
 set -uo pipefail
 
 BASE="origin/main"
@@ -33,10 +42,11 @@ AGE_THRESHOLD=24
 TSV=0
 FORGE_ON=1
 CLASS_FILTER=""
+HEALTH=0
 
 usage() {
     cat <<'EOF'
-Usage: unlanded-work.sh [--tsv] [--age-hours N] [--no-forge] [--class CLASS] [--base REF] [-h|--help]
+Usage: unlanded-work.sh [--tsv] [--age-hours N] [--no-forge] [--class CLASS] [--base REF] [--health] [-h|--help]
 
   --tsv            One row per branch, tab-separated, no header:
                     CLASS  BRANCH  AHEAD  AGE_HOURS  AGED(0|1)  EVIDENCE  WORKTREE_PATH_OR_EMPTY
@@ -45,10 +55,14 @@ Usage: unlanded-work.sh [--tsv] [--age-hours N] [--no-forge] [--class CLASS] [--
                     falls through to the git-only rules).
   --class CLASS    Only report this class: ACTIVE | LANDED-ELSEWHERE | STALE | UNLANDED-LIVE.
   --base REF       Compare against REF instead of origin/main.
+  --health         Print only alarm lines (LOST-COMMITS / SWEEP-ERROR); empty =
+                    healthy. Exit 1 when any alarm was printed. Excludes --tsv
+                    and --class.
   -h, --help       This message.
 
 Read-only and advisory: always exits 0 unless the command line itself is bad
-(exit 2). Never touches a worktree, never deletes a branch.
+(exit 2) or --health found an alarm (exit 1). Never touches a worktree, never
+deletes a branch.
 EOF
 }
 
@@ -70,27 +84,37 @@ while [ $# -gt 0 ]; do
         --base)
             [ $# -ge 2 ] || { echo "unlanded-work: --base requires a REF" >&2; exit 2; }
             BASE="$2"; shift 2 ;;
+        --health) HEALTH=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unlanded-work: unknown arg '$1'" >&2; exit 2 ;;
     esac
 done
 
+if [ "$HEALTH" = 1 ] && { [ "$TSV" = 1 ] || [ -n "$CLASS_FILTER" ]; }; then
+    echo "unlanded-work: --health cannot be combined with --tsv or --class" >&2
+    exit 2
+fi
+
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [ -z "$REPO_ROOT" ]; then
     echo "unlanded-work: not inside a git repo — nothing to report" >&2
+    [ "$HEALTH" = 1 ] && { echo "SWEEP-ERROR (sweep) not inside a git repo — nothing was checked"; exit 1; }
     exit 0
 fi
 cd "$REPO_ROOT" || exit 0
 
 if ! git rev-parse --verify -q "${BASE}^{commit}" >/dev/null 2>&1; then
     echo "unlanded-work: base ref '$BASE' does not resolve here (fetch it, or pass --base) — nothing to report" >&2
+    [ "$HEALTH" = 1 ] && { echo "SWEEP-ERROR (sweep) base ref '$BASE' does not resolve here — nothing was checked"; exit 1; }
     exit 0
 fi
 
 # ── shared temp index for the apply-ability probes, cleaned up on exit ──────
 idx="$(mktemp)"
 rows_file="$(mktemp)"
-trap 'rm -f "$idx" "$rows_file"' EXIT
+health_file="$(mktemp)"
+err_file="$(mktemp)"
+trap 'rm -f "$idx" "$rows_file" "$health_file" "$err_file"' EXIT
 GIT_INDEX_FILE="$idx" git read-tree "$BASE" >/dev/null 2>&1 || true
 
 reverse_applies() { # $1 = delta text
@@ -160,8 +184,44 @@ if git rev-parse --verify -q "refs/remotes/${BASE}" >/dev/null 2>&1; then
     case "$BASE" in */*) BASE_BARE="${BASE#*/}" ;; esac
 fi
 
-# forge_lookup <branch> <tip-sha> -> "OPEN\t<n>" or "MERGED\t<n>" or empty
-# (open wins). MERGED requires BOTH the PR's recorded headRefOid to equal the
+# MERGED_HEADS (HIMMEL-3405): "<headRefOid> <number>" for every MERGED PR into
+# BASE whose head commit exists in THIS repo -- the evidence for the tip rule in
+# forge_tip_lookup. Built once; a head that was never fetched cannot be compared
+# and is left out (the fail-LOUD direction: no evidence, no LANDED).
+MERGED_HEADS=""
+if [ "$FORGE_OK" = 1 ]; then
+    _mh="$(printf '%s' "$FORGE_CACHE" | jq -r --arg base "$BASE_BARE" \
+        '.[] | select(.state=="MERGED" and .baseRefName==$base and ((.headRefOid // "") | length) > 0) | "\(.headRefOid) \(.number)"' 2>/dev/null)"
+    if [ -n "$_mh" ]; then
+        _present="$(printf '%s\n' "$_mh" | cut -d' ' -f1 | git cat-file --batch-check='%(objectname) %(objecttype)' 2>/dev/null | awk '$2=="commit"{print $1}')"
+        if [ -n "$_present" ]; then
+            MERGED_HEADS="$(printf '%s\n' "$_mh" | awk 'NR==FNR{p[$1]=1;next} ($1 in p)' <(printf '%s\n' "$_present") -)"
+        fi
+    fi
+fi
+
+# forge_tip_lookup <tip-sha> -> "TIPMERGED\t<n>" or empty. A ref whose tip
+# EQUALS or is an ANCESTOR of a MERGED PR's final head has no commit of its own
+# that the PR did not carry into BASE -- whatever the ref is called. This is what
+# classifies a review snapshot (pr<N>, pr<N>tmp, ...) the name-keyed rule below
+# can never match (HIMMEL-3405). A tip AHEAD of the head is not an ancestor and
+# falls through to the git rules.
+forge_tip_lookup() {
+    local oid n
+    [ -n "$MERGED_HEADS" ] || return 0
+    while read -r oid n; do
+        [ -n "$oid" ] || continue
+        if git merge-base --is-ancestor "$1" "$oid" 2>/dev/null; then
+            printf 'TIPMERGED\t%s\n' "$n"
+            return 0
+        fi
+    done <<EOF
+$MERGED_HEADS
+EOF
+}
+
+# forge_lookup <branch> <tip-sha> -> "OPEN\t<n>" or "MERGED\t<n>" (by name) or
+# "TIPMERGED\t<n>" (by tip, name-agnostic) or empty (open wins). MERGED requires BOTH the PR's recorded headRefOid to equal the
 # branch's CURRENT tip AND its baseRefName to equal BASE_BARE:
 #   - tip match: a branch name can be reused/rewound after its PR merged (a
 #     mere "this branch name once had a merged PR" is not evidence the
@@ -176,12 +236,29 @@ fi
 # so it stays both tip- and base-agnostic.
 forge_lookup() {
     [ "$FORGE_OK" = 1 ] || return 0
-    printf '%s' "$FORGE_CACHE" | jq -r --arg b "$1" --arg tip "$2" --arg base "$BASE_BARE" '
+    local row
+    row="$(printf '%s' "$FORGE_CACHE" | jq -r --arg b "$1" --arg tip "$2" --arg base "$BASE_BARE" '
         ( [.[] | select(.headRefName==$b and .state=="OPEN")]   | .[0].number ) as $o
         | ( [.[] | select(.headRefName==$b and .state=="MERGED" and .headRefOid==$tip and .baseRefName==$base)] | .[0].number ) as $m
         | if $o then "OPEN\t\($o)"
           elif $m then "MERGED\t\($m)"
-          else empty end' 2>/dev/null
+          else empty end' 2>/dev/null)"
+    if [ -n "$row" ]; then printf '%s\n' "$row"; return 0; fi
+    forge_tip_lookup "$2"
+}
+
+# diff_failure_cause <branch> <rc> -- a readable cause for a failed delta, never
+# a bare rc (HIMMEL-3405). No merge base is the one known systematic case: a
+# branch whose root commit comes from another repo's history (e.g. the archived
+# private himmel) has nothing to diff against.
+diff_failure_cause() {
+    local first
+    if ! git merge-base "$BASE" "$1" >/dev/null 2>&1; then
+        printf 'no merge base with %s — unrelated history' "$BASE"
+        return 0
+    fi
+    first="$(head -1 "$err_file" 2>/dev/null)"
+    printf 'git diff failed (rc=%s)%s' "$2" "${first:+: $first}"
 }
 
 now="$(date +%s)"
@@ -190,7 +267,10 @@ now="$(date +%s)"
 while IFS= read -r branch; do
     [ -n "$branch" ] || continue
 
-    ahead="$(git rev-list --count "${BASE}..${branch}" 2>/dev/null)" || ahead=0
+    if ! ahead="$(git rev-list --count "${BASE}..${branch}" 2>/dev/null)"; then
+        printf 'SWEEP-ERROR %s git rev-list failed against %s — branch not classified\n' "$branch" "$BASE" >> "$health_file"
+        continue
+    fi
     case "$ahead" in ''|*[!0-9]*) ahead=0 ;; esac
     [ "$ahead" -gt 0 ] || continue
 
@@ -232,6 +312,7 @@ while IFS= read -r branch; do
         # not a data-loss one.
         OPEN*)   class="ACTIVE";           evidence="open PR #${forge_row#OPEN$'\t'}" ;;
         MERGED*) class="LANDED-ELSEWHERE"; evidence="merged PR #${forge_row#MERGED$'\t'}" ;;
+        TIPMERGED*) class="LANDED-ELSEWHERE"; evidence="merged PR #${forge_row#TIPMERGED$'\t'} (ref tip is at or behind the PR head)" ;;
     esac
 
     if [ -z "$class" ]; then
@@ -249,10 +330,12 @@ while IFS= read -r branch; do
         # file -- a false STALE/LANDED-ELSEWHERE for binary-only work. With
         # --binary the delta embeds real (literal/delta) binary patch data
         # apply can act on.
-        delta="$(git diff --binary "${BASE}...${branch}" 2>/dev/null)" || delta_rc=$?
+        delta="$(git diff --binary "${BASE}...${branch}" 2>"$err_file")" || delta_rc=$?
         if [ "$delta_rc" -ne 0 ]; then
             class="UNLANDED-LIVE"
-            evidence="git diff failed (rc=$delta_rc); could not compute a delta"
+            cause="$(diff_failure_cause "$branch" "$delta_rc")"
+            evidence="$cause; could not compute a delta"
+            printf 'SWEEP-ERROR %s %s\n' "$branch" "$cause" >> "$health_file"
         elif [ -z "$delta" ] || reverse_applies "$delta"; then
             class="LANDED-ELSEWHERE"
             evidence="content already on main"
@@ -285,6 +368,77 @@ while IFS= read -r branch; do
     wt="$(worktree_for_branch "$branch")"
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$class" "$branch" "$ahead" "$age_hours" "$aged" "$evidence" "$wt" >> "$rows_file"
 done < <(git for-each-ref --format='%(refname:short)' refs/heads/)
+
+# ── --health: LOST-COMMITS over local AND remote-tracking branches ───────────
+# A branch whose PR MERGED but whose tip carries commits that are in neither the
+# merged head nor BASE: work pushed after the merge that never shipped. An open
+# PR for the same name = live work, skipped. Only alarms are printed; the class
+# tables below are not.
+lost_scan() { # $1 label, $2 PR head-branch name, $3 tip
+    local label="$1" name="$2" tip="$3" info n oid k d
+    local healthy=0 best_k="" best_n="" unknown_n="" base_ahead
+    info="$(printf '%s' "$FORGE_CACHE" | jq -r --arg b "$name" --arg base "$BASE_BARE" '
+        if any(.[]; .headRefName==$b and .state=="OPEN") then "OPEN"
+        else (.[] | select(.headRefName==$b and .state=="MERGED" and .baseRefName==$base)
+              | "\(.number) \(.headRefOid // "")") end' 2>/dev/null)" || return 0
+    [ -n "$info" ] || return 0
+    case "$info" in OPEN*) return 0 ;; esac
+    while read -r n oid; do
+        [ -n "$n" ] || continue
+        if [ "$oid" = "$tip" ]; then healthy=1; break; fi
+        if [ -n "$oid" ] && git cat-file -e "${oid}^{commit}" 2>/dev/null; then
+            k="$(git rev-list --count "$tip" "^$oid" "^$BASE" 2>/dev/null)" || k=""
+            case "$k" in ''|*[!0-9]*) unknown_n="$n"; continue ;; esac
+            if [ "$k" -eq 0 ]; then healthy=1; break; fi
+            # Commits ahead of the merged head can still be on BASE under other
+            # shas (a follow-up squashed/cherry-picked elsewhere): if the delta
+            # oid..tip already reverse-applies to BASE, nothing was lost.
+            d="$(git diff --binary "$oid" "$tip" 2>/dev/null)" || d="x"
+            if [ -z "$d" ] || { [ "$d" != "x" ] && reverse_applies "$d"; }; then healthy=1; break; fi
+            if [ -z "$best_k" ] || [ "$k" -lt "$best_k" ]; then best_k="$k"; best_n="$n"; fi
+        else
+            unknown_n="$n"
+        fi
+    done <<EOF
+$info
+EOF
+    [ "$healthy" = 1 ] && return 0
+    if [ -n "$best_k" ]; then
+        printf 'LOST-COMMITS %s pr#%s ahead=%s\n' "$label" "$best_n" "$best_k" >> "$health_file"
+    elif [ -n "$unknown_n" ]; then
+        base_ahead="$(git rev-list --count "$tip" "^$BASE" 2>/dev/null)" || base_ahead=1
+        [ "$base_ahead" = 0 ] && return 0
+        printf 'SWEEP-ERROR %s merged PR #%s head is not present locally — cannot tell whether %s commit(s) landed\n' "$label" "$unknown_n" "$base_ahead" >> "$health_file"
+    fi
+    return 0
+}
+
+if [ "$HEALTH" = 1 ]; then
+    if [ "$FORGE_ON" = 1 ] && [ "$FORGE_OK" != 1 ]; then
+        echo "SWEEP-ERROR (forge) PR listing unavailable (gh failed, timed out or jq missing) — LOST-COMMITS check skipped" >> "$health_file"
+    elif [ "$FORGE_OK" = 1 ]; then
+        REMOTE_NAME="origin"
+        if git rev-parse --verify -q "refs/remotes/${BASE}" >/dev/null 2>&1; then
+            case "$BASE" in */*) REMOTE_NAME="${BASE%%/*}" ;; esac
+        fi
+        while IFS=$'\t' read -r ref tip; do
+            [ -n "$ref" ] || continue
+            name="${ref#refs/heads/}"
+            [ "$name" = "$BASE_BARE" ] && continue
+            lost_scan "$name" "$name" "$tip"
+        done < <(git for-each-ref --format='%(refname)%09%(objectname)' refs/heads/)
+        while IFS=$'\t' read -r ref tip; do
+            [ -n "$ref" ] || continue
+            name="${ref#refs/remotes/"$REMOTE_NAME"/}"
+            case "$name" in HEAD|"$BASE_BARE") continue ;; esac
+            # Same name and same tip as a local branch: already judged there.
+            [ "$(git rev-parse -q --verify "refs/heads/$name" 2>/dev/null)" = "$tip" ] && continue
+            lost_scan "$REMOTE_NAME/$name" "$name" "$tip"
+        done < <(git for-each-ref --format='%(refname)%09%(objectname)' "refs/remotes/$REMOTE_NAME/")
+    fi
+    if [ -s "$health_file" ]; then cat "$health_file"; exit 1; fi
+    exit 0
+fi
 
 # ── output ────────────────────────────────────────────────────────────────
 if [ "$TSV" = 1 ]; then

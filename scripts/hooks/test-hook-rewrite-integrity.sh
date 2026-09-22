@@ -102,17 +102,123 @@ else
   bad "tampered guard: expected rc=2 with a DENY message, got rc=$rc_after err=$(cat "$T/after.err")"
 fi
 
-# The documented single-run bypass still lets a legitimate mid-session edit
-# through.
+# HIMMEL-3384: the documented bypass is worktree-only and audited. In the
+# PRIMARY checkout (cwd = $PROJECT) it is not honoured, so the tampered guard
+# is still denied ...
 BYPASS_OUT="$T/bypass.out"
 BYPASS_ERR="$T/bypass.err"
-printf '%s' "$PAYLOAD" | CLAUDE_PROJECT_DIR="$PROJECT" HIMMEL_HOOK_INTEGRITY_DIR="$OUT_DIR" HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 \
-  node "$LAUNCHER" --optional "$GUARD" >"$BYPASS_OUT" 2>"$BYPASS_ERR"
+(cd "$PROJECT" && printf '%s' "$PAYLOAD" | CLAUDE_PROJECT_DIR="$PROJECT" HIMMEL_HOOK_INTEGRITY_DIR="$OUT_DIR" HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 \
+  node "$LAUNCHER" --optional "$GUARD" >"$BYPASS_OUT" 2>"$BYPASS_ERR")
 rc_bypass=$?
-if [ "$rc_bypass" -eq 0 ]; then
-  ok "HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 lets the tampered guard run"
+if [ "$rc_bypass" -eq 2 ] && grep -q 'linked git worktree' "$BYPASS_ERR"; then
+  ok "HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 is NOT honoured in the primary checkout (and the deny names the scope)"
 else
-  bad "bypass: expected rc=0, got rc=$rc_bypass err=$(cat "$BYPASS_ERR")"
+  bad "primary bypass: expected rc=2 naming the worktree scope, got rc=$rc_bypass err=$(cat "$BYPASS_ERR")"
+fi
+
+# ... a LEGACY record (no git_dir — this fixture has no origin remote, so the
+# recorder wrote the pins-only shape) gives the bypass nothing to validate the
+# worktree against, so it is refused even from a real linked worktree ...
+WT="$T/wt"
+git -C "$PROJECT" worktree add -q -b bypass-wt "$WT"
+cp "$GUARD" "$WT/scripts/hooks/fake-guard.sh"
+BYPASS_AUDIT="$PROJECT/.git/hook-integrity-bypass.jsonl"
+(cd "$WT" && printf '%s' "$PAYLOAD" | CLAUDE_PROJECT_DIR="$WT" HIMMEL_HOOK_INTEGRITY_DIR="$OUT_DIR" HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 \
+  node "$LAUNCHER" --optional "$WT/scripts/hooks/fake-guard.sh" >"$BYPASS_OUT" 2>"$BYPASS_ERR")
+rc_legacy=$?
+if [ "$rc_legacy" -eq 2 ] && [ ! -e "$BYPASS_AUDIT" ]; then
+  ok "a legacy record with no git_dir refuses the bypass, even in a linked worktree"
+else
+  bad "legacy record: expected rc=2 and no audit file, got rc=$rc_legacy err=$(cat "$BYPASS_ERR")"
+fi
+
+# ... while, once the record carries the recorded repo (git_dir, as the recorder
+# writes it for a repo with an anchor), a LINKED worktree with the guard inside
+# it gets the bypass and exactly one audit line.
+jq --arg g "$PROJECT/.git" '. + {git_dir: $g}' "$OUT_DIR/worker-session-1.json" > "$OUT_DIR/worker-session-1.json.new" \
+  && mv "$OUT_DIR/worker-session-1.json.new" "$OUT_DIR/worker-session-1.json"
+(cd "$WT" && printf '%s' "$PAYLOAD" | CLAUDE_PROJECT_DIR="$WT" HIMMEL_HOOK_INTEGRITY_DIR="$OUT_DIR" HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 \
+  node "$LAUNCHER" --optional "$WT/scripts/hooks/fake-guard.sh" >"$BYPASS_OUT" 2>"$BYPASS_ERR")
+rc_wt=$?
+audit_lines=$(wc -l <"$BYPASS_AUDIT" 2>/dev/null || echo missing)
+if [ "$rc_wt" -eq 0 ] && [ "$(printf '%s' "$audit_lines" | tr -d ' ')" = "1" ] && grep -q '"worktree"' "$BYPASS_AUDIT"; then
+  ok "HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 lets the tampered guard run in a linked worktree, with one audit line"
+else
+  bad "worktree bypass: expected rc=0 + 1 audit line, got rc=$rc_wt lines=$audit_lines err=$(cat "$BYPASS_ERR")"
+fi
+
+# HIMMEL-3384 (adversarial round): the worktree, "linked" and the audit sink come
+# from CLAUDE_PROJECT_DIR and the session's RECORDED repo, never from `git
+# rev-parse` in cwd (which follows a `.git` pointer FILE a worker can rewrite).
+bypass_run() { # <cwd> <project dir> <guard>
+  (cd "$1" && printf '%s' "$PAYLOAD" | CLAUDE_PROJECT_DIR="$2" HIMMEL_HOOK_INTEGRITY_DIR="$OUT_DIR" HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 \
+    node "$LAUNCHER" --optional "$3" >"$BYPASS_OUT" 2>"$BYPASS_ERR")
+}
+audit_count() { wc -l <"$BYPASS_AUDIT" 2>/dev/null | tr -d ' '; }
+expect_refused() { # <label> <rc>
+  if [ "$2" -eq 2 ] && [ "$(audit_count)" = "1" ]; then
+    ok "$1"
+  else
+    bad "$1: expected rc=2 and still 1 audit line, got rc=$2 lines=$(audit_count) err=$(cat "$BYPASS_ERR")"
+  fi
+}
+
+# C1: a forged scripts/.git pointer must not turn the primary into a linked worktree.
+printf 'gitdir: %s\n' "$PROJECT/.git/worktrees/wt" > "$PROJECT/scripts/.git"
+bypass_run "$PROJECT/scripts" "$PROJECT" "$GUARD"
+rc_c1=$?
+rm -f "$PROJECT/scripts/.git"
+expect_refused "C1: a forged scripts/.git pointer in the primary checkout is not a linked worktree" "$rc_c1"
+
+# C3: a primary-session hook symlinked to a tampered worktree hook is not vouched for.
+cp "$GUARD" "$T/guard.saved"
+rm -f "$GUARD"
+ln -s "$WT/scripts/hooks/fake-guard.sh" "$GUARD"
+bypass_run "$WT" "$PROJECT" "$GUARD"
+rc_c3=$?
+rm -f "$GUARD"
+cp "$T/guard.saved" "$GUARD"
+chmod +x "$GUARD"
+expect_refused "C3: a symlink from the primary hook to a worktree hook is not honoured" "$rc_c3"
+
+# I1: a symlinked audit sink is refused; nothing is written through it.
+: > "$T/scratch.log"
+mv "$BYPASS_AUDIT" "$T/audit.saved"
+ln -s "$T/scratch.log" "$BYPASS_AUDIT"
+bypass_run "$WT" "$WT" "$WT/scripts/hooks/fake-guard.sh"
+rc_i1=$?
+rm -f "$BYPASS_AUDIT"
+mv "$T/audit.saved" "$BYPASS_AUDIT"
+if [ "$rc_i1" -eq 2 ] && [ ! -s "$T/scratch.log" ]; then
+  ok "I1: a symlinked audit sink is refused and nothing is written through it"
+else
+  bad "I1: expected rc=2 and an empty scratch file, got rc=$rc_i1 scratch=$(cat "$T/scratch.log")"
+fi
+
+# Sibling: cwd in one worktree, CLAUDE_PROJECT_DIR the other, guard in the other.
+WT2="$T/wt2"
+git -C "$PROJECT" worktree add -q -b bypass-wt2 "$WT2"
+cp "$GUARD" "$WT2/scripts/hooks/fake-guard.sh"
+bypass_run "$WT" "$WT2" "$WT2/scripts/hooks/fake-guard.sh"
+rc_sib=$?
+expect_refused "a sibling worktree's cwd with CLAUDE_PROJECT_DIR set to the other worktree is refused" "$rc_sib"
+
+# C2: a rewritten worktree .git pointer (into a decoy repo) is refused, and the
+# decoy's common dir gets no audit line.
+DECOY="$T/decoy"
+mkdir -p "$DECOY"
+git -C "$DECOY" init -q
+git -C "$DECOY" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+git -C "$DECOY" worktree add -q -b dwt "$T/dwt"
+cp "$WT/.git" "$T/wt-dotgit.saved"
+printf 'gitdir: %s\n' "$DECOY/.git/worktrees/dwt" > "$WT/.git"
+bypass_run "$WT" "$WT" "$WT/scripts/hooks/fake-guard.sh"
+rc_c2=$?
+cp "$T/wt-dotgit.saved" "$WT/.git"
+if [ "$rc_c2" -eq 2 ] && [ "$(audit_count)" = "1" ] && [ ! -e "$DECOY/.git/hook-integrity-bypass.jsonl" ]; then
+  ok "C2: a worktree whose .git pointer was rewritten to a decoy repo is refused, decoy log untouched"
+else
+  bad "C2: expected rc=2, 1 real audit line, no decoy log; got rc=$rc_c2 lines=$(audit_count) err=$(cat "$BYPASS_ERR")"
 fi
 
 # A session with no pin file at all (e.g. record-hook-integrity.sh never ran,

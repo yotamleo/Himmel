@@ -14,7 +14,10 @@
 #     sh-diagnostic-known-limit below);
 #   - service-creation shapes (backgrounded `nohup ... &`, systemctl ...
 #     enable, launchctl load|bootstrap) count too. Bare nohup/setsid/disown
-#     do not (hook case lists and bounded detach helpers use them routinely).
+#     do not (hook case lists and bounded detach helpers use them routinely);
+#   - the exact command `systemctl [--user] daemon-reload` is carved out
+#     (HIMMEL-3414): it reloads unit files and starts nothing. Nothing else
+#     named daemon is exempt, and a spawn beside it still fails.
 #
 # End-to-end against real fixture repos: each case commits a base and a feature
 # commit into a throwaway git repo carrying a COPY of the real ws5 script, then
@@ -137,6 +140,36 @@ run_case md-setinterval FAIL docs/qmd.md \
     'The page polls with setInterval(tick, 1000).'
 run_case sh-comment-while-true FAIL scripts/start.sh \
     '# while true; do probe; done'
+
+echo "== T13(b): exact systemctl [--user] daemon-reload PASSES (HIMMEL-3414) =="
+# The verb reloads systemd's unit files and starts nothing. The carve-out is the
+# exact token only: the word `daemon` in general still counts (controls below).
+run_case sh-systemctl-user-daemon-reload PASS scripts/uninstall.sh \
+    'systemctl --user daemon-reload'
+run_case sh-systemctl-daemon-reload PASS scripts/uninstall.sh \
+    '  systemctl daemon-reload >/dev/null 2>&1 || true'
+run_case sh-systemctl-daemon-reload-if PASS scripts/uninstall.sh \
+    'if systemctl --user daemon-reload; then echo reloaded; fi'
+run_case sh-systemctl-daemon-reload-twice PASS scripts/uninstall.sh \
+    'systemctl daemon-reload;systemctl --user daemon-reload'
+
+echo "== T13(b): a daemon spawn beside or near daemon-reload still FAILS =="
+run_case sh-reload-then-nohup FAIL scripts/uninstall.sh \
+    'systemctl --user daemon-reload && nohup qmd mcp >/dev/null 2>&1 &'
+run_case sh-reload-then-enable FAIL scripts/uninstall.sh \
+    'systemctl --user daemon-reload && systemctl --user enable --now qmd.service'
+run_case sh-reload-then-daemon-flag FAIL scripts/uninstall.sh \
+    'systemctl --user daemon-reload; qmd mcp --http --daemon'
+run_case sh-bare-daemon-spawn FAIL scripts/uninstall.sh \
+    'bash scripts/ensure-qmd-daemon.sh'
+run_case sh-daemon-reload-lookalike FAIL scripts/uninstall.sh \
+    'systemctl --user daemon-reloader'
+run_case sh-daemon-reexec FAIL scripts/uninstall.sh \
+    'systemctl --user daemon-reexec'
+run_case sh-other-verb-daemon-reload FAIL scripts/uninstall.sh \
+    'foo --user daemon-reload'
+run_case sh-daemon-reload-with-arg FAIL scripts/uninstall.sh \
+    'systemctl --user daemon-reload --now qmd.service'
 
 if [ "$failures" -ne 0 ]; then
     echo "FAIL: $failures of $cases case(s) failed"

@@ -44,6 +44,16 @@ const fs = require('fs');
 const path = require('path');
 const { pathToFileURL } = require('url');
 const probesLib = require('./probes.js');
+const { nodeScriptCmd } = require('./helpers.js');
+
+// HIMMEL-3327: the printed `config set lanes.<id> on|off` remediations run from
+// the ADOPTER's project, not the clone, so they name this install's bin.js by
+// absolute path (lib/ sits one level under bin.js) — never the clone-relative
+// `node scripts/himmelctl/bin.js`. One definition for all three call sites.
+const HIMMELCTL_BIN = path.join(__dirname, '..', 'bin.js');
+function laneConfigSetCmd(registryId, state) {
+  return `${nodeScriptCmd(HIMMELCTL_BIN)} config set lanes.${registryId} ${state}`;
+}
 // RETASK stage1-build-6d2e round 10 [codex-1]: a pure-data read (not
 // bin.js's logic) so buildSummary can look up whether an 'unconfigured'
 // secret shares its aggregate luna-sources probe with a sibling credential —
@@ -598,7 +608,7 @@ function probeLane(lane, ctx) {
     return {
       state: 'absent',
       detail: `${probeDetail(baseProbe, false, platform)}; and DISABLED by scripts/lanes/lanes.local.json`,
-      overlayFix: `then re-enable it (the local overlay turns it off, so /lanes excludes it even once installed): node scripts/himmelctl/bin.js config set lanes.${lane.registryId} on`,
+      overlayFix: `then re-enable it (the local overlay turns it off, so /lanes excludes it even once installed): ${laneConfigSetCmd(lane.registryId, 'on')}`,
     };
   }
   if (!physical && enabled && overridden) {
@@ -1206,7 +1216,7 @@ function buildSummary(answers, laneRows, opts) {
         what: `lane ${row.id} — ${row.detail}`,
         how: row.hint,
         note: [
-          `the local overlay forces this lane on without it being installed — install it, or clear the override: node scripts/himmelctl/bin.js config set lanes.${row.registryId} off`,
+          `the local overlay forces this lane on without it being installed — install it, or clear the override: ${laneConfigSetCmd(row.registryId, 'off')}`,
         ].concat(row.note ? [`then complete setup: ${row.note.replace(/^then /, '')}`] : []),
       });
     } else if (row.state === 'disabled') {
@@ -1214,7 +1224,7 @@ function buildSummary(answers, laneRows, opts) {
       // reinstall, so it gets its own entry with the exact re-enable command.
       manual.push({
         what: `lane ${row.id} — ${row.detail}`,
-        how: `node scripts/himmelctl/bin.js config set lanes.${row.registryId} on`,
+        how: laneConfigSetCmd(row.registryId, 'on'),
         // CR round 9 [codex-adv-r8-2]: re-enabling is only half the story — a
         // disabled copilot still needs its device-flow login once it is back
         // on. Remediation first, then the setup step round 7 promised to keep.

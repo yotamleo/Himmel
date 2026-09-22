@@ -61,7 +61,9 @@ function normalize(candidate) {
 // HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1, set in the LAUNCHING shell (this repo's
 // standard bypass model — see scripts/hooks/CLAUDE.md), is the documented
 // escape hatch for a legitimate mid-session hook edit (an operator actively
-// developing a hook).
+// developing a hook). HIMMEL-3384: it is honoured only inside a linked
+// worktree, only for hook scripts that resolve inside that worktree, and every
+// use is audited (see the HIMMEL-3384 block above verifyProjectHookIntegrity).
 //
 // HONEST RESIDUALS:
 // (a) the pin file itself lives in an ordinary user-writable directory; a
@@ -861,37 +863,245 @@ function resolveMismatchInner(context) {
   }
 }
 
+// ------------------------------------------------------------- HIMMEL-3384
+//
+// The bypass is honoured only where the operator's own work lives and only
+// where it leaves a trace. It is consulted AFTER the normal check, so a session
+// that sets it pays nothing (and logs nothing) on a hook that verifies clean;
+// a "use" is a call where the bypass turned a deny into an allow. Honoured
+// only when ALL of these hold — anything else falls back to the normal deny:
+//   (1) the worktree is CLAUDE_PROJECT_DIR, never a directory discovered from cwd:
+//       `git rev-parse` follows the `.git` pointer FILE a worker can rewrite (the
+//       hazard gitInRecordedRepo's header names). cwd must merely lie inside it;
+//   (2) the session's RECORDED repo (record.git_dir, asked through
+//       gitInRecordedRepo) lists that directory as a LINKED, non-primary
+//       worktree and its `.git` pointer resolves back into that repo's worktrees/,
+//       so the primary checkout — where the live hooks run — stays enforced. A
+//       record with no git_dir (legacy) refuses;
+//   (3) the hook script's real path resolves inside that worktree, so the
+//       bypass cannot vouch for a script from the primary or a sibling;
+//   (4) one JSON line is appended, in a single write, to
+//       <record.git_dir>/hook-integrity-bypass.jsonl (a sibling of the other
+//       per-repo audit logs there). A symlink or non-regular sink is refused, and
+//       so is a failed or short write: an override that cannot be recorded is
+//       not granted.
+// One line per honoured HOOK, not per tool call: a hook chain runs this launcher
+// once per member, so a call that overrides several tampered members appends one
+// line for each.
+// Residual: HIMMEL_HOOK_INTEGRITY_BYPASS_OK is shared with the command-text
+// fences in block-glm-external-writes.sh, which this does NOT scope.
+const BYPASS_AUDIT_FILE = 'hook-integrity-bypass.jsonl';
+const BYPASS_SCOPE = 'The bypass is honoured only when the session cwd is inside CLAUDE_PROJECT_DIR, the '
+  + "session's recorded repo lists that directory as a linked git worktree (it is ignored in the primary "
+  + 'checkout) and the hook script resolves inside it; each honoured hook appends one line to '
+  + `<recorded-git-dir>/${BYPASS_AUDIT_FILE}, and a failed audit write refuses it.`;
+
+// The `-n <name>` of the claude process (same seam as scripts/lib/session-name.sh,
+// /proc is Linux-only). null, never a guess, when it cannot be resolved.
+function sessionNameFromProc() {
+  try {
+    const pid = process.env.CLAUDE_PID;
+    if (!pid || !/^[0-9]+$/.test(pid)) return null;
+    const argv = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0');
+    const at = argv.indexOf('-n');
+    return at >= 0 && argv[at + 1] ? argv[at + 1] : null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+function isInside(root, candidate) {
+  const rel = path.relative(root, candidate);
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
+}
+
+// Is `top` a LINKED worktree of the repo whose common dir is `commonDir`? Every
+// answer comes from that recorded repo (never from `top`'s own `.git`), except the
+// one pointer check below, which is exactly the comparison a rewritten pointer
+// fails.
+function isLinkedWorktreeOf(commonDir, top) {
+  const own = gitStdout(gitInRecordedRepo(commonDir, ['rev-parse', '--path-format=absolute', '--git-common-dir']));
+  if (!own || fs.realpathSync(own) !== commonDir) return false; // not a common dir
+  const listed = gitInRecordedRepo(commonDir, ['worktree', 'list', '--porcelain', '-z']);
+  if (!listed || listed.status !== 0) return false;
+  // -z: without it git C-quotes a path with a newline, which realpath would not resolve.
+  // Fields are NUL-terminated; the first `worktree` field is the main worktree (the
+  // primary checkout, or a bare repo) — never linked.
+  const linked = listed.stdout.split('\0').filter((f) => f.startsWith('worktree ')).slice(1).some((field) => {
+    try {
+      return fs.realpathSync(field.slice('worktree '.length)) === top;
+    } catch (_e) {
+      return false; // a listed worktree that is gone
+    }
+  });
+  if (!linked) return false;
+  const dotGit = path.join(top, '.git');
+  if (!fs.lstatSync(dotGit).isFile()) return false;
+  const pointer = /^gitdir: (.+)/.exec(fs.readFileSync(dotGit, 'utf8'));
+  return Boolean(pointer)
+    && path.dirname(fs.realpathSync(path.resolve(top, pointer[1].trim()))) === path.join(commonDir, 'worktrees');
+}
+
+// One O_APPEND write of the whole line into a regular file the launcher opened
+// without following a link; false on anything less than the full line landing.
+function appendBypassAudit(commonDir, line) {
+  const file = path.join(commonDir, BYPASS_AUDIT_FILE);
+  try {
+    if (!fs.lstatSync(file).isFile()) return false; // a symlink (/dev/null), directory or device
+  } catch (e) {
+    if (e.code !== 'ENOENT') throw e;
+  }
+  const { O_APPEND, O_WRONLY, O_CREAT, O_NOFOLLOW } = fs.constants;
+  const fd = fs.openSync(file, O_APPEND | O_WRONLY | O_CREAT | (O_NOFOLLOW || 0), 0o600);
+  try {
+    if (!fs.fstatSync(fd).isFile()) return false;
+    const bytes = Buffer.from(line);
+    return fs.writeSync(fd, bytes) === bytes.length;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function honourBypass(scriptPath, sessionId) {
+  try {
+    const projectDir = process.env.CLAUDE_PROJECT_DIR;
+    if (!nonEmptyString(projectDir)) return false;
+    const record = loadIntegrityRecord(sessionId);
+    if (!record || !nonEmptyString(record.git_dir) || !path.isAbsolute(record.git_dir)) return false;
+    const top = fs.realpathSync(projectDir);
+    const cwd = process.cwd();
+    const realCwd = fs.realpathSync(cwd);
+    if (realCwd !== top && !isInside(top, realCwd)) return false;
+    const hook = fs.realpathSync(scriptPath);
+    if (!isInside(top, hook)) return false;
+    const commonDir = fs.realpathSync(record.git_dir);
+    if (!isLinkedWorktreeOf(commonDir, top)) return false;
+    return appendBypassAudit(commonDir, `${JSON.stringify({
+      ts: new Date().toISOString(),
+      session: sessionNameFromProc(),
+      session_id: sessionId || null,
+      cwd,
+      worktree: top,
+      hook_paths: [hook],
+    })}\n`);
+  } catch (_e) {
+    return false;
+  }
+}
+
 function verifyProjectHookIntegrity(scriptPath, sessionId) {
+  const result = verifyIntegrityUnbypassed(scriptPath, sessionId);
+  if (result.ok || process.env.HIMMEL_HOOK_INTEGRITY_BYPASS_OK !== '1') return result;
+  return honourBypass(scriptPath, sessionId) ? { ok: true } : result;
+}
+
+// HIMMEL-3390. normalize() above only flips slashes; it does not collapse `..`
+// or follow a symlink, so `<project>/scripts/../scripts/hooks/guard.sh` was
+// project-local yet keyed a pin lookup by that spelling (`scripts/../scripts/…`,
+// never pinned) and skipped verification of a tampered file. Both the
+// project-local decision and the pin key now come from the RESOLVED path:
+// path.resolve collapses `..`, realpath follows links — through the deepest
+// ancestor that exists, so a missing script still resolves beside its siblings.
+const ESCAPES_PROJECT_DENY = 'escapes-project: ';
+
+function resolveReal(candidate) {
+  const raw = String(candidate);
+  // realpath(3) walks the string in kernel order, so `link/..` leaves the link's
+  // target; the JS realpathSync (and path.resolve) collapse `..` lexically first.
+  try { return fs.realpathSync.native(raw); } catch (_e) { /* absent: resolve what exists */ }
+  const abs = path.resolve(raw);
+  const tail = [];
+  for (let cur = abs; ;) {
+    try {
+      return path.join(fs.realpathSync.native(cur), ...tail);
+    } catch (_e) {
+      const up = path.dirname(cur);
+      if (up === cur) return abs;
+      tail.unshift(path.basename(cur));
+      cur = up;
+    }
+  }
+}
+
+// Every project-relative identity `candidate` passes through on its way to the
+// file that runs: for each hop of the leaf's symlink chain, the parents resolved
+// (kernel order) plus the unfollowed leaf. A pinned hook swapped for a link to an
+// unpinned sibling is then still checked under its own pin, whichever directory
+// alias it was reached through. Bounded, so a link loop cannot spin.
+function leafChain(candidate) {
+  const hops = [];
+  let cur = String(candidate);
+  for (let i = 0; i < 40; i++) {
+    const hop = path.join(resolveReal(path.dirname(cur)), path.basename(cur));
+    hops.push(normalize(hop));
+    let target;
+    try { target = fs.readlinkSync(hop); } catch (_e) { break; }
+    cur = path.isAbsolute(target) ? target : `${path.dirname(hop)}/${target}`;
+  }
+  return hops;
+}
+
+function verifyIntegrityUnbypassed(scriptPath, sessionId) {
   // ---- FAST PATH: strictly git-free, no child process, on every hook call ----
-  if (process.env.HIMMEL_HOOK_INTEGRITY_BYPASS_OK === '1') return { ok: true };
   const projectDir = process.env.CLAUDE_PROJECT_DIR;
   if (!projectDir) return { ok: true };
-  const normScript = normalize(scriptPath).toLowerCase();
-  const normProject = normalize(projectDir).toLowerCase();
-  if (!normScript.startsWith(`${normProject}/`)) return { ok: true }; // not project-local
-  const relPath = normalize(scriptPath).slice(normalize(projectDir).length + 1);
+  const resolvedScript = normalize(resolveReal(scriptPath));
+  const resolvedProject = normalize(resolveReal(projectDir));
+  if (!resolvedScript.toLowerCase().startsWith(`${resolvedProject.toLowerCase()}/`)) {
+    // Resolves outside the project. A path that never claimed to be inside it is
+    // simply foreign (not this check's business); one that spelled itself
+    // `<project>/…` but leaves it via `..` or a link is neither project-local nor
+    // vouched for by any pin, so it is refused, and the bypass cannot rescue it
+    // (honourBypass wants the resolved script inside the worktree).
+    if (!normalize(scriptPath).toLowerCase().startsWith(`${normalize(projectDir).toLowerCase()}/`)) return { ok: true };
+    return {
+      ok: false,
+      relPath: normalize(scriptPath).slice(normalize(projectDir).length + 1),
+      reason: `${ESCAPES_PROJECT_DENY}resolves to ${resolvedScript}, outside the project`,
+    };
+  }
+  const relPath = resolvedScript.slice(resolvedProject.length + 1);
   const { record, denyReason } = loadRecordAcrossPublish(sessionId);
   if (denyReason) return { ok: false, relPath, reason: denyReason };
   const pins = recordPins(record);
   if (!pins) return { ok: true };
-  const expected = pins[relPath];
-  if (typeof expected !== 'string' || !expected) return { ok: true }; // unpinned script
+  // Every identity the path claims is checked: the resolved target's, the spelled
+  // path's own (`..` collapsed, links NOT followed) and each hop of the leaf's link
+  // chain. A pinned hook swapped for a link to an unpinned sibling keeps its pin.
+  const spelled = normalize(path.resolve(String(scriptPath)));
+  const spelledProject = normalize(path.resolve(projectDir));
+  const keys = [relPath];
+  const claim = (abs, root) => {
+    if (!abs.toLowerCase().startsWith(`${root.toLowerCase()}/`)) return;
+    const rel = abs.slice(root.length + 1);
+    if (!keys.includes(rel)) keys.push(rel);
+  };
+  claim(spelled, spelledProject);
+  for (const hop of leafChain(scriptPath)) claim(hop, resolvedProject);
   let actual;
-  try {
-    actual = gitBlobSha1(fs.readFileSync(scriptPath));
-  } catch (_e) {
-    return { ok: true }; // unreadable/missing — the DELETE vector, already covered by --fail-closed-when
+  for (const key of keys) {
+    const expected = pins[key];
+    if (typeof expected !== 'string' || !expected) continue; // unpinned script
+    if (actual === undefined) {
+      try {
+        actual = gitBlobSha1(fs.readFileSync(scriptPath));
+      } catch (_e) {
+        return { ok: true }; // unreadable/missing — the DELETE vector, already covered by --fail-closed-when
+      }
+    }
+    if (actual === expected) continue;
+    // -------------------------------- MISMATCH: HIMMEL-2528 re-pin or deny ---
+    try {
+      const verdict = resolveMismatch({ projectDir, relPath: key, actual, record, sessionId });
+      if (!verdict.ok) return verdict;
+    } catch (_e) {
+      // Any unforeseen failure on the mismatch path denies, exactly as before
+      // this ticket — a crash here must never become an allow, and must never
+      // spill a stack trace into the session transcript.
+      return { ok: false, relPath: key, reason: null };
+    }
   }
-  if (actual === expected) return { ok: true };
-  // ---------------------------------- MISMATCH: HIMMEL-2528 re-pin or deny ---
-  try {
-    return resolveMismatch({ projectDir, relPath, actual, record, sessionId });
-  } catch (_e) {
-    // Any unforeseen failure on the mismatch path denies, exactly as before
-    // this ticket — a crash here must never become an allow, and must never
-    // spill a stack trace into the session transcript.
-    return { ok: false, relPath, reason: null };
-  }
+  return { ok: true };
 }
 
 function denyIntegrityMismatch(scriptPath, relPath, reason) {
@@ -903,7 +1113,15 @@ function denyIntegrityMismatch(scriptPath, relPath, reason) {
       + 'and allow, which is how a reader in this window skipped verification entirely. Retry once the '
       + 'publishing process has finished; if it died, the incumbent record is beside the missing one as '
       + 'a .old-* file. Legitimate mid-session hook edit: rerun with HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 '
-      + 'set in the LAUNCHING shell.\n',
+      + `set in the LAUNCHING shell. ${BYPASS_SCOPE}\n`,
+    );
+    return;
+  }
+  if (typeof reason === 'string' && reason.indexOf(ESCAPES_PROJECT_DENY) === 0) {
+    process.stderr.write(
+      `run-hook-with-bash: DENY ${path.basename(scriptPath)} — the hook path is spelled inside the project `
+      + `(${relPath}) but ${reason.slice(ESCAPES_PROJECT_DENY.length)}, so no session pin can vouch for it. `
+      + 'Point the hook at a script inside the project; HIMMEL_HOOK_INTEGRITY_BYPASS_OK does not apply to a path that leaves it.\n',
     );
     return;
   }
@@ -912,7 +1130,8 @@ function denyIntegrityMismatch(scriptPath, relPath, reason) {
     + `git-committed version pinned at session start (${relPath}). A guard that fails this check cannot `
     + 'be trusted to run tampered, so the tool call it would have evaluated is refused instead. '
     + (reason ? `Re-pin refused: ${reason}. ` : '')
-    + 'Legitimate mid-session hook edit: rerun with HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 set in the LAUNCHING shell.\n',
+    + 'Legitimate mid-session hook edit: rerun with HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 set in the LAUNCHING shell. '
+    + `${BYPASS_SCOPE}\n`,
   );
 }
 

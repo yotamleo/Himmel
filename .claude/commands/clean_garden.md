@@ -1,6 +1,6 @@
 ---
 description: Prune merged-PR worktrees and (optionally) create a new one in the same shot
-argument-hint: [branch-name] [--prune-only] [--no-prune] [--no-install] [--dry-run] [--verbose]
+argument-hint: [branch-name] [--prune-only] [--only <path|branch>] [--no-prune] [--no-install] [--dry-run] [--verbose]
 ---
 
 Combined worktree gardener. Supersedes the legacy `/new-worktree` (removed in #39) and the plugin command `/clean_gone` (still installed via `commit-commands` plugin but superseded for himmel — use `/clean_garden` instead).
@@ -24,6 +24,8 @@ Common invocations:
 - `/clean_garden --dry-run` — show what would be pruned.
 - `/clean_garden feat/bar --no-prune` — skip prune, just create.
 - `/clean_garden --prune-only` — same as no args; explicit form.
+- `/clean_garden --only <worktree-path|branch>` — prune exactly that one worktree (all gates still apply; non-zero exit if it is not a candidate). Use this, not a bare sweep, when other sessions may be live.
+- `/clean_garden --health` — read-only sweep health check: prints only alarm lines (`LOST-COMMITS`, `STUCK`, `SWEEP-ERROR`), nothing when healthy; exit 1 if any. Takes no other flag; `himmel-doctor` C42 runs it.
 
 Single-purpose siblings (same script, mode flag pinned):
 - `/clean` — prune-only (`clean-garden.sh --prune-only`). Use when you only want to clean up merged worktrees.

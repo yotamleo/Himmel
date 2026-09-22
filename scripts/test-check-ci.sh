@@ -159,6 +159,15 @@ if [ "$cmd" = "api" ]; then
                 *) echo '{"check_runs":[]}' ;;
             esac
             exit 0 ;;
+        repos/octo/demo/commits/sha1/status\?*)
+            # HIMMEL-3391: the combined-status read that names which contexts are
+            # published as commit STATUSES. Raw combined-status JSON through the real
+            # --jq expression; "fail" is an unreadable read; none = no status at all.
+            case "${GH_STUB_STATUSCTX:-none}" in
+                fail) echo "HTTP 500: status boom" >&2; exit 1 ;;
+                json:*) printf '%s' "${GH_STUB_STATUSCTX#json:}" | jq -r "$(_jq_arg "$@")" ;;
+            esac
+            exit 0 ;;
         # CodeRabbit's REAL shape: a commit STATUS on the head SHA, carrying
         # creator identity (HIMMEL-1072/1058). The list endpoint is newest-first.
         # 136622811 = coderabbitai[bot].
@@ -779,6 +788,7 @@ BODY_FILE2_OVERRIDE=""
 RULES_OVERRIDE=none
 CLASSIC_OVERRIDE=none
 PRODUCERS_OVERRIDE=none
+STATUSCTX_OVERRIDE=none
 CHECKS_OVERRIDE="pass:unit-tests"
 KEEP_ALERT_STATE=0
 ALERT_FAIL_OVERRIDE=""
@@ -874,6 +884,7 @@ run() {
         GH_STUB_RULES="$RULES_OVERRIDE" \
         GH_STUB_CLASSIC="$CLASSIC_OVERRIDE" \
         GH_STUB_PRODUCERS="$PRODUCERS_OVERRIDE" \
+        GH_STUB_STATUSCTX="$STATUSCTX_OVERRIDE" \
         GH_STUB_CHECKS="$CHECKS_OVERRIDE" \
         MERGE_BLOCK_ALERT_DIR="$STUBDIR/alert-sentinels" \
         MERGE_BLOCK_ALERT_CMD="$STUBDIR/alert-sender" \
@@ -900,7 +911,7 @@ run() {
     ESCALATE_WAIT_OVERRIDE=0; ESCALATE_POLL_OVERRIDE=0; MARKERS_OVERRIDE=""; SLEEP_CMD_OVERRIDE=":"
     CR_PROFILE_OVERRIDE=""; CR_APP_OVERRIDE=1
     FRESHNESS_OVERRIDE=fresh; FILES_OVERRIDE=README.md; CR_BOT_LOGINS_OVERRIDE=""; MPR_OVERRIDE=none; BODY_FILE_OVERRIDE=""; BODY_FILE2_OVERRIDE=""
-    RULES_OVERRIDE=none; CLASSIC_OVERRIDE=none; PRODUCERS_OVERRIDE=none; CHECKS_OVERRIDE="pass:unit-tests"
+    RULES_OVERRIDE=none; CLASSIC_OVERRIDE=none; PRODUCERS_OVERRIDE=none; STATUSCTX_OVERRIDE=none; CHECKS_OVERRIDE="pass:unit-tests"
     KEEP_ALERT_STATE=0; ALERT_FAIL_OVERRIDE=""; ACCESS_OVERRIDE="$STUBDIR/access.json"
 }
 
@@ -2444,7 +2455,45 @@ CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_runs_wrong"
 run cr-completed --grace 0
 assert_rc 0 "3385-g control: classic app_id -1 (any source) stays a name-only match"
 
+# --- 3391: a producer-pinned check published only as a commit STATUS -----------
+# `gh pr checks` lists statuses too, but the commit-status payload carries no app
+# id (GraphQL StatusContext exposes only `creator`, a login), so the pinned app can
+# never be verified from one. The gate stays fail-CLOSED (exit 5, never a name-only
+# pass) and the refusal must NAME that cause rather than read like a plain miss.
+_no_runs='{"check_runs":[]}'
+_status_gate='{"statuses":[{"context":"codeowner-review-gate","state":"success"}]}'
+_status_other='{"statuses":[{"context":"some-other-status","state":"success"}]}'
+
+# 3391-a — the pinned name is on the PR, no check run from the app, and a commit
+# status carries the name: exit 5, the message names the status-only cause.
+RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_no_runs"; STATUSCTX_OVERRIDE="json:$_status_gate"
+run cr-completed --grace 0
+assert_rc 5 "3391-a a pinned check published only as a commit status is refused (fail closed)"
+assert_err_has "commit status" "3391-a the refusal names the status-only cause"
+assert_err_has "codeowner-review-gate" "3391-a the refusal names the required check"
+if [ "$(alert_count)" = 1 ]; then pass "3391-a one alert for the status-only refusal"; else fail "3391-a one alert for the status-only refusal" "count=$(alert_count)"; fi
+
+# 3391-b — control: a status under a DIFFERENT name is not the pinned check; the
+# plain "never reported" refusal stands and does not claim a status-only cause.
+RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_no_runs"; STATUSCTX_OVERRIDE="json:$_status_other"
+run cr-completed --grace 0
+assert_rc 5 "3391-b control: a differently-named status leaves the pinned check missing"
+assert_err_lacks "3391-b control: no status-only claim for a plain miss" "message claims a commit status" -iF -- "commit status"
+
+# 3391-c — control: the status read is unreadable: still exit 5 (never a pass), and
+# the refusal is the plain one — it must not guess a cause it could not read.
+RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_no_runs"; STATUSCTX_OVERRIDE=fail
+run cr-completed --grace 0
+assert_rc 5 "3391-c control: an unreadable status read still fails closed"
+assert_err_lacks "3391-c control: no status-only claim when the status read failed" "message claims a commit status" -iF -- "commit status"
+
+# 3391-d — control: a status by the pinned name does not disturb a check run from
+# the RIGHT app — exit 0.
+RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_runs_right"; STATUSCTX_OVERRIDE="json:$_status_gate"
+run cr-completed --grace 0
+assert_rc 0 "3391-d control: the right app's check run still satisfies the requirement"
+
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 158 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 158"; exit 1; fi
+if [ "$COUNT" -ne 162 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 162"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1

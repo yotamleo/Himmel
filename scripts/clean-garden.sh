@@ -21,6 +21,10 @@
 #   --no-prune           Skip the prune phase; just create.
 #   --no-install         Forwarded to _new-worktree.sh.
 #   --dry-run            Show what would happen, do nothing.
+#   --health             Read-only sweep monitor (HIMMEL-3405): print only alarm
+#                        lines — LOST-COMMITS / SWEEP-ERROR (from unlanded-work.sh)
+#                        and STUCK (a worktree/branch prior sweeps skipped for N
+#                        sweeps or >24h) — empty output = healthy; exit 0/1.
 #   --verbose, -v        Stream subprocess output.
 #   -h, --help           Print usage.
 set -euo pipefail
@@ -47,9 +51,16 @@ USAGE_TEXT='Usage: clean-garden.sh [branch-name] [flags]
 
 Flags:
   --prune-only          Prune only; skip create even if branch-name given.
+  --only <path|branch>  Prune exactly ONE worktree (implies --prune-only), still
+                        subject to every prune gate. Exits non-zero when the
+                        target is not a prune candidate. Skips the fleet-wide
+                        stray/checkpoint/marker sweeps.
   --no-prune            Skip prune; only create.
   --no-install          Forward to _new-worktree.sh (skip jira install).
   --dry-run             Show plan; do nothing.
+  --health              Read-only: print only alarm lines (LOST-COMMITS, STUCK,
+                        SWEEP-ERROR); empty output = healthy. Exit 1 on any
+                        alarm. Takes no other flag; never prunes.
   --verbose, -v         Stream subprocess output.
   -h, --help            This message.
 
@@ -68,16 +79,25 @@ print_help() {
 
 BRANCH=""
 PRUNE_ONLY=0
+ONLY_TARGET=""
 NO_PRUNE=0
 NO_INSTALL=0
 DRY_RUN=0
 VERBOSE=0
+HEALTH=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --prune-only) PRUNE_ONLY=1; shift ;;
+        --only)
+            if [ $# -lt 2 ] || [ -z "$2" ]; then
+                echo "ERR clean-garden: --only needs a worktree path or branch name" >&2
+                usage_err
+            fi
+            ONLY_TARGET="$2"; PRUNE_ONLY=1; shift 2 ;;
         --no-prune)   NO_PRUNE=1; shift ;;
         --no-install) NO_INSTALL=1; shift ;;
         --dry-run)           DRY_RUN=1; shift ;;
+        --health)            HEALTH=1; shift ;;
         --verbose|-v)        VERBOSE=1; shift ;;
         -h|--help)    print_help ;;
         -*)           echo "Unknown flag: $1" >&2; usage_err ;;
@@ -92,8 +112,16 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+if [ "$HEALTH" -eq 1 ] && { [ -n "$BRANCH" ] || [ -n "$ONLY_TARGET" ] || [ "$PRUNE_ONLY" -eq 1 ] || [ "$NO_PRUNE" -eq 1 ] || [ "$DRY_RUN" -eq 1 ] || [ "$NO_INSTALL" -eq 1 ]; }; then
+    echo "ERR clean-garden: --health is a read-only monitor and takes no other flag or branch-name" >&2
+    exit 1
+fi
 if [ "$NO_PRUNE" -eq 1 ] && [ "$PRUNE_ONLY" -eq 1 ]; then
     echo "ERR clean-garden: --no-prune and --prune-only are mutually exclusive" >&2
+    exit 1
+fi
+if [ -n "$ONLY_TARGET" ] && { [ "$NO_PRUNE" -eq 1 ] || [ -n "$BRANCH" ]; }; then
+    echo "ERR clean-garden: --only prunes one worktree; it cannot be combined with --no-prune or a create branch-name" >&2
     exit 1
 fi
 if [ "$NO_PRUNE" -eq 1 ] && [ -z "$BRANCH" ]; then
@@ -111,6 +139,136 @@ log() {
         echo "$@"
     fi
 }
+
+# ---------------------------------------------------------------------------
+# HIMMEL-3405 — sweep health. A real sweep records every merged worktree/branch
+# it had to SKIP (dirty, locked, in use, a failed or partial removal, a refused
+# stray husk) in a small state file under the git common dir; `--health` reads
+# it back and alarms on an entry skipped for >= SWEEP_STUCK_SWEEPS consecutive
+# sweeps (default 3) or for more than SWEEP_STUCK_HOURS hours (default 24).
+# Reporting only: nothing here changes what a sweep prunes.
+#   row: <key>\t<first-seen epoch>\t<sweeps skipped>\t<reason>
+#   key: the worktree path, or the branch name for a partial prune
+# ponytail: last-writer-wins — two sweeps racing the same repo can lose one
+# counter increment (the alarm then fires one sweep late); a sweep that could
+# not read the forge leaves the file untouched rather than guess.
+STUCK_DIR="$(cd "$COMMON_DIR" 2>/dev/null && pwd || printf '%s' "$COMMON_DIR")/sweep-health"
+STUCK_STATE="$STUCK_DIR/stuck.tsv"
+STUCK_SEEN=""
+ONLY_WT_KEY=""
+ONLY_BR_KEY=""
+
+# note_stuck <key> <reason> — remember a skip made by THIS sweep.
+note_stuck() {
+    local reason
+    reason=$(printf '%s' "$2" | tr '\t\r\n' '   ')
+    STUCK_SEEN="${STUCK_SEEN}${1}"$'\t'"${reason}"$'\n'
+}
+
+# stuck_state_update — fold this sweep's skips into the state file. A full sweep
+# replaces it (whatever was skipped before and is not skipped now is resolved);
+# --only replaces only its own target's rows. Never under --dry-run, and never
+# from a sweep that could not read the forge (it could not tell a skip from a
+# resolved one).
+stuck_state_update() {
+    local now key reason first count prior p_first p_count kept="" new_rows="" tmp
+    [ "$DRY_RUN" -eq 0 ] || return 0
+    if [ "$HAVE_FORGE" -eq 0 ] || { [ "$FORGE_KIND" = "github" ] && [ "$ORIGIN_PR_CACHE_OK" -eq 0 ]; }; then
+        return 0
+    fi
+    now=$(date +%s)
+    while IFS=$'\t' read -r key reason; do
+        [ -n "$key" ] || continue
+        first="$now"; count=1
+        if [ -f "$STUCK_STATE" ]; then
+            prior=$(awk -F'\t' -v k="$key" '$1==k { print $2 "\t" $3; exit }' "$STUCK_STATE" 2>/dev/null || true)
+            if [ -n "$prior" ]; then
+                p_first="${prior%%$'\t'*}"; p_count="${prior#*$'\t'}"
+                case "$p_first" in ''|*[!0-9]*) p_first="" ;; esac
+                case "$p_count" in ''|*[!0-9]*) p_count="" ;; esac
+                if [ -n "$p_first" ] && [ -n "$p_count" ]; then
+                    first="$p_first"; count=$((10#$p_count + 1))
+                fi
+            fi
+        fi
+        new_rows="${new_rows}${key}"$'\t'"${first}"$'\t'"${count}"$'\t'"${reason}"$'\n'
+    done <<EOF
+$STUCK_SEEN
+EOF
+    if [ -n "$ONLY_TARGET" ] && [ -f "$STUCK_STATE" ]; then
+        kept=$(awk -F'\t' -v a="$ONLY_WT_KEY" -v b="$ONLY_BR_KEY" '$1 != a && $1 != b' "$STUCK_STATE" 2>/dev/null || true)
+    fi
+    if [ -z "$kept" ] && [ -z "$new_rows" ]; then
+        rm -f "$STUCK_STATE" 2>/dev/null || true
+        return 0
+    fi
+    mkdir -p "$STUCK_DIR" 2>/dev/null || return 0
+    tmp="$STUCK_STATE.$$"
+    {
+        [ -z "$kept" ] || printf '%s\n' "$kept"
+        printf '%s' "$new_rows"
+    } > "$tmp" 2>/dev/null && mv -f "$tmp" "$STUCK_STATE" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+    return 0
+}
+
+stuck_target_exists() {
+    case "$1" in
+        /*|[A-Za-z]:*) [ -d "$1" ] ;;
+        *) git -C "$PRIMARY_WORKTREE" show-ref --verify --quiet "refs/heads/$1" ;;
+    esac
+}
+
+stuck_ts() {
+    date -u -d "@$1" +%Y-%m-%dT%H:%MZ 2>/dev/null \
+        || date -u -r "$1" +%Y-%m-%dT%H:%MZ 2>/dev/null \
+        || printf '%s' "$1"
+}
+
+# sweep_health — alarm lines only. The branch scan is the SIBLING of this script
+# (not the primary checkout's copy), so --health run from a worktree exercises
+# the same revision of both.
+sweep_health() {
+    local script="$SCRIPT_DIR/unlanded-work.sh" out="" rc=0 err alarms=0
+    local now key first count reason min_sweeps max_age
+    err=$(mktemp)
+    if [ ! -f "$script" ]; then
+        echo "SWEEP-ERROR (sweep) unlanded-work.sh not found next to clean-garden.sh — LOST-COMMITS check skipped"
+        alarms=1
+    else
+        out=$(cd "$PRIMARY_WORKTREE" && bash "$script" --health 2>"$err") || rc=$?
+        if [ -n "$out" ]; then printf '%s\n' "$out"; alarms=1; fi
+        if [ "$rc" -gt 1 ] || { [ "$rc" -eq 1 ] && [ -z "$out" ]; }; then
+            echo "SWEEP-ERROR (sweep) unlanded-work.sh --health failed (rc=$rc): $(head -1 "$err")"
+            alarms=1
+        fi
+    fi
+    rm -f "$err"
+
+    min_sweeps="${SWEEP_STUCK_SWEEPS:-3}"
+    case "$min_sweeps" in ''|*[!0-9]*) min_sweeps=3 ;; esac
+    max_age="${SWEEP_STUCK_HOURS:-24}"
+    case "$max_age" in ''|*[!0-9]*) max_age=24 ;; esac
+    max_age=$(( 10#$max_age * 3600 ))
+    if [ -f "$STUCK_STATE" ]; then
+        now=$(date +%s)
+        while IFS=$'\t' read -r key first count reason; do
+            [ -n "$key" ] || continue
+            case "$first" in ''|*[!0-9]*) continue ;; esac
+            case "$count" in ''|*[!0-9]*) continue ;; esac
+            if [ "$((10#$count))" -lt "$((10#$min_sweeps))" ] && [ $((now - first)) -le "$max_age" ]; then
+                continue
+            fi
+            stuck_target_exists "$key" || continue
+            printf 'STUCK %s %s since %s\n' "$key" "$reason" "$(stuck_ts "$first")"
+            alarms=1
+        done < "$STUCK_STATE"
+    fi
+    [ "$alarms" -eq 0 ]
+}
+
+if [ "$HEALTH" -eq 1 ]; then
+    if sweep_health; then exit 0; else exit 1; fi
+fi
 
 # Detect PR-merge-detection mode once. Forge queries run pinned to the primary
 # worktree (forge_in_primary) so they use the primary's origin regardless of the
@@ -823,6 +981,23 @@ PRUNED=0
 PARTIAL=0
 SKIPPED=0
 FAILED=0
+ONLY_MATCHED=0
+# --only must name exactly ONE worktree: a value that is one worktree's path and
+# another's branch name would otherwise prune both. Count before any removal.
+if [ -n "$ONLY_TARGET" ]; then
+    only_norm=$(cd "$ONLY_TARGET" 2>/dev/null && pwd || echo "$ONLY_TARGET")
+    only_hits=0
+    for i in "${!WT_PATHS[@]}"; do
+        wt_norm=$(cd "${WT_PATHS[$i]}" 2>/dev/null && pwd || echo "${WT_PATHS[$i]}")
+        if [ "$wt_norm" = "$only_norm" ] || [ "${WT_BRANCHES[$i]}" = "$ONLY_TARGET" ]; then
+            only_hits=$((only_hits+1))
+        fi
+    done
+    if [ "$only_hits" -gt 1 ]; then
+        echo "ERR clean-garden: --only $ONLY_TARGET matches $only_hits worktrees (by path or branch) — nothing pruned; pass the full worktree path" >&2
+        exit 1
+    fi
+fi
 if [ "$NO_PRUNE" -eq 0 ]; then
     log "clean-garden: prune phase — scanning ${#WT_PATHS[@]} worktrees"
     for i in "${!WT_PATHS[@]}"; do
@@ -832,6 +1007,17 @@ if [ "$NO_PRUNE" -eq 0 ]; then
 
         # Normalize path comparison (Windows can return /c/ vs C:/ variants).
         wt_norm=$(cd "$wt" 2>/dev/null && pwd || echo "$wt")
+        # HIMMEL-3297 — --only narrows the sweep to ONE worktree (matched by
+        # path or branch). Everything below is unchanged, so the target still
+        # passes every prune gate; a sibling is never even considered.
+        if [ -n "$ONLY_TARGET" ]; then
+            only_norm=$(cd "$ONLY_TARGET" 2>/dev/null && pwd || echo "$ONLY_TARGET")
+            if [ "$wt_norm" != "$only_norm" ] && [ "$br" != "$ONLY_TARGET" ]; then
+                continue
+            fi
+            ONLY_MATCHED=1
+            ONLY_WT_KEY="$wt"; ONLY_BR_KEY="$br"
+        fi
         if [ "$wt_norm" = "$PRIMARY_WORKTREE" ]; then
             log "  skip primary: $wt"
             continue
@@ -843,6 +1029,7 @@ if [ "$NO_PRUNE" -eq 0 ]; then
         if [ "$locked" -eq 1 ]; then
             echo "WARN clean-garden: $br is locked — skipped ($wt); unlock with: git worktree unlock $wt" >&2
             SKIPPED=$((SKIPPED+1))
+            if is_branch_mergeable_for_prune "$br"; then note_stuck "$wt" "merged, but the worktree is locked"; fi
             continue
         fi
 
@@ -863,14 +1050,17 @@ if [ "$NO_PRUNE" -eq 0 ]; then
         case "$verdict" in
             scanfail)
                 echo "WARN clean-garden: $br working-tree scan failed — skipped ($wt)" >&2
+                note_stuck "$wt" "merged, but the working-tree scan failed"
                 SKIPPED=$((SKIPPED+1)); continue ;;
             tracked)
                 checkpoint_worktree "$wt" "$br" || true
                 echo "WARN clean-garden: $br has uncommitted changes — skipped ($wt)" >&2
+                note_stuck "$wt" "merged, but the worktree has uncommitted changes"
                 SKIPPED=$((SKIPPED+1)); continue ;;
             "forgotten "*)
                 checkpoint_worktree "$wt" "$br" || true
                 echo "WARN clean-garden: $br has untracked files that are not known strays (possible forgotten work) — skipped ($wt): ${verdict#forgotten }" >&2
+                note_stuck "$wt" "merged, but the worktree has untracked files that are not known strays"
                 SKIPPED=$((SKIPPED+1)); continue ;;
         esac
         # verdict is "clean" or "strays <paths>".
@@ -899,6 +1089,7 @@ if [ "$NO_PRUNE" -eq 0 ]; then
                 "clean") strays="" ;;  # strays vanished; plain remove now works
                 *)
                     echo "WARN clean-garden: $br changed during prune ($verdict2) — skipped ($wt)" >&2
+                    note_stuck "$wt" "merged, but the worktree changed during the prune ($verdict2)"
                     SKIPPED=$((SKIPPED+1)); continue ;;
             esac
             if [ -n "$strays" ]; then
@@ -914,6 +1105,7 @@ if [ "$NO_PRUNE" -eq 0 ]; then
         # for the measured repro).
         if worktree_in_use "$wt"; then
             echo "WARN clean-garden: $br could not be safely removed (likely in use by a live process) — skipped ($wt); $WORKTREE_INUSE_DETAIL" >&2
+            note_stuck "$wt" "merged, but the worktree is in use by a live process"
             SKIPPED=$((SKIPPED+1))
             continue
         fi
@@ -924,6 +1116,7 @@ if [ "$NO_PRUNE" -eq 0 ]; then
                 PRUNED=$((PRUNED+1))
             else
                 echo "WARN clean-garden: worktree removed but branch delete failed for $br — counted as partial" >&2
+                note_stuck "$br" "worktree removed but the branch delete failed"
                 PARTIAL=$((PARTIAL+1))
             fi
             # Delete the CR-pending marker for this branch now that the PR is merged.
@@ -940,14 +1133,33 @@ if [ "$NO_PRUNE" -eq 0 ]; then
             # gutted tree that still answers `git ls-files` with confident
             # zeroes.
             if worktree_intact "$PRIMARY_WORKTREE" "$wt"; then
+                note_stuck "$wt" "merged, but git refused the worktree removal"
                 echo "ERR clean-garden: failed to remove worktree $wt (re-dirtied? locked?) — git refused the removal; the worktree is still registered with its .git link present. Run with --verbose to investigate." >&2
             else
+                note_stuck "$wt" "removal failed partway — the tree may be gutted"
                 echo "ERR clean-garden: removal of worktree $wt FAILED PARTWAY — the tree may be GUTTED (its .git link and/or its 'git worktree list' entry is gone). Do NOT trust anything measured inside it: git commands there report an empty repo. Recover from the primary checkout, in order: 1) git -C '$PRIMARY_WORKTREE' worktree prune  2) make sure '$wt' is empty or removed -- 'git worktree add' refuses a non-empty destination, and remnants can survive exactly this partial-remove case  3) git -C '$PRIMARY_WORKTREE' worktree add '$wt' '$br'" >&2
             fi
             FAILED=$((FAILED+1))
         fi
     done
     echo "clean-garden: prune summary — $PRUNED pruned, $PARTIAL partial, $SKIPPED skipped, $FAILED failed"
+
+    # HIMMEL-3297 — --only is a one-worktree prune: report and exit here so the
+    # fleet-wide stray-husk sweep, marker sweep and checkpoint prune below never
+    # run. Non-zero unless the one target was actually pruned (or, under
+    # --dry-run, would be).
+    if [ -n "$ONLY_TARGET" ]; then
+        stuck_state_update || true
+        if [ "$ONLY_MATCHED" -eq 0 ]; then
+            echo "ERR clean-garden: --only $ONLY_TARGET is not a registered worktree (match by path or branch; see git worktree list)" >&2
+            exit 1
+        fi
+        if [ "$PRUNED" -ne 1 ] || [ "$PARTIAL" -ne 0 ] || [ "$FAILED" -ne 0 ]; then
+            echo "ERR clean-garden: --only $ONLY_TARGET was not cleanly pruned — not a prune candidate, or the removal was partial (reason above; a candidate needs a merged PR whose head is the branch tip, no uncommitted work, no live process inside)" >&2
+            exit 1
+        fi
+        exit 0
+    fi
 
     STRAY_HOME="$PRIMARY_WORKTREE/.claude/worktrees"
     if [ -d "$STRAY_HOME" ]; then
@@ -1031,6 +1243,7 @@ if [ "$NO_PRUNE" -eq 0 ]; then
                 tracked|"forgotten "*)
                     checkpoint_worktree "$stray_dir" "(husk) $(basename "$stray_dir")" || true
                     echo "WARN clean-garden: stray husk has uncommitted work ($verdict) — refusing to sweep $stray_dir" >&2
+                    note_stuck "$stray_dir" "stray husk refused: it has uncommitted work"
                     STRAY_REFUSED=$((STRAY_REFUSED+1))
                     continue
                     ;;
@@ -1041,6 +1254,7 @@ if [ "$NO_PRUNE" -eq 0 ]; then
                     # whether this is a worktree at all. Fail closed rather
                     # than assume it's safe.
                     echo "WARN clean-garden: stray husk's .git presence check could not be completed (unknown whether it is a worktree) — refusing to sweep $stray_dir (inspect by hand, then rm -rf it yourself once satisfied)" >&2
+                    note_stuck "$stray_dir" "stray husk refused: its .git presence check failed"
                     STRAY_REFUSED=$((STRAY_REFUSED+1))
                     continue
                     ;;
@@ -1052,6 +1266,7 @@ if [ "$NO_PRUNE" -eq 0 ]; then
                     # closed on the evidence that it WAS a worktree rather
                     # than assume it's safe.
                     echo "WARN clean-garden: stray husk looks like a broken/orphaned worktree whose contents git could not inspect — refusing to sweep $stray_dir (inspect by hand, then rm -rf it yourself once satisfied)" >&2
+                    note_stuck "$stray_dir" "stray husk refused: git could not inspect its contents"
                     STRAY_REFUSED=$((STRAY_REFUSED+1))
                     continue
                     ;;
@@ -1065,6 +1280,7 @@ if [ "$NO_PRUNE" -eq 0 ]; then
                     # updating this switch would silently DEFAULT TO DELETING.
                     # Fail closed, matching the prune loop's own `*)` skip.
                     echo "WARN clean-garden: stray husk got an unrecognized classify verdict ('$verdict') — refusing to sweep $stray_dir (fail-closed; teach this case statement the new verdict)" >&2
+                    note_stuck "$stray_dir" "stray husk refused: unrecognized classify verdict ($verdict)"
                     STRAY_REFUSED=$((STRAY_REFUSED+1))
                     continue
                     ;;
@@ -1087,6 +1303,7 @@ if [ "$NO_PRUNE" -eq 0 ]; then
                 STRAY_RECLAIMED_KIB=$((STRAY_RECLAIMED_KIB+stray_kib))
             else
                 echo "WARN clean-garden: failed to sweep stray husk $stray_dir" >&2
+                note_stuck "$stray_dir" "stray husk sweep failed (rm -rf did not complete)"
                 STRAY_FAILED=$((STRAY_FAILED+1))
             fi
         done < <(find "$STRAY_HOME" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
@@ -1095,6 +1312,8 @@ if [ "$NO_PRUNE" -eq 0 ]; then
             echo "clean-garden: stray-sweep — $STRAY_SWEPT swept, $STRAY_FAILED failed, $STRAY_REFUSED refused ($STRAY_SIZE reclaimed)"
         fi
     fi
+
+    stuck_state_update || true
 
     # CR-pending marker sweep: remove stale markers for branches that no
     # longer exist locally AND have no open PR. Markers for branches that are

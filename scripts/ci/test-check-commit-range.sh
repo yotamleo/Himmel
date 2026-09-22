@@ -137,5 +137,75 @@ if [ "$rc" -eq 0 ]; then pass "empty range -> rc0"; else fail "expected rc0, got
 if grepq "$out" -i 'nothing to lint'; then pass "empty range reports nothing to lint"; else fail "no nothing-to-lint msg: $out"; fi
 rm -rf "$t"
 
+# --- --merge-ref (HIMMEL-3413): CI checks out refs/pull/N/merge, a merge of the
+# CURRENT base tip and the PR head, but pull_request.base.sha is the tip when
+# the PR was OPENED. Linting <stale base>..merge-ref lints every commit main
+# gained since (a bot's ticketless bump). --merge-ref lints from the merge
+# commit's first parent instead.
+# mkmergeref <dir> <main-msg> <pr-msg...> — base commit; PR branch cut there
+# with <pr-msg...>; main then gains <main-msg>; HEAD = a merge of main tip +
+# PR head (detached, as actions/checkout leaves it). .base = the STALE base.
+mkmergeref() {
+    local d="$1" main_msg="$2"; shift 2
+    (
+        fixture_enter_git_init_dir "$d" || exit 1
+        git init -q -b main
+        git config user.email t@e
+        git config user.name t
+        git commit -q --allow-empty -m "chore: base"
+        git rev-parse HEAD > .base
+        git checkout -q -b pr
+        local m
+        for m in "$@"; do git commit -q --allow-empty -m "$m"; done
+        git checkout -q main
+        git commit -q --allow-empty -m "$main_msg"
+        git checkout -q --detach main
+        git merge -q --no-ff -m "Merge pr into main" pr
+    )
+}
+run_cr_mr() { # <repo-dir> -> the CI-shaped call: --merge-ref <stale base.sha>
+    local d="$1" base
+    base="$(cat "$d/.base")"
+    ( cd "$d" && TICKET_ID_REQUIRED=1 JIRA_PROJECT_KEY=HIMMEL \
+        TICKET_ID_TRUSTED_AUTHOR="${TICKET_ID_TRUSTED_AUTHOR:-}" bash "$CR" --merge-ref "$base" 2>&1 )
+}
+
+# main's ticketless bump landed after the PR was opened; the PR's own commit is clean
+t="$(fixture_mktemp_dir)" || exit 1
+mkmergeref "$t" "build(deps): bump the group across 6 directories" "fix(api): HIMMEL-5 pr commit"
+out="$(run_cr_mr "$t")"; rc=$?
+if [ "$rc" -eq 0 ]; then pass "merge-ref: main's post-open commit is not linted -> rc0"; else fail "expected rc0, got $rc: $out"; fi
+if grepq "$out" 'build(deps)' -F; then fail "merge-ref: main's commit was named: $out"; else pass "merge-ref: main's commit not named"; fi
+rm -rf "$t"
+
+# control: the SAME fixture without --merge-ref still lints the stale range (the bug)
+t="$(fixture_mktemp_dir)" || exit 1
+mkmergeref "$t" "build(deps): bump the group across 6 directories" "fix(api): HIMMEL-5 pr commit"
+out="$(run_cr "$t")"; rc=$?
+if [ "$rc" -eq 1 ]; then pass "control: stale base without --merge-ref -> rc1 (the HIMMEL-3413 shape)"; else fail "expected rc1, got $rc: $out"; fi
+rm -rf "$t"
+
+# control: a non-conforming commit ON the PR branch still fails under --merge-ref
+t="$(fixture_mktemp_dir)" || exit 1
+mkmergeref "$t" "fix(x): HIMMEL-6 main commit" "fix(api): HIMMEL-5 good" "broken pr commit no type"
+out="$(run_cr_mr "$t")"; rc=$?
+if [ "$rc" -eq 1 ]; then pass "merge-ref: bad PR commit -> rc1"; else fail "expected rc1, got $rc: $out"; fi
+if grepq "$out" 'broken pr commit no type' -F; then pass "merge-ref: names the PR's bad commit"; else fail "no PR subject: $out"; fi
+rm -rf "$t"
+
+# control: the FIRST of several PR commits is still linted (nothing skipped)
+t="$(fixture_mktemp_dir)" || exit 1
+mkmergeref "$t" "fix(x): HIMMEL-6 main commit" "broken first pr commit" "fix(api): HIMMEL-5 good"
+out="$(run_cr_mr "$t")"; rc=$?
+if [ "$rc" -eq 1 ]; then pass "merge-ref: first PR commit still linted -> rc1"; else fail "expected rc1, got $rc: $out"; fi
+rm -rf "$t"
+
+# fallback: HEAD is not a merge (checkout of the PR head) -> the given base is used
+t="$(fixture_mktemp_dir)" || exit 1
+mkrepo "$t" "fix(api): HIMMEL-2 ok" "broken commit no type"
+out="$(run_cr_mr "$t")"; rc=$?
+if [ "$rc" -eq 1 ]; then pass "merge-ref on a non-merge HEAD falls back to the given base -> rc1"; else fail "expected rc1, got $rc: $out"; fi
+rm -rf "$t"
+
 echo
 if [ "$failures" -eq 0 ]; then echo "ALL PASS"; else echo "$failures FAILED"; exit 1; fi
