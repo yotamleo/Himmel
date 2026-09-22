@@ -188,6 +188,46 @@ HOME="$TMP/a4/home" run_wet
 expect_refused "(a4) HOME symlinks into a real-home subdirectory" a
 if [ -f "$FAKE/Documents/.claude/himmel/sentinel" ]; then pass "(a4) real-home subdirectory untouched"; else fail "(a4) real-home subdirectory was modified"; fi
 
+# (ds) a leading `//` (or `///`) HOME or target: `cd -P && pwd -P` keeps a
+# leading `//`, so an unnormalized physical path never matched a root spelled
+# `/...` and every check was skipped. The settings step runs (no
+# --skip-settings, and no --purge-state, whose own halt would end the run
+# first), so the fake's settings.json must stay byte-identical.
+# The `//` spellings come from a guarded mktemp (the static caller guard only
+# accepts a HOME built from one), and each fake is named to the seam with ONE
+# leading slash, so the exact-spelling pass-through never matches.
+FLAGS=(--yes --skip-tasks --skip-plugins --skip-hooks)
+DSTPL="/$TMP/ds.XXXXXX"
+DS=$(mktemp -d "$DSTPL") || exit 1
+DS3TPL="//$TMP/ds3.XXXXXX"
+DS3=$(mktemp -d "$DS3TPL") || exit 1
+mk_fake "${DS#/}/fakereal"
+mkdir -p "${DS#/}/fakereal/Documents/.claude/himmel"
+printf '{"sentinel":true}\n' > "${DS#/}/fakereal/Documents/.claude/settings.json"
+mk_fake "${DS3#//}/fakereal"
+# ds_settings <label> <settings.json> — byte-identical to the mk_fake original.
+printf '{"sentinel":true}\n' > "$TMP/ds-settings.before"
+ds_settings() {
+    if cmp -s "$TMP/ds-settings.before" "$2"; then pass "$1: fake settings.json byte-identical"
+    else fail "$1: fake settings.json was rewritten"; cp "$TMP/ds-settings.before" "$2"; fi
+}
+HOME="$DS/fakereal" run_wet HIMMEL_UNINSTALL_TEST_REAL_HOME="${DS#/}/fakereal"
+expect_refused "(ds1) HOME spelled //<fake real home>" a "${DS#/}/fakereal"
+ds_settings "(ds1)" "${DS#/}/fakereal/.claude/settings.json"
+HOME="$DS/fakereal/Documents" run_wet HIMMEL_UNINSTALL_TEST_REAL_HOME="${DS#/}/fakereal"
+expect_refused "(ds2) HOME spelled //<fake real home>/Documents" a "${DS#/}/fakereal"
+ds_settings "(ds2)" "${DS#/}/fakereal/Documents/.claude/settings.json"
+HOME="$DS3/fakereal" run_wet HIMMEL_UNINSTALL_TEST_REAL_HOME="${DS3#//}/fakereal"
+expect_refused "(ds3) HOME spelled ///<fake real home>" a "${DS3#//}/fakereal"
+ds_settings "(ds3)" "${DS3#//}/fakereal/.claude/settings.json"
+awk -F'\t' -v OFS='\t' -v p="/$FAKE/.claude/himmel" '$1=="himmelctl-cache"{$6=p}1' \
+    "$HERE/install/uninstall-manifest.tsv" > "$TMP/ds4-manifest.tsv"
+mk_scratch "$TMP/ds4/home"
+HOME="$TMP/ds4/home" run_wet HIMMEL_UNINSTALL_MANIFEST="$TMP/ds4-manifest.tsv"
+expect_refused "(ds4) manifest row spelled //<fake real home>/..." c
+ds_settings "(ds4)" "$FAKE/.claude/settings.json"
+FLAGS=(--purge-state --yes --skip-tasks --skip-plugins --skip-hooks)
+
 # (d) HOME unset / empty lives in scripts/test-uninstall-ux.sh: that check
 # fires before the fence, and a file that drops HOME may not lift the fence
 # (the static caller guard, scripts/test-uninstall-real-home-callers.sh).

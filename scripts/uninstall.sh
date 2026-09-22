@@ -183,6 +183,15 @@ strip_trailing_slash() {
   printf '%s\n' "$_v"
 }
 
+# squash_leading_slashes <path> — collapse a leading run of `/` to one.
+squash_leading_slashes() {
+  local _v="$1"
+  while [ "${_v#//}" != "$_v" ]; do
+    _v="${_v#/}"
+  done
+  printf '%s\n' "$_v"
+}
+
 # --- Path manifest (HIMMEL-3058) ---------------------------------------------
 # scripts/install/uninstall-manifest.tsv is the ONE list of every surface this
 # script acts on. It is READ here — removal targets, the code-vs-state class
@@ -406,6 +415,9 @@ canonicalize_target() {
     _resolved=$(cd -- "$(dirname -- "$_cur")" 2>/dev/null && pwd -P) || return 1
     _resolved="$_resolved/$_base"
   fi
+  # `pwd -P` keeps a leading `//` (POSIX leaves it implementation-defined;
+  # Linux treats it as `/`): collapse it so every comparison sees one spelling.
+  _resolved=$(squash_leading_slashes "$_resolved")
   if [ -n "$_tail" ]; then
     printf '%s/%s\n' "$_resolved" "$_tail"
   else
@@ -1161,10 +1173,14 @@ real_home_phys() {
   canonicalize_target "$_p"
 }
 
-# real_home_under <path> <root> — true when path is root or below it.
+# real_home_under <path> <root> — true when path is root or below it. Both
+# sides lose a leading `//` first: an unresolved fallback is compared raw.
 real_home_under() {
-  [ "$2" = "/" ] && return 0
-  case "$1" in "$2"|"$2"/*) return 0 ;; esac
+  local _p _q
+  _p=$(squash_leading_slashes "$1")
+  _q=$(squash_leading_slashes "$2")
+  [ "$_q" = "/" ] && return 0
+  case "$_p" in "$_q"|"$_q"/*) return 0 ;; esac
   return 1
 }
 
@@ -1202,7 +1218,11 @@ real_home_target_ok() {
 # ponytail: a LEXICAL $HOME under the real home (e.g. ~/tmp/scratch, spelled
 # with no symlink) is a scratch dir by design and passes; only a HOME that
 # resolves somewhere other than where it is spelled is judged by where it
-# lands. Session launchers that reset HOME, and step [3/8]'s crontab and
+# lands. That relies on one canonical spelling of every compared path, which
+# is why a leading `//` is collapsed (canonicalize_target, real_home_under):
+# `//R` would otherwise compare unequal to `/R` and skip every check. The
+# lexical pass-through itself still needs the EXACT passwd spelling, so
+# `HOME=//R` is refused, not passed. Session launchers that reset HOME, and step [3/8]'s crontab and
 # `systemctl --user` (which act on the invoking user whatever HOME is), are
 # outside this check.
 real_home_check() {
@@ -1212,8 +1232,8 @@ real_home_check() {
     return 1
   fi
   _home=$(strip_trailing_slash "$HOME")
-  _hp=$(real_home_phys "$HOME") || _hp="$HOME"
-  _cp=$(real_home_phys "$HOME/.claude") || _cp="$HOME/.claude"
+  _hp=$(real_home_phys "$HOME") || _hp=$(squash_leading_slashes "$HOME")
+  _cp=$(real_home_phys "$HOME/.claude") || _cp=$(squash_leading_slashes "$HOME/.claude")
   # The top-level entries the {HOME} manifest rows live under (.claude,
   # .himmel, ...): a real home may symlink any of them OUT of itself (a
   # dotfiles layout), so each is protected at its PHYSICAL location too.
@@ -1232,7 +1252,7 @@ $_c" ;; esac
   while IFS= read -r _r; do
     [ -n "$_r" ] || continue
     [ "$_home" = "$_r" ] && continue
-    _rp=$(real_home_phys "$_r") || _rp="$_r"
+    _rp=$(real_home_phys "$_r") || _rp=$(squash_leading_slashes "$_r")
     if [ "$_rp" = "/" ]; then _rc="/.claude"; else _rc="$_rp/.claude"; fi
     _t=$(real_home_phys "$_rc") && _rc="$_t"
     _roots="$_rp"
