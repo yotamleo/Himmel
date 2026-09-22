@@ -444,14 +444,19 @@ is_readonly_allowlisted() {
 # settings.json — rule 2 catches `cp x .claude/` / `cp -t .claude/ x`,
 # where the destination basename is never "settings.json" in the text.
 mentions_dot_claude_dir_dest() {
-    printf '%s' "$1" | grep -Eq '(^|[^a-z0-9_])\.claude([/[:space:];&|]|$)'
+    local out
+    out=$(printf '%s' "$1" | grep -E '(^|[^a-z0-9_])\.claude([/[:space:];&|]|$)') || true
+    [ -n "$out" ]
 }
 
 # has_write_verb_or_target_flag CMD_LC — a copy/move/link-shaped verb, or a
 # `-t`/`--target-directory` flag (rule 2's verb list).
 has_write_verb_or_target_flag() {
-    printf '%s' "$1" | grep -Eq '(^|[;&|[:space:]])(cp|mv|install|rsync|ln|dd|tee)([[:space:]]|$)' && return 0
-    printf '%s' "$1" | grep -Eq '(^|[[:space:]])(-t|--target-directory)([[:space:]=]|$)' && return 0
+    local out
+    out=$(printf '%s' "$1" | grep -E '(^|[;&|[:space:]])(cp|mv|install|rsync|ln|dd|tee)([[:space:]]|$)') || true
+    [ -n "$out" ] && return 0
+    out=$(printf '%s' "$1" | grep -E '(^|[[:space:]])(-t|--target-directory)([[:space:]=]|$)') || true
+    [ -n "$out" ] && return 0
     return 1
 }
 
