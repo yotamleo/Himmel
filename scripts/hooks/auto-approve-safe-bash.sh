@@ -56,6 +56,9 @@
 #   (`[HANDOVER_DIR=<root>] bash scripts/handover/queue-lock.sh <verb> …`,
 #   literal args) is approved ONLY as the whole command — see
 #   segment_is_queue_lock. It is never one segment of a compound.
+#   The second (HIMMEL-3486): /pr-check step 3.6's `impacted-suites.sh`
+#   literal, whole command only and only on the anchor's bytes — see
+#   cmd_is_impacted_suites.
 #   Variable expansion in ARGUMENTS (`cat $f`, `… get $t`) is fine — the
 #   binary (argv[0]) is still a literal so we know what runs. If the binary
 #   ITSELF is a variable (`$cmd …`) it is not in the safe set → falls
@@ -903,6 +906,93 @@ segment_is_queue_lock() {
     esac
 }
 
+# HIMMEL-3486: is the WHOLE command one of /pr-check step 3.6's literals?
+#   bash <P> <40hex>..<40hex>
+#   bash <P> --check <40hex>..<40hex>
+#   bash <P> --check <40hex>..<40hex> <<'IMPACTED_EOF'
+#   SUITE ...            (zero or more lines, each starting `SUITE `)
+#   IMPACTED_EOF
+# <P> is `scripts/cr/impacted-suites.sh` (resolved against the payload cwd,
+# else $PWD) or an absolute `<root>/scripts/cr/impacted-suites.sh`, bare or
+# double-quoted. WHY: the step is a required gate, and the classifier denied
+# the listing as [Out-of-Place Publication], parking the leg. Read off the RAW
+# command, ahead of scan_cmd and the tripwires: the heredoc body is inert data
+# (its delimiter is quoted, so nothing in it expands), and a SKIP reason may
+# carry an apostrophe or `$(`. Only a line starting `SUITE ` sits between the
+# opener and the one closing `IMPACTED_EOF`, so no body line can close the
+# heredoc early and nothing runs after it.
+# The script is branch-editable and a gate, so the bytes that run must be the
+# anchor's (HIMMEL-3383 precedent, guard-pr-check-literal.sh): <root> is a
+# worktree root whose git-common-dir is $HIMMEL_REPO/.git, and its
+# impacted-suites.sh (a regular file, not a symlink) hashes, unfiltered, to the
+# same blob as both the anchor's working-tree copy and refs/heads/main's, with
+# the anchor on refs/heads/main. The script sources nothing, so that one file
+# is every byte it runs.
+# ponytail: checked at match time only - the bytes can change between this
+# check and the exec (TOCTOU), as in guard-pr-check-literal.sh; and a
+# docs-audit lane's `origin/main..<head>` range is not accepted (it falls
+# through to the classifier).
+IS_LINE1_RE="^bash +(\"[^\"]*\"|[^ \"]+) +(--check +)?[0-9a-f]{40}\\.\\.[0-9a-f]{40}( +<<'IMPACTED_EOF')? *\$"
+cmd_is_impacted_suites() {
+    local c="${1%$'\n'}" l1 body word root
+    case "$c" in *$'\r'*) return 1 ;; esac
+    l1="${c%%$'\n'*}"
+    case "$l1" in *[[:cntrl:]]*) return 1 ;; esac
+    [[ "$l1" =~ $IS_LINE1_RE ]] || return 1
+    word="${BASH_REMATCH[1]}"
+    if [ -n "${BASH_REMATCH[3]}" ]; then
+        [ -n "${BASH_REMATCH[2]}" ] || return 1
+        body="${c#*$'\n'}"
+        [ "$body" != "$c" ] || return 1
+        case "$body" in IMPACTED_EOF) body="" ;; *$'\n'IMPACTED_EOF) body="${body%$'\n'IMPACTED_EOF}" ;; *) return 1 ;; esac
+        [ -z "$body" ] || while IFS= read -r l; do
+            case "$l" in 'SUITE '*) ;; *) return 1 ;; esac
+            case "$l" in *[[:cntrl:]]*) return 1 ;; esac
+        done <<EOF
+$body
+EOF
+        [ -z "$body" ] || case "$body" in *$'\n'IMPACTED_EOF|*$'\n'IMPACTED_EOF$'\n'*) return 1 ;; esac
+    else
+        case "$c" in *$'\n'*) return 1 ;; esac
+    fi
+    ql_word_literal "$word" || return 1
+    case "$QW" in
+        scripts/cr/impacted-suites.sh)
+            root=$(jq -r '.cwd // ""' <<<"$input" 2>/dev/null) || return 1
+            root="${root%$'\r'}"
+            [ -n "$root" ] || root="$PWD" ;;
+        *)
+            ql_abs_path "$QW" || return 1
+            case "$QN" in /*/scripts/cr/impacted-suites.sh) ;; *) return 1 ;; esac
+            root="${QC%/scripts/cr/impacted-suites.sh}"
+            case "$root" in ?:) root="$root/" ;; esac ;;
+    esac
+    impacted_suites_is_anchored "$root"
+}
+
+impacted_suites_is_anchored() {   # $1 root — subshell: the unsets stay local
+    (
+        unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_REPLACE_REF_BASE
+        g() { git --no-replace-objects -c core.fsmonitor=false -c core.untrackedCache=false "$@" 2>/dev/null; }
+        f=scripts/cr/impacted-suites.sh
+        repo="${HIMMEL_REPO:-}"; repo="${repo%/}"
+        [ -n "$repo" ] || exit 1
+        anchor_git=$(cd -P "$repo/.git" 2>/dev/null && pwd -P) || exit 1
+        root=$(cd -P "$1" 2>/dev/null && pwd -P) || exit 1
+        common=$(g -C "$root" rev-parse --path-format=absolute --git-common-dir) || exit 1
+        common=$(cd -P "$common" 2>/dev/null && pwd -P) || exit 1
+        [ "$common" = "$anchor_git" ] || exit 1
+        prefix=$(g -C "$root" rev-parse --show-prefix) || exit 1
+        [ -z "$prefix" ] || exit 1
+        [ -f "$root/$f" ] && [ ! -L "$root/$f" ] && [ -f "$repo/$f" ] && [ ! -L "$repo/$f" ] || exit 1
+        [ "$(g -C "$repo" symbolic-ref -q HEAD)" = refs/heads/main ] || exit 1
+        want=$(g -C "$repo" rev-parse --verify -q "refs/heads/main:$f") || exit 1
+        [ -n "$want" ] || exit 1
+        [ "$(g -C "$repo" hash-object --no-filters -- "$f")" = "$want" ] || exit 1
+        [ "$(g -C "$root" hash-object --no-filters -- "$f")" = "$want" ]
+    )
+}
+
 emit_allow() {
     local reason
     # HIMMEL-2123: `jq -n --arg r "<text>" '$r'` JSON-encodes the exact string
@@ -946,6 +1036,13 @@ cmd="${result#*$'\n'}"
 cmd="${cmd//$'\r\n'/$'\n'}"
 [ "$tool" = "Bash" ] || exit 0   # PowerShell keeps its own native rules
 [ -n "$cmd" ] || exit 0
+
+# HIMMEL-3486: /pr-check step 3.6's impacted-suites.sh literals, read off the
+# raw command before scan_cmd (see cmd_is_impacted_suites).
+case "$cmd" in
+    bash*impacted-suites.sh*)
+        cmd_is_impacted_suites "$cmd" && emit_allow "pr-check impacted-suites literal (HIMMEL-3486): ${cmd%%$'\n'*}" ;;
+esac
 
 # Quote-aware structural scan (HIMMEL-209): produces SCAN_SEGS (split only at
 # UNQUOTED separators) + SCAN_MASK (quoted spans blanked). Fail closed if the

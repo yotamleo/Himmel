@@ -602,6 +602,94 @@ assert "HANDOVER_DIR=/a/b + contained doc"          ALLOW "$(qd "HANDOVER_DIR=/a
 assert "HANDOVER_DIR=C:/a + contained doc"          ALLOW "$(qd "HANDOVER_DIR=C:/a $QD_S status /c/a/x.md")"
 assert "ctl: HANDOVER_DIR=/a/b + doc outside it"    PASS  "$(qd "HANDOVER_DIR=/a/b $QD_S status /a/x.md")"
 
+# --- HIMMEL-3486: /pr-check step 3.6's impacted-suites.sh literals ---
+# The step is a required gate, yet `bash scripts/cr/impacted-suites.sh A..B`
+# fell to the classifier and was denied [Out-of-Place Publication]. The hook
+# approves exactly the two runbook shapes (the listing, and `--check` with its
+# quoted heredoc), and only when the file that runs is byte-equal to the
+# HIMMEL_REPO anchor's refs/heads/main blob. A throwaway anchor repo stands in
+# for HIMMEL_REPO, so no case depends on the real primary's state.
+IS_TMP="$(mktemp -d "${TMPDIR:-/tmp}/is-anchor.XXXXXX")" || { echo "FAIL mktemp for the impacted-suites anchor fixture"; exit 1; }
+IS_A="$IS_TMP/anchor"; IS_W="$IS_TMP/wt"
+isg() { env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git -c core.hooksPath=/dev/null -c commit.gpgsign=false -c user.name=t -c user.email=t@t "$@" >/dev/null 2>&1; }
+mkdir -p "$IS_A/scripts/cr"
+printf 'echo impacted\n' > "$IS_A/scripts/cr/impacted-suites.sh"
+printf 'echo other\n' > "$IS_A/scripts/cr/other.sh"
+isg init -q -b main "$IS_A"; isg -C "$IS_A" add -A; isg -C "$IS_A" commit -qm base
+isg -C "$IS_A" worktree add -q -b feat "$IS_W"
+mkdir -p "$IS_W/sub"
+is_dec() { # is_dec <cwd> <command> — decide with HIMMEL_REPO = the throwaway anchor
+    local out
+    out=$(j_bash_cwd "$1" "$2" | HIMMEL_REPO="$IS_A" bash "$HOOK" 2>/dev/null)
+    if grepq "$out" '"permissionDecision":"allow"'; then echo ALLOW; else echo PASS; fi
+}
+IS_R="$(printf 'a%.0s' $(seq 40))..$(printf 'b%.0s' $(seq 40))"
+IS_REL="bash scripts/cr/impacted-suites.sh"
+IS_ABS="bash \"$IS_W/scripts/cr/impacted-suites.sh\""
+IS_HD="<<'IMPACTED_EOF'"
+IS_BODY=$'SUITE scripts/hooks/test-x.sh = PASS\nSUITE scripts/y.test.mjs = SKIP no node here; won'"'"'t $(run) `this`'
+assert "precondition: impacted-suites anchor fixture built" ALLOW "$([ -f "$IS_W/scripts/cr/impacted-suites.sh" ] && echo ALLOW || echo PASS)"
+assert "impacted-suites listing (rel, worktree root)"   ALLOW "$(is_dec "$IS_W" "$IS_REL $IS_R")"
+assert "impacted-suites listing (rel, anchor root)"     ALLOW "$(is_dec "$IS_A" "$IS_REL $IS_R")"
+assert "impacted-suites listing (abs, quoted)"          ALLOW "$(is_dec "$IS_TMP" "$IS_ABS $IS_R")"
+assert "impacted-suites listing (abs, unquoted)"        ALLOW "$(is_dec "$IS_TMP" "bash $IS_A/scripts/cr/impacted-suites.sh $IS_R")"
+assert "impacted-suites --check, no heredoc"            ALLOW "$(is_dec "$IS_W" "$IS_REL --check $IS_R")"
+assert "impacted-suites --check heredoc (rel)"          ALLOW "$(is_dec "$IS_W" "$IS_REL --check $IS_R $IS_HD"$'\n'"$IS_BODY"$'\nIMPACTED_EOF')"
+assert "impacted-suites --check heredoc (abs, trailing NL)" ALLOW "$(is_dec "$IS_W" "$IS_ABS --check $IS_R $IS_HD"$'\n'"$IS_BODY"$'\nIMPACTED_EOF\n')"
+assert "impacted-suites --check heredoc, no verdicts"   ALLOW "$(is_dec "$IS_W" "$IS_REL --check $IS_R $IS_HD"$'\nIMPACTED_EOF')"
+# CONTROLS — grammar.
+assert "ctl: is extra trailing arg"          PASS "$(is_dec "$IS_W" "$IS_REL $IS_R --shell")"
+assert "ctl: is --check after the range"     PASS "$(is_dec "$IS_W" "$IS_REL $IS_R --check")"
+assert "ctl: is --runner form"               PASS "$(is_dec "$IS_W" "$IS_REL --runner scripts/x.test.mjs")"
+assert "ctl: is ; rm"                        PASS "$(is_dec "$IS_W" "$IS_REL $IS_R; rm -rf x")"
+assert "ctl: is && touch"                    PASS "$(is_dec "$IS_W" "$IS_REL $IS_R && touch x")"
+assert "ctl: is | tee"                       PASS "$(is_dec "$IS_W" "$IS_REL $IS_R | tee x")"
+assert "ctl: is > file"                      PASS "$(is_dec "$IS_W" "$IS_REL $IS_R > x")"
+assert "ctl: is \$( in range"                PASS "$(is_dec "$IS_W" "$IS_REL \$(git rev-parse HEAD)..$(printf 'b%.0s' $(seq 40))")"
+assert "ctl: is \$( in path"                 PASS "$(is_dec "$IS_W" "bash \"\$(pwd)/scripts/cr/impacted-suites.sh\" $IS_R")"
+assert "ctl: is short sha"                   PASS "$(is_dec "$IS_W" "$IS_REL abcdef1..$(printf 'b%.0s' $(seq 40))")"
+assert "ctl: is three-dot range"             PASS "$(is_dec "$IS_W" "$IS_REL ${IS_R/../...}")"
+assert "ctl: is upper-case hex"              PASS "$(is_dec "$IS_W" "$IS_REL $(printf 'A%.0s' $(seq 40))..$(printf 'b%.0s' $(seq 40))")"
+assert "ctl: is ref name range"              PASS "$(is_dec "$IS_W" "$IS_REL origin/main..HEAD")"
+assert "ctl: is env prefix"                  PASS "$(is_dec "$IS_W" "BASH_ENV=x $IS_REL $IS_R")"
+assert "ctl: is bash flag"                   PASS "$(is_dec "$IS_W" "bash -x scripts/cr/impacted-suites.sh $IS_R")"
+assert "ctl: is other scripts/cr script"     PASS "$(is_dec "$IS_W" "bash scripts/cr/other.sh $IS_R")"
+assert "ctl: is script outside scripts/cr"   PASS "$(is_dec "$IS_W" "bash scripts/impacted-suites.sh $IS_R")"
+assert "ctl: is ./ spelling"                 PASS "$(is_dec "$IS_W" "bash ./scripts/cr/impacted-suites.sh $IS_R")"
+assert "ctl: is dot-dot abs path"            PASS "$(is_dec "$IS_W" "bash $IS_W/sub/../scripts/cr/impacted-suites.sh $IS_R")"
+assert "ctl: is heredoc without --check"     PASS "$(is_dec "$IS_W" "$IS_REL $IS_R $IS_HD"$'\n'"$IS_BODY"$'\nIMPACTED_EOF')"
+assert "ctl: is unquoted heredoc delimiter"  PASS "$(is_dec "$IS_W" "$IS_REL --check $IS_R <<IMPACTED_EOF"$'\n'"$IS_BODY"$'\nIMPACTED_EOF')"
+assert "ctl: is <<- heredoc"                 PASS "$(is_dec "$IS_W" "$IS_REL --check $IS_R <<-'IMPACTED_EOF'"$'\n'"$IS_BODY"$'\nIMPACTED_EOF')"
+assert "ctl: is command after the heredoc"   PASS "$(is_dec "$IS_W" "$IS_REL --check $IS_R $IS_HD"$'\n'"$IS_BODY"$'\nIMPACTED_EOF\nrm -rf x')"
+assert "ctl: is early delimiter then command" PASS "$(is_dec "$IS_W" "$IS_REL --check $IS_R $IS_HD"$'\nIMPACTED_EOF\nrm -rf x\nIMPACTED_EOF')"
+assert "ctl: is non-SUITE body line"         PASS "$(is_dec "$IS_W" "$IS_REL --check $IS_R $IS_HD"$'\nrm -rf x\nIMPACTED_EOF')"
+assert "ctl: is unterminated heredoc"        PASS "$(is_dec "$IS_W" "$IS_REL --check $IS_R $IS_HD"$'\n'"$IS_BODY")"
+assert "ctl: is two commands on two lines"   PASS "$(is_dec "$IS_W" "$IS_REL $IS_R"$'\n'"rm -rf x")"
+# CONTROLS — where it runs, and the bytes it runs.
+assert "ctl: is rel from a sub-dir"          PASS "$(is_dec "$IS_W/sub" "$IS_REL $IS_R")"
+assert "ctl: is rel from a non-checkout"     PASS "$(is_dec "$IS_TMP" "$IS_REL $IS_R")"
+IS_FAKE="$IS_TMP/fake"; mkdir -p "$IS_FAKE/scripts/cr"; cp "$IS_A/scripts/cr/impacted-suites.sh" "$IS_FAKE/scripts/cr/"; isg init -q -b main "$IS_FAKE"
+assert "ctl: is same bytes, foreign repo"    PASS "$(is_dec "$IS_FAKE" "$IS_REL $IS_R")"
+printf 'echo edited\n' > "$IS_W/scripts/cr/impacted-suites.sh"
+assert "ctl: is worktree copy differs (rel)" PASS "$(is_dec "$IS_W" "$IS_REL $IS_R")"
+assert "ctl: is worktree copy differs (abs)" PASS "$(is_dec "$IS_TMP" "$IS_ABS $IS_R")"
+assert "ctl: is worktree copy differs (--check)" PASS "$(is_dec "$IS_W" "$IS_REL --check $IS_R $IS_HD"$'\n'"$IS_BODY"$'\nIMPACTED_EOF')"
+cp "$IS_A/scripts/cr/impacted-suites.sh" "$IS_W/scripts/cr/impacted-suites.sh"
+assert "impacted-suites listing, copy restored"     ALLOW "$(is_dec "$IS_W" "$IS_REL $IS_R")"
+rm "$IS_W/scripts/cr/impacted-suites.sh"; ln -s "$IS_A/scripts/cr/impacted-suites.sh" "$IS_W/scripts/cr/impacted-suites.sh"
+assert "ctl: is worktree copy is a symlink"  PASS "$(is_dec "$IS_W" "$IS_REL $IS_R")"
+rm "$IS_W/scripts/cr/impacted-suites.sh"; cp "$IS_A/scripts/cr/impacted-suites.sh" "$IS_W/scripts/cr/impacted-suites.sh"
+printf 'echo drift\n' > "$IS_A/scripts/cr/impacted-suites.sh"
+assert "ctl: is anchor tree off main's blob" PASS "$(is_dec "$IS_A" "$IS_REL $IS_R")"
+isg -C "$IS_A" checkout -q -- scripts/cr/impacted-suites.sh
+isg -C "$IS_A" checkout -q --detach
+assert "ctl: is anchor HEAD detached"        PASS "$(is_dec "$IS_W" "$IS_REL $IS_R")"
+isg -C "$IS_A" checkout -q main
+IS_OUT=$(j_bash_cwd "$IS_W" "$IS_REL $IS_R" | env -u HIMMEL_REPO bash "$HOOK" 2>/dev/null)
+assert "ctl: is HIMMEL_REPO unset"           PASS "$(grepq "$IS_OUT" '"permissionDecision":"allow"' && echo ALLOW || echo PASS)"
+assert "impacted-suites listing, anchor back on main" ALLOW "$(is_dec "$IS_W" "$IS_REL $IS_R")"
+rm -rf "$IS_TMP"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "All cases passed."
