@@ -651,22 +651,24 @@ sha_of() { if [ -f "$1" ]; then sha256sum "$1" | cut -d' ' -f1; else echo MISSIN
 # note and only the newline/EOL rules apply.
 JQ_NOTED=0
 content_equiv() {
-    local a="$1" b="$2" rel="$3" va vb
+    local a="$1" b="$2" rel="$3" va vb raw_a raw_b
     [ "$(sha_of "$a")" = "$(sha_of "$b")" ] && return 0
     [ -f "$a" ] && [ -f "$b" ] || return 1
     # `x` sentinel: $(...) would otherwise swallow EVERY trailing newline, and
     # only one is ignorable.
-    va="$({ cat "$a"; printf x; } 2>/dev/null)"; va="${va%x}"; va="${va%$'\n'}"
-    vb="$({ cat "$b"; printf x; } 2>/dev/null)"; vb="${vb%x}"; vb="${vb%$'\n'}"
+    raw_a="$({ cat "$a"; printf x; } 2>/dev/null)"; raw_a="${raw_a%x}"
+    raw_b="$({ cat "$b"; printf x; } 2>/dev/null)"; raw_b="${raw_b%x}"
+    va="${raw_a%$'\n'}"; vb="${raw_b%$'\n'}"
     [ "$va" = "$vb" ] && return 0
-    # EOL-only: normalize CRLF pairs to LF before comparing (HIMMEL-3406
-    # codex-2: a bare stray \r is content, not a line-ending style, and
-    # stripping it outright could misclassify a genuine difference as
-    # identical). Normalize BEFORE the trailing-newline strip above already
-    # ran — that strip only drops the \n of a trailing CRLF, so normalizing
-    # the post-strip strings would leave a lone \r unmatched at the end.
-    local va_eol="${va//$'\r\n'/$'\n'}" vb_eol="${vb//$'\r\n'/$'\n'}"
-    va_eol="${va_eol%$'\r'}"; vb_eol="${vb_eol%$'\r'}"
+    # EOL-only: normalize CRLF pairs to LF on the RAW content, then re-apply
+    # the same "one trailing newline is ignorable" rule (HIMMEL-3406 codex-2,
+    # codex-1 round 2: normalizing must run BEFORE the trailing-newline strip
+    # rather than after it — normalizing the already-\n-stripped `va`/`vb`
+    # left a genuine trailing CRLF's lone `\r` unmatched, and stripping that
+    # leftover `\r` unconditionally then also ate a file's real, standalone
+    # trailing `\r` — content, not a line-ending style — as a false match).
+    local va_eol="${raw_a//$'\r\n'/$'\n'}" vb_eol="${raw_b//$'\r\n'/$'\n'}"
+    va_eol="${va_eol%$'\n'}"; vb_eol="${vb_eol%$'\n'}"
     [ "$va_eol" = "$vb_eol" ] && return 0
     case "$rel" in
         *.json)

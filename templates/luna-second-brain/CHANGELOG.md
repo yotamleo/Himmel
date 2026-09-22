@@ -8,6 +8,16 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.50] — 2026-09-22
+
+### Fixed
+- `content_equiv()`'s EOL-equivalence check normalized CRLF pairs on the
+  already-trailing-newline-stripped copy, which left a genuine trailing CRLF's
+  lone `\r` unmatched and required an extra unconditional strip that then also
+  swallowed a file's real, standalone trailing `\r` as a false match.
+  Normalizing now runs on the raw content before that strip, so a genuine
+  trailing bare `\r` is never touched. (HIMMEL-3406)
+
 ## [0.4.49] — 2026-09-22
 
 ### Fixed
