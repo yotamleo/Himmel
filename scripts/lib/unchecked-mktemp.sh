@@ -311,6 +311,15 @@ unchecked_mktemp_scan() {
                 prev2 = (i > 2) ? substr(s, i - 2, 1) : ""
                 if (prev == "$") continue                    # $# -- positional count
                 if (prev == "{" && prev2 == "$") continue     # ${#name} -- length
+                # codex-2 (/pr-check round 1 on this branch): a `#` is only
+                # a comment START at the beginning of a shell word -- i.e.
+                # at the start of the line or right after whitespace. A `#`
+                # glued to the preceding character (no separating space),
+                # such as a `#` inside a literal mktemp template argument
+                # (`mktemp /tmp/name#XXXXXX`), is ordinary text, not a
+                # comment, and must not swallow a real trailing `|| exit 1`
+                # guard that follows it.
+                if (prev != "" && prev != " " && prev != "\t") continue
                 return substr(s, 1, i - 1)
             }
         }
@@ -441,7 +450,20 @@ unchecked_mktemp_scan() {
             # (round-4 fix).
             rem = remainder_after_capture(code_line)
             if (rem != "") {
-                if (rem ~ ("(\\[\\[?|test)[ \t].*\\$\\{?" var "\\}?[^A-Za-z0-9_/.]")) guarded = 1
+                # codex-1 (/pr-check round 1 on this branch): `\}?` was
+                # independently optional, so for a braced mention like
+                # `${tmp}/bin/node` the engine could skip matching the
+                # literal `}` and let the following negated boundary class
+                # (which does not exclude `}`) match `}` itself -- treating
+                # a mere mention as a real guard. Two full alternatives --
+                # braced-and-closed, or unbraced -- removes that mismatch.
+                # The braced alternative allows an interior parameter-
+                # expansion modifier (`[^{}]*`, e.g. `${T:-}`, a common
+                # set-u-safe spelling of a real `[ -z ... ]` test) as long
+                # as it is followed by an ACTUAL closing brace -- `[^{}]*`
+                # cannot itself consume `{`/`}`, so the brace can no longer
+                # be skipped the way the old optional form allowed.
+                if (rem ~ ("(\\[\\[?|test)[ \t].*(\\$\\{" var "[^{}]*\\}|\\$" var ")[^A-Za-z0-9_/.]")) guarded = 1
                 if (!guarded && rem ~ ("\\$\\{" var ":\\?")) guarded = 1
             }
 
@@ -465,7 +487,7 @@ unchecked_mktemp_scan() {
                     # remainder above.
                     t_code = strip_comment(t)
                     # (c) a test construct referencing the variable.
-                    if (t_code ~ ("(\\[\\[?|test)[ \t].*\\$\\{?" var "\\}?[^A-Za-z0-9_/.]")) { guarded = 1; break }
+                    if (t_code ~ ("(\\[\\[?|test)[ \t].*(\\$\\{" var "[^{}]*\\}|\\$" var ")[^A-Za-z0-9_/.]")) { guarded = 1; break }
                     # (d) `${VAR:?...}` -- colon form only (not `${VAR?...}`).
                     if (t_code ~ ("\\$\\{" var ":\\?")) { guarded = 1; break }
                 }

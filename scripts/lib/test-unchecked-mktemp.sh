@@ -421,6 +421,24 @@ f="$TMPDIR_ROOT/t31d.sh"
 printf 'tmp="$(mktemp -d)"\nout="$(resolve)"\nif [ "$rc" -eq 0 ] && { [ "$out" = "$tmp/bin/node.exe" ] || [ "$out" = "$tmp/bin/node" ]; }; then true; fi\n' > "$f"
 assert_eq "T31d regression lock: test-resolve-node.sh:73 shape -> offending (HIMMEL-3428 item 1)" "1" "$(scan_lines "$f")"
 
+# codex-1 (/pr-check round 1 on this branch): the item-1 fix only covered the
+# unbraced spelling ($tmp); a BRACED mere-mention (${tmp} embedded in a
+# compared string, not actually tested) slipped past the same rule (c)
+# window because the optional \}? let the engine skip the literal `}` and
+# match it as the boundary character instead.
+f="$TMPDIR_ROOT/t31e.sh"
+printf 'tmp="$(mktemp -d)"\nout="$(foo)"\nif [ "$out" = "${tmp}/bin/node" ]; then true; fi\n' > "$f"
+assert_eq "T31e rule (c) braced mention-only (\${tmp} embedded in a compared string) does not guard -> offending (codex-1)" "1" "$(scan_lines "$f")"
+
+# Regression lock for the codex-1 fix itself: requiring an exact `${VAR}`
+# close must not break the common set-u-safe `${VAR:-}` spelling of a real
+# emptiness test (scripts/handover/reconcile-workers.sh:338's shape) -- the
+# closing brace still has to be real, but a modifier between the var name
+# and it (`:-`, `:=`, ...) must still be accepted.
+f="$TMPDIR_ROOT/t31f.sh"
+printf 'a=$(mktemp 2>/dev/null) && b=$(mktemp 2>/dev/null)\nif [ -z "${a:-}" ] || [ -z "${b:-}" ]; then exit 1; fi\n' > "$f"
+assert_eq "T31f control: \${VAR:-} inside [ -z ] still guards (codex-1 widen)" "0" "$(scan_lines "$f")"
+
 # T32/T32b/T32c/T32d/T32e -- HIMMEL-3428 slice 2 item 2: a trailing ` #...`
 # comment must be stripped before rules (a)/(c)/(d) run, so a commented-out
 # guard (same-line or next-line) does not count as real -- while `#` inside
@@ -444,6 +462,14 @@ assert_eq "T32d control: \${#T} length op in a trailing comment does not break g
 f="$TMPDIR_ROOT/t32e.sh"
 printf 'T=$(mktemp -d "#tag") || exit 1\n' > "$f"
 assert_eq "T32e control: quoted # in the capture line args does not break || recognition -> ok (HIMMEL-3428 item 2)" "0" "$(scan_lines "$f")"
+
+# codex-2 (/pr-check round 1 on this branch): an UNQUOTED `#` glued to a
+# preceding character (no separating whitespace), e.g. inside a mktemp
+# template argument, is ordinary text, not a comment start -- stripping it
+# must not eat a real trailing `|| exit 1` guard that follows it.
+f="$TMPDIR_ROOT/t32f.sh"
+printf 'T=$(mktemp /tmp/name#XXXXXX) || exit 1\n' > "$f"
+assert_eq "T32f control: unquoted # glued to a template arg (no space) does not break || recognition -> ok (codex-2)" "0" "$(scan_lines "$f")"
 
 # T33/T33b/T33c/T33d/T33e/T33f -- HIMMEL-3428 slice 2 item 3: the command-name
 # boundary must also catch `<`/`>` redirects, a bare quote with no preceding
