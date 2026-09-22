@@ -1498,21 +1498,28 @@ _bwimc_unq() {
 # `receive.denyCurrentBranch=updateInstead` that rewrites a checked-out
 # tree), and a `<transport>::` helper runs a command: both fail closed.
 _bwimc_git_push() {
-    local clause="$1" dir="$2" unres="$3" a want="" d p r dests=()
+    local clause="$1" dir="$2" unres="$3" a want="" d p r dests=() npos=0 ddash=0
     shift 3
+    # parse_options permutes, so an option AFTER the destination still counts:
+    # scan every argument, and take only the first positional as the repo.
     for a in "$@"; do
         if [ -n "$want" ]; then
             [ "$want" = repo ] && dests+=("$a")
             want=""; continue
         fi
+        if [ "$ddash" = 1 ]; then
+            [ "$npos" = 0 ] && dests+=("$a")
+            npos=$((npos+1)); continue
+        fi
         case "$a" in
+            --) ddash=1 ;;
             --receive-pack|--receive-pack=*|--exec|--exec=*)
                 _bwimc_deny "unresolved-git-target" "$clause" "$dir" "" ;;
             --repo=*) dests+=("${a#--repo=}") ;;
             --repo) want=repo ;;
             -o|--push-option) want=skip ;;
             -*) ;;
-            *) dests+=("$a"); break ;;
+            *) [ "$npos" = 0 ] && dests+=("$a"); npos=$((npos+1)) ;;
         esac
     done
     [ "${#dests[@]}" -gt 0 ] || return 0
