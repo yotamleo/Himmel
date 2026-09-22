@@ -118,6 +118,11 @@ ln -s "$FAKE/.claude/himmel" "$TMP/c3/home/.claude/himmel"
 HOME="$TMP/c3/home" run_wet
 expect_refused "(c3) \$HOME/.claude/himmel portal" c
 
+# (c4) $HOME is an ANCESTOR of the real home: an override target inside the
+# real .claude is also under $HOME, which must not exempt it.
+HOME="$TMP" run_wet HIMMELCTL_CACHE_DIR="$FAKE/.claude/himmel"
+expect_refused "(c4) HOME an ancestor of the real home, override into the real .claude" c
+
 # (d) HOME unset / empty lives in scripts/test-uninstall-ux.sh: that check
 # fires before the fence, and a file that drops HOME may not lift the fence
 # (the static caller guard, scripts/test-uninstall-real-home-callers.sh).
@@ -201,12 +206,13 @@ fi
 
 # (u) an unresolvable passwd home fails CLOSED. A stub `id` ahead of $HBIN
 # (which has no getent/dscl fallback) answers (u1) a name outside
-# [A-Za-z0-9._-] carrying a command substitution — refused, never eval'd —
+# [A-Za-z0-9._-] carrying a command substitution whose body is a builtin redirect
+# (no PATH lookup, so it would fire if evaluated) — refused, never eval'd —
 # and (u2) an unknown user, whose `~name` stays literal — unresolved.
 UBIN="$TMP/ubin"
 mkdir -p "$UBIN" "$TMP/u/home"
 for _case in u1 u2; do
-    if [ "$_case" = u1 ]; then _name="x\$(touch $TMP/pwned)"; else _name="himmel_no_such_user_3415"; fi
+    if [ "$_case" = u1 ]; then _name="x\$(: >$TMP/pwned)"; else _name="himmel_no_such_user_3415"; fi
     printf '%s\n' "$_name" > "$UBIN/id.name"
     cat > "$UBIN/id" <<EOF
 #!/bin/sh

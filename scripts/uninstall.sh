@@ -1173,6 +1173,7 @@ real_home_under() {
 #   b           physical $HOME/.claude is at or under a protected home's .claude
 #   c           a $HOME-derived removal target (a {HOME} manifest row or any
 #               override env) resolves into a protected home but outside $HOME
+#               — or anywhere in it when $HOME is an ancestor of that home
 real_home_check() {
   local _homes _r _rp _rc _hp _cp _i _var _t _tp _home
   if ! _homes=$(real_home_protected_homes); then
@@ -1203,14 +1204,14 @@ real_home_check() {
         case "${M_PATH[$_i]}" in '{HOME}'*) _t=$(m_path "$_i") ;; *) continue ;; esac
       fi
       _tp=$(real_home_phys "$_t") || _tp="$_t"
-      if real_home_under "$_tp" "$_rp" && ! real_home_under "$_tp" "$_hp"; then
+      if real_home_under "$_tp" "$_rp" && { ! real_home_under "$_tp" "$_hp" || real_home_under "$_rp" "$_hp"; }; then
         echo "ERROR: refusing a wet uninstall — real-home check (c): ${M_ID[$_i]} target $_t resolves to $_tp, inside the real home $_rp" >&2
         return 1
       fi
     done
     if [ -n "${HIMMELCTL_SYSTEMD_USER_UNIT_DIR:-}" ]; then
       _tp=$(real_home_phys "$HIMMELCTL_SYSTEMD_USER_UNIT_DIR") || _tp="$HIMMELCTL_SYSTEMD_USER_UNIT_DIR"
-      if real_home_under "$_tp" "$_rp" && ! real_home_under "$_tp" "$_hp"; then
+      if real_home_under "$_tp" "$_rp" && { ! real_home_under "$_tp" "$_hp" || real_home_under "$_rp" "$_hp"; }; then
         echo "ERROR: refusing a wet uninstall — real-home check (c): HIMMELCTL_SYSTEMD_USER_UNIT_DIR resolves to $_tp, inside the real home $_rp" >&2
         return 1
       fi
