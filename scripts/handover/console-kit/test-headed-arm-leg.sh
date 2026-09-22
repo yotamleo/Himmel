@@ -73,7 +73,7 @@ HEADED_ARM="$HERE/../headed-arm.sh"
 . "$HERE/../../lib/timeout-bin.sh"
 # The suite owns every launcher input; an ambient leg shell must not silently
 # turn default-native cases into claudex cases.
-unset LEG_LANE LEG_CONTEXT LEG_REPO LEG_EFFORT HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER IMPL_GUARD_OK INLINE_IMPL_OK HIMMEL_CONSOLE_LEG HIMMEL_LEAN_LEG LEG_CLAUDE_BIN LEG_PROFILE LEG_PROFILE_SETTINGS LEG_PROFILE_PREFACE LEG_PROFILE_MCP_CONFIG LEG_SUPPRESS_CR_TRIGGER CR_TRIGGER_SUPPRESS 2>/dev/null || true
+unset LEG_LANE LEG_CONTEXT LEG_REPO LEG_EFFORT HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER IMPL_GUARD_OK INLINE_IMPL_OK HIMMEL_CONSOLE_LEG HIMMEL_LEAN_LEG LEG_CLAUDE_BIN LEG_PROFILE LEG_PROFILE_SETTINGS LEG_PROFILE_PREFACE LEG_PROFILE_MCP_CONFIG LEG_SUPPRESS_CR_TRIGGER CR_TRIGGER_SUPPRESS HIMMEL_CONSOLE_NAME CLAUDE_PID SESSION_NAME_CMDLINE_FILE 2>/dev/null || true
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/headed-arm-leg-test.XXXXXX")" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
 trap 'rm -rf "$tmp"' EXIT
@@ -129,7 +129,7 @@ mk_launch_stubs() {
   cat > "$dir/konsole" <<'KONSOLE_EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$(dirname "$0")/record"
-env | grep -E '^(IMPL_GUARD_OK|INLINE_IMPL_OK|HIMMEL_CONSOLE_LEG|HEADED_ARM_REQUIRED_AUTOCOMPACT|HIMMEL_LEAN_LEG|LEG_CLAUDE_BIN|LEG_PROFILE_SETTINGS|LEG_PROFILE_PREFACE|LEG_PROFILE_MCP_CONFIG|CONSOLE_CONTEXT|HANDOVER_DIR)=' > "$(dirname "$0")/env-record"
+env | grep -E '^(IMPL_GUARD_OK|INLINE_IMPL_OK|HIMMEL_CONSOLE_LEG|HEADED_ARM_REQUIRED_AUTOCOMPACT|HIMMEL_LEAN_LEG|LEG_CLAUDE_BIN|LEG_PROFILE_SETTINGS|LEG_PROFILE_PREFACE|LEG_PROFILE_MCP_CONFIG|CONSOLE_CONTEXT|HANDOVER_DIR|HIMMEL_CONSOLE_NAME)=' > "$(dirname "$0")/env-record"
 : > "$(dirname "$0")/confirmable"
 sleep 5
 KONSOLE_EOF
@@ -254,6 +254,7 @@ contains "dry-run default: reports INLINE_IMPL_OK=1" "$out" "INLINE_IMPL_OK=1"
 contains "dry-run default: reports HIMMEL_CONSOLE_LEG=1" "$out" "HIMMEL_CONSOLE_LEG=1"
 not_contains "dry-run default: no HIMMEL_CONSOLE_RELAY without --relay" "$out" "HIMMEL_CONSOLE_RELAY"
 contains "dry-run default: scrub list names CONSOLE_CONTEXT" "$out" "scrub=CONSOLE_CONTEXT"
+contains "dry-run default: no console-name source -> HIMMEL_CONSOLE_NAME absent" "$out" "HIMMEL_CONSOLE_NAME=<unset>"
 
 # HIMMEL-3139: a console armed with CONSOLE_CONTEXT=1m in its own environ (the
 # mandatory opt-in for a 1M successor, console.sh:382) must not forward that
@@ -268,6 +269,64 @@ rc=0; out="$(CONSOLE_CONTEXT=1m LEG_CONTEXT='' LEG_REPO='' bash "$SCRIPT" --dry-
 check "dry-run, ambient CONSOLE_CONTEXT=1m: exit 0 (a leg is unaffected by it)" "$rc" "0"
 contains "dry-run, ambient CONSOLE_CONTEXT=1m: scrubbed to <unset> in the wrapper's own env" "$out" "scrub=CONSOLE_CONTEXT CONSOLE_CONTEXT=<unset>"
 not_contains "dry-run, ambient CONSOLE_CONTEXT=1m: never reported as still set" "$out" "CONSOLE_CONTEXT=1m"
+
+# --- HIMMEL-3435: HIMMEL_CONSOLE_NAME resolution (--console, launching
+# shell's HIMMEL_CONSOLE_NAME, this process's own session name via
+# session-name.sh), charset refusal, and precedence. -------------------------
+
+# Source 1: --console flag.
+rc=0; out="$(bash "$SCRIPT" --dry-run --console opsdesk --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "dry-run --console opsdesk: exit 0" "$rc" "0"
+contains "dry-run --console opsdesk: reports HIMMEL_CONSOLE_NAME=opsdesk" "$out" "HIMMEL_CONSOLE_NAME=opsdesk"
+
+# Source 2: the launching shell's own HIMMEL_CONSOLE_NAME, no --console.
+rc=0; out="$(HIMMEL_CONSOLE_NAME=ambient-console bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "dry-run, ambient HIMMEL_CONSOLE_NAME: exit 0" "$rc" "0"
+contains "dry-run, ambient HIMMEL_CONSOLE_NAME: reports it" "$out" "HIMMEL_CONSOLE_NAME=ambient-console"
+
+# --console wins over an ambient HIMMEL_CONSOLE_NAME (source 1 before source 2).
+rc=0; out="$(HIMMEL_CONSOLE_NAME=ambient-console bash "$SCRIPT" --dry-run --console flag-console --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "dry-run, --console + ambient HIMMEL_CONSOLE_NAME: exit 0" "$rc" "0"
+contains "dry-run, --console + ambient HIMMEL_CONSOLE_NAME: flag wins" "$out" "HIMMEL_CONSOLE_NAME=flag-console"
+not_contains "dry-run, --console + ambient HIMMEL_CONSOLE_NAME: ambient value dropped" "$out" "HIMMEL_CONSOLE_NAME=ambient-console"
+
+# Source 3: this process's own Claude session name, via session-name.sh's
+# CLAUDE_PID + SESSION_NAME_CMDLINE_FILE test seam - only consulted when
+# neither --console nor the launching shell's HIMMEL_CONSOLE_NAME yielded one.
+csn_fixture="$tmp/session-name-cmdline"
+printf 'claude\0--model\0x\0-n\0detected-console\0load doc and continue\0' > "$csn_fixture"
+rc=0; out="$(CLAUDE_PID=4242 SESSION_NAME_CMDLINE_FILE="$csn_fixture" bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "dry-run, own session name via CLAUDE_PID/cmdline: exit 0" "$rc" "0"
+contains "dry-run, own session name via CLAUDE_PID/cmdline: reports it" "$out" "HIMMEL_CONSOLE_NAME=detected-console"
+
+# --console still wins over the auto-detected session name.
+rc=0; out="$(CLAUDE_PID=4242 SESSION_NAME_CMDLINE_FILE="$csn_fixture" bash "$SCRIPT" --dry-run --console flag-console --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+contains "dry-run, --console + own session name: flag wins" "$out" "HIMMEL_CONSOLE_NAME=flag-console"
+not_contains "dry-run, --console + own session name: auto-detected value dropped" "$out" "HIMMEL_CONSOLE_NAME=detected-console"
+
+# --console: a bad charset REFUSES the launch outright (explicit user input,
+# same stance as --lane/--profile) - unlike sources 2/3 below.
+rc=0; out="$(bash "$SCRIPT" --dry-run --console 'bad name' --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "--console with a bad charset: exit 2" "$rc" "2"
+contains "--console with a bad charset: usage text" "$out" "usage:"
+contains "--console with a bad charset: names the bad value" "$out" "bad name"
+
+# Ambient HIMMEL_CONSOLE_NAME with a bad charset: NOT a hard refusal - treated
+# as if that source yielded nothing (best-effort routing, not load-bearing),
+# so the launch still succeeds and HIMMEL_CONSOLE_NAME is absent.
+rc=0; out="$(HIMMEL_CONSOLE_NAME='bad/name' bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "dry-run, ambient HIMMEL_CONSOLE_NAME with a bad charset: exit 0 (not refused)" "$rc" "0"
+contains "dry-run, ambient HIMMEL_CONSOLE_NAME with a bad charset: treated as no source" "$out" "HIMMEL_CONSOLE_NAME=<unset>"
+
+# The auto-detected session name is charset-checked too: session-name.sh's own
+# validation would accept a colon (it only rejects '/', '..', whitespace and
+# glob metacharacters), but this narrower charset must still reject it and
+# fall through to "no source" rather than exporting an unsafe value.
+csn_fixture_colon="$tmp/session-name-cmdline-colon"
+printf 'claude\0--model\0x\0-n\0bad:name\0load doc and continue\0' > "$csn_fixture_colon"
+rc=0; out="$(CLAUDE_PID=4242 SESSION_NAME_CMDLINE_FILE="$csn_fixture_colon" bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "dry-run, own session name with a bad charset: exit 0 (not refused)" "$rc" "0"
+contains "dry-run, own session name with a bad charset: treated as no source" "$out" "HIMMEL_CONSOLE_NAME=<unset>"
 
 rc=0; out="$(LEG_CONTEXT=1m bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 check "dry-run LEG_CONTEXT=1m: refused with exit 2" "$rc" "2"
