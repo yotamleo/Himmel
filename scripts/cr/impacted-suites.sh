@@ -80,29 +80,29 @@ runner_for() {
     local path="$1" rel
     case "$path" in
         scripts/hooks/*.test.mjs|scripts/lib/*.test.mjs|scripts/lanes/tests/*.test.mjs|scripts/trust/tests/*.test.mjs)
-            printf 'node --test %s\n' "$path" ;;
+            printf 'node --test %q\n' "$path" ;;
         scripts/jira/*.test.ts)
             rel="${path#scripts/jira/}"
-            printf 'cd scripts/jira && npx vitest run %s\n' "$rel" ;;
+            printf 'cd scripts/jira && npx vitest run %q\n' "$rel" ;;
         scripts/bitbucket/*.test.ts)
             rel="${path#scripts/bitbucket/}"
-            printf 'cd scripts/bitbucket && npx vitest run %s\n' "$rel" ;;
+            printf 'cd scripts/bitbucket && npx vitest run %q\n' "$rel" ;;
         scripts/himmel-run/*.test.ts)
             rel="${path#scripts/himmel-run/}"
-            printf 'cd scripts/himmel-run && npx vitest run %s\n' "$rel" ;;
+            printf 'cd scripts/himmel-run && npx vitest run %q\n' "$rel" ;;
         scripts/ci-orchestrator/*.test.ts)
             rel="${path#scripts/ci-orchestrator/}"
-            printf 'cd scripts/ci-orchestrator && npx vitest run %s\n' "$rel" ;;
+            printf 'cd scripts/ci-orchestrator && npx vitest run %q\n' "$rel" ;;
         scripts/luna-vitals/*.test.mjs|scripts/luna-vitals/*.test.js|scripts/luna-vitals/*.test.ts)
             rel="${path#scripts/luna-vitals/}"
-            printf 'cd scripts/luna-vitals && bun test %s\n' "$rel" ;;
+            printf 'cd scripts/luna-vitals && bun test %q\n' "$rel" ;;
         scripts/telegram/*.test.mjs|scripts/telegram/*.test.js|scripts/telegram/*.test.ts)
-            printf 'bun test %s --dots\n' "$path" ;;
+            printf 'bun test %q --dots\n' "$path" ;;
         scripts/vault/tests/*.test.mjs|scripts/vault/tests/*.test.js|scripts/vault/tests/*.test.ts)
-            printf 'bun test %s --dots\n' "$path" ;;
+            printf 'bun test %q --dots\n' "$path" ;;
         marketplace/plugins/luna-correlate/*.test.mjs|marketplace/plugins/luna-correlate/*.test.js|marketplace/plugins/luna-correlate/*.test.ts)
             rel="${path#marketplace/plugins/luna-correlate/}"
-            printf 'cd marketplace/plugins/luna-correlate && bun test %s\n' "$rel" ;;
+            printf 'cd marketplace/plugins/luna-correlate && bun test %q\n' "$rel" ;;
         *)
             echo "impacted-suites.sh: --runner has no CI-runner mapping for '${path}' — refusing to guess" >&2
             return 2 ;;
@@ -114,6 +114,19 @@ runner_for() {
 # unmapped by runner_for above. Keep this list in lockstep with runner_for by
 # hand; there is no way to derive one from the other without reimplementing
 # the YAML.
+#
+# ponytail: this scans `run:` LINES only — a JS/TS test invocation written
+# inside a `run: |` block scalar body (the command on a following indented
+# line, not the `run:` line itself) is invisible to it. No current ci.yml step
+# does this; widen the grep to a block-scalar-aware scan if one ever does.
+#
+# ponytail: the `npm test` marker matches by SUBSTRING only, with no
+# directory context — it satisfies the drift check for `npm test` run from
+# ANY working directory, including a future one runner_for has no case for.
+# It exists because ci.yml's own `npm test` step (repo root) does not name
+# which of the vitest directories it covers; narrowing it would mean parsing
+# ci.yml's `working-directory:` keys, which this grep-based check deliberately
+# does not do.
 runner_known_markers() {
     cat <<'EOF'
 scripts/lanes/tests/**/*.test.mjs
