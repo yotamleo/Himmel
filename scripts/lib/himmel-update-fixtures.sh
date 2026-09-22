@@ -74,6 +74,14 @@ make_repo_channel() {
     # Overlaid, not committed — excluded from git status so is_dirty() (which
     # channel apply-mode's dirty-tree refusal relies on) never sees the test
     # harness's own script drop as a local edit.
+    # HIMMEL-3450: run-shell-tests.sh pins init.templateDir to an empty
+    # directory (scripts/lib/git-test-env.sh, perf) — under that pin this
+    # box's git (2.55.0) does not create .git/info/ at all, only under an
+    # unpinned/default template. mkdir -p makes the append hermetic to that
+    # pin either way (verified: 8/8 bare `git init` under the pin lack
+    # .git/info; solo quiet-run never applies the pin, which is why this only
+    # ever showed up under run-shell-tests.sh's batch runner).
+    mkdir -p "$clone/.git/info"
     printf 'scripts/\n' >> "$clone/.git/info/exclude"
     CHECKOUT_DIR="$clone"
     # HIMMEL-2705 codex-3: git init's local default branch name depends on
