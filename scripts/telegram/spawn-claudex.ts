@@ -761,6 +761,9 @@ export function claudexChildEnv(base: Record<string, string | undefined>, effort
   // the GLM twin.
   env.HIMMEL_WORKER = "1";
   delete env.TELEGRAM_OWN_POLLER;
+  // HIMMEL-3396: the operator's hook-integrity bypass is not a worker's lever —
+  // inherited, it would hand the worker its own pin-dir and anchor fences.
+  delete env.HIMMEL_HOOK_INTEGRITY_BYPASS_OK;
   return env;
 }
 

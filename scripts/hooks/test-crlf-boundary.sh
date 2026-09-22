@@ -107,6 +107,8 @@ D_WSL="ws""l -d Ubuntu -- bash -lc \"cod""ex exec -s workspace-write do-it\""
 D_TAIL="bash scripts/cr/clear-cr-mar""ker.sh | tai""l -5"
 D_QUIET="bash scripts/test-check-c""i.sh"
 D_RELAY="CLAUDE_PID=1 bash x.sh"
+D_PRCHECK="bash scripts/cr/pr-check-cont""ext.sh"
+D_PRCHECK_ENV="bash scripts/cr/pr-check-e""nv.sh CR_CLAUDE_AGENTS"
 A_OK="git status"
 
 printf '\nSingle-line command text\n'
@@ -133,6 +135,11 @@ check guard-relay-writes          Bash 2 "$D_RELAY"  "deny env-override under th
     HIMMEL_CONSOLE_RELAY=1
 check guard-relay-writes          Bash 0 "$D_RELAY"  "marker unset allows the same text" \
     -u HIMMEL_CONSOLE_RELAY
+# HIMMEL-3383: a CR must not turn the literal into a non-match (fail-open);
+# with no cwd in the payload no lane is provable, so the literal is denied.
+check guard-pr-check-literal      Bash 2 "$D_PRCHECK" "deny the step-0 literal with no provable lane"
+check guard-pr-check-literal      Bash 2 "$D_PRCHECK_ENV" "deny the pr-check-env literal with no provable lane"
+check guard-pr-check-literal      Bash 0 "$A_OK"     "allow git status"
 
 # A multi-line command is where the class actually bites: with CRLF endings the
 # LAST character of every record is a CR, so any check anchored at end-of-record

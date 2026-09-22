@@ -260,6 +260,7 @@ scripts/hooks/test-block-docker-privesc.sh	2
 scripts/hooks/test-block-edit-live-settings.sh	1
 scripts/hooks/test-block-edit-on-main.sh	4
 scripts/hooks/test-block-git-stash.sh	1
+scripts/hooks/test-block-glm-bypass-scope.sh	1
 scripts/hooks/test-block-glm-external-writes.sh	18
 scripts/hooks/test-block-graphify-egress.sh	1
 scripts/hooks/test-block-jira-compound-write.sh	10
