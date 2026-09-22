@@ -30,6 +30,11 @@ trap 'rm -rf "$TMPBASE"' EXIT
 
 export HOME="$TMPBASE/home"
 mkdir -p "$HOME"
+# HOME alone does not isolate git config: XDG and the system file still load,
+# and an inherited push.default would fail the "no defaults touched" assertion.
+export XDG_CONFIG_HOME="$HOME/.config"
+export GIT_CONFIG_NOSYSTEM=1
+unset GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM
 
 ORIGIN="$TMPBASE/origin.git"
 git init -q --bare "$ORIGIN"
