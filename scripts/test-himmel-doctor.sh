@@ -183,6 +183,13 @@ export DOCTOR_WORKTREE_ROOT="$DOCTOR_WT_EMPTY"
 DOCTOR_UNLANDED_EMPTY="$FAKEROOT/doctor-unlanded-empty"; mkdir -p "$DOCTOR_UNLANDED_EMPTY"
 export DOCTOR_UNLANDED_DIR="$DOCTOR_UNLANDED_EMPTY"
 
+# Keep unrelated cases from running the real sweep-health check for C42
+# (HIMMEL-3405: it makes live gh calls and reads the operator's real branches): a
+# stub that prints nothing and exits 0. Dedicated C42 cases override this seam.
+DOCTOR_SWEEP_HEALTH_STUB="$FAKEROOT/sweep-health-clean.sh"
+printf '#!/bin/sh\nexit 0\n' > "$DOCTOR_SWEEP_HEALTH_STUB"
+export DOCTOR_SWEEP_HEALTH_SCRIPT="$DOCTOR_SWEEP_HEALTH_STUB"
+
 # A fake node so "node resolvable" cases are deterministic regardless of whether
 # the host actually has node (a node-less Linux box would otherwise FAIL them).
 FAKENODE="$FAKEROOT/nodebin"; mkdir -p "$FAKENODE"
@@ -4943,6 +4950,72 @@ else
     fail "C41 no MCP config -> $(printf '%s' "$out" | grep -A1 C41)"
 fi
 rm -rf "$c41_t"
+
+# --- C42 (HIMMEL-3405): sweep health alarms ------------------------------------
+# C42 delegates to `clean-garden.sh --health` (alarm lines only, empty = healthy,
+# exit 0/1) and WARNs once per line. Seam: DOCTOR_SWEEP_HEALTH_SCRIPT -- a stub
+# here, so no case makes a live forge call or reads real branches.
+c42_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c42.XXXXXX")" || { fail "C42 setup: mktemp -d failed"; exit 1; }
+c42_stub() { # $1 exit code, $2.. stdout lines
+    local rc="$1" l; shift
+    # shellcheck disable=SC2016  # $1/$* belong to the generated stub, not to this shell
+    { printf '#!/bin/sh\n[ "$1" = "--health" ] || { echo "stub: wrong args: $*" >&2; exit 9; }\n'
+      for l in "$@"; do printf 'echo %s\n' "'$l'"; done
+      printf 'exit %s\n' "$rc"; } > "$c42_t/stub.sh"
+}
+c42_run() {
+    PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$c42_t/claude" HOME="$c42_t" DOCTOR_SWEEP_HEALTH_SCRIPT="${1:-$c42_t/stub.sh}" \
+        bash "$DOC" --no-color 2>&1
+}
+
+echo "== C42: healthy sweep (no output, rc 0) -> OK =="
+c42_stub 0
+out="$(c42_run)"
+if grepq "$out" 'OK   C42-sweep-health' && ! grepq "$out" 'WARN C42-sweep-health'; then
+    pass "C42 healthy -> OK"
+else
+    fail "C42 healthy -> $(printf '%s' "$out" | grep -A1 C42)"
+fi
+
+echo "== C42: three alarm lines -> one WARN per line, with the alarm text and a per-type remedy =="
+c42_stub 1 'LOST-COMMITS fix/x pr#12 ahead=3' 'STUCK /w/fix+y worktree has tracked changes since 2026-09-21T10:00Z' 'SWEEP-ERROR fix/z no merge base with origin/main -- unrelated history'
+out="$(c42_run)"
+n="$(printf '%s\n' "$out" | grep -c 'WARN C42-sweep-health')"
+if [ "$n" = 3 ] && grepq "$out" -F 'LOST-COMMITS fix/x pr#12 ahead=3' && grepq "$out" -F 'STUCK /w/fix+y' \
+   && grepq "$out" -F 'SWEEP-ERROR fix/z no merge base' && grepq "$out" -F 'git log <branch> --not origin/main' \
+   && grepq "$out" -F 'clean-garden.sh --dry-run' && grepq "$out" -F 'unlanded-work.sh --health' \
+   && ! grepq "$out" 'OK   C42-sweep-health' && ! grepq "$out" 'FAIL C42'; then
+    pass "C42 alarms -> 3 WARN lines (n=$n), remedies per type, no OK, no FAIL"
+else
+    fail "C42 alarms -> n=$n: $(printf '%s' "$out" | grep -A1 C42)"
+fi
+
+echo "== C42: script missing -> OK skip =="
+out="$(c42_run "$c42_t/no-such-script.sh")"
+if grepq "$out" 'OK   C42-sweep-health' && grepq "$out" -F 'not found'; then
+    pass "C42 missing script -> OK skip"
+else
+    fail "C42 missing script -> $(printf '%s' "$out" | grep -A1 C42)"
+fi
+
+echo "== C42: check could not run (rc 2) -> INFO, not a false-clean OK =="
+c42_stub 2
+out="$(c42_run)"
+if grepq "$out" 'INFO C42-sweep-health' && grepq "$out" -F 'could not run' && ! grepq "$out" 'OK   C42-sweep-health'; then
+    pass "C42 rc 2 -> INFO"
+else
+    fail "C42 rc 2 -> $(printf '%s' "$out" | grep -A1 C42)"
+fi
+
+echo "== C42: rc 1 with no alarm lines -> INFO, not a false-clean OK =="
+c42_stub 1
+out="$(c42_run)"
+if grepq "$out" 'INFO C42-sweep-health' && ! grepq "$out" 'OK   C42-sweep-health' && ! grepq "$out" 'WARN C42-sweep-health'; then
+    pass "C42 rc 1 + empty output -> INFO"
+else
+    fail "C42 rc 1 + empty output -> $(printf '%s' "$out" | grep -A1 C42)"
+fi
+rm -rf "$c42_t"
 
 rm -rf "$HIMMEL_DOCTOR_NOOP_HANDOVER"
 
