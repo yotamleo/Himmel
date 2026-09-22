@@ -73,14 +73,14 @@ Steps:
    Go on ONLY if its first line equals its second line followed by `/.git` (a string compare: a symlinked or differently spelled path fails it, which only sends you to the fence — the safe direction) and its third line is empty (the cwd is the worktree root); anything else, an empty second line included, means use the canonical fence above. Then decide the SAME set `pr-check-context.sh` itself decides on (HIMMEL-3382 — one diff definition, not two): the merge-base diff of the branch's COMMITTED history, PLUS its WORKING-TREE and UNTRACKED changes, all scoped to `scripts/cr/` and `scripts/guardrails/lib.sh` (always against refs/remotes/origin/main, even on a stacked PR — the branch runs its parent's bytes too, and a diff against a stacked base would hide them; spelled in full because a local branch named `origin/main` would shadow the bare name; the working-tree and untracked legs are what make an UNCOMMITTED `scripts/cr/` edit count too, and a change landed on main since the cut only over-reports, which is the safe direction):
    ```bash
    if mb=$(git merge-base HEAD refs/remotes/origin/main 2>/dev/null); then
-       git diff --name-only "$mb"..HEAD -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh'
-       git diff --name-only HEAD -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh'
-       git ls-files --others -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh'
+       git diff --name-only "$mb"..HEAD -- 'scripts/cr/' 'scripts/guardrails/lib.sh' || echo unknown
+       git diff --name-only HEAD -- 'scripts/cr/' 'scripts/guardrails/lib.sh' || echo unknown
+       git ls-files --others -- 'scripts/cr/' 'scripts/guardrails/lib.sh' || echo unknown
    else
        echo unknown
    fi
    ```
-   Use the bare literal below ONLY when that check prints nothing at all — a failed check (`refs/remotes/origin/main` does not resolve) prints the literal word `unknown`, which is not a path and can never mean a clean diff; `unknown` OR any path proves nothing clean and counts as a `scripts/cr/` diff. It is the one shape a leg's allow rule (`gateAllow` in `scripts/lanes/plugin-profiles.json`) can match; the fence above is a compound no rule can match, so legs were refused on it:
+   Use the bare literal below ONLY when that check prints nothing at all — a failed check (`refs/remotes/origin/main` does not resolve, or ANY one of the three listing calls fails, whose empty stdout would otherwise read as a clean diff — HIMMEL-3454) prints the literal word `unknown`, which is not a path and can never mean a clean diff; the pathspecs are plain, not `:(top)`, because the lane check already proved the cwd is the worktree root and an inherited `GIT_LITERAL_PATHSPECS=1` would take `:(top)scripts/cr/` literally and match nothing, while a plain pathspec means the same under every pathspec env var; `unknown` OR any path proves nothing clean and counts as a `scripts/cr/` diff. It is the one shape a leg's allow rule (`gateAllow` in `scripts/lanes/plugin-profiles.json`) can match; the fence above is a compound no rule can match, so legs were refused on it:
    ```bash
    bash scripts/cr/pr-check-context.sh
    ```

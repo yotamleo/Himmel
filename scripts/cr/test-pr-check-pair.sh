@@ -153,6 +153,100 @@ code_lines() {
     fi
 }
 
+# HIMMEL-3382 (Finding 6), factored into a function by HIMMEL-3454 so the
+# RED fixtures at the bottom of this file can run the SAME check against a
+# mutated twin. Prints the first structural failure, or nothing.
+lane_marker_check() {
+    local lane_section remaining prefix marker marker_fail="" markers
+    lane_section=$(sed -n '/Himmel-lane spelling of step 0 (HIMMEL-3359)/,/REVIEWED repo.s file/p' "$1")
+    markers=(
+        'ONLY if its first line equals its second line followed by'
+        'and its third line is empty'
+        'always against refs/remotes/origin/main, even on a stacked PR'
+        'if mb=$(git merge-base HEAD refs/remotes/origin/main 2>/dev/null); then'
+        'git diff --name-only "$mb"..HEAD -- '\''scripts/cr/'\'' '\''scripts/guardrails/lib.sh'\'' || echo unknown'
+        'git diff --name-only HEAD -- '\''scripts/cr/'\'' '\''scripts/guardrails/lib.sh'\'' || echo unknown'
+        'git ls-files --others -- '\''scripts/cr/'\'' '\''scripts/guardrails/lib.sh'\'' || echo unknown'
+        'echo unknown'
+        'ONLY when that check prints nothing at all'
+        'prints any path or `unknown`, use the canonical fence above'
+        'defense in depth, not the trust root'
+    )
+    remaining="$lane_section"
+    for marker in "${markers[@]}"; do
+        case "$remaining" in
+            *"$marker"*) ;;
+            *)
+                marker_fail="missing or out of order: '$marker'"
+                break
+                ;;
+        esac
+        prefix=${remaining%%"$marker"*}
+        case "$prefix" in
+            *"not "|*"n't ")
+                marker_fail="'$marker' appears negated (immediately preceded by 'not '/\"n't \")"
+                break
+                ;;
+        esac
+        remaining=${remaining#*"$marker"}
+    done
+    printf '%s' "$marker_fail"
+}
+
+# HIMMEL-3454 fixtures for (xii): scratch repos whose origin/main is the base
+# commit and whose branch changes (clean) only a file outside scripts/cr/,
+# (committed) scripts/cr/a.sh, or (ignored) adds a GITIGNORED untracked
+# scripts/cr/ file. Built with no global/system git config so an operator's
+# own settings cannot shape them.
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/pr-check-pair.XXXXXX") || { echo "mktemp failed" >&2; exit 1; }
+trap 'rm -rf "$tmp"' EXIT
+fx() {
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -C "$1" \
+        -c user.email=t@example.invalid -c user.name=t -c commit.gpgsign=false "${@:2}" >/dev/null
+}
+mkrepo() {
+    local d="$tmp/$1"
+    mkdir -p "$d/scripts/cr" "$d/scripts/guardrails"
+    fx "$d" init -q -b main
+    echo a > "$d/scripts/cr/a.sh"
+    echo l > "$d/scripts/guardrails/lib.sh"
+    echo o > "$d/other.txt"
+    fx "$d" add -A
+    fx "$d" commit -q -m base
+    fx "$d" update-ref refs/remotes/origin/main HEAD
+    case "$1" in
+        committed) echo b >> "$d/scripts/cr/a.sh" ;;
+        ignored)
+            echo 'scripts/cr/ign.sh' > "$d/.gitignore"
+            echo i > "$d/scripts/cr/ign.sh"
+            ;;
+    esac
+    echo o2 >> "$d/other.txt"
+    fx "$d" add -A
+    fx "$d" commit -q -m branch
+}
+for r in clean committed ignored; do mkrepo "$r"; done
+# Runs a twin's step-0 diff-decision block ($1) in fixture $2 with the extra
+# env assignments that follow. Every inherited git env var the block could
+# see is cleared first, so only the assignments under test reach it. A
+# FAIL_CALL of committed|worktree|untracked makes exactly that one git call
+# fail with no stdout, the fail-open shape HIMMEL-3454 closes.
+run_diff_block() {
+    local block=$1 repo="$tmp/$2"
+    shift 2
+    (cd "$repo" && env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR \
+        -u GIT_LITERAL_PATHSPECS -u GIT_GLOB_PATHSPECS -u GIT_NOGLOB_PATHSPECS \
+        -u GIT_ICASE_PATHSPECS -u FAIL_CALL GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "$@" \
+        bash -c '
+            git() {
+                case "${FAIL_CALL:-}:$1:${3:-}" in
+                    committed:diff:*..HEAD|worktree:diff:HEAD|untracked:ls-files:*) return 128 ;;
+                esac
+                command git "$@"
+            }
+            '"$block" 2>/dev/null)
+}
+
 for f in "$CLAUDE_RUNBOOK" "$CODEX_SKILL"; do
     [ -f "$f" ] || { echo "missing pr-check file: $f" >&2; exit 1; }
     n="${f#"$ROOT"/}"
@@ -273,9 +367,14 @@ for f in "$CLAUDE_RUNBOOK" "$CODEX_SKILL"; do
     # as a pathspec on three git calls and invokes nothing itself, so none of
     # those three lines is a himmel-script invocation line; each exact line is
     # pinned once per twin below (the structural section check further down).
-    diff_committed_pattern='^[[:space:]]*git diff --name-only "\$mb"\.\.HEAD -- '\'':\(top\)scripts/cr/'\'' '\'':\(top\)scripts/guardrails/lib\.sh'\''[[:space:]]*$'
-    diff_worktree_pattern='^[[:space:]]*git diff --name-only HEAD -- '\'':\(top\)scripts/cr/'\'' '\'':\(top\)scripts/guardrails/lib\.sh'\''[[:space:]]*$'
-    diff_untracked_pattern='^[[:space:]]*git ls-files --others -- '\'':\(top\)scripts/cr/'\'' '\'':\(top\)scripts/guardrails/lib\.sh'\''[[:space:]]*$'
+    # HIMMEL-3454: each line ends `|| echo unknown` (a failing call with empty
+    # stdout must not read as a clean diff), and the pathspecs are PLAIN, not
+    # `:(top)` -- an inherited GIT_LITERAL_PATHSPECS=1 takes `:(top)scripts/cr/`
+    # literally and matches nothing, while a plain pathspec is immune to that
+    # whole env family. (xii) below proves both by running the block.
+    diff_committed_pattern='^[[:space:]]*git diff --name-only "\$mb"\.\.HEAD -- '\''scripts/cr/'\'' '\''scripts/guardrails/lib\.sh'\'' \|\| echo unknown[[:space:]]*$'
+    diff_worktree_pattern='^[[:space:]]*git diff --name-only HEAD -- '\''scripts/cr/'\'' '\''scripts/guardrails/lib\.sh'\'' \|\| echo unknown[[:space:]]*$'
+    diff_untracked_pattern='^[[:space:]]*git ls-files --others -- '\''scripts/cr/'\'' '\''scripts/guardrails/lib\.sh'\'' \|\| echo unknown[[:space:]]*$'
     ii_calls=$(printf '%s\n' "$ii_calls" | grep -v -E "$diff_committed_pattern" | grep -v -E "$diff_worktree_pattern" | grep -v -E "$diff_untracked_pattern")
     bare=$(printf '%s\n' "$ii_calls" | grep -c -E 'bash scripts/|\. scripts/|-f scripts/')
     split=$(printf '%s\n' "$ii_calls" | grep -c '"/scripts/')
@@ -353,39 +452,7 @@ for f in "$CLAUDE_RUNBOOK" "$CODEX_SKILL"; do
     # "n't " on its own line) -- a file-wide substring grep -q could not tell
     # a genuine marker in the step-0 section from one quoted in an unrelated
     # comment, reordered, or negated nearby.
-    lane_section=$(sed -n '/Himmel-lane spelling of step 0 (HIMMEL-3359)/,/REVIEWED repo.s file/p' "$f")
-    markers=(
-        'ONLY if its first line equals its second line followed by'
-        'and its third line is empty'
-        'always against refs/remotes/origin/main, even on a stacked PR'
-        'if mb=$(git merge-base HEAD refs/remotes/origin/main 2>/dev/null); then'
-        'git diff --name-only "$mb"..HEAD -- '\'':(top)scripts/cr/'\'' '\'':(top)scripts/guardrails/lib.sh'\'''
-        'git diff --name-only HEAD -- '\'':(top)scripts/cr/'\'' '\'':(top)scripts/guardrails/lib.sh'\'''
-        'git ls-files --others -- '\'':(top)scripts/cr/'\'' '\'':(top)scripts/guardrails/lib.sh'\'''
-        'echo unknown'
-        'ONLY when that check prints nothing at all'
-        'prints any path or `unknown`, use the canonical fence above'
-        'defense in depth, not the trust root'
-    )
-    marker_fail=""
-    remaining="$lane_section"
-    for marker in "${markers[@]}"; do
-        case "$remaining" in
-            *"$marker"*) ;;
-            *)
-                marker_fail="missing or out of order: '$marker'"
-                break
-                ;;
-        esac
-        prefix=${remaining%%"$marker"*}
-        case "$prefix" in
-            *"not "|*"n't ")
-                marker_fail="'$marker' appears negated (immediately preceded by 'not '/\"n't \")"
-                break
-                ;;
-        esac
-        remaining=${remaining#*"$marker"}
-    done
+    marker_fail=$(lane_marker_check "$f")
     if [ "$lane_check" -eq 1 ] && [ "$diff_committed_count" -eq 1 ] \
        && [ "$diff_worktree_count" -eq 1 ] && [ "$diff_untracked_count" -eq 1 ] \
        && [ -z "$marker_fail" ]; then
@@ -752,7 +819,77 @@ for f in "$CLAUDE_RUNBOOK" "$CODEX_SKILL"; do
         [ "$line_flag" -eq 0 ] || fail "$n: (xi) $line_flag occurrence(s) of --line '<line>' in shell code -- same rule as --file: the producer already wrote the row's line, so a fence must never re-paste it (HIMMEL-2321-C)"
         [ "$detail_flag" -eq 0 ] || fail "$n: (xi) $detail_flag occurrence(s) of --detail '<text>' in shell code -- the avail fence must drop --detail; its value is the REMAINDER of a critic-printed line, i.e. arbitrary critic prose, and re-pasting it reopens the shell-fence surface HIMMEL-2321 closes"
     fi
+
+    # (xii) HIMMEL-3454 / HIMMEL-3459 -- BEHAVIOURAL: extract THIS twin's
+    # step-0 diff-decision block and run it against the fixtures above. The
+    # runbook reads "prints nothing at all" as the ONE licence for the bare
+    # relative literal, so every row that is not a proven-clean diff must
+    # print something. The clean row is the anti-vacuity control: a block
+    # that always prints would pass every other row.
+    diff_block=$(printf '%s\n' "$code" | awk '
+        /^[[:space:]]*if mb=\$\(git merge-base HEAD refs\/remotes\/origin\/main/ { grab=1 }
+        grab { print }
+        grab && /^[[:space:]]*fi[[:space:]]*$/ { exit }
+    ')
+    if [ -z "$diff_block" ]; then
+        fail "$n: (xii) could not locate the step-0 diff-decision block in extracted code -- (xii) would be vacuous"
+    else
+        xii_fail=""
+        out=$(run_diff_block "$diff_block" clean)
+        [ -z "$out" ] || xii_fail="$xii_fail; clean diff printed '$out' (want nothing)"
+        for pv in NONE GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS; do
+            if [ "$pv" = NONE ]; then
+                out=$(run_diff_block "$diff_block" committed)
+            else
+                out=$(run_diff_block "$diff_block" committed "$pv=1")
+            fi
+            printf '%s\n' "$out" | grep -qx 'scripts/cr/a.sh' \
+                || xii_fail="$xii_fail; committed scripts/cr/a.sh under $pv printed '$out'"
+        done
+        out=$(run_diff_block "$diff_block" ignored)
+        printf '%s\n' "$out" | grep -qx 'scripts/cr/ign.sh' \
+            || xii_fail="$xii_fail; gitignored untracked scripts/cr/ign.sh printed '$out'"
+        for fc in committed worktree untracked; do
+            out=$(run_diff_block "$diff_block" clean "FAIL_CALL=$fc")
+            [ -n "$out" ] || xii_fail="$xii_fail; failing $fc call printed nothing"
+        done
+        out=$(run_diff_block "$diff_block" clean GIT_GLOB_PATHSPECS=1 GIT_NOGLOB_PATHSPECS=1)
+        [ -n "$out" ] || xii_fail="$xii_fail; incompatible GLOB+NOGLOB pathspec env (git exits 128) printed nothing"
+        if [ -z "$xii_fail" ]; then
+            pass "$n: (xii) step-0 diff block: clean diff prints nothing; a committed scripts/cr/ change shows under every pathspec env; a gitignored untracked scripts/cr/ file shows; each failing git call prints unknown (HIMMEL-3454)"
+        else
+            fail "$n: (xii) step-0 diff block fails open${xii_fail} (HIMMEL-3454 / HIMMEL-3459)"
+        fi
+    fi
 done
+
+# --- RED fixtures for the HIMMEL-3382 Finding-6 structural pin (owed from
+# PR #1113, HIMMEL-3472): mutate a copy of the Claude runbook so a required
+# step-0 marker is (a) NEGATED in place, (b) moved OUT of the step-0 section
+# (present in the file, absent from the section), or (c) out of ORDER, and
+# prove lane_marker_check reds on each. Each mutation is first checked to have
+# changed the copy, so a sed that stops matching cannot turn a RED into a
+# silent pass.
+f6_mutate() {
+    local name=$1 expr=$2 copy="$tmp/f6-$1.md"
+    sed "$expr" "$CLAUDE_RUNBOOK" > "$copy"
+    [ "$name" = moved ] && printf '\nONLY when that check prints nothing at all\n' >> "$copy"
+    if cmp -s "$CLAUDE_RUNBOOK" "$copy"; then
+        fail "Finding-6 RED ($name): the mutation did not change the runbook copy -- this fixture is vacuous"
+        return
+    fi
+    f6_out=$(lane_marker_check "$copy")
+    if [ -n "$f6_out" ]; then
+        pass "Finding-6 RED ($name): the structural marker check reds -- $f6_out"
+    else
+        fail "Finding-6 RED ($name): the structural marker check PASSED a mutated step-0 section"
+    fi
+}
+f6_mutate negated 's/hand-off is defense in depth, not the trust root/hand-off is not defense in depth, not the trust root/'
+f6_mutate moved 's/ONLY when that check prints nothing at all/when that check prints nothing/'
+f6_mutate reordered 's|always against refs/remotes/origin/main, even on a stacked PR|always against the remote main, even on a stacked PR|; s|Go on ONLY if|always against refs/remotes/origin/main, even on a stacked PR. Go on ONLY if|'
+f6_ok=$(lane_marker_check "$CLAUDE_RUNBOOK")
+[ -z "$f6_ok" ] || fail "Finding-6 RED control: the UNMUTATED runbook fails the marker check ($f6_ok) -- the REDs above prove nothing"
 
 # --- Positive control: PROVE the PRE-FIX fence shape (assignment without
 # `| grep .`) WAS unsafe on a set-but-EMPTY HIMMEL_REPO -- without ever

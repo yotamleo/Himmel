@@ -151,16 +151,21 @@ UNCOMMITTED `scripts/cr/` edit count too, and a main-side change only
 over-reports):
 
     if mb=$(git merge-base HEAD refs/remotes/origin/main 2>/dev/null); then
-        git diff --name-only "$mb"..HEAD -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh'
-        git diff --name-only HEAD -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh'
-        git ls-files --others -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh'
+        git diff --name-only "$mb"..HEAD -- 'scripts/cr/' 'scripts/guardrails/lib.sh' || echo unknown
+        git diff --name-only HEAD -- 'scripts/cr/' 'scripts/guardrails/lib.sh' || echo unknown
+        git ls-files --others -- 'scripts/cr/' 'scripts/guardrails/lib.sh' || echo unknown
     else
         echo unknown
     fi
 
 Use the bare literal below ONLY when that check prints nothing at all — a
-failed check (`refs/remotes/origin/main` does not resolve) prints the literal
-word `unknown`, which is not a path and can never mean a clean diff; `unknown`
+failed check (`refs/remotes/origin/main` does not resolve, or ANY one of the
+three listing calls fails, whose empty stdout would otherwise read as a clean
+diff — HIMMEL-3454) prints the literal word `unknown`, which is not a path and
+can never mean a clean diff; the pathspecs are plain, not `:(top)`, because
+the lane check already proved the cwd is the worktree root and an inherited
+`GIT_LITERAL_PATHSPECS=1` would take `:(top)scripts/cr/` literally and match
+nothing, while a plain pathspec means the same under every pathspec env var; `unknown`
 OR any path proves nothing clean and counts as a `scripts/cr/` diff. It is the
 one shape a leg's allow rule can match:
 
