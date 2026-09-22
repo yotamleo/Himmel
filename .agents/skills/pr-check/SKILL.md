@@ -126,8 +126,10 @@ EnterWorktree-isolated session).
 
 **Himmel-lane spelling of step 0 (HIMMEL-3359) — run this INSTEAD of the
 fence above, never both, and ONLY in a himmel checkout on a diff that touches
-no `scripts/cr/` file and not `scripts/guardrails/lib.sh` (which
-`pr-check-context.sh` sources).** First prove the lane — the allow rule is
+none of the paths `pr-check-context.sh` guards: `scripts/cr/`, `scripts/lib/`,
+`scripts/guardrails/lib.sh`, `scripts/check-ci.sh` and
+`scripts/handover/resolve-active-item.sh` (what a clean step 0 later runs
+from the branch — HIMMEL-3493).** First prove the lane — the allow rule is
 emitted for every leg profile whatever its cwd, so the relative path is
 trusted only once the cwd shares `HIMMEL_REPO`'s git dir AND is the worktree
 root (from a subdirectory the relative path would name a local file there,
@@ -139,10 +141,13 @@ Go on ONLY if its first line equals its second line followed by `/.git` (a
 string compare: a differently spelled path only sends you to the fence, the
 safe direction) and its third line is empty (the cwd is the worktree root);
 anything else, an empty second line included, means use the canonical fence
-above. Then decide the SAME set `pr-check-context.sh` itself decides on
-(HIMMEL-3382 — one diff definition, not two): the merge-base diff of the
-branch's COMMITTED history, PLUS its WORKING-TREE and UNTRACKED changes, all
-scoped to `scripts/cr/` and `scripts/guardrails/lib.sh`
+above. Then run the same diff `pr-check-context.sh` runs (HIMMEL-3382): the
+merge-base diff of the branch's COMMITTED history, PLUS its WORKING-TREE and
+UNTRACKED changes, all scoped to the guarded paths above. This check's
+silence is necessary, not sufficient, for the script's own "no": the script
+also compares the guarded bytes against the anchor's (HIMMEL-3472) and
+ignores `__pycache__/`, so the check can only over-report, which sends you to
+the fence — the safe direction
 (always against refs/remotes/origin/main, even on a stacked PR — the branch
 runs its parent's bytes too, and a diff against a stacked base would hide
 them; spelled in full because a local branch named `origin/main` would shadow
@@ -151,9 +156,9 @@ UNCOMMITTED `scripts/cr/` edit count too, and a main-side change only
 over-reports):
 
     if mb=$(git merge-base HEAD refs/remotes/origin/main 2>/dev/null); then
-        git diff --name-only "$mb"..HEAD -- 'scripts/cr/' 'scripts/guardrails/lib.sh' || echo unknown
-        git diff --name-only HEAD -- 'scripts/cr/' 'scripts/guardrails/lib.sh' || echo unknown
-        git ls-files --others -- 'scripts/cr/' 'scripts/guardrails/lib.sh' || echo unknown
+        git diff --name-only "$mb"..HEAD -- 'scripts/cr/' 'scripts/lib/' 'scripts/guardrails/lib.sh' 'scripts/check-ci.sh' 'scripts/handover/resolve-active-item.sh' || echo unknown
+        git diff --name-only HEAD -- 'scripts/cr/' 'scripts/lib/' 'scripts/guardrails/lib.sh' 'scripts/check-ci.sh' 'scripts/handover/resolve-active-item.sh' || echo unknown
+        git ls-files --others -- 'scripts/cr/' 'scripts/lib/' 'scripts/guardrails/lib.sh' 'scripts/check-ci.sh' 'scripts/handover/resolve-active-item.sh' || echo unknown
     else
         echo unknown
     fi
@@ -166,7 +171,7 @@ can never mean a clean diff; the pathspecs are plain, not `:(top)`, because
 the lane check already proved the cwd is the worktree root and an inherited
 `GIT_LITERAL_PATHSPECS=1` would take `:(top)scripts/cr/` literally and match
 nothing, while a plain pathspec means the same under every pathspec env var; `unknown`
-OR any path proves nothing clean and counts as a `scripts/cr/` diff. It is the
+OR any path proves nothing clean and counts as a guarded-path diff. It is the
 one shape a leg's allow rule can match:
 
     bash scripts/cr/pr-check-context.sh
@@ -230,10 +235,12 @@ location, so STOP before any paid critic call rather than guess from the cwd.
 
 **Branch self-review is NOT lost — it moved one level down, and it is now a
 DELIBERATE, LOGGED decision instead of an automatic one (HIMMEL-2335).** On
-the himmel lane only, when the branch's own diff touches `scripts/cr/` or
-`scripts/guardrails/lib.sh` — the exact set is printed as `cr_diff_files=` in
-the stdout contract below (HIMMEL-3382: the SAME set the himmel-lane spelling
-above decides on, not a second recipe) — `pr-check-context.sh` detects it,
+the himmel lane only, when the branch's own diff touches a guarded path
+(`scripts/cr/`, `scripts/lib/`, `scripts/guardrails/lib.sh`,
+`scripts/check-ci.sh` or `scripts/handover/resolve-active-item.sh` —
+HIMMEL-3493) — the exact set is printed as `cr_diff_files=` in the stdout
+contract below (HIMMEL-3382: the same diff the himmel-lane spelling above
+runs, less `__pycache__/`) — `pr-check-context.sh` detects it,
 appends a `delegation` row
 to the CR ledger through the ANCHOR's own `scripts/cr/ledger-append.sh` (the
 trusted side logs the call it is about to make — a failed ledger write does
@@ -300,8 +307,9 @@ later block would be the drift the pin exists to catch. It also prints
 `anchor_lane=<himmel|adopter>`, `delegated=<yes|no>` and
 `cr_diff_files=<comma-joined, sorted, deduped set this run decided on
 (HIMMEL-3382) — the merge-base diff of committed history plus
-working-tree/untracked changes under scripts/cr/ and
-scripts/guardrails/lib.sh; empty when the diff proved clean or could not be
+working-tree/untracked changes under the guarded paths (scripts/cr/,
+scripts/lib/, scripts/guardrails/lib.sh, scripts/check-ci.sh,
+scripts/handover/resolve-active-item.sh); empty when the diff proved clean or could not be
 computed>` — informational only (nothing downstream substitutes any of them),
 and NOT the same field as `lane=` below, which is the marker's own 3rd field
 and means something unrelated.

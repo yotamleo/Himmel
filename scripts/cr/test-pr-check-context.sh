@@ -369,6 +369,13 @@ build_fake_himmel() {
   cp "$DIR/write-verdicts.sh" "$d/scripts/cr/write-verdicts.sh"
 cp "$DIR/anchor-handoff.sh" "$d/scripts/cr/anchor-handoff.sh"
   cp "$DIR/../guardrails/lib.sh" "$d/scripts/guardrails/lib.sh"
+  # HIMMEL-3493: the rest of the manifest scope (cr_guarded) - the shared
+  # libs, check-ci.sh and resolve-active-item.sh a "no" run executes from the
+  # branch.
+  mkdir -p "$d/scripts/lib" "$d/scripts/handover"
+  cp "$DIR/../lib/load-dotenv.sh" "$d/scripts/lib/load-dotenv.sh"
+  printf '#!/usr/bin/env bash\n' > "$d/scripts/check-ci.sh"
+  printf '#!/usr/bin/env bash\n' > "$d/scripts/handover/resolve-active-item.sh"
   (
     cd "$d" || exit 1
     git init -q -b main .
@@ -1730,7 +1737,7 @@ mutant36="$tmp/pr-check-context.mutant-t36.sh"
 # shellcheck disable=SC2016  # literal match against pr-check-context.sh's own
 # source text.
 literal_replace "$SCRIPT" "$mutant36" \
-  "            if worktree_files=\$(gitd diff --name-only HEAD -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh' 2>/dev/null); then" \
+  "            if worktree_files=\$(gitd diff --name-only HEAD -- \"\${cr_pathspecs[@]}\" 2>/dev/null); then" \
   '            if worktree_files=""; then'
 rc_m36=$?
 if [ "$rc_m36" -ne 0 ]; then
@@ -1978,17 +1985,19 @@ check "$((rows_after40 - rows_before40))" "1" "T40 exactly one new delegation le
 
 # T40 parity: run the EXACT recipe now pinned in both runbook twins
 # (test-pr-check-pair.sh check (ii)) against the same fixture and confirm it
-# names the same gitignored file - the twins and the script decide on the
-# same set, not just similar-looking text. The recipe names
+# names the same gitignored file - the twins and the script run the same
+# diff over the same guarded paths (HIMMEL-3493 widened both; the script
+# alone also excludes __pycache__/ and compares bytes, so the recipe's
+# silence is necessary, not sufficient, for its "no"). The recipe names
 # refs/remotes/origin/main, as the twins do (HIMMEL-3472), so the fixture
 # gets that ref first; main has not moved, so the merge base is unchanged.
 git -C "$anchor13" update-ref refs/remotes/origin/main refs/heads/main
 mb40="$(cd "$wt40" && git merge-base HEAD refs/remotes/origin/main)"
 recipe40="$(
   cd "$wt40" || exit 1
-  git diff --name-only "$mb40"..HEAD -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh'
-  git diff --name-only HEAD -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh'
-  git ls-files --others -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh'
+  git diff --name-only "$mb40"..HEAD -- 'scripts/cr/' 'scripts/lib/' 'scripts/guardrails/lib.sh' 'scripts/check-ci.sh' 'scripts/handover/resolve-active-item.sh'
+  git diff --name-only HEAD -- 'scripts/cr/' 'scripts/lib/' 'scripts/guardrails/lib.sh' 'scripts/check-ci.sh' 'scripts/handover/resolve-active-item.sh'
+  git ls-files --others -- 'scripts/cr/' 'scripts/lib/' 'scripts/guardrails/lib.sh' 'scripts/check-ci.sh' 'scripts/handover/resolve-active-item.sh'
 )"
 check "$recipe40" "scripts/cr/ignored-file.sh" "T40 the twins' pinned recipe also names the gitignored file - same set as the script"
 
@@ -2022,7 +2031,7 @@ fx_new() { # fx_new <branch> - fresh fake himmel + a worktree on <branch>
   (cd "$fx_anchor" && git worktree add -q -b "$1" "$fx_wt" main) || { echo "FAIL: $1 could not add worktree"; fail=1; }
 }
 fx_run() { # fx_run [subdir] - run the anchor's copy from the worktree (or a subdir of it); $fx_path is prepended to PATH
-  (cd "$fx_wt/${1:-}" && PATH="${fx_path:+$fx_path:}$PATH" HIMMEL_REPO="$fx_anchor" bash "$fx_anchor/scripts/cr/pr-check-context.sh" 2>/dev/null)
+  (cd "$fx_wt/${1:-}" && PATH="${fx_path:+$fx_path:}$PATH" HIMMEL_REPO="$fx_anchor" bash "$fx_anchor/scripts/cr/pr-check-context.sh" 2>"$tmp/fx-last.err")
   echo "pr-check-context: fx_rc=$?"
 }
 # Every outcome is positive evidence: a failed run, or a himmel_dir that is
@@ -2043,6 +2052,13 @@ fx_outcome() {
   else
     echo error
   fi
+}
+
+# HIMMEL-3493: the "bytes differ" stderr line names the file that differs, so
+# a row decided "anchor" for another reason (a failed hash, an ODD tree)
+# cannot pass as the byte comparison.
+fx_bytes_differ() { # fx_bytes_differ <path> - the last fx_run's stderr names <path> as differing
+  grep -F "differ from the anchor's" "$tmp/fx-last.err" 2>/dev/null | grep -qF " $1 " && echo yes || echo no
 }
 
 # T41 control: an untouched worktree still decides "no" (the byte comparison
@@ -2066,6 +2082,7 @@ fx_new t42-moved-base
 )
 out42="$(fx_run)"
 check "$(fx_outcome "$out42")" "anchor" "T42 a moved refs/remotes/origin/main does not hide a committed scripts/cr/ edit"
+check "$(fx_bytes_differ scripts/cr/critic-panel.sh)" "yes" "T42 stderr names scripts/cr/critic-panel.sh as differing"
 
 # T43 (vector b): a replace ref maps main's tree to the branch's tree, so git
 # reads the base as already containing the edit.
@@ -2090,6 +2107,7 @@ fx_new t44-assume
 )
 out44="$(fx_run)"
 check "$(fx_outcome "$out44")" "anchor" "T44 assume-unchanged does not hide an uncommitted scripts/cr/ edit"
+check "$(fx_bytes_differ scripts/cr/critic-panel.sh)" "yes" "T44 stderr names scripts/cr/critic-panel.sh as differing"
 fx_new t45-skip
 (
   cd "$fx_wt" || exit 1
@@ -2098,6 +2116,7 @@ fx_new t45-skip
 )
 out45="$(fx_run)"
 check "$(fx_outcome "$out45")" "anchor" "T45 skip-worktree does not hide an uncommitted scripts/cr/ edit"
+check "$(fx_bytes_differ scripts/cr/critic-panel.sh)" "yes" "T45 stderr names scripts/cr/critic-panel.sh as differing"
 
 # T46 (vector d): a repo-configured clean filter strips the edit before git
 # hashes the file, so the working tree reads equal to the index.
@@ -2110,6 +2129,7 @@ fx_new t46-filter
 )
 out46="$(fx_run)"
 check "$(fx_outcome "$out46")" "anchor" "T46 a clean filter does not hide an uncommitted scripts/cr/ edit"
+check "$(fx_bytes_differ scripts/cr/critic-panel.sh)" "yes" "T46 stderr names scripts/cr/critic-panel.sh as differing"
 
 # T47 (vector d): a repo-configured fsmonitor hook that reports nothing
 # changed. The index is refreshed first so every entry is marked fsmonitor-
@@ -2228,6 +2248,140 @@ pr-check-context: fx_rc=$RED_CONTROL_RC")" \
   --correct      "anchor" \
   --note "HIMMEL-3454 round-1 codex-2 - an unchecked sort -u turns a failed normalization into an empty diff set, read as cr_diff_state=no, and himmel_dir stays at the branch" \
   || fail=1
+
+# T44 RED (HIMMEL-3493 test rigor): the T44 fixture against a mutant whose
+# byte comparison never fires must print the false no - proof that the
+# comparison, not some other unknown, is what turns T44 into "anchor". The
+# mutant goes into both trees, and the worktree copy is hidden the same way
+# T44's edit is, so git still reads the branch as clean.
+mutant44="$tmp/pr-check-context.mutant-t44.sh"
+literal_replace "$SCRIPT" "$mutant44" \
+  "        elif [ \"\$branch_manifest\" != \"\$anchor_manifest\" ]; then" \
+  "        elif false; then # T44 mutant - byte comparison disabled"
+rc_m44=$?
+if [ "$rc_m44" -ne 0 ]; then
+  echo "FAIL: T44 could not build the byte-comparison-disabled mutant - $(cat "$tmp/literal_replace.err" 2>/dev/null)"
+  fail=1
+fi
+fx_new t44-red
+cp "$mutant44" "$fx_anchor/scripts/cr/pr-check-context.sh"
+(
+  cd "$fx_wt" || exit 1
+  cp "$mutant44" scripts/cr/pr-check-context.sh
+  printf '# t44 edit\n' >> scripts/cr/critic-panel.sh
+  git update-index --assume-unchanged scripts/cr/pr-check-context.sh scripts/cr/critic-panel.sh
+)
+red_control_run --cwd "$fx_wt" \
+  --env HIMMEL_REPO="$fx_anchor" \
+  -- bash "$fx_anchor/scripts/cr/pr-check-context.sh"
+red_control_assert --label "T44" \
+  --observed     "$(fx_outcome "$RED_CONTROL_OUT
+pr-check-context: fx_rc=$RED_CONTROL_RC")" \
+  --expect-wrong "branch" \
+  --correct      "anchor" \
+  --note "HIMMEL-3493 - without the byte comparison an assume-unchanged scripts/cr/ edit reads as cr_diff_state=no" \
+  || fail=1
+
+# --- T52-T60: HIMMEL-3493 - the manifest covers what a "no" run executes ---
+# On "no" himmel_dir stays at the branch, and later /pr-check fences run
+# more than scripts/cr/ from it: the shared libs under scripts/lib/,
+# scripts/check-ci.sh and scripts/handover/resolve-active-item.sh (the
+# closure test-cr-guarded-closure.sh derives). Before HIMMEL-3493 each row
+# below printed "branch".
+
+# T52 (acceptance): a branch that edits ONLY scripts/lib/load-dotenv.sh.
+fx_new t52-lib
+(
+  cd "$fx_wt" || exit 1
+  printf '# t52 touch\n' >> scripts/lib/load-dotenv.sh
+  git add -A
+  git commit -q -m "t52 touch scripts/lib"
+)
+out52="$(fx_run)"
+check "$(fx_outcome "$out52")" "delegated" "T52 a scripts/lib/-only edit is a guarded diff, not a no"
+check "$(get_kv "$out52" cr_diff_files)" "scripts/lib/load-dotenv.sh" "T52 cr_diff_files names the lib edit"
+
+# T53: the same lib edit, hidden from git by assume-unchanged - the byte
+# comparison covers scripts/lib/ too.
+fx_new t53-lib-hidden
+(
+  cd "$fx_wt" || exit 1
+  printf '# t53 edit\n' >> scripts/lib/load-dotenv.sh
+  git update-index --assume-unchanged scripts/lib/load-dotenv.sh
+)
+out53="$(fx_run)"
+check "$(fx_outcome "$out53")" "anchor" "T53 a hidden scripts/lib/ edit is not read as no"
+check "$(fx_bytes_differ scripts/lib/load-dotenv.sh)" "yes" "T53 stderr names scripts/lib/load-dotenv.sh as differing"
+
+# T54/T55: check-ci.sh and handover/resolve-active-item.sh, which the
+# runbook runs through <himmel_dir> with no anchor hand-off.
+fx_new t54-check-ci
+(
+  cd "$fx_wt" || exit 1
+  printf '# t54 touch\n' >> scripts/check-ci.sh
+  git add -A
+  git commit -q -m "t54 touch check-ci.sh"
+)
+out54="$(fx_run)"
+check "$(fx_outcome "$out54")" "delegated" "T54 a check-ci.sh-only edit is a guarded diff, not a no"
+fx_new t55-resolve
+(
+  cd "$fx_wt" || exit 1
+  printf '# t55 touch\n' >> scripts/handover/resolve-active-item.sh
+  git add -A
+  git commit -q -m "t55 touch resolve-active-item.sh"
+)
+out55="$(fx_run)"
+check "$(fx_outcome "$out55")" "delegated" "T55 a resolve-active-item.sh-only edit is a guarded diff, not a no"
+
+# T56 (HIMMEL-3472 review, test rigor): a hidden guardrails/lib.sh-only edit.
+fx_new t56-guardrails-lib
+(
+  cd "$fx_wt" || exit 1
+  printf '# t56 edit\n' >> scripts/guardrails/lib.sh
+  git update-index --assume-unchanged scripts/guardrails/lib.sh
+)
+out56="$(fx_run)"
+check "$(fx_outcome "$out56")" "anchor" "T56 a hidden guardrails/lib.sh edit is not read as no"
+check "$(fx_bytes_differ scripts/guardrails/lib.sh)" "yes" "T56 stderr names scripts/guardrails/lib.sh as differing"
+
+# T57 control: Python bytecode caches under scripts/lib/ (the primary
+# checkout carries an ignored scripts/lib/__pycache__/ from the VM tooling)
+# must not turn every clean branch into unknown or a delegation. No
+# /pr-check path runs Python from scripts/lib/.
+fx_new t57-pycache
+mkdir -p "$fx_anchor/scripts/lib/__pycache__" "$fx_wt/scripts/lib/__pycache__"
+printf 'anchor-pyc\n' > "$fx_anchor/scripts/lib/__pycache__/vmsdk.cpython-314.pyc"
+printf 'branch-pyc\n' > "$fx_wt/scripts/lib/__pycache__/vbox.cpython-314.pyc"
+out57="$(fx_run)"
+check "$(fx_outcome "$out57")" "branch" "T57 control - __pycache__ under scripts/lib/ in either tree still decides no"
+
+# T58 (test rigor): a hidden (dot-named) untracked file under scripts/lib/.
+fx_new t58-dotfile
+printf '#!/usr/bin/env bash\n' > "$fx_wt/scripts/lib/.t58-hidden.sh"
+out58="$(fx_run)"
+check "$(fx_outcome "$out58")" "delegated" "T58 a dot-named untracked scripts/lib/ file is a guarded diff"
+check "$(get_kv "$out58" cr_diff_files)" "scripts/lib/.t58-hidden.sh" "T58 cr_diff_files names the dot-named file"
+
+# T59 (test rigor): an untracked file whose name carries a control
+# character. git quotes it, so the set is non-empty - never an empty no.
+fx_new t59-cntrl
+printf '#!/usr/bin/env bash\n' > "$fx_wt/scripts/lib/t59$(printf '\001')x.sh"
+out59="$(fx_run)"
+check "$(fx_outcome "$out59")" "delegated" "T59 a control-character file name under scripts/lib/ is a guarded diff"
+
+# T60: a symlinked scripts/lib in the branch cannot be compared file for
+# file - unknown, and the anchor's copy runs. The link is committed and then
+# hidden from git's working-tree leg the same way T44 hides an edit.
+fx_new t60-lib-symlink
+(
+  cd "$fx_wt" || exit 1
+  mv scripts/lib scripts/lib-real
+  ln -s lib-real scripts/lib
+  git update-index --assume-unchanged scripts/lib/load-dotenv.sh
+) 2>/dev/null
+out60="$(fx_run)"
+check "$(fx_outcome "$out60")" "anchor" "T60 a symlinked scripts/lib is not read as no"
 
 # --- Negative-control check: perturb T3's expectation to confirm the
 # assertion genuinely fails, then restore. This is asserted directly (not by
