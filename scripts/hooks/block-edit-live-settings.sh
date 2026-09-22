@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# PreToolUse hook for Edit/Write/MultiEdit/NotebookEdit, plus a Bash redirect
-# arm.
+# PreToolUse hook for Edit/Write/MultiEdit/NotebookEdit, plus Bash and
+# PowerShell write-path arms.
 #
 # Denies writing to a LIVE settings.json/settings.local.json — the operator's
 # actual $HOME/.claude/ user-scope config, or the PRIMARY checkout's
@@ -46,24 +46,34 @@
 # not defending against an attacker who can already plant an arbitrary
 # symlink inside the checkout, which is filesystem write access at least as
 # strong as editing settings.json directly. Consistent with the existing
-# "not a complete write fence" scope (below) — sed -i/cp/tee/mv aren't
-# covered either.
+# "not a complete write fence" scope (below) — Copy-Item/Move-Item/New-Item
+# under PowerShell aren't covered (see the PowerShell arm below).
 #
-# Bash arm (HIMMEL-2360 retask): the replaced permission rules also covered
-# Bash redirect targets ("Bash redirect targets are checked against Edit
-# rules"), so a bare `Edit`/`Write`/etc. arm alone would silently reopen
-# `echo x > <primary>/.claude/settings.json`. When tool_name=Bash, extract
-# `>`/`>>` redirect targets from tool_input.command with a plain-text scan —
-# NOT a shell parser — and run each candidate through the same predicate.
-# This arm is the OPPOSITE failure direction from the edit-tool arms: it
-# fails OPEN. An unparseable command, an ambiguous/quoted redirect, or
-# anything else that goes sideways here just allows, matching the
-# `require-quiet-run.sh` "workflow nudge" posture in scripts/hooks/CLAUDE.md
-# ("fail open on their own infrastructure errors") rather than the
-# always-active security-fence posture the edit-tool arms use. A shell
-# parser that failed CLOSED here would deny arbitrary unrelated Bash calls
-# whenever the redirect shape it could not read happened to mention
-# "settings.json" in unrelated text.
+# Bash arm (HIMMEL-2360 retask, extended HIMMEL-1525): the replaced
+# permission rules also covered Bash redirect targets ("Bash redirect
+# targets are checked against Edit rules"), so a bare `Edit`/`Write`/etc. arm
+# alone would silently reopen `echo x > <primary>/.claude/settings.json`.
+# When tool_name=Bash, extract `>`/`>>` redirect targets, plus `cp`/`mv`
+# destination arguments and `tee`/`sed -i` write arguments, from
+# tool_input.command with a plain-text scan — NOT a shell parser — and run
+# each candidate through the same predicate. This arm is the OPPOSITE
+# failure direction from the edit-tool arms: it fails OPEN. An unparseable
+# command, an ambiguous/quoted redirect, or anything else that goes sideways
+# here just allows, matching the `require-quiet-run.sh` "workflow nudge"
+# posture in scripts/hooks/CLAUDE.md ("fail open on their own infrastructure
+# errors") rather than the always-active security-fence posture the
+# edit-tool arms use. A shell parser that failed CLOSED here would deny
+# arbitrary unrelated Bash calls whenever the redirect shape it could not
+# read happened to mention "settings.json" in unrelated text.
+#
+# HIMMEL-1525 fail-closed carve-out: `node -e`/`python3 -c` are the one
+# EXCEPTION to this arm's fail-open posture. Their write happens inside an
+# eval string, not a discrete shell argument this scan can extract, so once
+# the cheap prefilter has already confirmed the command names a live
+# settings file, the arm denies unconditionally rather than guess at (and
+# likely miss) the real target. A `node -e`/`python3 -c` invocation that
+# never mentions a settings file is unaffected (the prefilter exits 0 before
+# this check runs).
 #
 # Known limitation, deliberately not chased (HIMMEL-2360 CR round 5,
 # codex-1): a RELATIVE redirect target is always resolved against the
@@ -322,6 +332,49 @@ Or temporarily comment out the hook stanza in .claude/settings.json.
 EOF
 }
 
+# scan_and_deny_matches TOOL_LABEL — reads newline-separated raw candidate
+# targets on stdin (each still possibly quote-wrapped, exactly as extracted
+# by a plain-text scan), and for the first one that resolves (via
+# check_target) to a live settings file, denies with TOOL_LABEL in the
+# message and exits 2 (or allows via EDIT_LIVE_SETTINGS_OK). Returns
+# normally once every candidate has been checked and none denied — shared by
+# the Bash and PowerShell arms below so the dequote/HOME-expand/check_target
+# pipeline exists in exactly one place (HIMMEL-1525).
+scan_and_deny_matches() {
+    local tool_label="$1" tok t result Q
+    while IFS= read -r tok || [ -n "$tok" ]; do
+        [ -n "$tok" ] || continue
+        t="$tok"
+        while [ "${t:0:1}" = ">" ] || [ "${t:0:1}" = "|" ]; do t="${t#?}"; done
+        while [ "${t:0:1}" = " " ] || [ "${t:0:1}" = "$(printf '\t')" ]; do t="${t#?}"; done
+        [ -n "$t" ] || continue
+        Q="\"'"
+        t=$(printf '%s' "$t" | sed -E "s/^[$Q]+//; s/[$Q]+\$//; s#/[$Q]+#/#g; s#[$Q]+/#/#g")
+        [ -n "$t" ] || continue
+        # shellcheck disable=SC2088,SC2016
+        case "$t" in
+            '~') t="${HOME:-}" ;;
+            '~/'*) t="${HOME:-}/${t:2}" ;;
+            '$HOME') t="${HOME:-}" ;;
+            '$HOME/'*) t="${HOME:-}/${t:6}" ;;
+            '${HOME}') t="${HOME:-}" ;;
+            '${HOME}/'*) t="${HOME:-}/${t:8}" ;;
+        esac
+        [ -n "$t" ] || continue
+        result=$(check_target "$t")
+        case "$result" in
+            deny\ *)
+                if [ "${EDIT_LIVE_SETTINGS_OK:-0}" = "1" ]; then
+                    exit 0
+                fi
+                deny_message "$tool_label" "$t" "${result#deny }"
+                exit 2
+                ;;
+            *) : ;;   # allow or unknown -> fail OPEN, keep scanning other targets
+        esac
+    done
+}
+
 input=$(cat)
 tool_name=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || true)
 
@@ -366,69 +419,102 @@ if [ "$tool_name" = "Bash" ]; then
     # than the earlier fixes above: worst case is an annoying denial with a
     # documented bypass (`EDIT_LIVE_SETTINGS_OK=1`), not a silent bypass of
     # the guard itself.
+    #
+    # Quote-stripping note (HIMMEL-2360 CR round 5, codex-2 regression fix):
+    # scan_and_deny_matches strips quote characters only at a DELIMITER
+    # position — token start/end, or immediately touching a `/` — rather
+    # than every quote character. Round 4's blanket `tr -d` also deleted an
+    # apostrophe that is part of the PATH ITSELF, not shell quoting
+    # (`C:/Users/O'Brien/.claude/...`, a real Windows username shape),
+    # corrupting a legitimate target into one that no longer canonicalises to
+    # the same file the $HOME comparison expects — a false ALLOW. A quote
+    # next to `/` still catches concatenated quoting (`"$HOME"/.claude/...`
+    # — the closing `"` sits immediately before the `/`), but a quote sitting
+    # between two ordinary characters mid-segment (O'Brien) is left alone.
     matches=$(printf '%s' "$cmd" | grep -oE ">>?[[:space:]]*(\"[^\"]*\"|'[^']*'|[^[:space:];&|<>]+)" 2>/dev/null || true)
-    while IFS= read -r tok || [ -n "$tok" ]; do
-        [ -n "$tok" ] || continue
-        t="$tok"
-        while [ "${t:0:1}" = ">" ]; do t="${t#>}"; done
-        while [ "${t:0:1}" = " " ] || [ "${t:0:1}" = "$(printf '\t')" ]; do t="${t#?}"; done
-        [ -n "$t" ] || continue
-        # Strip quote characters that sit at a DELIMITER position — token
-        # start/end, or immediately touching a `/` — rather than every quote
-        # character (HIMMEL-2360 CR round 5, codex-2 regression fix): round
-        # 4's blanket `tr -d` also deleted an apostrophe that is part of the
-        # PATH ITSELF, not shell quoting (`C:/Users/O'Brien/.claude/...`,
-        # a real Windows username shape), corrupting a legitimate target
-        # into one that no longer canonicalises to the same file the $HOME
-        # comparison expects — a false ALLOW. A quote next to `/` still
-        # catches concatenated quoting (`"$HOME"/.claude/...` — the closing
-        # `"` sits immediately before the `/`), but a quote sitting between
-        # two ordinary characters mid-segment (O'Brien) is left alone.
-        Q="\"'"
-        t=$(printf '%s' "$t" | sed -E "s/^[$Q]+//; s/[$Q]+\$//; s#/[$Q]+#/#g; s#[$Q]+/#/#g")
-        [ -n "$t" ] || continue
 
-        # Expand the common HOME spellings the plain-text scan otherwise
-        # passes through literally (HIMMEL-2360 CR rounds 2-3): a genuinely
-        # unexpanded `$HOME`/`${HOME}`/`~` canonicalises to a nonsense path
-        # under $cwd whose basename still happens to read "settings.json" but
-        # whose PARENT never matches $HOME/.claude, silently missing the
-        # user-scope deny for the exact spelling that arm exists to catch —
-        # and, unlike the bare `$HOME` case, there is no coincidental
-        # ancestor-.git-walk rescue when the session's cwd is a linked
-        # worktree (git-dir != git-common-dir there, so that fallback path
-        # ALLOWS) or outside any git repo at all. Only the bare and prefix
-        # forms are handled — not general `~` (tilde-user) or a `$HOME`
-        # embedded mid-path — matching this arm's existing "ordinary case,
-        # not full shell semantics" scope.
-        #
-        # shellcheck disable=SC2088,SC2016
-        # SC2088/SC2016: deliberate — these patterns match the LITERAL
-        # `~`/`$HOME`/`${HOME}` characters in the scanned command text (which
-        # the real shell has not run yet), not an expansion of this script's
-        # own `$t`.
-        case "$t" in
-            '~') t="${HOME:-}" ;;
-            '~/'*) t="${HOME:-}/${t:2}" ;;
-            '$HOME') t="${HOME:-}" ;;
-            '$HOME/'*) t="${HOME:-}/${t:6}" ;;
-            '${HOME}') t="${HOME:-}" ;;
-            '${HOME}/'*) t="${HOME:-}/${t:8}" ;;
-        esac
-        [ -n "$t" ] || continue
+    # cp/mv/tee/sed -i destination scan (HIMMEL-1525): a plain-text,
+    # whole-command scan in the same "not a shell parser" spirit as the
+    # redirect scan above — command chaining (`cp a b && rm c`) is not
+    # decomposed into segments, matching the existing $cwd/`cd`-tracking
+    # limitation documented in this file's header. `cp`/`mv` write to their
+    # LAST argument (source args are read-only, e.g. `cp settings.json
+    # /tmp/x` must stay ALLOW — only the destination is checked); `tee`
+    # writes to every non-flag argument; `sed -i` writes to every non-flag
+    # argument AFTER the first (which is the script/expression, not a file).
+    cp_mv_rest=$(printf '%s' "$cmd" | grep -oE '(^|[;&|[:space:]])(cp|mv)[[:space:]]+.+' 2>/dev/null || true)
+    cp_mv_dest=$(printf '%s' "$cp_mv_rest" | grep -oE '("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:];&|]+)[[:space:]]*$' 2>/dev/null || true)
 
-        result=$(check_target "$t")
-        case "$result" in
-            deny\ *)
-                if [ "${EDIT_LIVE_SETTINGS_OK:-0}" = "1" ]; then
-                    exit 0
-                fi
-                deny_message "a Bash redirect" "$t" "${result#deny }"
-                exit 2
-                ;;
-            *) : ;;   # allow or unknown -> fail OPEN, keep scanning other targets
-        esac
-    done <<< "$matches"
+    tee_seg=$(printf '%s' "$cmd" | grep -oE '(^|[;&|[:space:]])tee[[:space:]]+.+' 2>/dev/null || true)
+    tee_rest=$(printf '%s' "$tee_seg" | sed -E 's/^[;&|[:space:]]*tee[[:space:]]+//')
+    tee_dest=$(printf '%s' "$tee_rest" | grep -oE '("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:];&|]+)' 2>/dev/null | grep -vE '^-' || true)
+
+    sed_matches=""
+    sed_seg=$(printf '%s' "$cmd" | grep -oE '(^|[;&|[:space:]])sed[[:space:]]+.+' 2>/dev/null || true)
+    case "$sed_seg" in
+        *' -i'*|*'-i.'*|*'--in-place'*)
+            sed_rest=$(printf '%s' "$sed_seg" | sed -E 's/^[;&|[:space:]]*sed[[:space:]]+//')
+            sed_tokens=$(printf '%s' "$sed_rest" | grep -oE '("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:];&|]+)' 2>/dev/null | grep -vE '^-' || true)
+            sed_matches=$(printf '%s' "$sed_tokens" | tail -n +2)
+            ;;
+    esac
+
+    # node -e / python3 -c fail-closed carve-out (HIMMEL-1525, console-agreed
+    # deviation from this arm's usual fail-open posture): the write actually
+    # happens inside an eval string, not a discrete shell argument this scan
+    # can extract — so once the cheap prefilter above has already confirmed
+    # the command names a live settings file, deny unconditionally rather
+    # than guess at a target. A bare `node -e "console.log(...)"` with no
+    # settings mention never reaches this arm at all (prefilter exits 0
+    # first), so this only fires on a command that already names the file.
+    case "$cmd_lc" in
+        *node*-e\ *|*node*-e\"*|*node*-e\'*|*node*--eval*|*python*-c\ *|*python*-c\"*|*python*-c\'*)
+            if [ "${EDIT_LIVE_SETTINGS_OK:-0}" = "1" ]; then
+                exit 0
+            fi
+            deny_message "a Bash eval (node -e / python -c)" "$cmd" "the command names a live settings file and its actual write target cannot be reliably parsed out of an eval string"
+            exit 2
+            ;;
+    esac
+
+    matches=$(printf '%s\n%s\n%s\n%s\n' "$matches" "$cp_mv_dest" "$tee_dest" "$sed_matches" | grep -v '^$' || true)
+    printf '%s\n' "$matches" | scan_and_deny_matches "a Bash write (redirect/cp/mv/tee/sed -i)"
+
+    exit 0
+fi
+
+if [ "$tool_name" = "PowerShell" ]; then
+    cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null || true)
+    cmd_lc=$(printf '%s' "$cmd" | tr '[:upper:]' '[:lower:]')
+    case "$cmd_lc" in
+        *settings.json*|*settings.local.json*) : ;;
+        *) exit 0 ;;
+    esac
+
+    # >/>>/>| redirect targets — same plain-text scan as the Bash arm above.
+    matches=$(printf '%s' "$cmd" | grep -oE '>{1,2}\|?[[:space:]]*("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:];&|<>]+)' 2>/dev/null || true)
+
+    # Set-Content/Add-Content/Out-File: -Path/-FilePath VALUE, or the first
+    # positional argument when the param name is omitted (PowerShell binds
+    # either form). Copy-Item/Move-Item/New-Item are NOT covered here —
+    # known limitation, mirrors this file's own "not a complete write fence"
+    # scope note for cp/mv/tee/sed-i above; HIMMEL-1525 named Set-Content and
+    # redirect specifically.
+    cmdlet_rest=$(printf '%s' "$cmd" | grep -oiE '(set-content|add-content|out-file)[[:space:]]+.+' 2>/dev/null || true)
+    if [ -n "$cmdlet_rest" ]; then
+        path_arg=$(printf '%s' "$cmdlet_rest" | grep -oiE -- '-(path|filepath)[[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:];&|]+)' 2>/dev/null | grep -oE '("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:];&|]+)$' || true)
+        if [ -z "$path_arg" ]; then
+            # Strip the leading verb token (cmdlet_rest starts with it,
+            # matched case-insensitively by the grep -oi above) by position
+            # rather than by re-matching its spelling — sed's case-
+            # insensitive `s///I` flag is a GNU extension BSD/macOS sed lacks.
+            rest_after_verb="${cmdlet_rest#* }"
+            path_arg=$(printf '%s' "$rest_after_verb" | grep -oE '("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:];&|]+)' 2>/dev/null | grep -vE '^-' | head -n1 || true)
+        fi
+        [ -z "$path_arg" ] || matches=$(printf '%s\n%s\n' "$matches" "$path_arg")
+    fi
+
+    printf '%s\n' "$matches" | scan_and_deny_matches "a PowerShell write (redirect/Set-Content/Add-Content/Out-File)"
 
     exit 0
 fi

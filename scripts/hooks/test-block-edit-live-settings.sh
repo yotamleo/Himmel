@@ -248,6 +248,60 @@ assert_rc "23 bash redirect with literal apostrophe (unquoted) denies" 2 \
 assert_rc "24 bash redirect with literal apostrophe (quoted) denies" 2 \
     "$(bash_rc_of "echo pwned > \"$APOS_PRIMARY/.claude/settings.json\"")"
 
+# powershell_rc_of COMMAND [EXTRA_ENV...] — {tool_name: PowerShell, tool_input:
+# {command: COMMAND}} on stdin, run the hook, echo its exit code.
+powershell_rc_of() {
+    local cmd="$1"
+    shift
+    jq -n --arg cmd "$cmd" '{tool_name: "PowerShell", tool_input: {command: $cmd}}' \
+        | env "$@" bash "$HOOK" >/dev/null 2>&1
+    echo "$?"
+}
+
+# 25-33 (HIMMEL-1525): every remaining write path the ticket named, still open
+# on this hook as of the audit. Each targets the PRIMARY checkout's
+# settings.json (or .local.json where noted) and must now DENY.
+assert_rc "25 bash cp overwrite of primary settings.json denies" 2 \
+    "$(bash_rc_of "cp /tmp/x.json $SANDBOX/primary/.claude/settings.json")"
+assert_rc "26 bash mv over primary settings.json denies" 2 \
+    "$(bash_rc_of "mv /tmp/x.json $SANDBOX/primary/.claude/settings.json")"
+assert_rc "27 bash tee into primary settings.json denies" 2 \
+    "$(bash_rc_of "echo pwned | tee $SANDBOX/primary/.claude/settings.json")"
+assert_rc "28 bash sed -i on primary settings.json denies" 2 \
+    "$(bash_rc_of "sed -i 's/a/a/' $SANDBOX/primary/.claude/settings.json")"
+assert_rc "29 bash node -e writeFileSync on primary settings.json denies" 2 \
+    "$(bash_rc_of "node -e \"require('fs').writeFileSync('$SANDBOX/primary/.claude/settings.json','{}')\"")"
+assert_rc "30 bash python3 -c open/write on primary settings.json denies" 2 \
+    "$(bash_rc_of "python3 -c \"open('$SANDBOX/primary/.claude/settings.json','w').write('{}')\"")"
+assert_rc "31 powershell Set-Content on primary settings.json denies" 2 \
+    "$(powershell_rc_of "Set-Content -Path $SANDBOX/primary/.claude/settings.json -Value '{}'")"
+assert_rc "32 powershell > redirect on primary settings.json denies" 2 \
+    "$(powershell_rc_of "'{}' > $SANDBOX/primary/.claude/settings.json")"
+assert_rc "33 bash cp overwrite of primary settings.local.json denies" 2 \
+    "$(bash_rc_of "cp /tmp/x.json $SANDBOX/primary/.claude/settings.local.json")"
+
+# 34-37: controls that must stay ALLOW — ordinary reads of the primary's
+# settings.json (this arm targets WRITE paths only; a leg reading the
+# primary's settings.json for diagnosis is normal and must keep working),
+# plus a legitimate cp INTO a worktree's own settings.json.
+assert_rc "34 bash cat of primary settings.json allows" 0 \
+    "$(bash_rc_of "cat $SANDBOX/primary/.claude/settings.json")"
+assert_rc "35 bash grep of primary settings.json allows" 0 \
+    "$(bash_rc_of "grep x $SANDBOX/primary/.claude/settings.json")"
+assert_rc "36 bash jq of primary settings.json allows" 0 \
+    "$(bash_rc_of "jq . $SANDBOX/primary/.claude/settings.json")"
+assert_rc "37 bash cp into worktree settings.json allows" 0 \
+    "$(bash_rc_of "cp /tmp/x.json $SANDBOX/primary/.claude/worktrees/feat+x/.claude/settings.json")"
+
+# 38-39 (console-requested, HIMMEL-1525): the interpreter-verb deny is scoped
+# to commands that actually NAME a live settings file — a bare `node -e` with
+# no settings mention, or a `cp` reading settings.json as the SOURCE (writing
+# elsewhere), must both stay ALLOW.
+assert_rc "38 bash node -e with no settings mention allows" 0 \
+    "$(bash_rc_of "node -e \"console.log('hi')\"")"
+assert_rc "39 bash cp of primary settings.json AS SOURCE allows" 0 \
+    "$(bash_rc_of "cp $SANDBOX/primary/.claude/settings.json /tmp/x.json")"
+
 # Clean up the worktree registration before removing the sandbox (avoids a
 # dangling `git worktree` admin record under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true
