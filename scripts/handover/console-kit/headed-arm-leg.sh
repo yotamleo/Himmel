@@ -37,6 +37,14 @@
 # (the same seams headed-arm.sh's own suite uses) to confirm the launched
 # argv matches what --dry-run predicted.
 #
+# --headless (HIMMEL-3403; or LEG_HEADLESS=1 in the launching shell, the flag
+# wins): the same launch with no konsole - the leg runs as a Claude Code
+# background session (headed-arm.sh adds --bg), and its env goes into the
+# per-leg settings file because the session inherits the claude daemon's env,
+# not ours. Needs a profile; native lane only. End a headless leg: `kill <pid>`
+# (the pid= in the log's `headless=1` line, or `claude agents --json`), then
+# `claude rm <short-id>`. Where -p vs --bg fits which job: HIMMEL-3410.
+#
 # Platform guard (gitbash-only): POSIX bash 3.2+, same as headed-arm.sh
 # itself (konsole is Linux/KDE-only) - no .ps1 twin; the Windows station
 # arms through arm-resume.sh's schtasks backend instead.
@@ -163,13 +171,15 @@
 set -u
 
 usage() {
-    echo "usage: headed-arm-leg.sh [--dry-run] [--lane native|claudex] (--profile <name> | --no-profile) [--relay] [--judge] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
+    echo "usage: headed-arm-leg.sh [--dry-run] [--headless] [--lane native|claudex] (--profile <name> | --no-profile) [--relay] [--judge] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
 }
 
 DRY_RUN=0
 RELAY=0
 JUDGE=0
 NO_PROFILE=0
+HEADLESS=0
+[ "${LEG_HEADLESS:-}" = "1" ] && HEADLESS=1
 LANE="${LEG_LANE:-native}"
 PROFILE="${LEG_PROFILE:-}"
 while :; do
@@ -178,6 +188,7 @@ while :; do
         --relay) RELAY=1; shift ;;
         --judge) JUDGE=1; shift ;;
         --no-profile) NO_PROFILE=1; shift ;;
+        --headless) HEADLESS=1; shift ;;
         --lane)
             # codex CR fix: `--lane` as the LAST arg leaves only 1 positional,
             # so `shift 2` fails (rc=1) and shifts NOTHING under `set -u`
@@ -245,6 +256,27 @@ case "$LANE" in
         exit 2
         ;;
 esac
+
+# --headless (HIMMEL-3403): the background session takes its env from the
+# claude daemon, so the leg's own env is written into the profile's settings
+# file. With no profile there is no such file, and the leg would silently run
+# on whatever env the daemon was spawned with. The claudex lane wraps claude
+# in script(1) for a tty, which has no background form.
+if [ "$HEADLESS" -eq 1 ]; then
+    if [ "$NO_PROFILE" -eq 1 ]; then
+        usage
+        echo "headed-arm-leg: --headless needs a profile (the leg's env rides in the profile's settings file); drop --no-profile" >&2
+        exit 2
+    fi
+    if [ "$LANE" != "native" ]; then
+        usage
+        echo "headed-arm-leg: --headless supports the native lane only (got: $LANE)" >&2
+        exit 2
+    fi
+    export HEADED_ARM_HEADLESS=1
+else
+    unset HEADED_ARM_HEADLESS
+fi
 
 if [ "$#" -lt 5 ]; then
     usage
@@ -641,6 +673,11 @@ if [ "$DRY_RUN" -eq 1 ]; then
     if [ -n "$TIER_GATE" ]; then
         printf 'headed-arm-leg: tier=%s tier-category=%s tier-reason=%s\n' "$TIER_GATE" "$TIER_CATEGORY" "$TIER_REASON"
     fi
+    # Printed ONLY under --headless, same guarantee shape as --relay above.
+    if [ "$HEADLESS" -eq 1 ]; then
+        printf 'headed-arm-leg: headless=1 launch=%s --bg --permission-mode auto (env merged into %s at launch)\n' \
+            "$HEADED_ARM_LAUNCHER" "$PROFILE_SETTINGS"
+    fi
     exit 0
 fi
 
@@ -788,6 +825,12 @@ if [ -n "$_ll_cache" ]; then
             >> "$_ll_cache/launch-logs/$NAME.log" ) 2>/dev/null; then
         echo "$(date +%F_%T) headed-arm-leg: WARN launch record NOT written under $_ll_cache/launch-logs (the cost cohort cannot see this launch)" >> "$LOG"
     fi
+fi
+
+# HIMMEL-3403: the pid and session id of a headless leg exist only after
+# headed-arm.sh launches it, so it appends them to the same durable record.
+if [ "$HEADLESS" -eq 1 ] && [ -n "$_ll_cache" ]; then
+    export HEADED_ARM_LAUNCH_RECORD="$_ll_cache/launch-logs/$NAME.log"
 fi
 
 exec "$HEADED_ARM" "$NAME" "$DOC" "$SIGNAL" "$DEADLINE" "$LOG" "$MODEL" "$CONTEXT"
