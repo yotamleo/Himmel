@@ -36,103 +36,149 @@ ALLOW_WHY=(
   "matches only remedy TEXT (the re-run hint printed for a refused wet run); it never sets the variable itself"
 )
 
-# home_is_scratch <file> -- succeed when the file assigns HOME from a mktemp-derived
-# value: a literal `mktemp`, or a variable that (transitively, through other
-# simple `NAME=value` assignments) was itself assigned from `mktemp`.
-# ponytail: flow-INSENSITIVE text tracing over simple `NAME=<word|"..."|'...'|$(...)>`
-# tokens. It will NOT follow a HOME set through a helper function, a sourced file,
-# `read` / `printf -v` / `declare -n`, or an env block passed as a variable; it
-# ignores order, so a scratch variable reassigned to something real AFTER the trace
-# still passes; and a mktemp buried past the first inner quote of a quoted `$(...)`
-# is missed (a false flag, never a false pass). It wants `mktemp` as a bare command
-# word, so /usr/bin/mktemp is a false flag; but it does not prove the word is
-# INVOKED, so `HOME="$(echo mktemp)"` still passes. A scratch variable counts only as a
-# plain `$v` / `${v}`, and a value carrying ANY `${x<op>...}` expansion is never
-# scratch (a false flag, never a false pass). It reads raw lines and cannot tell an
-# executable assignment from assignment-shaped TEXT: `HOME="$(mktemp -d)"` inside a
-# comment or a single-quoted `printf` argument (a fixture the file writes) counts as
-# one, so such a file can PASS while lifting the fence with the real HOME
-# (HIMMEL-3345; separating code from quoted text needs a parser).
-# The quoted dirname-of-scratch (`HOME="$(dirname "$td")"`, td a mktemp) is a false flag
-# ON PURPOSE (HIMMEL-3345): teaching this text matcher to trace it was tried and reverted,
-# because every rule that widened what counts as scratch opened a real false pass (six
-# review rounds, the last two Critical: `$(printenv HOME; : "$td")`, `$(cd "$td"; cd; pwd)`,
-# a mktemp under a real dir whose dirname is the real HOME). A caller that needs a scratch
-# HOME should take a second mktemp, not a dirname. The false-pass shapes those rounds found
-# are pinned below as must-flag fixtures; do not delete one to make a widening pass.
+# HIMMEL-3394: both halves are ALLOW-LISTS. Enumerating dangerous spellings lost six
+# review rounds to shapes nobody had listed (HIMMEL-3345), so the rule is inverted: a
+# write of the var counts as a lift unless it is provably not 1 (and a text matcher can
+# prove nothing -- see scan_callers), and HOME counts as scratch only in the few shapes
+# below. Anything else flags. A real caller that trips it is rewritten (a second mktemp,
+# a guard), never the matcher loosened.
+
+# join_continued <file> -- the file as the shell reads it: every backslash-newline removed.
+join_continued() { sed -e ':a' -e '/\\$/N' -e 's/\\\n//' -e 'ta' "$1"; }
+
+# home_is_scratch <file> -- succeed when EVERY assignment to HOME in the file (at least
+# one) is one of exactly: "$v", $v, "${v}", ${v}, "$v/<literal path>" (no `..`), or a
+# literal $(mktemp -d [template]), quoted or not; and the file never drops HOME
+# (`unset HOME`, `env -u HOME`, `env -i`: a child without HOME falls back to the passwd
+# home). v is scratch when EVERY assignment to it is one of the same shapes, a mktemp one
+# followed by `|| exit` / `|| return` / `|| { ...; exit N; }` -- an unguarded failed
+# mktemp leaves v empty, and "$v/home/<user>" is then the real HOME. The template is one
+# word: a literal, or a quoted literal after at most one `$x` / `${x}` / `${x:-/tmp}`
+# (mktemp -d prints a fresh directory or fails, whatever the template says).
+# Everything else is NOT scratch -- $(dirname ...), `..`, $PWD, $1, "$v-x", a concatenation,
+# and any write that is not a plain `NAME=` (`v+=`, `v[i]=`, `${v:=...}`).
+# ponytail: flow-INSENSITIVE text tracing over `NAME=` on raw lines (continuations
+# joined). It cannot see order (a HOME assigned from v BEFORE v's mktemp, or inherited
+# from the caller's shell), scope (`local v` / a subshell / a function argument), or a
+# write through `read` / `printf -v` / `declare -n` / a sourced file; and it does not tie a
+# lift to the HOME on its own command (`HOME="$td" true; VAR=1 bash uninstall.sh` passes,
+# the lift inheriting the real HOME). It reads text, so an assignment-shaped comment or
+# printf fixture counts: a non-scratch one is a false flag, and a file whose only scratch
+# HOME is text passes (HIMMEL-3345). Separating those needs a parser.
 home_is_scratch() {
-  local file="$1" line rest name rhs nocmd v changed is_scratch ref_re home_ok=0
-  local dq='"[^"]*"' sq="'[^']*'" cs='\$\([^)]*\)' bare='[^[:space:]]*'
-  local assign_re="(^|[^A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)=($dq|$sq|$cs|$bare)"
-  local mk_re='(^|[^A-Za-z0-9_./-])mktemp([[:space:])"`]|$)'   # mktemp as a command word, not a path part like /opt/mktemp-user
-  local xp_re='\$\{[A-Za-z_][A-Za-z0-9_]*[^A-Za-z0-9_}]'   # a parameter expansion with an operator
-  local scratch=" " lines=()
-  while IFS= read -r line || [ -n "$line" ]; do lines+=("$line"); done < "$file"
-  for _ in 1 2 3 4 5 6 7 8; do   # fixpoint: one pass per link of an assignment chain
+  local file="$1" line rest name s i j ok changed homes=0
+  local assign_re='(^|[^A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)(\[[^]]*\])?([-+:*/%&|^]?)=(.*)'
+  local end_re='^([[:space:];&|)]|$)' lit='[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*/?'
+  local tpl='([A-Za-z0-9_./%+-]+|"(\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*(:-/tmp)?\})?[A-Za-z0-9_./%+-]*")'
+  local mk='\$\(mktemp -d( '"$tpl"')?\)'
+  local mk_re='^('"$mk"'|"'"$mk"'")(.*)$'
+  # the brace form must END in an unconditional exit/return: every command before it is
+  # `;`-separated with no `&&` / `||` / `&` / `|` bar a `>&N` redirect (`{ false && exit 1; }` falls through).
+  local guard_re='^[[:space:]]*\|\|[[:space:]]*((exit|return)([[:space:]]+[0-9]+)?[[:space:]]*([;)#]|$)|\{(([^};&|]|>&[0-9])*;)*[[:space:]]*(exit|return)([[:space:]]+[0-9]+)?[[:space:]]*;[[:space:]]*\})'
+  local drop_re='(^|[^A-Za-z0-9_])(unset([[:space:]]+-[A-Za-z]+)*([[:space:]]+[A-Za-z_][A-Za-z0-9_]*)*[[:space:]]+HOME|env[[:space:]].*(-u[[:space:]]*|--unset=)HOME)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_])env([[:space:]]+-[A-Za-z]*i[A-Za-z]*|[[:space:]]+--ignore-environment|[[:space:]]+-)([[:space:]]|$)'
+  local scratch=" " names=() vals=()
+  while IFS= read -r line || [ -n "$line" ]; do
+    [[ "$line" =~ $drop_re ]] && return 1
+    rest="$line"
+    while [[ "$rest" =~ $assign_re ]]; do
+      names+=("${BASH_REMATCH[2]}"); rest="${BASH_REMATCH[5]}"
+      # `v+=`, `v[i]=`, `${v:=...}`: never a scratch shape (`<op>` matches none).
+      if [ -n "${BASH_REMATCH[3]}${BASH_REMATCH[4]}" ]; then vals+=("<op>"); else vals+=("$rest"); fi
+    done
+  done < <(join_continued "$file")
+  # scratch_value <value> <guard:0|1> -- the value (the text after `=`) is a scratch shape.
+  scratch_value() {
+    local val="$1" rest r
+    if [[ "$val" =~ $mk_re ]]; then
+      rest="${BASH_REMATCH[${#BASH_REMATCH[@]}-1]}"
+      [[ "$rest" =~ $end_re ]] || return 1
+      [ "$2" -eq 0 ] || [[ "$rest" =~ $guard_re ]]
+      return
+    fi
+    for s in $scratch; do
+      r='^("\$('"$s"'|\{'"$s"'\})(/'"$lit"')?"|\$('"$s"'|\{'"$s"'\}))(.*)$'
+      [[ "$val" =~ $r ]] || continue
+      rest="${BASH_REMATCH[${#BASH_REMATCH[@]}-1]}"
+      [[ "${BASH_REMATCH[1]}" != *..* && "$rest" =~ $end_re ]] && return 0
+    done
+    return 1
+  }
+  while :; do   # least fixpoint: v joins once every assignment to it is scratch
     changed=0
-    for line in "${lines[@]}"; do
-      rest="$line"
-      while [[ "$rest" =~ $assign_re ]]; do
-        name="${BASH_REMATCH[2]}"; rhs="${BASH_REMATCH[3]}"
-        rest="${rest#*"${BASH_REMATCH[0]}"}"
-        is_scratch=0
-        # ${x:-...} / ${x:+...} / ${x%...} outside a $(...) may select a non-scratch value;
-        # inside one (mktemp -d "${TMPDIR:-/tmp}/x.XXXXXX") it only shapes mktemp's argument.
-        nocmd="$rhs"
-        while [[ "$nocmd" =~ $cs ]]; do nocmd="${nocmd/"${BASH_REMATCH[0]}"/}"; done
-        [[ "$nocmd" =~ $xp_re ]] && continue
-        if [[ "$rhs" =~ $mk_re ]]; then is_scratch=1; fi
-        if [ "$is_scratch" -eq 0 ]; then
-          for v in $scratch; do
-            ref_re='\$('"$v"'([^A-Za-z0-9_{]|$)|\{'"$v"'\})'   # $v or ${v}, never ${v:+...} / ${v%/*}
-            if [[ "$rhs" =~ $ref_re ]]; then is_scratch=1; break; fi
-          done
-        fi
-        [ "$is_scratch" -eq 1 ] || continue
-        if [ "$name" = HOME ]; then home_ok=1; continue; fi
-        case "$scratch" in *" $name "*) ;; *) scratch="$scratch$name "; changed=1 ;; esac
+    for ((i=0; i<${#names[@]}; i++)); do
+      name="${names[$i]}"
+      [ "$name" = HOME ] && continue
+      case "$scratch" in *" $name "*) continue ;; esac
+      ok=1
+      for ((j=0; j<${#names[@]}; j++)); do
+        [ "${names[$j]}" = "$name" ] || continue
+        scratch_value "${vals[$j]}" 1 || { ok=0; break; }
       done
+      [ "$ok" -eq 1 ] && { scratch="$scratch$name "; changed=1; }
     done
     [ "$changed" -eq 0 ] && break
   done
-  [ "$home_ok" -eq 1 ]
+  for ((i=0; i<${#names[@]}; i++)); do
+    [ "${names[$i]}" = HOME ] || continue
+    scratch_value "${vals[$i]}" 0 || return 1
+    homes=$((homes+1))
+  done
+  [ "$homes" -gt 0 ]
 }
 
+# VCI: the var name matching any case ([Hh][Ii]...): Windows env names are case-insensitive.
+VCI=""; _up="$(printf '%s' "$V" | tr '[:lower:]' '[:upper:]')"; _lo="$(printf '%s' "$V" | tr '[:upper:]' '[:lower:]')"
+for ((_k=0; _k<${#V}; _k++)); do
+  case "${_up:$_k:1}" in [A-Z]) VCI="${VCI}[${_up:$_k:1}${_lo:$_k:1}]" ;; *) VCI="$VCI${_up:$_k:1}" ;; esac
+done
+
+# sets_var <file> -- succeed when the file WRITES the var anywhere: the name (any case,
+# not inside a longer identifier), an optional `[subscript]` and closing quotes/brackets,
+# then `=`, `+=` / `??=` / any operator-assignment, `:` (a JS/YAML key, `${VAR:=...}`)
+# or `,` (SetEnvironmentVariable("VAR", ...), a JS shorthand key). Only the shell READS
+# `${VAR:-...}` / `${VAR:+...}` / `${VAR:?...}` are exempt. Every write is a lift: no
+# value is provably not 1 to a line matcher, because under `declare -i` / `let` /
+# `(( ))` (possibly declared on another line) `1-extra`, `0|1`, `2 -1` and even an empty
+# value followed by ` 1` are 1, and in JS `+"1"`, `1.0`, `0x1` are. So `=10`, `=unset`
+# and `=0` flag too (a false flag, never a false pass). It runs on the raw lines AND on
+# the continuation-joined text with every quote and backslash deleted, so a name split
+# by a continuation, quotes or a backslash (`export HIMMEL_''..=1`) is still seen.
+# ponytail: it will NOT see a write that never spells the name next to its operator: a
+# computed name (`n=...; export "$n=1"`, a name split by an EMPTY EXPANSION like `${e}`),
+# `read` / `printf -v` / `declare -n`, `Set-Item Env:`, or a JS env object built from a
+# variable key. A mention with none of `=:,` after it (`unset VAR`, a comment) is a read.
+sets_var() (   # rc 0 = writes the var, 1 = does not, 2 = the file could not be scanned
+  set -o pipefail
+  local file="$1" read_re site_re st
+  read_re="\\\$\\{$VCI:[-+?]"
+  site_re="(^|[^A-Za-z0-9_])$VCI(\\[[^]]*\\])?[]'\"}]*[[:space:]]*([-+*/%&|^?<>!]*=|:|,)"
+  # grep without -q reads to EOF, so no producer takes SIGPIPE; any producer failure is rc 2.
+  { cat -- "$file" && printf '\n' && join_continued "$file" | sed -e "s/\\\$\\([\"']\\)/\\1/g" -e "s/[\"'\\\\]//g"; } \
+    | sed -E "s/$read_re//g" | grep -E "$site_re" >/dev/null
+  st=("${PIPESTATUS[@]}")
+  [ "${st[0]}" -eq 0 ] && [ "${st[1]}" -eq 0 ] && [ "${st[2]}" -le 1 ] || exit 2
+  exit "${st[2]}"
+)
+
 # scan_callers <root> [allowed-path...] -- print (root-relative) every file under
-# <root>/scripts that sets the var to 1 without a scratch HOME and is not allowed.
-# ponytail: a TEXT heuristic, not a data-flow check. "Sets the var" is `VAR=1`,
-# `VAR: 1`, `'VAR': '1'`, `VAR = "1"`, `$env:VAR = 1` -- the name, an optional
-# closing quote/bracket, `=` or `:`, an optional opening quote, and exactly `1`
-# followed by whitespace, a quote, or one of `;&|,)}]` and backtick (no `10` /
-# `1x` / `1.5` / `1-x`; a `1` ended by any other character is a false negative). A
-# closing quote counts as the end of the value, so shell concatenation (`"1"x`, whose
-# value is `1x`) is a false flag ON PURPOSE (HIMMEL-3345): a version that read it as a
-# concatenation was tried and reverted, because each rule that ended a quoted `1` more
-# precisely let a real lift through (`"1">/dev/null`, `"1"</dev/null`, `"1"$y`, `"1"""`,
-# JS `"1"+""`, `"1"/*x*/`; six review rounds, the last two Critical). The shapes those
-# rounds found are pinned below as must-flag fixtures; do not delete one to make a
-# loosening pass. If a real caller trips this, rewrite the caller (`V=1`), not the matcher.
-# It will NOT catch a fence lift spelled another way (a computed
-# variable name, `Set-Item Env:`, `[Environment]::SetEnvironmentVariable`, a
-# `process.env` object built from a variable name) or the value carried in a
-# variable (`v=1; ... $v`). "Scratch HOME" is home_is_scratch above, with its own
-# limits. A new operator-path caller has to be added to ALLOW_PATHS on purpose;
-# that friction is the point.
+# <root>/scripts that writes the var (sets_var) without a scratch HOME
+# (home_is_scratch) and is not allowed. A new operator-path caller has to be added to
+# ALLOW_PATHS on purpose; that friction is the point.
 scan_callers() {
   local root="$1"; shift
-  local set_re="(^|[^A-Za-z0-9_])${V}[]'\"}]*[[:space:]]*[:=][[:space:]]*['\"]?1([][:space:];&|,)}'\"\`]|\$)"
-  local f rel a allowed rc list
+  local f rel a allowed list rc
   # A failed traversal (unreadable subtree) is reported, not scanned around.
   list="$(find "$root/scripts" -path '*/node_modules' -prune -o -type f \
     \( -name '*.sh' -o -name '*.js' -o -name '*.mjs' -o -name '*.ts' -o -name '*.ps1' \) -print)" \
     || { printf 'scripts (find failed under %s)\n' "$root"; return 0; }
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    grep -Eq "$set_re" "$f"; rc=$?
-    [ "$rc" -eq 1 ] && continue
     rel="${f#"$root"/}"
-    # rc>1 is a read error: report the file rather than let it pass as a non-match.
-    if [ "$rc" -ne 0 ]; then printf '%s (unreadable: grep rc=%s)\n' "$rel" "$rc"; continue; fi
+    # an unreadable file is reported rather than passed as a non-match.
+    if [ ! -r "$f" ]; then printf '%s (unreadable)\n' "$rel"; continue; fi
+    sets_var "$f"; rc=$?
+    [ "$rc" -eq 1 ] && continue
+    if [ "$rc" -ne 0 ]; then printf '%s (unreadable: scan rc=%s)\n' "$rel" "$rc"; continue; fi
     allowed=0
     for a in "$@"; do [ "$rel" = "$a" ] && allowed=1; done
     [ "$allowed" -eq 1 ] && continue
@@ -140,7 +186,6 @@ scan_callers() {
     printf '%s\n' "$rel"
   done <<< "$list"
 }
-
 echo "== fixtures =="
 td="$(mktemp -d "${TMPDIR:-/tmp}/real-home-callers.XXXXXX")" || { echo "test-uninstall-real-home-callers: mktemp failed" >&2; exit 2; }
 trap 'chmod -R u+rwx "$td" 2>/dev/null; rm -rf "$td"' EXIT
@@ -153,20 +198,20 @@ printf '#!/usr/bin/env bash\ntd=$(mktemp -d /tmp/x.XXXXXX)\nFAKE_HOME="$td"\n%s=
 # HOME reassigned, but not to a scratch dir.
 printf '#!/usr/bin/env bash\nHOME="$HOME"\n%s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-not-scratch.sh"
 # scratch HOME in the same file.
-printf '#!/usr/bin/env bash\ntd=$(mktemp -d /tmp/x.XXXXXX)\nHOME="$td/home" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-scratch.sh"
+printf '#!/usr/bin/env bash\ntd=$(mktemp -d /tmp/x.XXXXXX) || exit 1\nHOME="$td/home" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-scratch.sh"
 # HIMMEL-3344: an unrelated mktemp does not make HOME a scratch dir.
 printf '#!/usr/bin/env bash\ntmp="$(mktemp -d /tmp/x.XXXXXX)"\nHOME="$HOME"\n%s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-unrelated-mktemp.sh"
 # HIMMEL-3344: HOME assigned from a variable that is NOT mktemp-derived.
 printf '#!/usr/bin/env bash\ntmp="$(mktemp -d /tmp/x.XXXXXX)"\nother=/somewhere/real\nHOME="$other"\n%s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-home-from-other.sh"
 # HIMMEL-3344: HOME derived from a mktemp variable through a second variable
 # (the shape of test-e2e-symmetry-isolation.sh) passes.
-printf '#!/usr/bin/env bash\ntd="$(mktemp -d /tmp/x.XXXXXX)"\nctl="$td/ctlhome"\nHOME="$ctl" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-scratch-transitive.sh"
+printf '#!/usr/bin/env bash\ntd="$(mktemp -d /tmp/x.XXXXXX)" || exit 1\nctl="$td/ctlhome"\nHOME="$ctl" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-scratch-transitive.sh"
 # HIMMEL-3344: a literal mktemp on the HOME assignment passes.
 printf '#!/usr/bin/env bash\nHOME="$(mktemp -d /tmp/x.XXXXXX)" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-scratch-literal.sh"
 # HIMMEL-3344: an expansion operator can swap the scratch value for the real one.
 printf '#!/usr/bin/env bash\ntd="$(mktemp -d /tmp/x.XXXXXX)"\nHOME="${td:+$HOME}" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-scratch-operator.sh"
 # ... but an operator INSIDE the mktemp command substitution is fine (test-uninstall.sh's shape).
-printf '#!/usr/bin/env bash\ntd=$(mktemp -d "${TMPDIR:-/tmp}/x.XXXXXX")\nHOME="$td/home" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-scratch-tmpdir.sh"
+printf '#!/usr/bin/env bash\ntd=$(mktemp -d "${TMPDIR:-/tmp}/x.XXXXXX") || { echo no tmp; exit 1; }\nHOME="$td/home" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-scratch-tmpdir.sh"
 printf '#!/usr/bin/env bash\ntd="$(mktemp -d /tmp/x.XXXXXX)"\nother=/somewhere/real\nHOME="${other:-$td}" %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-scratch-inside-operator.sh"
 # HIMMEL-3344: the word mktemp inside a path is not a mktemp call.
 printf '#!/usr/bin/env bash\nHOME=/opt/mktemp-user %s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-mktemp-in-path.sh"
@@ -175,7 +220,8 @@ printf '#!/usr/bin/env bash\nHOME=/opt/mktemp-user %s=1 bash uninstall.sh --yes\
 printf "runSpawn(cmd, { env: { '%s': 1 } });\n" "$V" > "$fx/scripts/quoted-key.js"
 printf 'runSpawn(cmd, { env: { %s: 1 } });\n' "$V" > "$fx/scripts/numeric-value.mjs"
 printf '$env:%s = 1\n& uninstall.ps1 -Yes\n' "$V" > "$fx/scripts/ps-env.ps1"
-# HIMMEL-3343: uninstall.sh lifts the fence only for exactly 1, so =10 / =1x are not lifts.
+# HIMMEL-3343 read these as not-lifts (uninstall.sh lifts only for exactly 1); HIMMEL-3394 flags
+# them: under declare -i / let / (( )) `1-extra` is 1, so no value is provably not 1 (false flags).
 printf '#!/usr/bin/env bash\n%s=10 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-value-10.sh"
 printf '#!/usr/bin/env bash\n%s=1x bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-value-1x.sh"
 printf '#!/usr/bin/env bash\n%s=1.5 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-value-1dot5.sh"
@@ -186,13 +232,9 @@ printf '#!/usr/bin/env bash\n%s=1-extra bash uninstall.sh --yes\n' "$V" > "$fx/s
 # real (the shell sets the value to 1, or HOME resolves to the real HOME) and is flagged
 # by the strict matcher. Cited: an independent false-pass review of the loosened matcher
 # (2 Critical) plus the panel's own five rounds. @V@ stands for the variable name.
-# ponytail: shapes origin/main already PASSES (false passes that predate this ticket) are
-# NOT pinned, since they cannot be must-flag without a matcher change: an unquoted
-# redirect after the value (1>/dev/null), the value spelled $'1', ${V:=1}, ${X:-1}, \1
-# or ""1, and a HOME that reaches the real HOME through a second dirname, a dotdot, a
-# literal /home dirname or an unquoted $HOME-in-scratch-ref. HIMMEL-3394 owns them: it
-# inverts the matcher to an allow-list of provably-scratch values. Do not pin them here as
-# "passes": an assertion that a lift passes would enshrine the hole.
+# The shapes #1069 left unpinned (false passes at its base) are pinned below under
+# HIMMEL-3394, which inverted the matcher to allow-lists. Never pin a lift as "passes":
+# that assertion would enshrine the hole.
 pinned=()
 RH=/ho"me"/someone   # @H@ in a fixture: a literal real home dir, spelled apart so the leak gate skips this source
 pin() {   # pin <file> <line>... -- write one must-flag fixture under scripts/
@@ -269,6 +311,47 @@ pin h-td-reassigned.sh 'td=$(mktemp -d)' 'td=@H@' 'HOME="$(dirname "$td")/overlo
 pin h-td-real.sh 'td=$HOME' 'HOME="$td"' '@V@=1 bash uninstall.sh --yes'
 pin h-td-tilde.sh 'td=~' 'HOME="$td"' '@V@=1 bash uninstall.sh --yes'
 pin h-tmpdir.sh 'td=$(TMPDIR=@H@ mktemp -d)' 'HOME="$(dirname "$td")"' '@V@=1 bash uninstall.sh --yes'
+# HIMMEL-3394: the eleven false passes of the enumerating matcher (the console's review of #1069).
+# shellcheck disable=SC1003  # the backslash is the fixture
+pin v-backslash.sh '@V@=\1 bash uninstall.sh --yes'
+pin v-ansi-c.sh "@V@=\$'1' bash uninstall.sh --yes"
+pin v-empty-dq-bare.sh '@V@=""1 bash uninstall.sh --yes'
+pin v-bare-redir.sh '@V@=1>/dev/null bash uninstall.sh --yes'
+pin v-default.sh '@V@=${X:-1} bash uninstall.sh --yes'
+pin v-assign-default.sh ': "${@V@:=1}"' 'export @V@' 'bash uninstall.sh --yes'
+pin h-dirname-dirname.sh 'td=$(mktemp -d /tmp/x.XXXXXX) || exit 1' 'HOME=$(dirname "$(dirname "$td")") @V@=1 bash uninstall.sh --yes'
+pin h-dirname-under-real.sh 'td=$(mktemp -d @H@/x.XXXXXX) || exit 1' 'HOME=$(dirname "$td") @V@=1 bash uninstall.sh --yes'
+pin h-dotdot.sh 'td=$(mktemp -d "$HOME/x.XXXXXX") || exit 1' 'HOME="$td/.." @V@=1 bash uninstall.sh --yes'
+pin h-cd-home-bare.sh 'td=$(mktemp -d) || exit 1' 'HOME=$(cd "$td"; cd; pwd) @V@=1 bash uninstall.sh --yes'
+pin h-printenv-bare.sh 'td=$(mktemp -d) || exit 1' 'HOME=$(printenv HOME; : "$td") @V@=1 bash uninstall.sh --yes'
+# HIMMEL-3394: classes the allow-list closes beyond the eleven.
+QV="HIMMEL_UNINSTALL_''REAL_HOME"   # the name split by an empty quote; bash still reads the full name
+pin w-split-name.sh "export $QV=1" 'bash uninstall.sh --yes'
+pin w-continued-name.sh "export @V@\\" '=1' 'bash uninstall.sh --yes'
+pin w-arith.sh 'declare -i @V@' '@V@=2-1 bash uninstall.sh --yes'
+pin w-append.sh '@V@=' '@V@+=1 bash uninstall.sh --yes'
+pin w-subscript.sh 'export @V@' '@V@[0]=1 bash uninstall.sh --yes'
+pin w-js-unary.js 'spawn(c,{env:{@V@:+"1"}})'
+pin w-js-logical.js 'process.env.@V@ ??= "1"; spawn(c)'
+pin w-ps-setenv.ps1 "[Environment]::SetEnvironmentVariable('@V@', '1')" '& uninstall.ps1 -Yes'
+pin w-lowercase.ps1 "\$env:$(printf '%s' "$V" | tr '[:upper:]' '[:lower:]') = 1" '& uninstall.ps1 -Yes'
+pin h-unguarded.sh 'td=$(mktemp -d /nonexistent/x.XXXXXX)' 'HOME="$td@H@" @V@=1 bash uninstall.sh --yes'
+pin h-v-reassigned.sh 'td=$(mktemp -d) || exit 1' 'td=$HOME' 'HOME="$td" @V@=1 bash uninstall.sh --yes'
+pin h-second-home.sh 'td=$(mktemp -d) || exit 1' 'HOME="$td" true' 'HOME=~ @V@=1 bash uninstall.sh --yes'
+pin h-unset-home.sh 'td=$(mktemp -d) || exit 1' 'HOME="$td" true' 'unset HOME' '@V@=1 bash uninstall.sh --yes'
+pin h-env-i.sh 'td=$(mktemp -d) || exit 1' 'HOME="$td" true' 'env -i PATH=/usr/bin @V@=1 bash uninstall.sh --yes'
+pin h-env-u.sh 'td=$(mktemp -d) || exit 1' 'HOME="$td" true' 'env -u HOME @V@=1 bash uninstall.sh --yes'
+pin h-suffix-var.sh 'td=$(mktemp -d) || exit 1' 'HOME="$td/$1" @V@=1 bash uninstall.sh --yes'
+pin h-subst-template.sh 'td=$(mktemp -d "$(printf %s "$HOME")") || exit 1' 'HOME="$td" @V@=1 bash uninstall.sh --yes'
+pin h-mktemp-then.sh 'HOME="$(mktemp -d; printf %s "$HOME")" @V@=1 bash uninstall.sh --yes'
+pin h-home-append.sh 'HOME=$(mktemp -d)' 'HOME+=/../..' '@V@=1 bash uninstall.sh --yes'
+pin h-v-append.sh 'td=$(mktemp -d) || exit 1' 'td+=/../..' 'HOME="$td" @V@=1 bash uninstall.sh --yes'
+pin h-home-default.sh 'HOME=$(mktemp -d)' ': "${HOME:=@H@}"' '@V@=1 bash uninstall.sh --yes'
+pin h-v-subscript.sh 'td=$(mktemp -d) || exit 1' 'td[0]=@H@' 'HOME="$td" @V@=1 bash uninstall.sh --yes'
+pin h-conditional-guard.sh 'td=$(mktemp -d /nonexistent/x.XXXXXX) || { false && exit 1; }' 'HOME="$td@H@" @V@=1 bash uninstall.sh --yes'
+pin h-redirect-and-guard.sh 'td=$(mktemp -d /nonexistent/x.XXXXXX) || { echo no >&2 && exit 1; }' 'HOME="$td@H@" @V@=1 bash uninstall.sh --yes'
+pin h-guard-exit-hyphen.sh 'td=$(mktemp -d /nonexistent/x.XXXXXX) || exit-later' 'HOME="$td@H@" @V@=1 bash uninstall.sh --yes'
+pin h-guard-exit-later.sh 'td=$(mktemp -d /nonexistent/x.XXXXXX) || { exit_later=1; }' 'HOME="$td@H@" @V@=1 bash uninstall.sh --yes'
 # HIMMEL-3344 (CodeRabbit): a longer identifier ending in the name is not the name.
 printf '#!/usr/bin/env bash\nNOT_%s=1 bash uninstall.sh --yes\n' "$V" > "$fx/scripts/test-prefixed-name.sh"
 # a JS operator-path caller, on the allowlist below.
@@ -310,14 +393,14 @@ check "unquoted JS key with a numeric value is flagged" \
   "$(printf '%s' "$got" | grep -c 'scripts/numeric-value.mjs')" "1"
 check "PowerShell \$env: assignment is flagged" \
   "$(printf '%s' "$got" | grep -c 'scripts/ps-env.ps1')" "1"
-check "=10 is not a fence lift (not flagged)" \
-  "$(printf '%s' "$got" | grep -c 'scripts/test-value-10.sh')" "0"
-check "=1x is not a fence lift (not flagged)" \
-  "$(printf '%s' "$got" | grep -c 'scripts/test-value-1x.sh')" "0"
-check "=1.5 is not a fence lift (not flagged)" \
-  "$(printf '%s' "$got" | grep -c 'scripts/test-value-1dot5.sh')" "0"
-check "=1-extra is not a fence lift (not flagged)" \
-  "$(printf '%s' "$got" | grep -c 'scripts/test-value-1dash.sh')" "0"
+check "=10 is flagged (1 in an arithmetic context)" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-value-10.sh')" "1"
+check "=1x is flagged (1 in an arithmetic context)" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-value-1x.sh')" "1"
+check "=1.5 is flagged (1 in an arithmetic context)" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-value-1dot5.sh')" "1"
+check "=1-extra is flagged (1 in an arithmetic context)" \
+  "$(printf '%s' "$got" | grep -c 'scripts/test-value-1dash.sh')" "1"
 check "a longer identifier ending in the name is not a fence lift (not flagged)" \
   "$(printf '%s' "$got" | grep -c 'scripts/test-prefixed-name.sh')" "0"
 for name in "${pinned[@]}"; do
@@ -342,6 +425,7 @@ got_noallow="$(scan_callers "$fx" | tr '\n' ' ')"
 check "the same JS file is flagged when NOT allowlisted" \
   "$(printf '%s' "$got_noallow" | grep -c 'scripts/wizard.js')" "1"
 
+sets_var "$fx/scripts/no-such-file.sh" 2>/dev/null; check "a read error in sets_var is rc 2, not a non-match" "$?" "2"
 echo "== the real tree =="
 check "no un-allowlisted fence-lifting caller under scripts/" \
   "$(scan_callers "$repo_root" "${ALLOW_PATHS[@]}" | tr '\n' ' ')" ""

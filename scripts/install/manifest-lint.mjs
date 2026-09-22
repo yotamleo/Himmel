@@ -41,7 +41,10 @@
 //
 //   type              | fields (all required unless noted)
 //   ------------------|--------------------------------------------------
-//   file-exists       | path: string
+//   file-exists       | path: string; OPTIONAL syntaxCheck: boolean
+//                     | (HIMMEL-3322 — existence alone isn't proof a shell
+//                     | lib actually sources; `bash -n path` on a hit,
+//                     | downgrading a syntax-broken file to 'degraded')
 //   git-hooks         | hooks: non-empty string[]
 //   settings-key      | file: string; EXACTLY ONE of key: string XOR
 //                     | keys: non-empty string[]; OPTIONAL expect: boolean
@@ -50,6 +53,19 @@
 //                     | catching a boolean flag set to the wrong value, not
 //                     | just present/absent — e.g. enabledPlugins["<spec>"]
 //                     | explicitly false must probe 'absent', not 'present')
+//                     | OPTIONAL verifyScript: boolean (HIMMEL-3322 — the
+//                     | key's value non-empty isn't proof a statusLine
+//                     | command's script actually resolves; parses the
+//                     | canonical `<interpreter> "<script>"` shape wire-
+//                     | statusline.sh writes and checks the interpreter
+//                     | resolves on PATH + the script is a readable file,
+//                     | downgrading a gap to 'degraded'. Never executes the
+//                     | command.) OPTIONAL verifyPluginSet: boolean
+//                     | (HIMMEL-3322 — a non-empty enabledPlugins map isn't
+//                     | proof it matches docs/setup/settings-template.json's
+//                     | recorded set or that those plugins are actually
+//                     | installed per ~/.claude/plugins/installed_plugins.json;
+//                     | any gap downgrades to 'degraded')
 //   settings-hooks    | file: string; key: string
 //   cmd:has_qmd       | resolver: string
 //   qmd-index         | collections: non-empty string[]
@@ -297,7 +313,10 @@ function checkProbeShape(probe, label, errors) {
   switch (type) {
     case 'file-exists': {
       if (typeof probe.path !== 'string') errors.push(`${label}: probe type 'file-exists' requires 'path' (string)`);
-      reportExtra(['path']);
+      if (Object.prototype.hasOwnProperty.call(probe, 'syntaxCheck') && typeof probe.syntaxCheck !== 'boolean') {
+        errors.push(`${label}: probe type 'file-exists' field 'syntaxCheck', when present, must be a boolean`);
+      }
+      reportExtra(['path', 'syntaxCheck']);
       break;
     }
     case 'git-hooks': {
@@ -329,7 +348,27 @@ function checkProbeShape(probe, label, errors) {
           errors.push(`${label}: probe type 'settings-key' field 'expect' requires singular 'key', not 'keys'`);
         }
       }
-      reportExtra(['file', 'key', 'keys', 'expect']);
+      // HIMMEL-3322: OPTIONAL deepening fields, same opt-in shape as mcp-
+      // registered's bin/initMarker above — a gap downgrades to 'degraded',
+      // never silently 'present'. Both require singular 'key' (each names a
+      // single script-command / plugin-map key, not a multi-key set).
+      if (Object.prototype.hasOwnProperty.call(probe, 'verifyScript')) {
+        if (typeof probe.verifyScript !== 'boolean') {
+          errors.push(`${label}: probe type 'settings-key' field 'verifyScript', when present, must be a boolean`);
+        }
+        if (hasKeys) {
+          errors.push(`${label}: probe type 'settings-key' field 'verifyScript' requires singular 'key', not 'keys'`);
+        }
+      }
+      if (Object.prototype.hasOwnProperty.call(probe, 'verifyPluginSet')) {
+        if (typeof probe.verifyPluginSet !== 'boolean') {
+          errors.push(`${label}: probe type 'settings-key' field 'verifyPluginSet', when present, must be a boolean`);
+        }
+        if (hasKeys) {
+          errors.push(`${label}: probe type 'settings-key' field 'verifyPluginSet' requires singular 'key', not 'keys'`);
+        }
+      }
+      reportExtra(['file', 'key', 'keys', 'expect', 'verifyScript', 'verifyPluginSet']);
       break;
     }
     case 'settings-hooks': {

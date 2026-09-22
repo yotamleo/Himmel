@@ -392,5 +392,125 @@ fi
 git -C "$t/repo" worktree remove --force "$t/with space/wt-quoted" >/dev/null 2>&1 || true
 rm -rf "$t"
 
+# ── HIMMEL-3405: pr<N> review refs classified by tip; readable SWEEP-ERROR;
+# --health alarms (LOST-COMMITS / SWEEP-ERROR). ────────────────────────────
+
+echo "== pr<N> review ref at or behind a MERGED PR's head -> LANDED-ELSEWHERE (matched by tip, not name) =="
+t="$(mktemp -d)"; make_repo "$t/repo"
+git -C "$t/repo" checkout -q -b feat/himmel-9200-prref
+commit_dated "$t/repo" 0 conflict.md "branch v1" "feat: first"
+mid9200="$(git -C "$t/repo" rev-parse HEAD)"
+commit_dated "$t/repo" 0 conflict.md "branch v2" "feat: second"
+head9200="$(git -C "$t/repo" rev-parse HEAD)"
+git -C "$t/repo" branch pr77 "$head9200"          # review snapshot AT the merged head
+git -C "$t/repo" branch pr78 "$mid9200"           # review snapshot BEHIND the merged head
+git -C "$t/repo" checkout -q pr77
+commit_dated "$t/repo" 0 conflict.md "branch v3" "feat: post-merge extra"
+git -C "$t/repo" branch pr79 HEAD                 # review snapshot AHEAD of the merged head
+git -C "$t/repo" checkout -q main
+commit_dated "$t/repo" 0 conflict.md "unrelated main version" "main: unrelated"
+git -C "$t/repo" branch -f pr77 "$head9200"
+git -C "$t/repo" branch -D feat/himmel-9200-prref >/dev/null 2>&1
+make_gh_stub "$t/stub" "feat/himmel-9200-prref:MERGED:77:$head9200"
+out="$(cd "$t/repo" && GH_CMD="$t/stub/gh" bash "$SCRIPT" --base main --tsv 2>&1)"
+r77="$(tsv_row "$out" pr77)"; r78="$(tsv_row "$out" pr78)"; r79="$(tsv_row "$out" pr79)"
+if grepq "$r77" '^LANDED-ELSEWHERE' && grepq "$r77" -F 'merged PR #77'; then pass "pr ref AT the merged head -> LANDED-ELSEWHERE"; else fail "pr ref at merged head -> $r77"; fi
+if grepq "$r78" '^LANDED-ELSEWHERE'; then pass "pr ref BEHIND the merged head -> LANDED-ELSEWHERE"; else fail "pr ref behind merged head -> $r78"; fi
+if grepq "$r79" '^STALE'; then pass "control: pr ref AHEAD of the merged head stays STALE (unlanded commits are never called landed)"; else fail "pr ref ahead of merged head -> $r79"; fi
+# A merged PR whose base is NOT the configured base proves nothing about landing on it.
+make_gh_stub "$t/stub" "feat/himmel-9200-prref:MERGED:77:$head9200:develop"
+out="$(cd "$t/repo" && GH_CMD="$t/stub/gh" bash "$SCRIPT" --base main --tsv 2>&1)"
+r77="$(tsv_row "$out" pr77)"
+if grepq "$r77" '^STALE'; then pass "control: merged PR into another base does not classify a pr ref LANDED"; else fail "pr ref, other-base PR -> $r77"; fi
+rm -rf "$t"
+
+echo "== no merge base with base -> readable cause, never a raw rc =="
+t="$(mktemp -d)"; make_repo "$t/repo"
+git -C "$t/repo" checkout -q --orphan fix/himmel-9210-unrelated
+git -C "$t/repo" rm -rq -f . >/dev/null 2>&1
+commit_dated "$t/repo" 0 other-root.md "unrelated history" "root: unrelated"
+git -C "$t/repo" checkout -q main
+out="$(cd "$t/repo" && bash "$SCRIPT" --no-forge --base main --tsv 2>&1)"
+row="$(tsv_row "$out" fix/himmel-9210-unrelated)"
+if grepq "$row" -F 'no merge base with main' && ! grepq "$row" -F 'rc='; then
+    pass "no-merge-base branch -> evidence names the cause, no raw rc"
+else
+    fail "no-merge-base evidence -> $row"
+fi
+out="$(cd "$t/repo" && bash "$SCRIPT" --no-forge --base main --health 2>&1)"; rc=$?
+if [ "$rc" -eq 1 ] && grepq "$out" -E '^SWEEP-ERROR fix/himmel-9210-unrelated no merge base with main' && ! grepq "$out" -F 'rc='; then
+    pass "--health: no-merge-base -> SWEEP-ERROR line with the cause, rc1"
+else
+    fail "--health no-merge-base -> rc=$rc out=$out"
+fi
+rm -rf "$t"
+
+echo "== --health: LOST-COMMITS when a MERGED PR's branch tip is AHEAD of the merged head =="
+t="$(mktemp -d)"; make_repo "$t/repo"
+git -C "$t/repo" checkout -q -b feat/himmel-9220-lost
+commit_dated "$t/repo" 0 lost.md "shipped" "feat: shipped"
+head9220="$(git -C "$t/repo" rev-parse HEAD)"
+commit_dated "$t/repo" 0 lost2.md "post-merge commit that never landed" "feat: after merge"
+git -C "$t/repo" checkout -q -b feat/himmel-9221-clean "$head9220"      # control: exactly at the merged head
+git -C "$t/repo" checkout -q -b feat/himmel-9222-active "$head9220"     # control: ahead but an OPEN PR exists
+commit_dated "$t/repo" 0 active.md "wip" "feat: wip"
+git -C "$t/repo" checkout -q main
+git -C "$t/repo" update-ref refs/remotes/origin/feat/himmel-9223-remote "$(git -C "$t/repo" rev-parse feat/himmel-9220-lost)"
+make_gh_stub "$t/stub" \
+    "feat/himmel-9220-lost:MERGED:220:$head9220" \
+    "feat/himmel-9221-clean:MERGED:221:$head9220" \
+    "feat/himmel-9222-active:MERGED:222:$head9220" "feat/himmel-9222-active:OPEN:223" \
+    "feat/himmel-9223-remote:MERGED:224:$head9220"
+out="$(cd "$t/repo" && GH_CMD="$t/stub/gh" bash "$SCRIPT" --base main --health 2>&1)"; rc=$?
+if [ "$rc" -eq 1 ] && grepq "$out" -x 'LOST-COMMITS feat/himmel-9220-lost pr#220 ahead=1'; then pass "local merged branch ahead of its merged head -> LOST-COMMITS ... ahead=1, rc1"; else fail "LOST-COMMITS local -> rc=$rc out=$out"; fi
+if grepq "$out" -x 'LOST-COMMITS origin/feat/himmel-9223-remote pr#224 ahead=1'; then pass "remote-tracking branch ahead of its merged head -> LOST-COMMITS origin/..."; else fail "LOST-COMMITS remote -> $out"; fi
+if ! grepq "$out" -F 'himmel-9221-clean' && ! grepq "$out" -F 'himmel-9222-active'; then pass "controls: branch at the merged head and branch with an open PR raise no alarm"; else fail "controls raised an alarm -> $out"; fi
+rm -rf "$t"
+
+echo "== --health: healthy repo -> empty output, rc0 =="
+t="$(mktemp -d)"; make_repo "$t/repo"
+git -C "$t/repo" checkout -q -b feat/himmel-9230-fine
+commit_dated "$t/repo" 0 fine.md "fine" "feat: fine"
+head9230="$(git -C "$t/repo" rev-parse HEAD)"
+git -C "$t/repo" checkout -q main
+make_gh_stub "$t/stub" "feat/himmel-9230-fine:MERGED:230:$head9230"
+out="$(cd "$t/repo" && GH_CMD="$t/stub/gh" bash "$SCRIPT" --base main --health 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && [ -z "$out" ]; then pass "clean merged branch -> no alarm output, rc0"; else fail "healthy --health -> rc=$rc out=$out"; fi
+rm -rf "$t"
+
+echo "== --health: post-merge commits whose content is already on main are NOT lost =="
+t="$(mktemp -d)"; make_repo "$t/repo"
+git -C "$t/repo" checkout -q -b feat/himmel-9240-dup
+commit_dated "$t/repo" 0 dup.md "shipped" "feat: shipped"
+head9240="$(git -C "$t/repo" rev-parse HEAD)"
+commit_dated "$t/repo" 0 dup2.md "landed via another PR" "feat: follow-up"
+git -C "$t/repo" checkout -q main
+commit_dated "$t/repo" 0 dup2.md "landed via another PR" "main: follow-up landed under another sha"
+make_gh_stub "$t/stub" "feat/himmel-9240-dup:MERGED:240:$head9240"
+out="$(cd "$t/repo" && GH_CMD="$t/stub/gh" bash "$SCRIPT" --base main --health 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && [ -z "$out" ]; then pass "follow-up commit already on main under another sha -> no LOST-COMMITS"; else fail "dup follow-up -> rc=$rc out=$out"; fi
+rm -rf "$t"
+
+echo "== --health: merged head not fetched locally -> SWEEP-ERROR, never a silent pass =="
+t="$(mktemp -d)"; make_repo "$t/repo"
+git -C "$t/repo" checkout -q -b feat/himmel-9250-nohead
+commit_dated "$t/repo" 0 nohead.md "unpushed tail" "feat: tail"
+git -C "$t/repo" checkout -q main
+make_gh_stub "$t/stub" "feat/himmel-9250-nohead:MERGED:250:1111111111111111111111111111111111111111"
+out="$(cd "$t/repo" && GH_CMD="$t/stub/gh" bash "$SCRIPT" --base main --health 2>&1)"; rc=$?
+if [ "$rc" -eq 1 ] && grepq "$out" -E '^SWEEP-ERROR feat/himmel-9250-nohead .*not present locally'; then pass "unfetched merged head -> SWEEP-ERROR with the cause"; else fail "unfetched head -> rc=$rc out=$out"; fi
+rm -rf "$t"
+
+echo "== --health: forge unavailable -> SWEEP-ERROR (forge), not a silent healthy =="
+t="$(mktemp -d)"; make_repo "$t/repo"
+mkdir -p "$t/stub"; printf '#!/bin/sh\nexit 1\n' > "$t/stub/gh"; chmod +x "$t/stub/gh"
+out="$(cd "$t/repo" && GH_CMD="$t/stub/gh" bash "$SCRIPT" --base main --health 2>&1)"; rc=$?
+if [ "$rc" -eq 1 ] && grepq "$out" -E '^SWEEP-ERROR \(forge\) '; then pass "forge outage -> SWEEP-ERROR (forge), rc1"; else fail "forge outage --health -> rc=$rc out=$out"; fi
+rm -rf "$t"
+
+echo "== --health cannot combine with --tsv/--class =="
+bash "$SCRIPT" --health --tsv >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 2 ]; then pass "--health --tsv -> rc2"; else fail "--health --tsv -> rc=$rc"; fi
+
 echo
 if [ "$failures" -eq 0 ]; then echo "ALL PASS"; exit 0; else echo "$failures FAILURE(S)"; exit 1; fi

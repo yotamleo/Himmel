@@ -37,6 +37,16 @@
 #   12. No jq + drifted output whose FIRST "command" pair is the
 #       ORIGINAL command → the anchored fallback still finds the
 #       rtk-find rewrite and suppresses its compound predicate.
+#   3e/3f/3g (HIMMEL-3362). A Windows payload cwd is backslash-separated,
+#       so the slash-only `.claude/worktrees/` match above misses it and
+#       forwards a git rewrite the worktree-isolation screen then refuses.
+#       3e: a backslash worktree cwd drops the rewrite on BOTH extraction
+#       forms — jq decodes JSON escapes to a single backslash; the no-jq
+#       grep+sed fallback keeps the JSON-escaped double backslash verbatim.
+#       3f: backslash lookalikes (no dot, wrong segment name, no worktree
+#       segment at all) keep the rewrite. 3g: a mixed forward/backslash cwd
+#       whose worktree segment itself uses backslashes still drops (see the
+#       inline justification).
 
 set -euo pipefail
 
@@ -256,6 +266,71 @@ else
     assert_fail "expected rtk git rewrite via the no-jq fallback outside a worktree, got: $out"
 fi
 rm -rf "$gitwt_dir"
+
+# ---------- 3e. Windows backslash worktree cwd (HIMMEL-3362) ----------
+# The `.claude/worktrees/` match above is slash-only, so a Windows payload
+# cwd (backslash-separated) fails to match and the git rewrite is forwarded
+# even inside a worktree. Cover both extraction forms: jq decodes JSON
+# escapes to a single backslash; the no-jq grep+sed fallback keeps the
+# JSON-escaped double backslash verbatim (see the extraction comment in the
+# guard).
+echo "Test 3e: Windows backslash worktree cwd drops the git rewrite"
+win_wt_cwd='C:\\Users\\u\\repo\\.claude\\worktrees\\fix+x'
+for cmd in 'git fetch origin' 'git push -u origin fix/x'; do
+    out=$(run_hook_cwd "$win_wt_cwd" "$cmd")
+    if [ -z "$out" ]; then
+        assert_pass "Windows backslash worktree cwd (jq path), rewrite suppressed: $cmd"
+    else
+        assert_fail "expected empty output for '$cmd' in $win_wt_cwd (jq path), got: $out"
+    fi
+done
+
+winwt_dir=$(mktemp -d "${TMPDIR:-/tmp}/rtk-guard-winwt.XXXXXX")
+printf '#!/usr/bin/env bash\nexit 1\n' > "$winwt_dir/jq"
+cat > "$winwt_dir/rtk" <<'STUB'
+#!/usr/bin/env bash
+[ "${1:-}" = "hook" ] && [ "${2:-}" = "claude" ] || exit 1
+cat >/dev/null
+printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecisionReason":"RTK auto-rewrite","updatedInput":{"command":"rtk git status"},"permissionDecision":"allow"}}'
+STUB
+chmod +x "$winwt_dir/jq" "$winwt_dir/rtk"
+out=$(printf '{"session_id":"s","cwd":"%s","tool_name":"Bash","tool_input":{"command":"git status"}}' "$win_wt_cwd" \
+    | PATH="$winwt_dir:$PATH" bash "$hook")
+if [ -z "$out" ]; then
+    assert_pass "Windows backslash worktree cwd (no-jq fallback), rewrite suppressed"
+else
+    assert_fail "expected empty output for Windows backslash worktree cwd via the no-jq fallback, got: $out"
+fi
+rm -rf "$winwt_dir"
+
+echo "Test 3f: backslash lookalikes keep the rewrite"
+for cwd in \
+    'C:\\Users\\u\\repo\\.claude\\worktreesX\\fix+x' \
+    'C:\\Users\\u\\repo\\claude\\worktrees\\fix+x' \
+    'C:\\Users\\u\\otherdir'; do
+    out=$(run_hook_cwd "$cwd" 'git fetch origin')
+    if grepq "$out" '"rtk git fetch origin"'; then
+        assert_pass "git rewrite preserved: $cwd"
+    else
+        assert_fail "expected rtk git rewrite in $cwd, got: $out"
+    fi
+done
+
+# ---------- 3g. Mixed forward/backslash worktree cwd (HIMMEL-3362) ----------
+# Decision (PR body): the backslash arm matches the literal
+# \.claude\worktrees\ segment regardless of what precedes it, mirroring the
+# forward-slash arm's own "don't care what precedes /.claude/worktrees/"
+# behaviour. A payload whose leading components use forward slashes but
+# whose worktree segment itself uses backslashes still names a
+# backslash-separated (Windows) worktree, so it drops the rewrite too.
+echo "Test 3g: mixed-separator worktree cwd drops the git rewrite"
+mixed_wt_cwd='C:/Users/u/repo\\.claude\\worktrees\\x'
+out=$(run_hook_cwd "$mixed_wt_cwd" 'git fetch origin')
+if [ -z "$out" ]; then
+    assert_pass "mixed-separator worktree cwd, rewrite suppressed"
+else
+    assert_fail "expected empty output for mixed-separator worktree cwd, got: $out"
+fi
 
 # ---------- 4. rtk silent (compound shell command) ----------
 echo "Test 4: rtk emits nothing → guard emits nothing"

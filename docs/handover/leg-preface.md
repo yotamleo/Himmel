@@ -213,7 +213,11 @@ hand-rolled `HOME=… cmd`, which keeps every other operator variable.
 
 **Impacted suites = every suite that references a file you touched**
 (`git grep -l` from the worktree), not the suites in the directory you edited.
-Run those and name them with their counts.
+Run those and name them with their counts, each as one literal
+`bash scripts/quiet-run.sh suite -- bash <tracked test-*.sh>`: the label is
+always the literal `suite`, the only one the allow list pre-approves
+(HIMMEL-3402); any other label, or a suite outside the enumerated
+directories, goes to the classifier by design.
 
 ## Shipping
 

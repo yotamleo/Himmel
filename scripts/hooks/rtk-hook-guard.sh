@@ -73,7 +73,10 @@ fi
 # own worktree is never refused.
 # ponytail: `.claude/worktrees/` is the only worktree root recognised — a
 # worktree elsewhere (`git worktree add ../x`) keeps the rewrite, so a pinned
-# session there can still be refused.
+# session there can still be refused. The backslash arm below (HIMMEL-3362)
+# is exercised only by Linux-simulated payloads (a literal backslash cwd
+# string) — reproduction on an actual Windows harness is still unconfirmed
+# (HIMMEL-3125, Windows is alpha).
 case "$out" in
 *git*)
     wt_cwd=""
@@ -86,8 +89,12 @@ case "$out" in
             | head -n 1 \
             | sed 's/^"cwd"[[:space:]]*:[[:space:]]*"//; s/"$//') || wt_cwd=""
     fi
+    # A Windows payload cwd is backslash-separated. jq decodes the JSON
+    # escape to a single backslash; the no-jq grep+sed fallback above does
+    # no unescaping, so it sees the JSON-escaped DOUBLE backslash verbatim.
+    # Both spellings are matched.
     case "$wt_cwd" in
-    */.claude/worktrees/*)
+    */.claude/worktrees/*|*\\.claude\\worktrees\\*|*\\\\.claude\\\\worktrees\\\\*)
         # Here-string, not a pipe: `grep -q` under pipefail SIGPIPEs the producer.
         if grep -Eq '(^|[^[:alnum:]_])git($|[^[:alnum:]_])' <<< "$out" 2>/dev/null; then
             exit 0

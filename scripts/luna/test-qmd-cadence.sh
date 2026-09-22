@@ -189,6 +189,8 @@ IFS=$_oldifs
 # this cadence primarily runs on.
 export HOME="$TMP_ROOT/home"
 mkdir -p "$HOME"
+# HIMMEL-3332 S8: arms record a provenance row; never into the operator's ledger.
+export HIMMEL_PROVENANCE_DIR="$HOME/.himmel"
 export USERPROFILE="$HOME"
 # BUN_INSTALL too (HIMMEL-1283 CR): arm resolves qmd through
 # qmd_pinned_invocation, whose FIRST branch looks for the bun-served install at
@@ -443,6 +445,12 @@ assert_contains "daily entry 05:00" "00 05 * * *" "$tab"
 assert_contains "entry marker-tagged" "# HIMMEL-Qmd-Reindex" "$tab"
 assert_contains "entry fires the runner" "qmd-reindex.sh" "$tab"
 assert_contains "unrelated entry preserved" "keep-me" "$tab"
+# HIMMEL-3332 S8: the arm records a `job register` row so uninstall can remove
+# exactly this line. Read back through the real reader, from the scratch HOME.
+jobs=$( . "$SCRIPT_DIR/../lib/provenance.sh" && . "$SCRIPT_DIR/../lib/provenance-read.sh" && prov_read_load >/dev/null && prov_read_units --kind job \
+    | jq -r '"\(.unit) ours=\(.ours) scheduler=\(.fields.scheduler)"' )
+assert_contains "arm recorded the cron job row (ours, scheduler cron)" \
+    "HIMMEL-Qmd-Reindex ours=true scheduler=cron" "$jobs"
 if [ -x "$CRON_DIR/qmd-reindex.sh" ]; then
     pass "runner .sh written + executable"
 else

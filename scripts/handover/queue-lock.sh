@@ -666,7 +666,38 @@ _ql_doc_matches() {
     [ "$h" = "$d" ] && return 0
     case "$d" in */"$h") return 0 ;; esac
     case "$h" in */"$d") return 0 ;; esac
+    # A spelling through a symlink (an aliased vault path) is neither a suffix
+    # nor a prefix of the canonical one, but names the same file.
+    [ -f "$1" ] && [ "$1" -ef "$2" ] && return 0
     return 1
+}
+
+# _ql_scan_namesakes <canonical-doc> -- print every lock dir, under any known
+# root or one level above one, that is NAMED for this doc (slug = the doc's
+# basename slug, or ends in `__` + it) but whose owner.json does not attribute
+# it to a different existing doc: owner.json missing, no handover field, or a
+# recorded path that resolves to nothing here (another host's path, a doc
+# since moved). Such a lock can neither be ruled this doc's nor ruled out, so
+# `status` reports it rather than answering `free`. Reading only.
+_ql_scan_namesakes() {
+    local doc="$1" root lk name h s
+    s=$(_ql_slug_for_root "${doc##*/}" "")
+    while IFS= read -r root; do
+        [ -n "$root" ] || continue
+        for lk in "$root"/.locks/queue/*.lock; do
+            [ -d "$lk" ] || continue
+            name=$(basename "$lk" .lock)
+            case "$name" in "$s"|*__"$s") ;; *) continue ;; esac
+            if [ -f "$lk/owner.json" ]; then
+                h=$(_ql_json_field "$lk/owner.json" handover)
+                h="${h//\\//}"
+                [ -n "$h" ] && [ -f "$h" ] && continue
+            fi
+            printf '%s\n' "$lk"
+        done
+    done <<EOF
+$(_ql_lock_roots)
+EOF
 }
 
 # _ql_scan_locks <canonical-doc> -- print every lock dir, under any known root
@@ -1788,6 +1819,15 @@ queue_lock_status() {
         local legacy_lk
         legacy_lk=$(_ql_scan_pick "$ho")
         if [ -z "$legacy_lk" ]; then
+            # A lock named for this doc that records no resolvable doc is
+            # neither held-by-this-doc nor provably someone else's: say so,
+            # fail-closed (rc 11, like CORRUPT) -- `free` means "reclaim it".
+            local namesake
+            namesake=$(_ql_scan_namesakes "$ho" | head -n 1)
+            if [ -n "$namesake" ]; then
+                echo "held -- UNVERIFIED lock: $namesake is named for this doc but records $(_ql_json_field "$namesake/owner.json" handover 2>/dev/null || true), which does not resolve here -- not reported free; check its owner by hand before treating the doc as free"
+                return 11
+            fi
             echo "free"
             return 0
         fi

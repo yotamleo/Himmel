@@ -173,8 +173,12 @@ that flags a dirty single-writer vault later.)
   written, re-run after resolving.
 - `3` — needs reconcile: every other file was applied, but local edits were
   withheld (no write failure) — stamp NOT written. Stdout carries one stable
-  `upgrade: NEEDS-RECONCILE — …` line. Reconcile each withheld file (take the
-  template copy or keep yours), then re-run. A run that also has a write
+  `upgrade: NEEDS-RECONCILE — …` line. Reconcile each withheld file: take the
+  template copy, or re-run with `--keep <rel>` (repeatable, HIMMEL-3406) to
+  explicitly keep the vault's content — this records which template version
+  the decision was made against, so a later run that finds the template
+  unchanged for that file does not re-prompt, but a later run where the
+  template changes it again does. Then re-run. A run that also has a write
   failure or `_CLAUDE.md` conflict is still `1`.
 - `2` — env/usage error (e.g. template not located, vault dir missing, unknown
   flag, unreadable marketplace.json, missing python3/git/sha256sum). On "could

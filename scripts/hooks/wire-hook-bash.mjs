@@ -73,6 +73,11 @@ export const EXPECTED_SCRIPT_ORDER = Object.freeze([
   // console state via Bash — see the sibling entry on the
   // Edit|Write|MultiEdit|NotebookEdit chain below.
   'guard-relay-writes.sh',
+  // HIMMEL-3383: re-checks /pr-check step 0's three bare-literal conditions
+  // (himmel lane, worktree root, no scripts/cr/ or lib.sh diff) when the
+  // allow-listed `bash scripts/cr/pr-check-context.sh` is typed; no-op on any
+  // other command.
+  'guard-pr-check-literal.sh',
   // PreToolUse `PowerShell` chain.
   'block-read-secrets.sh',
   'block-destructive-commands.sh',

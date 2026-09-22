@@ -8,6 +8,64 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.52] — 2026-09-22
+
+### Fixed
+- `test-upgrade.sh`'s T69 regression row only checked for a `timeout`
+  binary before bounding its run; on macOS with Homebrew coreutils the GNU
+  binary is `gtimeout`, so the row SKIPped there even when a bound was
+  available. It now resolves `timeout` or `gtimeout` inline, SKIPping only
+  when neither is on PATH. (HIMMEL-3439)
+
+## [0.4.51] — 2026-09-22
+
+### Added
+- `test-upgrade.sh` regression rows for the two bugs HIMMEL-3406's codex
+  rounds 1-2 caught and fixed: a trailing `--keep` with no value hanging the
+  arg parser instead of erroring (T69), and `content_equiv()` misreading a
+  genuine standalone trailing `\r` as an EOL-only difference (T70).
+  (HIMMEL-3439)
+
+## [0.4.50] — 2026-09-22
+
+### Fixed
+- `content_equiv()`'s EOL-equivalence check normalized CRLF pairs on the
+  already-trailing-newline-stripped copy, which left a genuine trailing CRLF's
+  lone `\r` unmatched and required an extra unconditional strip that then also
+  swallowed a file's real, standalone trailing `\r` as a false match.
+  Normalizing now runs on the raw content before that strip, so a genuine
+  trailing bare `\r` is never touched. (HIMMEL-3406)
+
+## [0.4.49] — 2026-09-22
+
+### Fixed
+- `upgrade.sh`: a trailing `--keep` with no value no longer hangs the arg
+  parser (`shift 2` failed without consuming the flag, so the loop re-matched
+  `--keep` forever); now a usage error like an unknown argument. (HIMMEL-3406)
+- `content_equiv()`'s EOL-equivalence check now normalizes CRLF pairs only,
+  instead of stripping every `\r` — a genuine difference carried by a bare
+  `\r` no longer misreads as identical. (HIMMEL-3406)
+
+## [0.4.48] — 2026-09-22
+
+### Added
+- `upgrade.sh` now accepts `--keep <rel>` (repeatable): explicitly accept the
+  vault's content for a local-edit-withheld file. The stamp records the
+  sha256 of the template content the decision was made against (a separate
+  map from the ordinary content snapshot), so a later run that finds the
+  template unchanged for that file does not re-prompt, but a later run where
+  the template changes it again does — renew with `--keep`, or take the
+  update. (HIMMEL-3406)
+
+### Fixed
+- `content_equiv()` (the identical-content check `process()` uses before
+  deciding a file needs an upgrade at all) now treats a CRLF-vs-LF-only
+  difference as identical, for any template-owned file — an editor resave or
+  a Windows checkout no longer reads as a local edit. (HIMMEL-3406)
+- Upstreamed the HIMMEL-3324 pre-commit shellcheck exclude for
+  `reports/*-artifacts/` into the template's own `.pre-commit-config.yaml`
+  (previously only present in the live vault's copy). (HIMMEL-3406)
+
 ## [0.4.47] — 2026-09-19
 
 ### Fixed

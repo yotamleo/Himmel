@@ -144,6 +144,7 @@ run_cadence() {
     UPSTREAMWATCH_HIMMEL_ROOT="$state/root" \
     UPSTREAMWATCH_PLATFORM=windows \
     HIMMEL_OBSERVABILITY_CONFIG="$state/observability.json" \
+    HIMMEL_PROVENANCE_DIR="$state/provenance" \
     bash "$CADENCE" "$@"
 }
 
@@ -157,6 +158,7 @@ run_cadence_posix() {
     UPSTREAMWATCH_HIMMEL_ROOT="$state/root" \
     UPSTREAMWATCH_PLATFORM=posix \
     HIMMEL_OBSERVABILITY_CONFIG="$state/observability.json" \
+    HIMMEL_PROVENANCE_DIR="$state/provenance" \
     bash "$CADENCE" "$@"
 }
 
@@ -297,6 +299,9 @@ if registry_has_task "$pstate/observability.json"; then
 else
   fail "posix arm: HIMMEL-UpstreamWatch missing from scratch registry"
 fi
+# HIMMEL-3332 S8: the arm records a `job register` row so uninstall can remove this line.
+jobs=$(HIMMEL_PROVENANCE_DIR="$pstate/provenance" bash -c '. "$1/lib/provenance.sh" && . "$1/lib/provenance-read.sh" && prov_read_load >/dev/null && prov_read_units --kind job | jq -r ".unit + \" ours=\" + (.ours|tostring) + \" scheduler=\" + .fields.scheduler"' _ "$SCRIPT_DIR/..")
+assert_has "$jobs" "HIMMEL-UpstreamWatch ours=true scheduler=cron" "posix arm: recorded the cron job row (ours, cron)"
 
 echo "== test: POSIX status (armed) + dedup =="
 out=$(run_cadence_posix "$pstate" status 2>&1); rc=$?

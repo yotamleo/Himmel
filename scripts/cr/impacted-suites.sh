@@ -18,7 +18,8 @@
 #       whose text references the file's basename — or, for a slash command or
 #       skill, `/<name>`. A changed suite lists itself. --shell keeps only
 #       test-*.sh (what run-shell-tests.sh can run); the *.test.mjs / .js / .ts
-#       suites are listed without it and are run by their own runner.
+#       suites are listed without it and are run by their own runner — see
+#       --runner below for which one.
 #   impacted-suites.sh --check <base>..<head>
 #       The verdict gate. Reads one line per impacted suite from stdin:
 #           SUITE <path> = PASS
@@ -28,11 +29,24 @@
 #       each on stderr, when any is missing; exit 3 when every suite has a
 #       verdict but one is BLOCKED — accounted for, yet the suite did not run,
 #       so the /pr-check row is NOT clean until the console/operator rules.
+#   impacted-suites.sh --runner <path>
+#       Print the ONE command CI uses to run a JS/TS suite path (HIMMEL-3436),
+#       e.g. `node --test scripts/hooks/foo.test.mjs` or
+#       `cd scripts/jira && npx vitest run src/foo.test.ts`. The map is read
+#       off .github/workflows/ci.yml, never guessed — a path CI does not run
+#       (or a runner directory this script does not yet know) refuses non-zero
+#       naming the path, rather than defaulting to `bun test` (HIMMEL-3436: a
+#       node:test suite can pass under node --test and fail under bun test on
+#       an unrelated bun fs quirk — a false red no code change caused).
+#   impacted-suites.sh --runner-check
+#       Drift check: fails, naming the ci.yml line, when a JS/TS test
+#       invocation ci.yml runs today has no --runner mapping — so a new CI
+#       runner directory cannot silently go unmapped.
 #
 # Exit codes: 0 ok / clean; 1 --check found a missing verdict; 2 usage, an
-# unresolvable range, or a failed search; 3 --check found a BLOCKED suite. A
-# range that cannot be resolved (or searched) is an ERROR, never an empty
-# list: an empty impacted set reads as "nothing to run".
+# unresolvable range, a failed search, or --runner found no mapping; 3 --check
+# found a BLOCKED suite. A range that cannot be resolved (or searched) is an
+# ERROR, never an empty list: an empty impacted set reads as "nothing to run".
 #
 # ponytail: references are DIRECT and textual. A suite that reaches a changed
 # file only through an intermediate script it calls (no mention of the changed
@@ -57,13 +71,104 @@ usage() {
     sed -n '2,/^set -uo/p' "$0" | sed -n 's/^# \{0,1\}//p' >&2
 }
 
+# runner_for <path> — print the ONE command CI uses to run a JS/TS suite path
+# (HIMMEL-3436), read off .github/workflows/ci.yml. Exit 2, naming the path,
+# for anything this table does not cover — never a guessed default (a
+# node:test suite can genuinely disagree with `bun test` on an unrelated bun
+# fs quirk, so guessing is not a safe fallback here).
+runner_for() {
+    local path="$1" rel
+    case "$path" in
+        scripts/hooks/*.test.mjs|scripts/lib/*.test.mjs|scripts/lanes/tests/*.test.mjs|scripts/trust/tests/*.test.mjs)
+            printf 'node --test %q\n' "$path" ;;
+        scripts/jira/*.test.ts)
+            rel="${path#scripts/jira/}"
+            printf 'cd scripts/jira && npx vitest run %q\n' "$rel" ;;
+        scripts/bitbucket/*.test.ts)
+            rel="${path#scripts/bitbucket/}"
+            printf 'cd scripts/bitbucket && npx vitest run %q\n' "$rel" ;;
+        scripts/himmel-run/*.test.ts)
+            rel="${path#scripts/himmel-run/}"
+            printf 'cd scripts/himmel-run && npx vitest run %q\n' "$rel" ;;
+        scripts/ci-orchestrator/*.test.ts)
+            rel="${path#scripts/ci-orchestrator/}"
+            printf 'cd scripts/ci-orchestrator && npx vitest run %q\n' "$rel" ;;
+        scripts/luna-vitals/*.test.mjs|scripts/luna-vitals/*.test.js|scripts/luna-vitals/*.test.ts)
+            rel="${path#scripts/luna-vitals/}"
+            printf 'cd scripts/luna-vitals && bun test %q\n' "$rel" ;;
+        scripts/telegram/*.test.mjs|scripts/telegram/*.test.js|scripts/telegram/*.test.ts)
+            printf 'bun test %q --dots\n' "$path" ;;
+        scripts/vault/tests/*.test.mjs|scripts/vault/tests/*.test.js|scripts/vault/tests/*.test.ts)
+            printf 'bun test %q --dots\n' "$path" ;;
+        marketplace/plugins/luna-correlate/*.test.mjs|marketplace/plugins/luna-correlate/*.test.js|marketplace/plugins/luna-correlate/*.test.ts)
+            rel="${path#marketplace/plugins/luna-correlate/}"
+            printf 'cd marketplace/plugins/luna-correlate && bun test %q\n' "$rel" ;;
+        *)
+            echo "impacted-suites.sh: --runner has no CI-runner mapping for '${path}' — refusing to guess" >&2
+            return 2 ;;
+    esac
+}
+
+# runner_check — drift guard: every JS/TS test invocation ci.yml runs today
+# must have a marker below, or a new CI runner directory could silently go
+# unmapped by runner_for above. Keep this list in lockstep with runner_for by
+# hand; there is no way to derive one from the other without reimplementing
+# the YAML.
+#
+# ponytail: this scans `run:` LINES only — a JS/TS test invocation written
+# inside a `run: |` block scalar body (the command on a following indented
+# line, not the `run:` line itself) is invisible to it. No current ci.yml step
+# does this; widen the grep to a block-scalar-aware scan if one ever does.
+#
+# ponytail: the `npm test` marker matches by SUBSTRING only, with no
+# directory context — it satisfies the drift check for `npm test` run from
+# ANY working directory, including a future one runner_for has no case for.
+# It exists because ci.yml's own `npm test` step (repo root) does not name
+# which of the vitest directories it covers; narrowing it would mean parsing
+# ci.yml's `working-directory:` keys, which this grep-based check deliberately
+# does not do.
+runner_known_markers() {
+    cat <<'EOF'
+scripts/lanes/tests/**/*.test.mjs
+scripts/trust/tests/*.test.mjs
+check-hook-lib-suites.sh
+npm test
+scripts/luna-vitals && bun install
+bun test scripts/telegram --dots
+bun test scripts/vault/tests --dots
+marketplace/plugins/luna-correlate && bun install
+EOF
+}
+
+runner_check() {
+    local ci="$PWD/.github/workflows/ci.yml" line marker hit missing=0
+    [ -f "$ci" ] || io_fail "reading ci.yml for --runner-check"
+    while IFS= read -r line; do
+        hit=0
+        while IFS= read -r marker; do
+            case "$line" in *"$marker"*) hit=1 ;; esac
+        done < <(runner_known_markers)
+        if [ "$hit" -eq 0 ]; then
+            echo "impacted-suites: --runner-check: ci.yml runs a JS/TS test invocation --runner does not map: ${line}" >&2
+            missing=1
+        fi
+    done < <(grep -vE '^[[:space:]]*#' "$ci" | grep -E 'run:.*(node --test|bun test|npm test|check-hook-lib-suites\.sh)')
+    [ "$missing" -eq 0 ]
+}
+
 check=0
 shell_only=0
 range=""
+runner_path=""
+runner_check_mode=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --check) check=1; shift ;;
         --shell) shell_only=1; shift ;;
+        --runner)
+            [ "$#" -ge 2 ] || { echo "impacted-suites.sh: --runner requires a path" >&2; exit 2; }
+            runner_path="$2"; shift 2 ;;
+        --runner-check) runner_check_mode=1; shift ;;
         -h|--help) usage; exit 0 ;;
         -*) echo "impacted-suites.sh: unknown flag: $1" >&2; exit 2 ;;
         *)
@@ -73,6 +178,20 @@ while [ "$#" -gt 0 ]; do
             range="$1"; shift ;;
     esac
 done
+
+if [ -n "$runner_path" ]; then
+    runner_for "$runner_path"
+    exit $?
+fi
+if [ "$runner_check_mode" -eq 1 ]; then
+    top=$(git rev-parse --show-toplevel) || { echo "impacted-suites.sh: not inside a git work tree" >&2; exit 2; }
+    cd "$top" || exit 2
+    if runner_check; then
+        exit 0
+    else
+        exit 1
+    fi
+fi
 
 case "$range" in
     *..*) ;;

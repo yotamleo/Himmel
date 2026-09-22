@@ -21,6 +21,14 @@
 #                       surface -- see the corpus loop below). The daemon
 #                       marker skips prose -- *.md and comment lines --
 #                       and adds service-creation shapes (HIMMEL-3233;
+#                       rules at T13(b) below). A lexical read-only-lookup
+#                       carve-out (pgrep / `pkill -0` / `ps ... | grep`) was
+#                       tried and removed after adversarial review proved a
+#                       Critical bypass (a shell function or alias shadowing
+#                       one of those names); the ONLY exemption now is a
+#                       trailing same-line `# t13b-ok: <reason>` -- exact
+#                       spacing, a non-trivial reason -- for that one line,
+#                       T13(b) only (HIMMEL-3432 marker-only exemption;
 #                       rules at T13(b) below).
 #   T14 locks        -- no per-token-lane wiring in shipped source; the
 #                       gemini/copilot/cursor index rows stay deferred.
@@ -203,8 +211,10 @@ trap 'rm -f "$SHIPPED"' EXIT
 # cancellation LESS likely, i.e. the gate stays strict.
 VENDORED_LIST="$(mktemp "${TMPDIR:-/tmp}/ws5-vendored-list.XXXXXX")" || { echo "test-ws5-invariants.sh: mktemp failed" >&2; exit 2; }
 REMOVED="$(mktemp "${TMPDIR:-/tmp}/ws5-removed.XXXXXX")" || { echo "test-ws5-invariants.sh: mktemp failed" >&2; exit 2; }
-# One line per $SHIPPED line, in lockstep: "md" when the added line came from a
-# *.md file, "code" otherwise. T13(b)'s daemon class reads it (HIMMEL-3233);
+# One line per $SHIPPED line, in lockstep: "md" for a *.md file, "sh" for a
+# *.sh/*.bash file, "code" otherwise. T13(b)'s daemon class reads md vs.
+# not-md only (HIMMEL-3233) -- "sh" and "code" are treated identically since
+# HIMMEL-3432 removed the lookup carve-out that used to read "sh" specifically.
 # $SHIPPED itself stays bare lines so T14(b)'s grep cannot match a path.
 SHIPPED_KIND="$(mktemp "${TMPDIR:-/tmp}/ws5-shipped-kind.XXXXXX")" || { echo "test-ws5-invariants.sh: mktemp failed" >&2; exit 2; }
 trap 'rm -f "$SHIPPED" "$VENDORED_LIST" "$REMOVED" "$SHIPPED_KIND"' EXIT
@@ -262,7 +272,7 @@ git diff "$BASE...HEAD" | awk -v vendored_file="$VENDORED_LIST" -v removed_file=
         # words T13(b) scans for (e.g. a setInterval-timing test).
         skip = (base ~ /^test-/) || (base ~ /\.tsv$/) \
             || (base ~ /\.test\.(ts|js|mjs|cjs)$/) || (f in vendored)
-        kind = (tolower(base) ~ /\.md$/) ? "md" : "code"
+        kind = (tolower(base) ~ /\.md$/) ? "md" : ((tolower(base) ~ /\.(sh|bash)$/) ? "sh" : "code")
         next
     }
     skip { next }
@@ -365,7 +375,10 @@ else
     #     on main 2026-09-19 they hit 31 lines, mostly hook command-position
     #     case lists (`command|exec|nohup)`) and bounded detach helpers
     #     (scripts/lib/detach.sh); `nohup ... &` hits 7 lines in 4 files,
-    #     each a real detached process.
+    #     each a real detached process;
+    #   - the exact command `systemctl [--user] daemon-reload` is carved out
+    #     (HIMMEL-3414, rule at the gsub below); it reloads unit files and
+    #     starts nothing. Known gap, unchanged: `systemctl start` is no shape.
     # ponytail: a heredoc body or multi-line string holding `#` at line start
     # reads as a comment, and a C-preprocessor `#define` line likewise
     # (himmel ships no C).
@@ -386,9 +399,77 @@ else
                 if (substr(code, 1, 2) == "/*") code = trim(substr(code, index(code, "*/") + 2))
                 else code = trim(substr(code, index(code, "-->") + 3))
             }
-            if (!hit && kind == "code" && code != "" && code !~ /^(#|\/\/|\/\*|\*([ \t]|$)|<!--)/ &&
-                code ~ /daemon|(^|[^a-z0-9_-])nohup[ \t].*(^|[^&<>])&([ \t]*($|[);"\047])|[ \t]+[^&> \t])|systemctl[^|;&]*[ \t]enable([ \t]|$)|launchctl[ \t]+(load|bootstrap)([ \t]|$)/)
+            # HIMMEL-3414: `systemctl [--user] daemon-reload` reloads systemd unit
+            # files and starts nothing; it is the only place the word `daemon`
+            # is a verb argument rather than a process. Strip that EXACT token
+            # (twice: a match eats its trailing `;`, so adjacent tokens need a
+            # second pass) and let the rest of the line meet the same rules, so
+            # `... && nohup ... &` or `... --daemon` beside it still fails.
+            # It must END the command (end of line, `;` `&` `|` `)` `>` `#`,
+            # or an fd redirect): `daemon-reload --now x`, `daemon-reloader`,
+            # `daemon-reexec` and any other verb keep the bare word `daemon`.
+            gsub(/(^|[^a-z0-9_-])systemctl[ \t]+(--user[ \t]+)?daemon-reload[ \t]*($|[;&|)>#]|[0-9]>)/, " ", code)
+            gsub(/(^|[^a-z0-9_-])systemctl[ \t]+(--user[ \t]+)?daemon-reload[ \t]*($|[;&|)>#]|[0-9]>)/, " ", code)
+            code = trim(code)
+            # HIMMEL-3432: the read-only-lookup carve-out (a lexical scan for
+            # pgrep/pkill/ps token shapes, with chain/subst/backslash-
+            # continuation disqualifiers and a *.sh-only kind gate) is
+            # REMOVED. It was added because a read-only process lookup
+            # naming a daemon (pgrep -f claude-daemon-run) is not a
+            # daemon start, and every fix closed one bypass shape while
+            # adversarial review kept finding the next: command/backtick/
+            # process substitution in the lookup argument, a `pkill -0`
+            # paired with a second signal flag, a *.sh line DEFINING a shell
+            # function named pgrep/pkill/ps whose own definition line matched
+            # the lookup anchor, a `\` line continuation hiding a starter on
+            # the next physical line, an fd-duplication redirect (`2>&1`)
+            # mistaken for chaining -- and finally a Critical: a shell
+            # function or `alias` literally named pgrep/pkill/ps/grep that
+            # SHADOWS the real command while `daemon` sits on the CALL line,
+            # not the definition line the anchor was checking. A per-line
+            # lexical scanner cannot tell a real pgrep(1) invocation from an
+            # identifier that happens to be spelled the same way -- that is
+            # not a bug to patch again, it is what a lexical scan is. Ruling
+            # (AC adversarial review, HIMMEL-3432): stop adding arms:
+            # KEEP the general narrowing above (prose/comments skipped,
+            # *.md exempt, systemctl daemon-reload carved out) and DROP the
+            # lookup-shape carve-out entirely, so a lookup line naming a
+            # daemon fails exactly like main again -- see the `t13b-ok`
+            # marker below for the one remaining, explicit and reviewable way
+            # to exempt a real read-only lookup.
+            daemon_hit = (code ~ /daemon/)
+            service_hit = code ~ /(^|[^a-z0-9_-])nohup[ \t].*(^|[^&<>])&([ \t]*($|[);"\047])|[ \t]+[^&> \t])|systemctl[^|;&]*[ \t]enable([ \t]|$)|launchctl[ \t]+(load|bootstrap)([ \t]|$)/
+            if (!hit && (kind == "code" || kind == "sh") && code != "" && code !~ /^(#|\/\/|\/\*|\*([ \t]|$)|<!--)/ &&
+                (daemon_hit || service_hit))
                 hit = 1
+            # HIMMEL-3432 AC ruling: a trailing `# t13b-ok: <reason>` on THIS
+            # shipped line is now the ONLY exemption (the lexical lookup
+            # carve-out above is gone) and it is hardened: the marker must
+            # open with EXACTLY `# t13b-ok: ` -- one space after `#`, one
+            # after the colon -- or the JS/TS `// t13b-ok: ` form, so
+            # `#t13b-ok:`, `#  t13b-ok:` and `# t13b-ok:x` all fail to match
+            # and so do not exempt. The reason after it must be non-trivial:
+            # at least 8 characters once trimmed AND containing a word
+            # character, so a long run of punctuation and a short real word
+            # both still fail. It exempts only THIS line, only T13(b) (not
+            # T13(a), not T12/T14/T15), and never a different line (`t` holds
+            # only this line own text, so a marker on the line above cannot
+            # cancel a hit here).
+            # ponytail: the match is text-only, not quote-aware -- a marker
+            # spelled inside a quoted argument (e.g. --label "# t13b-ok: a
+            # real reason") exempts the line the same as a real trailing
+            # comment would. This gate is a line-based awk scan with no shell
+            # tokenizer anywhere in it (see the systemctl-daemon-reload
+            # carve-out above for the same limit), so telling a real comment
+            # from a quoted string would need one; out of scope for this
+            # narrow marker. Tracked: HIMMEL-3446.
+            marker_at = 0
+            if ((mp = index(t, "# t13b-ok: ")) > 0) marker_at = mp + 11
+            else if ((mp = index(t, "// t13b-ok: ")) > 0) marker_at = mp + 12
+            if (marker_at > 0) {
+                reason = trim(substr(t, marker_at))
+                if (length(reason) >= 8 && reason ~ /[A-Za-z0-9_]/) hit = 0
+            }
             if (hit) {
                 if (removed[t] > 0) removed[t]--
                 else hits++

@@ -2160,11 +2160,15 @@ cron_arm() {
         # stalled every day it hasn't fired.
         observability_register_cadence graphmap-luna 604800 "$TASK_LUNA"
         observability_register_cadence graphmap-himmel 604800 "$TASK_HIMMEL"
+        cadence_prov_record "$TASK_LUNA"
+        cadence_prov_record "$TASK_HIMMEL"
     fi
     mv -f "$tmp_ast_luna" "$CRON_RUNNER_AST_LUNA"
     mv -f "$tmp_ast_himmel" "$CRON_RUNNER_AST_HIMMEL"
     observability_register_cadence graphmap-ast-luna 86400 "$TASK_AST_LUNA"
     observability_register_cadence graphmap-ast-himmel 3600 "$TASK_AST_HIMMEL"
+    cadence_prov_record "$TASK_AST_LUNA"
+    cadence_prov_record "$TASK_AST_HIMMEL"
     # Publish leg (HIMMEL-2095): opt-in via --with-publish (HIMMEL-3075).
     # $PUBLISH_FLOW_NAME ("graph-publish-<slug>"), NOT the
     # "graphmap-*.bat/.vbs/.log" runner-file naming this file's OTHER legs use --
@@ -2176,6 +2180,7 @@ cron_arm() {
     if [ "$WITH_PUBLISH" -eq 1 ]; then
         mv -f "$tmp_publish_himmel" "$CRON_RUNNER_PUBLISH_HIMMEL"
         observability_register_cadence "$PUBLISH_FLOW_NAME" 21600 "$TASK_PUBLISH_HIMMEL"
+        cadence_prov_record "$TASK_PUBLISH_HIMMEL"
     fi
 
     local semantic_lines arming_note

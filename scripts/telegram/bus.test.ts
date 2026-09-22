@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, existsSync } from "node:fs";
+import { mkdtempSync, existsSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sessionDir, ensureSession, readMeta, writeMeta, atomicWrite } from "./bus";
 import { appendLine, readNewLines, sessionDir as _sd, ensureSession as _es, sendToSession } from "./bus";
 import { appendContext, readContext, truncateFullyConsumed } from "./bus";
 import { repairCursorBeyondEof } from "./bus";
+import { appendIfExists } from "./bus";
 
 function root() { return mkdtempSync(join(tmpdir(), "telegram-bus-")); }
 
@@ -37,6 +38,24 @@ test("append + cursor reads only complete lines; partial held until newline", as
   await Bun.write(f, (await Bun.file(f).text()) + '{"n":3}');   // partial, no newline
   got = await readNewLines(f, cur);
   expect(got.length).toBe(0);                                    // partial NOT parsed
+});
+
+// HIMMEL-3440: appendIfExists must be O_CREAT-free — the previous
+// existsSync()-then-appendFile() pair had a TOCTOU window where a file
+// deleted between the two calls was silently recreated by the append.
+test("appendIfExists appends to a file that already exists and returns true", async () => {
+  const r = root(); const f = join(r, "opsdesk.md");
+  writeFileSync(f, "");
+  const delivered = await appendIfExists(f, "- line one");
+  expect(delivered).toBe(true);
+  expect(readFileSync(f, "utf8")).toBe("- line one\n");
+});
+
+test("appendIfExists never creates a missing file, returns false", async () => {
+  const r = root(); const f = join(r, "opsdesk.md");
+  const delivered = await appendIfExists(f, "- line one");
+  expect(delivered).toBe(false);
+  expect(existsSync(f)).toBe(false);
 });
 
 test("context append then compaction keeps head + recent under budget", async () => {

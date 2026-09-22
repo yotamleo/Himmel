@@ -27,6 +27,14 @@
 #   --backup-dir DIR    (optional) the pre-computed backup dest for this run,
 #                       named in the local-edit-withheld message so an operator
 #                       can recover the pre-upgrade file (HIMMEL-2886).
+#   --keep REL          (repeatable, HIMMEL-3406) explicitly keep the vault's
+#                       current content for a local-edit-withheld file <rel>
+#                       instead of the template's. Records the decision (which
+#                       template version it was kept against) so the stamp
+#                       advances and a later run with NO template change to
+#                       that file does not re-prompt; a template change to it
+#                       DOES re-surface it as withheld (renew with --keep
+#                       again, or drop it to take the template's update).
 #   --with-github-sync  install the optional github-sync Obsidian plugin (env
 #                       twin: LUNA_WITH_GITHUB_SYNC=1). Mutually exclusive with
 #                       vault-autosync.ps1/.sh — see HIMMEL-3066. Only ever
@@ -58,6 +66,7 @@ DRY_RUN=0
 ASSUME_YES=0
 CHECK_ONLY=0
 BACKUP_DIR=""
+declare -a KEEP_LIST=()
 # HIMMEL-3066: env twin, same on/off convention as LUNA_VAULT_AUTOSYNC — any
 # non-empty value other than "0"/"" arms it; the flag below can only turn it
 # ON (never off), matching "never silently uninstall".
@@ -72,6 +81,8 @@ while [ $# -gt 0 ]; do
         --template-dir)     TEMPLATE_DIR="${2:-}"; shift 2 ;;
         --vault-dir)        VAULT_DIR="${2:-}"; shift 2 ;;
         --backup-dir)       BACKUP_DIR="${2:-}"; shift 2 ;;
+        --keep)             [ $# -ge 2 ] || { echo "upgrade: --keep requires a value" >&2; exit 2; }
+                             KEEP_LIST+=("$2"); shift 2 ;;
         --dry-run)          DRY_RUN=1; shift ;;
         --check)            CHECK_ONLY=1; shift ;;
         --with-github-sync) WITH_GITHUB_SYNC=1; shift ;;
@@ -92,6 +103,9 @@ upgrade.sh — content-preserving vault/template upgrade (HIMMEL-389)
   --yes, -y           skip the confirm prompt.
   --backup-dir DIR    (optional) pre-computed backup dest, named in the
                       local-edit-withheld message.
+  --keep REL          (repeatable) keep the vault's content for a
+                      local-edit-withheld file <rel> over the template's;
+                      records the decision so the stamp advances.
   --with-github-sync  install the optional github-sync plugin (env twin:
                       LUNA_WITH_GITHUB_SYNC=1). Mutually exclusive with
                       vault-autosync.ps1/.sh; a vault that already has it
@@ -281,6 +295,61 @@ PY
         BASELINE_ERROR_REASON="snapshot unreadable"
     fi
 fi
+
+# Keep-mine decisions (HIMMEL-3406): the stamp's `kept: {"<rel>": "sha256:…"}`
+# map records, per file, the sha256 of the TEMPLATE content the operator's
+# --keep decision was made against — not the vault's own content (that is
+# already the ordinary snapshot above). A file stays silently kept only while
+# the template's copy is unchanged from that recorded sha; a later template
+# change to it makes the decision stale and re-surfaces the file as withheld
+# (see process()). Same row format/loader shape as SNAPSHOT_MAP; a malformed
+# `kept` value is read as no entries (fail-closed the safe way: everything
+# just re-surfaces as withheld rather than staying silently — and possibly
+# wrongly — kept).
+KEPT_MAP=""
+if [ -f "$STAMP" ]; then
+    KEPT_MAP="$("$PYTHON" - "$STAMP" 2>/dev/null <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    sys.exit(0)
+kept = d.get("kept") if isinstance(d, dict) else None
+if not isinstance(kept, dict):
+    sys.exit(0)
+for rel in sorted(kept):
+    sha = kept[rel]
+    if isinstance(sha, str) and isinstance(rel, str) and not (set("\t\n\r") & set(rel)):
+        print("%s\t%s" % (rel, sha))
+PY
+)"
+fi
+
+# kept_sha <rel>: echo the recorded "sha256:<hex>" the keep-mine decision for
+# <rel> was made against, or nothing if <rel> was never kept.
+kept_sha() {
+    local want="$1" rel sha
+    [ -n "$KEPT_MAP" ] || return 1
+    while IFS="$(printf '\t')" read -r rel sha; do
+        if [ "$rel" = "$want" ] && [ -n "$sha" ]; then
+            printf '%s' "$sha"
+            return 0
+        fi
+    done <<EOF
+$KEPT_MAP
+EOF
+    return 1
+}
+
+# is_keep_requested <rel>: exit 0 iff this run's --keep list names <rel>.
+is_keep_requested() {
+    local want="$1" k
+    [ "${#KEEP_LIST[@]}" -gt 0 ] || return 1
+    for k in "${KEEP_LIST[@]}"; do
+        [ "$k" = "$want" ] && return 0
+    done
+    return 1
+}
 
 # snapshot_sha <rel>: echo the recorded "sha256:<hex>" for <rel>, or nothing.
 snapshot_sha() {
@@ -572,20 +641,35 @@ sha_of() { if [ -f "$1" ]; then sha256sum "$1" | cut -d' ' -f1; else echo MISSIN
 # on every settings touch — dropping the template's final newline and
 # re-indenting — so a byte compare (sha) reads a semantically identical file as
 # different forever, and a withheld "local edit" then blocks the stamp. Equal
-# means: identical bytes, OR identical apart from ONE trailing newline, OR (a
-# *.json <rel>, working jq) identical after `jq -S .` normalisation. Two or more
-# extra newlines are a real difference. Without a working jq the JSON rule is
-# skipped with a one-time note and only the newline rule applies.
+# means: identical bytes, OR identical apart from ONE trailing newline, OR
+# identical apart from CRLF-vs-LF line endings (HIMMEL-3406 — an operator's
+# editor, or a Windows checkout, re-saves a template-owned file with different
+# line endings with no content change), OR (a *.json <rel>, working jq)
+# identical after `jq -S .` normalisation. Two or more extra newlines, or a
+# REAL content difference under normalised line endings, are still a
+# difference. Without a working jq the JSON rule is skipped with a one-time
+# note and only the newline/EOL rules apply.
 JQ_NOTED=0
 content_equiv() {
-    local a="$1" b="$2" rel="$3" va vb
+    local a="$1" b="$2" rel="$3" va vb raw_a raw_b
     [ "$(sha_of "$a")" = "$(sha_of "$b")" ] && return 0
     [ -f "$a" ] && [ -f "$b" ] || return 1
     # `x` sentinel: $(...) would otherwise swallow EVERY trailing newline, and
     # only one is ignorable.
-    va="$({ cat "$a"; printf x; } 2>/dev/null)"; va="${va%x}"; va="${va%$'\n'}"
-    vb="$({ cat "$b"; printf x; } 2>/dev/null)"; vb="${vb%x}"; vb="${vb%$'\n'}"
+    raw_a="$({ cat "$a"; printf x; } 2>/dev/null)"; raw_a="${raw_a%x}"
+    raw_b="$({ cat "$b"; printf x; } 2>/dev/null)"; raw_b="${raw_b%x}"
+    va="${raw_a%$'\n'}"; vb="${raw_b%$'\n'}"
     [ "$va" = "$vb" ] && return 0
+    # EOL-only: normalize CRLF pairs to LF on the RAW content, then re-apply
+    # the same "one trailing newline is ignorable" rule (HIMMEL-3406 codex-2,
+    # codex-1 round 2: normalizing must run BEFORE the trailing-newline strip
+    # rather than after it — normalizing the already-\n-stripped `va`/`vb`
+    # left a genuine trailing CRLF's lone `\r` unmatched, and stripping that
+    # leftover `\r` unconditionally then also ate a file's real, standalone
+    # trailing `\r` — content, not a line-ending style — as a false match).
+    local va_eol="${raw_a//$'\r\n'/$'\n'}" vb_eol="${raw_b//$'\r\n'/$'\n'}"
+    va_eol="${va_eol%$'\n'}"; vb_eol="${vb_eol%$'\n'}"
+    [ "$va_eol" = "$vb_eol" ] && return 0
     case "$rel" in
         *.json)
             if jq -n . >/dev/null 2>&1; then
@@ -690,8 +774,9 @@ PY
 # afterwards commits alongside the stamp. A file the template owns but that
 # is absent in the vault records nothing.
 SNAPSHOT_FILE=""
+KEPT_FILE=""
 GH_SYNC_CP_TMP=""
-trap '[ -n "${SNAPSHOT_FILE:-}" ] && rm -f "$SNAPSHOT_FILE"; [ -n "${GH_SYNC_CP_TMP:-}" ] && rm -f "$GH_SYNC_CP_TMP"; true' EXIT
+trap '[ -n "${SNAPSHOT_FILE:-}" ] && rm -f "$SNAPSHOT_FILE"; [ -n "${KEPT_FILE:-}" ] && rm -f "$KEPT_FILE"; [ -n "${GH_SYNC_CP_TMP:-}" ] && rm -f "$GH_SYNC_CP_TMP"; true' EXIT
 
 SNAPSHOT_FAILURES=0
 record_snapshot() {
@@ -720,6 +805,21 @@ record_snapshot() {
     if ! printf '%s\t%s\n' "$rel" "$s" >> "$SNAPSHOT_FILE"; then
         SNAPSHOT_FAILURES=$((SNAPSHOT_FAILURES+1))
         echo "  WARN: could not record the content snapshot for $rel" >&2
+    fi
+}
+
+# record_kept <rel> <template-sha>: append this run's keep-mine decision for
+# <rel> (the template content it was kept against, already "sha256:<hex>") to
+# the scratch file the stamp writer reads into `kept`. Reuses SNAPSHOT_FAILURES
+# so a bookkeeping failure here blocks the stamp write the same way a dropped
+# content-snapshot row does (HIMMEL-3406) — a keep-mine decision that silently
+# failed to record must not read back as a successful, stable keep.
+record_kept() {
+    local rel="$1" sha="$2"
+    [ -n "$KEPT_FILE" ] || return 0
+    if ! printf '%s\t%s\n' "$rel" "$sha" >> "$KEPT_FILE"; then
+        SNAPSHOT_FAILURES=$((SNAPSHOT_FAILURES+1))
+        echo "  WARN: could not record the keep-mine decision for $rel" >&2
     fi
 }
 
@@ -928,7 +1028,7 @@ claude_threeway() {
 }
 
 process() {
-    local execute="$1" rel class src dst conv
+    local execute="$1" rel class src dst conv src_sha prior_kept
     while IFS= read -r src; do
         rel="${src#"$TEMPLATE_DIR"/}"
         class="$(classify "$rel")"
@@ -941,11 +1041,33 @@ process() {
                     # => not a local edit; the template copy is taken.
                     conv=""
                     converged_equiv "$rel" "$src" "$dst" && conv=" (converged: same rules, only comments/order differ — template copy taken)"
-                    if [ -z "$conv" ] && has_local_edit "$rel" "$dst" "$((1 - execute))"; then
+                    src_sha="sha256:$(sha_of "$src")"
+                    prior_kept="$(kept_sha "$rel")" || prior_kept=""
+                    if [ -n "$conv" ]; then
+                        PLAN+=("WRITE        $rel$conv"); n_write=$((n_write+1))
+                        [ "$execute" = 1 ] && { write_file "$src" "$dst" || WRITE_FAILURES=$((WRITE_FAILURES+1)); }
+                    elif [ -n "$prior_kept" ] && [ "$prior_kept" = "$src_sha" ]; then
+                        # HIMMEL-3406: a standing keep-mine decision, still valid
+                        # — the template content it was kept against hasn't
+                        # changed since. Stays kept, no re-prompt.
+                        PLAN+=("KEEP-MINE    $rel (kept — not overwritten)")
+                        [ "$execute" = 1 ] && record_kept "$rel" "$src_sha"
+                    elif is_keep_requested "$rel"; then
+                        # A fresh (or renewed, post-template-change) keep-mine
+                        # decision. Records the DECISION (this template
+                        # version's sha, not just the vault's content), so a
+                        # LATER template change re-surfaces the file instead
+                        # of keeping it silently forever.
+                        PLAN+=("KEEP-MINE    $rel (kept — not overwritten; decision recorded)")
+                        [ "$execute" = 1 ] && record_kept "$rel" "$src_sha"
+                    elif has_local_edit "$rel" "$dst" "$((1 - execute))" || [ -n "$prior_kept" ]; then
+                        if [ -n "$prior_kept" ] && [ "$execute" = 0 ]; then
+                            echo "  kept previously against $prior_kept, but the template now ships $src_sha — re-run with --keep $rel to renew the keep, or take the template's update"
+                        fi
                         PLAN+=("LOCAL-EDIT   $rel (vault has local edits since last upgrade — NOT overwritten)")
                         n_local_edit=$((n_local_edit+1))
                     else
-                        PLAN+=("WRITE        $rel$conv"); n_write=$((n_write+1))
+                        PLAN+=("WRITE        $rel"); n_write=$((n_write+1))
                         [ "$execute" = 1 ] && { write_file "$src" "$dst" || WRITE_FAILURES=$((WRITE_FAILURES+1)); }
                     fi
                 else
@@ -1080,6 +1202,18 @@ if [ -z "$SNAPSHOT_FILE" ] || [ ! -e "$SNAPSHOT_FILE" ]; then
     echo "  temp space (or set TMPDIR to a writable directory) and re-run." >&2
     exit 2
 fi
+# Same fail-closed reasoning as SNAPSHOT_FILE above, for the "kept" map
+# (HIMMEL-3406): the stamp is rewritten wholesale below, so a run that
+# proceeded without a place to record keep-mine decisions would silently
+# drop every prior one.
+KEPT_FILE="$(mktemp -t luna-upgrade-kept.XXXXXX 2>/dev/null)"
+if [ -z "$KEPT_FILE" ] || [ ! -e "$KEPT_FILE" ]; then
+    echo "upgrade: could not create a temp file for the keep-mine decisions — aborting before any change." >&2
+    echo "  Proceeding would rewrite $STAMP without its kept-file map, dropping any prior" >&2
+    echo "  keep-mine decisions. No files were modified; free up temp space (or set" >&2
+    echo "  TMPDIR to a writable directory) and re-run." >&2
+    exit 2
+fi
 PLAN=()
 n_write=0 n_skip_identical=0 n_skip_exists=0 n_jsonmerge=0 n_report=0 n_threeway=0 n_local_edit=0
 WRITE_FAILURES=0
@@ -1144,15 +1278,16 @@ fi
 if [ "$n_local_edit" -gt 0 ]; then
     echo "" >&2
     echo "upgrade: every other template-owned file was updated; the local edits listed above" >&2
-    echo "  were withheld. Take the template copy or keep yours for each (a backup path is" >&2
-    echo "  named above when one was given), then re-run to write the version stamp." >&2
+    echo "  were withheld. Take the template copy, or re-run with --keep <rel> (repeatable)" >&2
+    echo "  to explicitly keep yours (a backup path is named above when one was given), then" >&2
+    echo "  re-run to write the version stamp." >&2
     echo "upgrade: NEEDS-RECONCILE — $n_local_edit local edit(s) withheld, version stamp NOT written"
     exit 3
 fi
 
-if ! "$PYTHON" - "$STAMP" "$TEMPLATE_VERSION" "$SNAPSHOT_FILE" <<'PY'
+if ! "$PYTHON" - "$STAMP" "$TEMPLATE_VERSION" "$SNAPSHOT_FILE" "$KEPT_FILE" <<'PY'
 import json, sys, datetime
-stamp_p, ver, snap_p = sys.argv[1], sys.argv[2], sys.argv[3]
+stamp_p, ver, snap_p, kept_p = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 stamp = {"template": "luna-second-brain", "version": ver, "upgraded_at": now}
 # files: the per-file content baseline for the next run (HIMMEL-2903). Sorted
@@ -1175,6 +1310,22 @@ if snap_p:
         sys.exit(3)
 if files:
     stamp["files"] = dict(sorted(files.items()))
+# kept: HIMMEL-3406 keep-mine decisions, rel -> the template sha they were
+# kept against. Same fail-closed reasoning as files above — an unreadable
+# scratch file must not silently drop prior keep-mine decisions.
+kept = {}
+if kept_p:
+    try:
+        with open(kept_p, encoding="utf-8") as fh:
+            for line in fh:
+                rel, tab, sha = line.rstrip("\n").partition("\t")
+                if tab and rel and sha:
+                    kept[rel] = sha
+    except OSError as e:
+        sys.stderr.write("upgrade: could not read the keep-mine decisions (%s)\n" % e)
+        sys.exit(3)
+if kept:
+    stamp["kept"] = dict(sorted(kept.items()))
 with open(stamp_p, "w", encoding="utf-8") as fh:
     json.dump(stamp, fh, indent=2)
     fh.write("\n")

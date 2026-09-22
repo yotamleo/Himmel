@@ -790,6 +790,7 @@ cron_arm() {
     fi
 
     observability_register_cadence upstream-watch 86400 "$TASK_NAME"
+    cadence_prov_record "$TASK_NAME"
 
     arm_summary "crontab entry" "$runner" "$BAT_DIR/upstream-watch.log"
 }

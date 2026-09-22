@@ -80,6 +80,7 @@ build_harvest_anchor() {
     local d="$1"
     mkdir -p "$d/scripts/cr" "$d/scripts/guardrails" "$d/scripts/lib" || return 1
     cp "$HERE/ledger-append.sh" "$d/scripts/cr/ledger-append.sh" || return 1
+    cp "$HERE/anchor-handoff.sh" "$d/scripts/cr/anchor-handoff.sh" || return 1
     cp "$HERE/codex-adv-completion-check.sh" "$d/scripts/cr/codex-adv-completion-check.sh" || return 1
     # Only reachable on the HIMMEL-1420 retry path, which T7's fixture never
     # takes -- copied (with the lib it sources) so the anchor is not silently

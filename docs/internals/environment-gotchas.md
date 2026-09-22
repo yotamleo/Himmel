@@ -1149,9 +1149,18 @@ elsewhere are all refused. Each honoured hook appends one JSON line — `ts`,
 write. A hook chain runs the launcher once per member, so a tool call that
 overrides several tampered hooks writes one line per hook. A symlink or
 non-regular file in that spot, and any failed or short write, refuse the bypass.
-The command-text fences in `block-glm-external-writes.sh` read the same variable
-and are not scoped this way. So do the hook edit in a worktree, with the
-session's cwd inside it.
+The two command-text fences in `block-glm-external-writes.sh` (the pin-dir fence
+and the anchor fence) apply the same predicate and write to the same audit file
+(HIMMEL-3396), re-stated in bash as `bypass_honoured`, with one difference: they
+append one line per tool call the bypass is consulted for, and a symlink or
+non-regular audit file refuses it by an lstat check before a plain append (not an
+`O_NOFOLLOW` open). Its git calls are bounded by `timeout` at the launcher's
+`HIMMEL_HOOK_INTEGRITY_GIT_TIMEOUT_MS` budget, and a missing `timeout` or a timed-out
+git refuses the bypass (the hook entry itself fails open on a hang); a `C:` drive
+path counts as absolute only on msys/cygwin. The worker spawners (`glmChildEnv`, `sessionEnv`,
+`claudexChildEnv`) also strip the variable from every worker child env, so a
+worker never inherits it. So do the hook edit in a worktree, with the session's
+cwd inside it.
 
 ## pre-commit: `run --commit-msg-filename` reports Passed for a message the hook rejects
 

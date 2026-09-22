@@ -227,6 +227,7 @@ mkdir -p "$mutant_t7_anchor/scripts/cr" "$mutant_t7_anchor/scripts/guardrails"
 : > "$mutant_t7_anchor/scripts/cr/critic-panel.sh"
 cp "$DIR/ledger-append.sh" "$mutant_t7_anchor/scripts/cr/ledger-append.sh"
 cp "$DIR/write-verdicts.sh" "$mutant_t7_anchor/scripts/cr/write-verdicts.sh"
+cp "$DIR/anchor-handoff.sh" "$mutant_t7_anchor/scripts/cr/anchor-handoff.sh"
 cp "$DIR/../guardrails/lib.sh" "$mutant_t7_anchor/scripts/guardrails/lib.sh"
 mutant_t7="$mutant_t7_anchor/scripts/cr/pr-check-context.sh"
 # shellcheck disable=SC2016  # literal match against pr-check-context.sh's own
@@ -361,6 +362,7 @@ build_fake_himmel() {
   cp "$DIR/pr-check-context.sh" "$d/scripts/cr/pr-check-context.sh"
   cp "$DIR/ledger-append.sh" "$d/scripts/cr/ledger-append.sh"
   cp "$DIR/write-verdicts.sh" "$d/scripts/cr/write-verdicts.sh"
+cp "$DIR/anchor-handoff.sh" "$d/scripts/cr/anchor-handoff.sh"
   cp "$DIR/../guardrails/lib.sh" "$d/scripts/guardrails/lib.sh"
   (
     cd "$d" || exit 1
