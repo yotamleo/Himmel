@@ -488,6 +488,10 @@ REPO="${HEADED_ARM_REPO:-$(cd "$(dirname "$0")/../.." && pwd)}"
 INIT="execute,prcheck,pr,ticket,merge,public,handover"
 LAUNCHER="${HEADED_ARM_LAUNCHER:-claude}"
 LAUNCHER_ENV="${HEADED_ARM_LAUNCHER_ENV:-}"
+# PR 1129 console review: konsole inherits this environment and hands it to the
+# leg's claude. A leaked list would make any arm spawned from that leg prepend
+# the PARENT's profile tokens (first token wins) ahead of its own.
+unset HEADED_ARM_LAUNCHER_ENV
 RECORDER="${HEADED_ARM_RECORDER:-0}"
 REQUIRED_AUTOCOMPACT="${HEADED_ARM_REQUIRED_AUTOCOMPACT:-}"
 unset HEADED_ARM_REQUIRED_AUTOCOMPACT

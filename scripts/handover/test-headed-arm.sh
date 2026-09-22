@@ -1465,6 +1465,30 @@ check "HEADED_ARM_LAUNCHER_ENV without RECORDER: exit 0" "$rc36c" "0"
 not_contains "HEADED_ARM_LAUNCHER_ENV without RECORDER: no script(1) tty wrapper" "$rec36c" "script -q -a -f"
 contains "HEADED_ARM_LAUNCHER_ENV without RECORDER: env tokens still reach the konsole argv" "$rec36c" "CLAUDEX_LANE_OK=1 CLAUDE_CODE_EFFORT_LEVEL=medium"
 
+# 36d (HIMMEL-2534, PR 1129 console review): HEADED_ARM_LAUNCHER_ENV is read
+# into LAUNCHER_ENV and must then be unset, like HEADED_ARM_HEADLESS. konsole
+# inherits headed-arm.sh's environment and hands it to the leg's claude, so a
+# leaked list would make any arm spawned from that leg prepend the PARENT's
+# profile tokens - first token wins - ahead of its own.
+d36d="$tmp/c36d"; mk_stub "$d36d" 1 alive "HIMMEL-launcher4"
+cat > "$d36d/konsole" <<'KONSOLE_EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$(dirname "$0")/record"
+printf '%s' "${HEADED_ARM_LAUNCHER_ENV-UNSET}" > "$(dirname "$0")/launcher-env"
+: > "$(dirname "$0")/confirmable"
+sleep 5
+KONSOLE_EOF
+chmod 755 "$d36d/konsole"
+rc36d=0
+KONSOLE_CMD="$d36d/konsole" PGREP_CMD="$d36d/pgrep" HEADED_ARM_REPO="$REPO" HEADED_ARM_PROC="$d36d/proc" \
+  HEADED_ARM_LOCK_DIR="$d36d/locks" \
+  HEADED_ARM_LAUNCHER_ENV="LEG_PROFILE_SETTINGS=/parent/settings.json" \
+  bash "$SCRIPT" "HIMMEL-launcher4" "doc36d.md" "$d36d/signal-never" "$PAST" "$d36d/log" >/dev/null 2>&1 || rc36d=$?
+wait_record "$d36d" || true
+check "36d LAUNCHER_ENV: exit 0" "$rc36d" "0"
+contains "36d LAUNCHER_ENV: the tokens still reach the konsole argv" "$(cat "$d36d/record" 2>/dev/null || true)" "LEG_PROFILE_SETTINGS=/parent/settings.json"
+check "36d LAUNCHER_ENV: konsole (and so the leg) does not inherit HEADED_ARM_LAUNCHER_ENV" "$(cat "$d36d/launcher-env" 2>/dev/null || echo MISSING)" "UNSET"
+
 d36b="$tmp/c36b"; mk_stub "$d36b" 1 alive "HIMMEL-launcher2"
 rc36b=0
 KONSOLE_CMD="$d36b/konsole" PGREP_CMD="$d36b/pgrep" HEADED_ARM_REPO="$REPO" HEADED_ARM_PROC="$d36b/proc" \
