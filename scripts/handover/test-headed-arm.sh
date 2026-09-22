@@ -1789,6 +1789,30 @@ HEADED_ARM_UNAME=Linux KONSOLE_CMD="$d41b/konsole" PGREP_CMD="$d41b/pgrep" \
 wait_record "$d41b" || true
 not_contains "41b Linux arm keeps the 5s budget (no macOS budget line)" "$(cat "$d41b/log" 2>/dev/null || true)" "session-visibility budget"
 
+# 41c. The shim reads the SAME var in a `[ ]` test, which is always decimal,
+# while the budget above is an arithmetic context, where a leading zero is
+# octal. Unnormalised, 0200 gives 0200*2+100 = 356 iters here while the shim
+# still waits 200 ticks - the drift the shared var exists to prevent. 10#
+# makes it 200*2+100 = 500, matching the shim.
+d41c="$tmp/c41c"; mk_stub "$d41c" 1 alive "HIMMEL-budget41c"
+KONSOLE_MACOS_STARTUP_TICKS=0200 HEADED_ARM_UNAME=Darwin KONSOLE_CMD="$d41c/konsole" PGREP_CMD="$d41c/pgrep" \
+  HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$d41c/locks" HEADED_ARM_PROC="$d41c/proc" \
+  bash "$SCRIPT" "HIMMEL-budget41c" "doc41c.md" "$d41c/signal-never" "$PAST" "$d41c/log" >/dev/null 2>&1
+wait_record "$d41c" || true
+log41c="$(cat "$d41c/log" 2>/dev/null || true)"
+contains "41c a leading-zero tick count is read as decimal, not octal" "$log41c" "session-visibility budget 500 iters"
+not_contains "41c the octal reading (356 iters) is gone" "$log41c" "session-visibility budget 356 iters"
+
+# 41d. 08/09 are not merely misread in an arithmetic context - they abort with
+# "value too great for base", killing the arm. 10# keeps them decimal.
+d41d="$tmp/c41d"; mk_stub "$d41d" 1 alive "HIMMEL-budget41d"
+KONSOLE_MACOS_STARTUP_TICKS=08 HEADED_ARM_UNAME=Darwin KONSOLE_CMD="$d41d/konsole" PGREP_CMD="$d41d/pgrep" \
+  HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$d41d/locks" HEADED_ARM_PROC="$d41d/proc" \
+  bash "$SCRIPT" "HIMMEL-budget41d" "doc41d.md" "$d41d/signal-never" "$PAST" "$d41d/log" >/dev/null 2>&1
+wait_record "$d41d" || true
+log41d="$(cat "$d41d/log" 2>/dev/null || true)"
+contains "41d an 08 tick count does not abort the arm (8*2+100 iters)" "$log41d" "session-visibility budget 116 iters"
+
 # --- 44. HIMMEL-2534: where $PROC is absent (macOS), session_confirmed()
 # must fall back to a `ps`-based comm check instead of silently answering
 # "not running" for every pid. Without this the /proc walk skips every
