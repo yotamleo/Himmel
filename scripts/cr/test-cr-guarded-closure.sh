@@ -86,10 +86,10 @@ closure() {
     f="${queue%%$'\n'*}"
     if [ "$f" = "$queue" ]; then queue=""; else queue="${queue#*$'\n'}"; fi
     [ -f "$ROOT/$f" ] || continue
-    printf '%s\n' "$seen" | grep -qxF -- "$f" && continue
+    grep -qxF -- "$f" <<< "$seen" && continue
     seen="$seen$f"$'\n'
     for e in $(edges "$f"); do
-      printf '%s\n' "$seen" | grep -qxF -- "$e" || queue="${queue:+$queue$'\n'}$e"
+      grep -qxF -- "$e" <<< "$seen" || queue="${queue:+$queue$'\n'}$e"
     done
   done
   printf '%s' "$seen" | sort -u
@@ -140,7 +140,7 @@ check "$escaped" "" "every file reached on the no path lies inside cr_guarded"
 # RED control: the pre-HIMMEL-3493 set must fail this suite's own assertion,
 # naming a scripts/lib/ file - proving the check depends on the set.
 red="$(printf '%s\n' "$reached" | outside "scripts/cr scripts/guardrails/lib.sh")"
-if printf '%s\n' "$red" | grep -qxF scripts/lib/load-dotenv.sh; then
+if grep -qxF scripts/lib/load-dotenv.sh <<< "$red"; then
   echo "RED control confirmed: the pre-HIMMEL-3493 set (scripts/cr scripts/guardrails/lib.sh) leaves $(printf '%s\n' "$red" | grep -c .) reached files unguarded, incl. scripts/lib/load-dotenv.sh"
   pass=$((pass + 1))
 else
