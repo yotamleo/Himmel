@@ -631,6 +631,30 @@ git -C "$R" add x2.sh y2.sh
 run_gate
 assert_rc "G20 diff.renameLimit=1, two inexact renames of pre-existing debt -> gate ok" 0 "$?"
 
+# G21 -- a failed write to the scratch name list must refuse the commit:
+# unchecked, a read-only diff-names.nul dropped every staged name, nothing
+# was scanned, and the unguarded capture passed. A PATH-shimmed mktemp
+# plants that read-only file in the scratch dir the gate creates.
+if [ "$(id -u)" = 0 ]; then
+    echo "SKIP: G21 needs a non-root user (root ignores a read-only file)"
+else
+    setup_repo || { echo "FAIL: G21 setup: setup_repo failed -- aborting suite" >&2; exit 1; }
+    real_mktemp=$(command -v mktemp) || { echo "FAIL: G21 setup: no mktemp -- aborting suite" >&2; exit 1; }
+    shim_dir="$R/.shim"
+    mkdir "$shim_dir"
+    printf '#!/usr/bin/env bash\nd=$("%s" "$@") || exit 1\nif [ "$1" = -d ]; then : > "$d/diff-names.nul" && chmod 444 "$d/diff-names.nul"; fi\nprintf "%%s\\n" "$d"\n' "$real_mktemp" > "$shim_dir/mktemp"
+    chmod +x "$shim_dir/mktemp"
+    printf '#!/usr/bin/env bash\nT=$(mktemp -d)\necho "$T"\n' > "$R/scripts.sh"
+    git -C "$R" add scripts.sh
+    g21_out="$(cd "$R" && PATH="$shim_dir:$PATH" bash "$GATE" 2>&1)"
+    g21_rc=$?
+    assert_rc "G21 read-only scratch name list -> gate refuses" 1 "$g21_rc"
+    case "$g21_out" in
+        *"cannot write the staged-name list"*) _pass=$((_pass + 1)) ;;
+        *) echo "FAIL: G21 refusal must name the name-list write failure -- got: $g21_out"; _fail=$((_fail + 1)) ;;
+    esac
+fi
+
 # ---------------------------------------------------------------------------
 # Section 3: RED control (scripts/lib/red-control.sh).
 #

@@ -154,7 +154,12 @@ fi
 # so this has to walk the stream field-by-field rather than treat every
 # record as a single path (round-4 finding 3).
 diff_names_file="$scratch_dir/diff-names.nul"
-: > "$diff_names_file"
+# No errexit here, so every write to the name list is checked: a failed one
+# (ENOSPC, a read-only file) would drop staged names unscanned (fail-open).
+: > "$diff_names_file" || {
+    echo "FAIL: check-unchecked-mktemp: cannot write the staged-name list $diff_names_file (fail-closed)" >&2
+    exit 1
+}
 while IFS= read -r -d '' status_field; do
     case "$status_field" in
         R*)
@@ -166,14 +171,20 @@ while IFS= read -r -d '' status_field; do
                 echo "FAIL: check-unchecked-mktemp: truncated rename record in git diff --name-status output (fail-closed)" >&2
                 exit 1
             }
-            printf '%s\0%s\0' "$dst_field" "$src_field" >> "$diff_names_file"
+            printf '%s\0%s\0' "$dst_field" "$src_field" >> "$diff_names_file" || {
+                echo "FAIL: check-unchecked-mktemp: cannot write the staged-name list $diff_names_file (fail-closed)" >&2
+                exit 1
+            }
             ;;
         *)
             IFS= read -r -d '' path_field || {
                 echo "FAIL: check-unchecked-mktemp: truncated record in git diff --name-status output (fail-closed)" >&2
                 exit 1
             }
-            printf '%s\0%s\0' "$path_field" "" >> "$diff_names_file"
+            printf '%s\0%s\0' "$path_field" "" >> "$diff_names_file" || {
+                echo "FAIL: check-unchecked-mktemp: cannot write the staged-name list $diff_names_file (fail-closed)" >&2
+                exit 1
+            }
             ;;
     esac
 done < "$diff_status_file"
