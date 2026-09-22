@@ -107,6 +107,11 @@ fi
 # --- drift check: an unmapped invocation must be CAUGHT, not waved through
 # (a --runner-check that always exits 0 would also pass the case above)
 if fixture_dir=$(mktemp -d "${TMPDIR:-/tmp}/impacted-suites-fixture.XXXXXX"); then
+    # --runner-check does `git rev-parse --show-toplevel` before reading
+    # ci.yml, so the fixture must itself be a git work tree or that call
+    # fails first — passing the assertion below for the wrong reason
+    # (a git error, not the drift check) rather than exercising it.
+    git -C "$fixture_dir" init -q
     mkdir -p "$fixture_dir/.github/workflows"
     cat >"$fixture_dir/.github/workflows/ci.yml" <<'EOF'
 jobs:
@@ -116,10 +121,14 @@ jobs:
 EOF
     out=$(cd "$fixture_dir" && bash "$IS" --runner-check 2>&1 >/dev/null); rc=$?
     rm -rf "$fixture_dir"
-    if [ "$rc" -ne 0 ] && [ -n "$out" ]; then
+    case "$out" in
+        *fleet-control*) matched=1 ;;
+        *) matched=0 ;;
+    esac
+    if [ "$rc" -ne 0 ] && [ "$matched" -eq 1 ]; then
         pass "--runner-check: an unmapped invocation is caught, not waved through"
     else
-        fail "--runner-check: unmapped invocation should refuse non-zero with a message (rc=$rc out='$out')"
+        fail "--runner-check: unmapped invocation should name it and refuse non-zero (rc=$rc out='$out')"
     fi
 else
     fail "--runner-check: an unmapped invocation is caught, not waved through (mktemp failed)"
