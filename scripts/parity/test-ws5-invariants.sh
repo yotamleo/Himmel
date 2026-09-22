@@ -446,6 +446,9 @@ else
             # The scan only asks this outside a string, so a quote here just
             # closed one: a slash after a string operand is division.
             if (p == "\"" || p == sq || p == "`") return 0
+            # Likewise a slash that just closed a regex literal (re_end is
+            # set by find_marker_start at each skipped regex).
+            if (p == "/" && j == re_end - 1) return 0
             if ((p == "+" || p == "-") && j > 1 && substr(t, j - 1, 1) == p) return 0
             if (p !~ /[A-Za-z0-9_$]/) return 1
             w = ""
@@ -474,7 +477,7 @@ else
         function find_marker_start(t, kind,    n, i, ch, two, cand, sp, top, esc_pos, MAXDEPTH, stype, sdepth) {
             n = length(t)
             MAXDEPTH = 20
-            sp = 0; esc_pos = 0; i = 1
+            sp = 0; esc_pos = 0; i = 1; re_end = 0
             while (i <= n) {
                 ch = substr(t, i, 1)
                 two = substr(t, i, 2)
@@ -538,7 +541,7 @@ else
                     }
                     if (kind == "js" && ch == "/" && two != "//" && two != "/*" && js_regex_opens(t, i)) {
                         i = js_regex_end(t, i, n); if (i == 0) return 0
-                        continue
+                        re_end = i; continue
                     }
                     if (ch == sq) {
                         sp++; if (sp > MAXDEPTH) return 0
@@ -576,7 +579,7 @@ else
                 if (two == "/*") { sp++; stype[sp] = "blk"; i += 2; continue }
                 if (kind == "js" && ch == "/" && two != "//" && js_regex_opens(t, i)) {
                     i = js_regex_end(t, i, n); if (i == 0) return 0
-                    continue
+                    re_end = i; continue
                 }
                 if ((kind == "sh" || kind == "code") && ch == "#" && is_word_start(t, i, esc_pos)) {
                     cand = substr(t, i, 11)
