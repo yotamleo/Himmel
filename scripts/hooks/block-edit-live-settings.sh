@@ -400,25 +400,33 @@ resolve_repo_context() {
 # is NOT just a bare relative spelling of the current worktree's own copy.
 mentions_primary_or_home() {
     local c="$1" c_noquotes
+    # A quoted `"/resolved/path"/.claude/` interposes a quote character
+    # between the resolved absolute path and its `.claude` suffix, which a
+    # literal substring match can't span — strip quote characters once up
+    # front so every match below sees the path as one contiguous string
+    # regardless of quoting (matches the $HOME-literal handling further down).
+    c_noquotes=$(printf '%s' "$c" | tr -d "\"'")
     if [ -n "$primary_root_lc" ]; then
-        case "$c" in *"$primary_root_lc"*) return 0 ;; esac
+        case "$c_noquotes" in *"$primary_root_lc"*) return 0 ;; esac
     fi
     # Only the resolved $HOME's OWN .claude counts as live — matching
     # home_root_lc as a bare substring anywhere also matched an unrelated
     # absolute path merely nested under $HOME (e.g. a worktree's own path),
     # over-denying that worktree's legitimate writes to its own settings.
     if [ -n "$home_root_lc" ]; then
-        case "$c" in *"$home_root_lc/.claude"*) return 0 ;; esac
+        case "$c_noquotes" in *"$home_root_lc/.claude"*) return 0 ;; esac
     fi
-    # A quoted `"$HOME"/.claude/` or `'$HOME'/.claude/` interposes a quote
-    # character between the variable and the path, which the literal glob
-    # below can't span — strip quote characters before matching so the
-    # unexpanded $home/~ literal is still caught regardless of quoting.
-    c_noquotes=$(printf '%s' "$c" | tr -d "\"'")
     # shellcheck disable=SC2016 # literal unexpanded $home/${home} text, not expansion
     case "$c_noquotes" in
         *'~/.claude/'*|*'$home/.claude/'*|*'${home}/.claude/'*) return 0 ;;
     esac
+    # A relative parent-directory traversal landing directly on `.claude/`
+    # (`../.claude/…`, any number of `../` segments) climbs OUT of the
+    # current worktree — the worktree-relative exemption only covers this
+    # worktree's own copy, which never needs `..` to name it, and in the
+    # real `<repo>/.claude/worktrees/<name>` layout this is exactly the
+    # shape that reaches the primary checkout's own `.claude/`.
+    case "$c_noquotes" in *'../.claude/'*) return 0 ;; esac
     return 1
 }
 
@@ -434,7 +442,13 @@ is_readonly_allowlisted() {
     esac
     first=$(printf '%s' "$c" | awk '{print $1}')
     case "$first" in
-        cat|head|tail|less|grep|rg|diff|wc) return 0 ;;
+        cat|head|tail|grep|rg|diff|wc) return 0 ;;
+        less)
+            # less -o/-O (case already folded by cmd_lc) or --log-file logs
+            # the input stream to a file — a write, despite the read-only verb.
+            case "$c" in *' -o'*|*'--log-file'*) return 1 ;; esac
+            return 0
+            ;;
         jq)
             case "$c" in *' -i'*|*'--in-place'*) return 1 ;; esac
             return 0
@@ -457,7 +471,10 @@ is_readonly_allowlisted() {
 # where the destination basename is never "settings.json" in the text.
 mentions_dot_claude_dir_dest() {
     local out
-    out=$(printf '%s' "$1" | grep -E '(^|[^a-z0-9_])\.claude([/[:space:];&|]|$)') || true
+    # Trailing boundary includes a quote character: a quoted destination
+    # with no trailing slash (`cp -r x/. ".claude"`) puts the closing quote
+    # immediately after `.claude`, which the boundary class must accept too.
+    out=$(printf '%s' "$1" | grep -E '(^|[^a-z0-9_])\.claude([/[:space:];&|"'"'"']|$)') || true
     [ -n "$out" ]
 }
 

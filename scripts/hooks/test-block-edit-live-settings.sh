@@ -372,6 +372,42 @@ assert_rc "50 bash redirect using quoted literal \$HOME denies" 2 \
 assert_rc "51 bash absolute-path /bin/cp into primary .claude/ dir denies" 2 \
     "$(bash_rc_of "$PRIMARY" "/bin/cp -r /tmp/payload/. .claude/")"
 
+# 52 (v2 CR round 3, codex-1): a relative parent-directory traversal
+# (`../../../.claude/...`) from a nested worktree climbs out to the primary
+# checkout's own `.claude/` without ever spelling out an absolute path or
+# `$HOME` -> DENY.
+assert_rc "52 bash relative traversal from nested worktree into primary settings.json denies" 2 \
+    "$(bash_rc_of "$SANDBOX/primary/.claude/worktrees/feat+x" "echo pwned > ../../../.claude/settings.json")"
+
+# 53 (v2 CR round 3, codex-1 control): an unrelated `..` mention and an
+# unrelated `.claude/` destination, not adjacent, must stay ALLOW — the
+# traversal match is `../.claude/` as one contiguous string, not `..`
+# anywhere plus `.claude/` anywhere.
+assert_rc "53 bash unrelated .. and .claude mention (non-adjacent) allows" 0 \
+    "$(bash_rc_of "$WT2" "cp ../backup-notes.txt .claude/settings.json")"
+
+# 54 (v2 CR round 3, codex-3): a quoted RESOLVED $HOME path with the closing
+# quote landing directly before `/.claude/...` (`"<resolved-home>"/.claude/...`)
+# interposes a quote character between home_root_lc and the `/.claude`
+# adjacency the round-2 fix (test 49) requires, which a literal substring
+# match can't span unless quotes are stripped first. Distinct from test 50
+# (a literal unexpanded `$HOME` token, matched separately) and from the
+# primary-checkout case (primary_root_lc has no adjacency requirement, so
+# quoting it was never a bypass) -> DENY.
+assert_rc "54 bash quoted-resolved-\$HOME-path redirect denies" 2 \
+    "$(bash_rc_of "$SANDBOX" "echo pwned > \"$FAKEHOME\"/.claude/settings.json" HOME="$FAKEHOME")"
+
+# 55 (v2 CR round 3, codex-4): `less -o <file>` logs its input stream to a
+# file — a write, despite `less` being an allowlisted read-only verb -> DENY.
+assert_rc "55 bash less -o into primary settings.json denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "less -o .claude/settings.json < /tmp/payload")"
+
+# 56 (v2 CR round 3, codex-5): a quoted `.claude` directory destination with
+# NO trailing slash (`cp -r x/. ".claude"`) puts the closing quote immediately
+# after `.claude`, which the boundary character class must accept too -> DENY.
+assert_rc "56 bash quoted dir-dest with no trailing slash denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "cp -r /tmp/payload/. \".claude\"")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true
