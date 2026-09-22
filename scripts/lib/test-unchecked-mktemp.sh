@@ -324,6 +324,234 @@ f="$TMPDIR_ROOT/t27b.sh"
 printf 'typeset -r T=$(mktemp -d)\n' > "$f"
 assert_eq "T27b typeset -r capture, unguarded -> flagged" "1" "$(scan_lines "$f")"
 
+# T28/T28b -- a commented-out guard line is not a guard (HIMMEL-3428 N333
+# item 1, ticket finding 1): the window scan must ignore comment-only lines
+# rather than treating their text as a real test construct.
+f="$TMPDIR_ROOT/t28.sh"
+printf 'T=$(mktemp -d)\n# [ -d "$T" ] || exit 1\n' > "$f"
+assert_eq "T28 next-line comment-only guard ignored -> offending (N333 item 1)" "1" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t28b.sh"
+printf 'T=$(mktemp -d)\n# validate with [ -n "$T" ]\n' > "$f"
+assert_eq "T28b next-line comment-only guard (alt wording) ignored -> offending (N333 item 1)" "1" "$(scan_lines "$f")"
+
+# T28c -- control: a REAL (uncommented) guard on the next line is still
+# accepted -- the comment-ignoring fix must not eat genuine guards.
+f="$TMPDIR_ROOT/t28c.sh"
+printf 'T=$(mktemp -d)\n[ -d "$T" ] || exit 1\n' > "$f"
+assert_eq "T28c control: real next-line guard still accepted (N333 item 1)" "0" "$(scan_lines "$f")"
+
+# T29/T29b/T29c -- a split declaration -- `local T; T=$(mktemp -d)` -- is
+# scanned at all (HIMMEL-3428 N333 item 2, ticket finding 2): the old
+# anchored assignment regex never matched this shape, so an unguarded
+# split-declared capture was invisible to the scan.
+f="$TMPDIR_ROOT/t29.sh"
+printf 'local T; T=$(mktemp -d)\n' > "$f"
+assert_eq "T29 split declaration local T; T=\$(mktemp -d), unguarded -> offending (N333 item 2)" "1" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t29b.sh"
+printf 'readonly T; T=$(mktemp -d)\n' > "$f"
+assert_eq "T29b split declaration readonly T; T=\$(mktemp -d), unguarded -> offending (N333 item 2)" "1" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t29c.sh"
+printf 'declare T; T=$(mktemp -d)\n' > "$f"
+assert_eq "T29c split declaration declare T; T=\$(mktemp -d), unguarded -> offending (N333 item 2)" "1" "$(scan_lines "$f")"
+
+# T29d -- control: a split declaration's bare assignment statement is a
+# plain assignment (no decl builtin on ITS OWN statement), so a same-line
+# `||` guards it correctly, unmasked -- the fix must not over-flag this.
+f="$TMPDIR_ROOT/t29d.sh"
+printf 'local T; T=$(mktemp -d) || exit 1\n' > "$f"
+assert_eq "T29d control: split declaration local T with guarded capture -> ok (N333 item 2)" "0" "$(scan_lines "$f")"
+
+# T30/T30b -- a command name that merely starts with "mktemp" is not mktemp
+# (HIMMEL-3428 N333 item 3, ticket round-7/8 codex-2): `mktemp_metadata` /
+# `mktemp_wrapper` must not be scanned as a mktemp capture.
+f="$TMPDIR_ROOT/t30.sh"
+printf 'T=$(mktemp_metadata)\n' > "$f"
+assert_eq "T30 mktemp_metadata is not mktemp -> ok (N333 item 3)" "0" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t30b.sh"
+printf 'T=$(mktemp_wrapper -d)\n' > "$f"
+assert_eq "T30b mktemp_wrapper is not mktemp -> ok (N333 item 3)" "0" "$(scan_lines "$f")"
+
+# T30c/T30d -- control: real mktemp is still matched, unguarded -> offending
+# -- the boundary tightening must not exclude the genuine command, templated
+# or bare.
+f="$TMPDIR_ROOT/t30c.sh"
+printf 'T=$(mktemp -d)\n' > "$f"
+assert_eq "T30c control: real mktemp -d still matched -> offending (N333 item 3)" "1" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t30d.sh"
+printf 'T=$(mktemp)\n' > "$f"
+assert_eq "T30d control: bare mktemp() still matched -> offending (N333 item 3)" "1" "$(scan_lines "$f")"
+
+# T30e/T30f -- codex-1 (round 1 /pr-check finding on this same branch): a
+# non-identifier boundary is not enough -- "-" and "." are non-identifier
+# characters that are still valid, common command-name characters, so
+# `mktemp-wrapper` / `mktemp.sh` are distinct commands the boundary must
+# also exclude.
+f="$TMPDIR_ROOT/t30e.sh"
+printf 'T=$(mktemp-wrapper -d)\n' > "$f"
+assert_eq "T30e mktemp-wrapper is not mktemp -> ok (N333 item 3, codex-1)" "0" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t30f.sh"
+printf 'T=$(mktemp.sh -d)\n' > "$f"
+assert_eq "T30f mktemp.sh is not mktemp -> ok (N333 item 3, codex-1)" "0" "$(scan_lines "$f")"
+
+# T31/T31b/T31c/T31d -- HIMMEL-3428 slice 2 item 1: a mere MENTION of the var
+# inside a `[ ]`/`[[ ]]`/`test` construct (the var appears embedded in a
+# larger string being compared, not as the thing actually being tested) must
+# not satisfy rule (c) -- this was the test-resolve-node.sh:73 regression the
+# console's adversarial review on #1107 found. Only an actual test of the
+# var itself (bare truthiness, -n/-d/-z, etc.) counts.
+f="$TMPDIR_ROOT/t31.sh"
+printf 'tmp="$(mktemp -d)"\nout="$(foo)"\nif [ "$out" = "$tmp/bin/node.exe" ]; then true; fi\n' > "$f"
+assert_eq "T31 rule (c) mention-only (\$tmp embedded in a compared string) does not guard -> offending (HIMMEL-3428 item 1)" "1" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t31b.sh"
+printf 'tmp="$(mktemp -d)"\n[ -d "$tmp" ] || exit 1\n' > "$f"
+assert_eq "T31b control: real [ -d \"\$tmp\" ] test of the var still guards -> ok (HIMMEL-3428 item 1)" "0" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t31c.sh"
+printf 'T=$(mktemp -d)\n[ "$T" ] || exit 1\n' > "$f"
+assert_eq "T31c control: bare [ \"\$T\" ] truthiness test still guards -> ok (HIMMEL-3428 item 1)" "0" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t31d.sh"
+printf 'tmp="$(mktemp -d)"\nout="$(resolve)"\nif [ "$rc" -eq 0 ] && { [ "$out" = "$tmp/bin/node.exe" ] || [ "$out" = "$tmp/bin/node" ]; }; then true; fi\n' > "$f"
+assert_eq "T31d regression lock: test-resolve-node.sh:73 shape -> offending (HIMMEL-3428 item 1)" "1" "$(scan_lines "$f")"
+
+# codex-1 (/pr-check round 1 on this branch): the item-1 fix only covered the
+# unbraced spelling ($tmp); a BRACED mere-mention (${tmp} embedded in a
+# compared string, not actually tested) slipped past the same rule (c)
+# window because the optional \}? let the engine skip the literal `}` and
+# match it as the boundary character instead.
+f="$TMPDIR_ROOT/t31e.sh"
+printf 'tmp="$(mktemp -d)"\nout="$(foo)"\nif [ "$out" = "${tmp}/bin/node" ]; then true; fi\n' > "$f"
+assert_eq "T31e rule (c) braced mention-only (\${tmp} embedded in a compared string) does not guard -> offending (codex-1)" "1" "$(scan_lines "$f")"
+
+# Regression lock for the codex-1 fix itself: requiring an exact `${VAR}`
+# close must not break the common set-u-safe `${VAR:-}` spelling of a real
+# emptiness test (scripts/handover/reconcile-workers.sh:338's shape) -- the
+# closing brace still has to be real, but a modifier between the var name
+# and it (`:-`, `:=`, ...) must still be accepted.
+f="$TMPDIR_ROOT/t31f.sh"
+printf 'a=$(mktemp 2>/dev/null) && b=$(mktemp 2>/dev/null)\nif [ -z "${a:-}" ] || [ -z "${b:-}" ]; then exit 1; fi\n' > "$f"
+assert_eq "T31f control: \${VAR:-} inside [ -z ] still guards (codex-1 widen)" "0" "$(scan_lines "$f")"
+
+# codex-1 (/pr-check round 2 on this branch): the braced alternative's
+# interior `[^{}]*` let identifier characters continue straight past the
+# captured var's name with no boundary, so `${tmp_other}` counted as a
+# guard for `tmp`. A real modifier (`:-`, `#`, `%`, ...) never starts with
+# an identifier character, so requiring a non-identifier boundary (or an
+# immediate close) right after the var name closes this without narrowing
+# back to exact-`${VAR}`-only.
+f="$TMPDIR_ROOT/t31g.sh"
+printf 'tmp=$(mktemp)\nother=$(foo)\nif [ -n "${tmp_other}" ]; then true; fi\n' > "$f"
+assert_eq "T31g rule (c) braced same-prefix different var (\${tmp_other} does not guard tmp) -> offending (codex-1 round 2)" "1" "$(scan_lines "$f")"
+
+# T32/T32b/T32c/T32d/T32e -- HIMMEL-3428 slice 2 item 2: a trailing ` #...`
+# comment must be stripped before rules (a)/(c)/(d) run, so a commented-out
+# guard (same-line or next-line) does not count as real -- while `#` inside
+# quotes, `${#x}` and `$#` are left alone.
+f="$TMPDIR_ROOT/t32.sh"
+printf 'T=$(mktemp) # || exit 1\n' > "$f"
+assert_eq "T32 same-line trailing-comment fake || guard -> offending (HIMMEL-3428 item 2)" "1" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t32b.sh"
+printf 'T=$(mktemp)\n# ${T:?}\n' > "$f"
+assert_eq "T32b next-line commented \${T:?} guard -> offending (HIMMEL-3428 item 2)" "1" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t32c.sh"
+printf 'T=$(mktemp)\n# [ -d "$T" ]\n' > "$f"
+assert_eq "T32c next-line commented [ -d ] guard (bare) -> offending (HIMMEL-3428 item 2)" "1" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t32d.sh"
+printf 'T=$(mktemp -d)\n[ -n "$T" ] # len=${#T}\n' > "$f"
+assert_eq "T32d control: \${#T} length op in a trailing comment does not break guard recognition -> ok (HIMMEL-3428 item 2)" "0" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t32e.sh"
+printf 'T=$(mktemp -d "#tag") || exit 1\n' > "$f"
+assert_eq "T32e control: quoted # in the capture line args does not break || recognition -> ok (HIMMEL-3428 item 2)" "0" "$(scan_lines "$f")"
+
+# codex-2 (/pr-check round 1 on this branch): an UNQUOTED `#` glued to a
+# preceding character (no separating whitespace), e.g. inside a mktemp
+# template argument, is ordinary text, not a comment start -- stripping it
+# must not eat a real trailing `|| exit 1` guard that follows it.
+f="$TMPDIR_ROOT/t32f.sh"
+printf 'T=$(mktemp /tmp/name#XXXXXX) || exit 1\n' > "$f"
+assert_eq "T32f control: unquoted # glued to a template arg (no space) does not break || recognition -> ok (codex-2)" "0" "$(scan_lines "$f")"
+
+# codex-2 (/pr-check round 2 on this branch): a `#` glued to a shell
+# operator (`;`, `&`, `|`, `(`, `)`) still starts a genuine comment -- those
+# characters end the previous word, they do not extend it, unlike a `#`
+# glued to ordinary text (T32f above). `T=$(mktemp);# || exit 1` must strip
+# the fake guard and flag as offending.
+f="$TMPDIR_ROOT/t32g.sh"
+printf 'T=$(mktemp);# || exit 1\n' > "$f"
+assert_eq "T32g operator-delimited comment (;# ) still strips a fake guard -> offending (codex-2 round 2)" "1" "$(scan_lines "$f")"
+
+# T33/T33b/T33c/T33d/T33e/T33f -- HIMMEL-3428 slice 2 item 3: the command-name
+# boundary must also catch `<`/`>` redirects, a bare quote with no preceding
+# whitespace, a line-continuing backslash, and a CRLF line ending (stripped
+# at ingestion so it never hides a match or a guard).
+f="$TMPDIR_ROOT/t33.sh"
+printf 'T=$(mktemp</dev/null)\n' > "$f"
+assert_eq "T33 mktemp</dev/null boundary -> offending (HIMMEL-3428 item 3)" "1" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t33b.sh"
+printf 'T=$(mktemp>"$f2")\n' > "$f"
+assert_eq "T33b mktemp>redirect boundary -> offending (HIMMEL-3428 item 3)" "1" "$(scan_lines "$f")"
+
+# T33c: HIMMEL-3428 -- the console reversed its own item-3 ruling on this
+# shape after four straight critic-panel rounds disputed it. Shell word
+# concatenation (no whitespace before the quote) makes mktemp$sq-d$sq lex as
+# the single word mktemp-d, not the mktemp binary, so it must NOT flag.
+f="$TMPDIR_ROOT/t33c.sh"
+printf 'T=$(mktemp%s-d%s)\n' "$sq" "$sq" > "$f"
+assert_eq "T33c mktemp$sq-d$sq word-concatenation -> NOT offending (HIMMEL-3428, reversed)" "0" "$(scan_lines "$f")"
+
+# T33c2 control: whitespace before the quote makes it a real, separate,
+# quoted argument to the actual mktemp binary -- must still flag.
+f="$TMPDIR_ROOT/t33c2.sh"
+printf 'T=$(mktemp %s-d%s)\n' "$sq" "$sq" > "$f"
+assert_eq "T33c2 mktemp $sq-d$sq whitespace-separated arg -> offending (HIMMEL-3428, control)" "1" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t33d.sh"
+printf 'T=$(mktemp \\\n-d)\n' > "$f"
+assert_eq "T33d backslash-newline continuation boundary -> offending (HIMMEL-3428 item 3)" "1" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t33e.sh"
+printf 'T=$(mktemp -d)\r\n' > "$f"
+assert_eq "T33e CRLF-terminated capture line -> offending (HIMMEL-3428 item 3)" "1" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t33f.sh"
+printf 'T=$(mktemp -d)\r\n[ -n "$T" ] || exit 1\r\n' > "$f"
+assert_eq "T33f control: CRLF-terminated guard line still recognized -> ok (HIMMEL-3428 item 3)" "0" "$(scan_lines "$f")"
+
+# T34/T34b/T34c/T34d/T34e -- HIMMEL-3428 slice 2 item 4: multi-var and
+# chained declarations are recognised as declaration prefixes, not just a
+# single split `local T; T=$(mktemp)`.
+f="$TMPDIR_ROOT/t34.sh"
+printf 'local T U\nT=$(mktemp)\n' > "$f"
+assert_eq "T34 multi-var local T U; T=\$(mktemp) -> offending (HIMMEL-3428 item 4)" "1" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t34b.sh"
+printf 'local T\nlocal U\nT=$(mktemp)\n' > "$f"
+assert_eq "T34b chained local T; local U; T=\$(mktemp) -> offending (HIMMEL-3428 item 4)" "1" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t34c.sh"
+printf 'local -- T\nT=$(mktemp)\n' > "$f"
+assert_eq "T34c local -- T; T=\$(mktemp) -> offending (HIMMEL-3428 item 4)" "1" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t34d.sh"
+printf 'local T && T=$(mktemp)\n' > "$f"
+assert_eq "T34d local T && T=\$(mktemp) -> offending (HIMMEL-3428 item 4)" "1" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t34e.sh"
+printf 'local T U\nT=$(mktemp) || exit 1\n' > "$f"
+assert_eq "T34e control: guarded multi-var declaration -> ok (HIMMEL-3428 item 4)" "0" "$(scan_lines "$f")"
+
 # T21 -- self-check: the predicate must NOT flag its own repo files. Locks
 # the codex-1 self-blocking regression closed for good -- if this ever comes
 # back it fails loudly here instead of silently refusing every commit that

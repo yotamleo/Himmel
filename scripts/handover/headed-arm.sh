@@ -443,6 +443,14 @@ LAUNCHER_ENV="${HEADED_ARM_LAUNCHER_ENV:-}"
 RECORDER="${HEADED_ARM_RECORDER:-0}"
 REQUIRED_AUTOCOMPACT="${HEADED_ARM_REQUIRED_AUTOCOMPACT:-}"
 unset HEADED_ARM_REQUIRED_AUTOCOMPACT
+# HIMMEL-3403: headed-arm-leg.sh --headless sets these. HEADLESS launches the
+# session in the background (no konsole) and confirms it through
+# `$CLAUDE_CLI agents --json` - a background session's process comm is the
+# CLI version string, not `claude`, so the pgrep census below never sees it.
+HEADLESS="${HEADED_ARM_HEADLESS:-0}"
+CLAUDE_CLI="${HEADED_ARM_CLAUDE_CLI:-claude}"
+LAUNCH_RECORD="${HEADED_ARM_LAUNCH_RECORD:-}"
+unset HEADED_ARM_HEADLESS HEADED_ARM_LAUNCH_RECORD
 # HIMMEL-2975 (renamed HIMMEL-3133): a console session must never inherit a
 # relay marker from whatever armed it -- ROLE_ENV_UNSET is an extra `-u`
 # token added to BOTH konsole launch branches' env -u list below,
@@ -490,6 +498,13 @@ if [ "$ROLE" = "console" ]; then
     CONSOLE_ENV=("HIMMEL_CONSOLE_DOC=$_console_doc" "HIMMEL_CONSOLE_WORKDIR=$(dirname -- "$SIGNAL")")
 fi
 LAUNCH_ARGV=("$LAUNCHER" --model "$MODEL" --autocompact "$AUTOCOMPACT" -n "$NAME" "load $DOC and continue")
+if [ "$HEADLESS" = "1" ]; then
+    # auto is what a headed leg runs in (defaultMode=auto in the operator's
+    # user settings), declared here because an unattended launch must never
+    # rely on the default (CLAUDE.md "Claude invocation billing").
+    # headless-claude-ok: HIMMEL-3403 console-armed leg; headed-arm-leg.sh ran the bank/fleet preflight
+    LAUNCH_ARGV=("$LAUNCHER" --bg --permission-mode auto --model "$MODEL" --autocompact "$AUTOCOMPACT" -n "$NAME" "load $DOC and continue")
+fi
 
 # HIMMEL-2779: headed-arm-leg.sh sets this required value. Validate the same
 # argv array both launch branches consume, so a future renderer cannot drop or
@@ -573,7 +588,18 @@ esac
 case "$DEADLINE" in
     ''|*[!0-9]*) echo "headed-arm: deadline must be an epoch second, got '$DEADLINE'" >&2; exit 2 ;;
 esac
-if ! command -v "$KONSOLE" >/dev/null 2>&1; then
+if [ "$HEADLESS" = "1" ]; then
+    if [ -z "${LEG_PROFILE_SETTINGS:-}" ]; then
+        echo "headed-arm: a headless launch needs LEG_PROFILE_SETTINGS (the leg's env rides in that settings file) - launch through headed-arm-leg.sh --headless --profile <name>" >&2
+        exit 2
+    fi
+    for _hl_need in "$CLAUDE_CLI" jq; do
+        if ! command -v "$_hl_need" >/dev/null 2>&1; then
+            echo "headed-arm: no '$_hl_need' on PATH - a headless launch needs it to list and confirm background sessions" >&2
+            exit 3
+        fi
+    done
+elif ! command -v "$KONSOLE" >/dev/null 2>&1; then
     echo "headed-arm: no '$KONSOLE' on PATH - this launcher needs a terminal emulator to give the session a TTY (HIMMEL-2534)" >&2
     exit 3
 fi
@@ -602,6 +628,9 @@ if [ "$DRY_RUN" -eq 1 ]; then
     printf 'headed-arm: %s (autocompact=%s)\n' "$CONTEXT_REASON" "$AUTOCOMPACT"
     printf 'headed-arm: launcher=%s recorder=%s konsole=%s pgrep=%s repo=%s\n' \
         "$LAUNCHER" "$RECORDER" "$KONSOLE" "$PGREP" "$REPO"
+    if [ "$HEADLESS" = "1" ]; then
+        printf 'headed-arm: headless=1 claude-cli=%s settings=%s\n' "$CLAUDE_CLI" "$LEG_PROFILE_SETTINGS"
+    fi
     exit 0
 fi
 
@@ -705,9 +734,28 @@ _argv_has_n_name() { # _argv_has_n_name <pid> - true iff /proc/<pid>/cmdline
     done < "$PROC/$pid/cmdline"
     return 1
 }
+# HIMMEL-3403: the headless census. A background session is listed by
+# `agents --json` with its pid while it runs. A CLI or jq failure is the same
+# third state (2) as a failed pgrep scan, and so is an answer that is not a
+# JSON array (jq's error() exits 5).
+headless_session_listed() {
+    local out
+    out="$("$CLAUDE_CLI" agents --json 2>/dev/null)" || return 2
+    printf '%s' "$out" | jq -e --arg n "$NAME" \
+        'if type == "array" then any(.[]; .name == $n and .pid != null) else error("not an array") end' >/dev/null 2>&1
+    case $? in
+        0) return 0 ;;
+        1) return 1 ;;
+        *) return 2 ;;
+    esac
+}
 session_confirmed() { # session_confirmed <pgrep-ere-pattern> - returns
                        # 0 confirmed, 1 genuinely not running, 2 the SCAN
                        # ITSELF failed (indeterminate, never "not running")
+    if [ "$HEADLESS" = "1" ]; then
+        headless_session_listed
+        return $?
+    fi
     local pat="$1" pid comm pids pg_rc
     pids="$("$PGREP" -f "$pat" 2>/dev/null)"
     pg_rc=$?
@@ -755,6 +803,168 @@ fi
 # mtime, which a stray `touch` or a slow/foreign filesystem could disturb),
 # mirroring the acquired-stamp idiom scripts/graphify/refresh-graph-map.sh
 # already uses for its own mkdir promote lock.
+# HIMMEL-3403: a background session gets the env of the claude daemon (the
+# process the first background launch spawned, from whatever shell ran it),
+# not ours. Measured: a session launched with FOO=second read FOO=first, the
+# daemon spawner's value. The one per-session channel is the settings file's
+# `env` block, which reaches every tool and hook subprocess. So the leg's
+# env is written there. Every leg var in our own env is mirrored; the vars a
+# headed launch passes through konsole's env are set explicitly; every
+# leg-shaped var the daemon carries that the leg should not have is set to
+# "", which every gate reading these vars treats as unset. Values of
+# secret-named vars are never copied into the file.
+_hl_leg_var() {
+    case "$1" in
+        HIMMEL_*|LEG_*|CONSOLE_*|HANDOVER_*|IMPL_*|*_OK|CR_*|ARM*|JIRA_PROJECT_KEY) return 0 ;;
+    esac
+    return 1
+}
+# The name shapes of scripts/hooks/stop-queue.mjs SECRET_NAME_SHAPES, matched
+# case-insensitively the same way, plus PASS and PAT as whole name tokens:
+# `HIMMEL_*` would otherwise mirror HIMMEL_MQTT_PASS and HIMMEL_GITHUB_PAT.
+# BYPASS is not a PASS token, so the *_BYPASS_OK gates still pass through.
+_hl_secret_var() {
+    local rc=1 nocase=0
+    [ "$1" = JIRA_PROJECT_KEY ] && return 1
+    shopt -q nocasematch && nocase=1
+    shopt -s nocasematch
+    case "$1" in
+        *TOKEN*|*SECRET*|*KEY*|*PASSWORD*|*PASSWD*|*CREDENTIAL*|*COOKIE*|*AUTH*|*CHAT_ID*|*DSN*|*_URL*|*CONNECTION*|*PRIVATE*|*CERT*|*BEARER*|*SIGNATURE*|*SESSION_ID*) rc=0 ;;
+        PASS|PASS_*|*_PASS|*_PASS_*|PAT|PAT_*|*_PAT|*_PAT_*) rc=0 ;;
+    esac
+    [ "$nocase" = 1 ] || shopt -u nocasematch
+    return "$rc"
+}
+# The background service is qualified on its cmdline (an argv entry whose
+# basename is `claude`, then `daemon run`), not on its comm, which for a bg
+# process can be the CLI version string.
+_hl_service_pid() {
+    local arg prev2="" prev1=""
+    while IFS= read -r -d '' arg; do
+        [ "${prev2##*/}" = claude ] && [ "$prev1" = daemon ] && [ "$arg" = run ] && return 0  # t13b-ok: read-only argv match of the Claude Code service, starts nothing
+        prev2="$prev1"; prev1="$arg"
+    done < "$PROC/$1/cmdline"
+    return 1
+}
+HL_KEYS=()
+HL_VALS=()
+_hl_set() { # _hl_set <name> <value> - last write wins
+    local i=0
+    while [ "$i" -lt "${#HL_KEYS[@]}" ]; do
+        if [ "${HL_KEYS[$i]}" = "$1" ]; then HL_VALS[i]="$2"; return 0; fi
+        i=$((i + 1))
+    done
+    HL_KEYS+=("$1")
+    HL_VALS+=("$2")
+}
+_hl_has() {
+    local k
+    for k in ${HL_KEYS[@]+"${HL_KEYS[@]}"}; do [ "$k" = "$1" ] && return 0; done
+    return 1
+}
+headless_fail() { # headless_fail <rc> <message>
+    echo "headed-arm: $2" >&2
+    echo "$(date +%F_%T) FAILED: $2" >> "$LOG"
+    rm -rf "$LOCK" 2>/dev/null
+    exit "$1"
+}
+# ponytail: the daemon env is read once, just before the launch. A daemon
+# that exits and is respawned by some other shell in between would hand the
+# leg vars this scan never saw. The window is the few ms between this read
+# and the launch call.
+# ponytail: only leg-shaped names (the case list in _hl_leg_var) are
+# overridden. Anything else the daemon spawner had - PATH, CLAUDE_CODE_*,
+# the CLAUDE_PID / CLAUDE_CODE_SESSION_ID a headed launch clears with env -u -
+# still reaches the leg from the daemon.
+headless_launch() {
+    local name val tok pid pids pg_rc settings="$LEG_PROFILE_SETTINGS" tmp_settings pair
+    [ -f "$settings" ] || headless_fail 2 "headless: settings file $settings is missing - it must exist before the launch"
+    for name in $(compgen -e); do
+        _hl_leg_var "$name" || continue
+        _hl_secret_var "$name" && continue
+        [ "$name" = HIMMEL_HOOK_INTEGRITY_BYPASS_OK ] && continue
+        _hl_set "$name" "${!name}"
+    done
+    _hl_set CLAUDE_CODE_FORCE_SESSION_PERSISTENCE 1
+    _hl_set HIMMEL_INITIATIVE "$INIT"
+    _hl_set ARMAUTOMERGE 1
+    set -f
+    # The role's `env -u` removals, applied before the explicit env exactly as
+    # the konsole branches order them (HIMMEL-3035: LAUNCHER_ENV may re-set).
+    for tok in $ROLE_ENV_UNSET; do
+        [ "$tok" = "-u" ] || _hl_set "$tok" ""
+    done
+    for tok in ${CONSOLE_ENV[@]+"${CONSOLE_ENV[@]}"} $LAUNCHER_ENV; do
+        case "$tok" in *=*) _hl_set "${tok%%=*}" "${tok#*=}" ;; esac
+    done
+    set +f
+    # Only a launcher the operator started with the bypass hands it on; a
+    # daemon spawned from a bypass shell never does.
+    val=""
+    [ "${HIMMEL_HOOK_INTEGRITY_BYPASS_OK:-}" = "1" ] && val=1
+    _hl_set HIMMEL_HOOK_INTEGRITY_BYPASS_OK "$val"
+    pids="$("$PGREP" -f '[c]laude daemon run' 2>/dev/null)"  # t13b-ok: read-only pgrep lookup of the Claude Code service, starts nothing
+    pg_rc=$?
+    [ "$pg_rc" -gt 1 ] && headless_fail 9 "headless: pgrep scan for the claude background service failed - its env decides what the leg inherits, refusing to launch blind"
+    local qualified=0
+    for pid in $pids; do
+        _hl_service_pid "$pid" 2>/dev/null || continue
+        qualified=$((qualified + 1))
+        [ -r "$PROC/$pid/environ" ] || headless_fail 9 "headless: cannot read the claude background service's env (pid $pid) - refusing to launch blind"
+        while IFS= read -r -d '' pair; do
+            name="${pair%%=*}"
+            _hl_leg_var "$name" || continue
+            _hl_has "$name" || _hl_set "$name" ""
+        done < "$PROC/$pid/environ"
+    done
+    [ -n "$pids" ] && [ "$qualified" -eq 0 ] && headless_fail 9 "headless: pgrep matched pid(s) ${pids//$'\n'/ } but none has a claude background service cmdline - refusing to launch blind"
+    local jq_args=() i=0
+    while [ "$i" -lt "${#HL_KEYS[@]}" ]; do
+        jq_args+=("${HL_KEYS[$i]}" "${HL_VALS[$i]}")
+        i=$((i + 1))
+    done
+    tmp_settings="$settings.tmp.$$"
+    # shellcheck disable=SC2016  # $ARGS / $a / $i are jq variables, not shell ones.
+    if ! ( umask 077 && jq --args '.env = ((.env // {}) + ($ARGS.positional as $a | reduce range(0; $a | length; 2) as $i ({}; . + {($a[$i]): $a[$i + 1]})))' \
+            "${jq_args[@]}" < "$settings" > "$tmp_settings" ) || ! mv -f "$tmp_settings" "$settings"; then
+        rm -f "$tmp_settings" 2>/dev/null
+        headless_fail 1 "headless: could not write the leg env into $settings"
+    fi
+    chmod 600 "$settings" 2>/dev/null || true
+
+    local lrc=0
+    # shellcheck disable=SC2086  # deliberately word-split env tokens, the same shape as the konsole branches.
+    env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID $ROLE_ENV_UNSET \
+        CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 HIMMEL_INITIATIVE="$INIT" ARMAUTOMERGE=1 ${CONSOLE_ENV[@]+"${CONSOLE_ENV[@]}"} $LAUNCHER_ENV \
+        "${LAUNCH_ARGV[@]}" < /dev/null >> "$LOG" 2>&1 || lrc=$?
+    [ "$lrc" -eq 0 ] || headless_fail 1 "headless: the background launch for $NAME exited $lrc - see $LOG for its output"
+
+    local n=0 seen=0 row="" out
+    while [ "$n" -lt 100 ]; do
+        headless_session_listed; sc_rc=$?
+        [ "$sc_rc" -eq 2 ] && headless_fail 9 "headless: agents census failed confirming $NAME after launch"
+        if [ "$sc_rc" -eq 0 ]; then seen=1; break; fi
+        n=$((n + 1))
+        sleep 0.2
+    done
+    [ "$seen" -eq 1 ] || headless_fail 7 "UNCONFIRMED: headless launch of $NAME exited 0 but it never appeared in \`agents --json\`"
+    out="$("$CLAUDE_CLI" agents --json 2>/dev/null)"
+    row="$(printf '%s' "$out" | jq -r --arg n "$NAME" '[.[] | select(.name == $n and .pid != null)][0] | "\(.pid) \(.sessionId // "-") \(.id // "-")"' 2>/dev/null)"
+    # shellcheck disable=SC2086  # deliberately split: "<pid> <session-id> <short-id>".
+    set -- $row
+    # The line the fleet UI and the console read. out= is where the launch
+    # call's own output went; the session's screen is `claude logs <short-id>`.
+    local line
+    line="headless=1 pid=${1:--} session-id=${2:--} short-id=${3:--} name=$NAME settings=$settings out=$LOG argv=$(printf '%q ' "${LAUNCH_ARGV[@]}")"
+    echo "$(date +%F_%T) $line" >> "$LOG"
+    if [ -n "$LAUNCH_RECORD" ]; then
+        ( umask 077 && printf 'headed-arm: %s launched=%s\n' "$line" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LAUNCH_RECORD" ) 2>/dev/null \
+            || echo "$(date +%F_%T) WARN headless launch line NOT written to $LAUNCH_RECORD" >> "$LOG"
+    fi
+    rm -rf "$LOCK" 2>/dev/null
+    exit 0
+}
+
 STALE_LOCK_SECS=120
 # r6-codex-2: the lock root used to default to a PREDICTABLE, SHARED path
 # under /tmp. On a multi-user host another local user could pre-create that
@@ -1031,6 +1241,10 @@ elif [ "$sc_rc" -eq 2 ]; then
 fi
 
 cd "$REPO" || { rm -rf "$LOCK" 2>/dev/null; exit 1; }
+# HIMMEL-3403: a headless launch never reaches konsole; headless_launch exits.
+if [ "$HEADLESS" = "1" ]; then
+    headless_launch
+fi
 # r6-codex (session-id leak): env -u cleared CLAUDE_CODE_CHILD_SESSION and
 # CLAUDE_PID but NOT CLAUDE_CODE_SESSION_ID, so the launched claude PROCESS
 # inherited the ARMING session's id in its own environ. claude generates

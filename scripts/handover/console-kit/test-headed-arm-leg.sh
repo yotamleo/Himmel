@@ -1440,6 +1440,193 @@ wait_record "$d28g" || true
 check "28i no resolvable cache dir: launch still exits 0" "$rc" "0"
 check "28i no resolvable cache dir: nothing written under /tmp/.claude" "$([ -e /tmp/.claude/himmel/launch-logs/HIMMEL-3270-N7-nohome.log ] && echo wrote || echo none)" "none"
 
+# --- 29 (HIMMEL-3403). --headless: the leg runs as a Claude Code background
+# session instead of in a konsole window. Stubs: the claude binary the shim
+# execs (LEG_CLAUDE_BIN) doubles as the CLI headed-arm.sh asks for the
+# session census (HEADED_ARM_CLAUDE_CLI). Its launch call writes its argv to
+# `record`, touches `confirmable` and prints the backgrounded line. After that,
+# `agents --json` lists the session. pgrep answers only the daemon scan: pid
+# 7777, whose environ carries stale vars that some other shell spawned the
+# daemon with. The session inherits the daemon's env, not the caller's, and
+# the launcher must override that env through the settings file.
+mk_headless_stubs() {
+  local dir="$1" name="$2"
+  mkdir -p "$dir/proc/7777"
+  cat > "$dir/claude" <<CLAUDE_EOF
+#!/usr/bin/env bash
+d="\$(dirname "\$0")"
+if [ "\${1:-}" = agents ]; then
+  [ -e "\$d/agents-fail" ] && exit 3
+  [ -e "\$d/agents-object" ] && { echo '{}'; exit 0; }
+  if [ -e "\$d/confirmable" ]; then
+    printf '[{"pid":4242,"id":"abc12345","sessionId":"11111111-2222-3333-4444-555555555555","name":"%s","kind":"background","status":"idle"}]\n' "$name"
+  else
+    echo '[]'
+  fi
+  exit 0
+fi
+printf '%s\n' "\$*" >> "\$d/record"
+: > "\$d/confirmable"
+printf 'backgrounded · abc12345 · %s\n' "$name"
+exit 0
+CLAUDE_EOF
+  chmod 755 "$dir/claude"
+  cat > "$dir/pgrep" <<'PGREP_EOF'
+#!/usr/bin/env bash
+case "$*" in *'[c]laude daemon run'*) echo 7777; exit 0 ;; esac
+exit 1
+PGREP_EOF
+  chmod 755 "$dir/pgrep"
+  cat > "$dir/konsole" <<'KONSOLE_EOF'
+#!/usr/bin/env bash
+printf 'KONSOLE %s\n' "$*" >> "$(dirname "$0")/konsole-called"
+KONSOLE_EOF
+  chmod 755 "$dir/konsole"
+  echo claude > "$dir/proc/7777/comm"
+  printf 'claude\0daemon\0run\0--origin\0transient\0' > "$dir/proc/7777/cmdline"
+  printf '%s\0' HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 HIMMEL_CONSOLE_DOC=/stale/console.md \
+    LEG_STALE_MARK=stale HIMMEL_STALE_TOKEN=s3cret PATH=/usr/bin > "$dir/proc/7777/environ"
+}
+run_headless() {
+  local stubdir="$1" repo="$2" name="$3"; shift 3
+  IMPL_GUARD_OK='' HIMMEL_CONSOLE_LEG='' \
+  HEADED_ARM_LEG_TARGET="$HEADED_ARM" \
+  HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+  KONSOLE_CMD="$stubdir/konsole" PGREP_CMD="$stubdir/pgrep" \
+  LEG_CLAUDE_BIN="$stubdir/claude" HEADED_ARM_CLAUDE_CLI="$stubdir/claude" \
+  LEG_REPO="$repo" HEADED_ARM_LOCK_DIR="$stubdir/locks" HEADED_ARM_PROC="$stubdir/proc" \
+    bash "$SCRIPT" "$@" "$name" "$some_doc" "$stubdir/signal-never" "$PAST" "$stubdir/log" claude-sonnet-5
+}
+
+d29="$tmp/c29"; mk_headless_stubs "$d29" "HIMMEL-3403-hl"; mkdir -p "$tmp/repo29"
+rc=0
+HIMMEL_HOOK_INTEGRITY_BYPASS_OK='' HIMMEL_API_TOKEN=abc HIMMEL_MQTT_PASS=p1 HIMMEL_GITHUB_PAT=p2 \
+  HIMMEL_PAT_RO=p3 HIMMEL_X_AUTH=p4 HIMMEL_SSH_KEY=p5 HIMMEL_DB_URL=p6 HIMMEL_EXAMPLE_BYPASS_OK=1 JIRA_PROJECT_KEY=HIMMEL \
+  run_headless "$d29" "$tmp/repo29" "HIMMEL-3403-hl" --headless --profile leg-impl >/dev/null 2>&1 || rc=$?
+rec29="$(cat "$d29/record" 2>/dev/null || true)"
+log29="$(cat "$d29/log" 2>/dev/null || true)"
+set29="$tmp/c29/HIMMEL-3403-hl.leg-settings.json"
+check "29a --headless: exit 0" "$rc" "0"
+contains "29b --headless: argv carries --bg" "$rec29" "--bg"
+contains "29c --headless: argv declares --permission-mode auto" "$rec29" "--permission-mode auto"
+contains "29d --headless: autocompact pin kept" "$rec29" "--autocompact 200000"
+contains "29e --headless: session name kept" "$rec29" "-n HIMMEL-3403-hl"
+contains "29f --headless: profile settings still injected" "$rec29" "--settings $set29"
+check "29g --headless: konsole never called" "$([ -e "$d29/konsole-called" ] && echo called || echo none)" "none"
+contains "29h launch log: headless=1" "$log29" "headless=1"
+contains "29i launch log: claude pid" "$log29" "pid=4242"
+contains "29j launch log: session id" "$log29" "session-id=11111111-2222-3333-4444-555555555555"
+contains "29k launch log: short id" "$log29" "short-id=abc12345"
+contains "29l launch log: exact argv" "$log29" "argv="
+contains "29m launch log: output path" "$log29" "out=$d29/log"
+dur29="$(cat "$HIMMELCTL_CACHE_DIR/launch-logs/HIMMEL-3403-hl.log" 2>/dev/null || true)"
+contains "29n durable launch record: headless=1 pid=4242" "$dur29" "headless=1 pid=4242"
+env29() { jq -r --arg k "$1" '.env[$k] // "<absent>"' "$set29" 2>/dev/null || echo "<nojson>"; }
+check "29o settings env: HIMMEL_CONSOLE_LEG=1 (Guard E marker, set explicitly)" "$(env29 HIMMEL_CONSOLE_LEG)" "1"
+check "29p settings env: HANDOVER_DIR mirrored" "$(env29 HANDOVER_DIR)" "$HANDOVER_DIR"
+check "29q settings env: HIMMEL_INITIATIVE set" "$(env29 HIMMEL_INITIATIVE)" "execute,prcheck,pr,ticket,merge,public,handover"
+check "29r settings env: daemon-injected hook-integrity bypass blanked" "$(env29 HIMMEL_HOOK_INTEGRITY_BYPASS_OK)" ""
+check "29s settings env: stale console doc from the daemon blanked" "$(env29 HIMMEL_CONSOLE_DOC)" ""
+check "29t settings env: stale LEG_* from the daemon blanked" "$(env29 LEG_STALE_MARK)" ""
+check "29u settings env: secret-named daemon var blanked, never copied" "$(env29 HIMMEL_STALE_TOKEN)" ""
+check "29v settings env: secret-named launcher var never copied" "$(env29 HIMMEL_API_TOKEN)" "<absent>"
+check "29w settings env: non-pattern daemon var untouched" "$(env29 PATH)" "<absent>"
+# 29v2: the stop-queue.mjs secret shapes, plus PASS and PAT as name tokens
+# (HIMMEL_MQTT_PASS is the recorded trap there). BYPASS is not a PASS token,
+# and JIRA_PROJECT_KEY is a key name, not a secret.
+for v in HIMMEL_MQTT_PASS HIMMEL_GITHUB_PAT HIMMEL_PAT_RO HIMMEL_X_AUTH HIMMEL_SSH_KEY HIMMEL_DB_URL; do
+  check "29v2 settings env: secret-shaped launcher var $v never copied" "$(env29 "$v")" "<absent>"
+done
+check "29v2 settings env: a *_BYPASS_OK gate is still mirrored" "$(env29 HIMMEL_EXAMPLE_BYPASS_OK)" "1"
+check "29v2 settings env: JIRA_PROJECT_KEY is still mirrored" "$(env29 JIRA_PROJECT_KEY)" "HIMMEL"
+check "29x settings file: mode 600 kept" "$(stat -c %a "$set29" 2>/dev/null || stat -f %Lp "$set29")" "600"  # gnu-ok: BSD stat -f fallback on the same line
+check "29y settings file: profile keys preserved" "$(jq -r 'keys | length > 1' "$set29" 2>/dev/null)" "true"
+
+# 29z: a launcher invoked WITH the bypass (an operator-approved hook-edit leg)
+# hands the leg "1". Every other launch writes "" (29r above).
+d29z="$tmp/c29z"; mk_headless_stubs "$d29z" "HIMMEL-3403-hlz"; mkdir -p "$tmp/repo29z"
+rc=0
+HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 run_headless "$d29z" "$tmp/repo29z" "HIMMEL-3403-hlz" --headless --profile leg-impl >/dev/null 2>&1 || rc=$?
+check "29z bypass-launched headless: exit 0" "$rc" "0"
+check "29z bypass-launched headless: bypass written as 1" "$(jq -r '.env.HIMMEL_HOOK_INTEGRITY_BYPASS_OK' "$tmp/c29z/HIMMEL-3403-hlz.leg-settings.json" 2>/dev/null)" "1"
+
+# 29-env: LEG_HEADLESS=1 in the launching shell does the same as the flag.
+d29e="$tmp/c29e"; mk_headless_stubs "$d29e" "HIMMEL-3403-hle"; mkdir -p "$tmp/repo29e"
+rc=0
+LEG_HEADLESS=1 run_headless "$d29e" "$tmp/repo29e" "HIMMEL-3403-hle" --profile leg-impl >/dev/null 2>&1 || rc=$?
+check "29-env LEG_HEADLESS=1: exit 0" "$rc" "0"
+contains "29-env LEG_HEADLESS=1: argv carries --bg" "$(cat "$d29e/record" 2>/dev/null)" "--bg"
+
+# 29-dedup: a background session with this name is already listed, so the
+# launcher does not start a second one.
+d29d="$tmp/c29d"; mk_headless_stubs "$d29d" "HIMMEL-3403-hld"; mkdir -p "$tmp/repo29d"; : > "$d29d/confirmable"
+rc=0
+run_headless "$d29d" "$tmp/repo29d" "HIMMEL-3403-hld" --headless --profile leg-impl >/dev/null 2>&1 || rc=$?
+check "29-dedup already running: exit 0" "$rc" "0"
+check "29-dedup already running: no second launch" "$([ -e "$d29d/record" ] && echo launched || echo none)" "none"
+
+# 29-indet: if the census itself fails, the result is indeterminate (exit 9),
+# never read as "not running".
+d29i="$tmp/c29i"; mk_headless_stubs "$d29i" "HIMMEL-3403-hli"; mkdir -p "$tmp/repo29i"; : > "$d29i/agents-fail"
+rc=0
+run_headless "$d29i" "$tmp/repo29i" "HIMMEL-3403-hli" --headless --profile leg-impl >/dev/null 2>&1 || rc=$?
+check "29-indet census failed: exit 9" "$rc" "9"
+check "29-indet census failed: nothing launched" "$([ -e "$d29i/record" ] && echo launched || echo none)" "none"
+# 29-shape: a census that answers with something other than a JSON array is
+# just as indeterminate as one that fails outright.
+d29s="$tmp/c29s"; mk_headless_stubs "$d29s" "HIMMEL-3403-hls"; mkdir -p "$tmp/repo29s"; : > "$d29s/agents-object"
+rc=0
+run_headless "$d29s" "$tmp/repo29s" "HIMMEL-3403-hls" --headless --profile leg-impl >/dev/null 2>&1 || rc=$?
+check "29-shape non-array census: exit 9" "$rc" "9"
+check "29-shape non-array census: nothing launched" "$([ -e "$d29s/record" ] && echo launched || echo none)" "none"
+# 29-qual: the service is qualified on its cmdline, not its comm (a bg
+# process's comm can be the CLI version string), so its env is still read.
+d29q="$tmp/c29q"; mk_headless_stubs "$d29q" "HIMMEL-3403-hlq"; mkdir -p "$tmp/repo29q"
+echo 2.1.300 > "$d29q/proc/7777/comm"
+rc=0
+run_headless "$d29q" "$tmp/repo29q" "HIMMEL-3403-hlq" --headless --profile leg-impl >/dev/null 2>&1 || rc=$?
+check "29-qual version-string comm: exit 0" "$rc" "0"
+check "29-qual version-string comm: service env still read (stale doc blanked)" "$(jq -r '.env.HIMMEL_CONSOLE_DOC // "<absent>"' "$d29q/HIMMEL-3403-hlq.leg-settings.json" 2>/dev/null)" ""
+# 29-noqual: pgrep matched a process that is not the service (the pattern sits
+# inside another command's argv). No qualifying pid = refuse, never launch blind.
+d29n="$tmp/c29n"; mk_headless_stubs "$d29n" "HIMMEL-3403-hln"; mkdir -p "$tmp/repo29n"
+echo bash > "$d29n/proc/7777/comm"
+printf 'bash\0-c\0echo claude daemon run\0' > "$d29n/proc/7777/cmdline"
+rc=0
+run_headless "$d29n" "$tmp/repo29n" "HIMMEL-3403-hln" --headless --profile leg-impl >/dev/null 2>&1 || rc=$?
+check "29-noqual no qualifying service pid: exit 9" "$rc" "9"
+check "29-noqual no qualifying service pid: nothing launched" "$([ -e "$d29n/record" ] && echo launched || echo none)" "none"
+# 29-role: a headless console launch (headed-arm.sh --role console) drops the
+# relay marker from the settings env, the same `env -u` a konsole launch gets.
+d29r="$tmp/c29r"; mk_headless_stubs "$d29r" "HIMMEL-3403-hlr"; mkdir -p "$tmp/repo29r" "$d29r/chain"
+echo '{"permissions":{}}' > "$d29r/settings.json"
+rc=0
+HIMMEL_CONSOLE_RELAY=1 HEADED_ARM_HEADLESS=1 LEG_PROFILE_SETTINGS="$d29r/settings.json" \
+  HEADED_ARM_LAUNCHER="$d29r/claude" HEADED_ARM_CLAUDE_CLI="$d29r/claude" \
+  PGREP_CMD="$d29r/pgrep" KONSOLE_CMD="$d29r/konsole" HEADED_ARM_PROC="$d29r/proc" \
+  HEADED_ARM_LOCK_DIR="$d29r/locks" HEADED_ARM_REPO="$tmp/repo29r" \
+  bash "$HEADED_ARM" --role console "HIMMEL-3403-hlr" "$some_doc" "$d29r/chain/signal-never" "$PAST" "$d29r/log" claude-sonnet-5 >/dev/null 2>&1 || rc=$?
+check "29-role headless console: exit 0" "$rc" "0"
+check "29-role headless console: relay marker blanked in settings env" "$(jq -r '.env.HIMMEL_CONSOLE_RELAY // "<absent>"' "$d29r/settings.json" 2>/dev/null)" ""
+
+# 29-refusals: --headless relies on the settings file for the leg's env, so an
+# unprofiled launch refuses. The claudex lane's script(1) wrapper has no bg form.
+rc=0; out="$(bash "$SCRIPT" --dry-run --headless --no-profile HIMMEL-3403-x some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "29-refuse --headless --no-profile: exit 2" "$rc" "2"
+contains "29-refuse --headless --no-profile: names the reason" "$out" "--headless needs a profile"
+rc=0; out="$(bash "$SCRIPT" --dry-run --headless --lane claudex --profile leg-impl HIMMEL-3403-x some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "29-refuse --headless --lane claudex: exit 2" "$rc" "2"
+
+# 29-dry: a --headless dry-run says so. The no-flag dry-run never mentions it
+# (the headed report is unchanged).
+rc=0; out="$(LEG_CONTEXT='' LEG_REPO='' bash "$SCRIPT" --dry-run --headless --profile leg-impl HIMMEL-3403-x "$some_doc" /tmp/nosig 99999999999 "$tmp/dry29.log" claude-sonnet-5 2>&1)" || rc=$?
+check "29-dry --headless: exit 0" "$rc" "0"
+contains "29-dry --headless: reports headless=1" "$out" "headless=1"
+contains "29-dry --headless: would-exec argv carries --bg" "$out" "--bg"
+rc=0; out="$(LEG_HEADLESS='' LEG_CONTEXT='' LEG_REPO='' bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-3403-x "$some_doc" /tmp/nosig 99999999999 "$tmp/dry29b.log" claude-sonnet-5 2>&1)" || rc=$?
+not_contains "29-dry no flag: headed report never mentions headless=" "$out" "headless="
+not_contains "29-dry no flag: headed argv has no --bg" "$out" "--bg"
+
 echo "---"
 if [ "$fails" -eq 0 ]; then
   echo "PASS - test-headed-arm-leg.sh"

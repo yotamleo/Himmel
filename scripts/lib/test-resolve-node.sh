@@ -64,13 +64,13 @@ fi
 # override here they would resolve the real machine node instead of the
 # fixture, on such a machine.
 echo "== resolve_node: found in an injected probe dir (PATH cleared) =="
-tmp="$(mktemp -d)"; make_fake_node "$tmp/bin"
+tmp="$(mktemp -d)" || exit 1; make_fake_node "$tmp/bin"
 out="$(PATH="$UTILS_DIR" NVM_SYMLINK="" RESOLVE_NODE_NVM4W_DIR="" RESOLVE_NODE_PROBE_DIRS="$tmp/bin" RESOLVE_NODE_NVM_ROOT="$tmp/none" FNM_DIR="$tmp/none" resolve_node)"; rc=$?
 if [ "$rc" -eq 0 ] && [ "$out" = "$tmp/bin/node" ]; then pass "probe dir -> '$out'"; else fail "probe dir -> rc=$rc out='$out' (want $tmp/bin/node)"; fi
 rm -rf "$tmp"
 
 echo "== resolve_node: node.exe variant in probe dir =="
-tmp="$(mktemp -d)"; make_fake_node "$tmp/bin" "node.exe"
+tmp="$(mktemp -d)" || exit 1; make_fake_node "$tmp/bin" "node.exe"
 out="$(PATH="$UTILS_DIR" NVM_SYMLINK="" RESOLVE_NODE_NVM4W_DIR="" RESOLVE_NODE_PROBE_DIRS="$tmp/bin" RESOLVE_NODE_NVM_ROOT="$tmp/none" FNM_DIR="$tmp/none" resolve_node)"; rc=$?
 # On Git Bash, `[ -x node ]` already resolves node.exe, so resolve_node may print
 # either basename; both are valid working paths. On macOS/Linux only node.exe exists.
@@ -78,14 +78,14 @@ if [ "$rc" -eq 0 ] && { [ "$out" = "$tmp/bin/node.exe" ] || [ "$out" = "$tmp/bin
 rm -rf "$tmp"
 
 echo "== resolve_node: nvm-windows NVM_SYMLINK probed (built-in list, HIMMEL-2013) =="
-tmp="$(mktemp -d)"; make_fake_node "$tmp/nvm4w" "node.exe"
+tmp="$(mktemp -d)" || exit 1; make_fake_node "$tmp/nvm4w" "node.exe"
 out="$(PATH="$UTILS_DIR" NVM_SYMLINK="$tmp/nvm4w" RESOLVE_NODE_NVM_ROOT="$tmp/none" FNM_DIR="$tmp/none" resolve_node)"; rc=$?
 if [ "$rc" -eq 0 ] && { [ "$out" = "$tmp/nvm4w/node.exe" ] || [ "$out" = "$tmp/nvm4w/node" ]; }; then pass "NVM_SYMLINK -> '$out'"; else fail "NVM_SYMLINK -> rc=$rc out='$out' (want $tmp/nvm4w/node.exe or $tmp/nvm4w/node)"; fi
 rm -rf "$tmp"
 
 echo "== resolve_node: NVM_SYMLINK drive-letter form (C:\\...) rewritten to /c/... (HIMMEL-2013) =="
 if command -v cygpath >/dev/null 2>&1; then
-    tmp="$(mktemp -d)"; make_fake_node "$tmp/nvm4w" "node.exe"
+    tmp="$(mktemp -d)" || exit 1; make_fake_node "$tmp/nvm4w" "node.exe"
     win_symlink="$(cygpath -w "$tmp/nvm4w")"
     out="$(PATH="$UTILS_DIR" NVM_SYMLINK="$win_symlink" RESOLVE_NODE_NVM_ROOT="$tmp/none" FNM_DIR="$tmp/none" resolve_node)"; rc=$?
     if [ "$rc" -eq 0 ] && [ -x "$out" ] && { [ "$(cygpath -w "$out")" = "$(cygpath -w "$tmp/nvm4w/node.exe")" ] || [ "$(cygpath -w "$out")" = "$(cygpath -w "$tmp/nvm4w/node")" ]; }; then

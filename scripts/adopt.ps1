@@ -858,20 +858,25 @@ function Do-Core {
     }
     # HIMMEL-2038: the "working principles" defaults were demoted out of himmel's
     # always-on project CLAUDE.md (general engineering defaults, not himmel
-    # invariants) -- adopters get them via this user-scope append instead. Runs
-    # in BOTH scopes on purpose: the principles live at user scope whichever way
-    # core was installed, so a project-scope adopter would otherwise pull the
-    # shortened CLAUDE.md and silently lose them. Idempotent, so re-running adopt
-    # is also the migration path. WARN-not-fail (see Wire-UserClaudeMd).
+    # invariants) -- adopters get them via this user-scope append instead.
+    # HIMMEL-3309: user-scope ONLY -- a project-scope install must not touch
+    # anything under $HOME (the flag's name is the contract). The principles
+    # still land at user scope whichever way core itself was installed; a
+    # project-scope adopter who also wants them runs `adopt.ps1 -Scope user`
+    # separately. Idempotent, so re-running adopt is also the migration path
+    # for a user-scope install that predates this. WARN-not-fail (see
+    # Wire-UserClaudeMd).
     #
     # TWO targets: Claude Code reads ~/.claude/CLAUDE.md, Codex reads
     # ~/.codex/AGENTS.md -- installing only into the Claude-only file would
     # leave a Codex adopter with the principles nowhere.
-    $userClaudeMdTemplate = Join-Path $HimmelRoot 'docs\setup\user-scope-claude-md-template.md'
-    $userClaudeMdTarget = Join-Path $HOME '.claude\CLAUDE.md'
-    Wire-UserClaudeMd -TemplatePath $userClaudeMdTemplate -TargetPath $userClaudeMdTarget
-    $userAgentsMdTarget = Join-Path $HOME '.codex\AGENTS.md'
-    Wire-UserClaudeMd -TemplatePath $userClaudeMdTemplate -TargetPath $userAgentsMdTarget
+    if ($Scope -eq 'user') {
+        $userClaudeMdTemplate = Join-Path $HimmelRoot 'docs\setup\user-scope-claude-md-template.md'
+        $userClaudeMdTarget = Join-Path $HOME '.claude\CLAUDE.md'
+        Wire-UserClaudeMd -TemplatePath $userClaudeMdTemplate -TargetPath $userClaudeMdTarget
+        $userAgentsMdTarget = Join-Path $HOME '.codex\AGENTS.md'
+        Wire-UserClaudeMd -TemplatePath $userClaudeMdTemplate -TargetPath $userAgentsMdTarget
+    }
     Install-Plugins
     Build-JiraCli
     Wire-QmdCore

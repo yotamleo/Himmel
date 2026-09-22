@@ -178,14 +178,17 @@ eq "9: merge_block_alert ignores console context, DMs the operator" 1 "$(count "
 # --- 10. no console resolvable -> check-ci red still DMs the operator (row c,
 #          today's behaviour) -----------------------------------------------
 new_case c10
+unset HIMMEL_CONSOLE_LEG HIMMEL_CONSOLE_NAME
 run_watch_alert "$CASE" octo/demo 42 aaaaaaaaaaaa "required check(s) FAILED: tests"
 eq "10a: HIMMEL_CONSOLE_LEG unset -> operator DM" 1 "$(count "$CASE/alerts.log")"
 new_case c10b
+unset HIMMEL_CONSOLE_NAME
 HIMMEL_CONSOLE_LEG=1 run_watch_alert "$CASE" octo/demo 42 aaaaaaaaaaaa "required check(s) FAILED: tests"
 eq "10b: console-leg but no HIMMEL_CONSOLE_NAME -> operator DM" 1 "$(count "$CASE/alerts.log")"
 new_case c10c
 HIMMEL_CONSOLE_LEG=1 HIMMEL_CONSOLE_NAME=ghost run_watch_alert "$CASE" octo/demo 42 aaaaaaaaaaaa "required check(s) FAILED: tests"
 eq "10c: console name set but its inbox was never armed -> operator DM" 1 "$(count "$CASE/alerts.log")"
+eq "10c: the never-armed inbox is NOT created (HIMMEL-3440)" "absent" "$([ -e "$CASE/bridge/consoles/ghost.md" ] && echo present || echo absent)"
 
 # --- 11. dedupe holds for the watch channel, independent of the operator
 #          channel (row d) ---------------------------------------------------
@@ -214,6 +217,40 @@ LONGHEAD=$(printf '%235s' '' | tr ' ' 'a')
 HIMMEL_CONSOLE_LEG=1 HIMMEL_CONSOLE_NAME=opsdesk run_watch_alert "$CASE" octo/demo 42 "$LONGHEAD" "rule"
 eq "12: watch-sentinel name-too-long falls back to operator DM" 1 "$(count "$CASE/alerts.log")"
 eq "12: no console-inbox line" 0 "$(count "$CASE/bridge/consoles/opsdesk.md")"
+
+# --- 13. _mba_append_if_exists (HIMMEL-3440): O_CREAT-free append -- appends
+#          to a file that already exists, and never creates one that doesn't
+#          (the primitive behind _mba_route_console; the previous separate
+#          `[ -f ]` check followed by `>>` had a TOCTOU window where a file
+#          deleted between the two was silently recreated by the append) -----
+new_case c13
+f="$CASE/opsdesk.md"; : > "$f"
+(
+    # shellcheck disable=SC1090
+    . "$LIB"
+    _mba_append_if_exists "$f" "- line one"
+)
+rc=$?
+eq "13: appends to an existing file, returns 0" 0 "$rc"
+eq "13: the line landed" "- line one" "$(cat "$f")"
+eq "13: the append adds its own trailing newline" "- line one
+x" "$(cat "$f"; echo x)"
+(
+    # shellcheck disable=SC1090
+    . "$LIB"
+    _mba_append_if_exists "$f" "- line two"
+)
+eq "13: a second append lands on its OWN line, not concatenated onto the first" "- line one
+- line two" "$(cat "$f")"
+f2="$CASE/ghost.md"
+(
+    # shellcheck disable=SC1090
+    . "$LIB"
+    _mba_append_if_exists "$f2" "- line one"
+)
+rc2=$?
+eq "13: a missing file returns nonzero" 1 "$rc2"
+eq "13: a missing file is NOT created" "absent" "$([ -e "$f2" ] && echo present || echo absent)"
 
 echo
 echo "merge-block-alert: $PASS passed, $FAIL failed"
