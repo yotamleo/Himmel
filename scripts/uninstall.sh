@@ -1170,12 +1170,15 @@ real_home_under() {
 # naming the check that fired and the two physical paths, and rc=1:
 #   unresolved  the passwd home could not be resolved (fail-closed)
 #   a           physical $HOME is a protected home
-#   b           physical $HOME/.claude is at or under a protected home's .claude
+#   b           physical $HOME/.claude is at or under a protected home's
+#               physical .claude (followed when it is symlinked out of the home)
 #   c           a $HOME-derived removal target (a {HOME} manifest row or any
-#               override env) resolves into a protected home but outside $HOME
-#               — or anywhere in it when $HOME is an ancestor of that home
+#               override env) resolves into a protected root but outside $HOME
+#               — or anywhere in it when $HOME is an ancestor of that root; the
+#               roots are the physical home plus the physical location of each
+#               top-level entry the {HOME} rows live under (.claude, .himmel)
 real_home_check() {
-  local _homes _r _rp _rc _hp _cp _i _var _t _tp _home
+  local _homes _r _rp _rc _hp _cp _i _var _t _tp _home _c _comps _roots _root
   if ! _homes=$(real_home_protected_homes); then
     echo "ERROR: refusing a wet uninstall — real-home check (unresolved): cannot resolve this user's passwd home independently of \$HOME ($HOME)" >&2
     return 1
@@ -1183,11 +1186,35 @@ real_home_check() {
   _home=$(strip_trailing_slash "$HOME")
   _hp=$(real_home_phys "$HOME") || _hp="$HOME"
   _cp=$(real_home_phys "$HOME/.claude") || _cp="$HOME/.claude"
+  # The top-level entries the {HOME} manifest rows live under (.claude,
+  # .himmel, ...): a real home may symlink any of them OUT of itself (a
+  # dotfiles layout), so each is protected at its PHYSICAL location too.
+  _comps=""
+  for _i in "${!M_ID[@]}"; do
+    case "${M_PATH[$_i]}" in '{HOME}/'*) ;; *) continue ;; esac
+    _c="${M_PATH[$_i]#'{HOME}/'}"
+    _c="${_c%%/*}"
+    case "
+$_comps
+" in *"
+$_c
+"*) ;; *) _comps="$_comps
+$_c" ;; esac
+  done
   while IFS= read -r _r; do
     [ -n "$_r" ] || continue
     [ "$_home" = "$_r" ] && continue
     _rp=$(real_home_phys "$_r") || _rp="$_r"
     if [ "$_rp" = "/" ]; then _rc="/.claude"; else _rc="$_rp/.claude"; fi
+    _t=$(real_home_phys "$_rc") && _rc="$_t"
+    _roots="$_rp"
+    while IFS= read -r _c; do
+      [ -n "$_c" ] || continue
+      if [ "$_rp" = "/" ]; then _t="/$_c"; else _t="$_rp/$_c"; fi
+      _t=$(real_home_phys "$_t") || continue
+      _roots="$_roots
+$_t"
+    done <<< "$_comps"
     if [ "$_hp" = "$_rp" ]; then
       echo "ERROR: refusing a wet uninstall — real-home check (a): \$HOME resolves to $_hp, the real home $_rp" >&2
       return 1
@@ -1204,17 +1231,21 @@ real_home_check() {
         case "${M_PATH[$_i]}" in '{HOME}'*) _t=$(m_path "$_i") ;; *) continue ;; esac
       fi
       _tp=$(real_home_phys "$_t") || _tp="$_t"
-      if real_home_under "$_tp" "$_rp" && { ! real_home_under "$_tp" "$_hp" || real_home_under "$_rp" "$_hp"; }; then
-        echo "ERROR: refusing a wet uninstall — real-home check (c): ${M_ID[$_i]} target $_t resolves to $_tp, inside the real home $_rp" >&2
-        return 1
-      fi
+      while IFS= read -r _root; do
+        if real_home_under "$_tp" "$_root" && { ! real_home_under "$_tp" "$_hp" || real_home_under "$_root" "$_hp"; }; then
+          echo "ERROR: refusing a wet uninstall — real-home check (c): ${M_ID[$_i]} target $_t resolves to $_tp, inside the real home's $_root" >&2
+          return 1
+        fi
+      done <<< "$_roots"
     done
     if [ -n "${HIMMELCTL_SYSTEMD_USER_UNIT_DIR:-}" ]; then
       _tp=$(real_home_phys "$HIMMELCTL_SYSTEMD_USER_UNIT_DIR") || _tp="$HIMMELCTL_SYSTEMD_USER_UNIT_DIR"
-      if real_home_under "$_tp" "$_rp" && { ! real_home_under "$_tp" "$_hp" || real_home_under "$_rp" "$_hp"; }; then
-        echo "ERROR: refusing a wet uninstall — real-home check (c): HIMMELCTL_SYSTEMD_USER_UNIT_DIR resolves to $_tp, inside the real home $_rp" >&2
-        return 1
-      fi
+      while IFS= read -r _root; do
+        if real_home_under "$_tp" "$_root" && { ! real_home_under "$_tp" "$_hp" || real_home_under "$_root" "$_hp"; }; then
+          echo "ERROR: refusing a wet uninstall — real-home check (c): HIMMELCTL_SYSTEMD_USER_UNIT_DIR resolves to $_tp, inside the real home's $_root" >&2
+          return 1
+        fi
+      done <<< "$_roots"
     fi
   done <<< "$_homes"
   return 0

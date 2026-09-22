@@ -76,14 +76,15 @@ run_wet() {
         HIMMEL_UNINSTALL_TEST_REAL_HOME="$FAKE" "$@" \
         bash "$CLI" "${FLAGS[@]}" </dev/null 2>&1); rc=$?
 }
-expect_refused() {  # <label> <check-name>
+expect_refused() {  # <label> <check-name> [fake real home, default $FAKE]
+    local _f="${3:-$FAKE}"
     if [ "$rc" -eq 3 ]; then pass "$1: rc=3"; else fail "$1: expected rc=3, got $rc — $out"; fi
     case "$out" in
         *"real-home check ($2)"*) pass "$1: names check ($2)" ;;
         *) fail "$1: stderr does not name check ($2) — $out" ;;
     esac
     case "$out" in *"Uninstall complete."*) fail "$1: claimed completion" ;; esac
-    if fake_intact "$FAKE"; then pass "$1: fake real home untouched"; else fail "$1: fake real home was modified"; mk_fake "$FAKE"; fi
+    if fake_intact "$_f"; then pass "$1: fake real home untouched"; else fail "$1: fake real home was modified"; mk_fake "$_f"; fi
 }
 
 # (a) portal: $HOME is a symlink to the real home.
@@ -122,6 +123,23 @@ expect_refused "(c3) \$HOME/.claude/himmel portal" c
 # real .claude is also under $HOME, which must not exempt it.
 HOME="$TMP" run_wet HIMMELCTL_CACHE_DIR="$FAKE/.claude/himmel"
 expect_refused "(c4) HOME an ancestor of the real home, override into the real .claude" c
+
+# (b2)/(c5) the real home's own .claude and .himmel are symlinks OUT of it
+# (a dotfiles layout): a scratch HOME whose .claude or .himmel points at the
+# same physical directory is refused although nothing resolves under $FAKE3.
+mk_fake "$TMP/ext3"
+FAKE3="$TMP/fake3"
+mkdir -p "$FAKE3"
+ln -s "$TMP/ext3/.claude" "$FAKE3/.claude"
+ln -s "$TMP/ext3/.himmel" "$FAKE3/.himmel"
+mkdir -p "$TMP/b2/home"
+ln -s "$TMP/ext3/.claude" "$TMP/b2/home/.claude"
+HOME="$TMP/b2/home" run_wet HIMMEL_UNINSTALL_TEST_REAL_HOME="$FAKE3"
+expect_refused "(b2) scratch .claude links to the real .claude's physical dir" b "$FAKE3"
+mkdir -p "$TMP/c5/home/.claude"
+ln -s "$TMP/ext3/.himmel" "$TMP/c5/home/.himmel"
+HOME="$TMP/c5/home" run_wet HIMMEL_UNINSTALL_TEST_REAL_HOME="$FAKE3"
+expect_refused "(c5) scratch .himmel links to the real .himmel's physical dir" c "$FAKE3"
 
 # (d) HOME unset / empty lives in scripts/test-uninstall-ux.sh: that check
 # fires before the fence, and a file that drops HOME may not lift the fence
