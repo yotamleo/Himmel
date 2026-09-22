@@ -28,7 +28,10 @@
 #
 # Under HIMMEL_TEST_FIXTURE=1 the DEFAULT sender refuses unless BRIDGE_ROOT names
 # a sandbox — a suite that reaches this by accident must not DM the operator
-# (same guard restart-bridge.sh carries, HIMMEL-2551).
+# (same guard restart-bridge.sh carries, HIMMEL-2551). HIMMEL-3478: the console-
+# routing path (_mba_route_console) carries the same refusal, keyed on
+# MERGE_WATCH_ALERT_BRIDGE_ROOT/BRIDGE_ROOT — a fixture suite must not write
+# into a real console's live bridge inbox either.
 #
 # ponytail: "operator" is access.json's first positive allowFrom entry, the same
 # rule operatorChatId() in scripts/telegram/gate.ts applies; an access.json
@@ -108,8 +111,8 @@ merge_block_alert() {
 # console context.
 #
 # When this leg is console-spawned (console_leg(), from go-gate.sh) AND its
-# console's session name is known (HIMMEL_CONSOLE_NAME — unset today; the
-# launcher export is HIMMEL-3435, a follow-up), the alert is appended to that
+# console's session name is known (HIMMEL_CONSOLE_NAME — exported into every
+# leg by the launcher since HIMMEL-3435), the alert is appended to that
 # console's own bridge inbox instead: the console is already watching the PR,
 # so an operator page mid-work is a false alarm. No console name, or the
 # console's inbox was never armed (routeToConsole's own rule in
@@ -183,6 +186,9 @@ _mba_append_if_exists() {
 _mba_route_console() {
     local repo="$1" pr="$2" name="$3" text="$4"
     local root file
+    if [ "${HIMMEL_TEST_FIXTURE:-}" = "1" ] && [ -z "${MERGE_WATCH_ALERT_BRIDGE_ROOT:-}" ] && [ -z "${BRIDGE_ROOT:-}" ]; then
+        return 0
+    fi
     root="${MERGE_WATCH_ALERT_BRIDGE_ROOT:-${BRIDGE_ROOT:-$HOME/.claude/handover/bridge}}"
     file=$(_mba_console_inbox_path "$root" "$name") || return 1
     local folded
