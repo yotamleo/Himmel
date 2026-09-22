@@ -193,18 +193,26 @@
 #      string (`\"`) -- unbounded shell lexing is out of scope per the file
 #      header; that shape does not occur in this repo.
 #   3. Boundary class: the command-name boundary after "mktemp" (N333 item 3)
-#      missed `<`/`>` (redirects: `mktemp</dev/null`), a bare `'` with no
-#      preceding whitespace (`mktemp'-d'`), a line-continuing `\` (backslash-
-#      newline), and a trailing `\r` (CRLF input, including a multi-line
-#      `$(mktemp ...)` whose closing paren is on the next line). Rather than
-#      keep growing an allow-list of boundary characters, the boundary is
-#      now the COMPLEMENT of the characters a command name can itself
-#      contain (`[A-Za-z0-9_./-]`) or end-of-string -- which is exactly
+#      missed `<`/`>` (redirects: `mktemp</dev/null`), a line-continuing `\`
+#      (backslash-newline), and a trailing `\r` (CRLF input, including a
+#      multi-line `$(mktemp ...)` whose closing paren is on the next line).
+#      Rather than keep growing an allow-list of boundary characters, the
+#      boundary is the COMPLEMENT of the characters a command name can
+#      itself contain (`[A-Za-z0-9_./-]`) or end-of-string -- which covers
 #      every character above, with nothing new to enumerate by hand. CRLF is
 #      handled once, globally, by stripping a trailing `\r` off every input
 #      line before any scanning -- so heredoc-terminator matching, variable
 #      matching and boundary matching all see the same text a plain LF file
 #      would produce.
+#      A bare `'` is deliberately NOT in the boundary class: shell word
+#      concatenation means `mktemp'-d'` lexes as the single word `mktemp-d`
+#      (the quotes are removed, nothing separates them), a distinct command
+#      name, not `mktemp` followed by a `-d` argument -- so it must not
+#      flag (HIMMEL-3428, reversing an earlier ruling on this branch that
+#      four straight critic-panel rounds disputed). A quote preceded by
+#      whitespace is unaffected: the whitespace itself is already outside
+#      `[A-Za-z0-9_./-]`, so `mktemp '-d'` (a real, separate, quoted
+#      argument) still flags correctly.
 #   4. Suggestion (kept in scope; did not grow the predicate materially):
 #      multi-variable and chained declarations -- `local T U; T=$(mktemp)`,
 #      `local T; local U; T=$(mktemp)`, `local -- T; T=$(mktemp)`,
@@ -399,16 +407,25 @@ unchecked_mktemp_scan() {
             # command name can itself contain.
             # HIMMEL-3428 item 3: rather than keep growing that allow-list
             # (round 1 of N333 already had to add `-`/`.` handling), the
-            # boundary is now the COMPLEMENT of the characters a command
+            # boundary is the COMPLEMENT of the characters a command
             # name can itself contain (`[A-Za-z0-9_./-]`) or end-of-string --
-            # which covers `<`/`>` (redirects), a bare quote character with
-            # no preceding whitespace, a line-continuing `\`, and (via the
-            # global CR strip above) a trailing `\r`, with nothing to
-            # enumerate by hand. This also drops the quote-exclusion note the
-            # old comment carried: a negated class needs no literal quote
-            # character in its own source, so there is no shell-quoting
-            # hazard to route around anymore.
-            if (scan_s !~ /^[ \t]*((local|export|typeset|readonly|declare)[ \t]+((-[a-zA-Z]+|--)[ \t]+)*)?[A-Za-z_][A-Za-z0-9_]*="?\$\([ \t]*mktemp([^A-Za-z0-9_./-]|$)/)
+            # which covers `<`/`>` (redirects), a line-continuing `\`, and
+            # (via the global CR strip above) a trailing `\r`, with nothing
+            # to enumerate by hand.
+            # A bare quote character is deliberately kept OUT of the negated
+            # boundary class (added back to the allowed set alongside
+            # `-./`): shell word concatenation means mktemp immediately
+            # followed by a quoted -d, with no separating whitespace, lexes
+            # as the single word mktemp-d, a distinct command name, not
+            # mktemp plus a -d argument, so it must not match here. mktemp
+            # followed by whitespace then a quoted -d (a real, separate
+            # argument) is unaffected -- the whitespace character itself is
+            # already outside the allowed set and matches first.
+            # (No literal quote character appears in this comment or the
+            # regex below by accident -- this whole awk program is itself
+            # single-quoted by its caller, so the one quote the regex needs
+            # is spelled with the close/escaped-quote/reopen idiom instead.)
+            if (scan_s !~ /^[ \t]*((local|export|typeset|readonly|declare)[ \t]+((-[a-zA-Z]+|--)[ \t]+)*)?[A-Za-z_][A-Za-z0-9_]*="?\$\([ \t]*mktemp([^A-Za-z0-9_./'\''-]|$)/)
                 continue
 
             # A declaration builtin (local/export/declare/typeset/readonly)
@@ -452,6 +469,8 @@ unchecked_mktemp_scan() {
             # expression, not a boundary-character tweak (codex-1, /pr-check
             # round 3 on this branch) -- deferred as a known false-negative,
             # same class as the already-accepted `T13 || echo failed` gap.
+            # Tracked as HIMMEL-3457 (this PR completes HIMMEL-3428, so the
+            # gap cannot defer onto the ticket it completes).
 
             # Rules (c)/(d) on the REMAINDER of the assignment line itself
             # (e.g. `T=$(mktemp -d); : "${T:?x}"`) -- these are VALUE guards

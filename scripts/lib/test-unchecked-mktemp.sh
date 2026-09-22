@@ -503,9 +503,19 @@ f="$TMPDIR_ROOT/t33b.sh"
 printf 'T=$(mktemp>"$f2")\n' > "$f"
 assert_eq "T33b mktemp>redirect boundary -> offending (HIMMEL-3428 item 3)" "1" "$(scan_lines "$f")"
 
+# T33c: HIMMEL-3428 -- the console reversed its own item-3 ruling on this
+# shape after four straight critic-panel rounds disputed it. Shell word
+# concatenation (no whitespace before the quote) makes mktemp$sq-d$sq lex as
+# the single word mktemp-d, not the mktemp binary, so it must NOT flag.
 f="$TMPDIR_ROOT/t33c.sh"
 printf 'T=$(mktemp%s-d%s)\n' "$sq" "$sq" > "$f"
-assert_eq "T33c mktemp$sq-d$sq quote boundary -> offending (HIMMEL-3428 item 3)" "1" "$(scan_lines "$f")"
+assert_eq "T33c mktemp$sq-d$sq word-concatenation -> NOT offending (HIMMEL-3428, reversed)" "0" "$(scan_lines "$f")"
+
+# T33c2 control: whitespace before the quote makes it a real, separate,
+# quoted argument to the actual mktemp binary -- must still flag.
+f="$TMPDIR_ROOT/t33c2.sh"
+printf 'T=$(mktemp %s-d%s)\n' "$sq" "$sq" > "$f"
+assert_eq "T33c2 mktemp $sq-d$sq whitespace-separated arg -> offending (HIMMEL-3428, control)" "1" "$(scan_lines "$f")"
 
 f="$TMPDIR_ROOT/t33d.sh"
 printf 'T=$(mktemp \\\n-d)\n' > "$f"
