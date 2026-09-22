@@ -2496,8 +2496,9 @@ assert_rc 0 "3391-d control: the right app's check run still satisfies the requi
 # --- 3434: only the LATEST check-run of a name is judged, not any run ---------
 # The check-runs REST list returns EVERY run ever created for the sha, including
 # ones a re-run or a close/reopen superseded. `_required_status` must judge only
-# the most recent one of a (name, app id) — ordered by started_at, highest id
-# breaking a tie — not "any run ever failed". PR #1079 hit this for real: three
+# the most recent one of a (name, app id) — ordered by check-run id alone
+# (strictly creation-order monotonic; started_at is not used, see 3434-h) —
+# not "any run ever failed". PR #1079 hit this for real: three
 # commit-lint check-runs on one sha (fail, fail, success) read 25/25 green
 # everywhere but this gate.
 _runs_fail_then_pass='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"failure","app":{"id":15368},"started_at":"2026-09-22T00:16:00Z","id":1},{"name":"codeowner-review-gate","status":"completed","conclusion":"success","app":{"id":15368},"started_at":"2026-09-22T01:54:00Z","id":3}]}'
