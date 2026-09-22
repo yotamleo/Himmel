@@ -1457,6 +1457,7 @@ mk_headless_stubs() {
 d="\$(dirname "\$0")"
 if [ "\${1:-}" = agents ]; then
   [ -e "\$d/agents-fail" ] && exit 3
+  [ -e "\$d/agents-object" ] && { echo '{}'; exit 0; }
   if [ -e "\$d/confirmable" ]; then
     printf '[{"pid":4242,"id":"abc12345","sessionId":"11111111-2222-3333-4444-555555555555","name":"%s","kind":"background","status":"idle"}]\n' "$name"
   else
@@ -1561,6 +1562,13 @@ rc=0
 run_headless "$d29i" "$tmp/repo29i" "HIMMEL-3403-hli" --headless --profile leg-impl >/dev/null 2>&1 || rc=$?
 check "29-indet census failed: exit 9" "$rc" "9"
 check "29-indet census failed: nothing launched" "$([ -e "$d29i/record" ] && echo launched || echo none)" "none"
+# 29-shape: a census that answers with something other than a JSON array is
+# just as indeterminate as one that fails outright.
+d29s="$tmp/c29s"; mk_headless_stubs "$d29s" "HIMMEL-3403-hls"; mkdir -p "$tmp/repo29s"; : > "$d29s/agents-object"
+rc=0
+run_headless "$d29s" "$tmp/repo29s" "HIMMEL-3403-hls" --headless --profile leg-impl >/dev/null 2>&1 || rc=$?
+check "29-shape non-array census: exit 9" "$rc" "9"
+check "29-shape non-array census: nothing launched" "$([ -e "$d29s/record" ] && echo launched || echo none)" "none"
 
 # 29-refusals: --headless relies on the settings file for the leg's env, so an
 # unprofiled launch refuses. The claudex lane's script(1) wrapper has no bg form.

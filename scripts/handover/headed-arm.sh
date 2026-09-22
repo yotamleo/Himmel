@@ -736,11 +736,13 @@ _argv_has_n_name() { # _argv_has_n_name <pid> - true iff /proc/<pid>/cmdline
 }
 # HIMMEL-3403: the headless census. A background session is listed by
 # `agents --json` with its pid while it runs. A CLI or jq failure is the same
-# third state (2) as a failed pgrep scan.
+# third state (2) as a failed pgrep scan, and so is an answer that is not a
+# JSON array (jq's error() exits 5).
 headless_session_listed() {
     local out
     out="$("$CLAUDE_CLI" agents --json 2>/dev/null)" || return 2
-    printf '%s' "$out" | jq -e --arg n "$NAME" 'any(.[]; .name == $n and .pid != null)' >/dev/null 2>&1
+    printf '%s' "$out" | jq -e --arg n "$NAME" \
+        'if type == "array" then any(.[]; .name == $n and .pid != null) else error("not an array") end' >/dev/null 2>&1
     case $? in
         0) return 0 ;;
         1) return 1 ;;
