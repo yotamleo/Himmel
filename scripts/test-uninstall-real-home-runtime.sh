@@ -215,6 +215,90 @@ mk_fake "$TMP/anc13/real"
 HOME="$TMP/c12/home" run_wet HIMMEL_UNINSTALL_TEST_REAL_HOME="$TMP/anc13/real" HIMMELCTL_CACHE_DIR="$TMP/anc13"
 expect_refused "(c13) HIMMELCTL_CACHE_DIR override is an ancestor of the real home" c "$TMP/anc13/real"
 
+# (d1)-(d6) an override SPELLED with a `.`/`..` segment, or relative, is
+# refused outright: a `..` behind a component missing at check time (one
+# uninstall itself creates later) resolves somewhere else by the time step
+# [8/8] removes it. Each fake sits alone in its own dir.
+# d1/d5 keep step [4/8] on: its scope-map `mkdir -p "$HIMMEL_CACHE_DIR"` is
+# what creates the missing component, so step [8/8] then removes the fake.
+# A stub `claude` (on the resolver's $HOME/.local/bin list) lets step [4/8] run.
+mk_claude_stub() { mkdir -p "$1/.local/bin"; printf '#!/usr/bin/env bash\nexit 0\n' > "$1/.local/bin/claude"; chmod +x "$1/.local/bin/claude"; }
+mkdir -p "$TMP/d/home"
+mk_claude_stub "$TMP/d/home"
+FLAGS=(--purge-state --yes --skip-tasks --skip-hooks)
+mk_fake "$TMP/d1/real"
+HOME="$TMP/d/home" run_wet HIMMEL_UNINSTALL_TEST_REAL_HOME="$TMP/d1/real" HIMMELCTL_CACHE_DIR="$TMP/d1/nonexist/../real"
+expect_refused "(d1) HIMMELCTL_CACHE_DIR with .. behind a missing component" c "$TMP/d1/real"
+FLAGS=(--purge-state --yes --skip-tasks --skip-plugins --skip-hooks)
+mk_fake "$TMP/d2/real"
+HOME="$TMP/d/home" run_wet HIMMEL_UNINSTALL_TEST_REAL_HOME="$TMP/d2/real" TELEGRAM_CHANNEL_DIR="$TMP/d2/nonexist/../real"
+expect_refused "(d2) TELEGRAM_CHANNEL_DIR with .. behind a missing component" c "$TMP/d2/real"
+mk_fake "$TMP/d3/real"
+HOME="$TMP/d/home" run_wet HIMMEL_UNINSTALL_TEST_REAL_HOME="$TMP/d3/real" HIMMEL_PROVENANCE_DIR="$TMP/d3/nonexist/../real"
+expect_refused "(d3) HIMMEL_PROVENANCE_DIR with .. behind a missing component" c "$TMP/d3/real"
+mk_fake "$TMP/d4/real"
+HOME="$TMP/d/home" run_wet HIMMEL_UNINSTALL_TEST_REAL_HOME="$TMP/d4/real" TELEGRAM_CHANNEL_DIR="$TMP/d4/no such/../real"
+expect_refused "(d4) TELEGRAM_CHANNEL_DIR with a spaced missing component and .." c "$TMP/d4/real"
+mk_fake "$TMP/d5/real"
+mkdir -p "$TMP/d5/home"
+mk_claude_stub "$TMP/d5/home"
+FLAGS=(--purge-state --yes --skip-tasks --skip-hooks)
+HOME="$TMP/d5/home" run_wet HIMMEL_UNINSTALL_TEST_REAL_HOME="$TMP/d5/real" HIMMELCTL_CACHE_DIR="$TMP/d5/home/.cache/pre-commit/../../../real"
+expect_refused "(d5) HIMMELCTL_CACHE_DIR through a dir a later step creates" c "$TMP/d5/real"
+FLAGS=(--purge-state --yes --skip-tasks --skip-plugins --skip-hooks)
+HOME="$TMP/d/home" run_wet HIMMELCTL_CACHE_DIR="rel/cache"
+expect_refused "(d6) relative HIMMELCTL_CACHE_DIR" c
+
+# (w1)-(w4) the point-of-use wrapper, armed by hand over --source-only: a path
+# that reaches the fake real home only through a symlink that exists at USE
+# time is refused rc=3 with the fake intact; a scratch path is removed.
+mk_fake "$TMP/w/real"
+mkdir -p "$TMP/w/home/junk"
+ln -s "$TMP/w/real/.claude" "$TMP/w/home/link"
+_wreal=$(cd "$TMP/w/real" && pwd -P)
+_whome=$(cd "$TMP/w/home" && pwd -P)
+guarded_call() {  # <path|--no-dashdash> — output in $out, rc in $rc
+    out=$(env HOME="$TMP/w/home" PATH="$HBIN" bash -c '. "$1" --source-only || exit 9
+        RH_ARMED=1; RH_HP="$2"; RH_ROOTS="$3"
+        if [ "$4" = --no-dashdash ]; then guarded rm -rf "$2/junk"; else guarded rm -rf -- "$4"; fi' \
+        _ "$CLI" "$_whome" "$_wreal" "$1" </dev/null 2>&1); rc=$?
+}
+guarded_call "$TMP/w/real/.claude/himmel"
+expect_refused "(w1) guarded removal inside the real home" c "$TMP/w/real"
+guarded_call "$TMP/w/home/link/himmel"
+expect_refused "(w2) guarded removal through a symlink into the real home" c "$TMP/w/real"
+guarded_call "$TMP/w/home/junk"
+if [ "$rc" -eq 0 ] && [ ! -e "$TMP/w/home/junk" ]; then pass "(w3) guarded removal of a scratch path proceeds"; else fail "(w3) scratch removal rc=$rc — $out"; fi
+mkdir -p "$TMP/w/home/junk"
+guarded_call --no-dashdash
+if [ "$rc" -eq 3 ] && [ -e "$TMP/w/home/junk" ]; then pass "(w4) guarded removal without -- is refused"; else fail "(w4) rc=$rc — $out"; fi
+# (w5) armed by real_home_check itself, not by hand: the roots it hands the
+# wrapper must not refuse a scratch path outside every root (an empty root
+# line once matched every absolute path).
+mkdir -p "$TMP/w/scratch/junk"
+out=$(cd "$TMP/w/scratch" && env HOME="$TMP/w/home" PATH="$HBIN" HIMMEL_UNINSTALL_TEST_REAL_HOME="$TMP/w/real" \
+    bash -c '. "$1" --source-only || exit 9
+    real_home_check || exit 8
+    guarded rm -rf -- "$2"' _ "$CLI" "$TMP/w/scratch/junk" </dev/null 2>&1); rc=$?
+if [ "$rc" -eq 0 ] && [ ! -e "$TMP/w/scratch/junk" ]; then pass "(w5) real_home_check-armed wrapper removes a scratch path"; else fail "(w5) rc=$rc — $out"; fi
+
+# (g1) every removal in uninstall.sh goes through the guarded wrapper: the only
+# bare rm left are the mktemp handoff files (EXIT traps, the crontab stderr).
+_allowed=$(cat <<'EOF'
+trap 'prov_read_cleanup; rm -f "${_ledger_owned:-}"' EXIT
+rm -f "$_cron_err"
+trap 'prov_read_cleanup; rm -f "${_scope_map:-}" "${_ledger_owned:-}"' EXIT
+EOF
+)
+_rmlines=$(grep -E '(^|[^[:alnum:]_./-])(rm|mv|rmdir|unlink)[[:space:]]' "$CLI" | sed 's/^[[:space:]]*//' | grep -v '^#')
+_bare=$(printf '%s\n' "$_rmlines" | grep -vE 'guarded (run )?(rm|mv) ' | grep -vxF "$_allowed")
+_nguard=$(printf '%s\n' "$_rmlines" | grep -cE 'guarded (run )?(rm|mv) ')
+if [ -z "$_bare" ] && [ "$_nguard" -ge 10 ]; then
+    pass "(g1) no removal bypasses the guarded wrapper ($_nguard guarded sites)"
+else
+    fail "(g1) $_nguard guarded sites; bare removals: $_bare"
+fi
+
 # (a4) $HOME is a symlink into a SUBDIRECTORY of the real home: physical and
 # lexical HOME differ and the physical one is inside a protected root. (A
 # lexical HOME under the real home is a scratch dir by design and passes.)

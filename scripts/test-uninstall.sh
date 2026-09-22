@@ -961,13 +961,13 @@ out=$(cd "$H_RELROOT/mid" && HOME="$TMP/h-home" PATH="$H_BIN5:$HBIN" \
     TELEGRAM_CHANNEL_DIR="$TMP/h-none-channel9" BRIDGE_ROOT="$TMP/h-none-bridge9" \
     HIMMELCTL_CACHE_DIR="$TMP/h-cache9" HIMMEL_UNINSTALL_REPO_ROOT="leaf" \
     bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-settings </dev/null 2>&1); rc=$?
-assert_rc "SC6O relative HOOKS_REPO_ROOT exits 2" 2 "$rc"
-assert_has "SC6O error names the hooks-repo git status as unresolved" \
-    "could not confirm whether leaf is a git work tree" "$out"
+# HIMMEL-3415: a relative env-derived target is now refused up front by the
+# real-home spelling rule (check c, rc=3), before step [2/8] ever walks it.
+assert_rc "SC6O relative HOOKS_REPO_ROOT refused up front" 3 "$rc"
+assert_has "SC6O refusal names the relative target" \
+    "is not an absolute path" "$out"
 assert_not_has "SC6O does not take the non-git clean-skip line (textual fixed point missed the real ancestor)" \
     "is not a git work tree — no repo-local hooks to remove" "$out"
-assert_has "SC6O later step 6 halted as a consequence" \
-    "[6/8] settings unwire: skipped — halted after an earlier failure" "$out"
 
 # ── SC6Q (HIMMEL-2857 i): a DANGLING `.git` symlink (target absent) is
 # indistinguishable from confirmed absence under `[ -e ]` alone — the walk
@@ -1266,7 +1266,9 @@ fi
 out=$(HOME="$FAKE_HOME" TELEGRAM_CHANNEL_DIR="$TMP/none14" BRIDGE_ROOT="$TMP/none14b" \
     HIMMELCTL_CACHE_DIR="$FAKE_HOME/." PATH="$HBIN" \
     bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
-assert_has "\$HOME/. alias refused as suspicious" "refusing to remove suspicious path" "$out"
+# HIMMEL-3415: the real-home spelling rule now refuses a `.` segment up front
+# (check c, rc=3), before the suspicious-path guard is reached.
+assert_has "\$HOME/. alias refused" "is spelled with a . or .. segment" "$out"
 if [ -x "$FAKE_HOME/.local/bin/claude" ]; then
     echo "PASS \$HOME/. alias left \$HOME intact"
 else
@@ -1274,7 +1276,7 @@ else
 fi
 # A refusal is not a teardown — the cache is still there, so the run must NOT
 # claim completion. This is the same rule step [4/8]/[5/8] follow.
-assert_rc "refused cache path exits 2, not 0" 2 "$rc"
+assert_rc "refused cache path exits non-zero (3, the up-front refusal)" 3 "$rc"
 assert_not_has "refused cache path claims no completion" "Uninstall complete." "$out"
 
 # 22d. Windows drive-root spellings must ALL be refused. MSYS/Git Bash

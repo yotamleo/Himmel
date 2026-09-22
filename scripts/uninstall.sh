@@ -961,7 +961,7 @@ remove_native_gate_hooks() {
         found=1
         if [ "$DRY_RUN" -eq 1 ]; then
           echo "  DRY: would remove native gate: $f"
-        elif rm -f "$f"; then
+        elif guarded rm -f -- "$f"; then
           echo "  removed native gate: $f"
         else
           echo "  ERROR: could not remove native gate hook $f" >&2
@@ -990,7 +990,7 @@ remove_native_gate_hooks() {
         elif [ -d "$payload_dir" ]; then
           if [ "$DRY_RUN" -eq 1 ]; then
             echo "  DRY: would remove native payload: $payload_dir"
-          elif rm -rf -- "$payload_dir"; then
+          elif guarded rm -rf -- "$payload_dir"; then
             echo "  removed native payload: $payload_dir"
           else
             echo "  ERROR: could not remove native payload: $payload_dir" >&2
@@ -1072,7 +1072,7 @@ restore_hook_backups() {
     fi
     if [ "$DRY_RUN" -eq 1 ]; then
       echo "  DRY: would restore: $target (from $hook.himmel-backup)"
-    elif mv -f -- "$backup" "$target"; then
+    elif guarded mv -f -- "$backup" "$target"; then
       echo "  restored: $target (from $hook.himmel-backup)"
     else
       echo "  ERROR: could not restore $backup to $target" >&2
@@ -1198,6 +1198,7 @@ real_home_target_ok() {
     return 1
   fi
   while IFS= read -r _root; do
+    [ -n "$_root" ] || continue
     if real_home_under "$_root" "$_tp"; then
       echo "ERROR: refusing a wet uninstall — real-home check (c): $1 target $2 resolves to $_tp, which contains the real home's $_root" >&2
       return 1
@@ -1208,6 +1209,61 @@ real_home_target_ok() {
     fi
   done <<< "$4"
   return 0
+}
+
+# real_home_spelling_ok <label> <target> — rc=1 (one stderr line, check c)
+# when an env- or row-derived removal target is relative or SPELLED with a `.`
+# or `..` segment. No normalization to get wrong: a `..` behind a component
+# that is missing at check time (one uninstall itself creates later, e.g. the
+# scope-map `mkdir -p`) would resolve somewhere else by the time it is removed.
+real_home_spelling_ok() {
+  case "$2" in
+    /*) ;;
+    *)
+      echo "ERROR: refusing a wet uninstall — real-home check (c): $1 target $2 is not an absolute path" >&2
+      return 1
+      ;;
+  esac
+  case "/$2/" in
+    */./*|*/../*)
+      echo "ERROR: refusing a wet uninstall — real-home check (c): $1 target $2 is spelled with a . or .. segment" >&2
+      return 1
+      ;;
+  esac
+  return 0
+}
+
+# guarded <cmd> [args] -- <path>... — EVERY destructive removal (rm, and the
+# mv that restores a hook backup over its target) goes through here. Once
+# real_home_check has passed (RH_ARMED=1), each path after `--` is resolved
+# physically AT THE MOMENT OF USE and re-judged by real_home_target_ok; a
+# refusal exits the whole run rc=3 before anything is removed. The one-shot
+# real_home_check stays as the early fail-fast; this closes the gap between
+# it and steps [2/8], [5/8] and [8/8]. Unarmed (a dry run, or --source-only)
+# it just runs the command.
+# ponytail: only removals in this file are guarded. The helper scripts it
+# calls (unwire-*.sh, uninstall-plugins.sh, `pre-commit uninstall`) and the
+# scope-map `mkdir -p` rewrite or create files without a point-of-use check;
+# the spelling rule above is what keeps their paths honest.
+RH_ARMED=0
+RH_HP=""
+RH_ROOTS=""
+guarded() {
+  local _a _seen=0
+  if [ "$RH_ARMED" -eq 1 ]; then
+    for _a in "$@"; do
+      if [ "$_seen" -eq 1 ]; then
+        real_home_target_ok "removal" "$_a" "$RH_HP" "$RH_ROOTS" || exit 3
+      elif [ "$_a" = "--" ]; then
+        _seen=1
+      fi
+    done
+    if [ "$_seen" -eq 0 ]; then
+      echo "ERROR: refusing a wet uninstall — guarded removal has no -- before its target: $*" >&2
+      exit 3
+    fi
+  fi
+  "$@"
 }
 
 # real_home_check — rc=0 when this run may proceed; otherwise ONE stderr line
@@ -1237,7 +1293,7 @@ real_home_target_ok() {
 # `systemctl --user` (which act on the invoking user whatever HOME is), are
 # outside this check.
 real_home_check() {
-  local _homes _r _rp _rc _hp _cp _i _t _home _c _comps _roots _root
+  local _homes _r _rp _rc _hp _cp _i _t _home _c _comps _roots _root _allroots
   if ! _homes=$(real_home_protected_homes); then
     echo "ERROR: refusing a wet uninstall — real-home check (unresolved): cannot resolve this user's passwd home independently of \$HOME ($HOME)" >&2
     return 1
@@ -1265,6 +1321,7 @@ $_c" ;; esac
       case "$_t" in */*) _t="${_t%/*}" ;; *) _t="" ;; esac
     done
   done
+  _allroots=""
   while IFS= read -r _r; do
     [ -n "$_r" ] || continue
     [ "$_home" = "$_r" ] && continue
@@ -1305,7 +1362,24 @@ $_t"
     if [ -n "${HIMMELCTL_SYSTEMD_USER_UNIT_DIR:-}" ]; then
       real_home_target_ok HIMMELCTL_SYSTEMD_USER_UNIT_DIR "$HIMMELCTL_SYSTEMD_USER_UNIT_DIR" "$_hp" "$_roots" || return 1
     fi
+    _allroots="$_allroots
+$_roots"
   done <<< "$_homes"
+  # The spelling rule runs for every run, a declared real-home run included
+  # (whose passwd home the loop above skips); after (a)/(b), which name the
+  # sharper cause for a HOME spelled with `.`.
+  for _i in "${!M_ID[@]}"; do
+    [ "${M_CLASS[$_i]}" = keep ] && continue
+    _t=$(m_path "$_i")
+    [ "$_t" = "-" ] && continue
+    real_home_spelling_ok "${M_ID[$_i]}" "$_t" || return 1
+  done
+  if [ -n "${HIMMELCTL_SYSTEMD_USER_UNIT_DIR:-}" ]; then
+    real_home_spelling_ok HIMMELCTL_SYSTEMD_USER_UNIT_DIR "$HIMMELCTL_SYSTEMD_USER_UNIT_DIR" || return 1
+  fi
+  RH_HP="$_hp"
+  RH_ROOTS="$_allroots"
+  RH_ARMED=1
   return 0
 }
 
@@ -1925,7 +1999,7 @@ else
     if [ -L "$_dir" ]; then
       # HIMMEL-2505 gap A.3: the target is a symlink — unlink the link
       # itself, never `rm -rf` through it into whatever it points at.
-      if run rm -f -- "$_dir"; then
+      if guarded run rm -f -- "$_dir"; then
         if [ "$DRY_RUN" -eq 0 ]; then
           echo "  removed symlink (link only): $_dir"
         fi
@@ -1934,7 +2008,7 @@ else
         fail_step "[2/8] telegram pairing + bridge state: $_dir could not be removed"
       fi
     elif [ -d "$_dir" ]; then
-      if run rm -rf -- "$_dir"; then
+      if guarded run rm -rf -- "$_dir"; then
         if [ "$DRY_RUN" -eq 0 ]; then
           echo "  removed: $_dir"
         fi
@@ -2942,7 +3016,7 @@ elif [ ! -e "$HIMMEL_CACHE_DIR" ] && [ ! -L "$HIMMEL_CACHE_DIR" ]; then
 elif [ -L "$HIMMEL_CACHE_DIR" ]; then
   # HIMMEL-2505 gap A.3: the target is a symlink — unlink the link itself,
   # never `rm -rf` through it into whatever it points at.
-  if run rm -f -- "$HIMMEL_CACHE_DIR"; then
+  if guarded run rm -f -- "$HIMMEL_CACHE_DIR"; then
     [ "$DRY_RUN" -eq 0 ] && echo "  removed symlink (link only): $HIMMEL_CACHE_DIR"
   else
     echo "  ERROR: failed to remove $HIMMEL_CACHE_DIR — residue remains; remove it manually." >&2
@@ -2967,7 +3041,7 @@ else
     done
     echo "  contains: $HIMMEL_CACHE_DIR/launch-logs/ ($_launch_n launch record(s), *.log)"
   fi
-  if run rm -rf -- "$HIMMEL_CACHE_DIR"; then
+  if guarded run rm -rf -- "$HIMMEL_CACHE_DIR"; then
     [ "$DRY_RUN" -eq 0 ] && echo "  removed: $HIMMEL_CACHE_DIR"
   else
     # A failed removal is residue that survives the uninstall — the exact
@@ -3016,12 +3090,12 @@ if [ "$LEDGER_OK" -eq 1 ]; then
           # HIMMEL-2505 gap A.3: a symlinked backups dir is unlinked, never
           # `rm -rf`'d through into whatever it points at.
           if [ -L "$_prov_backups_dir" ]; then
-            run rm -f -- "$_prov_backups_dir"
+            guarded run rm -f -- "$_prov_backups_dir"
           else
-            run rm -rf -- "$_prov_backups_dir"
+            guarded run rm -rf -- "$_prov_backups_dir"
           fi
         fi
-        run rm -f -- "$_prov_ledger_file"
+        guarded run rm -f -- "$_prov_ledger_file"
       fi
     elif [ "$KEEP_BACKUPS" -ne 1 ]; then
       # codex-1 fix: a dry run must not delete real backup files -- only say
