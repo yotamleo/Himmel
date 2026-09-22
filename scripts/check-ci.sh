@@ -450,9 +450,11 @@ _has_producer_ids() {
 # check run on the head. `gh pr checks --json` exposes no app id, so a
 # producer-pinned requirement is read from the check-runs API instead
 # (HIMMEL-3385). --paginate: a busy head has more than one page of runs, and an
-# unread page would read as "missing". started_at + id let the caller judge only
-# the LATEST run of a name (HIMMEL-3434): this REST list returns EVERY run ever
+# unread page would read as "missing". `id` lets the caller judge only the
+# LATEST run of a name (HIMMEL-3434): this REST list returns EVERY run ever
 # created for the sha, including ones a re-run or a close/reopen superseded.
+# started_at is carried for diagnostics only — ordering uses `id` alone (see
+# `_required_status`).
 _producer_rows() {
     gh api "repos/$owner/$repo/commits/$head0/check-runs?per_page=100" --paginate \
         --jq '.check_runs[] | "\(if .status != "completed" then "pending" elif (.conclusion == "success" or .conclusion == "neutral" or .conclusion == "skipped") then "pass" elif .conclusion == "cancelled" then "cancel" else "fail" end)\t\(.name)\t\(.app.id // "")\t\(.started_at // "")\t\(.id)"' 2>/dev/null
@@ -464,15 +466,16 @@ _producer_rows() {
 # latest-only, since `gh pr checks` reflects GitHub's own rollup, which judges
 # only the latest check suite per name. One with an id matches name AND app id
 # over <producer rows> — the raw check-runs API, which lists every run ever
-# created for the sha — so only the LATEST matching run is judged (ordered by
-# started_at, highest id breaks a tie), not any run that ever failed
-# (HIMMEL-3434): a re-run or a close/reopen on an unchanged head must be able to
-# clear an earlier red, the same as GitHub's own merge gate does. A queued run
-# can have a null started_at (jq-coerced to ""), which is unknown, not
-# "earliest" — when either side lacks a started_at the comparison falls back
-# to id alone (always present, assigned in creation order), so a freshly
-# queued rerun still outranks an older completed failure instead of losing to
-# it.
+# created for the sha — so only the LATEST matching run is judged, not any run
+# that ever failed (HIMMEL-3434): a re-run or a close/reopen on an unchanged
+# head must be able to clear an earlier red, the same as GitHub's own merge
+# gate does. "Latest" is decided by `id` alone (always present, assigned
+# strictly in creation order by GitHub), not `started_at`: a queued run can
+# have a null started_at, and comparing timestamps with an id-only fallback
+# per pair is non-transitive — a null-started_at row sitting between two
+# timestamped rows in the API's (unordered) response array could make an
+# older real timestamp beat a newer one, depending on row order. `id` alone
+# is a single total order with no such gap.
 _required_status() {
     local name id
     while IFS=$'\t' read -r name id; do
@@ -484,15 +487,7 @@ _required_status() {
             printf '%s\t%s\n' "$(printf '%s\n' "$3" | awk -F'\t' -v n="$name" -v a="$id" '
                 $2 == n && $3 == a {
                     f = 1
-                    newer = 0
-                    if (best_id == "") {
-                        newer = 1
-                    } else if ($4 != "" && best_ts != "") {
-                        if ($4 > best_ts || ($4 == best_ts && $5 + 0 > best_id + 0)) newer = 1
-                    } else if ($5 + 0 > best_id + 0) {
-                        newer = 1
-                    }
-                    if (newer) { best_ts = $4; best_id = $5; best_bucket = $1 }
+                    if (best_id == "" || $5 + 0 > best_id + 0) { best_id = $5; best_bucket = $1 }
                 }
                 END { print (f ? ((best_bucket == "fail" || best_bucket == "cancel") ? "fail" : "seen") : "missing") }')" "$name (app $id)"
         fi

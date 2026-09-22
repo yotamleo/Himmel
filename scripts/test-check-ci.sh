@@ -2507,6 +2507,15 @@ _runs_pass_then_cancel='{"check_runs":[{"name":"codeowner-review-gate","status":
 _runs_tie_higher_id_pass='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"failure","app":{"id":15368},"started_at":"2026-09-22T01:54:00Z","id":1},{"name":"codeowner-review-gate","status":"completed","conclusion":"success","app":{"id":15368},"started_at":"2026-09-22T01:54:00Z","id":3}]}'
 _runs_diff_app_later_pass='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"failure","app":{"id":15368},"started_at":"2026-09-22T00:16:00Z","id":1},{"name":"codeowner-review-gate","status":"completed","conclusion":"success","app":{"id":99},"started_at":"2026-09-22T01:54:00Z","id":3}]}'
 _runs_fail_then_pending_null_started='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"failure","app":{"id":15368},"started_at":"2026-09-22T00:16:00Z","id":1},{"name":"codeowner-review-gate","status":"queued","conclusion":null,"app":{"id":15368},"started_at":null,"id":3}]}'
+# id=3 is the true latest run (highest id); id=1 carries a LATER fake started_at
+# than id=3, and id=2 (between them in API response order) has a null
+# started_at. A comparator that mixes timestamp comparison with an id-only
+# fallback per-pair is non-transitive: id=1's later timestamp beats id=3's
+# earlier one, then id=2's null timestamp falls back to id-only and beats
+# id=1 on id alone — so id=2 (fail) wins even though id=3 (the actual latest
+# run) is a success. The GitHub check-runs API gives no ordering guarantee on
+# array position, so this exact response shape is a live possibility.
+_runs_order_dependent='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"success","app":{"id":15368},"started_at":"2026-09-22T00:16:00Z","id":3},{"name":"codeowner-review-gate","status":"completed","conclusion":"failure","app":{"id":15368},"started_at":"2026-09-22T01:54:00Z","id":1},{"name":"codeowner-review-gate","status":"completed","conclusion":"failure","app":{"id":15368},"started_at":null,"id":2}]}'
 
 # 3434-a — fail-then-success on one name reads PASS: an earlier failed run must
 # not poison a later success (the PR #1079 shape).
@@ -2554,7 +2563,15 @@ run cr-completed --grace 0
 assert_rc 0 "3434-g a queued latest run with a null started_at is not outranked by an older timestamped failure"
 if [ "$(alert_count)" = 0 ]; then pass "3434-g no alert while the null-started_at latest run is still pending"; else fail "3434-g no alert while the null-started_at latest run is still pending" "count=$(alert_count)"; fi
 
+# 3434-h — the true latest run (highest id) wins no matter where a null-
+# started_at row sits in the API's response order: the winner must not be
+# order-dependent (codex round-2 finding on HIMMEL-3434).
+RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_runs_order_dependent"
+run cr-completed --grace 0
+assert_rc 0 "3434-h the highest-id run wins regardless of API response order (non-transitive comparator control)"
+if [ "$(alert_count)" = 0 ]; then pass "3434-h no alert once the true latest (highest id) run is green"; else fail "3434-h no alert once the true latest (highest id) run is green" "count=$(alert_count)"; fi
+
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 169 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 169"; exit 1; fi
+if [ "$COUNT" -ne 170 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 170"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1
