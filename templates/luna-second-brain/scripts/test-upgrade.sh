@@ -1837,14 +1837,25 @@ assert_eq "T68 stamp NOT advanced" "1.2.0" "$(t53_stamp_version)"
 # T69 (HIMMEL-3439 regression for HIMMEL-3406 codex round-1): a trailing
 # --keep with no value must be a usage error (rc=2), not hang the arg parser
 # — a `shift 2` past the last positional argument fails without consuming
-# it, so the buggy loop re-matched --keep forever. Bounded by `timeout` so a
-# regression here fails the suite instead of hanging it.
-if command -v timeout >/dev/null 2>&1; then
+# it, so the buggy loop re-matched --keep forever. Bounded so a regression
+# here fails the suite instead of hanging it. Resolves `timeout` or (macOS
+# with brew coreutils) `gtimeout` inline rather than sourcing himmel's
+# scripts/lib/timeout-bin.sh: this template is a self-contained repo that
+# propagates to the public luna-brain repo, which has no scripts/lib/ of
+# its own to source.
+t69_timeout_bin=""
+for t69_bin in timeout gtimeout; do
+    if command -v "$t69_bin" >/dev/null 2>&1; then
+        t69_timeout_bin="$t69_bin"
+        break
+    fi
+done
+if [ -n "$t69_timeout_bin" ]; then
     T="$TMP/t69-tmpl"; V="$TMP/t69-vault"
     make_template "$T" "1.0.0"; mkdir -p "$V"; stamp_vault "$V" "0.9.0"
-    t69_out=$(timeout 5 bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --yes --keep 2>&1); t69_rc=$?
+    t69_out=$("$t69_timeout_bin" 5 bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --yes --keep 2>&1); t69_rc=$?
     if [ "$t69_rc" -eq 124 ]; then
-        fail "T69 trailing --keep with no value does not hang" "timed out under timeout (rc=124) — the arg parser hung"
+        fail "T69 trailing --keep with no value does not hang" "timed out under $t69_timeout_bin (rc=124) — the arg parser hung"
     else
         assert_eq "T69 trailing --keep with no value exits 2" "2" "$t69_rc"
     fi
@@ -1853,7 +1864,7 @@ if command -v timeout >/dev/null 2>&1; then
         *) fail "T69 trailing --keep with no value reports a usage error" "got: $t69_out" ;;
     esac
 else
-    echo "SKIP T69 trailing --keep with no value — no timeout binary"
+    echo "SKIP T69 trailing --keep with no value — no timeout/gtimeout binary"
 fi
 
 # ---------------------------------------------------------------------------
