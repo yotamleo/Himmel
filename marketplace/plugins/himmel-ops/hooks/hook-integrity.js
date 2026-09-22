@@ -1041,7 +1041,7 @@ const UNWALKABLE_DENY = 'unwalkable: ';
 const MAX_LINK_FOLLOWS = 40;
 const MAX_ALIASES = 64;
 
-function walkIdentities(candidate, resolvedProject) {
+function walkIdentities(candidate, resolvedProject, spelledProject) {
   const raw = String(candidate);
   const abs = path.isAbsolute(raw) ? raw : `${process.cwd()}${path.sep}${raw}`; // no lexical `..` collapse
   const sep = path.sep === '\\' ? /[\\/]+/ : /\/+/; // a POSIX backslash is a filename character
@@ -1097,9 +1097,17 @@ function walkIdentities(candidate, resolvedProject) {
       // add TARGET-based aliases for this link. Below (or at) the project
       // that is exactly the ambiguity a pinned key must not tolerate, so it
       // still fails closed, unchanged from HIMMEL-3397. Above the project it
-      // is harmless: the `keys` loop below only accepts a candidate rooted
-      // at resolvedProject/spelledProject, so no alias this link could ever
-      // produce would claim an in-project pin key anyway. Continue the walk
+      // is harmless — but "above" must be judged the same way the `keys`
+      // loop below judges "in-project": against BOTH resolvedProject and
+      // spelledProject, not resolvedProject alone. A link located exactly AT
+      // the project root (CLAUDE_PROJECT_DIR itself spells a symlink) never
+      // equals its own resolved TARGET, so a resolvedProject-only test always
+      // misreads it as "above" and continues the walk on the link's lexical
+      // spelling — which is exactly spelledProject, so the `keys` loop below
+      // still admits it as an in-project candidate. Checking spelledProject
+      // here too closes that: such a link is caught and fails closed, the
+      // same as any other at-or-below-project non-UTF-8 link (round-3 panel
+      // finding [codex-1]). Continue the walk
       // treating `next` as an opaque, unresolved hop (its own clean lexical
       // spelling, not its dirty target) — every later lstat/readlink still
       // reaches the real file, because the kernel follows `next` itself on
@@ -1127,8 +1135,11 @@ function walkIdentities(candidate, resolvedProject) {
       // built with) and rejoining `name` answers "where does this link
       // live", immune to both.
       const realNext = normalize(path.join(resolveReal(resolved), name));
-      const atOrBelowProject = realNext.toLowerCase() === resolvedProject.toLowerCase()
-        || realNext.toLowerCase().startsWith(`${resolvedProject.toLowerCase()}/`);
+      const realNextLower = realNext.toLowerCase();
+      const atOrBelowProject = [resolvedProject, spelledProject].some((root) => {
+        const rootLower = root.toLowerCase();
+        return realNextLower === rootLower || realNextLower.startsWith(`${rootLower}/`);
+      });
       if (atOrBelowProject) return null;
       resolved = next;
       aliases = aliases.map((a) => ({ s: path.join(a.s, name), d: a.d + 1 }));
@@ -1168,9 +1179,9 @@ function verifyIntegrityUnbypassed(scriptPath, sessionId) {
   // spelling's, and each one the kernel-order walk passes through a link
   // (walkIdentities), relative to the
   // resolved project or, for a link at the project root itself, its spelling.
-  const walked = walkIdentities(scriptPath, resolvedProject);
-  if (!walked) return { ok: false, relPath, reason: `${UNWALKABLE_DENY}a symlink loop, an unreadable or non-UTF-8 link, or a dangling link` };
   const spelledProject = normalize(path.resolve(projectDir));
+  const walked = walkIdentities(scriptPath, resolvedProject, spelledProject);
+  if (!walked) return { ok: false, relPath, reason: `${UNWALKABLE_DENY}a symlink loop, an unreadable or non-UTF-8 link, or a dangling link` };
   const keys = [relPath];
   for (const abs of [normalize(path.resolve(scriptPath)), ...walked]) { // the lexical spelling too: an over-claim only denies
     for (const root of [resolvedProject, spelledProject]) {

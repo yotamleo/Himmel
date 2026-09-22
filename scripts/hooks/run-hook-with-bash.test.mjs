@@ -1650,6 +1650,53 @@ test(
   },
 );
 
+// (f) round-3 panel finding [codex-1]: the containment test above compared
+// realNext only against resolvedProject. A non-UTF-8 link located exactly AT
+// the project root — CLAUDE_PROJECT_DIR itself spells a symlink — never
+// equals its own resolved TARGET (that is what a symlink is), so a
+// resolvedProject-only test always misread it as "above" and let the walk
+// continue on the link's lexical spelling. That spelling IS spelledProject,
+// so the outer `keys` loop (which checks both roots) still admitted the
+// walked identity as in-project — the exact fail-closed ambiguity this
+// branch exists to deny. Regression coverage for checking spelledProject too.
+function projectRootIsNonUtf8LinkFixture() {
+  const fs = require('node:fs');
+  const base = makeTmpDir('hook-integrity-rootlink-');
+  const rawReal = Buffer.concat([Buffer.from('real'), Buffer.from([0xff])]);
+  const realDir = Buffer.concat([Buffer.from(`${base}/`), rawReal]);
+  fs.mkdirSync(Buffer.concat([realDir, Buffer.from('/scripts/hooks')]), { recursive: true });
+  const leaf = Buffer.concat([realDir, Buffer.from('/scripts/hooks/guard.sh')]);
+  writeFileSync(leaf, 'echo original\n');
+  const scriptRel = 'scripts/hooks/guard.sh';
+  const integrityDir = makeTmpDir('hook-integrity-rootlink-pins-');
+  writeFileSync(
+    join(integrityDir, 's1.json'),
+    JSON.stringify({ session_id: 's1', pins: { [scriptRel]: gitBlobSha1(readFileSync(leaf)) } }),
+  );
+  const projectDir = join(base, 'proj'); // clean name; the link IS the project root, not an ancestor above it
+  fs.symlinkSync(rawReal, projectDir);
+  const scriptPath = join(projectDir, scriptRel);
+  const env = { CLAUDE_PROJECT_DIR: projectDir, HIMMEL_HOOK_INTEGRITY_DIR: integrityDir, HIMMEL_HOOK_INTEGRITY_BYPASS_OK: undefined };
+  const cleanup = () => { for (const d of [base, integrityDir]) rmSync(d, { recursive: true, force: true }); };
+  return { fs, base, leaf, scriptRel, scriptPath, env, cleanup };
+}
+
+test(
+  'HIMMEL-3448: a non-UTF-8 link AT the project root itself still fails closed',
+  { skip: process.platform === 'win32' },
+  () => {
+    const fx = projectRootIsNonUtf8LinkFixture();
+    try {
+      withEnv(fx.env, () => {
+        const result = verifyProjectHookIntegrity(fx.scriptPath, 's1');
+        assert.equal(result.ok, false);
+      });
+    } finally {
+      fx.cleanup();
+    }
+  },
+);
+
 // HIMMEL-3384: the bypass is worktree-only and audited. The old "always
 // allows" contract is gone — a bypass with no linked worktree around it is no
 // bypass at all, and every use that DOES override a deny leaves one audit line.
