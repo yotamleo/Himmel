@@ -213,6 +213,24 @@ else
   bad "zero-gap inventory invalid: $audit_out"
 fi
 
+# 3e. --manifest-only (HIMMEL-3464): local, no-network check that every
+#     marketplace plugin manifest carries a "version" field. RED against a
+#     scratch fixture with one manifest missing the field (never against the
+#     real tree), then GREEN once every fixture manifest has one.
+W_MAN="$(mktemp -d)" || { bad "--manifest-only fixture: mktemp -d failed"; exit 1; }
+mkdir -p "$W_MAN/plugin-a/.claude-plugin" "$W_MAN/plugin-b/.claude-plugin"
+printf '{"name": "plugin-a", "description": "no version here"}\n' > "$W_MAN/plugin-a/.claude-plugin/plugin.json"
+printf '{"name": "plugin-b", "version": "1.0.0"}\n' > "$W_MAN/plugin-b/.claude-plugin/plugin.json"
+red_out="$(DRIFT_PLUGINS_DIR="$W_MAN" bash "$SCRIPT" --manifest-only 2>&1)"; red_rc=$?
+if [ "$red_rc" -ne 0 ]; then ok "--manifest-only: RED — missing version exits non-zero"; else bad "--manifest-only: missing version did not fail (rc=0)"; fi
+if grepq "$red_out" "plugin-a/.claude-plugin/plugin.json"; then ok "--manifest-only: RED names the offending manifest"; else bad "--manifest-only: RED output did not name plugin-a's manifest: $red_out"; fi
+printf '{"name": "plugin-a", "version": "0.1.0"}\n' > "$W_MAN/plugin-a/.claude-plugin/plugin.json"
+green_out="$(DRIFT_PLUGINS_DIR="$W_MAN" bash "$SCRIPT" --manifest-only 2>&1)"; green_rc=$?
+if [ "$green_rc" -eq 0 ]; then ok "--manifest-only: GREEN — every manifest carries a version"; else bad "--manifest-only: GREEN fixture failed (rc=$green_rc): $green_out"; fi
+rm -rf -- "$W_MAN"
+real_out="$(bash "$SCRIPT" --manifest-only 2>&1)"; real_rc=$?
+if [ "$real_rc" -eq 0 ]; then ok "--manifest-only: real tree — every marketplace plugin manifest carries a version"; else bad "--manifest-only: real tree failed (rc=$real_rc): $real_out"; fi
+
 # 4. End-to-end: the script runs to completion with a sane exit code —
 #    0 (all current / fail-open), 2 (drift), or 3 (incomplete). Anything else
 #    (1, 127, crash) fails.

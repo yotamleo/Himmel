@@ -77,6 +77,14 @@ When drift is flagged (or quarterly, every 90 days, as a backstop):
 **Last upstream sync:** 2026-05-28 (initial fork).
 **Upstream baseline:** pinned by sha256 in `UPSTREAM_PIN` as of 2026-06-16 (HIMMEL-322) — `scripts/check-plugin-drift.sh` watches it.
 
+**Version bump (HIMMEL-3464):** bump `.claude-plugin/plugin.json`'s `version`
+whenever `agents/` or the manifest itself changes — the marketplace's local
+`directory` source has `autoUpdate: true`, so with no `version` bump Claude
+Code can't tell the plugin changed and either serves it stale or falls back to
+the checkout HEAD sha, spamming "Plugin updated" notices. `bash
+scripts/check-plugin-drift.sh --manifest-only` (pre-commit-wired) only checks
+the field is present, not that it was bumped on this change.
+
 ## Files
 
 - `.claude-plugin/plugin.json` — plugin manifest (name: `pr-review-toolkit-himmel`).
