@@ -73,7 +73,8 @@ case "$mode" in
     # given up and exited, yet finds its scratch dir present (a cleanup that
     # lost the race with the body's own pid write). The pid write succeeds,
     # so only the startup handshake can stop the command from running.
-    orphan) shim=\$PPID; for a in "\$@"; do case "\$a" in *.command) cp "\$a" "$log.body"; ( while kill -0 "\$shim" 2>/dev/null; do sleep 0.1; done; mkdir -p "\$(dirname "\$a")"; env -i sh "$log.body" ) >/dev/null 2>&1 & ;; esac; done; exit 0 ;;
+    # "$log.done" records the body's exit status, proving it actually ran.
+    orphan) shim=\$PPID; for a in "\$@"; do case "\$a" in *.command) cp "\$a" "$log.body"; ( while kill -0 "\$shim" 2>/dev/null; do sleep 0.1; done; mkdir -p "\$(dirname "\$a")"; env -i sh "$log.body"; echo "\$?" > "$log.done" ) >/dev/null 2>&1 & ;; esac; done; exit 0 ;;
 esac
 STUB
     chmod +x "$bindir/open"
@@ -230,7 +231,8 @@ b11="$tmp/b11"; mk_open_stub "$b11" "$tmp/open11.log" orphan
 PATH="$b11:$PATH" ARM_APP_DIRS="$appdirs" KONSOLE_MACOS_STARTUP_TICKS=3 \
     "$SCRIPT" --separate --workdir "$wd" -e touch "$tmp/orphan-ran" >/dev/null 2>&1; rc=$?
 check "6e orphaned body: the shim still reports exit 4" "$rc" "4"
-sleep 2
+n=0; while [ ! -s "$tmp/open11.log.done" ] && [ "$n" -lt 50 ]; do sleep 0.1; n=$((n + 1)); done
+check "6e orphaned body: the body ran and exited 1 on the missing ack" "$(cat "$tmp/open11.log.done" 2>/dev/null)" "1"
 check "6e orphaned body: the command never runs without the shim's ack" "$([ -e "$tmp/orphan-ran" ] && echo ran)" ""
 
 # --- 7. HIMMEL-3484: the fan-out caps reach a Mac leg ------------------------
