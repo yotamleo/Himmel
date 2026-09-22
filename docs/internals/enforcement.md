@@ -1368,6 +1368,18 @@ The configured upstream is protected too: `config`, `remote` and
 creation or deletion and `reflog expire|delete`. The bypass is the same as for
 every arm: `EDIT_ON_MAIN_OK=1` in the launching shell, or `.single-writer`.
 
+`push` is judged by its destination. A local path, `.`, a `file://` URL or a
+`--repo=` path that resolves into the primary is denied, and so is any
+`--receive-pack` / `--exec` (it can run `receive.denyCurrentBranch=updateInstead`
+on the receiving side and rewrite the primary's tree). A remote name or a
+network URL passes.
+
+Before the verb match, quotes are dropped, backslash escapes are undone
+(`\git`, `gi\t`, `\-C`) and backslash-newline continuations are joined, so an
+escaped spelling matches the word the shell runs. Direct-exec mode fails
+closed on input it cannot read: empty or non-JSON stdin, a non-object, a
+missing `tool_name`, or a Bash/PowerShell payload with no command.
+
 Named residual: config, remote and ref writes that land in the primary's
 SHARED common dir from a LINKED worktree's cwd: (a) `config` / `remote` /
 `branch -u` writes to the shared `$GIT_COMMON_DIR/config`, and (b)

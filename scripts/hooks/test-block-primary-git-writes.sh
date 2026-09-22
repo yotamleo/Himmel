@@ -103,6 +103,26 @@ allow() {
     done
 }
 
+# deny_direct / allow_direct <label> <cwd> <command> — direct-exec mode only,
+# for `git push`: the codex fence refuses every push (external-write class,
+# HIMMEL-745) before it sources this hook, so only the Claude lane decides.
+deny_direct() {
+    local j got err
+    j=$(payload "$3" "$2")
+    got=$(_rc "$DIRECT" "$j")
+    if [ "$got" != block ]; then bad "$1 [direct] — expected block got $got"; return; fi
+    err=$({ printf '%s' "$j" | bash "$DIRECT" >/dev/null; } 2>&1)
+    case "$err" in
+        *"git subcommand:"*) ok "$1 [direct]" ;;
+        *) bad "$1 [direct] — denied, but not by the git arm: $(printf '%s' "$err" | head -2 | tr '\n' '|')" ;;
+    esac
+}
+allow_direct() {
+    local got
+    got=$(_rc "$DIRECT" "$(payload "$3" "$2")")
+    if [ "$got" = allow ]; then ok "$1 [direct]"; else bad "$1 [direct] — expected allow got $got"; fi
+}
+
 echo "== DENY: the ticket's shapes, from a leg worktree cwd =="
 deny "checkout <leg-branch> -- <file>"      "$W" "git -C $P checkout feat/x -- README.md"
 deny "restore --source"                     "$W" "git -C $P restore --source=HEAD~1 README.md"
@@ -229,6 +249,35 @@ deny "/usr/bin/git path form"               "$W" "/usr/bin/git -C $P checkout 01
 deny "git -c k=v -C <primary> checkout"     "$W" "git -c advice.detachedHead=false -C $P checkout 0123abc"
 deny "second clause, after a read"          "$W" "git -C $P status; git -C $P checkout 0123abc"
 
+echo "== DENY: push INTO the primary (adversarial review C1) =="
+deny_direct "push --receive-pack updateInstead" "$W" "git push --receive-pack='git -c receive.denyCurrentBranch=updateInstead receive-pack' $P feat/x:main"
+deny_direct "push --receive-pack <v> (split)" "$W" "git push --receive-pack x origin feat/x"
+deny_direct "push --receive-pack=… to a remote" "$W" "git push --receive-pack=x origin feat/x"
+deny_direct "push --exec"                   "$W" "git push --exec=x origin feat/x"
+deny_direct "push <primary path>"           "$W" "git push $P feat/x:main"
+deny_direct "push <primary>/.git"           "$W" "git push $P/.git feat/x:main"
+deny_direct "push file://<primary>"         "$W" "git push file://$P feat/x:main"
+deny_direct "push ../primary (relative)"    "$W" "git push ../primary feat/x:main"
+deny_direct "push --repo=<primary>"         "$W" "git push --repo=$P feat/x:main"
+deny_direct "push --repo <primary>"         "$W" "git push --repo $P feat/x:main"
+deny_direct "push . from the primary"       "$W" "git -C $P push . feat/x:main"
+allow_direct "push (configured upstream)"   "$W" "git push"
+allow_direct "push -u origin feat/x"        "$W" "git push -u origin feat/x"
+allow_direct "push --force-with-lease origin" "$W" "git push --force-with-lease origin feat/x"
+allow_direct "push https URL"               "$W" "git push https://example.invalid/r.git feat/x"
+allow_direct "push scp-like URL"            "$W" "git push git@example.invalid:r.git feat/x"
+allow_direct "push -o ci.skip origin"       "$W" "git push -o ci.skip origin feat/x"
+allow_direct "push <single-writer path>"    "$W" "git push $S feat/x"
+allow_direct "git -C <primary> push origin main" "$W" "git -C $P push origin main"
+
+echo "== DENY: backslash-escaped spellings (adversarial review C2) =="
+deny "\\git -C <primary> checkout"          "$W" "\\git -C $P checkout feat/x -- README.md"
+deny "gi\\t -C <primary> checkout"          "$W" "gi\\t -C $P checkout feat/x -- README.md"
+deny "git \\<newline>-C <primary>"          "$W" "git \\"$'\n'"-C $P checkout feat/x -- README.md"
+deny "git \\-C <primary> checkout"          "$W" "git \\-C $P checkout feat/x -- README.md"
+deny "git -C <primary> check\\out"          "$W" "git -C $P check\\out feat/x -- README.md"
+allow "git -C <primary> st\\atus"           "$W" "git -C $P st\\atus"
+
 echo "== ALLOW: the console's wrap-flow carve-out on the primary =="
 allow "pull --ff-only"                      "$P" "git -C $P pull --ff-only"
 allow "pull --ff-only origin"               "$W" "git -C $P pull --ff-only origin"
@@ -286,6 +335,15 @@ allow "remote -v show origin"               "$W" "git -C $P remote -v show origi
 allow "GIT_WORK_TREE=<wt> git checkout"     "$W" "GIT_WORK_TREE=$W git checkout feat/x -- README.md"
 allow "single-writer repo: checkout"        "$W" "git -C $S checkout 0123abc"
 allow "single-writer repo: cwd + merge"     "$S" "git merge x"
+
+echo "== DENY: unparseable input fails CLOSED in direct-exec mode (adversarial review S6) =="
+for raw in '' 'not json' '[]' '{}' '{"tool_name":"Bash"}' '{"tool_name":"Bash","tool_input":{}}' \
+           '{"tool_input":{"command":"git status"}}'; do
+    got=$(_rc "$DIRECT" "$raw")
+    if [ "$got" = block ]; then ok "input '$raw' [direct]"; else bad "input '$raw' [direct] — expected block got $got"; fi
+done
+got=$(_rc "$DIRECT" '{"tool_name":"Read","tool_input":{"file_path":"/x"}}')
+if [ "$got" = allow ]; then ok "non-Bash tool passes [direct]"; else bad "non-Bash tool [direct] — expected allow got $got"; fi
 
 echo "== ALLOW: the documented bypass (EDIT_ON_MAIN_OK=1 in the launching shell) =="
 j=$(payload "git -C $P checkout feat/x -- README.md" "$W")

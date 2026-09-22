@@ -2291,7 +2291,8 @@ if [ "$R9_B" -gt 0 ]; then ok "r9 matrix class B is non-empty ($R9_B cells)"; el
 fi
 
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
-check_one "no command -> allow" "$DIRECT" allow '{"tool_name":"Bash","tool_input":{}}'
+# HIMMEL-3401 (S6): a Bash payload with no command fails CLOSED.
+check_one "no command -> block" "$DIRECT" block '{"tool_name":"Bash","tool_input":{}}'
 check_one "non-terminal tool -> allow" "$DIRECT" allow '{"tool_name":"Read","tool_input":{"file_path":"/x/README.md"}}'
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
