@@ -520,6 +520,11 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
         live=1
     elif mentions_primary_or_home "$cmd_lc"; then
         live=1
+    elif [ -z "$primary_root_lc" ] && [ -z "$home_root_lc" ]; then
+        # Neither root resolved (no git repo upward from cwd, and $HOME is
+        # unset or unresolvable) — the live-vs-worktree question cannot be
+        # answered at all, so it is not answered "not live". Fail closed.
+        live=1
     fi
 
     if [ "$live" = "0" ]; then

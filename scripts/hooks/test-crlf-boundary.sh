@@ -298,7 +298,10 @@ _rc_bounded() {
             "$(printf '%s' "$tool" | jq -Rs .)" "$(printf '%s' "$cmd" | jq -Rs .)")
     fi
     # shellcheck disable=SC2086  # intentional word-split: absent -> no extra token
-    printf '%s' "$json" | ${_TIMEOUT_BIN:+$_TIMEOUT_BIN 20} env "${envargs[@]}" bash "$SCRIPT_DIR/$hook.sh" >/dev/null 2>&1
+    # bash 3.2 (macOS): "${envargs[@]}" on an EMPTY array is an unbound-
+    # variable error under `set -u` (fixed in bash 4.4+) — guard with the
+    # portable ${arr[@]+"${arr[@]}"} idiom instead.
+    printf '%s' "$json" | ${_TIMEOUT_BIN:+$_TIMEOUT_BIN 20} env ${envargs[@]+"${envargs[@]}"} bash "$SCRIPT_DIR/$hook.sh" >/dev/null 2>&1
     echo "$?"
 }
 

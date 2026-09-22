@@ -138,7 +138,10 @@ bash_rc_of() {
 # .claude/worktrees/ (needed for test 7's traversal-into-primary case); a v2
 # cwd-based test needs a worktree whose own absolute path does NOT contain
 # the primary's, so an absolute-path assertion can't pass by coincidence.
-git -C "$SANDBOX/primary" worktree add -q "$SANDBOX/wt2" -b feat/wt2 >/dev/null 2>&1
+git -C "$SANDBOX/primary" worktree add -q "$SANDBOX/wt2" -b feat/wt2 >/dev/null 2>&1 || {
+    echo "FATAL: could not create the wt2 worktree fixture" >&2
+    exit 1
+}
 mkdir -p "$SANDBOX/wt2/.claude"
 printf '{}\n' > "$SANDBOX/wt2/.claude/settings.json"
 PRIMARY="$SANDBOX/primary"
@@ -407,6 +410,15 @@ assert_rc "55 bash less -o into primary settings.json denies" 2 \
 # after `.claude`, which the boundary character class must accept too -> DENY.
 assert_rc "56 bash quoted dir-dest with no trailing slash denies" 2 \
     "$(bash_rc_of "$PRIMARY" "cp -r /tmp/payload/. \".claude\"")"
+
+# 57 (CodeRabbit, PR #1115 round 3): from a cwd with no git repo anywhere
+# upward AND an unresolved $HOME, resolve_repo_context leaves BOTH
+# primary_root_lc and home_root_lc empty, so is_primary_cwd stays 0 and
+# mentions_primary_or_home can never match either root -> the old code fell
+# through to live=0 and ALLOWed. The live-vs-worktree question is simply
+# unanswerable here, not answered "not live" -> must fail closed -> DENY.
+assert_rc "57 bash mention of settings.json from a non-git cwd with unresolved HOME denies (fail-closed)" 2 \
+    "$(bash_rc_of "$SANDBOX" "echo pwned > .claude/settings.json" -u HOME)"
 
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
