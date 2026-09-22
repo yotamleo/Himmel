@@ -257,6 +257,7 @@ toybox sh scripts/cr/pr-check-context.sh
 bash scripts/cr/*.sh
 sh -c 'bash scripts/cr/*.sh'
 eval "bash scripts/cr/x*.sh"
+eval 'bash scripts/cr/pr-check-context.sh --help'
 VARIANTS
 run "a line continuation inside the name on an edited branch -> deny" 2 \
     "$(payload "bash scripts/cr/pr-check-con\\
@@ -328,6 +329,20 @@ EOF" "$WT")" "$HR"
 run "quoted-marker heredoc targeting cat stays inert -> no-op" 0 \
     "$(payload "cat > \$S/body.md <<'EOF'
 bash scripts/cr/pr-check-context.sh
+EOF" "$WT")" "$HR"
+# A heredoc opener sitting in a `#` comment is not a real redirect;
+# strip_heredocs still treated it as one and silently dropped the "body" -
+# the guarded invocation on the next line - before classify ever saw it
+# (codex-1, round 6 of the HIMMEL-3433 review).
+run "codex-1 round 6: a commented-out heredoc opener does not hide the next line -> deny" 2 \
+    "$(payload "# <<'EOF'
+bash scripts/cr/pr-check-context.sh
+EOF" "$WT")" "$HR"
+# Regression net: a REAL (non-comment) heredoc opener must still read
+# normally after the round-6 fix - only a comment-prefixed opener denies.
+run "codex-1 round 6 regression net: a real heredoc opener is unaffected -> no-op" 0 \
+    "$(payload "cat > \$S/body.md <<'EOF'
+see scripts/cr/pr-check-context.sh
 EOF" "$WT")" "$HR"
 # shellcheck disable=SC2016 # command text, verbatim
 # An UNQUOTED outer $( ) is already caught by tokenize()'s own bare-paren

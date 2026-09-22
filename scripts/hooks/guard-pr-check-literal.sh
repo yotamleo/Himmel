@@ -181,6 +181,52 @@ strip_heredocs() {
     done <<<"$text"
     printf '%s' "$out"
 }
+# HIMMEL-3433 round 6: two fail-closed guards against shapes strip_heredocs
+# and classify below cannot be trusted to parse correctly - added ahead of
+# both rather than teaching either the extra nuance, per console ruling
+# (AE): denying a guarded command outright is always the safe direction.
+raw_guarded=1
+case "${cmd//[\'\"\\]/}" in
+    *[pP][rR]-[cC][hH][eE][cC][kK]*|*[cC][rR]/*|*[][*?]*|*'{'*) ;;
+    *) raw_guarded=0 ;;
+esac
+if [ "$raw_guarded" -eq 1 ]; then
+    raw_masked=$(unquoted_mask "$cmd")
+    # codex-1 (round 6): a heredoc opener `<<` sitting in a `#` comment is
+    # not a real redirect, but strip_heredocs still treats it as one and
+    # silently drops the "body" - a guarded invocation placed there
+    # included - before classify ever sees it (unquoted_mask does not
+    # blank `#`, only quotes). Deny outright whenever a `<<` sits in a
+    # comment, in a command that also names a guarded path, rather than
+    # teach strip_heredocs to tell a real opener from a commented-out one.
+    # A real (non-comment) heredoc opener is left to strip_heredocs/
+    # classify below, unchanged, so a heredoc body that only mentions the
+    # path (data, not code) still reads as a no-op.
+    while IFS= read -r hl6; do
+        ml6=$(unquoted_mask "$hl6")
+        trimmed6=${ml6#"${ml6%%[![:space:]]*}"}
+        case "$trimmed6" in
+            '#'*'<<'*)
+                shown=${cmd//$'\n'/ }
+                shown=${shown:0:200}
+                deny "the command contains a heredoc opener '<<' inside a comment alongside text naming a guarded scripts/cr script, so the bytes that would actually run cannot be trusted to have been classified."
+                ;;
+        esac
+    done <<<"$cmd"
+    # codex-2 (round 6): eval's quoted operand is read as one opaque word
+    # by classify below (the same shape -c's operand needed a dedicated
+    # recursion case for), so an operand naming a guarded script plus
+    # trailing text (eval 'bash scripts/cr/pr-check-context.sh --help')
+    # never matches is_target's exact name and evades hit entirely. Deny
+    # outright whenever the word `eval` appears alongside text naming a
+    # guarded path, rather than recurse into eval's operand the way -c's
+    # already does.
+    if [[ "$raw_masked" =~ (^|[[:space:];\&\|\(])eval([[:space:]]|$) ]]; then
+        shown=${cmd//$'\n'/ }
+        shown=${shown:0:200}
+        deny "the command contains the word 'eval' alongside text naming a guarded scripts/cr script, so the operand eval would run cannot be trusted to have been classified."
+    fi
+fi
 cmd=$(strip_heredocs "$cmd")
 
 # ---- classify: does this command run a guarded script by a relative path? ---
