@@ -190,7 +190,7 @@ if [ "$_bwimc_sourced" = 0 ]; then
         Bash|PowerShell) ;;
         *) exit 0 ;;
     esac
-    cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null || true)
+    cmd=$(printf '%s' "$input" | jq -r '(.tool_input.command // empty) | strings' 2>/dev/null || true)
     if [ -z "$cmd" ]; then
         echo "block-write-into-main-checkout: $tool input carries no tool_input.command — refusing" >&2
         exit 2
@@ -841,6 +841,7 @@ _bwimc_deny() {
         unreadable) why="its repo's branch state could not be read (failing closed)" ;;
         cannot-canonicalise) why="the target path could not be canonicalised (failing closed)" ;;
         unresolved-git-target) why="a git -C/--git-dir/--work-tree/GIT_* env or cd target could not be resolved (failing closed)" ;;
+        repointed-remote) why="it runs a remote operation in a command that repoints a remote (a -c remote/url/protocol/core.sshCommand key, a GIT_CONFIG_COUNT/PARAMETERS/KEY_* env, or git remote add|set-url), which can reach the primary under an innocent name (failing closed)" ;;
     esac
     {
         echo "⛔ block-write-into-main-checkout: refusing a write-shaped command — $why."
@@ -1466,14 +1467,81 @@ done < <(_bwimc_split_clauses "$_bwimc_hb")
 # and so is any `--receive-pack`/`--exec` (it names a program run on the
 # receiving side, e.g. `receive.denyCurrentBranch=updateInstead`). A remote
 # NAME or a network URL passes; a remote name whose configured URL points at
-# the primary is not resolved.
+# the primary is not resolved. A repoint made in the SAME command (-c key,
+# GIT_CONFIG_COUNT/PARAMETERS/KEY_* env, `git remote add|set-url`) is
+# denied by key name; one made by an earlier, separate command is not seen
+# (HIMMEL-3407).
+
+# _bwimc_ansic BODY — the text bash's $'BODY' yields. A code point that is
+# NUL or non-ASCII, and a \c control letter, become `?`: none spells a word
+# this hook matches. An unknown escape drops its backslash (bash keeps it),
+# which only over-classifies.
+_bwimc_ansic() {
+    local s="$1" o="" c k=0 h v m
+    while [ "$k" -lt "${#s}" ]; do
+        c="${s:$k:1}"; k=$((k+1))
+        if [ "$c" != "\\" ]; then o="$o$c"; continue; fi
+        c="${s:$k:1}"; k=$((k+1))
+        case "$c" in
+            a) v=7 ;; b) v=8 ;; e|E) v=27 ;; f) v=12 ;; n) v=10 ;;
+            r) v=13 ;; t) v=9 ;; v) v=11 ;;
+            x|u|U)
+                case "$c" in x) m=2 ;; u) m=4 ;; *) m=8 ;; esac
+                h=""
+                while [ "${#h}" -lt "$m" ]; do
+                    case "${s:$k:1}" in
+                        [0-9A-Fa-f]) h="$h${s:$k:1}"; k=$((k+1)) ;;
+                        *) break ;;
+                    esac
+                done
+                if [ -z "$h" ]; then o="$o$c"; continue; fi
+                v=$((16#$h)) ;;
+            [0-7])
+                h="$c"
+                while [ "${#h}" -lt 3 ]; do
+                    case "${s:$k:1}" in
+                        [0-7]) h="$h${s:$k:1}"; k=$((k+1)) ;;
+                        *) break ;;
+                    esac
+                done
+                v=$((8#$h)) ;;
+            c) k=$((k+1)); o="$o?"; continue ;;
+            *) o="$o$c"; continue ;;
+        esac
+        if [ "$v" -eq 0 ] || [ "$v" -ge 128 ]; then o="$o?"; continue; fi
+        # shellcheck disable=SC2059  # the format IS the octal escape
+        o="$o$(printf "\\$(printf '%03o' "$v")")"
+    done
+    printf '%s' "$o"
+}
 
 # Quotes are dropped and backslash escapes undone (`\git`, `gi\t`, `\-C`, and
 # a backslash-newline line continuation joined), so an escaped spelling
-# matches the word the shell runs. Quote-blind: a backslash the shell would
-# keep inside quotes is dropped too, which only over-classifies.
+# matches the word the shell runs. ANSI-C `$'…'` is decoded and locale
+# `$"…"` read as `"…"` first (`$'\x67it'` runs git). Quote-blind: a backslash
+# the shell would keep inside quotes is dropped too, which only
+# over-classifies.
 _bwimc_unq() {
-    local t="$1" o="" c k=0
+    local t="$1" o="" c k=0 q
+    case "$t" in
+        *\$\'*|*\$\"*)
+            while [ "$k" -lt "${#t}" ]; do
+                c="${t:$k:1}"
+                if [ "$c" = '$' ] && [ "${t:$((k+1)):1}" = "'" ]; then
+                    k=$((k+2)); q=""
+                    while [ "$k" -lt "${#t}" ] && [ "${t:$k:1}" != "'" ]; do
+                        if [ "${t:$k:1}" = "\\" ]; then q="$q\\"; k=$((k+1)); fi
+                        q="$q${t:$k:1}"; k=$((k+1))
+                    done
+                    k=$((k+1))
+                    o="$o$(_bwimc_ansic "$q")"
+                    continue
+                fi
+                if [ "$c" = '$' ] && [ "${t:$((k+1)):1}" = '"' ]; then k=$((k+1)); continue; fi
+                o="$o$c"; k=$((k+1))
+            done
+            t="$o"; o=""; k=0 ;;
+    esac
     t="${t//\"/}"
     t="${t//\'/}"
     t="${t//\`/}"
@@ -1563,6 +1631,18 @@ _bwimc_long_is() {
     [ "${#p}" -ge "$3" ] || return 1
     case "$2" in "$p"*) return 0 ;; esac
     return 1
+}
+
+# _bwimc_cfg_key KEY[=VALUE] — flag a config key that repoints where a remote
+# operation connects or what it runs there. Judged by name: the value is
+# never resolved.
+_bwimc_cfg_key() {
+    _tolower_ascii "${1%%=*}"
+    case "$_TOLOWER_OUT" in
+        remote.*.url|remote.*.pushurl|remote.*.receivepack|remote.*.uploadpack|\
+        remote.*.vcs|url.*.insteadof|url.*.pushinsteadof|core.sshcommand|protocol.*)
+            _bwimc_g_repoint=1 ;;
+    esac
 }
 
 # A bare remote NAME — not `.`/`..`, a path or a URL.
@@ -1816,6 +1896,8 @@ _bwimc_git_clause() {
                         GIT_DIR=*) _bwimc_genv_dir="${toks[$i]#GIT_DIR=}" ;;
                         GIT_WORK_TREE=*) _bwimc_genv_wt="${toks[$i]#GIT_WORK_TREE=}" ;;
                         GIT_INDEX_FILE=*) _bwimc_genv_idx="${toks[$i]#GIT_INDEX_FILE=}" ;;
+                        GIT_CONFIG_COUNT*|GIT_CONFIG_PARAMETERS*|GIT_CONFIG_KEY_*)
+                            _bwimc_genv_cfg=1; _bwimc_g_repoint=1 ;;
                         GIT_CONFIG*) _bwimc_genv_cfg=1 ;;
                     esac
                 fi
@@ -1832,6 +1914,7 @@ _bwimc_git_clause() {
             GIT_DIR=*) e_dir="${t#GIT_DIR=}" ;;
             GIT_WORK_TREE=*) e_wt="${t#GIT_WORK_TREE=}" ;;
             GIT_INDEX_FILE=*) e_idx="${t#GIT_INDEX_FILE=}" ;;
+            GIT_CONFIG_COUNT=*|GIT_CONFIG_PARAMETERS=*|GIT_CONFIG_KEY_*=*) cfg=1; _bwimc_g_repoint=1 ;;
             GIT_CONFIG*=*) cfg=1 ;;
             [A-Za-z_]*=*) ;;
             *)
@@ -1871,6 +1954,8 @@ _bwimc_git_clause() {
                                 GIT_DIR=*) e_dir="${t#GIT_DIR=}" ;;
                                 GIT_WORK_TREE=*) e_wt="${t#GIT_WORK_TREE=}" ;;
                                 GIT_INDEX_FILE=*) e_idx="${t#GIT_INDEX_FILE=}" ;;
+                                GIT_CONFIG_COUNT=*|GIT_CONFIG_PARAMETERS=*|GIT_CONFIG_KEY_*=*)
+                                    cfg=1; _bwimc_g_repoint=1 ;;
                                 GIT_CONFIG*=*) cfg=1 ;;
                                 [A-Za-z_]*=*) ;;
                                 *) break ;;
@@ -1917,8 +2002,9 @@ _bwimc_git_clause() {
             -C)
                 i=$((i+1))
                 if r=$(_bwimc_resolve_abs "${toks[$i]:-}" "$dir"); then dir="$r"; else unres=1; fi ;;
-            -c|--config-env) cfg=1; i=$((i+1)) ;;
-            -c*|--config-env=*) cfg=1 ;;
+            -c|--config-env) cfg=1; i=$((i+1)); _bwimc_cfg_key "$(_bwimc_unq "${toks[$i]:-}")" ;;
+            --config-env=*) cfg=1; _bwimc_cfg_key "${t#--config-env=}" ;;
+            -c*) cfg=1; _bwimc_cfg_key "${t#-c}" ;;
             --git-dir|--work-tree|--namespace|--super-prefix) i=$((i+1)) ;;
             -*) ;;
             *) break ;;
@@ -1950,6 +2036,23 @@ _bwimc_git_clause() {
         fi
         i=$((i+1))
     done
+
+    # C1-a: a remote op in a command that also repoints a remote may reach the
+    # primary under a name that looks like any other remote. Order-free: the
+    # repoint and the op may sit in either clause.
+    case "$sub" in
+        remote)
+            v=""
+            for t in ${args[@]+"${args[@]}"}; do
+                case "$t" in -*) ;; *) v="$t"; break ;; esac
+            done
+            case "$v" in add|set-url) _bwimc_g_repoint=1 ;; *) _bwimc_g_netop=1 ;; esac ;;
+        push|fetch|pull|ls-remote) _bwimc_g_netop=1 ;;
+    esac
+    if [ "$_bwimc_g_repoint" = 1 ] && [ "$_bwimc_g_netop" = 1 ]; then
+        _BWIMC_GIT_SUB="$sub"
+        _bwimc_deny "repointed-remote" "$1" "$dir" ""
+    fi
 
     if [ "$sub" = push ]; then
         _BWIMC_GIT_SUB=push
@@ -2045,6 +2148,8 @@ _bwimc_genv_dir=""
 _bwimc_genv_wt=""
 _bwimc_genv_idx=""
 _bwimc_genv_cfg=0
+_bwimc_g_repoint=0
+_bwimc_g_netop=0
 while IFS= read -r _bwimc_clause; do
     [ -n "$(printf '%s' "$_bwimc_clause" | tr -d '[:space:]')" ] || continue
     # A backtick substitution's body is its own command (`$(` is already a

@@ -2293,6 +2293,7 @@ fi
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
 # HIMMEL-3401 (S6): a Bash payload with no command fails CLOSED.
 check_one "no command -> block" "$DIRECT" block '{"tool_name":"Bash","tool_input":{}}'
+check_one "numeric command -> block" "$DIRECT" block '{"tool_name":"Bash","tool_input":{"command":5}}'
 check_one "non-terminal tool -> allow" "$DIRECT" allow '{"tool_name":"Read","tool_input":{"file_path":"/x/README.md"}}'
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

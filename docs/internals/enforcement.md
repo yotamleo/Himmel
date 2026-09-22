@@ -1372,13 +1372,22 @@ every arm: `EDIT_ON_MAIN_OK=1` in the launching shell, or `.single-writer`.
 `--repo=` path that resolves into the primary is denied, and so is any
 `--receive-pack` / `--exec` (it can run `receive.denyCurrentBranch=updateInstead`
 on the receiving side and rewrite the primary's tree). A remote name or a
-network URL passes.
+network URL passes, unless the same command repoints a remote. In that case
+`push`, `fetch`, `pull`, `ls-remote` and `remote` are denied. A repoint is:
+- a `-c` / `--config-env` key matching `remote.*.url|pushurl|receivepack|uploadpack|vcs`, `url.*.insteadOf|pushInsteadOf`, `core.sshCommand` or `protocol.*` (case-insensitive, judged by key name, never by value);
+- a `GIT_CONFIG_COUNT` / `GIT_CONFIG_PARAMETERS` / `GIT_CONFIG_KEY_*` env assignment;
+- or a `git remote add|set-url` clause anywhere in the command line.
+
+A repoint made by an earlier, separate command (`git config remote.x.url …`)
+is not seen; HIMMEL-3407 covers it.
 
 Before the verb match, quotes are dropped, backslash escapes are undone
-(`\git`, `gi\t`, `\-C`) and backslash-newline continuations are joined, so an
-escaped spelling matches the word the shell runs. Direct-exec mode fails
-closed on input it cannot read: empty or non-JSON stdin, a non-object, a
-missing `tool_name`, or a Bash/PowerShell payload with no command.
+(`\git`, `gi\t`, `\-C`), backslash-newline continuations are joined, ANSI-C
+`$'…'` is decoded (`$'\x67it'`, `$'\147it'`, `$'git'`) and locale
+`$"…"` is read as `"…"`. An escaped or quoted spelling therefore matches the
+word the shell runs. Direct-exec mode fails closed on input it cannot read:
+empty or non-JSON stdin, a non-object, a missing `tool_name`, or a
+Bash/PowerShell payload whose command is missing or not a string.
 
 Named residual: config, remote and ref writes that land in the primary's
 SHARED common dir from a LINKED worktree's cwd: (a) `config` / `remote` /
