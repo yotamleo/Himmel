@@ -197,11 +197,14 @@ lane_marker_check() {
 # commit and whose branch changes (clean) only a file outside scripts/cr/,
 # (committed) scripts/cr/a.sh, or (ignored) adds a GITIGNORED untracked
 # scripts/cr/ file. Built with no global/system git config so an operator's
-# own settings cannot shape them.
+# own settings cannot shape them, and with the repo-routing env cleared: a
+# suite run from a git hook inherits GIT_DIR / GIT_INDEX_FILE, which override
+# `git -C` and would point the fixture's init/add/commit at the CALLER's repo.
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/pr-check-pair.XXXXXX") || { echo "mktemp failed" >&2; exit 1; }
 trap 'rm -rf "$tmp"' EXIT
 fx() {
-    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -C "$1" \
+    env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY \
+        GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -C "$1" \
         -c user.email=t@example.invalid -c user.name=t -c commit.gpgsign=false "${@:2}" >/dev/null
 }
 mkrepo() {
@@ -234,7 +237,7 @@ for r in clean committed ignored; do mkrepo "$r"; done
 run_diff_block() {
     local block=$1 repo="$tmp/$2"
     shift 2
-    (cd "$repo" && env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR \
+    (cd "$repo" && env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY \
         -u GIT_LITERAL_PATHSPECS -u GIT_GLOB_PATHSPECS -u GIT_NOGLOB_PATHSPECS \
         -u GIT_ICASE_PATHSPECS -u FAIL_CALL GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "$@" \
         bash -c '
