@@ -201,6 +201,10 @@ run_case sh-pgrep-backtick FAIL scripts/start.sh \
     "pgrep -f \`claude daemon run\`"
 run_case sh-pkill-dash-0-then-9 FAIL scripts/start.sh \
     "pkill -0 -9 -f 'claude daemon'"
+run_case sh-pgrep-process-subst FAIL scripts/start.sh \
+    'pgrep -f <(claude daemon run)'
+run_case sh-pgrep-process-subst-out FAIL scripts/start.sh \
+    'pgrep -f >(claude daemon run)'
 
 echo "== T13(b): # t13b-ok: <reason> exempts its own line only (HIMMEL-3432) =="
 run_case sh-t13b-ok-marker PASS scripts/start.sh \

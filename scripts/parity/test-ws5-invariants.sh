@@ -419,16 +419,17 @@ else
             # it does not merely test). It suppresses ONLY the bare-word
             # "daemon" match below; a lookup line that also matches a
             # service-start shape (nohup &, systemctl enable, launchctl load)
-            # still hits on that shape. A command substitution in the lookup
-            # argument (`pgrep -f "$(claude daemon run)"`, or the same with
-            # backticks) executes that argument BEFORE pgrep even runs, so it
-            # is not read-only either -- `subst` disqualifies all three
-            # shapes. `pkill
+            # still hits on that shape. A command or process substitution in
+            # the lookup argument (`pgrep -f "$(claude daemon run)"`, the
+            # backtick form, or `pgrep -f <(claude daemon run)` / `>(...)`)
+            # executes that argument BEFORE pgrep even runs, so it is not
+            # read-only either -- `subst` disqualifies all three shapes.
+            # `pkill
             # -0` additionally requires `-0` be the ONLY signal-like flag on the
             # line: `pkill -0 -9 -f ...` still matches the leading `-0` but a
             # later flag can override which signal is actually sent, so a
             # second `-<digit>` or `-s`/`--signal` flag disqualifies it too.
-            subst = code ~ /\$\(|`/
+            subst = code ~ /\$\(|`|<\(|>\(/
             is_lookup = 0
             if (code ~ /^pgrep([ \t]|$)/) {
                 if (code !~ /[;&|]/ && !subst) is_lookup = 1

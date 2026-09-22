@@ -255,12 +255,13 @@ line as a lookup) and a bare `pkill` (no `-0`) still fails (it terminates, it
 does not merely test). Precedent: HIMMEL-3414's exact-token
 `systemctl daemon-reload` carve-out.
 
-Two narrower bypasses closed on review: a command substitution in the lookup
-argument itself (`pgrep -f "$(claude daemon run)"`, or the backtick form)
-disqualifies the line even with no `;`/`&`/`|` present, since that argument
-executes before the lookup runs at all; and `pkill -0` requires `-0` be the
-*only* signal-like flag on the line (`pkill -0 -9 -f '...'` still fails —
-a second numeric or `-s`/`--signal` flag can override which signal is sent).
+Three narrower bypasses closed on review: a command or process substitution in
+the lookup argument itself (`pgrep -f "$(claude daemon run)"`, the backtick
+form, or `pgrep -f <(claude daemon run)` / `>(...)`) disqualifies the line
+even with no `;`/`&`/`|` present, since that argument executes before the
+lookup runs at all; and `pkill -0` requires `-0` be the *only* signal-like
+flag on the line (`pkill -0 -9 -f '...'` still fails — a second numeric or
+`-s`/`--signal` flag can override which signal is sent).
 
 Separately, a trailing same-line `# t13b-ok: <reason>` exempts that one line
 from T13(b) only (not T13(a), not T12/T14/T15) — the general escape hatch so
