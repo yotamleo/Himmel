@@ -1833,5 +1833,48 @@ assert_eq "T68 apply does NOT overwrite (re-surfaced local edit)" "$t65_pre" "$(
 assert_eq "T68 apply exits 3 (NEEDS-RECONCILE)" "3" "$t68_rc"
 assert_eq "T68 stamp NOT advanced" "1.2.0" "$(t53_stamp_version)"
 
+# ---------------------------------------------------------------------------
+# T69 (HIMMEL-3439 regression for HIMMEL-3406 codex round-1): a trailing
+# --keep with no value must be a usage error (rc=2), not hang the arg parser
+# — a `shift 2` past the last positional argument fails without consuming
+# it, so the buggy loop re-matched --keep forever. Bounded by `timeout` so a
+# regression here fails the suite instead of hanging it.
+if command -v timeout >/dev/null 2>&1; then
+    T="$TMP/t69-tmpl"; V="$TMP/t69-vault"
+    make_template "$T" "1.0.0"; mkdir -p "$V"; stamp_vault "$V" "0.9.0"
+    t69_out=$(timeout 5 bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --yes --keep 2>&1); t69_rc=$?
+    if [ "$t69_rc" -eq 124 ]; then
+        fail "T69 trailing --keep with no value does not hang" "timed out under timeout (rc=124) — the arg parser hung"
+    else
+        assert_eq "T69 trailing --keep with no value exits 2" "2" "$t69_rc"
+    fi
+    case "$t69_out" in
+        *"--keep requires a value"*) pass "T69 trailing --keep with no value reports a usage error" ;;
+        *) fail "T69 trailing --keep with no value reports a usage error" "got: $t69_out" ;;
+    esac
+else
+    echo "SKIP T69 trailing --keep with no value — no timeout binary"
+fi
+
+# ---------------------------------------------------------------------------
+# T70 (HIMMEL-3439 regression for HIMMEL-3406 codex round-2, negative control
+# for T64): a standalone trailing \r that is NOT part of a CRLF pair is
+# genuine content, not a line-ending style — content_equiv must NOT collapse
+# it to a false match (the round-1 fix stripped every \r unconditionally and
+# did exactly that; round 2 narrowed normalization to CRLF pairs only).
+T="$TMP/t70-tmpl"; V="$TMP/t70-vault"
+make_template "$T" "1.0.0"
+mkdir -p "$V"; cp -r "$T/." "$V/"
+stamp_vault "$V" "0.9.0"
+printf 'DEFAULT_X=1\r' > "$V/.env.example"
+t70_dry=$(run_upgrade --dry-run 2>&1)
+case "$t70_dry" in
+    *"WRITE        .env.example"*) pass "T70 a standalone trailing CR is a real difference (not converged)" ;;
+    *) fail "T70 a standalone trailing CR is a real difference (not converged)" "got: $t70_dry" ;;
+esac
+run_upgrade --yes >/dev/null 2>&1; t70_rc=$?
+assert_eq "T70 apply exits 0" "0" "$t70_rc"
+assert_eq "T70 apply overwrites the bare-CR file with the template's" "$(sha_of "$T/.env.example")" "$(sha_of "$V/.env.example")"
+
 echo
 if [ "$FAILED" -eq 0 ]; then echo "All upgrade tests passed."; else echo "$FAILED test(s) failed."; exit 1; fi
