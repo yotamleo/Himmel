@@ -1473,7 +1473,7 @@ CLAUDE_EOF
   chmod 755 "$dir/claude"
   cat > "$dir/pgrep" <<'PGREP_EOF'
 #!/usr/bin/env bash
-case "$*" in *daemon*) echo 7777; exit 0 ;; esac
+case "$*" in *'[c]laude [d]aemon run'*) echo 7777; exit 0 ;; esac
 exit 1
 PGREP_EOF
   chmod 755 "$dir/pgrep"

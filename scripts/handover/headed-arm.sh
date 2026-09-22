@@ -882,12 +882,12 @@ headless_launch() {
     val=""
     [ "${HIMMEL_HOOK_INTEGRITY_BYPASS_OK:-}" = "1" ] && val=1
     _hl_set HIMMEL_HOOK_INTEGRITY_BYPASS_OK "$val"
-    pids="$("$PGREP" -f '[c]laude daemon run' 2>/dev/null)"
+    pids="$("$PGREP" -f '[c]laude [d]aemon run' 2>/dev/null)"
     pg_rc=$?
-    [ "$pg_rc" -gt 1 ] && headless_fail 9 "headless: pgrep scan for the claude daemon failed - its env decides what the leg inherits, refusing to launch blind"
+    [ "$pg_rc" -gt 1 ] && headless_fail 9 "headless: pgrep scan for the claude background service failed - its env decides what the leg inherits, refusing to launch blind"
     for pid in $pids; do
         [ "$(cat "$PROC/$pid/comm" 2>/dev/null)" = claude ] || continue
-        [ -r "$PROC/$pid/environ" ] || headless_fail 9 "headless: cannot read the claude daemon's env (pid $pid) - refusing to launch blind"
+        [ -r "$PROC/$pid/environ" ] || headless_fail 9 "headless: cannot read the claude background service's env (pid $pid) - refusing to launch blind"
         while IFS= read -r -d '' pair; do
             name="${pair%%=*}"
             _hl_leg_var "$name" || continue
