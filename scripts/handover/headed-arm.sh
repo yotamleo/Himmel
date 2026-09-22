@@ -832,8 +832,15 @@ session_confirmed() { # session_confirmed <pgrep-ere-pattern> - returns
             echo "WARN headed-arm: no $PROC on this platform - session confirmation falls back to a lossy flattened pgrep scan (HIMMEL-2534)" >&2
             _LOSSY_WARNED=1
         fi
+        # ps rc 1 = that pid vanished since pgrep saw it (skip it); any other
+        # failure (a missing or broken ps) means the scan itself failed, so
+        # it is indeterminate (2), never "not running" (N357, codex-2).
+        local ps_rc
         for pid in $pids; do
-            comm="$(ps -o comm= -p "$pid" 2>/dev/null)" || continue
+            ps_rc=0
+            comm="$(ps -o comm= -p "$pid" 2>/dev/null)" || ps_rc=$?
+            [ "$ps_rc" -eq 1 ] && continue
+            [ "$ps_rc" -eq 0 ] || return 2
             [ "${comm##*/}" = claude ] || continue
             return 0
         done

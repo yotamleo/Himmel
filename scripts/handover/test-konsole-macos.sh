@@ -52,7 +52,10 @@ printf '%s\n' "\$*" >> "$log"
 case "$mode" in
     fail)   exit 1 ;;                 # \`open\` itself fails: nothing launched
     silent) exit 0 ;;                 # opens, but the body never runs (no pid)
-    run)    for a in "\$@"; do case "\$a" in *.command) "\$a" >/dev/null 2>&1 & ;; esac; done; exit 0 ;;
+    # env -i: a real \`open -a\` starts the body from a FRESH environment, so
+    # the stub must not hand it the caller's PATH - only the body's own
+    # PATH export may make 2f's bare name resolve (N357, codex-3).
+    run)    for a in "\$@"; do case "\$a" in *.command) env -i "\$a" >/dev/null 2>&1 & ;; esac; done; exit 0 ;;
 esac
 STUB
     chmod +x "$bindir/open"
@@ -186,6 +189,9 @@ out="$(PATH="$b9:$PATH" ARM_APP_DIRS="$appdirs" KONSOLE_MACOS_STARTUP_TICKS=abc 
     "$SCRIPT" --separate --workdir "$wd" -e true 2>&1)"; rc=$?
 check "6c malformed KONSOLE_MACOS_STARTUP_TICKS: exit 5, not a hang" "$rc" "5"
 contains "6c malformed ticks: names the bad value" "$out" "KONSOLE_MACOS_STARTUP_TICKS must be a plain decimal integer, got 'abc'"
+# N357 (codex-1): the refusal happens BEFORE `open -a`, so no session is left
+# running untracked behind a shim that already exited 5.
+check "6c malformed ticks: open was never invoked" "$(cat "$tmp/open9.log" 2>/dev/null)" ""
 
 echo
 [ "$fails" -eq 0 ] && { echo "All konsole-macos.sh cases passed."; exit 0; }

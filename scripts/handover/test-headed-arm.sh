@@ -1880,6 +1880,23 @@ wait_record "$d44c" || true
 [ -e "$d44c/record" ] && echo "ok - 44c no /proc: a failing ps does NOT confirm (konsole launched)" \
   || { echo "FAIL - 44c no /proc: a failing ps was wrongly read as a confirmation"; fails=$((fails+1)); }
 
+# 44d. N357 (codex-2): a `ps` failing with anything other than rc 1 (pid gone)
+# -- a missing or broken ps -- is a failed SCAN, not "not running": the arm
+# must refuse as indeterminate (exit 9) rather than launch a possible duplicate.
+d44d="$tmp/c44d"; mk_stub "$d44d" 0 alive
+cat > "$d44d/ps" <<'PS_EOF'
+#!/usr/bin/env bash
+exit 127
+PS_EOF
+chmod 755 "$d44d/ps"
+PATH="$d44d:$PATH" KONSOLE_CMD="$d44d/konsole" PGREP_CMD="$d44d/pgrep" \
+  HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$d44d/locks" HEADED_ARM_PROC="$d44d/no-such-proc" \
+  bash "$SCRIPT" "HIMMEL-mac44d" "doc44d.md" "$d44d/signal-never" "$PAST" "$d44d/log" >/dev/null 2>&1
+rc44d=$?
+check "44d no /proc: a broken ps is indeterminate (exit 9)" "$rc44d" "9"
+[ -e "$d44d/record" ] && { echo "FAIL - 44d no /proc: a broken ps must not launch konsole"; fails=$((fails+1)); } \
+  || echo "ok - 44d no /proc: konsole was never invoked"
+
 # --- 42. HIMMEL-2534 (codex-review I6): the recorder branch uses util-linux
 # `script -f/-c`, which BSD script rejects ("illegal option -- f"). Since
 # console-kit/headed-arm-leg.sh exports HEADED_ARM_RECORDER=1 unconditionally

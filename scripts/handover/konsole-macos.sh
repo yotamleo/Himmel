@@ -46,7 +46,9 @@
 # app-resolution seams, reused here deliberately (see below).
 #
 # Exit codes: 0 the launched command exited 0; its own rc when it exited
-# nonzero; 2 usage / bad argv; 3 `open` itself failed (nothing launched);
+# nonzero; 2 usage / bad argv; 3 nothing launched (`open` itself failed, or
+# the scratch dir for the launch body could not be created); 5 a malformed
+# KONSOLE_MACOS_STARTUP_TICKS (refused before launching);
 # 4 the launched command never reported a pid within the startup budget (the
 # scratch body is removed on the way out, so a window that opens AFTER the
 # budget shows a missing-file error rather than running an unconfirmed
@@ -134,6 +136,25 @@ if [ "$_app_found" -ne 1 ]; then
     TERM_APP="Terminal"
 fi
 
+# Startup budget: the window has to come up and the body has to reach its
+# `echo $$`. 20s is generous for a cold app launch and still bounded, so a
+# launch that silently never starts fails loudly instead of hanging an arm.
+_ticks="${KONSOLE_MACOS_STARTUP_TICKS:-200}"
+# HIMMEL-2534 CR fix (N346): `[ -ge ]` on a non-numeric _ticks doesn't abort -
+# it errors to stderr every iteration and evaluates false, so a malformed
+# KONSOLE_MACOS_STARTUP_TICKS (e.g. "abc") spins this loop forever instead of
+# failing bounded. Validated BEFORE `open -a` (N357, codex-1): a refusal
+# after the launch would leave a running, untracked session behind.
+# headed-arm.sh guards the same var with a `10#` arithmetic
+# context; mirror that here so a bad value fails loudly instead of hanging.
+case "$_ticks" in
+    ''|*[!0-9]*)
+        echo "konsole-macos: KONSOLE_MACOS_STARTUP_TICKS must be a plain decimal integer, got '$_ticks'" >&2
+        exit 5
+        ;;
+esac
+_ticks=$(( 10#$_ticks ))
+
 RUNDIR="$(mktemp -d "${TMPDIR:-/tmp}/konsole-macos.XXXXXX")" || {
     echo "konsole-macos: could not create a scratch dir for the launch body" >&2
     exit 3
@@ -211,23 +232,7 @@ if ! open -a "$TERM_APP" "$CMDFILE"; then
     exit 3
 fi
 
-# Startup budget: the window has to come up and the body has to reach its
-# `echo $$`. 20s is generous for a cold app launch and still bounded, so a
-# launch that silently never starts fails loudly instead of hanging an arm.
 _waited=0
-_ticks="${KONSOLE_MACOS_STARTUP_TICKS:-200}"
-# HIMMEL-2534 CR fix (N346): `[ -ge ]` on a non-numeric _ticks doesn't abort -
-# it errors to stderr every iteration and evaluates false, so a malformed
-# KONSOLE_MACOS_STARTUP_TICKS (e.g. "abc") spins this loop forever instead of
-# failing bounded. headed-arm.sh guards the same var with a `10#` arithmetic
-# context; mirror that here so a bad value fails loudly instead of hanging.
-case "$_ticks" in
-    ''|*[!0-9]*)
-        echo "konsole-macos: KONSOLE_MACOS_STARTUP_TICKS must be a plain decimal integer, got '$_ticks'" >&2
-        exit 5
-        ;;
-esac
-_ticks=$(( 10#$_ticks ))
 while [ ! -s "$PIDFILE" ]; do
     if [ "$_waited" -ge "$_ticks" ]; then
         echo "konsole-macos: launched $TERM_APP but the session never reported a pid within the startup budget" >&2
