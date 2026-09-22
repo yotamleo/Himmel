@@ -359,6 +359,8 @@ run_case ok-js-regex-in-subst-trailing-marker PASS src/x.ts \
     'const x = $(/"/); daemon.start()  // t13b-ok: genuine reason here'
 run_case ok-js-division-trailing-marker PASS src/x.ts \
     'const x = a / b / c; daemon.start()  // t13b-ok: genuine reason here'
+run_case ok-js-division-after-string-trailing-marker PASS src/x.ts \
+    'const x = "10" / 2; daemon.start()  // t13b-ok: genuine reason here'
 
 # HIMMEL-3446 round 3 (console ruling, AE): a substitution opened while
 # already inside a quote must push its OWN nested state instead of being

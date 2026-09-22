@@ -428,8 +428,8 @@ else
         # js_regex_opens) is skipped whole by js_regex_end, so a quote
         # inside the regex no longer opens a phantom string state.
         # ponytail: the regex-vs-division call is the classic prev-token
-        # heuristic, not a parser -- a slash after a closing brace or a
-        # string reads as a regex, and so does a slash starting a
+        # heuristic, not a parser -- a slash after a closing brace reads
+        # as a regex, and so does a slash starting a
         # continuation line. Such a misread usually runs to end of line
         # unterminated and FAILS CLOSED (no marker), but if a later slash
         # closes it, the scan resumes there and can itself desync -- the
@@ -443,6 +443,9 @@ else
             if (j < 1) return 1
             p = substr(t, j, 1)
             if (p == ")" || p == "]") return 0
+            # The scan only asks this outside a string, so a quote here just
+            # closed one: a slash after a string operand is division.
+            if (p == "\"" || p == sq || p == "`") return 0
             if ((p == "+" || p == "-") && j > 1 && substr(t, j - 1, 1) == p) return 0
             if (p !~ /[A-Za-z0-9_$]/) return 1
             w = ""
