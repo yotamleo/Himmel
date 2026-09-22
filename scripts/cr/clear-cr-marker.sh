@@ -118,7 +118,7 @@
 # PATH — never via a caller-settable seam.
 set -uo pipefail
 # HIMMEL-3395: a relative-entry copy that is not the anchor's hands off to it.
-. "$(dirname "${BASH_SOURCE[0]}")/anchor-handoff.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/anchor-handoff.sh" || exit 2
 # NOT set -e: this script inspects sub-call exit codes explicitly and must fail
 # CLOSED with its own codes, never abort mid-gate.
 

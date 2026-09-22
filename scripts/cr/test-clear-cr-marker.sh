@@ -86,6 +86,8 @@ build_repo_template() {
         || { echo "FAIL: cp clear-cr-marker.sh into template failed" >&2; rm -rf "$REPO_TEMPLATE"; return 1; }
     cp "$LEDGER_APPEND" "$REPO_TEMPLATE/scripts/cr/ledger-append.sh" \
         || { echo "FAIL: cp ledger-append.sh into template failed" >&2; rm -rf "$REPO_TEMPLATE"; return 1; }
+    cp "$(dirname "$CLEAR")/anchor-handoff.sh" "$REPO_TEMPLATE/scripts/cr/anchor-handoff.sh" \
+        || { echo "FAIL: cp anchor-handoff.sh into template failed" >&2; rm -rf "$REPO_TEMPLATE"; return 1; }
     # HIMMEL-3027: clear-cr-marker.sh's new branch-wide gate shells out to its
     # sibling review-round.sh promote -- a missing copy would fail every case
     # that reaches that gate at once (promote-error, exit 14).

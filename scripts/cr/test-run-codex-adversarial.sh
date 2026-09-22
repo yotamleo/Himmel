@@ -66,7 +66,7 @@ mkdir -p "$fx/scripts/cr" "$fx/scripts/lib" "$fx/scripts/guardrails" \
 # fixture HOME the companion glob never resolves, so no case can reach a
 # launch -- and if one ever did, the missing launcher fails loudly instead of
 # starting a real render.
-cp "$KICKOFF" "$HARVEST" "$HERE/codex-adv-completion-check.sh" "$fx/scripts/cr/"
+cp "$KICKOFF" "$HARVEST" "$HERE/codex-adv-completion-check.sh" "$HERE/anchor-handoff.sh" "$fx/scripts/cr/"
 cp "$HERE/../lib/load-dotenv.sh" "$HERE/../lib/render-lease.sh" "$fx/scripts/lib/"
 cp "$HERE/../guardrails/lib.sh" "$fx/scripts/guardrails/"
 cat > "$fx/scripts/lib/proc-tree.sh" <<'SH'

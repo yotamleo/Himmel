@@ -61,7 +61,7 @@
 # bash 3.2-safe (Git Bash on Windows and Linux).
 set -uo pipefail
 # HIMMEL-3395: a relative-entry copy that is not the anchor's hands off to it.
-. "$(dirname "${BASH_SOURCE[0]}")/anchor-handoff.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/anchor-handoff.sh" || exit 2
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HIMMEL_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"

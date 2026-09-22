@@ -7,7 +7,7 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 WRITERS="write-verdicts clear-cr-marker panel-first-pass docs-audit-panel codex-adv-kickoff codex-adv-harvest doc-freshness-advisory known-findings ledger-append"
 # shellcheck disable=SC2016  # the literal line each writer carries, not an expansion
-SOURCE_LINE='."$(dirname "${BASH_SOURCE[0]}")/anchor-handoff.sh"'
+SOURCE_LINE='. "$(dirname "${BASH_SOURCE[0]}")/anchor-handoff.sh" || exit 2'
 
 fail=0
 pass=0
@@ -68,6 +68,11 @@ check "$err" "" "T8 no hand-off message in the anchor"
 printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\necho "ARGS:$*"\n' "$SOURCE_LINE" > "$anchor/scripts/cr/known-findings.sh"
 printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\necho "LOCAL"\n' "$SOURCE_LINE" > "$wt/scripts/cr/known-findings.sh"
 check "$(cd "$wt" && env -u CR_ANCHOR_HANDED_OFF HIMMEL_REPO="$anchor" bash scripts/cr/known-findings.sh --diff 'a b' 2>/dev/null)" "ARGS:--diff a b" "T9 args forwarded"
+
+# 9b. A tree whose helper is missing fails closed rather than running the local copy.
+rm -f "$wt/scripts/cr/anchor-handoff.sh"
+check "$(run "$wt" "$anchor" scripts/cr/clear-cr-marker.sh | tr '\n' ' ')" "rc=2 " "T9b missing helper exits 2"
+cp "$DIR/anchor-handoff.sh" "$wt/scripts/cr/anchor-handoff.sh"
 
 # 10. Every auto-allowed writer sources the helper as its first statement
 # after `set -uo pipefail` — before it reads cwd, a .env or any other file.

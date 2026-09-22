@@ -108,6 +108,7 @@ make_repo() {
     [ -n "$sha" ] || { rm -rf "$tmp"; return 1; }
     mkdir -p "$tmp/scripts/cr"
     cp "$CLEAR" "$tmp/scripts/cr/clear-cr-marker.sh" || { rm -rf "$tmp"; return 1; }
+    cp "$(dirname "$CLEAR")/anchor-handoff.sh" "$tmp/scripts/cr/anchor-handoff.sh" || { rm -rf "$tmp"; return 1; }
 }
 
 # write_marker <tmp> <sha> [lane] [endpoint] [base] -- the 7-field HIMMEL-1540
