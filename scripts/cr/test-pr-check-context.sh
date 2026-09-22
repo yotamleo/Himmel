@@ -1725,7 +1725,7 @@ mutant36="$tmp/pr-check-context.mutant-t36.sh"
 # shellcheck disable=SC2016  # literal match against pr-check-context.sh's own
 # source text.
 literal_replace "$SCRIPT" "$mutant36" \
-  '            if worktree_files=$(git diff --name-only HEAD -- scripts/cr/ scripts/guardrails/lib.sh 2>/dev/null); then' \
+  "            if worktree_files=\$(git diff --name-only HEAD -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh' 2>/dev/null); then" \
   '            if worktree_files=""; then'
 rc_m36=$?
 if [ "$rc_m36" -ne 0 ]; then
@@ -1781,8 +1781,8 @@ mutant37="$tmp/pr-check-context.mutant-t37.sh"
 # shellcheck disable=SC2016  # literal match against pr-check-context.sh's own
 # source text.
 literal_replace "$SCRIPT" "$mutant37" \
-  '    if mb=$(git merge-base HEAD "$base" 2>/dev/null); then' \
-  '    if mb="$base" 2>/dev/null; then'
+  '    if mb=$(git merge-base HEAD "$base_ref" 2>/dev/null); then' \
+  '    if mb="$base_ref" 2>/dev/null; then'
 rc_m37=$?
 if [ "$rc_m37" -ne 0 ]; then
   echo "FAIL: T37 could not build the no-merge-base mutant - $(cat "$tmp/literal_replace.err" 2>/dev/null)"
