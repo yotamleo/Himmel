@@ -1161,16 +1161,34 @@ real_home_protected_homes() {
 }
 
 # real_home_phys <path> — the physical path: a symlinked leaf is followed
-# (files too — `rm`/`jq >` act on the link's target), then
-# canonicalize_target resolves the rest. rc=1 when nothing resolves.
+# (files too — `jq >` writes through the link), then canonicalize_target
+# resolves the rest. rc=1 when nothing resolves. rc=2 (the path still
+# printed) when the answer cannot be trusted, which every real-home caller
+# treats as a refusal (fail closed): the leaf chain does not end, a
+# component on the way up is a DANGLING symlink, or the missing tail
+# canonicalize_target re-appends lexically — from the caller's text or from
+# readlink text — has a `.` or `..` segment. Such a tail resolves somewhere
+# else once uninstall itself creates the missing component (step [4/8]'s
+# `mkdir -p` of the cache dir, `pre-commit`'s cache), so no answer computed
+# now is the one a later write or removal meets. The strictness lives here,
+# not in canonicalize_target, so suspicious_rm_path keeps its semantics.
 real_home_phys() {
-  local _p="$1" _l _n=0
+  local _p="$1" _l _n=0 _cur _b _rc=0
   while [ -L "$_p" ] && [ "$_n" -lt 40 ]; do
     _l=$(readlink -- "$_p") || return 1
     case "$_l" in /*) _p="$_l" ;; *) _p="$(dirname -- "$_p")/$_l" ;; esac
     _n=$((_n + 1))
   done
-  canonicalize_target "$_p"
+  [ -L "$_p" ] && _rc=2
+  _cur="$_p"
+  while [ "$_cur" != "/" ] && [ "$_cur" != "." ] && [ ! -e "$_cur" ]; do
+    [ -L "$_cur" ] && _rc=2
+    _b=$(basename -- "$_cur")
+    case "$_b" in .|..) _rc=2 ;; esac
+    _cur=$(dirname -- "$_cur")
+  done
+  canonicalize_target "$_p" || return 1
+  return "$_rc"
 }
 
 # real_home_under <path> <root> — true when path is root or below it. Both
@@ -1191,8 +1209,21 @@ real_home_under() {
 # ancestor of every root), since a recursive removal of an ancestor takes the
 # whole real home with it. This does not rely on suspicious_rm_path.
 real_home_target_ok() {
-  local _tp _root
-  _tp=$(real_home_phys "$2") || _tp="$2"
+  local _tp _root _prc=0
+  _tp=$(real_home_phys "$2") || _prc=$?
+  # A removal acts on a dangling leaf link itself, not on where it points:
+  # judge the link's own location (its parent must still resolve cleanly).
+  if [ "$_prc" -eq 2 ] && [ "$1" = removal ] && [ -L "$2" ] && [ ! -e "$2" ]; then
+    if _tp=$(real_home_phys "$(dirname -- "$2")"); then
+      _tp="$(strip_trailing_slash "$_tp")/$(basename -- "$2")"
+      _prc=0
+    fi
+  fi
+  if [ "$_prc" -eq 2 ]; then
+    echo "ERROR: refusing a wet uninstall — real-home check (c): $1 target $2 meets a dangling symlink or a . / .. segment in a missing tail, so where it lands cannot be known now" >&2
+    return 1
+  fi
+  [ "$_prc" -eq 0 ] || _tp="$2"
   if [ "$(squash_leading_slashes "$_tp")" = "/" ]; then
     echo "ERROR: refusing a wet uninstall — real-home check (c): $1 target $2 resolves to /, which contains the real home" >&2
     return 1
@@ -1241,10 +1272,11 @@ real_home_spelling_ok() {
 # real_home_check stays as the early fail-fast; this closes the gap between
 # it and steps [2/8], [5/8] and [8/8]. Unarmed (a dry run, or --source-only)
 # it just runs the command.
-# ponytail: only removals in this file are guarded. The helper scripts it
-# calls (unwire-*.sh, uninstall-plugins.sh, `pre-commit uninstall`) and the
-# scope-map `mkdir -p` rewrite or create files without a point-of-use check;
-# the spelling rule above is what keeps their paths honest.
+# ponytail: the helpers uninstall calls (unwire-*.sh, `pre-commit uninstall`)
+# get a call-site check of the paths they write (rh_helper_ok), not a check
+# inside them; uninstall-plugins.sh (it drives the `claude` CLI) and the
+# scope-map `mkdir -p` get neither — the spelling rule and the fail-closed
+# real_home_phys are what keep their paths honest.
 RH_ARMED=0
 RH_HP=""
 RH_ROOTS=""
@@ -1264,6 +1296,24 @@ guarded() {
     fi
   fi
   "$@"
+}
+
+# rh_helper_ok <label> <path>... — the call-site twin of `guarded` for the
+# helpers uninstall runs but does not own (unwire-*.sh, the ledger's
+# settings rewrites, `pre-commit uninstall`): each path the helper will write
+# is re-judged by real_home_target_ok right before it runs. rc=1 plus a WARN
+# means skip that helper; the caller records the fail_step. Unarmed, rc=0.
+rh_helper_ok() {
+  local _l="$1" _a
+  [ "$RH_ARMED" -eq 1 ] || return 0
+  shift
+  for _a in "$@"; do
+    if ! real_home_target_ok "$_l" "$_a" "$RH_HP" "$RH_ROOTS"; then
+      echo "  WARN: skipped $_l — $_a fails the real-home check at the point of use" >&2
+      return 1
+    fi
+  done
+  return 0
 }
 
 # real_home_check — rc=0 when this run may proceed; otherwise ONE stderr line
@@ -1299,8 +1349,16 @@ real_home_check() {
     return 1
   fi
   _home=$(strip_trailing_slash "$HOME")
-  _hp=$(real_home_phys "$HOME") || _hp=$(squash_leading_slashes "$HOME")
-  _cp=$(real_home_phys "$HOME/.claude") || _cp=$(squash_leading_slashes "$HOME/.claude")
+  if _hp=$(real_home_phys "$HOME"); then :
+  elif [ $? -eq 2 ]; then
+    echo "ERROR: refusing a wet uninstall — real-home check (a): \$HOME $HOME meets a dangling symlink or a . / .. segment in a missing tail" >&2
+    return 1
+  else _hp=$(squash_leading_slashes "$HOME"); fi
+  if _cp=$(real_home_phys "$HOME/.claude"); then :
+  elif [ $? -eq 2 ]; then
+    echo "ERROR: refusing a wet uninstall — real-home check (b): \$HOME/.claude meets a dangling symlink or a . / .. segment in a missing tail ($_cp)" >&2
+    return 1
+  else _cp=$(squash_leading_slashes "$HOME/.claude"); fi
   # Every path prefix of every {HOME} manifest row (.claude, .claude/channels,
   # .claude/channels/telegram, ...): a real home may symlink any of them OUT
   # of itself (a dotfiles layout), at any depth, so each is protected at its
@@ -1332,7 +1390,7 @@ $_c" ;; esac
     while IFS= read -r _c; do
       [ -n "$_c" ] || continue
       if [ "$_rp" = "/" ]; then _t="/$_c"; else _t="$_rp/$_c"; fi
-      _t=$(real_home_phys "$_t") || continue
+      _t=$(real_home_phys "$_t") || [ $? -eq 2 ] || continue
       _roots="$_roots
 $_t"
     done <<< "$_comps"
@@ -2436,6 +2494,9 @@ else
     else
       note_step "\`pre-commit\` not found and this repo carries no framework hooks — nothing to uninstall"
     fi
+  elif ! rh_helper_ok "pre-commit uninstall" "$(resolve_native_hooks_dir)" \
+      "${PRE_COMMIT_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/pre-commit}"; then
+    fail_step "[5/8] git hooks: pre-commit uninstall skipped — a path it writes fails the real-home check"
   else
     echo "  using: $_precommit_bin"
     for _hook_type in "" "pre-push" "commit-msg"; do
@@ -2527,6 +2588,10 @@ unwire_settings() {
   local settings="$1" helper _line _left _units _u _seen_sl=0 _seen_hd=0 _kept_as
   local _mask_hooks=0 _mask_sl=0 _mask_repo=0 _mask_vault=0 _mask_hd=0
   _LEDGER_PROTECTED=""
+  if ! rh_helper_ok "settings unwire" "$settings"; then
+    fail_step "[6/8] settings unwire: skipped $settings — it fails the real-home check"
+    return 0
+  fi
   if [ "$LEDGER_OK" -eq 1 ]; then
     # Ledger-driven per-unit pass (HIMMEL-3332 S6): every json-key/json-elem
     # fold unit recorded at THIS settings path gets its own verdict —
@@ -2656,13 +2721,17 @@ EOF
         # alongside a kept/restored one at the same event.
         [ "$_mask_hooks" -eq 1 ] && continue ;;
     esac
+    if ! rh_helper_ok "$helper" "$settings"; then
+      fail_step "[6/8] settings unwire: $helper skipped — $settings fails the real-home check"
+      continue
+    fi
     if ! bash "$REPO_ROOT/scripts/lib/$helper.sh" "$settings"; then
       echo "  WARN: $helper reported a problem; setup-state may remain." >&2
       fail_step "[6/8] settings unwire: $helper failed"
     fi
   done
   [ "$HALTED" -eq 0 ] || return 0
-  if [ "$LEDGER_OK" -eq 1 ] && ! prov_read_drop_env_if_ours "$settings"; then
+  if [ "$LEDGER_OK" -eq 1 ] && rh_helper_ok "ledger /env drop" "$settings" && ! prov_read_drop_env_if_ours "$settings"; then
     echo "  WARN: could not drop the now-empty /env from $settings" >&2
     fail_step "[6/8] ledger: could not drop the now-empty /env from $settings"
   fi

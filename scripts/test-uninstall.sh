@@ -979,15 +979,17 @@ out=$(HOME="$TMP/h-home" PATH="$H_BIN5:$HBIN" \
     TELEGRAM_CHANNEL_DIR="$TMP/h-none-channel11" BRIDGE_ROOT="$TMP/h-none-bridge11" \
     HIMMELCTL_CACHE_DIR="$TMP/h-cache11" HIMMEL_UNINSTALL_REPO_ROOT="$H_DANGLING" \
     bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-settings </dev/null 2>&1); rc=$?
-assert_rc "SC6Q dangling .git symlink exits 2" 2 "$rc"
-assert_has "SC6Q error names the dangling symlink" \
-    "dangling .git symlink" "$out"
-assert_has "SC6Q error names the hooks-repo git status as unresolved" \
-    "could not confirm whether $H_DANGLING is a git work tree" "$out"
+# HIMMEL-3415: the hooks dir resolves through that dangling link, so the
+# real-home check now fails closed up front (check c, rc=3) — before step
+# [5/8]'s walk ever classifies it; nothing is removed either way.
+assert_rc "SC6Q dangling .git symlink refused up front" 3 "$rc"
+assert_has "SC6Q refusal names the dangling symlink" \
+    "meets a dangling symlink" "$out"
+assert_has "SC6Q refusal names a target under the dangling .git" \
+    "target $H_DANGLING/.git/" "$out"
 assert_not_has "SC6Q does not take the non-git clean-skip line" \
     "is not a git work tree — no repo-local hooks to remove" "$out"
-assert_has "SC6Q later step 6 halted as a consequence" \
-    "[6/8] settings unwire: skipped — halted after an earlier failure" "$out"
+assert_not_has "SC6Q no step ran" "[2/8]" "$out"
 
 # ── SC6R (HIMMEL-2857 ii): an ancestor directory whose metadata this process
 # cannot fully inspect (read permission removed; search/execute kept so the

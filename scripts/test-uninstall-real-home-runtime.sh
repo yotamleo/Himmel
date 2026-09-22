@@ -249,6 +249,67 @@ FLAGS=(--purge-state --yes --skip-tasks --skip-plugins --skip-hooks)
 HOME="$TMP/d/home" run_wet HIMMELCTL_CACHE_DIR="rel/cache"
 expect_refused "(d6) relative HIMMELCTL_CACHE_DIR" c
 
+# (e3)/(e4) a pre-staged DANGLING symlink: $HOME/.claude links through a
+# component missing at check time, with the `..` in the LINK TEXT (the spelling
+# rule reads env/row text only). A later step creates the missing component
+# (step [4/8]'s scope-map mkdir, pre-commit's cache dir), the link goes live
+# into the real .claude, and step [6/8]'s unwire helpers rewrite its
+# settings.json. The fake settings carry a himmel env key to prove it.
+mk_fake_wired() { mk_fake "$1"; printf '{"sentinel":true,"env":{"HIMMEL_REPO":"/x"}}\n' > "$1/.claude/settings.json"; }
+wired_intact() {  # <label> <fake>
+    if grep -q HIMMEL_REPO "$2/.claude/settings.json"; then pass "$1: fake settings.json not rewritten"; else fail "$1: fake settings.json was rewritten"; fi
+}
+mk_fake_wired "$TMP/e4real"
+mkdir -p "$TMP/e4h"
+mk_claude_stub "$TMP/e4h"
+ln -s "$TMP/e4h/.himmel/../../e4real/.claude" "$TMP/e4h/.claude"
+FLAGS=(--yes --skip-tasks --skip-hooks)
+HOME="$TMP/e4h" run_wet HIMMEL_UNINSTALL_TEST_REAL_HOME="$TMP/e4real" HIMMELCTL_CACHE_DIR="$TMP/e4h/.himmel"
+expect_refused "(e4) dangling .claude link through the cache dir step [4/8] creates" b "$TMP/e4real"
+wired_intact "(e4)" "$TMP/e4real"
+if command -v git >/dev/null 2>&1; then
+    EBIN="$TMP/ebin"
+    mkdir -p "$EBIN" "$TMP/e3repo" "$TMP/e3h/.local/bin"
+    link_hermetic_tool git "$EBIN"
+    git -C "$TMP/e3repo" init -q
+    printf '#!/usr/bin/env bash\nmkdir -p "$HOME/.cache/pre-commit"\nexit 0\n' > "$TMP/e3h/.local/bin/pre-commit"
+    chmod +x "$TMP/e3h/.local/bin/pre-commit"
+    mk_fake_wired "$TMP/e3real"
+    ln -s "$TMP/e3h/.cache/pre-commit/../../../e3real/.claude" "$TMP/e3h/.claude"
+    FLAGS=(--yes --skip-tasks --skip-plugins)
+    out=$(cd "$TMP/e3repo" && env HOME="$TMP/e3h" PATH="$EBIN:$HBIN" HIMMEL_UNINSTALL_REAL_HOME=1 \
+        HIMMEL_UNINSTALL_TEST_REAL_HOME="$TMP/e3real" bash "$CLI" "${FLAGS[@]}" </dev/null 2>&1); rc=$?
+    expect_refused "(e3) dangling .claude link through the cache dir pre-commit creates" b "$TMP/e3real"
+    wired_intact "(e3)" "$TMP/e3real"
+else
+    pass "(e3) skipped: no git on this host"
+fi
+FLAGS=(--purge-state --yes --skip-tasks --skip-plugins --skip-hooks)
+
+# (p1) provenance-read.sh's removals go through the same wrapper: a
+# ledger-derived file unit inside the real home is refused at the point of use.
+mk_fake "$TMP/p1/real"
+mkdir -p "$TMP/p1/home"
+_p1real=$(cd "$TMP/p1/real" && pwd -P)
+_p1home=$(cd "$TMP/p1/home" && pwd -P)
+_p1unit=$(printf '{"kind":"file","path":"%s","unit":"/f"}' "$TMP/p1/real/.himmel/sentinel")
+out=$(env HOME="$TMP/p1/home" PATH="$HBIN" bash -c '. "$1" --source-only || exit 9
+    declare -F prov_read_apply >/dev/null || . "${1%/*}/lib/provenance-read.sh" || exit 9
+    RH_ARMED=1; RH_HP="$2"; RH_ROOTS="$3"
+    prov_read_apply "$4" remove' _ "$CLI" "$_p1home" "$_p1real" "$_p1unit" </dev/null 2>&1); rc=$?
+expect_refused "(p1) provenance file-unit removal inside the real home" c "$TMP/p1/real"
+# (h1) the call-site check before a helper uninstall does not own: armed, a
+# settings path that lands in the real home is refused with a WARN (the
+# helper is skipped); a scratch settings path passes.
+out=$(env HOME="$TMP/p1/home" PATH="$HBIN" bash -c '. "$1" --source-only || exit 9
+    RH_ARMED=1; RH_HP="$2"; RH_ROOTS="$3"
+    rh_helper_ok unwire-statusline "$3/.claude/settings.json" && exit 4
+    rh_helper_ok unwire-statusline "$2/.claude/settings.json" || exit 5' _ "$CLI" "$_p1home" "$_p1real" </dev/null 2>&1); rc=$?
+case "$rc:$out" in
+    "0:"*"WARN: skipped unwire-statusline"*) pass "(h1) helper call-site check skips a real-home settings path, passes a scratch one" ;;
+    *) fail "(h1) rc=$rc — $out" ;;
+esac
+
 # (w1)-(w4) the point-of-use wrapper, armed by hand over --source-only: a path
 # that reaches the fake real home only through a symlink that exists at USE
 # time is refused rc=3 with the fake intact; a scratch path is removed.
@@ -282,18 +343,27 @@ out=$(cd "$TMP/w/scratch" && env HOME="$TMP/w/home" PATH="$HBIN" HIMMEL_UNINSTAL
     guarded rm -rf -- "$2"' _ "$CLI" "$TMP/w/scratch/junk" </dev/null 2>&1); rc=$?
 if [ "$rc" -eq 0 ] && [ ! -e "$TMP/w/scratch/junk" ]; then pass "(w5) real_home_check-armed wrapper removes a scratch path"; else fail "(w5) rc=$rc — $out"; fi
 
-# (g1) every removal in uninstall.sh goes through the guarded wrapper: the only
-# bare rm left are the mktemp handoff files (EXIT traps, the crontab stderr).
+# (g1) every removal in uninstall.sh AND in the lib it sources that removes
+# ledger-recorded files (provenance-read.sh) goes through the guarded
+# wrapper: the only bare rm left are the mktemp handoff files (EXIT traps, the
+# crontab stderr, the lib's own .provread temp files), and the lib's one
+# `find -delete` runs right after a guarded check of the same dir.
 _allowed=$(cat <<'EOF'
 trap 'prov_read_cleanup; rm -f "${_ledger_owned:-}"' EXIT
 rm -f "$_cron_err"
 trap 'prov_read_cleanup; rm -f "${_scope_map:-}" "${_ledger_owned:-}"' EXIT
+rm -f "$out"
+[ -n "${PROV_READ_FOLD:-}" ] && [ -f "$PROV_READ_FOLD" ] && rm -f "$PROV_READ_FOLD"
+rm -f "$tmp"
+find "$bdir" -type d -empty -delete 2>/dev/null
 EOF
 )
-_rmlines=$(grep -E '(^|[^[:alnum:]_./-])(rm|mv|rmdir|unlink)[[:space:]]' "$CLI" | sed 's/^[[:space:]]*//' | grep -v '^#')
+_PRL="${CLI%/*}/lib/provenance-read.sh"
+_rmlines=$(grep -hE '(^|[^[:alnum:]_./-])(rm|mv|rmdir|unlink)[[:space:]]|-delete' "$CLI" "$_PRL" | sed 's/^[[:space:]]*//' | grep -v '^#')
 _bare=$(printf '%s\n' "$_rmlines" | grep -vE 'guarded (run )?(rm|mv) ' | grep -vxF "$_allowed")
 _nguard=$(printf '%s\n' "$_rmlines" | grep -cE 'guarded (run )?(rm|mv) ')
-if [ -z "$_bare" ] && [ "$_nguard" -ge 10 ]; then
+grep -qxF '_provread_guarded : -- "$bdir"' <(sed 's/^[[:space:]]*//' "$_PRL") || _bare="$_bare find -delete without its guarded check"
+if [ -z "$_bare" ] && [ "$_nguard" -ge 14 ]; then
     pass "(g1) no removal bypasses the guarded wrapper ($_nguard guarded sites)"
 else
     fail "(g1) $_nguard guarded sites; bare removals: $_bare"
