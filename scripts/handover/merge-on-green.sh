@@ -173,8 +173,13 @@
 # PATH. check-ci.sh / go-gate.sh / handover-path.sh resolve from the
 # HIMMEL_REPO anchor, NEVER as a sibling of this script's own BASH_SOURCE
 # (HIMMEL-3475): this script runs from a leg's own worktree, so a sibling
-# resolution would let the branch under review supply the bytes of its own
-# merge gate. HIMMEL_REPO is not a new seam — it is the anchor the rest of the
+# resolution would let a STALE worktree copy of those three files decide the
+# merge. SCOPE — this defends against a stale sibling copy, NOT a malicious
+# branch: the entry script itself and the helpers sourced before the anchor
+# resolves (cr-available.sh, merge-block-alert.sh, worktree-inuse.sh,
+# clear-cr-marker.sh) still come from the worktree, so a branch that rewrites
+# them still controls the gate. Anchoring those helpers and invoking the gate
+# from the anchor is HIMMEL-3485. HIMMEL_REPO is not a new seam — it is the anchor the rest of the
 # harness already trusts (himmel-doctor.sh, luna-upgrade-all.sh, ...), set at
 # install time by setup.sh/adopt.sh, never by a branch under review; a missing
 # or unreadable anchor fails CLOSED (exit 19), it never falls back to the
@@ -207,7 +212,8 @@ GH="gh"
 # this constant staying its own fixed literal is that decision holding.
 HIMMEL_PUBLIC_ORIGIN_NWO="yotamleo/Himmel"
 # The repo's ONE CodeRabbit-availability answer (scripts/lib/cr-available.sh).
-# Fixed in-repo sibling, resolved like CHECK_CI above and for the same reason.
+# Fixed in-repo sibling — NOT anchored like CHECK_CI (see GATE INTEGRITY SCOPE;
+# HIMMEL-3485).
 # shellcheck source=scripts/lib/cr-available.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/../lib/cr-available.sh" 2>/dev/null || true
@@ -363,7 +369,8 @@ command -v "$GH" >/dev/null 2>&1 || { echo "merge-on-green: required tool 'gh' n
 # merely behind main on scripts/check-ci.sh, and its own stale copy refused
 # its own green PR — the benign direction; the dangerous mirror is a branch
 # whose check-ci.sh wrongly PASSES). Fails CLOSED: unset, empty, or unreadable
-# all refuse with exit 19, never a fallback to the sibling.
+# all refuse with exit 19, never a fallback to the sibling. Scope: a stale
+# sibling, not a malicious branch — see GATE INTEGRITY above (HIMMEL-3485).
 if ! himmel_repo=$(printenv HIMMEL_REPO | grep .); then
     echo "merge-on-green: HIMMEL_REPO is unset or empty — cannot resolve the anchor for check-ci.sh. This merge gate no longer trusts its own worktree sibling (HIMMEL-3475): set HIMMEL_REPO to the primary himmel checkout in the launching shell." >&2
     audit "REFUSED reason=no-anchor selector=${selector:-<cwd-branch>}"
