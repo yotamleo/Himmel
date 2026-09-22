@@ -1528,8 +1528,8 @@ treating it as a mode-flip would be a pure false positive.
 
 ### `block-edit-live-settings.sh` — live-settings write guard (HIMMEL-2360)
 
-Fires on Edit/Write/MultiEdit/NotebookEdit, plus a Bash arm for `>`/`>>`
-redirect targets. Denies a write to a LIVE settings file — basename
+Fires on Edit/Write/MultiEdit/NotebookEdit, plus a textual Bash/PowerShell
+arm (below). Denies a write to a LIVE settings file — basename
 `settings.json` or `settings.local.json` with an immediate `.claude` parent —
 when EITHER it sits under `$HOME/.claude/` (the operator's user-scope live
 config) OR its repo is the PRIMARY checkout: `git rev-parse --git-dir` and
@@ -1556,10 +1556,38 @@ settings.json, a hook-wiring change (the "three places" rule in
 PR — the operator no longer hand-edits `.claude/settings.json` inside each
 leg's worktree for every hook-wiring change.
 
-**Not a complete write fence** — covers the four file-editing tools plus
-Bash `>`/`>>` redirect targets only; `sed -i`, `cp`, `tee`, and `mv` are NOT
-covered. Bypass: `EDIT_LIVE_SETTINGS_OK=1` (launching shell only, same
-convention as `EDIT_ON_MAIN_OK`).
+**The Bash/PowerShell arm is textual and blunt (HIMMEL-1525, HIMMEL-3468).**
+It does not parse commands. It fires when the command text names
+`settings.json`/`settings.local.json` (rule 1, any verb) or names a `.claude`
+directory together with a copy-shaped verb (`cp`/`mv`/`install`/`rsync`/`ln`/
+`dd`/`tee`) or `-t`/`--target-directory` (rule 2). It then denies when the
+mention is live: the cwd is a primary checkout, the text names the primary
+root, `$HOME/.claude`, `~/.claude` or `../.claude/`, or the command contains
+a `cd`/`pushd`/`popd` word. The last condition exists because the
+worktree-relative exemption is judged against the PreToolUse cwd, and a `cd`
+earlier in the same command moves the real target. Rule 1 lets through a bare
+read (`cat`/`head`/`tail`/`grep`/`rg`/`diff`/`wc`/`less`/`jq`/`git
+diff|show|log|status|blame`) that has no chaining, pipe or redirect.
+
+Word boundaries around the verbs and around `cd` are the **complement of a
+word character**, not a list of shell metacharacters. An enumerated class
+missed `(`, `\`, `"` and `'` in successive review rounds. The complement
+covers any metacharacter without listing it, and a verb inside a word
+(`add`, `scp`) does not match. Quotes and backslashes are deleted from the
+command text first, because the shell drops them inside a word (`c\p`,
+`c""p` and `settings.js\on` spell what they name). The PowerShell arm
+deletes quotes and backticks instead, and folds `\` to `/`. A linked worktree's own absolute root is blanked out before the
+primary-root match, so a nested worktree can write its own settings. That
+exemption is voided when `..` appears anywhere in the command.
+
+**Accepted false denies** (each has a test row): a harmless `cd` plus a
+worktree-settings mention; a `cat >> other.md` whose heredoc prose names
+`settings.json` (the hook does not parse where the bytes land); and a read
+of the file piped or redirected onward. **Known residuals:** `env -C`/
+`--chdir` or `find … -exec` moving the target, variables, globs and symlinks,
+and a POSIX-mount spelling of a Windows drive root. Bypass:
+`EDIT_LIVE_SETTINGS_OK=1` (launching shell only, same convention as
+`EDIT_ON_MAIN_OK`).
 
 ### `block-read-secrets.sh` — pre-read guard
 

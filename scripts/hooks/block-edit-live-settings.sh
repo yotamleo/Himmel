@@ -355,6 +355,7 @@ EOF
 resolve_repo_context() {
     is_primary_cwd=0
     primary_root_lc=""
+    own_root_lc=""
     home_root_lc=""
     local _d _prev repo_anchor="" raw_git_dir raw_git_common
     local abs_git_dir abs_git_common git_dir_real git_common_real primary_root home_real
@@ -381,7 +382,8 @@ resolve_repo_context() {
             if [ -n "$git_dir_real" ] && [ -n "$git_common_real" ]; then
                 [ "$git_dir_real" = "$git_common_real" ] && is_primary_cwd=1
                 primary_root=$(dirname "$git_common_real")
-                primary_root_lc=$(printf '%s' "$primary_root" | tr '[:upper:]' '[:lower:]')
+                primary_root_lc=$(printf '%s' "$primary_root" | tr '[:upper:]' '[:lower:]' | tr -d "\"'")
+                own_root_lc=$(canon "$repo_anchor" | tr '[:upper:]' '[:lower:]' | tr -d "\"'") || own_root_lc=""
             fi
         fi
     fi
@@ -389,7 +391,9 @@ resolve_repo_context() {
         home_real=$(canon "$HOME") || home_real=""
         if [ -n "$home_real" ]; then
             home_real="${home_real%/}"
-            home_root_lc=$(printf '%s' "$home_real" | tr '[:upper:]' '[:lower:]')
+            # Quote-stripped like the command text in mentions_primary_or_home,
+            # or an apostrophe in the root itself never matches (HIMMEL-3468).
+            home_root_lc=$(printf '%s' "$home_real" | tr '[:upper:]' '[:lower:]' | tr -d "\"'")
         fi
     fi
 }
@@ -406,6 +410,17 @@ mentions_primary_or_home() {
     # front so every match below sees the path as one contiguous string
     # regardless of quoting (matches the $HOME-literal handling further down).
     c_noquotes=$(printf '%s' "$c" | tr -d "\"'")
+    # A linked worktree nested under the primary (`<primary>/.claude/
+    # worktrees/<wt>`) contains the primary root in its own absolute path, so
+    # its OWN settings write matched below (HIMMEL-3468 codex-1). Blank out
+    # this worktree's own root first — never when `..` appears anywhere, since
+    # `<wt>/../../settings.json` climbs back into the primary.
+    if [ "$is_primary_cwd" = "0" ] && [ -n "$own_root_lc" ]; then
+        case "$c_noquotes" in
+            *..*) ;;
+            *) c_noquotes=${c_noquotes//"$own_root_lc"/} ;;
+        esac
+    fi
     if [ -n "$primary_root_lc" ]; then
         case "$c_noquotes" in *"$primary_root_lc"*) return 0 ;; esac
     fi
@@ -480,13 +495,30 @@ mentions_dot_claude_dir_dest() {
 
 # has_write_verb_or_target_flag CMD_LC — a copy/move/link-shaped verb, or a
 # `-t`/`--target-directory` flag (rule 2's verb list).
+#
+# The word boundary on both sides is the COMPLEMENT of a word character, not
+# a list of shell metacharacters (HIMMEL-3468): an enumerated class missed
+# `(`, `\`, `"` and `'` in turn, and whatever it omits next is the next
+# bypass. Any non-word character before the verb now counts, at the cost of
+# over-matching a word that merely ends a token (`-cp`, `x.tee`) — which only
+# denies when a `.claude` destination is named too, i.e. fail-closed.
 has_write_verb_or_target_flag() {
     local out
-    out=$(printf '%s' "$1" | grep -E '(^|[;&|[:space:]/])(cp|mv|install|rsync|ln|dd|tee)([[:space:]]|$)') || true
+    out=$(printf '%s' "$1" | grep -E '(^|[^a-z0-9_])(cp|mv|install|rsync|ln|dd|tee)([^a-z0-9_]|$)') || true
     [ -n "$out" ] && return 0
-    out=$(printf '%s' "$1" | grep -E '(^|[[:space:]])(-t|--target-directory)([[:space:]=]|$)') || true
+    out=$(printf '%s' "$1" | grep -E '(^|[^a-z0-9_-])(-t|--target-directory)([^a-z0-9_-]|$)') || true
     [ -n "$out" ] && return 0
     return 1
+}
+
+# changes_directory CMD_LC — a cd/pushd/popd word anywhere in the command,
+# with the same complement-of-a-word-character boundary as the verb list.
+# ponytail: other cwd-moving spellings (`env -C`, `env --chdir`, a relative
+# `find … -exec`) are not matched — the documented variable/glob residual.
+changes_directory() {
+    local out
+    out=$(printf '%s' "$1" | grep -E '(^|[^a-z0-9_])(cd|pushd|popd)([^a-z0-9_]|$)') || true
+    [ -n "$out" ]
 }
 
 input=$(cat)
@@ -498,6 +530,20 @@ cwd=$(printf '%s' "$input" | jq -r '.tool_input.cwd // .cwd // empty' 2>/dev/nul
 if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null || true)
     cmd_lc=$(printf '%s' "$cmd" | tr '[:upper:]' '[:lower:]')
+    # The shell drops quotes and escapes inside a word (`c\p`, `c""p` and
+    # `settings.js\on` all name what they spell without them), so every
+    # match below runs on the text with those characters removed
+    # (HIMMEL-3468). Removing characters never removes a chaining or
+    # redirection metacharacter, so the read-only allowlist only gets
+    # stricter. PowerShell's escape is the backtick, and there `\` is a path
+    # separator: fold it to `/` to match the forward-slash roots (codex-3).
+    # ponytail: only the separator is folded — a POSIX-mount spelling
+    # (`/c/Users/...`) of a drive-letter root is still not matched.
+    if [ "$tool_name" = "PowerShell" ]; then
+        cmd_lc=$(printf '%s' "$cmd_lc" | tr "\\\\" '/' | tr -d "\"'\`")
+    else
+        cmd_lc=$(printf '%s' "$cmd_lc" | tr -d "\"'\\\\")
+    fi
 
     mentions_settings=0
     case "$cmd_lc" in
@@ -517,6 +563,13 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
 
     live=0
     if [ "$is_primary_cwd" = "1" ]; then
+        live=1
+    elif changes_directory "$cmd_lc"; then
+        # The worktree-relative exemption is judged against the PreToolUse
+        # cwd; a cd/pushd/popd in the same command moves the real target
+        # (`cd ../../.. && echo x > .claude/settings.json` lands on the
+        # primary), so the exemption no longer applies. Blunt on purpose: a
+        # harmless cd is denied too (HIMMEL-3468, accepted false deny).
         live=1
     elif mentions_primary_or_home "$cmd_lc"; then
         live=1
