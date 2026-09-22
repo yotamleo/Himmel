@@ -345,8 +345,8 @@ assert_rc "44 bash tee-read of worktree settings.json allows" 0 \
     "$(bash_rc_of "$WT2" "tee /tmp/log < .claude/settings.json")"
 assert_rc "45 bash node -e writeFileSync into worktree settings.json allows" 0 \
     "$(bash_rc_of "$WT2" "node -e \"require('fs').writeFileSync('.claude/settings.json','{}')\"")"
-assert_rc "46 bash sed -i on worktree settings.json allows" 0 \
-    "$(bash_rc_of "$WT2" "sed -i 's/a/a/' .claude/settings.json")"
+assert_rc "46 bash sed in-place edit of worktree settings.json allows" 0 \
+    "$(bash_rc_of "$WT2" "sed -i 's/a/a/' .claude/settings.json")" # gnu-ok: fixture text parsed by the hook, never executed as a shell command
 assert_rc "47 powershell Set-Content on worktree settings.json allows" 0 \
     "$(powershell_rc_of "$WT2" "Set-Content -Path .claude/settings.json -Value x")"
 
