@@ -1107,8 +1107,20 @@ function walkIdentities(candidate, resolvedProject) {
       // An ancestor is outside a worker's Edit(<worktree>) grant (the
       // REWRITE vector HIMMEL-1666 defends against), so trusting its shape
       // here does not reopen it.
-      const atOrBelowProject = normalize(next).toLowerCase() === resolvedProject.toLowerCase()
-        || normalize(next).toLowerCase().startsWith(`${resolvedProject.toLowerCase()}/`);
+      //
+      // The containment test below resolves `next` at the OS level rather
+      // than comparing its lexical spelling: once an EARLIER non-UTF-8 hop
+      // has already been accepted above, `resolved` (and therefore `next`)
+      // carries that earlier link's own unresolved spelling, not a path
+      // that lexically starts with resolvedProject — even when this SECOND
+      // link's real target is at or below the project. A naive string
+      // comparison would misclassify it as "above" and skip the fail-closed
+      // check the HIMMEL-3397 C1 rows require. Resolving `next` for real
+      // (fs-level, byte-for-byte the same codec resolvedProject was built
+      // with) is immune to that drift.
+      const realNext = normalize(resolveReal(next));
+      const atOrBelowProject = realNext.toLowerCase() === resolvedProject.toLowerCase()
+        || realNext.toLowerCase().startsWith(`${resolvedProject.toLowerCase()}/`);
       if (atOrBelowProject) return null;
       resolved = next;
       aliases = aliases.map((a) => ({ s: path.join(a.s, name), d: a.d + 1 }));

@@ -1542,6 +1542,57 @@ test('HIMMEL-3448: a non-UTF-8 symlink ABOVE the project still verifies what is 
 // target fails closed", "a pinned leaf swapped for a link with a non-UTF-8
 // target fails closed") already cover this and must stay green.
 
+// (d) the same C1 invariant, but the at/below-project non-UTF-8 link is
+// NESTED beneath an already-accepted above-project non-UTF-8 link on the
+// same walk. Once the first (ancestor) hop is accepted, `resolved` carries
+// that link's own unresolved spelling rather than a path lexically rooted
+// at resolvedProject — a naive string-prefix containment check on the
+// SECOND link would then misclassify it as "above" too and skip the
+// fail-closed path, however deep it actually sits. Regression coverage for
+// that specific drift.
+function nestedNonUtf8Fixture() {
+  const fs = require('node:fs');
+  const base = makeTmpDir('hook-integrity-nested-');
+  const rawAnc = Buffer.concat([Buffer.from('a'), Buffer.from([0xff])]);
+  const realAnc = Buffer.concat([Buffer.from(`${base}/`), rawAnc]);
+  fs.mkdirSync(Buffer.concat([realAnc, Buffer.from('/proj/scripts')]), { recursive: true });
+  const rawHooks = Buffer.concat([Buffer.from('h'), Buffer.from([0xff])]);
+  const hooksReal = Buffer.concat([realAnc, Buffer.from('/proj/scripts/'), rawHooks]);
+  fs.mkdirSync(hooksReal, { recursive: true });
+  const leaf = Buffer.concat([hooksReal, Buffer.from('/guard.sh')]);
+  writeFileSync(leaf, 'echo original\n');
+  const scriptRel = 'scripts/hooks/guard.sh';
+  const integrityDir = makeTmpDir('hook-integrity-nested-pins-');
+  writeFileSync(
+    join(integrityDir, 's1.json'),
+    JSON.stringify({ session_id: 's1', pins: { [scriptRel]: gitBlobSha1(readFileSync(leaf)) } }),
+  );
+  const anc = join(base, 'anc'); // first hop: above-project, accepted
+  fs.symlinkSync(rawAnc, anc);
+  const projectDir = join(anc, 'proj');
+  fs.symlinkSync(rawHooks, join(projectDir, 'scripts', 'hooks')); // second hop: at/below-project
+  const scriptPath = join(projectDir, scriptRel);
+  const env = { CLAUDE_PROJECT_DIR: projectDir, HIMMEL_HOOK_INTEGRITY_DIR: integrityDir, HIMMEL_HOOK_INTEGRITY_BYPASS_OK: undefined };
+  const cleanup = () => { for (const d of [base, integrityDir]) rmSync(d, { recursive: true, force: true }); };
+  return { fs, base, leaf, scriptRel, scriptPath, env, cleanup };
+}
+
+test(
+  'HIMMEL-3448: a non-UTF-8 link AT/BELOW the project nested beneath an accepted ancestor non-UTF-8 link still fails closed',
+  { skip: process.platform === 'win32' },
+  () => {
+    const fx = nestedNonUtf8Fixture();
+    try {
+      withEnv(fx.env, () => {
+        const result = verifyProjectHookIntegrity(fx.scriptPath, 's1');
+        assert.equal(result.ok, false);
+      });
+    } finally {
+      fx.cleanup();
+    }
+  },
+);
+
 // HIMMEL-3384: the bypass is worktree-only and audited. The old "always
 // allows" contract is gone — a bypass with no linked worktree around it is no
 // bypass at all, and every use that DOES override a deny leaves one audit line.
