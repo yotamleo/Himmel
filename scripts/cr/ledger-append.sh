@@ -822,17 +822,22 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
     // raw-only check misses a finding chased through `--set head=`, so a
     // follow-up amend on the re-keyed head from a different checkout could
     // not locate its owning branch and fell through to the caller's own,
-    // wrong, branch). An empty-branch ("") candidate is never treated as a
-    // resolvable branch on its own (codex-2: a unique but branch-less legacy
-    // match used to be accepted as e.BRANCH="", silently writing a NEW amend
-    // into the all-branches legacy bucket - the exact cross-branch leak this
-    // ticket exists to close); it is dropped before counting, same as having
-    // no match at all. Exactly one REAL candidate branch -> use it, even when
-    // it differs from the caller's own checkout branch (the escalation case
-    // this exists for). No real candidate -> fall back to the caller's
-    // checkout branch, refusing only if that is also empty (detached HEAD).
-    // More than one real candidate -> refuse; guessing here is the exact bug
-    // this revision fixes.
+    // wrong, branch). clear-cr-marker.sh / handover-bridge.sh key amendSetFor
+    // on the TARGET FINDING ROW's own branch (o.branch||"") - for a
+    // branch-less legacy finding that collapses their "scoped" and "legacy"
+    // lookup keys to the same "" bucket, so an amend must itself be
+    // branch-less to stay visible to those readers (round-3 codex-1: a prior
+    // revision here stamped the caller's checkout branch instead, believing
+    // an empty-branch match was the same cross-branch leak this ticket
+    // closes; it is not - a branch-less finding is deliberately readable
+    // from any branch by design, and an amend to it must inherit that same
+    // scope). Exactly one DISTINCT candidate branch -> use it as-is, real or
+    // "". More than one DISTINCT REAL branch -> refuse (guessing here is the
+    // exact bug this revision fixes); a "" candidate never itself adds
+    // ambiguity, since it is compatible with any real one - a unique real
+    // branch still wins over any "" candidates present. No candidate at all
+    // -> fall back to the caller's checkout branch, refusing only if that is
+    // also empty (detached HEAD).
     if(e.BRANCH===""){
       const rawMatches=findings.filter(o=>keyForHead(o,e.HEAD_));
       const amendHeadMatches=parsed.filter(a=>a.kind==="amend"&&a.finding_id===e.ID
@@ -840,12 +845,14 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
         &&a.set&&typeof a.set.head==="string"&&headsMatch(a.set.head,e.HEAD_));
       const branches=[...new Set([...rawMatches.map(o=>o.branch||""),...amendHeadMatches.map(a=>a.branch||"")])];
       const realBranches=branches.filter(b=>b!=="");
-      if(realBranches.length===1){
-        e.BRANCH=realBranches[0];
-      } else if(realBranches.length>1){
+      if(realBranches.length>1){
         process.stderr.write("ledger-append.sh: amend --head "+e.HEAD_+" for "+e.ID
           +" matches finding rows on "+realBranches.length+" different branches ("+realBranches.join(", ")+") - refusing to guess which one this amend is for. Pass --branch explicitly.\n");
         process.exit(3);
+      } else if(realBranches.length===1){
+        e.BRANCH=realBranches[0];
+      } else if(branches.length===1){
+        e.BRANCH=branches[0];
       } else if(e.CALLER_BRANCH){
         e.BRANCH=e.CALLER_BRANCH;
       } else {

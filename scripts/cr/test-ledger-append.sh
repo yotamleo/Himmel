@@ -540,18 +540,44 @@ CR_LEDGER="$RKB" bash "$LA" amend --branch origin-branch --head RKH1 --id find-r
 check "follow-up amend on a re-keyed head with no --branch succeeds (HIMMEL-2405 codex-1)" "$?" "0"
 check "the follow-up amend infers the ORIGINAL owning branch, not the caller's checkout" "$(L="$RKB" node -e 'const rs=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse);console.log(rs.filter(r=>r.kind==="amend").pop().branch)')" "origin-branch"
 
-# HIMMEL-2405 panel round 2 (codex-2): a unique matching finding row with an
-# EMPTY (legacy/branch-less) branch used to be accepted as-is, silently
-# writing a brand-new amend into the all-branches legacy bucket even though
-# the caller's own checkout IS on a real branch - exactly the cross-branch
-# leak this ticket exists to close. An empty-branch match must be treated
-# like NO match: fall back to the caller's own branch instead.
+# HIMMEL-2405 panel round 3 (codex-1): a unique matching finding row with an
+# EMPTY (legacy/branch-less) branch must resolve e.BRANCH="" (inherit the
+# finding's own scope), NOT the caller's checkout branch. clear-cr-marker.sh
+# and handover-bridge.sh key amendSetFor on the TARGET FINDING ROW's own
+# branch (o.branch||"") - for a branch-less finding that collapses the
+# "scoped" and "legacy" lookup keys to the same "" bucket, so an amend
+# stamped with any other branch is invisible to both readers and a
+# successful `amend` silently never takes effect. (A prior round-2 "fix"
+# here stamped the caller's branch instead, believing this was the same
+# cross-branch leak HIMMEL-2405 closes; it is not - a branch-less finding is
+# deliberately readable from any branch by design, and an amend to it must
+# stay branch-less to remain visible. That prior fix is what this test now
+# guards against as the regression.)
 LGB="$tmp/legacy-branch-infer.jsonl"; : > "$LGB"
 CR_LEDGER="$LGB" bash "$LA" finding --head LGH1 --model m --id find-legacy-1 --severity imp --file f --line 3 --verdict agreed
 check "the legacy finding row was written with an empty branch" "$(L="$LGB" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="finding");console.log(JSON.stringify(o.branch))')" '""'
 (cd "$CB" && CR_LEDGER="$LGB" bash "$LA" amend --head LGH1 --id find-legacy-1 --set severity=sug --reason "no --branch, caller is on a real branch, only match is branch-less")
-check "amending a branch-less legacy match with no --branch succeeds (HIMMEL-2405 codex-2)" "$?" "0"
-check "the amend is stamped with the CALLER's branch, never left empty" "$(L="$LGB" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="amend");console.log(o.branch)')" "my-current-branch"
+check "amending a branch-less legacy match with no --branch succeeds (HIMMEL-2405 codex-1/round3)" "$?" "0"
+check "the amend is stamped EMPTY, inheriting the finding's own branch scope" "$(L="$LGB" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="amend");console.log(JSON.stringify(o.branch))')" '""'
+check "clear-cr-marker sees the amend (executable repro of the round-3 regression)" "$(CB_LGB="$LGB" node -e '
+const fs=require("fs");
+const SEP=String.fromCharCode(31);
+const lines=fs.readFileSync(process.env.CB_LGB,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse);
+const amendsByKey=new Map();
+for(const a of lines){
+  if(a.kind!=="amend"||!a.set||typeof a.set!=="object")continue;
+  const k=[a.branch||"",a.target_head,a.finding_id,a.artifact||"diff",a.perspective||"off"].join(SEP);
+  amendsByKey.set(k,Object.assign({},amendsByKey.get(k)||{},a.set));
+}
+const amendSetFor=(branch,head,id,artifact,perspective)=>{
+  const legacy=amendsByKey.get(["",head,id,artifact,perspective].join(SEP));
+  const scoped=amendsByKey.get([branch||"",head,id,artifact,perspective].join(SEP));
+  return (legacy||scoped)?Object.assign({},legacy||{},scoped||{}):null;
+};
+const f=lines.find(r=>r.kind==="finding");
+const set=amendSetFor(f.branch||"","LGH1","find-legacy-1","diff","off");
+console.log(set?set.severity:"NOT-FOUND");
+')" "sug"
 
 # The whole point of the verb: it must NEVER report success without writing.
 CR_LEDGER="$AM" bash "$LA" amend --branch b --head AH1 --id no-such-finding --set severity=sug --reason x 2>"$tmp/noop.err"
