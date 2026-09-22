@@ -104,6 +104,16 @@
 #       (scripts/lib/merge-block-alert.sh); a delivery failure never changes the
 #       exit code. Sits ABOVE 3 in severity: 3 is "fix the review state and
 #       re-run", 5 is "a rule GitHub enforces will refuse this until it changes".
+#   6 — every gate above passed but GitHub's own mergeStateStatus refuses the
+#       merge (HIMMEL-3473): BLOCKED, BEHIND, DIRTY or DRAFT at the watched head,
+#       still so after polling through --grace. GitHub's answer IS the verdict —
+#       check-ci does not model GitHub's merge rule from check-run data (three
+#       models of it were each wrong on #1115). The message prints the state and
+#       every non-passing check run on the head, as diagnosis only. CLEAN,
+#       HAS_HOOKS and UNSTABLE (mergeable with a non-passing non-required
+#       status, e.g. an advisory CodeRabbit one) pass; UNKNOWN (not yet
+#       computed), an unreadable read, an unrecognized state, or a state for
+#       another head is exit 2. Full path only: --threads-only never reads it.
 #
 # Env:
 #   CHECK_CI_POLL_INTERVAL — seconds between grace-window probes (default 10;
@@ -163,6 +173,8 @@ exit codes: 0 = checks green + all review threads resolved
             4 = retired (HIMMEL-3360) — no longer emitted,
             5 = GitHub will block this merge (HIMMEL-3381): a required check never reported within --grace, or the
                 required-check set could not be read (fails closed). One MERGE-BLOCKED line + one operator DM.
+            6 = every gate passed but GitHub's mergeStateStatus refuses the merge (BLOCKED/BEHIND/DIRTY/DRAFT
+                through --grace; HIMMEL-3473). CLEAN/HAS_HOOKS/UNSTABLE pass; UNKNOWN or unreadable = 2.
 env: CR_PROFILE=none skips reading CodeRabbit's status + body findings entirely (repos without CodeRabbit)
      CR_APP=1|0 forces that same read on/off, overriding the automatic probe (see scripts/lib/cr-available.sh)
      CHECK_CI_SLEEP_CMD replaces the command every wall-clock wait runs (default sleep; hermetic suites set it to :)
@@ -1393,6 +1405,44 @@ _cbg_note() {
     fi
 }
 
+# merge_state_gate — HIMMEL-3473. The verdict equals GitHub's mergeStateStatus
+# at the watched head; nothing here models WHY GitHub says what it says. Any
+# state other than a mergeable one is re-read through --grace (UNKNOWN is "not
+# computed yet", and a BLOCKED can lag checks that just went green), then
+# decided on the last read.
+merge_state_gate() {
+    local row state mhead="" start=$SECONDS tries=0 max_tries runs
+    max_tries=$(( GRACE / (POLL > 0 ? POLL : 1) + 1 ))
+    while :; do
+        state=""
+        if row=$(pr_view --json headRefOid,mergeStateStatus --jq '"\(.headRefOid) \(.mergeStateStatus)"' 2>/dev/null); then
+            case "$row" in *" "*) mhead=${row%% *}; state=${row#* } ;; esac
+        fi
+        if [ -n "$state" ] && [ "$mhead" != "$head0" ]; then
+            echo "check-ci: GitHub's merge state is for head ${mhead}, not the watched ${head0} — the PR moved; re-run" >&2
+            exit 2
+        fi
+        case "$state" in CLEAN|HAS_HOOKS|UNSTABLE) return 0 ;; esac
+        tries=$((tries + 1))
+        if [ $((SECONDS - start)) -ge "$GRACE" ] || [ "$tries" -ge "$max_tries" ]; then break; fi
+        "$CHECK_CI_SLEEP_CMD" "$POLL"
+    done
+    case "$state" in
+        BLOCKED|BEHIND|DIRTY|DRAFT)
+            # Diagnosis only: which runs on the head did not pass. Never a verdict input.
+            runs=$(gh api "repos/$owner/$repo/commits/$head0/check-runs?per_page=100" --paginate \
+                --jq '.check_runs[] | select(.conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped") | "\(.name) \(.conclusion // .status)"' 2>/dev/null | sort -u | paste -sd, - | sed 's/,/, /g')
+            echo "check-ci: every gate passed but GitHub refuses the merge: mergeStateStatus=$state at ${head0}. Non-passing check runs on this head: ${runs:-none found}. GitHub's state is the verdict (HIMMEL-3473, exit 6)" >&2
+            exit 6 ;;
+        "")
+            echo "check-ci: could not read GitHub's mergeStateStatus within ${GRACE}s — cannot evaluate; re-run" >&2
+            exit 2 ;;
+        *)
+            echo "check-ci: GitHub's mergeStateStatus is still '$state' after ${GRACE}s — not computed or not recognized; cannot evaluate, re-run" >&2
+            exit 2 ;;
+    esac
+}
+
 if [ "$THREADS_ONLY" -eq 1 ]; then
     # Bind + certify this path's own head (previously skipped entirely — S1
     # was invisible here too): cr_signal_gate/cr_body_gate both need a head0,
@@ -1468,6 +1518,11 @@ review_state_gate
 # slip past on a stale pre-watch read. HIMMEL-3360: review freshness is no
 # longer gated here — CodeRabbit is best effort.
 cr_body_gate
+
+# HIMMEL-3473 — GitHub's own verdict decides, last: our gates can all be green
+# while GitHub refuses the merge. Run after every other gate so a reported cause
+# of ours (red check, thread, body finding) still names itself first.
+merge_state_gate
 
 # Re-read the head: the green verdict only holds for the SHA we watched.
 head1=$(pr_view --json headRefOid --jq .headRefOid 2>/dev/null)

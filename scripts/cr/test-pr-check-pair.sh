@@ -269,11 +269,14 @@ for f in "$CLAUDE_RUNBOOK" "$CODEX_SKILL"; do
     env_lane_pattern='^[[:space:]]*bash scripts/cr/pr-check-env\.sh CR_CLAUDE_AGENTS[[:space:]]*$'
     env_lane_count=$(printf '%s\n' "$ii_calls" | grep -c -E "$env_lane_pattern")
     ii_calls=$(printf '%s\n' "$ii_calls" | grep -v -E "$env_lane_pattern")
-    # The step-0 diff check NAMES scripts/guardrails/lib.sh as a pathspec and
-    # invokes nothing, so it is not a himmel-script invocation line; its exact
-    # line is pinned once per twin below.
-    cr_touch_pattern='^[[:space:]]*git diff --name-only refs/remotes/origin/main -- scripts/cr/ scripts/guardrails/lib\.sh[[:space:]]*$'
-    ii_calls=$(printf '%s\n' "$ii_calls" | grep -v -E "$cr_touch_pattern")
+    # The step-0 diff-decision block (HIMMEL-3382) NAMES scripts/guardrails/lib.sh
+    # as a pathspec on three git calls and invokes nothing itself, so none of
+    # those three lines is a himmel-script invocation line; each exact line is
+    # pinned once per twin below (the structural section check further down).
+    diff_committed_pattern='^[[:space:]]*git diff --name-only "\$mb"\.\.HEAD -- '\'':\(top\)scripts/cr/'\'' '\'':\(top\)scripts/guardrails/lib\.sh'\''[[:space:]]*$'
+    diff_worktree_pattern='^[[:space:]]*git diff --name-only HEAD -- '\'':\(top\)scripts/cr/'\'' '\'':\(top\)scripts/guardrails/lib\.sh'\''[[:space:]]*$'
+    diff_untracked_pattern='^[[:space:]]*git ls-files --others -- '\'':\(top\)scripts/cr/'\'' '\'':\(top\)scripts/guardrails/lib\.sh'\''[[:space:]]*$'
+    ii_calls=$(printf '%s\n' "$ii_calls" | grep -v -E "$diff_committed_pattern" | grep -v -E "$diff_worktree_pattern" | grep -v -E "$diff_untracked_pattern")
     bare=$(printf '%s\n' "$ii_calls" | grep -c -E 'bash scripts/|\. scripts/|-f scripts/')
     split=$(printf '%s\n' "$ii_calls" | grep -c '"/scripts/')
     total=$(printf '%s\n' "$ii_calls" | grep -c 'scripts/[a-zA-Z0-9/._-]*\.sh')
@@ -337,21 +340,58 @@ for f in "$CLAUDE_RUNBOOK" "$CODEX_SKILL"; do
     # must carry both checks as ONE runnable line each (exactly once) and
     # state the conditions in prose; the in-script hand-off is defense in
     # depth, not the trust root.
-    # ponytail: the prose pins are substring greps -- they prove each phrase
-    # is present somewhere in the twin, not that it sits in the step-0
-    # paragraph or is not negated nearby (HIMMEL-3382).
-    cr_touch_check=$(printf '%s\n' "$calls" | grep -c -E "$cr_touch_pattern")
     lane_check=$(printf '%s\n' "$calls" | grep -c -E '^[[:space:]]*git rev-parse --path-format=absolute --git-common-dir; printenv HIMMEL_REPO; git rev-parse --show-prefix[[:space:]]*$')
-    if [ "$cr_touch_check" -eq 1 ] && [ "$lane_check" -eq 1 ] \
-       && grep -q 'ONLY when that check exits 0 and prints nothing' "$f" \
-       && grep -q 'ONLY if its first line equals its second line followed by' "$f" \
-       && grep -q 'and its third line is empty' "$f" \
-       && grep -q 'use the canonical fence above' "$f" \
-       && grep -q 'always against refs/remotes/origin/main, even on a stacked PR' "$f" \
-       && grep -q 'defense in depth, not the trust root' "$f"; then
-        pass "$n: (ii) himmel-lane step 0 is gated on the himmel lane and on a diff that touches no scripts/cr/ file (HIMMEL-3359 ruling)"
+    diff_committed_count=$(printf '%s\n' "$calls" | grep -c -E "$diff_committed_pattern")
+    diff_worktree_count=$(printf '%s\n' "$calls" | grep -c -E "$diff_worktree_pattern")
+    diff_untracked_count=$(printf '%s\n' "$calls" | grep -c -E "$diff_untracked_pattern")
+    # HIMMEL-3382 (Finding 6) -- extract each twin's step-0 himmel-lane section
+    # once (from its heading to the "REVIEWED repo's file" boundary, a
+    # byte-identical anchor pair in both twins) and assert the required
+    # markers STRUCTURALLY against just that extract: present, IN ORDER (each
+    # marker's first line number strictly greater than the previous marker's),
+    # and NOT NEGATED (the marker is not immediately preceded by "not " or
+    # "n't " on its own line) -- a file-wide substring grep -q could not tell
+    # a genuine marker in the step-0 section from one quoted in an unrelated
+    # comment, reordered, or negated nearby.
+    lane_section=$(sed -n '/Himmel-lane spelling of step 0 (HIMMEL-3359)/,/REVIEWED repo.s file/p' "$f")
+    markers=(
+        'ONLY if its first line equals its second line followed by'
+        'and its third line is empty'
+        'always against refs/remotes/origin/main, even on a stacked PR'
+        'if mb=$(git merge-base HEAD refs/remotes/origin/main 2>/dev/null); then'
+        'git diff --name-only "$mb"..HEAD -- '\'':(top)scripts/cr/'\'' '\'':(top)scripts/guardrails/lib.sh'\'''
+        'git diff --name-only HEAD -- '\'':(top)scripts/cr/'\'' '\'':(top)scripts/guardrails/lib.sh'\'''
+        'git ls-files --others -- '\'':(top)scripts/cr/'\'' '\'':(top)scripts/guardrails/lib.sh'\'''
+        'echo unknown'
+        'ONLY when that check prints nothing at all'
+        'prints any path or `unknown`, use the canonical fence above'
+        'defense in depth, not the trust root'
+    )
+    marker_fail=""
+    remaining="$lane_section"
+    for marker in "${markers[@]}"; do
+        case "$remaining" in
+            *"$marker"*) ;;
+            *)
+                marker_fail="missing or out of order: '$marker'"
+                break
+                ;;
+        esac
+        prefix=${remaining%%"$marker"*}
+        case "$prefix" in
+            *"not "|*"n't ")
+                marker_fail="'$marker' appears negated (immediately preceded by 'not '/\"n't \")"
+                break
+                ;;
+        esac
+        remaining=${remaining#*"$marker"}
+    done
+    if [ "$lane_check" -eq 1 ] && [ "$diff_committed_count" -eq 1 ] \
+       && [ "$diff_worktree_count" -eq 1 ] && [ "$diff_untracked_count" -eq 1 ] \
+       && [ -z "$marker_fail" ]; then
+        pass "$n: (ii) himmel-lane step 0 is gated on the himmel lane and on a diff that touches no scripts/cr/ file (HIMMEL-3359 ruling); all markers present in the step-0 section, in order, not negated"
     else
-        fail "$n: (ii) himmel-lane step 0 is not gated on the lane and scripts/cr/ conditions -- expected exactly one \`git diff --name-only refs/remotes/origin/main -- scripts/cr/ scripts/guardrails/lib.sh\` code line (found $cr_touch_check), exactly one \`git rev-parse --path-format=absolute --git-common-dir; printenv HIMMEL_REPO; git rev-parse --show-prefix\` code line (found $lane_check), plus the prose 'ONLY when that check exits 0 and prints nothing', 'ONLY if its first line equals its second line followed by', 'and its third line is empty', 'use the canonical fence above', 'always against refs/remotes/origin/main, even on a stacked PR' and 'defense in depth, not the trust root' (HIMMEL-3359 console ruling)"
+        fail "$n: (ii) himmel-lane step 0 is not gated on the lane and scripts/cr/ conditions -- lane_check=$lane_check (want 1), diff_committed=$diff_committed_count diff_worktree=$diff_worktree_count diff_untracked=$diff_untracked_count (each want exactly 1)${marker_fail:+, structural marker check: $marker_fail} (HIMMEL-3359 console ruling / HIMMEL-3382 Finding 6)"
     fi
 
     # HIMMEL-3375: pr-check-env.sh steers gate policy, so its bare literal

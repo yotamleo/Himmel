@@ -1394,8 +1394,8 @@ HANDOVER_DIR="$root" bash "$QL" release "$doc60bA" "$token60b" >/dev/null 2>&1
 # reachable through an explicit --model / CONSOLE_MODEL.
 out61a="$( ( cd "$fixture_repo" && unset CONSOLE_MODEL && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
     CONSOLE_WORK_DIR="$tmp/work" bash "$C" new --bucket modeldefault --dry-run --arm ) )"
-check "61 dry-run --arm launch line defaults to claude-opus-5" \
-    "$(printf '%s\n' "$out61a" | grep -c '^would-launch: .* claude --model claude-opus-5 ')" "1"
+check "61 dry-run --arm launch line defaults to claude-opus-5-5" \
+    "$(printf '%s\n' "$out61a" | grep -c '^would-launch: .* claude --model claude-opus-5-5 ')" "1"
 check "61 dry-run --arm launch line carries no fable model" \
     "$(printf '%s\n' "$out61a" | grep -c 'claude-fable-5-1')" "0"
 out61b="$( ( cd "$fixture_repo" && unset CONSOLE_MODEL && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
@@ -1417,7 +1417,7 @@ out61d="$( ( cd "$fixture_repo" && unset CONSOLE_MODEL && HANDOVER_DIR="$root" U
     CONSOLE_HEADED_ARM="$tmp/stub-arm-model-61.sh" CONSOLE_ARM_FOREGROUND=1 CONSOLE_WORK_DIR="$tmp/work" \
     bash "$C" new --bucket modeldefault --arm --deadline-min 0 ) )"
 token61d="$(token_of "$out61d")"
-check "61 armed console without --model: the arm target received claude-opus-5" "$(cat "$record61" 2>/dev/null)" "claude-opus-5"
+check "61 armed console without --model: the arm target received claude-opus-5-5" "$(cat "$record61" 2>/dev/null)" "claude-opus-5-5"
 HANDOVER_DIR="$root" bash "$QL" release "$root/tester/modeldefault/DEMO-nextleg-${today}A-console.md" "$token61d" >/dev/null 2>&1
 
 # --- 62: console.sh must not expand a possibly-EMPTY array bare (HIMMEL-3182).

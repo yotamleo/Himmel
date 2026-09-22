@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# PreToolUse hook for Edit/Write/MultiEdit/NotebookEdit, plus a Bash redirect
-# arm.
+# PreToolUse hook for Edit/Write/MultiEdit/NotebookEdit, plus Bash and
+# PowerShell write-path arms.
 #
 # Denies writing to a LIVE settings.json/settings.local.json — the operator's
 # actual $HOME/.claude/ user-scope config, or the PRIMARY checkout's
@@ -46,36 +46,59 @@
 # not defending against an attacker who can already plant an arbitrary
 # symlink inside the checkout, which is filesystem write access at least as
 # strong as editing settings.json directly. Consistent with the existing
-# "not a complete write fence" scope (below) — sed -i/cp/tee/mv aren't
-# covered either.
+# "not a complete write fence" scope (below) — Copy-Item/Move-Item/New-Item
+# under PowerShell aren't covered (see the PowerShell arm below).
 #
-# Bash arm (HIMMEL-2360 retask): the replaced permission rules also covered
-# Bash redirect targets ("Bash redirect targets are checked against Edit
-# rules"), so a bare `Edit`/`Write`/etc. arm alone would silently reopen
-# `echo x > <primary>/.claude/settings.json`. When tool_name=Bash, extract
-# `>`/`>>` redirect targets from tool_input.command with a plain-text scan —
-# NOT a shell parser — and run each candidate through the same predicate.
-# This arm is the OPPOSITE failure direction from the edit-tool arms: it
-# fails OPEN. An unparseable command, an ambiguous/quoted redirect, or
-# anything else that goes sideways here just allows, matching the
-# `require-quiet-run.sh` "workflow nudge" posture in scripts/hooks/CLAUDE.md
-# ("fail open on their own infrastructure errors") rather than the
-# always-active security-fence posture the edit-tool arms use. A shell
-# parser that failed CLOSED here would deny arbitrary unrelated Bash calls
-# whenever the redirect shape it could not read happened to mention
-# "settings.json" in unrelated text.
+# Bash/PowerShell arm (HIMMEL-2360 retask, rewritten HIMMEL-1525 retask 2):
+# the replaced permission rules also covered Bash redirect targets, so a
+# bare `Edit`/`Write`/etc. arm alone would silently reopen
+# `echo x > <primary>/.claude/settings.json`.
 #
-# Known limitation, deliberately not chased (HIMMEL-2360 CR round 5,
-# codex-1): a RELATIVE redirect target is always resolved against the
-# session's own cwd (tool_input.cwd), never against a `cd` earlier in the
-# SAME command string — `cd <primary> && echo x > .claude/settings.json`
-# from a non-primary cwd resolves the relative target against the ORIGINAL
-# cwd, not the post-`cd` one, and can under-match. Tracking `cd` requires
-# actually parsing shell control flow (`&&`/`;`/newline separators,
-# subshells, `cd -`, a variable target) — exactly the "not a shell parser"
-# line this arm already draws for quoting and redirection. An ordinary
-# ABSOLUTE target (the common, and the only fully-covered, shape) is
-# unaffected: it never touches $cwd at all.
+# v1 of this arm extracted a "destination argument" per verb (redirect
+# target, cp/mv's last arg, tee/sed -i's write args, a node -e/python3 -c
+# fail-closed carve-out). Console adversarial review (NO-GO on PR #1115)
+# found per-verb argument extraction cannot be made complete: trailing
+# `;`/`&`/`#`/`2>&1`/`| cat`/`> /dev/null`, a directory destination
+# (`cp x .claude/`, `-t .claude/`), combined short flags (`sed -Ei`),
+# subshells/aliasing/indirection (`(cp …)`, `\cp`, `/bin/cp`, `xargs cp`,
+# `bash -c '…'`, `eval`, `$(cp …)`, a for-loop) and other interpreters
+# (`node -p`) all defeated the per-verb scan on the very verbs it claimed to
+# cover — while ALSO false-positive-denying a worktree's own interpreter
+# writes and read-only pipelines (`tee /tmp/log < .claude/settings.json`)
+# because the target was never resolved against cwd.
+#
+# v2 (this version) drops per-verb argument extraction entirely and asks
+# only two questions of the WHOLE command text, case-insensitively:
+#   1. Does it mention a live settings file at all (substring match on
+#      `settings.json` / `settings.local.json` — any prefix, quoting, or
+#      trailing chaining/redirection, none of which changes whether the
+#      file is NAMED)? If so, deny — UNLESS the command is one of a short
+#      read-only allowlist (cat/head/tail/less/grep/rg/jq without a
+#      redirect or `-i`/diff/wc/git diff|show|log|status|blame) with no
+#      chaining or redirection metacharacter anywhere (so a trailing
+#      `&& rm -rf /` can't ride in on an allowlisted first verb).
+#   2. Does it target the primary's `.claude/` DIRECTORY itself as a
+#      destination (cp/mv/install/rsync/ln/dd/tee, or a
+#      `-t`/`--target-directory` flag) without necessarily naming
+#      settings.json in the text (`cp x .claude/`)?
+# Either question denies ONLY when the mention resolves to a LIVE file: cwd
+# is itself the primary checkout, or the command text contains the primary
+# checkout's own absolute path or $HOME's (resolved once via
+# git-common-dir/canon(), not re-parsed per candidate). A RELATIVE mention
+# while cwd is a linked worktree names that worktree's OWN settings.json —
+# allowed for every verb, matching a Write/Edit to the same path (fixes the
+# false positives above). This is deliberately MORE conservative than v1 in
+# one direction: a benign `cp <primary settings.json> /tmp/x` (reading, not
+# overwriting) is now denied too, since verb/argument-position is no longer
+# parsed — bypass: `EDIT_LIVE_SETTINGS_OK=1`, or use an allowlisted reader.
+#
+# ponytail: a variable-built path (`f="$HOME/.claude/settings.json"; cat
+# "$f"`), a glob (`cat .cla*/settings.json`), a symlink staged to alias the
+# file, or an absolute path into a SECOND clone of this repo elsewhere on
+# disk (not this session's own primary) get no special handling here — none
+# are text-matchable without a shell parser, and the Claude permission
+# matcher (`permissions.deny` patterns), not this hook, is the right layer
+# for that residual.
 #
 # Hook input arrives on stdin as JSON. Exit codes:
 #   0 — allow
@@ -322,115 +345,206 @@ Or temporarily comment out the hook stanza in .claude/settings.json.
 EOF
 }
 
+# resolve_repo_context — sets is_primary_cwd (1 if $cwd's repo has
+# git-dir == git-common-dir), primary_root_lc (the primary checkout's own
+# absolute path, lowercased — dirname of git-common-dir, which for BOTH a
+# primary cwd and a linked-worktree cwd resolves to the SAME primary
+# directory) and home_root_lc (canon($HOME), lowercased). Empty on failure —
+# callers must guard on non-empty before using either as a case pattern (an
+# empty quoted pattern segment inside `*"$var"*` matches everything).
+resolve_repo_context() {
+    is_primary_cwd=0
+    primary_root_lc=""
+    home_root_lc=""
+    local _d _prev repo_anchor="" raw_git_dir raw_git_common
+    local abs_git_dir abs_git_common git_dir_real git_common_real primary_root home_real
+    _d="$cwd"; _prev=""
+    while [ "$_d" != "$_prev" ]; do
+        if [ -e "$_d/.git" ]; then repo_anchor="$_d"; break; fi
+        _prev="$_d"
+        _d=$(dirname "$_d") || _d="$_prev"
+    done
+    if [ -n "$repo_anchor" ]; then
+        raw_git_dir=$(git -C "$repo_anchor" rev-parse --git-dir 2>/dev/null) || raw_git_dir=""
+        raw_git_common=$(git -C "$repo_anchor" rev-parse --git-common-dir 2>/dev/null) || raw_git_common=""
+        if [ -n "$raw_git_dir" ] && [ -n "$raw_git_common" ]; then
+            case "$raw_git_dir" in
+                /*|[A-Za-z]:/*|[A-Za-z]:\\*) abs_git_dir="$raw_git_dir" ;;
+                *) abs_git_dir="$repo_anchor/$raw_git_dir" ;;
+            esac
+            case "$raw_git_common" in
+                /*|[A-Za-z]:/*|[A-Za-z]:\\*) abs_git_common="$raw_git_common" ;;
+                *) abs_git_common="$repo_anchor/$raw_git_common" ;;
+            esac
+            git_dir_real=$(canon "$abs_git_dir") || git_dir_real=""
+            git_common_real=$(canon "$abs_git_common") || git_common_real=""
+            if [ -n "$git_dir_real" ] && [ -n "$git_common_real" ]; then
+                [ "$git_dir_real" = "$git_common_real" ] && is_primary_cwd=1
+                primary_root=$(dirname "$git_common_real")
+                primary_root_lc=$(printf '%s' "$primary_root" | tr '[:upper:]' '[:lower:]')
+            fi
+        fi
+    fi
+    if [ -n "${HOME:-}" ]; then
+        home_real=$(canon "$HOME") || home_real=""
+        if [ -n "$home_real" ]; then
+            home_real="${home_real%/}"
+            home_root_lc=$(printf '%s' "$home_real" | tr '[:upper:]' '[:lower:]')
+        fi
+    fi
+}
+
+# mentions_primary_or_home CMD_LC — true when the command text contains the
+# resolved primary checkout's own path, the resolved $HOME, or an
+# unexpanded $HOME/~ literal immediately before .claude — i.e. the mention
+# is NOT just a bare relative spelling of the current worktree's own copy.
+mentions_primary_or_home() {
+    local c="$1" c_noquotes
+    # A quoted `"/resolved/path"/.claude/` interposes a quote character
+    # between the resolved absolute path and its `.claude` suffix, which a
+    # literal substring match can't span — strip quote characters once up
+    # front so every match below sees the path as one contiguous string
+    # regardless of quoting (matches the $HOME-literal handling further down).
+    c_noquotes=$(printf '%s' "$c" | tr -d "\"'")
+    if [ -n "$primary_root_lc" ]; then
+        case "$c_noquotes" in *"$primary_root_lc"*) return 0 ;; esac
+    fi
+    # Only the resolved $HOME's OWN .claude counts as live — matching
+    # home_root_lc as a bare substring anywhere also matched an unrelated
+    # absolute path merely nested under $HOME (e.g. a worktree's own path),
+    # over-denying that worktree's legitimate writes to its own settings.
+    if [ -n "$home_root_lc" ]; then
+        case "$c_noquotes" in *"$home_root_lc/.claude"*) return 0 ;; esac
+    fi
+    # shellcheck disable=SC2016 # literal unexpanded $home/${home} text, not expansion
+    case "$c_noquotes" in
+        *'~/.claude/'*|*'$home/.claude/'*|*'${home}/.claude/'*) return 0 ;;
+    esac
+    # A relative parent-directory traversal landing directly on `.claude/`
+    # (`../.claude/…`, any number of `../` segments) climbs OUT of the
+    # current worktree — the worktree-relative exemption only covers this
+    # worktree's own copy, which never needs `..` to name it, and in the
+    # real `<repo>/.claude/worktrees/<name>` layout this is exactly the
+    # shape that reaches the primary checkout's own `.claude/`.
+    case "$c_noquotes" in *'../.claude/'*) return 0 ;; esac
+    return 1
+}
+
+# is_readonly_allowlisted CMD_LC — the rule 1 exception: a short list of
+# read-only programs, invoked alone (no chaining/redirection metacharacter
+# anywhere, so a trailing `&& rm -rf /` can't ride in on an allowlisted
+# first verb).
+is_readonly_allowlisted() {
+    local c="$1" first second
+    # shellcheck disable=SC2016 # literal metacharacter text, not expansion
+    case "$c" in
+        *';'*|*'&'*|*'|'*|*'`'*|*'$('*|*'<('*|*'>'*|*tee*) return 1 ;;
+    esac
+    first=$(printf '%s' "$c" | awk '{print $1}')
+    case "$first" in
+        cat|head|tail|grep|rg|diff|wc) return 0 ;;
+        less)
+            # less -o/-O (case already folded by cmd_lc) or --log-file logs
+            # the input stream to a file — a write, despite the read-only verb.
+            case "$c" in *' -o'*|*'--log-file'*) return 1 ;; esac
+            return 0
+            ;;
+        jq)
+            case "$c" in *' -i'*|*'--in-place'*) return 1 ;; esac
+            return 0
+            ;;
+        git)
+            second=$(printf '%s' "$c" | awk '{print $2}')
+            case "$second" in diff|show|log|status|blame) ;; *) return 1 ;; esac
+            # --output/--output=<file> redirects these read-only subcommands'
+            # output to a file — writing, not reading, despite the verb.
+            case "$c" in *'--output'*) return 1 ;; esac
+            return 0
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+# mentions_dot_claude_dir_dest CMD_LC — the command names a `.claude`
+# directory as a path component, independent of whether it also spells out
+# settings.json — rule 2 catches `cp x .claude/` / `cp -t .claude/ x`,
+# where the destination basename is never "settings.json" in the text.
+mentions_dot_claude_dir_dest() {
+    local out
+    # Trailing boundary includes a quote character: a quoted destination
+    # with no trailing slash (`cp -r x/. ".claude"`) puts the closing quote
+    # immediately after `.claude`, which the boundary class must accept too.
+    out=$(printf '%s' "$1" | grep -E '(^|[^a-z0-9_])\.claude([/[:space:];&|"'"'"']|$)') || true
+    [ -n "$out" ]
+}
+
+# has_write_verb_or_target_flag CMD_LC — a copy/move/link-shaped verb, or a
+# `-t`/`--target-directory` flag (rule 2's verb list).
+has_write_verb_or_target_flag() {
+    local out
+    out=$(printf '%s' "$1" | grep -E '(^|[;&|[:space:]/])(cp|mv|install|rsync|ln|dd|tee)([[:space:]]|$)') || true
+    [ -n "$out" ] && return 0
+    out=$(printf '%s' "$1" | grep -E '(^|[[:space:]])(-t|--target-directory)([[:space:]=]|$)') || true
+    [ -n "$out" ] && return 0
+    return 1
+}
+
 input=$(cat)
 tool_name=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || true)
 
 cwd=$(printf '%s' "$input" | jq -r '.tool_input.cwd // .cwd // empty' 2>/dev/null || true)
 [ -n "$cwd" ] || cwd="$PWD"
 
-if [ "$tool_name" = "Bash" ]; then
+if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null || true)
-
-    # Cheap prefilter — no git, no canon, on the common path: bail unless the
-    # raw command text even mentions a settings basename. Case-FOLDED
-    # (HIMMEL-2360 CR round 3): this gate runs BEFORE check_target's own
-    # case-fold, so a case-sensitive match here would exit early on
-    # `SETTINGS.JSON` and never even reach the (already case-insensitive)
-    # scan below — the same case-insensitive-filesystem bypass, one layer
-    # earlier.
     cmd_lc=$(printf '%s' "$cmd" | tr '[:upper:]' '[:lower:]')
+
+    mentions_settings=0
     case "$cmd_lc" in
-        *settings.json*|*settings.local.json*) : ;;
-        *) exit 0 ;;
+        *settings.json*|*settings.local.json*) mentions_settings=1 ;;
     esac
 
-    # Plain-text scan for `>`/`>>` redirect targets. Deliberately not a shell
-    # parser: escaped forms and non-redirect mentions (a pipeline with no `>`
-    # at all, the basename inside a string) simply produce no match here and
-    # fall through to the trailing `exit 0` — this arm's fail-open posture
-    # (see header). A quoted target (`"..."` or `'...'`) is matched as ONE
-    # span — INCLUDING any spaces inside the quotes — rather than stopping at
-    # the first whitespace: a live settings path legitimately contains a
-    # space on Windows (a `C:\Users\Jane Doe\...` profile), and the old  # leak-allow: home-path doc example
-    # whitespace-terminated regex silently truncated + allowed those.
-    #
-    # Known limitation, deliberately not chased (HIMMEL-2360 CR round 5,
-    # codex-3, Important not Critical — a FALSE-POSITIVE direction, not a
-    # bypass): this scan cannot tell a real redirect `>` from one that
-    # merely appears inside an ordinary quoted ARGUMENT, e.g.
-    # `grep "note: > settings.json is protected" file.txt` — no `>` is
-    # actually redirecting there, but the scan still extracts a candidate
-    # and can over-deny. Distinguishing the two needs a quote-aware
-    # character-by-character scan (full shell tokenising), the exact
-    # "not a shell parser" line this arm draws elsewhere. Lower priority
-    # than the earlier fixes above: worst case is an annoying denial with a
-    # documented bypass (`EDIT_LIVE_SETTINGS_OK=1`), not a silent bypass of
-    # the guard itself.
-    matches=$(printf '%s' "$cmd" | grep -oE ">>?[[:space:]]*(\"[^\"]*\"|'[^']*'|[^[:space:];&|<>]+)" 2>/dev/null || true)
-    while IFS= read -r tok || [ -n "$tok" ]; do
-        [ -n "$tok" ] || continue
-        t="$tok"
-        while [ "${t:0:1}" = ">" ]; do t="${t#>}"; done
-        while [ "${t:0:1}" = " " ] || [ "${t:0:1}" = "$(printf '\t')" ]; do t="${t#?}"; done
-        [ -n "$t" ] || continue
-        # Strip quote characters that sit at a DELIMITER position — token
-        # start/end, or immediately touching a `/` — rather than every quote
-        # character (HIMMEL-2360 CR round 5, codex-2 regression fix): round
-        # 4's blanket `tr -d` also deleted an apostrophe that is part of the
-        # PATH ITSELF, not shell quoting (`C:/Users/O'Brien/.claude/...`,
-        # a real Windows username shape), corrupting a legitimate target
-        # into one that no longer canonicalises to the same file the $HOME
-        # comparison expects — a false ALLOW. A quote next to `/` still
-        # catches concatenated quoting (`"$HOME"/.claude/...` — the closing
-        # `"` sits immediately before the `/`), but a quote sitting between
-        # two ordinary characters mid-segment (O'Brien) is left alone.
-        Q="\"'"
-        t=$(printf '%s' "$t" | sed -E "s/^[$Q]+//; s/[$Q]+\$//; s#/[$Q]+#/#g; s#[$Q]+/#/#g")
-        [ -n "$t" ] || continue
+    dir_dest=0
+    if mentions_dot_claude_dir_dest "$cmd_lc" && has_write_verb_or_target_flag "$cmd_lc"; then
+        dir_dest=1
+    fi
 
-        # Expand the common HOME spellings the plain-text scan otherwise
-        # passes through literally (HIMMEL-2360 CR rounds 2-3): a genuinely
-        # unexpanded `$HOME`/`${HOME}`/`~` canonicalises to a nonsense path
-        # under $cwd whose basename still happens to read "settings.json" but
-        # whose PARENT never matches $HOME/.claude, silently missing the
-        # user-scope deny for the exact spelling that arm exists to catch —
-        # and, unlike the bare `$HOME` case, there is no coincidental
-        # ancestor-.git-walk rescue when the session's cwd is a linked
-        # worktree (git-dir != git-common-dir there, so that fallback path
-        # ALLOWS) or outside any git repo at all. Only the bare and prefix
-        # forms are handled — not general `~` (tilde-user) or a `$HOME`
-        # embedded mid-path — matching this arm's existing "ordinary case,
-        # not full shell semantics" scope.
-        #
-        # shellcheck disable=SC2088,SC2016
-        # SC2088/SC2016: deliberate — these patterns match the LITERAL
-        # `~`/`$HOME`/`${HOME}` characters in the scanned command text (which
-        # the real shell has not run yet), not an expansion of this script's
-        # own `$t`.
-        case "$t" in
-            '~') t="${HOME:-}" ;;
-            '~/'*) t="${HOME:-}/${t:2}" ;;
-            '$HOME') t="${HOME:-}" ;;
-            '$HOME/'*) t="${HOME:-}/${t:6}" ;;
-            '${HOME}') t="${HOME:-}" ;;
-            '${HOME}/'*) t="${HOME:-}/${t:8}" ;;
-        esac
-        [ -n "$t" ] || continue
+    if [ "$mentions_settings" = "0" ] && [ "$dir_dest" = "0" ]; then
+        exit 0
+    fi
 
-        result=$(check_target "$t")
-        case "$result" in
-            deny\ *)
-                if [ "${EDIT_LIVE_SETTINGS_OK:-0}" = "1" ]; then
-                    exit 0
-                fi
-                deny_message "a Bash redirect" "$t" "${result#deny }"
-                exit 2
-                ;;
-            *) : ;;   # allow or unknown -> fail OPEN, keep scanning other targets
-        esac
-    done <<< "$matches"
+    resolve_repo_context
 
-    exit 0
+    live=0
+    if [ "$is_primary_cwd" = "1" ]; then
+        live=1
+    elif mentions_primary_or_home "$cmd_lc"; then
+        live=1
+    elif [ -z "$primary_root_lc" ] && [ -z "$home_root_lc" ]; then
+        # Neither root resolved (no git repo upward from cwd, and $HOME is
+        # unset or unresolvable) — the live-vs-worktree question cannot be
+        # answered at all, so it is not answered "not live". Fail closed.
+        live=1
+    fi
+
+    if [ "$live" = "0" ]; then
+        exit 0
+    fi
+
+    if [ "$mentions_settings" = "1" ] && is_readonly_allowlisted "$cmd_lc"; then
+        exit 0
+    fi
+
+    if [ "${EDIT_LIVE_SETTINGS_OK:-0}" = "1" ]; then
+        exit 0
+    fi
+
+    if [ "$mentions_settings" = "1" ]; then
+        deny_message "a $tool_name command" "$cmd" "the command text names a live settings.json/settings.local.json (worktree-relative spellings of the worktree's OWN copy are exempt; this one resolves to the primary checkout or \$HOME)"
+    else
+        deny_message "a $tool_name command" "$cmd" "the command targets the primary checkout's .claude/ directory itself (cp/mv/install/rsync/ln/dd/tee, or a -t/--target-directory destination)"
+    fi
+    exit 2
 fi
 
 # Edit/Write/MultiEdit/NotebookEdit arm. MultiEdit's exact tool_input schema

@@ -21,6 +21,13 @@ unset ARMAUTOMERGE CR_MERGE_GATE_OK
 # arms the console-GO gate — ambient, it would refuse every merge case below.
 # Its own line: RC-2 below mutates the line above by exact match.
 unset HIMMEL_CONSOLE_LEG
+# HIMMEL-3475: an operator/leg launching shell carries HIMMEL_REPO (the
+# harness-wide anchor) — ambient, it would point every case's gate at a real
+# checkout instead of the fixture's own stub. run_mog always passes its own
+# HIMMEL_REPO explicitly (default: the fixture tree itself), which already
+# overrides this per-invocation; unset here too for hermeticity / defense in
+# depth against any direct (non-run_mog) invocation added later.
+unset HIMMEL_REPO
 
 # grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
 # pipeline. printf/echo-into-`grep -q` is a trap under this file's
@@ -215,7 +222,13 @@ mog_build_fixture() {
         : > "$tmp/alerts/owner_repo__77__${STUB_SHA-abc123def456}"
     fi
     if [ "${NO_CHECK_CI:-0}" != "1" ]; then
-        printf '#!/usr/bin/env bash\nexit %s\n' "${STUB_CI_RC:-0}" > "$tmp/scripts/check-ci.sh"
+        # HIMMEL-3475: the marker (check-ci.ran, sibling to the stub) proves
+        # THIS stub actually executed — the RED assertion for the anchor fix
+        # is that a worktree's own check-ci.sh must NOT run once HIMMEL_REPO
+        # points at a distinct anchor tree; asserting only the exit code is
+        # weaker and can pass vacuously (a fixture where the two trees agree
+        # would look identical either way).
+        printf '#!/usr/bin/env bash\n: > "%s/scripts/check-ci.ran"\nexit %s\n' "$tmp" "${STUB_CI_RC:-0}" > "$tmp/scripts/check-ci.sh"
         chmod +x "$tmp/scripts/check-ci.sh"
     fi
 
@@ -507,8 +520,30 @@ run_mog() {
     local jiralog="$tmp/jira.log"; : > "$jiralog"
 
     mog_build_fixture "$tmp"
+    # HIMMEL-3485: MOG_POISON=<path under scripts/> replaces that helper in the
+    # WORKTREE tree with a branch-side mutant that leaves a marker and exits 42
+    # (sourced: kills the whole gate; executed: a failing clear). Paired with
+    # MOG_HIMMEL_REPO at a distinct anchor, it proves the anchor's copy runs.
+    if [ -n "${MOG_POISON:-}" ]; then
+        if ! printf '#!/usr/bin/env bash\n: > "%s/poison.ran"\nexit 42\n' "$tmp" > "$tmp/scripts/$MOG_POISON" \
+            || ! chmod +x "$tmp/scripts/$MOG_POISON"; then
+            LAST_TMP="$tmp"; fail "$name (setup: could not plant the MOG_POISON mutant $MOG_POISON)"; return
+        fi
+    fi
 
     local err rc
+    # HIMMEL-3475: the anchor. Defaults to the fixture tree itself (MOG_HIMMEL_REPO
+    # unset) — mog_build_fixture already lays out scripts/check-ci.sh,
+    # scripts/lib/go-gate.sh and scripts/lib/handover-path.sh at exactly the
+    # paths the anchored resolution expects, so every pre-existing case here is
+    # unaffected: it is its own anchor, matching the RED-first control (a) —
+    # "a worktree whose check-ci.sh is byte-identical to the anchor behaves the
+    # same before and after". MOG_HIMMEL_REPO points a case at a DISTINCT tree
+    # (proving the anchor decides, not the worktree); MOG_NO_HIMMEL_REPO=1
+    # sets it EMPTY and MOG_UNSET_HIMMEL_REPO=1 removes it from the child's
+    # environment (env -u, HIMMEL-3483) — the two refusal paths of control (b).
+    local himmel_repo_dir="${MOG_HIMMEL_REPO:-$tmp}"
+    [ "${MOG_NO_HIMMEL_REPO:-0}" = "1" ] && himmel_repo_dir=""
     # cwd matters since HIMMEL-1970: the post-merge prune reads `git worktree
     # list` from the checkout the script runs in. Default to the (non-repo)
     # temp dir so the suite is hermetic — it must never see, let alone remove,
@@ -516,17 +551,20 @@ run_mog() {
     # throwaway fixture repo.
     # HIMMEL-1953: the confirmation poll's `sleep 2` never runs for real here —
     # a test that sleeps is a test that can hang.
+    # shellcheck disable=SC2086,SC2016 # the unset flag pair splits into two words, or none; the bash -c body expands in the child
     GH_LOG="$ghlog" CLEAR_LOG="$clearlog" MERGE_ON_GREEN_LOG="$audit" JIRA_LOG="$jiralog" PATH="$tmp/bin:$PATH" \
           MERGE_ON_GREEN_SLEEP_CMD=: \
           MERGE_BLOCK_ALERT_DIR="$tmp/alerts" MERGE_BLOCK_ALERT_CMD="$tmp/bin/alert-sender" \
           TELEGRAM_ACCESS_PATH="$tmp/access.json" STUB_ALERT_FAIL="${STUB_ALERT_FAIL:-}" \
           CR_APP="${MOG_CR_APP:-}" \
+          HIMMEL_REPO="$himmel_repo_dir" \
+          env ${MOG_UNSET_HIMMEL_REPO:+-u HIMMEL_REPO} \
           bash -c 'cd "$1" || exit 1; shift; exec bash "$@"' _ "${MOG_CWD:-$tmp}" \
           "$tmp/scripts/handover/merge-on-green.sh" "$@" >/dev/null 2>"$tmp/err"
     rc=$?
     err=$(cat "$tmp/err" 2>/dev/null)
 
-    LAST_ALERT_LOG="$tmp/alerts.log"; LAST_GH_LOG="$ghlog"; LAST_AUDIT="$audit"; LAST_CLEAR_LOG="$clearlog"; LAST_ERR="$err"; LAST_JIRA_LOG="$jiralog"
+    LAST_ALERT_LOG="$tmp/alerts.log"; LAST_GH_LOG="$ghlog"; LAST_AUDIT="$audit"; LAST_CLEAR_LOG="$clearlog"; LAST_ERR="$err"; LAST_JIRA_LOG="$jiralog"; LAST_TMP="$tmp"
     if [ "$rc" -eq "$expected" ]; then
         pass
     else
@@ -907,8 +945,11 @@ fi
 # 6. Cannot read head SHA → refuse (exit 13).
 STUB_SHA="" run_mog 13 "empty head SHA → exit 13"
 
-# 7. check-ci not found → refuse (exit 14).
-NO_CHECK_CI=1 run_mog 14 "missing check-ci → exit 14"
+# 7. check-ci not found at the anchor (== the fixture itself, by default) →
+# HIMMEL-3475: this is now the "no anchor" refusal (exit 19), not the old
+# check-ci-gate-not-green path (exit 14) — the missing file is caught before
+# check-ci.sh is ever invoked.
+NO_CHECK_CI=1 run_mog 19 "missing check-ci at the anchor → exit 19"
 
 # 8. check-ci non-green (exit 3) → refuse (exit 14), no merge.
 STUB_CI_RC=3 run_mog 14 "check-ci exit 3 → exit 14"
@@ -1750,6 +1791,7 @@ SHEOF
             mog_build_fixture "$oa_tmp"
             GH_LOG="$oa_gh" CLEAR_LOG="$oa_clear" MERGE_ON_GREEN_LOG="$oa_audit" PATH="$oa_tmp/bin:$PATH" \
                   MERGE_ON_GREEN_SLEEP_CMD=: CR_APP="" STUB_SHA="$OA_SHA" STUB_HEAD_BRANCH="feat/mog-prune" ARMAUTOMERGE=1 \
+                  HIMMEL_REPO="$oa_tmp" \
                   run_mog_as_descendant "$OA_WT" "$OA_REPO" "$oa_tmp/scripts/handover/merge-on-green.sh" \
                   >/dev/null 2>"$oa_tmp/err"
             oa_rc=$?
@@ -1816,6 +1858,7 @@ SHEOF
                     WT_INUSE_SRC="$rc1_wt_inuse_mutant" mog_build_fixture "$rc1a_tmp"
                     GH_LOG="$rc1a_gh" CLEAR_LOG="$rc1a_clear" MERGE_ON_GREEN_LOG="$rc1a_audit" PATH="$rc1a_tmp/bin:$PATH" \
                           MERGE_ON_GREEN_SLEEP_CMD=: CR_APP="" STUB_SHA="$RC1A_SHA" STUB_HEAD_BRANCH="feat/mog-prune" ARMAUTOMERGE=1 \
+                          HIMMEL_REPO="$rc1a_tmp" \
                           run_mog_as_descendant "$RC1A_WT" "$RC1A_REPO" "$rc1a_tmp/scripts/handover/merge-on-green.sh" \
                           >/dev/null 2>"$rc1a_tmp/err"
                     rc1a_rc=$?
@@ -2160,7 +2203,7 @@ else
                 --env GH_LOG="$rc4_gh" --env CLEAR_LOG="$rc4_clear" --env MERGE_ON_GREEN_LOG="$rc4_audit" \
                 --env PATH="$rc4_tmp/bin:$PATH" --env MERGE_ON_GREEN_SLEEP_CMD=: \
                 --env ARMAUTOMERGE=1 --env STUB_NWO="yotamleo/Himmel" --env STUB_CWD_NWO="yotamleo/Himmel" \
-                --env STUB_PRIVATE=false --env STUB_SHA="pubok01" \
+                --env STUB_PRIVATE=false --env STUB_SHA="pubok01" --env HIMMEL_REPO="$rc4_tmp" \
                 -- bash "$rc4_tmp/scripts/handover/merge-on-green.sh"
             # Discriminate on whether the MERGE FIRED, not on the audit
             # reason= field: the mutant touches ONLY the `if` line, not the
@@ -2399,6 +2442,7 @@ else
             cd "$rc5_post_tmp" && \
             GH_LOG="$rc5_post_gh" CLEAR_LOG="$rc5_post_clear" MERGE_ON_GREEN_LOG="$rc5_post_audit" \
             PATH="$rc5_post_tmp/bin:$PATH" MERGE_ON_GREEN_SLEEP_CMD=: \
+            HIMMEL_REPO="$rc5_post_tmp" \
             HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$rc5_post_go_root" STUB_SHA="$rc5_sha" \
             bash "$rc5_post_tmp/scripts/handover/merge-on-green.sh"
         ) >/dev/null 2>"$rc5_post_err"
@@ -2492,6 +2536,7 @@ EOF
             cd "$rc6_post_tmp" && \
             GH_LOG="$rc6_post_gh" CLEAR_LOG="$rc6_post_clear" MERGE_ON_GREEN_LOG="$rc6_post_audit" \
             PATH="$rc6_bin:$rc6_post_tmp/bin:$PATH" MERGE_ON_GREEN_SLEEP_CMD=: \
+            HIMMEL_REPO="$rc6_post_tmp" \
             HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$rc6_post_go_root" STUB_SHA="$rc67_sha" \
             bash "$rc6_post_tmp/scripts/handover/merge-on-green.sh"
         ) >/dev/null 2>"$rc6_post_err"
@@ -2548,6 +2593,7 @@ EOF
             cd "$rc7_post_tmp" && \
             GH_LOG="$rc7_post_gh" CLEAR_LOG="$rc7_post_clear" MERGE_ON_GREEN_LOG="$rc7_post_audit" \
             PATH="$rc7_post_tmp/bin:$PATH" MERGE_ON_GREEN_SLEEP_CMD=: \
+            HIMMEL_REPO="$rc7_post_tmp" \
             HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$rc7_post_go_root" STUB_SHA="$rc67_sha" \
             bash "$rc7_post_tmp/scripts/handover/merge-on-green.sh"
         ) >/dev/null 2>"$rc7_post_err"
@@ -2663,6 +2709,287 @@ assert_alerts 0 "3381-e: no second DM for the same (repo, PR, head)"
 # A failed delivery never changes the exit code.
 STUB_ALERT_FAIL=1 STUB_CI_RC=5 run_mog 18 "3381-f: DM delivery failure keeps exit 18"
 assert_err_has "3381-f: says the delivery failed" "DM delivery failed"
+
+# --- HIMMEL-3475: the merge gate must resolve check-ci.sh (and, at the
+# console-GO gate, go-gate.sh / handover-path.sh) from the anchor
+# (HIMMEL_REPO), never as a sibling of its own BASH_SOURCE. This script runs
+# from a leg's own worktree, so a sibling resolution lets the branch under
+# review supply the bytes of its own merge gate (found live: PR #1115's
+# branch was merely behind main on scripts/check-ci.sh, and its own stale
+# gate wrongly refused its own green PR — the benign direction; the
+# dangerous mirror is a branch whose check-ci.sh wrongly PASSES).
+
+# Control (b): HIMMEL_REPO unset must REFUSE (exit 19) before any gate runs
+# — never fall back to the worktree's own sibling check-ci.sh.
+MOG_NO_HIMMEL_REPO=1 STUB_CI_RC=0 run_mog 19 "3475-b: HIMMEL_REPO empty refuses (exit 19), never falls back to the sibling"
+assert_err_has "3475-b: names the missing anchor" "HIMMEL_REPO"
+if [ -e "$LAST_TMP/scripts/check-ci.ran" ]; then
+    fail "3475-b: the worktree's own check-ci.sh ran despite HIMMEL_REPO being empty"
+else
+    pass
+fi
+# HIMMEL-3483: the genuinely UNSET path (env -u), not only the empty one.
+MOG_UNSET_HIMMEL_REPO=1 STUB_CI_RC=0 run_mog 19 "3483: HIMMEL_REPO unset (env -u) refuses (exit 19), never falls back to the sibling"
+assert_err_has "3483: names the missing anchor" "HIMMEL_REPO"
+if [ -e "$LAST_TMP/scripts/check-ci.ran" ]; then
+    fail "3483: the worktree's own check-ci.sh ran despite HIMMEL_REPO being unset"
+else
+    pass
+fi
+# Control: the env -u spelling run_mog uses really removes the variable.
+# shellcheck disable=SC2016 # expands in the child, by design
+if HIMMEL_REPO=x env -u HIMMEL_REPO bash -c '[ -z "${HIMMEL_REPO+set}" ]'; then pass; else fail "3483 control: env -u HIMMEL_REPO left the variable set"; fi
+
+# Control (a): a worktree that IS its own anchor (HIMMEL_REPO defaults to the
+# same tree, byte-identical check-ci.sh) behaves the same as before this
+# fix — this single case plus every pre-existing run_mog case above it
+# (~150, none of which set MOG_HIMMEL_REPO) continuing to pass unchanged
+# is that control.
+STUB_CI_RC=0 run_mog 0 "3475-a: worktree is its own anchor (byte-identical) behaves as before"
+if [ -e "$LAST_TMP/scripts/check-ci.ran" ]; then pass; else fail "3475-a: the anchor's (== worktree's) check-ci.sh never ran"; fi
+
+# Core RED-then-GREEN assertion: two DISTINCT trees. The worktree's own
+# check-ci.sh always fails; the anchor's always passes. The anchor must
+# decide (exit 0) and the worktree's copy must NEVER execute — proven via
+# the check-ci.ran marker file, not just the exit code, which could pass
+# vacuously if a fixture's two trees happened to agree.
+mog3475_base=$(mktemp -d "${TMPDIR:-/tmp}/mog-3475-anchor.XXXXXX")
+if [ -z "$mog3475_base" ] || [ ! -d "$mog3475_base" ]; then
+    fail "3475-core setup: mktemp -d produced no sandbox — refusing to build fixture paths on an empty root"
+else
+    mog3475_worktree="$mog3475_base/worktree"
+    mog3475_anchor="$mog3475_base/anchor"
+    mkdir -p "$mog3475_worktree" "$mog3475_anchor"
+    STUB_CI_RC=1 mog_build_fixture "$mog3475_worktree"
+    STUB_CI_RC=0 mog_build_fixture "$mog3475_anchor"
+    mog3475_gh="$mog3475_worktree/gh.log"; : > "$mog3475_gh"
+    mog3475_clear="$mog3475_worktree/clear.log"; : > "$mog3475_clear"
+    mog3475_audit="$mog3475_worktree/audit.log"
+    mog3475_err="$mog3475_worktree/stderr.log"
+    (
+        cd "$mog3475_worktree" && \
+        GH_LOG="$mog3475_gh" CLEAR_LOG="$mog3475_clear" MERGE_ON_GREEN_LOG="$mog3475_audit" \
+        PATH="$mog3475_worktree/bin:$PATH" MERGE_ON_GREEN_SLEEP_CMD=: \
+        MERGE_BLOCK_ALERT_DIR="$mog3475_worktree/alerts" MERGE_BLOCK_ALERT_CMD="$mog3475_worktree/bin/alert-sender" \
+        TELEGRAM_ACCESS_PATH="$mog3475_worktree/access.json" \
+        HIMMEL_REPO="$mog3475_anchor" \
+        bash "$mog3475_worktree/scripts/handover/merge-on-green.sh"
+    ) >/dev/null 2>"$mog3475_err"
+    mog3475_rc=$?
+    if [ "$mog3475_rc" -eq 0 ]; then
+        pass
+    else
+        fail "3475-core: expected exit 0 (the anchor's green check-ci.sh decides), got rc=$mog3475_rc stderr=$(cat "$mog3475_err" 2>/dev/null)"
+    fi
+    if [ -e "$mog3475_anchor/scripts/check-ci.ran" ]; then pass; else fail "3475-core: the anchor's check-ci.sh never ran"; fi
+    if [ -e "$mog3475_worktree/scripts/check-ci.ran" ]; then
+        fail "3475-core: the WORKTREE's own check-ci.sh ran — the branch under review supplied the bytes of its own merge gate"
+    else
+        pass
+    fi
+    rm -rf "$mog3475_base"
+fi
+
+# go-gate.sh must also come from the anchor: a malicious worktree go-gate.sh
+# that unconditionally forges "yes, a console leg, with a valid GO" must not
+# be able to skip or fake the console-GO requirement — the anchor's real
+# console_leg()/go_gate() must decide instead, and correctly refuse (no real
+# GO file exists).
+mog3475b_base=$(mktemp -d "${TMPDIR:-/tmp}/mog-3475-gogate.XXXXXX")
+if [ -z "$mog3475b_base" ] || [ ! -d "$mog3475b_base" ]; then
+    fail "3475-gogate setup: mktemp -d produced no sandbox — refusing to build fixture paths on an empty root"
+else
+    mog3475b_worktree="$mog3475b_base/worktree"
+    mog3475b_anchor="$mog3475b_base/anchor"
+    mkdir -p "$mog3475b_worktree" "$mog3475b_anchor"
+    mog3475b_go_root=$(mktemp -d "${TMPDIR:-/tmp}/mog-3475-gogate-go.XXXXXX")
+    if [ -z "$mog3475b_go_root" ] || [ ! -d "$mog3475b_go_root" ]; then
+        fail "3475-gogate setup: mktemp -d produced no go-root sandbox — refusing to build fixture paths on an empty root"
+    else
+        mog3475b_go_root=$(cd "$mog3475b_go_root" && pwd)
+        mog3475b_mutant_gogate=$(mktemp "${TMPDIR:-/tmp}/mog-3475-gogate-mutant.XXXXXX")
+        if [ -z "$mog3475b_mutant_gogate" ] || [ ! -f "$mog3475b_mutant_gogate" ]; then
+            fail "3475-gogate setup: mktemp produced no mutant-script file — refusing to build the fixture on an empty root"
+        else
+            cat > "$mog3475b_mutant_gogate" <<'EOF'
+#!/usr/bin/env bash
+# HIMMEL-3475 test mutant: forges "yes, a console leg, with a valid GO" no
+# matter what — this test proves the anchored fix never lets it run.
+console_leg() { return 0; }
+go_gate() { return 0; }
+EOF
+            STUB_CI_RC=0 GO_GATE_SRC="$mog3475b_mutant_gogate" mog_build_fixture "$mog3475b_worktree"
+            STUB_CI_RC=0 mog_build_fixture "$mog3475b_anchor"
+            mog3475b_gh="$mog3475b_worktree/gh.log"; : > "$mog3475b_gh"
+            mog3475b_clear="$mog3475b_worktree/clear.log"; : > "$mog3475b_clear"
+            mog3475b_audit="$mog3475b_worktree/audit.log"
+            mog3475b_err="$mog3475b_worktree/stderr.log"
+            (
+                cd "$mog3475b_worktree" && \
+                GH_LOG="$mog3475b_gh" CLEAR_LOG="$mog3475b_clear" MERGE_ON_GREEN_LOG="$mog3475b_audit" \
+                PATH="$mog3475b_worktree/bin:$PATH" MERGE_ON_GREEN_SLEEP_CMD=: \
+                MERGE_BLOCK_ALERT_DIR="$mog3475b_worktree/alerts" MERGE_BLOCK_ALERT_CMD="$mog3475b_worktree/bin/alert-sender" \
+                TELEGRAM_ACCESS_PATH="$mog3475b_worktree/access.json" \
+                HIMMEL_REPO="$mog3475b_anchor" HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$mog3475b_go_root" \
+                bash "$mog3475b_worktree/scripts/handover/merge-on-green.sh"
+            ) >/dev/null 2>"$mog3475b_err"
+            mog3475b_rc=$?
+            if [ "$mog3475b_rc" -eq 17 ]; then
+                pass
+            else
+                fail "3475-gogate: expected exit 17 (the anchor's real go-gate.sh refuses — no real GO file) despite the worktree's malicious go-gate.sh forging approval, got rc=$mog3475b_rc stderr=$(cat "$mog3475b_err" 2>/dev/null)"
+            fi
+            if grep -Eq '^pr merge( |$)' "$mog3475b_gh" 2>/dev/null; then
+                fail "3475-gogate: merged despite no real console GO — the worktree's forged go-gate.sh decided instead of the anchor's"
+            else
+                pass
+            fi
+            rm -f "$mog3475b_mutant_gogate"
+        fi
+        rm -rf "$mog3475b_go_root"
+    fi
+    rm -rf "$mog3475b_base"
+fi
+
+# handover-path.sh must also come from the anchor: a malicious worktree
+# handover-path.sh that forges handover_root() onto an attacker-writable,
+# pre-planted fake GO file must not be able to satisfy the console-GO check —
+# the anchor's real handover_root() must decide instead, and correctly
+# resolve to a root with no matching GO file (refuse).
+mog3475c_base=$(mktemp -d "${TMPDIR:-/tmp}/mog-3475-hpath.XXXXXX")
+if [ -z "$mog3475c_base" ] || [ ! -d "$mog3475c_base" ]; then
+    fail "3475-hpath setup: mktemp -d produced no sandbox — refusing to build fixture paths on an empty root"
+else
+mog3475c_worktree="$mog3475c_base/worktree"
+mog3475c_anchor="$mog3475c_base/anchor"
+mkdir -p "$mog3475c_worktree" "$mog3475c_anchor"
+mog3475c_fake_go_root="$mog3475c_base/attacker-writable-go-root"
+mog3475c_real_go_root=$(mktemp -d "${TMPDIR:-/tmp}/mog-3475-hpath-go.XXXXXX")
+if [ -z "$mog3475c_real_go_root" ] || [ ! -d "$mog3475c_real_go_root" ]; then
+    fail "3475-hpath setup: mktemp -d produced no go-root sandbox — refusing to build fixture paths on an empty root"
+else
+mog3475c_real_go_root=$(cd "$mog3475c_real_go_root" && pwd)
+mog3475c_sha=0123456789abcdef0123456789abcdef01234567
+mkdir -p "$mog3475c_fake_go_root/.locks/go"
+printf 'head=%s\n' "$mog3475c_sha" > "$mog3475c_fake_go_root/.locks/go/77.$mog3475c_sha"
+mog3475c_mutant_hpath=$(mktemp "${TMPDIR:-/tmp}/mog-3475-hpath-mutant.XXXXXX")
+if [ -z "$mog3475c_mutant_hpath" ] || [ ! -f "$mog3475c_mutant_hpath" ]; then
+    fail "3475-hpath setup: mktemp produced no mutant-script file — refusing to build the fixture on an empty root"
+else
+cat > "$mog3475c_mutant_hpath" <<EOF
+#!/usr/bin/env bash
+# HIMMEL-3475 test mutant: forges handover_root() onto a pre-planted fake GO
+# file's directory no matter what — this test proves the anchored fix never
+# lets it run.
+handover_root() { printf '%s\n' "$mog3475c_fake_go_root"; }
+EOF
+STUB_CI_RC=0 mog_build_fixture "$mog3475c_worktree"
+cp "$mog3475c_mutant_hpath" "$mog3475c_worktree/scripts/lib/handover-path.sh"
+STUB_CI_RC=0 mog_build_fixture "$mog3475c_anchor"
+mog3475c_gh="$mog3475c_worktree/gh.log"; : > "$mog3475c_gh"
+mog3475c_clear="$mog3475c_worktree/clear.log"; : > "$mog3475c_clear"
+mog3475c_audit="$mog3475c_worktree/audit.log"
+mog3475c_err="$mog3475c_worktree/stderr.log"
+(
+    cd "$mog3475c_worktree" && \
+    GH_LOG="$mog3475c_gh" CLEAR_LOG="$mog3475c_clear" MERGE_ON_GREEN_LOG="$mog3475c_audit" \
+    PATH="$mog3475c_worktree/bin:$PATH" MERGE_ON_GREEN_SLEEP_CMD=: \
+    MERGE_BLOCK_ALERT_DIR="$mog3475c_worktree/alerts" MERGE_BLOCK_ALERT_CMD="$mog3475c_worktree/bin/alert-sender" \
+    TELEGRAM_ACCESS_PATH="$mog3475c_worktree/access.json" \
+    HIMMEL_REPO="$mog3475c_anchor" HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$mog3475c_real_go_root" STUB_SHA="$mog3475c_sha" \
+    bash "$mog3475c_worktree/scripts/handover/merge-on-green.sh"
+) >/dev/null 2>"$mog3475c_err"
+mog3475c_rc=$?
+if [ "$mog3475c_rc" -eq 17 ]; then
+    pass
+else
+    fail "3475-hpath: expected exit 17 (the anchor's real handover-path.sh resolves the genuine root, which has no matching GO file) despite the worktree's malicious handover-path.sh forging a pre-planted fake GO, got rc=$mog3475c_rc stderr=$(cat "$mog3475c_err" 2>/dev/null)"
+fi
+if grep -Eq '^pr merge( |$)' "$mog3475c_gh" 2>/dev/null; then
+    fail "3475-hpath: merged despite no real console GO — the worktree's forged handover-path.sh decided instead of the anchor's"
+else
+    pass
+fi
+rm -f "$mog3475c_mutant_hpath"
+fi
+rm -rf "$mog3475c_real_go_root"
+fi
+rm -rf "$mog3475c_base"
+fi
+
+# --- HIMMEL-3485: a MALICIOUS branch, not only a stale one. Every helper the
+# gate sources or executes must come from the anchor, so a branch that rewrites
+# any one of them cannot change the verdict. Each case poisons ONE helper in
+# the worktree tree (MOG_POISON: marker + exit 42) and points HIMMEL_REPO at a
+# distinct, clean anchor tree. At the pre-fix base every case is RED: the
+# worktree's mutant runs (exit 42, or marker=clear-rc=42 for the clearer).
+mog3485_anchor() {  # mog3485_anchor <check-ci rc> -> prints a clean anchor tree
+    local a; a=$(mktemp -d "${TMPDIR:-/tmp}/mog-3485-anchor.XXXXXX") || return 1
+    [ -n "$a" ] && [ -d "$a" ] || return 1
+    STUB_CI_RC="$1" mog_build_fixture "$a" >/dev/null || { rm -rf "$a"; return 1; }
+    printf '%s' "$a"
+}
+mog3485_no_poison() {  # mog3485_no_poison <label>
+    if [ -e "$LAST_TMP/poison.ran" ]; then fail "$1: the worktree's mutant helper ran — the branch under review supplied gate bytes"; else pass; fi
+}
+
+# Sourced BEFORE the old anchor resolution: the anchor's red check-ci decides (14).
+for mog3485_helper in lib/cr-available.sh lib/merge-block-alert.sh; do
+    if mog3485_a=$(mog3485_anchor 1); then
+        MOG_HIMMEL_REPO="$mog3485_a" MOG_POISON="$mog3485_helper" STUB_CI_RC=0 \
+            run_mog 14 "3485: a branch-side $mog3485_helper cannot change the verdict (anchor's red check-ci → 14)"
+        mog3485_no_poison "3485: $mog3485_helper"
+        rm -rf "$mog3485_a"
+    else
+        fail "3485 setup: no anchor sandbox for $mog3485_helper"
+    fi
+done
+
+# Sourced after the gate, before the merge: the clean merge still lands (0).
+if mog3485_a=$(mog3485_anchor 0); then
+    MOG_HIMMEL_REPO="$mog3485_a" MOG_POISON=lib/worktree-inuse.sh STUB_CI_RC=1 \
+        run_mog 0 "3485: a branch-side lib/worktree-inuse.sh cannot change the verdict (anchor green → 0)"
+    mog3485_no_poison "3485: lib/worktree-inuse.sh"
+    rm -rf "$mog3485_a"
+else
+    fail "3485 setup: no anchor sandbox for lib/worktree-inuse.sh"
+fi
+
+# Executed on the merge path: the anchor's clearer runs, never the branch's.
+if mog3485_a=$(mog3485_anchor 0); then
+    read -r P_REPO P_WT P_SHA <<< "$(mk_prune_fixture)"
+    mk_marker "$P_REPO" "feat/mog-prune"
+    MOG_CWD="$P_REPO" STUB_SHA="$P_SHA" STUB_HEAD_BRANCH="feat/mog-prune" \
+        MOG_HIMMEL_REPO="$mog3485_a" MOG_POISON=cr/clear-cr-marker.sh STUB_CI_RC=1 \
+        run_mog 0 "3485: a branch-side cr/clear-cr-marker.sh is never executed (anchor green → 0)"
+    assert_audit_has "3485: the anchor's clearer cleared the marker" "marker=cleared"
+    mog3485_no_poison "3485: cr/clear-cr-marker.sh"
+    rm -rf "$mog3485_a"
+else
+    fail "3485 setup: no anchor sandbox for cr/clear-cr-marker.sh"
+fi
+
+# HIMMEL_REPO is a registered chokepoint seam: a per-call prefix that re-points
+# the anchor at the branch is denied by block-chokepoint-env-prefix.sh (run
+# read-only against this tree's own registry).
+mog3485_hook="$SCRIPT_DIR/../hooks/block-chokepoint-env-prefix.sh"
+# shellcheck disable=SC2016 # the $HIMMEL_REPO text is the payload, never expanded here
+mog3485_cmd='HIMMEL_REPO=. bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh"'
+mog3485_json=$(printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$(printf '%s' "$mog3485_cmd" | jq -Rs .)")
+# Captured, not piped: the hook denies with exit 2, which pipefail would carry.
+mog3485_out=$(printf '%s' "$mog3485_json" | env -u ENV_PREFIX_GUARD_OK -u CHOKEPOINT_REGISTRY bash "$mog3485_hook" 2>/dev/null)
+if printf '%s' "$mog3485_out" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null 2>&1; then
+    pass
+else
+    fail "3485: HIMMEL_REPO=. prefix on the anchored merge gate was not denied by the chokepoint hook"
+fi
+
+# check-ci exit 6 (HIMMEL-3473: GitHub's mergeStateStatus refuses while our
+# gates are green) is GitHub-blocked: 18 + one alert, never the generic 14.
+STUB_CI_RC=6 run_mog 18 "3485: check-ci exit 6 → exit 18"
+assert_audit_has "3485: exit-6 audit names the rule" "REFUSED reason=github-blocked phase=check-ci rule=merge-state gate=check-ci:6"
+assert_gh_lacks  "3485: exit 6 attempts no merge" "pr merge"
+assert_alerts 1  "3485: exit 6 sends exactly one operator DM"
 
 # HIMMEL-3154: guard against reintroducing extraction of a historical
 # commit's blob via `git show <sha>:<path>` — the class of fragility this

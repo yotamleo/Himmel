@@ -179,10 +179,10 @@ try {
     foreach ($pair in @(
         'ANTHROPIC_BASE_URL=https://openrouter.ai/api',
         'ANTHROPIC_AUTH_TOKEN=or-test-123',
-        'ANTHROPIC_MODEL=anthropic/claude-opus-5',
-        'ANTHROPIC_DEFAULT_HAIKU_MODEL=anthropic/claude-opus-5',
-        'ANTHROPIC_DEFAULT_SONNET_MODEL=anthropic/claude-opus-5',
-        'ANTHROPIC_DEFAULT_OPUS_MODEL=anthropic/claude-opus-5',
+        'ANTHROPIC_MODEL=anthropic/claude-opus-5.5',
+        'ANTHROPIC_DEFAULT_HAIKU_MODEL=anthropic/claude-opus-5.5',
+        'ANTHROPIC_DEFAULT_SONNET_MODEL=anthropic/claude-opus-5.5',
+        'ANTHROPIC_DEFAULT_OPUS_MODEL=anthropic/claude-opus-5.5',
         'CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000',
         ('CLAUDE_CONFIG_DIR=' + (Join-Path $FAKEHOME '.claude-openrouter')))) {
       if (FileHas $ChildEnv $pair) { Pass "child env has $pair" } else { Fail "child env missing $pair" }

@@ -54,12 +54,25 @@
 # it at a fixture without touching PATH. HEADED_ARM_LEG_PREFLIGHT overrides
 # the scripts/lib/bank-preflight.sh path the fleet-size cap below calls
 # (default: ../../lib/bank-preflight.sh next to this script), same reason.
+# HEADED_ARM_UNAME overrides the platform leg_propagate_env's whitespace
+# refusal branches on (default: real `uname -s`) - the same seam name and
+# idiom headed-arm.sh itself defines and its own suite already overrides
+# with HEADED_ARM_UNAME=Linux/Darwin; resolved again HERE because this
+# wrapper is a separate process that must settle that decision before it
+# ever execs into headed-arm.sh.
 #
 # Exit 10 (HIMMEL-2765): the fleet-size cap refused the launch - see the
 # preflight call below. Exit 11 (HIMMEL-2782 codex-1): the $LANE bank is
 # exhausted (SKIPPED-BANK) - same preflight call, distinct refusal reason.
-# Both are distinct from headed-arm.sh's own 0-9 exit range, since this
-# wrapper never reaches headed-arm.sh in either case.
+# Exit 12 (HIMMEL-2534): on macOS, leg_propagate_env refused a leg-process
+# env value that contains whitespace - it cannot round-trip through
+# HEADED_ARM_LAUNCHER_ENV's whitespace-split token list, and macOS has no
+# other channel for it (a plain export never reaches an `open -a` leg there).
+# On any other platform, plain-export inheritance already carries such a
+# value, so leg_propagate_env leaves it there instead of refusing - see its
+# own doc comment below. All three exit codes are distinct from
+# headed-arm.sh's own exit codes (0-9 and 13), since this wrapper never
+# reaches headed-arm.sh in any of these cases.
 #
 # --lane (HIMMEL-2782): native (default) or claudex. --lane claudex (or
 # LEG_LANE=claudex in the launching shell - the flag wins if both are
@@ -170,8 +183,74 @@
 # sequence it. Opt-out, default ON: unset changes nothing.
 set -u
 
+# HEADED_ARM_UNAME (HIMMEL-2534 follow-up) - same seam name and default-
+# expansion idiom headed-arm.sh itself defines; resolved again HERE because
+# this wrapper is a separate process that must settle leg_propagate_env's
+# platform branch before it ever execs into headed-arm.sh. Test seam:
+# HEADED_ARM_UNAME=Darwin|Linux|... overrides it without a real uname call,
+# same as headed-arm.sh's own suite already does.
+HEADED_ARM_UNAME="${HEADED_ARM_UNAME:-$(uname -s 2>/dev/null)}"
+export HEADED_ARM_UNAME
+
 usage() {
-    echo "usage: headed-arm-leg.sh [--dry-run] [--headless] [--lane native|claudex] (--profile <name> | --no-profile) [--relay] [--judge] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
+    echo "usage: headed-arm-leg.sh [--dry-run] [--headless] [--lane native|claudex] (--profile <name> | --no-profile) [--relay] [--judge] [--console <name>] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
+}
+
+# leg_propagate_env NAME VALUE - HIMMEL-2534: on macOS, `open -a` starts a leg
+# from a FRESH environment (konsole-macos.sh's own header - PATH excepted, by
+# a deliberate policy this fix leaves untouched), so a plain `export` here
+# never reaches the leg process on that platform. Only an explicit token on
+# headed-arm.sh's own `env ... NAME=VALUE ...` command line does: it is baked
+# into the launched .command file's argv (`%q`-quoted), not inherited, so it
+# survives the boundary a plain export does not. Every leg-process var this
+# wrapper sets (IMPL_GUARD_OK, LEG_PROFILE_*, HIMMEL_CONSOLE_LEG, ...) must go
+# through this function instead of a bare `export`. Vars headed-arm.sh itself
+# consumes in THIS SAME process tree (HEADED_ARM_REPO, HEADED_ARM_LAUNCHER,
+# HEADED_ARM_RECORDER, HEADED_ARM_REQUIRED_AUTOCOMPACT, ...) never cross that
+# boundary and must NOT be routed through it - they stay plain exports.
+#
+# A caller-preset HEADED_ARM_LAUNCHER_ENV is preserved (appended to, never
+# replaced) and wins on a name clash: this function only ever adds a NAME not
+# already present as a token. HEADED_ARM_LAUNCHER_ENV is a whitespace-split
+# token list (same contract as CODEX_BANK_PROBE_CMD) with no quoting scheme,
+# so a value containing whitespace cannot become a token: it would silently
+# mis-split into extra bogus tokens. On macOS (HEADED_ARM_UNAME=Darwin), the
+# token list is the ONLY channel to the leg, so such a value is refused
+# loudly (exit 12) rather than silently corrupted. On every other platform, a
+# plain `export` already reaches the leg via ordinary environment
+# inheritance (this was true before HIMMEL-2534 and must stay true), so the
+# value is left there untouched, a stderr warning explains why no token was
+# added, and this function returns without exit.
+leg_propagate_env() {
+    _leg_prop_name="$1"
+    _leg_prop_value="$2"
+    case "$_leg_prop_value" in
+        *[[:space:]]*)
+            if [ "$HEADED_ARM_UNAME" = "Darwin" ]; then
+                echo "headed-arm-leg: refusing to propagate $_leg_prop_name: value contains whitespace, which HEADED_ARM_LAUNCHER_ENV's token list cannot carry ($_leg_prop_name=$_leg_prop_value)" >&2
+                exit 12
+            fi
+            echo "headed-arm-leg: $_leg_prop_name value contains whitespace - leaving it to plain-export inheritance instead of HEADED_ARM_LAUNCHER_ENV (whose token list cannot carry it); harmless on $HEADED_ARM_UNAME, which inherits this process's environment directly" >&2
+            export "$_leg_prop_name=$_leg_prop_value"
+            unset -v _leg_prop_name _leg_prop_value
+            return
+            ;;
+    esac
+    export "$_leg_prop_name=$_leg_prop_value"
+    set -f
+    for _leg_prop_tok in ${HEADED_ARM_LAUNCHER_ENV:-}; do
+        case "$_leg_prop_tok" in
+            "$_leg_prop_name="*)
+                set +f
+                unset -v _leg_prop_name _leg_prop_value _leg_prop_tok
+                return
+                ;;
+        esac
+    done
+    set +f
+    HEADED_ARM_LAUNCHER_ENV="${HEADED_ARM_LAUNCHER_ENV:+$HEADED_ARM_LAUNCHER_ENV }$_leg_prop_name=$_leg_prop_value"
+    export HEADED_ARM_LAUNCHER_ENV
+    unset -v _leg_prop_name _leg_prop_value _leg_prop_tok
 }
 
 DRY_RUN=0
@@ -182,6 +261,7 @@ HEADLESS=0
 [ "${LEG_HEADLESS:-}" = "1" ] && HEADLESS=1
 LANE="${LEG_LANE:-native}"
 PROFILE="${LEG_PROFILE:-}"
+CONSOLE_FLAG=""
 while :; do
     case "${1:-}" in
         --dry-run) DRY_RUN=1; shift ;;
@@ -209,6 +289,14 @@ while :; do
                 exit 2
             fi
             PROFILE="$2"; shift 2 ;;
+        --console)
+            # Same missing-value trap as --lane/--profile above.
+            if [ "$#" -lt 2 ]; then
+                usage
+                echo "headed-arm-leg: --console requires a value (the owning console's session name)" >&2
+                exit 2
+            fi
+            CONSOLE_FLAG="$2"; shift 2 ;;
         *) break ;;
     esac
 done
@@ -256,6 +344,20 @@ case "$LANE" in
         exit 2
         ;;
 esac
+
+# --console (HIMMEL-3435): charset-checked here because it is an explicit,
+# user-typed flag - same refuse-on-bad-input stance as --lane/--profile
+# above. It lands in a filesystem path downstream (merge-block-alert.sh's
+# console inbox lookup), so only letters, digits, '.', '_' and '-' pass.
+if [ -n "$CONSOLE_FLAG" ]; then
+    case "$CONSOLE_FLAG" in
+        *[!A-Za-z0-9._-]*)
+            usage
+            echo "headed-arm-leg: --console: name must contain only letters, digits, '.', '_' or '-' (got: $CONSOLE_FLAG)" >&2
+            exit 2
+            ;;
+    esac
+fi
 
 # --headless (HIMMEL-3403): the background session takes its env from the
 # claude daemon, so the leg's own env is written into the profile's settings
@@ -330,20 +432,32 @@ HEADED_ARM="${HEADED_ARM_LEG_TARGET:-$HERE/../headed-arm.sh}"
 # HANDOVER_DIR is already a registered seam var (scripts/lib/handover-path.sh)
 # read by every handover script; this widens nothing - it only makes each
 # launch's already-resolved root explicit instead of leaving a leg in a
-# linked worktree to silently re-derive (and miss) it. Skip only when the
-# console's own launching shell already set HANDOVER_DIR (Mode B - already
-# correct, nothing to resolve) or when this process can't resolve one either
-# (nothing to export - unchanged behavior from before this ticket).
+# linked worktree to silently re-derive (and miss) it. Skip resolving only
+# when the console's own launching shell already set HANDOVER_DIR (Mode B -
+# already correct, nothing to resolve) or when this process can't resolve
+# one either (nothing to propagate - unchanged behavior from before this
+# ticket).
 if [ -z "${HANDOVER_DIR:-}" ]; then
     unset -f handover_root 2>/dev/null || true
     # shellcheck source=scripts/lib/handover-path.sh
     # shellcheck disable=SC1091
     if . "$HERE/../../lib/handover-path.sh" 2>/dev/null; then
         _leg_handover_root="$(handover_root 2>/dev/null)" || _leg_handover_root=""
-        [ -n "$_leg_handover_root" ] && export HANDOVER_DIR="$_leg_handover_root"
+        [ -n "$_leg_handover_root" ] && leg_propagate_env HANDOVER_DIR "$_leg_handover_root"
         unset -v _leg_handover_root
     fi
 fi
+
+# HIMMEL-2534 (coordinator follow-up): propagate HANDOVER_DIR whenever it is
+# non-empty, not only when the block above just resolved it - the normal
+# case for a grouped console already exports HANDOVER_DIR before this
+# wrapper ever runs (Mode B above), and that caller-preset value needs the
+# exact same macOS token-list crossing as the self-resolved case; on Linux
+# it was already reaching the leg via inheritance, so this is a no-op there.
+# leg_propagate_env de-dupes by NAME against any HEADED_ARM_LAUNCHER_ENV
+# token already present, so re-calling it for the value the block above just
+# propagated is a harmless no-op, not a double-add.
+[ -n "${HANDOVER_DIR:-}" ] && leg_propagate_env HANDOVER_DIR "$HANDOVER_DIR"
 
 # Context resolution (HIMMEL-2766/HIMMEL-2779): off-values stay standard;
 # the one old 1m opt-in is resolved explicitly so the argv guard below can
@@ -383,7 +497,7 @@ fi
 
 # HIMMEL-2976: an Opus or Fable leg costs materially more per turn than the
 # Sonnet default implementor, so it launches only when its brief names one of
-# the three sanctioned reasons on a Tier line (CLAUDE.md: "raise effort
+# the four sanctioned reasons on a Tier line (CLAUDE.md: "raise effort
 # before tier"). Matched by MODEL PREFIX, same reasoning as the [1m] suffix
 # guard above - a suffix (e.g. claude-opus-5[1m]) must not dodge the gate.
 TIER_GATE=""
@@ -398,7 +512,7 @@ if [ -n "$TIER_GATE" ]; then
     # dash) as non-empty, so strip surrounding whitespace before the check.
     TIER_REASON="$(printf '%s' "$TIER_REASON" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
     if [ -z "$TIER_REASON" ]; then
-        echo "headed-arm-leg: refusing $TIER_GATE launch: $DOC has no '> **Tier:** $TIER_GATE — <category>: <reason>' line (CLAUDE.md: raise effort before tier). Sanctioned reasons: multi-step design; a FINDING the console could not verify at Sonnet; a Sonnet leg returned the work as above its tier. Category tags (exact lowercase): design|unverified-finding|tier-return." >&2
+        echo "headed-arm-leg: refusing $TIER_GATE launch: $DOC has no '> **Tier:** $TIER_GATE — <category>: <reason>' line (CLAUDE.md: raise effort before tier). Sanctioned reasons: multi-step design; a FINDING the console could not verify at Sonnet; a Sonnet leg returned the work as above its tier; a standing operator ruling on model choice (HIMMEL-3480). Category tags (exact lowercase): design|unverified-finding|tier-return|operator-ruling." >&2
         exit 2
     fi
     # HIMMEL-2997: the design was left open (keyword vs enum vs LLM) - console
@@ -411,16 +525,16 @@ if [ -n "$TIER_GATE" ]; then
     case "$TIER_REASON" in
         *:*) ;;
         *)
-            echo "headed-arm-leg: refusing $TIER_GATE launch: $DOC's Tier reason must open with one of the three sanctioned category tags (exact lowercase) followed by ': ' and non-blank free text: design|unverified-finding|tier-return." >&2
+            echo "headed-arm-leg: refusing $TIER_GATE launch: $DOC's Tier reason must open with one of the four sanctioned category tags (exact lowercase) followed by ': ' and non-blank free text: design|unverified-finding|tier-return|operator-ruling." >&2
             exit 2
             ;;
     esac
     TIER_CATEGORY="${TIER_REASON%%:*}"
     TIER_REASON="${TIER_REASON#*:}"
     case "$TIER_CATEGORY" in
-        design|unverified-finding|tier-return) ;;
+        design|unverified-finding|tier-return|operator-ruling) ;;
         *)
-            echo "headed-arm-leg: refusing $TIER_GATE launch: $DOC's Tier reason must open with one of the three sanctioned category tags (exact lowercase) followed by ': ' and non-blank free text: design|unverified-finding|tier-return." >&2
+            echo "headed-arm-leg: refusing $TIER_GATE launch: $DOC's Tier reason must open with one of the four sanctioned category tags (exact lowercase) followed by ': ' and non-blank free text: design|unverified-finding|tier-return|operator-ruling." >&2
             exit 2
             ;;
     esac
@@ -452,7 +566,7 @@ fi
 # left to discretion once already and every open PR went unreviewed,
 # HIMMEL-1362) - a default-off seam here would recreate that exact failure.
 if [ -n "${LEG_SUPPRESS_CR_TRIGGER:-}" ]; then
-    export CR_TRIGGER_SUPPRESS=1
+    leg_propagate_env CR_TRIGGER_SUPPRESS 1
 fi
 
 # IMPL_GUARD_OK=1 / INLINE_IMPL_OK=1: leg-only env for
@@ -465,27 +579,76 @@ fi
 # rather than a bare $VAR, since a judge launch never sets them at all and
 # this script runs under `set -u`.
 if [ "$JUDGE" -ne 1 ]; then
-    export IMPL_GUARD_OK=1
-    export INLINE_IMPL_OK=1
+    leg_propagate_env IMPL_GUARD_OK 1
+    leg_propagate_env INLINE_IMPL_OK 1
 fi
 # HIMMEL_CONSOLE_LEG=1 (HIMMEL-2919): marks the launched process as a
 # console-spawned leg, both lanes - including --judge (design §3.2, "the
 # judge is a leg": this IS Guard E for a judge too, no separate
 # HIMMEL_CONSOLE_JUDGE marker). merge-on-green.sh then merges only on the
 # console's GO file (console-kit/go.sh), and go.sh refuses to run under it.
-export HIMMEL_CONSOLE_LEG=1
+leg_propagate_env HIMMEL_CONSOLE_LEG 1
+# HIMMEL_CONSOLE_NAME (HIMMEL-3435): the owning console's session name, so a
+# leg's HIMMEL-3430 merge-block alert (scripts/lib/merge-block-alert.sh,
+# untouched by this ticket - it already reads this var) can route to the
+# console's own inbox instead of DMing the operator. Resolved from the first
+# of three sources that yields a name - never guessed from the process tree:
+#   1. --console <name> (already charset-refused above if malformed)
+#   2. the launching shell's own HIMMEL_CONSOLE_NAME
+#   3. THIS process's own Claude session name (current_session_name(),
+#      scripts/lib/session-name.sh) - set when this launcher call is itself
+#      running inside a named console session
+# Sources 2 and 3 are re-checked against the same charset --console was
+# refused on above (it lands in the same inbox-lookup path), but a failure
+# there does not abort the launch the way a bad --console flag does: this
+# seam is best-effort alert routing, not load-bearing for the leg, and
+# HIMMEL-3430's own no-name fallback (operator DM) already covers "no usable
+# name" cleanly. A candidate failing the charset check is therefore treated
+# exactly like an empty source - try the next one, or export nothing.
+_console_name_ok() {
+    case "$1" in
+        ''|*[!A-Za-z0-9._-]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+if [ -n "$CONSOLE_FLAG" ]; then
+    CONSOLE_NAME="$CONSOLE_FLAG"
+elif _console_name_ok "${HIMMEL_CONSOLE_NAME:-}"; then
+    CONSOLE_NAME="$HIMMEL_CONSOLE_NAME"
+else
+    CONSOLE_NAME=""
+    # shellcheck source=../../lib/session-name.sh
+    # shellcheck disable=SC1091
+    if . "$HERE/../../lib/session-name.sh" 2>/dev/null; then
+        _detected_console_name="$(current_session_name 2>/dev/null)" || _detected_console_name=""
+        _console_name_ok "$_detected_console_name" && CONSOLE_NAME="$_detected_console_name"
+        unset -v _detected_console_name
+    fi
+fi
+if [ -n "$CONSOLE_NAME" ]; then
+    # HIMMEL-2534: leg_propagate_env, not a bare export - on macOS `open -a`
+    # starts a fresh environment, so a bare export never crosses and #1121's
+    # console-alert routing would silently stop reaching the leg.
+    # _console_name_ok already refuses whitespace, so leg_propagate_env's
+    # Darwin exit 12 branch is unreachable for this variable.
+    leg_propagate_env HIMMEL_CONSOLE_NAME "$CONSOLE_NAME"
+else
+    unset HIMMEL_CONSOLE_NAME
+fi
+unset -v CONSOLE_NAME
+unset -f _console_name_ok
 # HIMMEL_READ_CLAMP_LINES (HIMMEL-3133 / design §3.2): raises read-clamp.sh's
 # whole-file limit for a judge - independent reading is the job. 4000 is a
 # judgment call (no source document names a number): ~10x the leg default of
 # 400, generous for a design-sized doc without reopening the clamp entirely,
 # which stays HIMMEL_READ_CLAMP_OK's own, operator-only lever. The repeat-read
 # half of the clamp (read-clamp.sh's per-range dedup) is untouched.
-[ "$JUDGE" -eq 1 ] && export HIMMEL_READ_CLAMP_LINES=4000
+[ "$JUDGE" -eq 1 ] && leg_propagate_env HIMMEL_READ_CLAMP_LINES 4000
 # HIMMEL_CONSOLE_RELAY=1 (HIMMEL-2975): marks this leg as the Sonnet relay half
 # of a split console. inbox-send.sh's Guard C already refuses --token under it
 # (#733); the Task 26 write-deny hook denies writes under it. Both key off
 # this exact marker, not the console-relay profile above.
-[ "$RELAY" -eq 1 ] && export HIMMEL_CONSOLE_RELAY=1
+[ "$RELAY" -eq 1 ] && leg_propagate_env HIMMEL_CONSOLE_RELAY 1
 # headed-arm.sh builds one argv array for both native and recorder launches and
 # refuses exit 2 if this exact pair is absent. This is the final resolved-argv
 # guard; the context-value check above gives the earlier operator-facing error.
@@ -495,7 +658,8 @@ export HEADED_ARM_REQUIRED_AUTOCOMPACT=200000
 if [ "$LANE" = "claudex" ]; then
     CLAUDEX_BIN="${HEADED_ARM_LEG_CLAUDEX_BIN:-$HERE/../../claude-codex}"
     export HEADED_ARM_LAUNCHER="$CLAUDEX_BIN"
-    export HEADED_ARM_LAUNCHER_ENV="CLAUDEX_LANE_OK=1 CLAUDE_CODE_EFFORT_LEVEL=${LEG_EFFORT:-medium}"
+    leg_propagate_env CLAUDEX_LANE_OK 1
+    leg_propagate_env CLAUDE_CODE_EFFORT_LEVEL "${LEG_EFFORT:-medium}"
     export HEADED_ARM_RECORDER=1
     [ -z "$MODEL" ] && MODEL="gpt-6-astra"
 fi
@@ -566,17 +730,18 @@ if [ -n "$PROFILE" ]; then
             exit 2
         fi
     fi
-    # The shim reads these; export so they survive konsole's `-e env -u ...`.
-    export LEG_PROFILE_SETTINGS="$PROFILE_SETTINGS"
+    # The shim reads these; propagate so they survive both konsole's
+    # `-e env -u ...` (Linux) and `open -a`'s fresh environment (macOS).
+    leg_propagate_env LEG_PROFILE_SETTINGS "$PROFILE_SETTINGS"
     # (HIMMEL-2985) Per-leg path, like PROFILE_SETTINGS above - the claudex
     # lane below overrides this to the same shape for its own coordination
     # preface; content is written only at real-launch time further down.
     LEG_PROFILE_PREFACE="$(dirname "$LOG")/$NAME.leg-preface.md"
-    export LEG_PROFILE_PREFACE
+    leg_propagate_env LEG_PROFILE_PREFACE "$LEG_PROFILE_PREFACE"
     export HEADED_ARM_LAUNCHER="$LEG_SHIM"
     # Lean SessionStart (HIMMEL-2830): the three advisory hooks go quiet. Only
     # the exact value 1 leans - the hooks are fail-open by construction.
-    export HIMMEL_LEAN_LEG=1
+    leg_propagate_env HIMMEL_LEAN_LEG 1
     # mcpServers allowlist (HIMMEL-2935): resolved (and, on an unknown name,
     # REFUSED) here so a typo'd server name fails the same way under --dry-run
     # and for real, same reasoning as the settings JSON above. "null" (the
@@ -592,7 +757,7 @@ if [ -n "$PROFILE" ]; then
             exit 2
         fi
         PROFILE_MCP_CONFIG="$(dirname "$LOG")/$NAME.leg-mcp.json"
-        export LEG_PROFILE_MCP_CONFIG="$PROFILE_MCP_CONFIG"
+        leg_propagate_env LEG_PROFILE_MCP_CONFIG "$PROFILE_MCP_CONFIG"
     fi
 fi
 
@@ -602,7 +767,7 @@ fi
 if [ "$LANE" = "claudex" ]; then
     CLAUDEX_PREFACE="$HERE/../../../docs/handover/leg-preface-claudex.md"
     export HEADED_ARM_LAUNCHER="${HEADED_ARM_LEG_SHIM:-$HERE/../../lanes/leg-claude-launcher.sh}"
-    export LEG_CLAUDE_BIN="$CLAUDEX_BIN"
+    leg_propagate_env LEG_CLAUDE_BIN "$CLAUDEX_BIN"
     for _leg_need in "$CLAUDEX_PREFACE" "$HEADED_ARM_LAUNCHER"; do
         if [ ! -f "$_leg_need" ]; then
             echo "headed-arm-leg: --lane claudex: required file missing: $_leg_need" >&2
@@ -611,9 +776,10 @@ if [ "$LANE" = "claudex" ]; then
     done
     if [ -n "$PROFILE" ]; then
         LEG_PROFILE_PREFACE="$(dirname "$LOG")/$NAME.leg-preface.md"
-        export LEG_PROFILE_PREFACE
+        leg_propagate_env LEG_PROFILE_PREFACE "$LEG_PROFILE_PREFACE"
     else
-        export LEG_PROFILE_PREFACE="$CLAUDEX_PREFACE"
+        LEG_PROFILE_PREFACE="$CLAUDEX_PREFACE"
+        leg_propagate_env LEG_PROFILE_PREFACE "$LEG_PROFILE_PREFACE"
     fi
 fi
 
@@ -635,9 +801,12 @@ if [ "$DRY_RUN" -eq 1 ]; then
     # reason - proves LEG_SUPPRESS_CR_TRIGGER->CR_TRIGGER_SUPPRESS ran in
     # THIS wrapper's own process, and stays <unset> (the default-ON case)
     # for every caller that never sets LEG_SUPPRESS_CR_TRIGGER.
-    printf 'headed-arm-leg: env IMPL_GUARD_OK=%s INLINE_IMPL_OK=%s HIMMEL_CONSOLE_LEG=%s HEADED_ARM_REPO=%s scrub=%s CONSOLE_CONTEXT=%s CR_TRIGGER_SUPPRESS=%s HANDOVER_DIR=%s\n' \
+    # HIMMEL-3435: HIMMEL_CONSOLE_NAME folded in the same way - proves the
+    # three-source resolution above ran in THIS wrapper's own process, and
+    # stays <unset> when no source yielded a well-formed name.
+    printf 'headed-arm-leg: env IMPL_GUARD_OK=%s INLINE_IMPL_OK=%s HIMMEL_CONSOLE_LEG=%s HEADED_ARM_REPO=%s scrub=%s CONSOLE_CONTEXT=%s CR_TRIGGER_SUPPRESS=%s HANDOVER_DIR=%s HIMMEL_CONSOLE_NAME=%s\n' \
         "${IMPL_GUARD_OK:-<unset>}" "${INLINE_IMPL_OK:-<unset>}" "$HIMMEL_CONSOLE_LEG" "${HEADED_ARM_REPO:-<derived by headed-arm.sh>}" \
-        "$LEG_ENV_SCRUB" "${CONSOLE_CONTEXT:-<unset>}" "${CR_TRIGGER_SUPPRESS:-<unset>}" "${HANDOVER_DIR:-<unset>}"
+        "$LEG_ENV_SCRUB" "${CONSOLE_CONTEXT:-<unset>}" "${CR_TRIGGER_SUPPRESS:-<unset>}" "${HANDOVER_DIR:-<unset>}" "${HIMMEL_CONSOLE_NAME:-<unset>}"
     # Printed ONLY under --relay: with the flag omitted this line is absent and
     # the dry-run report stays byte-identical to today's, same guarantee shape
     # as the --profile line below.

@@ -470,18 +470,69 @@ function verifyStatusLineCommand(command, ctx) {
 
 // ── settings-key deepening: verifyPluginSet (claude-plugins-pluginSet) ───
 
+// A project path can arrive spelled two ways for the same install: with or
+// without a trailing separator, and (installed_plugins.json can be written
+// by a Windows Claude Code) with backslashes instead of forward slashes.
+// Separator-normalize ONLY when the path already looks Windows-shaped: a
+// drive letter, or a backslash with NO forward slash at all (a mixed path
+// like '/projects/a\b' is a POSIX path with a literal backslash byte, not a
+// Windows path — swapping its separator would collapse it onto a different
+// project's directory and defeat the scope check the panel flagged this on).
+// path.resolve() then collapses '.'/'..' segments and duplicate separators;
+// on POSIX it already strips a trailing '/' on its own, so the extra trim
+// below is applied ONLY for the Windows-shaped case, where it covers
+// path.resolve()'s own edge case of leaving a bare drive-root ('C:/')
+// separator in place — applying it unconditionally would also strip a
+// literal trailing backslash BYTE from a non-Windows-shaped path (e.g.
+// '/projects/a\'), collapsing it onto the distinct directory '/projects/a'
+// (panel Suggestion, round 2).
+function isWindowsShapedPath(p) {
+  return typeof p === 'string' && (/^[a-zA-Z]:/.test(p) || (p.indexOf('\\') !== -1 && p.indexOf('/') === -1));
+}
+
+function normalizeProjectPath(p) {
+  if (typeof p !== 'string') return p;
+  const windowsShaped = isWindowsShapedPath(p);
+  const slashed = windowsShaped ? p.replace(/\\/g, '/') : p;
+  const resolved = path.resolve(slashed);
+  return windowsShaped ? resolved.replace(/\/+$/, '') : resolved;
+}
+
+// An empty/whitespace/non-string path is malformed and never matches:
+// path.resolve('') is the process cwd, so an empty ledger projectPath would
+// otherwise collide with a cwd-shaped targetPath (HIMMEL-3463).
+function isUsablePath(p) {
+  return typeof p === 'string' && p.trim() !== '';
+}
+
+function sameProjectPath(a, b) {
+  if (!isUsablePath(a) || !isUsablePath(b)) return false;
+  return normalizeProjectPath(a) === normalizeProjectPath(b);
+}
+
+function isDirectory(p) {
+  try {
+    return fs.statSync(p).isDirectory();
+  } catch (_e) {
+    return false;
+  }
+}
+
 // docs/setup/settings-template.json's enabledPlugins true-flagged keys are
-// the recorded floor (scripts/machine-setup/reconcile-enabled-plugins.sh's
-// WHITELIST model already treats it as authoritative) — a non-empty
-// enabledPlugins map is not proof it MATCHES that set, or that any of it is
-// actually on disk. ~/.claude/plugins/installed_plugins.json is that ledger.
+// the recorded FLOOR (scripts/machine-setup/reconcile-enabled-plugins.sh's
+// WHITELIST model already treats it as authoritative), not an exact-match
+// ceiling — a MISSING recorded plugin degrades, but an EXTRA enabled plugin
+// beyond that floor is legitimate and stays present (console ruling,
+// HIMMEL-3441); it is still subject to the installed-ledger check below like
+// every other enabled plugin, and is named in the detail as information.
+// ~/.claude/plugins/installed_plugins.json is that ledger.
 function verifyPluginSet(enabledPlugins, ctx) {
   const templatePath = path.join(ctx.repoRoot, 'docs', 'setup', 'settings-template.json');
   let template;
   try {
     template = JSON.parse(fs.readFileSync(templatePath, 'utf8'));
   } catch (_e) {
-    return `cannot read/parse recorded pluginSet at ${templatePath}`;
+    return { problem: `cannot read/parse recorded pluginSet at ${templatePath}` };
   }
   const recordedFlags = template.enabledPlugins || {};
   const recordedSet = Object.keys(recordedFlags).filter((k) => recordedFlags[k] === true).sort();
@@ -489,11 +540,8 @@ function verifyPluginSet(enabledPlugins, ctx) {
   const actualSet = Object.keys(actualMap).filter((k) => actualMap[k] === true).sort();
   const missing = recordedSet.filter((k) => actualSet.indexOf(k) === -1);
   const extra = actualSet.filter((k) => recordedSet.indexOf(k) === -1);
-  if (missing.length > 0 || extra.length > 0) {
-    const parts = [];
-    if (missing.length > 0) parts.push(`missing: ${missing.join(', ')}`);
-    if (extra.length > 0) parts.push(`unexpected: ${extra.join(', ')}`);
-    return `does not match the recorded pluginSet (${parts.join('; ')})`;
+  if (missing.length > 0) {
+    return { problem: `does not match the recorded pluginSet (missing: ${missing.join(', ')})` };
   }
   const home = (ctx.env && ctx.env.HOME) || os.homedir();
   const ledgerPath = path.join(home, '.claude', 'plugins', 'installed_plugins.json');
@@ -501,7 +549,7 @@ function verifyPluginSet(enabledPlugins, ctx) {
   try {
     ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
   } catch (_e) {
-    return `cannot read/parse plugin install ledger at ${ledgerPath}`;
+    return { problem: `cannot read/parse plugin install ledger at ${ledgerPath}` };
   }
   const installed = (ledger && typeof ledger.plugins === 'object' && ledger.plugins) || {};
   // A "user" ledger entry is globally available, so it satisfies either
@@ -509,18 +557,22 @@ function verifyPluginSet(enabledPlugins, ctx) {
   // whose targetPath is that SAME project — an entry recorded for a
   // different project must not satisfy this one (installPath is a shared
   // marketplace-cache dir, so any stale entry would otherwise pass). Then
-  // the matching entry's installPath must still exist on disk, not merely
-  // be recorded.
+  // the matching entry's installPath must still exist on disk AS A
+  // DIRECTORY, not merely as some path fs.existsSync() is happy with (a
+  // regular file left behind by a botched install is not an installation).
   const scopeMatches = (entry) => entry && (entry.scope === 'user'
-    || (ctx.scope === 'project' && entry.scope === 'project' && entry.projectPath === ctx.targetPath));
+    || (ctx.scope === 'project' && entry.scope === 'project' && sameProjectPath(entry.projectPath, ctx.targetPath)));
   const notInstalled = actualSet.filter((k) => {
     const entries = Array.isArray(installed[k]) ? installed[k] : [];
-    return !entries.some((e) => scopeMatches(e) && typeof e.installPath === 'string' && fs.existsSync(e.installPath));
+    return !entries.some((e) => scopeMatches(e) && typeof e.installPath === 'string' && isDirectory(e.installPath));
   });
   if (notInstalled.length > 0) {
-    return `not installed for this scope per ${ledgerPath}: ${notInstalled.join(', ')}`;
+    return { problem: `not installed for this scope per ${ledgerPath}: ${notInstalled.join(', ')}` };
   }
-  return null;
+  if (extra.length > 0) {
+    return { note: `extra (not in the recorded set): ${extra.join(', ')}` };
+  }
+  return {};
 }
 
 // ── settings-key ─────────────────────────────────────────────────────────
@@ -572,8 +624,9 @@ function probeSettingsKey(item, ctx) {
       if (problem) return { actual: 'degraded', detail: `${filePath}: ${problem}` };
     }
     if (item.probe.verifyPluginSet) {
-      const problem = verifyPluginSet(getVal(item.probe.key), ctx);
-      if (problem) return { actual: 'degraded', detail: `${filePath}: ${problem}` };
+      const result = verifyPluginSet(getVal(item.probe.key), ctx);
+      if (result.problem) return { actual: 'degraded', detail: `${filePath}: ${result.problem}` };
+      if (result.note) return { actual: 'present', detail: `${filePath} (${result.note})` };
     }
     return { actual: 'present', detail: filePath };
   }

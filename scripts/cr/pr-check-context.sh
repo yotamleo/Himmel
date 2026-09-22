@@ -54,12 +54,16 @@
 #     it is what lets a change to scripts/cr/ review ITSELF.
 #   - NO MATCH -> anchor_lane=adopter. himmel_dir = the anchor, NEVER
 #     anything the reviewed repo supplied.
-# On the himmel lane, when NOT already the anchor itself, the merge-base..HEAD
-# diff is classified TRI-STATE into `cr_diff_state`: "no" (merge-base computed,
-# diff read cleanly, diff does NOT touch scripts/cr/), "yes" (merge-base
-# computed, diff read cleanly, diff DOES touch it), or "unknown" (merge-base
-# could not be computed, OR the diff itself could not be read - either
-# failure is treated identically: never delegate on an unknown diff). When
+# On the himmel lane, when NOT already the anchor itself, the branch's
+# changes to scripts/cr/ AND scripts/guardrails/lib.sh (HIMMEL-3382 - ONE
+# diff definition, shared with the runbook's own step-0 himmel-lane
+# precheck: the merge-base diff of COMMITTED history PLUS WORKING-TREE and
+# UNTRACKED changes, scoped to those two paths) are classified TRI-STATE into
+# `cr_diff_state`: "no" (every git call succeeded, the set is empty), "yes"
+# (every git call succeeded, the set is non-empty), or "unknown" (merge-base
+# could not be computed, OR any of the three git calls failed - either
+# failure is treated identically: never delegate on an unknown diff). The
+# exact set decided on is printed as `cr_diff_files=` below. When
 # cr_diff_state=yes AND this run is not itself the
 # verified delegate (the recursion guard - see "Identity handshake, not a
 # boolean" below) AND the branch carries its own
@@ -75,7 +79,8 @@
 #
 # THE single guarantee (HIMMEL-2335 round 6): himmel_dir may be left pointing
 # at the BRANCH ONLY IF cr_diff_state=no (the diff is PROVEN not to touch
-# scripts/cr/), OR the delegation is provably logged (verified_delegate=yes -
+# scripts/cr/ or scripts/guardrails/lib.sh), OR the delegation is provably
+# logged (verified_delegate=yes -
 # this run IS a verified delegate a genuine anchor handed off to - OR
 # ledger_written=yes - this run IS the anchor and its own ledger-append.sh
 # call just succeeded). This is now enforced by ONE assertion at the very end
@@ -235,6 +240,11 @@
 #     verify against, not merely "is set" - see "Identity handshake, not a
 #     boolean" above): the branch copy the anchor handed off to, which then
 #     produces the actual context>
+#   pr-check-context: cr_diff_files=<comma-joined, sorted, deduped set this
+#     run decided on for cr_diff_state (HIMMEL-3382) - the merge-base diff of
+#     committed history plus working-tree/untracked changes under
+#     scripts/cr/ and scripts/guardrails/lib.sh; empty when cr_diff_state is
+#     no or unknown>
 # Nothing else is written to stdout; diagnostics go to stderr.
 #
 # Side effects: pre-truncates (via scripts/cr/write-verdicts.sh, HIMMEL-2131)
@@ -263,6 +273,44 @@
 #      [A-Za-z0-9._/+-] that could break out of a substituted-literal fence
 #      downstream (HIMMEL-2226); nothing is printed and no side effect runs
 set -uo pipefail
+
+# CodeRabbit security finding (HIMMEL-3382): clear every git-repo-selection
+# env var this process may have inherited from its caller BEFORE the first
+# git call below - GIT_DIR/GIT_WORK_TREE/GIT_COMMON_DIR would otherwise
+# silently retarget every `git` invocation in this script (including the
+# HIMMEL_ROOT/anchor checks) at a repo this script never chose, and
+# GIT_INDEX_FILE/GIT_OBJECT_DIRECTORY/GIT_ALTERNATE_OBJECT_DIRECTORIES/
+# GIT_PREFIX carry the same risk for the index and object store.
+#
+# Console adversarial round 1 (HIMMEL-3454 finding 4): GIT_CONFIG_* was not
+# covered, and a config value can retarget or hide input the same way a
+# GIT_DIR override can - GIT_CONFIG_COUNT/KEY_0/VALUE_0=core.excludesFile
+# hides an untracked file, GIT_CONFIG_PARAMETERS='core.fileMode=false' hides
+# a mode change, and GIT_CONFIG_GLOBAL pointed at a scratch file carrying
+# `[core] worktree = <anchor>` silently redirects every later git call at
+# the anchor. Cleared the same way: every GIT_CONFIG_KEY_n/VALUE_n pair is
+# caller-numbered, so they are found by scanning the actual environment
+# rather than assumed to stop at index 0. GIT_CONFIG_NOSYSTEM is SET, not
+# unset - unsetting it would let a system-level gitconfig back in, which is
+# the opposite of this block's purpose.
+#
+# Console adversarial delta review (HIMMEL-3382): GIT_LITERAL_PATHSPECS/
+# GIT_GLOB_PATHSPECS/GIT_NOGLOB_PATHSPECS/GIT_ICASE_PATHSPECS were not
+# covered either. The diff/ls-files calls below rely on the `:(top)` magic
+# pathspec to anchor at the worktree root regardless of cwd; an inherited
+# GIT_LITERAL_PATHSPECS=1 turns `:(top)scripts/cr/` into a literal,
+# non-existent path, so every one of the three calls silently returns empty
+# and cr_diff_state falls back to "no" - a fail-open on exactly the diff this
+# script exists to catch.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE \
+    GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX \
+    GIT_CONFIG GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_PARAMETERS \
+    GIT_CONFIG_COUNT GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS \
+    GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS
+while IFS='=' read -r gcvar _; do
+    unset "$gcvar"
+done < <(env | grep -E '^GIT_CONFIG_(KEY|VALUE)_[0-9]+=')
+export GIT_CONFIG_NOSYSTEM=1
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HIMMEL_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -546,6 +594,16 @@ fi
 # prints a non-empty name on its own, this is defense in depth only.
 base=$(default_branch "$repo")
 [ -n "$base" ] || base=main
+# Console adversarial round 1 (HIMMEL-3454 finding 2/5): a bare branch name
+# is ambiguous - `git merge-base HEAD main` can resolve a same-named TAG
+# ahead of the branch, silently shrinking the diff. Match the runbook's own
+# step-0 precheck, which always spells this out in full: prefer the
+# remote-tracking ref, falling back to the local branch only when the
+# remote ref is absent (never a bare name).
+base_ref="refs/remotes/origin/$base"
+if ! git rev-parse --verify -q "$base_ref" >/dev/null 2>&1; then
+    base_ref="refs/heads/$base"
+fi
 
 # HIMMEL-2335 - deliberate delegation. himmel lane ONLY: the trusted anchor
 # decides whether execution hands off to the branch's own copy of this
@@ -553,49 +611,58 @@ base=$(default_branch "$repo")
 # precondition below must hold, or this run does its own work exactly as
 # before (delegated stays "no").
 #
-# HIMMEL-2335 round 6 - the diff state is TRI-STATE, computed once:
-# cr_diff_state=no (merge-base computed, diff read cleanly, diff does NOT
-# touch scripts/cr/), =yes (merge-base computed, diff read cleanly, diff
-# DOES touch scripts/cr/), or =unknown (merge-base could not be computed, OR
-# the diff itself could not be read - never delegate on an unknown diff, and
-# the single end-of-decision assertion below treats "unknown" the same as
-# "yes": both refuse to leave himmel_dir at the branch unlogged).
+# HIMMEL-3382 - ONE diff definition, shared with the runbook's own step-0
+# himmel-lane precheck (both twins): the merge-base diff of COMMITTED
+# history PLUS WORKING-TREE and UNTRACKED changes, scoped to scripts/cr/ AND
+# scripts/guardrails/lib.sh (this script sources the latter, so a branch
+# that touches only it is exactly as unreviewed-if-self-run as one that
+# touches scripts/cr/ itself - the pre-HIMMEL-3382 version scoped only to
+# scripts/cr/, missing this file entirely). Each of the three git calls
+# below is scoped to those paths directly via its own pathspec, not a
+# post-hoc `grep '^scripts/cr/'` filter, and each has its own exit status
+# checked separately - nothing here pipes a git call's output into grep, so
+# the pre-HIMMEL-3382 pipefail/SIGPIPE hazard this comment used to document
+# (a failed `git diff` piped into `grep -q` misread as a clean diff) cannot
+# recur. cr_diff_files carries the exact set decided on (sorted, deduped,
+# printed on stdout below) - cr_diff_state is TRI-STATE, computed once:
+# =no (every git call succeeded, the set is empty), =yes (every git call
+# succeeded, the set is non-empty), or =unknown (merge-base or any of the
+# three calls failed - never delegate on an unknown diff, and the single
+# end-of-decision assertion below treats "unknown" the same as "yes": both
+# refuse to leave himmel_dir at the branch unlogged).
 delegated=no
 cr_diff_state=unknown
+cr_diff_files=
 ledger_written=no
 if [ "$anchor_lane" = "himmel" ] && [ "$himmel_dir_is_anchor" = no ]; then
-    if mb=$(git merge-base HEAD "$base" 2>/dev/null); then
-        # HIMMEL-2335 CR [codex-3] - capture the diff and check ITS OWN exit
-        # status separately from grep's, same as the merge-base check just
-        # above. The old shape (`git diff ... | grep -c '^scripts/cr/'`) let
-        # a failed `git diff` print nothing, so grep -c counted 0 matches and
-        # cr_diff_state=no - "proven clean" - which is the one state that
-        # lets the branch's own scripts/cr/ execute: an unreadable diff was
-        # misclassified as known-safe instead of unknown. `grep -q` returning
-        # 1 (no match) is NOT a diff failure - it only decides yes vs no
-        # INSIDE the branch where the diff was already read successfully.
-        #
-        # HIMMEL-2335 CR - grep-q-pipe-under-pipefail: under `set -o
-        # pipefail` (line 199), `printf ... | grep -q` exits the pipeline
-        # non-zero as soon as grep finds its first match and SIGPIPEs printf
-        # before it finishes writing $diff_files - on a large diff (>~64
-        # KiB) that flips a real match into what looked like a clean diff.
-        # $diff_files is unbounded, so a here-string (`grep -q ... <<<`)
-        # isn't safe either (a >64 KiB here-string wedges Git Bash,
-        # HIMMEL-2027). Capture grep's own output instead of using -q so it
-        # always reads all of $diff_files and can't SIGPIPE the producer.
-        if diff_files=$(git diff --name-only "$mb"..HEAD 2>/dev/null); then
-            cr_hits=$(printf '%s\n' "$diff_files" | grep '^scripts/cr/')
-            if [ -n "$cr_hits" ]; then
-                cr_diff_state=yes
+    # Console adversarial round 1 (HIMMEL-3454 finding 1): a plain pathspec
+    # is resolved relative to CWD, not the repo root - invoked from a
+    # subdirectory it silently misses scripts/cr/ and scripts/guardrails/lib.sh
+    # entirely. ":(top)" anchors each pathspec to the worktree root regardless
+    # of cwd (finding 3): dropping --exclude-standard from the untracked-files
+    # call also counts a GITIGNORED file under these paths - an unreviewed
+    # scripts/cr/ change hidden behind .gitignore must not read as "no diff".
+    if mb=$(git merge-base HEAD "$base_ref" 2>/dev/null); then
+        if committed_files=$(git diff --name-only "$mb"..HEAD -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh' 2>/dev/null); then
+            if worktree_files=$(git diff --name-only HEAD -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh' 2>/dev/null); then
+                if untracked_files=$(git ls-files --others -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh' 2>/dev/null); then
+                    cr_diff_files=$(printf '%s\n%s\n%s\n' "$committed_files" "$worktree_files" "$untracked_files" | grep -v '^$' | sort -u)
+                    if [ -n "$cr_diff_files" ]; then
+                        cr_diff_state=yes
+                    else
+                        cr_diff_state=no
+                    fi
+                else
+                    echo "pr-check-context: could not compute git ls-files --others -- scripts/cr/ scripts/guardrails/lib.sh - cr_diff_state=unknown (never delegate on an unknown diff)" >&2
+                fi
             else
-                cr_diff_state=no
+                echo "pr-check-context: could not compute git diff --name-only HEAD -- scripts/cr/ scripts/guardrails/lib.sh - cr_diff_state=unknown (never delegate on an unknown diff)" >&2
             fi
         else
-            echo "pr-check-context: could not compute git diff --name-only $mb..HEAD - cr_diff_state=unknown (never delegate on an unknown diff)" >&2
+            echo "pr-check-context: could not compute git diff --name-only $mb..HEAD -- scripts/cr/ scripts/guardrails/lib.sh - cr_diff_state=unknown (never delegate on an unknown diff)" >&2
         fi
     else
-        echo "pr-check-context: could not compute merge-base HEAD..$base - cr_diff_state=unknown (never delegate on an unknown diff)" >&2
+        echo "pr-check-context: could not compute merge-base HEAD..$base_ref - cr_diff_state=unknown (never delegate on an unknown diff)" >&2
     fi
 
     # Attempt delegation only when the diff is KNOWN to touch scripts/cr/,
@@ -689,9 +756,9 @@ fi
 # unknown merge-base). himmel_dir may be left pointing at the BRANCH (i.e.
 # this run's own scripts/cr/, or a genuine delegate's, executes on every
 # later /pr-check fence) ONLY IF:
-#   (a) cr_diff_state=no          - the branch's scripts/cr/ is PROVEN
-#       byte-identical in effect to the anchor's (the diff does not touch
-#       it), OR
+#   (a) cr_diff_state=no          - the branch's scripts/cr/ and
+#       scripts/guardrails/lib.sh are PROVEN byte-identical in effect to the
+#       anchor's (the diff does not touch either), OR
 #   (b) verified_delegate=yes     - this run IS the verified delegate a
 #       genuine anchor handed off to (the identity handshake above), OR
 #   (c) ledger_written=yes        - this run IS the anchor and its own
@@ -796,5 +863,10 @@ printf 'pr-check-context: marker=%s\n' "$marker"
 printf 'pr-check-context: lane=%s\n' "$lane"
 printf 'pr-check-context: anchor_lane=%s\n' "$anchor_lane"
 printf 'pr-check-context: delegated=%s\n' "$delegated"
+# HIMMEL-3382 - the exact set this run decided on (comma-joined, empty when
+# cr_diff_state is no or unknown): the runbook points at this line instead
+# of restating the diff recipe itself.
+cr_diff_files_csv=$(printf '%s\n' "$cr_diff_files" | grep -v '^$' | tr '\n' ',' | sed 's/,$//')
+printf 'pr-check-context: cr_diff_files=%s\n' "$cr_diff_files_csv"
 
 exit 0

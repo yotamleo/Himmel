@@ -77,13 +77,70 @@
 #      when a check silently failed — that would be a dangerous false-negative.
 #
 # Lean-invoke: run `bash scripts/check-plugin-drift.sh` on demand, or arm it on a
-# cadence. NOT a pre-commit hook (a network round-trip per commit is too costly).
+# cadence. The full drift sweep above is NOT a pre-commit hook (a network
+# round-trip per commit is too costly) — but `--manifest-only` (HIMMEL-3464) IS
+# pre-commit-wired: a purely local, no-network check that every
+# marketplace/plugins/<p>/.claude-plugin/plugin.json carries a non-empty
+# "version" field. The marketplace's local "directory" source has
+# autoUpdate:true, so a manifest with no version falls back to the checkout's
+# HEAD sha — and main moves dozens of commits a day, so nearly every session
+# start prints a spurious "Plugin updated" notice for that plugin.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # Paths are env-overridable so the test harness can point at fixtures.
 MJSON="${DRIFT_MJSON:-$ROOT/marketplace/.claude-plugin/marketplace.json}"
 UPSTREAMS="${DRIFT_UPSTREAMS:-$ROOT/scripts/plugin-upstreams.json}"  # per-plugin true-upstream overrides (may be absent)
+PLUGINS_DIR="${DRIFT_PLUGINS_DIR:-$ROOT/marketplace/plugins}"
+
+# check_manifest_versions — the --manifest-only check (HIMMEL-3464). Local
+# only, no gh/network, so it can run on every commit. Fails closed: an
+# unreadable/unparsable manifest counts as bad, never a silent pass.
+check_manifest_versions() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "check-plugin-drift --manifest-only: python3 not available — cannot verify plugin manifest versions." >&2
+    return 1
+  fi
+  python3 - "$PLUGINS_DIR" <<'PY'
+import glob, json, os, sys
+
+plugins_dir = sys.argv[1]
+manifests = sorted(glob.glob(os.path.join(plugins_dir, "*", ".claude-plugin", "plugin.json")))
+if not manifests:
+    print(f'ERR check-plugin-drift --manifest-only: no plugin manifests found under {plugins_dir}', file=sys.stderr)
+    sys.exit(1)
+
+bad = []
+for path in manifests:
+    try:
+        with open(path) as f:
+            manifest = json.load(f)
+    except (OSError, ValueError) as e:
+        bad.append(f"{path} (unreadable/unparsable: {e})")
+        continue
+    if not isinstance(manifest, dict):
+        bad.append(f"{path} (not a JSON object)")
+        continue
+    version = manifest.get("version")
+    if not isinstance(version, str) or not version.strip():
+        bad.append(path)
+
+if bad:
+    print('ERR check-plugin-drift --manifest-only: plugin manifest(s) missing a "version" field (HIMMEL-3464):', file=sys.stderr)
+    for b in bad:
+        print(f"  {b}", file=sys.stderr)
+    print('    autoUpdate:true + no version falls back to the checkout HEAD sha, triggering a', file=sys.stderr)
+    print('    spurious "Plugin updated" notice on nearly every session start.', file=sys.stderr)
+    sys.exit(1)
+
+print("check-plugin-drift --manifest-only: every marketplace plugin manifest carries a version field")
+PY
+}
+
+if [ "${1:-}" = "--manifest-only" ]; then
+  check_manifest_versions
+  exit $?
+fi
 
 # Portable replacement for `sort -V | tail -1`: GNU-only (BSD sort on macOS has
 # no -V), which would silently leave `latest`/`hi` empty on macOS and either

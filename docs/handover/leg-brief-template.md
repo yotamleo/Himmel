@@ -55,11 +55,14 @@ template_version: 3
 
 > **Tier:** <opus|fable> — <category>: <free text>, where `<category>` is
 > exactly one of `design` (multi-step design), `unverified-finding` (a
-> FINDING the console could not verify at Sonnet), or `tier-return` (a
-> Sonnet leg returned the work as above its tier), e.g. `design: two
-> interacting hooks`. <Omit this line entirely for a Sonnet or Haiku leg —
-> `headed-arm-leg.sh` (HIMMEL-2976/HIMMEL-2997) refuses to launch an Opus or
-> Fable model without it.>
+> FINDING the console could not verify at Sonnet), `tier-return` (a
+> Sonnet leg returned the work as above its tier), or `operator-ruling` (a
+> standing operator ruling on model choice — the free text names the ruling,
+> its date and where it was given), e.g. `design: two interacting hooks` or
+> `operator-ruling: run only Opus 5.5 (operator 2026-09-22, console A)`.
+> <Omit this line entirely for a Sonnet or Haiku leg — `headed-arm-leg.sh`
+> (HIMMEL-2976/HIMMEL-2997/HIMMEL-3480) refuses to launch an Opus or Fable
+> model without it.>
 
 > **Why (read the ticket first: `<the exact command that fetches it>`):**
 > <two or three sentences: what the operator actually asked for, and what is
@@ -110,7 +113,7 @@ template_version: 3
 | Explicit do-nots | Scope widens into a neighbouring leg's files and the fan-out collides. |
 | The standing preface | Every rule the brief no longer repeats — reporting, RETASK asymmetry, RED-first, trailers in the first commit, GO-gated merge, the fill ceiling. It is injected by `--profile`, so a brief that omits it AND uses `--no-profile` is a leg running on vibes (a launch with neither is refused). |
 | `completes-ticket:` line | `merge-on-green.sh` closes the ticket only on `--jira-transition` (opt-in, HIMMEL-3143, because a default closes multi-PR tickets early). Without the line every leg guesses whether its PR finishes the ticket: in one shift six merges printed `would-transition` and five were closed by hand (HIMMEL-3271). It is a per-brief decision, never a default. |
-| Tier line (Opus/Fable only) | Without a trimmed, non-blank reason opening with one of the three exact-lowercase category tags (`design`, `unverified-finding`, `tier-return`), `headed-arm-leg.sh` refuses the launch (HIMMEL-2976/HIMMEL-2997, CLAUDE.md: "raise effort before tier") — the tag is validated and the free text after it must be non-blank, but its content is otherwise unrestricted, so a paraphrase can never be falsely rejected. |
+| Tier line (Opus/Fable only) | Without a trimmed, non-blank reason opening with one of the four exact-lowercase category tags (`design`, `unverified-finding`, `tier-return`, `operator-ruling`), `headed-arm-leg.sh` refuses the launch (HIMMEL-2976/HIMMEL-2997/HIMMEL-3480, CLAUDE.md: "raise effort before tier") — the tag is validated and the free text after it must be non-blank, but its content is otherwise unrestricted, so a paraphrase can never be falsely rejected. For a standing operator ruling on model choice, `operator-ruling:` free text names the ruling, its date and where it was given, so the console can trace the Opus/Fable spend back to it. |
 
 ## What the console must also do (2026-09-13)
 

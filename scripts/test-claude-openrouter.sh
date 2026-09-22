@@ -186,13 +186,13 @@ t "declared cell launches" 0
 for pair in \
   "ANTHROPIC_BASE_URL=https://openrouter.ai/api" \
   "ANTHROPIC_AUTH_TOKEN=or-test-123" \
-  "ANTHROPIC_MODEL=anthropic/claude-opus-5" \
-  "ANTHROPIC_DEFAULT_HAIKU_MODEL=anthropic/claude-opus-5" \
-  "ANTHROPIC_DEFAULT_SONNET_MODEL=anthropic/claude-opus-5" \
-  "ANTHROPIC_DEFAULT_OPUS_MODEL=anthropic/claude-opus-5" \
+  "ANTHROPIC_MODEL=anthropic/claude-opus-5.5" \
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL=anthropic/claude-opus-5.5" \
+  "ANTHROPIC_DEFAULT_SONNET_MODEL=anthropic/claude-opus-5.5" \
+  "ANTHROPIC_DEFAULT_OPUS_MODEL=anthropic/claude-opus-5.5" \
   "CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000" \
   "CLAUDE_CONFIG_DIR=$FAKEHOME/.claude-openrouter"; do
-  grep -qF "$pair" "$WORK/child-env.txt" || { echo "FAIL: child env missing $pair"; FAILS=$((FAILS+1)); }
+  grep -qxF "$pair" "$WORK/child-env.txt" || { echo "FAIL: child env missing $pair"; FAILS=$((FAILS+1)); }
 done
 # ANTHROPIC_API_KEY must reach the child EXPLICITLY EMPTY (whole-line match): the
 # empty key is load-bearing — it is what forces the SDK onto the OpenRouter path

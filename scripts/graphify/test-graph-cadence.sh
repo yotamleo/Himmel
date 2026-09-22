@@ -195,6 +195,7 @@ cat > "$FAKE_MERGE" <<'FAKEMERGE'
 {
     echo "args: $*"
     echo "ARMAUTOMERGE=${ARMAUTOMERGE:-unset}"
+    echo "HIMMEL_REPO=${HIMMEL_REPO:-unset}"
     echo "cwd=$(pwd)"
 } >> "$FAKE_MERGE_LOG"
 exit "${FAKE_MERGE_RC:-0}"
@@ -434,7 +435,9 @@ seed_repo "$REPO2" "$BARE2" 20
 BARE2_MAIN_BEFORE=$(git --git-dir="$BARE2" rev-parse main)
 BARE2_REFS_BEFORE=$(git --git-dir="$BARE2" for-each-ref --format='%(refname)')
 rc=0
-out=$(HOME="$HOME2" GRAPH_CADENCE_HIMMEL_ROOT="$REPO2" GRAPH_CADENCE_LEDGER_ROOT="$LEDGER2" FAKE_MERGE_RC=0 \
+# HIMMEL_REPO is unset for this run, as under the cron runner
+# (graphmap-publish-himmel.sh sets only PATH) -- HIMMEL-3475.
+out=$(unset HIMMEL_REPO; HOME="$HOME2" GRAPH_CADENCE_HIMMEL_ROOT="$REPO2" GRAPH_CADENCE_LEDGER_ROOT="$LEDGER2" FAKE_MERGE_RC=0 \
       run_gc --threshold 10 2>&1) || rc=$?
 assert_eq        "full-pipeline rc=0" "0" "$rc"
 # OPERATOR REQUIREMENT (HIMMEL-2654): graph updates land ONLY via a PR --
@@ -453,6 +456,9 @@ assert_not_contains "published branch landed on the bare origin" "MISSING" "$bar
 merge_log=$(cat "$FAKE_MERGE_LOG")
 assert_contains "merge-on-green invoked with the predicted branch selector" "args: chore/graph-publish-${CORPUS_SLUG}" "$merge_log"
 assert_contains "merge-on-green invoked with ARMAUTOMERGE=1" "ARMAUTOMERGE=1" "$merge_log"
+# HIMMEL-3475: merge-on-green.sh fails closed (exit 19) without the
+# HIMMEL_REPO anchor, so an unset one must reach it as this checkout's root.
+assert_contains "merge-on-green receives HIMMEL_REPO = this checkout when unset" "HIMMEL_REPO=$(cd "$SCRIPT_DIR/../.." && pwd)" "$merge_log"
 LEDGER_LINE2=$(tail -n1 "$LEDGER2/.graph-cadence/ledger.jsonl" 2>/dev/null || echo MISSING)
 assert_contains "ledger action=merged" '"action":"merged"' "$LEDGER_LINE2"
 assert_contains "ledger pr field populated" '"pr":"https://github.com/test/test/pull/42"' "$LEDGER_LINE2"
@@ -476,9 +482,10 @@ mkdir -p "$HOME3" "$LEDGER3"
 seed_repo "$REPO3" "$BARE3" 20
 : > "$FAKE_MERGE_LOG"
 rc=0
-out=$(HOME="$HOME3" GRAPH_CADENCE_HIMMEL_ROOT="$REPO3" GRAPH_CADENCE_LEDGER_ROOT="$LEDGER3" FAKE_MERGE_RC=14 \
+out=$(HIMMEL_REPO="$TMP_ROOT/t3-anchor" HOME="$HOME3" GRAPH_CADENCE_HIMMEL_ROOT="$REPO3" GRAPH_CADENCE_LEDGER_ROOT="$LEDGER3" FAKE_MERGE_RC=14 \
       run_gc --threshold 10 2>&1) || rc=$?
 assert_eq "not-yet-mergeable rc=0 (not a failure)" "0" "$rc"
+assert_contains "a HIMMEL_REPO already set is passed through unchanged" "HIMMEL_REPO=$TMP_ROOT/t3-anchor" "$(cat "$FAKE_MERGE_LOG")"
 LEDGER_LINE3=$(tail -n1 "$LEDGER3/.graph-cadence/ledger.jsonl" 2>/dev/null || echo MISSING)
 assert_contains "ledger action=published on a non-landing merge-on-green" '"action":"published"' "$LEDGER_LINE3"
 

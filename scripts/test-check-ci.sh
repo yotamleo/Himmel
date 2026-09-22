@@ -519,6 +519,17 @@ if [ "$cmd" = "pr" ] && [ "${2:-}" = "view" ]; then
             esac
             exit 0 ;;
         *"baseRefName"*) echo "main"; exit 0 ;;
+        # HIMMEL-3473: GitHub's own merge verdict, in check-ci's parsed shape
+        # "<head> <state>". GH_STUB_MERGE_STATE is a comma list consumed one
+        # read at a time (the last value repeats); "fail" is an unreadable read.
+        *"mergeStateStatus"*)
+            n=$(cat "$GH_STUB_MSC" 2>/dev/null); n=${n:-0}; echo $((n+1)) > "$GH_STUB_MSC"
+            IFS=, read -r -a _ms <<<"${GH_STUB_MERGE_STATE:-CLEAN}"
+            i=$(( n < ${#_ms[@]} ? n : ${#_ms[@]} - 1 ))
+            [ "${_ms[$i]}" = fail ] && { echo "HTTP 502: merge state boom" >&2; exit 1; }
+            [ "${_ms[$i]}" = bare ] && { echo sha1; exit 0; }   # a row with no state field
+            echo "${GH_STUB_MERGE_HEAD:-sha1} ${_ms[$i]}"
+            exit 0 ;;
         *"headRefOid"*)
             if [ "${GH_STUB_HEAD:-stable}" = "moving" ]; then
                 h=$(cat "$GH_STUB_HEADC" 2>/dev/null)
@@ -796,6 +807,9 @@ CHECKS_OVERRIDE="pass:unit-tests"
 KEEP_ALERT_STATE=0
 ALERT_FAIL_OVERRIDE=""
 ACCESS_OVERRIDE="$STUBDIR/access.json"
+# HIMMEL-3473: GitHub's mergeStateStatus sequence + the head it reports. Default
+# CLEAN at the watched head, so every pre-3473 case keeps its verdict.
+MERGE_STATE_OVERRIDE=CLEAN; MERGE_HEAD_OVERRIDE=sha1
 
 # --- HIMMEL-1953: no real sleeping, and no unbounded case -------------------
 #
@@ -857,6 +871,7 @@ run() {
     : > "$STUBDIR/comments"
     : > "$STUBDIR/claims"
     : > "$STUBDIR/reqrows-count"
+    : > "$STUBDIR/msc"
     # HIMMEL-3381: alert state resets per run unless a case sets KEEP_ALERT_STATE=1
     # (the dedupe case runs the SAME head twice and must see ONE alert).
     if [ "$KEEP_ALERT_STATE" -ne 1 ]; then : > "$STUBDIR/alerts.log"; rm -rf "$STUBDIR/alert-sentinels"; fi
@@ -889,9 +904,14 @@ run() {
         GH_STUB_PRODUCERS="$PRODUCERS_OVERRIDE" \
         GH_STUB_STATUSCTX="$STATUSCTX_OVERRIDE" \
         GH_STUB_CHECKS="$CHECKS_OVERRIDE" \
+        GH_STUB_MERGE_STATE="$MERGE_STATE_OVERRIDE" \
+        GH_STUB_MERGE_HEAD="$MERGE_HEAD_OVERRIDE" \
+        GH_STUB_MSC="$STUBDIR/msc" \
         MERGE_BLOCK_ALERT_DIR="$STUBDIR/alert-sentinels" \
         MERGE_BLOCK_ALERT_CMD="$STUBDIR/alert-sender" \
         TELEGRAM_ACCESS_PATH="$ACCESS_OVERRIDE" \
+        HIMMEL_TEST_FIXTURE=1 \
+        MERGE_WATCH_ALERT_BRIDGE_ROOT="$STUBDIR/console-bridge" \
         GH_STUB_ALERT_FAIL="$ALERT_FAIL_OVERRIDE" \
         CHECK_CI_POLL_INTERVAL="$POLL_OVERRIDE" \
         CHECK_CI_SETTLE="$SETTLE_OVERRIDE" \
@@ -916,6 +936,7 @@ run() {
     FRESHNESS_OVERRIDE=fresh; FILES_OVERRIDE=README.md; CR_BOT_LOGINS_OVERRIDE=""; MPR_OVERRIDE=none; BODY_FILE_OVERRIDE=""; BODY_FILE2_OVERRIDE=""
     RULES_OVERRIDE=none; CLASSIC_OVERRIDE=none; PRODUCERS_OVERRIDE=none; STATUSCTX_OVERRIDE=none; CHECKS_OVERRIDE="pass:unit-tests"
     KEEP_ALERT_STATE=0; ALERT_FAIL_OVERRIDE=""; ACCESS_OVERRIDE="$STUBDIR/access.json"
+    MERGE_STATE_OVERRIDE=CLEAN; MERGE_HEAD_OVERRIDE=sha1
 }
 
 run_in_repo() {
@@ -2606,7 +2627,82 @@ RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVER
 run cr-completed --grace 0
 assert_rc 0 "3434-k control: an id tie still prefers the completed row when it sits earlier in the array (order-independent)"
 
+# ── HIMMEL-3473: the verdict equals GitHub's own mergeStateStatus ─────────────
+# No case below encodes a model of GitHub's merge rule: each fixes what GitHub
+# SAYS and asserts check-ci says the same. The #1115 replay is the RED: every
+# latest run green, cancelled runs earlier in the same context, GitHub BLOCKED.
+_runs_1115='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"cancelled","app":{"id":15368},"started_at":"2026-09-22T13:31:05Z","id":1},{"name":"codeowner-review-gate","status":"completed","conclusion":"cancelled","app":{"id":15368},"started_at":"2026-09-22T13:34:03Z","id":2},{"name":"codeowner-review-gate","status":"completed","conclusion":"success","app":{"id":15368},"started_at":"2026-09-22T13:40:18Z","id":3},{"name":"codeowner-review-gate","status":"completed","conclusion":"cancelled","app":{"id":15368},"started_at":"2026-09-22T13:55:15Z","id":4},{"name":"codeowner-review-gate","status":"completed","conclusion":"success","app":{"id":15368},"started_at":"2026-09-22T13:55:57Z","id":5}]}'
+
+# 3473-a — the #1115 replay: GitHub says BLOCKED, so check-ci is not green.
+RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_runs_1115"; MERGE_STATE_OVERRIDE=BLOCKED
+run cr-completed --grace 0
+assert_rc 6 "3473-a every latest run green but GitHub BLOCKED -> exit 6, never green"
+assert_verdict 6 "3473-a exactly one verdict line, exit=6"
+assert_err_has "mergeStateStatus=BLOCKED" "3473-a the refusal quotes GitHub's own state"
+assert_err_has "codeowner-review-gate cancelled" "3473-a the refusal names the non-passing runs it found (diagnosis)"
+
+# 3473-b — the same runs once GitHub reports CLEAN (the cancelled runs re-run):
+# check-ci follows GitHub to green. Pre- and post-#1109 semantics no longer
+# decide anything; GitHub's answer does, in both directions.
+RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_runs_1115"; MERGE_STATE_OVERRIDE=CLEAN
+run cr-completed --grace 0
+assert_rc 0 "3473-b the same cancelled-run history with GitHub CLEAN -> exit 0"
+
+# 3473-c — the mapping, one GitHub state at a time.
+for _st in HAS_HOOKS UNSTABLE; do
+    MERGE_STATE_OVERRIDE=$_st
+    run cr-completed --grace 0
+    assert_rc 0 "3473-c GitHub $_st (mergeable) -> exit 0"
+done
+for _st in DIRTY BEHIND DRAFT; do
+    MERGE_STATE_OVERRIDE=$_st
+    run cr-completed --grace 0
+    assert_rc 6 "3473-c GitHub $_st (merge refused) -> exit 6"
+    assert_err_has "mergeStateStatus=$_st" "3473-c the $_st refusal quotes the state"
+done
+
+# 3473-d — UNKNOWN is "GitHub has not computed it yet": never green, never red.
+MERGE_STATE_OVERRIDE=UNKNOWN
+run cr-completed --grace 0
+assert_rc 2 "3473-d UNKNOWN past --grace -> exit 2 (cannot evaluate), not 0 and not 6"
+MERGE_STATE_OVERRIDE="UNKNOWN,UNKNOWN,CLEAN"
+run cr-completed --grace 30
+assert_rc 0 "3473-d UNKNOWN that settles to CLEAN within --grace -> exit 0"
+if [ "$(cat "$STUBDIR/msc")" = 3 ]; then pass "3473-d UNKNOWN is polled (3 reads), not read once"; else fail "3473-d UNKNOWN is polled (3 reads), not read once" "reads=$(cat "$STUBDIR/msc")"; fi
+
+# 3473-e — BLOCKED while GitHub is still settling (console ruling: #1125 read
+# BLOCKED only while its checks were pending) polls, never exits 6 at once.
+MERGE_STATE_OVERRIDE="BLOCKED,BLOCKED,CLEAN"
+run cr-completed --grace 30
+assert_rc 0 "3473-e BLOCKED that settles to CLEAN within --grace -> exit 0, not an immediate 6"
+MERGE_STATE_OVERRIDE="UNKNOWN,BLOCKED"
+run cr-completed --grace 30
+assert_rc 6 "3473-e BLOCKED that persists through --grace -> exit 6"
+
+# 3473-f — fail closed: an unreadable, unrecognized, or wrong-head state.
+MERGE_STATE_OVERRIDE=fail
+run cr-completed --grace 0
+assert_rc 2 "3473-f an unreadable mergeStateStatus -> exit 2, never green"
+MERGE_STATE_OVERRIDE=SOMETHING_NEW
+run cr-completed --grace 0
+assert_rc 2 "3473-f an unrecognized mergeStateStatus -> exit 2, never green"
+MERGE_STATE_OVERRIDE=bare
+run cr-completed --grace 0
+assert_rc 2 "3473-f a malformed state row (no state field) -> exit 2, never read as a state"
+assert_err_has "could not read GitHub's mergeStateStatus" "3473-f the malformed row reads as unreadable, not as a state named after the head"
+MERGE_HEAD_OVERRIDE=sha9
+run cr-completed --grace 0
+assert_rc 2 "3473-f GitHub's state is for another head -> exit 2 (the verdict is bound to the watched head)"
+
+# 3473-g — --threads-only never consults GitHub's merge state (it runs before
+# CI is green; a pending BLOCKED there is not a review-state verdict).
+MERGE_STATE_OVERRIDE=BLOCKED
+run cr-completed --threads-only
+assert_rc 0 "3473-g --threads-only is unaffected by a BLOCKED merge state"
+_ms_args=$(cat "$STUBDIR/args.log")
+assert_grep_lacks "3473-g --threads-only makes no mergeStateStatus read" "found a mergeStateStatus read" -F mergeStateStatus <<<"$_ms_args"
+
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 173 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 173"; exit 1; fi
+if [ "$COUNT" -ne 189 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 189"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1

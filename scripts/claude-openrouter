@@ -37,12 +37,12 @@ OPENROUTER_ANTHROPIC_BASE_URL="${OPENROUTER_ANTHROPIC_BASE_URL:-https://openrout
 # context_length: 1000000): the 1M Claude tiers are NATIVELY 1M on OpenRouter;
 # do NOT append `:extended` (no such variant exists). Default is the judge tier.
 # Selectable without editing the launcher (OPENROUTER_MODEL env):
-#   anthropic/claude-opus-5   (default — parent tier, 1M)
+#   anthropic/claude-opus-5.5 (default — parent tier, 1M)
 #   anthropic/claude-fable-5  (the judgment/taste escalation tier)
 #   anthropic/claude-opus-5-fast
 #   anthropic/claude-sonnet-5
 # `:batch` variants exist for async pricing — opt in deliberately, never default.
-OPENROUTER_MODEL="${OPENROUTER_MODEL:-anthropic/claude-opus-5}"
+OPENROUTER_MODEL="${OPENROUTER_MODEL:-anthropic/claude-opus-5.5}"
 OPENROUTER_HAIKU="${OPENROUTER_HAIKU:-$OPENROUTER_MODEL}"
 # OPENROUTER_CONTEXT_WINDOW feeds CLAUDE_CODE_AUTO_COMPACT_WINDOW (export block
 # below) so Claude Code budgets against the real 1M tier instead of its ~200k

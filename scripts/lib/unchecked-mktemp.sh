@@ -223,6 +223,23 @@
 #      alternative to `;`, and loops (strips repeatedly) so a CHAIN of
 #      declarations is fully peeled before the assignment is scanned.
 #
+# HIMMEL-3457 + HIMMEL-3460 close the gaps deferred from that slice:
+#   1. Rule (c) counts the var as tested only when it is a WHOLE operand --
+#      its own shell word, `"$T"` / `"${T...}"` or a bare `$T` -- never when
+#      it is glued into a larger compared string (`"$T-suffix"`,
+#      `"prefix$T"`, `"a ${T}"`), where the other operand is what is tested.
+#      Not a full tokenizer: the `.*` before the word still lets a whole-
+#      operand mention in a LATER command on the same line count, as before.
+#   2. `$(...)#` is one shell word, so the comment stripper no longer treats
+#      a `#` right after a command substitution `)` as a comment start; after
+#      a subshell or group `)` it still is.
+#   3. The word-concatenation ruling (item 3 above) now covers every
+#      quoting spelling: `mktemp"-d"` and `mktemp\ -d` each lex as one word
+#      that is not mktemp, so neither flags. A `\` at END of line is a line
+#      continuation, not an escape, so `mktemp\` followed by a newline still
+#      flags. An EMPTY quote pair (`mktemp"" -d`, `mktemp'' -d`) adds nothing
+#      to the word and still flags.
+#
 # Sourced, never executed. Sets no shell options of its own.
 
 unchecked_mktemp_scan() {
@@ -300,8 +317,15 @@ unchecked_mktemp_scan() {
     # track a backslash-escaped `\"` inside a double-quoted string as
     # still-quoted (general shell lexing is out of scope -- see the file
     # header); that shape does not occur in this repo.
-    function strip_comment(s,    i, n, c, prev, prev2, insq, indq) {
+    # HIMMEL-3460 item 3: `)` ends a word only when it closes a subshell or
+    # group -- the `)` of a `$(...)` command substitution does not, since
+    # `$(...)#tag` is ONE shell word. A string of 1/0 flags (1 = the open
+    # paren was `$(`) tracks which kind each unquoted `)` closes; a string,
+    # not an array, keeps this portable to every awk.
+    function strip_comment(s,    i, n, c, prev, prev2, insq, indq, stk, cmdsub_close) {
         n = length(s)
+        stk = ""
+        cmdsub_close = 0
         for (i = 1; i <= n; i++) {
             c = substr(s, i, 1)
             if (insq) {
@@ -314,6 +338,15 @@ unchecked_mktemp_scan() {
             }
             if (c == sq) { insq = 1; continue }
             if (c == "\"") { indq = 1; continue }
+            if (c == "(") {
+                stk = stk ((i > 1 && substr(s, i - 1, 1) == "$") ? "1" : "0")
+                continue
+            }
+            if (c == ")") {
+                cmdsub_close = (substr(stk, length(stk), 1) == "1")
+                if (stk != "") stk = substr(stk, 1, length(stk) - 1)
+                continue
+            }
             if (c == "#") {
                 prev = (i > 1) ? substr(s, i - 1, 1) : ""
                 prev2 = (i > 2) ? substr(s, i - 2, 1) : ""
@@ -329,10 +362,34 @@ unchecked_mktemp_scan() {
                 # such as a mktemp template argument (`mktemp
                 # /tmp/name#XXXXXX`), which is not a comment start.
                 if (prev != "" && prev !~ /[ \t;&|()]/) continue
+                if (prev == ")" && cmdsub_close) continue    # $(...)# is one word
                 return substr(s, 1, i - 1)
             }
         }
         return s
+    }
+    # Blank every quoted string that is not EXACTLY one reference, so the
+    # rule (c) pattern sees a reference only where it is a whole operand:
+    # a single-quoted string is a literal (no reference at all), and a
+    # double-quoted string survives only when its whole content matches
+    # ref (e.g. "$T" or "${T:-}"). "prefix $T suffix" becomes "".
+    function mask_quoted(s, ref,    i, j, n, c, out, body) {
+        n = length(s)
+        out = ""
+        for (i = 1; i <= n; i++) {
+            c = substr(s, i, 1)
+            if (c == sq || c == "\"") {
+                j = index(substr(s, i + 1), c)
+                if (j == 0) return out substr(s, i)
+                body = substr(s, i + 1, j - 1)
+                if (c == "\"" && body ~ ("^" ref "$")) out = out c body c
+                else out = out c c
+                i += j
+                continue
+            }
+            out = out c
+        }
+        return out
     }
     END {
         # Pass 1: mark every line inside a heredoc body (skip[i]=1) so the
@@ -421,11 +478,17 @@ unchecked_mktemp_scan() {
             # followed by whitespace then a quoted -d (a real, separate
             # argument) is unaffected -- the whitespace character itself is
             # already outside the allowed set and matches first.
+            # HIMMEL-3460 item 4: the same holds for a double quote and a
+            # backslash escape, so both are kept out of the boundary class
+            # too -- except a backslash at END of line, which is a line
+            # continuation (the next line starts a new word) and so is a
+            # boundary. Zero or more EMPTY quote pairs may sit between
+            # mktemp and the boundary: they add nothing to the word.
             # (No literal quote character appears in this comment or the
             # regex below by accident -- this whole awk program is itself
             # single-quoted by its caller, so the one quote the regex needs
             # is spelled with the close/escaped-quote/reopen idiom instead.)
-            if (scan_s !~ /^[ \t]*((local|export|typeset|readonly|declare)[ \t]+((-[a-zA-Z]+|--)[ \t]+)*)?[A-Za-z_][A-Za-z0-9_]*="?\$\([ \t]*mktemp([^A-Za-z0-9_./'\''-]|$)/)
+            if (scan_s !~ /^[ \t]*((local|export|typeset|readonly|declare)[ \t]+((-[a-zA-Z]+|--)[ \t]+)*)?[A-Za-z_][A-Za-z0-9_]*="?\$\([ \t]*mktemp(""|'\'''\'')*([^A-Za-z0-9_./'\''"\\-]|\\$|$)/)
                 continue
 
             # A declaration builtin (local/export/declare/typeset/readonly)
@@ -459,18 +522,21 @@ unchecked_mktemp_scan() {
 
             guarded = 0
 
-            # ponytail: rule (c) below still treats the captured var as
-            # "tested" when it is only EMBEDDED inside a larger compared
-            # string, e.g. `[ "$out" = "$tmp-suffix" ]` or
-            # `[ "$out" = "prefix$tmp" ]` -- the actual variable under test
-            # there is $out, not $tmp, but the regex has no way to tell
-            # "$tmp is the whole compared operand" from "$tmp is glued into
-            # one". Closing this needs real tokenization of the test
-            # expression, not a boundary-character tweak (codex-1, /pr-check
-            # round 3 on this branch) -- deferred as a known false-negative,
-            # same class as the already-accepted `T13 || echo failed` gap.
-            # Tracked as HIMMEL-3457 (this PR completes HIMMEL-3428, so the
-            # gap cannot defer onto the ticket it completes).
+            # The rule (c) pattern: a test construct in which the var is a
+            # WHOLE operand. HIMMEL-3457: the reference must be its own
+            # shell word -- preceded by whitespace or `(`, and either
+            # wrapped in a matching pair of double quotes or bare, then
+            # followed by whitespace, a command separator, `)` or
+            # end-of-line. `[ "$out" = "$T-suffix" ]`, `[ "$out" =
+            # "prefix$T" ]`, `[ "$out" = "a ${T}" ]` and (via mask_quoted)
+            # `[ "$out" = "a $T b" ]` all mention $T only
+            # as a FRAGMENT of the operand actually compared ($out is the
+            # thing under test), so none of them match. The braced form
+            # keeps both HIMMEL-3428 alternatives: an immediate close, or a
+            # modifier (`${T:-}`) that starts with a non-identifier char
+            # (so `${T_other}` is not `${T}`) and ends at a real `}`.
+            ref_re = "(\\$\\{" var "(\\}|[^A-Za-z0-9_][^{}]*\\})|\\$" var ")"
+            test_re = "(\\[\\[?|test)[ \t](.*[ \t(])?(\"" ref_re "\"|" ref_re ")([ \t;&|)]|$)"
 
             # Rules (c)/(d) on the REMAINDER of the assignment line itself
             # (e.g. `T=$(mktemp -d); : "${T:?x}"`) -- these are VALUE guards
@@ -501,7 +567,7 @@ unchecked_mktemp_scan() {
                 # identifier character, so requiring either an immediate
                 # close or a non-identifier char right after the var name
                 # closes this without narrowing back to exact-`${VAR}`-only.
-                if (rem ~ ("(\\[\\[?|test)[ \t].*(\\$\\{" var "(\\}|[^A-Za-z0-9_][^{}]*\\})|\\$" var ")[^A-Za-z0-9_/.]")) guarded = 1
+                if (mask_quoted(rem, ref_re) ~ test_re) guarded = 1
                 if (!guarded && rem ~ ("\\$\\{" var ":\\?")) guarded = 1
             }
 
@@ -525,7 +591,7 @@ unchecked_mktemp_scan() {
                     # remainder above.
                     t_code = strip_comment(t)
                     # (c) a test construct referencing the variable.
-                    if (t_code ~ ("(\\[\\[?|test)[ \t].*(\\$\\{" var "(\\}|[^A-Za-z0-9_][^{}]*\\})|\\$" var ")[^A-Za-z0-9_/.]")) { guarded = 1; break }
+                    if (mask_quoted(t_code, ref_re) ~ test_re) { guarded = 1; break }
                     # (d) `${VAR:?...}` -- colon form only (not `${VAR?...}`).
                     if (t_code ~ ("\\$\\{" var ":\\?")) { guarded = 1; break }
                 }

@@ -44,12 +44,12 @@ $OpenRouterAnthropicBaseUrl = if ($env:OPENROUTER_ANTHROPIC_BASE_URL) { $env:OPE
 # context_length: 1000000): the 1M Claude tiers are NATIVELY 1M on OpenRouter;
 # do NOT append ':extended' (no such variant exists). Default is the judge tier.
 # Selectable without editing the launcher (OPENROUTER_MODEL env):
-#   anthropic/claude-opus-5   (default — parent tier, 1M)
+#   anthropic/claude-opus-5.5 (default — parent tier, 1M)
 #   anthropic/claude-fable-5  (the judgment/taste escalation tier)
 #   anthropic/claude-opus-5-fast
 #   anthropic/claude-sonnet-5
 # ':batch' variants exist for async pricing — opt in deliberately, never default.
-$OpenRouterModel         = if ($env:OPENROUTER_MODEL) { $env:OPENROUTER_MODEL } else { 'anthropic/claude-opus-5' }
+$OpenRouterModel         = if ($env:OPENROUTER_MODEL) { $env:OPENROUTER_MODEL } else { 'anthropic/claude-opus-5.5' }
 $OpenRouterHaiku         = if ($env:OPENROUTER_HAIKU) { $env:OPENROUTER_HAIKU } else { $OpenRouterModel }
 $OpenRouterContextWindow = if ($env:OPENROUTER_CONTEXT_WINDOW) { $env:OPENROUTER_CONTEXT_WINDOW } else { '1000000' }
 $OpenRouterApiBase       = if ($env:OPENROUTER_API_BASE) { $env:OPENROUTER_API_BASE } else { 'https://openrouter.ai/api/v1' }

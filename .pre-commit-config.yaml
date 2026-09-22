@@ -79,6 +79,13 @@ repos:
         files: ^docs/setup/settings-template\.json$
         pass_filenames: false
 
+      - id: plugin-manifest-version
+        name: every marketplace plugin manifest carries a version field
+        entry: bash scripts/check-plugin-drift.sh --manifest-only
+        language: system
+        files: ^marketplace/plugins/[^/]+/\.claude-plugin/plugin\.json$
+        pass_filenames: false
+
       - id: doc-guard
         name: command/skill added requires catalog update (himmel-dev only)
         entry: bash scripts/hooks/check-doc-guard.sh

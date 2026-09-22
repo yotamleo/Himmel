@@ -146,6 +146,15 @@ pasted into the brief. Detail:
 `block-leg-askuserquestion.sh` (HIMMEL-2923) uses to structurally deny
 `AskUserQuestion` on the leg, rather than relying on the brief's prose NEVER.
 
+`headed-arm-leg.sh` also exports `HIMMEL_CONSOLE_NAME` (HIMMEL-3435) into the
+leg, resolved from the first of: a `--console <name>` flag, this launching
+shell's own `HIMMEL_CONSOLE_NAME`, or the console's own session name if it can
+be read reliably — never guessed from the process tree, and exported not at
+all if no source yields a name. A running console usually needs no flag: its
+own session name resolves automatically. This is what lets a leg's
+HIMMEL-3430 merge-block alert (`scripts/lib/merge-block-alert.sh`) route to
+the console's own inbox instead of DMing the operator.
+
 **Idle capacity is the console's duty.** `tick.sh` appends `fleet=<live>/<cap>`
 (bank-preflight's own census: native + claudex + reserved, `HIMMEL_FLEET_CAP`)
 and `capacity=`. On `capacity=UNDERFILLED:<slack>` — live below cap and no leg

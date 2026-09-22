@@ -97,6 +97,7 @@ check "PreToolUse rows pre absent"      "$(rows_of /hooks/PreToolUse insert | fi
 check "the operator's rtk stanza has no row" "$(rows_of /hooks/PreToolUse | grep -c 'rtk-hook-guard')" "0"
 check "one SessionStart insert row"     "$(count_of /hooks/SessionStart insert)" "1"
 check "SessionStart container created"  "$(rows_of /hooks/SessionStart insert | field .container_created)" "true"
+check "no /hooks row: the operator's hooks object pre-existed" "$(count_of /hooks)" "0"
 check "SessionStart elem_sha = wired hook sha" "$(rows_of /hooks/SessionStart insert | field .elem_sha)" \
   "$(sha "$(jq -cS '.hooks.SessionStart[0].hooks[0]' "$SETTINGS")")"
 
@@ -140,6 +141,12 @@ PSET="$td/proj/.claude/settings.json"
 bash "$lib/wire-himmel-repo.sh"       "$PSET" "$HIMMEL_FAKE" >/dev/null
 bash "$lib/wire-pretooluse-hooks.sh"  "$PSET" '$CLAUDE_PROJECT_DIR' >/dev/null
 check "project HIMMEL_REPO row scope"   "$(jq -r --arg p "$(cd "$td/proj/.claude" && pwd -P)/settings.json" 'select(.unit=="/env/HIMMEL_REPO" and .path==$p) | .scope' "$LEDGER")" "project"
+bash "$lib/wire-pretooluse-hooks.sh"  --sessionstart "$PSET" '$CLAUDE_PROJECT_DIR' "inject-initiative.sh" >/dev/null
+prow() { jq -c --arg u "$1" --arg p "$(cd "$td/proj/.claude" && pwd -P)/settings.json" 'select(.unit==$u and .path==$p)' "$LEDGER"; }
+check "project: one /hooks row for the created hooks object (HIMMEL-3389)" "$(prow /hooks | grep -c .)" "1"
+check "project: /hooks op=create"       "$(prow /hooks | field .op)" "create"
+check "project: /hooks pre absent"      "$(prow /hooks | field .pre.state)" "absent"
+check "project: /hooks writer"          "$(prow /hooks | field .writer)" "wire-pretooluse-hooks.sh"
 check "project PreToolUse rows scope"   "$(jq -r --arg p "$(cd "$td/proj/.claude" && pwd -P)/settings.json" 'select(.unit=="/hooks/PreToolUse" and .path==$p) | .scope' "$LEDGER" | sort -u)" "project"
 
 echo "==== AN EXPLICIT JSON null PRE-STATE IS RECORDED AS null, NOT AS ABSENT (HIMMEL-3352) ===="
@@ -169,6 +176,7 @@ null_case hr-envkey     '{"env": {"HIMMEL_REPO": null}}'                       /
 null_case lv-env        '{"env": null}'                                        /env                           replace wire-luna-vault.sh   "C:/fake/vault"
 null_case lv-envkey     '{"env": {"LUNA_VAULT_PATH": null}}'                   /env/LUNA_VAULT_PATH           replace wire-luna-vault.sh   "C:/fake/vault"
 null_case hd-env        '{"env": null}'                                        /env                           replace wire-handover-dir.sh "C:/fake/handovers"
+null_case hooks-null     '{"hooks": null}'                                      /hooks                         replace wire-pretooluse-hooks.sh "$HIMMEL_FAKE"
 null_case hd-envkey     '{"env": {"HANDOVER_DIR": null}}'                      /env/HANDOVER_DIR              replace wire-handover-dir.sh "C:/fake/handovers"
 # A null-valued sibling key is not the key being wired: the wired key is still `create`.
 d="$td/null-sibling/.claude"; mkdir -p "$d"; printf '%s' '{"env": {"OTHER": null}}' > "$d/settings.json"

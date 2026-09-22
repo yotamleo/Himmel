@@ -39,8 +39,12 @@
 # Run detached, so it outlives the session that armed it:
 #   setsid nohup bash scripts/handover/headed-arm.sh ... >/dev/null 2>&1 &
 #
-# Platform guard (gitbash-only): POSIX bash 3.2+ with a konsole on PATH, so
-# Linux/KDE in practice. No .ps1 twin - the Windows station arms through
+# Platform guard (gitbash-only): POSIX bash 3.2+ plus a terminal emulator -
+# konsole on Linux/KDE, and on macOS (HIMMEL-2534) the konsole-macos.sh shim
+# this defaults to there, which translates the SAME konsole argv into the
+# house `open -a <App> <file>.command` launch arm-resume.sh already uses.
+# macOS has no /proc, so the confirmation reads each pid's argv via ps -
+# see session_confirmed() below. No .ps1 twin - the Windows station arms through
 # scripts/handover/arm-resume.sh's schtasks backend, which carries the same
 # HIMMEL-2545 clears in its generated .bat. This marker sits ABOVE the
 # exit-code table below, rather than after it: that table gains an entry
@@ -49,7 +53,9 @@
 # scripts/parity/test-ws5-invariants.sh's T15 check scans for one - it has
 # already done so twice.
 #
-# Exit codes: 2 usage / bad argument; 3 no konsole on PATH; 4 no pgrep on
+# Exit codes: 2 usage / bad argument; 3 no konsole on PATH; 13 (HIMMEL-2534
+# CR fix, N346) could not resolve this script's own directory to locate the
+# macOS konsole shim, a distinct failure from 3 above; 4 no pgrep on
 # PATH (see codex-4 below); 5 the claim-lock root could not be created (see
 # r2-codex-2 below - an environment fault, never a dedup hit); 6 the claim
 # retry budget was exhausted without ever confirming a running session (see
@@ -371,7 +377,7 @@ fi
 
 # HIMMEL-3079: the console parent defaults to Opus (default parent tier);
 # Fable is the escalation target, reached only via an explicit [model].
-NAME="$1"; DOC="$2"; SIGNAL="$3"; DEADLINE="$4"; LOG="$5"; MODEL="${6:-claude-opus-5}"
+NAME="$1"; DOC="$2"; SIGNAL="$3"; DEADLINE="$4"; LOG="$5"; MODEL="${6:-claude-opus-5-5}"
 # HIMMEL-2973 (default re-pinned by HIMMEL-2975 T6, resolution now shared
 # via scripts/lib/console-context.sh): --context resolution, arming-time
 # only (see the header comment above). Defaults to `standard`
@@ -433,13 +439,70 @@ if [ "$CONTEXT" = "1m" ]; then
 else
     CONTEXT_REASON="context=standard ($_headed_context_source); model=$MODEL"
 fi
-KONSOLE="${KONSOLE_CMD:-konsole}"
+# HIMMEL-2534: macOS has no konsole. The default resolves to the shim beside
+# this script rather than branching the two launch blocks below - every
+# existing test asserts their exact argv shape, and a shim keeps that
+# contract instead of forking it per platform. KONSOLE_CMD still overrides
+# on every platform, unchanged.
+# codex-review S11: the platform read is a seam, like PGREP_CMD and
+# HEADED_ARM_PROC already are, so the macOS-only resolution and budget below
+# are testable on a Linux runner instead of silently reporting green there.
+HEADED_ARM_UNAME="${HEADED_ARM_UNAME:-$(uname -s 2>/dev/null)}"
+# Whether this station launches through `open -a` rather than konsole. This
+# tracks the PLATFORM, not which binary won the resolution below: an explicit
+# KONSOLE_CMD on a Mac is still an `open -a`-shaped launch and still needs the
+# larger visibility budget (see SESSION_VISIBLE_RETRY_ITERS).
+KONSOLE_IS_MACOS_SHIM=0
+[ "$HEADED_ARM_UNAME" = "Darwin" ] && KONSOLE_IS_MACOS_SHIM=1
+# Whether THIS run resolved the shim itself, as opposed to being handed a
+# launcher. Narrower than the platform flag above on purpose: an explicit
+# KONSOLE_CMD means the caller owns what the launcher does with the argv,
+# so the recorder refusal below must not speak for it.
+KONSOLE_IS_RESOLVED_SHIM=0
+if [ -n "${KONSOLE_CMD:-}" ]; then
+    KONSOLE="$KONSOLE_CMD"
+elif [ "$HEADED_ARM_UNAME" = "Darwin" ]; then
+    # codex-review S12: an unchecked `cd` here collapses to the literal
+    # "/konsole-macos.sh", and the refusal below then names a path that never
+    # existed -- "the shim is missing" instead of "I could not resolve my own
+    # directory". Fail with the real reason.
+    _here="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _here=""
+    if [ -z "$_here" ]; then
+        # HIMMEL-2534 CR fix (N346): exit 3 already means "no konsole/CLI dep
+        # on PATH" (below); this is a different failure (can't even resolve
+        # this script's own directory) and needs its own code, not a collision.
+        echo "headed-arm: could not resolve this script's own directory to locate the macOS konsole shim" >&2
+        # 13, not 10 (N357 r2 codex-3): headed-arm-leg.sh execs into this
+        # script and already owns 10-12 and 17 for its own refusals.
+        exit 13
+    fi
+    KONSOLE="$_here/konsole-macos.sh"
+    KONSOLE_IS_MACOS_SHIM=1
+    KONSOLE_IS_RESOLVED_SHIM=1
+else
+    KONSOLE="konsole"
+fi
+# HIMMEL-3484: the shim refuses anything but plain decimal digits here, while
+# the budget below reads the var through 10# arithmetic, which would take
+# "200+1". Same validation on both sides, refused before anything is claimed.
+if [ "$KONSOLE_IS_MACOS_SHIM" = "1" ]; then
+    case "${KONSOLE_MACOS_STARTUP_TICKS:-200}" in
+        ''|*[!0-9]*)
+            echo "headed-arm: KONSOLE_MACOS_STARTUP_TICKS must be a plain decimal integer, got '${KONSOLE_MACOS_STARTUP_TICKS:-}'" >&2
+            exit 2
+            ;;
+    esac
+fi
 PGREP="${PGREP_CMD:-pgrep}"
 PROC="${HEADED_ARM_PROC:-/proc}"
 REPO="${HEADED_ARM_REPO:-$(cd "$(dirname "$0")/../.." && pwd)}"
 INIT="execute,prcheck,pr,ticket,merge,public,handover"
 LAUNCHER="${HEADED_ARM_LAUNCHER:-claude}"
 LAUNCHER_ENV="${HEADED_ARM_LAUNCHER_ENV:-}"
+# PR 1129 console review: konsole inherits this environment and hands it to the
+# leg's claude. A leaked list would make any arm spawned from that leg prepend
+# the PARENT's profile tokens (first token wins) ahead of its own.
+unset HEADED_ARM_LAUNCHER_ENV
 RECORDER="${HEADED_ARM_RECORDER:-0}"
 REQUIRED_AUTOCOMPACT="${HEADED_ARM_REQUIRED_AUTOCOMPACT:-}"
 unset HEADED_ARM_REQUIRED_AUTOCOMPACT
@@ -606,7 +669,8 @@ fi
 # codex-4: unchecked, a missing pgrep fails the dedup call below rc=127,
 # which reads exactly like "no matching session" and silently disables
 # dedup - failing OPEN into duplicate windows. This script is already
-# Linux/KDE-only (konsole), so refusing here is honest, not restrictive.
+# tied to a terminal emulator (konsole, or the macOS shim), so refusing here
+# is honest, not restrictive.
 if ! command -v "$PGREP" >/dev/null 2>&1; then
     echo "headed-arm: no '$PGREP' on PATH - dedup needs pgrep (procps) to tell whether a session named $NAME is already running; refusing rather than risk launching a duplicate (HIMMEL-2545)" >&2
     exit 4
@@ -734,6 +798,30 @@ _argv_has_n_name() { # _argv_has_n_name <pid> - true iff /proc/<pid>/cmdline
     done < "$PROC/$pid/cmdline"
     return 1
 }
+# HIMMEL-3484: the no-/proc equivalent of _argv_has_n_name. `ps -o args=`
+# is the only argv source a stock Mac offers from the shell, and it joins the
+# elements with spaces, so this walks whitespace TOKENS and lets only the
+# FIRST `-n` token decide: our launches put every option ahead of the prompt,
+# so a "-n <NAME>" later in another session's prompt, or a name that merely
+# has ours as a prefix, no longer confirms.
+# ponytail: still weaker than the NUL-separated /proc read - an argv element
+# that itself contains " -n <NAME> " and sits BEFORE the real -n option (an
+# --append-system-prompt value), or a claude with no -n at all whose prompt
+# carries it, can still confirm. Closing that needs kern.procargs2, which no
+# stock macOS CLI exposes.
+_flat_argv_has_n_name() { # _flat_argv_has_n_name <space-joined argv>
+    local toks i=0
+    # -d '' reads past newlines (a multiline argv element); rc 1 at EOF is expected.
+    read -r -d '' -a toks <<< "$1" || true
+    while [ "$i" -lt "${#toks[@]}" ]; do
+        if [ "${toks[$i]}" = "-n" ]; then
+            [ "${toks[$((i + 1))]:-}" = "$NAME" ]
+            return $?
+        fi
+        i=$((i + 1))
+    done
+    return 1
+}
 # HIMMEL-3403: the headless census. A background session is listed by
 # `agents --json` with its pid while it runs. A CLI or jq failure is the same
 # third state (2) as a failed pgrep scan, and so is an answer that is not a
@@ -749,6 +837,8 @@ headless_session_listed() {
         *) return 2 ;;
     esac
 }
+
+_LOSSY_WARNED=0
 session_confirmed() { # session_confirmed <pgrep-ere-pattern> - returns
                        # 0 confirmed, 1 genuinely not running, 2 the SCAN
                        # ITSELF failed (indeterminate, never "not running")
@@ -760,6 +850,39 @@ session_confirmed() { # session_confirmed <pgrep-ere-pattern> - returns
     pids="$("$PGREP" -f "$pat" 2>/dev/null)"
     pg_rc=$?
     [ "$pg_rc" -gt 1 ] && return 2
+    # HIMMEL-2534: where $PROC is absent (macOS) the /proc walk below would
+    # answer "not running" forever (every `cat` fails, every pid is skipped,
+    # dedup fails OPEN into duplicate windows and every launch lands
+    # UNCONFIRMED/rc 7). So each candidate is read through `ps` instead: comm
+    # per pid, then (HIMMEL-3484) that pid's own argv, decided by
+    # _flat_argv_has_n_name rather than by pgrep's flattened match, which let
+    # ANY claude whose prompt carried "-n <NAME>" suppress the arm - the
+    # HIMMEL-2999 class. `ps -o args=` is still space-joined, so the residual
+    # gap its ponytail names is announced once - never silent.
+    if [ ! -d "$PROC" ]; then
+        if [ "$_LOSSY_WARNED" -eq 0 ]; then
+            echo "WARN headed-arm: no $PROC on this platform - session confirmation reads each candidate's argv via ps, whitespace-joined, so an argv element containing spaces can still spoof it (HIMMEL-3484)" >&2
+            _LOSSY_WARNED=1
+        fi
+        # ps rc 1 = that pid vanished since pgrep saw it (skip it); any other
+        # failure (a missing or broken ps) means the scan itself failed, so
+        # it is indeterminate (2), never "not running" (N357, codex-2).
+        local ps_rc args
+        for pid in $pids; do
+            ps_rc=0
+            comm="$(ps -o comm= -p "$pid" 2>/dev/null)" || ps_rc=$?
+            [ "$ps_rc" -eq 1 ] && continue
+            [ "$ps_rc" -eq 0 ] || return 2
+            [ "${comm##*/}" = claude ] || continue
+            # HIMMEL-3484: this pid's OWN argv decides, as on /proc - never
+            # pgrep's flattened match (same rc policy as the comm read).
+            args="$(ps -ww -o args= -p "$pid" 2>/dev/null)" || ps_rc=$?
+            [ "$ps_rc" -eq 1 ] && continue
+            [ "$ps_rc" -eq 0 ] || return 2
+            _flat_argv_has_n_name "$args" && return 0
+        done
+        return 1
+    fi
     for pid in $pids; do
         comm="$(cat "$PROC/$pid/comm" 2>/dev/null)" || continue
         [ "$comm" = claude ] || continue
@@ -1189,6 +1312,32 @@ CLAIM_RETRY_SLEEP=0.05
 # (kept next to the claim-retry constants, same shape).
 SESSION_VISIBLE_RETRY_ITERS=100
 SESSION_VISIBLE_RETRY_SLEEP=0.05
+# HIMMEL-2534 (codex-review C1, CRITICAL): the 5s budget above was sized for
+# konsole, where the window and the claude exec are effectively instantaneous.
+# The macOS shim is NOT: `open -a` has to bring the app up first, measured at
+# ~16s for a first-ever (cold) iTerm start and ~1s warm. Left at 5s, a cold
+# arm gives up, RELEASES THE LOCK (see the rm -rf "$LOCK" below) and exits 7
+# UNCONFIRMED at t=5s -- and then the window opens at t=16s and a real,
+# untracked session runs anyway, so the next arm on the same NAME launches a
+# genuine duplicate. That is the exact failure r3-codex-2/r4-codex-1/r8-codex-4
+# exist to prevent, reached through a budget mismatch instead of a race.
+#
+# Both budgets are now derived from the SAME env var the shim itself reads
+# (KONSOLE_MACOS_STARTUP_TICKS, 0.1s per tick), so they cannot drift apart:
+# cover the shim's whole startup budget, THEN still allow the original 5s for
+# claude to become visible once the window is actually up. Every macOS launch
+# pays this, including one with an explicit KONSOLE_CMD (still an `open -a`-
+# shaped launch - see KONSOLE_IS_MACOS_SHIM above); konsole keeps today's 5s.
+#
+# 10# is load-bearing, not decoration: the shim reads the same var in a `[ ]`
+# test, which is always decimal, while THIS is an arithmetic context, where a
+# leading zero is octal. Unnormalised, KONSOLE_MACOS_STARTUP_TICKS=0200 makes
+# this budget 128 ticks while the shim still waits 200 -- the exact drift the
+# shared var exists to prevent -- and 08/09 abort the arm outright with
+# "value too great for base".
+if [ "$KONSOLE_IS_MACOS_SHIM" = "1" ]; then
+    SESSION_VISIBLE_RETRY_ITERS=$(( 10#${KONSOLE_MACOS_STARTUP_TICKS:-200} * 2 + SESSION_VISIBLE_RETRY_ITERS ))
+fi
 claimed=0
 n=0
 while :; do
@@ -1261,6 +1410,30 @@ fi
 # (`konsole --help` lists it). Without it, the pid this script owns is not
 # necessarily the window that got created, so the aliveness check right
 # below means nothing on a station that already has a konsole open.
+# HIMMEL-2534 (codex-review I6): the recorder branch below runs
+# `script -q -a -f "$LOG" -c "$LAUNCH_CMD"`, which is util-linux syntax. BSD
+# script (macOS) has neither -f nor -c ("illegal option -- f"; it takes the
+# file positionally and the command as trailing argv), so on a Mac the branch
+# dies in milliseconds. That is not a rare seam: console-kit/headed-arm-leg.sh
+# exports HEADED_ARM_RECORDER=1 unconditionally for --lane claudex. Refuse
+# with the real reason instead of letting the lane fail as a mystery FAILED.
+# Gated on KONSOLE_IS_RESOLVED_SHIM, not the platform: with an explicit
+# KONSOLE_CMD the `script` argv is handed to a launcher of the caller's
+# choosing and may never be executed by BSD script at all (every existing
+# --lane claudex case passes a recording stub), so refusing there would
+# break a launch that works.
+# The lock is already CLAIMED by this point, and this script has no EXIT
+# trap - every other refusal past the claim releases it by hand (the two
+# session_confirmed branches and the `cd "$REPO"` guard just above all do).
+# Without the release here the refusal holds $LOCK for STALE_LOCK_SECS, so
+# the re-arm that follows it -- and on a Mac --lane claudex refuses EVERY
+# time, so there always is one -- dies in the claim-retry loop as exit 6
+# "the armed successor may be lost" instead of reporting this real reason.
+if [ "$RECORDER" = "1" ] && [ "$KONSOLE_IS_RESOLVED_SHIM" = "1" ]; then
+    echo "headed-arm: HEADED_ARM_RECORDER=1 is not supported on macOS - the recorder uses util-linux 'script -f/-c' syntax that BSD script rejects, so the --lane claudex tty recorder cannot run here (HIMMEL-2534)" >&2
+    rm -rf "$LOCK" 2>/dev/null
+    exit 2
+fi
 if [ "$RECORDER" = "1" ]; then
     # HIMMEL-2782: give the launcher a real tty via `script` rather than
     # execing it straight under konsole -e (see the RECORDER seam doc
@@ -1341,6 +1514,13 @@ if kill -0 "$KPID" 2>/dev/null; then
     # context line -- report the resolved mode next to the launch record it
     # governs, not just at usage-error time.
     echo "$(date +%F_%T) $CONTEXT_REASON (autocompact=$AUTOCOMPACT)" >> "$LOG"
+    # HIMMEL-2534 (codex-review C1): record the reconciled budget next to the
+    # launch it governs, same stdout-report-not-error reasoning as the context
+    # line above. An UNCONFIRMED on a Mac is then readable against the budget
+    # that actually applied, instead of the 5s konsole default one might assume.
+    if [ "$KONSOLE_IS_MACOS_SHIM" = "1" ]; then
+        echo "$(date +%F_%T) macOS launch: session-visibility budget $SESSION_VISIBLE_RETRY_ITERS iters x ${SESSION_VISIBLE_RETRY_SLEEP}s (covers the launcher startup budget of ${KONSOLE_MACOS_STARTUP_TICKS:-200} ticks, then the standard post-launch allowance)" >> "$LOG"
+    fi
 fi
 # r8-codex-4: even with --separate above, a dead pid at this point is not
 # treated as failure ON ITS OWN anymore - `kill -0` failing used to

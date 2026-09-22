@@ -60,6 +60,23 @@
 #       to <himmelctl-cache>/launch-logs/<session>.log - profile / lane /
 #       model / role / session / launched, no env values - and a write failure
 #       or an unresolvable cache dir never blocks the launch.
+#   29. HIMMEL-2534: every leg-process var this wrapper sets (LEG_PROFILE_*,
+#       HIMMEL_CONSOLE_LEG, IMPL_GUARD_OK, INLINE_IMPL_OK, HIMMEL_LEAN_LEG, ...)
+#       also lands in HEADED_ARM_LAUNCHER_ENV's token list - the only channel
+#       that survives macOS `open -a`'s fresh-environment boundary, since a
+#       plain `export` here never reaches the launched leg process on that
+#       platform. A caller-preset HEADED_ARM_LAUNCHER_ENV is preserved
+#       (appended to) and wins on a name clash; a leg-process value containing
+#       whitespace is refused loudly (exit 12) rather than silently mis-split.
+#   30. HIMMEL-2534 follow-up (console review of 7a23fcf): a caller-preset
+#       HANDOVER_DIR (the normal case for a grouped console) reaches
+#       launcher-env=, not only a HANDOVER_DIR this wrapper resolves itself
+#       (case 26/29). The whitespace refusal from case 29c is Darwin-only
+#       (HEADED_ARM_UNAME seam, mirroring headed-arm.sh's own): on Darwin it
+#       still refuses with exit 12; on any other platform, the pre-HIMMEL-2534
+#       behavior is restored exactly - plain `export` reaches the leg via
+#       ordinary inheritance, no token is added for that one var, and a
+#       stderr warning explains why.
 #
 # Platform guard (gitbash-only): POSIX bash 3.2+, same as headed-arm.sh
 # itself (konsole is Linux/KDE-only) - no .ps1 twin.
@@ -73,7 +90,7 @@ HEADED_ARM="$HERE/../headed-arm.sh"
 . "$HERE/../../lib/timeout-bin.sh"
 # The suite owns every launcher input; an ambient leg shell must not silently
 # turn default-native cases into claudex cases.
-unset LEG_LANE LEG_CONTEXT LEG_REPO LEG_EFFORT HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER IMPL_GUARD_OK INLINE_IMPL_OK HIMMEL_CONSOLE_LEG HIMMEL_LEAN_LEG LEG_CLAUDE_BIN LEG_PROFILE LEG_PROFILE_SETTINGS LEG_PROFILE_PREFACE LEG_PROFILE_MCP_CONFIG LEG_SUPPRESS_CR_TRIGGER CR_TRIGGER_SUPPRESS 2>/dev/null || true
+unset LEG_LANE LEG_CONTEXT LEG_REPO LEG_EFFORT HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER IMPL_GUARD_OK INLINE_IMPL_OK HIMMEL_CONSOLE_LEG HIMMEL_LEAN_LEG LEG_CLAUDE_BIN LEG_PROFILE LEG_PROFILE_SETTINGS LEG_PROFILE_PREFACE LEG_PROFILE_MCP_CONFIG LEG_SUPPRESS_CR_TRIGGER CR_TRIGGER_SUPPRESS HIMMEL_CONSOLE_NAME CLAUDE_PID SESSION_NAME_CMDLINE_FILE 2>/dev/null || true
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/headed-arm-leg-test.XXXXXX")" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
 trap 'rm -rf "$tmp"' EXIT
@@ -129,7 +146,7 @@ mk_launch_stubs() {
   cat > "$dir/konsole" <<'KONSOLE_EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$(dirname "$0")/record"
-env | grep -E '^(IMPL_GUARD_OK|INLINE_IMPL_OK|HIMMEL_CONSOLE_LEG|HEADED_ARM_REQUIRED_AUTOCOMPACT|HIMMEL_LEAN_LEG|LEG_CLAUDE_BIN|LEG_PROFILE_SETTINGS|LEG_PROFILE_PREFACE|LEG_PROFILE_MCP_CONFIG|CONSOLE_CONTEXT|HANDOVER_DIR)=' > "$(dirname "$0")/env-record"
+env | grep -E '^(IMPL_GUARD_OK|INLINE_IMPL_OK|HIMMEL_CONSOLE_LEG|HEADED_ARM_REQUIRED_AUTOCOMPACT|HIMMEL_LEAN_LEG|LEG_CLAUDE_BIN|LEG_PROFILE_SETTINGS|LEG_PROFILE_PREFACE|LEG_PROFILE_MCP_CONFIG|CONSOLE_CONTEXT|HANDOVER_DIR|HIMMEL_CONSOLE_NAME)=' > "$(dirname "$0")/env-record"
 : > "$(dirname "$0")/confirmable"
 sleep 5
 KONSOLE_EOF
@@ -254,6 +271,7 @@ contains "dry-run default: reports INLINE_IMPL_OK=1" "$out" "INLINE_IMPL_OK=1"
 contains "dry-run default: reports HIMMEL_CONSOLE_LEG=1" "$out" "HIMMEL_CONSOLE_LEG=1"
 not_contains "dry-run default: no HIMMEL_CONSOLE_RELAY without --relay" "$out" "HIMMEL_CONSOLE_RELAY"
 contains "dry-run default: scrub list names CONSOLE_CONTEXT" "$out" "scrub=CONSOLE_CONTEXT"
+contains "dry-run default: no console-name source -> HIMMEL_CONSOLE_NAME absent" "$out" "HIMMEL_CONSOLE_NAME=<unset>"
 
 # HIMMEL-3139: a console armed with CONSOLE_CONTEXT=1m in its own environ (the
 # mandatory opt-in for a 1M successor, console.sh:382) must not forward that
@@ -268,6 +286,64 @@ rc=0; out="$(CONSOLE_CONTEXT=1m LEG_CONTEXT='' LEG_REPO='' bash "$SCRIPT" --dry-
 check "dry-run, ambient CONSOLE_CONTEXT=1m: exit 0 (a leg is unaffected by it)" "$rc" "0"
 contains "dry-run, ambient CONSOLE_CONTEXT=1m: scrubbed to <unset> in the wrapper's own env" "$out" "scrub=CONSOLE_CONTEXT CONSOLE_CONTEXT=<unset>"
 not_contains "dry-run, ambient CONSOLE_CONTEXT=1m: never reported as still set" "$out" "CONSOLE_CONTEXT=1m"
+
+# --- HIMMEL-3435: HIMMEL_CONSOLE_NAME resolution (--console, launching
+# shell's HIMMEL_CONSOLE_NAME, this process's own session name via
+# session-name.sh), charset refusal, and precedence. -------------------------
+
+# Source 1: --console flag.
+rc=0; out="$(bash "$SCRIPT" --dry-run --console opsdesk --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "dry-run --console opsdesk: exit 0" "$rc" "0"
+contains "dry-run --console opsdesk: reports HIMMEL_CONSOLE_NAME=opsdesk" "$out" "HIMMEL_CONSOLE_NAME=opsdesk"
+
+# Source 2: the launching shell's own HIMMEL_CONSOLE_NAME, no --console.
+rc=0; out="$(HIMMEL_CONSOLE_NAME=ambient-console bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "dry-run, ambient HIMMEL_CONSOLE_NAME: exit 0" "$rc" "0"
+contains "dry-run, ambient HIMMEL_CONSOLE_NAME: reports it" "$out" "HIMMEL_CONSOLE_NAME=ambient-console"
+
+# --console wins over an ambient HIMMEL_CONSOLE_NAME (source 1 before source 2).
+rc=0; out="$(HIMMEL_CONSOLE_NAME=ambient-console bash "$SCRIPT" --dry-run --console flag-console --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "dry-run, --console + ambient HIMMEL_CONSOLE_NAME: exit 0" "$rc" "0"
+contains "dry-run, --console + ambient HIMMEL_CONSOLE_NAME: flag wins" "$out" "HIMMEL_CONSOLE_NAME=flag-console"
+not_contains "dry-run, --console + ambient HIMMEL_CONSOLE_NAME: ambient value dropped" "$out" "HIMMEL_CONSOLE_NAME=ambient-console"
+
+# Source 3: this process's own Claude session name, via session-name.sh's
+# CLAUDE_PID + SESSION_NAME_CMDLINE_FILE test seam - only consulted when
+# neither --console nor the launching shell's HIMMEL_CONSOLE_NAME yielded one.
+csn_fixture="$tmp/session-name-cmdline"
+printf 'claude\0--model\0x\0-n\0detected-console\0load doc and continue\0' > "$csn_fixture"
+rc=0; out="$(CLAUDE_PID=4242 SESSION_NAME_CMDLINE_FILE="$csn_fixture" bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "dry-run, own session name via CLAUDE_PID/cmdline: exit 0" "$rc" "0"
+contains "dry-run, own session name via CLAUDE_PID/cmdline: reports it" "$out" "HIMMEL_CONSOLE_NAME=detected-console"
+
+# --console still wins over the auto-detected session name.
+rc=0; out="$(CLAUDE_PID=4242 SESSION_NAME_CMDLINE_FILE="$csn_fixture" bash "$SCRIPT" --dry-run --console flag-console --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+contains "dry-run, --console + own session name: flag wins" "$out" "HIMMEL_CONSOLE_NAME=flag-console"
+not_contains "dry-run, --console + own session name: auto-detected value dropped" "$out" "HIMMEL_CONSOLE_NAME=detected-console"
+
+# --console: a bad charset REFUSES the launch outright (explicit user input,
+# same stance as --lane/--profile) - unlike sources 2/3 below.
+rc=0; out="$(bash "$SCRIPT" --dry-run --console 'bad name' --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "--console with a bad charset: exit 2" "$rc" "2"
+contains "--console with a bad charset: usage text" "$out" "usage:"
+contains "--console with a bad charset: names the bad value" "$out" "bad name"
+
+# Ambient HIMMEL_CONSOLE_NAME with a bad charset: NOT a hard refusal - treated
+# as if that source yielded nothing (best-effort routing, not load-bearing),
+# so the launch still succeeds and HIMMEL_CONSOLE_NAME is absent.
+rc=0; out="$(HIMMEL_CONSOLE_NAME='bad/name' bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "dry-run, ambient HIMMEL_CONSOLE_NAME with a bad charset: exit 0 (not refused)" "$rc" "0"
+contains "dry-run, ambient HIMMEL_CONSOLE_NAME with a bad charset: treated as no source" "$out" "HIMMEL_CONSOLE_NAME=<unset>"
+
+# The auto-detected session name is charset-checked too: session-name.sh's own
+# validation would accept a colon (it only rejects '/', '..', whitespace and
+# glob metacharacters), but this narrower charset must still reject it and
+# fall through to "no source" rather than exporting an unsafe value.
+csn_fixture_colon="$tmp/session-name-cmdline-colon"
+printf 'claude\0--model\0x\0-n\0bad:name\0load doc and continue\0' > "$csn_fixture_colon"
+rc=0; out="$(CLAUDE_PID=4242 SESSION_NAME_CMDLINE_FILE="$csn_fixture_colon" bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "dry-run, own session name with a bad charset: exit 0 (not refused)" "$rc" "0"
+contains "dry-run, own session name with a bad charset: treated as no source" "$out" "HIMMEL_CONSOLE_NAME=<unset>"
 
 rc=0; out="$(LEG_CONTEXT=1m bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 check "dry-run LEG_CONTEXT=1m: refused with exit 2" "$rc" "2"
@@ -684,6 +760,12 @@ contains "brief-preface: says to read /proc/pressure/memory before believing it 
   "$prefacecontent17b" "/proc/pressure/memory"
 contains "brief-preface: says to read the cgroup memory.events before believing it (HIMMEL-3097)" \
   "$prefacecontent17b" "memory.events"
+# HIMMEL-3479: the Opus 5.5 guide's standing "how turns end" instruction goes
+# at the END of the system prompt, so it must be the preface's last section.
+check "brief-preface: last section is the standing turn-ending instruction (HIMMEL-3479)" \
+  "$(printf '%s\n' "$prefacecontent17b" | grep '^## ' | tail -1)" "## How your turns end"
+contains "brief-preface: holding for GO stays a sanctioned stop (HIMMEL-3479)" \
+  "$prefacecontent17b" "holding for the console's \`GO\` after \`READY\`"
 not_contains "brief-preface: does NOT carry the fixture's Contract line (HIMMEL-2990)" \
   "$prefacecontent17b" "**Contract:**"
 not_contains "brief-preface: does NOT carry the Results tail" "$prefacecontent17b" \
@@ -843,7 +925,7 @@ contains "composed dry-run: claudex lane retained" "$out" "lane=claudex"
 rc=0; out="$(LEG_LANE=claudex LEG_PROFILE=leg-impl bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
 check "composition via the env equivalents: exit 0" "$rc" "0"
 
-composed="$tmp/composed launch"; mkdir -p "$composed"
+composed="$tmp/composed-launch"; mkdir -p "$composed"
 cat > "$composed/headed" <<'HEADED_EOF'
 #!/usr/bin/env bash
 read -r -a lane_env <<< "${HEADED_ARM_LAUNCHER_ENV:-}"
@@ -1133,6 +1215,33 @@ printf '%s\n' '# fixture brief' '> **Tier:** opus — design' > "$doc_tier_opus_
 rc=0; out="$(bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg "$doc_tier_opus_notag_colon" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
 check "tier gate (g): a bare sanctioned tag with no colon is refused with exit 2" "$rc" "2"
 contains "tier gate (g): refusal names the three category tags" "$out" "design|unverified-finding|tier-return"
+
+# --- HIMMEL-3480 (bundled in HIMMEL-3479): a fourth closed tag, operator-ruling,
+# for a standing operator ruling on model choice (2026-09-22: run only Opus
+# 5.5). Same shape as the other three: exact lowercase, non-blank free text.
+doc_tier_opus_ruling="$tmp/tier-doc-opus-ruling.md"
+printf '%s\n' '# fixture brief' '> **Tier:** opus — operator-ruling: run only Opus 5.5 (operator 2026-09-22, console A)' > "$doc_tier_opus_ruling"
+rc=0; out="$(bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg "$doc_tier_opus_ruling" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5-5 2>&1)" || rc=$?
+check "tier gate (h): operator-ruling: Tier line proceeds (dry-run exit 0)" "$rc" "0"
+contains "tier gate (h): dry-run report carries tier-category=operator-ruling" "$out" "tier-category=operator-ruling"
+contains "tier gate (h): dry-run report carries the ruling as tier-reason=" "$out" "tier-reason=run only Opus 5.5 (operator 2026-09-22, console A)"
+
+doc_tier_opus_ruling_blank="$tmp/tier-doc-opus-ruling-blank.md"
+printf '%s\n' '# fixture brief' '> **Tier:** opus — operator-ruling:   ' > "$doc_tier_opus_ruling_blank"
+rc=0; out="$(bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg "$doc_tier_opus_ruling_blank" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5-5 2>&1)" || rc=$?
+check "tier gate (i): operator-ruling: with blank free text is refused with exit 2" "$rc" "2"
+contains "tier gate (i): refusal names the empty-text problem" "$out" "no free text after"
+
+doc_tier_opus_ruling_case="$tmp/tier-doc-opus-ruling-case.md"
+printf '%s\n' '# fixture brief' '> **Tier:** opus — Operator-ruling: run only Opus 5.5' > "$doc_tier_opus_ruling_case"
+rc=0; out="$(bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg "$doc_tier_opus_ruling_case" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5-5 2>&1)" || rc=$?
+check "tier gate (j): wrong-case Operator-ruling: is refused with exit 2" "$rc" "2"
+contains "tier gate (j): refusal lists the four category tags" "$out" "design|unverified-finding|tier-return|operator-ruling"
+
+rc=0; out="$(bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg "$doc_no_tier" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5-5 2>&1)" || rc=$?
+check "tier gate (k): opus-5-5 without a Tier line is still refused with exit 2" "$rc" "2"
+contains "tier gate (k): missing-line refusal lists the four category tags" "$out" "design|unverified-finding|tier-return|operator-ruling"
+contains "tier gate (k): missing-line refusal names the operator-ruling reason" "$out" "a standing operator ruling on model choice"
 
 # --- 24 (HIMMEL-2774). FLEET_RESERVE_TTL is exported, derived from DEADLINE -
 # TTL_RECORD_PREFLIGHT stands in for bank-preflight.sh and records the TTL it
@@ -1626,6 +1735,105 @@ contains "29-dry --headless: would-exec argv carries --bg" "$out" "--bg"
 rc=0; out="$(LEG_HEADLESS='' LEG_CONTEXT='' LEG_REPO='' bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-3403-x "$some_doc" /tmp/nosig 99999999999 "$tmp/dry29b.log" claude-sonnet-5 2>&1)" || rc=$?
 not_contains "29-dry no flag: headed report never mentions headless=" "$out" "headless="
 not_contains "29-dry no flag: headed argv has no --bg" "$out" "--bg"
+# 31. HIMMEL-2534: macOS `open -a` starts a leg from a FRESH environment (only
+# PATH is re-injected, konsole-macos.sh's own policy, untouched by this fix) -
+# a plain `export` in this wrapper never reaches the launched leg process on
+# that platform. leg_propagate_env folds every leg-process var this wrapper
+# sets into HEADED_ARM_LAUNCHER_ENV's explicit token list instead, since those
+# tokens are baked into headed-arm.sh's own exec argv (the `env NAME=VALUE...`
+# line), which DOES cross the boundary. These cases pin the propagated set,
+# the caller-preset-wins contract, and the whitespace refusal.
+
+# 31a. --profile leg-impl: launcher-env= carries every leg-process var this
+# profile launch sets - the shim's own contract vars (LEG_PROFILE_SETTINGS,
+# LEG_PROFILE_PREFACE, and LEG_PROFILE_MCP_CONFIG since leg-impl declares
+# mcpServers, HIMMEL-2935) plus the always-on leg markers (HIMMEL_CONSOLE_LEG,
+# IMPL_GUARD_OK, INLINE_IMPL_OK, HIMMEL_LEAN_LEG).
+out31a="$(bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg-31a some/doc.md /tmp/nosig 99999999999 "$tmp/leg31a.log" claude-sonnet-5 2>&1)"
+lenv29a="$(printf '%s\n' "$out31a" | grep '^headed-arm-leg: lane=')"
+contains "31a launcher-env carries LEG_PROFILE_SETTINGS=" "$lenv29a" "LEG_PROFILE_SETTINGS=$tmp/HIMMEL-9999-leg-31a.leg-settings.json"
+contains "31a launcher-env carries LEG_PROFILE_PREFACE=" "$lenv29a" "LEG_PROFILE_PREFACE=$tmp/HIMMEL-9999-leg-31a.leg-preface.md"
+contains "31a launcher-env carries LEG_PROFILE_MCP_CONFIG=" "$lenv29a" "LEG_PROFILE_MCP_CONFIG=$tmp/HIMMEL-9999-leg-31a.leg-mcp.json"
+contains "31a launcher-env carries HIMMEL_CONSOLE_LEG=1" "$lenv29a" "HIMMEL_CONSOLE_LEG=1"
+contains "31a launcher-env carries IMPL_GUARD_OK=1" "$lenv29a" "IMPL_GUARD_OK=1"
+contains "31a launcher-env carries INLINE_IMPL_OK=1" "$lenv29a" "INLINE_IMPL_OK=1"
+contains "31a launcher-env carries HIMMEL_LEAN_LEG=1" "$lenv29a" "HIMMEL_LEAN_LEG=1"
+
+# 31b. A caller-preset HEADED_ARM_LAUNCHER_ENV is preserved (appended to, not
+# replaced) and wins on a name clash - leg_propagate_env only ever adds a NAME
+# not already present as a token.
+out31b="$(HEADED_ARM_LAUNCHER_ENV='HIMMEL_CONSOLE_LEG=caller-preset SOME_OTHER_TOKEN=x' bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg-31b some/doc.md /tmp/nosig 99999999999 "$tmp/leg31b.log" claude-sonnet-5 2>&1)"
+lenv29b="$(printf '%s\n' "$out31b" | grep '^headed-arm-leg: lane=')"
+contains "31b caller-preset HEADED_ARM_LAUNCHER_ENV token is preserved" "$lenv29b" "SOME_OTHER_TOKEN=x"
+contains "31b caller-preset value wins on a name clash (HIMMEL_CONSOLE_LEG)" "$lenv29b" "HIMMEL_CONSOLE_LEG=caller-preset"
+not_contains "31b the wrapper's own HIMMEL_CONSOLE_LEG=1 is not also added" "$lenv29b" "HIMMEL_CONSOLE_LEG=1"
+contains "31b the wrapper still appends its own vars after the caller's" "$lenv29b" "IMPL_GUARD_OK=1"
+
+# 31c. A leg-process value containing whitespace is refused loudly (exit 12)
+# rather than silently mis-split into extra bogus HEADED_ARM_LAUNCHER_ENV
+# tokens - the var is a whitespace-split token list with no quoting scheme
+# (same contract as CODEX_BANK_PROBE_CMD). HIMMEL-2534 follow-up (case 32):
+# this refusal is Darwin-only, so pin the seam explicitly rather than rely on
+# the test runner's real platform (this box happens to be Darwin too, but
+# case 32c below proves the non-Darwin branch takes a different path).
+mkdir -p "$tmp/space dir"
+rc=0
+err29c="$(HEADED_ARM_UNAME=Darwin bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg-31c some/doc.md /tmp/nosig 99999999999 "$tmp/space dir/leg.log" claude-sonnet-5 2>&1)" || rc=$?
+check "31c a whitespace-carrying leg-process value is refused with exit 12" "$rc" "12"
+contains "31c the refusal names the offending var" "$err29c" "LEG_PROFILE_SETTINGS"
+contains "31c the refusal explains why (HEADED_ARM_LAUNCHER_ENV cannot carry a spacey value)" "$err29c" "cannot carry"
+
+# 32a. HIMMEL-2534 follow-up (GAP): a caller-preset HANDOVER_DIR - the normal
+# case for a grouped console, which sets it before this wrapper ever runs -
+# must reach launcher-env= exactly like the wrapper-resolved case (26/31)
+# does. Before this fix, the resolve-if-unset block was skipped entirely
+# for a caller-preset value, so nothing propagated it.
+out32a="$(HANDOVER_DIR="$tmp/preset-hd-32a" bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg-32a some/doc.md /tmp/nosig 99999999999 "$tmp/leg32a.log" claude-sonnet-5 2>&1)"
+lenv30a="$(printf '%s\n' "$out32a" | grep '^headed-arm-leg: lane=')"
+contains "32a a caller-preset HANDOVER_DIR reaches launcher-env=" "$lenv30a" "HANDOVER_DIR=$tmp/preset-hd-32a"
+
+# 32b. Darwin: the whitespace refusal is unchanged (regression guard for the
+# restructured leg_propagate_env - same outcome as 31c, pinned explicitly).
+rc=0
+err30b="$(HEADED_ARM_UNAME=Darwin bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg-32b some/doc.md /tmp/nosig 99999999999 "$tmp/space dir/leg32b.log" claude-sonnet-5 2>&1)" || rc=$?
+check "32b Darwin still refuses a whitespace-carrying value with exit 12" "$rc" "12"
+contains "32b the refusal still names the offending var" "$err30b" "LEG_PROFILE_SETTINGS"
+
+# 32c. HIMMEL-2534 follow-up (REGRESSION RISK): on any platform other than
+# Darwin, plain-export inheritance already carried a whitespace-carrying
+# leg-process value to the leg BEFORE HIMMEL-2534 (e.g. a Linux leg). That
+# must stay literally true - the launch still succeeds, no token is added
+# for that one var (it would corrupt HEADED_ARM_LAUNCHER_ENV's token list),
+# and a warning on stderr explains why.
+rc=0
+out32c="$(HEADED_ARM_UNAME=Linux bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg-32c some/doc.md /tmp/nosig 99999999999 "$tmp/space dir/leg32c.log" claude-sonnet-5 2>&1)" || rc=$?
+check "32c non-Darwin: a whitespace-carrying value still launches (dry-run exit 0)" "$rc" "0"
+lenv30c="$(printf '%s\n' "$out32c" | grep '^headed-arm-leg: lane=')"
+not_contains "32c non-Darwin: no LEG_PROFILE_SETTINGS token is added" "$lenv30c" "LEG_PROFILE_SETTINGS="
+contains "32c non-Darwin: the wrapper still appends its other, non-spacey vars" "$lenv30c" "HIMMEL_CONSOLE_LEG=1"
+contains "32c non-Darwin: a stderr warning explains the value was left to inheritance" "$out32c" "leaving it to plain-export inheritance"
+contains "32c non-Darwin: the warning names the platform" "$out32c" "harmless on Linux"
+
+# 33. HIMMEL-2534 (#1122 CR fix): HIMMEL_CONSOLE_NAME (HIMMEL-3435) is a
+# leg-process var too - #1121 routed a leg's merge-block alert to the owning
+# console's inbox via this env var, and on macOS a plain `export` never
+# crosses `open -a`'s fresh-environment boundary any more than the other
+# leg-process vars above do. A naive main-merge resolution that keeps BOTH
+# sides (HIMMEL_CONSOLE_LEG via leg_propagate_env, HIMMEL_CONSOLE_NAME via a
+# bare export) passes every other case in this file - only these two rows
+# distinguish it, by asserting the token reaches launcher-env=, not just the
+# --dry-run report string cases 3-6/HIMMEL-3435 above already cover.
+
+# 33a. --console <name>: the flag-sourced name reaches launcher-env=.
+out33a="$(bash "$SCRIPT" --dry-run --console opsdesk --profile leg-impl HIMMEL-9999-leg-33a some/doc.md /tmp/nosig 99999999999 "$tmp/leg33a.log" claude-sonnet-5 2>&1)"
+lenv33a="$(printf '%s\n' "$out33a" | grep '^headed-arm-leg: lane=')"
+contains "33a launcher-env carries HIMMEL_CONSOLE_NAME=opsdesk (--console)" "$lenv33a" "HIMMEL_CONSOLE_NAME=opsdesk"
+
+# 33b. Inherited (no --console): the launching shell's own HIMMEL_CONSOLE_NAME
+# reaches launcher-env= the same way.
+out33b="$(HIMMEL_CONSOLE_NAME=ambient-console bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg-33b some/doc.md /tmp/nosig 99999999999 "$tmp/leg33b.log" claude-sonnet-5 2>&1)"
+lenv33b="$(printf '%s\n' "$out33b" | grep '^headed-arm-leg: lane=')"
+contains "33b launcher-env carries HIMMEL_CONSOLE_NAME=ambient-console (inherited)" "$lenv33b" "HIMMEL_CONSOLE_NAME=ambient-console"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

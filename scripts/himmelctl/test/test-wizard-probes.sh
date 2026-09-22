@@ -713,6 +713,167 @@ echo "$outSK2otherproject" | jq -e '.actual == "degraded"' >/dev/null \
   || fail "settings-key verifyPluginSet: a project-scope ledger entry for a DIFFERENT project must NOT satisfy this one (got: $outSK2otherproject)"
 echo "ok: settings-key simple non-dotted key + verifyPluginSet (claude-plugins-pluginSet) — present/absent, mismatch + not-installed degrade, stale installPath + wrong-project scope degrade"
 
+# ── settings-key: verifyPluginSet path normalization, directory-only
+#    installPath, and the recorded set as a FLOOR (HIMMEL-3441) ───────────
+# Same template ($sk2_repo: foo@bar true, off@bar false → recordedSet
+# [foo@bar]) and node/manifest plumbing as the block above. Ledger JSON is
+# written via node/JSON.stringify rather than printf so the backslash
+# fixture (b) round-trips through real JSON escaping instead of hand-quoted
+# bash.
+sk4_target="$work/sk4-target"; mkdir -p "$sk4_target/.claude"
+printf '{"enabledPlugins":{"foo@bar":true}}' > "$sk4_target/.claude/settings.json"
+sk4_target_w="$(winpath "$sk4_target")"
+sk4_cache_foo="$work/sk4-cache/foo"; mkdir -p "$sk4_cache_foo"
+sk4_cache_foo_w="$(winpath "$sk4_cache_foo")"
+sk4_cache_baz="$work/sk4-cache/baz"; mkdir -p "$sk4_cache_baz"
+sk4_cache_baz_w="$(winpath "$sk4_cache_baz")"
+sk4_cache_regularfile="$work/sk4-cache/regularfile"; printf 'not a directory' > "$sk4_cache_regularfile"
+sk4_cache_regularfile_w="$(winpath "$sk4_cache_regularfile")"
+
+write_sk4_ledger() {
+  # $1 home dir, $2 projectPath for foo@bar's entry, $3 installPath for
+  # foo@bar's entry, $4 optional extra plugin id, $5 optional extra
+  # plugin's installPath ('' = omit the extra entry entirely).
+  mkdir -p "$1/.claude/plugins"
+  "$node_bin" -e "
+const fs = require('fs');
+const plugins = { 'foo@bar': [{ scope: 'project', projectPath: process.argv[1], installPath: process.argv[2] }] };
+if (process.argv[3]) {
+  plugins[process.argv[3]] = [{ scope: 'project', projectPath: process.argv[1], installPath: process.argv[4] }];
+}
+fs.writeFileSync(process.argv[5], JSON.stringify({ version: 2, plugins }));
+" "$2" "$3" "${4:-}" "${5:-}" "$1/.claude/plugins/installed_plugins.json"
+}
+
+run_sk4() {
+  # $1 HOME dir, $2 targetPath, $3 enabledPlugins JSON for sk4_target's
+  # settings.json (defaults to the file written above if empty).
+  if [ -n "${3:-}" ]; then printf '%s' "$3" > "$sk4_target/.claude/settings.json"; fi
+  "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'claude-plugins-pluginSet');
+const env = Object.assign({}, process.env, { HOME: '$(winpath "$1")' });
+const ctx = { repoRoot: '$(winpath "$sk2_repo")', targetPath: '$2', scope: 'project', env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+"
+  printf '{"enabledPlugins":{"foo@bar":true}}' > "$sk4_target/.claude/settings.json"
+}
+
+# (a) RED: projectPath carries a trailing separator the targetPath lacks —
+# a raw string compare degrades a valid project-scope install.
+sk4_home_a="$work/sk4-home-a"
+write_sk4_ledger "$sk4_home_a" "${sk4_target_w}/" "$sk4_cache_foo_w"
+outSK4a=$(run_sk4 "$sk4_home_a" "$sk4_target_w")
+echo "$outSK4a" | jq -e '.actual == "present"' >/dev/null \
+  || fail "verifyPluginSet: projectPath with a trailing separator the targetPath lacks must still match (got: $outSK4a)"
+
+# (b) RED: the identical path, spelled with backslashes in the ledger vs
+# forward slashes in targetPath — a separator difference, not a real
+# project-path mismatch.
+sk4_target_backslash=$("$node_bin" -e "console.log(process.argv[1].split('/').join('\\\\'))" "$sk4_target_w")
+sk4_home_b="$work/sk4-home-b"
+write_sk4_ledger "$sk4_home_b" "$sk4_target_backslash" "$sk4_cache_foo_w"
+outSK4b=$(run_sk4 "$sk4_home_b" "$sk4_target_w")
+echo "$outSK4b" | jq -e '.actual == "present"' >/dev/null \
+  || fail "verifyPluginSet: projectPath spelled with backslashes must still match a forward-slash targetPath (got: $outSK4b)"
+
+# (c) control: a genuinely different project path must still degrade,
+# unchanged before and after the fix.
+sk4_home_c="$work/sk4-home-c"
+write_sk4_ledger "$sk4_home_c" "$(winpath "$work/sk4-some-other-project")" "$sk4_cache_foo_w"
+outSK4c=$(run_sk4 "$sk4_home_c" "$sk4_target_w")
+echo "$outSK4c" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "verifyPluginSet control: a genuinely different project path must NOT satisfy this one (got: $outSK4c)"
+
+# (d) RED: installPath resolves to a regular FILE, not a directory —
+# fs.existsSync() alone cannot tell the two apart.
+sk4_home_d="$work/sk4-home-d"
+write_sk4_ledger "$sk4_home_d" "$sk4_target_w" "$sk4_cache_regularfile_w"
+outSK4d=$(run_sk4 "$sk4_home_d" "$sk4_target_w")
+echo "$outSK4d" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "verifyPluginSet: a regular-file installPath must NOT read as installed (got: $outSK4d)"
+
+# (e) RED: an EXTRA enabled plugin beyond the recorded set, which IS
+# installed, must stay present — the template is a floor, not an exact
+# match (console ruling, HIMMEL-3441) — and must be named in the detail.
+sk4_home_e="$work/sk4-home-e"
+write_sk4_ledger "$sk4_home_e" "$sk4_target_w" "$sk4_cache_foo_w" "baz@qux" "$sk4_cache_baz_w"
+outSK4e=$(run_sk4 "$sk4_home_e" "$sk4_target_w" '{"enabledPlugins":{"foo@bar":true,"baz@qux":true}}')
+echo "$outSK4e" | jq -e '.actual == "present"' >/dev/null \
+  || fail "verifyPluginSet: an installed EXTRA plugin beyond the recorded floor must stay present (got: $outSK4e)"
+echo "$outSK4e" | jq -e '.detail | contains("baz@qux")' >/dev/null \
+  || fail "verifyPluginSet: an EXTRA plugin must be named in the detail (got: $outSK4e)"
+
+# (f) RED: an EXTRA enabled plugin that is NOT installed must still
+# degrade — the floor relaxation never skips the installed-ledger check.
+sk4_home_f="$work/sk4-home-f"
+write_sk4_ledger "$sk4_home_f" "$sk4_target_w" "$sk4_cache_foo_w"
+outSK4f=$(run_sk4 "$sk4_home_f" "$sk4_target_w" '{"enabledPlugins":{"foo@bar":true,"baz@qux":true}}')
+echo "$outSK4f" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "verifyPluginSet: an EXTRA plugin that is not installed must still degrade (got: $outSK4f)"
+
+# (g)+(h) RED (panel findings, round 2): both regressions below assume
+# sk4_target_w is a genuine POSIX path (no drive letter) so that an embedded
+# backslash is unambiguously a literal filename BYTE, not a separator. On a
+# real Windows-native run winpath()/cygpath already hands back a
+# drive-letter-shaped path (e.g. 'C:/Users/...'), where ANY backslash is a
+# valid separator and swapping it changes nothing about the resolved
+# directory -- "present" would then be the correct answer, not "degraded"
+# (panel Important codex-1). Skip both in that case instead of asserting a
+# result that would legitimately be wrong there.
+case "$sk4_target_w" in
+  [A-Za-z]:*)
+    echo "skip: verifyPluginSet mixed-separator/trailing-backslash collision guards (g)+(h) — sk4_target_w ($sk4_target_w) is already drive-letter-shaped; these regressions target a POSIX literal-backslash-byte scenario that cannot occur on a native Windows path"
+    ;;
+  *)
+    # (g) RED (panel finding, round 1): a projectPath that mixes a literal
+    # backslash with a real forward slash is a POSIX path with a backslash
+    # BYTE in a filename, not a Windows path — treating any-backslash as
+    # evidence of Windows shape would swap that byte for '/' and collapse a
+    # genuinely different directory onto the real target, letting another
+    # project's ledger entry satisfy this scope check.
+    sk4_target_collision=$("$node_bin" -e "const p=process.argv[1]; const i=p.lastIndexOf('/'); console.log(p.slice(0,i)+'\\\\'+p.slice(i+1));" "$sk4_target_w")
+    sk4_home_g="$work/sk4-home-g"
+    write_sk4_ledger "$sk4_home_g" "$sk4_target_collision" "$sk4_cache_foo_w"
+    outSK4g=$(run_sk4 "$sk4_home_g" "$sk4_target_w")
+    echo "$outSK4g" | jq -e '.actual == "degraded"' >/dev/null \
+      || fail "verifyPluginSet: a mixed-separator projectPath (has both '/' and a literal '\\') must NOT collapse onto the real target (got: $outSK4g)"
+
+    # (h) RED (panel finding, round 2, codex-2): a projectPath with a
+    # literal trailing backslash BYTE (the path also contains forward
+    # slashes, so it is not Windows-shaped) must not collapse onto the same
+    # directory without that trailing byte — the old unconditional
+    # trailing-separator trim stripped it regardless of path shape.
+    sk4_target_trailing_bs=$("$node_bin" -e "console.log(process.argv[1] + '\\\\')" "$sk4_target_w")
+    sk4_home_h="$work/sk4-home-h"
+    write_sk4_ledger "$sk4_home_h" "$sk4_target_trailing_bs" "$sk4_cache_foo_w"
+    outSK4h=$(run_sk4 "$sk4_home_h" "$sk4_target_w")
+    echo "$outSK4h" | jq -e '.actual == "degraded"' >/dev/null \
+      || fail "verifyPluginSet: a projectPath with a literal trailing backslash byte must NOT collapse onto the same target without it (got: $outSK4h)"
+    ;;
+esac
+
+# (i) RED (HIMMEL-3463): an empty projectPath must never match — node's
+# path.resolve('') is the process cwd, so a malformed ledger entry with
+# projectPath "" would satisfy the scope check whenever the probe runs
+# from inside the target directory. Run node with cwd = the target so the
+# collision is live.
+sk4_home_i="$work/sk4-home-i"
+write_sk4_ledger "$sk4_home_i" "" "$sk4_cache_foo_w"
+outSK4i=$(cd "$sk4_target" && run_sk4 "$sk4_home_i" "$sk4_target_w")
+echo "$outSK4i" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "verifyPluginSet: an empty projectPath must NOT match a targetPath equal to the cwd (got: $outSK4i)"
+
+# (j) a whitespace-only projectPath is just as malformed and must never match.
+sk4_home_j="$work/sk4-home-j"
+write_sk4_ledger "$sk4_home_j" "   " "$sk4_cache_foo_w"
+outSK4j=$(cd "$sk4_target" && run_sk4 "$sk4_home_j" "$sk4_target_w")
+echo "$outSK4j" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "verifyPluginSet: a whitespace-only projectPath must NOT match (got: $outSK4j)"
+
+echo "ok: settings-key verifyPluginSet (claude-plugins-pluginSet) — trailing-separator + backslash projectPath normalization, directory-only installPath, extra-plugins-are-a-floor, mixed-separator + trailing-backslash collision guards, empty/whitespace projectPath never matches"
+
 # ── settings-key: .env ALL-keys-required union (jira-env-keys) ────────────
 # Resolves against repoRoot for BOTH scopes (CLAUDE.md / adopt.sh
 # fill_env_core convention) — proven by using scope 'user' here too.

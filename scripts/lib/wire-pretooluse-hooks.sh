@@ -128,9 +128,9 @@ WIRE_PRETOOLUSE_MERGE_JQ='
 # settings JSON; recording is best-effort -- a failed record warns and never
 # fails the wire. ponytail: the pre-state of an element is the FIRST pre-existing
 # counterpart (same matcher for the trio; same command basename for SessionStart),
-# so a duplicate the merge strips is not backed up, and the `hooks` parent object
-# the wire may create is not recorded (the container_created field covers only
-# the PreToolUse / SessionStart array itself).
+# so a duplicate the merge strips is not backed up. The container_created field
+# covers only the PreToolUse / SessionStart array itself; the `hooks` parent
+# object is recorded as its own `/hooks` json-key row (HIMMEL-3389, below).
 # shellcheck source=scripts/lib/provenance.sh
 . "$(dirname "${BASH_SOURCE[0]}")/provenance.sh"
 # shellcheck source=scripts/lib/claude-config-dir.sh
@@ -169,6 +169,27 @@ _wire_hooks_record() {
       --field "elem_sha=$(jq -nc --arg s "$(prov_sha_json "$new")" '$s')" \
       "${pre[@]}" --post-json "$new" || return 1
   done <<< "$rows"
+}
+
+# _wire_hooks_record_container <settings> <pre-write JSON> (HIMMEL-3389): a wire
+# that had to create `.hooks` also records `/hooks`, as wire-statusline.sh does
+# for `/env`, so uninstall can drop the empty object it leaves behind. `.hooks`
+# absent -> create; an explicit `"hooks": null` -> replace with the null kept as
+# the pre-state (HIMMEL-3352); an existing object -> no row.
+_wire_hooks_record_container() {
+  local settings="$1" base="$2" scope hooks_pre
+  hooks_pre="$(printf '%s' "$base" | jq -c 'select(type == "object" and has("hooks")) | .hooks')"
+  [ -z "$hooks_pre" ] || [ "$hooks_pre" = null ] || return 0
+  scope="$(_wire_hooks_scope "$settings")" || return 1
+  if [ -z "$hooks_pre" ]; then
+    prov_record create json-key "$settings" --unit /hooks --scope "$scope" --class code \
+      --row "$scope-settings" --writer wire-pretooluse-hooks.sh --pre-absent \
+      --post-json "$(jq -c .hooks "$settings")"
+  else
+    prov_record replace json-key "$settings" --unit /hooks --scope "$scope" --class code \
+      --row "$scope-settings" --writer wire-pretooluse-hooks.sh --pre-json null --backup \
+      --post-json "$(jq -c .hooks "$settings")"
+  fi
 }
 
 wire_pretooluse_hooks() {
@@ -229,6 +250,7 @@ wire_pretooluse_hooks() {
               op: (if $old == null then "insert" elif $old == $st then "noop" else "replace" end) } ]
       | unique_by(.post) | .[]
     ' "$settings") \
+      && _wire_hooks_record_container "$settings" "$base" \
       && _wire_hooks_record "$settings" /hooks/PreToolUse "$rows" \
       || echo "wire-pretooluse-hooks: warning: provenance record failed (the hooks are wired; uninstall will keep them)" >&2
   else
@@ -308,6 +330,7 @@ wire_sessionstart_hook() {
       | { pre: $old, post: $new, cc: ($pre.hooks.SessionStart == null),
           op: (if $old == null then "insert" elif $old == $new then "noop" else "replace" end) }
     ' "$settings") \
+      && _wire_hooks_record_container "$settings" "$base" \
       && _wire_hooks_record "$settings" /hooks/SessionStart "$rows" \
       || echo "wire-pretooluse-hooks: warning: provenance record failed (the hook is wired; uninstall will keep it)" >&2
   else

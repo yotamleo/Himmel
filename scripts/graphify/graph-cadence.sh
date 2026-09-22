@@ -933,6 +933,13 @@ PR_REF=$(printf '%s' "$_pub_out" | grep -oE 'https://[^ ]+/pull/[0-9]+|PR #[0-9]
 # "current branch" selector, which would resolve to this worktree's OWN
 # graph-cadence-work branch (no PR there) after graph-publish.sh's own
 # restore_branch put it back.
+# HIMMEL-3475: merge-on-green.sh resolves its gate from the HIMMEL_REPO anchor
+# and fails closed (exit 19) without it. The cron runner sets only PATH, so
+# anchor an unset one to this script's own checkout -- the same REPO_ROOT
+# already trusted for this script's libs and for MERGE_ON_GREEN itself.
+if [ -z "${HIMMEL_REPO:-}" ]; then
+    export HIMMEL_REPO="$REPO_ROOT"
+fi
 _merge_out=$(cd "$WORKTREE_DIR" && ARMAUTOMERGE=1 "$MERGE_ON_GREEN" "$PUBLISH_BRANCH" 2>&1)
 _merge_rc=$?
 printf '%s\n' "$_merge_out"

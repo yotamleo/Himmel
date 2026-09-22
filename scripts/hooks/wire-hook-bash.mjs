@@ -84,6 +84,11 @@ export const EXPECTED_SCRIPT_ORDER = Object.freeze([
   'block-git-stash.sh',
   'block-rogue-claude-schedule.sh',
   'block-chokepoint-env-prefix.sh',
+  // HIMMEL-1525: the PowerShell matcher never carried this guard at all, so
+  // `Set-Content`/`Out-File`/`>` against a LIVE settings.json bypassed the
+  // fence the Bash and Edit/Write chains already enforce. Listed once per
+  // chain it appears in, per HIMMEL-2002.
+  'block-edit-live-settings.sh',
   // PreToolUse `Read|Grep`.
   'block-read-secrets.sh',
   'read-clamp.sh',

@@ -439,6 +439,46 @@ removed_line16=$(printf '%s\n' "$out16" | grep -c 'would remove env\.HIMMEL_REPO
 check "RED16 R2-codex8: masked env.HIMMEL_REPO kept once and never also previewed as removed" \
   "$kept_line16|$removed_line16" "1|0"
 
+echo "==== RED17 (HIMMEL-3389): a himmel-created empty hooks object is dropped; a pre-existing one survives ===="
+# The REAL wire records the /hooks container it creates; uninstall then drops the
+# empty object only when that governed /hooks unit says himmel created it.
+new_case red17
+bash "$lib/wire-pretooluse-hooks.sh" "$CASE_SETTINGS" "C:/fake/himmel" >/dev/null
+run_uninstall --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks >/dev/null
+check "RED17 HIMMEL-3389: a himmel-created hooks object is gone after uninstall" \
+  "$(jq -c '.hooks // "ABSENT"' "$CASE_SETTINGS")" '"ABSENT"'
+new_case red17c
+printf '{"hooks":{}}\n' > "$CASE_SETTINGS"
+bash "$lib/wire-pretooluse-hooks.sh" "$CASE_SETTINGS" "C:/fake/himmel" >/dev/null
+run_uninstall --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks >/dev/null
+check "RED17 control: a pre-existing empty hooks object survives uninstall" \
+  "$(jq -c '.hooks // "ABSENT"' "$CASE_SETTINGS")" '{}'
+
+echo "==== RED18 (HIMMEL-3398): a protected /statusLineX or /env/HIMMEL_REPOX never masks /statusLine or /env/HIMMEL_REPO ===="
+# /statusLineX and /env/HIMMEL_REPOX are kept (noop-preexisted), so they land in
+# _LEDGER_PROTECTED. /statusLine is a heuristic unit (noop, not preexisted) and
+# env.HIMMEL_REPO has no unit at all, so only today's helpers remove them --
+# unless a prefix match on the protected list wrongly masks those helpers.
+new_case red18
+SL18="bash \"$repo_root/marketplace/plugins/claude-hud/dist/index.js\""
+jq -n --arg c "$SL18" '{statusLine: {type: "command", command: $c}, statusLineX: "u",
+  env: {HIMMEL_REPO: "C:/fake/himmel", HIMMEL_REPOX: "x"}}' > "$CASE_SETTINGS"
+( prov_begin --writer install.sh -- seed-red18 >/dev/null
+  prov_record noop json-key "$CASE_SETTINGS" --unit /statusLine --scope user --class code --row user-settings \
+    --writer wire-statusline.sh --pre-json "$(jq -c .statusLine "$CASE_SETTINGS")" \
+    --post-json "$(jq -c .statusLine "$CASE_SETTINGS")" >/dev/null
+  prov_record noop json-key "$CASE_SETTINGS" --unit /statusLineX --scope user --class code --row user-settings \
+    --writer install.sh --pre-json '"u"' --post-json '"u"' --field preexisted=true >/dev/null
+  prov_record noop json-key "$CASE_SETTINGS" --unit /env/HIMMEL_REPOX --scope user --class code --row user-settings \
+    --writer install.sh --pre-json '"x"' --post-json '"x"' --field preexisted=true >/dev/null
+  prov_end ok >/dev/null )
+out18=$(run_uninstall --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks)
+check "RED18 HIMMEL-3398: /statusLine and env.HIMMEL_REPO removed; /statusLineX and env.HIMMEL_REPOX kept" \
+  "$(jq -c '[has("statusLine"), (.env | has("HIMMEL_REPO")), .statusLineX, .env.HIMMEL_REPOX]' "$CASE_SETTINGS")" \
+  '[false,false,"u","x"]'
+check "RED18: both protected units reported kept" \
+  "$(printf '%s\n' "$out18" | grep -c -E 'kept /(statusLineX|env/HIMMEL_REPOX) \(noop-preexisted\)')" "2"
+
 echo "==== REAL-LEDGER TRIPWIRE ===="
 REAL_LEDGER_AFTER=$(real_ledger_state)
 check "tripwire: operator's real ~/.himmel/provenance.jsonl untouched by this suite" \

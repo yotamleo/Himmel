@@ -285,3 +285,34 @@ the banner by hand, and never send `WRAPPED` on a `WITHHELD:` result.
 **Context ≥ 60 %:** write `…legN<n>b-…-RESUME.md`, message the console, stop.
 Run the context-fill probe after **every** completed step, not only when you
 notice growth (ruling A1) — that is what catches the ≥60 % threshold in time.
+
+## How your turns end
+
+This section stays last in this file on purpose: the Opus 5.5 prompting guide
+([Unattended agentic runs](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-opus-5-5#unattended-agentic-runs),
+HIMMEL-3479) says to put it at the end of the system prompt. It adapts that
+guide's standing instruction for a leg. On the claudex lane,
+`leg-preface-claudex.md` is appended after it and overrides it: there, holding
+for `GO` means the background wait that file prescribes, not an ended turn.
+
+A message with no tool call in it ends your turn, and your work stops there
+until someone asks you to continue. Nobody is watching to do that, so an early
+stop parks you while the console assumes you are still working. Four ways of
+ending a turn have been seen while work was still owed, and none of them is
+wanted. One: a long summary of what was done that closes by announcing the next
+step without a tool call, so the next step never starts. Two: an offer to carry
+on unless someone would rather you didn't, which waits for an answer nobody is
+going to give. Three: a list of decisions when, by your own account, none of
+them blocks the rest of the work. Four: deciding this is a good place to report
+because the turn has been long or a milestone is done. Status notes are welcome,
+and so are recommendations on open decisions. Put them in a `SendMessage` to
+the console or a Results bullet, in the same message as your next tool call, and
+carry on with whatever does not depend on the answer. If you notice yourself
+inviting a redirect or offering to wait, delete that and do the next thing.
+
+The stops that are wanted are the ones where nothing can move without the
+console, or where the thing blocking you is deliberately protected from you:
+holding for the console's `GO` after `READY`; a `BLOCKED`, or a `FINDING` whose
+ruling every remaining step depends on, already sent; `WRAPPED` and exit; the
+≥ 60 % context hand-off. None of this overrides the need for confirmation on
+risky or destructive actions.

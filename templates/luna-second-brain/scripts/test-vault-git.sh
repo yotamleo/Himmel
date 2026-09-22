@@ -332,6 +332,60 @@ UNEXCLUDED_FIXTURE
     ;;
   esac
   assert_eq "D15 unexcluded script NOT committed" "$d14_before" "$(git_in "$VC" rev-parse HEAD)"
+  # D14's blocked commit leaves check-something.sh staged (vault-autosync.sh
+  # stages before pre-commit runs; a block never unstages) — clean it up so it
+  # doesn't shellcheck-fail every later commit attempt in this same $VC.
+  git_in "$VC" reset -- check-something.sh >/dev/null 2>&1
+  rm -f "$VC/check-something.sh"
+
+  # D16-D17 (HIMMEL-3471): a fresh-leg RETASK nonce carries a single trailing
+  # lowercase letter on the leg number (e.g. `V-N236b-1d281f74`, minted when a
+  # leg resumes via recovery) — the pre-3471 regex only anchored `-N<digits>-`
+  # with no letter, so this real shape blocked every vault commit that quoted
+  # it in a handover doc.
+  # Fixture split the same way D11b's near-miss is (see its comment above):
+  # this file is ALSO scanned by himmel's own top-level gitleaks pre-commit
+  # hook (which carries none of the template's RETASK-nonce allowlist), so the
+  # token literal is passed as a printf ARGUMENT rather than inlined into the
+  # format string.
+  printf 'retask-token: %s\n' 'V-N236b-1d281f74' >"$VC/30-Resources/retask-token.md"
+  (cd "$VC" && LUNA_VAULT_AUTOSYNC=1 bash "$VC/scripts/vault-autosync.sh") >/dev/null 2>&1
+  assert_ok "D16 fresh-leg RETASK-nonce allowlist: autosync commits (exit 0)" "$?"
+  assert_eq "D17 RETASK-nonce note IS in committed tree" "1" \
+    "$(git_in "$VC" ls-tree -r HEAD --name-only | grep -c 'retask-token\.md' || true)"
+
+  # D18-D19 (HIMMEL-3471): a near-miss of the SAME shape — two trailing
+  # letters on the leg number, which no real leg number ever carries (verified
+  # against the live handover corpus) — must still be blocked. The widened
+  # regex must not have opened the anchor past one optional trailing letter.
+  # Same printf-argument split as D16, for the same reason.
+  d18_before=$(git_in "$VC" rev-parse HEAD)
+  printf 'retask-token: %s\n' 'V-N236bb-1d281f74' >"$VC/30-Resources/retask-token-nearmiss.md"
+  d18_out=$( (cd "$VC" && LUNA_VAULT_AUTOSYNC=1 bash "$VC/scripts/vault-autosync.sh") 2>&1 ); d18_rc=$?
+  assert_nz "D18 RETASK-nonce near-miss (double letter) still blocked (non-zero)" "$d18_rc"
+  # pipefail-ok note (known-findings grep-q-pipe-under-pipefail): captured
+  # into a variable first, not `| grep -q` directly, so a SIGPIPE'd printf
+  # under `set -o pipefail` can never flip this to non-zero on a real match.
+  d18_leak=$(printf '%s\n' "$d18_out" | grep -E 'leaks found: *[1-9][0-9]*')
+  assert_ok "D18b RETASK-nonce near-miss block attributable to gitleaks (secret scan)" "$([ -n "$d18_leak" ] && echo 0 || echo 1)"
+  assert_eq "D19 RETASK-nonce near-miss NOT in committed tree" "$d18_before" "$(git_in "$VC" rev-parse HEAD)"
+  rm -f "$VC/30-Resources/retask-token-nearmiss.md"
+
+  # D20-D21 (HIMMEL-3471): a genuine high-entropy secret in the SAME directory
+  # as the allowlisted RETASK-nonce fixture must still be blocked — the
+  # widened regex is not a blanket exemption for that directory. Same
+  # AWS-key-shaped construction as D1/G8 above (split so the value's own
+  # entropy, not a keyword match, is what gitleaks catches).
+  d20_before=$(git_in "$VC" rev-parse HEAD)
+  _akp="AKIA"
+  _aks="1234567890ABCDEF"
+  printf 'aws_key = "%s%s"\n' "$_akp" "$_aks" >"$VC/30-Resources/retask-dir-secret.md"
+  d20_out=$( (cd "$VC" && LUNA_VAULT_AUTOSYNC=1 bash "$VC/scripts/vault-autosync.sh") 2>&1 ); d20_rc=$?
+  assert_nz "D20 genuine secret alongside RETASK-nonce fixture still blocked (non-zero)" "$d20_rc"
+  d20_leak=$(printf '%s\n' "$d20_out" | grep -E 'leaks found: *[1-9][0-9]*')
+  assert_ok "D20b genuine-secret block attributable to gitleaks (secret scan)" "$([ -n "$d20_leak" ] && echo 0 || echo 1)"
+  assert_eq "D21 genuine secret NOT in committed tree" "$d20_before" "$(git_in "$VC" rev-parse HEAD)"
+  rm -f "$VC/30-Resources/retask-dir-secret.md"
 
   # =========================================================================
   # Phase E — clone-with-remote (no marker, PAST unborn HEAD): autosync must

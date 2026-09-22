@@ -517,13 +517,18 @@ f="$TMPDIR_ROOT/t33c2.sh"
 printf 'T=$(mktemp %s-d%s)\n' "$sq" "$sq" > "$f"
 assert_eq "T33c2 mktemp $sq-d$sq whitespace-separated arg -> offending (HIMMEL-3428, control)" "1" "$(scan_lines "$f")"
 
+# T33d/T33e -- HIMMEL-3460 item 2: the earlier rows put whitespace between
+# "mktemp" and the `\` / `\r`, so the whitespace was the boundary and the
+# rows passed on the pre-slice-2 predicate too (vacuous). Here the `\` and
+# the `\r` sit IMMEDIATELY after "mktemp", so each row exercises exactly the
+# boundary it names.
 f="$TMPDIR_ROOT/t33d.sh"
-printf 'T=$(mktemp \\\n-d)\n' > "$f"
-assert_eq "T33d backslash-newline continuation boundary -> offending (HIMMEL-3428 item 3)" "1" "$(scan_lines "$f")"
+printf 'T=$(mktemp\\\n -d)\n' > "$f"
+assert_eq "T33d mktemp\\<newline> continuation boundary -> offending (HIMMEL-3460 item 2)" "1" "$(scan_lines "$f")"
 
 f="$TMPDIR_ROOT/t33e.sh"
-printf 'T=$(mktemp -d)\r\n' > "$f"
-assert_eq "T33e CRLF-terminated capture line -> offending (HIMMEL-3428 item 3)" "1" "$(scan_lines "$f")"
+printf 'T=$(mktemp\r\n)\r\n' > "$f"
+assert_eq "T33e mktemp<CRLF> boundary -> offending (HIMMEL-3460 item 2)" "1" "$(scan_lines "$f")"
 
 f="$TMPDIR_ROOT/t33f.sh"
 printf 'T=$(mktemp -d)\r\n[ -n "$T" ] || exit 1\r\n' > "$f"
@@ -532,16 +537,20 @@ assert_eq "T33f control: CRLF-terminated guard line still recognized -> ok (HIMM
 # T34/T34b/T34c/T34d/T34e -- HIMMEL-3428 slice 2 item 4: multi-var and
 # chained declarations are recognised as declaration prefixes, not just a
 # single split `local T; T=$(mktemp)`.
+# HIMMEL-3460 item 1: the declaration and the capture share ONE line,
+# joined by `; ` -- with a newline between them (the earlier spelling) the
+# capture starts its own line and needs no stripping at all, so those rows
+# passed on the pre-slice-2 predicate as well.
 f="$TMPDIR_ROOT/t34.sh"
-printf 'local T U\nT=$(mktemp)\n' > "$f"
+printf 'local T U; T=$(mktemp)\n' > "$f"
 assert_eq "T34 multi-var local T U; T=\$(mktemp) -> offending (HIMMEL-3428 item 4)" "1" "$(scan_lines "$f")"
 
 f="$TMPDIR_ROOT/t34b.sh"
-printf 'local T\nlocal U\nT=$(mktemp)\n' > "$f"
+printf 'local T; local U; T=$(mktemp)\n' > "$f"
 assert_eq "T34b chained local T; local U; T=\$(mktemp) -> offending (HIMMEL-3428 item 4)" "1" "$(scan_lines "$f")"
 
 f="$TMPDIR_ROOT/t34c.sh"
-printf 'local -- T\nT=$(mktemp)\n' > "$f"
+printf 'local -- T; T=$(mktemp)\n' > "$f"
 assert_eq "T34c local -- T; T=\$(mktemp) -> offending (HIMMEL-3428 item 4)" "1" "$(scan_lines "$f")"
 
 f="$TMPDIR_ROOT/t34d.sh"
@@ -549,8 +558,68 @@ printf 'local T && T=$(mktemp)\n' > "$f"
 assert_eq "T34d local T && T=\$(mktemp) -> offending (HIMMEL-3428 item 4)" "1" "$(scan_lines "$f")"
 
 f="$TMPDIR_ROOT/t34e.sh"
-printf 'local T U\nT=$(mktemp) || exit 1\n' > "$f"
+printf 'local T U; T=$(mktemp) || exit 1\n' > "$f"
 assert_eq "T34e control: guarded multi-var declaration -> ok (HIMMEL-3428 item 4)" "0" "$(scan_lines "$f")"
+
+# T35/T35b/T35c/T35d -- HIMMEL-3457: rule (c) counts the captured var as
+# tested only when it is a WHOLE operand of the test -- `"$T"`, `"${T...}"`
+# or a bare `$T`, delimited by whitespace -- never when it is glued into a
+# larger compared string, where the thing actually under test is the other
+# operand.
+f="$TMPDIR_ROOT/t35.sh"
+printf 'T=$(mktemp)\n[ "$out" = "$T-suffix" ] || exit 1\n' > "$f"
+assert_eq "T35 rule (c) \$T glued before a suffix does not guard -> offending (HIMMEL-3457)" "1" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t35b.sh"
+printf 'T=$(mktemp)\n[ "$out" = "prefix$T" ] || exit 1\n' > "$f"
+assert_eq "T35b rule (c) \$T glued after a prefix does not guard -> offending (HIMMEL-3457)" "1" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t35c.sh"
+printf 'T=$(mktemp); [ "$out" = "a ${T}" ] && true\n' > "$f"
+assert_eq "T35c rule (c) same-line \${T} inside a larger quoted string does not guard -> offending (HIMMEL-3457)" "1" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t35d.sh"
+printf 'T=$(mktemp)\n[[ -n $T && -d "$T" ]] || exit 1\n' > "$f"
+assert_eq "T35d control: bare and quoted whole-operand tests still guard -> ok (HIMMEL-3457)" "0" "$(scan_lines "$f")"
+
+# T35e/T35f -- /pr-check round 1 codex-1: a reference with whitespace on
+# both sides is still a fragment when it sits INSIDE a larger quoted string.
+f="$TMPDIR_ROOT/t35e.sh"
+printf 'T=$(mktemp)\n[ "$out" = "prefix $T suffix" ] || exit 1\n' > "$f"
+assert_eq "T35e rule (c) \$T space-delimited inside a larger double-quoted string does not guard -> offending (HIMMEL-3457)" "1" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t35f.sh"
+printf 'T=$(mktemp)\n[ "$out" = %sa $T b%s ] || exit 1\n' "$sq" "$sq" > "$f"
+assert_eq "T35f rule (c) \$T inside a single-quoted literal is not a reference -> offending (HIMMEL-3457)" "1" "$(scan_lines "$f")"
+
+# T36/T36b -- HIMMEL-3460 item 3: `$(...)#` is ONE shell word -- the `#` is
+# glued to the command substitution, not a comment start -- so a real `||`
+# guard after it must survive the comment stripper. A `#` after a SUBSHELL's
+# closing paren is still a comment.
+f="$TMPDIR_ROOT/t36.sh"
+printf 'T=$(mktemp)#tag || exit 1\n' > "$f"
+assert_eq "T36 \$(mktemp)# is one word, the || after it still guards -> ok (HIMMEL-3460 item 3)" "0" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t36b.sh"
+printf 'T=$(mktemp); (true)# || exit 1\n' > "$f"
+assert_eq "T36b control: # after a subshell ) is still a comment -> offending (HIMMEL-3460 item 3)" "1" "$(scan_lines "$f")"
+
+# T37/T37b/T37c -- HIMMEL-3460 item 4: the word-concatenation ruling behind
+# T33c applies to every quoting spelling, not just single quotes --
+# `mktemp\ -d` (escaped space) and `mktemp"-d"` each lex as ONE word that is
+# not the mktemp binary. An EMPTY quote pair adds nothing to the word, so
+# `mktemp"" -d` IS the binary and still flags.
+f="$TMPDIR_ROOT/t37.sh"
+printf 'T=$(mktemp\\ -d)\n' > "$f"
+assert_eq "T37 mktemp\\<space>-d word-concatenation -> NOT offending (HIMMEL-3460 item 4)" "0" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t37b.sh"
+printf 'T=$(mktemp"-d")\n' > "$f"
+assert_eq "T37b mktemp\"-d\" word-concatenation -> NOT offending (HIMMEL-3460 item 4)" "0" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t37c.sh"
+printf 'T=$(mktemp"" -d)\nU=$(mktemp%s%s -d)\n' "$sq" "$sq" > "$f"
+assert_eq "T37c control: an empty quote pair leaves the word mktemp -> both offending (HIMMEL-3460 item 4)" "2" "$(scan_lines "$f")"
 
 # T21 -- self-check: the predicate must NOT flag its own repo files. Locks
 # the codex-1 self-blocking regression closed for good -- if this ever comes

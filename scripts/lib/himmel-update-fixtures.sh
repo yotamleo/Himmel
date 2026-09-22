@@ -65,6 +65,9 @@ make_repo_channel() {
     git -C "$clone" push --quiet -u origin HEAD:main 2>/dev/null
 
     mkdir -p "$clone/scripts/guardrails" "$clone/scripts/lib"
+    # SCRIPT is a contract input set by the sourcing suite (see file header),
+    # not a misspelling of $script.
+    # shellcheck disable=SC2153
     cp "$SCRIPT" "$clone/scripts/himmel-update.sh"
     local src_scripts; src_scripts="$(dirname "$SCRIPT")"
     cp "$src_scripts/guardrails/lib.sh"        "$clone/scripts/guardrails/lib.sh"

@@ -1,8 +1,8 @@
 import { spawn } from "bun";
 import { killTree, SPAWN_OWN_GROUP } from "../lib/kill-tree.mjs";
 import { buildGlmEnv, GLM_MODEL_ALIAS } from "./glm-env";
-import { existsSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Bounded-run spawn helper. Runs an INTERACTIVE `claude "<prompt>"` with stdin
@@ -33,7 +33,9 @@ export type PermissionMode = "bypassPermissions" | "dontAsk";
 // filing) that warrants the reasoning tier, and the operator's standing
 // guidance is opus/haiku for dispatches. Override via TELEGRAM_CLAUDE_MODEL
 // (poller env; restart to apply); blank/whitespace falls back to the default.
-export const DEFAULT_MODEL = "opus";
+// Pinned to a full model id, not the `opus` alias (HIMMEL-3481): a pin survives
+// the alias moving to a different Opus generation.
+export const DEFAULT_MODEL = "claude-opus-5-5";
 function resolveModel(): string {
   return process.env.TELEGRAM_CLAUDE_MODEL?.trim() || DEFAULT_MODEL;
 }
@@ -302,8 +304,34 @@ async function drain(stream: ReadableStream<Uint8Array>, onChunk?: (s: string) =
   return acc;
 }
 
+// Lane effort (HIMMEL-3482): lanes.json's claude-tier `effort` is the
+// per-dispatch setting, delivered through the same CLAUDE_CODE_EFFORT_LEVEL
+// binding the claudex lane uses. The model maps to its tier lane by alias
+// ("opus") or full id ("claude-opus-5-5"); a model no tier names, or a lane
+// with no level-shaped effort, sets nothing and the ambient value stands.
+const EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
+type LaneRegistry = { lanes: { id: string; class?: string; effort?: string }[] };
+function loadLanes(): LaneRegistry {
+  try { return JSON.parse(readFileSync(join(REPO_ROOT, "scripts", "lanes", "lanes.json"), "utf8")); }
+  catch { return { lanes: [] }; } // an unreadable registry never blocks a run
+}
+export function laneEffort(model: string, registry: LaneRegistry = loadLanes()): string | undefined {
+  if (!Array.isArray(registry?.lanes)) return undefined; // valid JSON of the wrong shape is no effort, not a throw
+  const tier = registry.lanes.find((l) => l?.class === "claude-tier" && (model === l.id || model.startsWith(`claude-${l.id}-`)));
+  return tier?.effort && EFFORT_LEVELS.has(tier.effort) ? tier.effort : undefined;
+}
+
+// argv + env of a bounded run, split out of runSession so the spawned env is
+// testable. The GLM lane is left alone: its alias names no claude tier.
+export function spawnSpec(prompt: string, permissionMode?: PermissionMode, lane?: "glm", modelOverride?: string, settings?: string, extraEnv?: Record<string, string>, mcpConfig?: string, registry?: LaneRegistry) {
+  const { cmd } = buildRunArgs(prompt, permissionMode, modelOverride ?? laneModel(lane), settings, mcpConfig);
+  const effort = lane === "glm" ? undefined : laneEffort(cmd[2], registry);
+  const env = sessionEnv(lane, effort ? { CLAUDE_CODE_EFFORT_LEVEL: effort, ...(extraEnv ?? {}) } : extraEnv);
+  return { cmd, env };
+}
+
 export async function runSession(prompt: string, cwd: string, permissionMode?: PermissionMode, lane?: "glm", modelOverride?: string, settings?: string, observe?: RunObserver, extraEnv?: Record<string, string>, mcpConfig?: string): Promise<{ code: number; capped: boolean; blocked: boolean; timedOut: boolean; pid: number; tail?: string }> {
-  const env = sessionEnv(lane, extraEnv);
+  const { cmd, env } = spawnSpec(prompt, permissionMode, lane, modelOverride, settings, extraEnv, mcpConfig);
   // PERMISSION POSTURE (HIMMEL-314; see also HIMMEL-203, HIMMEL-578):
   // the bounded run inherits the operator's default permission mode (accept-edits)
   // and runs with stdin closed (EOF) so it CANNOT answer a permission prompt. Any
@@ -316,7 +344,6 @@ export async function runSession(prompt: string, cwd: string, permissionMode?: P
   // else the FILE-and-commit flow deadlocks on un-answerable prompts. bypass does
   // NOT loosen containment: the VAULT's PreToolUse hooks (e.g. block-cloud-egress)
   // still fire and HARD-block web/cloud/push. Non-vault sessions keep the default.
-  const { cmd } = buildRunArgs(prompt, permissionMode, modelOverride ?? laneModel(lane), settings, mcpConfig);
   // SPAWN_OWN_GROUP (HIMMEL-1956): the timeout below calls killTree, and its
   // POSIX half signals the process GROUP -- which has to exist before it can
   // be signalled. Without this the claude worker's own children survive the

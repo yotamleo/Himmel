@@ -139,23 +139,34 @@ Go on ONLY if its first line equals its second line followed by `/.git` (a
 string compare: a differently spelled path only sends you to the fence, the
 safe direction) and its third line is empty (the cwd is the worktree root);
 anything else, an empty second line included, means use the canonical fence
-above. Then list the branch's changes to the files step 0 runs
+above. Then decide the SAME set `pr-check-context.sh` itself decides on
+(HIMMEL-3382 — one diff definition, not two): the merge-base diff of the
+branch's COMMITTED history, PLUS its WORKING-TREE and UNTRACKED changes, all
+scoped to `scripts/cr/` and `scripts/guardrails/lib.sh`
 (always against refs/remotes/origin/main, even on a stacked PR — the branch
 runs its parent's bytes too, and a diff against a stacked base would hide
 them; spelled in full because a local branch named `origin/main` would shadow
-the bare name; two-dot against the working tree, so uncommitted edits count
-and a main-side change only over-reports):
+the bare name; the working-tree and untracked legs are what make an
+UNCOMMITTED `scripts/cr/` edit count too, and a main-side change only
+over-reports):
 
-    git diff --name-only refs/remotes/origin/main -- scripts/cr/ scripts/guardrails/lib.sh
+    if mb=$(git merge-base HEAD refs/remotes/origin/main 2>/dev/null); then
+        git diff --name-only "$mb"..HEAD -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh'
+        git diff --name-only HEAD -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh'
+        git ls-files --others -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh'
+    else
+        echo unknown
+    fi
 
-Use the bare literal below ONLY when that check exits 0 and prints nothing — a
-failed check (e.g. `refs/remotes/origin/main` does not resolve: git exits non-zero with empty
-stdout) proves nothing and counts as a `scripts/cr/` diff. It is the one shape
-a leg's allow rule can match:
+Use the bare literal below ONLY when that check prints nothing at all — a
+failed check (`refs/remotes/origin/main` does not resolve) prints the literal
+word `unknown`, which is not a path and can never mean a clean diff; `unknown`
+OR any path proves nothing clean and counts as a `scripts/cr/` diff. It is the
+one shape a leg's allow rule can match:
 
     bash scripts/cr/pr-check-context.sh
 
-If the check prints any path or fails, use the canonical fence above — and if that
+If the check prints any path or `unknown`, use the canonical fence above — and if that
 fence is refused, stop and report BLOCKED; never fall back to the bare
 literal. On such a diff an allow-listed literal would auto-run the branch's own
 bytes, which may have deleted their own hand-off (console ruling on
@@ -214,8 +225,11 @@ location, so STOP before any paid critic call rather than guess from the cwd.
 
 **Branch self-review is NOT lost — it moved one level down, and it is now a
 DELIBERATE, LOGGED decision instead of an automatic one (HIMMEL-2335).** On
-the himmel lane only, when the branch's own diff (merge-base..HEAD) touches
-`scripts/cr/`, `pr-check-context.sh` detects it, appends a `delegation` row
+the himmel lane only, when the branch's own diff touches `scripts/cr/` or
+`scripts/guardrails/lib.sh` — the exact set is printed as `cr_diff_files=` in
+the stdout contract below (HIMMEL-3382: the SAME set the himmel-lane spelling
+above decides on, not a second recipe) — `pr-check-context.sh` detects it,
+appends a `delegation` row
 to the CR ledger through the ANCHOR's own `scripts/cr/ledger-append.sh` (the
 trusted side logs the call it is about to make — a failed ledger write does
 NOT abort any more: it warns on stderr, declines to delegate, and falls back
@@ -278,9 +292,14 @@ block need not survive into a later one). Take the WHOLE remainder after
 the marker path under it. The printed `head=` is also the HIMMEL-1175 pin:
 carrying it as a literal is the point — a fresh `git rev-parse HEAD` in a
 later block would be the drift the pin exists to catch. It also prints
-`anchor_lane=<himmel|adopter>` and `delegated=<yes|no>` — informational only
-(nothing downstream substitutes either), and NOT the same field as `lane=`
-below, which is the marker's own 3rd field and means something unrelated.
+`anchor_lane=<himmel|adopter>`, `delegated=<yes|no>` and
+`cr_diff_files=<comma-joined, sorted, deduped set this run decided on
+(HIMMEL-3382) — the merge-base diff of committed history plus
+working-tree/untracked changes under scripts/cr/ and
+scripts/guardrails/lib.sh; empty when the diff proved clean or could not be
+computed>` — informational only (nothing downstream substitutes any of them),
+and NOT the same field as `lane=` below, which is the marker's own 3rd field
+and means something unrelated.
 
 It also prints `lane=` — the marker's 3rd field, the CR lane, read INSIDE the
 script against a real shell variable rather than substituted into a fence
