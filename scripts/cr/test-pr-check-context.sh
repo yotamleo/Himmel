@@ -2021,18 +2021,27 @@ fx_new() { # fx_new <branch> - fresh fake himmel + a worktree on <branch>
   build_fake_himmel "$fx_anchor"
   (cd "$fx_anchor" && git worktree add -q -b "$1" "$fx_wt" main) || { echo "FAIL: $1 could not add worktree"; fail=1; }
 }
-fx_run() { # fx_run [subdir] - run the anchor's copy from the worktree (or a subdir of it)
-  (cd "$fx_wt/${1:-}" && HIMMEL_REPO="$fx_anchor" bash "$fx_anchor/scripts/cr/pr-check-context.sh" 2>/dev/null)
+fx_run() { # fx_run [subdir] - run the anchor's copy from the worktree (or a subdir of it); $fx_path is prepended to PATH
+  (cd "$fx_wt/${1:-}" && PATH="${fx_path:+$fx_path:}$PATH" HIMMEL_REPO="$fx_anchor" bash "$fx_anchor/scripts/cr/pr-check-context.sh" 2>/dev/null)
+  echo "pr-check-context: fx_rc=$?"
 }
+# Every outcome is positive evidence: a failed run, or a himmel_dir that is
+# neither checkout, is "error" - never read as the anchor fallback.
 fx_outcome() {
-  local wt_top
+  local wt_top anchor_top dir
   wt_top="$(cd "$fx_wt" && git rev-parse --show-toplevel)"
-  if [ "$(get_kv "$1" delegated)" = yes ]; then
+  anchor_top="$(cd "$fx_anchor" && git rev-parse --show-toplevel)"
+  dir="$(get_kv "$1" himmel_dir)"
+  if [ "$(get_kv "$1" fx_rc)" != 0 ]; then
+    echo error
+  elif [ "$(get_kv "$1" delegated)" = yes ] && [ "$dir" = "$wt_top" ]; then
     echo delegated
-  elif [ "$(get_kv "$1" himmel_dir)" = "$wt_top" ]; then
+  elif [ "$(get_kv "$1" delegated)" = no ] && [ "$dir" = "$wt_top" ]; then
     echo branch
-  else
+  elif [ "$(get_kv "$1" delegated)" = no ] && [ "$dir" = "$anchor_top" ]; then
     echo anchor
+  else
+    echo error
   fi
 }
 
@@ -2189,7 +2198,7 @@ printf '#!/usr/bin/env bash\nfor a in "$@"; do [ "$a" = -u ] && exit 1; done\nex
 chmod +x "$tmp/t51-bin/sort"
 out51c="$(fx_run)"
 check "$(fx_outcome "$out51c")" "delegated" "T51 control - with a working sort the fixture's git diff is non-empty and delegates"
-out51="$(cd "$fx_wt" && PATH="$tmp/t51-bin:$PATH" HIMMEL_REPO="$fx_anchor" bash "$fx_anchor/scripts/cr/pr-check-context.sh" 2>/dev/null)"
+out51="$(fx_path="$tmp/t51-bin" fx_run)"
 check "$(fx_outcome "$out51")" "anchor" "T51 a failed normalizer decides unknown, not an empty no"
 
 # T51 RED: the same fixture against a mutant that ignores the normalizer's
@@ -2213,7 +2222,8 @@ red_control_run --cwd "$fx_wt" \
   --env HIMMEL_REPO="$fx_anchor" \
   -- bash "$fx_anchor/scripts/cr/pr-check-context.sh"
 red_control_assert --label "T51" \
-  --observed     "$(fx_outcome "$RED_CONTROL_OUT")" \
+  --observed     "$(fx_outcome "$RED_CONTROL_OUT
+pr-check-context: fx_rc=$RED_CONTROL_RC")" \
   --expect-wrong "branch" \
   --correct      "anchor" \
   --note "HIMMEL-3454 round-1 codex-2 - an unchecked sort -u turns a failed normalization into an empty diff set, read as cr_diff_state=no, and himmel_dir stays at the branch" \
