@@ -235,6 +235,7 @@ root=$(make_root); state=$(mktemp -d); fake_cron=$(make_fake_crontab "$state"); 
 cron_env() {
   env DRIFTFIX_PLATFORM=posix DRIFTFIX_HIMMEL_ROOT="$root" \
       DRIFTFIX_CRONTAB="$fake_cron" DRIFTFIX_BAT_DIR="$state/bat" \
+      HIMMEL_PROVENANCE_DIR="$state/provenance" \
       DRIFTFIX_CLAUDE="$fake_claude" "$@"
 }
 
@@ -273,6 +274,10 @@ if [ -f "$state/tab" ]; then
   assert_has "$tab" "# HIMMEL-DriftFix" "drift entry is marker-tagged"
   assert_has "$tab" "# HIMMEL-ForkResync" "resync entry is marker-tagged"
   pass "crontab installed with both entries"
+  # HIMMEL-3332 S8: both legs are recorded as `job register` rows.
+  jobs=$(HIMMEL_PROVENANCE_DIR="$state/provenance" bash -c '. "$1/lib/provenance.sh" && . "$1/lib/provenance-read.sh" && prov_read_load >/dev/null && prov_read_units --kind job | jq -r ".unit + \" ours=\" + (.ours|tostring) + \" scheduler=\" + .fields.scheduler" | LC_ALL=C sort' _ "$SCRIPT_DIR/..")
+  assert_has "$jobs" "HIMMEL-DriftFix ours=true scheduler=cron" "drift leg recorded as a job row"
+  assert_has "$jobs" "HIMMEL-ForkResync ours=true scheduler=cron" "resync leg recorded as a job row"
 else
   fail "crontab was not installed"
 fi

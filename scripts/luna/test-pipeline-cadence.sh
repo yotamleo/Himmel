@@ -192,6 +192,8 @@ build_hook_sandbox() {
 
 TMP_ROOT=$(mktemp -d)
 if command -v cygpath >/dev/null 2>&1; then TMP_ROOT=$(cygpath -m "$TMP_ROOT"); fi
+# HIMMEL-3332 S8: arms record a provenance row; never into the operator's ledger.
+export HIMMEL_PROVENANCE_DIR="$TMP_ROOT/provenance"
 # HIMMEL-2044: the generated claude runners now shell bank-preflight.sh before
 # launching, and the fire tests below EXECUTE those runners. Left alone, every
 # fire would do a live usage-API fetch through usage-cache-producer.sh — slow,
@@ -479,6 +481,13 @@ assert_contains "weekly health entry SUN 04:00"   "00 04 * * 0" "$tab"
 assert_contains "harvest entry marker-tagged" "# HIMMEL-Pipeline-Harvest"     "$tab"
 assert_contains "synth entry marker-tagged"  "# HIMMEL-Pipeline-Synthesize" "$tab"
 assert_contains "health entry marker-tagged" "# HIMMEL-Pipeline-Health"     "$tab"
+# HIMMEL-3332 S8: every armed entry is recorded as a `job register` row.
+jobs=$( . "$SCRIPT_DIR/../lib/provenance.sh" && . "$SCRIPT_DIR/../lib/provenance-read.sh" && prov_read_load >/dev/null && prov_read_units --kind job | jq -r '"\(.unit) ours=\(.ours) scheduler=\(.fields.scheduler)"' | LC_ALL=C sort )
+assert_contains "arm recorded all four pipeline jobs (ours, cron)" \
+    "HIMMEL-Pipeline-FetchHealth ours=true scheduler=cron
+HIMMEL-Pipeline-Harvest ours=true scheduler=cron
+HIMMEL-Pipeline-Health ours=true scheduler=cron
+HIMMEL-Pipeline-Synthesize ours=true scheduler=cron" "$jobs"
 assert_contains "harvest entry fires the runner" "pipeline-harvest.sh"    "$tab"
 assert_contains "synth entry fires the runner"  "pipeline-synthesize.sh" "$tab"
 assert_contains "health entry fires the runner" "pipeline-health.sh"     "$tab"

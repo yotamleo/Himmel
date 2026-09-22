@@ -144,7 +144,21 @@ function probeFileExists(item, ctx) {
   }
   const base = (ctx.scope === 'user' || REPO_ROOT_FILE_EXISTS_IDS.has(item.id)) ? ctx.repoRoot : ctx.targetPath;
   const resolved = path.resolve(base, raw);
-  return { actual: fs.existsSync(resolved) ? 'present' : 'absent', detail: resolved };
+  if (!fs.existsSync(resolved)) return { actual: 'absent', detail: resolved };
+  // HIMMEL-3322: existence alone is not proof a shell lib actually sources —
+  // same class as HIMMEL-3306 for pre-commit-hooks. Opt-in per item
+  // (guardrail-scope); `bash -n` is a pure syntax check, never sourced/run,
+  // so the probe stays side-effect free.
+  if (item.probe.syntaxCheck) {
+    const r = spawnBashProbe(['-n', resolved], { env: ctx.env || process.env, encoding: 'utf8' });
+    if (r.timedOut) return { actual: 'degraded', detail: `${resolved} exists, but syntax check timed out after ${probeTimeoutSecs(r)}s` };
+    if (r.error) return { actual: 'degraded', detail: `${resolved} exists, but syntax check could not run: ${r.error.message}` };
+    if (r.status !== 0) {
+      const reason = (r.stderr || '').trim() || `bash -n exited ${r.status}`;
+      return { actual: 'degraded', detail: `${resolved} exists, but fails to source: ${reason}` };
+    }
+  }
+  return { actual: 'present', detail: resolved };
 }
 
 // ── git-hooks ────────────────────────────────────────────────────────────
@@ -427,6 +441,88 @@ function parseDotEnv(raw) {
   return out;
 }
 
+// ── settings-key deepening: verifyScript (wiring-statusline) ─────────────
+
+// wire-statusline.sh is the ONLY writer of statusLine.command, and it always
+// emits `node "<absolute-path-to-index.js>"` — see scripts/lib/wire-
+// statusline.sh. Parsing exactly that shape (rather than a general shell
+// tokenizer) keeps this simple and matches what actually gets written;
+// anything else can't be resolved with confidence, so it degrades rather
+// than reading a script it can't actually locate.
+// ponytail: never executes the command — only resolves the interpreter (on
+// PATH) and the script path (readable file), which is enough to catch a
+// missing/moved/unbuilt script without any side effect.
+const STATUSLINE_COMMAND_RE = /^(\S+)\s+"([^"]+)"$/;
+
+function verifyStatusLineCommand(command, ctx) {
+  if (typeof command !== 'string') return 'no usable command';
+  const m = command.trim().match(STATUSLINE_COMMAND_RE);
+  if (!m) return `command does not match the expected '<interpreter> "<script>"' shape: ${JSON.stringify(command)}`;
+  const interpreter = m[1];
+  const scriptPath = m[2];
+  const problems = [];
+  if (!which(interpreter, ctx.env)) problems.push(`interpreter '${interpreter}' not resolvable on PATH`);
+  const resolved = path.isAbsolute(scriptPath) ? scriptPath : path.resolve(ctx.repoRoot, scriptPath);
+  const usable = isUsableFile(resolved, { execCheck: false });
+  if (!usable.ok) problems.push(`script '${resolved}' ${usable.reason}`);
+  return problems.length > 0 ? problems.join('; ') : null;
+}
+
+// ── settings-key deepening: verifyPluginSet (claude-plugins-pluginSet) ───
+
+// docs/setup/settings-template.json's enabledPlugins true-flagged keys are
+// the recorded floor (scripts/machine-setup/reconcile-enabled-plugins.sh's
+// WHITELIST model already treats it as authoritative) — a non-empty
+// enabledPlugins map is not proof it MATCHES that set, or that any of it is
+// actually on disk. ~/.claude/plugins/installed_plugins.json is that ledger.
+function verifyPluginSet(enabledPlugins, ctx) {
+  const templatePath = path.join(ctx.repoRoot, 'docs', 'setup', 'settings-template.json');
+  let template;
+  try {
+    template = JSON.parse(fs.readFileSync(templatePath, 'utf8'));
+  } catch (_e) {
+    return `cannot read/parse recorded pluginSet at ${templatePath}`;
+  }
+  const recordedFlags = template.enabledPlugins || {};
+  const recordedSet = Object.keys(recordedFlags).filter((k) => recordedFlags[k] === true).sort();
+  const actualMap = enabledPlugins && typeof enabledPlugins === 'object' ? enabledPlugins : {};
+  const actualSet = Object.keys(actualMap).filter((k) => actualMap[k] === true).sort();
+  const missing = recordedSet.filter((k) => actualSet.indexOf(k) === -1);
+  const extra = actualSet.filter((k) => recordedSet.indexOf(k) === -1);
+  if (missing.length > 0 || extra.length > 0) {
+    const parts = [];
+    if (missing.length > 0) parts.push(`missing: ${missing.join(', ')}`);
+    if (extra.length > 0) parts.push(`unexpected: ${extra.join(', ')}`);
+    return `does not match the recorded pluginSet (${parts.join('; ')})`;
+  }
+  const home = (ctx.env && ctx.env.HOME) || os.homedir();
+  const ledgerPath = path.join(home, '.claude', 'plugins', 'installed_plugins.json');
+  let ledger;
+  try {
+    ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+  } catch (_e) {
+    return `cannot read/parse plugin install ledger at ${ledgerPath}`;
+  }
+  const installed = (ledger && typeof ledger.plugins === 'object' && ledger.plugins) || {};
+  // A "user" ledger entry is globally available, so it satisfies either
+  // scope of probe. A "project" entry only satisfies a project-scope probe
+  // whose targetPath is that SAME project — an entry recorded for a
+  // different project must not satisfy this one (installPath is a shared
+  // marketplace-cache dir, so any stale entry would otherwise pass). Then
+  // the matching entry's installPath must still exist on disk, not merely
+  // be recorded.
+  const scopeMatches = (entry) => entry && (entry.scope === 'user'
+    || (ctx.scope === 'project' && entry.scope === 'project' && entry.projectPath === ctx.targetPath));
+  const notInstalled = actualSet.filter((k) => {
+    const entries = Array.isArray(installed[k]) ? installed[k] : [];
+    return !entries.some((e) => scopeMatches(e) && typeof e.installPath === 'string' && fs.existsSync(e.installPath));
+  });
+  if (notInstalled.length > 0) {
+    return `not installed for this scope per ${ledgerPath}: ${notInstalled.join(', ')}`;
+  }
+  return null;
+}
+
 // ── settings-key ─────────────────────────────────────────────────────────
 
 function probeSettingsKey(item, ctx) {
@@ -466,7 +562,21 @@ function probeSettingsKey(item, ctx) {
   }
   const keys = item.probe.keys || [item.probe.key];
   const missing = keys.filter((k) => !nonEmpty(getVal(k)));
-  if (missing.length === 0) return { actual: 'present', detail: filePath };
+  if (missing.length === 0) {
+    // HIMMEL-3322: the key(s) being non-empty is not proof the thing they
+    // point at actually works — same "extend, don't replace" pattern as
+    // mcp-registered's bin/initMarker. Opt-in per item; any gap downgrades
+    // to 'degraded', never silently 'present'.
+    if (item.probe.verifyScript) {
+      const problem = verifyStatusLineCommand(getVal(item.probe.key), ctx);
+      if (problem) return { actual: 'degraded', detail: `${filePath}: ${problem}` };
+    }
+    if (item.probe.verifyPluginSet) {
+      const problem = verifyPluginSet(getVal(item.probe.key), ctx);
+      if (problem) return { actual: 'degraded', detail: `${filePath}: ${problem}` };
+    }
+    return { actual: 'present', detail: filePath };
+  }
   const detail = `missing/empty key(s) in ${filePath}: ${missing.join(', ')}`;
   // HIMMEL-3307: an .env that DEFINES none of the required keys (not even as
   // an empty `KEY=`) was never set up for this integration; one that defines

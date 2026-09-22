@@ -15,8 +15,9 @@
 # path that is neither prefix (a leaked third location) is NOT masked.
 #
 # VACUOUS GUARD: a snapshot with no settings.json hooks proves nothing (two empty
-# homes are "identical"), so that is refused (exit 3) rather than passed. The same
-# for --a-target/--b-target when NEITHER repo has a git hook.
+# homes are "identical"), so that is refused (exit 3) rather than passed -- counting
+# COMPARED ENTRIES, not event keys, so {"hooks":{"PreToolUse":[]}} does not count as
+# wired. The same for --a-target/--b-target when NEITHER repo has a git hook.
 #
 # USAGE:
 #   converge-check.sh --a-home <d> --a-prefix <d> --b-home <d> --b-prefix <d> \
@@ -52,7 +53,18 @@ mask() {
     rest="${rest#*"$needle"}"
     # A rejected sibling keeps a \001 after its first char, so a LATER mask (home is
     # usually a parent of the prefix) cannot re-match it; norm() strips the marks.
-    case "$rest" in [A-Za-z0-9._-]*) out+="${needle:0:1}"$'\001'"${needle:1}" ;; *) out+="$token" ;; esac
+    # Boundary is a DENYLIST, not an allowlist: almost any byte can legally continue
+    # a POSIX filename ('+', '~', '@', ',', '=', '%', ... are all valid), so only
+    # end-of-token, '/' (a real subpath) or a delimiter this snapshot's generated
+    # text actually emits around a path count as a boundary -- '"'/"'" (jq -S's
+    # JSON quoting and the launcher/hook scripts' shell quoting), ':', ';' and
+    # whitespace (token separators in those same scripts). Anything else marks a
+    # DIFFERENT sibling location, never masked.
+    case "$rest" in
+      "") out+="$token" ;;
+      '/'*|'"'*|"'"*|':'*|';'*|[[:space:]]*) out+="$token" ;;
+      *) out+="${needle:0:1}"$'\001'"${needle:1}" ;;
+    esac
   done
   REPLY="$out$rest"
 }
@@ -127,7 +139,7 @@ snapshot "$bh" "$bp" "$bt" > "$tmp/b.txt"
 # Vacuous guard: settings.json must exist and carry hooks on BOTH sides.
 for side in a b; do
   home="$ah"; [ "$side" = b ] && home="$bh"
-  if ! jq -e '(.hooks // {}) | length > 0' "$home/.claude/settings.json" >/dev/null 2>&1; then
+  if ! jq -e '[(.hooks // {}) | .[] | length] | add // 0 | . > 0' "$home/.claude/settings.json" >/dev/null 2>&1; then
     echo "converge-check: VACUOUS -- side $side has no hooks in $home/.claude/settings.json; an install that wired nothing cannot 'converge'" >&2
     exit 3
   fi

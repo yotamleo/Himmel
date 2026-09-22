@@ -1178,6 +1178,9 @@ if class_removes "$_ix_bproc"; then
 else
   echo "  1. keep the telegram bun bridge running (manifest class ${M_CLASS[$_ix_bproc]})"
 fi
+if [ "$LEDGER_OK" -eq 1 ] && class_removes "$_ix_bproc"; then
+  echo "     and disable + remove the telegram-bridge systemd unit the ledger recorded (linger only if it was not already on)"
+fi
 # Step 2 acts per row: the plan says REMOVE/keep for each row from the same
 # class_removes the step and the footprint read (a hand-edited manifest can
 # keep one row while --purge-state removes the other).
@@ -1219,6 +1222,9 @@ elif ! class_removes "$_ix_jobs"; then
   echo "  3. keep scheduled jobs (manifest class ${M_CLASS[$_ix_jobs]})"
 else
   echo "  3. remove HIMMEL-Resume-* scheduled jobs (+ HimmelTelegramBridge logon task)"
+  if [ "$LEDGER_OK" -eq 1 ]; then
+    echo "     and the cron/at jobs the ledger recorded a cadence arm adding (exact recorded names only)"
+  fi
 fi
 if [ "$SKIP_PLUGINS" -eq 1 ]; then
   echo "  4. keep Claude plugins (--skip-plugins)"
@@ -1251,6 +1257,9 @@ else
   fi
   if class_removes "$_ix_pset"; then
     echo "     and current-project settings: $PWD/.claude/settings.json (himmel's own checkout excluded)"
+    if [ "$LEDGER_OK" -eq 1 ]; then
+      echo "     and every other project's settings the ledger recorded (himmel's own checkout excluded)"
+    fi
   else
     echo "     keep current-project settings (manifest class ${M_CLASS[$_ix_pset]})"
   fi
@@ -1343,6 +1352,245 @@ if [ "$LEDGER_OK" -eq 1 ]; then
   fi
 fi
 
+# ledger_report_preexisted_units <plugin|marketplace> — for every fold unit of
+# this register kind with ours=false, print "kept (was already yours)" and
+# write its outcome row. Shared by [4/8] and [7/8] (HIMMEL-3332 S6).
+ledger_report_preexisted_units() {
+  local _kind="$1" _units _unit_json _unit
+  _units=$(prov_read_units --kind "$_kind")
+  while IFS= read -r _unit_json; do
+    [ -z "$_unit_json" ] && continue
+    [ "$(printf '%s' "$_unit_json" | jq -r '.ours')" = "false" ] || continue
+    _unit=$(printf '%s' "$_unit_json" | jq -r '.unit')
+    echo "  kept (was already yours): $_unit"
+    prov_read_outcome kept "$_unit_json" preexisted
+  done <<EOF
+$_units
+EOF
+}
+
+# ledger_apply_unit <unit-json> [step-label] — the ledger-driven per-unit action shared by
+# [6/8]'s settings/adopter-scripts/hud-config passes (HIMMEL-3332 S6; S8 also
+# calls it from [1/8] for the bridge unit file, passing its own step label):
+# computes prov_read_verdict, then removes/restores/keeps and writes the
+# outcome row. rc 1 means the unit is PROTECTED (kept or restored — the
+# caller must mask it out of any read-back and skip the matching today's
+# helper); rc 0 means removed, skipped, heuristic, or an already-reported
+# failure. Appends every PROTECTED unit's pointer/path to the global
+# _LEDGER_PROTECTED (newline-separated; the caller resets it before its loop).
+ledger_apply_unit() {
+  local u="$1" _step="${2:-[6/8]}" verdict action reason unit backup _ans _apply_args
+  verdict=$(prov_read_verdict "$u") || { fail_step "$_step ledger verdict: could not read current state for a unit"; return 0; }
+  action="${verdict%% *}"; reason="${verdict#* }"
+  unit=$(printf '%s' "$u" | jq -r '.unit // .path // "?"')
+  _apply_args=()
+  [ "$DRY_RUN" -eq 1 ] && _apply_args=(--dry-run)
+  case "$action" in
+    skip|heuristic)
+      # Not uninstall's ledger call — class-state (untouched by uninstall) or
+      # an ungoverned unit the caller's own default logic decides instead.
+      return 0 ;;
+    remove)
+      backup=$(printf '%s' "$u" | jq -r '.eff_pre.backup // empty')
+      if prov_read_apply "$u" remove ${_apply_args[@]+"${_apply_args[@]}"}; then
+        [ "$DRY_RUN" -eq 0 ] && echo "  removed $unit"
+        prov_read_outcome removed "$u" "$reason" "$backup"
+      else
+        echo "  WARN: could not remove $unit" >&2
+        fail_step "$_step ledger remove: $unit"
+        prov_read_outcome failed "$u" "step-failed" "$backup"
+      fi
+      return 0 ;;
+    restore)
+      backup=$(printf '%s' "$u" | jq -r '.eff_pre.backup // empty')
+      if prov_read_apply "$u" restore ${_apply_args[@]+"${_apply_args[@]}"}; then
+        [ "$DRY_RUN" -eq 0 ] && echo "  restored $unit (from $backup)"
+        prov_read_outcome restored "$u" "$reason" "$backup"
+      else
+        echo "  WARN: could not restore $unit" >&2
+        fail_step "$_step ledger restore: $unit"
+        prov_read_outcome failed "$u" "step-failed" "$backup"
+      fi
+      _LEDGER_PROTECTED="$_LEDGER_PROTECTED
+$unit"
+      return 1 ;;
+    *)
+      if [ "$DRY_RUN" -eq 1 ]; then
+        echo "DRY: would keep $unit ($reason)"
+      else
+        echo "  kept $unit ($reason)"
+        # ponytail: the [k]eep/[r]estore-or-[d]elete override for a
+        # user-modified unit only ever offers itself on a real TTY with no
+        # --yes — a scripted/CI/--yes run always takes the safe default
+        # (keep) rather than prompting into a pipe.
+        if [ "$reason" = "user-modified" ] && [ "$YES" -ne 1 ] && [ -t 0 ] && [ -t 1 ]; then
+          backup=$(printf '%s' "$u" | jq -r '.eff_pre.backup // empty')
+          if [ -n "$backup" ] && [ -r "$backup" ]; then
+            printf "  %s changed since install -- [k]eep / [r]estore himmel's backup? [k] " "$unit"
+            read -r _ans
+            case "$_ans" in
+              [rR]*)
+                if prov_read_apply "$u" restore; then
+                  echo "  restored $unit (from $backup)"
+                  prov_read_outcome restored "$u" "user-modified" "$backup"
+                else
+                  echo "  WARN: could not restore $unit" >&2
+                  fail_step "$_step ledger restore: $unit"
+                  prov_read_outcome failed "$u" "step-failed" "$backup"
+                fi
+                _LEDGER_PROTECTED="$_LEDGER_PROTECTED
+$unit"
+                return 1 ;;
+            esac
+          else
+            printf "  %s changed since install -- [k]eep / [d]elete anyway? [k] " "$unit"
+            read -r _ans
+            case "$_ans" in
+              [dD]*)
+                if prov_read_apply "$u" remove; then
+                  echo "  removed $unit"
+                  prov_read_outcome removed "$u" "user-modified" "$backup"
+                else
+                  echo "  WARN: could not remove $unit" >&2
+                  fail_step "$_step ledger remove: $unit"
+                  prov_read_outcome failed "$u" "step-failed" "$backup"
+                fi
+                return 0 ;;
+            esac
+          fi
+        fi
+      fi
+      prov_read_outcome kept "$u" "$reason"
+      _LEDGER_PROTECTED="$_LEDGER_PROTECTED
+$unit"
+      return 1 ;;
+  esac
+}
+
+# ledger_job_markers <cron|at> — HIMMEL-3332 S8: the markers of `job register`
+# rows himmel brought (ours=true) for this scheduler, one per line. Only a
+# HIMMEL-... token is accepted: a tampered row naming a bare word must never
+# turn into a line filter over the operator's crontab.
+ledger_job_markers() {
+  [ "$LEDGER_OK" -eq 1 ] || return 0
+  prov_read_units --kind job \
+    | jq -r --arg s "$1" 'select(.ours == true and (.fields.scheduler // "") == $s) | .unit // empty' \
+    | grep -E '^HIMMEL-[A-Za-z0-9._-]+$' || true
+}
+
+# job_line_marker <line> <markers> — prints the recorded marker a crontab line
+# (or an at-job body line) ends with as ` # <marker>`, rc 0; rc 1 when none.
+# EXACT trailing match: a lookalike (`# HIMMEL-Qmd-Reindex-extra`) is not it.
+job_line_marker() {
+  local _l="$1" _m
+  _l="${_l%"${_l##*[![:space:]]}"}"
+  while IFS= read -r _m; do
+    [ -n "$_m" ] || continue
+    case "$_l" in
+      *" # $_m"|"# $_m") printf '%s\n' "$_m"; return 0 ;;
+    esac
+  done <<EOF
+$2
+EOF
+  return 1
+}
+
+# cron_strip_recorded <markers> — stdin filter for the [3/8] rewrite: drops the
+# legacy HIMMEL-Resume- lines and lines ending in a recorded marker, keeps the rest.
+cron_strip_recorded() {
+  local _line
+  while IFS= read -r _line || [ -n "$_line" ]; do
+    case "$_line" in *HIMMEL-Resume-*) continue ;; esac
+    job_line_marker "$_line" "$1" >/dev/null && continue
+    printf '%s\n' "$_line"
+  done
+  return 0
+}
+
+# ledger_job_outcome <marker> <removed|kept|failed> <reason> — outcome row for one job unit.
+ledger_job_outcome() {
+  local _uj
+  _uj=$(prov_read_units --kind job | jq -c --arg m "$1" 'select(.unit == $m)' | head -n 1)
+  [ -n "$_uj" ] && prov_read_outcome "$2" "$_uj" "$3"
+  return 0
+}
+
+# ledger_teardown_bridge_unit — HIMMEL-3332 S8 [1/8]: the telegram-bridge
+# systemd user unit bridge-persistence.js installed. Runs BEFORE the supervisor
+# kill so systemd cannot restart a bridge we just stopped. Ownership comes from
+# the recorded `file` row at the unit path (the `register unit` row carries no
+# `preexisted`, so its own fold verdict is meaningless); only linger_preexisted
+# is read from the register row. remove -> `systemctl --user disable --now`,
+# then the unit file goes, then daemon-reload; restore (the operator had their
+# own unit) -> the file comes back, nothing is disabled; keep (user-modified,
+# no backup) -> nothing is touched and the interactive [d]elete/[r]estore
+# override is never offered (it would swap the file under a live unit, and the
+# disable -> reload sequence only runs for a removal this function drives).
+# `disable-linger` runs only when this uninstall removed or restored the unit
+# AND linger_preexisted is literally false — null (unknown) and true both leave
+# linger alone.
+ledger_teardown_bridge_unit() {
+  local _upath _uj _verdict _act _regj _linger _steps_before
+  _upath="${HIMMELCTL_SYSTEMD_USER_UNIT_DIR:-$HOME/.config/systemd/user}/telegram-bridge.service"
+  _uj=$(prov_read_units --path "$_upath" --kind file | head -n 1)
+  [ -n "$_uj" ] || return 0
+  _verdict=$(prov_read_verdict "$_uj") || { fail_step "[1/8] telegram bridge unit: could not read current state of $_upath"; return 0; }
+  _act="${_verdict%% *}"
+  case "$_act" in
+    remove|restore) ;;
+    skip|heuristic) return 0 ;;
+    *)
+      YES=1 ledger_apply_unit "$_uj" "[1/8]" || true   # YES=1: report kept, never prompt
+      if [ "${_verdict#* }" = "user-modified" ] && [ -e "$_upath" ] && [ "$DRY_RUN" -ne 1 ]; then
+        echo "  hand step: systemctl --user disable --now telegram-bridge.service, then remove $_upath"
+      fi
+      return 0 ;;
+  esac
+  if ! command -v systemctl >/dev/null 2>&1; then
+    echo "  kept $_upath (systemctl not on PATH — cannot disable the unit; disable and remove it by hand)"
+    prov_read_outcome kept "$_uj" "no-systemctl"
+    return 0
+  fi
+  if [ "$_act" = "remove" ]; then
+    # ponytail: only the unit himmel itself installed is disabled. A restored
+    # operator unit keeps whatever enablement it has — bridge-persistence.js
+    # does not record the pre-install enablement, so there is nothing to put back.
+    if ! run systemctl --user disable --now telegram-bridge.service; then
+      echo "  WARN: systemctl --user disable --now telegram-bridge.service failed — unit file kept." >&2
+      fail_step "[1/8] telegram bridge unit: could not disable telegram-bridge.service"
+      prov_read_outcome failed "$_uj" "step-failed"
+      return 0
+    fi
+  fi
+  _steps_before=${#STEPS_INCOMPLETE[@]}
+  ledger_apply_unit "$_uj" "[1/8]" || true   # rc 1 = a restore, still a done unit
+  [ "${#STEPS_INCOMPLETE[@]}" -gt "$_steps_before" ] && return 0
+  if ! run systemctl --user daemon-reload; then
+    echo "  WARN: systemd user manager reload failed — run it by hand." >&2
+    fail_step "[1/8] telegram bridge unit: could not do the systemd user manager reload after removing the unit file"
+  fi
+  _regj=$(prov_read_units --kind unit | jq -c 'select(.unit == "telegram-bridge.service")' | head -n 1)
+  [ -n "$_regj" ] || return 0
+  _linger=$(printf '%s' "$_regj" | jq -r '.fields.linger_preexisted | if . == null then "null" else tostring end')
+  if [ "$_linger" = "false" ]; then
+    if command -v loginctl >/dev/null 2>&1; then
+      if run loginctl disable-linger "${USER:-$(id -un)}"; then
+        prov_read_outcome removed "$_regj" "linger-not-preexisting"
+      else
+        echo "  WARN: loginctl disable-linger failed — run it by hand." >&2
+        fail_step "[1/8] telegram bridge unit: could not disable linger"
+        prov_read_outcome failed "$_regj" "step-failed"
+      fi
+    else
+      echo "  kept linger (loginctl not on PATH)"
+      prov_read_outcome kept "$_regj" "no-loginctl"
+    fi
+  else
+    echo "  kept linger (linger_preexisted=$_linger)"
+    prov_read_outcome kept "$_regj" "linger-preexisted"
+  fi
+}
+
 # --- [1/8] stop the bridge -------------------------------------------------
 # Uses the documented cross-platform lever (supervisor.pid under the bridge
 # root; see docs/internals/telegram-bridge.md). BRIDGE_ROOT is passed through
@@ -1350,6 +1598,10 @@ fi
 # WHY (HIMMEL-2754): halt if the bridge may still be live — removing state
 # would recreate it (and on Windows, locked files make removal fail partway).
 echo "[1/8] Stopping telegram bridge..."
+# HIMMEL-3332 S8: the systemd unit goes first — see ledger_teardown_bridge_unit.
+if [ "$LEDGER_OK" -eq 1 ] && class_removes "$_ix_bproc"; then
+  ledger_teardown_bridge_unit
+fi
 if ! class_removes "$_ix_bproc"; then
   echo "  kept (manifest class ${M_CLASS[$_ix_bproc]}): bridge left running."
   # A bridge that stays running must not have its state deleted under it: the
@@ -1498,6 +1750,11 @@ EOF
 else
   _found=0
   _query_failed=0
+  # HIMMEL-3332 S8: the routines a cadence arm recorded, plus the report of the
+  # job rows that were already the operator's (kept, never removed).
+  _rec_cron=$(ledger_job_markers cron)
+  _rec_at=$(ledger_job_markers at)
+  [ "$LEDGER_OK" -eq 1 ] && ledger_report_preexisted_units job
   if command -v atq >/dev/null 2>&1; then
     # Capture the atq rc separately — `atq || true` would mask an
     # enumeration failure as "no jobs" (same precedent as above).
@@ -1512,15 +1769,32 @@ else
         [ -z "$_line" ] && continue
         _job_id=$(printf '%s' "$_line" | awk '{print $1}')
         [ -z "$_job_id" ] && continue
-        if at -c "$_job_id" 2>/dev/null | grep -q 'HIMMEL-Resume-'; then
+        _at_body=$(at -c "$_job_id" 2>/dev/null)
+        _at_marker=""
+        case "$_at_body" in
+          *HIMMEL-Resume-*) _at_marker="HIMMEL-Resume-" ;;
+          *)
+            if [ -n "$_rec_at" ]; then
+              while IFS= read -r _l; do
+                _at_marker=$(job_line_marker "$_l" "$_rec_at") && break
+                _at_marker=""
+              done <<EOF
+$_at_body
+EOF
+            fi ;;
+        esac
+        if [ -n "$_at_marker" ]; then
           _found=1
           if [ "$DRY_RUN" -eq 1 ]; then
             echo "DRY: atrm $_job_id"
+            ledger_job_outcome "$_at_marker" removed ours
           elif atrm "$_job_id" 2>/dev/null; then
-            echo "  removed at job: $_job_id"
+            echo "  removed at job: $_job_id ($_at_marker)"
+            ledger_job_outcome "$_at_marker" removed ours
           else
             echo "  WARN: failed to remove at job: $_job_id" >&2
             fail_step "[3/8] scheduled jobs: could not remove at job $_job_id"
+            ledger_job_outcome "$_at_marker" failed step-failed
           fi
         fi
       done <<EOF
@@ -1540,22 +1814,56 @@ EOF
     _cron_out=$(LC_ALL=C crontab -l 2>"$_cron_err")
     _cron_rc=$?
     if [ "$_cron_rc" -eq 0 ]; then
-      case "$_cron_out" in
-        *HIMMEL-Resume-*)
-          _found=1
-          if [ "$DRY_RUN" -eq 1 ]; then
-            echo "DRY: crontab — strip lines containing HIMMEL-Resume-"
-          # `|| true` inside the group: grep -v exits 1 when every line matched
-          # (legit: only HIMMEL lines existed → install an empty crontab); with
-          # pipefail that rc would otherwise mask a successful rewrite as failed.
-          elif { printf '%s\n' "$_cron_out" | grep -vF 'HIMMEL-Resume-' || true; } | crontab -; then
-            echo "  stripped HIMMEL-Resume-* lines from crontab"
-          else
-            echo "  WARN: failed to rewrite crontab — HIMMEL-Resume-* lines may remain." >&2
-            fail_step "[3/8] scheduled jobs: could not rewrite crontab"
-          fi
-          ;;
-      esac
+      # HIMMEL-3332 S8: also drop the lines the ledger says a cadence arm added.
+      # Only the recorded markers, matched EXACTLY as the trailing ` # <marker>`.
+      _cron_hit=""
+      while IFS= read -r _m; do
+        [ -n "$_m" ] || continue
+        while IFS= read -r _l; do
+          if job_line_marker "$_l" "$_m" >/dev/null; then _cron_hit="$_cron_hit$_m"$'\n'; break; fi
+        done <<EOF
+$_cron_out
+EOF
+      done <<EOF
+$_rec_cron
+EOF
+      _cron_do=0
+      case "$_cron_out" in *HIMMEL-Resume-*) _cron_do=1 ;; esac
+      [ -n "$_cron_hit" ] && _cron_do=1
+      if [ "$_cron_do" -eq 1 ]; then
+        _found=1
+        if [ "$DRY_RUN" -eq 1 ]; then
+          echo "DRY: crontab — strip lines containing HIMMEL-Resume- and the recorded jobs below"
+          while IFS= read -r _m; do
+            [ -n "$_m" ] || continue
+            echo "DRY: crontab — remove recorded cron job: $_m"
+            ledger_job_outcome "$_m" removed ours
+          done <<EOF
+$_cron_hit
+EOF
+        # cron_strip_recorded always returns 0: a crontab whose every line is a
+        # himmel line legitimately becomes an empty one, and a filter that ended
+        # rc 1 would otherwise mask that successful rewrite as failed.
+        elif printf '%s\n' "$_cron_out" | cron_strip_recorded "$_rec_cron" | crontab -; then
+          case "$_cron_out" in *HIMMEL-Resume-*) echo "  stripped HIMMEL-Resume-* lines from crontab" ;; esac
+          while IFS= read -r _m; do
+            [ -n "$_m" ] || continue
+            echo "  removed cron job: $_m"
+            ledger_job_outcome "$_m" removed ours
+          done <<EOF
+$_cron_hit
+EOF
+        else
+          echo "  WARN: failed to rewrite crontab — HIMMEL-Resume-* and recorded lines may remain." >&2
+          fail_step "[3/8] scheduled jobs: could not rewrite crontab"
+          while IFS= read -r _m; do
+            [ -n "$_m" ] || continue
+            ledger_job_outcome "$_m" failed step-failed
+          done <<EOF
+$_cron_hit
+EOF
+        fi
+      fi
     elif [ "$_cron_rc" -eq 1 ] && { [ ! -s "$_cron_err" ] || grep -qi 'no crontab' "$_cron_err"; }; then
       : # no crontab installed — genuinely nothing to do
     else
@@ -1631,126 +1939,12 @@ if [ "$HALTED" -eq 0 ] && [ "$SKIP_PLUGINS" -eq 0 ] && { class_removes "$_ix_plu
   fi
 fi
 
-# ledger_report_preexisted_units <plugin|marketplace> — for every fold unit of
-# this register kind with ours=false, print "kept (was already yours)" and
-# write its outcome row. Shared by [4/8] and [7/8] (HIMMEL-3332 S6).
-ledger_report_preexisted_units() {
-  local _kind="$1" _units _unit_json _unit
-  _units=$(prov_read_units --kind "$_kind")
-  while IFS= read -r _unit_json; do
-    [ -z "$_unit_json" ] && continue
-    [ "$(printf '%s' "$_unit_json" | jq -r '.ours')" = "false" ] || continue
-    _unit=$(printf '%s' "$_unit_json" | jq -r '.unit')
-    echo "  kept (was already yours): $_unit"
-    prov_read_outcome kept "$_unit_json" preexisted
-  done <<EOF
-$_units
-EOF
-}
-
 # ledger_owned_hand_command <kind: plugins|marketplaces> — the single hand
 # command both [4/8] and [7/8] point at when there is no ledger to decide
 # ownership (HIMMEL-3332 S6, spec §4/§8 case 3).
 ledger_owned_hand_command() {
   printf '    remove by hand: bash %q --scope %q\n' \
     "$REPO_ROOT/scripts/machine-setup/uninstall-plugins.sh" "$PLUGIN_SCOPE"
-}
-
-# ledger_apply_unit <unit-json> — the ledger-driven per-unit action shared by
-# [6/8]'s settings/adopter-scripts/hud-config passes (HIMMEL-3332 S6):
-# computes prov_read_verdict, then removes/restores/keeps and writes the
-# outcome row. rc 1 means the unit is PROTECTED (kept or restored — the
-# caller must mask it out of any read-back and skip the matching today's
-# helper); rc 0 means removed, skipped, heuristic, or an already-reported
-# failure. Appends every PROTECTED unit's pointer/path to the global
-# _LEDGER_PROTECTED (newline-separated; the caller resets it before its loop).
-ledger_apply_unit() {
-  local u="$1" verdict action reason unit backup _ans _apply_args
-  verdict=$(prov_read_verdict "$u") || { fail_step "[6/8] ledger verdict: could not read current state for a unit"; return 0; }
-  action="${verdict%% *}"; reason="${verdict#* }"
-  unit=$(printf '%s' "$u" | jq -r '.unit // .path // "?"')
-  _apply_args=()
-  [ "$DRY_RUN" -eq 1 ] && _apply_args=(--dry-run)
-  case "$action" in
-    skip|heuristic)
-      # Not uninstall's ledger call — class-state (untouched by uninstall) or
-      # an ungoverned unit the caller's own default logic decides instead.
-      return 0 ;;
-    remove)
-      backup=$(printf '%s' "$u" | jq -r '.eff_pre.backup // empty')
-      if prov_read_apply "$u" remove ${_apply_args[@]+"${_apply_args[@]}"}; then
-        [ "$DRY_RUN" -eq 0 ] && echo "  removed $unit"
-        prov_read_outcome removed "$u" "$reason" "$backup"
-      else
-        echo "  WARN: could not remove $unit" >&2
-        fail_step "[6/8] ledger remove: $unit"
-        prov_read_outcome failed "$u" "step-failed" "$backup"
-      fi
-      return 0 ;;
-    restore)
-      backup=$(printf '%s' "$u" | jq -r '.eff_pre.backup // empty')
-      if prov_read_apply "$u" restore ${_apply_args[@]+"${_apply_args[@]}"}; then
-        [ "$DRY_RUN" -eq 0 ] && echo "  restored $unit (from $backup)"
-        prov_read_outcome restored "$u" "$reason" "$backup"
-      else
-        echo "  WARN: could not restore $unit" >&2
-        fail_step "[6/8] ledger restore: $unit"
-        prov_read_outcome failed "$u" "step-failed" "$backup"
-      fi
-      _LEDGER_PROTECTED="$_LEDGER_PROTECTED
-$unit"
-      return 1 ;;
-    *)
-      if [ "$DRY_RUN" -eq 1 ]; then
-        echo "DRY: would keep $unit ($reason)"
-      else
-        echo "  kept $unit ($reason)"
-        # ponytail: the [k]eep/[r]estore-or-[d]elete override for a
-        # user-modified unit only ever offers itself on a real TTY with no
-        # --yes — a scripted/CI/--yes run always takes the safe default
-        # (keep) rather than prompting into a pipe.
-        if [ "$reason" = "user-modified" ] && [ "$YES" -ne 1 ] && [ -t 0 ] && [ -t 1 ]; then
-          backup=$(printf '%s' "$u" | jq -r '.eff_pre.backup // empty')
-          if [ -n "$backup" ] && [ -r "$backup" ]; then
-            printf "  %s changed since install -- [k]eep / [r]estore himmel's backup? [k] " "$unit"
-            read -r _ans
-            case "$_ans" in
-              [rR]*)
-                if prov_read_apply "$u" restore; then
-                  echo "  restored $unit (from $backup)"
-                  prov_read_outcome restored "$u" "user-modified" "$backup"
-                else
-                  echo "  WARN: could not restore $unit" >&2
-                  fail_step "[6/8] ledger restore: $unit"
-                  prov_read_outcome failed "$u" "step-failed" "$backup"
-                fi
-                _LEDGER_PROTECTED="$_LEDGER_PROTECTED
-$unit"
-                return 1 ;;
-            esac
-          else
-            printf "  %s changed since install -- [k]eep / [d]elete anyway? [k] " "$unit"
-            read -r _ans
-            case "$_ans" in
-              [dD]*)
-                if prov_read_apply "$u" remove; then
-                  echo "  removed $unit"
-                  prov_read_outcome removed "$u" "user-modified" "$backup"
-                else
-                  echo "  WARN: could not remove $unit" >&2
-                  fail_step "[6/8] ledger remove: $unit"
-                  prov_read_outcome failed "$u" "step-failed" "$backup"
-                fi
-                return 0 ;;
-            esac
-          fi
-        fi
-      fi
-      prov_read_outcome kept "$u" "$reason"
-      _LEDGER_PROTECTED="$_LEDGER_PROTECTED
-$unit"
-      return 1 ;;
-  esac
 }
 
 # --- [4/8] uninstall plugins ------------------------------------------------
@@ -2169,15 +2363,66 @@ EOF
 # guard: direct inode equality, then git-common-dir for linked worktrees.
 # rc 2 means identity is unresolved, never permission to edit repo source.
 project_is_himmel_checkout() {
-  local source_root project_common source_common
+  local dir="${1:-$PWD}" source_root project_common source_common
   source_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)" || return 2
-  [ "$PWD" -ef "$source_root" ] && return 0
-  [ -e "$PWD/.git" ] || return 1
-  project_common=$(git -C "$PWD" rev-parse --git-common-dir 2>/dev/null) || return 2
+  [ "$dir" -ef "$source_root" ] && return 0
+  [ -e "$dir/.git" ] || return 1
+  project_common=$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null) || return 2
   source_common=$(git -C "$source_root" rev-parse --git-common-dir 2>/dev/null) || return 2
-  case "$project_common" in /*|[A-Za-z]:[/\\]*) ;; *) project_common="$PWD/$project_common" ;; esac
+  case "$project_common" in /*|[A-Za-z]:[/\\]*) ;; *) project_common="$dir/$project_common" ;; esac
   case "$source_common" in /*|[A-Za-z]:[/\\]*) ;; *) source_common="$source_root/$source_common" ;; esac
   [ "$project_common" -ef "$source_common" ]
+}
+
+# unwire_recorded_projects — HIMMEL-3332 S8 [6/8]: every OTHER project the
+# ledger recorded himmel wiring into (a project-scope settings row whose path
+# is not $PWD's), unwired through the same unwire_settings pass and behind the
+# same guards as the $PWD block: himmel's own checkout is kept, an unresolved
+# identity or a symlinked `.claude`/settings.json is refused, a target that is
+# already gone is only reported. The list comes from the ledger alone — no
+# directory is ever discovered by scanning the disk.
+unwire_recorded_projects() {
+  local _targets _t _dir _id _dir_real
+  _targets=$(prov_read_units --row project-settings \
+    | jq -r 'select(.scope == "project" and (.kind == "json-key" or .kind == "json-elem")) | .path // empty' \
+    | grep '/\.claude/settings\.json$' | sort -u || true)
+  while IFS= read -r _t; do
+    [ "$HALTED" -eq 0 ] || return 0
+    [ -n "$_t" ] || continue
+    _dir="${_t%/.claude/settings.json}"
+    [ "$_dir" -ef "$PWD" ] && continue   # $PWD's own settings are the block above's job
+    if [ ! -e "$_t" ] && [ ! -L "$_t" ]; then
+      echo "  project settings: recorded target already gone: $_t"
+      continue
+    fi
+    # a recorded dir replaced after recording with a symlink (itself or an
+    # ancestor component) must not silently redirect unwire_settings into an
+    # unrelated directory: resolve it and require the string to match what
+    # was recorded (no bare `realpath` — this file targets bash 3.2/macOS).
+    _dir_real=$(cd -P -- "$_dir" 2>/dev/null && pwd) || _dir_real=""
+    _id=0
+    project_is_himmel_checkout "$_dir" || _id=$?
+    if [ "$_id" -eq 0 ]; then
+      echo "  project settings: kept $_t (himmel's own checkout)"
+    elif [ "$_id" -eq 2 ]; then
+      echo "  project settings: cannot resolve checkout identity of $_dir — refusing to unwire" >&2
+      fail_step "[6/8] project settings: checkout identity unresolved for $_dir"
+    elif [ -L "$_dir/.claude" ] || [ -L "$_t" ] || [ ! -f "$_t" ] || [ "$_dir_real" != "$_dir" ]; then
+      echo "  project settings: refusing non-regular or symlinked target $_t" >&2
+      fail_step "[6/8] project settings: unsafe target $_t"
+    else
+      unwire_settings "$_t"
+      if [ "$HALTED" -eq 1 ]; then
+        echo "  project settings: unwire failed $_t" >&2
+      elif [ "$DRY_RUN" -eq 1 ]; then
+        echo "DRY: project settings: would unwire $_t"
+      else
+        echo "  project settings: unwired $_t"
+      fi
+    fi
+  done <<EOF
+$_targets
+EOF
 }
 
 # unwire_user_files — the user-scope files install writes beside settings.json
@@ -2310,6 +2555,10 @@ else
         echo "  project settings: unwired $_project_settings"
       fi
     fi
+  fi
+  # HIMMEL-3332 S8: the other projects the ledger recorded, same guards.
+  if [ "$HALTED" -eq 0 ] && [ "$LEDGER_OK" -eq 1 ] && class_removes "$_ix_pset"; then
+    unwire_recorded_projects
   fi
 fi
 # adopter-scripts (HIMMEL-3332 S6): a project-scope script install replaced,
@@ -2478,6 +2727,21 @@ else
 fi
 echo ""
 
+# HIMMEL-3332 S8: `tool register` rows are docs-only — himmel records the tool
+# it installed but uninstall never removes one. One line each in the final
+# "NOT touched" report, one kept outcome each in the ledger session.
+_kept_tools=""
+if [ "$LEDGER_OK" -eq 1 ]; then
+  _tool_units=$(prov_read_units --kind tool)
+  while IFS= read -r _u; do
+    [ -n "$_u" ] || continue
+    _kept_tools="$_kept_tools  - $(printf '%s' "$_u" | jq -r '.unit // .path // "?"') — tool himmel installed (documented; uninstall never removes a tool)"$'\n'
+    prov_read_outcome kept "$_u" class-keep
+  done <<EOF
+$_tool_units
+EOF
+fi
+
 # HIMMEL-3332 S6: close the ledger session. On a halt, keep everything —
 # backups and (with --purge-state) the ledger itself — so a retry has the
 # recorded pre-state to work from; only a clean end may purge.
@@ -2580,7 +2844,11 @@ echo ""
 echo "NOT touched (by design):"
 for _mi in "${!M_ID[@]}"; do
   case "${M_CLASS[$_mi]}" in
-    keep)  echo "  - $(m_path "$_mi") — ${M_WHAT[$_mi]}" ;;
+    keep)
+      _mp=$(m_path "$_mi")
+      [ "$_mp" = "-" ] && _mp="(${M_ID[$_mi]})"
+      echo "  - $_mp — ${M_WHAT[$_mi]}" ;;
     state) state_removed || echo "  - $(m_path "$_mi") — ${M_WHAT[$_mi]} (operator state; --purge-state removes it)" ;;
   esac
 done
+if [ -n "$_kept_tools" ]; then printf '%s' "$_kept_tools"; fi

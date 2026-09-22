@@ -1,0 +1,140 @@
+// scripts/lanes/tests/settings-allow.test.mjs
+// HIMMEL-3402 — the project permissions.allow list must not auto-approve a
+// trust-root script (scripts/cr/, scripts/guardrails/, scripts/hooks/) by
+// prefix. A prefix or glob rule approves every spelling the shell accepts —
+// `//`, `./`, brace lists, `..` traversal out of an allowed directory, a
+// quiet-run wrapper around a second command — without the classifier or the
+// operator ever seeing it. Only per-script literal rules are safe, plus the
+// two exact /pr-check step-0 literals and quiet-run's enumerated `suite` rules
+// (quiet-run.sh refuses a `..` argv component itself, HIMMEL-2967).
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+const SETTINGS = JSON.parse(readFileSync(join(REPO_ROOT, '.claude', 'settings.json'), 'utf8'));
+const REG = JSON.parse(readFileSync(join(REPO_ROOT, 'scripts', 'lanes', 'plugin-profiles.json'), 'utf8'));
+const ALLOW = SETTINGS.permissions.allow.filter((r) => r.startsWith('Bash('));
+// What a leg-profile session sees: the project list plus the profile's gateAllow.
+const LEG_ALLOW = [...ALLOW, ...REG.gateAllow];
+
+const STEP0 = [
+  'bash scripts/cr/pr-check-context.sh',
+  'bash scripts/cr/pr-check-env.sh CR_CLAUDE_AGENTS',
+];
+
+// A model of the documented rule forms, not the harness matcher: `X:*` = X or
+// X plus a space-separated tail; a body with `*` is a glob whose `*` matches
+// any characters (slashes and spaces included), and a trailing ` *` also
+// matches the bare prefix; anything else is exact. It errs toward matching
+// MORE than the harness, which is the safe direction for a "matches nothing"
+// assertion.
+function ruleMatches(rule, command) {
+  const body = /^Bash\(([\s\S]*)\)$/.exec(rule)?.[1];
+  if (body === undefined) return false;
+  if (body.endsWith(':*')) {
+    const prefix = body.slice(0, -2);
+    return command === prefix || command.startsWith(`${prefix} `);
+  }
+  if (!body.includes('*')) return command === body;
+  const esc = (s) => s.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+  const glob = new RegExp(`^${body.split('*').map(esc).join('[\\s\\S]*')}$`);
+  return glob.test(command) || (body.endsWith(' *') && command === body.slice(0, -2));
+}
+const matching = (rules, command) => rules.filter((r) => ruleMatches(r, command));
+
+test('the matcher model itself: prefix, glob and exact forms', () => {
+  assert.ok(ruleMatches('Bash(bash scripts/*)', 'bash scripts/lanes/../cr/x.sh'));
+  assert.ok(ruleMatches('Bash(ls *)', 'ls'));
+  assert.ok(ruleMatches('Bash(bash scripts/a.sh:*)', 'bash scripts/a.sh --x'));
+  assert.ok(!ruleMatches('Bash(bash scripts/a.sh:*)', 'bash scripts/a.sh/../cr/x.sh'));
+  assert.ok(!ruleMatches('Bash(bash scripts/a.sh)', 'bash scripts/a.sh --x'));
+});
+
+// RED rows: every one of these reaches a trust-root script (or runs an
+// arbitrary second command) and must match NO rule a session auto-allows.
+const TRUST_SPELLINGS = [
+  'bash scripts/cr/impacted-suites.sh',
+  'bash scripts/cr/review-round.sh start --branch x',
+  'bash scripts//cr/clear-cr-marker.sh',
+  'bash ./scripts/cr/clear-cr-marker.sh',
+  'bash scripts/{cr,x}/clear-cr-marker.sh',
+  'bash scripts/c?/clear-cr-marker.sh',
+  'CR_X=1 bash scripts/cr/clear-cr-marker.sh',
+  'bash scripts/lanes/../cr/clear-cr-marker.sh',
+  'bash scripts/check-ci.sh/../cr/clear-cr-marker.sh',
+  'bash scripts/handover/test-x/../../cr/clear-cr-marker.sh',
+  'bash scripts/hooks/test-x/../../evil.sh',
+  'bash scripts/hooks/guard-pr-check-literal.sh',
+  'bash scripts/guardrails/leak-classes.sh',
+  'bash scripts/quiet-run.sh x -- bash scripts/cr/y.sh',
+  'bash scripts/quiet-run.sh suite -- bash scripts/cr/y.sh',
+  'bash scripts/cr/pr-check-context.sh --x',
+  'bash scripts/cr/pr-check-env.sh CR_PROFILE',
+  'bash tests/../scripts/cr/clear-cr-marker.sh',
+  'bash marketplace/plugins/../../scripts/cr/clear-cr-marker.sh',
+];
+
+for (const command of TRUST_SPELLINGS) {
+  test(`no project allow rule matches: ${command}`, () => {
+    assert.deepEqual(matching(ALLOW, command), []);
+  });
+}
+
+// The gateAllow scripts/cr/ writers are literal `:*` rules, so only a
+// spelling that is not their literal prefix must stay unmatched for a leg.
+for (const command of TRUST_SPELLINGS.filter((c) => !/^bash scripts\/cr\/(clear-cr-marker|write-verdicts|ledger-append|panel-first-pass|docs-audit-panel)\.sh( |$)/.test(c))) {
+  test(`no leg-profile allow rule matches: ${command}`, () => {
+    assert.deepEqual(matching(LEG_ALLOW, command), []);
+  });
+}
+
+// Controls: the sanctioned literals and the common non-trust families a leg
+// and a console run every session still auto-allow.
+const SANCTIONED = [
+  ...STEP0,
+  'bash scripts/check-ci.sh 1090',
+  'bash scripts/context-fill.sh',
+  'bash scripts/handover/queue-lock.sh acquire /abs/doc.md',
+  'bash scripts/handover/merge-on-green.sh --jira-transition',
+  'bash scripts/handover/wrap-subtree-check.sh',
+  'bash scripts/handover/console-kit/go.sh 1090 abc',
+  'bash scripts/lanes/leg-burn.sh HIMMEL-1-N1-x',
+  'bash scripts/lanes/leg-pr-open.sh /t/title /t/body',
+  'bash scripts/lib/bank-preflight.sh',
+  'bash scripts/git/restore-to-head.sh scripts/x.sh',
+  'bash scripts/quiet-run.sh suite -- bash scripts/cr/test-clear-cr-marker.sh',
+  'SUITE_LOCK_WAIT=60 bash scripts/quiet-run.sh suite -- bash scripts/hooks/test-guard-pr-check-literal.sh',
+];
+
+for (const command of SANCTIONED) {
+  test(`a project allow rule still matches: ${command}`, () => {
+    assert.ok(matching(ALLOW, command).length > 0, `no rule matches ${command}`);
+  });
+}
+
+// Structural: enumerate every rule that names a repo path and fail on any
+// shape that can reach a trust root by prefix.
+const TRUST_DIR = /(^|\s)(\S*\/)?scripts\/(cr|guardrails|hooks)\//;
+const QUIET_SUITE = /^(SUITE_LOCK_WAIT=60 )?bash scripts\/quiet-run\.sh suite -- bash (scripts|templates\/luna-second-brain\/scripts)(\/[a-z-]+)*\/test-\*\.sh$/;
+const LITERAL_FILE = /^(bash|bun|nohup bun) [A-Za-z0-9_./-]+\.(sh|ts|mjs|js):\*$/;
+
+test('every path-naming Bash allow rule is a per-file literal, a step-0 literal or an enumerated quiet-run suite rule', () => {
+  const pathRules = ALLOW.map((r) => /^Bash\(([\s\S]*)\)$/.exec(r)[1])
+    .filter((b) => /(^|\s)(\.\/)?(scripts|tests|marketplace|templates)\//.test(b));
+  assert.ok(pathRules.length > 10, 'anti-vacuity: expected the per-script rules');
+  for (const body of pathRules) {
+    if (STEP0.includes(body) || QUIET_SUITE.test(body)) continue;
+    assert.match(body, LITERAL_FILE, `not a per-file literal rule: ${body}`);
+    assert.ok(!body.includes('..') && !body.includes('//'), `path trick in rule: ${body}`);
+    assert.ok(!TRUST_DIR.test(body), `trust-root prefix rule: ${body}`);
+  }
+});
+
+test('the project list carries every gateAllow quiet-run suite rule, so a console runs suites as a leg does', () => {
+  for (const rule of REG.gateAllow.filter((r) => r.includes('quiet-run.sh suite'))) {
+    assert.ok(ALLOW.includes(rule), `missing from .claude/settings.json: ${rule}`);
+  }
+});

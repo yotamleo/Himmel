@@ -458,9 +458,10 @@ short, self-named reason) is this hook, deterministic; text quoting script
 content, or the literal `Stage 2 classifier error`, is the classifier.
 
 **What to do:** run every suite — new or old — only through `bash
-scripts/quiet-run.sh <name> -- bash <suite>` as **one literal command**, never
+scripts/quiet-run.sh suite -- bash <suite>` as **one literal command**, never
 a hand-rolled compound. This is already the sanctioned shape in every leg
-brief.
+brief. The label is the literal `suite`: since HIMMEL-3402 only that label is
+auto-allowed, so any other label goes to the classifier.
 
 ---
 

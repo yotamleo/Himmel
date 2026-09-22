@@ -122,6 +122,10 @@ mkdir -p "$fixtureRepo/scripts/install" "$fixtureRepo/scripts/lib" "$fixtureRepo
 cp "$manifest_path" "$fixtureRepo/scripts/install/manifest.json"
 cp "$qmd_bin_lib" "$fixtureRepo/scripts/lib/qmd-bin.sh"
 cp "$handover_path_lib" "$fixtureRepo/scripts/lib/handover-path.sh"
+# HIMMEL-3322: wiring-statusline's verifyScript resolution target for flip 3
+# below — created once up front (same convention as the qmd stubs) so the
+# case-d purity sweep never sees it as a mutation introduced mid-run.
+printf '// fixture stub\n' > "$fixtureRepo/scripts/lib/statusline-stub.js"
 fixtureRepo_w="$(winpath "$fixtureRepo")"
 
 # ── target (project scope) ──────────────────────────────────────────────────
@@ -150,6 +154,11 @@ write_cache "$cacheDir/install-profile.json" adopter project none "" inline "" l
 baseStub="$work/stub-base"; mkdir -p "$baseStub"
 link_hermetic_tool bash "$baseStub"
 link_hermetic_tool git "$baseStub"
+# HIMMEL-3322: wiring-statusline's verifyScript resolves the `node` interpreter
+# via which() — scrub_path drops a WHOLE dir that carries any scrubbed tool, and
+# node commonly shares a toolchain-manager bin dir with bun/qmd, so without this
+# link the flip-3 control below reads degraded on hosts where that's true.
+link_hermetic_tool node "$baseStub"
 scrubbedBase=$(scrub_path "$PATH" bun qmd pre-commit)
 basePath="$baseStub:$scrubbedBase"
 
@@ -315,7 +324,12 @@ assert_items_severity "$out2" "flip qmd-index" \
 echo "ok: flip 2/6 — qmd-index leaves the red set (qmd-binary necessarily follows: documented has_qmd precondition); the other four stay red"
 
 # flip 3 — wiring-statusline: add statusLine.command, leave hooks untouched.
-printf '{"statusLine":{"command":"bash foo.sh"},"hooks":{"PreToolUse":[]}}' > "$targetGolden/.claude/settings.json"
+# HIMMEL-3322: verifyScript now resolves the interpreter (on PATH) and the
+# script path (readable file) — a real, non-empty script is required for the
+# green case; wire-statusline.sh always writes this exact `node "<path>"` shape.
+statuslineStub="$fixtureRepo/scripts/lib/statusline-stub.js"
+printf '// fixture stub\n' > "$statuslineStub"
+printf '{"statusLine":{"command":"node \\"%s\\""},"hooks":{"PreToolUse":[]}}' "$(winpath "$statuslineStub")" > "$targetGolden/.claude/settings.json"
 out3=$(run_status "" "")
 assert_items_severity "$out3" "flip wiring-statusline" \
   "wiring-statusline:green" "wiring-pretooluse:red" "qmd-binary:red" "qmd-index:red" \

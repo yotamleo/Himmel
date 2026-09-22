@@ -161,3 +161,56 @@ Reopen trigger: any entry appearing in `hook-chain-skips.jsonl`.
   an "ok" token as plain narration and still fail through a different,
   non-TAP mechanism, so a suite that keeps failing after its cap is raised
   still needs a look.
+
+## 5. Tests that can actually fail
+
+A test whose SETUP can fail silently reports success for the wrong reason —
+the repo's own vacuous-verdict doctrine (§4) applied to test scaffolding
+itself. `known-findings.json`'s `test-setup-unchecked-vacuous-green` class
+names three recurring shapes:
+
+- **(a) an unchecked setup capture** — `TMP=$(mktemp -d ...)` with the exit
+  status unchecked. On failure `TMP` is empty and every later `"$TMP/x"`
+  resolves to `/x` or the cwd.
+- **(b) an assumed-present tool** — a required binary (`jq`, `node`) assumed
+  on `PATH`, so the assertion after it silently never runs.
+- **(c) a discarded child exit status** — a child suite invoked with its
+  return code thrown away, so a child that crashed or never completed reads
+  as a pass.
+
+The measurement behind this: 27 of 242 `agreed` CR-ledger findings in the 14
+days to 2026-09-07 (11%) were this family, and 10 of those 27 were shape (a)
+specifically — always the same unguarded `$(mktemp` capture, the single most
+repeated defect class the ledger recorded in that window (HIMMEL-2709).
+
+Only shape (a) is now structural: the `unchecked-mktemp` pre-commit gate
+(`scripts/hooks/check-unchecked-mktemp.sh`; enforcement detail + bypass in
+[`enforcement.md`](enforcement.md)) refuses a commit whose staged diff adds
+an unguarded mktemp capture. Shapes (b) and (c) stay review-level — neither
+reduces to a low-false-positive deterministic check: "is a tool present" and
+"was a child's exit status actually consulted" both need the reviewer's
+judgment about what the surrounding code intends, where an unguarded
+`$(mktemp` capture is a fixed, greppable shape.
+
+Accepted guards for shape (a), enforced by the same predicate the gate and
+its suite share (`scripts/lib/unchecked-mktemp.sh`): any same-line `||`, a
+`[ ... "$VAR" ... ]` / `[[ ]]` / `test` check of the variable, or
+`${VAR:?message}` (the colon form: `${VAR?message}` fires only on UNSET, and
+a failed capture is set-but-empty). The last two count on the rest of the
+assignment line or within the next 3 non-blank lines. The gate decides
+whether a guard is PRESENT, never whether it is a GOOD guard, so
+`|| echo failed` passes. On a `local`/`export`/`declare`/`typeset`/`readonly`
+line a same-line `||` does not count, because the builtin's own status
+(always 0) is what `||` sees. Split it: `local T; T=$(mktemp -d) || exit 1`.
+A one-line escape exists for a capture that genuinely cannot fail:
+`# mktemp-unchecked-ok: <reason>`.
+
+**A `trap` cleaning up the temp dir is NOT a guard** — `T=$(mktemp -d);
+trap 'rm -rf "$T"' EXIT` reads as careful, which is why it recurs, but it
+does nothing about an empty `$T` (mktemp failed). The script runs on, and
+every path built from it collapses to the root: `rm -rf "$T/build"` becomes
+`rm -rf /build`.
+
+For the parallel discipline on the negative-control side of a test (a
+guard that never fires needs its own positive control proving the matcher
+CAN fire), see [`red-control.sh`](../../scripts/lib/red-control.sh)'s header.

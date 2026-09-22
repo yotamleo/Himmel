@@ -258,6 +258,8 @@ const MEMBERS = {
   // MUST_RUN_CHAIN_MEMBERS lookup (keyed by basename) actually fires in the
   // fixture dir (HIMMEL-2060).
   'block-read-secrets.sh': `sleep 3`,
+  // HIMMEL-3383: the /pr-check literal guard is must-run too.
+  'guard-pr-check-literal.sh': `sleep 3`,
   // The LEGACY PreToolUse block spelling — valid output, and not a shape the
   // merge allowlist could carry, so it has to short-circuit.
   'deny-legacy.sh': `printf '{"decision":"block","reason":"legacy block"}'`,
@@ -594,6 +596,7 @@ test('MUST_RUN_CHAIN_MEMBERS covers exactly the deny-capable security guards', (
       'block-tail-pipe-on-gates.sh',
       'block-write-into-main-checkout.sh',
       'check-cr-marker-on-pr-create.sh',
+      'guard-pr-check-literal.sh',
     ].sort(),
   );
 });
@@ -625,6 +628,25 @@ test('a must-run member over its budget DENIES the chain instead of being skippe
     assert.equal(rows[0].member, 'block-read-secrets.sh');
     assert.equal(rows[0].budget, 500);
     assert.equal(typeof rows[0].elapsed, 'number');
+  });
+});
+
+// HIMMEL-3383: a starved guard-pr-check-literal.sh must deny, never let the
+// bare scripts/cr literal fall through to the allow rule unchecked.
+test('a starved guard-pr-check-literal.sh DENIES the chain instead of being skipped', () => {
+  withChain((dir) => {
+    const result = spawnSync(
+      process.execPath,
+      [LAUNCHER, '--chain', join(dir, 'guard-pr-check-literal.sh'), join(dir, 'allow.sh')],
+      {
+        encoding: 'utf8',
+        input: PAYLOAD,
+        env: { ...process.env, RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS: '500', RUN_HOOK_CHAIN_SKIP_LOG: join(dir, 'skips.jsonl') },
+      },
+    );
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /DENY guard-pr-check-literal\.sh \(budget=500ms/);
+    assert.equal(ran(dir, 'allow.sh'), false, 'a starved literal guard must deny, not skip past it');
   });
 });
 
@@ -1118,6 +1140,351 @@ test('verifyProjectHookIntegrity denies a pinned script whose on-disk content dr
   } finally {
     rmSync(dir, { recursive: true, force: true });
     rmSync(integrityDir, { recursive: true, force: true });
+  }
+});
+
+// HIMMEL-3390: `..` segments and symlinks are resolved BEFORE the project-local
+// and pin decisions. Fixture: a pinned guard under <dir>/scripts/hooks, a
+// tampered copy of it, and a sibling directory outside the project.
+function dotdotFixture() {
+  const fs = require('node:fs');
+  const dir = makeTmpDir('hook-integrity-dotdot-');
+  const integrityDir = makeTmpDir('hook-integrity-dotdot-pins-');
+  const scriptRel = 'scripts/hooks/guard.sh';
+  const scriptPath = join(dir, ...scriptRel.split('/'));
+  fs.mkdirSync(dirname(scriptPath), { recursive: true });
+  writeFileSync(scriptPath, 'echo original\n');
+  writeFileSync(
+    join(integrityDir, 's1.json'),
+    JSON.stringify({ session_id: 's1', pins: { [scriptRel]: gitBlobSha1(readFileSync(scriptPath)) } }),
+  );
+  const outside = makeTmpDir('hook-integrity-dotdot-outside-');
+  fs.mkdirSync(join(outside, 'scripts', 'hooks'), { recursive: true });
+  writeFileSync(join(outside, 'scripts', 'hooks', 'guard.sh'), 'echo unpinned foreign\n');
+  const env = { CLAUDE_PROJECT_DIR: dir, HIMMEL_HOOK_INTEGRITY_DIR: integrityDir, HIMMEL_HOOK_INTEGRITY_BYPASS_OK: undefined };
+  const cleanup = () => {
+    for (const d of [dir, integrityDir, outside]) rmSync(d, { recursive: true, force: true });
+  };
+  return { fs, dir, outside, integrityDir, scriptRel, scriptPath, env, cleanup };
+}
+
+test('HIMMEL-3390: a `..` alias of a pinned, tampered hook is checked against the pin of its resolved path', () => {
+  const fx = dotdotFixture();
+  try {
+    const alias = `${fx.dir}/scripts/../scripts/hooks/guard.sh`;
+    withEnv(fx.env, () => {
+      assert.equal(verifyProjectHookIntegrity(alias, 's1').ok, true); // untouched: verifies like the plain path
+      writeFileSync(fx.scriptPath, 'echo tampered\n');
+      const result = verifyProjectHookIntegrity(alias, 's1');
+      assert.equal(result.ok, false);
+      assert.equal(result.relPath, fx.scriptRel);
+      assert.equal(verifyProjectHookIntegrity(fx.scriptPath, 's1').ok, false); // control: the plain path still denies
+    });
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('HIMMEL-3390: a `..` path that leaves the project is denied, and the bypass does not rescue it', () => {
+  const fx = dotdotFixture();
+  try {
+    const escaping = `${fx.dir}/scripts/../../${fx.outside.split('/').pop()}/scripts/hooks/guard.sh`;
+    withEnv(fx.env, () => {
+      const result = verifyProjectHookIntegrity(escaping, 's1');
+      assert.equal(result.ok, false);
+      assert.match(result.reason, /outside/);
+    });
+    withEnv({ ...fx.env, HIMMEL_HOOK_INTEGRITY_BYPASS_OK: '1' }, () => {
+      assert.equal(verifyProjectHookIntegrity(escaping, 's1').ok, false);
+    });
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('HIMMEL-3390: a symlinked in-project path resolves like its target; one that leaves the project is denied', () => {
+  const fx = dotdotFixture();
+  try {
+    fx.fs.symlinkSync(join(fx.dir, 'scripts', 'hooks'), join(fx.dir, 'alias-hooks'));
+    fx.fs.symlinkSync(join(fx.outside, 'scripts', 'hooks'), join(fx.dir, 'foreign-hooks'));
+    withEnv(fx.env, () => {
+      const viaLink = join(fx.dir, 'alias-hooks', 'guard.sh');
+      assert.equal(verifyProjectHookIntegrity(viaLink, 's1').ok, true);
+      writeFileSync(fx.scriptPath, 'echo tampered\n');
+      const result = verifyProjectHookIntegrity(viaLink, 's1');
+      assert.equal(result.ok, false);
+      assert.equal(result.relPath, fx.scriptRel);
+      assert.equal(verifyProjectHookIntegrity(join(fx.dir, 'foreign-hooks', 'guard.sh'), 's1').ok, false);
+    });
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('HIMMEL-3390: a pinned hook swapped for a symlink to an unpinned in-project file is still denied', () => {
+  const fx = dotdotFixture();
+  try {
+    writeFileSync(join(fx.dir, 'scripts', 'hooks', 'other.sh'), 'echo unpinned sibling\n');
+    withEnv(fx.env, () => {
+      assert.equal(verifyProjectHookIntegrity(fx.scriptPath, 's1').ok, true);
+      fx.fs.rmSync(fx.scriptPath);
+      fx.fs.symlinkSync(join(fx.dir, 'scripts', 'hooks', 'other.sh'), fx.scriptPath);
+      const result = verifyProjectHookIntegrity(fx.scriptPath, 's1');
+      assert.equal(result.ok, false); // the pin of the spelled path must still bind, not only the target's
+      assert.equal(result.relPath, fx.scriptRel);
+    });
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('HIMMEL-3390: the pin of a swapped leaf still binds when the hook is reached through a directory alias or a link chain', () => {
+  const fx = dotdotFixture();
+  try {
+    const hooks = join(fx.dir, 'scripts', 'hooks');
+    writeFileSync(join(hooks, 'other.sh'), 'echo unpinned sibling\n');
+    fx.fs.symlinkSync(hooks, join(fx.dir, 'alias-hooks'));
+    fx.fs.symlinkSync(join(hooks, 'other.sh'), join(hooks, 'mid.sh'));
+    fx.fs.rmSync(fx.scriptPath);
+    fx.fs.symlinkSync(join(hooks, 'mid.sh'), fx.scriptPath); // guard.sh -> mid.sh -> other.sh
+    withEnv(fx.env, () => {
+      for (const spelled of [join(fx.dir, 'alias-hooks', 'guard.sh'), join(hooks, 'guard.sh')]) {
+        const result = verifyProjectHookIntegrity(spelled, 's1');
+        assert.equal(result.ok, false, spelled);
+        assert.equal(result.relPath, fx.scriptRel);
+      }
+    });
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('HIMMEL-3390: `link/..` follows the link (kernel order), not a lexical collapse', () => {
+  const fx = dotdotFixture();
+  try {
+    // <dir>/hop -> <outside>/deep, so <dir>/hop/../scripts/hooks/guard.sh executes
+    // <outside>/scripts/hooks/guard.sh, though a lexical collapse reads <dir>/scripts/hooks/guard.sh.
+    fx.fs.mkdirSync(join(fx.outside, 'deep'));
+    fx.fs.symlinkSync(join(fx.outside, 'deep'), join(fx.dir, 'hop'));
+    const viaHop = `${fx.dir}/hop/../scripts/hooks/guard.sh`;
+    withEnv(fx.env, () => {
+      const result = verifyProjectHookIntegrity(viaHop, 's1');
+      assert.equal(result.ok, false);
+      assert.match(result.reason, /outside/);
+    });
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('HIMMEL-3390: a foreign path with no `..` stays allowed, and a missing project-local hook is not mistaken for an escape', () => {
+  const fx = dotdotFixture();
+  try {
+    withEnv(fx.env, () => {
+      assert.equal(verifyProjectHookIntegrity(join(fx.outside, 'scripts', 'hooks', 'guard.sh'), 's1').ok, true);
+      assert.equal(verifyProjectHookIntegrity(join(fx.dir, 'scripts', 'hooks', 'missing.sh'), 's1').ok, true);
+    });
+    const linkedProject = `${fx.dir}-link`;
+    fx.fs.symlinkSync(fx.dir, linkedProject);
+    try {
+      withEnv({ ...fx.env, CLAUDE_PROJECT_DIR: linkedProject }, () => {
+        assert.equal(verifyProjectHookIntegrity(join(linkedProject, 'scripts', 'hooks', 'missing.sh'), 's1').ok, true);
+        writeFileSync(fx.scriptPath, 'echo tampered\n');
+        assert.equal(verifyProjectHookIntegrity(join(linkedProject, 'scripts', 'hooks', 'guard.sh'), 's1').ok, false);
+      });
+    } finally {
+      rmSync(linkedProject, { force: true });
+    }
+  } finally {
+    fx.cleanup();
+  }
+});
+
+// HIMMEL-3397: the claimed identities come from a kernel-order walk, so every
+// directory link a path passes through is checked under its own pin.
+test('HIMMEL-3397: a pinned hooks directory replaced by a link is still checked when reached through an alias', () => {
+  const fx = dotdotFixture();
+  try {
+    const hooks = join(fx.dir, 'scripts', 'hooks');
+    fx.fs.symlinkSync(hooks, join(fx.dir, 'alias-hooks'));
+    withEnv(fx.env, () => {
+      assert.equal(verifyProjectHookIntegrity(fx.scriptPath, 's1').ok, true); // control: the wired spelling verifies
+      assert.equal(verifyProjectHookIntegrity(join(fx.dir, 'alias-hooks', 'guard.sh'), 's1').ok, true);
+      // scripts/hooks itself becomes a link to an unpinned in-project directory.
+      fx.fs.mkdirSync(join(fx.dir, 'unpinned'));
+      writeFileSync(join(fx.dir, 'unpinned', 'guard.sh'), 'echo tampered\n');
+      fx.fs.rmSync(hooks, { recursive: true });
+      fx.fs.symlinkSync(join(fx.dir, 'unpinned'), hooks);
+      const result = verifyProjectHookIntegrity(join(fx.dir, 'alias-hooks', 'guard.sh'), 's1');
+      assert.equal(result.ok, false);
+      assert.equal(result.relPath, fx.scriptRel);
+    });
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('HIMMEL-3397: an internal `sub/..` below a swapped hooks directory still checks the hooks pin', () => {
+  const fx = dotdotFixture();
+  try {
+    const hooks = join(fx.dir, 'scripts', 'hooks');
+    fx.fs.symlinkSync(hooks, join(fx.dir, 'alias-hooks'));
+    fx.fs.mkdirSync(join(fx.dir, 'unpinned', 'sub'), { recursive: true });
+    writeFileSync(join(fx.dir, 'unpinned', 'guard.sh'), 'echo tampered\n');
+    fx.fs.rmSync(hooks, { recursive: true });
+    fx.fs.symlinkSync(join(fx.dir, 'unpinned'), hooks);
+    withEnv(fx.env, () => {
+      const result = verifyProjectHookIntegrity(`${fx.dir}/alias-hooks/sub/../guard.sh`, 's1');
+      assert.equal(result.ok, false);
+      assert.equal(result.relPath, fx.scriptRel);
+    });
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('HIMMEL-3397: a backslash in a POSIX link target is a filename character, not a separator', { skip: process.platform === 'win32' }, () => {
+  const fx = dotdotFixture();
+  try {
+    const hooks = join(fx.dir, 'scripts', 'hooks');
+    const odd = join(fx.dir, 'un\\pinned');
+    fx.fs.mkdirSync(odd);
+    writeFileSync(join(odd, 'guard.sh'), 'echo tampered\n');
+    fx.fs.rmSync(hooks, { recursive: true });
+    fx.fs.symlinkSync(odd, hooks);
+    withEnv(fx.env, () => {
+      const result = verifyProjectHookIntegrity(fx.scriptPath, 's1');
+      assert.equal(result.ok, false);
+      assert.equal(result.relPath, fx.scriptRel);
+    });
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('HIMMEL-3397: the alias cap also holds when a queued link frame is restored', () => {
+  const fx = dotdotFixture();
+  try {
+    // x1 -> x2 -> a1/../a6 queue two frames; each a<k> -> n<k> doubles the live aliases to 63.
+    let at = fx.dir;
+    for (let k = 1; k <= 6; k++) {
+      fx.fs.mkdirSync(join(at, `n${k}`));
+      fx.fs.symlinkSync(`n${k}`, join(at, `a${k}`));
+      at = join(at, `n${k}`);
+    }
+    writeFileSync(join(at, 'f.sh'), 'echo unpinned\n');
+    fx.fs.symlinkSync('a1/a2/a3/a4/a5/a6', join(fx.dir, 'x2'));
+    fx.fs.symlinkSync('x2', join(fx.dir, 'x1'));
+    withEnv(fx.env, () => {
+      assert.equal(verifyProjectHookIntegrity(join(at, 'f.sh'), 's1').ok, true); // control: the plain spelling
+      assert.equal(verifyProjectHookIntegrity(join(fx.dir, 'x1', 'f.sh'), 's1').ok, false);
+    });
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('HIMMEL-3397: `hop/..` after a directory link claims the target-side path, not the lexical collapse', () => {
+  const fx = dotdotFixture();
+  try {
+    // <dir>/scripts/hop -> <dir>/other/deep, so scripts/hop/../guard.sh runs other/guard.sh.
+    fx.fs.mkdirSync(join(fx.dir, 'other', 'deep'), { recursive: true });
+    writeFileSync(join(fx.dir, 'other', 'guard.sh'), 'echo other\n');
+    writeFileSync(join(fx.dir, 'scripts', 'guard.sh'), 'echo scripts\n');
+    fx.fs.symlinkSync(join(fx.dir, 'other', 'deep'), join(fx.dir, 'scripts', 'hop'));
+    const pin = (rel) => gitBlobSha1(readFileSync(join(fx.dir, ...rel.split('/'))));
+    const writePins = (pins) => writeFileSync(join(fx.integrityDir, 's1.json'), JSON.stringify({ session_id: 's1', pins }));
+    const viaHop = `${fx.dir}/scripts/hop/../guard.sh`;
+    withEnv(fx.env, () => {
+      // The lexical spelling is claimed too (an over-claim only ever denies), so a
+      // differing pin on scripts/guard.sh is a safe-direction deny.
+      writePins({ 'scripts/guard.sh': pin('scripts/guard.sh') });
+      assert.equal(verifyProjectHookIntegrity(viaHop, 's1').ok, false);
+      writePins({ 'other/guard.sh': pin('other/guard.sh') });
+      writeFileSync(join(fx.dir, 'other', 'guard.sh'), 'echo tampered\n');
+      const result = verifyProjectHookIntegrity(viaHop, 's1');
+      assert.equal(result.ok, false);
+      assert.equal(result.relPath, 'other/guard.sh');
+    });
+  } finally {
+    fx.cleanup();
+  }
+});
+
+// A link target that is not valid UTF-8 cannot be walked faithfully (readlink and
+// realpath decode it lossily), so it fails closed rather than dropping the pin.
+const nonUtf8 = (dir, before, after) => Buffer.concat([Buffer.from(`${dir}/${before}`), Buffer.from([0xff]), Buffer.from(after)]);
+
+for (const [label, relative] of [['absolute', false], ['relative', true]]) {
+  test(`HIMMEL-3397: a hooks directory swapped for a ${label} non-UTF-8 link target fails closed`, { skip: process.platform === 'win32' }, () => {
+    const fx = dotdotFixture();
+    try {
+      const hooks = join(fx.dir, 'scripts', 'hooks');
+      const odd = nonUtf8(fx.dir, 'u', 'pinned');
+      fx.fs.mkdirSync(odd);
+      writeFileSync(Buffer.concat([odd, Buffer.from('/guard.sh')]), 'echo tampered\n');
+      fx.fs.rmSync(hooks, { recursive: true });
+      fx.fs.symlinkSync(relative ? Buffer.concat([Buffer.from('../'), odd.subarray(fx.dir.length + 1)]) : odd, hooks);
+      withEnv(fx.env, () => {
+        assert.equal(verifyProjectHookIntegrity(fx.scriptPath, 's1').ok, false);
+      });
+    } finally {
+      fx.cleanup();
+    }
+  });
+}
+
+test('HIMMEL-3397: a pinned leaf swapped for a link with a non-UTF-8 target fails closed', { skip: process.platform === 'win32' }, () => {
+  const fx = dotdotFixture();
+  try {
+    fx.fs.mkdirSync(join(fx.dir, 'u'));
+    writeFileSync(nonUtf8(fx.dir, 'u/ev', 'il.sh'), 'echo tampered\n');
+    rmSync(fx.scriptPath);
+    fx.fs.symlinkSync(Buffer.concat([Buffer.from('../../'), nonUtf8(fx.dir, 'u/ev', 'il.sh').subarray(fx.dir.length + 1)]), fx.scriptPath);
+    withEnv(fx.env, () => {
+      assert.equal(verifyProjectHookIntegrity(fx.scriptPath, 's1').ok, false);
+    });
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('HIMMEL-3397: an `X/..` spelling through a replaced X still claims the lexical pin', () => {
+  const fx = dotdotFixture();
+  try {
+    const hooks = join(fx.dir, 'scripts', 'hooks');
+    // scripts/hooks/sub -> x/y, so scripts/hooks/sub/../guard.sh runs x/guard.sh.
+    fx.fs.mkdirSync(join(fx.dir, 'x', 'y'), { recursive: true });
+    writeFileSync(join(fx.dir, 'x', 'guard.sh'), 'echo tampered\n');
+    fx.fs.symlinkSync(join(fx.dir, 'x', 'y'), join(hooks, 'sub'));
+    // scripts/hooks -> ../u, so scripts/hooks/../hooks/guard.sh runs hooks/guard.sh.
+    fx.fs.mkdirSync(join(fx.dir, 'u'));
+    fx.fs.mkdirSync(join(fx.dir, 'hooks'));
+    writeFileSync(join(fx.dir, 'hooks', 'guard.sh'), 'echo tampered\n');
+    withEnv(fx.env, () => {
+      assert.equal(verifyProjectHookIntegrity(`${fx.dir}/scripts/hooks/sub/../guard.sh`, 's1').ok, false);
+      fx.fs.rmSync(hooks, { recursive: true });
+      fx.fs.symlinkSync('../u', hooks);
+      assert.equal(verifyProjectHookIntegrity(`${fx.dir}/scripts/hooks/../hooks/guard.sh`, 's1').ok, false);
+    });
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('HIMMEL-3397: a symlink loop fails closed; an unpinned, unrelated path stays allowed', () => {
+  const fx = dotdotFixture();
+  try {
+    fx.fs.symlinkSync(join(fx.dir, 'loop-b'), join(fx.dir, 'loop-a'));
+    fx.fs.symlinkSync(join(fx.dir, 'loop-a'), join(fx.dir, 'loop-b'));
+    writeFileSync(join(fx.dir, 'scripts', 'unrelated.sh'), 'echo unpinned\n');
+    withEnv(fx.env, () => {
+      assert.equal(verifyProjectHookIntegrity(join(fx.dir, 'scripts', 'unrelated.sh'), 's1').ok, true);
+      const result = verifyProjectHookIntegrity(join(fx.dir, 'loop-a', 'guard.sh'), 's1');
+      assert.equal(result.ok, false);
+    });
+  } finally {
+    fx.cleanup();
   }
 });
 

@@ -90,7 +90,7 @@ PY
 # A missing/failing python3 leaves no copy, and "sha256sum -c fails" would then be a
 # MISSING FILE, not a hash mismatch -- require a real, different, same-size copy first.
 check "the flipped-byte copy exists, differs and keeps its size" \
-  bash -c "[ -s '$bad_dir/himmel-1.2.3-linux.tar.gz' ] && ! cmp -s '$tgz' '$bad_dir/himmel-1.2.3-linux.tar.gz' && [ \"\$(stat -c %s '$tgz')\" = \"\$(stat -c %s '$bad_dir/himmel-1.2.3-linux.tar.gz')\" ]"  # gnu-ok: this suite runs on Linux only (the tarball is Linux-only), where stat -c is coreutils'
+  bash -c "[ -s '$bad_dir/himmel-1.2.3-linux.tar.gz' ] && ! cmp -s '$tgz' '$bad_dir/himmel-1.2.3-linux.tar.gz' && [ \"\$(stat -c %s '$tgz' 2>/dev/null || stat -f %z '$tgz')\" = \"\$(stat -c %s '$bad_dir/himmel-1.2.3-linux.tar.gz' 2>/dev/null || stat -f %z '$bad_dir/himmel-1.2.3-linux.tar.gz')\" ]"
 check_not "RED: a tarball with one flipped byte FAILS sha256sum -c" \
   bash -c "cd '$bad_dir' && sha256sum -c himmel-1.2.3-linux.tar.gz.sha256"
 # (b) intact tarball, but a hash for different bytes.

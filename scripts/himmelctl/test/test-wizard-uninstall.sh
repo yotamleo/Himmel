@@ -47,7 +47,7 @@ node_bin=$(command -v node)
 # shellcheck disable=SC1091
 . "$repo_root/scripts/lib/hermetic-path.sh"
 
-work=$(mktemp -d)
+work=$(mktemp -d "${TMPDIR:-/tmp}/wiz-uninst.XXXXXX") || exit 1
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
 
@@ -378,8 +378,9 @@ echo "ok: caseG failed teardown preserves marked PATH launchers + warns (no stra
 # fixture whose uninstall-manifest.tsv is the REAL one with <sed-expr> applied
 # (empty = unedited; "none" = no manifest file at all) and prints the banner.
 banner_for() {
-  local _c="$1" _purge="$2" _sed="$3" _fx="$work/caseH-$1-fixture" _h="$work/hH-$1"
-  build_fixture "$_fx"; mkdir -p "$_h"
+  local _c="$1" _purge="$2" _sed="$3" _fx="$work/caseH-$1-fixture" _h
+  _h=$(mktemp -d "$work/hH.XXXXXX") || exit 1
+  build_fixture "$_fx"
   if [ "$_sed" != none ]; then
     if [ -n "$_sed" ]; then sed -e "$_sed" "$repo_root/scripts/install/uninstall-manifest.tsv" > "$_fx/scripts/install/uninstall-manifest.tsv"
     else cp "$repo_root/scripts/install/uninstall-manifest.tsv" "$_fx/scripts/install/uninstall-manifest.tsv"; fi

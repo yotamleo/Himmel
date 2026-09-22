@@ -233,6 +233,34 @@ test("glmChildEnv: diet values override an operator-exported gate", () => {
   }
 });
 
+// HIMMEL-3396: the operator's guard-override for a hooks-touching leg
+// (HIMMEL_HOOK_INTEGRITY_BYPASS_OK) must never ride the parent's env into a
+// dispatched worker — the worker would inherit a lever that disables its own
+// pin-dir and anchor fences. Every worker-env builder strips it, ambient or not.
+test("glmChildEnv strips HIMMEL_HOOK_INTEGRITY_BYPASS_OK (HIMMEL-3396)", () => {
+  process.env.ZAI_API_KEY = "k-bypass";
+  process.env.HIMMEL_HOOK_INTEGRITY_BYPASS_OK = "1";
+  try {
+    expect("HIMMEL_HOOK_INTEGRITY_BYPASS_OK" in glmChildEnv()).toBe(false);
+  } finally {
+    delete process.env.ZAI_API_KEY;
+    delete process.env.HIMMEL_HOOK_INTEGRITY_BYPASS_OK;
+  }
+});
+
+test("sessionEnv strips HIMMEL_HOOK_INTEGRITY_BYPASS_OK on both lanes (HIMMEL-3396)", () => {
+  process.env.ZAI_API_KEY = "k-bypass";
+  process.env.HIMMEL_HOOK_INTEGRITY_BYPASS_OK = "1";
+  try {
+    for (const lane of [undefined, "glm"] as const) {
+      expect("HIMMEL_HOOK_INTEGRITY_BYPASS_OK" in sessionEnv(lane)).toBe(false);
+    }
+  } finally {
+    delete process.env.ZAI_API_KEY;
+    delete process.env.HIMMEL_HOOK_INTEGRITY_BYPASS_OK;
+  }
+});
+
 test("REPO_ROOT resolves to the himmel checkout root (Windows-safe)", () => {
   // exercises the fileURLToPath derivation the ZAI-key .env fallback depends on
   expect(existsSync(join(REPO_ROOT, "scripts", "telegram", "run.ts"))).toBe(true);

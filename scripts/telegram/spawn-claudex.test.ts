@@ -1551,6 +1551,13 @@ test("claudexChildEnv: strips TELEGRAM_OWN_POLLER so a spawned worker never adop
   expect(env.OTHER).toBe("x");
 });
 
+// HIMMEL-3396: a worker must not inherit the operator's hook-integrity bypass.
+test("claudexChildEnv: strips HIMMEL_HOOK_INTEGRITY_BYPASS_OK (HIMMEL-3396)", () => {
+  const env = claudexChildEnv({ HIMMEL_HOOK_INTEGRITY_BYPASS_OK: "1", OTHER: "x" });
+  expect("HIMMEL_HOOK_INTEGRITY_BYPASS_OK" in env).toBe(false);
+  expect(env.OTHER).toBe("x");
+});
+
 test("claudexChildEnv: does not mutate the base object it was given", () => {
   const base = { TELEGRAM_OWN_POLLER: "1" };
   claudexChildEnv(base, "low");

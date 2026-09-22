@@ -9,8 +9,10 @@
 # supplied by CI and each commit's author metadata to match the exemption list.
 #
 # Usage:
-#   check-commit-range.sh [<base-ref-or-sha>]
+#   check-commit-range.sh [--merge-ref] [<base-ref-or-sha>]
 # Range = <base>..HEAD. Base resolution order:
+#   0. --merge-ref, when HEAD is a merge commit: HEAD^1 (a PR's merge ref — the
+#      base tip it was merged onto); otherwise falls through to 1..4
 #   1. $1 if given
 #   2. $COMMIT_RANGE_BASE if set
 #   3. git merge-base origin/<default> HEAD   (default branch = main|master)
@@ -31,7 +33,19 @@ default_branch() {
   echo main
 }
 
+MERGE_REF=0
+if [ "${1:-}" = "--merge-ref" ]; then MERGE_REF=1; shift; fi
+
 BASE="${1:-${COMMIT_RANGE_BASE:-}}"
+# --merge-ref (HIMMEL-3413): CI lints refs/pull/N/merge, the merge of the CURRENT
+# base tip and the PR head. pull_request.base.sha is the tip when the PR was
+# OPENED, so <base.sha>..HEAD also holds every commit main gained since (a bot's
+# ticketless bump), none of them the PR's. The merge commit's first parent is
+# the base tip it was merged onto: <HEAD^1>..HEAD is exactly the PR's own
+# commits. A non-merge HEAD keeps the given base (never narrower than before).
+if [ "$MERGE_REF" -eq 1 ] && git rev-parse --verify --quiet 'HEAD^2' >/dev/null 2>&1; then
+  BASE="$(git rev-parse 'HEAD^1')"
+fi
 if [ -z "$BASE" ]; then
   db="$(default_branch)"
   BASE="$(git merge-base "origin/$db" HEAD 2>/dev/null || true)"

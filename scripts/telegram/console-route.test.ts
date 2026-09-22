@@ -78,6 +78,9 @@ test("forwarded or caption /console messages are refused the console path and fa
   }
 });
 
+// HIMMEL-3440: routeToConsole never creates an inbox (appendIfExists is
+// O_CREAT-free — see bus.test.ts for the TOCTOU-race regression at the
+// primitive level).
 test("a console with no armed inbox gets an error reply, no file, and no cold session", async () => {
   const r = root(); const replies: string[] = []; const ran: string[] = [];
   await handleInbound(r, say(`/console ${NAME} hi`), async (s: string) => { ran.push(s); }, undefined, undefined, undefined, undefined, undefined, undefined, gate(replies));

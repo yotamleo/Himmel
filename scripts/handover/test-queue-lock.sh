@@ -2586,6 +2586,47 @@ else
     fail "T79: status answered STALE/wrong holder over a fresh legacy lock (rc=$rc): $out"
 fi
 
+# --- T80: status never answers `free` for a lock it cannot rule out ----------
+# (a) SYMLINK ALIAS: a lock taken through a symlinked spelling of the vault
+# records the alias path, which is not a suffix of the canonical one -- the
+# owner.json names the SAME file, so the doc is held. (b) A lock NAMED for this
+# doc whose owner.json records a path that resolves to nothing here (another
+# host's path, a doc since moved) cannot be attributed either way: it is
+# reported held -- UNVERIFIED (rc=11, fail-closed like CORRUPT), never `free`.
+# (c) Control: a namesake lock for a DIFFERENT, existing doc (same basename in
+# another bucket) leaves this doc `free`.
+M_ALIAS="$M_BASE/alias-vault"
+ln -s "$M_VAULT" "$M_ALIAS"
+M_DOC_G="$M_BUCKET/HIMMEL-3290-TG-RESUME.md"
+M_DOC_H="$M_BUCKET/HIMMEL-3290-TH-RESUME.md"
+M_DOC_I="$M_BUCKET/HIMMEL-3290-TI-RESUME.md"
+mkdir -p "$M_ROOT/yotamleo/salus"
+: > "$M_DOC_G"; : > "$M_DOC_H"; : > "$M_DOC_I"; : > "$M_ROOT/yotamleo/salus/HIMMEL-3290-TI-RESUME.md"
+m_lock_at "$M_ROOT/.locks/queue/alias-slug__HIMMEL-3290-TG-RESUME.lock" legAliasG \
+    "$M_ALIAS/handovers/yotamleo/himmel/HIMMEL-3290-TG-RESUME.md" "$M_ROOT" "$m_now"
+out="$(m_run "$M_PRIMARY" "$M_ROOT" status "$M_DOC_G")"; rc=$?
+if [ "$rc" -eq 11 ] && grepq "$out" 'legAliasG'; then
+    pass "T80: a lock recorded under a symlinked spelling of the doc reads held (rc=11)"
+else
+    fail "T80: status answered rc=$rc for a doc held under a symlink-alias spelling: $out"
+fi
+m_lock_at "$M_ROOT/.locks/queue/HIMMEL-3290-TH-RESUME.lock" legElsewhereH \
+    "/other-host/handovers/yotamleo/himmel/HIMMEL-3290-TH-RESUME.md" "/other-host/handovers" "$m_now"
+out="$(m_run "$M_PRIMARY" "$M_ROOT" status "$M_DOC_H")"; rc=$?
+if [ "$rc" -eq 11 ] && grepq "$out" 'UNVERIFIED' && ! grepq "$out" '^free$'; then
+    pass "T80: a namesake lock recording an unresolvable path reads held -- UNVERIFIED (rc=11), not free"
+else
+    fail "T80: status answered rc=$rc for an unattributable namesake lock: $out"
+fi
+m_lock_at "$M_ROOT/.locks/queue/yotamleo__salus__HIMMEL-3290-TI-RESUME.lock" legSalusI \
+    "$M_ROOT/yotamleo/salus/HIMMEL-3290-TI-RESUME.md" "$M_ROOT" "$m_now"
+out="$(m_run "$M_PRIMARY" "$M_ROOT" status "$M_DOC_I")"; rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "free" ]; then
+    pass "T80: control -- a namesake lock for a different existing doc leaves this one free (rc=0)"
+else
+    fail "T80: a different doc's namesake lock changed this doc's status (rc=$rc): $out"
+fi
+
 echo "---"
 echo "PASSED=$PASSED FAILED=$FAILED"
 [ "$FAILED" = 0 ]

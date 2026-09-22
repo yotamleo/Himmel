@@ -65,6 +65,8 @@
 # invocation, AND the absolute form for their primary checkout —
 # `Bash(bash <primary-checkout>/scripts/cr/write-verdicts.sh:*)`.
 set -uo pipefail
+# HIMMEL-3395: a relative-entry copy that is not the anchor's hands off to it.
+. "$(dirname "${BASH_SOURCE[0]}")/anchor-handoff.sh" || exit 2
 
 mode="${1:-}"; shift || true
 case "$mode" in

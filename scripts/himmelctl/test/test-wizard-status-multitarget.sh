@@ -73,8 +73,12 @@ JSON
 
 # ── shared fixture repo root (HIMMELCTL_REPO_ROOT) ──────────────────────────
 fixtureRepo="$work/repo"
-mkdir -p "$fixtureRepo/scripts/install"
+mkdir -p "$fixtureRepo/scripts/install" "$fixtureRepo/scripts/lib"
 cp "$manifest_path" "$fixtureRepo/scripts/install/manifest.json"
+# HIMMEL-3322: wiring-statusline's verifyScript resolution target for the two
+# flips below — a real, non-empty, readable file (never executed).
+printf '// fixture stub\n' > "$fixtureRepo/scripts/lib/statusline-stub.js"
+statuslineStub_w="$(winpath "$fixtureRepo/scripts/lib/statusline-stub.js")"
 fixtureRepo_w="$(winpath "$fixtureRepo")"
 
 # ── target A (project scope) ────────────────────────────────────────────────
@@ -140,7 +144,7 @@ sevB0=$(sevOf "$(runB wiring-statusline)")
 echo "ok: case a (baseline) — both A and B read red before either is flipped"
 
 # ── case (a): flip B, confirm A is unaffected, confirm B updated ───────────
-printf '{"statusLine":{"command":"bash foo.sh"},"hooks":{"PreToolUse":[]}}' > "$homeDir/.claude/settings.json"
+printf '{"statusLine":{"command":"node \\"%s\\""},"hooks":{"PreToolUse":[]}}' "$statuslineStub_w" > "$homeDir/.claude/settings.json"
 sevA1=$(sevOf "$(runA wiring-statusline)")
 sevB1=$(sevOf "$(runB wiring-statusline)")
 [ "$sevA1" = "red" ] || fail "case a: flipping B's wiring must NOT change A's report (got A severity: $sevA1)"
@@ -150,7 +154,7 @@ echo "ok: case a — toggling B's wiring does not bleed into A's report (A staye
 
 # ── case (a): flip A, confirm B is unaffected (reverse direction), confirm
 # A updated ─────────────────────────────────────────────────────────────
-printf '{"statusLine":{"command":"bash foo.sh"},"hooks":{"PreToolUse":[]}}' > "$targetA/.claude/settings.json"
+printf '{"statusLine":{"command":"node \\"%s\\""},"hooks":{"PreToolUse":[]}}' "$statuslineStub_w" > "$targetA/.claude/settings.json"
 sevB2=$(sevOf "$(runB wiring-statusline)")
 sevA2=$(sevOf "$(runA wiring-statusline)")
 [ "$sevB2" = "red" ] || fail "case a: flipping A's wiring must NOT change B's report (got B severity: $sevB2)"

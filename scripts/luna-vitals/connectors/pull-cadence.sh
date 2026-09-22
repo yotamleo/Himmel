@@ -730,6 +730,7 @@ cmd_disarm() {
         fi
 
         observability_register_cadence pull-cadence 86400 "$TASK_NAME"
+        cadence_prov_record "$TASK_NAME"
 
         arm_summary "crontab entry" "$runner" "$BAT_DIR/pull-cadence.log"
     }
