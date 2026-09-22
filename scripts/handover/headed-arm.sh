@@ -882,7 +882,7 @@ headless_launch() {
     val=""
     [ "${HIMMEL_HOOK_INTEGRITY_BYPASS_OK:-}" = "1" ] && val=1
     _hl_set HIMMEL_HOOK_INTEGRITY_BYPASS_OK "$val"
-    pids="$("$PGREP" -f '[c]laude [d]aemon run' 2>/dev/null)"
+    pids="$("$PGREP" -f '[c]laude daemon run' 2>/dev/null)"
     pg_rc=$?
     [ "$pg_rc" -gt 1 ] && headless_fail 9 "headless: pgrep scan for the claude background service failed - its env decides what the leg inherits, refusing to launch blind"
     for pid in $pids; do
