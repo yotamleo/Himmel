@@ -55,10 +55,12 @@ export function parseArgs(argv) {
     const a = argv[i];
     // A trailing option (no next token) must not silently take an undefined
     // value — --repo used to fall back to the local repo, --v1-keys used to
-    // silently skip the v1.0.0 step, both even under --apply.
+    // silently skip the v1.0.0 step, both even under --apply. Nor may a
+    // value position silently swallow the NEXT option (e.g. `--repo --apply`
+    // taking "--apply" as the repo path and dropping the actual flag).
     const value = (name) => {
       const v = argv[++i];
-      if (v === undefined) {
+      if (v === undefined || v.startsWith('--')) {
         process.stderr.write(`sync-versions: ${name} requires a value\n`);
         process.exit(1);
       }

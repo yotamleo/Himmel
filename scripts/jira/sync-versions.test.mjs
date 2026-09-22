@@ -455,4 +455,14 @@ describe('CLI option-value validation', () => {
       }
     });
   }
+
+  it('rejects --repo followed by another option instead of a value (codex-1)', () => {
+    expect.assertions(2);
+    try {
+      run(['--project', 'HIMMEL', '--repo', '--apply']);
+    } catch (e) {
+      expect(e.status).not.toBe(0);
+      expect(e.stderr.toString()).toMatch(/--repo/);
+    }
+  });
 });
