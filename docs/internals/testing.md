@@ -35,6 +35,15 @@ suite (`impacted-suites.sh --check`); a missing one (rc 1) or a `BLOCKED` one (r
 References are direct and textual only — a suite that reaches the file only
 through another script it calls is not listed.
 
+A `*.test.mjs`/`.js`/`.ts` suite's own runner is not "whatever's installed" —
+`impacted-suites.sh --runner <path>` prints the exact CI-equivalent command,
+read off `.github/workflows/ci.yml` (HIMMEL-3436: a node:test suite can pass
+under `node --test` and fail under a guessed `bun test` on an unrelated bun fs
+quirk, a false red no code change caused). It refuses non-zero, naming the
+path, rather than guessing, when the path has no mapping; `--runner-check` is
+a drift guard that fails when ci.yml runs a JS/TS test invocation the map does
+not yet cover.
+
 ## Scan roots — what the corpus covers (HIMMEL-3193)
 
 The default scan root is `scripts` (a scoped run: `run-shell-tests.sh scripts/hooks`).
