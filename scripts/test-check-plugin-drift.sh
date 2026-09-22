@@ -217,7 +217,7 @@ fi
 #     marketplace plugin manifest carries a "version" field. RED against a
 #     scratch fixture with one manifest missing the field (never against the
 #     real tree), then GREEN once every fixture manifest has one.
-W_MAN="$(mktemp -d)" || { bad "--manifest-only fixture: mktemp -d failed"; exit 1; }
+W_MAN="$(mktemp -d "${TMPDIR:-/tmp}/pdrift-manifest.XXXXXX")" || { bad "--manifest-only fixture: mktemp -d failed"; exit 1; }
 mkdir -p "$W_MAN/plugin-a/.claude-plugin" "$W_MAN/plugin-b/.claude-plugin"
 printf '{"name": "plugin-a", "description": "no version here"}\n' > "$W_MAN/plugin-a/.claude-plugin/plugin.json"
 printf '{"name": "plugin-b", "version": "1.0.0"}\n' > "$W_MAN/plugin-b/.claude-plugin/plugin.json"
