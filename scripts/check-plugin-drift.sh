@@ -118,6 +118,9 @@ for path in manifests:
     except (OSError, ValueError) as e:
         bad.append(f"{path} (unreadable/unparsable: {e})")
         continue
+    if not isinstance(manifest, dict):
+        bad.append(f"{path} (not a JSON object)")
+        continue
     version = manifest.get("version")
     if not isinstance(version, str) or not version.strip():
         bad.append(path)

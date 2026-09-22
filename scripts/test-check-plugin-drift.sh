@@ -247,6 +247,16 @@ DRIFT_PLUGINS_DIR="$W_TYPE" bash "$SCRIPT" --manifest-only >/dev/null 2>&1; type
 if [ "$type_rc" -ne 0 ]; then ok "--manifest-only: RED — non-string version (bool) exits non-zero"; else bad "--manifest-only: non-string version did not fail (rc=0)"; fi
 rm -rf -- "$W_TYPE"
 
+# 3h. --manifest-only: a manifest that decodes to non-object JSON (null, list)
+#     must not crash on .get() (codex-1, HIMMEL-3464 CR round 3).
+W_NULL="$(mktemp -d "${TMPDIR:-/tmp}/pdrift-null.XXXXXX")" || { bad "--manifest-only null-manifest fixture: mktemp -d failed"; exit 1; }
+mkdir -p "$W_NULL/plugin-d/.claude-plugin"
+printf 'null\n' > "$W_NULL/plugin-d/.claude-plugin/plugin.json"
+null_out="$(DRIFT_PLUGINS_DIR="$W_NULL" bash "$SCRIPT" --manifest-only 2>&1)"; null_rc=$?
+if [ "$null_rc" -ne 0 ]; then ok "--manifest-only: RED — non-object manifest (null) exits non-zero"; else bad "--manifest-only: non-object manifest did not fail (rc=0)"; fi
+if grepq "$null_out" "Traceback"; then bad "--manifest-only: non-object manifest crashed instead of failing cleanly: $null_out"; else ok "--manifest-only: non-object manifest fails cleanly, no traceback"; fi
+rm -rf -- "$W_NULL"
+
 # 4. End-to-end: the script runs to completion with a sane exit code —
 #    0 (all current / fail-open), 2 (drift), or 3 (incomplete). Anything else
 #    (1, 127, crash) fails.
