@@ -81,7 +81,8 @@ while [ $# -gt 0 ]; do
         --template-dir)     TEMPLATE_DIR="${2:-}"; shift 2 ;;
         --vault-dir)        VAULT_DIR="${2:-}"; shift 2 ;;
         --backup-dir)       BACKUP_DIR="${2:-}"; shift 2 ;;
-        --keep)             KEEP_LIST+=("${2:-}"); shift 2 ;;
+        --keep)             [ $# -ge 2 ] || { echo "upgrade: --keep requires a value" >&2; exit 2; }
+                             KEEP_LIST+=("$2"); shift 2 ;;
         --dry-run)          DRY_RUN=1; shift ;;
         --check)            CHECK_ONLY=1; shift ;;
         --with-github-sync) WITH_GITHUB_SYNC=1; shift ;;
@@ -658,10 +659,14 @@ content_equiv() {
     va="$({ cat "$a"; printf x; } 2>/dev/null)"; va="${va%x}"; va="${va%$'\n'}"
     vb="$({ cat "$b"; printf x; } 2>/dev/null)"; vb="${vb%x}"; vb="${vb%$'\n'}"
     [ "$va" = "$vb" ] && return 0
-    # EOL-only: strip every \r (CRLF -> LF, and a bare stray \r) before
-    # comparing. A file that differs from the other ONLY in line-ending style
-    # collapses to the same string here; any other difference survives it.
-    local va_eol="${va//$'\r'/}" vb_eol="${vb//$'\r'/}"
+    # EOL-only: normalize CRLF pairs to LF before comparing (HIMMEL-3406
+    # codex-2: a bare stray \r is content, not a line-ending style, and
+    # stripping it outright could misclassify a genuine difference as
+    # identical). Normalize BEFORE the trailing-newline strip above already
+    # ran — that strip only drops the \n of a trailing CRLF, so normalizing
+    # the post-strip strings would leave a lone \r unmatched at the end.
+    local va_eol="${va//$'\r\n'/$'\n'}" vb_eol="${vb//$'\r\n'/$'\n'}"
+    va_eol="${va_eol%$'\r'}"; vb_eol="${vb_eol%$'\r'}"
     [ "$va_eol" = "$vb_eol" ] && return 0
     case "$rel" in
         *.json)

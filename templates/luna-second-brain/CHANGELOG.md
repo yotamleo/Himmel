@@ -8,6 +8,16 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.49] — 2026-09-22
+
+### Fixed
+- `upgrade.sh`: a trailing `--keep` with no value no longer hangs the arg
+  parser (`shift 2` failed without consuming the flag, so the loop re-matched
+  `--keep` forever); now a usage error like an unknown argument. (HIMMEL-3406)
+- `content_equiv()`'s EOL-equivalence check now normalizes CRLF pairs only,
+  instead of stripping every `\r` — a genuine difference carried by a bare
+  `\r` no longer misreads as identical. (HIMMEL-3406)
+
 ## [0.4.48] — 2026-09-22
 
 ### Added
