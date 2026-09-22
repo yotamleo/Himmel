@@ -282,7 +282,11 @@ ordinary Bash call.
    at the first idle cross-session message. `--profile` is required: it injects
    the standing preface and the lean plugin set, and the launcher refuses
    (exit 2) an unprofiled launch. `--no-profile` is the explicit opt-out for a
-   brief that pastes the preface itself.
+   brief that pastes the preface itself. The launcher also exports
+   `HIMMEL_CONSOLE_NAME` into the leg (HIMMEL-3435) — this console's own
+   session name, resolved automatically, or an explicit `--console <name>` —
+   so the leg's merge-block alerts can route back to this console instead of
+   DMing the operator.
 5. Record the launch log path — the leg's window pid is in it, and that is how
    you close the window after it wraps.
 
