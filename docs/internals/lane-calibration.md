@@ -299,6 +299,13 @@ re-swept against real evals rather than assumed — that sweep is HIMMEL-774.
 
 Temperature is Claude-API-only — deferred; rides HIMMEL-774.
 
+**Where a claude-tier row's `effort` is applied (HIMMEL-3482):** the native
+Telegram dispatch (`scripts/telegram/run.ts` `spawnSpec`) maps the run's model
+to its tier row (alias `opus`, or full id `claude-opus-…`) and exports the row's
+`effort` as `CLAUDE_CODE_EFFORT_LEVEL`, over any ambient value; a route's own
+env still wins, and a row with no level-shaped `effort` leaves the ambient
+setting alone. The console leg launcher does not read the row yet (HIMMEL-3488).
+
 **2026-09-07 caveat:** the `fable`/`sonnet` effort defaults above predate
 Fable 5.1 and Anthropic's Fable 5.1 prompting guide's instruction to re-run
 the effort sweep even for a default already tuned on a prior generation —
