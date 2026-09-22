@@ -1,4 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   parseArgs,
   extractKeys,
@@ -8,6 +12,7 @@ import {
   planSync,
   runSync,
   checkNotTruncated,
+  isShallowClone,
 } from './sync-versions.mjs';
 
 // I/O-boundary functions this file does NOT cover (loadReleases, loadPrs,
@@ -360,4 +365,94 @@ describe('checkNotTruncated', () => {
   it('throws when the result hit the limit (it may be cut off)', () => {
     expect(() => checkNotTruncated(new Array(10), 10, 'releases')).toThrow(/releases.*10/);
   });
+});
+
+// Real fixture git repos on disk — HIMMEL-3431 item 1. A shallow clone's tag
+// refs exist but `git rev-list` from them may not reach the true root, so the
+// guard has to observe real git shallow-clone behavior, not a fake.
+function gitRepo(dir, args) {
+  return execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' });
+}
+
+describe('isShallowClone', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'sync-versions-shallow-'));
+  const origin = join(tmp, 'origin');
+  const full = join(tmp, 'full');
+  const shallow = join(tmp, 'shallow');
+  gitRepo(tmp, ['init', '-q', '-b', 'main', origin]);
+  gitRepo(origin, ['config', 'user.email', 'x@example.com']);
+  gitRepo(origin, ['config', 'user.name', 'x']);
+  writeFileSync(join(origin, 'a.txt'), '1\n');
+  gitRepo(origin, ['add', 'a.txt']);
+  gitRepo(origin, ['commit', '-q', '-m', 'one']);
+  gitRepo(origin, ['tag', 'v0.1.0']);
+  writeFileSync(join(origin, 'a.txt'), '2\n');
+  gitRepo(origin, ['add', 'a.txt']);
+  gitRepo(origin, ['commit', '-q', '-m', 'two']);
+  gitRepo(origin, ['tag', 'v0.2.0']);
+  execFileSync('git', ['clone', '-q', origin, full], { encoding: 'utf8' });
+  // --depth is silently ignored on a local-path clone unless --no-local
+  // forces the network-clone codepath that actually honors it.
+  execFileSync('git', ['clone', '-q', '--no-local', '--depth', '1', origin, shallow], { encoding: 'utf8' });
+
+  it('is false for a full clone', () => {
+    expect(isShallowClone(full)).toBe(false);
+  });
+
+  it('is true for a --depth 1 clone', () => {
+    expect(isShallowClone(shallow)).toBe(true);
+  });
+
+  afterAll(() => rmSync(tmp, { recursive: true, force: true }));
+});
+
+describe('runSync — shallow-clone guard', () => {
+  it('--apply refuses (zero writes) when deps.isShallow reports true, naming the shallow clone', async () => {
+    const { writes, deps } = fakeDeps({ isShallow: async () => true });
+    await expect(runSync({ project: 'HIMMEL', apply: true }, deps)).rejects.toThrow(/shallow clone/);
+    expect(writes).toEqual([]);
+  });
+
+  it('dry-run does not throw when shallow, but the report says so', async () => {
+    const { deps } = fakeDeps({ isShallow: async () => true });
+    const report = await runSync({ project: 'HIMMEL', apply: false }, deps);
+    expect(report.shallow).toBe(true);
+  });
+
+  it('a full clone (isShallow false) applies normally', async () => {
+    const { writes, deps } = fakeDeps({ isShallow: async () => false });
+    await runSync({ project: 'HIMMEL', apply: true }, deps);
+    expect(writes.length).toBeGreaterThan(0);
+  });
+});
+
+// HIMMEL-3431 item 3 — a trailing option with no value must be rejected, not
+// silently fall back (a trailing --repo used to fall back to the local repo
+// even under --apply; a trailing --v1-keys used to silently skip the v1 step).
+describe('CLI option-value validation', () => {
+  const SCRIPT = join(import.meta.dirname, 'sync-versions.mjs');
+  const run = (args) => execFileSync('node', [SCRIPT, ...args], { encoding: 'utf8' });
+
+  for (const apply of [[], ['--apply']]) {
+    const label = apply.length ? 'with --apply' : 'without --apply';
+    it(`rejects a trailing --repo (no value), ${label}`, () => {
+      expect.assertions(2);
+      try {
+        run(['--project', 'HIMMEL', ...apply, '--repo']);
+      } catch (e) {
+        expect(e.status).not.toBe(0);
+        expect(e.stderr.toString()).toMatch(/--repo/);
+      }
+    });
+
+    it(`rejects a trailing --v1-keys (no value), ${label}`, () => {
+      expect.assertions(2);
+      try {
+        run(['--project', 'HIMMEL', ...apply, '--v1-keys']);
+      } catch (e) {
+        expect(e.status).not.toBe(0);
+        expect(e.stderr.toString()).toMatch(/--v1-keys/);
+      }
+    });
+  }
 });

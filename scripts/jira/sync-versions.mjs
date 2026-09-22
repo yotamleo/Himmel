@@ -13,6 +13,9 @@
 // already carries is never re-added. Default is a dry-run report; --apply
 // writes. Only versions that are GitHub tags — plus v1.0.0 under --v1-keys —
 // are ever created or released here; any other hand-made version is left alone.
+// An existing version's release date and description are never rewritten
+// either (the one exception: releasing it, if it is still unreleased) — a
+// hand edit in Jira survives every run.
 //
 // Reads AND writes go through the jira CLI (dist/, `npm run build`) as a
 // subprocess — one auth path, breadcrumbs intact — and `gh` / local `git` for
@@ -50,12 +53,23 @@ export function parseArgs(argv) {
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
+    // A trailing option (no next token) must not silently take an undefined
+    // value — --repo used to fall back to the local repo, --v1-keys used to
+    // silently skip the v1.0.0 step, both even under --apply.
+    const value = (name) => {
+      const v = argv[++i];
+      if (v === undefined) {
+        process.stderr.write(`sync-versions: ${name} requires a value\n`);
+        process.exit(1);
+      }
+      return v;
+    };
     if (a === '--apply') opts.apply = true;
     else if (a === '--dry-run') opts.apply = false;
-    else if (a === '--project') opts.project = argv[++i];
-    else if (a === '--repo') opts.repo = argv[++i];
-    else if (a === '--jira-cli') opts.jiraCli = argv[++i];
-    else if (a === '--v1-keys') opts.v1KeysFile = argv[++i];
+    else if (a === '--project') opts.project = value('--project');
+    else if (a === '--repo') opts.repo = value('--repo');
+    else if (a === '--jira-cli') opts.jiraCli = value('--jira-cli');
+    else if (a === '--v1-keys') opts.v1KeysFile = value('--v1-keys');
     else {
       process.stderr.write(`sync-versions: unknown argument "${a}"\n`);
       process.exit(1);
@@ -128,6 +142,12 @@ export function planSync({ project, releases, prs, shaToTag, jiraVersions, jiraK
     const have = existing.get(spec.name);
     if (!have) createVersions.push(spec);
     else if (spec.released && !have.released) {
+      // ponytail: HIMMEL-3431 — releasing an unreleased version is the one
+      // write an existing version still gets. Its release date/description
+      // otherwise never converges onto the GitHub release's values, even if
+      // they now differ (an operator may have hand-edited them in Jira) —
+      // same "any hand-made version is left alone" invariant this file
+      // already applies to non-tag versions, extended to existing metadata.
       releaseVersions.push({ name: spec.name, releaseDate: spec.releaseDate });
     } else versionsUnchanged++;
   }
@@ -193,10 +213,22 @@ export function planSync({ project, releases, prs, shaToTag, jiraVersions, jiraK
   };
 }
 
-// deps: { loadReleases, loadPrs, reach(tag) -> Set|null, jira: {versions, keys,
-// carriers(name), createVersion(spec), releaseVersion(name, date),
-// fixVersion(key, name)} }. Reads always run; writes only under opts.apply.
+// deps: { loadReleases, loadPrs, reach(tag) -> Set|null, isShallow() -> bool,
+// jira: {versions, keys, carriers(name), createVersion(spec),
+// releaseVersion(name, date), fixVersion(key, name)} }. Reads always run;
+// writes only under opts.apply.
 export async function runSync(opts, deps) {
+  // A shallow clone's tag refs exist but git rev-list from them may not reach
+  // the true root, so --apply can assign a later tag or skip tickets while
+  // passing the missingTags check below. Dry-run only warns (via the report)
+  // since it writes nothing either way.
+  const shallow = deps.isShallow ? await deps.isShallow() : false;
+  if (opts.apply && shallow) {
+    throw new Error(
+      'refusing --apply: this checkout is a shallow clone (git rev-parse --is-shallow-repository) — tag ancestry may be incomplete; run `git fetch --unshallow` first',
+    );
+  }
+
   const releases = await deps.loadReleases();
   const prs = await deps.loadPrs();
   const tagOrder = releases
@@ -267,7 +299,7 @@ export async function runSync(opts, deps) {
     }
   }
 
-  return { ...plan, missingTags, failed, applied: Boolean(opts.apply) };
+  return { ...plan, missingTags, failed, applied: Boolean(opts.apply), shallow };
 }
 
 export function formatReport(r) {
@@ -285,6 +317,9 @@ export function formatReport(r) {
   ];
   if (r.missingTags.length) {
     lines.push(`tags not in the local clone (run \`git fetch --tags\`): ${r.missingTags.join(', ')}`);
+  }
+  if (r.shallow) {
+    lines.push('warning: this checkout is a shallow clone — tag ancestry may be incomplete (git fetch --unshallow before --apply)');
   }
   if (r.failed.length) {
     lines.push(`FAILED: ${r.failed.length}`, ...r.failed.map((f) => `  ${f}`));
@@ -355,6 +390,10 @@ function gitReach(tag) {
   return new Set(sh('git', ['-C', HERE, 'rev-list', `refs/tags/${tag}`]).split('\n').filter(Boolean));
 }
 
+export function isShallowClone(dir) {
+  return sh('git', ['-C', dir, 'rev-parse', '--is-shallow-repository']).trim() === 'true';
+}
+
 function makeJira(cli, project) {
   const run = (args) => sh('node', [cli, ...args]);
   const lines = (out) => out.split('\n').filter(Boolean);
@@ -399,6 +438,7 @@ async function main() {
     loadReleases: async () => loadReleases(repo),
     loadPrs: async () => loadPrs(repo),
     reach: async (tag) => gitReach(tag),
+    isShallow: async () => isShallowClone(HERE),
     jira: makeJira(opts.jiraCli, opts.project),
   });
   console.log(formatReport(report));
