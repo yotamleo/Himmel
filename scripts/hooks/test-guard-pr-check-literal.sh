@@ -422,6 +422,30 @@ run "bash -lc combined short flags running an unguarded command -> no-op" 0 \
 # flip GREEN - it is not an assertion that the behavior is correct.
 run "KNOWN GAP (HIMMEL-3458): 2>&1 before a guarded run is not caught -> no-op" 0 \
     "$(payload '2>&1 bash scripts/cr/pr-check-context.sh' "$WT")" "$HR"
+# Known pre-existing gap, NOT introduced by this branch (confirmed rc=0
+# against origin/main's own copy too) - quote-concatenation lets a word split
+# across adjacent quoted spans reassemble into "eval" at runtime while the
+# masker/tokenizer see two separate quoted words and never recognize the
+# eval-wrapper shape, so the guarded command it evals is never recursively
+# classified (codex-1, round 8 of the HIMMEL-3433 review; confirmed a
+# regression against origin/main, which denies this shape). Deferred to
+# HIMMEL-3458 per console ruling (AE, 2026-09-22: anything below Critical at
+# the round-7 fix head defers rather than getting a round 9 here). This row
+# documents the CURRENT (gap) behavior so HIMMEL-3458's fix has a RED to flip
+# GREEN - it is not an assertion that the behavior is correct.
+run "KNOWN GAP (HIMMEL-3458): quote-concatenated eval bypasses the wrapper check -> no-op" 0 \
+    "$(payload "e'val' 'bash scripts/cr/pr-check-context.sh --help'" "$WT")" "$HR"
+# Known pre-existing gap, NOT introduced by this branch (confirmed rc=0
+# against origin/main's own copy too) - the interpreter-operand scan that
+# looks past leading dash-flags to find the script an interpreter runs stops
+# at the FIRST non-flag operand, so an interpreter option that itself takes an
+# operand (bash --rcfile <file>) is misread as the script and the real script
+# one word later is never inspected (codex-2, round 8 of the HIMMEL-3433
+# review; confirmed a regression against origin/main, which denies this
+# shape). Deferred to HIMMEL-3458 for the same reason as the row above. This
+# row documents the CURRENT (gap) behavior, not correct behavior.
+run "KNOWN GAP (HIMMEL-3458): an interpreter option with its own operand hides the real script -> no-op" 0 \
+    "$(payload 'bash --rcfile /dev/null scripts/cr/pr-check-context.sh' "$WT")" "$HR"
 # single_quote_mask() had no escape handling: a backslash-escaped double
 # quote inside a double-quoted span closed the quote one character early, so
 # the apostrophe right after it read as a REAL opening single quote and
