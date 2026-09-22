@@ -97,7 +97,13 @@ fi
 # textconv driver) -- each once turned an added capture into zero hunks --
 # and --inter-hunk-context=0 (diff.interHunkContext would fuse hunks, so the
 # unchanged lines between two edits would read as added).
+# GIT_LITERAL_PATHSPECS=1 makes every `-- <path>` a literal name: a staged
+# file named `:(exclude):*.sh` otherwise parsed as pathspec magic and diffed
+# the OTHER staged files instead of itself (fail-open), and `a*.sh` globbed
+# its siblings in. `-l0` on both -M calls lifts diff.renameLimit, which
+# would otherwise unpair inexact renames into whole-file adds.
 unset GIT_DIFF_OPTS GIT_EXTERNAL_DIFF
+export GIT_LITERAL_PATHSPECS=1
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -135,7 +141,7 @@ trap 'rm -rf "$scratch_dir"' EXIT
 # not NUL-delimited, and merging the two streams would corrupt both).
 diff_status_file="$scratch_dir/diff-status.nul"
 diff_err_file="$scratch_dir/diff-status.err"
-if ! git diff --no-color --cached -M -z --diff-filter=AMRT --name-status \
+if ! git diff --no-color --cached -M -l0 -z --diff-filter=AMRT --name-status \
         >"$diff_status_file" 2>"$diff_err_file"; then
     diff_err="$(cat "$diff_err_file" 2>/dev/null)"
     echo "FAIL: check-unchecked-mktemp: git diff --cached --name-status failed: $diff_err" >&2
@@ -182,7 +188,7 @@ done < "$diff_status_file"
 added_lines_for() {
     local path="$1" src_path="$2" out="$3" hunks rc
     if [ -n "$src_path" ]; then
-        if ! hunks="$(git diff --no-color --no-ext-diff --text --no-textconv --inter-hunk-context=0 --cached -M -U0 -- "$src_path" "$path" 2>&1)"; then
+        if ! hunks="$(git diff --no-color --no-ext-diff --text --no-textconv --inter-hunk-context=0 --cached -M -l0 -U0 -- "$src_path" "$path" 2>&1)"; then
             echo "FAIL: check-unchecked-mktemp: git diff --cached -M -U0 -- $src_path $path failed: $hunks" >&2
             return 1
         fi

@@ -590,6 +590,47 @@ git -C "$R" add scripts.sh
 run_gate
 assert_rc "G18 diff.interHunkContext=5, pre-existing capture between edits -> gate ok" 0 "$?"
 
+# G19 -- a staged filename carrying pathspec magic must be diffed as a
+# literal path: `-- ':(exclude):*.sh'` would diff every OTHER staged
+# *.sh instead, so the unguarded capture on its line 10 was never read.
+setup_repo || { echo "FAIL: G19 setup: setup_repo failed -- aborting suite" >&2; exit 1; }
+printf '#!/usr/bin/env bash\necho 2\necho 3\necho 4\necho 5\necho 6\necho 7\necho 8\necho 9\nT=$(mktemp -d)\n' > "$R/:(exclude):*.sh"
+printf 'echo b\n' > "$R/b.sh"
+git --literal-pathspecs -C "$R" add -- ':(exclude):*.sh' b.sh
+run_gate
+assert_rc "G19 pathspec-magic filename with an unguarded capture -> gate refuses" 1 "$?"
+
+# G19b -- a glob-named file must not pick up a sibling it matches:
+# `-- 'a*.sh'` also diffs ab.sh, whose added line 2 was then read against
+# the pre-existing unguarded capture on line 2 of a*.sh.
+setup_repo || { echo "FAIL: G19b setup: setup_repo failed -- aborting suite" >&2; exit 1; }
+printf '#!/usr/bin/env bash\nT=$(mktemp -d)\necho 3\necho 4\n' > "$R/a*.sh"
+git --literal-pathspecs -C "$R" add -- 'a*.sh'
+git -C "$R" commit -q -n -m pre
+printf '#!/usr/bin/env bash\nT=$(mktemp -d)\necho 3\necho FOUR\n' > "$R/a*.sh"
+printf '#!/usr/bin/env bash\necho b\n' > "$R/ab.sh"
+git --literal-pathspecs -C "$R" add -- 'a*.sh' ab.sh
+run_gate
+assert_rc "G19b glob-named file, sibling it matches staged -> gate ok" 0 "$?"
+
+# G20 -- diff.renameLimit must not unpair inexact renames: unpaired, each
+# renamed file reads as wholly ADDED, so its pre-existing unguarded
+# capture blocked an unrelated rename.
+setup_repo || { echo "FAIL: G20 setup: setup_repo failed -- aborting suite" >&2; exit 1; }
+for f in x y; do
+    printf '#!/usr/bin/env bash\nT=$(mktemp -d)\necho 3\necho 4\necho 5\necho 6\necho 7\necho 8\necho %s\n' "$f" > "$R/$f.sh"
+done
+git -C "$R" add x.sh y.sh
+git -C "$R" commit -q -n -m pre
+git -C "$R" config diff.renameLimit 1
+for f in x y; do
+    git -C "$R" mv "$f.sh" "${f}2.sh"
+    printf '#!/usr/bin/env bash\nT=$(mktemp -d)\necho 3\necho 4\necho 5\necho 6\necho 7\necho 8\necho %s-renamed\n' "$f" > "$R/${f}2.sh"
+done
+git -C "$R" add x2.sh y2.sh
+run_gate
+assert_rc "G20 diff.renameLimit=1, two inexact renames of pre-existing debt -> gate ok" 0 "$?"
+
 # ---------------------------------------------------------------------------
 # Section 3: RED control (scripts/lib/red-control.sh).
 #
