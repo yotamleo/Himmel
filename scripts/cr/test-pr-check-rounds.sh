@@ -26,6 +26,7 @@ assert_eq() {
 fx="$tmp/fx"
 mkdir -p "$fx/scripts/cr" "$fx/scripts/guardrails" "$fx/scripts/lib"
 cp "$HERE/panel-first-pass.sh" "$fx/scripts/cr/panel-first-pass.sh"
+cp "$HERE/anchor-handoff.sh" "$fx/scripts/cr/anchor-handoff.sh"
 cp "$HERE/base-resolver.sh" "$fx/scripts/cr/base-resolver.sh"
 cp "$HERE/review-round.sh" "$fx/scripts/cr/review-round.sh"
 cp "$HERE/ledger-append.sh" "$fx/scripts/cr/ledger-append.sh"

@@ -4172,8 +4172,9 @@ through to chat, never auto. On a match the bridge shells the new chokepoint
 validates the PR is numeric and the SHA is 12-40 lowercase hex (anchored, rejecting
 multi-line values) before shelling out. This is the ONLY way a public squash-merge
 gets authorized — no allow-rule for this script or a public `gh pr merge` exists
-anywhere, so an agent can reach it only through the broad `Bash(bash scripts/*)`
-rule, and the script self-refuses under that path (see gate 7 below). The
+anywhere (and since HIMMEL-3402 no `Bash(bash scripts/*)` prefix rule reaches it),
+so an agent's run goes to the classifier, and the script self-refuses under that
+path anyway (see gate 7 below). The
 chokepoint enforces 7 gates, mirroring `merge-on-green.sh`'s (HIMMEL-1042)
 structure but with the binding INVERTED (public-pinned, not private-only) — see
 `scripts/merge-public-on-green.sh`'s header for the full exit-code reference:

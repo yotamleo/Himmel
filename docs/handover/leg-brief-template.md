@@ -74,7 +74,9 @@ template_version: 3
 > 1. LIVE; paste `git log -1 --format=%H` and the base-ancestor check.
 > 2. <the deliverables, one numbered item each, named by path>
 > 3. **Tests:** <the suite to write and the specific RED assertion to show
->    first; the impacted suites you already know about, by name.>
+>    first; the impacted suites you already know about, by name.> Suites run
+>    as `bash scripts/quiet-run.sh suite -- bash <tracked test-*.sh>` — the
+>    literal label `suite` is the only one auto-allowed (HIMMEL-3402).
 > 4. **Ship:** `<type>(<scope>): [<TICKET>] <subject>`, then the standing ship
 >    sequence. Trailers go in the FIRST commit, token first after the colon:
 >    `Platforms tested: <os>` and `Security reviewed: manual — <what you

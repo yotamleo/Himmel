@@ -73,7 +73,8 @@ if [ "$OP" = "merge-public" ]; then
     # the arm-resume path below — this chokepoint doesn't need them either.
     # DELIBERATELY do NOT strip CLAUDECODE (HIMMEL-1213 codex CR-1): it MUST
     # propagate to the chokepoint's gate 0. This script is itself reachable by an
-    # agent through the broad `Bash(bash scripts/*)` allow-rule, so the ONLY thing
+    # agent (through the classifier, since HIMMEL-3402 removed the broad
+    # `Bash(bash scripts/*)` allow-rule), so the ONLY thing
     # stopping an agent from laundering `auto-action.sh merge-public …` into a real
     # merge is CLAUDECODE reaching gate 0 and self-refusing there. The legitimate
     # bridge runs WITHOUT CLAUDECODE (it is not a Claude session), so it is

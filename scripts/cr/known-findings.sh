@@ -19,6 +19,8 @@
 #      CR_LEDGER (default: $(git rev-parse --git-common-dir)/cr-critic-scores.jsonl)
 # Exit: 0 (advisory — a match is NOT a failure), 2 usage / missing input.
 set -uo pipefail
+# HIMMEL-3395: a relative-entry copy that is not the anchor's hands off to it.
+. "$(dirname "${BASH_SOURCE[0]}")/anchor-handoff.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 KF="${KNOWN_FINDINGS_FILE:-$SCRIPT_DIR/known-findings.json}"

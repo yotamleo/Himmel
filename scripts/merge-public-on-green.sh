@@ -16,8 +16,9 @@
 # merge-on-green.sh's ARMAUTOMERGE): the authorization IS the bridge's own
 # TELEGRAM_AUTO_ACTIONS allow-list + operator-identity check, already enforced
 # before this script is ever invoked. No allow-rule for this script (or a
-# public `gh pr merge`) is added anywhere — an agent can reach it only through
-# the broad `Bash(bash scripts/*)` rule, which gate 0 below refuses on sight.
+# public `gh pr merge`) is added anywhere — since HIMMEL-3402 no prefix rule
+# reaches it either, so an agent's run goes to the classifier, and gate 0 below
+# refuses it on sight.
 #
 # Usage: merge-public-on-green.sh <pr> <sha> [--dry-run]
 #   pr         PR number (required)
@@ -81,13 +82,13 @@ set -uo pipefail
 # 0. Defense-in-depth agent refusal (design gate 7), checked FIRST — before
 # any argument parsing, cheapest possible refusal, no API calls. This is what
 # backstops the fact that no allow-rule for this script (or a public
-# `gh pr merge`) is ever added: an agent reaching this script only through the
-# broad `Bash(bash scripts/*)` rule self-refuses right here, even before the
-# auto-mode classifier weighs in.
+# `gh pr merge`) is ever added: an agent reaching this script (no allow rule
+# matches it since HIMMEL-3402 removed the `Bash(bash scripts/*)` prefix)
+# self-refuses right here, whatever the auto-mode classifier decides.
 # NOTE (defense-in-depth, not the boundary): `env -u CLAUDECODE bash …` or
 # `CLAUDECODE= bash …` clears the marker and sails past this check — but that
-# changed command shape no longer prefix-matches `Bash(bash scripts/*)`, so it
-# falls to the classifier/prompt instead of auto-approving. The BOUNDARY is
+# command matches no allow rule either, so it falls to the classifier/prompt
+# instead of auto-approving. The BOUNDARY is
 # "no allow-rule exists"; this gate is the cheap backstop behind it.
 if [ -n "${CLAUDECODE:-}" ]; then
     echo "merge-public-on-green: refusing — invoked from inside a Claude Code session (CLAUDECODE set). This chokepoint is bridge-only; the public merge stays operator-authorized via Telegram /mergepub, never agent-invoked." >&2
