@@ -239,6 +239,10 @@ run_case py-pgrep-lookalike FAIL src/start.py \
 run_case ts-pgrep-lookalike FAIL src/start.ts \
     'pgrep ? spawn("claude",["daemon","run"]) : 0'
 
+echo "== T13(b): a shell function NAMED ps still FAILS (HIMMEL-3432 round-4 panel) =="
+run_case sh-ps-function-name FAIL scripts/start.sh \
+    'ps () (claude daemon run | grep .)'
+
 if [ "$failures" -ne 0 ]; then
     echo "FAIL: $failures of $cases case(s) failed"
     exit 1

@@ -466,6 +466,17 @@ else
             # `chain` strips `[0-9]>&[0-9]` before that scan only -- `subst`
             # and the trailing-backslash check still read the untouched
             # `code`, since neither shape can hide inside an fd redirect.
+            # Critic-panel round (HIMMEL-3432, post-merge-prep) found the same
+            # function-definition bypass as the pgrep/pkill fix above, but in
+            # the `ps` branch: its outer anchor was `^ps[ \t]`, with no
+            # dash-flag requirement, so a *.sh line defining a shell function
+            # NAMED ps (`ps () (claude daemon run | grep .)`) matched the
+            # inner `... | grep` lookup shape and was wrongly treated as a
+            # lookup, suppressing the very definition line that starts the
+            # daemon. `ps` now requires a flag right after it
+            # (`^ps[ \t]+-`), mirroring the pgrep fix above -- a definition
+            # line never has a flag there, so it falls through to the bare
+            # "daemon" match below like any other spawn line.
             subst = code ~ /\$\(|`|<\(|>\(/
             cont = code ~ /\\$/
             chain = code
@@ -479,7 +490,7 @@ else
                     sub(/^pkill[ \t]+-0[ \t]*/, "", pkrest)
                     if (chain !~ /[;&|]/ && !subst && !cont &&
                         pkrest !~ /(^|[ \t])-([0-9]|-?signal([ \t=]|$)|s([ \t]|$))/) is_lookup = 1
-                } else if (code ~ /^ps[ \t]/) {
+                } else if (code ~ /^ps[ \t]+-/) {
                     if (chain ~ /^ps[^|;&]*\|[ \t]*grep([ \t]|$)[^;&|]*$/ && !subst && !cont) is_lookup = 1
                 }
             }
