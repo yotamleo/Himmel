@@ -1290,8 +1290,9 @@ SESSION_VISIBLE_RETRY_SLEEP=0.05
 # Both budgets are now derived from the SAME env var the shim itself reads
 # (KONSOLE_MACOS_STARTUP_TICKS, 0.1s per tick), so they cannot drift apart:
 # cover the shim's whole startup budget, THEN still allow the original 5s for
-# claude to become visible once the window is actually up. Only the shim path
-# pays this; konsole and an explicit KONSOLE_CMD keep today's 5s exactly.
+# claude to become visible once the window is actually up. Every macOS launch
+# pays this, including one with an explicit KONSOLE_CMD (still an `open -a`-
+# shaped launch - see KONSOLE_IS_MACOS_SHIM above); konsole keeps today's 5s.
 #
 # 10# is load-bearing, not decoration: the shim reads the same var in a `[ ]`
 # test, which is always decimal, while THIS is an arithmetic context, where a

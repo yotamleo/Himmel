@@ -80,6 +80,9 @@ contains "1a unsupported flag: names the offender" "$out" "unsupported argument 
 out="$(run_shim "$b1" -- --separate)"; rc=$?
 check "1b no -e: exit 2" "$rc" "2"
 contains "1b no -e: says -e is required" "$out" "-e is required"
+out="$(run_shim "$b1" -- --separate -e)"; rc=$?
+check "1b2 -e with no operand: exit 2" "$rc" "2"
+contains "1b2 -e with no operand: says -e is required" "$out" "-e is required"
 out="$(run_shim "$b1" -- --workdir "$tmp/nope" -e true)"; rc=$?
 check "1c missing --workdir dir: exit 2" "$rc" "2"
 out="$(run_shim "$b1" -- --workdir -e true)"; rc=$?

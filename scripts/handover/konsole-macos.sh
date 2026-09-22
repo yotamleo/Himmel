@@ -80,6 +80,10 @@ while [ $# -gt 0 ]; do
         -e)
             shift
             _saw_e=1
+            # Check the operand here (PR 1129 CR): `-e` as the last argument
+            # leaves CMD empty, and an empty array under `set -u` is not safe
+            # to expand on bash 3.2, the macOS system bash.
+            [ $# -gt 0 ] || { echo "konsole-macos: no command given (-e is required)" >&2; exit 2; }
             CMD=("$@")
             break
             ;;
@@ -90,7 +94,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-if [ "$_saw_e" -ne 1 ] || [ "${#CMD[@]}" -eq 0 ]; then
+if [ "$_saw_e" -ne 1 ]; then
     echo "konsole-macos: no command given (-e is required)" >&2
     exit 2
 fi
