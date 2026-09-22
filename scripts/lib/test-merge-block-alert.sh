@@ -233,6 +233,15 @@ f="$CASE/opsdesk.md"; : > "$f"
 rc=$?
 eq "13: appends to an existing file, returns 0" 0 "$rc"
 eq "13: the line landed" "- line one" "$(cat "$f")"
+eq "13: the append adds its own trailing newline" "- line one
+x" "$(cat "$f"; echo x)"
+(
+    # shellcheck disable=SC1090
+    . "$LIB"
+    _mba_append_if_exists "$f" "- line two"
+)
+eq "13: a second append lands on its OWN line, not concatenated onto the first" "- line one
+- line two" "$(cat "$f")"
 f2="$CASE/ghost.md"
 (
     # shellcheck disable=SC1090

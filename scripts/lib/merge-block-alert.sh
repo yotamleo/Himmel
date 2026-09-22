@@ -137,14 +137,18 @@ _mba_console_inbox_path() {
     printf '%s/consoles/%s.md' "$root" "$name"
 }
 
-# HIMMEL-3440: append $2 to file $1 ONLY if it already exists — an
-# O_WRONLY|O_APPEND open with NO O_CREAT, so a route attempt against an inbox
-# deleted moments earlier can never recreate it (a separate `[ -f ]` check
-# followed by `>>` has a TOCTOU window: `>>` implies O_CREAT, so a deletion
-# between the two silently recreates the file and reports delivery). Bash has
-# no redirection operator that opens append-only-without-create (`>>` and
-# `<>` both imply O_CREAT), so this shells out to node. No node found is
-# treated the same as ENOENT: "not delivered".
+# HIMMEL-3440: append $2 (no trailing newline) to file $1 ONLY if it already
+# exists — an O_WRONLY|O_APPEND open with NO O_CREAT, so a route attempt
+# against an inbox deleted moments earlier can never recreate it (a separate
+# `[ -f ]` check followed by `>>` has a TOCTOU window: `>>` implies O_CREAT,
+# so a deletion between the two silently recreates the file and reports
+# delivery). Bash has no redirection operator that opens
+# append-only-without-create (`>>` and `<>` both imply O_CREAT), so this
+# shells out to node. No node found is treated the same as ENOENT: "not
+# delivered". Mirrors bus.ts's appendIfExists(file, line): the newline is
+# added HERE, not by the caller — a `line=$(printf ...)` capture already
+# strips any trailing newline the caller embedded, so a caller-supplied
+# newline can never survive the shell round-trip.
 _mba_append_if_exists() {
     local file="$1" line="$2" node
     # shellcheck source=./resolve-node.sh
@@ -162,7 +166,7 @@ _mba_append_if_exists() {
             process.exit(1);
         }
         try {
-            fs.writeSync(fd, line);
+            fs.writeSync(fd, line + "\n");
         } finally {
             fs.closeSync(fd);
         }
@@ -181,7 +185,7 @@ _mba_route_console() {
     local folded
     folded=$(printf '%s' "$text" | tr '\n' ' ')
     local line
-    line=$(printf -- '- %s [merge-watch %s#%s] %s\n' "$(date +%H:%M)" "$repo" "$pr" "$folded")
+    line=$(printf -- '- %s [merge-watch %s#%s] %s' "$(date +%H:%M)" "$repo" "$pr" "$folded")
     _mba_append_if_exists "$file" "$line"
 }
 
