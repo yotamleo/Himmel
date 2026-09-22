@@ -178,6 +178,32 @@ else
     pass "(c9) skipped: no git on this host"
 fi
 
+# (c10) a DEEPER symlink out of the real home: the real .claude/himmel links
+# to an external dir, and a scratch HOME's own .claude/himmel links there too.
+mk_fake "$TMP/fake10"
+mkdir -p "$TMP/ext10"
+mv "$TMP/fake10/.claude/himmel" "$TMP/ext10/himmel"
+ln -s "$TMP/ext10/himmel" "$TMP/fake10/.claude/himmel"
+mkdir -p "$TMP/c10/home/.claude"
+ln -s "$TMP/ext10/himmel" "$TMP/c10/home/.claude/himmel"
+HOME="$TMP/c10/home" run_wet HIMMEL_UNINSTALL_TEST_REAL_HOME="$TMP/fake10"
+expect_refused "(c10) scratch .claude/himmel links to the real .claude/himmel's external dir" c "$TMP/fake10"
+
+# (c11) the same, one level up and with the row's leaf ABSENT at the real home:
+# the real .claude/channels links out and has no telegram/ under it, so the
+# deepest EXISTING ancestor is what is protected — a scratch telegram/ linked
+# to a sibling inside that external dir is refused.
+mk_fake "$TMP/fake11"
+mkdir -p "$TMP/ext11/channels/tg2"
+printf 'sentinel\n' > "$TMP/ext11/channels/tg2/sentinel"
+rm -rf "$TMP/fake11/.claude/channels"
+ln -s "$TMP/ext11/channels" "$TMP/fake11/.claude/channels"
+mkdir -p "$TMP/c11/home/.claude/channels"
+ln -s "$TMP/ext11/channels/tg2" "$TMP/c11/home/.claude/channels/telegram"
+HOME="$TMP/c11/home" run_wet HIMMEL_UNINSTALL_TEST_REAL_HOME="$TMP/fake11"
+expect_refused "(c11) absent real-home leaf under a linked-out ancestor" c "$FAKE"
+if [ -f "$TMP/ext11/channels/tg2/sentinel" ]; then pass "(c11) external dir untouched"; else fail "(c11) external dir was modified"; fi
+
 # (a4) $HOME is a symlink into a SUBDIRECTORY of the real home: physical and
 # lexical HOME differ and the physical one is inside a protected root. (A
 # lexical HOME under the real home is a scratch dir by design and passes.)

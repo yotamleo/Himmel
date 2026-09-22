@@ -1213,8 +1213,9 @@ real_home_target_ok() {
 #               override env, {HOME}, {PWD}, {HOOKS_REPO_ROOT} or an absolute
 #               path), the hooks dir after core.hooksPath resolution, and
 #               HIMMELCTL_SYSTEMD_USER_UNIT_DIR. The roots are the physical
-#               home plus the physical location of each top-level entry the
-#               {HOME} rows live under (.claude, .himmel)
+#               home plus the physical location of every path prefix of every
+#               {HOME} row (.claude, .claude/himmel, ...), so a real-home entry
+#               symlinked out at any depth stays protected
 # ponytail: a LEXICAL $HOME under the real home (e.g. ~/tmp/scratch, spelled
 # with no symlink) is a scratch dir by design and passes; only a HOME that
 # resolves somewhere other than where it is spelled is judged by where it
@@ -1234,20 +1235,25 @@ real_home_check() {
   _home=$(strip_trailing_slash "$HOME")
   _hp=$(real_home_phys "$HOME") || _hp=$(squash_leading_slashes "$HOME")
   _cp=$(real_home_phys "$HOME/.claude") || _cp=$(squash_leading_slashes "$HOME/.claude")
-  # The top-level entries the {HOME} manifest rows live under (.claude,
-  # .himmel, ...): a real home may symlink any of them OUT of itself (a
-  # dotfiles layout), so each is protected at its PHYSICAL location too.
+  # Every path prefix of every {HOME} manifest row (.claude, .claude/channels,
+  # .claude/channels/telegram, ...): a real home may symlink any of them OUT
+  # of itself (a dotfiles layout), at any depth, so each is protected at its
+  # PHYSICAL location too. A prefix absent at the real home is still covered:
+  # its deepest EXISTING ancestor is a shorter prefix (or the home itself).
   _comps=""
   for _i in "${!M_ID[@]}"; do
     case "${M_PATH[$_i]}" in '{HOME}/'*) ;; *) continue ;; esac
-    _c="${M_PATH[$_i]#'{HOME}/'}"
-    _c="${_c%%/*}"
-    case "
+    _t="${M_PATH[$_i]#'{HOME}/'}"
+    while [ -n "$_t" ]; do
+      _c="$_t"
+      case "
 $_comps
 " in *"
 $_c
 "*) ;; *) _comps="$_comps
 $_c" ;; esac
+      case "$_t" in */*) _t="${_t%/*}" ;; *) _t="" ;; esac
+    done
   done
   while IFS= read -r _r; do
     [ -n "$_r" ] || continue
