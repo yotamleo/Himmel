@@ -763,15 +763,20 @@ scan_cmd() {
 # QUEUE_LOCK_FORCE_RELEASE=1 (a console action) can never ride along.
 # Every value must be a literal: no expansion, no glob, no `..`, doc absolute
 # and `.md`, doc under HANDOVER_DIR when one is given. "Absolute" is `/x`, `/c/x`
-# or a Git-Bash drive path `C:/x` (ql_abs_path, HIMMEL-3192).
-# The script is the relative `scripts/handover/queue-lock.sh` or an ABSOLUTE
-# path; either way the checkout it resolves into must be a real one of this repo
-# (ql_root_is_own_checkout) — for the relative form that is the payload `cwd`
-# (else $PWD, when the payload has none), since bash resolves it there.
+# or a Git-Bash drive path `C:/x` (ql_abs_path, HIMMEL-3192) — in the
+# HANDOVER_DIR, doc and sweep positions only, which name a lock dir and are
+# never executed.
+# The script is the relative `scripts/handover/queue-lock.sh` or a `/`-rooted
+# path (HIMMEL-3494: no drive letter, `\` or `'`); either way the checkout it
+# resolves into must be a real one of this repo (ql_root_is_own_checkout) — for
+# the relative form that is the payload `cwd`, which must be absolute (never the
+# hook's own $PWD), since bash resolves it there.
 # ponytail: HANDOVER_DIR is not checked against the registered handover root —
 # a stray root only lets queue-lock write a `.locks/queue/` dir there — and the
 # relative form only accepts a cwd that IS a checkout root: from a sub-directory
 # (where the relative path would not resolve anyway) it falls through to a prompt.
+# On Windows Git Bash a drive-letter payload cwd or script path also falls
+# through to a prompt (as cmd_is_impacted_suites does, HIMMEL-3486).
 ql_word_literal() {   # $1 raw word → QW (cooked); fails on any expansion/glob/`..`
     case "$1" in *'$'*) return 1 ;; esac
     shell_word_value "$1" || return 1
@@ -792,9 +797,9 @@ ql_word_literal() {   # $1 raw word → QW (cooked); fails on any expansion/glob
 # drive spelling cannot dodge containment) — and QC, the spelling `cd` is given.
 # A backslash is a separator only in a drive path; a `/`-prefixed path carrying
 # one is refused, since MSYS reads it as a separator that would hide a `..`.
-# ponytail: on a POSIX host `C:/x` is really a cwd-relative name, and the
-# script-root `cd` (ql_root_is_own_checkout) is the only thing that decides it
-# there; the drive-relative `C:x`, UNC `//host/x` and an upper-case `/C/x` are
+# ponytail: on a POSIX host `C:/x` is really a cwd-relative name, which is why
+# segment_is_queue_lock refuses it in the executed script position (HIMMEL-3494)
+# and only lets it name a lock dir; the drive-relative `C:x`, UNC `//host/x` and an upper-case `/C/x` are
 # not accepted (they fall through to a prompt).
 ql_abs_path() {
     local p="$1" d
@@ -842,7 +847,7 @@ EOF
 segment_is_queue_lock() {
     tokenize_seg_words "$1" || return 1
     local -a a=("${RB_TOKENS[@]}")
-    local n=${#a[@]} i=0 hd="" hr verb doc ql_cwd ql_root
+    local n=${#a[@]} i=0 hd="" hr verb doc ql_cwd
     [ "$n" -ge 3 ] || return 1
     case "${a[0]}" in
         HANDOVER_DIR=*)
@@ -858,25 +863,25 @@ segment_is_queue_lock() {
             i=1 ;;
     esac
     [ "${a[$i]:-}" = "bash" ] || return 1
+    # HIMMEL-3494: no `\` or `'` in the script word, and no drive letter — on
+    # POSIX `C:\x\…` or `C:/x/…` is checked as one path but run as a
+    # cwd-relative file bash finds by its literal name.
+    case "${a[$((i + 1))]:-}" in *\\*|*\'*) return 1 ;; esac
     ql_word_literal "${a[$((i + 1))]:-}" || return 1
     case "$QW" in
         scripts/handover/queue-lock.sh)
             # Relative: bash resolves it against the session cwd, so that cwd
-            # must itself be a real checkout. Payload `.cwd`; $PWD only when the
-            # payload has none. Read lazily (this rare path only) so the hot
-            # path keeps its single jq call.
+            # must itself be a real checkout. Only an absolute payload `.cwd`,
+            # never the hook's own $PWD. Read lazily (this rare path only) so
+            # the hot path keeps its single jq call.
             ql_cwd=$(jq -r '.cwd // ""' <<<"$input" 2>/dev/null) || return 1
-            ql_cwd="${ql_cwd%$'\r'}"
-            [ -n "$ql_cwd" ] || ql_cwd="$PWD"
+            case "$ql_cwd" in /*) ;; *) return 1 ;; esac
             ql_root_is_own_checkout "$ql_cwd" || return 1 ;;
-        *)
+        /*)
             ql_abs_path "$QW" || return 1
             case "$QN" in /*/scripts/handover/queue-lock.sh) ;; *) return 1 ;; esac
-            ql_root="${QC%/scripts/handover/queue-lock.sh}"
-            # A script at a drive root strips to `C:`, which `cd` reads as the
-            # drive-relative cwd, not `C:/` — keep the slash so it is the root.
-            case "$ql_root" in ?:) ql_root="$ql_root/" ;; esac
-            ql_root_is_own_checkout "$ql_root" || return 1 ;;
+            ql_root_is_own_checkout "${QC%/scripts/handover/queue-lock.sh}" || return 1 ;;
+        *) return 1 ;;
     esac
     verb="${a[$((i + 2))]:-}"
     i=$((i + 3))
