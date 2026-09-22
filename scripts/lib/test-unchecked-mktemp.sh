@@ -577,6 +577,19 @@ git -C "$R" add scripts.sh
 run_gate
 assert_rc "G17 large clean diff (> pipe buffer) -> gate ok" 0 "$?"
 
+# G18 -- diff.interHunkContext must not fuse -U0 hunks: fused, the
+# unchanged lines between two edits read as added, so a pre-existing
+# unguarded capture sitting between them blocked an unrelated commit.
+setup_repo || { echo "FAIL: G18 setup: setup_repo failed -- aborting suite" >&2; exit 1; }
+printf '#!/usr/bin/env bash\necho a\nT=$(mktemp -d)\necho b\n' > "$R/scripts.sh"
+git -C "$R" add scripts.sh
+git -C "$R" commit -q -n -m pre
+git -C "$R" config diff.interHunkContext 5
+printf '#!/usr/bin/env bash\necho A\nT=$(mktemp -d)\necho B\n' > "$R/scripts.sh"
+git -C "$R" add scripts.sh
+run_gate
+assert_rc "G18 diff.interHunkContext=5, pre-existing capture between edits -> gate ok" 0 "$?"
+
 # ---------------------------------------------------------------------------
 # Section 3: RED control (scripts/lib/red-control.sh).
 #

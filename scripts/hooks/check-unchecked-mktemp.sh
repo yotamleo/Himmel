@@ -4,8 +4,8 @@
 #
 # Fail-closed. A missing or unreadable predicate library, an unresolvable
 # repo root, a failing `git diff`, a failed added-lines scan, a changed staged
-# *.sh whose diff has no hunk, or an unreadable staged blob refuses the commit rather than waving it through -- each with
-# its own distinct message so the mode is never ambiguous. `git diff`'s own
+# *.sh whose diff has no hunk, or an unreadable staged blob refuses the commit
+# rather than waving it through -- each with its own distinct message so the mode is never ambiguous. `git diff`'s own
 # failure is captured and its exit status checked BEFORE its (by-then
 # known-good) output is ever read as "nothing staged" -- never
 # `2>/dev/null || true`, which silently turns a genuine git error into a
@@ -61,8 +61,8 @@
 #
 # Staged names come from `git diff --cached -M -z --diff-filter=AMRT
 # --name-status` (T = a typechange, e.g. symlink -> regular file, which
-# carries new content exactly like an add): `-z` NUL-delimits so a quoted path (git quotes
-# non-ASCII/special-char names by default) is never mis-parsed by a
+# carries new content exactly like an add): `-z` NUL-delimits so a quoted
+# path (git quotes non-ASCII/special-char names by default) is never mis-parsed by a
 # line-oriented reader, and `--name-status` (rather than `--name-only`) is
 # what makes a rename's SOURCE path available at all. A per-file `git diff
 # --cached -U0 -- <dst>` restricted to the destination alone cannot pair with
@@ -94,7 +94,9 @@ fi
 # and GIT_EXTERNAL_DIFF swaps in another program (also refused per call by
 # --no-ext-diff). Config and attributes are handled per call: --no-ext-diff
 # (diff.external), --text (a `-diff` binary attribute), --no-textconv (a
-# textconv driver) -- each once turned an added capture into zero hunks.
+# textconv driver) -- each once turned an added capture into zero hunks --
+# and --inter-hunk-context=0 (diff.interHunkContext would fuse hunks, so the
+# unchanged lines between two edits would read as added).
 unset GIT_DIFF_OPTS GIT_EXTERNAL_DIFF
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -180,12 +182,12 @@ done < "$diff_status_file"
 added_lines_for() {
     local path="$1" src_path="$2" out="$3" hunks rc
     if [ -n "$src_path" ]; then
-        if ! hunks="$(git diff --no-color --no-ext-diff --text --no-textconv --cached -M -U0 -- "$src_path" "$path" 2>&1)"; then
+        if ! hunks="$(git diff --no-color --no-ext-diff --text --no-textconv --inter-hunk-context=0 --cached -M -U0 -- "$src_path" "$path" 2>&1)"; then
             echo "FAIL: check-unchecked-mktemp: git diff --cached -M -U0 -- $src_path $path failed: $hunks" >&2
             return 1
         fi
     else
-        if ! hunks="$(git diff --no-color --no-ext-diff --text --no-textconv --cached -U0 -- "$path" 2>&1)"; then
+        if ! hunks="$(git diff --no-color --no-ext-diff --text --no-textconv --inter-hunk-context=0 --cached -U0 -- "$path" 2>&1)"; then
             echo "FAIL: check-unchecked-mktemp: git diff --cached -U0 -- $path failed: $hunks" >&2
             return 1
         fi
