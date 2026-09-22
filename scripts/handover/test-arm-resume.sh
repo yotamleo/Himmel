@@ -769,7 +769,7 @@ HO=$(make_handover "$WORK_REPO")
 # so PAST_HHMM's "2 minutes ago" and the arm's own roll-to-tomorrow decision
 # always land on the SAME day the assertions expect -- regardless of the real
 # wall clock, and regression-testing the exact midnight boundary every run.
-T8_FREEZE=$(_freeze_now 2026 9 22 23 59 59)
+T8_FREEZE=$(_freeze_now 2026 9 22 23 59 59) || exit 1
 PAST_HHMM=$(PYTHONPATH="$T8_FREEZE" python3 -c 'import datetime; print((datetime.datetime.now()-datetime.timedelta(minutes=2)).strftime("%H:%M"))')
 # HIMMEL-966: host `at` must not be a dependency; pin the posix backend with the stub.
 out=$(PYTHONPATH="$T8_FREEZE" SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$PAST_HHMM" --handover "$HO" --long-gap --force --dry-run 2>&1)
@@ -961,7 +961,7 @@ HO=$(make_handover "$WORK_REPO")
 # arm-resume's own roll decision must see the SAME now, or a real clock tick
 # between the two reads (near-guaranteed at real midnight) can make arm-resume
 # see "23:57" as still LATER today instead of past, and never roll at all.
-T1674_TOMORROW_FREEZE=$(_freeze_now 2026 9 22 23 59 59)
+T1674_TOMORROW_FREEZE=$(_freeze_now 2026 9 22 23 59 59) || exit 1
 PAST_HHMM=$(PYTHONPATH="$T1674_TOMORROW_FREEZE" python3 -c 'import datetime; print((datetime.datetime.now()-datetime.timedelta(minutes=2)).strftime("%H:%M"))')
 out=$(PYTHONPATH="$T1674_TOMORROW_FREEZE" SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$PAST_HHMM" --handover "$HO" --long-gap --force --dry-run 2>&1)
 rc=$?
@@ -981,7 +981,7 @@ HO=$(make_handover "$WORK_REPO")
 # boundary so this test always exercises the "near roll across midnight" arm
 # the comment above describes, instead of leaving it to chance whether the
 # suite happens to run near real midnight.
-T1674_NEAR_FREEZE=$(_freeze_now 2026 9 22 23 59 59)
+T1674_NEAR_FREEZE=$(_freeze_now 2026 9 22 23 59 59) || exit 1
 NEAR_HHMM=$(PYTHONPATH="$T1674_NEAR_FREEZE" python3 -c 'import datetime; n=datetime.datetime.now(); t=n.replace(second=0,microsecond=0)+datetime.timedelta(minutes=25); print(t.strftime("%H:%M"))')
 out=$(PYTHONPATH="$T1674_NEAR_FREEZE" SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$NEAR_HHMM" --handover "$HO" --force --dry-run 2>&1)
 rc=$?
