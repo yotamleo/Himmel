@@ -504,9 +504,21 @@ function verifyPluginSet(enabledPlugins, ctx) {
     return `cannot read/parse plugin install ledger at ${ledgerPath}`;
   }
   const installed = (ledger && typeof ledger.plugins === 'object' && ledger.plugins) || {};
-  const notInstalled = actualSet.filter((k) => !Array.isArray(installed[k]) || installed[k].length === 0);
+  // A "user" ledger entry is globally available, so it satisfies either
+  // scope of probe. A "project" entry only satisfies a project-scope probe
+  // whose targetPath is that SAME project — an entry recorded for a
+  // different project must not satisfy this one (installPath is a shared
+  // marketplace-cache dir, so any stale entry would otherwise pass). Then
+  // the matching entry's installPath must still exist on disk, not merely
+  // be recorded.
+  const scopeMatches = (entry) => entry && (entry.scope === 'user'
+    || (ctx.scope === 'project' && entry.scope === 'project' && entry.projectPath === ctx.targetPath));
+  const notInstalled = actualSet.filter((k) => {
+    const entries = Array.isArray(installed[k]) ? installed[k] : [];
+    return !entries.some((e) => scopeMatches(e) && typeof e.installPath === 'string' && fs.existsSync(e.installPath));
+  });
   if (notInstalled.length > 0) {
-    return `not installed per ${ledgerPath}: ${notInstalled.join(', ')}`;
+    return `not installed for this scope per ${ledgerPath}: ${notInstalled.join(', ')}`;
   }
   return null;
 }

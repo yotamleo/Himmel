@@ -622,8 +622,20 @@ echo "ok: settings-key dot-path + verifyScript (wiring-statusline) — present/a
 sk2_repo="$work/sk2-repo"; mkdir -p "$sk2_repo/docs/setup"
 printf '{"enabledPlugins":{"foo@bar":true,"off@bar":false}}' > "$sk2_repo/docs/setup/settings-template.json"
 sk2_home="$work/sk2-home"; mkdir -p "$sk2_home/.claude/plugins"
-printf '{"version":2,"plugins":{"foo@bar":[{"scope":"user"}]}}' > "$sk2_home/.claude/plugins/installed_plugins.json"
+sk2_foo_installpath="$work/sk2-cache/foo"; mkdir -p "$sk2_foo_installpath"
+sk2_foo_installpath_w="$(winpath "$sk2_foo_installpath")"
+printf '{"version":2,"plugins":{"foo@bar":[{"scope":"user","installPath":"%s"}]}}' "$sk2_foo_installpath_w" > "$sk2_home/.claude/plugins/installed_plugins.json"
 sk2_home_w="$(winpath "$sk2_home")"
+
+# HIMMEL-3322 (codex /pr-check finding): a ledger entry with a non-empty
+# array used to be enough — regardless of whether its installPath still
+# exists on disk, or whether the entry belongs to a DIFFERENT project.
+sk2_home_stale="$work/sk2-home-stale"; mkdir -p "$sk2_home_stale/.claude/plugins"
+printf '{"version":2,"plugins":{"foo@bar":[{"scope":"user","installPath":"%s"}]}}' "$(winpath "$work/sk2-cache/gone")" > "$sk2_home_stale/.claude/plugins/installed_plugins.json"
+sk2_home_stale_w="$(winpath "$sk2_home_stale")"
+sk2_home_otherproject="$work/sk2-home-otherproject"; mkdir -p "$sk2_home_otherproject/.claude/plugins"
+printf '{"version":2,"plugins":{"foo@bar":[{"scope":"project","projectPath":"%s","installPath":"%s"}]}}' "$(winpath "$work/sk2-some-other-project")" "$sk2_foo_installpath_w" > "$sk2_home_otherproject/.claude/plugins/installed_plugins.json"
+sk2_home_otherproject_w="$(winpath "$sk2_home_otherproject")"
 
 sk2_present="$work/sk2-present"; mkdir -p "$sk2_present/.claude"
 printf '{"enabledPlugins":{"foo@bar":true}}' > "$sk2_present/.claude/settings.json"
@@ -677,7 +689,29 @@ console.log(JSON.stringify(runProbe(item, ctx)));
 ")
 echo "$outSK2uninstalled" | jq -e '.actual == "degraded"' >/dev/null \
   || fail "settings-key verifyPluginSet: a matching set that is not actually installed must NOT read green (got: $outSK2uninstalled)"
-echo "ok: settings-key simple non-dotted key + verifyPluginSet (claude-plugins-pluginSet) — present/absent, mismatch + not-installed degrade"
+# RED: a ledger entry naming an installPath that no longer exists on disk must not read green.
+outSK2stale=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'claude-plugins-pluginSet');
+const env = Object.assign({}, process.env, { HOME: '$sk2_home_stale_w' });
+const ctx = { repoRoot: '$(winpath "$sk2_repo")', targetPath: '$(winpath "$sk2_present")', scope: 'project', env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outSK2stale" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "settings-key verifyPluginSet: a ledger entry whose installPath no longer exists must NOT read green (got: $outSK2stale)"
+# RED: a ledger entry recorded for a DIFFERENT project must not satisfy this project's probe.
+outSK2otherproject=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'claude-plugins-pluginSet');
+const env = Object.assign({}, process.env, { HOME: '$sk2_home_otherproject_w' });
+const ctx = { repoRoot: '$(winpath "$sk2_repo")', targetPath: '$(winpath "$sk2_present")', scope: 'project', env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outSK2otherproject" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "settings-key verifyPluginSet: a project-scope ledger entry for a DIFFERENT project must NOT satisfy this one (got: $outSK2otherproject)"
+echo "ok: settings-key simple non-dotted key + verifyPluginSet (claude-plugins-pluginSet) — present/absent, mismatch + not-installed degrade, stale installPath + wrong-project scope degrade"
 
 # ── settings-key: .env ALL-keys-required union (jira-env-keys) ────────────
 # Resolves against repoRoot for BOTH scopes (CLAUDE.md / adopt.sh
