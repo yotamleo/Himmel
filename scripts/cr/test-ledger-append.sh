@@ -468,23 +468,33 @@ check "the original finding line is untouched" "$(L="$AM" node -e 'const o=requi
 check "amend records the target + the set" "$(L="$AM" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="amend");console.log(o.target_head+","+o.finding_id+","+o.set.severity)')" "AH1,codex-adv-1,sug"
 check "amend records the reason" "$(L="$AM" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="amend");console.log(o.reason)')" "out of diff, pre-existing, already public"
 
-# HIMMEL-2405 (supersedes HIMMEL-2909): amend without --branch used to write
-# branch:"" and then inherit from the TARGET finding row's own branch. That
-# was replaced with defaulting to the CALLER's own current checkout branch
-# (git symbolic-ref) — inheriting from whichever row the lookup happened to
-# match could silently stamp the wrong branch on the exact ambiguous/
-# cross-branch match this ticket exists to fix. Prove it here: the finding
-# carries a DIFFERENT branch ("origin-branch") than the caller's checkout
-# ("my-current-branch"), so inheritance and checkout-default disagree, and
-# the amend must record the checkout's branch.
+# HIMMEL-2405 (AE round-2 ruling, supersedes the original HIMMEL-2405 fix and
+# HIMMEL-2909): amend without --branch now prefers the UNIQUE matching
+# finding row's own branch over the caller's checkout branch - an escalation
+# amend run from the primary checkout (branch "my-current-branch") for a
+# finding raised on "origin-branch" must stamp "origin-branch", not
+# "my-current-branch" (defaulting to the caller's checkout silently dropped
+# exactly this escalation). The caller's checkout branch is used only as a
+# fallback when NO finding row matches at all (see the companion test
+# below).
 CB="$tmp/current-branch-repo"; mkdir -p "$CB"
 git -C "$CB" init -q
 git -C "$CB" -c user.email=t@t.example -c user.name=t commit -q --allow-empty -m init
 git -C "$CB" checkout -q -b my-current-branch
 CBL="$tmp/current-branch.jsonl"; : > "$CBL"
 CR_LEDGER="$CBL" bash "$LA" finding --branch origin-branch --head CBH1 --model m --id find-cb-1 --severity imp --file f --line 3 --verdict agreed
-(cd "$CB" && CR_LEDGER="$CBL" bash "$LA" amend --head CBH1 --id find-cb-1 --set severity=sug --reason "no --branch given, must default to the caller's own checkout")
-check "amend without --branch defaults to the CALLER's checkout branch, not the target's" "$(L="$CBL" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="amend");console.log(o.branch)')" "my-current-branch"
+(cd "$CB" && CR_LEDGER="$CBL" bash "$LA" amend --head CBH1 --id find-cb-1 --set severity=sug --reason "no --branch given, a unique match exists and its branch wins")
+check "amend without --branch prefers the unique match's branch over the caller's checkout" "$(L="$CBL" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="amend");console.log(o.branch)')" "origin-branch"
+
+# Companion: with NO matching finding row at all (but the caller IS on a
+# branch), the caller's own checkout branch is the fallback - execution then
+# proceeds to the standard "no target to amend" refusal (rc=3), not the
+# detached-HEAD refusal (rc=2), which proves branch resolution used the
+# fallback rather than bailing out early.
+NCB="$tmp/no-match-current-branch.jsonl"; : > "$NCB"
+(cd "$CB" && CR_LEDGER="$NCB" bash "$LA" amend --head ZZZ1 --id no-such-id --set severity=sug --reason "no match, falls back to caller's checkout") 2>"$tmp/no-match-cb.err"
+check "amend with no matching row falls back to caller branch then refuses with no target (not a detached-HEAD refusal)" "$?" "3"
+check "the no-target refusal (not detached-HEAD) confirms the caller-branch fallback ran" "$(grep -c 'detached HEAD' "$tmp/no-match-cb.err")" "0"
 
 # Control: an explicit --branch is never overridden by the checkout default.
 BR="$tmp/branch-inherit.jsonl"; : > "$BR"
@@ -492,26 +502,31 @@ CR_LEDGER="$BR" bash "$LA" finding --branch origin-branch --head BH1 --model m -
 CR_LEDGER="$BR" bash "$LA" amend --branch explicit-branch --head BH1 --id find-br-1 --set severity=sug --reason "explicit branch must win"
 check "amend with an explicit --branch keeps it (never overridden)" "$(L="$BR" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="amend");console.log(o.branch)')" "explicit-branch"
 
-# Negative: the caller's cwd is not on a branch (detached HEAD) and no
-# --branch was given — nothing to default to, so this must refuse loudly
-# BEFORE even looking for a target (HIMMEL-2405), rather than write "".
+# Positive (revised per HIMMEL-2405 AE round-2 ruling): the caller's cwd is
+# NOT on a branch (detached HEAD) and no --branch was given, but there IS a
+# UNIQUE matching finding row for this head/id/artifact/perspective - the
+# target's own branch is inferred and used, rather than refusing. Detached
+# HEAD alone is not fatal; only detached HEAD with no way to infer a branch
+# is (see the negative case below).
 DET="$tmp/detached-repo"; mkdir -p "$DET"
 git -C "$DET" init -q
 git -C "$DET" -c user.email=t@t.example -c user.name=t commit -q --allow-empty -m init
 git -C "$DET" checkout -q --detach HEAD
 NB="$tmp/no-branch-target.jsonl"; : > "$NB"
 CR_LEDGER="$NB" bash "$LA" finding --branch origin-branch --head NBH1 --model m --id find-nb-1 --severity imp --file f --line 3 --verdict agreed
-(cd "$DET" && CR_LEDGER="$NB" bash "$LA" amend --head NBH1 --id find-nb-1 --set severity=sug --reason "no --branch, detached HEAD") 2>"$tmp/no-branch.err"
-check "amend refuses when the caller's HEAD is detached and no --branch was given (HIMMEL-2405)" "$?" "2"
-check "amend refusal on a detached HEAD names it" "$(grep -c 'detached HEAD' "$tmp/no-branch.err")" "1"
-check "amend refusal on a detached HEAD wrote nothing" "$(wc -l < "$NB" | tr -d ' ')" "1"
+(cd "$DET" && CR_LEDGER="$NB" bash "$LA" amend --head NBH1 --id find-nb-1 --set severity=sug --reason "no --branch, detached HEAD, but a unique match exists")
+check "amend on detached HEAD with a unique matching row infers that row's branch (HIMMEL-2405)" "$?" "0"
+check "the inferred branch is the matched row's branch, not empty" "$(L="$NB" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="amend");console.log(o.branch)')" "origin-branch"
 
-# Negative (ticket-exact fixture): no matching finding row at all, also run
-# from a detached HEAD — the branch precondition fails first (before target
-# lookup even runs), so this still refuses, never falling through to write "".
-(cd "$DET" && CR_LEDGER="$NB" bash "$LA" amend --head NBH1 --id no-such-finding --set severity=sug --reason x) 2>"$tmp/no-match-detached.err"
-check "amend with no matching row + detached HEAD still refuses" "$?" "2"
-check "amend with no matching row + detached HEAD wrote nothing" "$(wc -l < "$NB" | tr -d ' ')" "1"
+# Negative: no matching row AND detached HEAD AND no --branch — nothing to
+# infer from and nothing to default to, so this must refuse loudly, never
+# falling through to write "".
+NM="$tmp/no-match-detached.jsonl"; : > "$NM"
+CR_LEDGER="$NM" bash "$LA" finding --branch origin-branch --head OTHERHEAD --model m --id some-other-id --severity imp --file f --line 3 --verdict agreed
+(cd "$DET" && CR_LEDGER="$NM" bash "$LA" amend --head NBH1 --id no-such-finding --set severity=sug --reason x) 2>"$tmp/no-match-detached.err"
+check "amend refuses when detached HEAD, no --branch, and no matching row (HIMMEL-2405)" "$?" "2"
+check "amend refusal on a detached HEAD with no match names it" "$(grep -c 'detached HEAD' "$tmp/no-match-detached.err")" "1"
+check "amend refusal on a detached HEAD with no match wrote nothing" "$(wc -l < "$NM" | tr -d ' ')" "1"
 
 # The whole point of the verb: it must NEVER report success without writing.
 CR_LEDGER="$AM" bash "$LA" amend --branch b --head AH1 --id no-such-finding --set severity=sug --reason x 2>"$tmp/noop.err"
@@ -921,15 +936,30 @@ check "batch mode refuses a row missing a required key" "$?" "3"
 check "batch mode writes nothing for the key-missing row" "$(wc -l < "$BFL4" | tr -d ' ')" "0"
 check "batch mode names the missing key in stderr" "$(grep -c 'branch' "$tmp/batch-missing-key.err")" "1"
 
-# Companion: a row with an EMPTY value (key present) for the same fields -
+# Companion: a row with an EMPTY value (key present) for file/line/verdict -
 # the actual shape critic-panel.sh emits for a citation-less finding - still
-# writes normally.
+# writes normally. branch must be non-empty here (see the empty-branch
+# refusal below, HIMMEL-2405 AE round-2): unlike file/line/verdict, an empty
+# branch has no legitimate meaning and would silently mint a row into the
+# back-compat "" bucket every branch's lookup checks.
 BF5="$tmp/batch-empty-values.jsonl"
 BFL5="$tmp/batch-empty-values-ledger.jsonl"; : > "$BFL5"
-printf '{"branch":"","head":"%s","model":"codex","id":"e-2","severity":"imp","file":"","line":"","verdict":""}\n' "$BHEAD" > "$BF5"
+printf '{"branch":"b","head":"%s","model":"codex","id":"e-2","severity":"imp","file":"","line":"","verdict":""}\n' "$BHEAD" > "$BF5"
 CR_LEDGER="$BFL5" bash "$LA" finding --batch-file "$BF5" 2>"$tmp/batch-empty-values.err"
-check "batch mode accepts a row with present-but-empty values" "$?" "0"
+check "batch mode accepts a row with present-but-empty file/line/verdict" "$?" "0"
 check "batch mode writes the empty-value row" "$(wc -l < "$BFL5" | tr -d ' ')" "1"
+
+# Negative (HIMMEL-2405 AE round-2): a row with a present-but-EMPTY branch is
+# refused, not silently accepted - unlike file/line/verdict, there is no
+# legitimate all-branches finding row, and accepting "" here would defeat
+# this ticket's branch isolation for every finding this batch writes.
+BF6="$tmp/batch-empty-branch.jsonl"
+BFL6="$tmp/batch-empty-branch-ledger.jsonl"; : > "$BFL6"
+printf '{"branch":"","head":"%s","model":"codex","id":"e-3","severity":"imp","file":"f","line":3,"verdict":""}\n' "$BHEAD" > "$BF6"
+CR_LEDGER="$BFL6" bash "$LA" finding --batch-file "$BF6" 2>"$tmp/batch-empty-branch.err"
+check "batch mode refuses a row with an empty branch (HIMMEL-2405)" "$?" "3"
+check "batch mode writes nothing for the empty-branch row" "$(wc -l < "$BFL6" | tr -d ' ')" "0"
+check "batch mode names the empty branch in stderr" "$(grep -c 'empty branch' "$tmp/batch-empty-branch.err")" "1"
 
 # --batch-file is scoped to the finding kind only.
 CR_LEDGER="$tmp/batch-kind.jsonl" bash "$LA" avail --batch-file "$BF" 2>/dev/null

@@ -77,7 +77,7 @@ case "$kind" in
   *) echo "ledger-append.sh: kind must be finding|avail|usage|amend|attempt|delegation|score" >&2; exit 2;;
 esac
 
-branch="" head="" model="" responding_model="" id="" severity="" file="" line="" verdict="" status="" artifact="diff" perspective="off"
+branch="" caller_branch="" head="" model="" responding_model="" id="" severity="" file="" line="" verdict="" status="" artifact="diff" perspective="off"
 prompt_chars="" response_chars="" reason="" detail="" deferred_to="" set_pairs="" attempt_num="" duration_secs="" batch_file="" text=""
 round="" disposition_round=""
 crit_n="" imp_n="" sug_n="" dropped_n="" raw_path=""
@@ -332,19 +332,20 @@ if [ "$kind" = "amend" ]; then
     esac
   done <<< "$set_pairs"
   if [ "$_disproving" = 1 ]; then disproval_bar_ok "$_evidence" || exit 2; fi
-  # HIMMEL-2405: --branch is optional and defaults to the CALLER's own current
-  # checkout branch, never inherited from whichever finding row the lookup
-  # happens to match (that was the HIMMEL-2909 behavior, and it could silently
-  # stamp the amend with the WRONG branch when the match itself was the
-  # ambiguous/cross-branch case this ticket exists to fix). Detached HEAD with
-  # no explicit --branch has nothing to default to and must refuse up front,
-  # before target lookup even runs.
+  # HIMMEL-2405 (revised per AE round-2 ruling): --branch is optional. When
+  # omitted, the TARGET's own branch wins over the caller's checkout branch -
+  # an escalation amend run from the primary checkout (branch `main`) for a
+  # finding raised on `feat/x` must stamp `feat/x`, not `main` (AE's R2:
+  # defaulting to the caller's checkout silently dropped exactly this
+  # escalation). The lookup against the ledger runs inside the node block
+  # below, where the head-resolution machinery (resolveHead/keyForHead)
+  # already lives - duplicating it here in shell would drift. caller_branch is
+  # captured now (possibly empty on detached HEAD) and handed to node as the
+  # fallback for when NO finding row matches at all; node still refuses loudly
+  # when the match is ambiguous across more than one branch (never guesses),
+  # and refuses when neither a unique match nor a caller branch is available.
   if [ -z "$branch" ]; then
-    branch="$(git symbolic-ref --short -q HEAD 2>/dev/null || true)"
-    if [ -z "$branch" ]; then
-      echo "ledger-append.sh: amend requires --branch when the current checkout is not on a branch (detached HEAD) - refusing to default to an empty branch (HIMMEL-2405). $amend_usage" >&2
-      exit 2
-    fi
+    caller_branch="$(git symbolic-ref --short -q HEAD 2>/dev/null || true)"
   fi
 fi
 
@@ -468,7 +469,7 @@ ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 # stdin (it does not; both child processes get an explicit stdin — git
 # cat-file is handed `input:`, git branch uses stdio "ignore").
 # shellcheck disable=SC2016  # the $-refs inside are a JS heredoc (process.env), not shell expansions
-KIND="$kind" BRANCH="$branch" HEAD_="$head" RAW_HEAD="$raw_head" MODEL="$model" RESPONDING_MODEL="$responding_model" ID="$id" SEV="$severity" \
+KIND="$kind" BRANCH="$branch" CALLER_BRANCH="$caller_branch" HEAD_="$head" RAW_HEAD="$raw_head" MODEL="$model" RESPONDING_MODEL="$responding_model" ID="$id" SEV="$severity" \
 FILE="$file" LINE="$line" VERDICT="$verdict" STATUS="$status" BATCH_FILE="$batch_file" \
 PROMPT_CHARS="$prompt_chars" RESPONSE_CHARS="$response_chars" TS="$ts" LEDGER="$ledger" ARTIFACT="$artifact" PERSPECTIVE="$perspective" \
 ATTEMPT_NUM="$attempt_num" DURATION_SECS="$duration_secs" ROUND="$round" DISPOSITION_ROUND="$disposition_round" \
@@ -687,6 +688,17 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
         process.stderr.write("ledger-append.sh: batch row "+sid+" is missing required field(s) ("+missingFields.join(",")+") - refusing this row.\n");
         anyFail=true; continue;
       }
+      // HIMMEL-2405 (AE round-2): "branch" in spec only checks key PRESENCE
+      // (a citation-less file/line is legitimately ""), but an empty branch
+      // is never legitimate here - unlike the single-row amend path, a batch
+      // finding row has no caller checkout to default from, so a blank value
+      // would mint a FRESH row that silently falls into the "" back-compat
+      // bucket every branch checks, defeating this ticket's isolation fix for
+      // every finding this batch writes.
+      if(!spec.branch){
+        process.stderr.write("ledger-append.sh: batch row "+sid+" has an empty branch - refusing this row (HIMMEL-2405).\n");
+        anyFail=true; continue;
+      }
       const positiveInteger=(v)=>(typeof v==="number"&&Number.isInteger(v)&&v>0)
           ||(typeof v==="string"&&/^[1-9][0-9]*$/.test(v));
       const invalidRoundFields=["round","disposition_round"].filter(f=>f in spec&&!positiveInteger(spec[f]));
@@ -801,6 +813,33 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
   // (caller sees 0, record unchanged, gate still refuses).
   if(e.KIND==="amend"){
     const findings=parsed.filter(o=>o.kind==="finding");
+    // HIMMEL-2405 (AE round-2): when the caller gave no --branch, resolve it
+    // from the ledger BEFORE computing `matches` below (matches/effective()
+    // both read e.BRANCH, so this must run first, not after). Matched on raw
+    // head only (keyForHead, no effective()/re-key chasing) - the point here
+    // is only to count how many DISTINCT branches have a finding row at this
+    // identity, not to resolve chained amends. Exactly one distinct branch ->
+    // use it, even when it differs from the caller's own checkout branch
+    // (the escalation case this exists for). Zero matches -> fall back to the
+    // caller's checkout branch, refusing only if that is also empty (detached
+    // HEAD). More than one distinct branch -> refuse; guessing here is the
+    // exact bug this revision fixes.
+    if(e.BRANCH===""){
+      const rawMatches=findings.filter(o=>keyForHead(o,e.HEAD_));
+      const branches=[...new Set(rawMatches.map(o=>o.branch||""))];
+      if(branches.length===1){
+        e.BRANCH=branches[0];
+      } else if(branches.length>1){
+        process.stderr.write("ledger-append.sh: amend --head "+e.HEAD_+" for "+e.ID
+          +" matches finding rows on "+branches.length+" different branches ("+branches.join(", ")+") - refusing to guess which one this amend is for. Pass --branch explicitly.\n");
+        process.exit(3);
+      } else if(e.CALLER_BRANCH){
+        e.BRANCH=e.CALLER_BRANCH;
+      } else {
+        process.stderr.write("ledger-append.sh: amend requires --branch when the current checkout is not on a branch (detached HEAD) and no finding row exists yet to infer one from (HIMMEL-2405).\n");
+        process.exit(2);
+      }
+    }
     const matches=findings.filter(o=>key(o)||key(effective(o)));
     // Ambiguity (HIMMEL-2029): a stale legacy pair - a short-keyed row and a
     // full-keyed row for the SAME finding_id, both resolving to this --head -

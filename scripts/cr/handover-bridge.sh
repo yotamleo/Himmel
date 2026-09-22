@@ -91,9 +91,14 @@ node -e '
       const k=[a.branch||"",a.target_head,a.finding_id,a.artifact||"diff",a.perspective||"off"].join(SEP);
       amendsByKey.set(k, Object.assign({}, amendsByKey.get(k)||{}, a.set));
     }
-    const amendSetFor=(head,id,artifact,perspective)=>{
+    // AE round-2: keyed on the branch stamped on the FINDING ROW itself (the
+    // caller passes o.branch below), not e.BRANCH (the branch this bridge
+    // run is for) - same fix as clear-cr-marker.sh amendSetFor. An
+    // escalation amend recorded FOR the rows own branch must apply here
+    // regardless of which branch this particular bridge invocation targets.
+    const amendSetFor=(branch,head,id,artifact,perspective)=>{
       const legacy=amendsByKey.get(["",head,id,artifact,perspective].join(SEP));
-      const scoped=amendsByKey.get([e.BRANCH||"",head,id,artifact,perspective].join(SEP));
+      const scoped=amendsByKey.get([branch||"",head,id,artifact,perspective].join(SEP));
       return (legacy||scoped) ? Object.assign({},legacy||{},scoped||{}) : null;
     };
 
@@ -109,7 +114,7 @@ node -e '
     const findingsByKey=new Map();
     for (const o of rows) {
       if (o.kind!=="finding") continue;
-      const amendSet=amendSetFor(o.head,o.finding_id,o.artifact||"diff",o.perspective||"off");
+      const amendSet=amendSetFor(o.branch||"",o.head,o.finding_id,o.artifact||"diff",o.perspective||"off");
       const eff = amendSet ? Object.assign({}, o, amendSet) : o;
       // Select on (head, branch), never head alone (CR round 1, codex-2).
       // --branch was required but unused, which is exactly the hole

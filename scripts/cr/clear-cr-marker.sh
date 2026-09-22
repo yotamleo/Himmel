@@ -516,9 +516,16 @@ verdict=$(LEDGER="$ledger" FULL_SHA="$tip" PANEL_EMPTY="${panel_empty:-0}" BRANC
       const k = [a.branch || "", a.target_head, a.finding_id, a.artifact || "diff", a.perspective || "off"].join(SEP);
       amendsByKey.set(k, Object.assign({}, amendsByKey.get(k) || {}, a.set));
   }
-  const amendSetFor = (head, id, artifact, perspective) => {
+  // AE round-2: keyed on the branch stamped on the FINDING ROW itself, not
+  // the branch this gate run is judging (e.BRANCH). A finding raised on
+  // feat/x is amended by an escalation recorded FOR feat/x - that amend must
+  // apply while judging feat/x even when e.BRANCH happens to be something
+  // else (e.g. a console-side re-check run against a different checkout).
+  // The legacy "" bucket is still checked unconditionally as the back-compat
+  // fallback.
+  const amendSetFor = (branch, head, id, artifact, perspective) => {
       const legacy = amendsByKey.get(["", head, id, artifact, perspective].join(SEP));
-      const scoped = amendsByKey.get([e.BRANCH || "", head, id, artifact, perspective].join(SEP));
+      const scoped = amendsByKey.get([branch || "", head, id, artifact, perspective].join(SEP));
       return (legacy || scoped) ? Object.assign({}, legacy || {}, scoped || {}) : null;
   };
   for (const l of lines) {
@@ -526,20 +533,25 @@ verdict=$(LEDGER="$ledger" FULL_SHA="$tip" PANEL_EMPTY="${panel_empty:-0}" BRANC
       try { o = JSON.parse(l); } catch { malformed++; continue; }
       if (o.kind === "amend") continue;   // metadata, not a verdict record
       let amendSet = null;
+      const origHead = o.head;
       if (o.kind === "finding") {
-          amendSet = amendSetFor(o.head, o.finding_id, o.artifact || "diff", o.perspective || "off");
+          amendSet = amendSetFor(o.branch || "", o.head, o.finding_id, o.artifact || "diff", o.perspective || "off");
           if (amendSet) o = Object.assign({}, o, amendSet);
       }
-      if (!atHead(o)) continue;
-      if (amendSet) {
-          // HIMMEL-2564: reported only once the (possibly re-keyed) row has
-          // passed atHead - i.e. the amends target actually sits at the
-          // head being judged. Reporting this before the atHead check (the
-          // prior shape) named every amend the ledger has ever recorded for
-          // this finding id across its whole history, not just the one this
-          // gate run actually acted on.
+      if (amendSet && (atHead(o) || atHead({ head: origHead }))) {
+          // HIMMEL-2564: reported once EITHER the (possibly re-keyed)
+          // effective row or the ORIGINAL row it was re-keyed FROM sits at
+          // the head being judged - an amend that moves a finding OFF the
+          // judged head still caused this gate run to clear and must be
+          // auditable, not only one that moves a finding ONTO it. Reporting
+          // this before the gate-4 atHead check below (the prior shape named
+          // every amend the ledger has ever recorded for this finding id
+          // across its whole history) would over-report; gating on ONLY the
+          // effective head (the shape before this fix) under-reported the
+          // off-head-move case.
           applied.push((o.finding_id || "?") + JSON.stringify(amendSet));
       }
+      if (!atHead(o)) continue;
       if (o.kind === "finding") {
         const k2 = [o.finding_id || "?", o.artifact || "diff", o.perspective || "off"].join(SEP);
         unadjByKey.set(k2, { id: o.finding_id || "?",

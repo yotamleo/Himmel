@@ -1283,18 +1283,27 @@ rm -rf "$tmp"
 make_repo || exit 1
 write_marker "$tmp" "$sha"
 write_ledger "$tmp" "$(avail_ok "${sha:0:8}")" \
-  "$(printf '{"kind":"finding","head":"%s","model":"codex","finding_id":"codex-xbr","severity":"imp","file":"a.sh","line":1,"verdict":"agreed"}' "${sha:0:8}")" \
+  "$(printf '{"kind":"finding","branch":"feat/x","head":"%s","model":"codex","finding_id":"codex-xbr","severity":"imp","file":"a.sh","line":1,"verdict":"agreed"}' "${sha:0:8}")" \
   "$(printf '{"kind":"amend","branch":"other-branch","target_head":"%s","finding_id":"codex-xbr","artifact":"diff","perspective":"off","set":{"severity":"sug"},"reason":"other branch own call"}' "${sha:0:8}")"
 stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
 run_clear "$tmp" 15 "an amend recorded for a different branch does not unblock THIS branch (HIMMEL-2405) → exit 15"
 rm -rf "$tmp"
 
-# 6a-1c. Positive control for 6a-1b: the SAME branch's own amend still applies.
+# 6a-1c. Positive control for 6a-1b: the SAME branch's own amend still
+# applies. The finding row itself carries branch=feat/x - AE round-2 keys the
+# scoped lookup on the FINDING ROW's own branch, not the branch this gate run
+# happens to be judging, so the finding must actually carry the branch the
+# amend targets. The amend's set carries a terminal verdict (deferred, not a
+# severity-only tweak): review-round.sh's own branch-wide still-open gate
+# (4c, HIMMEL-3027, a separate consumer) treats an agreed verdict still
+# standing at the judged head as needing a real disposition regardless of
+# severity - unrelated to this ticket's branch-keying fix, so the fixture
+# gives it one to isolate what THIS control is actually proving.
 make_repo || exit 1
 write_marker "$tmp" "$sha"
 write_ledger "$tmp" "$(avail_ok "${sha:0:8}")" \
-  "$(printf '{"kind":"finding","head":"%s","model":"codex","finding_id":"codex-xbr2","severity":"imp","file":"a.sh","line":1,"verdict":"agreed"}' "${sha:0:8}")" \
-  "$(printf '{"kind":"amend","branch":"feat/x","target_head":"%s","finding_id":"codex-xbr2","artifact":"diff","perspective":"off","set":{"severity":"sug"},"reason":"this branch own call"}' "${sha:0:8}")"
+  "$(printf '{"kind":"finding","branch":"feat/x","head":"%s","model":"codex","finding_id":"codex-xbr2","severity":"imp","file":"a.sh","line":1,"verdict":"agreed"}' "${sha:0:8}")" \
+  "$(printf '{"kind":"amend","branch":"feat/x","target_head":"%s","finding_id":"codex-xbr2","artifact":"diff","perspective":"off","set":{"severity":"sug","verdict":"deferred","deferred_to":"HIMMEL-TEST"},"reason":"this branch own call"}' "${sha:0:8}")"
 stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
 run_clear "$tmp" 0 "an amend recorded for THIS branch still unblocks it (HIMMEL-2405 control) → exit 0"
 rm -rf "$tmp"
@@ -1334,15 +1343,39 @@ else
 fi
 rm -rf "$tmp"
 
+# 6a-1f. HIMMEL-2405 AE round-2 (R1) — amendSetFor must key on the FINDING
+# ROW's own branch, not the branch this clear-cr-marker.sh run is judging
+# (e.BRANCH, here feat/x via write_marker). A finding and its amend both
+# recorded for a DIFFERENT branch (feat/y) than the one being judged must
+# still see the amend apply: the main gate-4b loop evaluates every finding at
+# the judged HEAD regardless of its own branch (two branches can share a
+# head, HIMMEL-1175), so keying the lookup on e.BRANCH instead of the row's
+# own o.branch would silently miss this amend.
+make_repo || exit 1
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok "${sha:0:8}")" \
+  "$(printf '{"kind":"finding","branch":"feat/y","head":"%s","model":"codex","finding_id":"codex-r1","severity":"imp","file":"a.sh","line":1,"verdict":"agreed"}' "${sha:0:8}")" \
+  "$(printf '{"kind":"amend","branch":"feat/y","target_head":"%s","finding_id":"codex-r1","artifact":"diff","perspective":"off","set":{"severity":"sug","verdict":"deferred","deferred_to":"HIMMEL-TEST"},"reason":"feat/y own adjudication, this run judges feat/x"}' "${sha:0:8}")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 0 "amend keyed on the finding row's own branch (feat/y) applies even though this run judges feat/x (HIMMEL-2405 AE round-2, R1)"
+rm -rf "$tmp"
+
 # 6a-2. Incident 2: the finding was keyed to the head that FIXES it instead of
 # the head it was raised against. An amend that re-keys `head` must move the
-# finding OFF this head entirely.
+# finding OFF this head entirely. HIMMEL-2564 AE round-2 (item 3): the AMENDS
+# audit line must still name this amend, because its ORIGINAL target_head
+# (the judged sha) matches even though the re-keyed head (deadbeef) moved the
+# finding off it — checking only the re-keyed/effective head would silently
+# drop this amend from the audit trail the moment it does its job.
 make_repo || exit 1
 write_marker "$tmp" "$sha"
 write_ledger "$tmp" "$(avail_ok "${sha:0:8}")" "$(finding "${sha:0:8}" imp agreed)" \
   "$(printf '{"kind":"amend","target_head":"%s","finding_id":"codex-1","artifact":"diff","perspective":"off","set":{"head":"deadbeef"},"reason":"raised against deadbeef, mis-keyed"}' "${sha:0:8}")"
 stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
 run_clear "$tmp" 0 "amend re-keying head moves the finding off this SHA → exit 0"
+if grepq "$LAST_CLEAR_OUT" -F "merged=codex-1"; then pass; else
+    fail "AMENDS audit line must name a move-off-head amend by its ORIGINAL target_head (HIMMEL-2564 AE round-2): $LAST_CLEAR_OUT"
+fi
 rm -rf "$tmp"
 
 # 6a-3. An amend must not be a universal unblock: one that leaves the finding
