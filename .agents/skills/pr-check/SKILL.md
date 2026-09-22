@@ -151,9 +151,9 @@ UNCOMMITTED `scripts/cr/` edit count too, and a main-side change only
 over-reports):
 
     if mb=$(git merge-base HEAD refs/remotes/origin/main 2>/dev/null); then
-        git diff --name-only "$mb"..HEAD -- scripts/cr/ scripts/guardrails/lib.sh
-        git diff --name-only HEAD -- scripts/cr/ scripts/guardrails/lib.sh
-        git ls-files --others --exclude-standard -- scripts/cr/ scripts/guardrails/lib.sh
+        git diff --name-only "$mb"..HEAD -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh'
+        git diff --name-only HEAD -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh'
+        git ls-files --others -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh'
     else
         echo unknown
     fi

@@ -293,10 +293,20 @@ set -uo pipefail
 # rather than assumed to stop at index 0. GIT_CONFIG_NOSYSTEM is SET, not
 # unset - unsetting it would let a system-level gitconfig back in, which is
 # the opposite of this block's purpose.
+#
+# Console adversarial delta review (HIMMEL-3382): GIT_LITERAL_PATHSPECS/
+# GIT_GLOB_PATHSPECS/GIT_NOGLOB_PATHSPECS/GIT_ICASE_PATHSPECS were not
+# covered either. The diff/ls-files calls below rely on the `:(top)` magic
+# pathspec to anchor at the worktree root regardless of cwd; an inherited
+# GIT_LITERAL_PATHSPECS=1 turns `:(top)scripts/cr/` into a literal,
+# non-existent path, so every one of the three calls silently returns empty
+# and cr_diff_state falls back to "no" - a fail-open on exactly the diff this
+# script exists to catch.
 unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE \
     GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX \
     GIT_CONFIG GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_PARAMETERS \
-    GIT_CONFIG_COUNT
+    GIT_CONFIG_COUNT GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS \
+    GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS
 while IFS='=' read -r gcvar _; do
     unset "$gcvar"
 done < <(env | grep -E '^GIT_CONFIG_(KEY|VALUE)_[0-9]+=')

@@ -1860,8 +1860,11 @@ literal_replace "$SCRIPT" "$mutant38" \
   'unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE \
     GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX \
     GIT_CONFIG GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_PARAMETERS \
-    GIT_CONFIG_COUNT' \
-  ': # T38 mutant - GIT env vars intentionally left inherited'
+    GIT_CONFIG_COUNT GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS \
+    GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS' \
+  'unset GIT_CONFIG GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_PARAMETERS \
+    GIT_CONFIG_COUNT GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS \
+    GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS # T38 mutant - GIT_DIR/WORK_TREE family intentionally left inherited'
 rc_m38=$?
 if [ "$rc_m38" -ne 0 ]; then
   echo "FAIL: T38 could not build the git-env-inherited mutant - $(cat "$tmp/literal_replace.err" 2>/dev/null)"
@@ -1880,6 +1883,112 @@ red_control_assert --label "T38" \
   --note "HIMMEL-3382 CodeRabbit item 2 - without clearing inherited GIT_DIR/GIT_WORK_TREE first, every later git call (branch, anchor_lane, the delegation decision) silently targets the decoy repo instead of the real cwd" \
   || fail=1
 cp "$SCRIPT" "$anchor13/scripts/cr/pr-check-context.sh"
+
+# T39 (fixture e, HIMMEL-3382 console adversarial delta review). An inherited
+# GIT_LITERAL_PATHSPECS=1 must not turn the `:(top)scripts/cr/` magic pathspec
+# into a literal, non-existent path - that would silently empty all three
+# diff/ls-files calls above and fail cr_diff_state open to "no" on a branch
+# that genuinely edited scripts/cr/, exactly the diff this script exists to
+# catch (round-1's git-env unset fix covered GIT_DIR/GIT_CONFIG_* but not the
+# pathspec-magic vars).
+wt39="$tmp/fake-himmel-wt-literal-pathspecs"
+(cd "$anchor13" && git worktree add -q -b t39-literal-pathspecs "$wt39" main) || { echo "FAIL: T39 could not add worktree"; fail=1; }
+(
+  cd "$wt39" || exit 1
+  printf '# t39 touch\n' >> scripts/cr/critic-panel.sh
+  git add -A
+  git commit -q -m "t39 touch scripts/cr"
+)
+rows_before39="$(grep -c '"kind":"delegation"' "$ledger13" 2>/dev/null || echo 0)"
+out39="$(cd "$wt39" && HIMMEL_REPO="$anchor13" GIT_LITERAL_PATHSPECS=1 bash "$anchor13/scripts/cr/pr-check-context.sh")"
+rc39=$?
+rows_after39="$(grep -c '"kind":"delegation"' "$ledger13" 2>/dev/null || echo 0)"
+check "$rc39" "0" "T39 rc (an inherited GIT_LITERAL_PATHSPECS=1 must not break this run)"
+check "$(get_kv "$out39" delegated)" "yes" "T39 delegated=yes (HIMMEL-3382 console adversarial delta review - GIT_LITERAL_PATHSPECS=1 must not fail the :(top) diff open)"
+check "$(get_kv "$out39" cr_diff_files)" "scripts/cr/critic-panel.sh" "T39 cr_diff_files still names the committed file with GIT_LITERAL_PATHSPECS=1 inherited"
+check "$((rows_after39 - rows_before39))" "1" "T39 exactly one new delegation ledger row"
+
+# T39 RED: a mutant that reverts to the round-1 unset list (no
+# GIT_LITERAL_PATHSPECS/GIT_GLOB_PATHSPECS/GIT_NOGLOB_PATHSPECS/
+# GIT_ICASE_PATHSPECS) must fail cr_diff_state open under
+# GIT_LITERAL_PATHSPECS=1 - the exact fail-open the console adversarial delta
+# review flagged - proving T39's assertions above actually depend on this
+# fix, not some other code path.
+mutant39="$tmp/pr-check-context.mutant-t39.sh"
+literal_replace "$SCRIPT" "$mutant39" \
+  'unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE \
+    GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX \
+    GIT_CONFIG GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_PARAMETERS \
+    GIT_CONFIG_COUNT GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS \
+    GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS' \
+  'unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE \
+    GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX \
+    GIT_CONFIG GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_PARAMETERS \
+    GIT_CONFIG_COUNT # T39 mutant - pathspec-magic env vars intentionally left inherited'
+rc_m39=$?
+if [ "$rc_m39" -ne 0 ]; then
+  echo "FAIL: T39 could not build the pathspec-inherited mutant - $(cat "$tmp/literal_replace.err" 2>/dev/null)"
+  fail=1
+fi
+cp "$mutant39" "$anchor13/scripts/cr/pr-check-context.sh"
+rows_before39r="$(grep -c '"kind":"delegation"' "$ledger13" 2>/dev/null || echo 0)"
+red_control_run --cwd "$wt39" \
+  --env HIMMEL_REPO="$anchor13" \
+  --env GIT_LITERAL_PATHSPECS=1 \
+  -- bash "$anchor13/scripts/cr/pr-check-context.sh"
+rows_after39r="$(grep -c '"kind":"delegation"' "$ledger13" 2>/dev/null || echo 0)"
+red_control_assert --label "T39" \
+  --observed     "delegated=$(get_kv "$RED_CONTROL_OUT" delegated) rows_added=$((rows_after39r - rows_before39r))" \
+  --expect-wrong "delegated=no rows_added=0" \
+  --correct      "delegated=yes rows_added=1" \
+  --note "HIMMEL-3382 console adversarial delta review - without unsetting GIT_LITERAL_PATHSPECS, an inherited GIT_LITERAL_PATHSPECS=1 turns ':(top)scripts/cr/' into a literal, non-existent path, silently emptying all three diff/ls-files calls and fail-opening cr_diff_state to no on a branch that genuinely edited scripts/cr/" \
+  || fail=1
+cp "$SCRIPT" "$anchor13/scripts/cr/pr-check-context.sh"
+
+# T40 (fixture f, HIMMEL-3382 console adversarial delta review). A gitignored,
+# untracked file under scripts/cr/ - never `git add`ed, excluded from
+# ordinary untracked-file listings by .gitignore - proves the twins' pinned
+# recipe (fix #2, test-pr-check-pair.sh check (ii)) and the script itself
+# decide on the SAME set: both must see it, because the round-1 fix
+# deliberately dropped --exclude-standard from the untracked-files leg
+# (finding 3) specifically so an unreviewed scripts/cr/ change cannot hide
+# behind .gitignore.
+wt40="$tmp/fake-himmel-wt-gitignored"
+(cd "$anchor13" && git worktree add -q -b t40-gitignored "$wt40" main) || { echo "FAIL: T40 could not add worktree"; fail=1; }
+(
+  cd "$wt40" || exit 1
+  printf 'scripts/cr/ignored-file.sh\n' >> .gitignore
+  git add .gitignore
+  git commit -q -m "t40 gitignore scripts/cr/ignored-file.sh"
+  printf '#!/usr/bin/env bash\n# t40 gitignored file\n' > scripts/cr/ignored-file.sh
+)
+rows_before40="$(grep -c '"kind":"delegation"' "$ledger13" 2>/dev/null || echo 0)"
+out40="$(cd "$wt40" && HIMMEL_REPO="$anchor13" bash "$anchor13/scripts/cr/pr-check-context.sh")"
+rc40=$?
+rows_after40="$(grep -c '"kind":"delegation"' "$ledger13" 2>/dev/null || echo 0)"
+check "$rc40" "0" "T40 rc"
+check "$(get_kv "$out40" delegated)" "yes" "T40 delegated=yes (the script's own untracked-files call, without --exclude-standard, counts a gitignored scripts/cr/ file)"
+check "$(get_kv "$out40" cr_diff_files)" "scripts/cr/ignored-file.sh" "T40 cr_diff_files names the gitignored untracked file"
+check "$((rows_after40 - rows_before40))" "1" "T40 exactly one new delegation ledger row"
+
+# T40 parity: run the EXACT recipe now pinned in both runbook twins
+# (test-pr-check-pair.sh check (ii)) against the same fixture and confirm it
+# names the same gitignored file - the twins and the script decide on the
+# same set, not just similar-looking text.
+mb40="$(cd "$wt40" && git merge-base HEAD refs/heads/main)"
+recipe40="$(
+  cd "$wt40" || exit 1
+  git diff --name-only "$mb40"..HEAD -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh'
+  git diff --name-only HEAD -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh'
+  git ls-files --others -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh'
+)"
+check "$recipe40" "scripts/cr/ignored-file.sh" "T40 the twins' pinned recipe also names the gitignored file - same set as the script"
+
+# T40 RED: the OLD recipe (round-1's --exclude-standard, no :(top)) that fix
+# #2 replaced must NOT see this gitignored file - proving why the alignment
+# in fix #2 matters, not just that the new recipe happens to work.
+recipe40_old="$(cd "$wt40" && git ls-files --others --exclude-standard -- scripts/cr/ scripts/guardrails/lib.sh)"
+check "$recipe40_old" "" "T40 RED - the pre-3382 recipe (--exclude-standard, no :(top)) misses the gitignored file entirely"
 
 # --- Negative-control check: perturb T3's expectation to confirm the
 # assertion genuinely fails, then restore. This is asserted directly (not by

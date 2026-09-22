@@ -73,9 +73,9 @@ Steps:
    Go on ONLY if its first line equals its second line followed by `/.git` (a string compare: a symlinked or differently spelled path fails it, which only sends you to the fence — the safe direction) and its third line is empty (the cwd is the worktree root); anything else, an empty second line included, means use the canonical fence above. Then decide the SAME set `pr-check-context.sh` itself decides on (HIMMEL-3382 — one diff definition, not two): the merge-base diff of the branch's COMMITTED history, PLUS its WORKING-TREE and UNTRACKED changes, all scoped to `scripts/cr/` and `scripts/guardrails/lib.sh` (always against refs/remotes/origin/main, even on a stacked PR — the branch runs its parent's bytes too, and a diff against a stacked base would hide them; spelled in full because a local branch named `origin/main` would shadow the bare name; the working-tree and untracked legs are what make an UNCOMMITTED `scripts/cr/` edit count too, and a change landed on main since the cut only over-reports, which is the safe direction):
    ```bash
    if mb=$(git merge-base HEAD refs/remotes/origin/main 2>/dev/null); then
-       git diff --name-only "$mb"..HEAD -- scripts/cr/ scripts/guardrails/lib.sh
-       git diff --name-only HEAD -- scripts/cr/ scripts/guardrails/lib.sh
-       git ls-files --others --exclude-standard -- scripts/cr/ scripts/guardrails/lib.sh
+       git diff --name-only "$mb"..HEAD -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh'
+       git diff --name-only HEAD -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh'
+       git ls-files --others -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh'
    else
        echo unknown
    fi

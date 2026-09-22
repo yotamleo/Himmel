@@ -273,9 +273,9 @@ for f in "$CLAUDE_RUNBOOK" "$CODEX_SKILL"; do
     # as a pathspec on three git calls and invokes nothing itself, so none of
     # those three lines is a himmel-script invocation line; each exact line is
     # pinned once per twin below (the structural section check further down).
-    diff_committed_pattern='^[[:space:]]*git diff --name-only "\$mb"\.\.HEAD -- scripts/cr/ scripts/guardrails/lib\.sh[[:space:]]*$'
-    diff_worktree_pattern='^[[:space:]]*git diff --name-only HEAD -- scripts/cr/ scripts/guardrails/lib\.sh[[:space:]]*$'
-    diff_untracked_pattern='^[[:space:]]*git ls-files --others --exclude-standard -- scripts/cr/ scripts/guardrails/lib\.sh[[:space:]]*$'
+    diff_committed_pattern='^[[:space:]]*git diff --name-only "\$mb"\.\.HEAD -- '\'':\(top\)scripts/cr/'\'' '\'':\(top\)scripts/guardrails/lib\.sh'\''[[:space:]]*$'
+    diff_worktree_pattern='^[[:space:]]*git diff --name-only HEAD -- '\'':\(top\)scripts/cr/'\'' '\'':\(top\)scripts/guardrails/lib\.sh'\''[[:space:]]*$'
+    diff_untracked_pattern='^[[:space:]]*git ls-files --others -- '\'':\(top\)scripts/cr/'\'' '\'':\(top\)scripts/guardrails/lib\.sh'\''[[:space:]]*$'
     ii_calls=$(printf '%s\n' "$ii_calls" | grep -v -E "$diff_committed_pattern" | grep -v -E "$diff_worktree_pattern" | grep -v -E "$diff_untracked_pattern")
     bare=$(printf '%s\n' "$ii_calls" | grep -c -E 'bash scripts/|\. scripts/|-f scripts/')
     split=$(printf '%s\n' "$ii_calls" | grep -c '"/scripts/')
@@ -359,9 +359,9 @@ for f in "$CLAUDE_RUNBOOK" "$CODEX_SKILL"; do
         'and its third line is empty'
         'always against refs/remotes/origin/main, even on a stacked PR'
         'if mb=$(git merge-base HEAD refs/remotes/origin/main 2>/dev/null); then'
-        'git diff --name-only "$mb"..HEAD -- scripts/cr/ scripts/guardrails/lib.sh'
-        'git diff --name-only HEAD -- scripts/cr/ scripts/guardrails/lib.sh'
-        'git ls-files --others --exclude-standard -- scripts/cr/ scripts/guardrails/lib.sh'
+        'git diff --name-only "$mb"..HEAD -- '\'':(top)scripts/cr/'\'' '\'':(top)scripts/guardrails/lib.sh'\'''
+        'git diff --name-only HEAD -- '\'':(top)scripts/cr/'\'' '\'':(top)scripts/guardrails/lib.sh'\'''
+        'git ls-files --others -- '\'':(top)scripts/cr/'\'' '\'':(top)scripts/guardrails/lib.sh'\'''
         'echo unknown'
         'ONLY when that check prints nothing at all'
         'prints any path or `unknown`, use the canonical fence above'
