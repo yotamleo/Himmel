@@ -428,21 +428,38 @@ else
         # js_regex_opens) is skipped whole by js_regex_end, so a quote
         # inside the regex no longer opens a phantom string state.
         # ponytail: the regex-vs-division call is the classic prev-token
-        # heuristic, not a parser -- a slash after a closing brace reads
-        # as a regex, and so does a slash starting a
-        # continuation line. Such a misread usually runs to end of line
+        # heuristic, not a parser -- a slash after a closing brace or at
+        # the start of a continuation line reads as a regex, and the paren
+        # match behind a ) ignores quoting and does not span lines (a
+        # condition split across lines reads as division). A misread to a
+        # regex usually runs to end of line
         # unterminated and FAILS CLOSED (no marker), but if a later slash
         # closes it, the scan resumes there and can itself desync -- the
         # shapes are contrived and still show the marker text on the line
         # for review. JS/py single- and double-quoted
         # strings still take bash quoting rules (a backslash-quote in a
         # single-quoted JS string closes it here), unchanged by this fix.
-        function js_regex_opens(t, i,    j, p, w) {
+        function js_regex_opens(t, i,    j, p, w, d) {
             j = i - 1
             while (j >= 1 && (substr(t, j, 1) == " " || substr(t, j, 1) == "\t")) j--
             if (j < 1) return 1
             p = substr(t, j, 1)
-            if (p == ")" || p == "]") return 0
+            # A ) is an operand unless it closes an if/while/for/with
+            # condition, where a regex statement may follow: walk back to
+            # the matching ( and read the word before it.
+            if (p == ")") {
+                d = 0
+                for (; j >= 1; j--) {
+                    if (substr(t, j, 1) == ")") d++
+                    else if (substr(t, j, 1) == "(" && --d == 0) break
+                }
+                j--
+                while (j >= 1 && (substr(t, j, 1) == " " || substr(t, j, 1) == "\t")) j--
+                w = ""
+                while (j >= 1 && substr(t, j, 1) ~ /[A-Za-z0-9_$]/) { w = substr(t, j, 1) w; j-- }
+                return (w ~ /^(if|while|for|with)$/) ? 1 : 0
+            }
+            if (p == "]") return 0
             # The scan only asks this outside a string, so a quote here just
             # closed one: a slash after a string operand is division.
             if (p == "\"" || p == sq || p == "`") return 0
