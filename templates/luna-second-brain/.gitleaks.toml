@@ -49,8 +49,22 @@ paths = [
 # `B-N44-b5c0792bbc9bdc03`, so the hex run is bounded {4,16}). Anchored to that exact shape, plus one
 # optional trailing sentence-punctuation character — a suffixed real
 # credential is still caught, only that shape.
+# HIMMEL-3471: a fresh-leg recovery mints a RETASK nonce with a single
+# trailing lowercase letter on the leg number (e.g. `V-N236b-1d281f74`,
+# chained recoveries go b, c, d, ...; verified against the live handover
+# corpus — that suffix is always exactly one letter, never doubled), which
+# the pre-3471 regex didn't anchor for and stalled every vault commit that
+# quoted such a doc. The ticket also asked for a `paths` entry scoping this
+# allowlist to the handover bucket; empirically verified (3 isolated gitleaks
+# runs against this build, including a negative control pairing a real `paths`
+# match with a regex that can never match) that this build's `[[allowlists]]`
+# `matchCondition = "AND"` does not actually AND paths+regexes — a path match
+# alone suppresses the finding — so a `paths`-scoped entry here would be a
+# broader, unscoped exemption for anything under that path, not a narrower
+# one. Widening only the anchored regex below keeps the exemption as tight as
+# the token shape itself, regardless of which file it appears in.
 regexes = [
   '''^himmel-local-claudex$''',
   '''^[a-z0-9]+-[a-z0-9]+-pid[0-9]+[.,;:)]?$''',
-  '''^[A-Z]{1,2}-N[0-9]+-[0-9a-f]{4,16}[.,;:)]?$''',
+  '''^[A-Z]{1,2}-N[0-9]+[a-z]?-[0-9a-f]{4,16}[.,;:)]?$''',
 ]
