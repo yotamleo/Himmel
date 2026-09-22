@@ -148,15 +148,23 @@ WT_FRESH=$(mk_wt wt-fresh feat/fresh)
 WT_STALE=$(mk_wt wt-stale feat/stale)
 WT_FREE=$(mk_wt wt-free feat/free)
 WT_ONLY=$(mk_wt wt-only feat/only)
+WT_QUOTED_DQ=$(mk_wt wt-quoted-dq feat/quoted-dq)
+WT_QUOTED_SQ=$(mk_wt wt-quoted-sq feat/quoted-sq)
 
 DOC_FRESH=$(mk_doc doc-fresh.md "$WT_FRESH")
 DOC_STALE=$(mk_doc doc-stale.md "$WT_STALE")
 DOC_ONLY=$(mk_doc doc-only.md "$WT_ONLY")
 mk_doc doc-free.md "$WT_FREE" >/dev/null   # no lock ever taken for this one
+# quoted resume_cwd: values (both styles arm-resume.sh's own reader unquotes,
+# see its T5/T6) must match the SAME as an unquoted one.
+DOC_QUOTED_DQ=$(mk_doc doc-quoted-dq.md "\"$WT_QUOTED_DQ\"")
+DOC_QUOTED_SQ=$(mk_doc doc-quoted-sq.md "'$WT_QUOTED_SQ'")
 
 lock_fresh "$DOC_FRESH"
 lock_stale "$DOC_STALE"
 lock_fresh "$DOC_ONLY"
+lock_fresh "$DOC_QUOTED_DQ"
+lock_fresh "$DOC_QUOTED_SQ"
 
 # ── case 1: a merged worktree whose leg holds a FRESH lock is skipped ────────
 echo "CASE 1: FRESH lock blocks the fleet-wide sweep"
@@ -164,6 +172,21 @@ out=$(run_clean --prune-only)
 expect "1: FRESH-locked worktree survives" "$out" is_dir "$WT_FRESH"
 expect "1: reason names the leg doc" "$out" grepq "$out" "FRESH queue lock"
 expect "1: reason line cites the doc path" "$out" grepq "$out" -F "$DOC_FRESH"
+
+# ── case 1q: a quoted resume_cwd: value still matches (codex-1) ──────────────
+echo "CASE 1Q: FRESH lock survives a quoted resume_cwd: value"
+expect "1q: double-quoted resume_cwd survives" "$out" is_dir "$WT_QUOTED_DQ"
+expect "1q: double-quoted reason cites the doc path" "$out" grepq "$out" -F "$DOC_QUOTED_DQ"
+expect "1q: single-quoted resume_cwd survives" "$out" is_dir "$WT_QUOTED_SQ"
+expect "1q: single-quoted reason cites the doc path" "$out" grepq "$out" -F "$DOC_QUOTED_SQ"
+
+# release both quoted locks now — they exist only to prove case 1Q and must
+# not leave FRESH-lock skip residue for CASE 6's --health assertion below.
+tok_dq=$(HANDOVER_DIR="$HANDOVER_ROOT" bash "$QUEUE_LOCK" status "$DOC_QUOTED_DQ" 2>/dev/null | sed -n 's/.*"session":"\([^"]*\)".*/\1/p')
+HANDOVER_DIR="$HANDOVER_ROOT" bash "$QUEUE_LOCK" release "$DOC_QUOTED_DQ" "$tok_dq" >/dev/null 2>&1
+tok_sq=$(HANDOVER_DIR="$HANDOVER_ROOT" bash "$QUEUE_LOCK" status "$DOC_QUOTED_SQ" 2>/dev/null | sed -n 's/.*"session":"\([^"]*\)".*/\1/p')
+HANDOVER_DIR="$HANDOVER_ROOT" bash "$QUEUE_LOCK" release "$DOC_QUOTED_SQ" "$tok_sq" >/dev/null 2>&1
+run_clean --prune-only >/dev/null
 
 # ── control: a STALE lock does not block the prune ───────────────────────────
 echo "CONTROL: STALE lock is pruned as before"

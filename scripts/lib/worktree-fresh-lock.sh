@@ -37,15 +37,25 @@ _WFL_QUEUE_LOCK="$_WFL_SCRIPT_DIR/../handover/queue-lock.sh"
 # _wfl_resume_cwd <doc> — the doc's `resume_cwd:` frontmatter value, or
 # empty. Frontmatter is the block between the first two `---` lines; a
 # `resume_cwd:` found outside it (prose, a code block) must never match.
+# Unquoted the same way arm-resume.sh's own reader does (rtrim, incl \r,
+# THEN strip surrounding quotes — order matters on CRLF input, see its
+# comment) so a quoted `resume_cwd: "/path"` matches here exactly as it
+# does there, instead of silently comparing the raw quoted string and
+# never matching a real worktree path.
 _wfl_resume_cwd() {
-    awk '
+    local v
+    v=$(awk '
         /^---[[:space:]]*$/ { fm++; if (fm == 2) exit; next }
         fm == 1 && /^resume_cwd:[[:space:]]*/ {
             sub(/^resume_cwd:[[:space:]]*/, "")
             print
             exit
         }
-    ' "$1" 2>/dev/null
+    ' "$1" 2>/dev/null)
+    v="${v%"${v##*[![:space:]]}"}"
+    v="${v#\'}"; v="${v%\'}"
+    v="${v#\"}"; v="${v%\"}"
+    printf '%s\n' "$v"
 }
 
 # _wfl_find_fresh_doc <normalized-worktree-path> — prints the handover doc
