@@ -276,11 +276,29 @@ fi
 
 _rc_bounded() {
     local hook="$1" tool="$2" cmd="$3"; shift 3
-    local json
-    json=$(printf '{"tool_name":%s,"tool_input":{"command":%s}}' \
-        "$(printf '%s' "$tool" | jq -Rs .)" "$(printf '%s' "$cmd" | jq -Rs .)")
+    # HIMMEL-1525: block-edit-live-settings's Bash/PowerShell arm is
+    # cwd-anchored (v2), unlike every other hook here — so a caller that
+    # needs to exercise a specific invoking cwd passes a trailing
+    # `_BOUNDED_CWD=<path>` marker, extracted here into tool_input.cwd and
+    # never forwarded to `env`. Every other check_bounded call site is
+    # unaffected: with no such marker, the JSON is identical to before.
+    local json cwd="" arg
+    local -a envargs=()
+    for arg in "$@"; do
+        case "$arg" in
+            _BOUNDED_CWD=*) cwd="${arg#_BOUNDED_CWD=}" ;;
+            *) envargs+=("$arg") ;;
+        esac
+    done
+    if [ -n "$cwd" ]; then
+        json=$(printf '{"tool_name":%s,"tool_input":{"command":%s,"cwd":%s}}' \
+            "$(printf '%s' "$tool" | jq -Rs .)" "$(printf '%s' "$cmd" | jq -Rs .)" "$(printf '%s' "$cwd" | jq -Rs .)")
+    else
+        json=$(printf '{"tool_name":%s,"tool_input":{"command":%s}}' \
+            "$(printf '%s' "$tool" | jq -Rs .)" "$(printf '%s' "$cmd" | jq -Rs .)")
+    fi
     # shellcheck disable=SC2086  # intentional word-split: absent -> no extra token
-    printf '%s' "$json" | ${_TIMEOUT_BIN:+$_TIMEOUT_BIN 20} env "$@" bash "$SCRIPT_DIR/$hook.sh" >/dev/null 2>&1
+    printf '%s' "$json" | ${_TIMEOUT_BIN:+$_TIMEOUT_BIN 20} env "${envargs[@]}" bash "$SCRIPT_DIR/$hook.sh" >/dev/null 2>&1
     echo "$?"
 }
 
@@ -664,10 +682,12 @@ mkdir -p "$BELS_FEAT/.claude"
 
 check_bounded block-edit-live-settings Bash 2 \
     "echo pwned > $BELS_MAIN/.claude/settings.json" \
-    "a Bash redirect into the primary checkout's settings.json blocks"
+    "a Bash redirect into the primary checkout's settings.json blocks" \
+    "_BOUNDED_CWD=$BELS_MAIN"
 check_bounded block-edit-live-settings Bash 0 \
     "echo pwned > $BELS_FEAT/.claude/settings.json" \
-    "the same redirect into a linked worktree's settings.json allows"
+    "the same redirect into a linked worktree's settings.json allows" \
+    "_BOUNDED_CWD=$BELS_FEAT"
 
 # ── trigger-cr-on-pr-create.sh / trigger-cr-on-push.sh ───────────────────────
 # Both are ADVISORY PostToolUse hooks — they ALWAYS exit 0, so rc proves
