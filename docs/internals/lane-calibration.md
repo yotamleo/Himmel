@@ -130,7 +130,7 @@ can inherit into the child.
 |---|---|---|
 | Haiku | bulk mechanical (never delegates further) | low |
 | Sonnet 5 | scoped research; default implementor for well-specified impl briefs | medium default; high for multi-file/long briefs — raise effort before reaching for Opus |
-| Opus 4.8 | multi-step reasoning; default parent | xhigh for parenting; scale DOWN (high/medium) for lighter parenting or scoped impl |
+| Opus 5.5 | multi-step reasoning; default parent | medium default (≈ Opus 5 `high`, HIMMEL-3479); `low` for scoped impl; `high` for heavy parenting; `xhigh`/`max` only where a gain was measured — see [Effort calibration](#effort-calibration) |
 | Fable 5 | judgment, taste — hardest calls; escalation target | scale to the item (operator 2026-07-08, un-capped): medium default; high for substantial judgment work — not just the hardest; xhigh for the hardest |
 
 Beyond the Claude tiers the fleet includes machine-specific impl/critic/bulk
@@ -282,14 +282,20 @@ Effort is a **per-dispatch** lever — use the full scale per item, do not flatt
 to one default. Raise effort before raising model tier: Fable-5 `low` ≈
 prior-gen `xhigh`, and the same shift applies down-tier.
 
-Anthropic's published **Claude Opus 5** prompting guidance — cited here as the
-newest available guidance for the Opus family, not as a claim that the Opus lane
-above already runs Opus 5 — is to use `low` and `medium` liberally as the
-primary control for token cost and latency wherever quality holds, and to step
-up to `xhigh` only for demanding coding and agentic work. Effort defaults
-carried over from a prior model should be re-swept against real evals rather
-than assumed — that sweep is HIMMEL-774, which is also where the lane's own
-model generation gets revisited.
+The Opus lane runs **Claude Opus 5.5** (the console and headed-arm default,
+`claude-opus-5-5`, HIMMEL-3479). Anthropic's
+[Prompting Claude Opus 5.5](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-opus-5-5#calibrate-effort)
+guide says effort names do not mean the same amount of thinking across models:
+Opus 5.5 at `medium` (its default; Opus 5 defaulted to `high`) matches or beats
+Opus 5 at `high` on coding and knowledge work, `low` comes close on several
+coding evals, and at a given level 5.5 thinks *more* per turn than 5 —
+especially at `xhigh` and `max`. Its instructions: start at `medium`, reserve
+`xhigh`/`max` for work where a quality gain was measured, and lower effort
+(not prompt wording) to get less thinking. So the `opus` row in `lanes.json`
+moved from `xhigh` to **`medium`**: no `xhigh` gain has been measured on this
+fleet, and carrying `xhigh` over from Opus 4.8/5 would buy longer, costlier
+turns. Effort defaults carried over from a prior model should still be
+re-swept against real evals rather than assumed — that sweep is HIMMEL-774.
 
 Temperature is Claude-API-only — deferred; rides HIMMEL-774.
 
@@ -425,6 +431,12 @@ via a wrapper script, so no glob or word-split can explain it. **Fable is the
 only family that refuses the suffix**, in both alias and full-id form — which is
 why a `1m` console arm gets the `--autocompact` half only, and why the arm log
 says so rather than claiming a mode it could not set.
+
+**2026-09-22 (HIMMEL-3479):** the console and headed-arm default moved to
+`claude-opus-5-5`. The rows above were measured on Opus 5 and have **not** been
+re-run for `claude-opus-5-5` — its `[1m]` handling and plain-launch
+`context_window_size` are unmeasured; re-measure with the zero-spend method
+above before relying on them.
 
 ### What a plain launch reports
 

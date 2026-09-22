@@ -371,7 +371,7 @@ fi
 
 # HIMMEL-3079: the console parent defaults to Opus (default parent tier);
 # Fable is the escalation target, reached only via an explicit [model].
-NAME="$1"; DOC="$2"; SIGNAL="$3"; DEADLINE="$4"; LOG="$5"; MODEL="${6:-claude-opus-5}"
+NAME="$1"; DOC="$2"; SIGNAL="$3"; DEADLINE="$4"; LOG="$5"; MODEL="${6:-claude-opus-5-5}"
 # HIMMEL-2973 (default re-pinned by HIMMEL-2975 T6, resolution now shared
 # via scripts/lib/console-context.sh): --context resolution, arming-time
 # only (see the header comment above). Defaults to `standard`

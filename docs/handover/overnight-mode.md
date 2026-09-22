@@ -89,7 +89,7 @@ Opus-class (HIMMEL-1480), and no reliable model-identity seam exists at
 launch time. Snippets are selected, not pasted, from the official
 [Fable-5](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5)
 and
-[Opus-5](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-opus-5)
+[Opus-5.5](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-opus-5-5)
 prompting guides:
 
 > When you have enough information to act, act. Do not re-derive facts

@@ -743,6 +743,12 @@ contains "brief-preface: says to read /proc/pressure/memory before believing it 
   "$prefacecontent17b" "/proc/pressure/memory"
 contains "brief-preface: says to read the cgroup memory.events before believing it (HIMMEL-3097)" \
   "$prefacecontent17b" "memory.events"
+# HIMMEL-3479: the Opus 5.5 guide's standing "how turns end" instruction goes
+# at the END of the system prompt, so it must be the preface's last section.
+check "brief-preface: last section is the standing turn-ending instruction (HIMMEL-3479)" \
+  "$(printf '%s\n' "$prefacecontent17b" | grep '^## ' | tail -1)" "## How your turns end"
+contains "brief-preface: holding for GO stays a sanctioned stop (HIMMEL-3479)" \
+  "$prefacecontent17b" "holding for the console's \`GO\` after \`READY\`"
 not_contains "brief-preface: does NOT carry the fixture's Contract line (HIMMEL-2990)" \
   "$prefacecontent17b" "**Contract:**"
 not_contains "brief-preface: does NOT carry the Results tail" "$prefacecontent17b" \
@@ -1192,6 +1198,33 @@ printf '%s\n' '# fixture brief' '> **Tier:** opus — design' > "$doc_tier_opus_
 rc=0; out="$(bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg "$doc_tier_opus_notag_colon" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
 check "tier gate (g): a bare sanctioned tag with no colon is refused with exit 2" "$rc" "2"
 contains "tier gate (g): refusal names the three category tags" "$out" "design|unverified-finding|tier-return"
+
+# --- HIMMEL-3480 (bundled in HIMMEL-3479): a fourth closed tag, operator-ruling,
+# for a standing operator ruling on model choice (2026-09-22: run only Opus
+# 5.5). Same shape as the other three: exact lowercase, non-blank free text.
+doc_tier_opus_ruling="$tmp/tier-doc-opus-ruling.md"
+printf '%s\n' '# fixture brief' '> **Tier:** opus — operator-ruling: run only Opus 5.5 (operator 2026-09-22, console A)' > "$doc_tier_opus_ruling"
+rc=0; out="$(bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg "$doc_tier_opus_ruling" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5-5 2>&1)" || rc=$?
+check "tier gate (h): operator-ruling: Tier line proceeds (dry-run exit 0)" "$rc" "0"
+contains "tier gate (h): dry-run report carries tier-category=operator-ruling" "$out" "tier-category=operator-ruling"
+contains "tier gate (h): dry-run report carries the ruling as tier-reason=" "$out" "tier-reason=run only Opus 5.5 (operator 2026-09-22, console A)"
+
+doc_tier_opus_ruling_blank="$tmp/tier-doc-opus-ruling-blank.md"
+printf '%s\n' '# fixture brief' '> **Tier:** opus — operator-ruling:   ' > "$doc_tier_opus_ruling_blank"
+rc=0; out="$(bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg "$doc_tier_opus_ruling_blank" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5-5 2>&1)" || rc=$?
+check "tier gate (i): operator-ruling: with blank free text is refused with exit 2" "$rc" "2"
+contains "tier gate (i): refusal names the empty-text problem" "$out" "no free text after"
+
+doc_tier_opus_ruling_case="$tmp/tier-doc-opus-ruling-case.md"
+printf '%s\n' '# fixture brief' '> **Tier:** opus — Operator-ruling: run only Opus 5.5' > "$doc_tier_opus_ruling_case"
+rc=0; out="$(bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg "$doc_tier_opus_ruling_case" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5-5 2>&1)" || rc=$?
+check "tier gate (j): wrong-case Operator-ruling: is refused with exit 2" "$rc" "2"
+contains "tier gate (j): refusal lists the four category tags" "$out" "design|unverified-finding|tier-return|operator-ruling"
+
+rc=0; out="$(bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg "$doc_no_tier" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5-5 2>&1)" || rc=$?
+check "tier gate (k): opus-5-5 without a Tier line is still refused with exit 2" "$rc" "2"
+contains "tier gate (k): missing-line refusal lists the four category tags" "$out" "design|unverified-finding|tier-return|operator-ruling"
+contains "tier gate (k): missing-line refusal names the operator-ruling reason" "$out" "a standing operator ruling on model choice"
 
 # --- 24 (HIMMEL-2774). FLEET_RESERVE_TTL is exported, derived from DEADLINE -
 # TTL_RECORD_PREFLIGHT stands in for bank-preflight.sh and records the TTL it

@@ -406,7 +406,7 @@ fi
 
 # HIMMEL-2976: an Opus or Fable leg costs materially more per turn than the
 # Sonnet default implementor, so it launches only when its brief names one of
-# the three sanctioned reasons on a Tier line (CLAUDE.md: "raise effort
+# the four sanctioned reasons on a Tier line (CLAUDE.md: "raise effort
 # before tier"). Matched by MODEL PREFIX, same reasoning as the [1m] suffix
 # guard above - a suffix (e.g. claude-opus-5[1m]) must not dodge the gate.
 TIER_GATE=""
@@ -421,7 +421,7 @@ if [ -n "$TIER_GATE" ]; then
     # dash) as non-empty, so strip surrounding whitespace before the check.
     TIER_REASON="$(printf '%s' "$TIER_REASON" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
     if [ -z "$TIER_REASON" ]; then
-        echo "headed-arm-leg: refusing $TIER_GATE launch: $DOC has no '> **Tier:** $TIER_GATE — <category>: <reason>' line (CLAUDE.md: raise effort before tier). Sanctioned reasons: multi-step design; a FINDING the console could not verify at Sonnet; a Sonnet leg returned the work as above its tier. Category tags (exact lowercase): design|unverified-finding|tier-return." >&2
+        echo "headed-arm-leg: refusing $TIER_GATE launch: $DOC has no '> **Tier:** $TIER_GATE — <category>: <reason>' line (CLAUDE.md: raise effort before tier). Sanctioned reasons: multi-step design; a FINDING the console could not verify at Sonnet; a Sonnet leg returned the work as above its tier; a standing operator ruling on model choice (HIMMEL-3480). Category tags (exact lowercase): design|unverified-finding|tier-return|operator-ruling." >&2
         exit 2
     fi
     # HIMMEL-2997: the design was left open (keyword vs enum vs LLM) - console
@@ -434,16 +434,16 @@ if [ -n "$TIER_GATE" ]; then
     case "$TIER_REASON" in
         *:*) ;;
         *)
-            echo "headed-arm-leg: refusing $TIER_GATE launch: $DOC's Tier reason must open with one of the three sanctioned category tags (exact lowercase) followed by ': ' and non-blank free text: design|unverified-finding|tier-return." >&2
+            echo "headed-arm-leg: refusing $TIER_GATE launch: $DOC's Tier reason must open with one of the four sanctioned category tags (exact lowercase) followed by ': ' and non-blank free text: design|unverified-finding|tier-return|operator-ruling." >&2
             exit 2
             ;;
     esac
     TIER_CATEGORY="${TIER_REASON%%:*}"
     TIER_REASON="${TIER_REASON#*:}"
     case "$TIER_CATEGORY" in
-        design|unverified-finding|tier-return) ;;
+        design|unverified-finding|tier-return|operator-ruling) ;;
         *)
-            echo "headed-arm-leg: refusing $TIER_GATE launch: $DOC's Tier reason must open with one of the three sanctioned category tags (exact lowercase) followed by ': ' and non-blank free text: design|unverified-finding|tier-return." >&2
+            echo "headed-arm-leg: refusing $TIER_GATE launch: $DOC's Tier reason must open with one of the four sanctioned category tags (exact lowercase) followed by ': ' and non-blank free text: design|unverified-finding|tier-return|operator-ruling." >&2
             exit 2
             ;;
     esac
