@@ -324,6 +324,68 @@ f="$TMPDIR_ROOT/t27b.sh"
 printf 'typeset -r T=$(mktemp -d)\n' > "$f"
 assert_eq "T27b typeset -r capture, unguarded -> flagged" "1" "$(scan_lines "$f")"
 
+# T28/T28b -- a commented-out guard line is not a guard (HIMMEL-3428 N333
+# item 1, ticket finding 1): the window scan must ignore comment-only lines
+# rather than treating their text as a real test construct.
+f="$TMPDIR_ROOT/t28.sh"
+printf 'T=$(mktemp -d)\n# [ -d "$T" ] || exit 1\n' > "$f"
+assert_eq "T28 next-line comment-only guard ignored -> offending (N333 item 1)" "1" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t28b.sh"
+printf 'T=$(mktemp -d)\n# validate with [ -n "$T" ]\n' > "$f"
+assert_eq "T28b next-line comment-only guard (alt wording) ignored -> offending (N333 item 1)" "1" "$(scan_lines "$f")"
+
+# T28c -- control: a REAL (uncommented) guard on the next line is still
+# accepted -- the comment-ignoring fix must not eat genuine guards.
+f="$TMPDIR_ROOT/t28c.sh"
+printf 'T=$(mktemp -d)\n[ -d "$T" ] || exit 1\n' > "$f"
+assert_eq "T28c control: real next-line guard still accepted (N333 item 1)" "0" "$(scan_lines "$f")"
+
+# T29/T29b/T29c -- a split declaration -- `local T; T=$(mktemp -d)` -- is
+# scanned at all (HIMMEL-3428 N333 item 2, ticket finding 2): the old
+# anchored assignment regex never matched this shape, so an unguarded
+# split-declared capture was invisible to the scan.
+f="$TMPDIR_ROOT/t29.sh"
+printf 'local T; T=$(mktemp -d)\n' > "$f"
+assert_eq "T29 split declaration local T; T=\$(mktemp -d), unguarded -> offending (N333 item 2)" "1" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t29b.sh"
+printf 'readonly T; T=$(mktemp -d)\n' > "$f"
+assert_eq "T29b split declaration readonly T; T=\$(mktemp -d), unguarded -> offending (N333 item 2)" "1" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t29c.sh"
+printf 'declare T; T=$(mktemp -d)\n' > "$f"
+assert_eq "T29c split declaration declare T; T=\$(mktemp -d), unguarded -> offending (N333 item 2)" "1" "$(scan_lines "$f")"
+
+# T29d -- control: a split declaration's bare assignment statement is a
+# plain assignment (no decl builtin on ITS OWN statement), so a same-line
+# `||` guards it correctly, unmasked -- the fix must not over-flag this.
+f="$TMPDIR_ROOT/t29d.sh"
+printf 'local T; T=$(mktemp -d) || exit 1\n' > "$f"
+assert_eq "T29d control: split declaration local T with guarded capture -> ok (N333 item 2)" "0" "$(scan_lines "$f")"
+
+# T30/T30b -- a command name that merely starts with "mktemp" is not mktemp
+# (HIMMEL-3428 N333 item 3, ticket round-7/8 codex-2): `mktemp_metadata` /
+# `mktemp_wrapper` must not be scanned as a mktemp capture.
+f="$TMPDIR_ROOT/t30.sh"
+printf 'T=$(mktemp_metadata)\n' > "$f"
+assert_eq "T30 mktemp_metadata is not mktemp -> ok (N333 item 3)" "0" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t30b.sh"
+printf 'T=$(mktemp_wrapper -d)\n' > "$f"
+assert_eq "T30b mktemp_wrapper is not mktemp -> ok (N333 item 3)" "0" "$(scan_lines "$f")"
+
+# T30c/T30d -- control: real mktemp is still matched, unguarded -> offending
+# -- the boundary tightening must not exclude the genuine command, templated
+# or bare.
+f="$TMPDIR_ROOT/t30c.sh"
+printf 'T=$(mktemp -d)\n' > "$f"
+assert_eq "T30c control: real mktemp -d still matched -> offending (N333 item 3)" "1" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t30d.sh"
+printf 'T=$(mktemp)\n' > "$f"
+assert_eq "T30d control: bare mktemp() still matched -> offending (N333 item 3)" "1" "$(scan_lines "$f")"
+
 # T21 -- self-check: the predicate must NOT flag its own repo files. Locks
 # the codex-1 self-blocking regression closed for good -- if this ever comes
 # back it fails loudly here instead of silently refusing every commit that

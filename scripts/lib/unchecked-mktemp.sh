@@ -141,6 +141,29 @@
 # the hazard, not the cure -- an empty $T makes the trap itself the destructive
 # operation.
 #
+# HIMMEL-3428 (N333) fixes three more gaps the CR ledger recorded on the
+# landing PR (all deferred there under the last-round rule):
+#   1. A commented-out guard is not a guard. A next-line
+#      `# [ -d "$T" ] || exit 1` used to satisfy rules (c)/(d) because the
+#      window scan matched the test-construct pattern inside the comment
+#      text. Comment-only lines are now ignored by the window scan exactly
+#      like blank lines -- neither a guard nor consumed budget.
+#   2. A split declaration -- `local T; T=$(mktemp -d)` -- used to be
+#      invisible to the scan: the candidate regex is anchored at the start
+#      of the line, and this shape puts the assignment after a `;`, not at
+#      the start. A bare `VARNAME;`-then-`;` declaration prefix (local/
+#      export/typeset/readonly/declare, with or without an option) is now
+#      stripped before matching, so the assignment statement that follows is
+#      scanned like ordinary code. That statement carries no declaration
+#      builtin of its OWN, so unlike rule (a)'s exception it is NOT
+#      exit-status-masked: a same-line `||` on it guards correctly.
+#   3. Command-name boundary: `mktemp_metadata` / `mktemp_wrapper` are not
+#      mktemp -- the old pattern matched "mktemp" as a bare substring with
+#      no trailing boundary, so any command merely starting with those six
+#      letters was scanned as a real mktemp capture (a fail-safe false
+#      positive). A token boundary (non-identifier char, or end of string)
+#      is now required immediately after "mktemp".
+#
 # Sourced, never executed. Sets no shell options of its own.
 
 unchecked_mktemp_scan() {
@@ -237,8 +260,30 @@ unchecked_mktemp_scan() {
         for (i = 1; i <= NR; i++) {
             if (skip[i]) continue
             s = line[i]
+
+            # N333 item 2: a split declaration -- a bare `local T;` (or
+            # export/typeset/readonly/declare, with or without an option)
+            # followed by a plain assignment statement on the SAME line --
+            # is invisible to the anchored candidate regex below, because
+            # the assignment does not start the line. Strip that bare
+            # declaration prefix before matching so the assignment statement
+            # after the `;` is scanned like ordinary code. It carries no
+            # declaration builtin of its OWN, so is_decl below correctly
+            # comes out false for it: its exit status is that of the mktemp
+            # command substitution, unmasked.
+            scan_s = s
+            if (s ~ /^[ \t]*(local|export|typeset|readonly|declare)([ \t]+-[a-zA-Z]+)*[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]*;[ \t]*/) {
+                tmp = s
+                sub(/^[ \t]*(local|export|typeset|readonly|declare)([ \t]+-[a-zA-Z]+)*[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]*;[ \t]*/, "", tmp)
+                scan_s = tmp
+            }
+
             # An assignment capturing mktemp through command substitution.
-            if (s !~ /^[ \t]*((local|export|typeset|readonly|declare)[ \t]+(-[a-zA-Z]+[ \t]+)*)?[A-Za-z_][A-Za-z0-9_]*="?\$\([ \t]*mktemp/)
+            # N333 item 3: a token boundary (non-identifier char, or end of
+            # string) is required right after "mktemp", so a command that
+            # merely starts with those letters (mktemp_metadata,
+            # mktemp_wrapper) is not mistaken for the real command.
+            if (scan_s !~ /^[ \t]*((local|export|typeset|readonly|declare)[ \t]+(-[a-zA-Z]+[ \t]+)*)?[A-Za-z_][A-Za-z0-9_]*="?\$\([ \t]*mktemp([^A-Za-z0-9_]|$)/)
                 continue
 
             # A declaration builtin (local/export/declare/typeset/readonly)
@@ -247,18 +292,18 @@ unchecked_mktemp_scan() {
             # rule (a) never applies to them. (Rules (c)/(d) are NOT gated by
             # this -- see below -- because they read the actual value of the variable,
             # not the exit status of the builtin.)
-            is_decl = (s ~ /^[ \t]*(local|export|typeset|declare|readonly)([ \t]+-[a-zA-Z]+)*[ \t]+/)
+            is_decl = (scan_s ~ /^[ \t]*(local|export|typeset|declare|readonly)([ \t]+-[a-zA-Z]+)*[ \t]+/)
 
             # Rule (a): a `||` ANYWHERE on the line guards it, full stop --
             # no judgement about what the right-hand side does.
-            if (!is_decl && s ~ /\|\|/) continue
+            if (!is_decl && scan_s ~ /\|\|/) continue
 
             # Rule (b): the escape comment.
-            if (index(s, "mktemp-unchecked-ok:") > 0) continue
+            if (index(scan_s, "mktemp-unchecked-ok:") > 0) continue
 
             # Recover the variable name: the token immediately before the `=`
             # that opens the command substitution.
-            head = s
+            head = scan_s
             sub(/="?\$\([ \t]*mktemp.*$/, "", head)
             var = head
             sub(/^.*[^A-Za-z0-9_]/, "", var)
@@ -273,21 +318,25 @@ unchecked_mktemp_scan() {
             # builtin masked exit status, so -- unlike rule (a) -- this
             # window applies to every assignment, declaration-prefixed or not
             # (round-4 fix).
-            rem = remainder_after_capture(s)
+            rem = remainder_after_capture(scan_s)
             if (rem != "") {
                 if (rem ~ ("(\\[\\[?|test)[ \t].*\\$\\{?" var "[^A-Za-z0-9_]")) guarded = 1
                 if (!guarded && rem ~ ("\\$\\{" var ":\\?")) guarded = 1
             }
 
-            # Rules (c) and (d): within the next 3 non-blank, non-heredoc-body
-            # lines -- this applies to every assignment, declaration-prefixed
-            # or not.
+            # Rules (c) and (d): within the next 3 non-blank, non-comment,
+            # non-heredoc-body lines -- this applies to every assignment,
+            # declaration-prefixed or not. N333 item 1: a comment-only line
+            # is ignored exactly like a blank one -- it is not a guard and
+            # does not consume the window budget, so a real guard one line
+            # further down is still found.
             if (!guarded) {
                 seen = 0
                 for (j = i + 1; j <= NR && seen < 3; j++) {
                     if (skip[j]) continue
                     t = line[j]
                     if (t ~ /^[ \t]*$/) continue
+                    if (t ~ /^[ \t]*#/) continue
                     seen++
                     # (c) a test construct referencing the variable.
                     if (t ~ ("(\\[\\[?|test)[ \t].*\\$\\{?" var "[^A-Za-z0-9_]")) { guarded = 1; break }
