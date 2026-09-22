@@ -139,7 +139,7 @@ runner_check() {
             echo "impacted-suites: --runner-check: ci.yml runs a JS/TS test invocation --runner does not map: ${line}" >&2
             missing=1
         fi
-    done < <(grep -vE '^\s*#' "$ci" | grep -E 'run:.*(node --test|bun test|npm test|check-hook-lib-suites\.sh)')
+    done < <(grep -vE '^[[:space:]]*#' "$ci" | grep -E 'run:.*(node --test|bun test|npm test|check-hook-lib-suites\.sh)')
     [ "$missing" -eq 0 ]
 }
 
