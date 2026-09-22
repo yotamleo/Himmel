@@ -47,6 +47,7 @@ For Jira ops in this repo, default to the local CLI at
 | Worklog     | `... worklog add HIMMEL-N --time 1h [--comment ...]` / `... worklog list HIMMEL-N` (HIMMEL-437) | `addWorklogToJiraIssue` (no list) |
 | Watchers    | `... watch HIMMEL-N [user]` / `... unwatch HIMMEL-N [user]` / `... watchers HIMMEL-N` (HIMMEL-437) | (none) |
 | Sprint      | `... boards` / `... sprints [--board N]` / `... sprint HIMMEL-N <sprintId\|backlog>` (Agile API `/rest/agile/1.0`; `JIRA_BOARD_ID` default) (HIMMEL-437) | (none — MCP has no Agile-board ops) |
+| Versions    | `... versions` / `... version-create <name> [--release-date YYYY-MM-DD] [--released] [--description ...]` / `... version-release <name> [--date YYYY-MM-DD]` / `... fix-version HIMMEL-N --add\|--remove <name>` (HIMMEL-3429; REST `/project/{key}/versions`, `/version`, and the issue `update.fixVersions` add/remove verbs, so other versions on the ticket are untouched) | (none — MCP has no version ops) |
 
 **Use MCP only when the plugin lacks the operation** (custom-field
 discovery, account-ID lookup via `lookupJiraAccountId`). Confluence now has
@@ -117,6 +118,36 @@ worktree fails `MODULE_NOT_FOUND` and can silently fail a `create`. Always
 invoke `node <repo-root>/scripts/jira/dist/index.js <op>` by absolute path,
 never the global `jira` shim.
 
+## Versions mirror the GitHub release tags (HIMMEL-3429)
+
+Jira's version field (`fixVersions`, multi-valued) mirrors the GitHub release
+tags: one Jira version per published tag, same name (`v0.3.0-pre.6`), released,
+dated with the release date, a pre-release noted in the description. On top of
+that, **`v1.0.0` = Linux GA** is a hand-made, unreleased version whose scope is
+the reconciled v1 milestone ticket list — *in addition to* any tag version a
+ticket carries.
+
+**Adding a release's version (part of cutting a release).** After the tag and
+its GitHub release are published, from the primary checkout (`dist/` built):
+
+```
+node scripts/jira/sync-versions.mjs --dry-run --project HIMMEL   # report only
+node scripts/jira/sync-versions.mjs --apply --project HIMMEL     # write
+```
+
+The sync is idempotent: it creates the missing versions, then for every merged
+PR it takes the **first** tag containing the PR's merge commit and adds that
+version to every `[HIMMEL-N]` key in the PR title (a PR in no tag is left
+alone). It needs `gh`, the tags in the local clone (`git fetch --tags`) and a
+built `dist/`; it prints counts plus any key a PR cites that Jira lacks. Only
+tag versions (and `v1.0.0` under `--v1-keys`) are ever created or released.
+
+**v1.0.0 scope.** `--v1-keys <file>` (one key per line, `#` comments allowed)
+creates `v1.0.0` if missing and adds it to exactly those tickets. The list is a
+file, not code, because the v1 definition has moved before. New v1-scoped work
+outside a sync run: `node <repo-root>/scripts/jira/dist/index.js fix-version
+HIMMEL-N --add v1.0.0`.
+
 ## Confluence CLI (HIMMEL-437)
 
 A sibling binary `scripts/jira/dist/confluence.js` (same package, same
@@ -155,7 +186,7 @@ The verb↔MCP-method rows above mirror `_CONFLUENCE_VERB_METHOD_MAP` in
 ## Mutation breadcrumbs (HIMMEL-618)
 
 Every ticket-workflow mutating verb (`transition`, `comment`, `create`, `move`,
-`edit`, `assign`, `worklog`, `link`, `unlink`, `sprint`) writes a breadcrumb file under
+`edit`, `assign`, `worklog`, `link`, `unlink`, `sprint`, `fix-version`) writes a breadcrumb file under
 `~/.claude/jira-breadcrumbs/` immediately after its request **resolves** — not
 gated on the command's exit code, so a mutation that landed before a later
 non-fatal failure (e.g. an attachment upload) still leaves a breadcrumb.
