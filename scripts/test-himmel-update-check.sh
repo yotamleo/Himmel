@@ -33,7 +33,7 @@ if [ ! -f "$SCRIPT" ]; then
     exit 1
 fi
 
-TMP="$(mktemp -d)" || exit 1
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/himmel-update-check.XXXXXX")" || exit 1
 trap 'rm -rf "$TMP"' EXIT
 
 # HIMMEL-2902: scope the profile lookup to this suite's own tmp dir and clear
