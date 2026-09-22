@@ -1469,6 +1469,19 @@ _bwimc_remote_name_ok() {
 
 # _bwimc_git_sub_is_read SUB ARG... — 0 = read-only (skip the clause),
 # 1 = write-shaped (check its targets). Args are unquoted, redirects removed.
+# _bwimc_short_has ARG LETTERS — rc 0 when ARG is a short-option cluster
+# (`-qd`, `-uorigin/x`; never `--long`) carrying any of LETTERS. Letters of an
+# attached value count too; that only over-classifies toward a write.
+_bwimc_short_has() {
+    case "$1" in --*|-) return 1 ;; -*) ;; *) return 1 ;; esac
+    local ci=1
+    while [ "$ci" -lt "${#1}" ]; do
+        case "$2" in *"${1:$ci:1}"*) return 0 ;; esac
+        ci=$((ci+1))
+    done
+    return 1
+}
+
 _bwimc_git_sub_is_read() {
     local sub="$1"; shift
     local a npos=0 first="" second="" ff=0 skipval=0
@@ -1503,11 +1516,13 @@ _bwimc_git_sub_is_read() {
                     -t|--track|--track=*|-f|--force|-m|-M|--move|-c|-C|--copy|--edit-description)
                         return 1 ;;
                 esac
+                _bwimc_short_has "$a" utfmMcC && return 1
             done
             return 0 ;;
         symbolic-ref)
             for a in "$@"; do
                 if [ "$skipval" = 1 ]; then skipval=0; continue; fi
+                _bwimc_short_has "$a" d && return 1
                 case "$a" in
                     -d|--delete) return 1 ;;
                     -m) skipval=1 ;;
@@ -1523,6 +1538,7 @@ _bwimc_git_sub_is_read() {
             esac
             for a in "$@"; do
                 if [ "$skipval" = 1 ]; then skipval=0; continue; fi
+                _bwimc_short_has "$a" e && return 1
                 case "$a" in
                     --get|--get-all|--get-regexp|--get-urlmatch|--get-color|--get-colorbool|-l|--list)
                         return 0 ;;
@@ -1538,7 +1554,7 @@ _bwimc_git_sub_is_read() {
             for a in "$@"; do
                 case "$a" in
                     -u|--update-head-ok|--upload-pack|--upload-pack=*|--refmap|--refmap=*) return 1 ;;
-                    -*) ;;
+                    -*) _bwimc_short_has "$a" u && return 1 ;;
                     *)
                         npos=$((npos+1))
                         if [ "$npos" = 1 ]; then
@@ -1600,6 +1616,7 @@ _bwimc_git_clause() {
     local toks=() t tu i n start v r
     local dir gitdir="" wtree="" idx="" unres=0 sub="" args=()
     local e_dir="$_bwimc_genv_dir" e_wt="$_bwimc_genv_wt" e_idx="$_bwimc_genv_idx"
+    local cfg="$_bwimc_genv_cfg"
     local cwd="$_bwimc_gcwd"
     while IFS= read -r t; do toks+=("$t"); done < <(_bwimc_tokenize "$1")
     n=${#toks[@]}
@@ -1656,6 +1673,7 @@ _bwimc_git_clause() {
                         GIT_DIR=*) _bwimc_genv_dir="${toks[$i]#GIT_DIR=}" ;;
                         GIT_WORK_TREE=*) _bwimc_genv_wt="${toks[$i]#GIT_WORK_TREE=}" ;;
                         GIT_INDEX_FILE=*) _bwimc_genv_idx="${toks[$i]#GIT_INDEX_FILE=}" ;;
+                        GIT_CONFIG*) _bwimc_genv_cfg=1 ;;
                     esac
                 fi
                 i=$((i+1))
@@ -1671,6 +1689,7 @@ _bwimc_git_clause() {
             GIT_DIR=*) e_dir="${t#GIT_DIR=}" ;;
             GIT_WORK_TREE=*) e_wt="${t#GIT_WORK_TREE=}" ;;
             GIT_INDEX_FILE=*) e_idx="${t#GIT_INDEX_FILE=}" ;;
+            GIT_CONFIG*=*) cfg=1 ;;
             [A-Za-z_]*=*) ;;
             *)
                 case "$(_bwimc_unq "$t")" in
@@ -1686,7 +1705,7 @@ _bwimc_git_clause() {
                             t=$(_bwimc_unq "${toks[$i]}")
                             local eopt="" eval_="" ci ch
                             case "$t" in
-                                -|-i|--ignore-environment) e_dir=""; e_wt=""; e_idx="" ;;
+                                -|-i|--ignore-environment) e_dir=""; e_wt=""; e_idx=""; cfg=0 ;;
                                 --unset=*) eopt=u; eval_="${t#--unset=}" ;;
                                 --unset) eopt=u ;;
                                 --chdir=*) eopt=C; eval_="${t#--chdir=}" ;;
@@ -1709,6 +1728,7 @@ _bwimc_git_clause() {
                                 GIT_DIR=*) e_dir="${t#GIT_DIR=}" ;;
                                 GIT_WORK_TREE=*) e_wt="${t#GIT_WORK_TREE=}" ;;
                                 GIT_INDEX_FILE=*) e_idx="${t#GIT_INDEX_FILE=}" ;;
+                                GIT_CONFIG*=*) cfg=1 ;;
                                 [A-Za-z_]*=*) ;;
                                 *) break ;;
                             esac
@@ -1754,7 +1774,9 @@ _bwimc_git_clause() {
             -C)
                 i=$((i+1))
                 if r=$(_bwimc_resolve_abs "${toks[$i]:-}" "$dir"); then dir="$r"; else unres=1; fi ;;
-            -c|--git-dir|--work-tree|--namespace|--config-env|--super-prefix) i=$((i+1)) ;;
+            -c|--config-env) cfg=1; i=$((i+1)) ;;
+            -c*|--config-env=*) cfg=1 ;;
+            --git-dir|--work-tree|--namespace|--super-prefix) i=$((i+1)) ;;
             -*) ;;
             *) break ;;
         esac
@@ -1786,11 +1808,17 @@ _bwimc_git_clause() {
         i=$((i+1))
     done
 
-    if [ "${#args[@]}" -gt 0 ]; then
-        _bwimc_git_sub_is_read "$sub" "${args[@]}" && return 0
-    else
-        _bwimc_git_sub_is_read "$sub" && return 0
-    fi
+    # A config override (-c, --config-env, GIT_CONFIG*) can repoint the
+    # remote or refspec pull/fetch act on, so it voids their carve-out.
+    case "$cfg:$sub" in
+        1:pull|1:fetch) ;;
+        *)
+            if [ "${#args[@]}" -gt 0 ]; then
+                _bwimc_git_sub_is_read "$sub" "${args[@]}" && return 0
+            else
+                _bwimc_git_sub_is_read "$sub" && return 0
+            fi ;;
+    esac
 
     _BWIMC_GIT_SUB="$sub"
     [ -n "$gitdir" ] || gitdir="$e_dir"
@@ -1822,6 +1850,7 @@ _bwimc_gcwd_unres=0
 _bwimc_genv_dir=""
 _bwimc_genv_wt=""
 _bwimc_genv_idx=""
+_bwimc_genv_cfg=0
 while IFS= read -r _bwimc_clause; do
     [ -n "$(printf '%s' "$_bwimc_clause" | tr -d '[:space:]')" ] || continue
     # A backtick substitution's body is its own command (`$(` is already a
