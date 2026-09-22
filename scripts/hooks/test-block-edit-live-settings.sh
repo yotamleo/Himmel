@@ -530,6 +530,17 @@ git -C "$SANDBOX/primary" worktree add -q "$PREFIX_WT" -b feat/prim >/dev/null 2
 assert_rc "83 worktree whose root prefixes the primary's still denies the primary's settings" 2 \
     "$(bash_rc_of "$PREFIX_WT" "echo x > $PRIMARY/.claude/settings.json")"
 
+# 84-86: a line continuation (backslash-newline in Bash, backtick-newline in
+# PowerShell) vanishes entirely, so a name split across one still spells it.
+NL='
+'
+assert_rc "84 settings.js<backslash-newline>on from primary denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "echo x > .claude/settings.js\\${NL}on")"
+assert_rc "85 c<backslash-newline>p -r into \$HOME/.claude/ denies" 2 \
+    "$(bash_rc_of "$WT2" "c\\${NL}p -r /tmp/payload/. \$HOME/.claude/" HOME="$FAKEHOME")"
+assert_rc "86 powershell settings.js<backtick-newline>on from primary denies" 2 \
+    "$(powershell_rc_of "$PRIMARY" "Set-Content -Path .claude/settings.js\`${NL}on -Value x")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true

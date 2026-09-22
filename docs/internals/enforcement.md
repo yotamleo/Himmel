@@ -1575,8 +1575,9 @@ missed `(`, `\`, `"` and `'` in successive review rounds. The complement
 covers any metacharacter without listing it, and a verb inside a word
 (`add`, `scp`) does not match. Quotes and backslashes are deleted from the
 command text first, because the shell drops them inside a word (`c\p`,
-`c""p` and `settings.js\on` spell what they name). The PowerShell arm
-deletes quotes and backticks instead, and folds `\` to `/`. A linked worktree's own absolute root, with its trailing `/`, is blanked out before the
+`c""p` and `settings.js\on` spell what they name). A line continuation
+(backslash-newline) is removed as a pair. The PowerShell arm deletes quotes
+and backticks instead (backtick-newline as a pair), and folds `\` to `/`. A linked worktree's own absolute root, with its trailing `/`, is blanked out before the
 primary-root match, so a nested worktree can write its own settings. That
 exemption is voided when `..` appears anywhere in the command.
 

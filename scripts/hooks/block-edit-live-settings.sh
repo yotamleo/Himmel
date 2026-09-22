@@ -541,9 +541,16 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     # separator: fold it to `/` to match the forward-slash roots (codex-3).
     # ponytail: only the separator is folded — a POSIX-mount spelling
     # (`/c/Users/...`) of a drive-letter root is still not matched.
+    # A line continuation (escape + newline) vanishes entirely, newline
+    # included, so it is removed as a pair first; a bare newline stays, since
+    # it separates commands.
     if [ "$tool_name" = "PowerShell" ]; then
+        cmd_lc=${cmd_lc//$'`\r\n'/}
+        cmd_lc=${cmd_lc//$'`\n'/}
         cmd_lc=$(printf '%s' "$cmd_lc" | tr "\\\\" '/' | tr -d "\"'\`")
     else
+        cmd_lc=${cmd_lc//$'\\\r\n'/}
+        cmd_lc=${cmd_lc//$'\\\n'/}
         cmd_lc=$(printf '%s' "$cmd_lc" | tr -d "\"'\\\\")
     fi
 
