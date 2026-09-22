@@ -231,6 +231,22 @@ rm -rf -- "$W_MAN"
 real_out="$(bash "$SCRIPT" --manifest-only 2>&1)"; real_rc=$?
 if [ "$real_rc" -eq 0 ]; then ok "--manifest-only: real tree — every marketplace plugin manifest carries a version"; else bad "--manifest-only: real tree failed (rc=$real_rc): $real_out"; fi
 
+# 3f. --manifest-only: an empty/absent plugins dir must not silently pass
+#     (codex-1, HIMMEL-3464 CR round 2).
+W_EMPTY="$(mktemp -d "${TMPDIR:-/tmp}/pdrift-empty.XXXXXX")" || { bad "--manifest-only empty-dir fixture: mktemp -d failed"; exit 1; }
+empty_out="$(DRIFT_PLUGINS_DIR="$W_EMPTY/no-such-dir" bash "$SCRIPT" --manifest-only 2>&1)"; empty_rc=$?
+if [ "$empty_rc" -ne 0 ]; then ok "--manifest-only: RED — empty plugins dir exits non-zero"; else bad "--manifest-only: empty plugins dir did not fail (rc=0)"; fi
+rm -rf -- "$W_EMPTY"
+
+# 3g. --manifest-only: a truthy non-string version (bool/number) must not pass
+#     (codex-2, HIMMEL-3464 CR round 2).
+W_TYPE="$(mktemp -d "${TMPDIR:-/tmp}/pdrift-type.XXXXXX")" || { bad "--manifest-only version-type fixture: mktemp -d failed"; exit 1; }
+mkdir -p "$W_TYPE/plugin-c/.claude-plugin"
+printf '{"name": "plugin-c", "version": true}\n' > "$W_TYPE/plugin-c/.claude-plugin/plugin.json"
+DRIFT_PLUGINS_DIR="$W_TYPE" bash "$SCRIPT" --manifest-only >/dev/null 2>&1; type_rc=$?
+if [ "$type_rc" -ne 0 ]; then ok "--manifest-only: RED — non-string version (bool) exits non-zero"; else bad "--manifest-only: non-string version did not fail (rc=0)"; fi
+rm -rf -- "$W_TYPE"
+
 # 4. End-to-end: the script runs to completion with a sane exit code —
 #    0 (all current / fail-open), 2 (drift), or 3 (incomplete). Anything else
 #    (1, 127, crash) fails.

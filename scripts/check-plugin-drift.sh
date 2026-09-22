@@ -105,15 +105,21 @@ check_manifest_versions() {
 import glob, json, os, sys
 
 plugins_dir = sys.argv[1]
+manifests = sorted(glob.glob(os.path.join(plugins_dir, "*", ".claude-plugin", "plugin.json")))
+if not manifests:
+    print(f'ERR check-plugin-drift --manifest-only: no plugin manifests found under {plugins_dir}', file=sys.stderr)
+    sys.exit(1)
+
 bad = []
-for path in sorted(glob.glob(os.path.join(plugins_dir, "*", ".claude-plugin", "plugin.json"))):
+for path in manifests:
     try:
         with open(path) as f:
             manifest = json.load(f)
     except (OSError, ValueError) as e:
         bad.append(f"{path} (unreadable/unparsable: {e})")
         continue
-    if not manifest.get("version"):
+    version = manifest.get("version")
+    if not isinstance(version, str) or not version.strip():
         bad.append(path)
 
 if bad:
