@@ -166,6 +166,16 @@ if ! run git -C "$PRIMARY_WORKTREE" worktree add "$WORKTREE_RELATIVE" -b "$BRANC
     exit 1
 fi
 
+# HIMMEL-3462: `-b <branch> origin/<default>` leaves the new branch tracking
+# origin/<default> (branch.autoSetupMerge), not a same-named remote branch
+# that doesn't exist yet — so a bare `git push` errors under push.default=simple
+# and a leg's first push needs an explicit `-u origin <branch>`. Point the
+# branch's OWN tracking config at its own future remote ref instead (branch-scoped
+# keys only — never a global/repo-wide default) so `git push` with no flags
+# already knows where to go and creates that ref on the first push.
+run git -C "$PRIMARY_WORKTREE" config "branch.${BRANCH}.remote" origin
+run git -C "$PRIMARY_WORKTREE" config "branch.${BRANCH}.merge" "refs/heads/${BRANCH}"
+
 INSTALL_NOTE=""
 if [ $NPM_INSTALL -eq 1 ] && [ -f "$WORKTREE_PATH/scripts/jira/package.json" ]; then
     if (cd "$WORKTREE_PATH/scripts/jira" && run npm install --omit=dev --no-audit --no-fund --silent); then

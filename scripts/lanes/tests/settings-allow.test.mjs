@@ -25,6 +25,19 @@ const STEP0 = [
   'bash scripts/cr/pr-check-env.sh CR_CLAUDE_AGENTS',
 ];
 
+// HIMMEL-3462: exact (no wildcard-tail) per-script literals beyond STEP0 —
+// each is a genuinely fixed invocation (no leg-supplied variable argument),
+// so the LITERAL_FILE wildcard-tail shape below does not apply to them.
+const EXACT_LITERALS = [
+  'bash scripts/cr/doc-freshness-advisory.sh',
+  'bash scripts/cr/known-findings.sh --diff',
+  'bash scripts/cr/codex-adv-kickoff.sh',
+  'bash scripts/cr/codex-adv-harvest.sh',
+  'bash scripts/cr/cr-scores.sh',
+  'bash scripts/handover/merge-on-green.sh',
+  'bash scripts/handover/merge-on-green.sh --jira-transition',
+];
+
 // A model of the documented rule forms, not the harness matcher: `X:*` = X or
 // X plus a space-separated tail; a body with `*` is a glob whose `*` matches
 // any characters (slashes and spaces included), and a trailing ` *` also
@@ -56,8 +69,15 @@ test('the matcher model itself: prefix, glob and exact forms', () => {
 // RED rows: every one of these reaches a trust-root script (or runs an
 // arbitrary second command) and must match NO rule a session auto-allows.
 const TRUST_SPELLINGS = [
-  'bash scripts/cr/impacted-suites.sh',
-  'bash scripts/cr/review-round.sh start --branch x',
+  // HIMMEL-3462 grants scripts/cr/impacted-suites.sh:*, orphan-check.sh:* and
+  // review-round.sh:* via plugin-profiles.json's gateAllow (safety rationale
+  // in the PR body), never in .claude/settings.json itself (TRUST_DIR forbids
+  // a wildcard-tail trust-root rule there) — so a bare/space-tailed
+  // invocation of any of the three is sanctioned for a LEG session only, see
+  // LEG_SANCTIONED below. These two prove the wildcard tail cannot be ridden
+  // past the granted script's own filename into a trust-root escape.
+  'bash scripts/cr/impacted-suites.sh/../clear-cr-marker.sh',
+  'bash scripts/cr/review-round.sh/../clear-cr-marker.sh',
   'bash scripts//cr/clear-cr-marker.sh',
   'bash ./scripts/cr/clear-cr-marker.sh',
   'bash scripts/{cr,x}/clear-cr-marker.sh',
@@ -95,16 +115,17 @@ for (const command of TRUST_SPELLINGS.filter((c) => !/^bash scripts\/cr\/(clear-
 // and a console run every session still auto-allow.
 const SANCTIONED = [
   ...STEP0,
+  ...EXACT_LITERALS,
   'bash scripts/check-ci.sh 1090',
   'bash scripts/context-fill.sh',
   'bash scripts/handover/queue-lock.sh acquire /abs/doc.md',
-  'bash scripts/handover/merge-on-green.sh --jira-transition',
   'bash scripts/handover/wrap-subtree-check.sh',
   'bash scripts/handover/console-kit/go.sh 1090 abc',
   'bash scripts/lanes/leg-burn.sh HIMMEL-1-N1-x',
   'bash scripts/lanes/leg-pr-open.sh /t/title /t/body',
   'bash scripts/lib/bank-preflight.sh',
   'bash scripts/git/restore-to-head.sh scripts/x.sh',
+  'git push',
   'bash scripts/quiet-run.sh suite -- bash scripts/cr/test-clear-cr-marker.sh',
   'SUITE_LOCK_WAIT=60 bash scripts/quiet-run.sh suite -- bash scripts/hooks/test-guard-pr-check-literal.sh',
 ];
@@ -112,6 +133,28 @@ const SANCTIONED = [
 for (const command of SANCTIONED) {
   test(`a project allow rule still matches: ${command}`, () => {
     assert.ok(matching(ALLOW, command).length > 0, `no rule matches ${command}`);
+  });
+}
+
+// These six are wildcard-tail trust-root grants that live ONLY in
+// plugin-profiles.json's gateAllow (TRUST_DIR forbids them in the project
+// .claude/settings.json), so a leg session sees them via LEG_ALLOW but a bare
+// console/user session does not.
+const LEG_SANCTIONED = [
+  'bash scripts/cr/docs-audit-panel.sh --head abc1234 --branch fix/x',
+  'bash scripts/cr/panel-first-pass.sh --head abc1234 --branch fix/x',
+  'bash scripts/cr/write-verdicts.sh prior-blocking --branch fix/x',
+  // HIMMEL-3462: newly granted this PR (impacted-suites.sh full-file read,
+  // orphan-check.sh read-only basis, review-round.sh full-file read — all in
+  // the PR body).
+  'bash scripts/cr/impacted-suites.sh abc1234..def5678',
+  'bash scripts/cr/orphan-check.sh --head abc1234',
+  'bash scripts/cr/review-round.sh start --branch fix/x',
+];
+
+for (const command of LEG_SANCTIONED) {
+  test(`a leg-profile allow rule matches: ${command}`, () => {
+    assert.ok(matching(LEG_ALLOW, command).length > 0, `no leg rule matches ${command}`);
   });
 }
 
@@ -126,7 +169,7 @@ test('every path-naming Bash allow rule is a per-file literal, a step-0 literal 
     .filter((b) => /(^|\s)(\.\/)?(scripts|tests|marketplace|templates)\//.test(b));
   assert.ok(pathRules.length > 10, 'anti-vacuity: expected the per-script rules');
   for (const body of pathRules) {
-    if (STEP0.includes(body) || QUIET_SUITE.test(body)) continue;
+    if (STEP0.includes(body) || EXACT_LITERALS.includes(body) || QUIET_SUITE.test(body)) continue;
     assert.match(body, LITERAL_FILE, `not a per-file literal rule: ${body}`);
     assert.ok(!body.includes('..') && !body.includes('//'), `path trick in rule: ${body}`);
     assert.ok(!TRUST_DIR.test(body), `trust-root prefix rule: ${body}`);
