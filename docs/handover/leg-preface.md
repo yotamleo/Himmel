@@ -288,10 +288,12 @@ notice growth (ruling A1) — that is what catches the ≥60 % threshold in time
 
 ## How your turns end
 
-This section stays last in the preface on purpose: the Opus 5.5 prompting guide
+This section stays last in this file on purpose: the Opus 5.5 prompting guide
 ([Unattended agentic runs](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-opus-5-5#unattended-agentic-runs),
 HIMMEL-3479) says to put it at the end of the system prompt. It adapts that
-guide's standing instruction for a leg.
+guide's standing instruction for a leg. On the claudex lane,
+`leg-preface-claudex.md` is appended after it and overrides it: there, holding
+for `GO` means the background wait that file prescribes, not an ended turn.
 
 A message with no tool call in it ends your turn, and your work stops there
 until someone asks you to continue. Nobody is watching to do that, so an early
