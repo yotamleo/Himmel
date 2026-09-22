@@ -111,6 +111,34 @@ cmd="${cmd//$'\r'/}"
 
 case "$tool" in Bash|"") ;; *) exit 0 ;; esac
 
+# A heredoc body is data for its redirect target, not a command: strip it so a
+# body line that merely mentions a guarded path is never read as one of the
+# "simple command lines" below (HIMMEL-3433).
+# ponytail: only the first heredoc on a line is tracked, so a rare second
+# `<<` on the same line keeps its marker text unstripped - a stray marker
+# word, never a guarded script's own text, so it cannot turn a deny into an
+# allow.
+strip_heredocs() {
+    local text=$1 out="" hline marker="" in_body=0
+    while IFS= read -r hline || [ -n "$hline" ]; do
+        if [ "$in_body" -eq 1 ]; then
+            if [ "$hline" = "$marker" ] || [[ "$hline" =~ ^$'\t'*${marker}$ ]]; then
+                in_body=0
+            fi
+            continue
+        fi
+        out="$out$hline"$'\n'
+        # No backreference to the opening quote: bash's =~ (POSIX ERE) does not
+        # support one, so a quoted marker (<<'EOF') would never match at all.
+        if [[ "$hline" =~ \<\<-?[[:space:]]*[\'\"]?([A-Za-z_][A-Za-z0-9_]*)[\'\"]? ]]; then
+            marker=${BASH_REMATCH[1]}
+            in_body=1
+        fi
+    done <<<"$text"
+    printf '%s' "$out"
+}
+cmd=$(strip_heredocs "$cmd")
+
 # ---- classify: does this command run a guarded script by a relative path? ---
 # Classification uses bash builtins only, so a missing tool cannot empty it
 # into a no-op. Quotes and backslashes are dropped first, as the shell drops
@@ -166,95 +194,182 @@ is_target() { # is_target <basename> - names, or globs onto, a guarded script, i
     return "$rc"
 }
 
+# Splits <text> into simple-command lines (newline-joined) of NUL^A-joined
+# words: quote-aware, so a metacharacter inside a quoted argument (the | and
+# ( ) of a jq program) stays part of its one word instead of fracturing into
+# spurious new lines, and a backslash-newline joins two physical lines with
+# no character at all. A redirect (< or >) drops its own following word - a
+# redirect target is never a command to classify (HIMMEL-3433).
+# ponytail: a backslash-escaped quote char inside a double-quoted string
+# (\") is not unescaped - it is read as closing the quote early. No target
+# test row hits this; a wrongly-early close only ever narrows a word, so the
+# failure direction stays a false deny, never a false allow.
+tokenize() {
+    local text=$1
+    local -i i=0 n=${#text}
+    local q="" word="" line="" res="" c nc pending_redirect=0
+    while [ "$i" -lt "$n" ]; do
+        c=${text:$i:1}
+        if [ -n "$q" ]; then
+            if [ "$c" = "$q" ]; then q=""; else word+="$c"; fi
+            i=$((i + 1))
+            continue
+        fi
+        case "$c" in
+            \'|\") q=$c ;;
+            \\)
+                i=$((i + 1))
+                if [ "$i" -lt "$n" ]; then
+                    nc=${text:$i:1}
+                    [ "$nc" = $'\n' ] || word+="$nc"
+                fi
+                ;;
+            ' '|$'\t')
+                if [ -n "$word" ]; then
+                    if [ "$pending_redirect" -eq 1 ]; then
+                        pending_redirect=0
+                    else
+                        line+="$word"$'\x01'
+                    fi
+                    word=""
+                fi
+                ;;
+            ';'|'&'|'|'|'('|')'|'`'|$'\n')
+                if [ -n "$word" ]; then
+                    if [ "$pending_redirect" -eq 1 ]; then
+                        pending_redirect=0
+                    else
+                        line+="$word"$'\x01'
+                    fi
+                    word=""
+                fi
+                res+="$line"$'\n'
+                line=""
+                pending_redirect=0
+                ;;
+            '<'|'>')
+                if [ -n "$word" ]; then
+                    if [ "$pending_redirect" -eq 1 ]; then
+                        pending_redirect=0
+                    else
+                        line+="$word"$'\x01'
+                    fi
+                    word=""
+                fi
+                pending_redirect=1
+                ;;
+            *) word+="$c" ;;
+        esac
+        i=$((i + 1))
+    done
+    if [ -n "$word" ] && [ "$pending_redirect" -ne 1 ]; then
+        line+="$word"$'\x01'
+    fi
+    res+="$line"$'\n'
+    printf '%s' "$res"
+}
+
 # Anything that runs a named file: an interpreter, `source`/`.`, `eval`, or
 # the file itself as the command word. Wrappers (env, timeout, xargs, ...),
 # their option words and VAR= prefixes are skipped to find that word; a
 # wrapper counts as running something itself, since its option operands
 # (env -C <dir>) hide the word that follows. Both a wrapper and a VAR= prefix
-# (BASH_ENV runs a file first) make a guarded run unverifiable.
-simple=${flat//[;&|()<>\`]/$'\n'}
+# (BASH_ENV runs a file first) make a guarded run unverifiable. An interpreter
+# name chains through the same skip-loop as a wrapper, so `env bash <op>` and
+# a bare `sh <op>` both land on <op> - the one word this hook ever classifies
+# on that line. A read-only program (grep, cat, jq, echo, ...) that is not a
+# wrapper or interpreter, and does not itself look like a guarded path, is not
+# executing anything checked here, so its argument words are never inspected
+# (HIMMEL-3433) - this is what lets `grep -n x scripts/cr/*` alone.
+#
+# A candidate operand: a relative path whose last segment names a guarded
+# script, a glob or brace list that could, or an absolute/tilde word (left to
+# the permission layer: no allow rule matches them, and the runbook's
+# <himmel_dir> spelling is one). Only a path that resolves to exactly
+# scripts/cr/<script> from the cwd can be checked; any other candidate (a glob,
+# a variable, a path outside the root, or a cd that moves what the path
+# resolves against) is unresolvable and denies. A wrapper/interpreter chain
+# that runs out of words before landing on one denies too - fail closed, since
+# its operand cannot be read at all.
+# ponytail: text classification, so a name the shell assembles from pieces the
+# text never spells (a variable holding the whole path, with neither "cr/" nor
+# "pr-check" in sight) is not seen. The branch can run arbitrary code through any other
+# allow-listed scripts/ path anyway; this hook closes the two named scripts.
+simple=$(tokenize "$cmd")
 runs=0
 chdir=0
 wrapped=0
+hit=0
+unresolved=""
 while IFS= read -r line; do
-    read -r -a w <<<"$line"
+    IFS=$'\x01' read -r -a w <<<"$line"
     i=0
     skip_opts=0
+    chained=0
+    lastw=""
     while [ "$i" -lt "${#w[@]}" ]; do
         x=${w[$i]}
         case "$x" in
             [A-Za-z_]*=*) wrapped=1 ;;
             if|then|else|elif|do|while|until|'!'|'{'|'}') skip_opts=1 ;;
-            time|command|builtin|nohup|nice|stdbuf|sudo|env|exec|timeout|xargs) skip_opts=1; runs=1; wrapped=1 ;;
+            time|command|builtin|nohup|nice|stdbuf|sudo|env|exec|timeout|xargs) skip_opts=1; runs=1; wrapped=1; chained=1; lastw=$x ;;
+            bash|sh|zsh|dash|ksh|mksh|busybox|toybox|source|.|eval) skip_opts=1; runs=1; chained=1; lastw=$x ;;
             -C*|-D*|--chdir*|--directory*) [ "$skip_opts" -eq 1 ] || break; chdir=1 ;;
             -*|[0-9]*) [ "$skip_opts" -eq 1 ] || break ;;
             *) break ;;
         esac
         i=$((i + 1))
     done
-    [ "$i" -lt "${#w[@]}" ] || continue
+    if [ "$i" -ge "${#w[@]}" ]; then
+        if [ "$chained" -eq 1 ]; then
+            runs=1
+            hit=1
+            unresolved="${lastw:-(no operand)}"
+        fi
+        continue
+    fi
     cw=${w[$i]}
     case "${cw##*/}" in
-        bash|sh|zsh|dash|ksh|mksh|busybox|toybox|source|.|eval) runs=1 ;;
-        cd|pushd|popd) chdir=1 ;;
+        cd|pushd|popd) chdir=1; continue ;;
     esac
-    case "$cw" in */*|pr-check*) runs=1 ;; esac
-done <<<"$simple"
-[ "$runs" -eq 1 ] || exit 0
-
-# A candidate operand: a relative path whose last segment names a guarded
-# script, a glob or brace list that could, or a runtime-built word when the
-# command mentions pr-check at all. Only a path that resolves to exactly
-# scripts/cr/<script> from the cwd can be checked; any other candidate (a glob,
-# a variable, a path outside the root, or a cd that moves what the path
-# resolves against) is unresolvable and denies. Absolute paths are left to the
-# permission layer: no allow rule matches them, and the runbook's
-# <himmel_dir> spelling is one.
-# ponytail: text classification, so a name the shell assembles from pieces the
-# text never spells (a variable holding the whole path, with neither "cr/" nor
-# "pr-check" in sight) is not seen. The branch can run arbitrary code through any other
-# allow-listed scripts/ path anyway; this hook closes the two named scripts.
-hit=0
-unresolved=""
-# A whole word that names a path through cr/ (any case) is read by its text
-# alone, so a word the shell rewrites first - an expansion, a substitution, a
-# glob, a brace list, a tilde - is unresolvable, and so is a relative one a
-# case-insensitive filesystem folds. Whole words, before any split: a
-# substitution ($(pwd)/scripts/cr/...) only looks absolute once split.
-# Absolute words keep their case (an adopter's /Users/... anchor path).
-for word in $flat; do
-    case "$word" in *[cC][rR]/*) ;; *) continue ;; esac
-    case "$word" in
-        *[][*?~\$\(\`]*|*'{'*|*'}'*) hit=1; unresolved=$word ;;
-        /*) ;;
-        *[[:upper:]]*) hit=1; unresolved=$word ;;
-    esac
-done
-for tok in ${flat//[;&|()<>\`=]/$'\n'}; do
-    case "$tok" in /*|'~'*) continue ;; esac
-    case "$tok" in
-        *'$'[A-Za-z_'{']*) case "$flat" in *pr-check*) hit=1; unresolved=$tok ;; esac ;;
-    esac
-    case "$tok" in *pr-check*'{'*|*pr-check*'}'*) hit=1; unresolved=$tok ;; esac
-    # A brace list reads as a glob that matches every word it could expand to,
-    # innermost group first; a pair it cannot reduce is unresolvable.
-    while :; do
-        case "$tok" in *'{'*) ;; *) break ;; esac
-        rest=${tok##*'{'}
-        case "$rest" in *'}'*) ;; *) break ;; esac
-        tok=${tok%'{'*}'*'${rest#*'}'}
-    done
-    case "$tok" in *'{'*'}'*) hit=1; unresolved=$tok ;; esac
-    rel=$(norm "$tok")
-    if is_target "${rel##*/}"; then
-        hit=1
-        case "$rel" in
-            scripts/cr/pr-check-context.sh|scripts/cr/pr-check-env.sh) ;;
-            *) unresolved=$tok ;;
+    if [ "$chained" -eq 0 ]; then
+        case "$cw" in
+            */*|pr-check*) runs=1 ;;
+            *) continue ;;
         esac
     fi
-done
-[ "$hit" -eq 1 ] || exit 0
+    case "$cw" in
+        *[][*?~\$\(\`]*|*'{'*|*'}'*) hit=1; unresolved=$cw ;;
+        /*|'~'*) ;;
+        *[[:upper:]]*) hit=1; unresolved=$cw ;;
+        *)
+            # A brace list reads as a glob that matches every word it could
+            # expand to, innermost group first; a pair it cannot reduce is
+            # unresolvable.
+            tok=$cw
+            while :; do
+                case "$tok" in *'{'*) ;; *) break ;; esac
+                rest=${tok##*'{'}
+                case "$rest" in *'}'*) ;; *) break ;; esac
+                tok=${tok%'{'*}'*'${rest#*'}'}
+            done
+            case "$tok" in *'{'*'}'*) hit=1; unresolved=$tok ;; esac
+            rel=$(norm "$cw")
+            if is_target "${rel##*/}"; then
+                hit=1
+                case "$rel" in
+                    scripts/cr/pr-check-context.sh|scripts/cr/pr-check-env.sh) ;;
+                    *) unresolved=$cw ;;
+                esac
+            fi
+            ;;
+    esac
+done <<<"$simple"
+[ "$runs" -eq 1 ] || exit 0
+# A chdir or a wrapper/VAR= prefix denies below on its own, even on a line
+# whose landing operand itself never set hit (env -C elsewhere bash ...): only
+# skip the deny chain when none of the three ever fired.
+[ "$hit" -eq 1 ] || [ "$chdir" -eq 1 ] || [ "$wrapped" -eq 1 ] || exit 0
 
 shown=${cmd//$'\n'/ }
 shown=${shown:0:200}

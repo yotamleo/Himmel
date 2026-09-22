@@ -254,10 +254,22 @@ bash SCRIPTS/CR/PR-CHECK-CONTEXT.SH
 bash scripts/C?/PR-CHECK-*.SH
 busybox sh scripts/cr/pr-check-context.sh
 toybox sh scripts/cr/pr-check-context.sh
+bash scripts/cr/*.sh
+sh -c 'bash scripts/cr/*.sh'
+eval "bash scripts/cr/x*.sh"
 VARIANTS
 run "a line continuation inside the name on an edited branch -> deny" 2 \
     "$(payload "bash scripts/cr/pr-check-con\\
 text.sh" "$WT")" "$HR"
+# An interpreter that runs out of operand words denies fail-closed, even
+# though the trailing text (needed only to pass the pre-filter) never
+# resolves under scripts/cr/ itself.
+# shellcheck disable=SC2016 # command text, verbatim
+run "bash \$X with an unresolvable operand -> deny" 2 \
+    "$(payload 'bash $X # scripts/cr/pr-check-context.sh' "$WT")" "$HR"
+# shellcheck disable=SC2016 # command text, verbatim
+run "a command substitution running the guarded glob -> deny" 2 \
+    "$(payload 'echo $(bash scripts/cr/*.sh)' "$WT")" "$HR"
 # Mentioning the file is not running it; the canonical forms stay usable.
 while IFS= read -r v; do
     run "mention [$v] on an edited branch -> no-op" 0 "$(payload "$v" "$WT")" "$HR"
@@ -268,7 +280,16 @@ cat scripts/cr/pr-check-env.sh
 bash scripts/cr/test-pr-check-context.sh
 bash scripts/hooks/test-guard-pr-check-literal.sh
 bash scripts/cr/panel-first-pass.sh --x
+grep -n x scripts/cr/*
+echo "see scripts/cr/*.sh"
+jq '.[] | select(.path|test("scripts/cr/.*"))' f
 MENTIONS
+# A heredoc body is data, not a command: naming the guarded script only in the
+# body must not deny (HIMMEL-3433).
+run "heredoc body naming pr-check-context.sh on an edited branch -> no-op" 0 \
+    "$(payload "cat > \$S/body.md <<'EOF'
+see scripts/cr/pr-check-context.sh
+EOF" "$WT")" "$HR"
 run "the anchored fence on an edited branch -> no-op" 0 "$(payload "$FENCE_TEXT" "$WT")" "$HR"
 run "HIMMEL_REPO re-pointed before the fence -> deny" 2 \
     "$(payload "export HIMMEL_REPO=.; $FENCE_TEXT" "$WT")" "$HR"
