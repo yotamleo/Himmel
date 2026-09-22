@@ -24,9 +24,11 @@
 //     [--v1-keys <file>]
 //
 // --v1-keys <file> (one key per line, blanks and # comments skipped) also
-// ensures an unreleased v1.0.0 version (Linux GA) exists and carries exactly
-// those tickets in addition to their tag versions. The v1 scope has moved
-// before, so the list is a file the operator reconciles, never baked in here.
+// ensures an unreleased v1.0.0 version (Linux GA) exists and adds it to those
+// tickets, in addition to their tag versions. Add-only: a ticket dropped from
+// the list keeps v1.0.0 until `fix-version <key> --remove v1.0.0`. The v1 scope
+// has moved before, so the list is a file the operator reconciles, never baked
+// in here.
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -156,7 +158,8 @@ export function planSync({ project, releases, prs, shaToTag, jiraVersions, jiraK
   }
 
   if (v1) {
-    if (!existing.has(v1.version)) {
+    // v1.0.0 may also be a published GitHub tag: that create is already planned.
+    if (!existing.has(v1.version) && !createVersions.some((c) => c.name === v1.version)) {
       createVersions.push({ name: v1.version, released: false, description: v1.description });
     }
     for (const key of v1.keys) {
@@ -207,6 +210,13 @@ export async function runSync(opts, deps) {
     const r = await deps.reach(tag);
     if (r) reachByTag.set(tag, r);
     else missingTags.push(tag);
+  }
+  // A skipped tag hands its commits to the NEXT tag, and a wrong fixVersion is
+  // never removed by a later run — so a partial clone may report but not write.
+  if (opts.apply && missingTags.length) {
+    throw new Error(
+      `tags not in the local clone (run \`git fetch --tags\`): ${missingTags.join(', ')} — refusing to write`,
+    );
   }
 
   const jiraVersions = await deps.jira.versions();
@@ -288,25 +298,50 @@ function sh(cmd, args) {
   return execFileSync(cmd, args, { encoding: 'utf8', maxBuffer: BUF });
 }
 
-function defaultRepo() {
-  return sh('gh', ['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner']).trim();
+// gh list --limit truncates silently; a result that fills the limit may be cut
+// off, and a cut-off release list hands old commits to a later tag.
+export function checkNotTruncated(rows, limit, what) {
+  if (rows.length >= limit) {
+    throw new Error(`${what}: got ${rows.length} rows, the --limit of ${limit} — the list may be truncated; raise the limit`);
+  }
+  return rows;
 }
 
+// The repo the local tags belong to: gh resolves it from this script's own
+// checkout, the same one gitReach reads, so the two cannot disagree.
+function defaultRepo() {
+  return execFileSync('gh', ['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner'], {
+    encoding: 'utf8',
+    cwd: HERE,
+  }).trim();
+}
+
+const RELEASE_LIMIT = 1000;
+const PR_LIMIT = 5000;
+
 function loadReleases(repo) {
-  return JSON.parse(
-    sh('gh', [
-      'release', 'list', '--repo', repo, '--limit', '200',
-      '--json', 'tagName,name,isPrerelease,isDraft,publishedAt',
-    ]),
+  return checkNotTruncated(
+    JSON.parse(
+      sh('gh', [
+        'release', 'list', '--repo', repo, '--limit', String(RELEASE_LIMIT),
+        '--json', 'tagName,name,isPrerelease,isDraft,publishedAt',
+      ]),
+    ),
+    RELEASE_LIMIT,
+    'gh release list',
   );
 }
 
 function loadPrs(repo) {
-  const rows = JSON.parse(
-    sh('gh', [
-      'pr', 'list', '--repo', repo, '--state', 'merged', '--limit', '5000',
-      '--json', 'number,title,mergeCommit',
-    ]),
+  const rows = checkNotTruncated(
+    JSON.parse(
+      sh('gh', [
+        'pr', 'list', '--repo', repo, '--state', 'merged', '--limit', String(PR_LIMIT),
+        '--json', 'number,title,mergeCommit',
+      ]),
+    ),
+    PR_LIMIT,
+    'gh pr list',
   );
   return rows.map((p) => ({ number: p.number, title: p.title, sha: p.mergeCommit?.oid }));
 }
@@ -353,7 +388,13 @@ function makeJira(cli, project) {
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   if (opts.v1KeysFile) opts.v1Keys = parseKeyFile(readFileSync(opts.v1KeysFile, 'utf8'));
-  const repo = opts.repo ?? defaultRepo();
+  const localRepo = defaultRepo();
+  const repo = opts.repo ?? localRepo;
+  // Reachability is read from THIS clone's tags; another repo's release names
+  // would silently resolve against the wrong history.
+  if (repo.toLowerCase() !== localRepo.toLowerCase()) {
+    throw new Error(`--repo ${repo} is not this checkout's repo (${localRepo}); run the sync from a clone of ${repo}`);
+  }
   const report = await runSync(opts, {
     loadReleases: async () => loadReleases(repo),
     loadPrs: async () => loadPrs(repo),

@@ -143,10 +143,16 @@ built `dist/`; it prints counts plus any key a PR cites that Jira lacks. Only
 tag versions (and `v1.0.0` under `--v1-keys`) are ever created or released.
 
 **v1.0.0 scope.** `--v1-keys <file>` (one key per line, `#` comments allowed)
-creates `v1.0.0` if missing and adds it to exactly those tickets. The list is a
-file, not code, because the v1 definition has moved before. New v1-scoped work
-outside a sync run: `node <repo-root>/scripts/jira/dist/index.js fix-version
-HIMMEL-N --add v1.0.0`.
+creates `v1.0.0` if missing and adds it to those tickets. It is add-only: a
+ticket dropped from the list keeps `v1.0.0` until you remove it by hand. The
+list is a file, not code, because the v1 definition has moved before. New
+v1-scoped work outside a sync run, or dropping a ticket from v1:
+`node <repo-root>/scripts/jira/dist/index.js fix-version HIMMEL-N --add v1.0.0`
+(`--remove` to drop it).
+
+The sync reads reachability from the tags of the clone it runs in, so it must
+run from a clone of the repo whose releases it lists (`--repo` must match), and
+`--apply` refuses when a published tag is missing locally (`git fetch --tags`).
 
 ## Confluence CLI (HIMMEL-437)
 

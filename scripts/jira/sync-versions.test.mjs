@@ -7,6 +7,7 @@ import {
   assignFirstTags,
   planSync,
   runSync,
+  checkNotTruncated,
 } from './sync-versions.mjs';
 
 // I/O-boundary functions this file does NOT cover (loadReleases, loadPrs,
@@ -239,6 +240,12 @@ describe('v1.0.0 scope (--v1-keys)', () => {
     expect(() => parseKeyFile('HIMMEL-1\nnot a key\n')).toThrow(/not a Jira key/);
   });
 
+  it('creates v1.0.0 once when it is ALSO a published GitHub release', () => {
+    const v1Release = { tagName: 'v1.0.0', name: 'v1.0.0', isPrerelease: false, isDraft: false, publishedAt: '2026-12-01T00:00:00Z' };
+    const p = planSync({ ...base, releases: [...RELEASES, v1Release], v1 });
+    expect(p.createVersions.filter((v) => v.name === 'v1.0.0')).toHaveLength(1);
+  });
+
   it('runSync applies v1.0.0: create, then add to the listed keys', async () => {
     const { writes, deps } = fakeDeps({
       loadReleases: async () => [],
@@ -324,5 +331,33 @@ describe('runSync', () => {
     const report = await runSync({ project: 'HIMMEL', apply: true }, deps);
     expect(report.failed).toHaveLength(1);
     expect(report.failed[0]).toMatch(/HIMMEL-10/);
+  });
+
+  it('--apply refuses (zero writes) when a published tag is missing from the local clone', async () => {
+    const { writes, deps } = fakeDeps({
+      loadReleases: async () => [RELEASES[0], RELEASES[1]],
+      reach: async (tag) => (tag === RELEASES[0].tagName ? null : new Set(['a'])),
+    });
+    await expect(runSync({ project: 'HIMMEL', apply: true }, deps)).rejects.toThrow(/git fetch --tags/);
+    expect(writes).toEqual([]);
+  });
+
+  it('dry-run still reports a missing tag instead of throwing', async () => {
+    const { deps } = fakeDeps({
+      loadReleases: async () => [RELEASES[0], RELEASES[1]],
+      reach: async (tag) => (tag === RELEASES[0].tagName ? null : new Set(['a'])),
+    });
+    const report = await runSync({ project: 'HIMMEL', apply: false }, deps);
+    expect(report.missingTags).toEqual([RELEASES[0].tagName]);
+  });
+});
+
+describe('checkNotTruncated', () => {
+  it('passes a result shorter than the limit', () => {
+    expect(() => checkNotTruncated(new Array(9), 10, 'releases')).not.toThrow();
+  });
+
+  it('throws when the result hit the limit (it may be cut off)', () => {
+    expect(() => checkNotTruncated(new Array(10), 10, 'releases')).toThrow(/releases.*10/);
   });
 });
