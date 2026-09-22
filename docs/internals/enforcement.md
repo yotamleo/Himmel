@@ -1345,6 +1345,10 @@ through `main_checkout_verdict`. The target covers:
   `env`, or by an earlier `export`
 - the cwd set by an earlier `cd` / `pushd` / `env -C`
 
+A `cd` may not have run (`false && cd <leg>; git merge x`), so a write is also
+checked from every cwd an earlier `cd` left. The cost is that
+`cd <leg> && git merge x` typed from the primary is denied as well.
+
 Checking the repo root closes the `-C <primary>/handovers` and
 `-C <primary>/<ignored-dir>` exemption holes. An unresolvable cwd or target on
 a write fails closed.
@@ -1356,9 +1360,12 @@ The console's wrap flow is carved out by shape:
   `pull --ff-only . <leg>` is denied.
 - `fetch` is allowed unless it uses `-u`, `--upload-pack` or `--refmap`, names
   a `.`/path/URL repository, or passes a `<src>:<dst>` refspec.
+- A config override (`-c`, `--config-env`, any `GIT_CONFIG*` variable) voids
+  both carve-outs, since it can repoint the remote or refspec.
 
 The configured upstream is protected too: `config`, `remote` and
-`branch -u|-f` writes on the primary are denied. The bypass is the same as for
+`branch -u|-f` writes on the primary are denied, and so are `tag` creation or
+deletion and `reflog expire|delete`. The bypass is the same as for
 every arm: `EDIT_ON_MAIN_OK=1` in the launching shell, or `.single-writer`.
 
 Named residual: config, remote and ref writes that land in the primary's

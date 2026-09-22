@@ -1443,7 +1443,11 @@ done < <(_bwimc_split_clauses "$_bwimc_hb")
 # displaced behind a wrapper this arm does not strip (sudo, xargs, timeout,
 # `sh -c '…'`, an interpreter body) is missed, the same residual as every
 # other arm. A `cd` inside a conditional (`false && cd <primary>`) is assumed
-# to have run (fails toward MORE denies). `git -c alias.x=…` and repo-level
+# to have run, and a write is ALSO checked from every cwd a cd left, so
+# `false && cd <leg>; git merge x` from the primary is still caught; the cost
+# is that `cd <leg> && git merge x` typed from the primary is denied too.
+# Shared-ref writes (tag, reflog expire, update-ref) are equally reachable
+# from the leg's own worktree: that residual is HIMMEL-3407. `git -c alias.x=…` and repo-level
 # hooks are code execution in the leg's own process, not a primary-state
 # write, and are out of scope. `worktree move|remove` of the primary is left
 # to git itself, which refuses to move or remove a main working tree.
@@ -1491,12 +1495,26 @@ _bwimc_git_sub_is_read() {
         merge-base|name-rev|show-ref|show-branch|cherry|range-diff|diff-tree|\
         diff-files|diff-index|var|version|help|check-ignore|check-attr|\
         check-mailmap|check-ref-format|count-objects|fsck|verify-commit|\
-        verify-tag|tag|reflog|worktree|push|gc|prune|repack|pack-refs|\
+        verify-tag|worktree|push|gc|prune|repack|pack-refs|\
         maintenance|commit-graph|multi-pack-index)
             return 0 ;;
         stash)
             case "${1:-}" in list|show) return 0 ;; esac
             return 1 ;;
+        reflog)
+            case "${1:-}" in expire|delete|drop|write) return 1 ;; esac
+            return 0 ;;
+        tag)
+            for a in "$@"; do
+                case "$a" in
+                    -l|--list|--list=*|-v|--verify|--contains*|--no-contains*|\
+                    --points-at*|--merged*|--no-merged*) return 0 ;;
+                    --*) ;;
+                    -*) _bwimc_short_has "$a" lv && return 0 ;;
+                    *) npos=$((npos+1)) ;;
+                esac
+            done
+            [ "$npos" = 0 ]; return ;;
         submodule)
             case "${1:-}" in status|summary) return 0 ;; esac
             return 1 ;;
@@ -1507,8 +1525,14 @@ _bwimc_git_sub_is_read() {
             case "${1:-}" in list|show) return 0 ;; esac
             return 1 ;;
         remote)
-            case "${1:-}" in ""|-v|--verbose|show|get-url) return 0 ;; esac
-            return 1 ;;
+            for a in "$@"; do
+                case "$a" in
+                    -v|--verbose) ;;
+                    show|get-url) return 0 ;;
+                    *) return 1 ;;
+                esac
+            done
+            return 0 ;;
         branch)
             for a in "$@"; do
                 case "$a" in
@@ -1639,7 +1663,13 @@ _bwimc_git_clause() {
     [ "$i" -lt "$n" ] || return 0
     tu=$(_bwimc_unq "${toks[$i]}")
 
-    # cd / pushd / popd: move the modelled cwd for later clauses.
+    # cd / pushd / popd: move the modelled cwd for later clauses. The cwd it
+    # leaves is kept as an alternative: the cd may not have run (`false && cd
+    # <leg>; git merge x`) or may have failed, and a write is checked from each.
+    case "$tu" in
+        cd|pushd|popd)
+            [ "$_bwimc_gcwd_unres" = 1 ] || _bwimc_gcwd_alts="$_bwimc_gcwd_alts$_bwimc_gcwd"$'\n' ;;
+    esac
     case "$tu" in
         cd|pushd)
             i=$((i+1))
@@ -1842,11 +1872,24 @@ _bwimc_git_clause() {
         _bwimc_git_check_path "$r" "index-file $idx"
     fi
     _BWIMC_GIT_SUB=""
+    if [ -z "$_bwimc_galt_mode" ] && [ -n "$_bwimc_gcwd_alts" ]; then
+        local saved_cwd="$_bwimc_gcwd" saved_unres="$_bwimc_gcwd_unres" alt
+        _bwimc_galt_mode=1
+        while IFS= read -r alt; do
+            [ -n "$alt" ] || continue
+            _bwimc_gcwd="$alt"; _bwimc_gcwd_unres=0
+            _bwimc_git_clause "$1"
+        done <<< "$_bwimc_gcwd_alts"
+        _bwimc_gcwd="$saved_cwd"; _bwimc_gcwd_unres="$saved_unres"
+        _bwimc_galt_mode=""
+    fi
 }
 
 _BWIMC_GIT_SUB=""
 _bwimc_gcwd="$_bwimc_cwd"
 _bwimc_gcwd_unres=0
+_bwimc_gcwd_alts=""
+_bwimc_galt_mode=""
 _bwimc_genv_dir=""
 _bwimc_genv_wt=""
 _bwimc_genv_idx=""

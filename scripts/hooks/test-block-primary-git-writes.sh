@@ -249,7 +249,28 @@ for sub in "checkout feat/x -- README.md" "reset --hard HEAD" "merge main" "stas
     allow "git $sub (cwd = leg worktree)" "$W" "git $sub"
 done
 allow "git -C <wt> checkout (cwd = primary)" "$P" "git -C $W checkout feat/x -- README.md"
-allow "cd <wt>/sub && git checkout"         "$P" "cd $W/sub && git checkout feat/x -- README.md"
+# A cd may not have run, so a write is also checked from the cwd it left: the
+# primary here (panel round 3). Deliberate over-deny, named in the hook.
+deny "cd <wt>/sub && git checkout (cwd = primary)" "$P" "cd $W/sub && git checkout feat/x -- README.md"
+deny "false && cd <leg>; git merge"         "$P" "false && cd $W; git merge feat/x"
+deny "cd <leg>; cd <leg>/sub; git merge"    "$P" "cd $W; cd sub; git merge feat/x"
+allow "cd <leg>/sub && git merge (cwd = leg)" "$W" "cd $W/sub && git merge feat/x"
+allow "cd <primary>; cd <leg>; git status"  "$W" "cd $P; cd $W; git status"
+
+# Ref-writing subcommands that used to sit on the read list (panel round 3).
+deny "reflog delete on the primary"         "$W" "git -C $P reflog delete refs/heads/main@{0}"
+deny "reflog expire on the primary"         "$W" "git -C $P reflog expire --all"
+deny "tag create on the primary"            "$W" "git -C $P tag v9 main"
+deny "tag -d on the primary"                "$W" "git -C $P tag -d v9"
+deny "remote -v add on the primary"         "$W" "git -C $P remote -v add evil $W"
+deny "remote --verbose set-url"             "$W" "git -C $P remote --verbose set-url origin $W"
+allow "reflog on the primary"               "$W" "git -C $P reflog -n 5"
+allow "reflog show main"                    "$W" "git -C $P reflog show main"
+allow "tag list"                            "$W" "git -C $P tag"
+allow "tag -l pattern"                      "$W" "git -C $P tag -l v*"
+allow "tag --contains"                      "$W" "git -C $P tag --contains main"
+allow "remote -v"                           "$W" "git -C $P remote -v"
+allow "remote -v show origin"               "$W" "git -C $P remote -v show origin"
 allow "GIT_WORK_TREE=<wt> git checkout"     "$W" "GIT_WORK_TREE=$W git checkout feat/x -- README.md"
 allow "single-writer repo: checkout"        "$W" "git -C $S checkout 0123abc"
 allow "single-writer repo: cwd + merge"     "$S" "git merge x"
