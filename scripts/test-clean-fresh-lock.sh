@@ -100,7 +100,9 @@ mk_wt() {
     git -C "$REPO" worktree add -q "$path" -b "$branch" >/dev/null 2>&1 \
         || bad "mk_wt($name): git worktree add failed"
     [ -d "$path" ] || bad "mk_wt($name): worktree dir missing after add"
-    git -C "$REPO" worktree list | grep -qF "$path" \
+    local wt_list
+    wt_list=$(git -C "$REPO" worktree list | grep -F "$path")
+    [ -n "$wt_list" ] \
         || bad "mk_wt($name): worktree not registered in git worktree list"
     echo "$path"
 }
