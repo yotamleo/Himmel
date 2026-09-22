@@ -634,7 +634,9 @@ async function poll() {
     else { const b = document.getElementById('banner'); b.hidden = false; b.className = 'banner bad'; b.textContent = 'Waiting for the fleet server…'; }
   }
 }
-if (LIVE) { document.getElementById('s-when-k').textContent = 'Refreshed'; poll(); setInterval(poll, 10000); }
+// Chained rather than a fixed interval: the next poll starts 10 s after the last one ends, so a slow fetch never overlaps it.
+function loop() { poll().then(() => setTimeout(loop, 10000)); }
+if (LIVE) { document.getElementById('s-when-k').textContent = 'Refreshed'; loop(); }
 else { const s = JSON.parse(document.getElementById('snap').textContent); document.getElementById('s-when-k').textContent = 'Snapshot'; render(s, 'Static snapshot from ' + clock(s.generatedAt) + ' — not live.'); }
 </script>
 </body>
