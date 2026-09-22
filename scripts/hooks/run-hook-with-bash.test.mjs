@@ -1362,6 +1362,28 @@ test('HIMMEL-3397: a backslash in a POSIX link target is a filename character, n
   }
 });
 
+test('HIMMEL-3397: the alias cap also holds when a queued link frame is restored', () => {
+  const fx = dotdotFixture();
+  try {
+    // x1 -> x2 -> a1/../a6 queue two frames; each a<k> -> n<k> doubles the live aliases to 63.
+    let at = fx.dir;
+    for (let k = 1; k <= 6; k++) {
+      fx.fs.mkdirSync(join(at, `n${k}`));
+      fx.fs.symlinkSync(`n${k}`, join(at, `a${k}`));
+      at = join(at, `n${k}`);
+    }
+    writeFileSync(join(at, 'f.sh'), 'echo unpinned\n');
+    fx.fs.symlinkSync('a1/a2/a3/a4/a5/a6', join(fx.dir, 'x2'));
+    fx.fs.symlinkSync('x2', join(fx.dir, 'x1'));
+    withEnv(fx.env, () => {
+      assert.equal(verifyProjectHookIntegrity(join(at, 'f.sh'), 's1').ok, true); // control: the plain spelling
+      assert.equal(verifyProjectHookIntegrity(join(fx.dir, 'x1', 'f.sh'), 's1').ok, false);
+    });
+  } finally {
+    fx.cleanup();
+  }
+});
+
 test('HIMMEL-3397: `hop/..` after a directory link claims the target-side path, not the lexical collapse', () => {
   const fx = dotdotFixture();
   try {

@@ -1050,7 +1050,11 @@ function walkIdentities(candidate) {
   const ids = () => [...aliases.map((a) => normalize(a.s)), normalize(resolved)];
   for (let follows = 0; todo.length;) {
     const name = todo.shift();
-    if (typeof name !== 'string') { aliases = aliases.concat(name.frozen); continue; } // the link's target is resolved
+    if (typeof name !== 'string') { // the link's target is resolved
+      aliases = aliases.concat(name.frozen);
+      if (aliases.length > MAX_ALIASES) return null;
+      continue;
+    }
     if (name === '..') {
       resolved = path.dirname(resolved);
       aliases = aliases.filter((a) => a.d > 0).map((a) => ({ s: path.dirname(a.s), d: a.d - 1 }));
