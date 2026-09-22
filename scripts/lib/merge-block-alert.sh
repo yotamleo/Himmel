@@ -91,3 +91,98 @@ merge_block_alert() {
     fi
     return 0
 }
+
+# shellcheck source=./go-gate.sh
+# shellcheck disable=SC1091
+. "$_MBA_LIB_DIR/go-gate.sh" 2>/dev/null || console_leg() {
+    case "$(printf '%s' "${HIMMEL_CONSOLE_LEG:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
+        ''|0|false|off|no) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+# HIMMEL-3430: merge_watch_alert — the alert for a MID-WORK check-ci red (this
+# leg's own CI watch, not an actual merge attempt). merge_block_alert above is
+# unchanged and still called directly by merge-on-green.sh/pr-merge.sh for a
+# genuinely refused merge, so those always DM the operator regardless of
+# console context.
+#
+# When this leg is console-spawned (console_leg(), from go-gate.sh) AND its
+# console's session name is known (HIMMEL_CONSOLE_NAME — unset today; the
+# launcher export is HIMMEL-3435, a follow-up), the alert is appended to that
+# console's own bridge inbox instead: the console is already watching the PR,
+# so an operator page mid-work is a false alarm. No console name, or the
+# console's inbox was never armed (routeToConsole's own rule in
+# scripts/telegram/console-route.ts: append only to a file that already
+# exists, never create one) -> falls through to merge_block_alert, i.e.
+# today's behaviour, one operator DM.
+#
+#   merge_watch_alert <owner/repo> <pr-number> <head-sha> <rule text...>
+#
+# Always returns 0. Dedupe: a SEPARATE sentinel per (repo, PR, head) from
+# merge_block_alert's own (suffixed .watch), so a console-routed watch alert
+# never suppresses a later real merge-refusal operator DM for the same head,
+# and vice versa.
+#
+# Seam: MERGE_WATCH_ALERT_BRIDGE_ROOT overrides BRIDGE_ROOT for the console
+# inbox path only (hermetic suites; a caller who can set this can already set
+# PATH).
+_mba_console_inbox_path() {
+    local root="$1" name="$2"
+    [ -n "$name" ] || return 1
+    case "$name" in
+        *[/\\]*|*..*) return 1 ;;
+        *[[:space:]]*) return 1 ;;
+    esac
+    printf '%s/consoles/%s.md' "$root" "$name"
+}
+
+# Mirrors scripts/telegram/console-route.ts's consoleInboxPath + routeToConsole
+# (bash-native: this lib is sourced by plain-bash callers, not bun).
+_mba_route_console() {
+    local repo="$1" pr="$2" name="$3" text="$4"
+    local root file
+    root="${MERGE_WATCH_ALERT_BRIDGE_ROOT:-${BRIDGE_ROOT:-$HOME/.claude/handover/bridge}}"
+    file=$(_mba_console_inbox_path "$root" "$name") || return 1
+    [ -f "$file" ] || return 1
+    local folded
+    folded=$(printf '%s' "$text" | tr '\n' ' ')
+    printf -- '- %s [merge-watch %s#%s] %s\n' "$(date +%H:%M)" "$repo" "$pr" "$folded" >> "$file" 2>/dev/null
+}
+
+merge_watch_alert() {
+    local repo="${1:-}" pr="${2:-}" head="${3:-}"
+    shift 3 2>/dev/null || shift $#
+    local rule="$*"
+    local short="${head:0:12}"
+
+    case "$repo$pr$head" in *[!A-Za-z0-9._/-]*|'') merge_block_alert "$repo" "$pr" "$head" "$rule"; return 0 ;; esac
+    if [ -z "$repo" ] || [ -z "$pr" ] || [ -z "$head" ]; then
+        merge_block_alert "$repo" "$pr" "$head" "$rule"
+        return 0
+    fi
+
+    if console_leg; then
+        local dir key
+        dir="${MERGE_BLOCK_ALERT_DIR:-}"
+        if [ -z "$dir" ]; then
+            dir=$(git rev-parse --git-common-dir 2>/dev/null) && dir="$dir/himmel-merge-block-alert"
+        fi
+        if [ -n "$dir" ] && mkdir -p "$dir" 2>/dev/null; then
+            key="${repo//\//_}__${pr}__${head}.watch"
+            if ( set -o noclobber; : > "$dir/$key" ) 2>/dev/null; then
+                if _mba_route_console "$repo" "$pr" "${HIMMEL_CONSOLE_NAME:-}" "MERGE-BLOCKED ${repo}#${pr} @${short}: ${rule}"; then
+                    echo "MERGE-BLOCKED ${repo}#${pr} @${short:-unknown-head}: ${rule}" >&2
+                    return 0
+                fi
+                rm -f "$dir/$key" 2>/dev/null
+            else
+                echo "MERGE-BLOCKED ${repo}#${pr} @${short:-unknown-head}: ${rule}" >&2
+                return 0
+            fi
+        fi
+    fi
+
+    merge_block_alert "$repo" "$pr" "$head" "$rule"
+    return 0
+}

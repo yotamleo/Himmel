@@ -400,7 +400,7 @@ pr_view() {
 # either, so neither is waited on past --grace. `gh pr checks --watch` knows
 # nothing about the required set, which is why a required check that never
 # registers used to read as green (or wait out --max-wait twice).
-_alert() { merge_block_alert "${owner:-?}/${repo:-?}" "${num:-?}" "${head0:-}" "$@"; }
+_alert() { merge_watch_alert "${owner:-?}/${repo:-?}" "${num:-?}" "${head0:-}" "$@"; }
 
 # required_set — one required check context per line. The EFFECTIVE set is the
 # union of rulesets (rules/branches/<base>, which covers protect-main's ruleset

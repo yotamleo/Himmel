@@ -145,6 +145,61 @@ new_case c7b
 )
 if grep -q 'console-route.ts reply 555 MERGE-BLOCKED octo/demo#42' "$CASE/bun.log"; then pass; else fail "7: control — with a sandbox BRIDGE_ROOT the default sender runs bun console-route.ts reply <chat> (got: $(cat "$CASE/bun.log"))"; fi
 
+# alert_watch <case> [env...] -- <repo> <pr> <head> <rule...>; merge_watch_alert (HIMMEL-3430)
+run_watch_alert() {
+    local c="$1"; shift
+    (
+        # shellcheck disable=SC1090
+        . "$LIB"
+        MERGE_BLOCK_ALERT_DIR="$c/sentinels" ALERT_LOG="$c/alerts.log" BUN_LOG="$c/bun.log" \
+        TELEGRAM_ACCESS_PATH="${ACCESS_OVERRIDE:-$ACCESS}" MERGE_WATCH_ALERT_BRIDGE_ROOT="$c/bridge" \
+        merge_watch_alert "$@" 2>>"$c/err"
+    )
+}
+console_case() { mkdir -p "$1/bridge/consoles"; : > "$1/bridge/consoles/$2.md"; }
+
+# --- 8. console-leg red -> NO operator DM, one console-inbox line (row a) ----
+new_case c8
+console_case "$CASE" opsdesk
+HIMMEL_CONSOLE_LEG=1 HIMMEL_CONSOLE_NAME=opsdesk run_watch_alert "$CASE" octo/demo 42 aaaaaaaaaaaa "required check(s) FAILED: tests"
+rc=$?
+eq "8: returns 0" 0 "$rc"
+eq "8: no operator DM" 0 "$(count "$CASE/alerts.log")"
+eq "8: exactly one console-inbox line" 1 "$(count "$CASE/bridge/consoles/opsdesk.md")"
+if grep -q '\[merge-watch octo/demo#42\] MERGE-BLOCKED octo/demo#42 @aaaaaaaaaaaa: required check(s) FAILED: tests' "$CASE/bridge/consoles/opsdesk.md"; then pass; else fail "8: console line carries the merge-watch tag and text (got: $(cat "$CASE/bridge/consoles/opsdesk.md" 2>/dev/null))"; fi
+
+# --- 9. merge_block_alert (a refused merge) still DMs the operator even in a
+#        console-leg context -- merge-on-green.sh/pr-merge.sh call this
+#        directly, unchanged, so a genuine merge refusal always pages (row b)
+new_case c9
+HIMMEL_CONSOLE_LEG=1 HIMMEL_CONSOLE_NAME=opsdesk run_alert "$CASE" octo/demo 42 aaaaaaaaaaaa "gh pr merge refused"
+eq "9: merge_block_alert ignores console context, DMs the operator" 1 "$(count "$CASE/alerts.log")"
+
+# --- 10. no console resolvable -> check-ci red still DMs the operator (row c,
+#          today's behaviour) -----------------------------------------------
+new_case c10
+run_watch_alert "$CASE" octo/demo 42 aaaaaaaaaaaa "required check(s) FAILED: tests"
+eq "10a: HIMMEL_CONSOLE_LEG unset -> operator DM" 1 "$(count "$CASE/alerts.log")"
+new_case c10b
+HIMMEL_CONSOLE_LEG=1 run_watch_alert "$CASE" octo/demo 42 aaaaaaaaaaaa "required check(s) FAILED: tests"
+eq "10b: console-leg but no HIMMEL_CONSOLE_NAME -> operator DM" 1 "$(count "$CASE/alerts.log")"
+new_case c10c
+HIMMEL_CONSOLE_LEG=1 HIMMEL_CONSOLE_NAME=ghost run_watch_alert "$CASE" octo/demo 42 aaaaaaaaaaaa "required check(s) FAILED: tests"
+eq "10c: console name set but its inbox was never armed -> operator DM" 1 "$(count "$CASE/alerts.log")"
+
+# --- 11. dedupe holds for the watch channel, independent of the operator
+#          channel (row d) ---------------------------------------------------
+new_case c11
+console_case "$CASE" opsdesk
+HIMMEL_CONSOLE_LEG=1 HIMMEL_CONSOLE_NAME=opsdesk run_watch_alert "$CASE" octo/demo 42 aaaaaaaaaaaa "rule"
+HIMMEL_CONSOLE_LEG=1 HIMMEL_CONSOLE_NAME=opsdesk run_watch_alert "$CASE" octo/demo 42 aaaaaaaaaaaa "rule again"
+eq "11: repeated watch alerts for the same (repo,PR,head) -> ONE console line" 1 "$(count "$CASE/bridge/consoles/opsdesk.md")"
+eq "11: still no operator DM" 0 "$(count "$CASE/alerts.log")"
+# a prior watch alert must not suppress a later genuine merge-refusal DM for
+# the SAME (repo, PR, head) -- separate sentinel domains.
+run_alert "$CASE" octo/demo 42 aaaaaaaaaaaa "gh pr merge refused"
+eq "11: a later merge_block_alert for the same head still DMs (separate sentinel from .watch)" 1 "$(count "$CASE/alerts.log")"
+
 echo
 echo "merge-block-alert: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
