@@ -467,7 +467,12 @@ _producer_rows() {
 # created for the sha — so only the LATEST matching run is judged (ordered by
 # started_at, highest id breaks a tie), not any run that ever failed
 # (HIMMEL-3434): a re-run or a close/reopen on an unchanged head must be able to
-# clear an earlier red, the same as GitHub's own merge gate does.
+# clear an earlier red, the same as GitHub's own merge gate does. A queued run
+# can have a null started_at (jq-coerced to ""), which is unknown, not
+# "earliest" — when either side lacks a started_at the comparison falls back
+# to id alone (always present, assigned in creation order), so a freshly
+# queued rerun still outranks an older completed failure instead of losing to
+# it.
 _required_status() {
     local name id
     while IFS=$'\t' read -r name id; do
@@ -479,9 +484,15 @@ _required_status() {
             printf '%s\t%s\n' "$(printf '%s\n' "$3" | awk -F'\t' -v n="$name" -v a="$id" '
                 $2 == n && $3 == a {
                     f = 1
-                    if (best_ts == "" || $4 > best_ts || ($4 == best_ts && $5 + 0 > best_id + 0)) {
-                        best_ts = $4; best_id = $5; best_bucket = $1
+                    newer = 0
+                    if (best_id == "") {
+                        newer = 1
+                    } else if ($4 != "" && best_ts != "") {
+                        if ($4 > best_ts || ($4 == best_ts && $5 + 0 > best_id + 0)) newer = 1
+                    } else if ($5 + 0 > best_id + 0) {
+                        newer = 1
                     }
+                    if (newer) { best_ts = $4; best_id = $5; best_bucket = $1 }
                 }
                 END { print (f ? ((best_bucket == "fail" || best_bucket == "cancel") ? "fail" : "seen") : "missing") }')" "$name (app $id)"
         fi

@@ -2506,6 +2506,7 @@ _runs_fail_then_pending='{"check_runs":[{"name":"codeowner-review-gate","status"
 _runs_pass_then_cancel='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"success","app":{"id":15368},"started_at":"2026-09-22T00:16:00Z","id":1},{"name":"codeowner-review-gate","status":"completed","conclusion":"cancelled","app":{"id":15368},"started_at":"2026-09-22T01:54:00Z","id":3}]}'
 _runs_tie_higher_id_pass='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"failure","app":{"id":15368},"started_at":"2026-09-22T01:54:00Z","id":1},{"name":"codeowner-review-gate","status":"completed","conclusion":"success","app":{"id":15368},"started_at":"2026-09-22T01:54:00Z","id":3}]}'
 _runs_diff_app_later_pass='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"failure","app":{"id":15368},"started_at":"2026-09-22T00:16:00Z","id":1},{"name":"codeowner-review-gate","status":"completed","conclusion":"success","app":{"id":99},"started_at":"2026-09-22T01:54:00Z","id":3}]}'
+_runs_fail_then_pending_null_started='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"failure","app":{"id":15368},"started_at":"2026-09-22T00:16:00Z","id":1},{"name":"codeowner-review-gate","status":"queued","conclusion":null,"app":{"id":15368},"started_at":null,"id":3}]}'
 
 # 3434-a — fail-then-success on one name reads PASS: an earlier failed run must
 # not poison a later success (the PR #1079 shape).
@@ -2544,7 +2545,16 @@ RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVER
 run cr-completed --grace 0
 assert_rc 1 "3434-f control: a later success from a different app does not clear the pinned app's failure"
 
+# 3434-g — a QUEUED latest run with a null started_at (never yet begun) must
+# still outrank an older completed failure: a missing started_at is not
+# "earliest", it is unknown, and the run's id (always present, monotonic)
+# breaks the tie so the gate defers instead of reporting a stale FAIL.
+RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_runs_fail_then_pending_null_started"
+run cr-completed --grace 0
+assert_rc 0 "3434-g a queued latest run with a null started_at is not outranked by an older timestamped failure"
+if [ "$(alert_count)" = 0 ]; then pass "3434-g no alert while the null-started_at latest run is still pending"; else fail "3434-g no alert while the null-started_at latest run is still pending" "count=$(alert_count)"; fi
+
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 168 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 168"; exit 1; fi
+if [ "$COUNT" -ne 169 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 169"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1
