@@ -813,30 +813,43 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
   // (caller sees 0, record unchanged, gate still refuses).
   if(e.KIND==="amend"){
     const findings=parsed.filter(o=>o.kind==="finding");
-    // HIMMEL-2405 (AE round-2): when the caller gave no --branch, resolve it
-    // from the ledger BEFORE computing `matches` below (matches/effective()
-    // both read e.BRANCH, so this must run first, not after). Matched on raw
-    // head only (keyForHead, no effective()/re-key chasing) - the point here
-    // is only to count how many DISTINCT branches have a finding row at this
-    // identity, not to resolve chained amends. Exactly one distinct branch ->
-    // use it, even when it differs from the caller's own checkout branch
-    // (the escalation case this exists for). Zero matches -> fall back to the
-    // caller's checkout branch, refusing only if that is also empty (detached
-    // HEAD). More than one distinct branch -> refuse; guessing here is the
-    // exact bug this revision fixes.
+    // HIMMEL-2405 (AE round-2, revised post-panel round 2 - codex-1/codex-2):
+    // when the caller gave no --branch, resolve it from the ledger BEFORE
+    // computing `matches` below (matches/effective() both read e.BRANCH, so
+    // this must run first, not after). Two sources feed the candidate branch
+    // set: a raw head match (keyForHead) AND any amend record that RE-KEYED
+    // some finding of this id/artifact/perspective onto --head (codex-1: a
+    // raw-only check misses a finding chased through `--set head=`, so a
+    // follow-up amend on the re-keyed head from a different checkout could
+    // not locate its owning branch and fell through to the caller's own,
+    // wrong, branch). An empty-branch ("") candidate is never treated as a
+    // resolvable branch on its own (codex-2: a unique but branch-less legacy
+    // match used to be accepted as e.BRANCH="", silently writing a NEW amend
+    // into the all-branches legacy bucket - the exact cross-branch leak this
+    // ticket exists to close); it is dropped before counting, same as having
+    // no match at all. Exactly one REAL candidate branch -> use it, even when
+    // it differs from the caller's own checkout branch (the escalation case
+    // this exists for). No real candidate -> fall back to the caller's
+    // checkout branch, refusing only if that is also empty (detached HEAD).
+    // More than one real candidate -> refuse; guessing here is the exact bug
+    // this revision fixes.
     if(e.BRANCH===""){
       const rawMatches=findings.filter(o=>keyForHead(o,e.HEAD_));
-      const branches=[...new Set(rawMatches.map(o=>o.branch||""))];
-      if(branches.length===1){
-        e.BRANCH=branches[0];
-      } else if(branches.length>1){
+      const amendHeadMatches=parsed.filter(a=>a.kind==="amend"&&a.finding_id===e.ID
+        &&(a.artifact||"diff")===e.ARTIFACT&&(a.perspective||"off")===e.PERSPECTIVE
+        &&a.set&&typeof a.set.head==="string"&&headsMatch(a.set.head,e.HEAD_));
+      const branches=[...new Set([...rawMatches.map(o=>o.branch||""),...amendHeadMatches.map(a=>a.branch||"")])];
+      const realBranches=branches.filter(b=>b!=="");
+      if(realBranches.length===1){
+        e.BRANCH=realBranches[0];
+      } else if(realBranches.length>1){
         process.stderr.write("ledger-append.sh: amend --head "+e.HEAD_+" for "+e.ID
-          +" matches finding rows on "+branches.length+" different branches ("+branches.join(", ")+") - refusing to guess which one this amend is for. Pass --branch explicitly.\n");
+          +" matches finding rows on "+realBranches.length+" different branches ("+realBranches.join(", ")+") - refusing to guess which one this amend is for. Pass --branch explicitly.\n");
         process.exit(3);
       } else if(e.CALLER_BRANCH){
         e.BRANCH=e.CALLER_BRANCH;
       } else {
-        process.stderr.write("ledger-append.sh: amend requires --branch when the current checkout is not on a branch (detached HEAD) and no finding row exists yet to infer one from (HIMMEL-2405).\n");
+        process.stderr.write("ledger-append.sh: amend requires --branch when the current checkout is not on a branch (detached HEAD) and no finding row with a branch of its own exists to infer one from (HIMMEL-2405).\n");
         process.exit(2);
       }
     }
@@ -931,14 +944,16 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
         }
       }
     }
-    // HIMMEL-2405 (supersedes HIMMEL-2909): --branch is not required on amend
-    // (unlike finding/avail/usage), and the bash arg-parsing block above has
-    // already resolved it — explicit --branch, else the CALLER's own current
-    // checkout branch, refusing before we ever got here if HEAD was detached
-    // with neither. It is never inherited from the target finding row: doing
-    // that used to let an amend that (mis-)matched the WRONG branch's finding
-    // (the ambiguous/cross-branch case this ticket exists to fix) silently
-    // adopt that wrong branch's stamp too.
+    // HIMMEL-2405 (supersedes HIMMEL-2909, revised post-panel round 2): by
+    // this point e.BRANCH has already been resolved above - explicit
+    // --branch if given, else (for the "" case) the unique real candidate
+    // branch a matching finding row or re-key amend belongs to, else the
+    // CALLER's own current checkout branch, refusing before we ever got here
+    // if none of those could be determined. It IS preferentially inherited
+    // from the matching finding row's own branch when that is unambiguous -
+    // that is the escalation case AE's round-2 ruling exists for - and never
+    // guessed across more than one real candidate branch (the
+    // ambiguous/cross-branch case this ticket exists to fix).
     const rec={kind:"amend",ts:e.TS,branch:e.BRANCH,target_head:target.head,finding_id:e.ID,
                artifact:e.ARTIFACT,perspective:e.PERSPECTIVE,set,reason:e.REASON};
     // HIMMEL-2901: the round a verdict was ADJUDICATED in is not the round the
