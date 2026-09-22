@@ -1400,13 +1400,15 @@ if [ -n "$hint_head" ] && [ "$hint_head" != "$sha" ]; then pass; else fail "hint
 # Run the PRINTED hint end-to-end: substitute its placeholders and execute it
 # verbatim. The relative `scripts/cr/ledger-append.sh` resolves from $tmp, where
 # make_repo copied the script tree — so this exercises the real amend path with
-# the hint's own --head value.
+# the hint's own --head value. HIMMEL_REPO names the fixture as the anchor
+# (HIMMEL-3395): the relative entry then runs the fixture's own copy instead of
+# refusing (unset, as in CI) or handing off to the operator's checkout (set).
 cmd="$hint"
 cmd=${cmd//<finding-id>/codex-1}
 cmd=${cmd//<TICKET>/HIMMEL-1327}
 cmd=${cmd//<why it is out of scope here>/pre-existing}
 _amend_rc=0
-_amend_out=$(cd "$tmp" && bash -c "$cmd" 2>&1) || _amend_rc=$?
+_amend_out=$(cd "$tmp" && HIMMEL_REPO="$tmp" bash -c "$cmd" 2>&1) || _amend_rc=$?
 if [ "$_amend_rc" -eq 0 ]; then pass; else fail "printed amend hint runs end-to-end (rc=$_amend_rc): $_amend_out"; fi
 # And it must actually have amended the target: re-running the gate now clears
 # (the finding is a tracked deferral, no longer blocking) — exit 0, marker GONE.
