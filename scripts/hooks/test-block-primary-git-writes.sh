@@ -201,7 +201,19 @@ deny "branch -vf cluster"                   "$W" "git -C $P branch -vf main feat
 deny "fetch -qu cluster"                    "$W" "git -C $P fetch -qu origin main"
 deny "config -le cluster"                   "$W" "git -C $P config -le"
 deny "symbolic-ref -qd cluster"             "$W" "git -C $P symbolic-ref -qd HEAD"
+deny "branch -D old"                        "$W" "git -C $P branch -D old"
+deny "branch -d old"                        "$W" "git -C $P branch -d old"
+deny "branch --delete old"                  "$W" "git -C $P branch --delete old"
+deny "branch -qD cluster"                   "$W" "git -C $P branch -qD old"
+deny "branch -r -d origin/x"                "$W" "git -C $P branch -r -d origin/feat/x"
+deny "branch <new>"                         "$W" "git -C $P branch newbr"
+deny "branch <new> <start>"                 "$W" "git -C $P branch newbr feat/x"
 allow "branch -vv"                          "$W" "git -C $P branch -vv"
+allow "branch --list 'feat/*'"              "$W" "git -C $P branch --list feat/x"
+allow "branch -l pattern"                   "$W" "git -C $P branch -l feat/x"
+allow "branch --contains <sha>"             "$W" "git -C $P branch --contains 0123abc"
+allow "branch --merged main"                "$W" "git -C $P branch --merged main"
+allow "branch -r"                           "$W" "git -C $P branch -r"
 allow "fetch -q origin"                     "$W" "git -C $P fetch -q origin"
 allow "config -l"                           "$W" "git -C $P config -l"
 allow "symbolic-ref -q HEAD"                "$W" "git -C $P symbolic-ref -q HEAD"
@@ -231,7 +243,7 @@ allow "fetch --all --tags"                  "$P" "git fetch --all --tags"
 echo "== ALLOW: read-only git on the primary =="
 for sub in "status" "status --porcelain" "log --oneline -3" "diff origin/main...HEAD" "show HEAD:README.md" \
            "rev-parse HEAD" "rev-parse --abbrev-ref HEAD" "ls-files" "merge-base --is-ancestor a b" \
-           "cat-file -p HEAD" "for-each-ref" "branch --show-current" "branch -a" "branch -D old" \
+           "cat-file -p HEAD" "for-each-ref" "branch --show-current" "branch -a" \
            "remote -v" "remote get-url origin" "config --get remote.origin.url" "config user.name" \
            "config -l" "config get user.name" "stash list" "stash show" "worktree list" \
            "worktree add $FIX/w2 -b w2" "worktree remove $W" "worktree prune" \

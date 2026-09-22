@@ -1364,8 +1364,8 @@ The console's wrap flow is carved out by shape:
   both carve-outs, since it can repoint the remote or refspec.
 
 The configured upstream is protected too: `config`, `remote` and
-`branch -u|-f` writes on the primary are denied, and so are `tag` creation or
-deletion and `reflog expire|delete`. The bypass is the same as for
+`branch -u|-f` writes on the primary are denied, and so are `branch` and `tag`
+creation or deletion and `reflog expire|delete`. The bypass is the same as for
 every arm: `EDIT_ON_MAIN_OK=1` in the launching shell, or `.single-writer`.
 
 Named residual: config, remote and ref writes that land in the primary's

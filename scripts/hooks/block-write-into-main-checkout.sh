@@ -1537,12 +1537,17 @@ _bwimc_git_sub_is_read() {
             for a in "$@"; do
                 case "$a" in
                     -u|--set-upstream-to|--set-upstream-to=*|--set-upstream|--unset-upstream|\
-                    -t|--track|--track=*|-f|--force|-m|-M|--move|-c|-C|--copy|--edit-description)
+                    -t|--track|--track=*|-f|--force|-m|-M|--move|-c|-C|--copy|--edit-description|\
+                    -d|-D|--delete)
                         return 1 ;;
+                    -l|--list|--show-current|--contains*|--no-contains*|--points-at*|--merged*|--no-merged*)
+                        return 0 ;;
+                    --*) ;;
+                    -*) _bwimc_short_has "$a" utfmMcCdD && return 1 ;;
+                    *) npos=$((npos+1)) ;;
                 esac
-                _bwimc_short_has "$a" utfmMcC && return 1
             done
-            return 0 ;;
+            [ "$npos" = 0 ]; return ;;
         symbolic-ref)
             for a in "$@"; do
                 if [ "$skipval" = 1 ]; then skipval=0; continue; fi
