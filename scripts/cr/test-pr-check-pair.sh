@@ -843,11 +843,11 @@ for f in "$CLAUDE_RUNBOOK" "$CODEX_SKILL"; do
             else
                 out=$(run_diff_block "$diff_block" committed "$pv=1")
             fi
-            printf '%s\n' "$out" | grep -qx 'scripts/cr/a.sh' \
+            grep -qx 'scripts/cr/a.sh' <<< "$out" \
                 || xii_fail="$xii_fail; committed scripts/cr/a.sh under $pv printed '$out'"
         done
         out=$(run_diff_block "$diff_block" ignored)
-        printf '%s\n' "$out" | grep -qx 'scripts/cr/ign.sh' \
+        grep -qx 'scripts/cr/ign.sh' <<< "$out" \
             || xii_fail="$xii_fail; gitignored untracked scripts/cr/ign.sh printed '$out'"
         for fc in committed worktree untracked; do
             out=$(run_diff_block "$diff_block" clean "FAIL_CALL=$fc")
