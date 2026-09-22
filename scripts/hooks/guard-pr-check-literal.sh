@@ -354,16 +354,31 @@ tokenize() {
 # uses this to tell the two apart (codex-3, round 3 of the HIMMEL-3433
 # review: `echo '$(bash scripts/cr/pr-check-context.sh)'` was extracted and
 # denied as if it ran, though the single quotes make it inert text).
-# ponytail: a backslash-escaped `"` inside a double-quoted span can close the
-# double-quote state one character early, same as unquoted_mask's own limit
-# above - the failure direction only ever widens what gets masked as
-# single-quoted, never narrows it, so it cannot turn a real substitution
-# invisible.
+# An escaped double quote (\") inside a double-quoted span does not close it -
+# the shell reads \" as a literal " and stays in the same quoted state. The
+# prior version had no escape handling here at all, so \" closed the span one
+# character early; the character right after it (an apostrophe in the PoC
+# below) then read as a REAL opening single quote, and everything up to the
+# next literal ' - including a $( ) that genuinely runs - got masked as inert
+# single-quoted text: `echo "\"'$(bash scripts/cr/pr-check-context.sh)'"`
+# denied under the unmodified function's own logic (rc=2, a false positive on
+# text masking) but, combined with extract_substitutions' mask check, the
+# substitution was skipped as "inside single quotes" and never classified -
+# a genuine bypass (codex-2, round 4 of the HIMMEL-3433 review; confirmed
+# rc=0 against the unfixed hook). Only \" is special-cased, matching the one
+# escape real double-quote state actually needs for this mask's purpose (\\,
+# \$ and \` also stay literal-but-in-state, so they get the same pass-through).
 single_quote_mask() {
     local s=$1
-    local sqout="" i=0 n=${#s} c q=""
+    local sqout="" i=0 n=${#s} c nc q=""
     while [ "$i" -lt "$n" ]; do
         c=${s:$i:1}
+        if [ "$q" = '"' ] && [ "$c" = "\\" ]; then
+            nc=${s:$((i + 1)):1}
+            case "$nc" in
+                '"'|\\|'$'|'`') sqout+="$c$nc"; i=$((i + 2)); continue ;;
+            esac
+        fi
         if [ "$q" = "'" ]; then
             [ "$c" = "'" ] && q=""
             sqout+=" "
@@ -436,88 +451,136 @@ extract_substitutions() {
     done
     printf '%s' "$acc"
 }
-simple=$(tokenize "$cmd"$'\n'"$(extract_substitutions "$cmd")")
 runs=0
 chdir=0
 wrapped=0
 hit=0
 unresolved=""
-while IFS= read -r line; do
-    IFS=$'\x01' read -r -a w <<<"$line"
-    i=0
-    skip_opts=0
-    chained=0
-    lastw=""
-    while [ "$i" -lt "${#w[@]}" ]; do
-        x=${w[$i]}
-        case "$x" in
-            [A-Za-z_]*=*) wrapped=1 ;;
-            if|then|else|elif|do|while|until|'!'|'{'|'}') skip_opts=1 ;;
-            time|command|builtin|nohup|nice|stdbuf|sudo|env|exec|timeout|xargs) skip_opts=1; runs=1; wrapped=1; chained=1; lastw=$x ;;
-            bash|sh|zsh|dash|ksh|mksh|busybox|toybox|source|.|eval) skip_opts=1; runs=1; chained=1; lastw=$x ;;
-            # An interpreter run by its absolute/relative path (/bin/bash),
-            # not its bare name, chains the same way - the case patterns
-            # above only match the exact bare word, so a path form fell to
-            # the default break and was classified as an ordinary program,
-            # leaving its own script operand uninspected (codex-1, round 3
-            # of the HIMMEL-3433 review).
-            */bash|*/sh|*/zsh|*/dash|*/ksh|*/mksh|*/busybox|*/toybox) skip_opts=1; runs=1; chained=1; lastw=$x ;;
-            -C*|-D*|--chdir*|--directory*) [ "$skip_opts" -eq 1 ] || break; chdir=1 ;;
-            -*|[0-9]*) [ "$skip_opts" -eq 1 ] || break ;;
-            *) break ;;
-        esac
-        i=$((i + 1))
-    done
-    if [ "$i" -ge "${#w[@]}" ]; then
-        if [ "$chained" -eq 1 ]; then
-            runs=1
-            hit=1
-            unresolved="${lastw:-(no operand)}"
-        fi
-        continue
+depth=0
+# classify tokenizes one command's text and walks each resulting simple
+# command's words, same as the single-pass loop this replaced. The one added
+# case is literal -c straight after a matched interpreter word: that marks
+# the operand right after it (bash -c '<this>') as a NESTED command rather
+# than an ordinary path/glob argument, and classify recurses into it instead
+# of running the path/glob checks on the whole quoted string. Without this,
+# `bash -c 'bash scripts/cr/pr-check-context.sh --help'` tokenized its
+# entire quoted operand as one word (tokenize doesn't split on spaces inside
+# a quote); that word matched no glob/uppercase/exact-target check and
+# evaded classification outright - a genuine bypass (codex-1, round 4 of the
+# HIMMEL-3433 review). runs/chdir/wrapped/hit/unresolved stay plain globals
+# (as before this was a function) so a recursive call's findings union
+# straight into the same overall verdict; depth is a global recursion guard.
+classify() {
+    local text=$1
+    depth=$((depth + 1))
+    if [ "$depth" -gt 20 ]; then
+        runs=1
+        hit=1
+        unresolved="(nested -c too deep to verify)"
+        depth=$((depth - 1))
+        return
     fi
-    cw=${w[$i]}
-    case "${cw##*/}" in
-        cd|pushd|popd) chdir=1; continue ;;
-    esac
-    if [ "$chained" -eq 0 ]; then
-        case "$cw" in
-            */*|pr-check*) runs=1 ;;
-            *) continue ;;
-        esac
-    fi
-    case "$cw" in
-        *[][*?~\$\(\`]*|*'{'*|*'}'*) hit=1; unresolved=$cw ;;
-        /*|'~'*) ;;
-        *[[:upper:]]*) hit=1; unresolved=$cw ;;
-        *)
-            # A brace list reads as a glob that matches every word it could
-            # expand to, innermost group first; a pair it cannot reduce is
-            # unresolvable.
-            tok=$cw
-            while :; do
-                case "$tok" in *'{'*) ;; *) break ;; esac
-                rest=${tok##*'{'}
-                case "$rest" in *'}'*) ;; *) break ;; esac
-                tok=${tok%'{'*}'*'${rest#*'}'}
-            done
-            case "$tok" in *'{'*'}'*) hit=1; unresolved=$tok ;; esac
-            rel=$(norm "$cw")
-            if is_target "${rel##*/}"; then
+    local lines
+    lines=$(tokenize "$text"$'\n'"$(extract_substitutions "$text")")
+    local line
+    while IFS= read -r line; do
+        local -a w
+        IFS=$'\x01' read -r -a w <<<"$line"
+        local i=0 skip_opts=0 chained=0 lastw="" dashc=0 x cw tok rest rel
+        while [ "$i" -lt "${#w[@]}" ]; do
+            x=${w[$i]}
+            case "$x" in
+                [A-Za-z_]*=*) wrapped=1 ;;
+                if|then|else|elif|do|while|until|'!'|'{'|'}') skip_opts=1 ;;
+                time|command|builtin|nohup|nice|stdbuf|sudo|env|exec|timeout|xargs) skip_opts=1; runs=1; wrapped=1; chained=1; lastw=$x ;;
+                bash|sh|zsh|dash|ksh|mksh|busybox|toybox|source|.|eval) skip_opts=1; runs=1; chained=1; lastw=$x ;;
+                # An interpreter run by its absolute/relative path (/bin/bash),
+                # not its bare name, chains the same way - the case patterns
+                # above only match the exact bare word, so a path form fell to
+                # the default break and was classified as an ordinary program,
+                # leaving its own script operand uninspected (codex-1, round 3
+                # of the HIMMEL-3433 review).
+                */bash|*/sh|*/zsh|*/dash|*/ksh|*/mksh|*/busybox|*/toybox) skip_opts=1; runs=1; chained=1; lastw=$x ;;
+                -c)
+                    if [ "$skip_opts" -eq 1 ]; then
+                        case "$lastw" in
+                            bash|sh|zsh|dash|ksh|mksh|busybox|toybox|*/bash|*/sh|*/zsh|*/dash|*/ksh|*/mksh|*/busybox|*/toybox) dashc=1 ;;
+                        esac
+                    else
+                        break
+                    fi
+                    ;;
+                -C*|-D*|--chdir*|--directory*) [ "$skip_opts" -eq 1 ] || break; chdir=1 ;;
+                -*|[0-9]*) [ "$skip_opts" -eq 1 ] || break ;;
+                *) break ;;
+            esac
+            i=$((i + 1))
+        done
+        if [ "$i" -ge "${#w[@]}" ]; then
+            if [ "$chained" -eq 1 ]; then
+                runs=1
                 hit=1
-                case "$rel" in
-                    scripts/cr/pr-check-context.sh|scripts/cr/pr-check-env.sh) ;;
-                    *) unresolved=$cw ;;
-                esac
+                unresolved="${lastw:-(no operand)}"
             fi
-            ;;
-    esac
-done <<<"$simple"
+            continue
+        fi
+        cw=${w[$i]}
+        if [ "$dashc" -eq 1 ]; then
+            runs=1
+            classify "$cw"
+            continue
+        fi
+        case "${cw##*/}" in
+            cd|pushd|popd) chdir=1; continue ;;
+        esac
+        if [ "$chained" -eq 0 ]; then
+            case "$cw" in
+                */*|pr-check*) runs=1 ;;
+                *) continue ;;
+            esac
+        fi
+        case "$cw" in
+            *[][*?~\$\(\`]*|*'{'*|*'}'*) hit=1; unresolved=$cw ;;
+            /*|'~'*) ;;
+            *[[:upper:]]*) hit=1; unresolved=$cw ;;
+            *)
+                # A brace list reads as a glob that matches every word it could
+                # expand to, innermost group first; a pair it cannot reduce is
+                # unresolvable.
+                tok=$cw
+                while :; do
+                    case "$tok" in *'{'*) ;; *) break ;; esac
+                    rest=${tok##*'{'}
+                    case "$rest" in *'}'*) ;; *) break ;; esac
+                    tok=${tok%'{'*}'*'${rest#*'}'}
+                done
+                case "$tok" in *'{'*'}'*) hit=1; unresolved=$tok ;; esac
+                rel=$(norm "$cw")
+                if is_target "${rel##*/}"; then
+                    hit=1
+                    case "$rel" in
+                        scripts/cr/pr-check-context.sh|scripts/cr/pr-check-env.sh) ;;
+                        *) unresolved=$cw ;;
+                    esac
+                fi
+                ;;
+        esac
+    done <<<"$lines"
+    depth=$((depth - 1))
+}
+classify "$cmd"
 [ "$runs" -eq 1 ] || exit 0
-# A chdir or a wrapper/VAR= prefix denies below on its own, even on a line
-# whose landing operand itself never set hit (env -C elsewhere bash ...): only
-# skip the deny chain when none of the three ever fired.
-[ "$hit" -eq 1 ] || [ "$chdir" -eq 1 ] || [ "$wrapped" -eq 1 ] || exit 0
+# A chdir denies below on its own, even on a line whose landing operand never
+# set hit (env -C elsewhere bash ...). wrapped alone must NOT force entry: a
+# wrapper (env, timeout, sudo, ...) running something that never touches a
+# guarded script - env printf '%s\n' scripts/cr/pr-check-context.sh, where
+# printf only prints the path as inert argument text - was denied unconditionally
+# just for being wrapped, even though hit stayed 0 and chdir stayed 0 (codex-3,
+# round 4 of the HIMMEL-3433 review; a regression from round 2's fix, which
+# added the wrapped clause here to preserve chdir-alone detection and, as a
+# side effect, made wrapped alone force entry too). wrapped is still checked
+# below and still denies - just no longer as an entry condition on its own.
+[ "$hit" -eq 1 ] || [ "$chdir" -eq 1 ] || exit 0
 
 shown=${cmd//$'\n'/ }
 shown=${shown:0:200}

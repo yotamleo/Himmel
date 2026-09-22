@@ -362,6 +362,30 @@ run "a real numeric argument before an unrelated redirect -> no-op" 0 \
 # genuinely inert text (codex-3, round 3 of the HIMMEL-3433 review).
 run "a single-quoted mention of the guarded run stays inert -> no-op" 0 \
     "$(payload 'echo '"'"'$(bash scripts/cr/pr-check-context.sh)'"'"'' "$WT")" "$HR"
+# bash -c '<string>' hands the shell a second command as one opaque quoted
+# word; tokenize() doesn't split on spaces inside a quote, so the whole
+# operand read as a single word that matched no glob/uppercase/exact-target
+# check and evaded classification outright (codex-1, round 4 of the
+# HIMMEL-3433 review).
+run "bash -c running the guarded script through -help args -> deny" 2 \
+    "$(payload 'bash -c '"'"'bash scripts/cr/pr-check-context.sh --help'"'"'' "$WT")" "$HR"
+run "bash -c running an unguarded command -> no-op" 0 \
+    "$(payload 'bash -c '"'"'echo hi'"'"'' "$WT")" "$HR"
+# single_quote_mask() had no escape handling: a backslash-escaped double
+# quote inside a double-quoted span closed the quote one character early, so
+# the apostrophe right after it read as a REAL opening single quote and
+# masked everything up to the next literal ' - including a $( ) that
+# genuinely runs - as inert single-quoted text (codex-2, round 4 of the
+# HIMMEL-3433 review).
+codex2_payload=$'echo "\\"\'$(bash scripts/cr/pr-check-context.sh)\'"'
+run "an escaped dquote misreading the next apostrophe as real quoting -> deny" 2 \
+    "$(payload "$codex2_payload" "$WT")" "$HR"
+# A wrapper (env, timeout, sudo, ...) running something that never touches a
+# guarded script or changes directory was denied unconditionally just for
+# being wrapped - wrapped alone must not force entry to the deny chain
+# (codex-3, round 4 of the HIMMEL-3433 review).
+run "an env-wrapped command that only mentions the guarded path as inert text -> no-op" 0 \
+    "$(payload "env printf '%s\\n' scripts/cr/pr-check-context.sh" "$WT")" "$HR"
 run "the anchored fence on an edited branch -> no-op" 0 "$(payload "$FENCE_TEXT" "$WT")" "$HR"
 run "HIMMEL_REPO re-pointed before the fence -> deny" 2 \
     "$(payload "export HIMMEL_REPO=.; $FENCE_TEXT" "$WT")" "$HR"
