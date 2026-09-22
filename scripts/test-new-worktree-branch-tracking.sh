@@ -39,6 +39,15 @@ unset GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM
 # fixture git call, and _new-worktree.sh's primary lookup, at the caller's repo.
 unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE \
     GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+# _new-worktree.sh exports FORGE and GH_CMD into its uniqueness guard, so an
+# inherited FORGE=github would make forge_detect reach gh (HIMMEL-3496). Unset
+# FORGE, and point GH_CMD at a tripwire that records any call it still gets.
+unset FORGE GH_CMD
+GH_CALLS="$TMPBASE/gh-calls.log"
+GH_CMD="$TMPBASE/gh-tripwire.sh"
+printf '#!/bin/sh\necho "$*" >> "%s"\nexit 1\n' "$GH_CALLS" > "$GH_CMD"
+chmod +x "$GH_CMD"
+export GH_CMD
 
 ORIGIN="$TMPBASE/origin.git"
 git init -q --bare "$ORIGIN"
@@ -75,6 +84,13 @@ else
     echo ""
     printf 'Results: %d passed, %d failed\n' "$PASS" "$FAIL"
     exit 1
+fi
+
+NAME="the uniqueness guard never reached gh (no live network)"
+if [ ! -e "$GH_CALLS" ]; then
+    _pass "$NAME"
+else
+    _fail "$NAME" "gh calls=[$(cat "$GH_CALLS")]"
 fi
 
 NAME="new branch's tracking config points at its OWN future remote ref, not origin/<default>"
