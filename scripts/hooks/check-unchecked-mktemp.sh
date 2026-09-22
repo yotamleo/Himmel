@@ -123,7 +123,7 @@ trap 'rm -rf "$scratch_dir"' EXIT
 # not NUL-delimited, and merging the two streams would corrupt both).
 diff_status_file="$scratch_dir/diff-status.nul"
 diff_err_file="$scratch_dir/diff-status.err"
-if ! git diff --cached -M -z --diff-filter=AMR --name-status \
+if ! git diff --no-color --cached -M -z --diff-filter=AMR --name-status \
         >"$diff_status_file" 2>"$diff_err_file"; then
     diff_err="$(cat "$diff_err_file" 2>/dev/null)"
     echo "FAIL: check-unchecked-mktemp: git diff --cached --name-status failed: $diff_err" >&2
@@ -170,12 +170,12 @@ done < "$diff_status_file"
 added_lines_for() {
     local path="$1" src_path="$2" out="$3" hunks rc
     if [ -n "$src_path" ]; then
-        if ! hunks="$(git diff --cached -M -U0 -- "$src_path" "$path" 2>&1)"; then
+        if ! hunks="$(git diff --no-color --cached -M -U0 -- "$src_path" "$path" 2>&1)"; then
             echo "FAIL: check-unchecked-mktemp: git diff --cached -M -U0 -- $src_path $path failed: $hunks" >&2
             return 1
         fi
     else
-        if ! hunks="$(git diff --cached -U0 -- "$path" 2>&1)"; then
+        if ! hunks="$(git diff --no-color --cached -U0 -- "$path" 2>&1)"; then
             echo "FAIL: check-unchecked-mktemp: git diff --cached -U0 -- $path failed: $hunks" >&2
             return 1
         fi

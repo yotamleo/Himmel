@@ -458,6 +458,15 @@ chmod +x "$shim_dir/grep"
 ( cd "$R" && PATH="$shim_dir:$PATH" bash "$GATE" >/dev/null 2>&1 )
 assert_rc "G10 added-line lookup error -> fail-closed" 1 "$?"
 
+# G11 -- color.ui=always must not blind the hunk parse: ANSI-prefixed `@@`
+# headers would yield zero added lines and let an unguarded capture through.
+setup_repo || { echo "FAIL: G11 setup: setup_repo failed -- aborting suite" >&2; exit 1; }
+git -C "$R" config color.ui always
+printf '#!/usr/bin/env bash\nT=$(mktemp -d)\necho "$T"\n' > "$R/scripts.sh"
+git -C "$R" add scripts.sh
+run_gate
+assert_rc "G11 color.ui=always, unguarded capture added -> gate refuses" 1 "$?"
+
 # ---------------------------------------------------------------------------
 # Section 3: RED control (scripts/lib/red-control.sh).
 #
