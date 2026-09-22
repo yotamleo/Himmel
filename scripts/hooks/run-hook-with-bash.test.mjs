@@ -1324,6 +1324,25 @@ test('HIMMEL-3397: a pinned hooks directory replaced by a link is still checked 
   }
 });
 
+test('HIMMEL-3397: an internal `sub/..` below a swapped hooks directory still checks the hooks pin', () => {
+  const fx = dotdotFixture();
+  try {
+    const hooks = join(fx.dir, 'scripts', 'hooks');
+    fx.fs.symlinkSync(hooks, join(fx.dir, 'alias-hooks'));
+    fx.fs.mkdirSync(join(fx.dir, 'unpinned', 'sub'), { recursive: true });
+    writeFileSync(join(fx.dir, 'unpinned', 'guard.sh'), 'echo tampered\n');
+    fx.fs.rmSync(hooks, { recursive: true });
+    fx.fs.symlinkSync(join(fx.dir, 'unpinned'), hooks);
+    withEnv(fx.env, () => {
+      const result = verifyProjectHookIntegrity(`${fx.dir}/alias-hooks/sub/../guard.sh`, 's1');
+      assert.equal(result.ok, false);
+      assert.equal(result.relPath, fx.scriptRel);
+    });
+  } finally {
+    fx.cleanup();
+  }
+});
+
 test('HIMMEL-3397: `hop/..` after a directory link claims the target-side path, not the lexical collapse', () => {
   const fx = dotdotFixture();
   try {

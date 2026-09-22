@@ -1025,15 +1025,19 @@ function resolveReal(candidate) {
 
 // HIMMEL-3397. Every identity `candidate` claims on its way to the file that
 // runs, derived the way the kernel walks it: component by component, lstat each.
-// At every link followed, the path as spelled from that point is claimed (parents
-// already resolved, the link unfollowed, the rest of the path), so a pinned hook,
-// or a pinned hooks DIRECTORY, swapped for a link keeps its pin whichever alias
-// reached it. A `..` after the link leaves the TARGET's parent, so that spelling
-// then names nothing and is not claimed. The final resolved path closes the list.
-// Bounded like the kernel's 40 links; a loop or an unreadable component returns
-// null so the caller fails closed. A missing component ends the walk as-is.
+// Each link followed becomes an ALIAS of the directory (or file) it resolves to,
+// spelled with its parents already resolved and the link unfollowed, and every
+// alias then moves with the walk: a plain component extends it, and a `..` pops
+// it only down to its own link point. A `..` below that point leaves the TARGET's
+// parent, so that alias names nothing and is dropped. So a pinned hook, or a
+// pinned hooks DIRECTORY swapped for a link, keeps its pin whichever alias reached
+// it, and an internal `sub/..` cancels only where `sub` really was a directory.
+// The final resolved path closes the list. Bounded like the kernel's 40 links,
+// and at 64 live aliases; a loop, an alias blow-up or an unreadable component
+// returns null so the caller fails closed. A missing component ends the walk as-is.
 const UNWALKABLE_DENY = 'unwalkable: ';
 const MAX_LINK_FOLLOWS = 40;
+const MAX_ALIASES = 64;
 
 function walkIdentities(candidate) {
   const raw = String(candidate);
@@ -1041,27 +1045,39 @@ function walkIdentities(candidate) {
   const split = (p) => p.split(/[\\/]+/).filter((c) => c !== '' && c !== '.');
   let resolved = path.parse(abs).root;
   let todo = split(abs.slice(resolved.length));
-  const ids = [];
+  let aliases = []; // { s: spelling of `resolved`, d: components below its link point }
+  const ids = () => [...aliases.map((a) => normalize(a.s)), normalize(resolved)];
   for (let follows = 0; todo.length;) {
     const name = todo.shift();
-    if (name === '..') { resolved = path.dirname(resolved); continue; }
+    if (typeof name !== 'string') { aliases = aliases.concat(name.frozen); continue; } // the link's target is resolved
+    if (name === '..') {
+      resolved = path.dirname(resolved);
+      aliases = aliases.filter((a) => a.d > 0).map((a) => ({ s: path.dirname(a.s), d: a.d - 1 }));
+      continue;
+    }
     const next = path.join(resolved, name);
     let st;
     try {
       st = fs.lstatSync(next);
     } catch (e) {
-      if (e && (e.code === 'ENOENT' || e.code === 'ENOTDIR')) return [...ids, normalize(path.join(next, ...todo))];
-      return null;
+      if (!e || (e.code !== 'ENOENT' && e.code !== 'ENOTDIR')) return null;
+      const rest = todo.filter((c) => typeof c === 'string');
+      return [...aliases.map((a) => a.s), resolved].map((s) => normalize(path.join(s, name, ...rest)));
     }
-    if (!st.isSymbolicLink()) { resolved = next; continue; }
+    if (!st.isSymbolicLink()) {
+      resolved = next;
+      aliases = aliases.map((a) => ({ s: path.join(a.s, name), d: a.d + 1 }));
+      continue;
+    }
     if (++follows > MAX_LINK_FOLLOWS) return null;
-    if (!todo.includes('..')) ids.push(normalize(path.join(next, ...todo)));
+    const frozen = [{ s: next, d: 0 }, ...aliases.map((a) => ({ s: path.join(a.s, name), d: 0 }))];
+    if (frozen.length + aliases.length > MAX_ALIASES) return null;
     let target;
     try { target = fs.readlinkSync(next); } catch (_e) { return null; }
-    if (path.isAbsolute(target)) resolved = path.parse(target).root;
-    todo = split(path.isAbsolute(target) ? target.slice(resolved.length) : target).concat(todo);
+    if (path.isAbsolute(target)) { resolved = path.parse(target).root; aliases = []; }
+    todo = [...split(path.isAbsolute(target) ? target.slice(resolved.length) : target), { frozen }, ...todo];
   }
-  return [...ids, normalize(resolved)];
+  return ids();
 }
 
 function verifyIntegrityUnbypassed(scriptPath, sessionId) {
