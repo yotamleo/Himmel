@@ -1488,6 +1488,60 @@ test('HIMMEL-3397: a symlink loop fails closed; an unpinned, unrelated path stay
   }
 });
 
+// HIMMEL-3448. HIMMEL-3397's non-UTF-8 round-trip check denied ANY path that
+// crossed a non-UTF-8 symlink target, even one strictly ABOVE the project —
+// where no alias it could produce ever claims an in-project pin key (the
+// `keys` loop below only accepts a candidate rooted at resolvedProject or
+// spelledProject). That fenced off a real filesystem shape: an ancestor
+// mounted or reached through a non-UTF-8-named link, e.g. a bind mount or a
+// locale-mismatched home directory. Fixture: <base>/anc -> a raw non-UTF-8
+// byte sequence (never decoded by us — only the KERNEL follows it, via the
+// clean lexical spelling `anc`), and the real project lives below that.
+function ancestorNonUtf8Fixture() {
+  const fs = require('node:fs');
+  const base = makeTmpDir('hook-integrity-ancestor-');
+  const rawName = Buffer.concat([Buffer.from('a'), Buffer.from([0xff])]);
+  const real = Buffer.concat([Buffer.from(`${base}/`), rawName]);
+  fs.mkdirSync(Buffer.concat([real, Buffer.from('/proj/scripts/hooks')]), { recursive: true });
+  const leaf = Buffer.concat([real, Buffer.from('/proj/scripts/hooks/guard.sh')]);
+  writeFileSync(leaf, 'echo original\n');
+  const scriptRel = 'scripts/hooks/guard.sh';
+  const integrityDir = makeTmpDir('hook-integrity-ancestor-pins-');
+  writeFileSync(
+    join(integrityDir, 's1.json'),
+    JSON.stringify({ session_id: 's1', pins: { [scriptRel]: gitBlobSha1(readFileSync(leaf)) } }),
+  );
+  const anc = join(base, 'anc'); // clean name; its TARGET (rawName) carries the non-UTF-8 byte
+  fs.symlinkSync(rawName, anc);
+  const projectDir = join(anc, 'proj'); // spelled via the clean link name, not the dirty target
+  const scriptPath = join(projectDir, 'scripts', 'hooks', 'guard.sh');
+  const env = { CLAUDE_PROJECT_DIR: projectDir, HIMMEL_HOOK_INTEGRITY_DIR: integrityDir, HIMMEL_HOOK_INTEGRITY_BYPASS_OK: undefined };
+  const cleanup = () => { for (const d of [base, integrityDir]) rmSync(d, { recursive: true, force: true }); };
+  return { fs, base, leaf, scriptRel, scriptPath, env, cleanup };
+}
+
+test('HIMMEL-3448: a non-UTF-8 symlink ABOVE the project still verifies what is below it', { skip: process.platform === 'win32' }, () => {
+  const fx = ancestorNonUtf8Fixture();
+  try {
+    withEnv(fx.env, () => {
+      // (a) untampered, reached through the ancestor link: ALLOW, not the old unwalkable DENY.
+      assert.equal(verifyProjectHookIntegrity(fx.scriptPath, 's1').ok, true);
+      // (b) tampered through that same ancestor: still DENY — the fix must not open anything.
+      writeFileSync(fx.leaf, 'echo tampered\n');
+      const result = verifyProjectHookIntegrity(fx.scriptPath, 's1');
+      assert.equal(result.ok, false);
+      assert.equal(result.relPath, fx.scriptRel);
+    });
+  } finally {
+    fx.cleanup();
+  }
+});
+
+// (c) a non-UTF-8 link AT or BELOW the project must still fail closed — the
+// #1096 C1 rows above ("a hooks directory swapped for a ... non-UTF-8 link
+// target fails closed", "a pinned leaf swapped for a link with a non-UTF-8
+// target fails closed") already cover this and must stay green.
+
 // HIMMEL-3384: the bypass is worktree-only and audited. The old "always
 // allows" contract is gone — a bypass with no linked worktree around it is no
 // bypass at all, and every use that DOES override a deny leaves one audit line.
