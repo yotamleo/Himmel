@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile, rename, appendFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rename, appendFile, open } from "node:fs/promises";
+import { constants } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
@@ -40,6 +41,29 @@ export async function writeMeta(root: string, s: string, m: Meta): Promise<void>
 
 export async function appendLine(file: string, line: string): Promise<void> {
   await appendFile(file, line + "\n", "utf8");
+}
+
+// HIMMEL-3440: append `line` to `file` ONLY if it already exists — an
+// O_WRONLY|O_APPEND open with NO O_CREAT, so a route attempt against a file
+// deleted moments earlier can never recreate it. A separate existsSync()
+// check followed by appendFile() (which implies O_CREAT) has a TOCTOU
+// window: a deletion between the two silently recreates the file. Returns
+// false (ENOENT — ideally the file never existed) instead of throwing so a
+// caller can fall back; any other error still throws.
+export async function appendIfExists(file: string, line: string): Promise<boolean> {
+  let handle;
+  try {
+    handle = await open(file, constants.O_WRONLY | constants.O_APPEND);
+  } catch (e: any) {
+    if (e?.code === "ENOENT") return false;
+    throw e;
+  }
+  try {
+    await handle.write(line + "\n", null, "utf8");
+  } finally {
+    await handle.close();
+  }
+  return true;
 }
 // Reclaim a fully-consumed append-log so a very long-lived session's
 // inbox/outbox can't grow unbounded (each flush/peek tick reads the whole file

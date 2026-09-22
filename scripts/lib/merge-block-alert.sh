@@ -137,17 +137,52 @@ _mba_console_inbox_path() {
     printf '%s/consoles/%s.md' "$root" "$name"
 }
 
+# HIMMEL-3440: append $2 to file $1 ONLY if it already exists — an
+# O_WRONLY|O_APPEND open with NO O_CREAT, so a route attempt against an inbox
+# deleted moments earlier can never recreate it (a separate `[ -f ]` check
+# followed by `>>` has a TOCTOU window: `>>` implies O_CREAT, so a deletion
+# between the two silently recreates the file and reports delivery). Bash has
+# no redirection operator that opens append-only-without-create (`>>` and
+# `<>` both imply O_CREAT), so this shells out to node. No node found is
+# treated the same as ENOENT: "not delivered".
+_mba_append_if_exists() {
+    local file="$1" line="$2" node
+    # shellcheck source=./resolve-node.sh
+    # shellcheck disable=SC1091
+    node=$(. "$_MBA_LIB_DIR/resolve-node.sh" 2>/dev/null && resolve_node) || return 1
+    [ -n "$node" ] || return 1
+    _MBA_APPEND_FILE="$file" _MBA_APPEND_LINE="$line" "$node" -e '
+        const fs = require("fs");
+        const file = process.env._MBA_APPEND_FILE;
+        const line = process.env._MBA_APPEND_LINE;
+        let fd;
+        try {
+            fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_APPEND);
+        } catch (e) {
+            process.exit(1);
+        }
+        try {
+            fs.writeSync(fd, line);
+        } finally {
+            fs.closeSync(fd);
+        }
+    ' 2>/dev/null
+}
+
 # Mirrors scripts/telegram/console-route.ts's consoleInboxPath + routeToConsole
-# (bash-native: this lib is sourced by plain-bash callers, not bun).
+# (bash-native: this lib is sourced by plain-bash callers, not bun). The open
+# itself is the existence check (see _mba_append_if_exists above) — there is
+# no separate check-then-act step left to race.
 _mba_route_console() {
     local repo="$1" pr="$2" name="$3" text="$4"
     local root file
     root="${MERGE_WATCH_ALERT_BRIDGE_ROOT:-${BRIDGE_ROOT:-$HOME/.claude/handover/bridge}}"
     file=$(_mba_console_inbox_path "$root" "$name") || return 1
-    [ -f "$file" ] || return 1
     local folded
     folded=$(printf '%s' "$text" | tr '\n' ' ')
-    printf -- '- %s [merge-watch %s#%s] %s\n' "$(date +%H:%M)" "$repo" "$pr" "$folded" >> "$file" 2>/dev/null
+    local line
+    line=$(printf -- '- %s [merge-watch %s#%s] %s\n' "$(date +%H:%M)" "$repo" "$pr" "$folded")
+    _mba_append_if_exists "$file" "$line"
 }
 
 merge_watch_alert() {
