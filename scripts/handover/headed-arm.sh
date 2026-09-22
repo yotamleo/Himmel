@@ -43,7 +43,7 @@
 # konsole on Linux/KDE, and on macOS (HIMMEL-2534) the konsole-macos.sh shim
 # this defaults to there, which translates the SAME konsole argv into the
 # house `open -a <App> <file>.command` launch arm-resume.sh already uses.
-# macOS has no /proc, so the confirmation read degrades to a lossy scan -
+# macOS has no /proc, so the confirmation reads each pid's argv via ps -
 # see session_confirmed() below. No .ps1 twin - the Windows station arms through
 # scripts/handover/arm-resume.sh's schtasks backend, which carries the same
 # HIMMEL-2545 clears in its generated .bat. This marker sits ABOVE the
@@ -482,6 +482,17 @@ elif [ "$HEADED_ARM_UNAME" = "Darwin" ]; then
 else
     KONSOLE="konsole"
 fi
+# HIMMEL-3484: the shim refuses anything but plain decimal digits here, while
+# the budget below reads the var through 10# arithmetic, which would take
+# "200+1". Same validation on both sides, refused before anything is claimed.
+if [ "$KONSOLE_IS_MACOS_SHIM" = "1" ]; then
+    case "${KONSOLE_MACOS_STARTUP_TICKS:-200}" in
+        ''|*[!0-9]*)
+            echo "headed-arm: KONSOLE_MACOS_STARTUP_TICKS must be a plain decimal integer, got '${KONSOLE_MACOS_STARTUP_TICKS:-}'" >&2
+            exit 2
+            ;;
+    esac
+fi
 PGREP="${PGREP_CMD:-pgrep}"
 PROC="${HEADED_ARM_PROC:-/proc}"
 REPO="${HEADED_ARM_REPO:-$(cd "$(dirname "$0")/../.." && pwd)}"
@@ -787,6 +798,29 @@ _argv_has_n_name() { # _argv_has_n_name <pid> - true iff /proc/<pid>/cmdline
     done < "$PROC/$pid/cmdline"
     return 1
 }
+# HIMMEL-3484: the no-/proc equivalent of _argv_has_n_name. `ps -o args=`
+# is the only argv source a stock Mac offers from the shell, and it joins the
+# elements with spaces, so this walks whitespace TOKENS and lets only the
+# FIRST `-n` token decide: our launches put every option ahead of the prompt,
+# so a "-n <NAME>" later in another session's prompt, or a name that merely
+# has ours as a prefix, no longer confirms.
+# ponytail: still weaker than the NUL-separated /proc read - an argv element
+# that itself contains " -n <NAME> " and sits BEFORE the real -n option (an
+# --append-system-prompt value), or a claude with no -n at all whose prompt
+# carries it, can still confirm. Closing that needs kern.procargs2, which no
+# stock macOS CLI exposes.
+_flat_argv_has_n_name() { # _flat_argv_has_n_name <space-joined argv>
+    local toks i=0
+    read -r -a toks <<< "$1"
+    while [ "$i" -lt "${#toks[@]}" ]; do
+        if [ "${toks[$i]}" = "-n" ]; then
+            [ "${toks[$((i + 1))]:-}" = "$NAME" ]
+            return $?
+        fi
+        i=$((i + 1))
+    done
+    return 1
+}
 # HIMMEL-3403: the headless census. A background session is listed by
 # `agents --json` with its pid while it runs. A CLI or jq failure is the same
 # third state (2) as a failed pgrep scan, and so is an answer that is not a
@@ -815,40 +849,36 @@ session_confirmed() { # session_confirmed <pgrep-ere-pattern> - returns
     pids="$("$PGREP" -f "$pat" 2>/dev/null)"
     pg_rc=$?
     [ "$pg_rc" -gt 1 ] && return 2
-    # HIMMEL-2534: where $PROC is absent (macOS) there is no real-argv source
-    # to read, so this degrades to the flattened pgrep match exactly the way
-    # scripts/lanes/lib/claude-sessions.sh already rules for the same gap -
-    # and says so once, rather than silently answering "not running" forever
-    # (which is what the /proc walk below does on a Mac: every `cat` fails,
-    # every pid is skipped, dedup fails OPEN into duplicate windows and every
-    # launch lands UNCONFIRMED/rc 7). $pat already asserted `-n <name>` on the
-    # flattened line; comm is still checked per pid via `ps`, so the only
-    # guarantee lost is the whole HIMMEL-2999 class, not merely a whitespace
-    # edge case (codex-review I3): confirmation rests on $pat matching the
-    # FLATTENED line, so ANY free-text argv element of any claude process -
-    # the trailing prompt, --append-system-prompt, --system-prompt - that
-    # contains the literal "-n <NAME>" satisfies it, which is exactly what
-    # _argv_has_n_name was written to stop (see its own note above). Direction
-    # of harm: a false confirm at the dedup layer SKIPS the arm entirely
-    # ("already running - not launching"), i.e. the silently-lost successor
-    # this ticket exists to eliminate, reached from the other side. Lossy,
-    # bounded, and announced - never silent.
+    # HIMMEL-2534: where $PROC is absent (macOS) the /proc walk below would
+    # answer "not running" forever (every `cat` fails, every pid is skipped,
+    # dedup fails OPEN into duplicate windows and every launch lands
+    # UNCONFIRMED/rc 7). So each candidate is read through `ps` instead: comm
+    # per pid, then (HIMMEL-3484) that pid's own argv, decided by
+    # _flat_argv_has_n_name rather than by pgrep's flattened match, which let
+    # ANY claude whose prompt carried "-n <NAME>" suppress the arm - the
+    # HIMMEL-2999 class. `ps -o args=` is still space-joined, so the residual
+    # gap its ponytail names is announced once - never silent.
     if [ ! -d "$PROC" ]; then
         if [ "$_LOSSY_WARNED" -eq 0 ]; then
-            echo "WARN headed-arm: no $PROC on this platform - session confirmation falls back to a lossy flattened pgrep scan (HIMMEL-2534)" >&2
+            echo "WARN headed-arm: no $PROC on this platform - session confirmation reads each candidate's argv via ps, whitespace-joined, so an argv element containing spaces can still spoof it (HIMMEL-3484)" >&2
             _LOSSY_WARNED=1
         fi
         # ps rc 1 = that pid vanished since pgrep saw it (skip it); any other
         # failure (a missing or broken ps) means the scan itself failed, so
         # it is indeterminate (2), never "not running" (N357, codex-2).
-        local ps_rc
+        local ps_rc args
         for pid in $pids; do
             ps_rc=0
             comm="$(ps -o comm= -p "$pid" 2>/dev/null)" || ps_rc=$?
             [ "$ps_rc" -eq 1 ] && continue
             [ "$ps_rc" -eq 0 ] || return 2
             [ "${comm##*/}" = claude ] || continue
-            return 0
+            # HIMMEL-3484: this pid's OWN argv decides, as on /proc - never
+            # pgrep's flattened match (same rc policy as the comm read).
+            args="$(ps -ww -o args= -p "$pid" 2>/dev/null)" || ps_rc=$?
+            [ "$ps_rc" -eq 1 ] && continue
+            [ "$ps_rc" -eq 0 ] || return 2
+            _flat_argv_has_n_name "$args" && return 0
         done
         return 1
     fi

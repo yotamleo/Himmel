@@ -37,7 +37,17 @@ fails=0
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 check()        { [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
 contains()     { grepq "$2" -F -e "$3" && echo "ok - $1" || { echo "FAIL - $1: output does not contain [$3]"; fails=$((fails+1)); }; }
-not_contains() { grepq "$2" -F -e "$3" && { echo "FAIL - $1: output must NOT contain [$3]"; fails=$((fails+1)); } || echo "ok - $1"; }
+# HIMMEL-3484: only grep's rc 1 means "absent"; rc >1 is an execution error,
+# which would otherwise pass every negative assertion vacuously.
+not_contains() {
+    local _rc=0
+    grepq "$2" -F -e "$3" || _rc=$?
+    case "$_rc" in
+        0) echo "FAIL - $1: output must NOT contain [$3]"; fails=$((fails+1)) ;;
+        1) echo "ok - $1" ;;
+        *) echo "FAIL - $1: grep itself failed (rc $_rc)"; fails=$((fails+1)) ;;
+    esac
+}
 
 # A stub `open` standing in for the real terminal: it records its own argv,
 # then RUNS the .command in the background exactly as a terminal window
@@ -59,6 +69,11 @@ case "$mode" in
     # late: the body is already open (fd 3) when the shim's scratch dir is
     # removed - the timeout-cleanup race - and only then runs (N357 r2 codex-1).
     late)   for a in "\$@"; do case "\$a" in *.command) ( exec 3<"\$a"; rm -rf "\$(dirname "\$a")"; env -i sh /dev/fd/3 ) >/dev/null 2>&1 & ;; esac; done; exit 0 ;;
+    # orphan (HIMMEL-3484): the body only starts once the shim has already
+    # given up and exited, yet finds its scratch dir present (a cleanup that
+    # lost the race with the body's own pid write). The pid write succeeds,
+    # so only the startup handshake can stop the command from running.
+    orphan) shim=\$PPID; for a in "\$@"; do case "\$a" in *.command) cp "\$a" "$log.body"; ( while kill -0 "\$shim" 2>/dev/null; do sleep 0.1; done; mkdir -p "\$(dirname "\$a")"; env -i sh "$log.body" ) >/dev/null 2>&1 & ;; esac; done; exit 0 ;;
 esac
 STUB
     chmod +x "$bindir/open"
@@ -207,6 +222,37 @@ PATH="$b10:$PATH" ARM_APP_DIRS="$appdirs" KONSOLE_MACOS_STARTUP_TICKS=3 \
     "$SCRIPT" --separate --workdir "$wd" -e touch "$tmp/late-ran" >/dev/null 2>&1
 sleep 1
 check "6d unrecordable pid: the command never runs" "$([ -e "$tmp/late-ran" ] && echo ran)" ""
+
+# HIMMEL-3484: the body that DID record its pid, but only after the shim
+# reported failure (exit 4), must not run either: it waits for the shim's
+# go/ack, and exits once the shim that would send it is gone.
+b11="$tmp/b11"; mk_open_stub "$b11" "$tmp/open11.log" orphan
+PATH="$b11:$PATH" ARM_APP_DIRS="$appdirs" KONSOLE_MACOS_STARTUP_TICKS=3 \
+    "$SCRIPT" --separate --workdir "$wd" -e touch "$tmp/orphan-ran" >/dev/null 2>&1; rc=$?
+check "6e orphaned body: the shim still reports exit 4" "$rc" "4"
+sleep 2
+check "6e orphaned body: the command never runs without the shim's ack" "$([ -e "$tmp/orphan-ran" ] && echo ran)" ""
+
+# --- 7. HIMMEL-3484: the fan-out caps reach a Mac leg ------------------------
+# `open -a` starts the body from a fresh environment, so the subagent caps an
+# operator set in the launching shell were silently dropped - a Mac leg ran
+# uncapped. They are forwarded explicitly, like PATH; nothing else is.
+b12="$tmp/b12"; mk_open_stub "$b12" "$tmp/open12.log"
+envdump="$tmp/env12.txt"; rm -f "$envdump"
+CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=3 CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=2 FLEET_CAP=7 KONSOLE_MACOS_UNRELATED=x \
+    PATH="$b12:$PATH" ARM_APP_DIRS="$appdirs" \
+    "$SCRIPT" --separate --workdir "$wd" -e /bin/sh -c "env > '$envdump'" >/dev/null 2>&1
+envout="$(cat "$envdump" 2>/dev/null)"
+contains "7a CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS reaches the session" "$envout" "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=3"
+contains "7a CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH reaches the session" "$envout" "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=2"
+contains "7a FLEET_CAP reaches the session" "$envout" "FLEET_CAP=7"
+not_contains "7b an unrelated launching-shell var still does not" "$envout" "KONSOLE_MACOS_UNRELATED"
+
+# --- 8. HIMMEL-3484: not_contains must not read a grep EXECUTION error (rc 2)
+# as "absent" - that would pass every negative assertion above vacuously.
+# shellcheck disable=SC2317,SC2329  # grep() is invoked indirectly, through grepq
+nc8=$( grep() { return 2; }; not_contains "8 probe" "x" "y" )
+check "8 not_contains reports a grep error as a failure, not as absence" "$nc8" "FAIL - 8 probe: grep itself failed (rc 2)"
 
 echo
 [ "$fails" -eq 0 ] && { echo "All konsole-macos.sh cases passed."; exit 0; }
