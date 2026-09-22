@@ -59,7 +59,9 @@ export async function appendIfExists(file: string, line: string): Promise<boolea
     throw e;
   }
   try {
-    await handle.write(line + "\n", null, "utf8");
+    // handle.write() can complete with fewer bytes than requested;
+    // appendFile() on the same open handle writes the whole buffer.
+    await handle.appendFile(line + "\n", "utf8");
   } finally {
     await handle.close();
   }
