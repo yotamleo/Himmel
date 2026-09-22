@@ -35,6 +35,10 @@ mkdir -p "$HOME"
 export XDG_CONFIG_HOME="$HOME/.config"
 export GIT_CONFIG_NOSYSTEM=1
 unset GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM
+# An inherited repository env (e.g. when run from a git hook) would point every
+# fixture git call, and _new-worktree.sh's primary lookup, at the caller's repo.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE \
+    GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
 
 ORIGIN="$TMPBASE/origin.git"
 git init -q --bare "$ORIGIN"
