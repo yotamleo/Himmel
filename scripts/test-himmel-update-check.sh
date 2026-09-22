@@ -390,8 +390,11 @@ if [ -n "$(git -C "$CHECKOUT_DIR" stash list 2>/dev/null)" ]; then
 else
     assert_fail "dirty + .env opt-in: no stash entry — pull did NOT get --autostash"
 fi
-assert_contains "dirty + .env opt-in: autostash-only pull detail" \
-    "autostash \(active\|reapply conflicted\)" "$out"
+if grepq "$out" -E "autostash (active|reapply conflicted)"; then
+    assert_pass "dirty + .env opt-in: autostash-only pull detail"
+else
+    assert_fail "dirty + .env opt-in: autostash-only pull detail — got: $out"
+fi
 # The reapply conflicts on the shared file, so the chain aborts non-zero. Assert
 # it rather than masking with `|| true` (a 0 here would mean the guard never
 # reached the failing pull).
@@ -424,8 +427,8 @@ assert_contains "unset channel: plain branch/upstream report still runs" "upstre
 echo "Test 9: channel=stable, only -pre.N tags exist → no stable release yet"
 make_repo_channel
 channel_tag_here "v0.1.0-pre.1"
-out=$(HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check 2>&1)
-rc=$?
+rc=0
+out=$(HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check 2>&1) || rc=$?
 assert_eq "stable, no stable tag: --check rc 0" "0" "$rc"
 assert_contains "stable, no stable tag: exact message" "no stable release yet — nothing to follow" "$out"
 
@@ -439,8 +442,8 @@ channel_commit "post-release change"
 git -C "$CHECKOUT_DIR" reset --quiet --hard "$INIT_SHA"
 out=$(HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check 2>&1) || true
 assert_contains "stable behind: exact wording" "behind stable v0.1.0 (at" "$out"
-out=$(HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --only pull 2>&1)
-rc=$?
+rc=0
+out=$(HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --only pull 2>&1) || rc=$?
 assert_eq "stable behind: apply rc 0" "0" "$rc"
 assert_eq "stable behind: HEAD lands on the tag" "v0.1.0" "$(git -C "$CHECKOUT_DIR" describe --tags)"
 assert_eq "stable behind: HEAD is detached" "HEAD" "$(git -C "$CHECKOUT_DIR" rev-parse --abbrev-ref HEAD)"
@@ -453,8 +456,8 @@ channel_commit "pre release work"
 channel_tag_here "v0.2.0-pre.1"
 BEHIND_SHA=$(git -C "$CHECKOUT_DIR" rev-parse --short HEAD^)
 git -C "$CHECKOUT_DIR" reset --quiet --hard "$BEHIND_SHA"
-out=$(HIMMEL_UPDATE_CHANNEL=pre bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --only pull 2>&1)
-rc=$?
+rc=0
+out=$(HIMMEL_UPDATE_CHANNEL=pre bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --only pull 2>&1) || rc=$?
 assert_eq "pre channel: apply rc 0" "0" "$rc"
 assert_eq "pre channel: HEAD lands on the -pre.N tag" "v0.2.0-pre.1" "$(git -C "$CHECKOUT_DIR" describe --tags)"
 
@@ -489,8 +492,8 @@ channel_commit "local work past the release"
 AHEAD_SHA=$(git -C "$CHECKOUT_DIR" rev-parse HEAD)
 out=$(HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check 2>&1) || true
 assert_contains "never-downgrade: check reports leaving as-is" "not behind — leaving as-is" "$out"
-out=$(HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --only pull 2>&1)
-rc=$?
+rc=0
+out=$(HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --only pull 2>&1) || rc=$?
 assert_eq "never-downgrade: apply rc 0" "0" "$rc"
 assert_eq "never-downgrade: HEAD unchanged (no downgrade to v0.1.0)" "$AHEAD_SHA" "$(git -C "$CHECKOUT_DIR" rev-parse HEAD)"
 
@@ -650,8 +653,8 @@ case "$out" in
     *v9.9.9*) fail=$((fail + 1)); echo "  FAIL: stray local tag: v9.9.9 must not appear in --check output" ;;
     *) pass=$((pass + 1)); echo "  PASS: stray local tag: v9.9.9 must not appear in --check output" ;;
 esac
-out=$(HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --only pull 2>&1)
-rc=$?
+rc=0
+out=$(HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --only pull 2>&1) || rc=$?
 assert_eq "stray local tag: apply rc 0" "0" "$rc"
 landed=$(git -C "$CHECKOUT_DIR" rev-parse HEAD)
 expected=$(git -C "$CHECKOUT_DIR" rev-parse "refs/tags/v0.1.0^{commit}")
@@ -672,8 +675,8 @@ channel_annotated_tag_here "v0.1.0"
 git -C "$CHECKOUT_DIR" reset --quiet --hard "$INIT_SHA"
 out=$(HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check 2>&1)
 assert_contains "annotated tag: --check reports behind" "behind stable v0.1.0" "$out"
-out=$(HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --only pull 2>&1)
-rc=$?
+rc=0
+out=$(HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --only pull 2>&1) || rc=$?
 assert_eq "annotated tag: apply rc 0" "0" "$rc"
 landed=$(git -C "$CHECKOUT_DIR" rev-parse HEAD)
 expected=$(git -C "$CHECKOUT_DIR" rev-parse "refs/tags/v0.1.0^{commit}")
