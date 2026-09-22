@@ -207,7 +207,11 @@ _q_rcfile=$(printf '%q' "$RCFILE")
     # session lifetime, because it waits on the command. Do not "restore" an
     # exec here -- $RCFILE would then never be written and every launch would
     # report success regardless of outcome.
-    printf 'echo $$ > %s\n' "$_q_pidfile"
+    # `|| exit 1` (N357 r2 codex-1): a body the terminal opened just before
+    # the shim's timeout cleanup removed $RUNDIR can no longer record its pid.
+    # The shim has already given up on it, so running the command would leave
+    # an untracked session a retry could duplicate - stop here instead.
+    printf 'echo $$ > %s || exit 1\n' "$_q_pidfile"
     printf '%s\n' "$_q_cmd"
     printf 'echo $? > %s\n' "$_q_rcfile"
 } > "$CMDFILE"

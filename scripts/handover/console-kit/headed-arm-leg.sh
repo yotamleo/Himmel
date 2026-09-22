@@ -71,8 +71,8 @@
 # On any other platform, plain-export inheritance already carries such a
 # value, so leg_propagate_env leaves it there instead of refusing - see its
 # own doc comment below. All three exit codes are distinct from
-# headed-arm.sh's own 0-9 exit range, since this wrapper never reaches
-# headed-arm.sh in any of these cases.
+# headed-arm.sh's own exit codes (0-9 and 13), since this wrapper never
+# reaches headed-arm.sh in any of these cases.
 #
 # --lane (HIMMEL-2782): native (default) or claudex. --lane claudex (or
 # LEG_LANE=claudex in the launching shell - the flag wins if both are

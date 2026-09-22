@@ -56,6 +56,9 @@ case "$mode" in
     # the stub must not hand it the caller's PATH - only the body's own
     # PATH export may make 2f's bare name resolve (N357, codex-3).
     run)    for a in "\$@"; do case "\$a" in *.command) env -i "\$a" >/dev/null 2>&1 & ;; esac; done; exit 0 ;;
+    # late: the body is already open (fd 3) when the shim's scratch dir is
+    # removed - the timeout-cleanup race - and only then runs (N357 r2 codex-1).
+    late)   for a in "\$@"; do case "\$a" in *.command) ( exec 3<"\$a"; rm -rf "\$(dirname "\$a")"; env -i sh /dev/fd/3 ) >/dev/null 2>&1 & ;; esac; done; exit 0 ;;
 esac
 STUB
     chmod +x "$bindir/open"
@@ -192,6 +195,15 @@ contains "6c malformed ticks: names the bad value" "$out" "KONSOLE_MACOS_STARTUP
 # N357 (codex-1): the refusal happens BEFORE `open -a`, so no session is left
 # running untracked behind a shim that already exited 5.
 check "6c malformed ticks: open was never invoked" "$(cat "$tmp/open9.log" 2>/dev/null)" ""
+
+# N357 r2 (codex-1): a body the terminal opened before the shim's scratch dir
+# was removed must not run its command once it cannot record its pid - the
+# shim has already given up on it, so nothing would track that session.
+b10="$tmp/b10"; mk_open_stub "$b10" "$tmp/open10.log" late
+PATH="$b10:$PATH" ARM_APP_DIRS="$appdirs" KONSOLE_MACOS_STARTUP_TICKS=3 \
+    "$SCRIPT" --separate --workdir "$wd" -e touch "$tmp/late-ran" >/dev/null 2>&1
+sleep 1
+check "6d unrecordable pid: the command never runs" "$([ -e "$tmp/late-ran" ] && echo ran)" ""
 
 echo
 [ "$fails" -eq 0 ] && { echo "All konsole-macos.sh cases passed."; exit 0; }
