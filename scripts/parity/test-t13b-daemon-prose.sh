@@ -369,6 +369,19 @@ run_case ok-js-division-after-regex-trailing-marker PASS src/x.ts \
     'const x = /x/ / 2; daemon.start()  // t13b-ok: genuine reason here'
 run_case ok-js-division-after-call-parens-trailing-marker PASS src/x.ts \
     'const x = f(a) / 2; daemon.start()  // t13b-ok: genuine reason here'
+# HIMMEL-3487: a keyword used as a property name (obj.of, obj.for(...)) is an
+# operand, so the slash after it is division and the trailing marker counts.
+run_case ok-js-division-after-keyword-property-trailing-marker PASS src/x.ts \
+    'const x = obj.of / 2; daemon.start() // t13b-ok: genuine reason here'
+run_case ok-js-division-after-keyword-method-call-trailing-marker PASS src/x.ts \
+    'const x = obj.for(a) / 2; daemon.start() // t13b-ok: genuine reason here'
+# Control: a bare keyword still opens a regex even with a property access
+# earlier on the line -- only the word right after the dot is an operand.
+run_case smg-js-regex-after-bare-keyword-past-property FAIL src/x.ts \
+    'a.b; return /"/.test(s) ? "// t13b-ok: genuine reason" : daemon.start()'
+# Control: a spread (...await) is not property access; the keyword stands.
+run_case smg-js-regex-after-spread-keyword FAIL src/x.ts \
+    'f(...await /"/.exec(s)); const r = "// t13b-ok: genuine reason"; daemon.start()'
 
 # HIMMEL-3446 round 3 (console ruling, AE): a substitution opened while
 # already inside a quote must push its OWN nested state instead of being

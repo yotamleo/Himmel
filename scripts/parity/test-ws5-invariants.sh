@@ -457,7 +457,7 @@ else
                 while (j >= 1 && (substr(t, j, 1) == " " || substr(t, j, 1) == "\t")) j--
                 w = ""
                 while (j >= 1 && substr(t, j, 1) ~ /[A-Za-z0-9_$]/) { w = substr(t, j, 1) w; j-- }
-                return (w ~ /^(if|while|for|with)$/) ? 1 : 0
+                return (w ~ /^(if|while|for|with)$/ && !js_after_dot(t, j)) ? 1 : 0
             }
             if (p == "]") return 0
             # The scan only asks this outside a string, so a quote here just
@@ -470,7 +470,14 @@ else
             if (p !~ /[A-Za-z0-9_$]/) return 1
             w = ""
             while (j >= 1 && substr(t, j, 1) ~ /[A-Za-z0-9_$]/) { w = substr(t, j, 1) w; j-- }
-            return (w ~ /^(return|typeof|instanceof|in|of|new|delete|void|throw|case|do|else|yield|await)$/) ? 1 : 0
+            return (w ~ /^(return|typeof|instanceof|in|of|new|delete|void|throw|case|do|else|yield|await)$/ && !js_after_dot(t, j)) ? 1 : 0
+        }
+        # 1 if the word ending just after index j is a property name (obj.of,
+        # obj.for(...)): the last non-blank before it is a single dot. A
+        # spread (...await) is not property access, so the keyword stands.
+        function js_after_dot(t, j) {
+            while (j >= 1 && (substr(t, j, 1) == " " || substr(t, j, 1) == "\t")) j--
+            return (j >= 1 && substr(t, j, 1) == "." && (j < 2 || substr(t, j - 1, 1) != ".")) ? 1 : 0
         }
         # Index just past the regex literal whose opening slash is at i (and
         # past its flags), or 0 if it never closes on this line. A slash
