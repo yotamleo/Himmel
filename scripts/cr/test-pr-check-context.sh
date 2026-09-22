@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 # Smoke test for scripts/cr/pr-check-context.sh (HIMMEL-2226, HIMMEL-2335).
+# HIMMEL-3472: the fixtures here (T13 onward) are the only CI coverage of the
+# step-0 diff decision - :(top) anchoring, merge-base scoping, the dropped
+# --exclude-standard and the HIMMEL-3472 byte comparison. The ad-hoc fixture
+# harness used while HIMMEL-3382 was reviewed was never committed; nothing
+# else pins these behaviours, so a row removed here is coverage lost.
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$DIR/pr-check-context.sh"
@@ -1725,7 +1730,7 @@ mutant36="$tmp/pr-check-context.mutant-t36.sh"
 # shellcheck disable=SC2016  # literal match against pr-check-context.sh's own
 # source text.
 literal_replace "$SCRIPT" "$mutant36" \
-  "            if worktree_files=\$(git diff --name-only HEAD -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh' 2>/dev/null); then" \
+  "            if worktree_files=\$(gitd diff --name-only HEAD -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh' 2>/dev/null); then" \
   '            if worktree_files=""; then'
 rc_m36=$?
 if [ "$rc_m36" -ne 0 ]; then
@@ -1781,7 +1786,7 @@ mutant37="$tmp/pr-check-context.mutant-t37.sh"
 # shellcheck disable=SC2016  # literal match against pr-check-context.sh's own
 # source text.
 literal_replace "$SCRIPT" "$mutant37" \
-  '    if mb=$(git merge-base HEAD "$base_ref" 2>/dev/null); then' \
+  '    if mb=$(gitd merge-base HEAD "$base_ref" 2>/dev/null); then' \
   '    if mb="$base_ref" 2>/dev/null; then'
 rc_m37=$?
 if [ "$rc_m37" -ne 0 ]; then
@@ -1861,7 +1866,7 @@ literal_replace "$SCRIPT" "$mutant38" \
     GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX \
     GIT_CONFIG GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_PARAMETERS \
     GIT_CONFIG_COUNT GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS \
-    GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS' \
+    GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS GIT_REPLACE_REF_BASE' \
   'unset GIT_CONFIG GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_PARAMETERS \
     GIT_CONFIG_COUNT GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS \
     GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS # T38 mutant - GIT_DIR/WORK_TREE family intentionally left inherited'
@@ -1920,7 +1925,7 @@ literal_replace "$SCRIPT" "$mutant39" \
     GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX \
     GIT_CONFIG GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_PARAMETERS \
     GIT_CONFIG_COUNT GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS \
-    GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS' \
+    GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS GIT_REPLACE_REF_BASE' \
   'unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE \
     GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX \
     GIT_CONFIG GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_PARAMETERS \
@@ -1974,8 +1979,11 @@ check "$((rows_after40 - rows_before40))" "1" "T40 exactly one new delegation le
 # T40 parity: run the EXACT recipe now pinned in both runbook twins
 # (test-pr-check-pair.sh check (ii)) against the same fixture and confirm it
 # names the same gitignored file - the twins and the script decide on the
-# same set, not just similar-looking text.
-mb40="$(cd "$wt40" && git merge-base HEAD refs/heads/main)"
+# same set, not just similar-looking text. The recipe names
+# refs/remotes/origin/main, as the twins do (HIMMEL-3472), so the fixture
+# gets that ref first; main has not moved, so the merge base is unchanged.
+git -C "$anchor13" update-ref refs/remotes/origin/main refs/heads/main
+mb40="$(cd "$wt40" && git merge-base HEAD refs/remotes/origin/main)"
 recipe40="$(
   cd "$wt40" || exit 1
   git diff --name-only "$mb40"..HEAD -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh'
@@ -1989,6 +1997,227 @@ check "$recipe40" "scripts/cr/ignored-file.sh" "T40 the twins' pinned recipe als
 # in fix #2 matters, not just that the new recipe happens to work.
 recipe40_old="$(cd "$wt40" && git ls-files --others --exclude-standard -- scripts/cr/ scripts/guardrails/lib.sh)"
 check "$recipe40_old" "" "T40 RED - the pre-3382 recipe (--exclude-standard, no :(top)) misses the gitignored file entirely"
+
+# --- T41-T50: HIMMEL-3472 - a false cr_diff_state=no is a trust-root hole ---
+# On "no" himmel_dir stays at the BRANCH, so every later /pr-check fence runs
+# the branch's own scripts/cr/ with no delegation row. Each row below is one
+# way a leg could make git's diff read clean while the branch's bytes differ
+# from the anchor's. Every row gets a FRESH fake himmel (vector (a) moves a
+# shared ref, (b) writes refs/replace/, (d) writes shared config) so nothing
+# leaks into another row. fx_outcome names what happened:
+#   branch    - cr_diff_state=no: himmel_dir left at the branch, no delegation
+#   delegated - cr_diff_state=yes: the branch copy ran, logged by a ledger row
+#   anchor    - cr_diff_state=unknown: himmel_dir forced back to the anchor
+# "branch" on a mutated tree is the false no; before HIMMEL-3472 every row
+# below except the controls printed it. T43 (replace refs) and T47 (fsmonitor)
+# are closed in git itself - gitd turns both off - so git sees the edit and the
+# row delegates. The rest, where the diff still reads clean (T42, T44-T46,
+# T48), expect "anchor", not "delegated": the byte comparison only turns a "no"
+# into unknown, never into yes, because T37 requires main moving ahead of the
+# branch base (bytes differ, branch changed nothing) not to delegate.
+fx_new() { # fx_new <branch> - fresh fake himmel + a worktree on <branch>
+  fx_anchor="$tmp/fx-$1"
+  fx_wt="$tmp/fx-$1-wt"
+  build_fake_himmel "$fx_anchor"
+  (cd "$fx_anchor" && git worktree add -q -b "$1" "$fx_wt" main) || { echo "FAIL: $1 could not add worktree"; fail=1; }
+}
+fx_run() { # fx_run [subdir] - run the anchor's copy from the worktree (or a subdir of it)
+  (cd "$fx_wt/${1:-}" && HIMMEL_REPO="$fx_anchor" bash "$fx_anchor/scripts/cr/pr-check-context.sh" 2>/dev/null)
+}
+fx_outcome() {
+  local wt_top
+  wt_top="$(cd "$fx_wt" && git rev-parse --show-toplevel)"
+  if [ "$(get_kv "$1" delegated)" = yes ]; then
+    echo delegated
+  elif [ "$(get_kv "$1" himmel_dir)" = "$wt_top" ]; then
+    echo branch
+  else
+    echo anchor
+  fi
+}
+
+# T41 control: an untouched worktree still decides "no" (the byte comparison
+# against the anchor must not turn every clean branch into a delegation).
+fx_new t41-clean
+out41="$(fx_run)"
+check "$(fx_outcome "$out41")" "branch" "T41 control - an untouched branch still decides no"
+
+# T42 (vector a): the leg moves refs/remotes/origin/main to its own HEAD. The
+# merge base becomes HEAD, the committed diff is empty, and the scripts/cr/
+# edit it carries disappears. A leg can do this from its own worktree - the
+# ref is in the shared git-common-dir and no main-ref guard covers
+# refs/remotes/*.
+fx_new t42-moved-base
+(
+  cd "$fx_wt" || exit 1
+  printf '# t42 touch\n' >> scripts/cr/critic-panel.sh
+  git add -A
+  git commit -q -m "t42 touch scripts/cr"
+  git update-ref refs/remotes/origin/main HEAD
+)
+out42="$(fx_run)"
+check "$(fx_outcome "$out42")" "anchor" "T42 a moved refs/remotes/origin/main does not hide a committed scripts/cr/ edit"
+
+# T43 (vector b): a replace ref maps main's tree to the branch's tree, so git
+# reads the base as already containing the edit.
+fx_new t43-replace
+(
+  cd "$fx_wt" || exit 1
+  printf '# t43 touch\n' >> scripts/cr/critic-panel.sh
+  git add -A
+  git commit -q -m "t43 touch scripts/cr"
+  git replace "$(git rev-parse 'main^{tree}')" "$(git rev-parse 'HEAD^{tree}')"
+)
+out43="$(fx_run)"
+check "$(fx_outcome "$out43")" "delegated" "T43 a refs/replace/ mapping does not hide a committed scripts/cr/ edit"
+
+# T44/T45 (vector c): assume-unchanged and skip-worktree index bits make git
+# diff skip the working-tree file, so an uncommitted edit is invisible.
+fx_new t44-assume
+(
+  cd "$fx_wt" || exit 1
+  printf '# t44 edit\n' >> scripts/cr/critic-panel.sh
+  git update-index --assume-unchanged scripts/cr/critic-panel.sh
+)
+out44="$(fx_run)"
+check "$(fx_outcome "$out44")" "anchor" "T44 assume-unchanged does not hide an uncommitted scripts/cr/ edit"
+fx_new t45-skip
+(
+  cd "$fx_wt" || exit 1
+  printf '# t45 edit\n' >> scripts/cr/critic-panel.sh
+  git update-index --skip-worktree scripts/cr/critic-panel.sh
+)
+out45="$(fx_run)"
+check "$(fx_outcome "$out45")" "anchor" "T45 skip-worktree does not hide an uncommitted scripts/cr/ edit"
+
+# T46 (vector d): a repo-configured clean filter strips the edit before git
+# hashes the file, so the working tree reads equal to the index.
+fx_new t46-filter
+(
+  cd "$fx_wt" || exit 1
+  git config filter.t46.clean "sed '/^# t46/d'"
+  printf 'scripts/cr/critic-panel.sh filter=t46\n' >> "$(git rev-parse --git-common-dir)/info/attributes"
+  printf '# t46 edit\n' >> scripts/cr/critic-panel.sh
+)
+out46="$(fx_run)"
+check "$(fx_outcome "$out46")" "anchor" "T46 a clean filter does not hide an uncommitted scripts/cr/ edit"
+
+# T47 (vector d): a repo-configured fsmonitor hook that reports nothing
+# changed. The index is refreshed first so every entry is marked fsmonitor-
+# valid, then the edit lands and git trusts the hook instead of the file.
+fx_new t47-fsmonitor
+(
+  cd "$fx_wt" || exit 1
+  printf '#!/bin/sh\nexit 0\n' > "$tmp/t47-fsmonitor-hook"
+  chmod +x "$tmp/t47-fsmonitor-hook"
+  git config core.fsmonitor "$tmp/t47-fsmonitor-hook"
+  git config core.fsmonitorHookVersion 1
+  git update-index --refresh -q >/dev/null 2>&1
+  git status --porcelain >/dev/null 2>&1
+  printf '# t47 edit\n' >> scripts/cr/critic-panel.sh
+)
+out47="$(fx_run)"
+check "$(fx_outcome "$out47")" "delegated" "T47 an fsmonitor hook reporting no change does not hide an uncommitted scripts/cr/ edit"
+
+# T48 (ticket item 2): core.fileMode=false hides an exec-bit-only change.
+fx_new t48-filemode
+(
+  cd "$fx_wt" || exit 1
+  git config core.fileMode false
+  chmod +x scripts/cr/critic-panel.sh
+)
+out48="$(fx_run)"
+check "$(fx_outcome "$out48")" "anchor" "T48 core.fileMode=false does not hide an exec-bit-only scripts/cr/ change"
+
+# T49 (ticket item 1): scripts/cr inherited from main as a symlink into the
+# repo. The branch edits the target, a path the scripts/cr/ pathspec never
+# names. The bytes that run are not the anchor's, and a symlink under the
+# guarded paths cannot be compared file for file, so the decision is unknown
+# and himmel_dir falls back to the anchor.
+fx_new t49-symlink-base
+(
+  cd "$fx_anchor" || exit 1
+  git worktree remove --force "$fx_wt"
+  git branch -q -D t49-symlink-base
+  mv scripts/cr scripts/cr-real
+  ln -s cr-real scripts/cr
+  git add -A
+  git commit -q -m "t49 scripts/cr is a symlink"
+  git worktree add -q -b t49-symlink-base "$fx_wt" main
+) || { echo "FAIL: T49 could not build the symlinked base"; fail=1; }
+(
+  cd "$fx_wt" || exit 1
+  printf '# t49 touch\n' >> scripts/cr-real/critic-panel.sh
+  git add -A
+  git commit -q -m "t49 edit through the symlink target"
+)
+out49="$(fx_run)"
+check "$(fx_outcome "$out49")" "anchor" "T49 an edit through a symlinked scripts/cr is not read as no"
+
+# T50 (CodeRabbit on #1113, deferred to HIMMEL-3472): run from a subdirectory,
+# the untracked leg printed a cwd-relative path while both diff legs print
+# top-relative ones. cr_diff_files must spell every path from the top.
+fx_new t50-subdir
+(
+  cd "$fx_wt" || exit 1
+  mkdir -p docs
+  printf '#!/usr/bin/env bash\n' > scripts/cr/t50-new.sh
+)
+out50="$(fx_run docs)"
+check "$(fx_outcome "$out50")" "delegated" "T50 an untracked scripts/cr/ file is seen from a subdirectory"
+check "$(get_kv "$out50" cr_diff_files)" "scripts/cr/t50-new.sh" "T50 cr_diff_files spells the untracked path from the worktree top"
+
+# T51 (HIMMEL-3454 round-1 codex-2, carried onto HIMMEL-3472): the `sort -u`
+# that normalizes the diff set fails. Its empty output must not read as "no".
+# The fixture makes git report a change while the branch's bytes equal the
+# anchor's (an edit committed, then undone in the working tree), so the byte
+# comparison cannot mask a missing status check - only the normalizer's own
+# check can decide unknown. The shim fails only `sort -u`; the manifest's
+# plain sort still works, so the byte check itself is not what trips.
+fx_new t51-normalizer
+(
+  cd "$fx_wt" || exit 1
+  printf '# t51 touch\n' >> scripts/cr/critic-panel.sh
+  git add -A
+  git commit -q -m "t51 touch scripts/cr"
+  git show main:scripts/cr/critic-panel.sh > scripts/cr/critic-panel.sh
+)
+real_sort="$(command -v sort)"
+mkdir -p "$tmp/t51-bin"
+# shellcheck disable=SC2016 # the $@ / $a are the shim's own, written literally
+printf '#!/usr/bin/env bash\nfor a in "$@"; do [ "$a" = -u ] && exit 1; done\nexec %s "$@"\n' "$real_sort" > "$tmp/t51-bin/sort"
+chmod +x "$tmp/t51-bin/sort"
+out51c="$(fx_run)"
+check "$(fx_outcome "$out51c")" "delegated" "T51 control - with a working sort the fixture's git diff is non-empty and delegates"
+out51="$(cd "$fx_wt" && PATH="$tmp/t51-bin:$PATH" HIMMEL_REPO="$fx_anchor" bash "$fx_anchor/scripts/cr/pr-check-context.sh" 2>/dev/null)"
+check "$(fx_outcome "$out51")" "anchor" "T51 a failed normalizer decides unknown, not an empty no"
+
+# T51 RED: the same fixture against a mutant that ignores the normalizer's
+# exit status must print the false no.
+mutant51="$tmp/pr-check-context.mutant-t51.sh"
+literal_replace "$SCRIPT" "$mutant51" \
+  "if cr_diff_files=\$(printf '%s\\n%s\\n%s\\n' \"\$committed_files\" \"\$worktree_files\" \"\$untracked_files\" | awk 'length' | sort -u); then" \
+  "cr_diff_files=\$(printf '%s\\n%s\\n%s\\n' \"\$committed_files\" \"\$worktree_files\" \"\$untracked_files\" | awk 'length' | sort -u); if true; then # T51 mutant - normalizer status ignored"
+rc_m51=$?
+if [ "$rc_m51" -ne 0 ]; then
+  echo "FAIL: T51 could not build the normalizer-unchecked mutant - $(cat "$tmp/literal_replace.err" 2>/dev/null)"
+  fail=1
+fi
+# The mutant goes into BOTH trees: in the anchor alone its bytes would differ
+# from the branch's copy and the byte comparison would decide unknown for
+# that reason instead.
+cp "$mutant51" "$fx_anchor/scripts/cr/pr-check-context.sh"
+cp "$mutant51" "$fx_wt/scripts/cr/pr-check-context.sh"
+red_control_run --cwd "$fx_wt" \
+  --env PATH="$tmp/t51-bin:$PATH" \
+  --env HIMMEL_REPO="$fx_anchor" \
+  -- bash "$fx_anchor/scripts/cr/pr-check-context.sh"
+red_control_assert --label "T51" \
+  --observed     "$(fx_outcome "$RED_CONTROL_OUT")" \
+  --expect-wrong "branch" \
+  --correct      "anchor" \
+  --note "HIMMEL-3454 round-1 codex-2 - an unchecked sort -u turns a failed normalization into an empty diff set, read as cr_diff_state=no, and himmel_dir stays at the branch" \
+  || fail=1
 
 # --- Negative-control check: perturb T3's expectation to confirm the
 # assertion genuinely fails, then restore. This is asserted directly (not by
