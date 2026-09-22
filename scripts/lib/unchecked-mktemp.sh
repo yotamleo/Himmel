@@ -238,7 +238,7 @@ unchecked_mktemp_scan() {
             if (skip[i]) continue
             s = line[i]
             # An assignment capturing mktemp through command substitution.
-            if (s !~ /^[ \t]*(local[ \t]+|export[ \t]+|typeset[ \t]+|readonly[ \t]+|declare[ \t]+(-[a-zA-Z]+[ \t]+)?)?[A-Za-z_][A-Za-z0-9_]*="?\$\([ \t]*mktemp/)
+            if (s !~ /^[ \t]*((local|export|typeset|readonly|declare)[ \t]+(-[a-zA-Z]+[ \t]+)*)?[A-Za-z_][A-Za-z0-9_]*="?\$\([ \t]*mktemp/)
                 continue
 
             # A declaration builtin (local/export/declare/typeset/readonly)
@@ -247,7 +247,7 @@ unchecked_mktemp_scan() {
             # rule (a) never applies to them. (Rules (c)/(d) are NOT gated by
             # this -- see below -- because they read the actual value of the variable,
             # not the exit status of the builtin.)
-            is_decl = (s ~ /^[ \t]*(local|export|typeset|declare|readonly)([ \t]+-[a-zA-Z]+)?[ \t]+/)
+            is_decl = (s ~ /^[ \t]*(local|export|typeset|declare|readonly)([ \t]+-[a-zA-Z]+)*[ \t]+/)
 
             # Rule (a): a `||` ANYWHERE on the line guards it, full stop --
             # no judgement about what the right-hand side does.

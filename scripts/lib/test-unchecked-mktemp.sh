@@ -303,6 +303,17 @@ f="$TMPDIR_ROOT/t26b.sh"
 printf 'local T=$(mktemp -d); [ -n "$T" ]\n' > "$f"
 assert_eq "T26b local + same-line [ -n ] test -> ok (finding 2)" "0" "$(scan_lines "$f")"
 
+# T27 -- an option on a declaration builtin other than declare (`local -r`,
+# `typeset -r`) must not hide the capture from the scan: it masks mktemp's
+# status exactly like the bare builtin does.
+f="$TMPDIR_ROOT/t27.sh"
+printf 'local -r T=$(mktemp -d) || exit 1\n' > "$f"
+assert_eq "T27 local -r capture + same-line || -> flagged (declaration masks status)" "1" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t27b.sh"
+printf 'typeset -r T=$(mktemp -d)\n' > "$f"
+assert_eq "T27b typeset -r capture, unguarded -> flagged" "1" "$(scan_lines "$f")"
+
 # T21 -- self-check: the predicate must NOT flag its own repo files. Locks
 # the codex-1 self-blocking regression closed for good -- if this ever comes
 # back it fails loudly here instead of silently refusing every commit that
@@ -432,6 +443,20 @@ git -C "$R" commit -q -m "add pre.sh with pre-existing unguarded capture"
 git -C "$R" mv pre.sh post.sh
 run_gate
 assert_rc "G9 pure rename, pre-existing unguarded capture, no content change -> gate ok" 0 "$?"
+
+# G10 -- fail-closed: when the added-line lookup itself errors (grep exit 2,
+# not 1), the gate must refuse rather than read the offending line as
+# "not added" and pass. A PATH shim makes only the `grep -Fxq` lookup fail.
+setup_repo || { echo "FAIL: G10 setup: setup_repo failed -- aborting suite" >&2; exit 1; }
+printf '#!/usr/bin/env bash\nT=$(mktemp -d)\necho "$T"\n' > "$R/scripts.sh"
+git -C "$R" add scripts.sh
+real_grep=$(command -v grep)
+shim_dir="$R/.shim"
+mkdir -p "$shim_dir"
+printf '#!/usr/bin/env bash\n[ "$1" = "-Fxq" ] && exit 2\nexec %s "$@"\n' "$real_grep" > "$shim_dir/grep"
+chmod +x "$shim_dir/grep"
+( cd "$R" && PATH="$shim_dir:$PATH" bash "$GATE" >/dev/null 2>&1 )
+assert_rc "G10 added-line lookup error -> fail-closed" 1 "$?"
 
 # ---------------------------------------------------------------------------
 # Section 3: RED control (scripts/lib/red-control.sh).

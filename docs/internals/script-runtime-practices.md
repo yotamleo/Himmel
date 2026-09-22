@@ -206,9 +206,10 @@ A one-line escape exists for a capture that genuinely cannot fail:
 `# mktemp-unchecked-ok: <reason>`.
 
 **A `trap` cleaning up the temp dir is NOT a guard** — `T=$(mktemp -d);
-trap 'rm -rf "$T"' EXIT` reads as careful, which is why it recurs, but an
-empty `$T` (mktemp failed) makes the trap itself the destructive operation:
-`rm -rf ""` or `rm -rf` against a root-collapsed path.
+trap 'rm -rf "$T"' EXIT` reads as careful, which is why it recurs, but it
+does nothing about an empty `$T` (mktemp failed). The script runs on, and
+every path built from it collapses to the root: `rm -rf "$T/build"` becomes
+`rm -rf /build`.
 
 For the parallel discipline on the negative-control side of a test (a
 guard that never fires needs its own positive control proving the matcher

@@ -249,7 +249,16 @@ while IFS= read -r -d '' sh_path && IFS= read -r -d '' src_path; do
         # (IFS set to a literal tab via printf -- $'\t' avoided so this file
         # stays byte-identical in tools that mangle ANSI-C quoting.)
         [ -n "$lineno" ] || continue
-        grep -Fxq "$lineno" "$added_file" || continue
+        # grep exit 1 = the line was not added; any other non-zero is a
+        # lookup error, which must refuse rather than read as "not added".
+        added_rc=0
+        grep -Fxq "$lineno" "$added_file" || added_rc=$?
+        [ "$added_rc" -eq 1 ] && continue
+        if [ "$added_rc" -ne 0 ]; then
+            fail=1
+            echo "⛔ check-unchecked-mktemp: added-line lookup failed for $sh_path:$lineno (grep rc=$added_rc, fail-closed)." >&2
+            continue
+        fi
         fail=1
         n_violations=$((n_violations + 1))
         echo "⛔ check-unchecked-mktemp: $sh_path:$lineno: $text" >&2
