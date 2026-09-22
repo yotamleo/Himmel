@@ -200,6 +200,21 @@ eq "11: still no operator DM" 0 "$(count "$CASE/alerts.log")"
 run_alert "$CASE" octo/demo 42 aaaaaaaaaaaa "gh pr merge refused"
 eq "11: a later merge_block_alert for the same head still DMs (separate sentinel from .watch)" 1 "$(count "$CASE/alerts.log")"
 
+# --- 12. .watch sentinel create fails for a reason OTHER than already-
+#          existing, while the plain (non-.watch) sentinel merge_block_alert's
+#          own fallback writes still fits -- must fall back to the operator
+#          DM, not be swallowed as if already delivered (HIMMEL-3430 panel
+#          finding). Forced via a head long enough that "<key>.watch" trips
+#          this filesystem's 255-byte NAME_MAX while the plain "<key>"
+#          (6 bytes shorter) still fits -- a real, not simulated, create
+#          failure that is not "already exists" ------------------------------
+new_case c12
+console_case "$CASE" opsdesk
+LONGHEAD=$(printf '%235s' '' | tr ' ' 'a')
+HIMMEL_CONSOLE_LEG=1 HIMMEL_CONSOLE_NAME=opsdesk run_watch_alert "$CASE" octo/demo 42 "$LONGHEAD" "rule"
+eq "12: watch-sentinel name-too-long falls back to operator DM" 1 "$(count "$CASE/alerts.log")"
+eq "12: no console-inbox line" 0 "$(count "$CASE/bridge/consoles/opsdesk.md")"
+
 echo
 echo "merge-block-alert: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

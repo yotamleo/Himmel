@@ -176,10 +176,16 @@ merge_watch_alert() {
                     return 0
                 fi
                 rm -f "$dir/$key" 2>/dev/null
-            else
+            elif [ -e "$dir/$key" ]; then
+                # Sentinel already exists: already alerted for this
+                # (repo, pr, head) — dedup, stay silent (no fallback).
                 echo "MERGE-BLOCKED ${repo}#${pr} @${short:-unknown-head}: ${rule}" >&2
                 return 0
             fi
+            # Sentinel create failed for a reason OTHER than already
+            # existing (unwritable dir, disk full, ...): unknown alert
+            # state, so fall through to merge_block_alert below rather
+            # than silently dropping the alert.
         fi
     fi
 
