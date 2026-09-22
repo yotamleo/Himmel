@@ -1049,9 +1049,13 @@ Out-of-Place Publication and so parked the leg. Guards:
   `--check` and the quoted delimiter. Every body line starts with `SUITE `.
   The command ends at the first closing `IMPACTED_EOF`, and nothing may follow
   it. The no-heredoc form is a single line.
-- **The path** is `scripts/cr/impacted-suites.sh` relative to the payload
-  `cwd` (else `$PWD`), or an absolute `…/scripts/cr/impacted-suites.sh`. Either
-  way it must resolve at a worktree root of the `HIMMEL_REPO` checkout.
+- **The path** is `scripts/cr/impacted-suites.sh` relative to an absolute
+  payload `cwd` (never the hook's own `$PWD`), or a `/`-rooted
+  `…/scripts/cr/impacted-suites.sh`, bare or double-quoted. Either way it must
+  resolve at a worktree root of the `HIMMEL_REPO` checkout. A backslash, a
+  single quote, a drive letter or any CR refuses it. On POSIX, `C:\x\…` or
+  `C:/x/…` would be checked as one path but run as a cwd-relative file of that
+  literal name. So Windows Git Bash always gets a prompt.
 - **The bytes are the anchor's** (the HIMMEL-3383 precedent). The file is
   regular, not a symlink. It hashes unfiltered to the same blob as both the
   anchor's working-tree copy and `refs/heads/main`'s, and the anchor is on

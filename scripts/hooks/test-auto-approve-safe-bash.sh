@@ -690,6 +690,42 @@ isg -C "$IS_A" checkout -q main
 IS_OUT=$(j_bash_cwd "$IS_W" "$IS_REL $IS_R" | env -u HIMMEL_REPO bash "$HOOK" 2>/dev/null)
 assert "ctl: is HIMMEL_REPO unset"           PASS "$(grepq "$IS_OUT" '"permissionDecision":"allow"' && echo ALLOW || echo PASS)"
 assert "impacted-suites listing, anchor back on main" ALLOW "$(is_dec "$IS_W" "$IS_REL $IS_R")"
+# CONTROLS — console review of PR 1143. On POSIX a drive-letter or backslash
+# word is checked as one path (`\`→`/`, resolved from the hook's cwd) but run
+# as another (a cwd-relative file bash finds by its literal name), so neither
+# spelling is in this grammar; and the root comes only from an absolute
+# payload cwd, never the hook's own $PWD. A `C:` symlink in the hook's cwd,
+# pointing at the real worktree, is what made those spellings pass the check.
+is_dec_in() { # is_dec_in <hook-cwd> <payload-json>
+    local out
+    out=$(cd "$1" && printf '%s' "$2" | HIMMEL_REPO="$IS_A" bash "$HOOK" 2>/dev/null)
+    if grepq "$out" '"permissionDecision":"allow"'; then echo ALLOW; else echo PASS; fi
+}
+IS_DRV="$IS_TMP/drv"; mkdir -p "$IS_DRV"
+if ln -s "$IS_W" "$IS_DRV/C:" 2>/dev/null; then
+    assert "ctl: is drive C:/ path"              PASS "$(is_dec_in "$IS_DRV" "$(j_bash_cwd "$IS_DRV" "bash C:/scripts/cr/impacted-suites.sh $IS_R")")"
+    assert "ctl: is drive quoted backslash path" PASS "$(is_dec_in "$IS_DRV" "$(j_bash_cwd "$IS_DRV" "bash \"C:\\scripts\\cr\\impacted-suites.sh\" $IS_R")")"
+    assert "ctl: is drive unquoted backslash"    PASS "$(is_dec_in "$IS_DRV" "$(j_bash_cwd "$IS_DRV" "bash C:\\\\scripts\\\\cr\\\\impacted-suites.sh $IS_R")")"
+else
+    echo "SKIP is drive rows (cannot create a C: symlink here)"
+fi
+assert "ctl: is rel, no payload cwd (hook PWD = worktree)" PASS "$(is_dec_in "$IS_W" "$(j_bash "$IS_REL $IS_R")")"
+assert "ctl: is rel, relative payload cwd"   PASS "$(is_dec_in "$IS_TMP" "$(j_bash_cwd wt "$IS_REL $IS_R")")"
+assert "ctl: is single-quoted path word"     PASS "$(is_dec "$IS_W" "bash 'scripts/cr/impacted-suites.sh' $IS_R")"
+assert "ctl: is CRLF heredoc, no final CRLF" PASS "$(is_dec "$IS_W" "$IS_REL --check $IS_R $IS_HD"$'\r\nSUITE scripts/x.sh = PASS\r\nIMPACTED_EOF')"
+assert "ctl: is CRLF heredoc"                PASS "$(is_dec "$IS_W" "$IS_REL --check $IS_R $IS_HD"$'\r\nSUITE scripts/x.sh = PASS\r\nIMPACTED_EOF\r\n')"
+assert "ctl: is CRLF listing"                PASS "$(is_dec "$IS_W" "$IS_REL $IS_R"$'\r\n')"
+assert "ctl: is lone CR in body"             PASS "$(is_dec "$IS_W" "$IS_REL --check $IS_R $IS_HD"$'\nSUITE x = PASS\rrm -rf x\nIMPACTED_EOF')"
+assert "ctl: is tab on line 1"               PASS "$(is_dec "$IS_W" "bash"$'\t'"scripts/cr/impacted-suites.sh $IS_R")"
+assert "ctl: is control char on line 1"      PASS "$(is_dec "$IS_W" "$IS_REL $IS_R"$'\x01')"
+assert "ctl: is backtick in quoted word"     PASS "$(is_dec "$IS_W" "bash \"\`pwd\`/scripts/cr/impacted-suites.sh\" $IS_R")"
+assert "ctl: is <( in quoted word"           PASS "$(is_dec "$IS_W" "bash \"<(x)/scripts/cr/impacted-suites.sh\" $IS_R")"
+assert "ctl: is >( in quoted word"           PASS "$(is_dec "$IS_W" "bash \">(x)/scripts/cr/impacted-suites.sh\" $IS_R")"
+assert "ctl: is glob in path"                PASS "$(is_dec "$IS_W" "bash scripts/cr/impacted-suite?.sh $IS_R")"
+assert "ctl: is brace in path"               PASS "$(is_dec "$IS_W" "bash scripts/cr/{impacted-suites,other}.sh $IS_R")"
+assert "ctl: is trailing &"                  PASS "$(is_dec "$IS_W" "$IS_REL $IS_R &")"
+IS_OUT=$(j_bash_cwd "$IS_W" "$IS_REL $IS_R" | HIMMEL_REPO="$IS_W" bash "$HOOK" 2>/dev/null)
+assert "ctl: is HIMMEL_REPO = own worktree"  PASS "$(grepq "$IS_OUT" '"permissionDecision":"allow"' && echo ALLOW || echo PASS)"
 rm -rf "$IS_TMP"
 
 echo ""

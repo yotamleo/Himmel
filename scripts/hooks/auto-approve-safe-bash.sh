@@ -913,9 +913,11 @@ segment_is_queue_lock() {
 #   SUITE ...            (zero or more lines, each starting `SUITE `)
 #   IMPACTED_EOF
 # <P> is `scripts/cr/impacted-suites.sh` (resolved against the payload cwd,
-# else $PWD) or an absolute `<root>/scripts/cr/impacted-suites.sh`, bare or
-# double-quoted. WHY: the step is a required gate, and the classifier denied
-# the listing as [Out-of-Place Publication], parking the leg. Read off the RAW
+# which must be absolute; never the hook's own $PWD) or a `/`-rooted
+# `<root>/scripts/cr/impacted-suites.sh`, bare or double-quoted. No `\`, `'` or
+# drive letter: on POSIX `C:\x\…` or `C:/x/…` is checked as one path but run as
+# a cwd-relative file bash finds by its literal name. WHY: the step is a
+# required gate, and the classifier denied the listing as [Out-of-Place Publication], parking the leg. Read off the RAW
 # command, ahead of scan_cmd and the tripwires: the heredoc body is inert data
 # (its delimiter is quoted, so nothing in it expands), and a SKIP reason may
 # carry an apostrophe or `$(`. Only a line starting `SUITE ` sits between the
@@ -931,7 +933,8 @@ segment_is_queue_lock() {
 # ponytail: checked at match time only - the bytes can change between this
 # check and the exec (TOCTOU), as in guard-pr-check-literal.sh; and a
 # docs-audit lane's `origin/main..<head>` range is not accepted (it falls
-# through to the classifier).
+# through to the classifier); and Windows Git Bash always falls through to a
+# prompt (its jq.exe CRLF output, drive-letter cwd and paths are all refused).
 IS_LINE1_RE="^bash +(\"[^\"]*\"|[^ \"]+) +(--check +)?[0-9a-f]{40}\\.\\.[0-9a-f]{40}( +<<'IMPACTED_EOF')? *\$"
 cmd_is_impacted_suites() {
     local c="${1%$'\n'}" l1 body word root
@@ -955,17 +958,17 @@ EOF
     else
         case "$c" in *$'\n'*) return 1 ;; esac
     fi
+    case "$word" in *\\*|*\'*) return 1 ;; esac
     ql_word_literal "$word" || return 1
     case "$QW" in
         scripts/cr/impacted-suites.sh)
             root=$(jq -r '.cwd // ""' <<<"$input" 2>/dev/null) || return 1
-            root="${root%$'\r'}"
-            [ -n "$root" ] || root="$PWD" ;;
-        *)
+            case "$root" in /*) ;; *) return 1 ;; esac ;;
+        /*)
             ql_abs_path "$QW" || return 1
             case "$QN" in /*/scripts/cr/impacted-suites.sh) ;; *) return 1 ;; esac
-            root="${QC%/scripts/cr/impacted-suites.sh}"
-            case "$root" in ?:) root="$root/" ;; esac ;;
+            root="${QC%/scripts/cr/impacted-suites.sh}" ;;
+        *) return 1 ;;
     esac
     impacted_suites_is_anchored "$root"
 }
@@ -1038,10 +1041,11 @@ cmd="${cmd//$'\r\n'/$'\n'}"
 [ -n "$cmd" ] || exit 0
 
 # HIMMEL-3486: /pr-check step 3.6's impacted-suites.sh literals, read off the
-# raw command before scan_cmd (see cmd_is_impacted_suites).
+# raw command before scan_cmd (see cmd_is_impacted_suites) — the jq text as it
+# came, before the CRLF→LF fold above, so any CR at all refuses it.
 case "$cmd" in
     bash*impacted-suites.sh*)
-        cmd_is_impacted_suites "$cmd" && emit_allow "pr-check impacted-suites literal (HIMMEL-3486): ${cmd%%$'\n'*}" ;;
+        cmd_is_impacted_suites "${result#*$'\n'}" && emit_allow "pr-check impacted-suites literal (HIMMEL-3486): ${cmd%%$'\n'*}" ;;
 esac
 
 # Quote-aware structural scan (HIMMEL-209): produces SCAN_SEGS (split only at
