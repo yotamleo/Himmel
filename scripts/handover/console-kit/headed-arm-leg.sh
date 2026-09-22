@@ -626,6 +626,11 @@ else
     fi
 fi
 if [ -n "$CONSOLE_NAME" ]; then
+    # HIMMEL-2534: leg_propagate_env, not a bare export - on macOS `open -a`
+    # starts a fresh environment, so a bare export never crosses and #1121's
+    # console-alert routing would silently stop reaching the leg.
+    # _console_name_ok already refuses whitespace, so leg_propagate_env's
+    # Darwin exit 12 branch is unreachable for this variable.
     leg_propagate_env HIMMEL_CONSOLE_NAME "$CONSOLE_NAME"
 else
     unset HIMMEL_CONSOLE_NAME

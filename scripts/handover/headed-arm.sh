@@ -53,7 +53,9 @@
 # scripts/parity/test-ws5-invariants.sh's T15 check scans for one - it has
 # already done so twice.
 #
-# Exit codes: 2 usage / bad argument; 3 no konsole on PATH; 4 no pgrep on
+# Exit codes: 2 usage / bad argument; 3 no konsole on PATH; 10 (HIMMEL-2534
+# CR fix, N346) could not resolve this script's own directory to locate the
+# macOS konsole shim, a distinct failure from 3 above; 4 no pgrep on
 # PATH (see codex-4 below); 5 the claim-lock root could not be created (see
 # r2-codex-2 below - an environment fault, never a dedup hit); 6 the claim
 # retry budget was exhausted without ever confirming a running session (see
@@ -466,8 +468,11 @@ elif [ "$HEADED_ARM_UNAME" = "Darwin" ]; then
     # directory". Fail with the real reason.
     _here="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _here=""
     if [ -z "$_here" ]; then
+        # HIMMEL-2534 CR fix (N346): exit 3 already means "no konsole/CLI dep
+        # on PATH" (below); this is a different failure (can't even resolve
+        # this script's own directory) and needs its own code, not a collision.
         echo "headed-arm: could not resolve this script's own directory to locate the macOS konsole shim" >&2
-        exit 3
+        exit 10
     fi
     KONSOLE="$_here/konsole-macos.sh"
     KONSOLE_IS_MACOS_SHIM=1

@@ -90,7 +90,10 @@ b2="$tmp/b2"; mk_open_stub "$b2" "$tmp/open2.log"
 # against the normalised form, not the raw concatenation.
 wd="$tmp/work"; mkdir -p "$wd"; wd="$(cd "$wd" && pwd)"
 marker="$tmp/ran.txt"; rm -f "$marker"
-out="$(run_shim "$b2" -- --separate --workdir "$wd" -p "tabtitle=probe" \
+# HIMMEL-2534 CR fix (N346): case 2c asserts the no-ARM_TERMINAL_APP default
+# resolves to iTerm, but that default reads $TERM_PROGRAM - green only by
+# accident, on a Mac running this suite inside iTerm. Pin it.
+out="$(TERM_PROGRAM=iTerm.app run_shim "$b2" -- --separate --workdir "$wd" -p "tabtitle=probe" \
     -e /bin/sh -c "pwd > '$marker'; printf '%s\n' \"\$0\" >> '$marker'")"
 rc=$?
 check "2a happy path: exit 0" "$rc" "0"
@@ -175,6 +178,14 @@ out="$(PATH="$b8:$PATH" ARM_APP_DIRS="$appdirs" KONSOLE_MACOS_STARTUP_TICKS=3 \
     "$SCRIPT" --separate --workdir "$wd" -e true 2>&1)"; rc=$?
 check "6b session never reports a pid: exit 4" "$rc" "4"
 contains "6b no-pid: names the startup budget" "$out" "never reported a pid"
+
+# HIMMEL-2534 CR fix (N346): a malformed KONSOLE_MACOS_STARTUP_TICKS must fail
+# bounded, not spin `[ -ge ]` forever on a non-numeric comparison.
+b9="$tmp/b9"; mk_open_stub "$b9" "$tmp/open9.log" silent
+out="$(PATH="$b9:$PATH" ARM_APP_DIRS="$appdirs" KONSOLE_MACOS_STARTUP_TICKS=abc \
+    "$SCRIPT" --separate --workdir "$wd" -e true 2>&1)"; rc=$?
+check "6c malformed KONSOLE_MACOS_STARTUP_TICKS: exit 5, not a hang" "$rc" "5"
+contains "6c malformed ticks: names the bad value" "$out" "KONSOLE_MACOS_STARTUP_TICKS must be a plain decimal integer, got 'abc'"
 
 echo
 [ "$fails" -eq 0 ] && { echo "All konsole-macos.sh cases passed."; exit 0; }

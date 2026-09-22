@@ -1752,7 +1752,15 @@ check "43 macOS default: exit 3 when the shim is absent" "$rc43" "3"
 contains "43 macOS default resolves to the konsole-macos.sh shim" "$out43" "konsole-macos.sh"
 not_contains "43 macOS default is never a bare 'konsole'" "$out43" "no 'konsole' on PATH"
 
-# 43b. The Linux default is unchanged by the per-platform resolution.
+# 43b. The Linux default is unchanged by the per-platform resolution. HIMMEL-2534
+# CR fix (N346, #1122): this row used to leave KONSOLE_CMD unset and rely on
+# `command -v konsole` failing, the only case in this suite to do so (every
+# other konsole case pins KONSOLE_CMD explicitly). On a station that actually
+# has konsole on PATH - this one - the refusal never fires and the row falls
+# through into launching a REAL konsole + REAL claude session instead of
+# testing anything. Pin KONSOLE_CMD at a path that cannot exist so the refusal
+# is deterministic regardless of the running station, same seam every other
+# konsole case already uses.
 d43b="$tmp/c43b"; mkdir -p "$d43b/bare" "$d43b/lib"
 cp "$SCRIPT" "$d43b/bare/headed-arm.sh"
 # HIMMEL-2975 made headed-arm.sh source $HERE/../lib/console-context.sh, so the
@@ -1760,10 +1768,11 @@ cp "$SCRIPT" "$d43b/bare/headed-arm.sh"
 # konsole-macos.sh is still deliberately absent -- that is what this case proves.
 cp "$HERE/../lib/console-context.sh" "$d43b/lib/console-context.sh"
 mk_stub "$d43b" 1 alive
-out43b=$(HEADED_ARM_UNAME=Linux PGREP_CMD="$d43b/pgrep" HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$d43b/locks" \
+missing_konsole43b="$d43b/no-such-bin/konsole"
+out43b=$(HEADED_ARM_UNAME=Linux KONSOLE_CMD="$missing_konsole43b" PGREP_CMD="$d43b/pgrep" HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$d43b/locks" \
   bash "$d43b/bare/headed-arm.sh" "HIMMEL-mac43b" "doc43b.md" "$d43b/signal-never" "$PAST" "$d43b/log" 2>&1)
-contains "43b Linux default is still a bare 'konsole'" "$out43b" "no 'konsole' on PATH"
-not_contains "43b Linux default never mentions the macOS shim" "$out43b" "konsole-macos.sh"
+contains "43b Linux, konsole unavailable: refused, names it 'on PATH'" "$out43b" "no '$missing_konsole43b' on PATH"
+not_contains "43b Linux, konsole unavailable: never mentions the macOS shim" "$out43b" "konsole-macos.sh"
 
 # --- 41. HIMMEL-2534 (codex-review C1, CRITICAL): the post-launch visibility
 # budget was 5s, sized for konsole. The macOS launcher has to bring an app up

@@ -138,8 +138,12 @@ RUNDIR="$(mktemp -d "${TMPDIR:-/tmp}/konsole-macos.XXXXXX")" || {
     echo "konsole-macos: could not create a scratch dir for the launch body" >&2
     exit 3
 }
-# The window owns its own lifetime; this shim only needs the dir until the
-# child reports its pid. Clean up on every exit path.
+# ponytail (HIMMEL-2534 CR fix, N346): this delete races the terminal app's
+# own read of $CMDFILE if `open -a` is slow handing it to `sh`. Probed as
+# safe -- a `.command` `sh` has already opened keeps running to completion
+# after the unlink, standard POSIX unlink-while-open semantics -- but that is
+# a probed behavior on the filesystems tried, not something this shim
+# enforces; it is not re-checked after cleanup.
 trap 'rm -rf "$RUNDIR"' EXIT
 PIDFILE="$RUNDIR/pid"
 RCFILE="$RUNDIR/rc"
@@ -212,6 +216,18 @@ fi
 # launch that silently never starts fails loudly instead of hanging an arm.
 _waited=0
 _ticks="${KONSOLE_MACOS_STARTUP_TICKS:-200}"
+# HIMMEL-2534 CR fix (N346): `[ -ge ]` on a non-numeric _ticks doesn't abort -
+# it errors to stderr every iteration and evaluates false, so a malformed
+# KONSOLE_MACOS_STARTUP_TICKS (e.g. "abc") spins this loop forever instead of
+# failing bounded. headed-arm.sh guards the same var with a `10#` arithmetic
+# context; mirror that here so a bad value fails loudly instead of hanging.
+case "$_ticks" in
+    ''|*[!0-9]*)
+        echo "konsole-macos: KONSOLE_MACOS_STARTUP_TICKS must be a plain decimal integer, got '$_ticks'" >&2
+        exit 5
+        ;;
+esac
+_ticks=$(( 10#$_ticks ))
 while [ ! -s "$PIDFILE" ]; do
     if [ "$_waited" -ge "$_ticks" ]; then
         echo "konsole-macos: launched $TERM_APP but the session never reported a pid within the startup budget" >&2

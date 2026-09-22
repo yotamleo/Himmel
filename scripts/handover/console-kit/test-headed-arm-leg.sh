@@ -1814,6 +1814,27 @@ contains "32c non-Darwin: the wrapper still appends its other, non-spacey vars" 
 contains "32c non-Darwin: a stderr warning explains the value was left to inheritance" "$out32c" "leaving it to plain-export inheritance"
 contains "32c non-Darwin: the warning names the platform" "$out32c" "harmless on Linux"
 
+# 33. HIMMEL-2534 (#1122 CR fix): HIMMEL_CONSOLE_NAME (HIMMEL-3435) is a
+# leg-process var too - #1121 routed a leg's merge-block alert to the owning
+# console's inbox via this env var, and on macOS a plain `export` never
+# crosses `open -a`'s fresh-environment boundary any more than the other
+# leg-process vars above do. A naive main-merge resolution that keeps BOTH
+# sides (HIMMEL_CONSOLE_LEG via leg_propagate_env, HIMMEL_CONSOLE_NAME via a
+# bare export) passes every other case in this file - only these two rows
+# distinguish it, by asserting the token reaches launcher-env=, not just the
+# --dry-run report string cases 3-6/HIMMEL-3435 above already cover.
+
+# 33a. --console <name>: the flag-sourced name reaches launcher-env=.
+out33a="$(bash "$SCRIPT" --dry-run --console opsdesk --profile leg-impl HIMMEL-9999-leg-33a some/doc.md /tmp/nosig 99999999999 "$tmp/leg33a.log" claude-sonnet-5 2>&1)"
+lenv33a="$(printf '%s\n' "$out33a" | grep '^headed-arm-leg: lane=')"
+contains "33a launcher-env carries HIMMEL_CONSOLE_NAME=opsdesk (--console)" "$lenv33a" "HIMMEL_CONSOLE_NAME=opsdesk"
+
+# 33b. Inherited (no --console): the launching shell's own HIMMEL_CONSOLE_NAME
+# reaches launcher-env= the same way.
+out33b="$(HIMMEL_CONSOLE_NAME=ambient-console bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg-33b some/doc.md /tmp/nosig 99999999999 "$tmp/leg33b.log" claude-sonnet-5 2>&1)"
+lenv33b="$(printf '%s\n' "$out33b" | grep '^headed-arm-leg: lane=')"
+contains "33b launcher-env carries HIMMEL_CONSOLE_NAME=ambient-console (inherited)" "$lenv33b" "HIMMEL_CONSOLE_NAME=ambient-console"
+
 echo "---"
 if [ "$fails" -eq 0 ]; then
   echo "PASS - test-headed-arm-leg.sh"
