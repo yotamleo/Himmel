@@ -316,6 +316,18 @@ run_case py-t13b-ok-marker-genuine PASS src/start.py \
 run_case py-t13b-ok-marker-quoted FAIL src/start.py \
     "s = '# t13b-ok: a real eight char reason'; daemon.start()"
 
+# Real markers already on main (verbatim, HIMMEL-3446 console re-verify: base
+# 08de71f5 predates #1087/58733898 and #1083/a358da5d, which added these).
+# Pinned so the tightened rules keep accepting the genuine shapes that shipped
+# on other legs' branches, not just the synthetic fixture lines above.
+run_case real-1083-test-fleet-daemon-string PASS scripts/handover/console-kit/test-fleet.sh \
+    "    '- 10:27 LIVE — background leg via the daemon'  # t13b-ok: literal fixture text for a mocked leg row, not real automation"
+# shellcheck disable=SC2016  # single-quoted on purpose: literal fixture text, real HIMMEL-3403 argv-match line
+run_case real-1087-argv-match-marker PASS scripts/handover/headed-arm.sh \
+    '        [ "${prev2##*/}" = claude ] && [ "$prev1" = daemon ] && [ "$arg" = run ] && return 0  # t13b-ok: read-only argv match of the Claude Code service, starts nothing'
+run_case real-1087-pgrep-marker PASS scripts/handover/headed-arm.sh \
+    "    pids=\"\$(\"\$PGREP\" -f '[c]laude daemon run' 2>/dev/null)\"  # t13b-ok: read-only pgrep lookup of the Claude Code service, starts nothing"
+
 if [ "$failures" -ne 0 ]; then
     echo "FAIL: $failures of $cases case(s) failed"
     exit 1
