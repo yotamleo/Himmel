@@ -94,8 +94,13 @@ else
     # RETASK-nonce allowlist regex stripped out, so it still carries
     # useDefault + every OTHER allowlist entry — isolating just the one
     # line this ticket adds.
+    # Match on 'N[0-9]+' alone (not the full '...N[0-9]+-[0-9a-f]' shape):
+    # HIMMEL-3471 inserted an optional '[a-z]?' between the leg digits and
+    # the trailing hyphen, so the longer literal stopped matching that line
+    # and silently left it in the "baseline", making the RED control below
+    # vacuous. 'N[0-9]+' is still unique to this one regex line.
     BASELINE_CFG="$WORK/gitleaks-baseline.toml"
-    grep -vF 'N[0-9]+-[0-9a-f]' "$TMPL/.gitleaks.toml" > "$BASELINE_CFG"
+    grep -vF 'N[0-9]+' "$TMPL/.gitleaks.toml" > "$BASELINE_CFG"
 
     # run_gitleaks <source> <config> <report-path>; sets GITLEAKS_RC to
     # gitleaks' own exit code (0 clean, 1 leak found, anything else a
