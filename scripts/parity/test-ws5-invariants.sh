@@ -213,11 +213,9 @@ VENDORED_LIST="$(mktemp "${TMPDIR:-/tmp}/ws5-vendored-list.XXXXXX")" || { echo "
 REMOVED="$(mktemp "${TMPDIR:-/tmp}/ws5-removed.XXXXXX")" || { echo "test-ws5-invariants.sh: mktemp failed" >&2; exit 2; }
 # One line per $SHIPPED line, in lockstep: "md" for a *.md file, "sh" for a
 # *.sh/*.bash file, "code" otherwise. T13(b)'s daemon class reads md vs.
-# not-md (HIMMEL-3233); its read-only-lookup carve-out reads "sh" specifically
-# (HIMMEL-3432 adversarial-review round: a lookup-shaped line in a non-shell
-# file, e.g. a Python/TS identifier named pgrep, is never a real pgrep(1)
-# invocation, so the carve-out cannot apply there). $SHIPPED itself stays bare
-# lines so T14(b)'s grep cannot match a path.
+# not-md only (HIMMEL-3233) -- "sh" and "code" are treated identically since
+# HIMMEL-3432 removed the lookup carve-out that used to read "sh" specifically.
+# $SHIPPED itself stays bare lines so T14(b)'s grep cannot match a path.
 SHIPPED_KIND="$(mktemp "${TMPDIR:-/tmp}/ws5-shipped-kind.XXXXXX")" || { echo "test-ws5-invariants.sh: mktemp failed" >&2; exit 2; }
 trap 'rm -f "$SHIPPED" "$VENDORED_LIST" "$REMOVED" "$SHIPPED_KIND"' EXIT
 while IFS= read -r f; do
