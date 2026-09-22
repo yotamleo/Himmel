@@ -106,20 +106,23 @@ fi
 
 # --- drift check: an unmapped invocation must be CAUGHT, not waved through
 # (a --runner-check that always exits 0 would also pass the case above)
-fixture_dir=$(mktemp -d)
-mkdir -p "$fixture_dir/.github/workflows"
-cat >"$fixture_dir/.github/workflows/ci.yml" <<'EOF'
+if fixture_dir=$(mktemp -d "${TMPDIR:-/tmp}/impacted-suites-fixture.XXXXXX"); then
+    mkdir -p "$fixture_dir/.github/workflows"
+    cat >"$fixture_dir/.github/workflows/ci.yml" <<'EOF'
 jobs:
   test:
     steps:
       - run: node --test scripts/fleet-control/tests/foo.test.mjs
 EOF
-out=$(cd "$fixture_dir" && bash "$IS" --runner-check 2>&1 >/dev/null); rc=$?
-rm -rf "$fixture_dir"
-if [ "$rc" -ne 0 ] && [ -n "$out" ]; then
-    pass "--runner-check: an unmapped invocation is caught, not waved through"
+    out=$(cd "$fixture_dir" && bash "$IS" --runner-check 2>&1 >/dev/null); rc=$?
+    rm -rf "$fixture_dir"
+    if [ "$rc" -ne 0 ] && [ -n "$out" ]; then
+        pass "--runner-check: an unmapped invocation is caught, not waved through"
+    else
+        fail "--runner-check: unmapped invocation should refuse non-zero with a message (rc=$rc out='$out')"
+    fi
 else
-    fail "--runner-check: unmapped invocation should refuse non-zero with a message (rc=$rc out='$out')"
+    fail "--runner-check: an unmapped invocation is caught, not waved through (mktemp failed)"
 fi
 
 echo ""
