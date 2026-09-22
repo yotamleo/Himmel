@@ -501,7 +501,17 @@ classify() {
                 # leaving its own script operand uninspected (codex-1, round 3
                 # of the HIMMEL-3433 review).
                 */bash|*/sh|*/zsh|*/dash|*/ksh|*/mksh|*/busybox|*/toybox) skip_opts=1; runs=1; chained=1; lastw=$x ;;
-                -c)
+                -C*|-D*|--chdir*|--directory*) [ "$skip_opts" -eq 1 ] || break; chdir=1 ;;
+                # Matched only the exact token -c; a combined short-flag
+                # cluster (bash -lc '...') fell to the generic -*|[0-9]*
+                # catch-all below, which never sets dashc, so the nested
+                # command string was checked only as an ordinary word
+                # (codex-1, round 5 of the HIMMEL-3433 review). Widened to
+                # any dash-flag word containing c rather than adding a
+                # second case - checked after the chdir flags above so
+                # --chdir/--directory (which also contain a c) keep their
+                # own handling.
+                -*c*)
                     if [ "$skip_opts" -eq 1 ]; then
                         case "$lastw" in
                             bash|sh|zsh|dash|ksh|mksh|busybox|toybox|*/bash|*/sh|*/zsh|*/dash|*/ksh|*/mksh|*/busybox|*/toybox) dashc=1 ;;
@@ -510,7 +520,6 @@ classify() {
                         break
                     fi
                     ;;
-                -C*|-D*|--chdir*|--directory*) [ "$skip_opts" -eq 1 ] || break; chdir=1 ;;
                 -*|[0-9]*) [ "$skip_opts" -eq 1 ] || break ;;
                 *) break ;;
             esac

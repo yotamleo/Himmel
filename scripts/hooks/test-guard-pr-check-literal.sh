@@ -371,6 +371,29 @@ run "bash -c running the guarded script through -help args -> deny" 2 \
     "$(payload 'bash -c '"'"'bash scripts/cr/pr-check-context.sh --help'"'"'' "$WT")" "$HR"
 run "bash -c running an unguarded command -> no-op" 0 \
     "$(payload 'bash -c '"'"'echo hi'"'"'' "$WT")" "$HR"
+# The -c) case matched only the exact standalone token -c; any other
+# dash-flag word - including a combined short-flag cluster like -lc - fell
+# to the generic -*|[0-9]* catch-all, which never sets dashc, so the nested
+# command string was checked only as an ordinary word and its trailing
+# args defeated the exact-target match, same failure shape as the bare -c
+# case above (codex-1, round 5 of the HIMMEL-3433 review; confirmed a
+# regression against origin/main, which denies this shape).
+run "bash -lc combined short flags still recurse into the nested command -> deny" 2 \
+    "$(payload 'bash -lc '"'"'bash scripts/cr/pr-check-context.sh --help'"'"'' "$WT")" "$HR"
+run "bash -lc combined short flags running an unguarded command -> no-op" 0 \
+    "$(payload 'bash -lc '"'"'echo hi'"'"'' "$WT")" "$HR"
+# Known pre-existing gap, NOT introduced by this branch (confirmed rc=0
+# against origin/main's own copy of this hook too) - tokenize() treats &
+# as an unconditional statement separator even inside an FD-duplication
+# redirect (2>&1), so the redirect's own dup-target digit surfaces as a
+# spurious standalone command word and the guarded invocation that follows
+# is never reached (codex-2, round 5 of the HIMMEL-3433 review). Deferred
+# to HIMMEL-3458 per console ruling (AE, 2026-09-22) rather than fixed
+# here, since round 5 was this branch's last permitted round. This row
+# documents the CURRENT (gap) behavior so HIMMEL-3458's fix has a RED to
+# flip GREEN - it is not an assertion that the behavior is correct.
+run "KNOWN GAP (HIMMEL-3458): 2>&1 before a guarded run is not caught -> no-op" 0 \
+    "$(payload '2>&1 bash scripts/cr/pr-check-context.sh' "$WT")" "$HR"
 # single_quote_mask() had no escape handling: a backslash-escaped double
 # quote inside a double-quoted span closed the quote one character early, so
 # the apostrophe right after it read as a REAL opening single quote and
