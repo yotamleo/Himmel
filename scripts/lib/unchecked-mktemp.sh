@@ -279,11 +279,24 @@ unchecked_mktemp_scan() {
             }
 
             # An assignment capturing mktemp through command substitution.
-            # N333 item 3: a token boundary (non-identifier char, or end of
-            # string) is required right after "mktemp", so a command that
-            # merely starts with those letters (mktemp_metadata,
-            # mktemp_wrapper) is not mistaken for the real command.
-            if (scan_s !~ /^[ \t]*((local|export|typeset|readonly|declare)[ \t]+(-[a-zA-Z]+[ \t]+)*)?[A-Za-z_][A-Za-z0-9_]*="?\$\([ \t]*mktemp([^A-Za-z0-9_]|$)/)
+            # N333 item 3: a token boundary is required right after
+            # "mktemp", so a command that merely starts with those letters
+            # (mktemp_metadata, mktemp_wrapper) is not mistaken for the real
+            # command. codex-1 (round 1 /pr-check on this branch): a
+            # non-identifier boundary is not enough -- "-" and "." are
+            # non-identifier but still valid command-name characters, so
+            # `mktemp-wrapper` / `mktemp.sh` slipped past it too. The
+            # boundary is now an actual shell word terminator: whitespace,
+            # a closing paren (bare `$(mktemp)`), a double quote, a
+            # backtick, or a command separator -- never a character a
+            # command name can itself contain. (A literal single-quote char
+            # is deliberately left out of this class: it cannot appear in
+            # this awk program source at all without prematurely closing the
+            # single-quoted shell string this whole predicate lives inside
+            # -- see the file header -- and every tested usage already puts
+            # whitespace before a quoted template arg, so whitespace covers
+            # it.)
+            if (scan_s !~ /^[ \t]*((local|export|typeset|readonly|declare)[ \t]+(-[a-zA-Z]+[ \t]+)*)?[A-Za-z_][A-Za-z0-9_]*="?\$\([ \t]*mktemp([ \t)"`;|&]|$)/)
                 continue
 
             # A declaration builtin (local/export/declare/typeset/readonly)

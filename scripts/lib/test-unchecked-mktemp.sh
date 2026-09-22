@@ -386,6 +386,19 @@ f="$TMPDIR_ROOT/t30d.sh"
 printf 'T=$(mktemp)\n' > "$f"
 assert_eq "T30d control: bare mktemp() still matched -> offending (N333 item 3)" "1" "$(scan_lines "$f")"
 
+# T30e/T30f -- codex-1 (round 1 /pr-check finding on this same branch): a
+# non-identifier boundary is not enough -- "-" and "." are non-identifier
+# characters that are still valid, common command-name characters, so
+# `mktemp-wrapper` / `mktemp.sh` are distinct commands the boundary must
+# also exclude.
+f="$TMPDIR_ROOT/t30e.sh"
+printf 'T=$(mktemp-wrapper -d)\n' > "$f"
+assert_eq "T30e mktemp-wrapper is not mktemp -> ok (N333 item 3, codex-1)" "0" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t30f.sh"
+printf 'T=$(mktemp.sh -d)\n' > "$f"
+assert_eq "T30f mktemp.sh is not mktemp -> ok (N333 item 3, codex-1)" "0" "$(scan_lines "$f")"
+
 # T21 -- self-check: the predicate must NOT flag its own repo files. Locks
 # the codex-1 self-blocking regression closed for good -- if this ever comes
 # back it fails loudly here instead of silently refusing every commit that
