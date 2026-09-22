@@ -408,6 +408,22 @@ else
         # spells the exact marker, nothing later on the line can be a
         # different "start" -- it is all one comment, or the line has none.
         # Returns the 1-based index of the marker text, or 0 if none.
+        # ponytail: two known quote-desync gaps, deferred to HIMMEL-3455 (not
+        # fixed here -- each needs a harder tokenizer than this minimal
+        # scan). (1) JS regex literals are not recognized: an unescaped
+        # double quote inside a slash-delimited regex opens phantom
+        # double-quote state, and the NEXT real double quote -- e.g. a real
+        # strings opening quote -- closes it instead, desyncing the rest of
+        # the scan, so a marker inside that real string reads as genuine.
+        # (2) bash dollar-single-quote ANSI-C strings allow a backslash
+        # before a single quote that does NOT terminate the string, but this
+        # scanners single-quote state has no backslash-awareness and closes
+        # on the first single quote regardless, so a marker just past that
+        # escaped quote reads as genuine. Known-gap rows
+        # sh-t13b-known-gap-js-regex-desync-codex1 and
+        # sh-t13b-known-gap-ansi-c-escape-desync-codex2 in
+        # test-t13b-daemon-prose.sh carry the exact repro lines and pin
+        # todays (wrong) behaviour so a future fix flips them visibly.
         function find_marker_start(t, kind,    n, i, ch, two, q, depth, blk, cand) {
             n = length(t)
             q = ""; depth = 0; blk = 0; i = 1

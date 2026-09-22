@@ -328,6 +328,15 @@ run_case real-1087-argv-match-marker PASS scripts/handover/headed-arm.sh \
 run_case real-1087-pgrep-marker PASS scripts/handover/headed-arm.sh \
     "    pids=\"\$(\"\$PGREP\" -f '[c]laude daemon run' 2>/dev/null)\"  # t13b-ok: read-only pgrep lookup of the Claude Code service, starts nothing"
 
+# KNOWN-GAP (HIMMEL-3455, deferred out of HIMMEL-3446 per console ruling):
+# these two pin TODAY's wrong behaviour, not the desired one -- a future fix
+# should flip both to FAIL and this comment + the ponytail in
+# find_marker_start() should be removed then.
+run_case sh-t13b-known-gap-ansi-c-escape-desync-codex2 PASS scripts/start.sh \
+    "printf '%s' \$'it\' # t13b-ok: genuine reason'; nohup claude daemon run &"
+run_case sh-t13b-known-gap-js-regex-desync-codex1 PASS src/x.ts \
+    'const r = /"/; const s = "// t13b-ok: genuine reason"; daemon.start()'
+
 if [ "$failures" -ne 0 ]; then
     echo "FAIL: $failures of $cases case(s) failed"
     exit 1
