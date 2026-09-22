@@ -365,7 +365,10 @@ else
     #     on main 2026-09-19 they hit 31 lines, mostly hook command-position
     #     case lists (`command|exec|nohup)`) and bounded detach helpers
     #     (scripts/lib/detach.sh); `nohup ... &` hits 7 lines in 4 files,
-    #     each a real detached process.
+    #     each a real detached process;
+    #   - the exact command `systemctl [--user] daemon-reload` is carved out
+    #     (HIMMEL-3414, rule at the gsub below); it reloads unit files and
+    #     starts nothing. Known gap, unchanged: `systemctl start` is no shape.
     # ponytail: a heredoc body or multi-line string holding `#` at line start
     # reads as a comment, and a C-preprocessor `#define` line likewise
     # (himmel ships no C).
@@ -386,6 +389,18 @@ else
                 if (substr(code, 1, 2) == "/*") code = trim(substr(code, index(code, "*/") + 2))
                 else code = trim(substr(code, index(code, "-->") + 3))
             }
+            # HIMMEL-3414: `systemctl [--user] daemon-reload` reloads systemd unit
+            # files and starts nothing; it is the only place the word `daemon`
+            # is a verb argument rather than a process. Strip that EXACT token
+            # (twice: a match eats its trailing `;`, so adjacent tokens need a
+            # second pass) and let the rest of the line meet the same rules, so
+            # `... && nohup ... &` or `... --daemon` beside it still fails.
+            # It must END the command (end of line, `;` `&` `|` `)` `>` `#`,
+            # or an fd redirect): `daemon-reload --now x`, `daemon-reloader`,
+            # `daemon-reexec` and any other verb keep the bare word `daemon`.
+            gsub(/(^|[^a-z0-9_-])systemctl[ \t]+(--user[ \t]+)?daemon-reload[ \t]*($|[;&|)>#]|[0-9]>)/, " ", code)
+            gsub(/(^|[^a-z0-9_-])systemctl[ \t]+(--user[ \t]+)?daemon-reload[ \t]*($|[;&|)>#]|[0-9]>)/, " ", code)
+            code = trim(code)
             if (!hit && kind == "code" && code != "" && code !~ /^(#|\/\/|\/\*|\*([ \t]|$)|<!--)/ &&
                 code ~ /daemon|(^|[^a-z0-9_-])nohup[ \t].*(^|[^&<>])&([ \t]*($|[);"\047])|[ \t]+[^&> \t])|systemctl[^|;&]*[ \t]enable([ \t]|$)|launchctl[ \t]+(load|bootstrap)([ \t]|$)/)
                 hit = 1
