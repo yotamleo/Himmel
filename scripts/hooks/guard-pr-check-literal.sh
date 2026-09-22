@@ -296,7 +296,14 @@ tokenize() {
                     if [ "$pending_redirect" -eq 1 ]; then
                         pending_redirect=0
                     else
-                        line+="$word"$'\x01'
+                        # A bare digit word directly against < or > (no space)
+                        # is the redirect's own FD prefix (2>...), not a
+                        # command word - dropping it here, not flushing it to
+                        # line, stops "2" standing in as the command
+                        # (codex-2, round 3 of the HIMMEL-3433 review).
+                        case "$word" in
+                            *[!0-9]*) line+="$word"$'\x01' ;;
+                        esac
                     fi
                     word=""
                 fi
@@ -340,6 +347,43 @@ tokenize() {
 # "pr-check" in sight) is not seen. The branch can run arbitrary code through any other
 # allow-listed scripts/ path anyway; this hook closes the two named scripts.
 #
+# Blanks only SINGLE-quoted spans (double-quoted and unquoted text pass
+# through unchanged, quote delimiters included there). A $( ) or `...` that
+# starts inside real single quotes is inert - the shell never expands it -
+# unlike one inside double quotes, which still executes; extract_substitutions
+# uses this to tell the two apart (codex-3, round 3 of the HIMMEL-3433
+# review: `echo '$(bash scripts/cr/pr-check-context.sh)'` was extracted and
+# denied as if it ran, though the single quotes make it inert text).
+# ponytail: a backslash-escaped `"` inside a double-quoted span can close the
+# double-quote state one character early, same as unquoted_mask's own limit
+# above - the failure direction only ever widens what gets masked as
+# single-quoted, never narrows it, so it cannot turn a real substitution
+# invisible.
+single_quote_mask() {
+    local s=$1
+    local sqout="" i=0 n=${#s} c q=""
+    while [ "$i" -lt "$n" ]; do
+        c=${s:$i:1}
+        if [ "$q" = "'" ]; then
+            [ "$c" = "'" ] && q=""
+            sqout+=" "
+        elif [ "$q" = '"' ]; then
+            [ "$c" = '"' ] && q=""
+            sqout+="$c"
+        elif [ "$c" = "'" ]; then
+            q="'"
+            sqout+=" "
+        elif [ "$c" = '"' ]; then
+            q='"'
+            sqout+="$c"
+        else
+            sqout+="$c"
+        fi
+        i=$((i + 1))
+    done
+    printf '%s' "$sqout"
+}
+
 # Extracts the inner text of every $(...) and `...` substitution in the raw
 # command, quoted or not, as its own line. tokenize()'s quote handling reads
 # every character of a double-quoted word literally - including a $( ) the
@@ -358,10 +402,13 @@ tokenize() {
 # it terminates on any command line the shell itself could parse.
 extract_substitutions() {
     local text=$1
-    local acc="" i=0 n=${#text} c depth inner
+    local mask
+    mask=$(single_quote_mask "$text")
+    local acc="" i=0 n=${#text} c mc depth inner
     while [ "$i" -lt "$n" ]; do
         c=${text:$i:1}
-        if [ "$c" = '`' ]; then
+        mc=${mask:$i:1}
+        if [ "$c" = '`' ] && [ "$mc" = '`' ]; then
             i=$((i + 1))
             inner=""
             while [ "$i" -lt "$n" ] && [ "${text:$i:1}" != '`' ]; do
@@ -369,7 +416,7 @@ extract_substitutions() {
                 i=$((i + 1))
             done
             acc+="$inner"$'\n'"$(extract_substitutions "$inner")"$'\n'
-        elif [ "$c" = '$' ] && [ "${text:$((i + 1)):1}" = '(' ]; then
+        elif [ "$c" = '$' ] && [ "$mc" = '$' ] && [ "${text:$((i + 1)):1}" = '(' ]; then
             i=$((i + 2))
             depth=1
             inner=""
@@ -408,6 +455,13 @@ while IFS= read -r line; do
             if|then|else|elif|do|while|until|'!'|'{'|'}') skip_opts=1 ;;
             time|command|builtin|nohup|nice|stdbuf|sudo|env|exec|timeout|xargs) skip_opts=1; runs=1; wrapped=1; chained=1; lastw=$x ;;
             bash|sh|zsh|dash|ksh|mksh|busybox|toybox|source|.|eval) skip_opts=1; runs=1; chained=1; lastw=$x ;;
+            # An interpreter run by its absolute/relative path (/bin/bash),
+            # not its bare name, chains the same way - the case patterns
+            # above only match the exact bare word, so a path form fell to
+            # the default break and was classified as an ordinary program,
+            # leaving its own script operand uninspected (codex-1, round 3
+            # of the HIMMEL-3433 review).
+            */bash|*/sh|*/zsh|*/dash|*/ksh|*/mksh|*/busybox|*/toybox) skip_opts=1; runs=1; chained=1; lastw=$x ;;
             -C*|-D*|--chdir*|--directory*) [ "$skip_opts" -eq 1 ] || break; chdir=1 ;;
             -*|[0-9]*) [ "$skip_opts" -eq 1 ] || break ;;
             *) break ;;

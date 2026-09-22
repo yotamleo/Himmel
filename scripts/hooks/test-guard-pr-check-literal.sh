@@ -340,6 +340,28 @@ run "an unquoted substitution nesting a quoted one running the guarded script ->
 # shellcheck disable=SC2016 # command text, verbatim
 run "the same nested shape running an unguarded command -> no-op" 0 \
     "$(payload 'echo $(echo "$(date)")' "$WT")" "$HR"
+# The case-pattern interpreter list only matched a bare interpreter name; a
+# path form (/bin/bash) fell through to the default `break` and was
+# classified as an ordinary program, leaving its own script operand
+# uninspected (codex-1, round 3 of the HIMMEL-3433 review).
+run "an absolute-path interpreter running the guarded script -> deny" 2 \
+    "$(payload '/bin/bash scripts/cr/pr-check-context.sh' "$WT")" "$HR"
+run "an absolute-path interpreter running an unguarded command -> no-op" 0 \
+    "$(payload '/bin/bash -c date' "$WT")" "$HR"
+# A bare digit directly against < or > (no space) is the redirect's own FD
+# prefix, not a command word; tokenize() flushed it as a real word before
+# reading the operator, so the guarded run one word later was skipped
+# entirely (codex-2, round 3 of the HIMMEL-3433 review).
+run "a leading FD redirect before the guarded run -> deny" 2 \
+    "$(payload '2>/dev/null bash scripts/cr/pr-check-context.sh' "$WT")" "$HR"
+run "a real numeric argument before an unrelated redirect -> no-op" 0 \
+    "$(payload 'echo 2 > /dev/null' "$WT")" "$HR"
+# shellcheck disable=SC2016 # command text, verbatim
+# extract_substitutions() extracted a $( ) span even when it sits entirely
+# inside single quotes, where the shell never expands it - an over-denial of
+# genuinely inert text (codex-3, round 3 of the HIMMEL-3433 review).
+run "a single-quoted mention of the guarded run stays inert -> no-op" 0 \
+    "$(payload 'echo '"'"'$(bash scripts/cr/pr-check-context.sh)'"'"'' "$WT")" "$HR"
 run "the anchored fence on an edited branch -> no-op" 0 "$(payload "$FENCE_TEXT" "$WT")" "$HR"
 run "HIMMEL_REPO re-pointed before the fence -> deny" 2 \
     "$(payload "export HIMMEL_REPO=.; $FENCE_TEXT" "$WT")" "$HR"
