@@ -1691,6 +1691,182 @@ check "$?" "0" "T35e rc (relative entry, lib.sh-only diff)"
 check "$(get_kv "$out35e" anchor_lane)" "himmel" "T35e anchor_lane=himmel - HIMMEL_REPO still names the anchor"
 grep -q 'handing off to the anchor' "$tmp/t35e.err" || { echo "FAIL: T35e the branch copy did not hand off to the anchor"; fail=1; }
 
+# --- T36-T38: HIMMEL-3382 - one diff definition + the CodeRabbit git-env-unset
+# fix. Reuses anchor13/wt13/ledger13 (built above for T13-T17) rather than a
+# fresh fake-himmel each time, same posture as those tests.
+
+# T36 (fixture a). An UNCOMMITTED scripts/cr/ edit - never `git add`ed or
+# committed - must still be counted and delegated. Before HIMMEL-3382 the
+# diff definition was committed-history-only (merge-base..HEAD), so this
+# exact case was invisible: the working tree carries the change but no commit
+# does, and cr_diff_state stayed "no".
+wt36="$tmp/fake-himmel-wt-uncommitted"
+(cd "$anchor13" && git worktree add -q -b t36-uncommitted "$wt36" main) || { echo "FAIL: T36 could not add worktree"; fail=1; }
+(
+  cd "$wt36" || exit 1
+  printf '# t36 uncommitted touch\n' >> scripts/cr/critic-panel.sh
+)
+rows_before36="$(grep -c '"kind":"delegation"' "$ledger13" 2>/dev/null || echo 0)"
+out36="$(cd "$wt36" && HIMMEL_REPO="$anchor13" bash "$anchor13/scripts/cr/pr-check-context.sh")"
+rc36=$?
+rows_after36="$(grep -c '"kind":"delegation"' "$ledger13" 2>/dev/null || echo 0)"
+check "$rc36" "0" "T36 rc"
+check "$(get_kv "$out36" anchor_lane)" "himmel" "T36 anchor_lane=himmel"
+check "$(get_kv "$out36" delegated)" "yes" "T36 delegated=yes (HIMMEL-3382 - an UNCOMMITTED scripts/cr/ edit now counts, not just committed history)"
+check "$(get_kv "$out36" cr_diff_files)" "scripts/cr/critic-panel.sh" "T36 cr_diff_files names the uncommitted file"
+check "$((rows_after36 - rows_before36))" "1" "T36 exactly one new delegation ledger row for the uncommitted edit"
+check "$(cd "$wt36" && git diff --name-only HEAD -- scripts/cr/critic-panel.sh)" "scripts/cr/critic-panel.sh" "T36 the edit is still uncommitted after the run (this script never commits on the caller's behalf)"
+
+# T36 RED: a mutant that discards the working-tree diff leg (the pre-3382
+# committed-only shape) must NOT see this uncommitted edit at all - zero
+# delegation, zero new ledger rows - proving T36's assertions above actually
+# depend on that leg, not some other code path.
+mutant36="$tmp/pr-check-context.mutant-t36.sh"
+# shellcheck disable=SC2016  # literal match against pr-check-context.sh's own
+# source text.
+literal_replace "$SCRIPT" "$mutant36" \
+  '            if worktree_files=$(git diff --name-only HEAD -- scripts/cr/ scripts/guardrails/lib.sh 2>/dev/null); then' \
+  '            if worktree_files=""; then'
+rc_m36=$?
+if [ "$rc_m36" -ne 0 ]; then
+  echo "FAIL: T36 could not build the committed-only mutant - $(cat "$tmp/literal_replace.err" 2>/dev/null)"
+  fail=1
+fi
+cp "$mutant36" "$anchor13/scripts/cr/pr-check-context.sh"
+rows_before36r="$(grep -c '"kind":"delegation"' "$ledger13" 2>/dev/null || echo 0)"
+red_control_run --cwd "$wt36" \
+  --env HIMMEL_REPO="$anchor13" \
+  -- bash "$anchor13/scripts/cr/pr-check-context.sh"
+rows_after36r="$(grep -c '"kind":"delegation"' "$ledger13" 2>/dev/null || echo 0)"
+red_control_assert --label "T36" \
+  --observed     "delegated=$(get_kv "$RED_CONTROL_OUT" delegated) rows_added=$((rows_after36r - rows_before36r))" \
+  --expect-wrong "delegated=no rows_added=0" \
+  --correct      "delegated=yes rows_added=1" \
+  --note "HIMMEL-3382 - without the worktree-diff leg, an UNCOMMITTED scripts/cr/ edit is invisible to cr_diff_state, so no delegation row is ever written (the exact pre-fix gap)" \
+  || fail=1
+cp "$SCRIPT" "$anchor13/scripts/cr/pr-check-context.sh"
+
+# T37 (fixture b). The base branch (main) moving AHEAD with its own
+# scripts/cr/ change, after this branch already forked from it, must NOT be
+# counted - the diff is merge-base-scoped, not base-tip-scoped, so a change
+# this branch never crossed stays invisible to it.
+wt37="$tmp/fake-himmel-wt-b-diverge"
+(cd "$anchor13" && git worktree add -q -b t37-diverge "$wt37" main) || { echo "FAIL: T37 could not add worktree"; fail=1; }
+(
+  cd "$wt37" || exit 1
+  printf 'unrelated t37\n' > README.md
+  git add -A
+  git commit -q -m "t37 unrelated commit"
+)
+(
+  cd "$anchor13" || exit 1
+  printf '# main-side touch, t37 never saw this\n' >> scripts/cr/critic-panel.sh
+  git add -A
+  git commit -q -m "main-side scripts/cr touch (t37 fixture)"
+)
+rows_before37="$(grep -c '"kind":"delegation"' "$ledger13" 2>/dev/null || echo 0)"
+out37="$(cd "$wt37" && HIMMEL_REPO="$anchor13" bash "$anchor13/scripts/cr/pr-check-context.sh")"
+rc37=$?
+rows_after37="$(grep -c '"kind":"delegation"' "$ledger13" 2>/dev/null || echo 0)"
+check "$rc37" "0" "T37 rc"
+check "$(get_kv "$out37" delegated)" "no" "T37 delegated=no (HIMMEL-3382 - main's later scripts/cr/ commit, which this branch never touched, must NOT be counted)"
+check "$(get_kv "$out37" cr_diff_files)" "" "T37 cr_diff_files empty"
+check "$((rows_after37 - rows_before37))" "0" "T37 no new delegation ledger row"
+
+# T37 RED: a mutant that diffs straight against the base branch's current TIP
+# instead of the merge-base wrongly counts main's later, unrelated scripts/cr/
+# commit - proving T37's assertions above actually depend on merge-base
+# scoping, not some other code path.
+mutant37="$tmp/pr-check-context.mutant-t37.sh"
+# shellcheck disable=SC2016  # literal match against pr-check-context.sh's own
+# source text.
+literal_replace "$SCRIPT" "$mutant37" \
+  '    if mb=$(git merge-base HEAD "$base" 2>/dev/null); then' \
+  '    if mb="$base" 2>/dev/null; then'
+rc_m37=$?
+if [ "$rc_m37" -ne 0 ]; then
+  echo "FAIL: T37 could not build the no-merge-base mutant - $(cat "$tmp/literal_replace.err" 2>/dev/null)"
+  fail=1
+fi
+cp "$mutant37" "$anchor13/scripts/cr/pr-check-context.sh"
+rows_before37r="$(grep -c '"kind":"delegation"' "$ledger13" 2>/dev/null || echo 0)"
+red_control_run --cwd "$wt37" \
+  --env HIMMEL_REPO="$anchor13" \
+  -- bash "$anchor13/scripts/cr/pr-check-context.sh"
+rows_after37r="$(grep -c '"kind":"delegation"' "$ledger13" 2>/dev/null || echo 0)"
+red_control_assert --label "T37" \
+  --observed     "delegated=$(get_kv "$RED_CONTROL_OUT" delegated) rows_added=$((rows_after37r - rows_before37r))" \
+  --expect-wrong "delegated=yes rows_added=1" \
+  --correct      "delegated=no rows_added=0" \
+  --note "HIMMEL-3382 - diffing straight against the base branch's TIP instead of the merge-base wrongly counts a scripts/cr/ change main picked up AFTER this branch forked, minting a spurious delegation row" \
+  || fail=1
+cp "$SCRIPT" "$anchor13/scripts/cr/pr-check-context.sh"
+
+# T38 (fixture d). An inherited GIT_DIR/GIT_WORK_TREE pointed at an unrelated
+# repo must not redirect this script's own git calls (CodeRabbit security
+# item 2) - repo, branch, head, anchor_lane and the delegation decision must
+# all still resolve against the REAL cwd, never the decoy.
+decoy38="$tmp/decoy-repo"
+mkdir -p "$decoy38"
+(
+  cd "$decoy38" || exit 1
+  git init -q -b decoy-main .
+  git config user.email t@t
+  git config user.name t
+  git config commit.gpgsign false
+  git commit -q --allow-empty -m "decoy init"
+)
+wt38="$tmp/fake-himmel-wt-gitdir"
+(cd "$anchor13" && git worktree add -q -b t38-gitdir "$wt38" main) || { echo "FAIL: T38 could not add worktree"; fail=1; }
+(
+  cd "$wt38" || exit 1
+  printf '# t38 touch\n' >> scripts/cr/critic-panel.sh
+  git add -A
+  git commit -q -m "t38 touch scripts/cr"
+)
+head38="$(cd "$wt38" && git rev-parse HEAD)"
+wt38_toplevel="$(cd "$wt38" && git rev-parse --show-toplevel)"
+rows_before38="$(grep -c '"kind":"delegation"' "$ledger13" 2>/dev/null || echo 0)"
+out38="$(cd "$wt38" && HIMMEL_REPO="$anchor13" GIT_DIR="$decoy38/.git" GIT_WORK_TREE="$decoy38" bash "$anchor13/scripts/cr/pr-check-context.sh")"
+rc38=$?
+rows_after38="$(grep -c '"kind":"delegation"' "$ledger13" 2>/dev/null || echo 0)"
+check "$rc38" "0" "T38 rc (an inherited GIT_DIR/GIT_WORK_TREE pointed at another repo must not break this run)"
+check "$(get_kv "$out38" repo)" "$wt38_toplevel" "T38 repo is still the real cwd, not the decoy"
+check "$(get_kv "$out38" branch)" "t38-gitdir" "T38 branch is the real repo's branch, not the decoy's (HIMMEL-3382 CodeRabbit item 2 - the git-env-unset fix)"
+check "$(get_kv "$out38" anchor_lane)" "himmel" "T38 anchor_lane=himmel (lane comparison resolved against the real repo, not the decoy)"
+check "$(get_kv "$out38" delegated)" "yes" "T38 delegated=yes (the real repo's own scripts/cr/ diff was read, not the decoy's)"
+check "$(get_kv "$out38" head)" "$head38" "T38 head matches the real worktree HEAD, not anything from the decoy"
+check "$((rows_after38 - rows_before38))" "1" "T38 exactly one new delegation ledger row (the real repo's diff, not redirected)"
+
+# T38 RED: a mutant that skips the GIT_DIR/GIT_WORK_TREE/... unset lets the
+# decoy hijack every git call - branch/head/anchor_lane/delegated all resolve
+# against the decoy instead of the real repo (observed directly against this
+# exact fixture before encoding this assertion) - proving T38's assertions
+# above actually depend on the unset, not some other code path.
+mutant38="$tmp/pr-check-context.mutant-t38.sh"
+literal_replace "$SCRIPT" "$mutant38" \
+  'unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE \
+    GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX' \
+  ': # T38 mutant - GIT env vars intentionally left inherited'
+rc_m38=$?
+if [ "$rc_m38" -ne 0 ]; then
+  echo "FAIL: T38 could not build the git-env-inherited mutant - $(cat "$tmp/literal_replace.err" 2>/dev/null)"
+  fail=1
+fi
+cp "$mutant38" "$anchor13/scripts/cr/pr-check-context.sh"
+red_control_run --cwd "$wt38" \
+  --env HIMMEL_REPO="$anchor13" \
+  --env GIT_DIR="$decoy38/.git" \
+  --env GIT_WORK_TREE="$decoy38" \
+  -- bash "$anchor13/scripts/cr/pr-check-context.sh"
+red_control_assert --label "T38" \
+  --observed     "rc=$RED_CONTROL_RC branch=$(get_kv "$RED_CONTROL_OUT" branch) anchor_lane=$(get_kv "$RED_CONTROL_OUT" anchor_lane) delegated=$(get_kv "$RED_CONTROL_OUT" delegated)" \
+  --expect-wrong "rc=0 branch=decoy-main anchor_lane=adopter delegated=no" \
+  --correct      "rc=0 branch=t38-gitdir anchor_lane=himmel delegated=yes" \
+  --note "HIMMEL-3382 CodeRabbit item 2 - without clearing inherited GIT_DIR/GIT_WORK_TREE first, every later git call (branch, anchor_lane, the delegation decision) silently targets the decoy repo instead of the real cwd" \
+  || fail=1
+cp "$SCRIPT" "$anchor13/scripts/cr/pr-check-context.sh"
+
 # --- Negative-control check: perturb T3's expectation to confirm the
 # assertion genuinely fails, then restore. This is asserted directly (not by
 # re-running check(), which only logs) so a broken assertion cannot pass
