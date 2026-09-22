@@ -1513,11 +1513,15 @@ _bwimc_git_push() {
         fi
         case "$a" in
             --) ddash=1 ;;
-            --receive-pack|--receive-pack=*|--exec|--exec=*)
-                _bwimc_deny "unresolved-git-target" "$clause" "$dir" "" ;;
-            --repo=*) dests+=("${a#--repo=}") ;;
-            --repo) want=repo ;;
-            -o|--push-option) want=skip ;;
+            --*)
+                if _bwimc_long_is "$a" receive-pack 3 || _bwimc_long_is "$a" exec 2; then
+                    _bwimc_deny "unresolved-git-target" "$clause" "$dir" ""
+                elif _bwimc_long_is "$a" repo 3; then
+                    case "$a" in *=*) dests+=("${a#*=}") ;; *) want=repo ;; esac
+                elif _bwimc_long_is "$a" push-option 2; then
+                    case "$a" in *=*) ;; *) want=skip ;; esac
+                fi ;;
+            -o) want=skip ;;
             -*) ;;
             *) [ "$npos" = 0 ] && dests+=("$a"); npos=$((npos+1)) ;;
         esac
@@ -1545,6 +1549,20 @@ _bwimc_git_push() {
         r=$(_bwimc_resolve_abs "$p" "$dir") || _bwimc_deny "unresolved-git-target" "$d" "$dir" ""
         _bwimc_git_check_path "$r" "push destination $d"
     done
+}
+
+# _bwimc_long_is ARG NAME MIN — rc 0 when ARG is `--<p>` or `--<p>=…` with <p>
+# a prefix of NAME at least MIN long. parse_options takes any unambiguous
+# abbreviation (`--receive-p=`, `--refm`), so a deny list keyed on the full
+# spelling alone is bypassable. An ambiguous prefix makes git itself refuse,
+# so matching it too only over-classifies.
+_bwimc_long_is() {
+    local p="${1#--}"
+    case "$1" in --?*) ;; *) return 1 ;; esac
+    p="${p%%=*}"
+    [ "${#p}" -ge "$3" ] || return 1
+    case "$2" in "$p"*) return 0 ;; esac
+    return 1
 }
 
 # A bare remote NAME — not `.`/`..`, a path or a URL.
@@ -1667,7 +1685,12 @@ _bwimc_git_sub_is_read() {
         fetch)
             for a in "$@"; do
                 case "$a" in
-                    -u|--update-head-ok|--upload-pack|--upload-pack=*|--refmap|--refmap=*) return 1 ;;
+                    -u) return 1 ;;
+                    --*)
+                        _bwimc_long_is "$a" update-head-ok 2 && return 1
+                        _bwimc_long_is "$a" upload-pack 2 && return 1
+                        _bwimc_long_is "$a" refmap 3 && return 1
+                        ;;
                     -*) _bwimc_short_has "$a" u && return 1 ;;
                     *)
                         npos=$((npos+1))
