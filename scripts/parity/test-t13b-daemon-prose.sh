@@ -254,6 +254,8 @@ run_case sh-t13b-ok-no-space-after-colon FAIL scripts/start.sh \
     'nohup claude daemon run &  # t13b-ok:realeightcharreason'
 run_case sh-t13b-ok-double-space-after-hash FAIL scripts/start.sh \
     'nohup claude daemon run &  #  t13b-ok: real eight char reason'
+run_case sh-t13b-ok-double-space-after-colon-ok PASS scripts/start.sh \
+    'nohup claude daemon run &  # t13b-ok:  real eight char reason'
 
 if [ "$failures" -ne 0 ]; then
     echo "FAIL: $failures of $cases case(s) failed"

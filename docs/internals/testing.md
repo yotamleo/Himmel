@@ -262,8 +262,10 @@ The **only** exemption is now a trailing same-line `# t13b-ok: <reason>` (or
 `// t13b-ok: <reason>` for JS/TS), which exempts that one line from T13(b)
 only (not T13(a), not T12/T14/T15) — the general escape hatch so a real
 read-only lookup does not need its own gate PR. It is hardened: the marker
-must open with the exact spacing shown — one space after `#`/`//`, one after
-the colon (`#t13b-ok:`, `#  t13b-ok:` and `# t13b-ok:x` do not exempt) — and
+must open with exactly `# t13b-ok: ` (or `// t13b-ok: `) — one space after
+`#`/`//` and at least one after the colon (`#t13b-ok:`, `#  t13b-ok:` and
+`# t13b-ok:x` do not exempt; extra spaces after the colon are tolerated,
+ending up inside the trimmed reason) — and
 the reason, once trimmed, must be at least 8 characters AND contain a word
 character (`# t13b-ok: short` and `# t13b-ok: --------` both still fail). The
 marker never reaches a different line (same-line only). The match is
