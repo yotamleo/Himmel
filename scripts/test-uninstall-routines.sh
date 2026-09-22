@@ -302,7 +302,7 @@ seed_unit true
 out=$(FAKE_SYSTEMCTL_FAIL_ON=daemon-reload run_uninstall "${BASE_FLAGS[@]}"); rc=$?
 check "B9 unit removed" "$([ -f "$UNIT" ] && echo present || echo gone)" "gone"
 check "B9 nonzero rc" "$([ "$rc" -ne 0 ] && echo nonzero || echo zero)" "nonzero"
-has "B9 names the daemon-reload failure" "daemon-reload" "$out"
+has "B9 names the reload failure" "systemd user manager reload failed" "$out"
 
 echo "==== B6: dry-run changes nothing ===="
 new_case b6

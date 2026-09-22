@@ -1566,8 +1566,8 @@ ledger_teardown_bridge_unit() {
   ledger_apply_unit "$_uj" "[1/8]" || true   # rc 1 = a restore, still a done unit
   [ "${#STEPS_INCOMPLETE[@]}" -gt "$_steps_before" ] && return 0
   if ! run systemctl --user daemon-reload; then
-    echo "  WARN: systemctl --user daemon-reload failed — run it by hand." >&2
-    fail_step "[1/8] telegram bridge unit: could not daemon-reload after removing the unit file"
+    echo "  WARN: systemd user manager reload failed — run it by hand." >&2
+    fail_step "[1/8] telegram bridge unit: could not do the systemd user manager reload after removing the unit file"
   fi
   _regj=$(prov_read_units --kind unit | jq -c 'select(.unit == "telegram-bridge.service")' | head -n 1)
   [ -n "$_regj" ] || return 0
