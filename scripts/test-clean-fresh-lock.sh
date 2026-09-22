@@ -67,6 +67,10 @@ STUB_DIR="$TMP_ROOT/bin"
 mkdir -p "$STUB_DIR"
 cat > "$STUB_DIR/gh" <<'STUB'
 #!/usr/bin/env bash
+# pipefail-ok: this stub has its own shebang and never sets pipefail itself,
+# so each `if echo … | grep -q …` below checks only grep's exit status (the
+# pipeline's last command) — HIMMEL-1430 does not reach a shell that never
+# opted into pipefail.
 args="$*"
 if echo "$args" | grep -q "auth status"; then exit 0; fi
 if echo "$args" | grep -q "repo view"; then echo "owner/repo"; exit 0; fi
