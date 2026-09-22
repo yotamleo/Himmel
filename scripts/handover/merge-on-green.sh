@@ -129,6 +129,12 @@
 #       carries `rule=`. An unsatisfiable rule needs a human admin action. A red
 #       CI (check-ci 1) stays 14 — a failing required check is named in check-ci's
 #       own alert, not here.
+#   19  no anchor (HIMMEL-3475): HIMMEL_REPO is unset, empty, or does not resolve
+#       to a readable scripts/check-ci.sh — refused before any gate runs. This
+#       script runs from a leg's own worktree, so a missing anchor must never
+#       fall back to resolving check-ci.sh (or go-gate.sh / handover-path.sh,
+#       below) as its own sibling — that sibling is the branch under review.
+#       Set HIMMEL_REPO to the primary himmel checkout in the launching shell.
 #
 # Environment:
 #   ARMAUTOMERGE           Must be truthy (1/true/on/yes) to enable at all.
@@ -143,6 +149,11 @@
 #   HANDOVER_DIR           Where handover_root resolves that GO file
 #                          (scripts/lib/handover-path.sh); read only under
 #                          HIMMEL_CONSOLE_LEG.
+#   HIMMEL_REPO            The anchor (HIMMEL-3475): check-ci.sh, go-gate.sh and
+#                          handover-path.sh all resolve from
+#                          $HIMMEL_REPO/scripts/..., never as a sibling of this
+#                          script's own BASH_SOURCE. Required; unset/empty/
+#                          unreadable refuses with exit 19 (see above).
 #
 # Jira auto-transition is opt-in per merge (HIMMEL-3143; --jira-transition
 # above). It used to fire unconditionally on every merge and closed
@@ -155,19 +166,28 @@
 # opt-in. Do not "improve" this back into an open-PR check; make the caller
 # ask for the transition instead. See jira_auto_transition_on_merge below.
 #
-# GATE INTEGRITY (coderabbit): `gh` and `check-ci.sh` are NOT environment-
-# overridable — a contaminated/inherited launching environment must not be able
-# to swap the merge gate or the SHA pin for a permissive stand-in. `gh` is
-# resolved off PATH; `check-ci.sh` is the fixed in-repo sibling. Tests exercise
-# the wrapper against stubs by running a COPY of the script tree with a stub `gh`
-# on PATH — never via a caller-settable override.
+# GATE INTEGRITY (coderabbit; anchoring HIMMEL-3475): `gh`, `check-ci.sh`,
+# go-gate.sh and handover-path.sh are NOT environment-overridable in the
+# widening sense — a contaminated/inherited launching environment must not be
+# able to swap the merge gate for a permissive stand-in. `gh` is resolved off
+# PATH. check-ci.sh / go-gate.sh / handover-path.sh resolve from the
+# HIMMEL_REPO anchor, NEVER as a sibling of this script's own BASH_SOURCE
+# (HIMMEL-3475): this script runs from a leg's own worktree, so a sibling
+# resolution would let the branch under review supply the bytes of its own
+# merge gate. HIMMEL_REPO is not a new seam — it is the anchor the rest of the
+# harness already trusts (himmel-doctor.sh, luna-upgrade-all.sh, ...), set at
+# install time by setup.sh/adopt.sh, never by a branch under review; a missing
+# or unreadable anchor fails CLOSED (exit 19), it never falls back to the
+# sibling. Tests exercise the wrapper against stubs by running a COPY of the
+# script tree with a stub `gh` on PATH and HIMMEL_REPO pointed at that same
+# copy (or a second, distinct fixture tree to prove the anchor decides) —
+# never via a caller-settable override of the gate logic itself.
 set -uo pipefail
 # NOT set -e: this script inspects sub-call exit codes (check-ci, gh) explicitly
 # and must fail CLOSED with its own codes, never abort mid-gate.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GH="gh"
-CHECK_CI="$SCRIPT_DIR/../check-ci.sh"
 # The ONE public repo armed auto-merge may target (HIMMEL-2869). Deliberately a
 # fixed literal, NOT environment-overridable: the GATE INTEGRITY paragraph above
 # forbids an env seam on a merge gate, and this one would be the WIDENING kind —
@@ -334,6 +354,27 @@ fi
 
 command -v git >/dev/null 2>&1 || { echo "merge-on-green: required tool 'git' not on PATH" >&2; exit 11; }
 command -v "$GH" >/dev/null 2>&1 || { echo "merge-on-green: required tool 'gh' not on PATH" >&2; exit 11; }
+
+# HIMMEL-3475 — resolve the anchor. check-ci.sh (and, at the console-GO gate
+# below, go-gate.sh / handover-path.sh) must come from $HIMMEL_REPO, never
+# from a sibling of THIS script's own BASH_SOURCE: this script runs from a
+# leg's own worktree, so a sibling resolution lets the branch under review
+# supply the bytes of its own merge gate (found live: PR #1115's branch was
+# merely behind main on scripts/check-ci.sh, and its own stale copy refused
+# its own green PR — the benign direction; the dangerous mirror is a branch
+# whose check-ci.sh wrongly PASSES). Fails CLOSED: unset, empty, or unreadable
+# all refuse with exit 19, never a fallback to the sibling.
+if ! himmel_repo=$(printenv HIMMEL_REPO | grep .); then
+    echo "merge-on-green: HIMMEL_REPO is unset or empty — cannot resolve the anchor for check-ci.sh. This merge gate no longer trusts its own worktree sibling (HIMMEL-3475): set HIMMEL_REPO to the primary himmel checkout in the launching shell." >&2
+    audit "REFUSED reason=no-anchor selector=${selector:-<cwd-branch>}"
+    exit 19
+fi
+CHECK_CI="$himmel_repo/scripts/check-ci.sh"
+if [ ! -r "$CHECK_CI" ]; then
+    echo "merge-on-green: HIMMEL_REPO=$himmel_repo does not resolve to a readable scripts/check-ci.sh ($CHECK_CI) — refusing. Point HIMMEL_REPO at the primary himmel checkout." >&2
+    audit "REFUSED reason=no-anchor selector=${selector:-<cwd-branch>}"
+    exit 19
+fi
 
 # gh helper honoring an optional selector (mirrors check-ci's pr_view shape).
 gh_pr_view() {
@@ -560,9 +601,12 @@ fi
 is_leg=1
 if [ -n "${HIMMEL_CONSOLE_LEG:-}" ]; then
     unset -f go_gate console_leg 2>/dev/null || true
+    # HIMMEL-3475: from the anchor, never this script's own worktree sibling —
+    # a malicious go-gate.sh here (e.g. console_leg() always returning false)
+    # would silently skip the console-GO requirement entirely.
     # shellcheck source=scripts/lib/go-gate.sh
     # shellcheck disable=SC1091
-    if ! . "$SCRIPT_DIR/../lib/go-gate.sh" 2>/dev/null || ! declare -F console_leg >/dev/null 2>&1; then
+    if ! . "$himmel_repo/scripts/lib/go-gate.sh" 2>/dev/null || ! declare -F console_leg >/dev/null 2>&1; then
         echo "merge-on-green: cannot load scripts/lib/go-gate.sh — refusing (the console-leg marker check must fail closed, not silently no-op)" >&2
         audit "REFUSED reason=policy-refused phase=console-go-lib-missing repo=$nwo pr=#$pr_num sha=$sha"
         exit 17
@@ -573,9 +617,12 @@ else
 fi
 if [ "$is_leg" -eq 1 ]; then
     go_root=""
+    # HIMMEL-3475: from the anchor — a malicious handover-path.sh in the
+    # worktree could otherwise forge go_root onto an attacker-writable,
+    # pre-planted fake GO file.
     # shellcheck source=scripts/lib/handover-path.sh
     # shellcheck disable=SC1091
-    if . "$SCRIPT_DIR/../lib/handover-path.sh" 2>/dev/null; then
+    if . "$himmel_repo/scripts/lib/handover-path.sh" 2>/dev/null; then
         go_root=$(handover_root 2>/dev/null) || go_root=""
     fi
     go_file="${go_root:-<unresolved handover root>}/.locks/go/$pr_num.$sha"
