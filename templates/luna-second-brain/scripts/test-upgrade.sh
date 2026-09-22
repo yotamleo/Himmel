@@ -1736,5 +1736,102 @@ t63_pre=$(sha_of "$V/.gitignore")
 t63_out=$(run_upgrade --yes 2>&1); t63_rc=$?
 t63_expect_withheld "T63l leading-space pattern" .gitignore "$t63_pre"
 
+# ---------------------------------------------------------------------------
+# T64 (HIMMEL-3406): a file that differs from the template ONLY in line
+# ending (CRLF vs LF — an operator's editor, or a Windows checkout, re-saving
+# a template-owned file with no content change) reads as identical, not as a
+# local edit: no WRITE, no LOCAL-EDIT, the run completes and the stamp
+# advances.
+T="$TMP/t64-tmpl"; V="$TMP/t64-vault"
+make_template "$T" "1.0.0"
+mkdir -p "$V"; cp -r "$T/." "$V/"
+stamp_vault "$V" "0.9.0"
+printf 'DEFAULT_X=1\r\n' > "$V/.env.example"
+t64_pre=$(sha_of "$V/.env.example")
+t64_dry=$(run_upgrade --dry-run 2>&1)
+case "$t64_dry" in
+    *"LOCAL-EDIT"*".env.example"*) fail "T64 EOL-only CRLF/LF is not a local edit" "got: $t64_dry" ;;
+    *) pass "T64 EOL-only CRLF/LF is not a local edit" ;;
+esac
+case "$t64_dry" in
+    *"WRITE        .env.example"*) fail "T64 EOL-only CRLF/LF file is not rewritten (reads as identical)" "got: $t64_dry" ;;
+    *) pass "T64 EOL-only CRLF/LF file is not rewritten (reads as identical)" ;;
+esac
+run_upgrade --yes >/dev/null 2>&1; t64_rc=$?
+assert_eq "T64 apply exits 0 (nothing withheld)" "0" "$t64_rc"
+assert_eq "T64 apply leaves the CRLF file's bytes untouched" "$t64_pre" "$(sha_of "$V/.env.example")"
+assert_eq "T64 stamp advances" "1.0.0" "$(t53_stamp_version)"
+
+# ---------------------------------------------------------------------------
+# T65-T68 (HIMMEL-3406): keep-mine. A genuine (non-EOL) local edit is
+# withheld by default; --keep advances the stamp and records the decision
+# against the template content it was made against; a later run that finds
+# the template UNCHANGED for that file does not re-prompt; a later run where
+# the template DOES change that file again re-surfaces it (the control).
+T="$TMP/t65-tmpl"; V="$TMP/t65-vault"
+make_template "$T" "1.0.0"
+printf '# template doc v1\n' > "$T/docs/guide.md"
+mkdir -p "$V"; cp -r "$T/." "$V/"
+stamp_vault "$V" "0.1.0"
+run_upgrade --yes >/dev/null 2>&1   # establish the stamp + content-snapshot baseline at 1.0.0
+t65_snap=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("files",{}).get("docs/guide.md",""))' "$V/.vault-template.json" 2>/dev/null)
+assert_eq "T65 setup: stamp records a content snapshot for docs/guide.md" "sha256:$(sha_of "$V/docs/guide.md")" "$t65_snap"
+
+# T65: a genuine local edit (real content, not EOL-only).
+printf '# template doc v1\nmy own local note\n' > "$V/docs/guide.md"
+t65_pre=$(sha_of "$V/docs/guide.md")
+printf '{"metadata":{"version":"1.1.0"}}\n' > "$T/marketplace/.claude-plugin/marketplace.json"
+printf '# template doc v2\n' > "$T/docs/guide.md"
+t65_dry=$(run_upgrade --dry-run 2>&1)
+case "$t65_dry" in
+    *"LOCAL-EDIT"*"docs/guide.md"*) pass "T65 dry-run surfaces LOCAL-EDIT for docs/guide.md (no --keep)" ;;
+    *) fail "T65 dry-run surfaces LOCAL-EDIT for docs/guide.md (no --keep)" "got: $t65_dry" ;;
+esac
+run_upgrade --yes >/dev/null 2>&1; t65_rc=$?
+assert_eq "T65 apply does NOT overwrite the local edit (default, no --keep)" "$t65_pre" "$(sha_of "$V/docs/guide.md")"
+assert_eq "T65 apply exits 3 (NEEDS-RECONCILE)" "3" "$t65_rc"
+assert_eq "T65 stamp NOT advanced" "1.0.0" "$(t53_stamp_version)"
+
+# T66: re-run WITH --keep — advances the stamp and records the decision
+# (the template sha the keep was made against).
+t66_out=$(run_upgrade --yes --keep docs/guide.md 2>&1); t66_rc=$?
+case "$t66_out" in
+    *"KEEP-MINE"*"docs/guide.md"*) pass "T66 plan names docs/guide.md as kept" ;;
+    *) fail "T66 plan names docs/guide.md as kept" "got: $t66_out" ;;
+esac
+assert_eq "T66 apply with --keep exits 0" "0" "$t66_rc"
+assert_eq "T66 apply with --keep leaves the vault's content untouched" "$t65_pre" "$(sha_of "$V/docs/guide.md")"
+assert_eq "T66 stamp advances" "1.1.0" "$(t53_stamp_version)"
+t66_kept=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("kept",{}).get("docs/guide.md",""))' "$V/.vault-template.json" 2>/dev/null)
+assert_eq "T66 stamp records the keep-mine decision (template sha at decision time)" "sha256:$(sha_of "$T/docs/guide.md")" "$t66_kept"
+
+# T67: a second upgrade, template UNCHANGED for this file — must NOT re-prompt.
+printf '{"metadata":{"version":"1.2.0"}}\n' > "$T/marketplace/.claude-plugin/marketplace.json"
+t67_dry=$(run_upgrade --dry-run 2>&1)
+case "$t67_dry" in
+    *"LOCAL-EDIT"*"docs/guide.md"*) fail "T67 kept file is NOT re-surfaced when the template hasn't changed it" "got: $t67_dry" ;;
+    *) pass "T67 kept file is NOT re-surfaced when the template hasn't changed it" ;;
+esac
+run_upgrade --yes >/dev/null 2>&1; t67_rc=$?
+assert_eq "T67 apply exits 0 (no re-prompt)" "0" "$t67_rc"
+assert_eq "T67 apply leaves the kept file's content untouched" "$t65_pre" "$(sha_of "$V/docs/guide.md")"
+assert_eq "T67 stamp advances" "1.2.0" "$(t53_stamp_version)"
+t67_kept=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("kept",{}).get("docs/guide.md",""))' "$V/.vault-template.json" 2>/dev/null)
+assert_eq "T67 the keep-mine decision persists across a no-op re-prompt run" "sha256:$(sha_of "$T/docs/guide.md")" "$t67_kept"
+
+# T68 (the required negative control): a third upgrade where the template
+# CHANGES the SAME file again — the kept file DOES re-surface as withheld.
+printf '{"metadata":{"version":"1.3.0"}}\n' > "$T/marketplace/.claude-plugin/marketplace.json"
+printf '# template doc v3\n' > "$T/docs/guide.md"
+t68_dry=$(run_upgrade --dry-run 2>&1)
+case "$t68_dry" in
+    *"LOCAL-EDIT"*"docs/guide.md"*) pass "T68 a later template change to the kept file re-surfaces it (negative control)" ;;
+    *) fail "T68 a later template change to the kept file re-surfaces it (negative control)" "got: $t68_dry" ;;
+esac
+run_upgrade --yes >/dev/null 2>&1; t68_rc=$?
+assert_eq "T68 apply does NOT overwrite (re-surfaced local edit)" "$t65_pre" "$(sha_of "$V/docs/guide.md")"
+assert_eq "T68 apply exits 3 (NEEDS-RECONCILE)" "3" "$t68_rc"
+assert_eq "T68 stamp NOT advanced" "1.2.0" "$(t53_stamp_version)"
+
 echo
 if [ "$FAILED" -eq 0 ]; then echo "All upgrade tests passed."; else echo "$FAILED test(s) failed."; exit 1; fi

@@ -8,6 +8,26 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.48] — 2026-09-22
+
+### Added
+- `upgrade.sh` now accepts `--keep <rel>` (repeatable): explicitly accept the
+  vault's content for a local-edit-withheld file. The stamp records the
+  sha256 of the template content the decision was made against (a separate
+  map from the ordinary content snapshot), so a later run that finds the
+  template unchanged for that file does not re-prompt, but a later run where
+  the template changes it again does — renew with `--keep`, or take the
+  update. (HIMMEL-3406)
+
+### Fixed
+- `content_equiv()` (the identical-content check `process()` uses before
+  deciding a file needs an upgrade at all) now treats a CRLF-vs-LF-only
+  difference as identical, for any template-owned file — an editor resave or
+  a Windows checkout no longer reads as a local edit. (HIMMEL-3406)
+- Upstreamed the HIMMEL-3324 pre-commit shellcheck exclude for
+  `reports/*-artifacts/` into the template's own `.pre-commit-config.yaml`
+  (previously only present in the live vault's copy). (HIMMEL-3406)
+
 ## [0.4.47] — 2026-09-19
 
 ### Fixed
