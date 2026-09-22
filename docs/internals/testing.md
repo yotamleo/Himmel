@@ -252,6 +252,39 @@ The residual is T15: its new-script list is `--diff-filter=A` limited to
 `scripts/`, so a rename from OUTSIDE `scripts/` reads as an addition — but T15
 is advisory (`WARN`, never a CI gate). Read the assertion, then decide.
 
+### T13(b) marker-only exemption (HIMMEL-3432)
+
+A read-only process lookup naming a daemon (`pgrep -f 'claude daemon run'`,
+`pkill -0 -f '...'`, `ps ... | grep '...'`) is not a daemon start — it reads
+`/proc`, nothing else. A first version of this gate tried a lexical carve-out
+keyed on the line's command matching one of those lookup shapes with no
+chaining, no command/process substitution and no backslash continuation, and
+every fix closed one bypass while adversarial review kept finding the next —
+ending in a Critical: a shell function or `alias` literally named
+`pgrep`/`pkill`/`ps`/`grep`, SHADOWING the real command, while `daemon` sat on
+the *call* line rather than the definition line the anchor was checking. A
+per-line lexical scanner cannot tell a real `pgrep(1)` invocation from an
+identifier spelled the same way, so the carve-out was **removed entirely**
+rather than patched again (standing rule: stop adding arms, simplify).
+
+The **only** exemption is now a trailing same-line `# t13b-ok: <reason>` (or
+`// t13b-ok: <reason>` for JS/TS), which exempts that one line from T13(b)
+only (not T13(a), not T12/T14/T15) — the general escape hatch so a real
+read-only lookup does not need its own gate PR. It is hardened: the marker
+must open with exactly `# t13b-ok: ` (or `// t13b-ok: `) — one space after
+`#`/`//` and at least one after the colon (`#t13b-ok:`, `#  t13b-ok:` and
+`# t13b-ok:x` do not exempt; extra spaces after the colon are tolerated,
+ending up inside the trimmed reason) — and
+the reason, once trimmed, must be at least 8 characters AND contain a word
+character (`# t13b-ok: short` and `# t13b-ok: --------` both still fail). The
+marker never reaches a different line (same-line only). The match is
+text-only, not quote-aware — a marker spelled inside a quoted argument exempts
+the line the same as a real trailing comment would (`ponytail:` in the gate,
+out of scope for this narrow marker — tracked separately as HIMMEL-3446). Read
+cases in `scripts/parity/test-t13b-daemon-prose.sh`. Precedent for a narrow,
+literal carve-out done right: HIMMEL-3414's exact-token
+`systemctl daemon-reload` strip, which this gate keeps unchanged.
+
 ## VM round trip — station-only, never CI (HIMMEL-3332)
 
 `VBOXMANAGE_PATH=/usr/bin/VBoxManage bash scripts/vm/provenance-roundtrip.sh <ref> [--expect-red] [--purge-state] [--profile core|all]`

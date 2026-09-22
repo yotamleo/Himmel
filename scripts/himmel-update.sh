@@ -1260,8 +1260,14 @@ check_pull() {
         # behind/ahead report below.
         echo "branch:   $branch"
         echo "channel:  $UPDATE_CHANNEL"
+        # HIMMEL-3449: propagate _channel_follow's own rc — it already returns
+        # 0 for every non-failure outcome (up to date, no release yet,
+        # offline, behind-in-check-mode, HEAD ahead) and 1 only on a genuine
+        # failure (e.g. the origin ls-remote query itself failed). A bare
+        # `return 0` here swallowed that 1, so --check's dispatcher below saw
+        # rc=0 and exited 0 even after printing "could not query origin".
         _channel_follow "$UPDATE_CHANNEL" check
-        return 0
+        return $?
     fi
     git fetch --quiet origin 2>/dev/null || {
         echo "update --check: could not reach origin (offline or no remote configured)."

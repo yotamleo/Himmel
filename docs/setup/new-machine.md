@@ -595,15 +595,17 @@ only (HIMMEL-2038, gate `scripts/ci/check-claude-md-budget.sh`). They ship at
 | Variant | Who gets it | How |
 |---|---|---|
 | **Operator** | this machine and any other operator station | the manual `cp` above — `global-claude-md.md` is the full personal file, including `@RTK.md` |
-| **Adopter** | any `bash scripts/adopt.sh --profile core` run (or `adopt.ps1`), **either scope** | `wire_user_claude_md` appends the fenced block from [`user-scope-claude-md-template.md`](user-scope-claude-md-template.md) to **both** `~/.claude/CLAUDE.md` (Claude Code) and `~/.codex/AGENTS.md` (Codex), creating each file if absent |
+| **Adopter** | `bash scripts/adopt.sh --profile core --scope user` (or `adopt.ps1`), **user scope only** (HIMMEL-3309) | `wire_user_claude_md` appends the fenced block from [`user-scope-claude-md-template.md`](user-scope-claude-md-template.md) to **both** `~/.claude/CLAUDE.md` (Claude Code) and `~/.codex/AGENTS.md` (Codex), creating each file if absent |
 
 The adopter path is idempotent and never destructive: it skips when the
 `HIMMEL:working-principles` marker is already present, appends (never
 overwrites) when it is not, and also skips on a heuristic phrase match so a
 hand-written target that already states the principles is left alone. It runs
-against **both** targets, in **both** scopes — the principles live at user
-scope whichever way core was installed, and a Claude-only install would
-otherwise leave a Codex adopter with the principles nowhere. Hermes is not a
+against **both** targets, but **only under `--scope user`** — a `--scope
+project` install must not touch anything under `$HOME` (HIMMEL-3309), so a
+project-scope adopter who also wants the principles runs `adopt.sh --scope
+user` separately. A Claude-only install would otherwise leave a Codex adopter
+with the principles nowhere. Hermes is not a
 target because it already carries the same four principles in its
 `himmel_agent` profile SOUL (`scripts/hermes/assets/himmel-agent.SOUL.md`,
 § How you work), installed by `install-himmel-profile.sh`. Re-running

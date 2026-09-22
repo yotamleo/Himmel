@@ -300,6 +300,19 @@ HOME="$base_home" bash "$adopt" --profile core --scope project --target "$proj" 
 diff -q "$work/before.json" "$s" >/dev/null || fail "core/project not idempotent"
 echo "ok: core/project idempotent on re-run"
 
+# ── 1c. HIMMEL-3309: --scope project must not write home rule files ─────────
+# wire_user_claude_md's two do_core() calls (~/.claude/CLAUDE.md, ~/.codex/
+# AGENTS.md) were unconditional in BOTH scopes -- the flag's name promises
+# project-only writes. $base_home already ran two project-scope installs
+# above with no --scope user in between, so any presence here is the bug.
+if [ -e "$base_home/.claude/CLAUDE.md" ]; then
+  fail "HIMMEL-3309: --scope project wrote $base_home/.claude/CLAUDE.md"
+fi
+if [ -e "$base_home/.codex/AGENTS.md" ]; then
+  fail "HIMMEL-3309: --scope project wrote $base_home/.codex/AGENTS.md"
+fi
+echo "ok: core/project does not write ~/.claude/CLAUDE.md or ~/.codex/AGENTS.md (HIMMEL-3309)"
+
 # ── 1b. HIMMEL-2435: self-copy guard ─────────────────────────────────────────
 # A brand-new adopter clones himmel and runs the installer FROM INSIDE that
 # clone (TARGET == HIMMEL_ROOT). do_core() mutates its TARGET, so this can't
@@ -384,6 +397,19 @@ case "$us_cmd" in
 esac
 [ ! -d "$work/ignored/scripts" ] || fail "core/user must NOT copy scripts into a repo"
 echo "ok: core/user wires ~/.claude to himmel abs path, copies no scripts"
+
+# ── 3b. HIMMEL-3309 control: --scope user still writes the home rule files ──
+# Negative control for 1c: the same wire_user_claude_md calls must still fire
+# under --scope user, or a guard that over-skips (e.g. unconditionally
+# disabled) would also pass 1c.
+MARKER="HIMMEL:working-principles"
+[ -f "$home/.claude/CLAUDE.md" ] || fail "HIMMEL-3309 control: --scope user did not write ~/.claude/CLAUDE.md"
+grep -q -- "<!-- BEGIN $MARKER -->" "$home/.claude/CLAUDE.md" \
+  || fail "HIMMEL-3309 control: ~/.claude/CLAUDE.md missing the working-principles marker"
+[ -f "$home/.codex/AGENTS.md" ] || fail "HIMMEL-3309 control: --scope user did not write ~/.codex/AGENTS.md"
+grep -q -- "<!-- BEGIN $MARKER -->" "$home/.codex/AGENTS.md" \
+  || fail "HIMMEL-3309 control: ~/.codex/AGENTS.md missing the working-principles marker"
+echo "ok: core/user still writes ~/.claude/CLAUDE.md + ~/.codex/AGENTS.md (HIMMEL-3309 control)"
 
 # ── 4. luna scaffold ─────────────────────────────────────────────────────────
 vault="$work/vault"

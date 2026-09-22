@@ -446,19 +446,41 @@ _has_producer_ids() {
     printf '%s\n' "$1" | awk -F'\t' '$2 != "" { f = 1 } END { exit !f }'
 }
 
-# _producer_rows — "<bucket>\t<name>\t<app id>" for every check run on the head.
-# `gh pr checks --json` exposes no app id, so a producer-pinned requirement is
-# read from the check-runs API instead (HIMMEL-3385). --paginate: a busy head has
-# more than one page of runs, and an unread page would read as "missing".
+# _producer_rows — "<bucket>\t<name>\t<app id>\t<started_at>\t<id>" for every
+# check run on the head. `gh pr checks --json` exposes no app id, so a
+# producer-pinned requirement is read from the check-runs API instead
+# (HIMMEL-3385). --paginate: a busy head has more than one page of runs, and an
+# unread page would read as "missing". `id` lets the caller judge only the
+# LATEST run of a name (HIMMEL-3434): this REST list returns EVERY run ever
+# created for the sha, including ones a re-run or a close/reopen superseded.
+# started_at is carried for diagnostics only — ordering uses `id` alone (see
+# `_required_status`).
 _producer_rows() {
     gh api "repos/$owner/$repo/commits/$head0/check-runs?per_page=100" --paginate \
-        --jq '.check_runs[] | "\(if .status != "completed" then "pending" elif (.conclusion == "success" or .conclusion == "neutral" or .conclusion == "skipped") then "pass" elif .conclusion == "cancelled" then "cancel" else "fail" end)\t\(.name)\t\(.app.id // "")"' 2>/dev/null
+        --jq '.check_runs[] | if .id == null then error("check-run with no id") else "\(if .status != "completed" then "pending" elif (.conclusion == "success" or .conclusion == "neutral" or .conclusion == "skipped") then "pass" elif .conclusion == "cancelled" then "cancel" else "fail" end)\t\(.name)\t\(.app.id // "")\t\(.started_at // "")\t\(.id)" end' 2>/dev/null
 }
 
-# _required_status <reqs> <rows> <producer rows> — "<fail|seen|missing>\t<label>"
+# _required_status <reqs> <rows> <producer rows> — "<fail|pending|seen|missing>\t<label>"
 # per required check. A cancelled required check blocks a merge exactly as a
-# failed one does. An entry with no id matches by name over <rows>; one with an id
-# matches name AND app id over <producer rows>.
+# failed one does. An entry with no id matches by name over <rows> — already
+# latest-only, since `gh pr checks` reflects GitHub's own rollup, which judges
+# only the latest check suite per name. One with an id matches name AND app id
+# over <producer rows> — the raw check-runs API, which lists every run ever
+# created for the sha — so only the LATEST matching run is judged, not any run
+# that ever failed (HIMMEL-3434): a re-run or a close/reopen on an unchanged
+# head must be able to clear an earlier red, the same as GitHub's own merge
+# gate does. "Latest" is decided by `id` alone (always present, assigned
+# strictly in creation order by GitHub), not `started_at`: a queued run can
+# have a null started_at, and comparing timestamps with an id-only fallback
+# per pair is non-transitive — a null-started_at row sitting between two
+# timestamped rows in the API's (unordered) response array could make an
+# older real timestamp beat a newer one, depending on row order. `id` alone
+# is a single total order with no such gap. On an exact id tie (the same run
+# read twice across a --paginate page boundary), the completed row wins over
+# a pending duplicate, in either array order. If the latest matching run is
+# itself still pending, the label is "pending", never folded into "seen" —
+# a required check that has not settled yet must not read as satisfied
+# (round-4 adversarial finding, HIMMEL-3434).
 _required_status() {
     local name id
     while IFS=$'\t' read -r name id; do
@@ -467,8 +489,12 @@ _required_status() {
             printf '%s\t%s\n' "$(printf '%s\n' "$2" | awk -F'\t' -v n="$name" \
                 '$2 == n { f = 1; if ($1 == "fail" || $1 == "cancel") bad = 1 } END { print (bad ? "fail" : (f ? "seen" : "missing")) }')" "$name"
         else
-            printf '%s\t%s\n' "$(printf '%s\n' "$3" | awk -F'\t' -v n="$name" -v a="$id" \
-                '$2 == n && $3 == a { f = 1; if ($1 == "fail" || $1 == "cancel") bad = 1 } END { print (bad ? "fail" : (f ? "seen" : "missing")) }')" "$name (app $id)"
+            printf '%s\t%s\n' "$(printf '%s\n' "$3" | awk -F'\t' -v n="$name" -v a="$id" '
+                $2 == n && $3 == a {
+                    f = 1
+                    if (best_id == "" || $5 + 0 > best_id + 0 || ($5 + 0 == best_id + 0 && best_bucket == "pending" && $1 != "pending")) { best_id = $5; best_bucket = $1 }
+                }
+                END { print (f ? ((best_bucket == "fail" || best_bucket == "cancel") ? "fail" : (best_bucket == "pending" ? "pending" : "seen")) : "missing") }')" "$name (app $id)"
         fi
     done <<<"$1"
 }
@@ -505,7 +531,7 @@ _join_by_status() { printf '%s\n' "$2" | awk -F'\t' -v s="$1" '$1 == s { print $
 # window, refuse now. Runs BEFORE the watch (fail fast) and after
 # the settle round.
 required_gate() {
-    local wait_ok="$1" reqs rows prows="" st missing status_only failed req_start tries=0 max_tries
+    local wait_ok="$1" reqs rows prows="" st missing pending status_only failed req_start tries=0 max_tries
     # Backstop beside the SECONDS bound: a no-op sleep seam (CHECK_CI_SLEEP_CMD=:)
     # or a POLL of 0 must not turn the bounded wait into a spin.
     max_tries=$(( GRACE / (POLL > 0 ? POLL : 1) + 1 ))
@@ -536,16 +562,20 @@ required_gate() {
             exit 1
         fi
         missing=$(_join_by_status missing "$st")
-        [ -n "$missing" ] || return 0
+        pending=$(_join_by_status pending "$st")
+        if [ -z "$missing" ] && [ -z "$pending" ]; then return 0; fi
         # A required job held by `needs:` (an aggregator behind pending shards) is
         # not listed until its dependencies finish, so "missing" while another
         # check is still pending is not yet "never reported": leave it to the
-        # watch; the post-settle call (wait 0) is the one that refuses.
-        if [ "$wait_ok" -eq 1 ] && printf '%s\n' "$rows" | awk -F'\t' '$1 == "pending" { f = 1 } END { exit !f }'; then
+        # watch; the post-settle call (wait 0) is the one that refuses. A
+        # required check whose own latest run is still pending (HIMMEL-3434)
+        # gets the same grace, not a silent pass.
+        if [ "$wait_ok" -eq 1 ] && { [ -n "$pending" ] || printf '%s\n' "$rows" | awk -F'\t' '$1 == "pending" { f = 1 } END { exit !f }'; }; then
             return 0
         fi
         tries=$((tries + 1))
         if [ "$wait_ok" -ne 1 ] || [ $((SECONDS - req_start)) -ge "$GRACE" ] || [ "$tries" -ge "$max_tries" ]; then
+            missing="${missing:+$missing, }$pending"
             echo "check-ci: BLOCKED — required check(s) never reported within ${GRACE}s: $missing. GitHub will refuse this merge; is the workflow configured for this branch, or did it not trigger? (HIMMEL-3381, exit 5)" >&2
             status_only=$(_status_only "$st")
             if [ -n "$status_only" ]; then

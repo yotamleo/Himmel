@@ -1060,11 +1060,13 @@ do_core() {
   fi
   # HIMMEL-2038: the "working principles" defaults were demoted out of himmel's
   # always-on project CLAUDE.md (general engineering defaults, not himmel
-  # invariants) -- adopters get them via this user-scope append instead. Runs in
-  # BOTH scopes on purpose: the principles live at user scope whichever way core
-  # was installed, so a project-scope adopter would otherwise pull the shortened
-  # CLAUDE.md and silently lose them. Idempotent, so re-running adopt is also the
-  # migration path for an install that predates this. WARN-not-fail: never let
+  # invariants) -- adopters get them via this user-scope append instead.
+  # HIMMEL-3309: user-scope ONLY -- a project-scope install must not touch
+  # anything under $HOME (the flag's name is the contract). The principles
+  # still land at user scope whichever way core itself was installed; a
+  # project-scope adopter who also wants them runs `adopt.sh --scope user`
+  # separately. Idempotent, so re-running adopt is also the migration path
+  # for a user-scope install that predates this. WARN-not-fail: never let
   # this abort the rest of adopt.
   #
   # TWO targets, same call, same semantics: Claude Code reads
@@ -1072,8 +1074,10 @@ do_core() {
   # the Claude-only file would leave a Codex adopter with the principles
   # nowhere. Hermes is not a target: its himmel_agent profile SOUL
   # (scripts/hermes/assets/himmel-agent.SOUL.md) already states the same four.
-  wire_user_claude_md "$HIMMEL_ROOT/docs/setup/user-scope-claude-md-template.md" "$HOME/.claude/CLAUDE.md" || true
-  wire_user_claude_md "$HIMMEL_ROOT/docs/setup/user-scope-claude-md-template.md" "$HOME/.codex/AGENTS.md" || true
+  if [[ "$SCOPE" == "user" ]]; then
+    wire_user_claude_md "$HIMMEL_ROOT/docs/setup/user-scope-claude-md-template.md" "$HOME/.claude/CLAUDE.md" || true
+    wire_user_claude_md "$HIMMEL_ROOT/docs/setup/user-scope-claude-md-template.md" "$HOME/.codex/AGENTS.md" || true
+  fi
   # Place git gates first: a fatal plugin install must not leave the repo ungated.
   install_precommit_hooks || exit $?
   install_plugins
