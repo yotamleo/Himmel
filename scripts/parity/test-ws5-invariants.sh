@@ -419,14 +419,26 @@ else
             # it does not merely test). It suppresses ONLY the bare-word
             # "daemon" match below; a lookup line that also matches a
             # service-start shape (nohup &, systemctl enable, launchctl load)
-            # still hits on that shape.
+            # still hits on that shape. A command substitution in the lookup
+            # argument (`pgrep -f "$(claude daemon run)"`, or the same with
+            # backticks) executes that argument BEFORE pgrep even runs, so it
+            # is not read-only either -- `subst` disqualifies all three
+            # shapes. `pkill
+            # -0` additionally requires `-0` be the ONLY signal-like flag on the
+            # line: `pkill -0 -9 -f ...` still matches the leading `-0` but a
+            # later flag can override which signal is actually sent, so a
+            # second `-<digit>` or `-s`/`--signal` flag disqualifies it too.
+            subst = code ~ /\$\(|`/
             is_lookup = 0
             if (code ~ /^pgrep([ \t]|$)/) {
-                if (code !~ /[;&|]/) is_lookup = 1
+                if (code !~ /[;&|]/ && !subst) is_lookup = 1
             } else if (code ~ /^pkill[ \t]+-0([ \t]|$)/) {
-                if (code !~ /[;&|]/) is_lookup = 1
+                pkrest = code
+                sub(/^pkill[ \t]+-0[ \t]*/, "", pkrest)
+                if (code !~ /[;&|]/ && !subst &&
+                    pkrest !~ /(^|[ \t])-([0-9]|-?signal([ \t=]|$)|s([ \t]|$))/) is_lookup = 1
             } else if (code ~ /^ps[ \t]/) {
-                if (code ~ /^ps[^|;&]*\|[ \t]*grep([ \t]|$)[^;&|]*$/) is_lookup = 1
+                if (code ~ /^ps[^|;&]*\|[ \t]*grep([ \t]|$)[^;&|]*$/ && !subst) is_lookup = 1
             }
             daemon_hit = (code ~ /daemon/) && !is_lookup
             service_hit = code ~ /(^|[^a-z0-9_-])nohup[ \t].*(^|[^&<>])&([ \t]*($|[);"\047])|[ \t]+[^&> \t])|systemctl[^|;&]*[ \t]enable([ \t]|$)|launchctl[ \t]+(load|bootstrap)([ \t]|$)/
@@ -440,6 +452,13 @@ else
             # does not exempt, and the marker never reaches a DIFFERENT line
             # (t/lt hold only this LINE own text, so a marker on the line above
             # cannot cancel a hit here).
+            # ponytail: the match is text-only, not quote-aware -- a marker
+            # spelled inside a quoted argument (e.g. --label "# t13b-ok: x")
+            # exempts the line the same as a real trailing comment would. This
+            # gate is a line-based awk scan with no shell tokenizer anywhere in
+            # it (see the systemctl-daemon-reload carve-out above for the same
+            # limit), so telling a real comment from a quoted string would need
+            # one; out of scope for this narrow carve-out.
             if (t ~ /#[ \t]*t13b-ok:[ \t]*[^ \t]/) hit = 0
             if (hit) {
                 if (removed[t] > 0) removed[t]--

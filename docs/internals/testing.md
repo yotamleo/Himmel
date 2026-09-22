@@ -255,12 +255,21 @@ line as a lookup) and a bare `pkill` (no `-0`) still fails (it terminates, it
 does not merely test). Precedent: HIMMEL-3414's exact-token
 `systemctl daemon-reload` carve-out.
 
+Two narrower bypasses closed on review: a command substitution in the lookup
+argument itself (`pgrep -f "$(claude daemon run)"`, or the backtick form)
+disqualifies the line even with no `;`/`&`/`|` present, since that argument
+executes before the lookup runs at all; and `pkill -0` requires `-0` be the
+*only* signal-like flag on the line (`pkill -0 -9 -f '...'` still fails —
+a second numeric or `-s`/`--signal` flag can override which signal is sent).
+
 Separately, a trailing same-line `# t13b-ok: <reason>` exempts that one line
 from T13(b) only (not T13(a), not T12/T14/T15) — the general escape hatch so
 the next legitimate case does not need its own gate PR. An empty reason
 (`# t13b-ok:` or `# t13b-ok: `) does not exempt, and the marker never reaches
-a different line (same-line only). Read cases in
-`scripts/parity/test-t13b-daemon-prose.sh`.
+a different line (same-line only). The match is text-only, not quote-aware —
+a marker spelled inside a quoted argument exempts the line the same as a real
+trailing comment would (`ponytail:` in the gate, out of scope for this narrow
+carve-out). Read cases in `scripts/parity/test-t13b-daemon-prose.sh`.
 
 ## VM round trip — station-only, never CI (HIMMEL-3332)
 

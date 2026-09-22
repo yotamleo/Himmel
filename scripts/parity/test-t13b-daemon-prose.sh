@@ -192,6 +192,16 @@ run_case sh-pkill-without-dash-0 FAIL scripts/start.sh \
 run_case sh-ps-grep-then-kill FAIL scripts/start.sh \
     "ps -eo pid,args | grep '[c]laude daemon' | xargs kill"
 
+echo "== T13(b): a lookup arg that itself SPAWNS still FAILS (HIMMEL-3432 CR) =="
+# shellcheck disable=SC2016  # command substitution is the point of the fixture
+run_case sh-pgrep-cmd-subst FAIL scripts/start.sh \
+    'pgrep -f "$(claude daemon run)"'
+# shellcheck disable=SC2006  # backtick substitution is the point of the fixture
+run_case sh-pgrep-backtick FAIL scripts/start.sh \
+    "pgrep -f \`claude daemon run\`"
+run_case sh-pkill-dash-0-then-9 FAIL scripts/start.sh \
+    "pkill -0 -9 -f 'claude daemon'"
+
 echo "== T13(b): # t13b-ok: <reason> exempts its own line only (HIMMEL-3432) =="
 run_case sh-t13b-ok-marker PASS scripts/start.sh \
     'nohup claude daemon run &  # t13b-ok: transient self-daemon the CLI background-run flag spawns; read-only var scrape'
