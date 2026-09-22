@@ -519,10 +519,22 @@ assert_rc "81 intra-word backslash in settings.js\\on from primary denies" 2 \
 assert_rc "82 powershell backtick in settings.js\`on from primary denies" 2 \
     "$(powershell_rc_of "$PRIMARY" "Set-Content -Path .claude/settings.js\`on -Value x")"
 
+# 83: the own-root strip needs a path boundary. A worktree whose root is a
+# string prefix of the primary's (`<sandbox>/prim` vs `<sandbox>/primary`)
+# must not blank out the front of the primary's path and hide the match.
+PREFIX_WT="$SANDBOX/prim"
+git -C "$SANDBOX/primary" worktree add -q "$PREFIX_WT" -b feat/prim >/dev/null 2>&1 || {
+    echo "FATAL: could not create the prefix worktree fixture" >&2
+    exit 1
+}
+assert_rc "83 worktree whose root prefixes the primary's still denies the primary's settings" 2 \
+    "$(bash_rc_of "$PREFIX_WT" "echo x > $PRIMARY/.claude/settings.json")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true
 git -C "$SANDBOX/primary" worktree remove --force "$WT2" 2>/dev/null || true
+git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/prim" 2>/dev/null || true
 rm -rf "$SANDBOX" 2>/dev/null || true
 
 if [ "$FAILED" -gt 0 ]; then

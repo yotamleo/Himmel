@@ -414,11 +414,13 @@ mentions_primary_or_home() {
     # worktrees/<wt>`) contains the primary root in its own absolute path, so
     # its OWN settings write matched below (HIMMEL-3468 codex-1). Blank out
     # this worktree's own root first — never when `..` appears anywhere, since
-    # `<wt>/../../settings.json` climbs back into the primary.
+    # `<wt>/../../settings.json` climbs back into the primary. Only the root
+    # followed by `/` is removed: a bare string prefix would also eat the
+    # front of a sibling path (`<dir>/prim` inside `<dir>/primary/...`).
     if [ "$is_primary_cwd" = "0" ] && [ -n "$own_root_lc" ]; then
         case "$c_noquotes" in
             *..*) ;;
-            *) c_noquotes=${c_noquotes//"$own_root_lc"/} ;;
+            *) c_noquotes=${c_noquotes//"$own_root_lc/"/} ;;
         esac
     fi
     if [ -n "$primary_root_lc" ]; then
