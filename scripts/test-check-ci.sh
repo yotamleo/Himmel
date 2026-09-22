@@ -155,7 +155,10 @@ if [ "$cmd" = "api" ]; then
             # old empty payload every pre-3385 caller sees.
             case "${GH_STUB_PRODUCERS:-none}" in
                 fail) echo "HTTP 500: check-runs boom" >&2; exit 1 ;;
-                json:*) printf '%s' "${GH_STUB_PRODUCERS#json:}" | jq -r "$(_jq_arg "$@")" ;;
+                # HIMMEL-3434: real `gh api --jq` propagates a jq error() as gh's own
+                # non-zero exit — the stub must too, or a null-id fixture can never
+                # exercise the caller's producers-unreadable path.
+                json:*) printf '%s' "${GH_STUB_PRODUCERS#json:}" | jq -r "$(_jq_arg "$@")"; exit $? ;;
                 *) echo '{"check_runs":[]}' ;;
             esac
             exit 0 ;;
@@ -2402,9 +2405,9 @@ assert_err_has "agg" "3381-n the refusal names the missing required check"
 # expression check-ci.sh really passes, so an id its expression drops stays dropped.
 _rule_id='[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"codeowner-review-gate","integration_id":15368}]}}]'
 _rule_noid='[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"codeowner-review-gate"}]}}]'
-_runs_wrong='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"success","app":{"id":99}}]}'
-_runs_right='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"success","app":{"id":15368}}]}'
-_runs_red='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"failure","app":{"id":15368}}]}'
+_runs_wrong='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"success","app":{"id":99},"id":1}]}'
+_runs_right='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"success","app":{"id":15368},"id":1}]}'
+_runs_red='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"failure","app":{"id":15368},"id":1}]}'
 _both_checks="pass:unit-tests
 pass:codeowner-review-gate"
 
@@ -2531,11 +2534,14 @@ run cr-completed --grace 0
 assert_rc 1 "3434-b control: success-then-fail on one name reads FAIL"
 
 # 3434-c — an old failure followed by a still-pending latest run must not read
-# as FAILED: the gate defers it like any other pending required check.
+# as FAILED: the gate must not fold a pending latest run into "seen"
+# (fail-open) either — with no grace left to actually wait it out, the honest
+# verdict is BLOCKED, the same as any other required check that never settled
+# (round-4 console adversarial finding, HIMMEL-3434).
 RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_runs_fail_then_pending"
 run cr-completed --grace 0
-assert_rc 0 "3434-c fail-then-pending on one name is not refused as FAILED"
-if [ "$(alert_count)" = 0 ]; then pass "3434-c no alert while the latest run is still pending"; else fail "3434-c no alert while the latest run is still pending" "count=$(alert_count)"; fi
+assert_rc 5 "3434-c fail-then-pending on one name is not refused as FAILED, but is not a silent PASS either — it BLOCKS once grace is exhausted"
+if [ "$(alert_count)" = 1 ]; then pass "3434-c one alert once the still-pending latest run exhausts its grace"; else fail "3434-c one alert once the still-pending latest run exhausts its grace" "count=$(alert_count)"; fi
 
 # 3434-d — control: a cancelled LATEST run still blocks, same as a failed one.
 RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_runs_pass_then_cancel"
@@ -2558,11 +2564,12 @@ assert_rc 1 "3434-f control: a later success from a different app does not clear
 # 3434-g — a QUEUED latest run with a null started_at (never yet begun) must
 # still outrank an older completed failure: a missing started_at is not
 # "earliest", it is unknown, and the run's id (always present, monotonic)
-# breaks the tie so the gate defers instead of reporting a stale FAIL.
+# breaks the tie so the gate reads it as PENDING (not FAIL, and not a silent
+# PASS either) — with no grace left it BLOCKS honestly, same as 3434-c.
 RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_runs_fail_then_pending_null_started"
 run cr-completed --grace 0
-assert_rc 0 "3434-g a queued latest run with a null started_at is not outranked by an older timestamped failure"
-if [ "$(alert_count)" = 0 ]; then pass "3434-g no alert while the null-started_at latest run is still pending"; else fail "3434-g no alert while the null-started_at latest run is still pending" "count=$(alert_count)"; fi
+assert_rc 5 "3434-g a queued latest run with a null started_at is not outranked by an older timestamped failure, and is not a silent PASS"
+if [ "$(alert_count)" = 1 ]; then pass "3434-g one alert once the null-started_at latest run exhausts its grace"; else fail "3434-g one alert once the null-started_at latest run exhausts its grace" "count=$(alert_count)"; fi
 
 # 3434-h — the true latest run (highest id) wins no matter where a null-
 # started_at row sits in the API's response order: the winner must not be
@@ -2572,7 +2579,34 @@ run cr-completed --grace 0
 assert_rc 0 "3434-h the highest-id run wins regardless of API response order (non-transitive comparator control)"
 if [ "$(alert_count)" = 0 ]; then pass "3434-h no alert once the true latest (highest id) run is green"; else fail "3434-h no alert once the true latest (highest id) run is green" "count=$(alert_count)"; fi
 
+# 3434-i — a check-run with a null id makes the producer read unreadable
+# (fail closed, exit 5): an id-less row must never first-win the id fold —
+# with no id there is no way to tell it apart from a stale duplicate (console
+# round-4 adversarial finding, HIMMEL-3434).
+_runs_null_id='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"success","app":{"id":15368},"started_at":"2026-09-22T00:16:00Z","id":null}]}'
+RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_runs_null_id"
+run cr-completed --grace 0
+assert_rc 5 "3434-i a check-run with a null id fails the producer read closed, never first-wins"
+assert_err_has "producer" "3434-i the refusal names the unreadable-producer cause"
+if [ "$(alert_count)" = 1 ]; then pass "3434-i one alert for the null-id refusal"; else fail "3434-i one alert for the null-id refusal" "count=$(alert_count)"; fi
+
+# 3434-j / 3434-k — the SAME run (same id) can appear twice across --paginate
+# pages if a page boundary is read while the run is still finishing: prefer
+# the completed row over the pending duplicate, in EITHER array order — a
+# plain "first wins" or "last wins" on an exact id tie would be
+# order-dependent, the same class of bug 3434-h guards against.
+_runs_id_tie_pending_then_completed='{"check_runs":[{"name":"codeowner-review-gate","status":"in_progress","conclusion":null,"app":{"id":15368},"started_at":"2026-09-22T01:00:00Z","id":5},{"name":"codeowner-review-gate","status":"completed","conclusion":"success","app":{"id":15368},"started_at":"2026-09-22T01:00:00Z","id":5}]}'
+_runs_id_tie_completed_then_pending='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"success","app":{"id":15368},"started_at":"2026-09-22T01:00:00Z","id":5},{"name":"codeowner-review-gate","status":"in_progress","conclusion":null,"app":{"id":15368},"started_at":"2026-09-22T01:00:00Z","id":5}]}'
+
+RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_runs_id_tie_pending_then_completed"
+run cr-completed --grace 0
+assert_rc 0 "3434-j an id tie prefers the completed row over an earlier-in-array pending duplicate"
+
+RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_runs_id_tie_completed_then_pending"
+run cr-completed --grace 0
+assert_rc 0 "3434-k control: an id tie still prefers the completed row when it sits earlier in the array (order-independent)"
+
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 170 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 170"; exit 1; fi
+if [ "$COUNT" -ne 173 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 173"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1
