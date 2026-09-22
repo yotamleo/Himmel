@@ -42,6 +42,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/worktree-inuse.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/lib/worktree-inuse.sh"
+# HIMMEL-3297 (option B) — worktree_fresh_locked: is this worktree's leg
+# still holding a FRESH queue-lock.sh lock on its own handover doc? Checked
+# alongside worktree_in_use below, right before the remove.
+# shellcheck source=lib/worktree-fresh-lock.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/lib/worktree-fresh-lock.sh"
 
 # shellcheck disable=SC2016  # literal text, no expansion intended
 USAGE_TEXT='Usage: clean-garden.sh [branch-name] [flags]
@@ -1096,6 +1102,19 @@ if [ "$NO_PRUNE" -eq 0 ]; then
                 remove_args=(--force)
                 echo "NOTE clean-garden: $br — pruning merged worktree, discarding untracked strays: $strays ($wt)" >&2
             fi
+        fi
+
+        # HIMMEL-3297 (option B) — a live leg's cwd can fall back to the
+        # primary while it is still mid-wrap, so worktree_in_use's /proc scan
+        # below can miss it; the leg's own queue-lock.sh lock on its handover
+        # doc is the real "done with it" signal and is checked BEFORE the
+        # in-use probe for the same reason: never touch the tree if either
+        # says no.
+        if worktree_fresh_locked "$wt"; then
+            echo "WARN clean-garden: $br could not be safely removed ($WORKTREE_FRESH_LOCK_DETAIL) — skipped ($wt)" >&2
+            note_stuck "$wt" "merged, but its leg still holds a FRESH queue lock"
+            SKIPPED=$((SKIPPED+1))
+            continue
         fi
 
         # HIMMEL-2227 — in-use probe BEFORE the remove, plain or --force alike:
