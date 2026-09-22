@@ -1500,7 +1500,9 @@ run_headless() {
 
 d29="$tmp/c29"; mk_headless_stubs "$d29" "HIMMEL-3403-hl"; mkdir -p "$tmp/repo29"
 rc=0
-HIMMEL_HOOK_INTEGRITY_BYPASS_OK='' HIMMEL_API_TOKEN=abc run_headless "$d29" "$tmp/repo29" "HIMMEL-3403-hl" --headless --profile leg-impl >/dev/null 2>&1 || rc=$?
+HIMMEL_HOOK_INTEGRITY_BYPASS_OK='' HIMMEL_API_TOKEN=abc HIMMEL_MQTT_PASS=p1 HIMMEL_GITHUB_PAT=p2 \
+  HIMMEL_PAT_RO=p3 HIMMEL_X_AUTH=p4 HIMMEL_SSH_KEY=p5 HIMMEL_DB_URL=p6 HIMMEL_EXAMPLE_BYPASS_OK=1 JIRA_PROJECT_KEY=HIMMEL \
+  run_headless "$d29" "$tmp/repo29" "HIMMEL-3403-hl" --headless --profile leg-impl >/dev/null 2>&1 || rc=$?
 rec29="$(cat "$d29/record" 2>/dev/null || true)"
 log29="$(cat "$d29/log" 2>/dev/null || true)"
 set29="$tmp/c29/HIMMEL-3403-hl.leg-settings.json"
@@ -1529,6 +1531,14 @@ check "29t settings env: stale LEG_* from the daemon blanked" "$(env29 LEG_STALE
 check "29u settings env: secret-named daemon var blanked, never copied" "$(env29 HIMMEL_STALE_TOKEN)" ""
 check "29v settings env: secret-named launcher var never copied" "$(env29 HIMMEL_API_TOKEN)" "<absent>"
 check "29w settings env: non-pattern daemon var untouched" "$(env29 PATH)" "<absent>"
+# 29v2: the stop-queue.mjs secret shapes, plus PASS and PAT as name tokens
+# (HIMMEL_MQTT_PASS is the recorded trap there). BYPASS is not a PASS token,
+# and JIRA_PROJECT_KEY is a key name, not a secret.
+for v in HIMMEL_MQTT_PASS HIMMEL_GITHUB_PAT HIMMEL_PAT_RO HIMMEL_X_AUTH HIMMEL_SSH_KEY HIMMEL_DB_URL; do
+  check "29v2 settings env: secret-shaped launcher var $v never copied" "$(env29 "$v")" "<absent>"
+done
+check "29v2 settings env: a *_BYPASS_OK gate is still mirrored" "$(env29 HIMMEL_EXAMPLE_BYPASS_OK)" "1"
+check "29v2 settings env: JIRA_PROJECT_KEY is still mirrored" "$(env29 JIRA_PROJECT_KEY)" "HIMMEL"
 check "29x settings file: mode 600 kept" "$(stat -c %a "$set29" 2>/dev/null || stat -f %Lp "$set29")" "600"  # gnu-ok: BSD stat -f fallback on the same line
 check "29y settings file: profile keys preserved" "$(jq -r 'keys | length > 1' "$set29" 2>/dev/null)" "true"
 
@@ -1569,6 +1579,23 @@ rc=0
 run_headless "$d29s" "$tmp/repo29s" "HIMMEL-3403-hls" --headless --profile leg-impl >/dev/null 2>&1 || rc=$?
 check "29-shape non-array census: exit 9" "$rc" "9"
 check "29-shape non-array census: nothing launched" "$([ -e "$d29s/record" ] && echo launched || echo none)" "none"
+# 29-qual: the service is qualified on its cmdline, not its comm (a bg
+# process's comm can be the CLI version string), so its env is still read.
+d29q="$tmp/c29q"; mk_headless_stubs "$d29q" "HIMMEL-3403-hlq"; mkdir -p "$tmp/repo29q"
+echo 2.1.300 > "$d29q/proc/7777/comm"
+rc=0
+run_headless "$d29q" "$tmp/repo29q" "HIMMEL-3403-hlq" --headless --profile leg-impl >/dev/null 2>&1 || rc=$?
+check "29-qual version-string comm: exit 0" "$rc" "0"
+check "29-qual version-string comm: service env still read (stale doc blanked)" "$(jq -r '.env.HIMMEL_CONSOLE_DOC // "<absent>"' "$d29q/HIMMEL-3403-hlq.leg-settings.json" 2>/dev/null)" ""
+# 29-noqual: pgrep matched a process that is not the service (the pattern sits
+# inside another command's argv). No qualifying pid = refuse, never launch blind.
+d29n="$tmp/c29n"; mk_headless_stubs "$d29n" "HIMMEL-3403-hln"; mkdir -p "$tmp/repo29n"
+echo bash > "$d29n/proc/7777/comm"
+printf 'bash\0-c\0echo claude daemon run\0' > "$d29n/proc/7777/cmdline"
+rc=0
+run_headless "$d29n" "$tmp/repo29n" "HIMMEL-3403-hln" --headless --profile leg-impl >/dev/null 2>&1 || rc=$?
+check "29-noqual no qualifying service pid: exit 9" "$rc" "9"
+check "29-noqual no qualifying service pid: nothing launched" "$([ -e "$d29n/record" ] && echo launched || echo none)" "none"
 # 29-role: a headless console launch (headed-arm.sh --role console) drops the
 # relay marker from the settings env, the same `env -u` a konsole launch gets.
 d29r="$tmp/c29r"; mk_headless_stubs "$d29r" "HIMMEL-3403-hlr"; mkdir -p "$tmp/repo29r" "$d29r/chain"

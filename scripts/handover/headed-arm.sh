@@ -819,10 +819,31 @@ _hl_leg_var() {
     esac
     return 1
 }
+# The name shapes of scripts/hooks/stop-queue.mjs SECRET_NAME_SHAPES, matched
+# case-insensitively the same way, plus PASS and PAT as whole name tokens:
+# `HIMMEL_*` would otherwise mirror HIMMEL_MQTT_PASS and HIMMEL_GITHUB_PAT.
+# BYPASS is not a PASS token, so the *_BYPASS_OK gates still pass through.
 _hl_secret_var() {
+    local rc=1 nocase=0
+    [ "$1" = JIRA_PROJECT_KEY ] && return 1
+    shopt -q nocasematch && nocase=1
+    shopt -s nocasematch
     case "$1" in
-        *TOKEN*|*SECRET*|*PASSWORD*|*PASSWD*|*API_KEY*|*APIKEY*|*CREDENTIAL*|*PRIVATE_KEY*) return 0 ;;
+        *TOKEN*|*SECRET*|*KEY*|*PASSWORD*|*PASSWD*|*CREDENTIAL*|*COOKIE*|*AUTH*|*CHAT_ID*|*DSN*|*_URL*|*CONNECTION*|*PRIVATE*|*CERT*|*BEARER*|*SIGNATURE*|*SESSION_ID*) rc=0 ;;
+        PASS|PASS_*|*_PASS|*_PASS_*|PAT|PAT_*|*_PAT|*_PAT_*) rc=0 ;;
     esac
+    [ "$nocase" = 1 ] || shopt -u nocasematch
+    return "$rc"
+}
+# The background service is qualified on its cmdline (an argv entry whose
+# basename is `claude`, then `daemon run`), not on its comm, which for a bg
+# process can be the CLI version string.
+_hl_service_pid() {
+    local arg prev2="" prev1=""
+    while IFS= read -r -d '' arg; do
+        [ "${prev2##*/}" = claude ] && [ "$prev1" = daemon ] && [ "$arg" = run ] && return 0
+        prev2="$prev1"; prev1="$arg"
+    done < "$PROC/$1/cmdline"
     return 1
 }
 HL_KEYS=()
@@ -885,8 +906,10 @@ headless_launch() {
     pids="$("$PGREP" -f '[c]laude daemon run' 2>/dev/null)"
     pg_rc=$?
     [ "$pg_rc" -gt 1 ] && headless_fail 9 "headless: pgrep scan for the claude background service failed - its env decides what the leg inherits, refusing to launch blind"
+    local qualified=0
     for pid in $pids; do
-        [ "$(cat "$PROC/$pid/comm" 2>/dev/null)" = claude ] || continue
+        _hl_service_pid "$pid" 2>/dev/null || continue
+        qualified=$((qualified + 1))
         [ -r "$PROC/$pid/environ" ] || headless_fail 9 "headless: cannot read the claude background service's env (pid $pid) - refusing to launch blind"
         while IFS= read -r -d '' pair; do
             name="${pair%%=*}"
@@ -894,6 +917,7 @@ headless_launch() {
             _hl_has "$name" || _hl_set "$name" ""
         done < "$PROC/$pid/environ"
     done
+    [ -n "$pids" ] && [ "$qualified" -eq 0 ] && headless_fail 9 "headless: pgrep matched pid(s) ${pids//$'\n'/ } but none has a claude background service cmdline - refusing to launch blind"
     local jq_args=() i=0
     while [ "$i" -lt "${#HL_KEYS[@]}" ]; do
         jq_args+=("${HL_KEYS[$i]}" "${HL_VALS[$i]}")
