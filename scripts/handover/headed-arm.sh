@@ -868,6 +868,11 @@ headless_launch() {
     _hl_set HIMMEL_INITIATIVE "$INIT"
     _hl_set ARMAUTOMERGE 1
     set -f
+    # The role's `env -u` removals, applied before the explicit env exactly as
+    # the konsole branches order them (HIMMEL-3035: LAUNCHER_ENV may re-set).
+    for tok in $ROLE_ENV_UNSET; do
+        [ "$tok" = "-u" ] || _hl_set "$tok" ""
+    done
     for tok in ${CONSOLE_ENV[@]+"${CONSOLE_ENV[@]}"} $LAUNCHER_ENV; do
         case "$tok" in *=*) _hl_set "${tok%%=*}" "${tok#*=}" ;; esac
     done

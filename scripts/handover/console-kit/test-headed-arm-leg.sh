@@ -1569,6 +1569,18 @@ rc=0
 run_headless "$d29s" "$tmp/repo29s" "HIMMEL-3403-hls" --headless --profile leg-impl >/dev/null 2>&1 || rc=$?
 check "29-shape non-array census: exit 9" "$rc" "9"
 check "29-shape non-array census: nothing launched" "$([ -e "$d29s/record" ] && echo launched || echo none)" "none"
+# 29-role: a headless console launch (headed-arm.sh --role console) drops the
+# relay marker from the settings env, the same `env -u` a konsole launch gets.
+d29r="$tmp/c29r"; mk_headless_stubs "$d29r" "HIMMEL-3403-hlr"; mkdir -p "$tmp/repo29r" "$d29r/chain"
+echo '{"permissions":{}}' > "$d29r/settings.json"
+rc=0
+HIMMEL_CONSOLE_RELAY=1 HEADED_ARM_HEADLESS=1 LEG_PROFILE_SETTINGS="$d29r/settings.json" \
+  HEADED_ARM_LAUNCHER="$d29r/claude" HEADED_ARM_CLAUDE_CLI="$d29r/claude" \
+  PGREP_CMD="$d29r/pgrep" KONSOLE_CMD="$d29r/konsole" HEADED_ARM_PROC="$d29r/proc" \
+  HEADED_ARM_LOCK_DIR="$d29r/locks" HEADED_ARM_REPO="$tmp/repo29r" \
+  bash "$HEADED_ARM" --role console "HIMMEL-3403-hlr" "$some_doc" "$d29r/chain/signal-never" "$PAST" "$d29r/log" claude-sonnet-5 >/dev/null 2>&1 || rc=$?
+check "29-role headless console: exit 0" "$rc" "0"
+check "29-role headless console: relay marker blanked in settings env" "$(jq -r '.env.HIMMEL_CONSOLE_RELAY // "<absent>"' "$d29r/settings.json" 2>/dev/null)" ""
 
 # 29-refusals: --headless relies on the settings file for the leg's env, so an
 # unprofiled launch refuses. The claudex lane's script(1) wrapper has no bg form.
