@@ -568,6 +568,15 @@ git -C "$R" mv scripts.sh renamed.sh
 run_gate
 assert_rc "G16c pure rename (no hunk) -> gate ok" 0 "$?"
 
+# G17 -- the zero-hunk check must read the whole diff: a `printf | grep -q`
+# under pipefail SIGPIPEs its producer on a diff larger than a pipe buffer,
+# reads a hunk-bearing diff as hunk-less and falsely refuses a clean file.
+setup_repo || { echo "FAIL: G17 setup: setup_repo failed -- aborting suite" >&2; exit 1; }
+awk 'BEGIN { print "#!/usr/bin/env bash"; for (i = 0; i < 4000; i++) printf "echo line-%06d-padding-padding-padding-padding\n", i }' > "$R/scripts.sh"
+git -C "$R" add scripts.sh
+run_gate
+assert_rc "G17 large clean diff (> pipe buffer) -> gate ok" 0 "$?"
+
 # ---------------------------------------------------------------------------
 # Section 3: RED control (scripts/lib/red-control.sh).
 #

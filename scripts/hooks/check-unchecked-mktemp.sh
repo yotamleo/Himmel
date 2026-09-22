@@ -195,7 +195,13 @@ added_lines_for() {
     # does not know about): refuse, never read it as "nothing added". A pure
     # rename, a mode-only change and an empty staged blob legitimately have
     # no hunk, and all three leave the blob either unchanged or empty.
-    if ! printf '%s\n' "$hunks" | grep -q '^@@ '; then
+    # `grep -c` reads its whole input: a `grep -q` would exit on the first
+    # match and SIGPIPE printf, and under pipefail a large hunk-bearing diff
+    # would then read as hunk-less (G17). A grep error leaves n_hunks empty,
+    # which falls through to the blob check (the fail-closed direction).
+    local n_hunks
+    n_hunks="$(printf '%s\n' "$hunks" | grep -c '^@@ ')" || :
+    if [ "${n_hunks:-0}" -eq 0 ]; then
         local new_oid old_oid empty_oid
         if ! new_oid="$(git rev-parse --verify -q ":$path")"; then
             echo "FAIL: check-unchecked-mktemp: cannot resolve the staged blob of $path (fail-closed)" >&2
