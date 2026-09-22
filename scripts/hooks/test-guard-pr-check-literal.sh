@@ -285,9 +285,11 @@ grep -n x scripts/cr/*
 echo "see scripts/cr/*.sh"
 jq '.[] | select(.path|test("scripts/cr/.*"))' f
 MENTIONS
-# A heredoc body is data, not a command: naming the guarded script only in the
-# body must not deny (HIMMEL-3433).
-run "heredoc body naming pr-check-context.sh on an edited branch -> no-op" 0 \
+# Per AE's round-7 ruling: a `<<` heredoc opener anywhere alongside text
+# naming a guarded path denies outright, heredoc BODY data included - the
+# bytes cannot be trusted to have been classified correctly. Flipped from
+# the earlier no-op verdict (HIMMEL-3433).
+run "heredoc body naming pr-check-context.sh on an edited branch -> deny" 2 \
     "$(payload "cat > \$S/body.md <<'EOF'
 see scripts/cr/pr-check-context.sh
 EOF" "$WT")" "$HR"
@@ -297,10 +299,9 @@ run "unquoted-marker heredoc body running the guarded script -> deny" 2 \
     "$(payload "cat <<EOF
 \$(bash scripts/cr/pr-check-context.sh)
 EOF" "$WT")" "$HR"
-# Plain text in an unquoted-marker heredoc body, with no substitution, is
-# still just data - the codex-1 fix must not turn every such heredoc into a
-# deny.
-run "unquoted-marker heredoc body only mentioning the path -> no-op" 0 \
+# Per AE's round-7 ruling this now denies too - any `<<` alongside a
+# guarded-path mention denies outright, heredoc body data included.
+run "unquoted-marker heredoc body only mentioning the path -> deny" 2 \
     "$(payload "cat <<EOF
 see scripts/cr/pr-check-context.sh
 EOF" "$WT")" "$HR"
@@ -324,26 +325,38 @@ run "quoted-marker heredoc targeting bash runs its body -> deny" 2 \
     "$(payload "bash <<'EOF'
 bash scripts/cr/pr-check-context.sh
 EOF" "$WT")" "$HR"
-# A quoted-marker heredoc into a data consumer stays inert (regression net
-# for the codex-1 round-2 fix): the target here is cat, not an interpreter.
-run "quoted-marker heredoc targeting cat stays inert -> no-op" 0 \
+# Per AE's round-7 ruling this now denies too - the target being a data
+# consumer (cat, not an interpreter) no longer matters: any `<<` alongside
+# a guarded-path mention denies outright, regardless of target program.
+run "quoted-marker heredoc targeting cat -> deny (round 7)" 2 \
     "$(payload "cat > \$S/body.md <<'EOF'
 bash scripts/cr/pr-check-context.sh
 EOF" "$WT")" "$HR"
-# A heredoc opener sitting in a `#` comment is not a real redirect;
-# strip_heredocs still treated it as one and silently dropped the "body" -
-# the guarded invocation on the next line - before classify ever saw it
-# (codex-1, round 6 of the HIMMEL-3433 review).
-run "codex-1 round 6: a commented-out heredoc opener does not hide the next line -> deny" 2 \
+# Round 6's line-anchored comment check missed a trailing-comment decoy
+# (`echo ok # <<'EOF'`, real command text before the `#`) - codex-1 raised
+# it again at round 7 and AE ruled: drop the line/comment logic entirely,
+# deny on ANY `<<` alongside a guarded-path mention. The two rows below
+# replace round 6's pair - the comment-opener row keeps denying, the old
+# "regression net" no-op row is retired since a real heredoc opener now
+# denies too.
+run "codex-1: a commented-out heredoc opener does not hide the next line -> deny" 2 \
     "$(payload "# <<'EOF'
 bash scripts/cr/pr-check-context.sh
 EOF" "$WT")" "$HR"
-# Regression net: a REAL (non-comment) heredoc opener must still read
-# normally after the round-6 fix - only a comment-prefixed opener denies.
-run "codex-1 round 6 regression net: a real heredoc opener is unaffected -> no-op" 0 \
-    "$(payload "cat > \$S/body.md <<'EOF'
-see scripts/cr/pr-check-context.sh
+# codex-1, round 7: round 6's fix only matched a line that is ENTIRELY a
+# comment; a TRAILING comment after real command text on the same line
+# (`echo ok # <<'EOF'`) has the identical strip_heredocs exposure and was
+# left uncaught - the exact shape the panel found. The blanket `<<` rule
+# catches it with no line-position logic at all.
+run "codex-1 round 7: a trailing-comment heredoc decoy does not hide the next line -> deny" 2 \
+    "$(payload "echo ok # <<'EOF'
+bash scripts/cr/pr-check-context.sh
 EOF" "$WT")" "$HR"
+# Regression net: a here-string `<<<` (data into a read-only consumer, no
+# heredoc body at all) is told apart from a heredoc opener by a plain text
+# check and stays allowed, per AE's round-7 ruling.
+run "a here-string mentioning the path stays inert -> no-op" 0 \
+    "$(payload 'cat <<< "see scripts/cr/pr-check-context.sh"' "$WT")" "$HR"
 # shellcheck disable=SC2016 # command text, verbatim
 # An UNQUOTED outer $( ) is already caught by tokenize()'s own bare-paren
 # splitting, but the guarded run can sit inside a FURTHER nested $( ) buried

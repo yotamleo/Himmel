@@ -192,27 +192,25 @@ case "${cmd//[\'\"\\]/}" in
 esac
 if [ "$raw_guarded" -eq 1 ]; then
     raw_masked=$(unquoted_mask "$cmd")
-    # codex-1 (round 6): a heredoc opener `<<` sitting in a `#` comment is
-    # not a real redirect, but strip_heredocs still treats it as one and
+    # codex-1 (round 6, corrected round 7 per AE): round 6 first narrowed
+    # this to a `<<` sitting on a line that is ENTIRELY a `#` comment,
+    # which strip_heredocs still mis-treats as a real redirect and
     # silently drops the "body" - a guarded invocation placed there
-    # included - before classify ever sees it (unquoted_mask does not
-    # blank `#`, only quotes). Deny outright whenever a `<<` sits in a
-    # comment, in a command that also names a guarded path, rather than
-    # teach strip_heredocs to tell a real opener from a commented-out one.
-    # A real (non-comment) heredoc opener is left to strip_heredocs/
-    # classify below, unchanged, so a heredoc body that only mentions the
-    # path (data, not code) still reads as a no-op.
-    while IFS= read -r hl6; do
-        ml6=$(unquoted_mask "$hl6")
-        trimmed6=${ml6#"${ml6%%[![:space:]]*}"}
-        case "$trimmed6" in
-            '#'*'<<'*)
-                shown=${cmd//$'\n'/ }
-                shown=${shown:0:200}
-                deny "the command contains a heredoc opener '<<' inside a comment alongside text naming a guarded scripts/cr script, so the bytes that would actually run cannot be trusted to have been classified."
-                ;;
-        esac
-    done <<<"$cmd"
+    # included - before classify ever sees it. That narrowing was itself
+    # the bug: a trailing comment after real command text on the same
+    # line (`echo ok # <<'EOF'`) has the identical strip_heredocs
+    # exposure and was left uncaught. Per AE's ruling as written - a
+    # guarded path plus a heredoc opener `<<` ANYWHERE in the command
+    # text denies, no line or comment logic - deny outright whenever the
+    # masked text contains `<<` at all, real heredoc bodies included (a
+    # heredoc body that only mentions the path as data now denies too;
+    # AE ruled that is acceptable, matching origin/main's own behaviour).
+    # A here-string `<<<` reads its operand as data, never a heredoc
+    # body, so it is told apart with a plain text check and left alone.
+    no_herestring=${raw_masked//<<</}
+    if [[ "$no_herestring" == *'<<'* ]]; then
+        deny "the command contains a heredoc opener '<<' alongside text naming a guarded scripts/cr script, so the bytes that would actually run cannot be trusted to have been classified."
+    fi
     # codex-2 (round 6): eval's quoted operand is read as one opaque word
     # by classify below (the same shape -c's operand needed a dedicated
     # recursion case for), so an operand naming a guarded script plus
