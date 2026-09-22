@@ -245,14 +245,16 @@ printf '#!/bin/sh\necho himmel9\n' > "$DEST9"
   prov_end ok >/dev/null )
 rm -f "$SNAP9"
 BACKUP9=$(find "$(prov_dir)/provenance-backups" -type f | head -n1)
-# NOTE: --skip-settings is deliberately NOT passed here. With it, the
-# unwire_settings loop (uninstall.sh ~2010-2023) never runs, so its
-# `_LEDGER_PROTECTED=""` reset (line 2000) never executes; the later
-# adopter-scripts loop then references `_LEDGER_PROTECTED` unset under
-# `set -uo pipefail` and the whole script aborts BEFORE reaching the
-# ledger-session-close code this RED targets -- a crash that would falsely
-# make the backup file "survive" for a reason unrelated to codex-1.
+# HIMMEL-3386: assert rc=0 BEFORE the survival check. A backup that survives
+# an uninstall that crashed early looks identical to one that survives a
+# clean dry-run, so the survival check alone is vacuous against a crash.
+# (--skip-settings used to be withheld here because it skipped the
+# unwire_settings `_LEDGER_PROTECTED=""` reset and the script then aborted
+# on an unbound variable; uninstall.sh now initialises it once globally, so
+# that is no longer a hazard and the rc check would catch it if it returned.)
 run_uninstall --dry-run --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks >/dev/null
+rc9=$?
+check "RED9 codex-1: dry-run uninstall exits 0" "$rc9" "0"
 check "RED9 codex-1: dry-run does not prune the backup file" \
   "$([ -n "$BACKUP9" ] && [ -f "$BACKUP9" ] && echo yes || echo no)" "yes"
 
@@ -409,11 +411,8 @@ printf '#!/bin/sh\necho operator-edited-after-install\n' > "$DEST15"
 BACKUP15=$(find "$(prov_dir)/provenance-backups" -type f | head -n1)
 [ -n "$BACKUP15" ] || { echo "FAIL - RED15 setup: backup for DEST15 not found"; fails=$((fails+1)); }
 LEDGER_PATH15="$(prov_ledger_path)"
-# NOTE: --skip-settings is deliberately NOT passed here (see RED9's note
-# above): it skips unwire_settings, whose `_LEDGER_PROTECTED=""` reset the
-# adopter-scripts loop later relies on -- without it the script aborts on an
-# unset variable under `set -uo pipefail` before ever reaching the
-# provenance session-close code this RED targets.
+# (HIMMEL-3386: the former note about --skip-settings and the unbound
+# `_LEDGER_PROTECTED` was stale -- uninstall.sh initialises it globally now.)
 run_uninstall --yes --purge-state --keep-backups --skip-tasks --skip-plugins --skip-hooks >/dev/null
 ledger_gone15=$([ -f "$LEDGER_PATH15" ] && echo present || echo gone)
 backup_kept15=$([ -f "$BACKUP15" ] && echo yes || echo no)

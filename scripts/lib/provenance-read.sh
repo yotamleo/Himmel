@@ -113,9 +113,9 @@ def build_chains($rows):
       | (presha($row)) as $ps
       | ([range(0;($chains|length)) | select($chains[.].cur == $ps)] | first) as $idx
       | if $idx != null then
-          $chains | .[$idx] = {eff_pre: $chains[$idx].eff_pre, cur: $row.post.sha, last: $row, ops: ($chains[$idx].ops + [$row.op])}
+          $chains | .[$idx] = {eff_pre: $chains[$idx].eff_pre, cur: $row.post.sha, last: $row, ops: ($chains[$idx].ops + [$row.op]), cc: ($chains[$idx].cc or ($row.container_created == true))}
         else
-          $chains + [{eff_pre: (if ($row|has("pre")) then $row.pre else null end), cur: $row.post.sha, last: $row, ops: [$row.op]}]
+          $chains + [{eff_pre: (if ($row|has("pre")) then $row.pre else null end), cur: $row.post.sha, last: $row, ops: [$row.op], cc: ($row.container_created == true)}]
         end
     );
 (map(select(.kind=="json-elem"))) as $elemrows
@@ -153,7 +153,7 @@ def build_chains($rows):
               class: (.last.class // null), scope: (.last.scope // null), row: (.last.manifest_row // null),
               governed: true, preexisted_only: false, ours: null,
               eff_pre: .eff_pre, eff_post: .last.post,
-              fields: (extra_fields(.last) + {elem_sha: .cur}),
+              fields: (extra_fields(.last) + {elem_sha: .cur} + (if .cc then {container_created: true} else {} end)),
               ref: refline(.last), ops: .ops
             }
         ) ) as $chainUnits
@@ -549,10 +549,19 @@ prov_read_apply() {
                     fi
                 fi
             else
-                local backup val container relpath
+                local backup val container relpath eff_sha
                 backup=$(printf '%s' "$u" | jq -r '.eff_pre.backup // empty')
+                eff_sha=$(printf '%s' "$u" | jq -r '.eff_pre.sha // empty')
                 if [ -z "$backup" ] || [ ! -f "$backup" ]; then _provread_err "no readable backup for $ptr in $path"; return 1; fi
                 val=$(cat "$backup") || { _provread_err "cannot read backup $backup"; return 1; }
+                # HIMMEL-3386: same guard as the json-key restore above -- the
+                # writer hashes a json-elem pre-value with prov_sha_json too
+                # (_prov_body's json case), so a corrupted-but-valid-JSON
+                # backup is refused BEFORE it is spliced into the array.
+                if [ -n "$eff_sha" ] && [ "$(prov_sha_json "$val" 2>/dev/null)" != "$eff_sha" ]; then
+                    _provread_err "backup for $ptr in $path does not match its recorded sha"
+                    return 1
+                fi
                 container=$(jq -c --argjson p "$patharr" 'getpath($p)' "$path")
                 relpath=$(_provread_json_elem_locate "$container" "$elemsha") || relpath=""
                 [ -n "$relpath" ] || { _provread_err "current element not found in $ptr of $path"; return 1; }
@@ -666,16 +675,22 @@ prov_read_session_end() {
 # is left alone; a later run may still need it. Refuses a symlinked backups
 # dir.
 prov_read_prune_backups() {
-    local dir bdir f is_done
+    local dir bdir f is_done done_list
     dir=$(prov_dir) || return 1
     bdir="$dir/provenance-backups"
     [ -e "$bdir" ] || return 0
     if [ -L "$bdir" ]; then _provread_err "refusing symlink $bdir"; return 1; fi
+    # HIMMEL-3386: the done list is "\n<path>\n<path>..." -- pad it with a
+    # trailing newline and match "\n<path>\n" so a finished foo.bak.extra
+    # cannot authorise deleting foo.bak (whole entries, not a prefix).
+    done_list="$_PROV_READ_DONE_BACKUPS
+"
     while IFS= read -r f; do
         [ -n "$f" ] || continue
         is_done=0
-        case "$_PROV_READ_DONE_BACKUPS" in *"
-$f"*) is_done=1 ;; esac
+        case "$done_list" in *"
+$f
+"*) is_done=1 ;; esac
         [ "$is_done" = 1 ] && rm -f -- "$f"
     done <<EOF
 $(find "$bdir" -type f 2>/dev/null)

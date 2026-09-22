@@ -51,23 +51,27 @@ Run these, in order, and write the result as the first bullet under
 7. **The kit:** `{{KIT}}` — versioned in-tree, nothing to copy. It holds
    `tick.sh` (the batched console snapshot), `headed-arm-leg.sh` (the leg
    launcher) and `inbox-send.sh` (rulings to a non-native lane).
-8. **Adopt the queue lock on THIS document — do not acquire a fresh one.**
-   Your release token is:
+8. **The queue lock on THIS document.** Its release token is:
 
    ```text
    {{RELEASE_TOKEN}}
    ```
 
-   `/console new` acquired the lock and that token is yours; releasing at wrap
-   requires it. Copy it into your first bullet. Acquiring again fails with
+   Which state to expect depends on how this document was made (HIMMEL-3304).
+   `/console new` acquires the lock and writes its real token above: adopt it,
+   copy it into your first bullet, and do not acquire again — that fails with
    `Work is owned elsewhere`, because the lock is held by the (now exited)
-   process that created this document — and on the `--arm` path there is no
+   process that created this document, and on the `--arm` path there is no
    terminal to read the token from, which is why it is written here.
-   Check the state rather than assuming it:
+   `/console next` never acquires one (the predecessor keeps its own doc's lock
+   until it wraps; this doc has never been locked), so the block above reads
+   `none yet` and the lock is `free`: acquire your own and record that token
+   instead. Check the state rather than assuming it:
    `HANDOVER_DIR="{{HANDOVER_ROOT}}" bash "{{REPO}}/scripts/handover/queue-lock.sh" status "<this file>"`
-   — `held` by that session is the expected, correct state. Only if it reports
-   `free` (an earlier console released it) do you acquire one yourself, and
-   then record the new token instead.
+   — `held` with a real token above, or `free` with `none yet`, is the
+   expected state. `held` with `none yet` means another console is still
+   running on this doc or died holding it: find that session, do not take it
+   over.
 9. **Re-brief every inherited leg BEFORE you announce yourself** (HIMMEL-3082,
    HIMMEL-3254). Each inherited leg holds a brief naming the predecessor, and
    you are a different session: until a leg has verified the succession it can
@@ -250,7 +254,7 @@ filters to terminal-state changes and emits nothing otherwise.
 
 | Monitor | Cadence | What it is |
 |---|---|---|
-| tick | 30 min | **Armed in ACTION ZERO step 10, not here** — the only unconditional monitor of the five, so its absence is the one that goes structurally unnoticed. The `Monitor` tool caps `timeout_ms` at `1800000` (30 min) and silently clamps anything larger, so arm it as a loop that emits on arm and re-arms on each expiry notice — never as one long-timeout arm. `bash "{{KIT}}/tick.sh" --doc "<this file>" --token <your token> --legs "{{STATE_DIR}}/<leg1>.md {{STATE_DIR}}/<leg2>.md"` (or comma-separated — `--legs` accepts space- **and** comma-separated docs, both spellings produce identical output; use absolute paths, because a bare leg doc name resolves against the handover ROOT, not your bucket, and reads `NOTFOUND`) — one batched line: heartbeat, leg locks, leg processes, armed jobs, suite locks, open PRs, bank. Per-leg lock status is one of **`FRESH`** (held, heartbeat current), **`STALE`** (held, heartbeat aged), **`WRAPPED`** (lock released and the leg's last status bullet says `WRAPPED` — the normal end of a leg, nothing to reclaim; HIMMEL-3293), **`FREE`** (the literal token `tick.sh` emits when the lock is gone while the leg has *not* wrapped — a lost lock, reclaim it; its own comments call this state "MISSING" as a concept, but `FREE` is what actually appears in `legs=`), or **`NOTFOUND`** (the leg doc did not resolve — a warning about a typo'd/nonexistent path, *not* a dead lock; never mistake it for a released lock). The line also ends `legset=<ok\|STALE:unarmed=…;unlisted=…\|unknown\|skip>` — see ACTION ZERO step 10: `STALE` means re-arm, not leg trouble. It then ends `board=<ok\|STALE:<age>\|MISSING\|skip>` — whether `console-board.html` still matches the state; anything but `ok` means re-run ACTION ZERO step 12 |
+| tick | 30 min | **Armed in ACTION ZERO step 10, not here** — the only unconditional monitor of the five, so its absence is the one that goes structurally unnoticed. The `Monitor` tool caps `timeout_ms` at `1800000` (30 min) and silently clamps anything larger, so arm it as a loop that emits on arm and re-arms on each expiry notice — never as one long-timeout arm. `bash "{{KIT}}/tick.sh" --doc "<this file>" --token <your token> --legs "{{STATE_DIR}}/<leg1>.md {{STATE_DIR}}/<leg2>.md"` (or comma-separated — `--legs` accepts space- **and** comma-separated docs, both spellings produce identical output; use absolute paths, because a bare leg doc name resolves against the handover ROOT, not your bucket, and reads `NOTFOUND`) — one batched line: heartbeat, leg locks, leg processes, armed jobs, suite locks, open PRs, bank. Per-leg lock status is one of **`FRESH`** (held, heartbeat current), **`STALE`** (held, heartbeat aged), **`WRAPPED`** (lock released and the leg's last status bullet says `WRAPPED` — the normal end of a leg, nothing to reclaim; HIMMEL-3293), **`FREE`** (the literal token `tick.sh` emits when the lock is gone while the leg has *not* wrapped — a lost lock, reclaim it; its own comments call this state "MISSING" as a concept, but `FREE` is what actually appears in `legs=`), **`UNVERIFIED`** (a lock *named* for the leg doc exists but records a path that does not resolve here, so `queue-lock.sh` can neither attribute it nor rule it out — **not** free: find its owner before anything else, never reclaim on it; HIMMEL-3290), or **`NOTFOUND`** (the leg doc did not resolve — a warning about a typo'd/nonexistent path, *not* a dead lock; never mistake it for a released lock). The line also ends `legset=<ok\|STALE:unarmed=…;unlisted=…\|unknown\|skip>` — see ACTION ZERO step 10: `STALE` means re-arm, not leg trouble. It then ends `board=<ok\|STALE:<age>\|MISSING\|skip>` — whether `console-board.html` still matches the state; anything but `ok` means re-run ACTION ZERO step 12 |
 | bank | 300 s | poll `bank-preflight.sh`, emit only when the state word changes (headroom → park → weekly-ceiling) |
 | CI | 600 s | poll `gh run list -R <owner/repo> --limit 20 --json databaseId,status`, emit only newly-completed runs |
 | notes repo | 300 s | if you keep a second repo for handover state, emit only on STALL (dirty files older than the commit cadence) or PUSH-LAG |
@@ -320,9 +324,14 @@ clean as evidence — query that PR yourself.
 ## Wrapping a leg
 
 On `WRAPPED`: confirm the lock is free at the ROOT sweep, close the leg's
-window (`kill <pid>` from its launch log), and prune its worktree once the PR
-is merged. A worktree reported "in use" immediately after a wrap is the leg's
-own end-of-session hook still writing — it prunes on the next sweep.
+window (`kill <pid>` from its launch log), and prune ITS worktree once the PR
+is merged: `bash scripts/clean.sh --only <leg-worktree-path>`. Never run the
+bare `clean.sh` sweep for one leg — it is fleet-wide and removes every merged
+worktree, including another leg's that has merged but not yet wrapped (a live
+`claude` process's cwd is the primary checkout, so nothing marks that
+worktree as in use). `--only` exits non-zero when the target is not a prune
+candidate. A worktree reported "in use" immediately after a wrap is the leg's
+own end-of-session hook still writing — re-run `--only` on it shortly.
 
 ## Standing rules
 

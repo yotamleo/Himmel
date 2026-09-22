@@ -995,36 +995,113 @@ function verifyProjectHookIntegrity(scriptPath, sessionId) {
   return honourBypass(scriptPath, sessionId) ? { ok: true } : result;
 }
 
+// HIMMEL-3390. normalize() above only flips slashes; it does not collapse `..`
+// or follow a symlink, so `<project>/scripts/../scripts/hooks/guard.sh` was
+// project-local yet keyed a pin lookup by that spelling (`scripts/../scripts/…`,
+// never pinned) and skipped verification of a tampered file. Both the
+// project-local decision and the pin key now come from the RESOLVED path:
+// path.resolve collapses `..`, realpath follows links — through the deepest
+// ancestor that exists, so a missing script still resolves beside its siblings.
+const ESCAPES_PROJECT_DENY = 'escapes-project: ';
+
+function resolveReal(candidate) {
+  const raw = String(candidate);
+  // realpath(3) walks the string in kernel order, so `link/..` leaves the link's
+  // target; the JS realpathSync (and path.resolve) collapse `..` lexically first.
+  try { return fs.realpathSync.native(raw); } catch (_e) { /* absent: resolve what exists */ }
+  const abs = path.resolve(raw);
+  const tail = [];
+  for (let cur = abs; ;) {
+    try {
+      return path.join(fs.realpathSync.native(cur), ...tail);
+    } catch (_e) {
+      const up = path.dirname(cur);
+      if (up === cur) return abs;
+      tail.unshift(path.basename(cur));
+      cur = up;
+    }
+  }
+}
+
+// Every project-relative identity `candidate` passes through on its way to the
+// file that runs: for each hop of the leaf's symlink chain, the parents resolved
+// (kernel order) plus the unfollowed leaf. A pinned hook swapped for a link to an
+// unpinned sibling is then still checked under its own pin, whichever directory
+// alias it was reached through. Bounded, so a link loop cannot spin.
+function leafChain(candidate) {
+  const hops = [];
+  let cur = String(candidate);
+  for (let i = 0; i < 40; i++) {
+    const hop = path.join(resolveReal(path.dirname(cur)), path.basename(cur));
+    hops.push(normalize(hop));
+    let target;
+    try { target = fs.readlinkSync(hop); } catch (_e) { break; }
+    cur = path.isAbsolute(target) ? target : `${path.dirname(hop)}/${target}`;
+  }
+  return hops;
+}
+
 function verifyIntegrityUnbypassed(scriptPath, sessionId) {
   // ---- FAST PATH: strictly git-free, no child process, on every hook call ----
   const projectDir = process.env.CLAUDE_PROJECT_DIR;
   if (!projectDir) return { ok: true };
-  const normScript = normalize(scriptPath).toLowerCase();
-  const normProject = normalize(projectDir).toLowerCase();
-  if (!normScript.startsWith(`${normProject}/`)) return { ok: true }; // not project-local
-  const relPath = normalize(scriptPath).slice(normalize(projectDir).length + 1);
+  const resolvedScript = normalize(resolveReal(scriptPath));
+  const resolvedProject = normalize(resolveReal(projectDir));
+  if (!resolvedScript.toLowerCase().startsWith(`${resolvedProject.toLowerCase()}/`)) {
+    // Resolves outside the project. A path that never claimed to be inside it is
+    // simply foreign (not this check's business); one that spelled itself
+    // `<project>/…` but leaves it via `..` or a link is neither project-local nor
+    // vouched for by any pin, so it is refused, and the bypass cannot rescue it
+    // (honourBypass wants the resolved script inside the worktree).
+    if (!normalize(scriptPath).toLowerCase().startsWith(`${normalize(projectDir).toLowerCase()}/`)) return { ok: true };
+    return {
+      ok: false,
+      relPath: normalize(scriptPath).slice(normalize(projectDir).length + 1),
+      reason: `${ESCAPES_PROJECT_DENY}resolves to ${resolvedScript}, outside the project`,
+    };
+  }
+  const relPath = resolvedScript.slice(resolvedProject.length + 1);
   const { record, denyReason } = loadRecordAcrossPublish(sessionId);
   if (denyReason) return { ok: false, relPath, reason: denyReason };
   const pins = recordPins(record);
   if (!pins) return { ok: true };
-  const expected = pins[relPath];
-  if (typeof expected !== 'string' || !expected) return { ok: true }; // unpinned script
+  // Every identity the path claims is checked: the resolved target's, the spelled
+  // path's own (`..` collapsed, links NOT followed) and each hop of the leaf's link
+  // chain. A pinned hook swapped for a link to an unpinned sibling keeps its pin.
+  const spelled = normalize(path.resolve(String(scriptPath)));
+  const spelledProject = normalize(path.resolve(projectDir));
+  const keys = [relPath];
+  const claim = (abs, root) => {
+    if (!abs.toLowerCase().startsWith(`${root.toLowerCase()}/`)) return;
+    const rel = abs.slice(root.length + 1);
+    if (!keys.includes(rel)) keys.push(rel);
+  };
+  claim(spelled, spelledProject);
+  for (const hop of leafChain(scriptPath)) claim(hop, resolvedProject);
   let actual;
-  try {
-    actual = gitBlobSha1(fs.readFileSync(scriptPath));
-  } catch (_e) {
-    return { ok: true }; // unreadable/missing — the DELETE vector, already covered by --fail-closed-when
+  for (const key of keys) {
+    const expected = pins[key];
+    if (typeof expected !== 'string' || !expected) continue; // unpinned script
+    if (actual === undefined) {
+      try {
+        actual = gitBlobSha1(fs.readFileSync(scriptPath));
+      } catch (_e) {
+        return { ok: true }; // unreadable/missing — the DELETE vector, already covered by --fail-closed-when
+      }
+    }
+    if (actual === expected) continue;
+    // -------------------------------- MISMATCH: HIMMEL-2528 re-pin or deny ---
+    try {
+      const verdict = resolveMismatch({ projectDir, relPath: key, actual, record, sessionId });
+      if (!verdict.ok) return verdict;
+    } catch (_e) {
+      // Any unforeseen failure on the mismatch path denies, exactly as before
+      // this ticket — a crash here must never become an allow, and must never
+      // spill a stack trace into the session transcript.
+      return { ok: false, relPath: key, reason: null };
+    }
   }
-  if (actual === expected) return { ok: true };
-  // ---------------------------------- MISMATCH: HIMMEL-2528 re-pin or deny ---
-  try {
-    return resolveMismatch({ projectDir, relPath, actual, record, sessionId });
-  } catch (_e) {
-    // Any unforeseen failure on the mismatch path denies, exactly as before
-    // this ticket — a crash here must never become an allow, and must never
-    // spill a stack trace into the session transcript.
-    return { ok: false, relPath, reason: null };
-  }
+  return { ok: true };
 }
 
 function denyIntegrityMismatch(scriptPath, relPath, reason) {
@@ -1037,6 +1114,14 @@ function denyIntegrityMismatch(scriptPath, relPath, reason) {
       + 'publishing process has finished; if it died, the incumbent record is beside the missing one as '
       + 'a .old-* file. Legitimate mid-session hook edit: rerun with HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 '
       + `set in the LAUNCHING shell. ${BYPASS_SCOPE}\n`,
+    );
+    return;
+  }
+  if (typeof reason === 'string' && reason.indexOf(ESCAPES_PROJECT_DENY) === 0) {
+    process.stderr.write(
+      `run-hook-with-bash: DENY ${path.basename(scriptPath)} — the hook path is spelled inside the project `
+      + `(${relPath}) but ${reason.slice(ESCAPES_PROJECT_DENY.length)}, so no session pin can vouch for it. `
+      + 'Point the hook at a script inside the project; HIMMEL_HOOK_INTEGRITY_BYPASS_OK does not apply to a path that leaves it.\n',
     );
     return;
   }

@@ -60,7 +60,10 @@ legs= reads a leg's lock as FRESH or STALE (held; an idle-warned lock still read
 FRESH/STALE here -- the IDLE-HELD? flag belongs to the sweep and the exit code),
 WRAPPED (lock released and the tail says WRAPPED -- the normal end of a leg),
 FREE (lock released while the tail does not say WRAPPED -- a lost lock),
-CORRUPT, UNKNOWN (queue-lock status unreadable) or NOTFOUND (no such doc).
+UNVERIFIED (a lock named for the doc exists but records a path that does not
+resolve here -- neither ruled held nor free: check its owner, never reclaim on
+it; HIMMEL-3290), CORRUPT, UNKNOWN (queue-lock status unreadable) or NOTFOUND
+(no such doc).
 
 legset=<ok|STALE:unarmed=A+B;unlisted=C|unknown|skip> (HIMMEL-3293) compares
 this console's `## Live state` legs with the --legs arm. unarmed = listed in
@@ -248,6 +251,7 @@ for leg in $LEGS_SPLIT; do
         case "$lock_out" in
             *'status: FRESH'*) lock_status=FRESH ;;
             *'status: STALE'*) lock_status=STALE ;;
+            *UNVERIFIED*) lock_status=UNVERIFIED ;;
             free*) lock_status=FREE ;;
             *CORRUPT*) lock_status=CORRUPT ;;
             *) lock_status=UNKNOWN ;;

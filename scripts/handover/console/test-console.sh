@@ -1506,4 +1506,16 @@ rm -f "$tmp/claude-argv-63"
 ( cd "$tmp" && HIMMELCTL_CACHE_DIR="$tmp/not-a-dir-63" PATH="$stub63:$PATH" bash -c "touch $tmp/not-a-dir-63; $(printf '%s\n' "$out63a" | sed -n 's/^launch: //p')" ) >/dev/null 2>&1
 check "63e unwritable record dir: claude still started" "$([ -s "$tmp/claude-argv-63" ] && echo started || echo not-started)" "started"
 
+# 64. HIMMEL-3304: `next` never acquires the successor doc's lock (the
+# RELEASE_TOKEN placeholder above says "none yet"), so ACTION ZERO step 8 must
+# present `free` as the expected state on that path, not as the exception. RED
+# control (pre-fix template): step 8 read "`held` by that session is the
+# expected, correct state" with no `/console next` branch -- 0 matches.
+step8_64="$(sed -n '/^8\. \*\*/,/^9\. \*\*/p' "$REPO_REAL/docs/handover/console-template.md")"
+# shellcheck disable=SC2016  # backticks are literal template text
+check "64 step 8 says /console next never acquires, so free is expected there" \
+    "$(printf '%s\n' "$step8_64" | tr '\n' ' ' | grep -c '`/console next` never acquires.*`none yet` and the lock is `free`')" "1"
+check "64 step 8 no longer calls held the only expected state" \
+    "$(printf '%s\n' "$step8_64" | grep -c 'is the expected, correct state')" "0"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

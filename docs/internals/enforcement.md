@@ -1774,6 +1774,81 @@ The brief-level twin is `STASH_BAN_LINE` in the lane worker prompts. Fails
 CLOSED on missing `jq` or malformed JSON. Bypass: `GIT_STASH_OK=1` (launching
 shell, session-sticky). Spec: `scripts/hooks/test-block-git-stash.sh`.
 
+### `guard-pr-check-literal.sh` — `/pr-check` step-0 relative spellings (HIMMEL-3383)
+
+Every leg profile allow-lists `bash scripts/cr/pr-check-context.sh` and
+`bash scripts/cr/pr-check-env.sh CR_CLAUDE_AGENTS` (HIMMEL-3359, HIMMEL-3375).
+The permission matcher is a prefix match, so the rule also covers other
+spellings that run the same relative file: extra arguments, `./`, `//`, `..`,
+quotes, `sh`/`source`/`.`, wrappers such as `env` or `timeout`, a compound
+command, a glob or a brace. The runbook permits running the checkout's own copy
+only when three conditions hold:
+
+- the cwd's git-common-dir is `$HIMMEL_REPO/.git` (the himmel lane);
+- the cwd is the worktree root;
+- the working-tree bytes and file modes under `scripts/cr/`, and of
+  `scripts/guardrails/lib.sh` and `scripts/lib/load-dotenv.sh` (the files the two
+  scripts source), equal the `HIMMEL_REPO` anchor's own working tree.
+
+**What fires it.** The hook classifies by the script a command runs, not by its
+text. It strips quotes and backslashes and splits the command into simple
+commands. A simple command counts when its command word runs a file (a shell,
+`source`, `.`, `eval`, or a path) and one of its words ends, after dropping
+`.` segments and repeated `/`, in a relative `pr-check-context.sh` or
+`pr-check-env.sh`, or is a glob, brace or `$var` that could. Mentions (`grep`,
+`cat`, `git diff`, the test suites) are a no-op. Absolute paths, including the
+anchor's, are a no-op too: no allow rule matches them, and the runbook's
+adopter lane depends on them. A candidate that does not resolve to exactly
+`scripts/cr/<script>` from the cwd (a glob, a variable, any `..`, which the
+kernel resolves after following symlinks), or a command that changes directory
+(`cd`, `pushd`, `env -C`), denies outright: the conditions
+are checked in the cwd, so they prove nothing about another copy. So does a
+candidate inside a compound command, behind a wrapper (`env`, `timeout`,
+`xargs`, ...) or after a `VAR=` prefix: another command in the same call can
+rewrite the checked bytes before the script runs (`cp x
+scripts/cr/pr-check-context.sh; bash …`), a wrapper's operands can hide the
+word it runs, and `BASH_ENV=` runs a file first. A glob or brace list is
+matched against the guarded names, in any case, so `scripts/c[r]/pr-chec[k]-context.sh`
+counts too. Any word naming a path through `cr/` (any case) that the shell
+rewrites before it runs (a `$` expansion, a `$( )` or backtick substitution, a
+glob, a brace list, a `~`) denies. So does a relative one with an uppercase
+letter, which a case-insensitive filesystem folds. `busybox` and `toybox`
+count as shells. The
+canonical anchored fence is exempt only in its exact shape; only its echo text
+may vary. Classification uses bash builtins only, so a missing tool cannot turn
+it into a no-op. Text classification has limits, and the hook's `ponytail:` names them.
+
+**Why the anchor, not a ref.** The compare base is the anchor's working-tree
+bytes, never `refs/remotes/origin/main`. Refs live in the common git dir, which
+a leg can write (`git update-ref`), so a ref-based base could be moved onto the
+edit. The anchor is the primary checkout, which `block-edit-on-main` keeps legs
+from editing. A git write can still reach its working tree (`git -C <primary>
+checkout <branch> -- <path>`, a detached HEAD), so the anchor must be on
+`refs/heads/main` and its guarded paths must equal main's committed tree
+(`git ls-tree`, which runs no filter). The check runs at match time only, so a
+swap between the check and the exec is not covered. Trade-off: a primary lagging behind main, or ahead of the branch's
+base, differs from a clean branch, so the hook denies and the anchored fence is
+the remedy. That is the safe direction.
+
+The compare runs file by file on `<mode> <blob-id> <path>` lines from
+`git hash-object --no-filters`, so no clean filter, index flag or replace ref
+can hide an edit. Untracked files, symlinks, other non-regular files and names
+with control characters all refuse.
+
+When the conditions all hold, the hook exits 0 silently and the permission rules
+decide as before. It never emits an allow of its own, so it can only narrow.
+When any condition fails, or cannot be evaluated (no cwd, unset `HIMMEL_REPO`, a
+missing tool on `PATH`, an unreadable anchor, or malformed stdin), it refuses and
+prints the canonical anchored fence as the remedy. It is a member of
+`MUST_RUN_CHAIN_MEMBERS` in `run-hook-with-bash.js`, so a starved chain denies
+instead of skipping it.
+
+It sources and execs nothing from the checkout under review. Its git calls ignore
+inherited `GIT_*` variables and switch off fsmonitor and replace refs
+(`--no-replace-objects`). Fails CLOSED. There is no bypass variable, because the
+canonical fence is always available and is the remedy. Spec:
+`scripts/hooks/test-guard-pr-check-literal.sh`.
+
 ### `block-rogue-claude-schedule.sh` — raw scheduler-arm guard (HIMMEL-647)
 
 Fires on Bash/PowerShell. Refuses a tool call that registers an OS scheduler

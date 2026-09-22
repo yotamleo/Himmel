@@ -56,6 +56,14 @@ readable by any local user via `ps` or `/proc/<pid>/cmdline`. It scans `~/.claud
 **name and flag only, never the value**. Remedy: move the key into the server's `env` block
 (or a file it reads) and rotate the exposed key.
 
+**C42-sweep-health** (HIMMEL-3405, WARN only) runs `bash scripts/clean-garden.sh --health`
+(read-only; prints only alarm lines, nothing when healthy) and WARNs once per line:
+`LOST-COMMITS <branch> pr#<n> ahead=<k>` (commits pushed after the PR merged that never
+shipped), `STUCK <path> <reason> since <ts>` (a worktree/branch the prune sweep keeps
+skipping — 3 sweeps or 24 h, `SWEEP_STUCK_SWEEPS` / `SWEEP_STUCK_HOURS`), and
+`SWEEP-ERROR <branch> <cause>` (the sweep could not classify a branch, e.g. no merge base
+with `origin/main`). A run that cannot happen is INFO, never a false-clean OK.
+
 It is read-only EXCEPT `--fix`, which heals the C1-guardrail node wiring by
 re-baking the 3 user-level guardrail hooks in the **user-scope**
 `~/.claude/settings.json` (outside any repo — the on-main / repo-settings

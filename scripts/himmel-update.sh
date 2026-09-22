@@ -71,14 +71,17 @@ report_plugin_gap() {
 
     if ! command -v jq >/dev/null 2>&1; then
         echo "    skip: jq not on PATH (cannot compute plugin gap)."
+        _ver_row plugins - - unknown "jq not on PATH"
         return 0
     fi
     if [ ! -f "$market_json" ]; then
         echo "    skip: marketplace manifest not found ($market_json)."
+        _ver_row plugins - - n/a "marketplace manifest not found"
         return 0
     fi
     if [ ! -f "$installed_json" ]; then
         echo "    skip: installed-plugins state not found ($installed_json)."
+        _ver_row plugins - - n/a "no installed-plugins state (no Claude plugins installed)"
         return 0
     fi
 
@@ -94,10 +97,11 @@ report_plugin_gap() {
 
     if [ -z "$declared" ]; then
         echo "    skip: no plugins declared in $market_json."
+        _ver_row plugins - - n/a "no plugins declared"
         return 0
     fi
 
-    local total=0 ok=0 missing="" shadowed="" name other
+    local total=0 ok=0 missing="" shadowed="" drifted="" name other iv sv
     while IFS= read -r name; do
         [ -z "$name" ] && continue
         total=$((total + 1))
@@ -112,6 +116,15 @@ report_plugin_gap() {
 "
         elif printf '%s\n' "$installed_specs" | grep -Fxq "$name@$mp_name"; then
             ok=$((ok + 1))
+            # --versions only: an installed @himmel copy whose version differs
+            # from the marketplace source is an update the re-sync has not landed.
+            if [ -n "${VER_FILE:-}" ]; then
+                iv=$(jq -r --arg k "$name@$mp_name" '.plugins[$k][0].version // empty' "$installed_json" 2>/dev/null | tr -d '\r' || true)
+                sv=$(jq -r '.version // empty' "$ROOT/marketplace/plugins/$name/.claude-plugin/plugin.json" 2>/dev/null | tr -d '\r' || true)
+                if [ -n "$iv" ] && [ -n "$sv" ] && [ "$iv" != "$sv" ]; then
+                    drifted="$drifted $name($iv->$sv)"
+                fi
+            fi
         else
             missing="$missing  claude plugin install $name@$mp_name
 "
@@ -122,9 +135,15 @@ EOF
 
     if [ -z "$missing" ] && [ -z "$shadowed" ]; then
         echo "    all $total @$mp_name plugins installed from @$mp_name."
+        if [ -n "$drifted" ]; then
+            _ver_row plugins "$ok/$total installed" "$total declared" behind "version drift:$drifted"
+        else
+            _ver_row plugins "$ok/$total installed" "$total declared" current
+        fi
         return 0
     fi
 
+    _ver_row plugins "$ok/$total installed" "$total declared" behind "some not installed from @$mp_name, or shadowed by another marketplace${drifted:+; version drift:$drifted}"
     echo "    $ok/$total @$mp_name plugins installed from @$mp_name."
     if [ -n "$missing" ]; then
         echo ""
@@ -211,12 +230,15 @@ update_hermes() {
         there=$(git -C "$src" ls-remote "$remote" "$merge_ref" 2>/dev/null | cut -f1)
         if [ -z "$there" ]; then
             echo "    skip: could not reach origin (offline?)."
+            _ver_row hermes "${here:0:7}" - unknown "could not reach origin"
             return 0
         fi
         if [ "$here" != "$there" ]; then
             echo "    update available — run /himmel-update (no --check) to pull + reinstall."
+            _ver_row hermes "${here:0:7}" "${there:0:7}" behind
         else
             echo "    hermes is current."
+            _ver_row hermes "${here:0:7}" "${there:0:7}" current
         fi
         return 0
     fi
@@ -771,6 +793,7 @@ update_jira_cli() {
         STATUS_jira_cli="skipped"; DETAIL_jira_cli="scripts/jira not found"
         return 0
     fi
+    _ver_jira_row "$jira_dir"
     local pm=""
     if command -v npm >/dev/null 2>&1; then
         pm=npm
@@ -842,14 +865,17 @@ update_qmd_fork() {
     # reporting a misleading "skipped".
     if ! . "$lib"; then
         STATUS_qmd_fork="failed"; DETAIL_qmd_fork="could not source qmd-bin.sh"
+        _ver_row qmd_fork - - unknown "could not source qmd-bin.sh"
         return 1
     fi
     if qmd_fork_served; then
         STATUS_qmd_fork="up-to-date"; DETAIL_qmd_fork="$(qmd_cmd --version 2>/dev/null)"
+        _ver_row qmd_fork "$(_ver_qmd_installed)" "pin $(_qmd_fork_ref | cut -c1-7)" current
         return 0
     fi
     if [ "$mode" = "check" ]; then
         STATUS_qmd_fork="skipped"; DETAIL_qmd_fork="update available — run without --check to install"
+        _ver_row qmd_fork "$(_ver_qmd_installed)" "pin $(_qmd_fork_ref | cut -c1-7)" behind "fork build not served at the pin"
         return 0
     fi
     if qmd_install; then
@@ -1042,6 +1068,7 @@ update_luna_template() {
     printf '%s\n' "$out"
     if [ "$mode" = "check" ]; then
         STATUS_luna_template="skipped"; DETAIL_luna_template="$(_last_line_trimmed "$out")"
+        _ver_luna_row "$out" "$rc"
         return 0
     fi
     if [ "$rc" -eq 0 ]; then
@@ -1096,6 +1123,213 @@ EOF
     if [ -n "$STATUS_graphify" ]; then
         printf '    %-14s %-14s %s\n' "graphify" "$STATUS_graphify" "$DETAIL_graphify"
     fi
+}
+
+# ─── --versions report plumbing (HIMMEL-3400) ────────────────────────────────
+# The per-component probes above already read "installed" and "available" while
+# they run in check mode; they hand those two values to _ver_row instead of a
+# second copy of each probe living in a report function. _ver_row appends to a
+# FILE (VER_FILE), not a shell variable, because several probes run inside a
+# `$(...)` subshell (run_hermes_step) where a variable write would be lost.
+# A no-op unless --versions armed VER_FILE, so --check / apply are unchanged.
+#   _ver_row <id> <installed> <available> <state> [note]
+# state: current | behind | unknown | info (informational, never counted).
+_ver_row() {
+    [ -n "${VER_FILE:-}" ] || return 0
+    local note="${5:-}"
+    printf '%s|%s|%s|%s|%s\n' "$1" "${2//|//}" "${3//|//}" "$4" "${note//|//}" >> "$VER_FILE"
+}
+
+# _ver_describe [ref] — `<describe> (<short sha>)`, or just the short sha when
+# the repo has no tag to describe against.
+_ver_describe() {
+    local ref="${1:-HEAD}" d s
+    d=$(git describe --tags --always "$ref" 2>/dev/null) || d="?"
+    s=$(git rev-parse --short "$ref" 2>/dev/null) || s="?"
+    case "$d" in
+        "$s"*|"?") printf '%s' "$d" ;;
+        *)         printf '%s (%s)' "$d" "$s" ;;
+    esac
+}
+
+# Installed qmd version, best effort (qmd_cmd comes from the sourced qmd-bin.sh).
+_ver_qmd_installed() {
+    local v
+    v=$(qmd_cmd --version 2>/dev/null | head -1) || v=""
+    printf '%s' "${v:-?}"
+}
+
+# jira CLI: dist/ is a gitignored build of scripts/jira/src, so "behind" means
+# the build is missing or older than a source file (or package.json) — the exact
+# staleness `git pull` leaves behind and the apply chain's rebuild repairs.
+_ver_jira_row() {
+    local dir="$1" dist="$1/dist/index.js" newer built
+    if [ ! -f "$dist" ]; then
+        _ver_row jira_cli "not built" "source" behind "scripts/jira/dist/index.js missing"
+        return 0
+    fi
+    built=$(date -r "$dist" +%Y-%m-%d 2>/dev/null || echo "?")
+    newer=$(find "$dir/src" "$dir/package.json" -type f -newer "$dist" 2>/dev/null | head -1 || true)
+    if [ -n "$newer" ]; then
+        _ver_row jira_cli "built $built" "source $(date -r "$newer" +%Y-%m-%d 2>/dev/null || echo "?")" behind "${newer#"$dir"/} is newer than the dist build"
+    else
+        _ver_row jira_cli "built $built" "source <= build" current
+    fi
+}
+
+# luna template: turn upgrade.sh --check's one-line answer into a row.
+#   "... template vX available (vault is vY) ..."  -> behind, installed vY, available vX
+#   "... vault is current (vX)."                     -> current
+# anything else (a non-zero rc, an unrecognised line) is unknown, not current.
+_ver_luna_row() {
+    local out="$1" rc="$2" tmpl vault
+    tmpl=$(printf '%s\n' "$out" | sed -n 's/.*template v\([0-9][^ ]*\) available (vault is v\([0-9][^)]*\)).*/\1/p' | head -1)
+    vault=$(printf '%s\n' "$out" | sed -n 's/.*template v\([0-9][^ ]*\) available (vault is v\([0-9][^)]*\)).*/\2/p' | head -1)
+    if [ -n "$tmpl" ] && [ -n "$vault" ]; then
+        _ver_row luna_template "v$vault" "v$tmpl" behind
+        return 0
+    fi
+    vault=$(printf '%s\n' "$out" | sed -n 's/.*vault is current (v\([0-9][^)]*\)).*/\1/p' | head -1)
+    if [ -n "$vault" ] && [ "$rc" -eq 0 ]; then
+        _ver_row luna_template "v$vault" "v$vault" current
+        return 0
+    fi
+    _ver_row luna_template - - unknown "upgrade.sh --check gave no version (rc $rc)"
+}
+
+# npm and bun carry no pin in this repo (both self-upgrade to latest on apply),
+# so there is nothing to be "behind": the row reports what is installed.
+_ver_pm_rows() {
+    local pm v
+    for pm in npm bun; do
+        if command -v "$pm" >/dev/null 2>&1; then
+            v=$("$pm" --version 2>/dev/null | head -1) || v=""
+            _ver_row "$pm" "${v:-?}" - info "no pin in this repo — self-upgrades on apply"
+        else
+            _ver_row "$pm" - - n/a "not on PATH"
+        fi
+    done
+}
+
+# A packaged / tarball install has no upstream; its himmel row is the same
+# release-tag lookup --check uses (scripts/lib/release-check.sh, HIMMEL-3247).
+_ver_nongit_row() {
+    local inst rc=0
+    # shellcheck source=lib/release-check.sh
+    # shellcheck disable=SC1091
+    if ! { [ -r "$ROOT/scripts/lib/release-check.sh" ] && . "$ROOT/scripts/lib/release-check.sh"; } 2>/dev/null; then
+        _ver_row himmel - - unknown "scripts/lib/release-check.sh missing or unreadable (broken install)"
+        return 0
+    fi
+    if ! inst=$(release_installed_version "$ROOT"); then
+        _ver_row himmel - - unknown "no readable VERSION file"
+        return 0
+    fi
+    release_fetch_latest || rc=$?
+    case "$rc" in
+        0)
+            if release_is_older "$inst" "$RELEASE_LATEST_TAG"; then
+                _ver_row himmel "$inst" "$RELEASE_LATEST_TAG" behind "not a git checkout — update through the package manager or the next release tarball"
+            else
+                _ver_row himmel "$inst" "$RELEASE_LATEST_TAG" current "not a git checkout"
+            fi ;;
+        3) _ver_row himmel "$inst" - n/a "no release has been published yet" ;;
+        *) _ver_row himmel "$inst" - unknown "release lookup failed (${RELEASE_FAIL_REASON:-unknown})" ;;
+    esac
+}
+
+# The read-only checkout comparison shared by --check and --versions: fetches
+# remote refs only, prints the branch/upstream/behind/ahead report, sets
+# STATUS_pull/DETAIL_pull and emits the himmel row. Returns 0 when it produced a
+# comparison (or a channel report), 2 on a malformed channel setting (already
+# reported), 10 when origin was unreachable and 11 when the branch has no
+# upstream (both after printing the message --check has always printed) — so
+# --check can still report the plugin gap and stop, while --versions carries on
+# to the other components.
+check_pull() {
+    local upstream behind ahead ahead_note
+    branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
+    # HIMMEL-2705: resolved here, not up front — only the modes that actually
+    # need the channel resolve it, so a malformed value still exits loud here.
+    if ! UPDATE_CHANNEL=$(_resolve_update_channel); then
+        return 2
+    fi
+    if [ -n "$UPDATE_CHANNEL" ]; then
+        # HIMMEL-2705: channel mode follows tags, not the branch's upstream —
+        # its own read-only fetch+compare, never the plain branch/upstream
+        # behind/ahead report below.
+        echo "branch:   $branch"
+        echo "channel:  $UPDATE_CHANNEL"
+        _channel_follow "$UPDATE_CHANNEL" check
+        return 0
+    fi
+    git fetch --quiet origin 2>/dev/null || {
+        echo "update --check: could not reach origin (offline or no remote configured)."
+        _ver_row himmel "$(_ver_describe)" - unknown "could not reach origin"
+        return 10
+    }
+    upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) || {
+        echo "update --check: no upstream configured for branch '$branch'."
+        _ver_row himmel "$(_ver_describe)" - unknown "no upstream configured for branch '$branch'"
+        return 11
+    }
+    behind=$(git rev-list --count "HEAD..$upstream" 2>/dev/null || echo "?")
+    ahead=$(git rev-list --count "$upstream..HEAD" 2>/dev/null || echo "?")
+    echo "branch:   $branch"
+    echo "upstream: $upstream"
+    echo "behind:   $behind"
+    echo "ahead:    $ahead"
+    if [ "$behind" = "0" ]; then
+        echo "status:   up to date — nothing to pull."
+        STATUS_pull="up-to-date"; DETAIL_pull="up to date"
+        ahead_note=""
+        case "$ahead" in 0|"?") ;; *) ahead_note="ahead $ahead" ;; esac
+        _ver_row himmel "$(_ver_describe)" "$(_ver_describe "$upstream")" current "$ahead_note"
+    elif [ "$behind" != "?" ]; then
+        echo "status:   $behind commit(s) behind — run /himmel-update (or bash scripts/himmel-update.sh) to pull."
+        STATUS_pull="skipped"; DETAIL_pull="$behind commit(s) behind — run without --check to pull"
+        _ver_row himmel "$(_ver_describe)" "$(_ver_describe "$upstream")" behind "$behind commit(s) behind $upstream"
+    else
+        STATUS_pull="skipped"; DETAIL_pull="unknown (git rev-list failed)"
+        _ver_row himmel "$(_ver_describe)" - unknown "git rev-list failed"
+    fi
+    return 0
+}
+
+# Prints one row per updatable component, in a fixed order, and returns the
+# report's exit code: 1 when any component is behind, else 3 when any could not
+# be determined (unknown is NOT "proved current"), else 0. A component with no
+# row (not installed / not configured) reads n/a with the chain's own skip
+# reason when it has one.
+print_versions_table() {
+    local id row inst avail state note behind=0 unknown=0
+    echo ""
+    echo "==> himmel ecosystem versions (read-only — nothing was pulled, rebuilt, restarted or upgraded)"
+    printf '    %-14s %-8s %-30s %-30s %s\n' component state installed available note
+    for id in himmel plugins jira_cli qmd_fork hermes luna_template cli_proxy node npm bun; do
+        row=$(grep "^$id|" "$VER_FILE" 2>/dev/null | tail -1 || true)
+        if [ -n "$row" ]; then
+            IFS='|' read -r _ inst avail state note <<EOF
+$row
+EOF
+        else
+            inst="-"; avail="-"; state="n/a"; note=""
+            case "$id" in
+                jira_cli)      note="$DETAIL_jira_cli" ;;
+                qmd_fork)      note="$DETAIL_qmd_fork" ;;
+                hermes)        note="$DETAIL_hermes" ;;
+                luna_template) note="$DETAIL_luna_template" ;;
+            esac
+        fi
+        [ "$state" = "behind" ] && behind=$((behind + 1))
+        [ "$state" = "unknown" ] && unknown=$((unknown + 1))
+        printf '    %-14s %-8s %-30s %-30s %s\n' "$id" "$state" "$inst" "$avail" "$note"
+    done
+    echo ""
+    echo "    $behind behind, $unknown undetermined."
+    [ "$behind" -eq 0 ] || return 1
+    [ "$unknown" -eq 0 ] || return 3
+    return 0
 }
 
 # ─── graphify pin sync (HIMMEL-1048) ─────────────────────────────────────────
@@ -1249,6 +1483,7 @@ sync_cli_proxy() {
     fi
     if [ ! -f "$lane" ]; then
         echo "    skip: $(basename "$lane") not found ($lane)."
+        _ver_row cli_proxy - - n/a "lane script not found"
         return 0
     fi
     # PowerShell's pin literal is the spot scripts/upstreams.json's version_pin
@@ -1265,6 +1500,7 @@ sync_cli_proxy() {
         else
             echo "    skip: could not read the \$Version pin from cli-proxy-lane.ps1."
         fi
+        _ver_row cli_proxy - - unknown "could not read the pin from $(basename "$lane")"
         return 0
     fi
     # cadence_user_home (lib/cadence-format.sh, already sourced): USERPROFILE via
@@ -1274,6 +1510,7 @@ sync_cli_proxy() {
     stamp_file="$(cadence_user_home)/.cli-proxy-api/cli-proxy-api.version"
     if [ ! -f "$stamp_file" ]; then
         echo "    skip: no cli-proxy-api install on this machine (no $stamp_file)."
+        _ver_row cli_proxy - "v$pin" n/a "not installed on this machine"
         if [ "$lane" = "$lane_sh" ]; then
             echo "          first install is deliberate operator setup: bash \"$lane\" --install"
         else
@@ -1284,6 +1521,7 @@ sync_cli_proxy() {
     installed="$(head -1 "$stamp_file" 2>/dev/null | tr -d '\r')"
     if [ "$installed" = "$pin" ]; then
         echo "    up-to-date: host at v$installed = pin."
+        _ver_row cli_proxy "v$installed" "v$pin" current
         return 0
     fi
     # NEVER DOWNGRADE, and never roll on an unverified direction (CR rounds
@@ -1297,12 +1535,14 @@ sync_cli_proxy() {
     if _cli_proxy_version_cmp "$installed" "$pin"; then cmp_rc=0; else cmp_rc=$?; fi
     if [ "$cmp_rc" -eq 1 ]; then
         echo "    not behind: host v${installed:-?} is not older than pin v$pin — leaving as-is (never downgrades)."
+        _ver_row cli_proxy "v${installed:-?}" "v$pin" current "not older than the pin"
         return 0
     fi
     if [ "$cmp_rc" -ne 0 ]; then
         # Cannot compare: no python3, or a stamp that is not a version at all.
         # Refuse to roll rather than guess a direction, and hand the operator
         # the command so an intentional convergence is still one paste away.
+        _ver_row cli_proxy "v${installed:-?}" "v$pin" unknown "could not compare (no python3, or the stamp is not a version)"
         echo "    cannot verify: host v${installed:-?} vs pin v$pin could not be compared" >&2
         echo "                   (no python3, or the version stamp is not a version) — NOT rolling." >&2
         echo "                   Roll it yourself if the pin is what you want:" >&2
@@ -1315,6 +1555,7 @@ sync_cli_proxy() {
     fi
     if [ "$mode" = "check" ]; then
         echo "    behind: host v${installed:-?} < pin v$pin — run without --check to roll it."
+        _ver_row cli_proxy "v${installed:-?}" "v$pin" behind
         return 0
     fi
     # Prefer the existing Windows path whenever pwsh is present. Without pwsh,
@@ -1458,6 +1699,7 @@ report_toolchain() {
     local nvmrc="$ROOT/.nvmrc"
     if [ ! -f "$nvmrc" ]; then
         echo "    skip: .nvmrc not found."
+        _ver_row node - - n/a ".nvmrc not found"
         return 0
     fi
     local pin
@@ -1467,6 +1709,12 @@ report_toolchain() {
         local node_ver verdict
         node_ver="$(node --version 2>/dev/null)"
         verdict="$(_node_vs_pin "$node_ver" "$pin")"
+        case "$verdict" in
+            behind)  _ver_row node "$node_ver" ".nvmrc $pin" behind ;;
+            unknown) _ver_row node "$node_ver" ".nvmrc $pin" unknown "one of them is not a plain version number" ;;
+            ahead)   _ver_row node "$node_ver" ".nvmrc $pin" current "ahead of the pin" ;;
+            *)       _ver_row node "$node_ver" ".nvmrc $pin" current ;;
+        esac
         if [ "$verdict" = "unknown" ]; then
             echo "    node $node_ver vs .nvmrc pin ($pin) — one of them is not a plain version number; cannot compare (report only)."
         elif [ "$verdict" = "ahead" ]; then
@@ -1487,6 +1735,7 @@ report_toolchain() {
         fi
     else
         echo "    node: not on PATH."
+        _ver_row node - ".nvmrc $pin" n/a "not on PATH"
     fi
 
     if command -v npm >/dev/null 2>&1; then
@@ -1757,6 +2006,7 @@ _channel_follow() {
         if [ "$mode" = "check" ]; then
             echo "update --check: could not reach origin for tags (offline or no remote configured)."
             STATUS_pull="skipped"; DETAIL_pull="could not fetch tags from origin"
+            _ver_row himmel "$(_ver_describe)" - unknown "could not fetch tags from origin"
             return 0
         fi
         STATUS_pull="failed"
@@ -1770,6 +2020,7 @@ _channel_follow() {
         STATUS_pull="failed"
         DETAIL_pull="could not query origin for $channel release tags — resolve manually, then re-run"
         echo "update: could not query origin for $channel release tags (network or auth failure) — resolve manually, then re-run" >&2
+        _ver_row himmel "$(_ver_describe)" - unknown "could not query origin for $channel release tags"
         return 1
     fi
     if [ "$resolve_rc" -ne 0 ]; then
@@ -1781,6 +2032,7 @@ _channel_follow() {
         fi
         echo "$msg"
         STATUS_pull="skipped"; DETAIL_pull="$msg"
+        _ver_row himmel "$(_ver_describe)" - n/a "$msg"
         return 0
     fi
 
@@ -1798,6 +2050,7 @@ _channel_follow() {
     if [ "$tag_commit" = "$head_commit" ]; then
         echo "status:   up to date — at $channel $tag."
         STATUS_pull="up-to-date"; DETAIL_pull="already at $tag ($channel)"
+        _ver_row himmel "$(_ver_describe)" "$tag" current "$channel channel"
         return 0
     fi
 
@@ -1805,6 +2058,7 @@ _channel_follow() {
         # HEAD is a descendant of the tag — never downgrade.
         echo "status:   not behind — leaving as-is (HEAD ahead of $channel $tag, at $describe)."
         STATUS_pull="up-to-date"; DETAIL_pull="not behind — leaving as-is (HEAD ahead of $tag)"
+        _ver_row himmel "$(_ver_describe)" "$tag" current "$channel channel; HEAD ahead of the tag"
         return 0
     fi
 
@@ -1812,6 +2066,7 @@ _channel_follow() {
         if [ "$mode" = "check" ]; then
             echo "behind $channel $tag (at $describe)"
             STATUS_pull="skipped"; DETAIL_pull="behind $channel $tag (at $describe) — run without --check to switch"
+            _ver_row himmel "$(_ver_describe)" "$tag" behind "$channel channel"
             return 0
         fi
         # apply mode: never move a dirty checkout — unlike the plain-pull
@@ -1854,6 +2109,45 @@ _channel_follow() {
 # directly with HERMES_HOME fixtures — no network, no repo mutation).
 [ "${HIMMEL_UPDATE_LIB:-}" = "1" ] && return 0
 
+# ─── --help and unknown-flag refusal (HIMMEL-3400) ───────────────────────────
+# Before this gate an unrecognised argument (a typo'd `--chek`, or `--help`)
+# fell straight through to the REAL update — a pull, a service restart and a
+# vault upgrade. Usage text and the refusal both run before load_dotenv and any
+# git or network call: no side effects.
+print_usage() {
+    cat <<'USAGE'
+Usage: scripts/himmel-update.sh [MODE]
+
+Update the himmel checkout and every component it manages. With no MODE it runs
+the real update: pull, marketplace re-sync, jira CLI rebuild, qmd fork, hermes,
+luna template, then the advisory steps (cli-proxy-api, codex, toolchain).
+
+Modes:
+  (none)              run the real update
+  --check, --dry-run  report behind/ahead + gaps; pull and change nothing
+  --versions          one row per component — installed vs available, behind
+                      marked; read-only. Exit 0 all current, 1 any behind,
+                      3 none behind but some could not be determined
+  --only <item>       run ONE step: pull marketplace jira_cli qmd_fork hermes
+                      luna_template graphify cli_proxy marketplaces toolchain
+  --plugins-check     just the plugin install-state report; no git, no network
+  -h, --help          this text
+
+Environment: HIMMEL_UPDATE_CHANNEL=stable|pre follows release tags instead of the
+branch upstream; HIMMEL_UPDATE_AUTOSTASH=1 autostashes a dirty tree around the pull.
+USAGE
+}
+case "${1:-}" in
+    ""|--check|--dry-run|--versions|--only|--plugins-check) ;;
+    -h|--help)
+        print_usage
+        exit 0 ;;
+    *)
+        echo "update: unknown argument '$1' — nothing was run." >&2
+        echo "        run with --help for usage." >&2
+        exit 2 ;;
+esac
+
 # Let the repo-root .env supply update opt-ins (HIMMEL_UPDATE_AUTOSTASH), same
 # as the Jira CLI reads .env (HIMMEL-1205) — a live shell env var still wins (load_dotenv only
 # fills UNSET keys). Without this, the var had to be exported in the launching
@@ -1884,7 +2178,7 @@ fi
 # ponytail: the update itself is deferred, not attempted — there is no in-place
 # self-update of a tarball install; the route is the package manager (pacman),
 # or a manual download + sha256 verify + re-extract of the next release tarball.
-if [ ! -e "$ROOT/.git" ] && { [ "${1:-}" != "--plugins-check" ] && { [ "${1:-}" != "--only" ] || [ "${2:-}" = "pull" ]; }; }; then
+if [ ! -e "$ROOT/.git" ] && { [ "${1:-}" != "--plugins-check" ] && [ "${1:-}" != "--versions" ] && { [ "${1:-}" != "--only" ] || [ "${2:-}" = "pull" ]; }; }; then
     NONGIT_ROUTE="update through the package manager that installed it (Arch: pacman -Syu himmel), or download the next release tarball from the releases page, verify its sha256 checksum and re-extract it over $ROOT"
     if [ "${1:-}" != "--check" ] && [ "${1:-}" != "--dry-run" ]; then
         echo "update: $ROOT is not a git checkout (no .git), so there is no upstream to pull — nothing was changed." >&2
@@ -1987,53 +2281,55 @@ if [ "${1:-}" = "--only" ]; then
     exit "$only_rc"
 fi
 
+# ─── --versions mode (HIMMEL-3400) ───────────────────────────────────────────
+# One row per updatable component — installed vs available, behind marked — for
+# `himmelctl --version --all`. It runs the SAME read-only probes --check runs
+# (check_pull, report_plugin_gap, update_jira_cli/qmd_fork/luna_template check,
+# run_hermes_step check, sync_cli_proxy check, report_toolchain check) with
+# their prose discarded and each probe's installed/available pair captured via
+# _ver_row, so there is no second copy of any probe. Nothing is pulled, rebuilt,
+# restarted or upgraded: --check's own contract (a remote-ref fetch on the
+# himmel checkout, `ls-remote` for hermes, `upgrade.sh --check` for luna).
+if [ "${1:-}" = "--versions" ]; then
+    VER_FILE=$(mktemp "${TMPDIR:-/tmp}/himmel-versions.XXXXXX")
+    trap 'rm -f "$VER_FILE"' EXIT
+    if [ ! -e "$ROOT/.git" ]; then
+        _ver_nongit_row
+    else
+        versions_pull_rc=0
+        check_pull >/dev/null || versions_pull_rc=$?
+        [ "$versions_pull_rc" -ne 2 ] || exit 2
+    fi
+    {
+        report_plugin_gap || true
+        update_jira_cli check || true
+        update_qmd_fork check || true
+        run_hermes_step check || true
+        update_luna_template check || true
+        sync_cli_proxy check || true
+        report_toolchain check || true
+        _ver_pm_rows
+    } >/dev/null 2>&1
+    versions_rc=0
+    print_versions_table || versions_rc=$?
+    exit "$versions_rc"
+fi
+
 # ─── --check / --dry-run mode ────────────────────────────────────────────────
 # Reports behind/ahead counts + plugin gap; pulls nothing. Exit 0 always —
 # except a malformed HIMMEL_UPDATE_CHANNEL or profile value, which still
 # exits 2 below (CR round 5, codex-2): that's a configuration failure to
 # report, not a repo-state fact --check can silently swallow into "0 behind".
 if [ "${1:-}" = "--check" ] || [ "${1:-}" = "--dry-run" ]; then
-    branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
-    # HIMMEL-2705: resolved here, not up front — --check is one of the two
-    # modes that actually needs the channel (CR round 4, codex-1), so a
-    # malformed value still exits loud here, same as before.
-    if ! UPDATE_CHANNEL=$(_resolve_update_channel); then
-        exit 2
-    fi
-    if [ -n "$UPDATE_CHANNEL" ]; then
-        # HIMMEL-2705: channel mode follows tags, not the branch's upstream —
-        # its own read-only fetch+compare, never the plain branch/upstream
-        # behind/ahead report below.
-        echo "branch:   $branch"
-        echo "channel:  $UPDATE_CHANNEL"
-        _channel_follow "$UPDATE_CHANNEL" check
-    else
-        git fetch --quiet origin 2>/dev/null || {
-            echo "update --check: could not reach origin (offline or no remote configured)."
+    check_pull_rc=0
+    check_pull || check_pull_rc=$?
+    case "$check_pull_rc" in
+        0) ;;
+        10|11)
             report_plugin_gap
-            exit 0
-        }
-        upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) || {
-            echo "update --check: no upstream configured for branch '$branch'."
-            report_plugin_gap
-            exit 0
-        }
-        behind=$(git rev-list --count "HEAD..$upstream" 2>/dev/null || echo "?")
-        ahead=$(git rev-list --count "$upstream..HEAD" 2>/dev/null || echo "?")
-        echo "branch:   $branch"
-        echo "upstream: $upstream"
-        echo "behind:   $behind"
-        echo "ahead:    $ahead"
-        if [ "$behind" = "0" ]; then
-            echo "status:   up to date — nothing to pull."
-            STATUS_pull="up-to-date"; DETAIL_pull="up to date"
-        elif [ "$behind" != "?" ]; then
-            echo "status:   $behind commit(s) behind — run /himmel-update (or bash scripts/himmel-update.sh) to pull."
-            STATUS_pull="skipped"; DETAIL_pull="$behind commit(s) behind — run without --check to pull"
-        else
-            STATUS_pull="skipped"; DETAIL_pull="unknown (git rev-list failed)"
-        fi
-    fi
+            exit 0 ;;
+        *) exit "$check_pull_rc" ;;
+    esac
     report_plugin_gap
     reconcile_plugins check
     offer_retired_plugin_removal check

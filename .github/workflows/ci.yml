@@ -87,7 +87,7 @@ jobs:
       - name: Lint commit messages in the PR range
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            bash scripts/ci/check-commit-range.sh "${{ github.event.pull_request.base.sha }}"
+            bash scripts/ci/check-commit-range.sh --merge-ref "${{ github.event.pull_request.base.sha }}"
           else
             bash scripts/ci/check-commit-range.sh
           fi

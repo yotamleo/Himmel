@@ -334,7 +334,9 @@ function inspect() {
   } catch (err) {
     // the file is the user's and is left exactly as it is: the fix is theirs
     throw new Error(`luna-config: malformed JSON in ${p}: ${err.message} (HIMMEL-2176) — the file was NOT touched; `
-      + `hand-fix: cp "${p}" "${p}.hand-fix.bak" && "\${EDITOR:-vi}" "${p}", then re-run himmelctl`);
+      // $EDITOR stays unquoted: it often carries arguments (`code --wait`) that
+      // the shell must split; only the path is quoted.
+      + `hand-fix: cp "${p}" "${p}.hand-fix.bak" && \${EDITOR:-vi} "${p}", then re-run himmelctl`);
   }
 
   const { doc: filledDoc, filled } = fillDefaults(migrate(doc, p));

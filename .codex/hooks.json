@@ -6,8 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".codex/run-hook.sh --sandbox auto-approve-safe-bash.sh+check-cr-marker-on-pr-create.sh+block-read-secrets.sh+read-clamp.sh+block-destructive-commands.sh+block-docker-privesc.sh+block-merged-pr-commit.sh+block-terminal-write-fence.sh+block-lesson-enforcement-writes.sh",
-            "commandWindows": ".codex/run-hook.cmd --sandbox auto-approve-safe-bash.sh+check-cr-marker-on-pr-create.sh+block-read-secrets.sh+read-clamp.sh+block-destructive-commands.sh+block-docker-privesc.sh+block-merged-pr-commit.sh+block-terminal-write-fence.sh+block-lesson-enforcement-writes.sh",
+            "command": ".codex/run-hook.sh --sandbox auto-approve-safe-bash.sh+check-cr-marker-on-pr-create.sh+block-read-secrets.sh+read-clamp.sh+block-destructive-commands.sh+block-docker-privesc.sh+block-merged-pr-commit.sh+block-terminal-write-fence.sh+block-lesson-enforcement-writes.sh+guard-pr-check-literal.sh",
+            "commandWindows": ".codex/run-hook.cmd --sandbox auto-approve-safe-bash.sh+check-cr-marker-on-pr-create.sh+block-read-secrets.sh+read-clamp.sh+block-destructive-commands.sh+block-docker-privesc.sh+block-merged-pr-commit.sh+block-terminal-write-fence.sh+block-lesson-enforcement-writes.sh+guard-pr-check-literal.sh",
             "timeout": 60
           }
         ]
