@@ -171,28 +171,26 @@ run_case sh-other-verb-daemon-reload FAIL scripts/uninstall.sh \
 run_case sh-daemon-reload-with-arg FAIL scripts/uninstall.sh \
     'systemctl --user daemon-reload --now qmd.service'
 
-echo "== T13(b): read-only process lookups naming a daemon PASS (HIMMEL-3432) =="
+echo "== T13(b): a read-only process lookup naming a daemon FAILS without a marker -- the lexical carve-out is gone (HIMMEL-3432 marker-only simplification) =="
+# The per-shape carve-out (pgrep/pkill/ps token anchors, chain/subst/
+# backslash-continuation disqualifiers, the *.sh-only kind gate) is REMOVED:
+# every fix closed one bypass shape and adversarial review kept finding the
+# next, ending in a Critical (see the shadowed-call section below). A
+# per-line lexical scanner cannot tell a real pgrep(1) invocation from an
+# identifier spelled the same way, so every shape below -- old bypasses and
+# the read-only shapes alike -- now fails exactly like main. Only the
+# `t13b-ok` marker (further below) exempts a line.
 # shellcheck disable=SC2016  # the brackets are a literal pgrep self-match idiom
-run_case sh-pgrep-bracket-c PASS scripts/start.sh \
+run_case sh-pgrep-bracket-c FAIL scripts/start.sh \
     "pgrep -f '[c]laude daemon run'"
-run_case sh-pgrep-af PASS scripts/start.sh \
+run_case sh-pgrep-af FAIL scripts/start.sh \
     "pgrep -af 'claude daemon'"
-run_case sh-ps-pipe-grep PASS scripts/start.sh \
+run_case sh-ps-pipe-grep FAIL scripts/start.sh \
     "ps -eo pid,args | grep '[c]laude daemon'"
-run_case sh-pkill-dash-0 PASS scripts/start.sh \
+run_case sh-pkill-dash-0 FAIL scripts/start.sh \
     "pkill -0 -f 'claude daemon'"
-
-echo "== T13(b): a lookup that ALSO starts a process still FAILS (HIMMEL-3432) =="
-run_case sh-pgrep-or-start FAIL scripts/start.sh \
-    "pgrep -f 'claude daemon run' || claude daemon run &"
-run_case sh-pgrep-and-nohup FAIL scripts/start.sh \
-    "pgrep -f 'claude daemon' && nohup claude daemon run &"
-run_case sh-pkill-without-dash-0 FAIL scripts/start.sh \
-    "pkill -f 'claude daemon'"
-run_case sh-ps-grep-then-kill FAIL scripts/start.sh \
-    "ps -eo pid,args | grep '[c]laude daemon' | xargs kill"
-
-echo "== T13(b): a lookup arg that itself SPAWNS still FAILS (HIMMEL-3432 CR) =="
+run_case sh-pgrep-redirect-fd-dup FAIL scripts/start.sh \
+    "pgrep -f 'claude daemon run' >/dev/null 2>&1"
 # shellcheck disable=SC2016  # command substitution is the point of the fixture
 run_case sh-pgrep-cmd-subst FAIL scripts/start.sh \
     'pgrep -f "$(claude daemon run)"'
@@ -201,47 +199,61 @@ run_case sh-pgrep-backtick FAIL scripts/start.sh \
     "pgrep -f \`claude daemon run\`"
 run_case sh-pkill-dash-0-then-9 FAIL scripts/start.sh \
     "pkill -0 -9 -f 'claude daemon'"
-run_case sh-pgrep-process-subst FAIL scripts/start.sh \
-    'pgrep -f <(claude daemon run)'
-run_case sh-pgrep-process-subst-out FAIL scripts/start.sh \
-    'pgrep -f >(claude daemon run)'
+run_case sh-zsh-process-subst FAIL scripts/start.sh \
+    'pgrep -f =(claude daemon run)'
 
-echo "== T13(b): # t13b-ok: <reason> exempts its own line only (HIMMEL-3432) =="
+echo "== T13(b): a pgrep/pkill/ps/grep shadowed by a function, function-keyword, or alias still FAILS when the CALL line names a daemon (HIMMEL-3432 AC adversarial Critical) =="
+# The Critical the AC adversarial review proved against the now-removed
+# carve-out: a *.sh line can DEFINE a shell function or alias literally
+# named pgrep/pkill/ps/grep, SHADOWING the real command, while `daemon` sits
+# on the CALL line rather than the definition line a lexical anchor was
+# checking. With the carve-out gone this closes by construction -- the call
+# line is just a line containing the word daemon, exempt only by marker.
+run_case sh-pgrep-function-shadow-call FAIL scripts/start.sh \
+    'pgrep () { shift; setsid -f claude "$@"; }
+pgrep -f daemon run'
+run_case sh-function-keyword-pgrep-shadow-call FAIL scripts/start.sh \
+    'function pgrep { shift; setsid -f claude "$@"; }
+pgrep -f daemon run'
+run_case sh-pkill-function-shadow-call FAIL scripts/start.sh \
+    'pkill () { setsid -f claude "$@"; }
+pkill -0 -f daemon run'
+run_case sh-ps-function-shadow-call FAIL scripts/start.sh \
+    'ps () { setsid -f claude daemon run; }
+ps aux | grep x'
+run_case sh-grep-function-shadow-call FAIL scripts/start.sh \
+    'grep () { shift; setsid -f claude daemon run; }
+ps aux | grep x'
+run_case sh-alias-pgrep-shadow-call FAIL scripts/start.sh \
+    'alias pgrep="setsid -f claude"
+pgrep -f daemon run'
+run_case sh-alias-pkill-shadow-call FAIL scripts/start.sh \
+    'alias pkill="setsid -f claude"
+pkill -0 -f daemon run'
+
+echo "== T13(b): # t13b-ok: <reason> is now the ONLY exemption -- hardened after the lexical carve-out's removal (HIMMEL-3432 marker-only simplification) =="
 run_case sh-t13b-ok-marker PASS scripts/start.sh \
     'nohup claude daemon run &  # t13b-ok: transient self-daemon the CLI background-run flag spawns; read-only var scrape'
+run_case js-t13b-ok-marker PASS src/probe.ts \
+    'daemon.start()  // t13b-ok: transient self-daemon the SDK background-run flag spawns'
 run_case sh-t13b-ok-empty-reason FAIL scripts/start.sh \
     'nohup claude daemon run &  # t13b-ok:'
 run_case sh-t13b-ok-empty-reason-space FAIL scripts/start.sh \
     'nohup claude daemon run &  # t13b-ok: '
 run_case sh-t13b-ok-marker-above-does-not-exempt FAIL scripts/start.sh \
     $'# t13b-ok: reason lives on the wrong line\nnohup claude daemon run &'
-
-echo "== T13(b): a redirect-only lookup line PASSES, not over-strict (HIMMEL-3432 adv-review) =="
-run_case sh-pgrep-redirect-fd-dup PASS scripts/start.sh \
-    "pgrep -f 'claude daemon run' >/dev/null 2>&1"
-
-echo "== T13(b): a shell function NAMED pgrep/pkill still FAILS (HIMMEL-3432 adv-review) =="
-run_case sh-pgrep-function-name FAIL scripts/start.sh \
-    'pgrep () ( setsid -f claude daemon run --label x )
-pgrep -f "claude daemon run"'
-run_case sh-pkill-function-name FAIL scripts/start.sh \
-    'pkill () ( setsid -f claude daemon run --label x )
-pkill -0 -f "claude daemon run"'
-
-echo "== T13(b): a backslash line-continuation hiding the starter still FAILS (HIMMEL-3432 adv-review) =="
-run_case sh-pgrep-backslash-continuation FAIL scripts/start.sh \
-    'pgrep -f "claude daemon run" >/dev/null \
-    || setsid -f claude daemon run'
-
-echo "== T13(b): the lookup carve-out is *.sh/*.bash only, not other languages (HIMMEL-3432 adv-review) =="
-run_case py-pgrep-lookalike FAIL src/start.py \
-    'pgrep and subprocess.Popen(["claude","daemon","run"])'
-run_case ts-pgrep-lookalike FAIL src/start.ts \
-    'pgrep ? spawn("claude",["daemon","run"]) : 0'
-
-echo "== T13(b): a shell function NAMED ps still FAILS (HIMMEL-3432 round-4 panel) =="
-run_case sh-ps-function-name FAIL scripts/start.sh \
-    'ps () (claude daemon run | grep .)'
+run_case sh-t13b-ok-reason-too-short FAIL scripts/start.sh \
+    'nohup claude daemon run &  # t13b-ok: short'
+run_case sh-t13b-ok-reason-no-word-char FAIL scripts/start.sh \
+    'nohup claude daemon run &  # t13b-ok: --------'
+run_case sh-t13b-ok-reason-digits-only-ok PASS scripts/start.sh \
+    'nohup claude daemon run &  # t13b-ok: 12345678'
+run_case sh-t13b-ok-no-space-after-hash FAIL scripts/start.sh \
+    'nohup claude daemon run &  #t13b-ok: real eight char reason'
+run_case sh-t13b-ok-no-space-after-colon FAIL scripts/start.sh \
+    'nohup claude daemon run &  # t13b-ok:realeightcharreason'
+run_case sh-t13b-ok-double-space-after-hash FAIL scripts/start.sh \
+    'nohup claude daemon run &  #  t13b-ok: real eight char reason'
 
 if [ "$failures" -ne 0 ]; then
     echo "FAIL: $failures of $cases case(s) failed"

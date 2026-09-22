@@ -21,11 +21,15 @@
 #                       surface -- see the corpus loop below). The daemon
 #                       marker skips prose -- *.md and comment lines --
 #                       and adds service-creation shapes (HIMMEL-3233;
-#                       rules at T13(b) below). A read-only process lookup
-#                       (pgrep / `pkill -0` / `ps ... | grep`) naming a
-#                       daemon does not count, and a trailing same-line
-#                       `# t13b-ok: <reason>` exempts that one line from
-#                       T13(b) only (HIMMEL-3432; rules at T13(b) below).
+#                       rules at T13(b) below). A lexical read-only-lookup
+#                       carve-out (pgrep / `pkill -0` / `ps ... | grep`) was
+#                       tried and removed after adversarial review proved a
+#                       Critical bypass (a shell function or alias shadowing
+#                       one of those names); the ONLY exemption now is a
+#                       trailing same-line `# t13b-ok: <reason>` -- exact
+#                       spacing, a non-trivial reason -- for that one line,
+#                       T13(b) only (HIMMEL-3432 marker-only exemption;
+#                       rules at T13(b) below).
 #   T14 locks        -- no per-token-lane wiring in shipped source; the
 #                       gemini/copilot/cursor index rows stay deferred.
 #                       (The former T14(a) claude-codex-launcher prohibition
@@ -409,111 +413,65 @@ else
             gsub(/(^|[^a-z0-9_-])systemctl[ \t]+(--user[ \t]+)?daemon-reload[ \t]*($|[;&|)>#]|[0-9]>)/, " ", code)
             gsub(/(^|[^a-z0-9_-])systemctl[ \t]+(--user[ \t]+)?daemon-reload[ \t]*($|[;&|)>#]|[0-9]>)/, " ", code)
             code = trim(code)
-            # HIMMEL-3432: a READ-ONLY process lookup naming a daemon is not
-            # a daemon start -- it reads /proc, nothing else (found on PR
-            # #1087: headed-arm-leg.sh (headless mode) reads the environ of
-            # Claude Code own transient `claude daemon run`, which the CLI
-            # background-run flag spawns and himmel never starts or keeps). The carve-out
-            # keys on the LINE COMMAND being one of three lookup shapes
-            # (pgrep, `pkill -0`, `ps ... | grep`) with NO chaining on that
-            # line (no `;`, `&&`, `||`, backgrounding `&`, or an extra `|`)
-            # -- never on stripping the word "daemon" itself, so `pgrep ... ||
-            # claude daemon run &` still hits (the `||`/`&` disqualify it as a
-            # lookup) and bare `pkill` (no `-0`) still hits (it terminates,
-            # it does not merely test). It suppresses ONLY the bare-word
-            # "daemon" match below; a lookup line that also matches a
-            # service-start shape (nohup &, systemctl enable, launchctl load)
-            # still hits on that shape. A command or process substitution in
-            # the lookup argument (`pgrep -f "$(claude daemon run)"`, the
-            # backtick form, or `pgrep -f <(claude daemon run)` / `>(...)`)
-            # executes that argument BEFORE pgrep even runs, so it is not
-            # read-only either -- `subst` disqualifies all three shapes.
-            # `pkill
-            # -0` additionally requires `-0` be the ONLY signal-like flag on the
-            # line: `pkill -0 -9 -f ...` still matches the leading `-0` but a
-            # later flag can override which signal is actually sent, so a
-            # second `-<digit>` or `-s`/`--signal` flag disqualifies it too.
-            # Adversarial-review round (HIMMEL-3432, before merge) found three
-            # more bypasses, each now closed:
-            #   - a *.sh line can DEFINE a shell function named pgrep/pkill
-            #     (`pgrep () ( setsid -f claude daemon run )`) and the old
-            #     `^pgrep([ \t]|$)` anchor matched the definition line itself,
-            #     suppressing the very line that starts the process. `pgrep`
-            #     now requires a flag right after it (`^pgrep[ \t]+-`) the
-            #     same way `pkill` already required `-0`; a definition line
-            #     (`pgrep (` / `pgrep(`) never has a flag there, so it is
-            #     never treated as a lookup and falls through to the bare
-            #     "daemon" match below like any other spawn line;
-            #   - a lookup can hide its own starter behind a `\` line
-            #     continuation (`pgrep -f "claude daemon run" >/dev/null \`
-            #     then `|| setsid ... run` on the next physical line): this
-            #     scanner is per-line, so the chaining on the continued line
-            #     never reaches the first line own chain check. A trailing
-            #     `\` (the shell continuation character) now disqualifies the
-            #     lookup on its own, whatever else is or is not on the line;
-            #   - the shapes above only mean anything in a shell script:
-            #     `pgrep and subprocess.Popen(...)` (Python) or `pgrep ?
-            #     spawn(...) : 0` (TypeScript) are not pgrep(1) invocations at
-            #     all, just an identifier that happens to be named `pgrep`,
-            #     but the old lookup check ran on every code line regardless
-            #     of file type. The carve-out now applies to `kind == "sh"`
-            #     only (`*.sh` / `*.bash`, set alongside "md" above) --
-            #     never to a lookalike token in any other language.
-            # Also from that round (over-strict, not a bypass): the chain
-            # scan `[;&|]` matched an fd-duplication redirect like `2>&1` or
-            # `1>&2` (the `&` inside it), so a plain `pgrep -f "..."
-            # >/dev/null 2>&1` wrongly failed as chained.
-            # `chain` strips `[0-9]>&[0-9]` before that scan only -- `subst`
-            # and the trailing-backslash check still read the untouched
-            # `code`, since neither shape can hide inside an fd redirect.
-            # Critic-panel round (HIMMEL-3432, post-merge-prep) found the same
-            # function-definition bypass as the pgrep/pkill fix above, but in
-            # the `ps` branch: its outer anchor was `^ps[ \t]`, with no
-            # dash-flag requirement, so a *.sh line defining a shell function
-            # NAMED ps (`ps () (claude daemon run | grep .)`) matched the
-            # inner `... | grep` lookup shape and was wrongly treated as a
-            # lookup, suppressing the very definition line that starts the
-            # daemon. `ps` now requires a flag right after it
-            # (`^ps[ \t]+-`), mirroring the pgrep fix above -- a definition
-            # line never has a flag there, so it falls through to the bare
-            # "daemon" match below like any other spawn line.
-            subst = code ~ /\$\(|`|<\(|>\(/
-            cont = code ~ /\\$/
-            chain = code
-            gsub(/[0-9]>&[0-9]/, "", chain)
-            is_lookup = 0
-            if (kind == "sh") {
-                if (code ~ /^pgrep[ \t]+-/) {
-                    if (chain !~ /[;&|]/ && !subst && !cont) is_lookup = 1
-                } else if (code ~ /^pkill[ \t]+-0([ \t]|$)/) {
-                    pkrest = code
-                    sub(/^pkill[ \t]+-0[ \t]*/, "", pkrest)
-                    if (chain !~ /[;&|]/ && !subst && !cont &&
-                        pkrest !~ /(^|[ \t])-([0-9]|-?signal([ \t=]|$)|s([ \t]|$))/) is_lookup = 1
-                } else if (code ~ /^ps[ \t]+-/) {
-                    if (chain ~ /^ps[^|;&]*\|[ \t]*grep([ \t]|$)[^;&|]*$/ && !subst && !cont) is_lookup = 1
-                }
-            }
-            daemon_hit = (code ~ /daemon/) && !is_lookup
+            # HIMMEL-3432: the read-only-lookup carve-out (a lexical scan for
+            # pgrep/pkill/ps token shapes, with chain/subst/backslash-
+            # continuation disqualifiers and a *.sh-only kind gate) is
+            # REMOVED. It was added because a read-only process lookup
+            # naming a daemon (pgrep -f claude-daemon-run) is not a
+            # daemon start, and every fix closed one bypass shape while
+            # adversarial review kept finding the next: command/backtick/
+            # process substitution in the lookup argument, a `pkill -0`
+            # paired with a second signal flag, a *.sh line DEFINING a shell
+            # function named pgrep/pkill/ps whose own definition line matched
+            # the lookup anchor, a `\` line continuation hiding a starter on
+            # the next physical line, an fd-duplication redirect (`2>&1`)
+            # mistaken for chaining -- and finally a Critical: a shell
+            # function or `alias` literally named pgrep/pkill/ps/grep that
+            # SHADOWS the real command while `daemon` sits on the CALL line,
+            # not the definition line the anchor was checking. A per-line
+            # lexical scanner cannot tell a real pgrep(1) invocation from an
+            # identifier that happens to be spelled the same way -- that is
+            # not a bug to patch again, it is what a lexical scan is. Ruling
+            # (AC adversarial review, HIMMEL-3432): stop adding arms:
+            # KEEP the general narrowing above (prose/comments skipped,
+            # *.md exempt, systemctl daemon-reload carved out) and DROP the
+            # lookup-shape carve-out entirely, so a lookup line naming a
+            # daemon fails exactly like main again -- see the `t13b-ok`
+            # marker below for the one remaining, explicit and reviewable way
+            # to exempt a real read-only lookup.
+            daemon_hit = (code ~ /daemon/)
             service_hit = code ~ /(^|[^a-z0-9_-])nohup[ \t].*(^|[^&<>])&([ \t]*($|[);"\047])|[ \t]+[^&> \t])|systemctl[^|;&]*[ \t]enable([ \t]|$)|launchctl[ \t]+(load|bootstrap)([ \t]|$)/
             if (!hit && (kind == "code" || kind == "sh") && code != "" && code !~ /^(#|\/\/|\/\*|\*([ \t]|$)|<!--)/ &&
                 (daemon_hit || service_hit))
                 hit = 1
-            # HIMMEL-3432: a trailing `# t13b-ok: <reason>` on THIS shipped
-            # line exempts it from T13(b) only -- not T13(a), not T12/T14/T15
-            # (this check lives entirely inside the T13(b) per-line loop). An
-            # empty reason (`# t13b-ok:` or `# t13b-ok: ` with nothing after)
-            # does not exempt, and the marker never reaches a DIFFERENT line
-            # (t/lt hold only this LINE own text, so a marker on the line above
-            # cannot cancel a hit here).
+            # HIMMEL-3432 AC ruling: a trailing `# t13b-ok: <reason>` on THIS
+            # shipped line is now the ONLY exemption (the lexical lookup
+            # carve-out above is gone) and it is hardened: the marker must
+            # open with EXACTLY `# t13b-ok: ` -- one space after `#`, one
+            # after the colon -- or the JS/TS `// t13b-ok: ` form, so
+            # `#t13b-ok:`, `#  t13b-ok:` and `# t13b-ok:x` all fail to match
+            # and so do not exempt. The reason after it must be non-trivial:
+            # at least 8 characters once trimmed AND containing a word
+            # character, so a long run of punctuation and a short real word
+            # both still fail. It exempts only THIS line, only T13(b) (not
+            # T13(a), not T12/T14/T15), and never a different line (`t` holds
+            # only this line own text, so a marker on the line above cannot
+            # cancel a hit here).
             # ponytail: the match is text-only, not quote-aware -- a marker
-            # spelled inside a quoted argument (e.g. --label "# t13b-ok: x")
-            # exempts the line the same as a real trailing comment would. This
-            # gate is a line-based awk scan with no shell tokenizer anywhere in
-            # it (see the systemctl-daemon-reload carve-out above for the same
-            # limit), so telling a real comment from a quoted string would need
-            # one; out of scope for this narrow carve-out. Tracked: HIMMEL-3446.
-            if (t ~ /#[ \t]*t13b-ok:[ \t]*[^ \t]/) hit = 0
+            # spelled inside a quoted argument (e.g. --label "# t13b-ok: a
+            # real reason") exempts the line the same as a real trailing
+            # comment would. This gate is a line-based awk scan with no shell
+            # tokenizer anywhere in it (see the systemctl-daemon-reload
+            # carve-out above for the same limit), so telling a real comment
+            # from a quoted string would need one; out of scope for this
+            # narrow marker. Tracked: HIMMEL-3446.
+            marker_at = 0
+            if ((mp = index(t, "# t13b-ok: ")) > 0) marker_at = mp + 11
+            else if ((mp = index(t, "// t13b-ok: ")) > 0) marker_at = mp + 12
+            if (marker_at > 0) {
+                reason = trim(substr(t, marker_at))
+                if (length(reason) >= 8 && reason ~ /[A-Za-z0-9_]/) hit = 0
+            }
             if (hit) {
                 if (removed[t] > 0) removed[t]--
                 else hits++

@@ -243,35 +243,36 @@ The residual is T15: its new-script list is `--diff-filter=A` limited to
 `scripts/`, so a rename from OUTSIDE `scripts/` reads as an addition — but T15
 is advisory (`WARN`, never a CI gate). Read the assertion, then decide.
 
-### T13(b) read-only lookup carve-out + `t13b-ok` marker (HIMMEL-3432)
+### T13(b) marker-only exemption (HIMMEL-3432)
 
 A read-only process lookup naming a daemon (`pgrep -f 'claude daemon run'`,
 `pkill -0 -f '...'`, `ps ... | grep '...'`) is not a daemon start — it reads
-`/proc`, nothing else. The carve-out keys on the *line's command* being one of
-those three lookup shapes with no chaining (`;`, `&&`, `||`, a backgrounding
-`&`, or an extra `|`) — never on stripping the word `daemon`, so
-`pgrep ... || claude daemon run &` still fails (the `||`/`&` disqualify the
-line as a lookup) and a bare `pkill` (no `-0`) still fails (it terminates, it
-does not merely test). Precedent: HIMMEL-3414's exact-token
-`systemctl daemon-reload` carve-out.
+`/proc`, nothing else. A first version of this gate tried a lexical carve-out
+keyed on the line's command matching one of those lookup shapes with no
+chaining, no command/process substitution and no backslash continuation, and
+every fix closed one bypass while adversarial review kept finding the next —
+ending in a Critical: a shell function or `alias` literally named
+`pgrep`/`pkill`/`ps`/`grep`, SHADOWING the real command, while `daemon` sat on
+the *call* line rather than the definition line the anchor was checking. A
+per-line lexical scanner cannot tell a real `pgrep(1)` invocation from an
+identifier spelled the same way, so the carve-out was **removed entirely**
+rather than patched again (standing rule: stop adding arms, simplify).
 
-Three narrower bypasses closed on review: a command or process substitution in
-the lookup argument itself (`pgrep -f "$(claude daemon run)"`, the backtick
-form, or `pgrep -f <(claude daemon run)` / `>(...)`) disqualifies the line
-even with no `;`/`&`/`|` present, since that argument executes before the
-lookup runs at all; and `pkill -0` requires `-0` be the *only* signal-like
-flag on the line (`pkill -0 -9 -f '...'` still fails — a second numeric or
-`-s`/`--signal` flag can override which signal is sent).
-
-Separately, a trailing same-line `# t13b-ok: <reason>` exempts that one line
-from T13(b) only (not T13(a), not T12/T14/T15) — the general escape hatch so
-the next legitimate case does not need its own gate PR. An empty reason
-(`# t13b-ok:` or `# t13b-ok: `) does not exempt, and the marker never reaches
-a different line (same-line only). The match is text-only, not quote-aware —
-a marker spelled inside a quoted argument exempts the line the same as a real
-trailing comment would (`ponytail:` in the gate, out of scope for this narrow
-carve-out — tracked separately as HIMMEL-3446). Read cases in
-`scripts/parity/test-t13b-daemon-prose.sh`.
+The **only** exemption is now a trailing same-line `# t13b-ok: <reason>` (or
+`// t13b-ok: <reason>` for JS/TS), which exempts that one line from T13(b)
+only (not T13(a), not T12/T14/T15) — the general escape hatch so a real
+read-only lookup does not need its own gate PR. It is hardened: the marker
+must open with the exact spacing shown — one space after `#`/`//`, one after
+the colon (`#t13b-ok:`, `#  t13b-ok:` and `# t13b-ok:x` do not exempt) — and
+the reason, once trimmed, must be at least 8 characters AND contain a word
+character (`# t13b-ok: short` and `# t13b-ok: --------` both still fail). The
+marker never reaches a different line (same-line only). The match is
+text-only, not quote-aware — a marker spelled inside a quoted argument exempts
+the line the same as a real trailing comment would (`ponytail:` in the gate,
+out of scope for this narrow marker — tracked separately as HIMMEL-3446). Read
+cases in `scripts/parity/test-t13b-daemon-prose.sh`. Precedent for a narrow,
+literal carve-out done right: HIMMEL-3414's exact-token
+`systemctl daemon-reload` strip, which this gate keeps unchanged.
 
 ## VM round trip — station-only, never CI (HIMMEL-3332)
 
