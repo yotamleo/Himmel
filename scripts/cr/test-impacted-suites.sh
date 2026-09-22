@@ -215,6 +215,61 @@ if [ "$rc" -eq 1 ]; then pass "a spaced suite without its own verdict stays miss
 ( cd "$FX" && printf '%s\n%s\n' "$SP1" 'SUITE scripts/test-a=b.sh = SKIP' | bash "$IS" --check "$range" >/dev/null 2>&1 ); rc=$?
 if [ "$rc" -eq 1 ]; then pass "a reasonless SKIP on a spaced-path row is still no verdict (rc1)"; else fail "reasonless SKIP accepted on spaced path: rc=$rc"; fi
 
+# --- 16. --runner-check: direct vitest steps + runner drift (HIMMEL-3445) ---
+# Fixture workflow files in a scratch dir under $FX, never the real
+# .github/workflows (case (c) below reads the real one as a control).
+mkdir -p "$FX/.github/workflows"
+run_rc() { ( cd "$FX" && bash "$IS" --runner-check 2>&1 ); }
+
+# (a) a direct `npx vitest run` step for an unmapped directory is invisible
+# to the old grep (it only looked for node --test/bun test/npm test/
+# check-hook-lib-suites.sh) and passed silently; it must now fail, naming it.
+cat > "$FX/.github/workflows/ci.yml" <<'YAML'
+name: ci
+on: push
+jobs:
+  new-suite:
+    runs-on: ubuntu-latest
+    steps:
+      - run: npx vitest run scripts/newthing/foo.test.ts
+YAML
+out="$(run_rc)"; rc=$?
+if [ "$rc" -eq 1 ] && grepq "$out" 'newthing'; then pass "unmapped direct vitest step fails --runner-check, naming it"; else fail "unmapped vitest step: rc=$rc out=$out"; fi
+
+# (b) a mapped suite whose invocation drifted from node --test to bun test:
+# the old marker matched by path substring alone (still present after the
+# swap), so drift went undetected. --runner still emits `node --test` for
+# this path.
+cat > "$FX/.github/workflows/ci.yml" <<'YAML'
+name: ci
+on: push
+jobs:
+  lanes-and-trust-suites:
+    runs-on: ubuntu-latest
+    steps:
+      - run: bun test "scripts/lanes/tests/**/*.test.mjs"
+YAML
+out="$(run_rc)"; rc=$?
+if [ "$rc" -eq 1 ] && grepq "$out" 'lanes'; then pass "runner drift (node --test -> bun test) fails --runner-check, naming the suite"; else fail "runner drift: rc=$rc out=$out"; fi
+
+# (c) control: today's real .github/workflows/ci.yml still passes.
+out="$( cd "$REPO_ROOT" && bash "$IS" --runner-check 2>&1 )"; rc=$?
+if [ "$rc" -eq 0 ]; then pass "control: today's real ci.yml still passes --runner-check"; else fail "real ci.yml regressed: rc=$rc out=$out"; fi
+
+# (d) an ambiguous line — two runner families on one `run:` line — cannot be
+# attributed to a single runner; fail closed and name it, never guess.
+cat > "$FX/.github/workflows/ci.yml" <<'YAML'
+name: ci
+on: push
+jobs:
+  weird:
+    runs-on: ubuntu-latest
+    steps:
+      - run: node --test "scripts/lanes/tests/**/*.test.mjs" && bun test "scripts/lanes/tests/**/*.test.mjs"
+YAML
+out="$(run_rc)"; rc=$?
+if [ "$rc" -eq 1 ] && grepq "$out" 'ambiguous'; then pass "a line naming two runner families fails closed as ambiguous"; else fail "ambiguous line: rc=$rc out=$out"; fi
+
 echo
 if [ "$failures" -eq 0 ]; then echo "OK: all cases passed"; exit 0; fi
 echo "FAIL: $failures case(s) failed"

@@ -39,14 +39,24 @@
 #       node:test suite can pass under node --test and fail under bun test on
 #       an unrelated bun fs quirk — a false red no code change caused).
 #   impacted-suites.sh --runner-check
-#       Drift check: fails, naming the ci.yml line, when a JS/TS test
-#       invocation ci.yml runs today has no --runner mapping — so a new CI
-#       runner directory cannot silently go unmapped.
+#       Drift check over ci.yml's run: lines, naming the offending line, exit
+#       1 on any of: (a) unmapped — a JS/TS test invocation (node --test, bun
+#       test, npm test, a direct npx/bunx vitest or vitest run, or
+#       check-hook-lib-suites.sh) that no known marker recognises; (b) drifted
+#       — a recognised marker's line now invokes a DIFFERENT runner family
+#       than --runner emits for it (e.g. a mapped suite's `node --test`
+#       switched to `bun test`); (c) ambiguous — a single line names more than
+#       one runner family (cannot attribute one runner to it), reported
+#       distinctly and failed closed rather than guessed. Exit 0 when every
+#       matched line is mapped, in-kind, and unambiguous.
 #
-# Exit codes: 0 ok / clean; 1 --check found a missing verdict; 2 usage, an
-# unresolvable range, a failed search, or --runner found no mapping; 3 --check
-# found a BLOCKED suite. A range that cannot be resolved (or searched) is an
-# ERROR, never an empty list: an empty impacted set reads as "nothing to run".
+# Exit codes: 0 ok / clean; 1 EITHER --check found a missing verdict OR
+# --runner-check found an unmapped/drifted/ambiguous invocation — these are
+# two distinct checks that never run in the same invocation, so the meaning
+# of exit 1 is fixed by which flag was passed; 2 usage, an unresolvable
+# range, a failed search, or --runner found no mapping; 3 --check found a
+# BLOCKED suite. A range that cannot be resolved (or searched) is an ERROR,
+# never an empty list: an empty impacted set reads as "nothing to run".
 #
 # ponytail: references are DIRECT and textual. A suite that reaches a changed
 # file only through an intermediate script it calls (no mention of the changed
@@ -109,50 +119,90 @@ runner_for() {
     esac
 }
 
-# runner_check — drift guard: every JS/TS test invocation ci.yml runs today
-# must have a marker below, or a new CI runner directory could silently go
-# unmapped by runner_for above. Keep this list in lockstep with runner_for by
-# hand; there is no way to derive one from the other without reimplementing
-# the YAML.
+# runner_known_markers — one `label|kind|locate` row per JS/TS invocation
+# ci.yml is known to run today. `locate` is the literal substring that
+# identifies the line (a path/glob, or the bare command for the ambiguous
+# multi-directory cases); `kind` is the runner family runner_for's own
+# command for that suite belongs to (node-test, bun-test, vitest, npm-test,
+# or hook-lib — a script call, not a runner). Keep this list in lockstep with
+# runner_for by hand; there is no way to derive one from the other without
+# reimplementing the YAML.
 #
 # ponytail: this scans `run:` LINES only — a JS/TS test invocation written
 # inside a `run: |` block scalar body (the command on a following indented
 # line, not the `run:` line itself) is invisible to it. No current ci.yml step
 # does this; widen the grep to a block-scalar-aware scan if one ever does.
 #
-# ponytail: the `npm test` marker matches by SUBSTRING only, with no
-# directory context — it satisfies the drift check for `npm test` run from
-# ANY working directory, including a future one runner_for has no case for.
-# It exists because ci.yml's own `npm test` step (repo root) does not name
-# which of the vitest directories it covers; narrowing it would mean parsing
-# ci.yml's `working-directory:` keys, which this grep-based check deliberately
-# does not do.
+# ponytail: the `npm test` marker (kind npm-test) matches by SUBSTRING only,
+# with no directory context — it is satisfied by `npm test` run from ANY
+# working directory, including a future one runner_for has no case for, and
+# it cannot detect drift within itself (unlike the single-line markers below,
+# nothing on the `run: npm test` line names which vitest directory it covers
+# or would show a swap to a different runner there). Narrowing it means
+# parsing ci.yml's `working-directory:` keys, which this grep-based check
+# deliberately does not do — a line-level scan fails closed instead (see
+# runner_check's ambiguous case) rather than guess at that attribution.
 runner_known_markers() {
     cat <<'EOF'
-scripts/lanes/tests/**/*.test.mjs
-scripts/trust/tests/*.test.mjs
-check-hook-lib-suites.sh
-npm test
-scripts/luna-vitals && bun install
-bun test scripts/telegram --dots
-bun test scripts/vault/tests --dots
-marketplace/plugins/luna-correlate && bun install
+lanes-node-suites|node-test|scripts/lanes/tests/**/*.test.mjs
+trust-suites|node-test|scripts/trust/tests/*.test.mjs
+hook-lib-suites|hook-lib|check-hook-lib-suites.sh
+matrix-npm-test|npm-test|npm test
+luna-vitals|bun-test|scripts/luna-vitals && bun install
+telegram-suites|bun-test|bun test scripts/telegram --dots
+vault-suites|bun-test|bun test scripts/vault/tests --dots
+luna-correlate|bun-test|marketplace/plugins/luna-correlate && bun install
 EOF
 }
 
+# line_kind <line> — which runner family a run: line invokes, by literal
+# substring, bash 3.2/grep-level (no YAML parsing). "ambiguous" when more than
+# one family's substring appears on the same line — that line cannot be
+# attributed to one runner, so runner_check fails it closed rather than guess.
+line_kind() {
+    local line="$1" n=0 kind=""
+    case "$line" in *"node --test"*) n=$((n + 1)); kind=node-test ;; esac
+    case "$line" in *"bun test"*) n=$((n + 1)); kind=bun-test ;; esac
+    case "$line" in *"npm test"*) n=$((n + 1)); kind=npm-test ;; esac
+    case "$line" in *"npx vitest"*|*"bunx vitest"*|*"vitest run"*) n=$((n + 1)); kind=vitest ;; esac
+    case "$line" in *"check-hook-lib-suites.sh"*) n=$((n + 1)); kind=hook-lib ;; esac
+    if [ "$n" -gt 1 ]; then
+        echo ambiguous
+    elif [ "$n" -eq 0 ]; then
+        echo unknown
+    else
+        echo "$kind"
+    fi
+}
+
 runner_check() {
-    local ci="$PWD/.github/workflows/ci.yml" line marker hit missing=0
+    local ci="$PWD/.github/workflows/ci.yml" line kind label exp_kind locate matched drift missing=0
     [ -f "$ci" ] || io_fail "reading ci.yml for --runner-check"
     while IFS= read -r line; do
-        hit=0
-        while IFS= read -r marker; do
-            case "$line" in *"$marker"*) hit=1 ;; esac
+        kind=$(line_kind "$line")
+        if [ "$kind" = ambiguous ]; then
+            echo "impacted-suites: --runner-check: ambiguous JS/TS test invocation — more than one runner family on one line, refusing to guess: ${line}" >&2
+            missing=1
+            continue
+        fi
+        matched=0
+        drift=""
+        while IFS='|' read -r label exp_kind locate; do
+            case "$line" in
+                *"$locate"*)
+                    matched=1
+                    [ "$exp_kind" = "$kind" ] || drift="${label} expects ${exp_kind}, ci.yml now runs ${kind}"
+                    ;;
+            esac
         done < <(runner_known_markers)
-        if [ "$hit" -eq 0 ]; then
+        if [ "$matched" -eq 0 ]; then
             echo "impacted-suites: --runner-check: ci.yml runs a JS/TS test invocation --runner does not map: ${line}" >&2
             missing=1
+        elif [ -n "$drift" ]; then
+            echo "impacted-suites: --runner-check: runner drift — ${drift}: ${line}" >&2
+            missing=1
         fi
-    done < <(grep -vE '^[[:space:]]*#' "$ci" | grep -E 'run:.*(node --test|bun test|npm test|check-hook-lib-suites\.sh)')
+    done < <(grep -vE '^[[:space:]]*#' "$ci" | grep -E 'run:.*(node --test|bun test|npm test|npx vitest|bunx vitest|vitest run|check-hook-lib-suites\.sh)')
     [ "$missing" -eq 0 ]
 }
 
