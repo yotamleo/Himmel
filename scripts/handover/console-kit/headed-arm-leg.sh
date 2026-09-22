@@ -348,9 +348,16 @@ esac
 # --console (HIMMEL-3435): charset-checked here because it is an explicit,
 # user-typed flag - same refuse-on-bad-input stance as --lane/--profile
 # above. It lands in a filesystem path downstream (merge-block-alert.sh's
-# console inbox lookup), so only letters, digits, '.', '_' and '-' pass.
+# console inbox lookup), so only letters, digits, '.', '_' and '-' pass, and
+# "." / ".." are refused outright (HIMMEL-3456): they pass that charset but
+# are path components, routing the lookup outside the console directory.
 if [ -n "$CONSOLE_FLAG" ]; then
     case "$CONSOLE_FLAG" in
+        .|..)
+            usage
+            echo "headed-arm-leg: --console: name must not be '.' or '..' (got: $CONSOLE_FLAG)" >&2
+            exit 2
+            ;;
         *[!A-Za-z0-9._-]*)
             usage
             echo "headed-arm-leg: --console: name must contain only letters, digits, '.', '_' or '-' (got: $CONSOLE_FLAG)" >&2
@@ -482,10 +489,26 @@ fi
 # every leg it arms. Kept as a list, not a bare `unset`, so --dry-run can
 # print it and test-headed-arm-leg.sh can assert the exact set and fail on
 # drift if a future console-only knob needs the same treatment.
+# HIMMEL-3456: the scrub also strips NAME=... tokens from a caller-preset
+# HEADED_ARM_LAUNCHER_ENV. leg_propagate_env appends to that list rather than
+# replacing it, and headed-arm.sh hands every token to the leg on every lane,
+# so an `unset` alone let a caller-listed CONSOLE_CONTEXT=1m come straight
+# back into the leg.
 LEG_ENV_SCRUB="CONSOLE_CONTEXT"
 for _leg_env_scrub in $LEG_ENV_SCRUB; do
     unset "$_leg_env_scrub"
+    _leg_env_kept=""
+    set -f
+    for _leg_env_tok in ${HEADED_ARM_LAUNCHER_ENV:-}; do
+        case "$_leg_env_tok" in
+            "$_leg_env_scrub="*) ;;
+            *) _leg_env_kept="${_leg_env_kept:+$_leg_env_kept }$_leg_env_tok" ;;
+        esac
+    done
+    set +f
+    [ -n "${HEADED_ARM_LAUNCHER_ENV:-}" ] && HEADED_ARM_LAUNCHER_ENV="$_leg_env_kept"
 done
+unset -v _leg_env_scrub _leg_env_kept _leg_env_tok
 
 # HIMMEL-2779: a leg's ceiling is the resolved CLI pair, not the absence of a
 # model suffix. Fail before dry-run reporting or preflight when context already
@@ -607,7 +630,7 @@ leg_propagate_env HIMMEL_CONSOLE_LEG 1
 # exactly like an empty source - try the next one, or export nothing.
 _console_name_ok() {
     case "$1" in
-        ''|*[!A-Za-z0-9._-]*) return 1 ;;
+        ''|.|..|*[!A-Za-z0-9._-]*) return 1 ;;
         *) return 0 ;;
     esac
 }

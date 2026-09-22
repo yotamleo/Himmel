@@ -114,7 +114,17 @@ fails=0
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 check()        { [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
 contains()     { grepq "$2" -F -e "$3" && echo "ok - $1" || { echo "FAIL - $1: output does not contain [$3]"; fails=$((fails+1)); }; }
-not_contains() { grepq "$2" -F -e "$3" && { echo "FAIL - $1: output must NOT contain [$3]"; fails=$((fails+1)); } || echo "ok - $1"; }
+# HIMMEL-3456: only grep's rc 1 means "absent"; rc >1 is an execution error,
+# which would otherwise pass every negative assertion vacuously (#1139).
+not_contains() {
+  local _rc=0
+  grepq "$2" -F -e "$3" || _rc=$?
+  case "$_rc" in
+    0) echo "FAIL - $1: output must NOT contain [$3]"; fails=$((fails+1)) ;;
+    1) echo "ok - $1" ;;
+    *) echo "FAIL - $1: grep itself failed (rc $_rc)"; fails=$((fails+1)) ;;
+  esac
+}
 ends_with()    { grepq "$2" -E -e "$3\$" && echo "ok - $1" || { echo "FAIL - $1: [$2] does not end with [$3]"; fails=$((fails+1)); }; }
 
 PAST=$(( $(date +%s) - 100 ))
@@ -344,6 +354,38 @@ printf 'claude\0--model\0x\0-n\0bad:name\0load doc and continue\0' > "$csn_fixtu
 rc=0; out="$(CLAUDE_PID=4242 SESSION_NAME_CMDLINE_FILE="$csn_fixture_colon" bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 check "dry-run, own session name with a bad charset: exit 0 (not refused)" "$rc" "0"
 contains "dry-run, own session name with a bad charset: treated as no source" "$out" "HIMMEL_CONSOLE_NAME=<unset>"
+
+# HIMMEL-3456: "." and ".." pass the charset but are path components once
+# merge-block-alert.sh joins the name into the console inbox path. Both
+# validation sites refuse them, each with its own stance (flag = exit 2,
+# ambient = no source).
+for dots in . ..; do
+  rc=0; out="$(bash "$SCRIPT" --dry-run --console "$dots" --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+  check "--console [$dots]: exit 2" "$rc" "2"
+  contains "--console [$dots]: names the bad value" "$out" "got: $dots"
+  rc=0; out="$(HIMMEL_CONSOLE_NAME="$dots" bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+  check "dry-run, ambient HIMMEL_CONSOLE_NAME=[$dots]: exit 0 (not refused)" "$rc" "0"
+  contains "dry-run, ambient HIMMEL_CONSOLE_NAME=[$dots]: treated as no source" "$out" "HIMMEL_CONSOLE_NAME=<unset>"
+done
+
+# HIMMEL-3456: a caller-preset HEADED_ARM_LAUNCHER_ENV is appended to, never
+# replaced (leg_propagate_env), and headed-arm.sh hands its tokens to the leg
+# on every lane - so a scrubbed var carried there would come back past the
+# `unset`. The scrub strips it from the token list too; siblings survive.
+for lane in native claudex; do
+  out="$(HEADED_ARM_LAUNCHER_ENV="CONSOLE_CONTEXT=1m KEEP_ME=1" bash "$SCRIPT" --dry-run --lane "$lane" --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)"
+  lenv="$(printf '%s\n' "$out" | grep '^headed-arm-leg: lane=')"
+  contains "--lane $lane, caller-preset launcher-env: dry-run reached the lane line" "$lenv" "launcher-env="
+  not_contains "--lane $lane, caller-preset launcher-env: scrubbed CONSOLE_CONTEXT stripped" "$lenv" "CONSOLE_CONTEXT="
+  contains "--lane $lane, caller-preset launcher-env: sibling token kept" "$lenv" "KEEP_ME=1"
+done
+
+# HIMMEL-3456: only grep's rc 1 means "absent" - an rc >1 is an execution
+# error and must fail the assertion, never pass it vacuously (#1139's fix to
+# the same helper in test-headed-arm.sh).
+# shellcheck disable=SC2317,SC2329  # grep() is invoked indirectly, through grepq
+nc_probe=$( grep() { return 2; }; not_contains "probe" "x" "y" )
+check "not_contains reports a grep error as a failure, not as absence" "$nc_probe" "FAIL - probe: grep itself failed (rc 2)"
 
 rc=0; out="$(LEG_CONTEXT=1m bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 check "dry-run LEG_CONTEXT=1m: refused with exit 2" "$rc" "2"
