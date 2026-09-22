@@ -86,12 +86,11 @@ if grep -qF 'exec bash "$_ah_anchor/scripts/cr/$_ah_name" "$@"' "$red/scripts/cr
 fi
 printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\necho "LOCAL"\n' "$SOURCE_LINE" > "$red/scripts/cr/known-findings.sh"
 red_out="$(cd "$red" && env -u CR_ANCHOR_HANDED_OFF HIMMEL_REPO="$anchor" bash scripts/cr/known-findings.sh --diff 'a b' 2>/dev/null)"
-if [ "$red_out" = "2|--diff|a b|" ]; then
-    echo "FAIL: T9c RED control — an unquoted \$* re-split still passed the strengthened T9 (got '$red_out')" >&2
-    fail=1
-else
-    pass=$((pass + 1))
-fi
+red_rc=$?
+# Assert the SPECIFIC unquoted-$* re-split shape (exit 0, argc 3: --diff a b),
+# not merely "not the correct value" — a setup/exec failure would also be
+# not-the-correct-value (e.g. empty output) and must not pass as evidence.
+check "$red_rc:$red_out" "0:3|--diff|a|b|" "T9c RED control catches the unquoted \$* re-split"
 
 # 9b. A tree whose helper is missing fails closed rather than running the local copy.
 rm -f "$wt/scripts/cr/anchor-handoff.sh"
