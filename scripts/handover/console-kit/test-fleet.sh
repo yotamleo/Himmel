@@ -81,7 +81,7 @@ mkleg HIMMEL-9009-N9-iota-2026-09-22 claude-opus-5 \
 # Live-state pid is the (dead) launcher wrapper, and no launch log exists. Only the
 # `claude agents --json` row identifies it.
 mkleg HIMMEL-9010-N10-kappa-2026-09-22 claude-sonnet-5 \
-    '- 10:27 LIVE — background leg via the agents service'
+    '- 10:27 LIVE — background leg via the daemon'  # t13b-ok: literal fixture text for a mocked leg row, not real automation
 
 cat > "$B/HIMMEL-nextleg-2026-09-22Z-console.md" <<'DOC'
 # console
