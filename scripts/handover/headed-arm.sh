@@ -841,7 +841,7 @@ _hl_secret_var() {
 _hl_service_pid() {
     local arg prev2="" prev1=""
     while IFS= read -r -d '' arg; do
-        [ "${prev2##*/}" = claude ] && [ "$prev1" = daemon ] && [ "$arg" = run ] && return 0
+        [ "${prev2##*/}" = claude ] && [ "$prev1" = daemon ] && [ "$arg" = run ] && return 0  # t13b-ok: read-only argv match of the Claude Code service, starts nothing
         prev2="$prev1"; prev1="$arg"
     done < "$PROC/$1/cmdline"
     return 1
@@ -903,7 +903,7 @@ headless_launch() {
     val=""
     [ "${HIMMEL_HOOK_INTEGRITY_BYPASS_OK:-}" = "1" ] && val=1
     _hl_set HIMMEL_HOOK_INTEGRITY_BYPASS_OK "$val"
-    pids="$("$PGREP" -f '[c]laude daemon run' 2>/dev/null)"
+    pids="$("$PGREP" -f '[c]laude daemon run' 2>/dev/null)"  # t13b-ok: read-only pgrep lookup of the Claude Code service, starts nothing
     pg_rc=$?
     [ "$pg_rc" -gt 1 ] && headless_fail 9 "headless: pgrep scan for the claude background service failed - its env decides what the leg inherits, refusing to launch blind"
     local qualified=0
