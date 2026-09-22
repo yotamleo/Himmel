@@ -274,16 +274,46 @@ read-only lookup does not need its own gate PR. It is hardened: the marker
 must open with exactly `# t13b-ok: ` (or `// t13b-ok: `) — one space after
 `#`/`//` and at least one after the colon (`#t13b-ok:`, `#  t13b-ok:` and
 `# t13b-ok:x` do not exempt; extra spaces after the colon are tolerated,
-ending up inside the trimmed reason) — and
-the reason, once trimmed, must be at least 8 characters AND contain a word
-character (`# t13b-ok: short` and `# t13b-ok: --------` both still fail). The
-marker never reaches a different line (same-line only). The match is
-text-only, not quote-aware — a marker spelled inside a quoted argument exempts
-the line the same as a real trailing comment would (`ponytail:` in the gate,
-out of scope for this narrow marker — tracked separately as HIMMEL-3446). Read
-cases in `scripts/parity/test-t13b-daemon-prose.sh`. Precedent for a narrow,
-literal carve-out done right: HIMMEL-3414's exact-token
-`systemctl daemon-reload` strip, which this gate keeps unchanged.
+ending up inside the trimmed reason).
+
+**Real trailing comment, not raw text (HIMMEL-3446).** The marker is now
+recognized by a minimal quote/brace-depth scan of the shipped line (no full
+tokenizer), not by a text search — `index(t, "# t13b-ok: ")` was the whole
+trust boundary once #1094 made the marker the only exemption, and a marker
+spelled anywhere in the line's text used to exempt it. The scan tracks
+single/double/backtick quoting, `${…}`/`$(…)` substitution nesting, and a
+leading `/* … */` block comment, and only recognizes a `#`/`//` as a real
+comment-open when it sits outside all of those. `#` opens a marker only on a
+sh/code-kind line, only at word start (column 1 or preceded by whitespace —
+mid-word `foo#…` and an escaped `\#…` do not count); `//` opens one only on a
+js-kind line (`.js`/`.ts`/`.mjs`/`.cjs`). `//` never counts in a shell kind and
+`#` never counts in a js/ts kind. The first real comment-open on the line is
+final either way — once it opens, nothing later on the line can be a
+different "start," whether or not it spells the exact marker text. This
+rejects a marker hidden in a single- or double-quoted string, a `bash -c`
+argument, a herestring, a `${x#…}` parameter expansion, a `$(…)` command
+substitution, and a `//` inside a `.sh` file — read the `smg-*` cases in
+`scripts/parity/test-t13b-daemon-prose.sh` for the full shape list. A
+semicolon-chained command genuinely *after* a real marker on the same line
+(`cmd & # t13b-ok: reason ; other-cmd &`) is not a bypass: everything past a
+real `#` is a shell comment, so the chained command is unreachable code on
+that line, and the gate still leaves it exempted (`mk-mid-chain`/
+`sh-t13b-ok-mid-chain-comment-eats-rest`) — which line shapes the marker may
+exempt is unchanged and out of scope here.
+
+Once a real comment opens, the reason after it must be non-trivial: at least
+8 characters trimmed AND containing a run of 3 or more letters, which kills an
+all-digit reason (`12345678`), punctuation padding (`.......x`) and
+whitespace padding, and a second `# t13b-ok: `/`// t13b-ok: ` nested inside
+the reason does not extend the exemption. The marker never reaches a
+different line (same-line only, unchanged). `ponytail:` in the gate: the
+scan is per diff line with no concept of "this line is heredoc BODY
+content, not a shell comment" — a heredoc body line whose text happens to
+spell a real-looking marker still exempts a daemon shape on that same line;
+out of scope, tracked on HIMMEL-3446. Read cases in
+`scripts/parity/test-t13b-daemon-prose.sh`. Precedent for a narrow, literal
+carve-out done right: HIMMEL-3414's exact-token `systemctl daemon-reload`
+strip, which this gate keeps unchanged.
 
 ## VM round trip — station-only, never CI (HIMMEL-3332)
 

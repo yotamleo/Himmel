@@ -212,9 +212,12 @@ trap 'rm -f "$SHIPPED"' EXIT
 VENDORED_LIST="$(mktemp "${TMPDIR:-/tmp}/ws5-vendored-list.XXXXXX")" || { echo "test-ws5-invariants.sh: mktemp failed" >&2; exit 2; }
 REMOVED="$(mktemp "${TMPDIR:-/tmp}/ws5-removed.XXXXXX")" || { echo "test-ws5-invariants.sh: mktemp failed" >&2; exit 2; }
 # One line per $SHIPPED line, in lockstep: "md" for a *.md file, "sh" for a
-# *.sh/*.bash file, "code" otherwise. T13(b)'s daemon class reads md vs.
-# not-md only (HIMMEL-3233) -- "sh" and "code" are treated identically since
-# HIMMEL-3432 removed the lookup carve-out that used to read "sh" specifically.
+# *.sh/*.bash file, "js" for a *.js/*.ts/*.mjs/*.cjs file, "code" otherwise.
+# T13(b)'s daemon class reads md vs. not-md only (HIMMEL-3233) -- "sh", "js"
+# and "code" are all still eligible for that check (HIMMEL-3432 removed the
+# lookup carve-out that used to read "sh" specifically; HIMMEL-3446 split
+# "js" out of "code" so the marker-comment scan below knows which line
+# comment style -- `#` or `//` -- is real for that line).
 # $SHIPPED itself stays bare lines so T14(b)'s grep cannot match a path.
 SHIPPED_KIND="$(mktemp "${TMPDIR:-/tmp}/ws5-shipped-kind.XXXXXX")" || { echo "test-ws5-invariants.sh: mktemp failed" >&2; exit 2; }
 trap 'rm -f "$SHIPPED" "$VENDORED_LIST" "$REMOVED" "$SHIPPED_KIND"' EXIT
@@ -272,7 +275,7 @@ git diff "$BASE...HEAD" | awk -v vendored_file="$VENDORED_LIST" -v removed_file=
         # words T13(b) scans for (e.g. a setInterval-timing test).
         skip = (base ~ /^test-/) || (base ~ /\.tsv$/) \
             || (base ~ /\.test\.(ts|js|mjs|cjs)$/) || (f in vendored)
-        kind = (tolower(base) ~ /\.md$/) ? "md" : ((tolower(base) ~ /\.(sh|bash)$/) ? "sh" : "code")
+        kind = (tolower(base) ~ /\.md$/) ? "md" : ((tolower(base) ~ /\.(sh|bash)$/) ? "sh" : ((tolower(base) ~ /\.(js|ts|mjs|cjs)$/) ? "js" : "code"))
         next
     }
     skip { next }
@@ -383,8 +386,68 @@ else
     # reads as a comment, and a C-preprocessor `#define` line likewise
     # (himmel ships no C).
     t13b_hit=0
-    t13b_count="$(awk -v removed_file="$REMOVED" -v kind_file="$SHIPPED_KIND" '
+    t13b_count="$(awk -v removed_file="$REMOVED" -v kind_file="$SHIPPED_KIND" -v sq="'" '
         function trim(x) { sub(/^[ \t]+/, "", x); sub(/[ \t\r]+$/, "", x); return x }
+        function is_word_start(t, i,   prev) {
+            if (i <= 1) return 1
+            prev = substr(t, i - 1, 1)
+            return (prev == " " || prev == "\t")
+        }
+        # HIMMEL-3446: locate the ONE real trailing t13b-ok marker on this
+        # line, if any -- a minimal quote/brace-depth scan (no shell
+        # tokenizer): tracks single/double/backtick quoting, a leading
+        # `/* ... */` block comment, and `${...}`/`$(...)` substitution
+        # nesting, and skips a `#`/`//` found inside any of them. `#` only
+        # opens a marker for sh/code kinds, at word start (column 1 or
+        # preceded by whitespace -- bash `#` mid-word is a literal
+        # character, not a comment; an escaped `\#` is skipped whole by the
+        # top-level backslash branch below, so it never reaches this check
+        # either). `//` only opens one for js/code kinds (JS `//` always
+        # starts a comment; no word-start rule there). The first REAL
+        # comment start on the line is final either way: whether or not it
+        # spells the exact marker, nothing later on the line can be a
+        # different "start" -- it is all one comment, or the line has none.
+        # Returns the 1-based index of the marker text, or 0 if none.
+        function find_marker_start(t, kind,    n, i, ch, two, q, depth, blk, cand) {
+            n = length(t)
+            q = ""; depth = 0; blk = 0; i = 1
+            while (i <= n) {
+                ch = substr(t, i, 1)
+                two = substr(t, i, 2)
+                if (blk) {
+                    if (two == "*/") { blk = 0; i += 2 } else { i++ }
+                    continue
+                }
+                if (q != "") {
+                    if (q == sq) { if (ch == sq) q = "" }
+                    else { if (ch == "\\") { i += 2; continue }; if (ch == q) q = "" }
+                    i++
+                    continue
+                }
+                if (depth > 0) {
+                    if (ch == "(" || ch == "{") depth++
+                    else if (ch == ")" || ch == "}") depth--
+                    else if (ch == sq || ch == "\"" || ch == "`") q = ch
+                    else if (ch == "\\") { i += 2; continue }
+                    i++
+                    continue
+                }
+                if (ch == "\\") { i += 2; continue }
+                if (ch == sq || ch == "\"" || ch == "`") { q = ch; i++; continue }
+                if (two == "${" || two == "$(") { depth = 1; i += 2; continue }
+                if (two == "/*") { blk = 1; i += 2; continue }
+                if ((kind == "sh" || kind == "code") && ch == "#" && is_word_start(t, i)) {
+                    cand = substr(t, i, 11)
+                    return (cand == "# t13b-ok: ") ? i : 0
+                }
+                if ((kind == "js" || kind == "code") && two == "//") {
+                    cand = substr(t, i, 12)
+                    return (cand == "// t13b-ok: ") ? i : 0
+                }
+                i++
+            }
+            return 0
+        }
         BEGIN {
             while ((getline line < removed_file) > 0) removed[trim(substr(line, 2))]++
             close(removed_file)
@@ -439,36 +502,44 @@ else
             # to exempt a real read-only lookup.
             daemon_hit = (code ~ /daemon/)
             service_hit = code ~ /(^|[^a-z0-9_-])nohup[ \t].*(^|[^&<>])&([ \t]*($|[);"\047])|[ \t]+[^&> \t])|systemctl[^|;&]*[ \t]enable([ \t]|$)|launchctl[ \t]+(load|bootstrap)([ \t]|$)/
-            if (!hit && (kind == "code" || kind == "sh") && code != "" && code !~ /^(#|\/\/|\/\*|\*([ \t]|$)|<!--)/ &&
+            if (!hit && (kind == "code" || kind == "sh" || kind == "js") && code != "" && code !~ /^(#|\/\/|\/\*|\*([ \t]|$)|<!--)/ &&
                 (daemon_hit || service_hit))
                 hit = 1
             # HIMMEL-3432 AC ruling: a trailing `# t13b-ok: <reason>` on THIS
             # shipped line is now the ONLY exemption (the lexical lookup
-            # carve-out above is gone) and it is hardened: the marker must
-            # open with EXACTLY `# t13b-ok: ` -- one space after `#`, one
-            # after the colon -- or the JS/TS `// t13b-ok: ` form, so
-            # `#t13b-ok:`, `#  t13b-ok:` and `# t13b-ok:x` all fail to match
-            # and so do not exempt. The reason after it must be non-trivial:
-            # at least 8 characters once trimmed AND containing a word
-            # character, so a long run of punctuation and a short real word
-            # both still fail. It exempts only THIS line, only T13(b) (not
-            # T13(a), not T12/T14/T15), and never a different line (`t` holds
-            # only this line own text, so a marker on the line above cannot
-            # cancel a hit here).
-            # ponytail: the match is text-only, not quote-aware -- a marker
-            # spelled inside a quoted argument (e.g. --label "# t13b-ok: a
-            # real reason") exempts the line the same as a real trailing
-            # comment would. This gate is a line-based awk scan with no shell
-            # tokenizer anywhere in it (see the systemctl-daemon-reload
-            # carve-out above for the same limit), so telling a real comment
-            # from a quoted string would need one; out of scope for this
-            # narrow marker. Tracked: HIMMEL-3446.
+            # carve-out above is gone). It exempts only THIS line, only
+            # T13(b) (not T13(a), not T12/T14/T15), and never a different
+            # line (`t` holds only this own line text, so a marker on the
+            # line above cannot cancel a hit here).
+            # HIMMEL-3446 (console ruling): the marker only counts when it is
+            # a REAL trailing comment -- find_marker_start above does a
+            # minimal quote/brace-depth scan (not a full tokenizer) so a
+            # marker spelled inside a quoted string, a backtick/`$()`/`${}`
+            # substitution, or a leading `/* ... */` block comment does not
+            # exempt. `#` only opens a marker on a sh/code-kind line; `//`
+            # only opens one on a js-kind line (`.js`/`.ts`/`.mjs`/`.cjs`) --
+            # `//` never counts in shell kinds and `#` never counts in
+            # js/ts, per the ruling. Exact spacing is still required
+            # (`# t13b-ok: ` / `// t13b-ok: `, one space each side -- #1094),
+            # so `#t13b-ok:`, `#  t13b-ok:` and `# t13b-ok:x` all still fail
+            # to match. Once a real comment opens, the reason after it must
+            # be non-trivial: >= 8 characters trimmed AND containing a run
+            # of 3+ letters (kills `12345678`, `.......x`, and whitespace
+            # padding), with no second `# t13b-ok: ` / `// t13b-ok: ` nested
+            # inside it (a chained marker does not extend the exemption).
+            # ponytail: the scan is per diff LINE with no concept of "this
+            # line is heredoc BODY content, not a shell comment" -- a
+            # heredoc body line whose text happens to spell a real-looking
+            # `# t13b-ok: <reason>` still exempts a daemon shape on that
+            # same line (same limit as the pre-existing heredoc ponytail
+            # above). Out of scope here; tracked on HIMMEL-3446.
             marker_at = 0
-            if ((mp = index(t, "# t13b-ok: ")) > 0) marker_at = mp + 11
-            else if ((mp = index(t, "// t13b-ok: ")) > 0) marker_at = mp + 12
+            mp = find_marker_start(t, kind)
+            if (mp > 0) marker_at = mp + ((substr(t, mp, 1) == "#") ? 11 : 12)
             if (marker_at > 0) {
                 reason = trim(substr(t, marker_at))
-                if (length(reason) >= 8 && reason ~ /[A-Za-z0-9_]/) hit = 0
+                if (length(reason) >= 8 && reason ~ /[A-Za-z][A-Za-z][A-Za-z]/ &&
+                    reason !~ /# t13b-ok: / && reason !~ /\/\/ t13b-ok: /) hit = 0
             }
             if (hit) {
                 if (removed[t] > 0) removed[t]--
