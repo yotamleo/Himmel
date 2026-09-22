@@ -290,6 +290,30 @@ run "heredoc body naming pr-check-context.sh on an edited branch -> no-op" 0 \
     "$(payload "cat > \$S/body.md <<'EOF'
 see scripts/cr/pr-check-context.sh
 EOF" "$WT")" "$HR"
+# An UNQUOTED heredoc marker still expands $( ) in its body when the heredoc
+# actually runs, so a guarded run hidden there must still deny (codex-1).
+run "unquoted-marker heredoc body running the guarded script -> deny" 2 \
+    "$(payload "cat <<EOF
+\$(bash scripts/cr/pr-check-context.sh)
+EOF" "$WT")" "$HR"
+# Plain text in an unquoted-marker heredoc body, with no substitution, is
+# still just data - the codex-1 fix must not turn every such heredoc into a
+# deny.
+run "unquoted-marker heredoc body only mentioning the path -> no-op" 0 \
+    "$(payload "cat <<EOF
+see scripts/cr/pr-check-context.sh
+EOF" "$WT")" "$HR"
+# A quoted << inside an argument is not a heredoc redirect; it must not
+# swallow the guarded line that follows it as a fake heredoc body (codex-2).
+run "a quoted decoy heredoc marker does not hide the next line -> deny" 2 \
+    "$(payload "echo '<<EOF'
+bash scripts/cr/pr-check-context.sh" "$WT")" "$HR"
+# shellcheck disable=SC2016 # command text, verbatim
+run "a double-quoted command substitution running the guarded script -> deny" 2 \
+    "$(payload 'echo "$(bash scripts/cr/pr-check-context.sh)"' "$WT")" "$HR"
+# shellcheck disable=SC2016 # command text, verbatim
+run "a double-quoted command substitution running an unguarded command -> no-op" 0 \
+    "$(payload 'echo "today: $(date) see scripts/cr/pr-check-context.sh"' "$WT")" "$HR"
 run "the anchored fence on an edited branch -> no-op" 0 "$(payload "$FENCE_TEXT" "$WT")" "$HR"
 run "HIMMEL_REPO re-pointed before the fence -> deny" 2 \
     "$(payload "export HIMMEL_REPO=.; $FENCE_TEXT" "$WT")" "$HR"

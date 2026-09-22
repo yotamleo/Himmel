@@ -111,15 +111,43 @@ cmd="${cmd//$'\r'/}"
 
 case "$tool" in Bash|"") ;; *) exit 0 ;; esac
 
-# A heredoc body is data for its redirect target, not a command: strip it so a
-# body line that merely mentions a guarded path is never read as one of the
-# "simple command lines" below (HIMMEL-3433).
+# Blanks quoted spans (each char replaced by a space, so length and position
+# are preserved) so a later << search only finds a real redirect operator,
+# never text that merely appears inside a quoted argument - `echo '<<EOF'`
+# is not a heredoc (codex-2, found in HIMMEL-3433 review).
+unquoted_mask() {
+    local s=$1
+    local out="" i=0 n=${#s} c q=""
+    while [ "$i" -lt "$n" ]; do
+        c=${s:$i:1}
+        if [ -n "$q" ]; then
+            [ "$c" = "$q" ] && q=""
+            out+=" "
+        elif [ "$c" = "'" ] || [ "$c" = '"' ]; then
+            q=$c
+            out+=" "
+        else
+            out+="$c"
+        fi
+        i=$((i + 1))
+    done
+    printf '%s' "$out"
+}
+
+# A heredoc body under a QUOTED marker (<<'EOF') is inert data for its
+# redirect target end-to-end, so it is stripped: a body line that merely
+# mentions a guarded path is never read as one of the "simple command lines"
+# below (HIMMEL-3433). A body under an UNQUOTED marker (<<EOF) still
+# undergoes command substitution when the heredoc actually runs, so it is
+# left in place for the classifier below rather than discarded unseen
+# (codex-1, found in HIMMEL-3433 review) - the classifier's own $( )
+# extraction (below) then catches a guarded run inside it.
 # ponytail: only the first heredoc on a line is tracked, so a rare second
 # `<<` on the same line keeps its marker text unstripped - a stray marker
 # word, never a guarded script's own text, so it cannot turn a deny into an
 # allow.
 strip_heredocs() {
-    local text=$1 out="" hline marker="" in_body=0
+    local text=$1 out="" hline marker="" in_body=0 masked prefix rest
     while IFS= read -r hline || [ -n "$hline" ]; do
         if [ "$in_body" -eq 1 ]; then
             if [ "$hline" = "$marker" ] || [[ "$hline" =~ ^$'\t'*${marker}$ ]]; then
@@ -128,11 +156,14 @@ strip_heredocs() {
             continue
         fi
         out="$out$hline"$'\n'
-        # No backreference to the opening quote: bash's =~ (POSIX ERE) does not
-        # support one, so a quoted marker (<<'EOF') would never match at all.
-        if [[ "$hline" =~ \<\<-?[[:space:]]*[\'\"]?([A-Za-z_][A-Za-z0-9_]*)[\'\"]? ]]; then
-            marker=${BASH_REMATCH[1]}
-            in_body=1
+        masked=$(unquoted_mask "$hline")
+        if [[ "$masked" == *'<<'* ]]; then
+            prefix=${masked%%<<*}
+            rest=${hline:${#prefix}}
+            if [[ "$rest" =~ ^\<\<-?[[:space:]]*[\'\"]([A-Za-z_][A-Za-z0-9_]*)[\'\"] ]]; then
+                marker=${BASH_REMATCH[1]}
+                in_body=1
+            fi
         fi
     done <<<"$text"
     printf '%s' "$out"
@@ -295,7 +326,50 @@ tokenize() {
 # text never spells (a variable holding the whole path, with neither "cr/" nor
 # "pr-check" in sight) is not seen. The branch can run arbitrary code through any other
 # allow-listed scripts/ path anyway; this hook closes the two named scripts.
-simple=$(tokenize "$cmd")
+#
+# Extracts the inner text of every $(...) and `...` substitution in the raw
+# command, quoted or not, as its own line. tokenize()'s quote handling reads
+# every character of a double-quoted word literally - including a $( ) the
+# shell still expands there - so a substitution buried inside one would
+# otherwise be swallowed as one opaque token and never classified (codex-3,
+# found in HIMMEL-3433 review). An unquoted $( ) is already caught by
+# tokenize() splitting on its bare parens; extracting it here too is
+# redundant, not wrong. Depth-tracked for one level of nesting; a
+# substitution nested inside an already-extracted one is not re-scanned.
+extract_substitutions() {
+    local text=$1
+    local acc="" i=0 n=${#text} c depth inner
+    while [ "$i" -lt "$n" ]; do
+        c=${text:$i:1}
+        if [ "$c" = '`' ]; then
+            i=$((i + 1))
+            inner=""
+            while [ "$i" -lt "$n" ] && [ "${text:$i:1}" != '`' ]; do
+                inner+="${text:$i:1}"
+                i=$((i + 1))
+            done
+            acc+="$inner"$'\n'
+        elif [ "$c" = '$' ] && [ "${text:$((i + 1)):1}" = '(' ]; then
+            i=$((i + 2))
+            depth=1
+            inner=""
+            while [ "$i" -lt "$n" ] && [ "$depth" -gt 0 ]; do
+                c=${text:$i:1}
+                case "$c" in
+                    '(') depth=$((depth + 1)); inner+="$c" ;;
+                    ')') depth=$((depth - 1)); [ "$depth" -gt 0 ] && inner+="$c" ;;
+                    *) inner+="$c" ;;
+                esac
+                i=$((i + 1))
+            done
+            acc+="$inner"$'\n'
+            continue
+        fi
+        i=$((i + 1))
+    done
+    printf '%s' "$acc"
+}
+simple=$(tokenize "$cmd"$'\n'"$(extract_substitutions "$cmd")")
 runs=0
 chdir=0
 wrapped=0
