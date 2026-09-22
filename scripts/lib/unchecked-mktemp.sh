@@ -313,13 +313,14 @@ unchecked_mktemp_scan() {
                 if (prev == "{" && prev2 == "$") continue     # ${#name} -- length
                 # codex-2 (/pr-check round 1 on this branch): a `#` is only
                 # a comment START at the beginning of a shell word -- i.e.
-                # at the start of the line or right after whitespace. A `#`
-                # glued to the preceding character (no separating space),
-                # such as a `#` inside a literal mktemp template argument
-                # (`mktemp /tmp/name#XXXXXX`), is ordinary text, not a
-                # comment, and must not swallow a real trailing `|| exit 1`
-                # guard that follows it.
-                if (prev != "" && prev != " " && prev != "\t") continue
+                # at the start of the line, right after whitespace, or right
+                # after a shell operator that ends the previous word (`;`,
+                # `&`, `|`, `(`, `)` -- round 2: these END a word rather than
+                # extending it, so `T=$(mktemp);# || exit 1` is a genuine
+                # commented-out guard, unlike a `#` glued to ordinary text
+                # such as a mktemp template argument (`mktemp
+                # /tmp/name#XXXXXX`), which is not a comment start.
+                if (prev != "" && prev !~ /[ \t;&|()]/) continue
                 return substr(s, 1, i - 1)
             }
         }
@@ -463,7 +464,14 @@ unchecked_mktemp_scan() {
                 # as it is followed by an ACTUAL closing brace -- `[^{}]*`
                 # cannot itself consume `{`/`}`, so the brace can no longer
                 # be skipped the way the old optional form allowed.
-                if (rem ~ ("(\\[\\[?|test)[ \t].*(\\$\\{" var "[^{}]*\\}|\\$" var ")[^A-Za-z0-9_/.]")) guarded = 1
+                # codex-1 (/pr-check round 2 on this branch): `[^{}]*` alone
+                # let identifier characters immediately continue the var
+                # name with no boundary, so `${tmp_other}` counted as a
+                # guard for `tmp`. A real modifier never starts with an
+                # identifier character, so requiring either an immediate
+                # close or a non-identifier char right after the var name
+                # closes this without narrowing back to exact-`${VAR}`-only.
+                if (rem ~ ("(\\[\\[?|test)[ \t].*(\\$\\{" var "(\\}|[^A-Za-z0-9_][^{}]*\\})|\\$" var ")[^A-Za-z0-9_/.]")) guarded = 1
                 if (!guarded && rem ~ ("\\$\\{" var ":\\?")) guarded = 1
             }
 
@@ -487,7 +495,7 @@ unchecked_mktemp_scan() {
                     # remainder above.
                     t_code = strip_comment(t)
                     # (c) a test construct referencing the variable.
-                    if (t_code ~ ("(\\[\\[?|test)[ \t].*(\\$\\{" var "[^{}]*\\}|\\$" var ")[^A-Za-z0-9_/.]")) { guarded = 1; break }
+                    if (t_code ~ ("(\\[\\[?|test)[ \t].*(\\$\\{" var "(\\}|[^A-Za-z0-9_][^{}]*\\})|\\$" var ")[^A-Za-z0-9_/.]")) { guarded = 1; break }
                     # (d) `${VAR:?...}` -- colon form only (not `${VAR?...}`).
                     if (t_code ~ ("\\$\\{" var ":\\?")) { guarded = 1; break }
                 }

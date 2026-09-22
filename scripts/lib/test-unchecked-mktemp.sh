@@ -439,6 +439,17 @@ f="$TMPDIR_ROOT/t31f.sh"
 printf 'a=$(mktemp 2>/dev/null) && b=$(mktemp 2>/dev/null)\nif [ -z "${a:-}" ] || [ -z "${b:-}" ]; then exit 1; fi\n' > "$f"
 assert_eq "T31f control: \${VAR:-} inside [ -z ] still guards (codex-1 widen)" "0" "$(scan_lines "$f")"
 
+# codex-1 (/pr-check round 2 on this branch): the braced alternative's
+# interior `[^{}]*` let identifier characters continue straight past the
+# captured var's name with no boundary, so `${tmp_other}` counted as a
+# guard for `tmp`. A real modifier (`:-`, `#`, `%`, ...) never starts with
+# an identifier character, so requiring a non-identifier boundary (or an
+# immediate close) right after the var name closes this without narrowing
+# back to exact-`${VAR}`-only.
+f="$TMPDIR_ROOT/t31g.sh"
+printf 'tmp=$(mktemp)\nother=$(foo)\nif [ -n "${tmp_other}" ]; then true; fi\n' > "$f"
+assert_eq "T31g rule (c) braced same-prefix different var (\${tmp_other} does not guard tmp) -> offending (codex-1 round 2)" "1" "$(scan_lines "$f")"
+
 # T32/T32b/T32c/T32d/T32e -- HIMMEL-3428 slice 2 item 2: a trailing ` #...`
 # comment must be stripped before rules (a)/(c)/(d) run, so a commented-out
 # guard (same-line or next-line) does not count as real -- while `#` inside
@@ -470,6 +481,15 @@ assert_eq "T32e control: quoted # in the capture line args does not break || rec
 f="$TMPDIR_ROOT/t32f.sh"
 printf 'T=$(mktemp /tmp/name#XXXXXX) || exit 1\n' > "$f"
 assert_eq "T32f control: unquoted # glued to a template arg (no space) does not break || recognition -> ok (codex-2)" "0" "$(scan_lines "$f")"
+
+# codex-2 (/pr-check round 2 on this branch): a `#` glued to a shell
+# operator (`;`, `&`, `|`, `(`, `)`) still starts a genuine comment -- those
+# characters end the previous word, they do not extend it, unlike a `#`
+# glued to ordinary text (T32f above). `T=$(mktemp);# || exit 1` must strip
+# the fake guard and flag as offending.
+f="$TMPDIR_ROOT/t32g.sh"
+printf 'T=$(mktemp);# || exit 1\n' > "$f"
+assert_eq "T32g operator-delimited comment (;# ) still strips a fake guard -> offending (codex-2 round 2)" "1" "$(scan_lines "$f")"
 
 # T33/T33b/T33c/T33d/T33e/T33f -- HIMMEL-3428 slice 2 item 3: the command-name
 # boundary must also catch `<`/`>` redirects, a bare quote with no preceding
