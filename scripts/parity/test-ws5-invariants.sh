@@ -207,9 +207,13 @@ trap 'rm -f "$SHIPPED"' EXIT
 # cancellation LESS likely, i.e. the gate stays strict.
 VENDORED_LIST="$(mktemp "${TMPDIR:-/tmp}/ws5-vendored-list.XXXXXX")" || { echo "test-ws5-invariants.sh: mktemp failed" >&2; exit 2; }
 REMOVED="$(mktemp "${TMPDIR:-/tmp}/ws5-removed.XXXXXX")" || { echo "test-ws5-invariants.sh: mktemp failed" >&2; exit 2; }
-# One line per $SHIPPED line, in lockstep: "md" when the added line came from a
-# *.md file, "code" otherwise. T13(b)'s daemon class reads it (HIMMEL-3233);
-# $SHIPPED itself stays bare lines so T14(b)'s grep cannot match a path.
+# One line per $SHIPPED line, in lockstep: "md" for a *.md file, "sh" for a
+# *.sh/*.bash file, "code" otherwise. T13(b)'s daemon class reads md vs.
+# not-md (HIMMEL-3233); its read-only-lookup carve-out reads "sh" specifically
+# (HIMMEL-3432 adversarial-review round: a lookup-shaped line in a non-shell
+# file, e.g. a Python/TS identifier named pgrep, is never a real pgrep(1)
+# invocation, so the carve-out cannot apply there). $SHIPPED itself stays bare
+# lines so T14(b)'s grep cannot match a path.
 SHIPPED_KIND="$(mktemp "${TMPDIR:-/tmp}/ws5-shipped-kind.XXXXXX")" || { echo "test-ws5-invariants.sh: mktemp failed" >&2; exit 2; }
 trap 'rm -f "$SHIPPED" "$VENDORED_LIST" "$REMOVED" "$SHIPPED_KIND"' EXIT
 while IFS= read -r f; do
@@ -266,7 +270,7 @@ git diff "$BASE...HEAD" | awk -v vendored_file="$VENDORED_LIST" -v removed_file=
         # words T13(b) scans for (e.g. a setInterval-timing test).
         skip = (base ~ /^test-/) || (base ~ /\.tsv$/) \
             || (base ~ /\.test\.(ts|js|mjs|cjs)$/) || (f in vendored)
-        kind = (tolower(base) ~ /\.md$/) ? "md" : "code"
+        kind = (tolower(base) ~ /\.md$/) ? "md" : ((tolower(base) ~ /\.(sh|bash)$/) ? "sh" : "code")
         next
     }
     skip { next }
@@ -429,21 +433,59 @@ else
             # line: `pkill -0 -9 -f ...` still matches the leading `-0` but a
             # later flag can override which signal is actually sent, so a
             # second `-<digit>` or `-s`/`--signal` flag disqualifies it too.
+            # Adversarial-review round (HIMMEL-3432, before merge) found three
+            # more bypasses, each now closed:
+            #   - a *.sh line can DEFINE a shell function named pgrep/pkill
+            #     (`pgrep () ( setsid -f claude daemon run )`) and the old
+            #     `^pgrep([ \t]|$)` anchor matched the definition line itself,
+            #     suppressing the very line that starts the process. `pgrep`
+            #     now requires a flag right after it (`^pgrep[ \t]+-`) the
+            #     same way `pkill` already required `-0`; a definition line
+            #     (`pgrep (` / `pgrep(`) never has a flag there, so it is
+            #     never treated as a lookup and falls through to the bare
+            #     "daemon" match below like any other spawn line;
+            #   - a lookup can hide its own starter behind a `\` line
+            #     continuation (`pgrep -f "claude daemon run" >/dev/null \`
+            #     then `|| setsid ... run` on the next physical line): this
+            #     scanner is per-line, so the chaining on the continued line
+            #     never reaches the first line own chain check. A trailing
+            #     `\` (the shell continuation character) now disqualifies the
+            #     lookup on its own, whatever else is or is not on the line;
+            #   - the shapes above only mean anything in a shell script:
+            #     `pgrep and subprocess.Popen(...)` (Python) or `pgrep ?
+            #     spawn(...) : 0` (TypeScript) are not pgrep(1) invocations at
+            #     all, just an identifier that happens to be named `pgrep`,
+            #     but the old lookup check ran on every code line regardless
+            #     of file type. The carve-out now applies to `kind == "sh"`
+            #     only (`*.sh` / `*.bash`, set alongside "md" above) --
+            #     never to a lookalike token in any other language.
+            # Also from that round (over-strict, not a bypass): the chain
+            # scan `[;&|]` matched an fd-duplication redirect like `2>&1` or
+            # `1>&2` (the `&` inside it), so a plain `pgrep -f "..."
+            # >/dev/null 2>&1` wrongly failed as chained.
+            # `chain` strips `[0-9]>&[0-9]` before that scan only -- `subst`
+            # and the trailing-backslash check still read the untouched
+            # `code`, since neither shape can hide inside an fd redirect.
             subst = code ~ /\$\(|`|<\(|>\(/
+            cont = code ~ /\\$/
+            chain = code
+            gsub(/[0-9]>&[0-9]/, "", chain)
             is_lookup = 0
-            if (code ~ /^pgrep([ \t]|$)/) {
-                if (code !~ /[;&|]/ && !subst) is_lookup = 1
-            } else if (code ~ /^pkill[ \t]+-0([ \t]|$)/) {
-                pkrest = code
-                sub(/^pkill[ \t]+-0[ \t]*/, "", pkrest)
-                if (code !~ /[;&|]/ && !subst &&
-                    pkrest !~ /(^|[ \t])-([0-9]|-?signal([ \t=]|$)|s([ \t]|$))/) is_lookup = 1
-            } else if (code ~ /^ps[ \t]/) {
-                if (code ~ /^ps[^|;&]*\|[ \t]*grep([ \t]|$)[^;&|]*$/ && !subst) is_lookup = 1
+            if (kind == "sh") {
+                if (code ~ /^pgrep[ \t]+-/) {
+                    if (chain !~ /[;&|]/ && !subst && !cont) is_lookup = 1
+                } else if (code ~ /^pkill[ \t]+-0([ \t]|$)/) {
+                    pkrest = code
+                    sub(/^pkill[ \t]+-0[ \t]*/, "", pkrest)
+                    if (chain !~ /[;&|]/ && !subst && !cont &&
+                        pkrest !~ /(^|[ \t])-([0-9]|-?signal([ \t=]|$)|s([ \t]|$))/) is_lookup = 1
+                } else if (code ~ /^ps[ \t]/) {
+                    if (chain ~ /^ps[^|;&]*\|[ \t]*grep([ \t]|$)[^;&|]*$/ && !subst && !cont) is_lookup = 1
+                }
             }
             daemon_hit = (code ~ /daemon/) && !is_lookup
             service_hit = code ~ /(^|[^a-z0-9_-])nohup[ \t].*(^|[^&<>])&([ \t]*($|[);"\047])|[ \t]+[^&> \t])|systemctl[^|;&]*[ \t]enable([ \t]|$)|launchctl[ \t]+(load|bootstrap)([ \t]|$)/
-            if (!hit && kind == "code" && code != "" && code !~ /^(#|\/\/|\/\*|\*([ \t]|$)|<!--)/ &&
+            if (!hit && (kind == "code" || kind == "sh") && code != "" && code !~ /^(#|\/\/|\/\*|\*([ \t]|$)|<!--)/ &&
                 (daemon_hit || service_hit))
                 hit = 1
             # HIMMEL-3432: a trailing `# t13b-ok: <reason>` on THIS shipped
@@ -459,7 +501,7 @@ else
             # gate is a line-based awk scan with no shell tokenizer anywhere in
             # it (see the systemctl-daemon-reload carve-out above for the same
             # limit), so telling a real comment from a quoted string would need
-            # one; out of scope for this narrow carve-out.
+            # one; out of scope for this narrow carve-out. Tracked: HIMMEL-3446.
             if (t ~ /#[ \t]*t13b-ok:[ \t]*[^ \t]/) hit = 0
             if (hit) {
                 if (removed[t] > 0) removed[t]--

@@ -216,6 +216,29 @@ run_case sh-t13b-ok-empty-reason-space FAIL scripts/start.sh \
 run_case sh-t13b-ok-marker-above-does-not-exempt FAIL scripts/start.sh \
     $'# t13b-ok: reason lives on the wrong line\nnohup claude daemon run &'
 
+echo "== T13(b): a redirect-only lookup line PASSES, not over-strict (HIMMEL-3432 adv-review) =="
+run_case sh-pgrep-redirect-fd-dup PASS scripts/start.sh \
+    "pgrep -f 'claude daemon run' >/dev/null 2>&1"
+
+echo "== T13(b): a shell function NAMED pgrep/pkill still FAILS (HIMMEL-3432 adv-review) =="
+run_case sh-pgrep-function-name FAIL scripts/start.sh \
+    'pgrep () ( setsid -f claude daemon run --label x )
+pgrep -f "claude daemon run"'
+run_case sh-pkill-function-name FAIL scripts/start.sh \
+    'pkill () ( setsid -f claude daemon run --label x )
+pkill -0 -f "claude daemon run"'
+
+echo "== T13(b): a backslash line-continuation hiding the starter still FAILS (HIMMEL-3432 adv-review) =="
+run_case sh-pgrep-backslash-continuation FAIL scripts/start.sh \
+    'pgrep -f "claude daemon run" >/dev/null \
+    || setsid -f claude daemon run'
+
+echo "== T13(b): the lookup carve-out is *.sh/*.bash only, not other languages (HIMMEL-3432 adv-review) =="
+run_case py-pgrep-lookalike FAIL src/start.py \
+    'pgrep and subprocess.Popen(["claude","daemon","run"])'
+run_case ts-pgrep-lookalike FAIL src/start.ts \
+    'pgrep ? spawn("claude",["daemon","run"]) : 0'
+
 if [ "$failures" -ne 0 ]; then
     echo "FAIL: $failures of $cases case(s) failed"
     exit 1

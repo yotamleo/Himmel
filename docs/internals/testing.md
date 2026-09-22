@@ -270,7 +270,8 @@ the next legitimate case does not need its own gate PR. An empty reason
 a different line (same-line only). The match is text-only, not quote-aware —
 a marker spelled inside a quoted argument exempts the line the same as a real
 trailing comment would (`ponytail:` in the gate, out of scope for this narrow
-carve-out). Read cases in `scripts/parity/test-t13b-daemon-prose.sh`.
+carve-out — tracked separately as HIMMEL-3446). Read cases in
+`scripts/parity/test-t13b-daemon-prose.sh`.
 
 ## VM round trip — station-only, never CI (HIMMEL-3332)
 
