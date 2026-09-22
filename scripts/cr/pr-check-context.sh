@@ -281,8 +281,26 @@ set -uo pipefail
 # HIMMEL_ROOT/anchor checks) at a repo this script never chose, and
 # GIT_INDEX_FILE/GIT_OBJECT_DIRECTORY/GIT_ALTERNATE_OBJECT_DIRECTORIES/
 # GIT_PREFIX carry the same risk for the index and object store.
+#
+# Console adversarial round 1 (HIMMEL-3454 finding 4): GIT_CONFIG_* was not
+# covered, and a config value can retarget or hide input the same way a
+# GIT_DIR override can - GIT_CONFIG_COUNT/KEY_0/VALUE_0=core.excludesFile
+# hides an untracked file, GIT_CONFIG_PARAMETERS='core.fileMode=false' hides
+# a mode change, and GIT_CONFIG_GLOBAL pointed at a scratch file carrying
+# `[core] worktree = <anchor>` silently redirects every later git call at
+# the anchor. Cleared the same way: every GIT_CONFIG_KEY_n/VALUE_n pair is
+# caller-numbered, so they are found by scanning the actual environment
+# rather than assumed to stop at index 0. GIT_CONFIG_NOSYSTEM is SET, not
+# unset - unsetting it would let a system-level gitconfig back in, which is
+# the opposite of this block's purpose.
 unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE \
-    GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX
+    GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX \
+    GIT_CONFIG GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_PARAMETERS \
+    GIT_CONFIG_COUNT
+while IFS='=' read -r gcvar _; do
+    unset "$gcvar"
+done < <(env | grep -E '^GIT_CONFIG_(KEY|VALUE)_[0-9]+=')
+export GIT_CONFIG_NOSYSTEM=1
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HIMMEL_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -566,6 +584,16 @@ fi
 # prints a non-empty name on its own, this is defense in depth only.
 base=$(default_branch "$repo")
 [ -n "$base" ] || base=main
+# Console adversarial round 1 (HIMMEL-3454 finding 2/5): a bare branch name
+# is ambiguous - `git merge-base HEAD main` can resolve a same-named TAG
+# ahead of the branch, silently shrinking the diff. Match the runbook's own
+# step-0 precheck, which always spells this out in full: prefer the
+# remote-tracking ref, falling back to the local branch only when the
+# remote ref is absent (never a bare name).
+base_ref="refs/remotes/origin/$base"
+if ! git rev-parse --verify -q "$base_ref" >/dev/null 2>&1; then
+    base_ref="refs/heads/$base"
+fi
 
 # HIMMEL-2335 - deliberate delegation. himmel lane ONLY: the trusted anchor
 # decides whether execution hands off to the branch's own copy of this
@@ -597,10 +625,17 @@ cr_diff_state=unknown
 cr_diff_files=
 ledger_written=no
 if [ "$anchor_lane" = "himmel" ] && [ "$himmel_dir_is_anchor" = no ]; then
-    if mb=$(git merge-base HEAD "$base" 2>/dev/null); then
-        if committed_files=$(git diff --name-only "$mb"..HEAD -- scripts/cr/ scripts/guardrails/lib.sh 2>/dev/null); then
-            if worktree_files=$(git diff --name-only HEAD -- scripts/cr/ scripts/guardrails/lib.sh 2>/dev/null); then
-                if untracked_files=$(git ls-files --others --exclude-standard -- scripts/cr/ scripts/guardrails/lib.sh 2>/dev/null); then
+    # Console adversarial round 1 (HIMMEL-3454 finding 1): a plain pathspec
+    # is resolved relative to CWD, not the repo root - invoked from a
+    # subdirectory it silently misses scripts/cr/ and scripts/guardrails/lib.sh
+    # entirely. ":(top)" anchors each pathspec to the worktree root regardless
+    # of cwd (finding 3): dropping --exclude-standard from the untracked-files
+    # call also counts a GITIGNORED file under these paths - an unreviewed
+    # scripts/cr/ change hidden behind .gitignore must not read as "no diff".
+    if mb=$(git merge-base HEAD "$base_ref" 2>/dev/null); then
+        if committed_files=$(git diff --name-only "$mb"..HEAD -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh' 2>/dev/null); then
+            if worktree_files=$(git diff --name-only HEAD -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh' 2>/dev/null); then
+                if untracked_files=$(git ls-files --others -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh' 2>/dev/null); then
                     cr_diff_files=$(printf '%s\n%s\n%s\n' "$committed_files" "$worktree_files" "$untracked_files" | grep -v '^$' | sort -u)
                     if [ -n "$cr_diff_files" ]; then
                         cr_diff_state=yes
@@ -608,7 +643,7 @@ if [ "$anchor_lane" = "himmel" ] && [ "$himmel_dir_is_anchor" = no ]; then
                         cr_diff_state=no
                     fi
                 else
-                    echo "pr-check-context: could not compute git ls-files --others --exclude-standard -- scripts/cr/ scripts/guardrails/lib.sh - cr_diff_state=unknown (never delegate on an unknown diff)" >&2
+                    echo "pr-check-context: could not compute git ls-files --others -- scripts/cr/ scripts/guardrails/lib.sh - cr_diff_state=unknown (never delegate on an unknown diff)" >&2
                 fi
             else
                 echo "pr-check-context: could not compute git diff --name-only HEAD -- scripts/cr/ scripts/guardrails/lib.sh - cr_diff_state=unknown (never delegate on an unknown diff)" >&2
@@ -617,7 +652,7 @@ if [ "$anchor_lane" = "himmel" ] && [ "$himmel_dir_is_anchor" = no ]; then
             echo "pr-check-context: could not compute git diff --name-only $mb..HEAD -- scripts/cr/ scripts/guardrails/lib.sh - cr_diff_state=unknown (never delegate on an unknown diff)" >&2
         fi
     else
-        echo "pr-check-context: could not compute merge-base HEAD..$base - cr_diff_state=unknown (never delegate on an unknown diff)" >&2
+        echo "pr-check-context: could not compute merge-base HEAD..$base_ref - cr_diff_state=unknown (never delegate on an unknown diff)" >&2
     fi
 
     # Attempt delegation only when the diff is KNOWN to touch scripts/cr/,
