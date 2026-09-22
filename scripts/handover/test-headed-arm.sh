@@ -1992,6 +1992,13 @@ d44h="$tmp/c44h"; mk_stub "$d44h" 0 alive
 mk_ps_stub "$d44h" "unused" 127
 run44 "$d44h" "HIMMEL-mac44h"; rc44h=$?
 check "44h no /proc: a failing argv read is indeterminate (exit 9)" "$rc44h" "9"
+# 44i. An earlier argv element carrying a newline (a multiline
+# --append-system-prompt value) must not hide the real -n after it.
+d44i="$tmp/c44i"; mk_stub "$d44i" 0 alive
+mk_ps_stub "$d44i" "/Users/x/.local/bin/claude --append-system-prompt line one
+line two -n HIMMEL-mac44i load x"
+run44 "$d44i" "HIMMEL-mac44i"; rc44i=$?
+check "44i no /proc: a -n after a multiline argv element still dedups (exit 0)" "$rc44i" "0"
 
 # --- 45. HIMMEL-3484: KONSOLE_MACOS_STARTUP_TICKS is read by BOTH this script
 # and the shim. The shim refuses anything but plain decimal digits; this one

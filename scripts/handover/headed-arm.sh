@@ -811,7 +811,8 @@ _argv_has_n_name() { # _argv_has_n_name <pid> - true iff /proc/<pid>/cmdline
 # stock macOS CLI exposes.
 _flat_argv_has_n_name() { # _flat_argv_has_n_name <space-joined argv>
     local toks i=0
-    read -r -a toks <<< "$1"
+    # -d '' reads past newlines (a multiline argv element); rc 1 at EOF is expected.
+    read -r -d '' -a toks <<< "$1" || true
     while [ "$i" -lt "${#toks[@]}" ]; do
         if [ "${toks[$i]}" = "-n" ]; then
             [ "${toks[$((i + 1))]:-}" = "$NAME" ]
