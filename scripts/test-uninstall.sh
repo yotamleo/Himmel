@@ -1477,8 +1477,15 @@ for _ptarget in "$PHOME" "$PHOME/.claude" "/" "$PHOME/.ssh"; do
         TELEGRAM_CHANNEL_DIR="$TMP/protected-none${_pn}" BRIDGE_ROOT="$TMP/protected-none${_pn}b" \
         HIMMELCTL_CACHE_DIR="$_ptarget" \
         bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
-    assert_rc "protected ancestor '$_ptarget' exits 2" 2 "$rc"
-    assert_has "protected ancestor '$_ptarget' refused" "refusing to remove suspicious path" "$out"
+    if [ "$_ptarget" = "/" ]; then
+        # HIMMEL-3415: `/` contains the real home, so the runtime real-home
+        # check refuses it before any removal step runs.
+        assert_rc "protected ancestor '$_ptarget' exits 3" 3 "$rc"
+        assert_has "protected ancestor '$_ptarget' refused" "real-home check (c)" "$out"
+    else
+        assert_rc "protected ancestor '$_ptarget' exits 2" 2 "$rc"
+        assert_has "protected ancestor '$_ptarget' refused" "refusing to remove suspicious path" "$out"
+    fi
     assert_not_has "protected ancestor '$_ptarget' claims no completion" "Uninstall complete." "$out"
     if [ -e "$_ptarget" ]; then
         echo "PASS protected ancestor '$_ptarget' still present"

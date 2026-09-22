@@ -204,6 +204,17 @@ HOME="$TMP/c11/home" run_wet HIMMEL_UNINSTALL_TEST_REAL_HOME="$TMP/fake11"
 expect_refused "(c11) absent real-home leaf under a linked-out ancestor" c "$FAKE"
 if [ -f "$TMP/ext11/channels/tg2/sentinel" ]; then pass "(c11) external dir untouched"; else fail "(c11) external dir was modified"; fi
 
+# (c12)/(c13) an override target that CONTAINS the real home: a recursive
+# removal of an ancestor would take the whole real home with it. Each fake
+# real home sits alone in its own ancestor dir, so a RED run destroys only it.
+mk_fake "$TMP/anc12/real"
+mkdir -p "$TMP/c12/home"
+HOME="$TMP/c12/home" run_wet HIMMEL_UNINSTALL_TEST_REAL_HOME="$TMP/anc12/real" TELEGRAM_CHANNEL_DIR="$TMP/anc12"
+expect_refused "(c12) TELEGRAM_CHANNEL_DIR override is an ancestor of the real home" c "$TMP/anc12/real"
+mk_fake "$TMP/anc13/real"
+HOME="$TMP/c12/home" run_wet HIMMEL_UNINSTALL_TEST_REAL_HOME="$TMP/anc13/real" HIMMELCTL_CACHE_DIR="$TMP/anc13"
+expect_refused "(c13) HIMMELCTL_CACHE_DIR override is an ancestor of the real home" c "$TMP/anc13/real"
+
 # (a4) $HOME is a symlink into a SUBDIRECTORY of the real home: physical and
 # lexical HOME differ and the physical one is inside a protected root. (A
 # lexical HOME under the real home is a scratch dir by design and passes.)

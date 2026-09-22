@@ -1187,11 +1187,21 @@ real_home_under() {
 # real_home_target_ok <label> <target> <physical $HOME> <roots> — rc=1 (one
 # stderr line, check c) when the target resolves into one of the
 # newline-separated roots outside $HOME, or anywhere in a root that $HOME is
-# an ancestor of.
+# an ancestor of — or when the target CONTAINS a root (`/` included: it is an
+# ancestor of every root), since a recursive removal of an ancestor takes the
+# whole real home with it. This does not rely on suspicious_rm_path.
 real_home_target_ok() {
   local _tp _root
   _tp=$(real_home_phys "$2") || _tp="$2"
+  if [ "$(squash_leading_slashes "$_tp")" = "/" ]; then
+    echo "ERROR: refusing a wet uninstall — real-home check (c): $1 target $2 resolves to /, which contains the real home" >&2
+    return 1
+  fi
   while IFS= read -r _root; do
+    if real_home_under "$_root" "$_tp"; then
+      echo "ERROR: refusing a wet uninstall — real-home check (c): $1 target $2 resolves to $_tp, which contains the real home's $_root" >&2
+      return 1
+    fi
     if real_home_under "$_tp" "$_root" && { ! real_home_under "$_tp" "$3" || real_home_under "$_root" "$3"; }; then
       echo "ERROR: refusing a wet uninstall — real-home check (c): $1 target $2 resolves to $_tp, inside the real home's $_root" >&2
       return 1
