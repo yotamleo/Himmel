@@ -131,7 +131,17 @@ Stages currently wired:
   is shared with `scripts/parity/test-ws5-invariants.sh`'s T15 via
   `scripts/lib/platform-guard.sh` so the two cannot drift; catches the same
   gap at commit time instead of a paid after-report or in-guest VM run;
-  HIMMEL-2682).
+  HIMMEL-2682), unchecked-mktemp (`check-unchecked-mktemp.sh`, always-run —
+  refuses a commit whose staged diff ADDS an unguarded `T=$(mktemp -d)`
+  capture: reads the STAGED blob of every staged `*.sh` (never the working
+  tree), intersects the predicate's offending lines with the file's own
+  ADDED lines from `git diff --cached -U0`, so pre-existing unguarded
+  mktemps never block an unrelated commit; predicate shared with its suite
+  via `scripts/lib/unchecked-mktemp.sh`; this was the single most-repeated
+  CR-ledger defect class (10 `agreed` findings in the 14 days to
+  2026-09-07, always the same unchecked-capture shape) and is also
+  `known-findings.json`'s `test-setup-unchecked-vacuous-green` shape (a);
+  bypass `UNCHECKED_MKTEMP_OK=1`; HIMMEL-2709).
 - **Runtime pin (not a gate — `/himmel-doctor` C20):** the doctor FAILS (exit 1)
   when the running node major ≠ the `.nvmrc` pin, so the drift stops being
   rediscovered per session (HIMMEL-1986 → HIMMEL-2010). Downgraded to a

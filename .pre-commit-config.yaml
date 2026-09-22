@@ -554,3 +554,17 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [pre-commit]
+
+      - id: unchecked-mktemp
+        name: added lines carry no unchecked mktemp capture
+        # reach: himmel-only - not soaked; mode (b) + export blocked on the HIMMEL-3418 burn-down
+        # (header `# soak:` line in scripts/lib/unchecked-mktemp.sh).
+        # HIMMEL-2709 -- scan mode (a): reads the staged index itself
+        # (git diff --cached) and judges ADDED lines only, so it always_runs
+        # rather than scoping via `files`. 914 pre-existing unguarded captures
+        # in 442 tracked *.sh on 2026-09-22 never block an unrelated commit.
+        language: system
+        entry: bash scripts/hooks/check-unchecked-mktemp.sh
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
