@@ -1676,20 +1676,55 @@ _bwimc_git_clause() {
                 case "$(_bwimc_unq "$t")" in
                     env)
                         i=$((i+1))
+                        # -i / `-` and -u NAME drop the modelled GIT_* values
+                        # (a stale GIT_DIR would point the check at the leg
+                        # while git runs on the -C dir); -a/-u/-C take an
+                        # operand, attached or not, in any short cluster; -S
+                        # re-splits a string we do not re-parse, so a git
+                        # inside it fails closed.
                         while [ "$i" -lt "$n" ]; do
-                            t="${toks[$i]}"
+                            t=$(_bwimc_unq "${toks[$i]}")
+                            local eopt="" eval_="" ci ch
                             case "$t" in
-                                -u|--unset) i=$((i+1)) ;;
-                                -C|--chdir)
-                                    i=$((i+1))
-                                    if r=$(_bwimc_resolve_abs "${toks[$i]:-}" "$cwd"); then cwd="$r"; else unres=1; fi ;;
-                                --chdir=*)
-                                    if r=$(_bwimc_resolve_abs "${t#--chdir=}" "$cwd"); then cwd="$r"; else unres=1; fi ;;
+                                -|-i|--ignore-environment) e_dir=""; e_wt=""; e_idx="" ;;
+                                --unset=*) eopt=u; eval_="${t#--unset=}" ;;
+                                --unset) eopt=u ;;
+                                --chdir=*) eopt=C; eval_="${t#--chdir=}" ;;
+                                --chdir) eopt=C ;;
+                                --argv0=*) ;;
+                                --argv0) i=$((i+1)) ;;
+                                --split-string=*) eopt=S; eval_="${t#--split-string=}" ;;
+                                --split-string) eopt=S ;;
+                                --*) ;;
+                                -?*)
+                                    ci=1
+                                    while [ "$ci" -lt "${#t}" ]; do
+                                        ch="${t:$ci:1}"
+                                        case "$ch" in
+                                            i) e_dir=""; e_wt=""; e_idx="" ;;
+                                            u|C|a|S) eopt="$ch"; eval_="${t:$((ci+1))}"; break ;;
+                                        esac
+                                        ci=$((ci+1))
+                                    done ;;
                                 GIT_DIR=*) e_dir="${t#GIT_DIR=}" ;;
                                 GIT_WORK_TREE=*) e_wt="${t#GIT_WORK_TREE=}" ;;
                                 GIT_INDEX_FILE=*) e_idx="${t#GIT_INDEX_FILE=}" ;;
-                                -*|[A-Za-z_]*=*) ;;
+                                [A-Za-z_]*=*) ;;
                                 *) break ;;
+                            esac
+                            if [ -n "$eopt" ] && [ -z "$eval_" ]; then
+                                i=$((i+1)); eval_=$(_bwimc_unq "${toks[$i]:-}")
+                            fi
+                            case "$eopt" in
+                                u) case "$eval_" in
+                                       GIT_DIR) e_dir="" ;;
+                                       GIT_WORK_TREE) e_wt="" ;;
+                                       GIT_INDEX_FILE) e_idx="" ;;
+                                   esac ;;
+                                C) if r=$(_bwimc_resolve_abs "$eval_" "$cwd"); then cwd="$r"; else unres=1; fi ;;
+                                S) case "$eval_" in
+                                       *git*) _bwimc_deny "unresolved-git-target" "$1" "$cwd" "" ;;
+                                   esac ;;
                             esac
                             i=$((i+1))
                         done
