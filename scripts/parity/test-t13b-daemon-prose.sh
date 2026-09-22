@@ -337,6 +337,40 @@ run_case sh-t13b-known-gap-ansi-c-escape-desync-codex2 PASS scripts/start.sh \
 run_case sh-t13b-known-gap-js-regex-desync-codex1 PASS src/x.ts \
     'const r = /"/; const s = "// t13b-ok: genuine reason"; daemon.start()'
 
+# HIMMEL-3446 round 3 (console ruling, AE): a substitution opened while
+# already inside a quote must push its OWN nested state instead of being
+# invisible to the scan, and a backslash-escaped space must not count as a
+# real word boundary for the `#` that follows it. Each row below wrongly
+# exempted the daemon-start line under the round-2 scanner.
+echo "== HIMMEL-3446 round 3: nested substitution-in-quote and escaped-space smuggles =="
+# shellcheck disable=SC2016  # single-quoted on purpose: literal fixture text
+run_case smg-nested-cmdsub-in-dq FAIL scripts/start.sh \
+    'x="$(echo " # t13b-ok: a real eight char reason")"; nohup claude daemon run &'
+# shellcheck disable=SC2016  # single-quoted on purpose: literal fixture text
+run_case smg-nested-cmdsub-in-backtick FAIL scripts/start.sh \
+    'x="`echo " # t13b-ok: a real eight char reason"`"; nohup claude daemon run &'
+# shellcheck disable=SC2016  # single-quoted on purpose: literal fixture text
+run_case smg-nested-param-exp-default FAIL scripts/start.sh \
+    'x="${y:-" # t13b-ok: a real eight char reason"}"; nohup claude daemon run &'
+# shellcheck disable=SC2016  # single-quoted on purpose: literal fixture text
+run_case smg-nested-cmdsub-systemctl FAIL scripts/start.sh \
+    'x="$(echo " # t13b-ok: a real eight char reason")"; systemctl --user enable --now foo'
+# shellcheck disable=SC2016  # single-quoted on purpose: literal fixture text
+run_case smg-js-nested-template FAIL src/x.ts \
+    'const x = `${`// t13b-ok: a real eight char reason`}`; daemon.start()'
+run_case smg-escaped-space-word-boundary FAIL scripts/start.sh \
+    'echo foo\ # t13b-ok: a real eight char reason; nohup claude daemon run &'
+
+# Controls that must keep passing after the round-3 fix: a real marker
+# following a LEGIT nested substitution (no smuggle) is still recognized,
+# and an unrelated escaped space earlier on the line does not blind the
+# scanner to a real marker later on.
+# shellcheck disable=SC2016  # single-quoted on purpose: literal fixture text
+run_case sh-t13b-ok-real-marker-after-nested-subst PASS scripts/start.sh \
+    'x="$(echo "value")"; nohup claude daemon run & # t13b-ok: a real eight char reason'
+run_case sh-t13b-ok-real-marker-with-unrelated-escape PASS scripts/start.sh \
+    'echo foo\ bar; nohup claude daemon run & # t13b-ok: a real eight char reason'
+
 if [ "$failures" -ne 0 ]; then
     echo "FAIL: $failures of $cases case(s) failed"
     exit 1

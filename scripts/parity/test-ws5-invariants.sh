@@ -388,71 +388,139 @@ else
     t13b_hit=0
     t13b_count="$(awk -v removed_file="$REMOVED" -v kind_file="$SHIPPED_KIND" -v sq="'" '
         function trim(x) { sub(/^[ \t]+/, "", x); sub(/[ \t\r]+$/, "", x); return x }
-        function is_word_start(t, i,   prev) {
+        function is_word_start(t, i, esc_pos,   prev) {
             if (i <= 1) return 1
             prev = substr(t, i - 1, 1)
-            return (prev == " " || prev == "\t")
+            if (prev != " " && prev != "\t") return 0
+            return (i - 1 != esc_pos) ? 1 : 0
         }
         # HIMMEL-3446: locate the ONE real trailing t13b-ok marker on this
-        # line, if any -- a minimal quote/brace-depth scan (no shell
+        # line, if any -- a quote/brace-depth STACK scan (no shell
         # tokenizer): tracks single/double/backtick quoting, a leading
         # `/* ... */` block comment, and `${...}`/`$(...)` substitution
-        # nesting, and skips a `#`/`//` found inside any of them. `#` only
-        # opens a marker for sh/code kinds, at word start (column 1 or
-        # preceded by whitespace -- bash `#` mid-word is a literal
-        # character, not a comment; an escaped `\#` is skipped whole by the
-        # top-level backslash branch below, so it never reaches this check
-        # either). `//` only opens one for js/code kinds (JS `//` always
-        # starts a comment; no word-start rule there). The first REAL
-        # comment start on the line is final either way: whether or not it
-        # spells the exact marker, nothing later on the line can be a
+        # nesting -- INCLUDING a substitution opened while already inside a
+        # double quote or backtick (round 3: `x="$(echo " # t13b-ok: R")"; ..`
+        # no longer desyncs -- the inner `$(`/backtick pushes a new stack
+        # frame instead of being invisible to the scan, so the `#` inside the
+        # nested string is correctly seen as still-quoted) -- and skips a
+        # `#`/`//` found inside any of them. A backslash escape at top level
+        # (`\ ` included) also marks the character it protects as NOT a real
+        # word boundary, so `foo\ # t13b-ok: R` does not read the `#` as a
+        # comment open either (round 3, same rationale: an escaped space does
+        # not end the preceding word in shell). Nesting deeper than 20 stack
+        # frames, or left unbalanced at end of line, FAILS CLOSED -- the walk
+        # never reaches a top-level `#`/`//` check while still inside an
+        # unterminated quote/substitution, so it returns 0 (no marker), never
+        # a false exemption; this is the safe direction, even though it can
+        # make a pathological genuine marker unrecognized. `#` only opens a
+        # marker for sh/code kinds, at word start (column 1 or preceded by an
+        # UNESCAPED whitespace); `//` only opens one for js/code kinds (JS
+        # `//` always starts a comment; no word-start rule there). The first
+        # REAL comment start on the line is final either way: whether or not
+        # it spells the exact marker, nothing later on the line can be a
         # different "start" -- it is all one comment, or the line has none.
         # Returns the 1-based index of the marker text, or 0 if none.
         # ponytail: two known quote-desync gaps, deferred to HIMMEL-3455 (not
-        # fixed here -- each needs a harder tokenizer than this minimal
-        # scan). (1) JS regex literals are not recognized: an unescaped
-        # double quote inside a slash-delimited regex opens phantom
-        # double-quote state, and the NEXT real double quote -- e.g. a real
-        # strings opening quote -- closes it instead, desyncing the rest of
-        # the scan, so a marker inside that real string reads as genuine.
-        # (2) bash dollar-single-quote ANSI-C strings allow a backslash
-        # before a single quote that does NOT terminate the string, but this
-        # scanners single-quote state has no backslash-awareness and closes
-        # on the first single quote regardless, so a marker just past that
-        # escaped quote reads as genuine. Known-gap rows
+        # fixed here -- each needs a harder tokenizer than this scan). (1) JS
+        # regex literals are not recognized: an unescaped double quote inside
+        # a slash-delimited regex opens phantom double-quote state, and the
+        # NEXT real double quote -- e.g. a real strings opening quote --
+        # closes it instead, desyncing the rest of the scan, so a marker
+        # inside that real string reads as genuine. (2) bash
+        # dollar-single-quote ANSI-C strings allow a backslash before a
+        # single quote that does NOT terminate the string, but this scanners
+        # single-quote state has no backslash-awareness and closes on the
+        # first single quote regardless, so a marker just past that escaped
+        # quote reads as genuine. Known-gap rows
         # sh-t13b-known-gap-js-regex-desync-codex1 and
         # sh-t13b-known-gap-ansi-c-escape-desync-codex2 in
         # test-t13b-daemon-prose.sh carry the exact repro lines and pin
         # todays (wrong) behaviour so a future fix flips them visibly.
-        function find_marker_start(t, kind,    n, i, ch, two, q, depth, blk, cand) {
+        function find_marker_start(t, kind,    n, i, ch, two, cand, sp, top, esc_pos, MAXDEPTH, stype, sdepth) {
             n = length(t)
-            q = ""; depth = 0; blk = 0; i = 1
+            MAXDEPTH = 20
+            sp = 0; esc_pos = 0; i = 1
             while (i <= n) {
                 ch = substr(t, i, 1)
                 two = substr(t, i, 2)
-                if (blk) {
-                    if (two == "*/") { blk = 0; i += 2 } else { i++ }
+                top = (sp > 0) ? stype[sp] : ""
+                if (top == "blk") {
+                    if (two == "*/") { sp--; i += 2 } else { i++ }
                     continue
                 }
-                if (q != "") {
-                    if (q == sq) { if (ch == sq) q = "" }
-                    else { if (ch == "\\") { i += 2; continue }; if (ch == q) q = "" }
+                if (top == "sq") {
+                    if (ch == sq) sp--
                     i++
                     continue
                 }
-                if (depth > 0) {
-                    if (ch == "(" || ch == "{") depth++
-                    else if (ch == ")" || ch == "}") depth--
-                    else if (ch == sq || ch == "\"" || ch == "`") q = ch
-                    else if (ch == "\\") { i += 2; continue }
+                if (top == "dq") {
+                    if (ch == "\\") { i += 2; continue }
+                    if (ch == "\"") { sp--; i++; continue }
+                    if (ch == "`") {
+                        sp++; if (sp > MAXDEPTH) return 0
+                        stype[sp] = "bt"; i++; continue
+                    }
+                    if (two == "${" || two == "$(") {
+                        sp++; if (sp > MAXDEPTH) return 0
+                        stype[sp] = "subst"; sdepth[sp] = 1; i += 2; continue
+                    }
                     i++
                     continue
                 }
-                if (ch == "\\") { i += 2; continue }
-                if (ch == sq || ch == "\"" || ch == "`") { q = ch; i++; continue }
-                if (two == "${" || two == "$(") { depth = 1; i += 2; continue }
-                if (two == "/*") { blk = 1; i += 2; continue }
-                if ((kind == "sh" || kind == "code") && ch == "#" && is_word_start(t, i)) {
+                if (top == "bt") {
+                    if (ch == "\\") { i += 2; continue }
+                    if (ch == "`") { sp--; i++; continue }
+                    if (ch == sq) {
+                        sp++; if (sp > MAXDEPTH) return 0
+                        stype[sp] = "sq"; i++; continue
+                    }
+                    if (ch == "\"") {
+                        sp++; if (sp > MAXDEPTH) return 0
+                        stype[sp] = "dq"; i++; continue
+                    }
+                    if (two == "${" || two == "$(") {
+                        sp++; if (sp > MAXDEPTH) return 0
+                        stype[sp] = "subst"; sdepth[sp] = 1; i += 2; continue
+                    }
+                    i++
+                    continue
+                }
+                if (top == "subst") {
+                    if (ch == "\\") { i += 2; continue }
+                    if (ch == sq) {
+                        sp++; if (sp > MAXDEPTH) return 0
+                        stype[sp] = "sq"; i++; continue
+                    }
+                    if (ch == "\"") {
+                        sp++; if (sp > MAXDEPTH) return 0
+                        stype[sp] = "dq"; i++; continue
+                    }
+                    if (ch == "`") {
+                        sp++; if (sp > MAXDEPTH) return 0
+                        stype[sp] = "bt"; i++; continue
+                    }
+                    if (two == "${" || two == "$(") {
+                        sp++; if (sp > MAXDEPTH) return 0
+                        stype[sp] = "subst"; sdepth[sp] = 1; i += 2; continue
+                    }
+                    if (ch == "(" || ch == "{") { sdepth[sp]++; i++; continue }
+                    if (ch == ")" || ch == "}") {
+                        sdepth[sp]--
+                        if (sdepth[sp] <= 0) sp--
+                        i++
+                        continue
+                    }
+                    i++
+                    continue
+                }
+                # sp == 0: top level
+                if (ch == "\\") { esc_pos = i + 1; i += 2; continue }
+                if (ch == sq) { sp++; stype[sp] = "sq"; i++; continue }
+                if (ch == "\"") { sp++; stype[sp] = "dq"; i++; continue }
+                if (ch == "`") { sp++; stype[sp] = "bt"; i++; continue }
+                if (two == "${" || two == "$(") { sp++; stype[sp] = "subst"; sdepth[sp] = 1; i += 2; continue }
+                if (two == "/*") { sp++; stype[sp] = "blk"; i += 2; continue }
+                if ((kind == "sh" || kind == "code") && ch == "#" && is_word_start(t, i, esc_pos)) {
                     cand = substr(t, i, 11)
                     return (cand == "# t13b-ok: ") ? i : 0
                 }

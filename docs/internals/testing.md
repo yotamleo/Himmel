@@ -301,6 +301,26 @@ that line, and the gate still leaves it exempted (`mk-mid-chain`/
 `sh-t13b-ok-mid-chain-comment-eats-rest`) — which line shapes the marker may
 exempt is unchanged and out of scope here.
 
+**Nested substitution inside a quote, and escaped word boundaries
+(HIMMEL-3446 round 3).** The scan is a proper stack, not a single quote/depth
+pair: `${…}`/`$(…)`/backtick can open one level DEEPER while already inside a
+single, double or backtick quote (`x="$(echo " # t13b-ok: reason")"` and its
+backtick and `${y:-"…"}` forms no longer desync — the inner `"` closes the
+INNER frame it opened, not the outer string), and the same nesting applies to
+a JS template literal's `` `${…}` `` interpolation. A backslash escape at top
+level also marks the character it protects — including a literal space — as
+not a real word boundary, so `foo\ # t13b-ok: reason` does not read that `#`
+as a comment open either (an escaped space does not end the preceding shell
+word). Nesting deeper than 20 stack frames, or left unbalanced at end of
+line, **fails closed**: the marker does not count, never the other direction.
+Read the `smg-nested-*`/`smg-js-nested-template`/
+`smg-escaped-space-word-boundary` cases in
+`scripts/parity/test-t13b-daemon-prose.sh`. Two narrower quote-desync gaps
+(a JS regex literal, and bash's `$'…\'…'` ANSI-C escaped-quote form) are
+unrelated to this nesting fix, remain open, and are tracked under
+HIMMEL-3455 — flagged with a `ponytail:` at `find_marker_start()` and pinned
+by the `sh-t13b-known-gap-*` fixture rows.
+
 Once a real comment opens, the reason after it must be non-trivial: at least
 8 characters trimmed AND containing a run of 3 or more letters, which kills an
 all-digit reason (`12345678`), punctuation padding (`.......x`) and
