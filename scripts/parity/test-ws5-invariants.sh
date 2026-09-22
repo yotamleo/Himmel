@@ -420,22 +420,54 @@ else
         # it spells the exact marker, nothing later on the line can be a
         # different "start" -- it is all one comment, or the line has none.
         # Returns the 1-based index of the marker text, or 0 if none.
-        # ponytail: two known quote-desync gaps, deferred to HIMMEL-3455 (not
-        # fixed here -- each needs a harder tokenizer than this scan). (1) JS
-        # regex literals are not recognized: an unescaped double quote inside
-        # a slash-delimited regex opens phantom double-quote state, and the
-        # NEXT real double quote -- e.g. a real strings opening quote --
-        # closes it instead, desyncing the rest of the scan, so a marker
-        # inside that real string reads as genuine. (2) bash
-        # dollar-single-quote ANSI-C strings allow a backslash before a
-        # single quote that does NOT terminate the string, but this scanners
-        # single-quote state has no backslash-awareness and closes on the
-        # first single quote regardless, so a marker just past that escaped
-        # quote reads as genuine. Known-gap rows
-        # sh-t13b-known-gap-js-regex-desync-codex1 and
-        # sh-t13b-known-gap-ansi-c-escape-desync-codex2 in
-        # test-t13b-daemon-prose.sh carry the exact repro lines and pin
-        # todays (wrong) behaviour so a future fix flips them visibly.
+        # HIMMEL-3455: two quote-desync gaps closed. (1) On sh/code lines a
+        # bash ANSI-C dollar-single-quote string is its own frame ("ansi")
+        # where a backslash escapes the next char, so a backslash-quote does
+        # not close it (plain single quotes keep NO escapes, as in bash).
+        # (2) On js lines a slash that opens a regex literal (see
+        # js_regex_opens) is skipped whole by js_regex_end, so a quote
+        # inside the regex no longer opens a phantom string state.
+        # ponytail: the regex-vs-division call is the classic prev-token
+        # heuristic, not a parser -- a slash after a closing brace or a
+        # string reads as a regex, and so does a slash starting a
+        # continuation line. Such a misread usually runs to end of line
+        # unterminated and FAILS CLOSED (no marker), but if a later slash
+        # closes it, the scan resumes there and can itself desync -- the
+        # shapes are contrived and still show the marker text on the line
+        # for review. JS/py single- and double-quoted
+        # strings still take bash quoting rules (a backslash-quote in a
+        # single-quoted JS string closes it here), unchanged by this fix.
+        function js_regex_opens(t, i,    j, p, w) {
+            j = i - 1
+            while (j >= 1 && (substr(t, j, 1) == " " || substr(t, j, 1) == "\t")) j--
+            if (j < 1) return 1
+            p = substr(t, j, 1)
+            if (p == ")" || p == "]") return 0
+            if ((p == "+" || p == "-") && j > 1 && substr(t, j - 1, 1) == p) return 0
+            if (p !~ /[A-Za-z0-9_$]/) return 1
+            w = ""
+            while (j >= 1 && substr(t, j, 1) ~ /[A-Za-z0-9_$]/) { w = substr(t, j, 1) w; j-- }
+            return (w ~ /^(return|typeof|instanceof|in|of|new|delete|void|throw|case|do|else|yield|await)$/) ? 1 : 0
+        }
+        # Index just past the regex literal whose opening slash is at i (and
+        # past its flags), or 0 if it never closes on this line. A slash
+        # inside a [...] class does not close it; a backslash escapes.
+        function js_regex_end(t, i, n,    c, incls) {
+            incls = 0; i++
+            while (i <= n) {
+                c = substr(t, i, 1)
+                if (c == "\\") { i += 2; continue }
+                if (incls) { if (c == "]") incls = 0; i++; continue }
+                if (c == "[") { incls = 1; i++; continue }
+                if (c == "/") {
+                    i++
+                    while (i <= n && substr(t, i, 1) ~ /[a-z]/) i++
+                    return i
+                }
+                i++
+            }
+            return 0
+        }
         function find_marker_start(t, kind,    n, i, ch, two, cand, sp, top, esc_pos, MAXDEPTH, stype, sdepth) {
             n = length(t)
             MAXDEPTH = 20
@@ -449,6 +481,12 @@ else
                     continue
                 }
                 if (top == "sq") {
+                    if (ch == sq) sp--
+                    i++
+                    continue
+                }
+                if (top == "ansi") {
+                    if (ch == "\\") { i += 2; continue }
                     if (ch == sq) sp--
                     i++
                     continue
@@ -470,6 +508,10 @@ else
                 if (top == "bt") {
                     if (ch == "\\") { i += 2; continue }
                     if (ch == "`") { sp--; i++; continue }
+                    if (kind != "js" && two == "$" sq) {
+                        sp++; if (sp > MAXDEPTH) return 0
+                        stype[sp] = "ansi"; i += 2; continue
+                    }
                     if (ch == sq) {
                         sp++; if (sp > MAXDEPTH) return 0
                         stype[sp] = "sq"; i++; continue
@@ -487,6 +529,14 @@ else
                 }
                 if (top == "subst") {
                     if (ch == "\\") { i += 2; continue }
+                    if (kind != "js" && two == "$" sq) {
+                        sp++; if (sp > MAXDEPTH) return 0
+                        stype[sp] = "ansi"; i += 2; continue
+                    }
+                    if (kind == "js" && ch == "/" && two != "//" && two != "/*" && js_regex_opens(t, i)) {
+                        i = js_regex_end(t, i, n); if (i == 0) return 0
+                        continue
+                    }
                     if (ch == sq) {
                         sp++; if (sp > MAXDEPTH) return 0
                         stype[sp] = "sq"; i++; continue
@@ -515,11 +565,16 @@ else
                 }
                 # sp == 0: top level
                 if (ch == "\\") { esc_pos = i + 1; i += 2; continue }
+                if (kind != "js" && two == "$" sq) { sp++; stype[sp] = "ansi"; i += 2; continue }
                 if (ch == sq) { sp++; stype[sp] = "sq"; i++; continue }
                 if (ch == "\"") { sp++; stype[sp] = "dq"; i++; continue }
                 if (ch == "`") { sp++; stype[sp] = "bt"; i++; continue }
                 if (two == "${" || two == "$(") { sp++; stype[sp] = "subst"; sdepth[sp] = 1; i += 2; continue }
                 if (two == "/*") { sp++; stype[sp] = "blk"; i += 2; continue }
+                if (kind == "js" && ch == "/" && two != "//" && js_regex_opens(t, i)) {
+                    i = js_regex_end(t, i, n); if (i == 0) return 0
+                    continue
+                }
                 if ((kind == "sh" || kind == "code") && ch == "#" && is_word_start(t, i, esc_pos)) {
                     cand = substr(t, i, 11)
                     return (cand == "# t13b-ok: ") ? i : 0

@@ -328,14 +328,37 @@ run_case real-1087-argv-match-marker PASS scripts/handover/headed-arm.sh \
 run_case real-1087-pgrep-marker PASS scripts/handover/headed-arm.sh \
     "    pids=\"\$(\"\$PGREP\" -f '[c]laude daemon run' 2>/dev/null)\"  # t13b-ok: read-only pgrep lookup of the Claude Code service, starts nothing"
 
-# KNOWN-GAP (HIMMEL-3455, deferred out of HIMMEL-3446 per console ruling):
-# these two pin TODAY's wrong behaviour, not the desired one -- a future fix
-# should flip both to FAIL and this comment + the ponytail in
-# find_marker_start() should be removed then.
-run_case sh-t13b-known-gap-ansi-c-escape-desync-codex2 PASS scripts/start.sh \
+# HIMMEL-3455: the scan tracks bash ANSI-C $'...' strings (a backslash
+# escapes the next char, so \' does not close them) and JS regex literals
+# (a quote inside /.../ is not a string opener). Each smg- row wrongly
+# exempted the daemon-start line before the fix; each ok- row is the
+# control: a REAL trailing marker right next to the same shape still counts.
+echo "== HIMMEL-3455: ANSI-C escapes and JS regex literals keep the scan in sync =="
+run_case smg-ansi-c-escaped-sq-codex2 FAIL scripts/start.sh \
     "printf '%s' \$'it\' # t13b-ok: genuine reason'; nohup claude daemon run &"
-run_case sh-t13b-known-gap-js-regex-desync-codex1 PASS src/x.ts \
+run_case ok-ansi-c-escaped-sq-trailing-marker PASS scripts/start.sh \
+    "printf '%s' \$'it\'s'; nohup claude daemon run &  # t13b-ok: genuine reason here"
+# Plain '...' has NO escapes in bash: 'it\' is a whole string, so the # after
+# it is a real comment -- only the $'...' variant changed.
+run_case ok-plain-sq-backslash-is-literal PASS scripts/start.sh \
+    "nohup claude daemon run & echo 'it\' # t13b-ok: genuine reason here"
+# Same class one frame down: $'...' inside $(...) must not close early and
+# drop the scan back to top level before the real ) arrives.
+run_case smg-ansi-c-in-cmdsub FAIL scripts/start.sh \
+    "x=\$(printf \$'a\') # t13b-ok: genuine reason'); nohup claude daemon run &"
+run_case smg-js-regex-dq-codex1 FAIL src/x.ts \
     'const r = /"/; const s = "// t13b-ok: genuine reason"; daemon.start()'
+run_case smg-js-regex-class-slash FAIL src/x.ts \
+    'const r = /[/"]/; const s = "// t13b-ok: genuine reason"; daemon.start()'
+run_case smg-js-regex-after-keyword FAIL src/x.ts \
+    'return /"/.test(s) ? "// t13b-ok: genuine reason" : daemon.start()'
+run_case ok-js-regex-dq-trailing-marker PASS src/x.ts \
+    'const r = /"/; daemon.start()  // t13b-ok: genuine reason here'
+# shellcheck disable=SC2016  # single-quoted on purpose: literal fixture text
+run_case ok-js-regex-in-subst-trailing-marker PASS src/x.ts \
+    'const x = $(/"/); daemon.start()  // t13b-ok: genuine reason here'
+run_case ok-js-division-trailing-marker PASS src/x.ts \
+    'const x = a / b / c; daemon.start()  // t13b-ok: genuine reason here'
 
 # HIMMEL-3446 round 3 (console ruling, AE): a substitution opened while
 # already inside a quote must push its OWN nested state instead of being
