@@ -316,6 +316,7 @@ function loadLanes(): LaneRegistry {
   catch { return { lanes: [] }; } // an unreadable registry never blocks a run
 }
 export function laneEffort(model: string, registry: LaneRegistry = loadLanes()): string | undefined {
+  if (!Array.isArray(registry?.lanes)) return undefined; // valid JSON of the wrong shape is no effort, not a throw
   const tier = registry.lanes.find((l) => l.class === "claude-tier" && (model === l.id || model.startsWith(`claude-${l.id}-`)));
   return tier?.effort && EFFORT_LEVELS.has(tier.effort) ? tier.effort : undefined;
 }
