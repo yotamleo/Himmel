@@ -1,6 +1,5 @@
-import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { appendLine, defaultRoot } from "./bus";
+import { appendIfExists, defaultRoot } from "./bus";
 
 // HIMMEL-3355: operator Telegram message -> a named RUNNING console.
 //
@@ -64,9 +63,10 @@ export async function routeToConsole(
   const file = consoleInboxPath(root, route.name);
   if (!file) { await say(`⚠️ refused: "${route.name}" is not a valid console name — nothing was sent.`); return; }
   // Append only to an inbox a console already armed; never create one, so a typo
-  // cannot open a mailbox nobody reads.
-  if (!existsSync(file)) { await say(`⚠️ no console "${route.name}" is listening (it has not armed its inbox) — nothing was sent.`); return; }
-  await appendLine(file, `- ${hhmm()} [telegram from=${msg.from} chat=${msg.chat_id}] ${foldLine(route.text)}`);
+  // cannot open a mailbox nobody reads. The append itself is the existence
+  // check (HIMMEL-3440) — no separate existsSync() step left to race.
+  const delivered = await appendIfExists(file, `- ${hhmm()} [telegram from=${msg.from} chat=${msg.chat_id}] ${foldLine(route.text)}`);
+  if (!delivered) { await say(`⚠️ no console "${route.name}" is listening (it has not armed its inbox) — nothing was sent.`); return; }
   await say(`→ console ${route.name}`);
 }
 

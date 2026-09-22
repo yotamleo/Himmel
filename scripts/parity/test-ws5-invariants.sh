@@ -21,6 +21,14 @@
 #                       surface -- see the corpus loop below). The daemon
 #                       marker skips prose -- *.md and comment lines --
 #                       and adds service-creation shapes (HIMMEL-3233;
+#                       rules at T13(b) below). A lexical read-only-lookup
+#                       carve-out (pgrep / `pkill -0` / `ps ... | grep`) was
+#                       tried and removed after adversarial review proved a
+#                       Critical bypass (a shell function or alias shadowing
+#                       one of those names); the ONLY exemption now is a
+#                       trailing same-line `# t13b-ok: <reason>` -- exact
+#                       spacing, a non-trivial reason -- for that one line,
+#                       T13(b) only (HIMMEL-3432 marker-only exemption;
 #                       rules at T13(b) below).
 #   T14 locks        -- no per-token-lane wiring in shipped source; the
 #                       gemini/copilot/cursor index rows stay deferred.
@@ -203,8 +211,13 @@ trap 'rm -f "$SHIPPED"' EXIT
 # cancellation LESS likely, i.e. the gate stays strict.
 VENDORED_LIST="$(mktemp "${TMPDIR:-/tmp}/ws5-vendored-list.XXXXXX")" || { echo "test-ws5-invariants.sh: mktemp failed" >&2; exit 2; }
 REMOVED="$(mktemp "${TMPDIR:-/tmp}/ws5-removed.XXXXXX")" || { echo "test-ws5-invariants.sh: mktemp failed" >&2; exit 2; }
-# One line per $SHIPPED line, in lockstep: "md" when the added line came from a
-# *.md file, "code" otherwise. T13(b)'s daemon class reads it (HIMMEL-3233);
+# One line per $SHIPPED line, in lockstep: "md" for a *.md file, "sh" for a
+# *.sh/*.bash file, "js" for a *.js/*.ts/*.mjs/*.cjs file, "code" otherwise.
+# T13(b)'s daemon class reads md vs. not-md only (HIMMEL-3233) -- "sh", "js"
+# and "code" are all still eligible for that check (HIMMEL-3432 removed the
+# lookup carve-out that used to read "sh" specifically; HIMMEL-3446 split
+# "js" out of "code" so the marker-comment scan below knows which line
+# comment style -- `#` or `//` -- is real for that line).
 # $SHIPPED itself stays bare lines so T14(b)'s grep cannot match a path.
 SHIPPED_KIND="$(mktemp "${TMPDIR:-/tmp}/ws5-shipped-kind.XXXXXX")" || { echo "test-ws5-invariants.sh: mktemp failed" >&2; exit 2; }
 trap 'rm -f "$SHIPPED" "$VENDORED_LIST" "$REMOVED" "$SHIPPED_KIND"' EXIT
@@ -262,7 +275,7 @@ git diff "$BASE...HEAD" | awk -v vendored_file="$VENDORED_LIST" -v removed_file=
         # words T13(b) scans for (e.g. a setInterval-timing test).
         skip = (base ~ /^test-/) || (base ~ /\.tsv$/) \
             || (base ~ /\.test\.(ts|js|mjs|cjs)$/) || (f in vendored)
-        kind = (tolower(base) ~ /\.md$/) ? "md" : "code"
+        kind = (tolower(base) ~ /\.md$/) ? "md" : ((tolower(base) ~ /\.(sh|bash)$/) ? "sh" : ((tolower(base) ~ /\.(js|ts|mjs|cjs)$/) ? "js" : "code"))
         next
     }
     skip { next }
@@ -373,8 +386,152 @@ else
     # reads as a comment, and a C-preprocessor `#define` line likewise
     # (himmel ships no C).
     t13b_hit=0
-    t13b_count="$(awk -v removed_file="$REMOVED" -v kind_file="$SHIPPED_KIND" '
+    t13b_count="$(awk -v removed_file="$REMOVED" -v kind_file="$SHIPPED_KIND" -v sq="'" '
         function trim(x) { sub(/^[ \t]+/, "", x); sub(/[ \t\r]+$/, "", x); return x }
+        function is_word_start(t, i, esc_pos,   prev) {
+            if (i <= 1) return 1
+            prev = substr(t, i - 1, 1)
+            if (prev != " " && prev != "\t") return 0
+            return (i - 1 != esc_pos) ? 1 : 0
+        }
+        # HIMMEL-3446: locate the ONE real trailing t13b-ok marker on this
+        # line, if any -- a quote/brace-depth STACK scan (no shell
+        # tokenizer): tracks single/double/backtick quoting, a leading
+        # `/* ... */` block comment, and `${...}`/`$(...)` substitution
+        # nesting -- INCLUDING a substitution opened while already inside a
+        # double quote or backtick (round 3: `x="$(echo " # t13b-ok: R")"; ..`
+        # no longer desyncs -- the inner `$(`/backtick pushes a new stack
+        # frame instead of being invisible to the scan, so the `#` inside the
+        # nested string is correctly seen as still-quoted) -- and skips a
+        # `#`/`//` found inside any of them. A backslash escape at top level
+        # (`\ ` included) also marks the character it protects as NOT a real
+        # word boundary, so `foo\ # t13b-ok: R` does not read the `#` as a
+        # comment open either (round 3, same rationale: an escaped space does
+        # not end the preceding word in shell). Nesting deeper than 20 stack
+        # frames, or left unbalanced at end of line, FAILS CLOSED -- the walk
+        # never reaches a top-level `#`/`//` check while still inside an
+        # unterminated quote/substitution, so it returns 0 (no marker), never
+        # a false exemption; this is the safe direction, even though it can
+        # make a pathological genuine marker unrecognized. `#` only opens a
+        # marker for sh/code kinds, at word start (column 1 or preceded by an
+        # UNESCAPED whitespace); `//` only opens one for js/code kinds (JS
+        # `//` always starts a comment; no word-start rule there). The first
+        # REAL comment start on the line is final either way: whether or not
+        # it spells the exact marker, nothing later on the line can be a
+        # different "start" -- it is all one comment, or the line has none.
+        # Returns the 1-based index of the marker text, or 0 if none.
+        # ponytail: two known quote-desync gaps, deferred to HIMMEL-3455 (not
+        # fixed here -- each needs a harder tokenizer than this scan). (1) JS
+        # regex literals are not recognized: an unescaped double quote inside
+        # a slash-delimited regex opens phantom double-quote state, and the
+        # NEXT real double quote -- e.g. a real strings opening quote --
+        # closes it instead, desyncing the rest of the scan, so a marker
+        # inside that real string reads as genuine. (2) bash
+        # dollar-single-quote ANSI-C strings allow a backslash before a
+        # single quote that does NOT terminate the string, but this scanners
+        # single-quote state has no backslash-awareness and closes on the
+        # first single quote regardless, so a marker just past that escaped
+        # quote reads as genuine. Known-gap rows
+        # sh-t13b-known-gap-js-regex-desync-codex1 and
+        # sh-t13b-known-gap-ansi-c-escape-desync-codex2 in
+        # test-t13b-daemon-prose.sh carry the exact repro lines and pin
+        # todays (wrong) behaviour so a future fix flips them visibly.
+        function find_marker_start(t, kind,    n, i, ch, two, cand, sp, top, esc_pos, MAXDEPTH, stype, sdepth) {
+            n = length(t)
+            MAXDEPTH = 20
+            sp = 0; esc_pos = 0; i = 1
+            while (i <= n) {
+                ch = substr(t, i, 1)
+                two = substr(t, i, 2)
+                top = (sp > 0) ? stype[sp] : ""
+                if (top == "blk") {
+                    if (two == "*/") { sp--; i += 2 } else { i++ }
+                    continue
+                }
+                if (top == "sq") {
+                    if (ch == sq) sp--
+                    i++
+                    continue
+                }
+                if (top == "dq") {
+                    if (ch == "\\") { i += 2; continue }
+                    if (ch == "\"") { sp--; i++; continue }
+                    if (ch == "`") {
+                        sp++; if (sp > MAXDEPTH) return 0
+                        stype[sp] = "bt"; i++; continue
+                    }
+                    if (two == "${" || two == "$(") {
+                        sp++; if (sp > MAXDEPTH) return 0
+                        stype[sp] = "subst"; sdepth[sp] = 1; i += 2; continue
+                    }
+                    i++
+                    continue
+                }
+                if (top == "bt") {
+                    if (ch == "\\") { i += 2; continue }
+                    if (ch == "`") { sp--; i++; continue }
+                    if (ch == sq) {
+                        sp++; if (sp > MAXDEPTH) return 0
+                        stype[sp] = "sq"; i++; continue
+                    }
+                    if (ch == "\"") {
+                        sp++; if (sp > MAXDEPTH) return 0
+                        stype[sp] = "dq"; i++; continue
+                    }
+                    if (two == "${" || two == "$(") {
+                        sp++; if (sp > MAXDEPTH) return 0
+                        stype[sp] = "subst"; sdepth[sp] = 1; i += 2; continue
+                    }
+                    i++
+                    continue
+                }
+                if (top == "subst") {
+                    if (ch == "\\") { i += 2; continue }
+                    if (ch == sq) {
+                        sp++; if (sp > MAXDEPTH) return 0
+                        stype[sp] = "sq"; i++; continue
+                    }
+                    if (ch == "\"") {
+                        sp++; if (sp > MAXDEPTH) return 0
+                        stype[sp] = "dq"; i++; continue
+                    }
+                    if (ch == "`") {
+                        sp++; if (sp > MAXDEPTH) return 0
+                        stype[sp] = "bt"; i++; continue
+                    }
+                    if (two == "${" || two == "$(") {
+                        sp++; if (sp > MAXDEPTH) return 0
+                        stype[sp] = "subst"; sdepth[sp] = 1; i += 2; continue
+                    }
+                    if (ch == "(" || ch == "{") { sdepth[sp]++; i++; continue }
+                    if (ch == ")" || ch == "}") {
+                        sdepth[sp]--
+                        if (sdepth[sp] <= 0) sp--
+                        i++
+                        continue
+                    }
+                    i++
+                    continue
+                }
+                # sp == 0: top level
+                if (ch == "\\") { esc_pos = i + 1; i += 2; continue }
+                if (ch == sq) { sp++; stype[sp] = "sq"; i++; continue }
+                if (ch == "\"") { sp++; stype[sp] = "dq"; i++; continue }
+                if (ch == "`") { sp++; stype[sp] = "bt"; i++; continue }
+                if (two == "${" || two == "$(") { sp++; stype[sp] = "subst"; sdepth[sp] = 1; i += 2; continue }
+                if (two == "/*") { sp++; stype[sp] = "blk"; i += 2; continue }
+                if ((kind == "sh" || kind == "code") && ch == "#" && is_word_start(t, i, esc_pos)) {
+                    cand = substr(t, i, 11)
+                    return (cand == "# t13b-ok: ") ? i : 0
+                }
+                if ((kind == "js" || kind == "code") && two == "//") {
+                    cand = substr(t, i, 12)
+                    return (cand == "// t13b-ok: ") ? i : 0
+                }
+                i++
+            }
+            return 0
+        }
         BEGIN {
             while ((getline line < removed_file) > 0) removed[trim(substr(line, 2))]++
             close(removed_file)
@@ -401,9 +558,73 @@ else
             gsub(/(^|[^a-z0-9_-])systemctl[ \t]+(--user[ \t]+)?daemon-reload[ \t]*($|[;&|)>#]|[0-9]>)/, " ", code)
             gsub(/(^|[^a-z0-9_-])systemctl[ \t]+(--user[ \t]+)?daemon-reload[ \t]*($|[;&|)>#]|[0-9]>)/, " ", code)
             code = trim(code)
-            if (!hit && kind == "code" && code != "" && code !~ /^(#|\/\/|\/\*|\*([ \t]|$)|<!--)/ &&
-                code ~ /daemon|(^|[^a-z0-9_-])nohup[ \t].*(^|[^&<>])&([ \t]*($|[);"\047])|[ \t]+[^&> \t])|systemctl[^|;&]*[ \t]enable([ \t]|$)|launchctl[ \t]+(load|bootstrap)([ \t]|$)/)
+            # HIMMEL-3432: the read-only-lookup carve-out (a lexical scan for
+            # pgrep/pkill/ps token shapes, with chain/subst/backslash-
+            # continuation disqualifiers and a *.sh-only kind gate) is
+            # REMOVED. It was added because a read-only process lookup
+            # naming a daemon (pgrep -f claude-daemon-run) is not a
+            # daemon start, and every fix closed one bypass shape while
+            # adversarial review kept finding the next: command/backtick/
+            # process substitution in the lookup argument, a `pkill -0`
+            # paired with a second signal flag, a *.sh line DEFINING a shell
+            # function named pgrep/pkill/ps whose own definition line matched
+            # the lookup anchor, a `\` line continuation hiding a starter on
+            # the next physical line, an fd-duplication redirect (`2>&1`)
+            # mistaken for chaining -- and finally a Critical: a shell
+            # function or `alias` literally named pgrep/pkill/ps/grep that
+            # SHADOWS the real command while `daemon` sits on the CALL line,
+            # not the definition line the anchor was checking. A per-line
+            # lexical scanner cannot tell a real pgrep(1) invocation from an
+            # identifier that happens to be spelled the same way -- that is
+            # not a bug to patch again, it is what a lexical scan is. Ruling
+            # (AC adversarial review, HIMMEL-3432): stop adding arms:
+            # KEEP the general narrowing above (prose/comments skipped,
+            # *.md exempt, systemctl daemon-reload carved out) and DROP the
+            # lookup-shape carve-out entirely, so a lookup line naming a
+            # daemon fails exactly like main again -- see the `t13b-ok`
+            # marker below for the one remaining, explicit and reviewable way
+            # to exempt a real read-only lookup.
+            daemon_hit = (code ~ /daemon/)
+            service_hit = code ~ /(^|[^a-z0-9_-])nohup[ \t].*(^|[^&<>])&([ \t]*($|[);"\047])|[ \t]+[^&> \t])|systemctl[^|;&]*[ \t]enable([ \t]|$)|launchctl[ \t]+(load|bootstrap)([ \t]|$)/
+            if (!hit && (kind == "code" || kind == "sh" || kind == "js") && code != "" && code !~ /^(#|\/\/|\/\*|\*([ \t]|$)|<!--)/ &&
+                (daemon_hit || service_hit))
                 hit = 1
+            # HIMMEL-3432 AC ruling: a trailing `# t13b-ok: <reason>` on THIS
+            # shipped line is now the ONLY exemption (the lexical lookup
+            # carve-out above is gone). It exempts only THIS line, only
+            # T13(b) (not T13(a), not T12/T14/T15), and never a different
+            # line (`t` holds only this own line text, so a marker on the
+            # line above cannot cancel a hit here).
+            # HIMMEL-3446 (console ruling): the marker only counts when it is
+            # a REAL trailing comment -- find_marker_start above does a
+            # minimal quote/brace-depth scan (not a full tokenizer) so a
+            # marker spelled inside a quoted string, a backtick/`$()`/`${}`
+            # substitution, or a leading `/* ... */` block comment does not
+            # exempt. `#` only opens a marker on a sh/code-kind line; `//`
+            # only opens one on a js-kind line (`.js`/`.ts`/`.mjs`/`.cjs`) --
+            # `//` never counts in shell kinds and `#` never counts in
+            # js/ts, per the ruling. Exact spacing is still required
+            # (`# t13b-ok: ` / `// t13b-ok: `, one space each side -- #1094),
+            # so `#t13b-ok:`, `#  t13b-ok:` and `# t13b-ok:x` all still fail
+            # to match. Once a real comment opens, the reason after it must
+            # be non-trivial: >= 8 characters trimmed AND containing a run
+            # of 3+ letters (kills `12345678`, `.......x`, and whitespace
+            # padding), with no second `# t13b-ok: ` / `// t13b-ok: ` nested
+            # inside it (a chained marker does not extend the exemption).
+            # ponytail: the scan is per diff LINE with no concept of "this
+            # line is heredoc BODY content, not a shell comment" -- a
+            # heredoc body line whose text happens to spell a real-looking
+            # `# t13b-ok: <reason>` still exempts a daemon shape on that
+            # same line (same limit as the pre-existing heredoc ponytail
+            # above). Out of scope here; tracked on HIMMEL-3446.
+            marker_at = 0
+            mp = find_marker_start(t, kind)
+            if (mp > 0) marker_at = mp + ((substr(t, mp, 1) == "#") ? 11 : 12)
+            if (marker_at > 0) {
+                reason = trim(substr(t, marker_at))
+                if (length(reason) >= 8 && reason ~ /[A-Za-z][A-Za-z][A-Za-z]/ &&
+                    reason !~ /# t13b-ok: / && reason !~ /\/\/ t13b-ok: /) hit = 0
+            }
             if (hit) {
                 if (removed[t] > 0) removed[t]--
                 else hits++

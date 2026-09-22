@@ -164,6 +164,12 @@ if [ "$PURGE_STATE" -eq 1 ] && [ "$KEEP_TELEGRAM_STATE" -eq 1 ]; then
   echo "ERROR: --purge-state and --keep-telegram-state contradict each other — pick one." >&2
   exit 2
 fi
+# HIMMEL-3415: an unset or empty $HOME is refused outright, dry-run included —
+# every {HOME} target would otherwise print (or remove) as a root-relative path.
+if [ -z "${HOME:-}" ]; then
+  echo "ERROR: refusing to run — real-home check (HOME-unset): \$HOME is unset or empty" >&2
+  exit 3
+fi
 
 # strip_trailing_slash <path> — HIMMEL-2505 gap A.3: a trailing slash makes
 # `cd`/`rm -rf` follow a symlinked directory instead of the removal sites
@@ -173,6 +179,15 @@ strip_trailing_slash() {
   local _v="$1"
   while [ "$_v" != "/" ] && [ "${_v%/}" != "$_v" ]; do
     _v="${_v%/}"
+  done
+  printf '%s\n' "$_v"
+}
+
+# squash_leading_slashes <path> — collapse a leading run of `/` to one.
+squash_leading_slashes() {
+  local _v="$1"
+  while [ "${_v#//}" != "$_v" ]; do
+    _v="${_v#/}"
   done
   printf '%s\n' "$_v"
 }
@@ -400,6 +415,9 @@ canonicalize_target() {
     _resolved=$(cd -- "$(dirname -- "$_cur")" 2>/dev/null && pwd -P) || return 1
     _resolved="$_resolved/$_base"
   fi
+  # `pwd -P` keeps a leading `//` (POSIX leaves it implementation-defined;
+  # Linux treats it as `/`): collapse it so every comparison sees one spelling.
+  _resolved=$(squash_leading_slashes "$_resolved")
   if [ -n "$_tail" ]; then
     printf '%s/%s\n' "$_resolved" "$_tail"
   else
@@ -943,7 +961,7 @@ remove_native_gate_hooks() {
         found=1
         if [ "$DRY_RUN" -eq 1 ]; then
           echo "  DRY: would remove native gate: $f"
-        elif rm -f "$f"; then
+        elif guarded rm -f -- "$f"; then
           echo "  removed native gate: $f"
         else
           echo "  ERROR: could not remove native gate hook $f" >&2
@@ -972,7 +990,7 @@ remove_native_gate_hooks() {
         elif [ -d "$payload_dir" ]; then
           if [ "$DRY_RUN" -eq 1 ]; then
             echo "  DRY: would remove native payload: $payload_dir"
-          elif rm -rf -- "$payload_dir"; then
+          elif guarded rm -rf -- "$payload_dir"; then
             echo "  removed native payload: $payload_dir"
           else
             echo "  ERROR: could not remove native payload: $payload_dir" >&2
@@ -1054,7 +1072,7 @@ restore_hook_backups() {
     fi
     if [ "$DRY_RUN" -eq 1 ]; then
       echo "  DRY: would restore: $target (from $hook.himmel-backup)"
-    elif mv -f -- "$backup" "$target"; then
+    elif guarded mv -f -- "$backup" "$target"; then
       echo "  restored: $target (from $hook.himmel-backup)"
     else
       echo "  ERROR: could not restore $backup to $target" >&2
@@ -1062,6 +1080,365 @@ restore_hook_backups() {
     fi
   done
   return "$rc"
+}
+
+# --- Runtime real-home refusal (HIMMEL-3415) ---------------------------------
+# The wet-run fence below is lifted by HIMMEL_UNINSTALL_REAL_HOME=1, and the
+# static caller guard (scripts/test-uninstall-real-home-callers.sh) only reads
+# how callers SPELL $HOME. A $HOME that claims to be scratch but RESOLVES into
+# the real home — `ln -s ~ "$td/home"`, a scratch $HOME whose .claude links to
+# the real one, an override target like HIMMELCTL_CACHE_DIR aimed into the
+# real ~/.claude — passes both. This check resolves the real home WITHOUT
+# $HOME and refuses such a run before any step.
+#
+# A $HOME spelled exactly as a protected home (trailing slashes trimmed, no
+# other normalisation) is a DECLARED real-home run — the operator's own shell,
+# himmelctl's confirmed spawn (scripts/himmelctl/bin.js), the VM harness — and
+# passes through to the fence unchanged. Any other spelling that resolves
+# there (`$R/.`, `/home//me`, a symlink) is refused.
+#
+# ponytail: a $HOME that IS literally the real home — reset by systemd-run
+# --user, sudo -u, ssh or su, or a literal HOME=/home/<me> — is
+# indistinguishable here from the operator's own run; the static caller guard
+# stays the only control for that shape. A same-uid process can also fake the
+# lookup itself (a PATH-shadowed `id`, getent or dscl, or an LD_PRELOAD'd
+# getpwnam) and so name a different "real" home. On win32 himmelctl always
+# spawns uninstall.ps1 (bin.js deriveUninstallCommand), so this script runs
+# there only by hand under Git-Bash — the MSYS USERPROFILE source below.
+
+# real_home_resolve — the invoking user's passwd home, never read from $HOME:
+# bash's own `~<user>` expansion (getpwnam, no external binary), then
+# `getent passwd <uid>`, then macOS `dscl`. The name from `id -un` is
+# charset-checked BEFORE the single eval, so it can never inject; an unknown
+# user leaves `~name` unexpanded, which counts as unresolved. rc=1 (nothing
+# printed) when no source yields an absolute path.
+real_home_resolve() {
+  local _u _uid _h=""
+  _u=$(id -un 2>/dev/null) || _u=""
+  case "$_u" in ''|-*|*[!A-Za-z0-9._-]*) _u="" ;; esac
+  if [ -n "$_u" ]; then
+    # An all-digit name never reaches the eval: `~N` expands from the
+    # directory stack (`~0` is $PWD), not from the passwd database.
+    case "$_u" in *[!0-9]*) eval "_h=~$_u" ;; esac
+    case "$_h" in /*) ;; *) _h="" ;; esac
+  fi
+  if [ -z "$_h" ] && command -v getent >/dev/null 2>&1; then
+    _uid=$(id -u 2>/dev/null) || _uid=""
+    case "$_uid" in ''|*[!0-9]*) ;; *) _h=$(getent passwd "$_uid" 2>/dev/null | cut -d: -f6) ;; esac
+    case "$_h" in /*) ;; *) _h="" ;; esac
+  fi
+  if [ -z "$_h" ] && [ -n "$_u" ] && command -v dscl >/dev/null 2>&1; then
+    _h=$(dscl . -read "/Users/$_u" NFSHomeDirectory 2>/dev/null | sed -n 's/^NFSHomeDirectory: *//p')
+    case "$_h" in /*) ;; *) _h="" ;; esac
+  fi
+  [ -n "$_h" ] || return 1
+  printf '%s\n' "$_h"
+}
+
+# real_home_protected_homes — every home a fence-lifted run must not resolve
+# into, one per line. Each source only ADDS: the passwd home (required; rc=1
+# when unresolved), the MSYS USERPROFILE (Git-Bash, whose getpwnam home is
+# /home/<user> while $HOME is /c/Users/<user>), and the test seam
+# HIMMEL_UNINSTALL_TEST_REAL_HOME, which fixtures point at a FAKE real home.
+# The seam can never replace or drop the passwd home; set to "/" it protects
+# the root, so a HOME resolving to "/" or an override target outside $HOME is
+# refused and nothing else changes.
+real_home_protected_homes() {
+  local _h
+  _h=$(real_home_resolve) || return 1
+  strip_trailing_slash "$_h"
+  case "$(uname -s 2>/dev/null)" in
+    MINGW*|MSYS*|CYGWIN*)
+      if [ -n "${USERPROFILE:-}" ] && command -v cygpath >/dev/null 2>&1; then
+        _h=$(cygpath -u "$USERPROFILE" 2>/dev/null) && [ -n "$_h" ] && strip_trailing_slash "$_h"
+      fi
+      ;;
+  esac
+  if [ -n "${HIMMEL_UNINSTALL_TEST_REAL_HOME:-}" ]; then
+    strip_trailing_slash "$HIMMEL_UNINSTALL_TEST_REAL_HOME"
+  fi
+  return 0
+}
+
+# real_home_phys <path> — the physical path: a symlinked leaf is followed
+# (files too — `jq >` writes through the link), then canonicalize_target
+# resolves the rest. rc=1 when nothing resolves. rc=2 (the path still
+# printed) when the answer cannot be trusted, which every real-home caller
+# treats as a refusal (fail closed): the leaf chain does not end, a
+# component on the way up is a DANGLING symlink, or the missing tail
+# canonicalize_target re-appends lexically — from the caller's text or from
+# readlink text — has a `.` or `..` segment. Such a tail resolves somewhere
+# else once uninstall itself creates the missing component (step [4/8]'s
+# `mkdir -p` of the cache dir, `pre-commit`'s cache), so no answer computed
+# now is the one a later write or removal meets. The strictness lives here,
+# not in canonicalize_target, so suspicious_rm_path keeps its semantics.
+real_home_phys() {
+  local _p="$1" _l _n=0 _cur _b _rc=0
+  while [ -L "$_p" ] && [ "$_n" -lt 40 ]; do
+    _l=$(readlink -- "$_p") || return 1
+    case "$_l" in /*) _p="$_l" ;; *) _p="$(dirname -- "$_p")/$_l" ;; esac
+    _n=$((_n + 1))
+  done
+  [ -L "$_p" ] && _rc=2
+  _cur="$_p"
+  while [ "$_cur" != "/" ] && [ "$_cur" != "." ] && [ ! -e "$_cur" ]; do
+    [ -L "$_cur" ] && _rc=2
+    _b=$(basename -- "$_cur")
+    case "$_b" in .|..) _rc=2 ;; esac
+    _cur=$(dirname -- "$_cur")
+  done
+  canonicalize_target "$_p" || return 1
+  return "$_rc"
+}
+
+# real_home_under <path> <root> — true when path is root or below it. Both
+# sides lose a leading `//` first: an unresolved fallback is compared raw.
+real_home_under() {
+  local _p _q
+  _p=$(squash_leading_slashes "$1")
+  _q=$(squash_leading_slashes "$2")
+  [ "$_q" = "/" ] && return 0
+  case "$_p" in "$_q"|"$_q"/*) return 0 ;; esac
+  return 1
+}
+
+# real_home_target_ok <label> <target> <physical $HOME> <roots> — rc=1 (one
+# stderr line, check c) when the target resolves into one of the
+# newline-separated roots outside $HOME, or anywhere in a root that $HOME is
+# an ancestor of — or when the target CONTAINS a root (`/` included: it is an
+# ancestor of every root), since a recursive removal of an ancestor takes the
+# whole real home with it. This does not rely on suspicious_rm_path.
+real_home_target_ok() {
+  local _tp _root _prc=0
+  _tp=$(real_home_phys "$2") || _prc=$?
+  # A removal acts on a dangling leaf link itself, not on where it points:
+  # judge the link's own location (its parent must still resolve cleanly).
+  if [ "$_prc" -eq 2 ] && [ "$1" = removal ] && [ -L "$2" ] && [ ! -e "$2" ]; then
+    if _tp=$(real_home_phys "$(dirname -- "$2")"); then
+      _tp="$(strip_trailing_slash "$_tp")/$(basename -- "$2")"
+      _prc=0
+    fi
+  fi
+  if [ "$_prc" -eq 2 ]; then
+    echo "ERROR: refusing a wet uninstall — real-home check (c): $1 target $2 meets a dangling symlink or a . / .. segment in a missing tail, so where it lands cannot be known now" >&2
+    return 1
+  fi
+  [ "$_prc" -eq 0 ] || _tp="$2"
+  if [ "$(squash_leading_slashes "$_tp")" = "/" ]; then
+    echo "ERROR: refusing a wet uninstall — real-home check (c): $1 target $2 resolves to /, which contains the real home" >&2
+    return 1
+  fi
+  while IFS= read -r _root; do
+    [ -n "$_root" ] || continue
+    if real_home_under "$_root" "$_tp"; then
+      echo "ERROR: refusing a wet uninstall — real-home check (c): $1 target $2 resolves to $_tp, which contains the real home's $_root" >&2
+      return 1
+    fi
+    if real_home_under "$_tp" "$_root" && { ! real_home_under "$_tp" "$3" || real_home_under "$_root" "$3"; }; then
+      echo "ERROR: refusing a wet uninstall — real-home check (c): $1 target $2 resolves to $_tp, inside the real home's $_root" >&2
+      return 1
+    fi
+  done <<< "$4"
+  return 0
+}
+
+# real_home_spelling_ok <label> <target> — rc=1 (one stderr line, check c)
+# when an env- or row-derived removal target is relative or SPELLED with a `.`
+# or `..` segment. No normalization to get wrong: a `..` behind a component
+# that is missing at check time (one uninstall itself creates later, e.g. the
+# scope-map `mkdir -p`) would resolve somewhere else by the time it is removed.
+real_home_spelling_ok() {
+  case "$2" in
+    /*) ;;
+    *)
+      echo "ERROR: refusing a wet uninstall — real-home check (c): $1 target $2 is not an absolute path" >&2
+      return 1
+      ;;
+  esac
+  case "/$2/" in
+    */./*|*/../*)
+      echo "ERROR: refusing a wet uninstall — real-home check (c): $1 target $2 is spelled with a . or .. segment" >&2
+      return 1
+      ;;
+  esac
+  return 0
+}
+
+# guarded <cmd> [args] -- <path>... — EVERY destructive removal (rm, and the
+# mv that restores a hook backup over its target) goes through here. Once
+# real_home_check has passed (RH_ARMED=1), each path after `--` is resolved
+# physically AT THE MOMENT OF USE and re-judged by real_home_target_ok; a
+# refusal exits the whole run rc=3 before anything is removed. The one-shot
+# real_home_check stays as the early fail-fast; this closes the gap between
+# it and steps [2/8], [5/8] and [8/8]. Unarmed (a dry run, or --source-only)
+# it just runs the command.
+# ponytail: the helpers uninstall calls (unwire-*.sh, `pre-commit uninstall`)
+# get a call-site check of the paths they write (rh_helper_ok), not a check
+# inside them; uninstall-plugins.sh (it drives the `claude` CLI) and the
+# scope-map `mkdir -p` get neither — the spelling rule and the fail-closed
+# real_home_phys are what keep their paths honest.
+RH_ARMED=0
+RH_HP=""
+RH_ROOTS=""
+guarded() {
+  local _a _seen=0
+  if [ "$RH_ARMED" -eq 1 ]; then
+    for _a in "$@"; do
+      if [ "$_seen" -eq 1 ]; then
+        real_home_target_ok "removal" "$_a" "$RH_HP" "$RH_ROOTS" || exit 3
+      elif [ "$_a" = "--" ]; then
+        _seen=1
+      fi
+    done
+    if [ "$_seen" -eq 0 ]; then
+      echo "ERROR: refusing a wet uninstall — guarded removal has no -- before its target: $*" >&2
+      exit 3
+    fi
+  fi
+  "$@"
+}
+
+# rh_helper_ok <label> <path>... — the call-site twin of `guarded` for the
+# helpers uninstall runs but does not own (unwire-*.sh, the ledger's
+# settings rewrites, `pre-commit uninstall`): each path the helper will write
+# is re-judged by real_home_target_ok right before it runs. rc=1 plus a WARN
+# means skip that helper; the caller records the fail_step. Unarmed, rc=0.
+rh_helper_ok() {
+  local _l="$1" _a
+  [ "$RH_ARMED" -eq 1 ] || return 0
+  shift
+  for _a in "$@"; do
+    if ! real_home_target_ok "$_l" "$_a" "$RH_HP" "$RH_ROOTS"; then
+      echo "  WARN: skipped $_l — $_a fails the real-home check at the point of use" >&2
+      return 1
+    fi
+  done
+  return 0
+}
+
+# real_home_check — rc=0 when this run may proceed; otherwise ONE stderr line
+# naming the check that fired and the two physical paths, and rc=1:
+#   unresolved  the passwd home could not be resolved (fail-closed)
+#   a           physical $HOME is a protected home, or $HOME is a symlink
+#               (physical != lexical) into a protected root
+#   b           physical $HOME/.claude is at or under a protected home's
+#               physical .claude (followed when it is symlinked out of the home)
+#   c           a removal target resolves into a protected root but outside
+#               $HOME — or anywhere in it when $HOME is an ancestor of that
+#               root. Targets: every non-keep manifest row with a path (its
+#               override env, {HOME}, {PWD}, {HOOKS_REPO_ROOT} or an absolute
+#               path), the hooks dir after core.hooksPath resolution, and
+#               HIMMELCTL_SYSTEMD_USER_UNIT_DIR. The roots are the physical
+#               home plus the physical location of every path prefix of every
+#               {HOME} row (.claude, .claude/himmel, ...), so a real-home entry
+#               symlinked out at any depth stays protected
+# ponytail: a LEXICAL $HOME under the real home (e.g. ~/tmp/scratch, spelled
+# with no symlink) is a scratch dir by design and passes; only a HOME that
+# resolves somewhere other than where it is spelled is judged by where it
+# lands. That relies on one canonical spelling of every compared path, which
+# is why a leading `//` is collapsed (canonicalize_target, real_home_under):
+# `//R` would otherwise compare unequal to `/R` and skip every check. The
+# lexical pass-through itself still needs the EXACT passwd spelling, so
+# `HOME=//R` is refused, not passed. Session launchers that reset HOME, and step [3/8]'s crontab and
+# `systemctl --user` (which act on the invoking user whatever HOME is), are
+# outside this check.
+real_home_check() {
+  local _homes _r _rp _rc _hp _cp _i _t _home _c _comps _roots _root _allroots
+  if ! _homes=$(real_home_protected_homes); then
+    echo "ERROR: refusing a wet uninstall — real-home check (unresolved): cannot resolve this user's passwd home independently of \$HOME ($HOME)" >&2
+    return 1
+  fi
+  _home=$(strip_trailing_slash "$HOME")
+  if _hp=$(real_home_phys "$HOME"); then :
+  elif [ $? -eq 2 ]; then
+    echo "ERROR: refusing a wet uninstall — real-home check (a): \$HOME $HOME meets a dangling symlink or a . / .. segment in a missing tail" >&2
+    return 1
+  else _hp=$(squash_leading_slashes "$HOME"); fi
+  if _cp=$(real_home_phys "$HOME/.claude"); then :
+  elif [ $? -eq 2 ]; then
+    echo "ERROR: refusing a wet uninstall — real-home check (b): \$HOME/.claude meets a dangling symlink or a . / .. segment in a missing tail ($_cp)" >&2
+    return 1
+  else _cp=$(squash_leading_slashes "$HOME/.claude"); fi
+  # Every path prefix of every {HOME} manifest row (.claude, .claude/channels,
+  # .claude/channels/telegram, ...): a real home may symlink any of them OUT
+  # of itself (a dotfiles layout), at any depth, so each is protected at its
+  # PHYSICAL location too. A prefix absent at the real home is still covered:
+  # its deepest EXISTING ancestor is a shorter prefix (or the home itself).
+  _comps=""
+  for _i in "${!M_ID[@]}"; do
+    case "${M_PATH[$_i]}" in '{HOME}/'*) ;; *) continue ;; esac
+    _t="${M_PATH[$_i]#'{HOME}/'}"
+    while [ -n "$_t" ]; do
+      _c="$_t"
+      case "
+$_comps
+" in *"
+$_c
+"*) ;; *) _comps="$_comps
+$_c" ;; esac
+      case "$_t" in */*) _t="${_t%/*}" ;; *) _t="" ;; esac
+    done
+  done
+  _allroots=""
+  while IFS= read -r _r; do
+    [ -n "$_r" ] || continue
+    [ "$_home" = "$_r" ] && continue
+    _rp=$(real_home_phys "$_r") || _rp=$(squash_leading_slashes "$_r")
+    if [ "$_rp" = "/" ]; then _rc="/.claude"; else _rc="$_rp/.claude"; fi
+    _t=$(real_home_phys "$_rc") && _rc="$_t"
+    _roots="$_rp"
+    while IFS= read -r _c; do
+      [ -n "$_c" ] || continue
+      if [ "$_rp" = "/" ]; then _t="/$_c"; else _t="$_rp/$_c"; fi
+      _t=$(real_home_phys "$_t") || [ $? -eq 2 ] || continue
+      _roots="$_roots
+$_t"
+    done <<< "$_comps"
+    if [ "$_hp" = "$_rp" ]; then
+      echo "ERROR: refusing a wet uninstall — real-home check (a): \$HOME resolves to $_hp, the real home $_rp" >&2
+      return 1
+    fi
+    if [ "$_hp" != "$_home" ]; then
+      while IFS= read -r _root; do
+        if real_home_under "$_hp" "$_root"; then
+          echo "ERROR: refusing a wet uninstall — real-home check (a): \$HOME $_home resolves to $_hp, inside the real home's $_root" >&2
+          return 1
+        fi
+      done <<< "$_roots"
+    fi
+    if real_home_under "$_cp" "$_rc"; then
+      echo "ERROR: refusing a wet uninstall — real-home check (b): \$HOME/.claude resolves to $_cp, under the real $_rc" >&2
+      return 1
+    fi
+    for _i in "${!M_ID[@]}"; do
+      [ "${M_CLASS[$_i]}" = keep ] && continue
+      _t=$(m_path "$_i")
+      [ "$_t" = "-" ] && continue
+      real_home_target_ok "${M_ID[$_i]}" "$_t" "$_hp" "$_roots" || return 1
+    done
+    real_home_target_ok "git hooks dir" "$(resolve_native_hooks_dir)" "$_hp" "$_roots" || return 1
+    if [ -n "${HIMMELCTL_SYSTEMD_USER_UNIT_DIR:-}" ]; then
+      real_home_target_ok HIMMELCTL_SYSTEMD_USER_UNIT_DIR "$HIMMELCTL_SYSTEMD_USER_UNIT_DIR" "$_hp" "$_roots" || return 1
+    fi
+    _allroots="$_allroots
+$_roots"
+  done <<< "$_homes"
+  # The spelling rule runs for every run, a declared real-home run included
+  # (whose passwd home the loop above skips); after (a)/(b), which name the
+  # sharper cause for a HOME spelled with `.`.
+  for _i in "${!M_ID[@]}"; do
+    [ "${M_CLASS[$_i]}" = keep ] && continue
+    _t=$(m_path "$_i")
+    [ "$_t" = "-" ] && continue
+    real_home_spelling_ok "${M_ID[$_i]}" "$_t" || return 1
+  done
+  if [ -n "${HIMMELCTL_SYSTEMD_USER_UNIT_DIR:-}" ]; then
+    real_home_spelling_ok HIMMELCTL_SYSTEMD_USER_UNIT_DIR "$HIMMELCTL_SYSTEMD_USER_UNIT_DIR" || return 1
+  fi
+  RH_HP="$_hp"
+  RH_ROOTS="$_allroots"
+  RH_ARMED=1
+  return 0
 }
 
 # HIMMEL-2503: `. scripts/uninstall.sh --source-only` loads everything above —
@@ -1113,6 +1490,12 @@ if [ "$DRY_RUN" -eq 0 ] && [ "${HIMMEL_UNINSTALL_REAL_HOME:-0}" != "1" ]; then
     echo "  Otherwise, pass --dry-run to preview without touching anything." >&2
     exit 3
   fi
+fi
+
+# HIMMEL-3415: the runtime real-home refusal (functions above the
+# --source-only stop), for every wet run — fence lifted or not.
+if [ "$DRY_RUN" -eq 0 ] && ! real_home_check; then
+  exit 3
 fi
 
 # --- Provenance ledger load (HIMMEL-3332 S6) ---------------------------------
@@ -1674,7 +2057,7 @@ else
     if [ -L "$_dir" ]; then
       # HIMMEL-2505 gap A.3: the target is a symlink — unlink the link
       # itself, never `rm -rf` through it into whatever it points at.
-      if run rm -f -- "$_dir"; then
+      if guarded run rm -f -- "$_dir"; then
         if [ "$DRY_RUN" -eq 0 ]; then
           echo "  removed symlink (link only): $_dir"
         fi
@@ -1683,7 +2066,7 @@ else
         fail_step "[2/8] telegram pairing + bridge state: $_dir could not be removed"
       fi
     elif [ -d "$_dir" ]; then
-      if run rm -rf -- "$_dir"; then
+      if guarded run rm -rf -- "$_dir"; then
         if [ "$DRY_RUN" -eq 0 ]; then
           echo "  removed: $_dir"
         fi
@@ -2111,6 +2494,9 @@ else
     else
       note_step "\`pre-commit\` not found and this repo carries no framework hooks — nothing to uninstall"
     fi
+  elif ! rh_helper_ok "pre-commit uninstall" "$(resolve_native_hooks_dir)" \
+      "${PRE_COMMIT_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/pre-commit}"; then
+    fail_step "[5/8] git hooks: pre-commit uninstall skipped — a path it writes fails the real-home check"
   else
     echo "  using: $_precommit_bin"
     for _hook_type in "" "pre-push" "commit-msg"; do
@@ -2202,6 +2588,10 @@ unwire_settings() {
   local settings="$1" helper _line _left _units _u _seen_sl=0 _seen_hd=0 _kept_as
   local _mask_hooks=0 _mask_sl=0 _mask_repo=0 _mask_vault=0 _mask_hd=0
   _LEDGER_PROTECTED=""
+  if ! rh_helper_ok "settings unwire" "$settings"; then
+    fail_step "[6/8] settings unwire: skipped $settings — it fails the real-home check"
+    return 0
+  fi
   if [ "$LEDGER_OK" -eq 1 ]; then
     # Ledger-driven per-unit pass (HIMMEL-3332 S6): every json-key/json-elem
     # fold unit recorded at THIS settings path gets its own verdict —
@@ -2331,13 +2721,17 @@ EOF
         # alongside a kept/restored one at the same event.
         [ "$_mask_hooks" -eq 1 ] && continue ;;
     esac
+    if ! rh_helper_ok "$helper" "$settings"; then
+      fail_step "[6/8] settings unwire: $helper skipped — $settings fails the real-home check"
+      continue
+    fi
     if ! bash "$REPO_ROOT/scripts/lib/$helper.sh" "$settings"; then
       echo "  WARN: $helper reported a problem; setup-state may remain." >&2
       fail_step "[6/8] settings unwire: $helper failed"
     fi
   done
   [ "$HALTED" -eq 0 ] || return 0
-  if [ "$LEDGER_OK" -eq 1 ] && ! prov_read_drop_env_if_ours "$settings"; then
+  if [ "$LEDGER_OK" -eq 1 ] && rh_helper_ok "ledger /env drop" "$settings" && ! prov_read_drop_env_if_ours "$settings"; then
     echo "  WARN: could not drop the now-empty /env from $settings" >&2
     fail_step "[6/8] ledger: could not drop the now-empty /env from $settings"
   fi
@@ -2691,7 +3085,7 @@ elif [ ! -e "$HIMMEL_CACHE_DIR" ] && [ ! -L "$HIMMEL_CACHE_DIR" ]; then
 elif [ -L "$HIMMEL_CACHE_DIR" ]; then
   # HIMMEL-2505 gap A.3: the target is a symlink — unlink the link itself,
   # never `rm -rf` through it into whatever it points at.
-  if run rm -f -- "$HIMMEL_CACHE_DIR"; then
+  if guarded run rm -f -- "$HIMMEL_CACHE_DIR"; then
     [ "$DRY_RUN" -eq 0 ] && echo "  removed symlink (link only): $HIMMEL_CACHE_DIR"
   else
     echo "  ERROR: failed to remove $HIMMEL_CACHE_DIR — residue remains; remove it manually." >&2
@@ -2716,7 +3110,7 @@ else
     done
     echo "  contains: $HIMMEL_CACHE_DIR/launch-logs/ ($_launch_n launch record(s), *.log)"
   fi
-  if run rm -rf -- "$HIMMEL_CACHE_DIR"; then
+  if guarded run rm -rf -- "$HIMMEL_CACHE_DIR"; then
     [ "$DRY_RUN" -eq 0 ] && echo "  removed: $HIMMEL_CACHE_DIR"
   else
     # A failed removal is residue that survives the uninstall — the exact
@@ -2765,12 +3159,12 @@ if [ "$LEDGER_OK" -eq 1 ]; then
           # HIMMEL-2505 gap A.3: a symlinked backups dir is unlinked, never
           # `rm -rf`'d through into whatever it points at.
           if [ -L "$_prov_backups_dir" ]; then
-            run rm -f -- "$_prov_backups_dir"
+            guarded run rm -f -- "$_prov_backups_dir"
           else
-            run rm -rf -- "$_prov_backups_dir"
+            guarded run rm -rf -- "$_prov_backups_dir"
           fi
         fi
-        run rm -f -- "$_prov_ledger_file"
+        guarded run rm -f -- "$_prov_ledger_file"
       fi
     elif [ "$KEEP_BACKUPS" -ne 1 ]; then
       # codex-1 fix: a dry run must not delete real backup files -- only say

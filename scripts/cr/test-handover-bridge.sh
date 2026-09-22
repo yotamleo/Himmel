@@ -288,6 +288,42 @@ EOF
 run_bridge --head headt13 --branch b --bugs "$BUGS"
 assert_eq "t13 avail row from a different branch is still counted -> vanished bug resolves" "resolved" "$(bug_status "$BUGS" BUG-1)"
 
+# -- T14 (HIMMEL-2405): the amend key gains branch. Two branches can sit at
+# the SAME head (HIMMEL-1175) and finding ids are minted in per-producer
+# stream order, not globally unique, so an amend recorded while judging
+# branch "theirs" must never leak into what this bridge forwards for branch
+# "mine" at the same head/finding_id.
+new_item t14
+CR_LEDGER="$TMP/ledger-t14.jsonl"
+cat > "$CR_LEDGER" <<'EOF'
+{"kind":"finding","head":"headt14","branch":"mine","model":"codex","finding_id":"codex-14","severity":"imp","file":"a.py","line":1,"verdict":"","artifact":"diff","perspective":"off","text":"amend isolation probe"}
+{"kind":"amend","branch":"theirs","target_head":"headt14","finding_id":"codex-14","artifact":"diff","perspective":"off","set":{"verdict":"deferred"}}
+EOF
+run_bridge --head headt14 --branch mine --notes "$NOTES"
+assert_not_contains "T14 a foreign-branch amend does not leak into this branch's rendering" "$(cat "$NOTES")" "(deferred)"
+assert_contains "T14 the unamended finding still renders" "$(cat "$NOTES")" "amend isolation probe"
+
+# T14b positive control: the SAME branch's own amend still applies.
+new_item t14b
+CR_LEDGER="$TMP/ledger-t14b.jsonl"
+cat > "$CR_LEDGER" <<'EOF'
+{"kind":"finding","head":"headt14b","branch":"mine","model":"codex","finding_id":"codex-14b","severity":"imp","file":"a.py","line":1,"verdict":"","artifact":"diff","perspective":"off","text":"amend own branch probe"}
+{"kind":"amend","branch":"mine","target_head":"headt14b","finding_id":"codex-14b","artifact":"diff","perspective":"off","set":{"verdict":"deferred"}}
+EOF
+run_bridge --head headt14b --branch mine --notes "$NOTES"
+assert_contains "T14b this branch's own amend still applies (control)" "$(cat "$NOTES")" "(deferred)"
+
+# -- T15 (HIMMEL-2405 back-compat): a legacy amend row with no branch field
+# (written before branches were stamped) still applies to any branch.
+new_item t15
+CR_LEDGER="$TMP/ledger-t15.jsonl"
+cat > "$CR_LEDGER" <<'EOF'
+{"kind":"finding","head":"headt15","branch":"mine","model":"codex","finding_id":"codex-15","severity":"imp","file":"a.py","line":1,"verdict":"","artifact":"diff","perspective":"off","text":"legacy amend probe"}
+{"kind":"amend","target_head":"headt15","finding_id":"codex-15","artifact":"diff","perspective":"off","set":{"verdict":"deferred"}}
+EOF
+run_bridge --head headt15 --branch mine --notes "$NOTES"
+assert_contains "T15 a legacy branchless amend still applies (back-compat)" "$(cat "$NOTES")" "(deferred)"
+
 if [ "$FAILED" -gt 0 ]; then
     echo "---"
     echo "FAIL $FAILED case(s)"

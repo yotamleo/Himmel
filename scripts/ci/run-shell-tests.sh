@@ -664,7 +664,7 @@ SKIP_LIST="
 scripts/test-install-symmetry-vm.sh  # drives a real VM over SSH
 scripts/test-luna-upgrade-vm.sh      # drives a real (Ubuntu or Windows) VM over SSH
 scripts/test-tarball-install-vm.sh   # drives a real VM over SSH (HIMMEL-3059 tarball-vs-clone acceptance)
-scripts/test-himmel-update.sh        # live git pull + marketplace re-sync
+scripts/test-himmel-update.sh        # HIMMEL-3450: one case needs this station's real marketplace registration (--only marketplace vs. a throwaway HOME); the rest is hermetic and runs in scripts/test-himmel-update-check.sh
 scripts/test-himmel-update-hermes.sh  # needs the hermes runtime
 scripts/hermes/test-invoke.sh        # needs the hermes runtime
 scripts/gemini/test-invoke.sh        # needs the gemini-cli binary

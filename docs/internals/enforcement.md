@@ -1341,6 +1341,70 @@ scoped to.
 
 Spec: `scripts/hooks/test-block-write-into-main-checkout.sh`.
 
+**Git subcommands aimed at a protected checkout (HIMMEL-3401).** A git
+command rewrites a checkout's tree, index, HEAD, refs or config without naming
+a file (`git -C <primary> checkout <leg-branch> -- f`, `restore --source=`,
+`merge`, `pull . <leg>`, `read-tree -u -m`), so arm (g) classifies the
+SUBCOMMAND on an allowlist. A read-only subcommand is never examined. Every
+other subcommand, including unknown aliases, has its target's REPO ROOT put
+through `main_checkout_verdict`. The target covers:
+
+- cumulative `-C`
+- `--git-dir` / `--work-tree`
+- `GIT_DIR` / `GIT_WORK_TREE` / `GIT_INDEX_FILE` set as a prefix, through
+  `env`, or by an earlier `export`
+- the cwd set by an earlier `cd` / `pushd` / `env -C`
+
+A `cd` may not have run (`false && cd <leg>; git merge x`), so a write is also
+checked from every cwd an earlier `cd` left. The cost is that
+`cd <leg> && git merge x` typed from the primary is denied as well.
+
+Checking the repo root closes the `-C <primary>/handovers` and
+`-C <primary>/<ignored-dir>` exemption holes. An unresolvable cwd or target on
+a write fails closed.
+
+The console's wrap flow is carved out by shape:
+
+- `pull` is allowed only with `--ff-only`, flags from a closed list, and
+  operands limited to none, `<remote-name>`, or `<remote-name> main|master`.
+  `pull --ff-only . <leg>` is denied.
+- `fetch` is allowed unless it uses `-u`, `--upload-pack` or `--refmap`, names
+  a `.`/path/URL repository, or passes a `<src>:<dst>` refspec.
+- A config override (`-c`, `--config-env`, any `GIT_CONFIG*` variable) voids
+  both carve-outs, since it can repoint the remote or refspec.
+
+The configured upstream is protected too: `config`, `remote` and
+`branch -u|-f` writes on the primary are denied, and so are `branch` and `tag`
+creation or deletion and `reflog expire|delete`. The bypass is the same as for
+every arm: `EDIT_ON_MAIN_OK=1` in the launching shell, or `.single-writer`.
+
+`push` is judged by its destination. A local path, `.`, a `file://` URL or a
+`--repo=` path that resolves into the primary is denied, and so is any
+`--receive-pack` / `--exec` (it can run `receive.denyCurrentBranch=updateInstead`
+on the receiving side and rewrite the primary's tree). A remote name or a
+network URL passes, unless the same command repoints a remote. In that case
+`push`, `fetch`, `pull`, `ls-remote` and `remote` are denied. A repoint is:
+- a `-c` / `--config-env` key matching `remote.*.url|pushurl|receivepack|uploadpack|vcs`, `url.*.insteadOf|pushInsteadOf`, `core.sshCommand` or `protocol.*` (case-insensitive, judged by key name, never by value);
+- a `GIT_CONFIG_COUNT` / `GIT_CONFIG_PARAMETERS` / `GIT_CONFIG_KEY_*` env assignment;
+- or a `git remote add|set-url` clause anywhere in the command line.
+
+A repoint made by an earlier, separate command (`git config remote.x.url …`)
+is not seen; HIMMEL-3407 covers it.
+
+Before the verb match, quotes are dropped, backslash escapes are undone
+(`\git`, `gi\t`, `\-C`), backslash-newline continuations are joined, ANSI-C
+`$'…'` is decoded (`$'\x67it'`, `$'\147it'`, `$'git'`) and locale
+`$"…"` is read as `"…"`. An escaped or quoted spelling therefore matches the
+word the shell runs. Direct-exec mode fails closed on input it cannot read:
+empty or non-JSON stdin, a non-object, a missing `tool_name`, or a
+Bash/PowerShell payload whose command is missing or not a string.
+
+Named residual: config, remote and ref writes that land in the primary's
+SHARED common dir from a LINKED worktree's cwd: (a) `config` / `remote` /
+`branch -u` writes to the shared `$GIT_COMMON_DIR/config`, and (b)
+`update-ref` / `symbolic-ref` on `refs/heads/main`. Follow-up HIMMEL-3407 covers
+them. Spec: `scripts/hooks/test-block-primary-git-writes.sh`.
+
 **KNOWN FAIL-OPEN SHAPES — CLOSED by HIMMEL-2592.** This section previously
 listed TWO open shapes; HIMMEL-2526's sixth and final CR round found four
 more, so the real residual was **six** instances of one class — a gap between

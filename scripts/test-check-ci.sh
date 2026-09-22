@@ -155,7 +155,10 @@ if [ "$cmd" = "api" ]; then
             # old empty payload every pre-3385 caller sees.
             case "${GH_STUB_PRODUCERS:-none}" in
                 fail) echo "HTTP 500: check-runs boom" >&2; exit 1 ;;
-                json:*) printf '%s' "${GH_STUB_PRODUCERS#json:}" | jq -r "$(_jq_arg "$@")" ;;
+                # HIMMEL-3434: real `gh api --jq` propagates a jq error() as gh's own
+                # non-zero exit — the stub must too, or a null-id fixture can never
+                # exercise the caller's producers-unreadable path.
+                json:*) printf '%s' "${GH_STUB_PRODUCERS#json:}" | jq -r "$(_jq_arg "$@")"; exit $? ;;
                 *) echo '{"check_runs":[]}' ;;
             esac
             exit 0 ;;
@@ -2402,9 +2405,9 @@ assert_err_has "agg" "3381-n the refusal names the missing required check"
 # expression check-ci.sh really passes, so an id its expression drops stays dropped.
 _rule_id='[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"codeowner-review-gate","integration_id":15368}]}}]'
 _rule_noid='[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"codeowner-review-gate"}]}}]'
-_runs_wrong='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"success","app":{"id":99}}]}'
-_runs_right='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"success","app":{"id":15368}}]}'
-_runs_red='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"failure","app":{"id":15368}}]}'
+_runs_wrong='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"success","app":{"id":99},"id":1}]}'
+_runs_right='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"success","app":{"id":15368},"id":1}]}'
+_runs_red='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"failure","app":{"id":15368},"id":1}]}'
 _both_checks="pass:unit-tests
 pass:codeowner-review-gate"
 
@@ -2493,7 +2496,117 @@ RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVER
 run cr-completed --grace 0
 assert_rc 0 "3391-d control: the right app's check run still satisfies the requirement"
 
+# --- 3434: only the LATEST check-run of a name is judged, not any run ---------
+# The check-runs REST list returns EVERY run ever created for the sha, including
+# ones a re-run or a close/reopen superseded. `_required_status` must judge only
+# the most recent one of a (name, app id) — ordered by check-run id alone
+# (strictly creation-order monotonic; started_at is not used, see 3434-h) —
+# not "any run ever failed". PR #1079 hit this for real: three
+# commit-lint check-runs on one sha (fail, fail, success) read 25/25 green
+# everywhere but this gate.
+_runs_fail_then_pass='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"failure","app":{"id":15368},"started_at":"2026-09-22T00:16:00Z","id":1},{"name":"codeowner-review-gate","status":"completed","conclusion":"success","app":{"id":15368},"started_at":"2026-09-22T01:54:00Z","id":3}]}'
+_runs_pass_then_fail='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"success","app":{"id":15368},"started_at":"2026-09-22T00:16:00Z","id":1},{"name":"codeowner-review-gate","status":"completed","conclusion":"failure","app":{"id":15368},"started_at":"2026-09-22T01:54:00Z","id":3}]}'
+_runs_fail_then_pending='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"failure","app":{"id":15368},"started_at":"2026-09-22T00:16:00Z","id":1},{"name":"codeowner-review-gate","status":"in_progress","conclusion":null,"app":{"id":15368},"started_at":"2026-09-22T01:54:00Z","id":3}]}'
+_runs_pass_then_cancel='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"success","app":{"id":15368},"started_at":"2026-09-22T00:16:00Z","id":1},{"name":"codeowner-review-gate","status":"completed","conclusion":"cancelled","app":{"id":15368},"started_at":"2026-09-22T01:54:00Z","id":3}]}'
+_runs_tie_higher_id_pass='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"failure","app":{"id":15368},"started_at":"2026-09-22T01:54:00Z","id":1},{"name":"codeowner-review-gate","status":"completed","conclusion":"success","app":{"id":15368},"started_at":"2026-09-22T01:54:00Z","id":3}]}'
+_runs_diff_app_later_pass='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"failure","app":{"id":15368},"started_at":"2026-09-22T00:16:00Z","id":1},{"name":"codeowner-review-gate","status":"completed","conclusion":"success","app":{"id":99},"started_at":"2026-09-22T01:54:00Z","id":3}]}'
+_runs_fail_then_pending_null_started='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"failure","app":{"id":15368},"started_at":"2026-09-22T00:16:00Z","id":1},{"name":"codeowner-review-gate","status":"queued","conclusion":null,"app":{"id":15368},"started_at":null,"id":3}]}'
+# id=3 is the true latest run (highest id); id=1 carries a LATER fake started_at
+# than id=3, and id=2 (between them in API response order) has a null
+# started_at. A comparator that mixes timestamp comparison with an id-only
+# fallback per-pair is non-transitive: id=1's later timestamp beats id=3's
+# earlier one, then id=2's null timestamp falls back to id-only and beats
+# id=1 on id alone — so id=2 (fail) wins even though id=3 (the actual latest
+# run) is a success. The GitHub check-runs API gives no ordering guarantee on
+# array position, so this exact response shape is a live possibility.
+_runs_order_dependent='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"success","app":{"id":15368},"started_at":"2026-09-22T00:16:00Z","id":3},{"name":"codeowner-review-gate","status":"completed","conclusion":"failure","app":{"id":15368},"started_at":"2026-09-22T01:54:00Z","id":1},{"name":"codeowner-review-gate","status":"completed","conclusion":"failure","app":{"id":15368},"started_at":null,"id":2}]}'
+
+# 3434-a — fail-then-success on one name reads PASS: an earlier failed run must
+# not poison a later success (the PR #1079 shape).
+RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_runs_fail_then_pass"
+run cr-completed --grace 0
+assert_rc 0 "3434-a fail-then-success on one name reads PASS (only the latest run is judged)"
+if [ "$(alert_count)" = 0 ]; then pass "3434-a no alert once the latest run is green"; else fail "3434-a no alert once the latest run is green" "count=$(alert_count)"; fi
+
+# 3434-b — control: success-then-fail reads FAIL — a later red still blocks.
+RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_runs_pass_then_fail"
+run cr-completed --grace 0
+assert_rc 1 "3434-b control: success-then-fail on one name reads FAIL"
+
+# 3434-c — an old failure followed by a still-pending latest run must not read
+# as FAILED: the gate must not fold a pending latest run into "seen"
+# (fail-open) either — with no grace left to actually wait it out, the honest
+# verdict is BLOCKED, the same as any other required check that never settled
+# (round-4 console adversarial finding, HIMMEL-3434).
+RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_runs_fail_then_pending"
+run cr-completed --grace 0
+assert_rc 5 "3434-c fail-then-pending on one name is not refused as FAILED, but is not a silent PASS either — it BLOCKS once grace is exhausted"
+if [ "$(alert_count)" = 1 ]; then pass "3434-c one alert once the still-pending latest run exhausts its grace"; else fail "3434-c one alert once the still-pending latest run exhausts its grace" "count=$(alert_count)"; fi
+
+# 3434-d — control: a cancelled LATEST run still blocks, same as a failed one.
+RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_runs_pass_then_cancel"
+run cr-completed --grace 0
+assert_rc 1 "3434-d control: a cancelled latest run still blocks"
+
+# 3434-e — a tie on started_at breaks on the HIGHEST id: the newer run (higher
+# id) wins even when the clock reads identical.
+RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_runs_tie_higher_id_pass"
+run cr-completed --grace 0
+assert_rc 0 "3434-e a started_at tie breaks on the highest id"
+
+# 3434-f — control: a later success from a DIFFERENT (unpinned) app must not
+# clear an earlier failure from the pinned app — producer pinning still applies
+# per run, not just per name.
+RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_runs_diff_app_later_pass"
+run cr-completed --grace 0
+assert_rc 1 "3434-f control: a later success from a different app does not clear the pinned app's failure"
+
+# 3434-g — a QUEUED latest run with a null started_at (never yet begun) must
+# still outrank an older completed failure: a missing started_at is not
+# "earliest", it is unknown, and the run's id (always present, monotonic)
+# breaks the tie so the gate reads it as PENDING (not FAIL, and not a silent
+# PASS either) — with no grace left it BLOCKS honestly, same as 3434-c.
+RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_runs_fail_then_pending_null_started"
+run cr-completed --grace 0
+assert_rc 5 "3434-g a queued latest run with a null started_at is not outranked by an older timestamped failure, and is not a silent PASS"
+if [ "$(alert_count)" = 1 ]; then pass "3434-g one alert once the null-started_at latest run exhausts its grace"; else fail "3434-g one alert once the null-started_at latest run exhausts its grace" "count=$(alert_count)"; fi
+
+# 3434-h — the true latest run (highest id) wins no matter where a null-
+# started_at row sits in the API's response order: the winner must not be
+# order-dependent (codex round-2 finding on HIMMEL-3434).
+RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_runs_order_dependent"
+run cr-completed --grace 0
+assert_rc 0 "3434-h the highest-id run wins regardless of API response order (non-transitive comparator control)"
+if [ "$(alert_count)" = 0 ]; then pass "3434-h no alert once the true latest (highest id) run is green"; else fail "3434-h no alert once the true latest (highest id) run is green" "count=$(alert_count)"; fi
+
+# 3434-i — a check-run with a null id makes the producer read unreadable
+# (fail closed, exit 5): an id-less row must never first-win the id fold —
+# with no id there is no way to tell it apart from a stale duplicate (console
+# round-4 adversarial finding, HIMMEL-3434).
+_runs_null_id='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"success","app":{"id":15368},"started_at":"2026-09-22T00:16:00Z","id":null}]}'
+RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_runs_null_id"
+run cr-completed --grace 0
+assert_rc 5 "3434-i a check-run with a null id fails the producer read closed, never first-wins"
+assert_err_has "producer" "3434-i the refusal names the unreadable-producer cause"
+if [ "$(alert_count)" = 1 ]; then pass "3434-i one alert for the null-id refusal"; else fail "3434-i one alert for the null-id refusal" "count=$(alert_count)"; fi
+
+# 3434-j / 3434-k — the SAME run (same id) can appear twice across --paginate
+# pages if a page boundary is read while the run is still finishing: prefer
+# the completed row over the pending duplicate, in EITHER array order — a
+# plain "first wins" or "last wins" on an exact id tie would be
+# order-dependent, the same class of bug 3434-h guards against.
+_runs_id_tie_pending_then_completed='{"check_runs":[{"name":"codeowner-review-gate","status":"in_progress","conclusion":null,"app":{"id":15368},"started_at":"2026-09-22T01:00:00Z","id":5},{"name":"codeowner-review-gate","status":"completed","conclusion":"success","app":{"id":15368},"started_at":"2026-09-22T01:00:00Z","id":5}]}'
+_runs_id_tie_completed_then_pending='{"check_runs":[{"name":"codeowner-review-gate","status":"completed","conclusion":"success","app":{"id":15368},"started_at":"2026-09-22T01:00:00Z","id":5},{"name":"codeowner-review-gate","status":"in_progress","conclusion":null,"app":{"id":15368},"started_at":"2026-09-22T01:00:00Z","id":5}]}'
+
+RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_runs_id_tie_pending_then_completed"
+run cr-completed --grace 0
+assert_rc 0 "3434-j an id tie prefers the completed row over an earlier-in-array pending duplicate"
+
+RULES_OVERRIDE="json:$_rule_id"; CHECKS_OVERRIDE="$_both_checks"; PRODUCERS_OVERRIDE="json:$_runs_id_tie_completed_then_pending"
+run cr-completed --grace 0
+assert_rc 0 "3434-k control: an id tie still prefers the completed row when it sits earlier in the array (order-independent)"
+
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 162 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 162"; exit 1; fi
+if [ "$COUNT" -ne 173 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 173"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1

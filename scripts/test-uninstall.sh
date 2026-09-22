@@ -66,6 +66,11 @@ unset HIMMEL_UNINSTALL_REAL_HOME
 SUITE_HOME="$TMP/suitehome"
 mkdir -p "$SUITE_HOME"
 export HOME="$SUITE_HOME"
+# HIMMEL-3415: run from a scratch cwd too. uninstall.sh refuses a wet run whose
+# repo-rooted targets ({PWD}, the hooks dir) resolve into the real home, which
+# a checkout under it (a worktree, CI's /home/runner/work) always does.
+mkdir -p "$TMP/cwd"
+cd "$TMP/cwd" || exit 1
 case "$REAL_HOME" in
     "$TMP"|"$TMP"/*)
         echo "FAIL the operator's real \$HOME resolved under this suite's \$TMP — refusing to proceed"
@@ -956,13 +961,13 @@ out=$(cd "$H_RELROOT/mid" && HOME="$TMP/h-home" PATH="$H_BIN5:$HBIN" \
     TELEGRAM_CHANNEL_DIR="$TMP/h-none-channel9" BRIDGE_ROOT="$TMP/h-none-bridge9" \
     HIMMELCTL_CACHE_DIR="$TMP/h-cache9" HIMMEL_UNINSTALL_REPO_ROOT="leaf" \
     bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-settings </dev/null 2>&1); rc=$?
-assert_rc "SC6O relative HOOKS_REPO_ROOT exits 2" 2 "$rc"
-assert_has "SC6O error names the hooks-repo git status as unresolved" \
-    "could not confirm whether leaf is a git work tree" "$out"
+# HIMMEL-3415: a relative env-derived target is now refused up front by the
+# real-home spelling rule (check c, rc=3), before step [2/8] ever walks it.
+assert_rc "SC6O relative HOOKS_REPO_ROOT refused up front" 3 "$rc"
+assert_has "SC6O refusal names the relative target" \
+    "is not an absolute path" "$out"
 assert_not_has "SC6O does not take the non-git clean-skip line (textual fixed point missed the real ancestor)" \
     "is not a git work tree — no repo-local hooks to remove" "$out"
-assert_has "SC6O later step 6 halted as a consequence" \
-    "[6/8] settings unwire: skipped — halted after an earlier failure" "$out"
 
 # ── SC6Q (HIMMEL-2857 i): a DANGLING `.git` symlink (target absent) is
 # indistinguishable from confirmed absence under `[ -e ]` alone — the walk
@@ -974,15 +979,17 @@ out=$(HOME="$TMP/h-home" PATH="$H_BIN5:$HBIN" \
     TELEGRAM_CHANNEL_DIR="$TMP/h-none-channel11" BRIDGE_ROOT="$TMP/h-none-bridge11" \
     HIMMELCTL_CACHE_DIR="$TMP/h-cache11" HIMMEL_UNINSTALL_REPO_ROOT="$H_DANGLING" \
     bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-settings </dev/null 2>&1); rc=$?
-assert_rc "SC6Q dangling .git symlink exits 2" 2 "$rc"
-assert_has "SC6Q error names the dangling symlink" \
-    "dangling .git symlink" "$out"
-assert_has "SC6Q error names the hooks-repo git status as unresolved" \
-    "could not confirm whether $H_DANGLING is a git work tree" "$out"
+# HIMMEL-3415: the hooks dir resolves through that dangling link, so the
+# real-home check now fails closed up front (check c, rc=3) — before step
+# [5/8]'s walk ever classifies it; nothing is removed either way.
+assert_rc "SC6Q dangling .git symlink refused up front" 3 "$rc"
+assert_has "SC6Q refusal names the dangling symlink" \
+    "meets a dangling symlink" "$out"
+assert_has "SC6Q refusal names a target under the dangling .git" \
+    "target $H_DANGLING/.git/" "$out"
 assert_not_has "SC6Q does not take the non-git clean-skip line" \
     "is not a git work tree — no repo-local hooks to remove" "$out"
-assert_has "SC6Q later step 6 halted as a consequence" \
-    "[6/8] settings unwire: skipped — halted after an earlier failure" "$out"
+assert_not_has "SC6Q no step ran" "[2/8]" "$out"
 
 # ── SC6R (HIMMEL-2857 ii): an ancestor directory whose metadata this process
 # cannot fully inspect (read permission removed; search/execute kept so the
@@ -1171,7 +1178,7 @@ fi
 #      files are written by the REAL hook (not hand-made), pointed at the cache
 #      the same way uninstall reads it, so the two cannot drift onto two paths.
 mk_cache
-HOOK_SH="$(cd "$(dirname "$0")" && pwd)/hooks/check-update-available.sh"
+HOOK_SH="$(dirname "$CLI")/hooks/check-update-available.sh"
 NG="$TMP/nongit-install"; rm -rf "$NG"; mkdir -p "$NG/scripts/hooks" "$NG/scripts/lib"
 cp "$HOOK_SH" "$NG/scripts/hooks/"
 cp "$(dirname "$HOOK_SH")/../lib/detach.sh" "$(dirname "$HOOK_SH")/../lib/release-check.sh" "$NG/scripts/lib/"
@@ -1211,7 +1218,7 @@ fi
 #      two cannot drift onto two paths. A dry-run must NAME the location, and a
 #      wet run must remove it with the dir - a survivor is HIMMEL-3251 residue.
 mk_cache
-LEG_SH="$(cd "$(dirname "$0")" && pwd)/handover/console-kit/headed-arm-leg.sh"
+LEG_SH="$(dirname "$CLI")/handover/console-kit/headed-arm-leg.sh"
 LLD="$TMP/launch20c"; mkdir -p "$LLD"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$LLD/target.sh"; printf '#!/usr/bin/env bash\necho PROCEED\n' > "$LLD/preflight.sh"
 chmod +x "$LLD/target.sh" "$LLD/preflight.sh"; echo doc > "$LLD/doc.md"
@@ -1261,7 +1268,9 @@ fi
 out=$(HOME="$FAKE_HOME" TELEGRAM_CHANNEL_DIR="$TMP/none14" BRIDGE_ROOT="$TMP/none14b" \
     HIMMELCTL_CACHE_DIR="$FAKE_HOME/." PATH="$HBIN" \
     bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1); rc=$?
-assert_has "\$HOME/. alias refused as suspicious" "refusing to remove suspicious path" "$out"
+# HIMMEL-3415: the real-home spelling rule now refuses a `.` segment up front
+# (check c, rc=3), before the suspicious-path guard is reached.
+assert_has "\$HOME/. alias refused" "is spelled with a . or .. segment" "$out"
 if [ -x "$FAKE_HOME/.local/bin/claude" ]; then
     echo "PASS \$HOME/. alias left \$HOME intact"
 else
@@ -1269,7 +1278,7 @@ else
 fi
 # A refusal is not a teardown — the cache is still there, so the run must NOT
 # claim completion. This is the same rule step [4/8]/[5/8] follow.
-assert_rc "refused cache path exits 2, not 0" 2 "$rc"
+assert_rc "refused cache path exits non-zero (3, the up-front refusal)" 3 "$rc"
 assert_not_has "refused cache path claims no completion" "Uninstall complete." "$out"
 
 # 22d. Windows drive-root spellings must ALL be refused. MSYS/Git Bash
@@ -1472,8 +1481,15 @@ for _ptarget in "$PHOME" "$PHOME/.claude" "/" "$PHOME/.ssh"; do
         TELEGRAM_CHANNEL_DIR="$TMP/protected-none${_pn}" BRIDGE_ROOT="$TMP/protected-none${_pn}b" \
         HIMMELCTL_CACHE_DIR="$_ptarget" \
         bash "$CLI" --purge-state --yes --skip-tasks --skip-plugins --skip-hooks --skip-settings </dev/null 2>&1); rc=$?
-    assert_rc "protected ancestor '$_ptarget' exits 2" 2 "$rc"
-    assert_has "protected ancestor '$_ptarget' refused" "refusing to remove suspicious path" "$out"
+    if [ "$_ptarget" = "/" ]; then
+        # HIMMEL-3415: `/` contains the real home, so the runtime real-home
+        # check refuses it before any removal step runs.
+        assert_rc "protected ancestor '$_ptarget' exits 3" 3 "$rc"
+        assert_has "protected ancestor '$_ptarget' refused" "real-home check (c)" "$out"
+    else
+        assert_rc "protected ancestor '$_ptarget' exits 2" 2 "$rc"
+        assert_has "protected ancestor '$_ptarget' refused" "refusing to remove suspicious path" "$out"
+    fi
     assert_not_has "protected ancestor '$_ptarget' claims no completion" "Uninstall complete." "$out"
     if [ -e "$_ptarget" ]; then
         echo "PASS protected ancestor '$_ptarget' still present"

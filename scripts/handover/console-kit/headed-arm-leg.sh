@@ -37,6 +37,14 @@
 # (the same seams headed-arm.sh's own suite uses) to confirm the launched
 # argv matches what --dry-run predicted.
 #
+# --headless (HIMMEL-3403; or LEG_HEADLESS=1 in the launching shell, the flag
+# wins): the same launch with no konsole - the leg runs as a Claude Code
+# background session (headed-arm.sh adds --bg), and its env goes into the
+# per-leg settings file because the session inherits the claude daemon's env,
+# not ours. Needs a profile; native lane only. End a headless leg: `kill <pid>`
+# (the pid= in the log's `headless=1` line, or `claude agents --json`), then
+# `claude rm <short-id>`. Where -p vs --bg fits which job: HIMMEL-3410.
+#
 # Platform guard (gitbash-only): POSIX bash 3.2+, same as headed-arm.sh
 # itself (konsole is Linux/KDE-only) - no .ps1 twin; the Windows station
 # arms through arm-resume.sh's schtasks backend instead.
@@ -163,21 +171,25 @@
 set -u
 
 usage() {
-    echo "usage: headed-arm-leg.sh [--dry-run] [--lane native|claudex] (--profile <name> | --no-profile) [--relay] [--judge] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
+    echo "usage: headed-arm-leg.sh [--dry-run] [--headless] [--lane native|claudex] (--profile <name> | --no-profile) [--relay] [--judge] [--console <name>] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
 }
 
 DRY_RUN=0
 RELAY=0
 JUDGE=0
 NO_PROFILE=0
+HEADLESS=0
+[ "${LEG_HEADLESS:-}" = "1" ] && HEADLESS=1
 LANE="${LEG_LANE:-native}"
 PROFILE="${LEG_PROFILE:-}"
+CONSOLE_FLAG=""
 while :; do
     case "${1:-}" in
         --dry-run) DRY_RUN=1; shift ;;
         --relay) RELAY=1; shift ;;
         --judge) JUDGE=1; shift ;;
         --no-profile) NO_PROFILE=1; shift ;;
+        --headless) HEADLESS=1; shift ;;
         --lane)
             # codex CR fix: `--lane` as the LAST arg leaves only 1 positional,
             # so `shift 2` fails (rc=1) and shifts NOTHING under `set -u`
@@ -198,6 +210,14 @@ while :; do
                 exit 2
             fi
             PROFILE="$2"; shift 2 ;;
+        --console)
+            # Same missing-value trap as --lane/--profile above.
+            if [ "$#" -lt 2 ]; then
+                usage
+                echo "headed-arm-leg: --console requires a value (the owning console's session name)" >&2
+                exit 2
+            fi
+            CONSOLE_FLAG="$2"; shift 2 ;;
         *) break ;;
     esac
 done
@@ -245,6 +265,41 @@ case "$LANE" in
         exit 2
         ;;
 esac
+
+# --console (HIMMEL-3435): charset-checked here because it is an explicit,
+# user-typed flag - same refuse-on-bad-input stance as --lane/--profile
+# above. It lands in a filesystem path downstream (merge-block-alert.sh's
+# console inbox lookup), so only letters, digits, '.', '_' and '-' pass.
+if [ -n "$CONSOLE_FLAG" ]; then
+    case "$CONSOLE_FLAG" in
+        *[!A-Za-z0-9._-]*)
+            usage
+            echo "headed-arm-leg: --console: name must contain only letters, digits, '.', '_' or '-' (got: $CONSOLE_FLAG)" >&2
+            exit 2
+            ;;
+    esac
+fi
+
+# --headless (HIMMEL-3403): the background session takes its env from the
+# claude daemon, so the leg's own env is written into the profile's settings
+# file. With no profile there is no such file, and the leg would silently run
+# on whatever env the daemon was spawned with. The claudex lane wraps claude
+# in script(1) for a tty, which has no background form.
+if [ "$HEADLESS" -eq 1 ]; then
+    if [ "$NO_PROFILE" -eq 1 ]; then
+        usage
+        echo "headed-arm-leg: --headless needs a profile (the leg's env rides in the profile's settings file); drop --no-profile" >&2
+        exit 2
+    fi
+    if [ "$LANE" != "native" ]; then
+        usage
+        echo "headed-arm-leg: --headless supports the native lane only (got: $LANE)" >&2
+        exit 2
+    fi
+    export HEADED_ARM_HEADLESS=1
+else
+    unset HEADED_ARM_HEADLESS
+fi
 
 if [ "$#" -lt 5 ]; then
     usage
@@ -442,6 +497,50 @@ fi
 # HIMMEL_CONSOLE_JUDGE marker). merge-on-green.sh then merges only on the
 # console's GO file (console-kit/go.sh), and go.sh refuses to run under it.
 export HIMMEL_CONSOLE_LEG=1
+# HIMMEL_CONSOLE_NAME (HIMMEL-3435): the owning console's session name, so a
+# leg's HIMMEL-3430 merge-block alert (scripts/lib/merge-block-alert.sh,
+# untouched by this ticket - it already reads this var) can route to the
+# console's own inbox instead of DMing the operator. Resolved from the first
+# of three sources that yields a name - never guessed from the process tree:
+#   1. --console <name> (already charset-refused above if malformed)
+#   2. the launching shell's own HIMMEL_CONSOLE_NAME
+#   3. THIS process's own Claude session name (current_session_name(),
+#      scripts/lib/session-name.sh) - set when this launcher call is itself
+#      running inside a named console session
+# Sources 2 and 3 are re-checked against the same charset --console was
+# refused on above (it lands in the same inbox-lookup path), but a failure
+# there does not abort the launch the way a bad --console flag does: this
+# seam is best-effort alert routing, not load-bearing for the leg, and
+# HIMMEL-3430's own no-name fallback (operator DM) already covers "no usable
+# name" cleanly. A candidate failing the charset check is therefore treated
+# exactly like an empty source - try the next one, or export nothing.
+_console_name_ok() {
+    case "$1" in
+        ''|*[!A-Za-z0-9._-]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+if [ -n "$CONSOLE_FLAG" ]; then
+    CONSOLE_NAME="$CONSOLE_FLAG"
+elif _console_name_ok "${HIMMEL_CONSOLE_NAME:-}"; then
+    CONSOLE_NAME="$HIMMEL_CONSOLE_NAME"
+else
+    CONSOLE_NAME=""
+    # shellcheck source=../../lib/session-name.sh
+    # shellcheck disable=SC1091
+    if . "$HERE/../../lib/session-name.sh" 2>/dev/null; then
+        _detected_console_name="$(current_session_name 2>/dev/null)" || _detected_console_name=""
+        _console_name_ok "$_detected_console_name" && CONSOLE_NAME="$_detected_console_name"
+        unset -v _detected_console_name
+    fi
+fi
+if [ -n "$CONSOLE_NAME" ]; then
+    export HIMMEL_CONSOLE_NAME="$CONSOLE_NAME"
+else
+    unset HIMMEL_CONSOLE_NAME
+fi
+unset -v CONSOLE_NAME
+unset -f _console_name_ok
 # HIMMEL_READ_CLAMP_LINES (HIMMEL-3133 / design §3.2): raises read-clamp.sh's
 # whole-file limit for a judge - independent reading is the job. 4000 is a
 # judgment call (no source document names a number): ~10x the leg default of
@@ -603,9 +702,12 @@ if [ "$DRY_RUN" -eq 1 ]; then
     # reason - proves LEG_SUPPRESS_CR_TRIGGER->CR_TRIGGER_SUPPRESS ran in
     # THIS wrapper's own process, and stays <unset> (the default-ON case)
     # for every caller that never sets LEG_SUPPRESS_CR_TRIGGER.
-    printf 'headed-arm-leg: env IMPL_GUARD_OK=%s INLINE_IMPL_OK=%s HIMMEL_CONSOLE_LEG=%s HEADED_ARM_REPO=%s scrub=%s CONSOLE_CONTEXT=%s CR_TRIGGER_SUPPRESS=%s HANDOVER_DIR=%s\n' \
+    # HIMMEL-3435: HIMMEL_CONSOLE_NAME folded in the same way - proves the
+    # three-source resolution above ran in THIS wrapper's own process, and
+    # stays <unset> when no source yielded a well-formed name.
+    printf 'headed-arm-leg: env IMPL_GUARD_OK=%s INLINE_IMPL_OK=%s HIMMEL_CONSOLE_LEG=%s HEADED_ARM_REPO=%s scrub=%s CONSOLE_CONTEXT=%s CR_TRIGGER_SUPPRESS=%s HANDOVER_DIR=%s HIMMEL_CONSOLE_NAME=%s\n' \
         "${IMPL_GUARD_OK:-<unset>}" "${INLINE_IMPL_OK:-<unset>}" "$HIMMEL_CONSOLE_LEG" "${HEADED_ARM_REPO:-<derived by headed-arm.sh>}" \
-        "$LEG_ENV_SCRUB" "${CONSOLE_CONTEXT:-<unset>}" "${CR_TRIGGER_SUPPRESS:-<unset>}" "${HANDOVER_DIR:-<unset>}"
+        "$LEG_ENV_SCRUB" "${CONSOLE_CONTEXT:-<unset>}" "${CR_TRIGGER_SUPPRESS:-<unset>}" "${HANDOVER_DIR:-<unset>}" "${HIMMEL_CONSOLE_NAME:-<unset>}"
     # Printed ONLY under --relay: with the flag omitted this line is absent and
     # the dry-run report stays byte-identical to today's, same guarantee shape
     # as the --profile line below.
@@ -640,6 +742,11 @@ if [ "$DRY_RUN" -eq 1 ]; then
     # absent for Sonnet/Haiku, matching the argv-report guarantee pattern above.
     if [ -n "$TIER_GATE" ]; then
         printf 'headed-arm-leg: tier=%s tier-category=%s tier-reason=%s\n' "$TIER_GATE" "$TIER_CATEGORY" "$TIER_REASON"
+    fi
+    # Printed ONLY under --headless, same guarantee shape as --relay above.
+    if [ "$HEADLESS" -eq 1 ]; then
+        printf 'headed-arm-leg: headless=1 launch=%s --bg --permission-mode auto (env merged into %s at launch)\n' \
+            "$HEADED_ARM_LAUNCHER" "$PROFILE_SETTINGS"
     fi
     exit 0
 fi
@@ -788,6 +895,12 @@ if [ -n "$_ll_cache" ]; then
             >> "$_ll_cache/launch-logs/$NAME.log" ) 2>/dev/null; then
         echo "$(date +%F_%T) headed-arm-leg: WARN launch record NOT written under $_ll_cache/launch-logs (the cost cohort cannot see this launch)" >> "$LOG"
     fi
+fi
+
+# HIMMEL-3403: the pid and session id of a headless leg exist only after
+# headed-arm.sh launches it, so it appends them to the same durable record.
+if [ "$HEADLESS" -eq 1 ] && [ -n "$_ll_cache" ]; then
+    export HEADED_ARM_LAUNCH_RECORD="$_ll_cache/launch-logs/$NAME.log"
 fi
 
 exec "$HEADED_ARM" "$NAME" "$DOC" "$SIGNAL" "$DEADLINE" "$LOG" "$MODEL" "$CONTEXT"

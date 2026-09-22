@@ -75,16 +75,32 @@ node -e '
     for (const l of lines) { try { rows.push(JSON.parse(l)); } catch (err) { malformed++; } }
     if (malformed) process.stderr.write("handover-bridge: "+malformed+" unparseable ledger row(s) skipped - finding set may be incomplete\n");
 
-    // Same amendsByKey / effective() shape as ledger-append.sh (405-413) and
-    // clear-cr-marker.sh: collect amends FIRST, keyed by the ORIGINAL
-    // (target_head, finding_id, artifact, perspective), later amends
-    // shallow-merged over earlier ones for the same key.
+    // Same amendsByKey / amendSetFor shape as ledger-append.sh and
+    // clear-cr-marker.sh (HIMMEL-2405): collect amends FIRST, keyed by
+    // (branch, target_head, finding_id, artifact, perspective), later amends
+    // shallow-merged over earlier ones for the same key. Two branches can sit
+    // at the same head (HIMMEL-1175) and finding ids are minted in
+    // per-producer stream order, not globally unique, so an amend recorded
+    // for one branch must never leak into another branchs handover item. A
+    // legacy row with no branch field (written before branches were stamped)
+    // still applies to any branch, via the same "" bucket every branch
+    // checks; a branch-specific amend merges last and wins field conflicts.
     const amendsByKey=new Map();
     for (const a of rows) {
       if (a.kind!=="amend" || !a.set || typeof a.set!=="object") continue;
-      const k=[a.target_head,a.finding_id,a.artifact||"diff",a.perspective||"off"].join(SEP);
+      const k=[a.branch||"",a.target_head,a.finding_id,a.artifact||"diff",a.perspective||"off"].join(SEP);
       amendsByKey.set(k, Object.assign({}, amendsByKey.get(k)||{}, a.set));
     }
+    // AE round-2: keyed on the branch stamped on the FINDING ROW itself (the
+    // caller passes o.branch below), not e.BRANCH (the branch this bridge
+    // run is for) - same fix as clear-cr-marker.sh amendSetFor. An
+    // escalation amend recorded FOR the rows own branch must apply here
+    // regardless of which branch this particular bridge invocation targets.
+    const amendSetFor=(branch,head,id,artifact,perspective)=>{
+      const legacy=amendsByKey.get(["",head,id,artifact,perspective].join(SEP));
+      const scoped=amendsByKey.get([branch||"",head,id,artifact,perspective].join(SEP));
+      return (legacy||scoped) ? Object.assign({},legacy||{},scoped||{}) : null;
+    };
 
     // Reviewer text already has \n/\r flattened by ledger-append.sh on write;
     // this is defence in depth for a legacy row or an amend.set.text that
@@ -98,8 +114,8 @@ node -e '
     const findingsByKey=new Map();
     for (const o of rows) {
       if (o.kind!=="finding") continue;
-      const origKey=[o.head,o.finding_id,o.artifact||"diff",o.perspective||"off"].join(SEP);
-      const eff = amendsByKey.has(origKey) ? Object.assign({}, o, amendsByKey.get(origKey)) : o;
+      const amendSet=amendSetFor(o.branch||"",o.head,o.finding_id,o.artifact||"diff",o.perspective||"off");
+      const eff = amendSet ? Object.assign({}, o, amendSet) : o;
       // Select on (head, branch), never head alone (CR round 1, codex-2).
       // --branch was required but unused, which is exactly the hole
       // HIMMEL-1175 names on the other side: two branches can sit at the SAME

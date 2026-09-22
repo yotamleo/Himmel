@@ -64,10 +64,33 @@ check "$out" "rc=2" "T7 second hop refuses"
 err=$(cd "$anchor" && env -u CR_ANCHOR_HANDED_OFF HIMMEL_REPO="$anchor" bash scripts/cr/clear-cr-marker.sh 2>&1 >/dev/null)
 check "$(run "$anchor" "$anchor" scripts/cr/clear-cr-marker.sh | tr '\n' ' ')" "RAN:anchor rc=0 " "T8 anchor runs itself"
 check "$err" "" "T8 no hand-off message in the anchor"
-# 9. Arguments survive the hand-off.
-printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\necho "ARGS:$*"\n' "$SOURCE_LINE" > "$anchor/scripts/cr/known-findings.sh"
+# 9. Arguments survive the hand-off. The stub reports argc plus each arg
+# pipe-delimited (not "$*", which would make one spaced argument ("a b")
+# indistinguishable from two ("a" "b") — see the T9c RED control below).
+printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\n' "$SOURCE_LINE" > "$anchor/scripts/cr/known-findings.sh"
+printf '%s\n' 'printf '\''%s|'\'' "$#" "$@"' >> "$anchor/scripts/cr/known-findings.sh"
 printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\necho "LOCAL"\n' "$SOURCE_LINE" > "$wt/scripts/cr/known-findings.sh"
-check "$(cd "$wt" && env -u CR_ANCHOR_HANDED_OFF HIMMEL_REPO="$anchor" bash scripts/cr/known-findings.sh --diff 'a b' 2>/dev/null)" "ARGS:--diff a b" "T9 args forwarded"
+check "$(cd "$wt" && env -u CR_ANCHOR_HANDED_OFF HIMMEL_REPO="$anchor" bash scripts/cr/known-findings.sh --diff 'a b' 2>/dev/null)" "2|--diff|a b|" "T9 args forwarded (argc + pipe-delimited, distinguishes 1 spaced arg from 2)"
+
+# 9c. RED control: a scratch copy of the hand-off whose exec line re-splits
+# with an unquoted $* instead of "$@" must FAIL the strengthened T9 above -
+# proves the check actually catches that regression class. Never touches the
+# real scripts/cr/anchor-handoff.sh; the mutation lives only in $tmp.
+red="$tmp/red"
+mkdir -p "$red/scripts/cr"
+sed 's/"\$@"/$*/' "$DIR/anchor-handoff.sh" > "$red/scripts/cr/anchor-handoff.sh"
+# shellcheck disable=SC2016  # the literal line to look for, not an expansion
+if grep -qF 'exec bash "$_ah_anchor/scripts/cr/$_ah_name" "$@"' "$red/scripts/cr/anchor-handoff.sh"; then
+    echo "FAIL: T9c setup — mutant exec line unchanged, control proves nothing" >&2
+    fail=1
+fi
+printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\necho "LOCAL"\n' "$SOURCE_LINE" > "$red/scripts/cr/known-findings.sh"
+red_out="$(cd "$red" && env -u CR_ANCHOR_HANDED_OFF HIMMEL_REPO="$anchor" bash scripts/cr/known-findings.sh --diff 'a b' 2>/dev/null)"
+red_rc=$?
+# Assert the SPECIFIC unquoted-$* re-split shape (exit 0, argc 3: --diff a b),
+# not merely "not the correct value" — a setup/exec failure would also be
+# not-the-correct-value (e.g. empty output) and must not pass as evidence.
+check "$red_rc:$red_out" "0:3|--diff|a|b|" "T9c RED control catches the unquoted \$* re-split"
 
 # 9b. A tree whose helper is missing fails closed rather than running the local copy.
 rm -f "$wt/scripts/cr/anchor-handoff.sh"

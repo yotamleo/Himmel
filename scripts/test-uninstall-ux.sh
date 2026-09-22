@@ -655,6 +655,17 @@ else fail "DOC install.md does not document --purge-state"; fi
 if grep -Eq 'uninstall --dry-run' "$ROOT/README.md"; then pass "DOC README links the dry-run uninstall"
 else fail "DOC README does not mention uninstall --dry-run"; fi
 
+# HIMMEL-3415: an unset or empty $HOME is refused (rc=3) before anything else,
+# dry-run included — every {HOME} target would otherwise be root-relative.
+# Kept here, not in test-uninstall-real-home-runtime.sh: this suite never lifts
+# the wet-run fence, and a file that drops HOME may not (the static caller guard).
+out=$(env -u HOME bash "$CLI" --dry-run </dev/null 2>&1); rc=$?
+assert_rc "HOME unset is refused" 3 "$rc"
+assert_has "HOME unset names the check" "real-home check (HOME-unset)" "$out"
+out=$(env HOME= bash "$CLI" --dry-run </dev/null 2>&1); rc=$?
+assert_rc "HOME empty is refused" 3 "$rc"
+assert_has "HOME empty names the check" "real-home check (HOME-unset)" "$out"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then echo "test-uninstall-ux: all passed"; exit 0; fi
 echo "test-uninstall-ux: $FAILED failed"

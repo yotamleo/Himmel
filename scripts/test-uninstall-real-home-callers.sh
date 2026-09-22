@@ -49,8 +49,9 @@ join_continued() { sed -e ':a' -e '/\\$/N' -e 's/\\\n//' -e 'ta' "$1"; }
 # home_is_scratch <file> -- succeed when EVERY assignment to HOME in the file (at least
 # one) is one of exactly: "$v", $v, "${v}", ${v}, "$v/<literal path>" (no `..`), or a
 # literal $(mktemp -d [template]), quoted or not; and the file never drops HOME
-# (`unset HOME`, `env -u HOME`, `env -i`: a child without HOME falls back to the passwd
-# home). v is scratch when EVERY assignment to it is one of the same shapes, a mktemp one
+# (`unset HOME`, `export -n HOME`, `env -u HOME`, `env -i`, `exec -c`, quoted or not:
+# a child without HOME falls back to the passwd home).
+# v is scratch when EVERY assignment to it is one of the same shapes, a mktemp one
 # followed by `|| exit` / `|| return` / `|| { ...; exit N; }` -- an unguarded failed
 # mktemp leaves v empty, and "$v/home/<user>" is then the real HOME. The template is one
 # word: a literal, or a quoted literal after at most one `$x` / `${x}` / `${x:-/tmp}`
@@ -75,10 +76,10 @@ home_is_scratch() {
   # the brace form must END in an unconditional exit/return: every command before it is
   # `;`-separated with no `&&` / `||` / `&` / `|` bar a `>&N` redirect (`{ false && exit 1; }` falls through).
   local guard_re='^[[:space:]]*\|\|[[:space:]]*((exit|return)([[:space:]]+[0-9]+)?[[:space:]]*([;)#]|$)|\{(([^};&|]|>&[0-9])*;)*[[:space:]]*(exit|return)([[:space:]]+[0-9]+)?[[:space:]]*;[[:space:]]*\})'
-  local drop_re='(^|[^A-Za-z0-9_])(unset([[:space:]]+-[A-Za-z]+)*([[:space:]]+[A-Za-z_][A-Za-z0-9_]*)*[[:space:]]+HOME|env[[:space:]].*(-u[[:space:]]*|--unset=)HOME)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_])env([[:space:]]+-[A-Za-z]*i[A-Za-z]*|[[:space:]]+--ignore-environment|[[:space:]]+-)([[:space:]]|$)'
+  local drop_re='(^|[^A-Za-z0-9_])(unset([[:space:]]+-[A-Za-z]+)*([[:space:]]+[A-Za-z_][A-Za-z0-9_]*)*[[:space:]]+HOME|export[[:space:]]+-[A-Za-z]*n[A-Za-z]*([[:space:]]+[A-Za-z_][A-Za-z0-9_]*)*[[:space:]]+HOME|env[[:space:]].*(-u[[:space:]]*|--unset=)HOME)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_])(env([[:space:]]+-[A-Za-z]*i[A-Za-z]*|[[:space:]]+--ignore-environment|[[:space:]]+-)|exec[[:space:]]+-[A-Za-z]*c[A-Za-z]*)([[:space:]]|$)'
   local scratch=" " names=() vals=()
   while IFS= read -r line || [ -n "$line" ]; do
-    [[ "$line" =~ $drop_re ]] && return 1
+    [[ "$line" =~ $drop_re || "${line//[\"\']/}" =~ $drop_re ]] && return 1   # quotes deleted too: `unset "HOME"`
     rest="$line"
     while [[ "$rest" =~ $assign_re ]]; do
       names+=("${BASH_REMATCH[2]}"); rest="${BASH_REMATCH[5]}"
@@ -341,6 +342,12 @@ pin h-second-home.sh 'td=$(mktemp -d) || exit 1' 'HOME="$td" true' 'HOME=~ @V@=1
 pin h-unset-home.sh 'td=$(mktemp -d) || exit 1' 'HOME="$td" true' 'unset HOME' '@V@=1 bash uninstall.sh --yes'
 pin h-env-i.sh 'td=$(mktemp -d) || exit 1' 'HOME="$td" true' 'env -i PATH=/usr/bin @V@=1 bash uninstall.sh --yes'
 pin h-env-u.sh 'td=$(mktemp -d) || exit 1' 'HOME="$td" true' 'env -u HOME @V@=1 bash uninstall.sh --yes'
+# HIMMEL-3415: the same drops, quoted or spelled another way.
+pin h-unset-quoted.sh 'td=$(mktemp -d) || exit 1' 'HOME="$td" true' 'unset "HOME"' '@V@=1 bash uninstall.sh --yes'
+pin h-export-n.sh 'td=$(mktemp -d) || exit 1' 'HOME="$td" true' 'export -n HOME' '@V@=1 bash uninstall.sh --yes'
+pin h-env-i-quoted.sh 'td=$(mktemp -d) || exit 1' 'HOME="$td" true' 'env "-i" PATH=/usr/bin @V@=1 bash uninstall.sh --yes'
+pin h-env-u-quoted.sh 'td=$(mktemp -d) || exit 1' 'HOME="$td" true' "env -u 'HOME' @V@=1 bash uninstall.sh --yes"
+pin h-exec-c.sh 'td=$(mktemp -d) || exit 1' 'HOME="$td" true' 'exec -c env @V@=1 bash uninstall.sh --yes'
 pin h-suffix-var.sh 'td=$(mktemp -d) || exit 1' 'HOME="$td/$1" @V@=1 bash uninstall.sh --yes'
 pin h-subst-template.sh 'td=$(mktemp -d "$(printf %s "$HOME")") || exit 1' 'HOME="$td" @V@=1 bash uninstall.sh --yes'
 pin h-mktemp-then.sh 'HOME="$(mktemp -d; printf %s "$HOME")" @V@=1 bash uninstall.sh --yes'

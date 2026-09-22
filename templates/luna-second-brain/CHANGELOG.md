@@ -8,6 +8,24 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.52] — 2026-09-22
+
+### Fixed
+- `test-upgrade.sh`'s T69 regression row only checked for a `timeout`
+  binary before bounding its run; on macOS with Homebrew coreutils the GNU
+  binary is `gtimeout`, so the row SKIPped there even when a bound was
+  available. It now resolves `timeout` or `gtimeout` inline, SKIPping only
+  when neither is on PATH. (HIMMEL-3439)
+
+## [0.4.51] — 2026-09-22
+
+### Added
+- `test-upgrade.sh` regression rows for the two bugs HIMMEL-3406's codex
+  rounds 1-2 caught and fixed: a trailing `--keep` with no value hanging the
+  arg parser instead of erroring (T69), and `content_equiv()` misreading a
+  genuine standalone trailing `\r` as an EOL-only difference (T70).
+  (HIMMEL-3439)
+
 ## [0.4.50] — 2026-09-22
 
 ### Fixed

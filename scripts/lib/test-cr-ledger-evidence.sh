@@ -137,7 +137,7 @@ CR_LEDGER="$TMP/empty.jsonl" chk d12b-env-does-not-hide-real-row 0 "$H" "$ID" "$
 
 # --- no silent inheritance: --set head= must not re-key a cr-od row -----------
 fresh; write_row deferred HIMMEL-9001 "pre-existing, tracked separately"
-CR_LEDGER="$LEDGER" bash "$APPEND" amend --head "$H" --id "$ID" --set "head=$H2" \
+CR_LEDGER="$LEDGER" bash "$APPEND" amend --branch feat/x --head "$H" --id "$ID" --set "head=$H2" \
     --reason "re-key attempt" >/dev/null 2>"$TMP/amend.err" \
     || { echo "FATAL: amend --set head= refused: $(cat "$TMP/amend.err")"; exit 1; }
 chk d13-amend-rekey-does-not-clear-new-head      1 "$H2" "$ID" "$FILE" "$LINE"
@@ -145,7 +145,7 @@ chk d13b-amend-rekey-keeps-original-head-bound   0 "$H"  "$ID" "$FILE" "$LINE"
 
 # --- amends other than head still apply (the append-only correction path) -----
 fresh; write_row deferred HIMMEL-9001 "pre-existing, tracked separately"
-CR_LEDGER="$LEDGER" bash "$APPEND" amend --head "$H" --id "$ID" --set verdict=agreed \
+CR_LEDGER="$LEDGER" bash "$APPEND" amend --branch feat/x --head "$H" --id "$ID" --set verdict=agreed \
     --reason "re-adjudicated: not deferrable" >/dev/null 2>"$TMP/amend.err" \
     || { echo "FATAL: amend --set verdict= refused: $(cat "$TMP/amend.err")"; exit 1; }
 chk d14-amended-verdict-applies-and-refuses       1 "$H" "$ID" "$FILE" "$LINE"

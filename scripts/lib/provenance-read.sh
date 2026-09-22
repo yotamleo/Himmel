@@ -35,6 +35,15 @@ if [ -n "${_PROV_READ_LIB_LOADED:-}" ]; then return 0 2>/dev/null || exit 0; fi
 _PROV_READ_LIB_LOADED=1
 
 _PROVREAD_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# _provread_guarded <cmd> [args] -- <path>... -- every destructive site here
+# (a removal, or an mv over a target) goes through uninstall.sh's `guarded`
+# when the sourcing script defines it (HIMMEL-3415: it re-judges each path
+# against the real home at the moment of use and exits rc=3 on refusal);
+# otherwise the command just runs. Temp-file cleanups stay bare.
+_provread_guarded() {
+    if declare -F guarded >/dev/null 2>&1; then guarded "$@"; else "$@"; fi
+}
 # shellcheck source=scripts/lib/provenance.sh
 . "$_PROVREAD_LIB_DIR/provenance.sh"
 
@@ -432,7 +441,7 @@ _provread_atomic_write() {
     fi
     mode=$(_prov_mode "$target" 2>/dev/null) || mode=""
     [ -n "$mode" ] && chmod "$mode" "$tmp" 2>/dev/null
-    mv -f "$tmp" "$target"
+    _provread_guarded mv -f -- "$tmp" "$target"
 }
 
 # prov_read_apply <unit-json> <remove|restore> [--dry-run] -- performs the
@@ -459,7 +468,7 @@ prov_read_apply() {
     case "$kind" in
         file)
             if [ "$action" = "remove" ]; then
-                if [ -f "$path" ] && [ ! -L "$path" ]; then rm -f -- "$path" || { _provread_err "cannot remove $path"; return 1; }; fi
+                if [ -f "$path" ] && [ ! -L "$path" ]; then _provread_guarded rm -f -- "$path" || { _provread_err "cannot remove $path"; return 1; }; fi
                 return 0
             fi
             local backup mode eff_sha
@@ -479,7 +488,7 @@ prov_read_apply() {
                 return 1
             fi
             [ -n "$mode" ] && chmod "$mode" "$tmp" 2>/dev/null
-            mv -f "$tmp" "$path" || { _provread_err "cannot restore $path"; return 1; }
+            _provread_guarded mv -f -- "$tmp" "$path" || { _provread_err "cannot restore $path"; return 1; }
             return 0
             ;;
         json-key)
@@ -691,10 +700,11 @@ prov_read_prune_backups() {
         case "$done_list" in *"
 $f
 "*) is_done=1 ;; esac
-        [ "$is_done" = 1 ] && rm -f -- "$f"
+        [ "$is_done" = 1 ] && _provread_guarded rm -f -- "$f"
     done <<EOF
 $(find "$bdir" -type f 2>/dev/null)
 EOF
+    _provread_guarded : -- "$bdir"
     find "$bdir" -type d -empty -delete 2>/dev/null
     return 0
 }
