@@ -473,14 +473,16 @@ function verifyStatusLineCommand(command, ctx) {
 // A project path can arrive spelled two ways for the same install: with or
 // without a trailing separator, and (installed_plugins.json can be written
 // by a Windows Claude Code) with backslashes instead of forward slashes.
-// Separator-normalize ONLY when the path already looks Windows-shaped (a
-// drive letter, or any backslash) — swapping separators unconditionally
-// would mangle a POSIX path that legitimately contains a literal backslash.
+// Separator-normalize ONLY when the path already looks Windows-shaped: a
+// drive letter, or a backslash with NO forward slash at all (a mixed path
+// like '/projects/a\b' is a POSIX path with a literal backslash byte, not a
+// Windows path — swapping its separator would collapse it onto a different
+// project's directory and defeat the scope check the panel flagged this on).
 // path.resolve() then collapses '.'/'..' segments and duplicate separators;
 // the trailing-separator trim below covers path.resolve()'s own edge case of
 // leaving a bare drive-root ('C:/') separator in place.
 function isWindowsShapedPath(p) {
-  return typeof p === 'string' && (/^[a-zA-Z]:/.test(p) || p.indexOf('\\') !== -1);
+  return typeof p === 'string' && (/^[a-zA-Z]:/.test(p) || (p.indexOf('\\') !== -1 && p.indexOf('/') === -1));
 }
 
 function normalizeProjectPath(p) {

@@ -812,7 +812,21 @@ write_sk4_ledger "$sk4_home_f" "$sk4_target_w" "$sk4_cache_foo_w"
 outSK4f=$(run_sk4 "$sk4_home_f" "$sk4_target_w" '{"enabledPlugins":{"foo@bar":true,"baz@qux":true}}')
 echo "$outSK4f" | jq -e '.actual == "degraded"' >/dev/null \
   || fail "verifyPluginSet: an EXTRA plugin that is not installed must still degrade (got: $outSK4f)"
-echo "ok: settings-key verifyPluginSet (claude-plugins-pluginSet) — trailing-separator + backslash projectPath normalization, directory-only installPath, extra-plugins-are-a-floor"
+
+# (g) RED (panel finding, round 1): a projectPath that mixes a literal
+# backslash with a real forward slash is a POSIX path with a backslash BYTE
+# in a filename, not a Windows path — treating any-backslash as evidence of
+# Windows shape would swap that byte for '/' and collapse a genuinely
+# different directory onto the real target, letting another project's
+# ledger entry satisfy this scope check.
+sk4_target_collision=$("$node_bin" -e "const p=process.argv[1]; const i=p.lastIndexOf('/'); console.log(p.slice(0,i)+'\\\\'+p.slice(i+1));" "$sk4_target_w")
+sk4_home_g="$work/sk4-home-g"
+write_sk4_ledger "$sk4_home_g" "$sk4_target_collision" "$sk4_cache_foo_w"
+outSK4g=$(run_sk4 "$sk4_home_g" "$sk4_target_w")
+echo "$outSK4g" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "verifyPluginSet: a mixed-separator projectPath (has both '/' and a literal '\\') must NOT collapse onto the real target (got: $outSK4g)"
+
+echo "ok: settings-key verifyPluginSet (claude-plugins-pluginSet) — trailing-separator + backslash projectPath normalization, directory-only installPath, extra-plugins-are-a-floor, mixed-separator collision guard"
 
 # ── settings-key: .env ALL-keys-required union (jira-env-keys) ────────────
 # Resolves against repoRoot for BOTH scopes (CLAUDE.md / adopt.sh
