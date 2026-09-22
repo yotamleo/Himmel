@@ -1038,6 +1038,28 @@ narrative, denied `release` as a merge without review. Guards:
   backslash are not accepted.
   Linux-only tested — the cases simulate the spelling; Git Bash itself was not run.
 
+**Third exception — `/pr-check` step 3.6's `impacted-suites.sh` literals
+(HIMMEL-3486):** `bash <path> <40hex>..<40hex>` and
+`bash <path> --check <40hex>..<40hex> <<'IMPACTED_EOF'` followed by zero or
+more `SUITE …` lines and a closing `IMPACTED_EOF` are granted. This required
+gate step used to fall through to the classifier, which sometimes denied it as
+Out-of-Place Publication and so parked the leg. Guards:
+- **The WHOLE command only**, parsed off the raw command. Line 1 has no
+  control character, operator, expansion or glob. The heredoc form needs
+  `--check` and the quoted delimiter. Every body line starts with `SUITE `.
+  The command ends at the first closing `IMPACTED_EOF`, and nothing may follow
+  it. The no-heredoc form is a single line.
+- **The path** is `scripts/cr/impacted-suites.sh` relative to the payload
+  `cwd` (else `$PWD`), or an absolute `…/scripts/cr/impacted-suites.sh`. Either
+  way it must resolve at a worktree root of the `HIMMEL_REPO` checkout.
+- **The bytes are the anchor's** (the HIMMEL-3383 precedent). The file is
+  regular, not a symlink. It hashes unfiltered to the same blob as both the
+  anchor's working-tree copy and `refs/heads/main`'s, and the anchor is on
+  `refs/heads/main`. The script sources nothing, so that one file is every
+  byte it runs. The check happens at match time only (TOCTOU, as in
+  `guard-pr-check-literal.sh`). The docs-audit lane's `origin/main..<head>`
+  range is not accepted.
+
 It fails toward a prompt, never toward approval. Spec:
 `scripts/hooks/test-auto-approve-safe-bash.sh`.
 

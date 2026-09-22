@@ -662,6 +662,8 @@ assert "ctl: is unquoted heredoc delimiter"  PASS "$(is_dec "$IS_W" "$IS_REL --c
 assert "ctl: is <<- heredoc"                 PASS "$(is_dec "$IS_W" "$IS_REL --check $IS_R <<-'IMPACTED_EOF'"$'\n'"$IS_BODY"$'\nIMPACTED_EOF')"
 assert "ctl: is command after the heredoc"   PASS "$(is_dec "$IS_W" "$IS_REL --check $IS_R $IS_HD"$'\n'"$IS_BODY"$'\nIMPACTED_EOF\nrm -rf x')"
 assert "ctl: is early delimiter then command" PASS "$(is_dec "$IS_W" "$IS_REL --check $IS_R $IS_HD"$'\nIMPACTED_EOF\nrm -rf x\nIMPACTED_EOF')"
+assert "ctl: is doubled delimiter, no body"  PASS "$(is_dec "$IS_W" "$IS_REL --check $IS_R $IS_HD"$'\nIMPACTED_EOF\nIMPACTED_EOF')"
+assert "ctl: is doubled delimiter after body" PASS "$(is_dec "$IS_W" "$IS_REL --check $IS_R $IS_HD"$'\n'"$IS_BODY"$'\nIMPACTED_EOF\nIMPACTED_EOF')"
 assert "ctl: is non-SUITE body line"         PASS "$(is_dec "$IS_W" "$IS_REL --check $IS_R $IS_HD"$'\nrm -rf x\nIMPACTED_EOF')"
 assert "ctl: is unterminated heredoc"        PASS "$(is_dec "$IS_W" "$IS_REL --check $IS_R $IS_HD"$'\n'"$IS_BODY")"
 assert "ctl: is two commands on two lines"   PASS "$(is_dec "$IS_W" "$IS_REL $IS_R"$'\n'"rm -rf x")"
