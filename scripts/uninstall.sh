@@ -2382,7 +2382,7 @@ project_is_himmel_checkout() {
 # already gone is only reported. The list comes from the ledger alone — no
 # directory is ever discovered by scanning the disk.
 unwire_recorded_projects() {
-  local _targets _t _dir _id
+  local _targets _t _dir _id _dir_real
   _targets=$(prov_read_units --row project-settings \
     | jq -r 'select(.scope == "project" and (.kind == "json-key" or .kind == "json-elem")) | .path // empty' \
     | grep '/\.claude/settings\.json$' | sort -u || true)
@@ -2395,6 +2395,11 @@ unwire_recorded_projects() {
       echo "  project settings: recorded target already gone: $_t"
       continue
     fi
+    # a recorded dir replaced after recording with a symlink (itself or an
+    # ancestor component) must not silently redirect unwire_settings into an
+    # unrelated directory: resolve it and require the string to match what
+    # was recorded (no bare `realpath` — this file targets bash 3.2/macOS).
+    _dir_real=$(cd -P -- "$_dir" 2>/dev/null && pwd) || _dir_real=""
     _id=0
     project_is_himmel_checkout "$_dir" || _id=$?
     if [ "$_id" -eq 0 ]; then
@@ -2402,7 +2407,7 @@ unwire_recorded_projects() {
     elif [ "$_id" -eq 2 ]; then
       echo "  project settings: cannot resolve checkout identity of $_dir — refusing to unwire" >&2
       fail_step "[6/8] project settings: checkout identity unresolved for $_dir"
-    elif [ -L "$_dir/.claude" ] || [ -L "$_t" ] || [ ! -f "$_t" ]; then
+    elif [ -L "$_dir/.claude" ] || [ -L "$_t" ] || [ ! -f "$_t" ] || [ "$_dir_real" != "$_dir" ]; then
       echo "  project settings: refusing non-regular or symlinked target $_t" >&2
       fail_step "[6/8] project settings: unsafe target $_t"
     else

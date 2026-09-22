@@ -368,6 +368,18 @@ cp "$OTHER/.claude/settings.json" "$CASE_DIR/settings.before"
 run_uninstall --dry-run --yes --keep-telegram-state --skip-plugins --skip-hooks --skip-tasks >/dev/null
 check "C3 target byte-identical" "$(cmp -s "$OTHER/.claude/settings.json" "$CASE_DIR/settings.before" && echo same || echo changed)" "same"
 
+echo "==== C5: a recorded target whose directory itself became a symlink (not just .claude) is refused, left untouched ===="
+new_case c5
+OTHER="$CASE_DIR/other project"
+seed_project "$OTHER"
+mv "$OTHER" "$CASE_DIR/elsewhere-c5"
+ln -s "$CASE_DIR/elsewhere-c5" "$OTHER"
+cp "$CASE_DIR/elsewhere-c5/.claude/settings.json" "$CASE_DIR/settings.before"
+out=$(run_uninstall --yes --keep-telegram-state --skip-plugins --skip-hooks --skip-tasks); rc=$?
+check "C5 nonzero rc" "$([ "$rc" -ne 0 ] && echo nonzero || echo zero)" "nonzero"
+check "C5 symlink destination untouched" "$(cmp -s "$CASE_DIR/elsewhere-c5/.claude/settings.json" "$CASE_DIR/settings.before" && echo same || echo changed)" "same"
+has "C5 refusal names the symlink" "symlinked target" "$out"
+
 # ---- D: env-key removal already on the ledger path (S6) ---------------------
 echo "==== D: CLAUDE_HUD_ALLOW_EXTRA_CMD env key removed on the ledger path ===="
 new_case d
