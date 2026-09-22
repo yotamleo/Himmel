@@ -479,16 +479,23 @@ function verifyStatusLineCommand(command, ctx) {
 // Windows path — swapping its separator would collapse it onto a different
 // project's directory and defeat the scope check the panel flagged this on).
 // path.resolve() then collapses '.'/'..' segments and duplicate separators;
-// the trailing-separator trim below covers path.resolve()'s own edge case of
-// leaving a bare drive-root ('C:/') separator in place.
+// on POSIX it already strips a trailing '/' on its own, so the extra trim
+// below is applied ONLY for the Windows-shaped case, where it covers
+// path.resolve()'s own edge case of leaving a bare drive-root ('C:/')
+// separator in place — applying it unconditionally would also strip a
+// literal trailing backslash BYTE from a non-Windows-shaped path (e.g.
+// '/projects/a\'), collapsing it onto the distinct directory '/projects/a'
+// (panel Suggestion, round 2).
 function isWindowsShapedPath(p) {
   return typeof p === 'string' && (/^[a-zA-Z]:/.test(p) || (p.indexOf('\\') !== -1 && p.indexOf('/') === -1));
 }
 
 function normalizeProjectPath(p) {
   if (typeof p !== 'string') return p;
-  const slashed = isWindowsShapedPath(p) ? p.replace(/\\/g, '/') : p;
-  return path.resolve(slashed).replace(/[\\/]+$/, '');
+  const windowsShaped = isWindowsShapedPath(p);
+  const slashed = windowsShaped ? p.replace(/\\/g, '/') : p;
+  const resolved = path.resolve(slashed);
+  return windowsShaped ? resolved.replace(/\/+$/, '') : resolved;
 }
 
 function sameProjectPath(a, b) {

@@ -813,20 +813,48 @@ outSK4f=$(run_sk4 "$sk4_home_f" "$sk4_target_w" '{"enabledPlugins":{"foo@bar":tr
 echo "$outSK4f" | jq -e '.actual == "degraded"' >/dev/null \
   || fail "verifyPluginSet: an EXTRA plugin that is not installed must still degrade (got: $outSK4f)"
 
-# (g) RED (panel finding, round 1): a projectPath that mixes a literal
-# backslash with a real forward slash is a POSIX path with a backslash BYTE
-# in a filename, not a Windows path — treating any-backslash as evidence of
-# Windows shape would swap that byte for '/' and collapse a genuinely
-# different directory onto the real target, letting another project's
-# ledger entry satisfy this scope check.
-sk4_target_collision=$("$node_bin" -e "const p=process.argv[1]; const i=p.lastIndexOf('/'); console.log(p.slice(0,i)+'\\\\'+p.slice(i+1));" "$sk4_target_w")
-sk4_home_g="$work/sk4-home-g"
-write_sk4_ledger "$sk4_home_g" "$sk4_target_collision" "$sk4_cache_foo_w"
-outSK4g=$(run_sk4 "$sk4_home_g" "$sk4_target_w")
-echo "$outSK4g" | jq -e '.actual == "degraded"' >/dev/null \
-  || fail "verifyPluginSet: a mixed-separator projectPath (has both '/' and a literal '\\') must NOT collapse onto the real target (got: $outSK4g)"
+# (g)+(h) RED (panel findings, round 2): both regressions below assume
+# sk4_target_w is a genuine POSIX path (no drive letter) so that an embedded
+# backslash is unambiguously a literal filename BYTE, not a separator. On a
+# real Windows-native run winpath()/cygpath already hands back a
+# drive-letter-shaped path (e.g. 'C:/Users/...'), where ANY backslash is a
+# valid separator and swapping it changes nothing about the resolved
+# directory -- "present" would then be the correct answer, not "degraded"
+# (panel Important codex-1). Skip both in that case instead of asserting a
+# result that would legitimately be wrong there.
+case "$sk4_target_w" in
+  [A-Za-z]:*)
+    echo "skip: verifyPluginSet mixed-separator/trailing-backslash collision guards (g)+(h) — sk4_target_w ($sk4_target_w) is already drive-letter-shaped; these regressions target a POSIX literal-backslash-byte scenario that cannot occur on a native Windows path"
+    ;;
+  *)
+    # (g) RED (panel finding, round 1): a projectPath that mixes a literal
+    # backslash with a real forward slash is a POSIX path with a backslash
+    # BYTE in a filename, not a Windows path — treating any-backslash as
+    # evidence of Windows shape would swap that byte for '/' and collapse a
+    # genuinely different directory onto the real target, letting another
+    # project's ledger entry satisfy this scope check.
+    sk4_target_collision=$("$node_bin" -e "const p=process.argv[1]; const i=p.lastIndexOf('/'); console.log(p.slice(0,i)+'\\\\'+p.slice(i+1));" "$sk4_target_w")
+    sk4_home_g="$work/sk4-home-g"
+    write_sk4_ledger "$sk4_home_g" "$sk4_target_collision" "$sk4_cache_foo_w"
+    outSK4g=$(run_sk4 "$sk4_home_g" "$sk4_target_w")
+    echo "$outSK4g" | jq -e '.actual == "degraded"' >/dev/null \
+      || fail "verifyPluginSet: a mixed-separator projectPath (has both '/' and a literal '\\') must NOT collapse onto the real target (got: $outSK4g)"
 
-echo "ok: settings-key verifyPluginSet (claude-plugins-pluginSet) — trailing-separator + backslash projectPath normalization, directory-only installPath, extra-plugins-are-a-floor, mixed-separator collision guard"
+    # (h) RED (panel finding, round 2, codex-2): a projectPath with a
+    # literal trailing backslash BYTE (the path also contains forward
+    # slashes, so it is not Windows-shaped) must not collapse onto the same
+    # directory without that trailing byte — the old unconditional
+    # trailing-separator trim stripped it regardless of path shape.
+    sk4_target_trailing_bs=$("$node_bin" -e "console.log(process.argv[1] + '\\\\')" "$sk4_target_w")
+    sk4_home_h="$work/sk4-home-h"
+    write_sk4_ledger "$sk4_home_h" "$sk4_target_trailing_bs" "$sk4_cache_foo_w"
+    outSK4h=$(run_sk4 "$sk4_home_h" "$sk4_target_w")
+    echo "$outSK4h" | jq -e '.actual == "degraded"' >/dev/null \
+      || fail "verifyPluginSet: a projectPath with a literal trailing backslash byte must NOT collapse onto the same target without it (got: $outSK4h)"
+    ;;
+esac
+
+echo "ok: settings-key verifyPluginSet (claude-plugins-pluginSet) — trailing-separator + backslash projectPath normalization, directory-only installPath, extra-plugins-are-a-floor, mixed-separator + trailing-backslash collision guards"
 
 # ── settings-key: .env ALL-keys-required union (jira-env-keys) ────────────
 # Resolves against repoRoot for BOTH scopes (CLAUDE.md / adopt.sh
