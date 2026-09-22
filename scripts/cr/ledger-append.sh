@@ -838,12 +838,24 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
     // branch still wins over any "" candidates present. No candidate at all
     // -> fall back to the caller's checkout branch, refusing only if that is
     // also empty (detached HEAD).
+    // HIMMEL-3466: a re-key counts only while it is the finding's CURRENT
+    // effective head, resolved under the finding row's own branch (the scope
+    // the readers use) - scanning every amend that ever set head=--head also
+    // counted stale intermediate re-keys (A -> X -> Y still read as "at X").
+    const branches=[...new Set(findings.filter(o=>keyForHead(o,e.HEAD_)
+      ||keyForHead(effective(o,o.branch||""),e.HEAD_)).map(o=>o.branch||""))];
+    // HIMMEL-3467: an explicit --branch no matching finding row carries writes
+    // an amend no reader retrieves (they key on the row's own branch) - a
+    // silent no-op disposition. Refuse before writing.
+    if(e.BRANCH!==""&&branches.length&&!branches.includes(e.BRANCH)){
+      const named=branches.map(b=>b===""?"(none - a branch-less legacy row)":b);
+      process.stderr.write("ledger-append.sh: amend --branch "+e.BRANCH+" does not match finding "+e.ID
+        +" at head "+e.HEAD_+", which is recorded on branch(es): "+named.join(", ")
+        +" - an amend stamped with another branch is never read back. NOTHING was written.\n"
+        +"  Pass the finding's own branch, or omit --branch to inherit it (HIMMEL-3467).\n");
+      process.exit(3);
+    }
     if(e.BRANCH===""){
-      const rawMatches=findings.filter(o=>keyForHead(o,e.HEAD_));
-      const amendHeadMatches=parsed.filter(a=>a.kind==="amend"&&a.finding_id===e.ID
-        &&(a.artifact||"diff")===e.ARTIFACT&&(a.perspective||"off")===e.PERSPECTIVE
-        &&a.set&&typeof a.set.head==="string"&&headsMatch(a.set.head,e.HEAD_));
-      const branches=[...new Set([...rawMatches.map(o=>o.branch||""),...amendHeadMatches.map(a=>a.branch||"")])];
       const realBranches=branches.filter(b=>b!=="");
       if(realBranches.length>1){
         process.stderr.write("ledger-append.sh: amend --head "+e.HEAD_+" for "+e.ID

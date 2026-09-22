@@ -496,11 +496,31 @@ NCB="$tmp/no-match-current-branch.jsonl"; : > "$NCB"
 check "amend with no matching row falls back to caller branch then refuses with no target (not a detached-HEAD refusal)" "$?" "3"
 check "the no-target refusal (not detached-HEAD) confirms the caller-branch fallback ran" "$(grep -c 'detached HEAD' "$tmp/no-match-cb.err")" "0"
 
-# Control: an explicit --branch is never overridden by the checkout default.
+# HIMMEL-3467: an explicit --branch that differs from the matching finding
+# row's own branch used to write an amend no reader ever retrieves (they key
+# on the finding row's branch) - a silent no-op disposition. It refuses now,
+# before writing, so it can never poison a later lookup either.
 BR="$tmp/branch-inherit.jsonl"; : > "$BR"
 CR_LEDGER="$BR" bash "$LA" finding --branch origin-branch --head BH1 --model m --id find-br-1 --severity imp --file f --line 3 --verdict agreed
-CR_LEDGER="$BR" bash "$LA" amend --branch explicit-branch --head BH1 --id find-br-1 --set severity=sug --reason "explicit branch must win"
-check "amend with an explicit --branch keeps it (never overridden)" "$(L="$BR" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="amend");console.log(o.branch)')" "explicit-branch"
+CR_LEDGER="$BR" bash "$LA" amend --branch explicit-branch --head BH1 --id find-br-1 --set severity=sug --reason "a mismatched branch" 2>"$tmp/br-mismatch.err"
+check "amend with an explicit --branch mismatching the finding's branch refuses (HIMMEL-3467)" "$?" "3"
+check "  ...the refusal names the finding's own branch" "$(grep -c 'origin-branch' "$tmp/br-mismatch.err")" "1"
+check "  ...and wrote nothing" "$(wc -l < "$BR" | tr -d ' ')" "1"
+CR_LEDGER="$BR" bash "$LA" amend --branch explicit-branch --head BH1 --id find-br-1 --set head=abcdef12 --reason "a mismatched branch re-key" 2>"$tmp/br-mismatch-rekey.err"
+check "a mismatched --branch that also re-keys (--set head=) refuses too (HIMMEL-3467)" "$?" "3"
+check "  ...and wrote nothing" "$(wc -l < "$BR" | tr -d ' ')" "1"
+# Control: an explicit --branch that matches is kept, never overridden by the
+# checkout default.
+(cd "$CB" && CR_LEDGER="$BR" bash "$LA" amend --branch origin-branch --head BH1 --id find-br-1 --set severity=sug --reason "explicit matching branch")
+check "amend with an explicit matching --branch succeeds" "$?" "0"
+check "  ...and keeps it (never overridden by the checkout)" "$(L="$BR" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="amend");console.log(o.branch)')" "origin-branch"
+# A branch-less legacy finding: readers look its amends up in the "" bucket,
+# so any explicit real branch is unreachable - refuse and say to omit it.
+BRL="$tmp/branch-mismatch-legacy.jsonl"; : > "$BRL"
+CR_LEDGER="$BRL" bash "$LA" finding --head BLH1 --model m --id find-brl-1 --severity imp --file f --line 3 --verdict agreed
+CR_LEDGER="$BRL" bash "$LA" amend --branch some-branch --head BLH1 --id find-brl-1 --set severity=sug --reason x 2>"$tmp/brl.err"
+check "an explicit --branch on a branch-less legacy finding refuses (HIMMEL-3467)" "$?" "3"
+check "  ...and tells the caller to omit --branch" "$(grep -c 'omit --branch' "$tmp/brl.err")" "1"
 
 # Positive (revised per HIMMEL-2405 AE round-2 ruling): the caller's cwd is
 # NOT on a branch (detached HEAD) and no --branch was given, but there IS a
@@ -539,6 +559,20 @@ CR_LEDGER="$RKB" bash "$LA" amend --branch origin-branch --head RKH1 --id find-r
 (cd "$CB" && CR_LEDGER="$RKB" bash "$LA" amend --head deadbeef --id find-rk-infer-1 --set severity=sug --reason "follow-up on the re-keyed finding, no --branch, from a foreign checkout")
 check "follow-up amend on a re-keyed head with no --branch succeeds (HIMMEL-2405 codex-1)" "$?" "0"
 check "the follow-up amend infers the ORIGINAL owning branch, not the caller's checkout" "$(L="$RKB" node -e 'const rs=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse);console.log(rs.filter(r=>r.kind==="amend").pop().branch)')" "origin-branch"
+
+# HIMMEL-3466: branch inference counted EVERY amend that ever re-keyed the id
+# onto --head, not only a finding's CURRENT effective head. branch-p's finding
+# moves A -> aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1 -> bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2; branch-q has its own finding at aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1.
+# An amend --head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1 with no --branch must resolve to branch-q alone,
+# not refuse on branch-p's stale intermediate re-key.
+RK2="$tmp/rekeyed-twice.jsonl"; : > "$RK2"
+CR_LEDGER="$RK2" bash "$LA" finding --branch branch-p --head RK2A --model m --id find-rk2-1 --severity imp --file f --line 3 --verdict agreed
+CR_LEDGER="$RK2" bash "$LA" amend --branch branch-p --head RK2A --id find-rk2-1 --set head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1 --reason "re-key 1"
+CR_LEDGER="$RK2" bash "$LA" amend --branch branch-p --head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1 --id find-rk2-1 --set head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2 --reason "re-key 2"
+CR_LEDGER="$RK2" bash "$LA" finding --branch branch-q --head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1 --model m --id find-rk2-1 --severity imp --file f --line 3 --verdict agreed
+(cd "$CB" && CR_LEDGER="$RK2" bash "$LA" amend --head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1 --id find-rk2-1 --set severity=sug --reason "no --branch, foreign checkout") 2>"$tmp/rk2.err"
+check "amend on a stale intermediate re-key head does not refuse on the stale candidate (HIMMEL-3466)" "$?" "0"
+check "  ...it resolves to the finding currently at that head" "$(L="$RK2" node -e 'const rs=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse);console.log(rs.filter(r=>r.kind==="amend").pop().branch)')" "branch-q"
 
 # HIMMEL-2405 panel round 3 (codex-1): a unique matching finding row with an
 # EMPTY (legacy/branch-less) branch must resolve e.BRANCH="" (inherit the
@@ -606,7 +640,10 @@ check "amend refuses to set a non-amendable key" "$?" "2"
 # and wrongly refuse (rc=3) a re-append that only ever changed the verdict.
 XBR="$tmp/cross-branch-amend.jsonl"
 CR_LEDGER="$XBR" bash "$LA" finding --branch branch-a --head XH1 --model codex --id codex-9 --severity crit --file f --line 3 --verdict ""
-CR_LEDGER="$XBR" bash "$LA" amend --branch branch-b --head XH1 --id codex-9 --set severity=sug --reason "branch B's own adjudication, must not leak into branch A"
+# Injected raw: since HIMMEL-3467 the amend verb refuses a --branch that no
+# matching finding row carries, so this pre-existing foreign-branch record can
+# only come from a ledger written before that refusal.
+printf '{"kind":"amend","ts":"2020-01-01T00:00:00Z","branch":"branch-b","target_head":"XH1","finding_id":"codex-9","artifact":"diff","perspective":"off","set":{"severity":"sug"},"reason":"branch B own adjudication, must not leak into branch A"}\n' >> "$XBR"
 CR_LEDGER="$XBR" bash "$LA" finding --branch branch-a --head XH1 --model codex --id codex-9 --severity crit --file f --line 3 --verdict agreed
 check "re-append on branch A ignores branch B's amend and appends a verdict-only amend (not a content-mismatch refusal)" "$?" "0"
 check "re-append on branch A wrote a NEW amend row (not a duplicate finding)" "$(L="$XBR" node -e 'const rs=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse);console.log(rs.filter(r=>r.kind==="finding").length+","+rs.filter(r=>r.kind==="amend").length)')" "1,2"
