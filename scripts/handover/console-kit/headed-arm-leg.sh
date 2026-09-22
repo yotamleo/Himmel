@@ -54,12 +54,25 @@
 # it at a fixture without touching PATH. HEADED_ARM_LEG_PREFLIGHT overrides
 # the scripts/lib/bank-preflight.sh path the fleet-size cap below calls
 # (default: ../../lib/bank-preflight.sh next to this script), same reason.
+# HEADED_ARM_UNAME overrides the platform leg_propagate_env's whitespace
+# refusal branches on (default: real `uname -s`) - the same seam name and
+# idiom headed-arm.sh itself defines and its own suite already overrides
+# with HEADED_ARM_UNAME=Linux/Darwin; resolved again HERE because this
+# wrapper is a separate process that must settle that decision before it
+# ever execs into headed-arm.sh.
 #
 # Exit 10 (HIMMEL-2765): the fleet-size cap refused the launch - see the
 # preflight call below. Exit 11 (HIMMEL-2782 codex-1): the $LANE bank is
 # exhausted (SKIPPED-BANK) - same preflight call, distinct refusal reason.
-# Both are distinct from headed-arm.sh's own 0-9 exit range, since this
-# wrapper never reaches headed-arm.sh in either case.
+# Exit 12 (HIMMEL-2534): on macOS, leg_propagate_env refused a leg-process
+# env value that contains whitespace - it cannot round-trip through
+# HEADED_ARM_LAUNCHER_ENV's whitespace-split token list, and macOS has no
+# other channel for it (a plain export never reaches an `open -a` leg there).
+# On any other platform, plain-export inheritance already carries such a
+# value, so leg_propagate_env leaves it there instead of refusing - see its
+# own doc comment below. All three exit codes are distinct from
+# headed-arm.sh's own 0-9 exit range, since this wrapper never reaches
+# headed-arm.sh in any of these cases.
 #
 # --lane (HIMMEL-2782): native (default) or claudex. --lane claudex (or
 # LEG_LANE=claudex in the launching shell - the flag wins if both are
@@ -170,8 +183,74 @@
 # sequence it. Opt-out, default ON: unset changes nothing.
 set -u
 
+# HEADED_ARM_UNAME (HIMMEL-2534 follow-up) - same seam name and default-
+# expansion idiom headed-arm.sh itself defines; resolved again HERE because
+# this wrapper is a separate process that must settle leg_propagate_env's
+# platform branch before it ever execs into headed-arm.sh. Test seam:
+# HEADED_ARM_UNAME=Darwin|Linux|... overrides it without a real uname call,
+# same as headed-arm.sh's own suite already does.
+HEADED_ARM_UNAME="${HEADED_ARM_UNAME:-$(uname -s 2>/dev/null)}"
+export HEADED_ARM_UNAME
+
 usage() {
     echo "usage: headed-arm-leg.sh [--dry-run] [--headless] [--lane native|claudex] (--profile <name> | --no-profile) [--relay] [--judge] [--console <name>] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
+}
+
+# leg_propagate_env NAME VALUE - HIMMEL-2534: on macOS, `open -a` starts a leg
+# from a FRESH environment (konsole-macos.sh's own header - PATH excepted, by
+# a deliberate policy this fix leaves untouched), so a plain `export` here
+# never reaches the leg process on that platform. Only an explicit token on
+# headed-arm.sh's own `env ... NAME=VALUE ...` command line does: it is baked
+# into the launched .command file's argv (`%q`-quoted), not inherited, so it
+# survives the boundary a plain export does not. Every leg-process var this
+# wrapper sets (IMPL_GUARD_OK, LEG_PROFILE_*, HIMMEL_CONSOLE_LEG, ...) must go
+# through this function instead of a bare `export`. Vars headed-arm.sh itself
+# consumes in THIS SAME process tree (HEADED_ARM_REPO, HEADED_ARM_LAUNCHER,
+# HEADED_ARM_RECORDER, HEADED_ARM_REQUIRED_AUTOCOMPACT, ...) never cross that
+# boundary and must NOT be routed through it - they stay plain exports.
+#
+# A caller-preset HEADED_ARM_LAUNCHER_ENV is preserved (appended to, never
+# replaced) and wins on a name clash: this function only ever adds a NAME not
+# already present as a token. HEADED_ARM_LAUNCHER_ENV is a whitespace-split
+# token list (same contract as CODEX_BANK_PROBE_CMD) with no quoting scheme,
+# so a value containing whitespace cannot become a token: it would silently
+# mis-split into extra bogus tokens. On macOS (HEADED_ARM_UNAME=Darwin), the
+# token list is the ONLY channel to the leg, so such a value is refused
+# loudly (exit 12) rather than silently corrupted. On every other platform, a
+# plain `export` already reaches the leg via ordinary environment
+# inheritance (this was true before HIMMEL-2534 and must stay true), so the
+# value is left there untouched, a stderr warning explains why no token was
+# added, and this function returns without exit.
+leg_propagate_env() {
+    _leg_prop_name="$1"
+    _leg_prop_value="$2"
+    case "$_leg_prop_value" in
+        *[[:space:]]*)
+            if [ "$HEADED_ARM_UNAME" = "Darwin" ]; then
+                echo "headed-arm-leg: refusing to propagate $_leg_prop_name: value contains whitespace, which HEADED_ARM_LAUNCHER_ENV's token list cannot carry ($_leg_prop_name=$_leg_prop_value)" >&2
+                exit 12
+            fi
+            echo "headed-arm-leg: $_leg_prop_name value contains whitespace - leaving it to plain-export inheritance instead of HEADED_ARM_LAUNCHER_ENV (whose token list cannot carry it); harmless on $HEADED_ARM_UNAME, which inherits this process's environment directly" >&2
+            export "$_leg_prop_name=$_leg_prop_value"
+            unset -v _leg_prop_name _leg_prop_value
+            return
+            ;;
+    esac
+    export "$_leg_prop_name=$_leg_prop_value"
+    set -f
+    for _leg_prop_tok in ${HEADED_ARM_LAUNCHER_ENV:-}; do
+        case "$_leg_prop_tok" in
+            "$_leg_prop_name="*)
+                set +f
+                unset -v _leg_prop_name _leg_prop_value _leg_prop_tok
+                return
+                ;;
+        esac
+    done
+    set +f
+    HEADED_ARM_LAUNCHER_ENV="${HEADED_ARM_LAUNCHER_ENV:+$HEADED_ARM_LAUNCHER_ENV }$_leg_prop_name=$_leg_prop_value"
+    export HEADED_ARM_LAUNCHER_ENV
+    unset -v _leg_prop_name _leg_prop_value _leg_prop_tok
 }
 
 DRY_RUN=0
@@ -353,20 +432,32 @@ HEADED_ARM="${HEADED_ARM_LEG_TARGET:-$HERE/../headed-arm.sh}"
 # HANDOVER_DIR is already a registered seam var (scripts/lib/handover-path.sh)
 # read by every handover script; this widens nothing - it only makes each
 # launch's already-resolved root explicit instead of leaving a leg in a
-# linked worktree to silently re-derive (and miss) it. Skip only when the
-# console's own launching shell already set HANDOVER_DIR (Mode B - already
-# correct, nothing to resolve) or when this process can't resolve one either
-# (nothing to export - unchanged behavior from before this ticket).
+# linked worktree to silently re-derive (and miss) it. Skip resolving only
+# when the console's own launching shell already set HANDOVER_DIR (Mode B -
+# already correct, nothing to resolve) or when this process can't resolve
+# one either (nothing to propagate - unchanged behavior from before this
+# ticket).
 if [ -z "${HANDOVER_DIR:-}" ]; then
     unset -f handover_root 2>/dev/null || true
     # shellcheck source=scripts/lib/handover-path.sh
     # shellcheck disable=SC1091
     if . "$HERE/../../lib/handover-path.sh" 2>/dev/null; then
         _leg_handover_root="$(handover_root 2>/dev/null)" || _leg_handover_root=""
-        [ -n "$_leg_handover_root" ] && export HANDOVER_DIR="$_leg_handover_root"
+        [ -n "$_leg_handover_root" ] && leg_propagate_env HANDOVER_DIR "$_leg_handover_root"
         unset -v _leg_handover_root
     fi
 fi
+
+# HIMMEL-2534 (coordinator follow-up): propagate HANDOVER_DIR whenever it is
+# non-empty, not only when the block above just resolved it - the normal
+# case for a grouped console already exports HANDOVER_DIR before this
+# wrapper ever runs (Mode B above), and that caller-preset value needs the
+# exact same macOS token-list crossing as the self-resolved case; on Linux
+# it was already reaching the leg via inheritance, so this is a no-op there.
+# leg_propagate_env de-dupes by NAME against any HEADED_ARM_LAUNCHER_ENV
+# token already present, so re-calling it for the value the block above just
+# propagated is a harmless no-op, not a double-add.
+[ -n "${HANDOVER_DIR:-}" ] && leg_propagate_env HANDOVER_DIR "$HANDOVER_DIR"
 
 # Context resolution (HIMMEL-2766/HIMMEL-2779): off-values stay standard;
 # the one old 1m opt-in is resolved explicitly so the argv guard below can
@@ -475,7 +566,7 @@ fi
 # left to discretion once already and every open PR went unreviewed,
 # HIMMEL-1362) - a default-off seam here would recreate that exact failure.
 if [ -n "${LEG_SUPPRESS_CR_TRIGGER:-}" ]; then
-    export CR_TRIGGER_SUPPRESS=1
+    leg_propagate_env CR_TRIGGER_SUPPRESS 1
 fi
 
 # IMPL_GUARD_OK=1 / INLINE_IMPL_OK=1: leg-only env for
@@ -488,15 +579,15 @@ fi
 # rather than a bare $VAR, since a judge launch never sets them at all and
 # this script runs under `set -u`.
 if [ "$JUDGE" -ne 1 ]; then
-    export IMPL_GUARD_OK=1
-    export INLINE_IMPL_OK=1
+    leg_propagate_env IMPL_GUARD_OK 1
+    leg_propagate_env INLINE_IMPL_OK 1
 fi
 # HIMMEL_CONSOLE_LEG=1 (HIMMEL-2919): marks the launched process as a
 # console-spawned leg, both lanes - including --judge (design §3.2, "the
 # judge is a leg": this IS Guard E for a judge too, no separate
 # HIMMEL_CONSOLE_JUDGE marker). merge-on-green.sh then merges only on the
 # console's GO file (console-kit/go.sh), and go.sh refuses to run under it.
-export HIMMEL_CONSOLE_LEG=1
+leg_propagate_env HIMMEL_CONSOLE_LEG 1
 # HIMMEL_CONSOLE_NAME (HIMMEL-3435): the owning console's session name, so a
 # leg's HIMMEL-3430 merge-block alert (scripts/lib/merge-block-alert.sh,
 # untouched by this ticket - it already reads this var) can route to the
@@ -535,7 +626,7 @@ else
     fi
 fi
 if [ -n "$CONSOLE_NAME" ]; then
-    export HIMMEL_CONSOLE_NAME="$CONSOLE_NAME"
+    leg_propagate_env HIMMEL_CONSOLE_NAME "$CONSOLE_NAME"
 else
     unset HIMMEL_CONSOLE_NAME
 fi
@@ -547,12 +638,12 @@ unset -f _console_name_ok
 # 400, generous for a design-sized doc without reopening the clamp entirely,
 # which stays HIMMEL_READ_CLAMP_OK's own, operator-only lever. The repeat-read
 # half of the clamp (read-clamp.sh's per-range dedup) is untouched.
-[ "$JUDGE" -eq 1 ] && export HIMMEL_READ_CLAMP_LINES=4000
+[ "$JUDGE" -eq 1 ] && leg_propagate_env HIMMEL_READ_CLAMP_LINES 4000
 # HIMMEL_CONSOLE_RELAY=1 (HIMMEL-2975): marks this leg as the Sonnet relay half
 # of a split console. inbox-send.sh's Guard C already refuses --token under it
 # (#733); the Task 26 write-deny hook denies writes under it. Both key off
 # this exact marker, not the console-relay profile above.
-[ "$RELAY" -eq 1 ] && export HIMMEL_CONSOLE_RELAY=1
+[ "$RELAY" -eq 1 ] && leg_propagate_env HIMMEL_CONSOLE_RELAY 1
 # headed-arm.sh builds one argv array for both native and recorder launches and
 # refuses exit 2 if this exact pair is absent. This is the final resolved-argv
 # guard; the context-value check above gives the earlier operator-facing error.
@@ -562,7 +653,8 @@ export HEADED_ARM_REQUIRED_AUTOCOMPACT=200000
 if [ "$LANE" = "claudex" ]; then
     CLAUDEX_BIN="${HEADED_ARM_LEG_CLAUDEX_BIN:-$HERE/../../claude-codex}"
     export HEADED_ARM_LAUNCHER="$CLAUDEX_BIN"
-    export HEADED_ARM_LAUNCHER_ENV="CLAUDEX_LANE_OK=1 CLAUDE_CODE_EFFORT_LEVEL=${LEG_EFFORT:-medium}"
+    leg_propagate_env CLAUDEX_LANE_OK 1
+    leg_propagate_env CLAUDE_CODE_EFFORT_LEVEL "${LEG_EFFORT:-medium}"
     export HEADED_ARM_RECORDER=1
     [ -z "$MODEL" ] && MODEL="gpt-6-astra"
 fi
@@ -633,17 +725,18 @@ if [ -n "$PROFILE" ]; then
             exit 2
         fi
     fi
-    # The shim reads these; export so they survive konsole's `-e env -u ...`.
-    export LEG_PROFILE_SETTINGS="$PROFILE_SETTINGS"
+    # The shim reads these; propagate so they survive both konsole's
+    # `-e env -u ...` (Linux) and `open -a`'s fresh environment (macOS).
+    leg_propagate_env LEG_PROFILE_SETTINGS "$PROFILE_SETTINGS"
     # (HIMMEL-2985) Per-leg path, like PROFILE_SETTINGS above - the claudex
     # lane below overrides this to the same shape for its own coordination
     # preface; content is written only at real-launch time further down.
     LEG_PROFILE_PREFACE="$(dirname "$LOG")/$NAME.leg-preface.md"
-    export LEG_PROFILE_PREFACE
+    leg_propagate_env LEG_PROFILE_PREFACE "$LEG_PROFILE_PREFACE"
     export HEADED_ARM_LAUNCHER="$LEG_SHIM"
     # Lean SessionStart (HIMMEL-2830): the three advisory hooks go quiet. Only
     # the exact value 1 leans - the hooks are fail-open by construction.
-    export HIMMEL_LEAN_LEG=1
+    leg_propagate_env HIMMEL_LEAN_LEG 1
     # mcpServers allowlist (HIMMEL-2935): resolved (and, on an unknown name,
     # REFUSED) here so a typo'd server name fails the same way under --dry-run
     # and for real, same reasoning as the settings JSON above. "null" (the
@@ -659,7 +752,7 @@ if [ -n "$PROFILE" ]; then
             exit 2
         fi
         PROFILE_MCP_CONFIG="$(dirname "$LOG")/$NAME.leg-mcp.json"
-        export LEG_PROFILE_MCP_CONFIG="$PROFILE_MCP_CONFIG"
+        leg_propagate_env LEG_PROFILE_MCP_CONFIG "$PROFILE_MCP_CONFIG"
     fi
 fi
 
@@ -669,7 +762,7 @@ fi
 if [ "$LANE" = "claudex" ]; then
     CLAUDEX_PREFACE="$HERE/../../../docs/handover/leg-preface-claudex.md"
     export HEADED_ARM_LAUNCHER="${HEADED_ARM_LEG_SHIM:-$HERE/../../lanes/leg-claude-launcher.sh}"
-    export LEG_CLAUDE_BIN="$CLAUDEX_BIN"
+    leg_propagate_env LEG_CLAUDE_BIN "$CLAUDEX_BIN"
     for _leg_need in "$CLAUDEX_PREFACE" "$HEADED_ARM_LAUNCHER"; do
         if [ ! -f "$_leg_need" ]; then
             echo "headed-arm-leg: --lane claudex: required file missing: $_leg_need" >&2
@@ -678,9 +771,10 @@ if [ "$LANE" = "claudex" ]; then
     done
     if [ -n "$PROFILE" ]; then
         LEG_PROFILE_PREFACE="$(dirname "$LOG")/$NAME.leg-preface.md"
-        export LEG_PROFILE_PREFACE
+        leg_propagate_env LEG_PROFILE_PREFACE "$LEG_PROFILE_PREFACE"
     else
-        export LEG_PROFILE_PREFACE="$CLAUDEX_PREFACE"
+        LEG_PROFILE_PREFACE="$CLAUDEX_PREFACE"
+        leg_propagate_env LEG_PROFILE_PREFACE "$LEG_PROFILE_PREFACE"
     fi
 fi
 
