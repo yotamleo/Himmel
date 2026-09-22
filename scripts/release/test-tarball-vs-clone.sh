@@ -169,6 +169,15 @@ bash "$CONV" --a-home "$tmp/cs1/home" --a-prefix "$tmp/cs1/prefix" --b-home "$tm
 mk_side "$tmp/csp1" "bash $tmp/csp1/prefix+old/g.sh"; mk_side "$tmp/csp2" "bash $tmp/csp2/prefix+old/g.sh"
 bash "$CONV" --a-home "$tmp/csp1/home" --a-prefix "$tmp/csp1/prefix" --b-home "$tmp/csp2/home" --b-prefix "$tmp/csp2/prefix" >/dev/null 2>&1; rc=$?
 [ "$rc" -eq 1 ] && ok "T7 RED: a sibling <prefix>+old path is NOT masked as the prefix (rc 1)" || bad "T7 sibling +old path masked (HIMMEL-3255)" "rc=$rc"
+# The boundary is a DENYLIST of real delimiters, not an allowlist of "safe" chars:
+# '~', '@', ',', '=' and '%' are all legal POSIX filename bytes too, so a sibling
+# suffixed with any of them must diverge the same way (HIMMEL-3255 round 2).
+for sym in '~' '@' ',' '=' '%'; do
+  rm -rf "$tmp/csym1" "$tmp/csym2"
+  mk_side "$tmp/csym1" "bash $tmp/csym1/prefix${sym}old/g.sh"; mk_side "$tmp/csym2" "bash $tmp/csym2/prefix${sym}old/g.sh"
+  bash "$CONV" --a-home "$tmp/csym1/home" --a-prefix "$tmp/csym1/prefix" --b-home "$tmp/csym2/home" --b-prefix "$tmp/csym2/prefix" >/dev/null 2>&1; rc=$?
+  [ "$rc" -eq 1 ] && ok "T7 RED: a sibling <prefix>${sym}old path is NOT masked as the prefix (rc 1)" || bad "T7 sibling ${sym}old path masked (HIMMEL-3255)" "rc=$rc"
+done
 # Git hooks that are SYMLINKS count: present on one side only -> DIVERGED; dangling -> UNREADABLE.
 mk_side "$tmp/cg1" "bash $tmp/cg1/prefix/g.sh"; mk_side "$tmp/cg2" "bash $tmp/cg2/prefix/g.sh"
 for s in cg1 cg2; do git init -q "$tmp/$s/repo" 2>/dev/null; mkdir -p "$tmp/$s/repo/.git/hooks"; done

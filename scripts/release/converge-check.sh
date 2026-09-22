@@ -53,7 +53,18 @@ mask() {
     rest="${rest#*"$needle"}"
     # A rejected sibling keeps a \001 after its first char, so a LATER mask (home is
     # usually a parent of the prefix) cannot re-match it; norm() strips the marks.
-    case "$rest" in [A-Za-z0-9._+-]*) out+="${needle:0:1}"$'\001'"${needle:1}" ;; *) out+="$token" ;; esac
+    # Boundary is a DENYLIST, not an allowlist: almost any byte can legally continue
+    # a POSIX filename ('+', '~', '@', ',', '=', '%', ... are all valid), so only
+    # end-of-token, '/' (a real subpath) or a delimiter this snapshot's generated
+    # text actually emits around a path count as a boundary -- '"'/"'" (jq -S's
+    # JSON quoting and the launcher/hook scripts' shell quoting), ':', ';' and
+    # whitespace (token separators in those same scripts). Anything else marks a
+    # DIFFERENT sibling location, never masked.
+    case "$rest" in
+      "") out+="$token" ;;
+      '/'*|'"'*|"'"*|':'*|';'*|[[:space:]]*) out+="$token" ;;
+      *) out+="${needle:0:1}"$'\001'"${needle:1}" ;;
+    esac
   done
   REPLY="$out$rest"
 }
