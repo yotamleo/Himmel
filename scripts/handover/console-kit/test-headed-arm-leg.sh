@@ -380,6 +380,20 @@ for lane in native claudex; do
   contains "--lane $lane, caller-preset launcher-env: sibling token kept" "$lenv" "KEEP_ME=1"
 done
 
+# HIMMEL-3456 (CodeRabbit on #1140): leg_propagate_env lets a caller-preset
+# token win on a name clash, so a preset HIMMEL_CONSOLE_NAME=.. used to reach
+# the leg unvalidated - past a valid --console, or with no source at all. The
+# launcher drops the preset token and propagates only the name it resolved.
+out="$(HEADED_ARM_LAUNCHER_ENV="HIMMEL_CONSOLE_NAME=.. KEEP_ME=1" bash "$SCRIPT" --dry-run --console good-console --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)"
+lenv="$(printf '%s\n' "$out" | grep '^headed-arm-leg: lane=')"
+contains "preset HIMMEL_CONSOLE_NAME token + --console: the validated name propagates" "$lenv" "HIMMEL_CONSOLE_NAME=good-console"
+not_contains "preset HIMMEL_CONSOLE_NAME token + --console: the preset token is dropped" "$lenv" "HIMMEL_CONSOLE_NAME=.."
+contains "preset HIMMEL_CONSOLE_NAME token + --console: sibling token kept" "$lenv" "KEEP_ME=1"
+out="$(HEADED_ARM_LAUNCHER_ENV="HIMMEL_CONSOLE_NAME=.. KEEP_ME=1" bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)"
+lenv="$(printf '%s\n' "$out" | grep '^headed-arm-leg: lane=')"
+not_contains "preset HIMMEL_CONSOLE_NAME token, no source: nothing propagates" "$lenv" "HIMMEL_CONSOLE_NAME="
+contains "preset HIMMEL_CONSOLE_NAME token, no source: sibling token kept" "$lenv" "KEEP_ME=1"
+
 # HIMMEL-3456: only grep's rc 1 means "absent" - an rc >1 is an execution
 # error and must fail the assertion, never pass it vacuously (#1139's fix to
 # the same helper in test-headed-arm.sh).

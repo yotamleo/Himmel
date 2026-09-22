@@ -253,6 +253,25 @@ leg_propagate_env() {
     unset -v _leg_prop_name _leg_prop_value _leg_prop_tok
 }
 
+# leg_env_drop_token NAME - HIMMEL-3456: remove every NAME=... token from a
+# caller-preset HEADED_ARM_LAUNCHER_ENV, keeping the rest in order. For a var
+# this wrapper must own outright (a scrubbed knob, a validated value), where
+# leg_propagate_env's caller-wins de-dupe would otherwise let the preset token
+# reach the leg. set -f so no caller token is glob-expanded.
+leg_env_drop_token() {
+    _leg_drop_kept=""
+    set -f
+    for _leg_drop_tok in ${HEADED_ARM_LAUNCHER_ENV:-}; do
+        case "$_leg_drop_tok" in
+            "$1="*) ;;
+            *) _leg_drop_kept="${_leg_drop_kept:+$_leg_drop_kept }$_leg_drop_tok" ;;
+        esac
+    done
+    set +f
+    [ -n "${HEADED_ARM_LAUNCHER_ENV:-}" ] && HEADED_ARM_LAUNCHER_ENV="$_leg_drop_kept"
+    unset -v _leg_drop_kept _leg_drop_tok
+}
+
 DRY_RUN=0
 RELAY=0
 JUDGE=0
@@ -497,18 +516,9 @@ fi
 LEG_ENV_SCRUB="CONSOLE_CONTEXT"
 for _leg_env_scrub in $LEG_ENV_SCRUB; do
     unset "$_leg_env_scrub"
-    _leg_env_kept=""
-    set -f
-    for _leg_env_tok in ${HEADED_ARM_LAUNCHER_ENV:-}; do
-        case "$_leg_env_tok" in
-            "$_leg_env_scrub="*) ;;
-            *) _leg_env_kept="${_leg_env_kept:+$_leg_env_kept }$_leg_env_tok" ;;
-        esac
-    done
-    set +f
-    [ -n "${HEADED_ARM_LAUNCHER_ENV:-}" ] && HEADED_ARM_LAUNCHER_ENV="$_leg_env_kept"
+    leg_env_drop_token "$_leg_env_scrub"
 done
-unset -v _leg_env_scrub _leg_env_kept _leg_env_tok
+unset -v _leg_env_scrub
 
 # HIMMEL-2779: a leg's ceiling is the resolved CLI pair, not the absence of a
 # model suffix. Fail before dry-run reporting or preflight when context already
@@ -634,6 +644,10 @@ _console_name_ok() {
         *) return 0 ;;
     esac
 }
+# HIMMEL-3456: a caller-preset HIMMEL_CONSOLE_NAME= launcher token would win
+# leg_propagate_env's name clash and reach the leg unvalidated, so drop it -
+# only the name resolved below (or none) may propagate.
+leg_env_drop_token HIMMEL_CONSOLE_NAME
 if [ -n "$CONSOLE_FLAG" ]; then
     CONSOLE_NAME="$CONSOLE_FLAG"
 elif _console_name_ok "${HIMMEL_CONSOLE_NAME:-}"; then
