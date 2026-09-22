@@ -130,7 +130,7 @@ ticket carries.
 **Adding a release's version (part of cutting a release).** After the tag and
 its GitHub release are published, from the primary checkout (`dist/` built):
 
-```
+```bash
 node scripts/jira/sync-versions.mjs --dry-run --project HIMMEL   # report only
 node scripts/jira/sync-versions.mjs --apply --project HIMMEL     # write
 ```
