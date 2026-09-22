@@ -252,6 +252,25 @@ rc2=$?
 eq "13: a missing file returns nonzero" 1 "$rc2"
 eq "13: a missing file is NOT created" "absent" "$([ -e "$f2" ] && echo present || echo absent)"
 
+# --- 14. HIMMEL_TEST_FIXTURE=1 with no bridge root named -> the console route
+#         refuses the DEFAULT $HOME inbox (HIMMEL-3478: test-check-ci.sh wrote
+#         fixture lines into the live console inbox). Case 8 is the control.
+new_case c14
+mkdir -p "$CASE/home/.claude/handover/bridge/consoles"
+: > "$CASE/home/.claude/handover/bridge/consoles/opsdesk.md"
+(
+    # shellcheck disable=SC1090
+    . "$LIB"
+    HOME="$CASE/home" HIMMEL_TEST_FIXTURE=1 BRIDGE_ROOT='' MERGE_WATCH_ALERT_BRIDGE_ROOT='' \
+    MERGE_BLOCK_ALERT_DIR="$CASE/sentinels" ALERT_LOG="$CASE/alerts.log" BUN_LOG="$CASE/bun.log" \
+    TELEGRAM_ACCESS_PATH="$ACCESS" HIMMEL_CONSOLE_LEG=1 HIMMEL_CONSOLE_NAME=opsdesk \
+    merge_watch_alert octo/demo 42 aaaaaaaaaaaa "required check(s) FAILED: tests" 2>>"$CASE/err"
+)
+rc=$?
+eq "14: returns 0" 0 "$rc"
+eq "14: the default-path console inbox gains no line" 0 "$(count "$CASE/home/.claude/handover/bridge/consoles/opsdesk.md")"
+eq "14: no operator DM" 0 "$(count "$CASE/alerts.log")"
+
 echo
 echo "merge-block-alert: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
