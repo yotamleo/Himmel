@@ -122,7 +122,9 @@
 #       this code also carried the GitHub-blocked refusals now reported as 18.
 #   18  GitHub-blocked (HIMMEL-3381) — refused once, alerted once, never retried:
 #       check-ci exit 5 (a required check never reported, or the required set is
-#       unreadable), green checks that still leave BLOCKED + REVIEW_REQUIRED, or
+#       unreadable), check-ci exit 6 (GitHub's mergeStateStatus refuses while
+#       every gate is green, HIMMEL-3485), green checks that still leave
+#       BLOCKED + REVIEW_REQUIRED, or
 #       gh refusing the merge on branch policy / a required check / a ruleset.
 #       Each prints one `MERGE-BLOCKED` line and sends one operator DM per
 #       (repo, PR, head) via scripts/lib/merge-block-alert.sh; the audit line
@@ -149,11 +151,13 @@
 #   HANDOVER_DIR           Where handover_root resolves that GO file
 #                          (scripts/lib/handover-path.sh); read only under
 #                          HIMMEL_CONSOLE_LEG.
-#   HIMMEL_REPO            The anchor (HIMMEL-3475): check-ci.sh, go-gate.sh and
-#                          handover-path.sh all resolve from
+#   HIMMEL_REPO            The anchor (HIMMEL-3475, HIMMEL-3485): every script
+#                          and lib this gate sources or runs resolves from
 #                          $HIMMEL_REPO/scripts/..., never as a sibling of this
 #                          script's own BASH_SOURCE. Required; unset/empty/
-#                          unreadable refuses with exit 19 (see above).
+#                          unreadable refuses with exit 19 (see above). A
+#                          registered chokepoint seam: set it in the launching
+#                          shell, never as a per-call prefix.
 #
 # Jira auto-transition is opt-in per merge (HIMMEL-3143; --jira-transition
 # above). It used to fire unconditionally on every merge and closed
@@ -172,18 +176,23 @@
 # able to swap the merge gate for a permissive stand-in. `gh` is resolved off
 # PATH. check-ci.sh / go-gate.sh / handover-path.sh resolve from the
 # HIMMEL_REPO anchor, NEVER as a sibling of this script's own BASH_SOURCE
-# (HIMMEL-3475): this script runs from a leg's own worktree, so a sibling
-# resolution would let a STALE worktree copy of those three files decide the
-# merge. SCOPE — this defends against a stale sibling copy, NOT a malicious
-# branch: the entry script itself and the helpers sourced before the anchor
-# resolves (cr-available.sh, merge-block-alert.sh, worktree-inuse.sh,
-# clear-cr-marker.sh) still come from the worktree, so a branch that rewrites
-# them still controls the gate. Anchoring those helpers and invoking the gate
-# from the anchor is HIMMEL-3485. HIMMEL_REPO is not a new seam — it is the anchor the rest of the
-# harness already trusts (himmel-doctor.sh, luna-upgrade-all.sh, ...), set at
-# install time by setup.sh/adopt.sh, never by a branch under review; a missing
-# or unreadable anchor fails CLOSED (exit 19), it never falls back to the
-# sibling. Tests exercise the wrapper against stubs by running a COPY of the
+# (HIMMEL-3475): a sibling resolution would let the worktree copy of those
+# files decide the merge. HIMMEL-3485 closes the MALICIOUS-branch half: every
+# other helper (cr-available.sh, merge-block-alert.sh, worktree-inuse.sh,
+# clear-cr-marker.sh) is sourced or executed from the anchor too, and only
+# after it resolved — nothing of this script's own tree is read, so the entry
+# script is the only branch-controllable byte left. HIMMEL_REPO is a registered
+# chokepoint seam (scripts/chokepoints.json), so a per-call `HIMMEL_REPO=. bash …`
+# re-pointing it at the branch is denied.
+# ponytail: the ENTRY script is still an OPEN path — legs are told to run
+# `bash scripts/handover/merge-on-green.sh` from their own worktree (leg-preface.md,
+# the gateAllow rule), so a branch that rewrites this file controls the gate.
+# Invoking it as `bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh"` is
+# HIMMEL-3491.
+# HIMMEL_REPO is the anchor the rest of the harness already trusts
+# (himmel-doctor.sh, luna-upgrade-all.sh, ...), set at install time by
+# setup.sh/adopt.sh, never by a branch under review; a missing or unreadable
+# anchor fails CLOSED (exit 19), it never falls back to the sibling. Tests exercise the wrapper against stubs by running a COPY of the
 # script tree with a stub `gh` on PATH and HIMMEL_REPO pointed at that same
 # copy (or a second, distinct fixture tree to prove the anchor decides) —
 # never via a caller-settable override of the gate logic itself.
@@ -191,7 +200,6 @@ set -uo pipefail
 # NOT set -e: this script inspects sub-call exit codes (check-ci, gh) explicitly
 # and must fail CLOSED with its own codes, never abort mid-gate.
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GH="gh"
 # The ONE public repo armed auto-merge may target (HIMMEL-2869). Deliberately a
 # fixed literal, NOT environment-overridable: the GATE INTEGRITY paragraph above
@@ -211,20 +219,6 @@ GH="gh"
 # scripts separate rather than building a shared "which repo class" switch;
 # this constant staying its own fixed literal is that decision holding.
 HIMMEL_PUBLIC_ORIGIN_NWO="yotamleo/Himmel"
-# The repo's ONE CodeRabbit-availability answer (scripts/lib/cr-available.sh).
-# Fixed in-repo sibling — NOT anchored like CHECK_CI (see GATE INTEGRITY SCOPE;
-# HIMMEL-3485).
-# shellcheck source=scripts/lib/cr-available.sh
-# shellcheck disable=SC1091
-. "$SCRIPT_DIR/../lib/cr-available.sh" 2>/dev/null || true
-# HIMMEL-3381 — the ONE operator alert when GitHub blocks the merge. Fixed in-repo
-# sibling like the libs above; if it is missing the fallback still prints the
-# MERGE-BLOCKED line, so a block is never silent.
-# shellcheck source=scripts/lib/merge-block-alert.sh
-# shellcheck disable=SC1091
-. "$SCRIPT_DIR/../lib/merge-block-alert.sh" 2>/dev/null || merge_block_alert() { echo "MERGE-BLOCKED ${1:-?}#${2:-?} @${3:0:12}: ${*:4}" >&2; return 0; }
-# block_alert <rule> — one DM per (repo, PR, head); never changes an exit code.
-block_alert() { merge_block_alert "${nwo:-?}" "${pr_num:-?}" "${sha:-}" "$@"; }
 
 selector=""
 DRY_RUN=0
@@ -369,8 +363,8 @@ command -v "$GH" >/dev/null 2>&1 || { echo "merge-on-green: required tool 'gh' n
 # merely behind main on scripts/check-ci.sh, and its own stale copy refused
 # its own green PR — the benign direction; the dangerous mirror is a branch
 # whose check-ci.sh wrongly PASSES). Fails CLOSED: unset, empty, or unreadable
-# all refuse with exit 19, never a fallback to the sibling. Scope: a stale
-# sibling, not a malicious branch — see GATE INTEGRITY above (HIMMEL-3485).
+# all refuse with exit 19, never a fallback to the sibling. Resolved BEFORE any
+# helper is sourced (HIMMEL-3485) — see GATE INTEGRITY above.
 if ! himmel_repo=$(printenv HIMMEL_REPO | grep .); then
     echo "merge-on-green: HIMMEL_REPO is unset or empty — cannot resolve the anchor for check-ci.sh. This merge gate no longer trusts its own worktree sibling (HIMMEL-3475): set HIMMEL_REPO to the primary himmel checkout in the launching shell." >&2
     audit "REFUSED reason=no-anchor selector=${selector:-<cwd-branch>}"
@@ -382,6 +376,23 @@ if [ ! -r "$CHECK_CI" ]; then
     audit "REFUSED reason=no-anchor selector=${selector:-<cwd-branch>}"
     exit 19
 fi
+
+# HIMMEL-3485 — every helper below is sourced or executed from the anchor, and
+# only AFTER it resolved: a helper sourced earlier from this script's own tree
+# ran branch bytes inside the gate before any anchor check (it could export
+# HIMMEL_REPO=$PWD, or define functions shadowing `bash`/`printenv`/`gh`).
+# The repo's ONE CodeRabbit-availability answer (scripts/lib/cr-available.sh).
+# shellcheck source=scripts/lib/cr-available.sh
+# shellcheck disable=SC1091
+. "$himmel_repo/scripts/lib/cr-available.sh" 2>/dev/null || true
+# HIMMEL-3381 — the ONE operator alert when GitHub blocks the merge. If it is
+# missing the fallback still prints the MERGE-BLOCKED line, so a block is never
+# silent.
+# shellcheck source=scripts/lib/merge-block-alert.sh
+# shellcheck disable=SC1091
+. "$himmel_repo/scripts/lib/merge-block-alert.sh" 2>/dev/null || merge_block_alert() { echo "MERGE-BLOCKED ${1:-?}#${2:-?} @${3:0:12}: ${*:4}" >&2; return 0; }
+# block_alert <rule> — one DM per (repo, PR, head); never changes an exit code.
+block_alert() { merge_block_alert "${nwo:-?}" "${pr_num:-?}" "${sha:-}" "$@"; }
 
 # gh helper honoring an optional selector (mirrors check-ci's pr_view shape).
 gh_pr_view() {
@@ -573,6 +584,17 @@ if [ "$ci_rc" -eq 5 ]; then
     audit "REFUSED reason=github-blocked phase=check-ci rule=required-check gate=check-ci:5 repo=$nwo pr=#$pr_num sha=$sha"
     exit 18
 fi
+if [ "$ci_rc" -eq 6 ]; then
+    # HIMMEL-3485 (#1131 follow-up): check-ci exit 6 = every gate of ours is
+    # green but GitHub's own mergeStateStatus refuses the merge (BLOCKED /
+    # BEHIND / DIRTY / DRAFT, HIMMEL-3473). check-ci now answers this before the
+    # pre-merge policy read below can, so without this branch the HIMMEL-3381
+    # path was unreachable and an unsatisfiable rule was retried as a silent 14.
+    echo "merge-on-green: GitHub-blocked — check-ci reported GitHub's mergeStateStatus refuses the merge while every gate is green (exit 6) — not merging." >&2
+    block_alert "GitHub's mergeStateStatus refuses the merge while every gate is green (check-ci exit 6)"
+    audit "REFUSED reason=github-blocked phase=check-ci rule=merge-state gate=check-ci:6 repo=$nwo pr=#$pr_num sha=$sha"
+    exit 18
+fi
 if [ "$ci_rc" -ne 0 ]; then
     echo "merge-on-green: check-ci gate did not pass (exit $ci_rc) — not merging. Address the gate, then re-run." >&2
     audit "REFUSED reason=gate-not-green gate=check-ci:$ci_rc repo=$nwo pr=#$pr_num sha=$sha"
@@ -684,7 +706,7 @@ clear_cr_marker_for_branch() {
     # it — the delete still only ever happens inside clear-cr-marker.sh.
     if [ ! -f "$common/cr-pending/$branch" ]; then MARKER_RESULT="absent"; return 0; fi
 
-    local clearer="$SCRIPT_DIR/../cr/clear-cr-marker.sh"
+    local clearer="$himmel_repo/scripts/cr/clear-cr-marker.sh"
     if [ ! -f "$clearer" ]; then
         MARKER_RESULT="no-clearer"
         echo "merge-on-green: clear-cr-marker.sh not found at $clearer — the CR marker for '$branch' stays pending." >&2
@@ -879,7 +901,7 @@ poll_merge_state() {
 # measured repro table and reasoning in that file's header).
 # shellcheck source=scripts/lib/worktree-inuse.sh
 # shellcheck disable=SC1091
-. "$SCRIPT_DIR/../lib/worktree-inuse.sh"
+. "$himmel_repo/scripts/lib/worktree-inuse.sh"
 
 # HIMMEL-1970 — close the worktree lifecycle loop at the merge itself. A merged
 # ticket's worktree used to outlive its PR until someone remembered to run

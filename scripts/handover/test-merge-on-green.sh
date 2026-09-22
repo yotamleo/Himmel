@@ -520,6 +520,14 @@ run_mog() {
     local jiralog="$tmp/jira.log"; : > "$jiralog"
 
     mog_build_fixture "$tmp"
+    # HIMMEL-3485: MOG_POISON=<path under scripts/> replaces that helper in the
+    # WORKTREE tree with a branch-side mutant that leaves a marker and exits 42
+    # (sourced: kills the whole gate; executed: a failing clear). Paired with
+    # MOG_HIMMEL_REPO at a distinct anchor, it proves the anchor's copy runs.
+    if [ -n "${MOG_POISON:-}" ]; then
+        printf '#!/usr/bin/env bash\n: > "%s/poison.ran"\nexit 42\n' "$tmp" > "$tmp/scripts/$MOG_POISON"
+        chmod +x "$tmp/scripts/$MOG_POISON"
+    fi
 
     local err rc
     # HIMMEL-3475: the anchor. Defaults to the fixture tree itself (MOG_HIMMEL_REPO
@@ -530,7 +538,8 @@ run_mog() {
     # "a worktree whose check-ci.sh is byte-identical to the anchor behaves the
     # same before and after". MOG_HIMMEL_REPO points a case at a DISTINCT tree
     # (proving the anchor decides, not the worktree); MOG_NO_HIMMEL_REPO=1
-    # simulates control (b), an unset anchor.
+    # sets it EMPTY and MOG_UNSET_HIMMEL_REPO=1 removes it from the child's
+    # environment (env -u, HIMMEL-3483) — the two refusal paths of control (b).
     local himmel_repo_dir="${MOG_HIMMEL_REPO:-$tmp}"
     [ "${MOG_NO_HIMMEL_REPO:-0}" = "1" ] && himmel_repo_dir=""
     # cwd matters since HIMMEL-1970: the post-merge prune reads `git worktree
@@ -540,12 +549,14 @@ run_mog() {
     # throwaway fixture repo.
     # HIMMEL-1953: the confirmation poll's `sleep 2` never runs for real here —
     # a test that sleeps is a test that can hang.
+    # shellcheck disable=SC2086,SC2016 # the unset flag pair splits into two words, or none; the bash -c body expands in the child
     GH_LOG="$ghlog" CLEAR_LOG="$clearlog" MERGE_ON_GREEN_LOG="$audit" JIRA_LOG="$jiralog" PATH="$tmp/bin:$PATH" \
           MERGE_ON_GREEN_SLEEP_CMD=: \
           MERGE_BLOCK_ALERT_DIR="$tmp/alerts" MERGE_BLOCK_ALERT_CMD="$tmp/bin/alert-sender" \
           TELEGRAM_ACCESS_PATH="$tmp/access.json" STUB_ALERT_FAIL="${STUB_ALERT_FAIL:-}" \
           CR_APP="${MOG_CR_APP:-}" \
           HIMMEL_REPO="$himmel_repo_dir" \
+          env ${MOG_UNSET_HIMMEL_REPO:+-u HIMMEL_REPO} \
           bash -c 'cd "$1" || exit 1; shift; exec bash "$@"' _ "${MOG_CWD:-$tmp}" \
           "$tmp/scripts/handover/merge-on-green.sh" "$@" >/dev/null 2>"$tmp/err"
     rc=$?
@@ -2708,13 +2719,24 @@ assert_err_has "3381-f: says the delivery failed" "DM delivery failed"
 
 # Control (b): HIMMEL_REPO unset must REFUSE (exit 19) before any gate runs
 # — never fall back to the worktree's own sibling check-ci.sh.
-MOG_NO_HIMMEL_REPO=1 STUB_CI_RC=0 run_mog 19 "3475-b: HIMMEL_REPO unset refuses (exit 19), never falls back to the sibling"
+MOG_NO_HIMMEL_REPO=1 STUB_CI_RC=0 run_mog 19 "3475-b: HIMMEL_REPO empty refuses (exit 19), never falls back to the sibling"
 assert_err_has "3475-b: names the missing anchor" "HIMMEL_REPO"
 if [ -e "$LAST_TMP/scripts/check-ci.ran" ]; then
-    fail "3475-b: the worktree's own check-ci.sh ran despite HIMMEL_REPO being unset"
+    fail "3475-b: the worktree's own check-ci.sh ran despite HIMMEL_REPO being empty"
 else
     pass
 fi
+# HIMMEL-3483: the genuinely UNSET path (env -u), not only the empty one.
+MOG_UNSET_HIMMEL_REPO=1 STUB_CI_RC=0 run_mog 19 "3483: HIMMEL_REPO unset (env -u) refuses (exit 19), never falls back to the sibling"
+assert_err_has "3483: names the missing anchor" "HIMMEL_REPO"
+if [ -e "$LAST_TMP/scripts/check-ci.ran" ]; then
+    fail "3483: the worktree's own check-ci.sh ran despite HIMMEL_REPO being unset"
+else
+    pass
+fi
+# Control: the env -u spelling run_mog uses really removes the variable.
+# shellcheck disable=SC2016 # expands in the child, by design
+if HIMMEL_REPO=x env -u HIMMEL_REPO bash -c '[ -z "${HIMMEL_REPO+set}" ]'; then pass; else fail "3483 control: env -u HIMMEL_REPO left the variable set"; fi
 
 # Control (a): a worktree that IS its own anchor (HIMMEL_REPO defaults to the
 # same tree, byte-identical check-ci.sh) behaves the same as before this
@@ -2892,6 +2914,80 @@ rm -rf "$mog3475c_real_go_root"
 fi
 rm -rf "$mog3475c_base"
 fi
+
+# --- HIMMEL-3485: a MALICIOUS branch, not only a stale one. Every helper the
+# gate sources or executes must come from the anchor, so a branch that rewrites
+# any one of them cannot change the verdict. Each case poisons ONE helper in
+# the worktree tree (MOG_POISON: marker + exit 42) and points HIMMEL_REPO at a
+# distinct, clean anchor tree. At the pre-fix base every case is RED: the
+# worktree's mutant runs (exit 42, or marker=clear-rc=42 for the clearer).
+mog3485_anchor() {  # mog3485_anchor <check-ci rc> -> prints a clean anchor tree
+    local a; a=$(mktemp -d "${TMPDIR:-/tmp}/mog-3485-anchor.XXXXXX") || return 1
+    [ -n "$a" ] && [ -d "$a" ] || return 1
+    STUB_CI_RC="$1" mog_build_fixture "$a" >/dev/null 2>&1
+    printf '%s' "$a"
+}
+mog3485_no_poison() {  # mog3485_no_poison <label>
+    if [ -e "$LAST_TMP/poison.ran" ]; then fail "$1: the worktree's mutant helper ran — the branch under review supplied gate bytes"; else pass; fi
+}
+
+# Sourced BEFORE the old anchor resolution: the anchor's red check-ci decides (14).
+for mog3485_helper in lib/cr-available.sh lib/merge-block-alert.sh; do
+    if mog3485_a=$(mog3485_anchor 1); then
+        MOG_HIMMEL_REPO="$mog3485_a" MOG_POISON="$mog3485_helper" STUB_CI_RC=0 \
+            run_mog 14 "3485: a branch-side $mog3485_helper cannot change the verdict (anchor's red check-ci → 14)"
+        mog3485_no_poison "3485: $mog3485_helper"
+        rm -rf "$mog3485_a"
+    else
+        fail "3485 setup: no anchor sandbox for $mog3485_helper"
+    fi
+done
+
+# Sourced after the gate, before the merge: the clean merge still lands (0).
+if mog3485_a=$(mog3485_anchor 0); then
+    MOG_HIMMEL_REPO="$mog3485_a" MOG_POISON=lib/worktree-inuse.sh STUB_CI_RC=1 \
+        run_mog 0 "3485: a branch-side lib/worktree-inuse.sh cannot change the verdict (anchor green → 0)"
+    mog3485_no_poison "3485: lib/worktree-inuse.sh"
+    rm -rf "$mog3485_a"
+else
+    fail "3485 setup: no anchor sandbox for lib/worktree-inuse.sh"
+fi
+
+# Executed on the merge path: the anchor's clearer runs, never the branch's.
+if mog3485_a=$(mog3485_anchor 0); then
+    read -r P_REPO P_WT P_SHA <<< "$(mk_prune_fixture)"
+    mk_marker "$P_REPO" "feat/mog-prune"
+    MOG_CWD="$P_REPO" STUB_SHA="$P_SHA" STUB_HEAD_BRANCH="feat/mog-prune" \
+        MOG_HIMMEL_REPO="$mog3485_a" MOG_POISON=cr/clear-cr-marker.sh STUB_CI_RC=1 \
+        run_mog 0 "3485: a branch-side cr/clear-cr-marker.sh is never executed (anchor green → 0)"
+    assert_audit_has "3485: the anchor's clearer cleared the marker" "marker=cleared"
+    mog3485_no_poison "3485: cr/clear-cr-marker.sh"
+    rm -rf "$mog3485_a"
+else
+    fail "3485 setup: no anchor sandbox for cr/clear-cr-marker.sh"
+fi
+
+# HIMMEL_REPO is a registered chokepoint seam: a per-call prefix that re-points
+# the anchor at the branch is denied by block-chokepoint-env-prefix.sh (run
+# read-only against this tree's own registry).
+mog3485_hook="$SCRIPT_DIR/../hooks/block-chokepoint-env-prefix.sh"
+# shellcheck disable=SC2016 # the $HIMMEL_REPO text is the payload, never expanded here
+mog3485_cmd='HIMMEL_REPO=. bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh"'
+mog3485_json=$(printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$(printf '%s' "$mog3485_cmd" | jq -Rs .)")
+# Captured, not piped: the hook denies with exit 2, which pipefail would carry.
+mog3485_out=$(printf '%s' "$mog3485_json" | env -u ENV_PREFIX_GUARD_OK -u CHOKEPOINT_REGISTRY bash "$mog3485_hook" 2>/dev/null)
+if printf '%s' "$mog3485_out" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null 2>&1; then
+    pass
+else
+    fail "3485: HIMMEL_REPO=. prefix on the anchored merge gate was not denied by the chokepoint hook"
+fi
+
+# check-ci exit 6 (HIMMEL-3473: GitHub's mergeStateStatus refuses while our
+# gates are green) is GitHub-blocked: 18 + one alert, never the generic 14.
+STUB_CI_RC=6 run_mog 18 "3485: check-ci exit 6 → exit 18"
+assert_audit_has "3485: exit-6 audit names the rule" "REFUSED reason=github-blocked phase=check-ci rule=merge-state gate=check-ci:6"
+assert_gh_lacks  "3485: exit 6 attempts no merge" "pr merge"
+assert_alerts 1  "3485: exit 6 sends exactly one operator DM"
 
 # HIMMEL-3154: guard against reintroducing extraction of a historical
 # commit's blob via `git show <sha>:<path>` — the class of fragility this
