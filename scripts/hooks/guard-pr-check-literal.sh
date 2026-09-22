@@ -190,6 +190,19 @@ case "${cmd//[\'\"\\]/}" in
     *[pP][rR]-[cC][hH][eE][cC][kK]*|*[cC][rR]/*|*[][*?]*|*'{'*) ;;
     *) raw_guarded=0 ;;
 esac
+# Exempt exactly the canonical step-0 fence from every raw-guarded blunt
+# check below - it is the anchor's own remedy text and its `>&2`
+# diagnostic would otherwise trip the fd-dup check added below for
+# HIMMEL-3433 round 9. Same normalization the later fence check (further
+# down, for classify()) uses, run here so the fence is exempt from ALL
+# the blunt checks, not only classify()'s own.
+raw_fence=${cmd//[$'\t\n\r']/ }
+while :; do
+    case "$raw_fence" in *'  '*) raw_fence=${raw_fence//  / } ;; *) break ;; esac
+done
+raw_fence=${raw_fence# }
+raw_fence=${raw_fence% }
+[[ "$raw_fence" =~ $FENCE_RE ]] && raw_guarded=0
 if [ "$raw_guarded" -eq 1 ]; then
     raw_masked=$(unquoted_mask "$cmd")
     # codex-1 (round 6, corrected round 7 per AE): round 6 first narrowed
@@ -223,6 +236,42 @@ if [ "$raw_guarded" -eq 1 ]; then
         shown=${cmd//$'\n'/ }
         shown=${shown:0:200}
         deny "the command contains the word 'eval' alongside text naming a guarded scripts/cr script, so the operand eval would run cannot be trusted to have been classified."
+    fi
+    # HIMMEL-3433 round 9 (AF's ruling: NO-GO on 6a267e09 - adversarial
+    # review found four more shapes that hide the guarded run from
+    # classify() below the same way eval's quoted operand did above):
+    # find -exec (find is not one of classify()'s wrapper words, so its
+    # own operands, -exec included, are never inspected), a quote-split
+    # eval reassembly (e'val' reads as two separate quoted words to
+    # classify(), never as the word eval), an fd redirect/dup ahead of
+    # the command (hides the command word the same way a wrapper does,
+    # but isn't one), and an interpreter long option that itself takes an
+    # operand (--rcfile FILE), which shifts the real script operand one
+    # word later than classify()'s operand scan looks. Same blunt-net
+    # style as the two checks above rather than teaching classify() four
+    # more shapes: deny outright whenever the QUOTE-STRIPPED text (quote
+    # characters deleted, not blanked - unlike raw_masked above, which
+    # blanks quoted spans and keeps e'val' as two separate words, quote
+    # deletion merges e'val' straight into eval) contains one of these
+    # alongside text naming a guarded path.
+    raw_stripped=${cmd//[\'\"\\]/}
+    if [[ "$raw_stripped" =~ (^|[[:space:];\&\|\(])(find|xargs|source|eval)([[:space:]]|$) ]] \
+        || [[ "$raw_stripped" =~ (^|[[:space:];\&\|\(])\.([[:space:]]|$) ]] \
+        || [[ "$raw_stripped" =~ (^|[^A-Za-z0-9_])-exec([[:space:]]|$) ]] \
+        || [[ "$raw_stripped" =~ (^|[[:space:];\&\|\(])(bash|sh|zsh|dash)[[:space:]]+(-[A-Za-z]*c[A-Za-z]*|--[A-Za-z][A-Za-z0-9-]*) ]]; then
+        shown=${cmd//$'\n'/ }
+        shown=${shown:0:200}
+        deny "the command contains find/xargs/source/eval/./-exec, or an interpreter -c/long-option flag, alongside text naming a guarded scripts/cr script, so the bytes that would actually run cannot be trusted to have been classified."
+    fi
+    # A file-descriptor redirect or duplication (N>, >&, <&, &>) anywhere
+    # hides the command word the same way (codex, HIMMEL-3433 round 8-9).
+    # The canonical fence's own `>&2` diagnostic is exempt - raw_guarded
+    # was already zeroed above for that exact literal, so this never runs
+    # against it.
+    if [[ "$raw_stripped" =~ [0-9]\>|\>\&|\<\&|\&\> ]]; then
+        shown=${cmd//$'\n'/ }
+        shown=${shown:0:200}
+        deny "the command contains a file-descriptor redirect or duplication (N>, >&, <&, &>) alongside text naming a guarded scripts/cr script, so the bytes that would actually run cannot be trusted to have been classified."
     fi
 fi
 cmd=$(strip_heredocs "$cmd")

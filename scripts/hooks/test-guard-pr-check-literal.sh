@@ -410,42 +410,58 @@ run "bash -lc combined short flags still recurse into the nested command -> deny
     "$(payload 'bash -lc '"'"'bash scripts/cr/pr-check-context.sh --help'"'"'' "$WT")" "$HR"
 run "bash -lc combined short flags running an unguarded command -> no-op" 0 \
     "$(payload 'bash -lc '"'"'echo hi'"'"'' "$WT")" "$HR"
-# Known pre-existing gap, NOT introduced by this branch (confirmed rc=0
-# against origin/main's own copy of this hook too) - tokenize() treats &
-# as an unconditional statement separator even inside an FD-duplication
-# redirect (2>&1), so the redirect's own dup-target digit surfaces as a
-# spurious standalone command word and the guarded invocation that follows
-# is never reached (codex-2, round 5 of the HIMMEL-3433 review). Deferred
-# to HIMMEL-3458 per console ruling (AE, 2026-09-22) rather than fixed
-# here, since round 5 was this branch's last permitted round. This row
-# documents the CURRENT (gap) behavior so HIMMEL-3458's fix has a RED to
-# flip GREEN - it is not an assertion that the behavior is correct.
-run "KNOWN GAP (HIMMEL-3458): 2>&1 before a guarded run is not caught -> no-op" 0 \
+# Fixed here (HIMMEL-3433 round 9, AF's ruling on the NO-GO at 6a267e09) -
+# was a documented KNOWN GAP deferred to HIMMEL-3458 (2>&1's dup-target
+# digit surfacing as a spurious standalone command word, hiding the guarded
+# invocation from tokenize()/classify()). The new blunt fd-redirect/dup
+# check (raw_stripped, ahead of classify()) now catches this outright rather
+# than waiting on a tokenizer fix; HIMMEL-3458 no longer needs to carry it.
+run "2>&1 before a guarded run is caught by the blunt fd-dup check -> deny" 2 \
     "$(payload '2>&1 bash scripts/cr/pr-check-context.sh' "$WT")" "$HR"
-# Known pre-existing gap, NOT introduced by this branch (confirmed rc=0
-# against origin/main's own copy too) - quote-concatenation lets a word split
-# across adjacent quoted spans reassemble into "eval" at runtime while the
-# masker/tokenizer see two separate quoted words and never recognize the
-# eval-wrapper shape, so the guarded command it evals is never recursively
-# classified (codex-1, round 8 of the HIMMEL-3433 review; confirmed a
-# regression against origin/main, which denies this shape). Deferred to
-# HIMMEL-3458 per console ruling (AE, 2026-09-22: anything below Critical at
-# the round-7 fix head defers rather than getting a round 9 here). This row
-# documents the CURRENT (gap) behavior so HIMMEL-3458's fix has a RED to flip
-# GREEN - it is not an assertion that the behavior is correct.
-run "KNOWN GAP (HIMMEL-3458): quote-concatenated eval bypasses the wrapper check -> no-op" 0 \
+# Fixed here (HIMMEL-3433 round 9) - was a documented KNOWN GAP deferred to
+# HIMMEL-3458 (quote-concatenation letting a word split across adjacent
+# quoted spans reassemble into "eval" at runtime, which the masker/tokenizer
+# never recognized since they see two separate quoted words). The new blunt
+# check strips quote characters outright (merging e'val' into eval) rather
+# than masking them, so the reassembled word is caught before classify()
+# ever runs; HIMMEL-3458 no longer needs to carry it.
+run "quote-concatenated eval is caught by the blunt quote-stripped check -> deny" 2 \
     "$(payload "e'val' 'bash scripts/cr/pr-check-context.sh --help'" "$WT")" "$HR"
-# Known pre-existing gap, NOT introduced by this branch (confirmed rc=0
-# against origin/main's own copy too) - the interpreter-operand scan that
-# looks past leading dash-flags to find the script an interpreter runs stops
-# at the FIRST non-flag operand, so an interpreter option that itself takes an
-# operand (bash --rcfile <file>) is misread as the script and the real script
-# one word later is never inspected (codex-2, round 8 of the HIMMEL-3433
-# review; confirmed a regression against origin/main, which denies this
-# shape). Deferred to HIMMEL-3458 for the same reason as the row above. This
-# row documents the CURRENT (gap) behavior, not correct behavior.
-run "KNOWN GAP (HIMMEL-3458): an interpreter option with its own operand hides the real script -> no-op" 0 \
+# Fixed here (HIMMEL-3433 round 9) - was a documented KNOWN GAP deferred to
+# HIMMEL-3458 (the interpreter-operand scan stopping at the first non-flag
+# operand, so an interpreter long option that itself takes an operand,
+# --rcfile <file>, was misread as the script and the real script one word
+# later never inspected). The new blunt check denies outright on any
+# interpreter long option or -c-bearing short flag alongside a guarded
+# mention, without needing to correctly parse the option's own operand;
+# HIMMEL-3458 no longer needs to carry it.
+run "an interpreter long option is caught by the blunt interpreter-flag check -> deny" 2 \
     "$(payload 'bash --rcfile /dev/null scripts/cr/pr-check-context.sh' "$WT")" "$HR"
+# New shape, not a prior KNOWN GAP row (HIMMEL-3433 round 9, AF's
+# adversarial-review finding): find is not one of classify()'s recognized
+# wrapper words, so find's own operands - -exec included - were never
+# inspected, and a guarded run chained through -exec evaded classification
+# outright (confirmed rc=0 against the pre-fix hook at 6a267e09). Caught by
+# the same blunt word-list check as the eval/source/. cases above.
+run "find -exec is caught by the blunt word-list check -> deny" 2 \
+    "$(payload 'find . -maxdepth 0 -exec bash scripts/cr/pr-check-context.sh {} +' "$WT")" "$HR"
+# Accepted consequence, not a bug (HIMMEL-3433 round 9, AF's ruling): the
+# round-7 blanket `<<` heredoc-opener check (raw_masked, above) already
+# denies any guarded mention alongside literal `<<` text, heredoc bodies
+# included. Shell arithmetic left-shift, $((1<<2)), also contains the two
+# literal characters `<<` and so trips the same check even though it opens
+# no heredoc. Ruled acceptable rather than taught apart - same blunt-net
+# tradeoff as the heredoc-body case above.
+# shellcheck disable=SC2016 # command text, verbatim
+run "arithmetic left-shift alongside a guarded mention denies (accepted false-positive) -> deny" 2 \
+    "$(payload 'echo $((1<<2)) scripts/cr/pr-check-context.sh' "$WT")" "$HR"
+# Regression net (HIMMEL-3433 round 9): the canonical step-0 fence's own
+# `>&2` diagnostic redirect would otherwise trip the new blunt fd-dup check
+# above. raw_guarded is zeroed for this exact literal before any blunt
+# check runs, so it stays exempt.
+# shellcheck disable=SC2016 # the fence text, verbatim
+run "the canonical step-0 fence stays allowed despite its own >&2 -> allow" 0 \
+    "$(payload "$(printf 'if himmel_repo=$(printenv HIMMEL_REPO | grep .); then\n    bash "$himmel_repo/scripts/cr/pr-check-context.sh"\nelse\n    echo "pr-check: HIMMEL_REPO is unset or empty" >&2\n    exit 2\nfi\n')" "$PRIMARY")" "$HR"
 # single_quote_mask() had no escape handling: a backslash-escaped double
 # quote inside a double-quoted span closed the quote one character early, so
 # the apostrophe right after it read as a REAL opening single quote and
