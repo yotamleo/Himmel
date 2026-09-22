@@ -473,8 +473,11 @@ make_handover() {
 # ---------------------------------------------------------------------------
 _freeze_now() {
     local y="$1" mo="$2" d="$3" h="$4" mi="$5" s="$6" dir
-    dir=$(mktemp -d "$TMP/freeze-clock.XXXXXX")
-    cat > "$dir/sitecustomize.py" <<EOF
+    dir=$(mktemp -d "$TMP/freeze-clock.XXXXXX") || {
+        echo "_freeze_now: mktemp -d failed -- refusing to silently fall back to the real clock" >&2
+        exit 1
+    }
+    cat > "$dir/sitecustomize.py" <<EOF || { echo "_freeze_now: failed to write $dir/sitecustomize.py" >&2; exit 1; }
 import datetime as _dt
 _real = _dt.datetime
 class _Frozen(_real):
