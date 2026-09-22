@@ -332,6 +332,20 @@ if [ "$kind" = "amend" ]; then
     esac
   done <<< "$set_pairs"
   if [ "$_disproving" = 1 ]; then disproval_bar_ok "$_evidence" || exit 2; fi
+  # HIMMEL-2405: --branch is optional and defaults to the CALLER's own current
+  # checkout branch, never inherited from whichever finding row the lookup
+  # happens to match (that was the HIMMEL-2909 behavior, and it could silently
+  # stamp the amend with the WRONG branch when the match itself was the
+  # ambiguous/cross-branch case this ticket exists to fix). Detached HEAD with
+  # no explicit --branch has nothing to default to and must refuse up front,
+  # before target lookup even runs.
+  if [ -z "$branch" ]; then
+    branch="$(git symbolic-ref --short -q HEAD 2>/dev/null || true)"
+    if [ -z "$branch" ]; then
+      echo "ledger-append.sh: amend requires --branch when the current checkout is not on a branch (detached HEAD) - refusing to default to an empty branch (HIMMEL-2405). $amend_usage" >&2
+      exit 2
+    fi
+  fi
 fi
 
 # attempt (HIMMEL-1500): one row per invocation ATTEMPT (primary + each
@@ -600,16 +614,36 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
   // original row or its effective state; an emitted amend still keys on the
   // ORIGINAL head, so the reader in clear-cr-marker needs no matching logic
   // of its own.
+  // HIMMEL-2405: the amend key gains branch, so an amend recorded FOR one
+  // branch's review context never silently applies while evaluating another
+  // branch at the SAME head (two branches can legitimately sit on the same
+  // commit - HIMMEL-1175 - and finding ids are minted in per-producer stream
+  // order, not globally unique, so the same id routinely exists on both).
+  // Back-compat: a legacy amend row with an empty branch (written before
+  // branches were stamped) still applies to ANY branch - it is looked up
+  // through the SAME "" bucket every branch checks, merged under whatever
+  // branch-specific amend exists for the branch being evaluated (branch-
+  // specific always merges LAST so it wins field-for-field conflicts; every
+  // branch-specific amend post-dates the legacy ones, since HIMMEL-2909 made
+  // the writer always stamp a real branch).
   const SEP=String.fromCharCode(31);
   const amendsByKey=new Map();
   for(const a of parsed){
     if(a.kind!=="amend"||!a.set||typeof a.set!=="object") continue;
-    const k=[a.target_head,a.finding_id,a.artifact||"diff",a.perspective||"off"].join(SEP);
+    const k=[a.branch||"",a.target_head,a.finding_id,a.artifact||"diff",a.perspective||"off"].join(SEP);
     amendsByKey.set(k,Object.assign({},amendsByKey.get(k)||{},a.set));
   }
-  const effective=(o)=>{
-    const k=[o.head,o.finding_id,o.artifact||"diff",o.perspective||"off"].join(SEP);
-    return amendsByKey.has(k)?Object.assign({},o,amendsByKey.get(k)):o;
+  const effectiveSetFor=(branch,head,id,artifact,perspective)=>{
+    const legacy=amendsByKey.get(["",head,id,artifact,perspective].join(SEP));
+    const scoped=branch?amendsByKey.get([branch,head,id,artifact,perspective].join(SEP)):undefined;
+    return (legacy||scoped)?Object.assign({},legacy||{},scoped||{}):null;
+  };
+  // branch defaults to e.BRANCH (the single branch this whole invocation is
+  // for), overridable per-call for --batch-file, where each spec row carries
+  // its OWN branch and the top-level invocation has none.
+  const effective=(o,branch)=>{
+    const s=effectiveSetFor(branch===undefined?e.BRANCH:branch,o.head,o.finding_id,o.artifact||"diff",o.perspective||"off");
+    return s?Object.assign({},o,s):o;
   };
 
   // BATCH (HIMMEL-2052): --batch-file writes N finding rows in ONE process -
@@ -695,7 +729,7 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
         rec.text=fullText.length>500?fullText.slice(0,500):fullText;
       }
 
-      const priorMatches=parsed.filter(o=>keyRow(o)||keyRow(effective(o)));
+      const priorMatches=parsed.filter(o=>keyRow(o)||keyRow(effective(o,spec.branch)));
       if(priorMatches.length>1){
         process.stderr.write("ledger-append.sh: finding "+sid+" matches "+priorMatches.length
           +" distinct existing rows (a legacy short-head + full-head pair) - refusing to guess which one to update.\n"
@@ -706,7 +740,7 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
       }
       const prior=priorMatches.pop();
       if(prior){
-        const priorEff=effective(prior);
+        const priorEff=effective(prior,spec.branch);
         // HIMMEL-2321 CR round 2 (codex-1): only ignore text when the
         // INCOMING record (rec) omits it - unconditionally dropping text on
         // BOTH sides let a genuinely DIFFERENT finding that reuses an id
@@ -739,7 +773,7 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
                          artifact,perspective,set,reason:"verdict appended after adjudication"};
             fs.appendFileSync(led, JSON.stringify(amend)+"\n");
             parsed.push(amend);
-            const amKey=[amend.target_head,amend.finding_id,amend.artifact,amend.perspective].join(SEP);
+            const amKey=[amend.branch||"",amend.target_head,amend.finding_id,amend.artifact,amend.perspective].join(SEP);
             amendsByKey.set(amKey,Object.assign({},amendsByKey.get(amKey)||{},amend.set));
             process.stderr.write("ledger-append.sh: appended verdict amend for "+sid+" at "+shead.slice(0,8)+"\n");
             continue;
@@ -858,27 +892,15 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
         }
       }
     }
-    // HIMMEL-2909: --branch is not required on amend (unlike finding/avail/
-    // usage), so a caller that omits it used to write branch:"" — a
-    // branch-scoped read then sees the finding but not its disposition. `set`
-    // never carries `branch` (not in the allowed --set keys), so target.branch
-    // is always the original, un-amended branch of the targeted finding row —
-    // inherit it first. Fall back to the current checkout only when the
-    // target itself has none (a legacy pre-branch row); refuse rather than
-    // ever write "" again.
-    let branch=e.BRANCH;
-    if(!branch){
-      branch=target.branch||"";
-      if(!branch){
-        try{ branch=cp.execFileSync("git",["branch","--show-current"],{encoding:"utf8",stdio:["ignore","pipe","ignore"]}).trim(); }
-        catch{ branch=""; }
-      }
-      if(!branch){
-        process.stderr.write("ledger-append.sh: amend for "+e.ID+" has no --branch, the target finding row carries none, and the current checkout is not on a branch (detached HEAD) - refusing to write an empty branch (HIMMEL-2909).\n");
-        process.exit(3);
-      }
-    }
-    const rec={kind:"amend",ts:e.TS,branch,target_head:target.head,finding_id:e.ID,
+    // HIMMEL-2405 (supersedes HIMMEL-2909): --branch is not required on amend
+    // (unlike finding/avail/usage), and the bash arg-parsing block above has
+    // already resolved it — explicit --branch, else the CALLER's own current
+    // checkout branch, refusing before we ever got here if HEAD was detached
+    // with neither. It is never inherited from the target finding row: doing
+    // that used to let an amend that (mis-)matched the WRONG branch's finding
+    // (the ambiguous/cross-branch case this ticket exists to fix) silently
+    // adopt that wrong branch's stamp too.
+    const rec={kind:"amend",ts:e.TS,branch:e.BRANCH,target_head:target.head,finding_id:e.ID,
                artifact:e.ARTIFACT,perspective:e.PERSPECTIVE,set,reason:e.REASON};
     // HIMMEL-2901: the round a verdict was ADJUDICATED in is not the round the
     // finding was produced in. Record it on the amend event so the reader can

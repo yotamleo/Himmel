@@ -413,7 +413,7 @@ REKEY_ONLY="$tmp/rekey-only-effective.jsonl"
   printf '{"kind":"finding","ts":"2020-01-03T00:00:00Z","branch":"b","head":"aaaa1110","model":"codex","finding_id":"codex-10","severity":"imp","file":"f","line":3,"verdict":"","artifact":"diff","perspective":"off"}\n'
   printf '{"kind":"amend","ts":"2020-01-04T00:00:00Z","branch":"b","target_head":"aaaa1110","finding_id":"codex-10","artifact":"diff","perspective":"off","set":{"head":"cccc3330"},"reason":"re-key row2 AWAY onto cccc3330"}\n'
 } > "$REKEY_ONLY"
-CR_LEDGER="$REKEY_ONLY" bash "$LA" amend --head aaaa1110 --id codex-10 --set severity=sug --reason "target the row that EFFECTIVELY sits at aaaa1110"
+CR_LEDGER="$REKEY_ONLY" bash "$LA" amend --branch b --head aaaa1110 --id codex-10 --set severity=sug --reason "target the row that EFFECTIVELY sits at aaaa1110"
 check "amend picks the row whose EFFECTIVE head matches, not the one whose stale raw head matches" "$?" "0"
 check "amend on the re-keyed row records row1 (AH10) as target_head, not row2" \
     "$(L="$REKEY_ONLY" node -e 'const rs=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).filter(r=>r.kind==="amend");console.log(rs[rs.length-1].target_head)')" "AH10"
@@ -429,7 +429,7 @@ REKEY_DUP="$tmp/rekey-dup-effective.jsonl"
   printf '{"kind":"amend","ts":"2020-01-02T00:00:00Z","branch":"b","target_head":"AH20","finding_id":"codex-11","artifact":"diff","perspective":"off","set":{"head":"bbbb2220"},"reason":"re-key onto bbbb2220"}\n'
   printf '{"kind":"finding","ts":"2020-01-03T00:00:00Z","branch":"b","head":"bbbb2220","model":"codex","finding_id":"codex-11","severity":"imp","file":"f","line":3,"verdict":"","artifact":"diff","perspective":"off"}\n'
 } > "$REKEY_DUP"
-CR_LEDGER="$REKEY_DUP" bash "$LA" amend --head bbbb2220 --id codex-11 --set severity=sug --reason x 2>"$tmp/rekey-dup.err"
+CR_LEDGER="$REKEY_DUP" bash "$LA" amend --branch b --head bbbb2220 --id codex-11 --set severity=sug --reason x 2>"$tmp/rekey-dup.err"
 check "amend refuses when a re-keyed row and an unrelated row share one effective head (genuine ambiguity)" "$?" "3"
 check "amend refusal on shared effective heads writes nothing" "$(wc -l < "$REKEY_DUP" | tr -d ' ')" "3"
 
@@ -443,7 +443,7 @@ check "amend refusal on shared effective heads writes nothing" "$(wc -l < "$REKE
 # short-row case above.
 RK="$tmp/rekeyed-finding.jsonl"; : > "$RK"
 CR_LEDGER="$RK" bash "$LA" finding --branch b --head AH2 --model codex --id codex-6 --severity imp --file f --line 3 --verdict ""
-CR_LEDGER="$RK" bash "$LA" amend --head AH2 --id codex-6 --set head="$GIT_SHORT" --reason "raised against $GIT_SHORT, mis-keyed onto AH2"
+CR_LEDGER="$RK" bash "$LA" amend --branch b --head AH2 --id codex-6 --set head="$GIT_SHORT" --reason "raised against $GIT_SHORT, mis-keyed onto AH2"
 CR_LEDGER="$RK" bash "$LA" finding --branch b --head "$GIT_FULL" --model codex --id codex-6 --severity imp --file f --line 3 --verdict agreed 2>/dev/null
 check "verdict append at the re-keyed head collides (not a duplicate row)" "$?" "3"
 check "re-keyed finding collision writes no duplicate finding row" "$(L="$RK" node -e 'const rs=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse);console.log(rs.filter(r=>r.kind==="finding"&&r.finding_id==="codex-6").length)')" "1"
@@ -468,36 +468,49 @@ check "the original finding line is untouched" "$(L="$AM" node -e 'const o=requi
 check "amend records the target + the set" "$(L="$AM" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="amend");console.log(o.target_head+","+o.finding_id+","+o.set.severity)')" "AH1,codex-adv-1,sug"
 check "amend records the reason" "$(L="$AM" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="amend");console.log(o.reason)')" "out of diff, pre-existing, already public"
 
-# HIMMEL-2909: amend without --branch used to write branch:"" — a
-# branch-scoped read then sees the finding but not its disposition. It must
-# inherit the branch of the finding row it targets (never "").
-check "amend without --branch inherits the finding's branch" "$(L="$AM" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="amend");console.log(o.branch)')" "b"
+# HIMMEL-2405 (supersedes HIMMEL-2909): amend without --branch used to write
+# branch:"" and then inherit from the TARGET finding row's own branch. That
+# was replaced with defaulting to the CALLER's own current checkout branch
+# (git symbolic-ref) — inheriting from whichever row the lookup happened to
+# match could silently stamp the wrong branch on the exact ambiguous/
+# cross-branch match this ticket exists to fix. Prove it here: the finding
+# carries a DIFFERENT branch ("origin-branch") than the caller's checkout
+# ("my-current-branch"), so inheritance and checkout-default disagree, and
+# the amend must record the checkout's branch.
+CB="$tmp/current-branch-repo"; mkdir -p "$CB"
+git -C "$CB" init -q
+git -C "$CB" -c user.email=t@t.example -c user.name=t commit -q --allow-empty -m init
+git -C "$CB" checkout -q -b my-current-branch
+CBL="$tmp/current-branch.jsonl"; : > "$CBL"
+CR_LEDGER="$CBL" bash "$LA" finding --branch origin-branch --head CBH1 --model m --id find-cb-1 --severity imp --file f --line 3 --verdict agreed
+(cd "$CB" && CR_LEDGER="$CBL" bash "$LA" amend --head CBH1 --id find-cb-1 --set severity=sug --reason "no --branch given, must default to the caller's own checkout")
+check "amend without --branch defaults to the CALLER's checkout branch, not the target's" "$(L="$CBL" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="amend");console.log(o.branch)')" "my-current-branch"
 
-# Control: an explicit --branch is never overridden by inheritance.
+# Control: an explicit --branch is never overridden by the checkout default.
 BR="$tmp/branch-inherit.jsonl"; : > "$BR"
 CR_LEDGER="$BR" bash "$LA" finding --branch origin-branch --head BH1 --model m --id find-br-1 --severity imp --file f --line 3 --verdict agreed
 CR_LEDGER="$BR" bash "$LA" amend --branch explicit-branch --head BH1 --id find-br-1 --set severity=sug --reason "explicit branch must win"
 check "amend with an explicit --branch keeps it (never overridden)" "$(L="$BR" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="amend");console.log(o.branch)')" "explicit-branch"
 
-# Negative: the target finding row itself carries no branch (a legacy
-# pre-branch row) and the cwd is not on a branch (detached HEAD) — no branch
-# to inherit and no fallback, so this must refuse loudly rather than write "".
+# Negative: the caller's cwd is not on a branch (detached HEAD) and no
+# --branch was given — nothing to default to, so this must refuse loudly
+# BEFORE even looking for a target (HIMMEL-2405), rather than write "".
 DET="$tmp/detached-repo"; mkdir -p "$DET"
 git -C "$DET" init -q
 git -C "$DET" -c user.email=t@t.example -c user.name=t commit -q --allow-empty -m init
 git -C "$DET" checkout -q --detach HEAD
 NB="$tmp/no-branch-target.jsonl"; : > "$NB"
-CR_LEDGER="$NB" bash "$LA" finding --head NBH1 --model m --id find-nb-1 --severity imp --file f --line 3 --verdict agreed
-(cd "$DET" && CR_LEDGER="$NB" bash "$LA" amend --head NBH1 --id find-nb-1 --set severity=sug --reason "no branch to inherit, detached HEAD") 2>"$tmp/no-branch.err"
-check "amend refuses when the target has no branch and HEAD is detached (HIMMEL-2909)" "$?" "3"
-check "amend refusal on a branchless target names the reason" "$(grep -c 'is not on a branch' "$tmp/no-branch.err")" "1"
-check "amend refusal on a branchless target wrote nothing" "$(wc -l < "$NB" | tr -d ' ')" "1"
+CR_LEDGER="$NB" bash "$LA" finding --branch origin-branch --head NBH1 --model m --id find-nb-1 --severity imp --file f --line 3 --verdict agreed
+(cd "$DET" && CR_LEDGER="$NB" bash "$LA" amend --head NBH1 --id find-nb-1 --set severity=sug --reason "no --branch, detached HEAD") 2>"$tmp/no-branch.err"
+check "amend refuses when the caller's HEAD is detached and no --branch was given (HIMMEL-2405)" "$?" "2"
+check "amend refusal on a detached HEAD names it" "$(grep -c 'detached HEAD' "$tmp/no-branch.err")" "1"
+check "amend refusal on a detached HEAD wrote nothing" "$(wc -l < "$NB" | tr -d ' ')" "1"
 
 # Negative (ticket-exact fixture): no matching finding row at all, also run
-# from a detached HEAD — must still refuse (the pre-existing "nothing
-# amended" refusal), never fall through to writing an empty branch.
+# from a detached HEAD — the branch precondition fails first (before target
+# lookup even runs), so this still refuses, never falling through to write "".
 (cd "$DET" && CR_LEDGER="$NB" bash "$LA" amend --head NBH1 --id no-such-finding --set severity=sug --reason x) 2>"$tmp/no-match-detached.err"
-check "amend with no matching row + detached HEAD still refuses" "$?" "3"
+check "amend with no matching row + detached HEAD still refuses" "$?" "2"
 check "amend with no matching row + detached HEAD wrote nothing" "$(wc -l < "$NB" | tr -d ' ')" "1"
 
 # The whole point of the verb: it must NEVER report success without writing.
@@ -513,6 +526,35 @@ CR_LEDGER="$AM" bash "$LA" amend --head AH1 --id codex-adv-1 --reason x 2>/dev/n
 check "amend requires at least one --set" "$?" "2"
 CR_LEDGER="$AM" bash "$LA" amend --head AH1 --id codex-adv-1 --set model=evil --reason x 2>/dev/null
 check "amend refuses to set a non-amendable key" "$?" "2"
+
+# ── HIMMEL-2405: the amend identity key gains branch ────────────────────────
+# Two branches can legitimately sit at the SAME head (HIMMEL-1175), and
+# finding ids are minted in per-producer stream order (not globally unique),
+# so branch A and branch B can both mint "codex-9" at the same head. An amend
+# recorded for branch B must never leak into branch A's view of that finding.
+#
+# (a) Cross-branch isolation: a foreign-branch amend must not be visible when
+# re-appending the SAME finding on its own branch. Without branch scoping,
+# effective(prior) would read the foreign amend's severity (sug) instead of
+# the original (crit), make the content comparison see a spurious mismatch,
+# and wrongly refuse (rc=3) a re-append that only ever changed the verdict.
+XBR="$tmp/cross-branch-amend.jsonl"
+CR_LEDGER="$XBR" bash "$LA" finding --branch branch-a --head XH1 --model codex --id codex-9 --severity crit --file f --line 3 --verdict ""
+CR_LEDGER="$XBR" bash "$LA" amend --branch branch-b --head XH1 --id codex-9 --set severity=sug --reason "branch B's own adjudication, must not leak into branch A"
+CR_LEDGER="$XBR" bash "$LA" finding --branch branch-a --head XH1 --model codex --id codex-9 --severity crit --file f --line 3 --verdict agreed
+check "re-append on branch A ignores branch B's amend and appends a verdict-only amend (not a content-mismatch refusal)" "$?" "0"
+check "re-append on branch A wrote a NEW amend row (not a duplicate finding)" "$(L="$XBR" node -e 'const rs=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse);console.log(rs.filter(r=>r.kind==="finding").length+","+rs.filter(r=>r.kind==="amend").length)')" "1,2"
+check "branch A's new amend is scoped to branch-a, not branch-b" "$(L="$XBR" node -e 'const rs=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).filter(r=>r.kind==="amend");console.log(rs[rs.length-1].branch)')" "branch-a"
+check "branch B's amend is untouched and still severity=sug" "$(L="$XBR" node -e 'const rs=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).filter(r=>r.kind==="amend"&&r.branch==="branch-b");console.log(rs[0].set.severity)')" "sug"
+
+# (b) Back-compat: a LEGACY amend with an empty branch (written before
+# HIMMEL-2909 started stamping one) still applies to ANY branch.
+LGB="$tmp/legacy-empty-branch-amend.jsonl"
+CR_LEDGER="$LGB" bash "$LA" finding --branch branch-c --head XH2 --model codex --id codex-12 --severity crit --file f --line 3 --verdict ""
+printf '{"kind":"amend","ts":"2020-01-01T00:00:00Z","branch":"","target_head":"XH2","finding_id":"codex-12","artifact":"diff","perspective":"off","set":{"severity":"sug"},"reason":"legacy pre-branch amend"}\n' >> "$LGB"
+CR_LEDGER="$LGB" bash "$LA" finding --branch branch-c --head XH2 --model codex --id codex-12 --severity sug --file f --line 3 --verdict agreed
+check "a legacy empty-branch amend still applies to branch-c (back-compat)" "$?" "0"
+check "legacy back-compat: no content-mismatch refusal, appended a verdict-only amend" "$(L="$LGB" node -e 'const rs=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse);console.log(rs.filter(r=>r.kind==="finding").length+","+rs.filter(r=>r.kind==="amend").length)')" "1,2"
 
 # Incident 2: the finding was keyed to the head that FIXES it instead of the
 # head it was raised against. amend can re-key it.
