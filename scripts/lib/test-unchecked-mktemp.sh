@@ -582,6 +582,16 @@ f="$TMPDIR_ROOT/t35d.sh"
 printf 'T=$(mktemp)\n[[ -n $T && -d "$T" ]] || exit 1\n' > "$f"
 assert_eq "T35d control: bare and quoted whole-operand tests still guard -> ok (HIMMEL-3457)" "0" "$(scan_lines "$f")"
 
+# T35e/T35f -- /pr-check round 1 codex-1: a reference with whitespace on
+# both sides is still a fragment when it sits INSIDE a larger quoted string.
+f="$TMPDIR_ROOT/t35e.sh"
+printf 'T=$(mktemp)\n[ "$out" = "prefix $T suffix" ] || exit 1\n' > "$f"
+assert_eq "T35e rule (c) \$T space-delimited inside a larger double-quoted string does not guard -> offending (HIMMEL-3457)" "1" "$(scan_lines "$f")"
+
+f="$TMPDIR_ROOT/t35f.sh"
+printf 'T=$(mktemp)\n[ "$out" = %sa $T b%s ] || exit 1\n' "$sq" "$sq" > "$f"
+assert_eq "T35f rule (c) \$T inside a single-quoted literal is not a reference -> offending (HIMMEL-3457)" "1" "$(scan_lines "$f")"
+
 # T36/T36b -- HIMMEL-3460 item 3: `$(...)#` is ONE shell word -- the `#` is
 # glued to the command substitution, not a comment start -- so a real `||`
 # guard after it must survive the comment stripper. A `#` after a SUBSHELL's

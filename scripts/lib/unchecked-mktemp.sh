@@ -368,6 +368,29 @@ unchecked_mktemp_scan() {
         }
         return s
     }
+    # Blank every quoted string that is not EXACTLY one reference, so the
+    # rule (c) pattern sees a reference only where it is a whole operand:
+    # a single-quoted string is a literal (no reference at all), and a
+    # double-quoted string survives only when its whole content matches
+    # ref (e.g. "$T" or "${T:-}"). "prefix $T suffix" becomes "".
+    function mask_quoted(s, ref,    i, j, n, c, out, body) {
+        n = length(s)
+        out = ""
+        for (i = 1; i <= n; i++) {
+            c = substr(s, i, 1)
+            if (c == sq || c == "\"") {
+                j = index(substr(s, i + 1), c)
+                if (j == 0) return out substr(s, i)
+                body = substr(s, i + 1, j - 1)
+                if (c == "\"" && body ~ ("^" ref "$")) out = out c body c
+                else out = out c c
+                i += j
+                continue
+            }
+            out = out c
+        }
+        return out
+    }
     END {
         # Pass 1: mark every line inside a heredoc body (skip[i]=1) so the
         # scan below never treats fixture content as executable code. Two
@@ -505,7 +528,8 @@ unchecked_mktemp_scan() {
             # wrapped in a matching pair of double quotes or bare, then
             # followed by whitespace, a command separator, `)` or
             # end-of-line. `[ "$out" = "$T-suffix" ]`, `[ "$out" =
-            # "prefix$T" ]` and `[ "$out" = "a ${T}" ]` all mention $T only
+            # "prefix$T" ]`, `[ "$out" = "a ${T}" ]` and (via mask_quoted)
+            # `[ "$out" = "a $T b" ]` all mention $T only
             # as a FRAGMENT of the operand actually compared ($out is the
             # thing under test), so none of them match. The braced form
             # keeps both HIMMEL-3428 alternatives: an immediate close, or a
@@ -543,7 +567,7 @@ unchecked_mktemp_scan() {
                 # identifier character, so requiring either an immediate
                 # close or a non-identifier char right after the var name
                 # closes this without narrowing back to exact-`${VAR}`-only.
-                if (rem ~ test_re) guarded = 1
+                if (mask_quoted(rem, ref_re) ~ test_re) guarded = 1
                 if (!guarded && rem ~ ("\\$\\{" var ":\\?")) guarded = 1
             }
 
@@ -567,7 +591,7 @@ unchecked_mktemp_scan() {
                     # remainder above.
                     t_code = strip_comment(t)
                     # (c) a test construct referencing the variable.
-                    if (t_code ~ test_re) { guarded = 1; break }
+                    if (mask_quoted(t_code, ref_re) ~ test_re) { guarded = 1; break }
                     # (d) `${VAR:?...}` -- colon form only (not `${VAR?...}`).
                     if (t_code ~ ("\\$\\{" var ":\\?")) { guarded = 1; break }
                 }
