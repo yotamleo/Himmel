@@ -442,6 +442,17 @@ unchecked_mktemp_scan() {
 
             guarded = 0
 
+            # ponytail: rule (c) below still treats the captured var as
+            # "tested" when it is only EMBEDDED inside a larger compared
+            # string, e.g. `[ "$out" = "$tmp-suffix" ]` or
+            # `[ "$out" = "prefix$tmp" ]` -- the actual variable under test
+            # there is $out, not $tmp, but the regex has no way to tell
+            # "$tmp is the whole compared operand" from "$tmp is glued into
+            # one". Closing this needs real tokenization of the test
+            # expression, not a boundary-character tweak (codex-1, /pr-check
+            # round 3 on this branch) -- deferred as a known false-negative,
+            # same class as the already-accepted `T13 || echo failed` gap.
+
             # Rules (c)/(d) on the REMAINDER of the assignment line itself
             # (e.g. `T=$(mktemp -d); : "${T:?x}"`) -- these are VALUE guards
             # (a test of the actual value of the variable, or `${VAR:?...}`), which
