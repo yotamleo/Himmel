@@ -78,8 +78,10 @@
 # itself.
 #
 # THE single guarantee (HIMMEL-2335 round 6): himmel_dir may be left pointing
-# at the BRANCH ONLY IF cr_diff_state=no (the diff is PROVEN not to touch
-# scripts/cr/ or scripts/guardrails/lib.sh), OR the delegation is provably
+# at the BRANCH ONLY IF cr_diff_state=no (the diff does not touch scripts/cr/
+# or scripts/guardrails/lib.sh and their bytes match the anchor's - that
+# scope only; see the ponytail at the end-of-decision assertion,
+# HIMMEL-3493), OR the delegation is provably
 # logged (verified_delegate=yes -
 # this run IS a verified delegate a genuine anchor handed off to - OR
 # ledger_written=yes - this run IS the anchor and its own ledger-append.sh
@@ -835,8 +837,15 @@ fi
 # this run's own scripts/cr/, or a genuine delegate's, executes on every
 # later /pr-check fence) ONLY IF:
 #   (a) cr_diff_state=no          - the branch's scripts/cr/ and
-#       scripts/guardrails/lib.sh are PROVEN byte-identical in effect to the
-#       anchor's (the diff does not touch either), OR
+#       scripts/guardrails/lib.sh (the manifest's whole scope, cr_guarded)
+#       match the anchor's byte for byte and mode for mode at step 0, OR
+#       ponytail: that scope is not everything a "no" run executes from the
+#       branch. Shared libs sourced from <himmel_dir> (scripts/lib/load-dotenv.sh,
+#       shared-branch-lock, gh-graphql-budget, proc-tree, ...), check-ci.sh and
+#       handover/resolve-active-item.sh are unchecked, and nothing pins the
+#       bytes between this manifest check and later execution (TOCTOU). The
+#       relative gate-writer hand-off (anchor-handoff.sh) covers only scripts/cr/
+#       writers entered relatively. Tracked on HIMMEL-3493.
 #   (b) verified_delegate=yes     - this run IS the verified delegate a
 #       genuine anchor handed off to (the identity handshake above), OR
 #   (c) ledger_written=yes        - this run IS the anchor and its own
