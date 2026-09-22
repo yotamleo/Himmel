@@ -86,6 +86,8 @@ expect_refused() {  # <label> <check-name> [fake real home, default $FAKE]
     case "$out" in *"Uninstall complete."*) fail "$1: claimed completion" ;; esac
     if fake_intact "$_f"; then pass "$1: fake real home untouched"; else fail "$1: fake real home was modified"; mk_fake "$_f"; fi
 }
+# mk_scratch <dir> — a genuine scratch HOME carrying a himmel cache to remove.
+mk_scratch() { rm -rf "$1"; mkdir -p "$1/.claude/himmel"; printf 'x\n' > "$1/.claude/himmel/install-profile.json"; }
 
 # (a) portal: $HOME is a symlink to the real home.
 mkdir -p "$TMP/a"
@@ -141,6 +143,51 @@ ln -s "$TMP/ext3/.himmel" "$TMP/c5/home/.himmel"
 HOME="$TMP/c5/home" run_wet HIMMEL_UNINSTALL_TEST_REAL_HOME="$FAKE3"
 expect_refused "(c5) scratch .himmel links to the real .himmel's physical dir" c "$FAKE3"
 
+# (c6)-(c9) targets that do not derive from $HOME: repo-rooted rows (the hooks
+# dir, project settings), an absolute manifest path, and a core.hooksPath —
+# each aimed into the fake real home while $HOME is a genuine scratch dir.
+mkdir -p "$FAKE/repo/.git/hooks" "$FAKE/repo/.claude"
+printf 'sentinel\n' > "$FAKE/repo/.git/hooks/pre-commit"
+printf '{"sentinel":true}\n' > "$FAKE/repo/.claude/settings.json"
+repo_intact() { [ -f "$FAKE/repo/.git/hooks/pre-commit" ] && grep -q sentinel "$FAKE/repo/.claude/settings.json"; }
+mk_scratch "$TMP/c6/home"
+HOME="$TMP/c6/home" run_wet HIMMEL_UNINSTALL_REPO_ROOT="$FAKE/repo"
+expect_refused "(c6) HIMMEL_UNINSTALL_REPO_ROOT inside the real home" c
+if repo_intact; then pass "(c6) real-home repo untouched"; else fail "(c6) real-home repo was modified"; fi
+mk_scratch "$TMP/c7/home"
+out=$(cd "$FAKE/repo" && env HOME="$TMP/c7/home" PATH="$HBIN" HIMMEL_UNINSTALL_REAL_HOME=1 \
+    HIMMEL_UNINSTALL_TEST_REAL_HOME="$FAKE" bash "$CLI" "${FLAGS[@]}" </dev/null 2>&1); rc=$?
+expect_refused "(c7) cwd is a repo inside the real home" c
+if repo_intact; then pass "(c7) real-home repo untouched"; else fail "(c7) real-home repo was modified"; fi
+awk -F'\t' -v OFS='\t' -v p="$FAKE/.claude/himmel" '$1=="himmelctl-cache"{$6=p}1' \
+    "$HERE/install/uninstall-manifest.tsv" > "$TMP/c8-manifest.tsv"
+mk_scratch "$TMP/c8/home"
+HOME="$TMP/c8/home" run_wet HIMMEL_UNINSTALL_MANIFEST="$TMP/c8-manifest.tsv"
+expect_refused "(c8) absolute manifest row inside the real home" c
+if command -v git >/dev/null 2>&1; then
+    GBIN="$TMP/gbin"
+    mkdir -p "$GBIN" "$FAKE/hooks" "$TMP/c9/repo"
+    link_hermetic_tool git "$GBIN"
+    printf 'sentinel\n' > "$FAKE/hooks/pre-commit"
+    git -C "$TMP/c9/repo" init -q && git -C "$TMP/c9/repo" config core.hooksPath "$FAKE/hooks"
+    mk_scratch "$TMP/c9/home"
+    HOME="$TMP/c9/home" run_wet HIMMEL_UNINSTALL_REPO_ROOT="$TMP/c9/repo" PATH="$GBIN:$HBIN"
+    expect_refused "(c9) core.hooksPath inside the real home" c
+    if [ -f "$FAKE/hooks/pre-commit" ]; then pass "(c9) real-home hooks dir untouched"; else fail "(c9) real-home hooks dir was modified"; fi
+else
+    pass "(c9) skipped: no git on this host"
+fi
+
+# (a4) $HOME is a symlink into a SUBDIRECTORY of the real home: physical and
+# lexical HOME differ and the physical one is inside a protected root. (A
+# lexical HOME under the real home is a scratch dir by design and passes.)
+mkdir -p "$FAKE/Documents/.claude/himmel" "$TMP/a4"
+printf 'sentinel\n' > "$FAKE/Documents/.claude/himmel/sentinel"
+ln -s "$FAKE/Documents" "$TMP/a4/home"
+HOME="$TMP/a4/home" run_wet
+expect_refused "(a4) HOME symlinks into a real-home subdirectory" a
+if [ -f "$FAKE/Documents/.claude/himmel/sentinel" ]; then pass "(a4) real-home subdirectory untouched"; else fail "(a4) real-home subdirectory was modified"; fi
+
 # (d) HOME unset / empty lives in scripts/test-uninstall-ux.sh: that check
 # fires before the fence, and a file that drops HOME may not lift the fence
 # (the static caller guard, scripts/test-uninstall-real-home-callers.sh).
@@ -149,7 +196,6 @@ expect_refused "(c5) scratch .himmel links to the real .himmel's physical dir" c
 # is protected, so a genuine scratch HOME proceeds as today. `/` protects the
 # root: an override target outside $HOME is refused (check c), a
 # self-contained scratch HOME still proceeds, and the passwd home stays listed.
-mk_scratch() { rm -rf "$1"; mkdir -p "$1/.claude/himmel"; printf 'x\n' > "$1/.claude/himmel/install-profile.json"; }
 mk_scratch "$TMP/s/home"
 out=$(cd "$TMP/cwd" && env HOME="$TMP/s/home" PATH="$HBIN" HIMMEL_UNINSTALL_REAL_HOME=1 \
     HIMMEL_UNINSTALL_TEST_REAL_HOME= bash "$CLI" "${FLAGS[@]}" </dev/null 2>&1); rc=$?
@@ -168,7 +214,9 @@ if [ "$rc" -eq 3 ] && [ -e "$TMP/s/home/.claude/himmel" ] && [ -d "$TMP/s/outsid
 else
     fail "(s2) seam=/ + outside override: expected rc=3 + nothing removed, got rc=$rc — $out"
 fi
-out=$(cd "$TMP/cwd" && env HOME="$TMP/s/home" PATH="$HBIN" HIMMEL_UNINSTALL_REAL_HOME=1 \
+# Self-contained includes the cwd: its repo-rooted targets (hooks dir, project
+# settings) sit outside $HOME otherwise, and seam=/ refuses those (check c).
+out=$(cd "$TMP/s/home" && env HOME="$TMP/s/home" PATH="$HBIN" HIMMEL_UNINSTALL_REAL_HOME=1 \
     HIMMEL_UNINSTALL_TEST_REAL_HOME=/ bash "$CLI" "${FLAGS[@]}" </dev/null 2>&1); rc=$?
 if [ "$rc" -eq 0 ] && [ ! -e "$TMP/s/home/.claude/himmel" ]; then
     pass "(s3) seam=/ does not disable anything: a self-contained scratch HOME proceeds"
@@ -226,11 +274,16 @@ fi
 # (which has no getent/dscl fallback) answers (u1) a name outside
 # [A-Za-z0-9._-] carrying a command substitution whose body is a builtin redirect
 # (no PATH lookup, so it would fire if evaluated) — refused, never eval'd —
-# and (u2) an unknown user, whose `~name` stays literal — unresolved.
+# (u2) an unknown user, whose `~name` stays literal — unresolved — and (u3) an
+# all-digit name, which must never reach the `~` expansion.
 UBIN="$TMP/ubin"
 mkdir -p "$UBIN" "$TMP/u/home"
-for _case in u1 u2; do
-    if [ "$_case" = u1 ]; then _name="x\$(: >$TMP/pwned)"; else _name="himmel_no_such_user_3415"; fi
+for _case in u1 u2 u3; do
+    case "$_case" in
+        u1) _name="x\$(: >$TMP/pwned)" ;;
+        u2) _name="himmel_no_such_user_3415" ;;
+        *) _name="0" ;;  # all digits: ~0 would expand from the dirstack ($PWD)
+    esac
     printf '%s\n' "$_name" > "$UBIN/id.name"
     cat > "$UBIN/id" <<EOF
 #!/bin/sh

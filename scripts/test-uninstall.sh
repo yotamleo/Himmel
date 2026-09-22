@@ -66,6 +66,11 @@ unset HIMMEL_UNINSTALL_REAL_HOME
 SUITE_HOME="$TMP/suitehome"
 mkdir -p "$SUITE_HOME"
 export HOME="$SUITE_HOME"
+# HIMMEL-3415: run from a scratch cwd too. uninstall.sh refuses a wet run whose
+# repo-rooted targets ({PWD}, the hooks dir) resolve into the real home, which
+# a checkout under it (a worktree, CI's /home/runner/work) always does.
+mkdir -p "$TMP/cwd"
+cd "$TMP/cwd" || exit 1
 case "$REAL_HOME" in
     "$TMP"|"$TMP"/*)
         echo "FAIL the operator's real \$HOME resolved under this suite's \$TMP — refusing to proceed"
@@ -1171,7 +1176,7 @@ fi
 #      files are written by the REAL hook (not hand-made), pointed at the cache
 #      the same way uninstall reads it, so the two cannot drift onto two paths.
 mk_cache
-HOOK_SH="$(cd "$(dirname "$0")" && pwd)/hooks/check-update-available.sh"
+HOOK_SH="$(dirname "$CLI")/hooks/check-update-available.sh"
 NG="$TMP/nongit-install"; rm -rf "$NG"; mkdir -p "$NG/scripts/hooks" "$NG/scripts/lib"
 cp "$HOOK_SH" "$NG/scripts/hooks/"
 cp "$(dirname "$HOOK_SH")/../lib/detach.sh" "$(dirname "$HOOK_SH")/../lib/release-check.sh" "$NG/scripts/lib/"
@@ -1211,7 +1216,7 @@ fi
 #      two cannot drift onto two paths. A dry-run must NAME the location, and a
 #      wet run must remove it with the dir - a survivor is HIMMEL-3251 residue.
 mk_cache
-LEG_SH="$(cd "$(dirname "$0")" && pwd)/handover/console-kit/headed-arm-leg.sh"
+LEG_SH="$(dirname "$CLI")/handover/console-kit/headed-arm-leg.sh"
 LLD="$TMP/launch20c"; mkdir -p "$LLD"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$LLD/target.sh"; printf '#!/usr/bin/env bash\necho PROCEED\n' > "$LLD/preflight.sh"
 chmod +x "$LLD/target.sh" "$LLD/preflight.sh"; echo doc > "$LLD/doc.md"

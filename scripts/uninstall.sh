@@ -1105,7 +1105,9 @@ real_home_resolve() {
   _u=$(id -un 2>/dev/null) || _u=""
   case "$_u" in ''|-*|*[!A-Za-z0-9._-]*) _u="" ;; esac
   if [ -n "$_u" ]; then
-    eval "_h=~$_u"
+    # An all-digit name never reaches the eval: `~N` expands from the
+    # directory stack (`~0` is $PWD), not from the passwd database.
+    case "$_u" in *[!0-9]*) eval "_h=~$_u" ;; esac
     case "$_h" in /*) ;; *) _h="" ;; esac
   fi
   if [ -z "$_h" ] && command -v getent >/dev/null 2>&1; then
@@ -1166,19 +1168,45 @@ real_home_under() {
   return 1
 }
 
+# real_home_target_ok <label> <target> <physical $HOME> <roots> — rc=1 (one
+# stderr line, check c) when the target resolves into one of the
+# newline-separated roots outside $HOME, or anywhere in a root that $HOME is
+# an ancestor of.
+real_home_target_ok() {
+  local _tp _root
+  _tp=$(real_home_phys "$2") || _tp="$2"
+  while IFS= read -r _root; do
+    if real_home_under "$_tp" "$_root" && { ! real_home_under "$_tp" "$3" || real_home_under "$_root" "$3"; }; then
+      echo "ERROR: refusing a wet uninstall — real-home check (c): $1 target $2 resolves to $_tp, inside the real home's $_root" >&2
+      return 1
+    fi
+  done <<< "$4"
+  return 0
+}
+
 # real_home_check — rc=0 when this run may proceed; otherwise ONE stderr line
 # naming the check that fired and the two physical paths, and rc=1:
 #   unresolved  the passwd home could not be resolved (fail-closed)
-#   a           physical $HOME is a protected home
+#   a           physical $HOME is a protected home, or $HOME is a symlink
+#               (physical != lexical) into a protected root
 #   b           physical $HOME/.claude is at or under a protected home's
 #               physical .claude (followed when it is symlinked out of the home)
-#   c           a $HOME-derived removal target (a {HOME} manifest row or any
-#               override env) resolves into a protected root but outside $HOME
-#               — or anywhere in it when $HOME is an ancestor of that root; the
-#               roots are the physical home plus the physical location of each
-#               top-level entry the {HOME} rows live under (.claude, .himmel)
+#   c           a removal target resolves into a protected root but outside
+#               $HOME — or anywhere in it when $HOME is an ancestor of that
+#               root. Targets: every non-keep manifest row with a path (its
+#               override env, {HOME}, {PWD}, {HOOKS_REPO_ROOT} or an absolute
+#               path), the hooks dir after core.hooksPath resolution, and
+#               HIMMELCTL_SYSTEMD_USER_UNIT_DIR. The roots are the physical
+#               home plus the physical location of each top-level entry the
+#               {HOME} rows live under (.claude, .himmel)
+# ponytail: a LEXICAL $HOME under the real home (e.g. ~/tmp/scratch, spelled
+# with no symlink) is a scratch dir by design and passes; only a HOME that
+# resolves somewhere other than where it is spelled is judged by where it
+# lands. Session launchers that reset HOME, and step [3/8]'s crontab and
+# `systemctl --user` (which act on the invoking user whatever HOME is), are
+# outside this check.
 real_home_check() {
-  local _homes _r _rp _rc _hp _cp _i _var _t _tp _home _c _comps _roots _root
+  local _homes _r _rp _rc _hp _cp _i _t _home _c _comps _roots _root
   if ! _homes=$(real_home_protected_homes); then
     echo "ERROR: refusing a wet uninstall — real-home check (unresolved): cannot resolve this user's passwd home independently of \$HOME ($HOME)" >&2
     return 1
@@ -1219,33 +1247,27 @@ $_t"
       echo "ERROR: refusing a wet uninstall — real-home check (a): \$HOME resolves to $_hp, the real home $_rp" >&2
       return 1
     fi
+    if [ "$_hp" != "$_home" ]; then
+      while IFS= read -r _root; do
+        if real_home_under "$_hp" "$_root"; then
+          echo "ERROR: refusing a wet uninstall — real-home check (a): \$HOME $_home resolves to $_hp, inside the real home's $_root" >&2
+          return 1
+        fi
+      done <<< "$_roots"
+    fi
     if real_home_under "$_cp" "$_rc"; then
       echo "ERROR: refusing a wet uninstall — real-home check (b): \$HOME/.claude resolves to $_cp, under the real $_rc" >&2
       return 1
     fi
     for _i in "${!M_ID[@]}"; do
-      _var="${M_ENV[$_i]}"
-      if [ "$_var" != "-" ] && [ -n "${!_var:-}" ]; then
-        _t="${!_var}"
-      else
-        case "${M_PATH[$_i]}" in '{HOME}'*) _t=$(m_path "$_i") ;; *) continue ;; esac
-      fi
-      _tp=$(real_home_phys "$_t") || _tp="$_t"
-      while IFS= read -r _root; do
-        if real_home_under "$_tp" "$_root" && { ! real_home_under "$_tp" "$_hp" || real_home_under "$_root" "$_hp"; }; then
-          echo "ERROR: refusing a wet uninstall — real-home check (c): ${M_ID[$_i]} target $_t resolves to $_tp, inside the real home's $_root" >&2
-          return 1
-        fi
-      done <<< "$_roots"
+      [ "${M_CLASS[$_i]}" = keep ] && continue
+      _t=$(m_path "$_i")
+      [ "$_t" = "-" ] && continue
+      real_home_target_ok "${M_ID[$_i]}" "$_t" "$_hp" "$_roots" || return 1
     done
+    real_home_target_ok "git hooks dir" "$(resolve_native_hooks_dir)" "$_hp" "$_roots" || return 1
     if [ -n "${HIMMELCTL_SYSTEMD_USER_UNIT_DIR:-}" ]; then
-      _tp=$(real_home_phys "$HIMMELCTL_SYSTEMD_USER_UNIT_DIR") || _tp="$HIMMELCTL_SYSTEMD_USER_UNIT_DIR"
-      while IFS= read -r _root; do
-        if real_home_under "$_tp" "$_root" && { ! real_home_under "$_tp" "$_hp" || real_home_under "$_root" "$_hp"; }; then
-          echo "ERROR: refusing a wet uninstall — real-home check (c): HIMMELCTL_SYSTEMD_USER_UNIT_DIR resolves to $_tp, inside the real home's $_root" >&2
-          return 1
-        fi
-      done <<< "$_roots"
+      real_home_target_ok HIMMELCTL_SYSTEMD_USER_UNIT_DIR "$HIMMELCTL_SYSTEMD_USER_UNIT_DIR" "$_hp" "$_roots" || return 1
     fi
   done <<< "$_homes"
   return 0
