@@ -456,6 +456,41 @@ make_handover() {
 }
 
 # ---------------------------------------------------------------------------
+# _freeze_now <Y> <M> <D> <H> <Mi> <S> (HIMMEL-3427): writes a sitecustomize.py
+# that pins python3's datetime.datetime.now()/.now(tz) to exactly this local
+# instant, and echoes a dir to put on PYTHONPATH. `site` auto-imports
+# sitecustomize at interpreter start, even under `python3 -c`, so putting this
+# dir on PYTHONPATH for BOTH this suite's own "past"/"tomorrow" one-liners AND
+# the `bash "$ARM"` invocation they bracket makes every datetime.now() read in
+# between see the SAME instant. Without it, each is an independent real-clock
+# read: the suite computes an input (or an expected date) at one instant,
+# arm-resume computes its own --time roll at a slightly later one, and a real
+# clock tick between them (near-guaranteed if the pair straddles UTC
+# midnight) makes the two disagree on which day it is -- HIMMEL-3199's class,
+# for the T8/T_1674 fixtures instead of the 2177 one. A caller that never sets
+# PYTHONPATH (production, or any other test) sees the real clock; arm-resume.sh
+# itself never sets or reads PYTHONPATH, so this changes no shipped behaviour.
+# ---------------------------------------------------------------------------
+_freeze_now() {
+    local y="$1" mo="$2" d="$3" h="$4" mi="$5" s="$6" dir
+    dir=$(mktemp -d "$TMP/freeze-clock.XXXXXX") || {
+        echo "_freeze_now: mktemp -d failed -- refusing to silently fall back to the real clock" >&2
+        exit 1
+    }
+    cat > "$dir/sitecustomize.py" <<EOF || { echo "_freeze_now: failed to write $dir/sitecustomize.py" >&2; exit 1; }
+import datetime as _dt
+_real = _dt.datetime
+class _Frozen(_real):
+    @classmethod
+    def now(cls, tz=None):
+        fixed = _real($y, $mo, $d, $h, $mi, $s)
+        return fixed.astimezone(tz) if tz is not None else fixed
+_dt.datetime = _Frozen
+EOF
+    printf '%s' "$dir"
+}
+
+# ---------------------------------------------------------------------------
 # Helper (HIMMEL-540): a TICKET-BEARING handover, dedicated + separate from
 # make_handover so the dedup/collision/multislot suite stays ticketless.
 #   $1 = H1 title text, $2 = optional 'ticket:' frontmatter value,
@@ -719,8 +754,8 @@ _assert_sd_is_tomorrow() {   # <label> <arm-output>
     local label="$1" text="$2" sd sd_set set4 set2
     sd=$(printf '%s\n' "$text" | sed -n 's|.* /sd \(.*\)|\1|p' | head -n 1 | sed 's| /.*||')
     sd_set=$(_digit_set "$sd")
-    set4=$(_digit_set "$(python3 -c 'import datetime; d=datetime.datetime.now()+datetime.timedelta(days=1); print(d.strftime("%d %m %Y"))')")
-    set2=$(_digit_set "$(python3 -c 'import datetime; d=datetime.datetime.now()+datetime.timedelta(days=1); print(d.strftime("%d %m %y"))')")
+    set4=$(_digit_set "$(PYTHONPATH="$T8_FREEZE" python3 -c 'import datetime; d=datetime.datetime.now()+datetime.timedelta(days=1); print(d.strftime("%d %m %Y"))')")
+    set2=$(_digit_set "$(PYTHONPATH="$T8_FREEZE" python3 -c 'import datetime; d=datetime.datetime.now()+datetime.timedelta(days=1); print(d.strftime("%d %m %y"))')")
     if [ "$sd_set" = "$set4" ] || [ "$sd_set" = "$set2" ]; then
         echo "PASS $label (/sd $sd)"
     else
@@ -729,9 +764,15 @@ _assert_sd_is_tomorrow() {   # <label> <arm-output>
     fi
 }
 HO=$(make_handover "$WORK_REPO")
-PAST_HHMM=$(python3 -c 'import datetime; print((datetime.datetime.now()-datetime.timedelta(minutes=2)).strftime("%H:%M"))')
+# HIMMEL-3427: freeze ONE instant deliberately at 23:59:59 and feed it to
+# every datetime.now() read below (ours and arm-resume's own via PYTHONPATH),
+# so PAST_HHMM's "2 minutes ago" and the arm's own roll-to-tomorrow decision
+# always land on the SAME day the assertions expect -- regardless of the real
+# wall clock, and regression-testing the exact midnight boundary every run.
+T8_FREEZE=$(_freeze_now 2026 9 22 23 59 59) || exit 1
+PAST_HHMM=$(PYTHONPATH="$T8_FREEZE" python3 -c 'import datetime; print((datetime.datetime.now()-datetime.timedelta(minutes=2)).strftime("%H:%M"))')
 # HIMMEL-966: host `at` must not be a dependency; pin the posix backend with the stub.
-out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$PAST_HHMM" --handover "$HO" --long-gap --force --dry-run 2>&1)
+out=$(PYTHONPATH="$T8_FREEZE" SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$PAST_HHMM" --handover "$HO" --long-gap --force --dry-run 2>&1)
 rc=$?
 assert_rc "T8 past --time exits 0 (force+dry)" 0 "$rc"
 case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
@@ -754,13 +795,13 @@ exit 0
 EOF
         chmod +x "$T8B_BIN/reg"
         HO_T8B=$(make_handover "$WORK_REPO")
-        out=$(SCHTASKS_CMD="$T8B_BIN/schtasks" PATH="$T8B_BIN:$PATH" bash "$ARM" --time "$PAST_HHMM" --handover "$HO_T8B" --long-gap --force --dry-run 2>&1)
+        out=$(PYTHONPATH="$T8_FREEZE" SCHTASKS_CMD="$T8B_BIN/schtasks" PATH="$T8B_BIN:$PATH" bash "$ARM" --time "$PAST_HHMM" --handover "$HO_T8B" --long-gap --force --dry-run 2>&1)
         rc=$?
         assert_rc "T8b day-first locale past --time exits 0 (force+dry)" 0 "$rc"
         _assert_sd_is_tomorrow "T8b schtasks /sd is tomorrow under dd/MM/yyyy" "$out"
         ;;
     *)
-        TOM=$(python3 -c 'import datetime; print((datetime.datetime.now()+datetime.timedelta(days=1)).strftime("%Y%m%d"))')
+        TOM=$(PYTHONPATH="$T8_FREEZE" python3 -c 'import datetime; print((datetime.datetime.now()+datetime.timedelta(days=1)).strftime("%Y%m%d"))')
         assert_contains "T8 at -t stamp is tomorrow" "at -t $TOM" "$out"
         ;;
 esac
@@ -916,8 +957,13 @@ assert_contains "T_1674 stale names the staleness reason" "stale" "$out"
 #     asserts the operator-facing roll WARN.
 # ---------------------------------------------------------------------------
 HO=$(make_handover "$WORK_REPO")
-PAST_HHMM=$(python3 -c 'import datetime; print((datetime.datetime.now()-datetime.timedelta(minutes=2)).strftime("%H:%M"))')
-out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$PAST_HHMM" --handover "$HO" --long-gap --force --dry-run 2>&1)
+# HIMMEL-3427: same freeze as T8 -- PAST_HHMM's "2 minutes ago" and
+# arm-resume's own roll decision must see the SAME now, or a real clock tick
+# between the two reads (near-guaranteed at real midnight) can make arm-resume
+# see "23:57" as still LATER today instead of past, and never roll at all.
+T1674_TOMORROW_FREEZE=$(_freeze_now 2026 9 22 23 59 59) || exit 1
+PAST_HHMM=$(PYTHONPATH="$T1674_TOMORROW_FREEZE" python3 -c 'import datetime; print((datetime.datetime.now()-datetime.timedelta(minutes=2)).strftime("%H:%M"))')
+out=$(PYTHONPATH="$T1674_TOMORROW_FREEZE" SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$PAST_HHMM" --handover "$HO" --long-gap --force --dry-run 2>&1)
 rc=$?
 assert_rc "T_1674 past-time far roll still arms (force+long-gap+dry)" 0 "$rc"
 assert_contains "T_1674 past-time roll warns LOUDLY about tomorrow" "rolled the arm to TOMORROW" "$out"
@@ -931,8 +977,13 @@ assert_contains "T_1674 past-time roll names the rolled time" "$PAST_HHMM" "$out
 #     and noising up every ordinary / midnight-crossing arm.
 # ---------------------------------------------------------------------------
 HO=$(make_handover "$WORK_REPO")
-NEAR_HHMM=$(python3 -c 'import datetime; n=datetime.datetime.now(); t=n.replace(second=0,microsecond=0)+datetime.timedelta(minutes=25); print(t.strftime("%H:%M"))')
-out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$NEAR_HHMM" --handover "$HO" --force --dry-run 2>&1)
+# HIMMEL-3427: same freeze technique as above, pinned right at the midnight
+# boundary so this test always exercises the "near roll across midnight" arm
+# the comment above describes, instead of leaving it to chance whether the
+# suite happens to run near real midnight.
+T1674_NEAR_FREEZE=$(_freeze_now 2026 9 22 23 59 59) || exit 1
+NEAR_HHMM=$(PYTHONPATH="$T1674_NEAR_FREEZE" python3 -c 'import datetime; n=datetime.datetime.now(); t=n.replace(second=0,microsecond=0)+datetime.timedelta(minutes=25); print(t.strftime("%H:%M"))')
+out=$(PYTHONPATH="$T1674_NEAR_FREEZE" SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$NEAR_HHMM" --handover "$HO" --force --dry-run 2>&1)
 rc=$?
 assert_rc "T_1674 near arm arms cleanly (rc 0, no long-gap refusal)" 0 "$rc"
 assert_not_contains "T_1674 near arm emits no spurious roll WARN" "rolled the arm to TOMORROW" "$out"

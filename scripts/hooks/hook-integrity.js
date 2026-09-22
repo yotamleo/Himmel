@@ -1023,22 +1023,73 @@ function resolveReal(candidate) {
   }
 }
 
-// Every project-relative identity `candidate` passes through on its way to the
-// file that runs: for each hop of the leaf's symlink chain, the parents resolved
-// (kernel order) plus the unfollowed leaf. A pinned hook swapped for a link to an
-// unpinned sibling is then still checked under its own pin, whichever directory
-// alias it was reached through. Bounded, so a link loop cannot spin.
-function leafChain(candidate) {
-  const hops = [];
-  let cur = String(candidate);
-  for (let i = 0; i < 40; i++) {
-    const hop = path.join(resolveReal(path.dirname(cur)), path.basename(cur));
-    hops.push(normalize(hop));
+// HIMMEL-3397. Every identity `candidate` claims on its way to the file that
+// runs, derived the way the kernel walks it: component by component, lstat each.
+// Each link followed becomes an ALIAS of the directory (or file) it resolves to,
+// spelled with its parents already resolved and the link unfollowed, and every
+// alias then moves with the walk: a plain component extends it, and a `..` pops
+// it only down to its own link point. A `..` below that point leaves the TARGET's
+// parent, so that alias names nothing and is dropped. So a pinned hook, or a
+// pinned hooks DIRECTORY swapped for a link, keeps its pin whichever alias reached
+// it, and an internal `sub/..` cancels only where `sub` really was a directory.
+// The final resolved path closes the list. Bounded like the kernel's 40 links,
+// and at 64 live aliases; a loop, an alias blow-up, an unreadable component, a
+// link target that is not valid UTF-8, or a missing component while a followed
+// link's identities are still pending returns null so the caller fails closed.
+// Any other missing component ends the walk as-is.
+const UNWALKABLE_DENY = 'unwalkable: ';
+const MAX_LINK_FOLLOWS = 40;
+const MAX_ALIASES = 64;
+
+function walkIdentities(candidate) {
+  const raw = String(candidate);
+  const abs = path.isAbsolute(raw) ? raw : `${process.cwd()}${path.sep}${raw}`; // no lexical `..` collapse
+  const sep = path.sep === '\\' ? /[\\/]+/ : /\/+/; // a POSIX backslash is a filename character
+  const split = (p) => p.split(sep).filter((c) => c !== '' && c !== '.');
+  let resolved = path.parse(abs).root;
+  let todo = split(abs.slice(resolved.length));
+  let aliases = []; // { s: spelling of `resolved`, d: components below its link point }
+  const ids = () => [...aliases.map((a) => normalize(a.s)), normalize(resolved)];
+  for (let follows = 0; todo.length;) {
+    const name = todo.shift();
+    if (typeof name !== 'string') { // the link's target is resolved
+      aliases = aliases.concat(name.frozen);
+      if (aliases.length > MAX_ALIASES) return null;
+      continue;
+    }
+    if (name === '..') {
+      resolved = path.dirname(resolved);
+      aliases = aliases.filter((a) => a.d > 0).map((a) => ({ s: path.dirname(a.s), d: a.d - 1 }));
+      continue;
+    }
+    const next = path.join(resolved, name);
+    let st;
+    try {
+      st = fs.lstatSync(next);
+    } catch (e) {
+      if (!e || (e.code !== 'ENOENT' && e.code !== 'ENOTDIR')) return null;
+      if (todo.some((c) => typeof c !== 'string')) return null; // a link's identities are still pending
+      const rest = todo.filter((c) => typeof c === 'string');
+      return [...aliases.map((a) => a.s), resolved].map((s) => normalize(path.join(s, name, ...rest)));
+    }
+    if (!st.isSymbolicLink()) {
+      resolved = next;
+      aliases = aliases.map((a) => ({ s: path.join(a.s, name), d: a.d + 1 }));
+      continue;
+    }
+    if (++follows > MAX_LINK_FOLLOWS) return null;
+    const frozen = [{ s: next, d: 0 }, ...aliases.map((a) => ({ s: path.join(a.s, name), d: 0 }))];
+    if (frozen.length + aliases.length > MAX_ALIASES) return null;
     let target;
-    try { target = fs.readlinkSync(hop); } catch (_e) { break; }
-    cur = path.isAbsolute(target) ? target : `${path.dirname(hop)}/${target}`;
+    try {
+      const bytes = fs.readlinkSync(next, { encoding: 'buffer' });
+      target = bytes.toString('utf8');
+      if (!Buffer.from(target, 'utf8').equals(bytes)) return null; // not UTF-8: the walk cannot spell what the kernel runs
+    } catch (_e) { return null; }
+    if (path.isAbsolute(target)) { resolved = path.parse(target).root; aliases = []; }
+    todo = [...split(path.isAbsolute(target) ? target.slice(resolved.length) : target), { frozen }, ...todo];
   }
-  return hops;
+  return ids();
 }
 
 function verifyIntegrityUnbypassed(scriptPath, sessionId) {
@@ -1065,19 +1116,21 @@ function verifyIntegrityUnbypassed(scriptPath, sessionId) {
   if (denyReason) return { ok: false, relPath, reason: denyReason };
   const pins = recordPins(record);
   if (!pins) return { ok: true };
-  // Every identity the path claims is checked: the resolved target's, the spelled
-  // path's own (`..` collapsed, links NOT followed) and each hop of the leaf's link
-  // chain. A pinned hook swapped for a link to an unpinned sibling keeps its pin.
-  const spelled = normalize(path.resolve(String(scriptPath)));
+  // Every identity the path claims is checked: the resolved target's, the lexical
+  // spelling's, and each one the kernel-order walk passes through a link
+  // (walkIdentities), relative to the
+  // resolved project or, for a link at the project root itself, its spelling.
+  const walked = walkIdentities(scriptPath);
+  if (!walked) return { ok: false, relPath, reason: `${UNWALKABLE_DENY}a symlink loop, an unreadable or non-UTF-8 link, or a dangling link` };
   const spelledProject = normalize(path.resolve(projectDir));
   const keys = [relPath];
-  const claim = (abs, root) => {
-    if (!abs.toLowerCase().startsWith(`${root.toLowerCase()}/`)) return;
-    const rel = abs.slice(root.length + 1);
-    if (!keys.includes(rel)) keys.push(rel);
-  };
-  claim(spelled, spelledProject);
-  for (const hop of leafChain(scriptPath)) claim(hop, resolvedProject);
+  for (const abs of [normalize(path.resolve(scriptPath)), ...walked]) { // the lexical spelling too: an over-claim only denies
+    for (const root of [resolvedProject, spelledProject]) {
+      if (!abs.toLowerCase().startsWith(`${root.toLowerCase()}/`)) continue;
+      const rel = abs.slice(root.length + 1);
+      if (!keys.includes(rel)) keys.push(rel);
+    }
+  }
   let actual;
   for (const key of keys) {
     const expected = pins[key];
@@ -1122,6 +1175,14 @@ function denyIntegrityMismatch(scriptPath, relPath, reason) {
       `run-hook-with-bash: DENY ${path.basename(scriptPath)} — the hook path is spelled inside the project `
       + `(${relPath}) but ${reason.slice(ESCAPES_PROJECT_DENY.length)}, so no session pin can vouch for it. `
       + 'Point the hook at a script inside the project; HIMMEL_HOOK_INTEGRITY_BYPASS_OK does not apply to a path that leaves it.\n',
+    );
+    return;
+  }
+  if (typeof reason === 'string' && reason.indexOf(UNWALKABLE_DENY) === 0) {
+    process.stderr.write(
+      `run-hook-with-bash: DENY ${path.basename(scriptPath)} — the hook path (${relPath}) could not be walked `
+      + `(${reason.slice(UNWALKABLE_DENY.length)}), so which pins bind it is unknown. `
+      + 'Point the hook at a path with no link loop and readable directories.\n',
     );
     return;
   }

@@ -32,7 +32,7 @@
       "scopes": ["project", "user"],
       "profiles": ["core", "all"],
       "deps": [],
-      "probe": { "type": "settings-key", "file": ".claude/settings.json", "key": "statusLine.command" },
+      "probe": { "type": "settings-key", "file": ".claude/settings.json", "key": "statusLine.command", "verifyScript": true },
       "install": { "type": "wire", "target": "statusline" },
       "unwire": { "type": "wire", "target": "statusline" },
       "removable": "per-item",
@@ -122,7 +122,7 @@
       "scopes": ["project", "user"],
       "profiles": ["core", "luna", "all"],
       "deps": [],
-      "probe": { "type": "settings-key", "file": ".claude/settings.json", "key": "enabledPlugins" },
+      "probe": { "type": "settings-key", "file": ".claude/settings.json", "key": "enabledPlugins", "verifyPluginSet": true },
       "install": { "type": "plugins" },
       "removable": "full-offboard-only",
       "offboard": "advise"
@@ -166,7 +166,7 @@
       "contributorScopes": ["user"],
       "profiles": ["core", "all"],
       "deps": [],
-      "probe": { "type": "file-exists", "path": "scripts/guardrails/lib.sh" },
+      "probe": { "type": "file-exists", "path": "scripts/guardrails/lib.sh", "syntaxCheck": true },
       "install": { "type": "adopt" },
       "removable": "full-offboard-only",
       "provenance": { "kinds": ["file"] }
