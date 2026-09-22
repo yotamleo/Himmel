@@ -164,6 +164,12 @@ if [ "$PURGE_STATE" -eq 1 ] && [ "$KEEP_TELEGRAM_STATE" -eq 1 ]; then
   echo "ERROR: --purge-state and --keep-telegram-state contradict each other — pick one." >&2
   exit 2
 fi
+# HIMMEL-3415: an unset or empty $HOME is refused outright, dry-run included —
+# every {HOME} target would otherwise print (or remove) as a root-relative path.
+if [ -z "${HOME:-}" ]; then
+  echo "ERROR: refusing to run — real-home check (HOME-unset): \$HOME is unset or empty" >&2
+  exit 3
+fi
 
 # strip_trailing_slash <path> — HIMMEL-2505 gap A.3: a trailing slash makes
 # `cd`/`rm -rf` follow a symlinked directory instead of the removal sites
@@ -1064,6 +1070,155 @@ restore_hook_backups() {
   return "$rc"
 }
 
+# --- Runtime real-home refusal (HIMMEL-3415) ---------------------------------
+# The wet-run fence below is lifted by HIMMEL_UNINSTALL_REAL_HOME=1, and the
+# static caller guard (scripts/test-uninstall-real-home-callers.sh) only reads
+# how callers SPELL $HOME. A $HOME that claims to be scratch but RESOLVES into
+# the real home — `ln -s ~ "$td/home"`, a scratch $HOME whose .claude links to
+# the real one, an override target like HIMMELCTL_CACHE_DIR aimed into the
+# real ~/.claude — passes both. This check resolves the real home WITHOUT
+# $HOME and refuses such a run before any step.
+#
+# A $HOME spelled exactly as a protected home (trailing slashes trimmed, no
+# other normalisation) is a DECLARED real-home run — the operator's own shell,
+# himmelctl's confirmed spawn (scripts/himmelctl/bin.js), the VM harness — and
+# passes through to the fence unchanged. Any other spelling that resolves
+# there (`$R/.`, `/home//me`, a symlink) is refused.
+#
+# ponytail: a $HOME that IS literally the real home — reset by systemd-run
+# --user, sudo -u, ssh or su, or a literal HOME=/home/<me> — is
+# indistinguishable here from the operator's own run; the static caller guard
+# stays the only control for that shape. A same-uid process can also fake the
+# lookup itself (a PATH-shadowed `id`, getent or dscl, or an LD_PRELOAD'd
+# getpwnam) and so name a different "real" home. On win32 himmelctl always
+# spawns uninstall.ps1 (bin.js deriveUninstallCommand), so this script runs
+# there only by hand under Git-Bash — the MSYS USERPROFILE source below.
+
+# real_home_resolve — the invoking user's passwd home, never read from $HOME:
+# bash's own `~<user>` expansion (getpwnam, no external binary), then
+# `getent passwd <uid>`, then macOS `dscl`. The name from `id -un` is
+# charset-checked BEFORE the single eval, so it can never inject; an unknown
+# user leaves `~name` unexpanded, which counts as unresolved. rc=1 (nothing
+# printed) when no source yields an absolute path.
+real_home_resolve() {
+  local _u _uid _h=""
+  _u=$(id -un 2>/dev/null) || _u=""
+  case "$_u" in ''|-*|*[!A-Za-z0-9._-]*) _u="" ;; esac
+  if [ -n "$_u" ]; then
+    eval "_h=~$_u"
+    case "$_h" in /*) ;; *) _h="" ;; esac
+  fi
+  if [ -z "$_h" ] && command -v getent >/dev/null 2>&1; then
+    _uid=$(id -u 2>/dev/null) || _uid=""
+    case "$_uid" in ''|*[!0-9]*) ;; *) _h=$(getent passwd "$_uid" 2>/dev/null | cut -d: -f6) ;; esac
+    case "$_h" in /*) ;; *) _h="" ;; esac
+  fi
+  if [ -z "$_h" ] && [ -n "$_u" ] && command -v dscl >/dev/null 2>&1; then
+    _h=$(dscl . -read "/Users/$_u" NFSHomeDirectory 2>/dev/null | sed -n 's/^NFSHomeDirectory: *//p')
+    case "$_h" in /*) ;; *) _h="" ;; esac
+  fi
+  [ -n "$_h" ] || return 1
+  printf '%s\n' "$_h"
+}
+
+# real_home_protected_homes — every home a fence-lifted run must not resolve
+# into, one per line. Each source only ADDS: the passwd home (required; rc=1
+# when unresolved), the MSYS USERPROFILE (Git-Bash, whose getpwnam home is
+# /home/<user> while $HOME is /c/Users/<user>), and the test seam
+# HIMMEL_UNINSTALL_TEST_REAL_HOME, which fixtures point at a FAKE real home.
+# The seam can never replace or drop the passwd home; set to "/" it protects
+# the root, so a HOME resolving to "/" or an override target outside $HOME is
+# refused and nothing else changes.
+real_home_protected_homes() {
+  local _h
+  _h=$(real_home_resolve) || return 1
+  strip_trailing_slash "$_h"
+  case "$(uname -s 2>/dev/null)" in
+    MINGW*|MSYS*|CYGWIN*)
+      if [ -n "${USERPROFILE:-}" ] && command -v cygpath >/dev/null 2>&1; then
+        _h=$(cygpath -u "$USERPROFILE" 2>/dev/null) && [ -n "$_h" ] && strip_trailing_slash "$_h"
+      fi
+      ;;
+  esac
+  if [ -n "${HIMMEL_UNINSTALL_TEST_REAL_HOME:-}" ]; then
+    strip_trailing_slash "$HIMMEL_UNINSTALL_TEST_REAL_HOME"
+  fi
+  return 0
+}
+
+# real_home_phys <path> — the physical path: a symlinked leaf is followed
+# (files too — `rm`/`jq >` act on the link's target), then
+# canonicalize_target resolves the rest. rc=1 when nothing resolves.
+real_home_phys() {
+  local _p="$1" _l _n=0
+  while [ -L "$_p" ] && [ "$_n" -lt 40 ]; do
+    _l=$(readlink -- "$_p") || return 1
+    case "$_l" in /*) _p="$_l" ;; *) _p="$(dirname -- "$_p")/$_l" ;; esac
+    _n=$((_n + 1))
+  done
+  canonicalize_target "$_p"
+}
+
+# real_home_under <path> <root> — true when path is root or below it.
+real_home_under() {
+  [ "$2" = "/" ] && return 0
+  case "$1" in "$2"|"$2"/*) return 0 ;; esac
+  return 1
+}
+
+# real_home_check — rc=0 when this run may proceed; otherwise ONE stderr line
+# naming the check that fired and the two physical paths, and rc=1:
+#   unresolved  the passwd home could not be resolved (fail-closed)
+#   a           physical $HOME is a protected home
+#   b           physical $HOME/.claude is at or under a protected home's .claude
+#   c           a $HOME-derived removal target (a {HOME} manifest row or any
+#               override env) resolves into a protected home but outside $HOME
+real_home_check() {
+  local _homes _r _rp _rc _hp _cp _i _var _t _tp _home
+  if ! _homes=$(real_home_protected_homes); then
+    echo "ERROR: refusing a wet uninstall — real-home check (unresolved): cannot resolve this user's passwd home independently of \$HOME ($HOME)" >&2
+    return 1
+  fi
+  _home=$(strip_trailing_slash "$HOME")
+  _hp=$(real_home_phys "$HOME") || _hp="$HOME"
+  _cp=$(real_home_phys "$HOME/.claude") || _cp="$HOME/.claude"
+  while IFS= read -r _r; do
+    [ -n "$_r" ] || continue
+    [ "$_home" = "$_r" ] && continue
+    _rp=$(real_home_phys "$_r") || _rp="$_r"
+    if [ "$_rp" = "/" ]; then _rc="/.claude"; else _rc="$_rp/.claude"; fi
+    if [ "$_hp" = "$_rp" ]; then
+      echo "ERROR: refusing a wet uninstall — real-home check (a): \$HOME resolves to $_hp, the real home $_rp" >&2
+      return 1
+    fi
+    if real_home_under "$_cp" "$_rc"; then
+      echo "ERROR: refusing a wet uninstall — real-home check (b): \$HOME/.claude resolves to $_cp, under the real $_rc" >&2
+      return 1
+    fi
+    for _i in "${!M_ID[@]}"; do
+      _var="${M_ENV[$_i]}"
+      if [ "$_var" != "-" ] && [ -n "${!_var:-}" ]; then
+        _t="${!_var}"
+      else
+        case "${M_PATH[$_i]}" in '{HOME}'*) _t=$(m_path "$_i") ;; *) continue ;; esac
+      fi
+      _tp=$(real_home_phys "$_t") || _tp="$_t"
+      if real_home_under "$_tp" "$_rp" && ! real_home_under "$_tp" "$_hp"; then
+        echo "ERROR: refusing a wet uninstall — real-home check (c): ${M_ID[$_i]} target $_t resolves to $_tp, inside the real home $_rp" >&2
+        return 1
+      fi
+    done
+    if [ -n "${HIMMELCTL_SYSTEMD_USER_UNIT_DIR:-}" ]; then
+      _tp=$(real_home_phys "$HIMMELCTL_SYSTEMD_USER_UNIT_DIR") || _tp="$HIMMELCTL_SYSTEMD_USER_UNIT_DIR"
+      if real_home_under "$_tp" "$_rp" && ! real_home_under "$_tp" "$_hp"; then
+        echo "ERROR: refusing a wet uninstall — real-home check (c): HIMMELCTL_SYSTEMD_USER_UNIT_DIR resolves to $_tp, inside the real home $_rp" >&2
+        return 1
+      fi
+    fi
+  done <<< "$_homes"
+  return 0
+}
+
 # HIMMEL-2503: `. scripts/uninstall.sh --source-only` loads everything above —
 # the suspicious_rm_path guard in particular — and stops HERE, before the
 # banner, the prompt and every step. It exists so a suite can assert the
@@ -1113,6 +1268,12 @@ if [ "$DRY_RUN" -eq 0 ] && [ "${HIMMEL_UNINSTALL_REAL_HOME:-0}" != "1" ]; then
     echo "  Otherwise, pass --dry-run to preview without touching anything." >&2
     exit 3
   fi
+fi
+
+# HIMMEL-3415: the runtime real-home refusal (functions above the
+# --source-only stop), for every wet run — fence lifted or not.
+if [ "$DRY_RUN" -eq 0 ] && ! real_home_check; then
+  exit 3
 fi
 
 # --- Provenance ledger load (HIMMEL-3332 S6) ---------------------------------
