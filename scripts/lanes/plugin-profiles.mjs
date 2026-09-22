@@ -24,7 +24,7 @@ const ID_RE = /^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$/;
 // HIMMEL-2959: positive rule shapes, not a generic Bash allowlist. In a
 // quiet-run rule the label AND directory are literal; a wildcard before the
 // suite basename can absorb a different executed program plus a fake tail.
-const GATE_SCRIPT_RE = /^Bash\(bash scripts\/(?:handover\/(?:merge-on-green|queue-lock)|handover\/console-kit\/inbox-send|cr\/(?:write-verdicts|clear-cr-marker|panel-first-pass|docs-audit-panel|ledger-append)|check-ci)\.sh:\*\)$/;
+const GATE_SCRIPT_RE = /^Bash\(bash scripts\/(?:handover\/(?:merge-on-green|queue-lock)|handover\/console-kit\/inbox-send|cr\/(?:write-verdicts|clear-cr-marker|panel-first-pass|docs-audit-panel|ledger-append|impacted-suites|orphan-check|review-round)|check-ci)\.sh:\*\)$/;
 // HIMMEL-3338: the /pr-check external-critic steps that take no arguments (or
 // exactly `--diff`) are exact literals — no `:*` tail, so nothing can be
 // appended to them. HIMMEL-3359 adds step 0's himmel-lane entry

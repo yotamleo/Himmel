@@ -48,6 +48,11 @@ const GATE_RULES = [
   // Exact literal — the script hands a non-anchor copy off to the anchor's.
   'Bash(bash scripts/cr/pr-check-env.sh CR_CLAUDE_AGENTS)',
   'Bash(bash scripts/cr/ledger-append.sh:*)',
+  // HIMMEL-3462: dynamic-arg /pr-check gates, each granted after a full-file
+  // safety read (range/branch/head arguments cannot be exact literals).
+  'Bash(bash scripts/cr/impacted-suites.sh:*)',
+  'Bash(bash scripts/cr/orphan-check.sh:*)',
+  'Bash(bash scripts/cr/review-round.sh:*)',
   'Bash(bash scripts/check-ci.sh:*)',
 ];
 const SUITE_TAILS = [
