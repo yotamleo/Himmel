@@ -1108,17 +1108,25 @@ function walkIdentities(candidate, resolvedProject) {
       // REWRITE vector HIMMEL-1666 defends against), so trusting its shape
       // here does not reopen it.
       //
-      // The containment test below resolves `next` at the OS level rather
-      // than comparing its lexical spelling: once an EARLIER non-UTF-8 hop
-      // has already been accepted above, `resolved` (and therefore `next`)
-      // carries that earlier link's own unresolved spelling, not a path
-      // that lexically starts with resolvedProject — even when this SECOND
-      // link's real target is at or below the project. A naive string
-      // comparison would misclassify it as "above" and skip the fail-closed
-      // check the HIMMEL-3397 C1 rows require. Resolving `next` for real
-      // (fs-level, byte-for-byte the same codec resolvedProject was built
-      // with) is immune to that drift.
-      const realNext = normalize(resolveReal(next));
+      // The containment test below resolves the link's PARENT (`resolved`)
+      // at the OS level and re-joins `name`, rather than either comparing
+      // `next`'s lexical spelling or resolving `next` itself. Two failure
+      // modes, fixed together:
+      //   - lexical `next`: once an EARLIER non-UTF-8 hop has already been
+      //     accepted above, `resolved` (and therefore `next`) carries that
+      //     earlier link's own unresolved spelling, not a path that
+      //     lexically starts with resolvedProject — even when THIS link's
+      //     location is at or below the project. Misclassified as "above",
+      //     skipping the fail-closed check the HIMMEL-3397 C1 rows require.
+      //   - resolving `next` itself: `next` IS the symlink, so resolving it
+      //     follows through to its TARGET, not its location. An in-project
+      //     link whose (non-UTF-8, so untrusted) target happens to resolve
+      //     outside the project would then read as an "ancestor" hop and be
+      //     let through, even though the link SITS inside the project.
+      // Resolving only `resolved` (fs-level, same codec resolvedProject was
+      // built with) and rejoining `name` answers "where does this link
+      // live", immune to both.
+      const realNext = normalize(path.join(resolveReal(resolved), name));
       const atOrBelowProject = realNext.toLowerCase() === resolvedProject.toLowerCase()
         || realNext.toLowerCase().startsWith(`${resolvedProject.toLowerCase()}/`);
       if (atOrBelowProject) return null;

@@ -1593,6 +1593,63 @@ test(
   },
 );
 
+// (e) containment must be decided by the link's own LOCATION, not by
+// following it to its target. A non-UTF-8 link that SITS inside the
+// project, but whose (unreadable, untrusted) target points OUTSIDE it, must
+// still fail closed even when a LATER hop happens to lead back inside —
+// resolving the link's TARGET instead of its own location would read the
+// first hop as "above the project" (since the target sits outside) and let
+// the walk continue, silently skipping the fail-closed check the location
+// alone should have triggered. The outer link's own PARENT directory never
+// moves, so this needs no fast-path escape at scriptPath's own final
+// resolution: the walk's final destination legitimately sits inside the
+// project (via a second, valid, absolute symlink back in), only the
+// INTERMEDIATE hop is the ambiguous one.
+function linkEscapesProjectViaTargetFixture() {
+  const fs = require('node:fs');
+  const base = makeTmpDir('hook-integrity-escape-');
+  const projectDir = join(base, 'proj');
+  fs.mkdirSync(join(projectDir, 'scripts'), { recursive: true });
+  fs.mkdirSync(join(projectDir, 'real'), { recursive: true });
+  const leaf = join(projectDir, 'real', 'guard.sh');
+  writeFileSync(leaf, 'echo original\n');
+  const scriptRel = 'real/guard.sh';
+  const integrityDir = makeTmpDir('hook-integrity-escape-pins-');
+  writeFileSync(
+    join(integrityDir, 's1.json'),
+    JSON.stringify({ session_id: 's1', pins: { [scriptRel]: gitBlobSha1(readFileSync(leaf)) } }),
+  );
+  const rawOut = Buffer.concat([Buffer.from('out'), Buffer.from([0xff])]);
+  const outReal = Buffer.concat([Buffer.from(`${base}/`), rawOut]);
+  fs.mkdirSync(outReal, { recursive: true });
+  // outReal/guard.sh -> absolute, valid-UTF-8, back INSIDE the project.
+  fs.symlinkSync(leaf, Buffer.concat([outReal, Buffer.from('/guard.sh')]));
+  // scripts/hooks -> ../../out<0xff> (relative, non-UTF-8). The link's own
+  // LOCATION is inside the project; only its TARGET is outside.
+  const target = Buffer.concat([Buffer.from('../../'), rawOut]);
+  fs.symlinkSync(target, join(projectDir, 'scripts', 'hooks'));
+  const scriptPath = join(projectDir, 'scripts', 'hooks', 'guard.sh');
+  const env = { CLAUDE_PROJECT_DIR: projectDir, HIMMEL_HOOK_INTEGRITY_DIR: integrityDir, HIMMEL_HOOK_INTEGRITY_BYPASS_OK: undefined };
+  const cleanup = () => { for (const d of [base, integrityDir]) rmSync(d, { recursive: true, force: true }); };
+  return { fs, base, leaf, scriptRel, scriptPath, env, cleanup };
+}
+
+test(
+  'HIMMEL-3448: an in-project non-UTF-8 link whose target escapes the project still fails closed',
+  { skip: process.platform === 'win32' },
+  () => {
+    const fx = linkEscapesProjectViaTargetFixture();
+    try {
+      withEnv(fx.env, () => {
+        const result = verifyProjectHookIntegrity(fx.scriptPath, 's1');
+        assert.equal(result.ok, false);
+      });
+    } finally {
+      fx.cleanup();
+    }
+  },
+);
+
 // HIMMEL-3384: the bypass is worktree-only and audited. The old "always
 // allows" contract is gone — a bypass with no linked worktree around it is no
 // bypass at all, and every use that DOES override a deny leaves one audit line.
