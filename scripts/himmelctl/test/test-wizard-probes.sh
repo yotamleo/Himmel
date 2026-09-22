@@ -12,14 +12,22 @@
 #   file-exists    targetPath-relative (guardrail-scope), the repoRoot-
 #                  relative exception (jira-cli-dist-build — proves it
 #                  ignores a targetPath that DOES carry the file), and the
-#                  {vaultPath} placeholder (luna-vault-scaffold).
+#                  {vaultPath} placeholder (luna-vault-scaffold); (HIMMEL-3322)
+#                  guardrail-scope's opt-in syntaxCheck — a present file that
+#                  fails `bash -n` degrades instead of reading green.
 #   git-hooks      pre-commit-hooks absent (none installed) / degraded
 #                  (partial install) / present (pre-commit + commit-msg +
 #                  pre-push), including linked-worktree commondir resolution.
 #   settings-key   dot-path single key (wiring-statusline), simple
 #                  non-dotted key (claude-plugins-pluginSet), and the .env
 #                  ALL-keys-required union resolving against repoRoot for
-#                  BOTH scopes (jira-env-keys).
+#                  BOTH scopes (jira-env-keys); (HIMMEL-3322) wiring-
+#                  statusline's opt-in verifyScript — a present command
+#                  pointed at a missing script degrades; claude-plugins-
+#                  pluginSet's opt-in verifyPluginSet — a present map that
+#                  doesn't match docs/setup/settings-template.json's recorded
+#                  set, or names a plugin absent from ~/.claude/plugins/
+#                  installed_plugins.json, degrades.
 #   settings-hooks present (all 3 himmel PreToolUse markers) / degraded
 #                  (1 of 3) / absent (none) (wiring-pretooluse).
 #   cmd:has_qmd    qmd-binary, via a stubbed `qmd` on PATH.
@@ -391,7 +399,19 @@ const item = manifest.items.find((i) => i.id === 'guardrail-scope');
 const ctx = { repoRoot: '$repo_root_w', targetPath: '$(winpath "$feA_present")', scope: 'project', env: process.env };
 console.log(JSON.stringify(runProbe(item, ctx)));
 ")
-echo "$outA1" | jq -e '.actual == "present"' >/dev/null || fail "file-exists targetPath-relative present: (got: $outA1)"
+echo "$outA1" | jq -e '.actual == "present"' >/dev/null || fail "file-exists targetPath-relative present (empty lib.sh syntax-checks clean): (got: $outA1)"
+# RED (HIMMEL-3322): a lib.sh that fails to source must not read green.
+feA_broken="$work/feA-broken"; mkdir -p "$feA_broken/scripts/guardrails"
+printf 'if [ true ]; then\n' > "$feA_broken/scripts/guardrails/lib.sh"
+outA3=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'guardrail-scope');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$(winpath "$feA_broken")', scope: 'project', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outA3" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "file-exists syntaxCheck: a lib.sh that fails to source must NOT read green (got: $outA3)"
 outA2=$("$node_bin" -e "
 const { runProbe } = require('$probes_lib_w');
 const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
@@ -400,7 +420,7 @@ const ctx = { repoRoot: '$repo_root_w', targetPath: '$(winpath "$feA_absent")', 
 console.log(JSON.stringify(runProbe(item, ctx)));
 ")
 echo "$outA2" | jq -e '.actual == "absent"' >/dev/null || fail "file-exists targetPath-relative absent: (got: $outA2)"
-echo "ok: file-exists targetPath-relative (guardrail-scope) present/absent"
+echo "ok: file-exists targetPath-relative + syntaxCheck (guardrail-scope) present/absent, syntax-broken degrades"
 
 # ── file-exists: repoRoot-relative exception (jira-cli-dist-build) ─────────
 # The target ALSO carries the file, at the identical relative path — proves
@@ -549,11 +569,19 @@ console.log(JSON.stringify(runProbe(item, ctx)));
 echo "$outC2" | jq -e '.actual == "absent"' >/dev/null || fail "file-exists {vaultPath} absent: (got: $outC2)"
 echo "ok: file-exists {vaultPath} placeholder (luna-vault-scaffold) present/absent"
 
-# ── settings-key: dot-path single key (wiring-statusline) ─────────────────
+# ── settings-key: dot-path single key + verifyScript (wiring-statusline) ──
+# HIMMEL-3322: a non-empty statusLine.command used to read green even when
+# the script it names is missing/moved/unbuilt. The control fixture below
+# uses the CANONICAL `node "<script>"` shape wire-statusline.sh itself
+# writes, pointed at a script that genuinely exists — the "stays green on a
+# clean starter install" control the ticket requires.
+sk1_script="$work/sk1-hud-index.js"; printf '// fixture stub\n' > "$sk1_script"
 sk1_present="$work/sk1-present"; mkdir -p "$sk1_present/.claude"
-printf '{"statusLine":{"command":"bash foo.sh"}}' > "$sk1_present/.claude/settings.json"
+printf '{"statusLine":{"command":"node \\"%s\\""}}' "$(winpath "$sk1_script")" > "$sk1_present/.claude/settings.json"
 sk1_absent="$work/sk1-absent"; mkdir -p "$sk1_absent/.claude"
 printf '{"statusLine":{}}' > "$sk1_absent/.claude/settings.json"
+sk1_missing="$work/sk1-missing"; mkdir -p "$sk1_missing/.claude"
+printf '{"statusLine":{"command":"node \\"%s/no-such-hud-index.js\\""}}' "$(winpath "$work")" > "$sk1_missing/.claude/settings.json"
 
 outSK1p=$("$node_bin" -e "
 const { runProbe } = require('$probes_lib_w');
@@ -562,7 +590,7 @@ const item = manifest.items.find((i) => i.id === 'wiring-statusline');
 const ctx = { repoRoot: '$repo_root_w', targetPath: '$(winpath "$sk1_present")', scope: 'project', env: process.env };
 console.log(JSON.stringify(runProbe(item, ctx)));
 ")
-echo "$outSK1p" | jq -e '.actual == "present"' >/dev/null || fail "settings-key dot-path present: (got: $outSK1p)"
+echo "$outSK1p" | jq -e '.actual == "present"' >/dev/null || fail "settings-key dot-path + verifyScript, existing script: (got: $outSK1p)"
 outSK1a=$("$node_bin" -e "
 const { runProbe } = require('$probes_lib_w');
 const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
@@ -571,31 +599,85 @@ const ctx = { repoRoot: '$repo_root_w', targetPath: '$(winpath "$sk1_absent")', 
 console.log(JSON.stringify(runProbe(item, ctx)));
 ")
 echo "$outSK1a" | jq -e '.actual == "absent"' >/dev/null || fail "settings-key dot-path absent: (got: $outSK1a)"
-echo "ok: settings-key dot-path single key (wiring-statusline) present/absent"
+# RED: statusLine.command pointing at a MISSING script must not read green.
+outSK1missing=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'wiring-statusline');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$(winpath "$sk1_missing")', scope: 'project', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outSK1missing" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "settings-key verifyScript: statusLine.command pointing at a missing script must NOT read green (got: $outSK1missing)"
+echo "ok: settings-key dot-path + verifyScript (wiring-statusline) — present/absent, missing script degrades"
 
-# ── settings-key: simple non-dotted key (claude-plugins-pluginSet) ─────────
+# ── settings-key: simple non-dotted key + verifyPluginSet (claude-plugins-pluginSet) ──
+# HIMMEL-3322: a non-empty enabledPlugins map used to read green regardless
+# of whether it matched the recorded pluginSet or was actually installed.
+# repoRoot is a SYNTHETIC sandbox carrying its own docs/setup/settings-
+# template.json (mirrors the repoRoot-relative jira-cli-dist-build fixture
+# above) — never the real checkout's template. HOME is threaded through
+# ctx.env (same seam mcp-registered's .claude.json resolution uses), never
+# the real ~/.claude/plugins/installed_plugins.json.
+sk2_repo="$work/sk2-repo"; mkdir -p "$sk2_repo/docs/setup"
+printf '{"enabledPlugins":{"foo@bar":true,"off@bar":false}}' > "$sk2_repo/docs/setup/settings-template.json"
+sk2_home="$work/sk2-home"; mkdir -p "$sk2_home/.claude/plugins"
+printf '{"version":2,"plugins":{"foo@bar":[{"scope":"user"}]}}' > "$sk2_home/.claude/plugins/installed_plugins.json"
+sk2_home_w="$(winpath "$sk2_home")"
+
 sk2_present="$work/sk2-present"; mkdir -p "$sk2_present/.claude"
 printf '{"enabledPlugins":{"foo@bar":true}}' > "$sk2_present/.claude/settings.json"
 sk2_absent="$work/sk2-absent"; mkdir -p "$sk2_absent/.claude"
 printf '{"enabledPlugins":{}}' > "$sk2_absent/.claude/settings.json"
+sk2_mismatch="$work/sk2-mismatch"; mkdir -p "$sk2_mismatch/.claude"
+printf '{"enabledPlugins":{"foo@bar":true,"extra@nope":true}}' > "$sk2_mismatch/.claude/settings.json"
+sk2_uninstalled="$work/sk2-uninstalled"; mkdir -p "$sk2_uninstalled/.claude"
+printf '{"enabledPlugins":{"foo@bar":true}}' > "$sk2_uninstalled/.claude/settings.json"
+sk2_home_empty="$work/sk2-home-empty"; mkdir -p "$sk2_home_empty/.claude/plugins"
+printf '{"version":2,"plugins":{}}' > "$sk2_home_empty/.claude/plugins/installed_plugins.json"
+sk2_home_empty_w="$(winpath "$sk2_home_empty")"
 
 outSK2p=$("$node_bin" -e "
 const { runProbe } = require('$probes_lib_w');
 const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
 const item = manifest.items.find((i) => i.id === 'claude-plugins-pluginSet');
-const ctx = { repoRoot: '$repo_root_w', targetPath: '$(winpath "$sk2_present")', scope: 'project', env: process.env };
+const env = Object.assign({}, process.env, { HOME: '$sk2_home_w' });
+const ctx = { repoRoot: '$(winpath "$sk2_repo")', targetPath: '$(winpath "$sk2_present")', scope: 'project', env };
 console.log(JSON.stringify(runProbe(item, ctx)));
 ")
-echo "$outSK2p" | jq -e '.actual == "present"' >/dev/null || fail "settings-key simple key present: (got: $outSK2p)"
+echo "$outSK2p" | jq -e '.actual == "present"' >/dev/null || fail "settings-key simple key + verifyPluginSet, matching+installed: (got: $outSK2p)"
 outSK2a=$("$node_bin" -e "
 const { runProbe } = require('$probes_lib_w');
 const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
 const item = manifest.items.find((i) => i.id === 'claude-plugins-pluginSet');
-const ctx = { repoRoot: '$repo_root_w', targetPath: '$(winpath "$sk2_absent")', scope: 'project', env: process.env };
+const env = Object.assign({}, process.env, { HOME: '$sk2_home_w' });
+const ctx = { repoRoot: '$(winpath "$sk2_repo")', targetPath: '$(winpath "$sk2_absent")', scope: 'project', env };
 console.log(JSON.stringify(runProbe(item, ctx)));
 ")
 echo "$outSK2a" | jq -e '.actual == "absent"' >/dev/null || fail "settings-key simple key absent (empty object): (got: $outSK2a)"
-echo "ok: settings-key simple non-dotted key (claude-plugins-pluginSet) present/absent"
+# RED: enabledPlugins that does not match the recorded pluginSet must not read green.
+outSK2mismatch=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'claude-plugins-pluginSet');
+const env = Object.assign({}, process.env, { HOME: '$sk2_home_w' });
+const ctx = { repoRoot: '$(winpath "$sk2_repo")', targetPath: '$(winpath "$sk2_mismatch")', scope: 'project', env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outSK2mismatch" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "settings-key verifyPluginSet: a set that does not match the recorded pluginSet must NOT read green (got: $outSK2mismatch)"
+# RED: enabledPlugins naming a plugin that is not installed must not read green.
+outSK2uninstalled=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'claude-plugins-pluginSet');
+const env = Object.assign({}, process.env, { HOME: '$sk2_home_empty_w' });
+const ctx = { repoRoot: '$(winpath "$sk2_repo")', targetPath: '$(winpath "$sk2_uninstalled")', scope: 'project', env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outSK2uninstalled" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "settings-key verifyPluginSet: a matching set that is not actually installed must NOT read green (got: $outSK2uninstalled)"
+echo "ok: settings-key simple non-dotted key + verifyPluginSet (claude-plugins-pluginSet) — present/absent, mismatch + not-installed degrade"
 
 # ── settings-key: .env ALL-keys-required union (jira-env-keys) ────────────
 # Resolves against repoRoot for BOTH scopes (CLAUDE.md / adopt.sh
