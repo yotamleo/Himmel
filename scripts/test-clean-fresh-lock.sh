@@ -25,6 +25,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# bad <msg> — a fixture setup step failed; fail loudly and abort the suite
+# rather than let a downstream control pass for the wrong reason.
+bad() { echo "  FATAL SETUP: $1" >&2; exit 1; }
 pass() { echo "  PASS: $1"; PASS=$((PASS+1)); }
 fail() { echo "  FAIL: $1"; if [ $# -ge 2 ]; then printf '    %s\n' "$2"; fi; FAIL=$((FAIL+1)); }
 expect() {
@@ -93,8 +96,13 @@ chmod +x "$STUB_DIR/gh"
 
 mk_wt() {
     local name="$1" branch="$2"
-    git -C "$REPO" worktree add -q "$TMP_ROOT/$name" -b "$branch" >/dev/null 2>&1
-    echo "$TMP_ROOT/$name"
+    local path="$TMP_ROOT/$name"
+    git -C "$REPO" worktree add -q "$path" -b "$branch" >/dev/null 2>&1 \
+        || bad "mk_wt($name): git worktree add failed"
+    [ -d "$path" ] || bad "mk_wt($name): worktree dir missing after add"
+    git -C "$REPO" worktree list | grep -qF "$path" \
+        || bad "mk_wt($name): worktree not registered in git worktree list"
+    echo "$path"
 }
 
 HANDOVER_ROOT="$TMP_ROOT/handover-root"
@@ -116,18 +124,24 @@ EOF
 
 # lock_fresh <doc> — a real queue-lock.sh acquire; heartbeat is "now" (FRESH).
 lock_fresh() {
-    HANDOVER_DIR="$HANDOVER_ROOT" bash "$QUEUE_LOCK" acquire "$1" "fixture-fresh-$$" >/dev/null 2>&1
+    HANDOVER_DIR="$HANDOVER_ROOT" bash "$QUEUE_LOCK" acquire "$1" "fixture-fresh-$$" >/dev/null 2>&1 \
+        || bad "lock_fresh($1): queue-lock acquire failed"
 }
 
 # lock_stale <doc> — acquire, then backdate the heartbeat past the TTL.
 lock_stale() {
     local doc="$1"
-    HANDOVER_DIR="$HANDOVER_ROOT" bash "$QUEUE_LOCK" acquire "$doc" "fixture-stale-$$" >/dev/null 2>&1
+    HANDOVER_DIR="$HANDOVER_ROOT" bash "$QUEUE_LOCK" acquire "$doc" "fixture-stale-$$" >/dev/null 2>&1 \
+        || bad "lock_stale($doc): queue-lock acquire failed"
     local slug lockdir
     slug=$(printf '%s' "${doc#"$HANDOVER_ROOT"/}" | sed 's/\.md$//; s#/#__#g' | tr -c 'A-Za-z0-9_-' '-')
     lockdir="$HANDOVER_ROOT/.locks/queue/$slug.lock"
+    [ -d "$lockdir" ] || bad "lock_stale($doc): lock dir missing after acquire"
     printf '{"session":"fixture-stale-%s","host":"h","handover":"%s","started":"2020-01-01T00:00:00Z","heartbeat":"2020-01-01T00:00:00Z"}\n' "$$" "$doc" \
-        > "$lockdir/owner.json"
+        > "$lockdir/owner.json" \
+        || bad "lock_stale($doc): owner.json backdate write failed"
+    grep -q '"heartbeat":"2020-01-01T00:00:00Z"' "$lockdir/owner.json" \
+        || bad "lock_stale($doc): owner.json backdate did not persist"
 }
 
 # run_clean <args...> — runs clean-garden.sh from inside the fixture repo with
@@ -144,12 +158,16 @@ run_clean() {
     )
 }
 
-WT_FRESH=$(mk_wt wt-fresh feat/fresh)
-WT_STALE=$(mk_wt wt-stale feat/stale)
-WT_FREE=$(mk_wt wt-free feat/free)
-WT_ONLY=$(mk_wt wt-only feat/only)
-WT_QUOTED_DQ=$(mk_wt wt-quoted-dq feat/quoted-dq)
-WT_QUOTED_SQ=$(mk_wt wt-quoted-sq feat/quoted-sq)
+# mk_wt fails loudly via `bad` from inside the $(...) subshell; that subshell's
+# exit status propagates to the assignment, so each call is checked here too —
+# a `bad` message printed but never checked would leave the suite running on
+# an empty/bogus path.
+WT_FRESH=$(mk_wt wt-fresh feat/fresh) || exit 1
+WT_STALE=$(mk_wt wt-stale feat/stale) || exit 1
+WT_FREE=$(mk_wt wt-free feat/free) || exit 1
+WT_ONLY=$(mk_wt wt-only feat/only) || exit 1
+WT_QUOTED_DQ=$(mk_wt wt-quoted-dq feat/quoted-dq) || exit 1
+WT_QUOTED_SQ=$(mk_wt wt-quoted-sq feat/quoted-sq) || exit 1
 
 DOC_FRESH=$(mk_doc doc-fresh.md "$WT_FRESH")
 DOC_STALE=$(mk_doc doc-stale.md "$WT_STALE")
