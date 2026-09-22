@@ -115,38 +115,63 @@ assert_rc "7 traversal into primary settings.json denies" 2 \
 assert_rc "8 EDIT_LIVE_SETTINGS_OK=1 bypass allows" 0 \
     "$(rc_of "$SANDBOX/primary/.claude/settings.json" Edit file_path EDIT_LIVE_SETTINGS_OK=1)"
 
-# bash_rc_of COMMAND [EXTRA_ENV...] — {tool_name: Bash, tool_input: {command:
-# COMMAND}} on stdin, run the hook, echo its exit code.
+# bash_rc_of CWD COMMAND [EXTRA_ENV...] — {tool_name: Bash, tool_input:
+# {command: COMMAND, cwd: CWD}} on stdin, run the hook, echo its exit code.
+# CWD is REQUIRED (not optional) from HIMMEL-1525 v2 onward: the unified
+# Bash/PowerShell arm's live-vs-worktree decision is a function of the
+# invoking cwd (resolve_repo_context), not of the mentioned path's own repo
+# the way check_target's target-anchored walk is — an omitted cwd would
+# silently resolve against wherever this test script happens to run instead
+# of the sandbox fixture, making the assertion depend on the caller's own
+# checkout layout rather than the fixture.
 bash_rc_of() {
-    local cmd="$1"
-    shift
-    jq -n --arg cmd "$cmd" '{tool_name: "Bash", tool_input: {command: $cmd}}' \
+    local cwd="$1" cmd="$2"
+    shift 2
+    jq -n --arg cmd "$cmd" --arg cwd "$cwd" \
+        '{tool_name: "Bash", tool_input: {command: $cmd, cwd: $cwd}}' \
         | env "$@" bash "$HOOK" >/dev/null 2>&1
     echo "$?"
 }
 
-# 9: Bash `>` redirect into the primary checkout's settings.json -> DENY.
+# Second worktree fixture (HIMMEL-1525 v2), OUTSIDE the primary's own
+# directory tree. The existing worktree above is nested under
+# .claude/worktrees/ (needed for test 7's traversal-into-primary case); a v2
+# cwd-based test needs a worktree whose own absolute path does NOT contain
+# the primary's, so an absolute-path assertion can't pass by coincidence.
+git -C "$SANDBOX/primary" worktree add -q "$SANDBOX/wt2" -b feat/wt2 >/dev/null 2>&1
+mkdir -p "$SANDBOX/wt2/.claude"
+printf '{}\n' > "$SANDBOX/wt2/.claude/settings.json"
+PRIMARY="$SANDBOX/primary"
+WT2="$SANDBOX/wt2"
+
+# 9: Bash `>` redirect into the primary checkout's settings.json (relative,
+# cwd=PRIMARY) -> DENY.
 assert_rc "9 bash > redirect into primary settings.json denies" 2 \
-    "$(bash_rc_of "echo pwned > $SANDBOX/primary/.claude/settings.json")"
+    "$(bash_rc_of "$PRIMARY" "echo pwned > .claude/settings.json")"
 
 # 10: Bash `>>` append into the primary checkout's settings.json -> DENY.
 assert_rc "10 bash >> append into primary settings.json denies" 2 \
-    "$(bash_rc_of "echo pwned >> $SANDBOX/primary/.claude/settings.json")"
+    "$(bash_rc_of "$PRIMARY" "echo pwned >> .claude/settings.json")"
 
-# 11: Bash redirect into the WORKTREE copy of settings.json -> ALLOW.
+# 11: Bash redirect into a WORKTREE's own settings.json (relative, cwd=WT2)
+# -> ALLOW. This is the console NO-GO's false-positive fix: a relative
+# mention while cwd is a linked worktree names that worktree's OWN copy.
 assert_rc "11 bash redirect into worktree settings.json allows" 0 \
-    "$(bash_rc_of "echo pwned > $SANDBOX/primary/.claude/worktrees/feat+x/.claude/settings.json")"
+    "$(bash_rc_of "$WT2" "echo pwned > .claude/settings.json")"
 
-# 12: Bash redirect into a non-settings path -> ALLOW.
+# 12: Bash redirect into a non-settings path (cwd=PRIMARY) -> ALLOW.
 assert_rc "12 bash redirect into non-settings path allows" 0 \
-    "$(bash_rc_of "echo hi > $SANDBOX/primary/notes.txt")"
+    "$(bash_rc_of "$PRIMARY" "echo hi > notes.txt")"
 
-# 13: fail-open proof — command mentions a settings basename but has no real
-# `>`/`>>` redirect at all (the basename only appears in ordinary text piped
-# through a pipeline) -> ALLOW, proving the ambiguous/unparseable case fails
-# OPEN rather than closed.
-assert_rc "13 bash mentions settings.json with no redirect allows (fail-open)" 0 \
-    "$(bash_rc_of "echo 'do not touch .claude/settings.json' | cat")"
+# 13: a settings.json mention with no redirect at all, piped through a
+# read-only-looking command (cwd=PRIMARY) -> DENY. v1 failed this OPEN
+# (fail-open on an unparseable case); v2's ONE fail-closed rule denies any
+# live mention that isn't a bare allowlisted read (a `|` metachar disallows
+# `is_readonly_allowlisted` even though the first token is `echo`) —
+# documented behaviour change, not a bypass: bypass is
+# `EDIT_LIVE_SETTINGS_OK=1` or an actually-bare allowlisted read (test 34).
+assert_rc "13 bash mentions settings.json through a pipe denies (fail-closed, v2)" 2 \
+    "$(bash_rc_of "$PRIMARY" "echo 'do not touch .claude/settings.json' | cat")"
 
 # 14: $HOME/.claude/settings.json rendered with a LOWERCASE drive letter
 # (Windows hands the same file back interchangeably as `c:/...` or
@@ -165,33 +190,30 @@ else
 fi
 
 # 15: a QUOTED Bash redirect target into the primary checkout's
-# settings.json -> DENY. Regression case: the extracted token used to keep
-# its literal quote characters (`> "path"` -> token `"path"`), so
-# `basename` never matched `settings.json` and the guard silently allowed
-# it — the single most common way to quote a redirect target defeated the
-# whole arm. `strip_quotes`-equivalent unwrapping in the Bash arm fixes this.
+# settings.json, run from an UNRELATED worktree cwd (WT2) -> DENY. Proves
+# the absolute-path-into-primary match works on its own text, independent of
+# is_primary_cwd, and needs no quote-stripping (v2 substring-matches the
+# whole command text, quotes and all).
 assert_rc "15 quoted bash redirect into primary settings.json denies" 2 \
-    "$(bash_rc_of "echo pwned > \"$SANDBOX/primary/.claude/settings.json\"")"
+    "$(bash_rc_of "$WT2" "echo pwned > \"$PRIMARY/.claude/settings.json\"")"
 
-# 16: a Bash redirect target spelled with a LITERAL (unexpanded) $HOME ->
-# DENY. Regression case: the plain-text scan never expands shell variables,
-# so `$HOME` used to canonicalise to a nonsense path under $cwd whose
-# PARENT never matched the real $HOME/.claude — silently missing the
-# user-scope deny for the exact spelling this arm exists to catch.
+# 16: a Bash redirect target spelled with a LITERAL (unexpanded) $HOME, run
+# from a cwd that is neither the primary nor a worktree of it -> DENY.
+# Proves the $HOME match is independent of is_primary_cwd.
 assert_rc "16 bash redirect using literal \$HOME denies" 2 \
-    "$(bash_rc_of "echo pwned > \$HOME/.claude/settings.json" HOME="$FAKEHOME")"
+    "$(bash_rc_of "$SANDBOX" "echo pwned > \$HOME/.claude/settings.json" HOME="$FAKEHOME")"
 
-# 17: a quoted Bash redirect target containing an internal SPACE -> DENY.
-# Regression case: the old regex stopped matching at the first whitespace
-# even inside quotes, truncating the token before it could canonicalise to
-# settings.json at all — a live path legitimately contains a space on
-# Windows (a `C:\Users\Jane Doe\...` profile).  # leak-allow: home-path doc example
+# 17: a quoted Bash redirect target containing an internal SPACE, run with
+# cwd AT that own space-bearing primary -> DENY. A live path legitimately
+# contains a space on Windows (a drive path with a space in a user profile
+# directory name); v2's plain substring match needs no special-casing for
+# this at all.
 SPACE_PRIMARY="$SANDBOX/pri mary"
 mkrepo "$SPACE_PRIMARY"
 mkdir -p "$SPACE_PRIMARY/.claude"
 printf '{}\n' > "$SPACE_PRIMARY/.claude/settings.json"
 assert_rc "17 quoted bash redirect with internal space denies" 2 \
-    "$(bash_rc_of "echo pwned > \"$SPACE_PRIMARY/.claude/settings.json\"")"
+    "$(bash_rc_of "$SPACE_PRIMARY" "echo pwned > \"$SPACE_PRIMARY/.claude/settings.json\"")"
 
 # 18: alternate-case basename + parent (.CLAUDE/SETTINGS.JSON) into the
 # primary checkout -> DENY. Regression case: NTFS/APFS are case-insensitive
@@ -200,21 +222,19 @@ assert_rc "17 quoted bash redirect with internal space denies" 2 \
 assert_rc "18 alternate-case basename+parent denies" 2 \
     "$(rc_of "$SANDBOX/primary/.CLAUDE/SETTINGS.JSON" Edit file_path)"
 
-# 19: a Bash redirect to an alternate-case path (SETTINGS.JSON) -> DENY.
-# Regression case: the prefilter's own case-sensitive
-# `case "$cmd" in *settings.json*)` used to exit early on an uppercase
-# command and never reach the (already case-folded) scan below it at all.
+# 19: a Bash redirect to an alternate-case path (SETTINGS.JSON), from WT2 ->
+# DENY. Regression case: the prefilter's own case-fold (`cmd_lc`) must catch
+# an uppercase command before the substring match runs.
 assert_rc "19 bash redirect to alternate-case path denies" 2 \
-    "$(bash_rc_of "echo pwned > $SANDBOX/primary/.CLAUDE/SETTINGS.JSON")"
+    "$(bash_rc_of "$WT2" "echo pwned > $PRIMARY/.CLAUDE/SETTINGS.JSON")"
 
-# 20: a Bash redirect target spelled with the BRACED \${HOME} form, run
-# from a LINKED WORKTREE cwd (no ancestor-.git-walk rescue possible there:
-# git-dir != git-common-dir) -> DENY. Regression case: only the bare/prefix
-# `$HOME` spelling was expanded before round 3; `${HOME}` fell through
-# unexpanded, and unlike the bare form there is no coincidental rescue when
-# cwd is a worktree.
+# 20: a Bash redirect target spelled with the BRACED \${HOME} form, run from
+# a LINKED WORKTREE cwd (WT2, git-dir != git-common-dir) -> DENY. Regression
+# case: only the bare/prefix `$HOME` spelling was checked before round 3;
+# `${HOME}` fell through unmatched — mentions_primary_or_home explicitly
+# checks the `${home}/.claude/` literal form.
 assert_rc "20 bash redirect using \${HOME} from a worktree cwd denies" 2 \
-    "$(cd "$SANDBOX/primary/.claude/worktrees/feat+x" && bash_rc_of "echo pwned > \${HOME}/.claude/settings.json" HOME="$FAKEHOME")"
+    "$(bash_rc_of "$WT2" "echo pwned > \${HOME}/.claude/settings.json" HOME="$FAKEHOME")"
 
 # 21: user-scope \$HOME/.CLAUDE (alt-case PARENT) -> DENY. Regression case:
 # round 2's basename/parent-basename fold only gated ENTRY into the deeper
@@ -230,81 +250,107 @@ assert_rc "21 user-scope \$HOME/.CLAUDE (alt-case parent) denies" 2 \
 # levels up even though the basename still happened to read
 # "settings.json".
 assert_rc "22 bash redirect with concatenated quote denies" 2 \
-    "$(bash_rc_of "echo pwned > \"$FAKEHOME\"/.claude/settings.json" HOME="$FAKEHOME")"
+    "$(bash_rc_of "$PRIMARY" "echo pwned > \"$FAKEHOME\"/.claude/settings.json" HOME="$FAKEHOME")"
 
 # 23/24: a path containing a literal APOSTROPHE that is part of the path
 # itself, not shell quoting (`C:\Users\O'Brien\...`, a real Windows
-# username shape) -> DENY, both unquoted and fully-quoted. Regression case:
-# round 4's blanket `tr -d "\"'"` also deleted this apostrophe, corrupting
-# the target into one that no longer canonicalises to the real file — a
-# false ALLOW. The round-5 boundary-aware strip must leave a mid-segment
-# apostrophe alone.
+# username shape) -> DENY, both unquoted and fully-quoted. cwd is the
+# apostrophe-bearing primary itself so is_primary_cwd triggers regardless of
+# how the mentioned path is spelled.
 APOS_PRIMARY="$SANDBOX/O'Brien"
 mkrepo "$APOS_PRIMARY"
 mkdir -p "$APOS_PRIMARY/.claude"
 printf '{}\n' > "$APOS_PRIMARY/.claude/settings.json"
 assert_rc "23 bash redirect with literal apostrophe (unquoted) denies" 2 \
-    "$(bash_rc_of "echo pwned > $APOS_PRIMARY/.claude/settings.json")"
+    "$(bash_rc_of "$APOS_PRIMARY" "echo pwned > $APOS_PRIMARY/.claude/settings.json")"
 assert_rc "24 bash redirect with literal apostrophe (quoted) denies" 2 \
-    "$(bash_rc_of "echo pwned > \"$APOS_PRIMARY/.claude/settings.json\"")"
+    "$(bash_rc_of "$APOS_PRIMARY" "echo pwned > \"$APOS_PRIMARY/.claude/settings.json\"")"
 
-# powershell_rc_of COMMAND [EXTRA_ENV...] — {tool_name: PowerShell, tool_input:
-# {command: COMMAND}} on stdin, run the hook, echo its exit code.
+# powershell_rc_of CWD COMMAND [EXTRA_ENV...] — {tool_name: PowerShell,
+# tool_input: {command: COMMAND, cwd: CWD}} on stdin, run the hook, echo its
+# exit code. CWD is required for the same reason as bash_rc_of above.
 powershell_rc_of() {
-    local cmd="$1"
-    shift
-    jq -n --arg cmd "$cmd" '{tool_name: "PowerShell", tool_input: {command: $cmd}}' \
+    local cwd="$1" cmd="$2"
+    shift 2
+    jq -n --arg cmd "$cmd" --arg cwd "$cwd" \
+        '{tool_name: "PowerShell", tool_input: {command: $cmd, cwd: $cwd}}' \
         | env "$@" bash "$HOOK" >/dev/null 2>&1
     echo "$?"
 }
 
-# 25-33 (HIMMEL-1525): every remaining write path the ticket named, still open
-# on this hook as of the audit. Each targets the PRIMARY checkout's
-# settings.json (or .local.json where noted) and must now DENY.
-assert_rc "25 bash cp overwrite of primary settings.json denies" 2 \
-    "$(bash_rc_of "cp /tmp/x.json $SANDBOX/primary/.claude/settings.json")"
-assert_rc "26 bash mv over primary settings.json denies" 2 \
-    "$(bash_rc_of "mv /tmp/x.json $SANDBOX/primary/.claude/settings.json")"
-assert_rc "27 bash tee into primary settings.json denies" 2 \
-    "$(bash_rc_of "echo pwned | tee $SANDBOX/primary/.claude/settings.json")"
-assert_rc "28 bash sed -i on primary settings.json denies" 2 \
-    "$(bash_rc_of "sed -i 's/a/a/' $SANDBOX/primary/.claude/settings.json")"
-assert_rc "29 bash node -e writeFileSync on primary settings.json denies" 2 \
-    "$(bash_rc_of "node -e \"require('fs').writeFileSync('$SANDBOX/primary/.claude/settings.json','{}')\"")"
-assert_rc "30 bash python3 -c open/write on primary settings.json denies" 2 \
-    "$(bash_rc_of "python3 -c \"open('$SANDBOX/primary/.claude/settings.json','w').write('{}')\"")"
-assert_rc "31 powershell Set-Content on primary settings.json denies" 2 \
-    "$(powershell_rc_of "Set-Content -Path $SANDBOX/primary/.claude/settings.json -Value '{}'")"
-assert_rc "32 powershell > redirect on primary settings.json denies" 2 \
-    "$(powershell_rc_of "'{}' > $SANDBOX/primary/.claude/settings.json")"
-assert_rc "33 bash cp overwrite of primary settings.local.json denies" 2 \
-    "$(bash_rc_of "cp /tmp/x.json $SANDBOX/primary/.claude/settings.local.json")"
+# 25-33 (v2, console NO-GO redesign): the unified textual arm's critical
+# bypasses, all from cwd=PRIMARY -> DENY. None of these are per-verb
+# argument extraction any more — dir_dest is a whole-command textual match
+# on a write verb/flag plus a `.claude` path component; mentions_settings is
+# a whole-command substring match with no bare-allowlisted-read exemption
+# once chaining/eval/subshell is present.
+assert_rc "25 bash cp chained with && into primary settings.json denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "cp /tmp/x.json .claude/settings.json && echo done")"
+assert_rc "26 bash cp into primary .claude/ dir denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "cp /tmp/x.json .claude/")"
+assert_rc "27 bash cp -t primary .claude/ dir denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "cp -t .claude/ /tmp/x.json")"
+assert_rc "28 bash sed -Ei on primary settings.json denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "sed -Ei 's/a/a/' .claude/settings.json")"
+assert_rc "29 bash subshell cp into primary settings.json denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "(cp /tmp/x.json .claude/settings.json)")"
+assert_rc "30 bash backslash-escaped cp into primary settings.json denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "\\cp /tmp/x.json .claude/settings.json")"
+assert_rc "31 bash xargs cp into primary settings.json denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "echo .claude/settings.json | xargs -I{} cp /tmp/x.json {}")"
+assert_rc "32 bash command-substitution cp into primary settings.json denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "x=\$(cp /tmp/x.json .claude/settings.json)")"
+assert_rc "33 bash install into primary settings.json denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "install /tmp/x.json .claude/settings.json")"
 
-# 34-37: controls that must stay ALLOW — ordinary reads of the primary's
-# settings.json (this arm targets WRITE paths only; a leg reading the
-# primary's settings.json for diagnosis is normal and must keep working),
-# plus a legitimate cp INTO a worktree's own settings.json.
-assert_rc "34 bash cat of primary settings.json allows" 0 \
-    "$(bash_rc_of "cat $SANDBOX/primary/.claude/settings.json")"
-assert_rc "35 bash grep of primary settings.json allows" 0 \
-    "$(bash_rc_of "grep x $SANDBOX/primary/.claude/settings.json")"
-assert_rc "36 bash jq of primary settings.json allows" 0 \
-    "$(bash_rc_of "jq . $SANDBOX/primary/.claude/settings.json")"
-assert_rc "37 bash cp into worktree settings.json allows" 0 \
-    "$(bash_rc_of "cp /tmp/x.json $SANDBOX/primary/.claude/worktrees/feat+x/.claude/settings.json")"
+# 34 (v2): an absolute-path cp into the primary's settings.json, run from an
+# unrelated worktree cwd (WT2) -> DENY. Proves the absolute-path-into-primary
+# substring match fires independent of is_primary_cwd.
+assert_rc "34 bash absolute-path cp into primary settings.json from WT2 denies" 2 \
+    "$(bash_rc_of "$WT2" "cp /tmp/x.json $PRIMARY/.claude/settings.json")"
 
-# 38-39 (console-requested, HIMMEL-1525): the interpreter-verb deny is scoped
-# to commands that actually NAME a live settings file — a bare `node -e` with
-# no settings mention, or a `cp` reading settings.json as the SOURCE (writing
-# elsewhere), must both stay ALLOW.
-assert_rc "38 bash node -e with no settings mention allows" 0 \
-    "$(bash_rc_of "node -e \"console.log('hi')\"")"
-assert_rc "39 bash cp of primary settings.json AS SOURCE allows" 0 \
-    "$(bash_rc_of "cp $SANDBOX/primary/.claude/settings.json /tmp/x.json")"
+# 35: PowerShell Set-Content on the primary's settings.json, cwd=PRIMARY ->
+# DENY. Proves the PowerShell arm shares the same unified textual logic.
+assert_rc "35 powershell Set-Content on primary settings.json denies" 2 \
+    "$(powershell_rc_of "$PRIMARY" "Set-Content -Path .claude/settings.json -Value x")"
 
-# Clean up the worktree registration before removing the sandbox (avoids a
-# dangling `git worktree` admin record under SANDBOX/primary).
+# 36-41: controls that must stay ALLOW from cwd=PRIMARY — ordinary reads (this
+# arm targets WRITE-shaped commands only; diagnosing the primary's settings.json
+# by reading it is normal and must keep working), plus commands that don't
+# mention a live settings file or a .claude/ dir-dest at all.
+assert_rc "36 bash cat of primary settings.json allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "cat .claude/settings.json")"
+assert_rc "37 bash grep of primary settings.json allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "grep x .claude/settings.json")"
+assert_rc "38 bash jq of primary settings.json allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "jq . .claude/settings.json")"
+assert_rc "39 bash git diff of primary settings.json allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "git diff .claude/settings.json")"
+assert_rc "40 bash node -e with no settings mention allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "node -e \"console.log(1)\"")"
+assert_rc "41 bash redirect+node with no settings mention allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "jq . x.json > /tmp/o && node -e 1")"
+
+# 42-47: controls that must stay ALLOW from cwd=WT2 — a worktree's own
+# settings.json is not "live", so every verb (write, read, or PowerShell)
+# stays open there, INCLUDING a deliberate-tightening case at 47.
+assert_rc "42 bash echo-redirect write into worktree settings.json allows" 0 \
+    "$(bash_rc_of "$WT2" "echo x > .claude/settings.json")"
+assert_rc "43 bash cp of worktree settings.json as source allows" 0 \
+    "$(bash_rc_of "$WT2" "cp .claude/settings.json /tmp/x")"
+assert_rc "44 bash tee-read of worktree settings.json allows" 0 \
+    "$(bash_rc_of "$WT2" "tee /tmp/log < .claude/settings.json")"
+assert_rc "45 bash node -e writeFileSync into worktree settings.json allows" 0 \
+    "$(bash_rc_of "$WT2" "node -e \"require('fs').writeFileSync('.claude/settings.json','{}')\"")"
+assert_rc "46 bash sed -i on worktree settings.json allows" 0 \
+    "$(bash_rc_of "$WT2" "sed -i 's/a/a/' .claude/settings.json")"
+assert_rc "47 powershell Set-Content on worktree settings.json allows" 0 \
+    "$(powershell_rc_of "$WT2" "Set-Content -Path .claude/settings.json -Value x")"
+
+# Clean up worktree registrations before removing the sandbox (avoids
+# dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true
+git -C "$SANDBOX/primary" worktree remove --force "$WT2" 2>/dev/null || true
 rm -rf "$SANDBOX" 2>/dev/null || true
 
 if [ "$FAILED" -gt 0 ]; then
