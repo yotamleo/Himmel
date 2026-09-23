@@ -940,37 +940,70 @@ check "full launch --profile: seeded settings carry gate permissions" "$rc" "0"
 
 # HIMMEL-3536: a leg must stay cd-based, never EnterWorktree-pinned - a pinned
 # session's isolation screen refuses /pr-check step 0's canonical fence.
-check "full launch --profile: seeded settings deny EnterWorktree" \
-  "$(jq -c '.permissions.deny' "$d17/HIMMEL-3333-leg.leg-settings.json" 2>/dev/null)" '["EnterWorktree"]'
+# HIMMEL-3285 also seeds the .locks deny below (same array), so this checks
+# EnterWorktree is present, not that it is the array's only member.
+contains "full launch --profile: seeded settings deny EnterWorktree" \
+  "$(jq -c '.permissions.deny' "$d17/HIMMEL-3333-leg.leg-settings.json" 2>/dev/null)" 'EnterWorktree'
 
 # HIMMEL-3285: a leg's Results writes land on its own handover doc, which
 # sits outside the leg's working directories whenever the handover root is
 # external (Mode B) - the auto-mode classifier inconsistently denies those
-# writes as Out-of-Place Publication. additionalDirectories grants exactly
-# the resolved handover root, nothing wider.
-check "full launch --profile: seeded settings grant the handover root as an additional directory" \
+# writes as Out-of-Place Publication. additionalDirectories grants only the
+# DOC's own directory, never the whole handover root - console-kit/go.sh's
+# merge GO is authenticated only by the existence of a file under
+# <handover_root>/.locks/go/, unguarded by any hook, so widening the grant to
+# the root would let a leg mint its own GO via an auto-approved Write.
+check "full launch --profile: seeded settings grant only the doc's own directory, not the handover root" \
   "$(jq -c '.permissions.additionalDirectories' "$d17/HIMMEL-3333-leg.leg-settings.json" 2>/dev/null)" \
-  "$(jq -cn --arg d "$HANDOVER_DIR" '[$d]')"
+  "$(jq -cn --arg d "$tmp" '[$d]')"
+
+# Never the handover root itself, on any --profile launch - the invariant the
+# scoped grant above must hold even if the doc happened to sit at the root.
+# jq exact-element equality, not a substring check: a legitimately narrower
+# doc subdirectory can textually START WITH the root's own path.
+check "full launch --profile: additionalDirectories never contains the handover root itself" \
+  "$(jq --arg d "$HANDOVER_DIR" '(.permissions.additionalDirectories // []) | any(. == $d)' "$d17/HIMMEL-3333-leg.leg-settings.json" 2>/dev/null)" \
+  "false"
+
+# Belt and braces: Edit/Write/MultiEdit/NotebookEdit are denied on the
+# handover root's .locks/** outright, regardless of what additionalDirectories
+# grants - deny wins over additionalDirectories.
+check "full launch --profile: seeded settings deny Edit/Write/MultiEdit/NotebookEdit on .locks/**" \
+  "$(jq -c '.permissions.deny' "$d17/HIMMEL-3333-leg.leg-settings.json" 2>/dev/null)" \
+  "$(jq -cn --arg d "$HANDOVER_DIR" '["EnterWorktree"] + (["Edit","Write","MultiEdit","NotebookEdit"] | map(. + "(" + $d + "/.locks/**)"))')"
 
 # A handover root containing a space must still resolve correctly -
 # HANDOVER_DIR reaches this wrapper's own process as a plain export
 # (leg_propagate_env's whitespace branch), not through the
-# HEADED_ARM_LAUNCHER_ENV token list, which cannot carry it.
+# HEADED_ARM_LAUNCHER_ENV token list, which cannot carry it. The doc lives
+# under the space root (a real leg bucket path), so this also exercises
+# additionalDirectories resolving a doc directory containing a space; the
+# .locks deny is built from HANDOVER_DIR directly, so it exercises the same
+# space handling on that side.
 d17s="$tmp/c17s"; mk_launch_stubs "$d17s" "HIMMEL-3333-space"; mkdir -p "$tmp/repo17s"
 space_root="$tmp/pinned handover root"
-mkdir -p "$space_root"
+space_doc_dir="$space_root/yotamleo/himmel"
+mkdir -p "$space_doc_dir"
+space_doc="$space_doc_dir/HIMMEL-3333-space.md"
+printf '%s\n' '# fixture doc' > "$space_doc"
 rc=0
 HEADED_ARM_LEG_TARGET="$HEADED_ARM" \
 HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
 KONSOLE_CMD="$d17s/konsole" PGREP_CMD="$d17s/pgrep" \
 LEG_REPO="$tmp/repo17s" HEADED_ARM_LOCK_DIR="$d17s/locks" HEADED_ARM_PROC="$d17s/proc" \
 HANDOVER_DIR="$space_root" \
-  bash "$SCRIPT" --profile leg-impl "HIMMEL-3333-space" "$some_doc" "$d17s/signal-never" "$PAST" "$d17s/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+  bash "$SCRIPT" --profile leg-impl "HIMMEL-3333-space" "$space_doc" "$d17s/signal-never" "$PAST" "$d17s/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
 wait_record "$d17s" || true
 check "full launch --profile (space in handover root): exit 0" "$rc" "0"
-check "full launch --profile (space in handover root): additionalDirectories resolves correctly" \
+check "full launch --profile (space in handover root): additionalDirectories grants the doc's own directory" \
   "$(jq -c '.permissions.additionalDirectories' "$d17s/HIMMEL-3333-space.leg-settings.json" 2>/dev/null)" \
-  "$(jq -cn --arg d "$space_root" '[$d]')"
+  "$(jq -cn --arg d "$space_doc_dir" '[$d]')"
+check "full launch --profile (space in handover root): additionalDirectories never contains the handover root itself" \
+  "$(jq --arg d "$space_root" '(.permissions.additionalDirectories // []) | any(. == $d)' "$d17s/HIMMEL-3333-space.leg-settings.json" 2>/dev/null)" \
+  "false"
+check "full launch --profile (space in handover root): .locks deny resolves with the space intact" \
+  "$(jq -c '.permissions.deny' "$d17s/HIMMEL-3333-space.leg-settings.json" 2>/dev/null)" \
+  "$(jq -cn --arg d "$space_root" '["EnterWorktree"] + (["Edit","Write","MultiEdit","NotebookEdit"] | map(. + "(" + $d + "/.locks/**)"))')"
 
 # The relay half of a split console is not a leg that works in a worktree:
 # its settings get no deny.
@@ -1071,7 +1104,12 @@ assert.deepStrictEqual(fs.readFileSync(`${dir}/args`, 'utf8').trimEnd().split('\
 ]);
 const settings = JSON.parse(fs.readFileSync(`${dir}/HIMMEL-composed.leg-settings.json`, 'utf8'));
 assert.ok(settings.permissions.allow.includes('Bash(bash scripts/handover/merge-on-green.sh:*)'));
-assert.deepStrictEqual(settings.permissions.deny, ['EnterWorktree']);
+// HIMMEL-3285: HANDOVER_DIR is exported suite-wide (line ~105), so this
+// non-relay launch also seeds the .locks deny alongside EnterWorktree.
+assert.deepStrictEqual(settings.permissions.deny, [
+  'EnterWorktree',
+  ...['Edit', 'Write', 'MultiEdit', 'NotebookEdit'].map((t) => `${t}(${process.env.HANDOVER_DIR}/.locks/**)`),
+]);
 assert.deepStrictEqual(JSON.parse(fs.readFileSync(`${dir}/HIMMEL-composed.leg-mcp.json`, 'utf8')),
   {mcpServers: {qmd: {type: 'http', url: 'http://localhost:8181/mcp'}}});
 NODE

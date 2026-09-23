@@ -575,10 +575,19 @@ the leg's window via `!`.
 (HIMMEL-3285) A leg's writes to its own handover doc are a common source of
 this symptom, since the resolved handover root sits outside the leg's working
 directories. `headed-arm-leg.sh --profile` now grants every generated leg
-settings file (native and claudex) the resolved handover root as a
-`permissions.additionalDirectories` entry, so a Results write no longer falls
-to the classifier on a fresh launch. A leg already running before its next
-launch does not pick this up — the interim above still applies to it.
+settings file (native and claudex) only the leg **doc's own directory** as a
+`permissions.additionalDirectories` entry — never the whole handover root —
+so a Results write no longer falls to the classifier on a fresh launch. The
+grant is scoped this narrowly because `console-kit/go.sh`'s merge GO is
+authenticated only by the *existence* of a file under
+`<handover_root>/.locks/go/<pr>.<sha>` (`go-gate.sh`, `merge-on-green.sh`),
+with no hook guarding that path: widening the grant to the root would let a
+leg's own Write auto-approve into `.locks/`, minting its own merge GO. As
+defense in depth, the same profile block also denies
+Edit/Write/MultiEdit/NotebookEdit on `<handover_root>/.locks/**` outright
+(the relay half of a split console is exempt, matching its existing
+no-worktree-deny settings). A leg already running before its next launch
+does not pick this up — the interim above still applies to it.
 
 ---
 

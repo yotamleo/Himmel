@@ -802,14 +802,32 @@ if [ -n "$PROFILE" ]; then
     # which sits outside the leg's working directories whenever the resolved
     # handover root is external (Mode B) or the doc's own root otherwise -
     # the auto-mode classifier inconsistently refuses those writes as
-    # Out-of-Place Publication. HANDOVER_DIR is already resolved (above,
-    # HIMMEL-3155) the same way handover_root() resolves it everywhere else
-    # in the kit, so grant exactly that directory - never $HOME, never the
-    # vault root above it.
-    if [ -n "${HANDOVER_DIR:-}" ]; then
-        if ! PROFILE_JSON="$(printf '%s' "$PROFILE_JSON" | jq --arg dir "$HANDOVER_DIR" \
+    # Out-of-Place Publication. Grant only the DOC's own directory, never the
+    # whole handover root: console-kit/go.sh's merge GO is authenticated only
+    # by the EXISTENCE of <handover_root>/.locks/go/<pr>.<sha> (go-gate.sh,
+    # merge-on-green.sh), with no hook guarding that path today - widening a
+    # leg's grant to the root would auto-approve its own Write there, letting
+    # a leg mint its own merge GO. The doc's directory is a strict subdir of
+    # the leg's own bucket (handovers/<user>/<repo>/...), which never
+    # contains .locks/ (that sits at the handover ROOT).
+    if [ -n "$DOC" ] && _leg_doc_dir="$(cd "$(dirname "$DOC")" 2>/dev/null && pwd)"; then
+        if ! PROFILE_JSON="$(printf '%s' "$PROFILE_JSON" | jq --arg dir "$_leg_doc_dir" \
             '.permissions.additionalDirectories = ((.permissions.additionalDirectories // []) + [$dir])')"; then
-            echo "headed-arm-leg: --profile $PROFILE: cannot add the handover root to additionalDirectories" >&2
+            echo "headed-arm-leg: --profile $PROFILE: cannot add the leg doc's directory to additionalDirectories" >&2
+            exit 2
+        fi
+    fi
+    unset -v _leg_doc_dir
+    # Belt and braces: even scoped to the doc's own directory, deny Edit/
+    # Write/MultiEdit/NotebookEdit on the handover root's .locks/** outright.
+    # Deny wins over additionalDirectories, so this holds even if a future
+    # change widens the grant back toward the root. Gated the same as the
+    # EnterWorktree deny above: the relay never works in a worktree and
+    # keeps its settings as they are.
+    if [ "$RELAY" -eq 0 ] && [ -n "${HANDOVER_DIR:-}" ]; then
+        if ! PROFILE_JSON="$(printf '%s' "$PROFILE_JSON" | jq --arg dir "$HANDOVER_DIR" \
+            '.permissions.deny = ((.permissions.deny // []) + (["Edit","Write","MultiEdit","NotebookEdit"] | map(. + "(" + $dir + "/.locks/**)")))')"; then
+            echo "headed-arm-leg: --profile $PROFILE: cannot add the .locks deny to settings JSON" >&2
             exit 2
         fi
     fi
