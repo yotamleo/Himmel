@@ -648,10 +648,17 @@ q_run() { # <label> <doc-body> <lock-state> <expect: 0|1 native count>
   run_pf "$slots" "$pdir" HIMMEL_FLEET_CAP=4 FLEET_HANDOVER_ROOT_OVERRIDE="$qdir" >/dev/null
   check "(q.$label) fleet_native" "$expect" "$(grep -oE 'native=[0-9]+' "$W/err.log" | head -1 | cut -d= -f2)"
 }
-q_run wrapped-free "- 10:00 WRAPPED — done." free 0
-q_run held-not-wrapped "- 10:00 WRAPPED — done." held 1
-q_run free-not-wrapped "- 10:00 READY — holding for GO." free 1
-q_run no-status-bullet "- 10:00 some note with no marker." free 1
+q_run wrapped-free "## Results
+- 10:00 WRAPPED — done." free 0
+q_run held-not-wrapped "## Results
+- 10:00 WRAPPED — done." held 1
+q_run free-not-wrapped "## Results
+- 10:00 READY — holding for GO." free 1
+q_run no-status-bullet "## Results
+- 10:00 some note with no marker." free 1
+q_run wrapped-example-above-results "- 10:00 WRAPPED — example bullet in prose, before the real Results section.
+## Results
+- 10:00 READY — holding for GO." free 1
 
 # --- (r) HIMMEL-3095 drift guard: drives the REAL scripts/handover/
 # queue-lock.sh (not a stub) to genuinely acquire and release a lock on a

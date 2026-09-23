@@ -53,6 +53,16 @@ fleet_doc_for_pid() {
 # one *.md file whose basename contains <name>. Prints the path (rc 0) on
 # exactly one hit; rc 1 on zero or on more than one (ambiguous — fail
 # toward counting the process rather than guessing which doc is its own).
+#
+# ponytail: HIMMEL-3095, this can still pick the WRONG doc when exactly one
+# matches by name but that match is a different, already-WRAPPED process
+# that happens to share <name> with the live one being checked (e.g. a
+# same-named re-arm racing its predecessor's still-live window) — a false
+# exclude, not the documented fail-toward-cap direction. Leg naming
+# convention keeps <name> unique per launch in practice, so this is
+# believed rare; upgrade path if it is ever measured live: have the doc
+# itself record the pid that last wrote WRAPPED and require it match
+# <pid>/<name>'s own resolved identity, not just a name substring.
 fleet_doc_for_name() {
   local _fdn_name="$1" _fdn_root _fdn_hits _fdn_n
   if [ -n "${FLEET_HANDOVER_ROOT_OVERRIDE:-}" ]; then
@@ -73,8 +83,12 @@ fleet_doc_for_name() {
 # ...) of the LAST `## Results` bullet in <doc> that carries one, matching
 # the same marker vocabulary console-kit/fleet.mjs's STATUS_RE reads.
 # Empty output (still rc 0) when no bullet carries a recognized marker.
+# Confined to text AFTER the first `## Results` heading, so an example
+# bullet in the brief/contract prose above it (which can legitimately show
+# the marker vocabulary) is never mistaken for a real status line.
 fleet_doc_last_status() {
-  grep -E '^- ([0-9]{1,2}:[0-9]{2}[[:space:]]+)?(\*\*)?(WRAPPED|READY|RESOLVED|BLOCKED|HALTED|FINDING|LIVE)([^A-Za-z0-9_]|$)' "$1" 2>/dev/null \
+  awk '/^## Results/{f=1} f' "$1" 2>/dev/null \
+    | grep -E '^- ([0-9]{1,2}:[0-9]{2}[[:space:]]+)?(\*\*)?(WRAPPED|READY|RESOLVED|BLOCKED|HALTED|FINDING|LIVE)([^A-Za-z0-9_]|$)' \
     | tail -n 1 \
     | sed -E 's/^- ([0-9]{1,2}:[0-9]{2}[[:space:]]+)?(\*\*)?(WRAPPED|READY|RESOLVED|BLOCKED|HALTED|FINDING|LIVE).*/\3/'
 }

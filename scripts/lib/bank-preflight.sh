@@ -606,7 +606,7 @@ $_fleet_name"
     if [ -z "${_fleet_wrapped_sourced:-}" ]; then
       _fleet_wrapped_sourced=1
       # shellcheck source=scripts/lib/fleet-wrapped.sh
-      . "$(dirname "$0")/fleet-wrapped.sh" 2>/dev/null && _fleet_wrapped_ok=1 || _fleet_wrapped_ok=0
+      . "$(dirname "${BASH_SOURCE[0]}")/fleet-wrapped.sh" 2>/dev/null && _fleet_wrapped_ok=1 || _fleet_wrapped_ok=0
     fi
     if [ "${_fleet_wrapped_ok:-0}" -eq 1 ] && [ -n "$_fleet_name" ] \
       && fleet_process_is_wrapped_and_free "$_fleet_pid" "$_fleet_name"; then
