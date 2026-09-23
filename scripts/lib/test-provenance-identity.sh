@@ -84,9 +84,10 @@ QMD_STUB_MODE=nopath
 check "rc 0 with no Path: line -> UNREADABLE" "$(prov_identity_live collection "$u")" "UNREADABLE"
 check "a unit with no name -> UNREADABLE" "$(prov_identity_live collection '{"kind":"collection"}')" "UNREADABLE"
 
-# ── kinds with no reader in S16 -> rc 2, nothing printed ────────────────────
+# ── kinds with no reader yet (S17 added plugin/marketplace; job/mcp/unit/tool
+# are still S18+) -> rc 2, nothing printed ──────────────────────────────────
 
-for k in plugin marketplace job mcp unit tool; do
+for k in job mcp unit tool; do
     out=$(prov_identity_live "$k" '{"unit":"x"}'); rc=$?
     check "kind $k has no reader -> rc 2" "$rc" "2"
     check "kind $k has no reader -> no output" "$out" ""
