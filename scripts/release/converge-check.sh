@@ -47,16 +47,22 @@ command -v jq >/dev/null 2>&1 || { echo "converge-check: jq is required" >&2; ex
 # a path boundary becomes <token>. A longer sibling (<path>-old, <path>.bak) is a
 # DIFFERENT location and must stay visible, or a leak into it would be masked.
 mask() {
-  local rest="$1" needle="$2" token="$3" out="" quote="" chunk i c
+  local rest="$1" needle="$2" token="$3" out="" quote="" esc=0 chunk i c
   while [[ "$rest" == *"$needle"* ]]; do
     chunk="${rest%%"$needle"*}"
     # Track quote state across the text consumed so far: ':', ';' and whitespace are
     # only real token separators OUTSIDE a quoted value -- inside one (the common
     # case, since jq -S / the hook scripts always quote the whole string) they are
-    # just filename bytes, same as '+' or '~' below (HIMMEL-3442).
+    # just filename bytes, same as '+' or '~' below (HIMMEL-3442). A backslash-escaped
+    # quote (jq's own JSON escaping of a literal '"' inside a string) is not a real
+    # delimiter and must not flip quote state -- track escaping too, one char lookahead.
     for (( i=0; i<${#chunk}; i++ )); do
       c="${chunk:i:1}"
-      if [ -z "$quote" ]; then
+      if [ "$esc" = 1 ]; then
+        esc=0
+      elif [ "$c" = "\\" ]; then
+        esc=1
+      elif [ -z "$quote" ]; then
         case "$c" in '"'|"'") quote="$c" ;; esac
       elif [ "$c" = "$quote" ]; then
         quote=""

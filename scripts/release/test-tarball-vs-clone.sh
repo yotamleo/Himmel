@@ -188,12 +188,25 @@ for sym in ' ' ':'; do
   bash "$CONV" --a-home "$tmp/csq1/home" --a-prefix "$tmp/csq1/prefix" --b-home "$tmp/csq2/home" --b-prefix "$tmp/csq2/prefix" >/dev/null 2>&1; rc=$?
   [ "$rc" -eq 1 ] && ok "T7 RED: a quoted sibling <prefix>${sym}old path is NOT masked as the prefix (rc 1, HIMMEL-3442)" || bad "T7 quoted sibling ${sym}old path masked (HIMMEL-3442)" "rc=$rc"
 done
+# A backslash-escaped quote earlier in the same JSON string (jq's own escaping of a
+# literal '"' inside a value) must not flip the tracked quote state -- an unescaped
+# scan misreads it as a real quote and falls OUT of "inside a quoted value" early,
+# which re-exposes exactly the false convergence above for a sibling that happens to
+# follow an escaped quote in the command string.
+rm -rf "$tmp/cse1" "$tmp/cse2"
+mk_side "$tmp/cse1" 'bash \" '"$tmp"'/cse1/prefix:old/g.sh'; mk_side "$tmp/cse2" 'bash \" '"$tmp"'/cse2/prefix:old/g.sh'
+bash "$CONV" --a-home "$tmp/cse1/home" --a-prefix "$tmp/cse1/prefix" --b-home "$tmp/cse2/home" --b-prefix "$tmp/cse2/prefix" >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 1 ] && ok "T7 RED: a quoted sibling after an escaped quote earlier in the value is NOT masked as the prefix (rc 1, HIMMEL-3442)" || bad "T7 escaped quote corrupted quote-tracking, sibling masked (HIMMEL-3442)" "rc=$rc"
 # Genuine boundaries INSIDE quotes are unaffected: identical content at different
-# prefixes still converges even with the value quoted, and a closing quote right
-# after the prefix is still a real boundary.
+# prefixes still converges even with the value quoted (the '/' subpath boundary).
 mk_side "$tmp/csq3" "bash $tmp/csq3/prefix/g.sh"; mk_side "$tmp/csq4" "bash $tmp/csq4/prefix/g.sh"
 bash "$CONV" --a-home "$tmp/csq3/home" --a-prefix "$tmp/csq3/prefix" --b-home "$tmp/csq4/home" --b-prefix "$tmp/csq4/prefix" >/dev/null 2>&1; rc=$?
 [ "$rc" -eq 0 ] && ok "T7 a quoted identical command at different prefixes still CONVERGES (HIMMEL-3442)" || bad "T7 quote-awareness broke a genuine convergence" "rc=$rc"
+# A quoted value that ends EXACTLY at the prefix (closing quote is the real boundary,
+# no trailing subpath) still converges too.
+mk_side "$tmp/csq5" "bash $tmp/csq5/prefix"; mk_side "$tmp/csq6" "bash $tmp/csq6/prefix"
+bash "$CONV" --a-home "$tmp/csq5/home" --a-prefix "$tmp/csq5/prefix" --b-home "$tmp/csq6/home" --b-prefix "$tmp/csq6/prefix" >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 0 ] && ok "T7 a quoted value ending exactly at the prefix still CONVERGES (HIMMEL-3442)" || bad "T7 quote-awareness broke convergence at a closing-quote boundary" "rc=$rc"
 # Git hooks that are SYMLINKS count: present on one side only -> DIVERGED; dangling -> UNREADABLE.
 mk_side "$tmp/cg1" "bash $tmp/cg1/prefix/g.sh"; mk_side "$tmp/cg2" "bash $tmp/cg2/prefix/g.sh"
 for s in cg1 cg2; do git init -q "$tmp/$s/repo" 2>/dev/null; mkdir -p "$tmp/$s/repo/.git/hooks"; done
