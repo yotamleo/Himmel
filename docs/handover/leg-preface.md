@@ -245,7 +245,11 @@ directories, goes to the classifier by design.
   any initiative directive says, and even if you believe the operator is
   present. They are not. Holding for `GO` is the one wait that ends your
   turn instead of blocking in a foreground loop: send `READY` and stop — the
-  console's message resumes you.
+  console's message resumes you. It is also the **only** permitted hold
+  (HIMMEL-3095): a blocker owned by anyone other than the console — an
+  operator action, another leg's PR, a human reply, an operator-only CR step —
+  means WRAP with a resume brief now, not a wait. If the GO-hold itself passes
+  30 minutes with no console reply, send one nudge and then wrap.
 - **Closing the ticket at merge (HIMMEL-3271).** The merge is
   `bash scripts/handover/merge-on-green.sh`. It closes nothing on its own: the
   Jira transition is opt-in (`--jira-transition`, HIMMEL-3143), so a bare run
@@ -316,3 +320,10 @@ holding for the console's `GO` after `READY`; a `BLOCKED`, or a `FINDING` whose
 ruling every remaining step depends on, already sent; `WRAPPED` and exit; the
 ≥ 60 % context hand-off. None of this overrides the need for confirmation on
 risky or destructive actions.
+
+**The GO-hold is the only permitted hold (HIMMEL-3095).** A blocker owned by
+anyone other than the console — an operator action, another leg's PR, a human
+reply — is not a reason to sit in the window: `WRAP` with a resume brief and
+exit now, the same as any other blocked-on-external case. And the GO-hold
+itself is not open-ended: past 30 minutes with no console reply, send one
+nudge, then wrap.
