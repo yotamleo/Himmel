@@ -90,7 +90,7 @@ HEADED_ARM="$HERE/../headed-arm.sh"
 . "$HERE/../../lib/timeout-bin.sh"
 # The suite owns every launcher input; an ambient leg shell must not silently
 # turn default-native cases into claudex cases.
-unset LEG_LANE LEG_CONTEXT LEG_REPO LEG_EFFORT HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER IMPL_GUARD_OK INLINE_IMPL_OK HIMMEL_CONSOLE_LEG HIMMEL_LEAN_LEG LEG_CLAUDE_BIN LEG_PROFILE LEG_PROFILE_SETTINGS LEG_PROFILE_PREFACE LEG_PROFILE_MCP_CONFIG LEG_SUPPRESS_CR_TRIGGER CR_TRIGGER_SUPPRESS HIMMEL_CONSOLE_NAME CLAUDE_PID SESSION_NAME_CMDLINE_FILE 2>/dev/null || true
+unset LEG_LANE LEG_CONTEXT LEG_REPO LEG_EFFORT HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER IMPL_GUARD_OK INLINE_IMPL_OK HIMMEL_CONSOLE_LEG HIMMEL_LEAN_LEG LEG_CLAUDE_BIN LEG_PROFILE LEG_PROFILE_SETTINGS LEG_PROFILE_PREFACE LEG_PROFILE_MCP_CONFIG LEG_SUPPRESS_CR_TRIGGER CR_TRIGGER_SUPPRESS HIMMEL_CONSOLE_NAME CLAUDE_PID SESSION_NAME_CMDLINE_FILE CLAUDE_CODE_EFFORT_LEVEL 2>/dev/null || true
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/headed-arm-leg-test.XXXXXX")" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
 trap 'rm -rf "$tmp"' EXIT
@@ -1890,6 +1890,40 @@ contains "33a launcher-env carries HIMMEL_CONSOLE_NAME=opsdesk (--console)" "$le
 out33b="$(HIMMEL_CONSOLE_NAME=ambient-console bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg-33b some/doc.md /tmp/nosig 99999999999 "$tmp/leg33b.log" claude-sonnet-5 2>&1)"
 lenv33b="$(printf '%s\n' "$out33b" | grep '^headed-arm-leg: lane=')"
 contains "33b launcher-env carries HIMMEL_CONSOLE_NAME=ambient-console (inherited)" "$lenv33b" "HIMMEL_CONSOLE_NAME=ambient-console"
+
+# 34. HIMMEL-3488: lanes.json's claude-tier effort reaches the native lane's
+# CLAUDE_CODE_EFFORT_LEVEL, mirroring the HIMMEL-3482 native-Telegram-dispatch
+# match rule (exact model id, or "claude-<tier-id>-" prefix). Own fixture
+# registry via HEADED_ARM_LEG_LANES_JSON (same seam shape as
+# HEADED_ARM_LEG_PROFILES above), never the real scripts/lanes/lanes.json -
+# a registry edit elsewhere must not flip these rows out from under the suite.
+lanes_fixture="$tmp/lanes-fixture.json"
+cat > "$lanes_fixture" <<'LANES_JSON_EOF'
+{"lanes":[{"id":"sonnet","class":"claude-tier","effort":"medium"},{"id":"opus","class":"claude-tier","effort":"high"}]}
+LANES_JSON_EOF
+
+# 34a. A model matching a claude-tier row exports the registry's effort.
+out34a="$(HEADED_ARM_LEG_LANES_JSON="$lanes_fixture" CLAUDE_CODE_EFFORT_LEVEL='' bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg-34a some/doc.md /tmp/nosig 99999999999 "$tmp/leg34a.log" claude-sonnet-5 2>&1)"
+lenv34a="$(printf '%s\n' "$out34a" | grep '^headed-arm-leg: lane=')"
+contains "34a a model with a tier row exports CLAUDE_CODE_EFFORT_LEVEL=medium" "$lenv34a" "CLAUDE_CODE_EFFORT_LEVEL=medium"
+
+# 34b. A model matching no claude-tier row leaves it unset.
+out34b="$(HEADED_ARM_LEG_LANES_JSON="$lanes_fixture" CLAUDE_CODE_EFFORT_LEVEL='' bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg-34b some/doc.md /tmp/nosig 99999999999 "$tmp/leg34b.log" gpt-6-sol 2>&1)"
+lenv34b="$(printf '%s\n' "$out34b" | grep '^headed-arm-leg: lane=')"
+not_contains "34b a model with no tier row leaves CLAUDE_CODE_EFFORT_LEVEL unset" "$lenv34b" "CLAUDE_CODE_EFFORT_LEVEL"
+
+# 34c. An explicit CLAUDE_CODE_EFFORT_LEVEL already set in the launching
+# shell wins over the registry lookup - never silently overwritten.
+out34c="$(HEADED_ARM_LEG_LANES_JSON="$lanes_fixture" CLAUDE_CODE_EFFORT_LEVEL=xhigh bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg-34c some/doc.md /tmp/nosig 99999999999 "$tmp/leg34c.log" claude-sonnet-5 2>&1)"
+lenv34c="$(printf '%s\n' "$out34c" | grep '^headed-arm-leg: lane=')"
+contains "34c an ambient CLAUDE_CODE_EFFORT_LEVEL=xhigh survives the registry lookup" "$lenv34c" "CLAUDE_CODE_EFFORT_LEVEL=xhigh"
+not_contains "34c the registry's medium never overwrites the ambient value" "$lenv34c" "CLAUDE_CODE_EFFORT_LEVEL=medium"
+
+# 34d. --lane claudex is untouched by this resolver: it keeps its own
+# LEG_EFFORT-sourced default, never lanes.json's per-model row.
+out34d="$(HEADED_ARM_LEG_LANES_JSON="$lanes_fixture" CLAUDE_CODE_EFFORT_LEVEL='' bash "$SCRIPT" --dry-run --no-profile --lane claudex HIMMEL-9999-leg-34d some/doc.md /tmp/nosig 99999999999 "$tmp/leg34d.log" 2>&1)"
+lenv34d="$(printf '%s\n' "$out34d" | grep '^headed-arm-leg: lane=')"
+contains "34d claudex lane still exports its own LEG_EFFORT-default effort" "$lenv34d" "CLAUDE_CODE_EFFORT_LEVEL=medium"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

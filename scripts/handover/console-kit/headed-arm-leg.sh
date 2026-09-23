@@ -691,6 +691,41 @@ unset -f _console_name_ok
 # guard; the context-value check above gives the earlier operator-facing error.
 export HEADED_ARM_REQUIRED_AUTOCOMPACT=200000
 
+# Native-lane effort (HIMMEL-3488): HIMMEL-3482 wired lanes.json's claude-tier
+# effort into the native Telegram dispatch (scripts/telegram/run.ts's
+# laneEffort()/spawnSpec, CLAUDE_CODE_EFFORT_LEVEL). This mirrors the same
+# match rule - exact model id, or the model prefixed "claude-<tier-id>-" - for
+# a console-launched native leg, which otherwise runs at ambient effort
+# instead of the registry's declared value. Mirrored rather than imported:
+# run.ts is TS/bun-only and off the leg's Do-not list to edit; jq is already
+# a direct dependency of this file (the --profile settings merge below).
+# An explicit CLAUDE_CODE_EFFORT_LEVEL from the LAUNCHING shell always wins
+# over the registry - checked here, before the lookup, because
+# leg_propagate_env's own `export` would otherwise silently overwrite it with
+# the registry's value. It still needs the SAME leg_propagate_env call as the
+# registry path (re-propagating a value already in the environment is a
+# no-op), so it reaches HEADED_ARM_LAUNCHER_ENV's token list and shows up in
+# the dry-run report the same way a registry-resolved value does.
+if [ "$LANE" = "native" ]; then
+    if [ -n "${CLAUDE_CODE_EFFORT_LEVEL:-}" ]; then
+        leg_propagate_env CLAUDE_CODE_EFFORT_LEVEL "$CLAUDE_CODE_EFFORT_LEVEL"
+    else
+        LANES_JSON="${HEADED_ARM_LEG_LANES_JSON:-$HERE/../../lanes/lanes.json}"
+        if [ -f "$LANES_JSON" ]; then
+            NATIVE_EFFORT="$(jq -r --arg model "$MODEL" '
+                [ .lanes[]? | select(.class == "claude-tier") | . as $lane
+                  | select($lane.id == $model or ($model | startswith("claude-" + $lane.id + "-")))
+                  | $lane.effort ] | first // empty
+            ' "$LANES_JSON" 2>/dev/null)"
+            case "$NATIVE_EFFORT" in
+                low | medium | high | xhigh | max)
+                    leg_propagate_env CLAUDE_CODE_EFFORT_LEVEL "$NATIVE_EFFORT"
+                    ;;
+            esac
+        fi
+    fi
+fi
+
 # claudex lane (HIMMEL-2782): see the --lane header comment above.
 if [ "$LANE" = "claudex" ]; then
     CLAUDEX_BIN="${HEADED_ARM_LEG_CLAUDEX_BIN:-$HERE/../../claude-codex}"
