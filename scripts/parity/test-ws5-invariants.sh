@@ -633,15 +633,32 @@ else
             }
             # HIMMEL-3414: `systemctl [--user] daemon-reload` reloads systemd unit
             # files and starts nothing; it is the only place the word `daemon`
-            # is a verb argument rather than a process. Strip that EXACT token
-            # (twice: a match eats its trailing `;`, so adjacent tokens need a
-            # second pass) and let the rest of the line meet the same rules, so
-            # `... && nohup ... &` or `... --daemon` beside it still fails.
-            # It must END the command (end of line, `;` `&` `|` `)` `>` `#`,
-            # or an fd redirect): `daemon-reload --now x`, `daemon-reloader`,
-            # `daemon-reexec` and any other verb keep the bare word `daemon`.
-            gsub(/(^|[^a-z0-9_-])systemctl[ \t]+(--user[ \t]+)?daemon-reload[ \t]*($|[;&|)>#]|[0-9]>)/, " ", code)
-            gsub(/(^|[^a-z0-9_-])systemctl[ \t]+(--user[ \t]+)?daemon-reload[ \t]*($|[;&|)>#]|[0-9]>)/, " ", code)
+            # is a verb argument rather than a process. Strip that EXACT verb
+            # token (twice: a match eats its trailing terminator, so adjacent
+            # tokens need a second pass) and let the rest of the line meet the
+            # same rules, so `... && nohup ... &` or `... --daemon` beside it
+            # still fails. It must END the command: end of line, `;` `&` `|`
+            # `)` `#`, right away or after a chain of redirections (`>`, an fd
+            # redirect like `2>`) each followed by its own target word --
+            # HIMMEL-3417: a redirect that is not itself followed by the end
+            # of the command (`>/dev/null --now x`) is not the end, and must
+            # NOT strip. Only the verb text is ever removed from `code` -- any
+            # redirect operator and target word stay verbatim, so a daemon
+            # named inside one (`>daemon.log`) still counts, and a chained
+            # redirect after the target (`>/dev/null 2>&1 || true`) is still
+            # read correctly by leaving it untouched. `daemon-reload
+            # --now x`, `daemon-reloader`, `daemon-reexec` and any other verb
+            # keep the bare word `daemon`.
+            for (t13b_pass = 1; t13b_pass <= 2; t13b_pass++) {
+                if (!match(code, /(^|[^a-z0-9_-])systemctl[ \t]+(--user[ \t]+)?daemon-reload[ \t]*/))
+                    break
+                t13b_vstart = RSTART; t13b_vend = RSTART + RLENGTH
+                t13b_tail = substr(code, t13b_vend)
+                if (match(t13b_tail, /^([0-9]?>[ \t]*[^ \t;&|)#]*[ \t]*)*($|[;&|)#])/))
+                    code = substr(code, 1, t13b_vstart - 1) " " substr(code, t13b_vend)
+                else
+                    break
+            }
             code = trim(code)
             # HIMMEL-3432: the read-only-lookup carve-out (a lexical scan for
             # pgrep/pkill/ps token shapes, with chain/subst/backslash-

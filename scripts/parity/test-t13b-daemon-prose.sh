@@ -152,6 +152,10 @@ run_case sh-systemctl-daemon-reload-if PASS scripts/uninstall.sh \
     'if systemctl --user daemon-reload; then echo reloaded; fi'
 run_case sh-systemctl-daemon-reload-twice PASS scripts/uninstall.sh \
     'systemctl daemon-reload;systemctl --user daemon-reload'
+run_case sh-systemctl-user-daemon-reload-redirect-only PASS scripts/uninstall.sh \
+    'systemctl --user daemon-reload >/dev/null'
+run_case sh-systemctl-daemon-reload-fd-redirect-pipe PASS scripts/uninstall.sh \
+    'systemctl daemon-reload 2>&1 | tail -1'
 
 echo "== T13(b): a daemon spawn beside or near daemon-reload still FAILS =="
 run_case sh-reload-then-nohup FAIL scripts/uninstall.sh \
@@ -170,6 +174,10 @@ run_case sh-other-verb-daemon-reload FAIL scripts/uninstall.sh \
     'foo --user daemon-reload'
 run_case sh-daemon-reload-with-arg FAIL scripts/uninstall.sh \
     'systemctl --user daemon-reload --now qmd.service'
+run_case sh-daemon-reload-redirect-then-arg FAIL scripts/uninstall.sh \
+    'systemctl daemon-reload >/dev/null --now qmd.service'
+run_case sh-daemon-reload-redirect-target-daemon FAIL scripts/uninstall.sh \
+    'systemctl daemon-reload >daemon.log'
 
 echo "== T13(b): a read-only process lookup naming a daemon FAILS without a marker -- the lexical carve-out is gone (HIMMEL-3432 marker-only simplification) =="
 # The per-shape carve-out (pgrep/pkill/ps token anchors, chain/subst/
