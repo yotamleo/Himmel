@@ -83,13 +83,13 @@ start() { # <inbox> <outfile> [tick args...]
 # --- (a) idle: no event, no change -> no output, still waiting -------------
 reset_stub
 I="$(new_inbox a)"
-timeout 4 bash "$WAIT" "$I" --legs "N1.md" > "$WORK/a.out" 2>/dev/null; rc=$?
+timeout 4 bash "$WAIT" "$I" --legs "N1.md" > "$WORK/a.out" 2>/dev/null; rc=$?  # gnu-ok: Linux-only kit; pipefail-ok: none set
 check "(a) an idle window with no event emits nothing" "" "$(cat "$WORK/a.out")"
 check "(a) an idle waiter is still waiting when the window closes (rc 124)" "124" "$rc"
 check "(a) the idle waiter wrote a heartbeat" "yes" "$(grep -q '^hb=[0-9]* pid=[0-9]* ' "$I.wait" && echo yes)"
 
 # --- (a2) a re-arm on an unchanged state emits nothing either --------------
-timeout 3 bash "$WAIT" "$I" --legs "N1.md" > "$WORK/a2.out" 2>/dev/null
+timeout 3 bash "$WAIT" "$I" --legs "N1.md" > "$WORK/a2.out" 2>/dev/null  # gnu-ok: Linux-only kit; pipefail-ok: none set
 check "(a2) a re-arm with nothing changed emits nothing" "" "$(cat "$WORK/a2.out")"
 
 # --- (b) a real change -> exactly one WAKE block, then exit 0 --------------
@@ -101,10 +101,10 @@ tick_line "N1:FREE" "ok"
 wait_exit "$WPID"
 check "(b) a leg going FREE ends the wait with rc 0" "0" "$rc"
 check "(b) the wake names the changed field" "WAKE tick changed=legs" "$(head -n1 "$WORK/b.out")"
-check "(b) the wake carries the tick line" "yes" "$(sed -n 2p "$WORK/b.out" | grep -q '^TICK .*legs=N1:FREE' && echo yes)"
+check "(b) the wake carries the tick line" "yes" "$(sed -n 2p "$WORK/b.out" | grep -q '^TICK .*legs=N1:FREE' && echo yes)"  # gnu-ok: Linux-only kit; pipefail-ok: none set
 check "(b) exactly one wake block (2 lines)" "2" "$(wc -l < "$WORK/b.out" | tr -d ' ')"
 check "(b) the exit reason is logged" "yes" "$(grep -q 'exit=wake-tick' "$I.wait" && echo yes)"
-timeout 3 bash "$WAIT" "$I" --legs "N1.md" > "$WORK/b2.out" 2>/dev/null
+timeout 3 bash "$WAIT" "$I" --legs "N1.md" > "$WORK/b2.out" 2>/dev/null  # gnu-ok: Linux-only kit; pipefail-ok: none set
 check "(b) the re-arm after the wake does not wake again for the same change" "" "$(cat "$WORK/b2.out")"
 
 # --- (c) noise fields do not wake: hb, board age, prs unchanged ------------
@@ -173,12 +173,12 @@ printf -- '- 03:10 [telegram from=1 chat=2] hello\n' >> "$I"
 wait_exit "$WPID"
 check "(g) an inbox line ends the wait with rc 0" "0" "$rc"
 check "(g) the wake is a telegram block with the line" "$(printf 'WAKE telegram\n- 03:10 [telegram from=1 chat=2] hello')" "$(cat "$WORK/g.out")"
-timeout 3 bash "$WAIT" "$I" --legs "N1.md" > "$WORK/g2.out" 2>/dev/null
+timeout 3 bash "$WAIT" "$I" --legs "N1.md" > "$WORK/g2.out" 2>/dev/null  # gnu-ok: Linux-only kit; pipefail-ok: none set
 check "(g) a re-arm does not replay a delivered line" "" "$(cat "$WORK/g2.out")"
 
 # --- (h) a line queued while no waiter ran is delivered on arm -------------
 printf -- '- 03:20 [telegram from=1 chat=2] queued\n' >> "$I"
-timeout 3 bash "$WAIT" "$I" --legs "N1.md" > "$WORK/h.out" 2>/dev/null; rc=$?
+timeout 3 bash "$WAIT" "$I" --legs "N1.md" > "$WORK/h.out" 2>/dev/null; rc=$?  # gnu-ok: Linux-only kit; pipefail-ok: none set
 check "(h) a line queued between arms is delivered by the next arm" "$(printf 'WAKE telegram\n- 03:20 [telegram from=1 chat=2] queued')" "$(cat "$WORK/h.out")"
 check "(h) and the arm exits 0" "0" "$rc"
 
@@ -195,9 +195,9 @@ kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
 # --- (j) new tick args re-baseline silently --------------------------------
 reset_stub
 I="$(new_inbox j)"
-timeout 2 bash "$WAIT" "$I" --legs "N1.md" >/dev/null 2>&1
+timeout 2 bash "$WAIT" "$I" --legs "N1.md" >/dev/null 2>&1  # gnu-ok: Linux-only kit; pipefail-ok: none set
 tick_line "N1:FRESH,N2:FRESH" "ok"
-timeout 3 bash "$WAIT" "$I" --legs "N1.md N2.md" > "$WORK/j.out" 2>/dev/null
+timeout 3 bash "$WAIT" "$I" --legs "N1.md N2.md" > "$WORK/j.out" 2>/dev/null  # gnu-ok: Linux-only kit; pipefail-ok: none set
 check "(j) a re-arm with a new leg set re-baselines instead of waking" "" "$(cat "$WORK/j.out")"
 
 # --- (k) usage ---------------------------------------------------------------

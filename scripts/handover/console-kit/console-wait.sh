@@ -77,7 +77,7 @@ tick_cmd="${CONSOLE_WAIT_TICK:-$HERE/tick.sh}"
 if [ -f "$hb_file" ]; then
     other="$(sed -n 's/.* pid=\([0-9][0-9]*\) .*state=waiting.*/\1/p' "$hb_file" | head -n 1)"
     if [ -n "$other" ] && [ "$other" != "$$" ] && kill -0 "$other" 2>/dev/null \
-        && tr '\0' ' ' < "/proc/$other/cmdline" 2>/dev/null | grep -q 'console-wait\.sh'; then
+        && tr '\0' ' ' < "/proc/$other/cmdline" 2>/dev/null | grep -q 'console-wait\.sh'; then  # pipefail-ok: no pipefail here; gnu-ok: Linux-only kit (PLATFORM GUARD)
         echo "console-wait: a waiter is already live on $inbox (pid $other) — not starting a second" >&2
         exit 3
     fi
@@ -95,13 +95,13 @@ trap "exit_reason='signal-TERM'; exit 143" TERM
 trap "exit_reason='signal-INT'; exit 130" INT
 trap "exit_reason='signal-HUP'; exit 129" HUP
 
-args_hash="$(printf '%s\n' "$*" | sha256sum | cut -c1-16)"
+args_hash="$(printf '%s\n' "$*" | sha256sum | cut -c1-16)"  # gnu-ok: Linux-only kit (PLATFORM GUARD)
 
 bank_word() {
     if [ -n "${CONSOLE_WAIT_BANK:-}" ]; then
         bash "$CONSOLE_WAIT_BANK" 2>/dev/null | tail -n 1
     else
-        # Same side-effect-free spelling tick.sh uses for its fleet census.
+        # gnu-ok: Linux-only kit (timeout). Same side-effect-free spelling tick.sh uses for its fleet census.
         CADENCE_BANK_LAUNCH='' CADENCE_BANK_LEDGER=/dev/null timeout "$tick_timeout" \
             bash "$REPO/scripts/lib/bank-preflight.sh" 2>/dev/null | tail -n 1
     fi
@@ -115,7 +115,7 @@ field() { # <name> <tick line>
 sample() {
     local f v
     key=""
-    tick_line="$(timeout "$tick_timeout" bash "$tick_cmd" "$@" 2>/dev/null | grep '^TICK ' | head -n 1)"
+    tick_line="$(timeout "$tick_timeout" bash "$tick_cmd" "$@" 2>/dev/null | grep '^TICK ' | head -n 1)"  # gnu-ok: Linux-only kit
     if [ -z "$tick_line" ]; then tick_state=fail; return; fi
     tick_state=ok
     for f in legs livestate prs tails legset board; do
@@ -153,7 +153,7 @@ while :; do
         next_tick=$(( $(date +%s) + interval ))
         sample "$@"
         if [ -n "$key" ]; then
-            cur_hash="$(printf '%s' "$key" | sha256sum | cut -c1-16)"
+            cur_hash="$(printf '%s' "$key" | sha256sum | cut -c1-16)"  # gnu-ok: Linux-only kit
             if [ -z "$saved" ]; then
                 saved="$key"; save_key "$key"
             elif [ "$key" = "$saved" ]; then
