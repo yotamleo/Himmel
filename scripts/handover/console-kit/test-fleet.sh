@@ -82,6 +82,16 @@ mkleg HIMMEL-9009-N9-iota-2026-09-22 claude-opus-5 \
 # `claude agents --json` row identifies it.
 mkleg HIMMEL-9010-N10-kappa-2026-09-22 claude-sonnet-5 \
     '- 10:27 LIVE — background leg via the daemon'  # t13b-ok: literal fixture text for a mocked leg row, not real automation
+# N11 is unlisted (not in Live state) and held only by the sweep, with no launch log
+# and a lock session that carries no pid: the ONLY pid source is a FINISHED bg agents
+# row whose pid (1011) happens to alias a live /proc entry — a stale/reused pid must
+# not resurrect it.
+mkleg HIMMEL-9011-N11-mu-2026-09-22 claude-sonnet-5 \
+    '- 10:28 LIVE — unlisted, bg-finished'  # t13b-ok: literal fixture text for a mocked leg row, not real automation
+# N13 is unlisted, held only by the sweep, with a launch log whose pid= line lands
+# past the first 8192 bytes.
+mkleg HIMMEL-9013-N13-nu-2026-09-22 claude-sonnet-5 \
+    '- 10:29 LIVE — unlisted, pid past 8192 bytes'  # t13b-ok: literal fixture text for a mocked leg row, not real automation
 
 cat > "$B/HIMMEL-nextleg-2026-09-22Z-console.md" <<'DOC'
 # console
@@ -122,6 +132,8 @@ mkproc 1007 490000 konsole -e claude
 mkproc 1008 490000 konsole -e claude
 mkproc 7009 490000 claude -n HIMMEL-9009-N9-iota
 mkproc 1010 300000 2.1.278
+mkproc 1011 490000 konsole -e claude
+mkproc 1013 490000 konsole -e claude
 
 # Launch logs: a headless one (headless=1, pid, session log) and a headed one.
 printf '%s\n' \
@@ -131,6 +143,14 @@ printf '%s\n' \
     'earlier line' \
     'tool result: wrote file (token Z-N2-deadbeef leaked here) ok <b>bold</b>' > "$LOGS/N2.session.log"
 printf '%s\n' '2026-09-22_10:00:00 konsole launched pid=1001 for HIMMEL-9001-N1-alpha' > "$LOGS/HIMMEL-9001-N1-alpha.launch.log"
+# N13's launch log: headless=1 up front, but its pid= line is appended after >8192
+# bytes of padding — only a tail read (not just the head) can see it.
+{
+    printf 'headless=1 name=HIMMEL-9013-N13-nu model=claude-sonnet-5\n'
+    head -c 9000 /dev/zero | tr '\0' '#'
+    printf '\n'
+    printf 'pid=1013\n'
+} > "$LOGS/HIMMEL-9013-N13-nu.launch.log"
 
 # queue-lock sweep stub: the real one's line shape. N3 (held, process dead), N8's lock
 # is gone (FREE while alive), N7 released (WRAPPED). N9 is held but unlisted.
@@ -148,6 +168,8 @@ case "$*" in
         echo "slug=${p}-9006-N6-zeta-2026-09-22-RESUME session=cachyos-x8664-pid7006 host=h age=20s status=OK"
         echo "slug=${p}-9009-N9-iota-2026-09-22-RESUME session=cachyos-x8664-pid7009 host=h age=15s status=OK"
         echo "slug=${p}-9010-N10-kappa-2026-09-22-RESUME session=cachyos-x8664-pid7010 host=h age=12s status=OK"
+        echo "slug=${p}-9011-N11-mu-2026-09-22-RESUME session=host-nopid host=h age=15s status=OK"
+        echo "slug=${p}-9013-N13-nu-2026-09-22-RESUME session=host-nopid host=h age=15s status=OK"
         echo "slug=${p}-nextleg-2026-09-22Z-console session=cachyos-x8664-pid7100 host=h age=5s status=OK"
         ;;
     *) exit 2 ;;
@@ -182,7 +204,8 @@ chmod +x "$W/bin/queue-lock" "$W/bin/bank" "$W/bin/gh" "$W/bin/agents" "$W/bin/a
 cat > "$W/agents.json" <<JSON
 [{"pid":9991,"cwd":"/x","kind":"interactive","startedAt":1,"sessionId":"s1","name":"HIMMEL-9001-N1-alpha","status":"busy"},
  {"id":"abc","cwd":"/x","kind":"background","startedAt":1790000000000,"sessionId":"s2","name":"HIMMEL-9010-N10-kappa","state":"running","pid":1010},
- {"id":"def","cwd":"/x","kind":"background","startedAt":1,"sessionId":"s3","name":"HIMMEL-9007-N7-eta","state":"done","pid":9999}]
+ {"id":"def","cwd":"/x","kind":"background","startedAt":1,"sessionId":"s3","name":"HIMMEL-9007-N7-eta","state":"done","pid":9999},
+ {"id":"ghi","cwd":"/x","kind":"background","startedAt":1,"sessionId":"s4","name":"HIMMEL-9011-N11-mu","state":"done","pid":1011}]
 JSON
 cat > "$W/open.json" <<'JSON'
 [{"number":2001,"title":"feat(x): [HIMMEL-9006] zeta","headRefName":"feat/himmel-9006","isDraft":false,
@@ -217,7 +240,7 @@ run --serve --out "$W/x.html" "${COMMON[@]}" >/dev/null 2>&1; eq "--serve with -
 
 # ------------------------------------------------------------------ snapshot
 J="$(run --json "${COMMON[@]}" 2>"$W/err")"
-eq "snapshot is valid JSON with 10 leg rows (9 listed + 1 unlisted held)" "$(printf '%s' "$J" | q 's.legs.length')" "10"
+eq "snapshot is valid JSON with 12 leg rows (9 listed + 3 unlisted held)" "$(printf '%s' "$J" | q 's.legs.length')" "12"
 eq "fleet is 10/15" "$(printf '%s' "$J" | q 's.fleet.live+"/"+s.fleet.cap')" "10/15"
 eq "bank 5h/7d" "$(printf '%s' "$J" | q 's.bank.fiveHour+"/"+s.bank.sevenDay')" "28.0/61.0"
 eq "headed leg: mode" "$(printf '%s' "$J" | q 'L("N1").mode')" "headed"
@@ -251,6 +274,9 @@ J5="$(AG_JSON="$W/agents-nopid.json" run --json "${COMMON[@]}" 2>/dev/null)"
 eq "agents source: a running bg row with no pid is alive by its state (no proc-dead)" "$(printf '%s' "$J5" | q 'L("N3").mode+":"+L("N3").alive+":"+L("N3").attention.length')" "headless:true:0"
 eq "agents source: healthy headless N10 needs nothing" "$(printf '%s' "$J" | q 'L("N10").attention.length')" "0"
 eq "agents source available: no agents warning" "$(printf '%s' "$J" | q 's.warnings.some(w=>/agents/.test(w))')" "false"
+eq "HIMMEL-3412(a): a finished bg row's stale/reused pid does not resurrect the leg" "$(printf '%s' "$J" | q 'L("N11").alive')" "false"
+eq "HIMMEL-3412(c): a launch-log pid= past byte 8192 is still read from the tail" "$(printf '%s' "$J" | q 'L("N13").pid')" "1013"
+eq "HIMMEL-3412(c): that tail-read pid makes the leg alive" "$(printf '%s' "$J" | q 'L("N13").alive')" "true"
 
 # ------------------------------------------------------------------ attention
 att() { printf '%s' "$J" | q "L(\"$1\").attention.map(a=>a.code).join(',')"; }
@@ -281,18 +307,68 @@ eq "the snapshot page does not poll" "$(printf '%s' "$HTML" | grep -c 'const LIV
 
 # ------------------------------------------------------------------ degraded sources
 J2="$(FLEET_BANK=/nonexistent FLEET_GH=/nonexistent run --json "${COMMON[@]}" 2>/dev/null)"
-eq "dead bank + gh: still renders every row" "$(printf '%s' "$J2" | q 's.legs.length')" "10"
+eq "dead bank + gh: still renders every row" "$(printf '%s' "$J2" | q 's.legs.length')" "12"
 eq "dead bank: fleet is null, not a made-up 0" "$(printf '%s' "$J2" | q 's.fleet===null')" "true"
 eq "dead gh: warning recorded" "$(printf '%s' "$J2" | q 's.warnings.some(w=>/gh/.test(w))')" "true"
 J3="$(run --json --doc "$DOC" --logs "$W/no-such-logs" --handover-root "$ROOT" 2>/dev/null)"
-eq "absent launch-log dir tolerated" "$(printf '%s' "$J3" | q 's.legs.length')" "10"
+eq "absent launch-log dir tolerated" "$(printf '%s' "$J3" | q 's.legs.length')" "12"
 for AGCMD in /nonexistent "$W/bin/agents-bad"; do
     J4="$(FLEET_AGENTS="$AGCMD" run --json "${COMMON[@]}" 2>/dev/null)"
-    eq "agents source ($(basename "$AGCMD")): every row still renders" "$(printf '%s' "$J4" | q 's.legs.length')" "10"
+    eq "agents source ($(basename "$AGCMD")): every row still renders" "$(printf '%s' "$J4" | q 's.legs.length')" "12"
     eq "agents source ($(basename "$AGCMD")): 'agents: unavailable' warning" "$(printf '%s' "$J4" | q 's.warnings.some(w=>/^agents: unavailable/.test(w))')" "true"
     eq "agents source ($(basename "$AGCMD")): the /proc source still finds headless N2" "$(printf '%s' "$J4" | q 'L("N2").mode')" "headless"
     eq "agents source ($(basename "$AGCMD")): N10 falls back to the Live-state pid (dead, lock held)" "$(printf '%s' "$J4" | q 'L("N10").mode+":"+L("N10").alive')" "?:false"
 done
+
+# ------------------------------------------------------------------ HIMMEL-3412(b): readSweep rc contract
+# A sweep that dies with an rc other than 0/20 is not a complete sweep, even if it
+# printed some slug= rows before it died: legs go UNKNOWN, not a partial trust.
+cat > "$W/bin/queue-lock-partial" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+    "status --sweep "*)
+        p=u__repo__HIMMEL
+        echo "sweep: read only $3"
+        echo "slug=${p}-9001-N1-alpha-2026-09-22-RESUME session=cachyos-x8664-pid7001 host=h age=600s status=OK"
+        exit 1
+        ;;
+    *) exit 2 ;;
+esac
+STUB
+chmod +x "$W/bin/queue-lock-partial"
+J6="$(FLEET_QUEUE_LOCK="$W/bin/queue-lock-partial" run --json "${COMMON[@]}" 2>/dev/null)"
+eq "sweep rc=1 with partial rows: sweep unavailable warning" "$(printf '%s' "$J6" | q 's.warnings.some(w=>/queue-lock sweep unavailable/.test(w))')" "true"
+eq "sweep rc=1 with partial rows: N1 lock falls back to UNKNOWN, not the partial row" "$(printf '%s' "$J6" | q 'L("N1").lock.state')" "UNKNOWN"
+eq "sweep rc=1: unlisted-held legs (need the sweep to be found) drop out" "$(printf '%s' "$J6" | q 's.legs.length')" "9"
+
+# rc=20 (a flagged lock) is a COMPLETE sweep, not a failure.
+cat > "$W/bin/queue-lock-flagged" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+    "status --sweep "*)
+        p=u__repo__HIMMEL
+        echo "sweep: read only $3"
+        echo "slug=${p}-9001-N1-alpha-2026-09-22-RESUME session=cachyos-x8664-pid7001 host=h age=600s status=OK"
+        echo "slug=${p}-9002-N2-beta-2026-09-22-RESUME session=cachyos-x8664-pid7002 host=h age=30s status=OK"
+        echo "slug=${p}-9003-N3-gamma-2026-09-22-RESUME session=cachyos-x8664-pid7003 host=h age=90s status=OK"
+        echo "slug=${p}-9004-N4-delta-2026-09-22-RESUME session=cachyos-x8664-pid7004 host=h age=4000s status=IDLE-HELD?"
+        echo "slug=${p}-9005-N5-eps-2026-09-22-RESUME session=cachyos-x8664-pid7005 host=h age=50s status=OK"
+        echo "slug=${p}-9006-N6-zeta-2026-09-22-RESUME session=cachyos-x8664-pid7006 host=h age=20s status=OK"
+        echo "slug=${p}-9009-N9-iota-2026-09-22-RESUME session=cachyos-x8664-pid7009 host=h age=15s status=OK"
+        echo "slug=${p}-9010-N10-kappa-2026-09-22-RESUME session=cachyos-x8664-pid7010 host=h age=12s status=OK"
+        echo "slug=${p}-9011-N11-mu-2026-09-22-RESUME session=host-nopid host=h age=15s status=OK"
+        echo "slug=${p}-9013-N13-nu-2026-09-22-RESUME session=host-nopid host=h age=15s status=OK"
+        echo "slug=${p}-nextleg-2026-09-22Z-console session=cachyos-x8664-pid7100 host=h age=5s status=OK"
+        exit 20
+        ;;
+    *) exit 2 ;;
+esac
+STUB
+chmod +x "$W/bin/queue-lock-flagged"
+J7="$(FLEET_QUEUE_LOCK="$W/bin/queue-lock-flagged" run --json "${COMMON[@]}" 2>/dev/null)"
+eq "sweep rc=20 (flagged lock): still a complete sweep, no warning" "$(printf '%s' "$J7" | q 's.warnings.some(w=>/queue-lock sweep unavailable/.test(w))')" "false"
+eq "sweep rc=20: N1 lock resolves normally" "$(printf '%s' "$J7" | q 'L("N1").lock.state')" "FRESH"
+eq "sweep rc=20: every row still renders" "$(printf '%s' "$J7" | q 's.legs.length')" "12"
 
 # ------------------------------------------------------------------ server
 cat > "$W/srv-test.mjs" <<'JS'
@@ -325,7 +401,7 @@ say(/const LIVE = true/.test(page.body), 'the served page polls');
 say(!/Z-N1-a1a1a1a1|cachyos-x8664-pid7001/.test(page.body), 'the served page holds no nonce or lock token');
 const api = await get('/api/fleet');
 let snap = null; try { snap = JSON.parse(api.body); } catch { /* reported below */ }
-say(api.status === 200 && snap && snap.legs.length === 10, 'GET /api/fleet returns the snapshot');
+say(api.status === 200 && snap && snap.legs.length === 12, 'GET /api/fleet returns the snapshot');
 say(/json/.test(api.headers['content-type'] || ''), '/api/fleet is application/json');
 say(!/Z-N1-a1a1a1a1|cachyos-x8664-pid7001|Z-N2-deadbeef/.test(api.body), '/api/fleet holds no nonce or lock token');
 say((await get('/nope')).status === 404, 'unknown path is 404');
