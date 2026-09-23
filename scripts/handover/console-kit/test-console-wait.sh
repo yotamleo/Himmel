@@ -172,6 +172,17 @@ check "(f) a failing tick.sh does not wake" "running" "$rc"
 check "(f) the heartbeat records the failed tick" "yes" "$(grep -q 'tick=fail' "$I.wait" && echo yes)"
 kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
 
+# --- (f2) an empty bank read is a failed sample, never a change ------------
+reset_stub
+I="$(new_inbox f2)"
+start "$I" "$WORK/f2.out" --legs "N1.md"
+wait_hb "$I" || fail "(f2) no baseline heartbeat"
+: > "$STUB/bank"
+wait_exit "$WPID"
+check "(f2) an empty bank read does not wake" "running" "$rc"
+check "(f2) the heartbeat records the failed sample" "yes" "$(grep -q 'tick=fail' "$I.wait" && echo yes)"
+kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
+
 # --- (g) a Telegram line wakes at once; a re-arm replays nothing -----------
 reset_stub
 I="$(new_inbox g)"

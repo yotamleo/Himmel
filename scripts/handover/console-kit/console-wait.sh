@@ -124,19 +124,22 @@ field() { # <name> <tick line>
 
 # sample: sets tick_line and key (empty on a failed tick).
 sample() {
-    local f v raw
+    local f v raw bank
     key=""
     # A tick that exits non-zero failed, whatever it printed first.
     raw="$(timeout -k 5 "$tick_timeout" bash "$tick_cmd" "$@" 2>/dev/null)" || { tick_state=fail; return; }  # gnu-ok: Linux-only kit
     tick_line="$(printf '%s\n' "$raw" | grep '^TICK ' | head -n 1)"
     if [ -z "$tick_line" ]; then tick_state=fail; return; fi
+    # An empty bank read (timed out, failed) is a failed sample, not a verdict.
+    bank="$(bank_word)"
+    if [ -z "$bank" ]; then tick_state=fail; return; fi
     tick_state=ok
     for f in legs livestate prs tails legset board; do
         v="$(field "$f" "$tick_line")"
         [ "$f" = board ] && v="${v%%:*}"
         key="$key$f=$v|"
     done
-    key="${key}bank=$(bank_word)"
+    key="${key}bank=$bank"
 }
 
 changed_fields() { # <old key> <new key>
