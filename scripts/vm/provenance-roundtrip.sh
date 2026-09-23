@@ -280,7 +280,7 @@ printf '%s\n' "$ASSERT_OUT"
 # invdiff/assert so a legitimate failure here still preserves their diagnostic
 # output in the captured run log.
 if [ "$CLONE_GONE" = 1 ] && [ "$PURGE" = 1 ]; then
-    HIMMEL_LEFT=$(vm_ssh "test -e $GHOME/.himmel && echo PRESENT || echo ABSENT")
+    HIMMEL_LEFT=$(vm_ssh "test -e $GHOME/.himmel -o -L $GHOME/.himmel && echo PRESENT || echo ABSENT")
     echo "[clone-gone-purge] ~/.himmel: $HIMMEL_LEFT"
     [ "$HIMMEL_LEFT" = ABSENT ] || fail "clone-gone --purge-state left $GHOME/.himmel behind"
 fi
