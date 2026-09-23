@@ -592,6 +592,29 @@ run_uninstall_fx --yes --skip-tasks --skip-plugins --skip-hooks >/dev/null; chec
 check "RED19d: with no ledger, the trust key is kept exactly as today" \
   "$(jq -c . "$CFG19D")" "$(jq -c . "$SUITE_TMP/red19d-before.json")"
 
+_red_seed_git_fork() {
+  # <dir> -- init a one-commit git repo at $1, matching the real fork
+  # checkout's shape (a build stamp file that is byte-identical to a fresh
+  # clone). Returns with the tree clean and HEAD pushed to a bare "origin".
+  # HIMMEL-3524: qmd_unwire_fork_checkout now checks live git state before
+  # removing, so every fixture standing in for a real (always-git) fork
+  # checkout needs an actual repo, not a plain directory -- a plain directory
+  # is itself the "unknown state" the fix is required to keep, not remove.
+  local dir="$1" bare
+  mkdir -p "$dir"
+  git -C "$dir" init -q
+  git -C "$dir" config user.email test@example.invalid
+  git -C "$dir" config user.name "Test"
+  printf 'ok\n' > "$dir/.himmel-build-ok"
+  printf 'fork file\n' > "$dir/tracked.txt"
+  git -C "$dir" add -A
+  git -C "$dir" commit -q -m seed
+  bare="$dir.git-origin"
+  git init -q --bare "$bare"
+  git -C "$dir" remote add origin "$bare"
+  git -C "$dir" push -q origin HEAD:refs/heads/main
+}
+
 echo "==== RED20 (HIMMEL-3332 slice3): install-created qmd kept by default, removed under --purge-state; stub never removed ===="
 # Fixture shape mirrors the real prov_record call sites (scripts/lib/qmd-bin.sh
 # lines 595-655, scripts/lib/fix-qmd-stub.sh line 66): fork checkout is a
@@ -636,8 +659,11 @@ check "RED20a: stub kept line printed" \
 new_case red20b
 CASE_QMD_FORK_DIR="$CASE_DIR/qmd-fork"
 CASE_BUN_INSTALL="$CASE_DIR/bun"
-mkdir -p "$CASE_QMD_FORK_DIR"
-STAMP20B="$CASE_QMD_FORK_DIR/.himmel-build-ok"; printf 'ok\n' > "$STAMP20B"
+# HIMMEL-3524: a real fork checkout is always a git work tree; a plain
+# directory is the "unknown state" the fix now keeps rather than removes, so
+# this --purge-state-removes fixture needs a clean git checkout to reach rm.
+_red_seed_git_fork "$CASE_QMD_FORK_DIR"
+STAMP20B="$CASE_QMD_FORK_DIR/.himmel-build-ok"
 GLOBAL_DIR20B="$CASE_BUN_INSTALL/install/global/node_modules/@tobilu/qmd"
 mkdir -p "$(dirname "$GLOBAL_DIR20B")"
 ln -s "$CASE_QMD_FORK_DIR" "$GLOBAL_DIR20B"
@@ -816,8 +842,11 @@ echo "==== RED26 (HIMMEL-3332 slice3, critic panel codex-1): qmd collection remo
 new_case red26
 CASE_QMD_FORK_DIR="$CASE_DIR/qmd-fork"
 CASE_BUN_INSTALL="$CASE_DIR/bun"
-mkdir -p "$CASE_QMD_FORK_DIR"
-STAMP26="$CASE_QMD_FORK_DIR/.himmel-build-ok"; printf 'ok\n' > "$STAMP26"
+# HIMMEL-3524: a real fork checkout is always a git work tree; a plain
+# directory is the "unknown state" the fix now keeps rather than removes, so
+# this --purge-state-removes fixture needs a clean git checkout to reach rm.
+_red_seed_git_fork "$CASE_QMD_FORK_DIR"
+STAMP26="$CASE_QMD_FORK_DIR/.himmel-build-ok"
 GLOBAL_DIR26="$CASE_BUN_INSTALL/install/global/node_modules/@tobilu/qmd"
 mkdir -p "$(dirname "$GLOBAL_DIR26")"
 ln -s "$CASE_QMD_FORK_DIR" "$GLOBAL_DIR26"
@@ -846,28 +875,9 @@ echo "==== RED27 (HIMMEL-3524): a qmd fork checkout carrying user work is kept, 
 # checkout is a git work tree, so the fix checks its live git state before
 # removing it: a dirty tree (tracked-file edit or untracked file) or an
 # unpushed local commit is user work the ledger cannot see, and must be kept.
-_red27_seed_git_fork() {
-  # <dir> -- init a one-commit git repo at $1, matching the real fork
-  # checkout's shape (a build stamp file that is byte-identical to a fresh
-  # clone). Returns with the tree clean and HEAD pushed to a bare "origin".
-  local dir="$1" bare
-  mkdir -p "$dir"
-  git -C "$dir" init -q
-  git -C "$dir" config user.email test@example.invalid
-  git -C "$dir" config user.name "Test"
-  printf 'ok\n' > "$dir/.himmel-build-ok"
-  printf 'fork file\n' > "$dir/tracked.txt"
-  git -C "$dir" add -A
-  git -C "$dir" commit -q -m seed
-  bare="$dir.git-origin"
-  git init -q --bare "$bare"
-  git -C "$dir" remote add origin "$bare"
-  git -C "$dir" push -q origin HEAD:refs/heads/main
-}
-
 new_case red27a
 CASE_QMD_FORK_DIR="$CASE_DIR/qmd-fork"
-_red27_seed_git_fork "$CASE_QMD_FORK_DIR"
+_red_seed_git_fork "$CASE_QMD_FORK_DIR"
 ( prov_begin --writer install.sh -- seed-red27a >/dev/null
   prov_record create file "$CASE_QMD_FORK_DIR/.himmel-build-ok" --pre-absent --post-file "$CASE_QMD_FORK_DIR/.himmel-build-ok" \
     --scope machine --class code --row qmd-fork --writer qmd-bin.sh --field preexisted=false >/dev/null
@@ -880,7 +890,7 @@ check "RED27a: a removed line is printed" \
 
 new_case red27b
 CASE_QMD_FORK_DIR="$CASE_DIR/qmd-fork"
-_red27_seed_git_fork "$CASE_QMD_FORK_DIR"
+_red_seed_git_fork "$CASE_QMD_FORK_DIR"
 printf 'edited by the user\n' > "$CASE_QMD_FORK_DIR/tracked.txt"
 ( prov_begin --writer install.sh -- seed-red27b >/dev/null
   prov_record create file "$CASE_QMD_FORK_DIR/.himmel-build-ok" --pre-absent --post-file "$CASE_QMD_FORK_DIR/.himmel-build-ok" \
@@ -896,7 +906,7 @@ check "RED27b: a user-modified kept line is printed" \
 
 new_case red27c
 CASE_QMD_FORK_DIR="$CASE_DIR/qmd-fork"
-_red27_seed_git_fork "$CASE_QMD_FORK_DIR"
+_red_seed_git_fork "$CASE_QMD_FORK_DIR"
 printf 'new file\n' > "$CASE_QMD_FORK_DIR/untracked.txt"
 ( prov_begin --writer install.sh -- seed-red27c >/dev/null
   prov_record create file "$CASE_QMD_FORK_DIR/.himmel-build-ok" --pre-absent --post-file "$CASE_QMD_FORK_DIR/.himmel-build-ok" \
@@ -912,7 +922,7 @@ check "RED27c: a user-modified kept line is printed" \
 
 new_case red27d
 CASE_QMD_FORK_DIR="$CASE_DIR/qmd-fork"
-_red27_seed_git_fork "$CASE_QMD_FORK_DIR"
+_red_seed_git_fork "$CASE_QMD_FORK_DIR"
 printf 'local work\n' > "$CASE_QMD_FORK_DIR/tracked.txt"
 git -C "$CASE_QMD_FORK_DIR" commit -q -am "local unpushed commit"
 ( prov_begin --writer install.sh -- seed-red27d >/dev/null
