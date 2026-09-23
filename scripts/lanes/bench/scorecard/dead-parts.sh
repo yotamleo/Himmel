@@ -117,7 +117,14 @@ ls_files_or_die() {
 ls_files_or_die "$RUN/script-files.txt" scripts
 while IFS= read -r p; do
     [ -n "$p" ] || continue
-    case "$p" in */fixtures/*) continue ;; esac
+    case "$p" in
+        */fixtures/*) continue ;;
+        # codex-1 (round 11): scripts/ also carries data and doc files
+        # (backends.json, README.md, ...) - without an extension filter every
+        # tracked file under it was misclassified as a script entry point.
+        *.sh|*.mjs|*.js|*.py) ;;
+        *) continue ;;
+    esac
     n=$(basename "$p" .sh)
     printf 'script\t%s\t%s\n' "$n" "$p"
 done < "$RUN/script-files.txt" >> "$ENTRIES"

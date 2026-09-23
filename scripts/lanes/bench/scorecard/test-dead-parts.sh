@@ -25,6 +25,14 @@ check_contains() {
     esac
 }
 
+check_not_contains() {
+    name="$1"; haystack="$2"; needle="$3"
+    case "$haystack" in
+        *"$needle"*) echo "FAIL - $name: expected NOT to find [$needle]"; fails=$((fails + 1)) ;;
+        *) echo "ok - $name" ;;
+    esac
+}
+
 TMPREPO=$(mktemp -d "${TMPDIR:-/tmp}/test-dead-parts.XXXXXX") || { echo "FAIL - mktemp"; exit 1; }
 WTPATH="$TMPREPO-worktree"
 # shellcheck disable=SC2317,SC2329  # invoked by the EXIT trap below
@@ -73,6 +81,8 @@ check_contains "basic: WIRED script whose own full-path doc mention used to mask
     "$OUT" $'script\tdoc-and-code\tscripts/doc-and-code.sh\tWIRED'
 check_contains "basic: the basename-only caller itself has no reference anywhere and stays DEAD" \
     "$OUT" $'script\trelative-caller\tscripts/relative-caller.sh\tDEAD'
+check_not_contains "basic: a non-script tracked file under scripts/ (README.md) is not classified as a script entry (codex-1, round 11)" \
+    "$OUT" $'script\tREADME\t'
 check_contains "basic: a mention living inside a nested fixtures/ dir does not count as a reference (codex-1 fixture-blind-spot fix)" \
     "$OUT" $'script\tfixture-blind\tscripts/fixture-blind.sh\tDEAD'
 check_contains "basic: a mention living inside a top-level fixtures/ dir (no leading slash) does not count as a reference either (codex-2 top-level-fixtures fix)" \
@@ -177,7 +187,7 @@ check_contains "linked worktree: still reports the classification table" \
 # fails - the report must abort loudly, never fall through to an empty
 # discovery file and a "successful" table claiming every entry point is
 # missing (round-8 codex-3) --------------------------------------------------
-BROKENREPO=$(mktemp -d "${TMPDIR:-/tmp}/test-dead-parts-broken.XXXXXX") || { echo "FAIL - mktemp broken repo"; fails=$((fails + 1)); }
+BROKENREPO=$(mktemp -d "${TMPDIR:-/tmp}/test-dead-parts-broken.XXXXXX") || { echo "FAIL - mktemp broken repo"; exit 1; }
 mkdir -p "$BROKENREPO/scripts"
 printf 'not a real gitfile\n' > "$BROKENREPO/.git"
 export SCORECARD_PROJECTS_DIR="$HERE/fixtures/dead-parts/basic-transcripts"
