@@ -1238,6 +1238,39 @@ mk_prune_fixture() {
     printf '%s %s %s\n' "$repo" "$wt" "$(git -C "$repo" rev-parse "$branch")"
 }
 prune_branch_gone() { ! git -C "$1" rev-parse --quiet --verify refs/heads/feat/mog-prune >/dev/null 2>&1; }
+# mk_prune_fixture_quoted — same shape as mk_prune_fixture, but the worktree
+# path itself contains a newline. `git worktree list --porcelain` (without
+# -z) prints the path RAW, with no quoting or escaping (verified: a literal
+# double quote passes through unquoted too), so a path byte that collides
+# with the parser's own line delimiter breaks a naive line-by-line read at
+# both merge-on-green.sh call sites (HIMMEL-3538). -z (NUL-terminated
+# records) is the only delimiter a path can never contain.
+#
+# Sets globals QP_REPO/QP_WT/QP_SHA instead of the usual echo+`read <<<`
+# return: `read` itself always terminates a record at \n regardless of IFS,
+# so a value containing an embedded newline cannot survive that channel.
+mk_prune_fixture_quoted() {
+    local root branch="feat/mog-prune-q" repo wt
+    root=$(mktemp -d) || { echo "FAIL: mk_prune_fixture_quoted: mktemp -d produced no run sandbox" >&2; return 1; }
+    repo="$root/repo"
+    git init -q --initial-branch=main "$repo" 2>/dev/null || {
+        git init -q "$repo"; git -C "$repo" symbolic-ref HEAD refs/heads/main || true
+    }
+    git -C "$repo" config user.email t@test.com
+    git -C "$repo" config user.name t
+    printf 'base\n' > "$repo/README"
+    git -C "$repo" add README
+    git -C "$repo" commit -q -m base
+    git -C "$repo" branch -m main 2>/dev/null || true
+    wt="$root/w"$'\n'"t"
+    git -C "$repo" worktree add -q "$wt" -b "$branch" >/dev/null 2>&1
+    printf '%s\n' "$branch" > "$wt/work.txt"
+    git -C "$wt" add work.txt
+    git -C "$wt" commit -q -m work
+    QP_REPO="$repo"
+    QP_WT="$wt"
+    QP_SHA="$(git -C "$repo" rev-parse "$branch")"
+}
 # wt_list_has <repo> <path> — does `git worktree list --porcelain` in <repo>
 # still carry a row for <path>? Normalizes both sides via cd+pwd (the same
 # trick merge-on-green.sh's own worktree_intact uses) because on this
@@ -1276,6 +1309,21 @@ MOG_CWD="$P_REPO" STUB_SHA="$P_SHA" STUB_HEAD_BRANCH="feat/mog-prune" \
 if [ -d "$P_WT" ]; then fail "11h: merged worktree was not removed"; else pass; fi
 if prune_branch_gone "$P_REPO"; then pass; else fail "11h: merged branch was not deleted"; fi
 assert_audit_has "11h: audit records the prune outcome" "prune=removed branch=deleted"
+
+# 11h-q. HIMMEL-3538: same fixture, but the worktree path holds a newline.
+# `git worktree list --porcelain` prints it raw, so a naive line parse never
+# matches "worktree "/"branch refs/heads/feat/mog-prune-q" to the real path
+# and the prune silently skips it. RED before the -z fix.
+mk_prune_fixture_quoted; P_REPO="$QP_REPO"; P_WT="$QP_WT"; P_SHA="$QP_SHA"
+MOG_CWD="$P_REPO" STUB_SHA="$P_SHA" STUB_HEAD_BRANCH="feat/mog-prune-q" \
+    run_mog 0 "11h-q: quoted-path worktree, merged + clean → pruned, exit 0"
+if [ -d "$P_WT" ]; then fail "11h-q: merged quoted-path worktree was not removed"; else pass; fi
+if git -C "$P_REPO" rev-parse --quiet --verify refs/heads/feat/mog-prune-q >/dev/null 2>&1; then
+    fail "11h-q: merged branch was not deleted"
+else
+    pass
+fi
+assert_audit_has "11h-q: audit records the prune outcome" "prune=removed branch=deleted"
 
 # 11i. Dirty worktree → plain `git worktree remove` refuses (never --force), the
 # tree survives INTACT, and the merge is still a success. NEGATIVE CONTROL for
@@ -2018,6 +2066,17 @@ if [ "$(cat "$LAST_CLEAR_LOG.cwd" 2>/dev/null)" = "$wt_real" ]; then
 else
     fail "11L-wt: the clearer must run in the branch's worktree ($wt_real), ran in: $(cat "$LAST_CLEAR_LOG.cwd" 2>/dev/null || echo none)"
 fi
+
+# 11L-q. HIMMEL-3538: same hazard as 11h-q, but on clear_cr_marker_for_branch's
+# parse. A worktree path with a newline must still resolve to a `wt` match so
+# the clearer runs (never a spurious marker=no-worktree). RED before the -z
+# fix.
+mk_prune_fixture_quoted; P_REPO="$QP_REPO"; P_WT="$QP_WT"; P_SHA="$QP_SHA"
+mk_marker "$P_REPO" "feat/mog-prune-q"
+MOG_CWD="$P_REPO" STUB_SHA="$P_SHA" STUB_HEAD_BRANCH="feat/mog-prune-q" \
+    run_mog 0 "11L-q: quoted worktree path -> marker still cleared via clear-cr-marker.sh"
+assert_clear_has "11L-q: the chokepoint was invoked for the merged branch" "feat/mog-prune-q"
+assert_audit_has "11L-q: audit records the marker outcome" "marker=cleared"
 
 # 11m. The chokepoint REFUSES (14 = no responders at that sha) → the merge
 # verdict and exit are unchanged (it already landed), and the failure is

@@ -79,10 +79,14 @@ case "$last" in
       early) echo '[uninstall-log] Halted at: [3/8] Claude settings: jq failed'; exit 2 ;;
       mkt) echo '[uninstall-log]   marketplace remove: rt-dir-marketplace' ;;
     esac ;;
-  *'test -e'*'.himmel'*)
-    case "${FAKE_HIMMEL_LEFT:-ABSENT}" in
-      ABSENT) echo ABSENT ;;
-      PRESENT) echo PRESENT ;;
+  *'find '*'.himmel -mindepth 1'*)
+    case "${FAKE_HIMMEL_CONTENTS:-config}" in
+      config) echo "/home/testuser/.himmel/config.json" ;;
+      empty) : ;;
+      extra) printf '%s\n' \
+        "/home/testuser/.himmel/config.json" \
+        "/home/testuser/.himmel/uninstall" \
+        "/home/testuser/.himmel/uninstall/bundle.json" ;;
     esac ;;
 esac
 exit 0
@@ -502,24 +506,35 @@ else
 fi
 
 # =====================================================================
-# D17 — --clone-gone --purge-state must leave no ~/.himmel; the check runs
-# AFTER invdiff/assert so a legitimate failure still preserves their output
+# D17 — --clone-gone --purge-state must leave nothing beyond baseline A's
+# ~/.himmel/config.json (never the whole directory — config.json is the
+# user's own file, untouched by design); the check runs AFTER invdiff/assert
+# so a legitimate failure still preserves their output (console ruling,
+# HIMMEL-3528, 2026-09-23)
 # =====================================================================
-FAKE_HIMMEL_LEFT=ABSENT run_rt "$ALL_PASS" f73a62f1 --clone-gone --purge-state
-if [ "$RC" -eq 0 ] && printf '%s\n' "$OUT" | grep -qxF '[clone-gone-purge] ~/.himmel: ABSENT' \
+FAKE_HIMMEL_CONTENTS=config run_rt "$ALL_PASS" f73a62f1 --clone-gone --purge-state
+if [ "$RC" -eq 0 ] && printf '%s\n' "$OUT" | grep -qxF '[clone-gone-purge] ~/.himmel contents: /home/testuser/.himmel/config.json' \
    && [ "$(printf '%s\n' "$OUT" | grep -n '^\[step\] assert$' | head -n1 | cut -d: -f1)" -lt \
         "$(printf '%s\n' "$OUT" | grep -n '^\[clone-gone-purge\]' | head -n1 | cut -d: -f1)" ]; then
-    pass "D17 clone-gone --purge-state: ~/.himmel absent, checked after the assert step"
+    pass "D17 clone-gone --purge-state: only baseline-A config.json left, checked after the assert step"
 else
-    fail_case "D17 clone-gone-purge pass case: rc=$RC"; dump
+    fail_case "D17 clone-gone-purge pass case (config.json only): rc=$RC"; dump
 fi
 
-FAKE_HIMMEL_LEFT=PRESENT run_rt "$ALL_PASS" f73a62f1 --clone-gone --purge-state
-if [ "$RC" -eq 2 ] && printf '%s\n' "$OUT" | grep -qxF '[clone-gone-purge] ~/.himmel: PRESENT' \
-   && printf '%s\n' "$OUT" | grep -q "clone-gone --purge-state left .*\.himmel behind" \
+FAKE_HIMMEL_CONTENTS=empty run_rt "$ALL_PASS" f73a62f1 --clone-gone --purge-state
+if [ "$RC" -eq 0 ] && printf '%s\n' "$OUT" | grep -qxF '[clone-gone-purge] ~/.himmel contents: (empty)'; then
+    pass "D17a clone-gone --purge-state: ~/.himmel fully gone also passes (nothing beyond A, vacuously)"
+else
+    fail_case "D17a clone-gone-purge pass case (empty): rc=$RC"; dump
+fi
+
+FAKE_HIMMEL_CONTENTS=extra run_rt "$ALL_PASS" f73a62f1 --clone-gone --purge-state
+if [ "$RC" -eq 2 ] \
+   && printf '%s\n' "$OUT" | grep -qxF '[clone-gone-purge] ~/.himmel contents: /home/testuser/.himmel/config.json /home/testuser/.himmel/uninstall /home/testuser/.himmel/uninstall/bundle.json' \
+   && printf '%s\n' "$OUT" | grep -q 'clone-gone --purge-state left unexpected ~/.himmel content:.*uninstall' \
    && printf '%s\n' "$OUT" | grep -q '^\[step\] assert$' \
    && printf '%s\n' "$OUT" | grep -q '^CHECK '; then
-    pass "D17b clone-gone-purge failure (rc 2) still preserves the invdiff/assert diagnostic output"
+    pass "D17b clone-gone-purge failure (rc 2) names the unexpected paths and still preserves the invdiff/assert diagnostic output"
 else
     fail_case "D17b clone-gone-purge fail case: rc=$RC"; dump
 fi
@@ -530,6 +545,16 @@ if ! printf '%s\n' "$OUT" | grep -q '^\[clone-gone-purge\]'; then
     pass "D17c --clone-gone without --purge-state: no clone-gone-purge check"
 else
     fail_case "D17c clone-gone-purge ran without --purge-state"; dump
+fi
+
+# D17d — the clone-gone-purge listing follows a symlinked ~/.himmel (plain
+# `find` does not descend into a symlink start-point, so a leftover symlink
+# would list empty and pass silently; codex-1, HIMMEL-3528 panel round 1)
+FAKE_HIMMEL_CONTENTS=config run_rt "$ALL_PASS" f73a62f1 --clone-gone --purge-state
+if grep -q '^SSH .*find -L .*\.himmel -mindepth 1' "$LOG"; then
+    pass "D17d clone-gone-purge listing uses find -L (traverses a symlinked ~/.himmel)"
+else
+    fail_case "D17d clone-gone-purge listing did not use find -L"; dump
 fi
 
 echo

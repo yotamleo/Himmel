@@ -502,11 +502,15 @@ CK1="$(mk_repo ok)"; CK1_HEAD="$(git -C "$CK1" rev-parse HEAD)"
 CK2="$(mk_repo mkt)"; CK2_HEAD="$(git -C "$CK2" rev-parse HEAD)"
 mkdir -p "$W7/state"
 : >"$W7/state/resolves"
+GCS_SHA=cccc111122223333444455556666777788889999
+GCSDIR="$W7/gcs_owner"; mkdir -p "$GCSDIR"
+printf ' %s \n' "$GCS_SHA" >"$GCSDIR/.gcs-sha"
 cat >"$W7/state/heads" <<HEADS
 owner/pin-full=aaaabbbbccccdddd000011112222333344445555
 owner/pin-short=1111222233334444555566667777888899990000
 owner/checkout-repo=${CK1_HEAD}
 owner/mkt-fixt=${CK2_HEAD}
+owner/gcs-repo=${GCS_SHA}
 HEADS
 cat >"$W7/state/resolves" <<RESOLVES
 owner/pin-short:Short0a=9999888877776666555544443333222211110000
@@ -525,6 +529,8 @@ cat >"$W7/upstreams.json" <<JSON
  {"name":"pin-short","kind":"commit_head","mode":"pin","tracked_repo":"owner/pin-short","pinned_commit":"Short0a","tier":"A"},
  {"name":"checkout-ok","kind":"commit_head","mode":"checkout","tracked_repo":"owner/checkout-repo","checkout_path":"$CK1","tier":"B"},
  {"name":"checkout-missing","kind":"commit_head","mode":"checkout","tracked_repo":"owner/x","checkout_path":"$MISSING","tier":"B"},
+ {"name":"checkout-expand","kind":"commit_head","mode":"checkout","tracked_repo":"owner/checkout-repo","checkout_path":"\${DRIFT_TEST_UNSET_VAR:-\$DRIFT_TEST_DEFAULT_DIR}","tier":"B"},
+ {"name":"checkout-gcs","kind":"commit_head","mode":"checkout","tracked_repo":"owner/gcs-repo","checkout_path":"$GCSDIR","tier":"B"},
  {"name":"base-cur","kind":"tag_release","mode":"base","tracked_repo":"owner/base-cur","synced_base":"v1.2.3","tier":"A"},
  {"name":"base-behind","kind":"tag_release","mode":"base","tracked_repo":"owner/base-behind","synced_base":"v1.0.0","tier":"A"},
  {"name":"probe-cur","kind":"tag_release","mode":"probe","tracked_repo":"owner/ver-current","version_command":"printf 1.2.3","version_regex":"[0-9]+[.][0-9]+[.][0-9]+[0-9A-Za-z.-]*","tier":"A"},
@@ -547,6 +553,7 @@ printf '{}' >"$W7/empty_ups.json"
 GHSTATE="$W7/state" PATH="$W7/bin:$PATH" \
   DRIFT_REGISTRY="$W7/upstreams.json" DRIFT_KNOWN_MARKETPLACES="$W7/km.json" \
   DRIFT_MJSON="$empty_mjson" DRIFT_UPSTREAMS="$W7/empty_ups.json" \
+  DRIFT_TEST_DEFAULT_DIR="$CK1" \
   bash "$SCRIPT" >"$W7/out.txt" 2>&1; rc7=$?
 sec7="$(sed -n '/carried upstreams/,$p' "$W7/out.txt")"
 # 7a. commit_head paths.
@@ -554,6 +561,18 @@ if grepq "$sec7" '^  pin-full: CURRENT'; then ok "commit_head pin full-SHA -> CU
 if grepq "$sec7" '^  pin-short: BEHIND'; then ok "commit_head pin short-SHA resolved -> BEHIND"; else bad "commit_head pin-short not BEHIND; $(printf '%s' "$sec7" | grep pin-short)"; fi
 if grepq "$sec7" '^  checkout-ok: CURRENT'; then ok "commit_head checkout present -> CURRENT"; else bad "checkout-ok not CURRENT; $(printf '%s' "$sec7" | grep checkout-ok)"; fi
 if grepq "$(printf '%s' "$sec7" | grep 'checkout-missing')" 'UNCHECKED'; then ok "commit_head checkout absent -> UNCHECKED"; else bad "checkout-missing not UNCHECKED"; fi
+# 7a-expand (HIMMEL-3537): checkout_path is ${UNSET:-default}, default text
+# itself carries a bare $VAR (DRIFT_TEST_DEFAULT_DIR=$CK1) — proves both the
+# ${VAR:-default} fallback AND the second substitution pass that expands a
+# $VAR embedded in the default's own text. A failed expand would leave the
+# literal '${...}' string as checkout_path, which is not a directory ->
+# "checkout not present", never CURRENT.
+if grepq "$sec7" '^  checkout-expand: CURRENT'; then ok "expand(): \${VAR:-default} with \$VAR inside the default resolves to a real checkout -> CURRENT"; else bad "checkout-expand not CURRENT; $(printf '%s' "$sec7" | grep checkout-expand)"; fi
+# 7a-gcs (HIMMEL-3537): no .git dir, but a .gcs-sha file (Claude Code's own
+# GCS-tarball marketplace install shape) -> read that as the local commit
+# instead of failing UNCHECKED. The fixture .gcs-sha carries leading/trailing
+# whitespace and a newline to prove the tr -d '[:space:]' strip.
+if grepq "$sec7" '^  checkout-gcs: CURRENT'; then ok ".gcs-sha (non-git checkout) read as local commit -> CURRENT"; else bad "checkout-gcs not CURRENT; $(printf '%s' "$sec7" | grep checkout-gcs)"; fi
 if grepq "$(printf '%s' "$sec7" | grep 'weird-mode')" "mode 'bogus' unknown"; then ok "commit_head unknown mode -> UNCHECKED"; else bad "weird-mode not flagged"; fi
 # 7b. tag_release paths.
 if grepq "$sec7" '^  base-cur: CURRENT'; then ok "tag_release base synced -> CURRENT"; else bad "base-cur not CURRENT"; fi

@@ -715,13 +715,17 @@ clear_cr_marker_for_branch() {
     # clear-cr-marker.sh refuses a branch other than the one checked out in its
     # cwd (HIMMEL-3495), and this script usually runs from the primary. Run it
     # from the worktree that has $branch checked out; with none, fail loud.
+    # -z: `worktree list --porcelain` prints a path RAW, unquoted, so a path
+    # containing the parser's own newline delimiter breaks a line-by-line
+    # read (HIMMEL-3538). -z NUL-terminates every field instead — the one
+    # byte a path can never contain.
     local line cur="" wt=""
-    while IFS= read -r line; do
+    while IFS= read -r -d '' line; do
         case "$line" in
             "worktree "*) cur="${line#worktree }" ;;
             "branch refs/heads/$branch") wt="$cur" ;;
         esac
-    done < <(git worktree list --porcelain 2>/dev/null)
+    done < <(git worktree list --porcelain -z 2>/dev/null)
     if [ -z "$wt" ]; then
         MARKER_RESULT="no-worktree"
         echo "merge-on-green: '$branch' is checked out in no worktree, so its CR marker in $common/cr-pending stays pending — run scripts/cr/clear-cr-marker.sh '$branch' from the worktree where $branch is checked out (HIMMEL-3495)." >&2
@@ -1114,8 +1118,12 @@ prune_merged_worktree() {
     # Find the worktree checked out on this PR's head branch. `locked` follows
     # `branch` inside a record, so buffer per record and decide on the blank
     # separator line.
+    # -z: see the matching comment in clear_cr_marker_for_branch above
+    # (HIMMEL-3538) — a raw, unquoted path can contain the parser's own
+    # delimiter, so read NUL-terminated fields instead of newline-terminated
+    # lines.
     local line cur="" cur_br="" cur_lock=0 path="" locked=0
-    while IFS= read -r line; do
+    while IFS= read -r -d '' line; do
         case "$line" in
             "worktree "*)          cur="${line#worktree }"; cur_br=""; cur_lock=0 ;;
             "branch refs/heads/"*) cur_br="${line#branch refs/heads/}" ;;
@@ -1126,7 +1134,7 @@ prune_merged_worktree() {
                 fi
                 cur=""; cur_br=""; cur_lock=0 ;;
         esac
-    done < <(git -C "$primary" worktree list --porcelain 2>/dev/null; printf '\n')
+    done < <(git -C "$primary" worktree list --porcelain -z 2>/dev/null; printf '\0')
     [ -n "$path" ] || return 0
 
     local path_norm

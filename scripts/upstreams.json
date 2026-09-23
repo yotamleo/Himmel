@@ -38,9 +38,9 @@
       "kind": "commit_head",
       "mode": "checkout",
       "tracked_repo": "NousResearch/hermes-agent",
-      "checkout_path": "${LOCALAPPDATA}/hermes/hermes-agent",
+      "checkout_path": "${LOCALAPPDATA:-$HOME/.hermes}/hermes-agent",
       "tier": "B",
-      "note": "Editable pip checkout (the multi-provider gateway). Tier B / high-churn (18k+ open PRs): reads BEHIND by design; that IS the signal — consult the HIMMEL-850 steal-list when a real bug hits. UNCHECKED if the checkout is absent on this machine (CI / fresh clone). NOTE (HIMMEL-2139): upstream FORCE-PUSHES main, so the local SHA regularly sits on commits that are reachable from no remote branch and the reported 'N commits ahead' is inflated — that is upstream rewriting history, NOT a local patch stack (himmel keeps nothing in this checkout; its tailoring is the himmel_agent PROFILE in the sibling profiles/ dir). update_hermes() in scripts/himmel-update.sh resyncs on a non-ff fetch when the tree is clean and no commit is ours; do NOT 'repair' this row by muting it."
+      "note": "Editable pip checkout (the multi-provider gateway). Tier B / high-churn (18k+ open PRs): reads BEHIND by design; that IS the signal — consult the HIMMEL-850 steal-list when a real bug hits. UNCHECKED if the checkout is absent on this machine (CI / fresh clone). NOTE (HIMMEL-2139): upstream FORCE-PUSHES main, so the local SHA regularly sits on commits that are reachable from no remote branch and the reported 'N commits ahead' is inflated — that is upstream rewriting history, NOT a local patch stack (himmel keeps nothing in this checkout; its tailoring is the himmel_agent PROFILE in the sibling profiles/ dir). update_hermes() in scripts/himmel-update.sh resyncs on a non-ff fetch when the tree is clean and no commit is ours; do NOT 'repair' this row by muting it. (HIMMEL-3537): checkout_path carries a ${LOCALAPPDATA:-$HOME/.hermes} fallback matching update_hermes()'s own default — a bare ${LOCALAPPDATA} previously left this row UNCHECKED on every Linux/macOS station, since LOCALAPPDATA is Windows-only and check-plugin-drift.sh's expand() had no default-value syntax."
     },
     {
       "name": "rtk",
@@ -161,7 +161,7 @@
       "kind": "tag_release",
       "mode": "base",
       "tracked_repo": "obra/superpowers",
-      "synced_base": "6.3.0",
+      "synced_base": "6.4.1",
       "tier": "A",
       "note": "11 of superpowers' 14 skill directories vendored verbatim at marketplace/plugins/lean-skills/skills (HIMMEL-3064): the four himmel invokes (brainstorming, writing-plans, systematic-debugging, verification-before-completion) plus the seven they hand off to, i.e. the `superpowers:<name>` reference closure — vendoring fewer leaves dangling cross-references. Deliberately NOT vendored: using-superpowers, receiving-code-review, dispatching-parallel-agents. Detection is release-level, not per-file: we carry whole DIRECTORIES (SKILL.md plus companion prompts and scripts), so a sha256 pin per file would cost ~36 gh calls a run and would still miss a companion file we had not enumerated — that is also why this plugin carries a VENDORED.md rather than a class-2 UPSTREAM_PIN, which parses only one triple per plugin. No `version_pin`, so scripts/upstreams/apply-drift-bump.sh reports SKIP (manual): repair is a reviewed re-copy of the 11 trees, and moving synced_base alone would launder the very signal this row raises (the qmd caveat). Tier A — these copies ARE himmel's context floor, so upstream fixes are worth adopting promptly."
     },

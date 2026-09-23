@@ -275,14 +275,22 @@ ASSERT_OUT=$(vm_ssh "HIMMEL_RT_GUEST=1 RT_PURGE=$PURGE RT_PROFILE=$PROFILE bash 
     || fail "step assert failed (rc=$?)"
 printf '%s\n' "$ASSERT_OUT"
 
-# 7b. --clone-gone --purge-state must leave no ~/.himmel (design §5.2/§4: the
-# bundle is removed last, as the final statement of the purge). Runs AFTER
-# invdiff/assert so a legitimate failure here still preserves their diagnostic
-# output in the captured run log.
+# 7b. --clone-gone --purge-state must leave no purge-owned ~/.himmel content
+# (design §5.2/§4: provenance.jsonl, provenance-backups/ and the standalone
+# uninstall/ bundle are the purge's own last statement) and nothing beyond
+# what baseline A seeded there — ~/.himmel/config.json (seed-provenance.sh),
+# never the whole directory: config.json is the user's own file and
+# uninstall.sh deliberately never removes it (console ruling, HIMMEL-3528,
+# 2026-09-23). Runs AFTER invdiff/assert so a legitimate failure here still
+# preserves their diagnostic output in the captured run log.
 if [ "$CLONE_GONE" = 1 ] && [ "$PURGE" = 1 ]; then
-    HIMMEL_LEFT=$(vm_ssh "test -e $GHOME/.himmel -o -L $GHOME/.himmel && echo PRESENT || echo ABSENT")
-    echo "[clone-gone-purge] ~/.himmel: $HIMMEL_LEFT"
-    [ "$HIMMEL_LEFT" = ABSENT ] || fail "clone-gone --purge-state left $GHOME/.himmel behind"
+    HIMMEL_LIST=$(vm_ssh "find -L $GHOME/.himmel -mindepth 1 2>/dev/null | LC_ALL=C sort")
+    HIMMEL_LIST_LINE=$(printf '%s' "$HIMMEL_LIST" | tr '\n' ' ')
+    echo "[clone-gone-purge] ~/.himmel contents: ${HIMMEL_LIST_LINE:-(empty)}"
+    UNEXPECTED=$(printf '%s\n' "$HIMMEL_LIST" | grep -vxF "$GHOME/.himmel/config.json" | grep -v '^$' || true)
+    if [ -n "$UNEXPECTED" ]; then
+        fail "clone-gone --purge-state left unexpected ~/.himmel content: $(printf '%s' "$UNEXPECTED" | tr '\n' ' ')"
+    fi
 fi
 
 # 8. The verdict.

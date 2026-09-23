@@ -376,14 +376,26 @@ import json, os, re, sys
 reg_path, mkt_path = sys.argv[1], sys.argv[2]
 
 def expand(p):
-    # Cross-platform env expansion ($VAR / ${VAR} / %VAR%) so the same registry
-    # entry resolves on Git Bash python AND Windows python, then forward-slash
-    # the result so `git -C <path>` is portable.
+    # Cross-platform env expansion ($VAR / ${VAR} / ${VAR:-default} / %VAR%) so
+    # the same registry entry resolves on Git Bash python AND Windows python,
+    # then forward-slash the result so `git -C <path>` is portable.
+    # ${VAR:-default} (HIMMEL-3537): a Windows-only var like LOCALAPPDATA is
+    # unset on Linux/macOS, so a bare ${LOCALAPPDATA} resolves to '' there
+    # instead of the platform's real default (hermes-agent's checkout_path).
+    # The default itself may reference another var ($HOME/.hermes); a bare
+    # $VAR inside it isn't matched by the outer regex in one pass, so the
+    # substitution runs twice — the second pass expands any $VAR the first
+    # pass's default text introduced.
     if not p:
         return p
+    pattern = r'\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}|\$([A-Za-z_][A-Za-z0-9_]*)'
     def rep(m):
-        return os.environ.get(m.group(1) or m.group(2), '')
-    p = re.sub(r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)', rep, p)
+        if m.group(1) is not None:
+            val = os.environ.get(m.group(1))
+            return val if val else (m.group(2) if m.group(2) is not None else '')
+        return os.environ.get(m.group(3), '')
+    p = re.sub(pattern, rep, p)
+    p = re.sub(pattern, rep, p)
     p = re.sub(r'%([A-Za-z_][A-Za-z0-9_]*)%', lambda m: os.environ.get(m.group(1), ''), p)
     return os.path.expanduser(p).replace('\\', '/')
 
@@ -462,10 +474,20 @@ PY
               incomplete=1; continue
             fi
             if ! git -C "$path" rev-parse --git-dir >/dev/null 2>&1; then
-              echo "  $name: ? checkout is not a git repo ($path) — UNCHECKED"
-              incomplete=1; continue
+              # Claude Code's own plugin manager installs some official
+              # marketplaces (claude-plugins-official) as a GCS tarball
+              # snapshot, not a git clone — no .git dir, but a .gcs-sha file
+              # recording the fetched commit (HIMMEL-3537). Read that instead
+              # of failing UNCHECKED.
+              if [ -f "$path/.gcs-sha" ]; then
+                local_ref="$(tr -d '[:space:]' < "$path/.gcs-sha")"
+              else
+                echo "  $name: ? checkout is not a git repo ($path) — UNCHECKED"
+                incomplete=1; continue
+              fi
+            else
+              local_ref="$(git -C "$path" rev-parse HEAD 2>/dev/null)"
             fi
-            local_ref="$(git -C "$path" rev-parse HEAD 2>/dev/null)"
             if [ -z "$local_ref" ]; then
               echo "  $name: ? could not read HEAD of checkout ($path) — UNCHECKED"
               incomplete=1; continue

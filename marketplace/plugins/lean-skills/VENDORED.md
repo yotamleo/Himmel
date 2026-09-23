@@ -7,7 +7,7 @@ upstream_repo/upstream_path/upstream_sha256 triple per plugin and would only
 ever check one of the 13 files below). Upstream advance for this plugin is
 detected at the RELEASE level instead, by two scripts/upstreams.json rows:
 
-    superpowers-skills   obra/superpowers      synced_base 6.3.0
+    superpowers-skills   obra/superpowers      synced_base 6.4.1
     mattpocock-skills    mattpocock/skills     synced_base 1.2.3
 
 A release-level check is the right grain here because we vendor whole skill
@@ -23,7 +23,7 @@ Everything below is copied VERBATIM. Do not edit vendored prose: a local
 edit makes the next re-vendor a merge instead of a copy. himmel's own
 framing lives in its CLAUDE.md and hooks, never inside a vendored SKILL.md.
 
-vendored_from=obra/superpowers@6.3.0 path=skills/<name>
+vendored_from=obra/superpowers@6.4.1 path=skills/<name>
 
 The 4 skills himmel actually invokes: brainstorming, writing-plans,
 systematic-debugging, verification-before-completion — plus the 7 they hand

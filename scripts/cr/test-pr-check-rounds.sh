@@ -516,6 +516,51 @@ assert_has "$promote_out_env" "promoted find-j@" "an ambient CR_LEDGER does not 
 if [ -e "$bogus_ledger" ]; then fail "ambient CR_LEDGER redirected the amend write"; else pass "ambient CR_LEDGER never gets a write"; fi
 assert_has "$(cat "$promote_ledger" 2>/dev/null)" '"finding_id":"find-j"' "find-j's fixed amend lands in the real ledger promote evaluated"
 
+# HIMMEL-3461: review-round.sh's own amendsByKey gains the branch dimension,
+# mirroring ledger-append.sh / clear-cr-marker.sh / handover-bridge.sh
+# (HIMMEL-2405). Two branches can legitimately share a head (HIMMEL-1175), so
+# an amend recorded while judging one branch must never leak into another
+# branch's promote decision.
+git -C "$repo" branch branchkey-b "$promote_head_a"
+
+# (n) cross-branch: an amend recorded for branch "promote" at promote_head_a
+# must NOT apply to a same-id finding on branch "branchkey-b" at the same
+# head, even though the two branches share both the head and the finding id.
+# ledger-append.sh itself now refuses to WRITE a mismatched --branch amend
+# (HIMMEL-3467), so this exercises review-round.sh's READ side directly by
+# injecting the raw ledger row a pre-HIMMEL-3467 writer (or a foreign branch's
+# own legitimate amend that later collided) could have produced.
+CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" finding \
+    --branch branchkey-b --head "$promote_head_a" --model stub --id find-n \
+    --severity sug --file promote.txt --line 10 --verdict "" \
+    --text "tidy up the promote fixture nu"
+printf '{"kind":"amend","ts":"2020-01-01T00:00:00Z","branch":"promote","target_head":"%s","finding_id":"find-n","artifact":"diff","perspective":"off","set":{"verdict":"agreed"},"reason":"leg agrees with nu on the OTHER branch"}\n' "$promote_head_a" >> "$promote_ledger"
+
+# (o) same-branch positive control: an amend recorded for branch
+# "branchkey-b" at promote_head_a DOES apply while judging branchkey-b.
+CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" finding \
+    --branch branchkey-b --head "$promote_head_a" --model stub --id find-o \
+    --severity sug --file promote.txt --line 11 --verdict "" \
+    --text "tidy up the promote fixture xi"
+CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" amend \
+    --branch branchkey-b --head "$promote_head_a" --id find-o \
+    --set verdict=agreed --reason "leg agrees with xi on its own branch"
+
+# (p) legacy back-compat: an amend row with NO branch field at all (written
+# before branches were stamped, HIMMEL-2405) still applies to ANY branch.
+CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" finding \
+    --branch branchkey-b --head "$promote_head_a" --model stub --id find-p \
+    --severity sug --file promote.txt --line 12 --verdict "" \
+    --text "tidy up the promote fixture pi"
+printf '{"kind":"amend","ts":"2020-01-01T00:00:00Z","target_head":"%s","finding_id":"find-p","artifact":"diff","perspective":"off","set":{"verdict":"agreed"},"reason":"legacy branchless amend"}\n' "$promote_head_a" >> "$promote_ledger"
+
+git -C "$repo" checkout -q branchkey-b
+branchkey_out="$(cd "$repo" && bash "$fx/scripts/cr/review-round.sh" promote --branch branchkey-b --head "$promote_head_b")"
+git -C "$repo" checkout -q promote
+assert_has "$branchkey_out" "$(printf 'still-open find-n@%s (unadjudicated)' "$(printf '%s' "$promote_head_a" | cut -c1-8)")" "HIMMEL-3461 (n) a different branch's amend does not merge into this branch's finding"
+assert_has "$branchkey_out" "promoted find-o@" "HIMMEL-3461 (o) a same-branch amend still merges (positive control)"
+assert_has "$branchkey_out" "promoted find-p@" "HIMMEL-3461 (p) a legacy branchless amend still applies (back-compat)"
+
 # Negative control: a malformed ledger row refuses automatic promotion and writes nothing.
 promote_lines_before="$(wc -l < "$promote_ledger" | tr -d ' ')"
 printf 'not-json-at-all\n' >> "$promote_ledger"
