@@ -332,7 +332,7 @@ prov_read_load
 uours=$(prov_read_units --kind plugin | jq -c 'select(.unit=="himmel-ops@himmel")')
 upre=$(prov_read_units --kind plugin | jq -c 'select(.unit=="someone-elses@shop")')
 check "register plugin ours" "$(field "$uours" .ours)" "true"
-check "register plugin ours -> verdict" "$(prov_read_verdict "$uours")" "remove ours"
+check "register plugin ours -> verdict (legacy row, S16)" "$(prov_read_verdict "$uours")" "remove ours-unverified"
 check "register plugin preexisted" "$(field "$upre" .ours)" "false"
 check "register plugin preexisted -> verdict" "$(prov_read_verdict "$upre")" "keep preexisted"
 ownedfile="$td/owned.tsv"
@@ -706,6 +706,149 @@ u=$(u_for --path "$w/f2.txt")
 check "F2: eff_pre is null, not an absent object" "$(field "$u" '.eff_pre')" "null"
 check "F2: verdict is keep no-backup, not remove" "$(prov_read_verdict "$u")" "keep no-backup"
 prov_read_cleanup
+
+# ── HIMMEL-3525 S16: register verdicts check live identity ──────────────────
+#    A stub `qmd` first on PATH answers `collection show <name>` with
+#    QMD_STUB_PATH (or exits QMD_STUB_RC, or says "Collection not found" when
+#    QMD_STUB_ABSENT is set); BUN_INSTALL has no qmd.js, so
+#    qmd_cmd always falls back to it.
+
+mkdir -p "$td/bin"
+cat > "$td/bin/qmd" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$QMD_STUB_LOG"
+[ -z "${QMD_STUB_RC:-}" ] || exit "$QMD_STUB_RC"
+[ -z "${QMD_STUB_ABSENT:-}" ] || { printf 'Collection not found: %s\n' "$3" >&2; exit 1; }
+case "$1 $2" in
+    'collection show') printf 'Collection: %s\n  Path:     %s\n  Pattern:  **/*.md\n' "$3" "$QMD_STUB_PATH" ;;
+    *) exit 2 ;;
+esac
+STUB
+chmod 755 "$td/bin/qmd"
+_s16_path_save="$PATH"
+export PATH="$td/bin:$PATH" BUN_INSTALL="$td/no-bun" QMD_STUB_LOG="$td/qmd.log"
+unset QMD_STUB_RC
+# the identity token for luna at /vaultA, computed independently of the lib
+tok_a=$(printf 'collection\nluna\n/vaultA\n**/*.md' | _prov_sha256)
+col_unit() { prov_read_units --kind collection | jq -c 'select(.unit=="luna")'; }
+
+# (a) + control: an identity row whose recorded token is /vaultA's
+reset
+prov_begin --iid S16A --writer t
+prov_record register collection - --unit luna --post-text "$tok_a" --scope machine --class code \
+    --row qmd-fork --writer qmd-bin.sh --field preexisted=false --field identity_v=1
+prov_end ok
+prov_read_load
+u=$(col_unit)
+check "S16 fold: ours_ids carries the identity row's post.sha" "$(field "$u" '.ours_ids | length')" "1"
+export QMD_STUB_PATH=/vaultB
+check "S16 (a): re-pointed collection -> keep user-modified" "$(prov_read_verdict "$u")" "keep user-modified"
+prov_read_cleanup
+prov_read_load
+u=$(col_unit)
+QMD_STUB_PATH=/vaultA
+check "S16 (a) control: same collection -> remove ours" "$(prov_read_verdict "$u")" "remove ours"
+prov_read_cleanup
+prov_read_load
+u=$(col_unit)
+export QMD_STUB_ABSENT=1
+check "S16: collection gone -> keep already-absent" "$(prov_read_verdict "$u")" "keep already-absent"
+unset QMD_STUB_ABSENT
+prov_read_cleanup
+
+# (c) the registrar cannot be asked
+reset
+prov_begin --iid S16C --writer t
+prov_record register collection - --unit luna --post-text "$tok_a" --scope machine --class code \
+    --row qmd-fork --writer qmd-bin.sh --field preexisted=false --field identity_v=1
+prov_end ok
+prov_read_load
+u=$(col_unit)
+export QMD_STUB_RC=127
+check "S16 (c): qmd exits 127 -> keep identity-unreadable" "$(prov_read_verdict "$u")" "keep identity-unreadable"
+unset QMD_STUB_RC
+prov_read_cleanup
+
+# a re-run that appends a preexisted=true row reading the user's /vaultB
+# identity must NOT make /vaultB himmel's: only preexisted=false rows count
+reset
+tok_b=$(printf 'collection\nluna\n/vaultB\n**/*.md' | _prov_sha256)
+prov_begin --iid S16R --writer t
+prov_record register collection - --unit luna --post-text "$tok_a" --scope machine --class code \
+    --row qmd-fork --writer qmd-bin.sh --field preexisted=false --field identity_v=1
+prov_record register collection - --unit luna --post-text "$tok_b" --scope machine --class code \
+    --row qmd-fork --writer qmd-bin.sh --field preexisted=true --field identity_v=1
+prov_end ok
+prov_read_load
+u=$(col_unit)
+QMD_STUB_PATH=/vaultB
+check "S16: a later preexisted=true row never joins ours_ids" "$(field "$u" '.ours_ids | length')" "1"
+check "S16: ... so the user's /vaultB still reads keep user-modified" "$(prov_read_verdict "$u")" "keep user-modified"
+prov_read_cleanup
+
+# (b) legacy collection row: post.sha = sha(path arg), no identity_v
+reset
+prov_begin --iid S16B --writer t
+prov_record register collection - --unit luna --post-text /vaultA --scope machine --class code \
+    --row qmd-fork --writer qmd-bin.sh --field preexisted=false
+prov_end ok
+prov_read_load
+u=$(col_unit)
+check "S16 (b): legacy row -> ours_ids empty" "$(field "$u" '.ours_ids | length')" "0"
+QMD_STUB_PATH=/vaultB
+check "S16 (b): legacy row, live /vaultB -> keep user-modified" "$(prov_read_verdict "$u")" "keep user-modified"
+prov_read_cleanup
+prov_read_load
+u=$(col_unit)
+QMD_STUB_PATH=/vaultA
+check "S16 (b): legacy row, live /vaultA -> remove ours" "$(prov_read_verdict "$u")" "remove ours"
+prov_read_cleanup
+prov_read_load
+u=$(col_unit)
+export QMD_STUB_RC=127
+check "S16 (b): legacy row, qmd unreadable -> keep identity-unreadable" "$(prov_read_verdict "$u")" "keep identity-unreadable"
+unset QMD_STUB_RC
+prov_read_cleanup
+
+# (d) legacy plugin / marketplace / job rows: remove by name, flagged
+# (e) the unit register row defers to its companion file row
+reset
+prov_begin --iid S16D --writer t
+prov_record register plugin - --unit p@m --scope user --class state --field preexisted=false --field cli_scope='"user"'
+prov_record register marketplace - --unit m --scope user --class state --field preexisted=false --field cli_scope='"user"'
+prov_record register job - --unit HIMMEL-X --scope user --class code --field preexisted=false --field scheduler='"cron"'
+prov_record register unit - --unit telegram-bridge.service --scope user --class code --field linger_preexisted=false
+prov_end ok
+prov_read_load
+check "S16 (d): legacy plugin -> remove ours-unverified" "$(prov_read_verdict "$(prov_read_units --kind plugin)")" "remove ours-unverified"
+check "S16 (d): legacy marketplace -> remove ours-unverified" "$(prov_read_verdict "$(prov_read_units --kind marketplace)")" "remove ours-unverified"
+check "S16 (d): legacy job -> remove ours-unverified" "$(prov_read_verdict "$(prov_read_units --kind job)")" "remove ours-unverified"
+check "S16 (e): unit register row -> skip delegated-file-row" "$(prov_read_verdict "$(prov_read_units --kind unit)")" "skip delegated-file-row"
+prov_read_cleanup
+
+# Q4: git-hook is no longer a register kind -- a row of it is never "ours"
+reset
+prov_begin --iid S16G --writer t
+prov_record register git-hook - --unit pre-commit --scope clone --class code --field preexisted=false
+prov_end ok
+prov_read_load
+check "S16 Q4: git-hook is not a register kind (ours is null)" "$(field "$(prov_read_units --kind git-hook)" .ours)" "null"
+check "S16 Q4: git-hook is never removed by name" "$(prov_read_verdict "$(prov_read_units --kind git-hook)")" "keep already-absent"
+prov_read_cleanup
+
+# the identity cache lives beside the fold file and prov_read_cleanup drops it
+reset
+prov_begin --iid S16K --writer t
+prov_record register collection - --unit luna --post-text "$tok_a" --scope machine --class code \
+    --row qmd-fork --writer qmd-bin.sh --field preexisted=false --field identity_v=1
+prov_end ok
+prov_read_load
+_s16_fold="$PROV_READ_FOLD"
+prov_read_verdict "$(col_unit)" >/dev/null
+check "S16: the identity cache sits beside the fold" "$([ -d "$_s16_fold.identity.d" ] && echo yes)" "yes"
+prov_read_cleanup
+check "S16: prov_read_cleanup removes the identity cache" "$([ -e "$_s16_fold.identity.d" ] && echo yes || echo no)" "no"
+export PATH="$_s16_path_save"
 
 echo "$passes passed, $fails failed"
 [ "$fails" -eq 0 ]

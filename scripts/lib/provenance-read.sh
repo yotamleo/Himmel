@@ -46,6 +46,8 @@ _provread_guarded() {
 }
 # shellcheck source=scripts/lib/provenance.sh
 . "$_PROVREAD_LIB_DIR/provenance.sh"
+# shellcheck source=scripts/lib/provenance-identity.sh
+. "$_PROVREAD_LIB_DIR/provenance-identity.sh"
 
 _provread_err() { printf 'provenance-read: %s\n' "$*" >&2; }
 
@@ -98,7 +100,9 @@ JQ
 # valid rows already filtered to the artifact ops. See the design doc "Fold"
 # section for the grouping/eff_pre/eff_post/ours rules this implements.
 read -r -d '' _PROVREAD_FOLD_JQ <<'JQ'
-def is_register_kind: . as $k | (["plugin","marketplace","mcp","collection","job","unit","tool","git-hook"] | index($k)) != null;
+# git-hook is not a register kind (HIMMEL-3525 Q4): a hook is a file, and a
+# writer that lands will record it as kind file.
+def is_register_kind: . as $k | (["plugin","marketplace","mcp","collection","job","unit","tool"] | index($k)) != null;
 def presha(r): if (r|has("pre"))|not then null elif r.pre.state=="absent" then "ABSENT" else r.pre.sha end;
 def extra_fields(r): r | del(.t,.iid,.op,.kind,.path,.unit,.scope,.class,.pre,.post,.writer,.manifest_row,._line);
 def refline(r): (r.iid) + ":" + ((r._line)|tostring);
@@ -143,6 +147,10 @@ def build_chains($rows):
           governed: (($N|length) > 0),
           preexisted_only: (if ($N|length)==0 then ($rows | any(.preexisted==true)) else false end),
           ours: (if $isreg then ($rows | any(.preexisted==false)) else null end),
+          # HIMMEL-3525 §4.1: the identities himmel recorded for registrations
+          # IT created. A later preexisted=true row (a re-run over a
+          # registration the user re-pointed) must never join this set.
+          ours_ids: (if $isreg then ([ $rows[] | select(.preexisted==false and .identity_v!=null and .post.sha!=null) | .post.sha ] | unique) else null end),
           eff_pre: (if ($N|length)>0 then eff_pre_of($N) else null end),
           eff_post: (if ($N|length)>0 then $N[-1].post else $lastRow.post end),
           fields: extra_fields($lastForFields),
@@ -258,8 +266,10 @@ prov_read_load() {
     return 0
 }
 
-# prov_read_cleanup -- removes PROV_READ_FOLD's temp file.
+# prov_read_cleanup -- removes PROV_READ_FOLD's temp file and the identity
+# reader's per-run cache beside it.
 prov_read_cleanup() {
+    [ -n "${PROV_READ_FOLD:-}" ] && [ -d "$PROV_READ_FOLD.identity.d" ] && rm -rf "$PROV_READ_FOLD.identity.d"
     [ -n "${PROV_READ_FOLD:-}" ] && [ -f "$PROV_READ_FOLD" ] && rm -f "$PROV_READ_FOLD"
     PROV_READ_FOLD=""
 }
@@ -385,6 +395,59 @@ prov_read_current() {
     esac
 }
 
+# _provread_register_verdict <unit-json> <kind> -- the verdict for a register
+# unit himmel created (ours=true), HIMMEL-3525 design §4.2 and §5. The live
+# identity token must be one himmel recorded for a registration it created
+# (ours_ids); anything else keeps. The writer records the token with
+# --post-text, which stores its sha, so the live token is hashed once more
+# before the lookup. A row with no recorded identity (a legacy ledger, or a
+# kind with no reader yet) takes the per-kind default of §5.
+_provread_register_verdict() {
+    local u="$1" kind="$2" ids live rc live_sha
+    ids=$(printf '%s' "$u" | jq -c '.ours_ids // []')
+    if [ "$ids" != "[]" ]; then
+        live=$(prov_identity_live "$kind" "$u"); rc=$?
+        if [ "$rc" -eq 0 ]; then
+            case "$live" in
+                UNREADABLE) printf 'keep identity-unreadable\n'; return 0 ;;
+                ABSENT)     printf 'keep already-absent\n'; return 0 ;;
+            esac
+            live_sha=$(prov_sha_text "$live") || { printf 'keep identity-unreadable\n'; return 0; }
+            if printf '%s' "$ids" | jq -e --arg s "$live_sha" 'index($s) != null' >/dev/null 2>&1; then
+                printf 'remove ours\n'
+            else
+                printf 'keep user-modified\n'
+            fi
+            return 0
+        fi
+    fi
+    case "$kind" in
+        collection) _provread_collection_salvage "$u" ;;
+        *) printf 'remove ours-unverified\n' ;;
+    esac
+}
+
+# _provread_collection_salvage <unit-json> -- a legacy collection row recorded
+# --post-text <path arg>, so post.sha = sha(path). Compare it with the live
+# Path (as qmd prints it, or canonicalized): equal -> remove ours; different
+# (or nothing recorded) -> keep user-modified; qmd unreadable -> keep.
+_provread_collection_salvage() {
+    local u="$1" name post_sha
+    name=$(printf '%s' "$u" | jq -r '.unit // ""')
+    post_sha=$(printf '%s' "$u" | jq -r '.eff_post.sha // ""')
+    _provid_qmd_show "$name"
+    case "$_PROVID_STATE" in
+        UNREADABLE) printf 'keep identity-unreadable\n'; return 0 ;;
+        ABSENT)     printf 'keep already-absent\n'; return 0 ;;
+    esac
+    if [ -n "$post_sha" ] && { [ "$(prov_sha_text "$_PROVID_PATH")" = "$post_sha" ] \
+            || [ "$(prov_sha_text "$(_provid_canon_path "$_PROVID_PATH")")" = "$post_sha" ]; }; then
+        printf 'remove ours\n'
+    else
+        printf 'keep user-modified\n'
+    fi
+}
+
 # prov_read_verdict <unit-json> -- prints "<action> <reason>".
 # action in remove restore keep skip heuristic; see the design doc "Verdict"
 # section for the order of tests this follows.
@@ -398,8 +461,12 @@ prov_read_verdict() {
 
     if [ "$kind" = "tool" ]; then printf 'keep class-keep\n'; return 0; fi
     case "$kind" in
-        plugin|marketplace|mcp|collection|job|unit|git-hook)
-            if [ "$ours" = "true" ]; then printf 'remove ours\n'; else printf 'keep preexisted\n'; fi
+        # the unit's register row carries no preexisted flag; its teardown takes
+        # ownership from the hash-checked file row at the unit path (§3.5)
+        unit) printf 'skip delegated-file-row\n'; return 0 ;;
+        plugin|marketplace|mcp|collection|job)
+            if [ "$ours" != "true" ]; then printf 'keep preexisted\n'; return 0; fi
+            _provread_register_verdict "$u" "$kind"
             return 0 ;;
     esac
     if [ "$class" = "state" ]; then printf 'skip class-state\n'; return 0; fi

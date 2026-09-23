@@ -15,11 +15,13 @@ const provLib = require('./provenance.js');
 
 const BUNDLE_MARKER = 'himmel-standalone-uninstaller/1';
 
-// design §3.2's closure (15 files, ~347 KB) plus the S13 node entry.
+// design §3.2's closure (15 files, ~347 KB) plus provenance-identity.sh
+// (HIMMEL-3525 S16, sourced by provenance-read.sh) and the S13 node entry.
 const BUNDLE_FILES_POSIX = [
   'scripts/uninstall.sh',
   'scripts/install/uninstall-manifest.tsv',
   'scripts/lib/provenance-read.sh',
+  'scripts/lib/provenance-identity.sh',
   'scripts/lib/provenance.sh',
   'scripts/lib/canon-path.sh',
   'scripts/lib/qmd-bin.sh',

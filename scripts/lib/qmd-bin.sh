@@ -650,9 +650,29 @@ qmd_register_collection() {
     fi
     return "$add_rc"
   fi
-  _qmd_prov_record "qmd collection '$name'" register collection - \
-    --unit "$name" --post-text "$path" --scope machine --class code \
-    --row qmd-fork --writer qmd-bin.sh --field preexisted=false
+  # HIMMEL-3525 S16: record the live identity token read straight back from
+  # qmd, so uninstall removes the collection only while it still points where
+  # himmel pointed it. The reader runs in a subshell, like _qmd_prov_record.
+  # A failed read-back records the legacy path row (no identity_v), which the
+  # uninstall verdict still checks against the live path.
+  local token
+  token=$( ( . "$(dirname "${BASH_SOURCE[0]}")/provenance-identity.sh" \
+    && prov_identity_live collection "$(jq -nc --arg n "$name" '{kind:"collection",unit:$n}')" ) 2>/dev/null )
+  case "$token" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f]*)
+      [ "${#token}" -eq 64 ] || token="" ;;
+    *) token="" ;;
+  esac
+  if [ -n "$token" ]; then
+    _qmd_prov_record "qmd collection '$name'" register collection - \
+      --unit "$name" --post-text "$token" --scope machine --class code \
+      --row qmd-fork --writer qmd-bin.sh --field preexisted=false --field identity_v=1
+  else
+    echo "  WARNING: could not read back qmd collection '$name' - recording its path only." >&2
+    _qmd_prov_record "qmd collection '$name'" register collection - \
+      --unit "$name" --post-text "$path" --scope machine --class code \
+      --row qmd-fork --writer qmd-bin.sh --field preexisted=false
+  fi
   return 0
 }
 

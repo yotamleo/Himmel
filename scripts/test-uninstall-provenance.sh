@@ -91,12 +91,22 @@ chmod 755 "$FAKE_CLAUDE"
 # uninstall.sh unwired the fork checkout or global symlink before removing
 # the collection, since prod's `qmd collection remove` is served through
 # exactly one of those two paths.
+# HIMMEL-3525 S16: `collection show <name>` answers the uninstall verdict's
+# live-identity read with QMD_STUB_SHOW_PATH as the Path; unset, it answers
+# qmd's own "Collection not found" (exit 1).
 FAKE_QMD="$SUITE_TMP/bin/qmd"
 cat > "$FAKE_QMD" <<'QMD_STUB_EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "${QMD_CALL_LOG:-/dev/null}"
 case "$*" in
+    'collection show '*)
+        if [ -z "${QMD_STUB_SHOW_PATH:-}" ]; then
+            echo "Collection not found: $3" >&2
+            exit 1
+        fi
+        printf 'Collection: %s\n  Path:     %s\n  Pattern:  **/*.md\n' "$3" "$QMD_STUB_SHOW_PATH"
+        exit 0 ;;
     'collection remove '*)
         if [ -n "${QMD_ORDER_CHECK_FORK_DIR:-}" ] && [ ! -d "$QMD_ORDER_CHECK_FORK_DIR" ]; then
             echo "fake qmd: collection remove called after the fork checkout was already removed" >&2
@@ -132,6 +142,7 @@ new_case() {
   # calling new_case -- unset here so a case that does NOT set them never
   # inherits a stale dir from an earlier case in the same suite run.
   unset CASE_QMD_FORK_DIR CASE_BUN_INSTALL CASE_QMD_ORDER_CHECK_FORK_DIR CASE_QMD_ORDER_CHECK_SYMLINK
+  unset CASE_QMD_COLLECTION_PATH
 }
 
 # run_uninstall <uninstall.sh args...> -- the real uninstall.sh, confined to
@@ -148,6 +159,7 @@ run_uninstall() {
     QMD_FORK_DIR="${CASE_QMD_FORK_DIR:-$CASE_DIR/no-qmd-fork}" \
     BUN_INSTALL="${CASE_BUN_INSTALL:-$CASE_DIR/no-bun}" \
     QMD_CALL_LOG="$CASE_DIR/qmd.log" \
+    QMD_STUB_SHOW_PATH="${CASE_QMD_COLLECTION_PATH:-}" \
     QMD_ORDER_CHECK_FORK_DIR="${CASE_QMD_ORDER_CHECK_FORK_DIR:-}" \
     QMD_ORDER_CHECK_SYMLINK="${CASE_QMD_ORDER_CHECK_SYMLINK:-}" \
     HIMMEL_PROVENANCE_DIR="$HIMMEL_PROVENANCE_DIR" \
@@ -677,6 +689,7 @@ GLOBAL_DIR20B="$CASE_BUN_INSTALL/install/global/node_modules/@tobilu/qmd"
 mkdir -p "$(dirname "$GLOBAL_DIR20B")"
 ln -s "$CASE_QMD_FORK_DIR" "$GLOBAL_DIR20B"
 STUB20B="$CASE_DIR/stub-qmd-20b"; printf 'patched stub\n' > "$STUB20B"
+CASE_QMD_COLLECTION_PATH="$CASE_QMD_FORK_DIR"
 cp "$STUB20B" "$SUITE_TMP/red20b-stub-before"
 printf 'orig stub\n' > "$SUITE_TMP/red20b-stub-pre"
 ( prov_begin --writer install.sh -- seed-red20b >/dev/null
@@ -861,6 +874,7 @@ mkdir -p "$(dirname "$GLOBAL_DIR26")"
 ln -s "$CASE_QMD_FORK_DIR" "$GLOBAL_DIR26"
 CASE_QMD_ORDER_CHECK_FORK_DIR="$CASE_QMD_FORK_DIR"
 CASE_QMD_ORDER_CHECK_SYMLINK="$GLOBAL_DIR26"
+CASE_QMD_COLLECTION_PATH="$CASE_QMD_FORK_DIR"
 ( prov_begin --writer install.sh -- seed-red26 >/dev/null
   prov_record create file "$STAMP26" --pre-absent --post-file "$STAMP26" --scope machine --class code \
     --row qmd-fork --writer qmd-bin.sh --field preexisted=false >/dev/null
@@ -1030,6 +1044,29 @@ check "RED29a: a freshly built (stamp-only-dirty) fork checkout IS removed under
   "$([ -e "$CASE_QMD_FORK_DIR" ] && echo yes || echo no)" "no"
 check "RED29a: never reports the stamp itself as a user modification" \
   "$(printf '%s\n' "$out29a" | grep -c 'kept:.*user-modified')" "0"
+
+echo "==== RED30 (HIMMEL-3525 S16 case f): a collection re-pointed after install survives --purge-state ===="
+# The install recorded the collection's live identity token (name, canonical
+# path, pattern) read back from qmd; the user then re-pointed the same name at
+# another vault. The verdict re-reads the live identity, finds a token himmel
+# never recorded, and keeps the collection. The control keeps the live path
+# where the install left it, and the collection is removed.
+tok30=$(printf 'collection\nqmd-vault\n/vaultA\n**/*.md' | _prov_sha256)
+for sub in repointed control; do
+  new_case "red30-$sub"
+  ( prov_begin --writer install.sh -- "seed-red30-$sub" >/dev/null
+    prov_record register collection - --unit qmd-vault --post-text "$tok30" --scope machine --class code \
+      --row qmd-fork --writer qmd-bin.sh --field preexisted=false --field identity_v=1 >/dev/null
+    prov_end ok >/dev/null )
+  if [ "$sub" = repointed ]; then CASE_QMD_COLLECTION_PATH=/vaultB; want=0; else CASE_QMD_COLLECTION_PATH=/vaultA; want=1; fi
+  run_uninstall --yes --purge-state --skip-tasks --skip-plugins --skip-hooks >/dev/null; rc30=$?
+  check "RED30 $sub: uninstall exit status" "$rc30" "0"
+  check "RED30 $sub: qmd collection remove qmd-vault called $want time(s)" \
+    "$(grep -c 'collection remove qmd-vault' "$CASE_DIR/qmd.log" 2>/dev/null)" "$want"
+  check "RED30 $sub: the verdict read the live identity" \
+    "$(grep -c 'collection show qmd-vault' "$CASE_DIR/qmd.log" 2>/dev/null)" "1"
+done
+unset rc30 tok30 want
 
 echo "==== REAL-LEDGER TRIPWIRE ===="
 REAL_LEDGER_AFTER=$(real_ledger_state)

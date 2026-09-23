@@ -862,6 +862,10 @@ if [ "$1" = "collection" ] && [ "$2" = "add" ]; then
   printf 'collection %s\n' "$*" >> "${ADD_LOG:?}"
   exit "${STUB_ADD_RC:-0}"
 fi
+if [ "$1" = "collection" ] && [ "$2" = "show" ] && [ -n "${STUB_SHOW_PATH:-}" ]; then
+  printf 'Collection: %s\n  Path:     %s\n  Pattern:  **/*.md\n' "$3" "$STUB_SHOW_PATH"
+  exit 0
+fi
 exit 0
 STUB
 chmod +x "$id3/bin/qmd"
@@ -907,6 +911,29 @@ assert "register add-127 returns 127" test "$(reg_rc /repo himmel)" -eq 127
 err_out=$(reg_err /repo himmel)
 assert "register add-127 prints the resolver install hint" grep -q 'rc=127 means' <<<"$err_out"
 STUB_ADD_RC=0
+
+echo "[test-qmd-bin] qmd_register_collection() records the live identity (HIMMEL-3525 S16)"
+# After a successful add the writer reads the registration straight back
+# (`qmd collection show`) and records its identity token with identity_v=1;
+# a read-back that yields no Path records the legacy path row instead.
+reg_prov() { # $1 = path, $2 = name, $3 = ledger dir; STUB_SHOW_PATH from env.
+  HOME="$id3" ADD_LOG="$add_log" PATH="$id3/bin:$PATH" HIMMEL_PROVENANCE_DIR="$3" \
+    STUB_LIST="" STUB_ADD_RC=0 STUB_SHOW_PATH="${STUB_SHOW_PATH:-}" \
+    bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_register_collection "'"$1"'" "'"$2"'"' >/dev/null 2>&1
+}
+. "$SCRIPT_DIR/provenance.sh"
+tok_id=$(printf 'collection\nhimmel\n/repo-id\n**/*.md' | _prov_sha256)
+STUB_SHOW_PATH=/repo-id reg_prov /repo-id himmel "$id3/prov-id"
+row_id=$(jq -c 'select(.kind=="collection")' "$id3/prov-id/provenance.jsonl" 2>/dev/null)
+assert "register records identity_v=1" test "$(jq -r '.identity_v' <<<"$row_id")" = "1"
+assert "register records the sha of the live identity token" \
+  test "$(jq -r '.post.sha' <<<"$row_id")" = "$(prov_sha_text "$tok_id")"
+STUB_SHOW_PATH="" reg_prov /repo-legacy himmel "$id3/prov-legacy"
+row_legacy=$(jq -c 'select(.kind=="collection")' "$id3/prov-legacy/provenance.jsonl" 2>/dev/null)
+assert "register with no read-back records no identity_v" test "$(jq -r '.identity_v' <<<"$row_legacy")" = "null"
+assert "register with no read-back records the path (legacy shape)" \
+  test "$(jq -r '.post.sha' <<<"$row_legacy")" = "$(prov_sha_text /repo-legacy)"
+assert "register with no read-back WARNs" grep -q 'could not read back' <<<"$(STUB_SHOW_PATH="" HOME="$id3" ADD_LOG="$add_log" PATH="$id3/bin:$PATH" HIMMEL_PROVENANCE_DIR="$id3/prov-legacy" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_register_collection /repo-legacy himmel' 2>&1 >/dev/null)"
 
 echo "[test-qmd-bin] consumer integration — scripts/setup.sh uses helpers"
 # Guard against accidental reintroduction of plain `qmd` in consumers.

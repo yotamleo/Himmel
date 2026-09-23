@@ -343,23 +343,28 @@ out=$(cd "$TMP/w/scratch" && env HOME="$TMP/w/home" PATH="$HBIN" HIMMEL_UNINSTAL
     guarded rm -rf -- "$2"' _ "$CLI" "$TMP/w/scratch/junk" </dev/null 2>&1); rc=$?
 if [ "$rc" -eq 0 ] && [ ! -e "$TMP/w/scratch/junk" ]; then pass "(w5) real_home_check-armed wrapper removes a scratch path"; else fail "(w5) rc=$rc — $out"; fi
 
-# (g1) every removal in uninstall.sh AND in the lib it sources that removes
-# ledger-recorded files (provenance-read.sh) goes through the guarded
-# wrapper: the only bare rm left are the mktemp handoff files (EXIT traps, the
-# crontab stderr, the lib's own .provread temp files), and the lib's one
-# `find -delete` runs right after a guarded check of the same dir.
+# (g1) every removal in uninstall.sh AND in the libs it sources that remove
+# ledger-recorded files (provenance-read.sh, and provenance-identity.sh which
+# it sources) goes through the guarded wrapper: the only bare rm left are the
+# mktemp handoff files (EXIT traps, the crontab stderr, the lib's own
+# .provread temp files and the identity reader's per-run cache beside them),
+# and the lib's one `find -delete` runs right after a guarded check of the
+# same dir.
 _allowed=$(cat <<'EOF'
 trap 'prov_read_cleanup; rm -f "${_ledger_owned:-}"' EXIT
 rm -f "$_cron_err"
 trap 'prov_read_cleanup; rm -f "${_scope_map:-}" "${_ledger_owned:-}"' EXIT
 rm -f "$out"
 [ -n "${PROV_READ_FOLD:-}" ] && [ -f "$PROV_READ_FOLD" ] && rm -f "$PROV_READ_FOLD"
+[ -n "${PROV_READ_FOLD:-}" ] && [ -d "$PROV_READ_FOLD.identity.d" ] && rm -rf "$PROV_READ_FOLD.identity.d"
+elif [ -n "$cache" ]; then rm -f "$cache"
 rm -f "$tmp"
 find "$bdir" -type d -empty -delete 2>/dev/null
 EOF
 )
 _PRL="${CLI%/*}/lib/provenance-read.sh"
-_rmlines=$(grep -hE '(^|[^[:alnum:]_./-])(rm|mv|rmdir|unlink)[[:space:]]|-delete' "$CLI" "$_PRL" | sed 's/^[[:space:]]*//' | grep -v '^#')
+_PRI="${CLI%/*}/lib/provenance-identity.sh"
+_rmlines=$(grep -hE '(^|[^[:alnum:]_./-])(rm|mv|rmdir|unlink)[[:space:]]|-delete' "$CLI" "$_PRL" "$_PRI" | sed 's/^[[:space:]]*//' | grep -v '^#')
 _bare=$(printf '%s\n' "$_rmlines" | grep -vE 'guarded (run )?(rm|mv) ' | grep -vxF "$_allowed")
 _nguard=$(printf '%s\n' "$_rmlines" | grep -cE 'guarded (run )?(rm|mv) ')
 grep -qxF '_provread_guarded : -- "$bdir"' <(sed 's/^[[:space:]]*//' "$_PRL") || _bare="$_bare find -delete without its guarded check"

@@ -3474,8 +3474,10 @@ qmd_unwire_global_symlink() {
 }
 
 # qmd_unwire_collection <unit_json> — "collection" is a register kind, so
-# prov_read_verdict's ownership fast path (.ours from any row with
-# preexisted=false) is genuinely correct here; only the apply step is
+# prov_read_verdict checks the LIVE registration (HIMMEL-3525 S16): it reads
+# `qmd collection show <name>` through prov_identity_live and removes only
+# when the live identity is one himmel recorded (a legacy row falls back to
+# its recorded path); a re-pointed collection is kept. Only the apply step is
 # bespoke, since prov_read_apply supports file/json-key/json-elem only.
 # It has no filesystem path to protect (it calls the qmd CLI, not `rm`), so
 # it goes through `run` only — same as uninstall-plugins.sh's own register-kind
