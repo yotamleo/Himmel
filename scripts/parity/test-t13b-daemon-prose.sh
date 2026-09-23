@@ -178,6 +178,10 @@ run_case sh-daemon-reload-redirect-then-arg FAIL scripts/uninstall.sh \
     'systemctl daemon-reload >/dev/null --now qmd.service'
 run_case sh-daemon-reload-redirect-target-daemon FAIL scripts/uninstall.sh \
     'systemctl daemon-reload >daemon.log'
+run_case sh-daemon-reload-empty-redirect-then-fd-arg FAIL scripts/uninstall.sh \
+    'systemctl daemon-reload >/dev/null 2>&1 --now qmd.service'
+run_case sh-daemon-reload-fd-dup-then-arg FAIL scripts/uninstall.sh \
+    'systemctl daemon-reload >&2 --now x'
 
 echo "== T13(b): a read-only process lookup naming a daemon FAILS without a marker -- the lexical carve-out is gone (HIMMEL-3432 marker-only simplification) =="
 # The per-shape carve-out (pgrep/pkill/ps token anchors, chain/subst/

@@ -648,13 +648,18 @@ else
             # redirect after the target (`>/dev/null 2>&1 || true`) is still
             # read correctly by leaving it untouched. `daemon-reload
             # --now x`, `daemon-reloader`, `daemon-reexec` and any other verb
-            # keep the bare word `daemon`.
+            # keep the bare word `daemon`. A plain `N>` MUST have a NON-EMPTY
+            # target word (`+`, not `*`): an empty one before `2>&1` let the
+            # `&` satisfy the outer terminator class on its own, so
+            # `>/dev/null 2>&1 --now x` and `>&2 --now x` wrongly stripped.
+            # An fd-duplication redirect (`2>&1`) is matched as its own whole
+            # shape, `N>&M`, so it never needs an (empty) target word.
             for (t13b_pass = 1; t13b_pass <= 2; t13b_pass++) {
                 if (!match(code, /(^|[^a-z0-9_-])systemctl[ \t]+(--user[ \t]+)?daemon-reload[ \t]*/))
                     break
                 t13b_vstart = RSTART; t13b_vend = RSTART + RLENGTH
                 t13b_tail = substr(code, t13b_vend)
-                if (match(t13b_tail, /^([0-9]?>[ \t]*[^ \t;&|)#]*[ \t]*)*($|[;&|)#])/))
+                if (match(t13b_tail, /^(([0-9]?>&[0-9-]+|[0-9]?>[ \t]*[^ \t;&|)#]+)[ \t]*)*($|[;&|)#])/))
                     code = substr(code, 1, t13b_vstart - 1) " " substr(code, t13b_vend)
                 else
                     break
