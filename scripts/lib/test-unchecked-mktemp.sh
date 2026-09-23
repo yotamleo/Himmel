@@ -621,6 +621,27 @@ f="$TMPDIR_ROOT/t37c.sh"
 printf 'T=$(mktemp"" -d)\nU=$(mktemp%s%s -d)\n' "$sq" "$sq" > "$f"
 assert_eq "T37c control: an empty quote pair leaves the word mktemp -> both offending (HIMMEL-3460 item 4)" "2" "$(scan_lines "$f")"
 
+# T38 -- HIMMEL-3489: mask_quoted must honor a backslash-escaped quote inside
+# a double-quoted string, not treat it as the string's close. The ticket's
+# example: without escape-tracking, "prefix \" $T suffix" is read as closing
+# right at the escaped quote, exposing " $T suffix" as unquoted text -- so $T
+# looks like a bare, space-delimited whole operand and wrongly counts as
+# guarded. $T is still only a FRAGMENT of the real (fully double-quoted)
+# operand throughout, same as T35e, so this must stay offending.
+f="$TMPDIR_ROOT/t38.sh"
+printf '%s\n%s\n' 'T=$(mktemp)' '[ "$out" = "prefix \" $T suffix" ] || exit 1' > "$f"
+assert_eq "T38 mask_quoted honors a backslash-escaped quote inside a larger double-quoted string -> offending (HIMMEL-3489)" "1" "$(scan_lines "$f")"
+
+# T38b -- HIMMEL-3489: strip_comment must apply the same escape rule, so a
+# `#` that sits after a backslash-escaped quote (still inside the real,
+# still-open double-quoted string) is not read as a comment start. Without
+# escape-tracking, the string is read as closing at the escaped quote, so
+# the `#` looks like it starts a comment at a word boundary and the line
+# gets truncated there -- losing the real `|| exit 1` guard that follows.
+f="$TMPDIR_ROOT/t38b.sh"
+printf '%s\n' 'T=$(mktemp) && x="a \" # b" || exit 1' > "$f"
+assert_eq "T38b strip_comment does not read a # after an escaped quote as a comment start -> ok (HIMMEL-3489)" "0" "$(scan_lines "$f")"
+
 # T21 -- self-check: the predicate must NOT flag its own repo files. Locks
 # the codex-1 self-blocking regression closed for good -- if this ever comes
 # back it fails loudly here instead of silently refusing every commit that

@@ -313,16 +313,18 @@ unchecked_mktemp_scan() {
     # OUTSIDE any quote and is not the parameter-expansion sigil of `$#`
     # (positional-parameter count) or `${#name}` (length-of-parameter) --
     # both are left alone, as ordinary code, never a comment start. A `#`
-    # inside single or double quotes is also left alone. This does not
-    # track a backslash-escaped `\"` inside a double-quoted string as
-    # still-quoted (general shell lexing is out of scope -- see the file
-    # header); that shape does not occur in this repo.
+    # inside single or double quotes is also left alone. HIMMEL-3489: a
+    # backslash-escaped `\"` (or a backslash-escaped single quote) inside
+    # a double-quoted string does
+    # NOT close it -- the backslash escapes the next character, same as
+    # real shell lexing -- and outside any quote, a backslash-escaped
+    # quote is a literal character, never a string opener.
     # HIMMEL-3460 item 3: `)` ends a word only when it closes a subshell or
     # group -- the `)` of a `$(...)` command substitution does not, since
     # `$(...)#tag` is ONE shell word. A string of 1/0 flags (1 = the open
     # paren was `$(`) tracks which kind each unquoted `)` closes; a string,
     # not an array, keeps this portable to every awk.
-    function strip_comment(s,    i, n, c, prev, prev2, insq, indq, stk, cmdsub_close) {
+    function strip_comment(s,    i, n, c, nc, prev, prev2, insq, indq, stk, cmdsub_close) {
         n = length(s)
         stk = ""
         cmdsub_close = 0
@@ -333,8 +335,17 @@ unchecked_mktemp_scan() {
                 continue
             }
             if (indq) {
+                # HIMMEL-3489: inside double quotes, a backslash escapes
+                # the next character -- an escaped `"` does not close it.
+                if (c == "\\" && i < n) { i++; continue }
                 if (c == "\"") indq = 0
                 continue
+            }
+            # HIMMEL-3489: outside any quote, a backslash-escaped quote is
+            # a literal character, never a string opener.
+            if (c == "\\" && i < n) {
+                nc = substr(s, i + 1, 1)
+                if (nc == "\"" || nc == sq) { i++; continue }
             }
             if (c == sq) { insq = 1; continue }
             if (c == "\"") { indq = 1; continue }
@@ -373,18 +384,41 @@ unchecked_mktemp_scan() {
     # a single-quoted string is a literal (no reference at all), and a
     # double-quoted string survives only when its whole content matches
     # ref (e.g. "$T" or "${T:-}"). "prefix $T suffix" becomes "".
-    function mask_quoted(s, ref,    i, j, n, c, out, body) {
+    # HIMMEL-3489: inside double quotes, a backslash escapes the next
+    # character, so an escaped `"` does not close the string; outside any
+    # quote, a backslash-escaped quote is a literal character, never a
+    # string opener (single quotes have no escaping at all in real shell
+    # lexing, so that side is unchanged).
+    function mask_quoted(s, ref,    i, j, k, n, c, nc, ck, out, body, closed) {
         n = length(s)
         out = ""
         for (i = 1; i <= n; i++) {
             c = substr(s, i, 1)
-            if (c == sq || c == "\"") {
+            if (c == "\\" && i < n) {
+                nc = substr(s, i + 1, 1)
+                if (nc == "\"" || nc == sq) { out = out c nc; i++; continue }
+            }
+            if (c == sq) {
                 j = index(substr(s, i + 1), c)
                 if (j == 0) return out substr(s, i)
-                body = substr(s, i + 1, j - 1)
-                if (c == "\"" && body ~ ("^" ref "$")) out = out c body c
-                else out = out c c
+                out = out c c
                 i += j
+                continue
+            }
+            if (c == "\"") {
+                k = i + 1
+                closed = 0
+                while (k <= n) {
+                    ck = substr(s, k, 1)
+                    if (ck == "\\" && k < n) { k += 2; continue }
+                    if (ck == "\"") { closed = 1; break }
+                    k++
+                }
+                if (!closed) return out substr(s, i)
+                body = substr(s, i + 1, k - i - 1)
+                if (body ~ ("^" ref "$")) out = out c body c
+                else out = out c c
+                i = k
                 continue
             }
             out = out c
