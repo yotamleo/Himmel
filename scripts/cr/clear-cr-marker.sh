@@ -85,7 +85,8 @@
 #   0   marker cleared (or --dry-run passed, or no marker — nothing to do)
 #   10  usage error
 #   11  required tool or component missing (git / node / the branch-lock lib)
-#   12  cannot resolve the branch, its tip, or the marker path — refused
+#   12  cannot resolve the branch, its tip, or the marker path, or the branch
+#       is not the one checked out in cwd (HIMMEL-3495) — refused
 #   13  the branch tip, the marker SHA/lane/remote binding changed while the
 #       gates ran, or a concurrent marker writer holds the branch lock —
 #       re-run /pr-check
@@ -188,8 +189,19 @@ if [ ! -f "$marker" ]; then
     exit 0
 fi
 
-# The branch's OWN tip — not cwd HEAD. Clearing another branch's marker must be
-# gated on THAT branch's state.
+# HIMMEL-3495: clearing writes shared per-branch state (the marker, and the
+# ledger through review-round.sh promote, which refuses a foreign branch too),
+# and a relative run is auto-allowed from any leg's worktree - so only the
+# branch checked out in cwd may be cleared. Say so here rather than let the
+# promote refusal surface as a broken-ledger exit.
+current_branch=$(git branch --show-current 2>/dev/null || true)
+if [ "$current_branch" != "$branch" ]; then
+    echo "clear-cr-marker: '$branch' is not the branch checked out in this directory ('${current_branch:-detached HEAD}') — run it from that branch's worktree." >&2
+    audit "REFUSED reason=foreign-branch branch=$branch current=${current_branch:-detached}"
+    exit 12
+fi
+
+# The branch's OWN tip, read by its ref.
 tip=$(git rev-parse --verify "refs/heads/$branch" 2>/dev/null || true)
 if [ -z "$tip" ]; then
     echo "clear-cr-marker: cannot resolve the tip of '$branch' — refusing." >&2

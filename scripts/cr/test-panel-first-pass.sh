@@ -124,7 +124,7 @@ mkdir -p "$repo"
     git checkout -q -b feature
     echo change >> f.txt
     git commit -q -am change
-    git checkout -q -b feature-empty main
+    git branch feature-empty main
 ) || { echo "FAIL: fixture repo setup failed" >&2; exit 1; }
 
 main_sha="$(git -C "$repo" rev-parse main)"
@@ -165,7 +165,9 @@ if [ -f "$CALL_LOG" ]; then bad "T3 panel invoked despite CR_PROFILE=none"; else
 
 # T4: empty diff -> skip, exit 0, no panel call (feature-empty == main).
 rm -f "$CALL_LOG" "$tmp/err"
-out="$( (cd "$repo" && bash "$SCRIPT" --head "$empty_sha" --branch feature-empty) 2>"$tmp/err" )"; rc=$?
+# panel-first-pass only runs for the branch checked out in cwd (HIMMEL-3495).
+git -C "$repo" worktree add -q "$tmp/wt-empty" feature-empty
+out="$( (cd "$tmp/wt-empty" && bash "$SCRIPT" --head "$empty_sha" --branch feature-empty) 2>"$tmp/err" )"; rc=$?
 if [ "$rc" -eq 0 ]; then ok "T4 empty diff exits 0"; else bad "T4 empty diff exit (got $rc)"; fi
 assert_has "$out" "empty diff - critic panel skipped" "T4 skip note on stdout"
 assert_has "$out" "captured diff base: main ($main_sha)" "T4 captured-base line"

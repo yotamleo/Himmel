@@ -126,13 +126,20 @@ REPO_ROOT="${HIMMEL_UNINSTALL_REPO_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]
 # unchanged, for every existing hook-detection test.
 HOOKS_REPO_ROOT="${HIMMEL_UNINSTALL_REPO_ROOT:-$PWD}"
 
-# HIMMEL-3312 S12: CLONE_ROOT is a REPORTING-ONLY value -- what the
+# HIMMEL-3312 S12: CLONE_ROOT started as a REPORTING-ONLY value -- what the
 # himmel-clone tsv row's {REPO_ROOT} token expands to. It equals REPO_ROOT
 # here and stays that way for every script-location use (SCRIPT_DIR, REPO_ROOT
 # itself); it is refined below, once the ledger has loaded, only when
 # REPO_ROOT turns out to be a standalone bundle standing in for a clone that
 # may no longer exist.
+# HIMMEL-3535: under that same bundle condition, CLONE_ROOT (and the
+# IS_STANDALONE_BUNDLE flag set alongside it below) also feeds
+# project_is_himmel_checkout's identity decision -- no new trust boundary,
+# since CLONE_ROOT is itself the ledger's/bundle.json's own record of where
+# himmel was installed from, no less trustworthy than the ledger data this
+# script already relies on elsewhere (LEDGER_OK gating, prov_read_units).
 CLONE_ROOT="$REPO_ROOT"
+IS_STANDALONE_BUNDLE=0
 
 DRY_RUN=0
 YES=0
@@ -1582,6 +1589,7 @@ fi
 if command -v jq >/dev/null 2>&1 && [ -z "${HIMMEL_UNINSTALL_REPO_ROOT:-}" ] \
     && [ -f "$REPO_ROOT/bundle.json" ] \
     && jq -e --arg m "$BUNDLE_MARKER" '.marker == $m' "$REPO_ROOT/bundle.json" >/dev/null 2>&1; then
+  IS_STANDALONE_BUNDLE=1
   _clone_root=""
   if [ "$LEDGER_OK" -eq 1 ]; then
     _clone_root="$(prov_last_himmel_root "$_prov_ledger_path" 2>/dev/null || true)"
@@ -2890,16 +2898,34 @@ EOF
 # clone providing the helpers. Match checkUninstallCompleteness's identity
 # guard: direct inode equality, then git-common-dir for linked worktrees.
 # rc 2 means identity is unresolved, never permission to edit repo source.
+# HIMMEL-3535: under the S13 standalone bundle, source_root (this script's own
+# location) has no .git, so the git-common-dir compare below can never
+# resolve -- every project used to come back rc 2 and halt step [6/8]. Only
+# when IS_STANDALONE_BUNDLE was actually set (the bundle-marker check at
+# L1582-1594, not a bare missing .git -- a git-less tarball copy with no
+# bundle marker must still return 2, unchanged) do we fall back to CLONE_ROOT,
+# the clone this bundle stands in for. If that clone is gone, nothing can -ef
+# a path that no longer exists, so an unrelated project correctly falls
+# through to rc 1 (not himmel's checkout) instead of halting every run.
 project_is_himmel_checkout() {
-  local dir="${1:-$PWD}" source_root project_common source_common
+  local dir="${1:-$PWD}" source_root identity_root project_common identity_common
   source_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)" || return 2
   [ "$dir" -ef "$source_root" ] && return 0
+  if [ -e "$source_root/.git" ]; then
+    identity_root="$source_root"
+  elif [ "${IS_STANDALONE_BUNDLE:-0}" -eq 1 ] && [ -n "${CLONE_ROOT:-}" ]; then
+    identity_root="$CLONE_ROOT"
+  else
+    return 2
+  fi
+  [ "$dir" -ef "$identity_root" ] && return 0
   [ -e "$dir/.git" ] || return 1
+  [ -e "$identity_root/.git" ] || return 1
   project_common=$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null) || return 2
-  source_common=$(git -C "$source_root" rev-parse --git-common-dir 2>/dev/null) || return 2
+  identity_common=$(git -C "$identity_root" rev-parse --git-common-dir 2>/dev/null) || return 2
   case "$project_common" in /*|[A-Za-z]:[/\\]*) ;; *) project_common="$dir/$project_common" ;; esac
-  case "$source_common" in /*|[A-Za-z]:[/\\]*) ;; *) source_common="$source_root/$source_common" ;; esac
-  [ "$project_common" -ef "$source_common" ]
+  case "$identity_common" in /*|[A-Za-z]:[/\\]*) ;; *) identity_common="$identity_root/$identity_common" ;; esac
+  [ "$project_common" -ef "$identity_common" ]
 }
 
 # unwire_recorded_projects — HIMMEL-3332 S8 [6/8]: every OTHER project the

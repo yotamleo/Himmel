@@ -240,7 +240,7 @@ printf '%s\n' "$reached" | grep -v '^scripts/cr/' | sed 's/^/  /'
 # console-route.ts and poller.ts are reached only through merge-block-alert.sh's
 # bare `bun` call and a dynamic import (second console review of #1148).
 for known in scripts/check-ci.sh scripts/handover/resolve-active-item.sh scripts/lib/handover-path.sh scripts/lib/load-dotenv.sh scripts/guardrails/lib.sh \
-    scripts/telegram/console-route.ts scripts/telegram/bus.ts scripts/telegram/poller.ts; do
+    scripts/telegram/console-route.ts scripts/telegram/bus.ts scripts/telegram/console-heartbeat-watch.ts scripts/telegram/poller.ts; do
   check "$(printf '%s\n' "$reached" | grep -cxF "$known")" "1" "closure reaches $known"
 done
 

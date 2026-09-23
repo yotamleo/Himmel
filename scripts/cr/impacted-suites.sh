@@ -69,6 +69,8 @@
 # Platform guard: POSIX bash 3.2+ (no mapfile / associative arrays); runs
 # under Git Bash on Windows. No .ps1 twin — it is a git + grep pipeline.
 set -uo pipefail
+# HIMMEL-3495: a relative-entry copy that is not the anchor's hands off to it.
+. "$(dirname "${BASH_SOURCE[0]}")/anchor-handoff.sh" || exit 2
 
 # io_fail <what> — a step that builds the impacted list or the verdict set did
 # not run; an empty or partial list must never read as "nothing to run".

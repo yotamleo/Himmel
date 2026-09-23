@@ -196,6 +196,79 @@ else
 fi
 assert_has "(e) reports it as kept, not himmel's" "kept: not himmel's" "$out"
 
+# (e) left $BUNDLE/bundle.json marker-less to test purge survival -- rebuild
+# it with the real marker before relying on $BUNDLE again below.
+build_bundle
+
+# --- IDENTITY (HIMMEL-3535): [6/8] project-settings identity resolution ----
+# --- under a git-less standalone bundle. project_is_himmel_checkout's own
+# --- source_root (this bundle's scripts/uninstall.sh) has no .git, so before
+# --- the fix ANY project that itself had a .git (almost every real, adopted
+# --- checkout) tripped the git-common-dir compare, which could never resolve
+# --- against a git-less source -- rc 2, halting step [6/8] for every run.
+# --- The fix falls back to CLONE_ROOT (the clone this bundle stands in for,
+# --- recorded by the ledger's install-begin row, "/nonexistent/himmel" for
+# --- every run_bundle() call above) only when the bundle marker was actually
+# --- detected -- never on a bare missing .git alone.
+
+# (f) an unrelated project (its own git repo, CLONE_ROOT points elsewhere and
+# doesn't exist on disk -- "the clone is gone") proceeds instead of halting.
+mkdir -p "$TMP/cwd/.claude"
+echo '{}' > "$TMP/cwd/.claude/settings.json"
+git -C "$TMP/cwd" init -q
+out=$(run_bundle --yes --skip-plugins --skip-hooks --skip-tasks)
+rc=$?
+assert_rc "(f) unrelated project under a git-less bundle proceeds" 0 "$rc"
+assert_has "(f) project settings unwired, not halted" "project settings: unwired" "$out"
+rm -rf "$TMP/cwd/.git" "$TMP/cwd/.claude/settings.json"
+
+# (g) the project IS the clone the bundle stands in for (CLONE_ROOT, recorded
+# by a fresh install-begin row) -- kept, never unwired.
+CLONE_DIR="$TMP/recorded-clone"
+mkdir -p "$CLONE_DIR/.claude"
+git init -q "$CLONE_DIR"
+echo '{}' > "$CLONE_DIR/.claude/settings.json"
+cp "$CLONE_DIR/.claude/settings.json" "$TMP/clone-before.json"
+jq -nc --arg home "$HOME_CANON" --arg root "$CLONE_DIR" \
+    '{t:"2026-01-01T00:00:01Z",iid:"test-iid-2",op:"install-begin",himmel_root:$root,himmel_head:"",version:"",argv:[],home:$home,claude_config_dir:"",target:"",platform:"",writer:"test"}' \
+    >> "$PROV_DIR/provenance.jsonl"
+out=$( (unset HIMMEL_UNINSTALL_REPO_ROOT; cd "$CLONE_DIR" && bash "$BUNDLE/scripts/uninstall.sh" \
+    --yes --skip-plugins --skip-hooks --skip-tasks </dev/null 2>&1) )
+rc=$?
+assert_rc "(g) recorded clone kept exits 0" 0 "$rc"
+assert_has "(g) recorded clone kept, not unwired" "himmel's own checkout" "$out"
+cmp -s "$TMP/clone-before.json" "$CLONE_DIR/.claude/settings.json"; rc=$?
+assert_rc "(g) recorded clone settings unchanged" 0 "$rc"
+
+# (h) a git-less source with NO bundle marker (a plain tarball copy, not a
+# recognized S13 bundle) must still return rc 2 and halt -- the fallback is
+# keyed on the bundle marker actually being detected, never on a bare missing
+# .git alone (an unrelated git-less copy must not turn into "unwire everything").
+BUNDLE_NOMARKER="$TMP/prov-nomarker/uninstall"
+mkdir -p "$BUNDLE_NOMARKER/scripts/lib" "$BUNDLE_NOMARKER/scripts/install" "$BUNDLE_NOMARKER/scripts/machine-setup" "$BUNDLE_NOMARKER/docs/setup"
+cp "$SRC_SCRIPTS/uninstall.sh" "$BUNDLE_NOMARKER/scripts/uninstall.sh"
+cp "$SRC_SCRIPTS/install/uninstall-manifest.tsv" "$BUNDLE_NOMARKER/scripts/install/uninstall-manifest.tsv"
+for f in provenance-read.sh provenance.sh canon-path.sh qmd-bin.sh \
+         unwire-statusline.sh unwire-himmel-repo.sh unwire-luna-vault.sh \
+         unwire-handover-dir.sh unwire-pretooluse-hooks.sh unwire-hud-config.sh \
+         unwire-user-claude-md.sh; do
+    cp "$SRC_SCRIPTS/lib/$f" "$BUNDLE_NOMARKER/scripts/lib/$f"
+done
+cp "$SRC_SCRIPTS/machine-setup/uninstall-plugins.sh" "$BUNDLE_NOMARKER/scripts/machine-setup/uninstall-plugins.sh"
+cp "$SRC_ROOT/docs/setup/settings-template.json" "$BUNDLE_NOMARKER/docs/setup/settings-template.json"
+chmod +x "$BUNDLE_NOMARKER/scripts/uninstall.sh"
+echo '{}' > "$BUNDLE_NOMARKER/bundle.json"
+PROJECT_NOMARKER="$TMP/cwd-nomarker"
+mkdir -p "$PROJECT_NOMARKER/.claude"
+echo '{}' > "$PROJECT_NOMARKER/.claude/settings.json"
+git init -q "$PROJECT_NOMARKER"
+PROV_DIR_NOMARKER="$TMP/prov-nomarker"
+out=$( (unset HIMMEL_UNINSTALL_REPO_ROOT; cd "$PROJECT_NOMARKER" && HIMMEL_PROVENANCE_DIR="$PROV_DIR_NOMARKER" \
+    bash "$BUNDLE_NOMARKER/scripts/uninstall.sh" --yes --skip-plugins --skip-hooks --skip-tasks </dev/null 2>&1) )
+rc=$?
+assert_rc "(h) git-less source with no bundle marker halts" 2 "$rc"
+assert_has "(h) checkout identity unresolved" "checkout identity unresolved" "$out"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "ALL PASS"

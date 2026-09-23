@@ -703,6 +703,7 @@ scripts/lanes/resolve.mjs scripts/lanes/check.mjs scripts/lanes/probe.mjs script
 scripts/observability/quota-sources.ts
 scripts/telegram/alibaba-probe-once.ts scripts/telegram/quota-gauge.ts scripts/telegram/quota-gauge-alibaba.ts
 scripts/telegram/console-route.ts scripts/telegram/bus.ts scripts/telegram/poller.ts
+scripts/telegram/console-heartbeat-watch.ts
 scripts/telegram/router.ts scripts/telegram/auto-action.ts scripts/telegram/telegram-api.ts
 scripts/telegram/log-timestamp.ts scripts/telegram/gate.ts scripts/telegram/run.ts
 scripts/telegram/triage.ts scripts/telegram/transcribe.ts scripts/telegram/spawn-glm.ts
@@ -722,6 +723,7 @@ cr_pathspecs=(':(top)scripts/cr/' ':(top)scripts/lib/' ':(top)scripts/guardrails
     ':(top)scripts/telegram/alibaba-probe-once.ts' ':(top)scripts/telegram/quota-gauge.ts'
     ':(top)scripts/telegram/quota-gauge-alibaba.ts'
     ':(top)scripts/telegram/console-route.ts' ':(top)scripts/telegram/bus.ts'
+    ':(top)scripts/telegram/console-heartbeat-watch.ts'
     ':(top)scripts/telegram/poller.ts' ':(top)scripts/telegram/router.ts'
     ':(top)scripts/telegram/auto-action.ts' ':(top)scripts/telegram/telegram-api.ts'
     ':(top)scripts/telegram/log-timestamp.ts' ':(top)scripts/telegram/gate.ts'

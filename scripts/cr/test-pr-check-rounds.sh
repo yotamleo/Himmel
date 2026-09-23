@@ -199,17 +199,21 @@ case "${1:-}" in
 esac
 STUB
 chmod +x "$tmp/bin/cat"
-(cd "$repo" && bash "$fx/scripts/cr/review-round.sh" start --branch contended >"$tmp/contended-1.out" 2>"$tmp/contended-1.err") &
+# review-round only writes the branch checked out in cwd (HIMMEL-3495), so each
+# branch runs from its own linked worktree; the state dir is the shared one.
+git -C "$repo" worktree add -q -b contended "$tmp/wt-contended" main
+git -C "$repo" worktree add -q -b independent "$tmp/wt-independent" main
+(cd "$tmp/wt-contended" && bash "$fx/scripts/cr/review-round.sh" start --branch contended >"$tmp/contended-1.out" 2>"$tmp/contended-1.err") &
 contended_pid1=$!
 arrival_wait=0
 while [ "$(find "$tmp/counter-arrivals" -type f | wc -l | tr -d ' ')" -lt 1 ] && [ "$arrival_wait" -lt 50 ]; do
     sleep 0.1
     arrival_wait=$((arrival_wait + 1))
 done
-(cd "$repo" && bash "$fx/scripts/cr/review-round.sh" start --branch contended >"$tmp/contended-2.out" 2>"$tmp/contended-2.err") &
+(cd "$tmp/wt-contended" && bash "$fx/scripts/cr/review-round.sh" start --branch contended >"$tmp/contended-2.out" 2>"$tmp/contended-2.err") &
 contended_pid2=$!
 sleep 1
-independent_out="$(cd "$repo" && bash "$fx/scripts/cr/review-round.sh" start --branch independent)"; independent_rc=$?
+independent_out="$(cd "$tmp/wt-independent" && bash "$fx/scripts/cr/review-round.sh" start --branch independent)"; independent_rc=$?
 printf 'release\n' > "$tmp/counter-release"
 wait "$contended_pid1"; contended_rc1=$?
 wait "$contended_pid2"; contended_rc2=$?
@@ -218,6 +222,26 @@ assert_eq "$contended_rc2" "0" "second contended counter start succeeds"
 assert_eq "$(cat "$git_dir/cr-review-rounds/contended.round")" "2" "contended starts do not lose an increment"
 assert_eq "$independent_rc" "0" "different branch starts while contended branch is locked"
 assert_eq "$independent_out" "1" "different branch keeps an independent counter"
+
+# HIMMEL-3495: review-round writes shared per-branch state, so every verb
+# refuses a --branch other than the one checked out in cwd, and a detached
+# HEAD. Run from the feature checkout against the `other` branch's state.
+other_round_before="$(cat "$git_dir/cr-review-rounds/other.round")"
+for verb_args in "start" "defer --head $other_head --defer-to HIMMEL-9000" "promote --head $other_head"; do
+    # shellcheck disable=SC2086 # verb_args splits into the verb and its flags on purpose
+    foreign_out="$(cd "$repo" && bash "$fx/scripts/cr/review-round.sh" $verb_args --branch other 2>&1)"; foreign_rc=$?
+    assert_eq "$foreign_rc" "2" "review-round ${verb_args%% *} refuses a branch not checked out in cwd"
+    assert_has "$foreign_out" "not the branch checked out" "review-round ${verb_args%% *} foreign-branch refusal names the reason"
+done
+assert_eq "$(cat "$git_dir/cr-review-rounds/other.round")" "$other_round_before" "a refused foreign start leaves the other branch's round untouched"
+git -C "$repo" worktree add -q --detach "$tmp/wt-detached" feature
+detached_out="$(cd "$tmp/wt-detached" && bash "$fx/scripts/cr/review-round.sh" start --branch feature 2>&1)"; detached_rc=$?
+assert_eq "$detached_rc" "2" "review-round refuses a detached HEAD"
+assert_has "$detached_out" "not the branch checked out" "detached-HEAD refusal names the reason"
+panel_foreign_out="$(cd "$repo" && bash "$SCRIPT" --head "$other_head" --branch other 2>&1)"; panel_foreign_rc=$?
+assert_eq "$panel_foreign_rc" "2" "panel-first-pass refuses a --branch not checked out in cwd"
+assert_has "$panel_foreign_out" "not the branch checked out" "panel-first-pass foreign-branch refusal names the reason"
+assert_eq "$(cat "$git_dir/cr-review-rounds/other.round")" "$other_round_before" "a refused panel run leaves the other branch's round untouched"
 
 write_real_marker feature "$head3"
 out5="$(cd "$repo" && PANEL_MODE=suggestion-on bash "$SCRIPT" --head "$head3" --branch feature 2>"$tmp/err5")"; rc5=$?

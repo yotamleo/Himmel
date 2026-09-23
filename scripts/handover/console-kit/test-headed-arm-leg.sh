@@ -938,6 +938,25 @@ assert.ok(settings.permissions?.allow.includes('Bash(bash scripts/handover/merge
 NODE
 check "full launch --profile: seeded settings carry gate permissions" "$rc" "0"
 
+# HIMMEL-3536: a leg must stay cd-based, never EnterWorktree-pinned - a pinned
+# session's isolation screen refuses /pr-check step 0's canonical fence.
+check "full launch --profile: seeded settings deny EnterWorktree" \
+  "$(jq -c '.permissions.deny' "$d17/HIMMEL-3333-leg.leg-settings.json" 2>/dev/null)" '["EnterWorktree"]'
+
+# The relay half of a split console is not a leg that works in a worktree:
+# its settings get no deny.
+d17r="$tmp/c17r"; mk_launch_stubs "$d17r" "HIMMEL-9999-relay"; mkdir -p "$tmp/repo17r"
+rc=0
+HEADED_ARM_LEG_TARGET="$HEADED_ARM" \
+HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+KONSOLE_CMD="$d17r/konsole" PGREP_CMD="$d17r/pgrep" \
+LEG_REPO="$tmp/repo17r" HEADED_ARM_LOCK_DIR="$d17r/locks" HEADED_ARM_PROC="$d17r/proc" \
+  bash "$SCRIPT" --relay "HIMMEL-9999-relay" "$fixture17b" "$d17r/signal-never" "$PAST" "$d17r/log" >/dev/null 2>&1 || rc=$?
+wait_record "$d17r" || true
+check "full launch --relay: exit 0" "$rc" "0"
+check "full launch --relay: settings deny nothing" \
+  "$(jq -c '.permissions.deny // "none"' "$d17r/HIMMEL-9999-relay.leg-settings.json" 2>/dev/null)" '"none"'
+
 rc=0
 node "$HERE/../../lanes/plugin-profiles.mjs" leg-impl > "$tmp/resolved-leg.json" || rc=$?
 check "--dry-run leg-impl: resolver succeeds" "$rc" "0"
@@ -1023,6 +1042,7 @@ assert.deepStrictEqual(fs.readFileSync(`${dir}/args`, 'utf8').trimEnd().split('\
 ]);
 const settings = JSON.parse(fs.readFileSync(`${dir}/HIMMEL-composed.leg-settings.json`, 'utf8'));
 assert.ok(settings.permissions.allow.includes('Bash(bash scripts/handover/merge-on-green.sh:*)'));
+assert.deepStrictEqual(settings.permissions.deny, ['EnterWorktree']);
 assert.deepStrictEqual(JSON.parse(fs.readFileSync(`${dir}/HIMMEL-composed.leg-mcp.json`, 'utf8')),
   {mcpServers: {qmd: {type: 'http', url: 'http://localhost:8181/mcp'}}});
 NODE

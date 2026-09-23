@@ -578,12 +578,6 @@ _fleet_census() {
       echo "bank-preflight: comm unreadable for at least one fleet candidate (pid $_fleet_pid) — falling back to argv-only matching for it (less precise: may double-count a launcher/child pair)" >&2
       _fleet_procfs_warned=1
     fi
-    _fc_n=$((_fc_n + 1))
-    if [ "$(_fleet_lane_of "$_fleet_pid")" = claudex ]; then
-      _fc_claudex=$((_fc_claudex + 1))
-    else
-      _fc_native=$((_fc_native + 1))
-    fi
     # HIMMEL-2774: a live session with this name CONSUMES its reservation
     # (below) — same match shape as the FLEET_CANDIDATES filter itself, so a
     # session counted here is recognized consistently there.
@@ -602,6 +596,28 @@ _fleet_census() {
     case "$_fleet_name" in *[[:cntrl:]]*) _fleet_name="" ;; esac
     [ -n "$_fleet_name" ] && _fc_names="$_fc_names
 $_fleet_name"
+    # HIMMEL-3095: a leg that has WRAPPED (queue lock released, last status
+    # bullet WRAPPED) no longer needs the slot even while its process/window
+    # is still alive — exclude it from the counts that gate FLEET_CAP. Its
+    # name still went into _fc_names above so a pending reservation under
+    # that name is still recognized as consumed. _fleet_wrapped_sourced is a
+    # once-per-census memo: sourcing failure means every process counts
+    # (fail toward the cap), same as any other lookup failure below.
+    if [ -z "${_fleet_wrapped_sourced:-}" ]; then
+      _fleet_wrapped_sourced=1
+      # shellcheck source=scripts/lib/fleet-wrapped.sh
+      . "$(dirname "${BASH_SOURCE[0]}")/fleet-wrapped.sh" 2>/dev/null && _fleet_wrapped_ok=1 || _fleet_wrapped_ok=0
+    fi
+    if [ "${_fleet_wrapped_ok:-0}" -eq 1 ] && [ -n "$_fleet_name" ] \
+      && fleet_process_is_wrapped_and_free "$_fleet_pid" "$_fleet_name"; then
+      continue
+    fi
+    _fc_n=$((_fc_n + 1))
+    if [ "$(_fleet_lane_of "$_fleet_pid")" = claudex ]; then
+      _fc_claudex=$((_fc_claudex + 1))
+    else
+      _fc_native=$((_fc_native + 1))
+    fi
   done <<FLEET_CANDIDATES
 $(printf '%s\n' "$_fc_raw" \
   | grep -E -- '-n[[:space:]]+(HIMMEL|LUNA)-' \

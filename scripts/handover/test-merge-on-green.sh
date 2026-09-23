@@ -243,7 +243,10 @@ mog_build_fixture() {
         # PREFIXED line to the gh log, which is the suite's only ordering record
         # — that is what pins the clear to BEFORE the merge (11L).
         # shellcheck disable=SC2016
-        printf '#!/usr/bin/env bash\necho "clear-cr-marker $*" >> "$GH_LOG"\necho "$*" >> "$CLEAR_LOG"\nexit %s\n' \
+        # It also records its cwd (HIMMEL-3495): the real clearer refuses a
+        # branch other than the one checked out where it runs, so the wrapper
+        # must run it from that branch's own worktree.
+        printf '#!/usr/bin/env bash\necho "clear-cr-marker $*" >> "$GH_LOG"\necho "$*" >> "$CLEAR_LOG"\npwd -P >> "$CLEAR_LOG.cwd"\nexit %s\n' \
             "${STUB_CLEAR_RC:-0}" > "$tmp/scripts/cr/clear-cr-marker.sh"
         chmod +x "$tmp/scripts/cr/clear-cr-marker.sh"
     fi
@@ -2005,6 +2008,16 @@ if [ -n "$clear_ln" ] && [ -n "$merge_ln" ] && [ "$clear_ln" -lt "$merge_ln" ]; 
 else
     fail "11L: the marker clear must precede the merge (clear@${clear_ln:-none} merge@${merge_ln:-none})"
 fi
+# 11L-wt. HIMMEL-3495: the run starts in the PRIMARY (on main) while the branch
+# lives in its own worktree. clear-cr-marker.sh refuses a branch other than the
+# one checked out in its cwd (exit 12), so the clear must run from P_WT.
+# Resolved through the parent: the post-merge prune has removed P_WT itself.
+wt_real="$(cd "$(dirname "$P_WT")" && pwd -P)/$(basename "$P_WT")"
+if [ "$(cat "$LAST_CLEAR_LOG.cwd" 2>/dev/null)" = "$wt_real" ]; then
+    pass
+else
+    fail "11L-wt: the clearer must run in the branch's worktree ($wt_real), ran in: $(cat "$LAST_CLEAR_LOG.cwd" 2>/dev/null || echo none)"
+fi
 
 # 11m. The chokepoint REFUSES (14 = no responders at that sha) → the merge
 # verdict and exit are unchanged (it already landed), and the failure is
@@ -2032,6 +2045,21 @@ MOG_CWD="$P_REPO" STUB_SHA="$P_SHA" STUB_HEAD_BRANCH="feat/mog-prune" \
     run_mog 0 "dry-run does not clear the marker" -- --dry-run
 assert_clear_not_invoked "11o: dry-run leaves the chokepoint uninvoked"
 if [ -f "$P_REPO/.git/cr-pending/feat/mog-prune" ]; then pass; else fail "11o: dry-run removed the marker file"; fi
+
+# 11o-nowt. HIMMEL-3495: the branch is checked out in NO worktree, so the clearer
+# (which would refuse from any cwd) is not run; the line says no-worktree and
+# stderr names the fix. The merge itself is unaffected.
+read -r P_REPO P_WT P_SHA <<< "$(mk_prune_fixture)"
+git -C "$P_REPO" worktree remove --force "$P_WT" >/dev/null 2>&1
+mk_marker "$P_REPO" "feat/mog-prune"
+MOG_CWD="$P_REPO" STUB_SHA="$P_SHA" STUB_HEAD_BRANCH="feat/mog-prune" \
+    run_mog 0 "marker present, branch in no worktree: merge still exit 0"
+assert_clear_not_invoked "11o-nowt: no worktree means no chokepoint call"
+assert_audit_has "11o-nowt: audit records no-worktree" "marker=no-worktree"
+case "$LAST_ERR" in
+    *"from the worktree where feat/mog-prune is checked out"*) pass ;;
+    *) fail "11o-nowt: stderr must name the fix, got: $LAST_ERR" ;;
+esac
 
 # --- 11p..11q. HIMMEL-2383 after-report pending marker -----------------------
 # Red-first: no SUMMARY comment on the PR yet at merge time -> a local marker

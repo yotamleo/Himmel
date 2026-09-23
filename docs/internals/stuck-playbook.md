@@ -421,6 +421,35 @@ and is unreported upstream.
 
 ---
 
+## Symptom: `/pr-check` step 0's canonical fence is refused — "runs bash in a plain command … cannot be shown not to run git" (HIMMEL-3536)
+
+The leg called `EnterWorktree`. That refusal comes from the worktree-isolation
+screen, which reads only `EnterWorktree`-pinned sessions: the fence runs the
+`HIMMEL_REPO` anchor's `scripts/cr/pr-check-context.sh`, outside the pin, so
+the screen refuses it. The operator's `!` in that window is refused too. A leg
+whose diff touches `scripts/cr/` cannot fall back to the bare relative literal,
+because `guard-pr-check-literal` correctly refuses branch bytes. Before the fix,
+N376 and N386 each sat `BLOCKED` for 10-12 h on this (2026-09-23).
+
+A leg that `cd`s into its worktree without the pin runs the exact fence
+unrefused (measured in N418: rc=0, `anchor_lane=himmel`). The anchor still
+decides whether to hand off to the branch's copy, so nothing about the anchor
+trust changes.
+
+**The fix.** `headed-arm-leg.sh` writes `permissions.deny: ["EnterWorktree"]`
+into every profiled leg's generated `<name>.leg-settings.json` (all lanes,
+not the relay). The tool is then absent from the leg's tool list. A leg works
+in its worktree by `cd <worktree path>` from its launch directory. Writes into
+the primary stay fenced without the pin: `block-edit-on-main` and
+`block-write-into-main-checkout` resolve the target path, and
+`check-worktree-isolation` checks the branch at commit time.
+
+**A leg launched before the fix that is already pinned:** `BLOCKED` to the
+console. The console runs the canonical fence from its own unpinned session
+with cwd set to the leg's worktree, and hands the leg the output.
+
+---
+
 ## Symptom: a late fix after `pre-commit run` gets gated against stale (pre-edit) content
 
 Plain `pre-commit run <hook>` (no `--all-files`, no `--files`) stashes

@@ -600,5 +600,86 @@ for p8 in $'HIMMEL-9613-x\n' $'HIMMEL-9614-y\nHIMMEL-9615-z'; do
   p_expect "p8.$p8_i reservation directory name with a newline" "$slots_p8" kept
 done
 
+# --- (q) HIMMEL-3095: a leg that has WRAPPED (queue lock released, last
+# status bullet WRAPPED) but whose process is still alive no longer counts
+# against FLEET_CAP. mk_wrapped_stub builds the cmdline shape
+# leg-claude-launcher.sh always uses (`load <DOC> and continue` as ONE argv
+# element after `-n <name>`) so fleet_doc_for_pid resolves the doc without a
+# glob. The lock check (fleet-wrapped.sh's fleet_lock_dir_for_doc) reads the
+# on-disk lock dir directly — no queue-lock.sh exec, per the HIMMEL-3095
+# redesign that keeps this out of scripts/cr's guarded reachability closure
+# — so ql_lockdir_stub builds/omits that dir itself, at the same path
+# fleet_lock_dir_for_doc computes for a doc under
+# FLEET_HANDOVER_ROOT_OVERRIDE (see the (r) drift guard below for a fixture
+# that drives the REAL queue-lock.sh instead of building this by hand).
+# RED first (pre-fix): every case below reports native=1 — the unfixed
+# census has no notion of WRAPPED at all.
+mk_wrapped_stub() { # <dir> <pid> <name> <doc>
+  local dir="$1" pid="$2" name="$3" doc="$4"
+  mkdir -p "$dir/proc/$pid"
+  printf '%s' claude > "$dir/proc/$pid/comm"
+  printf '%s %s\n' "$pid" "--model claude-opus-5 -n $name load doc" > "$dir/ps.data"
+  printf '%s\n' '#!/usr/bin/env bash' "cat '$dir/ps.data'" > "$dir/ps"
+  chmod +x "$dir/ps"
+  printf 'claude\0--model\0claude-opus-5\0-n\0%s\0load %s and continue\0' "$name" "$doc" > "$dir/proc/$pid/cmdline"
+}
+ql_lockdir_stub() { # <root> <doc> free|held -- builds/omits the on-disk
+  # lock dir fleet_lock_dir_for_doc (and queue-lock.sh itself) would compute
+  # for <doc> under <root> -- slug = <doc>'s basename minus ".md" (these
+  # fixtures never nest doc under a subdirectory of root, so no "/" fold).
+  local root="$1" doc="$2" state="$3" slug lockdir
+  slug="$(basename "$doc" .md)"
+  lockdir="$root/.locks/queue/$slug.lock"
+  case "$state" in
+    free) rm -rf "$lockdir" ;;
+    held) mkdir -p "$lockdir"; printf '{"session":"stub"}\n' > "$lockdir/owner.json" ;;
+  esac
+}
+q_run() { # <label> <doc-body> <lock-state> <expect: 0|1 native count>
+  local label="$1" body="$2" lock="$3" expect="$4"
+  local qdir="$W/q-$label"; mkdir -p "$qdir"
+  local doc="$qdir/doc.md"
+  printf '%s\n' "$body" > "$doc"
+  ql_lockdir_stub "$qdir" "$doc" "$lock"
+  local pdir="$W/q-$label-ps"
+  mk_wrapped_stub "$pdir" 9701 "HIMMEL-9701-wrapped" "$doc"
+  local slots; slots="$(mktemp -d "$W/q-$label-slots.XXXXXX")" || { echo "FAIL - could not create q-$label slots dir" >&2; exit 1; }
+  : > "$W/err.log"
+  run_pf "$slots" "$pdir" HIMMEL_FLEET_CAP=4 FLEET_HANDOVER_ROOT_OVERRIDE="$qdir" >/dev/null
+  check "(q.$label) fleet_native" "$expect" "$(grep -oE 'native=[0-9]+' "$W/err.log" | head -1 | cut -d= -f2)"
+}
+q_run wrapped-free "## Results
+- 10:00 WRAPPED — done." free 0
+q_run held-not-wrapped "## Results
+- 10:00 WRAPPED — done." held 1
+q_run free-not-wrapped "## Results
+- 10:00 READY — holding for GO." free 1
+q_run no-status-bullet "## Results
+- 10:00 some note with no marker." free 1
+q_run wrapped-example-above-results "- 10:00 WRAPPED — example bullet in prose, before the real Results section.
+## Results
+- 10:00 READY — holding for GO." free 1
+
+# --- (r) HIMMEL-3095 drift guard: drives the REAL scripts/handover/
+# queue-lock.sh (not a stub) to genuinely acquire and release a lock on a
+# real doc, and asserts fleet-wrapped.sh's pure-bash fleet_lock_dir_for_doc
+# agrees with it at every step, via the SAME root resolution (HANDOVER_DIR)
+# both sides read — a straight stub can't catch queue-lock.sh's on-disk
+# format (lock dir path, slug algorithm) drifting away from this reader's
+# copy of it; this fixture can.
+r_dir="$W/r-drift"; mkdir -p "$r_dir"
+r_doc="$r_dir/doc.md"
+printf '%s\n' "- 10:00 LIVE — working." > "$r_doc"
+( . "$REPO/scripts/lib/fleet-wrapped.sh"; HANDOVER_DIR="$r_dir" fleet_lock_dir_for_doc "$r_doc" ) > "$W/r-lockdir.txt" 2>/dev/null
+r_lockdir="$(cat "$W/r-lockdir.txt")"
+check "(r) fleet_lock_dir_for_doc resolved a lockdir" 1 "$([ -n "$r_lockdir" ] && echo 1 || echo 0)"
+check "(r) lock dir absent before acquire" absent "$([ -e "$r_lockdir" ] && echo present || echo absent)"
+r_ql_out="$(HANDOVER_DIR="$r_dir" bash "$REPO/scripts/handover/queue-lock.sh" acquire "$r_doc" 2>&1)"
+r_token="$(printf '%s\n' "$r_ql_out" | sed -n "s/.*release-token: \`\([^\`]*\)\`.*/\1/p")"
+check "(r) real queue-lock acquire printed a token" 1 "$([ -n "$r_token" ] && echo 1 || echo 0)"
+check "(r) lock dir present after real acquire" present "$([ -e "$r_lockdir" ] && echo present || echo absent)"
+HANDOVER_DIR="$r_dir" bash "$REPO/scripts/handover/queue-lock.sh" release "$r_doc" "$r_token" >/dev/null 2>&1
+check "(r) lock dir absent after real release" absent "$([ -e "$r_lockdir" ] && echo present || echo absent)"
+
 echo "--- $PASS passed, $FAIL failed ---"
 [ "$FAIL" -eq 0 ]

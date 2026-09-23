@@ -77,6 +77,13 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$HEAD_SHA" ] || { echo "panel-first-pass: --head is required (step 1's captured SHA, HIMMEL-1175)" >&2; exit 2; }
 [ -n "$BRANCH" ]   || { echo "panel-first-pass: --branch is required (step 1's captured branch, HIMMEL-1175)" >&2; exit 2; }
+# HIMMEL-3495: the round counter and ledger are per-branch shared state; only
+# the branch checked out in cwd may be written (review-round.sh refuses too).
+current_branch="$(git branch --show-current 2>/dev/null)" || current_branch=""
+if [ -z "$current_branch" ] || [ "$current_branch" != "$BRANCH" ]; then
+    echo "panel-first-pass: --branch '$BRANCH' is not the branch checked out in this directory ('${current_branch:-detached HEAD}') - run it from that branch's worktree" >&2
+    exit 2
+fi
 
 # HIMMEL-2542 - validate the INPUT PIN before any git command consumes it.
 # A --head naming no commit in this repo is a CALLER error, not a reviewer

@@ -5,7 +5,7 @@
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-WRITERS="write-verdicts clear-cr-marker panel-first-pass docs-audit-panel codex-adv-kickoff codex-adv-harvest doc-freshness-advisory known-findings ledger-append"
+WRITERS="write-verdicts clear-cr-marker panel-first-pass docs-audit-panel codex-adv-kickoff codex-adv-harvest doc-freshness-advisory known-findings ledger-append review-round orphan-check impacted-suites cr-scores"
 # shellcheck disable=SC2016  # the literal line each writer carries, not an expansion
 SOURCE_LINE='. "$(dirname "${BASH_SOURCE[0]}")/anchor-handoff.sh" || exit 2'
 

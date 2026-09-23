@@ -8,7 +8,8 @@
 # Output occurs only when the state changes or the earliest projection crosses
 # from >=24h/unknown to <24h; repeated below-threshold observations are silent.
 # This script is one-shot: collect enough points with a 300-second Bash poll,
-# distinct from the console tick's 60-minute cadence:
+# distinct from the console tick's 180-second sample cadence (console-wait.sh,
+# HIMMEL-3509; it wakes the console only on a change, not on every sample):
 #   while :; do bash scripts/lib/bank-monitor.sh; sleep 300; done
 #
 # Test seams:

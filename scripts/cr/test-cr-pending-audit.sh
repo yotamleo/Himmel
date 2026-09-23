@@ -113,7 +113,7 @@ make_repo || exit 1
 write_marker "$tmp" feat/x "$sha"
 write_ledger "$tmp" "$(avail_ok "$sha")" "$(finding "$sha" crit disproved)"
 out=$(cd "$tmp" && bash "$AUDIT" 2>&1); rc=$?
-[ "$rc" -eq 1 ] && grepq "$out" "reason=gates-may-pass" && grepq "$out" "clear-cr-marker.sh feat/x" && pass || fail "T4 rc=$rc out=$out"
+[ "$rc" -eq 1 ] && grepq "$out" "reason=gates-may-pass" && grepq "$out" "clear-cr-marker.sh feat/x from the worktree where feat/x is checked out" && pass || fail "T4 rc=$rc out=$out"
 rm -rf "$tmp"
 
 echo "T5: amended-to-sug finding is NOT re-reported as blocking (HIMMEL-1294)"

@@ -191,7 +191,7 @@ audit_branch() {
     counts=$(ledger_counts "$tip")
     responders="${counts%% *}"; blocking="${counts##* }"
     if [ "$responders" = "?" ]; then
-        echo "cr-pending-audit: branch=$branch class=NEEDS-ACTION reason=ledger-unreadable tip=${tip:0:8} remedy=\"run scripts/cr/clear-cr-marker.sh $branch for the authoritative verdict (node unavailable here)\""
+        echo "cr-pending-audit: branch=$branch class=NEEDS-ACTION reason=ledger-unreadable tip=${tip:0:8} remedy=\"run scripts/cr/clear-cr-marker.sh $branch from the worktree where $branch is checked out, for the authoritative verdict (node unavailable here)\""
         needs_action=$((needs_action+1))
         return 0
     fi
@@ -205,7 +205,7 @@ audit_branch() {
         needs_action=$((needs_action+1))
         return 0
     fi
-    echo "cr-pending-audit: branch=$branch class=NEEDS-ACTION reason=gates-may-pass tip=${tip:0:8} remedy=\"run scripts/cr/clear-cr-marker.sh $branch — evidence looks clean, the marker may clear right now\""
+    echo "cr-pending-audit: branch=$branch class=NEEDS-ACTION reason=gates-may-pass tip=${tip:0:8} remedy=\"run scripts/cr/clear-cr-marker.sh $branch from the worktree where $branch is checked out — evidence looks clean, the marker may clear right now\""
     needs_action=$((needs_action+1))
 }
 

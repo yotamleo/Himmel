@@ -40,6 +40,13 @@ echo ': lib' >"$ORIGIN/scripts/guardrails/lib.sh"
 echo 'echo env' >"$ORIGIN/scripts/cr/pr-check-env.sh"
 echo ': dotenv' >"$ORIGIN/scripts/lib/load-dotenv.sh"
 echo ': other lib' >"$ORIGIN/scripts/lib/other.sh"
+# HIMMEL-3495: every gate-allowed scripts/cr entry, and the hand-off each sources.
+for t in anchor-handoff.sh clear-cr-marker.sh codex-adv-harvest.sh codex-adv-kickoff.sh \
+    cr-scores.sh doc-freshness-advisory.sh docs-audit-panel.sh impacted-suites.sh \
+    known-findings.sh ledger-append.sh orphan-check.sh panel-first-pass.sh \
+    review-round.sh write-verdicts.sh; do
+    echo "echo $t" >"$ORIGIN/scripts/cr/$t"
+done
 echo 'doc' >"$ORIGIN/docs/a.md"
 g -C "$ORIGIN" add -A
 g -C "$ORIGIN" commit -qm base
@@ -157,6 +164,89 @@ echo doc2 >"$WT/docs/a.md"
 run "an unrelated (docs) diff -> allow" 0 "$(payload "$LITERAL" "$WT")" "$HR"
 g -C "$WT" checkout -q -- docs/a.md
 
+# ---- HIMMEL-3495: every gate-allowed scripts/cr script is a target ------------
+# The set is DERIVED from every `Bash(...` allow row in both permission files
+# that names scripts/cr/<name>.sh ANYWHERE (a `./scripts/cr/x.sh` row too), so a
+# new row the hook does not guard fails here.
+REPO_ROOT="$(cd "$(dirname "$HOOK")/../.." && pwd)"
+cr_rows() {
+    grep -ohE '"Bash\([^"]*scripts/cr/[A-Za-z0-9._-]+\.sh' "$@" \
+        | grep -oE 'scripts/cr/[A-Za-z0-9._-]+\.sh' | sed 's|.*/||' | LC_ALL=C sort -u
+}
+printf '{"allow": ["Bash(./scripts/cr/newgate.sh *)"]}\n' >"$TMP/rows.json"
+if [ "$(cr_rows "$TMP/rows.json")" = "newgate.sh" ]; then
+    echo "PASS a ./scripts/cr/ row is derived"
+else
+    echo "FAIL a ./scripts/cr/ row is not derived: $(cr_rows "$TMP/rows.json")"
+    FAILED=$((FAILED + 1))
+fi
+derived=$(cr_rows "$REPO_ROOT/.claude/settings.json" "$REPO_ROOT/scripts/lanes/plugin-profiles.json")
+declared=$(sed -n "/^TARGETS='/,/'\$/p" "$HOOK" | sed "s/^TARGETS=//; s/'//g" | tr ' ' '\n' | grep . | LC_ALL=C sort -u)
+if [ -n "$derived" ] && [ "$derived" = "$declared" ]; then
+    echo "PASS hook TARGETS equal the allow rows' scripts/cr entries ($(printf '%s\n' "$derived" | wc -l | tr -d ' '))"
+else
+    echo "FAIL hook TARGETS drift from the allow rows - rows: $(printf '%s' "$derived" | tr '\n' ' ') - hook: $(printf '%s' "$declared" | tr '\n' ' ')"
+    FAILED=$((FAILED + 1))
+fi
+for t in $derived; do
+    run "clean tree, bash scripts/cr/$t -> allow" 0 "$(payload "bash scripts/cr/$t" "$WT")" "$HR"
+    echo ': edited' >>"$WT/scripts/cr/$t"
+    run "edited entry, bash scripts/cr/$t -> deny" 2 "$(payload "bash scripts/cr/$t" "$WT")" "$HR"
+    g -C "$WT" checkout -q -- "scripts/cr/$t"
+done
+RR='bash scripts/cr/review-round.sh start --branch feat/x'
+echo ': edited' >>"$WT/scripts/cr/anchor-handoff.sh"
+run "edited anchor-handoff.sh, review-round -> deny" 2 "$(payload "$RR" "$WT")" "$HR"
+need_in_err "deny names the hand-off" "scripts/cr/anchor-handoff.sh"
+g -C "$WT" checkout -q -- scripts/cr/anchor-handoff.sh
+# Per-file scope: a sibling's edit leaves review-round's own bytes (and the
+# hand-off that execs the anchor's copy) unchanged; pr-check-context keeps the
+# whole directory.
+echo ': edited' >>"$WT/scripts/cr/cr-scores.sh"
+run "sibling cr-scores.sh edited, review-round -> allow" 0 "$(payload "$RR" "$WT")" "$HR"
+run "sibling cr-scores.sh edited, pr-check-context -> deny" 2 "$(payload "$LITERAL" "$WT")" "$HR"
+g -C "$WT" checkout -q -- scripts/cr/cr-scores.sh
+chmod +x "$WT/scripts/cr/review-round.sh"
+run "chmod +x on review-round.sh -> deny" 2 "$(payload "$RR" "$WT")" "$HR"
+chmod -x "$WT/scripts/cr/review-round.sh"
+# Per-file mode: a symlinked entry or hand-off is refused even when the bytes
+# it points at match the anchor's.
+for f in review-round.sh anchor-handoff.sh; do
+    mv "$WT/scripts/cr/$f" "$TMP/$f.real"
+    ln -s "$TMP/$f.real" "$WT/scripts/cr/$f"
+    run "symlinked $f, review-round -> deny" 2 "$(payload "$RR" "$WT")" "$HR"
+    rm "$WT/scripts/cr/$f"
+    mv "$TMP/$f.real" "$WT/scripts/cr/$f"
+done
+run "entry and hand-off restored, review-round -> allow" 0 "$(payload "$RR" "$WT")" "$HR"
+# A symlinked scripts/cr directory is refused even when every byte matches.
+mv "$WT/scripts/cr" "$WT/scripts/cr-real"
+ln -s cr-real "$WT/scripts/cr"
+run "symlinked scripts/cr dir, review-round -> deny" 2 "$(payload "$RR" "$WT")" "$HR"
+run "symlinked scripts/cr dir, pr-check-context -> deny" 2 "$(payload "$LITERAL" "$WT")" "$HR"
+rm "$WT/scripts/cr"
+mv "$WT/scripts/cr-real" "$WT/scripts/cr"
+run "scripts/cr dir restored, review-round -> allow" 0 "$(payload "$RR" "$WT")" "$HR"
+
+# ---- HIMMEL-3433 (d): an interpreter or find -exec word ANYWHERE runs ---------
+# On a clean tree, so each deny comes from the shape, not from an edit.
+run "2>&1 before the literal, clean root -> deny" 2 \
+    "$(payload "2>&1 $LITERAL" "$WT")" "$HR"
+run "find -exec env VAR= bash <target>, clean root -> deny" 2 \
+    "$(payload "find . -maxdepth 0 -exec env HIMMEL_REPO=/evil bash scripts/cr/review-round.sh +" "$WT")" "$HR"
+need_in_err "deny names the wrapper" "wrapper"
+run "find -exec VAR= bash <target>, clean root -> deny" 2 \
+    "$(payload "find . -maxdepth 0 -exec HIMMEL_REPO=/evil bash scripts/cr/review-round.sh +" "$WT")" "$HR"
+run "find -execdir bash <target>, clean root -> deny" 2 \
+    "$(payload "find . -maxdepth 0 -execdir bash scripts/cr/pr-check-context.sh +" "$WT")" "$HR"
+need_in_err "deny names the directory change" "changes directory"
+run "find -exec bash {} from the root, clean root -> deny" 2 \
+    "$(payload "find . -exec bash {} +" "$WT")" "$HR"
+run "find -exec {} (the found file itself), clean root -> deny" 2 \
+    "$(payload "find . -perm -100 -exec {} +" "$WT")" "$HR"
+run "bash * with the cwd in scripts/cr -> deny" 2 \
+    "$(payload "bash *" "$WT/scripts/cr")" "$HR"
+
 # ---- no-op: anything that is not the literal -------------------------------
 run "unrelated command, no HIMMEL_REPO -> no-op" 0 "$(payload 'git status' "$TMP")"
 [ -z "$LAST_ERR" ] || { echo "FAIL no-op is silent - stderr: $LAST_ERR"; FAILED=$((FAILED + 1)); }
@@ -254,6 +344,16 @@ bash SCRIPTS/CR/PR-CHECK-CONTEXT.SH
 bash scripts/C?/PR-CHECK-*.SH
 busybox sh scripts/cr/pr-check-context.sh
 toybox sh scripts/cr/pr-check-context.sh
+bash scripts//cr/*
+bash scripts/./cr/*
+bash scripts/cr/./*
+bash ./scripts/cr/*
+bash scripts/hooks/../cr/*
+bash Scripts/Cr/*
+bash scripts/cr/*.sh
+cd scripts/cr; bash *
+find . -maxdepth 0 -exec bash scripts/cr/pr-check-context.sh {} +
+2>&1 bash scripts/cr/pr-check-context.sh
 VARIANTS
 run "a line continuation inside the name on an edited branch -> deny" 2 \
     "$(payload "bash scripts/cr/pr-check-con\\
@@ -268,6 +368,14 @@ cat scripts/cr/pr-check-env.sh
 bash scripts/cr/test-pr-check-context.sh
 bash scripts/hooks/test-guard-pr-check-literal.sh
 bash scripts/cr/panel-first-pass.sh --x
+grep -n block scripts/hooks/*.sh 2>/dev/null | head
+find . -not -path './node_modules/*' 2>/dev/null
+ls docs/* > /tmp/o.txt
+rm -rf build/* 2>/dev/null
+cat logs/* 2>/dev/null
+cp marketplace/plugins/* /tmp/x 2>/dev/null
+ls * > /tmp/o.txt
+find . -name '*.md' -exec grep -l foo {} +
 MENTIONS
 run "the anchored fence on an edited branch -> no-op" 0 "$(payload "$FENCE_TEXT" "$WT")" "$HR"
 run "HIMMEL_REPO re-pointed before the fence -> deny" 2 \

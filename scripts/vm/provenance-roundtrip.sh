@@ -11,7 +11,7 @@
 # is the part CI runs.
 #
 # Usage: scripts/vm/provenance-roundtrip.sh <branch|sha> [--expect-red]
-#            [--profile core|all] [--purge-state]
+#            [--profile core|all] [--purge-state] [--clone-gone]
 #   --expect-red   pass only when BOTH directions fail (the pre-fix RED); any
 #                  missing direction prints `RED incomplete: <dir> direction missing`
 #   --profile      the install profile (default core). `all` also arms the
@@ -21,6 +21,15 @@
 #                  crontab line, so the cadence-crontab-removed direction is
 #                  observable (HIMMEL-3351)
 #   --purge-state  uninstall with --purge-state (the spec's second variant)
+#   --clone-gone   after install, `rm -rf` the staged clone on the guest, then
+#                  run `himmelctl uninstall` through the PATH launcher
+#                  (~/.local/bin/himmelctl) instead of `node <clone>/…/bin.js`
+#                  (HIMMEL-3312 S15). Verifies the standalone bundle/launcher
+#                  fallback and what `claude plugin marketplace remove` does
+#                  for a directory marketplace whose directory is gone; that
+#                  step's observed output is printed on a `[marketplace-remove]`
+#                  line. Combined with --purge-state, the run also asserts
+#                  no `~/.himmel` is left.
 # Exit: 0 green (or, with --expect-red, RED complete); 1 a FAIL (or RED
 # incomplete); 2 usage, a refused VM precondition or a failed harness step.
 #
@@ -47,15 +56,16 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
-    echo "usage: scripts/vm/provenance-roundtrip.sh <branch|sha> [--expect-red] [--profile core|all] [--purge-state]" >&2
+    echo "usage: scripts/vm/provenance-roundtrip.sh <branch|sha> [--expect-red] [--profile core|all] [--purge-state] [--clone-gone]" >&2
     exit 2
 }
 
-REF="" EXPECT_RED=0 PROFILE=core PURGE=0
+REF="" EXPECT_RED=0 PROFILE=core PURGE=0 CLONE_GONE=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --expect-red) EXPECT_RED=1; shift ;;
         --purge-state) PURGE=1; shift ;;
+        --clone-gone) CLONE_GONE=1; shift ;;
         --profile)
             case "${2:-}" in core|all) PROFILE="$2" ;; *) usage ;; esac
             shift 2 ;;
@@ -150,7 +160,7 @@ case $? in
     *) fail "could not acquire the vm-lock on '$CLONE_NAME'" ;;
 esac
 
-echo "[run] ref=$REF sha=$SHA profile=$PROFILE purge-state=$PURGE expect-red=$EXPECT_RED clone=$CLONE_NAME snapshot=$SNAPSHOT guest-user=$GUEST_USER"
+echo "[run] ref=$REF sha=$SHA profile=$PROFILE purge-state=$PURGE clone-gone=$CLONE_GONE expect-red=$EXPECT_RED clone=$CLONE_NAME snapshot=$SNAPSHOT guest-user=$GUEST_USER"
 vm_clone_ensure "$SNAPSHOT"
 vm_restore "$SNAPSHOT"
 vm_boot
@@ -208,13 +218,27 @@ done
 # 5. Inventory B + the ledger and the crontab as they stood after install.
 step inventory-B "bash $WORKDIR/inventory.sh B && { L=\${HIMMEL_PROVENANCE_DIR:-$GHOME/.himmel}/provenance.jsonl; [ ! -f \$L ] || cp \$L $WORKDIR/ledger-B.jsonl; } && { crontab -l >$WORKDIR/crontab-B.txt 2>/dev/null; true; }"
 
-# 6. Uninstall.
+# 5b. --clone-gone: delete the staged clone on the guest so the uninstall
+# below has no source tree to fall back on (HIMMEL-3312 S15).
+[ "$CLONE_GONE" = 0 ] || step clone-gone-rm "rm -rf $SRC"
+
+# 6. Uninstall. --clone-gone runs it through the PATH launcher
+# (~/.local/bin/himmelctl) rather than `node <clone>/…/bin.js`, since the
+# clone is gone: this is the launcher-fallback / standalone-bundle path
+# S13 added.
 UNINSTALL_FLAGS="--yes"
 [ "$PURGE" = 0 ] || UNINSTALL_FLAGS="--yes --purge-state"
+if [ "$CLONE_GONE" = 1 ]; then
+    UNINSTALL_ENTRY="$GHOME/.local/bin/himmelctl"
+    UNINSTALL_CD="cd $GHOME"
+else
+    UNINSTALL_ENTRY="node $BIN"
+    UNINSTALL_CD="cd $GHOME/proj"
+fi
 # A non-zero uninstall is itself a result (console ruling): record its rc and
 # the step it halted at, then take inventory C anyway.
 echo "[step] uninstall"
-UN_OUT=$(vm_ssh "cd $GHOME/proj && $ENV_CMD node $BIN uninstall $UNINSTALL_FLAGS >$WORKDIR/uninstall.log 2>&1; rc=\$?; sed 's/^/[uninstall-log] /' $WORKDIR/uninstall.log; exit \$rc")
+UN_OUT=$(vm_ssh "$UNINSTALL_CD && $ENV_CMD $UNINSTALL_ENTRY uninstall $UNINSTALL_FLAGS >$WORKDIR/uninstall.log 2>&1; rc=\$?; sed 's/^/[uninstall-log] /' $WORKDIR/uninstall.log; exit \$rc")
 UN_RC=$?
 printf '%s\n' "$UN_OUT"
 # "Halted at: [7/8] ..." -> 7; empty when the uninstall ran every step.
@@ -227,14 +251,39 @@ HALT_AT=none
 [ -z "$HALT_N" ] || HALT_AT="[$HALT_N/8]"
 echo "uninstall-exit rc=$UN_RC halted-at=$HALT_AT"
 
+# 6b. --clone-gone: the observed rc/output of `claude plugin marketplace
+# remove` for the gone directory marketplace — the one unverified claim this
+# slice exists to check. Reported verbatim, on its own harness line, whatever
+# it says: uninstall-plugins.sh does not always echo a per-command rc, so an
+# absent rc here is itself an observation, not a harness bug.
+if [ "$CLONE_GONE" = 1 ]; then
+    MKT_LINES=$(printf '%s\n' "$UN_OUT" | grep -i 'marketplace' || true)
+    if [ -n "$MKT_LINES" ]; then
+        printf '[marketplace-remove] %s\n' "$MKT_LINES"
+    else
+        echo "[marketplace-remove] no marketplace-related line observed in the uninstall log"
+    fi
+fi
+
 # 7. Inventory C, the diff summaries, the named checks.
 step inventory-C "bash $WORKDIR/inventory.sh C"
+
 echo "[step] invdiff"
 vm_ssh "INVDIFF_BASE=/tmp python3 $WORKDIR/invdiff.py A B | grep '^###'; INVDIFF_BASE=/tmp python3 $WORKDIR/invdiff.py A C | grep '^###'" || true
 echo "[step] assert"
 ASSERT_OUT=$(vm_ssh "HIMMEL_RT_GUEST=1 RT_PURGE=$PURGE RT_PROFILE=$PROFILE bash $WORKDIR/assert-provenance.sh") \
     || fail "step assert failed (rc=$?)"
 printf '%s\n' "$ASSERT_OUT"
+
+# 7b. --clone-gone --purge-state must leave no ~/.himmel (design §5.2/§4: the
+# bundle is removed last, as the final statement of the purge). Runs AFTER
+# invdiff/assert so a legitimate failure here still preserves their diagnostic
+# output in the captured run log.
+if [ "$CLONE_GONE" = 1 ] && [ "$PURGE" = 1 ]; then
+    HIMMEL_LEFT=$(vm_ssh "test -e $GHOME/.himmel -o -L $GHOME/.himmel && echo PRESENT || echo ABSENT")
+    echo "[clone-gone-purge] ~/.himmel: $HIMMEL_LEFT"
+    [ "$HIMMEL_LEFT" = ABSENT ] || fail "clone-gone --purge-state left $GHOME/.himmel behind"
+fi
 
 # 8. The verdict.
 # owner <check-id> — the uninstall step whose removal the check observes:

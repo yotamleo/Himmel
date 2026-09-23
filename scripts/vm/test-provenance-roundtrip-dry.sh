@@ -72,11 +72,17 @@ case "$last" in
   'command -v rsync'*) exit 1 ;;
   *'-xf -'|'cat > '*) cat >/dev/null ;;
   *assert-provenance.sh*) cat "$FAKE_ASSERT" ;;
-  *'bin.js uninstall'*)
+  *'bin.js uninstall'*|*'.local/bin/himmelctl uninstall'*)
     case "${FAKE_UNINSTALL:-ok}" in
       halt) echo '[uninstall-log] Halted at: [7/8] Claude marketplaces: uninstall-plugins.sh reported failures'; exit 2 ;;
       rc3) echo '[uninstall-log] boom'; exit 3 ;;
       early) echo '[uninstall-log] Halted at: [3/8] Claude settings: jq failed'; exit 2 ;;
+      mkt) echo '[uninstall-log]   marketplace remove: rt-dir-marketplace' ;;
+    esac ;;
+  *'test -e'*'.himmel'*)
+    case "${FAKE_HIMMEL_LEFT:-ABSENT}" in
+      ABSENT) echo ABSENT ;;
+      PRESENT) echo PRESENT ;;
     esac ;;
 esac
 exit 0
@@ -125,7 +131,8 @@ ssh_order() {
             *'bin.js install'*'--scope project'*) echo install-project ;;
             *'bin.js install'*'--scope user'*) echo install-user ;;
             *'inventory.sh B'*) echo invB ;;
-            *'bin.js uninstall'*) echo uninstall ;;
+            'SSH rm -rf /tmp/rt-src') echo clone-gone-rm ;;
+            *'bin.js uninstall'*|*'.local/bin/himmelctl uninstall'*) echo uninstall ;;
             *'inventory.sh C'*) echo invC ;;
             *assert-provenance.sh*) echo assert ;;
         esac
@@ -443,6 +450,75 @@ if grep '^SSH ' "$LOG" | grep 'inventory.sh B' | grep -qF 'crontab -l >/tmp/rt-w
     pass "D15b inventory B step captures crontab -l to crontab-B.txt"
 else
     fail_case "D15b crontab capture"; dump
+fi
+
+
+# =====================================================================
+# D16 — --clone-gone: the clone is rm -rf'd after inventory B, then uninstall
+# runs through the PATH launcher (~/.local/bin/himmelctl), never `node
+# <clone>/.../bin.js` — the clone is gone (HIMMEL-3312 S15)
+# =====================================================================
+run_rt "$ALL_PASS" f73a62f1 --clone-gone
+want='stage seed invA install-project install-user invB clone-gone-rm uninstall invC assert '
+got=$(ssh_order "$LOG")
+un=$(grep '^SSH ' "$LOG" | grep 'himmelctl uninstall')
+if [ "$got" = "$want" ] && [[ "$un" == *'/home/testuser/.local/bin/himmelctl uninstall --yes'* ]] \
+   && ! grep '^SSH ' "$LOG" | grep -q 'bin.js uninstall'; then
+    pass "D16 --clone-gone: rm -rf's the clone after inventory B, uninstall runs through the PATH launcher"
+else
+    fail_case "D16 clone-gone step order/launcher: got='$got' un='$un'"; dump
+fi
+
+# D16b — the marketplace-remove observation is printed verbatim, whatever it
+# says, even when absent (the one unverified claim this slice exists to check)
+FAKE_UNINSTALL=mkt run_rt "$ALL_PASS" f73a62f1 --clone-gone
+if printf '%s\n' "$OUT" | grep -qxF '[marketplace-remove] [uninstall-log]   marketplace remove: rt-dir-marketplace'; then
+    pass "D16b marketplace-remove line captured verbatim from the uninstall log"
+else
+    fail_case "D16b marketplace-remove capture"; dump
+fi
+run_rt "$ALL_PASS" f73a62f1 --clone-gone
+if printf '%s\n' "$OUT" | grep -qxF '[marketplace-remove] no marketplace-related line observed in the uninstall log'; then
+    pass "D16c marketplace-remove absence is its own reported observation, not a harness bug"
+else
+    fail_case "D16c marketplace-remove absence"; dump
+fi
+run_rt "$ALL_PASS" f73a62f1
+if ! printf '%s\n' "$OUT" | grep -q '^\[marketplace-remove\]'; then
+    pass "D16d without --clone-gone, no marketplace-remove line at all"
+else
+    fail_case "D16d marketplace-remove printed without --clone-gone"; dump
+fi
+
+# =====================================================================
+# D17 — --clone-gone --purge-state must leave no ~/.himmel; the check runs
+# AFTER invdiff/assert so a legitimate failure still preserves their output
+# =====================================================================
+FAKE_HIMMEL_LEFT=ABSENT run_rt "$ALL_PASS" f73a62f1 --clone-gone --purge-state
+if [ "$RC" -eq 0 ] && printf '%s\n' "$OUT" | grep -qxF '[clone-gone-purge] ~/.himmel: ABSENT' \
+   && [ "$(printf '%s\n' "$OUT" | grep -n '^\[step\] assert$' | head -n1 | cut -d: -f1)" -lt \
+        "$(printf '%s\n' "$OUT" | grep -n '^\[clone-gone-purge\]' | head -n1 | cut -d: -f1)" ]; then
+    pass "D17 clone-gone --purge-state: ~/.himmel absent, checked after the assert step"
+else
+    fail_case "D17 clone-gone-purge pass case: rc=$RC"; dump
+fi
+
+FAKE_HIMMEL_LEFT=PRESENT run_rt "$ALL_PASS" f73a62f1 --clone-gone --purge-state
+if [ "$RC" -eq 2 ] && printf '%s\n' "$OUT" | grep -qxF '[clone-gone-purge] ~/.himmel: PRESENT' \
+   && printf '%s\n' "$OUT" | grep -q "clone-gone --purge-state left .*\.himmel behind" \
+   && printf '%s\n' "$OUT" | grep -q '^\[step\] assert$' \
+   && printf '%s\n' "$OUT" | grep -q '^CHECK '; then
+    pass "D17b clone-gone-purge failure (rc 2) still preserves the invdiff/assert diagnostic output"
+else
+    fail_case "D17b clone-gone-purge fail case: rc=$RC"; dump
+fi
+
+# D17c — plain --clone-gone (no --purge-state) never runs the purge check
+run_rt "$ALL_PASS" f73a62f1 --clone-gone
+if ! printf '%s\n' "$OUT" | grep -q '^\[clone-gone-purge\]'; then
+    pass "D17c --clone-gone without --purge-state: no clone-gone-purge check"
+else
+    fail_case "D17c clone-gone-purge ran without --purge-state"; dump
 fi
 
 echo

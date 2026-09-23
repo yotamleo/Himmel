@@ -5,6 +5,8 @@
 # Bash 3.2-safe.
 # Platform guard: requires POSIX Bash 3.2+; on Windows, run under Git Bash.
 set -uo pipefail
+# HIMMEL-3495: a relative-entry copy that is not the anchor's hands off to it.
+. "$(dirname "${BASH_SOURCE[0]}")/anchor-handoff.sh" || exit 2
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HIMMEL_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -40,6 +42,15 @@ esac
 
 if ! git check-ref-format --branch "$branch" >/dev/null 2>&1; then
     echo "review-round: invalid branch name '$branch'" >&2
+    exit 2
+fi
+# HIMMEL-3495: every verb writes shared per-branch state (round counter,
+# ledger amends, marker clearance), and a relative run is auto-allowed from any
+# leg's worktree - so only the branch checked out in cwd may be written. A
+# detached HEAD has no branch and is refused too.
+current_branch="$(git branch --show-current 2>/dev/null)" || current_branch=""
+if [ -z "$current_branch" ] || [ "$current_branch" != "$branch" ]; then
+    echo "review-round: --branch '$branch' is not the branch checked out in this directory ('${current_branch:-detached HEAD}') - run it from that branch's worktree" >&2
     exit 2
 fi
 
