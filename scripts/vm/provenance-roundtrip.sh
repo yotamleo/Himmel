@@ -284,7 +284,7 @@ printf '%s\n' "$ASSERT_OUT"
 # 2026-09-23). Runs AFTER invdiff/assert so a legitimate failure here still
 # preserves their diagnostic output in the captured run log.
 if [ "$CLONE_GONE" = 1 ] && [ "$PURGE" = 1 ]; then
-    HIMMEL_LIST=$(vm_ssh "find $GHOME/.himmel -mindepth 1 2>/dev/null | LC_ALL=C sort")
+    HIMMEL_LIST=$(vm_ssh "find -L $GHOME/.himmel -mindepth 1 2>/dev/null | LC_ALL=C sort")
     HIMMEL_LIST_LINE=$(printf '%s' "$HIMMEL_LIST" | tr '\n' ' ')
     echo "[clone-gone-purge] ~/.himmel contents: ${HIMMEL_LIST_LINE:-(empty)}"
     UNEXPECTED=$(printf '%s\n' "$HIMMEL_LIST" | grep -vxF "$GHOME/.himmel/config.json" | grep -v '^$' || true)

@@ -536,6 +536,16 @@ else
     fail_case "D17c clone-gone-purge ran without --purge-state"; dump
 fi
 
+# D17d — the clone-gone-purge listing follows a symlinked ~/.himmel (plain
+# `find` does not descend into a symlink start-point, so a leftover symlink
+# would list empty and pass silently; codex-1, HIMMEL-3528 panel round 1)
+FAKE_HIMMEL_CONTENTS=config run_rt "$ALL_PASS" f73a62f1 --clone-gone --purge-state
+if grep -q '^SSH .*find -L .*\.himmel -mindepth 1' "$LOG"; then
+    pass "D17d clone-gone-purge listing uses find -L (traverses a symlinked ~/.himmel)"
+else
+    fail_case "D17d clone-gone-purge listing did not use find -L"; dump
+fi
+
 echo
 if [ "$FAILED" -eq 0 ]; then echo "ALL PASS"; exit 0; fi
 echo "$FAILED FAILED"; exit 1
