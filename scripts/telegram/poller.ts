@@ -1,4 +1,4 @@
-import { readFile, writeFile, rename, mkdir, readdir, unlink, stat, mkdtemp, copyFile } from "node:fs/promises";
+import { readFile, writeFile, rename, mkdir, readdir, unlink, stat, mkdtemp, copyFile, rm } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -1128,6 +1128,10 @@ const TELEGRAM_PROFILE = "telegram";
 // mtime changes.
 type PluginProfilesModule = typeof import("../lanes/plugin-profiles.mjs");
 const pluginProfilesModuleCache = new Map<string, Promise<PluginProfilesModule>>();
+// cacheKey -> its cachebust tmp dir, so a later successful import for the SAME
+// modulePath can clean up the now-unreachable prior one (HIMMEL-3504 codex-2:
+// otherwise every distinct mtime leaks its tmp dir for the bridge's lifetime).
+const pluginProfilesTempDirs = new Map<string, string>();
 export async function loadPluginProfilesModule(modulePath: string = join(REPO_ROOT, "scripts", "lanes", "plugin-profiles.mjs")): Promise<PluginProfilesModule> {
   const mtimeMs = (await stat(modulePath)).mtimeMs;
   const cacheKey = `${modulePath}@${mtimeMs}`;
@@ -1135,11 +1139,29 @@ export async function loadPluginProfilesModule(modulePath: string = join(REPO_RO
   if (!cached) {
     cached = (async () => {
       const dir = await mkdtemp(join(tmpdir(), "plugin-profiles-cachebust-"));
+      pluginProfilesTempDirs.set(cacheKey, dir);
       const dest = join(dir, `plugin-profiles.${mtimeMs}.mjs`);
       await copyFile(modulePath, dest);
       return import(pathToFileURL(dest).href) as Promise<PluginProfilesModule>;
-    })();
+    })().catch((err) => {
+      // HIMMEL-3504 codex-1: a failed copy/import must NOT stick — evict the
+      // rejected promise so the next dispatch retries instead of replaying
+      // this same failure until modulePath's mtime happens to change again.
+      pluginProfilesModuleCache.delete(cacheKey);
+      const dir = pluginProfilesTempDirs.get(cacheKey);
+      pluginProfilesTempDirs.delete(cacheKey);
+      if (dir) void rm(dir, { recursive: true, force: true });
+      throw err;
+    });
     pluginProfilesModuleCache.set(cacheKey, cached);
+    void cached.then(() => {
+      for (const [key, dir] of pluginProfilesTempDirs) {
+        if (key === cacheKey || !key.startsWith(`${modulePath}@`)) continue;
+        pluginProfilesTempDirs.delete(key);
+        pluginProfilesModuleCache.delete(key);
+        void rm(dir, { recursive: true, force: true });
+      }
+    });
   }
   return cached;
 }
