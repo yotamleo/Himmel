@@ -173,7 +173,14 @@ saved=""
 if [ -f "$key_file" ] && [ "$(sed -n 1p "$key_file")" = "$args_hash" ]; then
     saved="$(sed -n 2p "$key_file")"
 fi
-save_key() { printf '%s\n%s\n' "$args_hash" "$1" > "$key_file.tmp" 2>/dev/null && mv -f "$key_file.tmp" "$key_file" 2>/dev/null; }
+save_key() {
+    tmp="$(mktemp "$key_file.XXXXXX" 2>/dev/null)" || return 0
+    if printf '%s\n%s\n' "$args_hash" "$1" > "$tmp" 2>/dev/null; then
+        mv -f "$tmp" "$key_file" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+    else
+        rm -f "$tmp" 2>/dev/null
+    fi
+}
 # Line 3 `failwoke` = this failure streak already woke the console once.
 fail_woke() {
     [ "$(sed -n 1p "$key_file" 2>/dev/null)" = "$args_hash" ] && [ "$(sed -n 3p "$key_file" 2>/dev/null)" = failwoke ]
@@ -226,7 +233,13 @@ while :; do
             # A monitor that stays broken is an event too, but only once per
             # streak: the re-arm stays quiet until a sample succeeds.
             if [ "$fail_streak" -ge "$fail_wake" ] && ! fail_woke; then
-                printf '%s\n%s\nfailwoke\n' "$args_hash" "$saved" > "$key_file.tmp" 2>/dev/null && mv -f "$key_file.tmp" "$key_file" 2>/dev/null
+                if tmp="$(mktemp "$key_file.XXXXXX" 2>/dev/null)"; then
+                    if printf '%s\n%s\nfailwoke\n' "$args_hash" "$saved" > "$tmp" 2>/dev/null; then
+                        mv -f "$tmp" "$key_file" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+                    else
+                        rm -f "$tmp" 2>/dev/null
+                    fi
+                fi
                 printf 'WAKE tick-fail samples=%s\n' "$fail_streak"
                 exit_reason='wake-tick-fail'; exit 0
             fi
