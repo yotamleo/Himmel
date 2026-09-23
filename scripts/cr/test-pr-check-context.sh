@@ -2405,6 +2405,76 @@ fx_new t60-lib-symlink
 out60="$(fx_run)"
 check "$(fx_outcome "$out60")" "anchor" "T60 a symlinked scripts/lib is not read as no"
 
+# --- T62: HIMMEL-3536 - a branch that deletes its own hand-off guard still
+# cannot decide the lane. hand_off_to_anchor (top of this script) is
+# documented as defense in depth, not the trust root (see its own ponytail
+# comment): a branch that deletes it also deletes the guard. $anchor is read
+# from the TRUSTED HIMMEL_REPO env var, never from the branch's own bytes, so
+# gutting the guard cannot change who decides. T62a proves it through the
+# canonical anchored fence (fx_run always execs the ANCHOR's own copy first,
+# never the branch's, so the deleted guard never even runs for that
+# decision); T62b proves the runtime half holds even on a bare relative run
+# of the gutted copy itself - guard-pr-check-literal.sh (tested separately in
+# scripts/hooks/test-guard-pr-check-literal.sh) is what stops a leg from
+# reaching that shape at all once a scripts/cr/ diff's bytes actually differ.
+fx_new t62-deleted-handoff
+old62=$(cat <<'HANDOFF_GUARD_EOF'
+hand_off_to_anchor() {
+    if [ ! -f "$anchor/scripts/cr/pr-check-context.sh" ]; then
+        echo "pr-check-context: entered through a non-anchor copy ($SCRIPT_DIR) and the anchor carries no scripts/cr/pr-check-context.sh ($anchor) - refusing to let this copy decide; fix HIMMEL_REPO, then re-run" >&2
+        exit 2
+    fi
+    echo "pr-check-context: entered through a non-anchor copy ($SCRIPT_DIR) - handing off to the anchor's copy ($anchor/scripts/cr/pr-check-context.sh)" >&2
+    exec bash "$anchor/scripts/cr/pr-check-context.sh"
+}
+if ! [ "$HIMMEL_ROOT" -ef "$anchor" ]; then
+    guard_anchor="${PR_CHECK_ANCHOR_DELEGATED:-}"
+    case "$guard_anchor" in
+        *'|'*'|'*'|'*) ;;
+        *) hand_off_to_anchor ;;
+    esac
+    guard_anchor="${guard_anchor%|*}"
+    guard_anchor="${guard_anchor%|*}"
+    guard_anchor="${guard_anchor%|*}"
+    if ! { [ -n "$guard_anchor" ] && [ "$guard_anchor" -ef "$anchor" ]; }; then
+        hand_off_to_anchor
+    fi
+fi
+HANDOFF_GUARD_EOF
+)
+literal_replace "$SCRIPT" "$fx_wt/scripts/cr/pr-check-context.sh" "$old62" \
+  ': # T62 mutant (HIMMEL-3536) - the branch deleted its own hand-off guard entirely'
+rc62_mut=$?
+if [ "$rc62_mut" -ne 0 ]; then
+  echo "FAIL: T62 could not build the hand-off-deleted mutant - $(cat "$tmp/literal_replace.err" 2>/dev/null)"
+  fail=1
+fi
+(
+  cd "$fx_wt" || exit 1
+  git add -A
+  git commit -q -m "t62 delete the branch's own hand-off guard"
+) || { echo "FAIL: T62 could not commit the gutted branch copy"; fail=1; }
+
+# T62a: canonical anchored fence entry.
+out62a="$(fx_run)"
+check "$(fx_outcome "$out62a")" "delegated" "T62a canonical fence still delegates through the anchor with the branch's hand-off guard entirely deleted"
+check "$(get_kv "$out62a" cr_diff_files)" "scripts/cr/pr-check-context.sh" "T62a cr_diff_files names the gutted file itself"
+
+# T62b: bare relative entry directly on the gutted branch copy (no
+# PR_CHECK_ANCHOR_DELEGATED - the guard that would normally refuse this is
+# gone). fx_run always targets the anchor's copy, so this reuses fx_outcome
+# against a manual invocation of the branch's OWN (gutted) script instead.
+fx_run_branch_relative() {
+  (cd "$fx_wt" && HIMMEL_REPO="$fx_anchor" bash scripts/cr/pr-check-context.sh 2>"$tmp/fx-last.err")
+  echo "pr-check-context: fx_rc=$?"
+}
+ledger62="$fx_anchor/.git/cr-critic-scores.jsonl"
+rows62_before="$(grep -c '"kind":"delegation"' "$ledger62" 2>/dev/null || echo 0)"
+out62b="$(fx_run_branch_relative)"
+check "$(fx_outcome "$out62b")" "delegated" "T62b a bare relative run of the gutted branch copy still resolves delegated=yes through the anchor"
+rows62_after="$(grep -c '"kind":"delegation"' "$ledger62" 2>/dev/null || echo 0)"
+check "$rows62_after" "$((rows62_before + 1))" "T62b exactly one additional delegation row, still written through the anchor's own ledger-append.sh"
+
 # --- Negative-control check: perturb T3's expectation to confirm the
 # assertion genuinely fails, then restore. This is asserted directly (not by
 # re-running check(), which only logs) so a broken assertion cannot pass

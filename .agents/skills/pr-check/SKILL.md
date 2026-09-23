@@ -124,6 +124,12 @@ on the captured value — so the worktree-isolation guard accepts this shape
 exactly as it accepted the bare form (probed directly in an
 EnterWorktree-isolated session).
 
+**If this fence is refused with "runs bash in a plain command … cannot be
+shown not to run git" anyway, the session is EnterWorktree-pinned** (a leg
+launched before HIMMEL-3536's fix, or one whose settings someone hand-edited
+back in) — the fix and the interim are in `docs/internals/stuck-playbook.md`
+(HIMMEL-3536), not a respelling of this fence.
+
 **Himmel-lane spelling of step 0 (HIMMEL-3359) — run this INSTEAD of the
 fence above, never both, and ONLY in a himmel checkout on a diff that touches
 none of the paths `pr-check-context.sh` guards: `scripts/cr/`, `scripts/lib/`,
