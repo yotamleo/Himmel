@@ -46,6 +46,7 @@ new_repo() {
 # $REPORT for detected_our_rule() to inspect.
 REPORT="$WS/report.json"
 scan_staged() {
+    rm -f "$REPORT"
     gitleaks protect --staged --no-banner -c "$CONFIG" -s "$1" \
         --report-format json --report-path "$REPORT" >/dev/null 2>&1
 }
