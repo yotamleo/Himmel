@@ -40,6 +40,13 @@ git -C "$TMPREPO" -c user.email=fixture@test -c user.name=fixture commit -q -m f
 # --- basic: one entry per class, plus the precedence rule -------------------
 export SCORECARD_PROJECTS_DIR="$HERE/fixtures/dead-parts/basic-transcripts"
 OUT=$("$SCRIPT" --since 2026-09-15T00:00:00Z --repo-root "$TMPREPO" 2>/dev/null)
+rc=$?
+if [ "$rc" -eq 0 ]; then
+    echo "ok - basic: dead-parts.sh exits 0"
+else
+    echo "FAIL - basic: dead-parts.sh rc=$rc (expected 0): $OUT"
+    fails=$((fails + 1))
+fi
 
 check_contains "basic: script class counts (USED/WIRED/TEST-ONLY/DOC-ONLY/DEAD)" \
     "$OUT" "kind=script USED=2 WIRED=3 TEST-ONLY=2 DOC-ONLY=1 DEAD=4"
@@ -108,6 +115,13 @@ fi
 # must not leak into the DEAD verdict for an otherwise-unreferenced script ---
 export SCORECARD_PROJECTS_DIR="$HERE/fixtures/dead-parts/out-of-window-transcripts"
 OUT2=$("$SCRIPT" --since 2026-09-15T00:00:00Z --repo-root "$TMPREPO" 2>/dev/null)
+rc2=$?
+if [ "$rc2" -eq 0 ]; then
+    echo "ok - out-of-window: dead-parts.sh exits 0"
+else
+    echo "FAIL - out-of-window: dead-parts.sh rc=$rc2 (expected 0): $OUT2"
+    fails=$((fails + 1))
+fi
 
 check_contains "out-of-window: the pre-window transcript is discovered but skipped, not silently dropped" \
     "$OUT2" "coverage: roots=1 discovered=1 parsed=0 skipped=1 (out-of-window=1)"

@@ -286,7 +286,7 @@ jq -s -r '
 echo "--- 7. memory-trap join"
 TRAP_ROWS=""
 if [ -r "$MEMORY_TRAPS" ]; then
-    TRAP_ROWS=$(jq -r --slurpfile events "$EVENTS" '
+    if ! TRAP_ROWS=$(jq -r --slurpfile events "$EVENTS" '
         ($events | map(select(.is_error==true) | .text // "")) as $texts
         | .[]
         | (.pattern // "") as $p
@@ -295,7 +295,10 @@ if [ -r "$MEMORY_TRAPS" ]; then
             ([$texts[] | select(test($p))] | length) as $hits
             | "trap=\(.id) status=\(if $hits>0 then "RECURRING" else "DORMANT" end) hits=\($hits) source=\(.source)"
           end
-    ' "$MEMORY_TRAPS")
+    ' "$MEMORY_TRAPS"); then
+        echo "tool-usage: WARNING: memory-trap join (jq) failed - section 7 may be incomplete" >&2
+        TRAP_ROWS=""
+    fi
     printf '%s\n' "$TRAP_ROWS"
     N_TRAPS=$(printf '%s\n' "$TRAP_ROWS" | grep -c '^trap=')
     N_RECURRING=$(printf '%s\n' "$TRAP_ROWS" | grep -c 'status=RECURRING')

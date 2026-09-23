@@ -37,6 +37,13 @@ export SCORECARD_PROJECTS_DIR="$HERE/fixtures/tool-usage/basic"
 OUT=$("$SCRIPT" --since 2026-01-10T00:00:00Z --until 2026-01-20T00:00:00Z \
     --skill-cwd "$HERE/fixtures/tool-usage/skills" \
     --skill-config-dir "$HERE/fixtures/tool-usage/skills-config" 2>/dev/null)
+rc=$?
+if [ "$rc" -eq 0 ]; then
+    echo "ok - basic: tool-usage.sh exits 0"
+else
+    echo "FAIL - basic: tool-usage.sh rc=$rc (expected 0): $OUT"
+    fails=$((fails + 1))
+fi
 
 check_contains "basic: skill invocation counted across both sessions" \
     "$OUT" "skill=himmel-ops:stuck-playbook count=2 sessions=2"
@@ -81,6 +88,13 @@ export SCORECARD_PROJECTS_DIR="$HERE/fixtures/tool-usage/since-edge"
 OUT=$("$SCRIPT" --since 2026-01-10T00:00:00Z --until 2026-01-20T00:00:00Z \
     --skill-cwd "$HERE/fixtures/tool-usage/skills" \
     --skill-config-dir "$HERE/fixtures/tool-usage/skills-config" 2>/dev/null)
+rc_since=$?
+if [ "$rc_since" -eq 0 ]; then
+    echo "ok - since-edge: tool-usage.sh exits 0"
+else
+    echo "FAIL - since-edge: tool-usage.sh rc=$rc_since (expected 0): $OUT"
+    fails=$((fails + 1))
+fi
 check_not_contains "since-edge: the pre-window session's skill call is excluded" \
     "$OUT" "skill=himmel-ops:stuck-playbook count=1"
 check_contains "since-edge: the excluded session is counted as skipped, not lost" \
@@ -95,6 +109,13 @@ OUT=$("$SCRIPT" --since 2026-01-10T00:00:00Z --until 2026-01-20T00:00:00Z \
     --memory-traps "$HERE/fixtures/tool-usage/memory-join/traps.json" \
     --skill-cwd "$HERE/fixtures/tool-usage/skills" \
     --skill-config-dir "$HERE/fixtures/tool-usage/skills-config" 2>/dev/null)
+rc_mem=$?
+if [ "$rc_mem" -eq 0 ]; then
+    echo "ok - memory-join: tool-usage.sh exits 0"
+else
+    echo "FAIL - memory-join: tool-usage.sh rc=$rc_mem (expected 0): $OUT"
+    fails=$((fails + 1))
+fi
 check_contains "memory-join: a matched trap is RECURRING with a hit count" \
     "$OUT" "trap=trap-hit status=RECURRING hits=1"
 check_contains "memory-join: an unmatched trap is DORMANT" \
@@ -108,6 +129,23 @@ check_contains "memory-join: eval-candidates table carries the recurring trap" \
 check_contains "memory-join: eval-candidates table names a proposed eval" \
     "$OUT" "eval-candidates"
 
+# --- memory-join-malformed: a malformed traps file must not silently report
+# zero traps as if the join had succeeded (codex-5: the memory-trap jq call
+# now carries the same WARNING guard sections 3/4 already have) -------------
+OUT=$("$SCRIPT" --since 2026-01-10T00:00:00Z --until 2026-01-20T00:00:00Z \
+    --memory-traps "$HERE/fixtures/tool-usage/memory-join/traps-malformed.json.notjson" \
+    --skill-cwd "$HERE/fixtures/tool-usage/skills" \
+    --skill-config-dir "$HERE/fixtures/tool-usage/skills-config" 2>&1)
+rc_mem_bad=$?
+if [ "$rc_mem_bad" -eq 0 ]; then
+    echo "ok - memory-join-malformed: tool-usage.sh exits 0 (a jq failure here is a warning, not a fatal error)"
+else
+    echo "FAIL - memory-join-malformed: tool-usage.sh rc=$rc_mem_bad (expected 0): $OUT"
+    fails=$((fails + 1))
+fi
+check_contains "memory-join-malformed: the jq failure is surfaced, not silent" \
+    "$OUT" "tool-usage: WARNING: memory-trap join (jq) failed"
+
 # --- command-window: a <command-name> entry outside --since/--until must not
 # count even when the transcript FILE as a whole falls inside the window
 # (codex-2: the CMDS extraction pass filters each command's own timestamp,
@@ -116,6 +154,13 @@ export SCORECARD_PROJECTS_DIR="$HERE/fixtures/tool-usage/command-window"
 OUT=$("$SCRIPT" --since 2026-01-10T00:00:00Z --until 2026-01-20T00:00:00Z \
     --skill-cwd "$HERE/fixtures/tool-usage/skills" \
     --skill-config-dir "$HERE/fixtures/tool-usage/skills-config" 2>/dev/null)
+rc_cmdwin=$?
+if [ "$rc_cmdwin" -eq 0 ]; then
+    echo "ok - command-window: tool-usage.sh exits 0"
+else
+    echo "FAIL - command-window: tool-usage.sh rc=$rc_cmdwin (expected 0): $OUT"
+    fails=$((fails + 1))
+fi
 check_contains "command-window: an in-window command is counted" \
     "$OUT" "slash=/counted-cmd count=1"
 check_not_contains "command-window: a command timestamped before --since is excluded even though the file itself parses" \
@@ -132,6 +177,13 @@ export SCORECARD_PROJECTS_DIR="$HERE/fixtures/tool-usage/partial-write"
 OUT=$("$SCRIPT" --since 2026-01-10T00:00:00Z --until 2026-01-20T00:00:00Z \
     --skill-cwd "$HERE/fixtures/tool-usage/skills" \
     --skill-config-dir "$HERE/fixtures/tool-usage/skills-config" 2>&1)
+rc_partial=$?
+if [ "$rc_partial" -eq 0 ]; then
+    echo "ok - partial-write: tool-usage.sh exits 0 (a jq failure here is a warning, not a fatal error)"
+else
+    echo "FAIL - partial-write: tool-usage.sh rc=$rc_partial (expected 0): $OUT"
+    fails=$((fails + 1))
+fi
 check_not_contains "partial-write: a command from a file whose enrichment pass jq-failed is never counted" \
     "$OUT" "slash=/leaked-cmd"
 check_not_contains "partial-write: a tool_use preceding the malformed timestamp is never counted either (EVENTS staged per-file, same as CMDS)" \
