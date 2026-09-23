@@ -393,6 +393,21 @@ run "find -execdir grep (non-interpreter) -> allow (HIMMEL-3517)" 0 \
 # shellcheck disable=SC2016 # command text, verbatim
 run "control: bash scripts/cr/\$X (real unresolved target) -> still deny" 2 \
     "$(payload 'bash scripts/cr/$X' "$WT")" "$HR"
+
+# Documented residual (console FINDING, 2026-09-23, K-N431-7980c9b9): a
+# `sed -i` edit whose SINGLE-QUOTED sed script contains a backtick span
+# naming a gate-script stem as inert markdown-style prose (not a real
+# command substitution - the surrounding single quotes make the backtick
+# inert to the shell), targeting a literal (resolvable) path, still denies.
+# Quotes are stripped before classification (ponytail comment above
+# `flat=`), so the guard cannot tell that backtick was quoted; it reads
+# identically to a real one. A real fix needs quote-aware tokenization; not
+# attempted here - reported to the console rather than chased under a
+# narrow tightening. (Target is a literal path, not $TMP, so the deny is
+# provably the backtick-span misread and not the unrelated unresolved-var
+# check that a $VAR-suffixed path would also trip.)
+run "ponytail: sed -i backtick span in single-quoted replacement text still denies (HIMMEL-3517)" 2 \
+    "$(payload "sed -i 's/x/y \`bash scripts/cr/review-round.sh\` z/' handover.md" "$WT")" "$HR"
 run "control: find -execdir bash <target> -> still deny" 2 \
     "$(payload "find . -maxdepth 0 -execdir bash scripts/cr/pr-check-context.sh +" "$WT")" "$HR"
 

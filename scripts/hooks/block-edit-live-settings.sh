@@ -455,15 +455,14 @@ mentions_primary_or_home() {
     return 1
 }
 
-# is_readonly_allowlisted CMD_LC — the rule 1 exception: a short list of
-# read-only programs, invoked alone (no chaining/redirection metacharacter
-# anywhere, so a trailing `&& rm -rf /` can't ride in on an allowlisted
-# first verb).
-is_readonly_allowlisted() {
+# is_readonly_segment CMD_LC — the rule 1 exception for a SINGLE command (no
+# chaining/redirection metacharacter anywhere in this one segment, so a
+# trailing `&& rm -rf /` can't ride in on an allowlisted first verb).
+is_readonly_segment() {
     local c="$1" first second
     # shellcheck disable=SC2016 # literal metacharacter text, not expansion
     case "$c" in
-        *';'*|*'&'*|*'|'*|*'`'*|*'$('*|*'<('*|*'>'*|*tee*) return 1 ;;
+        *'&'*|*'|'*|*'`'*|*'$('*|*'<('*|*'>'*|*tee*) return 1 ;;
     esac
     first=$(printf '%s' "$c" | awk '{print $1}')
     case "$first" in
@@ -488,6 +487,45 @@ is_readonly_allowlisted() {
             ;;
         *) return 1 ;;
     esac
+}
+
+# is_readonly_allowlisted CMD_LC — the rule 1 exception: a short list of
+# read-only programs, invoked alone OR chained with a BARE `;` where every
+# `;`-separated segment either is a bare `VAR=value` assignment (inert on its
+# own — no read, no write) or independently passes is_readonly_segment (two
+# read-only `jq` reads back to back is exactly as safe as either one alone —
+# HIMMEL-3465 codex-2). Every other chaining/redirection metacharacter
+# (`&`, `|`, backtick, `$(`, `<(`, `>`, `tee`) still vetoes the WHOLE command
+# outright, so a trailing `&& rm -rf /` still can't ride in on an
+# allowlisted first verb, and a `;`-joined write (`cat x; rm -rf ~`) is still
+# denied because its own segment fails is_readonly_segment.
+# ponytail: matching runs on text with quotes already stripped (HIMMEL-3468,
+# for the primary/$HOME-path detection above), so a `|` INSIDE a quoted jq
+# filter argument (`test("a|b")`) is indistinguishable from a real shell
+# pipe and still denies — a real fix needs quote-aware tokenization, not a
+# metacharacter scan. Upgrade path: HIMMEL-3465 follow-up, if this recurs.
+is_readonly_allowlisted() {
+    local c="$1"
+    # shellcheck disable=SC2016 # literal metacharacter text, not expansion
+    case "$c" in
+        *'&'*|*'|'*|*'`'*|*'$('*|*'<('*|*'>'*|*tee*) return 1 ;;
+    esac
+    case "$c" in
+        *';'*)
+            local rest="$c" seg
+            while :; do
+                seg=${rest%%;*}
+                if printf '%s' "$seg" | grep -Eq '^[[:space:]]*[a-z_][a-z0-9_]*=[^[:space:]]*[[:space:]]*$'; then
+                    :
+                else
+                    is_readonly_segment "$seg" || return 1
+                fi
+                case "$rest" in *';'*) rest=${rest#*;} ;; *) break ;; esac
+            done
+            return 0
+            ;;
+    esac
+    is_readonly_segment "$c"
 }
 
 # mentions_dot_claude_dir_dest CMD_LC — the command names a `.claude`

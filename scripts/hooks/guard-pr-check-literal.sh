@@ -141,6 +141,16 @@ case "$tool" in Bash|"") ;; *) exit 0 ;; esac
 # them, so 'scripts/cr/x', scripts/cr/\x and $'scripts/cr/x' all read as
 # what they spell.
 # A backslash-newline is a line continuation: the shell joins it away first.
+# ponytail: this quote-strip is what lets a single-quoted backtick SPAN used
+# as inert markdown-style prose (a `sed -i 's/x/`bash scripts\/cr\/review-
+# round.sh`/'` replacement string, HIMMEL-3517 console repro 2026-09-23)
+# still deny below — once the quotes are gone, that backtick reads exactly
+# like a real command-substitution backtick, and `simple`'s split on backtick
+# (below) then treats the enclosed text as a command word of its own. A real
+# fix needs quote-aware tokenization (know which backtick was inside a
+# quote), not a wider text scan; same shared limitation as
+# block-edit-live-settings.sh's is_readonly_allowlisted() and a quoted `|`.
+# Upgrade path: HIMMEL-3517 follow-up, if this recurs.
 flat=${cmd//$'\\\n'/}
 flat=${flat//[\'\"\\]/}
 # A glob or brace list can spell a guarded name without either substring

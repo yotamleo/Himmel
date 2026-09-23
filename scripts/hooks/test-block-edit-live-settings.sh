@@ -672,6 +672,40 @@ assert_rc "119 jq read of a scratchpad .leg-settings.json file allows" 0 \
 assert_rc "120 jq -i on the same scratchpad file still denies (control)" 2 \
     "$(bash_rc_of "$PRIMARY" "jq -i '{add:.permissions.additionalDirectories}' /tmp/claude-1000/somesession/scratchpad/HIMMEL-3514-N424-bridge-hardening.leg-settings.json")"
 
+# 121: the console's OWN verbatim reproduction (2026-09-23, FINDING on
+# K-N431-7980c9b9) — case 119 was a simplified paraphrase of what the
+# console actually ran: a `VAR=path;`-prefixed, `;`-compound, TWO-statement
+# read-only `jq` command, from a PRIMARY-checkout cwd (where is_primary_cwd
+# always forces live=1, so the exemption has to come from the read-only
+# allowlist, not from the live/not-live question). Before this fix,
+# is_readonly_allowlisted vetoed on ANY bare `;` unconditionally, so a
+# harmless second read-only statement denied the whole command -> ALLOW now.
+assert_rc "121 VAR=path; jq read; jq read (console repro, no quoted pipe) allows (HIMMEL-3465)" 0 \
+    "$(bash_rc_of "$PRIMARY" "SP=/tmp/claude-1000/somesession/scratchpad; jq '.permissions.additionalDirectories' \$SP/HIMMEL-3514-N424-bridge-hardening.leg-settings.json; jq '.permissions.additionalDirectories' \$SP/HIMMEL-3536-N425-step0-remainder.leg-settings.json")"
+
+# 122 control: the same VAR=path;-prefixed shape, this time with a genuine
+# WRITE (sed -i) as the chained statement -> DENY — proves 121's exemption
+# only covers a chain of independently read-only segments, not a `;`-joined
+# write riding in behind a harmless assignment.
+assert_rc "122 VAR=path; sed -i write still denies (control)" 2 \
+    "$(bash_rc_of "$PRIMARY" "X=/tmp/claude-1000/somesession/scratchpad; sed -i s/a/b/ \$X/settings.json")"
+
+# 123 control: a `;`-joined write with NO leading assignment (`cat x; rm -rf
+# ~`-shaped) still denies — proves the per-segment check, not just the bare
+# `;` veto, is what is carrying rule 1 now.
+assert_rc "123 jq read; sed -i write (no assignment) still denies (control)" 2 \
+    "$(bash_rc_of "$PRIMARY" "jq '.permissions.additionalDirectories' /tmp/claude-1000/somesession/scratchpad/HIMMEL-3514-N424-bridge-hardening.leg-settings.json; sed -i s/a/b/ /tmp/claude-1000/somesession/scratchpad/HIMMEL-3514-N424-bridge-hardening.leg-settings.json")"
+
+# 124: known residual limitation of 121's fix, documented rather than chased
+# (ponytail: this guard matches metacharacters on TEXT after quotes are
+# stripped for the primary/$HOME-path detection above — HIMMEL-3468 — so a
+# `|` INSIDE a quoted jq filter argument, e.g. `test("a|b")`, is
+# indistinguishable from a real shell pipe once quotes are gone. Fixing this
+# needs quote-aware tokenization, a materially bigger change; reported to
+# the console as a FINDING rather than attempted here). Still denies today.
+assert_rc "124 VAR=path; jq with a quoted-pipe regex filter still denies (ponytail, HIMMEL-3465)" 2 \
+    "$(bash_rc_of "$PRIMARY" "SP=/tmp/claude-1000/somesession/scratchpad; jq '[.permissions.allow[]? | select(test(\"luna|handover\"))]' \$SP/HIMMEL-3514-N424-bridge-hardening.leg-settings.json")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true
