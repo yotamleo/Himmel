@@ -719,6 +719,19 @@ assert_rc "124 VAR=path; jq with a quoted-pipe regex filter still denies (ponyta
 assert_rc "125 PATH=/tmp/evil; cat live settings.json still denies (HIMMEL-3465, codex-1)" 2 \
     "$(bash_rc_of "$PRIMARY" "PATH=/tmp/evil; cat \$PRIMARY/.claude/settings.json")"
 
+# 126: /pr-check critic panel round 2 (Critical, 2026-09-23) — grep's ^/$
+# anchor per LINE, not per string. A `;`-segment that itself embeds a real
+# newline (two statements joined by newline rather than `;`) could have its
+# FIRST line match the bare-assignment pattern while a WRITE on the second
+# line of the SAME segment was never independently checked - grep reports
+# success if ANY line matches, so the write rode through unallowlisted.
+# Skipping the assignment shortcut whenever a segment contains a newline (and
+# letting is_readonly_segment judge the whole multi-line segment instead,
+# which denies on an unrecognized multi-line "first word") closes it -> DENY.
+CMD126=$'X=1\nsed -i s/a/b/ .claude/settings.json; jq \'.foo\' .claude/settings.json'
+assert_rc "126 newline-in-segment write no longer rides an assignment match (HIMMEL-3465, codex-1 round 2)" 2 \
+    "$(bash_rc_of "$PRIMARY" "$CMD126")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true

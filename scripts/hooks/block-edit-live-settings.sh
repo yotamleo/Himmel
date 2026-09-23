@@ -515,7 +515,20 @@ is_readonly_allowlisted() {
             local rest="$c" seg assign_match assign_var
             while :; do
                 seg=${rest%%;*}
-                assign_match=$(printf '%s' "$seg" | grep -E '^[[:space:]]*[a-z_][a-z0-9_]*=[^[:space:]]*[[:space:]]*$') || assign_match=
+                # grep's ^/$ anchor per LINE, not per string: a segment that
+                # itself embeds a real newline (two statements joined by
+                # newline rather than `;`) can have one line match the bare
+                # assignment pattern while a later line in the SAME segment
+                # is a write grep never checked - grep reports success on
+                # ANY matching line, so that write rode through unallowlisted
+                # (HIMMEL-3465/3517 panel round 2, codex-1). A segment with
+                # an embedded newline is never a single bare assignment, so
+                # skip the assignment shortcut entirely and let
+                # is_readonly_segment judge the whole (multi-line) segment.
+                case "$seg" in
+                    *$'\n'*) assign_match= ;;
+                    *) assign_match=$(printf '%s' "$seg" | grep -E '^[[:space:]]*[a-z_][a-z0-9_]*=[^[:space:]]*[[:space:]]*$') || assign_match= ;;
+                esac
                 if [ -n "$assign_match" ]; then
                     assign_var=$(printf '%s' "$seg" | sed -E 's/^[[:space:]]*([a-z_][a-z0-9_]*)=.*/\1/')
                     # exec/resolution-influencing names (sudo's env_delete list,
