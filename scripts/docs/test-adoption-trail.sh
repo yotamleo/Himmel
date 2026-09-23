@@ -195,19 +195,40 @@ fi
 # The three first questions (what is this / what will it do to my machine /
 # how do I undo it) must be answered before the reader meets the first
 # command that actually invokes the installer -- otherwise a fresh reader can
-# copy-paste an install before they know how to undo it.
+# copy-paste an install before they know how to undo it. It is not enough to
+# check that the install command comes after the Question 3 HEADING: it must
+# come after the undo guidance is fully stated, and it must still be part of
+# Question 3's own answer (not have drifted into a later section). Find the
+# line where the "undo" answer div actually closes by depth-counting <div>
+# tags from its opening tag, then require the install command to fall on or
+# before that close (inside Question 3) and after the div opened (after the
+# undo guidance).
 q3_line="$(grep -n -F 'qno">Question 3' "$PAGE" | head -1 | cut -d: -f1)"
+q3_end_line="$(awk '
+  /id="undo"/ { instart=1 }
+  instart {
+    line=$0
+    opens = gsub(/<div /,"<div ", line)
+    closes = gsub(/<\/div>/,"<\/div>", line)
+    depth += opens - closes
+    if (depth <= 0) { print NR; exit }
+  }
+' "$PAGE")"
 install_cmd_line="$(grep -n -E 'adopt\.sh --profile|himmelctl/bin\.js install' "$PAGE" | head -1 | cut -d: -f1)"
-if [ -n "$q3_line" ] && [ -n "$install_cmd_line" ] && [ "$install_cmd_line" -gt "$q3_line" ]; then
-  ok "the three first questions are answered above the first install command"
+if [ -n "$q3_line" ] && [ -n "$q3_end_line" ] && [ -n "$install_cmd_line" ] && [ "$install_cmd_line" -gt "$q3_line" ] && [ "$install_cmd_line" -le "$q3_end_line" ]; then
+  ok "the three first questions are answered above the first install command, which stays inside question 3"
 else
-  bad "an install command appears before question 3 (undo) is answered" "question3=line $q3_line, first install command=line $install_cmd_line"
+  bad "an install command appears before question 3 (undo) is fully answered, or outside its answer" "question3=line $q3_line, question3 answer ends=line $q3_end_line, first install command=line $install_cmd_line"
 fi
 
 # No internal ticket key in reader-facing prose. A code comment
 # (<!-- ... -->) or a data attribute is fine; strip both before checking, as
-# the LINKS section above already strips markup for its own checks.
-reader_text="$(sed -E 's/<!--.*-->//g' "$PAGE" | sed -E 's/<[a-zA-Z][^>]*>//g')"
+# the LINKS section above already strips markup for its own checks. A greedy
+# same-line sed match (`<!--.*-->`) can span two separate comments on one
+# line and eat the visible text between them, and it cannot see a comment
+# that spans multiple lines at all; use a non-greedy, whole-file match
+# instead so each comment is removed independently.
+reader_text="$(perl -0777 -pe 's/<!--.*?-->//gs' "$PAGE" | sed -E 's/<[a-zA-Z][^>]*>//g')"
 ticket_hits="$(printf '%s' "$reader_text" | grep -o -E 'HIMMEL-[0-9]+' | sort -u | tr '\n' ' ')"
 if [ -z "$ticket_hits" ]; then
   ok "no internal ticket key in reader-facing text"
