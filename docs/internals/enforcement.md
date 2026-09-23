@@ -1586,9 +1586,14 @@ Then `//` and `/./` are collapsed to `/`. A linked worktree's own absolute
 root, with its trailing `/`, is blanked out before the primary-root match, so
 a nested worktree can write its own settings.
 
+ANSI-C quoting (`$'\x2e\x2e'`, `settings$'\x2e'json`) can spell any byte, so
+it is not decoded. Any `$'` in a command that also contains the substring
+`settings` or `claude` counts as a live settings mention, whatever the cwd.
+
 **Accepted false denies** (each has a test row): a harmless `cd` plus a
 worktree-settings mention; any `..` beside a worktree-settings mention
-(`cp ../notes.txt .claude/settings.json`); a `cat >> other.md` whose heredoc
+(`cp ../notes.txt .claude/settings.json`); any `$'` beside a `settings` or
+`claude` substring, even for the worktree's own copy; a `cat >> other.md` whose heredoc
 prose names `settings.json` (the hook does not parse where the bytes land);
 and a read of the file piped or redirected onward.
 
@@ -1603,6 +1608,8 @@ does not name the file or its directory in a form above:
   flag with another name (`tar --directory`);
 - a name built at run time: variables, `$(…)` and backtick substitution,
   and globs;
+- an ANSI-C word that escapes the `settings` or `claude` letters themselves
+  (`$'\x73ettings.json'`);
 - symlinks;
 - an absolute path into a second clone of the repo, other than this
   session's own primary checkout;

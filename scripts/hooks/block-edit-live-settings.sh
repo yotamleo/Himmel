@@ -580,6 +580,22 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
         *settings.json*|*settings.local.json*) mentions_settings=1 ;;
     esac
 
+    # ANSI-C quoting (`$'\x2e\x2e'`, `settings$'\x2e'json`) spells any byte,
+    # so the text above cannot say what it names. Not decoded: a `$'` beside
+    # any `settings` or `claude` substring is treated as a live mention
+    # (HIMMEL-3468). Judged on the raw text — the fold removed the quote.
+    # ponytail: a word whose `settings`/`claude` letters are themselves
+    # escaped (`$'\x73ettings.json'`) is not caught — same class as a path
+    # built by `$(printf …)`.
+    ansi_c=0
+    case "$cmd" in
+        *"\$'"*)
+            case "$cmd_lc" in
+                *settings*|*claude*) ansi_c=1; mentions_settings=1 ;;
+            esac
+            ;;
+    esac
+
     dir_dest=0
     if mentions_dot_claude_dir_dest "$cmd_lc" && has_write_verb_or_target_flag "$cmd_lc"; then
         dir_dest=1
@@ -592,7 +608,7 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     resolve_repo_context
 
     live=0
-    if [ "$is_primary_cwd" = "1" ]; then
+    if [ "$is_primary_cwd" = "1" ] || [ "$ansi_c" = "1" ]; then
         live=1
     elif changes_directory "$cmd_lc" "$cmd_n"; then
         # The worktree-relative exemption is judged against the PreToolUse

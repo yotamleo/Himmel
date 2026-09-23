@@ -597,6 +597,17 @@ assert_rc "104 cp /tmp/x .claude/ from a worktree allows" 0 \
 assert_rc "105 grep -C 3 on the worktree's own settings allows" 0 \
     "$(bash_rc_of "$WT2" "grep -C 3 x .claude/settings.json")"
 
+# 106-109: ANSI-C quoting spells any byte, so a `$'` beside a settings or
+# claude substring is live, undecoded (console round-2 NO-GO).
+assert_rc "106 ANSI-C \$'\\x2e\\x2e' climb from a nested worktree denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'echo x > $'"'"'\x2e\x2e'"'"'/$'"'"'\x2e\x2e'"'"'/settings.json')"
+assert_rc "107 ANSI-C split settings\$'\\x2e'json from primary denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'echo x > .claude/settings$'"'"'\x2e'"'"'json')"
+assert_rc "108 ANSI-C split settings name from a worktree denies (accepted false deny)" 2 \
+    "$(bash_rc_of "$WT2" 'echo x > .claude/settings$'"'"'\x2e'"'"'json')"
+assert_rc "109 ANSI-C with no settings/claude mention allows" 0 \
+    "$(bash_rc_of "$WT2" 'printf $'"'"'a\tb\n'"'"' > /tmp/out.json')"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true
