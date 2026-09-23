@@ -28,11 +28,11 @@ V="HIMMEL_UNINSTALL_""REAL_HOME"
 # just confirmed offboarding, so a scratch HOME would defeat them. One reason
 # each; a new entry is a deliberate act.
 ALLOW_PATHS=(
-  "scripts/himmelctl/bin.js"
+  "scripts/himmelctl/lib/uninstall-wrapper.js"
   "scripts/uninstall.sh"
 )
 ALLOW_WHY=(
-  "the wizard's confirmed wet teardown spawn: it must lift the fence for the operator's real HOME"
+  "the wizard's confirmed wet teardown spawn: it must lift the fence for the operator's real HOME (HIMMEL-3312 S13 item 2 moved this out of bin.js, which no longer sets the variable itself)"
   "matches only remedy TEXT (the re-run hint printed for a refused wet run); it never sets the variable itself"
 )
 

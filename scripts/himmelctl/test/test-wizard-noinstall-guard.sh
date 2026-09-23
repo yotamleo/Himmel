@@ -26,6 +26,20 @@ repo_root=$(git rev-parse --show-toplevel)
 wizard="$repo_root/scripts/himmelctl/bin.js"
 [ -f "$wizard" ] || { echo "FAIL: $wizard not found" >&2; exit 1; }
 
+# HIMMEL-3312 S13 items 1-2 extracted the PATH-launcher shim and the
+# `uninstall` verb's script-exec (cmdUninstall -> uninstall.sh) out of bin.js
+# into these two lib files -- the script-exec surface (cases A/B below) has
+# to scan them too, or a name dropped from the allow-set stops constraining
+# anything (bin.js's own text no longer references it).
+script_exec_files=(
+  "$wizard"
+  "$repo_root/scripts/himmelctl/lib/launcher.js"
+  "$repo_root/scripts/himmelctl/lib/uninstall-wrapper.js"
+)
+for f in "${script_exec_files[@]}"; do
+  [ -f "$f" ] || { echo "FAIL: $f not found" >&2; exit 1; }
+done
+
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
 work=$(mktemp -d)
@@ -113,7 +127,7 @@ NAMES
 # rogue reference even inside a comment still trips the guard — a
 # conservative trip-wire). .mjs joined HIMMEL-758 (set-lane-override.mjs).
 extract_script_targets() {
-  grep -oE "['\"][A-Za-z0-9_.-]+\.(sh|ps1|mjs)['\"]" "$wizard" | tr -d "'\"" | sort -u
+  grep -ohE "['\"][A-Za-z0-9_.-]+\.(sh|ps1|mjs)['\"]" "${script_exec_files[@]}" | tr -d "'\"" | sort -u
 }
 
 # check_allow_set <allow-set-file> — 0 iff every script target bin.js
@@ -188,8 +202,8 @@ echo "ok: caseB dropping any single allow-set name breaks the guard (proves it c
 # `dest` itself is left untouched until the rename, so a failure at any point
 # up to and including the write leaves a previously-saved profile intact.
 writes=$(grep -c 'fs\.writeFileSync' "$wizard")
-[ "$writes" -eq 5 ] \
-  || fail "caseC: expected exactly 5 fs.writeFileSync calls (profile cache + install-profile save + PATH-launcher tmp + phi-roots + .salus marker), got $writes"
+[ "$writes" -eq 4 ] \
+  || fail "caseC: expected exactly 4 fs.writeFileSync calls in bin.js (profile cache + install-profile save + phi-roots + .salus marker; the PATH-launcher tmp write moved to lib/launcher.js, HIMMEL-3312 S13 item 1), got $writes"
 grep -q 'fs.writeFileSync(cachePath()' "$wizard" \
   || fail "caseC: missing the profile-cache write (cachePath())"
 # Pinned on the FULL call shape (destination var + bytes var + the exclusive-
@@ -199,23 +213,22 @@ grep -q 'fs.writeFileSync(cachePath()' "$wizard" \
 # named `tmpDest`.
 grep -q "fs.writeFileSync(tmpDest, bytes, { flag: 'wx' })" "$wizard" \
   || fail "caseC: missing the install-profile save write (offerSaveProfile tmpDest, HIMMEL-2483), or its call shape changed"
+# HIMMEL-3312 S13 item 1: writeMarkedLauncher() (and its tmp+rename PATH-
+# launcher shim write) was extracted out of bin.js into lib/launcher.js —
+# checked here, not against $wizard, since bin.js's own text no longer
+# contains it.
+grep -q "fs.writeFileSync(tmp, contents, 'utf8')" "$repo_root/scripts/himmelctl/lib/launcher.js" \
+  || fail "caseC: missing the PATH-launcher shim write (writeMarkedLauncher tmp, HIMMEL-1446) in lib/launcher.js"
 # Pinned on the FULL call shape, not the bare `fs.writeFileSync(tmp,` prefix:
 # since HIMMEL-2347 fix 3, mergePhiRoot() also writes to a variable named
 # `tmp`, so the short prefix matched EITHER site and this pin silently stopped
 # being site-specific. The count check alone would not cover that — it only
 # catches a write disappearing, not two pins collapsing onto one site.
-grep -q "fs.writeFileSync(tmp, contents, 'utf8')" "$wizard" \
-  || fail "caseC: missing the PATH-launcher shim write (writeMarkedLauncher tmp, HIMMEL-1446)"
-# HIMMEL-2347 CR fix 3: mergePhiRoot() now writes to a sibling tmp file and
-# rename()s it over the target (atomic write, torn-write fix) instead of
-# writing `file` directly — the pin is updated to the new call shape
-# deliberately, not bumped blindly; the call COUNT is unchanged (still one
-# fs.writeFileSync site for this write, just now targeting `tmp`).
 grep -q "fs.writeFileSync(tmp, lines.join('" "$wizard" \
   || fail "caseC: missing the phi-roots merge write (mergePhiRoot, HIMMEL-2347 — now via tmp+rename, HIMMEL-2347 CR fix 3)"
 grep -q "fs.writeFileSync(markerPath, '', { flag: 'wx' })" "$wizard" \
   || fail "caseC: missing the .salus marker write, or it is no longer exclusive-create 'wx' (HIMMEL-2347 — a plain write would truncate an existing marker)"
-echo "ok: caseC bin.js's only fs.writeFileSync calls are the profile cache, the install-profile save, the PATH-launcher shim, and the two PHI guard inputs"
+echo "ok: caseC bin.js's only fs.writeFileSync calls are the profile cache, the install-profile save, and the two PHI guard inputs; lib/launcher.js's is the PATH-launcher shim"
 
 # ── Case D: only node builtins are required -- zero npm deps ───────────────
 required=$(grep -oE "require\('[a-zA-Z_/-]+'\)" "$wizard" | sed -E "s/require\('(.*)'\)/\1/" | sort -u)

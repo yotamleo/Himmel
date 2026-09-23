@@ -17,6 +17,7 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
 repo_root=$(git rev-parse --show-toplevel)
+. "$repo_root/scripts/himmelctl/test/_hermetic-home.sh"  # HIMMEL-2350: shared winpath() -- dies loud on empty input/output instead of silently falling through to the operator's real home
 command -v node >/dev/null 2>&1 || fail "node required"
 node_bin=$(command -v node)
 bash_bin=$(command -v bash)
