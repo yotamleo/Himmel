@@ -36,7 +36,7 @@ check_not_contains() {
 TMPREPO=$(mktemp -d "${TMPDIR:-/tmp}/test-dead-parts.XXXXXX") || { echo "FAIL - mktemp"; exit 1; }
 WTPATH="$TMPREPO-worktree"
 # shellcheck disable=SC2317,SC2329  # invoked by the EXIT trap below
-cleanup() { git -C "$TMPREPO" worktree remove --force "$WTPATH" 2>/dev/null; rm -rf "$TMPREPO" "$WTPATH" "${BROKENREPO:-}"; }
+cleanup() { git -C "$TMPREPO" worktree remove --force "$WTPATH" 2>/dev/null; rm -rf "$TMPREPO" "$WTPATH" "${BROKENREPO:-}" "${TSREPO:-}" "${BIGTS:-}"; }
 trap cleanup EXIT
 
 cp -R "$HERE/fixtures/dead-parts/basic-repo/." "$TMPREPO/" || { echo "FAIL - fixture copy"; exit 1; }
@@ -209,6 +209,58 @@ else
 fi
 check_contains "broken repo: the abort names the failing git ls-files call, not a silent empty report" \
     "$OUT4" "dead-parts: git ls-files failed for --repo-root"
+
+# --- TS-ESM wiring: a .ts entry imported only via its compiled .js specifier
+# (PR #1170's documented caveat) must classify WIRED, not DEAD -------------
+TSREPO=$(mktemp -d "${TMPDIR:-/tmp}/test-dead-parts-ts.XXXXXX") || { echo "FAIL - mktemp ts repo"; exit 1; }
+mkdir -p "$TSREPO/scripts"
+printf 'export function actExec() {}\n' > "$TSREPO/scripts/act-exec.ts"
+printf 'import { actExec } from "./act-exec.js";\nactExec();\n' > "$TSREPO/scripts/caller.mjs"
+git -C "$TSREPO" init -q || { echo "FAIL - ts repo git init"; exit 1; }
+git -C "$TSREPO" add -A || { echo "FAIL - ts repo git add"; exit 1; }
+git -C "$TSREPO" -c user.email=fixture@test -c user.name=fixture commit -q -m fixture \
+    || { echo "FAIL - ts repo git commit"; exit 1; }
+export SCORECARD_PROJECTS_DIR="$HERE/fixtures/dead-parts/basic-transcripts"
+OUTTS=$("$SCRIPT" --since 2026-09-15T00:00:00Z --repo-root "$TSREPO" 2>&1)
+rcts=$?
+if [ "$rcts" -eq 0 ]; then
+    echo "ok - ts-wiring: dead-parts.sh exits 0"
+else
+    echo "FAIL - ts-wiring: dead-parts.sh rc=$rcts (expected 0): $OUTTS"
+    fails=$((fails + 1))
+fi
+check_contains "ts-wiring: a .ts entry referenced only via its .js import specifier lands WIRED, not DEAD (PR #1170 caveat fix)" \
+    "$OUTTS" $'script\tact-exec\tscripts/act-exec.ts\tWIRED'
+
+# --- pathological scale: many timestamps in one transcript file must not
+# block the report - the whole report used to be buffered until a per-line
+# `date -d` fork ran once for every extracted timestamp, so a large real
+# transcript (thousands of tool_use records) made the tool look silently
+# hung. A bounded `timeout` proves the fix. Measured on this machine: the
+# pre-fix per-line fork loop takes ~3.8s per 4000 timestamps (linear), so
+# 4000 alone finishes inside any reasonable timeout and proves nothing -
+# 20000 is chosen because the pre-fix loop reliably exceeds 10s on it while
+# the fixed sort-based gate finishes in well under 1s. ----------------------
+BIGTS=$(mktemp -d "${TMPDIR:-/tmp}/test-dead-parts-bigts.XXXXXX") || { echo "FAIL - mktemp bigts"; exit 1; }
+BIGFILE="$BIGTS/session.jsonl"
+: > "$BIGFILE"
+i=0
+while [ "$i" -lt 20000 ]; do
+    printf '{"type":"assistant","timestamp":"2026-09-15T00:00:%02d.%03dZ","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"echo hi"}}]}}\n' \
+        "$((i % 60))" "$((i % 1000))" >> "$BIGFILE"
+    i=$((i + 1))
+done
+export SCORECARD_PROJECTS_DIR="$BIGTS"
+OUTBIG=$(timeout 10 "$SCRIPT" --since 2026-09-15T00:00:00Z --repo-root "$TMPREPO" 2>&1)
+rcbig=$?
+if [ "$rcbig" -eq 0 ]; then
+    echo "ok - pathological scale: dead-parts.sh completes well inside 10s on a 20000-timestamp transcript"
+else
+    echo "FAIL - pathological scale: dead-parts.sh rc=$rcbig (expected 0, 124=timeout means the per-line date-fork hang is back): $OUTBIG"
+    fails=$((fails + 1))
+fi
+check_contains "pathological scale: the report still prints (not silently empty)" \
+    "$OUTBIG" "--- entry-point classification"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

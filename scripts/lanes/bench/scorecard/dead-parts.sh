@@ -34,15 +34,15 @@
 # runs in CI/pre-commit. Accepted given "report only, no deletions" - a human
 # reviews every DEAD row before acting.
 #
-# ponytail: a real 7-day audit run showed the DEAD class skewed heavily toward
-# .ts/.test.ts files (confirmed via scripts/ci-orchestrator/src/adapters/
-# act-exec.ts - imported by adapters-act-exec.test.ts, yet DEAD). Root cause:
-# TS-ESM import specifiers name the compiled `.js` extension
-# (`from "../src/adapters/act-exec.js"`) while the tracked source file is
-# `act-exec.ts`, so the basename-literal grep never matches. Same "no textual
-# reference to its own name" shape as the test-glob case above, one basename
-# suffix off; not special-cased, for the same reason. A DEAD .ts row needs a
-# manual .js-suffixed check before anyone treats it as orphaned.
+# HIMMEL-3513 follow-up (PR #1170's caveat): `.ts` was missing from the
+# discovery extension filter entirely, so a `.ts` source file was never even
+# added as an entry point - it silently never appeared in the report at all,
+# neither WIRED nor DEAD. Fixed: `.ts` is now discovered like `.sh`/`.js`.
+# Separately, a TS-ESM import specifier names the compiled `.js` extension
+# (`from "../foo.js"`) while the tracked source is `foo.ts`, so a plain
+# basename-literal grep on the `.ts` name still misses real references. Fixed:
+# a `.ts` entry's reference search also unions a basename search on its
+# `.js`-suffixed name (see the classification loop below).
 #
 # Usage: dead-parts.sh --since <ISO8601> [--until <ISO8601>] [--repo-root <path>]
 #
@@ -122,10 +122,13 @@ while IFS= read -r p; do
         # codex-1 (round 11): scripts/ also carries data and doc files
         # (backends.json, README.md, ...) - without an extension filter every
         # tracked file under it was misclassified as a script entry point.
-        *.sh|*.mjs|*.js|*.py) ;;
+        # HIMMEL-3513 follow-up: .ts was missing from this filter entirely, so
+        # a TS source file was never even added as an entry point - it could
+        # not be reported DEAD OR WIRED, it just silently never appeared.
+        *.sh|*.mjs|*.js|*.py|*.ts) ;;
         *) continue ;;
     esac
-    n=$(basename "$p" .sh)
+    n=$(basename "$p"); n="${n%.sh}"; n="${n%.mjs}"; n="${n%.js}"; n="${n%.py}"; n="${n%.ts}"
     printf 'script\t%s\t%s\n' "$n" "$p"
 done < "$RUN/script-files.txt" >> "$ENTRIES"
 
@@ -168,10 +171,23 @@ fi
 # resumed/compacted session can append a record whose timestamp sorts earlier
 # than one physically before it), so gating the whole file on its head/tail
 # LINES' timestamps can discard a file that still has a genuinely in-window
-# record somewhere in the middle. Scan every extracted timestamp and gate on
-# the true min/max instead - the per-record `inwin` filter below still does
-# the real per-record selection; this is only the cheap whole-file skip.
-ts_of() { grep -o '"timestamp":"[0-9TZ:.-]*"' "$1" 2>/dev/null | cut -d'"' -f4; }
+# record somewhere in the middle. Gate on the true min/max instead - the
+# per-record `inwin` filter below still does the real per-record selection;
+# this is only the cheap whole-file skip.
+#
+# HIMMEL-3513 follow-up: the min/max used to come from a per-line bash loop
+# calling `to_epoch` (a `date -d` fork) once per extracted timestamp - fine
+# for a handful of records, but a real transcript file can carry thousands of
+# tool_use timestamps, and a real run scans every *.jsonl under every
+# transcript root (hundreds of worktree roots as legs accumulate). That is
+# tens or hundreds of thousands of serial `date` forks before the FIRST byte
+# of the report prints (the report is built and emitted only after this whole
+# scan finishes), which is indistinguishable from a silent hang to anyone who
+# doesn't wait it out. `to_epoch` is now called at most twice per file - the
+# extracted timestamps are ISO8601 UTC strings of uniform width, which sort
+# lexically in chronological order, so the sorted first/last line IS the
+# min/max without visiting every line in a subshell.
+ts_of() { grep -o '"timestamp":"[0-9TZ:.-]*"' "$1" 2>/dev/null | cut -d'"' -f4 | sort; }
 
 TAGGED="$RUN/tagged.tsv"; : > "$TAGGED"
 JQ_FAILS=0
@@ -181,13 +197,9 @@ while IFS= read -r f; do
 
     ts_of "$f" > "$RUN/cur-ts.txt"
     [ -s "$RUN/cur-ts.txt" ] || { sc_cov no-timestamp; continue; }
-    min_epoch=""; max_epoch=""
-    while IFS= read -r ts; do
-        ep=$(to_epoch "$ts") || continue
-        if [ -z "$min_epoch" ] || [ "$ep" -lt "$min_epoch" ]; then min_epoch="$ep"; fi
-        if [ -z "$max_epoch" ] || [ "$ep" -gt "$max_epoch" ]; then max_epoch="$ep"; fi
-    done < "$RUN/cur-ts.txt"
-    [ -n "$min_epoch" ] || { sc_cov bad-timestamp; continue; }
+    min_epoch=$(to_epoch "$(head -n 1 "$RUN/cur-ts.txt")") || min_epoch=""
+    max_epoch=$(to_epoch "$(tail -n 1 "$RUN/cur-ts.txt")") || max_epoch=""
+    if [ -z "$min_epoch" ] || [ -z "$max_epoch" ]; then sc_cov bad-timestamp; continue; fi
     [ "$max_epoch" -ge "$SINCE_EPOCH" ] || { sc_cov out-of-window; continue; }
     if [ -n "$UNTIL_EPOCH" ] && [ "$min_epoch" -ge "$UNTIL_EPOCH" ]; then sc_cov out-of-window; continue; fi
 
@@ -301,6 +313,20 @@ while IFS=$'\t' read -r kind name path; do
         bn_hits=$(printf '%s\n' "$bn_hits" | grep -vE '(^|/)fixtures/')
         hits=$(printf '%s\n%s\n' "$hits" "$bn_hits" | grep -v '^$' | sort -u)
     fi
+    # HIMMEL-3513 follow-up (PR #1170's caveat): a TS-ESM import specifier
+    # names the compiled `.js` extension (`from "../src/foo.js"`) while the
+    # tracked source is `foo.ts`, so neither the full-path nor the
+    # basename-literal search above ever matches a real import. Union in one
+    # more basename search on the .js-suffixed name for .ts entries only.
+    case "$path" in
+        *.ts)
+            js_bn="$(basename "$path" .ts).js"
+            js_hits=$(git -C "$REPO_ROOT" grep -lF -- "$js_bn" 2>/dev/null); jgrc=$?
+            [ "$jgrc" -gt 1 ] && GIT_GREP_FAILS=$((GIT_GREP_FAILS + 1))
+            js_hits=$(printf '%s\n' "$js_hits" | grep -vE '(^|/)fixtures/')
+            hits=$(printf '%s\n%s\n' "$hits" "$js_hits" | grep -v '^$' | sort -u)
+            ;;
+    esac
     cls=$(printf '%s\n' "$hits" | classify_hits "$path")
     printf '%s\t%s\t%s\t%s\n' "$kind" "$name" "$path" "$cls" >> "$CLASS"
 done < "$ENTRIES"
