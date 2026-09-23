@@ -214,11 +214,12 @@ q3_end_line="$(awk '
     if (depth <= 0) { print NR; exit }
   }
 ' "$PAGE")"
+q3_last_p_line="$(awk -v s="$q3_line" -v e="$q3_end_line" 'NR>=s && NR<=e && /<p[ >]/ { last=NR } END { print last+0 }' "$PAGE")"
 install_cmd_line="$(grep -n -E 'adopt\.sh --profile|himmelctl/bin\.js install' "$PAGE" | head -1 | cut -d: -f1)"
-if [ -n "$q3_line" ] && [ -n "$q3_end_line" ] && [ -n "$install_cmd_line" ] && [ "$install_cmd_line" -gt "$q3_line" ] && [ "$install_cmd_line" -le "$q3_end_line" ]; then
-  ok "the three first questions are answered above the first install command, which stays inside question 3"
+if [ -n "$q3_line" ] && [ -n "$q3_end_line" ] && [ "$q3_last_p_line" -gt 0 ] && [ -n "$install_cmd_line" ] && [ "$install_cmd_line" -gt "$q3_last_p_line" ] && [ "$install_cmd_line" -le "$q3_end_line" ]; then
+  ok "the three first questions are answered above the first install command, which stays inside question 3 and after its last paragraph of prose"
 else
-  bad "an install command appears before question 3 (undo) is fully answered, or outside its answer" "question3=line $q3_line, question3 answer ends=line $q3_end_line, first install command=line $install_cmd_line"
+  bad "an install command appears before question 3's undo prose is fully stated, or outside its answer" "question3=line $q3_line, last undo paragraph=line $q3_last_p_line, question3 answer ends=line $q3_end_line, first install command=line $install_cmd_line"
 fi
 
 # No internal ticket key in reader-facing prose. A code comment
