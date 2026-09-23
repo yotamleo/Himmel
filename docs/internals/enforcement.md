@@ -17,7 +17,9 @@ Stages currently wired:
   check-yaml, check-json, shellcheck.
 - **Secrets (pre-commit):** gitleaks (`.gitleaks.toml`), including the
   `himmel-retired-org-name` rule (HIMMEL-3508): a retired third-party org's
-  name must never reappear in this repo, its commits, or its PRs.
+  name must never reappear in this repo's tracked content (gitleaks scans
+  staged/tracked files, not commit-message or PR-metadata text — those stay
+  a contributor discipline point, not a structurally enforced surface).
 - **Branch hygiene (pre-commit):** worktree-isolation (blocks commit when
   branch == main), merged-branch check (warns on commits to already-merged
   branches).
