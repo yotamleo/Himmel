@@ -727,14 +727,15 @@ apply`, `mode=level level=<X>`).
 
 | `CLAUDE_CODE_EFFORT_LEVEL` | Level sent to `gpt-6-sol` |
 |---|---|
-| _(unset — the lane default)_ | **`xhigh`** |
+| _(unset — the lane default)_ | **`medium`** (the launcher pins `CLAUDE_CODE_EFFORT_LEVEL=medium` when unset, HIMMEL-2772; a truly bare invocation that bypasses the launcher still falls back to Claude Code's own implicit `xhigh`) |
 | `low` / `medium` / `high` / `xhigh` | `low` / `medium` / `high` / `xhigh` |
 | `max` | `max` (accepted upstream — see caveat) |
-| `ultra`, or any unrecognized value | **`xhigh`** — silently falls back to the default |
+| `ultra`, or any unrecognized value | **`xhigh`** — silently falls back to Claude Code's own implicit default |
 
 - **`ultra` is unreachable from the Claude Code side.** The effort enum tops out
   at `max`; the literal `ultra` is never forwarded — Claude Code ignores any
-  unrecognized value and falls back to the lane default (`xhigh`). No
+  unrecognized value and falls back to its own implicit default (`xhigh`), not
+  the launcher's `medium` pin (which only fires when the var is fully unset). No
   `CLAUDE_CODE_EFFORT_LEVEL` value produces `level=ultra` to codex, so **no
   launcher guard against `ultra` is needed** (Claude Code itself refuses it).
 - **`max` is the real ultra-risk vector.** It IS reachable and forwarded

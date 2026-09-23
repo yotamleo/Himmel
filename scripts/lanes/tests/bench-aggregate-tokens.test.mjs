@@ -60,6 +60,23 @@ test('costUsd applies the spec §0.1 list-price rates', () => {
   assert.equal(costUsd('unknown-model', usage), null);
 });
 
+test('costUsd still resolves the legacy gpt-5.6-luna rate after the HIMMEL-3500 repin (HIMMEL-3516)', () => {
+  const usage = { input_tokens: 1_000_000, output_tokens: 1_000_000, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+  const cost = costUsd('gpt-5.6-luna', usage);
+  assert.notEqual(cost, null);
+  assert.equal(cost, RATES['gpt-5.6-luna'].inputPerM + RATES['gpt-5.6-luna'].outputPerM);
+});
+
+test('aggregate() resolves a manifest recorded under the legacy gpt-5.6-luna model to a real, non-null cost (HIMMEL-3516)', () => {
+  const records = [
+    { run_id: 'T7-luna-legacy-1', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-5.6-luna', transcript_path: LUNA_SAMPLE },
+  ];
+  const result = aggregate(records, { readTranscript: (p) => readFileSync(p, 'utf8') });
+  assert.equal(result.missing.length, 0);
+  assert.equal(result.rows.length, 1);
+  assert.notEqual(result.rows[0].cost_usd, null);
+});
+
 test('aggregate() resolves every run via an injected readTranscript and reports zero missing', () => {
   const records = [
     { run_id: 'T7-haiku-1', task: 'T7', cell: 'haiku', rep: 1, model: 'claude-haiku-4-5', transcript_path: HAIKU_SAMPLE },
