@@ -953,9 +953,15 @@ contains "full launch --profile: seeded settings deny EnterWorktree" \
 # merge GO is authenticated only by the existence of a file under
 # <handover_root>/.locks/go/, unguarded by any hook, so widening the grant to
 # the root would let a leg mint its own GO via an auto-approved Write.
-check "full launch --profile: seeded settings grant only the doc's own directory, not the handover root" \
-  "$(jq -c '.permissions.additionalDirectories' "$d17/HIMMEL-3333-leg.leg-settings.json" 2>/dev/null)" \
-  "$(jq -cn --arg d "$tmp" '[$d]')"
+# NOTE: this launch's doc is the shared $some_doc fixture ($tmp/some-doc.md),
+# whose directory ($tmp) is coincidentally an ANCESTOR of HANDOVER_DIR here -
+# a test-harness artifact of the shared tmp layout, not a real caller shape
+# (real callers always resolve DOC via handover_root(), never an ancestor of
+# it). The dedicated ancestor/prefix-lookalike cases below exercise that
+# boundary directly, so this assertion expects no grant, matching the
+# ancestor-skip behaviour (HIMMEL-3544).
+check "full launch --profile: seeded settings grant nothing (doc dir is an ancestor of the root here)" \
+  "$(jq -c '.permissions.additionalDirectories // "none"' "$d17/HIMMEL-3333-leg.leg-settings.json" 2>/dev/null)" '"none"'
 
 # Never the handover root itself, on any --profile launch - the invariant the
 # scoped grant above must hold even if the doc happened to sit at the root.
@@ -1005,10 +1011,12 @@ check "full launch --profile (space in handover root): .locks deny resolves with
   "$(jq -c '.permissions.deny' "$d17s/HIMMEL-3333-space.leg-settings.json" 2>/dev/null)" \
   "$(jq -cn --arg d "$space_root" '["EnterWorktree"] + (["Edit","Write","MultiEdit","NotebookEdit"] | map(. + "(" + $d + "/.locks/**)"))')"
 
-# HIMMEL-3285 (CR round 2, codex-1): a doc placed directly AT the handover
-# root (dirname(doc) == HANDOVER_DIR) must never collapse the grant to the
-# whole root - the wrapper refuses the launch outright rather than widen
-# additionalDirectories to HANDOVER_DIR.
+# HIMMEL-3285 (CR round 2, codex-1; behaviour changed CR round 4/5, codex-1,
+# HIMMEL-3544): a doc placed directly AT the handover root (dirname(doc) ==
+# HANDOVER_DIR) must never collapse the grant to the whole root - rather than
+# refusing the launch outright (round 2-4 behaviour), the wrapper now skips
+# only the additionalDirectories grant and launches normally, falling back to
+# the classifier for this leg's own doc writes.
 d17root="$tmp/c17root"; mk_launch_stubs "$d17root" "HIMMEL-3333-atroot"; mkdir -p "$tmp/repo17root"
 root_doc="$HANDOVER_DIR/HIMMEL-3333-atroot.md"
 printf '%s\n' '# fixture doc at the handover root' > "$root_doc"
@@ -1018,9 +1026,49 @@ HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
 KONSOLE_CMD="$d17root/konsole" PGREP_CMD="$d17root/pgrep" \
 LEG_REPO="$tmp/repo17root" HEADED_ARM_LOCK_DIR="$d17root/locks" HEADED_ARM_PROC="$d17root/proc" \
   bash "$SCRIPT" --profile leg-impl "HIMMEL-3333-atroot" "$root_doc" "$d17root/signal-never" "$PAST" "$d17root/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
-check "full launch --profile (doc directly at handover root): refuses rather than grant the whole root" "$rc" "2"
-check "full launch --profile (doc directly at handover root): no settings file written" \
-  "$([ -e "$d17root/HIMMEL-3333-atroot.leg-settings.json" ] && echo present || echo absent)" "absent"
+wait_record "$d17root" || true
+check "full launch --profile (doc directly at handover root): exit 0, no longer refused" "$rc" "0"
+check "full launch --profile (doc directly at handover root): additionalDirectories not granted" \
+  "$(jq -c '.permissions.additionalDirectories // "none"' "$d17root/HIMMEL-3333-atroot.leg-settings.json" 2>/dev/null)" '"none"'
+
+# HIMMEL-3285 (CR round 4, codex-1, HIMMEL-3544): a doc directory that is a
+# strict ANCESTOR of the handover root (not merely equal to it) must also
+# skip the grant - additionalDirectories to that ancestor would cover the
+# root, and its .locks/, underneath it.
+d17parent="$tmp/c17parent"; mk_launch_stubs "$d17parent" "HIMMEL-3333-parent"; mkdir -p "$tmp/repo17parent"
+parent_doc="$tmp/HIMMEL-3333-parent.md"
+printf '%s\n' '# fixture doc in a directory that is an ancestor of the handover root' > "$parent_doc"
+rc=0
+HEADED_ARM_LEG_TARGET="$HEADED_ARM" \
+HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+KONSOLE_CMD="$d17parent/konsole" PGREP_CMD="$d17parent/pgrep" \
+LEG_REPO="$tmp/repo17parent" HEADED_ARM_LOCK_DIR="$d17parent/locks" HEADED_ARM_PROC="$d17parent/proc" \
+  bash "$SCRIPT" --profile leg-impl "HIMMEL-3333-parent" "$parent_doc" "$d17parent/signal-never" "$PAST" "$d17parent/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d17parent" || true
+check "full launch --profile (doc directory is an ancestor of the handover root): exit 0" "$rc" "0"
+check "full launch --profile (doc directory is an ancestor of the handover root): additionalDirectories not granted" \
+  "$(jq -c '.permissions.additionalDirectories // "none"' "$d17parent/HIMMEL-3333-parent.leg-settings.json" 2>/dev/null)" '"none"'
+
+# HIMMEL-3285 (CR round 4/5, codex-1, HIMMEL-3544): a doc directory that is
+# merely a textual PREFIX-lookalike of the handover root (not a real
+# ancestor - no "/" boundary) must still get its normal, scoped grant. This
+# is the negative control for the ancestor check above.
+d17lookalike="$tmp/c17lookalike"; mk_launch_stubs "$d17lookalike" "HIMMEL-3333-lookalike"; mkdir -p "$tmp/repo17lookalike"
+lookalike_doc_dir="${HANDOVER_DIR}x"
+mkdir -p "$lookalike_doc_dir"
+lookalike_doc="$lookalike_doc_dir/HIMMEL-3333-lookalike.md"
+printf '%s\n' '# fixture doc whose directory textually prefixes the handover root name' > "$lookalike_doc"
+rc=0
+HEADED_ARM_LEG_TARGET="$HEADED_ARM" \
+HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+KONSOLE_CMD="$d17lookalike/konsole" PGREP_CMD="$d17lookalike/pgrep" \
+LEG_REPO="$tmp/repo17lookalike" HEADED_ARM_LOCK_DIR="$d17lookalike/locks" HEADED_ARM_PROC="$d17lookalike/proc" \
+  bash "$SCRIPT" --profile leg-impl "HIMMEL-3333-lookalike" "$lookalike_doc" "$d17lookalike/signal-never" "$PAST" "$d17lookalike/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d17lookalike" || true
+check "full launch --profile (doc directory is a prefix-lookalike, not an ancestor): exit 0" "$rc" "0"
+check "full launch --profile (doc directory is a prefix-lookalike, not an ancestor): additionalDirectories still grants it" \
+  "$(jq -c '.permissions.additionalDirectories' "$d17lookalike/HIMMEL-3333-lookalike.leg-settings.json" 2>/dev/null)" \
+  "$(jq -cn --arg d "$lookalike_doc_dir" '[$d]')"
 
 # HIMMEL-3285 (CR round 3, codex-1): a HANDOVER_DIR carrying a trailing slash
 # must not bypass the root-equality check or leave the .locks deny malformed
@@ -1036,7 +1084,10 @@ KONSOLE_CMD="$d17slash/konsole" PGREP_CMD="$d17slash/pgrep" \
 LEG_REPO="$tmp/repo17slash" HEADED_ARM_LOCK_DIR="$d17slash/locks" HEADED_ARM_PROC="$d17slash/proc" \
 HANDOVER_DIR="$slash_root" \
   bash "$SCRIPT" --profile leg-impl "HIMMEL-3333-slash" "$slash_doc" "$d17slash/signal-never" "$PAST" "$d17slash/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
-check "full launch --profile (trailing slash on HANDOVER_DIR, doc at root): still refuses rather than grant the root" "$rc" "2"
+wait_record "$d17slash" || true
+check "full launch --profile (trailing slash on HANDOVER_DIR, doc at root): exit 0, still no grant" "$rc" "0"
+check "full launch --profile (trailing slash on HANDOVER_DIR, doc at root): additionalDirectories not granted" \
+  "$(jq -c '.permissions.additionalDirectories // "none"' "$d17slash/HIMMEL-3333-slash.leg-settings.json" 2>/dev/null)" '"none"'
 
 d17slash2="$tmp/c17slash2"; mk_launch_stubs "$d17slash2" "HIMMEL-3333-slash2"; mkdir -p "$tmp/repo17slash2"
 slash2_doc_dir="$HANDOVER_DIR/yotamleo/himmel"

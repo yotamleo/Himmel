@@ -827,25 +827,37 @@ if [ -n "$PROFILE" ]; then
     # contains .locks/ (that sits at the handover ROOT) - verified below
     # rather than assumed, so a doc placed directly AT the root can never
     # collapse this grant back to the whole root (CR round 2, codex-1).
-    # ponytail: a doc directory that is an ANCESTOR of the handover root
-    # (rather than equal to it) still grants that ancestor - and the root
-    # underneath it - through additionalDirectories (CR round 4, codex-1,
-    # deferred HIMMEL-3544): DOC is always resolved via handover_root(),
-    # never handed an ancestor of the root, in every real caller; guarding
-    # it needs every generic test fixture's doc path moved out of the
-    # ancestor chain of its own HANDOVER_DIR fixture first.
+    # A doc directory that EQUALS the handover root, or is an ANCESTOR of it
+    # (CR round 4, codex-1, fixed per HIMMEL-3544), must never be granted:
+    # additionalDirectories would then cover the whole root - and its
+    # .locks/ - the exact privilege this grant exists to avoid. Rather than
+    # refusing the launch outright (round-3 behaviour for the equal case),
+    # skip the grant and fall back to today's classifier behaviour for this
+    # leg's own doc writes; the launch still succeeds. Compared as canonical
+    # absolute paths (both `cd && pwd`-derived) so a lookalike prefix like
+    # /a/bc is never mistaken for an ancestor of /a/b.
     if [ -n "$DOC" ] && _leg_doc_dir="$(cd "$(dirname "$DOC")" 2>/dev/null && pwd)"; then
-        if [ -n "$_leg_handover_dir_norm" ] && [ "$_leg_doc_dir" = "$_leg_handover_dir_norm" ]; then
-            echo "headed-arm-leg: --profile $PROFILE: leg doc sits directly at the handover root ($_leg_handover_dir_norm) - refusing to grant the whole root as additionalDirectories" >&2
-            exit 2
+        _leg_doc_is_root_or_ancestor=0
+        if [ -n "$_leg_handover_dir_norm" ]; then
+            if [ "$_leg_doc_dir" = "$_leg_handover_dir_norm" ]; then
+                _leg_doc_is_root_or_ancestor=1
+            else
+                case "$_leg_handover_dir_norm" in
+                    "$_leg_doc_dir"/*)
+                        _leg_doc_is_root_or_ancestor=1
+                        ;;
+                esac
+            fi
         fi
-        if ! PROFILE_JSON="$(printf '%s' "$PROFILE_JSON" | jq --arg dir "$_leg_doc_dir" \
+        if [ "$_leg_doc_is_root_or_ancestor" -eq 1 ]; then
+            echo "headed-arm-leg: --profile $PROFILE: leg doc directory ($_leg_doc_dir) is the handover root or an ancestor of it ($_leg_handover_dir_norm) - skipping additionalDirectories grant for it" >&2
+        elif ! PROFILE_JSON="$(printf '%s' "$PROFILE_JSON" | jq --arg dir "$_leg_doc_dir" \
             '.permissions.additionalDirectories = ((.permissions.additionalDirectories // []) + [$dir])')"; then
             echo "headed-arm-leg: --profile $PROFILE: cannot add the leg doc's directory to additionalDirectories" >&2
             exit 2
         fi
     fi
-    unset -v _leg_doc_dir
+    unset -v _leg_doc_dir _leg_doc_is_root_or_ancestor
     # Belt and braces: even scoped to the doc's own directory, deny Edit/
     # Write/MultiEdit/NotebookEdit on the handover root's .locks/** outright.
     # Deny wins over additionalDirectories, so this holds even if a future
