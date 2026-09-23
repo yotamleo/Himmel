@@ -66,7 +66,14 @@ edges() {
   } | while IFS= read -r raw; do
     tail="$raw"
     case "$tail" in
-      '$'*|')'*|'}'*) tail="/${tail#*/}" ;;
+      '$'*|')'*|'}'*)
+        # The prefix variable may name the repo root or the caller's own
+        # directory - resolve both and keep whichever exists (fail-safe).
+        tail="${tail#*/}"
+        for target in "$(normalize "$tail")" "$(normalize "$dir/$tail")"; do
+          [ -f "$ROOT/$target" ] && printf '%s\n' "$target"
+        done
+        continue ;;
     esac
     case "$tail" in
       /scripts/*|scripts/*) target="$(normalize "${tail#/}")" ;;
@@ -134,17 +141,19 @@ check "$n_specs" "$n_guarded" "cr_pathspecs has exactly one :(top) include per c
 # Positive control for edges(): a direct script call with no interpreter
 # word must yield an edge, in each command position CMD_RE names.
 fx="$(mktemp -d "${TMPDIR:-/tmp}/cr-closure.XXXXXX")" || exit 1
-mkdir -p "$fx/scripts/cr" "$fx/scripts/lib"
+mkdir -p "$fx/scripts/cr" "$fx/scripts/lib" "$fx/tools"
 for n in a b c d; do : > "$fx/scripts/lib/$n.sh"; done
+: > "$fx/tools/e.sh"
 cat > "$fx/scripts/cr/caller.sh" <<'EOF'
 "$ROOT/scripts/lib/a.sh" --flag
 x=$("$DIR/../lib/b.sh")
 if true; then "$ROOT/scripts/lib/c.sh"; fi
 true && "$ROOT/scripts/lib/d.sh"
+bash "$ROOT/tools/e.sh"
 # "$ROOT/scripts/lib/commented.sh"
 EOF
 got="$(ROOT="$fx" edges scripts/cr/caller.sh | tr '\n' ' ')"
-check "$got" "scripts/lib/a.sh scripts/lib/b.sh scripts/lib/c.sh scripts/lib/d.sh " "edges() sees direct script calls in command position"
+check "$got" "scripts/lib/a.sh scripts/lib/b.sh scripts/lib/c.sh scripts/lib/d.sh tools/e.sh " "edges() sees direct script calls in command position and repo-root paths outside scripts/"
 rm -rf "$fx"
 
 reached="$(closure)"
