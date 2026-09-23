@@ -712,8 +712,23 @@ clear_cr_marker_for_branch() {
         echo "merge-on-green: clear-cr-marker.sh not found at $clearer — the CR marker for '$branch' stays pending." >&2
         return 0
     fi
+    # clear-cr-marker.sh refuses a branch other than the one checked out in its
+    # cwd (HIMMEL-3495), and this script usually runs from the primary. Run it
+    # from the worktree that has $branch checked out; with none, fail loud.
+    local line cur="" wt=""
+    while IFS= read -r line; do
+        case "$line" in
+            "worktree "*) cur="${line#worktree }" ;;
+            "branch refs/heads/$branch") wt="$cur" ;;
+        esac
+    done < <(git worktree list --porcelain 2>/dev/null)
+    if [ -z "$wt" ]; then
+        MARKER_RESULT="no-worktree"
+        echo "merge-on-green: '$branch' is checked out in no worktree, so its CR marker in $common/cr-pending stays pending — run scripts/cr/clear-cr-marker.sh '$branch' from the worktree where $branch is checked out (HIMMEL-3495)." >&2
+        return 0
+    fi
     local rc=0
-    bash "$clearer" "$branch" || rc=$?
+    (cd "$wt" && bash "$clearer" "$branch") || rc=$?
     if [ "$rc" -eq 0 ]; then
         MARKER_RESULT="cleared"
     else

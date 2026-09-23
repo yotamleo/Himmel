@@ -165,12 +165,22 @@ run "an unrelated (docs) diff -> allow" 0 "$(payload "$LITERAL" "$WT")" "$HR"
 g -C "$WT" checkout -q -- docs/a.md
 
 # ---- HIMMEL-3495: every gate-allowed scripts/cr script is a target ------------
-# The set is DERIVED from every `Bash(bash scripts/cr/...` allow row in both
-# permission files, so a new row the hook does not guard fails here.
+# The set is DERIVED from every `Bash(...` allow row in both permission files
+# that names scripts/cr/<name>.sh ANYWHERE (a `./scripts/cr/x.sh` row too), so a
+# new row the hook does not guard fails here.
 REPO_ROOT="$(cd "$(dirname "$HOOK")/../.." && pwd)"
-derived=$(grep -ohE 'Bash\(bash scripts/cr/[A-Za-z0-9._-]+\.sh' \
-    "$REPO_ROOT/.claude/settings.json" "$REPO_ROOT/scripts/lanes/plugin-profiles.json" \
-    | sed 's|.*/||' | LC_ALL=C sort -u)
+cr_rows() {
+    grep -ohE '"Bash\([^"]*scripts/cr/[A-Za-z0-9._-]+\.sh' "$@" \
+        | grep -oE 'scripts/cr/[A-Za-z0-9._-]+\.sh' | sed 's|.*/||' | LC_ALL=C sort -u
+}
+printf '{"allow": ["Bash(./scripts/cr/newgate.sh *)"]}\n' >"$TMP/rows.json"
+if [ "$(cr_rows "$TMP/rows.json")" = "newgate.sh" ]; then
+    echo "PASS a ./scripts/cr/ row is derived"
+else
+    echo "FAIL a ./scripts/cr/ row is not derived: $(cr_rows "$TMP/rows.json")"
+    FAILED=$((FAILED + 1))
+fi
+derived=$(cr_rows "$REPO_ROOT/.claude/settings.json" "$REPO_ROOT/scripts/lanes/plugin-profiles.json")
 declared=$(sed -n "/^TARGETS='/,/'\$/p" "$HOOK" | sed "s/^TARGETS=//; s/'//g" | tr ' ' '\n' | grep . | LC_ALL=C sort -u)
 if [ -n "$derived" ] && [ "$derived" = "$declared" ]; then
     echo "PASS hook TARGETS equal the allow rows' scripts/cr entries ($(printf '%s\n' "$derived" | wc -l | tr -d ' '))"
@@ -199,6 +209,16 @@ g -C "$WT" checkout -q -- scripts/cr/cr-scores.sh
 chmod +x "$WT/scripts/cr/review-round.sh"
 run "chmod +x on review-round.sh -> deny" 2 "$(payload "$RR" "$WT")" "$HR"
 chmod -x "$WT/scripts/cr/review-round.sh"
+# Per-file mode: a symlinked entry or hand-off is refused even when the bytes
+# it points at match the anchor's.
+for f in review-round.sh anchor-handoff.sh; do
+    mv "$WT/scripts/cr/$f" "$TMP/$f.real"
+    ln -s "$TMP/$f.real" "$WT/scripts/cr/$f"
+    run "symlinked $f, review-round -> deny" 2 "$(payload "$RR" "$WT")" "$HR"
+    rm "$WT/scripts/cr/$f"
+    mv "$TMP/$f.real" "$WT/scripts/cr/$f"
+done
+run "entry and hand-off restored, review-round -> allow" 0 "$(payload "$RR" "$WT")" "$HR"
 # A symlinked scripts/cr directory is refused even when every byte matches.
 mv "$WT/scripts/cr" "$WT/scripts/cr-real"
 ln -s cr-real "$WT/scripts/cr"
