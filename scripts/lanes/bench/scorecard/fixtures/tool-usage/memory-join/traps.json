@@ -1,0 +1,5 @@
+[
+  {"id": "trap-hit", "kind": "pattern", "pattern": "AskUserQuestion", "source": "fixture.md"},
+  {"id": "trap-dormant", "kind": "pattern", "pattern": "totally-unseen-pattern-xyz", "source": "fixture.md"},
+  {"id": "trap-bad", "kind": "pattern", "pattern": "", "source": "fixture.md"}
+]
