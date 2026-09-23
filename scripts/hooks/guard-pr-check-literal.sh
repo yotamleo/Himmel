@@ -146,12 +146,18 @@ flat=${flat//[\'\"\\]/}
 # A glob or brace list can spell a guarded name without either substring
 # (scripts/c[r]/pr-chec[k]-context.sh), so it passes on to classification;
 # so does any case of the names, which a case-insensitive filesystem folds.
-names_target() { # names_target <text> - mentions pr-check or a target's stem, in any case
+names_target() { # names_target <text> - mentions pr-check or a target's exact
+    # scripts/cr/<name> path token, in any case. A bare stem substring also
+    # matched inside an unrelated file name that happens to contain it (a
+    # test suite's own name, e.g. test-cr-scores.sh contains "cr-scores"),
+    # which then made every $VAR token elsewhere in the same command look
+    # unresolvable (HIMMEL-3517) - so a target only counts here when its stem
+    # is immediately preceded by "cr/", never as a substring anywhere else.
     local t rc=1
     shopt -s nocasematch
     case "$1" in *pr-check*) rc=0 ;; esac
     for t in $TARGETS; do
-        case "$1" in *"${t%.sh}"*) rc=0 ;; esac
+        case "$1" in *[cC][rR]/"${t%.sh}"*) rc=0 ;; esac
     done
     shopt -u nocasematch
     return "$rc"
@@ -257,10 +263,33 @@ for x in $simple; do
     esac
     case "$x" in
         -exec|-ok) runs=1 ;;
-        -execdir|-okdir) runs=1; chdir=1 ;;
+        -execdir|-okdir) runs=1 ;;
     esac
     [[ "$x" =~ ^[[:upper:]_][[:upper:][:digit:]_]*= ]] && wrapped=1
 done
+# -execdir/-okdir moves find's cwd only while running the word right after
+# it; that word only makes a guarded run unverifiable when it could itself
+# run something (an interpreter, a wrapper, or a target's own name) -
+# otherwise (find ... -execdir grep foo {} \;) it never resolves a path
+# itself, so the {} carve-out below still applies (HIMMEL-3517).
+while IFS= read -r line; do
+    read -r -a lw <<<"$line"
+    j=0
+    while [ "$j" -lt "${#lw[@]}" ]; do
+        case "${lw[$j]}" in
+            -execdir|-okdir)
+                nextw=${lw[$((j + 1))]:-}
+                case "${nextw##*/}" in
+                    ''|bash|sh|zsh|dash|ksh|mksh|busybox|toybox|source|.|eval|time|command|builtin|nohup|nice|stdbuf|sudo|env|exec|timeout|xargs)
+                        chdir=1 ;;
+                    *)
+                        is_target "${nextw##*/}" && chdir=1 ;;
+                esac
+                ;;
+        esac
+        j=$((j + 1))
+    done
+done <<<"$simple"
 # find runs the found file itself when {} is the -exec command word.
 [[ "$flat" =~ -(exec|execdir|ok|okdir)[[:space:]]+[^[:space:]]*\{\} ]] && bare_runs=1
 [ "$runs" -eq 1 ] || exit 0

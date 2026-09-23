@@ -377,6 +377,25 @@ cp marketplace/plugins/* /tmp/x 2>/dev/null
 ls * > /tmp/o.txt
 find . -name '*.md' -exec grep -l foo {} +
 MENTIONS
+
+# ---- HIMMEL-3517: a target's stem inside an unrelated test-*.sh filename
+# must not flag $VAR tokens elsewhere in the same command as unresolved,
+# and -execdir with a non-interpreter command word keeps the {} carve-out.
+# shellcheck disable=SC2016 # command text, verbatim
+run "bash scripts/cr/test-cr-scores.sh \"\$TMP\" -> allow (HIMMEL-3517)" 0 \
+    "$(payload 'bash scripts/cr/test-cr-scores.sh "$TMP"' "$WT")" "$HR"
+# shellcheck disable=SC2016 # command text, verbatim
+run "CR_LEDGER=\$T/l.jsonl bash scripts/cr/test-ledger-append.sh -> allow (HIMMEL-3517)" 0 \
+    "$(payload 'CR_LEDGER=$T/l.jsonl bash scripts/cr/test-ledger-append.sh' "$WT")" "$HR"
+run "find -execdir grep (non-interpreter) -> allow (HIMMEL-3517)" 0 \
+    "$(payload "find . -name '*.md' -execdir grep foo {} \\;" "$WT")" "$HR"
+# Positive controls: the shapes these fixes must NOT widen stay denied.
+# shellcheck disable=SC2016 # command text, verbatim
+run "control: bash scripts/cr/\$X (real unresolved target) -> still deny" 2 \
+    "$(payload 'bash scripts/cr/$X' "$WT")" "$HR"
+run "control: find -execdir bash <target> -> still deny" 2 \
+    "$(payload "find . -maxdepth 0 -execdir bash scripts/cr/pr-check-context.sh +" "$WT")" "$HR"
+
 run "the anchored fence on an edited branch -> no-op" 0 "$(payload "$FENCE_TEXT" "$WT")" "$HR"
 run "HIMMEL_REPO re-pointed before the fence -> deny" 2 \
     "$(payload "export HIMMEL_REPO=.; $FENCE_TEXT" "$WT")" "$HR"

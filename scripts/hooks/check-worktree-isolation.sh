@@ -16,7 +16,7 @@ rc=$?
 case "$rc" in
     0)
         echo "ERROR: Committing directly on 'main' is not allowed."
-        echo "       Create a worktree branch: EnterWorktree in Claude Code, or 'git worktree add'."
+        echo "       Create a worktree branch: 'git worktree add', or /worktree; then cd into it (see docs/internals/stuck-playbook.md)."
         exit 1
         ;;
     1)

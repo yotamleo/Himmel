@@ -623,6 +623,38 @@ for eol in LF CRLF; do
         "$(bash_rc_of "$WT2" "${cont}'\\x63\\x70' -r /tmp/payload/. \"\$HOME/.claude/\"")"
 done
 
+# 115: a command mentioning the primary checkout's OWN root path as a bare
+# substring, with no .claude reference anywhere, run from an unrelated cwd
+# (WT2), and only incidentally "mentioning settings" via an unrelated
+# filename -> ALLOW. `stat` (not `jq`/`cat`/etc.) is deliberately NOT on the
+# read-only allowlist, so this exercises the live/not-live distinction
+# itself rather than being exempted regardless of it. Before the fix,
+# primary_root_lc matched as an unconstrained bare substring (unlike
+# home_root_lc's existing /.claude adjacency requirement below), so a
+# READ-ONLY command on a scratchpad file merely nested under the primary's
+# path false-denied (HIMMEL-3465).
+assert_rc "115 primary root mention with no .claude reference allows (HIMMEL-3465)" 0 \
+    "$(bash_rc_of "$WT2" "stat \"$PRIMARY/scratch/leg-settings.json\"")"
+
+# 116 control: the same primary root, this time immediately followed by
+# /.claude/settings.json, still denies — proves 115's fix did not widen the
+# genuine live-settings case.
+assert_rc "116 primary root immediately followed by /.claude still denies (control)" 2 \
+    "$(bash_rc_of "$WT2" "stat \"$PRIMARY/.claude/settings.json\"")"
+
+# 117: `ls -t` (sort-by-time) naming a live .claude dir as a plain listing
+# argument, not a copy/move destination -> ALLOW. Before the fix, the
+# -t/--target-directory flag check fired standalone regardless of verb, so
+# any `-t` anywhere near a .claude mention false-denied (HIMMEL-3465).
+assert_rc "117 ls -t on a .claude path allows (HIMMEL-3465)" 0 \
+    "$(bash_rc_of "$WT2" "ls -t \$HOME/.claude/handover/bridge/ | head" HOME="$FAKEHOME")"
+
+# 118 control: cp -t into \$HOME/.claude/ still denies — proves 117's fix did
+# not widen the genuine copy-into-live-settings-dir case (cp is still one of
+# the matched copy/move verbs).
+assert_rc "118 cp -t into \$HOME/.claude/ still denies (control)" 2 \
+    "$(bash_rc_of "$WT2" "cp -t \$HOME/.claude/ /tmp/payload" HOME="$FAKEHOME")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true
