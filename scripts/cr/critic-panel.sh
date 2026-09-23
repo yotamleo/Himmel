@@ -164,7 +164,18 @@ fi
 # CRITICS_BASE_JSON / CRITICS_LOCAL_JSON override the two merge inputs.
 _MERGED_REG=""
 _REG_BASE="${CRITICS_BASE_JSON:-$SCRIPT_DIR/critics.json}"
-_REG_LOCAL="${CRITICS_LOCAL_JSON:-$SCRIPT_DIR/critics.local.json}"
+# HIMMEL-3059 S3: an unset CRITICS_LOCAL_JSON checks the himmelctl cache dir
+# first — a read-only install tree can never carry an in-tree overlay — and
+# falls back to the in-tree default so an existing writable clone's
+# hand-authored overlay still resolves exactly as before.
+_REG_CACHE_LOCAL="${HIMMELCTL_CACHE_DIR:-$HOME/.claude/himmel}/critics.local.json"
+if [ -n "${CRITICS_LOCAL_JSON:-}" ]; then
+    _REG_LOCAL="$CRITICS_LOCAL_JSON"
+elif [ -f "$_REG_CACHE_LOCAL" ]; then
+    _REG_LOCAL="$_REG_CACHE_LOCAL"
+else
+    _REG_LOCAL="$SCRIPT_DIR/critics.local.json"
+fi
 if [ -n "${CRITICS_JSON:-}" ]; then
     REG="$CRITICS_JSON"
 elif [ -f "$_REG_LOCAL" ]; then

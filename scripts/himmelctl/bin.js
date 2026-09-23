@@ -3970,7 +3970,12 @@ async function applyLaneProfileStep(answers) {
     return true;
   }
   try {
-    const recorded = provBefore(path.join(repoRoot(), 'scripts', 'lanes', 'lanes.local.json'), { scope: 'clone', cls: 'keep' });
+    // HIMMEL-3059 S3: the write may land under the himmelctl cache dir instead
+    // of in-tree when the install prefix is not writable — the ledger must
+    // snapshot the file that is ACTUALLY written, with the matching scope, or
+    // `himmelctl uninstall` reverses the wrong path.
+    const { file: laneAllowlistFile, scope: laneAllowlistScope } = adopterProfileLib.resolveLaneAllowlistFile(repoRoot());
+    const recorded = provBefore(laneAllowlistFile, { scope: laneAllowlistScope, cls: 'keep' });
     const { ids, preservedLegacyGlobal } = await adopterProfileLib.persistProfileLaneAllowlist(answers.lanes || [], repoRoot());
     recorded();
     console.log(`lane profile: allowlisted ${ids.length > 0 ? ids.join(', ') : '(none)'}; unselected adopter-profile lanes are suppressed-by-profile`);
