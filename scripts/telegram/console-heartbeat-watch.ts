@@ -8,7 +8,7 @@
 // (HIMMEL-3097; legs N129/N132 never woke) is unreproduced and may NOT
 // re-invoke: the waiter dies, the session sits idle, and nothing tells the
 // operator. This module is pure code — no model turn, no new always-on
-// process — driven by a setInterval already living in poller.ts's main().
+// process — driven by a periodic timer already living in poller.ts's main().
 //
 // Heartbeat contract (owned by console-wait.sh):
 //   hb=<epoch> pid=<pid> key=<sha16> tick=<ok|fail|-> state=<waiting|exited> [exit=<reason>]

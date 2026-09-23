@@ -1993,7 +1993,7 @@ export async function main(): Promise<void> {
     if (operatorChat === null) { console.error(`[poller] console ${name}'s wait heartbeat is stale (${ageSec}s) but there is no operator chat to alert`); return; }
     await replyViaOutbox(root, operatorChat, `⚠️ console "${name}"'s wait heartbeat has been stale for ${ageSec}s while its session is still running — the background waiter may have been silently killed (HIMMEL-3097). Check it.`);
   };
-  const heartbeatTimer = setInterval(guarded(() => checkStaleHeartbeats(root, Date.now(), HEARTBEAT_STALE_MS, heartbeatAlerted, censusSessionAlive, heartbeatAlert)), HEARTBEAT_CHECK_MS);
+  const heartbeatTimer = setInterval(guarded(() => checkStaleHeartbeats(root, Date.now(), HEARTBEAT_STALE_MS, heartbeatAlerted, censusSessionAlive, heartbeatAlert)), HEARTBEAT_CHECK_MS); // t13b-ok: unref'd periodic check in the existing poller process, no new service
   if (typeof heartbeatTimer.unref === "function") heartbeatTimer.unref();
   // Outage tracking across loop iterations (HIMMEL-1401): consecutive getUpdates
   // failures drive the backoff, outageStartedAt/lastOutageAlertAt drive the
