@@ -250,7 +250,10 @@ while IFS=$'\t' read -r kind name path; do
     # reference search must too - otherwise a real script's name appearing
     # inside a committed fixture (a transcript, a nested test repo) counts as
     # a real reference and masks a genuinely dead script as WIRED.
-    hits=$(printf '%s\n' "$hits" | grep -v '/fixtures/')
+    # codex-2 fix: a root-level fixtures/ dir has no leading slash in
+    # git-grep output, so the exclusion must also match a path that STARTS
+    # with fixtures/, not only .../fixtures/... .
+    hits=$(printf '%s\n' "$hits" | grep -vE '(^|/)fixtures/')
     # ponytail: this basename search (script entries only, always run and
     # unioned with the full-path hits rather than gated on the full-path
     # search coming up empty - a doc's full-path reference must never
@@ -266,7 +269,7 @@ while IFS=$'\t' read -r kind name path; do
     if [ "$kind" = "script" ]; then
         bn_hits=$(git -C "$REPO_ROOT" grep -lF -- "$(basename "$path")" 2>/dev/null); bgrc=$?
         [ "$bgrc" -gt 1 ] && GIT_GREP_FAILS=$((GIT_GREP_FAILS + 1))
-        bn_hits=$(printf '%s\n' "$bn_hits" | grep -v '/fixtures/')
+        bn_hits=$(printf '%s\n' "$bn_hits" | grep -vE '(^|/)fixtures/')
         hits=$(printf '%s\n%s\n' "$hits" "$bn_hits" | grep -v '^$' | sort -u)
     fi
     cls=$(printf '%s\n' "$hits" | classify_hits "$path")

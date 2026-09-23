@@ -1,0 +1,4 @@
+a data file living inside a top-level fixtures/ dir (not nested under
+scripts/) that mentions scripts/toplevel-blind.sh - the reference search
+must exclude this path too, the same as a nested scripts/fixtures/ mention,
+even though git-grep prints it with no leading slash (codex-2 fix).

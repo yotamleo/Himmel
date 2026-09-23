@@ -49,7 +49,7 @@ else
 fi
 
 check_contains "basic: script class counts (USED/WIRED/TEST-ONLY/DOC-ONLY/DEAD)" \
-    "$OUT" "kind=script USED=2 WIRED=3 TEST-ONLY=3 DOC-ONLY=1 DEAD=4"
+    "$OUT" "kind=script USED=2 WIRED=3 TEST-ONLY=3 DOC-ONLY=1 DEAD=5"
 check_contains "basic: command class counts" \
     "$OUT" "kind=command USED=1 WIRED=0 TEST-ONLY=0 DOC-ONLY=0 DEAD=1"
 check_contains "basic: skill class counts" \
@@ -57,7 +57,7 @@ check_contains "basic: skill class counts" \
 check_contains "basic: agent class counts" \
     "$OUT" "kind=agent USED=1 WIRED=1 TEST-ONLY=0 DOC-ONLY=0 DEAD=1"
 check_contains "basic: totals line sums every kind" \
-    "$OUT" "totals: USED=5 WIRED=4 TEST-ONLY=3 DOC-ONLY=1 DEAD=7"
+    "$OUT" "totals: USED=5 WIRED=4 TEST-ONLY=3 DOC-ONLY=1 DEAD=8"
 check_contains "basic: transcript coverage line beside the table" \
     "$OUT" "coverage: roots=1 discovered=1 parsed=1 skipped=0"
 
@@ -75,6 +75,8 @@ check_contains "basic: the basename-only caller itself has no reference anywhere
     "$OUT" $'script\trelative-caller\tscripts/relative-caller.sh\tDEAD'
 check_contains "basic: a mention living inside a nested fixtures/ dir does not count as a reference (codex-1 fixture-blind-spot fix)" \
     "$OUT" $'script\tfixture-blind\tscripts/fixture-blind.sh\tDEAD'
+check_contains "basic: a mention living inside a top-level fixtures/ dir (no leading slash) does not count as a reference either (codex-2 top-level-fixtures fix)" \
+    "$OUT" $'script\ttoplevel-blind\tscripts/toplevel-blind.sh\tDEAD'
 check_contains "basic: plugin-qualified Skill tool_use (fixture-plugin:used-skill) still matches the bare discovered skill name" \
     "$OUT" $'skill\tused-skill\t.claude/skills/used-skill/SKILL.md\tUSED'
 check_contains "basic: Agent tool_use subagent_type marks a zero-static-reference agent USED" \

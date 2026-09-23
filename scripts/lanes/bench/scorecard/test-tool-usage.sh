@@ -146,6 +146,24 @@ fi
 check_contains "memory-join-malformed: the jq failure is surfaced, not silent" \
     "$OUT" "tool-usage: WARNING: memory-trap join (jq) failed"
 
+# --- chained: a single Bash command naming TWO himmel scripts (a.sh && b.sh)
+# must count a call for BOTH, not only the first (codex-1 chained-command fix)
+export SCORECARD_PROJECTS_DIR="$HERE/fixtures/tool-usage/chained"
+OUT=$("$SCRIPT" --since 2026-01-10T00:00:00Z --until 2026-01-20T00:00:00Z \
+    --skill-cwd "$HERE/fixtures/tool-usage/skills" \
+    --skill-config-dir "$HERE/fixtures/tool-usage/skills-config" 2>/dev/null)
+rc_chained=$?
+if [ "$rc_chained" -eq 0 ]; then
+    echo "ok - chained: tool-usage.sh exits 0"
+else
+    echo "FAIL - chained: tool-usage.sh rc=$rc_chained (expected 0): $OUT"
+    fails=$((fails + 1))
+fi
+check_contains "chained: the first script in a chained Bash command is counted" \
+    "$OUT" "script=scripts/lib/bank-preflight.sh count=1"
+check_contains "chained: the second script in the SAME chained Bash command is also counted" \
+    "$OUT" "script=scripts/lanes/bench/scorecard/agg-burn.sh count=1"
+
 # --- command-window: a <command-name> entry outside --since/--until must not
 # count even when the transcript FILE as a whole falls inside the window
 # (codex-2: the CMDS extraction pass filters each command's own timestamp,

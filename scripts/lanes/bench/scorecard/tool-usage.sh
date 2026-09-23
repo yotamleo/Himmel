@@ -172,15 +172,18 @@ fi
 # himmel script / jira-op key extraction, added as a `.script` field. jira
 # ops are keyed `jira:<op>` (never bare `<op>`, so a script literally named
 # `get` can't collide with the jira `get` op); every other tracked script is
-# keyed by its `scripts/...` path substring as it appeared in the command.
+# keyed by its `scripts/...` path substring as it appeared in the command. A
+# chained command (`a.sh && b.sh`) or a command re-invoking the same script
+# twice names more than one script, so every match in `.key` becomes its own
+# row (codex-1 chained-command fix) rather than only the first.
 SCRIPTED="$RUN/scripted.ndjson"
-if ! jq -c '. + {script: (
-    if .tool=="Bash" and (.key | test("scripts/jira/dist/index\\.js")) then
-        "jira:" + (.key | capture("scripts/jira/dist/index\\.js\\s+(?<op>[A-Za-z0-9_:-]+)") .op // "unknown")
+if ! jq -c '. as $e | ($e | if .tool=="Bash" and (.key | test("scripts/jira/dist/index\\.js")) then
+        ["jira:" + (.key | capture("scripts/jira/dist/index\\.js\\s+(?<op>[A-Za-z0-9_:-]+)") .op // "unknown")]
     elif .tool=="Bash" and (.key | test("scripts/[A-Za-z0-9_./-]+\\.(sh|mjs|js|py)")) then
-        (.key | capture("(?<m>scripts/[A-Za-z0-9_./-]+\\.(?:sh|mjs|js|py))") | .m)
-    else null end
-)}' "$EVENTS" > "$SCRIPTED"; then
+        [.key | scan("scripts/[A-Za-z0-9_./-]+\\.(?:sh|mjs|js|py)")]
+    else [] end) as $scripts
+    | if ($scripts | length) == 0 then $e + {script: null} else $scripts[] as $s | $e + {script: $s} end
+' "$EVENTS" > "$SCRIPTED"; then
     echo "tool-usage: WARNING: script/jira-op extraction (jq) failed - section 3 may be incomplete" >&2
 fi
 

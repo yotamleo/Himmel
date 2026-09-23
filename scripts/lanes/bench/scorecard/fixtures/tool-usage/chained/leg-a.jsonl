@@ -1,0 +1,2 @@
+{"type":"assistant","timestamp":"2026-01-15T00:00:00.000Z","customTitle":"HIMMEL-9060-N960-fixture-leg","message":{"id":"msg_1","model":"claude-sonnet-5-20260115","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"bash scripts/lib/bank-preflight.sh && bash scripts/lanes/bench/scorecard/agg-burn.sh"}}]}}
+{"type":"user","timestamp":"2026-01-15T00:00:01.000Z","customTitle":"HIMMEL-9060-N960-fixture-leg","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","is_error":false,"content":[{"type":"text","text":"ok"}]}]}}
