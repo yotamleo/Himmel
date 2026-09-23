@@ -341,12 +341,18 @@ unchecked_mktemp_scan() {
                 if (c == "\"") indq = 0
                 continue
             }
-            # HIMMEL-3489: outside any quote, a backslash-escaped quote is
-            # a literal character, never a string opener.
-            if (c == "\\" && i < n) {
-                nc = substr(s, i + 1, 1)
-                if (nc == "\"" || nc == sq) { i++; continue }
-            }
+            # HIMMEL-3489: outside any quote, a backslash escapes the next
+            # character unconditionally (codex-1, /pr-check round 1 on this
+            # branch) -- special-casing only a following quote char left a
+            # DOUBLE backslash (`\\"`) mis-scanned: the first backslash went
+            # unconsumed, so the second backslash was then read fresh and
+            # wrongly swallowed the real, unescaped `"` that follows as if
+            # IT were escaped, so the string never opened and a later `#`
+            # inside it was misread as a comment start, truncating a real
+            # trailing guard. Consuming the pair unconditionally (matching
+            # the indq branch above) makes `\\` an escaped backslash and
+            # leaves the next `"` to be evaluated fresh, as real shell does.
+            if (c == "\\" && i < n) { i++; continue }
             if (c == sq) { insq = 1; continue }
             if (c == "\"") { indq = 1; continue }
             if (c == "(") {
@@ -394,9 +400,14 @@ unchecked_mktemp_scan() {
         out = ""
         for (i = 1; i <= n; i++) {
             c = substr(s, i, 1)
+            # HIMMEL-3489: outside any quote, a backslash escapes the next
+            # character unconditionally (codex-1, same bug class as
+            # strip_comment above) -- a double backslash (`\\"`) must not
+            # leave the following `"` treated as if IT were escaped.
             if (c == "\\" && i < n) {
-                nc = substr(s, i + 1, 1)
-                if (nc == "\"" || nc == sq) { out = out c nc; i++; continue }
+                out = out c substr(s, i + 1, 1)
+                i++
+                continue
             }
             if (c == sq) {
                 j = index(substr(s, i + 1), c)

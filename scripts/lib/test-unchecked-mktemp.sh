@@ -642,6 +642,19 @@ f="$TMPDIR_ROOT/t38b.sh"
 printf '%s\n' 'T=$(mktemp) && x="a \" # b" || exit 1' > "$f"
 assert_eq "T38b strip_comment does not read a # after an escaped quote as a comment start -> ok (HIMMEL-3489)" "0" "$(scan_lines "$f")"
 
+# T38c -- HIMMEL-3489 (codex-1, /pr-check round 1): outside any quote, a
+# DOUBLE backslash before a quote (`\\"`) must consume as an escaped
+# backslash followed by a real, unescaped quote -- not be misread one
+# character at a time. Special-casing only a following quote char (rather
+# than consuming any next char unconditionally) left the first backslash
+# unconsumed, so the second backslash was reprocessed fresh and wrongly
+# treated the real `"` that follows as escaped, leaving strip_comment
+# thinking no string ever opened; the later `#` then read as a comment
+# start and discarded the real trailing `|| exit 1` guard.
+f="$TMPDIR_ROOT/t38c.sh"
+printf '%s\n' 'T=$(mktemp) && x=\\"a # b" || exit 1' > "$f"
+assert_eq "T38c strip_comment honors a double backslash before a real quote -> ok (HIMMEL-3489)" "0" "$(scan_lines "$f")"
+
 # T21 -- self-check: the predicate must NOT flag its own repo files. Locks
 # the codex-1 self-blocking regression closed for good -- if this ever comes
 # back it fails loudly here instead of silently refusing every commit that
