@@ -29,7 +29,11 @@ and their rows are paraphrased one-liners rather than verbatim frontmatter
 > commands, and it ships no `commands/` directory at all. Itemizing all 13
 > here would duplicate the inventory the plugin's own docs already own; see
 > [marketplace/plugins/lean-skills/README.md](../marketplace/plugins/lean-skills/README.md)
-> and its `VENDORED.md` instead.
+> and its `VENDORED.md` instead. This carve-out covers every companion file
+> under a vendored skill's own directory too (e.g. `executing-plans/scripts/`,
+> `subagent-driven-development/scripts/`) — an upstream re-vendor (HIMMEL-3537)
+> can add or remove one without a catalog edit, since none of them are himmel
+> slash commands.
 
 > **Keep this current.** When a ticket adds, renames, removes, or re-describes
 > a command under `.claude/commands/`, the Description column is regenerated
