@@ -16,7 +16,7 @@ lack the second half as `no-trigger` — "the ones that silently rot."
 
 ## Shape
 
-```
+```text
 ponytail: <ceiling>, <upgrade path>
 ```
 
