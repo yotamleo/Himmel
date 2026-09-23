@@ -512,10 +512,11 @@ is_readonly_allowlisted() {
     esac
     case "$c" in
         *';'*)
-            local rest="$c" seg
+            local rest="$c" seg assign_match
             while :; do
                 seg=${rest%%;*}
-                if printf '%s' "$seg" | grep -Eq '^[[:space:]]*[a-z_][a-z0-9_]*=[^[:space:]]*[[:space:]]*$'; then
+                assign_match=$(printf '%s' "$seg" | grep -E '^[[:space:]]*[a-z_][a-z0-9_]*=[^[:space:]]*[[:space:]]*$') || assign_match=
+                if [ -n "$assign_match" ]; then
                     :
                 else
                     is_readonly_segment "$seg" || return 1

@@ -688,13 +688,13 @@ assert_rc "121 VAR=path; jq read; jq read (console repro, no quoted pipe) allows
 # only covers a chain of independently read-only segments, not a `;`-joined
 # write riding in behind a harmless assignment.
 assert_rc "122 VAR=path; sed -i write still denies (control)" 2 \
-    "$(bash_rc_of "$PRIMARY" "X=/tmp/claude-1000/somesession/scratchpad; sed -i s/a/b/ \$X/settings.json")"
+    "$(bash_rc_of "$PRIMARY" "X=/tmp/claude-1000/somesession/scratchpad; sed -i s/a/b/ \$X/settings.json")" # gnu-ok: fixture text parsed by the hook, never executed
 
 # 123 control: a `;`-joined write with NO leading assignment (`cat x; rm -rf
 # ~`-shaped) still denies — proves the per-segment check, not just the bare
 # `;` veto, is what is carrying rule 1 now.
 assert_rc "123 jq read; sed -i write (no assignment) still denies (control)" 2 \
-    "$(bash_rc_of "$PRIMARY" "jq '.permissions.additionalDirectories' /tmp/claude-1000/somesession/scratchpad/HIMMEL-3514-N424-bridge-hardening.leg-settings.json; sed -i s/a/b/ /tmp/claude-1000/somesession/scratchpad/HIMMEL-3514-N424-bridge-hardening.leg-settings.json")"
+    "$(bash_rc_of "$PRIMARY" "jq '.permissions.additionalDirectories' /tmp/claude-1000/somesession/scratchpad/HIMMEL-3514-N424-bridge-hardening.leg-settings.json; sed -i s/a/b/ /tmp/claude-1000/somesession/scratchpad/HIMMEL-3514-N424-bridge-hardening.leg-settings.json")" # gnu-ok: fixture text parsed by the hook, never executed
 
 # 124: known residual limitation of 121's fix, documented rather than chased
 # (ponytail: this guard matches metacharacters on TEXT after quotes are
