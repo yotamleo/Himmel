@@ -2541,7 +2541,7 @@ assert_rc 'U17 dry-run completes' 0 "$rc"
 assert_has 'U17 footprint lists ~/.claude/CLAUDE.md block' "$U_HOME/.claude/CLAUDE.md — " "$out"
 assert_has 'U17 footprint lists ~/.codex/AGENTS.md block' "$U_HOME/.codex/AGENTS.md — " "$out"
 assert_has 'U17 footprint lists the hud config' "$U_HOME/.claude/plugins/claude-hud/config.json — " "$out"
-assert_has 'U17 footprint names the trust entry as NEVER' "NEVER   $U_HOME/.claude.json — " "$out"
+assert_has 'U17 footprint lists the trust entry' "$U_HOME/.claude.json — " "$out"
 assert_has 'U17 footprint names the adopter scripts/ as NEVER' "scripts — himmel scripts copied into" "$out"
 assert_has 'U17 dry-run previews the CLAUDE.md strip' "DRY: would strip himmel working-principles block from $U_HOME/.claude/CLAUDE.md" "$out"
 assert_has 'U17 dry-run previews the AGENTS.md strip' "DRY: would strip himmel working-principles block from $U_HOME/.codex/AGENTS.md" "$out"
@@ -2551,9 +2551,14 @@ assert_has 'U17 dry-run previews the AGENTS.md strip' "DRY: would strip himmel w
 # command, the same as the no-ledger branch, instead of the round-1
 # pattern-matched strip this case used to hit.
 assert_has 'U17 dry-run shows the hud config kept (not in ledger)' "kept (not in ledger): $U_HOME/.claude/plugins/claude-hud/config.json — remove by hand: bash $U17_SCRIPTS/lib/unwire-hud-config.sh $U_HOME/.claude/plugins/claude-hud/config.json" "$out"
+# HIMMEL-3332 S6 slice2: workspace-trust is ledger-decided too now; u_fixture's
+# ledger never records a unit for it, so it lands in the same "not in ledger"
+# fallback as the hud config above.
+assert_has 'U17 dry-run shows the trust entry kept (not in ledger)' "kept (not in ledger): $U_HOME/.claude.json — revoke it in Claude Code if you want it gone" "$out"
 u_same 'U17 dry-run left CLAUDE.md alone' "$U_HOME/.claude/CLAUDE.md" "$TMP/u17-claude-md-full"
 u_same 'U17 dry-run left AGENTS.md alone' "$U_HOME/.codex/AGENTS.md" "$TMP/u17-agents-md-full"
 u_same 'U17 dry-run left the hud config alone' "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u17-hud-full"
+u_same 'U17 dry-run left the trust entry alone' "$U_HOME/.claude.json" "$TMP/u-u17-trust-before"
 
 # U18 — wet run: the block goes and the operator's own text is byte-identical;
 # an install-created file that held only the block is removed; the hud config,
@@ -2567,8 +2572,8 @@ u_same 'U18 CLAUDE.md is the operator text again, byte-identical' "$U_HOME/.clau
 u_absent 'U18 install-created AGENTS.md removed' "$U_HOME/.codex/AGENTS.md"
 u_same 'U18 hud config kept (not in ledger), byte-identical' "$U_HOME/.claude/plugins/claude-hud/config.json" "$TMP/u-u18-hud-before"
 assert_has 'U18 footer names the hud config kept (not in ledger)' "kept (not in ledger): $U_HOME/.claude/plugins/claude-hud/config.json" "$out"
-u_same 'U18 workspace-trust entry untouched (keep)' "$U_HOME/.claude.json" "$TMP/u-u18-trust-before"
-assert_has 'U18 footer names the trust entry as not touched' "- $U_HOME/.claude.json — " "$out"
+u_same 'U18 workspace-trust entry untouched (not in ledger)' "$U_HOME/.claude.json" "$TMP/u-u18-trust-before"
+assert_has 'U18 footer names the trust entry kept (not in ledger)' "kept (not in ledger): $U_HOME/.claude.json — revoke it in Claude Code if you want it gone" "$out"
 assert_has 'U18 footer names the adopter scripts as not touched' "scripts — himmel scripts copied into" "$out"
 case "$(cat "$U_HOME/.claude/CLAUDE.md")" in
     *HIMMEL:working-principles*) echo 'FAIL U18 marker still in CLAUDE.md'; FAILED=$((FAILED + 1)) ;;

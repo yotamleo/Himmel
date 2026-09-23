@@ -599,12 +599,23 @@ node ~/himmel/scripts/himmelctl/bin.js uninstall</pre>
           <span class="mono">~/.claude/himmel</span>, and, once everything
           else succeeded, the <span class="mono">himmelctl</span> launcher in
           <span class="mono">~/.local/bin</span>.</li>
+          <li>Claude Code's trust entry for the project
+          (<span class="mono">~/.claude.json</span>), when this install
+          created it &mdash; install's own record is what tells that apart
+          from a trust entry you already had; without that record, or if
+          you have since changed it, it is left alone.</li>
         </ul>
         <p>A status line or <span class="mono">env.HANDOVER_DIR</span> key
         that install's own record does not recognize as its own is left
         alone, with a command printed for removing it by hand yourself
         &mdash; that record is what tells apart something himmel wrote from
         something you already had.</p>
+        <p>The three writes install makes in your home folder
+        (<a href="#what-it-does">Question 2</a> lists them: the status
+        line's config, the <span class="mono">himmelctl</span> launcher and
+        its cache) are all recorded and all reversed above; the status line
+        itself only ever reads its config from that same file, never from
+        anywhere else, so removing it is enough.</p>
         <h4>Kept on purpose</h4>
         <ul>
           <li>Your Telegram pairing and bridge state &mdash; add
@@ -615,9 +626,6 @@ node ~/himmel/scripts/himmelctl/bin.js uninstall</pre>
           keep its backup copies even then.</li>
           <li>The himmel download itself, its <span class="mono">.env</span>
           file, your worktrees and your handover notes.</li>
-          <li>Claude Code's own trust entry for the project, which may
-          predate himmel &mdash; revoke it in Claude Code if you want it
-          gone.</li>
           <li>A few leftovers in the project's and your user
           <span class="mono">settings.json</span> that install's own record
           cannot show himmel created: the empty
