@@ -1025,10 +1025,17 @@ narrative, denied `release` as a merge without review. Guards:
 - **The script resolves into a real checkout of this repo** (the checkout the
   hook lives in or one of its `git worktree list` siblings); a lookalike
   `…/scripts/handover/queue-lock.sh` falls through. The relative form is judged
-  against the payload `cwd` (else `$PWD`).
-- **Windows Git Bash drive-letter paths (HIMMEL-3192).** Each of the four path
-  positions (the `HANDOVER_DIR` value, the script, the `--sweep` dir, the doc)
-  goes through ONE helper (`ql_abs_path`) accepting `/x`, `/c/x` and `C:/x`
+  against an absolute payload `cwd` only — never the hook's own `$PWD`; no or a
+  relative payload `cwd` falls through (HIMMEL-3494).
+- **The script word is relative or `/`-rooted — never a drive letter, `\` or
+  `'` (HIMMEL-3494).** On POSIX, `C:\x\…` or `C:/x/…` would be checked as one
+  path but run as a cwd-relative file of that literal name, so any such
+  spelling falls through, as does a drive-letter payload `cwd`. Windows Git
+  Bash therefore always gets a prompt for this shape, like the
+  `impacted-suites.sh` exception below.
+- **Windows Git Bash drive-letter paths (HIMMEL-3192).** The three
+  non-executed path positions (the `HANDOVER_DIR` value, the `--sweep` dir, the
+  doc) go through ONE helper (`ql_abs_path`) accepting `/x`, `/c/x` and `C:/x`
   (`C:\x` when quoted — an unquoted backslash is eaten by bash before the path
   is seen, so it never qualifies). Every containment comparison first
   normalises BOTH sides to `/<lower-case drive>/…`, so `C:/x`, `c:/x` and
