@@ -444,7 +444,8 @@ function parseDotEnv(raw) {
 // ── settings-key deepening: verifyScript (wiring-statusline) ─────────────
 
 // wire-statusline.sh is the ONLY writer of statusLine.command, and it always
-// emits `node "<absolute-path-to-index.js>"` — see scripts/lib/wire-
+// emits `node "<absolute-path-to-index.js>"` (guarded since HIMMEL-3332, see
+// STATUSLINE_GUARDED_RE) — see scripts/lib/wire-
 // statusline.sh. Parsing exactly that shape (rather than a general shell
 // tokenizer) keeps this simple and matches what actually gets written;
 // anything else can't be resolved with confidence, so it degrades rather
@@ -453,9 +454,15 @@ function parseDotEnv(raw) {
 // PATH) and the script path (readable file), which is enough to catch a
 // missing/moved/unbuilt script without any side effect.
 const STATUSLINE_COMMAND_RE = /^(\S+)\s+"([^"]+)"$/;
+// HIMMEL-3332 (HIMMEL-3312): the guarded form wire-statusline.sh writes now,
+// `[ -f "<js>" ] && exec <interpreter> "<js>" || true`, is reduced to the bare
+// shape above — the same script must appear in both halves.
+const STATUSLINE_GUARDED_RE = /^\[ -f "([^"]+)" \] && exec (\S+) "([^"]+)" \|\| true$/;
 
 function verifyStatusLineCommand(command, ctx) {
   if (typeof command !== 'string') return 'no usable command';
+  const g = command.trim().match(STATUSLINE_GUARDED_RE);
+  if (g && g[1] === g[3]) command = `${g[2]} "${g[3]}"`;
   const m = command.trim().match(STATUSLINE_COMMAND_RE);
   if (!m) return `command does not match the expected '<interpreter> "<script>"' shape: ${JSON.stringify(command)}`;
   const interpreter = m[1];

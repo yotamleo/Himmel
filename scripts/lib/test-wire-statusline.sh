@@ -16,11 +16,18 @@ TMP="$(mktemp -d)"
 export HIMMEL_PROVENANCE_DIR="$TMP/prov"
 trap 'rm -rf "$TMP"' EXIT
 fail() { echo "FAIL: $1" >&2; exit 1; }
+# HIMMEL-3332 (HIMMEL-3312): the statusLine command wire-statusline.sh writes —
+# node on the hud renderer, guarded so a deleted clone renders nothing instead
+# of failing on every session start.
+guarded_cmd() {
+  local js="$1/marketplace/plugins/claude-hud/dist/index.js"
+  printf '[ -f "%s" ] && exec node "%s" || true' "$js" "$js"
+}
 
 # 1. fresh file gets a valid hud statusLine + the extra-cmd gate.
 bash "$HELPER" "$TMP/s1.json" "/c/Users/me/himmel" >/dev/null
 [ "$(jq -r .statusLine.type "$TMP/s1.json")" = "command" ] || fail "fresh type"
-[ "$(jq -r .statusLine.command "$TMP/s1.json")" = 'node "/c/Users/me/himmel/marketplace/plugins/claude-hud/dist/index.js"' ] || fail "fresh command"
+[ "$(jq -r .statusLine.command "$TMP/s1.json")" = "$(guarded_cmd /c/Users/me/himmel)" ] || fail "fresh command"
 [ "$(jq -r .env.CLAUDE_HUD_ALLOW_EXTRA_CMD "$TMP/s1.json")" = "1" ] || fail "extra-cmd gate set"
 echo "ok 1 fresh file"
 
@@ -43,7 +50,7 @@ echo "ok 3 idempotent"
 
 # 4. backslash himmel path normalized to forward slashes
 bash "$HELPER" "$TMP/s4.json" 'C:\Users\me\himmel' >/dev/null
-[ "$(jq -r .statusLine.command "$TMP/s4.json")" = 'node "C:/Users/me/himmel/marketplace/plugins/claude-hud/dist/index.js"' ] || fail "backslash normalize"
+[ "$(jq -r .statusLine.command "$TMP/s4.json")" = "$(guarded_cmd C:/Users/me/himmel)" ] || fail "backslash normalize"
 echo "ok 4 backslash normalized"
 
 # 5. overwrites a stale statusLine (authoritative)
@@ -87,7 +94,7 @@ dropped="$cfgdir/plugins/claude-hud/config.json"
 jq -e . "$dropped" >/dev/null 2>&1 || fail "dropped config not valid JSON"
 grep -q '<himmel-path>' "$dropped" && fail "placeholder <himmel-path> left in dropped config"
 grep -qF "$REPO_ROOT" "$dropped" || fail "real himmel path not substituted into dropped config"
-[ "$(jq -r .statusLine.command "$sdir/settings.json")" = "node \"$REPO_ROOT/marketplace/plugins/claude-hud/dist/index.js\"" ] || fail "command not node w/ real path"
+[ "$(jq -r .statusLine.command "$sdir/settings.json")" = "$(guarded_cmd "$REPO_ROOT")" ] || fail "command not node w/ real path"
 [ "$(jq -r .display.showPromptCache "$dropped")" = "true" ] || fail "dropped config missing showPromptCache: true"
 echo "ok 10 hud config dropped under CLAUDE_CONFIG_DIR + substituted"
 
@@ -634,5 +641,46 @@ esac
 [ "$(jq -c --arg p "cfg37/plugins/claude-hud" 'select(.kind == "tree" and (.path | endswith($p)))' "$HIMMEL_PROVENANCE_DIR/provenance.jsonl" | grep -c .)" = 0 ] \
   || fail "37: no purge tree row can be recorded without a listing file"
 echo "ok 37 a failed mktemp warns that the purge recording was skipped and still purges"
+
+# 38. HIMMEL-3332 (HIMMEL-3312): the wired command degrades silently when the
+# clone is gone — rc 0, nothing on stdout or stderr — and still renders when
+# the renderer is there.
+h38="$TMP/h38"; s38="$TMP/s38.json"
+mkdir -p "$h38/marketplace/plugins/claude-hud/dist"
+printf 'process.stdout.write("HUD-OK")\n' > "$h38/marketplace/plugins/claude-hud/dist/index.js"
+CLAUDE_CONFIG_DIR="$TMP/cfg38" bash "$HELPER" "$s38" "$h38" >/dev/null || fail "38: wire failed"
+cmd38="$(jq -r .statusLine.command "$s38")"
+[ "$cmd38" = "$(guarded_cmd "$h38")" ] || fail "38: not the guarded command: $cmd38"
+if command -v node >/dev/null 2>&1; then
+  out38="$(sh -c "$cmd38" </dev/null 2>&1)" || fail "38: present renderer failed: $out38"
+  [ "$out38" = "HUD-OK" ] || fail "38: present renderer did not render (got: $out38)"
+else
+  echo "skip 38 present-renderer half: node not on PATH"
+fi
+rm -rf "$h38"
+rc38=0; out38="$(sh -c "$cmd38" </dev/null 2>&1)" || rc38=$?
+[ "$rc38" -eq 0 ] || fail "38: a missing clone must not fail the statusLine (rc=$rc38)"
+[ -z "$out38" ] || fail "38: a missing clone must render nothing (got: $out38)"
+echo "ok 38 guarded statusLine renders when present and is silent when the clone is gone"
+
+# 39. HIMMEL-3332: unwire recognises BOTH forms — an adopter wired before the
+# guard (bare node form) and one wired after it — and leaves a user's own
+# statusLine alone.
+# shellcheck source=unwire-statusline.sh
+. "$HERE/unwire-statusline.sh"
+for form in bare guarded; do
+  s39="$TMP/s39-$form.json"
+  if [ "$form" = bare ]; then c39='node "/old/himmel/marketplace/plugins/claude-hud/dist/index.js"'
+  else c39="$(guarded_cmd /old/himmel)"; fi
+  jq -n --arg c "$c39" '{statusLine:{type:"command",command:$c},theme:"dark"}' > "$s39"
+  unwire_statusline "$s39" >/dev/null || fail "39: unwire failed ($form)"
+  [ "$(jq -c 'has("statusLine")' "$s39")" = false ] || fail "39: $form form not removed"
+  [ "$(jq -r .theme "$s39")" = dark ] || fail "39: sibling key lost ($form)"
+done
+s39u="$TMP/s39-user.json"
+printf '{"statusLine":{"type":"command","command":"[ -f ~/mine.js ] && exec node ~/mine.js || true"}}' > "$s39u"
+unwire_statusline "$s39u" >/dev/null || fail "39: unwire failed (user)"
+[ "$(jq -r .statusLine.command "$s39u")" = '[ -f ~/mine.js ] && exec node ~/mine.js || true' ] || fail "39: a user's own statusLine was touched"
+echo "ok 39 unwire removes the bare and guarded forms, keeps a user statusLine"
 
 echo "ALL PASS"

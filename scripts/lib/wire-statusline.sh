@@ -10,7 +10,8 @@
 # Does THREE things (HIMMEL-718 Task 4.1 — the wiring switch to the forked
 # claude-hud renderer; the vendored bash bar is RETAINED as fallback):
 #   1. .statusLine = { type: "command",
-#                      command: "node \"<himmel>/marketplace/plugins/claude-hud/dist/index.js\"" }
+#                      command: "[ -f \"<js>\" ] && exec node \"<js>\" || true" }
+#      where <js> = <himmel>/marketplace/plugins/claude-hud/dist/index.js
 #   2. .env.CLAUDE_HUD_ALLOW_EXTRA_CMD = "1"  (merged, preserving other env keys)
 #      — activates hud's customLineCommand extra-cmd gate.
 #   3. Drops the hud config: reads
@@ -213,7 +214,11 @@ wire_statusline() {
   # Forward-slash the himmel path so the `node "..."` command is valid even
   # when a caller passes a Windows backslash path (Git Bash tolerates /c/... ).
   local himmel_fwd="${himmel//\\//}"
-  local cmd="node \"${himmel_fwd}/marketplace/plugins/claude-hud/dist/index.js\""
+  # HIMMEL-3332 (HIMMEL-3312): guarded, so a deleted clone renders an empty
+  # statusLine instead of a node stack trace on every session start. unwire's
+  # path pattern (_UNWIRE_SL_PAT) matches this form and the older bare one.
+  local hud_js="${himmel_fwd}/marketplace/plugins/claude-hud/dist/index.js"
+  local cmd="[ -f \"${hud_js}\" ] && exec node \"${hud_js}\" || true"
 
   # The hud's plugin dir is per-USER (the config dir), never derived from the
   # settings path — see (3) below. Resolved up here because the previous hud
