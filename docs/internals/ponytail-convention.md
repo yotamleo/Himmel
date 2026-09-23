@@ -6,30 +6,41 @@ behavior for the complete one. It exists so "we simplified this on purpose"
 is attached to the code, not left to survive only in a PR description or
 someone's memory.
 
-Before this doc, the convention was undocumented and unenforced: 37 sites in
-`scripts/` (`grep -rio 'ponytail' scripts/ | wc -l`, re-derived 2026-09-17;
-zero hits under `docs/`, `CLAUDE.md`, `.claude/`). It survived by imitation
-alone. This doc records what those 37 sites actually do, derived from
-reading them — it does not redesign the convention.
+This is [upstream DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail)'s
+convention, not a homegrown one — we adopted the marker text but, until
+HIMMEL-3511, neither credited it nor used its full shape. Upstream's own
+`/ponytail-debt` skill (`skills/ponytail-debt/SKILL.md` in the installed
+plugin, `~/.claude/plugins/marketplaces/ponytail/`) is what makes the shape
+below load-bearing: it harvests every marker into a ledger and tags any that
+lack the second half as `no-trigger` — "the ones that silently rot."
 
-## Shape, as used today
+## Shape
 
-- **Prefix.** `# ponytail:` / `// ponytail:` at the start of the comment line
-  is the dominant shape (35 of 37 sites). Two sites diverge and are left
-  as-is (this ticket documents, it does not retro-edit the existing 37):
-  `scripts/sync/repo-sync-runner.sh:559` puts `ponytail:` mid-comment after
-  other prose, and `scripts/hooks/require-quiet-run.sh:119` references
-  "ponytail" in prose to describe a *former* note rather than writing a live
-  one.
-- **Content is contrastive.** Every conforming site states what the code
-  does and then explicitly what it does **not** do or guarantee — "shape-based,
-  so an unnamed... credential ... " (`run-hook-with-bash.js:303`),
-  "AT-LEAST-ONCE, not exactly-once" (`stop-queue.mjs:53`), "hashes only the
-  LOCAL file — it cannot independently..." (`artifact-sync.sh:115`). A
-  marker that only gestures at a simplification ("this is simplified")
-  without naming the limitation is not a conforming use — none of the 37
-  sites actually does this, which is itself evidence for what the
-  convention requires.
+```
+ponytail: <ceiling>, <upgrade path>
+```
+
+Both halves are required on a **new** marker:
+
+- **Ceiling** — what the code does *not* do or guarantee, stated
+  concretely. "Shape-based, so an unnamed or multi-word credential still gets
+  through" (`run-hook-with-bash.js:306`), "AT-LEAST-ONCE, not
+  exactly-once" (`stop-queue.mjs:53`). A marker that only gestures at a
+  simplification ("this is simplified") without naming the limitation is not
+  a conforming use.
+- **Upgrade path** — the trigger or ticket that would justify revisiting the
+  ceiling: a HIMMEL key, or a concrete condition ("upgrade to per-URL locking
+  if throughput ever makes that a bottleneck",
+  `scripts/handover/artifact-sync.sh:72`). "None planned, because X" is a
+  valid upgrade path — it is a decision, not silence. What's not valid is
+  leaving the second half off entirely.
+
+Upstream's own illustration uses an HTML comment (`<!-- ponytail: browser has
+one -->`) specifically so its README doesn't pollute its own ledger; that's a
+formatting trick, not part of the convention.
+
+- **Prefix.** A `#` or `//` line comment starting with `ponytail:` is the
+  dominant shape in this repo.
 - **Placement.** Directly on, or immediately above, the code exhibiting the
   simplification, in the same file — never centralized in a doc or a
   tracking issue.
@@ -38,35 +49,39 @@ reading them — it does not redesign the convention.
   doesn't cover a case, a comparison that's a prefix match. Not style
   commentary, not a TODO, not a changelog note.
 
-## What it does NOT include today
+## Where we stand today
 
-- **No ticket reference.** None of the 37 sites link to a Jira ticket, so
-  there is no structural path from "we simplified this" to "we fixed it" or
-  "we decided not to" — a simplification can sit unrevisited indefinitely.
-  This is a real gap; this ticket documents it rather than closing it.
-- **No enforcement.** Nothing checks the shape, and nothing requires a
-  marker when a shortcut is taken. The convention is entirely honor-system.
+`docs/internals/ponytail-debt.md` is the harvested ledger, generated with
+upstream's method (`grep -rnE '(#|//) ?ponytail:' .`, skipping
+`node_modules`/`.git`/build output). Most existing markers predate this
+rewrite and name only a ceiling; the ledger's `no-trigger` count is that
+backlog, not a new problem this doc created. Backfilling triggers onto
+existing markers is phase 2 (tracked in HIMMEL-3511's follow-up, not this
+PR) — this PR does not retro-edit any existing marker.
 
 ## Enforcement layer: documentation only, for now
 
 Per `CLAUDE.md`'s "Adding a rule — pick the cheapest layer": escalate to a
 structural gate only on the **second** drift instance, never on the first.
-This ticket *is* the first time the convention has been examined at all —
-there is no prior documented instance to escalate from — and the 37 existing
-sites are consistent enough (modulo the two stragglers above, both
-harmless) that the convention is evidently holding on imitation alone. The
-honest read of the evidence is: document it, do not gate it yet.
+Requiring the upgrade-path half on new markers is itself the first
+correction here — there is no prior documented instance of someone gaming
+*that* requirement to escalate from. The honest read of the evidence is:
+document the fuller shape, do not gate it yet.
 
 **What would count as the second drift instance**, i.e. what would justify
-adding a gate: a newly added `ponytail:` marker that gestures without naming
-a concrete limitation, or one used to wave through a shortcut nobody
-reviewed. If that happens, the shippable shape is a check scoped to **added**
-lines only (`git diff` on the changed hunks, `--diff-filter=A` equivalent for
-new markers) — it must never fire on the pre-existing 37 sites, which would
-make it noise from day one and get it disabled within a day.
+adding a gate: a newly added `ponytail:` marker missing the upgrade-path
+half, or naming one that just gestures without a real trigger or ticket. If
+that happens, the shippable shape is a check scoped to **added** lines only
+(new markers via the changed hunks) — it must never fire on pre-existing
+markers, which would make it noise from day one and get it disabled within a
+day.
 
 ## Writing a new one
 
 Before writing `ponytail:`, consider whether the simplification should just
 be fixed instead. If not, write the marker at the site, naming the concrete
-limitation — not merely that one exists.
+limitation and the upgrade path — not merely that a limitation exists.
+
+Run upstream's `/ponytail-debt` (or regenerate
+`docs/internals/ponytail-debt.md` the same way) whenever you want the
+current backlog, rather than trusting a stale ledger snapshot.
