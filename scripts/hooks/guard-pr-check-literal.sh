@@ -293,7 +293,18 @@ while IFS= read -r line; do
                     ''|bash|sh|zsh|dash|ksh|mksh|busybox|toybox|source|.|eval|time|command|builtin|nohup|nice|stdbuf|sudo|env|exec|timeout|xargs)
                         chdir=1 ;;
                     *)
-                        is_target "${nextw##*/}" && chdir=1 ;;
+                        # A bare word (no /) resolves via PATH to a known,
+                        # fixed-behavior utility (the grep carve-out below);
+                        # a path-qualified word (./wrapper, bin/wrapper) names
+                        # an arbitrary file whose behavior this hook cannot
+                        # see, and it runs from find's CHANGED cwd - treat it
+                        # the same as an unverifiable runner (codex-2 panel
+                        # finding, HIMMEL-3517).
+                        case "$nextw" in
+                            */*) chdir=1 ;;
+                            *) is_target "${nextw##*/}" && chdir=1 ;;
+                        esac
+                        ;;
                 esac
                 ;;
         esac

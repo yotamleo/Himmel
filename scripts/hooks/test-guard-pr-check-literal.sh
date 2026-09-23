@@ -389,6 +389,16 @@ run "CR_LEDGER=\$T/l.jsonl bash scripts/cr/test-ledger-append.sh -> allow (HIMME
     "$(payload 'CR_LEDGER=$T/l.jsonl bash scripts/cr/test-ledger-append.sh' "$WT")" "$HR"
 run "find -execdir grep (non-interpreter) -> allow (HIMMEL-3517)" 0 \
     "$(payload "find . -name '*.md' -execdir grep foo {} \\;" "$WT")" "$HR"
+
+# codex-2 (/pr-check critic panel, Important, 2026-09-23): -execdir's
+# next-word check only flagged a WORD that is_target recognized by name -
+# an arbitrary path-qualified wrapper (./wrapper) matched neither the
+# known-interpreter list nor is_target, so it fell through as "safe" even
+# though it runs from find's changed cwd and can itself resolve and execute
+# a guarded relative script there. Fixed by treating any path-qualified
+# (contains /) next-word as unverifiable, same as a known wrapper -> deny.
+run "find -execdir ./wrapper (path-qualified, unrecognized) -> deny (HIMMEL-3517, codex-2)" 2 \
+    "$(payload "find . -maxdepth 0 -execdir ./wrapper {} \\;" "$WT")" "$HR"
 # Positive controls: the shapes these fixes must NOT widen stay denied.
 # shellcheck disable=SC2016 # command text, verbatim
 run "control: bash scripts/cr/\$X (real unresolved target) -> still deny" 2 \

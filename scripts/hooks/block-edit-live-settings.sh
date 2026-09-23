@@ -512,12 +512,31 @@ is_readonly_allowlisted() {
     esac
     case "$c" in
         *';'*)
-            local rest="$c" seg assign_match
+            local rest="$c" seg assign_match assign_var
             while :; do
                 seg=${rest%%;*}
                 assign_match=$(printf '%s' "$seg" | grep -E '^[[:space:]]*[a-z_][a-z0-9_]*=[^[:space:]]*[[:space:]]*$') || assign_match=
                 if [ -n "$assign_match" ]; then
-                    :
+                    assign_var=$(printf '%s' "$seg" | sed -E 's/^[[:space:]]*([a-z_][a-z0-9_]*)=.*/\1/')
+                    # exec/resolution-influencing names (sudo's env_delete list,
+                    # folded lowercase since $c is already case-folded) — an
+                    # assignment to one of these can hijack what a LATER
+                    # read-only verb in the chain actually runs (HIMMEL-3465
+                    # codex-1: `PATH=/tmp/evil; cat ~/.claude/settings.json`
+                    # would otherwise run an attacker-controlled cat). Denied,
+                    # not allowlisted, so the original fix's harmless
+                    # `X=<path>; jq ...` shape keeps working.
+                    case "$assign_var" in
+                        path|cdpath|ifs|env|bash_env|ps4|shellopts|bashopts|glob_ignore|\
+ld_preload|ld_library_path|ld_audit|ld_origin_path|ld_run_path|\
+dyld_insert_libraries|dyld_library_path|dyld_framework_path|dyld_fallback_library_path|\
+nlspath|perl5lib|perllib|perl5opt|perl5db|pythonpath|pythonhome|pythoninspect|pythonstartup|\
+rubylib|rubyopt|gem_path|gem_home|node_options|node_path|\
+terminfo|terminfo_dirs|termpath|git_external_diff|git_pager|git_ssh|git_ssh_command|git_askpass|\
+pager|editor|visual|prompt_command|zdotdir|fpath|nullcmd|readnullcmd)
+                            is_readonly_segment "$seg" || return 1
+                            ;;
+                    esac
                 else
                     is_readonly_segment "$seg" || return 1
                 fi

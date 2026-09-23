@@ -706,6 +706,19 @@ assert_rc "123 jq read; write-in-place (no assignment) still denies (control)" 2
 assert_rc "124 VAR=path; jq with a quoted-pipe regex filter still denies (ponytail, HIMMEL-3465)" 2 \
     "$(bash_rc_of "$PRIMARY" "SP=/tmp/claude-1000/somesession/scratchpad; jq '[.permissions.allow[]? | select(test(\"luna|handover\"))]' \$SP/HIMMEL-3514-N424-bridge-hardening.leg-settings.json")"
 
+# 125: codex-1 (/pr-check critic panel, Critical, 2026-09-23) — 121's fix
+# checked each `;`-segment's leading assignment against a lowercase-only
+# regex, but is_readonly_allowlisted is invoked with the ALREADY-LOWERCASED
+# command text, so `PATH=/tmp/evil;` folds to `path=/tmp/evil;` and matched
+# the same as any harmless assignment, silently exempting the chain from the
+# read-only check on the LATER real verb. Before this fix that later `cat`
+# on the primary's live settings.json ran under an attacker-controlled PATH
+# (rc=0, allowed); denylisting exec/resolution-influencing names (sudo's
+# env_delete list, folded lowercase) closes it while leaving arbitrary
+# benign variable names (case 121's own repro) allowed -> DENY now.
+assert_rc "125 PATH=/tmp/evil; cat live settings.json still denies (HIMMEL-3465, codex-1)" 2 \
+    "$(bash_rc_of "$PRIMARY" "PATH=/tmp/evil; cat \$PRIMARY/.claude/settings.json")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true
