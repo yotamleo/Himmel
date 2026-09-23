@@ -17,6 +17,10 @@
 #   WAKE tick changed=<f,...>   the tick's ACTION KEY changed and the change
 #     bank=<verdict>            held for two consecutive samples; bank= is the
 #   TICK ...                    bank-preflight verdict word the key carries.
+#   WAKE tick-fail samples=<n>  CONSOLE_WAIT_FAIL_WAKE consecutive samples
+#                               failed (tick or bank read): the monitor is
+#                               broken. Once per streak; the re-arm stays quiet
+#                               until a sample succeeds.
 #
 # The action key is the tick fields a console acts on: legs=, livestate=,
 # prs=, tails=, legset=, board= (its class; the STALE age is dropped) and the
@@ -27,7 +31,8 @@
 # tick) is not an event. The first sample with no saved
 # key, or with a saved key taken under different tick args (a re-arm after a
 # dispatch or wrap), is a silent baseline. A tick.sh that exits non-zero or
-# prints no TICK line is never a change.
+# prints no TICK line, or a bank read that fails or is not a verdict token, is
+# a failed sample: never a change, and only a streak of them wakes.
 #
 # Files next to the inbox:
 #   <inbox>.wait       heartbeat, rewritten every poll:
@@ -40,7 +45,8 @@
 #                      plus a few polls, still
 #                      waiting or sampling, is a waiter that died without
 #                      trapping (SIGKILL).
-#   <inbox>.wait.state   the saved action key (line 1: tick-args hash, line 2: key).
+#   <inbox>.wait.state   the saved action key (line 1: tick-args hash, line 2: key;
+#                        line 3 `failwoke` once a failure streak has woken).
 #   <inbox>.wait.lock    the one-waiter flock (the file stays; the lock does not).
 #
 # Exit: 0 = a WAKE block was printed; 1 = the inbox could not be drained;
@@ -49,7 +55,8 @@
 # Env: CONSOLE_WAIT_INTERVAL tick interval in seconds (default 180);
 # CONSOLE_WAIT_POLL_SEC inbox poll (default 1); CONSOLE_WAIT_TICK_TIMEOUT
 # seconds a tick may run before it counts as failed (default 120), so a hung
-# tick cannot freeze the Telegram path; CONSOLE_WAIT_TICK / CONSOLE_WAIT_BANK
+# tick cannot freeze the Telegram path; CONSOLE_WAIT_FAIL_WAKE consecutive
+# failed samples before a tick-fail wake (default 3); CONSOLE_WAIT_TICK / CONSOLE_WAIT_BANK
 # replace tick.sh / the bank verdict command (tests).
 #
 # Leg messages (SendMessage) wake a console on their own; only the Telegram
@@ -108,14 +115,22 @@ trap "exit_reason='signal-HUP'; exit 129" HUP
 
 args_hash="$(printf '%s\n' "$*" | sha256sum | cut -c1-16)"  # gnu-ok: Linux-only kit (PLATFORM GUARD)
 
+# bank_word: prints the bank-preflight verdict token; non-zero when the read
+# failed, timed out, or its last line is not one of the verdict tokens.
 bank_word() {
+    local out
     if [ -n "${CONSOLE_WAIT_BANK:-}" ]; then
-        bash "$CONSOLE_WAIT_BANK" 2>/dev/null | tail -n 1
+        out="$(bash "$CONSOLE_WAIT_BANK" 2>/dev/null)" || return 1
     else
         # gnu-ok: Linux-only kit (timeout). Same side-effect-free spelling tick.sh uses for its fleet census.
-        CADENCE_BANK_LAUNCH='' CADENCE_BANK_LEDGER=/dev/null timeout -k 5 "$tick_timeout" \
-            bash "$REPO/scripts/lib/bank-preflight.sh" 2>/dev/null | tail -n 1
+        out="$(CADENCE_BANK_LAUNCH='' CADENCE_BANK_LEDGER=/dev/null timeout -k 5 "$tick_timeout" \
+            bash "$REPO/scripts/lib/bank-preflight.sh" 2>/dev/null)" || return 1
     fi
+    out="$(printf '%s\n' "$out" | tail -n 1)"
+    case "$out" in
+        PROCEED|SKIPPED-BANK|SKIPPED-FLEET|BANK-STALE|BANK-UNKNOWN) printf '%s\n' "$out" ;;
+        *) return 1 ;;
+    esac
 }
 
 field() { # <name> <tick line>
@@ -130,9 +145,8 @@ sample() {
     raw="$(timeout -k 5 "$tick_timeout" bash "$tick_cmd" "$@" 2>/dev/null)" || { tick_state=fail; return; }  # gnu-ok: Linux-only kit
     tick_line="$(printf '%s\n' "$raw" | grep '^TICK ' | head -n 1)"
     if [ -z "$tick_line" ]; then tick_state=fail; return; fi
-    # An empty bank read (timed out, failed) is a failed sample, not a verdict.
-    bank="$(bank_word)"
-    if [ -z "$bank" ]; then tick_state=fail; return; fi
+    # A failed or garbled bank read is a failed sample, not a verdict.
+    bank="$(bank_word)" || { tick_state=fail; return; }
     tick_state=ok
     for f in legs livestate prs tails legset board; do
         v="$(field "$f" "$tick_line")"
@@ -155,8 +169,14 @@ if [ -f "$key_file" ] && [ "$(sed -n 1p "$key_file")" = "$args_hash" ]; then
     saved="$(sed -n 2p "$key_file")"
 fi
 save_key() { printf '%s\n%s\n' "$args_hash" "$1" > "$key_file"; }
+# Line 3 `failwoke` = this failure streak already woke the console once.
+fail_woke() {
+    [ "$(sed -n 1p "$key_file" 2>/dev/null)" = "$args_hash" ] && [ "$(sed -n 3p "$key_file" 2>/dev/null)" = failwoke ]
+}
 
 pending=""
+fail_streak=0
+fail_wake="${CONSOLE_WAIT_FAIL_WAKE:-3}"
 next_tick=0
 heartbeat sampling
 while :; do
@@ -178,6 +198,8 @@ while :; do
         heartbeat sampling
         sample "$@" 9>&-
         if [ -n "$key" ]; then
+            fail_streak=0
+            fail_woke && save_key "${saved:-$key}"
             cur_hash="$(printf '%s' "$key" | sha256sum | cut -c1-16)"  # gnu-ok: Linux-only kit
             if [ -z "$saved" ]; then
                 saved="$key"; save_key "$key"
@@ -195,6 +217,14 @@ while :; do
             fi
         else
             pending=""
+            fail_streak=$((fail_streak + 1))
+            # A monitor that stays broken is an event too, but only once per
+            # streak: the re-arm stays quiet until a sample succeeds.
+            if [ "$fail_streak" -ge "$fail_wake" ] && ! fail_woke; then
+                printf '%s\n%s\nfailwoke\n' "$args_hash" "$saved" > "$key_file"
+                printf 'WAKE tick-fail samples=%s\n' "$fail_streak"
+                exit_reason='wake-tick-fail'; exit 0
+            fi
         fi
     fi
     heartbeat waiting

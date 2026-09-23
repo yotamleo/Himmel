@@ -50,6 +50,8 @@ EOF
 export STUB
 export CONSOLE_WAIT_TICK="$STUB/tick.sh" CONSOLE_WAIT_BANK="$STUB/bank.sh"
 export CONSOLE_WAIT_INTERVAL=1 CONSOLE_WAIT_POLL_SEC=0.2
+# A failure streak wakes only in (f4); elsewhere a failed sample is just "not a change".
+export CONSOLE_WAIT_FAIL_WAKE=1000
 
 # tick_line <legs> <board> [hb] [prs]: a tick line whose action fields are set.
 tick_line() {
@@ -182,6 +184,35 @@ wait_exit "$WPID"
 check "(f2) an empty bank read does not wake" "running" "$rc"
 check "(f2) the heartbeat records the failed sample" "yes" "$(grep -q 'tick=fail' "$I.wait" && echo yes)"
 kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
+
+# --- (f3) a bank read that is not a verdict token is a failed sample --------
+reset_stub
+I="$(new_inbox f3)"
+start "$I" "$WORK/f3.out" --legs "N1.md"
+wait_hb "$I" || fail "(f3) no baseline heartbeat"
+printf 'Traceback: boom\n' > "$STUB/bank"
+wait_exit "$WPID"
+check "(f3) a non-token bank line does not wake" "running" "$rc"
+kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
+
+# --- (f4) a failure streak wakes once; the re-arm stays quiet until a success -
+reset_stub
+I="$(new_inbox f4)"
+CONSOLE_WAIT_FAIL_WAKE=3 start "$I" "$WORK/f4.out" --legs "N1.md"
+wait_hb "$I" || fail "(f4) no baseline heartbeat"
+printf '1\n' > "$STUB/tick.rc"
+wait_exit "$WPID"
+check "(f4) a streak of failed samples ends the wait" "0" "$rc"
+[ "$rc" = running ] && { kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null; }
+check "(f4) the wake names the failure streak" "WAKE tick-fail samples=3" "$(head -n1 "$WORK/f4.out")"
+CONSOLE_WAIT_FAIL_WAKE=3 timeout 6 bash "$WAIT" "$I" --legs "N1.md" > "$WORK/f4b.out" 2>/dev/null; rc=$?  # gnu-ok: Linux-only kit; pipefail-ok: none set
+check "(f4) the re-arm during the same streak runs silent" "124" "$rc"
+check "(f4) the re-arm during the same streak prints nothing" "" "$(cat "$WORK/f4b.out")"
+rm -f "$STUB/tick.rc"
+CONSOLE_WAIT_FAIL_WAKE=3 timeout 3 bash "$WAIT" "$I" --legs "N1.md" >/dev/null 2>&1  # gnu-ok: Linux-only kit; pipefail-ok: none set
+printf '1\n' > "$STUB/tick.rc"
+CONSOLE_WAIT_FAIL_WAKE=3 timeout 8 bash "$WAIT" "$I" --legs "N1.md" > "$WORK/f4c.out" 2>/dev/null  # gnu-ok: Linux-only kit; pipefail-ok: none set
+check "(f4) a new streak after a success wakes again" "WAKE tick-fail samples=3" "$(head -n1 "$WORK/f4c.out")"
 
 # --- (g) a Telegram line wakes at once; a re-arm replays nothing -----------
 reset_stub

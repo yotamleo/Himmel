@@ -104,7 +104,10 @@ Run these, in order, and write the result as the first bullet under
     (everything after the inbox path is passed to `tick.sh` unchanged). It is
     silent while nothing happens and **exits on the first real event**,
     printing one block: `WAKE telegram` plus the operator's line(s), or
-    `WAKE tick changed=<fields> bank=<verdict>` plus the tick line. It runs `tick.sh` every
+    `WAKE tick changed=<fields> bank=<verdict>` plus the tick line, or
+    `WAKE tick-fail samples=<n>` when 3 samples in a row failed (the tick or
+    the bank read is broken: fix it, then restart the waiter; it wakes once per
+    failure streak). It runs `tick.sh` every
     180 s and wakes only when two consecutive samples differ from the action
     key you last saw: `legs=` (a leg FRESH → STALE / FREE / WRAPPED …),
     `livestate=` (DRIFT / MALFORMED), `prs=` (the repo's open-PR set — any
