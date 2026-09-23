@@ -827,6 +827,13 @@ if [ -n "$PROFILE" ]; then
     # contains .locks/ (that sits at the handover ROOT) - verified below
     # rather than assumed, so a doc placed directly AT the root can never
     # collapse this grant back to the whole root (CR round 2, codex-1).
+    # ponytail: a doc directory that is an ANCESTOR of the handover root
+    # (rather than equal to it) still grants that ancestor - and the root
+    # underneath it - through additionalDirectories (CR round 4, codex-1,
+    # deferred HIMMEL-3544): DOC is always resolved via handover_root(),
+    # never handed an ancestor of the root, in every real caller; guarding
+    # it needs every generic test fixture's doc path moved out of the
+    # ancestor chain of its own HANDOVER_DIR fixture first.
     if [ -n "$DOC" ] && _leg_doc_dir="$(cd "$(dirname "$DOC")" 2>/dev/null && pwd)"; then
         if [ -n "$_leg_handover_dir_norm" ] && [ "$_leg_doc_dir" = "$_leg_handover_dir_norm" ]; then
             echo "headed-arm-leg: --profile $PROFILE: leg doc sits directly at the handover root ($_leg_handover_dir_norm) - refusing to grant the whole root as additionalDirectories" >&2
