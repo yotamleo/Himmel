@@ -76,8 +76,9 @@ grepq "$out" 'standalone uninstaller' || grepq "$(cat "$bundle_json")" 'himmel-s
 grep -Fq 'himmel-standalone-uninstaller/1' "$bundle_json" || fail "caseA: bundle.json missing its marker"
 echo "ok: caseA writes a marked standalone bundle"
 
-dir_perm=$(stat -c '%a' "$bundle_dir")
-file_perm=$(stat -c '%a' "$bundle_json")
+perm_of() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"; }
+dir_perm=$(perm_of "$bundle_dir")
+file_perm=$(perm_of "$bundle_json")
 [ "$dir_perm" = '700' ] || fail "caseA: bundle dir perms $dir_perm, want 700"
 [ "$file_perm" = '600' ] || fail "caseA: bundle.json perms $file_perm, want 600"
 echo "ok: caseA bundle dir is 0700, bundle.json is 0600"

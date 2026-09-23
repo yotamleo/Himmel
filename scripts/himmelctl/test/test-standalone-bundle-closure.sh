@@ -64,9 +64,9 @@ walk_narrow() {
 # instruction). A parse finding zero names is itself a failure -- the loop
 # line may have moved or been reworded, silently dropping every unwire-* file
 # from the walk.
-loop_line=$(grep -n '^\s*for helper in ' "$entry" | head -1 || true)
+loop_line=$(grep -n '^[[:space:]]*for helper in ' "$entry" | head -1 || true)
 [ -n "$loop_line" ] || fail "no 'for helper in …' loop found in $entry -- did it move or get reworded?"
-helper_names=$(printf '%s\n' "$loop_line" | sed -E 's/^[0-9]+:\s*for helper in ([^;]+);.*/\1/')
+helper_names=$(printf '%s\n' "$loop_line" | sed -E 's/^[0-9]+:[[:space:]]*for helper in ([^;]+);.*/\1/')
 helper_names=$(printf '%s\n' "$helper_names" | tr -s ' ')
 [ -n "$helper_names" ] || fail "helper-loop parse found zero names in: $loop_line"
 helper_count=$(printf '%s\n' "$helper_names" | wc -w | tr -d ' ')
@@ -107,11 +107,13 @@ while [ "${#queue[@]}" -gt 0 ]; do
       next+=("$child")
     done < <(walk_narrow "$fpath" | sort -u)
   done
-  queue=("${next[@]}")
+  queue=(${next[@]+"${next[@]}"})
 done
 
 # Dedup the reached set.
-mapfile -t reached < <(printf '%s\n' "${reached[@]}" | sort -u)
+deduped=()
+while IFS= read -r _r; do deduped+=("$_r"); done < <(printf '%s\n' "${reached[@]}" | sort -u)
+reached=("${deduped[@]}")
 [ "${#reached[@]}" -gt 0 ] || fail "closure walk from $entry reached zero files -- grep patterns likely stale"
 
 # Pull BUNDLE_FILES_POSIX's own list of quoted repo-relative paths out of the
