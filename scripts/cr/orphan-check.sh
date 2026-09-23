@@ -48,6 +48,8 @@
 #
 # bash 3.2-safe.
 set -uo pipefail
+# HIMMEL-3495: a relative-entry copy that is not the anchor's hands off to it.
+. "$(dirname "${BASH_SOURCE[0]}")/anchor-handoff.sh" || exit 2
 
 branch=""
 while [ $# -gt 0 ]; do case "$1" in

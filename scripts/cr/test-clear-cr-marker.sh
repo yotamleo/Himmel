@@ -1730,12 +1730,21 @@ run_clear "$tmp" 10 "unknown option → exit 10" --bogus
 run_clear "$tmp" 10 "two branches → exit 10" feat/x feat/y
 rm -rf "$tmp"
 
-# 10. An explicit branch arg gates on THAT branch's tip, not cwd HEAD.
+# 10. An explicit branch arg other than the checked-out branch is refused
+# (HIMMEL-3495): clearing writes shared per-branch state, so only cwd's branch
+# may be cleared. A matching explicit arg still clears.
 make_repo || exit 1
 write_marker "$tmp" "$sha"; write_ledger "$tmp" "$(avail_ok "${sha:0:8}")"
 (cd "$tmp" && git checkout -q main) >/dev/null 2>&1
 stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
-run_clear "$tmp" 0 "explicit branch arg from another branch → exit 0" feat/x
+run_clear "$tmp" 12 "explicit branch arg from another branch → exit 12" feat/x
+if grepq "$LAST_CLEAR_OUT" "not the branch checked out"; then pass; else fail "foreign-branch refusal names the reason (got: $LAST_CLEAR_OUT)"; fi
+if marker_exists "$tmp"; then pass; else fail "foreign branch: marker must STAY"; fi
+(cd "$tmp" && git checkout -q --detach feat/x) >/dev/null 2>&1
+run_clear "$tmp" 12 "explicit branch arg on a detached HEAD → exit 12" feat/x
+if marker_exists "$tmp"; then pass; else fail "detached HEAD: marker must STAY"; fi
+(cd "$tmp" && git checkout -q feat/x) >/dev/null 2>&1
+run_clear "$tmp" 0 "explicit arg naming the checked-out branch → exit 0" feat/x
 if marker_exists "$tmp"; then fail "explicit branch: marker should be GONE"; else pass; fi
 rm -rf "$tmp"
 

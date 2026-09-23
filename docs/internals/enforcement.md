@@ -1885,29 +1885,51 @@ The brief-level twin is `STASH_BAN_LINE` in the lane worker prompts. Fails
 CLOSED on missing `jq` or malformed JSON. Bypass: `GIT_STASH_OK=1` (launching
 shell, session-sticky). Spec: `scripts/hooks/test-block-git-stash.sh`.
 
-### `guard-pr-check-literal.sh` — `/pr-check` step-0 relative spellings (HIMMEL-3383)
+### `guard-pr-check-literal.sh` — relative `scripts/cr/` gate spellings (HIMMEL-3383, HIMMEL-3495)
 
 Every leg profile allow-lists `bash scripts/cr/pr-check-context.sh` and
-`bash scripts/cr/pr-check-env.sh CR_CLAUDE_AGENTS` (HIMMEL-3359, HIMMEL-3375).
-The permission matcher is a prefix match, so the rule also covers other
-spellings that run the same relative file: extra arguments, `./`, `//`, `..`,
-quotes, `sh`/`source`/`.`, wrappers such as `env` or `timeout`, a compound
-command, a glob or a brace. The runbook permits running the checkout's own copy
-only when three conditions hold:
+`bash scripts/cr/pr-check-env.sh CR_CLAUDE_AGENTS` (HIMMEL-3359, HIMMEL-3375),
+plus relative literals for thirteen more `scripts/cr/` gate scripts
+(`review-round`, `cr-scores`, `clear-cr-marker`, `write-verdicts`, ... — the
+hook's `TARGETS` list, which its suite checks against every
+`Bash(bash scripts/cr/…` allow row). From a leg's worktree such a literal runs
+the BRANCH's copy. The permission matcher is a prefix match, so the rule also
+covers other spellings that run the same relative file: extra arguments, `./`,
+`//`, `..`, quotes, `sh`/`source`/`.`, wrappers such as `env` or `timeout`, a
+compound command, a glob or a brace. The hook permits running the checkout's
+own copy only when three conditions hold:
 
 - the cwd's git-common-dir is `$HIMMEL_REPO/.git` (the himmel lane);
 - the cwd is the worktree root;
-- the working-tree bytes and file modes under `scripts/cr/`, and of
-  `scripts/guardrails/lib.sh` and `scripts/lib/load-dotenv.sh` (the files the two
-  scripts source), equal the `HIMMEL_REPO` anchor's own working tree.
+- the working-tree bytes and file modes of the guarded files equal the
+  `HIMMEL_REPO` anchor's own working tree. For `pr-check-context.sh` and
+  `pr-check-env.sh` that is all of `scripts/cr/`, plus
+  `scripts/guardrails/lib.sh` and `scripts/lib/load-dotenv.sh`. For every
+  other target it is only the entry script and `scripts/cr/anchor-handoff.sh`
+  (HIMMEL-3495): each of those entry scripts sources the hand-off as its first
+  statement, so an entry byte-equal to the anchor's re-execs the anchor's copy,
+  and every library it loads comes from the anchor. A branch that deletes the
+  hand-off line changes the entry's bytes and is denied. A leg that edits one
+  gate script loses only that script's relative spelling, not all of them. The
+  hand-off reads `HIMMEL_REPO` from the environment, as the hook does.
+
+`review-round.sh` (every verb), `panel-first-pass.sh` and `clear-cr-marker.sh`
+also refuse a branch other than the one checked out in cwd, and a detached
+HEAD: they write shared per-branch state, and a relative run is auto-allowed
+from any leg's worktree.
 
 **What fires it.** The hook classifies by the script a command runs, not by its
 text. It strips quotes and backslashes and splits the command into simple
 commands. A simple command counts when its command word runs a file (a shell,
 `source`, `.`, `eval`, or a path) and one of its words ends, after dropping
-`.` segments and repeated `/`, in a relative `pr-check-context.sh` or
-`pr-check-env.sh`, or is a glob, brace or `$var` that could. Mentions (`grep`,
-`cat`, `git diff`, the test suites) are a no-op. Absolute paths, including the
+`.` segments and repeated `/`, in a relative target script, or is a glob, brace or `$var` that could. Whether anything runs is a presence test over every word,
+not a walk of positions: a shell, `source`, `.`, `eval`, a wrapper, `-exec` or
+`-ok` anywhere in the command counts (HIMMEL-3495), so a redirect in front
+(`2>&1 bash …`) or `find … -exec bash … {} +` is seen. A glob whose directory
+is a literal path other than `scripts/cr` (`scripts/hooks/*.sh`, `docs/*`,
+`./node_modules/*`) is not a candidate while no `cd` is present, and a bare `*`
+or `{}` is not one while nothing that could run it is present (HIMMEL-3433).
+Mentions (`grep`, `cat`, `git diff`, the test suites) are a no-op. Absolute paths, including the
 anchor's, are a no-op too: no allow rule matches them, and the runbook's
 adopter lane depends on them. A candidate that does not resolve to exactly
 `scripts/cr/<script>` from the cwd (a glob, a variable, any `..`, which the

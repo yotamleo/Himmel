@@ -40,14 +40,32 @@
 # denies too. Unreadable stdin denies every call, as block-git-stash.sh in the
 # same chain already does. There is no bypass variable: the canonical fence is
 # always available and is the remedy.
+#
+# HIMMEL-3495 widens the targets to EVERY gate-allowed scripts/cr script (the
+# `Bash(bash scripts/cr/...` rows of .claude/settings.json and the leg
+# profiles' gateAllow). The other thirteen are held to the same three
+# conditions over a narrower set: the entry file itself and
+# scripts/cr/anchor-handoff.sh. Each of them sources that hand-off as its first
+# statement, so an entry byte-equal to the anchor's still carries the line, the
+# hand-off it sources is the anchor's too, and the relative run execs the
+# ANCHOR's copy before any other byte - every lib it loads after that is the
+# anchor's. A branch that deletes the line or edits the hand-off differs, and
+# denies.
 set -uo pipefail
 set -f
 
-TARGETS='pr-check-context.sh pr-check-env.sh'
-# The bytes either script can run before or after its hand-off to the anchor:
-# pr-check-context.sh sources lib.sh, pr-check-env.sh sources load-dotenv.sh,
-# and both exec further scripts/cr/ files. Neither sourced file sources more.
-GUARDED='scripts/cr scripts/guardrails/lib.sh scripts/lib/load-dotenv.sh'
+# test-guard-pr-check-literal.sh derives this set from the allow rows and
+# fails when the two drift apart.
+TARGETS='clear-cr-marker.sh codex-adv-harvest.sh codex-adv-kickoff.sh cr-scores.sh
+doc-freshness-advisory.sh docs-audit-panel.sh impacted-suites.sh known-findings.sh
+ledger-append.sh orphan-check.sh panel-first-pass.sh pr-check-context.sh
+pr-check-env.sh review-round.sh write-verdicts.sh'
+# The bytes either pr-check script can run before or after its hand-off to the
+# anchor: pr-check-context.sh sources lib.sh, pr-check-env.sh sources
+# load-dotenv.sh, and both exec further scripts/cr/ files. Neither sourced file
+# sources more. Every other target is held to itself + the hand-off (above).
+FULL_GUARDED='scripts/cr scripts/guardrails/lib.sh scripts/lib/load-dotenv.sh'
+GUARDED=$FULL_GUARDED
 # shellcheck disable=SC2016 # printed verbatim as the remedy, never expanded
 FENCE='if himmel_repo=$(printenv HIMMEL_REPO | grep .); then
     bash "$himmel_repo/scripts/cr/pr-check-context.sh"
@@ -65,11 +83,12 @@ shown=""
 flat=""
 deny() {
     {
-        echo "guard-pr-check-literal: DENIED - \`$shown\` (HIMMEL-3383): $1"
-        echo "A relative spelling of scripts/cr/pr-check-context.sh or pr-check-env.sh is allowed"
-        echo "only in a himmel checkout, at its worktree root, on a tree whose scripts/cr/,"
-        echo "scripts/guardrails/lib.sh and scripts/lib/load-dotenv.sh equal the HIMMEL_REPO"
-        echo "anchor's byte for byte and mode for mode (compared raw, so a CRLF checkout differs)."
+        echo "guard-pr-check-literal: DENIED - \`$shown\` (HIMMEL-3383, HIMMEL-3495): $1"
+        echo "A relative spelling of a gate-allowed scripts/cr script is allowed only in a himmel"
+        echo "checkout, at its worktree root, on a tree whose copy of what it runs equals the"
+        echo "HIMMEL_REPO anchor's byte for byte and mode for mode (compared raw, so a CRLF checkout"
+        echo "differs): scripts/cr/, scripts/guardrails/lib.sh and scripts/lib/load-dotenv.sh for"
+        echo "pr-check-context.sh / pr-check-env.sh; the script and scripts/cr/anchor-handoff.sh for the rest."
         echo "If the command only mentions the script (a message, a heredoc), move that text into a file."
         case "$flat" in
             *pr-check-env*)
@@ -77,10 +96,15 @@ deny() {
                 echo
                 echo "bash \"<himmel_dir>/scripts/cr/pr-check-env.sh\" CR_CLAUDE_AGENTS"
                 ;;
-            *)
+            *pr-check*)
                 echo "Run /pr-check step 0's canonical anchored fence instead:"
                 echo
                 echo "$FENCE"
+                ;;
+            *)
+                echo "Run the anchor's copy by step 0's printed himmel_dir instead, as its own command:"
+                echo
+                echo "bash \"<himmel_dir>/scripts/cr/<script>.sh\" <args>"
                 ;;
         esac
     } >&2
@@ -122,7 +146,19 @@ flat=${flat//[\'\"\\]/}
 # A glob or brace list can spell a guarded name without either substring
 # (scripts/c[r]/pr-chec[k]-context.sh), so it passes on to classification;
 # so does any case of the names, which a case-insensitive filesystem folds.
-case "$flat" in *[pP][rR]-[cC][hH][eE][cC][kK]*|*[cC][rR]/*|*[][*?]*|*'{'*) ;; *) exit 0 ;; esac
+names_target() { # names_target <text> - mentions pr-check or a target's stem, in any case
+    local t rc=1
+    shopt -s nocasematch
+    case "$1" in *pr-check*) rc=0 ;; esac
+    for t in $TARGETS; do
+        case "$1" in *"${t%.sh}"*) rc=0 ;; esac
+    done
+    shopt -u nocasematch
+    return "$rc"
+}
+mentions=0
+names_target "$flat" && mentions=1
+case "$flat" in *[cC][rR]/*|*[][*?]*|*'{'*) ;; *) [ "$mentions" -eq 1 ] || exit 0 ;; esac
 
 # The canonical fence runs the anchor's copy through $himmel_repo, so it is
 # exempt - but only in its exact shape. Anything added to it (a second
@@ -176,12 +212,15 @@ simple=${flat//[;&|()<>\`]/$'\n'}
 runs=0
 chdir=0
 wrapped=0
+bare_runs=0
 while IFS= read -r line; do
     read -r -a w <<<"$line"
     i=0
     skip_opts=0
     while [ "$i" -lt "${#w[@]}" ]; do
         x=${w[$i]}
+        # A bare number is a redirect's fd left by the split (`2>&1 bash ...`).
+        case "$x" in ''|*[!0-9]*) ;; *) i=$((i + 1)); continue ;; esac
         case "$x" in
             [A-Za-z_]*=*) wrapped=1 ;;
             if|then|else|elif|do|while|until|'!'|'{'|'}') skip_opts=1 ;;
@@ -195,12 +234,59 @@ while IFS= read -r line; do
     [ "$i" -lt "${#w[@]}" ] || continue
     cw=${w[$i]}
     case "${cw##*/}" in
-        bash|sh|zsh|dash|ksh|mksh|busybox|toybox|source|.|eval) runs=1 ;;
+        bash|sh|zsh|dash|ksh|mksh|busybox|toybox|source|.|eval) runs=1; bare_runs=1 ;;
         cd|pushd|popd) chdir=1 ;;
     esac
-    case "$cw" in */*|pr-check*) runs=1 ;; esac
+    # /dev/null is only ever reached as a redirect target (HIMMEL-3433).
+    case "$cw" in /dev/null) ;; */*|pr-check*) runs=1 ;; esac
+    is_target "${cw##*/}" && runs=1
 done <<<"$simple"
+# The leading-word walk above misses a runner behind an operand it does not
+# know (`2>&1 bash ...`, `find . -exec env X=1 bash ...`), so these are
+# PRESENCE tests over every word, not a position walk (HIMMEL-3433): an
+# interpreter, a find -exec, a wrapper or an upper-case VAR= anywhere counts.
+# bare_runs: something present could run a bare * or find's {} - but not a
+# lone `.` or `source` away from the command word (`find . ...` is everywhere,
+# and neither builtin can be exec'd by find or a wrapper).
+# shellcheck disable=SC2086 # split into words on purpose; set -f is on
+for x in $simple; do
+    case "${x##*/}" in
+        source|.) runs=1 ;;
+        bash|sh|zsh|dash|ksh|mksh|busybox|toybox|eval) runs=1; bare_runs=1 ;;
+        time|command|builtin|nohup|nice|stdbuf|sudo|env|exec|timeout|xargs) runs=1; wrapped=1; bare_runs=1 ;;
+    esac
+    case "$x" in
+        -exec|-ok) runs=1 ;;
+        -execdir|-okdir) runs=1; chdir=1 ;;
+    esac
+    [[ "$x" =~ ^[[:upper:]_][[:upper:][:digit:]_]*= ]] && wrapped=1
+done
+# find runs the found file itself when {} is the -exec command word.
+[[ "$flat" =~ -(exec|execdir|ok|okdir)[[:space:]]+[^[:space:]]*\{\} ]] && bare_runs=1
 [ "$runs" -eq 1 ] || exit 0
+
+# glob_is_literal_elsewhere <raw-token> <normalised> - a glob operand that
+# cannot name a target (HIMMEL-3433): its directory part is literal (no glob,
+# brace, $, ~, .., // or /./) and is not scripts/cr, or it is a bare * (or
+# find's {}) with nothing present that would run it. A cd anywhere makes no
+# glob safe.
+glob_is_literal_elsewhere() {
+    local raw=$1 rel=$2 dir
+    [ "$chdir" -eq 0 ] || return 1
+    case "${rel##*/}" in *[][*?]*) ;; *) return 1 ;; esac
+    case "$rel" in
+        */*)
+            dir=${raw%/*}
+            case "$dir" in *[][*?{}~\$]*|*..*|*//*|*/./*) return 1 ;; esac
+            shopt -s nocasematch
+            case "/${rel%/*}" in */cr|*/scripts/cr/*) shopt -u nocasematch; return 1 ;; esac
+            shopt -u nocasematch
+            return 0
+            ;;
+        '*') [ "$bare_runs" -eq 0 ] ;;
+        *) return 1 ;;
+    esac
+}
 
 # A candidate operand: a relative path whose last segment names a guarded
 # script, a glob or brace list that could, or a runtime-built word when the
@@ -230,12 +316,14 @@ for word in $flat; do
         *[[:upper:]]*) hit=1; unresolved=$word ;;
     esac
 done
+entries=""
 for tok in ${flat//[;&|()<>\`=]/$'\n'}; do
     case "$tok" in /*|'~'*) continue ;; esac
     case "$tok" in
-        *'$'[A-Za-z_'{']*) case "$flat" in *pr-check*) hit=1; unresolved=$tok ;; esac ;;
+        *'$'[A-Za-z_'{']*) [ "$mentions" -eq 0 ] || { hit=1; unresolved=$tok; } ;;
     esac
-    case "$tok" in *pr-check*'{'*|*pr-check*'}'*) hit=1; unresolved=$tok ;; esac
+    case "$tok" in *'{'*|*'}'*) ! names_target "$tok" || { hit=1; unresolved=$tok; } ;; esac
+    raw=$tok
     # A brace list reads as a glob that matches every word it could expand to,
     # innermost group first; a pair it cannot reduce is unresolvable.
     while :; do
@@ -246,15 +334,34 @@ for tok in ${flat//[;&|()<>\`=]/$'\n'}; do
     done
     case "$tok" in *'{'*'}'*) hit=1; unresolved=$tok ;; esac
     rel=$(norm "$tok")
-    if is_target "${rel##*/}"; then
+    if is_target "${rel##*/}" && ! glob_is_literal_elsewhere "$raw" "$rel"; then
         hit=1
         case "$rel" in
-            scripts/cr/pr-check-context.sh|scripts/cr/pr-check-env.sh) ;;
+            scripts/cr/*)
+                e=${rel#scripts/cr/}
+                case " $TARGETS " in
+                    *[[:space:]]"$e"[[:space:]]*)
+                        case " $entries " in *" $e "*) ;; *) entries="$entries $e" ;; esac ;;
+                    *) unresolved=$tok ;;
+                esac
+                ;;
             *) unresolved=$tok ;;
         esac
     fi
 done
 [ "$hit" -eq 1 ] || exit 0
+# ponytail: a glob through a directory symlink the text does not spell as
+# scripts/cr (`bash scripts/lnk/*`, lnk -> cr) is not a candidate - the same
+# class as `bash scripts/lnk/x.sh`, which this hook never saw either, and no
+# allow rule matches it. The manifest refuses a symlinked scripts/ or
+# scripts/cr itself.
+case " $entries " in
+    *' pr-check-context.sh '*|*' pr-check-env.sh '*) GUARDED=$FULL_GUARDED ;;
+    *)
+        GUARDED='scripts/cr/anchor-handoff.sh'
+        for e in $entries; do GUARDED="$GUARDED scripts/cr/$e"; done
+        ;;
+esac
 
 shown=${cmd//$'\n'/ }
 shown=${shown:0:200}
@@ -337,7 +444,12 @@ prefix=$(gitq rev-parse --show-prefix 2>/dev/null) \
 manifest() { # manifest <root> - "<mode> <blob-id> <path>" per regular file, sorted
     local root=$1 odd files execs oids modes
     # shellcheck disable=SC2086 # $GUARDED is a fixed, space-free word list
-    odd=$(cd "$root" && find $GUARDED \( ! -type d ! -type f \) -o -name '*[[:cntrl:]]*' 2>/dev/null) || return 1
+    # scripts/ and scripts/cr/ themselves must be real directories: a per-file
+    # GUARDED list would otherwise read straight through a symlinked one.
+    odd=$(cd "$root" && {
+        find scripts scripts/cr -prune ! -type d
+        find $GUARDED \( ! -type d ! -type f \) -o -name '*[[:cntrl:]]*'
+    } 2>/dev/null) || return 1
     [ -z "$odd" ] || { printf 'ODD %s\n' "$(printf '%s' "$odd" | tr '\n' ' ')"; return 0; }
     # shellcheck disable=SC2086 # as above
     files=$(cd "$root" && find $GUARDED -type f 2>/dev/null) || return 1

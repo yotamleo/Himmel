@@ -111,6 +111,20 @@ for (const command of TRUST_SPELLINGS.filter((c) => !/^bash scripts\/cr\/(clear-
   });
 }
 
+// HIMMEL-3495: an exact scripts/cr literal with a second command riding
+// behind it must match no rule either - the literal grants that one command,
+// never a compound. (The `:*` gateAllow rules are left out: this model lets a
+// `:*` tail absorb anything, while the harness matches each subcommand.)
+const RIDERS = ['; evil', ' && evil', ' || evil', ' | sh', ' $(evil)', ' `evil`', '\nevil', ' & evil'];
+for (const literal of [...STEP0, ...EXACT_LITERALS].filter((c) => c.startsWith('bash scripts/cr/'))) {
+  for (const rider of RIDERS) {
+    const command = `${literal}${rider}`;
+    test(`no allow rule matches a literal with a rider: ${JSON.stringify(command)}`, () => {
+      assert.deepEqual(matching(LEG_ALLOW, command), []);
+    });
+  }
+}
+
 // Controls: the sanctioned literals and the common non-trust families a leg
 // and a console run every session still auto-allow.
 const SANCTIONED = [

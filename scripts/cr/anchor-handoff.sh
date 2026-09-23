@@ -8,7 +8,8 @@
 # WHY: plugin-profiles.json gateAllow pre-approves the relative literals
 # `bash scripts/cr/<writer>.sh …` (write-verdicts, clear-cr-marker,
 # panel-first-pass, docs-audit-panel, codex-adv-kickoff, codex-adv-harvest,
-# doc-freshness-advisory, known-findings, ledger-append). From a leg's
+# doc-freshness-advisory, known-findings, ledger-append, and since HIMMEL-3495
+# review-round, orphan-check, impacted-suites, cr-scores). From a leg's
 # worktree that literal runs the BRANCH's copy, so a branch that edits its own
 # verdict writer or marker clearer would run it unseen under the allow rule.
 # Every writer resolves the reviewed repo from cwd (git-common-dir /
@@ -28,9 +29,12 @@
 # an anchor with no copy of the writer, exits 2 rather than letting the
 # branch's copy decide. One hop only: a hand-off that lands on a copy which is
 # still not the anchor refuses instead of looping.
-# ponytail: defense in depth, NOT the trust root. This file and the one line
-# sourcing it are branch bytes, so a branch that deletes either also deletes
-# the hand-off - exactly as in pr-check-env.sh. And the absolute door is left
+# ponytail: this file and the one line sourcing it are branch bytes. What makes
+# them undeletable on the relative door is guard-pr-check-literal.sh
+# (HIMMEL-3495), which denies a relative run unless the entry script and this
+# file equal the anchor's byte for byte - a branch that deletes either is
+# refused before it runs. HIMMEL_REPO is still read from the environment, so
+# whoever sets it picks the anchor (a residual the hook shares). The absolute door is left
 # open on purpose: `bash /abs/worktree/scripts/cr/<writer>.sh` runs the
 # branch's copy, because no allow rule matches that spelling, so the classifier
 # or the operator sees it. "Relative" is decided on the entry path AS INVOKED

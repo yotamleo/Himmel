@@ -17,6 +17,8 @@
 # that PR, and the distinct heads are the rounds. Measurement only: it sets no
 # budget and blocks nothing — you cannot budget what you cannot yet measure.
 set -uo pipefail
+# HIMMEL-3495: a relative-entry copy that is not the anchor's hands off to it.
+. "$(dirname "${BASH_SOURCE[0]}")/anchor-handoff.sh" || exit 2
 
 # ── Named threshold constants (referenced by test-cr-scores.sh) ────────────
 CR_SCORES_DROP_BELOW="${CR_SCORES_DROP_BELOW:-40}"
