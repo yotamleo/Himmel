@@ -332,7 +332,9 @@ while IFS=$'\t' read -r kind name path; do
     # by a `/` and immediately followed by a closing quote - narrow (.ts
     # entries only, quote-terminated) to keep false-positive risk low, but
     # still over-matches a same-named directory or an unrelated string that
-    # happens to end in `/<basename>"` or `/<basename>'`.
+    # happens to end in `/<basename>"` or `/<basename>'`. The basename is
+    # ERE-escaped before interpolation, so a literal basename is always what
+    # gets matched (CR round 1, codex-1).
     case "$path" in
         *.ts)
             js_bn="$(basename "$path" .ts).js"
@@ -342,7 +344,9 @@ while IFS=$'\t' read -r kind name path; do
             hits=$(printf '%s\n%s\n' "$hits" "$js_hits" | grep -v '^$' | sort -u)
 
             ext_bn="$(basename "$path" .ts)"
-            extless_hits=$(git -C "$REPO_ROOT" grep -lE -- "/${ext_bn}[\"']" 2>/dev/null); egrc=$?
+            # shellcheck disable=SC2016 # single-quoted sed script: no expansion wanted
+            ext_bn_esc=$(printf '%s' "$ext_bn" | sed 's/[.[\*^$()+?{|]/\\&/g')
+            extless_hits=$(git -C "$REPO_ROOT" grep -lE -- "/${ext_bn_esc}[\"']" 2>/dev/null); egrc=$?
             [ "$egrc" -gt 1 ] && GIT_GREP_FAILS=$((GIT_GREP_FAILS + 1))
             extless_hits=$(printf '%s\n' "$extless_hits" | grep -vE '(^|/)fixtures/')
             hits=$(printf '%s\n%s\n' "$hits" "$extless_hits" | grep -v '^$' | sort -u)
