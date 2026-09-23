@@ -50,7 +50,7 @@
 # (HIMMEL-891) -- without carrying a fork. A pin bump is a reviewed change to this
 # line, paired with `synced_base` in scripts/upstreams.json so the nightly
 # fork-drift guard stays truthful.
-_graphify_version() { printf '%s\n' "${GRAPHIFY_VERSION:-0.9.61}"; }
+_graphify_version() { printf '%s\n' "${GRAPHIFY_VERSION:-0.9.66}"; }
 _graphify_pypi_name() { printf '%s\n' "graphifyy"; }
 # No extras by default (HIMMEL-2481): himmel has no Kimi backend -- we use
 # Claude -- so the install spec carries no `[kimi]` extra (which pulled in
