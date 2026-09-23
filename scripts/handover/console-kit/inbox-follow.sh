@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # inbox-follow.sh — HIMMEL-3356. Gap-free follow of a console's Telegram inbox.
 #
-#   inbox-follow.sh [--once] <inbox-file>
+#   inbox-follow.sh [--once|--peek] <inbox-file>
 #
 # The console armed `tail -n0 -F <inbox>` under a 30-min Monitor and re-armed it
 # on expiry, so a line the bridge appended between the expiry and the re-arm was
@@ -11,6 +11,10 @@
 # Nothing is lost, and a re-arm replays nothing.
 #
 # --once drains the unread tail and exits (no live follow).
+# --peek delivers nothing and leaves the cursor alone: rc 0 when a complete
+# unread line is waiting, rc 1 when not (HIMMEL-3509: console-wait.sh prints its
+# WAKE header first, then lets --once stream, so no line's cursor moves before
+# the line itself is out).
 # INBOX_FOLLOW_POLL_SEC is the live poll interval (default 1s).
 #
 # Delivery is at-least-once: a line is emitted before its cursor advance, so a
@@ -37,10 +41,13 @@ set -u
 LC_ALL=C   # ${#line} must count bytes: the cursor is a byte offset
 export LC_ALL
 
-once=0
-if [ "${1:-}" = "--once" ]; then once=1; shift; fi
+once=0; peek=0
+case "${1:-}" in
+    --once) once=1; shift ;;
+    --peek) peek=1; shift ;;
+esac
 if [ "$#" -ne 1 ] || [ -z "$1" ]; then
-    echo "usage: inbox-follow.sh [--once] <inbox-file>" >&2
+    echo "usage: inbox-follow.sh [--once|--peek] <inbox-file>" >&2
     exit 2
 fi
 inbox="$1"
@@ -85,6 +92,15 @@ drain() {
         save_cursor "$cur" || exit 1
     done || { echo "inbox-follow: cannot drain $inbox" >&2; return 1; }
 }
+
+if [ "$peek" = 1 ]; then
+    load_cursor
+    size=$(( $(wc -c < "$inbox") ))
+    [ "$cur" -gt "$size" ] && cur=0
+    n=$(( $(tail -c +$((cur + 1)) "$inbox" | tr -cd '\n' | wc -c) ))
+    [ "$n" -gt 0 ] && exit 0
+    exit 1
+fi
 
 drain || exit 1
 [ "$once" = 1 ] && exit 0

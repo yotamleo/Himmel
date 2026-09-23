@@ -25,15 +25,19 @@
 # necessarily from each other), so one failed `gh` read (prs=none for a single
 # tick) is not an event. The first sample with no saved
 # key, or with a saved key taken under different tick args (a re-arm after a
-# dispatch or wrap), is a silent baseline. A tick.sh that fails or prints no
-# TICK line is never a change.
+# dispatch or wrap), is a silent baseline. A tick.sh that exits non-zero or
+# prints no TICK line is never a change.
 #
 # Files next to the inbox:
 #   <inbox>.wait       heartbeat, rewritten every poll:
 #                      `hb=<epoch> pid=<pid> key=<sha16> tick=<ok|fail|-> state=waiting`,
-#                      then on every catchable exit `... state=exited exit=<reason>`.
-#                      A heartbeat older than a few polls with state=waiting is a
-#                      waiter that died without trapping (SIGKILL).
+#                      `state=sampling` while a tick runs, then on every
+#                      catchable exit `... state=exited exit=<reason>`.
+#                      A sample (tick, then bank) can take up to twice
+#                      CONSOLE_WAIT_TICK_TIMEOUT, and a Telegram line waits for
+#                      it. A heartbeat older than that plus a few polls, still
+#                      waiting or sampling, is a waiter that died without
+#                      trapping (SIGKILL).
 #   <inbox>.wait.state   the saved action key (line 1: tick-args hash, line 2: key).
 #
 # Exit: 0 = a WAKE block was printed; 1 = the inbox could not be drained;
@@ -75,7 +79,7 @@ tick_cmd="${CONSOLE_WAIT_TICK:-$HERE/tick.sh}"
 
 # One waiter per inbox: a second would double every wake.
 if [ -f "$hb_file" ]; then
-    other="$(sed -n 's/.* pid=\([0-9][0-9]*\) .*state=waiting.*/\1/p' "$hb_file" | head -n 1)"
+    other="$(sed -n 's/.* pid=\([0-9][0-9]*\) .*state=[a-z]*ing.*/\1/p' "$hb_file" | head -n 1)"
     if [ -n "$other" ] && [ "$other" != "$$" ] && kill -0 "$other" 2>/dev/null \
         && tr '\0' ' ' < "/proc/$other/cmdline" 2>/dev/null | grep -q 'console-wait\.sh'; then  # pipefail-ok: no pipefail here; gnu-ok: Linux-only kit (PLATFORM GUARD)
         echo "console-wait: a waiter is already live on $inbox (pid $other) — not starting a second" >&2
@@ -113,9 +117,11 @@ field() { # <name> <tick line>
 
 # sample: sets tick_line and key (empty on a failed tick).
 sample() {
-    local f v
+    local f v raw
     key=""
-    tick_line="$(timeout "$tick_timeout" bash "$tick_cmd" "$@" 2>/dev/null | grep '^TICK ' | head -n 1)"  # gnu-ok: Linux-only kit
+    # A tick that exits non-zero failed, whatever it printed first.
+    raw="$(timeout "$tick_timeout" bash "$tick_cmd" "$@" 2>/dev/null)" || { tick_state=fail; return; }  # gnu-ok: Linux-only kit
+    tick_line="$(printf '%s\n' "$raw" | grep '^TICK ' | head -n 1)"
     if [ -z "$tick_line" ]; then tick_state=fail; return; fi
     tick_state=ok
     for f in legs livestate prs tails legset board; do
@@ -142,15 +148,27 @@ save_key() { printf '%s\n%s\n' "$args_hash" "$1" > "$key_file"; }
 
 pending=""
 next_tick=0
+# Claim the inbox before the first (slow) sample, so a second waiter started
+# meanwhile sees a live heartbeat (waiting or sampling). The check-then-write
+# is not atomic: two waiters started in the same instant can both pass it.
+heartbeat sampling
 while :; do
-    # Telegram first: it is the cheap check and the operator's line.
-    out="$(bash "$HERE/inbox-follow.sh" --once "$inbox")" || { exit_reason='inbox-error'; exit 1; }
-    if [ -n "$out" ]; then
-        printf 'WAKE telegram\n%s\n' "$out"
+    # Telegram first: it is the cheap check and the operator's line. Peek, print
+    # the header, then let --once stream the lines: each line is on stdout
+    # before its cursor moves, so a kill mid-wake replays, never drops.
+    bash "$HERE/inbox-follow.sh" --peek "$inbox"; rc=$?
+    if [ "$rc" -eq 0 ]; then
+        printf 'WAKE telegram\n'
+        bash "$HERE/inbox-follow.sh" --once "$inbox" || { exit_reason='inbox-error'; exit 1; }
         exit_reason='wake-telegram'; exit 0
+    elif [ "$rc" -ne 1 ]; then
+        exit_reason='inbox-error'; exit 1
     fi
     if [ "$(date +%s)" -ge "$next_tick" ]; then
         next_tick=$(( $(date +%s) + interval ))
+        # The Telegram path is blocked while a tick runs (up to twice
+        # CONSOLE_WAIT_TICK_TIMEOUT with the bank read); say so in the heartbeat.
+        heartbeat sampling
         sample "$@"
         if [ -n "$key" ]; then
             cur_hash="$(printf '%s' "$key" | sha256sum | cut -c1-16)"  # gnu-ok: Linux-only kit

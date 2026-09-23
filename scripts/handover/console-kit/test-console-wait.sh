@@ -28,6 +28,10 @@ mkdir -p "$STUB"
 cat > "$STUB/tick.sh" <<'EOF'
 #!/usr/bin/env bash
 [ -f "$STUB/tick.rc" ] && exit "$(cat "$STUB/tick.rc")"
+# tick.sleep: a slow tick (seconds), as a real gh-bound tick can be.
+[ -f "$STUB/tick.sleep" ] && sleep "$(cat "$STUB/tick.sleep")"
+# tick.failafter: prints its line, then fails (a tick that dies mid-run).
+if [ -f "$STUB/tick.failafter" ]; then cat "$STUB/tick.line"; exit 1; fi
 # tick.blip: served for exactly one sample, then gone.
 if [ -f "$STUB/tick.blip" ]; then cat "$STUB/tick.blip"; rm -f "$STUB/tick.blip"; exit 0; fi
 # tick.churn: every sample serves a new prs= value (a busy repo's PR set).
@@ -50,7 +54,7 @@ tick_line() {
     printf 'TICK 03:00 hb=%s legs=%s livestate=ok procs=2 models=x ceiling=ok atq=0 suites=0alive/0dead prs=%s bank=5h8/wk15/codex=? fill=40 tails=N1:LIVE inbox=none tick=UNKNOWN fleet=3/15 capacity=ok gql=4000/04:00 orphans=none nonces=ok legset=ok board=%s\n' \
         "${3:-1m}" "$1" "${4:-#10}" "$2" > "$STUB/tick.line"
 }
-reset_stub() { rm -f "$STUB/tick.rc" "$STUB/tick.blip" "$STUB/tick.churn";tick_line "N1:FRESH" "ok"; printf 'PROCEED\n' > "$STUB/bank"; }
+reset_stub() { rm -f "$STUB/tick.rc" "$STUB/tick.blip" "$STUB/tick.churn" "$STUB/tick.sleep" "$STUB/tick.failafter"; tick_line "N1:FRESH" "ok"; printf 'PROCEED\n' > "$STUB/bank"; }
 
 # wait_hb <inbox>: block until the waiter has taken its baseline (heartbeat
 # carries a key), at most ~5 s.
@@ -199,6 +203,40 @@ timeout 2 bash "$WAIT" "$I" --legs "N1.md" >/dev/null 2>&1  # gnu-ok: Linux-only
 tick_line "N1:FRESH,N2:FRESH" "ok"
 timeout 3 bash "$WAIT" "$I" --legs "N1.md N2.md" > "$WORK/j.out" 2>/dev/null  # gnu-ok: Linux-only kit; pipefail-ok: none set
 check "(j) a re-arm with a new leg set re-baselines instead of waking" "" "$(cat "$WORK/j.out")"
+
+# --- (l) a tick that prints a line and then fails is never a change -------
+reset_stub
+I="$(new_inbox l)"
+start "$I" "$WORK/l.out" --legs "N1.md"
+wait_hb "$I" || fail "(l) no baseline heartbeat"
+tick_line "N1:FREE" "ok"; : > "$STUB/tick.failafter"
+sleep 3.5
+check "(l) a failing tick's TICK line does not wake" "" "$(cat "$WORK/l.out")"
+check "(l) the failing tick is recorded as tick=fail" "yes" "$(grep -q 'tick=fail' "$I.wait" && echo yes)"
+kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
+
+# --- (m) the heartbeat exists before the first (slow) sample returns -------
+reset_stub
+printf '3\n' > "$STUB/tick.sleep"
+I="$(new_inbox m)"
+start "$I" "$WORK/m.out" --legs "N1.md"
+sleep 1
+check "(m) a waiter mid-sample already shows state=sampling" "yes" "$(grep -q 'state=sampling' "$I.wait" 2>/dev/null && echo yes)"
+bash "$WAIT" "$I" --legs "N1.md" > "$WORK/m2.out" 2>&1; rc=$?
+check "(m) a second waiter during the first sample is refused (rc 3)" "3" "$rc"
+kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
+
+# --- (n) a partial inbox line (no newline yet) does not wake ---------------
+reset_stub
+I="$(new_inbox n)"
+start "$I" "$WORK/n.out" --legs "N1.md"
+wait_hb "$I" || fail "(n) no baseline heartbeat"
+printf -- '- 03:30 [telegram from=1 chat=2] half' >> "$I"
+sleep 1
+check "(n) a partial line does not wake" "" "$(cat "$WORK/n.out")"
+printf ' done\n' >> "$I"
+wait_exit "$WPID"
+check "(n) completing the line wakes with it whole" "$(printf 'WAKE telegram\n- 03:30 [telegram from=1 chat=2] half done')" "$(cat "$WORK/n.out")"
 
 # --- (k) usage ---------------------------------------------------------------
 bash "$WAIT" >/dev/null 2>&1; rc=$?

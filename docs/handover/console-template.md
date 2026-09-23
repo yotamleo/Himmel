@@ -124,11 +124,14 @@ Run these, in order, and write the result as the first bullet under
     **Verify it is live** — record in your first bullet the background task id
     the Bash tool returned, and read the heartbeat next to the inbox:
     `cat "<inbox>.wait"` → `hb=<epoch> pid=<pid> key=<hash> tick=ok state=waiting`,
-    rewritten every second. `state=exited exit=<reason>` is a waiter that
-    stopped (`wake-telegram`, `wake-tick`, `signal-TERM` …); a `state=waiting`
-    heartbeat that is minutes old is one that was SIGKILLed (untrappable).
-    `tick=fail` means `tick.sh` produced no line (it runs under a 120 s timeout,
-    so a hung tick cannot freeze the Telegram path). A second waiter on the same
+    rewritten every second between samples. `state=sampling` is a tick in
+    progress: a sample (tick, then bank) can take up to 240 s (twice the 120 s
+    timeout), and a Telegram line waits for it. `state=exited exit=<reason>` is
+    a waiter that stopped (`wake-telegram`, `wake-tick`, `signal-TERM` …); a
+    `state=waiting` or `state=sampling` heartbeat older than about 5 min is one
+    that was SIGKILLed (untrappable). `tick=fail` means `tick.sh` exited
+    non-zero or produced no TICK line (it runs under a 120 s timeout, so a hung
+    tick cannot hold the Telegram path forever). A second waiter on the same
     inbox is refused (exit 3, naming the live pid). Measured (HIMMEL-3509): a
     background task that exits, or that is SIGKILLed from outside, re-invokes
     the idle session. **Not reproduced:** the harness-internal "low memory" kill

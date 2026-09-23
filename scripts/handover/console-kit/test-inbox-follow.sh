@@ -166,6 +166,23 @@ if [ "$rc" -ne 0 ]; then pass "(l) --once fails (rc $rc) when tail fails"; else 
 case "$out" in *"inbox-follow:"*) pass "(l) the tail failure is reported on stderr" ;; *) fail "(l) the tail failure is reported on stderr (out='$out')" ;; esac
 check "(l) the unread line is still unread once tail works again" "unread" "$(arm "$I")"
 
+# --- (m) --peek: rc 0 only for a complete unread line, cursor untouched -------
+# HIMMEL-3509: console-wait.sh peeks, prints its WAKE header, then lets --once
+# stream the lines, so every line is emitted before its cursor moves.
+I="$WORK/m/consoles/c.md"
+mkdir -p "$WORK/m/consoles"; : > "$I"
+bash "$FOLLOW" --peek "$I" 2>/dev/null; rc=$?
+check "(m) --peek on an empty inbox is rc 1" "1" "$rc"
+printf 'half' >> "$I"
+bash "$FOLLOW" --peek "$I" 2>/dev/null; rc=$?
+check "(m) --peek on a partial line only is rc 1" "1" "$rc"
+printf ' line\n' >> "$I"
+bash "$FOLLOW" --peek "$I" 2>/dev/null; rc=$?
+check "(m) --peek on a complete unread line is rc 0" "0" "$rc"
+check "(m) --peek does not deliver or advance the cursor" "half line" "$(arm "$I")"
+bash "$FOLLOW" --peek "$I" 2>/dev/null; rc=$?
+check "(m) --peek after the line was delivered is rc 1" "1" "$rc"
+
 # --- (g) usage ---------------------------------------------------------------
 bash "$FOLLOW" >/dev/null 2>&1; rc=$?
 check "(g) no argument is a usage error (rc 2)" "2" "$rc"
