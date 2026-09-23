@@ -19,6 +19,16 @@ id = "himmel-telegram-bot-token"
 description = "Telegram bot API token"
 regex = '''[0-9]{8,10}:[A-Za-z0-9_-]{35}'''
 
+# HIMMEL-3508: operator ruling — a retired third-party org's name (a repo we
+# no longer maintain) must never reappear in this repo, its commits, or its
+# PRs. The pattern is written in an obfuscated form (a single-char class
+# splitting the vowel) so the literal itself never sits in this file; the
+# regex still matches it case-insensitively.
+[[rules]]
+id = "himmel-retired-org-name"
+description = "Retired third-party org name must never reappear"
+regex = '''(?i)kn[o]stic'''
+
 [allowlist]
 description = "Vendored third-party Obsidian plugin bundles + the known-benign local-proxy test token"
 paths = [

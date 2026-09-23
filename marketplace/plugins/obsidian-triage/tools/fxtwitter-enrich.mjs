@@ -265,6 +265,13 @@ function fxtUrlFor(canonical) {
   return `${FXT_BASE}${m[1]}`;
 }
 
+function fxtThreadUrlFor(canonical) {
+  // canonical = https://x.com/<user>/status/<id>
+  const m = canonical.match(/^https:\/\/x\.com\/[^/]+\/status\/(\d+)/);
+  if (!m) return null;
+  return `${FXT_BASE}/2/thread/${m[1]}`;
+}
+
 /**
  * Fetch the fxtwitter JSON. Returns { ok, tweet, error }.
  */
@@ -294,6 +301,75 @@ async function fetchFxt(url) {
   } finally {
     clearTimeout(t);
   }
+}
+
+/**
+ * Fetch the fxtwitter self-thread JSON (/2/thread/<id>, keyless). Returns
+ * { ok, thread, error }. `thread` is an array of posts (possibly the single
+ * status itself), or null when fxtwitter found no thread for this id — that
+ * is NOT an error, just "no thread".
+ */
+async function fetchFxtThread(url) {
+  if (process.env.FXT_THREAD_FIXTURE) {
+    try {
+      const data = JSON.parse(readFileSync(process.env.FXT_THREAD_FIXTURE, "utf-8"));
+      if (data.code !== 200) return { ok: false, error: `api_${data.code}` };
+      return { ok: true, thread: data.thread ?? null };
+    } catch (e) { return { ok: false, error: `fixture_err: ${e.message}` }; }
+  }
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const r = await fetch(url, {
+      headers: { Accept: "application/json", "User-Agent": "fxtwitter-enrich/1.0" },
+      signal: ctrl.signal,
+    });
+    if (!r.ok) return { ok: false, error: `http_${r.status}` };
+    const data = await r.json();
+    if (data.code !== 200) {
+      return { ok: false, error: `api_${data.code || "unknown"}_${data.message || ""}`.slice(0, 80) };
+    }
+    return { ok: true, thread: data.thread ?? null };
+  } catch (e) {
+    return { ok: false, error: `fetch_err: ${(e.message || String(e)).slice(0, 80)}` };
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/**
+ * True when the thread array carries more than one post by screenName.
+ * Pure + side-effect free.
+ */
+function threadHasMultipleByAuthor(thread, screenName) {
+  if (!Array.isArray(thread) || !screenName) return false;
+  const count = thread.filter((p) => p && p.author && p.author.screen_name === screenName).length;
+  return count > 1;
+}
+
+/**
+ * detectThreadSignal, extended with a fallback network check (HIMMEL-3506):
+ * a corporate/launch self-thread often carries no text signal at all on
+ * post 1 (no n/N counter, no 🧵, no reply-pointer) — replies > 0 is the only
+ * hint. When the text heuristic misses and replies > 0, ask the keyless
+ * /2/thread/<id> endpoint whether this status is part of a multi-post
+ * self-thread. At most one extra request per clip. Fail open: a thread-API
+ * error (or "no thread found") keeps today's text-only verdict and logs one
+ * line — it never blocks or fails the enrichment.
+ */
+async function detectThreadSignalWithApi(tweet, canon, rel, opts = {}) {
+  const repliesCount = tweet.replies ?? 0;
+  if (detectThreadSignal(tweet.text || "", repliesCount)) return true;
+  if (repliesCount <= 0) return false;
+  const threadUrl = fxtThreadUrlFor(canon);
+  if (!threadUrl) return false;
+  if (!opts.skipRateLimit) await sleep(RATE_LIMIT_MS);
+  const threadRes = await fetchFxtThread(threadUrl);
+  if (!threadRes.ok) {
+    console.error(`${rel} -- thread-api check failed (needs_thread heuristic only): ${threadRes.error}`);
+    return false;
+  }
+  return threadHasMultipleByAuthor(threadRes.thread, tweet.author?.screen_name);
 }
 
 // ---------------------------------------------------------------------------
@@ -807,8 +883,7 @@ export async function processClip(clipPath, vault, dryRun, opts = {}) {
     if (!opts.skipRateLimit) await sleep(RATE_LIMIT_MS);
     const fxt = await fetchFxt(fxtUrl);
     if (!fxt.ok) return { glyph: "~", message: `${rel} -- partial (reflag fetch): ${fxt.error}` };
-    const replies = fxt.tweet.replies ?? 0;
-    if (!detectThreadSignal(fxt.tweet.text || "", replies)) {
+    if (!(await detectThreadSignalWithApi(fxt.tweet, canon, rel, opts))) {
       return { glyph: "o", message: `${rel} -- skipped (reflag: no thread signal)` };
     }
     return await writeEnrichment({
@@ -934,7 +1009,7 @@ export async function processClip(clipPath, vault, dryRun, opts = {}) {
   // Plain tweets + note tweets: frontmatter-only enrichment.
 
   // Signal whether this clip needs the authenticated thread/reply escalation.
-  const needsThread = detectThreadSignal(tweet.text || "", stats.replies || 0);
+  const needsThread = await detectThreadSignalWithApi(tweet, canon, rel, opts);
 
   const markers = {
     enriched_at: TODAY,

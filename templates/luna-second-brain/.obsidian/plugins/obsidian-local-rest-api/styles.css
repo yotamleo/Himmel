@@ -30,6 +30,7 @@ div.obsidian-local-rest-api-content pre {
   background-color: var(--background-modifier-cover);
   font-family: monospace;
   user-select: all;
+  overflow-x: auto;
 }
 
 div.obsidian-local-rest-api-content p {
@@ -102,6 +103,13 @@ div.obsidian-local-rest-api-content div.certificate-expiring-soon {
 div.obsidian-local-rest-api-content div.certificate-regeneration-recommended {
   padding: 10px 20px;
   border: 2px solid #ffff00;
+}
+
+/* Informational, not a warning: the certificate still works, an update exists. */
+div.obsidian-local-rest-api-content div.certificate-update-available {
+  padding: 10px 20px;
+  border: 1px solid var(--background-modifier-border);
+  color: var(--text-muted);
 }
 
 div.obsidian-local-rest-api-content table.api-urls tr {
