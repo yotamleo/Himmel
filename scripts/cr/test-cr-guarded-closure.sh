@@ -133,7 +133,7 @@ check "$n_specs" "$n_guarded" "cr_pathspecs has exactly one :(top) include per c
 
 # Positive control for edges(): a direct script call with no interpreter
 # word must yield an edge, in each command position CMD_RE names.
-fx="$(mktemp -d)" || exit 1
+fx="$(mktemp -d "${TMPDIR:-/tmp}/cr-closure.XXXXXX")" || exit 1
 mkdir -p "$fx/scripts/cr" "$fx/scripts/lib"
 for n in a b c d; do : > "$fx/scripts/lib/$n.sh"; done
 cat > "$fx/scripts/cr/caller.sh" <<'EOF'
