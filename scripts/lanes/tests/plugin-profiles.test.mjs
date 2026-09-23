@@ -32,7 +32,14 @@ const GATE_RULES = [
   'Bash(bash scripts/handover/queue-lock.sh:*)',
   'Bash(bash scripts/handover/console-kit/inbox-send.sh:*)',
   'Bash(bash scripts/cr/write-verdicts.sh:*)',
+  // HIMMEL-3462 console-L REDIRECT: guard-pr-check-literal.sh prescribes the
+  // absolute $HIMMEL_REPO anchor spelling for these gate writers when a
+  // branch touches scripts/lib or scripts/cr (the relative rule above never
+  // matches that spelling — matching is literal), same shape as the
+  // merge-on-green anchor above.
+  'Bash(bash "$HIMMEL_REPO/scripts/cr/write-verdicts.sh":*)',
   'Bash(bash scripts/cr/clear-cr-marker.sh:*)',
+  'Bash(bash "$HIMMEL_REPO/scripts/cr/clear-cr-marker.sh":*)',
   'Bash(bash scripts/cr/panel-first-pass.sh:*)',
   // HIMMEL-3338 (operator ruling 2026-09-21: legs may send review diffs to
   // Codex): the /pr-check external-critic steps. Exact literals except
@@ -42,6 +49,7 @@ const GATE_RULES = [
   'Bash(bash scripts/cr/codex-adv-harvest.sh)',
   'Bash(bash scripts/cr/doc-freshness-advisory.sh)',
   'Bash(bash scripts/cr/known-findings.sh --diff)',
+  'Bash(bash "$HIMMEL_REPO/scripts/cr/known-findings.sh" --diff)',
   // HIMMEL-3359: the himmel-lane step-0 entry. Exact literal — the script
   // resolves HIMMEL_REPO and hands off to the anchor's copy itself.
   'Bash(bash scripts/cr/pr-check-context.sh)',
@@ -49,11 +57,15 @@ const GATE_RULES = [
   // Exact literal — the script hands a non-anchor copy off to the anchor's.
   'Bash(bash scripts/cr/pr-check-env.sh CR_CLAUDE_AGENTS)',
   'Bash(bash scripts/cr/ledger-append.sh:*)',
+  'Bash(bash "$HIMMEL_REPO/scripts/cr/ledger-append.sh":*)',
   // HIMMEL-3462: dynamic-arg /pr-check gates, each granted after a full-file
   // safety read (range/branch/head arguments cannot be exact literals).
   'Bash(bash scripts/cr/impacted-suites.sh:*)',
+  'Bash(bash "$HIMMEL_REPO/scripts/cr/impacted-suites.sh":*)',
   'Bash(bash scripts/cr/orphan-check.sh:*)',
+  'Bash(bash "$HIMMEL_REPO/scripts/cr/orphan-check.sh":*)',
   'Bash(bash scripts/cr/review-round.sh:*)',
+  'Bash(bash "$HIMMEL_REPO/scripts/cr/review-round.sh":*)',
   'Bash(bash scripts/check-ci.sh:*)',
 ];
 const SUITE_TAILS = [

@@ -44,7 +44,24 @@ const GATE_SUITE_RE = /^Bash\((?:SUITE_LOCK_WAIT=60 )?bash scripts\/quiet-run\.s
 // it, until Claude Code's `$VAR` permission-matcher semantics are confirmed
 // against literal typed command text (docs/source citation or a
 // non-billed measurement) — HIMMEL-3491 follow-up.
-const GATE_ANCHOR_LITERAL = 'Bash(bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh":*)';
+// HIMMEL-3462: guard-pr-check-literal.sh prescribes this SAME absolute
+// $HIMMEL_REPO anchor form for the other scripts/cr gate writers when a
+// branch touches scripts/lib or scripts/cr (so the relative spelling is
+// refused and the anchor is the ONLY sanctioned invocation) — each entry
+// here is the same kind of exact-string exception as the merge-on-green one
+// above, never a general `$` admission. known-findings.sh keeps its
+// existing exact (no `:*` tail) argument shape; the rest take the same
+// `:*`-tail shape as their relative gateAllow counterparts above.
+const GATE_ANCHOR_LITERALS = new Set([
+  'Bash(bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh":*)',
+  'Bash(bash "$HIMMEL_REPO/scripts/cr/write-verdicts.sh":*)',
+  'Bash(bash "$HIMMEL_REPO/scripts/cr/ledger-append.sh":*)',
+  'Bash(bash "$HIMMEL_REPO/scripts/cr/clear-cr-marker.sh":*)',
+  'Bash(bash "$HIMMEL_REPO/scripts/cr/review-round.sh":*)',
+  'Bash(bash "$HIMMEL_REPO/scripts/cr/orphan-check.sh":*)',
+  'Bash(bash "$HIMMEL_REPO/scripts/cr/impacted-suites.sh":*)',
+  'Bash(bash "$HIMMEL_REPO/scripts/cr/known-findings.sh" --diff)',
+]);
 const LEG_PROFILES = new Set(['lane-impl', 'leg-impl', 'lane-review', 'lane-content', 'console-relay']);
 
 function validateGateAllow(errors, rules) {
@@ -54,7 +71,7 @@ function validateGateAllow(errors, rules) {
     return;
   }
   for (const rule of rules) {
-    if (rule === GATE_ANCHOR_LITERAL) continue;
+    if (GATE_ANCHOR_LITERALS.has(rule)) continue;
     if (typeof rule !== 'string' || /[\r\n]/.test(rule)
       || ['--force', '--no-verify', '--amend', 'reset --hard', 'origin main', '..', '$'].some((s) => rule.includes(s))
       || ![GATE_SCRIPT_RE, GATE_EXACT_RE, GATE_SUITE_RE].some((re) => re.test(rule))) {

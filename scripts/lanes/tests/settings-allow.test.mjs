@@ -181,6 +181,42 @@ for (const command of LEG_SANCTIONED) {
   });
 }
 
+// HIMMEL-3462 console-L REDIRECT: when a branch touches scripts/lib or
+// scripts/cr, guard-pr-check-literal.sh refuses the RELATIVE spelling of
+// these gate writers and prescribes the ABSOLUTE $HIMMEL_REPO anchor instead
+// (the same shape ANCHOR_LITERALS already grants for merge-on-green.sh).
+// Before this PR's gateAllow additions, none of these anchored spellings
+// matched any leg rule, so a leg fell through to the auto-mode classifier —
+// exactly what denied N433/N435 on 2026-09-23 ([Auto-Mode Bypass] /
+// [CI Bypass] / [Out-of-Place Publication]). Spellings taken verbatim from
+// .claude/commands/pr-check.md's anchored fences (write-verdicts prior-blocking
+// call, ledger-append avail call, clear-cr-marker, review-round promote,
+// orphan-check, impacted-suites --check, known-findings.sh --diff).
+const SCR_CR_ANCHOR_LITERALS = [
+  'bash "$HIMMEL_REPO/scripts/cr/write-verdicts.sh" prior-blocking --branch fix/x',
+  'bash "$HIMMEL_REPO/scripts/cr/ledger-append.sh" avail --branch fix/x --head abc1234 --model claude --status ok',
+  'bash "$HIMMEL_REPO/scripts/cr/clear-cr-marker.sh" fix/x',
+  'bash "$HIMMEL_REPO/scripts/cr/review-round.sh" promote --branch fix/x --head abc1234',
+  'bash "$HIMMEL_REPO/scripts/cr/orphan-check.sh" --branch fix/x',
+  'bash "$HIMMEL_REPO/scripts/cr/impacted-suites.sh" abc1234..def5678',
+  'bash "$HIMMEL_REPO/scripts/cr/known-findings.sh" --diff',
+];
+
+for (const command of SCR_CR_ANCHOR_LITERALS) {
+  test(`a leg-profile allow rule matches the $HIMMEL_REPO anchor spelling: ${command}`, () => {
+    assert.ok(matching(LEG_ALLOW, command).length > 0, `no leg rule matches ${command}`);
+  });
+}
+
+// The exact (no `:*` tail) known-findings anchor literal must not admit a
+// rider, same invariant as the relative EXACT_LITERALS above.
+for (const rider of RIDERS) {
+  const command = `bash "$HIMMEL_REPO/scripts/cr/known-findings.sh" --diff${rider}`;
+  test(`no allow rule matches the known-findings anchor literal with a rider: ${JSON.stringify(command)}`, () => {
+    assert.deepEqual(matching(LEG_ALLOW, command), []);
+  });
+}
+
 // Structural: enumerate every rule that names a repo path and fail on any
 // shape that can reach a trust root by prefix.
 const TRUST_DIR = /(^|\s)(\S*\/)?scripts\/(cr|guardrails|hooks)\//;
