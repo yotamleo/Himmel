@@ -655,6 +655,23 @@ assert_rc "117 ls -t on a .claude path allows (HIMMEL-3465)" 0 \
 assert_rc "118 cp -t into \$HOME/.claude/ still denies (control)" 2 \
     "$(bash_rc_of "$WT2" "cp -t \$HOME/.claude/ /tmp/payload" HOME="$FAKEHOME")"
 
+# 119: the exact command a console session hit today (2026-09-23) — a
+# read-only `jq` query of a generated leg-settings scratchpad file whose
+# basename ends in "settings.json" (a bare substring match on
+# mentions_settings), from a scratchpad path nested under neither the
+# primary's nor $HOME's .claude/ -> ALLOW. Verified against a base-054df92e
+# extraction too: this exact command already ALLOWs at base (rc=0, no stash),
+# so the hook was never the cause of that refusal — jq without -i/--in-place
+# is on the read-only allowlist regardless of the live/not-live question.
+assert_rc "119 jq read of a scratchpad .leg-settings.json file allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "jq '{add:.permissions.additionalDirectories}' /tmp/claude-1000/somesession/scratchpad/HIMMEL-3514-N424-bridge-hardening.leg-settings.json")"
+
+# 120 control: the same file, this time with jq -i (a genuine in-place
+# write) -> DENY — proves 119's exemption only covers the read-only verb,
+# not the file itself.
+assert_rc "120 jq -i on the same scratchpad file still denies (control)" 2 \
+    "$(bash_rc_of "$PRIMARY" "jq -i '{add:.permissions.additionalDirectories}' /tmp/claude-1000/somesession/scratchpad/HIMMEL-3514-N424-bridge-hardening.leg-settings.json")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true
