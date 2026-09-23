@@ -455,13 +455,15 @@ else
     fail "(s3) seam=/ + self-contained scratch HOME: expected rc=0, got rc=$rc — $out"
 fi
 for _seam in "" "/"; do
-    _pw=$(env HOME="$TMP/suitehome" PATH="$HBIN" bash -c '. "$1" --source-only && real_home_resolve' _ "$CLI" 2>&1)
+    _pwerr="$TMP/s4-pw.err"
+    _pw=$(env HOME="$TMP/suitehome" PATH="$HBIN" bash -c '. "$1" --source-only && real_home_resolve' _ "$CLI" 2>"$_pwerr"); _pwrc=$?
+    _rherr="$TMP/s4-rh.err"
     _rh=$(env HOME="$TMP/suitehome" PATH="$HBIN" HIMMEL_UNINSTALL_TEST_REAL_HOME="$_seam" bash -c \
-        '. "$1" --source-only && real_home_protected_homes' _ "$CLI" 2>&1)
-    if [ -n "$_pw" ] && grep -qxF "$_pw" <<< "$_rh"; then
+        '. "$1" --source-only && real_home_protected_homes' _ "$CLI" 2>"$_rherr"); _rhrc=$?
+    if [ "$_pwrc" -eq 0 ] && [ "$_rhrc" -eq 0 ] && [ -n "$_pw" ] && grep -qxF "$_pw" <<< "$_rh"; then
         pass "(s4) seam='$_seam' keeps the passwd home protected"
     else
-        fail "(s4) seam='$_seam' dropped the passwd home '$_pw' — $_rh"
+        fail "(s4) seam='$_seam' dropped the passwd home '$_pw' (resolve rc=$_pwrc, protected rc=$_rhrc) — $_rh $(cat "$_pwerr" "$_rherr" 2>/dev/null)"
     fi
 done
 
