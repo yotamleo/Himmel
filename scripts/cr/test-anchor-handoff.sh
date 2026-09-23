@@ -2,6 +2,9 @@
 # Tests for scripts/cr/anchor-handoff.sh (HIMMEL-3395): a gate writer entered
 # by a RELATIVE path from a non-anchor tree runs the anchor's copy; an
 # absolute entry runs the local copy; the relative door fails closed.
+# T1-T10, T9b, T9c exercise scripts/cr/*.sh (depth 2 under the repo root).
+# T11-T13 (HIMMEL-3437) exercise a depth-3 entry (scripts/handover/console-kit/*.sh)
+# to prove the git-rev-parse-based root resolution is depth-agnostic.
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -19,8 +22,13 @@ tmp="$(mktemp -d -t anchor-handoff.XXXXXX)"; trap 'rm -rf "$tmp"' EXIT
 # including) its hand-off line, then a line naming which copy ran. Before the
 # writer sources the helper, the whole head is just `set -uo pipefail`, so the
 # local copy runs — the RED state.
+#
+# HIMMEL-3437: the generalized helper resolves its own root via
+# `git rev-parse --show-toplevel`, so every fixture tree must be a real git
+# repo (a bare `git init -q` — no commit needed, rev-parse works on an empty repo).
 make_tree() {  # <root> <label>
     mkdir -p "$1/scripts/cr"
+    git init -q "$1"
     cp "$DIR/anchor-handoff.sh" "$1/scripts/cr/anchor-handoff.sh"
     awk -v src="$SOURCE_LINE" '{ print } $0 == src { exit }' "$DIR/clear-cr-marker.sh" > "$1/scripts/cr/clear-cr-marker.sh.head"
     if grep -qxF "$SOURCE_LINE" "$1/scripts/cr/clear-cr-marker.sh.head"; then
@@ -78,9 +86,10 @@ check "$(cd "$wt" && env -u CR_ANCHOR_HANDED_OFF HIMMEL_REPO="$anchor" bash scri
 # real scripts/cr/anchor-handoff.sh; the mutation lives only in $tmp.
 red="$tmp/red"
 mkdir -p "$red/scripts/cr"
+git init -q "$red"
 sed 's/"\$@"/$*/' "$DIR/anchor-handoff.sh" > "$red/scripts/cr/anchor-handoff.sh"
 # shellcheck disable=SC2016  # the literal line to look for, not an expansion
-if grep -qF 'exec bash "$_ah_anchor/scripts/cr/$_ah_name" "$@"' "$red/scripts/cr/anchor-handoff.sh"; then
+if grep -qF 'exec bash "$_ah_anchor/$_ah_rel" "$@"' "$red/scripts/cr/anchor-handoff.sh"; then
     echo "FAIL: T9c setup — mutant exec line unchanged, control proves nothing" >&2
     fail=1
 fi
@@ -103,6 +112,30 @@ for w in $WRITERS; do
     first=$(grep -v -E '^[[:space:]]*(#|$)' "$DIR/$w.sh" | sed -n 2p)
     check "$first" "$SOURCE_LINE" "T10 $w sources the hand-off first"
 done
+
+# 11-13 (HIMMEL-3437). A depth-3 entry (scripts/handover/console-kit/*.sh) —
+# the source line points at ITS OWN sibling anchor-handoff.sh copy (the one
+# generalizing this file no longer requires the two hardcoded scripts/cr/
+# writers to be depth-2; real scripts/handover/*.sh sources scripts/cr/anchor-handoff.sh
+# cross-directory instead, exercised separately by test-merge-on-green.sh /
+# test-go.sh — this fixture just proves the resolver itself is depth-agnostic).
+# shellcheck disable=SC2016  # the literal line each writer carries, not an expansion
+D3_SOURCE_LINE='. "$(dirname "${BASH_SOURCE[0]}")/anchor-handoff.sh" || exit 2'
+make_d3_tree() {  # <root> <label>
+    mkdir -p "$1/scripts/handover/console-kit"
+    git init -q "$1"
+    cp "$DIR/anchor-handoff.sh" "$1/scripts/handover/console-kit/anchor-handoff.sh"
+    printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\necho "RAN:%s"\n' "$D3_SOURCE_LINE" "$2" > "$1/scripts/handover/console-kit/go-stub.sh"
+}
+d3_anchor="$tmp/d3_anchor"; d3_wt="$tmp/d3_wt"
+make_d3_tree "$d3_anchor" anchor
+make_d3_tree "$d3_wt" branch
+# 11. Relative entry three levels deep hands off to the anchor's copy.
+check "$(run "$d3_wt" "$d3_anchor" scripts/handover/console-kit/go-stub.sh | tr '\n' ' ')" "RAN:anchor rc=0 " "T11 depth-3 relative entry hands off"
+# 12. Absolute entry three levels deep still runs the local copy.
+check "$(run "$d3_wt" "$d3_anchor" "$d3_wt/scripts/handover/console-kit/go-stub.sh" | tr '\n' ' ')" "RAN:branch rc=0 " "T12 depth-3 absolute entry runs local"
+# 13. Relative entry three levels deep with HIMMEL_REPO unset fails closed.
+check "$(run "$d3_wt" - scripts/handover/console-kit/go-stub.sh | tr '\n' ' ')" "rc=2 " "T13 depth-3 unset HIMMEL_REPO exits 2"
 
 echo "anchor-handoff: $pass passed, $([ "$fail" = 0 ] && echo 0 || echo some) failed"
 exit "$fail"

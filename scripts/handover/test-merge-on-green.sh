@@ -181,8 +181,15 @@ mog_build_fixture() {
 
     # Copy the script into a temp tree so its fixed `../check-ci.sh` sibling
     # resolves to our stub — no CHECK_CI env override exists any more.
-    mkdir -p "$tmp/scripts/handover" "$tmp/scripts/lib" "$tmp/bin"
+    mkdir -p "$tmp/scripts/handover" "$tmp/scripts/lib" "$tmp/scripts/cr" "$tmp/bin"
     cp "${MOG_SRC:-$MOG}" "$tmp/scripts/handover/merge-on-green.sh"
+    # HIMMEL-3437: merge-on-green.sh now sources ../cr/anchor-handoff.sh as its
+    # first executable statement. run_mog always invokes the fixture copy by
+    # ABSOLUTE path, so the hand-off's relative-entry branch never fires here —
+    # but the `.` line itself still requires the sibling to exist to source
+    # cleanly, or every case below would fail closed at exit 2 before its own
+    # gate logic ever runs. ANCHOR_HANDOFF_SRC is MOG_SRC's own twin.
+    cp "${ANCHOR_HANDOFF_SRC:-$SCRIPT_DIR/../cr/anchor-handoff.sh}" "$tmp/scripts/cr/anchor-handoff.sh"
     # merge-on-green.sh now sources its HIMMEL-2227 in-use predicates from the
     # shared lib (../lib/worktree-inuse.sh, relative to its own SCRIPT_DIR) —
     # the copy must carry that sibling too. WT_INUSE_SRC is MOG_SRC's own twin
@@ -3110,6 +3117,65 @@ if grep -vE '^[[:space:]]*#' "$SCRIPT_DIR/test-merge-on-green.sh" \
 else
     pass
 fi
+
+# HIMMEL-3437: the entry script itself hands off a relative invocation to the
+# HIMMEL_REPO anchor's own copy (scripts/cr/anchor-handoff.sh, generalized by
+# this same ticket). Proven with the REAL, unmutated script — a fixture "wt"
+# tree's copy is mutated AFTER the hand-off line to prove which BYTES decided:
+# a real backdoor injected post-hand-off must never run when entered
+# relatively with HIMMEL_REPO pointing at a clean anchor. (RED-at-base for
+# this exact fixture shape — no hand-off line to mutate after, so a
+# same-shaped backdoor right after `set -uo pipefail` runs unconditionally —
+# is pasted in the PR body; not reproduced here per the HIMMEL-3154 lint above.)
+mog3437_anchor="$(mktemp -d "${TMPDIR:-/tmp}/mog-3437-anchor.XXXXXX")" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
+mog3437_wt="$(mktemp -d "${TMPDIR:-/tmp}/mog-3437-wt.XXXXXX")" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
+mog_build_fixture "$mog3437_anchor"
+mog_build_fixture "$mog3437_wt"
+# anchor-handoff.sh resolves the sourcing script's own root via
+# `git rev-parse --show-toplevel`, so a relative-entry fixture tree must be a
+# real git repo (a bare `git init -q` — no commit needed).
+git init -q "$mog3437_wt"
+# shellcheck disable=SC2016  # the literal line merge-on-green.sh carries, not an expansion
+mog3437_src_line='. "$(dirname "${BASH_SOURCE[0]}")/../cr/anchor-handoff.sh" || exit 2'
+awk -v src="$mog3437_src_line" '{ print } $0 == src { exit }' "$mog3437_wt/scripts/handover/merge-on-green.sh" > "$mog3437_wt/scripts/handover/merge-on-green.sh.head"
+if grep -qxF "$mog3437_src_line" "$mog3437_wt/scripts/handover/merge-on-green.sh.head"; then
+    cp "$mog3437_wt/scripts/handover/merge-on-green.sh.head" "$mog3437_wt/scripts/handover/merge-on-green.sh"
+    printf 'echo "RAN:branch-backdoor"\nexit 0\n' >> "$mog3437_wt/scripts/handover/merge-on-green.sh"
+    chmod +x "$mog3437_wt/scripts/handover/merge-on-green.sh"
+else
+    fail "3437: setup — could not locate the hand-off source line in merge-on-green.sh to build the backdoor mutant"
+fi
+rm -f "$mog3437_wt/scripts/handover/merge-on-green.sh.head"
+
+mog3437_run() {  # <cwd> <HIMMEL_REPO-or-dash> <entry>
+    if [ "$2" = "-" ]; then
+        (cd "$1" && env -u HIMMEL_REPO -u CR_ANCHOR_HANDED_OFF -u ARMAUTOMERGE bash "$3" 2>/dev/null; echo "rc=$?")
+    else
+        (cd "$1" && env -u CR_ANCHOR_HANDED_OFF -u ARMAUTOMERGE HIMMEL_REPO="$2" bash "$3" 2>/dev/null; echo "rc=$?")
+    fi
+}
+
+# 1. Relative entry from the mutated worktree hands off: the anchor's real,
+# unmutated script runs (this fixture's ARMAUTOMERGE is unset, so its real
+# gate refuses at exit 10 — "not opted in" — never the branch's backdoor).
+mog3437_out="$(mog3437_run "$mog3437_wt" "$mog3437_anchor" scripts/handover/merge-on-green.sh)"
+if grepq "$mog3437_out" -F -e "RAN:branch-backdoor"; then
+    fail "3437: relative entry ran the worktree's own backdoor copy instead of handing off: $mog3437_out"
+elif grepq "$mog3437_out" -F -e "rc=10"; then
+    pass
+else
+    fail "3437: relative entry did not hand off to the anchor's real script as expected: $mog3437_out"
+fi
+
+# 2. Absolute entry still runs the local (branch) copy — the deliberate open door.
+mog3437_abs_out="$(mog3437_run "$mog3437_wt" "$mog3437_anchor" "$mog3437_wt/scripts/handover/merge-on-green.sh")"
+if grepq "$mog3437_abs_out" -F -e "RAN:branch-backdoor"; then pass; else fail "3437: absolute entry did not run the local copy: $mog3437_abs_out"; fi
+
+# 3. Relative entry with HIMMEL_REPO unset fails closed at exit 2.
+mog3437_unset_out="$(mog3437_run "$mog3437_wt" - scripts/handover/merge-on-green.sh)"
+if grepq "$mog3437_unset_out" -F -e "rc=2"; then pass; else fail "3437: relative entry with HIMMEL_REPO unset did not exit 2: $mog3437_unset_out"; fi
+
+rm -rf "$mog3437_anchor" "$mog3437_wt"
 
 echo
 echo "merge-on-green: $PASS passed, $FAIL failed"
