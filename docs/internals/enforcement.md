@@ -4417,6 +4417,10 @@ the result with `--output-format json` rather than sniffing prose and declare
 an explicit `--permission-mode` (never `bypassPermissions`). These are
 review-enforced conventions, not structural guarantees.
 
+Which headless shape fits which job (`claude -p` vs `claude --bg` vs headed)
+— env inheritance, permission-mode, confirm/dedup, fleet-UI visibility per
+mode: [`headless-modes.md`](headless-modes.md).
+
 The `no-headless-claude` pre-commit hook
 (`scripts/hooks/check-no-headless-claude.sh`) flags new `claude -p` /
 `--print` / `--bg` introductions unless an opt-in marker is present:
