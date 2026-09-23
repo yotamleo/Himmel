@@ -2061,8 +2061,12 @@ stop_bridge_supervisor_directly() {
   else
     _cmdline="$(ps -p "$_pid" -o args= 2>/dev/null)"
   fi
-  case "$_cmdline" in
-    *supervisor.ts*) ;;
+  # HIMMEL-3312 S12 codex round 2: a bare substring match on "supervisor.ts"
+  # also fires on an unrelated recycled pid whose cmdline merely mentions the
+  # string (e.g. a "supervisor.ts.bak" argument) -- require it as its own
+  # whitespace-delimited token instead.
+  case " $_cmdline " in
+    *' supervisor.ts '*|*'/supervisor.ts '*) ;;
     *)
       echo "  WARN: pid $_pid (supervisor.pid) is not the telegram supervisor ('${_cmdline:-unreadable}') — refusing to signal a recycled pid." >&2
       return 2 ;;
