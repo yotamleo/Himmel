@@ -230,7 +230,7 @@ UNINSTALL_FLAGS="--yes"
 [ "$PURGE" = 0 ] || UNINSTALL_FLAGS="--yes --purge-state"
 if [ "$CLONE_GONE" = 1 ]; then
     UNINSTALL_ENTRY="$GHOME/.local/bin/himmelctl"
-    UNINSTALL_CD="cd $GHOME"
+    UNINSTALL_CD="cd $GHOME/proj"
 else
     UNINSTALL_ENTRY="node $BIN"
     UNINSTALL_CD="cd $GHOME/proj"

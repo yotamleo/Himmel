@@ -490,6 +490,17 @@ else
     fail_case "D16d marketplace-remove printed without --clone-gone"; dump
 fi
 
+# D16e — --clone-gone: uninstall must still run from $GHOME/proj (HIMMEL-3540).
+# $SRC (the staged clone, rm -rf'd above) is not the adopter's project; the
+# launcher may change (PATH vs node <clone>/bin.js) but the cwd must not.
+run_rt "$ALL_PASS" f73a62f1 --clone-gone
+un=$(grep '^SSH ' "$LOG" | grep 'himmelctl uninstall')
+if [[ "$un" == 'SSH cd /home/testuser/proj &&'* ]]; then
+    pass "D16e --clone-gone: uninstall runs from \$GHOME/proj, not \$GHOME"
+else
+    fail_case "D16e clone-gone uninstall cwd: un='$un'"; dump
+fi
+
 # =====================================================================
 # D17 — --clone-gone --purge-state must leave no ~/.himmel; the check runs
 # AFTER invdiff/assert so a legitimate failure still preserves their output
