@@ -42,28 +42,38 @@ new_repo() {
 
 # scan_staged <repo> -- runs the real pre-commit scanner (gitleaks protect
 # --staged) against himmel's own .gitleaks.toml; returns gitleaks' exit code
-# (0 = no leaks, non-zero = leaks found / blocked).
+# (0 = no leaks, non-zero = leaks found / blocked) and writes a JSON report to
+# $REPORT for detected_our_rule() to inspect.
+REPORT="$WS/report.json"
 scan_staged() {
-    gitleaks protect --staged --no-banner -c "$CONFIG" -s "$1" >/dev/null 2>&1
+    gitleaks protect --staged --no-banner -c "$CONFIG" -s "$1" \
+        --report-format json --report-path "$REPORT" >/dev/null 2>&1
 }
 
-# T1 -- RED: the retired org's name, built at runtime, staged -> blocked.
+# detected_our_rule -- true only if the last scan_staged report shows OUR
+# rule fired, not merely that gitleaks exited non-zero for some other reason.
+detected_our_rule() {
+    [ -f "$REPORT" ] && grep -q '"RuleID": *"himmel-retired-org-name"' "$REPORT" 2>/dev/null
+}
+
+# T1 -- RED: the retired org's name, built at runtime, staged -> blocked by
+# our specific rule (not merely blocked for some unrelated reason).
 r="$(new_repo)"
 fixture="$(printf 'kn%sstic' o)"
 printf '%s appears in this text\n' "$fixture" > "$r/f.txt"
 git -C "$r" add f.txt
-if scan_staged "$r"; then
+if scan_staged "$r" || ! detected_our_rule; then
     fail "T1 retired org name is blocked by the pre-commit scanner"
 else
     pass "T1 retired org name is blocked by the pre-commit scanner"
 fi
 
-# T1b -- same fixture, mixed case, still blocked (case-insensitive rule).
+# T1b -- same fixture, mixed case, still blocked by our rule (case-insensitive).
 r="$(new_repo)"
 fixture_mixed="$(printf 'Kn%sSTIC' O)"
 printf 'org: %s\n' "$fixture_mixed" > "$r/f.txt"
 git -C "$r" add f.txt
-if scan_staged "$r"; then
+if scan_staged "$r" || ! detected_our_rule; then
     fail "T1b mixed-case retired org name is blocked (case-insensitive)"
 else
     pass "T1b mixed-case retired org name is blocked (case-insensitive)"
