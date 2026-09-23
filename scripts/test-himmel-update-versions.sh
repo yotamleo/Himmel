@@ -292,6 +292,7 @@ printf '{"plugins":{"alpha@himmel":[{}]}}\n' > "$TMP/installed-noiv.json"
 rc=0
 out=$(HIMMEL_MARKETPLACE_JSON="$TMP/market.json" HIMMEL_INSTALLED_PLUGINS_JSON="$TMP/installed-noiv.json" \
     LUNA_VAULT_PATH="$TMP/vault" run_update "$fh6" "$TMP/claude-versions" --versions) || rc=$?
+assert_eq "plugins: unreadable installed version -> rc 3" "3" "$rc"
 assert_contains "plugins: unreadable installed version -> unknown, not current" "^ *plugins  *unknown" "$out"
 assert_not_contains "plugins: unreadable installed version -> never current" "^ *plugins  *current" "$out"
 
@@ -302,6 +303,7 @@ printf '{"plugins":{"beta@himmel":[{"version":"1.0.0"}]}}\n' > "$TMP/installed-n
 rc=0
 out=$(HIMMEL_MARKETPLACE_JSON="$TMP/market-beta.json" HIMMEL_INSTALLED_PLUGINS_JSON="$TMP/installed-nosv.json" \
     LUNA_VAULT_PATH="$TMP/vault" run_update "$fh6" "$TMP/claude-versions" --versions) || rc=$?
+assert_eq "plugins: unreadable source version -> rc 3" "3" "$rc"
 assert_contains "plugins: unreadable source version -> unknown, not current" "^ *plugins  *unknown" "$out"
 assert_not_contains "plugins: unreadable source version -> never current" "^ *plugins  *current" "$out"
 
