@@ -90,9 +90,17 @@ echo "ok: caseA writes exactly one tree ledger row for this session"
 # ── reports the checkout as not present. ─────────────────────────────────────
 rm -rf "$td/himmel"
 
+run_fallback() {
+  # cwd must be neutral: uninstall.sh's "current project" step resolves off
+  # the invoking directory, and this test's own worktree is a real himmel
+  # checkout unrelated to the scratch fixture -- run from $td/home instead so
+  # dry-run reports on the fixture's identity, not the leg's own repo.
+  (cd "$td/home" && HOME="$td/home" USERPROFILE="$td/home" HIMMEL_PROVENANCE_DIR="$td/prov" \
+    node "$td/bin/himmelctl.js" "$@" 2>&1)
+}
 set +e
-dry=$(node "$td/bin/himmelctl.js" uninstall --dry-run 2>&1); dry_rc=$?
-status_out=$(node "$td/bin/himmelctl.js" status 2>&1); status_rc=$?
+dry=$(run_fallback uninstall --dry-run); dry_rc=$?
+status_out=$(run_fallback status); status_rc=$?
 set -e
 [ "$dry_rc" -eq 0 ] || fail "caseB: uninstall --dry-run rc=$dry_rc after clone deleted: $dry"
 grepq "$dry" 'standalone uninstaller' || fail "caseB: dry-run did not report the standalone uninstaller: $dry"
@@ -106,7 +114,7 @@ provC="$work/caseC-prov"
 mkdir -p "$provC" "$work/caseC-elsewhere"
 ln -s "$work/caseC-elsewhere" "$provC/uninstall"
 out=$(HIMMEL_PROVENANCE_DIR="$provC" HIMMELCTL_SHIM_PLATFORM=linux \
-  "$node_bin" -e "const b=require('$repo_root/scripts/himmelctl/lib/standalone-bundle.js'); process.stdout.write(String(b.writeStandaloneBundle('$repo_root')));" 2>&1)
+  "$node_bin" -e "const b=require('$repo_root/scripts/himmelctl/lib/standalone-bundle.js'); process.stdout.write(String(b.writeStandaloneBundle('$repo_root')));")
 [ "$out" = 'false' ] || fail "caseC: writeStandaloneBundle should refuse a symlinked bundle dir, got: $out"
 [ -L "$provC/uninstall" ] || fail "caseC: symlink was replaced instead of left alone"
 readlink "$provC/uninstall" | grep -Fq 'caseC-elsewhere' || fail "caseC: symlink target changed"
