@@ -111,8 +111,7 @@ lands in the user-owned `~/.local/share/himmel` (no root); `himmelctl install`
 then does the per-user wiring and puts a `himmelctl` launcher in
 `~/.local/bin`. The tarball is built by CI on each `v*` tag
 ([`release.yml`](.github/workflows/release.yml)); the checksum is of that exact
-built asset. No release carries it until the first tag cut after HIMMEL-3059
-slice 1 — until then use the clone path below. To upgrade, extract the new
+built asset. To upgrade, extract the new
 release into a fresh directory (or remove the old `~/.local/share/himmel`
 first): extracting over an existing tree keeps files the new release deleted.
 
@@ -177,10 +176,12 @@ as verified.
 
 | Channel | Status |
 |---|---|
-| Release tarball (`himmel-<version>-linux.tar.gz` + `.sha256`) | **Supported** (Linux) — the four-step path above. The end-to-end fresh-guest run of it is not yet recorded: it is gated on HIMMEL-3252. |
+| Release tarball (`himmel-<version>-linux.tar.gz` + `.sha256`) | **Supported** (Linux) — the four-step path above. The end-to-end fresh-guest run is green (HIMMEL-3252, done). |
 | `git clone` + `himmelctl install` | **Supported** (Linux, macOS) |
-| AUR | Pending (HIMMEL-3059 slice 2) |
-| brew, nix, deb, rpm | Not supported |
+| Plugin marketplace (`marketplace/plugins/*`, 10 plugins) | **Supported** — installs through the Claude Code plugin marketplace, which owns that payload's file list, upgrade and removal (`claude plugin install/update/uninstall`), not `himmelctl`. |
+| AUR | Pending (HIMMEL-3059 slice 5) — reopens when that slice lands |
+| brew (Linux tap) | Not supported — runner-up channel; reopens only if macOS support makes a shared tap worthwhile (tracked in a separate ticket) |
+| nix, deb, rpm | Not supported — reopens on user-driven demand for a given channel (tracked in a separate ticket) |
 
 New shell scripts target bash (still bash 3.2-safe, for macOS); a `.ps1`
 Windows twin is now optional, added only when someone is actually working the

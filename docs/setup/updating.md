@@ -245,8 +245,9 @@ tells that case apart by the install's own root having no `.git`, and:
 To actually update such an install, use the route it came from: the package
 manager (Arch: `pacman -Syu himmel`), or download the next release tarball from
 the [releases page](https://github.com/yotamleo/Himmel/releases), verify its
-sha256 checksum, and re-extract it over the install. There is no in-place
-self-update of a tarball install.
+sha256 checksum, and extract it into a fresh directory (or remove the old
+install first) — extracting over an existing tree keeps files the new release
+deleted. There is no in-place self-update of a tarball install.
 
 The only thing the check fetches is the latest release tag, from a fixed HTTPS
 URL that no environment variable can redirect; nothing is downloaded or

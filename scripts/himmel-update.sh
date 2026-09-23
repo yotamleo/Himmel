@@ -2191,7 +2191,7 @@ fi
 # self-update of a tarball install; the route is the package manager (pacman),
 # or a manual download + sha256 verify + re-extract of the next release tarball.
 if [ ! -e "$ROOT/.git" ] && { [ "${1:-}" != "--plugins-check" ] && [ "${1:-}" != "--versions" ] && { [ "${1:-}" != "--only" ] || [ "${2:-}" = "pull" ]; }; }; then
-    NONGIT_ROUTE="update through the package manager that installed it (Arch: pacman -Syu himmel), or download the next release tarball from the releases page, verify its sha256 checksum and re-extract it over $ROOT"
+    NONGIT_ROUTE="update through the package manager that installed it (Arch: pacman -Syu himmel), or download the next release tarball from the releases page, verify its sha256 checksum and extract it into a fresh directory (or remove $ROOT first) — extracting over the existing tree keeps files the new release deleted"
     if [ "${1:-}" != "--check" ] && [ "${1:-}" != "--dry-run" ]; then
         echo "update: $ROOT is not a git checkout (no .git), so there is no upstream to pull — nothing was changed." >&2
         echo "        To update it, $NONGIT_ROUTE." >&2
