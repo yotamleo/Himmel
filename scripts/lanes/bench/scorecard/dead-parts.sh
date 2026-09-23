@@ -157,7 +157,14 @@ if ! sc_discover "$FILES" "$DISC_ERR"; then
     exit 1
 fi
 
-ts_of() { grep -o '"timestamp":"[0-9TZ:.-]*"' "$1" 2>/dev/null | "$2" -1 | cut -d'"' -f4; }
+# round-6 codex-1: a transcript's records are not guaranteed chronological (a
+# resumed/compacted session can append a record whose timestamp sorts earlier
+# than one physically before it), so gating the whole file on its head/tail
+# LINES' timestamps can discard a file that still has a genuinely in-window
+# record somewhere in the middle. Scan every extracted timestamp and gate on
+# the true min/max instead - the per-record `inwin` filter below still does
+# the real per-record selection; this is only the cheap whole-file skip.
+ts_of() { grep -o '"timestamp":"[0-9TZ:.-]*"' "$1" 2>/dev/null | cut -d'"' -f4; }
 
 TAGGED="$RUN/tagged.tsv"; : > "$TAGGED"
 JQ_FAILS=0
@@ -165,13 +172,17 @@ while IFS= read -r f; do
     [ -r "$f" ] || { sc_cov unreadable; continue; }
     case "$f" in */subagents/*) sc_cov subagent; continue ;; esac
 
-    first_ts=$(ts_of "$f" head)
-    [ -n "$first_ts" ] || { sc_cov no-timestamp; continue; }
-    last_ts=$(ts_of "$f" tail)
-    first_epoch=$(to_epoch "$first_ts") || { sc_cov bad-timestamp; continue; }
-    last_epoch=$(to_epoch "${last_ts:-$first_ts}") || { sc_cov bad-timestamp; continue; }
-    [ "$last_epoch" -ge "$SINCE_EPOCH" ] || { sc_cov out-of-window; continue; }
-    if [ -n "$UNTIL_EPOCH" ] && [ "$first_epoch" -ge "$UNTIL_EPOCH" ]; then sc_cov out-of-window; continue; fi
+    ts_of "$f" > "$RUN/cur-ts.txt"
+    [ -s "$RUN/cur-ts.txt" ] || { sc_cov no-timestamp; continue; }
+    min_epoch=""; max_epoch=""
+    while IFS= read -r ts; do
+        ep=$(to_epoch "$ts") || continue
+        if [ -z "$min_epoch" ] || [ "$ep" -lt "$min_epoch" ]; then min_epoch="$ep"; fi
+        if [ -z "$max_epoch" ] || [ "$ep" -gt "$max_epoch" ]; then max_epoch="$ep"; fi
+    done < "$RUN/cur-ts.txt"
+    [ -n "$min_epoch" ] || { sc_cov bad-timestamp; continue; }
+    [ "$max_epoch" -ge "$SINCE_EPOCH" ] || { sc_cov out-of-window; continue; }
+    if [ -n "$UNTIL_EPOCH" ] && [ "$min_epoch" -ge "$UNTIL_EPOCH" ]; then sc_cov out-of-window; continue; fi
 
     out=$(jq -r --argjson since_epoch "$SINCE_EPOCH" --argjson until_epoch "$UNTIL_EPOCH_ARG" '
       def inwin: (.timestamp // null) as $t | $t != null and

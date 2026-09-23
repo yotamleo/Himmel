@@ -132,6 +132,22 @@ check_contains "out-of-window: the pre-window transcript is discovered but skipp
 check_contains "out-of-window: a Bash call before --since does not count as USED - the script stays DEAD" \
     "$OUT2" $'script\tout-of-window\tscripts/out-of-window.sh\tDEAD'
 
+# --- non-chronological: a transcript whose PHYSICAL first and last records are
+# both out-of-window must not skip an in-window record sitting between them -
+# the window check must scan every record's timestamp, not just head/tail
+# (round-6 codex-1) ------------------------------------------------------------
+export SCORECARD_PROJECTS_DIR="$HERE/fixtures/dead-parts/non-chronological-transcripts"
+OUT5=$("$SCRIPT" --since 2026-09-15T00:00:00Z --repo-root "$TMPREPO" 2>/dev/null)
+rc5=$?
+if [ "$rc5" -eq 0 ]; then
+    echo "ok - non-chronological: dead-parts.sh exits 0"
+else
+    echo "FAIL - non-chronological: dead-parts.sh rc=$rc5 (expected 0): $OUT5"
+    fails=$((fails + 1))
+fi
+check_contains "non-chronological: an in-window Bash call is not discarded because the file's first and last physical records are both out-of-window (round-6 codex-1 fix)" \
+    "$OUT5" $'script\tqux-deadd\tscripts/qux-deadd.sh\tUSED'
+
 # --- linked worktree: --repo-root pointing at a worktree whose .git is a
 # FILE (`gitdir: ...`), not a directory - every leg runs from exactly this
 # shape, and a `[ -d "$REPO_ROOT/.git" ]` check (the pre-fix code) rejects it
