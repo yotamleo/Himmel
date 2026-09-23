@@ -84,7 +84,9 @@ chmod 755 "$FAKE_CLAUDE"
 # marketplace stub state for one case. Sets the CASE_* globals the rest of
 # the case (and run_uninstall) uses.
 new_case() {
-  CASE_DIR="$SUITE_TMP/$1"
+  # HIMMEL-3336: CASE_DIR is grounded in a literal mktemp template (not "$1")
+  # so the real-home-callers static scan can verify HOME stays scratch.
+  CASE_DIR="$(mktemp -d "$SUITE_TMP/case.XXXXXX")" || { echo "FAIL: mktemp CASE_DIR ($1)" >&2; exit 1; }
   mkdir -p "$CASE_DIR/home/.claude" "$CASE_DIR/cwd" "$CASE_DIR/prov"
   export HOME="$CASE_DIR/home"
   export HIMMEL_PROVENANCE_DIR="$CASE_DIR/prov"
@@ -283,7 +285,7 @@ check "RED10 codex-2: sibling-project adopter-scripts file untouched" "$AFTER10B
 
 echo "==== RED11 (codex-8): file_created=false ledger row passes --file-created no ===="
 new_case red11
-# RED7's `( HOME=… )` subshell closed long before this line; HOME here is the
+# RED7's HOME override, `( HOME set inside a subshell )`, closed long before this line; HOME here is the
 # suite's own scratch HOME, exactly as intended.
 # shellcheck disable=SC2031
 RULE11="$HOME/.claude/CLAUDE.md"
@@ -333,7 +335,7 @@ check "RED12 codex-9: second adopter-scripts unit untouched after the first fail
 
 echo "==== RED13 (codex-4): ledger loaded but silent on statusLine/HANDOVER_DIR/hud -- kept like no-ledger, not stripped ===="
 new_case red13
-# RED7's `( HOME=… )` subshell closed long before this line; HOME here is the
+# RED7's HOME override, `( HOME set inside a subshell )`, closed long before this line; HOME here is the
 # suite's own scratch HOME, exactly as intended.
 # shellcheck disable=SC2031
 HUD13="$HOME/.claude/plugins/claude-hud/config.json"
@@ -493,7 +495,7 @@ echo "==== RED19 (HIMMEL-3332 S6 slice2): workspace-trust json-key ledger excisi
 # for these four calls only.
 run_uninstall_fx() { export HIMMEL_UNINSTALL_REAL_HOME=1; run_uninstall "$@"; unset HIMMEL_UNINSTALL_REAL_HOME; }
 new_case red19a
-# RED7's `( HOME=… )` subshell closed long before this line; HOME here is the
+# RED7's HOME override, `( HOME set inside a subshell )`, closed long before this line; HOME here is the
 # suite's own scratch HOME, exactly as intended.
 # shellcheck disable=SC2031
 CFG19A="$HOME/.claude.json"
