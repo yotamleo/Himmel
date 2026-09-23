@@ -666,11 +666,16 @@ assert_rc "118 cp -t into \$HOME/.claude/ still denies (control)" 2 \
 assert_rc "119 jq read of a scratchpad .leg-settings.json file allows" 0 \
     "$(bash_rc_of "$PRIMARY" "jq '{add:.permissions.additionalDirectories}' /tmp/claude-1000/somesession/scratchpad/HIMMEL-3514-N424-bridge-hardening.leg-settings.json")"
 
-# 120 control: the same file, this time with jq -i (a genuine in-place
-# write) -> DENY — proves 119's exemption only covers the read-only verb,
-# not the file itself.
-assert_rc "120 jq -i on the same scratchpad file still denies (control)" 2 \
-    "$(bash_rc_of "$PRIMARY" "jq -i '{add:.permissions.additionalDirectories}' /tmp/claude-1000/somesession/scratchpad/HIMMEL-3514-N424-bridge-hardening.leg-settings.json")"
+# 120 control: the same read, this time redirected into the PRIMARY's live
+# settings.json (a genuine write) -> DENY — proves 119's exemption only
+# covers the read-only verb, not the file itself. (codex-3 panel finding,
+# round 5, HIMMEL-3517: the earlier version of this control used `jq -i`,
+# which jq does not actually support as a flag — it denied via the hook's
+# textual `-i` scan, not because it was a real write, so it never exercised
+# an actual write path. Replaced with a genuine `>` redirect, a write shape
+# jq truly performs.)
+assert_rc "120 jq read redirected into primary settings.json still denies (control)" 2 \
+    "$(bash_rc_of "$PRIMARY" "jq '{add:.permissions.additionalDirectories}' /tmp/claude-1000/somesession/scratchpad/HIMMEL-3514-N424-bridge-hardening.leg-settings.json > .claude/settings.json")"
 
 # 121: pinned known residual (K ruling 2026-09-23 on K-N431-7980c9b9,
 # HALT-and-simplify). This is the console's OWN verbatim reproduction: a

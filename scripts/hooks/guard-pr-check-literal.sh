@@ -167,6 +167,16 @@ names_target() { # names_target <text> - mentions pr-check or a target's exact
     shopt -s nocasematch
     case "$1" in *pr-check*) rc=0 ;; esac
     for t in $TARGETS; do
+        # ponytail: this is a PREFIX-stem match (cr/<stem>*), so a filename
+        # that merely STARTS WITH a guarded stem after "cr/" (e.g. a target
+        # named "foo.sh" also matches "cr/foo-other.sh") counts as a mention
+        # even though it names a different file (codex-2 panel finding,
+        # round 5, HIMMEL-3517, deferred by console ruling on
+        # K-N431-7980c9b9). Over-matching here only makes `mentions` MORE
+        # likely to be 1, which routes the command into the slower,
+        # stricter classification path below rather than the early
+        # fast-exit - the safe direction (a false-deny residual, not a
+        # hole). Upgrade path: HIMMEL-3546 (quote/token-aware matching).
         case "$1" in *[cC][rR]/"${t%.sh}"*) rc=0 ;; esac
     done
     shopt -u nocasematch
@@ -304,21 +314,20 @@ while IFS= read -r line; do
                         # (non-chdir-gating) treatment; every other bare word
                         # is an unverifiable runner too (codex-1 round-4
                         # panel finding, HIMMEL-3517: an unknown PATH
-                        # executable was previously treated as safe).
+                        # executable was previously treated as safe). sed and
+                        # awk are deliberately NOT on this allowlist even
+                        # without -i/--in-place: sed's `e` command and awk's
+                        # `system()` can execute a guarded relative script
+                        # from find's changed cwd with no in-place flag at all
+                        # (codex-1 round-5 panel finding, HIMMEL-3517) - they
+                        # are not fixed-behavior read-only tools, so they stay
+                        # chdir-gated like every other bare word.
                         case "$nextw" in
                             */*) chdir=1 ;;
                             *)
                                 case "${nextw##*/}" in
                                     grep|cat|head|tail|wc|ls|stat|file|sha256sum|md5sum)
                                         is_target "${nextw##*/}" && chdir=1 ;;
-                                    sed|awk)
-                                        # sed -i / awk -i inplace is a WRITE,
-                                        # not read-only - still chdir-gated.
-                                        case "$line" in
-                                            *' -i'*|*'--in-place'*) chdir=1 ;;
-                                            *) is_target "${nextw##*/}" && chdir=1 ;;
-                                        esac
-                                        ;;
                                     *) chdir=1 ;;
                                 esac
                                 ;;

@@ -407,15 +407,32 @@ run "find -execdir ./wrapper (path-qualified, unrecognized) -> deny (HIMMEL-3517
 # as unverifiable as a path-qualified wrapper, and it too runs from find's
 # changed cwd. Fixed by requiring a bare word to match a SMALL, explicit,
 # fixed-behavior read-only allowlist (grep, cat, head, tail, wc, ls, stat,
-# file, sha256sum, md5sum, sed/awk without -i) to keep the relaxed {}
-# carve-out; any other bare word is now chdir-gated like a path-qualified
-# one -> deny.
+# file, sha256sum, md5sum) to keep the relaxed {} carve-out; any other bare
+# word is now chdir-gated like a path-qualified one -> deny.
 run "find -execdir randomtool (bare, unrecognized, not allowlisted) -> deny (HIMMEL-3517, codex-1 round 4)" 2 \
     "$(payload "find . -maxdepth 0 -execdir randomtool {} \\;" "$WT")" "$HR"
-# control: sed -i in the same -execdir shape is a WRITE, not read-only, so
-# it stays chdir-gated even though "sed" itself is on the allowlist.
-run "find -execdir sed -i (allowlisted verb, but -i write) -> deny (HIMMEL-3517, codex-1 round 4)" 2 \
+run "find -execdir sed -i (never allowlisted) -> deny (HIMMEL-3517, codex-1 round 4)" 2 \
     "$(payload "find . -maxdepth 0 -execdir sed -i s/a/b/ {} \\;" "$WT")" "$HR"
+
+# codex-1 (/pr-check critic panel round 5, Important, 2026-09-23): an
+# earlier version of this fix allowlisted sed/awk without -i/--in-place as
+# "read-only". That is false - sed's `e` command and awk's `system()` can
+# execute an arbitrary command, including a guarded relative script, from
+# find's changed cwd with no in-place flag at all. Per the console's ruling
+# on K-N431-7980c9b9 (option 2), sed and awk are dropped from the allowlist
+# ENTIRELY - they now stay chdir-gated the same as every other bare word,
+# in-place or not.
+# No scripts/cr/ mention in either payload below - deliberately, so the
+# deny can only come from the -execdir chdir-gate itself (same isolation as
+# the "randomtool" row above), never from the unrelated direct-mention deny
+# path. At the base (round-4) hook, sed/awk without -i/--in-place stayed
+# off the chdir gate (is_target("sed"/"awk") is false), so these ALLOWED
+# despite sed's `e` command / awk's `system()` being able to execute
+# anything - the exact gap codex-1 flagged in round 5.
+run "find -execdir sed e (no -i, but sed's e command executes) -> deny (HIMMEL-3517, codex-1 round 5)" 2 \
+    "$(payload "find . -maxdepth 0 -execdir sed -n 'e ls' {} \\;" "$WT")" "$HR"
+run "find -execdir awk system() (no -i, but system() executes) -> deny (HIMMEL-3517, codex-1 round 5)" 2 \
+    "$(payload "find . -maxdepth 0 -execdir awk 'BEGIN{system(\"ls\")}' {} \\;" "$WT")" "$HR"
 # Positive controls: the shapes these fixes must NOT widen stay denied.
 # shellcheck disable=SC2016 # command text, verbatim
 run "control: bash scripts/cr/\$X (real unresolved target) -> still deny" 2 \
