@@ -840,6 +840,92 @@ check "RED26: --purge-state still calls qmd collection remove qmd-vault" \
 check "RED26: the fake qmd never saw the fork checkout already removed" \
   "$(printf '%s\n' "$out26" | grep -c 'already removed')" "0"
 
+echo "==== RED27 (HIMMEL-3524): a qmd fork checkout carrying user work is kept, never rm -rf'd, even under --purge-state ===="
+# qmd_unwire_fork_checkout's ledger verdict only proves himmel CREATED the
+# checkout; it says nothing about what has happened in it since. A real fork
+# checkout is a git work tree, so the fix checks its live git state before
+# removing it: a dirty tree (tracked-file edit or untracked file) or an
+# unpushed local commit is user work the ledger cannot see, and must be kept.
+_red27_seed_git_fork() {
+  # <dir> -- init a one-commit git repo at $1, matching the real fork
+  # checkout's shape (a build stamp file that is byte-identical to a fresh
+  # clone). Returns with the tree clean and HEAD pushed to a bare "origin".
+  local dir="$1" bare
+  mkdir -p "$dir"
+  git -C "$dir" init -q
+  git -C "$dir" config user.email test@example.invalid
+  git -C "$dir" config user.name "Test"
+  printf 'ok\n' > "$dir/.himmel-build-ok"
+  printf 'fork file\n' > "$dir/tracked.txt"
+  git -C "$dir" add -A
+  git -C "$dir" commit -q -m seed
+  bare="$dir.git-origin"
+  git init -q --bare "$bare"
+  git -C "$dir" remote add origin "$bare"
+  git -C "$dir" push -q origin HEAD:refs/heads/main
+}
+
+new_case red27a
+CASE_QMD_FORK_DIR="$CASE_DIR/qmd-fork"
+_red27_seed_git_fork "$CASE_QMD_FORK_DIR"
+( prov_begin --writer install.sh -- seed-red27a >/dev/null
+  prov_record create file "$CASE_QMD_FORK_DIR/.himmel-build-ok" --pre-absent --post-file "$CASE_QMD_FORK_DIR/.himmel-build-ok" \
+    --scope machine --class code --row qmd-fork --writer qmd-bin.sh --field preexisted=false >/dev/null
+  prov_end ok >/dev/null )
+out27a=$(run_uninstall --yes --purge-state --skip-tasks --skip-plugins --skip-hooks); rc27a=$?
+check "RED27a: uninstall exit status" "$rc27a" "0"
+check "RED27a: a clean git fork checkout IS removed under --purge-state" "$([ -e "$CASE_QMD_FORK_DIR" ] && echo yes || echo no)" "no"
+check "RED27a: a removed line is printed" \
+  "$(printf '%s\n' "$out27a" | grep -c 'removed:.*qmd fork checkout')" "1"
+
+new_case red27b
+CASE_QMD_FORK_DIR="$CASE_DIR/qmd-fork"
+_red27_seed_git_fork "$CASE_QMD_FORK_DIR"
+printf 'edited by the user\n' > "$CASE_QMD_FORK_DIR/tracked.txt"
+( prov_begin --writer install.sh -- seed-red27b >/dev/null
+  prov_record create file "$CASE_QMD_FORK_DIR/.himmel-build-ok" --pre-absent --post-file "$CASE_QMD_FORK_DIR/.himmel-build-ok" \
+    --scope machine --class code --row qmd-fork --writer qmd-bin.sh --field preexisted=false >/dev/null
+  prov_end ok >/dev/null )
+out27b=$(run_uninstall --yes --purge-state --skip-tasks --skip-plugins --skip-hooks); rc27b=$?
+check "RED27b: uninstall exit status" "$rc27b" "0"
+check "RED27b: a fork checkout with a modified tracked file is KEPT under --purge-state" \
+  "$([ -e "$CASE_QMD_FORK_DIR" ] && echo yes || echo no)" "yes"
+check "RED27b: the edit survives byte-identical" "$(cat "$CASE_QMD_FORK_DIR/tracked.txt")" "edited by the user"
+check "RED27b: a user-modified kept line is printed" \
+  "$(printf '%s\n' "$out27b" | grep -c 'kept:.*user-modified: uncommitted changes')" "1"
+
+new_case red27c
+CASE_QMD_FORK_DIR="$CASE_DIR/qmd-fork"
+_red27_seed_git_fork "$CASE_QMD_FORK_DIR"
+printf 'new file\n' > "$CASE_QMD_FORK_DIR/untracked.txt"
+( prov_begin --writer install.sh -- seed-red27c >/dev/null
+  prov_record create file "$CASE_QMD_FORK_DIR/.himmel-build-ok" --pre-absent --post-file "$CASE_QMD_FORK_DIR/.himmel-build-ok" \
+    --scope machine --class code --row qmd-fork --writer qmd-bin.sh --field preexisted=false >/dev/null
+  prov_end ok >/dev/null )
+out27c=$(run_uninstall --yes --purge-state --skip-tasks --skip-plugins --skip-hooks); rc27c=$?
+check "RED27c: uninstall exit status" "$rc27c" "0"
+check "RED27c: a fork checkout with an untracked file is KEPT under --purge-state" \
+  "$([ -e "$CASE_QMD_FORK_DIR" ] && echo yes || echo no)" "yes"
+check "RED27c: the untracked file survives" "$([ -f "$CASE_QMD_FORK_DIR/untracked.txt" ] && echo yes || echo no)" "yes"
+check "RED27c: a user-modified kept line is printed" \
+  "$(printf '%s\n' "$out27c" | grep -c 'kept:.*user-modified: uncommitted changes')" "1"
+
+new_case red27d
+CASE_QMD_FORK_DIR="$CASE_DIR/qmd-fork"
+_red27_seed_git_fork "$CASE_QMD_FORK_DIR"
+printf 'local work\n' > "$CASE_QMD_FORK_DIR/tracked.txt"
+git -C "$CASE_QMD_FORK_DIR" commit -q -am "local unpushed commit"
+( prov_begin --writer install.sh -- seed-red27d >/dev/null
+  prov_record create file "$CASE_QMD_FORK_DIR/.himmel-build-ok" --pre-absent --post-file "$CASE_QMD_FORK_DIR/.himmel-build-ok" \
+    --scope machine --class code --row qmd-fork --writer qmd-bin.sh --field preexisted=false >/dev/null
+  prov_end ok >/dev/null )
+out27d=$(run_uninstall --yes --purge-state --skip-tasks --skip-plugins --skip-hooks); rc27d=$?
+check "RED27d: uninstall exit status" "$rc27d" "0"
+check "RED27d: a fork checkout with an unpushed local commit is KEPT under --purge-state" \
+  "$([ -e "$CASE_QMD_FORK_DIR" ] && echo yes || echo no)" "yes"
+check "RED27d: a user-modified kept line is printed" \
+  "$(printf '%s\n' "$out27d" | grep -c 'kept:.*user-modified: unpushed local commits')" "1"
+
 echo "==== REAL-LEDGER TRIPWIRE ===="
 REAL_LEDGER_AFTER=$(real_ledger_state)
 check "tripwire: operator's real ~/.himmel/provenance.jsonl untouched by this suite" \

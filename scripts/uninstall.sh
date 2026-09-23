@@ -3302,7 +3302,7 @@ fi
 # removed and its kept line prints unconditionally below, in both modes,
 # ledger or not (console ruling on HIMMEL-3332, 2026-09-23).
 qmd_unwire_fork_checkout() {
-  local u="$1" verdict action reason path fork_dir resolved expected
+  local u="$1" verdict action reason path fork_dir resolved expected _porcelain
   verdict=$(prov_read_verdict "$u") || { echo "  WARN: qmd fork checkout: could not read current state" >&2; return 0; }
   action="${verdict%% *}"; reason="${verdict#* }"
   path=$(printf '%s' "$u" | jq -r '.path // empty')
@@ -3325,6 +3325,26 @@ qmd_unwire_fork_checkout() {
     fail_step "qmd-fork ledger remove: suspicious fork checkout path ($resolved)"
     prov_read_outcome failed "$u" "suspicious-path"
     return 0
+  fi
+  # HIMMEL-3524: the ledger only proves himmel created the checkout, not that
+  # nothing has touched it since — a dirty tree or an unpushed commit is user
+  # work the ledger has no way to see, so check the live git state before rm.
+  if git -C "$resolved" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if ! _porcelain=$(git -C "$resolved" status --porcelain --untracked-files=normal 2>&1); then
+      echo "  kept: $resolved (user-modified: could not read git status)"
+      prov_read_outcome kept "$u" "user-modified"
+      return 0
+    fi
+    if [ -n "$_porcelain" ]; then
+      echo "  kept: $resolved (user-modified: uncommitted changes)"
+      prov_read_outcome kept "$u" "user-modified"
+      return 0
+    fi
+    if [ -n "$(git -C "$resolved" log --branches --not --remotes -1 2>/dev/null)" ]; then
+      echo "  kept: $resolved (user-modified: unpushed local commits)"
+      prov_read_outcome kept "$u" "user-modified"
+      return 0
+    fi
   fi
   if guarded run rm -rf -- "$resolved"; then
     [ "$DRY_RUN" -eq 0 ] && echo "  removed: $resolved (qmd fork checkout)"
