@@ -583,12 +583,16 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     # ANSI-C quoting (`$'\x2e\x2e'`, `settings$'\x2e'json`) spells any byte,
     # so the text above cannot say what it names. Not decoded: a `$'` beside
     # any `settings` or `claude` substring is treated as a live mention
-    # (HIMMEL-3468). Judged on the raw text — the fold removed the quote.
+    # (HIMMEL-3468). Judged on the raw text — the fold removed the quote —
+    # with line continuations joined first, since bash joins `$\<NL>'` into
+    # `$'` before it reads words.
     # ponytail: a word whose `settings`/`claude` letters are themselves
     # escaped (`$'\x73ettings.json'`) is not caught — same class as a path
-    # built by `$(printf …)`.
+    # built by `$(printf …)`, `printf %b` or `${var@E}`.
     ansi_c=0
-    case "$cmd" in
+    cmd_j=${cmd//$'\\\r\n'/}
+    cmd_j=${cmd_j//$'\\\n'/}
+    case "$cmd_j" in
         *"\$'"*)
             case "$cmd_lc" in
                 *settings*|*claude*) ansi_c=1; mentions_settings=1 ;;

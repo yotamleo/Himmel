@@ -612,6 +612,17 @@ assert_rc "109 ANSI-C with no settings/claude mention allows" 0 \
 assert_rc "110 ANSI-C spelled cp into \$HOME/.claude from a worktree denies" 2 \
     "$(bash_rc_of "$WT2" '$'"'"'\x63\x70'"'"' -r /tmp/payload/. "$HOME/.claude/"')"
 
+# 111-114: a line continuation between `$` and `'` (LF and CRLF) still makes
+# ANSI-C quoting — bash joins the lines before it reads words (console E NO-GO).
+for eol in LF CRLF; do
+    if [ "$eol" = LF ]; then cont="\$\\"$'\n'; else cont="\$\\"$'\r\n'; fi
+    assert_rc "111/113 continued ANSI-C climb from a nested worktree denies ($eol)" 2 \
+        "$(bash_rc_of "$NESTED_WT" "echo x > ${cont}'\\x2e\\x2e'/${cont}'\\x2e\\x2e'/settings.json")"
+    # shellcheck disable=SC2016  # $HOME is literal command text for the hook
+    assert_rc "112/114 continued ANSI-C cp into \$HOME/.claude denies ($eol)" 2 \
+        "$(bash_rc_of "$WT2" "${cont}'\\x63\\x70' -r /tmp/payload/. \"\$HOME/.claude/\"")"
+done
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true

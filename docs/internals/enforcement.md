@@ -1589,6 +1589,8 @@ a nested worktree can write its own settings.
 ANSI-C quoting (`$'\x2e\x2e'`, `settings$'\x2e'json`) can spell any byte, so
 it is not decoded. Any `$'` in a command that also contains the substring
 `settings` or `claude` counts as a live settings mention, whatever the cwd.
+Line continuations are joined before this check, because bash joins
+`$\<newline>'` into `$'` before it reads words.
 
 **Accepted false denies** (each has a test row): a harmless `cd` plus a
 worktree-settings mention; any `..` beside a worktree-settings mention
@@ -1606,8 +1608,8 @@ does not name the file or its directory in a form above:
   the file (HIMMEL-3499);
 - a directory change by another spelling: `find … -exec`, or a directory
   flag with another name (`tar --directory`);
-- a name built at run time: variables, `$(…)` and backtick substitution,
-  and globs;
+- a name built at run time: variables (including `${var@E}` escape
+  expansion), `$(…)` and backtick substitution, `printf %b`, and globs;
 - an ANSI-C word that escapes the `settings` or `claude` letters themselves
   (`$'\x73ettings.json'`);
 - symlinks;
