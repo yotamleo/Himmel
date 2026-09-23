@@ -67,13 +67,34 @@ case "$_ah_self" in
     *)
         _ah_name="$(basename "$_ah_self")"
         _ah_dir="$(cd "$(dirname "$_ah_self")" && pwd)"
+        _ah_anchor="${HIMMEL_REPO:-}"
         _ah_root="$(cd "$_ah_dir" && git rev-parse --show-toplevel 2>/dev/null)"
+        if [ -z "$_ah_root" ] && [ -n "$_ah_anchor" ]; then
+            # No git metadata under $_ah_dir (a non-repo test fixture, not a
+            # real worktree). The self-anchor case still needs no genuine
+            # root: walk up from here looking for an ancestor that IS the
+            # anchor: found -> we're already the anchor's own copy, so a
+            # hand-off is not needed either way (matches the pre-HIMMEL-3437
+            # depth-2 resolver, which never validated its guessed root was a
+            # real repo top). A cross-tree hand-off still requires git, so a
+            # non-git wt still fails closed below.
+            _ah_walk="$_ah_dir"
+            while :; do
+                if [ "$_ah_walk" -ef "$_ah_anchor" ]; then
+                    _ah_root="$_ah_anchor"
+                    break
+                fi
+                _ah_parent="$(dirname "$_ah_walk")"
+                [ "$_ah_parent" = "$_ah_walk" ] && break
+                _ah_walk="$_ah_parent"
+            done
+            unset _ah_walk _ah_parent
+        fi
         if [ -z "$_ah_root" ]; then
             echo "$_ah_name: cannot resolve this copy's own repo root (git rev-parse --show-toplevel failed under $_ah_dir) - refusing to let it decide" >&2
             exit 2
         fi
         _ah_rel="${_ah_dir#"$_ah_root"/}/$_ah_name"
-        _ah_anchor="${HIMMEL_REPO:-}"
         if [ -z "$_ah_anchor" ]; then
             echo "$_ah_name: HIMMEL_REPO is unset or empty - refusing to let this relative-entry copy ($_ah_root) decide; export it non-empty (adopt/setup wires it into settings.json env), or run the anchored \"<himmel_dir>/$_ah_rel\" spelling" >&2
             exit 2
