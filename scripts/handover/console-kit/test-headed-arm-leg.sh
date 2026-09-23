@@ -1022,6 +1022,39 @@ check "full launch --profile (doc directly at handover root): refuses rather tha
 check "full launch --profile (doc directly at handover root): no settings file written" \
   "$([ -e "$d17root/HIMMEL-3333-atroot.leg-settings.json" ] && echo present || echo absent)" "absent"
 
+# HIMMEL-3285 (CR round 3, codex-1): a HANDOVER_DIR carrying a trailing slash
+# must not bypass the root-equality check or leave the .locks deny malformed
+# - both sides are normalized through `cd && pwd` before comparing/building.
+d17slash="$tmp/c17slash"; mk_launch_stubs "$d17slash" "HIMMEL-3333-slash"; mkdir -p "$tmp/repo17slash"
+slash_root="$HANDOVER_DIR/"
+slash_doc="$slash_root/HIMMEL-3333-slash.md"
+printf '%s\n' '# fixture doc at a trailing-slash handover root' > "$slash_doc"
+rc=0
+HEADED_ARM_LEG_TARGET="$HEADED_ARM" \
+HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+KONSOLE_CMD="$d17slash/konsole" PGREP_CMD="$d17slash/pgrep" \
+LEG_REPO="$tmp/repo17slash" HEADED_ARM_LOCK_DIR="$d17slash/locks" HEADED_ARM_PROC="$d17slash/proc" \
+HANDOVER_DIR="$slash_root" \
+  bash "$SCRIPT" --profile leg-impl "HIMMEL-3333-slash" "$slash_doc" "$d17slash/signal-never" "$PAST" "$d17slash/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+check "full launch --profile (trailing slash on HANDOVER_DIR, doc at root): still refuses rather than grant the root" "$rc" "2"
+
+d17slash2="$tmp/c17slash2"; mk_launch_stubs "$d17slash2" "HIMMEL-3333-slash2"; mkdir -p "$tmp/repo17slash2"
+slash2_doc_dir="$HANDOVER_DIR/yotamleo/himmel"
+mkdir -p "$slash2_doc_dir"
+slash2_doc="$slash2_doc_dir/HIMMEL-3333-slash2.md"
+printf '%s\n' '# fixture doc under a trailing-slash handover root' > "$slash2_doc"
+rc=0
+HEADED_ARM_LEG_TARGET="$HEADED_ARM" \
+HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+KONSOLE_CMD="$d17slash2/konsole" PGREP_CMD="$d17slash2/pgrep" \
+LEG_REPO="$tmp/repo17slash2" HEADED_ARM_LOCK_DIR="$d17slash2/locks" HEADED_ARM_PROC="$d17slash2/proc" \
+HANDOVER_DIR="$slash_root" \
+  bash "$SCRIPT" --profile leg-impl "HIMMEL-3333-slash2" "$slash2_doc" "$d17slash2/signal-never" "$PAST" "$d17slash2/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+check "full launch --profile (trailing slash on HANDOVER_DIR, doc under it): exit 0" "$rc" "0"
+check "full launch --profile (trailing slash on HANDOVER_DIR): .locks deny normalizes, no double slash" \
+  "$(jq -c '.permissions.deny' "$d17slash2/HIMMEL-3333-slash2.leg-settings.json" 2>/dev/null)" \
+  "$(jq -cn --arg d "$HANDOVER_DIR" '["EnterWorktree"] + (["Edit","Write","MultiEdit","NotebookEdit"] | map(. + "(" + $d + "/.locks/**)"))')"
+
 # The relay half of a split console is not a leg that works in a worktree:
 # its settings get no deny.
 d17r="$tmp/c17r"; mk_launch_stubs "$d17r" "HIMMEL-9999-relay"; mkdir -p "$tmp/repo17r"

@@ -798,6 +798,21 @@ if [ -n "$PROFILE" ]; then
             exit 2
         fi
     fi
+    # HANDOVER_DIR reaches this wrapper as a plain exported string, which may
+    # carry a trailing slash a caller happened to set. Normalize it once
+    # through `cd && pwd` (the same normalization handover_root() applies) so
+    # both the root-equality check below and the .locks deny pattern compare
+    # against the SAME canonical form _leg_doc_dir (also `cd && pwd`-derived)
+    # uses - a raw trailing-slash HANDOVER_DIR would otherwise silently
+    # bypass both (CR round 3, codex-1).
+    _leg_handover_dir_norm=""
+    if [ -n "${HANDOVER_DIR:-}" ]; then
+        _leg_handover_dir_norm="$(cd "$HANDOVER_DIR" 2>/dev/null && pwd)"
+        if [ -z "$_leg_handover_dir_norm" ]; then
+            echo "headed-arm-leg: --profile $PROFILE: HANDOVER_DIR='$HANDOVER_DIR' is not a directory" >&2
+            exit 2
+        fi
+    fi
     # (HIMMEL-3285) A leg writes its Results bullets to its own handover doc,
     # which sits outside the leg's working directories whenever the resolved
     # handover root is external (Mode B) or the doc's own root otherwise -
@@ -813,8 +828,8 @@ if [ -n "$PROFILE" ]; then
     # rather than assumed, so a doc placed directly AT the root can never
     # collapse this grant back to the whole root (CR round 2, codex-1).
     if [ -n "$DOC" ] && _leg_doc_dir="$(cd "$(dirname "$DOC")" 2>/dev/null && pwd)"; then
-        if [ -n "${HANDOVER_DIR:-}" ] && [ "$_leg_doc_dir" = "$HANDOVER_DIR" ]; then
-            echo "headed-arm-leg: --profile $PROFILE: leg doc sits directly at the handover root ($HANDOVER_DIR) - refusing to grant the whole root as additionalDirectories" >&2
+        if [ -n "$_leg_handover_dir_norm" ] && [ "$_leg_doc_dir" = "$_leg_handover_dir_norm" ]; then
+            echo "headed-arm-leg: --profile $PROFILE: leg doc sits directly at the handover root ($_leg_handover_dir_norm) - refusing to grant the whole root as additionalDirectories" >&2
             exit 2
         fi
         if ! PROFILE_JSON="$(printf '%s' "$PROFILE_JSON" | jq --arg dir "$_leg_doc_dir" \
@@ -830,13 +845,14 @@ if [ -n "$PROFILE" ]; then
     # change widens the grant back toward the root. Gated the same as the
     # EnterWorktree deny above: the relay never works in a worktree and
     # keeps its settings as they are.
-    if [ "$RELAY" -eq 0 ] && [ -n "${HANDOVER_DIR:-}" ]; then
-        if ! PROFILE_JSON="$(printf '%s' "$PROFILE_JSON" | jq --arg dir "$HANDOVER_DIR" \
+    if [ "$RELAY" -eq 0 ] && [ -n "$_leg_handover_dir_norm" ]; then
+        if ! PROFILE_JSON="$(printf '%s' "$PROFILE_JSON" | jq --arg dir "$_leg_handover_dir_norm" \
             '.permissions.deny = ((.permissions.deny // []) + (["Edit","Write","MultiEdit","NotebookEdit"] | map(. + "(" + $dir + "/.locks/**)")))')"; then
             echo "headed-arm-leg: --profile $PROFILE: cannot add the .locks deny to settings JSON" >&2
             exit 2
         fi
     fi
+    unset -v _leg_handover_dir_norm
     # (HIMMEL-2990) Native lane only - the claudex lane keeps its own
     # coordination preface untouched. Resolved even under --dry-run, same
     # reasoning as the profile/mcp resolution above: a jq failure here must
