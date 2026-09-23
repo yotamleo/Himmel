@@ -33,6 +33,18 @@ const GATE_SCRIPT_RE = /^Bash\(bash scripts\/(?:handover\/(?:merge-on-green|queu
 // (CR_CLAUDE_AGENTS, steps 2.5 / 3.5), which hands off the same way.
 const GATE_EXACT_RE = /^Bash\(bash scripts\/cr\/(?:(?:codex-adv-kickoff|codex-adv-harvest|doc-freshness-advisory|pr-check-context)\.sh|known-findings\.sh --diff|pr-check-env\.sh CR_CLAUDE_AGENTS)\)$/;
 const GATE_SUITE_RE = /^Bash\((?:SUITE_LOCK_WAIT=60 )?bash scripts\/quiet-run\.sh suite -- bash (?:scripts\/(?:handover\/console-kit\/|(?:handover|cr|git|hooks|guardrails|lib|luna|ci)\/)?|templates\/luna-second-brain\/scripts\/)test-\*\.sh\)$/;
+// HIMMEL-3491: the merge-gate ENTRY invocation runs from the $HIMMEL_REPO
+// anchor, not branch-controlled bytes, so it must carry a literal `$` the
+// generic ban below rejects. This is an EXACT-STRING exception for this one
+// rule only — never a general $VAR admission — so every other rule containing
+// `$` (including a different var or a different path under the anchor) still
+// falls through to the ban.
+// ponytail: kept alongside the pre-existing relative rule
+// (`Bash(bash scripts/handover/merge-on-green.sh:*)`) rather than replacing
+// it, until Claude Code's `$VAR` permission-matcher semantics are confirmed
+// against literal typed command text (docs/source citation or a
+// non-billed measurement) — HIMMEL-3491 follow-up.
+const GATE_ANCHOR_LITERAL = 'Bash(bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh":*)';
 const LEG_PROFILES = new Set(['lane-impl', 'leg-impl', 'lane-review', 'lane-content', 'console-relay']);
 
 function validateGateAllow(errors, rules) {
@@ -42,6 +54,7 @@ function validateGateAllow(errors, rules) {
     return;
   }
   for (const rule of rules) {
+    if (rule === GATE_ANCHOR_LITERAL) continue;
     if (typeof rule !== 'string' || /[\r\n]/.test(rule)
       || ['--force', '--no-verify', '--amend', 'reset --hard', 'origin main', '..', '$'].some((s) => rule.includes(s))
       || ![GATE_SCRIPT_RE, GATE_EXACT_RE, GATE_SUITE_RE].some((re) => re.test(rule))) {

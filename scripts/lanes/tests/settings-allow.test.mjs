@@ -38,6 +38,14 @@ const EXACT_LITERALS = [
   'bash scripts/handover/merge-on-green.sh --jira-transition',
 ];
 
+// HIMMEL-3491: the merge-gate ENTRY runs from the $HIMMEL_REPO anchor, not
+// branch-controlled bytes. This is a `:*`-tail rule (unlike the two exact
+// literals above), so it covers both the bare and --jira-transition spellings.
+const ANCHOR_LITERALS = [
+  'bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh"',
+  'bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh" --jira-transition',
+];
+
 // A model of the documented rule forms, not the harness matcher: `X:*` = X or
 // X plus a space-separated tail; a body with `*` is a glob whose `*` matches
 // any characters (slashes and spaces included), and a trailing ` *` also
@@ -130,6 +138,7 @@ for (const literal of [...STEP0, ...EXACT_LITERALS].filter((c) => c.startsWith('
 const SANCTIONED = [
   ...STEP0,
   ...EXACT_LITERALS,
+  ...ANCHOR_LITERALS,
   'bash scripts/check-ci.sh 1090',
   'bash scripts/context-fill.sh',
   'bash scripts/handover/queue-lock.sh acquire /abs/doc.md',

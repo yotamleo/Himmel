@@ -935,6 +935,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 const settings = JSON.parse(readFileSync(process.argv[2], 'utf8'));
 assert.ok(settings.permissions?.allow.includes('Bash(bash scripts/handover/merge-on-green.sh:*)'));
+// HIMMEL-3491: the anchored entry literal is seeded alongside the relative one.
+assert.ok(settings.permissions?.allow.includes('Bash(bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh":*)'));
 NODE
 check "full launch --profile: seeded settings carry gate permissions" "$rc" "0"
 

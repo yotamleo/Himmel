@@ -251,13 +251,15 @@ directories, goes to the classifier by design.
   means WRAP with a resume brief now, not a wait. If the GO-hold itself passes
   30 minutes with no console reply, send one nudge and then wrap.
 - **Closing the ticket at merge (HIMMEL-3271).** The merge is
-  `bash scripts/handover/merge-on-green.sh`. It closes nothing on its own: the
-  Jira transition is opt-in (`--jira-transition`, HIMMEL-3143), so a bare run
-  merges and only prints `jira-transition=would-transition` — a finished ticket
-  left open. Read the `completes-ticket:` line in your brief's Ship contract; if
-  it is absent, decide it yourself: does this PR finish the cited ticket?
+  `bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh"` (HIMMEL-3491: the
+  entry runs from the anchor, not branch-controlled bytes). It closes nothing
+  on its own: the Jira transition is opt-in (`--jira-transition`, HIMMEL-3143),
+  so a bare run merges and only prints `jira-transition=would-transition` — a
+  finished ticket left open. Read the `completes-ticket:` line in your brief's
+  Ship contract; if it is absent, decide it yourself: does this PR finish the
+  cited ticket?
   - **`completes-ticket: yes`** → pass the flag:
-    `bash scripts/handover/merge-on-green.sh --jira-transition`.
+    `bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh" --jira-transition`.
   - **`completes-ticket: no`** (the ticket spans further PRs, sibling slices, or
     work owed outside any PR) → omit the flag. Never turn it on by default:
     closing a sliced ticket on its first slice is the HIMMEL-3059 regression.

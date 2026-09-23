@@ -47,8 +47,9 @@ Steps run in this canonical order; only the tokens on the pointer's
 
 - **merge** — when CR is clean and the PR is open, squash-merge to main.
   Armed auto-merge (`ARMAUTOMERGE=1`, HIMMEL-1042) is
-  `bash scripts/handover/merge-on-green.sh` (exactly, to match the standing
-  allow-rule) — it gates on `check-ci.sh` green + a certified head SHA and
+  `bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh"` (HIMMEL-3491: the
+  entry runs from the anchor, matching the standing allow-rule) — it gates on
+  `check-ci.sh` green + a certified head SHA and
   merges only then. It admits a NON-private repo only when that repo is the ONE
   configured public origin AND a live read shows branch protection on the base
   branch with BOTH `enforce_admins` enabled and a non-empty
