@@ -167,6 +167,29 @@ else
   bad "the Kept-on-purpose list must name the settings.json residue (HIMMEL-3329)" "missing:$kept_missing"
 fi
 
+# HIMMEL-3332 slice 3: qmd is ledger-decided (kept by default; --purge-state
+# removes only units this install's own record shows it created), and the
+# plugin-cache stub patch is a separate, permanent keep that is never
+# reverted even under --purge-state. Both must be named where a reader
+# would look: the Kept-on-purpose list and the qmd detail panel.
+if grep -q -F -- '--purge-state' <<< "$kept" && grep -q -i -F 'qmd fork checkout' <<< "$kept"; then
+  ok "the Kept-on-purpose list states qmd's ledger-decided default-keep / --purge-state rule"
+else
+  bad "the Kept-on-purpose list must state qmd is kept by default and removed only under --purge-state for units this install created"
+fi
+if grep -q -i -F 'stub' <<< "$kept" && grep -q -F -- '--purge-state' <<< "$kept"; then
+  ok "the Kept-on-purpose list names the qmd plugin-cache stub patch as a permanent keep"
+else
+  bad "the Kept-on-purpose list must name the qmd plugin-cache stub patch as never reverted"
+fi
+
+qmd_panel="$(sed -n "/^    'qmd': { t:/,/' },\$/p" "$PAGE" | tr '\n' ' ' | sed -E 's/<[^>]*>//g; s/[[:space:]]+/ /g')"
+if grep -q -F -- '--purge-state' <<< "$qmd_panel"; then
+  ok "the qmd detail panel states the --purge-state keep/remove rule"
+else
+  bad "the qmd detail panel must state the --purge-state keep/remove rule"
+fi
+
 echo
 printf '%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -287,6 +287,27 @@ _qmd_backup_name() {
   printf '%s\n' "$base.$n"
 }
 
+# _qmd_prov_record <what> <prov_record args...> -- records one install-
+# provenance row for a qmd path this call just created (HIMMEL-3332 slice 3),
+# so a ledger-mode uninstall can remove exactly what himmel brought and
+# nothing else. Mirrors cadence_prov_record (HIMMEL-3332 S8,
+# scripts/lib/cadence-format.sh): sources provenance.sh lazily in a subshell
+# so its functions/shell options never leak into callers that don't source it
+# themselves (setup.sh, himmel-update.sh use qmd-bin.sh without provenance.sh,
+# and must stay unaffected). Best-effort by design: an unwritable ledger WARNs
+# and returns 0 rather than failing an otherwise-successful qmd install.
+_qmd_prov_record() {
+  local what="$1" lib
+  shift
+  lib="$(dirname "${BASH_SOURCE[0]}")/provenance.sh"
+  [ -r "$lib" ] || return 0
+  # shellcheck source=scripts/lib/provenance.sh
+  if ! ( . "$lib" && prov_record "$@" ) >/dev/null 2>&1; then
+    echo "  WARNING: could not record the $what in the provenance ledger (uninstall will keep it)." >&2
+  fi
+  return 0
+}
+
 # Point the bun-global @tobilu/qmd path at the fork clone. Idempotent
 # (no-ops if already correct). A stale link (wrong target) is removed
 # outright (link-only, safe); a REAL pre-existing directory is moved aside
@@ -402,6 +423,7 @@ qmd_fork_served() {
 # unstamped (failed/interrupted prior build) clone.
 qmd_install() {
   local fork_dir ref repo global_dir origin_url prebuild platform_arch
+  local _qmd_fork_created=0
 
   fork_dir="$(_qmd_fork_dir)"
   ref="$(_qmd_fork_ref)"
@@ -412,6 +434,12 @@ qmd_install() {
     echo "  qmd fork already installed and served ($(qmd_cmd --version 2>/dev/null)) - skipping."
     return 0
   fi
+
+  # HIMMEL-3332 slice 3: snapshot BEFORE any mutation below. A fork clone
+  # that already exists here predates (or survived) this call -- himmel never
+  # claims ownership of it, so only a fresh clone (the `else` branch further
+  # down) gets a provenance row for the build stamp.
+  [ -d "$fork_dir/.git" ] || _qmd_fork_created=1
 
   echo "Installing qmd fork ($repo@$ref)..."
 
@@ -558,9 +586,16 @@ qmd_install() {
     fi
   fi
 
+  local _qmd_link_created=1
+  _qmd_global_points_to_fork && _qmd_link_created=0
   if ! _qmd_ensure_global_link; then
     echo "  WARNING: qmd fork built but could not be linked at $global_dir." >&2
     return 1
+  fi
+  if [ "$_qmd_link_created" = 1 ]; then
+    _qmd_prov_record "qmd global symlink" create symlink "$global_dir" \
+      --post-text "$fork_dir" --scope machine --class code \
+      --row qmd-fork --writer qmd-bin.sh --field preexisted=false
   fi
 
   if qmd_cmd --version >/dev/null 2>&1; then
@@ -571,6 +606,11 @@ qmd_install() {
     if ! printf '%s\n' "$ref" > "$(_qmd_build_stamp)" 2>/dev/null; then
       echo "  WARNING: qmd fork verified but the build stamp could not be written." >&2
       return 1
+    fi
+    if [ "$_qmd_fork_created" = 1 ]; then
+      _qmd_prov_record "qmd fork checkout" create file "$(_qmd_build_stamp)" \
+        --pre-absent --post-file "$(_qmd_build_stamp)" --scope machine --class code \
+        --row qmd-fork --writer qmd-bin.sh --field preexisted=false
     fi
     echo "  qmd fork installed and verified ($(qmd_cmd --version 2>/dev/null))."
     return 0
@@ -610,6 +650,9 @@ qmd_register_collection() {
     fi
     return "$add_rc"
   fi
+  _qmd_prov_record "qmd collection '$name'" register collection - \
+    --unit "$name" --post-text "$path" --scope machine --class code \
+    --row qmd-fork --writer qmd-bin.sh --field preexisted=false
   return 0
 }
 

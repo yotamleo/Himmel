@@ -646,6 +646,10 @@ node ~/himmel/scripts/himmelctl/bin.js uninstall</pre>
           that record existed cannot be told apart from your own edits, so
           it is left in place; delete it with git if you do not want it.
           (Copies the record does recognize are removed.)</li>
+          <li>The qmd fork checkout, its bun-global symlink and your vault's
+          index collection &mdash; kept by default; add
+          <span class="mono">--purge-state</span> to remove them, and only
+          the ones install's own record shows it created.</li>
           <li>Caches other tools wrote while himmel ran &mdash; npm's
           <span class="mono">~/.npm/_cacache</span>, node-gyp's
           <span class="mono">~/.cache/node-gyp</span>, bun's
@@ -654,6 +658,11 @@ node ~/himmel/scripts/himmelctl/bin.js uninstall</pre>
           store. They belong to those tools and himmel never recorded them,
           so it will not remove them; clear them with the tool that owns
           them if you want the space back.</li>
+          <li>The fix himmel applies to a broken plugin-cache stub qmd
+          needs &mdash; unlike the qmd fork checkout above, this patch is
+          never reverted, even with <span class="mono">--purge-state</span>:
+          reverting it would restore the original broken stub, not undo an
+          install.</li>
         </ul>
       </div>
     </div>
@@ -1553,7 +1562,8 @@ bash ~/himmel/scripts/adopt.sh --profile core --scope project --dry-run</pre>
     'cadence-codex-sweep': { t: 'Codex sweep cadence', s: 'ship', h:
       '<p>One of the cadences: a cleanup sweep for orphaned codex broker processes. It is offered only if you selected the codex lane.</p>' },
     'qmd': { t: 'qmd vault search', s: 'ship', h:
-      '<p>himmel’s <b>fork of tobi’s qmd</b> search tool. <b>Installed by setup when <span class="mono">bun</span> is present</b>: the CLI is installed and your vault registered as a collection, so semantic search works immediately. The <b>nightly reindex</b> is its own cadence in the pick-list — arm it separately from the pipeline, or search goes stale.</p>' },
+      '<p>himmel’s <b>fork of tobi’s qmd</b> search tool. <b>Installed by setup when <span class="mono">bun</span> is present</b>: the CLI is installed and your vault registered as a collection, so semantic search works immediately. The <b>nightly reindex</b> is its own cadence in the pick-list — arm it separately from the pipeline, or search goes stale.</p>' +
+      '<p>Uninstall keeps it by default; <span class="mono">--purge-state</span> removes it only if install’s own record shows this install created it.</p>' },
     'luna-sources': { t: 'Source connectors', s: 'ship', h:
       '<p>Offered alongside the vault question: connectors the installer can wire up so sources feed the pipeline, rather than being copy-pasted in by hand.</p>' },
     'vault': { t: 'Your Obsidian vault', s: 'ship', h:

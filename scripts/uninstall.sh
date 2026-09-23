@@ -308,6 +308,7 @@ _ix_ucm=$(m_index user-claude-md) || exit 2
 _ix_uam=$(m_index user-agents-md) || exit 2
 _ix_hud=$(m_index hud-config) || exit 2
 _ix_trust=$(m_index workspace-trust) || exit 2
+_ix_qmd=$(m_index qmd-fork) || exit 2
 
 CHANNEL_DIR="$(strip_trailing_slash "$(m_path "$_ix_channel")")"
 BRIDGE_ROOT="$(strip_trailing_slash "$(m_path "$_ix_bridge")")"
@@ -3165,6 +3166,168 @@ if [ "$LEDGER_OK" -eq 1 ]; then
 $_tool_units
 EOF
 fi
+
+# HIMMEL-3332 slice 3 (U24, HIMMEL-3311): row "qmd-fork" folds up to 4
+# himmel-owned units — the fork checkout (kind file, the .himmel-build-ok
+# build stamp, op create), the bun-global symlink (kind symlink), the index
+# collection registration (kind collection, a register kind), and the
+# plugin-cache stub patch (kind file, op replace only — never "create").
+# The manifest class is "state": kept by default (the generic "NOT touched"
+# report below announces that, same as telegram-channel/telegram-bridge —
+# no per-unit line needed here for a default run), and under --purge-state
+# removed only for units this install created. The stub is the one
+# exception: reverting it restores a broken vendor stub, so it is NEVER
+# removed and its kept line prints unconditionally below, in both modes,
+# ledger or not (console ruling on HIMMEL-3332, 2026-09-23).
+qmd_unwire_fork_checkout() {
+  local u="$1" verdict action reason path fork_dir resolved expected
+  verdict=$(prov_read_verdict "$u") || { echo "  WARN: qmd fork checkout: could not read current state" >&2; return 0; }
+  action="${verdict%% *}"; reason="${verdict#* }"
+  path=$(printf '%s' "$u" | jq -r '.path // empty')
+  if [ "$action" != "remove" ] || [ -z "$path" ]; then
+    echo "  kept: ${path:-the qmd fork checkout} ($reason)"
+    prov_read_outcome kept "$u" "$reason"
+    return 0
+  fi
+  fork_dir="$(dirname -- "$path")"
+  expected="$(_qmd_canonical_dir "$(_qmd_fork_dir)" 2>/dev/null)" || expected="$(_qmd_fork_dir)"
+  resolved="$(_qmd_canonical_dir "$fork_dir" 2>/dev/null)" || resolved="$fork_dir"
+  if [ -z "$resolved" ] || [ "$resolved" != "$expected" ] || [ "$resolved" = "$HOME" ] || [ "$resolved" = "/" ]; then
+    echo "  WARN: qmd fork checkout: refusing to remove unexpected path '$fork_dir'" >&2
+    fail_step "qmd-fork ledger remove: unexpected fork checkout path ($fork_dir)"
+    prov_read_outcome failed "$u" "unexpected-path"
+    return 0
+  fi
+  if suspicious_rm_path "$resolved"; then
+    echo "  WARN: qmd fork checkout: refusing suspicious path '$resolved'" >&2
+    fail_step "qmd-fork ledger remove: suspicious fork checkout path ($resolved)"
+    prov_read_outcome failed "$u" "suspicious-path"
+    return 0
+  fi
+  if guarded run rm -rf -- "$resolved"; then
+    [ "$DRY_RUN" -eq 0 ] && echo "  removed: $resolved (qmd fork checkout)"
+    prov_read_outcome removed "$u" "$reason"
+  else
+    echo "  WARN: could not remove $resolved" >&2
+    fail_step "qmd-fork ledger remove: $resolved"
+    prov_read_outcome failed "$u" "step-failed"
+  fi
+}
+
+# qmd_unwire_global_symlink <unit_json> — prov_read_verdict's current-state
+# reader falls back to ABSENT unconditionally for symlink kind (no real
+# support for it), so verdict computation is bypassed entirely here:
+# ownership comes straight from .ops (himmel only ever records "create" for
+# a symlink it made), and the current-state comparison hashes a fresh
+# `readlink` with prov_sha_text and compares it to .eff_post.sha — the
+# ledger itself only ever stored a --post-text SHA, never the literal
+# target string (scripts/lib/provenance.sh _prov_body()).
+qmd_unwire_global_symlink() {
+  local u="$1" path ours cur_target cur_sha post_sha
+  path=$(printf '%s' "$u" | jq -r '.path // empty')
+  if printf '%s' "$u" | jq -e '(.ops // []) | index("create")' >/dev/null 2>&1; then ours=1; else ours=0; fi
+  if [ -z "$path" ]; then
+    echo "  WARN: qmd global symlink: unit has no path" >&2
+    prov_read_outcome kept "$u" "no-path"
+    return 0
+  fi
+  if [ "$ours" -ne 1 ]; then
+    echo "  kept: $path (preexisted)"
+    prov_read_outcome kept "$u" "preexisted"
+    return 0
+  fi
+  if [ ! -L "$path" ]; then
+    echo "  kept: $path (already-absent)"
+    prov_read_outcome kept "$u" "already-absent"
+    return 0
+  fi
+  cur_target="$(readlink -- "$path" 2>/dev/null || true)"
+  cur_sha="$(prov_sha_text "$cur_target")"
+  post_sha=$(printf '%s' "$u" | jq -r '.eff_post.sha // empty')
+  if [ -z "$post_sha" ] || [ "$cur_sha" != "$post_sha" ]; then
+    echo "  kept: $path (user-modified)"
+    prov_read_outcome kept "$u" "user-modified"
+    return 0
+  fi
+  if guarded run rm -f -- "$path"; then
+    [ "$DRY_RUN" -eq 0 ] && echo "  removed: $path (qmd global symlink)"
+    prov_read_outcome removed "$u" "ours"
+  else
+    echo "  WARN: could not remove $path" >&2
+    fail_step "qmd-fork ledger remove: $path"
+    prov_read_outcome failed "$u" "step-failed"
+  fi
+}
+
+# qmd_unwire_collection <unit_json> — "collection" is a register kind, so
+# prov_read_verdict's ownership fast path (.ours from any row with
+# preexisted=false) is genuinely correct here; only the apply step is
+# bespoke, since prov_read_apply supports file/json-key/json-elem only.
+# It has no filesystem path to protect (it calls the qmd CLI, not `rm`), so
+# it goes through `run` only — same as uninstall-plugins.sh's own register-kind
+# removals, never through `guarded` (which requires a `--`-delimited path
+# target and would hard-refuse this call with no path to check).
+qmd_unwire_collection() {
+  local u="$1" verdict action reason name
+  verdict=$(prov_read_verdict "$u") || { echo "  WARN: qmd collection: could not read current state" >&2; return 0; }
+  action="${verdict%% *}"; reason="${verdict#* }"
+  name=$(printf '%s' "$u" | jq -r '.unit // empty')
+  if [ "$action" != "remove" ] || [ -z "$name" ]; then
+    echo "  kept: ${name:-the qmd index collection} ($reason)"
+    prov_read_outcome kept "$u" "$reason"
+    return 0
+  fi
+  if run qmd_cmd collection remove "$name"; then
+    [ "$DRY_RUN" -eq 0 ] && echo "  removed: qmd collection '$name'"
+    prov_read_outcome removed "$u" "$reason"
+  else
+    echo "  WARN: could not remove qmd collection '$name'" >&2
+    fail_step "qmd-fork ledger remove: collection $name"
+    prov_read_outcome failed "$u" "step-failed"
+  fi
+}
+
+# qmd_print_stub_kept_line <unit_json|""> — unconditional (console ruling):
+# the patched plugin-cache stub is never reverted, so this prints in BOTH
+# the default run and --purge-state, ledger or not.
+qmd_print_stub_kept_line() {
+  local u="$1" path=""
+  [ -n "$u" ] && path=$(printf '%s' "$u" | jq -r '.path // empty')
+  if [ -n "$path" ]; then
+    echo "  kept: $path — the qmd plugin stub himmel patched, left in place (reverting it restores a broken vendor stub); it is in ~/.claude/plugins/cache, which himmel does not remove"
+    [ "$LEDGER_OK" -eq 1 ] && prov_read_outcome kept "$u" class-keep
+  else
+    echo "  kept: the qmd plugin stub himmel patched (in ~/.claude/plugins/cache, which himmel does not remove) — reverting it restores a broken vendor stub"
+  fi
+}
+
+echo "[qmd] provenance-recorded qmd install (HIMMEL-3332 U24):"
+# shellcheck source=lib/qmd-bin.sh
+. "$SCRIPT_DIR/lib/qmd-bin.sh"
+_qmd_stub_unit=""
+if [ "$LEDGER_OK" -eq 1 ]; then
+  _qmd_units=$(prov_read_units --row qmd-fork)
+  while IFS= read -r _u; do
+    [ -n "$_u" ] || continue
+    _qkind=$(printf '%s' "$_u" | jq -r '.kind // ""')
+    case "$_qkind" in
+      file)
+        if printf '%s' "$_u" | jq -e '(.ops // []) | index("create")' >/dev/null 2>&1; then
+          [ "$HALTED" -eq 0 ] && class_removes "$_ix_qmd" && qmd_unwire_fork_checkout "$_u"
+        else
+          _qmd_stub_unit="$_u"
+        fi ;;
+      symlink)    [ "$HALTED" -eq 0 ] && class_removes "$_ix_qmd" && qmd_unwire_global_symlink "$_u" ;;
+      collection) [ "$HALTED" -eq 0 ] && class_removes "$_ix_qmd" && qmd_unwire_collection "$_u" ;;
+    esac
+  done <<EOF
+$_qmd_units
+EOF
+elif [ "$PURGE_STATE" -eq 1 ]; then
+  echo "  kept (no ledger): $(_qmd_fork_dir), $(_qmd_global_dir) and its index collection — provenance cannot tell a himmel-created qmd from a pre-existing one without a ledger"
+fi
+qmd_print_stub_kept_line "$_qmd_stub_unit"
+echo ""
 
 # HIMMEL-3332 S6: close the ledger session. On a halt, keep everything —
 # backups and (with --purge-state) the ledger itself — so a retry has the

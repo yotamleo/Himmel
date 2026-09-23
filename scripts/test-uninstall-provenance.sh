@@ -80,6 +80,22 @@ esac
 STUB_EOF
 chmod 755 "$FAKE_CLAUDE"
 
+# fake qmd stub -- qmd_cmd (scripts/lib/qmd-bin.sh) falls back to `qmd` on
+# PATH whenever its bun-direct qmd.js path (BUN_INSTALL, pointed at a fresh
+# scratch dir by run_uninstall) does not exist, so this is always what
+# handles `qmd collection remove` in these tests, real bun on PATH or not.
+FAKE_QMD="$SUITE_TMP/bin/qmd"
+cat > "$FAKE_QMD" <<'QMD_STUB_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "${QMD_CALL_LOG:-/dev/null}"
+case "$*" in
+    'collection remove '*) exit 0 ;;
+    *) exit 2 ;;
+esac
+QMD_STUB_EOF
+chmod 755 "$FAKE_QMD"
+
 # new_case <name> -- fresh scratch HOME/cwd/provenance dir + fresh plugin and
 # marketplace stub state for one case. Sets the CASE_* globals the rest of
 # the case (and run_uninstall) uses.
@@ -96,17 +112,26 @@ new_case() {
   CASE_CLAUDE_LOG="$CASE_DIR/claude.log"; : > "$CASE_CLAUDE_LOG"
   CASE_PLUGINS_JSON="$CASE_DIR/plugins.json"; printf '[]\n' > "$CASE_PLUGINS_JSON"
   CASE_MARKETPLACES_JSON="$CASE_DIR/marketplaces.json"; printf '[]\n' > "$CASE_MARKETPLACES_JSON"
+  # A case that wants a real qmd fixture sets these itself, right after
+  # calling new_case -- unset here so a case that does NOT set them never
+  # inherits a stale dir from an earlier case in the same suite run.
+  unset CASE_QMD_FORK_DIR CASE_BUN_INSTALL
 }
 
 # run_uninstall <uninstall.sh args...> -- the real uninstall.sh, confined to
 # this case's scratch HOME/cwd, with the fake claude first on PATH. Telegram/
 # bridge/himmelctl-cache all point at fresh nonexistent dirs so steps 1-2-8
-# no-op no matter what the case is testing.
+# no-op no matter what the case is testing. QMD_FORK_DIR/BUN_INSTALL default
+# the same way (a case that wants a real qmd fixture sets CASE_QMD_FORK_DIR /
+# CASE_BUN_INSTALL before calling).
 run_uninstall() {
   ( cd "$CASE_DIR/cwd" && \
     HIMMEL_USER_SETTINGS="$CASE_SETTINGS" \
     TELEGRAM_CHANNEL_DIR="$CASE_DIR/no-telegram" BRIDGE_ROOT="$CASE_DIR/no-bridge" \
     HIMMELCTL_CACHE_DIR="$CASE_DIR/no-cache" \
+    QMD_FORK_DIR="${CASE_QMD_FORK_DIR:-$CASE_DIR/no-qmd-fork}" \
+    BUN_INSTALL="${CASE_BUN_INSTALL:-$CASE_DIR/no-bun}" \
+    QMD_CALL_LOG="$CASE_DIR/qmd.log" \
     HIMMEL_PROVENANCE_DIR="$HIMMEL_PROVENANCE_DIR" \
     CLAUDE_CALL_LOG="$CASE_CLAUDE_LOG" STUB_PLUGINS_JSON="$CASE_PLUGINS_JSON" \
     STUB_MARKETPLACES_JSON="$CASE_MARKETPLACES_JSON" \
@@ -548,6 +573,219 @@ cp "$CFG19D" "$SUITE_TMP/red19d-before.json"
 run_uninstall_fx --yes --skip-tasks --skip-plugins --skip-hooks >/dev/null; check "RED19d: uninstall exit status" "$?" "0"
 check "RED19d: with no ledger, the trust key is kept exactly as today" \
   "$(jq -c . "$CFG19D")" "$(jq -c . "$SUITE_TMP/red19d-before.json")"
+
+echo "==== RED20 (HIMMEL-3332 slice3): install-created qmd kept by default, removed under --purge-state; stub never removed ===="
+# Fixture shape mirrors the real prov_record call sites (scripts/lib/qmd-bin.sh
+# lines 595-655, scripts/lib/fix-qmd-stub.sh line 66): fork checkout is a
+# `create file` row on the build stamp, the bun-global link is a `create
+# symlink` row (--post-text stores the target string's SHA, never the
+# literal), the collection is a `register collection` row (path arg `-`,
+# ownership by unit name), and the stub patch is a `replace file` row with
+# --backup that NEVER gates a removal (console ruling, 2026-09-23).
+new_case red20a
+CASE_QMD_FORK_DIR="$CASE_DIR/qmd-fork"
+CASE_BUN_INSTALL="$CASE_DIR/bun"
+mkdir -p "$CASE_QMD_FORK_DIR"
+STAMP20A="$CASE_QMD_FORK_DIR/.himmel-build-ok"; printf 'ok\n' > "$STAMP20A"
+GLOBAL_DIR20A="$CASE_BUN_INSTALL/install/global/node_modules/@tobilu/qmd"
+mkdir -p "$(dirname "$GLOBAL_DIR20A")"
+ln -s "$CASE_QMD_FORK_DIR" "$GLOBAL_DIR20A"
+STUB20A="$CASE_DIR/stub-qmd-20a"; printf 'patched stub\n' > "$STUB20A"
+cp "$STUB20A" "$SUITE_TMP/red20a-stub-before"
+printf 'orig stub\n' > "$SUITE_TMP/red20a-stub-pre"
+( prov_begin --writer install.sh -- seed-red20a >/dev/null
+  prov_record create file "$STAMP20A" --pre-absent --post-file "$STAMP20A" --scope machine --class code \
+    --row qmd-fork --writer qmd-bin.sh --field preexisted=false >/dev/null
+  prov_record create symlink "$GLOBAL_DIR20A" --post-text "$CASE_QMD_FORK_DIR" --scope machine --class code \
+    --row qmd-fork --writer qmd-bin.sh --field preexisted=false >/dev/null
+  prov_record register collection - --unit qmd-vault --post-text "$CASE_QMD_FORK_DIR" --scope machine --class code \
+    --row qmd-fork --writer qmd-bin.sh --field preexisted=false >/dev/null
+  prov_record replace file "$STUB20A" --pre-file "$SUITE_TMP/red20a-stub-pre" --backup --post-file "$STUB20A" \
+    --scope machine --class code --row qmd-fork --writer fix-qmd-stub.sh --field preexisted=false >/dev/null
+  prov_end ok >/dev/null )
+out20a=$(run_uninstall --yes --skip-tasks --skip-plugins --skip-hooks); rc20a=$?
+check "RED20a: uninstall exit status" "$rc20a" "0"
+check "RED20a: default run keeps the fork checkout dir" "$([ -d "$CASE_QMD_FORK_DIR" ] && echo yes || echo no)" "yes"
+check "RED20a: default run keeps the build stamp byte-identical" "$(cat "$STAMP20A" 2>/dev/null)" "ok"
+check "RED20a: default run keeps the global symlink pointed at the fork dir" \
+  "$(readlink "$GLOBAL_DIR20A" 2>/dev/null)" "$CASE_QMD_FORK_DIR"
+check "RED20a: default run never calls qmd collection remove" \
+  "$(grep -c 'collection remove' "$CASE_DIR/qmd.log" 2>/dev/null || echo 0)" "0"
+check "RED20a: default run keeps the stub byte-identical" "$(cat "$STUB20A")" "$(cat "$SUITE_TMP/red20a-stub-before")"
+check "RED20a: stub kept line printed" \
+  "$(printf '%s\n' "$out20a" | grep -c 'qmd plugin stub himmel patched')" "1"
+
+new_case red20b
+CASE_QMD_FORK_DIR="$CASE_DIR/qmd-fork"
+CASE_BUN_INSTALL="$CASE_DIR/bun"
+mkdir -p "$CASE_QMD_FORK_DIR"
+STAMP20B="$CASE_QMD_FORK_DIR/.himmel-build-ok"; printf 'ok\n' > "$STAMP20B"
+GLOBAL_DIR20B="$CASE_BUN_INSTALL/install/global/node_modules/@tobilu/qmd"
+mkdir -p "$(dirname "$GLOBAL_DIR20B")"
+ln -s "$CASE_QMD_FORK_DIR" "$GLOBAL_DIR20B"
+STUB20B="$CASE_DIR/stub-qmd-20b"; printf 'patched stub\n' > "$STUB20B"
+cp "$STUB20B" "$SUITE_TMP/red20b-stub-before"
+printf 'orig stub\n' > "$SUITE_TMP/red20b-stub-pre"
+( prov_begin --writer install.sh -- seed-red20b >/dev/null
+  prov_record create file "$STAMP20B" --pre-absent --post-file "$STAMP20B" --scope machine --class code \
+    --row qmd-fork --writer qmd-bin.sh --field preexisted=false >/dev/null
+  prov_record create symlink "$GLOBAL_DIR20B" --post-text "$CASE_QMD_FORK_DIR" --scope machine --class code \
+    --row qmd-fork --writer qmd-bin.sh --field preexisted=false >/dev/null
+  prov_record register collection - --unit qmd-vault --post-text "$CASE_QMD_FORK_DIR" --scope machine --class code \
+    --row qmd-fork --writer qmd-bin.sh --field preexisted=false >/dev/null
+  prov_record replace file "$STUB20B" --pre-file "$SUITE_TMP/red20b-stub-pre" --backup --post-file "$STUB20B" \
+    --scope machine --class code --row qmd-fork --writer fix-qmd-stub.sh --field preexisted=false >/dev/null
+  prov_end ok >/dev/null )
+out20b=$(run_uninstall --yes --purge-state --skip-tasks --skip-plugins --skip-hooks); rc20b=$?
+check "RED20b: uninstall exit status" "$rc20b" "0"
+check "RED20b: --purge-state removes the fork checkout dir" "$([ -e "$CASE_QMD_FORK_DIR" ] && echo yes || echo no)" "no"
+check "RED20b: --purge-state removes the global symlink" "$([ -L "$GLOBAL_DIR20B" ] && echo yes || echo no)" "no"
+check "RED20b: --purge-state calls qmd collection remove qmd-vault" \
+  "$(grep -c 'collection remove qmd-vault' "$CASE_DIR/qmd.log" 2>/dev/null || echo 0)" "1"
+check "RED20b: --purge-state STILL never touches the stub" "$(cat "$STUB20B")" "$(cat "$SUITE_TMP/red20b-stub-before")"
+check "RED20b: stub kept line still printed under --purge-state" \
+  "$(printf '%s\n' "$out20b" | grep -c 'qmd plugin stub himmel patched')" "1"
+
+echo "==== RED21 (HIMMEL-3332 slice3): pre-existing qmd (no qmd-fork ledger rows) survives both modes byte-identical ===="
+# The real qmd-bin.sh only ever calls _qmd_prov_record when IT created the
+# path (preexisted=false); a pre-existing fork/symlink/collection gets no row
+# at all (scripts/lib/qmd-bin.sh lines 590-657). A ledger session that
+# recorded something unrelated (so LEDGER_OK=1) but nothing for qmd-fork is
+# the realistic pre-existing-qmd shape, not an absent ledger (that is RED22).
+new_case red21a
+CASE_QMD_FORK_DIR="$CASE_DIR/qmd-fork"
+CASE_BUN_INSTALL="$CASE_DIR/bun"
+mkdir -p "$CASE_QMD_FORK_DIR"
+STAMP21A="$CASE_QMD_FORK_DIR/.himmel-build-ok"; printf 'preexisting\n' > "$STAMP21A"
+GLOBAL_DIR21A="$CASE_BUN_INSTALL/install/global/node_modules/@tobilu/qmd"
+mkdir -p "$(dirname "$GLOBAL_DIR21A")"
+ln -s "$CASE_QMD_FORK_DIR" "$GLOBAL_DIR21A"
+STUB21A="$CASE_DIR/stub-qmd-21a"; printf 'preexisting stub\n' > "$STUB21A"
+cp "$STUB21A" "$SUITE_TMP/red21a-stub-before"
+( prov_begin --writer install.sh -- seed-red21a >/dev/null
+  prov_record noop json-key "$CASE_SETTINGS" --unit '/unrelated' --scope user --class code --row user-settings \
+    --writer install.sh --pre-json 'null' --post-json 'null' --field preexisted=true >/dev/null
+  prov_end ok >/dev/null )
+out21a=$(run_uninstall --yes --skip-tasks --skip-plugins --skip-hooks); rc21a=$?
+check "RED21a: uninstall exit status" "$rc21a" "0"
+check "RED21a: default run keeps the fork checkout stamp byte-identical" "$(cat "$STAMP21A")" "preexisting"
+check "RED21a: default run keeps the global symlink pointed at the fork dir" \
+  "$(readlink "$GLOBAL_DIR21A" 2>/dev/null)" "$CASE_QMD_FORK_DIR"
+check "RED21a: default run keeps the stub byte-identical" "$(cat "$STUB21A")" "$(cat "$SUITE_TMP/red21a-stub-before")"
+check "RED21a: stub kept line printed" \
+  "$(printf '%s\n' "$out21a" | grep -c 'qmd plugin stub himmel patched')" "1"
+
+new_case red21b
+CASE_QMD_FORK_DIR="$CASE_DIR/qmd-fork"
+CASE_BUN_INSTALL="$CASE_DIR/bun"
+mkdir -p "$CASE_QMD_FORK_DIR"
+STAMP21B="$CASE_QMD_FORK_DIR/.himmel-build-ok"; printf 'preexisting\n' > "$STAMP21B"
+GLOBAL_DIR21B="$CASE_BUN_INSTALL/install/global/node_modules/@tobilu/qmd"
+mkdir -p "$(dirname "$GLOBAL_DIR21B")"
+ln -s "$CASE_QMD_FORK_DIR" "$GLOBAL_DIR21B"
+STUB21B="$CASE_DIR/stub-qmd-21b"; printf 'preexisting stub\n' > "$STUB21B"
+cp "$STUB21B" "$SUITE_TMP/red21b-stub-before"
+( prov_begin --writer install.sh -- seed-red21b >/dev/null
+  prov_record noop json-key "$CASE_SETTINGS" --unit '/unrelated' --scope user --class code --row user-settings \
+    --writer install.sh --pre-json 'null' --post-json 'null' --field preexisted=true >/dev/null
+  prov_end ok >/dev/null )
+out21b=$(run_uninstall --yes --purge-state --skip-tasks --skip-plugins --skip-hooks); rc21b=$?
+check "RED21b: uninstall exit status" "$rc21b" "0"
+check "RED21b: --purge-state still keeps a pre-existing fork checkout stamp byte-identical" "$(cat "$STAMP21B")" "preexisting"
+check "RED21b: --purge-state still keeps the global symlink pointed at the fork dir" \
+  "$(readlink "$GLOBAL_DIR21B" 2>/dev/null)" "$CASE_QMD_FORK_DIR"
+check "RED21b: --purge-state never calls qmd collection remove for an unrecorded collection" \
+  "$(grep -c 'collection remove' "$CASE_DIR/qmd.log" 2>/dev/null || echo 0)" "0"
+check "RED21b: --purge-state still keeps the stub byte-identical" "$(cat "$STUB21B")" "$(cat "$SUITE_TMP/red21b-stub-before")"
+check "RED21b: stub kept line still printed under --purge-state" \
+  "$(printf '%s\n' "$out21b" | grep -c 'qmd plugin stub himmel patched')" "1"
+
+echo "==== RED22 (HIMMEL-3332 slice3): no ledger at all -- --purge-state keeps qmd, it cannot tell installed from pre-existing ===="
+new_case red22
+CASE_QMD_FORK_DIR="$CASE_DIR/qmd-fork"
+CASE_BUN_INSTALL="$CASE_DIR/bun"
+mkdir -p "$CASE_QMD_FORK_DIR"
+STAMP22="$CASE_QMD_FORK_DIR/.himmel-build-ok"; printf 'no-ledger\n' > "$STAMP22"
+GLOBAL_DIR22="$CASE_BUN_INSTALL/install/global/node_modules/@tobilu/qmd"
+mkdir -p "$(dirname "$GLOBAL_DIR22")"
+ln -s "$CASE_QMD_FORK_DIR" "$GLOBAL_DIR22"
+STUB22="$CASE_DIR/stub-qmd-22"; printf 'no-ledger stub\n' > "$STUB22"
+cp "$STUB22" "$SUITE_TMP/red22-stub-before"
+# no prov_begin/prov_record/prov_end at all -- a pre-ledger install.
+out22=$(run_uninstall --yes --purge-state --skip-tasks --skip-plugins --skip-hooks); rc22=$?
+check "RED22: uninstall exit status" "$rc22" "0"
+check "RED22: --purge-state with no ledger keeps the fork checkout stamp byte-identical" "$(cat "$STAMP22")" "no-ledger"
+check "RED22: --purge-state with no ledger keeps the global symlink pointed at the fork dir" \
+  "$(readlink "$GLOBAL_DIR22" 2>/dev/null)" "$CASE_QMD_FORK_DIR"
+check "RED22: --purge-state with no ledger never calls qmd collection remove" \
+  "$(grep -c 'collection remove' "$CASE_DIR/qmd.log" 2>/dev/null || echo 0)" "0"
+check "RED22: --purge-state with no ledger keeps the stub byte-identical" "$(cat "$STUB22")" "$(cat "$SUITE_TMP/red22-stub-before")"
+check "RED22: no-ledger kept message printed" \
+  "$(printf '%s\n' "$out22" | grep -c 'provenance cannot tell a himmel-created qmd')" "1"
+check "RED22: stub kept line printed" \
+  "$(printf '%s\n' "$out22" | grep -c 'qmd plugin stub himmel patched')" "1"
+
+echo "==== RED23 (HIMMEL-3332 slice3 console ruling 1): a redirected/tampered fork-checkout stamp path is refused, never rm -rf'd ===="
+# The ledger's recorded path for the qmd-fork file-create row resolves
+# OUTSIDE the expected fork dir (QMD_FORK_DIR at record time != at uninstall
+# time, or a tampered row) -- qmd_unwire_fork_checkout must refuse rather
+# than rm -rf whatever dirname(path) turns out to be.
+new_case red23
+CASE_QMD_FORK_DIR="$CASE_DIR/qmd-fork"
+CASE_BUN_INSTALL="$CASE_DIR/bun"
+mkdir -p "$CASE_QMD_FORK_DIR"
+DECOY23="$CASE_DIR/decoy-dir"
+mkdir -p "$DECOY23"
+STAMP23="$DECOY23/.himmel-build-ok"; printf 'decoy\n' > "$STAMP23"
+( prov_begin --writer install.sh -- seed-red23 >/dev/null
+  prov_record create file "$STAMP23" --pre-absent --post-file "$STAMP23" --scope machine --class code \
+    --row qmd-fork --writer qmd-bin.sh --field preexisted=false >/dev/null
+  prov_end ok >/dev/null )
+out23=$(run_uninstall --yes --purge-state --skip-tasks --skip-plugins --skip-hooks); rc23=$?
+check "RED23: uninstall reports incomplete (halted) rather than a silent success" "$rc23" "2"
+check "RED23: the decoy dir is NOT removed" "$([ -d "$DECOY23" ] && echo yes || echo no)" "yes"
+check "RED23: the decoy stamp survives byte-identical" "$(cat "$STAMP23" 2>/dev/null)" "decoy"
+check "RED23: a refusal warning is printed" \
+  "$(printf '%s\n' "$out23" | grep -c 'refusing to remove unexpected path')" "1"
+
+echo "==== RED24 (HIMMEL-3332 slice3 console ruling 1): a noop (not create) fork-checkout row keeps the dir even under --purge-state ===="
+new_case red24
+CASE_QMD_FORK_DIR="$CASE_DIR/qmd-fork"
+CASE_BUN_INSTALL="$CASE_DIR/bun"
+mkdir -p "$CASE_QMD_FORK_DIR"
+STAMP24="$CASE_QMD_FORK_DIR/.himmel-build-ok"; printf 'noop\n' > "$STAMP24"
+( prov_begin --writer install.sh -- seed-red24 >/dev/null
+  prov_record noop file "$STAMP24" --pre-file "$STAMP24" --post-file "$STAMP24" --scope machine --class code \
+    --row qmd-fork --writer qmd-bin.sh --field preexisted=true >/dev/null
+  prov_end ok >/dev/null )
+out24=$(run_uninstall --yes --purge-state --skip-tasks --skip-plugins --skip-hooks); rc24=$?
+check "RED24: uninstall exit status" "$rc24" "0"
+check "RED24: a noop row keeps the fork checkout dir under --purge-state" "$([ -d "$CASE_QMD_FORK_DIR" ] && echo yes || echo no)" "yes"
+check "RED24: a noop row keeps the stamp byte-identical" "$(cat "$STAMP24" 2>/dev/null)" "noop"
+check "RED24: a noop row is reported kept, not removed" \
+  "$(printf '%s\n' "$out24" | grep -c 'removed:.*qmd fork checkout')" "0"
+
+echo "==== RED25 (HIMMEL-3332 slice3 console ruling 1): a file-create row under a DIFFERENT row id is never touched by qmd dirname-removal ===="
+# prov_read_units --row qmd-fork scopes the whole qmd unwire loop; a row filed
+# under any other id must never reach qmd_unwire_fork_checkout, no matter its
+# kind or ops. Prove it with a decoy dir that a matching bug WOULD remove.
+new_case red25
+CASE_QMD_FORK_DIR="$CASE_DIR/qmd-fork"
+CASE_BUN_INSTALL="$CASE_DIR/bun"
+mkdir -p "$CASE_QMD_FORK_DIR"
+OTHERROW25="$CASE_DIR/other-row-dir"
+mkdir -p "$OTHERROW25"
+STAMP25="$OTHERROW25/.himmel-build-ok"; printf 'other-row\n' > "$STAMP25"
+( prov_begin --writer install.sh -- seed-red25 >/dev/null
+  prov_record create file "$STAMP25" --pre-absent --post-file "$STAMP25" --scope machine --class code \
+    --row not-qmd-fork --writer qmd-bin.sh --field preexisted=false >/dev/null
+  prov_end ok >/dev/null )
+out25=$(run_uninstall --yes --purge-state --skip-tasks --skip-plugins --skip-hooks); rc25=$?
+check "RED25: uninstall exit status" "$rc25" "0"
+check "RED25: a file row under a different row id is never removed" "$([ -d "$OTHERROW25" ] && echo yes || echo no)" "yes"
+check "RED25: its stamp survives byte-identical" "$(cat "$STAMP25" 2>/dev/null)" "other-row"
+check "RED25: the qmd unwire loop never even mentions the other-row path" \
+  "$(printf '%s\n' "$out25" | grep -c "$OTHERROW25")" "0"
 
 echo "==== REAL-LEDGER TRIPWIRE ===="
 REAL_LEDGER_AFTER=$(real_ledger_state)

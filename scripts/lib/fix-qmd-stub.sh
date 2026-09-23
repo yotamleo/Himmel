@@ -48,6 +48,29 @@ set -uo pipefail
 CACHE_ROOT="$HOME/.claude/plugins/cache"
 DRY_RUN=0
 
+# _fixqmdstub_prov_record <stub> <pre-content-file> -- records a `file
+# replace` provenance row for a stub this run just patched (HIMMEL-3332
+# slice 3), so a ledger-mode uninstall knows himmel wrote it -- it is never
+# reverted (that would restore the broken vendor stub), but the ledger row
+# lets uninstall print an honest kept line instead of staying silent.
+# Best-effort, mirrors cadence_prov_record (HIMMEL-3332 S8,
+# scripts/lib/cadence-format.sh): this script runs standalone (`bash
+# fix-qmd-stub.sh`, never sourced), so it sources provenance.sh itself,
+# lazily, in a subshell.
+_fixqmdstub_prov_record() {
+  local stub="$1" pre="$2" lib
+  lib="$(dirname "${BASH_SOURCE[0]}")/provenance.sh"
+  [ -r "$lib" ] || return 0
+  # shellcheck source=scripts/lib/provenance.sh
+  if ! ( . "$lib" \
+          && prov_record replace file "$stub" --pre-file "$pre" --backup --post-file "$stub" \
+              --scope machine --class code --row qmd-fork --writer fix-qmd-stub.sh \
+              --field preexisted=false ) >/dev/null 2>&1; then
+    echo "  WARNING: could not record the qmd stub patch in the provenance ledger." >&2
+  fi
+  return 0
+}
+
 usage() {
   cat <<'EOF'
 Usage: bash scripts/lib/fix-qmd-stub.sh [--cache-root PATH] [--dry-run]
@@ -237,13 +260,24 @@ for stub in "${stubs[@]}"; do
       echo "  note: $stub differs from existing $stub.orig (upstream rewrote the stub in this version dir?); keeping the existing backup — the current stub content is NOT preserved"
     fi
   fi
+  # Snapshot the content this write is about to replace (the pre-patch
+  # original in the common case, or the corrupted half-patch when
+  # re-patching) so the provenance row's --pre-file reflects what THIS write
+  # actually changed, not stale .orig content from an earlier install.
+  _prov_pre="$(mktemp 2>/dev/null)" || _prov_pre=""
+  if [ -n "$_prov_pre" ] && ! cp -- "$stub" "$_prov_pre" 2>/dev/null; then
+    _prov_pre=""
+  fi
   if write_patched_stub "$stub"; then
     echo "  patched: $stub (original at $stub.orig)"
     patched=$((patched+1))
+    [ -n "$_prov_pre" ] && _fixqmdstub_prov_record "$stub" "$_prov_pre"
   else
     echo "  ERR fix-qmd-stub: write failed: $stub" >&2
     failed=$((failed+1))
   fi
+  [ -n "$_prov_pre" ] && rm -f -- "$_prov_pre"
+  _prov_pre=""
 done
 
 echo "fix-qmd-stub: patched=$patched healthy=$healthy already-patched=$already failed=$failed"
