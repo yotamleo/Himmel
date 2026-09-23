@@ -93,6 +93,14 @@ else
     _fail "$NAME" "gh calls=[$(cat "$GH_CALLS")]"
 fi
 
+# Without this, a removed uniqueness guard would pass the no-gh-call check above.
+NAME="the uniqueness guard ran and took its fail-open forge-unreachable branch"
+if grep -Fq "WARN new-worktree: uniqueness-vs-merged-PR check skipped (forge unreachable)" "$err_f"; then
+    _pass "$NAME"
+else
+    _fail "$NAME" "stderr=[$(cat "$err_f")]"
+fi
+
 NAME="new branch's tracking config points at its OWN future remote ref, not origin/<default>"
 got_remote="$(git -C "$WT_PATH" config --get "branch.${BRANCH}.remote" || echo '(unset)')"
 got_merge="$(git -C "$WT_PATH" config --get "branch.${BRANCH}.merge" || echo '(unset)')"
