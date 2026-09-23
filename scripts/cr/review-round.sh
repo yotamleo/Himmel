@@ -230,16 +230,31 @@ function isAncestorOfHead(commit) {
   }
   return ancestorCache.get(h);
 }
-// Merge every amend.set for a (target_head, finding_id, artifact, perspective)
-// key in ledger (chronological) order — a later amend field wins, a field a
-// later amend never touched keeps its earlier value. Same shape as
-// ledger-append.shs own amendsByKey/effective().
+// Merge every amend.set for a (branch, target_head, finding_id, artifact,
+// perspective) key in ledger (chronological) order — a later amend field
+// wins, a field a later amend never touched keeps its earlier value. Same
+// shape as ledger-append.shs own amendsByKey/effective().
+// HIMMEL-3461: the key gains branch, matching ledger-append.sh,
+// clear-cr-marker.sh and handover-bridge.sh byte-for-byte (HIMMEL-2405). Two
+// branches can legitimately sit at the same head (HIMMEL-1175), and finding
+// ids are minted in per-producer stream order (not globally unique), so an
+// amend recorded while judging one branch must never leak into this gate
+// judgment of another. A legacy amend row with an empty branch (written
+// before branches were stamped) still applies to ANY branch — looked up
+// through the same "" bucket every branch checks, merged under whatever
+// branch-specific amend exists (branch-specific merges LAST and wins field
+// conflicts, since every branch-specific amend post-dates the legacy ones).
 const amendsByKey = new Map();
 for (const o of rows) {
   if (o.kind !== "amend" || !o.set || typeof o.set !== "object") continue;
-  const k = [o.target_head, o.finding_id, o.artifact || "diff", o.perspective || "off"].join(SEP);
+  const k = [o.branch || "", o.target_head, o.finding_id, o.artifact || "diff", o.perspective || "off"].join(SEP);
   amendsByKey.set(k, Object.assign({}, amendsByKey.get(k) || {}, o.set));
 }
+const amendSetFor = (branch, head, id, artifact, perspective) => {
+  const legacy = amendsByKey.get(["", head, id, artifact, perspective].join(SEP));
+  const scoped = amendsByKey.get([branch || "", head, id, artifact, perspective].join(SEP));
+  return (legacy || scoped) ? Object.assign({}, legacy || {}, scoped || {}) : null;
+};
 const findingRows = rows.filter((o) => o.kind === "finding" && o.branch === e.BRANCH);
 const atHead = findingRows.filter((o) => resolvesToHead(o.head));
 // Only a LIVE occurrence at --head is a genuine re-raise (codex-2, HIMMEL-2911
@@ -255,7 +270,7 @@ const fpAtHead = new Map();
 for (const o of atHead) {
   if (!o.fingerprint) continue;
   const idKey = [o.head, o.finding_id, o.artifact || "diff", o.perspective || "off"].join(SEP);
-  const effectiveAtHead = Object.assign({}, o, amendsByKey.get(idKey) || {});
+  const effectiveAtHead = Object.assign({}, o, amendSetFor(o.branch || "", o.head, o.finding_id, o.artifact || "diff", o.perspective || "off") || {});
   if (!liveVerdicts.has(String(effectiveAtHead.verdict || "").trim())) continue;
   if (!fpAtHead.has(o.fingerprint)) fpAtHead.set(o.fingerprint, new Set());
   fpAtHead.get(o.fingerprint).add(idKey);
@@ -263,7 +278,7 @@ for (const o of atHead) {
 const outLines = [];
 for (const row of findingRows) {
   const idKey = [row.head, row.finding_id, row.artifact || "diff", row.perspective || "off"].join(SEP);
-  const effective = Object.assign({}, row, amendsByKey.get(idKey) || {});
+  const effective = Object.assign({}, row, amendSetFor(row.branch || "", row.head, row.finding_id, row.artifact || "diff", row.perspective || "off") || {});
   const verdict = String(effective.verdict || "").trim();
   let action;
   if (verdict === "fixed" || verdict === "disproved" || verdict === "deferred") action = "skip-terminal";
