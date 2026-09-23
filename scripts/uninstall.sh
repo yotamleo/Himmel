@@ -3584,8 +3584,10 @@ if [ "$PURGE_STATE" -eq 1 ] && [ "$HALTED" -eq 0 ] && command -v jq >/dev/null 2
   if [ -d "$_bundle_dir" ] && [ ! -L "$_bundle_dir" ] && [ -f "$_bundle_dir/bundle.json" ] \
       && jq -e --arg m "$BUNDLE_MARKER" '.marker == $m' "$_bundle_dir/bundle.json" >/dev/null 2>&1; then
     echo "  removing the standalone uninstaller bundle: $_bundle_dir"
-    guarded run rm -rf -- "$_bundle_dir"
-    exit "$?"
+    # the group must be parsed whole before rm runs: rm deletes this running
+    # script's own bundle, and a second line read after that would be read
+    # from a file that no longer exists.
+    { guarded run rm -rf -- "$_bundle_dir"; exit $?; }
   elif [ -e "$_bundle_dir" ]; then
     echo "  kept: not himmel's ($_bundle_dir)"
   fi
