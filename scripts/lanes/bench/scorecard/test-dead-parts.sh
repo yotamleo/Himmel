@@ -110,6 +110,14 @@ check_contains "basic: precedence - a script referenced by BOTH a test file and 
 check_contains "basic: a script referenced only from a .spec.* file lands TEST-ONLY (codex-3 .spec.* naming fix)" \
     "$OUT" $'script\tspec-testonly\tscripts/spec-testonly.sh\tTEST-ONLY'
 dead_section=$(printf '%s\n' "$OUT" | sed -n '/^--- DEAD /,/^--- DOC-ONLY /p')
+# codex-2 (round 12): a `grep -q` miss on an EMPTY $dead_section (e.g. the
+# `--- DEAD ` header text drifted, breaking the sed range extraction) is
+# indistinguishable from a genuine absence - guard that the section was
+# actually extracted before trusting the negative assertion below.
+if ! printf '%s\n' "$dead_section" | grep -q 'qux-deadd'; then
+    echo "FAIL - precedence: DEAD section extraction is broken (missing known DEAD entry qux-deadd) - the precedence-test absence check below would be vacuous"
+    fails=$((fails + 1))
+fi
 if printf '%s\n' "$dead_section" | grep -q 'precedence-test'; then
     echo "FAIL - precedence: precedence-test.sh must not appear in the DEAD list"
     fails=$((fails + 1))
