@@ -544,6 +544,8 @@ FXT_FIXTURE="$tmpdir/fixture-unmarked-status.json" FXT_THREAD_FIXTURE="$tmpdir/f
     node "$SCRIPT" --vault "$unmarked_vault_b" --limit 1 >"$tmpdir/t14b.out" 2>&1
 t14b_flag=no; grep -q "needs_thread:" "$unmarked_vault_b/Clippings/unmarked-clip-b.md" 2>/dev/null && t14b_flag=yes
 assert "Test14B: thread API single-post -> needs_thread NOT set" "no" "$t14b_flag"
+t14b_ok=no; grep -q "enrichment_status: ok" "$unmarked_vault_b/Clippings/unmarked-clip-b.md" 2>/dev/null && t14b_ok=yes
+assert "Test14B: clip still enriches normally on single-post thread" "yes" "$t14b_ok"
 
 # Case C: thread API errors -> fail open (no needs_thread, no crash, clip still
 # enriched normally).
