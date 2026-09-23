@@ -103,7 +103,7 @@ touch "$STAMP" 2>/dev/null || true
 # operator's current project, which is usually some other git repo).
 SELF_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd) || SELF_ROOT=""
 if [ -n "$SELF_ROOT" ] && [ ! -e "$SELF_ROOT/.git" ]; then
-    ROUTE="update through the package manager that installed it (Arch: pacman -Syu himmel), or download the next release tarball, verify its checksum and re-extract it over $SELF_ROOT"
+    ROUTE="update through the package manager that installed it (Arch: pacman -Syu himmel), or download the next release tarball from the releases page, verify its sha256 checksum and extract it into a fresh directory (or remove $SELF_ROOT first) — extracting over the existing tree keeps files the new release deleted"
     FIRST="$STATE_DIR/himmel-update-check-first"   # mtime = the first check ever made here
     CACHE="$STATE_DIR/himmel-latest-release"      # mtime = last DEFINITE answer; one line
     [ -f "$FIRST" ] || touch "$FIRST" 2>/dev/null || true
