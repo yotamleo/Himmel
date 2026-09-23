@@ -138,7 +138,7 @@ else
         fi
         case "$record" in *none*) [ "$record" = none ] || { fail "M1 $id: 'none' must stand alone in record"; m1_ok=0; } ;; esac
         case "$class" in code|state|keep) ;; *) fail "M1 $id: bad class '$class'"; m1_ok=0 ;; esac
-        case "$kind" in dir|settings|githooks|process|jobs|plugins|marketplaces|file) ;; *) fail "M1 $id: bad kind '$kind'"; m1_ok=0 ;; esac
+        case "$kind" in dir|settings|githooks|process|jobs|plugins|marketplaces|file|tree) ;; *) fail "M1 $id: bad kind '$kind'"; m1_ok=0 ;; esac
         case "$step" in [1-8]|-) ;; *) fail "M1 $id: bad step '$step'"; m1_ok=0 ;; esac
         [ "$class" = keep ] && [ "$step" != - ] && { fail "M1 $id: a keep row has a step"; m1_ok=0; }
         [ "$class" != keep ] && [ "$step" = - ] && { fail "M1 $id: a non-keep row has no step"; m1_ok=0; }
@@ -227,6 +227,7 @@ w1_writer provenance-ledger scripts/lib/provenance.sh
 w1_writer workspace-trust scripts/himmelctl/bin.js
 w1_writer adopter-scripts scripts/adopt.sh
 w1_writer himmel-clone scripts/himmelctl/bin.js
+w1_writer standalone-uninstaller "PENDING(HIMMEL-3312 S13 — bundle writer not built yet)"
 # Coverage: a manifest row added later with record != none and no w1_writer
 # call above must fail here, not pass silently by never being checked.
 w1_missing=""
