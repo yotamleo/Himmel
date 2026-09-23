@@ -31,10 +31,11 @@
 # its own lifetime is a faithful proxy for the window's -- the same guarantee
 # --separate buys on KDE.
 #
-# App resolution mirrors arm-resume.sh's (ARM_TERMINAL_APP / ARM_APP_DIRS,
-# including $HOME/Applications where a user-installed iTerm typically lives),
-# deliberately reusing those variable names rather than inventing a second
-# vocabulary for the same decision. A missing app WARNs and falls back to
+# App resolution (ARM_TERMINAL_APP / ARM_APP_DIRS, including
+# $HOME/Applications where a user-installed iTerm typically lives) is shared
+# with arm-resume.sh's own macOS headed launch via
+# scripts/lib/macos-app-resolve.sh (HIMMEL-3474) -- one copy of the decision
+# instead of two drifting apart. A missing app WARNs and falls back to
 # Terminal.app, which is present on every Mac -- fail open, never refuse a
 # launch over a bad app name.
 #
@@ -42,8 +43,8 @@
 # 0.1s ticks the pid wait below allows (default 200 = 20s, which covers a
 # COLD app launch - measured ~16s for a first-ever iTerm start on the
 # HIMMEL-2534 station, ~1s warm), so a suite can exercise the timeout path
-# without paying it. ARM_TERMINAL_APP / ARM_APP_DIRS are arm-resume.sh's own
-# app-resolution seams, reused here deliberately (see below).
+# without paying it. ARM_TERMINAL_APP / ARM_APP_DIRS are the shared
+# macos-app-resolve.sh's own seams, reused here deliberately (see below).
 #
 # Exit codes: 0 the launched command exited 0; its own rc when it exited
 # nonzero; 2 usage / bad argv; 3 nothing launched (`open` itself failed, or
@@ -55,6 +56,10 @@
 # session - deliberate, see codex-review S8), or its startup ack could not be
 # written; a body runs its command only after that ack (HIMMEL-3484).
 set -u
+
+# HIMMEL-3474: shared with arm-resume.sh's own macOS headed launch -- one
+# copy of the ARM_TERMINAL_APP / ARM_APP_DIRS resolution instead of two.
+. "$(cd "$(dirname "$0")" && pwd)/../lib/macos-app-resolve.sh"
 
 WORKDIR=""
 TABTITLE=""
@@ -105,7 +110,8 @@ if [ -n "$WORKDIR" ] && [ ! -d "$WORKDIR" ]; then
 fi
 
 # Same resolution order, variable names and fail-open policy as
-# arm-resume.sh's macOS headed launch -- one vocabulary for one decision.
+# arm-resume.sh's macOS headed launch -- one vocabulary for one decision,
+# shared via scripts/lib/macos-app-resolve.sh (HIMMEL-3474).
 # codex-review S10: arm-resume.sh documents ARM_TERMINAL_APP=none as "opt out
 # to a headless inline launch". This launcher exists solely to give the
 # session a TTY, so it has no headless mode to opt into -- treating "none" as
@@ -116,30 +122,7 @@ if [ "${ARM_TERMINAL_APP:-}" = "none" ]; then
     echo "konsole-macos: ARM_TERMINAL_APP=none is not supported here - headed-arm needs a real TTY, so this launcher has no headless mode (arm-resume.sh's crontab arms are the path that does)" >&2
     exit 2
 fi
-if [ -n "${ARM_TERMINAL_APP:-}" ]; then
-    TERM_APP="$ARM_TERMINAL_APP"
-else
-    case "${TERM_PROGRAM:-}" in
-        iTerm.app)      TERM_APP="iTerm" ;;
-        Apple_Terminal) TERM_APP="Terminal" ;;
-        *)              TERM_APP="Terminal" ;;
-    esac
-fi
-# Plain filesystem probe, never `open -Ra`: -R REVEALS the app in Finder as a
-# side effect (arm-resume.sh's note), which is not acceptable on every launch.
-APP_DIRS="${ARM_APP_DIRS:-/Applications:/Applications/Utilities:/System/Applications:/System/Applications/Utilities:$HOME/Applications}"
-_app_found=0
-_IFS_SAVE="$IFS"
-IFS=:
-for _app_dir in $APP_DIRS; do
-    [ -n "$_app_dir" ] || continue
-    [ -d "$_app_dir/$TERM_APP.app" ] && { _app_found=1; break; }
-done
-IFS="$_IFS_SAVE"
-if [ "$_app_found" -ne 1 ]; then
-    echo "WARN konsole-macos: terminal app '$TERM_APP' not found under ARM_APP_DIRS; falling back to Terminal" >&2
-    TERM_APP="Terminal"
-fi
+TERM_APP="$(macos_resolve_term_app konsole-macos)"
 
 # Startup budget: the window has to come up and the body has to reach its
 # `echo $$`. 20s is generous for a cold app launch and still bounded, so a

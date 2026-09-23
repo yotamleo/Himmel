@@ -24,7 +24,9 @@
 #
 # Seams used (see headed-arm.sh's own header): KONSOLE_CMD / PGREP_CMD point
 # at stub binaries this suite writes per case; HEADED_ARM_REPO points at a
-# throwaway repo dir so `cd "$REPO"` never touches the real checkout.
+# throwaway repo dir so `cd "$REPO"` never touches the real checkout;
+# HEADED_ARM_UNAME pins the platform read (default `uname -s`) that picks
+# konsole vs. the macOS shim, so the macOS branch is exercised here too.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"; SCRIPT="$HERE/headed-arm.sh"
@@ -1813,6 +1815,24 @@ wait_record "$d43b" || true
 [ -e "$d43b/record" ] && echo "ok - 43b Linux default: the bare konsole on PATH is what launched" \
   || { echo "FAIL - 43b Linux default: the konsole on PATH was never invoked"; fails=$((fails+1)); }
 not_contains "43b Linux default: never mentions the macOS shim" "$out43b" "konsole-macos.sh"
+
+# 43c. HIMMEL-3474: HEADED_ARM_UNAME's own chosen contract, distinct from
+# every other case above (all of which pin it explicitly) -- with the var
+# genuinely UNSET, headed-arm.sh must fall back to the real `uname -s`, not
+# to some hardcoded platform. This runner is Linux, so the unset default must
+# behave identically to case 43b's explicit HEADED_ARM_UNAME=Linux: the seam
+# is additive (a test convenience), never a behavior change from the
+# production default.
+d43c="$tmp/c43c"; mkdir -p "$d43c/bare" "$d43c/lib"
+cp "$SCRIPT" "$d43c/bare/headed-arm.sh"
+cp "$HERE/../lib/console-context.sh" "$d43c/lib/console-context.sh"
+mk_stub "$d43c" 1 alive
+out43c=$(env -u KONSOLE_CMD -u HEADED_ARM_UNAME PATH="$d43c:$PATH" PGREP_CMD="$d43c/pgrep" HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$d43c/locks" \
+  bash "$d43c/bare/headed-arm.sh" "HIMMEL-mac43c" "doc43c.md" "$d43c/signal-never" "$PAST" "$d43c/log" 2>&1)
+wait_record "$d43c" || true
+[ -e "$d43c/record" ] && echo "ok - 43c HEADED_ARM_UNAME unset: the real uname's bare konsole on PATH is what launched" \
+  || { echo "FAIL - 43c HEADED_ARM_UNAME unset: the konsole on PATH was never invoked"; fails=$((fails+1)); }
+not_contains "43c HEADED_ARM_UNAME unset: never mentions the macOS shim on this (Linux) runner" "$out43c" "konsole-macos.sh"
 
 # --- 41. HIMMEL-2534 (codex-review C1, CRITICAL): the post-launch visibility
 # budget was 5s, sized for konsole. The macOS launcher has to bring an app up

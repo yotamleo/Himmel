@@ -265,6 +265,32 @@ assert_contains "a-headed: dry-run names the headed execution shape" "headed lau
 assert_contains "a-headed: headed launch still resolves claude absolutely" "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 HIMMEL_ARMED_RELAUNCH=1 && $EXPECTED_CLAUDE_Q " "$out"
 assert_not_contains "a-headed: RED CONTROL — headed .command body carries no stdin/log redirect" "< /dev/null" "$out"
 
+# ---------------------------------------------------------------------------
+# (a-appresolve) HIMMEL-3474: arm-resume.sh's headed macOS launch resolves
+# ARM_TERMINAL_APP / ARM_APP_DIRS through the SAME shared
+# scripts/lib/macos-app-resolve.sh konsole-macos.sh uses (see
+# scripts/handover/test-konsole-macos.sh's own cases 5a-5c for that caller).
+# Nothing exercised the fail-open-to-Terminal.app case through THIS caller
+# before -- these two rows pin behavior-equivalence: same resolution order,
+# same WARN text, same fallback, through both callers of one function.
+# ---------------------------------------------------------------------------
+appdirs="$TMP/apps"; mkdir -p "$appdirs/iTerm.app" "$appdirs/Terminal.app"
+HO_APP1=$(make_handover)
+out=$(env PATH="$MACBIN:$PATH" OSTYPE="darwin23" ARM_TERMINAL_APP=iTerm ARM_APP_DIRS="$appdirs" \
+  bash "$ARM" --time "$(future_time)" --handover "$HO_APP1" --dry-run 2>&1)
+rc=$?
+assert_rc "a-appresolve: existing app dry-run exits 0" 0 "$rc"
+assert_contains "a-appresolve: ARM_TERMINAL_APP wins when the app exists" "headed launch via 'open -a iTerm'" "$out"
+assert_not_contains "a-appresolve: no WARN when the app exists" "WARN arm-resume: terminal app" "$out"
+
+HO_APP2=$(make_handover)
+out=$(env PATH="$MACBIN:$PATH" OSTYPE="darwin23" ARM_TERMINAL_APP=Ghostty ARM_APP_DIRS="$appdirs" \
+  bash "$ARM" --time "$(future_time)" --handover "$HO_APP2" --dry-run 2>&1)
+rc=$?
+assert_rc "a-appresolve: missing app dry-run still exits 0 (fail open)" 0 "$rc"
+assert_contains "a-appresolve: missing app WARNs, same text as konsole-macos.sh's own" "WARN arm-resume: terminal app 'Ghostty' not found under ARM_APP_DIRS; falling back to Terminal" "$out"
+assert_contains "a-appresolve: missing app falls open to Terminal.app" "headed launch via 'open -a Terminal'" "$out"
+
 # (a-long) empirical proof of the actual bug fix: an artificially long
 # handover PATH (~950 chars, built as nested subdirs to stay under each
 # filesystem's per-component NAME_MAX) would, under the OLD design

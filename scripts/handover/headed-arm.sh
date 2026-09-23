@@ -296,7 +296,12 @@
 # HEADED_ARM_PROC overrides the procfs root session_confirmed() reads each
 # candidate pid's comm from (default: /proc - see r7-codex-1 below), so a
 # suite can point a matched pid at a fixture comm without a genuinely
-# running claude process.
+# running claude process. HEADED_ARM_UNAME overrides the platform read
+# (default: `uname -s`) that picks konsole vs. the macOS shim below
+# (HIMMEL-3474, formerly documented only at its own use site as "a seam,
+# like PGREP_CMD and HEADED_ARM_PROC already are" - codex-review S11), so a
+# suite can exercise the macOS branch on a Linux runner instead of silently
+# reporting green there.
 #
 # HIMMEL-2782: HEADED_ARM_LAUNCHER overrides the binary the konsole tab
 # execs (default: claude, PATH-resolved - unchanged for every existing
@@ -444,9 +449,9 @@ fi
 # existing test asserts their exact argv shape, and a shim keeps that
 # contract instead of forking it per platform. KONSOLE_CMD still overrides
 # on every platform, unchanged.
-# codex-review S11: the platform read is a seam, like PGREP_CMD and
-# HEADED_ARM_PROC already are, so the macOS-only resolution and budget below
-# are testable on a Linux runner instead of silently reporting green there.
+# codex-review S11: HEADED_ARM_UNAME is a documented seam (see the header
+# above), so the macOS-only resolution and budget below are testable on a
+# Linux runner instead of silently reporting green there.
 HEADED_ARM_UNAME="${HEADED_ARM_UNAME:-$(uname -s 2>/dev/null)}"
 # Whether this station launches through `open -a` rather than konsole. This
 # tracks the PLATFORM, not which binary won the resolution below: an explicit

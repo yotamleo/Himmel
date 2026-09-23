@@ -1066,6 +1066,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/../lib/py-armor.sh"
 
+# HIMMEL-3474: shared with konsole-macos.sh's own ARM_TERMINAL_APP /
+# ARM_APP_DIRS resolution -- one copy of the decision instead of two.
+# shellcheck source=../lib/macos-app-resolve.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/macos-app-resolve.sh"
+
 # HIMMEL-2113 Ask B: opt-in phase timing. ARM_PROFILE=1 wraps the slow phases
 # (usage-cache/slot resolve, worker census, queue-lock probe, arms-registry
 # cross-host check, shipped-work preflight) with wall-clock second markers and
@@ -4846,33 +4852,14 @@ fi"
     # there; `at` owns Linux's normal one-shot path and is unaffected).
     local term_app="" command_path="" q_commandfile=""
     if [ "$PLATFORM" = macos ] && [ "${ARM_TERMINAL_APP:-}" != "none" ]; then
-        if [ -n "${ARM_TERMINAL_APP:-}" ]; then
-            term_app="$ARM_TERMINAL_APP"
-        else
-            case "${TERM_PROGRAM:-}" in
-                iTerm.app)      term_app="iTerm" ;;
-                Apple_Terminal) term_app="Terminal" ;;
-                *)              term_app="Terminal" ;;
-            esac
-        fi
         # Existence probe: a PLAIN filesystem test, not `open -Ra` -- `-R`
         # REVEALS the app in Finder as a side effect (opens a real Finder
         # window) on every arm and every test run exercising this branch,
         # which is not an acceptable probe. Fail open to Terminal.app
         # (present on every Mac) rather than refuse the whole arm over a bad
-        # app name.
-        local _app_dirs="${ARM_APP_DIRS:-/Applications:/Applications/Utilities:/System/Applications:/System/Applications/Utilities:$HOME/Applications}"
-        local _app_found=0 _app_dir _IFS_SAVE="$IFS"
-        IFS=:
-        for _app_dir in $_app_dirs; do
-            [ -n "$_app_dir" ] || continue
-            [ -d "$_app_dir/$term_app.app" ] && { _app_found=1; break; }
-        done
-        IFS="$_IFS_SAVE"
-        if [ "$_app_found" -ne 1 ]; then
-            echo "WARN arm-resume: terminal app '$term_app' not found under ARM_APP_DIRS; falling back to Terminal" >&2
-            term_app="Terminal"
-        fi
+        # app name. Shared with konsole-macos.sh via macos-app-resolve.sh
+        # (HIMMEL-3474).
+        term_app="$(macos_resolve_term_app arm-resume)"
         command_path="$runner_dir/$TASK_NAME.command"
         q_commandfile=$(printf '%q' "$command_path")
     fi
