@@ -800,14 +800,16 @@ if [ -n "$PROFILE" ]; then
     fi
     # HANDOVER_DIR reaches this wrapper as a plain exported string, which may
     # carry a trailing slash a caller happened to set. Normalize it once
-    # through `cd && pwd` (the same normalization handover_root() applies) so
-    # both the root-equality check below and the .locks deny pattern compare
-    # against the SAME canonical form _leg_doc_dir (also `cd && pwd`-derived)
-    # uses - a raw trailing-slash HANDOVER_DIR would otherwise silently
-    # bypass both (CR round 3, codex-1).
+    # through `cd -P && pwd -P` (the kit's own canonicaliser, matching
+    # handover-path.sh's physical resolution) so both the root-equality
+    # check below and the .locks deny pattern compare against the SAME
+    # canonical form _leg_doc_dir (also `cd -P && pwd -P`-derived) uses - a
+    # raw trailing-slash HANDOVER_DIR would otherwise silently bypass both
+    # (CR round 3, codex-1), and a symlink component would otherwise let a
+    # doc dir reached through it evade the comparison (CR round 5, codex-2).
     _leg_handover_dir_norm=""
     if [ -n "${HANDOVER_DIR:-}" ]; then
-        _leg_handover_dir_norm="$(cd "$HANDOVER_DIR" 2>/dev/null && pwd)"
+        _leg_handover_dir_norm="$(cd -P "$HANDOVER_DIR" 2>/dev/null && pwd -P)"
         if [ -z "$_leg_handover_dir_norm" ]; then
             echo "headed-arm-leg: --profile $PROFILE: HANDOVER_DIR='$HANDOVER_DIR' is not a directory" >&2
             exit 2
@@ -834,14 +836,15 @@ if [ -n "$PROFILE" ]; then
     # refusing the launch outright (round-3 behaviour for the equal case),
     # skip the grant and fall back to today's classifier behaviour for this
     # leg's own doc writes; the launch still succeeds. Compared as canonical
-    # absolute paths (both `cd && pwd`-derived) so a lookalike prefix like
-    # /a/bc is never mistaken for an ancestor of /a/b.
+    # absolute paths (both `cd -P && pwd -P`-derived, so a symlinked doc
+    # directory resolves physically too) so a lookalike prefix like /a/bc
+    # is never mistaken for an ancestor of /a/b.
     # When HANDOVER_DIR could not be resolved at all, _leg_handover_dir_norm
     # is empty and the root/ancestor comparison below cannot run - an
     # unknown root can never be proven safe, so treat that the same as a
     # confirmed root/ancestor match rather than falling through to an
     # ungated grant (CR round 5, codex-1).
-    if [ -n "$DOC" ] && _leg_doc_dir="$(cd "$(dirname "$DOC")" 2>/dev/null && pwd)"; then
+    if [ -n "$DOC" ] && _leg_doc_dir="$(cd -P "$(dirname "$DOC")" 2>/dev/null && pwd -P)"; then
         _leg_doc_is_root_or_ancestor=0
         if [ -z "$_leg_handover_dir_norm" ]; then
             _leg_doc_is_root_or_ancestor=1

@@ -1070,6 +1070,26 @@ check "full launch --profile (doc directory is a prefix-lookalike, not an ancest
   "$(jq -c '.permissions.additionalDirectories' "$d17lookalike/HIMMEL-3333-lookalike.leg-settings.json" 2>/dev/null)" \
   "$(jq -cn --arg d "$lookalike_doc_dir" '[$d]')"
 
+# HIMMEL-3285 (CR round 5, codex-2): a doc directory reached through a
+# SYMLINK to the handover root must still be caught by the root/ancestor
+# check - the comparison resolves both sides physically (`cd -P && pwd -P`),
+# not textually, so a symlinked alias cannot evade it.
+d17symlink="$tmp/c17symlink"; mk_launch_stubs "$d17symlink" "HIMMEL-3333-symlink"; mkdir -p "$tmp/repo17symlink"
+symlink_alias="$tmp/handover-root-alias"
+ln -s "$HANDOVER_DIR" "$symlink_alias"
+symlink_doc="$symlink_alias/HIMMEL-3333-symlink.md"
+printf '%s\n' '# fixture doc reached through a symlink alias of the handover root' > "$symlink_doc"
+rc=0
+HEADED_ARM_LEG_TARGET="$HEADED_ARM" \
+HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+KONSOLE_CMD="$d17symlink/konsole" PGREP_CMD="$d17symlink/pgrep" \
+LEG_REPO="$tmp/repo17symlink" HEADED_ARM_LOCK_DIR="$d17symlink/locks" HEADED_ARM_PROC="$d17symlink/proc" \
+  bash "$SCRIPT" --profile leg-impl "HIMMEL-3333-symlink" "$symlink_doc" "$d17symlink/signal-never" "$PAST" "$d17symlink/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d17symlink" || true
+check "full launch --profile (doc directory is a symlink alias of the handover root): exit 0" "$rc" "0"
+check "full launch --profile (doc directory is a symlink alias of the handover root): additionalDirectories not granted" \
+  "$(jq -c '.permissions.additionalDirectories // "none"' "$d17symlink/HIMMEL-3333-symlink.leg-settings.json" 2>/dev/null)" '"none"'
+
 # HIMMEL-3285 (CR round 3, codex-1): a HANDOVER_DIR carrying a trailing slash
 # must not bypass the root-equality check or leave the .locks deny malformed
 # - both sides are normalized through `cd && pwd` before comparing/building.
