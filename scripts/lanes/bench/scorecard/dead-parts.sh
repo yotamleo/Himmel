@@ -241,10 +241,11 @@ while IFS=$'\t' read -r kind name path; do
     fi
     if [ "$kind" = "script" ]; then pattern="$path"; else pattern="$name"; fi
     hits=$(git -C "$REPO_ROOT" grep -lF -- "$pattern" 2>/dev/null)
-    non_self_hits=""
-    [ -n "$hits" ] && non_self_hits=$(printf '%s\n' "$hits" | grep -vxF -- "$path" 2>/dev/null)
-    # ponytail: this basename fallback (fires only when the full-path grep's
-    # sole hit is the entry's own self-referencing header) is a literal
+    # ponytail: this basename search (script entries only, always run and
+    # unioned with the full-path hits rather than gated on the full-path
+    # search coming up empty - a doc's full-path reference must never
+    # suppress a code caller that only spells the path relatively, e.g.
+    # ./foo.sh next to a docs/*.md hit on scripts/foo.sh) is a literal
     # substring search, so it also over-counts: a basename that is itself a
     # substring of another tracked file's name or prose (e.g. `caller.sh`
     # inside `test-caller.sh`, or inside a comment like "called from
@@ -252,9 +253,9 @@ while IFS=$'\t' read -r kind name path; do
     # USED-script ponytail above - the job is "does anything reference this
     # name at all", and the direction of the error (false WIRED, not false
     # DEAD) is the safe one for a report a human reviews before acting.
-    if [ -z "$non_self_hits" ] && [ "$kind" = "script" ]; then
-        pattern=$(basename "$path")
-        hits=$(git -C "$REPO_ROOT" grep -lF -- "$pattern" 2>/dev/null)
+    if [ "$kind" = "script" ]; then
+        bn_hits=$(git -C "$REPO_ROOT" grep -lF -- "$(basename "$path")" 2>/dev/null)
+        hits=$(printf '%s\n%s\n' "$hits" "$bn_hits" | grep -v '^$' | sort -u)
     fi
     cls=$(printf '%s\n' "$hits" | classify_hits "$path")
     printf '%s\t%s\t%s\t%s\n' "$kind" "$name" "$path" "$cls" >> "$CLASS"

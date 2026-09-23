@@ -42,7 +42,7 @@ export SCORECARD_PROJECTS_DIR="$HERE/fixtures/dead-parts/basic-transcripts"
 OUT=$("$SCRIPT" --since 2026-09-15T00:00:00Z --repo-root "$TMPREPO" 2>/dev/null)
 
 check_contains "basic: script class counts (USED/WIRED/TEST-ONLY/DOC-ONLY/DEAD)" \
-    "$OUT" "kind=script USED=2 WIRED=2 TEST-ONLY=2 DOC-ONLY=1 DEAD=2"
+    "$OUT" "kind=script USED=2 WIRED=3 TEST-ONLY=2 DOC-ONLY=1 DEAD=3"
 check_contains "basic: command class counts" \
     "$OUT" "kind=command USED=1 WIRED=0 TEST-ONLY=0 DOC-ONLY=0 DEAD=1"
 check_contains "basic: skill class counts" \
@@ -50,7 +50,7 @@ check_contains "basic: skill class counts" \
 check_contains "basic: agent class counts" \
     "$OUT" "kind=agent USED=1 WIRED=1 TEST-ONLY=0 DOC-ONLY=0 DEAD=1"
 check_contains "basic: totals line sums every kind" \
-    "$OUT" "totals: USED=5 WIRED=3 TEST-ONLY=2 DOC-ONLY=1 DEAD=5"
+    "$OUT" "totals: USED=5 WIRED=4 TEST-ONLY=2 DOC-ONLY=1 DEAD=6"
 check_contains "basic: transcript coverage line beside the table" \
     "$OUT" "coverage: roots=1 discovered=1 parsed=1 skipped=0"
 
@@ -62,6 +62,10 @@ check_contains "basic: USED command detected via a typed <command-name> tag" \
     "$OUT" $'command\tused-cmd\t.claude/commands/used-cmd.md'
 check_contains "basic: WIRED script whose own self-referencing header used to mask a real external basename reference (codex-3 unmasking fix)" \
     "$OUT" $'script\tcaller\tscripts/caller.sh\tWIRED'
+check_contains "basic: WIRED script whose own full-path doc mention used to mask a real basename-only code caller (codex-2 unmasking fix)" \
+    "$OUT" $'script\tdoc-and-code\tscripts/doc-and-code.sh\tWIRED'
+check_contains "basic: the basename-only caller itself has no reference anywhere and stays DEAD" \
+    "$OUT" $'script\trelative-caller\tscripts/relative-caller.sh'
 check_contains "basic: plugin-qualified Skill tool_use (fixture-plugin:used-skill) still matches the bare discovered skill name" \
     "$OUT" $'skill\tused-skill\t.claude/skills/used-skill/SKILL.md\tUSED'
 check_contains "basic: Agent tool_use subagent_type marks a zero-static-reference agent USED" \

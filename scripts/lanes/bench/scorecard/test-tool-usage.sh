@@ -134,6 +134,8 @@ OUT=$("$SCRIPT" --since 2026-01-10T00:00:00Z --until 2026-01-20T00:00:00Z \
     --skill-config-dir "$HERE/fixtures/tool-usage/skills-config" 2>&1)
 check_not_contains "partial-write: a command from a file whose enrichment pass jq-failed is never counted" \
     "$OUT" "slash=/leaked-cmd"
+check_not_contains "partial-write: a tool_use preceding the malformed timestamp is never counted either (EVENTS staged per-file, same as CMDS)" \
+    "$OUT" "script=scripts/lib/bank-preflight.sh count=1"
 check_contains "partial-write: the file is counted as jq-failed, not parsed" \
     "$OUT" "coverage: roots=1 discovered=1 parsed=0 skipped=1 (jq-failed=1)"
 check_contains "partial-write: the jq-failure warning is surfaced" \

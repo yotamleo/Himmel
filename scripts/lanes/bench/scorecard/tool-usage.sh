@@ -114,6 +114,7 @@ while IFS= read -r f; do
     uses_f="$RUN/uses.ndjson"; : > "$uses_f"
     results_f="$RUN/results.ndjson"; : > "$results_f"
     cmds_f="$RUN/cmds.ndjson"; : > "$cmds_f"
+    events_f="$RUN/events-per-file.ndjson"; : > "$events_f"
 
     if ! jq -c '. as $m | select(.type=="assistant") | $m.message.content[]? | select(.type=="tool_use") |
         {id: .id, ts: $m.timestamp, tool: .name,
@@ -149,13 +150,15 @@ while IFS= read -r f; do
         | select(.ts != null)
         | select((.ts | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) >= $since_epoch and (.ts | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) < $until_epoch)
         | . + {is_error: ($ridx[.id].is_error // null), text: ($ridx[.id].text // null), role: $role, file: $file}
-    ' >> "$EVENTS" 2>>"$JQ_FAILS"; then
+    ' > "$events_f" 2>>"$JQ_FAILS"; then
         printf '%s\n' "$f" >> "$JQ_FAILS"; sc_cov jq-failed; continue
     fi
-    # cmds_f is merged into $CMDS only now - after every extraction pass for
-    # this transcript has succeeded - so a later jq failure never leaves a
-    # partial row behind for a file this loop otherwise counts as skipped.
+    # cmds_f and events_f are merged into $CMDS/$EVENTS only now - after every
+    # extraction pass for this transcript has succeeded - so a later jq
+    # failure never leaves a partial row behind for a file this loop
+    # otherwise counts as skipped.
     cat "$cmds_f" >> "$CMDS"
+    cat "$events_f" >> "$EVENTS"
     sc_cov parsed
 done < "$FILES"
 
