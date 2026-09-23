@@ -693,8 +693,20 @@ gitd() { git --no-replace-objects -c core.fsmonitor=false -c core.untrackedCache
 # bun scripts/telegram/console-route.ts reply; that imports bus.ts and
 # dynamically poller.ts, whose static imports load the rest of the
 # scripts/telegram files below and scripts/lanes/plugin-profiles.mjs.
+#
+# HIMMEL-3491 added the anchored gateAllow literal for the merge-gate entry
+# point to plugin-profiles.mjs (already guarded), so the lexical scanner now
+# reads scripts/handover/merge-on-green.sh as an edge from that file too
+# (the literal is a JS string, never sourced/exec'd from plugin-profiles.mjs
+# itself - over-matching is the closure's own documented fail-safe
+# direction). merge-on-green.sh in turn sources queue-lock.sh and execs
+# clean-garden.sh, clean.sh, scripts/_new-worktree.sh, the observability
+# session-run-{hook,ledger} scripts and unlanded-work.sh.
 cr_guarded="scripts/cr scripts/lib scripts/guardrails/lib.sh scripts/check-ci.sh scripts/handover/resolve-active-item.sh
 scripts/handover/append-cr-findings.sh scripts/handover/append-cr-bugs.sh scripts/handover/bug.sh
+scripts/handover/merge-on-green.sh scripts/handover/queue-lock.sh
+scripts/clean-garden.sh scripts/clean.sh scripts/_new-worktree.sh scripts/unlanded-work.sh
+scripts/observability/session-run-hook.ts scripts/observability/session-run-ledger.ts
 scripts/hermes/invoke.sh scripts/hermes/egress-gate.sh
 scripts/guardrails/egress-matrix-eval.mjs scripts/guardrails/egress-matrix.json
 scripts/statusline/usage-cache-producer.sh
@@ -713,6 +725,9 @@ scripts/lanes/plugin-profiles.mjs"
 cr_pathspecs=(':(top)scripts/cr/' ':(top)scripts/lib/' ':(top)scripts/guardrails/lib.sh' ':(top)scripts/check-ci.sh'
     ':(top)scripts/handover/resolve-active-item.sh'
     ':(top)scripts/handover/append-cr-findings.sh' ':(top)scripts/handover/append-cr-bugs.sh' ':(top)scripts/handover/bug.sh'
+    ':(top)scripts/handover/merge-on-green.sh' ':(top)scripts/handover/queue-lock.sh'
+    ':(top)scripts/clean-garden.sh' ':(top)scripts/clean.sh' ':(top)scripts/_new-worktree.sh' ':(top)scripts/unlanded-work.sh'
+    ':(top)scripts/observability/session-run-hook.ts' ':(top)scripts/observability/session-run-ledger.ts'
     ':(top)scripts/hermes/invoke.sh' ':(top)scripts/hermes/egress-gate.sh'
     ':(top)scripts/guardrails/egress-matrix-eval.mjs' ':(top)scripts/guardrails/egress-matrix.json'
     ':(top)scripts/statusline/usage-cache-producer.sh'
