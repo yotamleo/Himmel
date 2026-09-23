@@ -127,8 +127,10 @@ EnterWorktree-isolated session).
 **Himmel-lane spelling of step 0 (HIMMEL-3359) — run this INSTEAD of the
 fence above, never both, and ONLY in a himmel checkout on a diff that touches
 none of the paths `pr-check-context.sh` guards: `scripts/cr/`, `scripts/lib/`,
-`scripts/guardrails/lib.sh`, `scripts/check-ci.sh` and
-`scripts/handover/resolve-active-item.sh` (what a clean step 0 later runs
+`scripts/guardrails/lib.sh`, `scripts/check-ci.sh`,
+`scripts/handover/resolve-active-item.sh` and the files the critic panel, the
+handover bridges and the bank preflight run through a variable — the full
+list is `cr_guarded` in `pr-check-context.sh` (what a clean step 0 later runs
 from the branch — HIMMEL-3493).** First prove the lane — the allow rule is
 emitted for every leg profile whatever its cwd, so the relative path is
 trusted only once the cwd shares `HIMMEL_REPO`'s git dir AND is the worktree
@@ -156,9 +158,9 @@ UNCOMMITTED `scripts/cr/` edit count too, and a main-side change only
 over-reports):
 
     if mb=$(git merge-base HEAD refs/remotes/origin/main 2>/dev/null); then
-        git diff --name-only "$mb"..HEAD -- 'scripts/cr/' 'scripts/lib/' 'scripts/guardrails/lib.sh' 'scripts/check-ci.sh' 'scripts/handover/resolve-active-item.sh' || echo unknown
-        git diff --name-only HEAD -- 'scripts/cr/' 'scripts/lib/' 'scripts/guardrails/lib.sh' 'scripts/check-ci.sh' 'scripts/handover/resolve-active-item.sh' || echo unknown
-        git ls-files --others -- 'scripts/cr/' 'scripts/lib/' 'scripts/guardrails/lib.sh' 'scripts/check-ci.sh' 'scripts/handover/resolve-active-item.sh' || echo unknown
+        git diff --name-only "$mb"..HEAD -- 'scripts/cr/' 'scripts/lib/' 'scripts/guardrails/lib.sh' 'scripts/check-ci.sh' 'scripts/handover/resolve-active-item.sh' 'scripts/handover/append-cr-findings.sh' 'scripts/handover/append-cr-bugs.sh' 'scripts/handover/bug.sh' 'scripts/hermes/invoke.sh' 'scripts/hermes/egress-gate.sh' 'scripts/guardrails/egress-matrix-eval.mjs' 'scripts/guardrails/egress-matrix.json' 'scripts/statusline/usage-cache-producer.sh' 'scripts/lanes/bank-status.ts' 'scripts/lanes/bank-status-core.mjs' 'scripts/lanes/funded-max-pct.mjs' 'scripts/lanes/resolve.mjs' 'scripts/lanes/check.mjs' 'scripts/lanes/probe.mjs' 'scripts/lanes/set-lane-override.mjs' 'scripts/observability/quota-sources.ts' 'scripts/telegram/alibaba-probe-once.ts' 'scripts/telegram/quota-gauge.ts' 'scripts/telegram/quota-gauge-alibaba.ts' || echo unknown
+        git diff --name-only HEAD -- 'scripts/cr/' 'scripts/lib/' 'scripts/guardrails/lib.sh' 'scripts/check-ci.sh' 'scripts/handover/resolve-active-item.sh' 'scripts/handover/append-cr-findings.sh' 'scripts/handover/append-cr-bugs.sh' 'scripts/handover/bug.sh' 'scripts/hermes/invoke.sh' 'scripts/hermes/egress-gate.sh' 'scripts/guardrails/egress-matrix-eval.mjs' 'scripts/guardrails/egress-matrix.json' 'scripts/statusline/usage-cache-producer.sh' 'scripts/lanes/bank-status.ts' 'scripts/lanes/bank-status-core.mjs' 'scripts/lanes/funded-max-pct.mjs' 'scripts/lanes/resolve.mjs' 'scripts/lanes/check.mjs' 'scripts/lanes/probe.mjs' 'scripts/lanes/set-lane-override.mjs' 'scripts/observability/quota-sources.ts' 'scripts/telegram/alibaba-probe-once.ts' 'scripts/telegram/quota-gauge.ts' 'scripts/telegram/quota-gauge-alibaba.ts' || echo unknown
+        git ls-files --others -- 'scripts/cr/' 'scripts/lib/' 'scripts/guardrails/lib.sh' 'scripts/check-ci.sh' 'scripts/handover/resolve-active-item.sh' 'scripts/handover/append-cr-findings.sh' 'scripts/handover/append-cr-bugs.sh' 'scripts/handover/bug.sh' 'scripts/hermes/invoke.sh' 'scripts/hermes/egress-gate.sh' 'scripts/guardrails/egress-matrix-eval.mjs' 'scripts/guardrails/egress-matrix.json' 'scripts/statusline/usage-cache-producer.sh' 'scripts/lanes/bank-status.ts' 'scripts/lanes/bank-status-core.mjs' 'scripts/lanes/funded-max-pct.mjs' 'scripts/lanes/resolve.mjs' 'scripts/lanes/check.mjs' 'scripts/lanes/probe.mjs' 'scripts/lanes/set-lane-override.mjs' 'scripts/observability/quota-sources.ts' 'scripts/telegram/alibaba-probe-once.ts' 'scripts/telegram/quota-gauge.ts' 'scripts/telegram/quota-gauge-alibaba.ts' || echo unknown
     else
         echo unknown
     fi
@@ -237,8 +239,8 @@ location, so STOP before any paid critic call rather than guess from the cwd.
 DELIBERATE, LOGGED decision instead of an automatic one (HIMMEL-2335).** On
 the himmel lane only, when the branch's own diff touches a guarded path
 (`scripts/cr/`, `scripts/lib/`, `scripts/guardrails/lib.sh`,
-`scripts/check-ci.sh` or `scripts/handover/resolve-active-item.sh` —
-HIMMEL-3493) — the exact set is printed as `cr_diff_files=` in the stdout
+`scripts/check-ci.sh`, `scripts/handover/resolve-active-item.sh` or the rest
+of `cr_guarded` in `pr-check-context.sh` — HIMMEL-3493) — the exact set is printed as `cr_diff_files=` in the stdout
 contract below (HIMMEL-3382: the same diff the himmel-lane spelling above
 runs, less `__pycache__/`) — `pr-check-context.sh` detects it,
 appends a `delegation` row
@@ -309,7 +311,8 @@ later block would be the drift the pin exists to catch. It also prints
 (HIMMEL-3382) — the merge-base diff of committed history plus
 working-tree/untracked changes under the guarded paths (scripts/cr/,
 scripts/lib/, scripts/guardrails/lib.sh, scripts/check-ci.sh,
-scripts/handover/resolve-active-item.sh); empty when the diff proved clean or could not be
+scripts/handover/resolve-active-item.sh and the rest of cr_guarded in
+pr-check-context.sh); empty when the diff proved clean or could not be
 computed>` — informational only (nothing downstream substitutes any of them),
 and NOT the same field as `lane=` below, which is the marker's own 3rd field
 and means something unrelated.

@@ -164,9 +164,9 @@ lane_marker_check() {
         'and its third line is empty'
         'always against refs/remotes/origin/main, even on a stacked PR'
         'if mb=$(git merge-base HEAD refs/remotes/origin/main 2>/dev/null); then'
-        'git diff --name-only "$mb"..HEAD -- '\''scripts/cr/'\'' '\''scripts/lib/'\'' '\''scripts/guardrails/lib.sh'\'' '\''scripts/check-ci.sh'\'' '\''scripts/handover/resolve-active-item.sh'\'' || echo unknown'
-        'git diff --name-only HEAD -- '\''scripts/cr/'\'' '\''scripts/lib/'\'' '\''scripts/guardrails/lib.sh'\'' '\''scripts/check-ci.sh'\'' '\''scripts/handover/resolve-active-item.sh'\'' || echo unknown'
-        'git ls-files --others -- '\''scripts/cr/'\'' '\''scripts/lib/'\'' '\''scripts/guardrails/lib.sh'\'' '\''scripts/check-ci.sh'\'' '\''scripts/handover/resolve-active-item.sh'\'' || echo unknown'
+        'git diff --name-only "$mb"..HEAD -- '\''scripts/cr/'\'' '\''scripts/lib/'\'' '\''scripts/guardrails/lib.sh'\'' '\''scripts/check-ci.sh'\'' '\''scripts/handover/resolve-active-item.sh'\'' '\''scripts/handover/append-cr-findings.sh'\'' '\''scripts/handover/append-cr-bugs.sh'\'' '\''scripts/handover/bug.sh'\'' '\''scripts/hermes/invoke.sh'\'' '\''scripts/hermes/egress-gate.sh'\'' '\''scripts/guardrails/egress-matrix-eval.mjs'\'' '\''scripts/guardrails/egress-matrix.json'\'' '\''scripts/statusline/usage-cache-producer.sh'\'' '\''scripts/lanes/bank-status.ts'\'' '\''scripts/lanes/bank-status-core.mjs'\'' '\''scripts/lanes/funded-max-pct.mjs'\'' '\''scripts/lanes/resolve.mjs'\'' '\''scripts/lanes/check.mjs'\'' '\''scripts/lanes/probe.mjs'\'' '\''scripts/lanes/set-lane-override.mjs'\'' '\''scripts/observability/quota-sources.ts'\'' '\''scripts/telegram/alibaba-probe-once.ts'\'' '\''scripts/telegram/quota-gauge.ts'\'' '\''scripts/telegram/quota-gauge-alibaba.ts'\'' || echo unknown'
+        'git diff --name-only HEAD -- '\''scripts/cr/'\'' '\''scripts/lib/'\'' '\''scripts/guardrails/lib.sh'\'' '\''scripts/check-ci.sh'\'' '\''scripts/handover/resolve-active-item.sh'\'' '\''scripts/handover/append-cr-findings.sh'\'' '\''scripts/handover/append-cr-bugs.sh'\'' '\''scripts/handover/bug.sh'\'' '\''scripts/hermes/invoke.sh'\'' '\''scripts/hermes/egress-gate.sh'\'' '\''scripts/guardrails/egress-matrix-eval.mjs'\'' '\''scripts/guardrails/egress-matrix.json'\'' '\''scripts/statusline/usage-cache-producer.sh'\'' '\''scripts/lanes/bank-status.ts'\'' '\''scripts/lanes/bank-status-core.mjs'\'' '\''scripts/lanes/funded-max-pct.mjs'\'' '\''scripts/lanes/resolve.mjs'\'' '\''scripts/lanes/check.mjs'\'' '\''scripts/lanes/probe.mjs'\'' '\''scripts/lanes/set-lane-override.mjs'\'' '\''scripts/observability/quota-sources.ts'\'' '\''scripts/telegram/alibaba-probe-once.ts'\'' '\''scripts/telegram/quota-gauge.ts'\'' '\''scripts/telegram/quota-gauge-alibaba.ts'\'' || echo unknown'
+        'git ls-files --others -- '\''scripts/cr/'\'' '\''scripts/lib/'\'' '\''scripts/guardrails/lib.sh'\'' '\''scripts/check-ci.sh'\'' '\''scripts/handover/resolve-active-item.sh'\'' '\''scripts/handover/append-cr-findings.sh'\'' '\''scripts/handover/append-cr-bugs.sh'\'' '\''scripts/handover/bug.sh'\'' '\''scripts/hermes/invoke.sh'\'' '\''scripts/hermes/egress-gate.sh'\'' '\''scripts/guardrails/egress-matrix-eval.mjs'\'' '\''scripts/guardrails/egress-matrix.json'\'' '\''scripts/statusline/usage-cache-producer.sh'\'' '\''scripts/lanes/bank-status.ts'\'' '\''scripts/lanes/bank-status-core.mjs'\'' '\''scripts/lanes/funded-max-pct.mjs'\'' '\''scripts/lanes/resolve.mjs'\'' '\''scripts/lanes/check.mjs'\'' '\''scripts/lanes/probe.mjs'\'' '\''scripts/lanes/set-lane-override.mjs'\'' '\''scripts/observability/quota-sources.ts'\'' '\''scripts/telegram/alibaba-probe-once.ts'\'' '\''scripts/telegram/quota-gauge.ts'\'' '\''scripts/telegram/quota-gauge-alibaba.ts'\'' || echo unknown'
         'echo unknown'
         'ONLY when that check prints nothing at all'
         'prints any path or `unknown`, use the canonical fence above'
@@ -209,13 +209,21 @@ fx() {
 }
 mkrepo() {
     local d="$tmp/$1"
-    mkdir -p "$d/scripts/cr" "$d/scripts/guardrails" "$d/scripts/lib" "$d/scripts/handover"
+    mkdir -p "$d/scripts/cr" "$d/scripts/guardrails" "$d/scripts/lib" "$d/scripts/handover" \
+        "$d/scripts/hermes" "$d/scripts/statusline" "$d/scripts/lanes" "$d/scripts/observability" "$d/scripts/telegram"
     fx "$d" init -q -b main
     echo a > "$d/scripts/cr/a.sh"
     echo l > "$d/scripts/guardrails/lib.sh"
     echo s > "$d/scripts/lib/s.sh"
     echo c > "$d/scripts/check-ci.sh"
     echo r > "$d/scripts/handover/resolve-active-item.sh"
+    echo x > "$d/scripts/handover/append-cr-findings.sh"
+    echo x > "$d/scripts/hermes/invoke.sh"
+    echo x > "$d/scripts/guardrails/egress-matrix.json"
+    echo x > "$d/scripts/statusline/usage-cache-producer.sh"
+    echo x > "$d/scripts/lanes/bank-status.ts"
+    echo x > "$d/scripts/observability/quota-sources.ts"
+    echo x > "$d/scripts/telegram/quota-gauge.ts"
     echo o > "$d/other.txt"
     fx "$d" add -A
     fx "$d" commit -q -m base
@@ -226,6 +234,14 @@ mkrepo() {
         lib) echo b >> "$d/scripts/lib/s.sh" ;;
         checkci) echo b >> "$d/scripts/check-ci.sh" ;;
         resolve) echo b >> "$d/scripts/handover/resolve-active-item.sh" ;;
+        # ...and what the critic panel, bridges and bank preflight run via a variable.
+        bridge) echo b >> "$d/scripts/handover/append-cr-findings.sh" ;;
+        invoke) echo b >> "$d/scripts/hermes/invoke.sh" ;;
+        matrix) echo b >> "$d/scripts/guardrails/egress-matrix.json" ;;
+        producer) echo b >> "$d/scripts/statusline/usage-cache-producer.sh" ;;
+        bankstatus) echo b >> "$d/scripts/lanes/bank-status.ts" ;;
+        quota) echo b >> "$d/scripts/observability/quota-sources.ts" ;;
+        gauge) echo b >> "$d/scripts/telegram/quota-gauge.ts" ;;
         ignored)
             echo 'scripts/cr/ign.sh' > "$d/.gitignore"
             echo i > "$d/scripts/cr/ign.sh"
@@ -235,7 +251,7 @@ mkrepo() {
     fx "$d" add -A
     fx "$d" commit -q -m branch
 }
-for r in clean committed ignored lib checkci resolve; do mkrepo "$r"; done
+for r in clean committed ignored lib checkci resolve bridge invoke matrix producer bankstatus quota gauge; do mkrepo "$r"; done
 # Runs a twin's step-0 diff-decision block ($1) in fixture $2 with the extra
 # env assignments that follow. Every inherited git env var the block could
 # see is cleared first, so only the assignments under test reach it. A
@@ -385,7 +401,7 @@ for f in "$CLAUDE_RUNBOOK" "$CODEX_SKILL"; do
     # whole env family. (xii) below proves both by running the block.
     # HIMMEL-3493 widened the guarded paths to what a clean step 0 later runs
     # from the branch (pr-check-context.sh's cr_guarded).
-    diff_paths_re=''\''scripts/cr/'\'' '\''scripts/lib/'\'' '\''scripts/guardrails/lib\.sh'\'' '\''scripts/check-ci\.sh'\'' '\''scripts/handover/resolve-active-item\.sh'\'''
+    diff_paths_re=''\''scripts/cr/'\'' '\''scripts/lib/'\'' '\''scripts/guardrails/lib\.sh'\'' '\''scripts/check-ci\.sh'\'' '\''scripts/handover/resolve-active-item\.sh'\'' '\''scripts/handover/append-cr-findings\.sh'\'' '\''scripts/handover/append-cr-bugs\.sh'\'' '\''scripts/handover/bug\.sh'\'' '\''scripts/hermes/invoke\.sh'\'' '\''scripts/hermes/egress-gate\.sh'\'' '\''scripts/guardrails/egress-matrix-eval\.mjs'\'' '\''scripts/guardrails/egress-matrix\.json'\'' '\''scripts/statusline/usage-cache-producer\.sh'\'' '\''scripts/lanes/bank-status\.ts'\'' '\''scripts/lanes/bank-status-core\.mjs'\'' '\''scripts/lanes/funded-max-pct\.mjs'\'' '\''scripts/lanes/resolve\.mjs'\'' '\''scripts/lanes/check\.mjs'\'' '\''scripts/lanes/probe\.mjs'\'' '\''scripts/lanes/set-lane-override\.mjs'\'' '\''scripts/observability/quota-sources\.ts'\'' '\''scripts/telegram/alibaba-probe-once\.ts'\'' '\''scripts/telegram/quota-gauge\.ts'\'' '\''scripts/telegram/quota-gauge-alibaba\.ts'\'''
     diff_committed_pattern='^[[:space:]]*git diff --name-only "\$mb"\.\.HEAD -- '"$diff_paths_re"' \|\| echo unknown[[:space:]]*$'
     diff_worktree_pattern='^[[:space:]]*git diff --name-only HEAD -- '"$diff_paths_re"' \|\| echo unknown[[:space:]]*$'
     diff_untracked_pattern='^[[:space:]]*git ls-files --others -- '"$diff_paths_re"' \|\| echo unknown[[:space:]]*$'
@@ -863,7 +879,8 @@ for f in "$CLAUDE_RUNBOOK" "$CODEX_SKILL"; do
         out=$(run_diff_block "$diff_block" ignored)
         grep -qx 'scripts/cr/ign.sh' <<< "$out" \
             || xii_fail="$xii_fail; gitignored untracked scripts/cr/ign.sh printed '$out'"
-        for lr in lib:scripts/lib/s.sh checkci:scripts/check-ci.sh resolve:scripts/handover/resolve-active-item.sh; do
+        for lr in lib:scripts/lib/s.sh checkci:scripts/check-ci.sh resolve:scripts/handover/resolve-active-item.sh \
+            bridge:scripts/handover/append-cr-findings.sh invoke:scripts/hermes/invoke.sh matrix:scripts/guardrails/egress-matrix.json producer:scripts/statusline/usage-cache-producer.sh bankstatus:scripts/lanes/bank-status.ts quota:scripts/observability/quota-sources.ts gauge:scripts/telegram/quota-gauge.ts; do
             out=$(run_diff_block "$diff_block" "${lr%%:*}")
             grep -qx "${lr#*:}" <<< "$out" \
                 || xii_fail="$xii_fail; committed ${lr#*:} (HIMMEL-3493) printed '$out'"

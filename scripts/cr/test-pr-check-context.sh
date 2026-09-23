@@ -376,6 +376,13 @@ cp "$DIR/anchor-handoff.sh" "$d/scripts/cr/anchor-handoff.sh"
   cp "$DIR/../lib/load-dotenv.sh" "$d/scripts/lib/load-dotenv.sh"
   printf '#!/usr/bin/env bash\n' > "$d/scripts/check-ci.sh"
   printf '#!/usr/bin/env bash\n' > "$d/scripts/handover/resolve-active-item.sh"
+  # ...and the files the critic panel, bridges and bank preflight run via a
+  # variable (console review of #1148): placeholders are enough, the rows
+  # below only compare their bytes.
+  mkdir -p "$d/scripts/guardrails" "$d/scripts/handover" "$d/scripts/hermes" "$d/scripts/lanes" "$d/scripts/observability" "$d/scripts/statusline" "$d/scripts/telegram"
+  for fp in scripts/handover/append-cr-findings.sh scripts/handover/append-cr-bugs.sh scripts/handover/bug.sh scripts/hermes/invoke.sh scripts/hermes/egress-gate.sh scripts/guardrails/egress-matrix-eval.mjs scripts/guardrails/egress-matrix.json scripts/statusline/usage-cache-producer.sh scripts/lanes/bank-status.ts scripts/lanes/bank-status-core.mjs scripts/lanes/funded-max-pct.mjs scripts/lanes/resolve.mjs scripts/lanes/check.mjs scripts/lanes/probe.mjs scripts/lanes/set-lane-override.mjs scripts/observability/quota-sources.ts scripts/telegram/alibaba-probe-once.ts scripts/telegram/quota-gauge.ts scripts/telegram/quota-gauge-alibaba.ts; do
+    printf 'placeholder\n' > "$d/$fp"
+  done
   (
     cd "$d" || exit 1
     git init -q -b main .
@@ -1995,9 +2002,9 @@ git -C "$anchor13" update-ref refs/remotes/origin/main refs/heads/main
 mb40="$(cd "$wt40" && git merge-base HEAD refs/remotes/origin/main)"
 recipe40="$(
   cd "$wt40" || exit 1
-  git diff --name-only "$mb40"..HEAD -- 'scripts/cr/' 'scripts/lib/' 'scripts/guardrails/lib.sh' 'scripts/check-ci.sh' 'scripts/handover/resolve-active-item.sh'
-  git diff --name-only HEAD -- 'scripts/cr/' 'scripts/lib/' 'scripts/guardrails/lib.sh' 'scripts/check-ci.sh' 'scripts/handover/resolve-active-item.sh'
-  git ls-files --others -- 'scripts/cr/' 'scripts/lib/' 'scripts/guardrails/lib.sh' 'scripts/check-ci.sh' 'scripts/handover/resolve-active-item.sh'
+  git diff --name-only "$mb40"..HEAD -- 'scripts/cr/' 'scripts/lib/' 'scripts/guardrails/lib.sh' 'scripts/check-ci.sh' 'scripts/handover/resolve-active-item.sh' 'scripts/handover/append-cr-findings.sh' 'scripts/handover/append-cr-bugs.sh' 'scripts/handover/bug.sh' 'scripts/hermes/invoke.sh' 'scripts/hermes/egress-gate.sh' 'scripts/guardrails/egress-matrix-eval.mjs' 'scripts/guardrails/egress-matrix.json' 'scripts/statusline/usage-cache-producer.sh' 'scripts/lanes/bank-status.ts' 'scripts/lanes/bank-status-core.mjs' 'scripts/lanes/funded-max-pct.mjs' 'scripts/lanes/resolve.mjs' 'scripts/lanes/check.mjs' 'scripts/lanes/probe.mjs' 'scripts/lanes/set-lane-override.mjs' 'scripts/observability/quota-sources.ts' 'scripts/telegram/alibaba-probe-once.ts' 'scripts/telegram/quota-gauge.ts' 'scripts/telegram/quota-gauge-alibaba.ts'
+  git diff --name-only HEAD -- 'scripts/cr/' 'scripts/lib/' 'scripts/guardrails/lib.sh' 'scripts/check-ci.sh' 'scripts/handover/resolve-active-item.sh' 'scripts/handover/append-cr-findings.sh' 'scripts/handover/append-cr-bugs.sh' 'scripts/handover/bug.sh' 'scripts/hermes/invoke.sh' 'scripts/hermes/egress-gate.sh' 'scripts/guardrails/egress-matrix-eval.mjs' 'scripts/guardrails/egress-matrix.json' 'scripts/statusline/usage-cache-producer.sh' 'scripts/lanes/bank-status.ts' 'scripts/lanes/bank-status-core.mjs' 'scripts/lanes/funded-max-pct.mjs' 'scripts/lanes/resolve.mjs' 'scripts/lanes/check.mjs' 'scripts/lanes/probe.mjs' 'scripts/lanes/set-lane-override.mjs' 'scripts/observability/quota-sources.ts' 'scripts/telegram/alibaba-probe-once.ts' 'scripts/telegram/quota-gauge.ts' 'scripts/telegram/quota-gauge-alibaba.ts'
+  git ls-files --others -- 'scripts/cr/' 'scripts/lib/' 'scripts/guardrails/lib.sh' 'scripts/check-ci.sh' 'scripts/handover/resolve-active-item.sh' 'scripts/handover/append-cr-findings.sh' 'scripts/handover/append-cr-bugs.sh' 'scripts/handover/bug.sh' 'scripts/hermes/invoke.sh' 'scripts/hermes/egress-gate.sh' 'scripts/guardrails/egress-matrix-eval.mjs' 'scripts/guardrails/egress-matrix.json' 'scripts/statusline/usage-cache-producer.sh' 'scripts/lanes/bank-status.ts' 'scripts/lanes/bank-status-core.mjs' 'scripts/lanes/funded-max-pct.mjs' 'scripts/lanes/resolve.mjs' 'scripts/lanes/check.mjs' 'scripts/lanes/probe.mjs' 'scripts/lanes/set-lane-override.mjs' 'scripts/observability/quota-sources.ts' 'scripts/telegram/alibaba-probe-once.ts' 'scripts/telegram/quota-gauge.ts' 'scripts/telegram/quota-gauge-alibaba.ts'
 )"
 check "$recipe40" "scripts/cr/ignored-file.sh" "T40 the twins' pinned recipe also names the gitignored file - same set as the script"
 
@@ -2333,6 +2340,21 @@ fx_new t55-resolve
 )
 out55="$(fx_run)"
 check "$(fx_outcome "$out55")" "delegated" "T55 a resolve-active-item.sh-only edit is a guarded diff, not a no"
+
+# T61 (console review of #1148): each file the critic panel, the handover
+# bridges and the bank preflight run through a variable is guarded: a
+# hidden edit to only that file is not read as no.
+for g61 in scripts/handover/append-cr-findings.sh scripts/handover/append-cr-bugs.sh scripts/handover/bug.sh scripts/hermes/invoke.sh scripts/hermes/egress-gate.sh scripts/guardrails/egress-matrix-eval.mjs scripts/guardrails/egress-matrix.json scripts/statusline/usage-cache-producer.sh scripts/lanes/bank-status.ts scripts/lanes/bank-status-core.mjs scripts/lanes/funded-max-pct.mjs scripts/lanes/resolve.mjs scripts/lanes/check.mjs scripts/lanes/probe.mjs scripts/lanes/set-lane-override.mjs scripts/observability/quota-sources.ts scripts/telegram/alibaba-probe-once.ts scripts/telegram/quota-gauge.ts scripts/telegram/quota-gauge-alibaba.ts; do
+  fx_new "t61-$(basename "$g61" | tr . -)"
+  (
+    cd "$fx_wt" || exit 1
+    printf 't61 edit\n' >> "$g61"
+    git update-index --assume-unchanged "$g61"
+  )
+  out61="$(fx_run)"
+  check "$(fx_outcome "$out61")" "anchor" "T61 a hidden $g61-only edit is not read as no"
+  check "$(fx_bytes_differ "$g61")" "yes" "T61 stderr names $g61 as differing"
+done
 
 # T56 (HIMMEL-3472 review, test rigor): a hidden guardrails/lib.sh-only edit.
 fx_new t56-guardrails-lib

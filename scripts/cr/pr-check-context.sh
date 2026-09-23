@@ -677,18 +677,50 @@ fi
 # would make every branch's bytes differ, and no /pr-check path runs
 # Python from scripts/lib/.
 gitd() { git --no-replace-objects -c core.fsmonitor=false -c core.untrackedCache=false "$@"; }
-cr_guarded="scripts/cr scripts/lib scripts/guardrails/lib.sh scripts/check-ci.sh scripts/handover/resolve-active-item.sh"
+#
+# The closure also follows script paths stored in a variable and run later
+# (console adversarial review of #1148): handover-bridge.sh hands
+# append-cr-{findings,bugs}.sh (and bug.sh) to node, critic-panel.sh runs
+# ${CRITIC_INVOKE:-.../hermes/invoke.sh} (egress-gate.sh and the egress
+# matrix it evaluates, the alibaba quota probe under scripts/telegram/), and
+# bank-preflight.sh runs the statusline usage-cache producer and the
+# scripts/lanes/bank-status.ts chain. Those are guarded file by file, not by
+# directory, so a branch touching an unrelated lane or telegram file keeps
+# its relative himmel-lane spelling. egress-matrix.json is data, not code,
+# but it is the egress policy invoke.sh enforces, so it is guarded too.
+cr_guarded="scripts/cr scripts/lib scripts/guardrails/lib.sh scripts/check-ci.sh scripts/handover/resolve-active-item.sh
+scripts/handover/append-cr-findings.sh scripts/handover/append-cr-bugs.sh scripts/handover/bug.sh
+scripts/hermes/invoke.sh scripts/hermes/egress-gate.sh
+scripts/guardrails/egress-matrix-eval.mjs scripts/guardrails/egress-matrix.json
+scripts/statusline/usage-cache-producer.sh
+scripts/lanes/bank-status.ts scripts/lanes/bank-status-core.mjs scripts/lanes/funded-max-pct.mjs
+scripts/lanes/resolve.mjs scripts/lanes/check.mjs scripts/lanes/probe.mjs scripts/lanes/set-lane-override.mjs
+scripts/observability/quota-sources.ts
+scripts/telegram/alibaba-probe-once.ts scripts/telegram/quota-gauge.ts scripts/telegram/quota-gauge-alibaba.ts"
 cr_pathspecs=(':(top)scripts/cr/' ':(top)scripts/lib/' ':(top)scripts/guardrails/lib.sh' ':(top)scripts/check-ci.sh'
-    ':(top)scripts/handover/resolve-active-item.sh' ':(top,exclude,glob)scripts/**/__pycache__/**')
+    ':(top)scripts/handover/resolve-active-item.sh'
+    ':(top)scripts/handover/append-cr-findings.sh' ':(top)scripts/handover/append-cr-bugs.sh' ':(top)scripts/handover/bug.sh'
+    ':(top)scripts/hermes/invoke.sh' ':(top)scripts/hermes/egress-gate.sh'
+    ':(top)scripts/guardrails/egress-matrix-eval.mjs' ':(top)scripts/guardrails/egress-matrix.json'
+    ':(top)scripts/statusline/usage-cache-producer.sh'
+    ':(top)scripts/lanes/bank-status.ts' ':(top)scripts/lanes/bank-status-core.mjs' ':(top)scripts/lanes/funded-max-pct.mjs'
+    ':(top)scripts/lanes/resolve.mjs' ':(top)scripts/lanes/check.mjs' ':(top)scripts/lanes/probe.mjs'
+    ':(top)scripts/lanes/set-lane-override.mjs'
+    ':(top)scripts/observability/quota-sources.ts'
+    ':(top)scripts/telegram/alibaba-probe-once.ts' ':(top)scripts/telegram/quota-gauge.ts'
+    ':(top)scripts/telegram/quota-gauge-alibaba.ts'
+    ':(top,exclude,glob)scripts/**/__pycache__/**')
 cr_manifest() { # cr_manifest <root> - "<mode> <blob-id> <path>" per guarded file, sorted
-    local root=$1 odd files execs oids modes p present=()
-    # A symlink or other non-regular entry (a symlinked scripts/,
-    # scripts/guardrails/ or scripts/handover/ too) cannot be compared file
-    # for file: say ODD and let the caller decide unknown.
-    if [ -L "$root/scripts" ] || [ -L "$root/scripts/guardrails" ] || [ -L "$root/scripts/handover" ]; then
-        echo ODD
-        return 0
-    fi
+    local root=$1 odd files execs oids modes p d present=()
+    # A symlink or other non-regular entry (a symlinked parent directory of
+    # any guarded entry too) cannot be compared file for file: say ODD and
+    # let the caller decide unknown.
+    for p in $cr_guarded; do
+        d=$p
+        while d=$(dirname "$d") && [ "$d" != . ]; do
+            if [ -L "$root/$d" ]; then echo ODD; return 0; fi
+        done
+    done
     # Only the entries this tree has: an entry missing from both trees
     # contributes nothing to either side, and one missing from only one
     # tree makes the manifests differ.

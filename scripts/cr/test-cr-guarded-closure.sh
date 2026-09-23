@@ -11,7 +11,9 @@
 #           + every non-test script at the top of scripts/cr/;
 #   edges = source/exec sites (`.`, source, bash, sh, node, python3, exec)
 #           and direct script calls in command position ("$DIR/x.sh" ...)
-#           on non-comment lines, plus relative JS require/import;
+#           and script paths stored in a variable (X="$DIR/x.sh",
+#           ${X:-$DIR/x.sh}, an env prefix) on non-comment lines, plus
+#           relative JS require/import;
 # and fails when a reached file exists outside cr_guarded. On a failure,
 # widen cr_guarded (and cr_pathspecs, and the runbook precheck) or prove the
 # site is not reached on the "no" path.
@@ -48,19 +50,25 @@ normalize() {
 
 # edges <repo-relative file> - print each repo-relative path the file
 # sources or execs (existing files only).
-PATH_RE='(\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|[)}])?/?[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*\.(sh|js|mjs|cjs|py)'
+PATH_RE='(\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|[)}])?/?[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*\.(sh|js|mjs|cjs|ts|py)'
 # A script path in command position: line start, after ; & | ( $( or
 # then/do/else, optionally quoted - a direct call with no interpreter word.
 # The $VAR/ prefix is required: without it a `(` in a message string or a
 # `|` in a case pattern reads as a call.
 CMD_RE='(^|[;&|(]|\$\(|(then|do|else)[[:space:]])[[:space:]]*"?\$\{?[A-Za-z_][A-Za-z0-9_]*\}?/[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*\.(sh|py)'
+# A line that assigns a variable (VAR=…, an env prefix, or a ${VAR:-…}
+# default): a script path stored there is run later through the variable, so
+# every path on it is an edge. Over-matching only widens the closure, which is
+# the fail-safe direction.
+ASSIGN_RE='[A-Za-z_][A-Za-z0-9_]*=|:-'
 edges() {
-  local f="$1" dir raw tail target
+  local f="$1" dir raw tail target cand
   dir="$(dirname "$f")"
   {
     grep -E '(^|[;&|({[:space:]])(\.|source|bash|sh|node|python3|exec)[[:space:]]' "$ROOT/$f" 2>/dev/null \
       | grep -vE '^[[:space:]]*#' | grep -oE "$PATH_RE"
     grep -vE '^[[:space:]]*#' "$ROOT/$f" 2>/dev/null | grep -oE "$CMD_RE" | grep -oE "$PATH_RE"
+    grep -vE '^[[:space:]]*#' "$ROOT/$f" 2>/dev/null | grep -E "$ASSIGN_RE" | grep -oE "$PATH_RE"
     grep -oE "(require\\(|from[[:space:]]+|import[[:space:]]+)['\"]\\.{1,2}/[^'\"]+['\"]" "$ROOT/$f" 2>/dev/null \
       | grep -oE "\\.{1,2}/[^'\"]+"
   } | while IFS= read -r raw; do
@@ -79,9 +87,22 @@ edges() {
       /scripts/*|scripts/*) target="$(normalize "${tail#/}")" ;;
       *) target="$(normalize "$dir/${tail#/}")" ;;
     esac
-    [ -f "$ROOT/$target" ] && printf '%s\n' "$target"
-  done | sort -u
+    # An extensionless JS/TS import resolves the way node/bun would.
+    for cand in "$target" "$target.ts" "$target.js" "$target.mjs" "$target.cjs" "$target/index.js"; do
+      [ -f "$ROOT/$cand" ] && { printf '%s\n' "$cand"; break; }
+    done
+  done | sort -u | while IFS= read -r target; do
+    # Drop the pinned non-executed edges (NOT_RUN below).
+    grep -qxF -- "$f -> $target" <<< "$NOT_RUN" || printf '%s\n' "$target"
+  done
 }
+
+# Edges the lexical scan sees that no "no" run executes: the path is written
+# into a config or hook for later, or only named in a message, not run. Each is pinned exactly and must
+# still be an edge (checked below), so the list cannot rot silently.
+NOT_RUN="scripts/cr/install-cr-gate.sh -> scripts/hooks/check-cr-before-push.sh
+scripts/lib/wire-statusline.sh -> marketplace/plugins/claude-hud/dist/index.js
+scripts/lib/bank-preflight.sh -> scripts/lanes/codex-bank-probe.ts"
 
 # closure - the transitive set of files reached from the seeds.
 closure() {
@@ -124,7 +145,8 @@ outside() {
 }
 
 # The set under test, parsed from the script itself.
-cr_guarded="$(sed -n 's/^cr_guarded="\(.*\)"$/\1/p' "$DIR/pr-check-context.sh")"
+# The assignment spans several lines; flatten it to one space-separated list.
+cr_guarded="$(sed -n '/^cr_guarded="/,/"$/p' "$DIR/pr-check-context.sh" | sed 's/^cr_guarded="//; s/"$//' | tr '\n' ' ')"
 check "$([ -n "$cr_guarded" ] && echo parsed || echo empty)" "parsed" "cr_guarded parsed from pr-check-context.sh"
 
 # Every guarded entry has a matching :(top) pathspec, and no pathspec names a
@@ -154,7 +176,24 @@ bash "$ROOT/tools/e.sh"
 EOF
 got="$(ROOT="$fx" edges scripts/cr/caller.sh | tr '\n' ' ')"
 check "$got" "scripts/lib/a.sh scripts/lib/b.sh scripts/lib/c.sh scripts/lib/d.sh tools/e.sh " "edges() sees direct script calls in command position and repo-root paths outside scripts/"
+# ...and a script path stored in a variable (a ${VAR:-…} default, an env
+# prefix, a plain assignment) and an extensionless relative import.
+: > "$fx/tools/f.sh"; : > "$fx/scripts/lib/g.sh"; : > "$fx/tools/h.sh"; : > "$fx/scripts/cr/helper.ts"
+cat > "$fx/scripts/cr/assigner.sh" <<'EOF'
+INVOKE="${X_INVOKE:-$SCRIPT_DIR/../../tools/f.sh}"
+BRIDGE="$HERE/../lib/g.sh" node -e 'run(process.env.BRIDGE)'
+P="$REPO/tools/h.sh"
+EOF
+printf 'import { q } from "./helper";\n' > "$fx/scripts/cr/importer.js"
+got="$(ROOT="$fx" edges scripts/cr/assigner.sh | tr '\n' ' ')"
+check "$got" "scripts/lib/g.sh tools/f.sh tools/h.sh " "edges() sees script paths stored in a variable (default, env prefix, assignment)"
+check "$(ROOT="$fx" edges scripts/cr/importer.js)" "scripts/cr/helper.ts" "edges() resolves an extensionless relative import"
 rm -rf "$fx"
+
+# Every pinned NOT_RUN edge is still a real edge of its parent.
+while IFS= read -r pin; do
+  check "$(NOT_RUN='' edges "${pin%% -> *}" | grep -cxF -- "${pin#* -> }")" "1" "NOT_RUN pin is still an edge: $pin"
+done <<< "$NOT_RUN"
 
 reached="$(closure)"
 echo "closure ($(printf '%s\n' "$reached" | grep -c .) files reached from the runbook and scripts/cr):"
@@ -179,6 +218,13 @@ else
   echo "FAIL: RED control - the pre-HIMMEL-3493 set was not caught (got: $red)"
   fail=1
 fi
+
+# RED control: the set PR #1148 first shipped (3f62af60) must fail too - it
+# missed the variable-assigned exec paths the console's review found.
+red="$(printf '%s\n' "$reached" | outside "scripts/cr scripts/lib scripts/guardrails/lib.sh scripts/check-ci.sh scripts/handover/resolve-active-item.sh")"
+for missed in scripts/handover/append-cr-findings.sh scripts/handover/append-cr-bugs.sh scripts/hermes/invoke.sh scripts/statusline/usage-cache-producer.sh; do
+  check "$(grep -cxF "$missed" <<< "$red")" "1" "RED control: the 3f62af60 set leaves $missed unguarded"
+done
 
 echo "test-cr-guarded-closure: $pass passed, fail=$fail"
 exit "$fail"
