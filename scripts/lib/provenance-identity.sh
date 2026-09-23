@@ -173,6 +173,7 @@ _provid_plugin() {
     ' "$file" 2>/dev/null) || { printf 'UNREADABLE'; return 0; }
     [ "$entry" = "null" ] && { printf 'ABSENT'; return 0; }
     mkt_live=$(_provid_marketplace "$(jq -nc --arg n "$mkt" '{unit:$n}')")
+    [ "$mkt_live" = "UNREADABLE" ] && { printf 'UNREADABLE'; return 0; }
     _provid_token plugin "$id"$'\n'"$scope"$'\n'"$proj"$'\n'"$mkt_live" || printf 'UNREADABLE'
 }
 
