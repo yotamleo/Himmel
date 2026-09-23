@@ -47,6 +47,8 @@
 #                      trapping (SIGKILL).
 #   <inbox>.wait.state   the saved action key (line 1: tick-args hash, line 2: key;
 #                        line 3 `failwoke` once a failure streak has woken).
+#                        Written atomically: temp file in the same dir, then
+#                        `mv`, so a kill mid-write never leaves it torn.
 #   <inbox>.wait.lock    the one-waiter flock (the file stays; the lock does not).
 #
 # Exit: 0 = a WAKE block was printed; 1 = the inbox could not be drained;
@@ -150,6 +152,9 @@ sample() {
     tick_state=ok
     for f in legs livestate prs tails legset board; do
         v="$(field "$f" "$tick_line")"
+        # A field missing from a malformed/partial tick line is a failed
+        # sample, never a key with an empty value baked in.
+        if [ -z "$v" ]; then tick_state=fail; key=""; return; fi
         [ "$f" = board ] && v="${v%%:*}"
         key="$key$f=$v|"
     done
@@ -168,7 +173,7 @@ saved=""
 if [ -f "$key_file" ] && [ "$(sed -n 1p "$key_file")" = "$args_hash" ]; then
     saved="$(sed -n 2p "$key_file")"
 fi
-save_key() { printf '%s\n%s\n' "$args_hash" "$1" > "$key_file"; }
+save_key() { printf '%s\n%s\n' "$args_hash" "$1" > "$key_file.tmp" 2>/dev/null && mv -f "$key_file.tmp" "$key_file" 2>/dev/null; }
 # Line 3 `failwoke` = this failure streak already woke the console once.
 fail_woke() {
     [ "$(sed -n 1p "$key_file" 2>/dev/null)" = "$args_hash" ] && [ "$(sed -n 3p "$key_file" 2>/dev/null)" = failwoke ]
@@ -221,7 +226,7 @@ while :; do
             # A monitor that stays broken is an event too, but only once per
             # streak: the re-arm stays quiet until a sample succeeds.
             if [ "$fail_streak" -ge "$fail_wake" ] && ! fail_woke; then
-                printf '%s\n%s\nfailwoke\n' "$args_hash" "$saved" > "$key_file"
+                printf '%s\n%s\nfailwoke\n' "$args_hash" "$saved" > "$key_file.tmp" 2>/dev/null && mv -f "$key_file.tmp" "$key_file" 2>/dev/null
                 printf 'WAKE tick-fail samples=%s\n' "$fail_streak"
                 exit_reason='wake-tick-fail'; exit 0
             fi

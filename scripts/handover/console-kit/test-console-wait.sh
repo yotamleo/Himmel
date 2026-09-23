@@ -324,6 +324,25 @@ wait_hb "$I" || fail "(q) no baseline heartbeat when consoles/ was absent"
 check "(q) the waiter created the inbox" "yes" "$([ -f "$I" ] && echo yes)"
 kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
 
+# --- (r) a tick line missing an action field is a failed sample, never a
+# key with an empty value baked in: it counts toward the fail streak, not a
+# changed-key wake, even across two consecutive malformed samples -----------
+reset_stub
+I="$(new_inbox r)"
+CONSOLE_WAIT_FAIL_WAKE=2 start "$I" "$WORK/r.out" --legs "N1.md"
+wait_hb "$I" || fail "(r) no baseline heartbeat"
+sed 's/ tails=N1:LIVE//' "$STUB/tick.line" > "$STUB/tick.line.tmp" && mv "$STUB/tick.line.tmp" "$STUB/tick.line"
+wait_exit "$WPID"
+check "(r) a streak of malformed samples ends the wait" "0" "$rc"
+check "(r) the wake is tick-fail, never a changed key from an empty field" "WAKE tick-fail samples=2" "$(head -n1 "$WORK/r.out")"
+[ "$rc" = running ] && { kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null; }
+
+# --- (s) .wait.state is written atomically (temp file + rename), never with
+# an in-place '>' redirect that could leave a torn key file on a kill -------
+# shellcheck disable=SC2016 # literal grep pattern, not a shell expansion
+check "(s) no in-place '> \"\$key_file\"' write remains (must go through .tmp + mv)" "0" \
+    "$(grep -cF '> "$key_file"' "$HERE/console-wait.sh")"
+
 # --- (k) usage ---------------------------------------------------------------
 bash "$WAIT" >/dev/null 2>&1; rc=$?
 check "(k) no inbox argument is a usage error (rc 2)" "2" "$rc"
