@@ -672,64 +672,61 @@ assert_rc "119 jq read of a scratchpad .leg-settings.json file allows" 0 \
 assert_rc "120 jq -i on the same scratchpad file still denies (control)" 2 \
     "$(bash_rc_of "$PRIMARY" "jq -i '{add:.permissions.additionalDirectories}' /tmp/claude-1000/somesession/scratchpad/HIMMEL-3514-N424-bridge-hardening.leg-settings.json")"
 
-# 121: the console's OWN verbatim reproduction (2026-09-23, FINDING on
-# K-N431-7980c9b9) — case 119 was a simplified paraphrase of what the
-# console actually ran: a `VAR=path;`-prefixed, `;`-compound, TWO-statement
-# read-only `jq` command, from a PRIMARY-checkout cwd (where is_primary_cwd
-# always forces live=1, so the exemption has to come from the read-only
-# allowlist, not from the live/not-live question). Before this fix,
-# is_readonly_allowlisted vetoed on ANY bare `;` unconditionally, so a
-# harmless second read-only statement denied the whole command -> ALLOW now.
-assert_rc "121 VAR=path; jq read; jq read (console repro, no quoted pipe) allows (HIMMEL-3465)" 0 \
+# 121: pinned known residual (K ruling 2026-09-23 on K-N431-7980c9b9,
+# HALT-and-simplify). This is the console's OWN verbatim reproduction: a
+# `VAR=path;`-prefixed, `;`-compound, TWO-statement read-only `jq` command,
+# from a PRIMARY-checkout cwd. Two successive panel rounds each found a real
+# bypass in a per-segment allowlist narrow enough to let this shape through
+# (round 2: an assignment shortcut riding past a later write on a
+# newline-embedded segment; round 3: the same class of gap recurring one
+# round later) — rising severity on the same surface, so the per-segment
+# split was reverted back to the blunt "any bare `;` vetoes" behavior rather
+# than patched a third time. This harmless chain now denies too; documented
+# as a known residual rather than chased further (ponytail, upgrade path
+# HIMMEL-3546 — a real fix needs quote-aware tokenization of the whole
+# command, not another metacharacter scan).
+assert_rc "121 VAR=path; jq read; jq read (console repro) still denies (known residual, HIMMEL-3546)" 2 \
     "$(bash_rc_of "$PRIMARY" "SP=/tmp/claude-1000/somesession/scratchpad; jq '.permissions.additionalDirectories' \$SP/HIMMEL-3514-N424-bridge-hardening.leg-settings.json; jq '.permissions.additionalDirectories' \$SP/HIMMEL-3536-N425-step0-remainder.leg-settings.json")"
 
 # 122 control: the same VAR=path;-prefixed shape, this time with a genuine
-# WRITE (sed -i) as the chained statement -> DENY — proves 121's exemption
-# only covers a chain of independently read-only segments, not a `;`-joined
-# write riding in behind a harmless assignment.
+# WRITE (sed -i) as the chained statement — denies, same as 121, now simply
+# because ANY bare `;` vetoes the allowlist unconditionally.
 assert_rc "122 VAR=path; write-in-place still denies (control)" 2 \
     "$(bash_rc_of "$PRIMARY" "X=/tmp/claude-1000/somesession/scratchpad; sed -i s/a/b/ \$X/settings.json")" # gnu-ok: fixture text parsed by the hook, never executed
 
 # 123 control: a `;`-joined write with NO leading assignment (`cat x; rm -rf
-# ~`-shaped) still denies — proves the per-segment check, not just the bare
-# `;` veto, is what is carrying rule 1 now.
+# ~`-shaped) still denies — same blunt bare-`;` veto as 121/122.
 assert_rc "123 jq read; write-in-place (no assignment) still denies (control)" 2 \
     "$(bash_rc_of "$PRIMARY" "jq '.permissions.additionalDirectories' /tmp/claude-1000/somesession/scratchpad/HIMMEL-3514-N424-bridge-hardening.leg-settings.json; sed -i s/a/b/ /tmp/claude-1000/somesession/scratchpad/HIMMEL-3514-N424-bridge-hardening.leg-settings.json")" # gnu-ok: fixture text parsed by the hook, never executed
 
-# 124: known residual limitation of 121's fix, documented rather than chased
-# (ponytail: this guard matches metacharacters on TEXT after quotes are
-# stripped for the primary/$HOME-path detection above — HIMMEL-3468 — so a
-# `|` INSIDE a quoted jq filter argument, e.g. `test("a|b")`, is
-# indistinguishable from a real shell pipe once quotes are gone. Fixing this
-# needs quote-aware tokenization, a materially bigger change; reported to
-# the console as a FINDING rather than attempted here). Still denies today.
-assert_rc "124 VAR=path; jq with a quoted-pipe regex filter still denies (ponytail, HIMMEL-3465)" 2 \
+# 124: another known residual of the same class, documented rather than
+# chased (ponytail: this guard matches metacharacters on TEXT after quotes
+# are stripped for the primary/$HOME-path detection above — HIMMEL-3468 —
+# so a `|` INSIDE a quoted jq filter argument, e.g. `test("a|b")`, is
+# indistinguishable from a real shell pipe once quotes are gone; this
+# command also carries a bare `;`, so it denies twice over today). Fixing
+# either needs the same quote-aware tokenization as 121 — HIMMEL-3546.
+assert_rc "124 VAR=path; jq with a quoted-pipe regex filter still denies (ponytail, HIMMEL-3546)" 2 \
     "$(bash_rc_of "$PRIMARY" "SP=/tmp/claude-1000/somesession/scratchpad; jq '[.permissions.allow[]? | select(test(\"luna|handover\"))]' \$SP/HIMMEL-3514-N424-bridge-hardening.leg-settings.json")"
 
-# 125: codex-1 (/pr-check critic panel, Critical, 2026-09-23) — 121's fix
-# checked each `;`-segment's leading assignment against a lowercase-only
-# regex, but is_readonly_allowlisted is invoked with the ALREADY-LOWERCASED
-# command text, so `PATH=/tmp/evil;` folds to `path=/tmp/evil;` and matched
-# the same as any harmless assignment, silently exempting the chain from the
-# read-only check on the LATER real verb. Before this fix that later `cat`
-# on the primary's live settings.json ran under an attacker-controlled PATH
-# (rc=0, allowed); denylisting exec/resolution-influencing names (sudo's
-# env_delete list, folded lowercase) closes it while leaving arbitrary
-# benign variable names (case 121's own repro) allowed -> DENY now.
-assert_rc "125 PATH=/tmp/evil; cat live settings.json still denies (HIMMEL-3465, codex-1)" 2 \
+# 125: PATH-hijack shape (/pr-check critic panel round 1, Critical,
+# 2026-09-23) — `PATH=/tmp/evil; cat ~/.claude/settings.json` would run the
+# later `cat` under an attacker-controlled PATH if the chain were ever
+# allowlisted. The round-1 fix denylisted exec-influencing assignment names
+# inside the (now-reverted) per-segment split; after the revert this denies
+# for the blunter reason every `;`-joined command now denies for, so the
+# security property (still DENY) holds unchanged.
+assert_rc "125 PATH=/tmp/evil; cat live settings.json still denies (HIMMEL-3465)" 2 \
     "$(bash_rc_of "$PRIMARY" "PATH=/tmp/evil; cat \$PRIMARY/.claude/settings.json")"
 
-# 126: /pr-check critic panel round 2 (Critical, 2026-09-23) — grep's ^/$
-# anchor per LINE, not per string. A `;`-segment that itself embeds a real
-# newline (two statements joined by newline rather than `;`) could have its
-# FIRST line match the bare-assignment pattern while a WRITE on the second
-# line of the SAME segment was never independently checked - grep reports
-# success if ANY line matches, so the write rode through unallowlisted.
-# Skipping the assignment shortcut whenever a segment contains a newline (and
-# letting is_readonly_segment judge the whole multi-line segment instead,
-# which denies on an unrecognized multi-line "first word") closes it -> DENY.
+# 126: newline-in-segment write shape (/pr-check critic panel round 2,
+# Critical, 2026-09-23) — a `;`-segment that itself embeds a real newline.
+# The round-2 fix closed a gap specific to the (now-reverted) per-segment
+# assignment shortcut; after the revert this denies for the same blunter
+# bare-`;` veto reason as 121-125, so the security property (still DENY)
+# holds unchanged.
 CMD126=$'X=1\nsed -i s/a/b/ .claude/settings.json; jq \'.foo\' .claude/settings.json'
-assert_rc "126 newline-in-segment write no longer rides an assignment match (HIMMEL-3465, codex-1 round 2)" 2 \
+assert_rc "126 newline-in-segment write still denies (HIMMEL-3465)" 2 \
     "$(bash_rc_of "$PRIMARY" "$CMD126")"
 
 # Clean up worktree registrations before removing the sandbox (avoids
