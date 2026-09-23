@@ -50,8 +50,18 @@ cat > "$td/profile.json" <<'JSON'
 }
 JSON
 
+# A CI runner has no `claude` CLI on PATH; uninstall.sh's [4/8] step halts
+# without one, which caseB's fallback uninstall --dry-run then hits. Stub it
+# so this suite is hermetic (does not depend on the ambient PATH), same
+# pattern as scripts/test-uninstall.sh's fake-HOME stub.
+stubbin="$td/stubbin"
+mkdir -p "$stubbin"
+printf '#!/usr/bin/env bash\necho "[]"\n' > "$stubbin/claude"
+chmod +x "$stubbin/claude"
+
 run_install() {
   HOME="$td/home" USERPROFILE="$td/home" \
+    PATH="$stubbin:$PATH" \
     HIMMELCTL_BASH="$bash_bin" HIMMELCTL_INTERACTIVE=0 \
     HIMMELCTL_CACHE_DIR="$td/cache" HIMMEL_LUNA_CONFIG_PATH="$td/cache-luna-config.json" \
     HIMMELCTL_REPO_ROOT="$td/himmel" \
@@ -98,7 +108,7 @@ run_fallback() {
   # checkout unrelated to the scratch fixture -- run from $td/home instead so
   # dry-run reports on the fixture's identity, not the leg's own repo.
   (cd "$td/home" && HOME="$td/home" USERPROFILE="$td/home" HIMMEL_PROVENANCE_DIR="$td/prov" \
-    node "$td/bin/himmelctl.js" "$@" 2>&1)
+    PATH="$stubbin:$PATH" node "$td/bin/himmelctl.js" "$@" 2>&1)
 }
 set +e
 dry=$(run_fallback uninstall --dry-run); dry_rc=$?
