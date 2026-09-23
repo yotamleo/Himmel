@@ -605,10 +605,19 @@ _red_seed_git_fork() {
   git -C "$dir" init -q
   git -C "$dir" config user.email test@example.invalid
   git -C "$dir" config user.name "Test"
-  printf 'ok\n' > "$dir/.himmel-build-ok"
+  # HIMMEL-3534: match the real fork's .gitignore shape (node_modules/,
+  # dist/ are the build's own output; notes/ stands in for the fork's many
+  # OTHER ignored patterns -- archive/, *.sqlite, etc -- that are NOT build
+  # output and so stay off the allowlist).
+  printf 'node_modules/\ndist/\nnotes/\n' > "$dir/.gitignore"
   printf 'fork file\n' > "$dir/tracked.txt"
   git -C "$dir" add -A
   git -C "$dir" commit -q -m seed
+  # The build stamp is written AFTER the seed commit, same as a real build:
+  # untracked, never gitignored (HIMMEL-3534 FINDING) -- present in every
+  # fixture from here on so RED27/RED28's clean-tree cases match a real
+  # built fork, not one caught mid-build.
+  printf 'ok\n' > "$dir/.himmel-build-ok"
   bare="$dir.git-origin"
   git init -q --bare "$bare"
   git -C "$dir" remote add origin "$bare"
@@ -935,6 +944,92 @@ check "RED27d: a fork checkout with an unpushed local commit is KEPT under --pur
   "$([ -e "$CASE_QMD_FORK_DIR" ] && echo yes || echo no)" "yes"
 check "RED27d: a user-modified kept line is printed" \
   "$(printf '%s\n' "$out27d" | grep -c 'kept:.*user-modified: unpushed local commits')" "1"
+
+echo "==== RED28 (HIMMEL-3534): a qmd fork checkout carrying user data in a git-ignored path is kept ===="
+# HIMMEL-3524's git-dirty check (RED27) is blind to ignored paths --
+# `status --porcelain` never lists them, so a user file placed inside one
+# (next to node_modules/ or dist/) read as clean and was silently rm -rf'd.
+# The fix diffs ignored paths against an allowlist of what the fork's own
+# build creates (node_modules/, dist/): anything else ignored is user work.
+
+new_case red28a
+CASE_QMD_FORK_DIR="$CASE_DIR/qmd-fork"
+_red_seed_git_fork "$CASE_QMD_FORK_DIR"
+# Only the build's own output present -- a real built fork, nothing else.
+mkdir -p "$CASE_QMD_FORK_DIR/node_modules" "$CASE_QMD_FORK_DIR/dist"
+printf 'pkg\n' > "$CASE_QMD_FORK_DIR/node_modules/pkg.js"
+printf 'out\n' > "$CASE_QMD_FORK_DIR/dist/out.js"
+( prov_begin --writer install.sh -- seed-red28a >/dev/null
+  prov_record create file "$CASE_QMD_FORK_DIR/.himmel-build-ok" --pre-absent --post-file "$CASE_QMD_FORK_DIR/.himmel-build-ok" \
+    --scope machine --class code --row qmd-fork --writer qmd-bin.sh --field preexisted=false >/dev/null
+  prov_end ok >/dev/null )
+out28a=$(run_uninstall --yes --purge-state --skip-tasks --skip-plugins --skip-hooks); rc28a=$?
+check "RED28a: uninstall exit status" "$rc28a" "0"
+check "RED28a: a fork checkout holding only allowlisted build output IS removed under --purge-state" \
+  "$([ -e "$CASE_QMD_FORK_DIR" ] && echo yes || echo no)" "no"
+check "RED28a: a removed line is printed" \
+  "$(printf '%s\n' "$out28a" | grep -c 'removed:.*qmd fork checkout')" "1"
+
+new_case red28b
+CASE_QMD_FORK_DIR="$CASE_DIR/qmd-fork"
+_red_seed_git_fork "$CASE_QMD_FORK_DIR"
+# A user file dropped into a git-ignored path OUTSIDE the build's allowlist
+# (not node_modules/ or dist/) -- e.g. next to the fork's own build output,
+# matching the ticket's "a stray personal note" example.
+mkdir -p "$CASE_QMD_FORK_DIR/notes"
+printf 'secret user note\n' > "$CASE_QMD_FORK_DIR/notes/mine.txt"
+( prov_begin --writer install.sh -- seed-red28b >/dev/null
+  prov_record create file "$CASE_QMD_FORK_DIR/.himmel-build-ok" --pre-absent --post-file "$CASE_QMD_FORK_DIR/.himmel-build-ok" \
+    --scope machine --class code --row qmd-fork --writer qmd-bin.sh --field preexisted=false >/dev/null
+  prov_end ok >/dev/null )
+out28b=$(run_uninstall --yes --purge-state --skip-tasks --skip-plugins --skip-hooks); rc28b=$?
+check "RED28b: uninstall exit status" "$rc28b" "0"
+check "RED28b: a fork checkout with a user file in an ignored path outside the allowlist is KEPT under --purge-state" \
+  "$([ -e "$CASE_QMD_FORK_DIR" ] && echo yes || echo no)" "yes"
+check "RED28b: the user's note survives" "$(cat "$CASE_QMD_FORK_DIR/notes/mine.txt")" "secret user note"
+check "RED28b: a user-modified kept line is printed" \
+  "$(printf '%s\n' "$out28b" | grep -c 'kept:.*user-modified: ignored files outside the build output')" "1"
+
+new_case red28c
+CASE_QMD_FORK_DIR="$CASE_DIR/qmd-fork"
+_red_seed_git_fork "$CASE_QMD_FORK_DIR"
+# A user file placed INSIDE an allowlisted dir (node_modules/) is still
+# removed with the rest of the checkout -- the documented trade-off: the
+# allowlist trusts the build's own directories wholesale, it does not
+# distinguish a stray file from real build output within them.
+mkdir -p "$CASE_QMD_FORK_DIR/node_modules"
+printf 'not really a package\n' > "$CASE_QMD_FORK_DIR/node_modules/users-own-file.txt"
+( prov_begin --writer install.sh -- seed-red28c >/dev/null
+  prov_record create file "$CASE_QMD_FORK_DIR/.himmel-build-ok" --pre-absent --post-file "$CASE_QMD_FORK_DIR/.himmel-build-ok" \
+    --scope machine --class code --row qmd-fork --writer qmd-bin.sh --field preexisted=false >/dev/null
+  prov_end ok >/dev/null )
+out28c=$(run_uninstall --yes --purge-state --skip-tasks --skip-plugins --skip-hooks); rc28c=$?
+check "RED28c: uninstall exit status" "$rc28c" "0"
+check "RED28c: a user file inside an allowlisted build dir (node_modules/) is REMOVED with the checkout" \
+  "$([ -e "$CASE_QMD_FORK_DIR" ] && echo yes || echo no)" "no"
+check "RED28c: a removed line is printed" \
+  "$(printf '%s\n' "$out28c" | grep -c 'removed:.*qmd fork checkout')" "1"
+
+echo "==== RED29 (HIMMEL-3534, regression from HIMMEL-3524/#1175): the build stamp itself never blocks removal ===="
+# _qmd_build_stamp (scripts/lib/qmd-bin.sh:82) writes .himmel-build-ok
+# untracked at the fork root on every successful build. RED27's dirty-tree
+# check (`status --porcelain --untracked-files=normal`) read that file as an
+# untracked change on EVERY built fork, so --purge-state never removed one --
+# _red_seed_git_fork now seeds the stamp on every case (matching a real
+# build), which is what makes RED27a/26/20b exercise this path too.
+new_case red29a
+CASE_QMD_FORK_DIR="$CASE_DIR/qmd-fork"
+_red_seed_git_fork "$CASE_QMD_FORK_DIR"
+( prov_begin --writer install.sh -- seed-red29a >/dev/null
+  prov_record create file "$CASE_QMD_FORK_DIR/.himmel-build-ok" --pre-absent --post-file "$CASE_QMD_FORK_DIR/.himmel-build-ok" \
+    --scope machine --class code --row qmd-fork --writer qmd-bin.sh --field preexisted=false >/dev/null
+  prov_end ok >/dev/null )
+out29a=$(run_uninstall --yes --purge-state --skip-tasks --skip-plugins --skip-hooks); rc29a=$?
+check "RED29a: uninstall exit status" "$rc29a" "0"
+check "RED29a: a freshly built (stamp-only-dirty) fork checkout IS removed under --purge-state" \
+  "$([ -e "$CASE_QMD_FORK_DIR" ] && echo yes || echo no)" "no"
+check "RED29a: never reports the stamp itself as a user modification" \
+  "$(printf '%s\n' "$out29a" | grep -c 'kept:.*user-modified')" "0"
 
 echo "==== REAL-LEDGER TRIPWIRE ===="
 REAL_LEDGER_AFTER=$(real_ledger_state)
