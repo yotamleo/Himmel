@@ -493,7 +493,7 @@ echo "==== RED19 (HIMMEL-3332 S6 slice2): workspace-trust json-key ledger excisi
 # wet-run fence (HIMMEL-2505) reads as a live operator profile. The HOME is a
 # temp dir, so lift the fence the way test-uninstall.sh's u_run_fx does --
 # for these four calls only.
-run_uninstall_fx() { export HIMMEL_UNINSTALL_REAL_HOME=1; run_uninstall "$@"; unset HIMMEL_UNINSTALL_REAL_HOME; }
+run_uninstall_fx() { export HIMMEL_UNINSTALL_REAL_HOME=1; run_uninstall "$@"; local rc=$?; unset HIMMEL_UNINSTALL_REAL_HOME; return "$rc"; }
 new_case red19a
 # RED7's HOME override, `( HOME set inside a subshell )`, closed long before this line; HOME here is the
 # suite's own scratch HOME, exactly as intended.
@@ -505,7 +505,7 @@ cp "$CFG19A" "$SUITE_TMP/red19a-before.json"
   prov_record create json-key "$CFG19A" --unit '/projects/~1proj/hasTrustDialogAccepted' --scope user --class code \
     --writer himmelctl-bin.js --row workspace-trust --pre-absent --post-json 'true' --field preexisted=false >/dev/null
   prov_end ok >/dev/null )
-run_uninstall_fx --yes --skip-tasks --skip-plugins --skip-hooks >/dev/null
+run_uninstall_fx --yes --skip-tasks --skip-plugins --skip-hooks >/dev/null; check "RED19a: uninstall exit status" "$?" "0"
 check "RED19a: install-created trust key is removed" \
   "$(jq -c '.projects."/proj" | has("hasTrustDialogAccepted")' "$CFG19A")" "false"
 check "RED19a: rest of the project object is byte-identical" \
@@ -521,7 +521,7 @@ cp "$CFG19B" "$SUITE_TMP/red19b-before.json"
   prov_record noop json-key "$CFG19B" --unit '/projects/~1proj/hasTrustDialogAccepted' --scope user --class code \
     --writer himmelctl-bin.js --row workspace-trust --pre-json 'true' --post-json 'true' --field preexisted=true >/dev/null
   prov_end ok >/dev/null )
-run_uninstall_fx --yes --skip-tasks --skip-plugins --skip-hooks >/dev/null
+run_uninstall_fx --yes --skip-tasks --skip-plugins --skip-hooks >/dev/null; check "RED19b: uninstall exit status" "$?" "0"
 check "RED19b: pre-existing trust key survives byte-identical" \
   "$(jq -c . "$CFG19B")" "$(jq -c . "$SUITE_TMP/red19b-before.json")"
 
@@ -535,7 +535,7 @@ jq -n '{projects: {"/proj": {hasTrustDialogAccepted: false}}}' > "$CFG19C"
   prov_record create json-key "$CFG19C" --unit '/projects/~1proj/hasTrustDialogAccepted' --scope user --class code \
     --writer himmelctl-bin.js --row workspace-trust --pre-absent --post-json 'true' --field preexisted=false >/dev/null
   prov_end ok >/dev/null )
-run_uninstall_fx --yes --skip-tasks --skip-plugins --skip-hooks >/dev/null
+run_uninstall_fx --yes --skip-tasks --skip-plugins --skip-hooks >/dev/null; check "RED19c: uninstall exit status" "$?" "0"
 check "RED19c: a trust key the user has since revoked is kept (false)" \
   "$(jq -c '.projects."/proj".hasTrustDialogAccepted' "$CFG19C")" "false"
 
@@ -545,7 +545,7 @@ CFG19D="$HOME/.claude.json"
 jq -n '{projects: {"/proj": {hasTrustDialogAccepted: true}}}' > "$CFG19D"
 cp "$CFG19D" "$SUITE_TMP/red19d-before.json"
 # no prov_begin/prov_record/prov_end at all -- a pre-ledger install.
-run_uninstall_fx --yes --skip-tasks --skip-plugins --skip-hooks >/dev/null
+run_uninstall_fx --yes --skip-tasks --skip-plugins --skip-hooks >/dev/null; check "RED19d: uninstall exit status" "$?" "0"
 check "RED19d: with no ledger, the trust key is kept exactly as today" \
   "$(jq -c . "$CFG19D")" "$(jq -c . "$SUITE_TMP/red19d-before.json")"
 
