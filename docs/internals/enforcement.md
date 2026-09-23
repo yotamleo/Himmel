@@ -1561,11 +1561,15 @@ It does not parse commands. It fires when the command text names
 `settings.json`/`settings.local.json` (rule 1, any verb) or names a `.claude`
 directory together with a copy-shaped verb (`cp`/`mv`/`install`/`rsync`/`ln`/
 `dd`/`tee`) or `-t`/`--target-directory` (rule 2). It then denies when the
-mention is live: the cwd is a primary checkout, the text names the primary
-root, `$HOME/.claude`, `~/.claude` or `../.claude/`, or the command contains
-a `cd`/`pushd`/`popd` word. The last condition exists because the
-worktree-relative exemption is judged against the PreToolUse cwd, and a `cd`
-earlier in the same command moves the real target. Rule 1 lets through a bare
+mention is live: the cwd is a primary checkout or is in no repo at all; the
+text names the primary root or `$HOME`'s `.claude` (`<home>/.claude`,
+`$HOME/.claude`, `${HOME}/.claude`, `~/.claude`, `~user/.claude`, with or
+without a trailing `/`); the command contains `..` anywhere; or it contains a
+`cd`/`pushd`/`popd` word or a case-sensitive `-C`/`--chdir` word (`git -C`,
+`make -C`, `env -C`). The worktree-relative exemption is judged against the
+PreToolUse cwd, and a `..` climb or a directory change in the same command
+moves the real target: from `<primary>/.claude/worktrees/<wt>`,
+`../../settings.json` is the primary's file, whatever the verb. Rule 1 lets through a bare
 read (`cat`/`head`/`tail`/`grep`/`rg`/`diff`/`wc`/`less`/`jq`/`git
 diff|show|log|status|blame`) that has no chaining, pipe or redirect.
 
@@ -1577,16 +1581,34 @@ covers any metacharacter without listing it, and a verb inside a word
 command text first, because the shell drops them inside a word (`c\p`,
 `c""p` and `settings.js\on` spell what they name). A line continuation
 (backslash-newline) is removed as a pair. The PowerShell arm deletes quotes
-and backticks instead (backtick-newline as a pair), and folds `\` to `/`. A linked worktree's own absolute root, with its trailing `/`, is blanked out before the
-primary-root match, so a nested worktree can write its own settings. That
-exemption is voided when `..` appears anywhere in the command.
+and backticks instead (backtick-newline as a pair), and folds `\` to `/`.
+Then `//` and `/./` are collapsed to `/`. A linked worktree's own absolute
+root, with its trailing `/`, is blanked out before the primary-root match, so
+a nested worktree can write its own settings.
 
 **Accepted false denies** (each has a test row): a harmless `cd` plus a
-worktree-settings mention; a `cat >> other.md` whose heredoc prose names
-`settings.json` (the hook does not parse where the bytes land); and a read
-of the file piped or redirected onward. **Known residuals:** `env -C`/
-`--chdir` or `find … -exec` moving the target, variables, globs and symlinks,
-and a POSIX-mount spelling of a Windows drive root. Bypass:
+worktree-settings mention; any `..` beside a worktree-settings mention
+(`cp ../notes.txt .claude/settings.json`); a `cat >> other.md` whose heredoc
+prose names `settings.json` (the hook does not parse where the bytes land);
+and a read of the file piped or redirected onward.
+
+**Known residuals** — the hook matches text, so it misses a write whose text
+does not name the file or its directory in a form above:
+
+- a command that names neither `settings.json` nor a `.claude` directory
+  but writes one anyway: `tar -C … -x`, `unzip -d`,
+  `git checkout <ref> -- .claude`, or a directory copy whose source holds
+  the file (HIMMEL-3499);
+- a directory change by another spelling: `find … -exec`, or a directory
+  flag with another name (`tar --directory`);
+- a name built at run time: variables, `$(…)` and backtick substitution,
+  and globs;
+- symlinks;
+- an absolute path into a second clone of the repo, other than this
+  session's own primary checkout;
+- a POSIX-mount spelling (`/c/Users/…`) of a Windows drive root.
+
+Bypass:
 `EDIT_LIVE_SETTINGS_OK=1` (launching shell only, same convention as
 `EDIT_ON_MAIN_OK`).
 

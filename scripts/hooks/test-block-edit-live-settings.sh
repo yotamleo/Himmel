@@ -382,11 +382,12 @@ assert_rc "51 bash absolute-path /bin/cp into primary .claude/ dir denies" 2 \
 assert_rc "52 bash relative traversal from nested worktree into primary settings.json denies" 2 \
     "$(bash_rc_of "$SANDBOX/primary/.claude/worktrees/feat+x" "echo pwned > ../../../.claude/settings.json")"
 
-# 53 (v2 CR round 3, codex-1 control): an unrelated `..` mention and an
-# unrelated `.claude/` destination, not adjacent, must stay ALLOW — the
-# traversal match is `../.claude/` as one contiguous string, not `..`
-# anywhere plus `.claude/` anywhere.
-assert_rc "53 bash unrelated .. and .claude mention (non-adjacent) allows" 0 \
+# 53 (was a v2 CR round 3 ALLOW control): an unrelated `..` next to the
+# worktree's own settings is now an accepted false deny. Any `..` in a
+# command that names settings voids the worktree exemption (HIMMEL-3468,
+# console ruling on 1146): the hook cannot tell which word the `..` climbs
+# from, and `../../settings.json` from a nested worktree is the primary's.
+assert_rc "53 accepted false deny: unrelated .. beside the worktree's own settings denies" 2 \
     "$(bash_rc_of "$WT2" "cp ../backup-notes.txt .claude/settings.json")"
 
 # 54 (v2 CR round 3, codex-3): a quoted RESOLVED $HOME path with the closing
@@ -540,6 +541,61 @@ assert_rc "85 c<backslash-newline>p -r into \$HOME/.claude/ denies" 2 \
     "$(bash_rc_of "$WT2" "c\\${NL}p -r /tmp/payload/. \$HOME/.claude/" HOME="$FAKEHOME")"
 assert_rc "86 powershell settings.js<backtick-newline>on from primary denies" 2 \
     "$(powershell_rc_of "$PRIMARY" "Set-Content -Path .claude/settings.js\`${NL}on -Value x")"
+
+# 87-91: a relative `..` climb from a worktree cwd. The nested worktree's
+# `../../settings.json` IS the primary's live file, whatever the verb, so any
+# `..` in a command that names settings voids the worktree exemption.
+assert_rc "87 nested worktree echo > ../../settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "echo x > ../../settings.json")"
+assert_rc "88 nested worktree cp /tmp/x ../../settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp /tmp/x ../../settings.json")"
+assert_rc "89 nested worktree sed -i ../../settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "sed -i s/a/b/ ../../settings.json")"
+assert_rc "90 nested worktree /proc/self/cwd/../../settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "echo x > /proc/self/cwd/../../settings.json")"
+assert_rc "91 nested worktree git -C ../../.. checkout -- .claude/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "git -C ../../.. checkout -- .claude/settings.json")"
+
+# 92: a `-C <dir>` word moves the target like a cd does.
+assert_rc "92 git -C ~ checkout -- .claude/settings.json denies" 2 \
+    "$(bash_rc_of "$WT2" "git -C ~ checkout -- .claude/settings.json" HOME="$FAKEHOME")"
+
+# 93-97: `//` and `/./` name the same path as `/`, so they are collapsed
+# before any root is matched.
+assert_rc "93 <home>//.claude/settings.json denies" 2 \
+    "$(bash_rc_of "$WT2" "echo x > $FAKEHOME//.claude/settings.json" HOME="$FAKEHOME")"
+assert_rc "94 \$HOME//.claude/settings.json denies" 2 \
+    "$(bash_rc_of "$WT2" "echo x > \$HOME//.claude/settings.json" HOME="$FAKEHOME")"
+assert_rc "95 ~/./.claude/settings.json denies" 2 \
+    "$(bash_rc_of "$WT2" "echo x > ~/./.claude/settings.json" HOME="$FAKEHOME")"
+assert_rc "96 <sandbox>//primary/.claude/settings.json denies" 2 \
+    "$(bash_rc_of "$WT2" "echo x > $SANDBOX//primary/.claude/settings.json")"
+assert_rc "97 <sandbox>/./primary/.claude/settings.json denies" 2 \
+    "$(bash_rc_of "$WT2" "echo x > $SANDBOX/./primary/.claude/settings.json")"
+
+# 98-100: a `~user` home, and `~/.claude` named as a directory with no
+# trailing slash.
+assert_rc "98 ~user/.claude/settings.json denies" 2 \
+    "$(bash_rc_of "$WT2" "echo x > ~someone/.claude/settings.json" HOME="$FAKEHOME")"
+assert_rc "99 cp /tmp/x ~/.claude from a worktree denies" 2 \
+    "$(bash_rc_of "$WT2" "cp /tmp/settings.json ~/.claude" HOME="$FAKEHOME")"
+assert_rc "100 cp /tmp/x ~/.claude from a non-repo cwd denies" 2 \
+    "$(bash_rc_of "$SANDBOX" "cp /tmp/settings.json ~/.claude" HOME="$FAKEHOME")"
+
+# 101: a cwd outside any repo has no worktree to exempt, so a relative
+# mention resolves to whatever sits there — here $HOME's own settings.
+assert_rc "101 relative .claude/settings.json write with cwd=\$HOME denies" 2 \
+    "$(bash_rc_of "$FAKEHOME" "echo x > .claude/settings.json" HOME="$FAKEHOME")"
+
+# 102-105 controls: the new rules must not reach these.
+assert_rc "102 git -C <primary>/.claude/worktrees/x status allows" 0 \
+    "$(bash_rc_of "$WT2" "git -C $PRIMARY/.claude/worktrees/x status")"
+assert_rc "103 ls .claude/worktrees from primary allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "ls .claude/worktrees")"
+assert_rc "104 cp /tmp/x .claude/ from a worktree allows" 0 \
+    "$(bash_rc_of "$WT2" "cp /tmp/x .claude/")"
+assert_rc "105 grep -C 3 on the worktree's own settings allows" 0 \
+    "$(bash_rc_of "$WT2" "grep -C 3 x .claude/settings.json")"
 
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
