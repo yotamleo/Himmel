@@ -79,7 +79,7 @@ if [ -z "$REPO_ROOT" ]; then
     REPO_ROOT="$(git -C "$HERE" rev-parse --show-toplevel 2>/dev/null)"
     [ -n "$REPO_ROOT" ] || { echo "dead-parts: could not determine default --repo-root (not inside a git repo?)" >&2; exit 2; }
 fi
-[ -d "$REPO_ROOT/.git" ] || { echo "dead-parts: not a git repo root: $REPO_ROOT" >&2; exit 2; }
+[ -e "$REPO_ROOT/.git" ] || { echo "dead-parts: not a git repo root: $REPO_ROOT" >&2; exit 2; }
 
 to_epoch() {
     date -d "$1" +%s 2>/dev/null && return 0
@@ -168,7 +168,8 @@ while IFS= read -r f; do
       if .type=="assistant" then
         (.message.content[]? | select(.type=="tool_use") |
           if .name=="Skill" then "SKILL\t\(.input.skill // "")"
-          elif .name=="Bash" then "BASH\t\(.input.command // "")"
+          elif .name=="Bash" then "BASH\t\(.input.command // "" | gsub("\n";" "))"
+          elif .name=="Agent" then "AGENT\t\(.input.subagent_type // "")"
           else empty end)
       elif .type=="user" then
         (.message.content | select(type=="string") | select(test("^<command-name>")) | "CMD\t\(.)")
@@ -182,11 +183,22 @@ if [ "$JQ_FAILS" -gt 0 ]; then
     echo "dead-parts: WARNING: $JQ_FAILS transcript(s) skipped due to jq failure in the USED scan" >&2
 fi
 
-awk -F'\t' '$1=="SKILL" && $2!=""{print $2}' "$TAGGED" | sort -u > "$RUN/used-skill-names.txt"
+# ponytail: a transcript's Skill tool_use may name a plugin-qualified skill
+# (`plugin:name`) while discovery's `name` is bare, so a used skill is matched
+# by taking the suffix after the last `:` - same tradeoff as tool-usage.sh's
+# own USED-skill matching, same accepted collision risk.
+awk -F'\t' '$1=="SKILL" && $2!=""{print $2}' "$TAGGED" | sed 's/.*://' | sort -u > "$RUN/used-skill-names.txt"
+awk -F'\t' '$1=="AGENT" && $2!=""{print $2}' "$TAGGED" | sort -u > "$RUN/used-agent-names.txt"
 awk -F'\t' '$1=="BASH"{print $2}' "$TAGGED" > "$RUN/bash-commands.txt"
 awk -F'\t' '$1=="CMD"{print $2}' "$TAGGED" > "$RUN/command-strings.txt"
 grep -o '<command-name>/\?[^<]*' "$RUN/command-strings.txt" 2>/dev/null \
     | sed -E 's#^<command-name>/?##' | sort -u > "$RUN/used-command-names.txt"
+# ponytail: USED-script detection is a path-substring match against raw Bash
+# command text, so a `cat`/`grep` on a script's own path also counts as USED,
+# not only its execution. Accepted: the same over-counting risk already
+# applies to the WIRED git-grep pass (a mention anywhere in tracked content
+# also counts), and this metric's job is "does anything reference this path
+# at all", not "does anything execute it" - a human reviews every DEAD row.
 : > "$RUN/used-script-paths.txt"
 awk -F'\t' '$1=="script"{print $3}' "$ENTRIES" | while IFS= read -r sp; do
     grep -qF -- "$sp" "$RUN/bash-commands.txt" 2>/dev/null && echo "$sp" >> "$RUN/used-script-paths.txt"
@@ -221,6 +233,7 @@ while IFS=$'\t' read -r kind name path; do
         script) grep -qxF -- "$path" "$RUN/used-script-paths.txt" 2>/dev/null && used=1 ;;
         skill) grep -qxF -- "$name" "$RUN/used-skill-names.txt" 2>/dev/null && used=1 ;;
         command) grep -qxF -- "$name" "$RUN/used-command-names.txt" 2>/dev/null && used=1 ;;
+        agent) grep -qxF -- "$name" "$RUN/used-agent-names.txt" 2>/dev/null && used=1 ;;
     esac
     if [ "$used" -eq 1 ]; then
         printf '%s\t%s\t%s\tUSED\n' "$kind" "$name" "$path" >> "$CLASS"
@@ -228,7 +241,18 @@ while IFS=$'\t' read -r kind name path; do
     fi
     if [ "$kind" = "script" ]; then pattern="$path"; else pattern="$name"; fi
     hits=$(git -C "$REPO_ROOT" grep -lF -- "$pattern" 2>/dev/null)
-    if [ -z "$hits" ] && [ "$kind" = "script" ]; then
+    non_self_hits=""
+    [ -n "$hits" ] && non_self_hits=$(printf '%s\n' "$hits" | grep -vxF -- "$path" 2>/dev/null)
+    # ponytail: this basename fallback (fires only when the full-path grep's
+    # sole hit is the entry's own self-referencing header) is a literal
+    # substring search, so it also over-counts: a basename that is itself a
+    # substring of another tracked file's name or prose (e.g. `caller.sh`
+    # inside `test-caller.sh`, or inside a comment like "called from
+    # caller.sh") counts as a hit too. Accepted for the same reason as the
+    # USED-script ponytail above - the job is "does anything reference this
+    # name at all", and the direction of the error (false WIRED, not false
+    # DEAD) is the safe one for a report a human reviews before acting.
+    if [ -z "$non_self_hits" ] && [ "$kind" = "script" ]; then
         pattern=$(basename "$path")
         hits=$(git -C "$REPO_ROOT" grep -lF -- "$pattern" 2>/dev/null)
     fi

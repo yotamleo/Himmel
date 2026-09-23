@@ -26,8 +26,9 @@ check_contains() {
 }
 
 TMPREPO=$(mktemp -d "${TMPDIR:-/tmp}/test-dead-parts.XXXXXX") || { echo "FAIL - mktemp"; exit 1; }
+WTPATH="$TMPREPO-worktree"
 # shellcheck disable=SC2317,SC2329  # invoked by the EXIT trap below
-cleanup() { rm -rf "$TMPREPO"; }
+cleanup() { git -C "$TMPREPO" worktree remove --force "$WTPATH" 2>/dev/null; rm -rf "$TMPREPO" "$WTPATH"; }
 trap cleanup EXIT
 
 cp -R "$HERE/fixtures/dead-parts/basic-repo/." "$TMPREPO/" || { echo "FAIL - fixture copy"; exit 1; }
@@ -41,15 +42,15 @@ export SCORECARD_PROJECTS_DIR="$HERE/fixtures/dead-parts/basic-transcripts"
 OUT=$("$SCRIPT" --since 2026-09-15T00:00:00Z --repo-root "$TMPREPO" 2>/dev/null)
 
 check_contains "basic: script class counts (USED/WIRED/TEST-ONLY/DOC-ONLY/DEAD)" \
-    "$OUT" "kind=script USED=1 WIRED=1 TEST-ONLY=2 DOC-ONLY=1 DEAD=3"
+    "$OUT" "kind=script USED=2 WIRED=2 TEST-ONLY=2 DOC-ONLY=1 DEAD=2"
 check_contains "basic: command class counts" \
     "$OUT" "kind=command USED=1 WIRED=0 TEST-ONLY=0 DOC-ONLY=0 DEAD=1"
 check_contains "basic: skill class counts" \
     "$OUT" "kind=skill USED=1 WIRED=0 TEST-ONLY=0 DOC-ONLY=0 DEAD=1"
 check_contains "basic: agent class counts" \
-    "$OUT" "kind=agent USED=0 WIRED=1 TEST-ONLY=0 DOC-ONLY=0 DEAD=1"
+    "$OUT" "kind=agent USED=1 WIRED=1 TEST-ONLY=0 DOC-ONLY=0 DEAD=1"
 check_contains "basic: totals line sums every kind" \
-    "$OUT" "totals: USED=3 WIRED=2 TEST-ONLY=2 DOC-ONLY=1 DEAD=6"
+    "$OUT" "totals: USED=5 WIRED=3 TEST-ONLY=2 DOC-ONLY=1 DEAD=5"
 check_contains "basic: transcript coverage line beside the table" \
     "$OUT" "coverage: roots=1 discovered=1 parsed=1 skipped=0"
 
@@ -59,12 +60,18 @@ check_contains "basic: USED skill detected via a Skill tool_use" \
     "$OUT" $'skill\tused-skill\t.claude/skills/used-skill/SKILL.md'
 check_contains "basic: USED command detected via a typed <command-name> tag" \
     "$OUT" $'command\tused-cmd\t.claude/commands/used-cmd.md'
+check_contains "basic: WIRED script whose own self-referencing header used to mask a real external basename reference (codex-3 unmasking fix)" \
+    "$OUT" $'script\tcaller\tscripts/caller.sh\tWIRED'
+check_contains "basic: plugin-qualified Skill tool_use (fixture-plugin:used-skill) still matches the bare discovered skill name" \
+    "$OUT" $'skill\tused-skill\t.claude/skills/used-skill/SKILL.md\tUSED'
+check_contains "basic: Agent tool_use subagent_type marks a zero-static-reference agent USED" \
+    "$OUT" $'agent\tused-agent\t.claude/agents/used-agent.md\tUSED'
+check_contains "basic: a Bash command with an embedded newline still counts its second line's script as USED" \
+    "$OUT" $'script\tmultiline-used\tscripts/multiline-used.sh\tUSED'
 
 check_contains "basic: DEAD list header" "$OUT" "--- DEAD (no reference anywhere, no transcript call)"
 check_contains "basic: DEAD script with only a self-referencing header comment stays DEAD (self-match excluded)" \
     "$OUT" $'script\tqux-deadd\tscripts/qux-deadd.sh'
-check_contains "basic: DEAD script with zero references at all" \
-    "$OUT" $'script\tcaller\tscripts/caller.sh'
 check_contains "basic: DEAD command" "$OUT" $'command\tdead-cmd\t.claude/commands/dead-cmd.md'
 check_contains "basic: DEAD skill" "$OUT" $'skill\tdead-skill\t.claude/skills/dead-skill/SKILL.md'
 check_contains "basic: DEAD agent" "$OUT" $'agent\tdead-agent\t.claude/agents/dead-agent.md'
@@ -100,6 +107,30 @@ check_contains "out-of-window: the pre-window transcript is discovered but skipp
     "$OUT2" "coverage: roots=1 discovered=1 parsed=0 skipped=1 (out-of-window=1)"
 check_contains "out-of-window: a Bash call before --since does not count as USED - the script stays DEAD" \
     "$OUT2" $'script\tout-of-window\tscripts/out-of-window.sh'
+
+# --- linked worktree: --repo-root pointing at a worktree whose .git is a
+# FILE (`gitdir: ...`), not a directory - every leg runs from exactly this
+# shape, and a `[ -d "$REPO_ROOT/.git" ]` check (the pre-fix code) rejects it
+# outright even though the repo is perfectly valid ---------------------------
+git -C "$TMPREPO" worktree add -q -b test-dead-parts-wt "$WTPATH" >/dev/null 2>&1 \
+    || { echo "FAIL - git worktree add"; fails=$((fails + 1)); }
+if [ -f "$WTPATH/.git" ]; then
+    echo "ok - linked worktree: .git is a file, not a directory (precondition)"
+else
+    echo "FAIL - linked worktree: expected $WTPATH/.git to be a file"
+    fails=$((fails + 1))
+fi
+export SCORECARD_PROJECTS_DIR="$HERE/fixtures/dead-parts/basic-transcripts"
+OUT3=$("$SCRIPT" --since 2026-09-15T00:00:00Z --repo-root "$WTPATH" 2>&1)
+rc3=$?
+if [ "$rc3" -eq 0 ]; then
+    echo "ok - linked worktree: dead-parts.sh accepts a file-shaped .git and exits 0"
+else
+    echo "FAIL - linked worktree: dead-parts.sh rc=$rc3 (expected 0): $OUT3"
+    fails=$((fails + 1))
+fi
+check_contains "linked worktree: still reports the classification table" \
+    "$OUT3" "--- entry-point classification"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

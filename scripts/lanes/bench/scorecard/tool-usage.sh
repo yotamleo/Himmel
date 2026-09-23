@@ -113,6 +113,7 @@ while IFS= read -r f; do
 
     uses_f="$RUN/uses.ndjson"; : > "$uses_f"
     results_f="$RUN/results.ndjson"; : > "$results_f"
+    cmds_f="$RUN/cmds.ndjson"; : > "$cmds_f"
 
     if ! jq -c '. as $m | select(.type=="assistant") | $m.message.content[]? | select(.type=="tool_use") |
         {id: .id, ts: $m.timestamp, tool: .name,
@@ -129,10 +130,14 @@ while IFS= read -r f; do
         printf '%s\n' "$f" >> "$JQ_FAILS"; sc_cov jq-failed; continue
     fi
     if ! jq -c --arg role "$role" --arg file "$f" \
+        --argjson since_epoch "$SINCE_EPOCH" --argjson until_epoch "$UNTIL_EPOCH_ARG" \
         '. as $m | select(.type=="user") | select(($m.message.content // "")|type=="string") |
          ($m.message.content) as $c | select($c | test("^<command-name>")) |
+         select(($m.timestamp // null) != null and
+           (($m.timestamp | sub("\\.[0-9]+Z$";"Z") | fromdateiso8601) >= $since_epoch) and
+           (($m.timestamp | sub("\\.[0-9]+Z$";"Z") | fromdateiso8601) < $until_epoch)) |
          {cmd: ($c | capture("<command-name>(?<c>[^<]+)</command-name>").c // ""), ts: $m.timestamp, role: $role, file: $file}' \
-        "$f" >> "$CMDS" 2>>"$JQ_FAILS"; then
+        "$f" > "$cmds_f" 2>>"$JQ_FAILS"; then
         printf '%s\n' "$f" >> "$JQ_FAILS"; sc_cov jq-failed; continue
     fi
 
@@ -147,6 +152,10 @@ while IFS= read -r f; do
     ' >> "$EVENTS" 2>>"$JQ_FAILS"; then
         printf '%s\n' "$f" >> "$JQ_FAILS"; sc_cov jq-failed; continue
     fi
+    # cmds_f is merged into $CMDS only now - after every extraction pass for
+    # this transcript has succeeded - so a later jq failure never leaves a
+    # partial row behind for a file this loop otherwise counts as skipped.
+    cat "$cmds_f" >> "$CMDS"
     sc_cov parsed
 done < "$FILES"
 
@@ -290,6 +299,12 @@ else
     echo "tool-usage: memory-traps file not readable: $MEMORY_TRAPS" >&2
 fi
 
+# ponytail: the default MEM_DIR is hardcoded to this repo's own project-hash
+# path (not portable to another checkout without --skill-cwd-style overriding
+# via SCORECARD_MEMORY_DIR), and the `/memory/` substring test below matches
+# any Read path containing that segment, not only this project's memory dir -
+# both accepted since every real run on this station sets neither override and
+# reads only this repo's own memory files.
 MEM_DIR="${SCORECARD_MEMORY_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/-home-overlord-Documents-github-himmel/memory}"
 if [ -d "$MEM_DIR" ]; then
     jq -s -r --arg memdir_marker "/memory/" '
@@ -302,11 +317,19 @@ if [ -d "$MEM_DIR" ]; then
 fi
 
 echo "--- 8. eval-candidates"
+# A hook/classifier denial is not itself a defect - it may be correct
+# enforcement (e.g. a destructive-command block working as designed), so its
+# proposed eval asks whether the denial is right, not that it should go away.
+# A script error has no such ambiguity: "expect no error" is the correct ask.
 jq -n -r --slurpfile hookfriction "$FRICTION" --slurpfile scripted "$SCRIPTED" '
-    ($hookfriction | map(select(.friction!=null)) | group_by(.friction.key) | map({defect: .[0].friction.key, evidence: length})) as $friction_rows
-    | ($scripted | map(select(.script!=null and .is_error==true)) | group_by(.script) | map({defect: .[0].script, evidence: length})) as $error_rows
+    ($hookfriction | map(select(.friction!=null)) | group_by(.friction.key) |
+      map({defect: .[0].friction.key, evidence: length,
+           proposed_eval: "reproduce \(.[0].friction.key)'"'"'s trigger; confirm whether the denial is correct enforcement or a false-positive papercut"})) as $friction_rows
+    | ($scripted | map(select(.script!=null and .is_error==true)) | group_by(.script) |
+      map({defect: .[0].script, evidence: length,
+           proposed_eval: "reproduce \(.[0].script); expect no error"})) as $error_rows
     | ($friction_rows + $error_rows) | sort_by(-.evidence)[]
-    | "eval-candidates: defect=\(.defect) evidence_count=\(.evidence) proposed_eval=\"reproduce \(.defect); expect no denial/no error\" existing_suite=none"
+    | "eval-candidates: defect=\(.defect) evidence_count=\(.evidence) proposed_eval=\"\(.proposed_eval)\" existing_suite=none"
 '
 if [ -n "$TRAP_ROWS" ]; then
     printf '%s\n' "$TRAP_ROWS" | while IFS= read -r _row; do

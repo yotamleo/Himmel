@@ -66,6 +66,10 @@ check_contains "basic: per-role split shows console for the console session" \
     "$OUT" "role=console skill=himmel-ops:stuck-playbook count=1"
 check_not_contains "basic: the used skill is excluded from never-used" \
     "$OUT" "never-used: scope=project-skills name=stuck-playbook"
+check_contains "basic: a guardrail-friction eval-candidate asks whether the denial is correct enforcement, not that it should go away" \
+    "$OUT" "eval-candidates: defect=block-destructive-commands evidence_count=1 proposed_eval=\"reproduce block-destructive-commands's trigger; confirm whether the denial is correct enforcement or a false-positive papercut\""
+check_contains "basic: a script-error eval-candidate asks for no error, unambiguously" \
+    "$OUT" "eval-candidates: defect=scripts/lanes/bench/scorecard/agg-burn.sh evidence_count=1 proposed_eval=\"reproduce scripts/lanes/bench/scorecard/agg-burn.sh; expect no error\""
 check_contains "basic: an installed-but-uninvoked skill is listed never-used" \
     "$OUT" "never-used: scope=user-skills name=never-used-skill"
 check_contains "basic: an installed-but-untyped command is listed never-used" \
@@ -103,6 +107,37 @@ check_contains "memory-join: eval-candidates table carries the recurring trap" \
     "$OUT" "trap-hit"
 check_contains "memory-join: eval-candidates table names a proposed eval" \
     "$OUT" "eval-candidates"
+
+# --- command-window: a <command-name> entry outside --since/--until must not
+# count even when the transcript FILE as a whole falls inside the window
+# (codex-2: the CMDS extraction pass filters each command's own timestamp,
+# not just the file's first/last) ------------------------------------------
+export SCORECARD_PROJECTS_DIR="$HERE/fixtures/tool-usage/command-window"
+OUT=$("$SCRIPT" --since 2026-01-10T00:00:00Z --until 2026-01-20T00:00:00Z \
+    --skill-cwd "$HERE/fixtures/tool-usage/skills" \
+    --skill-config-dir "$HERE/fixtures/tool-usage/skills-config" 2>/dev/null)
+check_contains "command-window: an in-window command is counted" \
+    "$OUT" "slash=/counted-cmd count=1"
+check_not_contains "command-window: a command timestamped before --since is excluded even though the file itself parses" \
+    "$OUT" "slash=/out-of-window-cmd"
+check_contains "command-window: the file still counts as parsed, not skipped" \
+    "$OUT" "coverage: roots=1 discovered=1 parsed=1 skipped=0"
+
+# --- partial-write: a file whose tool_use/tool_result enrichment pass fails
+# (a malformed tool_use timestamp) must not leak its slash commands into the
+# report, even though the earlier CMDS extraction pass for that same file
+# succeeded on its own (codex-7: cmds_f is merged into CMDS only after every
+# extraction pass for the file has succeeded) -------------------------------
+export SCORECARD_PROJECTS_DIR="$HERE/fixtures/tool-usage/partial-write"
+OUT=$("$SCRIPT" --since 2026-01-10T00:00:00Z --until 2026-01-20T00:00:00Z \
+    --skill-cwd "$HERE/fixtures/tool-usage/skills" \
+    --skill-config-dir "$HERE/fixtures/tool-usage/skills-config" 2>&1)
+check_not_contains "partial-write: a command from a file whose enrichment pass jq-failed is never counted" \
+    "$OUT" "slash=/leaked-cmd"
+check_contains "partial-write: the file is counted as jq-failed, not parsed" \
+    "$OUT" "coverage: roots=1 discovered=1 parsed=0 skipped=1 (jq-failed=1)"
+check_contains "partial-write: the jq-failure warning is surfaced" \
+    "$OUT" "tool-usage: WARNING: transcript(s) skipped due to jq failure"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

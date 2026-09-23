@@ -1,0 +1,3 @@
+{"type":"assistant","timestamp":"2026-01-12T00:00:00.000Z","customTitle":"HIMMEL-3513-fixture-legN388-cmdwindow","message":{"id":"msg_1","model":"claude-sonnet-5-20260115","content":[{"type":"tool_use","id":"toolu_1","name":"Skill","input":{"skill":"himmel-ops:stuck-playbook"}}]}}
+{"type":"user","timestamp":"2026-01-05T00:00:00.000Z","customTitle":"HIMMEL-3513-fixture-legN388-cmdwindow","message":{"content":"<command-name>/out-of-window-cmd</command-name><command-args></command-args>"}}
+{"type":"user","timestamp":"2026-01-14T00:00:00.000Z","customTitle":"HIMMEL-3513-fixture-legN388-cmdwindow","message":{"content":"<command-name>/counted-cmd</command-name><command-args></command-args>"}}
