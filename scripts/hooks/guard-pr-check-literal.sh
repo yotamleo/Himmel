@@ -293,16 +293,35 @@ while IFS= read -r line; do
                     ''|bash|sh|zsh|dash|ksh|mksh|busybox|toybox|source|.|eval|time|command|builtin|nohup|nice|stdbuf|sudo|env|exec|timeout|xargs)
                         chdir=1 ;;
                     *)
-                        # A bare word (no /) resolves via PATH to a known,
-                        # fixed-behavior utility (the grep carve-out below);
-                        # a path-qualified word (./wrapper, bin/wrapper) names
+                        # A path-qualified word (./wrapper, bin/wrapper) names
                         # an arbitrary file whose behavior this hook cannot
                         # see, and it runs from find's CHANGED cwd - treat it
                         # the same as an unverifiable runner (codex-2 panel
-                        # finding, HIMMEL-3517).
+                        # finding, HIMMEL-3517). A bare word (no /) resolves
+                        # via PATH to whatever is installed there, which this
+                        # hook cannot see either - only a SMALL, explicit,
+                        # fixed-behavior read-only allowlist gets the relaxed
+                        # (non-chdir-gating) treatment; every other bare word
+                        # is an unverifiable runner too (codex-1 round-4
+                        # panel finding, HIMMEL-3517: an unknown PATH
+                        # executable was previously treated as safe).
                         case "$nextw" in
                             */*) chdir=1 ;;
-                            *) is_target "${nextw##*/}" && chdir=1 ;;
+                            *)
+                                case "${nextw##*/}" in
+                                    grep|cat|head|tail|wc|ls|stat|file|sha256sum|md5sum)
+                                        is_target "${nextw##*/}" && chdir=1 ;;
+                                    sed|awk)
+                                        # sed -i / awk -i inplace is a WRITE,
+                                        # not read-only - still chdir-gated.
+                                        case "$line" in
+                                            *' -i'*|*'--in-place'*) chdir=1 ;;
+                                            *) is_target "${nextw##*/}" && chdir=1 ;;
+                                        esac
+                                        ;;
+                                    *) chdir=1 ;;
+                                esac
+                                ;;
                         esac
                         ;;
                 esac

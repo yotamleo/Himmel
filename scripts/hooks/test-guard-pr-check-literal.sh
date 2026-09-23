@@ -399,6 +399,23 @@ run "find -execdir grep (non-interpreter) -> allow (HIMMEL-3517)" 0 \
 # (contains /) next-word as unverifiable, same as a known wrapper -> deny.
 run "find -execdir ./wrapper (path-qualified, unrecognized) -> deny (HIMMEL-3517, codex-2)" 2 \
     "$(payload "find . -maxdepth 0 -execdir ./wrapper {} \\;" "$WT")" "$HR"
+
+# codex-1 (/pr-check critic panel round 4, Important, 2026-09-23): a BARE
+# (no /) -execdir command word that codex-2's fix above did not deny fell
+# through as safe whenever it was neither a known interpreter nor a guarded
+# target's own name - an arbitrary PATH executable (randomtool) is exactly
+# as unverifiable as a path-qualified wrapper, and it too runs from find's
+# changed cwd. Fixed by requiring a bare word to match a SMALL, explicit,
+# fixed-behavior read-only allowlist (grep, cat, head, tail, wc, ls, stat,
+# file, sha256sum, md5sum, sed/awk without -i) to keep the relaxed {}
+# carve-out; any other bare word is now chdir-gated like a path-qualified
+# one -> deny.
+run "find -execdir randomtool (bare, unrecognized, not allowlisted) -> deny (HIMMEL-3517, codex-1 round 4)" 2 \
+    "$(payload "find . -maxdepth 0 -execdir randomtool {} \\;" "$WT")" "$HR"
+# control: sed -i in the same -execdir shape is a WRITE, not read-only, so
+# it stays chdir-gated even though "sed" itself is on the allowlist.
+run "find -execdir sed -i (allowlisted verb, but -i write) -> deny (HIMMEL-3517, codex-1 round 4)" 2 \
+    "$(payload "find . -maxdepth 0 -execdir sed -i s/a/b/ {} \\;" "$WT")" "$HR"
 # Positive controls: the shapes these fixes must NOT widen stay denied.
 # shellcheck disable=SC2016 # command text, verbatim
 run "control: bash scripts/cr/\$X (real unresolved target) -> still deny" 2 \
