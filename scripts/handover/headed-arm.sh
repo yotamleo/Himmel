@@ -834,6 +834,7 @@ _flat_argv_has_n_name() { # _flat_argv_has_n_name <space-joined argv>
 headless_session_listed() {
     local out
     out="$("$CLAUDE_CLI" agents --json 2>/dev/null)" || return 2
+    _HSL_OUT="$out"  # HIMMEL-3426: the caller reuses this instead of a second census call
     printf '%s' "$out" | jq -e --arg n "$NAME" \
         'if type == "array" then any(.[]; .name == $n and .pid != null) else error("not an array") end' >/dev/null 2>&1
     case $? in
@@ -1031,7 +1032,7 @@ headless_launch() {
     val=""
     [ "${HIMMEL_HOOK_INTEGRITY_BYPASS_OK:-}" = "1" ] && val=1
     _hl_set HIMMEL_HOOK_INTEGRITY_BYPASS_OK "$val"
-    pids="$("$PGREP" -f '[c]laude daemon run' 2>/dev/null)"  # t13b-ok: read-only pgrep lookup of the Claude Code service, starts nothing
+    pids="$("$PGREP" -u "$(id -u)" -f '[c]laude daemon run' 2>/dev/null)"  # t13b-ok: read-only pgrep lookup of the Claude Code service, starts nothing; HIMMEL-3426: scoped to the launching user, never host-wide
     pg_rc=$?
     [ "$pg_rc" -gt 1 ] && headless_fail 9 "headless: pgrep scan for the claude background service failed - its env decides what the leg inherits, refusing to launch blind"
     local qualified=0
@@ -1076,7 +1077,7 @@ headless_launch() {
         sleep 0.2
     done
     [ "$seen" -eq 1 ] || headless_fail 7 "UNCONFIRMED: headless launch of $NAME exited 0 but it never appeared in \`agents --json\`"
-    out="$("$CLAUDE_CLI" agents --json 2>/dev/null)"
+    out="$_HSL_OUT"  # HIMMEL-3426: the census that CONFIRMED the session, not a second lookup
     row="$(printf '%s' "$out" | jq -r --arg n "$NAME" '[.[] | select(.name == $n and .pid != null)][0] | "\(.pid) \(.sessionId // "-") \(.id // "-")"' 2>/dev/null)"
     # shellcheck disable=SC2086  # deliberately split: "<pid> <session-id> <short-id>".
     set -- $row

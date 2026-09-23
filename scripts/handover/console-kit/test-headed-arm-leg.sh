@@ -1638,6 +1638,7 @@ CLAUDE_EOF
   chmod 755 "$dir/claude"
   cat > "$dir/pgrep" <<'PGREP_EOF'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >> "$(dirname "$0")/pgrep-argv"
 case "$*" in *'[c]laude daemon run'*) echo 7777; exit 0 ;; esac
 exit 1
 PGREP_EOF
@@ -1791,6 +1792,70 @@ contains "29-dry --headless: would-exec argv carries --bg" "$out" "--bg"
 rc=0; out="$(LEG_HEADLESS='' LEG_CONTEXT='' LEG_REPO='' bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-3403-x "$some_doc" /tmp/nosig 99999999999 "$tmp/dry29b.log" claude-sonnet-5 2>&1)" || rc=$?
 not_contains "29-dry no flag: headed report never mentions headless=" "$out" "headless="
 not_contains "29-dry no flag: headed argv has no --bg" "$out" "--bg"
+
+# 29-uid (HIMMEL-3426): the daemon pgrep scan is scoped to the launching
+# user, never host-wide. mk_headless_stubs' pgrep stub already logs its own
+# argv to pgrep-argv; d29 above already ran a normal headless launch.
+contains "29-uid daemon pgrep scan scoped to the launching user" "$(cat "$d29/pgrep-argv" 2>/dev/null || true)" "-u $(id -u)"
+
+# 29-once (HIMMEL-3426): identifiers (pid/session-id/short-id) come from the
+# CONFIRMING census call, never a second `agents --json` lookup. The stub
+# below answers by call count, not by a "confirmable" marker: the three
+# pre-launch dedup checks (the quick check, the claim-loop check, and the
+# post-lock-claim re-check) all say nothing is running, the 4th call (the
+# post-launch confirm loop, inside headless_launch itself) reports the real
+# session, and a 5th call - if the launcher still made one for identifiers -
+# would report nothing, forcing "-" fields into the log.
+mk_headless_stubs_census_once() {
+  local dir="$1" name="$2"
+  mkdir -p "$dir/proc/7777"
+  cat > "$dir/claude" <<CLAUDE_EOF
+#!/usr/bin/env bash
+d="\$(dirname "\$0")"
+if [ "\${1:-}" = agents ]; then
+  n=0
+  [ -f "\$d/agents-calls" ] && n="\$(cat "\$d/agents-calls")"
+  n=\$((n + 1))
+  printf '%s' "\$n" > "\$d/agents-calls"
+  if [ "\$n" -eq 4 ]; then
+    printf '[{"pid":4242,"id":"abc12345","sessionId":"11111111-2222-3333-4444-555555555555","name":"%s","kind":"background","status":"idle"}]\n' "$name"
+  else
+    echo '[]'
+  fi
+  exit 0
+fi
+printf '%s\n' "\$*" >> "\$d/record"
+printf 'backgrounded · abc12345 · %s\n' "$name"
+exit 0
+CLAUDE_EOF
+  chmod 755 "$dir/claude"
+  cat > "$dir/pgrep" <<'PGREP_EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$(dirname "$0")/pgrep-argv"
+case "$*" in *'[c]laude daemon run'*) echo 7777; exit 0 ;; esac
+exit 1
+PGREP_EOF
+  chmod 755 "$dir/pgrep"
+  cat > "$dir/konsole" <<'KONSOLE_EOF'
+#!/usr/bin/env bash
+printf 'KONSOLE %s\n' "$*" >> "$(dirname "$0")/konsole-called"
+KONSOLE_EOF
+  chmod 755 "$dir/konsole"
+  echo claude > "$dir/proc/7777/comm"
+  printf 'claude\0daemon\0run\0--origin\0transient\0' > "$dir/proc/7777/cmdline"
+  printf '%s\0' PATH=/usr/bin > "$dir/proc/7777/environ"
+}
+d29once="$tmp/c29once"; mk_headless_stubs_census_once "$d29once" "HIMMEL-3426-once"; mkdir -p "$tmp/repo29once"
+rc=0
+run_headless "$d29once" "$tmp/repo29once" "HIMMEL-3426-once" --headless --profile leg-impl >/dev/null 2>&1 || rc=$?
+log29once="$(cat "$d29once/log" 2>/dev/null || true)"
+callcount29once="$(cat "$d29once/agents-calls" 2>/dev/null || echo 0)"
+check "29-once: exit 0" "$rc" "0"
+check "29-once: census called exactly 4 times (3 dedup checks + 1 confirm), no extra lookup for identifiers" "$callcount29once" "4"
+contains "29-once: launch log carries the real pid from the confirming census" "$log29once" "pid=4242"
+contains "29-once: launch log carries the real session id from the confirming census" "$log29once" "session-id=11111111-2222-3333-4444-555555555555"
+contains "29-once: launch log carries the real short id from the confirming census" "$log29once" "short-id=abc12345"
+
 # 31. HIMMEL-2534: macOS `open -a` starts a leg from a FRESH environment (only
 # PATH is re-injected, konsole-macos.sh's own policy, untouched by this fix) -
 # a plain `export` in this wrapper never reaches the launched leg process on
