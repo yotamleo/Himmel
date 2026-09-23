@@ -47,22 +47,40 @@ command -v jq >/dev/null 2>&1 || { echo "converge-check: jq is required" >&2; ex
 # a path boundary becomes <token>. A longer sibling (<path>-old, <path>.bak) is a
 # DIFFERENT location and must stay visible, or a leak into it would be masked.
 mask() {
-  local rest="$1" needle="$2" token="$3" out=""
+  local rest="$1" needle="$2" token="$3" out="" quote="" chunk i c
   while [[ "$rest" == *"$needle"* ]]; do
-    out+="${rest%%"$needle"*}"
+    chunk="${rest%%"$needle"*}"
+    # Track quote state across the text consumed so far: ':', ';' and whitespace are
+    # only real token separators OUTSIDE a quoted value -- inside one (the common
+    # case, since jq -S / the hook scripts always quote the whole string) they are
+    # just filename bytes, same as '+' or '~' below (HIMMEL-3442).
+    for (( i=0; i<${#chunk}; i++ )); do
+      c="${chunk:i:1}"
+      if [ -z "$quote" ]; then
+        case "$c" in '"'|"'") quote="$c" ;; esac
+      elif [ "$c" = "$quote" ]; then
+        quote=""
+      fi
+    done
+    out+="$chunk"
     rest="${rest#*"$needle"}"
     # A rejected sibling keeps a \001 after its first char, so a LATER mask (home is
     # usually a parent of the prefix) cannot re-match it; norm() strips the marks.
     # Boundary is a DENYLIST, not an allowlist: almost any byte can legally continue
-    # a POSIX filename ('+', '~', '@', ',', '=', '%', ... are all valid), so only
-    # end-of-token, '/' (a real subpath) or a delimiter this snapshot's generated
-    # text actually emits around a path count as a boundary -- '"'/"'" (jq -S's
-    # JSON quoting and the launcher/hook scripts' shell quoting), ':', ';' and
-    # whitespace (token separators in those same scripts). Anything else marks a
-    # DIFFERENT sibling location, never masked.
+    # a POSIX filename ('+', '~', '@', ',', '=', '%', ':', ';', whitespace, ... are
+    # all valid), so only end-of-token, '/' (a real subpath), the matching closing
+    # quote, or -- OUTSIDE any quote -- '"'/"'", ':', ';' and whitespace (the token
+    # separators this snapshot's generated text actually emits around a path) count
+    # as a boundary. Anything else marks a DIFFERENT sibling location, never masked.
     case "$rest" in
       "") out+="$token" ;;
-      '/'*|'"'*|"'"*|':'*|';'*|[[:space:]]*) out+="$token" ;;
+      '/'*) out+="$token" ;;
+      '"'*|"'"*)
+        if [ -z "$quote" ] || [ "${rest:0:1}" = "$quote" ]; then out+="$token"
+        else out+="${needle:0:1}"$'\001'"${needle:1}"; fi ;;
+      ':'*|';'*|[[:space:]]*)
+        if [ -z "$quote" ]; then out+="$token"
+        else out+="${needle:0:1}"$'\001'"${needle:1}"; fi ;;
       *) out+="${needle:0:1}"$'\001'"${needle:1}" ;;
     esac
   done

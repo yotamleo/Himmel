@@ -178,6 +178,22 @@ for sym in '~' '@' ',' '=' '%'; do
   bash "$CONV" --a-home "$tmp/csym1/home" --a-prefix "$tmp/csym1/prefix" --b-home "$tmp/csym2/home" --b-prefix "$tmp/csym2/prefix" >/dev/null 2>&1; rc=$?
   [ "$rc" -eq 1 ] && ok "T7 RED: a sibling <prefix>${sym}old path is NOT masked as the prefix (rc 1)" || bad "T7 sibling ${sym}old path masked (HIMMEL-3255)" "rc=$rc"
 done
+# HIMMEL-3442: ':', ';' and whitespace are ALSO legal POSIX filename bytes, and mk_side's
+# command value is itself a quoted JSON string -- a sibling path containing one of these
+# bytes right after the prefix, but still inside that same quoted token, must diverge the
+# same way as the '+'/'~'/etc siblings above, not be masked as a boundary.
+for sym in ' ' ':'; do
+  rm -rf "$tmp/csq1" "$tmp/csq2"
+  mk_side "$tmp/csq1" "bash $tmp/csq1/prefix${sym}old/g.sh"; mk_side "$tmp/csq2" "bash $tmp/csq2/prefix${sym}old/g.sh"
+  bash "$CONV" --a-home "$tmp/csq1/home" --a-prefix "$tmp/csq1/prefix" --b-home "$tmp/csq2/home" --b-prefix "$tmp/csq2/prefix" >/dev/null 2>&1; rc=$?
+  [ "$rc" -eq 1 ] && ok "T7 RED: a quoted sibling <prefix>${sym}old path is NOT masked as the prefix (rc 1, HIMMEL-3442)" || bad "T7 quoted sibling ${sym}old path masked (HIMMEL-3442)" "rc=$rc"
+done
+# Genuine boundaries INSIDE quotes are unaffected: identical content at different
+# prefixes still converges even with the value quoted, and a closing quote right
+# after the prefix is still a real boundary.
+mk_side "$tmp/csq3" "bash $tmp/csq3/prefix/g.sh"; mk_side "$tmp/csq4" "bash $tmp/csq4/prefix/g.sh"
+bash "$CONV" --a-home "$tmp/csq3/home" --a-prefix "$tmp/csq3/prefix" --b-home "$tmp/csq4/home" --b-prefix "$tmp/csq4/prefix" >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 0 ] && ok "T7 a quoted identical command at different prefixes still CONVERGES (HIMMEL-3442)" || bad "T7 quote-awareness broke a genuine convergence" "rc=$rc"
 # Git hooks that are SYMLINKS count: present on one side only -> DIVERGED; dangling -> UNREADABLE.
 mk_side "$tmp/cg1" "bash $tmp/cg1/prefix/g.sh"; mk_side "$tmp/cg2" "bash $tmp/cg2/prefix/g.sh"
 for s in cg1 cg2; do git init -q "$tmp/$s/repo" 2>/dev/null; mkdir -p "$tmp/$s/repo/.git/hooks"; done
