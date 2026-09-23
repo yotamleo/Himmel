@@ -1601,7 +1601,7 @@ if [ "$LEDGER_OK" -eq 1 ]; then
   _ledger_unknown_rows=$(jq -R -s --argjson known "$_known_ids" '
       split("\n") | map(select(length>0)) | map(try fromjson catch null) | map(select(. != null))
       | map(.manifest_row // empty) | map(select(. != "")) | unique
-      | map(select(($known | index(.)) == null)) | length
+      | (. - $known) | length
     ' "$_prov_ledger_path" 2>/dev/null)
   case "$_ledger_unknown_rows" in ''|*[!0-9]*) _ledger_unknown_rows=0 ;; esac
   if [ "$_ledger_unknown_rows" -gt 0 ]; then
@@ -3584,8 +3584,8 @@ if [ "$PURGE_STATE" -eq 1 ] && [ "$HALTED" -eq 0 ] && command -v jq >/dev/null 2
   if [ -d "$_bundle_dir" ] && [ ! -L "$_bundle_dir" ] && [ -f "$_bundle_dir/bundle.json" ] \
       && jq -e --arg m "$BUNDLE_MARKER" '.marker == $m' "$_bundle_dir/bundle.json" >/dev/null 2>&1; then
     echo "  removing the standalone uninstaller bundle: $_bundle_dir"
-    _final_rc=0
-    { guarded run rm -rf -- "$_bundle_dir"; exit "$_final_rc"; }
+    guarded run rm -rf -- "$_bundle_dir"
+    exit "$?"
   elif [ -e "$_bundle_dir" ]; then
     echo "  kept: not himmel's ($_bundle_dir)"
   fi
