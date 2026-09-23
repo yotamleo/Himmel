@@ -30,7 +30,7 @@
 # Defaults: repo = cwd; base = merge-base with the default branch — origin/main,
 # origin/master, main, then master in order (HIMMEL-297);
 # route = hermes with NO --model, but the HERMES route itself now defaults to
-# the critics.json-pinned gpt-6-astra/openai-codex (HIMMEL-2059, operator
+# the critics.json-pinned gpt-6-sol/openai-codex (HIMMEL-2059, operator
 # ruling 2026-08-23) — NOT the himmel_agent hermes profile default (ox-alpha
 # today: free, front-tier, temporary; operator ruling 2026-08-22 on
 # HIMMEL-2017; lane profiling: HIMMEL-2024). ox-alpha stays the profile
@@ -62,14 +62,14 @@ the diff. Routing is by implementer:
 
   no --implementer and no CRITIC_ROUTE
       -> HERMES reviewer with no --model: defaults to the critics.json-pinned
-         gpt-6-astra (HIMMEL-2059) — NOT the himmel_agent profile default.
+         gpt-6-sol (HIMMEL-2059) — NOT the himmel_agent profile default.
          Spends no Claude bank (it spends the OpenAI Codex bank instead).
   hermes (any hermes-driven dev plan, incl. ox-alpha)
       -> CLAUDE CLI reviewer (claude print-mode; opt-in bank spend);
          optionally add a second hermes pass via --route both.
   codex CLI / claude CLI / other lanes
       -> HERMES reviewer, UNLESS the hermes reviewer is itself codex-family
-         (HERMES_CRITIC_MODEL / HERMES_CRITIC_FAMILY, or the gpt-6-astra
+         (HERMES_CRITIC_MODEL / HERMES_CRITIC_FAMILY, or the gpt-6-sol
          default itself) — then CLAUDE CLI.
 
 An explicit --route overrides all of that and may knowingly break the
@@ -128,7 +128,7 @@ fi
 # himmel_agent hermes profile default (ox-alpha today — free/front-tier,
 # reserved for implementation/one-shot work, HIMMEL-2024). When neither
 # --model nor HERMES_CRITIC_MODEL pins the hermes reviewer, default it to the
-# critics.json "codex" row's model (gpt-6-astra/openai-codex) — the same pin
+# critics.json "codex" row's model (gpt-6-sol/openai-codex) — the same pin
 # the codex-CLI panel critic uses. Reused rather than duplicated into a
 # second panel row: critic-panel.sh iterates every critics.json row with a
 # slug+model as a live /pr-check panel member, so a second row would
@@ -148,11 +148,11 @@ if [ -z "$model" ] && [ -z "$hermes_model" ]; then
           } catch (e) {}
         ' 2>/dev/null)"
     fi
-    [ -n "$hermes_model" ] || hermes_model="gpt-6-astra"
+    [ -n "$hermes_model" ] || hermes_model="gpt-6-sol"
 fi
 
 # Which model family the HERMES reviewer actually is. HIMMEL-2059: hermes_model
-# now defaults to the critics.json-pinned gpt-6-astra (codex family) rather
+# now defaults to the critics.json-pinned gpt-6-sol (codex family) rather
 # than the profile default, so `codex -> hermes` is SAME-family by default —
 # the route-derivation case below already falls back to claude for that
 # combination. The "" branch is a defensive fallback only (e.g. an explicit
@@ -164,7 +164,7 @@ hermes_family() {
     # script running with an empty family.
     if [ -n "${HERMES_CRITIC_FAMILY:-}" ]; then printf '%s' "$HERMES_CRITIC_FAMILY"; return 0; fi
     local id="${model:-$hermes_model}"
-    # Match on the bare id: provider-qualified forms (openai-codex/gpt-6-astra,
+    # Match on the bare id: provider-qualified forms (openai-codex/gpt-6-sol,
     # openrouter/anthropic/claude-...) would otherwise fall through to 'other'
     # and skip the same-family fallback entirely.
     id="${id##*/}"
@@ -342,10 +342,10 @@ run_claude_review() {
 
 run_hermes_review() {
     # HIMMEL-2059: hermes_model is resolved above to the critics.json-pinned
-    # gpt-6-astra whenever neither --model nor HERMES_CRITIC_MODEL set it, so
+    # gpt-6-sol whenever neither --model nor HERMES_CRITIC_MODEL set it, so
     # "$m" is no longer empty in the default case — the profile default is not
     # used for critics. The openai-codex provider pin applies ONLY to
-    # codex-family model ids: a gpt-6-astra reviewer is ChatGPT-auth and
+    # codex-family model ids: a gpt-6-sol reviewer is ChatGPT-auth and
     # without the pin lands on openai-api and dies on a missing OPENAI_API_KEY
     # (observed 2026-08-22). Pinning it for any other model would misroute it.
     local m="${model:-$hermes_model}"

@@ -29,7 +29,7 @@ function writeCompleteMatrix(runsDir, { skip, transcriptFor, verdictFor } = {}) 
         if (skip && skip.has(runId)) continue;
         writeRunManifest(runsDir, buildRunRecord({
           run_id: runId, task, cell, rep,
-          model: cell === 'haiku' ? 'claude-haiku-4-5' : 'gpt-5.6-luna',
+          model: cell === 'haiku' ? 'claude-haiku-4-5' : 'gpt-6-luna',
           effort: cell === 'haiku' ? 'low' : 'high', prompt_sha256: `hash-${task}`,
           fixture_path: `/tmp/${runId}`,
           transcript_path: transcriptFor ? transcriptFor(runId) : validTranscript,
@@ -63,7 +63,7 @@ test('buildSummary keeps T1 out of the code bucket and counts nondeterminism + h
 test('renderReport throws loudly on a deliberate cross-cell prompt-hash mismatch (spec §2.3)', () => {
   const badRuns = [
     { run_id: 'T7-haiku-1', task: 'T7', cell: 'haiku', rep: 1, model: 'claude-haiku-4-5', effort: 'low', prompt_sha256: 'hash-a', verdict: 'pass', out_of_scope_paths: [] },
-    { run_id: 'T7-luna-1', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-5.6-luna', effort: 'high', prompt_sha256: 'hash-b', verdict: 'pass', out_of_scope_paths: [] }, // deliberately different
+    { run_id: 'T7-luna-1', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-6-luna', effort: 'high', prompt_sha256: 'hash-b', verdict: 'pass', out_of_scope_paths: [] }, // deliberately different
   ];
   assert.throws(() => renderReport({ runs: badRuns }), /MISMATCH/);
 });
@@ -75,7 +75,7 @@ test('CLI: report.mjs exits nonzero on a cross-cell prompt-hash mismatch', () =>
     effort: 'low', prompt_sha256: 'hash-a', fixture_path: '/tmp/a', verdict: 'pass',
   }));
   writeRunManifest(runsDir, buildRunRecord({
-    run_id: 'T7-luna-1', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-5.6-luna',
+    run_id: 'T7-luna-1', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-6-luna',
     effort: 'high', prompt_sha256: 'hash-b', fixture_path: '/tmp/b', verdict: 'pass',
   }));
   assert.throws(() => execFileSync('node', [CLI, '--runs-dir', runsDir], { encoding: 'utf8' }));
@@ -90,7 +90,7 @@ test('CLI: report.mjs exits 0 and renders a report for a complete runs/ dir', ()
       for (const rep of [1, 2]) {
         writeRunManifest(runsDir, buildRunRecord({
           run_id: `${task}-${cell}-${rep}`, task, cell, rep,
-          model: cell === 'haiku' ? 'claude-haiku-4-5' : 'gpt-5.6-luna',
+          model: cell === 'haiku' ? 'claude-haiku-4-5' : 'gpt-6-luna',
           effort: cell === 'haiku' ? 'low' : 'high', prompt_sha256: `hash-${task}`,
           fixture_path: `/tmp/${task}-${cell}-${rep}`, transcript_path: transcriptPath, verdict: 'pass',
         }));
@@ -129,7 +129,7 @@ test('CLI: a marked probe manifest is excluded from stats and does not fail the 
   // probe leaked into the luna summary, T7's verdicts would disagree and the
   // nondeterminism count would rise from 0.
   writeRunManifest(runsDir, buildRunRecord({
-    run_id: 'T7-luna-probe', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-5.6-luna',
+    run_id: 'T7-luna-probe', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-6-luna',
     effort: 'high', prompt_sha256: 'hash-T7', fixture_path: '/tmp/probe',
     transcript_path: '-', verdict: 'fail', probe: true,
   }));
@@ -159,7 +159,7 @@ test('CLI: a genuinely unexpected (unmarked) manifest still fails the whole repo
   // Off the canonical matrix AND not marked probe — this is the gate the
   // surfacing rework must keep (wrong --runs-dir / misnamed run-id).
   writeRunManifest(runsDir, buildRunRecord({
-    run_id: 'T99-luna-1', task: 'T99', cell: 'luna', rep: 1, model: 'gpt-5.6-luna',
+    run_id: 'T99-luna-1', task: 'T99', cell: 'luna', rep: 1, model: 'gpt-6-luna',
     effort: 'high', prompt_sha256: 'hash-T99', fixture_path: '/tmp/t99', verdict: 'pass',
   }));
   assert.throws(
@@ -198,7 +198,7 @@ test('CLI: a self-inconsistent manifest (run_id != tuple) is excluded and surfac
   // parity check, T7-luna nondeterminism would rise or the render would
   // hard-exit on a hash MISMATCH. It must instead be excluded everywhere.
   writeRunManifest(runsDir, buildRunRecord({
-    run_id: 'T7-luna-typo', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-5.6-luna',
+    run_id: 'T7-luna-typo', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-6-luna',
     effort: 'high', prompt_sha256: 'hash-OTHER', fixture_path: '/tmp/typo',
     transcript_path: '-', verdict: 'fail',
   }));
@@ -218,7 +218,7 @@ test('renderReport: raw runs containing a self-inconsistent manifest surface it 
   const text = renderReport({
     runs: [
       ...syntheticRuns,
-      { run_id: 'T7-luna-typo', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-5.6-luna', effort: 'high', prompt_sha256: 'hTYPO', verdict: 'fail', out_of_scope_paths: [] },
+      { run_id: 'T7-luna-typo', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-6-luna', effort: 'high', prompt_sha256: 'hTYPO', verdict: 'fail', out_of_scope_paths: [] },
     ],
     tokenRowsByRunId: syntheticTokenRows(),
   });
@@ -255,7 +255,7 @@ test('renderReport: an off-matrix, unmarked, self-consistent manifest fails the 
   // module header promised "only structurally WRONG input fails the render"
   // including unexpected manifests, but only the CLI enforced it — the pure
   // path silently rendered an off-matrix manifest as measurement data.
-  const offMatrix = { run_id: 'T99-luna-1', task: 'T99', cell: 'luna', rep: 1, model: 'gpt-5.6-luna', effort: 'high', prompt_sha256: 'hT99', verdict: 'pass', out_of_scope_paths: [] };
+  const offMatrix = { run_id: 'T99-luna-1', task: 'T99', cell: 'luna', rep: 1, model: 'gpt-6-luna', effort: 'high', prompt_sha256: 'hT99', verdict: 'pass', out_of_scope_paths: [] };
   assert.throws(() => renderReport({ runs: [...syntheticRuns, offMatrix] }), /unexpected non-canonical/);
 });
 
@@ -309,7 +309,7 @@ const POISONS = {
     poison: (dir) => {
       writeCompleteMatrix(dir);
       writeRunManifest(dir, buildRunRecord({
-        run_id: 'T7-luna-typo', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-5.6-luna',
+        run_id: 'T7-luna-typo', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-6-luna',
         effort: 'high', prompt_sha256: 'hash-POISON', fixture_path: '/tmp/typo',
         transcript_path: '-', verdict: 'fail',
       }));
@@ -331,7 +331,7 @@ const POISONS = {
     poison: (dir) => {
       writeCompleteMatrix(dir);
       writeRunManifest(dir, buildRunRecord({
-        run_id: 'T7-luna-probe', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-5.6-luna',
+        run_id: 'T7-luna-probe', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-6-luna',
         effort: 'high', prompt_sha256: 'hash-T7', fixture_path: '/tmp/probe',
         transcript_path: '-', verdict: 'fail', probe: true,
       }));

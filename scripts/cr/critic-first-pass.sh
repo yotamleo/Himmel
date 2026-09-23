@@ -139,7 +139,7 @@ known_block=""
 # critic-panel.sh always passes --provider explicitly; a HAND-RUN invocation
 # does not, and hermes' default provider is openai-api — so the sanctioned
 # "review this upstream diff with the codex critic" call,
-#   critic-first-pass.sh --model gpt-6-astra < the.diff
+#   critic-first-pass.sh --model gpt-6-sol < the.diff
 # died on "No usable credentials" for a model the registry says is reached via
 # openai-codex. An explicit --provider still wins; a model the registry does
 # not know still falls through to hermes' default, unchanged.

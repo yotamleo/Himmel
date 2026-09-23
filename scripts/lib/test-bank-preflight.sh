@@ -288,7 +288,7 @@ mk_ps_stub_environ() {
   chmod +x "$dir/ps"
 }
 pclaudex="$W/psclaudex"; mk_ps_stub_environ "$pclaudex" \
-  '9001:claude:HOME=/home/x,CLAUDEX_LANE_OK=1:--model gpt-6-astra -n HIMMEL-1000-leg load doc' \
+  '9001:claude:HOME=/home/x,CLAUDEX_LANE_OK=1:--model gpt-6-sol -n HIMMEL-1000-leg load doc' \
   '9002:claude:HOME=/home/x:--model claude-opus-5 -n HIMMEL-1001-leg load doc'
 fleet_verdict "$pclaudex" HIMMEL_FLEET_CAP=4 >/dev/null
 if grep -q 'FLEET native=1 claudex=1 reserved=0 total=2/4' "$W/err.log" 2>/dev/null; then

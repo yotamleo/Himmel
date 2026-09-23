@@ -56,14 +56,14 @@ test('sumTranscriptUsage sums the committed synthetic sample fixtures correctly'
 test('costUsd applies the spec §0.1 list-price rates', () => {
   const usage = { input_tokens: 1_000_000, output_tokens: 1_000_000, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
   assert.equal(costUsd('claude-haiku-4-5', usage), RATES['claude-haiku-4-5'].inputPerM + RATES['claude-haiku-4-5'].outputPerM);
-  assert.equal(costUsd('gpt-5.6-luna', usage), RATES['gpt-5.6-luna'].inputPerM + RATES['gpt-5.6-luna'].outputPerM);
+  assert.equal(costUsd('gpt-6-luna', usage), RATES['gpt-6-luna'].inputPerM + RATES['gpt-6-luna'].outputPerM);
   assert.equal(costUsd('unknown-model', usage), null);
 });
 
 test('aggregate() resolves every run via an injected readTranscript and reports zero missing', () => {
   const records = [
     { run_id: 'T7-haiku-1', task: 'T7', cell: 'haiku', rep: 1, model: 'claude-haiku-4-5', transcript_path: HAIKU_SAMPLE },
-    { run_id: 'T7-luna-1', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-5.6-luna', transcript_path: LUNA_SAMPLE },
+    { run_id: 'T7-luna-1', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-6-luna', transcript_path: LUNA_SAMPLE },
   ];
   const result = aggregate(records, { readTranscript: (p) => readFileSync(p, 'utf8') });
   assert.equal(result.missing.length, 0);
@@ -75,7 +75,7 @@ test('aggregate() resolves every run via an injected readTranscript and reports 
 test('aggregate() flags an unresolvable transcript as missing (spec §6.1 hard invariant)', () => {
   const records = [
     { run_id: 'T7-haiku-1', task: 'T7', cell: 'haiku', rep: 1, model: 'claude-haiku-4-5', transcript_path: HAIKU_SAMPLE },
-    { run_id: 'T7-luna-1', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-5.6-luna', transcript_path: '/does/not/exist.jsonl' },
+    { run_id: 'T7-luna-1', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-6-luna', transcript_path: '/does/not/exist.jsonl' },
   ];
   const result = aggregate(records, { readTranscript: (p) => readFileSync(p, 'utf8') });
   assert.deepEqual(result.missing, ['T7-luna-1']);
@@ -89,20 +89,20 @@ test('CLI: aggregate-tokens.mjs exits 0 and emits cost-annotated rows for a full
     effort: 'low', prompt_sha256: 'h', fixture_path: '/tmp/a', transcript_path: HAIKU_SAMPLE,
   }));
   writeRunManifest(runsDir, buildRunRecord({
-    run_id: 'T7-luna-1', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-5.6-luna',
+    run_id: 'T7-luna-1', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-6-luna',
     effort: 'high', prompt_sha256: 'h', fixture_path: '/tmp/b', transcript_path: LUNA_SAMPLE,
   }));
   const out = execFileSync('node', [CLI, '--runs-dir', runsDir], { encoding: 'utf8' });
   const rows = JSON.parse(out);
   assert.equal(rows.length, 2);
   const luna = rows.find((r) => r.run_id === 'T7-luna-1');
-  assert.equal(luna.cost_usd, costUsd('gpt-5.6-luna', luna.usage));
+  assert.equal(luna.cost_usd, costUsd('gpt-6-luna', luna.usage));
 });
 
 test('CLI: aggregate-tokens.mjs exits NONZERO when a dispatch has no resolvable transcript', () => {
   const runsDir = makeTmpDir('bench-aggregate-cli-missing-');
   writeRunManifest(runsDir, buildRunRecord({
-    run_id: 'T7-luna-1', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-5.6-luna',
+    run_id: 'T7-luna-1', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-6-luna',
     effort: 'high', prompt_sha256: 'h', fixture_path: '/tmp/nonexistent-fixture-path-xyz',
   }));
   assert.throws(() => execFileSync('node', [CLI, '--runs-dir', runsDir], { encoding: 'utf8' }));

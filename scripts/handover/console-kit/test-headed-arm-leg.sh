@@ -467,7 +467,7 @@ contains "dry-run --judge: preface source is judge-preface.md" "$out" "docs/hand
 
 # --judge --lane claudex: the Fable default is scoped to the native lane only
 # (HIMMEL-3133 explicitly leaves composing --judge with claudex out of scope)
-# - claudex keeps its own gpt-6-astra default untouched, and some/doc.md (no
+# - claudex keeps its own gpt-6-sol default untouched, and some/doc.md (no
 # Tier line) proves that default never reached the Opus/Fable tier gate.
 rc=0; out="$(bash "$SCRIPT" --dry-run --judge --lane claudex HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
 check "dry-run --judge --lane claudex: exit 0" "$rc" "0"
@@ -643,21 +643,21 @@ rc=0; out="$(LEG_LANE=bogus bash "$SCRIPT" HIMMEL-x some/doc.md /tmp/nosig 99999
 check "unknown lane via LEG_LANE: exit 2" "$rc" "2"
 
 # --- 15 (HIMMEL-2782). --dry-run --lane claudex: resolved launcher + env,
-# default model gpt-6-astra, --lane wins over LEG_LANE. ---------------------
+# default model gpt-6-sol, --lane wins over LEG_LANE. -----------------------
 rc=0; out="$(LEG_LANE=native LEG_REPO='' bash "$SCRIPT" --dry-run --no-profile --lane claudex HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
 check "dry-run --lane claudex: exit 0 (flag wins over LEG_LANE=native)" "$rc" "0"
 contains "dry-run --lane claudex: reports lane=claudex" "$out" "lane=claudex"
 contains "dry-run --lane claudex: resolved launcher names claude-codex" "$out" "claude-codex"
 contains "dry-run --lane claudex: env carries CLAUDEX_LANE_OK=1" "$out" "CLAUDEX_LANE_OK=1"
 contains "dry-run --lane claudex: env carries CLAUDE_CODE_EFFORT_LEVEL=medium default" "$out" "CLAUDE_CODE_EFFORT_LEVEL=medium"
-contains "dry-run --lane claudex: MODEL defaults to gpt-6-astra" "$out" "gpt-6-astra"
+contains "dry-run --lane claudex: MODEL defaults to gpt-6-sol" "$out" "gpt-6-sol"
 
 rc=0; out="$(LEG_EFFORT=high bash "$SCRIPT" --dry-run --no-profile --lane claudex HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
 contains "dry-run --lane claudex: LEG_EFFORT overrides the medium default" "$out" "CLAUDE_CODE_EFFORT_LEVEL=high"
 
 rc=0; out="$(bash "$SCRIPT" --dry-run --no-profile --lane claudex HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 contains "dry-run --lane claudex: an explicit model is NOT overridden" "$out" "claude-sonnet-5"
-not_contains "dry-run --lane claudex: an explicit model is NOT overridden" "$out" "gpt-6-astra"
+not_contains "dry-run --lane claudex: an explicit model is NOT overridden" "$out" "gpt-6-sol"
 
 rc=0; out="$(bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 contains "dry-run, no --lane: reports lane=native" "$out" "lane=native"
@@ -692,7 +692,7 @@ contains "full launch, --lane claudex: the preface shim reaches the recorded arg
 contains "full launch, --lane claudex: the shim retains the claudex backend" \
   "$(cat "$d16/env-record" 2>/dev/null || true)" "LEG_CLAUDE_BIN=$claudex_stub"
 not_contains "full launch, --lane claudex: launcher not force-wrapped in bash (execs via its own shebang)" "$rec16" "bash $claudex_stub"
-contains "full launch, --lane claudex: --model defaults to gpt-6-astra" "$rec16" "--model gpt-6-astra"
+contains "full launch, --lane claudex: --model defaults to gpt-6-sol" "$rec16" "--model gpt-6-sol"
 contains "full launch, --lane claudex: --autocompact 200000 (standard context ceiling)" "$rec16" "--autocompact 200000"
 contains "full launch, --lane claudex: CLAUDEX_LANE_OK=1 reaches the konsole argv" "$rec16" "CLAUDEX_LANE_OK=1"
 contains "full launch, --lane claudex: CLAUDE_CODE_EFFORT_LEVEL=medium reaches the konsole argv" "$rec16" "CLAUDE_CODE_EFFORT_LEVEL=medium"
@@ -1019,7 +1019,7 @@ assert.deepStrictEqual(fs.readFileSync(`${dir}/args`, 'utf8').trimEnd().split('\
   '--settings', `${dir}/HIMMEL-composed.leg-settings.json`,
   '--append-system-prompt-file', preface,
   '--mcp-config', `${dir}/HIMMEL-composed.leg-mcp.json`, '--strict-mcp-config',
-  '--model', 'gpt-6-astra', '--autocompact', '200000', '-n', 'HIMMEL-composed', 'load some/doc.md and continue',
+  '--model', 'gpt-6-sol', '--autocompact', '200000', '-n', 'HIMMEL-composed', 'load some/doc.md and continue',
 ]);
 const settings = JSON.parse(fs.readFileSync(`${dir}/HIMMEL-composed.leg-settings.json`, 'utf8'));
 assert.ok(settings.permissions.allow.includes('Bash(bash scripts/handover/merge-on-green.sh:*)'));
@@ -1041,7 +1041,7 @@ const fs = require('node:fs');
 const [dir, preface] = process.argv.slice(2);
 assert.deepStrictEqual(fs.readFileSync(`${dir}/args`, 'utf8').trimEnd().split('\n'), [
   '--append-system-prompt-file', preface,
-  '--model', 'gpt-6-astra', '--autocompact', '200000', '-n', 'HIMMEL-unprofiled', 'load some/doc.md and continue',
+  '--model', 'gpt-6-sol', '--autocompact', '200000', '-n', 'HIMMEL-unprofiled', 'load some/doc.md and continue',
 ]);
 NODE
 check "unprofiled claudex: exactly one added preface pair, other argv unchanged" "$rc" "0"

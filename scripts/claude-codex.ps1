@@ -33,13 +33,13 @@ $ErrorActionPreference = 'Stop'
 
 $CodexProxyBaseUrl = if ($env:CODEX_PROXY_BASE_URL) { $env:CODEX_PROXY_BASE_URL } else { 'http://127.0.0.1:8317' }
 # Model names are whatever the local CLIProxyAPI /v1/models exposes for the
-# authed codex subscription (gpt-5.6-sol at ship time). All overridable per task.
-$CodexModel         = if ($env:CODEX_MODEL) { $env:CODEX_MODEL } else { 'gpt-5.6-sol' }
+# authed codex subscription (gpt-6-sol at ship time). All overridable per task.
+$CodexModel         = if ($env:CODEX_MODEL) { $env:CODEX_MODEL } else { 'gpt-6-sol' }
 $CodexHaiku         = if ($env:CODEX_HAIKU) { $env:CODEX_HAIKU } else { $CodexModel }
 $CodexSubagentModel = if ($env:CODEX_SUBAGENT_MODEL) { $env:CODEX_SUBAGENT_MODEL } else { $CodexModel }
 # CODEX_CONTEXT_WINDOW feeds CLAUDE_CODE_AUTO_COMPACT_WINDOW (env block below) so
 # Claude Code budgets against a real number instead of its ~200k default for the
-# unrecognized gpt-5.6-sol slug — twin of the bash launcher. gpt-5.6's actual
+# unrecognized gpt-6-sol slug — twin of the bash launcher. gpt-5.6's actual
 # window is ~372k (95% effective ~353k, openai/codex#32486). The 272000 default is
 # the COST-OPTIMAL compaction point, NOT a hard ceiling: input past 272k bills 2x
 # input / 1.5x output for the whole request. Raise to CODEX_CONTEXT_WINDOW=353000
@@ -496,7 +496,7 @@ function Copy-SeedConfig {
       # this launcher the way ANTHROPIC_*/CLAUDE_CODE_USE_* are — so a
       # newline-bearing value must not land verbatim in agent instructions.
       # Degrade to a generic phrase outside a plain slug shape; the common case
-      # (gpt-5.6-sol) is unaffected.
+      # (gpt-6-sol) is unaffected.
       $stanzaModel = Get-CodexStanzaModel
       $identityStanza = @"
 

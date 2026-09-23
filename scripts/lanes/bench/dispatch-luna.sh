@@ -94,7 +94,7 @@ ALLOWED_TOOLS='{"permissions":{"allow":["Bash","Read","Edit","Write","Glob","Gre
 if [ "$DRY_RUN" -eq 1 ]; then
     prompt_bytes="$(printf '%s' "$prompt_text" | wc -c)"
     echo "DRY-RUN argv: bash $LAUNCHER --permission-mode dontAsk --settings \"$ALLOWED_TOOLS\" <prompt.md contents, $prompt_bytes bytes>"
-    echo "DRY-RUN env: CODEX_MODEL=gpt-5.6-luna CLAUDE_CODE_EFFORT_LEVEL=$EFFORT"
+    echo "DRY-RUN env: CODEX_MODEL=gpt-6-luna CLAUDE_CODE_EFFORT_LEVEL=$EFFORT"
     echo "DRY-RUN cwd: $fixture_path"
     echo "DRY-RUN stdin: closed"
     exit 0
@@ -128,7 +128,7 @@ started_ms="$(now_ms)"
 # already-correct interpreter rather than repeating a fresh, ambiguous PATH
 # lookup.
 set -m
-( cd "$fixture_path" && CODEX_MODEL=gpt-5.6-luna CLAUDE_CODE_EFFORT_LEVEL="$EFFORT" \
+( cd "$fixture_path" && CODEX_MODEL=gpt-6-luna CLAUDE_CODE_EFFORT_LEVEL="$EFFORT" \
     "${BASH:-bash}" "$LAUNCHER" --permission-mode dontAsk --settings "$ALLOWED_TOOLS" "$prompt_text" ) < /dev/null > "$run_log" 2>&1 &
 pid=$!
 set +m

@@ -29,7 +29,7 @@ import { listRunManifests } from './run-manifest.mjs';
 // spec §0.1, retrieved 2026-08-11 — $/M tokens (first-party list price).
 export const RATES = {
   'claude-haiku-4-5': { inputPerM: 1.00, outputPerM: 5.00 },
-  'gpt-5.6-luna': { inputPerM: 0.20, outputPerM: 1.20 },
+  'gpt-6-luna': { inputPerM: 0.20, outputPerM: 1.20 },
 };
 
 // windowsDriveFormPath / cwdToProjectSlug mirror Claude Code's own path->slug

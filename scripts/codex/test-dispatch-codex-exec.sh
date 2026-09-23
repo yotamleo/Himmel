@@ -208,7 +208,7 @@ export CODEX_CRITICS_FILE="$TMP/missing-critics.json"
 run_dispatch --worktree "$WT" do-it
 assert_rc 0 "unreadable registry uses fallback" "missing registry rc=$RC out=$OUT"
 case "$(cat "$TMP/codex.args")" in
-  'exec --model gpt-6-astra --sandbox workspace-write do-it') pass "unreadable registry uses named fallback model" ;;
+  'exec --model gpt-6-sol --sandbox workspace-write do-it') pass "unreadable registry uses named fallback model" ;;
   *) fail "fallback argv: $(cat "$TMP/codex.args")" ;;
 esac
 unset CODEX_CRITICS_FILE
