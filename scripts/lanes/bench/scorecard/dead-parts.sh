@@ -214,7 +214,7 @@ classify_hits() {
         [ -z "$hp" ] && continue
         [ "$hp" = "$1" ] && continue
         case "$hp" in
-            test-*.sh|*/test-*.sh|*.test.*|*_test.*|tests/*|*/tests/*|test/*|*/test/*) _cp_test=1 ;;
+            test-*.sh|*/test-*.sh|*.test.*|*_test.*|*.spec.*|*_spec.*|tests/*|*/tests/*|test/*|*/test/*) _cp_test=1 ;;
             docs/*) _cp_doc=1 ;;
             *) _cp_code=1 ;;
         esac

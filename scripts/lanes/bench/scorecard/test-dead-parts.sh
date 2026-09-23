@@ -49,7 +49,7 @@ else
 fi
 
 check_contains "basic: script class counts (USED/WIRED/TEST-ONLY/DOC-ONLY/DEAD)" \
-    "$OUT" "kind=script USED=2 WIRED=3 TEST-ONLY=2 DOC-ONLY=1 DEAD=4"
+    "$OUT" "kind=script USED=2 WIRED=3 TEST-ONLY=3 DOC-ONLY=1 DEAD=4"
 check_contains "basic: command class counts" \
     "$OUT" "kind=command USED=1 WIRED=0 TEST-ONLY=0 DOC-ONLY=0 DEAD=1"
 check_contains "basic: skill class counts" \
@@ -57,7 +57,7 @@ check_contains "basic: skill class counts" \
 check_contains "basic: agent class counts" \
     "$OUT" "kind=agent USED=1 WIRED=1 TEST-ONLY=0 DOC-ONLY=0 DEAD=1"
 check_contains "basic: totals line sums every kind" \
-    "$OUT" "totals: USED=5 WIRED=4 TEST-ONLY=2 DOC-ONLY=1 DEAD=7"
+    "$OUT" "totals: USED=5 WIRED=4 TEST-ONLY=3 DOC-ONLY=1 DEAD=7"
 check_contains "basic: transcript coverage line beside the table" \
     "$OUT" "coverage: roots=1 discovered=1 parsed=1 skipped=0"
 
@@ -95,6 +95,8 @@ check_contains "basic: DOC-ONLY script referenced only from docs/readme.md" \
 
 check_contains "basic: precedence - a script referenced by BOTH a test file and a doc lands TEST-ONLY, not DOC-ONLY" \
     "$OUT" $'script\tprecedence-test\tscripts/precedence-test.sh\tTEST-ONLY'
+check_contains "basic: a script referenced only from a .spec.* file lands TEST-ONLY (codex-3 .spec.* naming fix)" \
+    "$OUT" $'script\tspec-testonly\tscripts/spec-testonly.sh\tTEST-ONLY'
 dead_section=$(printf '%s\n' "$OUT" | sed -n '/^--- DEAD /,/^--- DOC-ONLY /p')
 if printf '%s\n' "$dead_section" | grep -q 'precedence-test'; then
     echo "FAIL - precedence: precedence-test.sh must not appear in the DEAD list"
