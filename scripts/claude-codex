@@ -5,13 +5,13 @@ set -u
 
 CODEX_PROXY_BASE_URL="${CODEX_PROXY_BASE_URL:-http://127.0.0.1:8317}"
 # Model names are whatever the local CLIProxyAPI /v1/models exposes for the
-# authed codex subscription (gpt-5.6-sol at ship time). All overridable per task.
-CODEX_MODEL="${CODEX_MODEL:-gpt-5.6-sol}"
+# authed codex subscription (gpt-6-sol at ship time). All overridable per task.
+CODEX_MODEL="${CODEX_MODEL:-gpt-6-sol}"
 CODEX_HAIKU="${CODEX_HAIKU:-$CODEX_MODEL}"
 CODEX_SUBAGENT_MODEL="${CODEX_SUBAGENT_MODEL:-$CODEX_MODEL}"
 # CODEX_CONTEXT_WINDOW feeds CLAUDE_CODE_AUTO_COMPACT_WINDOW (export block below)
 # so Claude Code budgets against a real number instead of its ~200k default for
-# the unrecognized gpt-5.6-sol slug — the twin of claude-glm's GLM_CONTEXT_WINDOW.
+# the unrecognized gpt-6-sol slug — the twin of claude-glm's GLM_CONTEXT_WINDOW.
 # gpt-5.6's actual window is ~372k (95% effective ~353k, openai/codex#32486). The
 # 272000 default is the COST-OPTIMAL compaction point, NOT a hard ceiling: input
 # past 272k bills 2x input / 1.5x output for the whole request, so compacting at
@@ -405,7 +405,7 @@ seed_config_dir() {
     # this launcher the way ANTHROPIC_*/CLAUDE_CODE_USE_* are — so a
     # newline-bearing value must not land verbatim in agent instructions.
     # Degrade to a generic phrase outside a plain slug shape; the common case
-    # (gpt-5.6-sol) is unaffected.
+    # (gpt-6-sol) is unaffected.
     stanza_model="$(codex_stanza_model)"
     cat >> "$CONFIG_DIR/CLAUDE.md" <<EOF || seed_fail "append the claudex model-identity stanza to CLAUDE.md"
 
@@ -742,7 +742,7 @@ export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$CODEX_CONTEXT_WINDOW"
 # modelWindow falls back to a hardcoded 200000 — so this launcher's 272000 was
 # silently clamped to 200000 and CODEX_CONTEXT_WINDOW never took effect.
 # CLAUDE_CODE_MAX_CONTEXT_TOKENS is the documented lever that declares the
-# window (honored precisely for a non-`claude-` slug like gpt-5.6-sol), and it
+# window (honored precisely for a non-`claude-` slug like gpt-6-sol), and it
 # is fed the SAME value on purpose: min(o,c) with o == c is c for every value a
 # caller picks, so the clamp becomes structurally unreachable rather than merely
 # unlikely. Deliberately NOT setting

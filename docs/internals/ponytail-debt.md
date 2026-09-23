@@ -1,0 +1,181 @@
+# `ponytail:` debt ledger
+
+Generated with upstream's method (`grep -rnE '(#|//) ?ponytail:' .`, skipping `node_modules`/`.git`/build output) — see [`ponytail-debt`](https://github.com/DietrichGebert/ponytail/blob/main/skills/ponytail-debt/SKILL.md) and [`ponytail-convention.md`](ponytail-convention.md). Snapshot at `015f4cf34ba628a4fad2a419b4eb52b66c85c67c`, 2026-09-23. `scripts/` is under concurrent edit (HIMMEL-3511 scope note), so line numbers drift — regenerate rather than trusting this file long after that sha.
+
+Each row: `file:line`, the ceiling (what was simplified), and the upgrade path or `no-trigger` if the marker names none. Backfilling triggers onto the `no-trigger` rows is phase 2 — not done here; this is a read-only harvest.
+
+- `marketplace/plugins/himmel-ops/hooks/run-hook-with-bash.js:306`, shape-based, so an unnamed or multi-word credential (e.g. — no-trigger
+- `scripts/adopt.ps1:244`, distinctive-phrase heuristic, not a real "did the operator — the same idea without this exact phrase would still get appended to. Upgrade path: none planned, a rare double-append is cheaper to fix by hand than a stricter matcher is to build.
+- `scripts/check-ci.sh:424`, a token without admin cannot read the classic endpoint (403), so it — no-trigger
+- `scripts/check-ci.sh:519`, a commit status carries no app id — the REST payload has none and — no-trigger
+- `scripts/ci/run-shell-tests.sh:2863`, the tree list is hand-kept — a NEW top-level tree that gains a — no-trigger
+- `scripts/clean-garden.sh:158`, last-writer-wins — two sweeps racing the same repo can lose one — no-trigger
+- `scripts/codex/startup-health.ps1:188`, only the table-header form codex itself writes ([marketplaces.X], — no-trigger
+- `scripts/codex/startup-health.sh:215`, only the table-header form codex itself writes ([marketplaces.X], — no-trigger
+- `scripts/cr/anchor-handoff.sh:31`, defense in depth, NOT the trust root. This file and the one line — no-trigger
+- `scripts/cr/claude-floor.mjs:41`, the signer runs as the authoring leg's uid, so any same-uid — no-trigger
+- `scripts/cr/claude-floor.mjs:92`, one blob is still read into one Buffer, so a single blob beyond what — no-trigger
+- `scripts/cr/claude-floor.mjs:188`, POSIX mode bits only; on Windows the ACL is not checked. — no-trigger
+- `scripts/cr/clear-cr-marker.sh:687`, the signer runs as the authoring leg's uid, so any same-uid process — no-trigger
+- `scripts/cr/clear-cr-marker.sh:1036`, a missing helper file skips this ADVISORY wait (fail-open on the — no-trigger
+- `scripts/cr/critic-first-pass.sh:567`, score rows do not carry an artifact label (spec/plan/diff); the raw — no-trigger
+- `scripts/cr/failure-classify.sh:160`, a line-level match. A body whose only signal spans a line break, or — no-trigger
+- `scripts/cr/impacted-suites.sh:61`, references are DIRECT and textual. A suite that reaches a changed — no-trigger
+- `scripts/cr/impacted-suites.sh:131`, this scans `run:` LINES only — a JS/TS test invocation written — no-trigger
+- `scripts/cr/impacted-suites.sh:136`, the `npm test` marker (kind npm-test) matches by SUBSTRING only, — no-trigger
+- `scripts/cr/install-cr-gate.sh:246`, textual probe — matches a chain that execs the repo hook by — reads as "no chain" (fail-LOUD: it over-warns, never under-warns). Upgrade to a dry-run exec probe only if a real shim trips it.
+- `scripts/cr/ledger-append.sh:194`, a text heuristic. It proves a version was NAMED, not that the — no-trigger
+- `scripts/cr/ledger-append.sh:208`, a bare name is refused even when it is not itself a measurement — no-trigger
+- `scripts/cr/ledger-append.sh:220`, a major-only version is read from "<shell> 3" / "<shell> v3" / — no-trigger
+- `scripts/cr/ledger-append.sh:712`, only the measurement half of the bar runs here; the claim check — no-trigger
+- `scripts/cr/pr-check-context.sh:359`, this guard is defense in depth, NOT the trust root. It lives in — no-trigger
+- `scripts/cr/pr-check-env.sh:65`, this guard is defense in depth, NOT the trust root. It lives in — no-trigger
+- `scripts/cr/test-install-cr-gate.sh:332`, consequence-level check; a true mid-write interrupt needs a fault- — no-trigger
+- `scripts/cr/test-install-cr-gate.sh:350`, no portable way to interrupt a write mid-flight — chmod on a — no-trigger
+- `scripts/cr/test-pr-check-pair.sh:476`, the phrase pin is a substring grep -- it proves the phrase is — no-trigger
+- `scripts/docs/test-adoption-trail.sh:130`, the wizard's questions are asked by an imperative flow in — no-trigger
+- `scripts/graphify/graph-cadence.sh:637`, a holder that is alive but HUNG keeps heartbeating, so every later — no-trigger
+- `scripts/graphify/refresh-graph-map.sh:2190`, a *.quarantine holds only graphify-out's contents, no corpus — no-trigger
+- `scripts/graphify/refresh-graph-map.sh:2473`, --promote-only never invokes graphify (no extraction, and the — no-trigger
+- `scripts/handover/arm-resume.sh:2543`, only the crontab and `at` launch bodies are wired; the Windows — no-trigger
+- `scripts/handover/artifact-sync.sh:72`, a single registry-wide lock, not per-URL -- fine at this — lock, not per-URL -- fine at this operator's publish cadence; upgrade to per-URL locking if throughput ever makes that a bottleneck.
+- `scripts/handover/artifact-sync.sh:115`, `record` hashes only the LOCAL file -- it cannot independently — no-trigger
+- `scripts/handover/console-kit/board.mjs:24`, the epic "merged" count is PRs whose title cites [KEY], from one — no-trigger
+- `scripts/handover/console-kit/board.mjs:104`, a malformed span (tick reports it MALFORMED by label) is not an entry — no-trigger
+- `scripts/handover/console-kit/board.mjs:191`, a leg that opened a PR without ever writing one of these bullets has no — no-trigger
+- `scripts/handover/console-kit/board.mjs:261`, a PR gh cannot answer for (gh down, not a PR of this repo) reads not — no-trigger
+- `scripts/handover/console-kit/compacted-check.sh:25`, the snap also records `lock` and `go-file` (the queue-lock token — no-trigger
+- `scripts/handover/console-kit/fleet.mjs:24`, board.mjs exports nothing and runs on import, so its parsers (the — no-trigger
+- `scripts/handover/console-kit/fleet.mjs:27`, uptime assumes CLK_TCK=100 (every Linux the kit runs on); a leg's — no-trigger
+- `scripts/handover/console-kit/headed-arm-leg.sh:1011`, this records the launch ATTEMPT that reached the exec below; — no-trigger
+- `scripts/handover/console-kit/headed-arm-leg.sh:1019`, with no HIMMELCTL_CACHE_DIR and no HOME nothing is written - — no-trigger
+- `scripts/handover/console-kit/inbox-follow.sh:29`, the cursor is a bare byte offset, so an inbox replaced by a file — no-trigger
+- `scripts/handover/console-kit/tick.sh:196`, a status bullet that leads with something other than the marker — no-trigger
+- `scripts/handover/console-kit/tick.sh:266`, WRAPPED is the leg's own last bullet, self-reported -- a leg — no-trigger
+- `scripts/handover/console-kit/tick.sh:365`, the block ENDS at a blank, `word:` or list-marker line, so a leg — no-trigger
+- `scripts/handover/console-kit/tick.sh:403`, the arm still decides which legs get lock/tail/nonce checks; — no-trigger
+- `scripts/handover/console-kit/tick.sh:459`, both reads are self-reported state, not proof. A leg that — no-trigger
+- `scripts/handover/console-kit/tick.sh:556`, a degraded census (rc=3, unreadable=<n>) can hide a live leg's row, — no-trigger
+- `scripts/handover/console-kit/tick.sh:591`, with several consoles on one box another console's legs read here too; — no-trigger
+- `scripts/handover/console-kit/tick.sh:724`, CI colour and fleet capacity are shown on the board but deliberately — no-trigger
+- `scripts/handover/console-kit/tick.sh:803`, bank-preflight still takes its fleet admission lock and prunes — no-trigger
+- `scripts/handover/console-kit/tick.sh:870`, this can only ever report UNKNOWN. A Monitor's armed/pending — no-trigger
+- `scripts/handover/console/record-launch.sh:19`, the row exists once this runs, which is before claude has — no-trigger
+- `scripts/handover/console/test-console.sh:1430`, static proof only -- the real bash 3.2 run is the macOS nightly. — no-trigger
+- `scripts/handover/headed-arm.sh:530`, keyed on --role console only. A console armed without --role (a — no-trigger
+- `scripts/handover/headed-arm.sh:807`, still weaker than the NUL-separated /proc read - an argv element — no-trigger
+- `scripts/handover/headed-arm.sh:994`, the daemon env is read once, just before the launch. A daemon — no-trigger
+- `scripts/handover/headed-arm.sh:998`, only leg-shaped names (the case list in _hl_leg_var) are — no-trigger
+- `scripts/handover/merge-on-green.sh:187`, the ENTRY script is still an OPEN path — legs are told to run — no-trigger
+- `scripts/handover/wrap-subtree-check.sh:35`, only DESCENDANTS of the session are seen. A shell reparented to — no-trigger
+- `scripts/handover/wrap-subtree-check.sh:42`, the start-time rule is a conjunction (direct child AND non-wrapper — no-trigger
+- `scripts/handover/wrap-subtree-check.sh:60`, the default harness match is a heuristic over argv, so a leaked — no-trigger
+- `scripts/hermes/assets/parity_guard.py:1059`, the `code` class is a LITERAL-TEXT scan — the same regexes the — no-trigger
+- `scripts/hermes/assets/parity_guard.py:1063`, the `scan` class does not apply the engine-specific external-write — no-trigger
+- `scripts/hermes/egress-gate.sh:56`, the snapshot pins the bytes at copy time, not at classification time: — no-trigger
+- `scripts/hermes/test-hook-inventory.sh:273`, this also collects a "name" key that is NOT a tool's name, so — no-trigger
+- `scripts/himmel-doctor.sh:2867`, the remedy points at the qmd README instead of printing the literal start command, because the ws5 T13(b) marker scan false-positi… — no-trigger
+- `scripts/himmel-doctor.sh:2986`, only `args` arrays are examined -- a key inside `command` (a `bash -c "... --api-key K"` — no-trigger
+- `scripts/himmel-update.sh:2184`, the update itself is deferred, not attempted — there is no in-place — no-trigger
+- `scripts/himmelctl/bin.js:58`, provStep names only the plan step in flight, so install-end's — no-trigger
+- `scripts/himmelctl/bin.js:2598`, the `./` prefix can collide back to a bare basename only if the — no-trigger
+- `scripts/himmelctl/bin.js:3804`, a key that pre-existed as `false` is recorded as absent (the — no-trigger
+- `scripts/himmelctl/lib/luna-config.js:481`, a pre-existing config.json that does not parse is treated as — no-trigger
+- `scripts/himmelctl/lib/probes.js:453`, never executes the command — only resolves the interpreter (on — no-trigger
+- `scripts/himmelctl/lib/probes.js:1145`, keys on the resolver's stderr wording (handover-path.sh has no — no-trigger
+- `scripts/himmelctl/lib/probes.js:2687`, the phi-roots comparison below is a SIMPLIFIED prefix match — matcher — good enough for a coherence hint, not a security boundary; upgrade to a shared matcher only if this probe's own false mismatches become a real complaint (avoids a second, driftable copy of…
+- `scripts/himmelctl/lib/provenance.js:72`, no jq on PATH -- this fallback sorts keys by UTF-16 code unit and — no-trigger
+- `scripts/himmelctl/lib/status-report.js:99`, looks at `origin` only (like forge_detect); a Bitbucket remote under — no-trigger
+- `scripts/hooks/auto-approve-safe-bash.sh:774`, HANDOVER_DIR is not checked against the registered handover root — — no-trigger
+- `scripts/hooks/auto-approve-safe-bash.sh:800`, on a POSIX host `C:/x` is really a cwd-relative name, which is why — no-trigger
+- `scripts/hooks/auto-approve-safe-bash.sh:938`, checked at match time only - the bytes can change between this — no-trigger
+- `scripts/hooks/block-chokepoint-env-prefix.sh:344`, the fold is STATIC -- it only sees a seam NAME written in the body. — no-trigger
+- `scripts/hooks/block-edit-live-settings.sh:95`, a variable-built path (`f="$HOME/.claude/settings.json"; cat — no-trigger
+- `scripts/hooks/block-glm-external-writes.sh:268`, the audit line records that the bypass was CONSULTED and granted for — no-trigger
+- `scripts/hooks/block-glm-external-writes.sh:718`, BSD awk (macOS) sprintf("%c", 0) yields the EMPTY string (C strings), so — no-trigger
+- `scripts/hooks/block-glm-external-writes.sh:764`, de-duped fork growth is bounded by distinct paths, not by — keep the candidates already tracked, rather than growing unbounded. Upgrade path if this ever needs raising: none identified, no case has hit it.
+- `scripts/hooks/block-write-into-main-checkout.sh:1452`, command-text scanning, not a shell parser — a git invocation — no-trigger
+- `scripts/hooks/console-precompact-snapshot.sh:46`, `## Live state` is read with a plain ``` fence toggle and single-line — no-trigger
+- `scripts/hooks/console-precompact-snapshot.sh:51`, `tick.sh` does not persist its output today, so the `--- tick` tail is — no-trigger
+- `scripts/hooks/guard-pr-check-literal.sh:213`, text classification, so a name the shell assembles from pieces the — no-trigger
+- `scripts/hooks/guard-pr-check-literal.sh:333`, refs/heads/main is trusted as the anchor's commit - a leg that — no-trigger
+- `scripts/hooks/guard-pr-check-literal.sh:335`, checked at match time only - a background job or another session — no-trigger
+- `scripts/hooks/require-quiet-run.sh:147`, only the FIRST heredoc intro on a given physical line is — no-trigger
+- `scripts/hooks/rtk-hook-guard.sh:74`, `.claude/worktrees/` is the only worktree root recognised — a — no-trigger
+- `scripts/hooks/run-hook-with-bash.js:306`, shape-based, so an unnamed or multi-word credential (e.g. — no-trigger
+- `scripts/hooks/stop-queue.mjs:25`, the bound is the lock, not a pool — if these jobs ever need to — no-trigger
+- `scripts/hooks/stop-queue.mjs:53`, AT-LEAST-ONCE, not exactly-once. runEntry persists the incremented — idempotent enough) and the alternative loses work on every crash. Upgrade path if a non-idempotent job ever joins: a per-entry "started" marker the next worker treats as done-unless-proven-otherwise.
+- `scripts/hooks/stop-queue.mjs:60`, a caller that hands a TEMP FILE PATH in argv (the end-side hooks — by the TTL and only reachable when the queue never drains at all. Upgrade path: pipe those payloads through the enqueue's stdin, which the entry already stores, and drop the temp file from argv…
+- `scripts/hooks/stop-queue.mjs:277`, the denylist fences the obvious shapes, so the ceiling is an — can tell a platform constant from a secret by looking at its name. Upgrade path if it ever matters: make the hatch carry a VALUE the enqueuer supplies rather than a name it copies.
+- `scripts/hooks/stop-queue.mjs:297`, still shape-based, and still unable to be exhaustive — but since — visible (a job fails) rather than silent, and ENV_EXTRA_VAR is its upgrade path.
+- `scripts/hooks/stop-queue.mjs:445`, shape-based, so a credential in an unguessable shape still gets — no-trigger
+- `scripts/hooks/stop-queue.mjs:471`, trimming rewrites the log, and an enqueuer appending between the — atomic (tmp + rename), so no reader ever sees a half-written log. Upgrade path if the census ever has to be lossless: trim under the worker lock AND make enqueue take it for the append.
+- `scripts/hooks/stop-queue.mjs:721`, this makes the CONSEQUENCE of a wrong staleness judgement safe; it — no-trigger
+- `scripts/hooks/stop-queue.mjs:740`, one gap in that rule is left (HIMMEL-3294), and it is the one POSIX — no-trigger
+- `scripts/hooks/test-crlf-boundary.sh:262`, this section spawns dozens of nested bash+env+git+gh processes: a — so a wedge fails loudly in ~20s rather than hanging the suite. Upgrade path: none needed — a rare bounded retry is cheaper than chasing an upstream MSYS bug.
+- `scripts/hooks/trigger-cr-on-push.sh:38`, resolves the PR via `gh pr view` for the CURRENT checked-out — no-trigger
+- `scripts/jira/sync-versions.mjs:147`, HIMMEL-3431 — releasing an unreleased version is the one — no-trigger
+- `scripts/lanes/bench/scorecard/lib/scorecard-lib.sh:34`, the primary dir name is this machine's himmel checkout path — no-trigger
+- `scripts/lanes/bench/scorecard/lib/scorecard-lib.sh:90`, the older `leg<Letter><k>` titles (legG3, legS1 ...) still fall to — no-trigger
+- `scripts/lanes/bench/scorecard/lib/scorecard-lib.sh:92`, a leg-shaped title leg_identity does not recognise still races on the — no-trigger
+- `scripts/lanes/bench/scorecard/ready-go-latency.sh:31`, "discovered" is one READY per PR (the last one; an earlier READY a — no-trigger
+- `scripts/lib/bank-preflight.sh:257`, `_fleet_gate_drop` is still check-then-remove — a holder paused — no-trigger
+- `scripts/lib/bank-preflight.sh:748`, without a readable cmdline (no procfs — macOS/Windows — or a — no-trigger
+- `scripts/lib/cadence-format.sh:533`, a --force re-arm over a crontab line the operator already had under — no-trigger
+- `scripts/lib/canon-path.sh:25`, the Git Bash arm (cygpath -ml) cannot run on Linux/macOS - it is — no-trigger
+- `scripts/lib/claude-headless.sh:183`, rm -rf here is a plain check-then-act, not atomic against — a crash AND two concurrent reclaimers in the same ~100ms poll tick). Upgrade path if this ever bites: a reclaim-intent marker (mkdir a sibling dir as a lock-on-the-reclaim) before the rm -rf.
+- `scripts/lib/clean-sandbox.sh:26`, the PATH is fixed at the common Linux/macOS system dirs, so a tool — no-trigger
+- `scripts/lib/cr-trigger-ledger.sh:30`, check-then-post is NOT atomic — two concurrent hook processes — a missed trigger is caught loudly by the merge gate refusing green. Upgrade path if that ever stops holding (e.g. CodeRabbit review credits become the scarce resource): a per-key mkdir claim, same primitive…
+- `scripts/lib/gh-graphql-budget.sh:30`, an unreadable/absent header set means "proceed" — this preflight is — no-trigger
+- `scripts/lib/graphify-bin.sh:697`, unlocked read-modify-write, no lock file. himmel-update is a — no-trigger
+- `scripts/lib/graphify-bin.sh:730`, a write failure (read-only/unavailable config dir) still — no-trigger
+- `scripts/lib/host-caps.sh:36`, the NTFS/MSYS behaviour cannot run on Linux/macOS - it is covered by — no-trigger
+- `scripts/lib/merge-block-alert.sh:36`, "operator" is access.json's first positive allowFrom entry, the same — no-trigger
+- `scripts/lib/orphan-branches.sh:164`, a conclusion this filter does not name (a state GitHub adds later) — no-trigger
+- `scripts/lib/provenance-read.sh:316`, fixed at exactly two levels with a hardcoded `.hooks` field name, — no-trigger
+- `scripts/lib/provenance-read.sh:409`, the design leaves the ungoverned/non-preexisted-only case — no-trigger
+- `scripts/lib/red-control-extraction-lint.sh:69`, a historical-ref variable whose name does not end in `_SHA` — no-trigger
+- `scripts/lib/release-check.sh:112`, the sed fallback is NOT structural. A jq-less adopter keeps the old — no-trigger
+- `scripts/lib/release-check.sh:158`, that check-then-mv is not atomic. Losing the race can only drop one — no-trigger
+- `scripts/lib/test-vbox-path.sh:45`, the Git-Bash arm (cygpath present) is unverified here — Windows — no-trigger
+- `scripts/lib/unwire-hud-config.sh:13`, an operator's hand edits to a himmel-wired config.json go with it; — no-trigger
+- `scripts/lib/unwire-user-claude-md.sh:184`, check-then-copy is not atomic -- a link planted at $backup between — no-trigger
+- `scripts/lib/user-claude-md.sh:37`, distinctive-phrase heuristic, not a real "did the operator already — ever using these two words together would still get appended to. Upgrade path: none planned, the cost of a rare double-append (operator just deletes the duplicate block) is lower than the cost of a…
+- `scripts/lib/vm-guest-excludes.sh:31`, the vocabulary is ONLY the wizard-owned ids, so a lanes.local.json that — no-trigger
+- `scripts/lib/vm-guest-excludes.sh:64`, the snapshot scan (vmsdk.snapshot) covers ONLY the guest home dir and the — no-trigger
+- `scripts/lib/wire-statusline.sh:132`, the vocabulary has no delete op, so a purge is a `replace` of the — no-trigger
+- `scripts/machine-setup/migrate-plugin-to-himmel.sh:110`, a writer landing between the re-check and the mv is — no-trigger
+- `scripts/machine-setup/upgrade-rtk.sh:421`, checksums.txt is fetched from the same GitHub releases host as — no-trigger
+- `scripts/observability/quiet-run-orphans.ts:13`, "reparented" means ppid 1 or a `systemd` parent (the — no-trigger
+- `scripts/observability/restart-stack.sh:515`, these .bak-* files are never pruned (CR round-2, codex-2) — no-trigger
+- `scripts/observability/session-run-hook.ts:88`, two known ceilings, both deliberate. (1) Subagent (`isSidechain`) — the transcript never records. Join against the session start row if that gap ever matters.
+- `scripts/observability/tool-call-census.sh:140`, the denial classifier is a first-line prefix/keyword match, not a — no-trigger
+- `scripts/parity/test-ws5-invariants.sh:385`, a heredoc body or multi-line string holding `#` at line start — no-trigger
+- `scripts/parity/test-ws5-invariants.sh:430`, the regex-vs-division call is the classic prev-token — no-trigger
+- `scripts/parity/test-ws5-invariants.sh:699`, the scan is per diff LINE with no concept of "this — no-trigger
+- `scripts/quiet-run.sh:101`, SIGKILL of the wrapper itself cannot be trapped, so a kill -9'd — no-trigger
+- `scripts/release/converge-check.sh:103`, the seed is compared by FILE LIST only, not contents -- seeded files may carry — no-trigger
+- `scripts/telegram/console-route.ts:25`, an inbox file that exists is only evidence a console armed its — no-trigger
+- `scripts/telegram/onboard.ts:113`, best-effort OS process scan — the pidfile check above is the — to "not found" so a broken scan can never itself hang onboarding; upgrade path if that gap ever bites: read /proc directly on POSIX.
+- `scripts/telegram/test-restart-bridge.sh:668`, static-only for macOS -- no BSD stat/bash 3.2 here; Linux (GNU stat — no-trigger
+- `scripts/telegram/test-restart-bridge.sh:978`, static-only -- the /proc branch above is what runs on Linux, so this — no-trigger
+- `scripts/test-tarball-install-vm.sh:15`, both installs go into a fake HOME under /tmp, and there is no uninstall — no-trigger
+- `scripts/test-uninstall-real-home-callers.sh:61`, flow-INSENSITIVE text tracing over `NAME=` on raw lines (continuations — no-trigger
+- `scripts/test-uninstall-real-home-callers.sh:147`, it will NOT see a write that never spells the name next to its operator: a — no-trigger
+- `scripts/test-uninstall-ux.sh:181`, the file check greps for ANY provenance-writing call in the named — no-trigger
+- `scripts/uninstall.sh:1100`, a $HOME that IS literally the real home — reset by systemd-run — no-trigger
+- `scripts/uninstall.sh:1275`, the helpers uninstall calls (unwire-*.sh, `pre-commit uninstall`) — no-trigger
+- `scripts/uninstall.sh:1335`, a LEXICAL $HOME under the real home (e.g. ~/tmp/scratch, spelled — no-trigger
+- `scripts/uninstall.sh:1547`, provenance-read.sh is jq-only by design (see its header) — with — no-trigger
+- `scripts/uninstall.sh:1805`, the [k]eep/[r]estore-or-[d]elete override for a — no-trigger
+- `scripts/uninstall.sh:1938`, only the unit himmel itself installed is disabled. A restored — no-trigger
+- `scripts/uninstall.sh:2386`, the step's rc is the finest grain uninstall-plugins.sh reports — — no-trigger
+- `scripts/uninstall.sh:2725`, any PROTECTED hook chain at this path skips the WHOLE — no-trigger
+- `scripts/uninstall.sh:3047`, same coarse rc-based outcome as [4/8] — a marketplace kept — no-trigger
+- `scripts/upstream/run-target-tests.sh:29`, only HERMES_* is scrubbed; provider/bot credentials named without — no-trigger
+- `scripts/vault/backfill-source-identity.mjs:149`, a README over the API's 1 MB inline limit returns empty `.content`, — no-trigger
+- `scripts/vm/lib/assert-provenance.sh:23`, residue is grouped by its first three path components under HOME — no-trigger
+- `scripts/vm/lib/seed-provenance.sh:25`, a stub is not a real qmd or graphify. It proves the arm and the — no-trigger
+- `templates/luna-second-brain/scripts/upgrade.sh:511`, a HASH cannot be compared newline/JSON-insensitively (HIMMEL-3037), — no-trigger
+
+**173 markers, 157 with no trigger.**

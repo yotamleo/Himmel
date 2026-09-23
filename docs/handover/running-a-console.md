@@ -96,10 +96,11 @@ status` that the lock is held, and acquiring one only if it reports `free` —
 and tells its predecessor it is live.
 
 It also opens a **Telegram inbox** (HIMMEL-3355): it creates
-`<bridge root>/consoles/<session>.md` and arms a `Monitor` on
-`console-kit/inbox-follow.sh` of it (a persisted read cursor: a line appended
-while the monitor was expired is delivered on the re-arm; at-least-once, so a
-follower killed mid-emit can repeat one line), so
+`<bridge root>/consoles/<session>.md` and watches it with its one event waiter,
+`console-kit/console-wait.sh`, run with Bash `run_in_background` (HIMMEL-3509:
+no `Monitor` re-arm loop, so an idle console takes no turns; a persisted read
+cursor means a line appended while no waiter ran is delivered on the next
+start; at-least-once, so a waiter killed mid-emit can repeat one line), so
 the operator's `/console <session> <text>` from
 Telegram reaches the running console with the operator's authority — rulings,
 halts, new work — but never a permission or settings change and never a

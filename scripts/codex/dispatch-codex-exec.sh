@@ -371,7 +371,7 @@ fi
 # Invariant 2 (HIMMEL-2811): share the critic's model source. HIMMEL-2546
 # left this lane's pin divergent; that stale default later 404'd. Only an
 # unreadable registry permits the named fallback; invalid content must refuse.
-FALLBACK_MODEL="gpt-6-astra"
+FALLBACK_MODEL="gpt-6-sol"
 CRITICS_FILE="${CODEX_CRITICS_FILE:-$SCRIPT_DIR/../cr/critics.json}"
 # Sandbox pin (codex-adv r4): ambient $CODEX_HOME/config.toml can default the
 # sandbox to danger-full-access - always pass an EXPLICIT safe --sandbox when

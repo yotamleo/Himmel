@@ -55,10 +55,13 @@
 #   - NO MATCH -> anchor_lane=adopter. himmel_dir = the anchor, NEVER
 #     anything the reviewed repo supplied.
 # On the himmel lane, when NOT already the anchor itself, the branch's
-# changes to scripts/cr/ AND scripts/guardrails/lib.sh (HIMMEL-3382 - ONE
-# diff definition, shared with the runbook's own step-0 himmel-lane
-# precheck: the merge-base diff of COMMITTED history PLUS WORKING-TREE and
-# UNTRACKED changes, scoped to those two paths) are classified TRI-STATE into
+# changes to the guarded paths in cr_guarded below - scripts/cr/,
+# scripts/lib/, scripts/guardrails/lib.sh, scripts/check-ci.sh and
+# scripts/handover/resolve-active-item.sh (HIMMEL-3382, widened by
+# HIMMEL-3493: the merge-base diff of COMMITTED history PLUS WORKING-TREE and
+# UNTRACKED changes, scoped to those paths; the runbook's step-0 himmel-lane
+# precheck runs the same diff, and its silence is necessary, not sufficient,
+# for this script's "no") are classified TRI-STATE into
 # `cr_diff_state`: "no" (every git call succeeded, the set is empty), "yes"
 # (every git call succeeded, the set is non-empty), or "unknown" (merge-base
 # could not be computed, OR any of the three git calls failed - either
@@ -78,10 +81,9 @@
 # itself.
 #
 # THE single guarantee (HIMMEL-2335 round 6): himmel_dir may be left pointing
-# at the BRANCH ONLY IF cr_diff_state=no (the diff does not touch scripts/cr/
-# or scripts/guardrails/lib.sh and their bytes match the anchor's - that
-# scope only; see the ponytail at the end-of-decision assertion,
-# HIMMEL-3493), OR the delegation is provably
+# at the BRANCH ONLY IF cr_diff_state=no (the diff touches no cr_guarded
+# path and their bytes match the anchor's at step 0 - see the ponytail at
+# the end-of-decision assertion, HIMMEL-3497), OR the delegation is provably
 # logged (verified_delegate=yes -
 # this run IS a verified delegate a genuine anchor handed off to - OR
 # ledger_written=yes - this run IS the anchor and its own ledger-append.sh
@@ -244,8 +246,8 @@
 #     produces the actual context>
 #   pr-check-context: cr_diff_files=<comma-joined, sorted, deduped set this
 #     run decided on for cr_diff_state (HIMMEL-3382) - the merge-base diff of
-#     committed history plus working-tree/untracked changes under
-#     scripts/cr/ and scripts/guardrails/lib.sh; empty when cr_diff_state is
+#     committed history plus working-tree/untracked changes under the
+#     cr_guarded paths (HIMMEL-3493); empty when cr_diff_state is
 #     no or unknown>
 # Nothing else is written to stdout; diagnostics go to stderr.
 #
@@ -359,9 +361,10 @@ fi
 # ponytail: this guard is defense in depth, NOT the trust root. It lives in
 # the branch's own bytes, so a branch that deletes it also deletes the
 # hand-off. The trust root is the runbook condition (console ruling): the bare
-# literal is permitted only on a diff that touches no scripts/cr/ file (nor
-# scripts/guardrails/lib.sh), and a branch that could delete this guard is
-# exactly such a diff, which must enter by the canonical absolute fence.
+# literal is permitted only on a diff that touches no cr_guarded path
+# (scripts/cr/, scripts/lib/, scripts/guardrails/lib.sh, scripts/check-ci.sh,
+# scripts/handover/resolve-active-item.sh), and a branch that could delete
+# this guard is exactly such a diff, which must enter by the canonical absolute fence.
 hand_off_to_anchor() {
     if [ ! -f "$anchor/scripts/cr/pr-check-context.sh" ]; then
         echo "pr-check-context: entered through a non-anchor copy ($SCRIPT_DIR) and the anchor carries no scripts/cr/pr-check-context.sh ($anchor) - refusing to let this copy decide; fix HIMMEL_REPO, then re-run" >&2
@@ -617,13 +620,15 @@ fi
 # precondition below must hold, or this run does its own work exactly as
 # before (delegated stays "no").
 #
-# HIMMEL-3382 - ONE diff definition, shared with the runbook's own step-0
-# himmel-lane precheck (both twins): the merge-base diff of COMMITTED
-# history PLUS WORKING-TREE and UNTRACKED changes, scoped to scripts/cr/ AND
-# scripts/guardrails/lib.sh (this script sources the latter, so a branch
-# that touches only it is exactly as unreviewed-if-self-run as one that
-# touches scripts/cr/ itself - the pre-HIMMEL-3382 version scoped only to
-# scripts/cr/, missing this file entirely). Each of the three git calls
+# HIMMEL-3382 - the diff: the merge-base diff of COMMITTED history PLUS
+# WORKING-TREE and UNTRACKED changes, scoped to cr_guarded (HIMMEL-3382 added
+# scripts/guardrails/lib.sh, which this script sources; HIMMEL-3493 added
+# scripts/lib/, scripts/check-ci.sh and scripts/handover/resolve-active-item.sh,
+# which a "no" run executes from the branch). The runbook's step-0 himmel-lane
+# precheck (both twins) runs the same diff over the same paths, but this
+# script ALSO compares bytes (HIMMEL-3472) and ignores __pycache__/, so the
+# precheck's silence is necessary, not sufficient, for a "no" here - the
+# fence fails safe. Each of the three git calls
 # below is scoped to those paths directly via its own pathspec, not a
 # post-hoc `grep '^scripts/cr/'` filter, and each has its own exit status
 # checked separately - nothing here pipes a git call's output into grep, so
@@ -655,25 +660,101 @@ fi
 # "yes" - it cannot tell a hidden edit from a primary checkout that is behind
 # or ahead of the branch's base (T37: main's later scripts/cr/ commit is not
 # the branch's change), so it delegates nothing and the anchor's copy runs.
+#
+# HIMMEL-3493 - the scope is what a "no" run executes from the branch, not
+# just scripts/cr/: later /pr-check fences run <himmel_dir>/scripts/cr/*,
+# which source the shared libs under scripts/lib/ (load-dotenv,
+# shared-branch-lock, gh-graphql-budget, cr-default-base, proc-tree, ...),
+# and the runbook also runs <himmel_dir>/scripts/check-ci.sh (more
+# scripts/lib/) and scripts/handover/resolve-active-item.sh (lib/handover-
+# path.sh). The whole scripts/lib/ directory is guarded, not a hand-kept
+# list: an edit to a lib nothing reaches only turns "no" into a delegation
+# or unknown, the fail-safe direction. test-cr-guarded-closure.sh derives
+# the closure from the scripts and the runbook twins and fails when a new
+# source or exec site reaches outside this list. __pycache__/ directories
+# are left out of both the diff and the manifest: the primary checkout
+# carries an ignored scripts/lib/__pycache__/ from the VM tooling, which
+# would make every branch's bytes differ, and no /pr-check path runs
+# Python from scripts/lib/.
 gitd() { git --no-replace-objects -c core.fsmonitor=false -c core.untrackedCache=false "$@"; }
-cr_guarded="scripts/cr scripts/guardrails/lib.sh"
+#
+# The closure also follows script paths stored in a variable and run later
+# (console adversarial review of #1148): handover-bridge.sh hands
+# append-cr-{findings,bugs}.sh (and bug.sh) to node, critic-panel.sh runs
+# ${CRITIC_INVOKE:-.../hermes/invoke.sh} (egress-gate.sh and the egress
+# matrix it evaluates, the alibaba quota probe under scripts/telegram/), and
+# bank-preflight.sh runs the statusline usage-cache producer and the
+# scripts/lanes/bank-status.ts chain. Those are guarded file by file, not by
+# directory, so a branch touching an unrelated lane or telegram file keeps
+# its relative himmel-lane spelling. egress-matrix.json is data, not code,
+# but it is the egress policy invoke.sh enforces, so it is guarded too.
+# A red required check reaches the telegram bridge as well (second console
+# review of #1148): check-ci.sh sources merge-block-alert.sh, which runs
+# bun scripts/telegram/console-route.ts reply; that imports bus.ts and
+# dynamically poller.ts, whose static imports load the rest of the
+# scripts/telegram files below and scripts/lanes/plugin-profiles.mjs.
+cr_guarded="scripts/cr scripts/lib scripts/guardrails/lib.sh scripts/check-ci.sh scripts/handover/resolve-active-item.sh
+scripts/handover/append-cr-findings.sh scripts/handover/append-cr-bugs.sh scripts/handover/bug.sh
+scripts/hermes/invoke.sh scripts/hermes/egress-gate.sh
+scripts/guardrails/egress-matrix-eval.mjs scripts/guardrails/egress-matrix.json
+scripts/statusline/usage-cache-producer.sh
+scripts/lanes/bank-status.ts scripts/lanes/bank-status-core.mjs scripts/lanes/funded-max-pct.mjs
+scripts/lanes/resolve.mjs scripts/lanes/check.mjs scripts/lanes/probe.mjs scripts/lanes/set-lane-override.mjs
+scripts/observability/quota-sources.ts
+scripts/telegram/alibaba-probe-once.ts scripts/telegram/quota-gauge.ts scripts/telegram/quota-gauge-alibaba.ts
+scripts/telegram/console-route.ts scripts/telegram/bus.ts scripts/telegram/poller.ts
+scripts/telegram/router.ts scripts/telegram/auto-action.ts scripts/telegram/telegram-api.ts
+scripts/telegram/log-timestamp.ts scripts/telegram/gate.ts scripts/telegram/run.ts
+scripts/telegram/triage.ts scripts/telegram/transcribe.ts scripts/telegram/spawn-glm.ts
+scripts/telegram/glm-env.ts scripts/telegram/grants.ts scripts/telegram/huge-diff-guard.ts
+scripts/telegram/lane-args.ts scripts/telegram/phi-egress-guard.ts scripts/telegram/round-guard.ts
+scripts/lanes/plugin-profiles.mjs"
+cr_pathspecs=(':(top)scripts/cr/' ':(top)scripts/lib/' ':(top)scripts/guardrails/lib.sh' ':(top)scripts/check-ci.sh'
+    ':(top)scripts/handover/resolve-active-item.sh'
+    ':(top)scripts/handover/append-cr-findings.sh' ':(top)scripts/handover/append-cr-bugs.sh' ':(top)scripts/handover/bug.sh'
+    ':(top)scripts/hermes/invoke.sh' ':(top)scripts/hermes/egress-gate.sh'
+    ':(top)scripts/guardrails/egress-matrix-eval.mjs' ':(top)scripts/guardrails/egress-matrix.json'
+    ':(top)scripts/statusline/usage-cache-producer.sh'
+    ':(top)scripts/lanes/bank-status.ts' ':(top)scripts/lanes/bank-status-core.mjs' ':(top)scripts/lanes/funded-max-pct.mjs'
+    ':(top)scripts/lanes/resolve.mjs' ':(top)scripts/lanes/check.mjs' ':(top)scripts/lanes/probe.mjs'
+    ':(top)scripts/lanes/set-lane-override.mjs'
+    ':(top)scripts/observability/quota-sources.ts'
+    ':(top)scripts/telegram/alibaba-probe-once.ts' ':(top)scripts/telegram/quota-gauge.ts'
+    ':(top)scripts/telegram/quota-gauge-alibaba.ts'
+    ':(top)scripts/telegram/console-route.ts' ':(top)scripts/telegram/bus.ts'
+    ':(top)scripts/telegram/poller.ts' ':(top)scripts/telegram/router.ts'
+    ':(top)scripts/telegram/auto-action.ts' ':(top)scripts/telegram/telegram-api.ts'
+    ':(top)scripts/telegram/log-timestamp.ts' ':(top)scripts/telegram/gate.ts'
+    ':(top)scripts/telegram/run.ts' ':(top)scripts/telegram/triage.ts'
+    ':(top)scripts/telegram/transcribe.ts' ':(top)scripts/telegram/spawn-glm.ts'
+    ':(top)scripts/telegram/glm-env.ts' ':(top)scripts/telegram/grants.ts'
+    ':(top)scripts/telegram/huge-diff-guard.ts' ':(top)scripts/telegram/lane-args.ts'
+    ':(top)scripts/telegram/phi-egress-guard.ts' ':(top)scripts/telegram/round-guard.ts'
+    ':(top)scripts/lanes/plugin-profiles.mjs'
+    ':(top,exclude,glob)scripts/**/__pycache__/**')
 cr_manifest() { # cr_manifest <root> - "<mode> <blob-id> <path>" per guarded file, sorted
-    local root=$1 odd files execs oids modes
-    # A symlink or other non-regular entry (a symlinked scripts/ or
-    # scripts/guardrails/ too) cannot be compared file for file: say ODD and
+    local root=$1 odd files execs oids modes p d present=()
+    # A symlink or other non-regular entry (a symlinked parent directory of
+    # any guarded entry too) cannot be compared file for file: say ODD and
     # let the caller decide unknown.
-    if [ -L "$root/scripts" ] || [ -L "$root/scripts/guardrails" ]; then
-        echo ODD
-        return 0
-    fi
-    # shellcheck disable=SC2086 # $cr_guarded is a fixed, space-free word list
-    odd=$(cd "$root" && find $cr_guarded \( ! -type d ! -type f \) -o -name '*[[:cntrl:]]*' 2>/dev/null) || return 1
+    for p in $cr_guarded; do
+        d=$p
+        while d=$(dirname "$d") && [ "$d" != . ]; do
+            if [ -L "$root/$d" ]; then echo ODD; return 0; fi
+        done
+    done
+    # Only the entries this tree has: an entry missing from both trees
+    # contributes nothing to either side, and one missing from only one
+    # tree makes the manifests differ.
+    for p in $cr_guarded; do
+        if [ -e "$root/$p" ] || [ -L "$root/$p" ]; then present+=("$p"); fi
+    done
+    [ "${#present[@]}" -gt 0 ] || return 1
+    odd=$(cd "$root" && find "${present[@]}" -type d -name __pycache__ -prune -o \( \( ! -type d ! -type f \) -o -name '*[[:cntrl:]]*' \) -print 2>/dev/null) || return 1
     [ -z "$odd" ] || { echo ODD; return 0; }
-    # shellcheck disable=SC2086 # as above
-    files=$(cd "$root" && find $cr_guarded -type f 2>/dev/null) || return 1
+    files=$(cd "$root" && find "${present[@]}" -type d -name __pycache__ -prune -o -type f -print 2>/dev/null) || return 1
     [ -n "$files" ] || return 1
-    # shellcheck disable=SC2086 # as above
-    execs=$(cd "$root" && find $cr_guarded -type f -perm -100 2>/dev/null) || return 1
+    execs=$(cd "$root" && find "${present[@]}" -type d -name __pycache__ -prune -o -type f -perm -100 -print 2>/dev/null) || return 1
     oids=$(printf '%s\n' "$files" \
         | git --no-replace-objects -C "$root" -c core.fsmonitor=false hash-object --no-filters --stdin-paths 2>/dev/null) || return 1
     modes=$(awk 'NR == FNR { x[$0] = 1; next } { print (($0 in x) ? "100755" : "100644") }' \
@@ -688,18 +769,17 @@ ledger_written=no
 if [ "$anchor_lane" = "himmel" ] && [ "$himmel_dir_is_anchor" = no ]; then
     # Console adversarial round 1 (HIMMEL-3454 finding 1): a plain pathspec
     # is resolved relative to CWD, not the repo root - invoked from a
-    # subdirectory it silently misses scripts/cr/ and scripts/guardrails/lib.sh
-    # entirely. ":(top)" anchors each pathspec to the worktree root regardless
-    # of cwd (finding 3): dropping --exclude-standard from the untracked-files
+    # subdirectory it silently misses the guarded paths entirely. ":(top)"
+    # anchors each pathspec to the worktree root regardless of cwd (finding 3): dropping --exclude-standard from the untracked-files
     # call also counts a GITIGNORED file under these paths - an unreviewed
     # scripts/cr/ change hidden behind .gitignore must not read as "no diff".
     # HIMMEL-3472: no replace refs, no repo-configured fsmonitor. --full-name
     # on the untracked leg: run from a subdirectory it otherwise prints
     # cwd-relative paths while both diff legs print top-relative ones.
     if mb=$(gitd merge-base HEAD "$base_ref" 2>/dev/null); then
-        if committed_files=$(gitd diff --name-only "$mb"..HEAD -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh' 2>/dev/null); then
-            if worktree_files=$(gitd diff --name-only HEAD -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh' 2>/dev/null); then
-                if untracked_files=$(gitd ls-files --others --full-name -- ':(top)scripts/cr/' ':(top)scripts/guardrails/lib.sh' 2>/dev/null); then
+        if committed_files=$(gitd diff --name-only "$mb"..HEAD -- "${cr_pathspecs[@]}" 2>/dev/null); then
+            if worktree_files=$(gitd diff --name-only HEAD -- "${cr_pathspecs[@]}" 2>/dev/null); then
+                if untracked_files=$(gitd ls-files --others --full-name -- "${cr_pathspecs[@]}" 2>/dev/null); then
                     # HIMMEL-3472 (HIMMEL-3454 round-1 codex-2): the
                     # normalizer's own status is checked too - a failed
                     # sort would otherwise yield an empty set, read as "no".
@@ -712,16 +792,16 @@ if [ "$anchor_lane" = "himmel" ] && [ "$himmel_dir_is_anchor" = no ]; then
                         fi
                     else
                         cr_diff_files=
-                        echo "pr-check-context: could not normalize the scripts/cr/ scripts/guardrails/lib.sh diff set - cr_diff_state=unknown (never delegate on an unknown diff)" >&2
+                        echo "pr-check-context: could not normalize the guarded diff set ($cr_guarded) - cr_diff_state=unknown (never delegate on an unknown diff)" >&2
                     fi
                 else
-                    echo "pr-check-context: could not compute git ls-files --others -- scripts/cr/ scripts/guardrails/lib.sh - cr_diff_state=unknown (never delegate on an unknown diff)" >&2
+                    echo "pr-check-context: could not compute git ls-files --others -- $cr_guarded - cr_diff_state=unknown (never delegate on an unknown diff)" >&2
                 fi
             else
-                echo "pr-check-context: could not compute git diff --name-only HEAD -- scripts/cr/ scripts/guardrails/lib.sh - cr_diff_state=unknown (never delegate on an unknown diff)" >&2
+                echo "pr-check-context: could not compute git diff --name-only HEAD -- $cr_guarded - cr_diff_state=unknown (never delegate on an unknown diff)" >&2
             fi
         else
-            echo "pr-check-context: could not compute git diff --name-only $mb..HEAD -- scripts/cr/ scripts/guardrails/lib.sh - cr_diff_state=unknown (never delegate on an unknown diff)" >&2
+            echo "pr-check-context: could not compute git diff --name-only $mb..HEAD -- $cr_guarded - cr_diff_state=unknown (never delegate on an unknown diff)" >&2
         fi
     else
         echo "pr-check-context: could not compute merge-base HEAD..$base_ref - cr_diff_state=unknown (never delegate on an unknown diff)" >&2
@@ -732,15 +812,15 @@ if [ "$anchor_lane" = "himmel" ] && [ "$himmel_dir_is_anchor" = no ]; then
     # stays unknown.
     if [ "$cr_diff_state" = no ]; then
         if ! branch_manifest=$(cr_manifest "$himmel_dir") || ! anchor_manifest=$(cr_manifest "$anchor"); then
-            echo "pr-check-context: could not hash scripts/cr/ and scripts/guardrails/lib.sh in the branch ($himmel_dir) or the anchor ($anchor) - cr_diff_state=unknown (never delegate on an unknown diff)" >&2
+            echo "pr-check-context: could not hash the guarded paths ($cr_guarded) in the branch ($himmel_dir) or the anchor ($anchor) - cr_diff_state=unknown (never delegate on an unknown diff)" >&2
             cr_diff_state=unknown
         elif [ "$branch_manifest" = ODD ] || [ "$anchor_manifest" = ODD ]; then
-            echo "pr-check-context: a symlink, non-regular file or control-character name sits under scripts/cr/ or scripts/guardrails/lib.sh in the branch ($himmel_dir) or the anchor ($anchor) - cr_diff_state=unknown (never delegate on an unknown diff)" >&2
+            echo "pr-check-context: a symlink, non-regular file or control-character name sits under the guarded paths ($cr_guarded) in the branch ($himmel_dir) or the anchor ($anchor) - cr_diff_state=unknown (never delegate on an unknown diff)" >&2
             cr_diff_state=unknown
         elif [ "$branch_manifest" != "$anchor_manifest" ]; then
             byte_files=$(LC_ALL=C comm -3 <(printf '%s\n' "$anchor_manifest") <(printf '%s\n' "$branch_manifest") \
                 | awk '{ sub(/^\t/, ""); sub(/^[^ ]* [^ ]* /, ""); print }' | LC_ALL=C sort -u | tr '\n' ' ')
-            echo "pr-check-context: git reports no change under scripts/cr/ or scripts/guardrails/lib.sh, but the branch's bytes ($himmel_dir) differ from the anchor's ($anchor): $byte_files- cr_diff_state=unknown (never delegate on an unknown diff; the anchor's copy runs)" >&2
+            echo "pr-check-context: git reports no change under the guarded paths ($cr_guarded), but the branch's bytes ($himmel_dir) differ from the anchor's ($anchor): $byte_files- cr_diff_state=unknown (never delegate on an unknown diff; the anchor's copy runs)" >&2
             cr_diff_state=unknown
         fi
     fi
@@ -836,16 +916,17 @@ fi
 # unknown merge-base). himmel_dir may be left pointing at the BRANCH (i.e.
 # this run's own scripts/cr/, or a genuine delegate's, executes on every
 # later /pr-check fence) ONLY IF:
-#   (a) cr_diff_state=no          - the branch's scripts/cr/ and
-#       scripts/guardrails/lib.sh (the manifest's whole scope, cr_guarded)
-#       match the anchor's byte for byte and mode for mode at step 0, OR
-#       ponytail: that scope is not everything a "no" run executes from the
-#       branch. Shared libs sourced from <himmel_dir> (scripts/lib/load-dotenv.sh,
-#       shared-branch-lock, gh-graphql-budget, proc-tree, ...), check-ci.sh and
-#       handover/resolve-active-item.sh are unchecked, and nothing pins the
-#       bytes between this manifest check and later execution (TOCTOU). The
-#       relative gate-writer hand-off (anchor-handoff.sh) covers only scripts/cr/
-#       writers entered relatively. Tracked on HIMMEL-3493.
+#   (a) cr_diff_state=no          - everything a "no" run executes from the
+#       branch (cr_guarded: scripts/cr/, scripts/lib/, guardrails/lib.sh,
+#       check-ci.sh, handover/resolve-active-item.sh - the closure
+#       test-cr-guarded-closure.sh pins) matches the anchor's byte for byte
+#       and mode for mode at step 0, OR
+#       ponytail: "at step 0" only. Nothing pins those bytes between this
+#       check and the later fences that execute them, so an edit made to the
+#       branch's guarded files AFTER step 0 (a background job, a swapped
+#       hard link) runs unchecked (TOCTOU). Only running the anchor's copy on
+#       "no" closes that, at the cost of the relative himmel-lane spelling
+#       (HIMMEL-3338); tracked on HIMMEL-3497.
 #   (b) verified_delegate=yes     - this run IS the verified delegate a
 #       genuine anchor handed off to (the identity handshake above), OR
 #   (c) ledger_written=yes        - this run IS the anchor and its own

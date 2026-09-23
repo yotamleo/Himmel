@@ -173,11 +173,12 @@ examples:
 [`docs/internals/context-architecture.md`](docs/internals/context-architecture.md).
 
 ### Honesty markers — `ponytail:`
-A `ponytail:` code comment flags a known, deliberate simplification at the
-site a reader would otherwise mistake for complete — it must name the
-concrete limitation, not merely gesture at one. Documented-not-gated is a
-deliberate choice, not an oversight: convention + shape + the drift that
-would justify a gate → [`docs/internals/ponytail-convention.md`](docs/internals/ponytail-convention.md).
+A `ponytail:` code comment (credited to upstream
+[DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail)) flags a
+known, deliberate simplification in the shape `ponytail: <ceiling>, <upgrade
+path>` — the limitation AND the ticket or trigger that justifies revisiting
+it, not either alone. Documented-not-gated is deliberate: convention, shape,
+debt ledger → [`docs/internals/ponytail-convention.md`](docs/internals/ponytail-convention.md).
 
 ### Where artifacts land
 - **Reference docs operators consume** → the owning repo's `docs/` (plugin specs

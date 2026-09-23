@@ -236,7 +236,7 @@ cmd_dispatch_luna() {
         fi
         node "$BENCH_DIR/run-manifest.mjs" write \
             --runs-dir "$RUNS_DIR" --run-id "$run_id" --task "$task" --cell luna --rep "$rep" \
-            --model gpt-5.6-luna --effort "$EFFORT" --prompt-file "$prompt_file" \
+            --model gpt-6-luna --effort "$EFFORT" --prompt-file "$prompt_file" \
             --fixture-path "${fixture_path:-unknown}" --transcript-path "${transcript_path:--}" \
             --exit-code "$launcher_exit" --duration-ms "$duration_ms" --verdict "$verdict" >/dev/null
 

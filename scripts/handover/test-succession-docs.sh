@@ -277,8 +277,10 @@ done
 step11="$(awk '/^11\. \*\*/ { f = 1 } /^## Live state/ { f = 0 } f' "$CONSOLE")"
 mons="$(section "$CONSOLE" '^## Monitors')"
 contains 'ACTION ZERO step 11 creates the inbox before the bridge will write' "$(flat "$step11")" 'consoles/{{SESSION_NAME}}.md'
-contains 'ACTION ZERO step 11 arms the monitor at the 1800000 cap' "$step11" '1800000'
-contains 'ACTION ZERO step 11 re-arms on every expiry notice' "$(flat "$step11")" 're-armed on every expiry notice'
+# HIMMEL-3509: the inbox is read by the step-10 event waiter, not a 30-min
+# Monitor re-arm loop (every expiry cost a full-context turn).
+absent 'ACTION ZERO step 11 no longer re-arms a Monitor on expiry (HIMMEL-3509)' "$(flat "$step11")" 're-armed on every expiry notice'
+contains 'ACTION ZERO step 11 reads the inbox through the step-10 waiter (HIMMEL-3509)' "$(flat "$step11")" 'The waiter reads it through'
 contains 'ACTION ZERO step 11 tells the console how to reply' "$step11" 'console-route.ts'
 contains 'ACTION ZERO step 11: no permission/settings change' "$(flat "$step11")" 'never changes permissions or settings'
 contains 'ACTION ZERO step 11: GO verification is never skipped' "$(flat "$step11")" 'GO verification'
@@ -294,7 +296,8 @@ fi
 absent '## Monitors telegram row no longer arms a bare tail -n0 -F (loses lines across a re-arm)' "$mons" 'tail -n0 -F'
 absent 'ACTION ZERO step 11 no longer arms a bare tail -n0 -F' "$step11" 'tail -n0 -F'
 contains 'ACTION ZERO step 11 points the monitor at the cursor-keeping follower' "$(flat "$step11")" 'inbox-follow.sh'
-contains '## Monitors telegram row states the 30-min cap and re-arm' "$(flat "$mons")" 're-arm on every expiry notice'
+absent '## Monitors telegram row no longer re-arms on expiry (HIMMEL-3509)' "$(flat "$mons")" 're-arm on every expiry notice'
+contains '## Monitors telegram row runs inside the step-10 waiter (HIMMEL-3509)' "$(flat "$mons")" 'Runs inside the step-10 waiter.'
 absent 'console template no longer says Four monitors' "$(cat "$CONSOLE")" 'Four, and no more'
 
 if [ "$fails" -eq 0 ]; then

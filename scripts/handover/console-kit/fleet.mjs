@@ -99,9 +99,9 @@ const deepRedact = (v) => {
 const sh = async (cmd, cmdArgs, o = {}) => {
     try {
         const r = await run(cmd, cmdArgs, { encoding: 'utf8', timeout: o.timeout || 30000, cwd: o.cwd, maxBuffer: 16 << 20 });
-        return { ok: true, out: r.stdout, err: r.stderr };
+        return { ok: true, out: r.stdout, err: r.stderr, code: 0 };
     } catch (e) {
-        return { ok: false, out: e.stdout || '', err: e.stderr || '', spawnFailed: e.code === 'ENOENT' };
+        return { ok: false, out: e.stdout || '', err: e.stderr || '', spawnFailed: e.code === 'ENOENT', code: typeof e.code === 'number' ? e.code : null };
     }
 };
 const cache = new Map();
@@ -228,15 +228,25 @@ const indexLogs = () => {
     };
     walk(logsDir, 0);
     return files.sort((a, b) => b.mtime - a.mtime).slice(0, 400).map((f) => {
+        // A late field (e.g. a background pid appended once the launcher forks) can
+        // land past the first 8192 bytes, so read the tail too when the file is bigger.
         let head = '';
+        let tail = '';
         try {
             const fd = openSync(f.path, 'r');
-            const buf = Buffer.alloc(8192);
-            head = buf.toString('utf8', 0, readSync(fd, buf, 0, 8192, 0));
+            const size = fstatSync(fd).size;
+            const headLen = Math.min(size, 8192);
+            const hbuf = Buffer.alloc(headLen);
+            head = hbuf.toString('utf8', 0, readSync(fd, hbuf, 0, headLen, 0));
+            if (size > 8192) {
+                const tailLen = Math.min(size - 8192, 8192);
+                const tbuf = Buffer.alloc(tailLen);
+                tail = tbuf.toString('utf8', 0, readSync(fd, tbuf, 0, tailLen, size - tailLen));
+            }
             closeSync(fd);
         } catch { /* unreadable: matched by name only */ }
         const stem = basename(f.path).replace(/\.log$/, '').replace(/\.launch$/, '').replace(/^launch-/, '').replace(/-launch$/, '');
-        return { ...f, stem, head };
+        return { ...f, stem, head, tail };
     });
 };
 const findLaunchLog = (logs, names) => {
@@ -249,13 +259,16 @@ const findLaunchLog = (logs, names) => {
     return null;
 };
 const lastMatch = (text, re) => { let v = ''; for (const m of text.matchAll(re)) v = m[1]; return v; };
-const parseLaunch = (f) => ({
-    headless: /\bheadless=1\b/.test(f.head),
-    konsole: /konsole launched/.test(f.head),
-    pid: Number(lastMatch(f.head, /(?:^|\s)pid=(\d+)/gm)) || null,
-    model: lastMatch(f.head, /\bmodel=(\S+)/g),
-    sessionLog: lastMatch(f.head, /\b(?:session[_-]?log|log[_-]?path|logfile|stdout[_-]?log)=(\S+)/g),
-});
+const parseLaunch = (f) => {
+    const text = f.tail ? `${f.head}\n${f.tail}` : f.head;
+    return {
+        headless: /\bheadless=1\b/.test(text),
+        konsole: /konsole launched/.test(text),
+        pid: Number(lastMatch(text, /(?:^|\s)pid=(\d+)/gm)) || null,
+        model: lastMatch(text, /\bmodel=(\S+)/g),
+        sessionLog: lastMatch(text, /\b(?:session[_-]?log|log[_-]?path|logfile|stdout[_-]?log)=(\S+)/g),
+    };
+};
 
 // ---------------------------------------------------------------- /proc
 const procInfo = (pid) => {
@@ -281,8 +294,12 @@ const modelFromArgv = (argv) => {
 const slugOf = (docFile) => relative(handoverRoot, docFile).replace(/\.md$/, '').split('/').join('__');
 const readSweep = async () => {
     const r = await sh('bash', [QUEUE_LOCK, 'status', '--sweep', handoverRoot], { timeout: 30000 });
+    // 0 = clean, 20 = a flagged lock — both are a complete sweep. Any other rc
+    // (crash, timeout, partial output) leaves legs unknown rather than trusting
+    // a partial map.
+    if (r.code !== 0 && r.code !== 20) return null;
     const map = new Map();
-    if (!r.out.includes('slug=')) return r.ok ? map : null;
+    if (!r.out.includes('slug=')) return map;
     for (const l of r.out.split('\n')) {
         if (!l.startsWith('slug=')) continue;
         const f = Object.fromEntries([...l.matchAll(/(?:^|\s)([a-z]+)=(\S*)/g)].map((m) => [m[1], m[2]]));
@@ -406,10 +423,11 @@ const buildSnapshot = async () => {
         // leg: its pid is the real session, not the launcher's wrapper.
         const ag = agents ? (names.length ? names : [stem]).map((n) => agents.get(n)).find(Boolean) || null : null;
         const agBg = !!ag && ag.kind === 'background';
-        const agPid = ag && Number.isInteger(ag.pid) ? ag.pid : null;
         // A finished bg row says nothing about a live process (its pid may be reused or
-        // stale); it only hints at the mode.
+        // stale); it only hints at the mode. Only take agPid when the row isn't
+        // background, or it's background and still running.
         const agRun = agBg && !AG_DONE.test(ag.state || '');
+        const agPid = ag && Number.isInteger(ag.pid) && (!agBg || agRun) ? ag.pid : null;
         const pid = (agRun && agPid) || (entry && entry.pid) || (launch && launch.pid) || lockPid || agPid || null;
         let proc = procInfo(pid);
         const sinceStart = ag && ag.startedAt ? Math.max(0, Math.floor((now - ag.startedAt) / 1000)) : null;

@@ -101,7 +101,7 @@ report_plugin_gap() {
         return 0
     fi
 
-    local total=0 ok=0 missing="" shadowed="" drifted="" name other iv sv
+    local total=0 ok=0 missing="" shadowed="" drifted="" unknown_ver="" name other iv sv
     while IFS= read -r name; do
         [ -z "$name" ] && continue
         total=$((total + 1))
@@ -121,7 +121,11 @@ report_plugin_gap() {
             if [ -n "${VER_FILE:-}" ]; then
                 iv=$(jq -r --arg k "$name@$mp_name" '.plugins[$k][0].version // empty' "$installed_json" 2>/dev/null | tr -d '\r' || true)
                 sv=$(jq -r '.version // empty' "$ROOT/marketplace/plugins/$name/.claude-plugin/plugin.json" 2>/dev/null | tr -d '\r' || true)
-                if [ -n "$iv" ] && [ -n "$sv" ] && [ "$iv" != "$sv" ]; then
+                # An unreadable iv or sv means the comparison was never made —
+                # report unknown for this plugin, not "current" (HIMMEL-3416).
+                if [ -z "$iv" ] || [ -z "$sv" ]; then
+                    unknown_ver="$unknown_ver $name"
+                elif [ "$iv" != "$sv" ]; then
                     drifted="$drifted $name($iv->$sv)"
                 fi
             fi
@@ -135,7 +139,9 @@ EOF
 
     if [ -z "$missing" ] && [ -z "$shadowed" ]; then
         echo "    all $total @$mp_name plugins installed from @$mp_name."
-        if [ -n "$drifted" ]; then
+        if [ -n "$unknown_ver" ]; then
+            _ver_row plugins "$ok/$total installed" "$total declared" unknown "could not read version for:$unknown_ver${drifted:+; version drift:$drifted}"
+        elif [ -n "$drifted" ]; then
             _ver_row plugins "$ok/$total installed" "$total declared" behind "version drift:$drifted"
         else
             _ver_row plugins "$ok/$total installed" "$total declared" current

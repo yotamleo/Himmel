@@ -164,9 +164,9 @@ lane_marker_check() {
         'and its third line is empty'
         'always against refs/remotes/origin/main, even on a stacked PR'
         'if mb=$(git merge-base HEAD refs/remotes/origin/main 2>/dev/null); then'
-        'git diff --name-only "$mb"..HEAD -- '\''scripts/cr/'\'' '\''scripts/guardrails/lib.sh'\'' || echo unknown'
-        'git diff --name-only HEAD -- '\''scripts/cr/'\'' '\''scripts/guardrails/lib.sh'\'' || echo unknown'
-        'git ls-files --others -- '\''scripts/cr/'\'' '\''scripts/guardrails/lib.sh'\'' || echo unknown'
+        'git diff --name-only "$mb"..HEAD -- '\''scripts/cr/'\'' '\''scripts/lib/'\'' '\''scripts/guardrails/lib.sh'\'' '\''scripts/check-ci.sh'\'' '\''scripts/handover/resolve-active-item.sh'\'' '\''scripts/handover/append-cr-findings.sh'\'' '\''scripts/handover/append-cr-bugs.sh'\'' '\''scripts/handover/bug.sh'\'' '\''scripts/hermes/invoke.sh'\'' '\''scripts/hermes/egress-gate.sh'\'' '\''scripts/guardrails/egress-matrix-eval.mjs'\'' '\''scripts/guardrails/egress-matrix.json'\'' '\''scripts/statusline/usage-cache-producer.sh'\'' '\''scripts/lanes/bank-status.ts'\'' '\''scripts/lanes/bank-status-core.mjs'\'' '\''scripts/lanes/funded-max-pct.mjs'\'' '\''scripts/lanes/resolve.mjs'\'' '\''scripts/lanes/check.mjs'\'' '\''scripts/lanes/probe.mjs'\'' '\''scripts/lanes/set-lane-override.mjs'\'' '\''scripts/observability/quota-sources.ts'\'' '\''scripts/telegram/alibaba-probe-once.ts'\'' '\''scripts/telegram/quota-gauge.ts'\'' '\''scripts/telegram/quota-gauge-alibaba.ts'\'' '\''scripts/telegram/console-route.ts'\'' '\''scripts/telegram/bus.ts'\'' '\''scripts/telegram/poller.ts'\'' '\''scripts/telegram/router.ts'\'' '\''scripts/telegram/auto-action.ts'\'' '\''scripts/telegram/telegram-api.ts'\'' '\''scripts/telegram/log-timestamp.ts'\'' '\''scripts/telegram/gate.ts'\'' '\''scripts/telegram/run.ts'\'' '\''scripts/telegram/triage.ts'\'' '\''scripts/telegram/transcribe.ts'\'' '\''scripts/telegram/spawn-glm.ts'\'' '\''scripts/telegram/glm-env.ts'\'' '\''scripts/telegram/grants.ts'\'' '\''scripts/telegram/huge-diff-guard.ts'\'' '\''scripts/telegram/lane-args.ts'\'' '\''scripts/telegram/phi-egress-guard.ts'\'' '\''scripts/telegram/round-guard.ts'\'' '\''scripts/lanes/plugin-profiles.mjs'\'' || echo unknown'
+        'git diff --name-only HEAD -- '\''scripts/cr/'\'' '\''scripts/lib/'\'' '\''scripts/guardrails/lib.sh'\'' '\''scripts/check-ci.sh'\'' '\''scripts/handover/resolve-active-item.sh'\'' '\''scripts/handover/append-cr-findings.sh'\'' '\''scripts/handover/append-cr-bugs.sh'\'' '\''scripts/handover/bug.sh'\'' '\''scripts/hermes/invoke.sh'\'' '\''scripts/hermes/egress-gate.sh'\'' '\''scripts/guardrails/egress-matrix-eval.mjs'\'' '\''scripts/guardrails/egress-matrix.json'\'' '\''scripts/statusline/usage-cache-producer.sh'\'' '\''scripts/lanes/bank-status.ts'\'' '\''scripts/lanes/bank-status-core.mjs'\'' '\''scripts/lanes/funded-max-pct.mjs'\'' '\''scripts/lanes/resolve.mjs'\'' '\''scripts/lanes/check.mjs'\'' '\''scripts/lanes/probe.mjs'\'' '\''scripts/lanes/set-lane-override.mjs'\'' '\''scripts/observability/quota-sources.ts'\'' '\''scripts/telegram/alibaba-probe-once.ts'\'' '\''scripts/telegram/quota-gauge.ts'\'' '\''scripts/telegram/quota-gauge-alibaba.ts'\'' '\''scripts/telegram/console-route.ts'\'' '\''scripts/telegram/bus.ts'\'' '\''scripts/telegram/poller.ts'\'' '\''scripts/telegram/router.ts'\'' '\''scripts/telegram/auto-action.ts'\'' '\''scripts/telegram/telegram-api.ts'\'' '\''scripts/telegram/log-timestamp.ts'\'' '\''scripts/telegram/gate.ts'\'' '\''scripts/telegram/run.ts'\'' '\''scripts/telegram/triage.ts'\'' '\''scripts/telegram/transcribe.ts'\'' '\''scripts/telegram/spawn-glm.ts'\'' '\''scripts/telegram/glm-env.ts'\'' '\''scripts/telegram/grants.ts'\'' '\''scripts/telegram/huge-diff-guard.ts'\'' '\''scripts/telegram/lane-args.ts'\'' '\''scripts/telegram/phi-egress-guard.ts'\'' '\''scripts/telegram/round-guard.ts'\'' '\''scripts/lanes/plugin-profiles.mjs'\'' || echo unknown'
+        'git ls-files --others -- '\''scripts/cr/'\'' '\''scripts/lib/'\'' '\''scripts/guardrails/lib.sh'\'' '\''scripts/check-ci.sh'\'' '\''scripts/handover/resolve-active-item.sh'\'' '\''scripts/handover/append-cr-findings.sh'\'' '\''scripts/handover/append-cr-bugs.sh'\'' '\''scripts/handover/bug.sh'\'' '\''scripts/hermes/invoke.sh'\'' '\''scripts/hermes/egress-gate.sh'\'' '\''scripts/guardrails/egress-matrix-eval.mjs'\'' '\''scripts/guardrails/egress-matrix.json'\'' '\''scripts/statusline/usage-cache-producer.sh'\'' '\''scripts/lanes/bank-status.ts'\'' '\''scripts/lanes/bank-status-core.mjs'\'' '\''scripts/lanes/funded-max-pct.mjs'\'' '\''scripts/lanes/resolve.mjs'\'' '\''scripts/lanes/check.mjs'\'' '\''scripts/lanes/probe.mjs'\'' '\''scripts/lanes/set-lane-override.mjs'\'' '\''scripts/observability/quota-sources.ts'\'' '\''scripts/telegram/alibaba-probe-once.ts'\'' '\''scripts/telegram/quota-gauge.ts'\'' '\''scripts/telegram/quota-gauge-alibaba.ts'\'' '\''scripts/telegram/console-route.ts'\'' '\''scripts/telegram/bus.ts'\'' '\''scripts/telegram/poller.ts'\'' '\''scripts/telegram/router.ts'\'' '\''scripts/telegram/auto-action.ts'\'' '\''scripts/telegram/telegram-api.ts'\'' '\''scripts/telegram/log-timestamp.ts'\'' '\''scripts/telegram/gate.ts'\'' '\''scripts/telegram/run.ts'\'' '\''scripts/telegram/triage.ts'\'' '\''scripts/telegram/transcribe.ts'\'' '\''scripts/telegram/spawn-glm.ts'\'' '\''scripts/telegram/glm-env.ts'\'' '\''scripts/telegram/grants.ts'\'' '\''scripts/telegram/huge-diff-guard.ts'\'' '\''scripts/telegram/lane-args.ts'\'' '\''scripts/telegram/phi-egress-guard.ts'\'' '\''scripts/telegram/round-guard.ts'\'' '\''scripts/lanes/plugin-profiles.mjs'\'' || echo unknown'
         'echo unknown'
         'ONLY when that check prints nothing at all'
         'prints any path or `unknown`, use the canonical fence above'
@@ -209,16 +209,44 @@ fx() {
 }
 mkrepo() {
     local d="$tmp/$1"
-    mkdir -p "$d/scripts/cr" "$d/scripts/guardrails"
+    mkdir -p "$d/scripts/cr" "$d/scripts/guardrails" "$d/scripts/lib" "$d/scripts/handover" \
+        "$d/scripts/hermes" "$d/scripts/statusline" "$d/scripts/lanes" "$d/scripts/observability" "$d/scripts/telegram"
     fx "$d" init -q -b main
     echo a > "$d/scripts/cr/a.sh"
     echo l > "$d/scripts/guardrails/lib.sh"
+    echo s > "$d/scripts/lib/s.sh"
+    echo c > "$d/scripts/check-ci.sh"
+    echo r > "$d/scripts/handover/resolve-active-item.sh"
+    echo x > "$d/scripts/handover/append-cr-findings.sh"
+    echo x > "$d/scripts/hermes/invoke.sh"
+    echo x > "$d/scripts/guardrails/egress-matrix.json"
+    echo x > "$d/scripts/statusline/usage-cache-producer.sh"
+    echo x > "$d/scripts/lanes/bank-status.ts"
+    echo x > "$d/scripts/observability/quota-sources.ts"
+    echo x > "$d/scripts/telegram/quota-gauge.ts"
+    echo x > "$d/scripts/telegram/console-route.ts"
+    echo x > "$d/scripts/lanes/plugin-profiles.mjs"
     echo o > "$d/other.txt"
     fx "$d" add -A
     fx "$d" commit -q -m base
     fx "$d" update-ref refs/remotes/origin/main HEAD
     case "$1" in
         committed) echo b >> "$d/scripts/cr/a.sh" ;;
+        # HIMMEL-3493: a clean step 0 also runs these from the branch.
+        lib) echo b >> "$d/scripts/lib/s.sh" ;;
+        checkci) echo b >> "$d/scripts/check-ci.sh" ;;
+        resolve) echo b >> "$d/scripts/handover/resolve-active-item.sh" ;;
+        # ...and what the critic panel, bridges and bank preflight run via a variable.
+        bridge) echo b >> "$d/scripts/handover/append-cr-findings.sh" ;;
+        invoke) echo b >> "$d/scripts/hermes/invoke.sh" ;;
+        matrix) echo b >> "$d/scripts/guardrails/egress-matrix.json" ;;
+        producer) echo b >> "$d/scripts/statusline/usage-cache-producer.sh" ;;
+        bankstatus) echo b >> "$d/scripts/lanes/bank-status.ts" ;;
+        quota) echo b >> "$d/scripts/observability/quota-sources.ts" ;;
+        gauge) echo b >> "$d/scripts/telegram/quota-gauge.ts" ;;
+        # ...and the telegram bridge a red check-ci alert runs.
+        route) echo b >> "$d/scripts/telegram/console-route.ts" ;;
+        profiles) echo b >> "$d/scripts/lanes/plugin-profiles.mjs" ;;
         ignored)
             echo 'scripts/cr/ign.sh' > "$d/.gitignore"
             echo i > "$d/scripts/cr/ign.sh"
@@ -228,7 +256,7 @@ mkrepo() {
     fx "$d" add -A
     fx "$d" commit -q -m branch
 }
-for r in clean committed ignored; do mkrepo "$r"; done
+for r in clean committed ignored lib checkci resolve bridge invoke matrix producer bankstatus quota gauge route profiles; do mkrepo "$r"; done
 # Runs a twin's step-0 diff-decision block ($1) in fixture $2 with the extra
 # env assignments that follow. Every inherited git env var the block could
 # see is cleared first, so only the assignments under test reach it. A
@@ -366,8 +394,9 @@ for f in "$CLAUDE_RUNBOOK" "$CODEX_SKILL"; do
     env_lane_pattern='^[[:space:]]*bash scripts/cr/pr-check-env\.sh CR_CLAUDE_AGENTS[[:space:]]*$'
     env_lane_count=$(printf '%s\n' "$ii_calls" | grep -c -E "$env_lane_pattern")
     ii_calls=$(printf '%s\n' "$ii_calls" | grep -v -E "$env_lane_pattern")
-    # The step-0 diff-decision block (HIMMEL-3382) NAMES scripts/guardrails/lib.sh
-    # as a pathspec on three git calls and invokes nothing itself, so none of
+    # The step-0 diff-decision block (HIMMEL-3382) NAMES scripts/guardrails/lib.sh,
+    # scripts/check-ci.sh and scripts/handover/resolve-active-item.sh (HIMMEL-3493)
+    # as pathspecs on three git calls and invokes nothing itself, so none of
     # those three lines is a himmel-script invocation line; each exact line is
     # pinned once per twin below (the structural section check further down).
     # HIMMEL-3454: each line ends `|| echo unknown` (a failing call with empty
@@ -375,9 +404,12 @@ for f in "$CLAUDE_RUNBOOK" "$CODEX_SKILL"; do
     # `:(top)` -- an inherited GIT_LITERAL_PATHSPECS=1 takes `:(top)scripts/cr/`
     # literally and matches nothing, while a plain pathspec is immune to that
     # whole env family. (xii) below proves both by running the block.
-    diff_committed_pattern='^[[:space:]]*git diff --name-only "\$mb"\.\.HEAD -- '\''scripts/cr/'\'' '\''scripts/guardrails/lib\.sh'\'' \|\| echo unknown[[:space:]]*$'
-    diff_worktree_pattern='^[[:space:]]*git diff --name-only HEAD -- '\''scripts/cr/'\'' '\''scripts/guardrails/lib\.sh'\'' \|\| echo unknown[[:space:]]*$'
-    diff_untracked_pattern='^[[:space:]]*git ls-files --others -- '\''scripts/cr/'\'' '\''scripts/guardrails/lib\.sh'\'' \|\| echo unknown[[:space:]]*$'
+    # HIMMEL-3493 widened the guarded paths to what a clean step 0 later runs
+    # from the branch (pr-check-context.sh's cr_guarded).
+    diff_paths_re=''\''scripts/cr/'\'' '\''scripts/lib/'\'' '\''scripts/guardrails/lib\.sh'\'' '\''scripts/check-ci\.sh'\'' '\''scripts/handover/resolve-active-item\.sh'\'' '\''scripts/handover/append-cr-findings\.sh'\'' '\''scripts/handover/append-cr-bugs\.sh'\'' '\''scripts/handover/bug\.sh'\'' '\''scripts/hermes/invoke\.sh'\'' '\''scripts/hermes/egress-gate\.sh'\'' '\''scripts/guardrails/egress-matrix-eval\.mjs'\'' '\''scripts/guardrails/egress-matrix\.json'\'' '\''scripts/statusline/usage-cache-producer\.sh'\'' '\''scripts/lanes/bank-status\.ts'\'' '\''scripts/lanes/bank-status-core\.mjs'\'' '\''scripts/lanes/funded-max-pct\.mjs'\'' '\''scripts/lanes/resolve\.mjs'\'' '\''scripts/lanes/check\.mjs'\'' '\''scripts/lanes/probe\.mjs'\'' '\''scripts/lanes/set-lane-override\.mjs'\'' '\''scripts/observability/quota-sources\.ts'\'' '\''scripts/telegram/alibaba-probe-once\.ts'\'' '\''scripts/telegram/quota-gauge\.ts'\'' '\''scripts/telegram/quota-gauge-alibaba\.ts'\'' '\''scripts/telegram/console-route\.ts'\'' '\''scripts/telegram/bus\.ts'\'' '\''scripts/telegram/poller\.ts'\'' '\''scripts/telegram/router\.ts'\'' '\''scripts/telegram/auto-action\.ts'\'' '\''scripts/telegram/telegram-api\.ts'\'' '\''scripts/telegram/log-timestamp\.ts'\'' '\''scripts/telegram/gate\.ts'\'' '\''scripts/telegram/run\.ts'\'' '\''scripts/telegram/triage\.ts'\'' '\''scripts/telegram/transcribe\.ts'\'' '\''scripts/telegram/spawn-glm\.ts'\'' '\''scripts/telegram/glm-env\.ts'\'' '\''scripts/telegram/grants\.ts'\'' '\''scripts/telegram/huge-diff-guard\.ts'\'' '\''scripts/telegram/lane-args\.ts'\'' '\''scripts/telegram/phi-egress-guard\.ts'\'' '\''scripts/telegram/round-guard\.ts'\'' '\''scripts/lanes/plugin-profiles\.mjs'\'''
+    diff_committed_pattern='^[[:space:]]*git diff --name-only "\$mb"\.\.HEAD -- '"$diff_paths_re"' \|\| echo unknown[[:space:]]*$'
+    diff_worktree_pattern='^[[:space:]]*git diff --name-only HEAD -- '"$diff_paths_re"' \|\| echo unknown[[:space:]]*$'
+    diff_untracked_pattern='^[[:space:]]*git ls-files --others -- '"$diff_paths_re"' \|\| echo unknown[[:space:]]*$'
     ii_calls=$(printf '%s\n' "$ii_calls" | grep -v -E "$diff_committed_pattern" | grep -v -E "$diff_worktree_pattern" | grep -v -E "$diff_untracked_pattern")
     bare=$(printf '%s\n' "$ii_calls" | grep -c -E 'bash scripts/|\. scripts/|-f scripts/')
     split=$(printf '%s\n' "$ii_calls" | grep -c '"/scripts/')
@@ -432,8 +464,8 @@ for f in "$CLAUDE_RUNBOOK" "$CODEX_SKILL"; do
     fi
 
     # HIMMEL-3359 console ruling: the himmel-lane literal is permitted ONLY on
-    # a diff that touches no scripts/cr/ file (nor scripts/guardrails/lib.sh,
-    # which pr-check-context.sh sources) -- on one that does, an allow-listed
+    # a diff that touches no scripts/cr/ file (nor any other path in
+    # pr-check-context.sh's cr_guarded -- HIMMEL-3493) -- on one that does, an allow-listed
     # bare literal would auto-run branch bytes that may have deleted their own
     # hand-off, so step 0 must stay the anchored fence. And only in a himmel
     # checkout at its root: the lane check proves the cwd shares HIMMEL_REPO's
@@ -852,6 +884,13 @@ for f in "$CLAUDE_RUNBOOK" "$CODEX_SKILL"; do
         out=$(run_diff_block "$diff_block" ignored)
         grep -qx 'scripts/cr/ign.sh' <<< "$out" \
             || xii_fail="$xii_fail; gitignored untracked scripts/cr/ign.sh printed '$out'"
+        for lr in lib:scripts/lib/s.sh checkci:scripts/check-ci.sh resolve:scripts/handover/resolve-active-item.sh \
+            bridge:scripts/handover/append-cr-findings.sh invoke:scripts/hermes/invoke.sh matrix:scripts/guardrails/egress-matrix.json producer:scripts/statusline/usage-cache-producer.sh bankstatus:scripts/lanes/bank-status.ts quota:scripts/observability/quota-sources.ts gauge:scripts/telegram/quota-gauge.ts \
+            route:scripts/telegram/console-route.ts profiles:scripts/lanes/plugin-profiles.mjs; do
+            out=$(run_diff_block "$diff_block" "${lr%%:*}")
+            grep -qx "${lr#*:}" <<< "$out" \
+                || xii_fail="$xii_fail; committed ${lr#*:} (HIMMEL-3493) printed '$out'"
+        done
         for fc in committed worktree untracked; do
             out=$(run_diff_block "$diff_block" clean "FAIL_CALL=$fc")
             [ -n "$out" ] || xii_fail="$xii_fail; failing $fc call printed nothing"
@@ -859,7 +898,7 @@ for f in "$CLAUDE_RUNBOOK" "$CODEX_SKILL"; do
         out=$(run_diff_block "$diff_block" clean GIT_GLOB_PATHSPECS=1 GIT_NOGLOB_PATHSPECS=1)
         [ -n "$out" ] || xii_fail="$xii_fail; incompatible GLOB+NOGLOB pathspec env (git exits 128) printed nothing"
         if [ -z "$xii_fail" ]; then
-            pass "$n: (xii) step-0 diff block: clean diff prints nothing; a committed scripts/cr/ change shows under every pathspec env; a gitignored untracked scripts/cr/ file shows; each failing git call prints unknown (HIMMEL-3454)"
+            pass "$n: (xii) step-0 diff block: clean diff prints nothing; a committed scripts/cr/ change shows under every pathspec env; a gitignored untracked scripts/cr/ file shows; scripts/lib/, check-ci.sh and resolve-active-item.sh changes show (HIMMEL-3493); each failing git call prints unknown (HIMMEL-3454)"
         else
             fail "$n: (xii) step-0 diff block fails open${xii_fail} (HIMMEL-3454 / HIMMEL-3459)"
         fi

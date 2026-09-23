@@ -39,11 +39,39 @@ assert_contains() {
     if grepq "$3" "$2"; then assert_pass "$1"; else assert_fail "$1 — expected '$2', got: $3"; fi
 }
 assert_not_contains() {
-    if grepq "$3" "$2"; then assert_fail "$1 — did NOT expect '$2', got: $3"; else assert_pass "$1"; fi
+    local rc=0
+    grepq "$3" "$2" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        assert_fail "$1 — did NOT expect '$2', got: $3"
+    elif [ "$rc" -eq 1 ]; then
+        assert_pass "$1"
+    else
+        assert_fail "$1 — grep errored (status $rc) evaluating '$2' against: $3"
+    fi
 }
 assert_eq() {
     if [ "$2" = "$3" ]; then assert_pass "$1"; else assert_fail "$1 — expected '$2', got '$3'"; fi
 }
+
+# Self-test: assert_not_contains must FAIL a grep error (status >= 2, e.g. an
+# invalid pattern), not treat it as a passing "no match" (status 1). Runs in
+# isolated counters so it never skews the suite's own pass/fail totals.
+echo "Test 0: assert_not_contains distinguishes grep no-match from grep error"
+_outer_pass=$pass; _outer_fail=$fail
+pass=0; fail=0
+assert_not_contains "self-test: genuine no-match is a pass" "nomatch" "hello world"
+if [ "$pass" -ne 1 ] || [ "$fail" -ne 0 ]; then
+    echo "FAIL: assert_not_contains mishandled a genuine no-match (pass=$pass fail=$fail)" >&2
+    exit 1
+fi
+pass=0; fail=0
+assert_not_contains "self-test: an invalid regex (grep error) must FAIL" "[" "hello world"
+if [ "$fail" -ne 1 ] || [ "$pass" -ne 0 ]; then
+    echo "FAIL: assert_not_contains treated a grep error (invalid regex) as a pass" >&2
+    exit 1
+fi
+pass=$_outer_pass; fail=$_outer_fail
+assert_pass "assert_not_contains: grep-status split (self-test)"
 
 _repo_counter=0
 
@@ -257,6 +285,27 @@ out=$(plugins_row "1.0.0") || true
 assert_contains "plugins: older installed copy -> behind, names the drift" "^ *plugins  *behind .*alpha(1\\.0\\.0->2\\.0\\.0)" "$out"
 out=$(plugins_row "") || true
 assert_contains "plugins: declared but not installed -> behind" "^ *plugins  *behind  *0/1 installed" "$out"
+
+# HIMMEL-3416: an unreadable installed OR source version must report unknown,
+# never claim "current" (version equality was never established).
+printf '{"plugins":{"alpha@himmel":[{}]}}\n' > "$TMP/installed-noiv.json"
+rc=0
+out=$(HIMMEL_MARKETPLACE_JSON="$TMP/market.json" HIMMEL_INSTALLED_PLUGINS_JSON="$TMP/installed-noiv.json" \
+    LUNA_VAULT_PATH="$TMP/vault" run_update "$fh6" "$TMP/claude-versions" --versions) || rc=$?
+assert_eq "plugins: unreadable installed version -> rc 3" "3" "$rc"
+assert_contains "plugins: unreadable installed version -> unknown, not current" "^ *plugins  *unknown" "$out"
+assert_not_contains "plugins: unreadable installed version -> never current" "^ *plugins  *current" "$out"
+
+mkdir -p "$CHECKOUT_DIR/marketplace/plugins/beta/.claude-plugin"
+printf '{"name":"beta"}\n' > "$CHECKOUT_DIR/marketplace/plugins/beta/.claude-plugin/plugin.json"
+printf '{"name":"himmel","plugins":[{"name":"beta"}]}\n' > "$TMP/market-beta.json"
+printf '{"plugins":{"beta@himmel":[{"version":"1.0.0"}]}}\n' > "$TMP/installed-nosv.json"
+rc=0
+out=$(HIMMEL_MARKETPLACE_JSON="$TMP/market-beta.json" HIMMEL_INSTALLED_PLUGINS_JSON="$TMP/installed-nosv.json" \
+    LUNA_VAULT_PATH="$TMP/vault" run_update "$fh6" "$TMP/claude-versions" --versions) || rc=$?
+assert_eq "plugins: unreadable source version -> rc 3" "3" "$rc"
+assert_contains "plugins: unreadable source version -> unknown, not current" "^ *plugins  *unknown" "$out"
+assert_not_contains "plugins: unreadable source version -> never current" "^ *plugins  *current" "$out"
 
 # ─── 7: release channel — the himmel row follows the tag, not the upstream ────
 echo "Test 7: --versions with HIMMEL_UPDATE_CHANNEL follows release tags"
