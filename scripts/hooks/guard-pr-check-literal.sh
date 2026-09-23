@@ -6,10 +6,13 @@
 #     bash scripts/cr/pr-check-context.sh
 #     bash scripts/cr/pr-check-env.sh CR_CLAUDE_AGENTS
 #
-# for every leg profile (`gateAllow` in scripts/lanes/plugin-profiles.json),
-# and `Bash(bash scripts/*)` in .claude/settings.json auto-allows every other
-# relative spelling of them too. The runbook twins permit a relative spelling
-# only when three conditions hold:
+# for every leg profile (`gateAllow` in scripts/lanes/plugin-profiles.json).
+# HIMMEL-3402 later narrowed away .claude/settings.json's `Bash(bash scripts/*)`
+# prefix rule; scripts/cr/, scripts/guardrails/ and scripts/hooks/ get no
+# prefix allow at all now, only the exact literals below - but an exact
+# literal still matches TEXT, so it auto-runs whatever bytes currently sit at
+# that relative path in the caller's cwd, branch copy included. The runbook
+# twins permit a relative spelling only when three conditions hold:
 #
 #   1. the himmel lane - the cwd's git-common-dir is "$HIMMEL_REPO/.git";
 #   2. the cwd is the worktree root - `git rev-parse --show-prefix` is empty
@@ -66,6 +69,18 @@ pr-check-env.sh review-round.sh write-verdicts.sh'
 # sources more. Every other target is held to itself + the hand-off (above).
 FULL_GUARDED='scripts/cr scripts/guardrails/lib.sh scripts/lib/load-dotenv.sh'
 GUARDED=$FULL_GUARDED
+
+# HIMMEL-3437: the two scripts/handover/ gate-writer entries a leg profile
+# also pre-approves as RELATIVE literals (merge-on-green.sh, console-kit/go.sh)
+# - outside scripts/cr/, so TARGETS above (and the derived/declared check in
+# the test suite, which is scoped to scripts/cr/ allow rows only) does not
+# reach them. Held to the same narrower condition as every TARGETS entry but
+# pr-check-context.sh/env.sh: the entry script and scripts/cr/anchor-handoff.sh
+# (HIMMEL-3437's hand-off, shared with the scripts/cr/ family) byte- and
+# mode-equal the anchor's. Full relative paths, not bare basenames: "go.sh" is
+# too common a stem to key on alone, and matching the full path is exact
+# rather than relying on a directory-marker substring.
+HTARGETS='scripts/handover/merge-on-green.sh scripts/handover/console-kit/go.sh'
 # shellcheck disable=SC2016 # printed verbatim as the remedy, never expanded
 FENCE='if himmel_repo=$(printenv HIMMEL_REPO | grep .); then
     bash "$himmel_repo/scripts/cr/pr-check-context.sh"
@@ -83,12 +98,13 @@ shown=""
 flat=""
 deny() {
     {
-        echo "guard-pr-check-literal: DENIED - \`$shown\` (HIMMEL-3383, HIMMEL-3495): $1"
-        echo "A relative spelling of a gate-allowed scripts/cr script is allowed only in a himmel"
-        echo "checkout, at its worktree root, on a tree whose copy of what it runs equals the"
-        echo "HIMMEL_REPO anchor's byte for byte and mode for mode (compared raw, so a CRLF checkout"
-        echo "differs): scripts/cr/, scripts/guardrails/lib.sh and scripts/lib/load-dotenv.sh for"
-        echo "pr-check-context.sh / pr-check-env.sh; the script and scripts/cr/anchor-handoff.sh for the rest."
+        echo "guard-pr-check-literal: DENIED - \`$shown\` (HIMMEL-3383, HIMMEL-3495, HIMMEL-3437): $1"
+        echo "A relative spelling of a gate-allowed scripts/cr or scripts/handover/ writer is allowed"
+        echo "only in a himmel checkout, at its worktree root, on a tree whose copy of what it runs"
+        echo "equals the HIMMEL_REPO anchor's byte for byte and mode for mode (compared raw, so a CRLF"
+        echo "checkout differs): scripts/cr/, scripts/guardrails/lib.sh and scripts/lib/load-dotenv.sh"
+        echo "for pr-check-context.sh / pr-check-env.sh; the script and scripts/cr/anchor-handoff.sh"
+        echo "for every other target, merge-on-green.sh and console-kit/go.sh included."
         echo "If the command only mentions the script (a message, a heredoc), move that text into a file."
         case "$flat" in
             *pr-check-env*)
@@ -100,6 +116,17 @@ deny() {
                 echo "Run /pr-check step 0's canonical anchored fence instead:"
                 echo
                 echo "$FENCE"
+                ;;
+            *handover/merge-on-green*)
+                echo "Run the anchored spelling instead (HIMMEL-3491):"
+                echo
+                # shellcheck disable=SC2016 # printed verbatim, never expanded
+                echo 'bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh" <args>'
+                ;;
+            *console-kit/go*)
+                echo "Run the anchor's copy by step 0's printed himmel_dir instead, as its own command:"
+                echo
+                echo "bash \"<himmel_dir>/scripts/handover/console-kit/go.sh\" <args>"
                 ;;
             *)
                 echo "Run the anchor's copy by step 0's printed himmel_dir instead, as its own command:"
@@ -156,13 +183,14 @@ flat=${flat//[\'\"\\]/}
 # A glob or brace list can spell a guarded name without either substring
 # (scripts/c[r]/pr-chec[k]-context.sh), so it passes on to classification;
 # so does any case of the names, which a case-insensitive filesystem folds.
-names_target() { # names_target <text> - mentions pr-check or a target's exact
-    # scripts/cr/<name> path token, in any case. A bare stem substring also
-    # matched inside an unrelated file name that happens to contain it (a
-    # test suite's own name, e.g. test-cr-scores.sh contains "cr-scores"),
-    # which then made every $VAR token elsewhere in the same command look
-    # unresolvable (HIMMEL-3517) - so a target only counts here when its stem
-    # is immediately preceded by "cr/", never as a substring anywhere else.
+names_target() { # names_target <text> - mentions pr-check, a scripts/cr/
+    # target's exact path token, or an HTARGETS marker+stem, in any case. A
+    # bare stem substring also matched inside an unrelated file name that
+    # happens to contain it (a test suite's own name, e.g. test-cr-scores.sh
+    # contains "cr-scores"), which then made every $VAR token elsewhere in
+    # the same command look unresolvable (HIMMEL-3517) - so a target only
+    # counts here when its stem is immediately preceded by "cr/", never as a
+    # substring anywhere else.
     local t rc=1
     shopt -s nocasematch
     case "$1" in *pr-check*) rc=0 ;; esac
@@ -179,12 +207,17 @@ names_target() { # names_target <text> - mentions pr-check or a target's exact
         # hole). Upgrade path: HIMMEL-3546 (quote/token-aware matching).
         case "$1" in *[cC][rR]/"${t%.sh}"*) rc=0 ;; esac
     done
+    # HIMMEL-3437: same prefix-stem match, keyed on each HTARGET's own
+    # immediate parent directory (handover/ for merge-on-green.sh,
+    # console-kit/ for go.sh) rather than a fixed "cr/" marker.
+    case "$1" in *[hH]andover/merge-on-green*) rc=0 ;; esac
+    case "$1" in *[cC]onsole-kit/go*) rc=0 ;; esac
     shopt -u nocasematch
     return "$rc"
 }
 mentions=0
 names_target "$flat" && mentions=1
-case "$flat" in *[cC][rR]/*|*[][*?]*|*'{'*) ;; *) [ "$mentions" -eq 1 ] || exit 0 ;; esac
+case "$flat" in *[cC][rR]/*|*[hH]andover/*|*[][*?]*|*'{'*) ;; *) [ "$mentions" -eq 1 ] || exit 0 ;; esac
 
 # The canonical fence runs the anchor's copy through $himmel_repo, so it is
 # exempt - but only in its exact shape. Anything added to it (a second
@@ -218,6 +251,24 @@ is_target() { # is_target <basename> - names, or globs onto, a guarded script, i
     local t rc=1
     shopt -s nocasematch
     for t in $TARGETS; do
+        case "$1" in "$t") rc=0 ;; esac
+        # shellcheck disable=SC2254 # $1 IS the pattern: a glob operand
+        case "$1" in
+            *[][*?]*) case "$t" in $1) rc=0 ;; esac ;;
+        esac
+    done
+    shopt -u nocasematch
+    return "$rc"
+}
+
+is_htarget() { # is_htarget <basename> - names, or globs onto, an HTARGETS
+    # basename, in any case. Basename-only, like is_target above: this is a
+    # coarse candidate test, not the exact full-path match the classify loop
+    # below makes before trusting it.
+    local p t rc=1
+    shopt -s nocasematch
+    for p in $HTARGETS; do
+        t=${p##*/}
         case "$1" in "$t") rc=0 ;; esac
         # shellcheck disable=SC2254 # $1 IS the pattern: a glob operand
         case "$1" in
@@ -266,6 +317,7 @@ while IFS= read -r line; do
     # /dev/null is only ever reached as a redirect target (HIMMEL-3433).
     case "$cw" in /dev/null) ;; */*|pr-check*) runs=1 ;; esac
     is_target "${cw##*/}" && runs=1
+    is_htarget "${cw##*/}" && runs=1
 done <<<"$simple"
 # The leading-word walk above misses a runner behind an operand it does not
 # know (`2>&1 bash ...`, `find . -exec env X=1 bash ...`), so these are
@@ -357,7 +409,10 @@ glob_is_literal_elsewhere() {
             dir=${raw%/*}
             case "$dir" in *[][*?{}~\$]*|*..*|*//*|*/./*) return 1 ;; esac
             shopt -s nocasematch
-            case "/${rel%/*}" in */cr|*/scripts/cr/*) shopt -u nocasematch; return 1 ;; esac
+            case "/${rel%/*}" in
+                */cr|*/scripts/cr/*|*/scripts/handover|*/scripts/handover/console-kit)
+                    shopt -u nocasematch; return 1 ;;
+            esac
             shopt -u nocasematch
             return 0
             ;;
@@ -387,7 +442,7 @@ unresolved=""
 # substitution ($(pwd)/scripts/cr/...) only looks absolute once split.
 # Absolute words keep their case (an adopter's /Users/... anchor path).
 for word in $flat; do
-    case "$word" in *[cC][rR]/*) ;; *) continue ;; esac
+    case "$word" in *[cC][rR]/*|*[hH]andover/*) ;; *) continue ;; esac
     case "$word" in
         *[][*?~\$\(\`]*|*'{'*|*'}'*) hit=1; unresolved=$word ;;
         /*) ;;
@@ -395,6 +450,7 @@ for word in $flat; do
     esac
 done
 entries=""
+hentries=""
 for tok in ${flat//[;&|()<>\`=]/$'\n'}; do
     case "$tok" in /*|'~'*) continue ;; esac
     case "$tok" in
@@ -425,6 +481,17 @@ for tok in ${flat//[;&|()<>\`=]/$'\n'}; do
                 ;;
             *) unresolved=$tok ;;
         esac
+    elif is_htarget "${rel##*/}" && ! glob_is_literal_elsewhere "$raw" "$rel"; then
+        # HIMMEL-3437: the two scripts/handover/ writers, held to the entry
+        # itself + scripts/cr/anchor-handoff.sh - full-path match, not a
+        # TARGETS-style basename lookup, since HTARGETS entries are full
+        # relative paths (a basename alone, "go.sh", is too common a stem).
+        hit=1
+        case " $HTARGETS " in
+            *[[:space:]]"$rel"[[:space:]]*)
+                case " $hentries " in *" $rel "*) ;; *) hentries="$hentries $rel" ;; esac ;;
+            *) unresolved=$tok ;;
+        esac
     fi
 done
 [ "$hit" -eq 1 ] || exit 0
@@ -440,12 +507,19 @@ case " $entries " in
         for e in $entries; do GUARDED="$GUARDED scripts/cr/$e"; done
         ;;
 esac
+for e in $hentries; do
+    case " $GUARDED " in
+        *' scripts/cr/anchor-handoff.sh '*) ;;
+        *) GUARDED="$GUARDED scripts/cr/anchor-handoff.sh" ;;
+    esac
+    GUARDED="$GUARDED $e"
+done
 
 shown=${cmd//$'\n'/ }
 shown=${shown:0:200}
 
 [ -z "$unresolved" ] \
-    || deny "'$unresolved' does not resolve to this root's scripts/cr/ by its text alone (a glob, a variable, or a path outside the root), so the bytes it runs cannot be checked."
+    || deny "'$unresolved' does not resolve to this root's scripts/cr/ or scripts/handover/ writer by its text alone (a glob, a variable, or a path outside the root), so the bytes it runs cannot be checked."
 [ "$chdir" -eq 0 ] \
     || deny "the command changes directory, so the relative path does not resolve against the cwd the conditions are checked in."
 # Only one simple command can be checked: the conditions hold for the bytes
@@ -520,12 +594,22 @@ prefix=$(gitq rev-parse --show-prefix 2>/dev/null) \
 # ponytail: checked at match time only - a background job or another session
 # can swap the bytes between this check and the exec (TOCTOU), not closed here.
 manifest() { # manifest <root> - "<mode> <blob-id> <path>" per regular file, sorted
-    local root=$1 odd files execs oids modes
+    local root=$1 odd files execs oids modes prune_dirs
     # shellcheck disable=SC2086 # $GUARDED is a fixed, space-free word list
     # scripts/ and scripts/cr/ themselves must be real directories: a per-file
     # GUARDED list would otherwise read straight through a symlinked one.
+    # HIMMEL-3437: scripts/handover/ and scripts/handover/console-kit/ join the
+    # same check, but only when $GUARDED actually reaches under them - the
+    # fixtures a scripts/cr/-only run checks never create scripts/handover/,
+    # and an unconditional check here would deny those runs on a missing path.
+    prune_dirs='scripts scripts/cr'
+    case " $GUARDED " in
+        *' scripts/handover/console-kit/go.sh '*) prune_dirs="$prune_dirs scripts/handover scripts/handover/console-kit" ;;
+        *' scripts/handover/merge-on-green.sh '*) prune_dirs="$prune_dirs scripts/handover" ;;
+    esac
+    # shellcheck disable=SC2086 # prune_dirs is a fixed, space-free word list
     odd=$(cd "$root" && {
-        find scripts scripts/cr -prune ! -type d
+        find $prune_dirs -prune ! -type d
         find $GUARDED \( ! -type d ! -type f \) -o -name '*[[:cntrl:]]*'
     } 2>/dev/null) || return 1
     [ -z "$odd" ] || { printf 'ODD %s\n' "$(printf '%s' "$odd" | tr '\n' ' ')"; return 0; }

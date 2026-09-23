@@ -55,7 +55,7 @@ assert_contains() {
 run_case "$(j_bash 'bash scripts/test-check-ci.sh')"
 assert_rc "bare test-check-ci.sh" 2 "$RC"
 assert_contains "bare test-check-ci.sh replacement" \
-    "bash scripts/quiet-run.sh check-ci-suite -- bash scripts/test-check-ci.sh" "$ERR"
+    "bash scripts/quiet-run.sh suite -- bash scripts/test-check-ci.sh" "$ERR"
 
 # 2. Same command already wrapped in quiet-run.sh -> passes through.
 run_case "$(j_bash 'bash scripts/quiet-run.sh check-ci-suite -- bash scripts/test-check-ci.sh')"
@@ -69,7 +69,7 @@ assert_rc "QUIET_RUN_BYPASS=1" 0 "$RC"
 run_case "$(j_bash 'bash scripts/ci/run-shell-tests.sh')"
 assert_rc "run-shell-tests.sh" 2 "$RC"
 assert_contains "run-shell-tests.sh replacement" \
-    "bash scripts/quiet-run.sh run-shell-tests-suite -- bash scripts/ci/run-shell-tests.sh" "$ERR"
+    "bash scripts/quiet-run.sh suite -- bash scripts/ci/run-shell-tests.sh" "$ERR"
 
 # 5. Non-suite commands are unaffected - the regression that matters most.
 run_case "$(j_bash 'git status')"
@@ -83,11 +83,14 @@ assert_rc "bun test" 0 "$RC"
 run_case "$(j_bash 'cat scripts/test-check-ci.sh')"
 assert_rc "cat suite file" 0 "$RC"
 
-# 7. Nested suite path -> denied, label derived from the filename only.
+# 7. Nested suite path -> denied, the literal pre-approved label "suite"
+# (HIMMEL-3437; only that exact label is auto-allowed since HIMMEL-3402 - a
+# derived per-suite label falls to the classifier), not a name derived from
+# the filename.
 run_case "$(j_bash 'bash scripts/hooks/test-block-destructive-commands.sh')"
 assert_rc "nested suite path" 2 "$RC"
 assert_contains "nested suite path replacement" \
-    "bash scripts/quiet-run.sh block-destructive-commands-suite -- bash scripts/hooks/test-block-destructive-commands.sh" "$ERR"
+    "bash scripts/quiet-run.sh suite -- bash scripts/hooks/test-block-destructive-commands.sh" "$ERR"
 
 # 8. Direct ./ exec form (no interpreter word) -> denied.
 run_case "$(j_bash './scripts/test-check-ci.sh')"
@@ -166,7 +169,7 @@ assert_rc "quiet-run wrap in a subshell (regression)" 0 "$RC"
 # the filename class used to stop at the first '.' and exit 0 on them.
 run_case "$(j_bash 'bash scripts/test-check.ci.sh')"
 assert_rc "dotted suite filename" 2 "$RC"
-assert_contains "dotted suite filename replacement"     "bash scripts/quiet-run.sh check.ci-suite -- bash scripts/test-check.ci.sh" "$ERR"
+assert_contains "dotted suite filename replacement"     "bash scripts/quiet-run.sh suite -- bash scripts/test-check.ci.sh" "$ERR"
 
 # 19. HIMMEL-2322 - heredoc bodies fed to a real shell still deny: a heredoc
 # piped into bash, or bash reading its own heredoc, genuinely executes its
