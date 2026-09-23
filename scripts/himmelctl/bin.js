@@ -33,6 +33,7 @@ const readline = require('readline');
 const { spawnSync } = require('child_process');
 const { cacheDir, profileForVault, which, resolvePowershell, displayPath, shellQuote, nodeScriptCmd } = require('./lib/helpers.js');
 const launcherLib = require('./lib/launcher.js');
+const uninstallWrapperLib = require('./lib/uninstall-wrapper.js');
 const stateLib = require('./lib/state.js');
 const statusReportLib = require('./lib/status-report.js');
 const installEngineLib = require('./lib/install-engine.js');
@@ -4421,18 +4422,9 @@ async function cmdInstall(args) {
 // path/hook/settings key, and reading it from one place keeps the preview and
 // the teardown from drifting. --purge-state is the code-vs-state switch; the
 // default (absent) keeps operator state.
-function deriveUninstallCommand(args = {}) {
-  const scriptsDir = path.join(repoRoot(), 'scripts');
-  if (process.platform === 'win32') {
-    const argv = [resolvePowershell(), '-ExecutionPolicy', 'Bypass', '-File', path.join(scriptsDir, 'uninstall.ps1')];
-    argv.push(args.dryRun ? '-DryRun' : '-Yes');
-    if (args.purgeState) argv.push('-PurgeState');
-    return { argv };
-  }
-  const argv = [resolveBash(), toBashPath(path.join(scriptsDir, 'uninstall.sh')), args.dryRun ? '--dry-run' : '--yes'];
-  if (args.purgeState) argv.push('--purge-state');
-  return { argv };
-}
+// deriveUninstallCommand lives in lib/uninstall-wrapper.js now (HIMMEL-3312
+// S13 item 2), parameterized on repoRoot/bashPath instead of calling
+// repoRoot()/resolveBash() itself.
 
 // HIMMEL-755 sub-ticket E (uninstall-completeness, operator LOCKED
 // 2026-07-17): uninstall.sh/.ps1 already tears down himmel's OWN wiring
@@ -4628,79 +4620,38 @@ function operatorStateBanner(purgeState) {
   })];
 }
 
+// A thin bin.js-side wrapper around lib/uninstall-wrapper.js's
+// runUninstallWrapper (HIMMEL-3312 S13 item 2): builds the header/afterRun
+// closures bin.js owns (the manifest-driven offboard plan + the post-teardown
+// completeness check — both clone-dependent, so standalone.js's own call
+// skips them) and passes resolveBash()/repoRoot(). The TTY/--yes/spawn/
+// launcher-removal logic itself now lives in the wrapper module.
 async function cmdUninstall(args) {
-  const cmd = deriveUninstallCommand(args);
-  console.log('himmelctl: this will offboard himmel from this machine —');
-  console.log('  plugins, scheduled jobs, git hooks, and settings.json wiring.');
-  for (const line of operatorStateBanner(args.purgeState)) console.log(line);
-  console.log(`derived: ${displayCommand(cmd)}`);
-
   // Guard the manifest load: uninstall is the "thin wrapper, always works,
-  // last resort" escape hatch (see the design comment above cmdUninstall) —
-  // a missing/malformed scripts/install/manifest.json must never abort the
+  // last resort" escape hatch (see the design comment above operatorStateBanner)
+  // — a missing/malformed scripts/install/manifest.json must never abort the
   // whole uninstall (loadManifest()/partitionOffboard() throw uncaught
   // otherwise, which main()'s catch turns into a hard exit(1), even under
   // --dry-run). On failure, WARN and skip ONLY the manifest-driven advisory
-  // plan + completeness check; the derive->confirm->spawn teardown below
-  // still runs unconditionally, same as before this sub-ticket existed.
+  // plan + completeness check; the derive->confirm->spawn teardown still
+  // runs unconditionally, same as before this sub-ticket existed.
   let offboard = null;
-  try {
-    const manifest = loadManifest();
-    offboard = partitionOffboard(manifest);
-    printOffboardPlan(offboard.unwireItems, offboard.adviseItems, offboard.keepItems);
-  } catch (e) {
-    console.error(`himmelctl: WARN: could not read manifest.json (${e.message}) — skipping offboard plan/completeness check`);
-  }
-
-  // --dry-run asks nothing and removes nothing: it runs the executor in its own
-  // --dry-run, which prints every path/plugin/hook/settings key it WOULD touch
-  // (HIMMEL-3058). No HIMMEL_UNINSTALL_REAL_HOME here — the wet-run fence is
-  // for wet runs; a dry run is never fenced. No completeness check or launcher
-  // removal either: nothing was torn down.
-  if (args.dryRun) return runSpawn(cmd);
-
-  // HIMMEL-2755: EOF and an explicit "n" are DIFFERENT facts and a caller that
-  // records an offboard must be able to tell them apart. A closed/non-tty
-  // stdin without --yes is a REFUSAL (rc=2, fail-closed, same code and same
-  // remedy as uninstall.sh's own non-interactive abort), not a decline.
-  if (!args.yes) {
-    // WHY (HIMMEL-2755): a pipe cannot consent AND must not be able to stall
-    // a teardown; uninstall.sh:676's [ -t 0 ] && [ -t 1 ] is the twin.
-    if (!process.stdin.isTTY || !process.stdout.isTTY) {
-      console.error('himmelctl: ERROR: non-interactive run without --yes — aborting (fail-closed).');
-      console.error('  Re-run with --yes to confirm, or --dry-run to preview.');
-      return 2;
+  const header = (purgeState) => {
+    console.log('himmelctl: this will offboard himmel from this machine —');
+    console.log('  plugins, scheduled jobs, git hooks, and settings.json wiring.');
+    for (const line of operatorStateBanner(purgeState)) console.log(line);
+    try {
+      const manifest = loadManifest();
+      offboard = partitionOffboard(manifest);
+      printOffboardPlan(offboard.unwireItems, offboard.adviseItems, offboard.keepItems);
+    } catch (e) {
+      console.error(`himmelctl: WARN: could not read manifest.json (${e.message}) — skipping offboard plan/completeness check`);
     }
-    const EOF = '\u0000himmelctl-eof';
-    const ans = await askConfirmSafe('Proceed? [y/N] ', EOF);
-    if (ans === EOF) {
-      console.error('himmelctl: ERROR: non-interactive run without --yes — aborting (fail-closed).');
-      console.error('  Re-run with --yes to confirm, or --dry-run to preview.');
-      return 2;
-    }
-    // Default-No (HIMMEL-3328): a bare Enter or anything but y/yes declines.
-    if (!/^\s*(y|yes)\s*$/i.test(ans)) {
-      console.log('himmelctl: declined; nothing run.');
-      return 3;
-    }
-  }
-  // HIMMEL-2505: this is the ONE spawn that runs uninstall.sh/.ps1 WET, after
-  // the human's own confirm above — tell it so its own live-operator-HOME
-  // fence doesn't refuse the very machine the operator just confirmed
-  // offboarding. The dry-run/plan path above never reaches here.
-  const rc = runSpawn(cmd, { env: { ...process.env, HIMMEL_UNINSTALL_REAL_HOME: '1' } });
-  if (offboard) checkUninstallCompleteness(offboard.unwireItems);
-  // HIMMEL-1446 r4 (codex-1/codex-adv converged blocker): strip the managed
-  // PATH launchers ONLY when the teardown succeeded. A failed teardown (rc!=0)
-  // leaves the machine in a partial state and the user will likely retry, so
-  // removing the launchers now would strand the machine with no working
-  // `himmelctl` for the retry. Preserve them and WARN naming the failure.
-  if (rc === 0) {
-    launcherLib.removeHimmelctlLaunchers();
-  } else {
-    console.error(`himmelctl: WARN: uninstall teardown exited ${rc} — PATH launchers left in place; fix the failure and re-run \`himmelctl uninstall\`.`);
-  }
-  return rc;
+  };
+  const afterRun = () => {
+    if (offboard) checkUninstallCompleteness(offboard.unwireItems);
+  };
+  return uninstallWrapperLib.runUninstallWrapper(args, { bashPath: resolveBash(), repoRoot: repoRoot(), header, afterRun });
 }
 
 // ── PATH launcher (HIMMEL-1446) ──────────────────────────────────────────
