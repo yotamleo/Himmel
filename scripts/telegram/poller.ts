@@ -12,6 +12,7 @@ import { cwdForChat, isAllowed, isGroupAllowed, isOperatorIdentity, loadAccess, 
 import { runSession, buildPrompt, BASH_BIN, REPO_ROOT, type BusPaths, type PermissionMode } from "./run";
 import { classifyForSpawn, type TriageVerdict, type TriageModelOverride, type ModelOverride } from "./triage";
 import { transcribe } from "./transcribe";
+import { checkStaleHeartbeats, censusSessionAlive, DEFAULT_STALE_MS, type AlertedState, type AlertFn } from "./console-heartbeat-watch";
 // HIMMEL-2961: resolve the bridge's own plugin profile per dispatch (lever-b,
 // HIMMEL-1040), the same seam spawn-claudex.ts already uses — instead of the
 // previous hardcoded `undefined` (no --settings => full operator ~/.claude
@@ -1978,6 +1979,22 @@ export async function main(): Promise<void> {
   const FLUSH_MS = intervalEnvMs(process.env.TELEGRAM_FLUSH_MS, 1000);
   const flushTimer = setInterval(guarded(() => flushOutboxes(root, send)), FLUSH_MS);
   if (typeof flushTimer.unref === "function") flushTimer.unref();
+  // Stale console-waiter heartbeat alert (HIMMEL-3510). console-wait.sh
+  // (HIMMEL-3509) rewrites consoles/<name>.md.wait on every poll; a gap past
+  // HEARTBEAT_STALE_MS while the console's own session is still alive means
+  // its background waiter may have died silently (HIMMEL-3097's unreproduced
+  // harness low-memory kill) — a SIGKILL alone re-invokes the console, so
+  // this alert only fires for the silent case. heartbeatAlerted persists
+  // across ticks so a stale episode alerts exactly once until re-armed.
+  const HEARTBEAT_STALE_MS = intervalEnvMs(process.env.TELEGRAM_HEARTBEAT_STALE_MS, DEFAULT_STALE_MS);
+  const HEARTBEAT_CHECK_MS = intervalEnvMs(process.env.TELEGRAM_HEARTBEAT_CHECK_MS, 60_000);
+  const heartbeatAlerted: AlertedState = new Map();
+  const heartbeatAlert: AlertFn = async (name, ageSec) => {
+    if (operatorChat === null) { console.error(`[poller] console ${name}'s wait heartbeat is stale (${ageSec}s) but there is no operator chat to alert`); return; }
+    await replyViaOutbox(root, operatorChat, `⚠️ console "${name}"'s wait heartbeat has been stale for ${ageSec}s while its session is still running — the background waiter may have been silently killed (HIMMEL-3097). Check it.`);
+  };
+  const heartbeatTimer = setInterval(guarded(() => checkStaleHeartbeats(root, Date.now(), HEARTBEAT_STALE_MS, heartbeatAlerted, censusSessionAlive, heartbeatAlert)), HEARTBEAT_CHECK_MS);
+  if (typeof heartbeatTimer.unref === "function") heartbeatTimer.unref();
   // Outage tracking across loop iterations (HIMMEL-1401): consecutive getUpdates
   // failures drive the backoff, outageStartedAt/lastOutageAlertAt drive the
   // rate-limited log marker. All three reset together on the next clean call.
