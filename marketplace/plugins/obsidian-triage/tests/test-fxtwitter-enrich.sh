@@ -385,7 +385,10 @@ cat >"$tmpdir/fixture-plain.json" <<'EOF'
 }
 EOF
 
-FXT_FIXTURE="$tmpdir/fixture-plain.json" node "$SCRIPT" --vault "$plain_vault" --limit 1 >"$tmpdir/t12b.out" 2>&1
+cat >"$tmpdir/fixture-thread-none.json" <<'EOF'
+{ "code": 200, "thread": null }
+EOF
+FXT_FIXTURE="$tmpdir/fixture-plain.json" FXT_THREAD_FIXTURE="$tmpdir/fixture-thread-none.json" node "$SCRIPT" --vault "$plain_vault" --limit 1 >"$tmpdir/t12b.out" 2>&1
 t12b_rc=$?
 t12b_written="$plain_vault/Clippings/plain-clip.md"
 if grep -q "needs_thread:" "$t12b_written" 2>/dev/null; then
@@ -467,6 +470,140 @@ EOF
 FXT_FIXTURE="$tmpdir/fixture-reflag-thread.json" node "$SCRIPT" --vault "$reflag_vault" --reflag >"$tmpdir/t13c.out" 2>&1 || true
 t13c_flag=no; grep -q "needs_thread:" "$reflag_vault/Clippings/not-enriched.md" 2>/dev/null && t13c_flag=yes
 assert "Test13C: --reflag skips a non-enriched clip (no needs_thread written)" "no" "$t13c_flag"
+
+# -- Test 14: HIMMEL-3506 — unmarked self-thread escalation via /2/thread/<id> --
+echo "Test 14: unmarked self-thread caught via the fxtwitter thread API"
+
+# Post-1 text carries NO text signal (no n/N counter, no thread, no pointer) —
+# this is the Opus 5.5 launch-tweet shape from the ticket. replies > 0 is the
+# only hint, so the fix must fall back to /2/thread/<id>.
+cat >"$tmpdir/fixture-unmarked-status.json" <<'EOF'
+{
+  "code": 200,
+  "tweet": {
+    "text": "Introducing Opus 5.5, the first model in our new family.",
+    "replies": 1906,
+    "retweets": 0,
+    "quotes": 0,
+    "likes": 0,
+    "views": 0,
+    "author": { "screen_name": "claudeai" }
+  }
+}
+EOF
+
+# Case A: thread API returns >1 post by the same author -> needs_thread:true.
+unmarked_vault="$tmpdir/vault-unmarked"
+mkdir -p "$unmarked_vault/Clippings"
+cat >"$unmarked_vault/Clippings/unmarked-clip.md" <<'EOF'
+---
+source: https://x.com/claudeai/status/40
+processed: true
+---
+# tweet from x.com/claudeai/status/40
+
+## The Idea
+
+## Source
+https://x.com/claudeai/status/40
+EOF
+cat >"$tmpdir/fixture-thread-multi.json" <<'EOF'
+{
+  "code": 200,
+  "thread": [
+    { "id": "40", "author": { "screen_name": "claudeai" }, "text": "post 1" },
+    { "id": "41", "author": { "screen_name": "claudeai" }, "text": "post 2" }
+  ]
+}
+EOF
+FXT_FIXTURE="$tmpdir/fixture-unmarked-status.json" FXT_THREAD_FIXTURE="$tmpdir/fixture-thread-multi.json" \
+    node "$SCRIPT" --vault "$unmarked_vault" --limit 1 >"$tmpdir/t14a.out" 2>&1
+t14a_flag=no; grep -q "needs_thread: true" "$unmarked_vault/Clippings/unmarked-clip.md" 2>/dev/null && t14a_flag=yes
+assert "Test14A: no-text-signal + thread API multi-post -> needs_thread:true" "yes" "$t14a_flag"
+if [ "$t14a_flag" != "yes" ]; then
+    echo "  (debug out=$(cat "$tmpdir/t14a.out" 2>/dev/null))"
+fi
+
+# Case B: thread API returns only 1 post (itself) -> no escalation.
+unmarked_vault_b="$tmpdir/vault-unmarked-b"
+mkdir -p "$unmarked_vault_b/Clippings"
+cat >"$unmarked_vault_b/Clippings/unmarked-clip-b.md" <<'EOF'
+---
+source: https://x.com/claudeai/status/41
+processed: true
+---
+## The Idea
+
+## Source
+https://x.com/claudeai/status/41
+EOF
+cat >"$tmpdir/fixture-thread-single.json" <<'EOF'
+{ "code": 200, "thread": [ { "id": "41", "author": { "screen_name": "claudeai" }, "text": "post 1" } ] }
+EOF
+FXT_FIXTURE="$tmpdir/fixture-unmarked-status.json" FXT_THREAD_FIXTURE="$tmpdir/fixture-thread-single.json" \
+    node "$SCRIPT" --vault "$unmarked_vault_b" --limit 1 >"$tmpdir/t14b.out" 2>&1
+t14b_flag=no; grep -q "needs_thread:" "$unmarked_vault_b/Clippings/unmarked-clip-b.md" 2>/dev/null && t14b_flag=yes
+assert "Test14B: thread API single-post -> needs_thread NOT set" "no" "$t14b_flag"
+
+# Case C: thread API errors -> fail open (no needs_thread, no crash, clip still
+# enriched normally).
+unmarked_vault_c="$tmpdir/vault-unmarked-c"
+mkdir -p "$unmarked_vault_c/Clippings"
+cat >"$unmarked_vault_c/Clippings/unmarked-clip-c.md" <<'EOF'
+---
+source: https://x.com/claudeai/status/42
+processed: true
+---
+## The Idea
+
+## Source
+https://x.com/claudeai/status/42
+EOF
+cat >"$tmpdir/fixture-thread-error.json" <<'EOF'
+{ "code": 404, "message": "not found" }
+EOF
+FXT_FIXTURE="$tmpdir/fixture-unmarked-status.json" FXT_THREAD_FIXTURE="$tmpdir/fixture-thread-error.json" \
+    node "$SCRIPT" --vault "$unmarked_vault_c" --limit 1 >"$tmpdir/t14c.out" 2>&1
+t14c_flag=no; grep -q "needs_thread:" "$unmarked_vault_c/Clippings/unmarked-clip-c.md" 2>/dev/null && t14c_flag=yes
+assert "Test14C: thread API error fails open (no needs_thread)" "no" "$t14c_flag"
+t14c_ok=no; grep -q "enrichment_status: ok" "$unmarked_vault_c/Clippings/unmarked-clip-c.md" 2>/dev/null && t14c_ok=yes
+assert "Test14C: clip still enriches normally on thread-API error" "yes" "$t14c_ok"
+
+# -- Test 15: --reflag surfaces the same unmarked-self-thread miss (HIMMEL-3506 DoD) --
+echo "Test 15: --reflag backfill catches an unmarked self-thread via the thread API"
+reflag_unmarked_vault="$tmpdir/vault-reflag-unmarked"
+mkdir -p "$reflag_unmarked_vault/Clippings"
+cat >"$reflag_unmarked_vault/Clippings/enriched-unmarked.md" <<'EOF'
+---
+source: https://x.com/claudeai/status/50
+processed: true
+enriched_at: 2026-06-01
+enrichment_source: fxtwitter
+enrichment_status: ok
+---
+## The Idea
+already-enriched body, only post 1 was captured
+
+## Source
+https://x.com/claudeai/status/50
+EOF
+cat >"$tmpdir/fixture-reflag-unmarked-status.json" <<'EOF'
+{
+  "code": 200,
+  "tweet": {
+    "text": "Introducing Opus 5.5, the first model in our new family.",
+    "replies": 1906,
+    "author": { "screen_name": "claudeai" }
+  }
+}
+EOF
+FXT_FIXTURE="$tmpdir/fixture-reflag-unmarked-status.json" FXT_THREAD_FIXTURE="$tmpdir/fixture-thread-multi.json" \
+    node "$SCRIPT" --vault "$reflag_unmarked_vault" --reflag --limit 1 >"$tmpdir/t15.out" 2>&1
+t15_flag=no; grep -q "needs_thread: true" "$reflag_unmarked_vault/Clippings/enriched-unmarked.md" 2>/dev/null && t15_flag=yes
+assert "Test15: --reflag flags a past unmarked-self-thread clip via thread API" "yes" "$t15_flag"
+if [ "$t15_flag" != "yes" ]; then
+    echo "  (debug out=$(cat "$tmpdir/t15.out" 2>/dev/null))"
+fi
 
 # -- Summary -----------------------------------------------------------
 total=$((pass + fail))
