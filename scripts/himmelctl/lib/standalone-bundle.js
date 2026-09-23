@@ -239,11 +239,17 @@ function writeStandaloneBundle(repoRoot) {
 
   // 5. Swap: rename(2) won't replace a non-empty dir, hence two renames.
   const oldDirBackup = path.join(parent, `.uninstall.old-${process.pid}`);
+  let movedOldAside = false;
   try {
-    if (st) fs.renameSync(dir, oldDirBackup);
+    if (st) { fs.renameSync(dir, oldDirBackup); movedOldAside = true; }
     fs.renameSync(stage, dir);
     if (st) fs.rmSync(oldDirBackup, { recursive: true, force: true });
   } catch (e) {
+    // The stage->dir rename can fail after the old bundle was already moved
+    // aside; restore it so the launcher fallback still has a bundle.
+    if (movedOldAside) {
+      try { fs.renameSync(oldDirBackup, dir); } catch (_e) { /* best-effort */ }
+    }
     warn(`failed to install standalone uninstaller bundle (${e.message})`);
     return false;
   }

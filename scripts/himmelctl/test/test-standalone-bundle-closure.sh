@@ -122,8 +122,8 @@ bundle_files=$(awk '/const BUNDLE_FILES_POSIX = \[/{f=1;next} f && /\]/{f=0} f' 
 
 missing=()
 for rel in "${reached[@]}"; do
-  case "$bundle_files" in
-    *"$rel"*) : ;;
+  case $'\n'"$bundle_files"$'\n' in
+    *$'\n'"$rel"$'\n'*) : ;;
     *) missing+=("$rel") ;;
   esac
 done
