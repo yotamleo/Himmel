@@ -67,6 +67,8 @@ trap 'rm -rf "$RUN" "$SC_COV"' EXIT
 RUN=$(mktemp -d "${TMPDIR:-/tmp}/tool-usage.XXXXXX") || { echo "tool-usage: mktemp failed" >&2; exit 1; }
 sc_cov_init || exit 1
 
+# GNU `date -d` first; BSD/macOS `date -j -f` fallback (same convention as
+# extra-metrics.sh's to_epoch()).
 to_epoch() {
     date -d "$1" +%s 2>/dev/null && return 0
     date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$(printf '%s' "$1" | sed 's/\.[0-9]*Z$/Z/')" +%s 2>/dev/null

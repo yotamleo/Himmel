@@ -81,6 +81,8 @@ if [ -z "$REPO_ROOT" ]; then
 fi
 [ -e "$REPO_ROOT/.git" ] || { echo "dead-parts: not a git repo root: $REPO_ROOT" >&2; exit 2; }
 
+# GNU `date -d` first; BSD/macOS `date -j -f` fallback (same convention as
+# extra-metrics.sh's to_epoch()).
 to_epoch() {
     date -d "$1" +%s 2>/dev/null && return 0
     date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$(printf '%s' "$1" | sed 's/\.[0-9]*Z$/Z/')" +%s 2>/dev/null
