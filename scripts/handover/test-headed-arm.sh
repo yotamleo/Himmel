@@ -1819,20 +1819,34 @@ not_contains "43b Linux default: never mentions the macOS shim" "$out43b" "konso
 # 43c. HIMMEL-3474: HEADED_ARM_UNAME's own chosen contract, distinct from
 # every other case above (all of which pin it explicitly) -- with the var
 # genuinely UNSET, headed-arm.sh must fall back to the real `uname -s`, not
-# to some hardcoded platform. This runner is Linux, so the unset default must
-# behave identically to case 43b's explicit HEADED_ARM_UNAME=Linux: the seam
-# is additive (a test convenience), never a behavior change from the
-# production default.
+# to some hardcoded platform. The seam is additive (a test convenience),
+# never a behavior change from the production default, so the expected
+# outcome tracks the REAL host running this suite: on Darwin the unset
+# default must behave identically to case 43's explicit
+# HEADED_ARM_UNAME=Darwin (the macOS shim is absent here too, so it refuses);
+# anywhere else it must behave identically to case 43b's explicit
+# HEADED_ARM_UNAME=Linux. HIMMEL-3523: without this branch, a real macOS
+# runner FAILS this case (it expects the Linux-only outcome) instead of
+# proving the fallback -- the gap this ticket closes.
 d43c="$tmp/c43c"; mkdir -p "$d43c/bare" "$d43c/lib"
 cp "$SCRIPT" "$d43c/bare/headed-arm.sh"
 cp "$HERE/../lib/console-context.sh" "$d43c/lib/console-context.sh"
 mk_stub "$d43c" 1 alive
 out43c=$(env -u KONSOLE_CMD -u HEADED_ARM_UNAME PATH="$d43c:$PATH" PGREP_CMD="$d43c/pgrep" HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$d43c/locks" \
   bash "$d43c/bare/headed-arm.sh" "HIMMEL-mac43c" "doc43c.md" "$d43c/signal-never" "$PAST" "$d43c/log" 2>&1)
+rc43c=$?
 wait_record "$d43c" || true
-[ -e "$d43c/record" ] && echo "ok - 43c HEADED_ARM_UNAME unset: the real uname's bare konsole on PATH is what launched" \
-  || { echo "FAIL - 43c HEADED_ARM_UNAME unset: the konsole on PATH was never invoked"; fails=$((fails+1)); }
-not_contains "43c HEADED_ARM_UNAME unset: never mentions the macOS shim on this (Linux) runner" "$out43c" "konsole-macos.sh"
+if [ "$(uname -s)" = "Darwin" ]; then
+  check "43c HEADED_ARM_UNAME unset (real macOS host): exit 3 when the shim is absent" "$rc43c" "3"
+  contains "43c HEADED_ARM_UNAME unset (real macOS host): resolves to the konsole-macos.sh shim" "$out43c" "konsole-macos.sh"
+  [ -e "$d43c/record" ] \
+    && { echo "FAIL - 43c HEADED_ARM_UNAME unset (real macOS host): the stub konsole was invoked, but the macOS branch must refuse instead"; fails=$((fails+1)); } \
+    || echo "ok - 43c HEADED_ARM_UNAME unset (real macOS host): the stub konsole was never invoked"
+else
+  [ -e "$d43c/record" ] && echo "ok - 43c HEADED_ARM_UNAME unset: the real uname's bare konsole on PATH is what launched" \
+    || { echo "FAIL - 43c HEADED_ARM_UNAME unset: the konsole on PATH was never invoked"; fails=$((fails+1)); }
+  not_contains "43c HEADED_ARM_UNAME unset: never mentions the macOS shim on this (non-macOS) runner" "$out43c" "konsole-macos.sh"
+fi
 
 # --- 41. HIMMEL-2534 (codex-review C1, CRITICAL): the post-launch visibility
 # budget was 5s, sized for konsole. The macOS launcher has to bring an app up
