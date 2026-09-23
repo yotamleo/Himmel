@@ -183,6 +183,13 @@ check "(m) --peek does not deliver or advance the cursor" "half line" "$(arm "$I
 bash "$FOLLOW" --peek "$I" 2>/dev/null; rc=$?
 check "(m) --peek after the line was delivered is rc 1" "1" "$rc"
 
+# --- (m2) --peek reports a failed read, never "nothing unread" -------------
+I="$WORK/m2/consoles/c.md"
+mkdir -p "$WORK/m2/consoles"; : > "$I"
+printf 'unread\n' >> "$I"
+PATH="$WORK/l/bin:$PATH" bash "$FOLLOW" --peek "$I" 2>/dev/null; rc=$?
+check "(m2) --peek fails with rc 3 when tail fails" "3" "$rc"
+
 # --- (g) usage ---------------------------------------------------------------
 bash "$FOLLOW" >/dev/null 2>&1; rc=$?
 check "(g) no argument is a usage error (rc 2)" "2" "$rc"

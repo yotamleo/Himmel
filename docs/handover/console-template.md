@@ -104,7 +104,7 @@ Run these, in order, and write the result as the first bullet under
     (everything after the inbox path is passed to `tick.sh` unchanged). It is
     silent while nothing happens and **exits on the first real event**,
     printing one block: `WAKE telegram` plus the operator's line(s), or
-    `WAKE tick changed=<fields>` plus the tick line. It runs `tick.sh` every
+    `WAKE tick changed=<fields> bank=<verdict>` plus the tick line. It runs `tick.sh` every
     180 s and wakes only when two consecutive samples differ from the action
     key you last saw: `legs=` (a leg FRESH → STALE / FREE / WRAPPED …),
     `livestate=` (DRIFT / MALFORMED), `prs=` (the repo's open-PR set — any
@@ -125,8 +125,8 @@ Run these, in order, and write the result as the first bullet under
     the Bash tool returned, and read the heartbeat next to the inbox:
     `cat "<inbox>.wait"` → `hb=<epoch> pid=<pid> key=<hash> tick=ok state=waiting`,
     rewritten every second between samples. `state=sampling` is a tick in
-    progress: a sample (tick, then bank) can take up to 240 s (twice the 120 s
-    timeout), and a Telegram line waits for it. `state=exited exit=<reason>` is
+    progress: a sample (tick, then bank) can take about 4 min (twice the 120 s
+    timeout, plus a 5 s kill grace each), and a Telegram line waits for it. `state=exited exit=<reason>` is
     a waiter that stopped (`wake-telegram`, `wake-tick`, `signal-TERM` …); a
     `state=waiting` or `state=sampling` heartbeat older than about 5 min is one
     that was SIGKILLed (untrappable). `tick=fail` means `tick.sh` exited

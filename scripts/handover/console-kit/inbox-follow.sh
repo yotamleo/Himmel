@@ -12,7 +12,7 @@
 #
 # --once drains the unread tail and exits (no live follow).
 # --peek delivers nothing and leaves the cursor alone: rc 0 when a complete
-# unread line is waiting, rc 1 when not (HIMMEL-3509: console-wait.sh prints its
+# unread line is waiting, rc 1 when not, rc 3 when the inbox cannot be read (HIMMEL-3509: console-wait.sh prints its
 # WAKE header first, then lets --once stream, so no line's cursor moves before
 # the line itself is out).
 # INBOX_FOLLOW_POLL_SEC is the live poll interval (default 1s).
@@ -97,8 +97,11 @@ if [ "$peek" = 1 ]; then
     load_cursor
     size=$(( $(wc -c < "$inbox") ))
     [ "$cur" -gt "$size" ] && cur=0
-    n=$(( $(tail -c +$((cur + 1)) "$inbox" | tr -cd '\n' | wc -c) ))
-    [ "$n" -gt 0 ] && exit 0
+    # pipefail: a failed tail must not read as "nothing unread".
+    set -o pipefail
+    n="$(tail -c +$((cur + 1)) "$inbox" | tr -cd '\n' | wc -c)" \
+        || { echo "inbox-follow: cannot read $inbox" >&2; exit 3; }
+    [ "$((n))" -gt 0 ] && exit 0
     exit 1
 fi
 

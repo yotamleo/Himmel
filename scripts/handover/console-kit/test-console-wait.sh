@@ -30,6 +30,8 @@ cat > "$STUB/tick.sh" <<'EOF'
 [ -f "$STUB/tick.rc" ] && exit "$(cat "$STUB/tick.rc")"
 # tick.sleep: a slow tick (seconds), as a real gh-bound tick can be.
 [ -f "$STUB/tick.sleep" ] && sleep "$(cat "$STUB/tick.sleep")"
+# tick.ignoreterm: a hung tick that ignores SIGTERM (timeout needs -k).
+if [ -f "$STUB/tick.ignoreterm" ]; then trap '' TERM; sleep 20; exit 0; fi
 # tick.failafter: prints its line, then fails (a tick that dies mid-run).
 if [ -f "$STUB/tick.failafter" ]; then cat "$STUB/tick.line"; exit 1; fi
 # tick.blip: served for exactly one sample, then gone.
@@ -54,7 +56,7 @@ tick_line() {
     printf 'TICK 03:00 hb=%s legs=%s livestate=ok procs=2 models=x ceiling=ok atq=0 suites=0alive/0dead prs=%s bank=5h8/wk15/codex=? fill=40 tails=N1:LIVE inbox=none tick=UNKNOWN fleet=3/15 capacity=ok gql=4000/04:00 orphans=none nonces=ok legset=ok board=%s\n' \
         "${3:-1m}" "$1" "${4:-#10}" "$2" > "$STUB/tick.line"
 }
-reset_stub() { rm -f "$STUB/tick.rc" "$STUB/tick.blip" "$STUB/tick.churn" "$STUB/tick.sleep" "$STUB/tick.failafter"; tick_line "N1:FRESH" "ok"; printf 'PROCEED\n' > "$STUB/bank"; }
+reset_stub() { rm -f "$STUB/tick.rc" "$STUB/tick.blip" "$STUB/tick.churn" "$STUB/tick.sleep" "$STUB/tick.failafter" "$STUB/tick.ignoreterm"; tick_line "N1:FRESH" "ok"; printf 'PROCEED\n' > "$STUB/bank"; }
 
 # wait_hb <inbox>: block until the waiter has taken its baseline (heartbeat
 # carries a key), at most ~5 s.
@@ -93,8 +95,9 @@ check "(a) an idle waiter is still waiting when the window closes (rc 124)" "124
 check "(a) the idle waiter wrote a heartbeat" "yes" "$(grep -q '^hb=[0-9]* pid=[0-9]* ' "$I.wait" && echo yes)"
 
 # --- (a2) a re-arm on an unchanged state emits nothing either --------------
-timeout 3 bash "$WAIT" "$I" --legs "N1.md" > "$WORK/a2.out" 2>/dev/null  # gnu-ok: Linux-only kit; pipefail-ok: none set
+timeout 3 bash "$WAIT" "$I" --legs "N1.md" > "$WORK/a2.out" 2>/dev/null; rc=$?  # gnu-ok: Linux-only kit; pipefail-ok: none set
 check "(a2) a re-arm with nothing changed emits nothing" "" "$(cat "$WORK/a2.out")"
+check "(a2) and is still waiting when the window closes (rc 124)" "124" "$rc"
 
 # --- (b) a real change -> exactly one WAKE block, then exit 0 --------------
 reset_stub
@@ -104,12 +107,13 @@ wait_hb "$I" || fail "(b) no baseline heartbeat"
 tick_line "N1:FREE" "ok"
 wait_exit "$WPID"
 check "(b) a leg going FREE ends the wait with rc 0" "0" "$rc"
-check "(b) the wake names the changed field" "WAKE tick changed=legs" "$(head -n1 "$WORK/b.out")"
+check "(b) the wake names the changed field" "WAKE tick changed=legs bank=PROCEED" "$(head -n1 "$WORK/b.out")"
 check "(b) the wake carries the tick line" "yes" "$(sed -n 2p "$WORK/b.out" | grep -q '^TICK .*legs=N1:FREE' && echo yes)"  # gnu-ok: Linux-only kit; pipefail-ok: none set
 check "(b) exactly one wake block (2 lines)" "2" "$(wc -l < "$WORK/b.out" | tr -d ' ')"
 check "(b) the exit reason is logged" "yes" "$(grep -q 'exit=wake-tick' "$I.wait" && echo yes)"
-timeout 3 bash "$WAIT" "$I" --legs "N1.md" > "$WORK/b2.out" 2>/dev/null  # gnu-ok: Linux-only kit; pipefail-ok: none set
+timeout 3 bash "$WAIT" "$I" --legs "N1.md" > "$WORK/b2.out" 2>/dev/null; rc=$?  # gnu-ok: Linux-only kit; pipefail-ok: none set
 check "(b) the re-arm after the wake does not wake again for the same change" "" "$(cat "$WORK/b2.out")"
+check "(b) the re-arm is still waiting when the window closes (rc 124)" "124" "$rc"
 
 # --- (c) noise fields do not wake: hb, board age, prs unchanged ------------
 reset_stub
@@ -144,7 +148,7 @@ wait_hb "$I" || fail "(d2) no baseline heartbeat"
 printf '0\n' > "$STUB/tick.churn"
 wait_exit "$WPID"
 check "(d2) a key that differs from the saved one on every sample wakes" "0" "$rc"
-check "(d2) the wake names prs" "WAKE tick changed=prs" "$(head -n1 "$WORK/d2.out")"
+check "(d2) the wake names prs" "WAKE tick changed=prs bank=PROCEED" "$(head -n1 "$WORK/d2.out")"
 [ "$rc" = running ] && { kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null; }
 
 # --- (e) a bank verdict change wakes, naming bank --------------------------
@@ -155,7 +159,7 @@ wait_hb "$I" || fail "(e) no baseline heartbeat"
 printf 'SKIPPED-BANK\n' > "$STUB/bank"
 wait_exit "$WPID"
 check "(e) a bank verdict change ends the wait" "0" "$rc"
-check "(e) the wake names bank" "WAKE tick changed=bank" "$(head -n1 "$WORK/e.out")"
+check "(e) the wake names bank and carries the new verdict" "WAKE tick changed=bank bank=SKIPPED-BANK" "$(head -n1 "$WORK/e.out")"
 
 # --- (f) a failing tick is never a change ----------------------------------
 reset_stub
@@ -237,6 +241,33 @@ check "(n) a partial line does not wake" "" "$(cat "$WORK/n.out")"
 printf ' done\n' >> "$I"
 wait_exit "$WPID"
 check "(n) completing the line wakes with it whole" "$(printf 'WAKE telegram\n- 03:30 [telegram from=1 chat=2] half done')" "$(cat "$WORK/n.out")"
+
+# --- (o) a hung tick that ignores TERM still frees the Telegram path -------
+reset_stub
+: > "$STUB/tick.ignoreterm"
+I="$(new_inbox o)"
+CONSOLE_WAIT_TICK_TIMEOUT=1 start "$I" "$WORK/o.out" --legs "N1.md"
+# The line lands after the TERM (1 s), while the first sample is still hung.
+sleep 2
+printf -- '- 03:40 [telegram from=1 chat=2] hello\n' >> "$I"
+n=0
+while [ "$n" -lt 150 ] && kill -0 "$WPID" 2>/dev/null; do sleep 0.1; n=$((n + 1)); done
+check "(o) the line is delivered within 15 s despite a TERM-ignoring tick" "WAKE telegram" "$(head -n1 "$WORK/o.out")"
+kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
+
+# --- (p) two waiters started at the same instant: exactly one runs ---------
+reset_stub
+I="$(new_inbox p)"
+bash "$WAIT" "$I" --legs "N1.md" > "$WORK/p1.out" 2>&1 &
+P1=$!
+bash "$WAIT" "$I" --legs "N1.md" > "$WORK/p2.out" 2>&1 &
+P2=$!
+sleep 2
+alive=0
+kill -0 "$P1" 2>/dev/null && alive=$((alive + 1))
+kill -0 "$P2" 2>/dev/null && alive=$((alive + 1))
+check "(p) exactly one of two simultaneous waiters is still running" "1" "$alive"
+kill "$P1" "$P2" 2>/dev/null; wait "$P1" "$P2" 2>/dev/null
 
 # --- (k) usage ---------------------------------------------------------------
 bash "$WAIT" >/dev/null 2>&1; rc=$?

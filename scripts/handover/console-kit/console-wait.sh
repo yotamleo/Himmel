@@ -15,7 +15,8 @@
 #                               --once, so its byte cursor is shared and a
 #                               re-arm replays nothing.
 #   WAKE tick changed=<f,...>   the tick's ACTION KEY changed and the change
-#   TICK ...                    held for two consecutive samples.
+#     bank=<verdict>            held for two consecutive samples; bank= is the
+#   TICK ...                    bank-preflight verdict word the key carries.
 #
 # The action key is the tick fields a console acts on: legs=, livestate=,
 # prs=, tails=, legset=, board= (its class; the STALE age is dropped) and the
@@ -34,11 +35,13 @@
 #                      `state=sampling` while a tick runs, then on every
 #                      catchable exit `... state=exited exit=<reason>`.
 #                      A sample (tick, then bank) can take up to twice
-#                      CONSOLE_WAIT_TICK_TIMEOUT, and a Telegram line waits for
-#                      it. A heartbeat older than that plus a few polls, still
+#                      CONSOLE_WAIT_TICK_TIMEOUT (+5 s kill grace each), and a
+#                      Telegram line waits for it. A heartbeat older than that
+#                      plus a few polls, still
 #                      waiting or sampling, is a waiter that died without
 #                      trapping (SIGKILL).
 #   <inbox>.wait.state   the saved action key (line 1: tick-args hash, line 2: key).
+#   <inbox>.wait.lock    the one-waiter flock (the file stays; the lock does not).
 #
 # Exit: 0 = a WAKE block was printed; 1 = the inbox could not be drained;
 # 2 = usage; 3 = another waiter is already live on this inbox (its pid is named).
@@ -77,14 +80,17 @@ poll="${CONSOLE_WAIT_POLL_SEC:-1}"
 tick_timeout="${CONSOLE_WAIT_TICK_TIMEOUT:-120}"
 tick_cmd="${CONSOLE_WAIT_TICK:-$HERE/tick.sh}"
 
-# One waiter per inbox: a second would double every wake.
-if [ -f "$hb_file" ]; then
-    other="$(sed -n 's/.* pid=\([0-9][0-9]*\) .*state=[a-z]*ing.*/\1/p' "$hb_file" | head -n 1)"
-    if [ -n "$other" ] && [ "$other" != "$$" ] && kill -0 "$other" 2>/dev/null \
-        && tr '\0' ' ' < "/proc/$other/cmdline" 2>/dev/null | grep -q 'console-wait\.sh'; then  # pipefail-ok: no pipefail here; gnu-ok: Linux-only kit (PLATFORM GUARD)
-        echo "console-wait: a waiter is already live on $inbox (pid $other) — not starting a second" >&2
-        exit 3
-    fi
+# One waiter per inbox: a second would double every wake. flock is atomic and
+# the lock dies with the waiter; every child runs with fd 9 closed, so a killed
+# waiter's tick or sleep cannot go on holding it.
+if ! exec 9>>"$inbox.wait.lock"; then
+    echo "console-wait: cannot open $inbox.wait.lock" >&2
+    exit 1
+fi
+if ! flock -n 9; then  # gnu-ok: Linux-only kit (util-linux flock, PLATFORM GUARD)
+    other="$(sed -n 's/.* pid=\([0-9][0-9]*\) .*/\1/p' "$hb_file" 2>/dev/null | head -n 1)"
+    echo "console-wait: a waiter is already live on $inbox (pid ${other:-?}) — not starting a second" >&2
+    exit 3
 fi
 
 cur_hash=""; tick_state="-"; exit_reason="unknown"
@@ -106,7 +112,7 @@ bank_word() {
         bash "$CONSOLE_WAIT_BANK" 2>/dev/null | tail -n 1
     else
         # gnu-ok: Linux-only kit (timeout). Same side-effect-free spelling tick.sh uses for its fleet census.
-        CADENCE_BANK_LAUNCH='' CADENCE_BANK_LEDGER=/dev/null timeout "$tick_timeout" \
+        CADENCE_BANK_LAUNCH='' CADENCE_BANK_LEDGER=/dev/null timeout -k 5 "$tick_timeout" \
             bash "$REPO/scripts/lib/bank-preflight.sh" 2>/dev/null | tail -n 1
     fi
 }
@@ -120,7 +126,7 @@ sample() {
     local f v raw
     key=""
     # A tick that exits non-zero failed, whatever it printed first.
-    raw="$(timeout "$tick_timeout" bash "$tick_cmd" "$@" 2>/dev/null)" || { tick_state=fail; return; }  # gnu-ok: Linux-only kit
+    raw="$(timeout -k 5 "$tick_timeout" bash "$tick_cmd" "$@" 2>/dev/null)" || { tick_state=fail; return; }  # gnu-ok: Linux-only kit
     tick_line="$(printf '%s\n' "$raw" | grep '^TICK ' | head -n 1)"
     if [ -z "$tick_line" ]; then tick_state=fail; return; fi
     tick_state=ok
@@ -148,18 +154,15 @@ save_key() { printf '%s\n%s\n' "$args_hash" "$1" > "$key_file"; }
 
 pending=""
 next_tick=0
-# Claim the inbox before the first (slow) sample, so a second waiter started
-# meanwhile sees a live heartbeat (waiting or sampling). The check-then-write
-# is not atomic: two waiters started in the same instant can both pass it.
 heartbeat sampling
 while :; do
     # Telegram first: it is the cheap check and the operator's line. Peek, print
     # the header, then let --once stream the lines: each line is on stdout
     # before its cursor moves, so a kill mid-wake replays, never drops.
-    bash "$HERE/inbox-follow.sh" --peek "$inbox"; rc=$?
+    bash "$HERE/inbox-follow.sh" --peek "$inbox" 9>&-; rc=$?
     if [ "$rc" -eq 0 ]; then
         printf 'WAKE telegram\n'
-        bash "$HERE/inbox-follow.sh" --once "$inbox" || { exit_reason='inbox-error'; exit 1; }
+        bash "$HERE/inbox-follow.sh" --once "$inbox" 9>&- || { exit_reason='inbox-error'; exit 1; }
         exit_reason='wake-telegram'; exit 0
     elif [ "$rc" -ne 1 ]; then
         exit_reason='inbox-error'; exit 1
@@ -169,7 +172,7 @@ while :; do
         # The Telegram path is blocked while a tick runs (up to twice
         # CONSOLE_WAIT_TICK_TIMEOUT with the bank read); say so in the heartbeat.
         heartbeat sampling
-        sample "$@"
+        sample "$@" 9>&-
         if [ -n "$key" ]; then
             cur_hash="$(printf '%s' "$key" | sha256sum | cut -c1-16)"  # gnu-ok: Linux-only kit
             if [ -z "$saved" ]; then
@@ -180,7 +183,7 @@ while :; do
                 # Two consecutive samples off the saved key, equal or not: a
                 # key that moves on every sample (a busy repo's PR set) is
                 # still a change, not a blip.
-                printf 'WAKE tick changed=%s\n%s\n' "$(changed_fields "$saved" "$key")" "$tick_line"
+                printf 'WAKE tick changed=%s bank=%s\n%s\n' "$(changed_fields "$saved" "$key")" "${key##*|bank=}" "$tick_line"
                 save_key "$key"
                 exit_reason='wake-tick'; exit 0
             else
@@ -191,5 +194,5 @@ while :; do
         fi
     fi
     heartbeat waiting
-    sleep "$poll"
+    sleep "$poll" 9>&-
 done
