@@ -74,7 +74,7 @@ async function main() {
   };
   const afterRun = (rc) => {
     if (rc === 0 && !args.dryRun && !args.purgeState) {
-      console.log(`himmelctl: to finish removing state, re-run: node ${path.join(bundleRoot, 'standalone.js')} uninstall --purge-state`);
+      console.log(`himmelctl: to finish removing state, re-run: ${helpersLib.nodeScriptCmd(path.join(bundleRoot, 'standalone.js'))} uninstall --purge-state`);
     }
   };
 
