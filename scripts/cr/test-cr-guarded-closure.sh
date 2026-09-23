@@ -10,6 +10,7 @@
 #   seeds = every <himmel_dir>/scripts/... target named in the runbook twins
 #           + every non-test script at the top of scripts/cr/;
 #   edges = source/exec sites (`.`, source, bash, sh, node, python3, exec)
+#           and direct script calls in command position ("$DIR/x.sh" ...)
 #           on non-comment lines, plus relative JS require/import;
 # and fails when a reached file exists outside cr_guarded. On a failure,
 # widen cr_guarded (and cr_pathspecs, and the runbook precheck) or prove the
@@ -48,12 +49,18 @@ normalize() {
 # edges <repo-relative file> - print each repo-relative path the file
 # sources or execs (existing files only).
 PATH_RE='(\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|[)}])?/?[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*\.(sh|js|mjs|cjs|py)'
+# A script path in command position: line start, after ; & | ( $( or
+# then/do/else, optionally quoted - a direct call with no interpreter word.
+# The $VAR/ prefix is required: without it a `(` in a message string or a
+# `|` in a case pattern reads as a call.
+CMD_RE='(^|[;&|(]|\$\(|(then|do|else)[[:space:]])[[:space:]]*"?\$\{?[A-Za-z_][A-Za-z0-9_]*\}?/[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*\.(sh|py)'
 edges() {
   local f="$1" dir raw tail target
   dir="$(dirname "$f")"
   {
     grep -E '(^|[;&|({[:space:]])(\.|source|bash|sh|node|python3|exec)[[:space:]]' "$ROOT/$f" 2>/dev/null \
       | grep -vE '^[[:space:]]*#' | grep -oE "$PATH_RE"
+    grep -vE '^[[:space:]]*#' "$ROOT/$f" 2>/dev/null | grep -oE "$CMD_RE" | grep -oE "$PATH_RE"
     grep -oE "(require\\(|from[[:space:]]+|import[[:space:]]+)['\"]\\.{1,2}/[^'\"]+['\"]" "$ROOT/$f" 2>/dev/null \
       | grep -oE "\\.{1,2}/[^'\"]+"
   } | while IFS= read -r raw; do
@@ -123,6 +130,22 @@ done
 n_specs="$(printf '%s\n' "$pathspec_block" | grep -oE "':\\(top\\)[^']+'" | grep -c .)"
 n_guarded="$(printf '%s\n' "$cr_guarded" | tr ' ' '\n' | grep -c .)"
 check "$n_specs" "$n_guarded" "cr_pathspecs has exactly one :(top) include per cr_guarded entry"
+
+# Positive control for edges(): a direct script call with no interpreter
+# word must yield an edge, in each command position CMD_RE names.
+fx="$(mktemp -d)" || exit 1
+mkdir -p "$fx/scripts/cr" "$fx/scripts/lib"
+for n in a b c d; do : > "$fx/scripts/lib/$n.sh"; done
+cat > "$fx/scripts/cr/caller.sh" <<'EOF'
+"$ROOT/scripts/lib/a.sh" --flag
+x=$("$DIR/../lib/b.sh")
+if true; then "$ROOT/scripts/lib/c.sh"; fi
+true && "$ROOT/scripts/lib/d.sh"
+# "$ROOT/scripts/lib/commented.sh"
+EOF
+got="$(ROOT="$fx" edges scripts/cr/caller.sh | tr '\n' ' ')"
+check "$got" "scripts/lib/a.sh scripts/lib/b.sh scripts/lib/c.sh scripts/lib/d.sh " "edges() sees direct script calls in command position"
+rm -rf "$fx"
 
 reached="$(closure)"
 echo "closure ($(printf '%s\n' "$reached" | grep -c .) files reached from the runbook and scripts/cr):"

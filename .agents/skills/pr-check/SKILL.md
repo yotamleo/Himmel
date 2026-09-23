@@ -250,8 +250,8 @@ diagnostic naming the anchor, the delegate and the head SHA, then re-execs
 the BRANCH's own copy of `pr-check-context.sh` with an anchor-identity
 handshake — `PR_CHECK_ANCHOR_DELEGATED=<the delegating anchor's own resolved
 path>`, not a bare `1` — set. **The branch never elects itself — the anchor
-decides delegation happens and records it.** When the diff does not touch
-`scripts/cr/`, on the adopter lane, or once that handshake already verifies
+decides delegation happens and records it.** When the diff touches none
+of the guarded paths, on the adopter lane, or once that handshake already verifies
 against this run's own resolved anchor, the run does its own work directly.
 A `git merge-base` that cannot be computed is an UNKNOWN diff, not a
 known-non-touching one: never delegate on it, and fall back
