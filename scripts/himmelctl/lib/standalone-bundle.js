@@ -115,6 +115,14 @@ function gitHead(repoRoot) {
   return (!g.error && g.status === 0) ? g.stdout.trim() : null;
 }
 
+// A marked sibling younger than this is assumed to be a concurrent write
+// still between its bundle.json write and its swap rename, not an orphan
+// from a crash -- sweeping it out from under that write would turn its
+// rename(stage, dir) into an ENOENT. A few seconds covers the swap; minutes
+// covers everything short of a genuinely stuck process, which the NEXT
+// write's sweep will still catch once it ages past this window.
+const STALE_SIBLING_MIN_AGE_MS = 5 * 60 * 1000;
+
 // Best-effort removal of stale staging/backup siblings from a crashed prior
 // write (design §3.3 step 5: "the next write sweeps any it finds that carry
 // our marker"). A .uninstall.tmp-* that never reached the bundle.json write
@@ -133,6 +141,12 @@ function sweepStaleSiblings(parent, ownPid) {
     const full = path.join(parent, name);
     const meta = readMarker(full);
     if (!meta || meta.marker !== BUNDLE_MARKER) continue;
+    try {
+      const st = fs.statSync(full);
+      if (Date.now() - st.mtimeMs < STALE_SIBLING_MIN_AGE_MS) continue;
+    } catch (_e) {
+      continue;
+    }
     try {
       fs.rmSync(full, { recursive: true, force: true });
     } catch (e) {
