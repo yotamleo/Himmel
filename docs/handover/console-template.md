@@ -112,7 +112,10 @@ Run these, in order, and write the result as the first bullet under
     key you last saw: `legs=` (a leg FRESH → STALE / FREE / WRAPPED …),
     `livestate=` (DRIFT / MALFORMED), `prs=` (the repo's open-PR set — any
     PR opening or merging, yours or not), `tails=` (a leg's marker: FINDING, READY …),
-    `legset=`, `board=` (its class — the STALE age alone does not wake) and the
+    `legset=`, `board=` (its class — the STALE age alone does not wake, and a
+    move TO `ok` never wakes on its own either, since that's just the console's
+    own render; the key still saves, so a later move to STALE/MISSING wakes
+    again) and the
     `bank-preflight.sh` verdict word. Heartbeat, procs, fill, fleet, gql and
     orphans never wake. An idle console therefore takes **zero** turns.
 
