@@ -100,6 +100,30 @@ check_not_contains "since-edge: the pre-window session's skill call is excluded"
 check_contains "since-edge: the excluded session is counted as skipped, not lost" \
     "$OUT" "coverage: roots=1 discovered=1 parsed=0 skipped=1"
 
+# --- non-chronological: a transcript whose physically first/last lines are
+# BOTH before --since must not have its whole file skipped when a
+# chronologically in-window line sits between them out of physical order
+# (codex-1, round 10: ts_of() picked head -1/tail -1 by PHYSICAL line, not by
+# timestamp value - the same defect class as dead-parts.sh's fixed
+# non-chronological-transcripts fixture).
+export SCORECARD_PROJECTS_DIR="$HERE/fixtures/tool-usage/non-chronological"
+OUT=$("$SCRIPT" --since 2026-01-10T00:00:00Z --until 2026-01-20T00:00:00Z \
+    --skill-cwd "$HERE/fixtures/tool-usage/skills" \
+    --skill-config-dir "$HERE/fixtures/tool-usage/skills-config" 2>/dev/null)
+rc_nonchron=$?
+if [ "$rc_nonchron" -eq 0 ]; then
+    echo "ok - non-chronological: tool-usage.sh exits 0"
+else
+    echo "FAIL - non-chronological: tool-usage.sh rc=$rc_nonchron (expected 0): $OUT"
+    fails=$((fails + 1))
+fi
+check_contains "non-chronological: the in-window skill call survives the physically-out-of-order file's window pre-filter" \
+    "$OUT" "skill=graphify count=1 sessions=1"
+check_not_contains "non-chronological: the out-of-window skill call on the physically-first line is still excluded" \
+    "$OUT" "skill=himmel-ops:stuck-playbook count=1"
+check_contains "non-chronological: the file is parsed, not skipped as out-of-window" \
+    "$OUT" "coverage: roots=1 discovered=1 parsed=1 skipped=0"
+
 # --- memory-join: a hook-denial matching a fixture trap's pattern is
 # RECURRING, an unseen trap is DORMANT, an empty-pattern trap is UNMATCHABLE;
 # a Read of a file under SCORECARD_MEMORY_DIR is counted by basename.

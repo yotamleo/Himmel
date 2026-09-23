@@ -80,7 +80,17 @@ if [ -n "$UNTIL" ]; then
 fi
 UNTIL_EPOCH_ARG="${UNTIL_EPOCH:-9999999999}"
 
-ts_of() { grep -o '"timestamp":"[0-9TZ:.-]*"' "$1" 2>/dev/null | "$2" -1 | cut -d'"' -f4; }
+# A transcript's records are not guaranteed chronological (a resumed/
+# compacted session can append a record whose timestamp sorts earlier than
+# one physically before it - dead-parts.sh hit the same defect class), so
+# gating the whole file on its head/tail LINES' timestamps can discard a file
+# that still has a genuinely in-window record somewhere in the middle
+# (codex-1). Scan every extracted timestamp and gate on the true min/max
+# instead - dropping any candidate to_epoch can't parse (e.g. a malformed
+# "T99:99:99" mid-file - fixtures/tool-usage/partial-write/ - so it can't
+# masquerade as the file's outer bound); the per-record filters below still
+# do the real per-record selection, this is only the cheap whole-file skip.
+ts_of() { grep -o '"timestamp":"[0-9TZ:.-]*"' "$1" 2>/dev/null | cut -d'"' -f4; }
 
 FILES="$RUN/files.txt"
 DISC_ERR="$RUN/disc-err.txt"
@@ -103,11 +113,15 @@ while IFS= read -r f; do
     [ -r "$f" ] || { sc_cov unreadable; continue; }
     case "$f" in */subagents/*) sc_cov subagent; continue ;; esac
 
-    first_ts=$(ts_of "$f" head)
-    [ -n "$first_ts" ] || { sc_cov no-timestamp; continue; }
-    last_ts=$(ts_of "$f" tail)
-    first_epoch=$(to_epoch "$first_ts") || { sc_cov bad-timestamp; continue; }
-    last_epoch=$(to_epoch "${last_ts:-$first_ts}") || { sc_cov bad-timestamp; continue; }
+    ts_of "$f" > "$RUN/cur-ts.txt"
+    [ -s "$RUN/cur-ts.txt" ] || { sc_cov no-timestamp; continue; }
+    first_epoch=""; last_epoch=""
+    while IFS= read -r ts; do
+        ep=$(to_epoch "$ts") || continue
+        if [ -z "$first_epoch" ] || [ "$ep" -lt "$first_epoch" ]; then first_epoch="$ep"; fi
+        if [ -z "$last_epoch" ] || [ "$ep" -gt "$last_epoch" ]; then last_epoch="$ep"; fi
+    done < "$RUN/cur-ts.txt"
+    [ -n "$first_epoch" ] || { sc_cov bad-timestamp; continue; }
     [ "$last_epoch" -ge "$SINCE_EPOCH" ] || { sc_cov out-of-window; continue; }
     if [ -n "$UNTIL_EPOCH" ] && [ "$first_epoch" -ge "$UNTIL_EPOCH" ]; then sc_cov out-of-window; continue; fi
 
@@ -178,6 +192,14 @@ fi
 # first — the jira match and the generic scan run independently and their
 # results are unioned, with the jira invocation itself excluded from the
 # generic scan so it is never counted twice.
+#
+# ponytail: every script matched in one chained command shares that single
+# Bash tool_result's `is_error`, since the join has only one exit status for
+# the whole compound command - an earlier script that actually succeeded can
+# be reported as an error when a later `&&`-chained one fails (codex-2, round
+# 10). Disambiguating per-sub-command outcome needs shell-semantics parsing
+# of the chain, out of scope here; revisit if error_rate on a heavily-chained
+# script proves misleading in a real 7-day run.
 SCRIPTED="$RUN/scripted.ndjson"
 if ! jq -c '
     def jira_scripts: if .tool=="Bash" and (.key | test("scripts/jira/dist/index\\.js")) then
