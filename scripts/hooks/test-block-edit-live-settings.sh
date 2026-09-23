@@ -607,6 +607,10 @@ assert_rc "108 ANSI-C split settings name from a worktree denies (accepted false
     "$(bash_rc_of "$WT2" 'echo x > .claude/settings$'"'"'\x2e'"'"'json')"
 assert_rc "109 ANSI-C with no settings/claude mention allows" 0 \
     "$(bash_rc_of "$WT2" 'printf $'"'"'a\tb\n'"'"' > /tmp/out.json')"
+# 110: ANSI-C spelled verb (`$'\x63\x70'` = cp) into the home .claude (CodeRabbit).
+# shellcheck disable=SC2016  # $HOME is literal command text for the hook
+assert_rc "110 ANSI-C spelled cp into \$HOME/.claude from a worktree denies" 2 \
+    "$(bash_rc_of "$WT2" '$'"'"'\x63\x70'"'"' -r /tmp/payload/. "$HOME/.claude/"')"
 
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
