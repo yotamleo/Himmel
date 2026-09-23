@@ -2456,7 +2456,7 @@ function printUninstallFooter() {
     bundleOk = meta && meta.marker === standaloneBundleLib.BUNDLE_MARKER;
   } catch (_e) { /* no bundle, or not ours */ }
   if (bundleOk) {
-    console.log(`To uninstall later: ${nodeScriptCmd(__filename)} uninstall (works even after you delete ${primaryCheckoutRoot()}; fallback: ${nodeScriptCmd(path.join(bundleDir, 'standalone.js'))} uninstall)`);
+    console.log(`To uninstall later: ${nodeScriptCmd(__filename)} uninstall (if you delete ${primaryCheckoutRoot()} first, the fallback still works: ${nodeScriptCmd(path.join(bundleDir, 'standalone.js'))} uninstall)`);
     // ^ nodeScriptCmd already prefixes "node " and quotes the path when needed.
   } else {
     console.log(`To uninstall later: ${nodeScriptCmd(__filename)} uninstall`);
@@ -5002,7 +5002,7 @@ function printOrphanedBundleInfo() {
   try {
     const meta = JSON.parse(fs.readFileSync(path.join(standaloneBundleLib.bundleDir(), 'bundle.json'), 'utf8'));
     if (meta.marker === standaloneBundleLib.BUNDLE_MARKER && meta.himmel_root && !fs.existsSync(meta.himmel_root)) {
-      console.log(`INFO  standalone-uninstaller  clone gone (${meta.himmel_root}); undo with: node ${path.join(standaloneBundleLib.bundleDir(), 'standalone.js')} uninstall --purge-state`);
+      console.log(`INFO  standalone-uninstaller  clone gone (${meta.himmel_root}); undo with: ${nodeScriptCmd(path.join(standaloneBundleLib.bundleDir(), 'standalone.js'))} uninstall --purge-state`);
     }
   } catch (_e) { /* no bundle, or not ours */ }
 }
