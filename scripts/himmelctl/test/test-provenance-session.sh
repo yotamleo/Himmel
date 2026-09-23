@@ -77,8 +77,8 @@ check "A cache file row (class code, manifest_row himmelctl-cache)" \
     "$(jq -rs '[.[] | select(.kind=="file" and .manifest_row=="himmelctl-cache" and .class=="code")] | length' "$ledA" 2>/dev/null)" "1"
 check "A launcher shim row (class code)" \
     "$(jq -rs '[.[] | select(.kind=="shim" and .op=="create" and .class=="code")] | length >= 1' "$ledA" 2>/dev/null)" "true"
-check "A workspace-trust json-key row (keep, preexisted=false)" \
-    "$(jq -rs '[.[] | select(.kind=="json-key" and .manifest_row=="workspace-trust" and .class=="keep" and .op=="create" and .preexisted==false)] | length' "$ledA" 2>/dev/null)" "1"
+check "A workspace-trust json-key row (code, preexisted=false)" \
+    "$(jq -rs '[.[] | select(.kind=="json-key" and .manifest_row=="workspace-trust" and .class=="code" and .op=="create" and .preexisted==false)] | length' "$ledA" 2>/dev/null)" "1"
 check "A lanes.local.json row is scope clone, class keep" \
     "$(jq -rs '[.[] | select(.kind=="file" and (.path|endswith("lanes.local.json")) and .class=="keep" and .scope=="clone")] | length >= 1' "$ledA" 2>/dev/null)" "true"
 check "A ledger mode 0600" "$(stat -c %a "$ledA" 2>/dev/null || stat -f %Lp "$ledA" 2>/dev/null)" "600"

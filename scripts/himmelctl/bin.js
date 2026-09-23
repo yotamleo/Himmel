@@ -3806,7 +3806,7 @@ function applyWorkspaceTrust() {
   if (preKnown) prov([preexisted ? 'noop' : 'create', 'json-key', trustCfg,
     '--unit', `/projects/${dir.replace(/~/g, '~0').replace(/\//g, '~1')}/hasTrustDialogAccepted`,
     ...(preexisted ? ['--pre-json', 'true'] : ['--pre-absent']), '--post-json', 'true',
-    '--scope', 'user', '--class', 'keep', '--row', 'workspace-trust', '--field', `preexisted=${preexisted}`]);
+    '--scope', 'user', '--class', 'code', '--row', 'workspace-trust', '--field', `preexisted=${preexisted}`]);
   return { applied: true, dir: dir };
 }
 

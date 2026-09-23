@@ -243,6 +243,7 @@ load_manifest() {
       user-claude-md)   _want="file path 6" ;;
       user-agents-md)   _want="file path 6" ;;
       hud-config)       _want="file path 6" ;;
+      workspace-trust)  _want="file path 6" ;;
       marketplaces)     _want="marketplaces - 7" ;;
       himmelctl-cache)  _want="dir path 8" ;;
       *)                _want="" ;;
@@ -306,6 +307,7 @@ _ix_mkt=$(m_index marketplaces) || exit 2
 _ix_ucm=$(m_index user-claude-md) || exit 2
 _ix_uam=$(m_index user-agents-md) || exit 2
 _ix_hud=$(m_index hud-config) || exit 2
+_ix_trust=$(m_index workspace-trust) || exit 2
 
 CHANNEL_DIR="$(strip_trailing_slash "$(m_path "$_ix_channel")")"
 BRIDGE_ROOT="$(strip_trailing_slash "$(m_path "$_ix_bridge")")"
@@ -2843,9 +2845,9 @@ EOF
 # ledger-or-kept fallback -- so the computation is dropped as an orphan of
 # that fix rather than left unused.
 unwire_user_files() {
-  local _ix _p _dry=0 _probe_rc _hud_units _hu _fc_args _block_unit _fc
+  local _ix _p _dry=0 _probe_rc _hud_units _hu _fc_args _block_unit _fc _trust_units _tu
   [ "$DRY_RUN" -eq 1 ] && _dry=1
-  for _ix in "$_ix_ucm" "$_ix_uam" "$_ix_hud"; do
+  for _ix in "$_ix_ucm" "$_ix_uam" "$_ix_hud" "$_ix_trust"; do
     # A failure on one file halts the step: never edit the next file after it.
     [ "$HALTED" -eq 0 ] || return 0
     _p="$(m_path "$_ix")"
@@ -2876,6 +2878,25 @@ EOF
       # "kept (no ledger)" would be misleading with a real ledger present.
       else
         echo "  kept (not in ledger): $_p — remove by hand: bash $SCRIPT_DIR/lib/unwire-hud-config.sh $_p"
+      fi
+    elif [ "$_ix" = "$_ix_trust" ]; then
+      if [ "$LEDGER_OK" -ne 1 ]; then
+        # HIMMEL-3332 S6 slice2: no ledger to tell a pre-existing trust entry
+        # from himmel's own -- kept exactly as before this fix, by hand.
+        echo "  kept (no ledger): $_p — revoke it in Claude Code if you want it gone"
+        continue
+      fi
+      _trust_units="$(prov_read_units --path "$_p" --row workspace-trust --kind json-key)"
+      if [ -n "$_trust_units" ]; then
+        while IFS= read -r _tu; do
+          [ "$HALTED" -eq 0 ] || break
+          [ -n "$_tu" ] || continue
+          ledger_apply_unit "$_tu"
+        done <<EOF
+$_trust_units
+EOF
+      else
+        echo "  kept (not in ledger): $_p — revoke it in Claude Code if you want it gone"
       fi
     else
       _fc_args=()
