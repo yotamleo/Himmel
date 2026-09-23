@@ -9,11 +9,11 @@
 # trusting a hand-kept list:
 #   seeds = every <himmel_dir>/scripts/... target named in the runbook twins
 #           + every non-test script at the top of scripts/cr/;
-#   edges = source/exec sites (`.`, source, bash, sh, node, python3, exec)
-#           and direct script calls in command position ("$DIR/x.sh" ...)
-#           and script paths stored in a variable (X="$DIR/x.sh",
-#           ${X:-$DIR/x.sh}, an env prefix) on non-comment lines, plus
-#           relative JS require/import;
+#   edges = source/exec sites (`.`, source, bash, sh, node, bun, tsx, deno,
+#           python, python3, pwsh, exec) and direct script calls in command
+#           position ("$DIR/x.sh" ...) and script paths stored in a variable
+#           (X="$DIR/x.sh", ${X:-$DIR/x.sh}, an env prefix) on non-comment
+#           lines, plus relative JS require/import, static or dynamic;
 # and fails when a reached file exists outside cr_guarded. On a failure,
 # widen cr_guarded (and cr_pathspecs, and the runbook precheck) or prove the
 # site is not reached on the "no" path.
@@ -55,7 +55,7 @@ PATH_RE='(\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|[)}])?/?[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]
 # then/do/else, optionally quoted - a direct call with no interpreter word.
 # The $VAR/ prefix is required: without it a `(` in a message string or a
 # `|` in a case pattern reads as a call.
-CMD_RE='(^|[;&|(]|\$\(|(then|do|else)[[:space:]])[[:space:]]*"?\$\{?[A-Za-z_][A-Za-z0-9_]*\}?/[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*\.(sh|py)'
+CMD_RE='(^|[;&|(]|\$\(|(then|do|else)[[:space:]])[[:space:]]*"?\$\{?[A-Za-z_][A-Za-z0-9_]*\}?/[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*\.(sh|py|ts|mjs|cjs|js)'
 # A line that assigns a variable (VAR=…, an env prefix, or a ${VAR:-…}
 # default): a script path stored there is run later through the variable, so
 # every path on it is an edge. Over-matching only widens the closure, which is
@@ -65,11 +65,11 @@ edges() {
   local f="$1" dir raw tail target cand
   dir="$(dirname "$f")"
   {
-    grep -E '(^|[;&|({[:space:]])(\.|source|bash|sh|node|python3|exec)[[:space:]]' "$ROOT/$f" 2>/dev/null \
+    grep -E '(^|[;&|({[:space:]])(\.|source|bash|sh|node|bun|tsx|deno|python|python3|pwsh|exec)[[:space:]]' "$ROOT/$f" 2>/dev/null \
       | grep -vE '^[[:space:]]*#' | grep -oE "$PATH_RE"
     grep -vE '^[[:space:]]*#' "$ROOT/$f" 2>/dev/null | grep -oE "$CMD_RE" | grep -oE "$PATH_RE"
     grep -vE '^[[:space:]]*#' "$ROOT/$f" 2>/dev/null | grep -E "$ASSIGN_RE" | grep -oE "$PATH_RE"
-    grep -oE "(require\\(|from[[:space:]]+|import[[:space:]]+)['\"]\\.{1,2}/[^'\"]+['\"]" "$ROOT/$f" 2>/dev/null \
+    grep -oE "(require\\(|import\\([[:space:]]*|from[[:space:]]+|import[[:space:]]+)['\"]\\.{1,2}/[^'\"]+['\"]" "$ROOT/$f" 2>/dev/null \
       | grep -oE "\\.{1,2}/[^'\"]+"
   } | while IFS= read -r raw; do
     tail="$raw"
@@ -102,7 +102,8 @@ edges() {
 # still be an edge (checked below), so the list cannot rot silently.
 NOT_RUN="scripts/cr/install-cr-gate.sh -> scripts/hooks/check-cr-before-push.sh
 scripts/lib/wire-statusline.sh -> marketplace/plugins/claude-hud/dist/index.js
-scripts/lib/bank-preflight.sh -> scripts/lanes/codex-bank-probe.ts"
+scripts/lib/bank-preflight.sh -> scripts/lanes/codex-bank-probe.ts
+scripts/lanes/bank-status-core.mjs -> scripts/lanes/codex-bank-probe.ts"
 
 # closure - the transitive set of files reached from the seeds.
 closure() {
@@ -128,6 +129,16 @@ closure() {
     done
   done
   printf '%s' "$seen" | sort -u
+}
+
+# unreadable <<closure - print each reached file edges() could not read (its
+# greps discard errors, so an unreadable file would look like a leaf).
+unreadable() {
+  local f
+  while IFS= read -r f; do
+    [ -n "$f" ] && [ ! -r "$ROOT/$f" ] && printf '%s\n' "$f"
+  done
+  return 0
 }
 
 # outside <guarded list> <<closure - print each closure file not under a
@@ -188,6 +199,31 @@ printf 'import { q } from "./helper";\n' > "$fx/scripts/cr/importer.js"
 got="$(ROOT="$fx" edges scripts/cr/assigner.sh | tr '\n' ' ')"
 check "$got" "scripts/lib/g.sh tools/f.sh tools/h.sh " "edges() sees script paths stored in a variable (default, env prefix, assignment)"
 check "$(ROOT="$fx" edges scripts/cr/importer.js)" "scripts/cr/helper.ts" "edges() resolves an extensionless relative import"
+# ...and the non-shell runners (a bare `bun` with no assignment on the line),
+# a direct .ts call, and a dynamic import().
+mkdir -p "$fx/scripts/telegram"
+for n in r1 r2 r3 r4 r5 r6 dyn; do : > "$fx/scripts/telegram/$n.ts"; done
+cat > "$fx/scripts/lib/runner.sh" <<'EOF'
+$tmo bun "$LIB/../telegram/r1.ts" reply "$chat"
+tsx "$LIB/../telegram/r2.ts"
+deno run "$LIB/../telegram/r3.ts"
+python "$LIB/../telegram/r4.ts"
+pwsh -File "$LIB/../telegram/r5.ts"
+if true; then "$LIB/../telegram/r6.ts"; fi
+EOF
+printf 'const { f } = await import("./dyn");\n' > "$fx/scripts/telegram/importer.ts"
+got="$(ROOT="$fx" edges scripts/lib/runner.sh | tr '\n' ' ')"
+check "$got" "scripts/telegram/r1.ts scripts/telegram/r2.ts scripts/telegram/r3.ts scripts/telegram/r4.ts scripts/telegram/r5.ts scripts/telegram/r6.ts " "edges() sees bun/tsx/deno/python/pwsh runners and a direct .ts call"
+check "$(ROOT="$fx" edges scripts/telegram/importer.ts)" "scripts/telegram/dyn.ts" "edges() sees a dynamic import()"
+# A reached file edges() cannot read yields no edges, which would truncate the
+# closure silently - unreadable() must name it.
+: > "$fx/scripts/lib/locked.sh"; chmod 000 "$fx/scripts/lib/locked.sh"
+if [ -r "$fx/scripts/lib/locked.sh" ]; then
+  echo "skip: unreadable() control (running with read-all privileges)"
+else
+  check "$(printf 'scripts/lib/a.sh\nscripts/lib/locked.sh\n' | ROOT="$fx" unreadable)" "scripts/lib/locked.sh" "unreadable() names a reached file edges() cannot read"
+fi
+chmod 600 "$fx/scripts/lib/locked.sh"
 rm -rf "$fx"
 
 # Every pinned NOT_RUN edge is still a real edge of its parent.
@@ -201,9 +237,14 @@ printf '%s\n' "$reached" | grep -v '^scripts/cr/' | sed 's/^/  /'
 
 # Sanity: the derivation actually reaches the known non-scripts/cr sites, so
 # an empty or truncated closure cannot pass vacuously.
-for known in scripts/check-ci.sh scripts/handover/resolve-active-item.sh scripts/lib/handover-path.sh scripts/lib/load-dotenv.sh scripts/guardrails/lib.sh; do
+# console-route.ts and poller.ts are reached only through merge-block-alert.sh's
+# bare `bun` call and a dynamic import (second console review of #1148).
+for known in scripts/check-ci.sh scripts/handover/resolve-active-item.sh scripts/lib/handover-path.sh scripts/lib/load-dotenv.sh scripts/guardrails/lib.sh \
+    scripts/telegram/console-route.ts scripts/telegram/bus.ts scripts/telegram/poller.ts; do
   check "$(printf '%s\n' "$reached" | grep -cxF "$known")" "1" "closure reaches $known"
 done
+
+check "$(printf '%s\n' "$reached" | unreadable)" "" "every reached file was readable, so no edge was dropped"
 
 escaped="$(printf '%s\n' "$reached" | outside "$cr_guarded")"
 check "$escaped" "" "every file reached on the no path lies inside cr_guarded"

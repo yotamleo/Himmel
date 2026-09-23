@@ -688,6 +688,11 @@ gitd() { git --no-replace-objects -c core.fsmonitor=false -c core.untrackedCache
 # directory, so a branch touching an unrelated lane or telegram file keeps
 # its relative himmel-lane spelling. egress-matrix.json is data, not code,
 # but it is the egress policy invoke.sh enforces, so it is guarded too.
+# A red required check reaches the telegram bridge as well (second console
+# review of #1148): check-ci.sh sources merge-block-alert.sh, which runs
+# bun scripts/telegram/console-route.ts reply; that imports bus.ts and
+# dynamically poller.ts, whose static imports load the rest of the
+# scripts/telegram files below and scripts/lanes/plugin-profiles.mjs.
 cr_guarded="scripts/cr scripts/lib scripts/guardrails/lib.sh scripts/check-ci.sh scripts/handover/resolve-active-item.sh
 scripts/handover/append-cr-findings.sh scripts/handover/append-cr-bugs.sh scripts/handover/bug.sh
 scripts/hermes/invoke.sh scripts/hermes/egress-gate.sh
@@ -696,7 +701,14 @@ scripts/statusline/usage-cache-producer.sh
 scripts/lanes/bank-status.ts scripts/lanes/bank-status-core.mjs scripts/lanes/funded-max-pct.mjs
 scripts/lanes/resolve.mjs scripts/lanes/check.mjs scripts/lanes/probe.mjs scripts/lanes/set-lane-override.mjs
 scripts/observability/quota-sources.ts
-scripts/telegram/alibaba-probe-once.ts scripts/telegram/quota-gauge.ts scripts/telegram/quota-gauge-alibaba.ts"
+scripts/telegram/alibaba-probe-once.ts scripts/telegram/quota-gauge.ts scripts/telegram/quota-gauge-alibaba.ts
+scripts/telegram/console-route.ts scripts/telegram/bus.ts scripts/telegram/poller.ts
+scripts/telegram/router.ts scripts/telegram/auto-action.ts scripts/telegram/telegram-api.ts
+scripts/telegram/log-timestamp.ts scripts/telegram/gate.ts scripts/telegram/run.ts
+scripts/telegram/triage.ts scripts/telegram/transcribe.ts scripts/telegram/spawn-glm.ts
+scripts/telegram/glm-env.ts scripts/telegram/grants.ts scripts/telegram/huge-diff-guard.ts
+scripts/telegram/lane-args.ts scripts/telegram/phi-egress-guard.ts scripts/telegram/round-guard.ts
+scripts/lanes/plugin-profiles.mjs"
 cr_pathspecs=(':(top)scripts/cr/' ':(top)scripts/lib/' ':(top)scripts/guardrails/lib.sh' ':(top)scripts/check-ci.sh'
     ':(top)scripts/handover/resolve-active-item.sh'
     ':(top)scripts/handover/append-cr-findings.sh' ':(top)scripts/handover/append-cr-bugs.sh' ':(top)scripts/handover/bug.sh'
@@ -709,6 +721,16 @@ cr_pathspecs=(':(top)scripts/cr/' ':(top)scripts/lib/' ':(top)scripts/guardrails
     ':(top)scripts/observability/quota-sources.ts'
     ':(top)scripts/telegram/alibaba-probe-once.ts' ':(top)scripts/telegram/quota-gauge.ts'
     ':(top)scripts/telegram/quota-gauge-alibaba.ts'
+    ':(top)scripts/telegram/console-route.ts' ':(top)scripts/telegram/bus.ts'
+    ':(top)scripts/telegram/poller.ts' ':(top)scripts/telegram/router.ts'
+    ':(top)scripts/telegram/auto-action.ts' ':(top)scripts/telegram/telegram-api.ts'
+    ':(top)scripts/telegram/log-timestamp.ts' ':(top)scripts/telegram/gate.ts'
+    ':(top)scripts/telegram/run.ts' ':(top)scripts/telegram/triage.ts'
+    ':(top)scripts/telegram/transcribe.ts' ':(top)scripts/telegram/spawn-glm.ts'
+    ':(top)scripts/telegram/glm-env.ts' ':(top)scripts/telegram/grants.ts'
+    ':(top)scripts/telegram/huge-diff-guard.ts' ':(top)scripts/telegram/lane-args.ts'
+    ':(top)scripts/telegram/phi-egress-guard.ts' ':(top)scripts/telegram/round-guard.ts'
+    ':(top)scripts/lanes/plugin-profiles.mjs'
     ':(top,exclude,glob)scripts/**/__pycache__/**')
 cr_manifest() { # cr_manifest <root> - "<mode> <blob-id> <path>" per guarded file, sorted
     local root=$1 odd files execs oids modes p d present=()
