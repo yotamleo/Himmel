@@ -1538,7 +1538,10 @@ ln -s "$REPO_REAL/docs" "$foreign65/docs"
 out65="$(cd "$foreign65/nested" && env -u HANDOVER_DIR -u USER_SLUG -u JIRA_PROJECT_KEY CONSOLE_WORK_DIR="$tmp/defaultwork65" bash "$own65/scripts/handover/console/console.sh" new --name rec65 --dry-run 2>&1)"
 rc65=$?
 check "65 own-checkout .env resolves rc=0" "$rc65" "0"
-contains65() { printf '%s' "$out65" | grep -qF "$1" && echo yes || echo no; }
-check "65 own-checkout's HANDOVER_DIR used, not the foreign CWD repo" "$(contains65 "$own65/state-fixture-65")" "yes"
+case "$out65" in
+    *"$own65/state-fixture-65"*) contains65=yes ;;
+    *) contains65=no ;;
+esac
+check "65 own-checkout's HANDOVER_DIR used, not the foreign CWD repo" "$contains65" "yes"
 
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }
