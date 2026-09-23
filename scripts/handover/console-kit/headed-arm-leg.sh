@@ -809,8 +809,14 @@ if [ -n "$PROFILE" ]; then
     # leg's grant to the root would auto-approve its own Write there, letting
     # a leg mint its own merge GO. The doc's directory is a strict subdir of
     # the leg's own bucket (handovers/<user>/<repo>/...), which never
-    # contains .locks/ (that sits at the handover ROOT).
+    # contains .locks/ (that sits at the handover ROOT) - verified below
+    # rather than assumed, so a doc placed directly AT the root can never
+    # collapse this grant back to the whole root (CR round 2, codex-1).
     if [ -n "$DOC" ] && _leg_doc_dir="$(cd "$(dirname "$DOC")" 2>/dev/null && pwd)"; then
+        if [ -n "${HANDOVER_DIR:-}" ] && [ "$_leg_doc_dir" = "$HANDOVER_DIR" ]; then
+            echo "headed-arm-leg: --profile $PROFILE: leg doc sits directly at the handover root ($HANDOVER_DIR) - refusing to grant the whole root as additionalDirectories" >&2
+            exit 2
+        fi
         if ! PROFILE_JSON="$(printf '%s' "$PROFILE_JSON" | jq --arg dir "$_leg_doc_dir" \
             '.permissions.additionalDirectories = ((.permissions.additionalDirectories // []) + [$dir])')"; then
             echo "headed-arm-leg: --profile $PROFILE: cannot add the leg doc's directory to additionalDirectories" >&2

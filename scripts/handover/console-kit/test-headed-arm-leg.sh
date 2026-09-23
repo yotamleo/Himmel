@@ -1005,6 +1005,23 @@ check "full launch --profile (space in handover root): .locks deny resolves with
   "$(jq -c '.permissions.deny' "$d17s/HIMMEL-3333-space.leg-settings.json" 2>/dev/null)" \
   "$(jq -cn --arg d "$space_root" '["EnterWorktree"] + (["Edit","Write","MultiEdit","NotebookEdit"] | map(. + "(" + $d + "/.locks/**)"))')"
 
+# HIMMEL-3285 (CR round 2, codex-1): a doc placed directly AT the handover
+# root (dirname(doc) == HANDOVER_DIR) must never collapse the grant to the
+# whole root - the wrapper refuses the launch outright rather than widen
+# additionalDirectories to HANDOVER_DIR.
+d17root="$tmp/c17root"; mk_launch_stubs "$d17root" "HIMMEL-3333-atroot"; mkdir -p "$tmp/repo17root"
+root_doc="$HANDOVER_DIR/HIMMEL-3333-atroot.md"
+printf '%s\n' '# fixture doc at the handover root' > "$root_doc"
+rc=0
+HEADED_ARM_LEG_TARGET="$HEADED_ARM" \
+HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+KONSOLE_CMD="$d17root/konsole" PGREP_CMD="$d17root/pgrep" \
+LEG_REPO="$tmp/repo17root" HEADED_ARM_LOCK_DIR="$d17root/locks" HEADED_ARM_PROC="$d17root/proc" \
+  bash "$SCRIPT" --profile leg-impl "HIMMEL-3333-atroot" "$root_doc" "$d17root/signal-never" "$PAST" "$d17root/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+check "full launch --profile (doc directly at handover root): refuses rather than grant the whole root" "$rc" "2"
+check "full launch --profile (doc directly at handover root): no settings file written" \
+  "$([ -e "$d17root/HIMMEL-3333-atroot.leg-settings.json" ] && echo present || echo absent)" "absent"
+
 # The relay half of a split console is not a leg that works in a worktree:
 # its settings get no deny.
 d17r="$tmp/c17r"; mk_launch_stubs "$d17r" "HIMMEL-9999-relay"; mkdir -p "$tmp/repo17r"
