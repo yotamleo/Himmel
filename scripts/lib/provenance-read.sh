@@ -151,6 +151,9 @@ def build_chains($rows):
           # IT created. A later preexisted=true row (a re-run over a
           # registration the user re-pointed) must never join this set.
           ours_ids: (if $isreg then ([ $rows[] | select(.preexisted==false and .identity_v!=null and .post.sha!=null) | .post.sha ] | unique) else null end),
+          # the same rule for a legacy row's recorded post (the collection
+          # path-sha salvage, §5): only rows that created the registration
+          ours_posts: (if $isreg then ([ $rows[] | select(.preexisted==false and .post.sha!=null) | .post.sha ] | unique) else null end),
           eff_pre: (if ($N|length)>0 then eff_pre_of($N) else null end),
           eff_post: (if ($N|length)>0 then $N[-1].post else $lastRow.post end),
           fields: extra_fields($lastForFields),
@@ -428,20 +431,24 @@ _provread_register_verdict() {
 }
 
 # _provread_collection_salvage <unit-json> -- a legacy collection row recorded
-# --post-text <path arg>, so post.sha = sha(path). Compare it with the live
-# Path (as qmd prints it, or canonicalized): equal -> remove ours; different
-# (or nothing recorded) -> keep user-modified; qmd unreadable -> keep.
+# --post-text <path arg>, so post.sha = sha(path). Compare the live Path (as
+# qmd prints it, or canonicalized) with the posts of the rows that created the
+# registration (ours_posts; a later preexisted=true row never counts): a match
+# -> remove ours; none (or nothing recorded) -> keep user-modified; qmd
+# unreadable -> keep.
 _provread_collection_salvage() {
-    local u="$1" name post_sha
+    local u="$1" name posts raw_sha canon_sha
     name=$(printf '%s' "$u" | jq -r '.unit // ""')
-    post_sha=$(printf '%s' "$u" | jq -r '.eff_post.sha // ""')
+    posts=$(printf '%s' "$u" | jq -c '.ours_posts // []')
     _provid_qmd_show "$name"
     case "$_PROVID_STATE" in
         UNREADABLE) printf 'keep identity-unreadable\n'; return 0 ;;
         ABSENT)     printf 'keep already-absent\n'; return 0 ;;
     esac
-    if [ -n "$post_sha" ] && { [ "$(prov_sha_text "$_PROVID_PATH")" = "$post_sha" ] \
-            || [ "$(prov_sha_text "$(_provid_canon_path "$_PROVID_PATH")")" = "$post_sha" ]; }; then
+    raw_sha=$(prov_sha_text "$_PROVID_PATH")
+    canon_sha=$(prov_sha_text "$(_provid_canon_path "$_PROVID_PATH")")
+    if printf '%s' "$posts" | jq -e --arg a "$raw_sha" --arg b "$canon_sha" \
+            'index($a) != null or index($b) != null' >/dev/null 2>&1; then
         printf 'remove ours\n'
     else
         printf 'keep user-modified\n'

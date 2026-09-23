@@ -810,6 +810,26 @@ check "S16 (b): legacy row, qmd unreadable -> keep identity-unreadable" "$(prov_
 unset QMD_STUB_RC
 prov_read_cleanup
 
+# (b) a later legacy preexisted=true row recording the user's /vaultB path
+# must not become the salvage reference: only rows himmel created count
+reset
+prov_begin --iid S16BR --writer t
+prov_record register collection - --unit luna --post-text /vaultA --scope machine --class code \
+    --row qmd-fork --writer qmd-bin.sh --field preexisted=false
+prov_record register collection - --unit luna --post-text /vaultB --scope machine --class code \
+    --row qmd-fork --writer qmd-bin.sh --field preexisted=true
+prov_end ok
+prov_read_load
+u=$(col_unit)
+QMD_STUB_PATH=/vaultB
+check "S16 (b): legacy preexisted=true row, live /vaultB -> keep user-modified" "$(prov_read_verdict "$u")" "keep user-modified"
+prov_read_cleanup
+prov_read_load
+u=$(col_unit)
+QMD_STUB_PATH=/vaultA
+check "S16 (b): legacy preexisted=true row, live /vaultA -> remove ours" "$(prov_read_verdict "$u")" "remove ours"
+prov_read_cleanup
+
 # (d) legacy plugin / marketplace / job rows: remove by name, flagged
 # (e) the unit register row defers to its companion file row
 reset
