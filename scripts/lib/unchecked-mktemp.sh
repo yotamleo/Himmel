@@ -324,7 +324,7 @@ unchecked_mktemp_scan() {
     # `$(...)#tag` is ONE shell word. A string of 1/0 flags (1 = the open
     # paren was `$(`) tracks which kind each unquoted `)` closes; a string,
     # not an array, keeps this portable to every awk.
-    function strip_comment(s,    i, n, c, nc, prev, prev2, insq, indq, stk, cmdsub_close) {
+    function strip_comment(s,    i, n, c, prev, prev2, insq, indq, stk, cmdsub_close) {
         n = length(s)
         stk = ""
         cmdsub_close = 0
@@ -395,7 +395,7 @@ unchecked_mktemp_scan() {
     # quote, a backslash-escaped quote is a literal character, never a
     # string opener (single quotes have no escaping at all in real shell
     # lexing, so that side is unchanged).
-    function mask_quoted(s, ref,    i, j, k, n, c, nc, ck, out, body, closed) {
+    function mask_quoted(s, ref,    i, j, k, n, c, ck, out, body, closed) {
         n = length(s)
         out = ""
         for (i = 1; i <= n; i++) {
