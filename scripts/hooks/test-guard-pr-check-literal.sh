@@ -406,7 +406,7 @@ run "control: bash scripts/cr/\$X (real unresolved target) -> still deny" 2 \
 # narrow tightening. (Target is a literal path, not $TMP, so the deny is
 # provably the backtick-span misread and not the unrelated unresolved-var
 # check that a $VAR-suffixed path would also trip.)
-run "ponytail: sed -i backtick span in single-quoted replacement text still denies (HIMMEL-3517)" 2 \
+run "ponytail: sed-i backtick span in single-quoted replacement text still denies (HIMMEL-3517)" 2 \
     "$(payload "sed -i 's/x/y \`bash scripts/cr/review-round.sh\` z/' handover.md" "$WT")" "$HR" # gnu-ok: fixture text fed to the hook as tool_input.command, never executed
 run "control: find -execdir bash <target> -> still deny" 2 \
     "$(payload "find . -maxdepth 0 -execdir bash scripts/cr/pr-check-context.sh +" "$WT")" "$HR" # gnu-ok: fixture text fed to the hook as tool_input.command, never executed
