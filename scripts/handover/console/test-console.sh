@@ -1518,4 +1518,27 @@ check "64 step 8 says /console next never acquires, so free is expected there" \
 check "64 step 8 no longer calls held the only expected state" \
     "$(printf '%s\n' "$step8_64" | grep -c 'is the expected, correct state')" "0"
 
+# 65. HIMMEL-3533: HANDOVER_DIR / USER_SLUG / JIRA_PROJECT_KEY must resolve
+# from console.sh's OWN checkout, never the caller's CWD repo. Fixture mirrors
+# test-bank-preflight-dotenv-root.sh: a scratch "own checkout" (scripts/lib +
+# scripts/handover copied verbatim, plus a fixture .env carrying the three
+# keys) is run with CWD inside a SEPARATE, foreign `git init` repo that has no
+# .env of its own and none of the three vars exported by the caller.
+own65="$tmp/own-checkout-65"
+mkdir -p "$own65/scripts"
+cp -r "$REPO_REAL/scripts/lib" "$own65/scripts/lib"
+cp -r "$REPO_REAL/scripts/handover" "$own65/scripts/handover"
+mkdir -p "$own65/state-fixture-65/ownslug"
+printf 'HANDOVER_DIR=%s\nUSER_SLUG=ownslug\nJIRA_PROJECT_KEY=OWNKEY\n' "$own65/state-fixture-65" > "$own65/.env"
+foreign65="$tmp/foreign-repo-65"
+mkdir -p "$foreign65/nested"
+( cd "$foreign65" && git init -q )
+ln -s "$REPO_REAL/scripts" "$foreign65/scripts"
+ln -s "$REPO_REAL/docs" "$foreign65/docs"
+out65="$(cd "$foreign65/nested" && env -u HANDOVER_DIR -u USER_SLUG -u JIRA_PROJECT_KEY CONSOLE_WORK_DIR="$tmp/defaultwork65" bash "$own65/scripts/handover/console/console.sh" new --name rec65 --dry-run 2>&1)"
+rc65=$?
+check "65 own-checkout .env resolves rc=0" "$rc65" "0"
+contains65() { printf '%s' "$out65" | grep -qF "$1" && echo yes || echo no; }
+check "65 own-checkout's HANDOVER_DIR used, not the foreign CWD repo" "$(contains65 "$own65/state-fixture-65")" "yes"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

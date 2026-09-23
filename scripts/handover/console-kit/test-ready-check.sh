@@ -201,6 +201,31 @@ check "missing-ticket: exit 1" "$rc" "1"
 contains "missing-ticket: check 6 fails" "$out" "[FAIL] 6."
 contains "missing-ticket: names the offending subject" "$out" "tweak with no ticket"
 
+# --- 7. HIMMEL-3533: TICKET_ID_PATTERN / JIRA_PROJECT_KEY must resolve from
+# ready-check.sh's OWN checkout, never the caller's CWD repo. Fixture mirrors
+# test-bank-preflight-dotenv-root.sh: a scratch "own checkout" (this script +
+# scripts/lib/load-dotenv.sh, laid out at the same relative depth, plus a
+# fixture .env carrying JIRA_PROJECT_KEY) is run with CWD at $REPO — a git
+# repo with no .env of its own — and neither var exported by the caller.
+REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
+own="$tmp/own-checkout"
+mkdir -p "$own/scripts/handover/console-kit" "$own/scripts/lib"
+cp "$SCRIPT" "$own/scripts/handover/console-kit/ready-check.sh"
+cp "$REPO_ROOT/scripts/lib/load-dotenv.sh" "$own/scripts/lib/load-dotenv.sh"
+printf 'JIRA_PROJECT_KEY=HIMMEL\n' > "$own/.env"
+
+reset_stubs
+STUB_COMMITS="$GREEN_COMMITS"
+rc=0
+out="$(cd "$REPO" && env -u TICKET_ID_PATTERN -u JIRA_PROJECT_KEY \
+    STUB_NWO="$NWO" STUB_HEAD="$SHA" STUB_MSS=CLEAN \
+    STUB_ROLLUP="$GREEN_ROLLUP" STUB_UNRESOLVED=0 \
+    STUB_COMMITS="$STUB_COMMITS" STUB_FILES="$GREEN_FILES" \
+    PATH="$PATH" GH_LOG="$GH_LOG" \
+    bash "$own/scripts/handover/console-kit/ready-check.sh" "$PR" "$SHA")" || rc=$?
+check "own-checkout .env: exit 0" "$rc" "0"
+contains "own-checkout .env: check 6 (ticket ID) passes" "$out" "[PASS] 6."
+
 echo "---"
 if [ "$fails" -eq 0 ]; then
     echo "ALL PASS"

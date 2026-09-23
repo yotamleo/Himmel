@@ -55,7 +55,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/handover-path.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/../lib/handover-path.sh"
-load_dotenv HANDOVER_DIR USER_SLUG
+# HIMMEL-3533: pin to this script's OWN checkout, never the caller's CWD repo
+# (load_dotenv with no --root resolves via the process CWD's git repo — see
+# HIMMEL-3532 / bank-preflight.sh for the failure mode).
+load_dotenv --root "$(_load_dotenv_primary_for "$SCRIPT_DIR/../..")" HANDOVER_DIR USER_SLUG
 
 glm_dir="${LEG_TIMELINE_WORKER_GLM:-$HOME/.claude/handover/bridge/glm-sessions}"
 claudex_dir="${LEG_TIMELINE_WORKER_CLAUDEX:-$HOME/.claude/handover/bridge/claudex-sessions}"

@@ -70,7 +70,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # HIMMEL-335: pull HANDOVER_DIR / USER_SLUG from <repo>/.env when the
 # launching shell didn't export them (a live env value still wins). Makes
 # .env a real config source for the handover root instead of a hardcode.
-load_dotenv HANDOVER_DIR USER_SLUG
+# HIMMEL-3533: pin to this script's OWN checkout, never the caller's CWD repo
+# (load_dotenv with no --root resolves via the process CWD's git repo — see
+# HIMMEL-3532 / bank-preflight.sh for the failure mode).
+load_dotenv --root "$(_load_dotenv_primary_for "$SCRIPT_DIR/../..")" HANDOVER_DIR USER_SLUG
 
 MESSAGE=""
 DELAY_MINUTES=2

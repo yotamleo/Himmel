@@ -291,7 +291,10 @@ else
     # shellcheck source=../../lib/load-dotenv.sh
     # shellcheck disable=SC1091
     if . "$RC_SCRIPT_DIR/../../lib/load-dotenv.sh" 2>/dev/null; then
-        load_dotenv TICKET_ID_PATTERN JIRA_PROJECT_KEY || true
+        # HIMMEL-3533: pin to this script's OWN checkout, never the caller's
+        # CWD repo (load_dotenv with no --root resolves via the process CWD's
+        # git repo — see HIMMEL-3532 / bank-preflight.sh for the failure mode).
+        load_dotenv --root "$(_load_dotenv_primary_for "$RC_SCRIPT_DIR/../../..")" TICKET_ID_PATTERN JIRA_PROJECT_KEY || true
     fi
     TICKET_PATTERN="${TICKET_ID_PATTERN:-}"
     if [ -z "$TICKET_PATTERN" ] && [ -n "${JIRA_PROJECT_KEY:-}" ]; then

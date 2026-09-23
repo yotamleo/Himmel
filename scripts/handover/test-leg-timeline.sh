@@ -397,6 +397,27 @@ contains "gate avail row for '@'-branch" "$out" "avail codex"
 matches "'@'-branch shown intact in gate run" "$out" 'feat/x@y.*run='
 
 # ===========================================================================
+# HIMMEL-3533: .env read must come from leg-timeline.sh's OWN checkout, never
+# the caller's CWD repo. Fixture mirrors test-bank-preflight-dotenv-root.sh: a
+# scratch "own checkout" (scripts/lib + scripts/handover copied verbatim, plus
+# a fixture .env carrying HANDOVER_DIR/USER_SLUG) is run with CWD inside a
+# SEPARATE, foreign `git init` repo that has no .env of its own.
+# ===========================================================================
+REPO_ROOT="$(cd "$HERE/../.." && pwd)"
+own="$ROOT/own-checkout"
+mkdir -p "$own/scripts"
+cp -r "$REPO_ROOT/scripts/lib" "$own/scripts/lib"
+cp -r "$REPO_ROOT/scripts/handover" "$own/scripts/handover"
+mkdir -p "$own/state-fixture/ownslug"
+printf 'HANDOVER_DIR=%s\nUSER_SLUG=ownslug\n' "$own/state-fixture" > "$own/.env"
+foreign="$ROOT/foreign-repo"
+mkdir -p "$foreign/nested"
+( cd "$foreign" && git init -q )
+out=$(cd "$foreign/nested" && env -u HANDOVER_DIR -u USER_SLUG bash "$own/scripts/handover/leg-timeline.sh" 2026-08-03T00:00 2>&1); rc=$?
+check "own-checkout .env resolves rc=0" "$rc" "0"
+contains "own-checkout's HANDOVER_DIR used, not the foreign CWD repo" "$out" "$own/state-fixture/ownslug"
+
+# ===========================================================================
 # Footer.
 # ===========================================================================
 rc=0

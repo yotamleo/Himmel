@@ -148,6 +148,27 @@ rc=$?
 assert_rc "T17 missing HANDOVER_DIR fail-closed rc=2" 2 "$rc"
 assert_contains "T17 diagnostic" "cannot resolve handover root" "$out"
 
+# --- HIMMEL-3533: .env read must come from hop.sh's OWN checkout, never the
+# caller's CWD repo. Fixture mirrors test-bank-preflight-dotenv-root.sh: a
+# scratch "own checkout" (scripts/lib + scripts/handover copied verbatim, plus
+# a fixture .env carrying HANDOVER_DIR/USER_SLUG) is run with CWD inside a
+# SEPARATE, foreign `git init` repo that has no .env of its own.
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+own="$TMP/own-checkout"
+mkdir -p "$own/scripts"
+cp -r "$ROOT/scripts/lib" "$own/scripts/lib"
+cp -r "$ROOT/scripts/handover" "$own/scripts/handover"
+mkdir -p "$own/state-fixture/ownslug"
+printf 'HANDOVER_DIR=%s\nUSER_SLUG=ownslug\n' "$own/state-fixture" > "$own/.env"
+foreign="$TMP/foreign-repo"
+mkdir -p "$foreign/nested"
+( cd "$foreign" && git init -q )
+
+out=$(cd "$foreign/nested" && env -u HANDOVER_DIR -u USER_SLUG bash "$own/scripts/handover/hop.sh" --message "dotenv-root" --print --dry-run 2>&1)
+rc=$?
+assert_rc "T18 own-checkout .env resolves rc=0" 0 "$rc"
+assert_contains "T18 snapshot under own-checkout's HANDOVER_DIR, not the foreign CWD repo" "$own/state-fixture/ownslug/context-hop-" "$out"
+
 if [ "$FAILED" -gt 0 ]; then
     echo "---"
     echo "FAIL $FAILED case(s)"
