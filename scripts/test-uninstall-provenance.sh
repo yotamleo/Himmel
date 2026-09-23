@@ -84,7 +84,9 @@ chmod 755 "$FAKE_CLAUDE"
 # marketplace stub state for one case. Sets the CASE_* globals the rest of
 # the case (and run_uninstall) uses.
 new_case() {
-  CASE_DIR="$SUITE_TMP/$1"
+  # HIMMEL-3336: CASE_DIR is grounded in a literal mktemp template (not "$1")
+  # so the real-home-callers static scan can verify HOME stays scratch.
+  CASE_DIR="$(mktemp -d "$SUITE_TMP/case.XXXXXX")" || { echo "FAIL: mktemp CASE_DIR ($1)" >&2; exit 1; }
   mkdir -p "$CASE_DIR/home/.claude" "$CASE_DIR/cwd" "$CASE_DIR/prov"
   export HOME="$CASE_DIR/home"
   export HIMMEL_PROVENANCE_DIR="$CASE_DIR/prov"
@@ -283,7 +285,7 @@ check "RED10 codex-2: sibling-project adopter-scripts file untouched" "$AFTER10B
 
 echo "==== RED11 (codex-8): file_created=false ledger row passes --file-created no ===="
 new_case red11
-# RED7's `( HOME=… )` subshell closed long before this line; HOME here is the
+# RED7's HOME override, `( HOME set inside a subshell )`, closed long before this line; HOME here is the
 # suite's own scratch HOME, exactly as intended.
 # shellcheck disable=SC2031
 RULE11="$HOME/.claude/CLAUDE.md"
@@ -333,7 +335,7 @@ check "RED12 codex-9: second adopter-scripts unit untouched after the first fail
 
 echo "==== RED13 (codex-4): ledger loaded but silent on statusLine/HANDOVER_DIR/hud -- kept like no-ledger, not stripped ===="
 new_case red13
-# RED7's `( HOME=… )` subshell closed long before this line; HOME here is the
+# RED7's HOME override, `( HOME set inside a subshell )`, closed long before this line; HOME here is the
 # suite's own scratch HOME, exactly as intended.
 # shellcheck disable=SC2031
 HUD13="$HOME/.claude/plugins/claude-hud/config.json"
@@ -359,8 +361,11 @@ statusline_kept13=$(jq -r 'has("statusLine")' "$CASE_SETTINGS")
 handover_kept13=$(jq -r '.env.HANDOVER_DIR // "ABSENT"' "$CASE_SETTINGS")
 hud_kept13=$([ -f "$HUD13" ] && echo yes || echo no)
 notinledger13=$(printf '%s\n' "$out13" | grep -c 'kept (not in ledger)')
+# HIMMEL-3332 S6 slice2: workspace-trust is now ledger-decided too, so a
+# loaded-but-silent ledger also keeps it "not in ledger" -- a 4th line,
+# alongside statusLine, env.HANDOVER_DIR and the hud config.
 check "RED13 codex-4: loaded-but-silent ledger keeps statusLine/HANDOVER_DIR/hud-config like the no-ledger branch" \
-  "$statusline_kept13|$handover_kept13|$hud_kept13|$notinledger13" "true|/opt/red13-handover|yes|3"
+  "$statusline_kept13|$handover_kept13|$hud_kept13|$notinledger13" "true|/opt/red13-handover|yes|4"
 
 echo "==== RED14 (codex-5): a halted per-unit settings loop must not fall through to the legacy helper for a unit it never reached ===="
 new_case red14
@@ -478,6 +483,71 @@ check "RED18 HIMMEL-3398: /statusLine and env.HIMMEL_REPO removed; /statusLineX 
   '[false,false,"u","x"]'
 check "RED18: both protected units reported kept" \
   "$(printf '%s\n' "$out18" | grep -c -E 'kept /(statusLineX|env/HIMMEL_REPOX) \(noop-preexisted\)')" "2"
+
+echo "==== RED19 (HIMMEL-3332 S6 slice2): workspace-trust json-key ledger excision ===="
+# applyWorkspaceTrust (himmelctl bin.js) records a json-key row for
+# /projects/<dir>/hasTrustDialogAccepted in ~/.claude.json. Today's
+# uninstall.sh has no code path that ever reads ~/.claude.json -- these four
+# rows are proven RED against the unfixed tree.
+# These fixtures put ~/.claude.json under the case's scratch HOME, which the
+# wet-run fence (HIMMEL-2505) reads as a live operator profile. The HOME is a
+# temp dir, so lift the fence the way test-uninstall.sh's u_run_fx does --
+# for these four calls only.
+run_uninstall_fx() { export HIMMEL_UNINSTALL_REAL_HOME=1; run_uninstall "$@"; local rc=$?; unset HIMMEL_UNINSTALL_REAL_HOME; return "$rc"; }
+new_case red19a
+# RED7's HOME override, `( HOME set inside a subshell )`, closed long before this line; HOME here is the
+# suite's own scratch HOME, exactly as intended.
+# shellcheck disable=SC2031
+CFG19A="$HOME/.claude.json"
+jq -n '{projects: {"/proj": {hasTrustDialogAccepted: true}}}' > "$CFG19A"
+cp "$CFG19A" "$SUITE_TMP/red19a-before.json"
+( prov_begin --writer himmelctl-bin.js -- seed-red19a >/dev/null
+  prov_record create json-key "$CFG19A" --unit '/projects/~1proj/hasTrustDialogAccepted' --scope user --class code \
+    --writer himmelctl-bin.js --row workspace-trust --pre-absent --post-json 'true' --field preexisted=false >/dev/null
+  prov_end ok >/dev/null )
+run_uninstall_fx --yes --skip-tasks --skip-plugins --skip-hooks >/dev/null; check "RED19a: uninstall exit status" "$?" "0"
+check "RED19a: install-created trust key is removed" \
+  "$(jq -c '.projects."/proj" | has("hasTrustDialogAccepted")' "$CFG19A")" "false"
+check "RED19a: rest of the project object is byte-identical" \
+  "$(jq -c '.projects."/proj" | del(.hasTrustDialogAccepted)' "$CFG19A")" \
+  "$(jq -c '.projects."/proj" | del(.hasTrustDialogAccepted)' "$SUITE_TMP/red19a-before.json")"
+
+new_case red19b
+# shellcheck disable=SC2031
+CFG19B="$HOME/.claude.json"
+jq -n '{projects: {"/proj": {hasTrustDialogAccepted: true, otherKey: "x"}}}' > "$CFG19B"
+cp "$CFG19B" "$SUITE_TMP/red19b-before.json"
+( prov_begin --writer himmelctl-bin.js -- seed-red19b >/dev/null
+  prov_record noop json-key "$CFG19B" --unit '/projects/~1proj/hasTrustDialogAccepted' --scope user --class code \
+    --writer himmelctl-bin.js --row workspace-trust --pre-json 'true' --post-json 'true' --field preexisted=true >/dev/null
+  prov_end ok >/dev/null )
+run_uninstall_fx --yes --skip-tasks --skip-plugins --skip-hooks >/dev/null; check "RED19b: uninstall exit status" "$?" "0"
+check "RED19b: pre-existing trust key survives byte-identical" \
+  "$(jq -c . "$CFG19B")" "$(jq -c . "$SUITE_TMP/red19b-before.json")"
+
+new_case red19c
+# shellcheck disable=SC2031
+CFG19C="$HOME/.claude.json"
+# himmel's own row says it wrote "true" at install; the operator has since
+# revoked trust (current file has "false") -- verdict must be user-modified.
+jq -n '{projects: {"/proj": {hasTrustDialogAccepted: false}}}' > "$CFG19C"
+( prov_begin --writer himmelctl-bin.js -- seed-red19c >/dev/null
+  prov_record create json-key "$CFG19C" --unit '/projects/~1proj/hasTrustDialogAccepted' --scope user --class code \
+    --writer himmelctl-bin.js --row workspace-trust --pre-absent --post-json 'true' --field preexisted=false >/dev/null
+  prov_end ok >/dev/null )
+run_uninstall_fx --yes --skip-tasks --skip-plugins --skip-hooks >/dev/null; check "RED19c: uninstall exit status" "$?" "0"
+check "RED19c: a trust key the user has since revoked is kept (false)" \
+  "$(jq -c '.projects."/proj".hasTrustDialogAccepted' "$CFG19C")" "false"
+
+new_case red19d
+# shellcheck disable=SC2031
+CFG19D="$HOME/.claude.json"
+jq -n '{projects: {"/proj": {hasTrustDialogAccepted: true}}}' > "$CFG19D"
+cp "$CFG19D" "$SUITE_TMP/red19d-before.json"
+# no prov_begin/prov_record/prov_end at all -- a pre-ledger install.
+run_uninstall_fx --yes --skip-tasks --skip-plugins --skip-hooks >/dev/null; check "RED19d: uninstall exit status" "$?" "0"
+check "RED19d: with no ledger, the trust key is kept exactly as today" \
+  "$(jq -c . "$CFG19D")" "$(jq -c . "$SUITE_TMP/red19d-before.json")"
 
 echo "==== REAL-LEDGER TRIPWIRE ===="
 REAL_LEDGER_AFTER=$(real_ledger_state)

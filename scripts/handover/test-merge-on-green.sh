@@ -593,6 +593,9 @@ assert_jira_log_lacks() {
 assert_err_has() {
     if grepq "$LAST_ERR" -F -- "$2"; then pass; else fail "$1 (stderr lacks '$2')"; fi
 }
+assert_err_lacks() {
+    if grepq "$LAST_ERR" -F -- "$2"; then fail "$1 (stderr unexpectedly has '$2')"; else pass; fi
+}
 # HIMMEL-1346 — did the run go through the clear-cr-marker chokepoint, and with
 # what argv? An EMPTY log is the assertion that it was never invoked.
 assert_clear_has() {
@@ -1453,7 +1456,24 @@ touch "$1"
 n=0
 while [ -e "$1" ] && [ "$n" -lt 300 ]; do sleep 0.2; n=$((n + 1)); done
 SHEOF
-        cp "$SUITE_HOLDER_DIR/run-shell-tests.sh" "$SUITE_HOLDER_DIR/sleeper.sh"
+        # sleeper.sh: the same idle-until-removed shape, but for the
+        # "foreign process cwd'd inside the tree" fixtures (11k7, RC-1
+        # row-2), whose detector is worktree_in_use's /proc scan -- it names
+        # the FIRST /proc entry it finds with a cwd inside the tree, in
+        # lexicographic pid order (HIMMEL-3519). run-shell-tests.sh's idle
+        # `sleep` inherits its parent's cwd, which is fine there (it argv-
+        # matches as a real runner, so a transient sleep child never gets
+        # picked); here the holder is meant to be the ONLY process cwd'd
+        # inside the tree, so a sleep child that also inherited that cwd
+        # could sort before the holder's own pid and get named instead. Run
+        # the sleep in a subshell cd'd outside the tree so no other process
+        # is ever cwd'd inside it during the idle window.
+        cat > "$SUITE_HOLDER_DIR/sleeper.sh" <<'SHEOF'
+#!/usr/bin/env bash
+touch "$1"
+n=0
+while [ -e "$1" ] && [ "$n" -lt 300 ]; do (cd / && sleep 0.2); n=$((n + 1)); done
+SHEOF
 
         # start_suite_holder <cwd> <script> [extra-argv...] — sets HOLDER_PID
         # and HOLDER_READY. `bash -c '... exec ...'` rather than a subshell so
