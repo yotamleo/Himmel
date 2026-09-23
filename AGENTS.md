@@ -269,6 +269,7 @@ Docs not already linked from a rule above (relative to `docs/`):
 | `commands-catalog.md` | project-local slash commands |
 | `glossary.md` | the one definition site: console, judge, relay, leg, chain, wave, arming, manual override |
 | `handover/running-a-console.md` | starting + handing over a console (`/console new\|next`), vs `/overnight-shift` |
+| `internals/headless-modes.md` | `claude -p` vs `claude --bg` vs headed — which fits which job, env/permission/confirm details |
 
 ## graphify
 

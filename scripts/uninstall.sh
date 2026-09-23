@@ -3301,8 +3301,16 @@ fi
 # exception: reverting it restores a broken vendor stub, so it is NEVER
 # removed and its kept line prints unconditionally below, in both modes,
 # ledger or not (console ruling on HIMMEL-3332, 2026-09-23).
+# HIMMEL-3534: git-ignored top-level paths the fork's own build creates --
+# `node_modules/` (bun install, scripts/lib/qmd-bin.sh:546) and `dist/` (bun
+# run build -> node scripts/build.mjs, scripts/lib/qmd-bin.sh:546; TS outDir
+# is "dist" per the fork's tsconfig.build.json). Anything else git-ignored in
+# the checkout (a stray note next to node_modules/, etc.) is user work, not
+# build output, and must keep the checkout.
+_QMD_FORK_BUILD_ALLOWLIST="node_modules dist"
+
 qmd_unwire_fork_checkout() {
-  local u="$1" verdict action reason path fork_dir resolved expected _porcelain _unpushed
+  local u="$1" verdict action reason path fork_dir resolved expected _porcelain _unpushed _ignored _iline _itop
   verdict=$(prov_read_verdict "$u") || { echo "  WARN: qmd fork checkout: could not read current state" >&2; return 0; }
   action="${verdict%% *}"; reason="${verdict#* }"
   path=$(printf '%s' "$u" | jq -r '.path // empty')
@@ -3336,10 +3344,41 @@ qmd_unwire_fork_checkout() {
     prov_read_outcome kept "$u" "user-modified"
     return 0
   fi
+  # HIMMEL-3534 (regression from HIMMEL-3524/#1175): the fork's own build
+  # stamp is untracked by design (_qmd_build_stamp, scripts/lib/qmd-bin.sh:82),
+  # so every successfully built fork showed as dirty here and was kept
+  # forever under --purge-state. Drop exactly that one root-anchored line —
+  # a literal match, never a glob — before judging the tree clean.
+  _porcelain="$(printf '%s\n' "$_porcelain" | grep -v -x '?? \.himmel-build-ok')"
   if [ -n "$_porcelain" ]; then
     echo "  kept: $resolved (user-modified: uncommitted changes)"
     prov_read_outcome kept "$u" "user-modified"
     return 0
+  fi
+  # HIMMEL-3534: `status --porcelain` never lists git-ignored paths, so a
+  # user file placed inside one (next to node_modules/ or dist/) read as
+  # clean and was silently rm -rf'd. Any ignored path outside the build's own
+  # output is user work and keeps the checkout too; the build's own output
+  # (a user file placed INSIDE node_modules/ or dist/) is still removed --
+  # a deliberate trade-off, not a gap.
+  if ! _ignored=$(git -C "$resolved" ls-files --others --ignored --exclude-standard --directory 2>&1); then
+    echo "  kept: $resolved (user-modified: could not read git status)"
+    prov_read_outcome kept "$u" "user-modified"
+    return 0
+  fi
+  if [ -n "$_ignored" ]; then
+    while IFS= read -r _iline; do
+      [ -z "$_iline" ] && continue
+      _itop="${_iline%%/*}"
+      case " $_QMD_FORK_BUILD_ALLOWLIST " in
+        *" $_itop "*) continue ;;
+      esac
+      echo "  kept: $resolved (user-modified: ignored files outside the build output)"
+      prov_read_outcome kept "$u" "user-modified"
+      return 0
+    done <<EOF
+$_ignored
+EOF
   fi
   # HEAD is included explicitly so an unpushed commit on a detached HEAD is
   # caught too, not just commits reachable from a local branch ref.
