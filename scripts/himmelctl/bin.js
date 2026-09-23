@@ -34,6 +34,7 @@ const { spawnSync } = require('child_process');
 const { cacheDir, profileForVault, which, resolvePowershell, displayPath, shellQuote, nodeScriptCmd } = require('./lib/helpers.js');
 const launcherLib = require('./lib/launcher.js');
 const uninstallWrapperLib = require('./lib/uninstall-wrapper.js');
+const standaloneBundleLib = require('./lib/standalone-bundle.js');
 const stateLib = require('./lib/state.js');
 const statusReportLib = require('./lib/status-report.js');
 const installEngineLib = require('./lib/install-engine.js');
@@ -2448,7 +2449,17 @@ function displayCommand(cmd) {
 // operator pastes the line from whatever project the install summary was
 // printed for, where a clone-relative `scripts/himmelctl/bin.js` is not found.
 function printUninstallFooter() {
-  console.log(`To uninstall later: ${nodeScriptCmd(__filename)} uninstall`);
+  const bundleDir = standaloneBundleLib.bundleDir();
+  let bundleOk = false;
+  try {
+    const meta = JSON.parse(fs.readFileSync(path.join(bundleDir, 'bundle.json'), 'utf8'));
+    bundleOk = meta && meta.marker === standaloneBundleLib.BUNDLE_MARKER;
+  } catch (_e) { /* no bundle, or not ours */ }
+  if (bundleOk) {
+    console.log(`To uninstall later: ${nodeScriptCmd(__filename)} uninstall (works even after you delete ${primaryCheckoutRoot()}; fallback: node ${path.join(bundleDir, 'standalone.js')} uninstall)`);
+  } else {
+    console.log(`To uninstall later: ${nodeScriptCmd(__filename)} uninstall`);
+  }
 }
 
 // Spawn the derived command VERBATIM (stdio inherit) and propagate its exit
@@ -4764,13 +4775,22 @@ function sameFsEntry(a, b) {
 function applyHimmelctlPathShim(args) {
   const binDir = launcherLib.himmelctlBinDir();
   const platform = himmelctlShimPlatform();
-  const target = path.join(primaryCheckoutRoot(), 'scripts', 'himmelctl', 'bin.js');
+  const repoRootPath = primaryCheckoutRoot();
+  const target = path.join(repoRootPath, 'scripts', 'himmelctl', 'bin.js');
+  const fallback = path.join(standaloneBundleLib.bundleDir(), 'standalone.js');
   if (args.dryRun) {
     console.log(`DRY: himmelctl launcher -> ${target} (would write to ${binDir})`);
+    console.log(`DRY: standalone uninstaller -> ${standaloneBundleLib.bundleDir()}`);
     prov(['create', 'shim', path.join(binDir, platform === 'win32' ? 'himmelctl.js' : 'himmelctl'), '--scope', 'user', '--class', 'code', '--dry-run']);
     printHimmelctlPathInstruction(binDir, platform);
     return true;
   }
+
+  // The bundle is written BEFORE the launcher (design §3.3): a launcher must
+  // never point at a fallback that does not exist yet. Best-effort, same
+  // posture as the launcher write itself — a failed bundle write WARNs
+  // (inside writeStandaloneBundle) and never blocks the PATH launcher.
+  standaloneBundleLib.writeStandaloneBundle(repoRootPath);
 
   try {
     fs.mkdirSync(binDir, { recursive: true });
@@ -4779,7 +4799,12 @@ function applyHimmelctlPathShim(args) {
     // own `if (require.main === module)` guard (HIMMEL-2438) never fires and
     // main() silently never runs (rc 0, no output). A child process always
     // has its own require.main === itself, so the guard passes as intended.
-    const jsBody = `'use strict';\n// ${launcherLib.SHIM_MARKER}\nconst { status } = require('child_process').spawnSync(process.execPath, [${JSON.stringify(target)}, ...process.argv.slice(2)], { stdio: 'inherit' });\nprocess.exit(status === null ? 1 : status);\n`;
+    //
+    // design §7: two absolute paths are embedded at write time — the clone
+    // target and the bundle fallback — and the first that exists on disk at
+    // RUN time (not write time) is used, so a launcher written while the
+    // clone is present still falls back correctly once it is later deleted.
+    const jsBody = `'use strict';\n// ${launcherLib.SHIM_MARKER}\nconst fs = require('fs');\nconst t = ${JSON.stringify(target)};\nconst f = ${JSON.stringify(fallback)};\nconst e = fs.existsSync(t) ? t : fs.existsSync(f) ? f : t;\nconst { status } = require('child_process').spawnSync(process.execPath, [e, ...process.argv.slice(2)], { stdio: 'inherit' });\nprocess.exit(status === null ? 1 : status);\n`;
     if (!launcherLib.writeMarkedLauncher(path.join(binDir, 'himmelctl.js'), jsBody)) return false;
     if (platform === 'win32') {
       const cmdBody = `@echo off\r\nREM ${launcherLib.SHIM_MARKER}\r\nnode "%~dp0himmelctl.js" %*\r\n`;
@@ -4961,7 +4986,24 @@ async function cmdStatus(args) {
   // only — the --json summary shape above is byte-stable.
   const notSetUp = report.items.filter((r) => r.desired === true && r.severity === 'n/a').length;
   console.log(`${report.summary.red} red, ${report.summary.degraded} degraded, ${report.summary.green} green, ${report.summary.na} n/a${notSetUp > 0 ? ` (${notSetUp} of them desired but not set up: see the n/a rows above)` : ''}`);
+  printOrphanedBundleInfo();
   return 0;
+}
+
+// HIMMEL-3312 S13 item 7 ("himmelctl doctor"): the health-check surface for
+// a machine that already deleted its clone is `himmelctl status` — there is
+// no separate `doctor` verb in this CLI. A bundle whose ledger-recorded
+// himmel_root is gone is not itself a fault (that IS the standalone path's
+// whole point), so it stays out of the red/degraded/green/n/a item report
+// (and out of --json, whose shape test-wizard-status-golden.sh pins) — this
+// is a one-line INFO surfaced only in the text report.
+function printOrphanedBundleInfo() {
+  try {
+    const meta = JSON.parse(fs.readFileSync(path.join(standaloneBundleLib.bundleDir(), 'bundle.json'), 'utf8'));
+    if (meta.marker === standaloneBundleLib.BUNDLE_MARKER && meta.himmel_root && !fs.existsSync(meta.himmel_root)) {
+      console.log(`INFO  standalone-uninstaller  clone gone (${meta.himmel_root}); undo with: node ${path.join(standaloneBundleLib.bundleDir(), 'standalone.js')} uninstall --purge-state`);
+    }
+  } catch (_e) { /* no bundle, or not ours */ }
 }
 
 // ── gaps (HIMMEL-2348 deliverable 2) ─────────────────────────────────────
