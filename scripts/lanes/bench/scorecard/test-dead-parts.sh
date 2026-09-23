@@ -28,7 +28,7 @@ check_contains() {
 TMPREPO=$(mktemp -d "${TMPDIR:-/tmp}/test-dead-parts.XXXXXX") || { echo "FAIL - mktemp"; exit 1; }
 WTPATH="$TMPREPO-worktree"
 # shellcheck disable=SC2317,SC2329  # invoked by the EXIT trap below
-cleanup() { git -C "$TMPREPO" worktree remove --force "$WTPATH" 2>/dev/null; rm -rf "$TMPREPO" "$WTPATH"; }
+cleanup() { git -C "$TMPREPO" worktree remove --force "$WTPATH" 2>/dev/null; rm -rf "$TMPREPO" "$WTPATH" "${BROKENREPO:-}"; }
 trap cleanup EXIT
 
 cp -R "$HERE/fixtures/dead-parts/basic-repo/." "$TMPREPO/" || { echo "FAIL - fixture copy"; exit 1; }
@@ -155,6 +155,26 @@ else
 fi
 check_contains "linked worktree: still reports the classification table" \
     "$OUT3" "--- entry-point classification"
+
+# --- broken repo lookup: --repo-root's `.git` exists (passes the earlier
+# `[ -e "$REPO_ROOT/.git" ]` guard) but is corrupt, so `git ls-files` itself
+# fails - the report must abort loudly, never fall through to an empty
+# discovery file and a "successful" table claiming every entry point is
+# missing (round-8 codex-3) --------------------------------------------------
+BROKENREPO=$(mktemp -d "${TMPDIR:-/tmp}/test-dead-parts-broken.XXXXXX") || { echo "FAIL - mktemp broken repo"; fails=$((fails + 1)); }
+mkdir -p "$BROKENREPO/scripts"
+printf 'not a real gitfile\n' > "$BROKENREPO/.git"
+export SCORECARD_PROJECTS_DIR="$HERE/fixtures/dead-parts/basic-transcripts"
+OUT4=$("$SCRIPT" --since 2026-09-15T00:00:00Z --repo-root "$BROKENREPO" 2>&1)
+rc4=$?
+if [ "$rc4" -ne 0 ]; then
+    echo "ok - broken repo: dead-parts.sh aborts (rc=$rc4) instead of reporting success"
+else
+    echo "FAIL - broken repo: dead-parts.sh exited 0 despite a failed git ls-files"
+    fails=$((fails + 1))
+fi
+check_contains "broken repo: the abort names the failing git ls-files call, not a silent empty report" \
+    "$OUT4" "dead-parts: git ls-files failed for --repo-root"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

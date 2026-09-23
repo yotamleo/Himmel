@@ -173,15 +173,20 @@ fi
 # ops are keyed `jira:<op>` (never bare `<op>`, so a script literally named
 # `get` can't collide with the jira `get` op); every other tracked script is
 # keyed by its `scripts/...` path substring as it appeared in the command. A
-# chained command (`a.sh && b.sh`) or a command re-invoking the same script
-# twice names more than one script, so every match in `.key` becomes its own
-# row (codex-1 chained-command fix) rather than only the first.
+# chained command (`a.sh && b.sh`) names more than one script, so every match
+# becomes its own row (codex-1 fix) rather than only the branch that matched
+# first — the jira match and the generic scan run independently and their
+# results are unioned, with the jira invocation itself excluded from the
+# generic scan so it is never counted twice.
 SCRIPTED="$RUN/scripted.ndjson"
-if ! jq -c '. as $e | ($e | if .tool=="Bash" and (.key | test("scripts/jira/dist/index\\.js")) then
-        ["jira:" + (.key | capture("scripts/jira/dist/index\\.js\\s+(?<op>[A-Za-z0-9_:-]+)") .op // "unknown")]
-    elif .tool=="Bash" and (.key | test("scripts/[A-Za-z0-9_./-]+\\.(sh|mjs|js|py)")) then
-        [.key | scan("scripts/[A-Za-z0-9_./-]+\\.(?:sh|mjs|js|py)")]
-    else [] end) as $scripts
+if ! jq -c '
+    def jira_scripts: if .tool=="Bash" and (.key | test("scripts/jira/dist/index\\.js")) then
+            ["jira:" + (.key | capture("scripts/jira/dist/index\\.js\\s+(?<op>[A-Za-z0-9_:-]+)") .op // "unknown")]
+        else [] end;
+    def other_scripts: if .tool=="Bash" and (.key | test("scripts/[A-Za-z0-9_./-]+\\.(sh|mjs|js|py)")) then
+            [.key | scan("scripts/[A-Za-z0-9_./-]+\\.(?:sh|mjs|js|py)")] | map(select(test("scripts/jira/dist/index\\.js") | not))
+        else [] end;
+    . as $e | (($e | jira_scripts) + ($e | other_scripts)) as $scripts
     | if ($scripts | length) == 0 then $e + {script: null} else $scripts[] as $s | $e + {script: $s} end
 ' "$EVENTS" > "$SCRIPTED"; then
     echo "tool-usage: WARNING: script/jira-op extraction (jq) failed - section 3 may be incomplete" >&2

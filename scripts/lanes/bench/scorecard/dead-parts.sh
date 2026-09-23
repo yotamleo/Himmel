@@ -103,7 +103,18 @@ sc_cov_init || exit 1
 ENTRIES="$RUN/entries.tsv"   # kind<TAB>name<TAB>path
 : > "$ENTRIES"
 
-git -C "$REPO_ROOT" ls-files -- scripts > "$RUN/script-files.txt" 2>/dev/null
+# codex-3: a broken repo lookup at --repo-root (corrupt .git, detached
+# gitdir, etc.) must abort loudly rather than fall through to an empty file
+# and a "successful" report claiming every entry point is missing.
+ls_files_or_die() {
+    local out="$1" err="$RUN/ls-files-err.txt"; shift
+    if ! git -C "$REPO_ROOT" ls-files -- "$@" > "$out" 2>"$err"; then
+        echo "dead-parts: git ls-files failed for --repo-root '$REPO_ROOT' (path: $*): $(cat "$err")" >&2
+        exit 1
+    fi
+}
+
+ls_files_or_die "$RUN/script-files.txt" scripts
 while IFS= read -r p; do
     [ -n "$p" ] || continue
     case "$p" in */fixtures/*) continue ;; esac
@@ -111,8 +122,8 @@ while IFS= read -r p; do
     printf 'script\t%s\t%s\n' "$n" "$p"
 done < "$RUN/script-files.txt" >> "$ENTRIES"
 
-git -C "$REPO_ROOT" ls-files -- .claude > "$RUN/claude-files.txt" 2>/dev/null
-git -C "$REPO_ROOT" ls-files -- marketplace/plugins > "$RUN/mp-files.txt" 2>/dev/null
+ls_files_or_die "$RUN/claude-files.txt" .claude
+ls_files_or_die "$RUN/mp-files.txt" marketplace/plugins
 
 {
     grep -E '^\.claude/commands/[^/]+\.md$' "$RUN/claude-files.txt" 2>/dev/null | while IFS= read -r p; do

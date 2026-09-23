@@ -164,6 +164,26 @@ check_contains "chained: the first script in a chained Bash command is counted" 
 check_contains "chained: the second script in the SAME chained Bash command is also counted" \
     "$OUT" "script=scripts/lanes/bench/scorecard/agg-burn.sh count=1"
 
+# --- chained-jira: a single Bash command naming a jira op AND another himmel
+# script (jira-cli && b.sh) must count BOTH, not only the jira branch (round-8
+# codex-1: the old if/elif was exclusive, so a jira match short-circuited the
+# generic script scan and the chained script call was silently dropped)
+export SCORECARD_PROJECTS_DIR="$HERE/fixtures/tool-usage/chained-jira"
+OUT=$("$SCRIPT" --since 2026-01-10T00:00:00Z --until 2026-01-20T00:00:00Z \
+    --skill-cwd "$HERE/fixtures/tool-usage/skills" \
+    --skill-config-dir "$HERE/fixtures/tool-usage/skills-config" 2>/dev/null)
+rc_chained_jira=$?
+if [ "$rc_chained_jira" -eq 0 ]; then
+    echo "ok - chained-jira: tool-usage.sh exits 0"
+else
+    echo "FAIL - chained-jira: tool-usage.sh rc=$rc_chained_jira (expected 0): $OUT"
+    fails=$((fails + 1))
+fi
+check_contains "chained-jira: the jira op in a chained Bash command is counted" \
+    "$OUT" "script=jira:get count=1"
+check_contains "chained-jira: the OTHER script in the SAME chained command is also counted, not swallowed by the jira branch" \
+    "$OUT" "script=scripts/lanes/bench/scorecard/agg-burn.sh count=1"
+
 # --- command-window: a <command-name> entry outside --since/--until must not
 # count even when the transcript FILE as a whole falls inside the window
 # (codex-2: the CMDS extraction pass filters each command's own timestamp,
