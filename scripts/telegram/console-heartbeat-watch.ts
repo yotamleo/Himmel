@@ -105,6 +105,10 @@ export async function censusSessionAlive(
 ): Promise<boolean> {
   const script = join(REPO_ROOT, "scripts", "telegram", "console-census.sh");
   const p = Bun.spawn([BASH_BIN, script], { env: opts.env ?? (process.env as Record<string, string>), stdout: "pipe", stderr: "pipe" });
-  const [stdout] = await Promise.all([new Response(p.stdout).text(), p.exited]);
+  // Drain stdout AND stderr concurrently with p.exited — an unread stderr
+  // pipe fills its OS buffer and blocks the child from exiting, hanging this
+  // await forever once its diagnostics grow past that buffer.
+  const [stdout, , exitCode] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+  if (exitCode !== 0) return false; // degraded/failed scan — never trust a match from it
   return stdout.split("\n").some((line) => line.split("\t")[1] === consoleName);
 }

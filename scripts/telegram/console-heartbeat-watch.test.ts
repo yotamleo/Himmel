@@ -208,3 +208,19 @@ test("censusSessionAlive is false (never throws) when the census itself fails", 
   });
   expect(alive).toBe(false);
 });
+
+test("censusSessionAlive is false on a degraded scan even when a matching row printed (rc=3, HIMMEL-3510 codex-1)", async () => {
+  // One live pid the census CAN read (matches consoleName) plus one it
+  // CANNOT (unreadable cmdline) makes claude_sessions() print the matching
+  // row and still return rc=3 (degraded) — that rc must win, never the row.
+  const proc = join(tmp, "proc");
+  const bin = join(tmp, "bin");
+  mkcmdline(proc, 501, ["claude", "--model", "claude-sonnet-5", "-n", "HIMMEL-nextleg-2026-09-23E-console", "work"]);
+  mkdirSync(join(proc, "503"), { recursive: true });
+  writeFileSync(join(proc, "503", "cmdline"), "unreadable", { mode: 0o000 });
+  pgrepXStub(bin, [501, 503]);
+  const alive = await censusSessionAlive("HIMMEL-nextleg-2026-09-23E-console", {
+    env: { ...process.env, CLAUDE_SESSIONS_PROC: proc, PATH: `${bin}:${process.env.PATH}` },
+  });
+  expect(alive).toBe(false);
+});
