@@ -93,7 +93,12 @@ if [ -z "$FLEET_CAP" ]; then
   # shellcheck source=scripts/lib/load-dotenv.sh
   # shellcheck disable=SC1091
   . "$REPO/scripts/lib/load-dotenv.sh"
-  load_dotenv HIMMEL_FLEET_CAP
+  # HIMMEL-3532: pin to bank-preflight's OWN checkout, never the caller's CWD
+  # repo (load_dotenv with no --root resolves via the process CWD's git repo,
+  # which a launcher run from an unrelated bucket -- e.g. the luna vault --
+  # silently swaps in, finding no HIMMEL_FLEET_CAP there and falling back to
+  # the provisional default of 4).
+  load_dotenv --root "$(_load_dotenv_primary_for "$REPO")" HIMMEL_FLEET_CAP
   FLEET_CAP="${HIMMEL_FLEET_CAP:-4}"
 fi
 is_int "$FLEET_CAP" || FLEET_CAP=4
