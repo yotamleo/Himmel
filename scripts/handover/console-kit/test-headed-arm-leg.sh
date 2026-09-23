@@ -1106,6 +1106,24 @@ check "full launch --profile (trailing slash on HANDOVER_DIR): .locks deny norma
   "$(jq -c '.permissions.deny' "$d17slash2/HIMMEL-3333-slash2.leg-settings.json" 2>/dev/null)" \
   "$(jq -cn --arg d "$HANDOVER_DIR" '["EnterWorktree"] + (["Edit","Write","MultiEdit","NotebookEdit"] | map(. + "(" + $d + "/.locks/**)"))')"
 
+# HIMMEL-3285 (CR round 5, codex-1): when HANDOVER_DIR cannot be resolved at
+# all, the root/ancestor comparison has nothing to compare against - an
+# unresolved root can never be proven NOT to be the doc's own directory, so
+# the grant must be skipped rather than falling through ungated.
+d17nohandover="$tmp/c17nohandover"; mk_launch_stubs "$d17nohandover" "HIMMEL-3333-nohandover"; mkdir -p "$tmp/repo17nohandover"
+nohandover_doc="$tmp/HIMMEL-3333-nohandover-doc.md"
+printf '%s\n' '# fixture doc launched with HANDOVER_DIR unset' > "$nohandover_doc"
+rc=0
+HEADED_ARM_LEG_TARGET="$HEADED_ARM" \
+HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+KONSOLE_CMD="$d17nohandover/konsole" PGREP_CMD="$d17nohandover/pgrep" \
+LEG_REPO="$tmp/repo17nohandover" HEADED_ARM_LOCK_DIR="$d17nohandover/locks" HEADED_ARM_PROC="$d17nohandover/proc" \
+  env -u HANDOVER_DIR bash "$SCRIPT" --profile leg-impl "HIMMEL-3333-nohandover" "$nohandover_doc" "$d17nohandover/signal-never" "$PAST" "$d17nohandover/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d17nohandover" || true
+check "full launch --profile (HANDOVER_DIR unset): exit 0, launch still succeeds" "$rc" "0"
+check "full launch --profile (HANDOVER_DIR unset): additionalDirectories not granted" \
+  "$(jq -c '.permissions.additionalDirectories // "none"' "$d17nohandover/HIMMEL-3333-nohandover.leg-settings.json" 2>/dev/null)" '"none"'
+
 # The relay half of a split console is not a leg that works in a worktree:
 # its settings get no deny.
 d17r="$tmp/c17r"; mk_launch_stubs "$d17r" "HIMMEL-9999-relay"; mkdir -p "$tmp/repo17r"

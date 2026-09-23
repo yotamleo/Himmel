@@ -836,21 +836,26 @@ if [ -n "$PROFILE" ]; then
     # leg's own doc writes; the launch still succeeds. Compared as canonical
     # absolute paths (both `cd && pwd`-derived) so a lookalike prefix like
     # /a/bc is never mistaken for an ancestor of /a/b.
+    # When HANDOVER_DIR could not be resolved at all, _leg_handover_dir_norm
+    # is empty and the root/ancestor comparison below cannot run - an
+    # unknown root can never be proven safe, so treat that the same as a
+    # confirmed root/ancestor match rather than falling through to an
+    # ungated grant (CR round 5, codex-1).
     if [ -n "$DOC" ] && _leg_doc_dir="$(cd "$(dirname "$DOC")" 2>/dev/null && pwd)"; then
         _leg_doc_is_root_or_ancestor=0
-        if [ -n "$_leg_handover_dir_norm" ]; then
-            if [ "$_leg_doc_dir" = "$_leg_handover_dir_norm" ]; then
-                _leg_doc_is_root_or_ancestor=1
-            else
-                case "$_leg_handover_dir_norm" in
-                    "$_leg_doc_dir"/*)
-                        _leg_doc_is_root_or_ancestor=1
-                        ;;
-                esac
-            fi
+        if [ -z "$_leg_handover_dir_norm" ]; then
+            _leg_doc_is_root_or_ancestor=1
+        elif [ "$_leg_doc_dir" = "$_leg_handover_dir_norm" ]; then
+            _leg_doc_is_root_or_ancestor=1
+        else
+            case "$_leg_handover_dir_norm" in
+                "$_leg_doc_dir"/*)
+                    _leg_doc_is_root_or_ancestor=1
+                    ;;
+            esac
         fi
         if [ "$_leg_doc_is_root_or_ancestor" -eq 1 ]; then
-            echo "headed-arm-leg: --profile $PROFILE: leg doc directory ($_leg_doc_dir) is the handover root or an ancestor of it ($_leg_handover_dir_norm) - skipping additionalDirectories grant for it" >&2
+            echo "headed-arm-leg: --profile $PROFILE: leg doc directory ($_leg_doc_dir) is the handover root or an ancestor of it, or HANDOVER_DIR could not be resolved (HANDOVER_DIR='${HANDOVER_DIR:-}') - skipping additionalDirectories grant for it" >&2
         elif ! PROFILE_JSON="$(printf '%s' "$PROFILE_JSON" | jq --arg dir "$_leg_doc_dir" \
             '.permissions.additionalDirectories = ((.permissions.additionalDirectories // []) + [$dir])')"; then
             echo "headed-arm-leg: --profile $PROFILE: cannot add the leg doc's directory to additionalDirectories" >&2
