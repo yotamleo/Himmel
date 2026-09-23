@@ -463,10 +463,9 @@ claude --version</pre>
         changes below. Adding <span class="mono">--dry-run</span> to the
         <span class="mono">himmelctl install</span> command prints only a
         one-line summary and writes nothing; it does not list the files.
-        To preview the file-level plan, run the installer script it wraps
-        (from the project folder, with himmel downloaded to
-        <span class="mono">~/himmel</span> as in the first 5 minutes):</p>
-        <pre class="cmd">bash ~/himmel/scripts/adopt.sh --profile core --scope project --dry-run</pre>
+        To preview the file-level plan instead, run the installer script it
+        wraps &mdash; the command is at the end of
+        <a href="#undo">question 3</a>, once you also know how to undo it.</p>
         <h4>In the project folder you run it from</h4>
         <ul>
           <li>Copies 13 helper scripts into the project's
@@ -664,6 +663,13 @@ node ~/himmel/scripts/himmelctl/bin.js uninstall</pre>
           reverting it would restore the original broken stub, not undo an
           install.</li>
         </ul>
+        <p>Now that you know what the install changes and how to undo it,
+        here is the preview command <a href="#what-it-does">question 2</a>
+        mentioned (from the project folder, with himmel downloaded to
+        <span class="mono">~/himmel</span> as in the first 5 minutes): it
+        writes nothing and lists every file and setting the starter install
+        would touch.</p>
+        <pre class="cmd">bash ~/himmel/scripts/adopt.sh --profile core --scope project --dry-run</pre>
       </div>
     </div>
   </section>

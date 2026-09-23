@@ -190,6 +190,31 @@ else
   bad "the qmd detail panel must state the --purge-state keep/remove rule"
 fi
 
+# --- 4. FRESH-USER (HIMMEL-2476) -----------------------------------------------
+
+# The three first questions (what is this / what will it do to my machine /
+# how do I undo it) must be answered before the reader meets the first
+# command that actually invokes the installer -- otherwise a fresh reader can
+# copy-paste an install before they know how to undo it.
+q3_line="$(grep -n -F 'qno">Question 3' "$PAGE" | head -1 | cut -d: -f1)"
+install_cmd_line="$(grep -n -E 'adopt\.sh --profile|himmelctl/bin\.js install' "$PAGE" | head -1 | cut -d: -f1)"
+if [ -n "$q3_line" ] && [ -n "$install_cmd_line" ] && [ "$install_cmd_line" -gt "$q3_line" ]; then
+  ok "the three first questions are answered above the first install command"
+else
+  bad "an install command appears before question 3 (undo) is answered" "question3=line $q3_line, first install command=line $install_cmd_line"
+fi
+
+# No internal ticket key in reader-facing prose. A code comment
+# (<!-- ... -->) or a data attribute is fine; strip both before checking, as
+# the LINKS section above already strips markup for its own checks.
+reader_text="$(sed -E 's/<!--.*-->//g' "$PAGE" | sed -E 's/<[a-zA-Z][^>]*>//g')"
+ticket_hits="$(printf '%s' "$reader_text" | grep -o -E 'HIMMEL-[0-9]+' | sort -u | tr '\n' ' ')"
+if [ -z "$ticket_hits" ]; then
+  ok "no internal ticket key in reader-facing text"
+else
+  bad "internal ticket key(s) in reader-facing text" "$ticket_hits"
+fi
+
 echo
 printf '%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
