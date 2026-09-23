@@ -162,10 +162,18 @@ function sweepStaleSiblings(parent, ownPid) {
 // throws — the launcher write must proceed regardless (design §3.3: "never
 // fails install or update").
 function writeStandaloneBundle(repoRoot) {
+  const platform = shimPlatform();
+  // Q2 (HIMMEL-3312 S13 defaults): POSIX only. BUNDLE_FILES_WIN32 is
+  // exported so the win32 closure list has one home ahead of S14
+  // (HIMMEL-3527), but that closure is unverified -- writing an incomplete
+  // win32 bundle would route a post-checkout-deletion `uninstall` at an
+  // uninstall.ps1 that has never been proven to run from a bundle dir the
+  // way S12 proved for uninstall.sh. No-op here until S14 does that work.
+  if (platform === 'win32') return false;
+
   const dir = bundleDir();
   const parent = path.dirname(dir);
-  const platform = shimPlatform();
-  const files = platform === 'win32' ? BUNDLE_FILES_WIN32 : BUNDLE_FILES_POSIX;
+  const files = BUNDLE_FILES_POSIX;
 
   // 1. Refuse to touch anything that isn't ours: a symlink, a dir owned by
   // someone else, or a dir without a matching bundle.json marker. Same rule

@@ -2456,7 +2456,8 @@ function printUninstallFooter() {
     bundleOk = meta && meta.marker === standaloneBundleLib.BUNDLE_MARKER;
   } catch (_e) { /* no bundle, or not ours */ }
   if (bundleOk) {
-    console.log(`To uninstall later: ${nodeScriptCmd(__filename)} uninstall (works even after you delete ${primaryCheckoutRoot()}; fallback: node ${path.join(bundleDir, 'standalone.js')} uninstall)`);
+    console.log(`To uninstall later: ${nodeScriptCmd(__filename)} uninstall (works even after you delete ${primaryCheckoutRoot()}; fallback: ${nodeScriptCmd(path.join(bundleDir, 'standalone.js'))} uninstall)`);
+    // ^ nodeScriptCmd already prefixes "node " and quotes the path when needed.
   } else {
     console.log(`To uninstall later: ${nodeScriptCmd(__filename)} uninstall`);
   }
