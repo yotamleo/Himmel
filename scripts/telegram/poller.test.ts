@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readNewLines, readMeta, writeMeta, ensureSession, appendLine, sessionDir } from "./bus";
-import { ingestUpdates, repairThenIngest, loadOffset, handleInbound, handleAutoCommand, replyViaOutbox, runAndSettle, reconcile, flushOutboxes, isRetryDue, peekPending, commitPending, makeRunFn, makeAllow, makeDispatcher, makeFetchVoice, sweepStuckRunning, signalTyping, guarded, deliverAllPending, sweepAttachments, resolveRetentionMs, noticeText, parseBridgeEnv, loadBridgeEnv, bridgeEnvOrigin, makeRestart, makeBurstCoalescer, intervalEnvMs, windowEnvMs, handleBatch, RESTART_WATCHDOG_MS, getUpdatesBackoffMs, shouldAlertOutage, OUTAGE_ALERT_AFTER_MS, parseModelTag, hasReadOnlyFloor, mentionsBot, type FetchImageFn } from "./poller";
+import { ingestUpdates, repairThenIngest, loadOffset, handleInbound, handleAutoCommand, replyViaOutbox, runAndSettle, reconcile, flushOutboxes, isRetryDue, peekPending, commitPending, makeRunFn, makeAllow, makeDispatcher, makeFetchVoice, sweepStuckRunning, signalTyping, guarded, deliverAllPending, sweepAttachments, resolveRetentionMs, noticeText, parseBridgeEnv, loadBridgeEnv, bridgeEnvOrigin, makeRestart, makeBurstCoalescer, intervalEnvMs, windowEnvMs, handleBatch, RESTART_WATCHDOG_MS, getUpdatesBackoffMs, shouldAlertOutage, OUTAGE_ALERT_AFTER_MS, parseModelTag, hasReadOnlyFloor, mentionsBot, loadPluginProfilesModule, type FetchImageFn } from "./poller";
 import { readFile, writeFile, mkdir, utimes } from "node:fs/promises";
 import { GROUP_ANONYMOUS_BOT_ID, isAllowed, isOperatorIdentity, vaultForChat } from "./gate";
 import { describeEnabledOps, KNOWN_OPS } from "./auto-action";
@@ -3264,4 +3264,39 @@ test("shouldAlertOutage: silent before the threshold, fires once at it, then re-
   expect(shouldAlertOutage(firstAlertAt + 1000, start, firstAlertAt)).toBe(false);
   // A full interval after the last alert, it re-fires (still ongoing).
   expect(shouldAlertOutage(firstAlertAt + OUTAGE_ALERT_AFTER_MS, start, firstAlertAt)).toBe(true);
+});
+
+// --- loadPluginProfilesModule: mtime-keyed re-import (HIMMEL-3504) --------
+
+test("loadPluginProfilesModule re-imports fresh after the file changes on disk, never serving a stale validator", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "plugin-profiles-fixture-"));
+  const fixture = join(dir, "fixture.mjs");
+  await writeFile(fixture, "export function validateRegistry(r) { return r.v === 1 ? [] : ['stale-validator: expected v1']; }\n");
+  const t0 = new Date(Date.now() - 60_000);
+  await utimes(fixture, t0, t0);
+
+  const mod1 = await loadPluginProfilesModule(fixture);
+  expect(mod1.validateRegistry({ v: 1 })).toEqual([]);
+  expect(mod1.validateRegistry({ v: 2 })).toEqual(["stale-validator: expected v1"]);
+
+  // Simulate a merge that changes the module (new schema) without restarting
+  // the bridge: rewrite the file and bump its mtime forward.
+  await writeFile(fixture, "export function validateRegistry(r) { return r.v === 2 ? [] : ['stale-validator: expected v2']; }\n");
+  const t1 = new Date();
+  await utimes(fixture, t1, t1);
+
+  const mod2 = await loadPluginProfilesModule(fixture);
+  expect(mod2).not.toBe(mod1); // a genuine re-import, not the cached first copy
+  // The NEW validator accepts the NEW schema and rejects the old one — never
+  // a false "registry invalid" on the schema it was actually written for.
+  expect(mod2.validateRegistry({ v: 2 })).toEqual([]);
+  expect(mod2.validateRegistry({ v: 1 })).toEqual(["stale-validator: expected v2"]);
+});
+
+test("loadPluginProfilesModule serves the SAME cached import when the file's mtime has not changed", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "plugin-profiles-fixture-"));
+  const fixture = join(dir, "fixture.mjs");
+  await writeFile(fixture, "export function validateRegistry() { return []; }\n");
+  const [a, b] = await Promise.all([loadPluginProfilesModule(fixture), loadPluginProfilesModule(fixture)]);
+  expect(a).toBe(b);
 });

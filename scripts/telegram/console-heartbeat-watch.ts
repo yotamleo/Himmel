@@ -19,6 +19,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { BASH_BIN, REPO_ROOT } from "./run";
+import { killTree, SPAWN_OWN_GROUP } from "../lib/kill-tree.mjs";
 
 export type Heartbeat = {
   hb: number;
@@ -99,16 +100,34 @@ export async function checkStaleHeartbeats(
 // console both read as "not found" here — the caller only asks "should I
 // alert," and a census too broken to trust must not manufacture a false
 // "alive" that would then page the operator over nothing.
+//
+// HIMMEL-3514: a genuinely hung child (a stuck pgrep, a wedged /proc read)
+// would otherwise block this await indefinitely on one console, starving
+// checkStaleHeartbeats's scan loop for every remaining console. Bound it and
+// treat a timeout the same as any other degraded scan: sessionAlive=false,
+// matching the fail-closed "degraded scan never alerts" stance above — never
+// a manufactured "alive". SPAWN_OWN_GROUP + killTree (not a bare p.kill) so a
+// grandchild the stub/census script itself spawns doesn't survive the kill
+// and keep holding the pipes open (same defect class as HIMMEL-1956).
+export const CENSUS_TIMEOUT_MS = 10_000;
+
 export async function censusSessionAlive(
   consoleName: string,
-  opts: { env?: Record<string, string | undefined> } = {},
+  opts: { env?: Record<string, string | undefined>; timeoutMs?: number } = {},
 ): Promise<boolean> {
   const script = join(REPO_ROOT, "scripts", "telegram", "console-census.sh");
-  const p = Bun.spawn([BASH_BIN, script], { env: opts.env ?? (process.env as Record<string, string>), stdout: "pipe", stderr: "pipe" });
-  // Drain stdout AND stderr concurrently with p.exited — an unread stderr
-  // pipe fills its OS buffer and blocks the child from exiting, hanging this
-  // await forever once its diagnostics grow past that buffer.
-  const [stdout, , exitCode] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
-  if (exitCode !== 0) return false; // degraded/failed scan — never trust a match from it
+  const p = Bun.spawn([BASH_BIN, script], { ...SPAWN_OWN_GROUP, env: opts.env ?? (process.env as Record<string, string>), stdout: "pipe", stderr: "pipe" });
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; killTree(p.pid, (s: string) => p.kill(s as any)); }, opts.timeoutMs ?? CENSUS_TIMEOUT_MS);
+  let stdout: string, exitCode: number;
+  try {
+    // Drain stdout AND stderr concurrently with p.exited — an unread stderr
+    // pipe fills its OS buffer and blocks the child from exiting, hanging
+    // this await forever once its diagnostics grow past that buffer.
+    [stdout, , exitCode] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+  } finally {
+    clearTimeout(timer);
+  }
+  if (timedOut || exitCode !== 0) return false; // timed-out/degraded/failed scan — never trust a match from it
   return stdout.split("\n").some((line) => line.split("\t")[1] === consoleName);
 }

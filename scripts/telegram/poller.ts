@@ -1,7 +1,8 @@
-import { readFile, writeFile, rename, mkdir, readdir, unlink, stat } from "node:fs/promises";
+import { readFile, writeFile, rename, mkdir, readdir, unlink, stat, mkdtemp, copyFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { homedir } from "node:os";
+import { pathToFileURL } from "node:url";
+import { homedir, tmpdir } from "node:os";
 import { appendLine, atomicWrite, bridgeRoot, ensureSession, readMeta, writeMeta, sessionDir, readNewLines, repairCursorBeyondEof, truncateFullyConsumed, type Meta, type OnCursorReset } from "./bus";
 import { classify, type Route } from "./router";
 import { routeToConsole, type ConsoleRouteGate } from "./console-route";
@@ -21,7 +22,6 @@ import { checkStaleHeartbeats, censusSessionAlive, DEFAULT_STALE_MS, type Alerte
 // with no plugin-profile seam — the bridge dispatch below is the ONLY wired
 // entry point.
 import { resolveProfileSettings } from "./spawn-glm";
-import { loadRegistry, validateRegistry, mcpServersForProfile, collectMcpServerDefs } from "../lanes/plugin-profiles.mjs";
 
 // Retry backoff for a capped session (ms). On a cap, settle retry_at = now + RETRY_MS
 // so deliverAllPending's isRetryDue re-runs the session later instead of re-spawning a
@@ -1104,14 +1104,58 @@ export function hasReadOnlyFloor(cwd: string): boolean {
 // luna-correlate are deliberately excluded; qmd is the sole mcpServers entry).
 const TELEGRAM_PROFILE = "telegram";
 
+// HIMMEL-3504: poller.ts used to statically import plugin-profiles.mjs ONCE
+// at process startup (the ESM module cache), while loadRegistry() re-reads
+// plugin-profiles.json fresh on every call below — so a merge changing BOTH
+// files together left a long-running bridge validating NEW json with a
+// STALE validator, failing every dispatch with "registry invalid" (or worse,
+// silently accepting something the new schema disallows) until an operator
+// restarted it, with nothing telling them. Fix: re-import the module fresh
+// per dispatch, cache-busted on the FILE'S OWN mtime (not wall-clock) so the
+// cache only grows on a real on-disk change, never per-request — and every
+// function (loadRegistry/validateRegistry/mcpServersForProfile/
+// collectMcpServerDefs) comes from the SAME fresh import, so they can never
+// drift out of sync with each other. plugin-profiles.mjs's only imports are
+// node:fs/node:path/node:url/node:os (no local files), so busting on its own
+// mtime alone is sufficient — there is no local import graph to combine.
+//
+// A `?v=<mtime>` query-string on the specifier does NOT bust Bun's dynamic
+// import() cache (measured: two imports of the same path differing only by
+// query string return the SAME module object), so a stale-mtime key would
+// silently never re-import. Instead, on a cache miss, copy the module's
+// CURRENT bytes to a uniquely-named file and import that — a genuinely
+// distinct path forces a genuinely fresh module every time the source file's
+// mtime changes.
+type PluginProfilesModule = typeof import("../lanes/plugin-profiles.mjs");
+const pluginProfilesModuleCache = new Map<string, Promise<PluginProfilesModule>>();
+export async function loadPluginProfilesModule(modulePath: string = join(REPO_ROOT, "scripts", "lanes", "plugin-profiles.mjs")): Promise<PluginProfilesModule> {
+  const mtimeMs = (await stat(modulePath)).mtimeMs;
+  const cacheKey = `${modulePath}@${mtimeMs}`;
+  let cached = pluginProfilesModuleCache.get(cacheKey);
+  if (!cached) {
+    cached = (async () => {
+      const dir = await mkdtemp(join(tmpdir(), "plugin-profiles-cachebust-"));
+      const dest = join(dir, `plugin-profiles.${mtimeMs}.mjs`);
+      await copyFile(modulePath, dest);
+      return import(pathToFileURL(dest).href) as Promise<PluginProfilesModule>;
+    })();
+    pluginProfilesModuleCache.set(cacheKey, cached);
+  }
+  return cached;
+}
+
 // Resolves the telegram profile's mcpServers allowlist (["qmd"]) into a
 // --mcp-config JSON payload, mirroring resolveProfileSettings's --settings
 // convention (an inline JSON string, not a file path — the claude CLI accepts
 // both). undefined when the profile declares no allowlist at all (distinct
 // from an explicit [], which would still apply --strict-mcp-config with zero
 // servers). Throws on an invalid registry, exactly like resolveProfileByName.
-function resolveTelegramMcpConfig(cwd: string): string | undefined {
-  const registry = loadRegistry();
+async function resolveTelegramMcpConfig(cwd: string): Promise<string | undefined> {
+  const { loadRegistry, validateRegistry, mcpServersForProfile, collectMcpServerDefs } = await loadPluginProfilesModule();
+  // The copied module runs from a tmp dir, so its own SCRIPT_DIR-relative
+  // REGISTRY default resolves to nothing there — pass the real json path
+  // explicitly (loadRegistry accepts one) rather than relying on that default.
+  const registry = loadRegistry(join(REPO_ROOT, "scripts", "lanes", "plugin-profiles.json"));
   const errors = validateRegistry(registry);
   if (errors.length) throw new Error(`plugin-profiles: registry invalid:\n  - ${errors.join("\n  - ")}`);
   const names = mcpServersForProfile(registry, TELEGRAM_PROFILE);
@@ -1208,7 +1252,7 @@ export function makeRunFn(root: string, repoCwd: string, runImpl: (prompt: strin
     // actual session cwd, defeating deny-by-default for exactly the routed
     // spawns that most need it.
     const settings = resolveProfileSettings(TELEGRAM_PROFILE, [], sessionCwd);
-    const mcpConfig = resolveTelegramMcpConfig(repoCwd);
+    const mcpConfig = await resolveTelegramMcpConfig(repoCwd);
     const res = await runAndSettle(root, session, () => withDeadline(runImpl(buildPrompt(session, paths, filingVault, !!routedCwd), sessionCwd, permissionMode, undefined, modelOverride, settings, undefined, extraEnv, mcpConfig), deadlineMs), undefined, retryAt);
     // run.log (HIMMEL-262): persist the run's output tail — before this, a dead
     // run's stdout/stderr vanished and failures were undebuggable

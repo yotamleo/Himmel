@@ -224,3 +224,21 @@ test("censusSessionAlive is false on a degraded scan even when a matching row pr
   });
   expect(alive).toBe(false);
 });
+
+test("censusSessionAlive kills a hung child at the timeout and returns false without hanging the caller (HIMMEL-3514)", async () => {
+  const proc = join(tmp, "proc"); // must EXIST so claude_sessions() takes the `pgrep -x claude` path, not the -af lossy fallback
+  const bin = join(tmp, "bin");
+  mkdirSync(proc, { recursive: true });
+  mkdirSync(bin, { recursive: true });
+  // pgrep itself hangs — claude_sessions() never returns, so without a
+  // timeout around the Bun.spawn this await (and this test) never resolves.
+  writeFileSync(join(bin, "pgrep"), "#!/usr/bin/env bash\nif [ \"$1\" = \"-x\" ]; then sleep 30; fi\nexit 1\n", { mode: 0o755 });
+  const start = Date.now();
+  const alive = await censusSessionAlive("anything", {
+    env: { ...process.env, CLAUDE_SESSIONS_PROC: proc, PATH: `${bin}:${process.env.PATH}` },
+    timeoutMs: 200,
+  });
+  const elapsedMs = Date.now() - start;
+  expect(alive).toBe(false);
+  expect(elapsedMs).toBeLessThan(5_000);
+});
