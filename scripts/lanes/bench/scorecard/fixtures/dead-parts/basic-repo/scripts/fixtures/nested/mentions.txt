@@ -1,0 +1,5 @@
+a data file living inside a nested fixtures/ dir that happens to mention
+scripts/fixture-blind.sh and fixture-blind.sh - a real 7-day run's own repo
+tree contains this scorecard kit's own fixtures/dead-parts/ directory, so
+the reference search must exclude anything under a fixtures/ path the same
+way entry discovery already does.

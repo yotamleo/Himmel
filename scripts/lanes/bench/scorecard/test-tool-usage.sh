@@ -68,8 +68,8 @@ check_not_contains "basic: the used skill is excluded from never-used" \
     "$OUT" "never-used: scope=project-skills name=stuck-playbook"
 check_contains "basic: a guardrail-friction eval-candidate asks whether the denial is correct enforcement, not that it should go away" \
     "$OUT" "eval-candidates: defect=block-destructive-commands evidence_count=1 proposed_eval=\"reproduce block-destructive-commands's trigger; confirm whether the denial is correct enforcement or a false-positive papercut\""
-check_contains "basic: a script-error eval-candidate asks for no error, unambiguously" \
-    "$OUT" "eval-candidates: defect=scripts/lanes/bench/scorecard/agg-burn.sh evidence_count=1 proposed_eval=\"reproduce scripts/lanes/bench/scorecard/agg-burn.sh; expect no error\""
+check_contains "basic: a script-error eval-candidate asks whether the error is an expected rejection, not that it should go away (codex-5 asymmetry fix)" \
+    "$OUT" "eval-candidates: defect=scripts/lanes/bench/scorecard/agg-burn.sh evidence_count=1 proposed_eval=\"reproduce scripts/lanes/bench/scorecard/agg-burn.sh; confirm whether the error is an expected rejection or a defect\""
 check_contains "basic: an installed-but-uninvoked skill is listed never-used" \
     "$OUT" "never-used: scope=user-skills name=never-used-skill"
 check_contains "basic: an installed-but-untyped command is listed never-used" \

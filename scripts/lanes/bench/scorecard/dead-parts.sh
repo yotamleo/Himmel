@@ -226,6 +226,7 @@ classify_hits() {
 
 CLASS="$RUN/classified.tsv"
 : > "$CLASS"
+GIT_GREP_FAILS=0
 while IFS=$'\t' read -r kind name path; do
     [ -n "$kind" ] || continue
     used=0
@@ -240,7 +241,14 @@ while IFS=$'\t' read -r kind name path; do
         continue
     fi
     if [ "$kind" = "script" ]; then pattern="$path"; else pattern="$name"; fi
-    hits=$(git -C "$REPO_ROOT" grep -lF -- "$pattern" 2>/dev/null)
+    hits=$(git -C "$REPO_ROOT" grep -lF -- "$pattern" 2>/dev/null); grc=$?
+    [ "$grc" -gt 1 ] && GIT_GREP_FAILS=$((GIT_GREP_FAILS + 1))
+    # codex-1 fix: entry discovery already excludes */fixtures/* (this
+    # scorecard kit's own fixture trees, or any other repo's), so the
+    # reference search must too - otherwise a real script's name appearing
+    # inside a committed fixture (a transcript, a nested test repo) counts as
+    # a real reference and masks a genuinely dead script as WIRED.
+    hits=$(printf '%s\n' "$hits" | grep -v '/fixtures/')
     # ponytail: this basename search (script entries only, always run and
     # unioned with the full-path hits rather than gated on the full-path
     # search coming up empty - a doc's full-path reference must never
@@ -254,12 +262,18 @@ while IFS=$'\t' read -r kind name path; do
     # name at all", and the direction of the error (false WIRED, not false
     # DEAD) is the safe one for a report a human reviews before acting.
     if [ "$kind" = "script" ]; then
-        bn_hits=$(git -C "$REPO_ROOT" grep -lF -- "$(basename "$path")" 2>/dev/null)
+        bn_hits=$(git -C "$REPO_ROOT" grep -lF -- "$(basename "$path")" 2>/dev/null); bgrc=$?
+        [ "$bgrc" -gt 1 ] && GIT_GREP_FAILS=$((GIT_GREP_FAILS + 1))
+        bn_hits=$(printf '%s\n' "$bn_hits" | grep -v '/fixtures/')
         hits=$(printf '%s\n%s\n' "$hits" "$bn_hits" | grep -v '^$' | sort -u)
     fi
     cls=$(printf '%s\n' "$hits" | classify_hits "$path")
     printf '%s\t%s\t%s\t%s\n' "$kind" "$name" "$path" "$cls" >> "$CLASS"
 done < "$ENTRIES"
+
+if [ "$GIT_GREP_FAILS" -gt 0 ]; then
+    echo "dead-parts: WARNING: $GIT_GREP_FAILS git-grep call(s) failed (rc>1, not a plain no-match) during the reference search - affected entries may show a false DEAD/DOC-ONLY verdict" >&2
+fi
 
 # --- report ------------------------------------------------------------------
 echo "--- entry-point classification (since=$SINCE until=${UNTIL:-now} repo-root=$REPO_ROOT)"

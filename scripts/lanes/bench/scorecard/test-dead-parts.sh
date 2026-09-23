@@ -42,7 +42,7 @@ export SCORECARD_PROJECTS_DIR="$HERE/fixtures/dead-parts/basic-transcripts"
 OUT=$("$SCRIPT" --since 2026-09-15T00:00:00Z --repo-root "$TMPREPO" 2>/dev/null)
 
 check_contains "basic: script class counts (USED/WIRED/TEST-ONLY/DOC-ONLY/DEAD)" \
-    "$OUT" "kind=script USED=2 WIRED=3 TEST-ONLY=2 DOC-ONLY=1 DEAD=3"
+    "$OUT" "kind=script USED=2 WIRED=3 TEST-ONLY=2 DOC-ONLY=1 DEAD=4"
 check_contains "basic: command class counts" \
     "$OUT" "kind=command USED=1 WIRED=0 TEST-ONLY=0 DOC-ONLY=0 DEAD=1"
 check_contains "basic: skill class counts" \
@@ -50,7 +50,7 @@ check_contains "basic: skill class counts" \
 check_contains "basic: agent class counts" \
     "$OUT" "kind=agent USED=1 WIRED=1 TEST-ONLY=0 DOC-ONLY=0 DEAD=1"
 check_contains "basic: totals line sums every kind" \
-    "$OUT" "totals: USED=5 WIRED=4 TEST-ONLY=2 DOC-ONLY=1 DEAD=6"
+    "$OUT" "totals: USED=5 WIRED=4 TEST-ONLY=2 DOC-ONLY=1 DEAD=7"
 check_contains "basic: transcript coverage line beside the table" \
     "$OUT" "coverage: roots=1 discovered=1 parsed=1 skipped=0"
 
@@ -65,7 +65,9 @@ check_contains "basic: WIRED script whose own self-referencing header used to ma
 check_contains "basic: WIRED script whose own full-path doc mention used to mask a real basename-only code caller (codex-2 unmasking fix)" \
     "$OUT" $'script\tdoc-and-code\tscripts/doc-and-code.sh\tWIRED'
 check_contains "basic: the basename-only caller itself has no reference anywhere and stays DEAD" \
-    "$OUT" $'script\trelative-caller\tscripts/relative-caller.sh'
+    "$OUT" $'script\trelative-caller\tscripts/relative-caller.sh\tDEAD'
+check_contains "basic: a mention living inside a nested fixtures/ dir does not count as a reference (codex-1 fixture-blind-spot fix)" \
+    "$OUT" $'script\tfixture-blind\tscripts/fixture-blind.sh\tDEAD'
 check_contains "basic: plugin-qualified Skill tool_use (fixture-plugin:used-skill) still matches the bare discovered skill name" \
     "$OUT" $'skill\tused-skill\t.claude/skills/used-skill/SKILL.md\tUSED'
 check_contains "basic: Agent tool_use subagent_type marks a zero-static-reference agent USED" \
@@ -75,17 +77,17 @@ check_contains "basic: a Bash command with an embedded newline still counts its 
 
 check_contains "basic: DEAD list header" "$OUT" "--- DEAD (no reference anywhere, no transcript call)"
 check_contains "basic: DEAD script with only a self-referencing header comment stays DEAD (self-match excluded)" \
-    "$OUT" $'script\tqux-deadd\tscripts/qux-deadd.sh'
-check_contains "basic: DEAD command" "$OUT" $'command\tdead-cmd\t.claude/commands/dead-cmd.md'
-check_contains "basic: DEAD skill" "$OUT" $'skill\tdead-skill\t.claude/skills/dead-skill/SKILL.md'
-check_contains "basic: DEAD agent" "$OUT" $'agent\tdead-agent\t.claude/agents/dead-agent.md'
+    "$OUT" $'script\tqux-deadd\tscripts/qux-deadd.sh\tDEAD'
+check_contains "basic: DEAD command" "$OUT" $'command\tdead-cmd\t.claude/commands/dead-cmd.md\tDEAD'
+check_contains "basic: DEAD skill" "$OUT" $'skill\tdead-skill\t.claude/skills/dead-skill/SKILL.md\tDEAD'
+check_contains "basic: DEAD agent" "$OUT" $'agent\tdead-agent\t.claude/agents/dead-agent.md\tDEAD'
 
 check_contains "basic: DOC-ONLY list header" "$OUT" "--- DOC-ONLY (referenced only from docs/*.md)"
 check_contains "basic: DOC-ONLY script referenced only from docs/readme.md" \
-    "$OUT" $'script\tquux-doc\tscripts/quux-doc.sh'
+    "$OUT" $'script\tquux-doc\tscripts/quux-doc.sh\tDOC-ONLY'
 
 check_contains "basic: precedence - a script referenced by BOTH a test file and a doc lands TEST-ONLY, not DOC-ONLY" \
-    "$OUT" $'script\tprecedence-test\tscripts/precedence-test.sh'
+    "$OUT" $'script\tprecedence-test\tscripts/precedence-test.sh\tTEST-ONLY'
 dead_section=$(printf '%s\n' "$OUT" | sed -n '/^--- DEAD /,/^--- DOC-ONLY /p')
 if printf '%s\n' "$dead_section" | grep -q 'precedence-test'; then
     echo "FAIL - precedence: precedence-test.sh must not appear in the DEAD list"
@@ -110,7 +112,7 @@ OUT2=$("$SCRIPT" --since 2026-09-15T00:00:00Z --repo-root "$TMPREPO" 2>/dev/null
 check_contains "out-of-window: the pre-window transcript is discovered but skipped, not silently dropped" \
     "$OUT2" "coverage: roots=1 discovered=1 parsed=0 skipped=1 (out-of-window=1)"
 check_contains "out-of-window: a Bash call before --since does not count as USED - the script stays DEAD" \
-    "$OUT2" $'script\tout-of-window\tscripts/out-of-window.sh'
+    "$OUT2" $'script\tout-of-window\tscripts/out-of-window.sh\tDEAD'
 
 # --- linked worktree: --repo-root pointing at a worktree whose .git is a
 # FILE (`gitdir: ...`), not a directory - every leg runs from exactly this

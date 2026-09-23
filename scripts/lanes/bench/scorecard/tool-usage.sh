@@ -149,7 +149,7 @@ while IFS= read -r f; do
         | $uses[]
         | select(.ts != null)
         | select((.ts | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) >= $since_epoch and (.ts | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) < $until_epoch)
-        | . + {is_error: ($ridx[.id].is_error // null), text: ($ridx[.id].text // null), role: $role, file: $file}
+        | . + {is_error: (if $ridx[.id] then $ridx[.id].is_error else null end), text: ($ridx[.id].text // null), role: $role, file: $file}
     ' > "$events_f" 2>>"$JQ_FAILS"; then
         printf '%s\n' "$f" >> "$JQ_FAILS"; sc_cov jq-failed; continue
     fi
@@ -323,14 +323,16 @@ echo "--- 8. eval-candidates"
 # A hook/classifier denial is not itself a defect - it may be correct
 # enforcement (e.g. a destructive-command block working as designed), so its
 # proposed eval asks whether the denial is right, not that it should go away.
-# A script error has no such ambiguity: "expect no error" is the correct ask.
+# A script error carries the same ambiguity (codex-5): the script may have
+# exited non-zero on purpose (a validator correctly rejecting bad input), so
+# the proposed eval asks whether the error is expected, not that it is a bug.
 jq -n -r --slurpfile hookfriction "$FRICTION" --slurpfile scripted "$SCRIPTED" '
     ($hookfriction | map(select(.friction!=null)) | group_by(.friction.key) |
       map({defect: .[0].friction.key, evidence: length,
            proposed_eval: "reproduce \(.[0].friction.key)'"'"'s trigger; confirm whether the denial is correct enforcement or a false-positive papercut"})) as $friction_rows
     | ($scripted | map(select(.script!=null and .is_error==true)) | group_by(.script) |
       map({defect: .[0].script, evidence: length,
-           proposed_eval: "reproduce \(.[0].script); expect no error"})) as $error_rows
+           proposed_eval: "reproduce \(.[0].script); confirm whether the error is an expected rejection or a defect"})) as $error_rows
     | ($friction_rows + $error_rows) | sort_by(-.evidence)[]
     | "eval-candidates: defect=\(.defect) evidence_count=\(.evidence) proposed_eval=\"\(.proposed_eval)\" existing_suite=none"
 '
