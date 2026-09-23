@@ -609,6 +609,26 @@ console.log(JSON.stringify(runProbe(item, ctx)));
 ")
 echo "$outSK1missing" | jq -e '.actual == "degraded"' >/dev/null \
   || fail "settings-key verifyScript: statusLine.command pointing at a missing script must NOT read green (got: $outSK1missing)"
+# HIMMEL-3332 (HIMMEL-3312): wire-statusline.sh now writes the GUARDED form
+# `[ -f "<js>" ] && exec node "<js>" || true`. The probe must still resolve it —
+# green on an existing script, degraded on a missing one — not report a shape
+# mismatch.
+for sk1g_case in present missing; do
+  sk1g="$work/sk1g-$sk1g_case"; mkdir -p "$sk1g/.claude"
+  if [ "$sk1g_case" = present ]; then sk1g_js="$(winpath "$sk1_script")"; else sk1g_js="$(winpath "$work")/no-such-hud-index.js"; fi
+  jq -n --arg js "$sk1g_js" '{statusLine:{command:("[ -f \"" + $js + "\" ] && exec node \"" + $js + "\" || true")}}' > "$sk1g/.claude/settings.json"
+  outSK1g=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'wiring-statusline');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$(winpath "$sk1g")', scope: 'project', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+  if [ "$sk1g_case" = present ]; then want_sk1g=present; else want_sk1g=degraded; fi
+  echo "$outSK1g" | jq -e --arg w "$want_sk1g" '.actual == $w' >/dev/null \
+    || fail "settings-key verifyScript: guarded statusLine form, $sk1g_case script, want $want_sk1g (got: $outSK1g)"
+  case "$outSK1g" in *"does not match the expected"*) fail "settings-key verifyScript: guarded form read as a shape mismatch (got: $outSK1g)" ;; esac
+done
 echo "ok: settings-key dot-path + verifyScript (wiring-statusline) — present/absent, missing script degrades"
 
 # ── settings-key: simple non-dotted key + verifyPluginSet (claude-plugins-pluginSet) ──

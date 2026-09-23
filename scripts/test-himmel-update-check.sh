@@ -190,7 +190,8 @@ assert_contains "all-installed: clean message" "all 3 @himmel plugins installed"
 echo "Test 5: rewire_statusline → migrates only existing himmel statusLine wiring"
 REAL_ROOT="$(cd "$(dirname "$SCRIPT")/.." && pwd)"
 REAL_ROOT_FWD="${REAL_ROOT//\\//}"
-EXPECTED_HUD_CMD="node \"$REAL_ROOT_FWD/marketplace/plugins/claude-hud/dist/index.js\""
+EXPECTED_HUD_JS="$REAL_ROOT_FWD/marketplace/plugins/claude-hud/dist/index.js"
+EXPECTED_HUD_CMD="[ -f \"$EXPECTED_HUD_JS\" ] && exec node \"$EXPECTED_HUD_JS\" || true"
 
 run_rewire_statusline() {
     local p="$1"

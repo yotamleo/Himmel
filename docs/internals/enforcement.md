@@ -15,7 +15,11 @@ Stages currently wired:
 
 - **Format/lint (pre-commit):** trailing-whitespace, end-of-file-fixer,
   check-yaml, check-json, shellcheck.
-- **Secrets (pre-commit):** gitleaks.
+- **Secrets (pre-commit):** gitleaks (`.gitleaks.toml`), including the
+  `himmel-retired-org-name` rule (HIMMEL-3508): a retired third-party org's
+  name must never reappear in this repo's tracked content (gitleaks scans
+  staged/tracked files, not commit-message or PR-metadata text — those stay
+  a contributor discipline point, not a structurally enforced surface).
 - **Branch hygiene (pre-commit):** worktree-isolation (blocks commit when
   branch == main), merged-branch check (warns on commits to already-merged
   branches).
@@ -1535,8 +1539,8 @@ treating it as a mode-flip would be a pure false positive.
 
 ### `block-edit-live-settings.sh` — live-settings write guard (HIMMEL-2360)
 
-Fires on Edit/Write/MultiEdit/NotebookEdit, plus a Bash arm for `>`/`>>`
-redirect targets. Denies a write to a LIVE settings file — basename
+Fires on Edit/Write/MultiEdit/NotebookEdit, plus a textual Bash/PowerShell
+arm (below). Denies a write to a LIVE settings file — basename
 `settings.json` or `settings.local.json` with an immediate `.claude` parent —
 when EITHER it sits under `$HOME/.claude/` (the operator's user-scope live
 config) OR its repo is the PRIMARY checkout: `git rev-parse --git-dir` and
@@ -1563,10 +1567,70 @@ settings.json, a hook-wiring change (the "three places" rule in
 PR — the operator no longer hand-edits `.claude/settings.json` inside each
 leg's worktree for every hook-wiring change.
 
-**Not a complete write fence** — covers the four file-editing tools plus
-Bash `>`/`>>` redirect targets only; `sed -i`, `cp`, `tee`, and `mv` are NOT
-covered. Bypass: `EDIT_LIVE_SETTINGS_OK=1` (launching shell only, same
-convention as `EDIT_ON_MAIN_OK`).
+**The Bash/PowerShell arm is textual and blunt (HIMMEL-1525, HIMMEL-3468).**
+It does not parse commands. It fires when the command text names
+`settings.json`/`settings.local.json` (rule 1, any verb) or names a `.claude`
+directory together with a copy-shaped verb (`cp`/`mv`/`install`/`rsync`/`ln`/
+`dd`/`tee`) or `-t`/`--target-directory` (rule 2). It then denies when the
+mention is live: the cwd is a primary checkout or is in no repo at all; the
+text names the primary root or `$HOME`'s `.claude` (`<home>/.claude`,
+`$HOME/.claude`, `${HOME}/.claude`, `~/.claude`, `~user/.claude`, with or
+without a trailing `/`); the command contains `..` anywhere; or it contains a
+`cd`/`pushd`/`popd` word or a case-sensitive `-C`/`--chdir` word (`git -C`,
+`make -C`, `env -C`). The worktree-relative exemption is judged against the
+PreToolUse cwd, and a `..` climb or a directory change in the same command
+moves the real target: from `<primary>/.claude/worktrees/<wt>`,
+`../../settings.json` is the primary's file, whatever the verb. Rule 1 lets through a bare
+read (`cat`/`head`/`tail`/`grep`/`rg`/`diff`/`wc`/`less`/`jq`/`git
+diff|show|log|status|blame`) that has no chaining, pipe or redirect.
+
+Word boundaries around the verbs and around `cd` are the **complement of a
+word character**, not a list of shell metacharacters. An enumerated class
+missed `(`, `\`, `"` and `'` in successive review rounds. The complement
+covers any metacharacter without listing it, and a verb inside a word
+(`add`, `scp`) does not match. Quotes and backslashes are deleted from the
+command text first, because the shell drops them inside a word (`c\p`,
+`c""p` and `settings.js\on` spell what they name). A line continuation
+(backslash-newline) is removed as a pair. The PowerShell arm deletes quotes
+and backticks instead (backtick-newline as a pair), and folds `\` to `/`.
+Then `//` and `/./` are collapsed to `/`. A linked worktree's own absolute
+root, with its trailing `/`, is blanked out before the primary-root match, so
+a nested worktree can write its own settings.
+
+ANSI-C quoting (`$'\x2e\x2e'`, `settings$'\x2e'json`) can spell any byte, so
+it is not decoded. Any `$'` in a command that also contains the substring
+`settings` or `claude` counts as a live settings mention, whatever the cwd.
+Line continuations are joined before this check, because bash joins
+`$\<newline>'` into `$'` before it reads words.
+
+**Accepted false denies** (each has a test row): a harmless `cd` plus a
+worktree-settings mention; any `..` beside a worktree-settings mention
+(`cp ../notes.txt .claude/settings.json`); any `$'` beside a `settings` or
+`claude` substring, even for the worktree's own copy; a `cat >> other.md` whose heredoc
+prose names `settings.json` (the hook does not parse where the bytes land);
+and a read of the file piped or redirected onward.
+
+**Known residuals** — the hook matches text, so it misses a write whose text
+does not name the file or its directory in a form above:
+
+- a command that names neither `settings.json` nor a `.claude` directory
+  but writes one anyway: `tar -C … -x`, `unzip -d`,
+  `git checkout <ref> -- .claude`, or a directory copy whose source holds
+  the file (HIMMEL-3499);
+- a directory change by another spelling: `find … -exec`, or a directory
+  flag with another name (`tar --directory`);
+- a name built at run time: variables (including `${var@E}` escape
+  expansion), `$(…)` and backtick substitution, `printf %b`, and globs;
+- an ANSI-C word that escapes the `settings` or `claude` letters themselves
+  (`$'\x73ettings.json'`);
+- symlinks;
+- an absolute path into a second clone of the repo, other than this
+  session's own primary checkout;
+- a POSIX-mount spelling (`/c/Users/…`) of a Windows drive root.
+
+Bypass:
+`EDIT_LIVE_SETTINGS_OK=1` (launching shell only, same convention as
+`EDIT_ON_MAIN_OK`).
 
 ### `block-read-secrets.sh` — pre-read guard
 

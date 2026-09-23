@@ -382,11 +382,12 @@ assert_rc "51 bash absolute-path /bin/cp into primary .claude/ dir denies" 2 \
 assert_rc "52 bash relative traversal from nested worktree into primary settings.json denies" 2 \
     "$(bash_rc_of "$SANDBOX/primary/.claude/worktrees/feat+x" "echo pwned > ../../../.claude/settings.json")"
 
-# 53 (v2 CR round 3, codex-1 control): an unrelated `..` mention and an
-# unrelated `.claude/` destination, not adjacent, must stay ALLOW — the
-# traversal match is `../.claude/` as one contiguous string, not `..`
-# anywhere plus `.claude/` anywhere.
-assert_rc "53 bash unrelated .. and .claude mention (non-adjacent) allows" 0 \
+# 53 (was a v2 CR round 3 ALLOW control): an unrelated `..` next to the
+# worktree's own settings is now an accepted false deny. Any `..` in a
+# command that names settings voids the worktree exemption (HIMMEL-3468,
+# console ruling on 1146): the hook cannot tell which word the `..` climbs
+# from, and `../../settings.json` from a nested worktree is the primary's.
+assert_rc "53 accepted false deny: unrelated .. beside the worktree's own settings denies" 2 \
     "$(bash_rc_of "$WT2" "cp ../backup-notes.txt .claude/settings.json")"
 
 # 54 (v2 CR round 3, codex-3): a quoted RESOLVED $HOME path with the closing
@@ -420,10 +421,213 @@ assert_rc "56 bash quoted dir-dest with no trailing slash denies" 2 \
 assert_rc "57 bash mention of settings.json from a non-git cwd with unresolved HOME denies (fail-closed)" 2 \
     "$(bash_rc_of "$SANDBOX" "echo pwned > .claude/settings.json" -u HOME)"
 
+# 58-74 (HIMMEL-3468): the post-#1115 fail-opens, each RED against da43ee9f.
+# Every DENY row below has a baseline sibling in rows 9/26/34/B-rows that
+# already denied at da43ee9f, so the row proves the prefix/spelling is what
+# used to walk past the hook — not that the target was never guarded.
+NESTED_WT="$SANDBOX/primary/.claude/worktrees/feat+x"
+
+# 58-61: a cd/pushd earlier in the same command moves the real write target
+# away from the PreToolUse cwd the worktree-relative exemption was judged on.
+assert_rc "58 cd ../../.. from nested worktree then redirect into settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cd ../../.. && echo x > .claude/settings.json")"
+assert_rc "59 cd \"\$HOME\" then redirect into settings.json denies" 2 \
+    "$(bash_rc_of "$WT2" "cd \"\$HOME\" && echo x > .claude/settings.json" HOME="$FAKEHOME")"
+assert_rc "60 cd ../../.. then cp -r into .claude/ dir denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cd ../../.. && cp -r payload/. .claude/")"
+assert_rc "61 pushd ../../.. then sed -i settings.json denies (verb-agnostic)" 2 \
+    "$(bash_rc_of "$NESTED_WT" "pushd ../../.. && sed -i s/a/b/ .claude/settings.json")" # gnu-ok: fixture text parsed by the hook, never executed
+
+# 62-63: a quote character directly before the write verb.
+assert_rc "62 bash -c \"cp -r payload .claude/\" from primary denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "bash -c \"cp -r /tmp/payload .claude/\"")"
+assert_rc "63 bash -c 'cp -r payload \$HOME/.claude/' denies" 2 \
+    "$(bash_rc_of "$WT2" "bash -c 'cp -r /tmp/payload \$HOME/.claude/'" HOME="$FAKEHOME")"
+
+# 64-66 (codex-4): `(` or `\` directly before the verb skipped rule 2.
+assert_rc "64 subshell (cp -r payload \$HOME/.claude/) denies" 2 \
+    "$(bash_rc_of "$WT2" "(cp -r /tmp/payload/. \$HOME/.claude/)" HOME="$FAKEHOME")"
+assert_rc "65 backslash \\cp -r payload \$HOME/.claude/ denies" 2 \
+    "$(bash_rc_of "$WT2" "\\cp -r /tmp/payload/. \$HOME/.claude/" HOME="$FAKEHOME")"
+assert_rc "66 subshell (cp -r payload <primary>/.claude/) denies" 2 \
+    "$(bash_rc_of "$WT2" "(cp -r /tmp/payload/. $PRIMARY/.claude/)")"
+
+# 67 (codex-2 round 4): quotes were stripped from the command but not from
+# the resolved root, so an apostrophe-bearing $HOME never matched.
+assert_rc "67 quoted abs path into an apostrophe-bearing \$HOME denies" 2 \
+    "$(bash_rc_of "$WT2" "echo x > '$APOS_PRIMARY'/.claude/settings.json" HOME="$APOS_PRIMARY")"
+
+# 68 (codex-3): a PowerShell backslash spelling of $HOME's settings.json.
+FAKEHOME_BS=$(printf '%s' "$FAKEHOME" | tr '/' "\\\\")
+assert_rc "68 powershell backslash path into \$HOME settings.json denies" 2 \
+    "$(powershell_rc_of "$WT2" "Set-Content -Path $FAKEHOME_BS\\.claude\\settings.json -Value x" HOME="$FAKEHOME")"
+
+# 69 (codex-1, fail-closed over-deny): a nested worktree writing its OWN
+# settings.json by absolute path contains the primary root as a substring,
+# which must not make it "live" -> ALLOW (DENIED at da43ee9f).
+assert_rc "69 nested worktree abs write to its own settings.json allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "echo x > $NESTED_WT/.claude/settings.json")"
+
+# 70-72: accepted false denies, asserted so they are documented behaviour,
+# not surprises. A cd anywhere voids the worktree-relative exemption even
+# when the cd is harmless (70); a heredoc whose PROSE names settings.json is
+# a write (`>>`) whose target the hook does not parse (71, the console's
+# FD-2); a read piped onward is no longer a bare allowlisted read (72, FD-1's
+# piped form).
+assert_rc "70 accepted false deny: harmless cd + worktree settings write denies" 2 \
+    "$(bash_rc_of "$WT2" "cd . && echo x > .claude/settings.json")"
+assert_rc "71 accepted false deny: cat >> other file with settings.json in heredoc prose denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "cat >> /tmp/doc.md <<'EOF'
+- avoided .claude/settings.json
+EOF")"
+assert_rc "72 accepted false deny: piped grep naming settings.json from primary denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "grep -rl x scripts .claude/settings.json docs | head")"
+
+# 73-74 controls: FD-1's exact spelling stays a bare allowlisted read, and a
+# worktree's own relative write with no cd stays open.
+assert_rc "73 bare grep with settings.json as a search path allows (FD-1)" 0 \
+    "$(bash_rc_of "$PRIMARY" "grep -rl \"block-edit-live-settings\" scripts .claude/settings.json docs")"
+assert_rc "74 worktree relative settings write without cd allows" 0 \
+    "$(bash_rc_of "$WT2" "echo x > .claude/settings.json")"
+
+# 75-77: row 69's own-root strip must not open the primary. Regression
+# guards (these already denied at da43ee9f): a nested worktree naming the
+# PRIMARY's settings (75), climbing back out of its own root with `..` (76,
+# which voids the strip), and naming both its own and the primary's (77).
+assert_rc "75 nested worktree write to the primary's settings.json still denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "echo x > $PRIMARY/.claude/settings.json")"
+assert_rc "76 nested worktree <own-root>/../../settings.json still denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "echo x > $NESTED_WT/../../settings.json")"
+assert_rc "77 nested worktree naming its own AND the primary's settings still denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "echo x > $NESTED_WT/.claude/settings.json; echo y > $PRIMARY/.claude/settings.json")"
+
+# 78 control: the verb boundary is the complement of a word character, so a
+# verb embedded in a word (`add` holds `dd`) is not a write verb — worktree
+# creation from the primary keeps working.
+assert_rc "78 git worktree add under .claude/worktrees from primary allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "git worktree add .claude/worktrees/y -b y")"
+
+# 79-82: an escape or empty quote INSIDE a word is dropped by the shell
+# (`c\p` and `c""p` run cp, `settings.js\on` names settings.json), so the
+# text is matched with quotes and backslashes removed — PowerShell's escape
+# is the backtick instead.
+assert_rc "79 intra-word backslash c\\p -r into \$HOME/.claude/ denies" 2 \
+    "$(bash_rc_of "$WT2" "c\\p -r /tmp/payload/. \$HOME/.claude/" HOME="$FAKEHOME")"
+assert_rc "80 intra-word empty quotes c\"\"p -r into \$HOME/.claude/ denies" 2 \
+    "$(bash_rc_of "$WT2" "c\"\"p -r /tmp/payload/. \$HOME/.claude/" HOME="$FAKEHOME")"
+assert_rc "81 intra-word backslash in settings.js\\on from primary denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "echo x > .claude/settings.js\\on")"
+assert_rc "82 powershell backtick in settings.js\`on from primary denies" 2 \
+    "$(powershell_rc_of "$PRIMARY" "Set-Content -Path .claude/settings.js\`on -Value x")"
+
+# 83: the own-root strip needs a path boundary. A worktree whose root is a
+# string prefix of the primary's (`<sandbox>/prim` vs `<sandbox>/primary`)
+# must not blank out the front of the primary's path and hide the match.
+PREFIX_WT="$SANDBOX/prim"
+git -C "$SANDBOX/primary" worktree add -q "$PREFIX_WT" -b feat/prim >/dev/null 2>&1 || {
+    echo "FATAL: could not create the prefix worktree fixture" >&2
+    exit 1
+}
+assert_rc "83 worktree whose root prefixes the primary's still denies the primary's settings" 2 \
+    "$(bash_rc_of "$PREFIX_WT" "echo x > $PRIMARY/.claude/settings.json")"
+
+# 84-86: a line continuation (backslash-newline in Bash, backtick-newline in
+# PowerShell) vanishes entirely, so a name split across one still spells it.
+NL='
+'
+assert_rc "84 settings.js<backslash-newline>on from primary denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "echo x > .claude/settings.js\\${NL}on")"
+assert_rc "85 c<backslash-newline>p -r into \$HOME/.claude/ denies" 2 \
+    "$(bash_rc_of "$WT2" "c\\${NL}p -r /tmp/payload/. \$HOME/.claude/" HOME="$FAKEHOME")"
+assert_rc "86 powershell settings.js<backtick-newline>on from primary denies" 2 \
+    "$(powershell_rc_of "$PRIMARY" "Set-Content -Path .claude/settings.js\`${NL}on -Value x")"
+
+# 87-91: a relative `..` climb from a worktree cwd. The nested worktree's
+# `../../settings.json` IS the primary's live file, whatever the verb, so any
+# `..` in a command that names settings voids the worktree exemption.
+assert_rc "87 nested worktree echo > ../../settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "echo x > ../../settings.json")"
+assert_rc "88 nested worktree cp /tmp/x ../../settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp /tmp/x ../../settings.json")"
+assert_rc "89 nested worktree sed -i ../../settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "sed -i s/a/b/ ../../settings.json")"
+assert_rc "90 nested worktree /proc/self/cwd/../../settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "echo x > /proc/self/cwd/../../settings.json")"
+assert_rc "91 nested worktree git -C ../../.. checkout -- .claude/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "git -C ../../.. checkout -- .claude/settings.json")"
+
+# 92: a `-C <dir>` word moves the target like a cd does.
+assert_rc "92 git -C ~ checkout -- .claude/settings.json denies" 2 \
+    "$(bash_rc_of "$WT2" "git -C ~ checkout -- .claude/settings.json" HOME="$FAKEHOME")"
+
+# 93-97: `//` and `/./` name the same path as `/`, so they are collapsed
+# before any root is matched.
+assert_rc "93 <home>//.claude/settings.json denies" 2 \
+    "$(bash_rc_of "$WT2" "echo x > $FAKEHOME//.claude/settings.json" HOME="$FAKEHOME")"
+assert_rc "94 \$HOME//.claude/settings.json denies" 2 \
+    "$(bash_rc_of "$WT2" "echo x > \$HOME//.claude/settings.json" HOME="$FAKEHOME")"
+assert_rc "95 ~/./.claude/settings.json denies" 2 \
+    "$(bash_rc_of "$WT2" "echo x > ~/./.claude/settings.json" HOME="$FAKEHOME")"
+assert_rc "96 <sandbox>//primary/.claude/settings.json denies" 2 \
+    "$(bash_rc_of "$WT2" "echo x > $SANDBOX//primary/.claude/settings.json")"
+assert_rc "97 <sandbox>/./primary/.claude/settings.json denies" 2 \
+    "$(bash_rc_of "$WT2" "echo x > $SANDBOX/./primary/.claude/settings.json")"
+
+# 98-100: a `~user` home, and `~/.claude` named as a directory with no
+# trailing slash.
+assert_rc "98 ~user/.claude/settings.json denies" 2 \
+    "$(bash_rc_of "$WT2" "echo x > ~someone/.claude/settings.json" HOME="$FAKEHOME")"
+assert_rc "99 cp /tmp/x ~/.claude from a worktree denies" 2 \
+    "$(bash_rc_of "$WT2" "cp /tmp/settings.json ~/.claude" HOME="$FAKEHOME")"
+assert_rc "100 cp /tmp/x ~/.claude from a non-repo cwd denies" 2 \
+    "$(bash_rc_of "$SANDBOX" "cp /tmp/settings.json ~/.claude" HOME="$FAKEHOME")"
+
+# 101: a cwd outside any repo has no worktree to exempt, so a relative
+# mention resolves to whatever sits there — here $HOME's own settings.
+assert_rc "101 relative .claude/settings.json write with cwd=\$HOME denies" 2 \
+    "$(bash_rc_of "$FAKEHOME" "echo x > .claude/settings.json" HOME="$FAKEHOME")"
+
+# 102-105 controls: the new rules must not reach these.
+assert_rc "102 git -C <primary>/.claude/worktrees/x status allows" 0 \
+    "$(bash_rc_of "$WT2" "git -C $PRIMARY/.claude/worktrees/x status")"
+assert_rc "103 ls .claude/worktrees from primary allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "ls .claude/worktrees")"
+assert_rc "104 cp /tmp/x .claude/ from a worktree allows" 0 \
+    "$(bash_rc_of "$WT2" "cp /tmp/x .claude/")"
+assert_rc "105 grep -C 3 on the worktree's own settings allows" 0 \
+    "$(bash_rc_of "$WT2" "grep -C 3 x .claude/settings.json")"
+
+# 106-109: ANSI-C quoting spells any byte, so a `$'` beside a settings or
+# claude substring is live, undecoded (console round-2 NO-GO).
+assert_rc "106 ANSI-C \$'\\x2e\\x2e' climb from a nested worktree denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'echo x > $'"'"'\x2e\x2e'"'"'/$'"'"'\x2e\x2e'"'"'/settings.json')"
+assert_rc "107 ANSI-C split settings\$'\\x2e'json from primary denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'echo x > .claude/settings$'"'"'\x2e'"'"'json')"
+assert_rc "108 ANSI-C split settings name from a worktree denies (accepted false deny)" 2 \
+    "$(bash_rc_of "$WT2" 'echo x > .claude/settings$'"'"'\x2e'"'"'json')"
+assert_rc "109 ANSI-C with no settings/claude mention allows" 0 \
+    "$(bash_rc_of "$WT2" 'printf $'"'"'a\tb\n'"'"' > /tmp/out.json')"
+# 110: ANSI-C spelled verb (`$'\x63\x70'` = cp) into the home .claude (CodeRabbit).
+# shellcheck disable=SC2016  # $HOME is literal command text for the hook
+assert_rc "110 ANSI-C spelled cp into \$HOME/.claude from a worktree denies" 2 \
+    "$(bash_rc_of "$WT2" '$'"'"'\x63\x70'"'"' -r /tmp/payload/. "$HOME/.claude/"')"
+
+# 111-114: a line continuation between `$` and `'` (LF and CRLF) still makes
+# ANSI-C quoting — bash joins the lines before it reads words (console E NO-GO).
+for eol in LF CRLF; do
+    if [ "$eol" = LF ]; then cont="\$\\"$'\n'; else cont="\$\\"$'\r\n'; fi
+    assert_rc "111/113 continued ANSI-C climb from a nested worktree denies ($eol)" 2 \
+        "$(bash_rc_of "$NESTED_WT" "echo x > ${cont}'\\x2e\\x2e'/${cont}'\\x2e\\x2e'/settings.json")"
+    # shellcheck disable=SC2016  # $HOME is literal command text for the hook
+    assert_rc "112/114 continued ANSI-C cp into \$HOME/.claude denies ($eol)" 2 \
+        "$(bash_rc_of "$WT2" "${cont}'\\x63\\x70' -r /tmp/payload/. \"\$HOME/.claude/\"")"
+done
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true
 git -C "$SANDBOX/primary" worktree remove --force "$WT2" 2>/dev/null || true
+git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/prim" 2>/dev/null || true
 rm -rf "$SANDBOX" 2>/dev/null || true
 
 if [ "$FAILED" -gt 0 ]; then

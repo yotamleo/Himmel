@@ -567,6 +567,12 @@ claude --version</pre>
         claiming success. The commands assume himmel is downloaded to
         <span class="mono">~/himmel</span>, which is what step 3 of the
         first-5-minutes path below does.</p>
+        <p><b>Undo first, then delete the download.</b> The uninstaller
+        lives in the himmel download, so deleting
+        <span class="mono">~/himmel</span> first leaves you without it.
+        If you have already deleted the download, the status line goes quiet
+        rather than failing; download himmel again to the same place and run
+        the uninstaller.</p>
         <pre class="cmd"># preview only: prints the footprint and changes nothing
 node ~/himmel/scripts/himmelctl/bin.js uninstall --dry-run
 # the real thing (asks before it acts)
