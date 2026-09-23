@@ -2058,7 +2058,7 @@ fx_outcome() {
 # a row decided "anchor" for another reason (a failed hash, an ODD tree)
 # cannot pass as the byte comparison.
 fx_bytes_differ() { # fx_bytes_differ <path> - the last fx_run's stderr names <path> as differing
-  grep -F "differ from the anchor's" "$tmp/fx-last.err" 2>/dev/null | grep -qF " $1 " && echo yes || echo no
+  grep -F "differ from the anchor's" "$tmp/fx-last.err" 2>/dev/null | grep -F " $1 " >/dev/null && echo yes || echo no
 }
 
 # T41 control: an untouched worktree still decides "no" (the byte comparison
