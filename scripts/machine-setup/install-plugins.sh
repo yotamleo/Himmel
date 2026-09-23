@@ -95,6 +95,8 @@ command -v claude  >/dev/null || { echo "ERROR: claude CLI required on PATH" >&2
 # helpers are tracked in HIMMEL-3346.
 # shellcheck source=../lib/provenance.sh
 . "$REPO_ROOT/scripts/lib/provenance.sh"
+# shellcheck source=../lib/provenance-identity.sh
+. "$REPO_ROOT/scripts/lib/provenance-identity.sh"
 PROV_STEP="preflight"
 prov_finish() {
   local rc=$?
@@ -200,6 +202,10 @@ done
 # entry, a wrong "yes" only leaves residue.
 PROV_CFG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 PROV_SCOPE="$SCOPE"; [[ "$SCOPE" == local ]] && PROV_SCOPE=project   # the ledger has no `local` scope; cli_scope keeps it
+# HIMMEL-3525 S17: the plugin identity reader's projectPath match target for
+# project/local scope (design §3.3) -- install-plugins.sh installs project/local
+# scope plugins from the CURRENT directory (see --scope's usage text above).
+PROV_PROJECT_PATH=""; [[ "$SCOPE" == project || "$SCOPE" == local ]] && PROV_PROJECT_PATH="$PWD"
 
 # json_declares <file> <jq-test> <a> [<b>] — file exists and the test (over --arg a/b) holds;
 # a file that exists but cannot be read as that shape (unparseable, or valid JSON of the
@@ -230,12 +236,38 @@ marketplace_preexisted() {   # <name> — this scope's settings, or the CLI's us
   json_declares "$PROV_CFG_DIR/plugins/known_marketplaces.json" 'has($a)' "$1"
 }
 # prov_register <kind> <unit> <preexisted true|false> [--field K=JSON ...]
+# HIMMEL-3525 S17: after building the row's fields, reads back the LIVE
+# identity with the very reader `prov_read_verdict` will call at uninstall
+# (provenance-identity.sh's header: "the SAME reader runs at install ...
+# and at uninstall"), and records it with --post-text + identity_v=1. A
+# failed or unavailable read-back records the legacy row (no identity_v) --
+# degrade, never fail the install.
 prov_register() {
   local kind="$1" unit="$2" pre="$3" row=plugins
   shift 3
   [[ "$kind" == marketplace ]] && row=marketplaces
+  local -a args=("$@") idargs=()
+  local i=0 n=${#args[@]} fk fv fields_json token unit_json
+  fields_json=$(jq -nc --arg s "$SCOPE" '{cli_scope:$s}')
+  while [ "$i" -lt "$n" ]; do
+    if [ "${args[$i]}" = "--field" ]; then
+      fk="${args[$((i + 1))]%%=*}"; fv="${args[$((i + 1))]#*=}"
+      fields_json=$(jq -c --arg k "$fk" --argjson v "$fv" '.[$k]=$v' <<<"$fields_json" 2>/dev/null) || fields_json='{}'
+      i=$((i + 2))
+    else
+      i=$((i + 1))
+    fi
+  done
+  unit_json=$(jq -nc --arg u "$unit" --argjson f "$fields_json" '{unit:$u, fields:$f}')
+  token=$(prov_identity_live "$kind" "$unit_json" 2>/dev/null) || token=""
+  case "$token" in
+    *[!0-9a-f]*) token="" ;;
+    *) [[ ${#token} -eq 64 ]] || token="" ;;
+  esac
+  [[ -n "$token" ]] && idargs=(--post-text "$token" --field identity_v=1)
   prov_note register "$kind" "$PROV_SETTINGS_FILE" --unit "$unit" --scope "$PROV_SCOPE" --class code --row "$row" \
-    --field "cli_scope=\"$SCOPE\"" --field "preexisted=$pre" --writer install-plugins.sh "$@"
+    --field "cli_scope=\"$SCOPE\"" --field "preexisted=$pre" --writer install-plugins.sh "$@" \
+    ${idargs[@]+"${idargs[@]}"}
 }
 
 # ── Register marketplaces ───────────────────────────────────────────────────
@@ -393,7 +425,9 @@ while IFS= read -r SPEC; do
   # A failed install registered nothing, so it records nothing (the presence
   # verify below owns the failure).
   if run_step claude plugin install "$SPEC" --scope "$SCOPE"; then
-    prov_register plugin "$SPEC" "$PLUGIN_PRE" --field "marketplace=$(jq -nc --arg v "${SPEC##*@}" '$v')"
+    prov_register plugin "$SPEC" "$PLUGIN_PRE" \
+      --field "marketplace=$(jq -nc --arg v "${SPEC##*@}" '$v')" \
+      --field "project_path=$(jq -nc --arg v "$PROV_PROJECT_PATH" '$v')"
   fi
 done <<< "$SPECS"
 

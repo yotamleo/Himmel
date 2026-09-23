@@ -17,8 +17,8 @@
 # the registrar answered and the name is not registered; UNREADABLE = the
 # registrar could not be asked, never treated as absent or as a match.
 #
-# S16 ships the collection reader only. plugin/marketplace (S17) and job (S18)
-# return rc 2 until their slices land.
+# S16 shipped the collection reader; S17 adds plugin/marketplace. job (S18)
+# still returns rc 2 until its slice lands.
 #
 # SOURCE it; it defines only prov_identity_* / _provid_* names and sets no
 # shell options. The reader for collection calls qmd_cmd, sourcing
@@ -121,10 +121,67 @@ _provid_collection() {
     esac
 }
 
+# _provid_cfg_dir -- resolves the Claude config dir the same way
+# install-plugins.sh does (PROV_CFG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"),
+# independently -- uninstall.sh never sets either var itself.
+_provid_cfg_dir() {
+    printf '%s' "${PROV_CFG_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}"
+}
+
+# _provid_marketplace <unit-json> -- identity = name + canonical source
+# object from known_marketplaces.json[name].source (design §3.2): installLocation/
+# lastUpdated/autoUpdate excluded. A directory source's path is canonicalized;
+# other source shapes are taken as the CLI stores them, keys sorted.
+_provid_marketplace() {
+    local name file src stype spath
+    name=$(printf '%s' "$1" | jq -r '.unit // ""' 2>/dev/null) || name=""
+    [ -n "$name" ] || { printf 'UNREADABLE'; return 0; }
+    file="$(_provid_cfg_dir)/plugins/known_marketplaces.json"
+    [ -f "$file" ] || { printf 'ABSENT'; return 0; }
+    src=$(jq -c --arg n "$name" '.[$n].source // null' "$file" 2>/dev/null) || { printf 'UNREADABLE'; return 0; }
+    [ "$src" = "null" ] && { printf 'ABSENT'; return 0; }
+    stype=$(printf '%s' "$src" | jq -r '.source // ""')
+    if [ "$stype" = "directory" ]; then
+        spath=$(printf '%s' "$src" | jq -r '.path // ""')
+        src=$(printf '%s' "$src" | jq -c --arg p "$(_provid_canon_path "$spath")" '.path = $p') || { printf 'UNREADABLE'; return 0; }
+    fi
+    src=$(printf '%s' "$src" | jq -cS '.') || { printf 'UNREADABLE'; return 0; }
+    _provid_token marketplace "$name"$'\n'"$src" || printf 'UNREADABLE'
+}
+
+# _provid_plugin <unit-json> -- identity = id, cli_scope, project_path (for
+# project/local scope), and the marketplace's own LIVE identity token (design
+# §3.3): a marketplace re-pointed at a new source changes every plugin it
+# owns too, folded in with no separate cascade logic. Unit fields consumed:
+# .unit (id, "name@marketplace"), .fields.cli_scope, .fields.project_path,
+# .fields.marketplace (the marketplace name).
+_provid_plugin() {
+    local u="$1" id scope proj mkt file version entry mkt_live
+    id=$(printf '%s' "$u" | jq -r '.unit // ""' 2>/dev/null) || id=""
+    scope=$(printf '%s' "$u" | jq -r '.fields.cli_scope // ""' 2>/dev/null) || scope=""
+    proj=$(printf '%s' "$u" | jq -r '.fields.project_path // ""' 2>/dev/null) || proj=""
+    mkt=$(printf '%s' "$u" | jq -r '.fields.marketplace // ""' 2>/dev/null) || mkt=""
+    if [ -z "$id" ] || [ -z "$scope" ]; then printf 'UNREADABLE'; return 0; fi
+    file="$(_provid_cfg_dir)/plugins/installed_plugins.json"
+    [ -f "$file" ] || { printf 'ABSENT'; return 0; }
+    version=$(jq -r '.version // ""' "$file" 2>/dev/null) || { printf 'UNREADABLE'; return 0; }
+    [ "$version" = "2" ] || { printf 'UNREADABLE'; return 0; }
+    entry=$(jq -c --arg id "$id" --arg s "$scope" --arg p "$(_provid_canon_path "$proj")" '
+        (.plugins[$id] // []) | map(select(.scope == $s and
+            (($s != "project" and $s != "local") or (.projectPath // "") == $p)))
+        | .[0] // null
+    ' "$file" 2>/dev/null) || { printf 'UNREADABLE'; return 0; }
+    [ "$entry" = "null" ] && { printf 'ABSENT'; return 0; }
+    mkt_live=$(_provid_marketplace "$(jq -nc --arg n "$mkt" '{unit:$n}')")
+    _provid_token plugin "$id"$'\n'"$scope"$'\n'"$proj"$'\n'"$mkt_live" || printf 'UNREADABLE'
+}
+
 # prov_identity_live <kind> <unit-json> -- see the header.
 prov_identity_live() {
     case "$1" in
-        collection) _provid_collection "$2" ;;
+        collection)  _provid_collection "$2" ;;
+        marketplace) _provid_marketplace "$2" ;;
+        plugin)      _provid_plugin "$2" ;;
         *) return 2 ;;
     esac
 }

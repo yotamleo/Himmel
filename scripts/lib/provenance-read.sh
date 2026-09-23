@@ -792,11 +792,24 @@ EOF
 }
 
 # prov_read_owned <outfile> -- writes uninstall-plugins.sh's --ledger-owned
-# file (TAB-separated plugin/marketplace rows) from register units with
-# ours=true.
+# file (TAB-separated plugin/marketplace rows) for register units whose
+# verdict is `remove` (HIMMEL-3525 S17; a unit kept for identity is not owned
+# in uninstall-plugins.sh's eyes, and its existing not-owned path keeps it --
+# no change inside uninstall-plugins.sh).
 prov_read_owned() {
-    local outfile="$1"
-    if [ -z "${PROV_READ_FOLD:-}" ] || [ ! -f "$PROV_READ_FOLD" ]; then : > "$outfile"; return 0; fi
-    jq -r 'select(.ours==true and (.kind=="plugin" or .kind=="marketplace")) | [.kind, (.unit // ""), (.fields.cli_scope // "")] | @tsv' \
-        "$PROV_READ_FOLD" > "$outfile"
+    local outfile="$1" units u v kind unit cli_scope
+    : > "$outfile"
+    if [ -z "${PROV_READ_FOLD:-}" ] || [ ! -f "$PROV_READ_FOLD" ]; then return 0; fi
+    units=$(prov_read_units --kind plugin --kind marketplace)
+    while IFS= read -r u; do
+        [ -z "$u" ] && continue
+        v=$(prov_read_verdict "$u") || continue
+        [ "${v%% *}" = "remove" ] || continue
+        kind=$(printf '%s' "$u" | jq -r '.kind')
+        unit=$(printf '%s' "$u" | jq -r '.unit // ""')
+        cli_scope=$(printf '%s' "$u" | jq -r '.fields.cli_scope // ""')
+        printf '%s\t%s\t%s\n' "$kind" "$unit" "$cli_scope" >> "$outfile"
+    done <<EOF
+$units
+EOF
 }

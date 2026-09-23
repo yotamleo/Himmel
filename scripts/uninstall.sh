@@ -1805,21 +1805,38 @@ if [ "$LEDGER_OK" -eq 1 ]; then
   fi
 fi
 
-# ledger_report_preexisted_units <plugin|marketplace> — for every fold unit of
-# this register kind with ours=false, print "kept (was already yours)" and
-# write its outcome row. Shared by [4/8] and [7/8] (HIMMEL-3332 S6).
-ledger_report_preexisted_units() {
-  local _kind="$1" _units _unit_json _unit
+# ledger_report_kept_units <plugin|marketplace|job> — for every fold unit of
+# this register kind whose verdict is NOT `remove`, print "kept (<reason>)"
+# and write its outcome row; also prints one count line for `ours-unverified`
+# removals (a legacy row with no recorded identity, removed unverified).
+# Shared by [4/8] and [7/8] (HIMMEL-3332 S6; verdict-based since HIMMEL-3525
+# S17 — replaces ledger_report_preexisted_units, which only reported
+# ours=false rows and missed a kept-for-identity registration entirely).
+ledger_report_kept_units() {
+  local _kind="$1" _units _unit_json _unit _verdict _action _reason _label _unverified=0
   _units=$(prov_read_units --kind "$_kind")
   while IFS= read -r _unit_json; do
     [ -z "$_unit_json" ] && continue
-    [ "$(printf '%s' "$_unit_json" | jq -r '.ours')" = "false" ] || continue
+    _verdict=$(prov_read_verdict "$_unit_json") || continue
+    _action="${_verdict%% *}"; _reason="${_verdict#* }"
+    if [ "$_action" = "remove" ]; then
+      [ "$_reason" = "ours-unverified" ] && _unverified=$((_unverified + 1))
+      continue
+    fi
     _unit=$(printf '%s' "$_unit_json" | jq -r '.unit')
-    echo "  kept (was already yours): $_unit"
-    prov_read_outcome kept "$_unit_json" preexisted
+    case "$_reason" in
+      preexisted)          _label="was already yours" ;;
+      user-modified)       _label="changed since install" ;;
+      already-absent)      _label="already removed" ;;
+      identity-unreadable) _label="could not verify" ;;
+      *)                   _label="$_reason" ;;
+    esac
+    echo "  kept ($_label): $_unit"
+    prov_read_outcome kept "$_unit_json" "$_reason"
   done <<EOF
 $_units
 EOF
+  [ "$_unverified" -gt 0 ] && echo "  ($_unverified removed without identity verification — legacy record)"
 }
 
 # ledger_apply_unit <unit-json> [step-label] — the ledger-driven per-unit action shared by
@@ -2270,7 +2287,7 @@ else
   # job rows that were already the operator's (kept, never removed).
   _rec_cron=$(ledger_job_markers cron)
   _rec_at=$(ledger_job_markers at)
-  [ "$LEDGER_OK" -eq 1 ] && ledger_report_preexisted_units job
+  [ "$LEDGER_OK" -eq 1 ] && ledger_report_kept_units job
   if command -v atq >/dev/null 2>&1; then
     # Capture the atq rc separately — `atq || true` would mask an
     # enumeration failure as "no jobs" (same precedent as above).
@@ -2498,10 +2515,11 @@ elif [ "$LEDGER_OK" -ne 1 ]; then
   fi
 else
   echo "  using: $_claude_bin (fallback scope: $PLUGIN_SCOPE)"
-  ledger_report_preexisted_units plugin
+  ledger_report_kept_units plugin
   _plug_ours_units=$(prov_read_units --kind plugin | { while IFS= read -r _u; do
     [ -n "$_u" ] || continue
-    [ "$(printf '%s' "$_u" | jq -r '.ours')" = "true" ] && printf '%s\n' "$_u"
+    _pv=$(prov_read_verdict "$_u") || continue
+    [ "${_pv%% *}" = "remove" ] && printf '%s\n' "$_u"
   done; })
   _plug_args=(--plugins-only --scope "$PLUGIN_SCOPE" --scope-map "$_scope_map" --ledger-owned "$_ledger_owned")
   [ "$DRY_RUN" -eq 1 ] && _plug_args+=(--dry-run)
@@ -3204,10 +3222,11 @@ elif [ "$LEDGER_OK" -ne 1 ]; then
   fi
 else
   echo "  using: $_claude_bin (fallback scope: $PLUGIN_SCOPE)"
-  ledger_report_preexisted_units marketplace
+  ledger_report_kept_units marketplace
   _mkt_ours_units=$(prov_read_units --kind marketplace | { while IFS= read -r _u; do
     [ -n "$_u" ] || continue
-    [ "$(printf '%s' "$_u" | jq -r '.ours')" = "true" ] && printf '%s\n' "$_u"
+    _mv=$(prov_read_verdict "$_u") || continue
+    [ "${_mv%% *}" = "remove" ] && printf '%s\n' "$_u"
   done; })
   _plug_args=(--marketplaces-only --scope "$PLUGIN_SCOPE" --scope-map "$_scope_map" --ledger-owned "$_ledger_owned")
   [ "$DRY_RUN" -eq 1 ] && _plug_args+=(--dry-run)

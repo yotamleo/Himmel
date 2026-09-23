@@ -79,15 +79,34 @@ if [ "${1:-}" = "plugin" ] && [ "${2:-}" = "list" ]; then
 fi
 if [ "${1:-}" = "plugin" ] && [ "${2:-}" = "marketplace" ] && [ "${3:-}" = "add" ]; then
   case " ${STUB_MKT_FAIL:-} " in *" ${4:-} "*) echo "stub: marketplace add failed" >&2; exit 1 ;; esac
+  mkdir -p "$cfg/plugins"
+  mf="$cfg/plugins/known_marketplaces.json"
+  name="${STUB_MKT_NAME:-${4##*/}}"
+  src=$(jq -n --arg p "$4" '{source:"directory",path:$p}')
+  if [ -f "$mf" ]; then
+    tmp=$(mktemp "$mf.stub.XXXXXX"); jq --arg n "$name" --argjson s "$src" '.[$n] = {source:$s}' "$mf" > "$tmp" && mv "$tmp" "$mf"
+  else
+    jq -n --arg n "$name" --argjson s "$src" '{($n): {source:$s}}' > "$mf"
+  fi
   exit 0
 fi
 if [ "${1:-}" = "plugin" ] && [ "${2:-}" = "install" ]; then
   spec="${3:-}"
-  mkdir -p "$(dirname "$sf")" "$cfg/plugins/cache/${spec##*@}/${spec%@*}"
+  mkdir -p "$(dirname "$sf")" "$cfg/plugins/cache/${spec##*@}/${spec%@*}" "$cfg/plugins"
   if [ -f "$sf" ]; then
     tmp=$(mktemp "$sf.stub.XXXXXX"); jq --arg k "$spec" '.enabledPlugins[$k] = true' "$sf" > "$tmp" && mv "$tmp" "$sf"
   else
     jq -n --arg k "$spec" '{enabledPlugins: {($k): true}}' > "$sf"
+  fi
+  pf="$cfg/plugins/installed_plugins.json"
+  pid="$spec"
+  proj=""
+  case "$scope" in project|local) proj="$PWD" ;; esac
+  entry=$(jq -n --arg s "$scope" --arg p "$proj" '{scope:$s} + (if $p != "" then {projectPath:$p} else {} end)')
+  if [ -f "$pf" ]; then
+    tmp=$(mktemp "$pf.stub.XXXXXX"); jq --arg id "$pid" --argjson e "$entry" '.version = 2 | .plugins[$id] = ((.plugins[$id] // []) + [$e])' "$pf" > "$tmp" && mv "$tmp" "$pf"
+  else
+    jq -n --arg id "$pid" --argjson e "$entry" '{version:2, plugins: {($id): [$e]}}' > "$pf"
   fi
   exit 0
 fi
@@ -365,6 +384,32 @@ assert_eq "17 valid settings without the plugin: preexisted false" false \
     "$(field "$(row plugin himmel-ops@himmel)" .preexisted)"
 assert_eq "17 valid settings without the marketplace: preexisted false" false \
     "$(field "$(row marketplace himmel)" .preexisted)"
+
+# ── Case 19: HIMMEL-3525 S17 — the read-back identity token is recorded ─────
+# The stub CLI now mirrors the real one's known_marketplaces.json /
+# installed_plugins.json side effects, so the SAME reader prov_read_verdict
+# calls at uninstall (provenance-identity.sh) can read back what this install
+# just wrote: the plugin and marketplace rows carry identity_v=1 and a 64-hex
+# post.sha.
+fresh_env identity
+export STUB_MKT_NAME=himmel
+out=$(run_install --scope user); rc=$?
+unset STUB_MKT_NAME
+assert_eq "19 install rc" 0 "$rc"
+r=$(row plugin himmel-ops@himmel)
+assert_eq "19 himmel-ops identity_v" 1 "$(field "$r" .identity_v)"
+sha=$(field "$r" .post.sha)
+case "$sha" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*)
+    if [ "${#sha}" -eq 64 ]; then pass "19 himmel-ops post.sha is 64-hex"; else fail "19 himmel-ops post.sha wrong length: $sha"; fi ;;
+  *) fail "19 himmel-ops post.sha not hex: $sha" ;;
+esac
+r=$(row marketplace himmel)
+assert_eq "19 himmel marketplace identity_v" 1 "$(field "$r" .identity_v)"
+sha=$(field "$r" .post.sha)
+case "$sha" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*)
+    if [ "${#sha}" -eq 64 ]; then pass "19 himmel marketplace post.sha is 64-hex"; else fail "19 himmel marketplace post.sha wrong length: $sha"; fi ;;
+  *) fail "19 himmel marketplace post.sha not hex: $sha" ;;
+esac
 
 if [ "$(real_ledger_sha)" = "$REAL_LEDGER_BEFORE" ]; then
     pass "18 the real ~/.himmel ledger is untouched by this suite"

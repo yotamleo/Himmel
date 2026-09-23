@@ -29,6 +29,8 @@ cd "$w" || exit 1
 . "$here/provenance.sh"
 # shellcheck source=scripts/lib/provenance-read.sh
 . "$here/provenance-read.sh"
+# shellcheck source=scripts/lib/provenance-identity.sh
+. "$here/provenance-identity.sh"
 
 ledger="$HIMMEL_PROVENANCE_DIR/provenance.jsonl"
 reset() { unset HIMMEL_PROVENANCE_IID _PROV_OWNS; rm -rf "$HIMMEL_PROVENANCE_DIR"; }
@@ -341,6 +343,58 @@ check "prov_read_owned: plugin row" "$(grep -c "$(printf 'plugin\thimmel-ops@him
 check "prov_read_owned: marketplace row" "$(grep -c "$(printf 'marketplace\thimmel\tuser')" "$ownedfile")" "1"
 check "prov_read_owned: preexisted plugin excluded" "$(grep -c 'someone-elses@shop' "$ownedfile")" "0"
 prov_read_cleanup
+
+# ── HIMMEL-3525 S17: plugin/marketplace live-identity verdict + prov_read_owned ──
+# The install-time read-back (install-plugins.sh's prov_register) recorded the
+# marketplace's LIVE identity at the moment of install: {source:directory,
+# path:/clone}. A user who later re-points the SAME marketplace name at a
+# different source (design §3.2/§3.3) must see BOTH the marketplace row and
+# every plugin it owns kept -- the plugin's own identity folds in the
+# marketplace's live token (§3.3), so the cascade needs no separate logic.
+# The control leaves the source untouched: both rows remove.
+
+reset
+mkdir -p "$HOME/.claude/plugins"
+mktfile="$HOME/.claude/plugins/known_marketplaces.json"
+pfile="$HOME/.claude/plugins/installed_plugins.json"
+printf '{"himmel":{"source":{"source":"directory","path":"/clone"}}}' > "$mktfile"
+printf '{"version":2,"plugins":{"himmel-ops@himmel":[{"scope":"user"}]}}' > "$pfile"
+mkt_json=$(jq -nc '{unit:"himmel"}')
+mkt_tok_installtime=$(_provid_marketplace "$mkt_json")
+plug_json=$(jq -nc '{unit:"himmel-ops@himmel", fields:{cli_scope:"user", project_path:"", marketplace:"himmel"}}')
+plug_tok_installtime=$(_provid_plugin "$plug_json")
+case "$mkt_tok_installtime" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) : ;; *) echo "FAIL - fixture setup: marketplace install-time token not hex: $mkt_tok_installtime" >&2; fails=$((fails+1)) ;; esac
+case "$plug_tok_installtime" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) : ;; *) echo "FAIL - fixture setup: plugin install-time token not hex: $plug_tok_installtime" >&2; fails=$((fails+1)) ;; esac
+prov_begin --iid S17-1 --writer t
+prov_record register marketplace - --unit himmel --scope user --class code \
+    --field preexisted=false --field cli_scope='"user"' --post-text "$mkt_tok_installtime" --field identity_v=1
+prov_record register plugin - --unit himmel-ops@himmel --scope user --class code \
+    --field preexisted=false --field cli_scope='"user"' --field 'marketplace="himmel"' --field 'project_path=""' \
+    --post-text "$plug_tok_installtime" --field identity_v=1
+prov_end ok
+prov_read_load
+umkt=$(prov_read_units --kind marketplace | jq -c 'select(.unit=="himmel")')
+uplug=$(prov_read_units --kind plugin | jq -c 'select(.unit=="himmel-ops@himmel")')
+
+# repointed: the marketplace source now differs from what was recorded
+printf '{"himmel":{"source":{"source":"directory","path":"/elsewhere"}}}' > "$mktfile"
+check "S17 marketplace re-pointed: verdict" "$(prov_read_verdict "$umkt")" "keep user-modified"
+check "S17 plugin (cascade via re-pointed marketplace): verdict" "$(prov_read_verdict "$uplug")" "keep user-modified"
+ownedfile2="$td/owned-repointed.tsv"
+prov_read_owned "$ownedfile2"
+check "S17 prov_read_owned: re-pointed marketplace excluded" "$(grep -c 'himmel$' "$ownedfile2")" "0"
+check "S17 prov_read_owned: cascaded plugin excluded" "$(grep -c 'himmel-ops@himmel' "$ownedfile2")" "0"
+
+# control: the marketplace source still matches what install recorded
+printf '{"himmel":{"source":{"source":"directory","path":"/clone"}}}' > "$mktfile"
+check "S17 marketplace control (unchanged source): verdict" "$(prov_read_verdict "$umkt")" "remove ours"
+check "S17 plugin control (marketplace unchanged): verdict" "$(prov_read_verdict "$uplug")" "remove ours"
+ownedfile3="$td/owned-control.tsv"
+prov_read_owned "$ownedfile3"
+check "S17 prov_read_owned: control marketplace included" "$(grep -c "$(printf 'marketplace\thimmel\tuser')" "$ownedfile3")" "1"
+check "S17 prov_read_owned: control plugin included" "$(grep -c "$(printf 'plugin\thimmel-ops@himmel\tuser')" "$ownedfile3")" "1"
+prov_read_cleanup
+rm -f "$mktfile" "$pfile"
 
 # ── kind tool -> class-keep; class state -> skip ───────────────────────────
 

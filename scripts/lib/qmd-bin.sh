@@ -659,9 +659,8 @@ qmd_register_collection() {
   token=$( ( . "$(dirname "${BASH_SOURCE[0]}")/provenance-identity.sh" \
     && prov_identity_live collection "$(jq -nc --arg n "$name" '{kind:"collection",unit:$n}')" ) 2>/dev/null )
   case "$token" in
-    [0-9a-f][0-9a-f][0-9a-f][0-9a-f]*)
-      [ "${#token}" -eq 64 ] || token="" ;;
-    *) token="" ;;
+    *[!0-9a-f]*) token="" ;;
+    *) [ "${#token}" -eq 64 ] || token="" ;;
   esac
   if [ -n "$token" ]; then
     _qmd_prov_record "qmd collection '$name'" register collection - \

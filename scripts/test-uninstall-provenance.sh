@@ -19,6 +19,8 @@ lib="$repo_root/scripts/lib"
 command -v jq >/dev/null 2>&1 || { echo "test-uninstall-provenance: jq required" >&2; exit 2; }
 # shellcheck source=scripts/lib/provenance.sh
 . "$lib/provenance.sh"
+# shellcheck source=scripts/lib/provenance-identity.sh
+. "$lib/provenance-identity.sh"
 
 # HIMMEL-3332 S6 safety: the real-ledger tripwire. REAL_HOME is captured
 # before ANY case below exports its own scratch HOME, so a bug that let a
@@ -1067,6 +1069,66 @@ for sub in repointed control; do
     "$(grep -c 'collection show qmd-vault' "$CASE_DIR/qmd.log" 2>/dev/null)" "1"
 done
 unset rc30 tok30 want
+
+echo "==== RED31 (HIMMEL-3525 S17): a plugin/marketplace re-pointed after install survives --purge-state ===="
+# Install recorded the marketplace's + plugin's live identity token (design
+# §3.2/§3.3); the plugin's own identity folds in the marketplace's live
+# token, so re-pointing the marketplace alone is enough to keep BOTH rows --
+# no separate cascade logic needed. The control leaves the marketplace
+# source where install left it: both remove.
+new_case red31-tok
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell leak
+mkdir -p "$HOME/.claude/plugins"
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell leak
+printf '{"himmel":{"source":{"source":"directory","path":"/clone"}}}\n' > "$HOME/.claude/plugins/known_marketplaces.json"
+# shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell leak
+printf '{"version":2,"plugins":{"himmel-ops@himmel":[{"scope":"user"}]}}\n' > "$HOME/.claude/plugins/installed_plugins.json"
+mkt_tok31=$(_provid_marketplace '{"unit":"himmel"}')
+plug_tok31=$(_provid_plugin '{"unit":"himmel-ops@himmel","fields":{"cli_scope":"user","project_path":"","marketplace":"himmel"}}')
+
+for sub in repointed control; do
+  new_case "red31-$sub"
+  # shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell leak
+  mkdir -p "$HOME/.claude/plugins"
+  if [ "$sub" = repointed ]; then
+    # shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell leak
+    printf '{"himmel":{"source":{"source":"directory","path":"/elsewhere"}}}\n' > "$HOME/.claude/plugins/known_marketplaces.json"
+  else
+    # shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell leak
+    printf '{"himmel":{"source":{"source":"directory","path":"/clone"}}}\n' > "$HOME/.claude/plugins/known_marketplaces.json"
+  fi
+  # shellcheck disable=SC2031  # HOME is new_case's top-level export, not a subshell leak
+  printf '{"version":2,"plugins":{"himmel-ops@himmel":[{"scope":"user"}]}}\n' > "$HOME/.claude/plugins/installed_plugins.json"
+  ( prov_begin --writer install-plugins.sh -- "seed-red31-$sub" >/dev/null
+    prov_record register marketplace - --unit himmel --scope machine --class code \
+      --writer install-plugins.sh --row marketplaces --field 'cli_scope="user"' --field preexisted=false \
+      --post-text "$mkt_tok31" --field identity_v=1 >/dev/null
+    prov_record register plugin - --unit himmel-ops@himmel --scope machine --class code \
+      --writer install-plugins.sh --row plugins --field 'cli_scope="user"' --field 'marketplace="himmel"' \
+      --field 'project_path=""' --field preexisted=false \
+      --post-text "$plug_tok31" --field identity_v=1 >/dev/null
+    prov_end ok >/dev/null )
+  printf '[{"id":"himmel-ops@himmel","scope":"user"}]\n' > "$CASE_PLUGINS_JSON"
+  printf '[{"name":"himmel"}]\n' > "$CASE_MARKETPLACES_JSON"
+  out31=$(run_uninstall --yes --purge-state --skip-tasks --skip-hooks --skip-settings); rc31=$?
+  check "RED31 $sub: uninstall exit status" "$rc31" "0"
+  if [ "$sub" = repointed ]; then
+    check "RED31 $sub: marketplace kept (changed since install)" \
+      "$(printf '%s\n' "$out31" | grep -c 'kept (changed since install): himmel$')" "1"
+    check "RED31 $sub: plugin kept (changed since install)" \
+      "$(printf '%s\n' "$out31" | grep -c 'kept (changed since install): himmel-ops@himmel$')" "1"
+    check "RED31 $sub: plugin left installed" \
+      "$(jq -r '[.[] | select(.id=="himmel-ops@himmel")] | length' "$CASE_PLUGINS_JSON")" "1"
+    check "RED31 $sub: marketplace left registered" \
+      "$(jq -r '[.[] | select(.name=="himmel")] | length' "$CASE_MARKETPLACES_JSON")" "1"
+  else
+    check "RED31 $sub: plugin removed" \
+      "$(jq -r '[.[] | select(.id=="himmel-ops@himmel")] | length' "$CASE_PLUGINS_JSON")" "0"
+    check "RED31 $sub: marketplace removed" \
+      "$(jq -r '[.[] | select(.name=="himmel")] | length' "$CASE_MARKETPLACES_JSON")" "0"
+  fi
+done
+unset mkt_tok31 plug_tok31 rc31 out31
 
 echo "==== REAL-LEDGER TRIPWIRE ===="
 REAL_LEDGER_AFTER=$(real_ledger_state)
