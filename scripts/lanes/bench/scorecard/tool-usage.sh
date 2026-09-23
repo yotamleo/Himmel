@@ -172,23 +172,27 @@ fi
 # `get` can't collide with the jira `get` op); every other tracked script is
 # keyed by its `scripts/...` path substring as it appeared in the command.
 SCRIPTED="$RUN/scripted.ndjson"
-jq -c '. + {script: (
+if ! jq -c '. + {script: (
     if .tool=="Bash" and (.key | test("scripts/jira/dist/index\\.js")) then
         "jira:" + (.key | capture("scripts/jira/dist/index\\.js\\s+(?<op>[A-Za-z0-9_:-]+)") .op // "unknown")
     elif .tool=="Bash" and (.key | test("scripts/[A-Za-z0-9_./-]+\\.(sh|mjs|js|py)")) then
         (.key | capture("(?<m>scripts/[A-Za-z0-9_./-]+\\.(?:sh|mjs|js|py))") | .m)
     else null end
-)}' "$EVENTS" > "$SCRIPTED"
+)}' "$EVENTS" > "$SCRIPTED"; then
+    echo "tool-usage: WARNING: script/jira-op extraction (jq) failed - section 3 may be incomplete" >&2
+fi
 
 # guardrail-friction classification, added as `.friction` {kind, key, sample}.
 FRICTION="$RUN/friction.ndjson"
-jq -c 'select(.is_error==true and (.text // "")!="") | . + {friction: (
+if ! jq -c 'select(.is_error==true and (.text // "")!="") | . + {friction: (
     if (.text | test("^(Pre|Post)ToolUse:")) then
         {kind: "hook", key: (.text | capture("\\]:\\s*(?:⛔\\s*)?(?<h>[A-Za-z0-9_-]+):") .h // "unknown")}
     elif (.text | test("Stage 2 classifier error:|Permission for this action was denied by the Claude Code auto mode classifier")) then
         {kind: "classifier", key: ("[" + (.text | capture("\\[(?<c>[A-Z][A-Za-z /-]{2,40})\\]") .c // "unknown") + "]")}
     else null end
-)}' "$EVENTS" > "$FRICTION"
+)}' "$EVENTS" > "$FRICTION"; then
+    echo "tool-usage: WARNING: guardrail-friction classification (jq) failed - section 4 may be incomplete" >&2
+fi
 
 echo "--- 1. skill invocations"
 jq -s -r '
