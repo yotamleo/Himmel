@@ -131,7 +131,7 @@ The wrapper enforces the three invariants from the HIMMEL-741 diagnosis:
    preflight is a no-op on non-Windows platforms.
 2. **Model follows the codex critic in `scripts/cr/critics.json` (HIMMEL-2811).**
    The registry is read with Node.js; only an unreadable file uses the named
-   fallback (`gpt-6-astra`). Readable but invalid data refuses the dispatch.
+   fallback (`gpt-6-sol`). Readable but invalid data refuses the dispatch.
    `CODEX_CRITICS_FILE` overrides the registry path for tests. A caller-named
    `--model` bypasses registry lookup and wins unchanged; only `-codex`-suffixed
    variant names warn about HTTP 400 under ChatGPT-plan auth.

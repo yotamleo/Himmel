@@ -8,7 +8,7 @@ it):
 
 | Tier | What it does | Status |
 |------|--------------|--------|
-| **CR critic** | Independent model-family reviewer over a branch diff, wired into `/pr-check` (`scripts/cr/hermes-critic.sh` + `critic-first-pass.sh` → `scripts/hermes/invoke.sh`). No free critic is registered (`scripts/cr/critics.json`); the panel defaults straight to the paid `codex`/`gpt-5.6-sol` anchor (HIMMEL-1101) — set `CR_PROFILE=none` for claude-only. Fail-closed verdict, fail-open transport. Routes + the proven invocation: [CR critic: routes + proven invocation](#cr-critic-routes--proven-invocation-himmel-2017). | **Working — the production hermes lane today.** |
+| **CR critic** | Independent model-family reviewer over a branch diff, wired into `/pr-check` (`scripts/cr/hermes-critic.sh` + `critic-first-pass.sh` → `scripts/hermes/invoke.sh`). No free critic is registered (`scripts/cr/critics.json`); the panel defaults straight to the paid `codex`/`gpt-6-sol` anchor (HIMMEL-1101) — set `CR_PROFILE=none` for claude-only. Fail-closed verdict, fail-open transport. Routes + the proven invocation: [CR critic: routes + proven invocation](#cr-critic-routes--proven-invocation-himmel-2017). | **Working — the production hermes lane today.** |
 | **Junior** | Chore-shaped work (vault inbox capture, summaries, note-taking) on free inference, behind a read-only `luna_vault_guard` write fence. | **Working.** |
 | **`himmel_agent` main tier** | A full-control orchestrator (Codex / GPT-5.5) carrying `parity_guard` instead of the junior fence — does real engineering / research / vault work. | **Alpha - guard parity now tests green; still treat as experimental until more live mileage.** |
 
@@ -63,7 +63,7 @@ hermes config set model.default <provider/model>
 The `model:` block in `config.yaml` is `{default, provider, base_url}`, with an
 ordered `fallback_providers:` list for resilience — himmel's live chain and
 fallback policy are in [Provider routes](#provider-routes-wired-2026-06-12-himmel-278)
-below. For himmel's **CR paid-escalation** lane (`codex` / `gpt-5.6-sol`), log in to
+below. For himmel's **CR paid-escalation** lane (`codex` / `gpt-6-sol`), log in to
 Codex once:
 
 ```bash
@@ -358,7 +358,7 @@ discarding orphaned upstream commits safe.
 
 > **SUPERSEDED 2026-06-24 — the live route is now Codex / `gpt-5.5` via the
 > `openai-codex` provider** (the impl/junior profiles — the CR critic pins its
-> own model, `gpt-5.6-sol`, independently; see the tier table above), not the
+> own model, `gpt-6-sol`, independently; see the tier table above), not the
 > NVIDIA/OpenRouter chain documented below. The Nemotron block is kept for history; a full re-doc of
 > the current routing is tracked. Verify the live model with
 > `hermes profile list` (Model column) or `hermes model`.

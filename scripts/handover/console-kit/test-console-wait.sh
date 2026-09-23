@@ -343,6 +343,41 @@ check "(r) the wake is tick-fail, never a changed key from an empty field" "WAKE
 check "(s) no in-place '> \"\$key_file\"' write remains (must go through .tmp + mv)" "0" \
     "$(grep -cF '> "$key_file"' "$HERE/console-wait.sh")"
 
+# --- (t) a board class move to ok never wakes on its own; the saved key
+# still moves to board=ok, so a later move to STALE wakes again (HIMMEL-3521) -
+reset_stub
+tick_line "N1:FRESH" "STALE:5m"
+I="$(new_inbox t)"
+start "$I" "$WORK/t.out" --legs "N1.md"
+wait_hb "$I" || fail "(t) no baseline heartbeat"
+tick_line "N1:FRESH" "ok"
+wait_exit "$WPID"
+check "(t) a board move to ok alone does not wake" "running" "$rc"
+check "(t) the saved key still moved to board=ok" "yes" "$(grep -q 'board=ok' "$I.wait.state" && echo yes)"
+kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
+
+# --- (u) a board class move to STALE wakes, naming board -------------------
+reset_stub
+I="$(new_inbox u)"
+start "$I" "$WORK/u.out" --legs "N1.md"
+wait_hb "$I" || fail "(u) no baseline heartbeat"
+tick_line "N1:FRESH" "STALE:3m"
+wait_exit "$WPID"
+check "(u) a board move to STALE ends the wait" "0" "$rc"
+check "(u) the wake names board" "WAKE tick changed=board bank=PROCEED" "$(head -n1 "$WORK/u.out")"
+
+# --- (v) board STALE-to-ok combined with a prs change still wakes, naming
+# only the real field ---------------------------------------------------------
+reset_stub
+tick_line "N1:FRESH" "STALE:5m"
+I="$(new_inbox v)"
+start "$I" "$WORK/v.out" --legs "N1.md"
+wait_hb "$I" || fail "(v) no baseline heartbeat"
+tick_line "N1:FRESH" "ok" "1m" "#99"
+wait_exit "$WPID"
+check "(v) board-to-ok combined with a prs change still wakes" "0" "$rc"
+check "(v) the wake names only prs, not board" "WAKE tick changed=prs bank=PROCEED" "$(head -n1 "$WORK/v.out")"
+
 # --- (k) usage ---------------------------------------------------------------
 bash "$WAIT" >/dev/null 2>&1; rc=$?
 check "(k) no inbox argument is a usage error (rc 2)" "2" "$rc"

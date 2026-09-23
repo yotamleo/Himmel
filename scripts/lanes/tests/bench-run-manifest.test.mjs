@@ -28,7 +28,7 @@ test('promptSha256 matches a plain sha256 of the exact prompt text', () => {
 
 test('buildRunRecord fills the full schema and rejects a missing required field', () => {
   const record = buildRunRecord({
-    run_id: 'T7-luna-1', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-5.6-luna',
+    run_id: 'T7-luna-1', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-6-luna',
     effort: 'high', prompt_sha256: 'abc123', fixture_path: '/tmp/x',
   });
   assert.deepEqual(Object.keys(record).sort(), [...RUN_MANIFEST_FIELDS].sort());
@@ -42,7 +42,7 @@ test('buildRunRecord fills the full schema and rejects a missing required field'
 
 test('buildRunRecord defaults probe to false and round-trips probe: true (pipeline smoke-test marker)', () => {
   const base = {
-    run_id: 'T7-luna-probe', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-5.6-luna',
+    run_id: 'T7-luna-probe', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-6-luna',
     effort: 'high', prompt_sha256: 'abc123', fixture_path: '/tmp/x',
   };
   assert.equal(buildRunRecord(base).probe, false); // a measurement unless explicitly marked
@@ -67,7 +67,7 @@ test('listRunManifests returns every written record and nothing for an empty dir
   const runsDir = makeTmpDir('bench-run-manifest-list-');
   assert.deepEqual(listRunManifests(runsDir), []);
   writeRunManifest(runsDir, buildRunRecord({
-    run_id: 'T1-luna-1', task: 'T1', cell: 'luna', rep: 1, model: 'gpt-5.6-luna',
+    run_id: 'T1-luna-1', task: 'T1', cell: 'luna', rep: 1, model: 'gpt-6-luna',
     effort: 'high', prompt_sha256: 'h1', fixture_path: '/tmp/a',
   }));
   writeRunManifest(runsDir, buildRunRecord({
@@ -138,7 +138,7 @@ test('CLI: write --prompt-file computes prompt_sha256 from the file and the mani
 
   const out = execFileSync('node', [
     CLI, 'write', '--runs-dir', runsDir, '--run-id', 'T7-luna-1', '--task', 'T7', '--cell', 'luna',
-    '--rep', '1', '--model', 'gpt-5.6-luna', '--effort', 'high', '--prompt-file', promptFile,
+    '--rep', '1', '--model', 'gpt-6-luna', '--effort', 'high', '--prompt-file', promptFile,
     '--fixture-path', '/tmp/fixture', '--exit-code', '0', '--duration-ms', '5000',
   ], { encoding: 'utf8' });
 
@@ -156,7 +156,7 @@ test('CLI: check-parity exits nonzero on a mismatch and 0 when clean', () => {
     effort: 'low', prompt_sha256: 'hash-a', fixture_path: '/tmp/a',
   }));
   writeRunManifest(runsDir, buildRunRecord({
-    run_id: 'T7-luna-1', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-5.6-luna',
+    run_id: 'T7-luna-1', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-6-luna',
     effort: 'high', prompt_sha256: 'hash-b', fixture_path: '/tmp/b',
   }));
   assert.throws(() => execFileSync('node', [CLI, 'check-parity', '--runs-dir', runsDir], { encoding: 'utf8' }));
@@ -167,7 +167,7 @@ test('CLI: check-parity exits nonzero on a mismatch and 0 when clean', () => {
     effort: 'low', prompt_sha256: 'same', fixture_path: '/tmp/a',
   }));
   writeRunManifest(cleanDir, buildRunRecord({
-    run_id: 'T7-luna-1', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-5.6-luna',
+    run_id: 'T7-luna-1', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-6-luna',
     effort: 'high', prompt_sha256: 'same', fixture_path: '/tmp/b',
   }));
   const out = execFileSync('node', [CLI, 'check-parity', '--runs-dir', cleanDir], { encoding: 'utf8' });

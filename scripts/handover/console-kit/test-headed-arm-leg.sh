@@ -90,7 +90,7 @@ HEADED_ARM="$HERE/../headed-arm.sh"
 . "$HERE/../../lib/timeout-bin.sh"
 # The suite owns every launcher input; an ambient leg shell must not silently
 # turn default-native cases into claudex cases.
-unset LEG_LANE LEG_CONTEXT LEG_REPO LEG_EFFORT HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER IMPL_GUARD_OK INLINE_IMPL_OK HIMMEL_CONSOLE_LEG HIMMEL_LEAN_LEG LEG_CLAUDE_BIN LEG_PROFILE LEG_PROFILE_SETTINGS LEG_PROFILE_PREFACE LEG_PROFILE_MCP_CONFIG LEG_SUPPRESS_CR_TRIGGER CR_TRIGGER_SUPPRESS HIMMEL_CONSOLE_NAME CLAUDE_PID SESSION_NAME_CMDLINE_FILE 2>/dev/null || true
+unset LEG_LANE LEG_CONTEXT LEG_REPO LEG_EFFORT HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER IMPL_GUARD_OK INLINE_IMPL_OK HIMMEL_CONSOLE_LEG HIMMEL_LEAN_LEG LEG_CLAUDE_BIN LEG_PROFILE LEG_PROFILE_SETTINGS LEG_PROFILE_PREFACE LEG_PROFILE_MCP_CONFIG LEG_SUPPRESS_CR_TRIGGER CR_TRIGGER_SUPPRESS HIMMEL_CONSOLE_NAME CLAUDE_PID SESSION_NAME_CMDLINE_FILE CLAUDE_CODE_EFFORT_LEVEL 2>/dev/null || true
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/headed-arm-leg-test.XXXXXX")" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
 trap 'rm -rf "$tmp"' EXIT
@@ -467,7 +467,7 @@ contains "dry-run --judge: preface source is judge-preface.md" "$out" "docs/hand
 
 # --judge --lane claudex: the Fable default is scoped to the native lane only
 # (HIMMEL-3133 explicitly leaves composing --judge with claudex out of scope)
-# - claudex keeps its own gpt-6-astra default untouched, and some/doc.md (no
+# - claudex keeps its own gpt-6-sol default untouched, and some/doc.md (no
 # Tier line) proves that default never reached the Opus/Fable tier gate.
 rc=0; out="$(bash "$SCRIPT" --dry-run --judge --lane claudex HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
 check "dry-run --judge --lane claudex: exit 0" "$rc" "0"
@@ -643,21 +643,21 @@ rc=0; out="$(LEG_LANE=bogus bash "$SCRIPT" HIMMEL-x some/doc.md /tmp/nosig 99999
 check "unknown lane via LEG_LANE: exit 2" "$rc" "2"
 
 # --- 15 (HIMMEL-2782). --dry-run --lane claudex: resolved launcher + env,
-# default model gpt-6-astra, --lane wins over LEG_LANE. ---------------------
+# default model gpt-6-sol, --lane wins over LEG_LANE. -----------------------
 rc=0; out="$(LEG_LANE=native LEG_REPO='' bash "$SCRIPT" --dry-run --no-profile --lane claudex HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
 check "dry-run --lane claudex: exit 0 (flag wins over LEG_LANE=native)" "$rc" "0"
 contains "dry-run --lane claudex: reports lane=claudex" "$out" "lane=claudex"
 contains "dry-run --lane claudex: resolved launcher names claude-codex" "$out" "claude-codex"
 contains "dry-run --lane claudex: env carries CLAUDEX_LANE_OK=1" "$out" "CLAUDEX_LANE_OK=1"
 contains "dry-run --lane claudex: env carries CLAUDE_CODE_EFFORT_LEVEL=medium default" "$out" "CLAUDE_CODE_EFFORT_LEVEL=medium"
-contains "dry-run --lane claudex: MODEL defaults to gpt-6-astra" "$out" "gpt-6-astra"
+contains "dry-run --lane claudex: MODEL defaults to gpt-6-sol" "$out" "gpt-6-sol"
 
 rc=0; out="$(LEG_EFFORT=high bash "$SCRIPT" --dry-run --no-profile --lane claudex HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
 contains "dry-run --lane claudex: LEG_EFFORT overrides the medium default" "$out" "CLAUDE_CODE_EFFORT_LEVEL=high"
 
 rc=0; out="$(bash "$SCRIPT" --dry-run --no-profile --lane claudex HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 contains "dry-run --lane claudex: an explicit model is NOT overridden" "$out" "claude-sonnet-5"
-not_contains "dry-run --lane claudex: an explicit model is NOT overridden" "$out" "gpt-6-astra"
+not_contains "dry-run --lane claudex: an explicit model is NOT overridden" "$out" "gpt-6-sol"
 
 rc=0; out="$(bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 contains "dry-run, no --lane: reports lane=native" "$out" "lane=native"
@@ -692,7 +692,7 @@ contains "full launch, --lane claudex: the preface shim reaches the recorded arg
 contains "full launch, --lane claudex: the shim retains the claudex backend" \
   "$(cat "$d16/env-record" 2>/dev/null || true)" "LEG_CLAUDE_BIN=$claudex_stub"
 not_contains "full launch, --lane claudex: launcher not force-wrapped in bash (execs via its own shebang)" "$rec16" "bash $claudex_stub"
-contains "full launch, --lane claudex: --model defaults to gpt-6-astra" "$rec16" "--model gpt-6-astra"
+contains "full launch, --lane claudex: --model defaults to gpt-6-sol" "$rec16" "--model gpt-6-sol"
 contains "full launch, --lane claudex: --autocompact 200000 (standard context ceiling)" "$rec16" "--autocompact 200000"
 contains "full launch, --lane claudex: CLAUDEX_LANE_OK=1 reaches the konsole argv" "$rec16" "CLAUDEX_LANE_OK=1"
 contains "full launch, --lane claudex: CLAUDE_CODE_EFFORT_LEVEL=medium reaches the konsole argv" "$rec16" "CLAUDE_CODE_EFFORT_LEVEL=medium"
@@ -1019,7 +1019,7 @@ assert.deepStrictEqual(fs.readFileSync(`${dir}/args`, 'utf8').trimEnd().split('\
   '--settings', `${dir}/HIMMEL-composed.leg-settings.json`,
   '--append-system-prompt-file', preface,
   '--mcp-config', `${dir}/HIMMEL-composed.leg-mcp.json`, '--strict-mcp-config',
-  '--model', 'gpt-6-astra', '--autocompact', '200000', '-n', 'HIMMEL-composed', 'load some/doc.md and continue',
+  '--model', 'gpt-6-sol', '--autocompact', '200000', '-n', 'HIMMEL-composed', 'load some/doc.md and continue',
 ]);
 const settings = JSON.parse(fs.readFileSync(`${dir}/HIMMEL-composed.leg-settings.json`, 'utf8'));
 assert.ok(settings.permissions.allow.includes('Bash(bash scripts/handover/merge-on-green.sh:*)'));
@@ -1041,7 +1041,7 @@ const fs = require('node:fs');
 const [dir, preface] = process.argv.slice(2);
 assert.deepStrictEqual(fs.readFileSync(`${dir}/args`, 'utf8').trimEnd().split('\n'), [
   '--append-system-prompt-file', preface,
-  '--model', 'gpt-6-astra', '--autocompact', '200000', '-n', 'HIMMEL-unprofiled', 'load some/doc.md and continue',
+  '--model', 'gpt-6-sol', '--autocompact', '200000', '-n', 'HIMMEL-unprofiled', 'load some/doc.md and continue',
 ]);
 NODE
 check "unprofiled claudex: exactly one added preface pair, other argv unchanged" "$rc" "0"
@@ -1890,6 +1890,40 @@ contains "33a launcher-env carries HIMMEL_CONSOLE_NAME=opsdesk (--console)" "$le
 out33b="$(HIMMEL_CONSOLE_NAME=ambient-console bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg-33b some/doc.md /tmp/nosig 99999999999 "$tmp/leg33b.log" claude-sonnet-5 2>&1)"
 lenv33b="$(printf '%s\n' "$out33b" | grep '^headed-arm-leg: lane=')"
 contains "33b launcher-env carries HIMMEL_CONSOLE_NAME=ambient-console (inherited)" "$lenv33b" "HIMMEL_CONSOLE_NAME=ambient-console"
+
+# 34. HIMMEL-3488: lanes.json's claude-tier effort reaches the native lane's
+# CLAUDE_CODE_EFFORT_LEVEL, mirroring the HIMMEL-3482 native-Telegram-dispatch
+# match rule (exact model id, or "claude-<tier-id>-" prefix). Own fixture
+# registry via HEADED_ARM_LEG_LANES_JSON (same seam shape as
+# HEADED_ARM_LEG_PROFILES above), never the real scripts/lanes/lanes.json -
+# a registry edit elsewhere must not flip these rows out from under the suite.
+lanes_fixture="$tmp/lanes-fixture.json"
+cat > "$lanes_fixture" <<'LANES_JSON_EOF'
+{"lanes":[{"id":"sonnet","class":"claude-tier","effort":"medium"},{"id":"opus","class":"claude-tier","effort":"high"}]}
+LANES_JSON_EOF
+
+# 34a. A model matching a claude-tier row exports the registry's effort.
+out34a="$(HEADED_ARM_LEG_LANES_JSON="$lanes_fixture" CLAUDE_CODE_EFFORT_LEVEL='' bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg-34a some/doc.md /tmp/nosig 99999999999 "$tmp/leg34a.log" claude-sonnet-5 2>&1)"
+lenv34a="$(printf '%s\n' "$out34a" | grep '^headed-arm-leg: lane=')"
+contains "34a a model with a tier row exports CLAUDE_CODE_EFFORT_LEVEL=medium" "$lenv34a" "CLAUDE_CODE_EFFORT_LEVEL=medium"
+
+# 34b. A model matching no claude-tier row leaves it unset.
+out34b="$(HEADED_ARM_LEG_LANES_JSON="$lanes_fixture" CLAUDE_CODE_EFFORT_LEVEL='' bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg-34b some/doc.md /tmp/nosig 99999999999 "$tmp/leg34b.log" gpt-6-sol 2>&1)"
+lenv34b="$(printf '%s\n' "$out34b" | grep '^headed-arm-leg: lane=')"
+not_contains "34b a model with no tier row leaves CLAUDE_CODE_EFFORT_LEVEL unset" "$lenv34b" "CLAUDE_CODE_EFFORT_LEVEL"
+
+# 34c. An explicit CLAUDE_CODE_EFFORT_LEVEL already set in the launching
+# shell wins over the registry lookup - never silently overwritten.
+out34c="$(HEADED_ARM_LEG_LANES_JSON="$lanes_fixture" CLAUDE_CODE_EFFORT_LEVEL=xhigh bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg-34c some/doc.md /tmp/nosig 99999999999 "$tmp/leg34c.log" claude-sonnet-5 2>&1)"
+lenv34c="$(printf '%s\n' "$out34c" | grep '^headed-arm-leg: lane=')"
+contains "34c an ambient CLAUDE_CODE_EFFORT_LEVEL=xhigh survives the registry lookup" "$lenv34c" "CLAUDE_CODE_EFFORT_LEVEL=xhigh"
+not_contains "34c the registry's medium never overwrites the ambient value" "$lenv34c" "CLAUDE_CODE_EFFORT_LEVEL=medium"
+
+# 34d. --lane claudex is untouched by this resolver: it keeps its own
+# LEG_EFFORT-sourced default, never lanes.json's per-model row.
+out34d="$(HEADED_ARM_LEG_LANES_JSON="$lanes_fixture" CLAUDE_CODE_EFFORT_LEVEL='' bash "$SCRIPT" --dry-run --no-profile --lane claudex HIMMEL-9999-leg-34d some/doc.md /tmp/nosig 99999999999 "$tmp/leg34d.log" 2>&1)"
+lenv34d="$(printf '%s\n' "$out34d" | grep '^headed-arm-leg: lane=')"
+contains "34d claudex lane still exports its own LEG_EFFORT-default effort" "$lenv34d" "CLAUDE_CODE_EFFORT_LEVEL=medium"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

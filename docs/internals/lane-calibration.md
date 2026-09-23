@@ -185,11 +185,11 @@ below already uses.
 |---|---|---|---|---|---|
 | `glm` — GLM lane (spawn-glm.ts) | impl | small-context discipline — chunk big plans | 1M | glm (flat-rate overflow, not per-token) | calibrated |
 | `claudex` — claudex lane (claude-codex over CLIProxyAPI) | impl | launcher default `high`; `xhigh` rare; never `ultra`/`max` | 900000 — declared window raised by operator ruling (HIMMEL-1833, 2026-08-17) alongside `hermes-oneshot`; the CLIProxyAPI path itself is UNMEASURED at 900k (see below) — the launcher's `CODEX_CONTEXT_WINDOW` default stays 272000 (its own code warns past the ~372k backend ceiling it has evidence for), so a caller opts UP toward 900k per-dispatch and accepts the risk | codex | calibrated (HIMMEL-1001/1002) |
-| `hermes-critics` — hermes free critics (scripts/cr/hermes-critic.sh) | critic | — (critic pass, not effort-tiered) | unverified/varies | none (dashboard-omitted) | calibrated — model is PINNED to gpt-6-astra via `critics.json` (re-pinned HIMMEL-2546, 2026-09-05, operator switched the codex CLI default; the pin-via-critics.json mechanism itself dates to operator ruling 2026-08-23, HIMMEL-2059, which pinned gpt-5.6-sol), not the himmel_agent profile default (ox-alpha stays reserved for `hermes-oneshot`/dispatch-trusted); not yet wired into the `/pr-check` gate (HIMMEL-2031) |
-| `codex` (paid, via hermes) | critic | — (critic pass) | 900000 — raised by operator ruling (HIMMEL-1833, 2026-08-17); pins gpt-6-astra via `critics.json` (HIMMEL-2546, 2026-09-05) — the window figure predates and is independent of the model pin; least-verified of the five raised lanes | none (dashboard-omitted); opt-in `CR_PROFILE=paid` | calibrated — CR escalation / second opinions only |
+| `hermes-critics` — hermes free critics (scripts/cr/hermes-critic.sh) | critic | — (critic pass, not effort-tiered) | unverified/varies | none (dashboard-omitted) | calibrated — model is PINNED to gpt-6-sol via `critics.json` (re-pinned HIMMEL-3500, 2026-09-23, operator adopted GPT-6 Sol for codex lanes; gpt-6-astra before it, re-pinned HIMMEL-2546, 2026-09-05, operator switched the codex CLI default; the pin-via-critics.json mechanism itself dates to operator ruling 2026-08-23, HIMMEL-2059, which pinned gpt-5.6-sol), not the himmel_agent profile default (ox-alpha stays reserved for `hermes-oneshot`/dispatch-trusted); not yet wired into the `/pr-check` gate (HIMMEL-2031) |
+| `codex` (paid, via hermes) | critic | — (critic pass) | 900000 — raised by operator ruling (HIMMEL-1833, 2026-08-17); pins gpt-6-sol via `critics.json` (HIMMEL-3500, 2026-09-23; gpt-6-astra before it, HIMMEL-2546, 2026-09-05) — the window figure predates and is independent of the model pin; least-verified of the five raised lanes | none (dashboard-omitted); opt-in `CR_PROFILE=paid` | calibrated — CR escalation / second opinions only |
 | `copilot-cli` — GitHub Copilot CLI (free tier) | bulk | small tasks; model tier is mini-class unless the caller overrides the auto pin | unverified/varies | none (dashboard-omitted); 2,000 completions/mo bank | **not calibrated yet** — worker-spawn-matrix row UNVERIFIED (live smoke pending eval); route only for free chores / second opinions, and only through the `dispatch-copilot.sh` chokepoint |
 | `hermes-oneshot` — hermes one-shot dispatch | impl | invoke.sh wall-clock timebox (default 1800s) + Nth-identical-deny abort (HIMMEL-2025) | 900000 — re-confirmed on ox-alpha (HIMMEL-2024, 2026-08-22: 300K/600K/900K probes all accepted); previously operator-verified inside hermes v0.20.2 (2026.8.16), upstream commit `bab7be3c` (2026-08-17), superseding 350000 (hermes-agent commit 522997543, 2026-08-16) | none (dashboard-omitted) — free while ox-alpha lasts | calibrated — live-proven spawn path; see [ox-alpha](#ox-alpha--the-current-hermes-himmel_agent-default-himmel-2024) |
-| `codex-exec` — codex CLI sandbox | impl | well-scoped chunks; job registry is per-workspace | 900000 — raised by operator ruling (HIMMEL-1833, 2026-08-17) despite the 360K rejection hermes measured on the gpt-5.5 pin it carried then (codex-exec now follows the `codex` critic's model, `gpt-6-astra`, HIMMEL-2811; that probe was not repeated there); least-verified of the five raised lanes | codex | calibrated (HIMMEL-741) |
+| `codex-exec` — codex CLI sandbox | impl | well-scoped chunks; job registry is per-workspace | 900000 — raised by operator ruling (HIMMEL-1833, 2026-08-17) despite the 360K rejection hermes measured on the gpt-5.5 pin it carried then (codex-exec now follows the `codex` critic's model, `gpt-6-sol`, HIMMEL-3500 (`gpt-6-astra` before it, HIMMEL-2811); that probe was not repeated there); least-verified of the five raised lanes | codex | calibrated (HIMMEL-741) |
 | `codex-wsl` — codex WSL lane | impl | well-scoped chunks; brief via `--brief-file` | 900000 — raised by operator ruling (HIMMEL-1833, 2026-08-17) despite still pinning gpt-5.5, the same model hermes measured rejecting a 360K probe; least-verified of the five raised lanes | codex | calibrated (HIMMEL-999) |
 | `antigravity-cli` — Antigravity CLI (Google AI Plus) | bulk | simple tasks; `--output-format` drift seen on Windows builds | unverified/varies | none (dashboard-omitted); free AI-Plus bank | **not calibrated yet** — roster + quota shape TO VERIFY at eval (HIMMEL-772); parity/guards UNVERIFIED (permission flags only, no hook surface); egress-DENIED for vault corpora, himmel-code only; route only for free-bank chores / second opinions |
 | `ollama-local` — ollama (local models) | bulk | slow, small tasks | unverified/varies | none (dashboard-omitted); free, local wall-clock | calibrated — zero-egress guarantee is structural; the only salus-eligible backend |
@@ -329,11 +329,10 @@ not re-measured it):
 
 The ladder stays; only its resting point moves. Mind which model each lane runs:
 `codex-exec` follows the `codex` critic in `scripts/cr/critics.json` (currently
-`gpt-6-astra`), but the `claudex` launcher's own default model is still
-`gpt-5.6-sol` (`CODEX_MODEL` in `scripts/claude-codex`, overridable) — the note
-above is about Astra, so a claudex station left on the Sol default runs the
-lower effort ahead of any model switch; export `CLAUDE_CODE_EFFORT_LEVEL=high`
-there if `medium` under-delivers. The rungs:
+`gpt-6-sol`, HIMMEL-3500), and the `claudex` launcher's own default model now
+matches it (`gpt-6-sol`, `CODEX_MODEL` in `scripts/claude-codex`, overridable) —
+both lanes run at effort medium by default; export
+`CLAUDE_CODE_EFFORT_LEVEL=high` there if `medium` under-delivers. The rungs:
 
 | Effort | Use for |
 |---|---|
@@ -356,9 +355,10 @@ prints both banks on its one line — `five_hour=… seven_day=… codex=5h<n>/w
 a refusal on that account), an **Opus parent routes implementation chunks
 codex-exec first**:
 
-1. **codex-exec** (`scripts/codex/dispatch-codex-exec.sh`; Astra — the wrapper's
+1. **codex-exec** (`scripts/codex/dispatch-codex-exec.sh`; Sol — the wrapper's
    default model is the `codex` critic in `scripts/cr/critics.json`, currently
-   `gpt-6-astra` — at **`--reasoning-effort medium`**, `low` for a mechanical
+   `gpt-6-sol` (HIMMEL-3500; `gpt-6-astra` before it) — at
+   **`--reasoning-effort medium`**, `low` for a mechanical
    chunk) — the default home of a well-specified implementation chunk, because
    it draws the codex bank rather than the Claude one.
 2. **A Sonnet child** — only where the codex lane **cannot act**.
@@ -573,7 +573,7 @@ to gate new arms, not reads.
 
 `headed-arm-leg.sh --lane claudex` (or `LEG_LANE=claudex`) routes a leg arm
 through `scripts/claude-codex` — the Claude Code harness running against
-GPT-6 Astra via the local CLIProxyAPI service — drawing on the **codex weekly
+GPT-6 Sol via the local CLIProxyAPI service — drawing on the **codex weekly
 bank** (`bank-preflight.sh` parks a claudex leg on
 `scripts/lanes/codex-bank-probe.ts`'s cache, never the Claude five-hour/weekly
 check) instead of the Claude subscription bank the native lane spends from.
@@ -616,7 +616,7 @@ or message anything else running — it is not a substitute for:
   ambiguous ticket) belongs on a native tier that can actually escalate.
 
 **Operating model — claudex legs cannot ask, so they never park.** A claudex
-leg is `scripts/claude-codex` (Claude Code) talking to GPT-6 Astra through
+leg is `scripts/claude-codex` (Claude Code) talking to GPT-6 Sol through
 CLIProxyAPI; it is not a peer session in this operator's `ListAgents`
 registry and structurally cannot see or message any native session —
 `ListAgents`/`SendMessage` simply do not reach it, and it cannot reach them.

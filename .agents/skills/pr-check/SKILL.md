@@ -375,7 +375,7 @@ as "no valid diff"). `CR_PROFILE` is authoritative — the panel derives its tie
 from it; **unset ⇒ the PAID codex anchor, not a free panel (HIMMEL-1101,
 operator decision: accept paid-by-default).** The free lane was removed
 deliberately (HIMMEL-667, HIMMEL-953), and `critics.json` today holds exactly one
-row — `codex` / `gpt-5.6-sol`, tier `paid` — so an unset `CR_PROFILE` resolves to
+row — `codex` / `gpt-6-sol`, tier `paid` — so an unset `CR_PROFILE` resolves to
 zero free rows and falls back to it: a default `/pr-check` that actually runs the
 panel consumes the operator's OpenAI usage bank. `CR_PROFILE=none` is the instant
 escape when spend is unwanted — but it skips the panel, and this subset has no

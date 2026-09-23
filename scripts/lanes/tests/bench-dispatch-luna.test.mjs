@@ -31,7 +31,7 @@ test('dispatch-luna.sh --dry-run prints the launcher argv, env, and cwd without 
     env: { ...process.env, BENCH_SCRATCH_ROOT: scratchRoot },
   });
   assert.match(out, /DRY-RUN argv: bash .*scripts[\\/]claude-codex --permission-mode dontAsk/);
-  assert.match(out, /DRY-RUN env: CODEX_MODEL=gpt-5\.6-luna CLAUDE_CODE_EFFORT_LEVEL=high/);
+  assert.match(out, /DRY-RUN env: CODEX_MODEL=gpt-6-luna CLAUDE_CODE_EFFORT_LEVEL=high/);
   assert.match(out, /DRY-RUN cwd: /);
   assert.match(out, /DRY-RUN stdin: closed/);
   // Never the telegram claudex worker-spawner path (structural invariant,

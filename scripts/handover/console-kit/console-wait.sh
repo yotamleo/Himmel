@@ -34,6 +34,12 @@
 # prints no TICK line, or a bank read that fails or is not a verdict token, is
 # a failed sample: never a change, and only a streak of them wakes.
 #
+# board= is asymmetric: a class move TO ok is never itself a wake (the
+# console just rendered its own board — nothing for it to act on), only a
+# move to STALE or MISSING is. The key still saves silently on a move to ok,
+# so a later move to STALE wakes again. A sample where board moves to ok AND
+# another action field changes still wakes, naming only the other field(s).
+#
 # Files next to the inbox:
 #   <inbox>.wait       heartbeat, rewritten every poll:
 #                      `hb=<epoch> pid=<pid> key=<sha16> tick=<ok|fail|-> state=waiting`,
@@ -169,6 +175,24 @@ changed_fields() { # <old key> <new key>
     rm -f "$hb_file.old"
 }
 
+# key_field: <name> <key> — the value of one field inside a pipe-joined key
+# (see sample()), the same encoding changed_fields() splits on.
+key_field() {
+    printf '%s\n' "$2" | tr '|' '\n' | sed -n "s/^$1=//p" | head -n 1
+}
+
+# drop_board_ok: <changed csv> <new key> — a board class move TO ok is never
+# itself a wake (only a move to STALE/MISSING is); strip it from a changed=
+# list so a combined change still names its other real fields.
+drop_board_ok() {
+    local board_new
+    board_new="$(key_field board "$2")"
+    printf '%s\n' "$1" | tr ',' '\n' | while IFS= read -r f; do
+        [ "$f" = board ] && [ "$board_new" = ok ] && continue
+        printf '%s\n' "$f"
+    done | paste -sd, -
+}
+
 saved=""
 if [ -f "$key_file" ] && [ "$(sed -n 1p "$key_file")" = "$args_hash" ]; then
     saved="$(sed -n 2p "$key_file")"
@@ -220,10 +244,17 @@ while :; do
             elif [ -n "$pending" ]; then
                 # Two consecutive samples off the saved key, equal or not: a
                 # key that moves on every sample (a busy repo's PR set) is
-                # still a change, not a blip.
-                printf 'WAKE tick changed=%s bank=%s\n%s\n' "$(changed_fields "$saved" "$key")" "${key##*|bank=}" "$tick_line"
-                save_key "$key"
-                exit_reason='wake-tick'; exit 0
+                # still a change, not a blip. A board class move TO ok is
+                # never itself a wake (only a move to STALE/MISSING is), so
+                # it never appears in changed=; the key still saves.
+                real_changed="$(drop_board_ok "$(changed_fields "$saved" "$key")" "$key")"
+                if [ -z "$real_changed" ]; then
+                    saved="$key"; save_key "$key"; pending=""
+                else
+                    printf 'WAKE tick changed=%s bank=%s\n%s\n' "$real_changed" "${key##*|bank=}" "$tick_line"
+                    save_key "$key"
+                    exit_reason='wake-tick'; exit 0
+                fi
             else
                 pending=1
             fi
