@@ -82,8 +82,9 @@ tick_cmd="${CONSOLE_WAIT_TICK:-$HERE/tick.sh}"
 
 # One waiter per inbox: a second would double every wake. flock is atomic and
 # the lock dies with the waiter; every child runs with fd 9 closed, so a killed
-# waiter's tick or sleep cannot go on holding it.
-if ! exec 9>>"$inbox.wait.lock"; then
+# waiter's tick or sleep cannot go on holding it. The inbox's directory may not
+# exist yet on a first start; inbox-follow.sh creates the inbox itself.
+if ! mkdir -p "$(dirname "$inbox")" || ! exec 9>>"$inbox.wait.lock"; then
     echo "console-wait: cannot open $inbox.wait.lock" >&2
     exit 1
 fi

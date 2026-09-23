@@ -203,10 +203,15 @@ kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
 # --- (j) new tick args re-baseline silently --------------------------------
 reset_stub
 I="$(new_inbox j)"
-timeout 2 bash "$WAIT" "$I" --legs "N1.md" >/dev/null 2>&1  # gnu-ok: Linux-only kit; pipefail-ok: none set
+timeout 2 bash "$WAIT" "$I" --legs "N1.md" >/dev/null 2>&1; rc=$?  # gnu-ok: Linux-only kit; pipefail-ok: none set
+check "(j) the first arm ran until the timeout" "124" "$rc"
+base1="$(cat "$I.wait.state" 2>/dev/null)"
 tick_line "N1:FRESH,N2:FRESH" "ok"
-timeout 3 bash "$WAIT" "$I" --legs "N1.md N2.md" > "$WORK/j.out" 2>/dev/null  # gnu-ok: Linux-only kit; pipefail-ok: none set
+timeout 3 bash "$WAIT" "$I" --legs "N1.md N2.md" > "$WORK/j.out" 2>/dev/null; rc=$?  # gnu-ok: Linux-only kit; pipefail-ok: none set
+check "(j) the re-arm ran until the timeout" "124" "$rc"
 check "(j) a re-arm with a new leg set re-baselines instead of waking" "" "$(cat "$WORK/j.out")"
+base2="$(cat "$I.wait.state" 2>/dev/null)"
+if [ -n "$base1" ] && [ -n "$base2" ] && [ "$base1" != "$base2" ]; then pass "(j) the saved baseline moved to the new leg set"; else fail "(j) the saved baseline moved to the new leg set (was '$base1' now '$base2')"; fi
 
 # --- (l) a tick that prints a line and then fails is never a change -------
 reset_stub
@@ -268,6 +273,14 @@ kill -0 "$P1" 2>/dev/null && alive=$((alive + 1))
 kill -0 "$P2" 2>/dev/null && alive=$((alive + 1))
 check "(p) exactly one of two simultaneous waiters is still running" "1" "$alive"
 kill "$P1" "$P2" 2>/dev/null; wait "$P1" "$P2" 2>/dev/null
+
+# --- (q) a first start with no consoles/ directory yet still arms -----------
+reset_stub
+I="$WORK/q/consoles/c.md"
+start "$I" "$WORK/q.out" --legs "N1.md"
+wait_hb "$I" || fail "(q) no baseline heartbeat when consoles/ was absent"
+check "(q) the waiter created the inbox" "yes" "$([ -f "$I" ] && echo yes)"
+kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
 
 # --- (k) usage ---------------------------------------------------------------
 bash "$WAIT" >/dev/null 2>&1; rc=$?
