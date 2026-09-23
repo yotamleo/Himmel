@@ -10,7 +10,13 @@
 # process only when BOTH the queue lock is free AND the last status bullet
 # is WRAPPED. Any lookup that fails or is ambiguous counts the process —
 # fail toward the cap, never toward an undercount that could push the fleet
-# over it.
+# over it. Revised same day: this must never exec another script (a
+# fleet-wrapped.sh -> queue-lock.sh call edge pulled queue-lock.sh, and its
+# own deps, into scripts/cr's guarded reachability closure unallowlisted —
+# see test-cr-guarded-closure.sh). The lock check below reads
+# queue-lock.sh's on-disk lock dir / owner.json directly instead; see
+# fleet_lock_dir_for_doc's ponytail note for exactly how much of
+# queue-lock.sh's own root/slug resolution this replicates.
 #
 # Defines functions only; sourcing prints nothing and touches no file.
 # Bash 3.2-safe; no .ps1 twin (reads /proc, a POSIX-only construct — the
@@ -73,17 +79,74 @@ fleet_doc_last_status() {
     | sed -E 's/^- ([0-9]{1,2}:[0-9]{2}[[:space:]]+)?(\*\*)?(WRAPPED|READY|RESOLVED|BLOCKED|HALTED|FINDING|LIVE).*/\3/'
 }
 
+# fleet_lock_slug_for_root <doc> <root> — prints the queue-lock slug <doc>
+# would get under <root>, exactly as scripts/handover/queue-lock.sh's own
+# _ql_slug_for_root computes it: strip ".md", relativize against <root> when
+# <doc> falls under it, fold "/" to "__", then fold every remaining
+# non-[A-Za-z0-9_-] character to "-".
+fleet_lock_slug_for_root() {
+  local _fls_p="${1%.md}" _fls_root="${2:-}"
+  case "$_fls_p" in
+    "$_fls_root"/*) _fls_p="${_fls_p#"$_fls_root"/}" ;;
+  esac
+  _fls_p="$(printf '%s' "$_fls_p" | sed 's#/#__#g')"
+  printf '%s' "$_fls_p" | tr -c 'A-Za-z0-9_-' '-'
+}
+
+# fleet_lock_dir_for_doc <doc> — prints the canonical queue-lock directory
+# for <doc> (rc 0) under the first root <doc> resolves under, out of
+# $HANDOVER_DIR and handover-path.sh's handover_root (or
+# $FLEET_HANDOVER_ROOT_OVERRIDE alone, for tests) — the same two roots
+# fleet_doc_for_name already searches. rc 1 when <doc> falls under neither.
+#
+# ponytail: HIMMEL-3095, this covers only the two-root case queue-lock.sh's
+# own _ql_roots_all resolves without a registry read (HANDOVER_DIR +
+# handover_root — the common HIMMEL-2861 cross-root pair). It does not
+# reimplement the full registry-scanned candidate-root list, nor the
+# pre-HIMMEL-3290 legacy-mis-keyed-lock / namesake scan queue-lock.sh falls
+# back to when the canonical dir is absent. A doc locked only under a
+# registry root, or only under a legacy-keyed dir, reads as a missing lock
+# dir here and this function returns 1 (ambiguous), which the caller below
+# already treats as COUNT — fail-toward-cap, never a false exclude. Upgrade
+# path: if that undercount-by-caution is ever measured to actually cost a
+# fleet slot in practice, port _ql_candidate_roots' registry parse (or call
+# queue-lock.sh's own root/slug helpers if they get exposed sourceable
+# without pulling in acquire/release's write paths) rather than widening
+# this by hand.
+fleet_lock_dir_for_doc() {
+  local _fld_doc="$1" _fld_root _fld_slug
+  if [ -n "${FLEET_HANDOVER_ROOT_OVERRIDE:-}" ]; then
+    set -- "$FLEET_HANDOVER_ROOT_OVERRIDE"
+  else
+    # shellcheck source=scripts/lib/handover-path.sh
+    . "${FLEET_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}/handover-path.sh" 2>/dev/null
+    set -- "${HANDOVER_DIR:-}" "$(handover_root 2>/dev/null)"
+  fi
+  for _fld_root in "$@"; do
+    if [ -z "$_fld_root" ] || [ ! -d "$_fld_root" ]; then continue; fi
+    _fld_root="$(cd "$_fld_root" 2>/dev/null && pwd)" || continue
+    case "$_fld_doc" in
+      "$_fld_root"/*) : ;;
+      *) continue ;;
+    esac
+    _fld_slug="$(fleet_lock_slug_for_root "$_fld_doc" "$_fld_root")"
+    printf '%s\n' "$_fld_root/.locks/queue/$_fld_slug.lock"
+    return 0
+  done
+  return 1
+}
+
 # fleet_process_is_wrapped_and_free <pid> <name> — rc 0 (EXCLUDE: wrapped
 # and lock-free) or rc 1 (COUNT: everything else, including a failed or
-# ambiguous doc/lock lookup). Read-only: a queue-lock `status` call and two
-# file reads, nothing is written or moved.
+# ambiguous doc/lock lookup). Read-only: no exec, just file/directory
+# reads — see fleet_lock_dir_for_doc's ponytail note for the on-disk-format
+# coupling this implies.
 fleet_process_is_wrapped_and_free() {
-  local _fpw_pid="$1" _fpw_name="$2" _fpw_doc _fpw_lock_out _fpw_lock_rc _fpw_status
+  local _fpw_pid="$1" _fpw_name="$2" _fpw_doc _fpw_lockdir _fpw_status
   _fpw_doc="$(fleet_doc_for_pid "$_fpw_pid")" || _fpw_doc="$(fleet_doc_for_name "$_fpw_name")" || return 1
   [ -f "$_fpw_doc" ] || return 1
-  _fpw_lock_out="$("${FLEET_QUEUE_LOCK:-$(dirname "${BASH_SOURCE[0]}")/../handover/queue-lock.sh}" status "$_fpw_doc" 2>/dev/null)"
-  _fpw_lock_rc=$?
-  [ "$_fpw_lock_rc" -eq 0 ] && [ "$_fpw_lock_out" = "free" ] || return 1
+  _fpw_lockdir="$(fleet_lock_dir_for_doc "$_fpw_doc")" || return 1
+  [ -e "$_fpw_lockdir" ] && return 1
   _fpw_status="$(fleet_doc_last_status "$_fpw_doc")"
   [ "$_fpw_status" = "WRAPPED" ] || return 1
   return 0
