@@ -63,6 +63,16 @@ function bundleDir() {
   return path.join(provLib.ledgerDir(), 'uninstall');
 }
 
+// design §3.1's tree mirrors repo-relative paths EXCEPT scripts/himmelctl/,
+// which mounts at the bundle root (so the copied standalone.js sits at
+// <bundle>/standalone.js, matching the launcher's `path.join(bundleDir(),
+// 'standalone.js')`, and its own `require('./lib/...')` calls resolve
+// against <bundle>/lib/ unchanged).
+const HIMMELCTL_PREFIX = 'scripts/himmelctl/';
+function destRel(rel) {
+  return rel.startsWith(HIMMELCTL_PREFIX) ? rel.slice(HIMMELCTL_PREFIX.length) : rel;
+}
+
 function warn(msg) {
   console.error(`himmelctl: WARN: ${msg}`);
 }
@@ -195,7 +205,7 @@ function writeStandaloneBundle(repoRoot) {
     fs.chmodSync(stage, 0o700);
     for (const rel of files) {
       const src = path.join(repoRoot, rel);
-      const dest = path.join(stage, rel);
+      const dest = path.join(stage, destRel(rel));
       fs.mkdirSync(path.dirname(dest), { recursive: true, mode: 0o700 });
       fs.copyFileSync(src, dest);
       fs.chmodSync(dest, 0o600);
