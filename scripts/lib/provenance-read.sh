@@ -635,7 +635,8 @@ prov_read_session_begin() {
     for a in "$@"; do argv=$(jq -nc --argjson acc "$argv" --arg v "$a" '$acc + [$v]') || return 1; done
     _prov_append "$(jq -nc --arg t "$(_prov_now)" --arg iid "$_PROV_READ_IID" --argjson argv "$argv" \
         --arg mode "$mode" --argjson rows "${PROV_READ_ROWS:-0}" --argjson bad "${PROV_READ_BAD_ROWS:-0}" \
-        '{t:$t,iid:$iid,op:"uninstall-begin",argv:$argv,mode:$mode,ledger_rows:$rows,ledger_bad_rows:$bad}')" || return 1
+        --argjson unknown "${PROV_READ_UNKNOWN_ROWS:-0}" \
+        '{t:$t,iid:$iid,op:"uninstall-begin",argv:$argv,mode:$mode,ledger_rows:$rows,ledger_bad_rows:$bad,ledger_unknown_rows:$unknown}')" || return 1
 }
 
 # prov_read_outcome <removed|restored|kept|failed> <unit-json> <reason> [backup]

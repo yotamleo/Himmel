@@ -126,6 +126,14 @@ REPO_ROOT="${HIMMEL_UNINSTALL_REPO_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]
 # unchanged, for every existing hook-detection test.
 HOOKS_REPO_ROOT="${HIMMEL_UNINSTALL_REPO_ROOT:-$PWD}"
 
+# HIMMEL-3312 S12: CLONE_ROOT is a REPORTING-ONLY value -- what the
+# himmel-clone tsv row's {REPO_ROOT} token expands to. It equals REPO_ROOT
+# here and stays that way for every script-location use (SCRIPT_DIR, REPO_ROOT
+# itself); it is refined below, once the ledger has loaded, only when
+# REPO_ROOT turns out to be a standalone bundle standing in for a clone that
+# may no longer exist.
+CLONE_ROOT="$REPO_ROOT"
+
 DRY_RUN=0
 YES=0
 KEEP_TELEGRAM_STATE=0
@@ -216,7 +224,7 @@ load_manifest() {
       *) echo "ERROR: row '$_id' has class '$_class' (want code|state|keep) in $MANIFEST_FILE" >&2; return 1 ;;
     esac
     case "$_kind" in
-      dir|settings|githooks|process|jobs|plugins|marketplaces|file) ;;
+      dir|settings|githooks|process|jobs|plugins|marketplaces|file|tree) ;;
       *) echo "ERROR: row '$_id' has kind '$_kind' in $MANIFEST_FILE" >&2; return 1 ;;
     esac
     case "$_step" in
@@ -280,14 +288,23 @@ m_index() {
 m_path() {
   local _i="$1" _var="${M_ENV[$1]}" _p _t
   if [ "$_var" != "-" ] && [ -n "${!_var:-}" ]; then
-    printf '%s\n' "${!_var}"
+    _p="${!_var}"
+    # HIMMEL-3312 S12: HIMMEL_PROVENANCE_DIR overrides the LEDGER's directory
+    # (shared with the provenance-ledger row); this row's target is the
+    # "uninstall" bundle dir underneath it, so the override needs the same
+    # join the default {HOME}/.himmel/uninstall template gets below.
+    [ "${M_ID[$_i]}" = "standalone-uninstaller" ] && _p="$_p/uninstall"
+    printf '%s\n' "$_p"
     return 0
   fi
   _p="${M_PATH[$_i]}"
   if [ "$_p" = "-" ]; then printf '%s\n' "-"; return 0; fi
   _t='{HOME}';            _p="${_p//"$_t"/$HOME}"
   _t='{PWD}';             _p="${_p//"$_t"/$PWD}"
-  _t='{REPO_ROOT}';       _p="${_p//"$_t"/$REPO_ROOT}"
+  # HIMMEL-3312 S12: {REPO_ROOT} (himmel-clone row only) reports the CLONE the
+  # running script stands in for, not REPO_ROOT (this script's own location,
+  # which is a bundle dir once S13 lands) -- see CLONE_ROOT's definition.
+  _t='{REPO_ROOT}';       _p="${_p//"$_t"/$CLONE_ROOT}"
   _t='{HOOKS_REPO_ROOT}'; _p="${_p//"$_t"/$HOOKS_REPO_ROOT}"
   printf '%s\n' "$_p"
 }
@@ -1556,6 +1573,42 @@ else
   echo "  (jq is not installed; the ledger cannot be read)"
 fi
 
+# HIMMEL-3312 S12: REPO_ROOT is a bundle, not a clone, when $REPO_ROOT/bundle.json
+# carries BUNDLE_MARKER -- CLONE_ROOT then becomes the clone the bundle stands
+# in for (last ledger install-begin, else bundle.json's own record), so the
+# himmel-clone row reports where the clone actually is (or was).
+# HIMMEL_UNINSTALL_REPO_ROOT (the HIMMEL-2754 fixture seam) names REPO_ROOT
+# outright, so it wins for CLONE_ROOT too -- unchanged, no bundle lookup.
+if command -v jq >/dev/null 2>&1 && [ -z "${HIMMEL_UNINSTALL_REPO_ROOT:-}" ] \
+    && [ -f "$REPO_ROOT/bundle.json" ] \
+    && jq -e --arg m "$BUNDLE_MARKER" '.marker == $m' "$REPO_ROOT/bundle.json" >/dev/null 2>&1; then
+  _clone_root=""
+  if [ "$LEDGER_OK" -eq 1 ]; then
+    _clone_root="$(prov_last_himmel_root "$_prov_ledger_path" 2>/dev/null || true)"
+  fi
+  if [ -z "$_clone_root" ]; then
+    _clone_root="$(jq -r '.himmel_root // empty' "$REPO_ROOT/bundle.json" 2>/dev/null)"
+  fi
+  [ -n "$_clone_root" ] && CLONE_ROOT="$_clone_root"
+fi
+
+# HIMMEL-3312 S12: rows a hand-edited/older ledger still references but the
+# CURRENT tsv no longer lists -- reported so an operator on a stale ledger
+# knows the report may be incomplete, never treated as an error.
+_ledger_unknown_rows=0
+if [ "$LEDGER_OK" -eq 1 ]; then
+  _known_ids=$(printf '%s\n' "${M_ID[@]}" | jq -R -s 'split("\n") | map(select(length>0))')
+  _ledger_unknown_rows=$(jq -R -s --argjson known "$_known_ids" '
+      split("\n") | map(select(length>0)) | map(try fromjson catch null) | map(select(. != null))
+      | map(.manifest_row // empty) | map(select(. != "")) | unique
+      | map(select(($known | index(.)) == null)) | length
+    ' "$_prov_ledger_path" 2>/dev/null)
+  case "$_ledger_unknown_rows" in ''|*[!0-9]*) _ledger_unknown_rows=0 ;; esac
+  if [ "$_ledger_unknown_rows" -gt 0 ]; then
+    echo "provenance: $_ledger_unknown_rows ledger row(s) reference a manifest row no longer in $MANIFEST_FILE"
+  fi
+fi
+
 echo "==> himmel uninstall (offboard)"
 echo ""
 echo "This will:"
@@ -1699,6 +1752,9 @@ for _mi in "${!M_ID[@]}"; do
   esac
   _mp=$(m_path "$_mi")
   [ "$_mp" = "-" ] && _mp="(${M_ID[$_mi]})"
+  # HIMMEL-3312 S12: himmel-clone reports CLONE_ROOT, which in bundle mode is
+  # not this script's own directory and may no longer exist at all.
+  [ "${M_ID[$_mi]}" = "himmel-clone" ] && [ ! -e "$_mp" ] && _mp="$_mp (not present)"
   echo "  $_disp  $_mp — ${M_WHAT[$_mi]}"
 done
 if ! state_removed; then
@@ -1727,6 +1783,9 @@ echo ""
 # HIMMEL-3332 S6: begin the uninstall session AFTER a declined run has
 # already exited above (a decline writes nothing). No-op when the ledger
 # did not load (prov_read_session_begin checks PROV_READ_STATE itself).
+# HIMMEL-3312 S12: threaded into the written row as ledger_unknown_rows.
+# shellcheck disable=SC2034  # read by prov_read_session_begin in provenance-read.sh
+PROV_READ_UNKNOWN_ROWS="$_ledger_unknown_rows"
 if [ "$LEDGER_OK" -eq 1 ]; then
   # bash 3.2: "${arr[@]}" on an EMPTY array errors under `set -u` — the
   # "${arr[@]+...}" guard is this script's existing idiom for that (see
@@ -1977,6 +2036,55 @@ ledger_teardown_bridge_unit() {
   fi
 }
 
+# stop_bridge_supervisor_directly — HIMMEL-3312 S12: when $REPO_ROOT has no
+# scripts/telegram (running from the standalone bundle, not the clone), stop
+# the bun supervisor without shelling to bun at all: read its own recorded
+# pid, verify it is really the supervisor (never signal a recycled pid), TERM
+# it, and poll. Mirrors supervisor.ts --kill's own return-code contract (0
+# gone, 1 no pidfile, >=2 may still be running) so the caller's fail_step
+# logic does not need to know which path ran.
+stop_bridge_supervisor_directly() {
+  local _pidfile="$BRIDGE_ROOT/supervisor.pid" _pid _cmdline _waited
+  [ -f "$_pidfile" ] || return 1
+  _pid="$(cat "$_pidfile" 2>/dev/null)"
+  case "$_pid" in
+    ''|*[!0-9]*|0)
+      echo "  WARN: $_pidfile does not hold a positive pid ('$_pid') — leaving it alone." >&2
+      return 2 ;;
+  esac
+  if ! kill -0 "$_pid" 2>/dev/null; then
+    echo "  supervisor.pid names pid $_pid, which is not running — nothing to stop."
+    return 0
+  fi
+  if [ -r "/proc/$_pid/cmdline" ]; then
+    _cmdline="$(tr '\0' ' ' < "/proc/$_pid/cmdline" 2>/dev/null)"
+  else
+    _cmdline="$(ps -p "$_pid" -o args= 2>/dev/null)"
+  fi
+  case "$_cmdline" in
+    *supervisor.ts*) ;;
+    *)
+      echo "  WARN: pid $_pid (supervisor.pid) is not the telegram supervisor ('${_cmdline:-unreadable}') — refusing to signal a recycled pid." >&2
+      return 2 ;;
+  esac
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "DRY: kill -TERM $_pid (telegram supervisor, no bundled scripts/telegram)"
+    return 0
+  fi
+  kill -TERM "$_pid" 2>/dev/null
+  _waited=0
+  while kill -0 "$_pid" 2>/dev/null; do
+    if [ "$_waited" -ge 5 ]; then
+      echo "  WARN: pid $_pid still running 5s after TERM — bridge may still be running; check manually." >&2
+      return 2
+    fi
+    sleep 1
+    _waited=$((_waited + 1))
+  done
+  echo "  stopped telegram supervisor (pid $_pid) directly (no bundled scripts/telegram)."
+  return 0
+}
+
 # --- [1/8] stop the bridge -------------------------------------------------
 # Uses the documented cross-platform lever (supervisor.pid under the bridge
 # root; see docs/internals/telegram-bridge.md). BRIDGE_ROOT is passed through
@@ -2005,23 +2113,33 @@ if ! class_removes "$_ix_bproc"; then
   fi
 elif [ ! -f "$BRIDGE_ROOT/supervisor.pid" ]; then
   echo "  no supervisor.pid under $BRIDGE_ROOT — bridge not running, skipping."
-elif ! command -v bun >/dev/null 2>&1; then
-  echo "  WARN: supervisor.pid exists but bun is not on PATH — cannot stop the bridge." >&2
-  if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win"* ]] \
-      || command -v pwsh >/dev/null 2>&1; then
-    echo "  Stop it manually: pwsh -File scripts/telegram/restart-bridge.ps1 -StatusOnly (inspect), then kill." >&2
+elif [ -f "$REPO_ROOT/scripts/telegram/supervisor.ts" ]; then
+  if ! command -v bun >/dev/null 2>&1; then
+    echo "  WARN: supervisor.pid exists but bun is not on PATH — cannot stop the bridge." >&2
+    if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win"* ]] \
+        || command -v pwsh >/dev/null 2>&1; then
+      echo "  Stop it manually: pwsh -File scripts/telegram/restart-bridge.ps1 -StatusOnly (inspect), then kill." >&2
+    else
+      echo "  Find the supervisor pid in $BRIDGE_ROOT/supervisor.pid and kill it manually." >&2
+    fi
+    fail_step "[1/8] telegram bridge: could not stop the supervisor"
   else
-    echo "  Find the supervisor pid in $BRIDGE_ROOT/supervisor.pid and kill it manually." >&2
+    run env BRIDGE_ROOT="$BRIDGE_ROOT" bun --cwd "$REPO_ROOT/scripts/telegram" supervisor.ts --kill
+    _rc=$?
+    # --kill rc: 0 = killed/already gone, 1 = pidfile absent (not running),
+    # 2 = pidfile unreadable/corrupt OR a signal failed (e.g. EPERM) → bridge
+    # MAY still be running (supervisor keeps the pidfile in that case).
+    if [ "$DRY_RUN" -eq 0 ] && [ "$_rc" -ge 2 ]; then
+      echo "  WARN: supervisor --kill rc=$_rc — bridge may still be running; check manually." >&2
+      fail_step "[1/8] telegram bridge: could not stop the supervisor"
+    fi
   fi
-  fail_step "[1/8] telegram bridge: could not stop the supervisor"
 else
-  run env BRIDGE_ROOT="$BRIDGE_ROOT" bun --cwd "$REPO_ROOT/scripts/telegram" supervisor.ts --kill
+  # HIMMEL-3312 S12: no clone/bundle telegram dir (running from a bundle) —
+  # stop the supervisor directly instead of shelling to bun.
+  stop_bridge_supervisor_directly
   _rc=$?
-  # --kill rc: 0 = killed/already gone, 1 = pidfile absent (not running),
-  # 2 = pidfile unreadable/corrupt OR a signal failed (e.g. EPERM) → bridge
-  # MAY still be running (supervisor keeps the pidfile in that case).
-  if [ "$DRY_RUN" -eq 0 ] && [ "$_rc" -ge 2 ]; then
-    echo "  WARN: supervisor --kill rc=$_rc — bridge may still be running; check manually." >&2
+  if [ "$_rc" -ge 2 ]; then
     fail_step "[1/8] telegram bridge: could not stop the supervisor"
   fi
 fi
@@ -3446,8 +3564,29 @@ for _mi in "${!M_ID[@]}"; do
     keep)
       _mp=$(m_path "$_mi")
       [ "$_mp" = "-" ] && _mp="(${M_ID[$_mi]})"
+      [ "${M_ID[$_mi]}" = "himmel-clone" ] && [ ! -e "$_mp" ] && _mp="$_mp (not present)"
       echo "  - $_mp — ${M_WHAT[$_mi]}" ;;
     state) state_removed || echo "  - $(m_path "$_mi") — ${M_WHAT[$_mi]} (operator state; --purge-state removes it)" ;;
   esac
 done
 if [ -n "$_kept_tools" ]; then printf '%s' "$_kept_tools"; fi
+
+# --- Standalone bundle purge (HIMMEL-3312 S12) --------------------------------
+# The last thing this script may ever do: the bundle himmelctl copies beside
+# the ledger (S13) is uninstall.sh's own to remove, and only as the true final
+# statement -- once the group below starts, NOTHING may run after it, since it
+# can unlink the very directory this running script's siblings live in (POSIX
+# keeps an already-open script's inode alive for the process running it, so
+# self-deletion here is safe; anything queued after the group would not be
+# able to rely on that).
+if [ "$PURGE_STATE" -eq 1 ] && [ "$HALTED" -eq 0 ] && command -v jq >/dev/null 2>&1; then
+  _bundle_dir="${HIMMEL_PROVENANCE_DIR:-$HOME/.himmel}/uninstall"
+  if [ -d "$_bundle_dir" ] && [ ! -L "$_bundle_dir" ] && [ -f "$_bundle_dir/bundle.json" ] \
+      && jq -e --arg m "$BUNDLE_MARKER" '.marker == $m' "$_bundle_dir/bundle.json" >/dev/null 2>&1; then
+    echo "  removing the standalone uninstaller bundle: $_bundle_dir"
+    _final_rc=0
+    { guarded run rm -rf -- "$_bundle_dir"; exit "$_final_rc"; }
+  elif [ -e "$_bundle_dir" ]; then
+    echo "  kept: not himmel's ($_bundle_dir)"
+  fi
+fi

@@ -69,6 +69,30 @@ prov_ledger_path() {
     printf '%s/provenance.jsonl' "$d"
 }
 
+# BUNDLE_MARKER -- the exact string the standalone-bundle writer (HIMMEL-3312
+# S13) stamps into bundle.json's "marker" field, and the one uninstall.sh
+# checks before it will treat a directory as its own bundle: never touched,
+# never trusted, without this literal match.
+# shellcheck disable=SC2034  # read by uninstall.sh, which sources this file
+BUNDLE_MARKER="himmel-standalone-uninstaller/1"
+
+# prov_last_himmel_root [ledger-path] -- echoes the himmel_root the LAST
+# install-begin row recorded (a raw scan: install-begin is a session row,
+# never folded into PROV_READ_FOLD, so prov_read_units can't answer this).
+# Empty output + rc=1 when the ledger is unreadable or has no install-begin row.
+prov_last_himmel_root() {
+    local ledger="${1:-}" root
+    [ -n "$ledger" ] || ledger=$(prov_ledger_path) || return 1
+    [ -r "$ledger" ] || return 1
+    root=$(jq -R -s -r '
+        split("\n") | map(select(length>0))
+        | map(try fromjson catch null) | map(select(. != null and .op=="install-begin"))
+        | if length>0 then (last.himmel_root // "") else "" end
+    ' "$ledger" 2>/dev/null)
+    [ -n "$root" ] || return 1
+    printf '%s\n' "$root"
+}
+
 # _prov_canon_partial <path> -- canon_path_partial, except that climbing to a
 # Windows drive stops at the drive ROOT (C:/), never at the bare `C:` (= the
 # drive's current directory).
