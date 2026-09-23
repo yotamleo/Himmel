@@ -786,6 +786,18 @@ if [ -n "$PROFILE" ]; then
         echo "headed-arm-leg: --profile $PROFILE: resolver produced no settings JSON" >&2
         exit 2
     fi
+    # (HIMMEL-3536) A leg works in its worktree by cd, never by EnterWorktree:
+    # a pinned session's worktree-isolation screen refuses /pr-check step 0's
+    # canonical fence (it runs the HIMMEL_REPO anchor's script, outside the
+    # pin), so a leg whose diff touches scripts/cr/ could not review itself
+    # without a human. A tool-name deny removes the tool from the leg's list.
+    # The relay never works in a worktree and keeps its settings as they are.
+    if [ "$RELAY" -eq 0 ]; then
+        if ! PROFILE_JSON="$(printf '%s' "$PROFILE_JSON" | jq '.permissions.deny = ((.permissions.deny // []) + ["EnterWorktree"])')"; then
+            echo "headed-arm-leg: --profile $PROFILE: cannot add the EnterWorktree deny to settings JSON" >&2
+            exit 2
+        fi
+    fi
     # (HIMMEL-2990) Native lane only - the claudex lane keeps its own
     # coordination preface untouched. Resolved even under --dry-run, same
     # reasoning as the profile/mcp resolution above: a jq failure here must
