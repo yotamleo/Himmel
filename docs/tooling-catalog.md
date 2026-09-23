@@ -1774,6 +1774,14 @@ Flags for hermetic testing: `--catalog-file`, `--endpoints-dir`,
 `scripts/openrouter/test-free-watch.sh`. Pattern-parity with
 `alibaba-probe-once` (HIMMEL-729); relates HIMMEL-737 rotation.
 
+## Alibaba quota-gauge monitoring key (`scripts/alibaba/create-monitoring-key.ts`, HIMMEL-729)
+
+One-shot bootstrap that derives a SCOPED, read-only monitoring key
+(`CloudMonitorReadOnlyAccess`) from the operator's master Alibaba AK/SK, so
+`quota-gauge-alibaba.ts` / `alibaba-probe-once.ts` never hold account-level
+credentials. Idempotent; run with `bun scripts/alibaba/create-monitoring-key.ts`.
+Rerun it on monitoring-key rotation — never reuse the master pair for polling.
+
 ## GLM ship lane (`scripts/glm/`, HIMMEL-750)
 
 - `scripts/glm/ship-branch.sh` — pushes a reviewed `glm/*` branch FROM the trusted main checkout (the GLM worker still never pushes for itself — the no-push prompt + the deny hook are unchanged; the pushurl poison that used to sit alongside them is gone, HIMMEL-1961). `ship-branch.sh <branch> [--session-dir <dir>] [--allow-any-branch]`; refuses to run from a `.claude/worktrees/` path, requires an `origin` remote, and is authorized only by `external_cr_verdict:pass` (written by `pr-check-external.sh`) whose reviewed SHA must equal the current branch tip (closes the post-panel-commit TOCTOU). Runs `git push -u origin <branch>` with the real pre-push gates (NO `--no-verify`), then clears the CR marker only when its SHA matches the pushed SHA. Never opens a PR, never merges — prints the exact `gh pr create` for the operator. Test: `scripts/glm/test-ship-branch.sh` (hermetic; temp bare-repo origin). See [`docs/glm-offload.md`](glm-offload.md) "Claude-down ship flow".

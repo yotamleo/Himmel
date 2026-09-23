@@ -36,7 +36,7 @@ check_not_contains() {
 TMPREPO=$(mktemp -d "${TMPDIR:-/tmp}/test-dead-parts.XXXXXX") || { echo "FAIL - mktemp"; exit 1; }
 WTPATH="$TMPREPO-worktree"
 # shellcheck disable=SC2317,SC2329  # invoked by the EXIT trap below
-cleanup() { git -C "$TMPREPO" worktree remove --force "$WTPATH" 2>/dev/null; rm -rf "$TMPREPO" "$WTPATH" "${BROKENREPO:-}" "${TSREPO:-}" "${BIGTS:-}"; }
+cleanup() { git -C "$TMPREPO" worktree remove --force "$WTPATH" 2>/dev/null; rm -rf "$TMPREPO" "$WTPATH" "${BROKENREPO:-}" "${TSREPO:-}" "${TSREPO2:-}" "${BIGTS:-}"; }
 trap cleanup EXIT
 
 cp -R "$HERE/fixtures/dead-parts/basic-repo/." "$TMPREPO/" || { echo "FAIL - fixture copy"; exit 1; }
@@ -231,6 +231,30 @@ else
 fi
 check_contains "ts-wiring: a .ts entry referenced only via its .js import specifier lands WIRED, not DEAD (PR #1170 caveat fix)" \
     "$OUTTS" $'script\tact-exec\tscripts/act-exec.ts\tWIRED'
+
+# --- TS extensionless wiring: a .ts entry imported only via an extensionless
+# specifier (`from "./foo"`, common with bundler-resolved TS) must also
+# classify WIRED, not DEAD - the .js-suffixed union above (PR #1170) covers
+# the compiled-extension form but not this one (HIMMEL-3550) -----------------
+TSREPO2=$(mktemp -d "${TMPDIR:-/tmp}/test-dead-parts-tsext.XXXXXX") || { echo "FAIL - mktemp ts-ext repo"; exit 1; }
+mkdir -p "$TSREPO2/scripts"
+printf 'export function extlessFn() {}\n' > "$TSREPO2/scripts/extless-src.ts"
+printf 'import { extlessFn } from "./extless-src";\nextlessFn();\n' > "$TSREPO2/scripts/extless-caller.mjs"
+git -C "$TSREPO2" init -q || { echo "FAIL - ts-ext repo git init"; exit 1; }
+git -C "$TSREPO2" add -A || { echo "FAIL - ts-ext repo git add"; exit 1; }
+git -C "$TSREPO2" -c user.email=fixture@test -c user.name=fixture commit -q -m fixture \
+    || { echo "FAIL - ts-ext repo git commit"; exit 1; }
+export SCORECARD_PROJECTS_DIR="$HERE/fixtures/dead-parts/basic-transcripts"
+OUTTSEXT=$("$SCRIPT" --since 2026-09-15T00:00:00Z --repo-root "$TSREPO2" 2>&1)
+rctsext=$?
+if [ "$rctsext" -eq 0 ]; then
+    echo "ok - ts-extensionless: dead-parts.sh exits 0"
+else
+    echo "FAIL - ts-extensionless: dead-parts.sh rc=$rctsext (expected 0): $OUTTSEXT"
+    fails=$((fails + 1))
+fi
+check_contains "ts-extensionless: a .ts entry referenced only via an extensionless import specifier lands WIRED, not DEAD (HIMMEL-3550)" \
+    "$OUTTSEXT" $'script\textless-src\tscripts/extless-src.ts\tWIRED'
 
 # --- pathological scale: many timestamps in one transcript file must not
 # block the report - the whole report used to be buffered until a per-line

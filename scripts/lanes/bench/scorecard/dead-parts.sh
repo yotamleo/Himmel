@@ -44,6 +44,13 @@
 # a `.ts` entry's reference search also unions a basename search on its
 # `.js`-suffixed name (see the classification loop below).
 #
+# HIMMEL-3550 follow-up: a `.ts` entry can ALSO be imported via an
+# extensionless specifier (`from "./foo"`), which the `.js`-suffixed union
+# above still misses. The reference search also unions a quote-terminated
+# `/<basename>"` / `/<basename>'` search for `.ts` entries only, over-matching
+# a same-named directory or unrelated string ending the same way, kept narrow
+# on purpose (see the classification loop).
+#
 # Usage: dead-parts.sh --since <ISO8601> [--until <ISO8601>] [--repo-root <path>]
 #
 # --repo-root scopes the STATIC git-grep audit to a repo other than the one
@@ -318,6 +325,14 @@ while IFS=$'\t' read -r kind name path; do
     # tracked source is `foo.ts`, so neither the full-path nor the
     # basename-literal search above ever matches a real import. Union in one
     # more basename search on the .js-suffixed name for .ts entries only.
+    # HIMMEL-3550: a `.ts` entry can also be imported via an EXTENSIONLESS
+    # specifier (`from "./foo"`, resolver-dependent, common with bundlers),
+    # which neither the full-path nor either basename-literal search above
+    # ever matches. Union in a search for the basename immediately preceded
+    # by a `/` and immediately followed by a closing quote - narrow (.ts
+    # entries only, quote-terminated) to keep false-positive risk low, but
+    # still over-matches a same-named directory or an unrelated string that
+    # happens to end in `/<basename>"` or `/<basename>'`.
     case "$path" in
         *.ts)
             js_bn="$(basename "$path" .ts).js"
@@ -325,6 +340,12 @@ while IFS=$'\t' read -r kind name path; do
             [ "$jgrc" -gt 1 ] && GIT_GREP_FAILS=$((GIT_GREP_FAILS + 1))
             js_hits=$(printf '%s\n' "$js_hits" | grep -vE '(^|/)fixtures/')
             hits=$(printf '%s\n%s\n' "$hits" "$js_hits" | grep -v '^$' | sort -u)
+
+            ext_bn="$(basename "$path" .ts)"
+            extless_hits=$(git -C "$REPO_ROOT" grep -lE -- "/${ext_bn}[\"']" 2>/dev/null); egrc=$?
+            [ "$egrc" -gt 1 ] && GIT_GREP_FAILS=$((GIT_GREP_FAILS + 1))
+            extless_hits=$(printf '%s\n' "$extless_hits" | grep -vE '(^|/)fixtures/')
+            hits=$(printf '%s\n%s\n' "$hits" "$extless_hits" | grep -v '^$' | sort -u)
             ;;
     esac
     cls=$(printf '%s\n' "$hits" | classify_hits "$path")
