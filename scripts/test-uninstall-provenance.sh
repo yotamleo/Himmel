@@ -84,13 +84,29 @@ chmod 755 "$FAKE_CLAUDE"
 # PATH whenever its bun-direct qmd.js path (BUN_INSTALL, pointed at a fresh
 # scratch dir by run_uninstall) does not exist, so this is always what
 # handles `qmd collection remove` in these tests, real bun on PATH or not.
+# RED26: `collection remove` refuses (exit 127, matching a real qmd_cmd
+# "not found" when the bun-global link/fork are already gone) if
+# QMD_ORDER_CHECK_FORK_DIR/QMD_ORDER_CHECK_SYMLINK are set and either has
+# already been removed -- this is how a real qmd_cmd resolution would fail if
+# uninstall.sh unwired the fork checkout or global symlink before removing
+# the collection, since prod's `qmd collection remove` is served through
+# exactly one of those two paths.
 FAKE_QMD="$SUITE_TMP/bin/qmd"
 cat > "$FAKE_QMD" <<'QMD_STUB_EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "${QMD_CALL_LOG:-/dev/null}"
 case "$*" in
-    'collection remove '*) exit 0 ;;
+    'collection remove '*)
+        if [ -n "${QMD_ORDER_CHECK_FORK_DIR:-}" ] && [ ! -d "$QMD_ORDER_CHECK_FORK_DIR" ]; then
+            echo "fake qmd: collection remove called after the fork checkout was already removed" >&2
+            exit 127
+        fi
+        if [ -n "${QMD_ORDER_CHECK_SYMLINK:-}" ] && [ ! -L "$QMD_ORDER_CHECK_SYMLINK" ]; then
+            echo "fake qmd: collection remove called after the global symlink was already removed" >&2
+            exit 127
+        fi
+        exit 0 ;;
     *) exit 2 ;;
 esac
 QMD_STUB_EOF
@@ -115,7 +131,7 @@ new_case() {
   # A case that wants a real qmd fixture sets these itself, right after
   # calling new_case -- unset here so a case that does NOT set them never
   # inherits a stale dir from an earlier case in the same suite run.
-  unset CASE_QMD_FORK_DIR CASE_BUN_INSTALL
+  unset CASE_QMD_FORK_DIR CASE_BUN_INSTALL CASE_QMD_ORDER_CHECK_FORK_DIR CASE_QMD_ORDER_CHECK_SYMLINK
 }
 
 # run_uninstall <uninstall.sh args...> -- the real uninstall.sh, confined to
@@ -132,6 +148,8 @@ run_uninstall() {
     QMD_FORK_DIR="${CASE_QMD_FORK_DIR:-$CASE_DIR/no-qmd-fork}" \
     BUN_INSTALL="${CASE_BUN_INSTALL:-$CASE_DIR/no-bun}" \
     QMD_CALL_LOG="$CASE_DIR/qmd.log" \
+    QMD_ORDER_CHECK_FORK_DIR="${CASE_QMD_ORDER_CHECK_FORK_DIR:-}" \
+    QMD_ORDER_CHECK_SYMLINK="${CASE_QMD_ORDER_CHECK_SYMLINK:-}" \
     HIMMEL_PROVENANCE_DIR="$HIMMEL_PROVENANCE_DIR" \
     CLAUDE_CALL_LOG="$CASE_CLAUDE_LOG" STUB_PLUGINS_JSON="$CASE_PLUGINS_JSON" \
     STUB_MARKETPLACES_JSON="$CASE_MARKETPLACES_JSON" \
@@ -786,6 +804,41 @@ check "RED25: a file row under a different row id is never removed" "$([ -d "$OT
 check "RED25: its stamp survives byte-identical" "$(cat "$STAMP25" 2>/dev/null)" "other-row"
 check "RED25: the qmd unwire loop never even mentions the other-row path" \
   "$(printf '%s\n' "$out25" | grep -c "$OTHERROW25")" "0"
+
+echo "==== RED26 (HIMMEL-3332 slice3, critic panel codex-1): qmd collection remove runs before the fork checkout/symlink are unwired ===="
+# A real qmd_cmd resolves through the bun-global symlink into the fork
+# checkout's dist/cli/qmd.js, or (failing that) a `qmd` already on PATH.
+# Removing the fork checkout or the global symlink before calling `qmd
+# collection remove` can leave `qmd_cmd` unable to resolve at all in a real
+# install. QMD_ORDER_CHECK_FORK_DIR/QMD_ORDER_CHECK_SYMLINK make the fake qmd
+# stub fail exactly the way a real one would if the unwire loop got the order
+# wrong, independent of which path a real qmd_cmd would have taken.
+new_case red26
+CASE_QMD_FORK_DIR="$CASE_DIR/qmd-fork"
+CASE_BUN_INSTALL="$CASE_DIR/bun"
+mkdir -p "$CASE_QMD_FORK_DIR"
+STAMP26="$CASE_QMD_FORK_DIR/.himmel-build-ok"; printf 'ok\n' > "$STAMP26"
+GLOBAL_DIR26="$CASE_BUN_INSTALL/install/global/node_modules/@tobilu/qmd"
+mkdir -p "$(dirname "$GLOBAL_DIR26")"
+ln -s "$CASE_QMD_FORK_DIR" "$GLOBAL_DIR26"
+CASE_QMD_ORDER_CHECK_FORK_DIR="$CASE_QMD_FORK_DIR"
+CASE_QMD_ORDER_CHECK_SYMLINK="$GLOBAL_DIR26"
+( prov_begin --writer install.sh -- seed-red26 >/dev/null
+  prov_record create file "$STAMP26" --pre-absent --post-file "$STAMP26" --scope machine --class code \
+    --row qmd-fork --writer qmd-bin.sh --field preexisted=false >/dev/null
+  prov_record create symlink "$GLOBAL_DIR26" --post-text "$CASE_QMD_FORK_DIR" --scope machine --class code \
+    --row qmd-fork --writer qmd-bin.sh --field preexisted=false >/dev/null
+  prov_record register collection - --unit qmd-vault --post-text "$CASE_QMD_FORK_DIR" --scope machine --class code \
+    --row qmd-fork --writer qmd-bin.sh --field preexisted=false >/dev/null
+  prov_end ok >/dev/null )
+out26=$(run_uninstall --yes --purge-state --skip-tasks --skip-plugins --skip-hooks); rc26=$?
+check "RED26: uninstall exit status (collection remove succeeded while fork/symlink still resolved)" "$rc26" "0"
+check "RED26: --purge-state still removes the fork checkout dir" "$([ -e "$CASE_QMD_FORK_DIR" ] && echo yes || echo no)" "no"
+check "RED26: --purge-state still removes the global symlink" "$([ -L "$GLOBAL_DIR26" ] && echo yes || echo no)" "no"
+check "RED26: --purge-state still calls qmd collection remove qmd-vault" \
+  "$(grep -c 'collection remove qmd-vault' "$CASE_DIR/qmd.log" 2>/dev/null || echo 0)" "1"
+check "RED26: the fake qmd never saw the fork checkout already removed" \
+  "$(printf '%s\n' "$out26" | grep -c 'already removed')" "0"
 
 echo "==== REAL-LEDGER TRIPWIRE ===="
 REAL_LEDGER_AFTER=$(real_ledger_state)

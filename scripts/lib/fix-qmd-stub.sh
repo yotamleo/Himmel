@@ -266,6 +266,7 @@ for stub in "${stubs[@]}"; do
   # actually changed, not stale .orig content from an earlier install.
   _prov_pre="$(mktemp 2>/dev/null)" || _prov_pre=""
   if [ -n "$_prov_pre" ] && ! cp -- "$stub" "$_prov_pre" 2>/dev/null; then
+    rm -f -- "$_prov_pre"
     _prov_pre=""
   fi
   if write_patched_stub "$stub"; then

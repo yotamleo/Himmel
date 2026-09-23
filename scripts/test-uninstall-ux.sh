@@ -162,7 +162,7 @@ m1_want bridge-unit code file - 1 unit,file
 m1_want third-party-caches keep file - - none
 m1_want phi-roots code file - 6 line
 m1_want graphify-wiring code file - 6 mcp,json-elem,symlink
-m1_want qmd-fork code file - 8 symlink,file,collection
+m1_want qmd-fork state file - 8 symlink,file,collection
 m1_want adopter-scripts keep dir - - file
 case "$(m1_col adopter-scripts 8)" in *"code for recorded files; unrecorded copies kept"*) pass "M1 adopter-scripts reason names recorded vs unrecorded copies" ;; *) fail "M1 adopter-scripts reason text not updated" ;; esac
 case "$(m1_col third-party-caches 8)" in *HIMMEL-3330*) pass "M1 third-party-caches cites HIMMEL-3330" ;; *) fail "M1 third-party-caches does not cite HIMMEL-3330" ;; esac
@@ -222,7 +222,7 @@ w1_writer phi-roots scripts/himmelctl/bin.js
 w1_writer graphify-wiring "PENDING(design doc D5 — separate ticket, not yet filed)"
 w1_writer marketplaces scripts/machine-setup/install-plugins.sh
 w1_writer himmelctl-cache scripts/himmelctl/bin.js
-w1_writer qmd-fork "PENDING(no writer found; gap predates S6, unfiled)"
+w1_writer qmd-fork scripts/lib/qmd-bin.sh:scripts/lib/fix-qmd-stub.sh
 w1_writer provenance-ledger scripts/lib/provenance.sh
 w1_writer workspace-trust scripts/himmelctl/bin.js
 w1_writer adopter-scripts scripts/adopt.sh

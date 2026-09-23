@@ -3307,6 +3307,19 @@ echo "[qmd] provenance-recorded qmd install (HIMMEL-3332 U24):"
 _qmd_stub_unit=""
 if [ "$LEDGER_OK" -eq 1 ]; then
   _qmd_units=$(prov_read_units --row qmd-fork)
+  # Collection removal goes through qmd_cmd (scripts/lib/qmd-bin.sh), which
+  # resolves either through the fork checkout's dist/cli/qmd.js (via the
+  # bun-global symlink) or a `qmd` already on PATH — so it must run BEFORE
+  # the fork checkout or the global symlink are unwired, not after (critic
+  # panel codex-1, HIMMEL-3332 slice3). Two passes over the same ledger read:
+  # collection first, then symlink/file in ledger order.
+  while IFS= read -r _u; do
+    [ -n "$_u" ] || continue
+    [ "$(printf '%s' "$_u" | jq -r '.kind // ""')" = "collection" ] || continue
+    [ "$HALTED" -eq 0 ] && class_removes "$_ix_qmd" && qmd_unwire_collection "$_u"
+  done <<EOF
+$_qmd_units
+EOF
   while IFS= read -r _u; do
     [ -n "$_u" ] || continue
     _qkind=$(printf '%s' "$_u" | jq -r '.kind // ""')
@@ -3317,8 +3330,7 @@ if [ "$LEDGER_OK" -eq 1 ]; then
         else
           _qmd_stub_unit="$_u"
         fi ;;
-      symlink)    [ "$HALTED" -eq 0 ] && class_removes "$_ix_qmd" && qmd_unwire_global_symlink "$_u" ;;
-      collection) [ "$HALTED" -eq 0 ] && class_removes "$_ix_qmd" && qmd_unwire_collection "$_u" ;;
+      symlink) [ "$HALTED" -eq 0 ] && class_removes "$_ix_qmd" && qmd_unwire_global_symlink "$_u" ;;
     esac
   done <<EOF
 $_qmd_units
