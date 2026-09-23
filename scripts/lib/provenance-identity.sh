@@ -17,8 +17,8 @@
 # the registrar answered and the name is not registered; UNREADABLE = the
 # registrar could not be asked, never treated as absent or as a match.
 #
-# S16 shipped the collection reader; S17 adds plugin/marketplace. job (S18)
-# still returns rc 2 until its slice lands.
+# S16 shipped the collection reader; S17 added plugin/marketplace; S18 adds
+# job (scheduler cron only -- other schedulers still return rc 2).
 #
 # SOURCE it; it defines only prov_identity_* / _provid_* names and sets no
 # shell options. The reader for collection calls qmd_cmd, sourcing
@@ -140,7 +140,7 @@ _provid_marketplace() {
     [ -f "$file" ] || { printf 'ABSENT'; return 0; }
     src=$(jq -c --arg n "$name" '.[$n].source // null' "$file" 2>/dev/null) || { printf 'UNREADABLE'; return 0; }
     [ "$src" = "null" ] && { printf 'ABSENT'; return 0; }
-    stype=$(printf '%s' "$src" | jq -r '.source // ""')
+    stype=$(printf '%s' "$src" | jq -r '.source // ""' 2>/dev/null) || { printf 'UNREADABLE'; return 0; }
     if [ "$stype" = "directory" ]; then
         spath=$(printf '%s' "$src" | jq -r '.path // ""')
         src=$(printf '%s' "$src" | jq -c --arg p "$(_provid_canon_path "$spath")" '.path = $p') || { printf 'UNREADABLE'; return 0; }
@@ -177,12 +177,50 @@ _provid_plugin() {
     _provid_token plugin "$id"$'\n'"$scope"$'\n'"$proj"$'\n'"$mkt_live" || printf 'UNREADABLE'
 }
 
+# _provid_job <unit-json> -- identity = the trimmed crontab line ending in
+# " # <marker>" (S18, design §3.4). Only scheduler "cron" has a reader this
+# slice; any other scheduler returns rc 2, same as before. One `crontab -l`
+# snapshot per call: a failed read whose message says there is no crontab is
+# ABSENT; any other failed read, or 2+ matching lines, is UNREADABLE (never
+# guess which line is "the" one -- a tampered/duplicated marker must never
+# resolve to a single line picked at random); exactly one match is the token
+# of that line, trimmed of trailing whitespace exactly as job_line_marker
+# (scripts/uninstall.sh) matches it; zero matches is ABSENT.
+_provid_job() {
+    local u="$1" marker scheduler out rc line trimmed hit="" n=0
+    scheduler=$(printf '%s' "$u" | jq -r '.fields.scheduler // ""' 2>/dev/null) || scheduler=""
+    [ "$scheduler" = "cron" ] || return 2
+    marker=$(printf '%s' "$u" | jq -r '.unit // ""' 2>/dev/null) || marker=""
+    [ -n "$marker" ] || { printf 'UNREADABLE'; return 0; }
+    out=$(crontab -l 2>&1); rc=$?
+    if [ "$rc" -ne 0 ]; then
+        case "$out" in
+            *"no crontab for"*) printf 'ABSENT'; return 0 ;;
+            *) printf 'UNREADABLE'; return 0 ;;
+        esac
+    fi
+    while IFS= read -r line; do
+        trimmed="${line%"${line##*[![:space:]]}"}"
+        case "$trimmed" in
+            *" # $marker"|"# $marker") n=$((n + 1)); hit="$trimmed" ;;
+        esac
+    done <<EOF
+$out
+EOF
+    case "$n" in
+        0) printf 'ABSENT' ;;
+        1) _provid_token job "$hit" || printf 'UNREADABLE' ;;
+        *) printf 'UNREADABLE' ;;
+    esac
+}
+
 # prov_identity_live <kind> <unit-json> -- see the header.
 prov_identity_live() {
     case "$1" in
         collection)  _provid_collection "$2" ;;
         marketplace) _provid_marketplace "$2" ;;
         plugin)      _provid_plugin "$2" ;;
+        job)         _provid_job "$2" ;;
         *) return 2 ;;
     esac
 }

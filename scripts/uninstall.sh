@@ -1805,13 +1805,16 @@ if [ "$LEDGER_OK" -eq 1 ]; then
   fi
 fi
 
-# ledger_report_kept_units <plugin|marketplace|job> — for every fold unit of
+# ledger_report_kept_units <plugin|marketplace> — for every fold unit of
 # this register kind whose verdict is NOT `remove`, print "kept (<reason>)"
 # and write its outcome row; also prints one count line for `ours-unverified`
 # removals (a legacy row with no recorded identity, removed unverified).
 # Shared by [4/8] and [7/8] (HIMMEL-3332 S6; verdict-based since HIMMEL-3525
 # S17 — replaces ledger_report_preexisted_units, which only reported
 # ours=false rows and missed a kept-for-identity registration entirely).
+# job has its own reporter, ledger_job_report_kept (HIMMEL-3525 S18): the
+# plan's required wording ("kept cron line <marker> (<reason>)") differs from
+# this helper's generic "kept (<label>): <unit>" phrasing.
 ledger_report_kept_units() {
   local _kind="$1" _units _unit_json _unit _verdict _action _reason _label _unverified=0
   _units=$(prov_read_units --kind "$_kind")
@@ -1937,15 +1940,51 @@ $unit"
   esac
 }
 
-# ledger_job_markers <cron|at> — HIMMEL-3332 S8: the markers of `job register`
-# rows himmel brought (ours=true) for this scheduler, one per line. Only a
-# HIMMEL-... token is accepted: a tampered row naming a bare word must never
-# turn into a line filter over the operator's crontab.
+# ledger_job_markers <cron|at> — HIMMEL-3332 S8, HIMMEL-3525 S18: the markers
+# of `job register` rows himmel brought (ours=true) for this scheduler whose
+# verdict is `remove`, one per line — a marker whose live line has changed
+# since it was recorded (verdict `keep user-modified`/`identity-unreadable`)
+# is never handed to the crontab-rewrite filter. Only a HIMMEL-... token is
+# accepted: a tampered row naming a bare word must never turn into a line
+# filter over the operator's crontab.
 ledger_job_markers() {
   [ "$LEDGER_OK" -eq 1 ] || return 0
+  local _unit_json _verdict
   prov_read_units --kind job \
-    | jq -r --arg s "$1" 'select(.ours == true and (.fields.scheduler // "") == $s) | .unit // empty' \
+    | jq -c --arg s "$1" 'select(.ours == true and (.fields.scheduler // "") == $s)' \
+    | while IFS= read -r _unit_json; do
+        [ -z "$_unit_json" ] && continue
+        _verdict=$(prov_read_verdict "$_unit_json") || continue
+        [ "${_verdict%% *}" = "remove" ] || continue
+        printf '%s' "$_unit_json" | jq -r '.unit // empty'
+      done \
     | grep -E '^HIMMEL-[A-Za-z0-9._-]+$' || true
+}
+
+# ledger_job_report_kept — HIMMEL-3525 S18: for every `job register` fold
+# unit whose verdict is NOT `remove`, print the plan's required line and
+# write its outcome row. Job units get their own reporter (rather than
+# sharing ledger_report_kept_units) because the plan's wording ("kept cron
+# line <marker> (<reason>)") differs from that helper's generic "kept
+# (<label>): <unit>" phrasing. The unit's own recorded scheduler picks the
+# noun; an unrecognized/missing one falls back to "job".
+ledger_job_report_kept() {
+  local _units _unit_json _marker _scheduler _noun _verdict _action _reason
+  _units=$(prov_read_units --kind job)
+  while IFS= read -r _unit_json; do
+    [ -z "$_unit_json" ] && continue
+    _verdict=$(prov_read_verdict "$_unit_json") || continue
+    _action="${_verdict%% *}"; _reason="${_verdict#* }"
+    [ "$_action" = "remove" ] && continue
+    _marker=$(printf '%s' "$_unit_json" | jq -r '.unit // empty')
+    [ -n "$_marker" ] || continue
+    _scheduler=$(printf '%s' "$_unit_json" | jq -r '.fields.scheduler // ""')
+    case "$_scheduler" in cron) _noun="cron line" ;; at) _noun="at job" ;; *) _noun="job" ;; esac
+    echo "  kept $_noun $_marker ($_reason)"
+    ledger_job_outcome "$_marker" kept "$_reason"
+  done <<EOF
+$_units
+EOF
 }
 
 # job_line_marker <line> <markers> — prints the recorded marker a crontab line
@@ -2287,7 +2326,7 @@ else
   # job rows that were already the operator's (kept, never removed).
   _rec_cron=$(ledger_job_markers cron)
   _rec_at=$(ledger_job_markers at)
-  [ "$LEDGER_OK" -eq 1 ] && ledger_report_kept_units job
+  [ "$LEDGER_OK" -eq 1 ] && ledger_job_report_kept
   if command -v atq >/dev/null 2>&1; then
     # Capture the atq rc separately — `atq || true` would mask an
     # enumeration failure as "no jobs" (same precedent as above).
