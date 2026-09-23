@@ -943,6 +943,35 @@ check "full launch --profile: seeded settings carry gate permissions" "$rc" "0"
 check "full launch --profile: seeded settings deny EnterWorktree" \
   "$(jq -c '.permissions.deny' "$d17/HIMMEL-3333-leg.leg-settings.json" 2>/dev/null)" '["EnterWorktree"]'
 
+# HIMMEL-3285: a leg's Results writes land on its own handover doc, which
+# sits outside the leg's working directories whenever the handover root is
+# external (Mode B) - the auto-mode classifier inconsistently denies those
+# writes as Out-of-Place Publication. additionalDirectories grants exactly
+# the resolved handover root, nothing wider.
+check "full launch --profile: seeded settings grant the handover root as an additional directory" \
+  "$(jq -c '.permissions.additionalDirectories' "$d17/HIMMEL-3333-leg.leg-settings.json" 2>/dev/null)" \
+  "$(jq -cn --arg d "$HANDOVER_DIR" '[$d]')"
+
+# A handover root containing a space must still resolve correctly -
+# HANDOVER_DIR reaches this wrapper's own process as a plain export
+# (leg_propagate_env's whitespace branch), not through the
+# HEADED_ARM_LAUNCHER_ENV token list, which cannot carry it.
+d17s="$tmp/c17s"; mk_launch_stubs "$d17s" "HIMMEL-3333-space"; mkdir -p "$tmp/repo17s"
+space_root="$tmp/pinned handover root"
+mkdir -p "$space_root"
+rc=0
+HEADED_ARM_LEG_TARGET="$HEADED_ARM" \
+HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+KONSOLE_CMD="$d17s/konsole" PGREP_CMD="$d17s/pgrep" \
+LEG_REPO="$tmp/repo17s" HEADED_ARM_LOCK_DIR="$d17s/locks" HEADED_ARM_PROC="$d17s/proc" \
+HANDOVER_DIR="$space_root" \
+  bash "$SCRIPT" --profile leg-impl "HIMMEL-3333-space" "$some_doc" "$d17s/signal-never" "$PAST" "$d17s/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d17s" || true
+check "full launch --profile (space in handover root): exit 0" "$rc" "0"
+check "full launch --profile (space in handover root): additionalDirectories resolves correctly" \
+  "$(jq -c '.permissions.additionalDirectories' "$d17s/HIMMEL-3333-space.leg-settings.json" 2>/dev/null)" \
+  "$(jq -cn --arg d "$space_root" '[$d]')"
+
 # The relay half of a split console is not a leg that works in a worktree:
 # its settings get no deny.
 d17r="$tmp/c17r"; mk_launch_stubs "$d17r" "HIMMEL-9999-relay"; mkdir -p "$tmp/repo17r"

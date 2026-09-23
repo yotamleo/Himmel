@@ -572,6 +572,14 @@ console with the exact denial text; the console never runs the denied command
 itself (permission laundering) — it routes it to the operator's own shell or
 the leg's window via `!`.
 
+(HIMMEL-3285) A leg's writes to its own handover doc are a common source of
+this symptom, since the resolved handover root sits outside the leg's working
+directories. `headed-arm-leg.sh --profile` now grants every generated leg
+settings file (native and claudex) the resolved handover root as a
+`permissions.additionalDirectories` entry, so a Results write no longer falls
+to the classifier on a fresh launch. A leg already running before its next
+launch does not pick this up — the interim above still applies to it.
+
 ---
 
 ## Symptom: a leg's `queue-lock.sh release` is denied `[Merge Without Review]` right after its merge (HIMMEL-3131)

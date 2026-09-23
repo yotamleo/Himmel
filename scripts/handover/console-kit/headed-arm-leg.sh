@@ -798,6 +798,21 @@ if [ -n "$PROFILE" ]; then
             exit 2
         fi
     fi
+    # (HIMMEL-3285) A leg writes its Results bullets to its own handover doc,
+    # which sits outside the leg's working directories whenever the resolved
+    # handover root is external (Mode B) or the doc's own root otherwise -
+    # the auto-mode classifier inconsistently refuses those writes as
+    # Out-of-Place Publication. HANDOVER_DIR is already resolved (above,
+    # HIMMEL-3155) the same way handover_root() resolves it everywhere else
+    # in the kit, so grant exactly that directory - never $HOME, never the
+    # vault root above it.
+    if [ -n "${HANDOVER_DIR:-}" ]; then
+        if ! PROFILE_JSON="$(printf '%s' "$PROFILE_JSON" | jq --arg dir "$HANDOVER_DIR" \
+            '.permissions.additionalDirectories = ((.permissions.additionalDirectories // []) + [$dir])')"; then
+            echo "headed-arm-leg: --profile $PROFILE: cannot add the handover root to additionalDirectories" >&2
+            exit 2
+        fi
+    fi
     # (HIMMEL-2990) Native lane only - the claudex lane keeps its own
     # coordination preface untouched. Resolved even under --dry-run, same
     # reasoning as the profile/mcp resolution above: a jq failure here must
