@@ -115,6 +115,11 @@ done
 # --- 3. Live end-to-end: full table against go.sh (cheapest call site) ---
 ROOT="$(mktemp -d "${TMPDIR:-/tmp}/test-go-gate.XXXXXX")" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
 trap 'rm -rf "$ROOT"' EXIT
+ROOT="$(cd "$ROOT" && pwd)"
+# HIMMEL-3543: go.sh mints its GO key under $HOME/.config/himmel — a scratch
+# HOME keeps every run below off the operator's real key.
+export HOME="$ROOT/home"
+mkdir -p "$HOME"
 SHA="$(printf '%040d' 7)"
 
 old_ifs="$IFS"
@@ -141,6 +146,58 @@ for row in $SPELLINGS; do
 '
 done
 IFS="$old_ifs"
+
+# --- 4. HIMMEL-3543: a GO is authenticated, not merely present -----------
+# A leg that can write the handover root must not be able to forge its own
+# GO. go.sh signs pr|sha with a key only it mints; go_gate verifies the mac.
+unset HIMMEL_CONSOLE_LEG HIMMEL_CONSOLE_RELAY 2>/dev/null || true
+GROOT="$ROOT/g4"
+mkdir -p "$GROOT/.locks/go"
+gate() {  # <pr> <sha> -> rc of go_gate in a clean shell, reason on stdout
+    bash -c 'unset -f go_gate 2>/dev/null || true; . "$1"; go_gate "$2" "$3" "$4"' _ "$GO_GATE_SRC" "$1" "$2" "$GROOT"
+}
+
+# 4a. A leg-planted GO — the plain lines go.sh used to write — is refused.
+printf 'pr=%s\nhead=%s\nby=leg\nat=2026-09-24T00:00:00Z\n' 91 "$SHA" > "$GROOT/.locks/go/91.$SHA"
+rc=0; out=$(gate 91 "$SHA") || rc=$?
+[ "$rc" -eq 2 ] || fail "4a: a leg-planted GO (no mac) was accepted by go_gate (rc=$rc) -- HIMMEL-3543"
+case "$out" in *mac*) ;; *) fail "4a: refusal does not name the mac as the cause: $out" ;; esac
+
+# 4b. A real console GO written by go.sh passes.
+rc=0; HANDOVER_DIR="$GROOT" bash "$GO_SCRIPT" 92 "$SHA" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 0 ] || fail "4b: go.sh could not write a GO (rc=$rc)"
+rc=0; out=$(gate 92 "$SHA") || rc=$?
+[ "$rc" -eq 0 ] || fail "4b: a real console GO was refused (rc=$rc): $out"
+
+# 4c. The key go.sh minted is 0600 and 64 hex chars.
+KEY="$HOME/.config/himmel/go-hmac.key"
+if [ ! -f "$KEY" ]; then
+    fail "4c: go.sh minted no key at $KEY"
+else
+    mode=$(stat -c %a "$KEY" 2>/dev/null || stat -f %Lp "$KEY" 2>/dev/null)
+    [ "$mode" = "600" ] || fail "4c: key mode is $mode, want 600"
+    grep -qxE '[0-9a-f]{64}' "$KEY" || fail "4c: key is not 64 lowercase hex chars"
+fi
+
+# 4d. A real GO copied onto another PR's path, pr= line rewritten, is refused:
+# the mac binds pr as well as sha.
+sed 's/^pr=92$/pr=93/' "$GROOT/.locks/go/92.$SHA" > "$GROOT/.locks/go/93.$SHA"
+rc=0; gate 93 "$SHA" >/dev/null || rc=$?
+[ "$rc" -eq 2 ] || fail "4d: a GO re-bound to another PR was accepted (rc=$rc)"
+
+# 4e. The mac is a real HMAC-SHA256 over himmel-go-v1|<pr>|<sha>.
+if [ -f "$KEY" ]; then
+    want=$(printf 'himmel-go-v1|92|%s' "$SHA" | openssl dgst -sha256 -mac HMAC -macopt "hexkey:$(cat "$KEY")" | awk '{print $NF}')
+    got=$(sed -n 's/^mac=//p' "$GROOT/.locks/go/92.$SHA")
+    if [ -z "$want" ] || [ "$got" != "$want" ]; then
+        fail "4e: mac [$got] is not HMAC-SHA256 [$want]"
+    fi
+fi
+
+# 4f. No key at the verifier (a different HOME) fails closed.
+rc=0; HOME="$ROOT/nokey" gate 92 "$SHA" >/dev/null || rc=$?
+[ "$rc" -eq 2 ] || fail "4f: go_gate accepted a GO with no key to verify against (rc=$rc)"
+[ ! -e "$ROOT/nokey/.config/himmel/go-hmac.key" ] || fail "4f: the verifier minted a key (only go.sh may)"
 
 if [ "$FAIL" -eq 0 ]; then
     echo "PASS: test-go-gate.sh"

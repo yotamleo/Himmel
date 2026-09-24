@@ -1649,13 +1649,19 @@ sha26="$(printf 'a%.0s' $(seq 1 40))"
 # primary-like cwd, HANDOVER_DIR cleared like the launch above) and must sit
 # inside this suite's own temp dir; anything else (a live root leaking in)
 # skips the write and fails loudly instead of minting a fake GO there.
-go_root26="$(cd "$primary26" && HANDOVER_DIR='' bash -c '. "$1/../../lib/handover-path.sh" && handover_root' _ "$HERE" 2>/dev/null)" || go_root26=""
+# HIMMEL-3543/3572: go.sh now resolves through go_resolve_root, which prefers
+# the anchor's .env HANDOVER_DIR over a cwd-derived inline root - so the
+# console's resolved root is passed explicitly (as the wrapper exports it),
+# the guard mirrors go_resolve_root itself, and a scratch HOME keeps go.sh
+# from minting its GO key in the operator's real ~/.config/himmel.
+home26="$tmp/home26"; mkdir -p "$home26"
+go_root26="$(cd "$primary26" && HANDOVER_DIR="$primary26/handovers" bash -c '. "$1/../../lib/handover-path.sh" && . "$1/../../lib/go-gate.sh" && go_resolve_root "$1/../../.."' _ "$HERE" 2>/dev/null)" || go_root26=""
 case "$go_root26" in
   "$tmp"/?*) echo "ok - HANDOVER_DIR e2e: resolved GO root [$go_root26] is inside the suite's temp dir"; go_root26_ok=1 ;;
   *) echo "FAIL - HANDOVER_DIR e2e: resolved GO root [$go_root26] is not inside the suite's temp dir [$tmp] - refusing to write a GO"; fails=$((fails+1)); go_root26_ok=0 ;;
 esac
 if [ "$go_root26_ok" -eq 1 ]; then
-  go_out26="$(cd "$primary26" && HANDOVER_DIR='' bash "$HERE/go.sh" 26260 "$sha26" 2>&1)"
+  go_out26="$(cd "$primary26" && HOME="$home26" HIMMEL_CONSOLE_LEG='' HIMMEL_CONSOLE_RELAY='' HANDOVER_DIR="$primary26/handovers" bash "$HERE/go.sh" 26260 "$sha26" 2>/dev/null)"
 else
   go_out26="SKIPPED: unsafe GO root"
 fi
@@ -1672,7 +1678,7 @@ go_gate 26260 "$sha26" "\$root"
 EOF
 chmod 755 "$gate_script26"
 rc2=0
-( cd "$worktree26" && HANDOVER_DIR="$leg_handover_dir26" bash "$gate_script26" ) >/dev/null 2>&1 || rc2=$?
+( cd "$worktree26" && HOME="$home26" HANDOVER_DIR="$leg_handover_dir26" bash "$gate_script26" ) >/dev/null 2>&1 || rc2=$?
 check "HANDOVER_DIR e2e: go.sh wrote the GO from the console cwd" "$go_out26" "$primary26/handovers/.locks/go/26260.$sha26"
 check "HANDOVER_DIR e2e: go_gate resolved from a linked worktree (HANDOVER_DIR only) finds the GO" "$rc2" "0"
 

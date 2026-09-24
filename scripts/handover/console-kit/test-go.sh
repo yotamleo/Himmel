@@ -24,6 +24,9 @@ unset HIMMEL_CONSOLE_LEG CONSOLE_SESSION_NAME 2>/dev/null || true
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/go-test.XXXXXX")" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
 trap 'rm -rf "$tmp"' EXIT
 tmp="$(cd "$tmp" && pwd)"
+# HIMMEL-3543: go.sh mints its GO key under $HOME/.config/himmel — keep it off
+# the operator's real key.
+export HOME="$tmp/home"; mkdir -p "$HOME"
 fails=0
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 check()    { [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
@@ -75,6 +78,11 @@ rc=0; out="$(HANDOVER_DIR="$LEGROOT" HIMMEL_CONSOLE_LEG=1 bash "$SCRIPT" 77 "$SH
 check "leg marker: exit 3" "$rc" "3"
 contains "leg marker: names the reason" "$out" "console-spawned leg"
 check "leg marker: nothing written" "$(ls -A "$LEGROOT")" ""
+# HIMMEL-3543: a leg must not mint (or even create) the GO key either.
+LEGHOME="$tmp/leghome"; mkdir -p "$LEGHOME"
+rc=0; HOME="$LEGHOME" HANDOVER_DIR="$LEGROOT" HIMMEL_CONSOLE_LEG=1 bash "$SCRIPT" 77 "$SHA" >/dev/null 2>&1 || rc=$?
+check "leg marker: exit 3 with a fresh HOME" "$rc" "3"
+check "leg marker: no GO key minted" "$(find "$LEGHOME" -type f | wc -l | tr -d ' ')" "0"
 rc=0; HANDOVER_DIR="$LEGROOT" HIMMEL_CONSOLE_LEG=0 bash "$SCRIPT" 77 "$SHA" >/dev/null 2>&1 || rc=$?
 check "leg marker: a falsy marker is no marker" "$rc" "0"
 
@@ -138,6 +146,41 @@ check "3437: absolute entry runs local" "$out" "RAN:branch"
 
 rc=0; (cd "$G3437_WT" && env -u CR_ANCHOR_HANDED_OFF -u HIMMEL_REPO bash scripts/handover/console-kit/go.sh >/dev/null 2>&1) || rc=$?
 check "3437: unset HIMMEL_REPO exits 2" "$rc" "2"
+
+# --- 10. HIMMEL-3572 row 1: go.sh writes where merge-on-green reads ---------
+# A console whose env has no HANDOVER_DIR (or has the harness repo's own
+# handovers/ stub) used to get rc=0 and a GO under <repo>/handovers, while the
+# gate reads the root the repo's .env configures. Fixture: a git tree carrying
+# go.sh + scripts/lib + anchor-handoff.sh, a handovers/ stub, and a .env
+# naming a real root outside it. go.sh runs by ABSOLUTE path (no hand-off).
+S10="$tmp/s10"; S10_REAL="$tmp/s10-real"
+mkdir -p "$S10/scripts/handover/console-kit" "$S10/scripts/cr" "$S10/handovers" "$S10_REAL"
+git init -q "$S10"
+cp "$SCRIPT" "$S10/scripts/handover/console-kit/go.sh"
+cp -R "$HERE/../../lib" "$S10/scripts/lib"
+cp "$HERE/../../cr/anchor-handoff.sh" "$S10/scripts/cr/anchor-handoff.sh"
+printf 'HANDOVER_DIR=%s\n' "$S10_REAL" > "$S10/.env"
+S10_GO=".locks/go/77.$SHA"
+
+# 10a. HANDOVER_DIR unset: the GO lands in the configured root, not the stub.
+rc=0; out=$(cd "$S10" && env -u HANDOVER_DIR -u HIMMEL_REPO bash "$S10/scripts/handover/console-kit/go.sh" 77 "$SHA" 2>&1) || rc=$?
+check "3572: unset HANDOVER_DIR -> exit 0" "$rc" "0"
+check "3572: unset HANDOVER_DIR -> nothing under the repo stub" "$(find "$S10/handovers" -type f | wc -l | tr -d ' ')" "0"
+check "3572: unset HANDOVER_DIR -> GO in the .env-configured root" "$([ -f "$S10_REAL/$S10_GO" ] && echo yes)" "yes"
+rm -f "$S10_REAL/$S10_GO"
+
+# 10b. HANDOVER_DIR = the repo stub itself: same answer, the stub is skipped.
+rc=0; (cd "$S10" && env -u HIMMEL_REPO HANDOVER_DIR="$S10/handovers" bash "$S10/scripts/handover/console-kit/go.sh" 77 "$SHA" >/dev/null 2>&1) || rc=$?
+check "3572: HANDOVER_DIR=stub -> exit 0" "$rc" "0"
+check "3572: HANDOVER_DIR=stub -> nothing under the repo stub" "$(find "$S10/handovers" -type f | wc -l | tr -d ' ')" "0"
+check "3572: HANDOVER_DIR=stub -> GO in the .env-configured root" "$([ -f "$S10_REAL/$S10_GO" ] && echo yes)" "yes"
+
+# 10c. The configured root is gone: refuse non-zero rather than fall back to
+# the stub the gate never reads.
+printf 'HANDOVER_DIR=%s\n' "$tmp/s10-missing" > "$S10/.env"
+rc=0; out=$(cd "$S10" && env -u HANDOVER_DIR -u HIMMEL_REPO bash "$S10/scripts/handover/console-kit/go.sh" 77 "$SHA" 2>&1) || rc=$?
+[ "$rc" -ne 0 ] && echo "ok - 3572: configured root missing -> non-zero ($rc)" || { echo "FAIL - 3572: configured root missing -> rc=0 (GO written where the gate cannot see it)"; fails=$((fails+1)); }
+check "3572: configured root missing -> nothing under the repo stub" "$(find "$S10/handovers" -type f | wc -l | tr -d ' ')" "0"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

@@ -201,13 +201,20 @@ unset CR_PROFILE
 # suite's 2919-* cases.
 GOROOT="$TMP/handover_root"
 mkdir -p "$GOROOT/.locks/go"
+# HIMMEL-3543: go_gate verifies an HMAC mac= line, so a valid GO needs a key
+# (scratch HOME, above) and the mac go.sh would write. go_mac_42 signs the
+# fixture's pr=42/head=abc123 with that scratch key.
+mkdir -p "$HOME/.config/himmel"
+( umask 077; printf '%064d\n' 3543 > "$HOME/.config/himmel/go-hmac.key" )
+GO_MAC_42="$(bash -c '. "$1"; go_mac 42 abc123' _ "$SCRIPT_DIR/../lib/go-gate.sh")"
+[ "${#GO_MAC_42}" -eq 64 ] || { fail=$((fail+1)); echo "FAIL setup: could not compute the scratch GO mac"; }
 
 # leg + no GO file at all -> refused (the PR #798 shape this ticket exists to close)
 HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean t leg-no-go-blocks 2 Bash "gh pr merge 42 --squash"
 
 # leg + a GO file for the exact certified head, and the merge command pins
 # that exact head -> bound, merge allowed
-printf 'pr=42\nhead=abc123\nby=test\nat=now\n' > "$GOROOT/.locks/go/42.abc123"
+printf 'pr=42\nhead=abc123\nby=test\nat=now\nmac=%s\n' "$GO_MAC_42" > "$GOROOT/.locks/go/42.abc123"
 HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean t leg-valid-go-allows 0 Bash "gh pr merge 42 --squash --match-head-commit abc123"
 
 # HIMMEL-3142 CR round: a confirmed GO is bound to $go_sha, but that's only
@@ -222,6 +229,12 @@ HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean t leg-valid-go-wr
 # discarded it via the --*|-* catch-all instead of capturing it) naming the
 # exact certified head -> allowed
 HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean t leg-valid-go-pin-eq-form-allows 0 Bash "gh pr merge 42 --squash --match-head-commit=abc123"
+rm -f "$GOROOT/.locks/go/42.abc123"
+
+# HIMMEL-3543 RED control: leg + a GO for the exact head, pinned, but with NO
+# mac (a leg-planted file, or one written before HIMMEL-3543) -> refused
+printf 'pr=42\nhead=abc123\nby=leg\nat=now\n' > "$GOROOT/.locks/go/42.abc123"
+HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean t leg-go-without-mac-blocks 2 Bash "gh pr merge 42 --squash --match-head-commit abc123"
 rm -f "$GOROOT/.locks/go/42.abc123"
 
 # leg + a GO file present but for a DIFFERENT (stale) head -> still refused
@@ -239,7 +252,7 @@ HIMMEL_CONSOLE_LEG=0 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean t leg-marker-fals
 # GO file exists at all, but that alone cannot rule out an implementation
 # that is really keying off go_root/file presence rather than the marker; a
 # GO file genuinely present here removes that ambiguity.
-printf 'pr=42\nhead=abc123\nby=test\nat=now\n' > "$GOROOT/.locks/go/42.abc123"
+printf 'pr=42\nhead=abc123\nby=test\nat=now\nmac=%s\n' "$GO_MAC_42" > "$GOROOT/.locks/go/42.abc123"
 HIMMEL_CONSOLE_LEG=0 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean t leg-marker-falsy-with-go-present-allows 0 Bash "gh pr merge 42 --squash"
 rm -f "$GOROOT/.locks/go/42.abc123"
 
@@ -352,7 +365,7 @@ echo "rc=\$?"
 RUNEOF
 chmod +x "$PRE_PIN_ROOT/run.sh"
 
-printf 'pr=42\nhead=abc123\nby=test\nat=now\n' > "$GOROOT/.locks/go/42.abc123"
+printf 'pr=42\nhead=abc123\nby=test\nat=now\nmac=%s\n' "$GO_MAC_42" > "$GOROOT/.locks/go/42.abc123"
 if [ ! -s "$PRE_PIN_ROOT/scripts/hooks/block-unresolved-cr-merge.sh" ]; then
     fail=$((fail+1)); echo "FAIL red-control setup: could not extract the pre-pin hook from head $PRE_PIN_SHA"
 else
