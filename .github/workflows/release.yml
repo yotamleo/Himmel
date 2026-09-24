@@ -17,6 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write   # create the release if absent + upload assets
+      id-token: write      # attest-build-provenance: mint the OIDC token
+      attestations: write  # attest-build-provenance: publish the attestation
     env:
       TAG: ${{ github.ref_name }}
       GH_TOKEN: ${{ github.token }}
@@ -30,6 +32,11 @@ jobs:
         run: |
           ver="${TAG#v}"
           bash scripts/release/build-tarball.sh --version "$ver" --out dist-release
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist-release/himmel-*-linux.tar.gz
 
       - name: Ensure the release exists
         run: |
@@ -57,3 +64,4 @@ jobs:
             --pattern "himmel-${ver}-linux.tar.gz" \
             --pattern "himmel-${ver}-linux.tar.gz.sha256"
           sha256sum -c "himmel-${ver}-linux.tar.gz.sha256"
+          gh attestation verify "himmel-${ver}-linux.tar.gz" -R "$GITHUB_REPOSITORY"

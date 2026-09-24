@@ -106,7 +106,10 @@ sha256sum -c "himmel-$V-linux.tar.gz.sha256" \
 ```
 
 The `&&` chain is the point: a tarball whose bytes do not match the published
-`.sha256` fails `sha256sum -c` and nothing is extracted or installed. The tree
+`.sha256` fails `sha256sum -c` and nothing is extracted or installed. If you
+have `gh`, you can additionally verify the tarball was built by this repo's
+CI (optional — the hash check above is the mandatory step):
+`gh attestation verify himmel-$V-linux.tar.gz -R yotamleo/Himmel`. The tree
 lands in the user-owned `~/.local/share/himmel` (no root); `himmelctl install`
 then does the per-user wiring and puts a `himmelctl` launcher in
 `~/.local/bin`. The tarball is built by CI on each `v*` tag
