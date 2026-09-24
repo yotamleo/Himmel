@@ -86,6 +86,13 @@ repos:
         files: ^marketplace/plugins/[^/]+/\.claude-plugin/plugin\.json$
         pass_filenames: false
 
+      - id: plugin-version-bump-required
+        name: a changed plugin file must bump that plugin's version
+        entry: bash scripts/check-plugin-drift.sh --bump-required
+        language: system
+        files: ^marketplace/plugins/
+        pass_filenames: false
+
       - id: doc-guard
         name: command/skill added requires catalog update (himmel-dev only)
         entry: bash scripts/hooks/check-doc-guard.sh

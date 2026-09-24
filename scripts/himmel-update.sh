@@ -1653,6 +1653,66 @@ sync_marketplaces() {
     return 0
 }
 
+# ─── installed plugin version catch-up (HIMMEL-3551) ─────────────────────────
+# sync_marketplaces above only re-syncs a MARKETPLACE REGISTRY (`claude plugin
+# marketplace update <name>`) — it never touches an individual plugin's
+# installed content, so a plugin sourced from its own remote (ponytail,
+# scroll-world, superpowers, …) just sits stale even after every marketplace
+# refresh. This runs the missing step: `claude plugin update <spec>` for every
+# installed non-@himmel plugin. @himmel plugins are excluded — their content
+# is this checkout, already re-read by `claude plugin marketplace update
+# himmel` (chain item 2), so a separate `plugin update` there is redundant.
+# Advisory + failure-isolated, same as sync_marketplaces: one plugin failing
+# to update must never abort the others or the update. MUST run before
+# reconcile_plugins, so a plugin update can never leave a floor-`false` plugin
+# enabled — the call site enforces that order.
+update_installed_plugins() {
+    local mode="${1:-apply}"   # check | apply
+    local claude_bin="${HIMMEL_UPDATE_CLAUDE_BIN:-claude}"
+    local settings="${CLAUDE_USER_SETTINGS:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json}"
+    echo "==> installed plugin version catch-up (HIMMEL-3551)"
+    if ! command -v "$claude_bin" >/dev/null 2>&1; then
+        echo "    skip: claude CLI not on PATH."
+        return 0
+    fi
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "    skip: jq not on PATH (cannot enumerate installed plugins)."
+        return 0
+    fi
+    if [ ! -f "$settings" ]; then
+        echo "    skip: $settings not found."
+        return 0
+    fi
+    local specs
+    specs="$(jq -r '.enabledPlugins // {} | keys[] | select(endswith("@himmel") | not)' "$settings" 2>/dev/null)" || {
+        echo "    skip: could not read enabledPlugins from $settings."
+        return 0
+    }
+    if [ -z "$specs" ]; then
+        echo "    no non-@himmel plugins installed."
+        return 0
+    fi
+    if [ "$mode" = "check" ]; then
+        echo "    would update:"
+        printf '%s\n' "$specs" | while IFS= read -r spec; do
+            [ -n "$spec" ] && echo "      $spec"
+        done
+        return 0
+    fi
+    local failed=""
+    while IFS= read -r spec; do
+        [ -n "$spec" ] || continue
+        echo "    ==> claude plugin update $spec"
+        "$claude_bin" plugin update "$spec" </dev/null || failed="$failed $spec"
+    done <<EOF
+$specs
+EOF
+    if [ -n "$failed" ]; then
+        echo "    warn: failed to update:$failed — run \`claude plugin update <spec>\` yourself." >&2
+    fi
+    return 0
+}
+
 # _node_vs_pin <node-version> <pin> — prints match|behind|ahead|unknown.
 # Compares only as many dot-components as the pin gives (20 = major, 20.11 =
 # major.minor, 20.11.0 = major.minor.patch); a leading "v" is ignored on both.
@@ -2362,6 +2422,7 @@ if [ "${1:-}" = "--check" ] || [ "${1:-}" = "--dry-run" ]; then
     # claude CLI, so --check stays the zero-mutation dry-run it promises to be.
     sync_cli_proxy check || true
     sync_marketplaces check || true
+    update_installed_plugins check || true
     report_cadence_stale
     report_qmd_bun_missing
     report_toolchain check
@@ -2536,6 +2597,7 @@ sync_graphify
 # here the advisory contract still applies.
 sync_cli_proxy || true
 sync_marketplaces
+update_installed_plugins apply
 report_plugin_gap
 reconcile_plugins apply
 offer_retired_plugin_removal apply

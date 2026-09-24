@@ -11,6 +11,7 @@
     "ci:shell-unit": { "fidelity": "act-faithful", "os": ["linux"], "heavy": false }
   },
   "intentionallyAbsent": {
+    "ci:plugin-version-bump": "HIMMEL-3551: not yet act-classified — needs the pull_request base.sha context, same shim shape as ci:commit-lint above; falls through to hosted routing without an act-exec fast path until someone verifies it under act.",
     "ci:lanes-and-trust-suites": "HIMMEL-2880: not yet act-classified — needs a full-history checkout (fetch-depth 0) act does not replicate; falls through to hosted routing without an act-exec fast path until someone verifies it under act.",
     "ci:guardrail-matrices": "HIMMEL-2880: not yet act-classified — no known act blocker, just never surveyed; falls through to hosted routing without an act-exec fast path until classified.",
     "ci:doc-invariants": "HIMMEL-2880: not yet act-classified — no-ops without the gitignored .himmel-dev marker and only meaningfully gates the public post-propagation tree, not a private PR; falls through to hosted routing without an act-exec fast path until classified."
