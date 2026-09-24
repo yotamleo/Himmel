@@ -37,9 +37,12 @@ permissions:
 # HIMMEL-3588: no cancel-in-progress. A cancelled run still leaves its
 # CANCELLED context in the PR's statusCheckRollup, which blocks the ruleset's
 # merge evaluation even when the latest run is green. The job is cheap, so
-# grouped runs queue and each one runs to completion instead.
+# grouped runs queue and each one runs to completion instead. queue: max
+# raises the default single-pending-run cap (100), so a burst of pushes
+# cannot silently drop a queued run before it gets a chance to run.
 concurrency:
   group: codeowner-review-gate-${{ github.event.pull_request.number }}
+  queue: max
 
 jobs:
   gate:
