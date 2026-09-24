@@ -68,6 +68,20 @@ case "$_ah_self" in
         _ah_name="$(basename "$_ah_self")"
         _ah_dir="$(cd "$(dirname "$_ah_self")" && pwd)"
         _ah_anchor="${HIMMEL_REPO:-}"
+        # HIMMEL-3451: a relative HIMMEL_REPO (".", "..", a bare name) resolves
+        # against whatever cwd happens to be at `-ef` test time below, so it can
+        # accidentally equal $_ah_root and make a branch self-anchor. The anchor
+        # is only ever meant to be pinned by an absolute path (adopt/setup wire
+        # it that way); reject anything else before it reaches any -ef test.
+        if [ -n "$_ah_anchor" ]; then
+            case "$_ah_anchor" in
+                /* | [A-Za-z]:[\\/]*) ;;
+                *)
+                    echo "$_ah_name: HIMMEL_REPO ($_ah_anchor) is not an absolute path - refusing to let a relative anchor decide" >&2
+                    exit 2
+                    ;;
+            esac
+        fi
         # -u GIT_DIR/GIT_WORK_TREE/GIT_COMMON_DIR (HIMMEL-3437 F4): a caller
         # that inherits any of these pointed at the anchor makes git resolve
         # the anchor as the toplevel regardless of $_ah_dir, so this copy
@@ -141,6 +155,24 @@ case "$_ah_self" in
             echo "$_ah_name: HIMMEL_REPO is unset or empty - refusing to let this relative-entry copy ($_ah_root) decide; export it non-empty (adopt/setup wires it into settings.json env), or run the anchored \"<himmel_dir>/$_ah_rel\" spelling" >&2
             exit 2
         fi
+        # HIMMEL-3451: the anchor must be a PRIMARY checkout, never a linked
+        # worktree (the caller's own included) - a worktree's git-common-dir
+        # points at the primary's .git elsewhere, never at its own .git. Without
+        # this, HIMMEL_REPO pointed at the caller's own worktree made
+        # "$_ah_root" -ef "$_ah_anchor" true below, so the branch treated
+        # itself as already-the-anchor and ran its own (possibly tampered)
+        # bytes with no hand-off at all. A HIMMEL_REPO that is not a git repo
+        # at all is left to the existing "anchor carries no $_ah_rel" refusal
+        # further down, so only a GENUINE (but wrong) worktree is caught here.
+        _ah_anchor_common=""
+        if [ -d "$_ah_anchor" ]; then
+            _ah_anchor_common="$(cd "$_ah_anchor" && env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
+        fi
+        if [ -n "$_ah_anchor_common" ] && ! [ "$_ah_anchor_common" -ef "$_ah_anchor/.git" ]; then
+            echo "$_ah_name: HIMMEL_REPO ($_ah_anchor) is not the anchor's own checkout - its git-common-dir ($_ah_anchor_common) is not $_ah_anchor/.git, so it is a linked worktree, not the primary anchor - refusing" >&2
+            exit 2
+        fi
+        unset _ah_anchor_common
         # CodeRabbit (PR #1212): root -ef anchor alone is not proof this IS the
         # anchor's own tracked copy. A directory with NO .git of its own (an
         # orphaned worktree under $HIMMEL_REPO/.claude/worktrees/ whose gitlink
@@ -196,6 +228,29 @@ case "$_ah_self" in
                 echo "$_ah_name: hand-off target ($_ah_anchor/$_ah_rel) is this same file - refusing rather than re-run it unchecked as an absolute entry" >&2
                 exit 2
             fi
+            # HIMMEL-3451: before trusting the hand-off, byte-compare this
+            # helper's own file and the two libs a scripts/cr/ or
+            # scripts/handover/ entry sources (scripts/guardrails/lib.sh,
+            # scripts/lib/load-dotenv.sh) against the anchor's copies at the
+            # same root-relative path. This is defense in depth alongside
+            # guard-pr-check-literal.sh's own byte-compare (which does not run
+            # outside a himmel-project hook chain, HIMMEL-3558): a tree whose
+            # copy of any of the three disagrees with the anchor's is treated
+            # as tampered and refused, rather than handed off while leaving a
+            # differing copy of shared trust code sitting in the worktree.
+            # Only checked when THIS tree carries the file - a fixture or a
+            # tree that never had it is not "tampered", just incomplete.
+            for _ah_dep in "${_ah_prefix}anchor-handoff.sh" scripts/guardrails/lib.sh scripts/lib/load-dotenv.sh; do
+                _ah_dep_local="$_ah_root/$_ah_dep"
+                _ah_dep_anchor="$_ah_anchor/$_ah_dep"
+                if [ -f "$_ah_dep_local" ]; then
+                    if [ ! -f "$_ah_dep_anchor" ] || ! cmp -s "$_ah_dep_local" "$_ah_dep_anchor"; then
+                        echo "$_ah_name: this tree's $_ah_dep differs from the anchor's ($_ah_anchor) - refusing to hand off on a tampered dependency" >&2
+                        exit 2
+                    fi
+                fi
+            done
+            unset _ah_dep _ah_dep_local _ah_dep_anchor
             export CR_ANCHOR_HANDED_OFF=1
             echo "$_ah_name: entered through a non-anchor copy ($_ah_root) - handing off to the anchor's copy ($_ah_anchor/$_ah_rel)" >&2
             exec bash "$_ah_anchor/$_ah_rel" "$@"

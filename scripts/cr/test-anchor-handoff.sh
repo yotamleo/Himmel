@@ -95,17 +95,26 @@ check "$(cd "$wt" && env -u CR_ANCHOR_HANDED_OFF HIMMEL_REPO="$anchor" bash scri
 # with an unquoted $* instead of "$@" must FAIL the strengthened T9 above -
 # proves the check actually catches that regression class. Never touches the
 # real scripts/cr/anchor-handoff.sh; the mutation lives only in $tmp.
-red="$tmp/red"
-mkdir -p "$red/scripts/cr"
+red="$tmp/red"; red_anchor="$tmp/red_anchor"
+mkdir -p "$red/scripts/cr" "$red_anchor/scripts/cr"
 git init -q "$red"
+git init -q "$red_anchor"
 sed 's/"\$@"/$*/' "$DIR/anchor-handoff.sh" > "$red/scripts/cr/anchor-handoff.sh"
 # shellcheck disable=SC2016  # the literal line to look for, not an expansion
 if grep -qF 'exec bash "$_ah_anchor/$_ah_rel" "$@"' "$red/scripts/cr/anchor-handoff.sh"; then
     echo "FAIL: T9c setup — mutant exec line unchanged, control proves nothing" >&2
     fail=1
 fi
+# HIMMEL-3451: anchor-handoff.sh now byte-compares itself against the anchor's
+# copy before handing off, so $red_anchor carries the SAME mutant helper as
+# $red — the control is exercising the exec-line regression, not that new
+# dependency check (which has its own dedicated tests below).
+cp "$red/scripts/cr/anchor-handoff.sh" "$red_anchor/scripts/cr/anchor-handoff.sh"
+printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\n' "$SOURCE_LINE" > "$red_anchor/scripts/cr/known-findings.sh"
+printf '%s\n' 'printf '\''%s|'\'' "$#" "$@"' >> "$red_anchor/scripts/cr/known-findings.sh"
+git -C "$red_anchor" add -A
 printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\necho "LOCAL"\n' "$SOURCE_LINE" > "$red/scripts/cr/known-findings.sh"
-red_out="$(cd "$red" && env -u CR_ANCHOR_HANDED_OFF HIMMEL_REPO="$anchor" bash scripts/cr/known-findings.sh --diff 'a b' 2>/dev/null)"
+red_out="$(cd "$red" && env -u CR_ANCHOR_HANDED_OFF HIMMEL_REPO="$red_anchor" bash scripts/cr/known-findings.sh --diff 'a b' 2>/dev/null)"
 red_rc=$?
 # Assert the SPECIFIC unquoted-$* re-split shape (exit 0, argc 3: --diff a b),
 # not merely "not the correct value" — a setup/exec failure would also be
@@ -220,6 +229,47 @@ run_index_override() {  # <cwd> <HIMMEL_REPO> <entry path> <extra env assignment
 }
 check "$(run_index_override "$nested_removed" "$anchor" scripts/cr/clear-cr-marker.sh "GIT_DIR=$fake/.git" | tr '\n' ' ')" "rc=2 " "T18 GIT_DIR pointed at a crafted index cannot fake the ls-files tracked-path check"
 check "$(run_index_override "$nested_removed" "$anchor" scripts/cr/clear-cr-marker.sh "GIT_INDEX_FILE=$fake/.git/index" | tr '\n' ' ')" "rc=2 " "T19 GIT_INDEX_FILE alone (no GIT_DIR) cannot fake the ls-files tracked-path check"
+
+# 20 (HIMMEL-3451). A relative HIMMEL_REPO (".") is refused regardless of cwd -
+# it would resolve against wherever `-ef` runs, letting it accidentally equal
+# $_ah_root and self-anchor a tampered branch.
+check "$(run "$wt" "." scripts/cr/clear-cr-marker.sh | tr '\n' ' ')" "rc=2 " "T20 relative HIMMEL_REPO (.) refused"
+
+# 21 (HIMMEL-3451). HIMMEL_REPO pointed at a genuine LINKED worktree (not the
+# primary checkout) must be refused - its git-common-dir points at some other
+# repo's .git, never its own, so the primary-checkout invariant the hand-off
+# target depends on does not hold. Without this check, a branch could point
+# HIMMEL_REPO at its own (or any) worktree and self-anchor unchecked.
+wt_primary="$tmp/wt_primary"
+mkdir -p "$wt_primary"
+git init -q "$wt_primary"
+git -c user.email=t@t -c user.name=t -C "$wt_primary" commit --allow-empty -q -m init
+linked="$tmp/wt_linked"
+git -C "$wt_primary" worktree add -q "$linked" -b anchor-handoff-t21 >/dev/null 2>&1
+mkdir -p "$linked/scripts/cr"
+cp "$DIR/anchor-handoff.sh" "$linked/scripts/cr/anchor-handoff.sh"
+printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\necho "RAN:linked"\n' "$SOURCE_LINE" > "$linked/scripts/cr/clear-cr-marker.sh"
+git -C "$linked" add -A
+check "$(run "$wt" "$linked" scripts/cr/clear-cr-marker.sh | tr '\n' ' ')" "rc=2 " "T21 HIMMEL_REPO pointed at a linked worktree (not the primary) refused"
+
+# 22 (HIMMEL-3451). A tampered helper (this tree's own copy of
+# anchor-handoff.sh differs from the anchor's) is refused before it is
+# trusted to hand off, even when the mutation itself doesn't touch behavior.
+tampered="$tmp/tampered"
+make_tree "$tampered" tampered
+printf '\n# tampered\n' >> "$tampered/scripts/cr/anchor-handoff.sh"
+check "$(run "$tampered" "$anchor" scripts/cr/clear-cr-marker.sh | tr '\n' ' ')" "rc=2 " "T22 tampered anchor-handoff.sh itself refused before hand-off"
+
+# 23 (HIMMEL-3451). A tampered scripts/guardrails/lib.sh (present locally,
+# differing from the anchor's copy at the same root-relative path) is refused
+# the same way - the byte-compare extends beyond the helper itself.
+depmismatch="$tmp/depmismatch"
+make_tree "$depmismatch" depmismatch
+mkdir -p "$depmismatch/scripts/guardrails" "$anchor/scripts/guardrails"
+printf 'echo anchor-lib\n' > "$anchor/scripts/guardrails/lib.sh"
+git -C "$anchor" add -A
+printf 'echo local-lib\n' > "$depmismatch/scripts/guardrails/lib.sh"
+check "$(run "$depmismatch" "$anchor" scripts/cr/clear-cr-marker.sh | tr '\n' ' ')" "rc=2 " "T23 tampered scripts/guardrails/lib.sh refused before hand-off"
 
 echo "anchor-handoff: $pass passed, $([ "$fail" = 0 ] && echo 0 || echo some) failed"
 exit "$fail"

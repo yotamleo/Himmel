@@ -49,9 +49,15 @@ const ANCHOR_LITERALS = [
 // A model of the documented rule forms, not the harness matcher: `X:*` = X or
 // X plus a space-separated tail; a body with `*` is a glob whose `*` matches
 // any characters (slashes and spaces included), and a trailing ` *` also
-// matches the bare prefix; anything else is exact. It errs toward matching
-// MORE than the harness, which is the safe direction for a "matches nothing"
-// assertion.
+// matches the bare prefix; anything else is exact. It can UNDER-match the
+// real harness — a command that differs only by a run of extra whitespace
+// (a double space the harness may still treat as a separator), or one that
+// reaches a guarded literal through an indirection the harness's own matcher
+// may still resolve (e.g. `xargs bash scripts/cr/x.sh`), can read here as "no
+// rule matches" even though the real matcher would catch it. That is the
+// UNSAFE direction for a "matches nothing" RED assertion: a false negative
+// hides a gap instead of manufacturing one. Treat a RED row that passes here
+// as a lower bound on what the harness refuses, not proof of it.
 function ruleMatches(rule, command) {
   const body = /^Bash\(([\s\S]*)\)$/.exec(rule)?.[1];
   if (body === undefined) return false;
@@ -216,5 +222,41 @@ test('every path-naming Bash allow rule is a per-file literal, a step-0 literal 
 test('the project list carries every gateAllow quiet-run suite rule, so a console runs suites as a leg does', () => {
   for (const rule of REG.gateAllow.filter((r) => r.includes('quiet-run.sh suite'))) {
     assert.ok(ALLOW.includes(rule), `missing from .claude/settings.json: ${rule}`);
+  }
+});
+
+// HIMMEL-3451: the structural test above only ever examined `Bash(...)`
+// rules — a `PowerShell(...)` prefix or glob rule reaching a trust root, or
+// granting a whole scripts/ directory rather than one file, was invisible to
+// it. Mirror the same shape for PowerShell.
+const ALLOW_PS = SETTINGS.permissions.allow.filter((r) => r.startsWith('PowerShell('));
+const PS_TRUST_DIR = /scripts\/(cr|guardrails|hooks)\//;
+// Exact per-script literals: a fixed script path plus a fixed flag/arg tail,
+// no wildcard.
+const PS_EXACT_LITERALS = [
+  'pwsh -File scripts/telegram/restart-bridge.ps1 -FromLedger',
+  'pwsh -File scripts/telegram/restart-bridge.ps1 -FromLedger -Kill',
+];
+// HIMMEL-3451: `pwsh -NoProfile -File scripts/*` is a whole-directory grant —
+// its `*` matches any script under scripts/, not one named file, unlike
+// every Bash per-script rule above. Decision (see PR body for the console's
+// review): left as an ALLOWED exception rather than narrowed, since this leg
+// cannot edit .claude/settings.json (Do-Not list) and the station this rule
+// targets has no pwsh to exercise it (this brief: "The station has NO
+// pwsh: the PowerShell part is a STRUCTURAL test over the settings text, not
+// an execution"); PS_TRUST_DIR below still refuses it if it is ever narrowed
+// the other way, into scripts/cr, scripts/guardrails or scripts/hooks.
+const PS_ALLOWED_DIRECTORY_GRANTS = [
+  'pwsh -NoProfile -File scripts/*',
+];
+
+test('every PowerShell allow rule under scripts/ is a per-file literal or a documented directory-grant exception, and none reaches a trust root', () => {
+  const psPathRules = ALLOW_PS.map((r) => /^PowerShell\(([\s\S]*)\)$/.exec(r)[1])
+    .filter((b) => /scripts\//.test(b));
+  assert.ok(psPathRules.length > 0, 'anti-vacuity: expected PowerShell scripts/ rules');
+  for (const body of psPathRules) {
+    assert.ok(!PS_TRUST_DIR.test(body), `PowerShell trust-root rule: ${body}`);
+    if (PS_EXACT_LITERALS.includes(body) || PS_ALLOWED_DIRECTORY_GRANTS.includes(body)) continue;
+    assert.fail(`unrecognized PowerShell scripts/ rule, needs classification as a literal or a documented exception: ${body}`);
   }
 });
