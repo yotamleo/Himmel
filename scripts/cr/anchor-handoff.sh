@@ -76,6 +76,12 @@ case "$_ah_self" in
         # cwd is the only trusted signal for "where does this file live".
         _ah_root="$(cd "$_ah_dir" && env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR git rev-parse --show-toplevel 2>/dev/null)"
         _ah_prefix=""
+        # Tracks whether $_ah_root came from a genuine git toplevel resolve
+        # (below) rather than the non-git walk-up fallback further down -
+        # only the former needs the ls-files tracked-path check: the
+        # walk-up already proves self-anchor identity by directory equality
+        # against $_ah_anchor, and there is no git index to check there.
+        _ah_via_git=0
         if [ -n "$_ah_root" ]; then
             # show-prefix is the path from the repo's toplevel down to cwd,
             # computed by git itself - correct regardless of any
@@ -92,6 +98,8 @@ case "$_ah_self" in
             # of trusting a toplevel that doesn't point back at this file.
             if ! [ "$_ah_dir" -ef "$_ah_root/$_ah_prefix" ]; then
                 _ah_root=""
+            else
+                _ah_via_git=1
             fi
         fi
         if [ -z "$_ah_root" ] && [ -n "$_ah_anchor" ]; then
@@ -144,9 +152,18 @@ case "$_ah_self" in
         # worktree fails this and falls through to the real hand-off attempt
         # below, which then correctly fails closed (not the anchor, and the
         # anchor carries no file at this untracked-only relative path either).
+        # The orphaned-worktree bypass only reaches this via a genuine git
+        # toplevel resolve (its .git removal still leaves the ANCHOR's own
+        # .git discoverable above it), so the tracked-path check gates only
+        # $_ah_via_git=1; the non-git walk-up path already proved identity
+        # by directory equality and has no git index to check against.
         _ah_is_anchor=0
-        if [ "$_ah_root" -ef "$_ah_anchor" ] && git -C "$_ah_anchor" ls-files --error-unmatch -- "$_ah_rel" >/dev/null 2>&1; then
-            _ah_is_anchor=1
+        if [ "$_ah_root" -ef "$_ah_anchor" ]; then
+            if [ "$_ah_via_git" -eq 1 ]; then
+                git -C "$_ah_anchor" ls-files --error-unmatch -- "$_ah_rel" >/dev/null 2>&1 && _ah_is_anchor=1
+            else
+                _ah_is_anchor=1
+            fi
         fi
         if [ "$_ah_is_anchor" -eq 0 ]; then
             if [ ! -f "$_ah_anchor/$_ah_rel" ]; then
@@ -174,7 +191,7 @@ case "$_ah_self" in
             echo "$_ah_name: entered through a non-anchor copy ($_ah_root) - handing off to the anchor's copy ($_ah_anchor/$_ah_rel)" >&2
             exec bash "$_ah_anchor/$_ah_rel" "$@"
         fi
-        unset _ah_name _ah_dir _ah_root _ah_rel _ah_anchor _ah_prefix _ah_is_anchor
+        unset _ah_name _ah_dir _ah_root _ah_rel _ah_anchor _ah_prefix _ah_is_anchor _ah_via_git
         ;;
 esac
 unset _ah_self
