@@ -142,7 +142,10 @@ case "$pr" in
         exit 0 ;;
 esac
 
-state=$("$GH" pr view "$pr" --json state --jq '.state' 2>/dev/null)
+if ! state=$("$GH" pr view "$pr" --json state --jq '.state' 2>/dev/null); then
+    echo "close-wrapped-leg: refusing - gh pr view #$pr failed (auth/connectivity?) - cannot confirm the PR is merged, not pruning" >&2
+    exit 1
+fi
 if [ "$state" != "MERGED" ]; then
     echo "close-wrapped-leg: PR #$pr state is '${state:-unknown}', not MERGED - skipping the prune" >&2
     exit 0

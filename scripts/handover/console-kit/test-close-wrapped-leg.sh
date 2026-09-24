@@ -20,6 +20,7 @@
 #  10. 1 match, 1 worktree, PR MERGED, clean.sh succeeds      -> rc 0, kill called with the ONE matched pid, clean.sh called once
 #  11. clean.sh output contains "in use"                    -> rc 0 (non-fatal)
 #  12. clean.sh fails for another reason                    -> rc 1
+#  13. gh pr view itself fails (auth/connectivity)           -> rc 1, clean.sh NOT called
 #
 # Platform guard: Linux bash 3.2+ (depends on /proc via claude-sessions.sh).
 set -uo pipefail
@@ -34,6 +35,11 @@ fails=0
 check()    { if [ "$2" = "$3" ]; then echo "ok - $1"; else echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); fi; }
 contains() { if grep -q -F -e "$3" <<< "$2"; then echo "ok - $1"; else echo "FAIL - $1: output does not contain [$3]"; fails=$((fails+1)); fi; }
 not_contains() { if grep -q -F -e "$3" <<< "$2"; then echo "FAIL - $1: output unexpectedly contains [$3]"; fails=$((fails+1)); else echo "ok - $1"; fi; }
+# exact_count <label> <haystack> <exact-line> <expected-count> - a substring
+# `contains` passes if the script ALSO signaled another pid or called
+# clean.sh twice; this counts exact-line occurrences so an extra/duplicate
+# call fails the assertion.
+exact_count() { local n; n=$(grep -c -F -x -e "$3" <<< "$2"); if [ "$n" = "$4" ]; then echo "ok - $1"; else echo "FAIL - $1: expected $4 occurrence(s) of [$3], got $n"; fails=$((fails+1)); fi; }
 
 mkdir -p "$W/proc" "$W/bin" "$W/wt"
 CALLS="$W/calls.log"
@@ -71,6 +77,10 @@ cat > "$GH_STUB" <<'STUB'
 echo "gh $*" >> "$CALLS_LOG"
 case "$*" in
     "pr view "*)
+        if [ "${CWL_PR_VIEW_FAIL:-0}" = "1" ]; then
+            echo "gh-stub: pr view forced failure (auth/connectivity)" >&2
+            exit 1
+        fi
         printf '%s' "${CWL_PR_STATE:-MERGED}"
         exit 0 ;;
 esac
@@ -118,10 +128,11 @@ run() { # run <doc> - runs the script under test with every stub wired
     CALLS_LOG="$CALLS" PATH="$W/bin:$PATH" CLAUDE_SESSIONS_PROC="$W/proc" \
         GH_BIN="$GH_STUB" KILL_BIN="$KILL_STUB" CLEAN_SH_BIN="$CLEAN_STUB" \
         CWL_PR_STATE="${CWL_PR_STATE:-MERGED}" CWL_CLEAN_MODE="${CWL_CLEAN_MODE:-ok}" \
+        CWL_PR_VIEW_FAIL="${CWL_PR_VIEW_FAIL:-0}" \
         bash "$SCRIPT" "$@"
 }
 reset_calls() { : > "$CALLS"; }
-unset CWL_PR_STATE CWL_CLEAN_MODE
+unset CWL_PR_STATE CWL_CLEAN_MODE CWL_PR_VIEW_FAIL
 
 # --- 1. usage ----------------------------------------------------------------
 reset_calls
@@ -175,8 +186,10 @@ mkdoc "- 10:00 WRAPPED - done"
 reset_calls
 rc=0; out=$(run "$DOC" 2>&1) || rc=$?
 check "no-worktree: rc 0" "$rc" "0"
-contains "no-worktree: kill still called" "$(cat "$CALLS")" "kill -TERM 210"
-not_contains "no-worktree: clean.sh not called" "$(cat "$CALLS")" "clean.sh"
+calls6="$(cat "$CALLS")"
+exact_count "no-worktree: kill called exactly once with the matched pid" "$calls6" "kill -TERM 210" "1"
+not_contains "no-worktree: clean.sh not called" "$calls6" "clean.sh"
+check "no-worktree: exactly one call logged (no other pid signaled)" "$(wc -l < "$CALLS" | tr -d ' ')" "1"
 
 # --- 7. 1 match, 2 worktree paths -------------------------------------------------
 mkdoc "- 10:00 WRAPPED - done" "worktree: \`$WT/.claude/worktrees/demo\`" "worktree: \`$W/wt/.claude/worktrees/other\`"
@@ -205,8 +218,10 @@ reset_calls
 rc=0; out=$(CWL_PR_STATE="MERGED" run "$DOC" 2>&1) || rc=$?
 check "clean-success: rc 0" "$rc" "0"
 calls="$(cat "$CALLS")"
-contains "clean-success: kill called with the matched pid" "$calls" "kill -TERM 210"
-contains "clean-success: clean.sh called once" "$calls" "clean.sh --only $WT/.claude/worktrees/demo"
+exact_count "clean-success: kill called exactly once with the matched pid" "$calls" "kill -TERM 210" "1"
+exact_count "clean-success: clean.sh called exactly once" "$calls" "clean.sh --only $WT/.claude/worktrees/demo" "1"
+exact_count "clean-success: gh pr view called exactly once" "$calls" "gh pr view 42 --json state --jq .state" "1"
+check "clean-success: exactly 3 calls logged (no extra kill/clean.sh)" "$(wc -l < "$CALLS" | tr -d ' ')" "3"
 
 # --- 11. clean.sh reports in-use ------------------------------------------------
 reset_calls
@@ -218,6 +233,14 @@ contains "clean-in-use: names it" "$out" "in use"
 reset_calls
 rc=0; out=$(CWL_PR_STATE="MERGED" CWL_CLEAN_MODE="fail" run "$DOC" 2>&1) || rc=$?
 check "clean-fail: rc 1" "$rc" "1"
+
+# --- 13. gh pr view itself fails -------------------------------------------------
+mkdoc "- 10:00 WRAPPED - done" "worktree: \`$WT/.claude/worktrees/demo\`" "- 09:45 MERGED #42 -> deadbeef"
+reset_calls
+rc=0; out=$(CWL_PR_VIEW_FAIL="1" run "$DOC" 2>&1) || rc=$?
+check "pr-view-fail: rc 1" "$rc" "1"
+not_contains "pr-view-fail: clean.sh not called" "$(cat "$CALLS")" "clean.sh"
+contains "pr-view-fail: names the reason" "$out" "gh pr view"
 
 echo "----"
 if [ "$fails" -eq 0 ]; then
