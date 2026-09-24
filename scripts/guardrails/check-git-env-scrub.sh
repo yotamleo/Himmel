@@ -424,7 +424,10 @@ scan_one() {
 if [ "$MODE" = staged ]; then
     tmp_list=$(mktemp "${TMPDIR:-/tmp}/git-env-scrub-list.XXXXXX") || exit 2
     trap 'rm -f "$tmp_list"' EXIT
-    git diff --cached --name-only --diff-filter=ACM > "$tmp_list"
+    # ACMR, not ACM: a rename INTO a trust path (`git mv x scripts/hooks/y`,
+    # status R100) must be scanned too — ACM alone let it slip past pre-commit
+    # (console adversarial review, 2026-09-24).
+    git diff --cached --name-only --diff-filter=ACMR > "$tmp_list"
     while IFS= read -r f || [ -n "$f" ]; do
         [ -z "$f" ] && continue
         is_trust_path "$f" || continue
@@ -444,13 +447,36 @@ else
                 while IFS= read -r f; do
                     scan_one "$f" "$f"
                 done < <(find "$p" -type f \( -name '*.sh' -o -name '*.mjs' -o -name '*.js' \) | sort)
+            else
+                # A renamed/moved fixture must FAIL loud, not silently scan
+                # nothing and report clean (console adversarial review,
+                # 2026-09-24).
+                echo "check-git-env-scrub: --tree path does not exist: $p" >&2
+                exit 2
             fi
         done
     else
+        # No `2>/dev/null`, no process substitution: capture the list and its
+        # own exit status directly, so a `git ls-files` failure is never
+        # swallowed, and floor the scan at >0 files so an empty result (a
+        # detached/corrupt worktree, a moved trust path) can never read as
+        # "clean" either (console adversarial review, 2026-09-24).
+        tree_list=$(git ls-files 'scripts/handover' 'scripts/lanes' 'scripts/hooks' 'scripts/cr' 'scripts/lib/go-gate.sh') || {
+            echo "check-git-env-scrub: git ls-files failed while listing trust paths" >&2
+            exit 2
+        }
+        scanned=0
         while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            case "$f" in *.sh|*.mjs|*.js) : ;; *) continue ;; esac
             is_trust_path "$f" || continue
+            scanned=$((scanned + 1))
             scan_one "$f" "$f"
-        done < <(git ls-files 'scripts/handover' 'scripts/lanes' 'scripts/hooks' 'scripts/cr' 'scripts/lib/go-gate.sh' 2>/dev/null | grep -E '\.(sh|mjs|js)$')
+        done <<<"$tree_list"
+        if [ "$scanned" -eq 0 ]; then
+            echo "check-git-env-scrub: 0 trust-path files scanned — refusing to report clean" >&2
+            exit 2
+        fi
     fi
 fi
 

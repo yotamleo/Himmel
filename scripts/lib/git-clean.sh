@@ -9,6 +9,18 @@
 # poisoned GIT_DIR) and PR 1217 (plugin-profiles.mjs `primaryCheckout`, the
 # same class via `git rev-parse --git-common-dir`) are both this bug.
 #
+# CAUTION — git hooks: `GIT_INDEX_FILE` is NOT always attacker-controlled
+# noise to scrub. A running git hook (e.g. `pre-commit` under `commit -a`)
+# can set it legitimately to the lock file it is committing through, and a
+# hook-invoked trust-path script that calls `git_env_scrub` unconditionally
+# near the top would unset that real value, so a later `git diff --cached`
+# in the SAME script then reads the wrong (default) index instead of the
+# hook's. A trust-path script that may run AS a git hook must not scrub
+# GIT_INDEX_FILE file-wide — either scrub only around the specific
+# non-index trust-path call (`git_clean -C ... rev-parse ...`, never a bare
+# `git_env_scrub`), or scrub the other three and leave GIT_INDEX_FILE alone
+# (console adversarial review, HIMMEL-3570, 2026-09-24).
+#
 # Source this file and use either form on any trust-path script
 # (scripts/handover/**, scripts/lanes/**, scripts/hooks/**, scripts/cr/**,
 # scripts/lib/go-gate.sh):

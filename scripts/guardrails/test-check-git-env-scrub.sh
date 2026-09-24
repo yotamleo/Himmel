@@ -118,6 +118,66 @@ expect_red "T20 quoted multi-word command string ('git status') is caught" quote
 expect_red "T21 bare exec( ) (no Sync/File) is caught"                   exec-bare-unscrubbed.mjs
 expect_red "T22 scrub names in a COMMENT alone don't satisfy the window" comment-fake-scrub-unscrubbed.mjs
 
+# ---- should-fix round (console adversarial review, 2026-09-24) ----
+
+# T23 -- a --tree path that does not exist must fail, not report clean. Before
+# the fix, a nonexistent path matches neither `-f` nor `-d` and is silently
+# skipped, so the fixture below (deliberately never on disk) would previously
+# report zero findings and rc=0.
+T23_OUT="$(cd "$REPO_ROOT" && GIT_ENV_SCRUB_BASELINE="$EMPTY_BASELINE" bash "$CHECKER" --tree "$CASES/does-not-exist-xyz.sh" 2>&1)"
+T23_RC=$?
+if [ "$T23_RC" -ne 0 ] && grep -qF "does not exist" <<<"$T23_OUT"; then
+    pass "T23 --tree on a nonexistent path fails, not clean"
+else
+    fail "T23 --tree on a nonexistent path fails, not clean (rc=$T23_RC)"
+    printf '%s\n' "$T23_OUT" | sed 's/^/    /'
+fi
+
+# T24 -- bare `--tree` (no PATH args — the real full-scan mode CI runs, see
+# T18 below) must fail, not report clean, when it scans zero trust-path
+# files. Before the fix, `git ls-files ... 2>/dev/null` inside a process
+# substitution silently swallows an empty/errored file list and the checker
+# exits 0 "clean" with no floor on how many files it actually looked at.
+# Isolated tmp repo: none of the five trust-path pathspecs exist in it, so
+# `git ls-files` legitimately returns an empty list.
+T24_REPO="$(mktemp -d "${TMPDIR:-/tmp}/git-env-scrub-empty-repo.XXXXXX")" || exit 2
+(cd "$T24_REPO" && git init -q && git config user.email t@t && git config user.name t) >/dev/null 2>&1
+T24_OUT="$(cd "$T24_REPO" && GIT_ENV_SCRUB_BASELINE="$EMPTY_BASELINE" bash "$CHECKER" --tree 2>&1)"
+T24_RC=$?
+rm -rf "$T24_REPO"
+if [ "$T24_RC" -ne 0 ]; then
+    pass "T24 default mode with 0 trust-path files scanned fails, not clean"
+else
+    fail "T24 default mode with 0 trust-path files scanned fails, not clean (rc=$T24_RC)"
+    printf '%s\n' "$T24_OUT" | sed 's/^/    /'
+fi
+
+# T25 -- --staged must catch a rename INTO a trust path. Before the fix,
+# `--diff-filter=ACM` omits `R`, so `git mv scripts/other/x.sh
+# scripts/hooks/x.sh` (status R100) never reaches the scanner and pre-commit
+# passes an unscrubbed file renamed straight into a guarded directory.
+T25_REPO="$(mktemp -d "${TMPDIR:-/tmp}/git-env-scrub-staged-repo.XXXXXX")" || exit 2
+(
+    cd "$T25_REPO" || exit 1
+    git init -q
+    git config user.email t@t
+    git config user.name t
+    mkdir -p scripts/other scripts/hooks
+    printf '#!/usr/bin/env bash\ngit status\n' > scripts/other/x.sh
+    git add scripts/other/x.sh
+    git commit -q -m init
+    git mv scripts/other/x.sh scripts/hooks/x.sh
+) >/dev/null 2>&1
+T25_OUT="$(cd "$T25_REPO" && GIT_ENV_SCRUB_BASELINE="$EMPTY_BASELINE" bash "$CHECKER" --staged 2>&1)"
+T25_RC=$?
+rm -rf "$T25_REPO"
+if [ "$T25_RC" -eq 1 ] && grep -qF "scripts/hooks/x.sh" <<<"$T25_OUT"; then
+    pass "T25 --staged catches a rename INTO a trust path"
+else
+    fail "T25 --staged catches a rename INTO a trust path (rc=$T25_RC)"
+    printf '%s\n' "$T25_OUT" | sed 's/^/    /'
+fi
+
 # T18 -- sanity: the real trust paths, under the real committed baseline,
 # report clean. This is the ratchet's day-one promise.
 REAL_OUT="$(cd "$REPO_ROOT" && bash "$CHECKER" --tree 2>&1)"
