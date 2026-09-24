@@ -130,6 +130,7 @@ ssh_order() {
     grep '^SSH ' "$1" | while IFS= read -r l; do
         case "$l" in
             *'tar -C /tmp/rt-src'*) echo stage ;;
+            *'sha256sum -c himmel-'*) echo tarball-extract ;;
             *seed-provenance.sh*) echo seed ;;
             *'inventory.sh A'*) echo invA ;;
             *'bin.js install'*'--scope project'*) echo install-project ;;
@@ -555,6 +556,58 @@ if grep -q '^SSH .*find -L .*\.himmel -mindepth 1' "$LOG"; then
     pass "D17d clone-gone-purge listing uses find -L (traverses a symlinked ~/.himmel)"
 else
     fail_case "D17d clone-gone-purge listing did not use find -L"; dump
+fi
+
+# =====================================================================
+# D18 — HIMMEL-3059 S6: --install-from clone|tarball|aur
+# =====================================================================
+# D18 — a bad --install-from value is a usage error, rc 2, before VBoxManage
+run_rt "$BOTH" f73a62f1 --install-from bogus
+if [ "$RC" -eq 2 ] && [ ! -s "$LOG" ]; then
+    pass "D18 bad --install-from value exits 2 before touching VBoxManage"
+else
+    fail_case "D18 bad --install-from: rc=$RC"; dump
+fi
+
+# D18b — aur refuses "needs S5 packaging", rc 2, before VBoxManage (S5 has not landed)
+run_rt "$BOTH" f73a62f1 --install-from aur
+if [ "$RC" -eq 2 ] && [ ! -s "$LOG" ] && printf '%s\n' "$OUT" | grep -qF 'needs S5 packaging'; then
+    pass "D18b --install-from aur refuses 'needs S5 packaging' before touching VBoxManage"
+else
+    fail_case "D18b aur refusal: rc=$RC"; dump
+fi
+
+# D18c — clone stays the default and byte-for-byte unaffected: same guest step
+# order as D1, and the [run] line now names it
+run_rt "$ALL_PASS" f73a62f1
+got=$(ssh_order "$LOG")
+if printf '%s\n' "$OUT" | grep -qE '^\[run\] .*install-from=clone ' \
+   && [ "$got" = 'stage seed invA install-project install-user invB uninstall invC assert ' ]; then
+    pass "D18c default --install-from is clone; guest step order unchanged: $got"
+else
+    fail_case "D18c clone default: order='$got'"; dump
+fi
+
+# D18d — --install-from tarball: runs the REAL build-tarball.sh (HIMMEL_RT_TARBALL_NO_BUILD=1
+# skips only its npm build, a hermetic-test seam — see provenance-roundtrip.sh),
+# stages the built asset instead of the source tree (no stage/git-init step),
+# and every guest install/uninstall argv targets the extracted
+# ~/.local/share/himmel/current tree instead of /tmp/rt-src.
+HIMMEL_RT_TARBALL_NO_BUILD=1 run_rt "$ALL_PASS" f73a62f1 --install-from tarball
+got=$(ssh_order "$LOG")
+want='tarball-extract seed invA install-project install-user invB uninstall invC assert '
+bin_ok=0
+if [ "$(grep '^SSH ' "$LOG" | grep -c '\.local/share/himmel/current/scripts/himmelctl/bin\.js install')" -eq 2 ] \
+   && grep '^SSH ' "$LOG" | grep -q '\.local/share/himmel/current/scripts/himmelctl/bin\.js uninstall'; then
+    bin_ok=1
+fi
+if [ "$RC" -eq 0 ] && [ "$got" = "$want" ] && [ "$bin_ok" -eq 1 ] \
+   && printf '%s\n' "$OUT" | grep -qE '^\[run\] .*install-from=tarball ' \
+   && printf '%s\n' "$OUT" | grep -qxF '[step] build-tarball' \
+   && printf '%s\n' "$OUT" | grep -qE '^asset: .*himmel-0\.0\.0-rt[0-9a-f]+-linux\.tar\.gz$'; then
+    pass "D18d --install-from tarball: real build-tarball.sh ran, guest installs from the extracted ~/.local/share/himmel/current tree, no stage/git-init: $got"
+else
+    fail_case "D18d tarball mode: rc=$RC order='$got' bin_ok=$bin_ok"; dump
 fi
 
 echo
