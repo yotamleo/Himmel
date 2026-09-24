@@ -374,6 +374,17 @@ run "fully single-quoted \$HIMMEL_REPO never expands -> deny" 2 \
 # shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
 run "single-quoted with leading junk before the dollar -> deny" 2 \
     "$(payload "bash 'x \$HIMMEL_REPO/scripts/handover/console-kit/go.sh'" "$WT")" "$HR"
+# Console round 4 (evidence request): byte-exact reproductions of the
+# original report's probes 4 and 6, built with $'...' ANSI-C quoting so
+# no character is reinterpreted along the way - $'...' processes only
+# backslash escapes and never expands a $VAR, so $HIMMEL_REPO here stays
+# literal text, exactly like every other case in this file.
+PROBE4=$'bash \\\'"$HIMMEL_REPO/scripts/cr/pr-check-context.sh"'
+run 'probe 4: backslash then double-quote before the dollar -> deny' 2 \
+    "$(payload "$PROBE4" "$WT")" "$HR"
+PROBE6=$'bash \'"$HIMMEL_REPO/scripts/cr/pr-check-context.sh"\''
+run 'probe 6: the whole double-quoted prefix wrapped in single quotes -> deny' 2 \
+    "$(payload "$PROBE6" "$WT")" "$HR"
 
 # ---- console-O NO-GO round 3 (F2): the tail must resolve as a plain path -----
 # A `..` or a second `$` after the exempted prefix must still deny - the
@@ -382,6 +393,16 @@ run "single-quoted with leading junk before the dollar -> deny" 2 \
 # shellcheck disable=SC2016 # the literal `$HIMMEL_REPO`/`$PWD` text, never expanded here
 run 'traversal plus a second $ after the prefix -> deny' 2 \
     "$(payload 'bash "$HIMMEL_REPO/../../../../../../..$PWD/scripts/cr/pr-check-context.sh"' "$WT")" "$HR"
+
+# ---- console-O NO-GO round 4: the merge-on-green remedy must not loop --------
+# F1 denies ANY quote/backslash anywhere in the command, so a leg that reaches
+# for the remedy with a quoted argument (`--branch 'x'`) would trip F1 again.
+# The remedy text itself must say so, and name a fallback that never needs
+# quoting args at all.
+run 'quoted arg on the anchored spelling -> deny (would loop without the fix)' 2 \
+    "$(payload "bash \"\$HIMMEL_REPO/scripts/handover/merge-on-green.sh\" --branch 'x'" "$WT")" "$HR"
+need_in_err "remedy says args must be unquoted" "unquoted"
+need_in_err "remedy offers the himmel_dir fallback" "<himmel_dir>/scripts/handover/merge-on-green.sh"
 
 # ---- console-O NO-GO finding 2: go.sh's own sibling-sourced libs -------------
 # go.sh sources scripts/lib/go-gate.sh and scripts/lib/handover-path.sh via a

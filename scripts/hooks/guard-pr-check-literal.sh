@@ -118,10 +118,17 @@ deny() {
                 echo "$FENCE"
                 ;;
             *handover/merge-on-green*)
-                echo "Run the anchored spelling instead (HIMMEL-3491):"
+                echo "Run the anchored spelling instead (HIMMEL-3491) - EVERY argument must be"
+                echo "unquoted, with no ' or \\ anywhere in the command (the anchor prefix is"
+                echo "exempted only when the whole command carries neither):"
                 echo
                 # shellcheck disable=SC2016 # printed verbatim, never expanded
-                echo 'bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh" <args>'
+                echo 'bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh" <unquoted-args>'
+                echo
+                echo "If an argument genuinely needs quoting, use the anchor's copy by step 0's"
+                echo "printed himmel_dir instead, as its own command:"
+                echo
+                echo "bash \"<himmel_dir>/scripts/handover/merge-on-green.sh\" <args>"
                 ;;
             *console-kit/go*)
                 echo "Run the anchor's copy by step 0's printed himmel_dir instead, as its own command:"
