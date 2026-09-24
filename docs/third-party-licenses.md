@@ -143,7 +143,7 @@ line; the file itself is the MIT text. No `node_modules`/npm involvement.
 MIT License text as it appeared at that commit (`LICENSE`), reproduced here
 per the license's own attribution requirement:
 
-```
+```text
 MIT License
 
 Copyright (c) 2026 OpenClaw Foundation
