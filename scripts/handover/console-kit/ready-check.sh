@@ -38,7 +38,11 @@
 #      files carry the history of why each regex looks the way it does.
 #   6. Every commit subject in the PR carries a ticket ID, using the same
 #      pattern scripts/hooks/check-commit-msg.sh derives (TICKET_ID_PATTERN,
-#      else "${JIRA_PROJECT_KEY}-[0-9]+", else a bare "#123" reference).
+#      else "${JIRA_PROJECT_KEY}-[0-9]+", else a bare "#123" reference) —
+#      except a commit with more than one parent (a real merge, e.g. a leg's
+#      `Merge remote-tracking branch 'origin/main' into <branch>`), mirroring
+#      scripts/ci/check-commit-range.sh's `git rev-list --no-merges`. Parent
+#      count, not subject text, is the exemption signal.
 #
 # Owner/repo are derived from `gh repo view --json owner,name`, never hard-
 # coded (so this runs the same in any clone/fork). It writes nothing — no
@@ -303,7 +307,20 @@ else
     fi
     TICKET_PATTERN="${TICKET_PATTERN:-(^|[^0-9A-Za-z_])#[0-9]+([^0-9A-Za-z_]|$)}"
 
-    missing=$(printf '%s' "$commits_json" | jq -r '.[].messageHeadline' 2>/dev/null | grep -vE "$TICKET_PATTERN" || true)
+    # Merge commits (>1 parent) are exempt — same signal check-commit-range.sh
+    # uses. `gh pr view --json commits` has no `parents` field, so this is a
+    # separate raw GraphQL query keyed on commit oid.
+    # shellcheck disable=SC2016  # $o/$r/$n are GraphQL variables — literal on purpose
+    merge_oids=$("$GH" api graphql \
+        -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){commits(first:100){nodes{commit{oid parents{totalCount}}}}}}}' \
+        -f o="$owner" -f r="$repo" -F n="$PR" \
+        --jq '.data.repository.pullRequest.commits.nodes[] | select(.commit.parents.totalCount > 1) | .commit.oid' 2>/dev/null)
+
+    missing=$(printf '%s' "$commits_json" | jq -r --arg merges "$merge_oids" '
+        ($merges | split("\n") | map(select(length > 0))) as $m
+        | .[] | select((.oid // "") as $o | ($m | index($o)) == null)
+        | .messageHeadline
+    ' 2>/dev/null | grep -vE "$TICKET_PATTERN" || true)
     if [ -z "$missing" ]; then
         echo "[PASS] 6. every commit subject carries a ticket ID"
     else

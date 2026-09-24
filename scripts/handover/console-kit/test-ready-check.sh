@@ -51,6 +51,8 @@ case "$args" in
         printf '%s' "${STUB_ROLLUP:-[]}" ;;
     *"--json commits"*)
         printf '%s' "${STUB_COMMITS:-[]}" ;;
+    *"commits(first:100)"*)
+        printf '%s\n' "${STUB_MERGE_OIDS:-}" ;;
     *"api graphql"*)
         printf '%s %s %s\n' "${STUB_UNRESOLVED:-0}" "false" "null" ;;
     *"api --paginate"*"/files"*"filename"*)
@@ -86,6 +88,7 @@ run() {
         STUB_ROLLUP="${STUB_ROLLUP:-$GREEN_ROLLUP}" \
         STUB_UNRESOLVED="${STUB_UNRESOLVED:-0}" \
         STUB_COMMITS="${STUB_COMMITS:-$GREEN_COMMITS}" \
+        STUB_MERGE_OIDS="${STUB_MERGE_OIDS:-}" \
         STUB_FILES="${STUB_FILES:-$GREEN_FILES}" \
         STUB_FILES_FAIL="${STUB_FILES_FAIL:-}" \
         PATH="$PATH" GH_LOG="$GH_LOG" \
@@ -93,7 +96,7 @@ run() {
 }
 
 reset_stubs() {
-    unset STUB_HEAD STUB_MSS STUB_ROLLUP STUB_UNRESOLVED STUB_COMMITS STUB_FILES STUB_FILES_FAIL
+    unset STUB_HEAD STUB_MSS STUB_ROLLUP STUB_UNRESOLVED STUB_COMMITS STUB_MERGE_OIDS STUB_FILES STUB_FILES_FAIL
     seed_ledger_ok
 }
 
@@ -200,6 +203,31 @@ rc=0; out="$(run)" || rc=$?
 check "missing-ticket: exit 1" "$rc" "1"
 contains "missing-ticket: check 6 fails" "$out" "[FAIL] 6."
 contains "missing-ticket: names the offending subject" "$out" "tweak with no ticket"
+
+# --- 6b. HIMMEL-3586: a merge commit (>1 parent) is exempt from check 6,
+# even though its subject carries no ticket ID -------------------------
+reset_stubs
+MERGE_OID=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+STUB_FILES="docs/handover/running-a-console.md"
+STUB_COMMITS='[{"oid":"'"$MERGE_OID"'","messageHeadline":"Merge remote-tracking branch '"'"'origin/main'"'"' into fix/x","messageBody":""},{"oid":"1111111111111111111111111111111111111a","messageHeadline":"fix(x): [HIMMEL-1] tweak","messageBody":""}]'
+rc=0; out="$(run)" || rc=$?
+check "merge-commit unexempt (no STUB_MERGE_OIDS): exit 1" "$rc" "1"
+contains "merge-commit unexempt: check 6 fails at base" "$out" "[FAIL] 6."
+
+STUB_MERGE_OIDS="$MERGE_OID"
+rc=0; out="$(run)" || rc=$?
+check "merge-commit exempt: exit 0" "$rc" "0"
+contains "merge-commit exempt: check 6 passes" "$out" "[PASS] 6."
+
+# --- 6c. an unticketed NON-merge commit still fails check 6 even when a
+# merge commit is present elsewhere in the range ------------------------
+reset_stubs
+STUB_MERGE_OIDS="$MERGE_OID"
+STUB_COMMITS='[{"oid":"'"$MERGE_OID"'","messageHeadline":"Merge remote-tracking branch '"'"'origin/main'"'"' into fix/x","messageBody":""},{"oid":"1111111111111111111111111111111111111a","messageHeadline":"fix(x): tweak with no ticket","messageBody":"Platforms tested: linux\nSecurity reviewed: manual"}]'
+rc=0; out="$(run)" || rc=$?
+check "merge-plus-unticketed: exit 1" "$rc" "1"
+contains "merge-plus-unticketed: check 6 fails" "$out" "[FAIL] 6."
+contains "merge-plus-unticketed: names the offending subject, not the merge" "$out" "tweak with no ticket"
 
 # --- 7. HIMMEL-3533: TICKET_ID_PATTERN / JIRA_PROJECT_KEY must resolve from
 # ready-check.sh's OWN checkout, never the caller's CWD repo. Fixture mirrors
