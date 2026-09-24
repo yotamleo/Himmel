@@ -183,8 +183,11 @@ flat=${flat//[\'\"\\]/}
 # expanding nothing. Returns 0 (ST_OK=1) on success, 1 (ST_OK=0) on anything
 # it does not model — an unterminated quote, an unmatched `)`, `;;`, a
 # backtick inside double quotes inside backticks, a `${…}` beyond a bare
-# name, a redirect with no target, more than 16 KiB — and the caller then
-# falls back to its older, stricter text scan.
+# name, a redirect with no target, more than 8 KiB — and the caller then
+# falls back to its older, stricter text scan. The cap bounds the hooks'
+# worst case well inside run-hook-with-bash.js's 15 s member timeout (J1242):
+# every loop here and in the callers is linear and fork-free, so an 8 KiB
+# command tokenizes in a fraction of a second.
 #   ST_N        number of words
 #   ST_W[i]     word i with quotes and escapes removed, nothing expanded
 #   ST_Q[i]     1 when any byte of word i was quoted or escaped
@@ -211,7 +214,7 @@ st_tokenize() {
     ST_OK=0 ST_N=0 ST_NSEG=0 ST_SUBST=0 ST_HEREDOC=0 ST_ANSIC=0 ST_COMMENT=0
     ST_W=() ST_Q=() ST_X=() ST_G=() ST_A=() ST_S=() ST_RO=() ST_SEP=()
     n=${#s}
-    [ "$n" -le 16384 ] || return 1
+    [ "$n" -le 8192 ] || return 1
     i=0
     while [ "$i" -lt "$n" ]; do
         c=${s:i:1}
@@ -457,6 +460,19 @@ _st_heredocs() { # skip the bodies of every heredoc queued on the line just ende
         done
         hd_i=$((hd_i + 1))
     done
+}
+
+# st_lower STR — ST_LOWER is STR with A-Z folded to a-z (bytes, as `tr` does
+# in the C locale), without a fork: a fork per word is what made a padded
+# command outrun the runner's member timeout (J1242).
+# shellcheck disable=SC2034,SC2317,SC2329 # ST_LOWER is read by the caller; only block-edit calls it, the guard inlines the whole lib
+st_lower() {
+    local s="$1" u=ABCDEFGHIJKLMNOPQRSTUVWXYZ l=abcdefghijklmnopqrstuvwxyz i=0
+    while [ "$i" -lt 26 ]; do
+        s=${s//${u:i:1}/${l:i:1}}
+        i=$((i + 1))
+    done
+    ST_LOWER=$s
 }
 
 # st_sed_inert SCRIPT — 0 when SCRIPT is one sed command that can neither

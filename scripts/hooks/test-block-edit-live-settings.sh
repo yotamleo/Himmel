@@ -937,6 +937,62 @@ assert_rc "184 cat; X=\$(write) (command substitution) denies (control)" 2 \
 assert_rc "185 X=v; less \$X (assigned value reaches a less word) denies (control)" 2 \
     "$(bash_rc_of "$PRIMARY" "X=+!touch; less \$X .claude/settings.json")"
 
+# 186-190 (J1242 finding 1): the tokenizer path must stay bounded. A settings
+# write padded to just under the tokenizer's byte cap made the hook fork per
+# word and scan every word once per segment; past run-hook-with-bash.js's
+# 15 s member timeout the runner SKIPPED it (exit 1, non-blocking) and the
+# write went through. 186 is the judge's repro through the real runner, which
+# must block (exit 2). 187-190 time the hook alone on the padded shapes: each
+# must deny well inside the budget. HIMMEL-3546.
+now_ms() { node -e 'process.stdout.write(String(Date.now()))'; }
+rep() { local n=$1 out='' i=0; while [ "$i" -lt "$n" ]; do out=$out$2; i=$((i + 1)); done; printf '%s' "$out"; }
+pad_to() { # pad_to PREFIX FILLER SUFFIX BYTES — PREFIX FILLER… SUFFIX, about BYTES long
+    local n=$(( ($4 - ${#1} - ${#3}) / ${#2} ))
+    printf '%s%s%s' "$1" "$(rep "$n" "$2")" "$3"
+}
+TIMING_BUDGET_MS=5000
+if command -v node >/dev/null 2>&1; then
+    RUNNER="$(dirname "$HOOK")/run-hook-with-bash.js"
+    for sz in 8190 13600; do
+        J_CMD=$(pad_to '' 'x=y; ' 'cp /tmp/evil ~/.claude/settings.json' "$sz")
+        t0=$(now_ms)
+        jq -n --arg cmd "$J_CMD" --arg cwd "$PRIMARY" \
+            '{tool_name: "Bash", tool_input: {command: $cmd, cwd: $cwd}}' \
+            | env HOME="$FAKEHOME" node "$RUNNER" --chain "$HOOK" >/dev/null 2>&1
+        rc=$?
+        echo "  186/$sz timing: ${#J_CMD} bytes through the runner, $(( $(now_ms) - t0 )) ms"
+        assert_rc "186/$sz padded settings write through run-hook-with-bash --chain is blocked (J1242)" 2 "$rc"
+    done
+    timed_row() { # timed_row LABEL CMD — the hook alone must deny inside TIMING_BUDGET_MS
+        local t0 rc ms
+        t0=$(now_ms)
+        rc=$(bash_rc_of "$PRIMARY" "$2" HOME="$FAKEHOME")
+        ms=$(( $(now_ms) - t0 ))
+        echo "  $1 timing: ${#2} bytes, ${ms} ms"
+        assert_rc "$1 denies" 2 "$rc"
+        if [ "$ms" -lt "$TIMING_BUDGET_MS" ]; then
+            echo "PASS $1 within ${TIMING_BUDGET_MS} ms"
+        else
+            echo "FAIL $1 took ${ms} ms (budget ${TIMING_BUDGET_MS} ms)"
+            FAILED=$((FAILED + 1))
+        fi
+    }
+    # Each shape at just under the tokenizer's 8 KiB cap (the tokenized path)
+    # and at 16 KiB (over the cap: the older text scan, which must deny too).
+    for sz in 8190 16300; do
+        timed_row "187/$sz x=y; padding then cp into live settings" \
+            "$(pad_to '' 'x=y; ' 'cp /tmp/evil ~/.claude/settings.json' "$sz")"
+        timed_row "188/$sz sed -i on live settings + word padding" \
+            "$(pad_to 'sed -i s/a/b/ ~/.claude/settings.json ' 'a ' '' "$sz")" # gnu-ok: fixture text parsed by the hook, never executed
+        timed_row "189/$sz cat | cat… | tee into live settings" \
+            "$(pad_to 'cat ~/.claude/settings.json | ' 'cat | ' 'tee ~/.claude/settings.json' "$sz")"
+        timed_row "190/$sz tar list segments then tar extract into .claude" \
+            "$(pad_to '' 'tar -tf a.tar -C ~/.claude; ' 'tar -xf a.tar -C ~/.claude' "$sz")"
+    done
+else
+    echo "SKIP 186-190 (node not installed)"
+fi
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true

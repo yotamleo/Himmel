@@ -124,8 +124,11 @@ fi
 # expanding nothing. Returns 0 (ST_OK=1) on success, 1 (ST_OK=0) on anything
 # it does not model — an unterminated quote, an unmatched `)`, `;;`, a
 # backtick inside double quotes inside backticks, a `${…}` beyond a bare
-# name, a redirect with no target, more than 16 KiB — and the caller then
-# falls back to its older, stricter text scan.
+# name, a redirect with no target, more than 8 KiB — and the caller then
+# falls back to its older, stricter text scan. The cap bounds the hooks'
+# worst case well inside run-hook-with-bash.js's 15 s member timeout (J1242):
+# every loop here and in the callers is linear and fork-free, so an 8 KiB
+# command tokenizes in a fraction of a second.
 #   ST_N        number of words
 #   ST_W[i]     word i with quotes and escapes removed, nothing expanded
 #   ST_Q[i]     1 when any byte of word i was quoted or escaped
@@ -152,7 +155,7 @@ st_tokenize() {
     ST_OK=0 ST_N=0 ST_NSEG=0 ST_SUBST=0 ST_HEREDOC=0 ST_ANSIC=0 ST_COMMENT=0
     ST_W=() ST_Q=() ST_X=() ST_G=() ST_A=() ST_S=() ST_RO=() ST_SEP=()
     n=${#s}
-    [ "$n" -le 16384 ] || return 1
+    [ "$n" -le 8192 ] || return 1
     i=0
     while [ "$i" -lt "$n" ]; do
         c=${s:i:1}
@@ -398,6 +401,19 @@ _st_heredocs() { # skip the bodies of every heredoc queued on the line just ende
         done
         hd_i=$((hd_i + 1))
     done
+}
+
+# st_lower STR — ST_LOWER is STR with A-Z folded to a-z (bytes, as `tr` does
+# in the C locale), without a fork: a fork per word is what made a padded
+# command outrun the runner's member timeout (J1242).
+# shellcheck disable=SC2034,SC2317,SC2329 # ST_LOWER is read by the caller; only block-edit calls it, the guard inlines the whole lib
+st_lower() {
+    local s="$1" u=ABCDEFGHIJKLMNOPQRSTUVWXYZ l=abcdefghijklmnopqrstuvwxyz i=0
+    while [ "$i" -lt 26 ]; do
+        s=${s//${u:i:1}/${l:i:1}}
+        i=$((i + 1))
+    done
+    ST_LOWER=$s
 }
 
 # st_sed_inert SCRIPT — 0 when SCRIPT is one sed command that can neither
@@ -874,30 +890,6 @@ is_readonly_allowlisted() {
 # to the older whole-text scan (PowerShell always) or fails closed.
 TOK=0
 
-# _tok_seg_lc SEG — the words of segment SEG, joined by spaces, lowercased.
-_tok_seg_lc() {
-    local k=0 out=''
-    while [ "$k" -lt "$ST_N" ]; do
-        [ "${ST_S[k]}" != "$1" ] || out="$out ${ST_W[k]}"
-        k=$((k + 1))
-    done
-    printf '%s' "$out" | tr '[:upper:]' '[:lower:]'
-}
-
-# _tok_next_arg K — the first word after word K in the same segment that is
-# not a redirect target; empty (and rc 1) when there is none.
-_tok_next_arg() {
-    local k=$(($1 + 1))
-    while [ "$k" -lt "$ST_N" ] && [ "${ST_S[k]}" = "${ST_S[$1]}" ]; do
-        if [ -z "${ST_RO[k]}" ]; then
-            printf '%s' "${ST_W[k]}"
-            return 0
-        fi
-        k=$((k + 1))
-    done
-    return 1
-}
-
 # _tok_verb_write KIND REGEX — 0 (a candidate write) unless EVERY segment
 # whose text matches REGEX (the same lowercased verb pattern
 # has_write_verb_or_target_flag matched against the whole text) is accounted
@@ -915,41 +907,60 @@ _tok_next_arg() {
 # A match that no segment accounts for (it sat in a comment) is a write too,
 # as is TOK=0.
 _tok_verb_write() {
-    local kind=$1 re=$2 s=0 k txt base arg matched=0 found gre='(^|[^a-z0-9_])git([^a-z0-9_]|$)'
+    local kind=$1 re=$2 s k j sg arg matched=0 gre='(^|[^a-z0-9_])git([^a-z0-9_]|$)'
+    local -a segtxt segm found
     [ "$TOK" = 1 ] || return 0
+    # One pass each over the words and the segments, no fork (J1242): a
+    # per-segment rescan of every word made a padded command outrun the
+    # runner's member timeout, and the runner then skipped this hook.
+    k=0
+    while [ "$k" -lt "$ST_N" ]; do
+        sg=${ST_S[k]}
+        segtxt[sg]="${segtxt[sg]:-} ${ST_LW[k]}"
+        k=$((k + 1))
+    done
+    s=0
     while [ "$s" -lt "$ST_NSEG" ]; do
-        txt=$(_tok_seg_lc "$s")
-        if [[ $txt =~ $re ]]; then
+        segm[s]=0
+        if [[ ${segtxt[s]:-} =~ $re ]]; then
             matched=1
-            if [ "$kind" = checkout ]; then
-                if [[ $txt =~ $gre ]]; then return 0; fi
-            else
-                found=0
-                k=0
-                while [ "$k" -lt "$ST_N" ]; do
-                    if [ "${ST_S[k]}" = "$s" ] && [ -z "${ST_RO[k]}" ]; then
-                        base=$(printf '%s' "${ST_W[k]##*/}" | tr '[:upper:]' '[:lower:]')
-                        case "$kind:$base" in
-                            tar:tar|tar:gtar|tar:bsdtar)
-                                found=1
-                                arg=$(_tok_next_arg "$k") || return 0
-                                case "$arg" in -c*|-t*|--create|--list|[ct]*) ;; *) return 0 ;; esac
-                                ;;
-                            unzip:unzip)
-                                found=1
-                                arg=$(_tok_next_arg "$k") || return 0
-                                case "$arg" in -l*|-t*|-v*) ;; *) return 0 ;; esac
-                                ;;
-                        esac
-                    fi
-                    k=$((k + 1))
-                done
-                [ "$found" = 1 ] || return 0
-            fi
+            segm[s]=1
+            if [ "$kind" = checkout ] && [[ ${segtxt[s]:-} =~ $gre ]]; then return 0; fi
         fi
         s=$((s + 1))
     done
     [ "$matched" = 1 ] || return 0
+    [ "$kind" != checkout ] || return 1
+    k=0
+    while [ "$k" -lt "$ST_N" ]; do
+        sg=${ST_S[k]}
+        if [ "${segm[sg]}" = 1 ] && [ -z "${ST_RO[k]}" ]; then
+            case "$kind:${ST_LW[k]##*/}" in
+                tar:tar|tar:gtar|tar:bsdtar|unzip:unzip)
+                    found[sg]=1
+                    # its first argument: the next word in the segment that
+                    # is not a redirect target, case kept
+                    arg='' j=$((k + 1))
+                    while [ "$j" -lt "$ST_N" ] && [ "${ST_S[j]}" = "$sg" ]; do
+                        if [ -z "${ST_RO[j]}" ]; then arg=x${ST_W[j]}; break; fi
+                        j=$((j + 1))
+                    done
+                    [ -n "$arg" ] || return 0
+                    case "$kind:${arg#x}" in
+                        tar:-c*|tar:-t*|tar:--create|tar:--list|tar:[ct]*) ;;
+                        unzip:-l*|unzip:-t*|unzip:-v*) ;;
+                        *) return 0 ;;
+                    esac
+                    ;;
+            esac
+        fi
+        k=$((k + 1))
+    done
+    s=0
+    while [ "$s" -lt "$ST_NSEG" ]; do
+        if [ "${segm[s]}" = 1 ] && [ "${found[s]:-0}" != 1 ]; then return 0; fi
+        s=$((s + 1))
+    done
     return 1
 }
 
@@ -984,71 +995,88 @@ _tok_sensitive_name() {
 # `+!cmd`). The per-program option vetoes are the old ones plus rg --pre and
 # less `+…`.
 _tok_readonly_ok() {
-    local s=0 k first fk name w lw sub re='^[A-Za-z_][A-Za-z0-9_]*$'
+    local s k sg first fk name w lw sub re='^[A-Za-z_][A-Za-z0-9_]*$'
     [ "$ST_SUBST" = 0 ] || return 1
+    s=0
     while [ "$s" -lt "$ST_NSEG" ]; do
         case "${ST_SEP[s]}" in ';'|'&&'|'||'|'|'|nl|'') ;; *) return 1 ;; esac
-        first='' fk=-1
-        k=0
-        while [ "$k" -lt "$ST_N" ]; do
-            if [ "${ST_S[k]}" = "$s" ]; then
-                w=${ST_W[k]}
-                lw=$(printf '%s' "$w" | tr '[:upper:]' '[:lower:]')
-                case "$lw" in *tee*) return 1 ;; esac
-                if [ -n "${ST_RO[k]}" ]; then
-                    case "${ST_RO[k]}" in
-                        *'<>'*) return 1 ;;
-                        *'>&') case "$w" in [0-9]|-) [ "${ST_X[k]}" = 0 ] || return 1 ;; *) return 1 ;; esac ;;
-                        *'>'*) [ "$w" = /dev/null ] || return 1 ;;
-                    esac
-                elif [ "$fk" -lt 0 ] && [ "${ST_A[k]}" = 1 ]; then
-                    name=${w%%=*}
-                    [[ $name =~ $re ]] || return 1
-                    if _tok_sensitive_name "$name"; then return 1; fi
-                    if printenv "$name" >/dev/null 2>&1; then return 1; fi
-                    first=assign
-                elif [ "$fk" -lt 0 ]; then
-                    [ "$first" != assign ] || return 1
-                    [ "${ST_X[k]}" = 0 ] && [ "${ST_G[k]}" = 0 ] || return 1
-                    first=$lw fk=$k
-                fi
-            fi
-            k=$((k + 1))
-        done
-        if [ "$fk" -ge 0 ]; then
-            case "$first" in
-                cat|head|tail|grep|diff|wc|jq|rg|less|sed) ;;
-                git)
-                    sub=$(_tok_next_arg "$fk" | tr '[:upper:]' '[:lower:]') || return 1
-                    case "$sub" in diff|show|log|status|blame) ;; *) return 1 ;; esac
-                    ;;
-                *) return 1 ;;
-            esac
-            k=$((fk + 1))
-            while [ "$k" -lt "$ST_N" ]; do
-                if [ "${ST_S[k]}" = "$s" ] && [ -z "${ST_RO[k]}" ]; then
-                    case "$first" in
-                        less|git|rg|sed) [ "${ST_X[k]}" = 0 ] && [ "${ST_G[k]}" = 0 ] || return 1 ;;
-                    esac
-                    lw=$(printf '%s' "${ST_W[k]}" | tr '[:upper:]' '[:lower:]')
-                    case "$first:$lw" in
-                        # less: -o/-O (alone or in a cluster) and --log-file
-                        # log the input stream to a file; a `+` word runs a
-                        # less command at startup (`+!cmd`).
-                        less:-o*|less:-[!-]*o*|less:--log-file*|less:+*) return 1 ;;
-                        jq:-i*|jq:--in-place*) return 1 ;;
-                        # --output=<file> writes these subcommands' output.
-                        git:--output*) return 1 ;;
-                        rg:--pre*) return 1 ;;
-                    esac
-                fi
-                k=$((k + 1))
-            done
-            if [ "$first" = sed ]; then st_sed_args "$fk" 0 || return 1; fi
-        fi
         s=$((s + 1))
     done
+    # One pass over the words, no fork per word (J1242): a segment is judged
+    # when the next one starts, and the last one after the loop.
+    s=-1 first='' fk=-1 sub=''
+    k=0
+    while [ "$k" -lt "$ST_N" ]; do
+        sg=${ST_S[k]}
+        if [ "$sg" != "$s" ]; then
+            [ "$s" -lt 0 ] || _tok_ro_segment || return 1
+            s=$sg first='' fk=-1 sub=''
+        fi
+        w=${ST_W[k]}
+        lw=${ST_LW[k]}
+        case "$lw" in *tee*) return 1 ;; esac
+        if [ -n "${ST_RO[k]}" ]; then
+            case "${ST_RO[k]}" in
+                *'<>'*) return 1 ;;
+                *'>&') case "$w" in [0-9]|-) [ "${ST_X[k]}" = 0 ] || return 1 ;; *) return 1 ;; esac ;;
+                *'>'*) [ "$w" = /dev/null ] || return 1 ;;
+            esac
+        elif [ "$fk" -lt 0 ] && [ "${ST_A[k]}" = 1 ]; then
+            name=${w%%=*}
+            [[ $name =~ $re ]] || return 1
+            if _tok_sensitive_name "$name"; then return 1; fi
+            if _tok_exported "$name"; then return 1; fi
+            first=assign
+        elif [ "$fk" -lt 0 ]; then
+            [ "$first" != assign ] || return 1
+            [ "${ST_X[k]}" = 0 ] && [ "${ST_G[k]}" = 0 ] || return 1
+            first=$lw fk=$k
+        else
+            case "$first" in
+                less|git|rg|sed) [ "${ST_X[k]}" = 0 ] && [ "${ST_G[k]}" = 0 ] || return 1 ;;
+            esac
+            [ -n "$sub" ] || sub=x$lw
+            case "$first:$lw" in
+                # less: -o/-O (alone or in a cluster) and --log-file
+                # log the input stream to a file; a `+` word runs a
+                # less command at startup (`+!cmd`).
+                less:-o*|less:-[!-]*o*|less:--log-file*|less:+*) return 1 ;;
+                jq:-i*|jq:--in-place*) return 1 ;;
+                # --output=<file> writes these subcommands' output.
+                git:--output*) return 1 ;;
+                rg:--pre*) return 1 ;;
+            esac
+        fi
+        k=$((k + 1))
+    done
+    [ "$s" -lt 0 ] || _tok_ro_segment || return 1
     return 0
+}
+
+# _tok_ro_segment — the end of one segment, in _tok_readonly_ok's scope: its
+# command word, if any, is an allowlisted read; git's first argument (`sub`,
+# prefixed x) is a read-only subcommand; sed runs only inert scripts.
+_tok_ro_segment() {
+    [ "$fk" -ge 0 ] || return 0
+    case "$first" in
+        cat|head|tail|grep|diff|wc|jq|rg|less|sed) ;;
+        git)
+            case "$sub" in xdiff|xshow|xlog|xstatus|xblame) ;; *) return 1 ;; esac
+            ;;
+        *) return 1 ;;
+    esac
+    if [ "$first" = sed ]; then st_sed_args "$fk" 0 || return 1; fi
+    return 0
+}
+
+# _tok_exported NAME — NAME is in this hook's environment (what `printenv
+# NAME` answered), read from one `compgen -e` listing taken on first use
+# rather than a fork per assignment (J1242).
+_TOK_ENV=''
+_tok_exported() {
+    [ -n "$_TOK_ENV" ] || _TOK_ENV=$'\n'$(compgen -e)$'\n'
+    case "$_TOK_ENV" in *$'\n'"$1"$'\n'*) return 0 ;; esac
+    return 1
 }
 
 # mentions_dot_claude_dir_dest CMD_LC — the command names a `.claude`
@@ -1278,8 +1306,18 @@ cwd=$(printf '%s' "$input" | jq -r '.tool_input.cwd // .cwd // empty' 2>/dev/nul
 if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null || true)
     cmd_n=$cmd
-    if [ "$tool_name" = Bash ] && st_tokenize "$cmd" && [ "$ST_HEREDOC" = 0 ] && [ "$ST_ANSIC" = 0 ]; then
-        TOK=1
+    # ST_LW holds the lowercased words: the lowercased text tokenizes to the
+    # same words and segments (case never changes how bash splits), so a
+    # second pass over it costs no fork, where a `tr` per word did (J1242).
+    if [ "$tool_name" = Bash ]; then
+        st_lower "$cmd"
+        if st_tokenize "$ST_LOWER"; then
+            ST_LW=("${ST_W[@]}") lw_n=$ST_N lw_nseg=$ST_NSEG
+            if st_tokenize "$cmd" && [ "$ST_HEREDOC" = 0 ] && [ "$ST_ANSIC" = 0 ] \
+                && [ "$ST_N" = "$lw_n" ] && [ "$ST_NSEG" = "$lw_nseg" ]; then
+                TOK=1
+            fi
+        fi
     fi
     # The shell drops quotes and escapes inside a word (`c\p`, `c""p` and
     # `settings.js\on` all name what they spell without them), so every

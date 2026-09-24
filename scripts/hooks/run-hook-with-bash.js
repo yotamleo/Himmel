@@ -244,6 +244,9 @@ const MUST_RUN_CHAIN_MEMBERS = new Set([
   // HIMMEL-3383: fences the auto-allowed bare /pr-check scripts/cr literals; a
   // starved run would let a branch-edited reviewer run without the check.
   'guard-pr-check-literal.sh',
+  // HIMMEL-3546 (J1242): fences writes to the live settings files; a starved
+  // or overrun run was skipped (exit 1, non-blocking) and the write went through.
+  'block-edit-live-settings.sh',
   // HIMMEL-2526's destination-write fence, landing in a sibling PR. This set is
   // BASENAME-keyed and is consulted only when a member with that basename has
   // been starved of budget, so naming a file that does not exist yet is inert:

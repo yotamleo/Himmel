@@ -589,6 +589,7 @@ test('MUST_RUN_CHAIN_MEMBERS covers exactly the deny-capable security guards', (
     [
       'block-chokepoint-env-prefix.sh',
       'block-destructive-commands.sh',
+      'block-edit-live-settings.sh',
       'block-git-stash.sh',
       'block-jira-compound-write.sh',
       'block-read-secrets.sh',
