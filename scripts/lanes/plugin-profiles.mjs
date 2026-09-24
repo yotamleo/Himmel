@@ -439,11 +439,15 @@ export function anchorMergeRule(anchor) {
 }
 
 // The primary checkout that owns `dir` (its git common dir's parent), or null
-// when `dir` is not in a non-bare git checkout.
+// when `dir` is not in a non-bare git checkout. The repo-locating GIT_* vars
+// are dropped: git honours them over `-C`, so an inherited GIT_DIR or
+// GIT_COMMON_DIR would steer the anchor to another checkout's bytes.
 export function primaryCheckout(dir) {
+  const env = { ...process.env };
+  for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE']) delete env[key];
   try {
     const common = execFileSync('git', ['-C', dir, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
-      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env,
     }).trim();
     return basename(common) === '.git' ? dirname(common) : null;
   } catch {

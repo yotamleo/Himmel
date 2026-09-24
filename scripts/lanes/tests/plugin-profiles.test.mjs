@@ -1160,6 +1160,37 @@ test('HIMMEL-3567: primaryCheckout resolves a worktree to its primary checkout',
   assert.equal(PP.primaryCheckout(root), null);
 });
 
+// A caller's GIT_DIR / GIT_COMMON_DIR must not steer the anchor: git honours
+// them over `-C`, which would emit an allow rule for another checkout's
+// merge-on-green.sh (bytes the GO gate never vetted).
+for (const key of ['GIT_DIR', 'GIT_COMMON_DIR']) {
+  test(`HIMMEL-3567: primaryCheckout ignores an inherited ${key} pointing at another repo`, () => {
+    const { repo, wt } = primaryWithWorktree();
+    const { repo: evil } = primaryWithWorktree();
+    const saved = process.env[key];
+    process.env[key] = join(evil, '.git');
+    try {
+      assert.equal(PP.primaryCheckout(repo), repo);
+      assert.equal(PP.primaryCheckout(wt), repo);
+    } finally {
+      if (saved === undefined) delete process.env[key]; else process.env[key] = saved;
+    }
+  });
+
+  test(`HIMMEL-3567: CLI under an inherited ${key} still emits the real primary's merge literal`, () => {
+    const { root, repo, wt } = primaryWithWorktree();
+    const { repo: evil } = primaryWithWorktree();
+    const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'plugin-profiles.mjs');
+    const run = spawnSync(process.execPath, [cli, 'leg-impl'], {
+      encoding: 'utf8', cwd: wt, env: { ...process.env, HOME: root, USERPROFILE: root, HIMMEL_REPO: wt, [key]: join(evil, '.git') },
+    });
+    assert.equal(run.status, 0, run.stderr);
+    const { allow } = JSON.parse(run.stdout).permissions;
+    assert.ok(allow.includes(`Bash(bash ${repo}/scripts/handover/merge-on-green.sh:*)`), allow.join('\n'));
+    assert.ok(!allow.some((r) => r.includes(evil)), allow.join('\n'));
+  });
+}
+
 test('HIMMEL-3567: CLI run from a leg worktree emits the PRIMARY absolute merge literal, never the worktree', () => {
   const { root, repo, wt } = primaryWithWorktree();
   const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'plugin-profiles.mjs');
