@@ -160,7 +160,16 @@ case "$_ah_self" in
         _ah_is_anchor=0
         if [ "$_ah_root" -ef "$_ah_anchor" ]; then
             if [ "$_ah_via_git" -eq 1 ]; then
-                git -C "$_ah_anchor" ls-files --error-unmatch -- "$_ah_rel" >/dev/null 2>&1 && _ah_is_anchor=1
+                # -u GIT_INDEX_FILE joins the F4 scrub list here (HIMMEL-3437
+                # review round 2): this call reads the anchor's INDEX, not
+                # just its toplevel, so a caller-supplied GIT_INDEX_FILE (or
+                # GIT_DIR, which locates the default index) pointed at a
+                # crafted index that happens to track $_ah_rel made an
+                # orphaned worktree's copy pass this check exactly as an
+                # unset GIT_DIR made F4's rev-parse calls report the anchor
+                # as the toplevel - same fail-open class, this call just
+                # missed it.
+                env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE git -C "$_ah_anchor" ls-files --error-unmatch -- "$_ah_rel" >/dev/null 2>&1 && _ah_is_anchor=1
             else
                 _ah_is_anchor=1
             fi

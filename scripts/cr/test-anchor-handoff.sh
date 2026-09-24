@@ -197,5 +197,24 @@ cp "$DIR/anchor-handoff.sh" "$nested_removed/scripts/cr/anchor-handoff.sh"
 printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\necho "RAN:removed"\n' "$SOURCE_LINE" > "$nested_removed/scripts/cr/clear-cr-marker.sh"
 check "$(run "$nested_removed" "$anchor" scripts/cr/clear-cr-marker.sh | tr '\n' ' ')" "rc=2 " "T17 nested worktree with .git fully removed cannot fake anchor status via untracked ls-files"
 
+# 18/19 (HIMMEL-3437 review round 2). T17's fix trusts `git -C "$_ah_anchor"
+# ls-files` to answer for the ANCHOR's own index — but that call ran with
+# whatever GIT_DIR/GIT_INDEX_FILE the caller inherited still live, same class
+# F4 closed for the rev-parse calls. A crafted repo whose OWN index tracks
+# the orphan's relative path, pointed at via GIT_DIR (T18) or GIT_INDEX_FILE
+# alone (T19, no GIT_DIR — proves `-C "$_ah_anchor"` does not save it either),
+# makes ls-files answer "tracked" for the anchor even though the anchor's
+# real index does not track this untracked nested copy at all.
+fake="$tmp/fake_index"; mkdir -p "$fake/.claude/worktrees/nested_removed/scripts/cr"
+git init -q "$fake"
+touch "$fake/.claude/worktrees/nested_removed/scripts/cr/clear-cr-marker.sh"
+git -C "$fake" add -A
+run_index_override() {  # <cwd> <HIMMEL_REPO> <entry path> <extra env assignment...>
+    local cwd="$1" repo="$2" entry="$3"; shift 3
+    (cd "$cwd" && env -u CR_ANCHOR_HANDED_OFF HIMMEL_REPO="$repo" "$@" bash "$entry" 2>/dev/null; echo "rc=$?")
+}
+check "$(run_index_override "$nested_removed" "$anchor" scripts/cr/clear-cr-marker.sh "GIT_DIR=$fake/.git" | tr '\n' ' ')" "rc=2 " "T18 GIT_DIR pointed at a crafted index cannot fake the ls-files tracked-path check"
+check "$(run_index_override "$nested_removed" "$anchor" scripts/cr/clear-cr-marker.sh "GIT_INDEX_FILE=$fake/.git/index" | tr '\n' ' ')" "rc=2 " "T19 GIT_INDEX_FILE alone (no GIT_DIR) cannot fake the ls-files tracked-path check"
+
 echo "anchor-handoff: $pass passed, $([ "$fail" = 0 ] && echo 0 || echo some) failed"
 exit "$fail"
