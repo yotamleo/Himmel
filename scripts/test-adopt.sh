@@ -2204,6 +2204,7 @@ echo "ok: HIMMEL-3332 S4 user-scope gate copies record create + replace rows wit
 # [5/8] still removes/restores them from the manifest, not from these rows.
 p4gh="$work/p4-gh"; mkdir -p "$p4gh"
 HOME="$p4home" git -C "$p4gh" init -q
+mkdir -p "$p4gh/.git/hooks"
 printf '#!/bin/sh\necho adopter pre-commit\n' > "$p4gh/.git/hooks/pre-commit"; chmod +x "$p4gh/.git/hooks/pre-commit"
 p4gh_sha="$(prov_sha "$p4gh/.git/hooks/pre-commit")"
 p4ghled="$work/p4-gh-ledger"
