@@ -221,10 +221,16 @@ for f in "$H"/proj/scripts/*.sh "$H"/proj/scripts/hooks/*.sh "$H/.bashrc"; do
     [ -f "$f" ] || continue
     ok parse too-much "bash-n:$(rel "$f")" 'bash -n fails' bash -n "$f"
 done
-if command -v systemd-analyze >/dev/null 2>&1; then
-    ok parse too-much unit:mine.service 'systemd-analyze verify fails' systemd-analyze --user verify "$H/.config/systemd/user/mine.service"
-else
+if ! command -v systemd-analyze >/dev/null 2>&1; then
     check parse too-much SKIP unit:mine.service "no systemd-analyze"
+elif ! systemctl --user show-environment >/dev/null 2>&1; then
+    # HIMMEL-3059 S6b: a container with no live systemd --user session (the
+    # aur mode's build container, unlike a real VM guest) fails `verify` on
+    # "Failed to initialize manager", not a real unit defect -- gate on the
+    # manager being reachable at all, same posture as the binary-missing case.
+    check parse too-much SKIP unit:mine.service "no systemd --user manager"
+else
+    ok parse too-much unit:mine.service 'systemd-analyze verify fails' systemd-analyze --user verify "$H/.config/systemd/user/mine.service"
 fi
 
 # ============================================================ 5. execute

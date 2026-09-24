@@ -43,8 +43,22 @@ case "${1:-}" in
     *) exit 2 ;;
 esac
 EOF
-printf '#!/bin/sh\nexit 1\n' >"$FAKEBIN/systemctl"
-printf '#!/bin/sh\nexit 0\n' >"$FAKEBIN/systemd-analyze"
+# `--user show-environment` is the mine.service reachability gate
+# (HIMMEL-3059 S6b) -- everything else keeps the old unconditional exit 1
+# (e.g. `--user is-enabled`). FAKE_SYSTEMD_MANAGER_RC/FAKE_SYSTEMD_ANALYZE_RC
+# default to "no manager" so the suite's default world matches a bare
+# container with no systemd --user session, same as before this env gate
+# existed (systemd-analyze was never actually reached without it either --
+# nothing asserted on unit:mine.service's own verdict).
+cat >"$FAKEBIN/systemctl" <<'EOF'
+#!/usr/bin/env bash
+[ "$*" = "--user show-environment" ] && exit "${FAKE_SYSTEMD_MANAGER_RC:-1}"
+exit 1
+EOF
+cat >"$FAKEBIN/systemd-analyze" <<'EOF'
+#!/usr/bin/env bash
+exit "${FAKE_SYSTEMD_ANALYZE_RC:-0}"
+EOF
 chmod +x "$FAKEBIN"/*
 
 H="$WORK/home"
@@ -427,6 +441,23 @@ if [ "$RC" -eq 2 ] && grep -q "refusing: $H/.local/bin/qmd already exists" <<<"$
 fresh; rm -rf "$H"; mkdir -p "$H/.local/bin"; echo mine >"$H/.local/bin/qmd"
 seed core
 if [ "$RC" -eq 0 ]; then pass "seed (core) leaves an existing qmd alone"; else fail_case "seed (core) leaves an existing qmd alone (rc=$RC)"; fi
+
+# ---- 9. HIMMEL-3059 S6b: unit:mine.service only runs systemd-analyze --user
+# verify when a user systemd manager is actually reachable (a container with
+# no live session, e.g. the aur mode's archlinux:base-devel build, means
+# `systemd-analyze --user verify` fails on "Failed to initialize manager",
+# not a real unit defect -- confirmed against a real container, see the PR
+# body). A real VM with a session must still run the verify and still FAIL a
+# broken unit; this is the RED/negative control.
+fresh
+FAKE_SYSTEMD_MANAGER_RC=1 run_assert core 0
+has "no systemd --user manager: unit:mine.service is SKIPped" 'CHECK parse too-much SKIP unit:mine\.service — no systemd --user manager'
+fresh
+FAKE_SYSTEMD_MANAGER_RC=0 FAKE_SYSTEMD_ANALYZE_RC=1 run_assert core 0
+has "manager reachable + a failing verify: unit:mine.service still FAILs" 'CHECK parse too-much FAIL unit:mine\.service —'
+fresh
+FAKE_SYSTEMD_MANAGER_RC=0 FAKE_SYSTEMD_ANALYZE_RC=0 run_assert core 0
+has "manager reachable + a passing verify: unit:mine.service PASSes" 'CHECK parse too-much PASS unit:mine\.service —'
 
 echo
 if [ "$FAILED" -eq 0 ]; then echo "test-assert-provenance: all passed"; exit 0; fi
