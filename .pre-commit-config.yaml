@@ -100,6 +100,14 @@ repos:
         files: ^(docs/.*\.md|\.claude/commands/.*\.md|\.agents/skills/.*\.md|scripts/.*\.(sh|md)|CLAUDE\.md|README\.md|\.pre-commit-config\.yaml)$
         pass_filenames: false
 
+      - id: cr-terminology
+        name: CR means code review, not CodeRabbit
+        # HIMMEL-3561
+        entry: bash scripts/ci/check-cr-terminology.sh
+        language: system
+        files: ^(docs/.*\.(md|html)|\.claude/commands/.*\.md|marketplace/.*\.(md|html)|CLAUDE\.md|README\.md)$
+        pass_filenames: false
+
       - id: template-version
         name: template content change requires metadata.version bump (himmel-dev only)
         # HIMMEL-524
