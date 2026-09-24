@@ -68,7 +68,13 @@ case "$_ah_self" in
         _ah_name="$(basename "$_ah_self")"
         _ah_dir="$(cd "$(dirname "$_ah_self")" && pwd)"
         _ah_anchor="${HIMMEL_REPO:-}"
-        _ah_root="$(cd "$_ah_dir" && git rev-parse --show-toplevel 2>/dev/null)"
+        # -u GIT_DIR/GIT_WORK_TREE/GIT_COMMON_DIR (HIMMEL-3437 F4): a caller
+        # that inherits any of these pointed at the anchor makes git resolve
+        # the anchor as the toplevel regardless of $_ah_dir, so this copy
+        # would believe it was ALREADY the anchor and skip the hand-off,
+        # running its own (possibly branch) bytes under the anchor's name.
+        # cwd is the only trusted signal for "where does this file live".
+        _ah_root="$(cd "$_ah_dir" && env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR git rev-parse --show-toplevel 2>/dev/null)"
         _ah_prefix=""
         if [ -n "$_ah_root" ]; then
             # show-prefix is the path from the repo's toplevel down to cwd,
@@ -78,7 +84,15 @@ case "$_ah_self" in
             # string-subtraction this replaced (HIMMEL-3437 F1: a symlinked
             # worktree path made that subtraction a no-op, leaving _ah_rel
             # absolute instead of relative and breaking the hand-off).
-            _ah_prefix="$(cd "$_ah_dir" && git rev-parse --show-prefix 2>/dev/null)"
+            _ah_prefix="$(cd "$_ah_dir" && env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR git rev-parse --show-prefix 2>/dev/null)"
+            # Belt-and-suspenders on top of the -u fix above: the resolved
+            # root+prefix must actually reconstruct $_ah_dir. If some OTHER
+            # env var this fix doesn't know about ever steers git the same
+            # way, this still refuses to self-anchor on a mismatch instead
+            # of trusting a toplevel that doesn't point back at this file.
+            if ! [ "$_ah_dir" -ef "$_ah_root/$_ah_prefix" ]; then
+                _ah_root=""
+            fi
         fi
         if [ -z "$_ah_root" ] && [ -n "$_ah_anchor" ]; then
             # No git metadata under $_ah_dir (a non-repo test fixture, not a

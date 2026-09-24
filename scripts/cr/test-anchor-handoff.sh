@@ -161,5 +161,16 @@ printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\necho "RAN:corrupted"\n' "$SOU
 echo "gitdir: /nonexistent/path" > "$nested/.git"
 check "$(run "$nested" "$anchor" scripts/cr/clear-cr-marker.sh | tr '\n' ' ')" "rc=2 " "T15 corrupted nested worktree fails closed instead of self-anchoring (F2)"
 
+# 16 (HIMMEL-3437 F4). GIT_DIR / GIT_WORK_TREE pointed at the anchor from a
+# worktree must not let the resolver believe it is ALREADY the anchor: both
+# `git rev-parse` calls run under `cd "$_ah_dir"`, so an inherited GIT_DIR/
+# GIT_WORK_TREE (or GIT_COMMON_DIR) overrides cwd and reports the anchor as
+# the toplevel even though the sourcing file physically lives in the
+# worktree - the branch would then run unhanded-off, under the anchor's name.
+run_env_override() {  # <cwd> <HIMMEL_REPO> <entry path> <fake GIT_DIR/GIT_WORK_TREE root>
+    (cd "$1" && env -u CR_ANCHOR_HANDED_OFF HIMMEL_REPO="$2" GIT_DIR="$4/.git" GIT_WORK_TREE="$4" GIT_COMMON_DIR="$4/.git" bash "$3" 2>/dev/null; echo "rc=$?")
+}
+check "$(run_env_override "$wt" "$anchor" scripts/cr/clear-cr-marker.sh "$anchor" | tr '\n' ' ')" "RAN:anchor rc=0 " "T16 GIT_DIR/GIT_WORK_TREE override cannot fake anchor status (F4)"
+
 echo "anchor-handoff: $pass passed, $([ "$fail" = 0 ] && echo 0 || echo some) failed"
 exit "$fail"

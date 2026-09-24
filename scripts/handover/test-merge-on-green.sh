@@ -3123,11 +3123,11 @@ fi
 # this same ticket). Proven with the REAL, unmutated script — a fixture "wt"
 # tree's copy is mutated AFTER the hand-off line to prove which BYTES decided:
 # a real backdoor injected post-hand-off must never run when entered
-# relatively with HIMMEL_REPO pointing at a clean anchor. RED-at-base for this
-# exact fixture shape (case 0 below): a SYNTHETIC base-shaped copy — built
-# from scratch, never extracted from a historical ref, so it doesn't trip the
-# HIMMEL-3154 lint above — with no hand-off line to mutate after, so a
-# same-shaped backdoor right after `set -uo pipefail` runs unconditionally.
+# relatively with HIMMEL_REPO pointing at a clean anchor. RED-at-base for the
+# resolver anchor-handoff.sh itself replaces lives in scripts/cr/test-anchor-handoff.sh
+# T14/T15 (HIMMEL-3437 F1/F2) — a fixture built HERE that skipped sourcing the
+# real hand-off line entirely would only prove its own shape backdoors, not
+# exercise the code under test, so it is not duplicated in this file.
 mog3437_anchor="$(mktemp -d "${TMPDIR:-/tmp}/mog-3437-anchor.XXXXXX")" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
 mog3437_wt="$(mktemp -d "${TMPDIR:-/tmp}/mog-3437-wt.XXXXXX")" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
 mog_build_fixture "$mog3437_anchor"
@@ -3155,24 +3155,6 @@ mog3437_run() {  # <cwd> <HIMMEL_REPO-or-dash> <entry>
         (cd "$1" && env -u CR_ANCHOR_HANDED_OFF -u ARMAUTOMERGE HIMMEL_REPO="$2" bash "$3" 2>/dev/null; echo "rc=$?")
     fi
 }
-
-# 0. RED-at-base: a synthetic base-shaped copy (built here, never extracted
-# from a historical ref — the HIMMEL-3154 lint above forbids that) mirrors
-# the pre-3437 shape, which never sourced anchor-handoff.sh at all. Its own
-# backdoor must run unconditionally, proving HIMMEL_REPO had no effect before
-# this PR — the vulnerability case 1 below closes.
-mog3437_redbase_wt="$(mktemp -d "${TMPDIR:-/tmp}/mog-3437-redbase.XXXXXX")" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
-mkdir -p "$mog3437_redbase_wt/scripts/handover"
-git init -q "$mog3437_redbase_wt"
-printf '#!/usr/bin/env bash\nset -uo pipefail\necho "RAN:branch-backdoor"\nexit 0\n' > "$mog3437_redbase_wt/scripts/handover/merge-on-green.sh"
-chmod +x "$mog3437_redbase_wt/scripts/handover/merge-on-green.sh"
-mog3437_redbase_out="$(mog3437_run "$mog3437_redbase_wt" "$mog3437_anchor" scripts/handover/merge-on-green.sh)"
-if grepq "$mog3437_redbase_out" -F -e "RAN:branch-backdoor"; then
-    pass
-else
-    fail "3437: RED-at-base fixture did not demonstrate the pre-fix vulnerability (backdoor should run unconditionally, HIMMEL_REPO unread): $mog3437_redbase_out"
-fi
-rm -rf "$mog3437_redbase_wt"
 
 # 1. Relative entry from the mutated worktree hands off: the anchor's real,
 # unmutated script runs (this fixture's ARMAUTOMERGE is unset, so its real
