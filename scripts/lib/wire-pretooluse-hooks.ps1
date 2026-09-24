@@ -45,6 +45,15 @@ param(
 # its `$` would point every project-scope hook at a path that does not exist.
 # $rel, the hook BASENAME, gets no exemption: it is an ARGUMENT of the public
 # Set-SessionStartHook, not a hardcoded literal (CodeRabbit, PR #612).
+#
+# HIMMEL-3574: the command guards its own script path with `[ -f ]` before
+# invoking it -- a wired install/clone that gets deleted previously left the
+# hook exiting 127 on every event (a hook ERROR design forbids), failing open
+# invisibly. Per design (b): still exit 0 on a missing script, but warn on
+# stderr first, naming the path and how to fix it; a PRESENT script is
+# unaffected -- `bash "$p"` is the `if` branch's last command, so its exit
+# code (a deny included) passes through unchanged. Verbatim twin of the bash
+# lib's $WIRE_HOOK_CMD_JQ -- keep byte-identical.
 $WireHookCmdJq = @'
   def shesc($p):
     $p | split("\\") | join("\\\\")
@@ -52,8 +61,11 @@ $WireHookCmdJq = @'
        | split("$")  | join("\\$")
        | split("`")  | join("\\`");
   def hookcmd($pfx; $rel):
-    "bash \"" + (if $pfx == "$CLAUDE_PROJECT_DIR" then $pfx else shesc($pfx) end)
-    + "/scripts/hooks/" + shesc($rel) + "\"";
+    ((if $pfx == "$CLAUDE_PROJECT_DIR" then $pfx else shesc($pfx) end)
+      + "/scripts/hooks/" + shesc($rel)) as $p
+    | "if [ -f \"" + $p + "\" ]; then bash \"" + $p
+      + "\"; else echo \"himmel: hook script missing (" + $p
+      + ") -- re-run the install (himmelctl install) or unwire it (himmelctl uninstall)\" >&2; exit 0; fi";
 '@
 
 function Read-SettingsBase {

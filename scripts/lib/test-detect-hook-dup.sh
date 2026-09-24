@@ -57,6 +57,14 @@ printf '%s' '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"ba
 out=$(bash "$det" "$user" "$td/proj3/.claude/settings.json" "/opt/himmel" 2>&1)
 printf '%s' "$out" | grep -q "inject-initiative" && check "SC5 detects SessionStart dup" yes yes || check "SC5 detects SessionStart dup" no yes
 
+# ── SC5e: HIMMEL-3574 new wired-command shape (missing-script guard) is
+# still recognised as the same himmel hook, not just the old bare `bash "..."` ─
+mkdir -p "$td/proj4/.claude"
+printf '%s' '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"if [ -f \"/proj4/scripts/hooks/auto-approve-safe-bash.sh\" ]; then bash \"/proj4/scripts/hooks/auto-approve-safe-bash.sh\"; else echo \"himmel: hook script missing (/proj4/scripts/hooks/auto-approve-safe-bash.sh) -- re-run the install (himmelctl install) or unwire it (himmelctl uninstall)\" >&2; exit 0; fi"}]}]}}' > "$td/proj4/.claude/settings.json"
+out=$(bash "$det" "$user" "$td/proj4/.claude/settings.json" "/opt/himmel" 2>&1)
+printf '%s' "$out" | grep -q "wired at BOTH user and project scope" && check "SC5e new-shape warns on dup" yes yes || check "SC5e new-shape warns on dup" no yes
+printf '%s' "$out" | grep -q "auto-approve-safe-bash" && check "SC5e new-shape lists the dup hook" yes yes || check "SC5e new-shape lists the dup hook" no yes
+
 # ── SC11: benign double-fire — same hook, same input, twice → same decision ─
 aa="$repo_root/scripts/hooks/auto-approve-safe-bash.sh"
 brs="$repo_root/scripts/hooks/block-read-secrets.sh"

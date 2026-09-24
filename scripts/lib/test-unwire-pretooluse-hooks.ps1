@@ -83,5 +83,23 @@ $s8 = Join-Path $td 's8.json'; $fixture | Set-Content $s8 -Encoding utf8; $b8 = 
 Remove-PretooluseHooks -SettingsPath $s8 -DryRun | Out-Null
 Check 'dry-run no mutation' (Get-Content $s8 -Raw) $b8
 
+# 9. HIMMEL-3574: the new wired-command shape (missing-script guard) must
+# still unwire -- an existing install may carry either the old bare
+# `bash "..."` or the new `if [ -f "..." ]; then bash "..."; else ...; fi`.
+$newShapeFixture = '{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher":"Bash","hooks":[{"type":"command","command":"if [ -f \"C:/h/scripts/hooks/auto-approve-safe-bash.sh\" ]; then bash \"C:/h/scripts/hooks/auto-approve-safe-bash.sh\"; else echo \"himmel: hook script missing (C:/h/scripts/hooks/auto-approve-safe-bash.sh) -- re-run the install (himmelctl install) or unwire it (himmelctl uninstall)\" >&2; exit 0; fi"}]}
+    ],
+    "SessionStart": [
+      {"hooks":[{"type":"command","command":"if [ -f \"C:/h/scripts/hooks/inject-initiative.sh\" ]; then bash \"C:/h/scripts/hooks/inject-initiative.sh\"; else echo \"himmel: hook script missing (C:/h/scripts/hooks/inject-initiative.sh) -- re-run the install (himmelctl install) or unwire it (himmelctl uninstall)\" >&2; exit 0; fi"}]}
+    ]
+  }
+}'
+$s9 = Join-Path $td 's9.json'; $newShapeFixture | Set-Content $s9 -Encoding utf8
+Remove-PretooluseHooks -SettingsPath $s9 | Out-Null
+Check 'new shape: trio removed' (JqVal $s9 '[.hooks.PreToolUse[].hooks[].command | select(test("auto-approve-safe-bash"))] | length') '0'
+Check 'new shape: inject-initiative removed' (JqVal $s9 '[.hooks.SessionStart[].hooks[].command | select(test("inject-initiative"))] | length') '0'
+
 Remove-Item -Recurse -Force $td
 if ($fails -eq 0) { Write-Host 'ALL PASS' } else { Write-Host "$fails FAILED"; exit 1 }

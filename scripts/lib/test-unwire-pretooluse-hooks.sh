@@ -85,5 +85,30 @@ s8="$td/s8.json"; mk "$s8"; b8="$(cat "$s8")"
 bash "$unwire" "$s8" 1 >/dev/null
 check "dry-run no mutation" "$(cat "$s8")" "$b8"
 
+# 9. HIMMEL-3574: the wired command shape changed (a missing-script guard
+# wraps it, `if [ -f "..." ]; then bash "..."; else echo ...; exit 0; fi`)
+# but an EXISTING install still carries the OLD bare `bash "..."` shape.
+# unwire's match is a substring/regex test against `.command`, so both must
+# be recognised -- an installed-with-the-new-wirer trio/inject-initiative
+# must unwire exactly like an old one.
+s9="$td/s9.json"
+printf '%s' '{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher":"Bash","hooks":[{"type":"command","command":"if [ -f \"C:/h/scripts/hooks/auto-approve-safe-bash.sh\" ]; then bash \"C:/h/scripts/hooks/auto-approve-safe-bash.sh\"; else echo \"himmel: hook script missing (C:/h/scripts/hooks/auto-approve-safe-bash.sh) -- re-run the install (himmelctl install) or unwire it (himmelctl uninstall)\" >&2; exit 0; fi"}]},
+      {"matcher":"Edit|Write|MultiEdit|NotebookEdit","hooks":[{"type":"command","command":"if [ -f \"C:/h/scripts/hooks/block-edit-on-main.sh\" ]; then bash \"C:/h/scripts/hooks/block-edit-on-main.sh\"; else echo \"himmel: hook script missing (C:/h/scripts/hooks/block-edit-on-main.sh) -- re-run the install (himmelctl install) or unwire it (himmelctl uninstall)\" >&2; exit 0; fi"}]},
+      {"matcher":"Bash|PowerShell|Read|Grep","hooks":[{"type":"command","command":"if [ -f \"C:/h/scripts/hooks/block-read-secrets.sh\" ]; then bash \"C:/h/scripts/hooks/block-read-secrets.sh\"; else echo \"himmel: hook script missing (C:/h/scripts/hooks/block-read-secrets.sh) -- re-run the install (himmelctl install) or unwire it (himmelctl uninstall)\" >&2; exit 0; fi"}]}
+    ],
+    "SessionStart": [
+      {"hooks":[{"type":"command","command":"if [ -f \"C:/h/scripts/hooks/inject-initiative.sh\" ]; then bash \"C:/h/scripts/hooks/inject-initiative.sh\"; else echo \"himmel: hook script missing (C:/h/scripts/hooks/inject-initiative.sh) -- re-run the install (himmelctl install) or unwire it (himmelctl uninstall)\" >&2; exit 0; fi"}]}
+    ]
+  }
+}' > "$s9"
+bash "$unwire" "$s9" >/dev/null
+check "new shape: trio removed (auto-approve)" "$(jq -r '[.hooks.PreToolUse[].hooks[].command | select(test("auto-approve-safe-bash"))] | length' "$s9")" "0"
+check "new shape: trio removed (block-edit)"   "$(jq -r '[.hooks.PreToolUse[].hooks[].command | select(test("block-edit-on-main"))] | length' "$s9")" "0"
+check "new shape: trio removed (block-read)"   "$(jq -r '[.hooks.PreToolUse[].hooks[].command | select(test("block-read-secrets"))] | length' "$s9")" "0"
+check "new shape: inject-initiative removed"   "$(jq -r '[.hooks.SessionStart[].hooks[].command | select(test("inject-initiative"))] | length' "$s9")" "0"
+
 rm -rf "$td"
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

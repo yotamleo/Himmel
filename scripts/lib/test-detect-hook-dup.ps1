@@ -47,5 +47,14 @@ $proj3 = Join-Path $td 'proj3/.claude/settings.json'
 $out = & pwsh -NoProfile -File $det -UserSettings $user -ProjectSettings $proj3 -HimmelRoot '/opt/himmel' 2>&1 | Out-String
 Check 'SC5 detects SessionStart dup' ($out -match 'inject-initiative') $true
 
+# SC5e: HIMMEL-3574 new wired-command shape (missing-script guard) is still
+# recognised as the same himmel hook.
+New-Item -ItemType Directory -Force (Join-Path $td 'proj4/.claude') | Out-Null
+$proj4 = Join-Path $td 'proj4/.claude/settings.json'
+'{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"if [ -f \"/proj4/scripts/hooks/auto-approve-safe-bash.sh\" ]; then bash \"/proj4/scripts/hooks/auto-approve-safe-bash.sh\"; else echo \"himmel: hook script missing (/proj4/scripts/hooks/auto-approve-safe-bash.sh) -- re-run the install (himmelctl install) or unwire it (himmelctl uninstall)\" >&2; exit 0; fi"}]}]}}' | Set-Content $proj4 -Encoding utf8
+$out = & pwsh -NoProfile -File $det -UserSettings $user -ProjectSettings $proj4 -HimmelRoot '/opt/himmel' 2>&1 | Out-String
+Check 'SC5e new-shape warns on dup' ($out -match 'BOTH user and project scope') $true
+Check 'SC5e new-shape lists the dup hook' ($out -match 'auto-approve-safe-bash') $true
+
 Remove-Item -Recurse -Force $td
 if ($fails -eq 0) { Write-Host 'ALL PASS' } else { Write-Host "$fails FAILED"; exit 1 }

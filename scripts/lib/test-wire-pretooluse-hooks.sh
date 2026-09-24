@@ -10,6 +10,26 @@ wire="$here/wire-pretooluse-hooks.sh"
 fails=0
 check(){ [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
 
+# HIMMEL-3574: the wired command guards its own script with `[ -f ]` before
+# invoking it -- build the expected string the same way the lib does, so
+# these assertions don't hand-duplicate the shape.
+hookcmd_expect() {
+  local p="$1"
+  printf 'if [ -f "%s" ]; then bash "%s"; else echo "himmel: hook script missing (%s) -- re-run the install (himmelctl install) or unwire it (himmelctl uninstall)" >&2; exit 0; fi' "$p" "$p" "$p"
+}
+# Same shell-escaping as the jq lib's shesc() (order matters: backslash first).
+shesc() {
+  local s="$1"
+  s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//\$/\\\$}"; s="${s//\`/\\\`}"
+  printf '%s' "$s"
+}
+hookcmd_expect_escaped() { hookcmd_expect "$(shesc "$1")"; }
+# The runtime warning a missing-script path emits, in the shell's UN-escaped
+# form -- what a real shell round-trip resolves the escaped command back to.
+warn_expect() {
+  printf 'himmel: hook script missing (%s) -- re-run the install (himmelctl install) or unwire it (himmelctl uninstall)' "$1"
+}
+
 td="$(mktemp -d)"
 # HIMMEL-3332: the wire writes provenance rows; keep them out of the real ~/.himmel.
 export HIMMEL_PROVENANCE_DIR="$td/prov"
@@ -18,19 +38,19 @@ export HIMMEL_PROVENANCE_DIR="$td/prov"
 s1="$td/s1.json"
 bash "$wire" "$s1" "C:/himmel" >/dev/null
 check "3 PreToolUse stanzas"      "$(jq '.hooks.PreToolUse | length' "$s1")" "3"
-check "auto-approve quoted path"  "$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$s1")" 'bash "C:/himmel/scripts/hooks/auto-approve-safe-bash.sh"'
+check "auto-approve quoted path"  "$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$s1")" "$(hookcmd_expect 'C:/himmel/scripts/hooks/auto-approve-safe-bash.sh')"
 
 # 2. backslash prefix -> forward-slashed in the command.
 s2="$td/s2.json"
 bash "$wire" "$s2" 'C:\Users\me\himmel' >/dev/null
-check "backslash forward-slashed" "$(jq -r '.hooks.PreToolUse[1].hooks[0].command' "$s2")" 'bash "C:/Users/me/himmel/scripts/hooks/block-edit-on-main.sh"'
+check "backslash forward-slashed" "$(jq -r '.hooks.PreToolUse[1].hooks[0].command' "$s2")" "$(hookcmd_expect 'C:/Users/me/himmel/scripts/hooks/block-edit-on-main.sh')"
 
 # 3. SC8 dedup-by-basename across a CLONE-PATH change -> still exactly 3, new path.
 s3="$td/s3.json"
 bash "$wire" "$s3" "C:/old/himmel" >/dev/null
 bash "$wire" "$s3" "C:/new/himmel" >/dev/null
 check "clone-path change: still 3"   "$(jq '.hooks.PreToolUse | length' "$s3")" "3"
-check "clone-path change: new path"  "$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$s3")" 'bash "C:/new/himmel/scripts/hooks/auto-approve-safe-bash.sh"'
+check "clone-path change: new path"  "$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$s3")" "$(hookcmd_expect 'C:/new/himmel/scripts/hooks/auto-approve-safe-bash.sh')"
 
 # 4. rtk-hook-guard / non-himmel hook in the SAME Bash stanza is preserved.
 s4="$td/s4.json"
@@ -51,7 +71,7 @@ check "inject-initiative added"    "$(jq -r '[.hooks.SessionStart[].hooks[].comm
 # 6. SessionStart idempotent across re-run with changed clone path -> single object.
 ( . "$wire"; wire_sessionstart_hook "$s5" "C:/moved/himmel" "inject-initiative.sh" 0 >/dev/null )
 check "inject-initiative dedup"    "$(jq -r '[.hooks.SessionStart[].hooks[].command | select(test("inject-initiative"))] | length' "$s5")" "1"
-check "inject-initiative new path" "$(jq -r '[.hooks.SessionStart[].hooks[].command | select(test("inject-initiative"))][0]' "$s5")" 'bash "C:/moved/himmel/scripts/hooks/inject-initiative.sh"'
+check "inject-initiative new path" "$(jq -r '[.hooks.SessionStart[].hooks[].command | select(test("inject-initiative"))][0]' "$s5")" "$(hookcmd_expect 'C:/moved/himmel/scripts/hooks/inject-initiative.sh')"
 
 # 7. SessionStart with no prior stanza -> creates a standalone one.
 s7="$td/s7.json"
@@ -138,11 +158,12 @@ check "quote in prefix: block still wired" "$(jq -r '.hooks.PreToolUse | length'
 cmd8f=$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$s8f" 2>/dev/null)
 if bash -n -c "$cmd8f" 2>/dev/null; then echo "ok - quote in prefix: command parses as shell"
 else echo "FAIL - quote in prefix: command does not parse as shell: [$cmd8f]"; fails=$((fails+1)); fi
-# `${cmd8f#bash }` is the quoted path exactly as written; printf echoes what
-# the shell actually resolved it to -- no eval of the hook itself.
+# HIMMEL-3574: the command now guards itself with `[ -f ]`; the script at
+# this path does not exist, so running it FOR REAL takes the `else` branch
+# and echoes the path back out -- the same round-trip proof, one layer later.
 check "quote in prefix: path round-trips through the shell" \
-  "$(bash -c "printf '%s\n' ${cmd8f#bash }" 2>/dev/null)" \
-  '/opt/we"ird/clone/scripts/hooks/auto-approve-safe-bash.sh'
+  "$(bash -c "$cmd8f" 2>&1 1>/dev/null)" \
+  "$(warn_expect '/opt/we"ird/clone/scripts/hooks/auto-approve-safe-bash.sh')"
 # ...and the SessionStart composer, which builds its command the same way.
 s8f2="$td/s8f2.json"
 ( . "$wire"; wire_sessionstart_hook "$s8f2" '/opt/we"ird/clone' "inject-initiative.sh" 0 >/dev/null 2>&1 ) || true
@@ -150,8 +171,8 @@ cmd8f2=$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$s8f2" 2>/dev/null)
 if bash -n -c "$cmd8f2" 2>/dev/null; then echo "ok - quote in prefix: SessionStart command parses as shell"
 else echo "FAIL - quote in prefix: SessionStart command does not parse as shell: [$cmd8f2]"; fails=$((fails+1)); fi
 check "quote in prefix: SessionStart path round-trips" \
-  "$(bash -c "printf '%s\n' ${cmd8f2#bash }" 2>/dev/null)" \
-  '/opt/we"ird/clone/scripts/hooks/inject-initiative.sh'
+  "$(bash -c "$cmd8f2" 2>&1 1>/dev/null)" \
+  "$(warn_expect '/opt/we"ird/clone/scripts/hooks/inject-initiative.sh')"
 
 # 8f2. CodeRabbit on PR #612: the hook BASENAME goes through the same escaper.
 # It is an ARGUMENT of wire_sessionstart_hook (and of the --sessionstart CLI),
@@ -163,8 +184,8 @@ cmd8f3=$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$s8f3" 2>/dev/null)
 if bash -n -c "$cmd8f3" 2>/dev/null; then echo "ok - quote in basename: command parses as shell"
 else echo "FAIL - quote in basename: command does not parse as shell: [$cmd8f3]"; fails=$((fails+1)); fi
 check "quote in basename: path round-trips through the shell" \
-  "$(bash -c "printf '%s\n' ${cmd8f3#bash }" 2>/dev/null)" \
-  'C:/himmel/scripts/hooks/we"ird-hook.sh'
+  "$(bash -c "$cmd8f3" 2>&1 1>/dev/null)" \
+  "$(warn_expect 'C:/himmel/scripts/hooks/we"ird-hook.sh')"
 # ...and the DEDUP test must still recognise the command it just wrote (CR
 # round 3, [codex-1]). Escaping the basename without re-deriving the needle
 # from the same escaped string left the pattern unable to match its own
@@ -175,7 +196,7 @@ check "quote in basename: re-wire dedups (no double-wire)" \
   "$(jq -r '[.hooks.SessionStart[].hooks[]] | length' "$s8f3" 2>/dev/null)" "1"
 check "quote in basename: re-wire repoints at the new clone path" \
   "$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$s8f3" 2>/dev/null)" \
-  'bash "C:/moved/scripts/hooks/we\"ird-hook.sh"'
+  "$(hookcmd_expect_escaped 'C:/moved/scripts/hooks/we"ird-hook.sh')"
 
 # 8f4. HIMMEL-2913: an entry wired by a PREVIOUS release carries the RAW
 # (unescaped) basename in its command -- shesc() on the basename postdates
@@ -191,7 +212,7 @@ check "legacy raw basename: dedup replaces, not appends" \
   "$(jq -r '[.hooks.SessionStart[].hooks[]] | length' "$s8f4" 2>/dev/null)" "1"
 check "legacy raw basename: repointed to the escaped command" \
   "$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$s8f4" 2>/dev/null)" \
-  'bash "C:/himmel/scripts/hooks/we\"ird-hook.sh"'
+  "$(hookcmd_expect_escaped 'C:/himmel/scripts/hooks/we"ird-hook.sh')"
 
 # 8g. NEGATIVE control for 8f (load-bearing): the project-scope prefix is the
 # LITERAL, unexpanded `$CLAUDE_PROJECT_DIR` -- Claude Code expands it at
@@ -203,14 +224,14 @@ bash "$wire" "$s8g" '$CLAUDE_PROJECT_DIR' >/dev/null
 # shellcheck disable=SC2016  # the literal, UNEXPANDED $CLAUDE_PROJECT_DIR is the assertion
 check "project scope: unexpanded \$CLAUDE_PROJECT_DIR kept verbatim" \
   "$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$s8g")" \
-  'bash "$CLAUDE_PROJECT_DIR/scripts/hooks/auto-approve-safe-bash.sh"'
+  "$(hookcmd_expect '$CLAUDE_PROJECT_DIR/scripts/hooks/auto-approve-safe-bash.sh')"
 s8g2="$td/s8g2.json"
 # shellcheck disable=SC2016  # the literal, UNEXPANDED $CLAUDE_PROJECT_DIR is the assertion
 ( . "$wire"; wire_sessionstart_hook "$s8g2" '$CLAUDE_PROJECT_DIR' "inject-initiative.sh" 0 >/dev/null )
 # shellcheck disable=SC2016  # the literal, UNEXPANDED $CLAUDE_PROJECT_DIR is the assertion
 check "project scope: SessionStart keeps the literal too" \
   "$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$s8g2")" \
-  'bash "$CLAUDE_PROJECT_DIR/scripts/hooks/inject-initiative.sh"'
+  "$(hookcmd_expect '$CLAUDE_PROJECT_DIR/scripts/hooks/inject-initiative.sh')"
 
 # 9. invalid JSON -> refused, file unchanged.
 s9="$td/s9.json"
@@ -221,6 +242,17 @@ else
   echo "ok - refuses invalid JSON"
 fi
 check "invalid file unchanged" "$(cat "$s9")" "nope {"
+
+# 10. HIMMEL-3574: the wired script itself is gone (deleted prefix / clone) --
+# running the wired command must warn on stderr and exit 0, never a silent
+# exit 127 "hook error". RED on the pre-fix lib: the command is a bare
+# `bash "<missing path>"`, which exits 127 and prints no himmel-authored line.
+s10="$td/s10.json"
+bash "$wire" "$s10" "$td/gone-clone" >/dev/null
+cmd10=$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$s10")
+out10=$(bash -c "$cmd10" 2>&1 1>/dev/null); rc10=$?
+check "missing script: exits 0" "$rc10" "0"
+check "missing script: warns on stderr" "$out10" "$(warn_expect "$td/gone-clone/scripts/hooks/auto-approve-safe-bash.sh")"
 
 rm -rf "$td"
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

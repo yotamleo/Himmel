@@ -81,9 +81,19 @@ WIRE_HOOK_CMD_JQ='
        | split("\"") | join("\\\"")
        | split("$")  | join("\\$")
        | split("`")  | join("\\`");
+  # HIMMEL-3574: a wired hook whose script no longer exists (a deleted clone
+  # or install prefix) must not exit 127 -- that surfaces as an invisible
+  # hook ERROR (design SS4.3 rules it out). Guard the invocation with
+  # `[ -f ]`: script present -> unchanged behaviour and exit code (a deny
+  # still denies, since `bash "$p"` is the `then` branchs last command);
+  # script missing -> one stderr line naming it, then exit 0 (fails open,
+  # but visibly). `if`/`fi` keeps this bash-3.2 / Git-Bash portable.
   def hookcmd($pfx; $rel):
-    "bash \"" + (if $pfx == "$CLAUDE_PROJECT_DIR" then $pfx else shesc($pfx) end)
-    + "/scripts/hooks/" + shesc($rel) + "\"";
+    ((if $pfx == "$CLAUDE_PROJECT_DIR" then $pfx else shesc($pfx) end)
+      + "/scripts/hooks/" + shesc($rel)) as $p
+    | "if [ -f \"" + $p + "\" ]; then bash \"" + $p
+      + "\"; else echo \"himmel: hook script missing (" + $p
+      + ") -- re-run the install (himmelctl install) or unwire it (himmelctl uninstall)\" >&2; exit 0; fi";
 '
 
 # The merge program, shared verbatim with the PowerShell twin
