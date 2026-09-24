@@ -92,12 +92,17 @@
 # Known limitations:
 #   - Arm (g) (HIMMEL-3401, git subcommands that rewrite a protected
 #     checkout — see its own header for the allowlist + the pull/fetch
-#     carve-out) targets the repo a git command is AIMED at. Writes that land
-#     in the primary's SHARED common dir from a LINKED worktree's cwd are not
-#     modelled: `git config`/`remote set-url`/`branch -u` (shared
-#     $GIT_COMMON_DIR/config) and `update-ref`/`symbolic-ref` on
-#     refs/heads/main (the ref the primary's HEAD names). Named residual,
-#     follow-up HIMMEL-3407.
+#     carve-out) targets the repo a git command is AIMED at, which for a
+#     write run from a LINKED worktree's own cwd (no -C) is the worktree's
+#     OWN root — a legitimate feature checkout that allows, even though
+#     `config`/`remote` writes, `branch -u|-f`, and `update-ref`/
+#     `symbolic-ref` on refs/heads/main|master land in the primary's SHARED
+#     $GIT_COMMON_DIR. HIMMEL-3407 closes this for exactly those shapes by
+#     also checking the target's owning primary checkout
+#     (_bwimc_git_check_common_owner). Still unmodelled: `tag`/`reflog
+#     expire|delete` writes and any other branch create/delete/rename from a
+#     linked worktree's own cwd, and a remote repoint made by an earlier,
+#     separate command (see the arm's own header, below).
 #   - Command-text scanning, not a shell parser. A verb displaced from
 #     command position (env-prefix, sudo/xargs/timeout wrappers) is missed,
 #     same residual as block-terminal-write-fence.sh's class (a). The `tee`
@@ -1426,6 +1431,18 @@ done < <(_bwimc_split_clauses "$_bwimc_hb")
 # Env assignments are read from the clause prefix (`GIT_DIR=… git`, `env
 # GIT_DIR=… git`) and from an earlier `export` in the same command.
 #
+# COMMON-DIR OWNER (HIMMEL-3407): the TARGETS above are resolved to their own
+# repo root, which for a LINKED worktree's own cwd (no -C/--git-dir pointed
+# elsewhere) is the worktree itself — a legitimate feature checkout that
+# ALLOWS, even though a `config`/`remote` write, `branch -u|-f`, or
+# `update-ref`/`symbolic-ref` on refs/heads/main|master lands in the
+# worktree's SHARED $GIT_COMMON_DIR, which the PRIMARY checkout also reads.
+# For exactly those subcommands/flags, the target's OWNING primary checkout
+# (`primary_checkout_root`; a no-op for an ordinary non-worktree repo) is
+# checked too (`_bwimc_git_check_common_owner`) — so a leg cwd'd into its own
+# worktree can no longer repoint the primary's upstream/HEAD-tracked refs by
+# omitting `-C <primary>`.
+#
 # CARVE-OUT (the console's wrap flow, `git -C <primary> pull --ff-only` +
 # `fetch`), shape-bounded so it cannot be steered at a leg's commits:
 #   pull  — read only with `--ff-only`, flags from a closed list (no
@@ -1456,8 +1473,11 @@ done < <(_bwimc_split_clauses "$_bwimc_hb")
 # to have run, and a write is ALSO checked from every cwd a cd left, so
 # `false && cd <leg>; git merge x` from the primary is still caught; the cost
 # is that `cd <leg> && git merge x` typed from the primary is denied too.
-# Shared-ref writes (tag, reflog expire, update-ref) are equally reachable
-# from the leg's own worktree: that residual is HIMMEL-3407. `git -c alias.x=…` and repo-level
+# Shared-ref writes from the leg's own worktree (no -C) are checked against
+# the common dir's owning primary for `config`/`remote`/`branch -u|-f`/
+# `update-ref`/`symbolic-ref` on refs/heads/main|master (HIMMEL-3407, above);
+# `tag`, `reflog expire|delete`, and any other branch create/delete/rename are
+# still reachable that way — narrower residual, same ticket. `git -c alias.x=…` and repo-level
 # hooks are code execution in the leg's own process, not a primary-state
 # write, and are out of scope. `worktree move|remove` of the primary is left
 # to git itself, which refuses to move or remove a main working tree.
@@ -1826,6 +1846,26 @@ _bwimc_git_check_path() {
     fi
 }
 
+# _bwimc_git_check_common_owner DIR LABEL — HIMMEL-3407. `config`/`remote`
+# writes, `branch -u|-f`, and `update-ref`/`symbolic-ref` on
+# refs/heads/main|master land in $GIT_COMMON_DIR, which is SHARED by every
+# worktree of one repository. Run from a LINKED worktree's own cwd (no `-C`),
+# DIR is the worktree itself — repo_root_for_path resolves to the worktree's
+# OWN root, a legitimate feature checkout, so _bwimc_git_check_path on DIR
+# alone ALLOWS even though the file these subcommands actually write
+# ($GIT_COMMON_DIR/config, or a shared ref) lives in the PRIMARY's git
+# directory. primary_checkout_root(DIR) resolves that owning checkout — for
+# an ordinary, non-worktree repo it is a no-op (returns DIR's own root, git-dir
+# == common-dir there), so calling this unconditionally never changes the
+# verdict for a plain checkout; it only adds a second, correct target for a
+# linked worktree.
+_bwimc_git_check_common_owner() {
+    local dir="$1" label="$2" owner
+    owner=$(primary_checkout_root "$dir" 2>/dev/null) || return 0
+    [ -n "$owner" ] || return 0
+    _bwimc_git_check_path "$owner" "$label"
+}
+
 # _bwimc_git_clause CLAUSE_SP — per-clause state machine for arm (g). Reads
 # and updates the command-wide _bwimc_gcwd / _bwimc_gcwd_unres /
 # _bwimc_genv_* globals; must be called as a plain statement (never `$(…)`).
@@ -2084,12 +2124,54 @@ _bwimc_git_clause() {
     if [ "$unres" = 1 ]; then
         _bwimc_deny "unresolved-git-target" "$1" "$dir" ""
     fi
+    local gtarget
     if [ -n "$gitdir" ]; then
         r=$(_bwimc_resolve_abs "$gitdir" "$dir") || _bwimc_deny "unresolved-git-target" "$gitdir" "$dir" ""
         _bwimc_git_check_path "$r" "git-dir $gitdir"
+        gtarget="$r"
     else
         _bwimc_git_check_path "$dir" "repo $dir"
+        gtarget="$dir"
     fi
+    # HIMMEL-3407: config/remote writes, branch -u|-f, and update-ref/
+    # symbolic-ref on refs/heads/main|master ALSO get checked against the
+    # target's owning PRIMARY checkout (see _bwimc_git_check_common_owner) —
+    # closing the gap where the target IS a linked worktree, whose own repo
+    # root looks like an ordinary feature checkout and allows, while the
+    # subcommand actually writes the shared $GIT_COMMON_DIR the worktree and
+    # its primary both point at.
+    case "$sub" in
+        config|remote)
+            _bwimc_git_check_common_owner "$gtarget" "$sub clause $1"
+            ;;
+        branch)
+            for v in ${args[@]+"${args[@]}"}; do
+                case "$v" in
+                    -u|--set-upstream-to|--set-upstream-to=*|--set-upstream|-f|--force)
+                        _bwimc_git_check_common_owner "$gtarget" "branch clause $1"
+                        break ;;
+                    --*) ;;
+                    -*)
+                        if _bwimc_short_has "$v" uf; then
+                            _bwimc_git_check_common_owner "$gtarget" "branch clause $1"
+                            break
+                        fi ;;
+                esac
+            done
+            ;;
+        update-ref|symbolic-ref)
+            for v in ${args[@]+"${args[@]}"}; do
+                case "$v" in
+                    -*) continue ;;
+                esac
+                case "$v" in
+                    refs/heads/main|refs/heads/master)
+                        _bwimc_git_check_common_owner "$gtarget" "$sub clause $1" ;;
+                esac
+                break
+            done
+            ;;
+    esac
     if [ -n "$wtree" ]; then
         r=$(_bwimc_resolve_abs "$wtree" "$dir") || _bwimc_deny "unresolved-git-target" "$wtree" "$dir" ""
         _bwimc_git_check_path "$r" "work-tree $wtree"

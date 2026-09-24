@@ -302,7 +302,14 @@ deny "pull -c remote.x.url"                 "$W" "git -c remote.x.url=$P pull x"
 deny "ls-remote -c remote.x.url"            "$W" "git -c remote.x.url=$P ls-remote x"
 deny_direct "remote update -c url.insteadOf" "$W" "git -c url.$P.insteadOf=fake: remote update"
 allow_direct "push -c advice.*=false origin" "$W" "git -c advice.pushUpdateRejected=false push origin feat/x"
-allow_direct "remote add alone"             "$W" "git remote add up https://example.invalid/r.git"
+# "remote add alone" used to be allow_direct here (this row only ever
+# validated that the C1-a repoint+netop COMBO doesn't fire without a paired
+# push — it never claimed the sourced/fence lane's own, unrelated verdict).
+# HIMMEL-3407 now denies it too: adding ANY remote, even a harmless new name,
+# still writes the leg worktree's SHARED $GIT_COMMON_DIR/config, and the
+# existing -C <primary> rows already deny `remote add` unconditionally — the
+# implicit-cwd form should not be a back door to the same write.
+deny_direct "remote add alone"              "$W" "git remote add up https://example.invalid/r.git"
 allow "remote -v"                           "$W" "git remote -v"
 allow "fetch -c advice.*=false origin"      "$W" "git -c advice.detachedHead=false fetch origin"
 
@@ -350,8 +357,11 @@ allow "cd <primary> && git log"             "$W" "cd $P && git log -1"
 allow "cd <primary> && git -C <wt> checkout" "$W" "cd $P && git -C $W checkout feat/x -- README.md"
 
 echo "== ALLOW: leg-local git is unaffected =="
+# "config core.x y" used to be ALLOW here; HIMMEL-3407 moved it to the DENY
+# section below (an ordinary `git config` from a leg worktree always writes
+# the shared config anyway — accepted cost, named in the ticket's proposed fix).
 for sub in "checkout feat/x -- README.md" "reset --hard HEAD" "merge main" "stash pop" "commit -m x" \
-           "restore README.md" "rebase main" "pull --rebase" "config core.x y" "co x"; do
+           "restore README.md" "rebase main" "pull --rebase" "co x"; do
     allow "git $sub (cwd = leg worktree)" "$W" "git $sub"
 done
 allow "git -C <wt> checkout (cwd = primary)" "$P" "git -C $W checkout feat/x -- README.md"
@@ -380,6 +390,36 @@ allow "remote -v show origin"               "$W" "git -C $P remote -v show origi
 allow "GIT_WORK_TREE=<wt> git checkout"     "$W" "GIT_WORK_TREE=$W git checkout feat/x -- README.md"
 allow "single-writer repo: checkout"        "$W" "git -C $S checkout 0123abc"
 allow "single-writer repo: cwd + merge"     "$S" "git merge x"
+
+echo "== DENY: HIMMEL-3407 — config/remote/branch-upstream/main-ref writes from a LEG'S OWN cwd (no -C) reach the primary's shared common dir =="
+# The gap this ticket names: the git arm judges the leg's own repo root, and a
+# feature worktree's own root allows — but git config/remote and the shared
+# refs/heads namespace live in $GIT_COMMON_DIR, which the worktree shares
+# with the primary. Every row below carries NO -C/--git-dir at all; the
+# command is aimed at $W itself, which is exactly the shape the ticket says
+# the existing arm (g) misses.
+deny "config <key> <value>, no -C"          "$W" "git config core.fsmonitor x"
+deny "config --unset, no -C"                "$W" "git config --unset branch.main.remote"
+deny "config set (new syntax), no -C"       "$W" "git config set core.hooksPath x"
+deny "remote add, no -C"                    "$W" "git remote add evil $W"
+deny_any "remote set-url, no -C"            "$W" "git remote set-url origin $W"
+deny "branch -u, no -C"                     "$W" "git branch -u origin/feat/x"
+deny "branch --set-upstream-to, no -C"      "$W" "git branch --set-upstream-to=origin/feat/x"
+deny "branch -f, no -C"                     "$W" "git branch -f other feat/x"
+deny "branch -uorigin/x attached, no -C"    "$W" "git branch -uorigin/feat/x"
+deny "update-ref refs/heads/main, no -C"    "$W" "git update-ref refs/heads/main HEAD"
+deny "update-ref refs/heads/master, no -C"  "$W" "git update-ref refs/heads/master HEAD"
+deny "symbolic-ref refs/heads/main, no -C"  "$W" "git symbolic-ref refs/heads/main refs/heads/feat/x"
+
+echo "== ALLOW: HIMMEL-3407 scope is bounded — ordinary worktree git use keeps working =="
+allow "branch <new>, no -C (no -u/-f)"      "$W" "git branch newbr"
+allow "branch -d, no -C (delete only)"      "$W" "git branch -d newbr"
+allow "branch -D, no -C (delete only)"      "$W" "git branch -D newbr"
+allow "update-ref refs/heads/other, no -C (not main/master)" "$W" "git update-ref refs/heads/other HEAD"
+allow "config -l, no -C (read)"             "$W" "git config -l"
+allow "config get user.name, no -C (read)"  "$W" "git config get user.name"
+allow "remote -v, no -C (read)"             "$W" "git remote -v"
+allow "single-writer repo: config write (no primary linkage)" "$S" "git config core.x y"
 
 echo "== DENY: unparseable input fails CLOSED in direct-exec mode (adversarial review S6) =="
 for raw in '' 'not json' '[]' '{}' '{"tool_name":"Bash"}' '{"tool_name":"Bash","tool_input":{}}' \
