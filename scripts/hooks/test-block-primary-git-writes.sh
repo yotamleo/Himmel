@@ -418,15 +418,50 @@ deny "update-ref refs/heads/main, no -C"    "$W" "git update-ref refs/heads/main
 deny "update-ref refs/heads/master, no -C"  "$W" "git update-ref refs/heads/master HEAD"
 deny "symbolic-ref refs/heads/main, no -C"  "$W" "git symbolic-ref refs/heads/main refs/heads/feat/x"
 
+echo "== DENY: HIMMEL-3407 adversarial review round 1 =="
+# F1 (HIGH, bypass): the old update-ref/symbolic-ref loop skipped every
+# `-`-prefixed word but not the VALUE a value-taking flag consumes, so `-m
+# <reason>` shifted the ref-name check onto the reason text instead. --stdin
+# reads its ref updates from stdin, invisible to a command-text scanner.
+deny "update-ref -m <reason> refs/heads/main, no -C" "$W" "git update-ref -m msg refs/heads/main HEAD"
+deny "symbolic-ref -m <reason> refs/heads/main, no -C" "$W" "git symbolic-ref -m msg refs/heads/main refs/heads/feat/x"
+deny "update-ref --stdin, no -C"            "$W" "git update-ref --stdin"
+deny "update-ref --stdin -z, no -C"         "$W" "git update-ref --stdin -z"
+# F3 (LOW): -M/-C are branch's FORCE rename/copy (bare -m/-c cannot overwrite
+# an existing branch, so they stay in the ordinary-use bucket; only the
+# force forms can move `main`). checkout -B / switch -C force-create-or-RESET
+# a branch to a start-point, the same "move an existing ref" class spelled
+# through a different verb.
+deny "branch -M <old> main, no -C"          "$W" "git branch -M feat/x main"
+deny "branch -C <old> main, no -C"          "$W" "git branch -C feat/x main"
+deny "checkout -B main, no -C"              "$W" "git checkout --ignore-other-worktrees -B main"
+deny "switch -C main, no -C"                "$W" "git switch -C main"
+deny "checkout -Bmain attached, no -C"      "$W" "git checkout -Bmain"
+
 echo "== ALLOW: HIMMEL-3407 scope is bounded — ordinary worktree git use keeps working =="
 allow "branch <new>, no -C (no -u/-f)"      "$W" "git branch newbr"
 allow "branch -d, no -C (delete only)"      "$W" "git branch -d newbr"
 allow "branch -D, no -C (delete only)"      "$W" "git branch -D newbr"
+allow "branch -m <old> <new> (plain rename, no -C)" "$W" "git branch -m feat/x renamedbr"
+allow "checkout -b <new>, no -C (plain create)" "$W" "git checkout -b anothernew"
 allow "update-ref refs/heads/other, no -C (not main/master)" "$W" "git update-ref refs/heads/other HEAD"
 allow "config -l, no -C (read)"             "$W" "git config -l"
 allow "config get user.name, no -C (read)"  "$W" "git config get user.name"
 allow "remote -v, no -C (read)"             "$W" "git remote -v"
 allow "single-writer repo: config write (no primary linkage)" "$S" "git config core.x y"
+
+echo "== ALLOW: HIMMEL-3407 adversarial review round 1 -- F2 false-deny fixes =="
+# F2 (MEDIUM, false deny): config/remote writes that do NOT touch the shared
+# repo config at all must not deny just because the subcommand name matches.
+allow "config --global, no -C"              "$W" "git config --global user.name t"
+allow "config --system, no -C"              "$W" "git config --system core.x y"
+allow "config --worktree, no -C"            "$W" "git config --worktree core.x y"
+allow "config -f <outside path>, no -C"     "$W" "git config -f /tmp/himmel-3407-outside-cfg a.b c"
+allow "config --file=<outside path>, no -C" "$W" "git config --file=/tmp/himmel-3407-outside-cfg a.b c"
+deny "config --file=<primary>/.git/config, no -C" "$W" "git config --file=$P/.git/config a.b c"
+allow "remote update, no -C"                "$W" "git remote update"
+allow "remote prune origin, no -C"          "$W" "git remote prune origin"
+allow "remote show origin, no -C"           "$W" "git remote show origin"
 
 echo "== DENY: unparseable input fails CLOSED in direct-exec mode (adversarial review S6) =="
 for raw in '' 'not json' '[]' '{}' '{"tool_name":"Bash"}' '{"tool_name":"Bash","tool_input":{}}' \

@@ -1442,7 +1442,8 @@ Bash/PowerShell payload whose command is missing or not a string.
 git command is AIMED at — for a write run from a LINKED worktree's own cwd
 (no `-C`/`--git-dir` pointed elsewhere), that is the worktree's OWN root, a
 legitimate feature checkout, so the ordinary verdict allows. But `config` /
-`remote` writes, `branch -u|--set-upstream-to|--unset-upstream|-f|--force`, and `update-ref` /
+`remote` writes, `branch -u|--set-upstream-to|--unset-upstream|-M|-C|-f|--force`,
+`checkout -B`/`switch -C` onto `main|master`, and `update-ref` /
 `symbolic-ref` on `refs/heads/main|master` land in the worktree's SHARED
 `$GIT_COMMON_DIR`, which the PRIMARY checkout also reads — so a leg could
 repoint `branch.main.remote/merge` or `remote.origin.url` (poisoning the
@@ -1454,11 +1455,33 @@ ordinary, non-worktree repo) now gets the SAME `main_checkout_verdict`
 <k> <v>` or `git remote add <name> <url>` from a leg's own cwd now denies too
 — it writes the shared config regardless of the key/remote name, and the
 `-C <primary>` form of the same write already denied unconditionally.
-Ordinary worktree git (checkout, commit, merge, `branch` create/delete/rename
-without `-u`/`-f`, `update-ref`/`symbolic-ref` on any OTHER ref) is
-unaffected. Still unmodelled from a linked worktree's own cwd: `tag` and
-`reflog expire|delete` writes, and any other branch create/delete/rename —
-same residual class, narrower now. Spec:
+Ordinary worktree git (checkout, commit, merge, `branch` create/delete/plain
+rename without `-M`/`-C`/`-u`/`-f`/`--unset-upstream`, `update-ref`/
+`symbolic-ref` on any OTHER ref) is unaffected.
+
+Two shapes narrow the `config`/`remote` check rather than widen it (adversarial
+review, round 1): `config --global`/`--system`/`--worktree` write a DIFFERENT
+file entirely (not the shared repo config), and are exempt outright; `config
+-f`/`--file <path>` redirects to an ARBITRARY path, resolved and run through
+the same file-target check `--git-dir`/`--work-tree` already use, so `--file
+<primary>/.git/config` still denies while a path outside any repo does not.
+`remote update`/`prune`/`show` are fetch-shaped (refresh, not repoint) and are
+exempt; `get-url` never reaches this arm at all (already read-shaped).
+
+Also fixed the same round: `update-ref`/`symbolic-ref -m <reason>
+refs/heads/main` used to read the `-m` VALUE as the positional ref-name and
+stop there, missing the real ref name entirely — the loop now consumes the
+value like every other value-taking flag in this file does. `--stdin` reads
+its ref updates from stdin, invisible to a command-text scanner, and is
+denied outright rather than silently passed. `branch -M`/`-C` (branch's own
+FORCE rename/copy — bare `-m`/`-c` cannot overwrite an existing branch, so
+they stay ordinary) and `checkout -B`/`switch -C` (force-create-or-reset a
+branch to a start-point, the same "move an existing ref" class spelled
+through a different verb) now trigger the check too.
+
+Still unmodelled from a linked worktree's own cwd: `tag` and `reflog
+expire|delete` writes, and any other branch create/delete/rename — same
+residual class, narrower now. Spec:
 `scripts/hooks/test-block-primary-git-writes.sh`.
 
 **KNOWN FAIL-OPEN SHAPES — CLOSED by HIMMEL-2592.** This section previously
