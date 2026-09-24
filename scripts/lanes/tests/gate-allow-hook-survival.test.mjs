@@ -15,9 +15,9 @@
 // the hook's current bytes, not a description of them.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync, execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const HOOK = join(REPO_ROOT, 'scripts', 'hooks', 'guard-pr-check-literal.sh');
@@ -56,23 +56,24 @@ for (const command of RIDER_COMMANDS) {
 }
 
 // Control: a clean, single-simple-command invocation of each script (no
-// rider) must NOT be denied — otherwise the RIDER denials above would prove
-// nothing (the hook could just be refusing the script names outright,
-// meaning the gateAllow grant is unreachable dead weight, the exact defect
-// closed PR #1204 shipped for a different rule shape). HIMMEL_REPO is
-// resolved from git itself (never hardcoded), so this holds whether the
-// suite runs from the primary checkout or a worktree of it.
-const GIT_COMMON_DIR = execFileSync('git', ['-C', REPO_ROOT, 'rev-parse', '--git-common-dir'], { encoding: 'utf8' }).trim();
-const ANCHOR_ROOT = resolve(REPO_ROOT, GIT_COMMON_DIR, '..');
-
+// rider) must never be denied FOR THE RIDER REASON — otherwise the RIDER
+// denials above would prove nothing (the hook could just be refusing the
+// script names outright, meaning the gateAllow grant is unreachable dead
+// weight, the exact defect closed PR #1204 shipped for a different rule
+// shape). This does NOT assert a full allow (rc=0): the hook's other
+// runbook conditions (worktree root, byte-equal anchor tree, and — CI-only —
+// the anchor being checked out on refs/heads/main rather than a detached
+// HEAD) are environment-dependent and orthogonal to the property this file
+// tests, so asserting rc=0 here would make the suite fail under a detached
+// HEAD (e.g. GitHub Actions' checkout) for a reason unrelated to riders.
 const CLEAN_COMMANDS = [
   'bash scripts/cr/ledger-append.sh amend --head abc123 --id x --set severity=crit --reason y',
   'bash scripts/cr/clear-cr-marker.sh --dry-run',
 ];
 
 for (const command of CLEAN_COMMANDS) {
-  test(`guard-pr-check-literal.sh does not deny a clean single-simple-command: ${JSON.stringify(command)}`, () => {
-    const { status, stderr } = runHook(command, { env: { HIMMEL_REPO: ANCHOR_ROOT } });
-    assert.equal(status, 0, `expected allow (rc=0), got rc=${status}: ${stderr}`);
+  test(`guard-pr-check-literal.sh does not deny a clean single-simple-command as a rider: ${JSON.stringify(command)}`, () => {
+    const { status, stderr } = runHook(command, { env: { HIMMEL_REPO: '' } });
+    if (status !== 0) assert.doesNotMatch(stderr, /not one simple command/, `denied as a rider, not just an unmet runbook condition: ${stderr}`);
   });
 }
