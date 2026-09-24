@@ -3040,6 +3040,16 @@ project_is_himmel_checkout() {
     # file requirement keeps this from matching an arbitrary directory that
     # merely happens to sit next to an unrelated `current` symlink.
     identity_root="$source_root"
+  elif [ -f "$source_root/VERSION" ] \
+      && [ "$(cat -- "$source_root/.himmel-install-kind" 2>/dev/null)" = aur ]; then
+    # HIMMEL-3059 S6b: the AUR package's flat /opt/himmel prefix -- no .git,
+    # no `current` symlink (packaging/aur/PKGBUILD: "a FLAT tree with no
+    # `current` link"), so neither case above ever matches it. VERSION is
+    # already there (git-archived into the tarball PKGBUILD packages), so it
+    # alone can't discriminate; .himmel-install-kind is a second marker only
+    # PKGBUILD's package() writes, guarding against an arbitrary directory
+    # that merely happens to hold a stray VERSION file.
+    identity_root="$source_root"
   else
     return 2
   fi

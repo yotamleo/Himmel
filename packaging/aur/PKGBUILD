@@ -50,6 +50,11 @@ sha256sums=('517ed66cea93d43063a3c9a1c8806149a2ca090ac6c589e32b3bd725b374bab7')
 package() {
   install -d "$pkgdir/opt"
   cp -a "$srcdir/himmel-${_tag}" "$pkgdir/opt/himmel"
+  # HIMMEL-3059 S6b: uninstall.sh's project_is_himmel_checkout() needs a way
+  # to recognise this flat, .git-less, current-symlink-less prefix as a real
+  # himmel identity root (VERSION alone isn't enough -- it's already in the
+  # tarball this package() step just copied in). Only pacman ever writes this.
+  printf 'aur\n' > "$pkgdir/opt/himmel/.himmel-install-kind"
   # The wrapper runs the packaged entry point by absolute path; it sets and
   # exports nothing, so it does not widen PATH or change the environment.
   install -d "$pkgdir/usr/bin"

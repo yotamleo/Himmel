@@ -163,6 +163,11 @@ PY
   x="$tmp/x"; mkdir -p "$x"; bsdtar -xf "$pkg" -C "$x" 2>/dev/null
   [ "$(cat "$x/usr/bin/himmelctl")" = "$(printf '#!/bin/sh\nexec node /opt/himmel/scripts/himmelctl/bin.js "$@"')" ] \
     && ok "wrapper is exactly: exec node /opt/himmel/scripts/himmelctl/bin.js \"\$@\" (sets no PATH or env)" || bad "wrapper content differs" "$(tr '\n' '|' < "$x/usr/bin/himmelctl")"
+  # HIMMEL-3059 S6b: uninstall.sh's project_is_himmel_checkout() needs this
+  # marker to recognise the flat, .git-less, current-symlink-less prefix.
+  [ "$(cat "$x/opt/himmel/.himmel-install-kind" 2>/dev/null)" = aur ] \
+    && ok "package carries the aur install-kind marker (opt/himmel/.himmel-install-kind = aur)" \
+    || bad "install-kind marker missing or wrong" "$(cat "$x/opt/himmel/.himmel-install-kind" 2>&1)"
   [ -x "$x/usr/bin/himmelctl" ] && ok "wrapper is executable" || bad "wrapper is not executable"
   cmp -s "$x/.INSTALL" "$HERE/himmel.install" && ok "the package's .INSTALL is himmel.install" || bad "package .INSTALL differs from himmel.install"
   check_print_only "$HERE/himmel.install"

@@ -373,6 +373,77 @@ rc=$?
 assert_rc "(l) missing VERSION marker halts" 2 "$rc"
 assert_has "(l) checkout identity unresolved" "checkout identity unresolved" "$out"
 
+# --- AUR FLAT LAYOUT (HIMMEL-3059 S6b): [6/8] project-settings identity ----
+# --- resolution when himmel's OWN checkout is the AUR package's flat
+# --- /opt/himmel prefix -- no .git, no bundle.json, and no `current` symlink
+# --- (packaging/aur/PKGBUILD: "a FLAT tree with no `current` link"), so
+# --- neither the git-checkout, standalone-bundle nor versioned-tarball case
+# --- above ever matched -- rc 2, halting step [6/8] for every real AUR
+# --- install (surfaced by the S6b guest round trip, not a test artifact).
+# --- The fix adds a fourth identity root: a git-less source_root that
+# --- carries BOTH himmel's own VERSION marker AND the distinct install-kind
+# --- marker only PKGBUILD's package() writes -- guarding against an
+# --- arbitrary directory that merely happens to hold a stray VERSION file.
+
+build_flat_aur() {
+    # $1 = the flat prefix dir (source_root, e.g. /opt/himmel)
+    local dir="$1"
+    build_versioned "$dir"
+    echo "0.3.0" > "$dir/VERSION"
+}
+
+# (m) positive: VERSION + the aur install-kind marker present, no `current`
+# symlink anywhere -- an unrelated project proceeds (unwired), not halted.
+FLAT_M="$TMP/aur-flat-m/himmel"
+build_flat_aur "$FLAT_M"
+echo "aur" > "$FLAT_M/.himmel-install-kind"
+PROJECT_M="$TMP/cwd-aur-flat-m"
+new_unrelated_project "$PROJECT_M"
+PROV_M="$TMP/prov-aur-flat-m"
+out=$( (cd "$PROJECT_M" && run_versioned "$FLAT_M" "$PROV_M" --yes --skip-plugins --skip-hooks --skip-tasks) )
+rc=$?
+assert_rc "(m) aur flat layout with both markers resolves, exits 0" 0 "$rc"
+assert_has "(m) project settings unwired, not halted" "project settings: unwired" "$out"
+
+# (n) negative: VERSION present but NO install-kind marker -- halts (this is
+# the exact pre-fix shape: a real AUR /opt/himmel already carries VERSION
+# from `git archive`, so VERSION alone must not be enough).
+FLAT_N="$TMP/aur-flat-n/himmel"
+build_flat_aur "$FLAT_N"
+PROJECT_N="$TMP/cwd-aur-flat-n"
+new_unrelated_project "$PROJECT_N"
+PROV_N="$TMP/prov-aur-flat-n"
+out=$( (cd "$PROJECT_N" && run_versioned "$FLAT_N" "$PROV_N" --yes --skip-plugins --skip-hooks --skip-tasks) )
+rc=$?
+assert_rc "(n) missing install-kind marker halts" 2 "$rc"
+assert_has "(n) checkout identity unresolved" "checkout identity unresolved" "$out"
+
+# (o) negative: install-kind marker present but wrong content -- halts (the
+# marker's VALUE is checked, not merely its existence).
+FLAT_O="$TMP/aur-flat-o/himmel"
+build_flat_aur "$FLAT_O"
+echo "bogus" > "$FLAT_O/.himmel-install-kind"
+PROJECT_O="$TMP/cwd-aur-flat-o"
+new_unrelated_project "$PROJECT_O"
+PROV_O="$TMP/prov-aur-flat-o"
+out=$( (cd "$PROJECT_O" && run_versioned "$FLAT_O" "$PROV_O" --yes --skip-plugins --skip-hooks --skip-tasks) )
+rc=$?
+assert_rc "(o) wrong install-kind marker value halts" 2 "$rc"
+assert_has "(o) checkout identity unresolved" "checkout identity unresolved" "$out"
+
+# (p) negative: install-kind marker present but NO VERSION -- halts (both
+# markers are required together, neither alone is sufficient).
+FLAT_P="$TMP/aur-flat-p/himmel"
+build_versioned "$FLAT_P"
+echo "aur" > "$FLAT_P/.himmel-install-kind"
+PROJECT_P="$TMP/cwd-aur-flat-p"
+new_unrelated_project "$PROJECT_P"
+PROV_P="$TMP/prov-aur-flat-p"
+out=$( (cd "$PROJECT_P" && run_versioned "$FLAT_P" "$PROV_P" --yes --skip-plugins --skip-hooks --skip-tasks) )
+rc=$?
+assert_rc "(p) missing VERSION marker halts" 2 "$rc"
+assert_has "(p) checkout identity unresolved" "checkout identity unresolved" "$out"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "ALL PASS"
