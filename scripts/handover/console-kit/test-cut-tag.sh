@@ -18,6 +18,12 @@
 #   9.  --dry-run on an otherwise-clean sha            -> rc 0, ref-create NOT called
 #   10. clean sha, in-sequence version                -> rc 0, ref-create called once,
 #       then git fetch --tags
+#   11. gh repo view / origin remote mismatch          -> rc 1
+#   12. origin remote URL unresolvable (RED)           -> rc 1
+#   13. series ls-remote failure (RED)                 -> rc 1
+#   14. check-runs gh api failure (RED)                -> rc 4
+#   15. combined status gh api failure (RED)           -> rc 4
+#   16. option-shaped / empty --version-override reason (RED) -> rc 2, nothing called
 #
 # Platform guard: Linux/macOS bash 3.2+.
 set -uo pipefail
@@ -223,6 +229,17 @@ reset_calls
 rc=0; out=$(CT_SERIES_TAGS="$CT_SERIES_TAGS_DEFAULT" CT_STATUS_FAIL=1 run "$CLEAN_VERSION" "$SHA" 2>&1) || rc=$?
 check "status-fail: rc 4" "$rc" "4"
 not_contains "status-fail: never writes the tag" "$(cat "$CALLS")" "git/refs -f"
+
+# --- 16. option-shaped / empty --version-override reason (RED: must not become the reason) ---
+reset_calls
+rc=0; out=$(run "$CLEAN_VERSION" "$SHA" --version-override --dry-run 2>&1) || rc=$?
+check "override-reason-option-shaped: rc 2" "$rc" "2"
+not_contains "override-reason-option-shaped: nothing called" "$(cat "$CALLS")" "/"
+
+reset_calls
+rc=0; out=$(run "$CLEAN_VERSION" "$SHA" --version-override "" 2>&1) || rc=$?
+check "override-reason-empty: rc 2" "$rc" "2"
+not_contains "override-reason-empty: nothing called" "$(cat "$CALLS")" "/"
 
 echo "----"
 if [ "$fails" -eq 0 ]; then

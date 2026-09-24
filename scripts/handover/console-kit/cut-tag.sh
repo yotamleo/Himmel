@@ -88,6 +88,12 @@ while [ "$#" -gt 0 ]; do
                 echo "cut-tag: --version-override needs a <reason>" >&2
                 exit 2
             fi
+            case "$1" in
+                ""|--*)
+                    usage
+                    echo "cut-tag: --version-override needs a non-option <reason> (got '$1')" >&2
+                    exit 2 ;;
+            esac
             OVERRIDE=1; REASON="$1"; shift ;;
         --*)
             usage
