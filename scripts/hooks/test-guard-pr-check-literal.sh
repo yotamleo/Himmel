@@ -353,6 +353,36 @@ run '$HIMMEL_REPO_X is a different variable, not a prefix match -> deny' 2 \
 run 'literal prefix followed by a second scripts/cr/ command -> deny (compound)' 2 \
     "$(payload 'bash "$HIMMEL_REPO/scripts/cr/pr-check-context.sh"; bash scripts/cr/review-round.sh start --branch feat/x' "$WT")" "$HR"
 
+# ---- console-O NO-GO round 3 (F1): a stray quote/backslash ANYWHERE denies ---
+# Round 2 only checked the character immediately before the reference; a
+# quote or backslash elsewhere in the command still changes how a real
+# shell groups tokens even though $flat has already stripped it by the
+# time any later check runs. Decided from the raw command, so the
+# exemption now requires NO quote or backslash anywhere in it at all.
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run "stray single-quote before the dollar, inside double quotes -> deny" 2 \
+    "$(payload 'bash "'"'"'$HIMMEL_REPO/scripts/cr/pr-check-context.sh"' "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run "stray single-quote after the path, same word -> deny" 2 \
+    "$(payload 'bash "$HIMMEL_REPO/scripts/cr/pr-check-context.sh'"'"'"' "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run "stray backslash right before the dollar -> deny" 2 \
+    "$(payload 'bash "\$HIMMEL_REPO/scripts/cr/pr-check-context.sh"' "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run "fully single-quoted \$HIMMEL_REPO never expands -> deny" 2 \
+    "$(payload "bash '\$HIMMEL_REPO/scripts/cr/pr-check-context.sh'" "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run "single-quoted with leading junk before the dollar -> deny" 2 \
+    "$(payload "bash 'x \$HIMMEL_REPO/scripts/handover/console-kit/go.sh'" "$WT")" "$HR"
+
+# ---- console-O NO-GO round 3 (F2): the tail must resolve as a plain path -----
+# A `..` or a second `$` after the exempted prefix must still deny - the
+# word must resolve to exactly the anchor's own file, not somewhere else
+# the substitution can be steered to.
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO`/`$PWD` text, never expanded here
+run 'traversal plus a second $ after the prefix -> deny' 2 \
+    "$(payload 'bash "$HIMMEL_REPO/../../../../../../..$PWD/scripts/cr/pr-check-context.sh"' "$WT")" "$HR"
+
 # ---- console-O NO-GO finding 2: go.sh's own sibling-sourced libs -------------
 # go.sh sources scripts/lib/go-gate.sh and scripts/lib/handover-path.sh via a
 # branch-relative $HERE, so they must be in its GUARDED set too - a byte-equal

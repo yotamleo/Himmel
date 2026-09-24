@@ -395,16 +395,23 @@ done <<<"$simple"
 [[ "$flat" =~ -(exec|execdir|ok|okdir)[[:space:]]+[^[:space:]]*\{\} ]] && bare_runs=1
 [ "$runs" -eq 1 ] || exit 0
 
-# HIMMEL-3437 console NO-GO round 2: a "$HIMMEL_REPO/..." word is the anchor
-# spelling ONLY when the whole command is genuinely one simple command (no
-# separator, so nothing later in it can re-point the variable or hide a
-# second command behind it), carries no wrapper or VAR= assignment anywhere
-# ($wrapped, already computed above - a re-point earlier in the SAME command,
-# `HIMMEL_REPO=.; bash "$HIMMEL_REPO/..."`, must still deny), and HIMMEL_REPO
-# is referenced exactly once, in exactly that shape. Decided from the RAW,
-# unstripped $cmd - never $flat - so a single-quoted or backslash-escaped
-# `$HIMMEL_REPO` (which a real shell never expands either) is never exempted:
-# that spells a literal path through a directory a branch could create.
+# HIMMEL-3437 console NO-GO rounds 2-3: a "$HIMMEL_REPO/..." word is the
+# anchor spelling ONLY when the whole command is genuinely one simple
+# command (no separator, so nothing later in it can re-point the variable
+# or hide a second command behind it), carries no wrapper or VAR=
+# assignment anywhere ($wrapped, already computed above - a re-point
+# earlier in the SAME command, `HIMMEL_REPO=.; bash "$HIMMEL_REPO/..."`,
+# must still deny), and HIMMEL_REPO is referenced exactly once. Round 3
+# (F1): the RAW command must carry no quote or backslash ANYWHERE - not
+# only right next to the reference (round 2's check) - since $flat has
+# already stripped every quote by the time any later check runs, and a
+# stray one elsewhere still changes how a real shell groups tokens; a
+# quoted or backslash-escaped reference never expands in a real shell
+# either, so denying on ANY quote/backslash present is never a false
+# negative on legitimate use, which needs neither (only a bare or plain
+# double-quoted prefix is ever a real allow rule's spelling). Round 3
+# (F2): what follows the prefix must resolve as a plain path too - no
+# `..` and no further `$` (`$HIMMEL_REPO/../../etc$PWD/...` denies).
 himmel_anchor_prefix=0
 case "$flat" in
     *[\;\&\|\(\)\<\>\`]*|*$'\n'*) ;;
@@ -419,23 +426,55 @@ case "$flat" in
                         n=$((n + 1))
                         rest=${rest#*HIMMEL_REPO}
                     done
+                    # shellcheck disable=SC1003 # literal quote/backslash match, not an escape
+                    case "$cmd" in *"'"*|*'\'*) n=0 ;; esac
                     if [ "$n" -eq 1 ]; then
                         before=${cmd%%HIMMEL_REPO*}
                         after=${cmd#*HIMMEL_REPO}
-                        # shellcheck disable=SC1003,SC2016 # literal backslash/quote/brace match, not an escape
+                        # shellcheck disable=SC2016 # literal text match, never expanded
                         case "$before" in
-                            *'$')
-                                head=${before%?}
+                            *'"${')
+                                head=${before%???}
                                 case "$head" in
-                                    *'\'|*"'") ;;
-                                    *) case "$after" in /*) himmel_anchor_prefix=1 ;; esac ;;
+                                    ''|*[[:space:]])
+                                        case "$after" in
+                                            '}'/*'..'*|'}'/*'$'*) ;;
+                                            '}'/*) himmel_anchor_prefix=1 ;;
+                                        esac
+                                        ;;
                                 esac
                                 ;;
                             *'${')
                                 head=${before%??}
                                 case "$head" in
-                                    *'\'|*"'") ;;
-                                    *) case "$after" in '}'/*) himmel_anchor_prefix=1 ;; esac ;;
+                                    ''|*[[:space:]])
+                                        case "$after" in
+                                            '}'/*'..'*|'}'/*'$'*) ;;
+                                            '}'/*) himmel_anchor_prefix=1 ;;
+                                        esac
+                                        ;;
+                                esac
+                                ;;
+                            *'"$')
+                                head=${before%??}
+                                case "$head" in
+                                    ''|*[[:space:]])
+                                        case "$after" in
+                                            *'..'*|*'$'*) ;;
+                                            /*) himmel_anchor_prefix=1 ;;
+                                        esac
+                                        ;;
+                                esac
+                                ;;
+                            *'$')
+                                head=${before%?}
+                                case "$head" in
+                                    ''|*[[:space:]])
+                                        case "$after" in
+                                            *'..'*|*'$'*) ;;
+                                            /*) himmel_anchor_prefix=1 ;;
+                                        esac
+                                        ;;
                                 esac
                                 ;;
                         esac
