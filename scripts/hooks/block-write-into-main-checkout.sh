@@ -1854,14 +1854,30 @@ _bwimc_git_check_path() {
 # OWN root, a legitimate feature checkout, so _bwimc_git_check_path on DIR
 # alone ALLOWS even though the file these subcommands actually write
 # ($GIT_COMMON_DIR/config, or a shared ref) lives in the PRIMARY's git
-# directory. primary_checkout_root(DIR) resolves that owning checkout — for
-# an ordinary, non-worktree repo it is a no-op (returns DIR's own root, git-dir
-# == common-dir there), so calling this unconditionally never changes the
+# directory. primary_checkout_root resolves that owning checkout — for an
+# ordinary, non-worktree repo it is a no-op (returns the same root, git-dir ==
+# common-dir there), so calling this unconditionally never changes the
 # verdict for a plain checkout; it only adds a second, correct target for a
 # linked worktree.
+#
+# DIR is resolved to its REPO ROOT (guard_canon_path + repo_root_for_path,
+# the exact walk _bwimc_git_check_path already does) BEFORE calling
+# primary_checkout_root, rather than handed to it raw: primary_checkout_root
+# runs `git -C DIR …`, which requires DIR to be an EXISTING DIRECTORY, but a
+# `--git-dir=<worktree>/.git` target is exactly that worktree's `.git`
+# FILE (git itself follows the gitfile redirection there — verified: `git
+# --git-dir=<wt>/.git status` succeeds against a linked worktree) — handing
+# the file straight to `git -C` fails ("cannot change to … Not a directory"),
+# which would silently skip this whole check for that one spelling. The repo
+# ROOT above the `.git` entry is always a real, `-C`-able directory by
+# construction (repo_root_for_path only returns a directory it saw `-e
+# "$d/.git"` under), so resolving it first closes that gap.
 _bwimc_git_check_common_owner() {
-    local dir="$1" label="$2" owner
-    owner=$(primary_checkout_root "$dir" 2>/dev/null) || return 0
+    local dir="$1" label="$2" canon root owner
+    canon=$(guard_canon_path "$dir" 2>/dev/null) || return 0
+    root=$(repo_root_for_path "$canon" 2>/dev/null) || return 0
+    [ -n "$root" ] || return 0
+    owner=$(primary_checkout_root "$root" 2>/dev/null) || return 0
     [ -n "$owner" ] || return 0
     _bwimc_git_check_path "$owner" "$label"
 }

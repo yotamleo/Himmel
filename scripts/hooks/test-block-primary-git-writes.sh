@@ -399,6 +399,12 @@ echo "== DENY: HIMMEL-3407 — config/remote/branch-upstream/main-ref writes fro
 # command is aimed at $W itself, which is exactly the shape the ticket says
 # the existing arm (g) misses.
 deny "config <key> <value>, no -C"          "$W" "git config core.fsmonitor x"
+# --git-dir pointing at the worktree's OWN .git FILE (not a directory) is a
+# real, working git invocation — git follows the gitfile redirection there —
+# and primary_checkout_root's own `git -C <dir>` needs a directory, so
+# _bwimc_git_check_common_owner must resolve the repo ROOT first or this
+# exact spelling slips through with no check at all.
+deny "config via --git-dir=<wt>/.git (file, not dir)" "$W" "git --git-dir=$W/.git config core.fsmonitor x"
 deny "config --unset, no -C"                "$W" "git config --unset branch.main.remote"
 deny "config set (new syntax), no -C"       "$W" "git config set core.hooksPath x"
 deny "remote add, no -C"                    "$W" "git remote add evil $W"
