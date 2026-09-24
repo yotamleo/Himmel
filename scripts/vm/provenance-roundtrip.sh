@@ -314,7 +314,11 @@ if [ "$INSTALL_FROM" = tarball ] || [ "$INSTALL_FROM" = aur ]; then
 #!/usr/bin/env bash
 set -euo pipefail
 GHOME="$1" ASSET="$2" PKGVER="$3" SUM="$4" TAG="$5"
-pacman -Syu --noconfirm --needed git jq nodejs python sudo cronie
+# npm is not in the PKGBUILD's own depends (adopt.sh preflight only WARNs on
+# it for the vault-setup path) but its project-scope install preflight HARD
+# ERRORs without it, and Arch splits npm out of the nodejs package unlike
+# Debian/Ubuntu's bundled nodejs -- a container test dep, not a package dep.
+pacman -Syu --noconfirm --needed git jq nodejs npm python sudo cronie
 useradd -m -d "$GHOME" builder
 echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
 mkdir -p /build/pkg
