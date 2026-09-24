@@ -83,7 +83,11 @@ SCOPED_BASELINE="$(mktemp "${TMPDIR:-/tmp}/git-env-scrub-scoped-baseline.XXXXXX"
     line="$(sed -n '6p' "$REPO_ROOT/$CASES/baseline-listed.mjs")"
     trimmed="${line#"${line%%[![:space:]]*}"}"
     trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
-    hash="$(printf '%s' "$trimmed" | sha256sum | cut -c1-12)"
+    if command -v sha256sum >/dev/null 2>&1; then
+        hash="$(printf '%s' "$trimmed" | sha256sum | cut -c1-12)"
+    else
+        hash="$(printf '%s' "$trimmed" | shasum -a 256 | cut -c1-12)"
+    fi
     printf 'JS:%s/baseline-listed.mjs:%s\n' "$CASES" "$hash"
 } > "$SCOPED_BASELINE"
 
@@ -106,6 +110,13 @@ else
     fail "T17 same two fixtures fail without the baseline (control) (rc=$rc)"
     printf '%s\n' "$OUT" | sed 's/^/    /'
 fi
+
+# ---- CR fixup (HIMMEL-3570): detector gaps the panel's self-review found
+# before the console-facing review saw them ----
+expect_red "T19 git inside a double-quoted \$(...) cmdsub is caught"     quoted-cmdsub-unscrubbed.sh
+expect_red "T20 quoted multi-word command string ('git status') is caught" quoted-multiword-unscrubbed.mjs
+expect_red "T21 bare exec( ) (no Sync/File) is caught"                   exec-bare-unscrubbed.mjs
+expect_red "T22 scrub names in a COMMENT alone don't satisfy the window" comment-fake-scrub-unscrubbed.mjs
 
 # T18 -- sanity: the real trust paths, under the real committed baseline,
 # report clean. This is the ratchet's day-one promise.

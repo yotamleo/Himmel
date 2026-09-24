@@ -117,11 +117,20 @@ cd "$REPO_ROOT"
 # real one; unset in every production caller (pre-commit, CI).
 BASELINE_FILE="${GIT_ENV_SCRUB_BASELINE:-$REPO_ROOT/scripts/guardrails/git-env-baseline.txt}"
 
+sha256_hex() {
+    # sha256sum (GNU coreutils) or shasum -a 256 (BSD/macOS, no sha256sum).
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum
+    else
+        shasum -a 256
+    fi
+}
+
 line_hash() {
     # First 12 hex chars of the sha256 of the trimmed line content — stable
     # under re-indentation of SURROUNDING code, sensitive to a change of THIS
     # line, which is exactly what the ratchet wants to key on.
-    printf '%s' "$1" | sha256sum | cut -c1-12
+    printf '%s' "$1" | sha256_hex | cut -c1-12
 }
 
 trim() {
@@ -145,13 +154,36 @@ is_excluded_path() {
 # at the first unquoted `#`, in one pass. This is what keeps a case-pattern
 # label, a string literal ("run git status"), and a comment from ever being
 # mistaken for a real invocation, without a full shell tokenizer.
+#
+# A `$(...)` command substitution is left un-blanked even when it opens
+# inside a double-quoted string (`out="$(git rev-parse HEAD)"` is a common,
+# real invocation) — cmdsub tracks the paren depth of the substitution and
+# suspends the enclosing double-quote's blanking for its extent, restoring it
+# once the substitution's parens balance back to zero (HIMMEL-3570 CR fixup).
 strip_code() {
     awk '
     {
-        out = ""; instr = 0
+        out = ""; instr = 0; cmdsub = 0; saved_instr = 0
         n = length($0)
         for (i = 1; i <= n; i++) {
             c = substr($0, i, 1)
+            if (cmdsub == 0 && instr != 1 && c == "$" && substr($0, i+1, 1) == "(") {
+                saved_instr = instr
+                instr = 0
+                cmdsub = 1
+                out = out "$("
+                i++
+                continue
+            }
+            if (cmdsub > 0) {
+                if (c == "(") { cmdsub++; out = out c; continue }
+                if (c == ")") {
+                    cmdsub--
+                    out = out c
+                    if (cmdsub == 0) { instr = saved_instr }
+                    continue
+                }
+            }
             if (instr == 0) {
                 if (c == "#") { break }
                 else if (c == "\047") { instr = 1; out = out " " }
@@ -187,6 +219,18 @@ is_git_invocation() {
 
 exemption_reason_js() {
     printf '%s' "$1" | grep -oE '//[[:space:]]*git-env-ok:.*' | tail -n1 || true
+}
+
+# Blanks everything from the first `//` onward — naive (does not track
+# strings), so a `//` inside a string literal is a rare accepted false
+# negative for this heuristic gate. Used ONLY for the scrub-window text so a
+# comment MENTIONING the four GIT_* names can't fake a real scrub (HIMMEL-3570
+# CR fixup) — never applied to the raw line used for call/exemption matching.
+strip_js_comment() {
+    case "$1" in
+        *'//'*) printf '%s' "${1%%//*}" ;;
+        *) printf '%s' "$1" ;;
+    esac
 }
 
 # HITS accumulates human-readable "file[:line]: message" for the report.
@@ -311,17 +355,26 @@ scan_js_file() {
         [ -z "$trimmed" ] && continue
         case "$trimmed" in '//'*) continue ;; esac
         local m
-        m=$(printf '%s' "$line" | grep -E "(execFileSync|spawnSync|execSync|spawn)\\([[:space:]]*['\"]git['\"]") || true
+        # A quote/backtick opening char, then "git", then either the SAME
+        # closing char (the array-arg form, `'git'`) or whitespace (a
+        # single quoted/backtick multi-word command, `'git status'` /
+        # `` `git status` ``) — catches both shapes the array-only match
+        # (`execFileSync('git', [...])`) missed. `exec`/`execFile` (no
+        # `Sync`) are real Node call forms this list omitted (HIMMEL-3570 CR
+        # fixup); each alternative requires its OWN immediate `(`, so
+        # `exec` never matches inside `execSync`/`execFile`/`execFileSync`.
+        m=$(printf '%s' "$line" | grep -E "(execFileSync|execFile|spawnSync|spawn|execSync|exec)\\([[:space:]]*['\"\`]git([[:space:]]|['\"\`])") || true
         [ -n "$m" ] || continue
-        # Window: this line plus the next 4, joined, to see a same-statement
-        # scrub (e.g. an `env:` object on a following line).
+        # Window: this line plus the next 4, comment-stripped, joined, to see
+        # a same-statement scrub (e.g. an `env:` object on a following line)
+        # without a comment MENTIONING the scrub names satisfying the check.
         local end=$((lineno + 4))
         [ "$end" -gt "$n" ] && end=$n
-        window="$line"
+        window=$(strip_js_comment "$line")
         local j=$lineno
         while [ "$j" -lt "$end" ]; do
             window="$window
-${lines[$j]}"
+$(strip_js_comment "${lines[$j]}")"
             j=$((j + 1))
         done
         case "$window" in
