@@ -88,13 +88,7 @@
     "claude-obsidian@himmel": false,
     "luna-correlate@himmel": false,
     "obsidian-triage@himmel": false,
-    "telegram-himmel@himmel": false,
-    "coderabbit@claude-plugins-official": false,
-    "mattpocock-skills@claude-plugins-official": false,
-    "superpowers@claude-plugins-official": false,
-    "ponytail@ponytail": false,
-    "scroll-world@scroll-world": false,
-    "ui-ux-pro-max@ui-ux-pro-max-skill": false
+    "telegram-himmel@himmel": false
   },
   "_onDemandPluginsComment": "HIMMEL-2733 ON-DEMAND tier: INSTALLED by install-plugins.sh but left DISABLED, so the plugin is reachable (`/profile enable <spec>`, or a cadence's own force-enable fragment) without costing session-start context on every launch. `neededBy` names WHO wants it, so discovery can say 'enable X for Y'. Every key here MUST also appear in enabledPlugins as `false` (check-template-himmel-plugins.sh enforces that), and its marketplace MUST be in extraKnownMarketplaces.",
   "onDemandPlugins": {
@@ -153,15 +147,6 @@
     "openai-codex": {
       "source": { "source": "url", "url": "https://github.com/openai/codex-plugin-cc.git" },
       "autoUpdate": true
-    },
-    "ponytail": {
-      "source": { "source": "github", "repo": "DietrichGebert/ponytail" }
-    },
-    "ui-ux-pro-max-skill": {
-      "source": { "source": "github", "repo": "nextlevelbuilder/ui-ux-pro-max-skill" }
-    },
-    "scroll-world": {
-      "source": { "source": "github", "repo": "oso95/scroll-world" }
     }
   },
   "autoUpdatesChannel": "latest",
