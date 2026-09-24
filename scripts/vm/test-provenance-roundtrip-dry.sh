@@ -91,7 +91,48 @@ case "$last" in
 esac
 exit 0
 EOF
-chmod +x "$FAKEBIN/VBoxManage" "$FAKEBIN/fakepy" "$FAKEBIN/ssh"
+
+# --- fake docker/podman: the aur-mode container runtime. `info` answers
+# whether the runtime is "up" (FAKE_RUNTIME_NO_INFO forces both to refuse, for
+# the no-runtime-answers case); `run` prints a fake container id; `exec`'s
+# remote command is the LAST argv element, same shape ssh already forwards
+# (aur_ssh's `bash -c "$1"` produces the identical trailing command-string),
+# so the same $last case-match technique applies. The one exec that is NOT
+# that shape is the root container-setup call (`exec <c> bash /root/aur-setup.sh
+# ...`); it is matched separately, by substring, and always succeeds.
+cat >"$FAKEBIN/docker" <<'EOF'
+#!/usr/bin/env bash
+tag=$(basename "$0" | tr '[:lower:]' '[:upper:]')
+printf '%s %s\n' "$tag" "$*" >> "$FAKE_LOG"
+case "${1:-}" in
+  info)
+    [ "$tag" != DOCKER ] || [ -z "${FAKE_DOCKER_ONLY_FAIL:-}" ] || exit 1
+    [ -z "${FAKE_RUNTIME_NO_INFO:-}" ] || exit 1
+    exit 0 ;;
+  run) echo "${FAKE_CONTAINER_ID:-fakecontainer}"; exit 0 ;;
+  cp) exit 0 ;;
+  stop) exit 0 ;;
+  exec)
+    if [[ "$*" == *aur-setup.sh* ]]; then exit 0; fi
+    for last in "$@"; do :; done
+    if [ -n "${FAKE_FAIL_MATCH:-}" ] && [[ "$last" == *"$FAKE_FAIL_MATCH"* ]]; then exit 7; fi
+    case "$last" in
+      *'-xf -'|'cat > '*) cat >/dev/null ;;
+      *assert-provenance.sh*) cat "$FAKE_ASSERT" ;;
+      *'/usr/bin/himmelctl uninstall'*)
+        case "${FAKE_UNINSTALL:-ok}" in
+          halt) echo '[uninstall-log] Halted at: [7/8] Claude marketplaces: uninstall-plugins.sh reported failures'; exit 2 ;;
+          rc3) echo '[uninstall-log] boom'; exit 3 ;;
+          early) echo '[uninstall-log] Halted at: [3/8] Claude settings: jq failed'; exit 2 ;;
+        esac ;;
+      *'[ -e /opt/himmel ]'*) echo gone; echo gone ;;
+    esac
+    exit 0 ;;
+esac
+exit 0
+EOF
+cp "$FAKEBIN/docker" "$FAKEBIN/podman"
+chmod +x "$FAKEBIN/VBoxManage" "$FAKEBIN/fakepy" "$FAKEBIN/ssh" "$FAKEBIN/docker" "$FAKEBIN/podman"
 
 BOTH="$WORK/assert-both"
 cat >"$BOTH" <<'EOF'
@@ -140,6 +181,25 @@ ssh_order() {
             *'bin.js uninstall'*|*'.local/bin/himmelctl uninstall'*) echo uninstall ;;
             *'inventory.sh C'*) echo invC ;;
             *assert-provenance.sh*) echo assert ;;
+        esac
+    done | tr '\n' ' '
+}
+
+# container_order <log> — the aur-mode twin of ssh_order: same steps, over
+# DOCKER/PODMAN exec lines and the /usr/bin/himmelctl RUN_BIN, plus the aur-only
+# pacman-remove tail step.
+container_order() {
+    grep -E '^(DOCKER|PODMAN) exec' "$1" | while IFS= read -r l; do
+        case "$l" in
+            *seed-provenance.sh*) echo seed ;;
+            *'inventory.sh A'*) echo invA ;;
+            *'himmelctl install'*'--scope project'*) echo install-project ;;
+            *'himmelctl install'*'--scope user'*) echo install-user ;;
+            *'inventory.sh B'*) echo invB ;;
+            *'/usr/bin/himmelctl uninstall'*) echo uninstall ;;
+            *'inventory.sh C'*) echo invC ;;
+            *assert-provenance.sh*) echo assert ;;
+            *'pacman -R'*) echo pacman-remove ;;
         esac
     done | tr '\n' ' '
 }
@@ -569,12 +629,26 @@ else
     fail_case "D18 bad --install-from: rc=$RC"; dump
 fi
 
-# D18b — aur refuses "needs S5 packaging", rc 2, before VBoxManage (S5 has not landed)
-run_rt "$BOTH" f73a62f1 --install-from aur
-if [ "$RC" -eq 2 ] && [ ! -s "$LOG" ] && printf '%s\n' "$OUT" | grep -qF 'needs S5 packaging'; then
-    pass "D18b --install-from aur refuses 'needs S5 packaging' before touching VBoxManage"
+# D18b — aur: no container runtime answers refuses (its own rc 3), only
+# `info` was probed (docker then podman), nothing else ran
+FAKE_RUNTIME_NO_INFO=1 run_rt "$BOTH" f73a62f1 --install-from aur
+if [ "$RC" -eq 3 ] && [ "$(grep -cE '^(DOCKER|PODMAN) info$' "$LOG")" -eq 2 ] \
+   && ! grep -qE '^(DOCKER|PODMAN) (run|exec|cp|stop)' "$LOG" \
+   && ! grep -q '^VBOX ' "$LOG" \
+   && printf '%s\n' "$OUT" | grep -qF 'no container runtime answers'; then
+    pass "D18b aur: no container runtime answers refuses (rc=3) after probing docker then podman info, nothing else runs"
 else
-    fail_case "D18b aur refusal: rc=$RC"; dump
+    fail_case "D18b aur no-runtime refusal: rc=$RC"; dump
+fi
+
+# D18b2 — aur + --clone-gone is refused (rc 2) before any runtime is probed:
+# aur mode never stages a clone, so there is nothing for --clone-gone to remove
+run_rt "$BOTH" f73a62f1 --install-from aur --clone-gone
+if [ "$RC" -eq 2 ] && [ ! -s "$LOG" ] \
+   && printf '%s\n' "$OUT" | grep -qF -- '--clone-gone is not supported with --install-from aur'; then
+    pass "D18b2 aur + --clone-gone refuses (rc=2) before touching any runtime"
+else
+    fail_case "D18b2 aur clone-gone: rc=$RC"; dump
 fi
 
 # D18c — clone stays the default and byte-for-byte unaffected: same guest step
@@ -608,6 +682,36 @@ if [ "$RC" -eq 0 ] && [ "$got" = "$want" ] && [ "$bin_ok" -eq 1 ] \
     pass "D18d --install-from tarball: real build-tarball.sh ran, guest installs from the extracted ~/.local/share/himmel/current tree, no stage/git-init: $got"
 else
     fail_case "D18d tarball mode: rc=$RC order='$got' bin_ok=$bin_ok"; dump
+fi
+
+# =====================================================================
+# D19 — --install-from aur: the full round trip, hermetically, through a
+# fake docker (HIMMEL-3059 S6b). AUR_REF is f8ef4333 (post-S5), the first
+# commit on main carrying packaging/aur/{PKGBUILD,himmel.install} — f73a62f1
+# predates S5 and has neither file, so it cannot exercise this mode.
+# =====================================================================
+AUR_REF=f8ef4333e3f0e03bc540da932a09a3eb84696d67
+HIMMEL_RT_TARBALL_NO_BUILD=1 run_rt "$ALL_PASS" "$AUR_REF" --install-from aur
+got=$(container_order "$LOG")
+want='seed invA install-project install-user invB uninstall invC assert pacman-remove '
+if [ "$RC" -eq 0 ] && [ "$got" = "$want" ] \
+   && printf '%s\n' "$OUT" | grep -qE '^\[run\] .*install-from=aur .*runtime=docker image=archlinux:base-devel guest-user=builder$' \
+   && printf '%s\n' "$OUT" | grep -qxF '[step] container-boot runtime=docker image=archlinux:base-devel' \
+   && printf '%s\n' "$OUT" | grep -qxF '[step] container-setup' \
+   && printf '%s\n' "$OUT" | grep -qxF '[step] makepkg' \
+   && printf '%s\n' "$OUT" | grep -qE '^asset: .*himmel-0\.0\.0-rt[0-9a-f]+-linux\.tar\.gz$' \
+   && printf '%s\n' "$OUT" | grep -qxF '[pacman-payload] /opt/himmel=gone /usr/bin/himmelctl=gone'; then
+    pass "D19 --install-from aur: full hermetic round trip through the container, guest steps in order: $got"
+else
+    fail_case "D19 aur hermetic green: rc=$RC order='$got'"; dump
+fi
+
+# D19b — podman is tried only when docker's `info` refuses (autodetect order)
+FAKE_DOCKER_ONLY_FAIL=1 HIMMEL_RT_TARBALL_NO_BUILD=1 run_rt "$ALL_PASS" "$AUR_REF" --install-from aur
+if printf '%s\n' "$OUT" | grep -qE '^\[run\] .*runtime=podman '; then
+    pass "D19b docker refusing 'info' falls back to podman"
+else
+    fail_case "D19b docker->podman fallback"; dump
 fi
 
 echo

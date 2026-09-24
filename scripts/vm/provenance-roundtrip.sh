@@ -12,7 +12,7 @@
 #
 # Usage: scripts/vm/provenance-roundtrip.sh <branch|sha> [--expect-red]
 #            [--profile core|all] [--purge-state] [--clone-gone]
-#            [--install-from clone|tarball|aur]
+#            [--install-from clone|tarball|aur] [--runtime docker|podman] [--image <ref>]
 #   --expect-red   pass only when BOTH directions fail (the pre-fix RED); any
 #                  missing direction prints `RED incomplete: <dir> direction missing`
 #   --install-from clone (default) stages the ref's tree and installs from it,
@@ -21,8 +21,16 @@
 #                  stages the two assets, then installs on the guest via the
 #                  README recipe (sha256 verify, extract into the versioned
 #                  dir + `current`), before running the same install/uninstall/
-#                  assert chain (HIMMEL-3059 S6). `aur` refuses today: it needs
-#                  S5 packaging (HIMMEL-3059 S5), a separate leg, not merged yet.
+#                  assert chain (HIMMEL-3059 S6). `aur` (HIMMEL-3059 S6b, console
+#                  ruling 2026-09-24) builds the same release tarball, then packages
+#                  and installs it via the REAL PKGBUILD in an archlinux:base-devel
+#                  container (docker or podman — no VM, pacman is Arch-only and
+#                  no Arch VM exists in vms.json): makepkg -si installs
+#                  /opt/himmel + /usr/bin/himmelctl owned by pacman, then the same
+#                  seed/install/uninstall/assert chain runs as a non-root
+#                  container user, then `pacman -R himmel` removes the payload.
+#                  --runtime/--image only apply to this mode (default: autodetect
+#                  docker then podman, image archlinux:base-devel).
 #   --profile      the install profile (default core). `all` also arms the
 #                  pipeline, qmd and graphmap cadences: the seed step then puts
 #                  user-owned qmd/graphify stubs on the guest PATH (the arms
@@ -65,11 +73,11 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
-    echo "usage: scripts/vm/provenance-roundtrip.sh <branch|sha> [--expect-red] [--profile core|all] [--purge-state] [--clone-gone] [--install-from clone|tarball|aur]" >&2
+    echo "usage: scripts/vm/provenance-roundtrip.sh <branch|sha> [--expect-red] [--profile core|all] [--purge-state] [--clone-gone] [--install-from clone|tarball|aur] [--runtime docker|podman] [--image <ref>]" >&2
     exit 2
 }
 
-REF="" EXPECT_RED=0 PROFILE=core PURGE=0 CLONE_GONE=0 INSTALL_FROM=clone
+REF="" EXPECT_RED=0 PROFILE=core PURGE=0 CLONE_GONE=0 INSTALL_FROM=clone RUNTIME_OPT="" IMAGE_OPT=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --expect-red) EXPECT_RED=1; shift ;;
@@ -81,21 +89,49 @@ while [ $# -gt 0 ]; do
         --install-from)
             case "${2:-}" in clone|tarball|aur) INSTALL_FROM="$2" ;; *) usage ;; esac
             shift 2 ;;
+        --runtime)
+            case "${2:-}" in docker|podman) RUNTIME_OPT="$2" ;; *) usage ;; esac
+            shift 2 ;;
+        --image)
+            [ -n "${2:-}" ] || usage; IMAGE_OPT="$2"; shift 2 ;;
         -h|--help) usage ;;
         -*) usage ;;
         *) [ -z "$REF" ] || usage; REF="$1"; shift ;;
     esac
 done
 [ -n "$REF" ] || usage
+# --runtime/--image only mean anything for the container backend.
+[ "$INSTALL_FROM" = aur ] || { [ -z "$RUNTIME_OPT" ] && [ -z "$IMAGE_OPT" ]; } || usage
 
 fail() {
     echo "ERROR: provenance-roundtrip: $1" >&2
     exit 2
 }
 
-# aur mode: S5 (AUR packaging) has not landed yet; refuse before touching
-# VirtualBox at all, same posture as a usage error.
-[ "$INSTALL_FROM" != aur ] || fail "--install-from aur: needs S5 packaging (HIMMEL-3059 S5)"
+# aur mode never stages a clone tree, so --clone-gone (which deletes one) is
+# not a meaningful combination.
+[ "$INSTALL_FROM" != aur ] || [ "$CLONE_GONE" = 0 ] || fail "--clone-gone is not supported with --install-from aur"
+
+RUNTIME="" IMAGE="${IMAGE_OPT:-archlinux:base-devel}"
+if [ "$INSTALL_FROM" = aur ]; then
+    # No Arch VM exists (scripts/lib/vms.json lists ubuntu_new/win11_base_himmel/
+    # win2 only) and pacman is Arch-only, so this mode never touches VirtualBox:
+    # refuse before resolving the ref at all if no runtime answers, same
+    # posture as a usage error, but its own exit code (3) since it is neither
+    # a usage mistake nor a harness-step failure.
+    pick_runtime() {
+        local r
+        if [ -n "$RUNTIME_OPT" ]; then
+            command -v "$RUNTIME_OPT" >/dev/null 2>&1 && "$RUNTIME_OPT" info >/dev/null 2>&1 && { echo "$RUNTIME_OPT"; return 0; }
+            return 1
+        fi
+        for r in docker podman; do
+            command -v "$r" >/dev/null 2>&1 && "$r" info >/dev/null 2>&1 && { echo "$r"; return 0; }
+        done
+        return 1
+    }
+    RUNTIME=$(pick_runtime) || { echo "ERROR: provenance-roundtrip: --install-from aur: no container runtime answers ('docker info'/'podman info'); pass --runtime or start one" >&2; exit 3; }
+fi
 
 # The ref is resolved BEFORE anything touches VirtualBox.
 SHA=$(git -C "$REPO_ROOT" rev-parse --verify --quiet "$REF^{commit}") \
@@ -109,21 +145,27 @@ SHA=$(git -C "$REPO_ROOT" rev-parse --verify --quiet "$REF^{commit}") \
 # shellcheck source=scripts/lib/vm-guest-excludes.sh
 . "$REPO_ROOT/scripts/lib/vm-guest-excludes.sh"
 
-vm_env_init
+[ "$INSTALL_FROM" = aur ] || vm_env_init
 # shellcheck source=scripts/vm/vm-lock.sh
 . "$REPO_ROOT/scripts/vm/vm-lock.sh"
 
-SOURCE_VM="${HIMMEL_VM_AR_SOURCE_VM:-ubuntu_new}"
-SNAPSHOT="${HIMMEL_VM_AR_SNAPSHOT:-suite-ready-v4}"
-if [ -n "${HIMMEL_VM_AR_GUEST_USER:-}" ]; then
-    GUEST_USER="$HIMMEL_VM_AR_GUEST_USER"
+if [ "$INSTALL_FROM" = aur ]; then
+    # The guest is the container's own non-root user, a fixed identity
+    # independent of any VM or vms.json lookup.
+    GUEST_USER=builder
 else
-    GUEST_USER=$("$HIMMEL_VM_PYTHON" -c '
+    SOURCE_VM="${HIMMEL_VM_AR_SOURCE_VM:-ubuntu_new}"
+    SNAPSHOT="${HIMMEL_VM_AR_SNAPSHOT:-suite-ready-v4}"
+    if [ -n "${HIMMEL_VM_AR_GUEST_USER:-}" ]; then
+        GUEST_USER="$HIMMEL_VM_AR_GUEST_USER"
+    else
+        GUEST_USER=$("$HIMMEL_VM_PYTHON" -c '
 import json, sys
 u = json.load(open(sys.argv[1])).get(sys.argv[2], {}).get("user")
 sys.exit(1) if not u else print(u)
 ' "$REPO_ROOT/scripts/lib/vms.json" "$SOURCE_VM" 2>/dev/null) \
-        || fail "no 'user' for '$SOURCE_VM' in scripts/lib/vms.json"
+            || fail "no 'user' for '$SOURCE_VM' in scripts/lib/vms.json"
+    fi
 fi
 case "$GUEST_USER" in ''|*[!A-Za-z0-9._-]*) fail "invalid guest user '$GUEST_USER'" ;; esac
 GHOME="/home/$GUEST_USER"
@@ -132,8 +174,9 @@ WORKDIR=/tmp/rt-work
 TARBALL_STAGE=/tmp/rt-tarball
 SHARE_HIMMEL="$GHOME/.local/share/himmel"
 case "$INSTALL_FROM" in
-    clone)   BIN="$SRC/scripts/himmelctl/bin.js" ;;
-    tarball) BIN="$SHARE_HIMMEL/current/scripts/himmelctl/bin.js" ;;
+    clone)   RUN_BIN="node $SRC/scripts/himmelctl/bin.js"; INSTALLED_ROOT="$SRC" ;;
+    tarball) RUN_BIN="node $SHARE_HIMMEL/current/scripts/himmelctl/bin.js"; INSTALLED_ROOT="$SHARE_HIMMEL/current" ;;
+    aur)     RUN_BIN="/usr/bin/himmelctl"; INSTALLED_ROOT="/opt/himmel" ;;
 esac
 
 # The exact environment every install and the uninstall run under (HIMMEL-3321:
@@ -143,9 +186,18 @@ ENV_CMD="env -i ${INSTALL_ENV[*]}"
 
 HOST_TMP=""
 LOCKED=0
+CONTAINER=""
+TARBALL_OUT=""
 # shellcheck disable=SC2317,SC2329 # invoked via `trap cleanup EXIT`
 cleanup() {
-    local rc=$? off_rc=0 res_rc=0
+    local rc=$?
+    if [ "$INSTALL_FROM" = aur ]; then
+        [ -z "$CONTAINER" ] || "$RUNTIME" stop -t 5 "$CONTAINER" >&2 2>/dev/null || true
+        [ -z "$HOST_TMP" ] || rm -rf "$HOST_TMP"
+        [ -z "$TARBALL_OUT" ] || rm -rf "$TARBALL_OUT"
+        exit "$rc"
+    fi
+    local off_rc=0 res_rc=0
     if [ "$LOCKED" = 1 ]; then
         vbox_py '
 try:
@@ -173,24 +225,35 @@ trap cleanup EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
 
-vm_slot_acquire
-vm_lock_acquire_waiting "$CLONE_NAME"
-case $? in
-    0) LOCKED=1 ;;
-    5) fail "timed out waiting for the vm-lock on '$CLONE_NAME'" ;;
-    *) fail "could not acquire the vm-lock on '$CLONE_NAME'" ;;
-esac
+if [ "$INSTALL_FROM" = aur ]; then
+    echo "[run] ref=$REF sha=$SHA install-from=$INSTALL_FROM profile=$PROFILE purge-state=$PURGE expect-red=$EXPECT_RED runtime=$RUNTIME image=$IMAGE guest-user=$GUEST_USER"
+else
+    vm_slot_acquire
+    vm_lock_acquire_waiting "$CLONE_NAME"
+    case $? in
+        0) LOCKED=1 ;;
+        5) fail "timed out waiting for the vm-lock on '$CLONE_NAME'" ;;
+        *) fail "could not acquire the vm-lock on '$CLONE_NAME'" ;;
+    esac
 
-echo "[run] ref=$REF sha=$SHA install-from=$INSTALL_FROM profile=$PROFILE purge-state=$PURGE clone-gone=$CLONE_GONE expect-red=$EXPECT_RED clone=$CLONE_NAME snapshot=$SNAPSHOT guest-user=$GUEST_USER"
-vm_clone_ensure "$SNAPSHOT"
-vm_restore "$SNAPSHOT"
-vm_boot
+    echo "[run] ref=$REF sha=$SHA install-from=$INSTALL_FROM profile=$PROFILE purge-state=$PURGE clone-gone=$CLONE_GONE expect-red=$EXPECT_RED clone=$CLONE_NAME snapshot=$SNAPSHOT guest-user=$GUEST_USER"
+    vm_clone_ensure "$SNAPSHOT"
+    vm_restore "$SNAPSHOT"
+    vm_boot
+fi
+
+# aur_ssh <cmd> — run one command in the container as the non-root builder
+# user, stdin forwarded (-i) so a tar pipe works the same way vm_ssh's does.
+aur_ssh() { "$RUNTIME" exec -i -u "$GUEST_USER" -w "$GHOME" -e HOME="$GHOME" "$CONTAINER" bash -c "$1"; }
+# guest_ssh <cmd> — the one guest dispatch point every mode's steps use:
+# aur's container exec, or the existing VM's vm_ssh, byte-identical to before.
+guest_ssh() { if [ "$INSTALL_FROM" = aur ]; then aur_ssh "$1"; else vm_ssh "$1"; fi; }
 
 # step <name> <guest-command> — one guest step; any failure ends the run (rc 2).
 step() {
     local name="$1" rc
     echo "[step] $name"
-    vm_ssh "$2"
+    guest_ssh "$2"
     rc=$?
     [ "$rc" -eq 0 ] || fail "step $name failed (rc=$rc)"
 }
@@ -198,7 +261,7 @@ step() {
 # 1. Stage the ref's tree (git archive: tracked files only) + the helpers.
 HOST_TMP=$(mktemp -d "${TMPDIR:-/tmp}/rt-src.XXXXXX") || fail "mktemp failed"
 git -C "$REPO_ROOT" archive "$SHA" | tar -x -C "$HOST_TMP" || fail "git archive $SHA failed"
-if [ "$INSTALL_FROM" = tarball ]; then
+if [ "$INSTALL_FROM" = tarball ] || [ "$INSTALL_FROM" = aur ]; then
     # build-tarball.sh always archives HEAD of --src, so HOST_TMP (already the
     # ref's tree) is turned into a one-commit git checkout AT $SHA on the
     # HOST, mirroring the release job (reused unmodified, not re-implemented).
@@ -222,13 +285,54 @@ if [ "$INSTALL_FROM" = tarball ]; then
     bash "$REPO_ROOT/scripts/release/build-tarball.sh" --version "$VERSION" --src "$HOST_TMP" --out "$TARBALL_OUT" "${BUILD_ARGS[@]}" \
         || fail "step build-tarball failed"
     ASSET="himmel-$VERSION-linux.tar.gz"
-    echo "[step] stage-tarball"
-    tar -C "$TARBALL_OUT" -cf - "$ASSET" "$ASSET.sha256" \
-        | vm_ssh "rm -rf $TARBALL_STAGE && mkdir -p $TARBALL_STAGE && tar -C $TARBALL_STAGE -xf -" \
-        || fail "step stage-tarball failed"
-    # The README recipe verbatim: sha256 verify, extract into the versioned
-    # dir with --strip-components=1, `current` symlink.
-    step tarball-extract "cd $TARBALL_STAGE && sha256sum -c $ASSET.sha256 && mkdir -p $SHARE_HIMMEL/$VERSION && tar -xzf $ASSET -C $SHARE_HIMMEL/$VERSION --strip-components=1 && ln -sfn $VERSION $SHARE_HIMMEL/current"
+    if [ "$INSTALL_FROM" = tarball ]; then
+        echo "[step] stage-tarball"
+        tar -C "$TARBALL_OUT" -cf - "$ASSET" "$ASSET.sha256" \
+            | vm_ssh "rm -rf $TARBALL_STAGE && mkdir -p $TARBALL_STAGE && tar -C $TARBALL_STAGE -xf -" \
+            || fail "step stage-tarball failed"
+        # The README recipe verbatim: sha256 verify, extract into the versioned
+        # dir with --strip-components=1, `current` symlink.
+        step tarball-extract "cd $TARBALL_STAGE && sha256sum -c $ASSET.sha256 && mkdir -p $SHARE_HIMMEL/$VERSION && tar -xzf $ASSET -C $SHARE_HIMMEL/$VERSION --strip-components=1 && ln -sfn $VERSION $SHARE_HIMMEL/current"
+    else
+        # aur: package + install the SAME tarball via the real PKGBUILD, inside
+        # a fresh --rm container (no host writes beyond $TARBALL_OUT/$HOST_TMP
+        # scratch). pacman/makepkg is Arch-only, hence the container instead of
+        # a VM. cronie is installed for crontab(1) only; nothing starts a
+        # cron/systemd session inside the container.
+        # ponytail: no running cron/systemd session in the container, so
+        # --profile all's cadence-crontab-removed direction is observed via
+        # crontab(1) spool state only, never a live fire; upgrade path is a
+        # real Arch VM guest, HIMMEL-3059 follow-up.
+        cp "$HOST_TMP/packaging/aur/PKGBUILD" "$HOST_TMP/packaging/aur/himmel.install" "$TARBALL_OUT/" \
+            || fail "step aur-stage failed: packaging/aur/{PKGBUILD,himmel.install} missing at $SHA"
+        SUM=$(awk '{print $1}' "$TARBALL_OUT/$ASSET.sha256")
+        AUR_PKGVER="${VERSION//-/}"
+        echo "[step] container-boot runtime=$RUNTIME image=$IMAGE"
+        CONTAINER=$("$RUNTIME" run -d --rm -v "$TARBALL_OUT:/art:ro" "$IMAGE" sleep infinity) \
+            || fail "step container-boot failed: could not start $IMAGE"
+        cat >"$HOST_TMP/aur-setup.sh" <<'AURSETUP'
+#!/usr/bin/env bash
+set -euo pipefail
+GHOME="$1" ASSET="$2" PKGVER="$3" SUM="$4"
+pacman -Syu --noconfirm --needed git jq nodejs python sudo cronie
+useradd -m -d "$GHOME" builder
+echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+mkdir -p /build/pkg
+cp /art/PKGBUILD /art/himmel.install "/art/$ASSET" "/art/$ASSET.sha256" /build/pkg/
+sed -i \
+    -e "s|^pkgver=.*|pkgver=$PKGVER|" \
+    -e "s|^source=.*|source=(\"$ASSET\")|" \
+    -e "s|^sha256sums=.*|sha256sums=('$SUM')|" \
+    /build/pkg/PKGBUILD
+chown -R builder /build/pkg
+AURSETUP
+        echo "[step] container-setup"
+        if ! "$RUNTIME" cp "$HOST_TMP/aur-setup.sh" "$CONTAINER:/root/aur-setup.sh" \
+            || ! "$RUNTIME" exec "$CONTAINER" bash /root/aur-setup.sh "$GHOME" "$ASSET" "$AUR_PKGVER" "$SUM"; then
+            fail "step container-setup failed"
+        fi
+        step makepkg "cd /build/pkg && makepkg -si --noconfirm --nocolor >/tmp/makepkg.log 2>&1; rc=\$?; sed 's/^/[makepkg-log] /' /tmp/makepkg.log; exit \$rc"
+    fi
 else
     TOP=()
     while IFS= read -r f; do TOP+=("$f"); done < <(ls -A "$HOST_TMP")
@@ -239,7 +343,7 @@ else
 fi
 echo "[step] helpers"
 tar -C "$REPO_ROOT/scripts/vm/lib" -cf - seed-provenance.sh assert-provenance.sh inventory.sh invdiff.py \
-    | vm_ssh "rm -rf $WORKDIR && mkdir -p $WORKDIR && tar -C $WORKDIR -xf -" || fail "step helpers failed"
+    | guest_ssh "rm -rf $WORKDIR && mkdir -p $WORKDIR && tar -C $WORKDIR -xf -" || fail "step helpers failed"
 
 # 2-3. Seed, inventory A.
 step seed "HIMMEL_RT_GUEST=1 RT_PROFILE=$PROFILE bash $WORKDIR/seed-provenance.sh"
@@ -253,9 +357,9 @@ step inventory-A "bash $WORKDIR/inventory.sh A"
 # shellcheck disable=SC2016 # $v is jq's, bound by --arg on the guest
 OVERLAY='.vault = {mode: "default-template", path: $v} | .cadences = {pipeline: "armed", qmd: "armed", graphmap: "armed"}'
 if [ "$PROFILE" = all ]; then
-    echo "[overlay] jq --arg v $GHOME/luna '$OVERLAY' $SRC/docs/setup/profiles/adopter-<scope>.install-profile.json"
+    echo "[overlay] jq --arg v $GHOME/luna '$OVERLAY' $INSTALLED_ROOT/docs/setup/profiles/adopter-<scope>.install-profile.json"
     for scope in project user; do
-        step "profile-$scope" "jq --arg v $GHOME/luna '$OVERLAY' $SRC/docs/setup/profiles/adopter-$scope.install-profile.json >$WORKDIR/profile-all-$scope.json"
+        step "profile-$scope" "jq --arg v $GHOME/luna '$OVERLAY' $INSTALLED_ROOT/docs/setup/profiles/adopter-$scope.install-profile.json >$WORKDIR/profile-all-$scope.json"
     done
 fi
 echo "[env] $ENV_CMD"
@@ -265,7 +369,7 @@ for scope in project user; do
     # `install` takes no --profile/--yes (spec §11 step 4 says so; the CLI does
     # not): `--scope` alone is the non-interactive adopter path, whose shipped
     # profile (starter, vault none) maps to adopt.sh --profile core.
-    INSTALL_CMD="cd $GHOME/proj && $ENV_CMD node $BIN install ${INSTALL_ARGS:+$INSTALL_ARGS }--scope $scope >$WORKDIR/install-$scope.log 2>&1; rc=\$?; sed 's/^/[install-$scope-log] /' $WORKDIR/install-$scope.log; exit \$rc"
+    INSTALL_CMD="cd $GHOME/proj && $ENV_CMD $RUN_BIN install ${INSTALL_ARGS:+$INSTALL_ARGS }--scope $scope >$WORKDIR/install-$scope.log 2>&1; rc=\$?; sed 's/^/[install-$scope-log] /' $WORKDIR/install-$scope.log; exit \$rc"
     step "install-$scope" "$INSTALL_CMD"
 done
 
@@ -286,13 +390,13 @@ if [ "$CLONE_GONE" = 1 ]; then
     UNINSTALL_ENTRY="$GHOME/.local/bin/himmelctl"
     UNINSTALL_CD="cd $GHOME/proj"
 else
-    UNINSTALL_ENTRY="node $BIN"
+    UNINSTALL_ENTRY="$RUN_BIN"
     UNINSTALL_CD="cd $GHOME/proj"
 fi
 # A non-zero uninstall is itself a result (console ruling): record its rc and
 # the step it halted at, then take inventory C anyway.
 echo "[step] uninstall"
-UN_OUT=$(vm_ssh "$UNINSTALL_CD && $ENV_CMD $UNINSTALL_ENTRY uninstall $UNINSTALL_FLAGS >$WORKDIR/uninstall.log 2>&1; rc=\$?; sed 's/^/[uninstall-log] /' $WORKDIR/uninstall.log; exit \$rc")
+UN_OUT=$(guest_ssh "$UNINSTALL_CD && $ENV_CMD $UNINSTALL_ENTRY uninstall $UNINSTALL_FLAGS >$WORKDIR/uninstall.log 2>&1; rc=\$?; sed 's/^/[uninstall-log] /' $WORKDIR/uninstall.log; exit \$rc")
 UN_RC=$?
 printf '%s\n' "$UN_OUT"
 # "Halted at: [7/8] ..." -> 7; empty when the uninstall ran every step.
@@ -323,11 +427,22 @@ fi
 step inventory-C "bash $WORKDIR/inventory.sh C"
 
 echo "[step] invdiff"
-vm_ssh "INVDIFF_BASE=/tmp python3 $WORKDIR/invdiff.py A B | grep '^###'; INVDIFF_BASE=/tmp python3 $WORKDIR/invdiff.py A C | grep '^###'" || true
+guest_ssh "INVDIFF_BASE=/tmp python3 $WORKDIR/invdiff.py A B | grep '^###'; INVDIFF_BASE=/tmp python3 $WORKDIR/invdiff.py A C | grep '^###'" || true
 echo "[step] assert"
-ASSERT_OUT=$(vm_ssh "HIMMEL_RT_GUEST=1 RT_PURGE=$PURGE RT_PROFILE=$PROFILE bash $WORKDIR/assert-provenance.sh") \
+ASSERT_OUT=$(guest_ssh "HIMMEL_RT_GUEST=1 RT_PURGE=$PURGE RT_PROFILE=$PROFILE bash $WORKDIR/assert-provenance.sh") \
     || fail "step assert failed (rc=$?)"
 printf '%s\n' "$ASSERT_OUT"
+
+# aur only: complete the real-world lifecycle (himmelctl uninstall, then
+# `pacman -R himmel`, per packaging/aur/himmel.install's documented order) and
+# print explicit confirmation that pacman's own payload is gone. assert-provenance.sh
+# is $HOME-scoped only, so it never sees /opt/himmel or /usr/bin/himmelctl either
+# way — this is extra evidence beyond what the shared assertion checks.
+if [ "$INSTALL_FROM" = aur ]; then
+    step pacman-remove "sudo pacman -R --noconfirm himmel >/tmp/pacman-remove.log 2>&1; rc=\$?; sed 's/^/[pacman-remove-log] /' /tmp/pacman-remove.log; exit \$rc"
+    PAYLOAD=$(guest_ssh "{ [ -e /opt/himmel ] && echo present || echo gone; } ; { [ -e /usr/bin/himmelctl ] && echo present || echo gone; }")
+    echo "[pacman-payload] /opt/himmel=$(printf '%s\n' "$PAYLOAD" | sed -n 1p) /usr/bin/himmelctl=$(printf '%s\n' "$PAYLOAD" | sed -n 2p)"
+fi
 
 # 7b. --clone-gone --purge-state must leave no purge-owned ~/.himmel content
 # (design §5.2/§4: provenance.jsonl, provenance-backups/ and the standalone
