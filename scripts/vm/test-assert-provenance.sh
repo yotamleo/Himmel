@@ -328,7 +328,33 @@ run_assert core 0
 has "claude.json neg: a left-over projects entry fails, naming it" 'CHECK identity identity FAIL claude-json-restored — .* at: projects\..*/proj=null->\{\}$'
 cj_world '.theme = "light"'
 run_assert core 0
-has "claude.json neg: a changed user key fails, naming it" 'CHECK identity identity FAIL claude-json-restored — .* at: theme="dark"->"light"$'
+has "claude.json neg: a changed user key fails, naming it" 'CHECK identity identity FAIL claude-json-restored — .* at: theme=null->"light"$'
+
+# The CLI saves ~/.claude.json without the keys that equal its defaults
+# (Claude Code 2.1.281 saveGlobalConfig): the seed's theme "dark" is one.
+cj_world 'del(.theme)'
+run_assert core 0
+has "claude.json: a key the CLI dropped at its default value -> PASS" 'CHECK identity identity PASS claude-json-restored '
+cj_world 'del(.numStartups)'
+run_assert core 0
+has "claude.json neg: a dropped key that was NOT at its CLI default fails" 'CHECK identity identity FAIL claude-json-restored — .* at: numStartups=3->null$'
+
+# ---- 6h. HIMMEL-3541 class 4: `claude plugin marketplace add --scope user`
+# rewrites ~/.claude/settings.json in the CLI's own key order; the same values
+# in another order are restored, a changed value is not.
+set_world() {  # <jq program turning A into the live file>
+    fresh
+    jq -n '{mcpServers: {m: {command: "x"}}, env: {A: "1"}}' >"$LB/seed-state/settings.json"
+    jq "$1" "$LB/seed-state/settings.json" >"$H/.claude/settings.json"
+    printf '%s\n' "$H/.claude/settings.json" >>"$LB/seeded.list"
+    inv A f "$H/.claude/settings.json" a; inv C f "$H/.claude/settings.json" c
+}
+set_world '{env: .env, mcpServers: .mcpServers}'
+run_assert core 0
+has "settings: only the CLI's key order changed -> PASS" 'CHECK identity identity PASS seeded:~/\.claude/settings\.json — '
+set_world '{env: {A: "2"}, mcpServers: .mcpServers}'
+run_assert core 0
+has "settings neg: a changed value still fails, naming it" 'CHECK identity identity FAIL seeded:~/\.claude/settings\.json — .* at: env\.A="1"->"2"$'
 
 # ---- 6g. HIMMEL-3541 class 5: a directory new at B is recorded when a ledger
 # row's path lies under it (its writer's mkdir -p); one with none is not.

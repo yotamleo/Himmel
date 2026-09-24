@@ -68,13 +68,15 @@ led_units() {
 # Claude Code CLI re-fetches such a clone when install-plugins.sh's
 # "Registering marketplaces" step runs `claude plugin marketplace add` for it,
 # so its clone is the CLI's refresh of the operator's own marketplace.
-# json_delta <A copy> <C file> [keys to ignore, JSON array]: the first leaf
+# json_delta <A copy> <C file> [keys to ignore, JSON array] [top-level
+# defaults, JSON object: a key at its default counts as absent]: the first leaf
 # paths (an empty container counts as a leaf) whose values differ, each as
 # path=A->C, so a FAIL names what changed instead of only two shas; when no
 # value differs, the top-level key order of both.
 json_delta() {
-    jq -rn --slurpfile a "$1" --slurpfile c "$2" --argjson k "${3:-[]}" '
-        ($k | map([.])) as $d | ($a[0] | delpaths($d)) as $A | ($c[0] | delpaths($d)) as $C
+    jq -rn --slurpfile a "$1" --slurpfile c "$2" --argjson k "${3:-[]}" --argjson f "${4:-{\}}" '
+        def nodflt: if type == "object" then with_entries(select(.key as $x | ($f | has($x) | not) or .value != $f[$x])) else . end;
+        ($k | map([.])) as $d | ($a[0] | delpaths($d) | nodflt) as $A | ($c[0] | delpaths($d) | nodflt) as $C
         | def leaves: paths((type != "object" and type != "array") or length == 0);
           [($A | leaves), ($C | leaves)] | unique
         | map(select(. as $q | ($A | getpath($q)) != ($C | getpath($q))))
@@ -94,6 +96,10 @@ done < <(led_units marketplace)
 # first-run stamps, the machine/user ids, and its settings migrations.
 # ponytail: an exact list, so a future CLI key fails claude-json-restored until
 # it is added here (the safe direction); re-derive from the RT's A-vs-C diff.
+# The CLI also saves ~/.claude.json without every key equal to its default
+# (Claude Code 2.1.281 saveGlobalConfig keeps only keys whose JSON differs from
+# its default config), so a key at one of these defaults counts as absent.
+CLI_DEFAULTS='{"theme":"dark","preferredNotifChannel":"auto","verbose":false,"editorMode":"normal","autoCompactEnabled":true,"autoScrollEnabled":true,"showTurnDuration":true,"numStartups":0}'
 CLI_KEYS='["firstStartTime","firstStartVersion","hasResetAutoModeOptInForDefaultOffer","machineID","migrationVersion","opusProMigrationComplete","seenNotifications","sonnet1m45MigrationComplete","userID"]'
 
 # =========================================================== 1. byte identity
@@ -106,11 +112,12 @@ while IFS= read -r p; do
         # Claude Code CLI itself writes whenever the install or uninstall runs it.
         if [ -z "$(meta_of C "$p")" ]; then
             check identity too-much FAIL claude-json-restored "removed (present at A)"
-        elif jq -en --slurpfile a "$ST/claude.json" --slurpfile c "$p" --argjson k "$CLI_KEYS" \
-                '($k | map([.])) as $d | ($a[0] | delpaths($d)) == ($c[0] | delpaths($d))' >/dev/null 2>&1; then
-            check identity identity PASS claude-json-restored "equal to A outside the CLI's own keys"
+        elif jq -en --slurpfile a "$ST/claude.json" --slurpfile c "$p" --argjson k "$CLI_KEYS" --argjson f "$CLI_DEFAULTS" '
+                def nodflt: with_entries(select(.key as $x | ($f | has($x) | not) or .value != $f[$x]));
+                ($k | map([.])) as $d | ($a[0] | delpaths($d) | nodflt) == ($c[0] | delpaths($d) | nodflt)' >/dev/null 2>&1; then
+            check identity identity PASS claude-json-restored "equal to A outside the CLI's own keys and defaults"
         else
-            check identity identity FAIL claude-json-restored "differs from A outside the CLI's own keys at: $(json_delta "$ST/claude.json" "$p" "$CLI_KEYS")"
+            check identity identity FAIL claude-json-restored "differs from A outside the CLI's own keys at: $(json_delta "$ST/claude.json" "$p" "$CLI_KEYS" "$CLI_DEFAULTS")"
         fi
         continue
     fi
@@ -125,11 +132,18 @@ while IFS= read -r p; do
     if [ -z "$mc" ]; then
         check identity too-much FAIL "seeded:$(rel "$p")" "removed (present at A)"
     elif [ "$(sha_of A "$p")" != "$(sha_of C "$p")" ]; then
-        delta=""
+        delta="" acopy=""
         case "$p" in
-            "$H/.claude/settings.json") delta=" at: $(json_delta "$ST/settings.json" "$p")" ;;
-            "$H/proj/.claude/settings.json") delta=" at: $(json_delta "$ST/proj-settings.json" "$p")" ;;
+            "$H/.claude/settings.json") acopy="$ST/settings.json" ;;
+            "$H/proj/.claude/settings.json") acopy="$ST/proj-settings.json" ;;
         esac
+        # `claude plugin marketplace add|install` (install-plugins.sh) rewrites
+        # settings.json in the CLI's own key order: the same values restored.
+        if [ -n "$acopy" ] && jq -en --slurpfile a "$acopy" --slurpfile c "$p" '$a[0] == $c[0]' >/dev/null 2>&1; then
+            check identity identity PASS "seeded:$(rel "$p")" "same JSON values as A; only the key order differs (the Claude Code CLI's own serialization)"
+            continue
+        fi
+        [ -z "$acopy" ] || delta=" at: $(json_delta "$acopy" "$p")"
         check identity identity FAIL "seeded:$(rel "$p")" "content changed (sha A=$(sha_of A "$p" | cut -c1-12) C=$(sha_of C "$p" | cut -c1-12))$delta"
     elif [ "$ma" != "$mc" ]; then
         check identity identity FAIL "seeded:$(rel "$p")" "type/mode/target changed ($(printf '%s' "$ma" | tr '\t' ' ') -> $(printf '%s' "$mc" | tr '\t' ' '))"
