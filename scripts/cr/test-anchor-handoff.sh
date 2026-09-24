@@ -43,7 +43,12 @@ set -uo pipefail'
     # anchor's own git index to TRACK the resolved relative path before
     # trusting a self-anchor match - stage every fixture file so the genuine
     # self-anchor cases (T8) keep passing under that check.
-    git -C "$1" add -A
+    # HIMMEL-3437 (CodeRabbit, PR #1212 review round 3): clear any git
+    # identity env this suite's own caller might have set before staging, so
+    # fixture setup always targets $1's own default index rather than an
+    # inherited alternate one - T18/T19 still set their overrides explicitly
+    # afterward, on top of this clean baseline.
+    env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE git -C "$1" add -A
 }
 anchor="$tmp/anchor"; wt="$tmp/wt"; bare="$tmp/bare"
 make_tree "$anchor" anchor
@@ -208,7 +213,7 @@ check "$(run "$nested_removed" "$anchor" scripts/cr/clear-cr-marker.sh | tr '\n'
 fake="$tmp/fake_index"; mkdir -p "$fake/.claude/worktrees/nested_removed/scripts/cr"
 git init -q "$fake"
 touch "$fake/.claude/worktrees/nested_removed/scripts/cr/clear-cr-marker.sh"
-git -C "$fake" add -A
+env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE git -C "$fake" add -A
 run_index_override() {  # <cwd> <HIMMEL_REPO> <entry path> <extra env assignment...>
     local cwd="$1" repo="$2" entry="$3"; shift 3
     (cd "$cwd" && env -u CR_ANCHOR_HANDED_OFF HIMMEL_REPO="$repo" "$@" bash "$entry" 2>/dev/null; echo "rc=$?")
