@@ -32,6 +32,25 @@ describe('log.appendLog', () => {
     expect(written.length).toBeLessThanOrEqual(4000 + 4);
     expect(written.toString('utf8')).toMatch(/…\n$/);
   });
+
+  it('truncation that lands MID-CHARACTER still produces valid UTF-8 and preserves the exact whole-character prefix', () => {
+    const f = join(dir, 'normal.log');
+    // 3999 ASCII bytes then a 4-byte emoji: the MAX_LINE_BYTES=4000 cut lands
+    // exactly 1 byte into the emoji's 4-byte sequence — a genuine mid-character
+    // boundary (the repeated-emoji case above always cuts on a whole-character
+    // boundary, since 4000 is a multiple of 4, so it never exercises this path).
+    const prefix = 'a'.repeat(3999);
+    appendLog(f, prefix + '😀' + 'trailing filler to exceed the cap');
+    const written = readFileSync(f);
+    // Must decode as valid UTF-8 — a naive byte-slice would split the emoji's
+    // 4-byte sequence and leave a dangling lead byte, which is invalid UTF-8.
+    expect(() => new TextDecoder('utf-8', { fatal: true }).decode(written)).not.toThrow();
+    const text = written.toString('utf8');
+    // The whole-character prefix must be preserved exactly; the incomplete
+    // trailing emoji byte must not corrupt or shift it.
+    expect(text.startsWith(prefix)).toBe(true);
+    expect(text).toMatch(/…\n$/);
+  });
 });
 
 describe('log.rotateIfLarge', () => {

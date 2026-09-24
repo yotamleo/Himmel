@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { readdirSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { MAPPINGS, EXCLUDED } from './table';
 
@@ -73,19 +73,19 @@ describe('MAPPINGS table', () => {
     expect(sleepInBed?.dataTypeId).toBe('sleep');
   });
 
-  test('list-method entries with a matching fixture file have that file accessible', () => {
+  test('required fixtures are present, readable, and valid JSON', () => {
+    // Explicit required set (not derived from the directory listing itself —
+    // deriving the set from the same listing used to check it is a tautology
+    // that can never fail). This is the current __fixtures__/ inventory.
+    const REQUIRED_FIXTURES = [
+      'daily-heart-rate-variability', 'daily-oxygen-saturation', 'daily-resting-heart-rate',
+      'exercise', 'heart-rate', 'heart-rate-variability', 'height', 'oxygen-saturation',
+      'sleep', 'steps', 'weight',
+    ];
     const fixturesDir = join(import.meta.dir, '../__fixtures__');
-    const files = readdirSync(fixturesDir);
-    const jsonFiles = files.filter(f => f.endsWith('.json'));
-    const fixtureIds = new Set(jsonFiles.map(f => f.replace(/\.json$/, '')));
-
-    for (const m of MAPPINGS) {
-      if (m.method === 'dailyRollUp') continue;
-      if (fixtureIds.has(m.dataTypeId)) {
-        // Fixture exists — assert it's in the directory listing
-        expect(jsonFiles).toContain(`${m.dataTypeId}.json`);
-      }
-      // No fixture: allowed (note field documents why)
+    for (const dataTypeId of REQUIRED_FIXTURES) {
+      const raw = readFileSync(join(fixturesDir, `${dataTypeId}.json`), 'utf8');
+      expect(() => JSON.parse(raw)).not.toThrow();
     }
   });
 

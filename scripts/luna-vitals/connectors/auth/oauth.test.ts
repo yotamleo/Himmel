@@ -3,7 +3,6 @@ import {
   getAccessToken,
   buildAuthUrl,
   exchangeCode,
-  GH_SCOPES,
   RECONSENT_EXIT,
   ReconsentNeededError,
 } from "./oauth";
@@ -15,6 +14,15 @@ function makeFetch(body: unknown, ok = true, status = 200) {
     status,
     json: async () => body,
   });
+}
+
+// Fake fetchImpl that captures the request body so a test can assert on what
+// was actually SUBMITTED, not just what the (unconditional) response claims.
+function capturingFetch(body: unknown, captured: { init?: RequestInit }) {
+  return async (_url: string, init: RequestInit) => {
+    captured.init = init;
+    return { ok: true, status: 200, json: async () => body };
+  };
 }
 
 describe("getAccessToken", () => {
@@ -79,12 +87,22 @@ describe("buildAuthUrl", () => {
     expect(url).toContain("response_type=code");
   });
 
-  test("contains all 6 scope strings", () => {
+  test("requests exactly the required Google Health scope set", () => {
+    // Pinned independently of GH_SCOPES — iterating the production export would
+    // let a removed scope shrink both the requested URL and this check together
+    // and still pass. This is the actual contract: what googlehealth.* read
+    // scopes the app needs.
+    const REQUIRED_SCOPES = [
+      "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
+      "https://www.googleapis.com/auth/googlehealth.sleep.readonly",
+      "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
+      "https://www.googleapis.com/auth/googlehealth.nutrition.readonly",
+      "https://www.googleapis.com/auth/googlehealth.ecg.readonly",
+      "https://www.googleapis.com/auth/googlehealth.irn.readonly",
+    ];
     const url = buildAuthUrl("cid");
-    for (const scope of GH_SCOPES) {
-      // Scopes are URL-encoded in the query string
-      expect(url).toContain(encodeURIComponent(scope));
-    }
+    const requestedScopes = new URLSearchParams(url.split("?")[1]).get("scope")?.split(" ") ?? [];
+    expect(new Set(requestedScopes)).toEqual(new Set(REQUIRED_SCOPES));
   });
 
   test("custom redirectUri is included", () => {
@@ -109,22 +127,42 @@ describe("exchangeCode", () => {
     expect(result.scope).toBe(fakeResp.scope);
   });
 
-  test("accepts full redirect URL and extracts code", async () => {
+  test("accepts full redirect URL and submits only the extracted code, not the whole URL", async () => {
     const fakeResp = {
       access_token: "at",
       refresh_token: "rt-extracted",
       scope: "openid",
       token_type: "Bearer",
     };
+    const captured: { init?: RequestInit } = {};
     const result = await exchangeCode(
       {
         clientId: "cid",
         clientSecret: "csec",
         code: "http://localhost/?code=ABC123&scope=openid",
       },
-      makeFetch(fakeResp),
+      capturingFetch(fakeResp, captured),
     );
     expect(result.refreshToken).toBe("rt-extracted");
+    const submitted = new URLSearchParams(captured.init?.body as string);
+    expect(submitted.get("code")).toBe("ABC123");
+  });
+
+  test("a bare code (no redirect wrapper) is submitted unchanged", async () => {
+    const fakeResp = {
+      access_token: "at",
+      refresh_token: "rt-bare",
+      scope: "openid",
+      token_type: "Bearer",
+    };
+    const captured: { init?: RequestInit } = {};
+    const result = await exchangeCode(
+      { clientId: "cid", clientSecret: "csec", code: "ABC123" },
+      capturingFetch(fakeResp, captured),
+    );
+    expect(result.refreshToken).toBe("rt-bare");
+    const submitted = new URLSearchParams(captured.init?.body as string);
+    expect(submitted.get("code")).toBe("ABC123");
   });
 
   test("throws when response lacks refresh_token", async () => {

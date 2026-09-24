@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scrubProviderKeys, PROVIDER_KEY_NAMES, startServer, eventsResponse, resolveCodexStateRoot, resolveServeRoots } from "../server";
@@ -79,11 +79,44 @@ test("resolveCodexStateRoot precedence: CLAUDE_PLUGIN_DATA > plugins dir > tmpdi
   expect(resolveCodexStateRoot({ HOME: bareHome })).toBe(join(tmpdir(), "codex-companion"));
 });
 
-test("passivity: no setInterval in server.ts or any aggregator source (broadened)", () => {
-  const files = [join(import.meta.dir, "..", "server.ts")];
-  const aggDir = join(import.meta.dir, "..", "aggregator");
-  for (const f of readdirSync(aggDir)) if (f.endsWith(".ts")) files.push(join(aggDir, f));
-  for (const f of files) expect(readFileSync(f, "utf8")).not.toContain("setInterval");
+test("passivity: starting the server and serving /fleet + /escalations never registers a recurring timer", async () => {
+  // The claimed contract is that this server does no unsolicited background
+  // work while idle — not merely that the literal text "setInterval" is
+  // absent from server.ts/aggregator/*.ts (a comment mentioning it would
+  // false-red; a recursive setTimeout poll or an imported polling helper
+  // could stay green under the old source-grep). Spy on the real global
+  // timer registrars across a realistic request cycle plus an idle window
+  // instead, so a self-rescheduling poll loop anywhere in the reachable call
+  // graph (server.ts AND every aggregator/*.ts reader it calls) is caught.
+  const origInterval = globalThis.setInterval;
+  const origTimeout = globalThis.setTimeout;
+  let intervalCalls = 0;
+  let timeoutCalls = 0;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  globalThis.setInterval = ((...args: any[]) => { intervalCalls++; return origInterval(...(args as [any, any])); }) as typeof setInterval;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  globalThis.setTimeout = ((...args: any[]) => { timeoutCalls++; return origTimeout(...(args as [any, any])); }) as typeof setTimeout;
+  try {
+    const root = mkdtempSync(join(tmpdir(), "fleet-passivity-"));
+    const glm = join(root, "glm-sessions", "demo");
+    mkdirSync(glm, { recursive: true });
+    writeFileSync(join(glm, "meta.json"), JSON.stringify({ task_name: "demo", branch: "glm/demo", status: "running" }));
+    const logs = join(root, "logs");
+    mkdirSync(logs, { recursive: true });
+    writeFileSync(join(logs, "hermes-foo.log"), "ok\n");
+    const { server, port } = startServer({ port: 0, stateRoot: root, bridgeRoot: root });
+    await fetch(`http://127.0.0.1:${port}/fleet`);
+    await fetch(`http://127.0.0.1:${port}/escalations`);
+    const timeoutCallsAfterRequests = timeoutCalls;
+    // Idle window with no further requests: a polling loop would self-reschedule here.
+    await new Promise((r) => origTimeout(r, 50));
+    expect(intervalCalls).toBe(0);
+    expect(timeoutCalls).toBe(timeoutCallsAfterRequests);
+    server.stop();
+  } finally {
+    globalThis.setInterval = origInterval;
+    globalThis.setTimeout = origTimeout;
+  }
 });
 
 test("resolveServeRoots derives bridgeRoot as the PARENT of the fleet-control state dir", () => {

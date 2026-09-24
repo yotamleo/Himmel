@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# test-check-ci-forks-probe.sh -- HIMMEL-2169 gh-fork profiling probe for
+# probe-check-ci-forks.sh -- HIMMEL-2169 gh-fork profiling probe for
 # scripts/test-check-ci.sh.
+# Renamed off the test-*.sh pattern (HIMMEL-3580): it is a measurement tool
+# that always exits 0, not an assertion suite, so it must not be collected by
+# run-shell-tests.sh's `find ... -name 'test-*.sh'` discovery.
 #
 # WHY THIS EXISTS: test-check-ci.sh runs ~110 cases / 244 assertions in
 # ~624s fresh (~5.7s/case, vs ~1.3s/case on comparable suites). The suspected
@@ -32,7 +35,7 @@
 # error (missing suite, anchor lines not found -- suite edited out from under
 # this probe).
 #
-# Usage: bash scripts/test-check-ci-forks-probe.sh
+# Usage: bash scripts/probe-check-ci-forks.sh
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -86,7 +89,7 @@ awk -v d="$SCRIPT_DIR" -v s="$SCRIPT_DIR/check-ci.sh" '
     }
 ' "$WORK/spliced-pre.sh" > "$SPLICED"
 
-echo "== test-check-ci-forks-probe: running the full instrumented suite (this takes several minutes) =="
+echo "== probe-check-ci-forks: running the full instrumented suite (this takes several minutes) =="
 T0=$(date +%s)
 bash "$SPLICED" > "$WORK/suite.out" 2>&1
 SUITE_RC=$?

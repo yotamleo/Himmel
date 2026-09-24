@@ -130,6 +130,43 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## Vendored skill: `test-audit` (MIT, OpenClaw Foundation)
+
+Added HIMMEL-3580 (2026-09-24). Lives at `.claude/skills/test-audit/`
+(`SKILL.md` adapted, with its deviations listed in its own header;
+`CAMPAIGN.md` verbatim), sourced from `openclaw/openclaw` at pinned commit
+`1370643e394f956dfae2e42f43ee030b0072434b`, path
+`.agents/skills/test-audit/`. The GitHub API reports the repo licence as
+`NOASSERTION` because the `LICENSE` file carries a trailing third-party-notices
+line; the file itself is the MIT text. No `node_modules`/npm involvement.
+
+MIT License text as it appeared at that commit (`LICENSE`), reproduced here
+per the license's own attribution requirement:
+
+```
+MIT License
+
+Copyright (c) 2026 OpenClaw Foundation
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ## Non-npm sweep (marketplace/plugins + scripts)
 
 - Every `marketplace/plugins/*` plugin with a `LICENSE` file declares MIT

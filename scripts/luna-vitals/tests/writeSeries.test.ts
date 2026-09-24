@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { join } from "node:path";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { writeSeries } from "../src/writeSeries";
 import type { ReviewArtifact } from "../src/types";
@@ -56,6 +56,9 @@ test("an empty artifact (rows: []) writes nothing and returns []", async () => {
   const dir = tmp();
   const res = await writeSeries({ bucket: "x", conflicts: [], rows: [] }, dir);
   expect(res).toEqual([]);
+  // The return value alone doesn't prove nothing was written to disk — inspect
+  // the directory too, so a stray file created for an empty artifact fails here.
+  expect(readdirSync(dir)).toEqual([]);
 });
 
 test("warnings do not erase an existing sleep_hours value for the warned-and-dropped date", async () => {

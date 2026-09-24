@@ -7,7 +7,6 @@ import {
   MIN_PROBE_GAP_S, markerPath, shouldProbe, basicAuthHeader, buildPromQueryUrl,
   runProbe, parseDotenv,
 } from "./alibaba-probe-once";
-import type { FetchResult, ProbeOutcome } from "./alibaba-probe-once";
 import type { QuotaGaugeRecord } from "./quota-gauge";
 import { writeFileSync, unlinkSync } from "node:fs";
 
@@ -209,17 +208,15 @@ test("runProbe appended (ok, garbled body): ONE invisible row + one stderr line"
   expect(logged).toBe(1);
 });
 
-test("runProbe: exhausted-but-distinct outcomes (compile-time coverage of the union)", () => {
-  // Belt-and-braces: the four skip outcomes + appended are the whole ProbeOutcome
-  // union; this pins the spelling the runner's callers/observers depend on.
-  const all: ProbeOutcome[] = ["appended", "skip-noenv", "skip-fresh", "skip-429", "skip-error"];
-  expect(new Set(all).size).toBe(all.length);
-});
-
-// FetchResult union pin (guards against a silent shape drift in the transport).
-test("FetchResult shapes are spellable", () => {
-  const a: FetchResult = { status: "ok", body: "{}" };
-  const b: FetchResult = { status: "rate_limited" };
-  const c: FetchResult = { status: "error", message: "x" };
-  expect([a.status, b.status, c.status]).toEqual(["ok", "rate_limited", "error"]);
-});
+// ProbeOutcome/FetchResult union-pin tests deleted (HIMMEL-2725): neither
+// called runProbe or any product code — both built handwritten literals and
+// asserted properties of those same literals, giving zero runtime coverage.
+// Verified vacuous: renaming "skip-429" to "skip-ratelimited" in the
+// ProbeOutcome union and its return site (a real behavior-breaking change)
+// failed the real "runProbe skip-429" test above but left both deleted
+// literal-pin tests green. Stronger owner-boundary proof already exists at
+// real call sites in this file: every ProbeOutcome member is asserted via an
+// actual runProbe() call — skip-noenv (line 97), skip-fresh (111),
+// skip-429 (125), skip-error (139), appended (162) — and every FetchResult
+// shape (ok/rate_limited/error) is exercised the same way via fetchJson
+// returns in those same tests.

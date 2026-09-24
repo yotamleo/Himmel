@@ -28,9 +28,20 @@ test("note carries disclaimer, banner, and a row per signal", () => {
   expect(md).toContain("best-lag selection");  // selection caveat present
 });
 
-test("survivors render above non-survivors", () => {
-  const md = formatDashboard(res);
-  expect(md.indexOf("Kp-index")).toBeLessThan(md.indexOf("daylight"));
+test("formatDashboard preserves caller row order (ordering is analyze's contract, not the formatter's)", () => {
+  // Shuffled relative to both survivor status AND n: the non-survivor (lower n)
+  // comes FIRST and the survivor (higher n) comes SECOND — the opposite of what a
+  // by-survivor or by-n resort would produce. This can only pass if formatDashboard
+  // renders rows in the exact order it is given, proving it does not (re)implement
+  // any ordering itself — that stays analyze's job (see its "Sort: survivors first"
+  // step in analyze.ts).
+  const shuffled: DashboardResult = {
+    rows: [res.rows[1], res.rows[0]], // daylight/non-survivor (n=110) then Kp-index/survivor (n=120)
+    testCount: res.testCount, pairCount: res.pairCount, lagCount: res.lagCount,
+    fdrQ: res.fdrQ, survivorCount: res.survivorCount, familySize: res.familySize,
+  };
+  const md = formatDashboard(shuffled);
+  expect(md.indexOf("daylight")).toBeLessThan(md.indexOf("Kp-index"));
 });
 
 test("dashboardJson round-trips the result", () => {
@@ -82,21 +93,29 @@ test("lag-profile line emits literal null for undefined-r lags (renders a gap)",
   expect(md).not.toContain("NaN");
 });
 
-test("lag-profile chart caps at the top signals (survivors-first ordering preserved)", () => {
-  // 6 interpretable rows pre-sorted survivors-first by analyze; the lag chart must
-  // draw at most LAG_CHART_MAX (4) line series.
-  const mkRow = (i: number, surv: boolean): DashboardResult["rows"][number] => ({
-    series: `s${i}`, factor: "f", bestLag: 0, n: 50, correlation: 0.5 - i * 0.05,
+test("lag-profile chart caps at the first N rows given, by position — not by re-ranked |r|", () => {
+  // Deliberately NOT monotonic by |r| (analyze already ordered rows; the chart
+  // must trust that order and slice, not re-sort). Positions 0..5 carry
+  // correlations 0.5, 0.25, 0.45, 0.3, 0.4, 0.35 — so "first 4 by position"
+  // (s0, s1, s2, s3) and "top 4 by |r| magnitude" (s0, s2, s4, s5) disagree,
+  // which is exactly what distinguishes a position-based cap from a
+  // (wrong, re-ranking) magnitude-based one.
+  const mkRow = (i: number, corr: number, surv: boolean): DashboardResult["rows"][number] => ({
+    series: `s${i}`, factor: "f", bestLag: 0, n: 50, correlation: corr,
     pValue: 0.001, rateHigh: 1, rateLow: 1, rateRatio: 1, belowMinN: false, fdrSurvivor: surv,
-    lagProfile: [{ lag: -1, r: 0.1, n: 50 }, { lag: 0, r: 0.5 - i * 0.05, n: 50 }, { lag: 1, r: 0.2, n: 50 }],
+    lagProfile: [{ lag: -1, r: 0.1, n: 50 }, { lag: 0, r: corr, n: 50 }, { lag: 1, r: 0.2, n: 50 }],
   });
   const many: DashboardResult = {
-    rows: [mkRow(0, true), mkRow(1, false), mkRow(2, false), mkRow(3, false), mkRow(4, false), mkRow(5, false)],
+    rows: [
+      mkRow(0, 0.5, true), mkRow(1, 0.25, false), mkRow(2, 0.45, false),
+      mkRow(3, 0.3, false), mkRow(4, 0.4, false), mkRow(5, 0.35, false),
+    ],
     testCount: 18, pairCount: 6, lagCount: 3, fdrQ: 0.1, survivorCount: 1, familySize: 6,
   };
   const md = formatDashboard(many);
   const lineBlock = md.slice(md.indexOf("## Lag profiles"));
-  expect((lineBlock.match(/^  - title:/gm) ?? []).length).toBe(4);   // capped at 4
+  const titles = [...lineBlock.matchAll(/^  - title: "s(\d+) × f"/gm)].map(m => m[1]);
+  expect(titles).toEqual(["0", "1", "2", "3"]);   // first 4 by position, not top 4 by |r|
 });
 
 test("no chart blocks when no row is interpretable (table still renders)", () => {
