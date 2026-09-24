@@ -193,7 +193,7 @@ as verified.
 | Release tarball (`himmel-<version>-linux.tar.gz` + `.sha256`) | **Supported** (Linux) — the four-step path above. The end-to-end fresh-guest run is green (HIMMEL-3252, done). |
 | `git clone` + `himmelctl install` | **Supported** (Linux, macOS) |
 | Plugin marketplace (`marketplace/plugins/*`, 10 plugins) | **Supported** — installs through the Claude Code plugin marketplace, which owns that payload's file list, upgrade and removal (`claude plugin install/update/uninstall`), not `himmelctl`. |
-| AUR | Pending (HIMMEL-3059 slice 5) — reopens when that slice lands |
+| AUR (`himmel`, recipe in [`packaging/aur/`](packaging/aur/)) | **Supported after the first AUR push** (Arch). `pacman` installs the payload to `/opt/himmel`; each user then runs `himmelctl install --scope user`, and `himmelctl update` defers to `pacman -Syu`. Remove in this order: `himmelctl uninstall` (each user), then `pacman -R himmel`. |
 | brew (Linux tap) | Not supported — runner-up channel; reopens only if macOS support makes a shared tap worthwhile (tracked in a separate ticket) |
 | nix, deb, rpm | Not supported — reopens on user-driven demand for a given channel (tracked in a separate ticket) |
 

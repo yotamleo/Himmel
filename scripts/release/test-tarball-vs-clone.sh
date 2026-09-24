@@ -246,6 +246,32 @@ mkdir -p "$tmp/cn1/home/himmel" "$tmp/cn2/home/himmel"
 bash "$CONV" --a-home "$tmp/cn1/home" --a-prefix "$tmp/cn1/home/himmel" --b-home "$tmp/cn2/home" --b-prefix "$tmp/cn2/home/himmel" >/dev/null 2>&1; rc=$?
 [ "$rc" -eq 1 ] && ok "T7 RED: a sibling of a prefix nested under HOME is not re-masked as {HOME} (rc 1)" || bad "T7 nested sibling masked by the home pass" "rc=$rc"
 
+# --- T13 a third input: the packaged (AUR) install, HIMMEL-3059 S5 -------------
+# The AUR prefix is a fixed system path OUTSIDE the user's HOME (/opt/himmel);
+# side c is compared against side a exactly as b is, and any pair diverging fails.
+mk_side "$tmp/cp1" "bash $tmp/cp1/prefix/g.sh"; mk_side "$tmp/cp2" "bash $tmp/cp2/prefix/g.sh"
+mkdir -p "$tmp/cp3/home/.claude" "$tmp/cp3/opt/himmel"
+printf '{"hooks":{"PreToolUse":[{"hooks":[{"command":"bash %s/opt/himmel/g.sh"}]}]}}\n' "$tmp/cp3" > "$tmp/cp3/home/.claude/settings.json"
+bash "$CONV" --a-home "$tmp/cp1/home" --a-prefix "$tmp/cp1/prefix" --b-home "$tmp/cp2/home" --b-prefix "$tmp/cp2/prefix" \
+  --c-home "$tmp/cp3/home" --c-prefix "$tmp/cp3/opt/himmel" >"$tmp/cp.log" 2>&1; rc=$?
+[ "$rc" -eq 0 ] && ok "T13 a third (packaged) input at a system prefix outside HOME CONVERGES (rc 0)" || bad "T13 packaged third input refused or diverged" "rc=$rc: $(head -3 "$tmp/cp.log" | tr '\n' '|')"
+has "$tmp/cp.log" 'side-c' && ok "T13 the verdict covers side c, not only a vs b" || bad "T13 side c was not compared"
+printf '{"hooks":{"PreToolUse":[{"hooks":[{"command":"bash %s/opt/himmel/other.sh"}]}]}}\n' "$tmp/cp3" > "$tmp/cp3/home/.claude/settings.json"
+bash "$CONV" --a-home "$tmp/cp1/home" --a-prefix "$tmp/cp1/prefix" --b-home "$tmp/cp2/home" --b-prefix "$tmp/cp2/prefix" \
+  --c-home "$tmp/cp3/home" --c-prefix "$tmp/cp3/opt/himmel" >"$tmp/cp.log" 2>&1; rc=$?
+[ "$rc" -eq 1 ] && ok "T13 RED: a packaged side that differs is DIVERGED (rc 1) even when a and b agree" || bad "T13 differing third side accepted" "rc=$rc"
+echo '{}' > "$tmp/cp3/home/.claude/settings.json"
+bash "$CONV" --a-home "$tmp/cp1/home" --a-prefix "$tmp/cp1/prefix" --b-home "$tmp/cp2/home" --b-prefix "$tmp/cp2/prefix" \
+  --c-home "$tmp/cp3/home" --c-prefix "$tmp/cp3/opt/himmel" >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 3 ] && ok "T13 RED: a packaged side that wired nothing is VACUOUS (rc 3)" || bad "T13 vacuous third side accepted" "rc=$rc"
+bash "$CONV" --a-home "$tmp/cp1/home" --a-prefix "$tmp/cp1/prefix" --b-home "$tmp/cp2/home" --b-prefix "$tmp/cp2/prefix" \
+  --c-home "$tmp/cp3/home" >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 2 ] && ok "T13 --c-home without --c-prefix is a usage error (rc 2)" || bad "T13 half a third side accepted" "rc=$rc"
+bash "$CONV" --a-home "$tmp/ct1/home" --a-prefix "$tmp/ct1/prefix" --a-target "$tmp/ct1/repo" \
+  --b-home "$tmp/ct2/home" --b-prefix "$tmp/ct2/prefix" --b-target "$tmp/ct2/repo" \
+  --c-home "$tmp/cp1/home" --c-prefix "$tmp/cp1/prefix" >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 2 ] && ok "T13 targets on a and b but none on c is a usage error (rc 2)" || bad "T13 targetless third side accepted" "rc=$rc"
+
 # --- T9 RED: the published pair does not verify -> the body stops, fail closed --
 # The README chain never reaches tar on a bad hash; the body must not extract or
 # install the rejected tarball either.
