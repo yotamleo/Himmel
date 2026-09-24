@@ -298,7 +298,7 @@ if [ "$is_leg" -eq 1 ]; then
             # Claude Code's own hook timeout instead of reading as a refusal.
             # Bash-native bound: background `gh`, poll for up to 5s, then
             # kill it and treat that exactly like a timeout (empty go_nwo).
-            _gh_out="$(mktemp)" 2>/dev/null || _gh_out=""
+            _gh_out="$(mktemp "${TMPDIR:-/tmp}/block-unresolved-cr-merge-gh.XXXXXX" 2>/dev/null)" || _gh_out=""
             if [ -z "$_gh_out" ]; then
                 go_nwo=""
             else
