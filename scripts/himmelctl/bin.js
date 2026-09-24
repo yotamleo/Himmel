@@ -3828,9 +3828,13 @@ function applyWorkspaceTrust() {
   const trustCfg = process.env.WORKSPACE_TRUST_CONFIG || path.join(process.env.HOME || process.env.USERPROFILE || os.homedir(), '.claude.json');
   let preexisted = false;
   let preKnown = true;
+  // HIMMEL-3541: whether projects[<dir>] itself existed -- when it did not,
+  // uninstall drops the entry again once removing the key leaves it empty.
+  let parentCreated = true;
   try {
     const cfg = JSON.parse(fs.readFileSync(trustCfg, 'utf8'));
     preexisted = Boolean(cfg && cfg.projects && cfg.projects[dir] && cfg.projects[dir].hasTrustDialogAccepted === true);
+    parentCreated = !(cfg && cfg.projects && Object.prototype.hasOwnProperty.call(cfg.projects, dir));
   } catch (e) {
     // an absent config means the key did not pre-exist; an unreadable or
     // invalid one has an unknown pre-state, so no row is recorded for it
@@ -3846,7 +3850,8 @@ function applyWorkspaceTrust() {
   if (preKnown) prov([preexisted ? 'noop' : 'create', 'json-key', trustCfg,
     '--unit', `/projects/${dir.replace(/~/g, '~0').replace(/\//g, '~1')}/hasTrustDialogAccepted`,
     ...(preexisted ? ['--pre-json', 'true'] : ['--pre-absent']), '--post-json', 'true',
-    '--scope', 'user', '--class', 'code', '--row', 'workspace-trust', '--field', `preexisted=${preexisted}`]);
+    '--scope', 'user', '--class', 'code', '--row', 'workspace-trust', '--field', `preexisted=${preexisted}`,
+    '--field', `parent_created=${parentCreated}`]);
   return { applied: true, dir: dir };
 }
 
