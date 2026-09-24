@@ -196,7 +196,11 @@ check "success: rc 0" "$rc" "0"
 contains "success: created message" "$out" "created refs/tags/$CLEAN_VERSION"
 calls="$(cat "$CALLS")"
 check "success: ref-create called exactly once" "$(grep -c 'git/refs -f' <<< "$calls")" "1"
-contains "success: fetches tags after write" "$calls" "git fetch origin --tags"
+create_line="$(grep -n 'git/refs -f' <<< "$calls" | head -1 | cut -d: -f1)"
+fetch_line="$(grep -n 'git fetch origin --tags' <<< "$calls" | head -1 | cut -d: -f1)"
+order_ok=no
+[ -n "$create_line" ] && [ -n "$fetch_line" ] && [ "$create_line" -lt "$fetch_line" ] && order_ok=yes
+check "success: fetches tags after write" "$order_ok" "yes"
 
 # --- 11. gh repo view / origin remote mismatch --------------------------------
 reset_calls
@@ -234,12 +238,12 @@ not_contains "status-fail: never writes the tag" "$(cat "$CALLS")" "git/refs -f"
 reset_calls
 rc=0; out=$(run "$CLEAN_VERSION" "$SHA" --version-override --dry-run 2>&1) || rc=$?
 check "override-reason-option-shaped: rc 2" "$rc" "2"
-not_contains "override-reason-option-shaped: nothing called" "$(cat "$CALLS")" "/"
+check "override-reason-option-shaped: nothing called" "$(cat "$CALLS")" ""
 
 reset_calls
 rc=0; out=$(run "$CLEAN_VERSION" "$SHA" --version-override "" 2>&1) || rc=$?
 check "override-reason-empty: rc 2" "$rc" "2"
-not_contains "override-reason-empty: nothing called" "$(cat "$CALLS")" "/"
+check "override-reason-empty: nothing called" "$(cat "$CALLS")" ""
 
 echo "----"
 if [ "$fails" -eq 0 ]; then
