@@ -226,24 +226,27 @@ while IFS= read -r f; do
 
     ts_of "$f" > "$RUN/cur-ts.txt"
     [ -s "$RUN/cur-ts.txt" ] || { sc_cov no-timestamp; continue; }
+    file_bad_edge=0
     min_epoch=$(to_epoch "$(head -n 1 "$RUN/cur-ts.txt")") || min_epoch=""
     if [ -z "$min_epoch" ]; then
         min_epoch=$(nearest_valid_epoch "$RUN/cur-ts.txt" asc) || min_epoch=""
-        [ -n "$min_epoch" ] && BAD_EDGE_TIMESTAMPS=$((BAD_EDGE_TIMESTAMPS + 1))
+        [ -n "$min_epoch" ] && file_bad_edge=1
     fi
     max_epoch=$(to_epoch "$(tail -n 1 "$RUN/cur-ts.txt")") || max_epoch=""
     if [ -z "$max_epoch" ]; then
         max_epoch=$(nearest_valid_epoch "$RUN/cur-ts.txt" desc) || max_epoch=""
-        [ -n "$max_epoch" ] && BAD_EDGE_TIMESTAMPS=$((BAD_EDGE_TIMESTAMPS + 1))
+        [ -n "$max_epoch" ] && file_bad_edge=1
     fi
+    [ "$file_bad_edge" -eq 1 ] && BAD_EDGE_TIMESTAMPS=$((BAD_EDGE_TIMESTAMPS + 1))
     if [ -z "$min_epoch" ] || [ -z "$max_epoch" ]; then sc_cov bad-timestamp; continue; fi
     [ "$max_epoch" -ge "$SINCE_EPOCH" ] || { sc_cov out-of-window; continue; }
     if [ -n "$UNTIL_EPOCH" ] && [ "$min_epoch" -ge "$UNTIL_EPOCH" ]; then sc_cov out-of-window; continue; fi
 
     out=$(jq -r --argjson since_epoch "$SINCE_EPOCH" --argjson until_epoch "$UNTIL_EPOCH_ARG" '
       def inwin: (.timestamp // null) as $t | $t != null and
-        (($t | sub("\\.[0-9]+Z$";"Z") | fromdateiso8601) >= $since_epoch) and
-        (($t | sub("\\.[0-9]+Z$";"Z") | fromdateiso8601) < $until_epoch);
+        (try (($t | sub("\\.[0-9]+Z$";"Z") | fromdateiso8601) >= $since_epoch and
+              ($t | sub("\\.[0-9]+Z$";"Z") | fromdateiso8601) < $until_epoch)
+         catch false);
       select(inwin) |
       if .type=="assistant" then
         (.message.content[]? | select(.type=="tool_use") |

@@ -36,7 +36,7 @@ check_not_contains() {
 TMPREPO=$(mktemp -d "${TMPDIR:-/tmp}/test-dead-parts.XXXXXX") || { echo "FAIL - mktemp"; exit 1; }
 WTPATH="$TMPREPO-worktree"
 # shellcheck disable=SC2317,SC2329  # invoked by the EXIT trap below
-cleanup() { git -C "$TMPREPO" worktree remove --force "$WTPATH" 2>/dev/null; rm -rf "$TMPREPO" "$WTPATH" "${BROKENREPO:-}" "${TSREPO:-}" "${TSREPO2:-}" "${BIGTS:-}" "${MALREPO:-}"; }
+cleanup() { git -C "$TMPREPO" worktree remove --force "$WTPATH" 2>/dev/null; rm -rf "$TMPREPO" "$WTPATH" "${BROKENREPO:-}" "${TSREPO:-}" "${TSREPO2:-}" "${BIGTS:-}" "${MALREPO:-}" "${JQORDERREPO:-}" "${BOTHEDGESREPO:-}"; }
 trap cleanup EXIT
 
 cp -R "$HERE/fixtures/dead-parts/basic-repo/." "$TMPREPO/" || { echo "FAIL - fixture copy"; exit 1; }
@@ -284,6 +284,44 @@ check_contains "malformed-edge: a transcript with a malformed TAIL timestamp sti
     "$OUTMAL" $'script\tmalformed-tail\tscripts/malformed-tail.sh\tUSED'
 check_contains "malformed-edge: the WARNING names the fallback, not a silent skip" \
     "$OUTMAL" "dead-parts: WARNING: 2 transcript(s) had a malformed head/tail timestamp - fell back to the nearest valid one instead of skipping the file"
+
+# --- malformed timestamp mid-scan: a valid in-window record followed later
+# in FILE order (not sorted order) by a record with a malformed timestamp
+# must not lose the valid record - jq's per-record fromdateiso8601 throws on
+# the malformed one, which aborted the whole `jq` invocation (nonzero exit)
+# and discarded every record it had already emitted via the JQ_FAILS/continue
+# branch, even though the valid Bash call was already in jq's stdout
+# (HIMMEL-3547 CR round 1) ----------------------------------------------
+JQORDERREPO=$(mktemp -d "${TMPDIR:-/tmp}/test-dead-parts-jqorder.XXXXXX") || { echo "FAIL - mktemp jqorder repo"; exit 1; }
+mkdir -p "$JQORDERREPO/scripts"
+printf '#!/usr/bin/env bash\necho jqorder\n' > "$JQORDERREPO/scripts/malformed-jq-order.sh"
+git -C "$JQORDERREPO" init -q || { echo "FAIL - jqorder repo git init"; exit 1; }
+git -C "$JQORDERREPO" add -A || { echo "FAIL - jqorder repo git add"; exit 1; }
+git -C "$JQORDERREPO" -c user.email=fixture@test -c user.name=fixture commit -q -m fixture \
+    || { echo "FAIL - jqorder repo git commit"; exit 1; }
+export SCORECARD_PROJECTS_DIR="$HERE/fixtures/dead-parts/malformed-jq-order-transcripts"
+OUTJQORDER=$("$SCRIPT" --since 2026-09-15T00:00:00Z --repo-root "$JQORDERREPO" 2>&1)
+check_contains "malformed-jq-order: a valid in-window Bash record emitted before a later malformed-timestamp record still counts as USED (HIMMEL-3547)" \
+    "$OUTJQORDER" $'script\tmalformed-jq-order\tscripts/malformed-jq-order.sh\tUSED'
+
+# --- malformed BOTH edges: when the sorted-first AND sorted-last timestamp
+# are both malformed, the fallback runs twice for the SAME transcript - the
+# WARNING count must still name it once, not twice (HIMMEL-3547 CR round 1) -
+BOTHEDGESREPO=$(mktemp -d "${TMPDIR:-/tmp}/test-dead-parts-bothedges.XXXXXX") || { echo "FAIL - mktemp bothedges repo"; exit 1; }
+mkdir -p "$BOTHEDGESREPO/scripts"
+printf '#!/usr/bin/env bash\necho bothedges\n' > "$BOTHEDGESREPO/scripts/malformed-both-edges.sh"
+git -C "$BOTHEDGESREPO" init -q || { echo "FAIL - bothedges repo git init"; exit 1; }
+git -C "$BOTHEDGESREPO" add -A || { echo "FAIL - bothedges repo git add"; exit 1; }
+git -C "$BOTHEDGESREPO" -c user.email=fixture@test -c user.name=fixture commit -q -m fixture \
+    || { echo "FAIL - bothedges repo git commit"; exit 1; }
+export SCORECARD_PROJECTS_DIR="$HERE/fixtures/dead-parts/malformed-both-edges-transcripts"
+OUTBOTHEDGES=$("$SCRIPT" --since 2026-09-15T00:00:00Z --repo-root "$BOTHEDGESREPO" 2>&1)
+check_contains "malformed-both-edges: still counts the in-window Bash call as USED" \
+    "$OUTBOTHEDGES" $'script\tmalformed-both-edges\tscripts/malformed-both-edges.sh\tUSED'
+check_contains "malformed-both-edges: WARNING counts the transcript ONCE, not twice, when both edges are malformed" \
+    "$OUTBOTHEDGES" "dead-parts: WARNING: 1 transcript(s) had a malformed head/tail timestamp - fell back to the nearest valid one instead of skipping the file"
+check_not_contains "malformed-both-edges: WARNING must not double-count" \
+    "$OUTBOTHEDGES" "dead-parts: WARNING: 2 transcript(s) had a malformed head/tail timestamp"
 
 # --- pathological scale: many timestamps in one transcript file must not
 # block the report - the whole report used to be buffered until a per-line
