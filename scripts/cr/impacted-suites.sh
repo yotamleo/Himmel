@@ -227,7 +227,7 @@ runner_check() {
 # package.json. Prints it and returns 0; returns 1 with no output when the
 # suite has no package.json ancestor (a suite with no npm/bun deps at all).
 pkg_dir_for() {
-    local dir
+    local dir parent
     dir=$(dirname -- "$1")
     while :; do
         if [ -f "$dir/package.json" ]; then
@@ -235,7 +235,9 @@ pkg_dir_for() {
             return 0
         fi
         [ "$dir" = "." ] && return 1
-        dir=$(dirname -- "$dir")
+        parent=$(dirname -- "$dir")
+        [ "$parent" = "$dir" ] && return 1
+        dir="$parent"
     done
 }
 
@@ -293,6 +295,9 @@ ensure_deps() {
 # failed to install) and otherwise the suite's own exit code.
 run_suite() {
     local path="$1" cmd
+    case "$path" in
+        ./*) path="${path#./}" ;;
+    esac
     ensure_deps "$path" || return 2
     case "$path" in
         *.test.mjs|*.test.js|*.test.ts)
