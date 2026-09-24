@@ -233,6 +233,31 @@ assert_eq "unavailable-fallback path still exits 0" "0" "$rc_j"
 argv_j=$(cat "$ARGV_LOG")
 contains "gh receives the unavailable-fallback leg-burn line" "$argv_j" "leg-burn: unavailable ("
 
+# ── (k) HIMMEL-3572 (CodeRabbit): when a transcript RESOLVES but leg-burn.sh
+# itself fails on it, the PR body's fallback line must never carry the local
+# transcript path (home dir + username + session ID, the HIMMEL-1352 leak
+# class) — only a generic reason. The full path stays in the WARN on stderr.
+echo "TEST: a resolvable-but-broken transcript falls back to a generic reason, never the local path"
+: > "$ARGV_LOG"
+unset STUB_OPEN_PR 2>/dev/null || true
+FAKE_CLAUDE_HOME="$TMP_ROOT/fake-claude-home"
+FAKE_SID="00000000-0000-0000-0000-000000000000"
+mkdir -p "$FAKE_CLAUDE_HOME/projects/-fake-project"
+printf 'not valid jsonl\n' > "$FAKE_CLAUDE_HOME/projects/-fake-project/$FAKE_SID.jsonl"
+(
+    cd "$REPO" || exit 99
+    unset CLAUDE_PID
+    CLAUDE_CODE_SESSION_ID="$FAKE_SID" CLAUDE_CONFIG_DIR="$FAKE_CLAUDE_HOME" \
+        FORGE=github CR_APP=0 GH_CMD="$GH_STUB" ARGV_LOG="$ARGV_LOG" \
+        HEAD_SHA_STUB="$HEAD_SHA" \
+        bash "$SUT" "$TITLE_FILE" "$NO_BURN_BODY"
+) >/dev/null; rc_k=$?
+assert_eq "resolvable-but-broken-transcript path still exits 0" "0" "$rc_k"
+argv_k=$(cat "$ARGV_LOG")
+contains "gh receives a generic unavailable reason" "$argv_k" "leg-burn: unavailable (leg-burn.sh failed for"
+not_contains "gh never receives the fake claude home path" "$argv_k" "$FAKE_CLAUDE_HOME"
+not_contains "gh never receives the session ID as a path fragment" "$argv_k" "$FAKE_SID.jsonl"
+
 echo
 echo "===================================="
 echo "test summary: $PASS passed, $FAIL failed"

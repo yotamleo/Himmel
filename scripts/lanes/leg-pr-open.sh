@@ -114,7 +114,15 @@ compute_leg_burn_line() {
     local raw
     if ! raw=$("$HERE/leg-burn.sh" "${transcript:-$session}" 2>&1); then
         echo "WARN leg-pr-open: leg-burn.sh failed for '${transcript:-$session}': $raw" >&2
-        echo "leg-burn: unavailable (leg-burn.sh failed for '${transcript:-$session}')"
+        # HIMMEL-3572 (CodeRabbit): never publish the local transcript path
+        # into the PR body — it carries the operator's home dir, username and
+        # session ID (the HIMMEL-1352 leak class). The full path stays in the
+        # WARN line above (stderr only); the PR body gets a generic reason.
+        if [ -n "$session" ]; then
+            echo "leg-burn: unavailable (leg-burn.sh failed for session '$session')"
+        else
+            echo "leg-burn: unavailable (leg-burn.sh failed for the CLAUDE_CODE_SESSION_ID transcript)"
+        fi
         return 0
     fi
 
