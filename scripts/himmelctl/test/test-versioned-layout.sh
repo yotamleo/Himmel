@@ -182,7 +182,7 @@ out=$(run_ctl "$td" update); rc=$?
 [ "$(cat "$td/share/0.4.0/RELEASE-MARKER" 2>/dev/null)" = 0.4.0 ] || fail "caseC: share/0.4.0 is not the release's tree"
 [ -f "$td/share/0.3.0/VERSION" ] || fail "caseC: the previous version dir was not kept for rollback"
 [ -f "$td/share/current/RELEASE-MARKER" ] || fail "caseC: current/ does not resolve to the new tree"
-leftover=$(find "$td/share" -mindepth 1 -maxdepth 1 -name '.*')
+leftover=$(compgen -G "$td/share/.[!.]*")
 [ -z "$leftover" ] || fail "caseC: staging left behind: $leftover"
 grep -Fxq "https://github.com/yotamleo/Himmel/releases/download/v0.4.0/himmel-0.4.0-linux.tar.gz" "$td/curl.log" \
   || fail "caseC: tarball not fetched from the release URL: $(cat "$td/curl.log")"
@@ -201,7 +201,7 @@ out=$(run_ctl "$td" update); rc=$?
 grepq "$out" -i 'checksum' || fail "caseD: failure does not name the checksum: $out"
 [ "$(readlink "$td/share/current")" = 0.3.0 ] || fail "caseD: current moved on a failed verify"
 [ ! -e "$td/share/0.4.0" ] || fail "caseD: share/0.4.0 extracted despite a failed verify"
-[ -z "$(find "$td/share" -mindepth 1 -maxdepth 1 -name '.*')" ] || fail "caseD: staging left behind"
+[ -z "$(compgen -G "$td/share/.[!.]*")" ] || fail "caseD: staging left behind"
 echo "ok: caseD bad checksum -> rc $rc, nothing extracted, current unchanged"
 
 # ── E: a failed attestation (gh present + authenticated) extracts nothing ────
@@ -245,7 +245,7 @@ out=$(run_ctl "$td" update); rc=$?
 [ "$rc" -ne 0 ] || fail "caseH: update with a mis-rooted tarball exited 0: $out"
 [ "$(readlink "$td/share/current")" = 0.3.0 ] || fail "caseH: current moved"
 [ ! -e "$td/share/0.4.0" ] || fail "caseH: share/0.4.0 created from a mis-rooted tarball"
-[ -z "$(find "$td/share" -mindepth 1 -maxdepth 1 -name '.*')" ] || fail "caseH: staging left behind"
+[ -z "$(compgen -G "$td/share/.[!.]*")" ] || fail "caseH: staging left behind"
 echo "ok: caseH mis-rooted tarball -> refused, nothing swapped"
 
 # ── I: himmel-update.sh's non-git refusal names `himmelctl update` for the ───
