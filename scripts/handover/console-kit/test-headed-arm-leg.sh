@@ -470,7 +470,16 @@ contains "dry-run LEG_CONTEXT=1m, sanctioned Context line: exports CONSOLE_CONTE
 # read-only for this ticket, so this drives its own --dry-run directly with
 # the same CONSOLE_CONTEXT=1m + context=1m pair the wrapper's sanctioned
 # branch would hand it, rather than editing that file to observe it.
-rc=0; out="$(CONSOLE_CONTEXT=1m bash "$HEADED_ARM" --dry-run HIMMEL-9999-leg "$doc_context_ok" /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 1m 2>&1)" || rc=$?
+# KONSOLE_CMD is stubbed because headed-arm.sh's own terminal-emulator
+# dependency check runs before --dry-run short-circuits, and a real konsole
+# binary is not guaranteed on PATH (e.g. CI runners).
+d_sanctioned="$tmp/sanctioned-pair"; mkdir -p "$d_sanctioned"
+cat > "$d_sanctioned/konsole" <<'KONSOLE_STUB_EOF'
+#!/usr/bin/env bash
+exit 0
+KONSOLE_STUB_EOF
+chmod 755 "$d_sanctioned/konsole"
+rc=0; out="$(CONSOLE_CONTEXT=1m KONSOLE_CMD="$d_sanctioned/konsole" bash "$HEADED_ARM" --dry-run HIMMEL-9999-leg "$doc_context_ok" /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 1m 2>&1)" || rc=$?
 check "headed-arm.sh --dry-run, sanctioned pair (CONSOLE_CONTEXT=1m, context=1m): exit 0" "$rc" "0"
 contains "headed-arm.sh --dry-run, sanctioned pair: accepted argv carries --autocompact auto" "$out" "--autocompact auto"
 contains "headed-arm.sh --dry-run, sanctioned pair: accepted argv carries the [1m] model suffix" "$out" "claude-sonnet-5[1m]"
