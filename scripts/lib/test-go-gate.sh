@@ -122,6 +122,33 @@ export HOME="$ROOT/home"
 mkdir -p "$HOME"
 SHA="$(printf '%040d' 7)"
 
+# HIMMEL-3578: go.sh now resolves this repo's nwo via `gh repo view` to bind
+# the GO mac. A gh stub on PATH keeps every go.sh call below hermetic (no
+# real gh/network dependency) and lets tests fix the nwo it returns via
+# STUB_NWO.
+mkdir -p "$ROOT/bin"
+cat > "$ROOT/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+    "repo view")
+        json=""
+        while [ $# -gt 0 ]; do
+            case "$1" in --json) json="$2" ;; esac
+            shift
+        done
+        case "$json" in
+            nameWithOwner)
+                [ "${STUB_GH_REPO_VIEW_FAIL:-0}" = "1" ] && exit 1
+                printf '%s' "${STUB_NWO:-o/r}" ;;
+            *) exit 90 ;;
+        esac ;;
+    *) exit 91 ;;
+esac
+STUB
+chmod +x "$ROOT/bin/gh"
+export PATH="$ROOT/bin:$PATH"
+export STUB_NWO="o/r"
+
 old_ifs="$IFS"
 IFS='
 '
@@ -153,8 +180,8 @@ IFS="$old_ifs"
 unset HIMMEL_CONSOLE_LEG HIMMEL_CONSOLE_RELAY 2>/dev/null || true
 GROOT="$ROOT/g4"
 mkdir -p "$GROOT/.locks/go"
-gate() {  # <pr> <sha> -> rc of go_gate in a clean shell, reason on stdout
-    bash -c 'unset -f go_gate 2>/dev/null || true; . "$1"; go_gate "$2" "$3" "$4"' _ "$GO_GATE_SRC" "$1" "$2" "$GROOT"
+gate() {  # <pr> <sha> [nwo] -> rc of go_gate in a clean shell, reason on stdout
+    bash -c 'unset -f go_gate 2>/dev/null || true; . "$1"; go_gate "$2" "$3" "$4" "$5"' _ "$GO_GATE_SRC" "$1" "$2" "$GROOT" "${3:-o/r}"
 }
 
 # 4a. A leg-planted GO — the plain lines go.sh used to write — is refused.
@@ -185,9 +212,10 @@ sed 's/^pr=92$/pr=93/' "$GROOT/.locks/go/92.$SHA" > "$GROOT/.locks/go/93.$SHA"
 rc=0; gate 93 "$SHA" >/dev/null || rc=$?
 [ "$rc" -eq 2 ] || fail "4d: a GO re-bound to another PR was accepted (rc=$rc)"
 
-# 4e. The mac is a real HMAC-SHA256 over himmel-go-v1|<pr>|<sha>.
+# 4e. The mac is a real HMAC-SHA256 over himmel-go-v2|<nwo>|<pr>|<sha>
+# (HIMMEL-3578: bound to the repo, resolved above via the gh stub as o/r).
 if [ -f "$KEY" ]; then
-    want=$(printf 'himmel-go-v1|92|%s' "$SHA" | openssl dgst -sha256 -mac HMAC -macopt "hexkey:$(cat "$KEY")" | awk '{print $NF}')
+    want=$(printf 'himmel-go-v2|o/r|92|%s' "$SHA" | openssl dgst -sha256 -mac HMAC -macopt "hexkey:$(cat "$KEY")" | awk '{print $NF}')
     got=$(sed -n 's/^mac=//p' "$GROOT/.locks/go/92.$SHA")
     if [ -z "$want" ] || [ "$got" != "$want" ]; then
         fail "4e: mac [$got] is not HMAC-SHA256 [$want]"
@@ -198,6 +226,45 @@ fi
 rc=0; HOME="$ROOT/nokey" gate 92 "$SHA" >/dev/null || rc=$?
 [ "$rc" -eq 2 ] || fail "4f: go_gate accepted a GO with no key to verify against (rc=$rc)"
 [ ! -e "$ROOT/nokey/.config/himmel/go-hmac.key" ] || fail "4f: the verifier minted a key (only go.sh may)"
+
+# --- 5. HIMMEL-3570: _go_in_harness must not trust an inherited GIT_* env ---
+# An exported GIT_DIR pointing at a DIFFERENT repo would, without a scrub,
+# override `-C` and steer `git rev-parse` to answer about that other repo
+# instead of the path _go_in_harness was actually asked about.
+REAL_A="$ROOT/harness-a"; mkdir -p "$REAL_A" && git -C "$REAL_A" init -q
+REAL_B="$ROOT/harness-b"; mkdir -p "$REAL_B" && git -C "$REAL_B" init -q
+DECOY="$ROOT/decoy"; mkdir -p "$DECOY" && git -C "$DECOY" init -q
+DECOY_GIT_DIR="$(git -C "$DECOY" rev-parse --path-format=absolute --git-dir)"
+
+# Baseline (no env poisoning): A is not B.
+rc=0; bash -c 'unset -f _go_in_harness 2>/dev/null || true; . "$1"; _go_in_harness "$2" "$3"' \
+    _ "$GO_GATE_SRC" "$REAL_A" "$REAL_B" || rc=$?
+[ "$rc" -ne 0 ] || fail "5a: baseline expected _go_in_harness(A, B) to be false (rc!=0), got rc=0"
+
+# Poisoned: an exported GIT_DIR naming the decoy repo must not change the
+# answer -- the scrub inside _go_in_harness's own subshells must win.
+rc=0; GIT_DIR="$DECOY_GIT_DIR" bash -c 'unset -f _go_in_harness 2>/dev/null || true; . "$1"; _go_in_harness "$2" "$3"' \
+    _ "$GO_GATE_SRC" "$REAL_A" "$REAL_B" || rc=$?
+[ "$rc" -ne 0 ] || fail "5b: an exported GIT_DIR (decoy repo) flipped _go_in_harness(A, B) to true (rc=0) -- HIMMEL-3570"
+
+# 5c. HIMMEL-3572 round 2: GIT_CEILING_DIRECTORIES joins the scrub too. A
+# nested "split-root" shape (e.g. a handovers/ dir under the anchor, no .git
+# of its own) resolves via upward .git discovery from the nested path -- an
+# exported GIT_CEILING_DIRECTORIES naming the anchor's own top blocks that
+# discovery, flipping the same-repo answer from true (rc=0) to false (rc!=0),
+# unless the scrub wins.
+REAL_A_SUB="$REAL_A/handovers"; mkdir -p "$REAL_A_SUB"
+
+# Baseline (no env poisoning): the nested path is inside REAL_A.
+rc=0; bash -c 'unset -f _go_in_harness 2>/dev/null || true; . "$1"; _go_in_harness "$2" "$3"' \
+    _ "$GO_GATE_SRC" "$REAL_A_SUB" "$REAL_A" || rc=$?
+[ "$rc" -eq 0 ] || fail "5c-baseline: expected _go_in_harness(REAL_A/handovers, REAL_A) to be true (rc=0), got rc=$rc"
+
+# Poisoned: an exported GIT_CEILING_DIRECTORIES naming REAL_A must not change
+# the answer -- the scrub inside _go_in_harness's own subshells must win.
+rc=0; GIT_CEILING_DIRECTORIES="$REAL_A" bash -c 'unset -f _go_in_harness 2>/dev/null || true; . "$1"; _go_in_harness "$2" "$3"' \
+    _ "$GO_GATE_SRC" "$REAL_A_SUB" "$REAL_A" || rc=$?
+[ "$rc" -eq 0 ] || fail "5c: an exported GIT_CEILING_DIRECTORIES (anchor top) flipped _go_in_harness(REAL_A/handovers, REAL_A) to false (rc=$rc) -- HIMMEL-3572 round 2"
 
 if [ "$FAIL" -eq 0 ]; then
     echo "PASS: test-go-gate.sh"
