@@ -664,6 +664,7 @@ SKIP_LIST="
 scripts/test-install-symmetry-vm.sh  # drives a real VM over SSH
 scripts/test-luna-upgrade-vm.sh      # drives a real (Ubuntu or Windows) VM over SSH
 scripts/test-tarball-install-vm.sh   # drives a real VM over SSH (HIMMEL-3059 tarball-vs-clone acceptance)
+packaging/aur/test-pkgbuild.sh       # HIMMEL-3059: needs an Arch container (or makepkg + namcap on an Arch host) and downloads the real release tarball; the follow-up aur-package CI job runs it
 scripts/test-himmel-update.sh        # HIMMEL-3450: one case needs this station's real marketplace registration (--only marketplace vs. a throwaway HOME); the rest is hermetic and runs in scripts/test-himmel-update-check.sh
 scripts/test-himmel-update-hermes.sh  # needs the hermes runtime
 scripts/hermes/test-invoke.sh        # needs the hermes runtime
@@ -2864,7 +2865,7 @@ trap 'rm -f "$suites_file" "$suites_raw"; suite_lock_release; suite_lock_queue_l
 # test-*.sh is not run until it is added here; test-run-shell-tests.sh Case 23c
 # fails on exactly that drift (a tracked suite absent from `--list .`).
 if [ "$scan" = "." ]; then
-  find -H scripts templates marketplace -path '*/node_modules' -prune -o -name 'test-*.sh' -print > "$suites_raw" 2>/dev/null
+  find -H scripts templates marketplace packaging -path '*/node_modules' -prune -o -name 'test-*.sh' -print > "$suites_raw" 2>/dev/null
 else
   find -H "$scan" -path '*/node_modules' -prune -o -name 'test-*.sh' -print > "$suites_raw" 2>/dev/null
 fi
