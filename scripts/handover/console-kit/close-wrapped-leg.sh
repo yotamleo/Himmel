@@ -152,7 +152,7 @@ out=$(bash "$CLEAN_SH" --only "$WT" 2>&1)
 rc=$?
 echo "$out"
 if [ "$rc" -ne 0 ]; then
-    if printf '%s' "$out" | grep -qi 'in use'; then
+    if printf '%s' "$out" | grep -qi 'in use'; then  # pipefail-ok: no pipefail here (set -u only); $out is an already-captured small string, not a live producer
         echo "close-wrapped-leg: worktree $WT reported in use - not a failure, retry --only shortly"
         exit 0
     fi
