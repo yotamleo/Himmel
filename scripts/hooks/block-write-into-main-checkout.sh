@@ -1907,6 +1907,7 @@ _bwimc_git_clause() {
     local toks=() t tu i n start v r
     local dir gitdir="" wtree="" idx="" unres=0 sub="" args=()
     local e_dir="$_bwimc_genv_dir" e_wt="$_bwimc_genv_wt" e_idx="$_bwimc_genv_idx"
+    local e_cfgglobal="$_bwimc_genv_cfgglobal" e_cfgsystem="$_bwimc_genv_cfgsystem"
     local cfg="$_bwimc_genv_cfg"
     local cwd="$_bwimc_gcwd"
     while IFS= read -r t; do toks+=("$t"); done < <(_bwimc_tokenize "$1")
@@ -1964,12 +1965,18 @@ _bwimc_git_clause() {
                         GIT_DIR) _bwimc_genv_dir="" ;;
                         GIT_WORK_TREE) _bwimc_genv_wt="" ;;
                         GIT_INDEX_FILE) _bwimc_genv_idx="" ;;
+                        GIT_CONFIG_GLOBAL) _bwimc_genv_cfgglobal="" ;;
+                        GIT_CONFIG_SYSTEM) _bwimc_genv_cfgsystem="" ;;
                     esac
                 else
                     case "${toks[$i]}" in
                         GIT_DIR=*) _bwimc_genv_dir="${toks[$i]#GIT_DIR=}" ;;
                         GIT_WORK_TREE=*) _bwimc_genv_wt="${toks[$i]#GIT_WORK_TREE=}" ;;
                         GIT_INDEX_FILE=*) _bwimc_genv_idx="${toks[$i]#GIT_INDEX_FILE=}" ;;
+                        GIT_CONFIG_GLOBAL=*)
+                            _bwimc_genv_cfgglobal="${toks[$i]#GIT_CONFIG_GLOBAL=}"; _bwimc_genv_cfg=1 ;;
+                        GIT_CONFIG_SYSTEM=*)
+                            _bwimc_genv_cfgsystem="${toks[$i]#GIT_CONFIG_SYSTEM=}"; _bwimc_genv_cfg=1 ;;
                         GIT_CONFIG_COUNT*|GIT_CONFIG_PARAMETERS*|GIT_CONFIG_KEY_*)
                             _bwimc_genv_cfg=1; _bwimc_g_repoint=1 ;;
                         GIT_CONFIG*) _bwimc_genv_cfg=1 ;;
@@ -1988,6 +1995,8 @@ _bwimc_git_clause() {
             GIT_DIR=*) e_dir="${t#GIT_DIR=}" ;;
             GIT_WORK_TREE=*) e_wt="${t#GIT_WORK_TREE=}" ;;
             GIT_INDEX_FILE=*) e_idx="${t#GIT_INDEX_FILE=}" ;;
+            GIT_CONFIG_GLOBAL=*) e_cfgglobal="${t#GIT_CONFIG_GLOBAL=}"; cfg=1 ;;
+            GIT_CONFIG_SYSTEM=*) e_cfgsystem="${t#GIT_CONFIG_SYSTEM=}"; cfg=1 ;;
             GIT_CONFIG_COUNT=*|GIT_CONFIG_PARAMETERS=*|GIT_CONFIG_KEY_*=*) cfg=1; _bwimc_g_repoint=1 ;;
             GIT_CONFIG*=*) cfg=1 ;;
             [A-Za-z_]*=*) ;;
@@ -2005,7 +2014,8 @@ _bwimc_git_clause() {
                             t=$(_bwimc_unq "${toks[$i]}")
                             local eopt="" eval_="" ci ch
                             case "$t" in
-                                -|-i|--ignore-environment) e_dir=""; e_wt=""; e_idx=""; cfg=0 ;;
+                                -|-i|--ignore-environment)
+                                    e_dir=""; e_wt=""; e_idx=""; e_cfgglobal=""; e_cfgsystem=""; cfg=0 ;;
                                 --unset=*) eopt=u; eval_="${t#--unset=}" ;;
                                 --unset) eopt=u ;;
                                 --chdir=*) eopt=C; eval_="${t#--chdir=}" ;;
@@ -2020,7 +2030,7 @@ _bwimc_git_clause() {
                                     while [ "$ci" -lt "${#t}" ]; do
                                         ch="${t:$ci:1}"
                                         case "$ch" in
-                                            i) e_dir=""; e_wt=""; e_idx="" ;;
+                                            i) e_dir=""; e_wt=""; e_idx=""; e_cfgglobal=""; e_cfgsystem="" ;;
                                             u|C|a|S) eopt="$ch"; eval_="${t:$((ci+1))}"; break ;;
                                         esac
                                         ci=$((ci+1))
@@ -2028,6 +2038,8 @@ _bwimc_git_clause() {
                                 GIT_DIR=*) e_dir="${t#GIT_DIR=}" ;;
                                 GIT_WORK_TREE=*) e_wt="${t#GIT_WORK_TREE=}" ;;
                                 GIT_INDEX_FILE=*) e_idx="${t#GIT_INDEX_FILE=}" ;;
+                                GIT_CONFIG_GLOBAL=*) e_cfgglobal="${t#GIT_CONFIG_GLOBAL=}"; cfg=1 ;;
+                                GIT_CONFIG_SYSTEM=*) e_cfgsystem="${t#GIT_CONFIG_SYSTEM=}"; cfg=1 ;;
                                 GIT_CONFIG_COUNT=*|GIT_CONFIG_PARAMETERS=*|GIT_CONFIG_KEY_*=*)
                                     cfg=1; _bwimc_g_repoint=1 ;;
                                 GIT_CONFIG*=*) cfg=1 ;;
@@ -2042,6 +2054,8 @@ _bwimc_git_clause() {
                                        GIT_DIR) e_dir="" ;;
                                        GIT_WORK_TREE) e_wt="" ;;
                                        GIT_INDEX_FILE) e_idx="" ;;
+                                       GIT_CONFIG_GLOBAL) e_cfgglobal="" ;;
+                                       GIT_CONFIG_SYSTEM) e_cfgsystem="" ;;
                                    esac ;;
                                 C) if r=$(_bwimc_resolve_abs "$eval_" "$cwd"); then cwd="$r"; else unres=1; fi ;;
                                 S) case "$eval_" in
@@ -2200,14 +2214,18 @@ _bwimc_git_clause() {
             #     `-f "$X"` target), the old code did nothing at all. Every
             #     other arm in this file denies an unresolved git target
             #     (`unresolved-git-target`); this one now does too.
-            #   N3 (bypass) — GIT_CONFIG_GLOBAL / GIT_CONFIG_SYSTEM set as an
-            #     env prefix or export REPOINT what file --global/--system
-            #     actually write, so the exemption above is unsound when
-            #     either is present anywhere in the command. A raw substring
-            #     scan of the clause text is coarse but errs toward MORE
-            #     denials, never fewer, and needs no new env-tracking state.
-            local cfg_scope="" cfg_file="" cfg_want=0 cfg_env_override=0
-            case "$1" in *GIT_CONFIG_GLOBAL=*|*GIT_CONFIG_SYSTEM=*) cfg_env_override=1 ;; esac
+            #
+            # HIMMEL-3565 (residuals 1 + 3): GIT_CONFIG_GLOBAL / GIT_CONFIG_SYSTEM
+            # set as an env prefix, `env VAR=…`, or `export` REPOINT what file
+            # --global/--system actually write, so the exemption above is
+            # unsound when either is present. Their VALUE is resolved and
+            # run through the same `_bwimc_resolve_abs` + `_bwimc_git_check_path`
+            # pair `-f/--file` already uses (not a coarse substring scan of the
+            # clause text, and not the target's cwd-derived owner either —
+            # both missed the actual file the flag writes to), and carried
+            # across clauses via `e_cfgglobal`/`e_cfgsystem` the same way arm
+            # (g) already carries GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE.
+            local cfg_scope="" cfg_file="" cfg_want=0
             for v in ${args[@]+"${args[@]}"}; do
                 if [ "$cfg_want" != 0 ]; then
                     [ "$cfg_want" = 1 ] && cfg_file="$v"
@@ -2222,14 +2240,26 @@ _bwimc_git_clause() {
                     --blob|--type|--default|--comment) cfg_want=2 ;;
                 esac
             done
-            if [ -n "$cfg_scope" ] && [ "$cfg_env_override" != 1 ]; then
-                :
-            elif [ -n "$cfg_file" ]; then
-                r=$(_bwimc_resolve_abs "$cfg_file" "$dir") || _bwimc_deny "unresolved-git-target" "$cfg_file" "$dir" ""
-                _bwimc_git_check_path "$r" "config --file $cfg_file"
-            else
-                _bwimc_git_check_common_owner "$gtarget" "config clause $1"
-            fi
+            case "$cfg_scope" in
+                --global)
+                    if [ -n "$e_cfgglobal" ]; then
+                        r=$(_bwimc_resolve_abs "$e_cfgglobal" "$dir") || _bwimc_deny "unresolved-git-target" "$e_cfgglobal" "$dir" ""
+                        _bwimc_git_check_path "$r" "config --global (GIT_CONFIG_GLOBAL) $e_cfgglobal"
+                    fi ;;
+                --system)
+                    if [ -n "$e_cfgsystem" ]; then
+                        r=$(_bwimc_resolve_abs "$e_cfgsystem" "$dir") || _bwimc_deny "unresolved-git-target" "$e_cfgsystem" "$dir" ""
+                        _bwimc_git_check_path "$r" "config --system (GIT_CONFIG_SYSTEM) $e_cfgsystem"
+                    fi ;;
+                --worktree) : ;;
+                "")
+                    if [ -n "$cfg_file" ]; then
+                        r=$(_bwimc_resolve_abs "$cfg_file" "$dir") || _bwimc_deny "unresolved-git-target" "$cfg_file" "$dir" ""
+                        _bwimc_git_check_path "$r" "config --file $cfg_file"
+                    else
+                        _bwimc_git_check_common_owner "$gtarget" "config clause $1"
+                    fi ;;
+            esac
             ;;
         remote)
             # Adversarial review round 1: `update`/`prune`/`show` are
@@ -2255,30 +2285,74 @@ _bwimc_git_clause() {
             # leg's OWN feature branch (git refuses to check main out in two
             # worktrees at once), never main, so `branch -u origin/x` and
             # `branch -f other start` are ordinary and must allow, matching
-            # `push -u`. Only an EXPLICIT `main`/`master` operand makes any
-            # of these flags dangerous (mirrors update-ref/symbolic-ref's own
-            # refs/heads/main|master scoping above) — so this arm now needs
-            # BOTH a dangerous flag AND a main/master operand before it
-            # triggers. N5: `--forc` (an unambiguous abbreviation of
+            # `push -u`. N5: `--forc` (an unambiguous abbreviation of
             # --force, which real git accepts) is matched via
             # _bwimc_is_long_abbrev, the same helper the option-value arms
             # above already use for exactly this purpose.
-            local br_danger=0 br_target_main=0
+            #
+            # HIMMEL-3565 (residual 2): "any operand is main/master" false-denied
+            # `branch -f <new> main` (main is the START-POINT) and
+            # `branch -C main <new>` (main is the SOURCE), and separately
+            # false-DENIED `branch -u main` by reading -u's own mandatory
+            # VALUE as if it were a branch-name operand. Real git's target
+            # operand differs by flag family:
+            #   - upstream family (-u/--set-upstream-to[=…]/--set-upstream/
+            #     --unset-upstream): `branch -u <upstream> [<branchname>]` —
+            #     the separate-token form of -u/--set-upstream-to consumes
+            #     the NEXT token as its mandatory value (never a target), and
+            #     the target is the LAST branch-name operand if any is given,
+            #     else the implicit current branch (never main, per N4 above).
+            #   - move/copy family (-M/-C, or bare -m/-c/--move/--copy when
+            #     combined with a force flag): `branch (-m|-M) [<old>] <new>`
+            #     — <old> is only ever READ, so the target is always the LAST
+            #     positional.
+            #   - otherwise (plain -f/--force): `branch -f <name> [<start>]`
+            #     — <start> is only ever READ, so the target is the FIRST
+            #     positional.
+            # (git branch -D main is inert from a linked worktree — git
+            # itself refuses to delete a branch checked out in another
+            # worktree — and is deliberately not modelled here; see the
+            # pinning test row. ponytail: static text scanning cannot special-
+            # case every branch/git version's exact flag-value shape, revisit
+            # if HIMMEL-3546's shared tokenizer lands and can replace this
+            # scan outright.)
+            local br_danger=0 br_upstream=0 br_movecopy=0 br_want_val=0
+            local br_first="" br_last="" br_target
             for v in ${args[@]+"${args[@]}"}; do
+                if [ "$br_want_val" = 1 ]; then
+                    br_want_val=0
+                    continue
+                fi
                 case "$v" in
-                    -u|--set-upstream-to|--set-upstream-to=*|--set-upstream|--unset-upstream|-M|-C)
-                        br_danger=1 ;;
+                    -u|--set-upstream-to)
+                        br_danger=1; br_upstream=1; br_want_val=1 ;;
+                    -u?*)
+                        br_danger=1; br_upstream=1 ;;
+                    --set-upstream-to=*|--set-upstream|--unset-upstream)
+                        br_danger=1; br_upstream=1 ;;
+                    -M|-C)
+                        br_danger=1; br_movecopy=1 ;;
+                    -m|-c|--move|--copy)
+                        br_movecopy=1 ;;
                     --*)
                         _bwimc_is_long_abbrev "force" "$v" && br_danger=1 ;;
                     -*)
-                        _bwimc_short_has "$v" ufMC && br_danger=1 ;;
-                    main|master)
-                        br_target_main=1 ;;
+                        _bwimc_short_has "$v" ufMC && br_danger=1
+                        case "$v" in *[MC]*) br_movecopy=1 ;; esac ;;
+                    *)
+                        [ -n "$br_first" ] || br_first="$v"
+                        br_last="$v" ;;
                 esac
             done
-            if [ "$br_danger" = 1 ] && [ "$br_target_main" = 1 ]; then
-                _bwimc_git_check_common_owner "$gtarget" "branch clause $1"
+            if [ "$br_upstream" = 1 ] || [ "$br_movecopy" = 1 ]; then
+                br_target="$br_last"
+            else
+                br_target="$br_first"
             fi
+            case "$br_target" in
+                main|master)
+                    [ "$br_danger" = 1 ] && _bwimc_git_check_common_owner "$gtarget" "branch clause $1" ;;
+            esac
             ;;
         update-ref|symbolic-ref)
             # Adversarial review round 1 (HIGH, bypass): the old loop skipped
@@ -2419,6 +2493,8 @@ _bwimc_galt_mode=""
 _bwimc_genv_dir=""
 _bwimc_genv_wt=""
 _bwimc_genv_idx=""
+_bwimc_genv_cfgglobal=""
+_bwimc_genv_cfgsystem=""
 _bwimc_genv_cfg=0
 _bwimc_g_repoint=0
 _bwimc_g_netop=0
