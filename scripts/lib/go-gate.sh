@@ -147,16 +147,19 @@ go_mac() {
 # HIMMEL-3570: an inherited GIT_DIR/GIT_WORK_TREE/GIT_COMMON_DIR/GIT_INDEX_FILE
 # overrides `-C`, so a caller's env — not the path we were given — would pick
 # the repo rev-parse answers about, which is exactly the GO root this
-# function decides. unset scrubs each call's own subshell only, so a
-# sourcing caller's env is never mutated.
+# function decides. HIMMEL-3572 round 2: GIT_CEILING_DIRECTORIES joins the
+# scrub too — exporting it at the repo's top directory stops `-C` from
+# discovering ANY repo above it, flipping this rc 0 -> 1 (reproduced: the
+# HIMMEL-3572 split-root shape). unset scrubs each call's own subshell only,
+# so a sourcing caller's env is never mutated.
 _go_in_harness() {
     local a b
     a=$(
-        unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
+        unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_CEILING_DIRECTORIES
         git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null
     ) || return 1
     b=$(
-        unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
+        unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_CEILING_DIRECTORIES
         git -C "$2" rev-parse --path-format=absolute --git-common-dir 2>/dev/null
     ) || return 1
     [ -n "$a" ] && [ "$a" = "$b" ]

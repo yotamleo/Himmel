@@ -113,9 +113,15 @@ fi
 
 # HIMMEL-3578: the mac binds the repo (himmel-go-v2|<nwo>|<pr>|<sha>) - a GO
 # minted for one repo's PR #N at a sha must not validate another repo's PR #N
-# at the same sha. Resolve nwo from the CURRENT checkout the same way
-# merge-on-green.sh's own cwd_nwo does, from the anchor so a worktree copy
-# cannot forge it.
+# at the same sha. Resolve nwo from the HARNESS ANCHOR (not the PR's own
+# repo), the same way merge-on-green.sh's own cwd_nwo does, so a worktree
+# copy cannot forge it.
+# ponytail: a GO always signs the harness's own nwo, so a cross-repo
+# adopter/upstream PR (whose repo differs from the harness anchor's) can
+# never mint a mac that repo's own verifier would match -- this fails
+# CLOSED (the merge is refused, never allowed), so it does not block this
+# PR, but the case is unhandled -- upgrade: HIMMEL-3582 resolves nwo
+# per-target-repo instead of always from ANCHOR.
 NWO=$(cd "$ANCHOR" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null) || NWO=""
 if [ -z "$NWO" ]; then
     echo "go: cannot resolve this repo's owner/name (gh repo view failed) - no GO written; the mac binds the repo (HIMMEL-3578)" >&2

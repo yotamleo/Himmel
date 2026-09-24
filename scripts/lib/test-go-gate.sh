@@ -247,6 +247,25 @@ rc=0; GIT_DIR="$DECOY_GIT_DIR" bash -c 'unset -f _go_in_harness 2>/dev/null || t
     _ "$GO_GATE_SRC" "$REAL_A" "$REAL_B" || rc=$?
 [ "$rc" -ne 0 ] || fail "5b: an exported GIT_DIR (decoy repo) flipped _go_in_harness(A, B) to true (rc=0) -- HIMMEL-3570"
 
+# 5c. HIMMEL-3572 round 2: GIT_CEILING_DIRECTORIES joins the scrub too. A
+# nested "split-root" shape (e.g. a handovers/ dir under the anchor, no .git
+# of its own) resolves via upward .git discovery from the nested path -- an
+# exported GIT_CEILING_DIRECTORIES naming the anchor's own top blocks that
+# discovery, flipping the same-repo answer from true (rc=0) to false (rc!=0),
+# unless the scrub wins.
+REAL_A_SUB="$REAL_A/handovers"; mkdir -p "$REAL_A_SUB"
+
+# Baseline (no env poisoning): the nested path is inside REAL_A.
+rc=0; bash -c 'unset -f _go_in_harness 2>/dev/null || true; . "$1"; _go_in_harness "$2" "$3"' \
+    _ "$GO_GATE_SRC" "$REAL_A_SUB" "$REAL_A" || rc=$?
+[ "$rc" -eq 0 ] || fail "5c-baseline: expected _go_in_harness(REAL_A/handovers, REAL_A) to be true (rc=0), got rc=$rc"
+
+# Poisoned: an exported GIT_CEILING_DIRECTORIES naming REAL_A must not change
+# the answer -- the scrub inside _go_in_harness's own subshells must win.
+rc=0; GIT_CEILING_DIRECTORIES="$REAL_A" bash -c 'unset -f _go_in_harness 2>/dev/null || true; . "$1"; _go_in_harness "$2" "$3"' \
+    _ "$GO_GATE_SRC" "$REAL_A_SUB" "$REAL_A" || rc=$?
+[ "$rc" -eq 0 ] || fail "5c: an exported GIT_CEILING_DIRECTORIES (anchor top) flipped _go_in_harness(REAL_A/handovers, REAL_A) to false (rc=$rc) -- HIMMEL-3572 round 2"
+
 if [ "$FAIL" -eq 0 ]; then
     echo "PASS: test-go-gate.sh"
     exit 0

@@ -282,9 +282,14 @@ if [ "$is_leg" -eq 1 ]; then
     # a budget, and a hang here must read as a refusal, never as an allow.
     go_nwo="$repo"
     if [ -z "$go_nwo" ]; then
-        if command -v timeout >/dev/null 2>&1; then
-            go_nwo=$(timeout 5 gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null) || go_nwo=""
-        fi
+        # HIMMEL-3578 (round 2): resolve the GNU-semantics `timeout` through
+        # the shared resolver, which also tries `gtimeout` — a bare `timeout`
+        # check alone left every merge refused on stock macOS (no coreutils),
+        # since the block below was skipped whole and go_nwo stayed empty.
+        # shellcheck disable=SC1091
+        # shellcheck source=../lib/timeout-bin.sh
+        . "$SCRIPT_DIR/../lib/timeout-bin.sh"
+        go_nwo=$(${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" 5} gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null) || go_nwo=""
     fi
     if [ -z "$go_nwo" ]; then
         echo "block-unresolved-cr-merge: cannot resolve this repo's owner/name for PR #$go_num — refusing (GATE INTEGRITY: the GO mac binds the repo). Pass --repo <owner>/<name>, or run from a checkout gh can resolve." >&2
