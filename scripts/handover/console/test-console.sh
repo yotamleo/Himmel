@@ -1544,4 +1544,88 @@ case "$out65" in
 esac
 check "65 own-checkout's HANDOVER_DIR used, not the foreign CWD repo" "$contains65" "yes"
 
+# --- 66: HIMMEL-3568 -- next --arm run from inside a leg's own shell must
+# arm a CLEAN console. A leg's env keeps every leg_propagate_env / plain
+# `export` name from headed-arm-leg.sh live for its whole session (plain
+# export crosses every descendant of that long-running process, not just its
+# immediate child), so a later `console.sh next --arm` in that same shell
+# used to inherit all of it unfiltered. Runs the REAL headed-arm.sh (not a
+# stub) via --dry-run, reached through do_arm()'s own CONSOLE_ARM_FOREGROUND
+# path -- this exercises the actual strip, not a hand-written substitute.
+# CONSOLE_CONTEXT=1m is the operator's real opt-in mechanism (headed-arm.sh
+# only ever appends [1m] to MODEL when CONTEXT resolves to 1m, regardless of
+# what --model was given) -- a leaked HEADED_ARM_REQUIRED_AUTOCOMPACT=200000
+# refuses that launch outright (see the RED excerpt in this ticket's PR).
+out66a="$(console new --bucket cleanenv66)"
+token66a="$(token_of "$out66a")"
+doc66A="$root/tester/cleanenv66/DEMO-nextleg-${today}A-console.md"
+
+cat > "$tmp/stub-arm-66.sh" <<STUB
+#!/usr/bin/env bash
+# HIMMEL-3568: dump whether each scrubbed name is still SET in this child's
+# own environment (not just absent from headed-arm.sh's printed output) --
+# the console's ruling asked for direct evidence on the child process, since
+# a text-scan of argv/output cannot tell "unset" from "set to a value that
+# happens not to print".
+{
+    printf 'LEG_PROFILE_SETTINGS=%s\n' "\${LEG_PROFILE_SETTINGS+set}"
+    printf 'HIMMEL_CONSOLE_LEG=%s\n' "\${HIMMEL_CONSOLE_LEG+set}"
+    printf 'HEADED_ARM_REQUIRED_AUTOCOMPACT=%s\n' "\${HEADED_ARM_REQUIRED_AUTOCOMPACT+set}"
+} > "$tmp/child-env-66.txt"
+exec "$REPO_REAL/scripts/handover/headed-arm.sh" --dry-run "\$@"
+STUB
+chmod +x "$tmp/stub-arm-66.sh"
+
+# headed-arm.sh's own presence check for $KONSOLE runs even under --dry-run
+# (only the actual launch is skipped) -- a CI runner has no real konsole, so
+# this needs the same KONSOLE_CMD stub test-headed-arm.sh already uses,
+# never invoked here (dry-run never reaches the launch), only present.
+cat > "$tmp/konsole-66" <<'KONSOLE_STUB'
+#!/usr/bin/env bash
+exit 0
+KONSOLE_STUB
+chmod +x "$tmp/konsole-66"
+
+out66b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    LEG_PROFILE_SETTINGS=/leaked-66/settings.json LEG_PROFILE_PREFACE=/leaked-66/preface.md \
+    LEG_PROFILE_MCP_CONFIG=/leaked-66/mcp.json LEG_CLAUDE_BIN=/leaked-66/claude \
+    HIMMEL_LEAN_LEG=1 HIMMEL_CONSOLE_LEG=1 HIMMEL_CONSOLE_NAME=leaked-console-66 \
+    LEG_EFFORT=high CLAUDE_CODE_EFFORT_LEVEL=high CLAUDEX_LANE_OK=1 \
+    CR_TRIGGER_SUPPRESS=1 IMPL_GUARD_OK=1 INLINE_IMPL_OK=1 HIMMEL_READ_CLAMP_LINES=4000 \
+    HIMMEL_CONSOLE_RELAY=1 \
+    HEADED_ARM_LAUNCHER=/leaked-66/leg-claude-launcher.sh HEADED_ARM_RECORDER=1 \
+    HEADED_ARM_REQUIRED_AUTOCOMPACT=200000 \
+    HEADED_ARM_LAUNCHER_ENV="CLAUDEX_LANE_OK=1 LEG_PROFILE_SETTINGS=/leaked-66/settings.json" \
+    HEADED_ARM_UNAME=Darwin \
+    CONSOLE_CONTEXT=1m \
+    KONSOLE_CMD="$tmp/konsole-66" \
+    CONSOLE_HEADED_ARM="$tmp/stub-arm-66.sh" CONSOLE_ARM_FOREGROUND=1 CONSOLE_WORK_DIR="$tmp/work66" \
+    bash "$C" next --bucket cleanenv66 --arm --deadline-min 0 ) 2>&1 )"
+rc66b=$?
+check "66 next --arm from a leaked leg env still succeeds (rc=0)" "$rc66b" "0"
+check "66 CONSOLE_CONTEXT=1m survives the leaked required-autocompact pin, model carries [1m]" \
+    "$(printf '%s\n' "$out66b" | grep -c '^headed-arm: context=1m .*model=claude-opus-5-5\[1m\] (autocompact=auto)$')" "1"
+check "66 dry-run resolves the real launcher, not the leaked shim; recorder not inherited" \
+    "$(printf '%s\n' "$out66b" | grep -c '^headed-arm: launcher=claude recorder=0 ')" "1"
+check "66 no leaked leg-profile value reaches the armed console's argv/env" \
+    "$(printf '%s\n' "$out66b" | grep -c 'leaked-66')" "0"
+check "66 armed child's OWN environment still lacks LEG_PROFILE_SETTINGS (not just unprinted)" \
+    "$(grep -c '^LEG_PROFILE_SETTINGS=set$' "$tmp/child-env-66.txt")" "0"
+check "66 armed child's OWN environment still lacks HIMMEL_CONSOLE_LEG (not just unprinted)" \
+    "$(grep -c '^HIMMEL_CONSOLE_LEG=set$' "$tmp/child-env-66.txt")" "0"
+check "66 armed child's OWN environment still lacks HEADED_ARM_REQUIRED_AUTOCOMPACT (not just unprinted)" \
+    "$(grep -c '^HEADED_ARM_REQUIRED_AUTOCOMPACT=set$' "$tmp/child-env-66.txt")" "0"
+HANDOVER_DIR="$root" bash "$QL" release "$doc66A" "$token66a" >/dev/null 2>&1
+
+# --- 67: HIMMEL-3568 sync -- console_context_leg_env_unset_names must name
+# every var headed-arm-leg.sh propagates to a leg via leg_propagate_env, so a
+# NEW leg_propagate_env call site there is a visible gap here, not a silent
+# new leak (headed-arm-leg.sh is read-only for HIMMEL-3568; this is the
+# contract's "a test that fails when it gains a var the strip list does not
+# name").
+propagated67="$(grep -v -E '^[[:space:]]*#' "$REPO_REAL/scripts/handover/console-kit/headed-arm-leg.sh" | grep -oE 'leg_propagate_env [A-Z_][A-Z0-9_]*' | awk '{print $2}' | sort -u)"
+strip_list67="$( ( . "$REPO_REAL/scripts/lib/console-context.sh"; console_context_leg_env_unset_names ) | sort -u)"
+missing67="$(comm -23 <(printf '%s\n' "$propagated67") <(printf '%s\n' "$strip_list67"))"
+check "67 every leg_propagate_env name in headed-arm-leg.sh is in the strip list" "$missing67" ""
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

@@ -77,6 +77,12 @@
 #       behavior is restored exactly - plain `export` reaches the leg via
 #       ordinary inheritance, no token is added for that one var, and a
 #       stderr warning explains why.
+#   35. HIMMEL-3545 (invariant pin, not a regression repro): HANDOVER_DIR
+#       unset but self-resolvable (case 26's shape) and the doc directory
+#       outside that root still gets the additionalDirectories grant, named
+#       exactly - proving HIMMEL-3155's leg_propagate_env export already
+#       carries the self-resolved root to the grant check, and that the
+#       grant is never /, $HOME, or the resolved root's own repo.
 #
 # Platform guard (gitbash-only): POSIX bash 3.2+, same as headed-arm.sh
 # itself (konsole is Linux/KDE-only) - no .ps1 twin.
@@ -2217,6 +2223,43 @@ not_contains "34c the registry's medium never overwrites the ambient value" "$le
 out34d="$(HEADED_ARM_LEG_LANES_JSON="$lanes_fixture" CLAUDE_CODE_EFFORT_LEVEL='' bash "$SCRIPT" --dry-run --no-profile --lane claudex HIMMEL-9999-leg-34d some/doc.md /tmp/nosig 99999999999 "$tmp/leg34d.log" 2>&1)"
 lenv34d="$(printf '%s\n' "$out34d" | grep '^headed-arm-leg: lane=')"
 contains "34d claudex lane still exports its own LEG_EFFORT-default effort" "$lenv34d" "CLAUDE_CODE_EFFORT_LEVEL=medium"
+
+# --- 35 (HIMMEL-3545, invariant pin). HANDOVER_DIR unset, but a root IS
+# self-resolvable (case 26's HIMMEL-3155 shape: a console-like cwd with an
+# inline handovers/ dir) and the leg's own doc lives OUTSIDE that root, not
+# at/under it: the additionalDirectories grant must still fire and must name
+# exactly the doc's own directory, not the unset HANDOVER_DIR var read
+# directly. This is not a regression repro - HIMMEL-3155's leg_propagate_env
+# export (headed-arm-leg.sh:239, ~466-475) already carries the self-resolved
+# root to the :811 grant check on unmodified code, so this case is a pin
+# proving that continues to hold, not a fix. It fails only against a mutant
+# that drops the export (see PR description for the scratch RED run).
+primary35="$tmp/primary35"
+mkdir -p "$primary35/handovers" && git -C "$primary35" init -q
+d35="$tmp/c35"; mk_launch_stubs "$d35" "HIMMEL-3545-leg"; mkdir -p "$tmp/repo35"
+doc35_dir="$tmp/legdoc35"; mkdir -p "$doc35_dir"
+doc35="$doc35_dir/HIMMEL-3545-leg.md"
+printf '%s\n' '# fixture doc outside the self-resolved root' > "$doc35"
+rc=0
+( cd "$primary35" && \
+  HANDOVER_DIR='' \
+  HEADED_ARM_LEG_TARGET="$HEADED_ARM" HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+  KONSOLE_CMD="$d35/konsole" PGREP_CMD="$d35/pgrep" \
+  LEG_REPO="$tmp/repo35" HEADED_ARM_LOCK_DIR="$d35/locks" HEADED_ARM_PROC="$d35/proc" \
+    bash "$SCRIPT" --profile leg-impl "HIMMEL-3545-leg" "$doc35" "$d35/signal-never" "$PAST" "$d35/log" "claude-sonnet-5" \
+) >/dev/null 2>&1 || rc=$?
+wait_record "$d35" || true
+settings35="$d35/HIMMEL-3545-leg.leg-settings.json"
+check "self-resolved root, doc outside it: exit 0" "$rc" "0"
+check "self-resolved root, doc outside it: additionalDirectories grants exactly the doc's own directory" \
+  "$(jq -c '.permissions.additionalDirectories' "$settings35" 2>/dev/null)" \
+  "$(jq -cn --arg d "$doc35_dir" '[$d]')"
+check "self-resolved root, doc outside it: grant is never /" \
+  "$(jq --arg d "/" '(.permissions.additionalDirectories // []) | any(. == $d)' "$settings35" 2>/dev/null)" "false"
+check "self-resolved root, doc outside it: grant is never \$HOME" \
+  "$(jq --arg d "$HOME" '(.permissions.additionalDirectories // []) | any(. == $d)' "$settings35" 2>/dev/null)" "false"
+check "self-resolved root, doc outside it: grant is never the repo root" \
+  "$(jq --arg d "$primary35" '(.permissions.additionalDirectories // []) | any(. == $d)' "$settings35" 2>/dev/null)" "false"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

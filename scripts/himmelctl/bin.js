@@ -35,6 +35,7 @@ const { cacheDir, profileForVault, which, resolvePowershell, displayPath, shellQ
 const launcherLib = require('./lib/launcher.js');
 const uninstallWrapperLib = require('./lib/uninstall-wrapper.js');
 const standaloneBundleLib = require('./lib/standalone-bundle.js');
+const tarballUpdateLib = require('./lib/tarball-update.js');
 const stateLib = require('./lib/state.js');
 const statusReportLib = require('./lib/status-report.js');
 const installEngineLib = require('./lib/install-engine.js');
@@ -72,7 +73,9 @@ function provWarn(e) {
 // child runSpawn() starts inherits the session.
 function provOpen(args) {
   try {
-    provLib.provBegin(['--writer', 'himmelctl', '--target', process.cwd(), '--root', repoRoot(),
+    // The ledger records the real version dir, never the `current` link
+    // himmelRoot() answers for a versioned release tree (HIMMEL-3059 S4).
+    provLib.provBegin(['--writer', 'himmelctl', '--target', process.cwd(), '--root', process.env.HIMMELCTL_REPO_ROOT || himmelRealRoot(),
       ...(args && args.dryRun ? ['--dry-run'] : []), '--', ...process.argv.slice(2)]);
   } catch (e) { provWarn(e); }
 }
@@ -149,7 +152,11 @@ commands:
   update                  update this himmel checkout — thin wrapper around
                           scripts/himmel-update.sh (same engine as
                           /himmel-update): full dependency-chain check/update
-                          with per-item status + abort-on-first-failure
+                          with per-item status + abort-on-first-failure. A
+                          release-tarball install in the versioned layout
+                          (<base>/<version>/ + <base>/current) instead
+                          downloads, verifies and extracts the latest release
+                          into a new version dir, then swaps current
   --version [--all]       print the himmel version, git describe string and
                           commit; --all also prints one line per updatable
                           component (himmel checkout, plugins, jira CLI, qmd,
@@ -711,7 +718,26 @@ function parseArgs(argv) {
 }
 
 // Absolute himmel repo root (this file lives at scripts/himmelctl/bin.js).
+// Node realpaths a main module's __dirname, so for a release tree in the
+// versioned layout (<base>/<version>/ + <base>/current, HIMMEL-3059 S4) that
+// is the VERSIONED dir — and every path wired from it (adopt.sh's HIMMEL_ROOT
+// -> env.HIMMEL_REPO and the hook commands, the PATH launcher's target) would
+// be stranded by the next `current` swap. Such a tree answers its stable
+// `current` path instead. A git clone never matches: its root is unchanged.
+// Resolved once: after `update` swaps current away from the running tree, a
+// fresh check would no longer match and would answer the old version dir.
+// (A function property, not a module `let`: himmelRoot() runs at module top
+// level before a `let` further down would be initialised.)
 function himmelRoot() {
+  if (himmelRoot.cached === undefined) {
+    const real = himmelRealRoot();
+    const layout = tarballUpdateLib.versionedLayout(real);
+    himmelRoot.cached = layout ? layout.current : real;
+  }
+  return himmelRoot.cached;
+}
+
+function himmelRealRoot() {
   return path.resolve(__dirname, '..', '..');
 }
 
@@ -2456,10 +2482,10 @@ function printUninstallFooter() {
     bundleOk = meta && meta.marker === standaloneBundleLib.BUNDLE_MARKER;
   } catch (_e) { /* no bundle, or not ours */ }
   if (bundleOk) {
-    console.log(`To uninstall later: ${nodeScriptCmd(__filename)} uninstall (if you delete ${primaryCheckoutRoot()} first, the fallback still works: ${nodeScriptCmd(path.join(bundleDir, 'standalone.js'))} uninstall)`);
+    console.log(`To uninstall later: ${nodeScriptCmd(path.join(himmelRoot(), 'scripts', 'himmelctl', 'bin.js'))} uninstall (if you delete ${primaryCheckoutRoot()} first, the fallback still works: ${nodeScriptCmd(path.join(bundleDir, 'standalone.js'))} uninstall)`);
     // ^ nodeScriptCmd already prefixes "node " and quotes the path when needed.
   } else {
-    console.log(`To uninstall later: ${nodeScriptCmd(__filename)} uninstall`);
+    console.log(`To uninstall later: ${nodeScriptCmd(path.join(himmelRoot(), 'scripts', 'himmelctl', 'bin.js'))} uninstall`);
   }
 }
 
@@ -4870,6 +4896,8 @@ function deriveUpdateCommand() {
 }
 
 async function cmdUpdate(args) {
+  const layout = tarballUpdateLib.versionedLayout(repoRoot());
+  if (layout) return cmdUpdateVersioned(args, layout);
   const cmd = deriveUpdateCommand();
   console.log(`derived: ${displayCommand(cmd)}`);
   if (args.dryRun) {
@@ -4885,6 +4913,31 @@ async function cmdUpdate(args) {
   // specific refusal/error. A failed launcher write must NOT mask the update's
   // success in this exit code (automation keys off rc 0/!=0), so surface a LOUD
   // warning and keep rc 0 — the launcher is best-effort, never a hard dependency.
+  if (!applyHimmelctlPathShim(args)) {
+    console.error('himmelctl: WARN: update succeeded, but the PATH launcher could not be written (see above); the update is complete — the launcher is best-effort');
+  }
+  return 0;
+}
+
+// A release tree in the versioned layout (HIMMEL-3059 S4) has no upstream to
+// pull, so himmel-update.sh would refuse it. Its update is download -> verify
+// -> extract into a new version dir -> atomic `current` swap
+// (lib/tarball-update.js); the launcher rider is the git route's.
+async function cmdUpdateVersioned(args, layout) {
+  console.log(`derived: versioned tarball update of ${layout.base} (current -> ${path.basename(layout.dir)}): release lookup, download, sha256 verify, extract into a new version dir, swap current`);
+  if (args.dryRun) {
+    applyHimmelctlPathShim(args);
+    return 0;
+  }
+  provOpen(args);
+  provStep = 'update';
+  const rc = tarballUpdateLib.updateVersioned(layout, {
+    bash: resolveBash(),
+    releaseCheck: toBashPath(path.join(repoRoot(), 'scripts', 'lib', 'release-check.sh')),
+    log: (m) => console.log(m),
+    err: (m) => console.error(m),
+  });
+  if (rc !== 0) return rc;
   if (!applyHimmelctlPathShim(args)) {
     console.error('himmelctl: WARN: update succeeded, but the PATH launcher could not be written (see above); the update is complete — the launcher is best-effort');
   }

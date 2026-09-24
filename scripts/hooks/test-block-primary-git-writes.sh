@@ -499,6 +499,75 @@ allow "branch --unset-upstream (implicit target)" "$W" "git branch --unset-upstr
 allow "branch -M old new (neither is main)" "$W" "git branch -M oldbr newbr2"
 allow "branch -uorigin/x attached (implicit target)" "$W" "git branch -uorigin/feat/x"
 
+echo "== HIMMEL-3565 residual 1 + 3: GIT_CONFIG_GLOBAL/SYSTEM value path-check + cross-clause carry =="
+# Residual 1 (N3 incomplete): the old check only withheld the
+# --global/--system exemption when the env var's NAME was present in the
+# clause text; it never resolved the var's VALUE. The existing round-2 deny
+# row (cwd=$W, a worktree of $P) passed by accident — $W's own common-dir
+# owner IS $P, so the (wrong) check landed on the right answer. From a cwd
+# with no repo at all (/tmp), that accident doesn't happen, and the old code
+# allowed. The value itself must be resolved and checked directly.
+deny "GIT_CONFIG_GLOBAL=<primary cfg> + config --global, cwd=/tmp" "/tmp" \
+    "GIT_CONFIG_GLOBAL=$P/.git/config git config --global core.hooksPath /x"
+deny "GIT_CONFIG_SYSTEM=<primary cfg> + config --system, cwd=/tmp" "/tmp" \
+    "GIT_CONFIG_SYSTEM=$P/.git/config git config --system core.hooksPath /x"
+allow "GIT_CONFIG_GLOBAL=<outside path> + config --global, cwd=/tmp" "/tmp" \
+    "GIT_CONFIG_GLOBAL=/tmp/himmel-3565-outside-cfg git config --global core.hooksPath /x"
+# Residual 3: the old scan read only the CURRENT clause's text, so an
+# earlier `export` in the same command (arm (g) already carries
+# GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE this way) was invisible to it.
+deny "export GIT_CONFIG_GLOBAL=<primary cfg>; config --global, no -C" "$W" \
+    "export GIT_CONFIG_GLOBAL=$P/.git/config; git config --global core.hooksPath /x"
+
+echo "== HIMMEL-3565 residual 2: branch arm scopes to the flag's TARGET operand, not any main/master operand =="
+# -f's target is the FIRST positional (the branch being created/reset); a
+# main/master START-POINT (second positional) is read-only and must allow.
+allow "branch -f <new> main (main is the START-POINT, not the target)" "$W" \
+    "git branch -f feat main"
+# -u/--set-upstream-to's mandatory value is the UPSTREAM, not a branch name;
+# with no further operand the target is the CURRENT branch (never main here).
+allow "branch -u main (main is -u's VALUE, not a branch operand)" "$W" \
+    "git branch -u main"
+# -C's target is the NEW branch (last positional); the old one is a read-only
+# copy SOURCE.
+allow "branch -C main <new> (main is the SOURCE, not the target)" "$W" \
+    "git branch -C main feat2"
+
+echo "== HIMMEL-3565 round-3 CR (B1): move SOURCE is a target too — <old> is deleted, not just read =="
+# Copy's source is read-only (residual 2's -C row above stays allow), but
+# move DELETES the source ref (refs/heads/<old> goes away, and if <old> was
+# checked out elsewhere its HEAD repoints) — that is a write, not a read.
+deny "branch -M main <new> (main is the MOVE SOURCE, uppercase)" "$W" \
+    "git branch -M main renamed"
+deny "branch -M master <new> (master is the MOVE SOURCE)" "$W" \
+    "git branch -M master renamed"
+deny "branch --move --force main <new> (long form, main is the SOURCE)" "$W" \
+    "git branch --move --force main renamed"
+# Bare -m (no force) is a real rename too — git only needs -f when <new>
+# already exists — so it was wrongly excluded from br_danger entirely; now
+# in the same danger bucket as -M.
+deny "branch -m main <new>, no force (main is the MOVE SOURCE)" "$W" \
+    "git branch -m main renamed"
+
+echo "== HIMMEL-3565 round-3 CR (B2): -u's value hides inside a bundled short cluster =="
+# The exact -u/-uVALUE forms above are matched, but a cluster like -fu bundles
+# -u with an unrelated boolean flag in one token; -u still consumes the NEXT
+# token as its mandatory value (never a branch-name operand), and the real
+# target is main, the operand after it.
+deny "branch -fu <upstream> main (u bundled with -f)" "$W" \
+    "git branch -fu origin/feat/x main"
+deny "branch -qu <upstream> main (u bundled with -q)" "$W" \
+    "git branch -qu origin/feat/x main"
+deny "branch -vu <upstream> main (u bundled with -v)" "$W" \
+    "git branch -vu origin/feat/x main"
+
+echo "== HIMMEL-3565 residual 4 (documented, not fixed): branch -D main is inert, not modelled =="
+# git itself refuses to delete the branch checked out in another worktree, so
+# this is inert in the exact scenario this arm defends. See the ponytail
+# comment beside the branch arm in block-write-into-main-checkout.sh. Pinned
+# here so a change to that invariant is caught rather than silently drifting.
+allow "branch -D main, no -C (git itself refuses; not modelled)" "$W" "git branch -D main"
+
 echo "== DENY: unparseable input fails CLOSED in direct-exec mode (adversarial review S6) =="
 for raw in '' 'not json' '[]' '{}' '{"tool_name":"Bash"}' '{"tool_name":"Bash","tool_input":{}}' \
            '{"tool_input":{"command":"git status"}}'; do

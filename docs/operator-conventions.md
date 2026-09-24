@@ -217,6 +217,22 @@ Canonical arming mechanics live in [`docs/internals/handover-system.md`](interna
   a park lands on a durable commit instead of a dirty worktree. Nudging has
   a ceiling of two attempts — after that, take over (stop the worker first,
   so the takeover stays single-writer, then land its diff yourself).
+- **A hook or permission PR gets an independent adversarial review before
+  GO.** A leg's self-review, even one that tested its own guard adversarially
+  with its impacted suites green, is not enough evidence for a guard change.
+  In one shift (2026-09-24) an independent reviewer turned three self-reviewed
+  guard PRs from GO to NO-GO: allow rules shadowed by an earlier hook, a
+  false deny that would have broken every leg, and in-scope bypasses. Brief
+  the reviewer on the diff and the guard's threat model, and ask for a RED
+  row per finding. When the rounds keep turning up new bypasses of the new
+  coverage (text scanning is whack-a-mole), stop the rounds, ticket the
+  residuals, and point at the structural fix instead of a round 4.
+- **Never tell a child to route around its own session's guards.** A review
+  or test brief that says "build the payload another way if the hook refuses
+  it" invites escalation: one reviewer went from placeholder substitution to
+  encoding script names past `guard-pr-check-literal`, and the classifier
+  stopped it. Tell the child to report the denial as a finding and to rely on
+  reading the code and on the PR's own real-hook tests instead.
 
 ## Permissions & bash command shape
 

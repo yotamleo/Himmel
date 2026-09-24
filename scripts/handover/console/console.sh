@@ -204,6 +204,22 @@ do_arm() {
     # the environment is ignored.
     mkdir -p "$(dirname "$log")"
     arm="${CONSOLE_HEADED_ARM:-$HERE/../headed-arm.sh}"
+    # HIMMEL-3568: this process itself may BE a leg (console.sh next --arm run
+    # from inside one) -- a leg's own profile/launcher env stays live in its
+    # shell for its whole session (see console_context_leg_env_unset_names),
+    # and headed-arm.sh would otherwise resolve its ${HEADED_ARM_*:-default}
+    # fallbacks and leg-profile vars from that leaked env. Scrub the whole
+    # canonical set from THIS process's own environment before the launch
+    # lines below run, so a fresh console always arms clean regardless of
+    # what launched the process running this script -- do_arm is always the
+    # last thing its caller does (end of cmd_new / cmd_next, script exits
+    # right after), so nothing downstream in this process needs them back.
+    local -a leg_env_names=()
+    local leg_env_name
+    for leg_env_name in $(console_context_leg_env_unset_names); do
+        leg_env_names+=("$leg_env_name")
+    done
+    unset "${leg_env_names[@]}"
     if [ "${CONSOLE_ARM_FOREGROUND:-0}" = "1" ]; then
         bash "$arm" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model"
     elif command -v setsid >/dev/null 2>&1; then

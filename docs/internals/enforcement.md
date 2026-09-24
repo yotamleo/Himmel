@@ -2095,7 +2095,10 @@ is a literal path other than `scripts/cr` (`scripts/hooks/*.sh`, `docs/*`,
 or `{}` is not one while nothing that could run it is present (HIMMEL-3433).
 Mentions (`grep`, `cat`, `git diff`, the test suites) are a no-op. Absolute paths, including the
 anchor's, are a no-op too: no allow rule matches them, and the runbook's
-adopter lane depends on them. A candidate that does not resolve to exactly
+adopter lane depends on them. (A consequence: a settings allow rule spelled
+`bash "$HIMMEL_REPO/scripts/cr/<script>"` is dead. This hook denies the
+`$`-bearing word before the allow list is consulted, so an allow rule has to
+name a spelling this hook lets through, never a variable one.) A candidate that does not resolve to exactly
 `scripts/cr/<script>` from the cwd (a glob, a variable, any `..`, which the
 kernel resolves after following symlinks), or a command that changes directory
 (`cd`, `pushd`, `env -C`), denies outright: the conditions

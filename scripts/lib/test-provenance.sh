@@ -388,5 +388,24 @@ check "the opener's prov_end wrote exactly one install-end" "$(grep -c '"op":"in
 check "the opener's prov_end closed the session" "${HIMMEL_PROVENANCE_IID:-unset}" "unset"
 ( prov_begin --writer own --iid SUB2; prov_end ok ); check "a subshell that opens its own session closes it" "$(grep -c '"iid":"SUB2","op":"install-end"' "$ledger")" "1"
 
+# ── HIMMEL-3556 ───────────────────────────────────────────────────────────
+# prov_ledger_registered_ours: a register row counts as ours only after the
+# most recent uninstall-begin boundary (or from the ledger's start, if none).
+rm -f "$ledger"
+_prov_append '{"op":"register","kind":"marketplace","unit":"himmel","preexisted":false}'
+check "registered_ours: no boundary yet, a register row counts as ours" \
+    "$(prov_ledger_registered_ours marketplace himmel >/dev/null 2>&1 && echo yes || echo no)" "yes"
+_prov_append '{"op":"uninstall-begin"}'
+check "registered_ours: a register row before the boundary is NOT ours (operator re-added)" \
+    "$(prov_ledger_registered_ours marketplace himmel >/dev/null 2>&1 && echo yes || echo no)" "no"
+_prov_append '{"op":"register","kind":"marketplace","unit":"himmel","preexisted":false}'
+check "registered_ours: a register row after the boundary IS ours" \
+    "$(prov_ledger_registered_ours marketplace himmel >/dev/null 2>&1 && echo yes || echo no)" "yes"
+rm -f "$ledger"
+_prov_append '{"op":"uninstall-begin"}'
+_prov_append '{"op":"register","kind":"marketplace","unit":"himmel","preexisted":true}'
+check "registered_ours: preexisted=true after the boundary is NOT ours" \
+    "$(prov_ledger_registered_ours marketplace himmel >/dev/null 2>&1 && echo yes || echo no)" "no"
+
 echo "$passes passed, $fails failed"
 [ "$fails" -eq 0 ]
