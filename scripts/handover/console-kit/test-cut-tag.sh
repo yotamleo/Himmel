@@ -44,14 +44,17 @@ RUNS_DEFAULT='{"total_count":1,"check_runs":[{"name":"ci","status":"completed","
 STATUS_DEFAULT='{"state":"success","total_count":0}'
 case "$1 $2" in
   "repo view")
+    [ "${CT_NWO_MISMATCH:-0}" = "1" ] && { echo "octo-other/demo"; exit 0; }
     echo '{"owner":{"login":"octo"},"name":"demo"}' | jq -r '"\(.owner.login)/\(.name)"'
     exit 0 ;;
 esac
 case "$*" in
   *"commits/$SHA_ENV/check-runs"*)
+    [ "${CT_RUNS_FAIL:-0}" = "1" ] && exit 1
     printf '%s' "${CT_RUNS_JSON:-$RUNS_DEFAULT}"
     exit 0 ;;
   *"commits/$SHA_ENV/status"*)
+    [ "${CT_STATUS_FAIL:-0}" = "1" ] && exit 1
     printf '%s' "${CT_STATUS_JSON:-$STATUS_DEFAULT}"
     exit 0 ;;
   *"git/refs -f"*)
@@ -68,6 +71,12 @@ GIT_STUB_DIR="$tmp/bin"; mkdir -p "$GIT_STUB_DIR"
 cat > "$GIT_STUB_DIR/git" <<'STUB'
 #!/usr/bin/env bash
 echo "git $*" >> "$CALLS_LOG"
+case "$1 $2" in
+  "remote get-url")
+    [ "${CT_ORIGIN_URL_FAIL:-0}" = "1" ] && exit 1
+    printf '%s\n' "${CT_ORIGIN_URL:-https://github.com/octo/demo.git}"
+    exit 0 ;;
+esac
 case "$1 $2 $3" in
   "fetch origin main")
     [ "${CT_FETCH_FAIL:-0}" = "1" ] && exit 1
@@ -85,6 +94,7 @@ case "$*" in
     [ "${CT_TAG_EXISTS:-0}" = "1" ] && exit 0
     exit 2 ;;
   "ls-remote --tags origin "*)
+    [ "${CT_SERIES_LS_FAIL:-0}" = "1" ] && exit 1
     printf '%s\n' "${CT_SERIES_TAGS:-}"
     exit 0 ;;
 esac
@@ -99,10 +109,14 @@ run() { # run <version> <sha> [more args...] - runs the script under test
         CT_SERIES_TAGS="${CT_SERIES_TAGS:-}" CT_FETCH_FAIL="${CT_FETCH_FAIL:-0}" \
         CT_RUNS_JSON="${CT_RUNS_JSON:-}" CT_STATUS_JSON="${CT_STATUS_JSON:-}" \
         CT_CREATE_FAIL="${CT_CREATE_FAIL:-0}" \
+        CT_ORIGIN_URL="${CT_ORIGIN_URL:-}" CT_ORIGIN_URL_FAIL="${CT_ORIGIN_URL_FAIL:-0}" \
+        CT_NWO_MISMATCH="${CT_NWO_MISMATCH:-0}" CT_SERIES_LS_FAIL="${CT_SERIES_LS_FAIL:-0}" \
+        CT_RUNS_FAIL="${CT_RUNS_FAIL:-0}" CT_STATUS_FAIL="${CT_STATUS_FAIL:-0}" \
         bash "$SCRIPT" "$@"
 }
 reset_calls() { : > "$CALLS"; }
 unset CT_ANCESTOR_BAD CT_TAG_EXISTS CT_SERIES_TAGS CT_FETCH_FAIL CT_RUNS_JSON CT_STATUS_JSON CT_CREATE_FAIL
+unset CT_ORIGIN_URL CT_ORIGIN_URL_FAIL CT_NWO_MISMATCH CT_SERIES_LS_FAIL CT_RUNS_FAIL CT_STATUS_FAIL
 
 CLEAN_VERSION="v0.3.0-pre.9"
 CT_SERIES_TAGS_DEFAULT="aaaa1111	refs/tags/v0.3.0-pre.6
@@ -110,7 +124,7 @@ bbbb2222	refs/tags/v0.3.0-pre.7
 cccc3333	refs/tags/v0.3.0-pre.8"
 
 # --- 1. usage ------------------------------------------------------------
-for args in "" "v0.3.0-pre.9" "bad-version $SHA" "v0.3.0-pre.9 tooshort" "v0.3.0-pre.9 $SHA --nope" "v0.3.0-pre.9 $SHA --version-override"; do
+for args in "" "v0.3.0-pre.9" "bad-version $SHA" "v0.3.0-pre.9 tooshort" "v0.3.0-pre.9 $SHA --nope" "v0.3.0-pre.9 $SHA --version-override" "v0a.3.0-pre.9 $SHA" "v0.3.0-pre.9a $SHA" "v0.3.0.1-pre.9 $SHA"; do
     reset_calls
     rc=0
     # shellcheck disable=SC2086
@@ -177,6 +191,38 @@ contains "success: created message" "$out" "created refs/tags/$CLEAN_VERSION"
 calls="$(cat "$CALLS")"
 check "success: ref-create called exactly once" "$(grep -c 'git/refs -f' <<< "$calls")" "1"
 contains "success: fetches tags after write" "$calls" "git fetch origin --tags"
+
+# --- 11. gh repo view / origin remote mismatch --------------------------------
+reset_calls
+rc=0; out=$(CT_NWO_MISMATCH=1 run "$CLEAN_VERSION" "$SHA" 2>&1) || rc=$?
+check "nwo-mismatch: rc 1" "$rc" "1"
+contains "nwo-mismatch: names both repos" "$out" "octo-other/demo"
+not_contains "nwo-mismatch: never writes the tag" "$(cat "$CALLS")" "git/refs -f"
+
+# --- 12. origin remote URL unresolvable (RED: must refuse, not proceed) -------
+reset_calls
+rc=0; out=$(CT_ORIGIN_URL_FAIL=1 run "$CLEAN_VERSION" "$SHA" 2>&1) || rc=$?
+check "origin-url-fail: rc 1" "$rc" "1"
+not_contains "origin-url-fail: never writes the tag" "$(cat "$CALLS")" "git/refs -f"
+
+# --- 13. series ls-remote failure (RED: must NOT read as "no tags") -----------
+reset_calls
+rc=0; out=$(CT_SERIES_LS_FAIL=1 run "$CLEAN_VERSION" "$SHA" 2>&1) || rc=$?
+check "series-ls-fail: rc 1" "$rc" "1"
+contains "series-ls-fail: names the reason" "$out" "ls-remote"
+not_contains "series-ls-fail: never writes the tag" "$(cat "$CALLS")" "git/refs -f"
+
+# --- 14. check-runs gh api failure (RED: must NOT read as clean) --------------
+reset_calls
+rc=0; out=$(CT_SERIES_TAGS="$CT_SERIES_TAGS_DEFAULT" CT_RUNS_FAIL=1 run "$CLEAN_VERSION" "$SHA" 2>&1) || rc=$?
+check "runs-fail: rc 4" "$rc" "4"
+not_contains "runs-fail: never writes the tag" "$(cat "$CALLS")" "git/refs -f"
+
+# --- 15. combined status gh api failure (RED: must NOT read as clean) ---------
+reset_calls
+rc=0; out=$(CT_SERIES_TAGS="$CT_SERIES_TAGS_DEFAULT" CT_STATUS_FAIL=1 run "$CLEAN_VERSION" "$SHA" 2>&1) || rc=$?
+check "status-fail: rc 4" "$rc" "4"
+not_contains "status-fail: never writes the tag" "$(cat "$CALLS")" "git/refs -f"
 
 echo "----"
 if [ "$fails" -eq 0 ]; then

@@ -20,6 +20,10 @@
 # stdout/PR-body trail.
 #
 # Refuses (nothing written on origin) unless, after a fetch:
+#   - gh's default repo (from `gh repo view`) is the SAME repo as the `origin`
+#     remote git itself resolves - the ancestor/tag checks below run against
+#     origin, so a gh context pointed elsewhere would check one repo and tag
+#     another;
 #   - <sha> is an ancestor of (or equal to) origin/main;
 #   - <version> does not already exist as a tag on origin;
 #   - <version> is the next in-sequence pre-release (or carries
@@ -32,14 +36,21 @@
 #     zero statuses while Actions check-runs are red) - the combined-status
 #     read is a second, belt-and-suspenders refusal, never the primary one.
 #
+# Every read that feeds a refusal decision (git remote/ls-remote, gh api) is
+# itself fail-closed: a transient failure of the READ refuses with a plain
+# "could not confirm" message, never falls through as if the read had come
+# back clean (HIMMEL-3572 CR round: a failed `git ls-remote` used to read as
+# "no tags exist", and a failed `gh api` used to read as "nothing to flag").
+#
 # --dry-run runs every check and prints the plan; no origin write, no tag.
 #
 # Exit codes:
 #   0  success (or a clean --dry-run)
-#   1  gh/git failure (repo resolution, fetch, or the ref-create call itself)
+#   1  gh/git failure (repo resolution, origin/gh repo mismatch, fetch,
+#      ls-remote, or the ref-create call itself)
 #   2  usage
 #   3  <sha> is not an ancestor of origin/main
-#   4  check-runs / combined status not green
+#   4  check-runs / combined status not green, or unreadable
 #   5  <version> already exists as a tag on origin
 #   6  <version> is out of sequence and no --version-override was given
 #
@@ -48,6 +59,12 @@
 #
 # Platform guard: Linux/macOS bash 3.2+ (gh + git only, no /proc dependency).
 set -u
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=scripts/lib/git-clean.sh
+# shellcheck disable=SC1091
+. "$HERE/../../lib/git-clean.sh"
+git_env_scrub   # not a git hook - safe to scrub GIT_INDEX_FILE too (HIMMEL-3570)
 
 GH="${GH_BIN:-gh}"
 
@@ -95,12 +112,37 @@ if [ "$positional" -ne 2 ]; then
 fi
 
 case "$VERSION" in
-    v[0-9]*.[0-9]*.[0-9]*-pre.[0-9]*) : ;;
+    v*-pre.*) : ;;
     *)
         usage
         echo "cut-tag: version must be v<X>.<Y>.<Z>-pre.<N> (got '$VERSION')" >&2
         exit 2 ;;
 esac
+# The case glob above only anchors the literal "-pre." - a bare `[0-9]*` glob
+# lets `*` swallow non-digit characters too (e.g. "v0a.3.0-pre.9" would pass),
+# so each component is re-checked as ALL-DIGIT below rather than trusting the
+# glob shape alone.
+_vrest="${VERSION#v}"              # X.Y.Z-pre.N
+_vcore="${_vrest%-pre.*}"          # X.Y.Z
+_vn="${_vrest##*-pre.}"
+_vx="${_vcore%%.*}"
+_vyz="${_vcore#*.}"
+_vy="${_vyz%%.*}"
+_vz="${_vyz#*.}"
+case "$_vz" in
+    *.*)
+        usage
+        echo "cut-tag: version must be v<X>.<Y>.<Z>-pre.<N> (got '$VERSION')" >&2
+        exit 2 ;;
+esac
+for _vcomp in "$_vx" "$_vy" "$_vz" "$_vn"; do
+    case "$_vcomp" in
+        ''|*[!0123456789]*)
+            usage
+            echo "cut-tag: version must be v<X>.<Y>.<Z>-pre.<N> with all-numeric components (got '$VERSION')" >&2
+            exit 2 ;;
+    esac
+done
 case "$SHA" in
     *[!0123456789abcdef]*) SHA_OK=0 ;;
     *) SHA_OK=1 ;;
@@ -117,6 +159,16 @@ N="${VERSION##*.}"               # "9"
 NWO=$("$GH" repo view --json owner,name --jq '"\(.owner.login)/\(.name)"' 2>/dev/null)
 if [ -z "$NWO" ]; then
     echo "cut-tag: cannot resolve owner/repo (gh repo view --json owner,name failed)" >&2
+    exit 1
+fi
+
+if ! origin_url=$(git remote get-url origin 2>/dev/null); then
+    echo "cut-tag: refusing - could not resolve the origin remote's URL" >&2
+    exit 1
+fi
+origin_nwo=$(printf '%s' "$origin_url" | sed -E 's#^(git@github\.com:|https://github\.com/)##; s#\.git$##')
+if [ "$NWO" != "$origin_nwo" ]; then
+    echo "cut-tag: refusing - gh's default repo ($NWO) differs from the origin remote ($origin_nwo) - the ancestor/tag checks run against origin, so gh must target the same repo" >&2
     exit 1
 fi
 
@@ -137,7 +189,11 @@ fi
 
 if [ "$OVERRIDE" -ne 1 ]; then
     maxn=0
-    existing=$(git ls-remote --tags origin "refs/tags/${SERIES}*" 2>/dev/null | awk '{print $2}' | grep -v '\^{}$')
+    if ! ls_raw=$(git ls-remote --tags origin "refs/tags/${SERIES}*" 2>/dev/null); then
+        echo "cut-tag: refusing - git ls-remote --tags origin failed while checking the ${SERIES}* series - cannot confirm sequence" >&2
+        exit 1
+    fi
+    existing=$(printf '%s\n' "$ls_raw" | awk '{print $2}' | grep -v '\^{}$')
     while IFS= read -r ref; do
         [ -n "$ref" ] || continue
         tail="${ref#refs/tags/"$SERIES"}"
@@ -155,7 +211,10 @@ EOF
     fi
 fi
 
-runs_json=$("$GH" api "repos/$NWO/commits/$SHA/check-runs?per_page=100" --paginate 2>/dev/null)
+if ! runs_json=$("$GH" api "repos/$NWO/commits/$SHA/check-runs?per_page=100" --paginate 2>/dev/null); then
+    echo "cut-tag: refusing - gh api check-runs failed at $SHA" >&2
+    exit 4
+fi
 if [ -z "$runs_json" ]; then
     echo "cut-tag: refusing - could not read check-runs at $SHA" >&2
     exit 4
@@ -175,7 +234,10 @@ if [ -n "$bad" ]; then
     exit 4
 fi
 
-status_json=$("$GH" api "repos/$NWO/commits/$SHA/status" 2>/dev/null)
+if ! status_json=$("$GH" api "repos/$NWO/commits/$SHA/status" 2>/dev/null); then
+    echo "cut-tag: refusing - gh api combined status failed at $SHA" >&2
+    exit 4
+fi
 combined_state=$(printf '%s' "$status_json" | jq -r '.state // "unknown"' 2>/dev/null)
 combined_count=$(printf '%s' "$status_json" | jq -r '.total_count // 0' 2>/dev/null)
 if [ "${combined_count:-0}" -gt 0 ] 2>/dev/null; then
