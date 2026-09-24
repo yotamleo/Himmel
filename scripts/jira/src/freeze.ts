@@ -32,8 +32,11 @@ export function freezeFixVersion(
 /** Post-cutoff Bugs sitting in the v1 version without the blocker label — the freeze's leaks. */
 export function freezeCheckJql(project: string): string {
   const { cutoff, v1Version, blockerLabel } = BUG_FREEZE;
+  // Jira reads `created > "<date>"` as after 00:00 that day, so start at the day after the cutoff.
+  const firstFrozenDay = new Date(`${cutoff}T00:00:00Z`);
+  firstFrozenDay.setUTCDate(firstFrozenDay.getUTCDate() + 1);
   return (
-    `project = "${project}" AND issuetype = Bug AND created > "${cutoff}" ` +
+    `project = "${project}" AND issuetype = Bug AND created >= "${firstFrozenDay.toISOString().slice(0, 10)}" ` +
     `AND fixVersion = "${v1Version}" AND (labels IS EMPTY OR labels != "${blockerLabel}") ORDER BY key ASC`
   );
 }

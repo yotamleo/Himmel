@@ -30,9 +30,14 @@ describe('freezeCheckJql', () => {
   it('finds post-cutoff Bugs in the v1 version without the blocker label', () => {
     const jql = freezeCheckJql('HIMMEL');
     expect(jql).toBe(
-      'project = "HIMMEL" AND issuetype = Bug AND created > "2026-09-25" ' +
+      'project = "HIMMEL" AND issuetype = Bug AND created >= "2026-09-26" ' +
         'AND fixVersion = "v1.0.0" AND (labels IS EMPTY OR labels != "v1-blocker") ORDER BY key ASC',
     );
-    expect(jql).toContain(BUG_FREEZE.cutoff);
+  });
+
+  it('starts the day after the cutoff, matching create (a Bug filed ON the cutoff day is not a leak)', () => {
+    // Jira reads `created > "2026-09-25"` as after 00:00 that day, which would flag the cutoff day itself.
+    expect(freezeCheckJql('HIMMEL')).not.toContain(`created > "${BUG_FREEZE.cutoff}"`);
+    expect(freezeCheckJql('HIMMEL')).toContain('created >= "2026-09-26"');
   });
 });
