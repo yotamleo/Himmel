@@ -664,7 +664,7 @@ SKIP_LIST="
 scripts/test-install-symmetry-vm.sh  # drives a real VM over SSH
 scripts/test-luna-upgrade-vm.sh      # drives a real (Ubuntu or Windows) VM over SSH
 scripts/test-tarball-install-vm.sh   # drives a real VM over SSH (HIMMEL-3059 tarball-vs-clone acceptance)
-packaging/aur/test-pkgbuild.sh       # HIMMEL-3059: needs an Arch container (or makepkg + namcap on an Arch host) and downloads the real release tarball; the follow-up aur-package CI job runs it
+packaging/aur/test-pkgbuild.sh       # ponytail: not run in CI (needs an Arch container + a release-tarball download), upgrade: the HIMMEL-3059 S6 aur-package job un-skips it
 scripts/test-himmel-update.sh        # HIMMEL-3450: one case needs this station's real marketplace registration (--only marketplace vs. a throwaway HOME); the rest is hermetic and runs in scripts/test-himmel-update-check.sh
 scripts/test-himmel-update-hermes.sh  # needs the hermes runtime
 scripts/hermes/test-invoke.sh        # needs the hermes runtime
