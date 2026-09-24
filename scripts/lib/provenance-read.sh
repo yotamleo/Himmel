@@ -576,7 +576,14 @@ prov_read_apply() {
             patharr=$(_provread_ptr_path "$ptr") || return 1
             if [ ! -f "$path" ] || ! jq -e . "$path" >/dev/null 2>&1; then _provread_err "$path is not valid JSON -- refusing to modify"; return 1; fi
             if [ "$action" = "remove" ]; then
-                jq --argjson p "$patharr" 'delpaths([$p])' "$path" | _provread_atomic_write "$path" || { _provread_err "cannot write $path"; return 1; }
+                # HIMMEL-3541: parent_created -- the install created the key's
+                # parent object for it, so drop that parent too once empty.
+                local pcreated
+                pcreated=$(printf '%s' "$u" | jq '.fields.parent_created == true')
+                jq --argjson p "$patharr" --argjson pc "$pcreated" '
+                    delpaths([$p])
+                    | if ($pc and ($p|length) > 1 and ((getpath($p[:-1]) // null) == {})) then delpaths([$p[:-1]]) else . end
+                ' "$path" | _provread_atomic_write "$path" || { _provread_err "cannot write $path"; return 1; }
             else
                 local backup val eff_sha
                 backup=$(printf '%s' "$u" | jq -r '.eff_pre.backup // empty')
@@ -626,14 +633,17 @@ prov_read_apply() {
                         # nested (e.g. a SessionStart hook OBJECT inside a
                         # stanza's .hooks[]): delete the leaf, then -- exactly
                         # like unwire-pretooluse-hooks.sh -- unconditionally
-                        # prune the wrapper stanza if its .hooks[] is now empty.
+                        # prune the wrapper stanza if its .hooks[] is now empty;
+                        # then, like the flat branch, drop the container itself
+                        # when himmel created it and it is now empty (HIMMEL-3541).
                         local full stanzapath
                         full=$(jq -c -n --argjson p "$patharr" --argjson r "$relpath" '$p + $r')
                         stanzapath=$(jq -c -n --argjson p "$patharr" --argjson r "$relpath" '$p + [$r[0]]')
-                        jq --argjson full "$full" --argjson sp "$stanzapath" '
+                        jq --argjson full "$full" --argjson sp "$stanzapath" --argjson p "$patharr" --argjson created "$created" '
                             delpaths([$full])
                             | (getpath($sp).hooks // []) as $h
-                            | if ($h|length)==0 then delpaths([$sp]) else . end
+                            | (if ($h|length)==0 then delpaths([$sp]) else . end)
+                            | if ($created and ((getpath($p) // [])|length)==0) then delpaths([$p]) else . end
                         ' "$path" | _provread_atomic_write "$path" || { _provread_err "cannot write $path"; return 1; }
                     fi
                 fi

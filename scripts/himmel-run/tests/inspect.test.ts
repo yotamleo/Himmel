@@ -23,7 +23,14 @@ describe('inspect', () => {
       logOffsetStart: 3, logOffsetEnd: 8, errOffsetStart: 0, errOffsetEnd: 0,
     });
     const out = await inspect('jira', 'r1', dir);
-    expect(out).toContain('hello');
+    // Assert the exact stdout slice, not merely that it contains 'hello' —
+    // toContain('hello') also passes if inspect ignores the offsets and
+    // returns the whole file (which still contains 'hello' inside
+    // 'AAAhelloBBB'). Pull out the section between the stdout/stderr
+    // markers and require it to be precisely the sliced bytes, excluding
+    // both surrounding sentinels.
+    const stdoutSection = out.split('--- stdout ---\n')[1]?.split('\n--- stderr ---')[0];
+    expect(stdoutSection).toBe('hello');
   });
 
   // B10: tag path traversal

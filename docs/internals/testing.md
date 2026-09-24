@@ -6,6 +6,16 @@ each one has a wired reason (a per-suite cwd rule, a quiet reporter, a runner
 that both runs suites and reports the plan) — so this doc states them once,
 here, rather than re-deriving them per session.
 
+## Writing or reviewing a test (HIMMEL-3580)
+
+Use the `test-audit` skill (`.claude/skills/test-audit/SKILL.md`, adapted from
+openclaw) whenever you write, change, review or sweep a test. Before adding a
+test it asks four questions, and it lists the junk patterns to reject (a
+self-comparison, a source grep standing in for behaviour, a negative control
+that fails for an unrelated reason). Before removing a test it requires a
+candidate-evidence record. A new or repaired assertion is shown RED against the
+broken subject before it goes green.
+
 ## Shell suites
 
 `bash scripts/ci/run-shell-tests.sh` runs the full shell-test corpus. It is

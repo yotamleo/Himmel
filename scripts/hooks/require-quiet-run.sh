@@ -474,16 +474,14 @@ done < <(printf '%s' "$cmd_norm" | tr ';&|(){}`' '\n')
 
 [ -n "$suite_path" ] || exit 0
 
-base=$(basename "$suite_path" .sh)
-label="${base#test-}-suite"
-
 {
     printf 'require-quiet-run: bare repo test-suite run refused.\n\n'
     printf 'scripts/quiet-run.sh already exists for this (docs/commands-catalog.md,\n'
     printf '/quiet-run) - it runs the noisy suite, suppresses output, and prints ONE\n'
     printf 'OK/ERR line with the log path, instead of a hand-rolled background run\n'
-    printf 'chased with tail/grep for the PASS/FAIL line. Run it wrapped:\n\n'
-    printf '  bash scripts/quiet-run.sh %s -- bash %s\n\n' "$label" "$suite_path"
+    printf 'chased with tail/grep for the PASS/FAIL line. Run it wrapped (HIMMEL-3402:\n'
+    printf 'only the literal label "suite" is pre-approved, not a derived name):\n\n'
+    printf '  bash scripts/quiet-run.sh suite -- bash %s\n\n' "$suite_path"
     printf 'Bypass (streaming output genuinely needed): QUIET_RUN_BYPASS=1 <launching\n'
     printf 'shell>; a per-call prefix does not work.\n'
 } >&2

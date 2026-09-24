@@ -83,6 +83,21 @@
 #       exactly - proving HIMMEL-3155's leg_propagate_env export already
 #       carries the self-resolved root to the grant check, and that the
 #       grant is never /, $HOME, or the resolved root's own repo.
+#   36. HIMMEL-3581: a sanctioned operator ruling opens a leg-level 1M opt-in -
+#       accepted ONLY when the brief carries a well-formed
+#       `> **Context:** 1m — operator-ruling: <reason>` line (mirrors the
+#       Tier-line gate, case 6c's fixture-doc shape); stays refused for no
+#       line, an empty reason, or a malformed line (wrong dash, wrong mode,
+#       missing marker). On acceptance: dry-run reports context=1m
+#       (operator-ruling) and CONSOLE_CONTEXT=1m (proving the same-process
+#       export ran before this wrapper execs into headed-arm.sh, whose own
+#       gate this satisfies without editing that read-only file); a direct
+#       invocation of headed-arm.sh's own --dry-run with the same env proves
+#       the accepted argv actually carries --autocompact auto and [1m]; the
+#       full non-dry launch reaches konsole with HEADED_ARM_REQUIRED_AUTOCOMPACT
+#       resolved to auto (never leaking into the launched leg's own env,
+#       same non-leak shape as case 10) and CONSOLE_CONTEXT=1m recorded, and
+#       the arm log records context=1m (operator-ruling).
 #
 # Platform guard (gitbash-only): POSIX bash 3.2+, same as headed-arm.sh
 # itself (konsole is Linux/KDE-only) - no .ps1 twin.
@@ -416,6 +431,59 @@ rc=0; out="$(LEG_CONTEXT=1m bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-le
 check "dry-run LEG_CONTEXT=1m, Fable model: refused with exit 2" "$rc" "2"
 contains "dry-run LEG_CONTEXT=1m, Fable model: still checks autocompact, not the model suffix" "$out" "--autocompact 200000"
 
+# --- 36 (HIMMEL-3581). Sanctioned operator-ruled 1m Context-line opt-in ------
+# some/doc.md (nonexistent) already covers the "no line" negative above -
+# these fixture docs cover the empty-reason and malformed-line negatives,
+# plus the one well-formed positive case.
+doc_context_none="$tmp/context-doc-none.md"
+printf '%s\n' '# fixture brief, no Context line at all' > "$doc_context_none"
+
+doc_context_empty="$tmp/context-doc-empty.md"
+printf '%s\n' '# fixture brief' '> **Context:** 1m — operator-ruling: ' > "$doc_context_empty"
+
+doc_context_bad_dash="$tmp/context-doc-bad-dash.md"
+printf '%s\n' '# fixture brief' '> **Context:** 1m - operator-ruling: hyphen not em dash' > "$doc_context_bad_dash"
+
+doc_context_bad_mode="$tmp/context-doc-bad-mode.md"
+printf '%s\n' '# fixture brief' '> **Context:** 1M — operator-ruling: wrong case mode' > "$doc_context_bad_mode"
+
+doc_context_no_marker="$tmp/context-doc-no-marker.md"
+printf '%s\n' '# fixture brief' '> **Context:** 1m — because I said so' > "$doc_context_no_marker"
+
+doc_context_ok="$tmp/context-doc-ok.md"
+printf '%s\n' '# fixture brief' '> **Context:** 1m — operator-ruling: HIMMEL-3581 sanctioned 1m leg test' > "$doc_context_ok"
+
+for d in "$doc_context_none" "$doc_context_empty" "$doc_context_bad_dash" "$doc_context_bad_mode" "$doc_context_no_marker"; do
+    rc=0; out="$(LEG_CONTEXT=1m bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg "$d" /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+    check "dry-run LEG_CONTEXT=1m, $(basename "$d"): still refused with exit 2" "$rc" "2"
+    contains "dry-run LEG_CONTEXT=1m, $(basename "$d"): refusal names the required ceiling" "$out" "--autocompact 200000"
+done
+
+rc=0; out="$(LEG_CONTEXT=1m bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg "$doc_context_ok" /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "dry-run LEG_CONTEXT=1m, sanctioned Context line: accepted (exit 0)" "$rc" "0"
+contains "dry-run LEG_CONTEXT=1m, sanctioned Context line: reports context=1m (operator-ruling)" "$out" "context=1m (operator-ruling)"
+contains "dry-run LEG_CONTEXT=1m, sanctioned Context line: reports the reason" "$out" "HIMMEL-3581 sanctioned 1m leg test"
+contains "dry-run LEG_CONTEXT=1m, sanctioned Context line: exports CONSOLE_CONTEXT=1m before the exec" "$out" "CONSOLE_CONTEXT=1m"
+
+# Proves the ACCEPTED argv (not just this wrapper's own dry-run report) really
+# carries --autocompact auto and a [1m]-suffixed model - headed-arm.sh is
+# read-only for this ticket, so this drives its own --dry-run directly with
+# the same CONSOLE_CONTEXT=1m + context=1m pair the wrapper's sanctioned
+# branch would hand it, rather than editing that file to observe it.
+# KONSOLE_CMD is stubbed because headed-arm.sh's own terminal-emulator
+# dependency check runs before --dry-run short-circuits, and a real konsole
+# binary is not guaranteed on PATH (e.g. CI runners).
+d_sanctioned="$tmp/sanctioned-pair"; mkdir -p "$d_sanctioned"
+cat > "$d_sanctioned/konsole" <<'KONSOLE_STUB_EOF'
+#!/usr/bin/env bash
+exit 0
+KONSOLE_STUB_EOF
+chmod 755 "$d_sanctioned/konsole"
+rc=0; out="$(CONSOLE_CONTEXT=1m KONSOLE_CMD="$d_sanctioned/konsole" bash "$HEADED_ARM" --dry-run HIMMEL-9999-leg "$doc_context_ok" /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 1m 2>&1)" || rc=$?
+check "headed-arm.sh --dry-run, sanctioned pair (CONSOLE_CONTEXT=1m, context=1m): exit 0" "$rc" "0"
+contains "headed-arm.sh --dry-run, sanctioned pair: accepted argv carries --autocompact auto" "$out" "--autocompact auto"
+contains "headed-arm.sh --dry-run, sanctioned pair: accepted argv carries the [1m] model suffix" "$out" "claude-sonnet-5[1m]"
+
 for off in "standard" "yes" "true" "1M" ""; do
   rc=0; out="$(LEG_CONTEXT="$off" bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
   ends_with "dry-run LEG_CONTEXT=[$off]: stays on standard (fail toward the cheaper default)" "$out" "standard"
@@ -546,6 +614,29 @@ LEG_CONTEXT=1m RUN_LEG_ARGS=--no-profile run_leg "$d9" "$tmp/repo9" "HIMMEL-8888
 rec9="$(cat "$d9/record" 2>/dev/null || true)"
 check "full launch, LEG_CONTEXT=1m: refused with exit 2" "$rc" "2"
 check "full launch, LEG_CONTEXT=1m: headed-arm was never invoked" "$rec9" ""
+
+# --- 36 continued. full (non-dry) launch, sanctioned Context-line opt-in ----
+# Inlined rather than run_leg (which is hardwired to $some_doc): the brief
+# here must carry the well-formed Context line.
+d9c="$tmp/c9c"; mk_launch_stubs "$d9c" "HIMMEL-6666-leg"; mkdir -p "$tmp/repo9c"
+rc=0
+IMPL_GUARD_OK='' HIMMEL_CONSOLE_LEG='' \
+HEADED_ARM_LEG_TARGET="$HEADED_ARM" \
+HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+KONSOLE_CMD="$d9c/konsole" PGREP_CMD="$d9c/pgrep" \
+LEG_REPO="$tmp/repo9c" HEADED_ARM_LOCK_DIR="$d9c/locks" HEADED_ARM_PROC="$d9c/proc" \
+LEG_CONTEXT=1m \
+  bash "$SCRIPT" --no-profile "HIMMEL-6666-leg" "$doc_context_ok" "$d9c/signal-never" "$PAST" "$d9c/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d9c" || true
+rec9c="$(cat "$d9c/record" 2>/dev/null || true)"
+env9c="$(cat "$d9c/env-record" 2>/dev/null || true)"
+check "full launch, sanctioned Context line: exit 0" "$rc" "0"
+contains "full launch, sanctioned Context line: --autocompact auto reaches konsole's argv" "$rec9c" "--autocompact auto"
+contains "full launch, sanctioned Context line: model carries the [1m] suffix" "$rec9c" "claude-sonnet-5[1m]"
+contains "full launch, sanctioned Context line: CONSOLE_CONTEXT=1m reaches konsole's own env" "$env9c" "CONSOLE_CONTEXT=1m"
+not_contains "full launch, sanctioned Context line: internal autocompact requirement does not leak into the launched leg" "$env9c" "HEADED_ARM_REQUIRED_AUTOCOMPACT="
+logline9c="$(cat "$d9c/log" 2>/dev/null || true)"
+contains "full launch, sanctioned Context line: arm log records context=1m (operator-ruling)" "$logline9c" "context=1m (operator-ruling)"
 
 # --- 10. IMPL_GUARD_OK reaches the konsole invocation's own environment ----
 env8="$(cat "$d8/env-record" 2>/dev/null || true)"
@@ -1655,13 +1746,34 @@ sha26="$(printf 'a%.0s' $(seq 1 40))"
 # the guard mirrors go_resolve_root itself, and a scratch HOME keeps go.sh
 # from minting its GO key in the operator's real ~/.config/himmel.
 home26="$tmp/home26"; mkdir -p "$home26"
+# HIMMEL-3578: go.sh now resolves this repo's nwo via `gh repo view` to bind
+# the GO mac. A gh stub on PATH keeps this e2e hermetic (no real gh/network
+# dependency), matching test-go.sh's own stub.
+bin26="$tmp/bin26"; mkdir -p "$bin26"
+cat > "$bin26/gh" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+    "repo view")
+        json=""
+        while [ $# -gt 0 ]; do
+            case "$1" in --json) json="$2" ;; esac
+            shift
+        done
+        case "$json" in
+            nameWithOwner) printf '%s' "o/r" ;;
+            *) exit 90 ;;
+        esac ;;
+    *) exit 91 ;;
+esac
+STUB
+chmod +x "$bin26/gh"
 go_root26="$(cd "$primary26" && HANDOVER_DIR="$primary26/handovers" bash -c '. "$1/../../lib/handover-path.sh" && . "$1/../../lib/go-gate.sh" && go_resolve_root "$1/../../.."' _ "$HERE" 2>/dev/null)" || go_root26=""
 case "$go_root26" in
   "$tmp"/?*) echo "ok - HANDOVER_DIR e2e: resolved GO root [$go_root26] is inside the suite's temp dir"; go_root26_ok=1 ;;
   *) echo "FAIL - HANDOVER_DIR e2e: resolved GO root [$go_root26] is not inside the suite's temp dir [$tmp] - refusing to write a GO"; fails=$((fails+1)); go_root26_ok=0 ;;
 esac
 if [ "$go_root26_ok" -eq 1 ]; then
-  go_out26="$(cd "$primary26" && HOME="$home26" HIMMEL_CONSOLE_LEG='' HIMMEL_CONSOLE_RELAY='' HANDOVER_DIR="$primary26/handovers" bash "$HERE/go.sh" 26260 "$sha26" 2>/dev/null)"
+  go_out26="$(cd "$primary26" && HOME="$home26" PATH="$bin26:$PATH" HIMMEL_CONSOLE_LEG='' HIMMEL_CONSOLE_RELAY='' HANDOVER_DIR="$primary26/handovers" bash "$HERE/go.sh" 26260 "$sha26" 2>/dev/null)"
 else
   go_out26="SKIPPED: unsafe GO root"
 fi
@@ -1674,7 +1786,7 @@ set -u
 . "$HERE/../../lib/handover-path.sh"
 . "$HERE/../../lib/go-gate.sh"
 root="\$(handover_root)" || exit 9
-go_gate 26260 "$sha26" "\$root"
+go_gate 26260 "$sha26" "\$root" "o/r"
 EOF
 chmod 755 "$gate_script26"
 rc2=0

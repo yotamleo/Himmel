@@ -329,6 +329,10 @@ seed_settings() { # <path>
   mkdir -p "$(dirname "$1")"
   printf '{ "extraKnownMarketplaces": { "mp": { "autoUpdate": false } } }\n' > "$1"
 }
+seed_settings_unregistered() { # <path> -- no mp yet; the sh stub's marketplace add declares it
+  mkdir -p "$(dirname "$1")"
+  printf '{}\n' > "$1"
+}
 autoupdate_true() { # <path> -> "true" | "false" | "absent" | "MISSING"
   # NOT `// "absent"` — jq's `//` treats a literal `false` as empty too, so a
   # seeded autoUpdate:false would misreport as "absent" (same trap
@@ -337,10 +341,22 @@ autoupdate_true() { # <path> -> "true" | "false" | "absent" | "MISSING"
   jq -r 'if (.extraKnownMarketplaces.mp | has("autoUpdate")) then (.extraKnownMarketplaces.mp.autoUpdate | tostring) else "absent" end' "$1" 2>/dev/null
 }
 
+# The sh stub's `marketplace add` declares mp in the user-scope settings file
+# when absent, as the real CLI does: install-plugins.sh reads that file BEFORE
+# the call and leaves an entry already there alone (HIMMEL-3541), so the sh
+# cases seed an mp-less file. The ps1 twin still patches a pre-existing entry
+# and keeps seed_settings.
 make_sh_claude_stub() { # <bindir>
   mkdir -p "$1"
   cat > "$1/claude" <<'STUB'
 #!/usr/bin/env bash
+if [ "${1:-}" = "plugin" ] && [ "${2:-}" = "marketplace" ] && [ "${3:-}" = "add" ]; then
+  f="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
+  [ -f "$f" ] || exit 0
+  jq --arg p "$4" '.extraKnownMarketplaces.mp //= {source: {source: "directory", path: $p}}' "$f" >"$f.stub" 2>/dev/null \
+    && mv "$f.stub" "$f"
+  rm -f "$f.stub"
+fi
 exit 0
 STUB
   chmod +x "$1/claude"
@@ -404,7 +420,7 @@ fi
 sbx="$(mktemp -d "$TMP/sh-unset.XXXXXX")"
 bindir="$sbx/bin"; make_sh_claude_stub "$bindir"
 default_settings="$sbx/.claude/settings.json"
-seed_settings "$default_settings"
+seed_settings_unregistered "$default_settings"
 env -u CLAUDE_CONFIG_DIR -u HIMMEL_RECONCILE_PLUGINS \
   HOME="$sbx" USERPROFILE="$sbx" PATH="$bindir:$PATH" \
   bash "$INSTALL_SH" --template "$TWIN_TEMPLATE" --scope user >/dev/null 2>&1
@@ -422,7 +438,7 @@ home_settings="$sbx/home/.claude/settings.json"
 cfg_dir="$sbx/cfgdir"
 cfg_settings="$cfg_dir/settings.json"
 seed_settings "$home_settings"
-seed_settings "$cfg_settings"
+seed_settings_unregistered "$cfg_settings"
 env -u HIMMEL_RECONCILE_PLUGINS \
   HOME="$sbx/home" USERPROFILE="$sbx/home" CLAUDE_CONFIG_DIR="$cfg_dir" PATH="$bindir:$PATH" \
   bash "$INSTALL_SH" --template "$TWIN_TEMPLATE" --scope user >/dev/null 2>&1

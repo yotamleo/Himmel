@@ -27,6 +27,16 @@ let tmp: string;
 beforeEach(() => { tmp = mkdtempSync(join(tmpdir(), "flow-run-ledger-")); });
 afterEach(() => { rmSync(tmp, { recursive: true, force: true }); });
 
+// Prerequisite for every BASH_LIB shell-out below: can BASH_BIN run at all? A
+// genuinely missing/broken bash (e.g. the Windows System32 WSL stub,
+// HIMMEL-1992/1279) is a bun SKIP, never a silent pass — checked separately
+// from each shell-out it gates so a real bash-side failure still fails loudly
+// instead of being swallowed into a no-op (HIMMEL-2725).
+const BASH_RUNS = Bun.spawnSync([BASH_BIN, "-c", "exit 0"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
+if (!BASH_RUNS) {
+  console.warn(`[flow-run-ledger.test] SKIP all bash-shell-out cases: BASH_BIN=${BASH_BIN} cannot even run "-c exit 0" — not a Git-Bash-compatible shell on this machine.`);
+}
+
 const START: FlowRunStart = {
   v: 1,
   ev: "start",
@@ -70,7 +80,7 @@ test("ledgerPath default is <HOME>/.himmel/flow-runs.jsonl", () => {
   expect(ledgerPath({ HOME: "C:/Users/test", USERPROFILE: "C:/Users/other" })).toBe(join("C:/Users/test", ".himmel", "flow-runs.jsonl"));
 });
 
-test("byte-identical bash<->TS start serialization, including escaping and nulls", () => {
+test.skipIf(!BASH_RUNS)("byte-identical bash<->TS start serialization, including escaping and nulls", () => {
   const cases: Array<{ args: string[]; row: FlowRunStart }> = [
     {
       args: [START.flow, START.run_id, START.fired_at, START.host!, START.lane!, START.model!, START.task_name!, START.log_path!, String(START.pid!)],
@@ -106,16 +116,14 @@ test("byte-identical bash<->TS start serialization, including escaping and nulls
   for (const { args, row } of cases) {
     const tsLine = serializeFlowRunStart(row);
     const r = Bun.spawnSync([BASH_BIN, BASH_LIB, "--emit-start", ...args], { stdout: "pipe", stderr: "pipe" });
-    if (r.exitCode !== 0) {
-      console.warn(`flow-run start byte-identical: bash rc=${r.exitCode} (stderr=${r.stderr.toString().trim()}); skipping bash shell-out, asserting TS canonical string only`);
-      expect(tsLine).toBe(tsLine);
-      continue;
-    }
+    // BASH_RUNS already proved this bash can execute; a nonzero --emit-start
+    // here is a real serializer failure, not an environment gap — fail it.
+    expect(r.exitCode, `bash --emit-start rc=${r.exitCode} (stderr=${r.stderr.toString().trim()})`).toBe(0);
     expect(r.stdout.toString().trimEnd()).toBe(tsLine);
   }
 });
 
-test("byte-identical bash<->TS end serialization, including unicode note and null items", () => {
+test.skipIf(!BASH_RUNS)("byte-identical bash<->TS end serialization, including unicode note and null items", () => {
   const cases: Array<{ args: string[]; row: FlowRunEnd }> = [
     {
       args: [END.flow, END.run_id, END.ended_at, String(END.exit_code!), END.outcome, String(END.items_processed!), ""],
@@ -139,25 +147,22 @@ test("byte-identical bash<->TS end serialization, including unicode note and nul
   for (const { args, row } of cases) {
     const tsLine = serializeFlowRunEnd(row);
     const r = Bun.spawnSync([BASH_BIN, BASH_LIB, "--emit-end", ...args], { stdout: "pipe", stderr: "pipe" });
-    if (r.exitCode !== 0) {
-      console.warn(`flow-run end byte-identical: bash rc=${r.exitCode} (stderr=${r.stderr.toString().trim()}); skipping bash shell-out, asserting TS canonical string only`);
-      expect(tsLine).toBe(tsLine);
-      continue;
-    }
+    // BASH_RUNS already proved this bash can execute; a nonzero --emit-end
+    // here is a real serializer failure, not an environment gap — fail it.
+    expect(r.exitCode, `bash --emit-end rc=${r.exitCode} (stderr=${r.stderr.toString().trim()})`).toBe(0);
     expect(r.stdout.toString().trimEnd()).toBe(tsLine);
   }
 });
 
-test("bash --append-start: run_id is minutes-compact and host defaults non-null", () => {
+test.skipIf(!BASH_RUNS)("bash --append-start: run_id is minutes-compact and host defaults non-null", () => {
   const ledger = join(tmp, "flow-runs.jsonl");
   const r = Bun.spawnSync(
     [BASH_BIN, BASH_LIB, "--append-start", "pipeline-harvest", "2026-07-11T03:00:04+03:00", "", "claude", "opus", "", "", "4821"],
     { stdout: "pipe", stderr: "pipe", env: { ...process.env, HIMMEL_FLOW_RUNS_LEDGER: ledger } },
   );
-  if (r.exitCode !== 0) {
-    console.warn(`flow-run append-start: bash rc=${r.exitCode} (stderr=${r.stderr.toString().trim()}); skipping bash shell-out`);
-    return;
-  }
+  // BASH_RUNS already proved this bash can execute; a nonzero --append-start
+  // here is a real failure, not an environment gap — fail it.
+  expect(r.exitCode, `bash --append-start rc=${r.exitCode} (stderr=${r.stderr.toString().trim()})`).toBe(0);
   // run_id grain is MINUTES (design §1.2: <flow>-YYYYMMDDTHHMM-<pid>).
   expect(r.stdout.toString().trimEnd()).toBe("pipeline-harvest-20260711T0300-4821");
   const row = JSON.parse(readFileSync(ledger, "utf8").trimEnd());
@@ -273,30 +278,28 @@ test("classifier: required marker absent (blocked/parked leg, rc 0) -> parked", 
   expect(classifyOutcome(0, p)).toBe("complete");
 });
 
-test("bash classifier mirrors the required-marker cases", () => {
+test.skipIf(!BASH_RUNS)("bash classifier mirrors the required-marker cases", () => {
   const p = join(tmp, "run.log").replaceAll("\\", "/");
   writeFileSync(p, "[fired]\nblocked on a prompt\n");
   const parked = Bun.spawnSync([BASH_BIN, BASH_LIB, "--classify", "0", p, "", "PIPELINE-LEG-DONE"], { stdout: "pipe", stderr: "pipe" });
-  if (parked.exitCode !== 0) {
-    console.warn(`flow-run classifier: bash rc=${parked.exitCode}; skipping bash shell-out`);
-  } else {
-    expect(parked.stdout.toString().trim()).toBe("parked");
-    writeFileSync(p, "done\r\nPIPELINE-LEG-DONE\r\n");
-    const done = Bun.spawnSync([BASH_BIN, BASH_LIB, "--classify", "0", p, "", "PIPELINE-LEG-DONE"], { stdout: "pipe", stderr: "pipe" });
-    expect(done.stdout.toString().trim()).toBe("complete");
-  }
+  // BASH_RUNS already proved this bash can execute; a nonzero --classify
+  // here is a real classifier failure, not an environment gap — fail it.
+  expect(parked.exitCode, `bash --classify rc=${parked.exitCode}`).toBe(0);
+  expect(parked.stdout.toString().trim()).toBe("parked");
+  writeFileSync(p, "done\r\nPIPELINE-LEG-DONE\r\n");
+  const done = Bun.spawnSync([BASH_BIN, BASH_LIB, "--classify", "0", p, "", "PIPELINE-LEG-DONE"], { stdout: "pipe", stderr: "pipe" });
+  expect(done.exitCode, `bash --classify rc=${done.exitCode}`).toBe(0);
+  expect(done.stdout.toString().trim()).toBe("complete");
 });
 
-test("bash classifier mirrors TS classifier cases", () => {
+test.skipIf(!BASH_RUNS)("bash classifier mirrors TS classifier cases", () => {
   const p = join(tmp, "run.log").replaceAll("\\", "/");
   writeFileSync(p, "ok\nBackground tasks still running: terminating\n");
   const r = Bun.spawnSync([BASH_BIN, BASH_LIB, "--classify", "0", p], { stdout: "pipe", stderr: "pipe" });
-  if (r.exitCode !== 0) {
-    console.warn(`flow-run classifier: bash rc=${r.exitCode} (stderr=${r.stderr.toString().trim()}); skipping bash shell-out`);
-    expect(classifyOutcome(0, p)).toBe("truncated");
-  } else {
-    expect(r.stdout.toString().trim()).toBe("truncated");
-  }
+  // BASH_RUNS already proved this bash can execute; a nonzero --classify
+  // here is a real classifier failure, not an environment gap — fail it.
+  expect(r.exitCode, `bash --classify rc=${r.exitCode} (stderr=${r.stderr.toString().trim()})`).toBe(0);
+  expect(r.stdout.toString().trim()).toBe("truncated");
 });
 
 test("append creates parent dir and keeps null items_processed as null", () => {

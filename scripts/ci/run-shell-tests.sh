@@ -671,13 +671,10 @@ scripts/hermes/test-invoke.sh        # needs the hermes runtime
 scripts/gemini/test-invoke.sh        # needs the gemini-cli binary
 scripts/cr/test-hermes-critic.sh     # integration: needs the hermes runtime (no keys on CI) — VM e2e covers it
 scripts/handover/test-hop.sh         # integration: needs a live 'claude' (--print relaunch) — VM e2e covers it
-scripts/handover/test-resume-armed.sh  # integration: needs the bun runtime + armed-resume flow — VM e2e covers it
 scripts/handover/test-arm-resume.sh  # HIMMEL-3132: superseded by its two --only wrappers below, not a VM-coverage gap — per-section timing (2026-09-18) found the 2775s runtime (637/0/1, HIMMEL-2254) concentrated almost entirely in one section (real wall-clock wait loops); the other 91 sections (~200s) run per-PR via test-arm-resume-fast.sh and the slow section runs nightly via test-arm-resume-1879.sh (SUITE_TIER_DEFAULT extended below). This monolith stays skipped only so a bare run doesn't duplicate both wrappers' coverage; runnable individually
 scripts/luna/test-pipeline-cadence.sh  # integration: drives a live 'claude' (--settings fragment) — VM e2e covers it
 scripts/statusline/test-usage-fetch-scheduled.sh  # needs network + OAuth credential; GATE probe run manually (HIMMEL-1841)
 scripts/test-plugin-test.sh          # integration: self-bootstraps a plugin's deps over npm/network — VM e2e covers it
-scripts/handover/test-arm-resume-probe.sh  # MEASUREMENT tool, not an assertion suite — times a dry-run/real arm and reports python3 spawn counts; always exits 0, so collecting it would spend ~20s per full run to assert nothing (HIMMEL-2125)
-scripts/test-check-ci-forks-probe.sh  # MEASUREMENT tool, not an assertion suite — re-runs the full test-check-ci.sh suite instrumented to report gh-stub fork counts + wall time per case; always exits 0 and duplicates the suite's own run, so collecting it would double the extended-tier cost to assert nothing (HIMMEL-2169)
 "
 
 # Off-Linux skips (HIMMEL-3203): same format as SKIP_LIST, but appended to it
@@ -688,7 +685,7 @@ scripts/test-check-ci-forks-probe.sh  # MEASUREMENT tool, not an assertion suite
 # which is how the HIMMEL-3201 fixture drift (rc=123) went unnoticed. The
 # non-Linux reason is unchanged from its SKIP_LIST days.
 SKIP_LIST_NON_LINUX="
-scripts/test-adopt.sh                # HIMMEL-3203: skipped off-Linux only — timing-heavy full adoption matrix exceeds the hermetic runner's per-suite cap on Windows (600s default since HIMMEL-2233; the exceedance was last measured against the older 180s cap and has not been re-measured); runs on Linux CI (~62s); runnable individually, no VM e2e coverage
+scripts/test-adopt.sh                # HIMMEL-3203: skipped off-Linux only — timing-heavy full adoption matrix exceeds the hermetic runner's per-suite cap on Windows (600s default since HIMMEL-2233; the exceedance was last measured against the older 180s cap and STILL has not been re-measured, HIMMEL-3580 — do not reinstate on Windows without one); runs on Linux CI (~62s uncontended, 2026-09-19; re-verified PASS at 197s under concurrent multi-lane load, 2026-09-24 — still well inside the 600s cap either way); runnable individually, no VM e2e coverage
 "
 case "$(uname -s 2>/dev/null || echo unknown)" in
   Linux) ;;

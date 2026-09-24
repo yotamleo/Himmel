@@ -196,24 +196,57 @@ fi
 # min/max without visiting every line in a subshell.
 ts_of() { grep -o '"timestamp":"[0-9TZ:.-]*"' "$1" 2>/dev/null | cut -d'"' -f4 | sort; }
 
+# HIMMEL-3547: a malformed timestamp (matches the extraction charset but
+# fails `date -d`/`date -j`, e.g. an out-of-range month/day) can still sort
+# to the lexically-first or -last line, so the sorted head/tail line's
+# to_epoch can fail even though every other timestamp in the file parses
+# fine. Falling back to skipping the whole file (bad-timestamp) then throws
+# away real in-window usage evidence. On a head/tail parse failure, scan the
+# sorted list from that end for the nearest line that DOES parse instead -
+# this only runs on the rare malformed case, so the common-case "at most
+# twice" fork budget above is unaffected.
+nearest_valid_epoch() {
+    # $1 = sorted timestamp file, $2 = order (asc for min, desc for max)
+    local f="$1" order="$2" f_sorted line e
+    if [ "$order" = desc ]; then f_sorted=$(sort -r "$f"); else f_sorted=$(cat "$f"); fi
+    while IFS= read -r line; do
+        e=$(to_epoch "$line") && { printf '%s\n' "$e"; return 0; }
+    done <<EOF
+$f_sorted
+EOF
+    return 1
+}
+
 TAGGED="$RUN/tagged.tsv"; : > "$TAGGED"
 JQ_FAILS=0
+BAD_EDGE_TIMESTAMPS=0
 while IFS= read -r f; do
     [ -r "$f" ] || { sc_cov unreadable; continue; }
     case "$f" in */subagents/*) sc_cov subagent; continue ;; esac
 
     ts_of "$f" > "$RUN/cur-ts.txt"
     [ -s "$RUN/cur-ts.txt" ] || { sc_cov no-timestamp; continue; }
+    file_bad_edge=0
     min_epoch=$(to_epoch "$(head -n 1 "$RUN/cur-ts.txt")") || min_epoch=""
+    if [ -z "$min_epoch" ]; then
+        min_epoch=$(nearest_valid_epoch "$RUN/cur-ts.txt" asc) || min_epoch=""
+        [ -n "$min_epoch" ] && file_bad_edge=1
+    fi
     max_epoch=$(to_epoch "$(tail -n 1 "$RUN/cur-ts.txt")") || max_epoch=""
+    if [ -z "$max_epoch" ]; then
+        max_epoch=$(nearest_valid_epoch "$RUN/cur-ts.txt" desc) || max_epoch=""
+        [ -n "$max_epoch" ] && file_bad_edge=1
+    fi
+    [ "$file_bad_edge" -eq 1 ] && BAD_EDGE_TIMESTAMPS=$((BAD_EDGE_TIMESTAMPS + 1))
     if [ -z "$min_epoch" ] || [ -z "$max_epoch" ]; then sc_cov bad-timestamp; continue; fi
     [ "$max_epoch" -ge "$SINCE_EPOCH" ] || { sc_cov out-of-window; continue; }
     if [ -n "$UNTIL_EPOCH" ] && [ "$min_epoch" -ge "$UNTIL_EPOCH" ]; then sc_cov out-of-window; continue; fi
 
     out=$(jq -r --argjson since_epoch "$SINCE_EPOCH" --argjson until_epoch "$UNTIL_EPOCH_ARG" '
       def inwin: (.timestamp // null) as $t | $t != null and
-        (($t | sub("\\.[0-9]+Z$";"Z") | fromdateiso8601) >= $since_epoch) and
-        (($t | sub("\\.[0-9]+Z$";"Z") | fromdateiso8601) < $until_epoch);
+        (try (($t | sub("\\.[0-9]+Z$";"Z") | fromdateiso8601) >= $since_epoch and
+              ($t | sub("\\.[0-9]+Z$";"Z") | fromdateiso8601) < $until_epoch)
+         catch false);
       select(inwin) |
       if .type=="assistant" then
         (.message.content[]? | select(.type=="tool_use") |
@@ -231,6 +264,9 @@ done < "$FILES"
 
 if [ "$JQ_FAILS" -gt 0 ]; then
     echo "dead-parts: WARNING: $JQ_FAILS transcript(s) skipped due to jq failure in the USED scan" >&2
+fi
+if [ "$BAD_EDGE_TIMESTAMPS" -gt 0 ]; then
+    echo "dead-parts: WARNING: $BAD_EDGE_TIMESTAMPS transcript(s) had a malformed head/tail timestamp - fell back to the nearest valid one instead of skipping the file" >&2
 fi
 
 # ponytail: a transcript's Skill tool_use may name a plugin-qualified skill

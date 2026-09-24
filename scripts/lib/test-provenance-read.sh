@@ -248,6 +248,47 @@ prov_read_apply "$u" remove
 check "json-key ~1 escaping: key removed" "$(jq -c . "$S1")" '{"env":{}}'
 prov_read_cleanup
 
+# ── HIMMEL-3541: json-key remove + parent_created drops the now-empty parent
+# (the workspace-trust key: install created projects[<dir>] for it) ─────────
+reset
+C1="$w/claude1.json"
+printf '%s' '{"projects":{"/other":{"x":1},"/p":{"hasTrustDialogAccepted":true}}}' > "$C1"
+prov_begin --iid P1 --writer t
+prov_record create json-key "$C1" --unit /projects/~1p/hasTrustDialogAccepted --pre-absent --post-json true \
+    --field parent_created=true --scope user --class code --row workspace-trust
+prov_end ok
+prov_read_load
+u=$(u_for --path "$C1")
+prov_read_apply "$u" remove
+check "json-key remove + parent_created: empty parent dropped, siblings kept" "$(jq -c . "$C1")" '{"projects":{"/other":{"x":1}}}'
+prov_read_cleanup
+
+# control: parent_created=false -> the pre-existing (now empty) parent stays
+reset
+printf '%s' '{"projects":{"/p":{"hasTrustDialogAccepted":true}}}' > "$C1"
+prov_begin --iid P2 --writer t
+prov_record create json-key "$C1" --unit /projects/~1p/hasTrustDialogAccepted --pre-absent --post-json true \
+    --field parent_created=false --scope user --class code --row workspace-trust
+prov_end ok
+prov_read_load
+u=$(u_for --path "$C1")
+prov_read_apply "$u" remove
+check "json-key remove control: parent not created by install is kept" "$(jq -c . "$C1")" '{"projects":{"/p":{}}}'
+prov_read_cleanup
+
+# control: parent_created=true but the parent still holds other keys -> kept
+reset
+printf '%s' '{"projects":{"/p":{"hasTrustDialogAccepted":true,"allowedTools":[]}}}' > "$C1"
+prov_begin --iid P3 --writer t
+prov_record create json-key "$C1" --unit /projects/~1p/hasTrustDialogAccepted --pre-absent --post-json true \
+    --field parent_created=true --scope user --class code --row workspace-trust
+prov_end ok
+prov_read_load
+u=$(u_for --path "$C1")
+prov_read_apply "$u" remove
+check "json-key remove control: non-empty created parent is kept" "$(jq -c . "$C1")" '{"projects":{"/p":{"allowedTools":[]}}}'
+prov_read_cleanup
+
 # ── json-elem insert/remove + container_created deletes the empty container ─
 
 reset
@@ -316,7 +357,24 @@ u=$(u_for --path "$S4")
 check "json-elem nested: current finds the nested hook object" "$(prov_read_current "$u")" "$sssha"
 check "json-elem nested: verdict" "$(prov_read_verdict "$u")" "remove ours"
 prov_read_apply "$u" remove
-check "json-elem nested: removed + empty wrapper stanza pruned" "$(jq -c . "$S4")" '{"hooks":{"SessionStart":[]}}'
+# HIMMEL-3541: container_created=true -> the now-empty SessionStart array is
+# dropped too, exactly like the flat branch (the VM round trip left
+# `"SessionStart": []` behind in user settings).
+check "json-elem nested: removed + empty wrapper stanza pruned + created container dropped" "$(jq -c . "$S4")" '{"hooks":{}}'
+prov_read_cleanup
+
+# control: no container_created (the array pre-existed) -> the empty array stays
+reset
+printf '{"hooks":{"SessionStart":[]}}\n' > "$S4"
+prov_begin --iid K2 --writer t
+prov_record insert json-elem "$S4" --unit /hooks/SessionStart --pre-absent --post-json "$ssobj" \
+    --field elem_sha="\"$sssha\"" --scope user --class code
+prov_end ok
+printf '%s' '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"bash x/inject-initiative.sh"}]}]}}' > "$S4"
+prov_read_load
+u=$(u_for --path "$S4")
+prov_read_apply "$u" remove
+check "json-elem nested control: pre-existing container kept (empty)" "$(jq -c . "$S4")" '{"hooks":{"SessionStart":[]}}'
 prov_read_cleanup
 
 # ── register: plugin ours vs preexisted, and prov_read_owned's TSV ─────────

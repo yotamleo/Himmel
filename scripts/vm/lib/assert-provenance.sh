@@ -52,27 +52,99 @@ meta_of() { awk -F'\t' -v p="$2" '$4 == p { print $1 "\t" $2 "\t" $5 }' "$INV/in
 
 S="$H/.claude/settings.json"
 SEEDS="$ST/settings.json"
+L="$D/ledger-B.jsonl"
+PL="$H/.claude/plugins"
+MK="$PL/marketplaces"
+# led_units <marketplace|plugin> — "<unit><TAB><preexisted>" once per unit
+# install-plugins.sh registered, the flag taken from the unit's FIRST row (a
+# later scope's run sees the first one's registration as pre-existing).
+led_units() {
+    [ -f "$L" ] || return 0
+    jq -rs --arg k "$1" '[.[] | select(.kind == $k and .op == "register" and (.unit // "") != "")]
+        | group_by(.unit) | .[] | "\(.[0].unit)\t\(.[0].preexisted)"' "$L" 2>/dev/null
+}
+# HIMMEL-3541 class 1: the marketplaces the operator had ALREADY registered
+# (the ledger says preexisted, and the clone dir is in inventory A). The
+# Claude Code CLI re-fetches such a clone when install-plugins.sh's
+# "Registering marketplaces" step runs `claude plugin marketplace add` for it,
+# so its clone is the CLI's refresh of the operator's own marketplace.
+# json_delta <A copy> <C file> [keys to ignore, JSON array] [top-level
+# defaults, JSON object: a key at its default counts as absent]: the first leaf
+# paths (an empty container counts as a leaf) whose values differ, each as
+# path=A->C, so a FAIL names what changed instead of only two shas; when no
+# value differs, the top-level key order of both.
+json_delta() {
+    jq -rn --slurpfile a "$1" --slurpfile c "$2" --argjson k "${3:-[]}" --argjson f "${4:-{\}}" '
+        def nodflt: if type == "object" then with_entries(select(.key as $x | ($f | has($x) | not) or .value != $f[$x])) else . end;
+        ($k | map([.])) as $d | ($a[0] | delpaths($d) | nodflt) as $A | ($c[0] | delpaths($d) | nodflt) as $C
+        | def leaves: paths((type != "object" and type != "array") or length == 0);
+          [($A | leaves), ($C | leaves)] | unique
+        | map(select(. as $q | ($A | getpath($q)) != ($C | getpath($q))))
+        | .[:6] | map(. as $q | ($q | map(tostring) | join(".")) + "=" + ($A | getpath($q) | tojson | .[:40])
+            + "->" + ($C | getpath($q) | tojson | .[:40]))
+        | if length > 0 then join(", ")
+          else "no value differs; key order A=" + ($a[0] | keys_unsorted | join(",")) + " C=" + ($c[0] | keys_unsorted | join(","))
+          end' 2>/dev/null
+}
+MKT_PRE_A=" "
+while IFS=$'\t' read -r m pre; do
+    case "$m" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
+    [ "$pre" = true ] && [ -n "$(meta_of A "$MK/$m")" ] && MKT_PRE_A="$MKT_PRE_A$m "
+done < <(led_units marketplace)
+# The keys the Claude Code CLI writes into ~/.claude.json on its own start (the
+# uninstall runs `claude plugin ...`), none of them ever written by himmel:
+# first-run stamps, the machine/user ids, and its settings migrations.
+# ponytail: an exact list, so a future CLI key fails claude-json-restored until
+# it is added here (the safe direction); re-derive from the RT's A-vs-C diff.
+# The CLI also saves ~/.claude.json without every key equal to its default
+# (Claude Code 2.1.281 saveGlobalConfig keeps only keys whose JSON differs from
+# its default config), so a key at one of these defaults counts as absent.
+CLI_DEFAULTS='{"theme":"dark","preferredNotifChannel":"auto","verbose":false,"editorMode":"normal","autoCompactEnabled":true,"autoScrollEnabled":true,"showTurnDuration":true,"numStartups":0}'
+CLI_KEYS='["firstStartTime","firstStartVersion","hasResetAutoModeOptInForDefaultOffer","machineID","migrationVersion","opusProMigrationComplete","seenNotifications","sonnet1m45MigrationComplete","userID"]'
 
 # =========================================================== 1. byte identity
 while IFS= read -r p; do
     [ -n "$p" ] || continue
     if [ "$p" = "$H/.claude.json" ]; then
-        # 3309: the trust entry install adds for ~/proj is kept by design, so
-        # ~/.claude.json is compared against B (after install), not A.
+        # HIMMEL-3541 class 4: uninstall removes the trust entry install added
+        # for ~/proj (a ledger row, parent included when install created it),
+        # so ~/.claude.json must equal A again -- outside CLI_KEYS, which the
+        # Claude Code CLI itself writes whenever the install or uninstall runs it.
         if [ -z "$(meta_of C "$p")" ]; then
-            check identity too-much FAIL claude-json-unchanged-from-B "removed (present at B)"
-        elif [ "$(sha_of B "$p")" = "$(sha_of C "$p")" ]; then
-            check identity identity PASS claude-json-unchanged-from-B "sha equal to B"
+            check identity too-much FAIL claude-json-restored "removed (present at A)"
+        elif jq -en --slurpfile a "$ST/claude.json" --slurpfile c "$p" --argjson k "$CLI_KEYS" --argjson f "$CLI_DEFAULTS" '
+                def nodflt: with_entries(select(.key as $x | ($f | has($x) | not) or .value != $f[$x]));
+                ($k | map([.])) as $d | ($a[0] | delpaths($d) | nodflt) == ($c[0] | delpaths($d) | nodflt)' >/dev/null 2>&1; then
+            check identity identity PASS claude-json-restored "equal to A outside the CLI's own keys and defaults"
         else
-            check identity identity FAIL claude-json-unchanged-from-B "sha B=$(sha_of B "$p" | cut -c1-12) C=$(sha_of C "$p" | cut -c1-12)"
+            check identity identity FAIL claude-json-restored "differs from A outside the CLI's own keys at: $(json_delta "$ST/claude.json" "$p" "$CLI_KEYS" "$CLI_DEFAULTS")"
         fi
         continue
     fi
+    case "$p" in "$MK"/*/.claude-plugin/marketplace.json)
+        m=${p#"$MK"/}; m=${m%%/*}
+        if [ "${MKT_PRE_A#* "$m" }" != "$MKT_PRE_A" ] && [ -n "$(meta_of C "$p")" ]; then
+            check identity identity PASS "seeded:$(rel "$p")" "not compared: the CLI refreshed marketplace $m (registered at A) during install-plugins.sh's marketplace add"
+            continue
+        fi ;;
+    esac
     ma=$(meta_of A "$p") mc=$(meta_of C "$p")
     if [ -z "$mc" ]; then
         check identity too-much FAIL "seeded:$(rel "$p")" "removed (present at A)"
     elif [ "$(sha_of A "$p")" != "$(sha_of C "$p")" ]; then
-        check identity identity FAIL "seeded:$(rel "$p")" "content changed (sha A=$(sha_of A "$p" | cut -c1-12) C=$(sha_of C "$p" | cut -c1-12))"
+        delta="" acopy=""
+        case "$p" in
+            "$H/.claude/settings.json") acopy="$ST/settings.json" ;;
+            "$H/proj/.claude/settings.json") acopy="$ST/proj-settings.json" ;;
+        esac
+        # `claude plugin marketplace add|install` (install-plugins.sh) rewrites
+        # settings.json in the CLI's own key order: the same values restored.
+        if [ -n "$acopy" ] && jq -en --slurpfile a "$acopy" --slurpfile c "$p" '$a[0] == $c[0]' >/dev/null 2>&1; then
+            check identity identity PASS "seeded:$(rel "$p")" "same JSON values as A; only the key order differs (the Claude Code CLI's own serialization)"
+            continue
+        fi
+        [ -z "$acopy" ] || delta=" at: $(json_delta "$acopy" "$p")"
+        check identity identity FAIL "seeded:$(rel "$p")" "content changed (sha A=$(sha_of A "$p" | cut -c1-12) C=$(sha_of C "$p" | cut -c1-12))$delta"
     elif [ "$ma" != "$mc" ]; then
         check identity identity FAIL "seeded:$(rel "$p")" "type/mode/target changed ($(printf '%s' "$ma" | tr '\t' ' ') -> $(printf '%s' "$mc" | tr '\t' ' '))"
     else
@@ -273,7 +345,17 @@ allow="^($H/\\.npm/_cacache|$H/\\.npm/_logs|$H/\\.npm/_update-notifier-last-chec
 # data, never himmel's: uninstall must never touch it, so it is a residue
 # allowance here, not a manifest removal row.
 [ "$PROFILE" = all ] && allow="$allow|$H/luna"
+# HIMMEL-3541 class 1: the clone of a marketplace registered at A (MKT_PRE_A
+# above) -- the CLI's refresh of the operator's own marketplace, which the
+# uninstall rightly keeps ("kept (was already yours)"). Only those dirs.
+for m in $MKT_PRE_A; do allow="$allow|$MK/${m//./\\.}"; done
 allow="$allow)(/|\$)"
+# HIMMEL-3541 class 1: files the Claude Code CLI writes for itself whenever
+# install-plugins.sh or uninstall.sh runs it -- exact paths, nothing beneath:
+# its ~/.claude.json lock and timestamped backups, its in-use sweep stamp, and
+# its own marketplace/plugin registries (cli-registries-clean below checks
+# those no longer name anything himmel registered).
+allow="$allow|^($H/\\.claude\\.json\\.lock|$H/\\.claude/backups|$H/\\.claude/backups/\\.claude\\.json\\.backup\\.[0-9]+|$PL/\\.last_inuse_sweep|$PL/known_marketplaces\\.json|$PL/installed_plugins\\.json)\$"
 # paths <a> <b> <mode>: new = in b not a; gone = in a not b; changed = regular
 # file in both with a different sha. Directories count only when new/gone.
 paths() {
@@ -300,25 +382,50 @@ report_groups() {  # <direction> <name-prefix> <verb> — reads paths on stdin
 paths A C new | report_groups too-little left "left behind (not at A)"
 paths A C gone | report_groups too-much gone "gone (present at A)"
 paths A C changed | report_groups too-little changed "changed since A and not restored"
+# The CLI registries are allowlisted above as files; what they list is not:
+# nothing himmel registered (first row not preexisted) may still be named.
+reg_left=""
+while IFS=$'\t' read -r m pre; do
+    [ "$pre" = false ] && jq -e --arg m "$m" 'has($m)' "$PL/known_marketplaces.json" >/dev/null 2>&1 && reg_left="$reg_left$m "
+done < <(led_units marketplace)
+# installed_plugins.json keeps one entry per install scope, so a plugin is
+# checked per (scope, project): himmel's project-scope install of a plugin the
+# operator already had at user scope leaves the user entry, legitimately.
+if [ -f "$L" ] && [ -f "$PL/installed_plugins.json" ]; then
+    while IFS= read -r u; do reg_left="$reg_left$u "; done < <(jq -rs --slurpfile ip "$PL/installed_plugins.json" '
+        (($ip[0].plugins // {}) | if type == "object" then . else {} end) as $P
+        | [.[] | select(.kind == "plugin" and .op == "register" and (.unit // "") != "")]
+        | group_by([.unit, (.cli_scope // ""), (.project_path // "")]) | .[] | .[0]
+        | select(.preexisted == false) | . as $r | ($r.cli_scope // "") as $s
+        | select(($P | has($r.unit)) and ($s == "" or ([$P[$r.unit][]?
+            | select(.scope == $s and ($s != "project" or (.projectPath // "") == ($r.project_path // "")))] | length > 0)))
+        | $r.unit + (if $s == "project" then "(project)" else "" end)' "$L" 2>/dev/null)
+fi
+if [ -n "$reg_left" ]; then check semantic too-little FAIL cli-registries-clean "left: ${reg_left% }"
+else check semantic too-little PASS cli-registries-clean "no marketplace or plugin himmel registered"; fi
 
 # ====================================================== 8. ledger (step 5)
-L="$D/ledger-B.jsonl"
 if [ -f "$L" ]; then
     check ledger ledger PASS ledger-exists "$(wc -l <"$L") row(s) after install"
     ok ledger ledger ledger-install-begin 'no install-begin row' jq -se 'map(select(.op == "install-begin")) | length > 0' "$L"
     ok ledger ledger ledger-install-end-ok 'no install-end status=ok row' jq -se 'map(select(.op == "install-end" and .status == "ok")) | length > 0' "$L"
     jq -r 'select(.path != null) | .path' "$L" 2>/dev/null | sort -u >"$D/ledger-paths.txt"
-    jq -r 'select(.path != null and .kind == "tree") | .path' "$L" 2>/dev/null | sort -u >"$D/ledger-trees.txt"
+    # a registered marketplace's clone is the CLI's write for that register row
+    { jq -r 'select(.path != null and .kind == "tree") | .path' "$L" 2>/dev/null
+      led_units marketplace | while IFS=$'\t' read -r m _; do
+          case "$m" in ''|*[!A-Za-z0-9._-]*) ;; *) printf '%s\n' "$MK/$m" ;; esac
+      done; } | sort -u >"$D/ledger-trees.txt"
 else
     check ledger ledger FAIL ledger-exists "no provenance.jsonl after install"
     : >"$D/ledger-paths.txt"
     : >"$D/ledger-trees.txt"
 fi
 # No unrecorded write: every path new or changed at B (outside the allowlist)
-# is a ledger row's path or lies under a `tree` row's path.
-unrec=$( { paths A B new; paths A B changed; } | grep -vE "$allow" | awk -v h="$H/" 'FILENAME == ARGV[1] { if ($0 != "") p[$0] = 1; next }
+# is a ledger row's path, lies under a `tree` row's path, or is a directory
+# above a ledger row's path (HIMMEL-3541 class 5: its writer's mkdir -p).
+unrec=$( { paths A B new; paths A B changed; } | grep -vE "$allow" | awk -v h="$H/" 'FILENAME == ARGV[1] { if ($0 != "") { p[$0] = 1; x = $0; while (sub(/\/[^\/]*$/, "", x) && x != "" && x "/" != h) a[x] = 1 } next }
     FILENAME == ARGV[2] { if ($0 != "") t[$0] = 1; next }
-    { hit = ($0 in p); x = $0; while (!hit) { sub(/\/[^\/]*$/, "", x); if (x == "" || x "/" == h) break; if (x in t) hit = 1 } if (!hit) print }' "$D/ledger-paths.txt" "$D/ledger-trees.txt" - )
+    { hit = ($0 in p) || ($0 in a) || ($0 in t); x = $0; while (!hit) { sub(/\/[^\/]*$/, "", x); if (x == "" || x "/" == h) break; if (x in t) hit = 1 } if (!hit) print }' "$D/ledger-paths.txt" "$D/ledger-trees.txt" - )
 n=$(printf '%s' "$unrec" | grep -c .)
 if [ "$n" -eq 0 ]; then check ledger ledger PASS no-unrecorded-write "every write at B has a ledger row"
 else check ledger ledger FAIL no-unrecorded-write "$n path(s) written with no ledger row, e.g. $(printf '%s\n' "$unrec" | head -n 3 | while IFS= read -r x; do rel "$x"; printf ' '; done)"; fi

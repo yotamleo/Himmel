@@ -1208,6 +1208,43 @@ for sub in edited control duplicated; do
 done
 unset tok32 rc32 out32
 
+echo "==== RED33 (HIMMEL-3541): settings containers + a scope marketplace entry install created ===="
+# install-plugins.sh records a created-when-absent json-key row for the
+# enabledPlugins / extraKnownMarketplaces containers and for a scope entry the
+# CLI added for a marketplace that already existed (its register row reads
+# preexisted, so step 7 keeps the marketplace). Uninstall removes the entry
+# and drops each container once empty -- but only one the ledger shows absent.
+for sub in created control; do
+  new_case "red33-$sub"
+  ENTRY33='{"source":{"source":"github","repo":"anthropics/claude-plugins-official"}}'
+  # the state after step 4 removed the plugins: same bytes in both sub-cases,
+  # only the ledger differs
+  printf '{"enabledPlugins":{},"extraKnownMarketplaces":{"claude-plugins-official":%s}}\n' "$ENTRY33" > "$CASE_SETTINGS"
+  ( prov_begin --writer install-plugins.sh -- seed-red33 >/dev/null
+    prov_record register marketplace - --unit claude-plugins-official --scope machine --class code \
+      --writer install-plugins.sh --row marketplaces --field 'cli_scope="user"' --field preexisted=true >/dev/null
+    if [ "$sub" = created ]; then
+      prov_record create json-key "$CASE_SETTINGS" --unit /extraKnownMarketplaces --pre-absent \
+        --post-json "{\"claude-plugins-official\":$ENTRY33}" --scope user --class code --row user-settings --writer install-plugins.sh >/dev/null
+      prov_record create json-key "$CASE_SETTINGS" --unit /enabledPlugins --pre-absent \
+        --post-json '{"himmel-ops@himmel":true}' --scope user --class code --row user-settings --writer install-plugins.sh >/dev/null
+    fi
+    prov_record create json-key "$CASE_SETTINGS" --unit /extraKnownMarketplaces/claude-plugins-official --pre-absent \
+      --post-json "$ENTRY33" --scope user --class code --row user-settings --writer install-plugins.sh >/dev/null
+    prov_end ok >/dev/null )
+  printf '[{"name":"claude-plugins-official"}]\n' > "$CASE_MARKETPLACES_JSON"
+  run_uninstall --yes --keep-telegram-state --skip-tasks --skip-hooks >/dev/null
+  case "$sub" in
+    created)
+      check "RED33 created: entry removed and both created containers dropped" \
+        "$(jq -c . "$CASE_SETTINGS")" '{}' ;;
+    control)
+      check "RED33 control: entry removed, pre-existing containers kept (empty)" \
+        "$(jq -c . "$CASE_SETTINGS")" '{"enabledPlugins":{},"extraKnownMarketplaces":{}}' ;;
+  esac
+done
+unset ENTRY33
+
 echo "==== REAL-LEDGER TRIPWIRE ===="
 REAL_LEDGER_AFTER=$(real_ledger_state)
 check "tripwire: operator's real ~/.himmel/provenance.jsonl untouched by this suite" \

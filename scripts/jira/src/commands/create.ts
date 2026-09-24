@@ -7,6 +7,7 @@ import type { CreateIssueResponse } from '../types.js';
 import { uploadAll } from './attach-helper.js';
 import { readBodyFile } from './body-file.js';
 import { parseLabels } from './labels.js';
+import { BUG_FREEZE, freezeFixVersion, todayIso } from '../freeze.js';
 
 function collect(value: string, prev: string[]): string[] {
   return [...prev, value];
@@ -82,7 +83,17 @@ export function registerCreate(program: Command): void {
           fields['description'] = markdownToAdf(options.desc);
         }
         if (options.parent) fields['parent'] = { key: options.parent };
-        if (options.labels !== undefined) fields['labels'] = parseLabels(options.labels);
+        const labels = options.labels !== undefined ? parseLabels(options.labels) : undefined;
+        if (labels) fields['labels'] = labels;
+        const frozenTo = freezeFixVersion(options.type, labels, todayIso());
+        if (frozenTo) {
+          fields['fixVersions'] = [{ name: frozenTo }];
+          // stderr: stdout stays the bare `Created KEY` line scripted callers capture.
+          console.error(
+            `jira: bug freeze (after ${BUG_FREEZE.cutoff}): fixVersion ${frozenTo}; ` +
+              `label ${BUG_FREEZE.blockerLabel} to keep it in ${BUG_FREEZE.v1Version}`,
+          );
+        }
 
         const result = await request<CreateIssueResponse>('POST', '/issue', { fields });
         // Breadcrumb BEFORE attachments (same rationale as comment): the issue

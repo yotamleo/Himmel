@@ -142,12 +142,12 @@ if [ "$RC" -eq 2 ] && grep -q 'missing input .*state.list' <<<"$OUT"; then pass 
 # ---- 4. ~/.claude.json deleted is a too-much, not an identity, failure.
 fresh; : >"$INV/inv-C/home.meta"; : >"$INV/inv-C/home.sha"
 run_assert core 0
-has "claude.json deleted is too-much" 'CHECK identity too-much FAIL claude-json-unchanged-from-B '
-hasnt "claude.json deleted is not tagged identity" 'CHECK identity identity FAIL claude-json-unchanged-from-B '
+has "claude.json deleted is too-much" 'CHECK identity too-much FAIL claude-json-restored '
+hasnt "claude.json deleted is not tagged identity" 'CHECK identity identity FAIL claude-json-restored '
 fresh                                                # A=B=C, then C's ~/.claude.json differs from B's
 sed -i "s#^.*  $H/.claude.json\$#$(sha other)  $H/.claude.json#" "$INV/inv-C/home.sha"  # gnu-ok: linux-only suite (uname guard at the top)
 run_assert core 0
-has "claude.json rewritten stays identity" 'CHECK identity identity FAIL claude-json-unchanged-from-B '
+has "claude.json rewritten stays identity" 'CHECK identity identity FAIL claude-json-restored '
 
 # ---- 5. the user's qmd/graphify stubs (profile all): user-owned, must survive.
 STUBS="$H/.local/bin"
@@ -237,6 +237,135 @@ fresh
 inv C d "$VLT"; inv C f "$VLT/index.md" seed
 run_assert core 0
 has "core: the same leftover at ~/luna is not exempted" 'CHECK residue [a-z-]+ FAIL [a-z]+:~/luna'
+
+# ---- 6e. HIMMEL-3541 class 1: what the Claude Code CLI itself writes while
+# himmel's install drives it. Exact paths only (the lock, the ~/.claude.json
+# backups, the CLI's plugin registries), the clone of a marketplace himmel
+# registered, and the clone the CLI refreshed over a marketplace the operator
+# had ALREADY registered at A. A planted file beside any of them still fails.
+PL="$H/.claude/plugins" MK="$H/.claude/plugins/marketplaces"
+OFF="$MK/claude-plugins-official" OBS="$MK/obsidian-skills"
+cli_world() {  # <official-at-A: 1|0>
+    fresh
+    mkdir -p "$PL"
+    printf '%s\n' \
+        '{"op":"install-begin"}' \
+        '{"kind":"marketplace","op":"register","unit":"claude-plugins-official","preexisted":true}' \
+        '{"kind":"marketplace","op":"register","unit":"obsidian-skills","preexisted":false}' \
+        '{"kind":"marketplace","op":"register","unit":"obsidian-skills","preexisted":true}' \
+        '{"kind":"plugin","op":"register","unit":"codex@openai-codex","preexisted":false,"cli_scope":"user"}' \
+        '{"kind":"plugin","op":"register","unit":"context7@claude-plugins-official","preexisted":false,"cli_scope":"project","project_path":"/p"}' \
+        '{"kind":"plugin","op":"register","unit":"context7@claude-plugins-official","preexisted":true,"cli_scope":"user"}' \
+        '{"op":"install-end","status":"ok"}' >"$LB/ledger-B.jsonl"
+    both "A B C" d "$PL"; both "A B C" d "$MK"
+    if [ "$1" = 1 ]; then
+        inv A d "$OFF"; inv A d "$OFF/.claude-plugin"; inv A f "$OFF/.claude-plugin/marketplace.json" seed
+        printf '%s\n' "$OFF/.claude-plugin/marketplace.json" >>"$LB/seeded.list"
+    fi
+    both "B C" d "$OFF"; both "B C" d "$OFF/.claude-plugin"
+    both "B C" f "$OFF/.claude-plugin/marketplace.json" fetched; both "B C" f "$OFF/README.md" r
+    inv B d "$OBS"; inv B f "$OBS/README.md" o
+    both "B C" f "$H/.claude.json.lock" l
+    both "B C" d "$H/.claude/backups"; both "B C" f "$H/.claude/backups/.claude.json.backup.1790271492607" b
+    both "B C" f "$PL/.last_inuse_sweep" s
+    both "B C" f "$PL/known_marketplaces.json" k; both "B C" f "$PL/installed_plugins.json" i
+    echo '{"claude-plugins-official":{}}' >"$PL/known_marketplaces.json"
+    # context7: himmel added a project-scope install over the operator's user-scope one
+    echo '{"version":2,"plugins":{"context7@claude-plugins-official":[{"scope":"user"}]}}' >"$PL/installed_plugins.json"
+}
+cli_world 1
+run_assert core 0
+for p in '\.claude\.json\.lock' '\.claude/backups' '\.claude/plugins/\.last_inuse_sweep' '\.claude/plugins/known_marketplaces\.json' '\.claude/plugins/installed_plugins\.json' '\.claude/plugins/marketplaces'; do
+    hasnt "cli: ~/${p//\\/} is not residue" "CHECK residue [a-z-]+ FAIL [a-z]+:~/$p"
+done
+has "cli: the refreshed official marketplace.json (registered at A) is exempt, not compared" 'CHECK identity identity PASS seeded:~/\.claude/plugins/marketplaces/claude-plugins-official/\.claude-plugin/marketplace\.json — '
+has "cli: the CLI writes and marketplace clones are not unrecorded" 'CHECK ledger ledger PASS no-unrecorded-write '
+has "cli: the CLI registries name nothing himmel registered" 'CHECK semantic too-little PASS cli-registries-clean '
+# negatives: a himmel-written file planted beside the exempt ones still fails.
+cli_world 1
+both "B C" f "$PL/himmel-stray.json" x
+both "B C" f "$H/.claude/backups/stray.txt" x
+run_assert core 0
+has "cli neg: a file planted in ~/.claude/plugins is residue" 'CHECK residue too-little FAIL left:~/\.claude/plugins/himmel-stray\.json '
+has "cli neg: a file planted in ~/.claude/backups is residue" 'CHECK residue too-little FAIL left:~/\.claude/backups/stray\.txt '
+has "cli neg: the planted files are unrecorded writes" 'CHECK ledger ledger FAIL no-unrecorded-write — 2 path'
+# a clone of a marketplace himmel registered, left at C, is residue.
+cli_world 1
+inv C d "$OBS"; inv C f "$OBS/README.md" o
+run_assert core 0
+has "cli neg: a himmel-registered marketplace clone left at C is residue" 'CHECK residue too-little FAIL left:~/\.claude/plugins/marketplaces '
+# the official clone is exempt only when it was registered at A.
+cli_world 0
+run_assert core 0
+has "cli neg: the official clone is residue when it was not registered at A" 'CHECK residue too-little FAIL left:~/\.claude/plugins/marketplaces '
+# the registries must not still name what himmel registered.
+cli_world 1
+echo '{"claude-plugins-official":{},"obsidian-skills":{}}' >"$PL/known_marketplaces.json"
+echo '{"version":2,"plugins":{"codex@openai-codex":[{"scope":"user"}],"context7@claude-plugins-official":[{"scope":"user"},{"scope":"project","projectPath":"/p"}]}}' >"$PL/installed_plugins.json"
+run_assert core 0
+has "cli neg: a registry still naming himmel's marketplace and plugins fails" 'CHECK semantic too-little FAIL cli-registries-clean — left: obsidian-skills codex@openai-codex context7@claude-plugins-official\(project\)'
+# a project-scope install of the same plugin for ANOTHER project is not ours.
+cli_world 1
+echo '{"version":2,"plugins":{"context7@claude-plugins-official":[{"scope":"user"},{"scope":"project","projectPath":"/other"}]}}' >"$PL/installed_plugins.json"
+run_assert core 0
+has "cli: another project's install of a plugin himmel added is not ours" 'CHECK semantic too-little PASS cli-registries-clean '
+
+# ---- 6f. HIMMEL-3541 class 4: ~/.claude.json at C equals A outside the keys
+# the Claude Code CLI writes on its own start (uninstall runs the CLI).
+cj_world() {  # <jq edit applied to the seed for the live file>
+    fresh
+    sed -i "s#^.*  $H/.claude.json\$#$(sha other)  $H/.claude.json#" "$INV/inv-C/home.sha"  # gnu-ok: linux-only suite (uname guard at the top)
+    jq -n --arg o "$H/other-project" '{numStartups: 3, userID: "seed-user", theme: "dark", projects: {($o): {hasTrustDialogAccepted: true, allowedTools: []}}}' \
+        >"$LB/seed-state/claude.json"
+    jq --arg p "$H/proj" "$1" "$LB/seed-state/claude.json" >"$H/.claude.json"
+}
+cj_world '. + {firstStartTime: "t", firstStartVersion: "2", hasResetAutoModeOptInForDefaultOffer: true, machineID: "m", migrationVersion: 14, opusProMigrationComplete: true, seenNotifications: {}, sonnet1m45MigrationComplete: true, userID: "cli-id"}'
+run_assert core 0
+has "claude.json: only CLI-owned keys differ from A -> PASS" 'CHECK identity identity PASS claude-json-restored '
+# shellcheck disable=SC2016  # $p is a jq --arg, bound in cj_world
+cj_world '.projects[$p] = {}'
+run_assert core 0
+has "claude.json neg: a left-over projects entry fails, naming it" 'CHECK identity identity FAIL claude-json-restored — .* at: projects\..*/proj=null->\{\}$'
+cj_world '.theme = "light"'
+run_assert core 0
+has "claude.json neg: a changed user key fails, naming it" 'CHECK identity identity FAIL claude-json-restored — .* at: theme=null->"light"$'
+
+# The CLI saves ~/.claude.json without the keys that equal its defaults
+# (Claude Code 2.1.281 saveGlobalConfig): the seed's theme "dark" is one.
+cj_world 'del(.theme)'
+run_assert core 0
+has "claude.json: a key the CLI dropped at its default value -> PASS" 'CHECK identity identity PASS claude-json-restored '
+cj_world 'del(.numStartups)'
+run_assert core 0
+has "claude.json neg: a dropped key that was NOT at its CLI default fails" 'CHECK identity identity FAIL claude-json-restored — .* at: numStartups=3->null$'
+
+# ---- 6h. HIMMEL-3541 class 4: `claude plugin marketplace add --scope user`
+# rewrites ~/.claude/settings.json in the CLI's own key order; the same values
+# in another order are restored, a changed value is not.
+set_world() {  # <jq program turning A into the live file>
+    fresh
+    jq -n '{mcpServers: {m: {command: "x"}}, env: {A: "1"}}' >"$LB/seed-state/settings.json"
+    jq "$1" "$LB/seed-state/settings.json" >"$H/.claude/settings.json"
+    printf '%s\n' "$H/.claude/settings.json" >>"$LB/seeded.list"
+    inv A f "$H/.claude/settings.json" a; inv C f "$H/.claude/settings.json" c
+}
+set_world '{env: .env, mcpServers: .mcpServers}'
+run_assert core 0
+has "settings: only the CLI's key order changed -> PASS" 'CHECK identity identity PASS seeded:~/\.claude/settings\.json — '
+set_world '{env: {A: "2"}, mcpServers: .mcpServers}'
+run_assert core 0
+has "settings neg: a changed value still fails, naming it" 'CHECK identity identity FAIL seeded:~/\.claude/settings\.json — .* at: env\.A="1"->"2"$'
+
+# ---- 6g. HIMMEL-3541 class 5: a directory new at B is recorded when a ledger
+# row's path lies under it (its writer's mkdir -p); one with none is not.
+fresh
+printf '{"op":"create","kind":"file","path":"%s"}\n' "$H/.claude/himmel/install-profile.json" >"$LB/ledger-B.jsonl"
+inv B d "$H/.claude/himmel"; inv B f "$H/.claude/himmel/install-profile.json" p
+run_assert core 0
+has "ancestor: a new dir holding a recorded file is recorded" 'CHECK ledger ledger PASS no-unrecorded-write '
+inv B d "$H/.claude/stray-dir"
+run_assert core 0
+has "ancestor neg: a new dir with no recorded path under it is unrecorded" 'CHECK ledger ledger FAIL no-unrecorded-write — 1 path'
 
 # ---- 7. cadence-crontab-armed-at-B (profile all only).
 fresh

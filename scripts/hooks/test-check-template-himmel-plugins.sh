@@ -153,16 +153,39 @@ if run_guard "$tmp/tmpl.json" >/dev/null 2>&1; then
 fi
 echo "ok: string false rejected by exact-boolean guard"
 
-# Case 11 (HIMMEL-2733 extends HIMMEL-2691): an onDemandPlugins key whose
-# marketplace has no extraKnownMarketplaces entry → expect FAIL.
+# Case 11 (HIMMEL-2733 extends HIMMEL-2691, fixed for HIMMEL-2725/HIMMEL-3580):
+# an onDemandPlugins key whose marketplace has no extraKnownMarketplaces entry
+# → expect FAIL with THIS guard's own diagnostic. Both @himmel vendored
+# plugins are present here so the first guard (missing-vendored-plugin) can
+# never fire — the previous fixture omitted obsidian-triage@himmel, so its
+# rc=1 came from that unrelated failure even with this guard's own check
+# broken (verified: dropping the onDemandPlugins clause from the third
+# guard's union left the old fixture green — a masked negative control).
 printf '{
-  "enabledPlugins": {"handover@himmel": true, "codex@openai-codex": false},
+  "enabledPlugins": {"handover@himmel": true, "obsidian-triage@himmel": true, "codex@openai-codex": false},
   "onDemandPlugins": {"codex@openai-codex": {"neededBy": "x"}},
   "extraKnownMarketplaces": {"himmel": {"source": {"source": "directory", "path": "x"}}}
 }' > "$tmp/tmpl.json"
-if run_guard "$tmp/tmpl.json" >/dev/null 2>&1; then
+if out=$(run_guard "$tmp/tmpl.json" 2>&1); then
   echo "FAIL: guard passed despite an onDemandPlugins marketplace unregistered"; exit 1
 fi
-echo "ok: onDemandPlugins unregistered marketplace detected"
+case "$out" in
+  *"enabledPlugins names a marketplace with no extraKnownMarketplaces entry"*"openai-codex"*) ;;
+  *) echo "FAIL: guard failed but not with the marketplace-registration diagnostic: $out"; exit 1 ;;
+esac
+echo "ok: onDemandPlugins unregistered marketplace detected (exact diagnostic, unmasked)"
+
+# Case 12: same shape but openai-codex IS registered → expect PASS. Positive
+# control for case 11: proves the FAIL above is this guard firing, not some
+# other broken input in the fixture.
+printf '{
+  "enabledPlugins": {"handover@himmel": true, "obsidian-triage@himmel": true, "codex@openai-codex": false},
+  "onDemandPlugins": {"codex@openai-codex": {"neededBy": "x"}},
+  "extraKnownMarketplaces": {"himmel": {"source": {"source": "directory", "path": "x"}}, "openai-codex": {"source": {"source": "github", "repo": "openai/codex"}}}
+}' > "$tmp/tmpl.json"
+if ! run_guard "$tmp/tmpl.json" >/dev/null 2>&1; then
+  echo "FAIL: guard failed despite openai-codex being registered"; exit 1
+fi
+echo "ok: onDemandPlugins registered marketplace passes (control for case 11)"
 
 echo "PASS: check-template-himmel-plugins smoke test"

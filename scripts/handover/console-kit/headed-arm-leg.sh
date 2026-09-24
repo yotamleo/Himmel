@@ -523,9 +523,32 @@ unset -v _leg_env_scrub
 # HIMMEL-2779: a leg's ceiling is the resolved CLI pair, not the absence of a
 # model suffix. Fail before dry-run reporting or preflight when context already
 # resolves wrong; headed-arm.sh separately validates the exact argv it launches.
+#
+# HIMMEL-3581: a sanctioned operator ruling opens this door - mirrors the
+# Tier-line gate below (HIMMEL-2976), same shape: a fixed marker line in the
+# brief, grepped by exact prefix, non-blank free text required. CONTEXT_REASON
+# stays empty for every standard-ceiling launch (the case above never sets
+# RESOLVED_AUTOCOMPACT to anything but 200000 there), so this block is a
+# no-op for every existing caller.
+CONTEXT_REASON=""
 if [ "$RESOLVED_AUTOCOMPACT" != "200000" ]; then
-    echo "headed-arm-leg: refusing leg launch: resolved argv lacks the required --autocompact 200000 ceiling (got --autocompact $RESOLVED_AUTOCOMPACT). unset LEG_CONTEXT and retry; use a console arm, not a leg, for 1m context." >&2
-    exit 2
+    CONTEXT_REASON="$(grep -m1 -E '^> \*\*Context:\*\* 1m — operator-ruling: ' "$DOC" 2>/dev/null | sed -E 's/^> \*\*Context:\*\* 1m — operator-ruling: //')"
+    CONTEXT_REASON="$(printf '%s' "$CONTEXT_REASON" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+    if [ -z "$CONTEXT_REASON" ]; then
+        echo "headed-arm-leg: refusing leg launch: resolved argv lacks the required --autocompact 200000 ceiling (got --autocompact $RESOLVED_AUTOCOMPACT). unset LEG_CONTEXT and retry, or add '> **Context:** 1m — operator-ruling: <reason>' to $DOC for a sanctioned opt-in; use a console arm, not a leg, for unsanctioned 1m context." >&2
+        exit 2
+    fi
+    # headed-arm.sh's own 1m gate (unedited by this ticket) requires
+    # CONSOLE_CONTEXT=1m in ITS process env, not merely a resolved CONTEXT
+    # positional - a var it consumes in THIS SAME process tree, so a plain
+    # export (never leg_propagate_env) is the right channel, same convention
+    # leg_propagate_env's own header documents for HEADED_ARM_REPO etc. The
+    # HIMMEL-3139 scrub above already ran unconditionally and unset any
+    # ambient value before this point; this is a deliberate, narrow re-set
+    # for the one sanctioned exec below, not a change to that scrub. Any
+    # further headed-arm-leg.sh launch this leg itself makes re-scrubs it
+    # from scratch, so no ambient leak survives past this one call.
+    export CONSOLE_CONTEXT=1m
 fi
 
 # HIMMEL-2976: an Opus or Fable leg costs materially more per turn than the
@@ -689,7 +712,10 @@ unset -f _console_name_ok
 # headed-arm.sh builds one argv array for both native and recorder launches and
 # refuses exit 2 if this exact pair is absent. This is the final resolved-argv
 # guard; the context-value check above gives the earlier operator-facing error.
-export HEADED_ARM_REQUIRED_AUTOCOMPACT=200000
+# HIMMEL-3581: the required value tracks RESOLVED_AUTOCOMPACT, not a hardcoded
+# 200000 - a sanctioned Context-line opt-in resolves it to `auto` above, and
+# this guard must then require THAT value, not the standard ceiling.
+export HEADED_ARM_REQUIRED_AUTOCOMPACT="$RESOLVED_AUTOCOMPACT"
 
 # Native-lane effort (HIMMEL-3488): HIMMEL-3482 wired lanes.json's claude-tier
 # effort into the native Telegram dispatch (scripts/telegram/run.ts's
@@ -1008,6 +1034,11 @@ if [ "$DRY_RUN" -eq 1 ]; then
     if [ -n "$TIER_GATE" ]; then
         printf 'headed-arm-leg: tier=%s tier-category=%s tier-reason=%s\n' "$TIER_GATE" "$TIER_CATEGORY" "$TIER_REASON"
     fi
+    # Printed ONLY for a sanctioned 1m Context-line opt-in, same guarantee
+    # shape as the Tier-gate line above.
+    if [ -n "$CONTEXT_REASON" ]; then
+        printf 'headed-arm-leg: context=1m (operator-ruling) context-reason=%s\n' "$CONTEXT_REASON"
+    fi
     # Printed ONLY under --headless, same guarantee shape as --relay above.
     if [ "$HEADLESS" -eq 1 ]; then
         printf 'headed-arm-leg: headless=1 launch=%s --bg --permission-mode auto (env merged into %s at launch)\n' \
@@ -1126,6 +1157,11 @@ fi
 # ourselves, same append style as the SKIPPED-FLEET/SKIPPED-BANK lines above.
 if [ -n "$TIER_GATE" ]; then
     echo "$(date +%F_%T) headed-arm-leg: tier=$TIER_GATE tier-category=$TIER_CATEGORY tier-reason=$TIER_REASON" >> "$LOG"
+fi
+# HIMMEL-3581: same reasoning as the TIER_GATE line above - headed-arm.sh's
+# own "armed:" line never sees CONTEXT_REASON, so log it ourselves.
+if [ -n "$CONTEXT_REASON" ]; then
+    echo "$(date +%F_%T) headed-arm-leg: context=1m (operator-ruling) context-reason=$CONTEXT_REASON" >> "$LOG"
 fi
 
 # HIMMEL-3270: record what this launch WAS, where a cohort query can find it

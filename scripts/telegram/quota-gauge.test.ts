@@ -31,6 +31,15 @@ afterEach(() => { rmSync(tmp, { recursive: true, force: true }); });
 
 const NOW_TS = "2026-07-04T12:00:00Z";
 
+// Prerequisite for the byte-identical bash<->TS test: can BASH_BIN run at
+// all? A genuinely missing/broken bash (e.g. the Windows System32 WSL stub,
+// HIMMEL-1992/1279) is a bun SKIP, never a silent pass — checked separately
+// from the --emit case it gates so a real --emit failure still fails loudly.
+const BASH_RUNS = Bun.spawnSync([BASH_BIN, "-c", "exit 0"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
+if (!BASH_RUNS) {
+  console.warn(`[quota-gauge.test] SKIP byte-identical bash<->TS case: BASH_BIN=${BASH_BIN} cannot even run "-c exit 0" — not a Git-Bash-compatible shell on this machine.`);
+}
+
 function rec(partial: Partial<QuotaGaugeRecord>): QuotaGaugeRecord {
   return {
     v: 1, ts: NOW_TS, lane: "claude", source: "test",
@@ -47,11 +56,10 @@ test("QUOTA_GAUGE_FIELDS canonical order (10 keys, schema-locked)", () => {
 });
 
 test("no forbidden fields in the record schema (AC23/T23)", () => {
-  const src = readFileSync(join(import.meta.dir, "quota-gauge.ts"), "utf8");
-  expect(src).not.toMatch(/fresh_for_s/);
-  expect(src).not.toMatch(/concurrency/);
-  // no $-budget field on the record line
-  expect(serializeQuotaGauge(rec({}))).not.toMatch(/"budget"/);
+  // A record smuggling the forbidden per-row TTL / parallel-writer / $-budget
+  // keys serializes to exactly the canonical 10 keys — they never reach a line.
+  const smuggled = { ...rec({}), fresh_for_s: 30, concurrency: 2, budget: 5 } as QuotaGaugeRecord;
+  expect(Object.keys(JSON.parse(serializeQuotaGauge(smuggled)))).toEqual([...QUOTA_GAUGE_FIELDS]);
 });
 
 test("ledgerPath honors HIMMEL_QUOTA_GAUGE_LEDGER override (T22)", () => {
@@ -87,7 +95,7 @@ test("appendQuotaGauge creates the parent dir on append (not on resolve)", () =>
   expect(existsSync(nested)).toBe(true);
 });
 
-test("byte-identical bash<->TS serialization (T22)", () => {
+test.skipIf(!BASH_RUNS)("byte-identical bash<->TS serialization (T22)", () => {
   const cases: Array<{ args: string[]; record: QuotaGaugeRecord }> = [
     {
       args: ["claude", "arm-threshold", "93", "5h", "2026-06-10T13:30:00+00:00", "cap approached", NOW_TS],
@@ -104,13 +112,9 @@ test("byte-identical bash<->TS serialization (T22)", () => {
   for (const { args, record } of cases) {
     const tsLine = serializeQuotaGauge(record);
     const r = Bun.spawnSync([BASH_BIN, BASH_LIB, "--emit", ...args], { stdout: "pipe", stderr: "pipe" });
-    if (r.exitCode !== 0) {
-      // Fallback where a bare `bash` resolves to a non-Git-Bash stub: the
-      // bash smoke test carries the authoritative bash-side assertion.
-      console.warn(`byte-identical: bash --emit rc=${r.exitCode} (stderr=${r.stderr.toString().trim()}); skipping bash shell-out, asserting TS canonical string only`);
-      expect(tsLine).toBe(tsLine);
-      continue;
-    }
+    // BASH_RUNS already proved this bash can execute; a nonzero --emit here
+    // is a real serializer failure, not an environment gap — fail it.
+    expect(r.exitCode, `bash --emit rc=${r.exitCode} (stderr=${r.stderr.toString().trim()})`).toBe(0);
     const bashLine = r.stdout.toString().trimEnd();
     expect(bashLine).toBe(tsLine);
   }
@@ -239,13 +243,19 @@ test("T18 GLM burst after a fresh Codex row does not evict Codex (within N)", ()
   expect(r.codex.row?.used_pct).toBe(50);
 });
 
-test("T26 absent lane beyond lookbackN -> unknown, scan bounded at N", () => {
-  const rows: string[] = [];
-  for (let i = 0; i < 200; i++) rows.push(serializeQuotaGauge(rec({ lane: "glm", used_pct: 60, ts: ago(30) })));
-  const r = quotaGaugeRead({ path: writeLedger(rows), nowMs: NOW_MS, lookbackN: 50 });
-  expect(r.codex.status).toBe("unknown"); // codex never appears within the newest 50
-  expect(r.codex.row).toBeNull();
-  expect(r.glm.status).toBe("known");     // glm found at row 1, before the bound bites
+test("T26 absent lane beyond lookbackN -> unknown, scan bounded at N; widening the bound by one reaches it", () => {
+  // A valid codex row sits just OUTSIDE the lookbackN window: oldest row is
+  // codex, followed by 50 newer glm rows -> codex is at scan position 51.
+  const rows: string[] = [serializeQuotaGauge(rec({ lane: "codex", used_pct: 50, window: "weekly", ts: ago(60) }))];
+  for (let i = 0; i < 50; i++) rows.push(serializeQuotaGauge(rec({ lane: "glm", used_pct: 60, ts: ago(30) })));
+  const path = writeLedger(rows);
+  const bounded = quotaGaugeRead({ path, nowMs: NOW_MS, lookbackN: 50 });
+  expect(bounded.codex.status).toBe("unknown"); // codex at position 51 > 50, bound bites before it
+  expect(bounded.codex.row).toBeNull();
+  expect(bounded.glm.status).toBe("known");
+  const widened = quotaGaugeRead({ path, nowMs: NOW_MS, lookbackN: 51 });
+  expect(widened.codex.status).toBe("known"); // widening the bound by one now reaches it
+  expect(widened.codex.row?.used_pct).toBe(50);
 });
 
 // ── HIMMEL-729: alibaba lane in the reader (budget 3600s, like codex) ─────────
@@ -274,11 +284,19 @@ test("T11b stale alibaba row (age 4000s > 3600 budget) -> fresh:false status:unk
   expect(r.alibaba.row?.used_pct).toBe(12); // last-known still carried even when stale
 });
 
-test("T21/AC11 exactly one quotaGaugeRead impl; no second-language reader twin", () => {
-  const src = readFileSync(join(REPO_ROOT, "scripts", "telegram", "quota-gauge.ts"), "utf8");
-  expect((src.match(/export function quotaGaugeRead/g) ?? []).length).toBe(1);
-  expect(existsSync(join(REPO_ROOT, "scripts", "lib", "quota-gauge-read.sh"))).toBe(false);
-});
+// T21/AC11 ("exactly one quotaGaugeRead impl") deleted (HIMMEL-2726): it only
+// counted the spelling `export function quotaGaugeRead` in this one file and
+// checked one hardcoded filename's absence — a false red on any identifier-
+// preserving refactor of the declaration (verified: rewriting the function
+// declaration to a const function expression, same name, same behavior,
+// makes it fail) and a false green for a second reader under any other name
+// or file, since it never scans beyond this file and that one path. The
+// single non-test consumer, readGlmBank in scripts/observability/quota-
+// sources.ts:190, is driven through quotaGaugeRead with real ledger
+// fixtures (fresh/stale/omitted/expired-window/invisible cases) by
+// scripts/observability/quota-sources.test.ts:194-221 — a stronger
+// owner-boundary proof that a second reader implementation would have to
+// route around to go undetected.
 
 // ── Task 5: GLM row-builder + peak band (T1, T2, T3) ─────────────────────────
 test("T1 buildGlmRow maps a live-shaped reading; round-trips; no fresh_for_s (AC1)", () => {

@@ -48,6 +48,7 @@ For Jira ops in this repo, default to the local CLI at
 | Watchers    | `... watch HIMMEL-N [user]` / `... unwatch HIMMEL-N [user]` / `... watchers HIMMEL-N` (HIMMEL-437) | (none) |
 | Sprint      | `... boards` / `... sprints [--board N]` / `... sprint HIMMEL-N <sprintId\|backlog>` (Agile API `/rest/agile/1.0`; `JIRA_BOARD_ID` default) (HIMMEL-437) | (none — MCP has no Agile-board ops) |
 | Versions    | `... versions` / `... version-create <name> [--release-date YYYY-MM-DD] [--released] [--description ...]` / `... version-release <name> [--date YYYY-MM-DD]` / `... fix-version HIMMEL-N --add\|--remove <name>` (HIMMEL-3429; REST `/project/{key}/versions`, `/version`, and the issue `update.fixVersions` add/remove verbs, so other versions on the ticket are untouched) | (none — MCP has no version ops) |
+| Bug freeze  | `... freeze-check [--project KEY] [--limit N]` (HIMMEL-3411; Bugs created after the freeze cutoff in `v1.0.0` without `v1-blocker`; exit 1 if any) | (none) |
 
 **Use MCP only when the plugin lacks the operation** (custom-field
 discovery, account-ID lookup via `lookupJiraAccountId`). Confluence now has
@@ -153,6 +154,16 @@ v1-scoped work outside a sync run, or dropping a ticket from v1:
 The sync reads reachability from the tags of the clone it runs in, so it must
 run from a clone of the repo whose releases it lists (`--repo` must match), and
 `--apply` refuses when a published tag is missing locally (`git fetch --tags`).
+
+**The v1 bug freeze (HIMMEL-3411).** Bugs filed after `2026-09-25` default to
+`v1.0.1`, not `v1.0.0`. `create --type Bug` sets fixVersion `v1.0.1` and prints
+one stderr line saying so, unless `--labels` includes `v1-blocker`, which leaves
+the version unset so the bug can be added to `v1.0.0` by hand. Other types are
+untouched. `node <repo-root>/scripts/jira/dist/index.js freeze-check` lists the
+Bugs created after the cutoff that carry `v1.0.0` without `v1-blocker` (the
+freeze's leaks), and exits 1 if there are any. The cutoff date, both version
+names and the label live in one constant, `BUG_FREEZE` in
+`scripts/jira/src/freeze.ts`.
 
 ## Confluence CLI (HIMMEL-437)
 

@@ -872,10 +872,41 @@ test("parseClaudexArgs: --skip-auth-preflight is an EXPLICIT per-invocation flag
   if (on.ok) { expect(on.args.skipAuthPreflight).toBe(true); expect(on.args.task).toBe("do x"); }
 });
 
-test("no AMBIENT env can bypass or fake the auth gate — the only override is the explicit flag (source-text guard, codex-adv CR)", () => {
+// HIMMEL-2725: the ambient-env half of this test used to be a source grep
+// (`expect(src.includes("CLAUDEX_SKIP_AUTH_PREFLIGHT")).toBe(false)`), which
+// only catches literal reintroduction of that identifier — a differently-
+// named ambient var wired to the same effect would sail through unnoticed.
+// Proven behaviorally instead, reusing the closed-port fixture from the
+// "CLEAN checkout ... proceeds to the codex auth preflight" negative control
+// above: setting the retired env var (no --skip-auth-preflight flag) must
+// NOT change the outcome — the auth preflight still runs and still refuses.
+test("no AMBIENT env can bypass the auth gate — CLAUDEX_SKIP_AUTH_PREFLIGHT has zero effect without the explicit flag (codex-adv CR)", () => {
+  const { repo } = initHermeticRepo("cxcli-envbypass-");
+  const fakeHome = mkdtempSync(join(tmpdir(), "cxcli-envbypass-home-"));
+  try {
+    mkdirSync(join(repo, "scripts"), { recursive: true });
+    writeFileSync(join(repo, "scripts", "claude-codex"), "#!/usr/bin/env bash\nexit 0\n");
+    const r = Bun.spawnSync(["bun", "scripts/telegram/spawn-claudex.ts", "do the task", "--cwd", repo, "--force"], {
+      cwd: resolve("."), stdout: "pipe", stderr: "pipe", timeout: 20_000,
+      env: {
+        ...process.env, CLIPROXY_API_KEY: "test-key", HOME: fakeHome, CLAUDEX_AUTH_RETRY_DELAYS: "0.01",
+        CODEX_PROXY_BASE_URL: "http://127.0.0.1:1",
+        CLAUDEX_SKIP_AUTH_PREFLIGHT: "1", // the retired ambient bypass — must be inert
+      },
+    });
+    const err = r.stderr.toString();
+    // Same outcome as the no-env negative control: the auth preflight still
+    // ran and still refused (exit 2) — if the env var bypassed it, the
+    // dispatch would instead sail past to a LATER gate (worktree minted or a
+    // different refusal entirely).
+    expect(r.exitCode).toBe(2);
+    expect(err).toMatch(/auth preflight|auth still unavailable/);
+    expect(existsSync(join(repo, ".claude", "worktrees"))).toBe(false);
+  } finally { rmSync(fakeHome, { recursive: true, force: true }); removeFixture(repo); }
+}, CX_GIT_TEST_TIMEOUT_MS);
+
+test("the auth gate's only override is the explicit --skip-auth-preflight flag, and it warns loudly (source-text guard, codex-adv CR)", () => {
   const src = readFileSync("scripts/telegram/spawn-claudex.ts", "utf8");
-  // the env bypass is GONE: a stale/inherited var must not silently disable the gate
-  expect(src.includes("CLAUDEX_SKIP_AUTH_PREFLIGHT")).toBe(false);
   // the override is the parsed CLI flag, and it warns loudly
   expect(src.includes("if (skipAuthPreflight)")).toBe(true);
   expect(/--skip-auth-preflight given[\s\S]*?DISABLED/.test(src)).toBe(true);

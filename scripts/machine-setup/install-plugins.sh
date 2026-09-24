@@ -232,6 +232,10 @@ plugin_preexisted() {   # <spec> — the scope's enabledPlugins, or (user scope)
   json_declares "$PROV_CFG_DIR/plugins/installed_plugins.json" \
     '(.plugins[$a] // []) | any(.scope == "user")' "$1"
 }
+settings_declares_top() {   # <key> — top-level key present in this scope's settings file
+  # shellcheck disable=SC2016  # $a is a jq variable (--arg), not a shell expansion
+  json_declares "$PROV_SETTINGS_FILE" 'has($a)' "$1"
+}
 marketplace_preexisted() {   # <name> — this scope's settings, or the CLI's user-level registry (a marketplace is global)
   settings_declares extraKnownMarketplaces "$1" && return 0
   # HIMMEL-3556: the two global signals below (marketplaces dir, known_marketplaces.json)
@@ -299,10 +303,23 @@ SOURCES=$(echo "$EXPANDED" | jq -r '
       end)
 ' | tr -d '\r')
 FAILED_MARKETPLACES=()
+# HIMMEL-3541: the settings-file pre-state, read before any CLI write. The
+# autoUpdate patch below never touches an entry that was already in the file,
+# and a scope entry the CLI adds for a marketplace that already existed
+# elsewhere (so its register row reads preexisted and uninstall keeps it) gets
+# its own created-when-absent row -- as do the two containers, when absent.
+# shellcheck disable=SC2016  # $a is a jq variable (--arg), not a shell expansion
+AU_PRE_NAMES=$(jq -r '(.extraKnownMarketplaces // {}) | keys[]' "$SETTINGS_FILE" 2>/dev/null | tr -d '\r') || AU_PRE_NAMES=""
+MKT_CONTAINER_ABSENT=true; settings_declares_top extraKnownMarketplaces && MKT_CONTAINER_ABSENT=false
+EP_CONTAINER_ABSENT=true; settings_declares_top enabledPlugins && EP_CONTAINER_ABSENT=false
+MKT_SCOPE_ENTRY_NAMES=()
 while IFS= read -r MKT_LINE; do
   MKT_NAME="${MKT_LINE%%$'\t'*}"; SRC="${MKT_LINE#*$'\t'}"
   [[ -z "$SRC" || "$SRC" == UNKNOWN:* ]] && { echo "  skip: $SRC"; continue; }
   MKT_PRE=false; marketplace_preexisted "$MKT_NAME" && MKT_PRE=true
+  if [[ "$MKT_PRE" == true ]] && ! settings_declares extraKnownMarketplaces "$MKT_NAME"; then
+    MKT_SCOPE_ENTRY_NAMES+=("$MKT_NAME")
+  fi
   echo "  marketplace add: $SRC"
   if ! run_step claude plugin marketplace add "$SRC" --scope "$SCOPE"; then
     echo "  marketplace retry in 2 seconds: $SRC" >&2
@@ -342,6 +359,14 @@ AUTO_NAMES=$(echo "$EXPANDED" | jq -r '
 ' | tr -d '\r')
 while IFS= read -r NAME; do
   [[ -z "$NAME" ]] && continue
+  # HIMMEL-3541: an entry already in the file before this run is the
+  # operator's (autoUpdate is a HIMMEL-365 convenience, not needed to
+  # function) -- leave it exactly as it was, so uninstall has nothing to undo.
+  # ponytail: sh-only, install-plugins.ps1 still patches a pre-existing entry; port the skip under HIMMEL-3584
+  if grep -Fqx -- "$NAME" <<<"$AU_PRE_NAMES"; then
+    echo "  skip: '$NAME' was already declared in $SETTINGS_FILE — left as it is"
+    continue
+  fi
   if [[ $DRY_RUN -eq 1 ]]; then
     echo "DRY: set autoUpdate=true for '$NAME' in $SETTINGS_FILE"
     continue
@@ -393,6 +418,24 @@ while IFS= read -r NAME; do
     echo "  skip: $NAME (jq patch failed — $SETTINGS_FILE left unchanged)" >&2
   fi
 done <<< "$AUTO_NAMES"
+
+# prov_settings_created <unit> <jq-path> [<$n>] — a created-when-absent json-key row
+# for what the CLI just wrote into this scope's settings file (HIMMEL-3541).
+prov_settings_created() {
+  local post
+  post=$(jq -c --arg n "${3:-}" "$2" "$PROV_SETTINGS_FILE" 2>/dev/null) || return 0
+  [[ -n "$post" && "$post" != null ]] || return 0
+  prov_note create json-key "$PROV_SETTINGS_FILE" --unit "$1" --pre-absent --post-json "$post" \
+    --scope "$PROV_SCOPE" --class code --row "$PROV_SCOPE-settings" --writer install-plugins.sh
+}
+if [[ $DRY_RUN -eq 0 ]]; then
+  [[ "$MKT_CONTAINER_ABSENT" == true ]] && prov_settings_created /extraKnownMarketplaces .extraKnownMarketplaces
+  for MKT_NAME in ${MKT_SCOPE_ENTRY_NAMES[@]+"${MKT_SCOPE_ENTRY_NAMES[@]}"}; do
+    MKT_PTR=${MKT_NAME//\~/\~0}; MKT_PTR=${MKT_PTR//\//\~1}
+    # shellcheck disable=SC2016  # $n is a jq variable (--arg), not a shell expansion
+    prov_settings_created "/extraKnownMarketplaces/$MKT_PTR" '.extraKnownMarketplaces[$n]' "$MKT_NAME"
+  done
+fi
 
 # ── Snapshot enabledPlugins BEFORE the install loop (HIMMEL-2733) ───────────
 # `claude plugin install <spec> --scope <scope>` WRITES
@@ -673,6 +716,10 @@ case "${HIMMEL_RECONCILE_PLUGINS:-}" in
   *)
     echo "  (install is additive-only; set HIMMEL_RECONCILE_PLUGINS=1 to also disable drifted plugins down to the lean floor)" ;;
 esac
+
+# HIMMEL-3541: the enabledPlugins container the CLI created in this scope's
+# settings file, so uninstall can drop it once its plugins are gone.
+[[ $DRY_RUN -eq 0 && "$EP_CONTAINER_ABSENT" == true ]] && prov_settings_created /enabledPlugins .enabledPlugins
 
 # ── Install summary: on-demand tier (HIMMEL-2733) ────────────────────────────
 # Discoverability, not enforcement: name what just landed installed-but-

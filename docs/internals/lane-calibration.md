@@ -512,6 +512,22 @@ test-headed-arm-leg.sh` asserts this end-to-end). The wrapper also adds the
 leg-only `IMPL_GUARD_OK=1` env and folds `LEG_REPO` onto `headed-arm.sh`'s own
 `HEADED_ARM_REPO` seam.
 
+**Sanctioned operator-ruled 1M opt-in (HIMMEL-3581).** The refusal above is not
+absolute — a brief (the handover doc `headed-arm-leg.sh` is given) carrying a
+well-formed `> **Context:** 1m — operator-ruling: <non-empty reason>` line
+opens the door for that one leg, same shape as the Tier-line gate
+(HIMMEL-2976): a fixed marker, grepped by exact prefix, non-blank free text
+required. Without the line — or with an empty reason, a malformed line, or no
+line at all — the refusal is byte-identical to before. On acceptance the
+wrapper still runs the profile, preface, fleet reservation and bank preflight
+unchanged; it exports `CONSOLE_CONTEXT=1m` in its own process (after the
+HIMMEL-3139 scrub already ran, so that scrub's own logic is untouched) so
+`headed-arm.sh`'s independent `CONSOLE_CONTEXT`-gate — a file this ticket does
+not edit — passes for that one exec, and it switches the internal
+`HEADED_ARM_REQUIRED_AUTOCOMPACT` argv-verify value from the standard `200000`
+to the resolved `auto`. The arm log and the `--dry-run` report both record
+`context=1m (operator-ruling)` plus the reason text.
+
 **Leg handover is whichever limit arrives first: 45% context fill OR 90,000
 total input tokens on the latest turn.** The absolute turn count is
 `message.usage.input_tokens + cache_read_input_tokens +

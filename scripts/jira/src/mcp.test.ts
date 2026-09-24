@@ -74,11 +74,16 @@ describe('MCP tool registration', () => {
 describe('MCP server wiring', () => {
   it('builds a server and lists all ten tools via the ListTools handler', async () => {
     const server = buildServer();
-    // Reach into the registered handler the SDK installs for ListTools.
-    // Easier + version-stable: assert createTools (the source of the list)
-    // and that buildServer does not throw with default deps.
-    expect(server).toBeDefined();
-    expect(createTools()).toHaveLength(10);
+    // Reach into the registered handler the SDK installs for ListTools — the
+    // same private _requestHandlers map the CallTool test below uses — and
+    // actually invoke it, rather than asserting createTools() (the tool list's
+    // own source) independently of whether ListTools ever serves it.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const handler = (server as any)._requestHandlers.get('tools/list');
+    expect(handler).toBeDefined();
+    const result = await handler({ method: 'tools/list', params: {} }, {});
+    expect(result.tools.map((t: JiraTool) => t.name).sort()).toEqual([...TOOL_NAMES].sort());
+    expect(result.tools).toHaveLength(10);
   });
 
   it('CallTool error path: non-Error throwable yields String() text (HIMMEL-292)', async () => {

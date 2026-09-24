@@ -75,14 +75,25 @@ plant_attack_link() {
   exit 1
 }
 
-# Stub `claude`: install/marketplace add are no-ops; `plugin list` prints the
-# enabled specs so the post-install verify passes.
+# Stub `claude`: install is a no-op; `plugin list` prints the enabled specs so
+# the post-install verify passes. `marketplace add` declares the marketplace in
+# the local-scope settings file when absent, as the real CLI does (HIMMEL-3541:
+# install-plugins.sh reads that file BEFORE this call, so an entry already there
+# is the operator's and stays untouched). ghost never registers.
 STUB_DIR="$TMP/bin"
 mkdir -p "$STUB_DIR"
 cat > "$STUB_DIR/claude" <<'STUB'
 #!/usr/bin/env bash
 if [ "${1:-}" = "plugin" ] && [ "${2:-}" = "list" ]; then
   printf '  %s\n' "good@flagged" "good@unflagged"
+fi
+if [ "${1:-}" = "plugin" ] && [ "${2:-}" = "marketplace" ] && [ "${3:-}" = "add" ]; then
+  f="$PWD/.claude/settings.local.json" n="${4##*/}"
+  case "$n" in flagged|unflagged) ;; *) exit 0 ;; esac
+  [ -f "$f" ] || exit 0
+  jq --arg n "$n" --arg r "$4" '.extraKnownMarketplaces[$n] //= {source: {source: "github", repo: $r}}' "$f" >"$f.stub" 2>/dev/null \
+    && mv "$f.stub" "$f"
+  rm -f "$f.stub"
 fi
 exit 0
 STUB
@@ -102,18 +113,15 @@ cat > "$TEMPLATE" <<'JSON'
 }
 JSON
 
-# Seed settings.local.json as `marketplace add` would: flagged + unflagged
-# registered, ghost absent (exercises the existence guard).
+# Seed settings.local.json without the marketplaces: the stub's `marketplace
+# add` registers flagged + unflagged, ghost stays absent (exercises the
+# existence guard).
 WORK="$TMP/work"
 mkdir -p "$WORK/.claude"
 SF="$WORK/.claude/settings.local.json"
 cat > "$SF" <<'JSON'
 {
-  "theme": "dark",
-  "extraKnownMarketplaces": {
-    "flagged":   { "source": { "source": "github", "repo": "a/flagged" } },
-    "unflagged": { "source": { "source": "github", "repo": "a/unflagged" } }
-  }
+  "theme": "dark"
 }
 JSON
 
@@ -155,16 +163,29 @@ rm -f "$SF"
 [ ! -f "$SF" ] || fail "missing settings file was created"
 [ "$FAILED" -eq 0 ] && echo "ok: missing settings file stays absent"
 
+# HIMMEL-3541: an entry the operator already declared before the run is
+# theirs -- left byte-identical, its autoUpdate:false kept.
+cat > "$SF" <<'JSON'
+{
+  "extraKnownMarketplaces": {
+    "flagged": { "source": { "source": "github", "repo": "a/flagged" }, "autoUpdate": false }
+  }
+}
+JSON
+PRE_OP="$(jq -c '.extraKnownMarketplaces.flagged' "$SF")"
+( cd "$WORK" && PATH="$STUB_DIR:$PATH" bash "$script" --scope local --template "$TEMPLATE" ) \
+  >/dev/null 2>&1 || fail "operator-entry run exited non-zero"
+[ "$(jq -c '.extraKnownMarketplaces.flagged' "$SF")" = "$PRE_OP" ] \
+  || fail "HIMMEL-3541: the operator's pre-existing flagged entry was changed"
+[ "$(jq -r '.extraKnownMarketplaces.unflagged.source.repo' "$SF")" = "a/unflagged" ] \
+  || fail "HIMMEL-3541: the run did not register unflagged beside the operator entry"
+[ "$FAILED" -eq 0 ] && echo "ok: an operator's pre-existing entry is left as it was"
+
 # HIMMEL-2324: a link pre-planted at the OLD predictable temp path
 # ("$SF.autoupdate.tmp") must not be written through, and the intended
 # autoUpdate patch must still land via the (now-unpredictable) mktemp path.
 cat > "$SF" <<'JSON'
-{
-  "extraKnownMarketplaces": {
-    "flagged":   { "source": { "source": "github", "repo": "a/flagged" } },
-    "unflagged": { "source": { "source": "github", "repo": "a/unflagged" } }
-  }
-}
+{}
 JSON
 CANARY="$TMP/canary.txt"
 printf 'CANARY-UNCHANGED\n' > "$CANARY"

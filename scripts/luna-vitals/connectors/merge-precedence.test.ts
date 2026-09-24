@@ -84,3 +84,54 @@ test(
     expect(conflict.chosen.value).toBe(7.5);
   },
 );
+
+test(
+  "reversing --det argv order flips the winner: note (now listed first) wins over connector",
+  async () => {
+    // Same two artifacts as above, but with --det order reversed. This is the
+    // contrast the first test alone cannot establish: it proves precedence
+    // follows ARGV ORDER, not "always prefer connector/machine data" (a
+    // regression that would leave the first test green while this one fails).
+    const dir = mkdtempSync(join(tmpdir(), "luna-vitals-prec-rev-"));
+
+    const connectorArtifact = join(dir, "connector.json");
+    const noteArtifact = join(dir, "note.json");
+    const mergedArtifact = join(dir, "merged.json");
+
+    await Bun.write(
+      connectorArtifact,
+      JSON.stringify({
+        bucket: "google-health:2026-06-28..2026-06-28",
+        rows: [{ metric: "sleep_hours", date: "2026-06-28", value: 7.5, source: "google-health:sleep:HEALTH_CONNECT" }],
+        conflicts: [],
+      }),
+    );
+    await Bun.write(
+      noteArtifact,
+      JSON.stringify({
+        bucket: "daily-note:2026-06-28",
+        rows: [{ metric: "sleep_hours", date: "2026-06-28", value: 6.0, source: "daily note: felt like 6h" }],
+        conflicts: [],
+      }),
+    );
+
+    // Note listed FIRST in --det this time; connector second.
+    const p = Bun.spawn(
+      ["bun", "run", "cli.ts", "merge", "--det", noteArtifact, "--det", connectorArtifact, "--out", mergedArtifact],
+      { cwd: ROOT, stderr: "pipe" },
+    );
+    expect(await p.exited).toBe(0);
+
+    const merged = await readJson(mergedArtifact);
+
+    const sleepRows = merged.rows.filter(
+      (r: { metric: string; date: string }) => r.metric === "sleep_hours" && r.date === "2026-06-28",
+    );
+    expect(sleepRows).toHaveLength(1);
+    expect((sleepRows[0] as { value: number }).value).toBe(6.0);
+
+    expect(merged.conflicts).toHaveLength(1);
+    const conflict = merged.conflicts[0];
+    expect(conflict.chosen.value).toBe(6.0);
+  },
+);

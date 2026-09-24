@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startServer } from "../server";
@@ -38,9 +38,13 @@ test("GET /fleet returns unified lanes, feeds, and coverage", async () => {
   }
 });
 
-test("fleet builder remains passive: no interval polling loop", () => {
-  const source = readFileSync(join(import.meta.dir, "..", "aggregator", "fleet.ts"), "utf8");
-  expect(source).not.toContain("setInterval");
+// Passivity (no background polling) is proved behaviourally, once, in
+// tests/server.test.ts — a setInterval/setTimeout spy across a real request
+// cycle that already reaches buildFleet and therefore this file. A source
+// grep of fleet.ts here duplicated that same contract more weakly (it stayed
+// green under a recursive setTimeout poll, which does not contain the
+// literal text "setInterval") and was removed (HIMMEL-3580 test audit).
+test("buildFleet stamps a valid ISO timestamp", () => {
   const root = makeRoot();
   const doc = buildFleet({ bridgeRoot: root, stateRoot: root, pluginDataRoot: join(root, "codex-plugin-data") });
   expect(doc.generatedAt).toMatch(/T/);

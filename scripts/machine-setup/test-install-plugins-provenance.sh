@@ -88,6 +88,13 @@ if [ "${1:-}" = "plugin" ] && [ "${2:-}" = "marketplace" ] && [ "${3:-}" = "add"
   else
     jq -n --arg n "$name" --argjson s "$src" '{($n): {source:$s}}' > "$mf"
   fi
+  # STUB_MKT_SETTINGS=1: like the real CLI, also declare the marketplace in the
+  # scope's settings file (an existing entry is left as it is).
+  if [ "${STUB_MKT_SETTINGS:-}" = 1 ]; then
+    mkdir -p "$(dirname "$sf")"
+    [ -f "$sf" ] || echo '{}' > "$sf"
+    tmp=$(mktemp "$sf.stub.XXXXXX"); jq --arg n "$name" --argjson s "$src" '.extraKnownMarketplaces[$n] //= {source:$s}' "$sf" > "$tmp" && mv "$tmp" "$sf"
+  fi
   exit 0
 fi
 if [ "${1:-}" = "plugin" ] && [ "${2:-}" = "install" ]; then
@@ -502,6 +509,64 @@ out=$(run_install --scope user --himmel-path "$CASE/himmel"); rc=$?
 assert_eq "22 second install rc" 0 "$rc"
 assert_eq "22 user himmel marketplace preexisted (operator re-added after an uninstall — kept, not claimed as ours)" true \
     "$(field "$(row marketplace himmel | tail -n 1)" .preexisted)"
+
+# ── HIMMEL-3541 cases 23-25: the scope's settings file itself ───────────────
+# The VM round trip left the operator's own marketplace entry carrying an
+# unledgered autoUpdate:true, a project-scope entry for a marketplace the
+# operator had registered at user level, and empty enabledPlugins /
+# extraKnownMarketplaces objects in project settings. Every one of those is a
+# settings write uninstall could not see.
+TEMPLATE_AU="$TMP/settings-template-au.json"
+jq '.extraKnownMarketplaces |= with_entries(.value.autoUpdate = true)' "$TEMPLATE" > "$TEMPLATE_AU"
+jrow() { # <path> <unit> -- the json-key rows at that path+unit
+    jq -c --arg p "$1" --arg u "$2" 'select(.kind == "json-key" and .path == $p and .unit == $u)' "$LEDGER" 2>/dev/null
+}
+
+# ── Case 23: a PRE-EXISTING scope entry is never patched with autoUpdate ────
+fresh_env au-preexisting
+mkdir -p "$CASE/himmel"
+seed_operator_state "$HOME/.claude"
+pre_entry=$(jq -c '.extraKnownMarketplaces["claude-plugins-official"]' "$HOME/.claude/settings.json")
+out=$(STUB_MKT_SETTINGS=1 PATH="$STUB_DIR:$PATH" bash "$script" --template "$TEMPLATE_AU" --himmel-path "$CASE/himmel" --scope user 2>&1); rc=$?
+assert_eq "23 install rc" 0 "$rc"
+assert_eq "23 operator's own marketplace entry left byte-identical (no autoUpdate patch)" "$pre_entry" \
+    "$(jq -c '.extraKnownMarketplaces["claude-plugins-official"]' "$HOME/.claude/settings.json")"
+assert_eq "23 control: the entry himmel's add created still gets autoUpdate" true \
+    "$(jq -r '.extraKnownMarketplaces.himmel.autoUpdate' "$HOME/.claude/settings.json")"
+
+# ── Case 24: project scope over a user-level marketplace — every settings ───
+# write the install makes in the project file is ledgered, created-when-absent
+fresh_env proj-entries
+mkdir -p "$CASE/himmel"
+seed_operator_state "$HOME/.claude"
+out=$(STUB_MKT_SETTINGS=1 PATH="$STUB_DIR:$PATH" bash "$script" --template "$TEMPLATE_AU" --himmel-path "$CASE/himmel" --scope project 2>&1); rc=$?
+PS="$CASE/cwd/.claude/settings.json"
+assert_eq "24 install rc" 0 "$rc"
+assert_eq "24 marketplace itself still reads preexisted (known at user level)" true \
+    "$(field "$(row marketplace claude-plugins-official)" .preexisted)"
+r=$(jrow "$PS" /extraKnownMarketplaces/claude-plugins-official)
+assert_eq "24 project entry for the pre-existing marketplace: one create row" create "$(field "$r" .op)"
+assert_eq "24 project entry row pre is absent" absent "$(field "$r" .pre.state)"
+r=$(jrow "$PS" /extraKnownMarketplaces)
+assert_eq "24 extraKnownMarketplaces container: create row, pre absent" "create absent" "$(field "$r" '.op + " " + .pre.state')"
+r=$(jrow "$PS" /enabledPlugins)
+assert_eq "24 enabledPlugins container: create row, pre absent" "create absent" "$(field "$r" '.op + " " + .pre.state')"
+assert_eq "24 control: no entry row for a marketplace himmel's own add created" "" \
+    "$(jrow "$PS" /extraKnownMarketplaces/himmel)"
+
+# ── Case 25: the same project already declares both containers + the entry ─
+fresh_env proj-preexisting
+mkdir -p "$CASE/himmel" .claude
+seed_operator_state "$HOME/.claude"
+echo '{ "enabledPlugins": {}, "extraKnownMarketplaces": { "claude-plugins-official": { "source": { "source": "github", "repo": "anthropics/claude-plugins-official" } } } }' > .claude/settings.json
+pre_entry=$(jq -c '.extraKnownMarketplaces["claude-plugins-official"]' .claude/settings.json)
+out=$(STUB_MKT_SETTINGS=1 PATH="$STUB_DIR:$PATH" bash "$script" --template "$TEMPLATE_AU" --himmel-path "$CASE/himmel" --scope project 2>&1); rc=$?
+PS="$CASE/cwd/.claude/settings.json"
+assert_eq "25 install rc" 0 "$rc"
+assert_eq "25 control: no container or entry rows when all pre-existed" "" \
+    "$(jrow "$PS" /extraKnownMarketplaces)$(jrow "$PS" /enabledPlugins)$(jrow "$PS" /extraKnownMarketplaces/claude-plugins-official)"
+assert_eq "25 pre-existing project entry left byte-identical" "$pre_entry" \
+    "$(jq -c '.extraKnownMarketplaces["claude-plugins-official"]' "$PS")"
 
 if [ "$(real_ledger_sha)" = "$REAL_LEDGER_BEFORE" ]; then
     pass "18 the real ~/.himmel ledger is untouched by this suite"

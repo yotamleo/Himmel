@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# test-arm-resume-probe.sh -- HIMMEL-2125 timing probe for arm-resume.sh.
+# probe-arm-resume.sh -- HIMMEL-2125 timing probe for arm-resume.sh.
+# Renamed off the test-*.sh pattern (HIMMEL-3580): it is a measurement tool
+# that always exits 0, not an assertion suite, so it must not be collected by
+# run-shell-tests.sh's `find ... -name 'test-*.sh'` discovery.
 #
 # WHY THIS EXISTS: test-arm-resume-identity.sh is the correctness suite and
 # runs ~40+ minutes -- unusable as an iteration loop for a latency change.
@@ -17,7 +20,7 @@
 # wall-clock on a loaded Windows host is noisy enough that the count is the
 # more honest signal. Run it before and after a change and diff both.
 #
-# Usage: bash scripts/handover/test-arm-resume-probe.sh [--repeat N]
+# Usage: bash scripts/handover/probe-arm-resume.sh [--repeat N]
 # Exit:  0 on a completed run (this is a measurement tool, not an assertion
 #        suite -- a nonzero arm rc is reported inline, not surfaced as a
 #        probe failure); 1 on bad arguments.
@@ -50,6 +53,9 @@ trap 'rm -rf "$TMP"' EXIT
 # the production dir the live fleet counts, and fail the suite if it could leak.
 . "$SCRIPT_DIR/../lib/fleet-slots-shield.sh"
 fleet_slots_shield "$TMP" || exit 1
+# Scrub inherited GIT_* env before the first git call (check-git-env-scrub).
+. "$SCRIPT_DIR/../lib/git-clean.sh"
+git_env_scrub
 
 # --- hermetic environment (mirrors test-arm-resume-identity.sh) -------------
 HANDOVER_DIR="$TMP/statedocs/handovers"

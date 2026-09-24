@@ -74,6 +74,16 @@ assert_scope() {
     echo "ok: autoUpdate targets $sf for scope '$want'"
 }
 
+# A scratch HOME and cwd (HIMMEL-3541): install-plugins.sh leaves an autoUpdate
+# entry the settings file already declares alone, so on a machine where himmel
+# is installed the real ~/.claude/settings.json would hide the dry line.
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/himmel-scope-test.XXXXXX") || fail "mktemp failed"
+trap 'rm -rf "$scratch"' EXIT
+mkdir -p "$scratch/home" "$scratch/proj"
+export HOME="$scratch/home"
+unset CLAUDE_CONFIG_DIR
+cd "$scratch/proj"
+
 assert_scope user                      # default
 assert_scope project --scope project
 assert_scope local   --scope local

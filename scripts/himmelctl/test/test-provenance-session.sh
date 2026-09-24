@@ -79,6 +79,10 @@ check "A launcher shim row (class code)" \
     "$(jq -rs '[.[] | select(.kind=="shim" and .op=="create" and .class=="code")] | length >= 1' "$ledA" 2>/dev/null)" "true"
 check "A workspace-trust json-key row (code, preexisted=false)" \
     "$(jq -rs '[.[] | select(.kind=="json-key" and .manifest_row=="workspace-trust" and .class=="code" and .op=="create" and .preexisted==false)] | length' "$ledA" 2>/dev/null)" "1"
+# HIMMEL-3541: no projects[<dir>] entry existed before, so the row says the
+# install created the parent too -- uninstall drops it once it is empty.
+check "A workspace-trust row records parent_created=true (no projects entry before)" \
+    "$(jq -rs '[.[] | select(.kind=="json-key" and .manifest_row=="workspace-trust")][0].parent_created // false' "$ledA" 2>/dev/null)" "true"
 check "A lanes.local.json row is scope clone, class keep" \
     "$(jq -rs '[.[] | select(.kind=="file" and (.path|endswith("lanes.local.json")) and .class=="keep" and .scope=="clone")] | length >= 1' "$ledA" 2>/dev/null)" "true"
 check "A ledger mode 0600" "$(stat -c %a "$ledA" 2>/dev/null || stat -f %Lp "$ledA" 2>/dev/null)" "600"
@@ -137,6 +141,19 @@ outD3=$(run_save 0); rcD3=$?
 check "D corrupt-config save rc" "$rcD3" "0"
 [ "$rcD3" -eq 0 ] || echo "note: save output: $outD3"
 check "D corrupt-config save records no rows" "$(jq -rs 'length' "$ledD" 2>/dev/null)" "$rowsD3_before"
+
+# ── E: control -- a projects[<dir>] entry that already existed (untrusted) is
+# not recorded as created by the install (HIMMEL-3541) ─────────────────────
+cloneE="$work/e-clone"; make_clone "$cloneE" 0
+mkdir -p "$cloneE/scripts/lib"; cp "$repo/scripts/lib/ensure-workspace-trust.sh" "$cloneE/scripts/lib/"
+homeE="$work/e-home"; mkdir -p "$homeE"
+dirE="$(winpath "$(cd "$cloneE" && pwd -P)")"
+jq -n --arg d "$dirE" '{projects: {($d): {allowedTools: []}}}' > "$homeE/.claude.json"
+outE=$(run_install "$cloneE" "$homeE" --scope user); rcE=$?
+check "E install rc" "$rcE" "0"
+[ "$rcE" -eq 0 ] || echo "note: install output: $outE"
+check "E workspace-trust row: parent_created=false (projects entry pre-existed)" \
+    "$(jq -rs '[.[] | select(.kind=="json-key" and .manifest_row=="workspace-trust")][0].parent_created | tostring' "$homeE/.himmel/provenance.jsonl" 2>/dev/null)" "false"
 
 echo "passes=$passes fails=$fails"
 [ "$fails" -eq 0 ]

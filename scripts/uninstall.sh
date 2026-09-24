@@ -2859,9 +2859,10 @@ $(prov_read_units --path "$settings" --kind json-elem)"
       # user-modified here — skip it with no print/outcome row;
       # prov_read_drop_env_if_ours (below, after the helper loop) drops the
       # now-empty container once its /env/<KEY> units are handled. The /hooks
-      # container (HIMMEL-3389) goes stale the same way and is dropped the same way.
+      # container (HIMMEL-3389) goes stale the same way and is dropped the same way,
+      # as do install-plugins.sh's enabledPlugins / extraKnownMarketplaces (HIMMEL-3541).
       case "$(printf '%s' "$_u" | jq -r '.unit // ""')" in
-        /env|/hooks) continue ;;
+        /env|/hooks|/enabledPlugins|/extraKnownMarketplaces) continue ;;
         # R2-codex4: track whether the ledger recorded a unit AT ALL for
         # these two rows -- distinct from whether ledger_apply_unit ended up
         # protecting it (below), so a governed-but-e.g.-removed row still
@@ -2986,7 +2987,7 @@ EOF
     fi
   done
   [ "$HALTED" -eq 0 ] || return 0
-  for _c in env hooks; do
+  for _c in env hooks enabledPlugins extraKnownMarketplaces; do
     if [ "$LEDGER_OK" -eq 1 ] && rh_helper_ok "ledger /$_c drop" "$settings" && ! prov_read_drop_empty_if_ours "$settings" "$_c"; then
       echo "  WARN: could not drop the now-empty /$_c from $settings" >&2
       fail_step "[6/8] ledger: could not drop the now-empty /$_c from $settings"
@@ -3358,6 +3359,22 @@ else
 $_mkt_ours_units
 EOF
   fi
+fi
+# HIMMEL-3541: the marketplace removals above run after step 6's container
+# drop, so an extraKnownMarketplaces object install created can only be empty
+# now -- drop it here too (only where the ledger shows it was absent).
+if [ "$HALTED" -eq 0 ] && [ "$LEDGER_OK" -eq 1 ]; then
+  _drop_args=(); [ "$DRY_RUN" -eq 1 ] && _drop_args=(--dry-run)
+  while IFS= read -r _mp; do
+    [ -n "$_mp" ] || continue
+    if rh_helper_ok "ledger /extraKnownMarketplaces drop" "$_mp" \
+        && ! prov_read_drop_empty_if_ours "$_mp" extraKnownMarketplaces ${_drop_args[@]+"${_drop_args[@]}"}; then
+      echo "  WARN: could not drop the now-empty /extraKnownMarketplaces from $_mp" >&2
+      fail_step "[7/8] ledger: could not drop the now-empty /extraKnownMarketplaces from $_mp"
+    fi
+  done <<EOF
+$(prov_read_units --kind json-key | jq -r 'select(.unit == "/extraKnownMarketplaces") | .path')
+EOF
 fi
 echo ""
 

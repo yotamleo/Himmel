@@ -7,8 +7,6 @@ import { makeTmpDir } from '../../lib/test-tmpdir.mjs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  CLAUDE_SEVEN_DAY_REFUSE_PCT,
-  CODEX_WEEKLY_REFUSE_PCT,
   evaluateDelta,
   evaluatePreflight,
   extractLaneWindowPct,
@@ -54,16 +52,27 @@ test('evaluatePreflight REFUSES when a bank reading is null or unreadable', () =
   assert.deepEqual(result.reasons, ['codex weekly UNKNOWN', 'claude seven_day UNKNOWN']);
 });
 
-test('evaluatePreflight REFUSES at the codex weekly threshold (spec §7.2: >= 80%)', () => {
-  const result = evaluatePreflight({ codexWeeklyPct: CODEX_WEEKLY_REFUSE_PCT, claudeSevenDayPct: 10 });
-  assert.equal(result.proceed, false);
-  assert.match(result.reasons[0], /codex weekly/);
+test('evaluatePreflight REFUSES at the codex weekly threshold (spec §7.2: >= 80%), proceeds one point under', () => {
+  // Literal contractual boundary, not the implementation constant — testing
+  // CODEX_WEEKLY_REFUSE_PCT against itself can never catch the threshold
+  // silently drifting to a different value (both sides move together).
+  const atThreshold = evaluatePreflight({ codexWeeklyPct: 80, claudeSevenDayPct: 10 });
+  assert.equal(atThreshold.proceed, false);
+  assert.match(atThreshold.reasons[0], /codex weekly/);
+
+  const belowThreshold = evaluatePreflight({ codexWeeklyPct: 79, claudeSevenDayPct: 10 });
+  assert.equal(belowThreshold.proceed, true);
+  assert.deepEqual(belowThreshold.reasons, []);
 });
 
-test('evaluatePreflight REFUSES at the claude seven_day threshold (spec §7.2: >= 70%)', () => {
-  const result = evaluatePreflight({ codexWeeklyPct: 10, claudeSevenDayPct: CLAUDE_SEVEN_DAY_REFUSE_PCT });
-  assert.equal(result.proceed, false);
-  assert.match(result.reasons[0], /claude seven_day/);
+test('evaluatePreflight REFUSES at the claude seven_day threshold (spec §7.2: >= 70%), proceeds one point under', () => {
+  const atThreshold = evaluatePreflight({ codexWeeklyPct: 10, claudeSevenDayPct: 70 });
+  assert.equal(atThreshold.proceed, false);
+  assert.match(atThreshold.reasons[0], /claude seven_day/);
+
+  const belowThreshold = evaluatePreflight({ codexWeeklyPct: 10, claudeSevenDayPct: 69 });
+  assert.equal(belowThreshold.proceed, true);
+  assert.deepEqual(belowThreshold.reasons, []);
 });
 
 test('evaluatePreflight reports BOTH reasons when both banks breach', () => {

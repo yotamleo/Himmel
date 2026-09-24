@@ -33,7 +33,8 @@ g() { git -c user.name=t -c user.email=t@t -c init.defaultBranch=main -c commit.
 ORIGIN="$TMP/origin"
 PRIMARY="$TMP/himmel"
 WT="$TMP/wt"
-mkdir -p "$ORIGIN/scripts/cr" "$ORIGIN/scripts/guardrails" "$ORIGIN/scripts/lib" "$ORIGIN/docs"
+mkdir -p "$ORIGIN/scripts/cr" "$ORIGIN/scripts/guardrails" "$ORIGIN/scripts/lib" "$ORIGIN/docs" \
+    "$ORIGIN/scripts/handover/console-kit"
 g init -q "$ORIGIN"
 echo 'echo anchor' >"$ORIGIN/scripts/cr/pr-check-context.sh"
 echo ': lib' >"$ORIGIN/scripts/guardrails/lib.sh"
@@ -47,6 +48,15 @@ for t in anchor-handoff.sh clear-cr-marker.sh codex-adv-harvest.sh codex-adv-kic
     review-round.sh write-verdicts.sh; do
     echo "echo $t" >"$ORIGIN/scripts/cr/$t"
 done
+# HIMMEL-3437: the two scripts/handover/ gate-writer entries this hook also
+# targets, held to the entry + scripts/cr/anchor-handoff.sh (narrower family) -
+# plus go.sh's own sibling-sourced libs (go-gate.sh, handover-path.sh), which
+# it reads via a branch-relative path even after the hand-off's re-exec lands
+# it in the anchor's own console-kit/, so they must be guarded too.
+echo 'echo mog' >"$ORIGIN/scripts/handover/merge-on-green.sh"
+echo 'echo go' >"$ORIGIN/scripts/handover/console-kit/go.sh"
+echo ': go-gate' >"$ORIGIN/scripts/lib/go-gate.sh"
+echo ': handover-path' >"$ORIGIN/scripts/lib/handover-path.sh"
 echo 'doc' >"$ORIGIN/docs/a.md"
 g -C "$ORIGIN" add -A
 g -C "$ORIGIN" commit -qm base
@@ -228,6 +238,210 @@ rm "$WT/scripts/cr"
 mv "$WT/scripts/cr-real" "$WT/scripts/cr"
 run "scripts/cr dir restored, review-round -> allow" 0 "$(payload "$RR" "$WT")" "$HR"
 
+# ---- HIMMEL-3437: scripts/handover/ gate writers are targets too --------------
+# merge-on-green.sh and console-kit/go.sh are gate-allowed RELATIVE literals
+# too (scripts/lanes/plugin-profiles.json gateAllow), outside scripts/cr/ -
+# held to the same narrower condition as the other thirteen: the entry script
+# and scripts/cr/anchor-handoff.sh byte-equal the anchor's.
+MOG='bash scripts/handover/merge-on-green.sh'
+GO='bash scripts/handover/console-kit/go.sh'
+run "clean tree, bash scripts/handover/merge-on-green.sh -> allow" 0 "$(payload "$MOG" "$WT")" "$HR"
+run "clean tree, bash scripts/handover/console-kit/go.sh -> allow" 0 "$(payload "$GO" "$WT")" "$HR"
+echo ': edited' >>"$WT/scripts/handover/merge-on-green.sh"
+run "edited merge-on-green.sh -> deny" 2 "$(payload "$MOG" "$WT")" "$HR"
+need_in_err "deny names merge-on-green.sh" "scripts/handover/merge-on-green.sh"
+g -C "$WT" checkout -q -- scripts/handover/merge-on-green.sh
+echo ': edited' >>"$WT/scripts/handover/console-kit/go.sh"
+run "edited go.sh -> deny" 2 "$(payload "$GO" "$WT")" "$HR"
+need_in_err "deny names go.sh" "scripts/handover/console-kit/go.sh"
+g -C "$WT" checkout -q -- scripts/handover/console-kit/go.sh
+echo ': edited' >>"$WT/scripts/cr/anchor-handoff.sh"
+run "edited anchor-handoff.sh, merge-on-green -> deny" 2 "$(payload "$MOG" "$WT")" "$HR"
+need_in_err "deny names the hand-off" "scripts/cr/anchor-handoff.sh"
+run "edited anchor-handoff.sh, go.sh -> deny" 2 "$(payload "$GO" "$WT")" "$HR"
+g -C "$WT" checkout -q -- scripts/cr/anchor-handoff.sh
+# Per-file scope: editing one handover writer must not deny the other, or an
+# unrelated scripts/cr entry.
+echo ': edited' >>"$WT/scripts/handover/merge-on-green.sh"
+run "merge-on-green.sh edited, go.sh -> allow" 0 "$(payload "$GO" "$WT")" "$HR"
+run "merge-on-green.sh edited, review-round -> allow" 0 "$(payload "$RR" "$WT")" "$HR"
+g -C "$WT" checkout -q -- scripts/handover/merge-on-green.sh
+chmod +x "$WT/scripts/handover/console-kit/go.sh"
+run "chmod +x on go.sh -> deny" 2 "$(payload "$GO" "$WT")" "$HR"
+chmod -x "$WT/scripts/handover/console-kit/go.sh"
+# A symlinked entry is refused even when the bytes it points at match.
+mv "$WT/scripts/handover/merge-on-green.sh" "$TMP/mog.real"
+ln -s "$TMP/mog.real" "$WT/scripts/handover/merge-on-green.sh"
+run "symlinked merge-on-green.sh -> deny" 2 "$(payload "$MOG" "$WT")" "$HR"
+rm "$WT/scripts/handover/merge-on-green.sh"
+mv "$TMP/mog.real" "$WT/scripts/handover/merge-on-green.sh"
+# A symlinked scripts/handover/ or console-kit/ directory is refused even when
+# every byte underneath matches (same class as the symlinked scripts/cr dir
+# case above).
+mv "$WT/scripts/handover" "$WT/scripts/handover-real"
+ln -s handover-real "$WT/scripts/handover"
+run "symlinked scripts/handover dir, merge-on-green -> deny" 2 "$(payload "$MOG" "$WT")" "$HR"
+rm "$WT/scripts/handover"
+mv "$WT/scripts/handover-real" "$WT/scripts/handover"
+mv "$WT/scripts/handover/console-kit" "$WT/scripts/handover/console-kit-real"
+ln -s console-kit-real "$WT/scripts/handover/console-kit"
+run "symlinked console-kit dir, go.sh -> deny" 2 "$(payload "$GO" "$WT")" "$HR"
+rm "$WT/scripts/handover/console-kit"
+mv "$WT/scripts/handover/console-kit-real" "$WT/scripts/handover/console-kit"
+run "handover writers restored, merge-on-green -> allow" 0 "$(payload "$MOG" "$WT")" "$HR"
+run "handover writers restored, go.sh -> allow" 0 "$(payload "$GO" "$WT")" "$HR"
+
+# ---- console-O NO-GO finding 1: the $HIMMEL_REPO-prefixed anchor spelling -----
+# HIMMEL-3491's documented anchored spelling for merge-on-green.sh, gate-
+# allowed at scripts/lanes/plugin-profiles.json:7 and .claude/settings.json,
+# is a LITERAL `$HIMMEL_REPO` (or `${HIMMEL_REPO}`) prefix - never evaluated
+# by this hook (it only sees the raw command text), so it is exactly as
+# trusted as any other absolute path once resolved: the shell, not a branch,
+# picks the anchor. Denying it left a leg with no allow-listed way to merge.
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run 'literal $HIMMEL_REPO/ prefix, clean tree -> allow' 0 \
+    "$(payload 'bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh"' "$WT")" "$HR"
+echo ': edited' >>"$WT/scripts/handover/merge-on-green.sh"
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run 'literal $HIMMEL_REPO/ prefix, edited branch -> still allow (anchor spelling)' 0 \
+    "$(payload 'bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh"' "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal `${HIMMEL_REPO}` text, never expanded here
+run 'literal ${HIMMEL_REPO}/ braced prefix, edited branch -> still allow' 0 \
+    "$(payload 'bash "${HIMMEL_REPO}/scripts/handover/merge-on-green.sh"' "$WT")" "$HR"
+g -C "$WT" checkout -q -- scripts/handover/merge-on-green.sh
+# The exemption is general (not handover-specific): a clean scripts/cr/
+# target and go.sh through the same literal prefix must also allow.
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run 'literal $HIMMEL_REPO/ prefix onto a scripts/cr/ target -> allow' 0 \
+    "$(payload 'bash "$HIMMEL_REPO/scripts/cr/pr-check-context.sh"' "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run 'literal $HIMMEL_REPO/ prefix onto go.sh -> allow' 0 \
+    "$(payload 'bash "$HIMMEL_REPO/scripts/handover/console-kit/go.sh"' "$WT")" "$HR"
+
+# ---- console-O NO-GO round 2: the exemption must not survive a re-point ------
+# A `$HIMMEL_REPO` re-point earlier in the SAME command, any wrapper, or any
+# separator must still deny - the exemption is sound only when HIMMEL_REPO
+# is the command's sole reference to itself, on a genuinely single simple
+# command (finding 1). A quoted or backslash-escaped `$HIMMEL_REPO` never
+# expands either, so it must deny too, decided from the RAW command text,
+# never the quote-stripped one (finding 2).
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run 'HIMMEL_REPO re-pointed with export; before the literal prefix -> deny' 2 \
+    "$(payload 'export HIMMEL_REPO=.; bash "$HIMMEL_REPO/scripts/cr/pr-check-context.sh"' "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run 'bare HIMMEL_REPO=. before the literal prefix -> deny' 2 \
+    "$(payload 'HIMMEL_REPO=.; bash "$HIMMEL_REPO/scripts/cr/pr-check-context.sh"' "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run 'env HIMMEL_REPO=. wrapper around the literal prefix -> deny' 2 \
+    "$(payload "env HIMMEL_REPO=. bash -c 'bash \"\$HIMMEL_REPO/scripts/cr/pr-check-context.sh\"'" "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run 'source before the literal prefix (compound) -> deny' 2 \
+    "$(payload 'source /dev/null; bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh"' "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run "single-quoted \$HIMMEL_REPO never expands -> deny" 2 \
+    "$(payload 'bash '"'"'$HIMMEL_REPO/scripts/cr/pr-check-context.sh'"'"'' "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run 'backslash-escaped $HIMMEL_REPO never expands -> deny' 2 \
+    "$(payload 'bash \$HIMMEL_REPO/scripts/cr/pr-check-context.sh' "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal `${HIMMEL_REPO:-.}` text, never expanded here
+run '${HIMMEL_REPO:-.} default-value form is not the plain prefix -> deny' 2 \
+    "$(payload 'bash "${HIMMEL_REPO:-.}/scripts/cr/pr-check-context.sh"' "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO_X` text, never expanded here
+run '$HIMMEL_REPO_X is a different variable, not a prefix match -> deny' 2 \
+    "$(payload 'bash "$HIMMEL_REPO_X/scripts/cr/pr-check-context.sh"' "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run 'literal prefix followed by a second scripts/cr/ command -> deny (compound)' 2 \
+    "$(payload 'bash "$HIMMEL_REPO/scripts/cr/pr-check-context.sh"; bash scripts/cr/review-round.sh start --branch feat/x' "$WT")" "$HR"
+
+# ---- console-O NO-GO round 3 (F1): a stray quote/backslash ANYWHERE denies ---
+# Round 2 only checked the character immediately before the reference; a
+# quote or backslash elsewhere in the command still changes how a real
+# shell groups tokens even though $flat has already stripped it by the
+# time any later check runs. Decided from the raw command, so the
+# exemption now requires NO quote or backslash anywhere in it at all.
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run "stray single-quote before the dollar, inside double quotes -> deny" 2 \
+    "$(payload 'bash "'"'"'$HIMMEL_REPO/scripts/cr/pr-check-context.sh"' "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run "stray single-quote after the path, same word -> deny" 2 \
+    "$(payload 'bash "$HIMMEL_REPO/scripts/cr/pr-check-context.sh'"'"'"' "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run "stray backslash right before the dollar -> deny" 2 \
+    "$(payload 'bash "\$HIMMEL_REPO/scripts/cr/pr-check-context.sh"' "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run "fully single-quoted \$HIMMEL_REPO never expands -> deny" 2 \
+    "$(payload "bash '\$HIMMEL_REPO/scripts/cr/pr-check-context.sh'" "$WT")" "$HR"
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO` text, never expanded here
+run "single-quoted with leading junk before the dollar -> deny" 2 \
+    "$(payload "bash 'x \$HIMMEL_REPO/scripts/handover/console-kit/go.sh'" "$WT")" "$HR"
+# Console round 4 (evidence request): byte-exact reproductions of the
+# original report's probes 4 and 6, built with $'...' ANSI-C quoting so
+# no character is reinterpreted along the way - $'...' processes only
+# backslash escapes and never expands a $VAR, so $HIMMEL_REPO here stays
+# literal text, exactly like every other case in this file.
+PROBE4=$'bash \\\'"$HIMMEL_REPO/scripts/cr/pr-check-context.sh"'
+run 'probe 4: backslash then double-quote before the dollar -> deny' 2 \
+    "$(payload "$PROBE4" "$WT")" "$HR"
+PROBE6=$'bash \'"$HIMMEL_REPO/scripts/cr/pr-check-context.sh"\''
+run 'probe 6: the whole double-quoted prefix wrapped in single quotes -> deny' 2 \
+    "$(payload "$PROBE6" "$WT")" "$HR"
+
+# ---- console-O NO-GO round 3 (F2): the tail must resolve as a plain path -----
+# A `..` or a second `$` after the exempted prefix must still deny - the
+# word must resolve to exactly the anchor's own file, not somewhere else
+# the substitution can be steered to.
+# shellcheck disable=SC2016 # the literal `$HIMMEL_REPO`/`$PWD` text, never expanded here
+run 'traversal plus a second $ after the prefix -> deny' 2 \
+    "$(payload 'bash "$HIMMEL_REPO/../../../../../../..$PWD/scripts/cr/pr-check-context.sh"' "$WT")" "$HR"
+
+# ---- console-O NO-GO round 4: the merge-on-green remedy must not loop --------
+# F1 denies ANY quote/backslash anywhere in the command, so a leg that reaches
+# for the remedy with a quoted argument (`--branch 'x'`) would trip F1 again.
+# The remedy text itself must say so, and name a fallback that never needs
+# quoting args at all.
+run 'quoted arg on the anchored spelling -> deny (would loop without the fix)' 2 \
+    "$(payload "bash \"\$HIMMEL_REPO/scripts/handover/merge-on-green.sh\" --branch 'x'" "$WT")" "$HR"
+need_in_err "remedy says args must be unquoted" "unquoted"
+need_in_err "remedy offers the himmel_dir fallback" "<himmel_dir>/scripts/handover/merge-on-green.sh"
+
+# ---- console-O NO-GO finding 2: go.sh's own sibling-sourced libs -------------
+# go.sh sources scripts/lib/go-gate.sh and scripts/lib/handover-path.sh via a
+# branch-relative $HERE, so they must be in its GUARDED set too - a byte-equal
+# go.sh (+ anchor-handoff.sh) with an edited sibling lib must still deny.
+echo ': edited' >>"$WT/scripts/lib/go-gate.sh"
+run "go-gate.sh edited, go.sh clean -> deny" 2 "$(payload "$GO" "$WT")" "$HR"
+need_in_err "deny names go-gate.sh" "scripts/lib/go-gate.sh"
+g -C "$WT" checkout -q -- scripts/lib/go-gate.sh
+echo ': edited' >>"$WT/scripts/lib/handover-path.sh"
+run "handover-path.sh edited, go.sh clean -> deny" 2 "$(payload "$GO" "$WT")" "$HR"
+need_in_err "deny names handover-path.sh" "scripts/lib/handover-path.sh"
+g -C "$WT" checkout -q -- scripts/lib/handover-path.sh
+run "go.sh's sibling libs restored -> allow" 0 "$(payload "$GO" "$WT")" "$HR"
+# Sibling-lib edit must not deny an unrelated target (merge-on-green.sh never
+# sources these two - it resolves its own helpers from $himmel_repo instead).
+echo ': edited' >>"$WT/scripts/lib/go-gate.sh"
+run "go-gate.sh edited, merge-on-green unaffected -> allow" 0 "$(payload "$MOG" "$WT")" "$HR"
+g -C "$WT" checkout -q -- scripts/lib/go-gate.sh
+
+# Classified by the script they run, not by the text - same spellings the
+# scripts/cr/ family is held to.
+echo ': edited' >>"$WT/scripts/handover/merge-on-green.sh"
+for v in \
+    'bash ./scripts/handover/merge-on-green.sh' \
+    'bash scripts//handover/merge-on-green.sh' \
+    'sh scripts/handover/merge-on-green.sh' \
+    'source scripts/handover/merge-on-green.sh' \
+    'env bash scripts/handover/merge-on-green.sh' \
+    'bash scripts/handover/merge-on-green.s?' \
+    'bash scripts/handover/merge-on-green.*'; do
+    run "variant [$v] on an edited branch -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done
+run "the anchor's absolute path on an edited branch -> no-op" 0 \
+    "$(payload "bash \"$PRIMARY/scripts/handover/merge-on-green.sh\"" "$WT")" "$HR"
+run "mention (not run) of the edited file -> no-op" 0 \
+    "$(payload "git diff -- scripts/handover/merge-on-green.sh" "$WT")" "$HR"
+g -C "$WT" checkout -q -- scripts/handover/merge-on-green.sh
+
 # ---- HIMMEL-3433 (d): an interpreter or find -exec word ANYWHERE runs ---------
 # On a clean tree, so each deny comes from the shape, not from an edit.
 run "2>&1 before the literal, clean root -> deny" 2 \
@@ -285,7 +499,7 @@ run "anchor on another branch at the branch's commit -> deny" 2 "$(payload "$LIT
 g -C "$PRIMARY" checkout -q main
 g -C "$PRIMARY" branch -q -D forged
 
-# ---- C1: spelling variants the Bash(bash scripts/*) allow rule also matches --
+# ---- C1: spelling variants that must classify to the same guarded script --
 # Classified by the script they run, not by the text: each runs the branch's
 # edited pr-check-context.sh / pr-check-env.sh, so each must deny.
 while IFS= read -r v; do

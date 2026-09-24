@@ -640,11 +640,25 @@ _native_hooks_canon() {
   printf '%s\n' "$acc"
 }
 
+# HIMMEL-3541: one ledger row for a native-hook write (the hook, the adopter's
+# displaced hook, the shared-dir payload). Audit rows: uninstall [5/8] still
+# removes and restores these from the manifest's git-hooks rows. Best-effort,
+# like copy_recorded: the hook is in place whether or not the row lands.
+_native_hook_rec() {
+  local op="$1" kind="$2" path="$3" row="$4"
+  shift 4
+  prov_record "$op" "$kind" "$path" --scope project --class code --row "$row" --writer adopt.sh "$@" \
+    || echo "  warning: provenance record failed for $path (uninstall still handles it from the manifest)" >&2
+  return 0
+}
+
 install_native_hooks() {
   # HIMMEL-2771: resolve Git's effective hook directory (including worktrees
   # and core.hooksPath), but keep hook payloads independent of this clone.
   local hooks_dir hook script hooks_dir_canon target_canon backup marker
   local common_dir common_dir_canon payload_dir payload_file hooks_path_configured
+  local payload_pre hop hsnap
+  local -a hpre
   marker='# HIMMEL-2771: native invariant gate; lint hooks require pre-commit.'
   if [[ $DRY_RUN -eq 1 ]]; then
     echo "DRY: place executable native commit-msg, pre-commit, pre-push hooks in $TARGET (used when the target has no .pre-commit-config.yaml, or pre-commit is unavailable or fails)"
@@ -753,6 +767,7 @@ install_native_hooks() {
     payload_dir="$hooks_dir/himmel-payload"
   fi
   if [[ -n "$payload_dir" ]]; then
+    payload_pre=absent; [[ -e "$payload_dir" ]] && payload_pre=present
     # Preserve the relative layout: check-worktree-isolation.sh and
     # check-push-target.sh both `source "$SCRIPT_DIR/../guardrails/lib.sh"`,
     # so a flat copy would break them.
@@ -768,6 +783,9 @@ install_native_hooks() {
       echo "  git gate hooks — FAILED (native: cannot chmod +x payload scripts in $payload_dir)" >&2
       return 1
     fi
+    if [[ $payload_pre == absent ]]; then hpre=(--pre-absent); hop=create; else hpre=(--pre-text present); hop=replace; fi
+    _native_hook_rec "$hop" tree "$payload_dir" git-hooks "${hpre[@]}" \
+      --post-text "$(cd "$payload_dir" && find . -type f | LC_ALL=C sort)"
     echo "  git gate hooks — payload copied to $payload_dir (shared hooks directory serves other checkouts too; dispatchers fall back to it when their own \$root lacks scripts/hooks)"
   fi
   # User scope normally references this clone; native Git gates must survive
@@ -786,6 +804,7 @@ install_native_hooks() {
       pre-commit) script=check-worktree-isolation.sh ;;
       pre-push) script=check-push-target.sh ;;
     esac
+    hop=create; hpre=(--pre-absent); hsnap=""
     # CR: `cat >` truncates unconditionally, which would silently destroy an
     # adopter's own hand-written hook (pre-commit's own `install` migrates a
     # pre-existing hook to `<hook>.legacy` instead of destroying it -- mirror
@@ -829,6 +848,8 @@ install_native_hooks() {
       # failure); a link still resolving to something executable runs exactly
       # as before. So "still runs" is NOT an unconditional promise for a
       # symlinked hook -- say so instead of the plain claim used below.
+      hop=replace; hpre=(--pre-text "symlink:$(readlink "$backup")")
+      _native_hook_rec create symlink "$backup" git-hook-backups --pre-absent --post-text "$(readlink "$backup")"
       echo "  git gate hooks — existing $hook (a symlink) backed up to $hook.himmel-backup (chained after the himmel gate only if the link still resolves to something executable; a dangling link will not run)"
     elif [[ -e "$hooks_dir/$hook" ]] && ! grep -qF "$marker" "$hooks_dir/$hook" 2>/dev/null; then
       backup="$hooks_dir/$hook.himmel-backup"
@@ -840,7 +861,12 @@ install_native_hooks() {
         echo "  git gate hooks — FAILED (native: cannot back up existing $hooks_dir/$hook)" >&2
         return 1
       fi
+      hop=replace; hpre=(--pre-file "$backup")
+      _native_hook_rec create file "$backup" git-hook-backups --pre-absent --post-file "$backup"
       echo "  git gate hooks — existing $hook backed up to $hook.himmel-backup (still runs: chained after the himmel gate)"
+    elif [[ -f "$hooks_dir/$hook" ]] && hsnap="$(mktemp "${TMPDIR:-/tmp}/himmel-hook-pre.XXXXXX")" && cp -p "$hooks_dir/$hook" "$hsnap"; then
+      # our own hook from an earlier run: the row's pre is its bytes before this rewrite
+      hop=replace; hpre=(--pre-file "$hsnap")
     fi
     # CR round-2: `exec` replaces the shell, so the adopter's backed-up hook
     # (above) would never run again -- its bytes survive but nothing ever
@@ -937,6 +963,8 @@ HOOK
       echo "  git gate hooks — FAILED (native: cannot make $hooks_dir/$hook executable)" >&2
       return 1
     fi
+    _native_hook_rec "$hop" file "$hooks_dir/$hook" git-hooks "${hpre[@]}" --post-file "$hooks_dir/$hook"
+    [[ -z "$hsnap" ]] || rm -f "$hsnap"
   done
   echo "  git gate hooks — placed (native, no pre-commit framework: lint hooks absent)"
 }

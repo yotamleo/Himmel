@@ -343,8 +343,11 @@ per decision point, not one per thought.
 
 A leg reports `READY <pr> <head> GREEN` plus its code-review status line. The
 console verifies independently — all check-runs success at that exact head,
-zero unresolved review threads, attestation trailers in the first commit — and
-only then runs `console-kit/go.sh <pr> <head>` — that write is the ACT of
+zero unresolved review threads, attestation trailers in the first commit —
+via `console-kit/ready-check.sh <pr> <full-40-hex-head-sha>` (HIMMEL-3163),
+which mechanizes that checklist and prints `READY-CHECK PASS|FAIL`; it does
+not read the three-dot diff, which stays your own judgement call. Only then
+run `console-kit/go.sh <pr> <head>` — that write is the ACT of
 granting the GO (HIMMEL-3142: `gh pr merge` itself is gated on that file for
 a console-spawned leg, not merely on hearing from you); answering `GO` over
 SendMessage is a notification to the leg, not the mechanism. The leg merges;
@@ -361,11 +364,25 @@ ticket checked by hand.
 Never merge with open review threads, and never read a handoff calling a PR
 clean as evidence — query that PR yourself.
 
+To cut a pre-release tag yourself (HIMMEL-3572), run
+`bash scripts/handover/console-kit/cut-tag.sh <version> <sha>` (`--dry-run`
+first to see the plan) — it creates the tag through the GitHub API, never
+`git tag`, so it needs no operator `!` step. It refuses unless `<sha>` is an
+ancestor of `origin/main`, every check-run at `<sha>` is green, the tag
+doesn't already exist, and `<version>` is the next `N` in sequence for its
+own `v<X>.<Y>.<Z>-pre.` series — the series is derived from `<version>`
+itself, not hardcoded to any one release line, so `v0.3.0-pre.9` and a future
+`v0.4.0-pre.1` are each checked against their own prior tags — (or carries
+`--version-override <reason>`).
+
 ## Wrapping a leg
 
-On `WRAPPED`: confirm the lock is free at the ROOT sweep, close the leg's
-window (`kill <pid>` from its launch log), and prune ITS worktree once the PR
-is merged: `bash scripts/clean.sh --only <leg-worktree-path>`. Never run the
+On `WRAPPED`: confirm the lock is free at the ROOT sweep, then close the
+leg's window with `bash scripts/handover/console-kit/close-wrapped-leg.sh
+<leg-doc>` (HIMMEL-3572) — it verifies the lock is free and the doc's last
+Results marker is `WRAPPED`, signals the exactly-one live session that
+matches the leg (never a guess), and prunes ITS worktree once the PR is
+merged, all with no operator `!` step. Never run the
 bare `clean.sh` sweep for one leg — it is fleet-wide and removes every merged
 worktree, including another leg's that has merged but not yet wrapped (a live
 `claude` process's cwd is the primary checkout, so nothing marks that

@@ -2198,6 +2198,34 @@ row="$(prov_row "$p4led/provenance.jsonl" "$p4gate/scripts/guardrails/lib.sh")"
   || fail "HIMMEL-3332 S4: a fresh user-scope gate copy must be a create row: $row"
 echo "ok: HIMMEL-3332 S4 user-scope gate copies record create + replace rows with a backup"
 
+# HIMMEL-3541 class 5: the native git hooks, the adopter's displaced hook and
+# the shared-dir payload are all written into the repo, so each gets a ledger
+# row (the VM round trip's no-unrecorded-write check reads these); uninstall
+# [5/8] still removes/restores them from the manifest, not from these rows.
+p4gh="$work/p4-gh"; mkdir -p "$p4gh"
+HOME="$p4home" git -C "$p4gh" init -q
+mkdir -p "$p4gh/.git/hooks"
+printf '#!/bin/sh\necho adopter pre-commit\n' > "$p4gh/.git/hooks/pre-commit"; chmod +x "$p4gh/.git/hooks/pre-commit"
+p4gh_sha="$(prov_sha "$p4gh/.git/hooks/pre-commit")"
+p4ghled="$work/p4-gh-ledger"
+HOME="$p4home" HIMMEL_PROVENANCE_DIR="$p4ghled" PATH="$work/bin:$native_free_path" \
+  bash "$adopt" --profile core --scope project --target "$p4gh" >/dev/null
+for h in commit-msg pre-push; do
+  row="$(prov_row "$p4ghled/provenance.jsonl" "/.git/hooks/$h")"
+  [ "$(jq -r '[.op,.pre.state,.manifest_row,.scope,.class]|join(",")' <<< "$row")" = "create,absent,git-hooks,project,code" ] \
+    || fail "HIMMEL-3541: a fresh native $h hook must be a create row on git-hooks: $row"
+done
+row="$(prov_row "$p4ghled/provenance.jsonl" "/.git/hooks/pre-commit")"
+[ "$(jq -r '[.op,.pre.sha,.manifest_row]|join(",")' <<< "$row")" = "replace,$p4gh_sha,git-hooks" ] \
+  || fail "HIMMEL-3541: a native hook over the adopter's own must be a replace row naming its bytes: $row"
+row="$(prov_row "$p4ghled/provenance.jsonl" "/.git/hooks/pre-commit.himmel-backup")"
+[ "$(jq -r '[.op,.pre.state,.post.sha,.manifest_row]|join(",")' <<< "$row")" = "create,absent,$p4gh_sha,git-hook-backups" ] \
+  || fail "HIMMEL-3541: the displaced hook's backup must be a create row on git-hook-backups: $row"
+row="$(jq -c 'select(.kind=="tree" and (.path|endswith("/.git/hooks/himmel-payload")))' "$p4ghled/provenance.jsonl" | tail -n 1)"
+[ "$(jq -r '[.op,.pre.state,.manifest_row]|join(",")' <<< "$row")" = "create,absent,git-hooks" ] \
+  || fail "HIMMEL-3541: the shared-dir hook payload must be a tree create row: $row"
+echo "ok: HIMMEL-3541 native git hooks, the displaced hook and the payload are ledger rows"
+
 # wire_handover_dir_luna skips a HANDOVER_DIR the operator already chose (HIMMEL-839);
 # the ledger must say the key was theirs, or uninstall removes it anyway.
 p4hd="$work/p4-hd"; mkdir -p "$p4hd/.claude"
