@@ -92,6 +92,7 @@ repos:
         language: system
         files: ^marketplace/plugins/
         pass_filenames: false
+        always_run: true
 
       - id: doc-guard
         name: command/skill added requires catalog update (himmel-dev only)
