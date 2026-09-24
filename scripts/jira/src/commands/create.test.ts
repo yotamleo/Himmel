@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Command } from 'commander';
 
 // Mock the network + breadcrumb layers so the command action resolves without
@@ -94,5 +94,54 @@ describe('create — command wiring (--summary → POST /issue payload)', () => 
       { fields: { summary: string } },
     ];
     expect(body.fields.summary).toBe('title wins');
+  });
+});
+
+// HIMMEL-3411: the v1 bug freeze is applied at the filing point.
+describe('create — v1 bug freeze wiring', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockRequest.mockResolvedValue({ key: 'HIMMEL-1' });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function createFields(date: string, args: string[]) {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(`${date}T12:00:00`));
+    const p = new Command();
+    p.exitOverride();
+    registerCreate(p);
+    await p.parseAsync(['node', 'jira', 'create', '--title', 't', ...args]);
+    const [, , body] = mockRequest.mock.calls[0] as [
+      string,
+      string,
+      { fields: { fixVersions?: { name: string }[] } },
+    ];
+    return body.fields;
+  }
+
+  it('sets fixVersion v1.0.1 on a Bug filed after the cutoff and says so', async () => {
+    const fields = await createFields('2026-09-26', ['--type', 'Bug']);
+    expect(fields.fixVersions).toEqual([{ name: 'v1.0.1' }]);
+    expect(console.error).toHaveBeenCalledWith(expect.stringMatching(/bug freeze.*v1\.0\.1/));
+  });
+
+  it('sets no fixVersion when the Bug is labelled v1-blocker', async () => {
+    const fields = await createFields('2026-09-26', ['--type', 'Bug', '--labels', 'v1-blocker']);
+    expect(fields.fixVersions).toBeUndefined();
+  });
+
+  it('sets no fixVersion before the cutoff', async () => {
+    const fields = await createFields('2026-09-25', ['--type', 'Bug']);
+    expect(fields.fixVersions).toBeUndefined();
+  });
+
+  it('sets no fixVersion on a Task', async () => {
+    const fields = await createFields('2026-09-26', ['--type', 'Task']);
+    expect(fields.fixVersions).toBeUndefined();
   });
 });
