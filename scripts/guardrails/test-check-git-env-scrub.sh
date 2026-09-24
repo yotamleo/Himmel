@@ -32,7 +32,7 @@ expect_red() {
     local label="$1" fixture="$2"
     run "$CASES/$fixture"
     local rc=$?
-    if [ "$rc" -eq 1 ] && printf '%s' "$OUT" | grep -qF "$fixture"; then
+    if [ "$rc" -eq 1 ] && grep -qF "$fixture" <<<"$OUT"; then
         pass "$label"
     else
         fail "$label (rc=$rc)"
@@ -100,7 +100,7 @@ fi
 # prove T16 passed because of the baseline and not by accident.
 run "$CASES/baseline-listed.sh" "$CASES/baseline-listed.mjs"
 rc=$?
-if [ "$rc" -eq 1 ] && printf '%s' "$OUT" | grep -qF "baseline-listed.sh" && printf '%s' "$OUT" | grep -qF "baseline-listed.mjs"; then
+if [ "$rc" -eq 1 ] && grep -qF "baseline-listed.sh" <<<"$OUT" && grep -qF "baseline-listed.mjs" <<<"$OUT"; then
     pass "T17 same two fixtures fail without the baseline (control)"
 else
     fail "T17 same two fixtures fail without the baseline (control) (rc=$rc)"
@@ -111,7 +111,7 @@ fi
 # report clean. This is the ratchet's day-one promise.
 REAL_OUT="$(cd "$REPO_ROOT" && bash "$CHECKER" --tree 2>&1)"
 real_rc=$?
-if [ "$real_rc" -eq 0 ] && printf '%s' "$REAL_OUT" | grep -qF "clean"; then
+if [ "$real_rc" -eq 0 ] && grep -qF "clean" <<<"$REAL_OUT"; then
     pass "T18 real trust paths are clean under the committed baseline"
 else
     fail "T18 real trust paths are clean under the committed baseline (rc=$real_rc)"

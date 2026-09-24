@@ -174,7 +174,15 @@ is_git_invocation() {
     # shell separator before it, whitespace or end-of-line after it. Excludes
     # `git_clean` (next char `_`) and a case-label `git)` (next char `)`) by
     # construction.
-    printf '%s' "$1" | grep -qE '(^|[;&|(`[:space:]])git([[:space:]]|$)'
+    #
+    # Captured rather than piped into `grep -q` (pipefail-ok would not save
+    # us here: grep is the last command, so a match is never masked — but a
+    # SIGPIPE-killed producer under pipefail WOULD still flip the pipeline
+    # non-zero on an otherwise-real match; capturing sidesteps that class
+    # entirely, HIMMEL-1430).
+    local m
+    m=$(printf '%s' "$1" | grep -E '(^|[;&|(`[:space:]])git([[:space:]]|$)') || true
+    [ -n "$m" ]
 }
 
 exemption_reason_js() {
@@ -302,7 +310,9 @@ scan_js_file() {
         i=$((i + 1))
         [ -z "$trimmed" ] && continue
         case "$trimmed" in '//'*) continue ;; esac
-        printf '%s' "$line" | grep -qE "(execFileSync|spawnSync|execSync|spawn)\\([[:space:]]*['\"]git['\"]" || continue
+        local m
+        m=$(printf '%s' "$line" | grep -E "(execFileSync|spawnSync|execSync|spawn)\\([[:space:]]*['\"]git['\"]") || true
+        [ -n "$m" ] || continue
         # Window: this line plus the next 4, joined, to see a same-statement
         # scrub (e.g. an `env:` object on a following line).
         local end=$((lineno + 4))
@@ -345,7 +355,9 @@ ${lines[$j]}"
 }
 
 is_trust_path() {
-    printf '%s' "$1" | grep -qE '^scripts/handover/|^scripts/lanes/|^scripts/hooks/|^scripts/cr/|^scripts/lib/go-gate\.sh$'
+    local m
+    m=$(printf '%s' "$1" | grep -E '^scripts/handover/|^scripts/lanes/|^scripts/hooks/|^scripts/cr/|^scripts/lib/go-gate\.sh$') || true
+    [ -n "$m" ]
 }
 
 scan_one() {
@@ -357,14 +369,14 @@ scan_one() {
 }
 
 if [ "$MODE" = staged ]; then
-    tmp_list=$(mktemp) || exit 2
+    tmp_list=$(mktemp "${TMPDIR:-/tmp}/git-env-scrub-list.XXXXXX") || exit 2
     trap 'rm -f "$tmp_list"' EXIT
     git diff --cached --name-only --diff-filter=ACM > "$tmp_list"
     while IFS= read -r f || [ -n "$f" ]; do
         [ -z "$f" ] && continue
         is_trust_path "$f" || continue
         case "$f" in *.sh|*.mjs|*.js) : ;; *) continue ;; esac
-        tmp_blob=$(mktemp) || exit 2
+        tmp_blob=$(mktemp "${TMPDIR:-/tmp}/git-env-scrub-blob.XXXXXX") || exit 2
         if git show ":$f" > "$tmp_blob" 2>/dev/null; then
             scan_one "$f" "$tmp_blob"
         fi
