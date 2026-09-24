@@ -44,7 +44,7 @@ const fs = require('fs');
 const path = require('path');
 const { pathToFileURL } = require('url');
 const probesLib = require('./probes.js');
-const { nodeScriptCmd } = require('./helpers.js');
+const { nodeScriptCmd, cacheDir } = require('./helpers.js');
 
 // HIMMEL-3327: the printed `config set lanes.<id> on|off` remediations run from
 // the ADOPTER's project, not the clone, so they name this install's bin.js by
@@ -305,6 +305,27 @@ function registryIdsForSelection(selected) {
   return out;
 }
 
+function isWritableDir(dir) {
+  try {
+    fs.accessSync(dir, fs.constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// HIMMEL-3059 S3: a packaged/root-owned install prefix can't take the in-tree
+// overlay write, so the writer defaults to the himmelctl cache dir instead of
+// throwing — mirroring critic-panel.sh's CRITICS_LOCAL_JSON and
+// load-dotenv.sh's cache-dir-first fallback. A writable git clone is
+// untouched: same path as before, byte for byte.
+function resolveLaneAllowlistFile(repoRoot) {
+  const inTree = path.join(repoRoot || process.cwd(), 'scripts', 'lanes', 'lanes.local.json');
+  return isWritableDir(path.dirname(inTree))
+    ? { file: inTree, scope: 'clone' }
+    : { file: path.join(cacheDir(), 'lanes.local.json'), scope: 'user' };
+}
+
 // Validate the profile-overlay conditions that are predictable before the core
 // installer runs. The real write repeats the same checks after the install so a
 // change during the run still fails closed; interruption inside the core
@@ -318,9 +339,9 @@ async function preflightProfileLaneAllowlist(repoRoot) {
   }
   const lanesDir = path.resolve(__dirname, '..', '..', 'lanes');
   const writer = await import(pathToFileURL(path.join(lanesDir, 'set-lane-override.mjs')).href);
-  const file = path.join(repoRoot || process.cwd(), 'scripts', 'lanes', 'lanes.local.json');
+  const { file, scope } = resolveLaneAllowlistFile(repoRoot);
   writer.validateProfileAllowlistTarget(file);
-  return { writer, file };
+  return { writer, file, scope };
 }
 
 // Persist the adopter selection as a top-level profileAllowlist in the SAME
@@ -331,10 +352,10 @@ async function preflightProfileLaneAllowlist(repoRoot) {
 // it can suppress but never conjure availability. The writer preserves existing
 // per-lane overrides and uses its proven lock + atomic-rename path.
 async function persistProfileLaneAllowlist(selected, repoRoot) {
-  const { writer, file } = await preflightProfileLaneAllowlist(repoRoot);
+  const { writer, file, scope } = await preflightProfileLaneAllowlist(repoRoot);
   const ids = registryIdsForSelection(selected);
   const preservedLegacyGlobal = writer.writeProfileAllowlist(file, ids, PROFILE_LANE_REGISTRY_IDS);
-  return { ids, preservedLegacyGlobal };
+  return { ids, preservedLegacyGlobal, file, scope };
 }
 
 // ── probing ─────────────────────────────────────────────────────────────────
@@ -409,7 +430,12 @@ function readLaneRegistries(repoRoot) {
 
   const base = readRegistryFile(path.join(lanesDir, 'lanes.json'));
   if (base.status !== 'ok') return null;
-  const localFile = path.join(lanesDir, 'lanes.local.json');
+  // HIMMEL-3059 S3: mirrors resolveLaneAllowlistFile's cache-dir-first read —
+  // the writer may have landed the overlay under the himmelctl cache dir
+  // (read-only install prefix), so the reader checks there before the in-tree
+  // default. An existing writable clone's in-tree overlay is unaffected.
+  const cacheFile = path.join(cacheDir(), 'lanes.local.json');
+  const localFile = fs.existsSync(cacheFile) ? cacheFile : path.join(lanesDir, 'lanes.local.json');
   const local = readRegistryFile(localFile);
   if (local.status === 'invalid') {
     return { base: base.value, local: null, localError: { file: localFile, detail: local.detail } };
@@ -1735,6 +1761,8 @@ module.exports = {
   registryIdsForSelection,
   preflightProfileLaneAllowlist,
   persistProfileLaneAllowlist,
+  resolveLaneAllowlistFile,
+  readLaneRegistries,
   probeLane,
   probeSelection,
   HARDENING_CHECKLIST,

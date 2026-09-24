@@ -53,7 +53,7 @@ flowchart TD
     end
 
     subgraph S4["4 · CI — .github/workflows/ci.yml, on the pushed branch"]
-        CI["10 jobs · secret-scan · commit-lint · lint<br/>node-suites · lanes-and-trust-suites<br/>guardrail-matrices · bun-suites<br/>doc-invariants · security-scan · shell-unit"]
+        CI["11 jobs · secret-scan · commit-lint · plugin-version-bump · lint<br/>node-suites · lanes-and-trust-suites<br/>guardrail-matrices · bun-suites<br/>doc-invariants · security-scan · shell-unit"]
     end
 
     subgraph S5["5 · pull request + merge"]

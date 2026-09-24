@@ -86,6 +86,14 @@ repos:
         files: ^marketplace/plugins/[^/]+/\.claude-plugin/plugin\.json$
         pass_filenames: false
 
+      - id: plugin-version-bump-required
+        name: a changed plugin file must bump that plugin's version
+        entry: bash scripts/check-plugin-drift.sh --bump-required
+        language: system
+        files: ^marketplace/plugins/
+        pass_filenames: false
+        always_run: true
+
       - id: doc-guard
         name: command/skill added requires catalog update (himmel-dev only)
         entry: bash scripts/hooks/check-doc-guard.sh
@@ -98,6 +106,14 @@ repos:
         entry: bash scripts/hooks/check-cr-best-effort.sh
         language: system
         files: ^(docs/.*\.md|\.claude/commands/.*\.md|\.agents/skills/.*\.md|scripts/.*\.(sh|md)|CLAUDE\.md|README\.md|\.pre-commit-config\.yaml)$
+        pass_filenames: false
+
+      - id: cr-terminology
+        name: CR means code review, not CodeRabbit
+        # HIMMEL-3561
+        entry: bash scripts/ci/check-cr-terminology.sh
+        language: system
+        files: ^(docs/.*\.(md|html)|\.claude/commands/.*\.md|marketplace/.*\.(md|html)|CLAUDE\.md|README\.md)$
         pass_filenames: false
 
       - id: template-version
@@ -331,6 +347,15 @@ repos:
         # HIMMEL-2561
         language: system
         entry: bash scripts/guardrails/leak-classes.sh --staged
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+
+      - id: git-env-scrub
+        name: gate unscrubbed GIT_* env on trust-path git calls
+        # HIMMEL-3570
+        language: system
+        entry: bash scripts/guardrails/check-git-env-scrub.sh --staged
         pass_filenames: false
         always_run: true
         stages: [pre-commit]

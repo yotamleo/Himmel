@@ -232,10 +232,39 @@ if [ "$PROFILE" = all ]; then
 fi
 
 # ==================================================== 7. residue (C vs A)
-# The 3330 allowlist: caches install may fill and uninstall may keep. The ledger
-# itself is allowed too, except after --purge-state.
-allow="^($H/\\.npm/_cacache|$H/\\.npm/_logs|$H/\\.cache/node-gyp|$H/\\.bun/install/cache|$H/\\.claude/plugins/cache|$H/\\.cache/qmd"
-[ "$PURGE" = 1 ] || allow="$allow|$H/\\.himmel/provenance(\\.jsonl)?"
+# The 3330 allowlist: caches install may fill and uninstall may keep. The
+# ledger, the standalone uninstall bundle (S13) and provenance-backups/ are
+# allowed too, except after --purge-state, which is the step that removes all
+# three (HIMMEL-3541: a plain run must not flag them as leftover residue).
+#
+# HIMMEL-3541 sizing (N444, 2026-09-24) added three more, each with a named
+# writer and a citation -- no path is allowlisted without both:
+#   - $H/.npm/_update-notifier-last-checked: npm's own update-notifier module
+#     writes this on any `npm` invocation himmel's install runs; covered by
+#     the `third-party-caches` manifest row (uninstall-manifest.tsv:56,
+#     HIMMEL-3330: "caches other tools wrote while himmel ran ... theirs,
+#     never himmel-provenanced, so not removed").
+#   - $H/proj/scripts/(guardrails|lib): himmel's own file copies into the
+#     adopter's scripts/ tree; uninstall removes the recorded FILES (see the
+#     "removed .../guard-gh.sh" etc. lines) but the manifest's `scripts` row
+#     is class NEVER for the containing tree -- "himmel scripts copied into
+#     a project-scope adopter's scripts/ -- code for recorded files;
+#     unrecorded copies kept ... drop them with git if unwanted" (printed
+#     verbatim by uninstall.sh) -- the now-empty directories are that same
+#     documented non-cleanup, not a bug.
+#   - $H/.codex: himmel only ever manages the FILE $H/.codex/AGENTS.md
+#     (manifest row `user-agents-md`, class block/STRIP); the directory
+#     itself is grouped with ~/.claude, ~/.ssh, ~/.gitconfig, ~/.config,
+#     ~/.local as an operator-owned dir uninstall.sh deliberately never
+#     deletes wholesale (uninstall.sh:43,615,1486,1492,1496).
+allow="^($H/\\.npm/_cacache|$H/\\.npm/_logs|$H/\\.npm/_update-notifier-last-checked|$H/\\.cache/node-gyp|$H/\\.bun/install/cache|$H/\\.claude/plugins/cache|$H/\\.cache/qmd|$H/proj/scripts/guardrails|$H/proj/scripts/lib|$H/\\.codex"
+[ "$PURGE" = 1 ] || allow="$allow|$H/\\.himmel/provenance(\\.jsonl)?|$H/\\.himmel/uninstall|$H/\\.himmel/provenance-backups"
+# HIMMEL-3559: --profile all seeds a real vault at $H/luna (the adopter-<scope>
+# profile overlay's .vault.path — see provenance-roundtrip.sh's OVERLAY) so the
+# adopter has second-brain content from the first run. It is the operator's
+# data, never himmel's: uninstall must never touch it, so it is a residue
+# allowance here, not a manifest removal row.
+[ "$PROFILE" = all ] && allow="$allow|$H/luna"
 allow="$allow)(/|\$)"
 # paths <a> <b> <mode>: new = in b not a; gone = in a not b; changed = regular
 # file in both with a different sha. Directories count only when new/gone.

@@ -84,14 +84,55 @@ QMD_STUB_MODE=nopath
 check "rc 0 with no Path: line -> UNREADABLE" "$(prov_identity_live collection "$u")" "UNREADABLE"
 check "a unit with no name -> UNREADABLE" "$(prov_identity_live collection '{"kind":"collection"}')" "UNREADABLE"
 
-# ── kinds with no reader yet (S17 added plugin/marketplace; job/mcp/unit/tool
-# are still S18+) -> rc 2, nothing printed ──────────────────────────────────
+# ── kinds with no reader yet (S17 added plugin/marketplace, S18 added job;
+# mcp/unit/tool are still unshipped) -> rc 2, nothing printed ──────────────
 
-for k in job mcp unit tool; do
+for k in mcp unit tool; do
     out=$(prov_identity_live "$k" '{"unit":"x"}'); rc=$?
     check "kind $k has no reader -> rc 2" "$rc" "2"
     check "kind $k has no reader -> no output" "$out" ""
 done
+
+# ── job (HIMMEL-3525 S18): cron only, one crontab -l snapshot per call ─────
+
+cat > "$td/bin/crontab" <<'CRON_STUB'
+#!/usr/bin/env bash
+case "${CRONTAB_STUB_MODE:-ok}" in
+    absent) echo "no crontab for tester" >&2; exit 1 ;;
+    fail)   exit 127 ;;
+    ok)     printf '%s\n' "${CRONTAB_STUB_TABLE:-}" ;;
+esac
+CRON_STUB
+chmod 755 "$td/bin/crontab"
+
+check "job, a non-cron scheduler -> rc 2 (no reader yet)" \
+    "$(prov_identity_live job '{"unit":"HIMMEL-X","fields":{"scheduler":"at"}}'; echo $?)" "2"
+
+uj_job='{"unit":"HIMMEL-Qmd-Reindex","fields":{"scheduler":"cron"}}'
+export CRONTAB_STUB_MODE CRONTAB_STUB_TABLE
+CRONTAB_STUB_MODE=absent
+check "job, no crontab -> ABSENT" "$(prov_identity_live job "$uj_job")" "ABSENT"
+CRONTAB_STUB_MODE=fail
+check "job, a failed crontab -l -> UNREADABLE" "$(prov_identity_live job "$uj_job")" "UNREADABLE"
+CRONTAB_STUB_MODE=ok CRONTAB_STUB_TABLE='0 3 * * * run.sh # unrelated'
+check "job, no matching line -> ABSENT" "$(prov_identity_live job "$uj_job")" "ABSENT"
+CRONTAB_STUB_TABLE='0 3 * * * run.sh # HIMMEL-Qmd-Reindex'
+tok_job=$(printf 'job\n0 3 * * * run.sh # HIMMEL-Qmd-Reindex' | _prov_sha256)
+check "job, exactly one matching line -> the token of that line" "$(prov_identity_live job "$uj_job")" "$tok_job"
+CRONTAB_STUB_TABLE=$'0 3 * * * run.sh # HIMMEL-Qmd-Reindex\n0 4 * * * run.sh # HIMMEL-Qmd-Reindex'
+check "job, 2+ matching lines -> UNREADABLE (never guess which one)" "$(prov_identity_live job "$uj_job")" "UNREADABLE"
+unset CRONTAB_STUB_MODE CRONTAB_STUB_TABLE
+rm -f "$td/bin/crontab"
+
+# ── deferred from S17 round 3: _provid_marketplace's stype read must never
+# let a non-object .source crash the reader (HIMMEL-3525) ──────────────────
+
+mkt_dir="$td/mkt-cfg/plugins"; mkdir -p "$mkt_dir"
+printf '{"weird":{"source":"just-a-string"}}\n' > "$mkt_dir/known_marketplaces.json"
+PROV_CFG_DIR="$td/mkt-cfg"
+check "marketplace, a non-object .source -> UNREADABLE, not a crash" \
+    "$(prov_identity_live marketplace '{"unit":"weird"}')" "UNREADABLE"
+unset PROV_CFG_DIR
 
 # ── per-run cache under the fold's temp dir ─────────────────────────────────
 

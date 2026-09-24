@@ -142,6 +142,121 @@ if [ "${1:-}" = "--manifest-only" ]; then
   exit $?
 fi
 
+# check_bump_required — the --bump-required check (HIMMEL-3551). A commit (or
+# PR range) that changes any file under marketplace/plugins/<p>/ must also bump
+# that plugin's plugin.json "version", so `claude plugin update` actually picks
+# the change up (an unbumped local-directory source falls back to the
+# checkout's HEAD sha — see check_manifest_versions above — but only on a
+# COMMIT boundary; between commits `claude plugin update` compares versions and
+# reports "already at the latest" against stale cached content, HIMMEL-3551).
+#
+# Two modes, both git-diff based (never DRIFT_PLUGINS_DIR — that override
+# exists for the network-free class above; this check is inherently
+# range-based, so its fixtures are throwaway git repos, not bare directories):
+#   - no arg:      staged diff (`git diff --cached`) — the pre-commit shape.
+#   - <base-ref>:  <base-ref>..HEAD — the CI/PR-range shape.
+#
+# No marketplace.json entry currently pins a "version" field for a
+# directory-sourced (local) plugin — only the two git-remote plugins
+# (claude-obsidian, plannotator-effective-html) carry a version-shaped field,
+# and it's a `ref`/`sha` pin, not a `version` key, and neither has files under
+# marketplace/plugins/ (they're fetched from their own upstream repos) — so
+# they never enter this gate's diff scope. The existing pinned-remote drift
+# check above (the `gh api` sweep) is what catches THEIR staleness. If a future
+# local plugin's marketplace.json entry ever gains a "version" key, extend this
+# check then; today it would be dead code.
+check_bump_required() {
+  local base_ref="${1:-}"
+  if ! git rev-parse --show-toplevel >/dev/null 2>&1; then
+    echo "ERR check-plugin-drift --bump-required: not inside a git repository" >&2
+    return 1
+  fi
+  local rel="marketplace/plugins"
+  local changed
+  local diff_rc
+  if [ -n "$base_ref" ]; then
+    if ! git rev-parse --verify --quiet "$base_ref" >/dev/null 2>&1; then
+      echo "ERR check-plugin-drift --bump-required: cannot resolve base ref '$base_ref'" >&2
+      return 1
+    fi
+    changed="$(git diff --name-only --diff-filter=ACMRD "${base_ref}..HEAD" -- "$rel")"; diff_rc=$?
+  else
+    changed="$(git diff --cached --name-only --diff-filter=ACMRD -- "$rel")"; diff_rc=$?
+  fi
+  if [ "$diff_rc" -ne 0 ]; then
+    echo "ERR check-plugin-drift --bump-required: git diff failed (rc=$diff_rc) — cannot determine changed plugin files" >&2
+    return 1
+  fi
+  if [ -z "$changed" ]; then
+    echo "check-plugin-drift --bump-required: no plugin files changed"
+    return 0
+  fi
+
+  local names
+  names="$(printf '%s\n' "$changed" | sed -n "s#^${rel}/\\([^/]*\\)/.*#\\1#p" | sort -u)"
+
+  local bad=0 name
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    local manifest="$rel/$name/.claude-plugin/plugin.json"
+    if ! printf '%s\n' "$changed" | grep -qx "$manifest"; then
+      echo "ERR check-plugin-drift --bump-required: $name changed under $rel/$name/ but $manifest was not bumped (HIMMEL-3551)" >&2
+      bad=1
+      continue
+    fi
+    local old_ver new_ver
+    if [ -n "$base_ref" ]; then
+      old_ver="$(git show "${base_ref}:$manifest" 2>/dev/null | python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("version",""))
+except Exception:
+    print("")' 2>/dev/null)"
+      new_ver="$(git show "HEAD:$manifest" 2>/dev/null | python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("version",""))
+except Exception:
+    print("")' 2>/dev/null)"
+    else
+      old_ver="$(git show "HEAD:$manifest" 2>/dev/null | python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("version",""))
+except Exception:
+    print("")' 2>/dev/null)"
+      new_ver="$(git show ":$manifest" 2>/dev/null | python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("version",""))
+except Exception:
+    print("")' 2>/dev/null)"
+    fi
+    if [ -z "$old_ver" ]; then
+      continue  # plugin.json newly introduced — nothing to compare against
+    fi
+    if [ "$old_ver" = "$new_ver" ]; then
+      echo "ERR check-plugin-drift --bump-required: $name's plugin.json changed but \"version\" is still $old_ver — bump it (HIMMEL-3551)" >&2
+      bad=1
+      continue
+    fi
+    if ! python3 -c 'import sys
+def key(v):
+    return [int(p) if p.isdigit() else p for p in v.replace("-", ".").split(".")]
+sys.exit(0 if key(sys.argv[2]) > key(sys.argv[1]) else 1)' "$old_ver" "$new_ver" 2>/dev/null; then
+      echo "ERR check-plugin-drift --bump-required: $name's plugin.json version went $old_ver -> $new_ver, which is not a bump (HIMMEL-3551)" >&2
+      bad=1
+    fi
+  done <<< "$names"
+
+  if [ "$bad" -ne 0 ]; then
+    return 1
+  fi
+  echo "check-plugin-drift --bump-required: every changed plugin bumped its version"
+  return 0
+}
+
+if [ "${1:-}" = "--bump-required" ]; then
+  check_bump_required "${2:-}"
+  exit $?
+fi
+
 # Portable replacement for `sort -V | tail -1`: GNU-only (BSD sort on macOS has
 # no -V), which would silently leave `latest`/`hi` empty on macOS and either
 # mark a tag_release check UNCHECKED or misreport it as BEHIND. Reads

@@ -100,6 +100,11 @@ trap cleanup EXIT
 # invokes the existing primitive and reads its exit status; the
 # ~/.claude.json read-modify-write logic stays in scripts/lib/, none of it
 # reimplemented here.
+#
+# HIMMEL-3059 S4: release-check.sh — `himmelctl update` on a versioned
+# release-tarball install sources the existing release-lookup primitive (the
+# same fixed URL, tag grammar and version compare the session nudge and
+# himmel-update.sh --check use) instead of reimplementing the lookup in JS.
 allow_full="$work/allow-full.txt"
 cat > "$allow_full" <<'NAMES'
 check-user-slug.sh
@@ -120,6 +125,7 @@ wire-trust-hooks.mjs
 remove-retired-plugin.sh
 plugin-profile.sh
 ensure-workspace-trust.sh
+release-check.sh
 NAMES
 
 # extract_script_targets — every 'name.sh' / "name.sh" / 'name.ps1' /

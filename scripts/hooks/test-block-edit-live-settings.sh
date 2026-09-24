@@ -734,6 +734,155 @@ CMD126=$'X=1\nsed -i s/a/b/ .claude/settings.json; jq \'.foo\' .claude/settings.
 assert_rc "126 newline-in-segment write still denies (HIMMEL-3465)" 2 \
     "$(bash_rc_of "$PRIMARY" "$CMD126")"
 
+# 127-131 (HIMMEL-3499): named residuals from HIMMEL-3468's PR #1146 — extract
+# and checkout tools that clobber a live .claude/ without going through the
+# cp/mv/install/rsync/ln/dd/tee verb list or naming settings.json in the text.
+# Each RED against 6cba9613 (the HIMMEL-3468 merge base for this ticket).
+assert_rc "127 git checkout <ref> -- .claude from primary denies (probe 1)" 2 \
+    "$(bash_rc_of "$PRIMARY" "git checkout origin/x -- .claude")"
+assert_rc "128 tar -x -C .claude from primary denies (probe 2)" 2 \
+    "$(bash_rc_of "$PRIMARY" "tar -xf a.tar -C .claude")"
+assert_rc "129 unzip -d .claude from primary denies (probe 3)" 2 \
+    "$(bash_rc_of "$PRIMARY" "unzip -o a.zip -d .claude")"
+assert_rc "130 tar -C \$HOME/.claude from a non-repo cwd denies (probe 4)" 2 \
+    "$(bash_rc_of "$SANDBOX" "tar -xf a.tar -C \$HOME/.claude" HOME="$FAKEHOME")"
+assert_rc "131 git restore --source=<ref> -- .claude from primary denies (scope companion to probe 1)" 2 \
+    "$(bash_rc_of "$PRIMARY" "git restore --source=origin/x -- .claude")"
+
+# 132-135: ordinary worktree git/extract use stays ALLOW. 132 has no .claude
+# mention at all (an everyday branch checkout); 133-135 target a WORKTREE'S
+# OWN .claude — a bare relative mention with no cd/-C/.. and no primary/$HOME
+# prefix, same exemption every other verb already gets.
+assert_rc "132 git checkout -b <branch> with no .claude mention allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "git checkout -b some-branch")"
+assert_rc "133 git checkout HEAD -- .claude from a worktree (own dir) allows" 0 \
+    "$(bash_rc_of "$WT2" "git checkout HEAD -- .claude")"
+assert_rc "134 unzip -d .claude from a worktree (own dir) allows" 0 \
+    "$(bash_rc_of "$WT2" "unzip -o a.zip -d .claude")"
+assert_rc "135 git restore --source=HEAD -- .claude from a worktree (own dir) allows" 0 \
+    "$(bash_rc_of "$WT2" "git restore --source=HEAD -- .claude")"
+
+# 136: accepted false deny, documented (HIMMEL-3499, same shape as the
+# HIMMEL-3468 cd/pushd precedent). tar's OWN directory flag is `-C`, the same
+# spelling changes_directory() already treats as "the target may have moved,
+# void the worktree-relative exemption" for `git -C`/`env -C`/`make -C`. That
+# blunt rule cannot distinguish tar's `-C .claude` (which NAMES its own
+# destination, not an unrelated cwd shift) from a genuine directory jump, so
+# it denies this worktree's own extraction too. Accepted: matches the
+# project's stated preference (fail closed, prefer false positive) and needs
+# no new parsing to fix.
+assert_rc "136 tar -x -C .claude from a worktree (own dir) denies (accepted false deny)" 2 \
+    "$(bash_rc_of "$WT2" "tar -xf a.tar -C .claude")"
+
+# 137-149 (HIMMEL-3555, adversarial panel round on PR #1210): fixes for
+# false-denies and false-positives the panel found in the HIMMEL-3499 fix
+# itself, verified against the panel's own probe corpus
+# (scratchpad/{run.sh,cases,cases2,cases3}.txt) before being written here.
+
+# 137-138: a `.claude/worktrees/<name>` mention is a CONTAINER path, not a
+# destination — every linked worktree lives there, so an ordinary
+# cross-worktree `-C <other-worktree-path>` reference (a ubiquitous shape:
+# `git -C <wt> checkout …`, `tar -C <wt>/vendor -x …`) is NOT "naming
+# .claude as a destination", even though the worktree's own path contains
+# ".claude" as a substring. Before this fix these false-denied from EVERY
+# cwd once "checkout"/"tar" became recognized verbs — a fleet-breaking
+# regression (panel finding 1, IMPORTANT).
+assert_rc "137 git -C <other-worktree> checkout from an unrelated cwd allows" 0 \
+    "$(bash_rc_of "$WT2" "git -C $NESTED_WT checkout -- scripts/x.sh")"
+assert_rc "138 tar -xzf into <other-worktree>/vendor from an unrelated cwd allows" 0 \
+    "$(bash_rc_of "$WT2" "tar -xzf a.tgz -C $NESTED_WT/vendor")"
+
+# 139-140: gtar/bsdtar are common alternate tar spellings — before this fix
+# they denied only by ACCIDENT, via a `.tar`-suffixed archive-filename
+# argument matching the bare `tar` word (`a.tar` contains the `tar` word,
+# `.tar` boundary and all) — an archive named anything else evaded
+# detection entirely (panel residual note). `.tgz` filenames below prove the
+# recognition is now robust, not accidental.
+assert_rc "139 bsdtar -C \$HOME/.claude (.tgz archive, no accidental match) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "bsdtar -xf a.tgz -C \$HOME/.claude" HOME="$FAKEHOME")"
+assert_rc "140 gtar --directory=\$HOME/.claude (.tgz archive, no accidental match) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "gtar -xzf pkg.tgz --directory=\$HOME/.claude" HOME="$FAKEHOME")"
+
+# 141-142: a short flag glued directly to its argument (`-C.claude`,
+# `-d.claude`, `-t.claude`) put an alnum character immediately before the
+# dot, which the old leading-boundary class rejected — a real bypass (GNU
+# tar/unzip/cp all accept the glued form; panel finding 2, IMPORTANT). 142
+# is the SAME regex bug predating this PR (`cp -t.claude`), fixed in the
+# same pass per the panel's request.
+assert_rc "141 tar -xf a.tar -C.claude (glued flag) from primary denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "tar -xf a.tar -C.claude")"
+assert_rc "142 cp x -t.claude (glued flag, pre-existing bug) from primary denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "cp x -t.claude")"
+
+# 143-145: tar's CREATE (-c) and LIST (-t) modes, and unzip's LIST (-l) mode,
+# read/archive `.claude`'s CONTENTS — they do not write into it. Before this
+# fix the bare verb word matched regardless of mode and false-denied a
+# legitimate backup/listing (panel finding 3, MINOR).
+assert_rc "143 tar -czf backup.tgz .claude (create mode) from primary allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "tar -czf backup.tgz .claude")"
+assert_rc "144 tar -tf a.tar .claude/ (list mode) from primary allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "tar -tf a.tar .claude/")"
+assert_rc "145 unzip -l a.zip .claude/* (list mode) from primary allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "unzip -l a.zip .claude/*")"
+
+# 146-148: "checkout"/"restore" are ordinary English words that show up as
+# plain filenames or grep search terms with no git verb anywhere — a bare
+# bare-word match false-denied a plain read (panel finding 3, MINOR). Requires
+# a `git` word co-occurring anywhere in the text (loose, not adjacency) —
+# 148 proves this still catches `git checkout` even with another git flag
+# (`--work-tree=.`) sitting between "git" and "checkout".
+assert_rc "146 cat of a file literally named checkout.md allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "cat \$HOME/.claude/commands/checkout.md" HOME="$FAKEHOME")"
+assert_rc "147 grep for the word restore (no git verb) allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "grep -rn restore \$HOME/.claude/skills" HOME="$FAKEHOME")"
+assert_rc "148 git --work-tree=. checkout -- .claude (non-adjacent git flag) still denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "git --work-tree=. checkout x -- .claude")"
+
+# 149 control: the four HIMMEL-3499 probes still deny after the redesign —
+# regression guard for the fix this panel round revised.
+assert_rc "149 git checkout <ref> -- .claude from primary still denies (probe 1 regression guard)" 2 \
+    "$(bash_rc_of "$PRIMARY" "git checkout origin/x -- .claude")"
+
+# 150-153 (HIMMEL-3555, fourth panel round on #1210, F1 IMPORTANT): a `..`
+# after the `.claude/worktrees/` container-path strip climbs back OUT of the
+# worktrees container into the primary's own `.claude` — the strip must not
+# apply when `..` appears anywhere, mirroring mentions_primary_or_home()'s
+# own-root blanking rule for the identical reason (the hook never resolves
+# `..`, so refusing to strip is what keeps the climb visible to the
+# existing `..` live-check rule). All 4 gave rc=0 everywhere before this fix.
+assert_rc "150 cp -r x/. into <primary>/.claude/worktrees/.. denies" 2 \
+    "$(bash_rc_of "$WT2" "cp -r x/. $PRIMARY/.claude/worktrees/..")"
+assert_rc "151 rsync -a into <primary>/.claude/worktrees/../ denies" 2 \
+    "$(bash_rc_of "$WT2" "rsync -a x/ $PRIMARY/.claude/worktrees/../")"
+assert_rc "152 cp -r x/. into relative .claude/worktrees/.. from primary denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "cp -r x/. .claude/worktrees/..")"
+assert_rc "153 cp -r x/. into <nested-worktree>/../../ denies" 2 \
+    "$(bash_rc_of "$WT2" "cp -r x/. $NESTED_WT/../../")"
+
+# 154-158 (HIMMEL-3555, fourth panel round on #1210, F2 MED): the tar/unzip
+# mode check is scoped to the shell SEGMENT containing the verb (split on
+# `;`, `&`, `|`, `#`) — a chained or commented trailing token used to spoof
+# it via a coincidental ` -t`/` -c`/` -l`/` -v` elsewhere in the command. All
+# 5 gave rc=0 everywhere before this fix, despite a genuine extraction into
+# a live $HOME/.claude target.
+assert_rc "154 tar -C \$HOME/.claude then a chained ls -t still denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "tar -xzf a.tgz -C \$HOME/.claude; ls -t" HOME="$FAKEHOME")"
+assert_rc "155 tar -C \$HOME/.claude then && bash -c true still denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "tar -xzf a.tgz -C \$HOME/.claude && bash -c true" HOME="$FAKEHOME")"
+assert_rc "156 tar --directory \$HOME/.claude with a trailing # -t comment still denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "tar -xzf a.tgz --directory \$HOME/.claude # -t" HOME="$FAKEHOME")"
+assert_rc "157 unzip -d \$HOME/.claude then && ls -l still denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "unzip -o a.zip -d \$HOME/.claude && ls -l" HOME="$FAKEHOME")"
+assert_rc "158 unzip -d \$HOME/.claude with a trailing -x -v still denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "unzip -o a.zip -d \$HOME/.claude -x -v" HOME="$FAKEHOME")"
+
+# 159 (HIMMEL-3555, fourth panel round on #1210, F3 LOW): checkout/restore's
+# git-co-occurrence check is scoped to the same segment too — "git" in a
+# LATER, unrelated chained command must not make an unrelated read look like
+# a git-checkout write. Gave rc=2 everywhere before this fix.
+assert_rc "159 cat of a checkout.md file, then && git status (unrelated segment), allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "cat \$HOME/.claude/checkout.md && git status" HOME="$FAKEHOME")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true

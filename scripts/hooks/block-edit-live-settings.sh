@@ -78,9 +78,9 @@
 #      chaining or redirection metacharacter anywhere (so a trailing
 #      `&& rm -rf /` can't ride in on an allowlisted first verb).
 #   2. Does it target the primary's `.claude/` DIRECTORY itself as a
-#      destination (cp/mv/install/rsync/ln/dd/tee, or a
-#      `-t`/`--target-directory` flag) without necessarily naming
-#      settings.json in the text (`cp x .claude/`)?
+#      destination (cp/mv/install/rsync/ln/dd/tee/tar/gtar/bsdtar/unzip, git
+#      checkout/restore, or a `-t`/`--target-directory` flag) without
+#      necessarily naming settings.json in the text (`cp x .claude/`)?
 # Either question denies ONLY when the mention resolves to a LIVE file: cwd
 # is itself the primary checkout, or the command text contains the primary
 # checkout's own absolute path or $HOME's (resolved once via
@@ -507,16 +507,111 @@ is_readonly_allowlisted() {
 # settings.json — rule 2 catches `cp x .claude/` / `cp -t .claude/ x`,
 # where the destination basename is never "settings.json" in the text.
 mentions_dot_claude_dir_dest() {
-    local out
-    # Trailing boundary includes a quote character: a quoted destination
-    # with no trailing slash (`cp -r x/. ".claude"`) puts the closing quote
-    # immediately after `.claude`, which the boundary class must accept too.
-    out=$(printf '%s' "$1" | grep -E '(^|[^a-z0-9_])\.claude([/[:space:];&|"'"'"']|$)') || true
+    local c out
+    # A `.claude/worktrees/…` mention is a CONTAINER path, not a destination
+    # (HIMMEL-3499/3555 panel round on #1210): every linked worktree lives at
+    # <root>/.claude/worktrees/<name>, so `git -C <that-path> checkout …` or
+    # `tar -C <that-path>/vendor -x …` names `.claude` only because that is
+    # where worktrees live, not because the command targets the `.claude`
+    # directory itself. Strip it before matching so an ordinary cross-
+    # worktree reference never counts. Never strips a mention of the
+    # worktree's OWN nested `.claude` (`…/worktrees/<wt>/.claude/settings.json`
+    # keeps a SECOND, un-stripped `.claude` after the container segment), and
+    # never touches rule 1 (`settings.json` is a distinct substring).
+    #
+    # Never stripped when `..` appears ANYWHERE in the text (HIMMEL-3555,
+    # third panel round on #1210): `cp -r x/. …/worktrees/..` (or a deeper
+    # `worktrees/wt/../../`) climbs back OUT of the worktrees container into
+    # `.claude` itself — the SAME "any `..` voids the strip" rule
+    # mentions_primary_or_home() already applies to its own-root blanking,
+    # for the identical reason (this hook does not resolve `..`, so it
+    # cannot tell how far a climb reaches; only refusing to strip at all
+    # keeps the mention visible to the live-check `..` rule below).
+    case "$1" in
+        *..*) c="$1" ;;
+        *) c=${1//.claude\/worktrees/CLAUDE_WORKTREES_PATH} ;;
+    esac
+    # No LEADING boundary requirement (HIMMEL-3499/3555 panel round on
+    # #1210): a short flag glued directly to its argument (`-C.claude`,
+    # `-d.claude`, `-t.claude`) puts an alnum character immediately before
+    # the dot, which the old `(^|[^a-z0-9_])` leading class rejected — GNU
+    # tar/unzip/cp all accept the glued form, so this was a real bypass, not
+    # just a `cp -t.claude` residual (the same regex predates HIMMEL-3499).
+    # Trailing boundary still includes a quote character: a quoted
+    # destination with no trailing slash (`cp -r x/. ".claude"`) puts the
+    # closing quote immediately after `.claude`, which it must accept too.
+    # Accepted over-match: a real filename ending in `…x.claude` now matches
+    # too — fail-closed, matching the project's stated preference.
+    out=$(printf '%s' "$c" | grep -E '\.claude([/[:space:];&|"'"'"']|$)') || true
     [ -n "$out" ]
 }
 
-# has_write_verb_or_target_flag CMD_LC — a copy/move/link-shaped verb, or a
-# `-t`/`--target-directory` flag (rule 2's verb list).
+# _verb_segment TEXT VERB_GREP_PATTERN — the single shell "segment" of TEXT
+# containing a match for VERB_GREP_PATTERN, split on `;`, `&` (covers `&&`
+# too — each `&` is its own split point), `|` and `#` (HIMMEL-3555, third
+# panel round on #1210): a mode-check that scanned the WHOLE command let a
+# chained or commented trailing token spoof it via a coincidental
+# ` -t`/` -c`/` -l`/` -v` elsewhere in the text — `tar -xzf a.tgz -C
+# ~/.claude; ls -t` false-ALLOWED because `ls -t`'s `-t` read as tar's own
+# list-mode flag. Falls back to the whole text if no segment matches (should
+# not happen — the caller already matched the same pattern against the
+# whole text), never to an empty result.
+_verb_segment() {
+    local seg
+    seg=$(printf '%s' "$1" | tr ';&|#' '\n' | grep -E "$2" | head -1)
+    [ -n "$seg" ] && printf '%s' "$seg" || printf '%s' "$1"
+}
+
+# _tar_verb_mode CMD_N — CMD_N is the case-preserved command text. Returns
+# 0 (a candidate write) unless the tar/gtar/bsdtar segment (see
+# _verb_segment above) names tar's CREATE (`-c`/`--create`) or LIST
+# (`-t`/`--list`) mode, or an old-style clustered option (`tar cf …`,
+# `tar tvf …`) whose first letter is `c`/`t` — none of those write into a
+# destination directory (HIMMEL-3499/3555: `tar -czf out.tgz .claude` and
+# `tar -tf a.tar .claude/` archive/list `.claude`'s CONTENTS, they do not
+# write into it, and were false-denied).
+#
+# Checked on the CASE-PRESERVED text, not the lowercased CMD_LC
+# has_write_verb_or_target_flag otherwise uses: tar's create flag is
+# lowercase `-c`, distinct from the (uppercase) `-C` directory flag
+# changes_directory() already recognizes. Case-folding first would conflate
+# them — a command using only `-C` (extract-into-a-dir) would then read as
+# `-c` (create) and be wrongly excluded, a bypass.
+_tar_verb_mode() {
+    local seg
+    seg=$(_verb_segment "$1" '(^|[^a-zA-Z0-9_])(g?tar|bsdtar)([^a-zA-Z0-9_]|$)')
+    case "$seg" in
+        *' -c'*|*'--create'*|*' -t'*|*'--list'*) return 1 ;;
+    esac
+    case "$seg" in
+        *' tar '[ct]*|*' gtar '[ct]*|*' bsdtar '[ct]*) return 1 ;;
+        'tar '[ct]*|'gtar '[ct]*|'bsdtar '[ct]*) return 1 ;;
+    esac
+    return 0
+}
+
+# _unzip_verb_mode CMD_LC — 0 (a candidate write) unless the unzip segment
+# (see _verb_segment above) names unzip's own LIST (`-l`), TEST (`-t`) or
+# verbose-list (`-v`) mode AS ITS FIRST FLAG (HIMMEL-3499, HIMMEL-3555). The
+# first-flag requirement is deliberate: `unzip -o a.zip -d ~/.claude -x -v`
+# is a genuine extraction (destination `-d`, overwrite `-o`) that merely
+# also passes `-v` — a bare "anywhere in the segment" check read that
+# trailing `-v` as unzip's list mode and false-ALLOWED it. `unzip -l
+# a.zip .claude/*` (mode flag first) still excludes correctly. Unlike tar,
+# none of unzip's own flag letters collide across case, so CMD_LC is fine.
+_unzip_verb_mode() {
+    local seg
+    seg=$(_verb_segment "$1" '(^|[^a-z0-9_])unzip([^a-z0-9_]|$)')
+    case "$seg" in
+        *' unzip '-[ltv]*|unzip' '-[ltv]*) return 1 ;;
+    esac
+    return 0
+}
+
+# has_write_verb_or_target_flag CMD_LC CMD_N — a copy/move/link/extract/
+# checkout-shaped verb, or a `-t`/`--target-directory` flag (rule 2's verb
+# list). CMD_N is the case-preserved text, needed only for tar's own
+# create/list-mode check above.
 #
 # The word boundary on both sides is the COMPLEMENT of a word character, not
 # a list of shell metacharacters (HIMMEL-3468): an enumerated class missed
@@ -524,16 +619,57 @@ mentions_dot_claude_dir_dest() {
 # bypass. Any non-word character before the verb now counts, at the cost of
 # over-matching a word that merely ends a token (`-cp`, `x.tee`) — which only
 # denies when a `.claude` destination is named too, i.e. fail-closed.
+#
+# tar/gtar/bsdtar/unzip/checkout/restore (HIMMEL-3499, HIMMEL-3555): the same
+# blunt verb-name list, widened to the extract and checkout tools that
+# clobber a directory without naming settings.json in the text —
+# `git checkout <ref> -- .claude`, `tar -x -C .claude`, `unzip -d .claude`.
+# This is the SAME shape as the existing cp/mv/install/rsync/ln/dd/tee list
+# (an allowlist of known destructive verb spellings), not the
+# metacharacter-boundary enumeration HIMMEL-3468 ruled against — so it stays
+# in scope for the "no more parsing" decision. gtar/bsdtar are the two other
+# common tar spellings; before this they denied only by accident, via a
+# `.tar`-suffixed archive-filename argument matching the bare `tar` word.
+# tar's own directory flag happens to be spelled `-C`, which
+# changes_directory() already treats as a directory-move signal for
+# `git -C`/`env -C`/`make -C`; that rule cannot tell tar's self-targeting
+# `-C .claude` apart from an unrelated cwd shift, so it also denies a
+# worktree's own `tar -x -C .claude` — an accepted, documented false deny
+# (test 136), the same shape as the cd/pushd precedent above.
+#
+# checkout/restore additionally require a `git` word in the SAME segment
+# (see _verb_segment above; HIMMEL-3499, HIMMEL-3555): unlike cp/mv/tar/
+# unzip, these are common English words that show up as ordinary
+# filenames/arguments (`~/.claude/commands/checkout.md`, `grep -rn restore
+# ~/.claude/skills`), and a bare-word match false-denied a plain read of
+# one. Scoped to the segment, not just loose whole-text co-occurrence — `cat
+# ~/.claude/checkout.md && git status` has "git" only in a LATER, unrelated
+# segment and must stay allowed. `git -C <dir> checkout` and
+# `git --work-tree=. checkout` both still count (same segment); the
+# `.claude/worktrees/` path-stripping above is what excludes an ordinary
+# cross-worktree `-C` reference, not this check.
 has_write_verb_or_target_flag() {
-    local out
-    # -t/--target-directory is a flag of the copy/move-shaped verbs below
-    # (`cp -t`, `install -t`), never a standalone signal — matched on its own
-    # it also caught unrelated tools that reuse -t for something else
-    # (`ls -t` sorts by time; `ls -t ~/.claude/…` false-denied, HIMMEL-3465).
-    # A verb match already returns 0 below, so gating -t on that same verb
-    # list adds no case the verb check doesn't already cover.
-    out=$(printf '%s' "$1" | grep -E '(^|[^a-z0-9_])(cp|mv|install|rsync|ln|dd|tee)([^a-z0-9_]|$)') || true
+    local c="$1" n="$2" out seg
+    out=$(printf '%s' "$c" | grep -E '(^|[^a-z0-9_])(cp|mv|install|rsync|ln|dd|tee)([^a-z0-9_]|$)') || true
     [ -n "$out" ] && return 0
+
+    out=$(printf '%s' "$c" | grep -E '(^|[^a-z0-9_])(g?tar|bsdtar)([^a-z0-9_]|$)') || true
+    if [ -n "$out" ] && _tar_verb_mode "$n"; then
+        return 0
+    fi
+
+    out=$(printf '%s' "$c" | grep -E '(^|[^a-z0-9_])unzip([^a-z0-9_]|$)') || true
+    if [ -n "$out" ] && _unzip_verb_mode "$c"; then
+        return 0
+    fi
+
+    out=$(printf '%s' "$c" | grep -E '(^|[^a-z0-9_])(checkout|restore)([^a-z0-9_]|$)') || true
+    if [ -n "$out" ]; then
+        seg=$(_verb_segment "$c" '(^|[^a-z0-9_])(checkout|restore)([^a-z0-9_]|$)')
+        out=$(printf '%s' "$seg" | grep -E '(^|[^a-z0-9_])git([^a-z0-9_]|$)') || true
+        [ -n "$out" ] && return 0
+    fi
+
     return 1
 }
 
@@ -542,9 +678,19 @@ has_write_verb_or_target_flag() {
 # list, or a `-C <dir>` / `--chdir` word (`git -C`, `make -C`, `env -C`),
 # which moves the target the same way. `-C` is matched on the case-preserved
 # text CMD_N, so a lowercase `-c` (`bash -c`) is not one.
-# ponytail: a relative `find … -exec` and a tool whose directory flag has
-# another name (`tar --directory`, `unzip -d`) are not matched — the
-# documented residuals.
+#
+# tar/unzip naming a `.claude` destination (`tar -C .claude`, `tar --directory
+# .claude`, `unzip -d .claude`) no longer need THIS function to be caught at
+# all (HIMMEL-3499): has_write_verb_or_target_flag() now matches the bare
+# `tar`/`unzip` word regardless of which directory flag it uses, so rule 2
+# (mentions_dot_claude_dir_dest + has_write_verb_or_target_flag) denies them
+# directly. tar's `-C` spelling happens to ALSO match this function's own
+# `-C` case, which additionally voids the worktree-relative exemption for a
+# worktree's own `tar -C .claude` — an accepted, documented false deny (test
+# 136) — but that is a side effect of the shared `-C` spelling, not something
+# this function needed to grow to close the residual.
+# ponytail: a relative `find … -exec` naming `.claude` as its target is still
+# not matched by either mechanism — the remaining documented residual.
 changes_directory() {
     local out
     out=$(printf '%s' "$1" | grep -E '(^|[^a-z0-9_])(cd|pushd|popd)([^a-z0-9_]|$)') || true
@@ -622,7 +768,7 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     esac
 
     dir_dest=0
-    if mentions_dot_claude_dir_dest "$cmd_lc" && has_write_verb_or_target_flag "$cmd_lc"; then
+    if mentions_dot_claude_dir_dest "$cmd_lc" && has_write_verb_or_target_flag "$cmd_lc" "$cmd_n"; then
         dir_dest=1
     fi
 
@@ -679,7 +825,7 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     if [ "$mentions_settings" = "1" ]; then
         deny_message "a $tool_name command" "$cmd" "the command text names a live settings.json/settings.local.json (worktree-relative spellings of the worktree's OWN copy are exempt; this one resolves to the primary checkout or \$HOME)"
     else
-        deny_message "a $tool_name command" "$cmd" "the command targets the primary checkout's .claude/ directory itself (cp/mv/install/rsync/ln/dd/tee, or a -t/--target-directory destination)"
+        deny_message "a $tool_name command" "$cmd" "the command targets the primary checkout's .claude/ directory itself (cp/mv/install/rsync/ln/dd/tee/tar/gtar/bsdtar/unzip, git checkout/restore, or a -t/--target-directory destination)"
     fi
     exit 2
 fi

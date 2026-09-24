@@ -257,6 +257,55 @@ if [ "$null_rc" -ne 0 ]; then ok "--manifest-only: RED — non-object manifest (
 if grepq "$null_out" "Traceback"; then bad "--manifest-only: non-object manifest crashed instead of failing cleanly: $null_out"; else ok "--manifest-only: non-object manifest fails cleanly, no traceback"; fi
 rm -rf -- "$W_NULL"
 
+# 3i. --bump-required (HIMMEL-3551): a commit that changes a plugin file
+#     without bumping that plugin's plugin.json "version" must fail, both in
+#     staged mode (pre-commit shape) and range mode (CI shape). Throwaway git
+#     repo fixtures — this check is inherently diff-based, unlike the
+#     directory-only --manifest-only checks above.
+W_BUMP="$(mktemp -d "${TMPDIR:-/tmp}/pdrift-bump.XXXXXX")" || { bad "--bump-required fixture: mktemp -d failed"; exit 1; }
+(
+  set -e
+  cd "$W_BUMP"
+  git init -q
+  git config user.email test@example.com
+  git config user.name test
+  mkdir -p marketplace/plugins/plugin-a/.claude-plugin marketplace/plugins/plugin-a/skills
+  printf '{"name": "plugin-a", "version": "0.1.0"}\n' > marketplace/plugins/plugin-a/.claude-plugin/plugin.json
+  printf '# skill\n' > marketplace/plugins/plugin-a/skills/one.md
+  git add -A
+  git commit -q -m 'chore: seed plugin-a'
+)
+# RED (staged): edit a plugin file, stage it, don't touch the manifest.
+(cd "$W_BUMP" && printf '# skill v2\n' > marketplace/plugins/plugin-a/skills/one.md && git add -A)
+staged_red_out="$(cd "$W_BUMP" && bash "$SCRIPT" --bump-required 2>&1)"; staged_red_rc=$?
+if [ "$staged_red_rc" -ne 0 ]; then ok "--bump-required (staged): RED — plugin changed without a version bump exits non-zero"; else bad "--bump-required (staged): RED did not fail (rc=0): $staged_red_out"; fi
+if grepq "$staged_red_out" "plugin-a"; then ok "--bump-required (staged): RED names the offending plugin"; else bad "--bump-required (staged): RED output did not name plugin-a: $staged_red_out"; fi
+# GREEN (staged): also bump the version.
+(cd "$W_BUMP" && printf '{"name": "plugin-a", "version": "0.1.1"}\n' > marketplace/plugins/plugin-a/.claude-plugin/plugin.json && git add -A)
+staged_green_out="$(cd "$W_BUMP" && bash "$SCRIPT" --bump-required 2>&1)"; staged_green_rc=$?
+if [ "$staged_green_rc" -eq 0 ]; then ok "--bump-required (staged): GREEN — version bumped alongside the change"; else bad "--bump-required (staged): GREEN fixture failed (rc=$staged_green_rc): $staged_green_out"; fi
+(cd "$W_BUMP" && git commit -q -m 'chore: bump plugin-a')
+
+# RED (range): a second commit changes a plugin file, no manifest bump; gate
+# against the range base..HEAD instead of the index.
+base_sha="$(cd "$W_BUMP" && git rev-parse HEAD)"
+(cd "$W_BUMP" && printf '# skill v3\n' > marketplace/plugins/plugin-a/skills/one.md && git add -A && git commit -q -m 'fix: tweak plugin-a skill, no bump')
+range_red_out="$(cd "$W_BUMP" && bash "$SCRIPT" --bump-required "$base_sha" 2>&1)"; range_red_rc=$?
+if [ "$range_red_rc" -ne 0 ]; then ok "--bump-required (range): RED — unbumped range change exits non-zero"; else bad "--bump-required (range): RED did not fail (rc=0): $range_red_out"; fi
+# GREEN (range): a bump commit on top closes the range's own gap.
+(cd "$W_BUMP" && printf '{"name": "plugin-a", "version": "0.1.2"}\n' > marketplace/plugins/plugin-a/.claude-plugin/plugin.json && git add -A && git commit -q -m 'chore: bump plugin-a again')
+range_green_out="$(cd "$W_BUMP" && bash "$SCRIPT" --bump-required "$base_sha" 2>&1)"; range_green_rc=$?
+if [ "$range_green_rc" -eq 0 ]; then ok "--bump-required (range): GREEN — version bumped within the range"; else bad "--bump-required (range): GREEN fixture failed (rc=$range_green_rc): $range_green_out"; fi
+# A new plugin's first commit needs no bump — there's nothing to bump FROM.
+(cd "$W_BUMP" && mkdir -p marketplace/plugins/plugin-b/.claude-plugin && printf '{"name": "plugin-b", "version": "0.1.0"}\n' > marketplace/plugins/plugin-b/.claude-plugin/plugin.json && git add -A)
+new_plugin_out="$(cd "$W_BUMP" && bash "$SCRIPT" --bump-required 2>&1)"; new_plugin_rc=$?
+if [ "$new_plugin_rc" -eq 0 ]; then ok "--bump-required (staged): a brand-new plugin needs no bump"; else bad "--bump-required (staged): new plugin wrongly required a bump (rc=$new_plugin_rc): $new_plugin_out"; fi
+(cd "$W_BUMP" && git commit -q -m 'feat: add plugin-b')
+# Nothing staged/changed under marketplace/plugins/ at all -> pass trivially.
+noop_out="$(cd "$W_BUMP" && bash "$SCRIPT" --bump-required 2>&1)"; noop_rc=$?
+if [ "$noop_rc" -eq 0 ]; then ok "--bump-required (staged): no plugin changes -> pass"; else bad "--bump-required (staged): no-op case failed (rc=$noop_rc): $noop_out"; fi
+rm -rf -- "$W_BUMP"
+
 # 4. End-to-end: the script runs to completion with a sane exit code —
 #    0 (all current / fail-open), 2 (drift), or 3 (incomplete). Anything else
 #    (1, 127, crash) fails.

@@ -333,6 +333,10 @@ _ix_uam=$(m_index user-agents-md) || exit 2
 _ix_hud=$(m_index hud-config) || exit 2
 _ix_trust=$(m_index workspace-trust) || exit 2
 _ix_qmd=$(m_index qmd-fork) || exit 2
+_ix_cadence_pipeline=$(m_index cadence-pipeline-dir) || exit 2
+_ix_cadence_qmd=$(m_index cadence-qmd-dir) || exit 2
+_ix_cadence_graphmap=$(m_index cadence-graphmap-dir) || exit 2
+_ix_obs=$(m_index observability-registry) || exit 2
 
 CHANNEL_DIR="$(strip_trailing_slash "$(m_path "$_ix_channel")")"
 BRIDGE_ROOT="$(strip_trailing_slash "$(m_path "$_ix_bridge")")"
@@ -344,6 +348,13 @@ USER_SETTINGS="$(m_path "$_ix_settings")"
 # temp dir must point the other there too, or uninstall would delete the real
 # cache during a test.
 HIMMEL_CACHE_DIR="$(strip_trailing_slash "$(m_path "$_ix_cache")")"
+# HIMMEL-3559: the 3 cadence runner dirs an arm writes into (never removed by
+# any cadence script's own disarm, which only clears files inside them) and
+# the observability registry any cadence arm's register call writes.
+CADENCE_PIPELINE_DIR="$(strip_trailing_slash "$(m_path "$_ix_cadence_pipeline")")"
+CADENCE_QMD_DIR="$(strip_trailing_slash "$(m_path "$_ix_cadence_qmd")")"
+CADENCE_GRAPHMAP_DIR="$(strip_trailing_slash "$(m_path "$_ix_cadence_graphmap")")"
+OBSERVABILITY_REGISTRY="$(m_path "$_ix_obs")"
 
 # Operator state (manifest class=state) is removed only on --purge-state; the
 # legacy --keep-telegram-state can only ever keep more, and contradicts the
@@ -631,6 +642,7 @@ protected_path() {
   local _allowed_suffixes=(
     ".claude/himmel" ".claude/channels/telegram" ".claude/handover/bridge"
     ".himmel"
+    ".claude/pipeline-cadence" ".claude/qmd-cadence" ".claude/graphmap-cadence"
   )
   if [ -n "$_t_lexical" ]; then
     for _suffix in "${_allowed_suffixes[@]}"; do
@@ -1805,13 +1817,16 @@ if [ "$LEDGER_OK" -eq 1 ]; then
   fi
 fi
 
-# ledger_report_kept_units <plugin|marketplace|job> — for every fold unit of
+# ledger_report_kept_units <plugin|marketplace> — for every fold unit of
 # this register kind whose verdict is NOT `remove`, print "kept (<reason>)"
 # and write its outcome row; also prints one count line for `ours-unverified`
 # removals (a legacy row with no recorded identity, removed unverified).
 # Shared by [4/8] and [7/8] (HIMMEL-3332 S6; verdict-based since HIMMEL-3525
 # S17 — replaces ledger_report_preexisted_units, which only reported
 # ours=false rows and missed a kept-for-identity registration entirely).
+# job has its own reporter, ledger_job_report_kept (HIMMEL-3525 S18): the
+# plan's required wording ("kept cron line <marker> (<reason>)") differs from
+# this helper's generic "kept (<label>): <unit>" phrasing.
 ledger_report_kept_units() {
   local _kind="$1" _units _unit_json _unit _verdict _action _reason _label _unverified=0
   _units=$(prov_read_units --kind "$_kind")
@@ -1937,15 +1952,51 @@ $unit"
   esac
 }
 
-# ledger_job_markers <cron|at> — HIMMEL-3332 S8: the markers of `job register`
-# rows himmel brought (ours=true) for this scheduler, one per line. Only a
-# HIMMEL-... token is accepted: a tampered row naming a bare word must never
-# turn into a line filter over the operator's crontab.
+# ledger_job_markers <cron|at> — HIMMEL-3332 S8, HIMMEL-3525 S18: the markers
+# of `job register` rows himmel brought (ours=true) for this scheduler whose
+# verdict is `remove`, one per line — a marker whose live line has changed
+# since it was recorded (verdict `keep user-modified`/`identity-unreadable`)
+# is never handed to the crontab-rewrite filter. Only a HIMMEL-... token is
+# accepted: a tampered row naming a bare word must never turn into a line
+# filter over the operator's crontab.
 ledger_job_markers() {
   [ "$LEDGER_OK" -eq 1 ] || return 0
+  local _unit_json _verdict
   prov_read_units --kind job \
-    | jq -r --arg s "$1" 'select(.ours == true and (.fields.scheduler // "") == $s) | .unit // empty' \
+    | jq -c --arg s "$1" 'select(.ours == true and (.fields.scheduler // "") == $s)' \
+    | while IFS= read -r _unit_json; do
+        [ -z "$_unit_json" ] && continue
+        _verdict=$(prov_read_verdict "$_unit_json") || continue
+        [ "${_verdict%% *}" = "remove" ] || continue
+        printf '%s' "$_unit_json" | jq -r '.unit // empty'
+      done \
     | grep -E '^HIMMEL-[A-Za-z0-9._-]+$' || true
+}
+
+# ledger_job_report_kept — HIMMEL-3525 S18: for every `job register` fold
+# unit whose verdict is NOT `remove`, print the plan's required line and
+# write its outcome row. Job units get their own reporter (rather than
+# sharing ledger_report_kept_units) because the plan's wording ("kept cron
+# line <marker> (<reason>)") differs from that helper's generic "kept
+# (<label>): <unit>" phrasing. The unit's own recorded scheduler picks the
+# noun; an unrecognized/missing one falls back to "job".
+ledger_job_report_kept() {
+  local _units _unit_json _marker _scheduler _noun _verdict _action _reason
+  _units=$(prov_read_units --kind job)
+  while IFS= read -r _unit_json; do
+    [ -z "$_unit_json" ] && continue
+    _verdict=$(prov_read_verdict "$_unit_json") || continue
+    _action="${_verdict%% *}"; _reason="${_verdict#* }"
+    [ "$_action" = "remove" ] && continue
+    _marker=$(printf '%s' "$_unit_json" | jq -r '.unit // empty')
+    [ -n "$_marker" ] || continue
+    _scheduler=$(printf '%s' "$_unit_json" | jq -r '.fields.scheduler // ""')
+    case "$_scheduler" in cron) _noun="cron line" ;; at) _noun="at job" ;; *) _noun="job" ;; esac
+    echo "  kept $_noun $_marker ($_reason)"
+    ledger_job_outcome "$_marker" kept "$_reason"
+  done <<EOF
+$_units
+EOF
 }
 
 # job_line_marker <line> <markers> — prints the recorded marker a crontab line
@@ -2287,7 +2338,7 @@ else
   # job rows that were already the operator's (kept, never removed).
   _rec_cron=$(ledger_job_markers cron)
   _rec_at=$(ledger_job_markers at)
-  [ "$LEDGER_OK" -eq 1 ] && ledger_report_kept_units job
+  [ "$LEDGER_OK" -eq 1 ] && ledger_job_report_kept
   if command -v atq >/dev/null 2>&1; then
     # Capture the atq rc separately — `atq || true` would mask an
     # enumeration failure as "no jobs" (same precedent as above).
@@ -2409,6 +2460,52 @@ EOF
   fi
   [ "$_found" -eq 0 ] && [ "$_query_failed" -eq 0 ] && echo "  no matching scheduled jobs found."
 fi
+# HIMMEL-3559: cadence-jobs above only strips the crontab/schtasks entry — the
+# runner scripts + settings fragment an arm writes into these dirs are never
+# touched by that, and each cadence script's own disarm only clears files
+# inside its BAT_DIR, never the directory itself.
+for _ix_cad in "$_ix_cadence_pipeline" "$_ix_cadence_qmd" "$_ix_cadence_graphmap"; do
+  case "$_ix_cad" in
+    "$_ix_cadence_pipeline") _cad_dir="$CADENCE_PIPELINE_DIR" ;;
+    "$_ix_cadence_qmd")      _cad_dir="$CADENCE_QMD_DIR" ;;
+    *)                       _cad_dir="$CADENCE_GRAPHMAP_DIR" ;;
+  esac
+  if [ "$HALTED" -eq 1 ]; then
+    echo "  skipped: $_cad_dir (halted after an earlier failure)"
+    STEPS_INCOMPLETE+=("[3/8] scheduled jobs: $_cad_dir skipped — halted after an earlier failure")
+    continue
+  fi
+  if [ "$SKIP_TASKS" -eq 1 ]; then
+    echo "  kept (--skip-tasks): $_cad_dir"
+    continue
+  fi
+  if ! class_removes "$_ix_cad"; then
+    echo "  kept (manifest class ${M_CLASS[$_ix_cad]}): $_cad_dir"
+    continue
+  fi
+  if suspicious_rm_path "$_cad_dir"; then
+    echo "  WARN: refusing to remove suspicious path: '$_cad_dir'" >&2
+    fail_step "[3/8] scheduled jobs: refused a suspicious path ('$_cad_dir')"
+    continue
+  fi
+  if [ -L "$_cad_dir" ]; then
+    if guarded run rm -f -- "$_cad_dir"; then
+      [ "$DRY_RUN" -eq 0 ] && echo "  removed symlink (link only): $_cad_dir"
+    else
+      echo "  WARN: failed to remove $_cad_dir — residue remains; remove it manually." >&2
+      fail_step "[3/8] scheduled jobs: $_cad_dir could not be removed"
+    fi
+  elif [ -d "$_cad_dir" ]; then
+    if guarded run rm -rf -- "$_cad_dir"; then
+      [ "$DRY_RUN" -eq 0 ] && echo "  removed: $_cad_dir"
+    else
+      echo "  WARN: failed to remove $_cad_dir — residue remains; remove it manually." >&2
+      fail_step "[3/8] scheduled jobs: $_cad_dir could not be removed"
+    fi
+  else
+    echo "  absent, skipping: $_cad_dir"
+  fi
+done
 echo ""
 
 # WHY (HIMMEL-2754): wet-run removal scopes deliberately outlive a halted
@@ -3315,6 +3412,26 @@ else
     # thing HIMMEL-2458 says must not end in "Uninstall complete." at rc=0.
     echo "  ERROR: failed to remove $HIMMEL_CACHE_DIR — residue remains; remove it manually." >&2
     fail_step "[8/8] himmelctl cache: $HIMMEL_CACHE_DIR could not be removed"
+  fi
+fi
+# HIMMEL-3559: the cadence observability registry — any cadence arm's
+# register call writes it (graphmap-cadence.sh today), but nothing ever
+# deleted it; only its JSON content was ever mutated, by unregister.
+if [ "$HALTED" -eq 1 ]; then
+  STEPS_INCOMPLETE+=("[8/8] observability registry: skipped — halted after an earlier failure")
+elif ! class_removes "$_ix_obs"; then
+  echo "  kept (manifest class ${M_CLASS[$_ix_obs]}): $OBSERVABILITY_REGISTRY"
+elif suspicious_rm_path "$(dirname -- "$OBSERVABILITY_REGISTRY")"; then
+  echo "  ERROR: refusing to remove suspicious path: '$OBSERVABILITY_REGISTRY'" >&2
+  fail_step "[8/8] observability registry: refused a suspicious HIMMEL_OBSERVABILITY_CONFIG ('$OBSERVABILITY_REGISTRY')"
+elif [ ! -e "$OBSERVABILITY_REGISTRY" ] && [ ! -L "$OBSERVABILITY_REGISTRY" ]; then
+  echo "  absent, skipping: $OBSERVABILITY_REGISTRY"
+else
+  if guarded run rm -f -- "$OBSERVABILITY_REGISTRY"; then
+    [ "$DRY_RUN" -eq 0 ] && echo "  removed: $OBSERVABILITY_REGISTRY"
+  else
+    echo "  ERROR: failed to remove $OBSERVABILITY_REGISTRY — residue remains; remove it manually." >&2
+    fail_step "[8/8] observability registry: $OBSERVABILITY_REGISTRY could not be removed"
   fi
 fi
 echo ""

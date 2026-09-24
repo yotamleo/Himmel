@@ -102,6 +102,43 @@ contains "relay: correctly names the console as the GO writer" "$out" "only the 
 rc=0; HANDOVER_DIR="$tmp/absent" bash "$SCRIPT" 77 "$SHA" >/dev/null 2>&1 || rc=$?
 check "no root: exit 1" "$rc" "1"
 
+# --- 9. HIMMEL-3437: relative entry hands off to the $HIMMEL_REPO anchor -----
+# The same mechanism scripts/cr/anchor-handoff.sh gives the scripts/cr/
+# writers (HIMMEL-3395), generalized to reach this depth-3 entry too
+# (HIMMEL-3437). Fixture trees carry the REAL generalized anchor-handoff.sh
+# and must be real git repos (its root resolution is `git rev-parse
+# --show-toplevel`). A marker go.sh keeps everything up to and including the
+# real hand-off sourcing line verbatim, then `echo "RAN:<label>"` — a passing
+# case proves the ACTUAL shipped sourcing line triggers the hand-off, not a
+# hand-rolled substitute (all cases above invoke go.sh by ABSOLUTE path, so
+# none of them exercises the relative door — this is the first).
+# shellcheck disable=SC2016  # the literal line go.sh carries, not an expansion
+GO_ENTRY_SOURCE_LINE='. "$(dirname "${BASH_SOURCE[0]}")/../../cr/anchor-handoff.sh" || exit 2'
+mk_go_entry_tree() {  # <root> <label>
+  mkdir -p "$1/scripts/handover/console-kit" "$1/scripts/cr"
+  git init -q "$1"
+  cp "$HERE/../../cr/anchor-handoff.sh" "$1/scripts/cr/anchor-handoff.sh"
+  awk -v src="$GO_ENTRY_SOURCE_LINE" '{ print } $0 == src { exit }' "$SCRIPT" > "$1/head.tmp"
+  if ! grep -qxF "$GO_ENTRY_SOURCE_LINE" "$1/head.tmp"; then
+    echo "FAIL - 3437 setup: go.sh no longer carries the expected hand-off sourcing line verbatim, control proves nothing" >&2
+    fails=$((fails+1))
+  fi
+  printf '%s\necho "RAN:%s"\n' "$(cat "$1/head.tmp")" "$2" > "$1/scripts/handover/console-kit/go.sh"
+  rm -f "$1/head.tmp"
+}
+G3437_WT="$tmp/g3437-wt"; G3437_ANCHOR="$tmp/g3437-anchor"
+mk_go_entry_tree "$G3437_WT" branch
+mk_go_entry_tree "$G3437_ANCHOR" anchor
+
+out=$(cd "$G3437_WT" && env -u CR_ANCHOR_HANDED_OFF HIMMEL_REPO="$G3437_ANCHOR" bash scripts/handover/console-kit/go.sh 2>/dev/null)
+check "3437: relative entry hands off" "$out" "RAN:anchor"
+
+out=$(cd "$G3437_WT" && env -u CR_ANCHOR_HANDED_OFF HIMMEL_REPO="$G3437_ANCHOR" bash "$G3437_WT/scripts/handover/console-kit/go.sh" 2>/dev/null)
+check "3437: absolute entry runs local" "$out" "RAN:branch"
+
+rc=0; (cd "$G3437_WT" && env -u CR_ANCHOR_HANDED_OFF -u HIMMEL_REPO bash scripts/handover/console-kit/go.sh >/dev/null 2>&1) || rc=$?
+check "3437: unset HIMMEL_REPO exits 2" "$rc" "2"
+
 echo "---"
 if [ "$fails" -eq 0 ]; then
   echo "PASS - test-go.sh"

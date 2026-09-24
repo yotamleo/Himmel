@@ -2,6 +2,9 @@
 # Tests for scripts/cr/anchor-handoff.sh (HIMMEL-3395): a gate writer entered
 # by a RELATIVE path from a non-anchor tree runs the anchor's copy; an
 # absolute entry runs the local copy; the relative door fails closed.
+# T1-T10, T9b, T9c exercise scripts/cr/*.sh (depth 2 under the repo root).
+# T11-T13 (HIMMEL-3437) exercise a depth-3 entry (scripts/handover/console-kit/*.sh)
+# to prove the git-rev-parse-based root resolution is depth-agnostic.
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -19,8 +22,13 @@ tmp="$(mktemp -d -t anchor-handoff.XXXXXX)"; trap 'rm -rf "$tmp"' EXIT
 # including) its hand-off line, then a line naming which copy ran. Before the
 # writer sources the helper, the whole head is just `set -uo pipefail`, so the
 # local copy runs — the RED state.
+#
+# HIMMEL-3437: the generalized helper resolves its own root via
+# `git rev-parse --show-toplevel`, so every fixture tree must be a real git
+# repo (a bare `git init -q` — no commit needed, rev-parse works on an empty repo).
 make_tree() {  # <root> <label>
     mkdir -p "$1/scripts/cr"
+    git init -q "$1"
     cp "$DIR/anchor-handoff.sh" "$1/scripts/cr/anchor-handoff.sh"
     awk -v src="$SOURCE_LINE" '{ print } $0 == src { exit }' "$DIR/clear-cr-marker.sh" > "$1/scripts/cr/clear-cr-marker.sh.head"
     if grep -qxF "$SOURCE_LINE" "$1/scripts/cr/clear-cr-marker.sh.head"; then
@@ -31,6 +39,16 @@ set -uo pipefail'
     fi
     rm -f "$1/scripts/cr/clear-cr-marker.sh.head"
     printf '%s\necho "RAN:%s"\n' "$head" "$2" > "$1/scripts/cr/clear-cr-marker.sh"
+    # HIMMEL-3437 (CodeRabbit, PR #1212): anchor-handoff.sh now requires the
+    # anchor's own git index to TRACK the resolved relative path before
+    # trusting a self-anchor match - stage every fixture file so the genuine
+    # self-anchor cases (T8) keep passing under that check.
+    # HIMMEL-3437 (CodeRabbit, PR #1212 review round 3): clear any git
+    # identity env this suite's own caller might have set before staging, so
+    # fixture setup always targets $1's own default index rather than an
+    # inherited alternate one - T18/T19 still set their overrides explicitly
+    # afterward, on top of this clean baseline.
+    env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE git -C "$1" add -A
 }
 anchor="$tmp/anchor"; wt="$tmp/wt"; bare="$tmp/bare"
 make_tree "$anchor" anchor
@@ -70,6 +88,7 @@ check "$err" "" "T8 no hand-off message in the anchor"
 printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\n' "$SOURCE_LINE" > "$anchor/scripts/cr/known-findings.sh"
 printf '%s\n' 'printf '\''%s|'\'' "$#" "$@"' >> "$anchor/scripts/cr/known-findings.sh"
 printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\necho "LOCAL"\n' "$SOURCE_LINE" > "$wt/scripts/cr/known-findings.sh"
+git -C "$anchor" add -A
 check "$(cd "$wt" && env -u CR_ANCHOR_HANDED_OFF HIMMEL_REPO="$anchor" bash scripts/cr/known-findings.sh --diff 'a b' 2>/dev/null)" "2|--diff|a b|" "T9 args forwarded (argc + pipe-delimited, distinguishes 1 spaced arg from 2)"
 
 # 9c. RED control: a scratch copy of the hand-off whose exec line re-splits
@@ -78,9 +97,10 @@ check "$(cd "$wt" && env -u CR_ANCHOR_HANDED_OFF HIMMEL_REPO="$anchor" bash scri
 # real scripts/cr/anchor-handoff.sh; the mutation lives only in $tmp.
 red="$tmp/red"
 mkdir -p "$red/scripts/cr"
+git init -q "$red"
 sed 's/"\$@"/$*/' "$DIR/anchor-handoff.sh" > "$red/scripts/cr/anchor-handoff.sh"
 # shellcheck disable=SC2016  # the literal line to look for, not an expansion
-if grep -qF 'exec bash "$_ah_anchor/scripts/cr/$_ah_name" "$@"' "$red/scripts/cr/anchor-handoff.sh"; then
+if grep -qF 'exec bash "$_ah_anchor/$_ah_rel" "$@"' "$red/scripts/cr/anchor-handoff.sh"; then
     echo "FAIL: T9c setup — mutant exec line unchanged, control proves nothing" >&2
     fail=1
 fi
@@ -103,6 +123,103 @@ for w in $WRITERS; do
     first=$(grep -v -E '^[[:space:]]*(#|$)' "$DIR/$w.sh" | sed -n 2p)
     check "$first" "$SOURCE_LINE" "T10 $w sources the hand-off first"
 done
+
+# 11-13 (HIMMEL-3437). A depth-3 entry (scripts/handover/console-kit/*.sh) —
+# the source line points at ITS OWN sibling anchor-handoff.sh copy (the one
+# generalizing this file no longer requires the two hardcoded scripts/cr/
+# writers to be depth-2; real scripts/handover/*.sh sources scripts/cr/anchor-handoff.sh
+# cross-directory instead, exercised separately by test-merge-on-green.sh /
+# test-go.sh — this fixture just proves the resolver itself is depth-agnostic).
+# shellcheck disable=SC2016  # the literal line each writer carries, not an expansion
+D3_SOURCE_LINE='. "$(dirname "${BASH_SOURCE[0]}")/anchor-handoff.sh" || exit 2'
+make_d3_tree() {  # <root> <label>
+    mkdir -p "$1/scripts/handover/console-kit"
+    git init -q "$1"
+    cp "$DIR/anchor-handoff.sh" "$1/scripts/handover/console-kit/anchor-handoff.sh"
+    printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\necho "RAN:%s"\n' "$D3_SOURCE_LINE" "$2" > "$1/scripts/handover/console-kit/go-stub.sh"
+    git -C "$1" add -A
+}
+d3_anchor="$tmp/d3_anchor"; d3_wt="$tmp/d3_wt"
+make_d3_tree "$d3_anchor" anchor
+make_d3_tree "$d3_wt" branch
+# 11. Relative entry three levels deep hands off to the anchor's copy.
+check "$(run "$d3_wt" "$d3_anchor" scripts/handover/console-kit/go-stub.sh | tr '\n' ' ')" "RAN:anchor rc=0 " "T11 depth-3 relative entry hands off"
+# 12. Absolute entry three levels deep still runs the local copy.
+check "$(run "$d3_wt" "$d3_anchor" "$d3_wt/scripts/handover/console-kit/go-stub.sh" | tr '\n' ' ')" "RAN:branch rc=0 " "T12 depth-3 absolute entry runs local"
+# 13. Relative entry three levels deep with HIMMEL_REPO unset fails closed.
+check "$(run "$d3_wt" - scripts/handover/console-kit/go-stub.sh | tr '\n' ' ')" "rc=2 " "T13 depth-3 unset HIMMEL_REPO exits 2"
+
+# 14 (HIMMEL-3437 F1). A worktree reached through a SYMLINKED path must still
+# hand off. `_ah_dir` is built from plain `pwd` (logical, symlink-preserving)
+# while `_ah_root` comes from `git rev-parse --show-toplevel` (physical,
+# symlink-resolved) — when the entry cwd is a symlink these diverge, and the
+# old string-subtraction (`${_ah_dir#"$_ah_root"/}`) left `_ah_rel` absolute
+# instead of relative, breaking the hand-off.
+real_wt="$tmp/real_wt"; link_wt="$tmp/link_wt"
+make_tree "$real_wt" branch
+ln -s "$real_wt" "$link_wt"
+check "$(run "$link_wt" "$anchor" scripts/cr/clear-cr-marker.sh | tr '\n' ' ')" "RAN:anchor rc=0 " "T14 symlinked worktree still hands off (F1)"
+
+# 15 (HIMMEL-3437 F2). A worktree nested INSIDE the anchor's own directory
+# tree, whose own .git is corrupted (git rev-parse fails for a bad reason,
+# not because it's a genuine non-git fixture), must fail closed rather than
+# have the no-git walk-up fallback find the anchor as an ancestor and treat
+# itself as already-the-anchor — that would run this copy's own (possibly
+# tampered) bytes unchecked.
+nested="$anchor/.claude/worktrees/nested_corrupt"
+mkdir -p "$nested/scripts/cr"
+cp "$DIR/anchor-handoff.sh" "$nested/scripts/cr/anchor-handoff.sh"
+printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\necho "RAN:corrupted"\n' "$SOURCE_LINE" > "$nested/scripts/cr/clear-cr-marker.sh"
+echo "gitdir: /nonexistent/path" > "$nested/.git"
+check "$(run "$nested" "$anchor" scripts/cr/clear-cr-marker.sh | tr '\n' ' ')" "rc=2 " "T15 corrupted nested worktree fails closed instead of self-anchoring (F2)"
+
+# 16 (HIMMEL-3437 F4). GIT_DIR / GIT_WORK_TREE pointed at the anchor from a
+# worktree must not let the resolver believe it is ALREADY the anchor: both
+# `git rev-parse` calls run under `cd "$_ah_dir"`, so an inherited GIT_DIR/
+# GIT_WORK_TREE (or GIT_COMMON_DIR) overrides cwd and reports the anchor as
+# the toplevel even though the sourcing file physically lives in the
+# worktree - the branch would then run unhanded-off, under the anchor's name.
+run_env_override() {  # <cwd> <HIMMEL_REPO> <entry path> <fake GIT_DIR/GIT_WORK_TREE root>
+    (cd "$1" && env -u CR_ANCHOR_HANDED_OFF HIMMEL_REPO="$2" GIT_DIR="$4/.git" GIT_WORK_TREE="$4" GIT_COMMON_DIR="$4/.git" bash "$3" 2>/dev/null; echo "rc=$?")
+}
+check "$(run_env_override "$wt" "$anchor" scripts/cr/clear-cr-marker.sh "$anchor" | tr '\n' ' ')" "RAN:anchor rc=0 " "T16 GIT_DIR/GIT_WORK_TREE override cannot fake anchor status (F4)"
+
+# 17 (CodeRabbit, PR #1212). Unlike T15's DANGLING .git file (git rev-parse
+# fails for a bad reason), a nested worktree whose .git entry is REMOVED
+# entirely has no .git at all between it and the anchor - the no-git walk-up
+# fallback's own `[ -e "$_ah_walk/.git" ]` guard never trips, so it reaches
+# and matches the anchor as an ancestor exactly like a genuine self-anchor
+# case. `_ah_root -ef _ah_anchor` alone is then satisfied even though this
+# tree's own (possibly tampered) bytes are not the anchor's tracked copy -
+# only requiring the anchor's git index to TRACK the resolved relative path
+# closes this: the untracked nested copy fails the self-anchor check and
+# falls through to the real hand-off attempt, which (after one redundant
+# self-referential hop, since the file also physically exists under the
+# anchor's own tree) refuses rather than running the nested bytes.
+nested_removed="$anchor/.claude/worktrees/nested_removed"
+mkdir -p "$nested_removed/scripts/cr"
+cp "$DIR/anchor-handoff.sh" "$nested_removed/scripts/cr/anchor-handoff.sh"
+printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\necho "RAN:removed"\n' "$SOURCE_LINE" > "$nested_removed/scripts/cr/clear-cr-marker.sh"
+check "$(run "$nested_removed" "$anchor" scripts/cr/clear-cr-marker.sh | tr '\n' ' ')" "rc=2 " "T17 nested worktree with .git fully removed cannot fake anchor status via untracked ls-files"
+
+# 18/19 (HIMMEL-3437 review round 2). T17's fix trusts `git -C "$_ah_anchor"
+# ls-files` to answer for the ANCHOR's own index — but that call ran with
+# whatever GIT_DIR/GIT_INDEX_FILE the caller inherited still live, same class
+# F4 closed for the rev-parse calls. A crafted repo whose OWN index tracks
+# the orphan's relative path, pointed at via GIT_DIR (T18) or GIT_INDEX_FILE
+# alone (T19, no GIT_DIR — proves `-C "$_ah_anchor"` does not save it either),
+# makes ls-files answer "tracked" for the anchor even though the anchor's
+# real index does not track this untracked nested copy at all.
+fake="$tmp/fake_index"; mkdir -p "$fake/.claude/worktrees/nested_removed/scripts/cr"
+git init -q "$fake"
+touch "$fake/.claude/worktrees/nested_removed/scripts/cr/clear-cr-marker.sh"
+env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE git -C "$fake" add -A
+run_index_override() {  # <cwd> <HIMMEL_REPO> <entry path> <extra env assignment...>
+    local cwd="$1" repo="$2" entry="$3"; shift 3
+    (cd "$cwd" && env -u CR_ANCHOR_HANDED_OFF HIMMEL_REPO="$repo" "$@" bash "$entry" 2>/dev/null; echo "rc=$?")
+}
+check "$(run_index_override "$nested_removed" "$anchor" scripts/cr/clear-cr-marker.sh "GIT_DIR=$fake/.git" | tr '\n' ' ')" "rc=2 " "T18 GIT_DIR pointed at a crafted index cannot fake the ls-files tracked-path check"
+check "$(run_index_override "$nested_removed" "$anchor" scripts/cr/clear-cr-marker.sh "GIT_INDEX_FILE=$fake/.git/index" | tr '\n' ' ')" "rc=2 " "T19 GIT_INDEX_FILE alone (no GIT_DIR) cannot fake the ls-files tracked-path check"
 
 echo "anchor-handoff: $pass passed, $([ "$fail" = 0 ] && echo 0 || echo some) failed"
 exit "$fail"

@@ -524,24 +524,53 @@ cadence_runner_stamp() {
 }
 
 # cadence_prov_record <task-marker>
-# HIMMEL-3332 S8: record a `job register` provenance row for the cron entry an
-# arm just installed, so a ledger-mode uninstall can remove exactly that line
-# (matched by its trailing ` # <marker>`) and nothing else. Call it only AFTER
-# the arm's cron_install succeeded. Best effort by design: an unwritable ledger
-# must never fail an arm, so it WARNs and returns 0. Runs in a subshell so
-# provenance.sh's functions and shell options never leak into the arm script.
-# ponytail: a --force re-arm over a crontab line the operator already had under
-# this same marker records preexisted=false, so uninstall will remove it; the
-# arms cannot tell a himmel-written line from a hand-written one of that name.
+# HIMMEL-3332 S8, HIMMEL-3525 S18: record a `job register` provenance row for
+# the cron entry an arm just installed, so a ledger-mode uninstall can remove
+# exactly that line (matched by its trailing ` # <marker>`) and nothing else.
+# Call it only AFTER the arm's cron_install succeeded. S18 reads the live
+# identity straight back (the crontab line just installed, matched by the
+# same marker) and records it with --post-text + --field identity_v=1, so
+# uninstall only removes the line while it still reads exactly as installed;
+# a failed read-back (no reader for this env, or the line could not be found)
+# falls back to the pre-S18 unverified row. Best effort by design: an
+# unwritable ledger must never fail an arm, so it WARNs and returns 0. Every
+# provenance call runs in its own subshell so provenance.sh's/
+# provenance-identity.sh's functions and shell options never leak into the
+# arm script.
+# ponytail: a --force re-arm over a crontab line the operator already had
+# under this same marker still records preexisted=false -- the arm cannot
+# tell a himmel-written line from a hand-written one of that name, and the
+# identity read-back only verifies the LIVE line's content, not who wrote it
+# first. No upgrade planned: closing this needs a preexisted-detection pass
+# at arm time, which no ticket currently covers.
 cadence_prov_record() {
-    local marker="$1" lib
-    lib="$(dirname "${BASH_SOURCE[0]}")/provenance.sh"
+    local marker="$1" dir lib token u
+    dir="$(dirname "${BASH_SOURCE[0]}")"
+    lib="$dir/provenance.sh"
     [ -r "$lib" ] || return 0
+    u=$(jq -nc --arg m "$marker" '{unit:$m, fields:{scheduler:"cron"}}' 2>/dev/null) || u=""
     # shellcheck source=scripts/lib/provenance.sh
-    if ! ( . "$lib" \
-            && prov_record register job - --unit "$marker" --scope user --class code \
-                --writer cadence-arm --field 'scheduler="cron"' --field preexisted=false ) >/dev/null 2>&1; then
-        echo "WARN cadence: could not record provenance for $marker (uninstall will not remove it)" >&2
+    # shellcheck source=scripts/lib/provenance-identity.sh
+    token=$( ( . "$lib" && . "$dir/provenance-identity.sh" && [ -n "$u" ] && prov_identity_live job "$u" ) 2>/dev/null )
+    case "$token" in
+        *[!0-9a-f]*) token="" ;;
+        *) [ "${#token}" -eq 64 ] || token="" ;;
+    esac
+    if [ -n "$token" ]; then
+        # shellcheck source=scripts/lib/provenance.sh
+        if ! ( . "$lib" \
+                && prov_record register job - --unit "$marker" --scope user --class code \
+                    --writer cadence-arm --field 'scheduler="cron"' --field preexisted=false \
+                    --post-text "$token" --field identity_v=1 ) >/dev/null 2>&1; then
+            echo "WARN cadence: could not record provenance for $marker (uninstall will not remove it)" >&2
+        fi
+    else
+        # shellcheck source=scripts/lib/provenance.sh
+        if ! ( . "$lib" \
+                && prov_record register job - --unit "$marker" --scope user --class code \
+                    --writer cadence-arm --field 'scheduler="cron"' --field preexisted=false ) >/dev/null 2>&1; then
+            echo "WARN cadence: could not record provenance for $marker (uninstall will not remove it)" >&2
+        fi
     fi
     return 0
 }

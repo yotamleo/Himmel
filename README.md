@@ -100,21 +100,34 @@ V=X.Y.Z   # a release that ships the tarball: https://github.com/yotamleo/Himmel
 curl -fsSLO "https://github.com/yotamleo/Himmel/releases/download/v$V/himmel-$V-linux.tar.gz"
 curl -fsSLO "https://github.com/yotamleo/Himmel/releases/download/v$V/himmel-$V-linux.tar.gz.sha256"
 sha256sum -c "himmel-$V-linux.tar.gz.sha256" \
-  && mkdir -p ~/.local/share/himmel \
-  && tar -xzf "himmel-$V-linux.tar.gz" -C ~/.local/share/himmel --strip-components=1 \
-  && node ~/.local/share/himmel/scripts/himmelctl/bin.js install --scope user
+  && mkdir -p ~/.local/share/himmel/"$V" \
+  && tar -xzf "himmel-$V-linux.tar.gz" -C ~/.local/share/himmel/"$V" --strip-components=1 \
+  && ln -sfn "$V" ~/.local/share/himmel/current \
+  && node ~/.local/share/himmel/current/scripts/himmelctl/bin.js install --scope user
 ```
 
 The `&&` chain is the point: a tarball whose bytes do not match the published
-`.sha256` fails `sha256sum -c` and nothing is extracted or installed. The tree
-lands in the user-owned `~/.local/share/himmel` (no root); `himmelctl install`
-then does the per-user wiring and puts a `himmelctl` launcher in
-`~/.local/bin`. The tarball is built by CI on each `v*` tag
+`.sha256` fails `sha256sum -c` and nothing is extracted or installed. If you
+have `gh`, you can additionally verify the tarball was built by this repo's
+CI (optional — the hash check above is the mandatory step):
+`gh attestation verify himmel-$V-linux.tar.gz -R yotamleo/Himmel`. Each
+release lands in its own user-owned `~/.local/share/himmel/<version>/` (no
+root), and `~/.local/share/himmel/current` points at the live one;
+`himmelctl install` wires everything through `current` and puts a `himmelctl`
+launcher in `~/.local/bin`. The tarball is built by CI on each `v*` tag
 ([`release.yml`](.github/workflows/release.yml)); the checksum is of that exact
-built asset. No release carries it until the first tag cut after HIMMEL-3059
-slice 1 — until then use the clone path below. To upgrade, extract the new
-release into a fresh directory (or remove the old `~/.local/share/himmel`
-first): extracting over an existing tree keeps files the new release deleted.
+built asset.
+
+To upgrade, run `himmelctl update`: it downloads the latest release, verifies
+its `.sha256` (and its attestation when `gh` is installed and logged in),
+extracts it into a new `~/.local/share/himmel/<version>/` and only then swaps
+`current` to it in one step. A download that fails to verify changes
+nothing. The previous version stays in place. To roll back, run
+`ln -sfn <previous-version> ~/.local/share/himmel/current`. After
+`himmelctl uninstall`, removing `~/.local/share/himmel` removes every version.
+An install from an earlier recipe (the tree extracted straight into
+`~/.local/share/himmel`) predates this layout. Move it aside and install once
+with the recipe above.
 
 **Any platform — from a clone:**
 
@@ -177,10 +190,12 @@ as verified.
 
 | Channel | Status |
 |---|---|
-| Release tarball (`himmel-<version>-linux.tar.gz` + `.sha256`) | **Supported** (Linux) — the four-step path above. The end-to-end fresh-guest run of it is not yet recorded: it is gated on HIMMEL-3252. |
+| Release tarball (`himmel-<version>-linux.tar.gz` + `.sha256`) | **Supported** (Linux) — the four-step path above. The end-to-end fresh-guest run is green (HIMMEL-3252, done). |
 | `git clone` + `himmelctl install` | **Supported** (Linux, macOS) |
-| AUR | Pending (HIMMEL-3059 slice 2) |
-| brew, nix, deb, rpm | Not supported |
+| Plugin marketplace (`marketplace/plugins/*`, 10 plugins) | **Supported** — installs through the Claude Code plugin marketplace, which owns that payload's file list, upgrade and removal (`claude plugin install/update/uninstall`), not `himmelctl`. |
+| AUR | Pending (HIMMEL-3059 slice 5) — reopens when that slice lands |
+| brew (Linux tap) | Not supported — runner-up channel; reopens only if macOS support makes a shared tap worthwhile (tracked in a separate ticket) |
+| nix, deb, rpm | Not supported — reopens on user-driven demand for a given channel (tracked in a separate ticket) |
 
 New shell scripts target bash (still bash 3.2-safe, for macOS); a `.ps1`
 Windows twin is now optional, added only when someone is actually working the

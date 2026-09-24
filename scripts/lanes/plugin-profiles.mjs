@@ -6,7 +6,8 @@
 // Consumed by the Bun spawn scripts (spawn-glm.ts / spawn-claudex.ts import
 // resolveProfileByName) and by a small CLI (measurement / launcher use).
 import { readFileSync, existsSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 
@@ -408,9 +409,50 @@ export function resolveProfile(registry, name, opts = {}) {
   for (const id of addPlugins) enabledPlugins[id] = true;                 // 4. per-dispatch overlay on
   for (const id of (registry.floor ?? [])) enabledPlugins[id] = true;     // 5. floor forced on, LAST (inviolable)
   if (spec?.gateAllow === true) {
-    return { enabledPlugins, permissions: { allow: [...registry.gateAllow] } };
+    const allow = [...registry.gateAllow];
+    const rule = opts.anchor === undefined ? null : anchorMergeRule(opts.anchor);
+    if (rule && !allow.includes(rule)) allow.push(rule);
+    return { enabledPlugins, permissions: { allow } };
   }
   return { enabledPlugins };
+}
+
+// HIMMEL-3567: the permission matcher compares literal command text, so a merge
+// typed with the anchor's ABSOLUTE path (`bash /abs/…/merge-on-green.sh …`, the
+// HIMMEL-3491 run-from-the-anchor spelling) matches neither the relative rule
+// nor the `$HIMMEL_REPO` one and falls to the auto-mode classifier. This emits
+// the one exact absolute literal for the PRIMARY checkout. It widens nothing:
+// the relative rule already admits merge-on-green.sh, and the GO gate inside it
+// (exit 17 without a GO file) stays the only authority on whether a merge runs.
+export function anchorMergeRule(anchor) {
+  const path = String(anchor).replace(/\/+$/, '');
+  // A leg worktree's bytes are the leg's to change, so a rule naming one would
+  // let a leg approve its own edited merge script. Refuse, never emit.
+  if (!path.startsWith('/') || path.split('/').includes('..') || path.includes('/.claude/worktrees/')) {
+    throw new Error(`plugin-profiles: merge anchor "${anchor}" must be the absolute primary checkout, not a worktree or relative path`);
+  }
+  // ponytail: a primary checkout whose path holds a character the matcher could
+  // read as syntax (space, `*`, `)`, `$`, …) gets no absolute rule and its merge
+  // still reaches the classifier; quote-aware emission if such a station appears.
+  if (!/^[A-Za-z0-9._/+-]+$/.test(path)) return null;
+  return `Bash(bash ${path}/scripts/handover/merge-on-green.sh:*)`;
+}
+
+// The primary checkout that owns `dir` (its git common dir's parent), or null
+// when `dir` is not in a non-bare git checkout. The repo-locating GIT_* vars
+// are dropped: git honours them over `-C`, so an inherited GIT_DIR or
+// GIT_COMMON_DIR would steer the anchor to another checkout's bytes.
+export function primaryCheckout(dir) {
+  const env = { ...process.env };
+  for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE']) delete env[key];
+  try {
+    const common = execFileSync('git', ['-C', dir, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env,
+    }).trim();
+    return basename(common) === '.git' ? dirname(common) : null;
+  } catch {
+    return null;
+  }
 }
 
 // File-reading convenience for the spawn scripts / CLI: load the registry and
@@ -560,7 +602,10 @@ if (import.meta.url === `file://${process.argv[1]}` || process.argv[1] === fileU
     // the same leak class, just via a different layer. undefined falls back
     // to <home>/.claude, the existing behaviour.
     const installed = readEnabledPluginIds(homedir(), process.cwd(), process.env.CLAUDE_CONFIG_DIR);
-    const settings = resolveProfileByName(name, { addPlugins, installed });
+    // HIMMEL-3567: the anchor a leg types its merge from — the primary checkout
+    // behind $HIMMEL_REPO (or behind this script), never a worktree.
+    const anchor = primaryCheckout(process.env.HIMMEL_REPO || SCRIPT_DIR);
+    const settings = resolveProfileByName(name, { addPlugins, installed, anchor: anchor ?? undefined });
     if (settings === null) process.exit(0); // operator: nothing to inject
     process.stdout.write(JSON.stringify(settings) + '\n');
   } catch (e) {

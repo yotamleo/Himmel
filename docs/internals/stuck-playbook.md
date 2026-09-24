@@ -671,6 +671,21 @@ have not controlled for.
 
 ---
 
+## Symptom: `leg-burn.sh` is denied `[Session Transcript Tampering]`
+
+`bash scripts/lanes/leg-burn.sh <session>` only READS the session's
+transcript JSONL to price its token usage for the PR body's `leg-burn:` line,
+but the auto-mode classifier can read "a script opening session transcripts"
+as tampering and deny it, twice in a row for the same leg (2026-09-24).
+
+**What to do:** do not reshape the command or read the JSONL another way.
+Report `BLOCKED` to the console, which routes it to the operator, who runs
+`! bash scripts/lanes/leg-burn.sh <session>` in the leg's tab; paste the
+printed line into the PR body. The rest of the ship flow is not blocked by
+it, so keep working while you wait.
+
+---
+
 ## Why this is a playbook, not a `CLAUDE.md` rule
 
 Root `CLAUDE.md` is **state, not a prompt** — frame-shaping invariants only, paid

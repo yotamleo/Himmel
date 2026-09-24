@@ -411,6 +411,98 @@ case "$sha" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][
   *) fail "19 himmel marketplace post.sha not hex: $sha" ;;
 esac
 
+# ── Case 20: HIMMEL-3541 — a same-round project-then-user install must not ──
+#    mark the user-scope registration pre-existing off the project scope's own
+#    residue (the shared plugin cache dir, or an unscoped installed_plugins.json
+#    lookup). END STATE: a plugin fresh at both scopes reads preexisted=false at
+#    BOTH; a genuinely operator-owned user-scope plugin (control) still reads true.
+fresh_env dualscope
+out=$(run_install --scope project); rc=$?
+assert_eq "20 project install rc" 0 "$rc"
+assert_eq "20 project himmel-ops preexisted" false "$(field "$(row plugin himmel-ops@himmel)" .preexisted)"
+out=$(run_install --scope user); rc=$?
+assert_eq "20 user install rc" 0 "$rc"
+assert_eq "20 user himmel-ops preexisted (fresh, same round as project)" false \
+    "$(field "$(row plugin himmel-ops@himmel | tail -n 1)" .preexisted)"
+
+fresh_env dualscope-control
+seed_operator_state "$HOME/.claude"   # user scope already declares context7, before either install
+out=$(run_install --scope project); rc=$?
+assert_eq "20c project install rc" 0 "$rc"
+out=$(run_install --scope user); rc=$?
+assert_eq "20c user install rc" 0 "$rc"
+assert_eq "20c user context7 preexisted (genuinely operator-owned, control)" true \
+    "$(field "$(row plugin context7@claude-plugins-official | tail -n 1)" .preexisted)"
+assert_eq "20c user himmel-ops preexisted (fresh, unaffected by the control plugin)" false \
+    "$(field "$(row plugin himmel-ops@himmel | tail -n 1)" .preexisted)"
+
+# ── Case 21: HIMMEL-3556 — a same-round project-then-user install must not ──
+#    mark the user-scope MARKETPLACE registration pre-existing off the
+#    project scope's own known_marketplaces.json / marketplaces-dir residue.
+#    Unlike a plugin, a marketplace carries no per-entry .scope field to
+#    filter to (HIMMEL-3541 Class 1's fix), because the CLI's marketplace
+#    state is inherently global — so this exercises the ledger-based fix
+#    instead. END STATE: a marketplace fresh at both scopes reads
+#    preexisted=false at BOTH (equivalent to a "remove ours" verdict at
+#    uninstall — see test-provenance-read.sh's S17 control, "remove ours" iff
+#    ours=true i.e. preexisted=false — so neither scope is left registered);
+#    a genuinely operator-owned marketplace (control) still reads true (kept).
+fresh_env marketscope
+# The stub names a directory-source marketplace off the LAST path component of
+# --himmel-path (mirroring the real CLI's own basename-of-source naming), so
+# it must actually be "himmel" — the worktree's own basename is not — for the
+# known_marketplaces.json key to match the template's "himmel" entry at all.
+mkdir -p "$CASE/himmel"
+out=$(run_install --scope project --himmel-path "$CASE/himmel"); rc=$?
+assert_eq "21 project install rc" 0 "$rc"
+assert_eq "21 project himmel marketplace preexisted" false "$(field "$(row marketplace himmel)" .preexisted)"
+out=$(run_install --scope user --himmel-path "$CASE/himmel"); rc=$?
+assert_eq "21 user install rc" 0 "$rc"
+assert_eq "21 user himmel marketplace preexisted (fresh, same round as project)" false \
+    "$(field "$(row marketplace himmel | tail -n 1)" .preexisted)"
+
+fresh_env marketscope-control
+seed_operator_state "$HOME/.claude"   # operator already has claude-plugins-official registered, before either install
+mkdir -p "$CASE/himmel"
+out=$(run_install --scope project --himmel-path "$CASE/himmel"); rc=$?
+assert_eq "21c project install rc" 0 "$rc"
+out=$(run_install --scope user --himmel-path "$CASE/himmel"); rc=$?
+assert_eq "21c user install rc" 0 "$rc"
+assert_eq "21c user claude-plugins-official marketplace preexisted (genuinely operator-owned, control)" true \
+    "$(field "$(row marketplace claude-plugins-official | tail -n 1)" .preexisted)"
+assert_eq "21c user himmel marketplace preexisted (fresh, unaffected by the control marketplace)" false \
+    "$(field "$(row marketplace himmel | tail -n 1)" .preexisted)"
+
+# ── Case 22: HIMMEL-3556 console ruling — a stale register row must not ─────
+#    outlive an uninstall. install (ours) → uninstall (writes uninstall-begin,
+#    mirrors uninstall.sh:1804) → the OPERATOR re-adds the same marketplace
+#    themselves (no register row — mirrors a bare `claude plugin marketplace
+#    add`, never going through install-plugins.sh) → a later install must see
+#    it as pre-existing again, not ours, so it is kept rather than removed.
+#    Without the uninstall-begin boundary, the ORIGINAL preexisted=false row
+#    from the first install would still match and this install would wrongly
+#    claim (and a subsequent uninstall would then remove) the operator's copy.
+fresh_env marketscope-stale
+mkdir -p "$CASE/himmel"
+out=$(run_install --scope user --himmel-path "$CASE/himmel"); rc=$?
+assert_eq "22 first install rc" 0 "$rc"
+assert_eq "22 first install himmel marketplace preexisted (ours)" false \
+    "$(field "$(row marketplace himmel)" .preexisted)"
+
+# shellcheck source=scripts/lib/provenance.sh
+. "$repo_root/scripts/lib/provenance.sh"
+# shellcheck source=scripts/lib/provenance-read.sh
+. "$repo_root/scripts/lib/provenance-read.sh"
+prov_read_load
+prov_read_session_begin wet --scope user
+rm -f "$HOME/.claude/plugins/known_marketplaces.json"
+PATH="$STUB_DIR:$PATH" "$STUB_DIR/claude" plugin marketplace add "$CASE/himmel" >/dev/null 2>&1
+
+out=$(run_install --scope user --himmel-path "$CASE/himmel"); rc=$?
+assert_eq "22 second install rc" 0 "$rc"
+assert_eq "22 user himmel marketplace preexisted (operator re-added after an uninstall — kept, not claimed as ours)" true \
+    "$(field "$(row marketplace himmel | tail -n 1)" .preexisted)"
+
 if [ "$(real_ledger_sha)" = "$REAL_LEDGER_BEFORE" ]; then
     pass "18 the real ~/.himmel ledger is untouched by this suite"
 else

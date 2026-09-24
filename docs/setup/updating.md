@@ -242,11 +242,20 @@ tells that case apart by the install's own root having no `.git`, and:
   succeeded for 7 days (`UPDATE_CHECK_STALE`, seconds) it says the check could
   not run, with the last error, instead of staying silent.
 
-To actually update such an install, use the route it came from: the package
-manager (Arch: `pacman -Syu himmel`), or download the next release tarball from
+To actually update such an install, use the route it came from. A release
+tarball installed with the README recipe has the versioned layout (each release
+in `~/.local/share/himmel/<version>/`, with `current` pointing at the live one;
+HIMMEL-3059 S4). `himmelctl update` updates it: it downloads the latest
+release, verifies its sha256 (and its attestation when `gh` is installed and
+logged in), extracts it into a new version directory and only then swaps
+`current`. A failed download or verify leaves `current` untouched. The previous
+version is kept, so `ln -sfn <previous-version> ~/.local/share/himmel/current`
+rolls back. For a native package, use the package manager (Arch: `pacman -Syu
+himmel`). For any other tarball install, download the next release tarball from
 the [releases page](https://github.com/yotamleo/Himmel/releases), verify its
-sha256 checksum, and re-extract it over the install. There is no in-place
-self-update of a tarball install.
+sha256 checksum, and extract it into a fresh directory (or remove the old
+install first): extracting over an existing tree keeps files the new release
+deleted.
 
 The only thing the check fetches is the latest release tag, from a fixed HTTPS
 URL that no environment variable can redirect; nothing is downloaded or

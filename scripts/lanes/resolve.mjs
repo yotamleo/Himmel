@@ -5,6 +5,7 @@ import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:
 import { execFileSync } from 'node:child_process';
 import { dirname, join, delimiter, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { homedir } from 'node:os';
 import { evalProbe } from './probe.mjs';
 import { formatBankAnnotation, parseBankStatusOutput } from './bank-status-core.mjs';
 
@@ -13,7 +14,14 @@ const REPO_ROOT  = join(SCRIPT_DIR, '..', '..');           // scripts/lanes -> r
 const REGISTRY   = process.env.LANES_REGISTRY || join(SCRIPT_DIR, 'lanes.json');
 // HIMMEL-758: the machine-local, gitignored overlay `himmelctl config` writes
 // to (via set-lane-override.mjs) — never scripts/lanes/lanes.json itself.
-const LOCAL_REGISTRY = join(SCRIPT_DIR, 'lanes.local.json');
+// HIMMEL-3059 S3: a read-only install prefix can't take the in-tree overlay
+// write, so set-lane-override.mjs may have landed it under the himmelctl
+// cache dir instead — checked first here, mirroring adopter-profile.js's
+// readLaneRegistries(). A writable clone's in-tree overlay is unaffected.
+const HIMMELCTL_CACHE_DIR = process.env.HIMMELCTL_CACHE_DIR || join(homedir(), '.claude', 'himmel');
+const CACHE_LOCAL_REGISTRY = join(HIMMELCTL_CACHE_DIR, 'lanes.local.json');
+const IN_TREE_LOCAL_REGISTRY = join(SCRIPT_DIR, 'lanes.local.json');
+const LOCAL_REGISTRY = existsSync(CACHE_LOCAL_REGISTRY) ? CACHE_LOCAL_REGISTRY : IN_TREE_LOCAL_REGISTRY;
 
 const die = (code, msg) => { process.stderr.write(msg + '\n'); process.exit(code); };
 

@@ -1426,7 +1426,9 @@ network URL passes, unless the same command repoints a remote. In that case
 - or a `git remote add|set-url` clause anywhere in the command line.
 
 A repoint made by an earlier, separate command (`git config remote.x.url …`)
-is not seen; HIMMEL-3407 covers it.
+is still not seen — cross-command state tracking is out of scope for a
+command-text scanner, and HIMMEL-3407's common-dir-owner check (below) only
+reasons about the SAME clause.
 
 Before the verb match, quotes are dropped, backslash escapes are undone
 (`\git`, `gi\t`, `\-C`), backslash-newline continuations are joined, ANSI-C
@@ -1436,11 +1438,81 @@ word the shell runs. Direct-exec mode fails closed on input it cannot read:
 empty or non-JSON stdin, a non-object, a missing `tool_name`, or a
 Bash/PowerShell payload whose command is missing or not a string.
 
-Named residual: config, remote and ref writes that land in the primary's
-SHARED common dir from a LINKED worktree's cwd: (a) `config` / `remote` /
-`branch -u` writes to the shared `$GIT_COMMON_DIR/config`, and (b)
-`update-ref` / `symbolic-ref` on `refs/heads/main`. Follow-up HIMMEL-3407 covers
-them. Spec: `scripts/hooks/test-block-primary-git-writes.sh`.
+**Common-dir owner (HIMMEL-3407).** The TARGETS above resolve to the repo a
+git command is AIMED at — for a write run from a LINKED worktree's own cwd
+(no `-C`/`--git-dir` pointed elsewhere), that is the worktree's OWN root, a
+legitimate feature checkout, so the ordinary verdict allows. But `config` /
+`remote` writes, `branch -u|--set-upstream-to|--unset-upstream|-M|-C|-f|--force`,
+`checkout -B`/`switch -C` onto `main|master`, and `update-ref` /
+`symbolic-ref` on `refs/heads/main|master` land in the worktree's SHARED
+`$GIT_COMMON_DIR`, which the PRIMARY checkout also reads — so a leg could
+repoint `branch.main.remote/merge` or `remote.origin.url` (poisoning the
+console's own `pull --ff-only`) or move `refs/heads/main` itself, all without
+ever writing `-C <primary>`. For exactly those subcommands/flags, the
+target's OWNING primary checkout (`primary_checkout_root` — a no-op for an
+ordinary, non-worktree repo) now gets the SAME `main_checkout_verdict`
+(`_bwimc_git_check_common_owner`). Accepted cost: an ordinary `git config
+<k> <v>` or `git remote add <name> <url>` from a leg's own cwd now denies too
+— it writes the shared config regardless of the key/remote name, and the
+`-C <primary>` form of the same write already denied unconditionally.
+Ordinary worktree git (checkout, commit, merge, `branch` create/delete/plain
+rename without `-M`/`-C`/`-u`/`-f`/`--unset-upstream`, `update-ref`/
+`symbolic-ref` on any OTHER ref) is unaffected.
+
+Two shapes narrow the `config`/`remote` check rather than widen it (adversarial
+review, round 1): `config --global`/`--system`/`--worktree` write a DIFFERENT
+file entirely (not the shared repo config), and are exempt outright; `config
+-f`/`--file <path>` redirects to an ARBITRARY path, resolved and run through
+the same file-target check `--git-dir`/`--work-tree` already use, so `--file
+<primary>/.git/config` still denies while a path outside any repo does not.
+`remote update`/`prune`/`show` are fetch-shaped (refresh, not repoint) and are
+exempt; `get-url` never reaches this arm at all (already read-shaped).
+
+Also fixed the same round: `update-ref`/`symbolic-ref -m <reason>
+refs/heads/main` used to read the `-m` VALUE as the positional ref-name and
+stop there, missing the real ref name entirely — the loop now consumes the
+value like every other value-taking flag in this file does. `--stdin` reads
+its ref updates from stdin, invisible to a command-text scanner, and is
+denied outright rather than silently passed. `branch -M`/`-C` (branch's own
+FORCE rename/copy — bare `-m`/`-c` cannot overwrite an existing branch, so
+they stay ordinary) and `checkout -B`/`switch -C` (force-create-or-reset a
+branch to a start-point, the same "move an existing ref" class spelled
+through a different verb) now trigger the check too.
+
+A second adversarial round found five more issues in that round-1 shape,
+against a differential run of this branch's hook vs main's on identical
+payloads:
+- (bypass) a GLUED `-f<path>` (`config -f<primary>/.git/config …`, no space)
+  is a real git invocation and was not recognised as the file flag at all —
+  the same value the separate-token `-f`/`--file` form already captures is
+  now captured from the glued form too.
+- (fail-open) an unresolvable `--file` target (a `"$VAR"` the scanner cannot
+  read) used to be silently allowed; it now denies as an unresolved git
+  target, like every other arm.
+- (bypass) `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` set as an env prefix or
+  export repoint what file `--global`/`--system` actually write, voiding the
+  scope exemption above — a raw substring scan of the clause for either name
+  now withholds the exemption when present (coarse, but only ever adds a
+  check, never removes one).
+- (false deny) `-u`/`--set-upstream-to`/`--unset-upstream`/`-f`/`-M`/`-C`
+  implicitly target the CURRENT branch when no branch-name operand is given
+  — in a linked worktree that is always the leg's own feature branch (git
+  refuses to check main out in two worktrees at once), never main, so `branch
+  -u origin/x` with no third operand is ordinary and matches the
+  already-allowed `push -u`. The branch arm now requires an EXPLICIT
+  `main`/`master` operand, mirroring update-ref/symbolic-ref's own scoping,
+  before any of these flags trigger the check.
+- (cheap) `switch`'s long form of `-C` is `--force-create`, not modelled
+  before; `--forc` (an unambiguous abbreviation of `--force` that real git
+  accepts) is now matched via the same `_bwimc_is_long_abbrev` helper the
+  option-value arms already use; and a BUNDLED short cluster (`checkout -fB
+  main`) is now recognised by scanning for the flag letter anywhere after a
+  leading dash, the same way `_bwimc_opt_scan`'s own `-t` handling works.
+
+Still unmodelled from a linked worktree's own cwd: `tag` and `reflog
+expire|delete` writes, and any other branch create/delete/rename — same
+residual class, narrower now. Spec:
+`scripts/hooks/test-block-primary-git-writes.sh`.
 
 **KNOWN FAIL-OPEN SHAPES — CLOSED by HIMMEL-2592.** This section previously
 listed TWO open shapes; HIMMEL-2526's sixth and final CR round found four
@@ -1567,11 +1639,25 @@ settings.json, a hook-wiring change (the "three places" rule in
 PR — the operator no longer hand-edits `.claude/settings.json` inside each
 leg's worktree for every hook-wiring change.
 
-**The Bash/PowerShell arm is textual and blunt (HIMMEL-1525, HIMMEL-3468).**
-It does not parse commands. It fires when the command text names
-`settings.json`/`settings.local.json` (rule 1, any verb) or names a `.claude`
-directory together with a copy-shaped verb (`cp`/`mv`/`install`/`rsync`/`ln`/
-`dd`/`tee`) or `-t`/`--target-directory` (rule 2). It then denies when the
+**The Bash/PowerShell arm is textual and blunt (HIMMEL-1525, HIMMEL-3468,
+HIMMEL-3499, HIMMEL-3555).** It does not parse commands. It fires when the
+command text names `settings.json`/`settings.local.json` (rule 1, any verb)
+or names a `.claude` directory together with a copy/extract/checkout-shaped
+verb (`cp`/`mv`/`install`/`rsync`/`ln`/`dd`/`tee`/`tar`/`gtar`/`bsdtar`/
+`unzip`/`checkout`/`restore`) or `-t`/`--target-directory` (rule 2). A
+`.claude/worktrees/<name>` mention (every linked worktree's own container
+path) is stripped before this match, so an ordinary cross-worktree
+`-C <other-worktree>` reference does not count — unless `..` appears
+anywhere in the text, since the hook never resolves `..` and a
+`worktrees/../` (or deeper) climb can reach back into the primary's own
+`.claude`, so the strip is skipped and the mention stays visible. tar/unzip
+additionally exclude their own CREATE/LIST/TEST/verbose-list modes, and
+`checkout`/`restore` additionally require a `git` word — both checked
+against only the shell SEGMENT containing the verb (split on `;`, `&`, `|`,
+`#`, mirroring how a shell itself separates commands), not the whole
+command text, so a chained or commented trailing token cannot spoof the
+mode check and an unrelated later `git` cannot turn a plain
+`checkout.md` read into a match. It then denies when the
 mention is live: the cwd is a primary checkout or is in no repo at all; the
 text names the primary root or `$HOME`'s `.claude` (`<home>/.claude`,
 `$HOME/.claude`, `${HOME}/.claude`, `~/.claude`, `~user/.claude`, with or
@@ -1608,19 +1694,37 @@ worktree-settings mention; any `..` beside a worktree-settings mention
 (`cp ../notes.txt .claude/settings.json`); any `$'` beside a `settings` or
 `claude` substring, even for the worktree's own copy; a `cat >> other.md` whose heredoc
 prose names `settings.json` (the hook does not parse where the bytes land);
-and a read of the file piped or redirected onward.
+a read of the file piped or redirected onward; and a worktree's own
+`tar -x -C .claude` extraction (HIMMEL-3499) — tar's `-C` flag shares its
+spelling with the `cd`/`git -C` directory-move signal, which cannot tell
+tar's self-targeting `-C .claude` apart from an unrelated cwd shift.
 
 **Known residuals** — the hook matches text, so it misses a write whose text
 does not name the file or its directory in a form above:
 
 - a command that names neither `settings.json` nor a `.claude` directory
-  but writes one anyway: `tar -C … -x`, `unzip -d`,
-  `git checkout <ref> -- .claude`, or a directory copy whose source holds
-  the file (HIMMEL-3499);
+  but writes one anyway: a directory copy whose source holds the file.
+  (`tar -C … -x`, `unzip -d` and `git checkout <ref> -- .claude` — when they
+  DO name `.claude` in the text, as in the HIMMEL-3499 probes — are now
+  caught: `tar`/`gtar`/`bsdtar`/`unzip`/`checkout`/`restore` are recognized
+  verbs, gated by tar's own create/list-mode and by `checkout`/`restore`
+  needing a `git` word somewhere in the text — HIMMEL-3499, HIMMEL-3555.);
+- an extraction tool other than tar/unzip: `python -m zipfile`,
+  `python3 -m tarfile`, `cpio`, `7z` (HIMMEL-3555 — the fix stayed scoped to
+  the named probes' tools rather than enumerating every archive utility);
 - a directory change by another spelling: `find … -exec`, or a directory
-  flag with another name (`tar --directory`);
+  flag with another name (`tar --directory` now IS caught, since the verb
+  match no longer depends on which directory flag it uses — only
+  `find … -exec` remains open here);
+- a `.claude` mention spelled with a shell glob the hook's own trailing
+  boundary does not accept (`.claude*`, `.clau?e`) — the shell has not
+  expanded it (this is static command TEXT, not a runtime-built name, unlike
+  the next bullet), but the boundary character class stops at the glob
+  metacharacter (HIMMEL-3555);
 - a name built at run time: variables (including `${var@E}` escape
-  expansion), `$(…)` and backtick substitution, `printf %b`, and globs;
+  expansion), `$(…)` and backtick substitution, `printf %b`, and an
+  EXPANDED glob (the shell resolves it before the hook ever sees the
+  literal text);
 - an ANSI-C word that escapes the `settings` or `claude` letters themselves
   (`$'\x73ettings.json'`);
 - symlinks;
@@ -1991,7 +2095,10 @@ is a literal path other than `scripts/cr` (`scripts/hooks/*.sh`, `docs/*`,
 or `{}` is not one while nothing that could run it is present (HIMMEL-3433).
 Mentions (`grep`, `cat`, `git diff`, the test suites) are a no-op. Absolute paths, including the
 anchor's, are a no-op too: no allow rule matches them, and the runbook's
-adopter lane depends on them. A candidate that does not resolve to exactly
+adopter lane depends on them. (A consequence: a settings allow rule spelled
+`bash "$HIMMEL_REPO/scripts/cr/<script>"` is dead. This hook denies the
+`$`-bearing word before the allow list is consulted, so an allow rule has to
+name a spelling this hook lets through, never a variable one.) A candidate that does not resolve to exactly
 `scripts/cr/<script>` from the cwd (a glob, a variable, any `..`, which the
 kernel resolves after following symlinks), or a command that changes directory
 (`cd`, `pushd`, `env -C`), denies outright: the conditions

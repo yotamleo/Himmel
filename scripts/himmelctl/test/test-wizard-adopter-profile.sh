@@ -1745,15 +1745,19 @@ grepq "$out" 'lane profile preflight failed' \
   && fail "caseAA: refusal should happen before writing an overlay the resolver ignores"
 echo "ok: caseAA LANES_REGISTRY aborts in preflight before the core installer or overlay write"
 
-# ── Case AB: unwritable overlay dir aborts T5b before any mutation ───────────
+# ── Case AB: HIMMEL-3059 S3 — an unwritable in-tree overlay dir (e.g. a
+# packaged, root-owned install prefix) falls back to the himmelctl cache dir
+# instead of aborting; the rest of the install (handover, wire, upgrade) still
+# runs, since preflight no longer treats this as fatal.
 sAB="$work/ab"; mkdir -p "$sAB"; hAB="$work/ab-home"; mkdir -p "$hAB"
 fAB="$work/ab-fix"; make_fixture "$fAB"
-vaultAB="$work/ab-vault"; mkdir -p "$vaultAB"
-printf '{ "template": "luna-second-brain" }\n' > "$vaultAB/.vault-template.json"
+mkdir -p "$fAB/scripts/handover"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$fAB/scripts/handover/set-handover-dir.sh"
+chmod +x "$fAB/scripts/handover/set-handover-dir.sh"
 handoverAB="$work/ab-handover"
 profAB="$work/ab-profile.json"
-printf '{\n  "role": "adopter",\n  "tier": "standard",\n  "scope": "user",\n  "vault": { "mode": "existing", "path": "%s" },\n  "handover": { "mode": "external", "path": "%s" },\n  "pluginSet": "lean",\n  "lanes": [],\n  "lanesMeaningful": true,\n  "alwaysOn": false\n}\n' \
-  "$(winpath "$vaultAB")" "$(winpath "$handoverAB")" > "$profAB"
+printf '{\n  "role": "adopter",\n  "tier": "standard",\n  "scope": "user",\n  "vault": { "mode": "none" },\n  "handover": { "mode": "external", "path": "%s" },\n  "pluginSet": "lean",\n  "lanes": [],\n  "lanesMeaningful": true,\n  "alwaysOn": false\n}\n' \
+  "$(winpath "$handoverAB")" > "$profAB"
 denyAB="$work/deny-lane-overlay-write.js"
 cat > "$denyAB" <<'JS'
 const fs = require('fs');
@@ -1769,28 +1773,25 @@ fs.accessSync = function (p, mode) {
 };
 require('module').syncBuiltinESMExports();
 JS
+cacheAB="$hAB.himmelctl-cache"
 pAB=$(build_path "$sAB" bash jq python3 npm -- "${LANE_TOOLS[@]}")
 make_git_stub "$sAB" "https://github.com/someone/other-repo.git"
 set +e
-out=$(PATH="$pAB" HOME="$hAB" USERPROFILE="$(winpath "$hAB")" HIMMELCTL_CACHE_DIR="$(winpath "$hAB.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hAB.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
+out=$(PATH="$pAB" HOME="$hAB" USERPROFILE="$(winpath "$hAB")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheAB")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheAB/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
       HIMMELCTL_REPO_ROOT="$(winpath "$fAB")" \
       DENY_LANE_OVERLAY_DIR="$(winpath "$fAB/scripts/lanes")" \
       NODE_OPTIONS="--require=$(winpath "$denyAB")" \
       "$node_bin" "$wizard" install --from-profile "$(winpath "$profAB")" \
       </dev/null 2>&1); rc=$?
 set -e
-[ "$rc" -ne 0 ] || fail "caseAB: unwritable lane overlay dir must fail before T5b mutation: $out"
-grepq "$out" 'overlay target is not writable' \
-  || fail "caseAB: failure must name the unwritable overlay target: $out"
-grepq "$out" 'EACCES' \
-  || fail "caseAB: failure must surface the permission code: $out"
-grepq "$out" 'lane profile preflight failed' \
-  || fail "caseAB: unwritable target must fail in the pre-install validation phase: $out"
-[ -e "$handoverAB" ] \
-  && fail "caseAB: T5b preflight must abort before applyHandoverStep creates the external handover dir"
-[ -f "$fAB/.env" ] \
-  && fail "caseAB: T5b preflight must abort before applyHandoverStep writes HANDOVER_DIR"
-echo "ok: caseAB unwritable overlay dir aborts T5b before handover, wire or upgrade mutation"
+[ "$rc" -eq 0 ] || fail "caseAB: an unwritable in-tree lane overlay dir must fall back to the cache dir, not fail: $out"
+grepq "$out" 'lane profile: allowlisted' \
+  || fail "caseAB: install must still report the lane profile persisted via the cache-dir fallback: $out"
+[ -f "$cacheAB/lanes.local.json" ] \
+  || fail "caseAB: overlay must land under the himmelctl cache dir when scripts/lanes/ is unwritable"
+[ -f "$fAB/scripts/lanes/lanes.local.json" ] \
+  && fail "caseAB: overlay must NOT be written into the unwritable in-tree lanes dir"
+echo "ok: caseAB unwritable in-tree lane overlay dir falls back to the himmelctl cache dir instead of aborting"
 
 # ── Case AC (HIMMEL-2305): resolveActiveFeatures() — the ONE selection ->
 # feature mapping shared by the secrets walk (bin.js's runSecretsWalk) and

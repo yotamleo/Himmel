@@ -118,8 +118,22 @@ load_dotenv() {
 
     local _ld_envfile
     # An explicit --root bypasses CWD git resolution (never trust the CWD repo).
-    [ -n "$_ld_root" ] || { _ld_root=$(_load_dotenv_root) || return 0; }
-    _ld_envfile="$_ld_root/.env"
+    if [ -n "$_ld_root" ]; then
+        _ld_envfile="$_ld_root/.env"
+    else
+        # HIMMEL-3059 S3: a read-only install tree (e.g. a packaged /usr/share
+        # prefix) can never HAVE an in-tree .env, so an adopter's overrides land
+        # under the himmelctl cache dir instead. Readers check there FIRST, then
+        # fall back to the git-resolved root, so an existing writable clone's
+        # .env is unaffected.
+        local _ld_cache="${HIMMELCTL_CACHE_DIR:-$HOME/.claude/himmel}"
+        if [ -f "$_ld_cache/.env" ]; then
+            _ld_envfile="$_ld_cache/.env"
+        else
+            _ld_root=$(_load_dotenv_root) || return 0
+            _ld_envfile="$_ld_root/.env"
+        fi
+    fi
     [ -f "$_ld_envfile" ] || return 0
 
     local _ld_key _ld_line _ld_val

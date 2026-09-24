@@ -70,6 +70,18 @@ jobs:
           persist-credentials: false
       - run: bash scripts/guardrails/leak-classes.sh --tree
 
+  # Trust-path git subprocess calls must scrub GIT_DIR/GIT_WORK_TREE/
+  # GIT_COMMON_DIR/GIT_INDEX_FILE before invoking git — an attacker-set value
+  # otherwise steers which repo/worktree/index the call answers about
+  # (HIMMEL-3570; already caught twice as real bugs, PR 1212 and PR 1217).
+  git-env-scrub:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: bash scripts/guardrails/check-git-env-scrub.sh --tree
+
   # Commit-message governance (HIMMEL-594/1483): every non-exempt commit in the
   # PR range must be conventional and ticket-traceable. Reuses the local
   # commit-msg gate (scripts/hooks/check-commit-msg.sh) over the range so CI and
@@ -91,6 +103,24 @@ jobs:
           else
             bash scripts/ci/check-commit-range.sh
           fi
+
+  # Plugin-version-bump governance (HIMMEL-3551): mirrors the local
+  # plugin-version-bump-required pre-commit hook (--bump-required), which only
+  # sees STAGED files at commit time, over the whole PR range — so a commit
+  # that changes a marketplace/plugins/<p>/ file without bumping that plugin's
+  # plugin.json version is caught even when pre-commit was skipped/bypassed.
+  # fetch-depth: 0 → the base ref is reachable for the range diff. On `push`
+  # (post-merge to main) there's no PR base to diff against and nothing new to
+  # gate, so this only runs on pull_request.
+  plugin-version-bump:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Every plugin file changed in the PR range bumped its version
+        run: bash scripts/check-plugin-drift.sh --bump-required "${{ github.event.pull_request.base.sha }}"
 
   lint:
     runs-on: ubuntu-latest

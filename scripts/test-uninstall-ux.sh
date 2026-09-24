@@ -86,11 +86,21 @@ fixture() {
     FX_PROJ="$FX/proj"
     rm -rf "$FX"
     mkdir -p "$FX_HOME/.claude/channels/telegram" "$FX_HOME/.claude/handover/bridge/sessions/S1" \
-        "$FX_HOME/.claude/himmel" "$FX_PROJ/.claude"
+        "$FX_HOME/.claude/himmel" "$FX_PROJ/.claude" \
+        "$FX_HOME/.claude/pipeline-cadence" "$FX_HOME/.claude/qmd-cadence" "$FX_HOME/.claude/graphmap-cadence" \
+        "$FX_HOME/.himmel"
     printf 'TELEGRAM_BOT_TOKEN=123:abc\n' > "$FX_HOME/.claude/channels/telegram/.env"
     printf '{"allowFrom":["42"]}\n' > "$FX_HOME/.claude/channels/telegram/access.json"
     printf 'x\n' > "$FX_HOME/.claude/handover/bridge/sessions/S1/inbox.jsonl"
     printf '{"scope":"user"}\n' > "$FX_HOME/.claude/himmel/install-profile.json"
+    # HIMMEL-3559: the runner scripts a cadence arm writes into its BAT_DIR,
+    # and the observability registry graphmap-cadence.sh registers into —
+    # neither had a manifest row, so uninstall left them behind.
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$FX_HOME/.claude/pipeline-cadence/run.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$FX_HOME/.claude/qmd-cadence/run.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$FX_HOME/.claude/graphmap-cadence/run.sh"
+    printf '{"flows":[{"name":"graphmap","cadence_seconds":3600}],"expected_tasks":["graphmap"]}\n' \
+        > "$FX_HOME/.himmel/observability.json"
     printf '%s\n' "$SETTINGS_JSON" > "$FX_HOME/.claude/settings.json"
     printf '%s\n' "$SETTINGS_JSON" > "$FX_PROJ/.claude/settings.json"
     git -C "$FX_PROJ" init -q 2>/dev/null
@@ -280,8 +290,13 @@ assert_not_has "D1 never lists a foreign hook as removed" "$HOOK_FOREIGN" "$out"
 assert_has "D1 says it is a dry run" "dry-run" "$out"
 
 # ── S1 — DEFAULT uninstall removes himmel's code, keeps operator state ─────
+# HIMMEL-3559: no --skip-tasks here (unlike the other scenarios) — the cadence
+# runner dirs are gated on it the same as cadence-jobs (removing a runner dir
+# while its scheduled entry survives would leave a broken job), so exercising
+# their removal needs the flag OFF. Safe to omit: crontab/atq/schtasks are
+# unreachable in this hermetic PATH, so step 3's job-marker code no-ops.
 fixture s1
-run_uninstall --yes --skip-tasks --skip-plugins
+run_uninstall --yes --skip-plugins
 assert_rc "S1 default uninstall" 0 "$rc"
 assert_exists "S1 telegram pairing kept by default" "$FX_HOME/.claude/channels/telegram/access.json"
 assert_exists "S1 bridge state kept by default" "$FX_HOME/.claude/handover/bridge/sessions/S1/inbox.jsonl"
@@ -295,6 +310,12 @@ assert_has "S1 positive read-back of the user settings" "verified: no himmel wir
 assert_has "S1 positive read-back of the project settings" "verified: no himmel wiring left in $FX_PROJ/.claude/settings.json" "$out"
 assert_has "S1 footprint marks state as kept" "KEEP" "$out"
 assert_has "S1 footprint names the purge flag" "--purge-state" "$out"
+# HIMMEL-3559: himmel's own cadence runner dirs + observability registry are
+# code, not operator state — removed by DEFAULT, same as himmelctl-cache.
+assert_absent "S1 pipeline-cadence dir removed (himmel's own code)" "$FX_HOME/.claude/pipeline-cadence"
+assert_absent "S1 qmd-cadence dir removed (himmel's own code)" "$FX_HOME/.claude/qmd-cadence"
+assert_absent "S1 graphmap-cadence dir removed (himmel's own code)" "$FX_HOME/.claude/graphmap-cadence"
+assert_absent "S1 observability registry removed (himmel's own bookkeeping)" "$FX_HOME/.himmel/observability.json"
 
 # ── S2 — --purge-state ALSO removes operator state (distinct outcome) ──────
 fixture s2

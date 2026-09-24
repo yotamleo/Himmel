@@ -14,13 +14,25 @@
 #   1  handover root unresolvable, or the write failed; also scripts/lib/go-gate.sh
 #      failed to source or did not define console_leg (fail closed - writing a GO
 #      is sensitive enough that a broken shared lib must never read as "not a leg")
-#   2  usage (arg count, non-digit PR, sha not exactly 40 lowercase hex)
+#   2  usage (arg count, non-digit PR, sha not exactly 40 lowercase hex); also
+#      a relative-entry copy handed off (anchor-handoff.sh, HIMMEL-3437) and
+#      refused - HIMMEL_REPO unset/empty, or the anchor carries no copy
 #   3  refused: run from a console-spawned leg (a judge included - HIMMEL-3133,
 #      "the judge is a leg") - a leg never writes its own GO
 #   3  refused: run from a console relay - only the console writes a GO
 #
+# A relative entry (`bash scripts/handover/console-kit/go.sh`, the leg
+# profile's pre-approved literal) hands off to the HIMMEL_REPO anchor's own
+# copy before anything else runs (HIMMEL-3437) - same reasoning as
+# merge-on-green.sh's own entry-script hand-off: a leg-writable worktree copy
+# must never decide what its own GO writer does. An absolute entry (the
+# console's own invocation) is unaffected - see anchor-handoff.sh's header.
+#
 # Platform guard (gitbash-only): POSIX bash 3.2+, same as headed-arm-leg.sh.
 set -u
+# HIMMEL-3437: a relative-entry copy that is not the anchor's hands off to it
+# (the same one-hop, fail-closed pattern scripts/cr/anchor-handoff.sh uses).
+. "$(dirname "${BASH_SOURCE[0]}")/../../cr/anchor-handoff.sh" || exit 2
 
 usage() {
     echo "usage: go.sh <pr-number> <full-40-hex-head-sha>" >&2

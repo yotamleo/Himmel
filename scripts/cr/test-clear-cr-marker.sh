@@ -104,6 +104,14 @@ build_repo_template() {
     # HIMMEL-3220: the floor provenance check verifies the artifact's stamp here.
     cp "$FLOOR_MJS" "$REPO_TEMPLATE/scripts/cr/claude-floor.mjs" \
         || { echo "FAIL: cp claude-floor.mjs into template failed" >&2; rm -rf "$REPO_TEMPLATE"; return 1; }
+    # HIMMEL-3437: anchor-handoff.sh's self-anchor check now also requires
+    # the anchor's own git index to track the relative entry path (closing
+    # the orphaned-worktree bypass) - without this, these scripts/cr/*.sh
+    # copies are untracked in the template repo and a relative entry with
+    # HIMMEL_REPO=$tmp (the legitimate self-anchor case these fixtures rely
+    # on) falls through to the hand-off path instead of self-anchoring.
+    git -C "$REPO_TEMPLATE" add -A scripts/cr scripts/lib bin \
+        || { echo "FAIL: git add of template scaffold scripts failed" >&2; rm -rf "$REPO_TEMPLATE"; return 1; }
 }
 # HIMMEL-3220: a throwaway floor signing key pair — never the real
 # ~/.himmel/cr-floor-key (the gate reads CR_FLOOR_KEY_DIR).

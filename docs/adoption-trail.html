@@ -1016,10 +1016,12 @@ bash ~/himmel/scripts/adopt.sh --profile core --scope project --dry-run</pre>
         into the commit message itself, as trailer lines such as
         <span class="mono">Platforms tested: linux</span> and
         <span class="mono">Security reviewed: manual</span>, which the push
-        gate checks; and <dfn>CR</dfn> is short for CodeRabbit, an automated
-        pull-request review app &mdash; himmel's docs also say &ldquo;CR
+        gate checks; and <dfn>CR</dfn> is short for code review, the pre-PR
+        review gate this level runs &mdash; himmel's docs say &ldquo;CR
         findings&rdquo; for the comments any reviewer leaves on a pull
-        request. Review of a change is run by a <dfn>panel</dfn>: the group
+        request. CodeRabbit, an automated pull-request review app, is one
+        best-effort reviewer inside that gate and is always spelled out, never
+        abbreviated CR. Review of a change is run by a <dfn>panel</dfn>: the group
         of reviewers &mdash; Claude, plus any review lane you switched on
         (Level 4) &mdash; that the <span class="mono">/pr-check</span>
         command asks to look at the same diff.</p>

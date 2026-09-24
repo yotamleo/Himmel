@@ -116,7 +116,13 @@ def eff_pre_of($N):
     ).pre
   end;
 def group_key(r):
-  if (r.kind|is_register_kind) then ["reg", r.kind, (r.unit // "")]
+  # HIMMEL-3541: a register-kind unit installed at two scopes in the same
+  # round (project then user) must fold SEPARATELY -- otherwise the folded
+  # record's .path (first row) and .fields (last row, cli_scope/project_path)
+  # come from different scopes, and only one scope's file is ever touched at
+  # apply. A row with no .scope at all (legacy) still keys on "" and folds
+  # with other scope-less rows exactly as before.
+  if (r.kind|is_register_kind) then ["reg", r.kind, (r.unit // ""), (r.scope // "")]
   else ["path", (r.path // ""), (r.unit // "")]
   end;
 def build_chains($rows):

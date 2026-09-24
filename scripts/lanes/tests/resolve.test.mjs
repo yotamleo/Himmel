@@ -471,6 +471,25 @@ test('mergeLocalOverlay: unknown top-level local keys cannot shadow the base reg
   assert.equal(merged.schemaVersion, 1);
   assert.ok(!Object.prototype.hasOwnProperty.call(merged, 'typoedPolicy'));
 });
+
+// HIMMEL-3059 S3 — loadRegistry() must find lanes.local.json under the
+// himmelctl cache dir when a read-only install prefix couldn't take the
+// in-tree overlay write. No in-tree scripts/lanes/lanes.local.json exists in
+// this checkout, so a bare, un-pinned LANES_REGISTRY run against the real
+// lanes.json base that still surfaces a lane ONLY the cache-dir overlay
+// declares proves that file was the one merged in — regardless of which
+// real lanes this machine's own probes happen to resolve.
+test('loadRegistry: finds the lanes.local.json overlay under HIMMELCTL_CACHE_DIR', () => {
+  const cacheDir = makeTmpDir('lanes-cache-overlay-');
+  writeFileSync(join(cacheDir, 'lanes.local.json'), JSON.stringify({
+    lanes: [{ id: 'zzz-cache-overlay-test-lane', class: 'impl', bestFor: 'test', effort: 'low', probe: { kind: 'always' } }],
+  }));
+  const env = { ...process.env, HIMMELCTL_CACHE_DIR: cacheDir };
+  delete env.LANES_REGISTRY;
+  const json = JSON.parse(execFileSync(process.execPath, [RESOLVER, '--json'], { env, encoding: 'utf8' }));
+  assert.ok(json.some((l) => l.id === 'zzz-cache-overlay-test-lane'));
+});
+
 test('applyProfileAllowlist: preserves overrides and converges allowlist + scope ids', () => {
   const local = { lanes: [{ id: 'a', probe: { kind: 'never' } }], other: true };
   const next = applyProfileAllowlist(local, ['b', 'b', 'a'], ['a', 'b', 'a']);

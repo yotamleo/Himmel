@@ -338,6 +338,41 @@ printf '%s\n' "$bsq_line" > "$REPO/.env"
 got=$( cd "$REPO" && unset DOTENV_BSQ2 && load_dotenv DOTENV_BSQ2 && printf '<%s>' "$DOTENV_BSQ2" )
 assert_eq "T36 single-quoted mid-value backslash is literal" "<'a\\b'>" "$got"
 
+# ── HIMMEL-3059 S3: himmelctl-cache-dir-first fallback ──────────────────────
+# When the install prefix is read-only (e.g. a packaged /usr/share tree), the
+# adopter path can't write an in-tree .env, so it lands under the himmelctl
+# cache dir instead. Readers must check there FIRST, then fall back to the
+# git-resolved root — so a writable clone's in-tree .env still wins when no
+# cache-dir .env exists.
+
+# T37: a cache-dir .env is found even when the in-tree root has none (the
+# read-only-prefix case). CACHE-side value: DOTENV_CACHE.
+CACHEDIR="$TMP/cache-himmel"
+mkdir -p "$CACHEDIR"
+printf 'DOTENV_CACHE=from-cache-dir\n' > "$CACHEDIR/.env"
+rm -f "$REPO/.env"
+got=$( cd "$REPO" && unset DOTENV_CACHE && HIMMELCTL_CACHE_DIR="$CACHEDIR" load_dotenv DOTENV_CACHE && printf '%s' "${DOTENV_CACHE:-<unset>}" )
+assert_eq "T37 cache-dir .env found when in-tree root has none" "from-cache-dir" "$got"
+
+# T38: a cache-dir .env WINS over an in-tree .env (new place first).
+printf 'DOTENV_CACHE=from-in-tree\n' > "$REPO/.env"
+got=$( cd "$REPO" && unset DOTENV_CACHE && HIMMELCTL_CACHE_DIR="$CACHEDIR" load_dotenv DOTENV_CACHE && printf '%s' "${DOTENV_CACHE:-<unset>}" )
+assert_eq "T38 cache-dir .env wins over in-tree" "from-cache-dir" "$got"
+
+# T39: no cache-dir .env → falls back to the in-tree root, byte-for-byte
+# (existing writable clones are unaffected).
+EMPTYCACHE="$TMP/cache-empty"
+mkdir -p "$EMPTYCACHE"
+printf 'DOTENV_CACHE=from-in-tree\n' > "$REPO/.env"
+got=$( cd "$REPO" && unset DOTENV_CACHE && HIMMELCTL_CACHE_DIR="$EMPTYCACHE" load_dotenv DOTENV_CACHE && printf '%s' "${DOTENV_CACHE:-<unset>}" )
+assert_eq "T39 no cache-dir .env falls back to in-tree" "from-in-tree" "$got"
+
+# T40: an explicit --root is HERMETIC — never consults the cache dir at all.
+printf 'DOTENV_CACHE=from-root-flag\n' > "$ROOTDIR/.env"
+got=$( cd "$NONGIT" && unset DOTENV_CACHE && HIMMELCTL_CACHE_DIR="$CACHEDIR" load_dotenv --root "$ROOTDIR" DOTENV_CACHE && printf '%s' "${DOTENV_CACHE:-<unset>}" )
+assert_eq "T40 --root bypasses the cache dir entirely" "from-root-flag" "$got"
+rm -f "$ROOTDIR/.env"
+
 echo
 if [ "$FAILED" -eq 0 ]; then
     echo "All load-dotenv tests passed."

@@ -251,6 +251,28 @@ else
 fi
 rm -rf "$_prov_tmp"
 
+# HIMMEL-3525 S18: with a real (fake) crontab on PATH holding the just-armed
+# line, cadence_prov_record reads its own identity straight back and records
+# --post-text <token> --field identity_v=1, so uninstall can tell this exact
+# line apart from an edited one later.
+_prov_tmp2=$(mktemp -d "${TMPDIR:-/tmp}/cadence-prov2.XXXXXX") || { echo "FAIL: mktemp" >&2; exit 1; }
+_cron_bin="$_prov_tmp2/bin"; mkdir -p "$_cron_bin"
+cat > "$_cron_bin/crontab" <<'CRON_STUB'
+#!/usr/bin/env bash
+printf '%s\n' "0 3 * * * run.sh # HIMMEL-Fmt-Probe2"
+CRON_STUB
+chmod 755 "$_cron_bin/crontab"
+PATH="$_cron_bin:$PATH" HIMMEL_PROVENANCE_DIR="$_prov_tmp2/ledger" cadence_prov_record HIMMEL-Fmt-Probe2; _prc=$?
+_prow2=$(grep '"op":"register"' "$_prov_tmp2/ledger/provenance.jsonl" 2>/dev/null)
+if [ "$_prc" -eq 0 ] && grep -q '"unit":"HIMMEL-Fmt-Probe2"' <<< "$_prow2" \
+    && grep -q '"identity_v":1' <<< "$_prow2" \
+    && grep -qE '"post":\{"sha":"[0-9a-f]{64}"\}' <<< "$_prow2"; then
+  pass=$((pass + 1)); echo "  ok: cadence_prov_record reads the live line back and records identity_v=1 + a post sha"
+else
+  fail=$((fail + 1)); echo "  FAIL: cadence_prov_record did not record the read-back identity (rc=$_prc): $_prow2"
+fi
+rm -rf "$_prov_tmp2"
+
 echo
 echo "[test-cadence-format] pass=$pass fail=$fail"
 [ "$fail" -eq 0 ] || exit 1

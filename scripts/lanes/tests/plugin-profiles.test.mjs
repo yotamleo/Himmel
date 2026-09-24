@@ -2,12 +2,13 @@
 // HIMMEL-1040 — resolver invariants for the named plugin-profile registry.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, realpathSync } from 'node:fs';
 import { makeTmpDir } from '../../lib/test-tmpdir.mjs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { resolveProfile, validateRegistry, parseAddPlugins, loadRegistry, readEnabledPluginIds, resolveProfileByName, mcpServersForProfile, collectMcpServerDefs } from '../plugin-profiles.mjs';
+import * as PP from '../plugin-profiles.mjs';
 
 const REG = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'plugin-profiles.json'), 'utf8'));
 const FLOOR = REG.floor;
@@ -171,7 +172,20 @@ const BAD_GATE_RULES = [
   ['pr-check-env widened var set', 'Bash(bash scripts/cr/pr-check-env.sh CR_CLAUDE_AGENTS CR_PROFILE)'],
   ['pr-check-env wildcard var tail', 'Bash(bash scripts/cr/pr-check-env.sh CR_CLAUDE_AGENTS:*)'],
   ['pr-check-env other var', 'Bash(bash scripts/cr/pr-check-env.sh CR_PROFILE)'],
+  // HIMMEL-3107 (restated by the HIMMEL-3469/3470 audit): spawns a fresh
+  // BILLED headless claude session (claude-floor-review.sh:194) — never a
+  // blanket auto-approval, see CLAUDE.md's Claude-invocation-billing rule.
   ['claude-floor-review stays out', 'Bash(bash scripts/cr/claude-floor-review.sh:*)'],
+  // HIMMEL-3469: --notes/--bugs are caller-supplied destination PATHS with no
+  // containment check (handover-bridge.sh:36; scripts/handover/append-cr-findings.sh:17-21
+  // only checks the parent dir exists, never that it's under a handover
+  // root) — a wildcard tail would be an arbitrary-file-write primitive.
+  ['handover-bridge stays out', 'Bash(bash scripts/cr/handover-bridge.sh:*)'],
+  // HIMMEL-3469: --input reads an arbitrary caller-named file and files
+  // matching lines as a live GitHub issue title+body
+  // (file-deferred-issues.sh:133-145,371-397) — an externally-visible,
+  // hard-to-reverse side effect on attacker-influenceable content.
+  ['file-deferred-issues stays out', 'Bash(bash scripts/cr/file-deferred-issues.sh:*)'],
   // HIMMEL-3359: the step-0 entry is admitted as an exact literal only.
   ['pr-check-context gains a wildcard', 'Bash(bash scripts/cr/pr-check-context.sh:*)'],
   ['pr-check-context gains an argument', 'Bash(bash scripts/cr/pr-check-context.sh --head)'],
@@ -1087,3 +1101,105 @@ for (const file of ['.claude/commands/pr-check.md', '.agents/skills/pr-check/SKI
     assert.match(text, /authoris(?:es|ed)\s+sending\s+review\s+diffs\s+to\s+Codex/, 'missing the operator ruling note');
   });
 }
+
+// HIMMEL-3567: a leg's merge is typed with the primary checkout's ABSOLUTE path
+// (merge-on-green.sh runs from the anchor, HIMMEL-3491), and the permission
+// matcher compares literal text, so the leg settings must carry that exact
+// absolute literal. It must name the PRIMARY checkout — never a leg worktree,
+// whose bytes the leg controls — and it adds nothing beyond merge-on-green.sh:
+// the GO gate (exit 17) stays the only authority on whether a merge happens.
+const ANCHOR = '/home/u/himmel';
+const ANCHOR_RULE = 'Bash(bash /home/u/himmel/scripts/handover/merge-on-green.sh:*)';
+
+for (const name of LEG_PROFILES) {
+  test(`HIMMEL-3567: ${name} with an anchor adds exactly the absolute merge literal and keeps every gate rule`, () => {
+    const { permissions } = resolveProfile(REG, name, { anchor: ANCHOR, installed: [] });
+    assert.deepEqual(permissions.allow, [...REG.gateAllow, ANCHOR_RULE]);
+  });
+}
+
+for (const name of ['operator', 'user', 'bare']) {
+  test(`HIMMEL-3567: ${name} gets no permissions even with an anchor`, () => {
+    const out = resolveProfile(REG, name, { anchor: ANCHOR, installed: [] });
+    assert.equal(out?.permissions, undefined);
+  });
+}
+
+for (const bad of ['/home/u/himmel/.claude/worktrees/fix+x', '/home/u/himmel/.claude/worktrees/fix+x/', 'home/u/himmel', '/home/u/x/../himmel']) {
+  test(`HIMMEL-3567: anchor ${JSON.stringify(bad)} is refused, never emitted`, () => {
+    assert.throws(() => resolveProfile(REG, 'leg-impl', { anchor: bad, installed: [] }), /anchor/);
+  });
+}
+
+for (const odd of ['/home/u/him mel', '/home/u/*', '/home/u/a)b', '/home/u/$X']) {
+  test(`HIMMEL-3567: anchor ${JSON.stringify(odd)} with a matcher-unsafe character adds no rule`, () => {
+    const { permissions } = resolveProfile(REG, 'leg-impl', { anchor: odd, installed: [] });
+    assert.deepEqual(permissions.allow, REG.gateAllow);
+  });
+}
+
+function primaryWithWorktree() {
+  const root = realpathSync(makeTmpDir('pp-anchor-'));
+  const repo = join(root, 'himmel');
+  const wt = join(repo, '.claude', 'worktrees', 'fix+x');
+  const git = (...args) => {
+    const r = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'init.defaultBranch=main', ...args], { encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+  };
+  mkdirSync(repo);
+  git('-C', repo, 'init', '-q');
+  git('-C', repo, 'commit', '-q', '--allow-empty', '-m', 'init');
+  git('-C', repo, 'worktree', 'add', '-q', '-b', 'fix/x', wt);
+  return { root, repo, wt };
+}
+
+test('HIMMEL-3567: primaryCheckout resolves a worktree to its primary checkout', () => {
+  const { root, repo, wt } = primaryWithWorktree();
+  assert.equal(PP.primaryCheckout(wt), repo);
+  assert.equal(PP.primaryCheckout(repo), repo);
+  assert.equal(PP.primaryCheckout(root), null);
+});
+
+// A caller's GIT_DIR / GIT_COMMON_DIR must not steer the anchor: git honours
+// them over `-C`, which would emit an allow rule for another checkout's
+// merge-on-green.sh (bytes the GO gate never vetted).
+for (const key of ['GIT_DIR', 'GIT_COMMON_DIR']) {
+  test(`HIMMEL-3567: primaryCheckout ignores an inherited ${key} pointing at another repo`, () => {
+    const { repo, wt } = primaryWithWorktree();
+    const { repo: evil } = primaryWithWorktree();
+    const saved = process.env[key];
+    process.env[key] = join(evil, '.git');
+    try {
+      assert.equal(PP.primaryCheckout(repo), repo);
+      assert.equal(PP.primaryCheckout(wt), repo);
+    } finally {
+      if (saved === undefined) delete process.env[key]; else process.env[key] = saved;
+    }
+  });
+
+  test(`HIMMEL-3567: CLI under an inherited ${key} still emits the real primary's merge literal`, () => {
+    const { root, repo, wt } = primaryWithWorktree();
+    const { repo: evil } = primaryWithWorktree();
+    const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'plugin-profiles.mjs');
+    const run = spawnSync(process.execPath, [cli, 'leg-impl'], {
+      encoding: 'utf8', cwd: wt, env: { ...process.env, HOME: root, USERPROFILE: root, HIMMEL_REPO: wt, [key]: join(evil, '.git') },
+    });
+    assert.equal(run.status, 0, run.stderr);
+    const { allow } = JSON.parse(run.stdout).permissions;
+    assert.ok(allow.includes(`Bash(bash ${repo}/scripts/handover/merge-on-green.sh:*)`), allow.join('\n'));
+    assert.ok(!allow.some((r) => r.includes(evil)), allow.join('\n'));
+  });
+}
+
+test('HIMMEL-3567: CLI run from a leg worktree emits the PRIMARY absolute merge literal, never the worktree', () => {
+  const { root, repo, wt } = primaryWithWorktree();
+  const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'plugin-profiles.mjs');
+  const run = spawnSync(process.execPath, [cli, 'leg-impl'], {
+    encoding: 'utf8', cwd: wt, env: { ...process.env, HOME: root, USERPROFILE: root, HIMMEL_REPO: wt },
+  });
+  assert.equal(run.status, 0, run.stderr);
+  const { allow } = JSON.parse(run.stdout).permissions;
+  assert.ok(allow.includes(`Bash(bash ${repo}/scripts/handover/merge-on-green.sh:*)`), allow.join('\n'));
+  assert.ok(!allow.some((r) => r.includes('.claude/worktrees')), allow.join('\n'));
+  for (const rule of REG.gateAllow) assert.ok(allow.includes(rule), `lost ${rule}`);
+});

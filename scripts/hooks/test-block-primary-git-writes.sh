@@ -302,7 +302,14 @@ deny "pull -c remote.x.url"                 "$W" "git -c remote.x.url=$P pull x"
 deny "ls-remote -c remote.x.url"            "$W" "git -c remote.x.url=$P ls-remote x"
 deny_direct "remote update -c url.insteadOf" "$W" "git -c url.$P.insteadOf=fake: remote update"
 allow_direct "push -c advice.*=false origin" "$W" "git -c advice.pushUpdateRejected=false push origin feat/x"
-allow_direct "remote add alone"             "$W" "git remote add up https://example.invalid/r.git"
+# "remote add alone" used to be allow_direct here (this row only ever
+# validated that the C1-a repoint+netop COMBO doesn't fire without a paired
+# push — it never claimed the sourced/fence lane's own, unrelated verdict).
+# HIMMEL-3407 now denies it too: adding ANY remote, even a harmless new name,
+# still writes the leg worktree's SHARED $GIT_COMMON_DIR/config, and the
+# existing -C <primary> rows already deny `remote add` unconditionally — the
+# implicit-cwd form should not be a back door to the same write.
+deny_direct "remote add alone"              "$W" "git remote add up https://example.invalid/r.git"
 allow "remote -v"                           "$W" "git remote -v"
 allow "fetch -c advice.*=false origin"      "$W" "git -c advice.detachedHead=false fetch origin"
 
@@ -350,8 +357,11 @@ allow "cd <primary> && git log"             "$W" "cd $P && git log -1"
 allow "cd <primary> && git -C <wt> checkout" "$W" "cd $P && git -C $W checkout feat/x -- README.md"
 
 echo "== ALLOW: leg-local git is unaffected =="
+# "config core.x y" used to be ALLOW here; HIMMEL-3407 moved it to the DENY
+# section below (an ordinary `git config` from a leg worktree always writes
+# the shared config anyway — accepted cost, named in the ticket's proposed fix).
 for sub in "checkout feat/x -- README.md" "reset --hard HEAD" "merge main" "stash pop" "commit -m x" \
-           "restore README.md" "rebase main" "pull --rebase" "config core.x y" "co x"; do
+           "restore README.md" "rebase main" "pull --rebase" "co x"; do
     allow "git $sub (cwd = leg worktree)" "$W" "git $sub"
 done
 allow "git -C <wt> checkout (cwd = primary)" "$P" "git -C $W checkout feat/x -- README.md"
@@ -380,6 +390,183 @@ allow "remote -v show origin"               "$W" "git -C $P remote -v show origi
 allow "GIT_WORK_TREE=<wt> git checkout"     "$W" "GIT_WORK_TREE=$W git checkout feat/x -- README.md"
 allow "single-writer repo: checkout"        "$W" "git -C $S checkout 0123abc"
 allow "single-writer repo: cwd + merge"     "$S" "git merge x"
+
+echo "== DENY: HIMMEL-3407 — config/remote/branch-upstream/main-ref writes from a LEG'S OWN cwd (no -C) reach the primary's shared common dir =="
+# The gap this ticket names: the git arm judges the leg's own repo root, and a
+# feature worktree's own root allows — but git config/remote and the shared
+# refs/heads namespace live in $GIT_COMMON_DIR, which the worktree shares
+# with the primary. Every row below carries NO -C/--git-dir at all; the
+# command is aimed at $W itself, which is exactly the shape the ticket says
+# the existing arm (g) misses.
+deny "config <key> <value>, no -C"          "$W" "git config core.fsmonitor x"
+# --git-dir pointing at the worktree's OWN .git FILE (not a directory) is a
+# real, working git invocation — git follows the gitfile redirection there —
+# and primary_checkout_root's own `git -C <dir>` needs a directory, so
+# _bwimc_git_check_common_owner must resolve the repo ROOT first or this
+# exact spelling slips through with no check at all.
+deny "config via --git-dir=<wt>/.git (file, not dir)" "$W" "git --git-dir=$W/.git config core.fsmonitor x"
+deny "config --unset, no -C"                "$W" "git config --unset branch.main.remote"
+deny "config set (new syntax), no -C"       "$W" "git config set core.hooksPath x"
+deny "remote add, no -C"                    "$W" "git remote add evil $W"
+deny_any "remote set-url, no -C"            "$W" "git remote set-url origin $W"
+# Round 2 (N4) narrowed these to require an EXPLICIT main/master operand —
+# -u/-f/etc with NO branch name given targets the CURRENT branch, which in a
+# linked worktree is never main, so every row here now names main explicitly.
+deny "branch -u <upstream> main, no -C"     "$W" "git branch -u origin/feat/x main"
+deny "branch --set-upstream-to=<u> main, no -C" "$W" "git branch --set-upstream-to=origin/feat/x main"
+deny "branch --unset-upstream main, no -C"  "$W" "git branch --unset-upstream main"
+deny "branch -f main <start>, no -C"        "$W" "git branch -f main feat/x"
+deny "branch -uorigin/x attached main, no -C" "$W" "git branch -uorigin/feat/x main"
+deny "update-ref refs/heads/main, no -C"    "$W" "git update-ref refs/heads/main HEAD"
+deny "update-ref refs/heads/master, no -C"  "$W" "git update-ref refs/heads/master HEAD"
+deny "symbolic-ref refs/heads/main, no -C"  "$W" "git symbolic-ref refs/heads/main refs/heads/feat/x"
+
+echo "== DENY: HIMMEL-3407 adversarial review round 1 =="
+# F1 (HIGH, bypass): the old update-ref/symbolic-ref loop skipped every
+# `-`-prefixed word but not the VALUE a value-taking flag consumes, so `-m
+# <reason>` shifted the ref-name check onto the reason text instead. --stdin
+# reads its ref updates from stdin, invisible to a command-text scanner.
+deny "update-ref -m <reason> refs/heads/main, no -C" "$W" "git update-ref -m msg refs/heads/main HEAD"
+deny "symbolic-ref -m <reason> refs/heads/main, no -C" "$W" "git symbolic-ref -m msg refs/heads/main refs/heads/feat/x"
+deny "update-ref --stdin, no -C"            "$W" "git update-ref --stdin"
+deny "update-ref --stdin -z, no -C"         "$W" "git update-ref --stdin -z"
+# F3 (LOW): -M/-C are branch's FORCE rename/copy (bare -m/-c cannot overwrite
+# an existing branch, so they stay in the ordinary-use bucket; only the
+# force forms can move `main`). checkout -B / switch -C force-create-or-RESET
+# a branch to a start-point, the same "move an existing ref" class spelled
+# through a different verb.
+deny "branch -M <old> main, no -C"          "$W" "git branch -M feat/x main"
+deny "branch -C <old> main, no -C"          "$W" "git branch -C feat/x main"
+deny "checkout -B main, no -C"              "$W" "git checkout --ignore-other-worktrees -B main"
+deny "switch -C main, no -C"                "$W" "git switch -C main"
+deny "checkout -Bmain attached, no -C"      "$W" "git checkout -Bmain"
+
+echo "== DENY: HIMMEL-3407 adversarial review round 2 =="
+# N1 (bypass): a glued -f<path> is a real git invocation and was not
+# recognised as the file flag at all, so its value was never checked.
+# cwd is a NON-repo directory (/tmp), not the leg worktree: the glued form
+# must be recognised and checked by ITS OWN resolved path regardless of cwd,
+# not fall through to the (here, repo-less and fail-open) common-owner check.
+deny "config -f<glued primary path>, cwd=/tmp" "/tmp" "git config -f$P/.git/config core.hooksPath /x"
+# N2 (fail-open): an unresolvable --file target used to be silently allowed;
+# every other arm denies an unresolved git target, this one now does too.
+deny "config --file \"\$DYNAMIC\", no -C"   "$W" "X=$P/.git/config; git config --file \"\$X\" core.hooksPath /x"
+# N3 (bypass): GIT_CONFIG_GLOBAL/SYSTEM repoint what --global/--system
+# actually write, voiding the scope exemption below.
+deny "GIT_CONFIG_GLOBAL= + config --global, no -C" "$W" "GIT_CONFIG_GLOBAL=$P/.git/config git config --global core.hooksPath /x"
+deny "GIT_CONFIG_SYSTEM= + config --system, no -C" "$W" "GIT_CONFIG_SYSTEM=$P/.git/config git config --system core.hooksPath /x"
+# N5 (cheap): switch's long form of -C, an unambiguous --force abbreviation
+# on branch, and a bundled short cluster on checkout.
+deny "switch --force-create main, no -C"    "$W" "git switch --force-create main"
+deny "branch --move --forc <old> main, no -C" "$W" "git branch --move --forc feat/x main"
+deny "checkout -fB main (bundled), no -C"   "$W" "git checkout -fB main"
+
+echo "== ALLOW: HIMMEL-3407 scope is bounded — ordinary worktree git use keeps working =="
+allow "branch <new>, no -C (no -u/-f)"      "$W" "git branch newbr"
+allow "branch -d, no -C (delete only)"      "$W" "git branch -d newbr"
+allow "branch -D, no -C (delete only)"      "$W" "git branch -D newbr"
+allow "branch -m <old> <new> (plain rename, no -C)" "$W" "git branch -m feat/x renamedbr"
+allow "checkout -b <new>, no -C (plain create)" "$W" "git checkout -b anothernew"
+allow "update-ref refs/heads/other, no -C (not main/master)" "$W" "git update-ref refs/heads/other HEAD"
+allow "config -l, no -C (read)"             "$W" "git config -l"
+allow "config get user.name, no -C (read)"  "$W" "git config get user.name"
+allow "remote -v, no -C (read)"             "$W" "git remote -v"
+allow "single-writer repo: config write (no primary linkage)" "$S" "git config core.x y"
+
+echo "== ALLOW: HIMMEL-3407 adversarial review round 1 -- F2 false-deny fixes =="
+# F2 (MEDIUM, false deny): config/remote writes that do NOT touch the shared
+# repo config at all must not deny just because the subcommand name matches.
+allow "config --global, no -C"              "$W" "git config --global user.name t"
+allow "config --system, no -C"              "$W" "git config --system core.x y"
+allow "config --worktree, no -C"            "$W" "git config --worktree core.x y"
+allow "config -f <outside path>, no -C"     "$W" "git config -f /tmp/himmel-3407-outside-cfg a.b c"
+allow "config --file=<outside path>, no -C" "$W" "git config --file=/tmp/himmel-3407-outside-cfg a.b c"
+deny "config --file=<primary>/.git/config, no -C" "$W" "git config --file=$P/.git/config a.b c"
+allow "remote update, no -C"                "$W" "git remote update"
+allow "remote prune origin, no -C"          "$W" "git remote prune origin"
+allow "remote show origin, no -C"           "$W" "git remote show origin"
+
+echo "== ALLOW: HIMMEL-3407 adversarial review round 2 -- N4 false-deny fixes =="
+# N4 (false deny): -u/--set-upstream*/-f/-M/-C implicitly target the CURRENT
+# branch when no branch-name operand is given — in a linked worktree that is
+# always the leg's own feature branch (git refuses to check main out in two
+# worktrees at once), never main. Only an EXPLICIT main/master operand makes
+# any of these dangerous, matching update-ref/symbolic-ref's own scoping.
+allow "branch -u origin/other (implicit target, not main)" "$W" "git branch -u origin/other"
+allow "branch -f other start (no main operand)" "$W" "git branch -f other start"
+allow "branch --set-upstream-to=<u> (implicit target)" "$W" "git branch --set-upstream-to=origin/other"
+allow "branch --unset-upstream (implicit target)" "$W" "git branch --unset-upstream"
+allow "branch -M old new (neither is main)" "$W" "git branch -M oldbr newbr2"
+allow "branch -uorigin/x attached (implicit target)" "$W" "git branch -uorigin/feat/x"
+
+echo "== HIMMEL-3565 residual 1 + 3: GIT_CONFIG_GLOBAL/SYSTEM value path-check + cross-clause carry =="
+# Residual 1 (N3 incomplete): the old check only withheld the
+# --global/--system exemption when the env var's NAME was present in the
+# clause text; it never resolved the var's VALUE. The existing round-2 deny
+# row (cwd=$W, a worktree of $P) passed by accident — $W's own common-dir
+# owner IS $P, so the (wrong) check landed on the right answer. From a cwd
+# with no repo at all (/tmp), that accident doesn't happen, and the old code
+# allowed. The value itself must be resolved and checked directly.
+deny "GIT_CONFIG_GLOBAL=<primary cfg> + config --global, cwd=/tmp" "/tmp" \
+    "GIT_CONFIG_GLOBAL=$P/.git/config git config --global core.hooksPath /x"
+deny "GIT_CONFIG_SYSTEM=<primary cfg> + config --system, cwd=/tmp" "/tmp" \
+    "GIT_CONFIG_SYSTEM=$P/.git/config git config --system core.hooksPath /x"
+allow "GIT_CONFIG_GLOBAL=<outside path> + config --global, cwd=/tmp" "/tmp" \
+    "GIT_CONFIG_GLOBAL=/tmp/himmel-3565-outside-cfg git config --global core.hooksPath /x"
+# Residual 3: the old scan read only the CURRENT clause's text, so an
+# earlier `export` in the same command (arm (g) already carries
+# GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE this way) was invisible to it.
+deny "export GIT_CONFIG_GLOBAL=<primary cfg>; config --global, no -C" "$W" \
+    "export GIT_CONFIG_GLOBAL=$P/.git/config; git config --global core.hooksPath /x"
+
+echo "== HIMMEL-3565 residual 2: branch arm scopes to the flag's TARGET operand, not any main/master operand =="
+# -f's target is the FIRST positional (the branch being created/reset); a
+# main/master START-POINT (second positional) is read-only and must allow.
+allow "branch -f <new> main (main is the START-POINT, not the target)" "$W" \
+    "git branch -f feat main"
+# -u/--set-upstream-to's mandatory value is the UPSTREAM, not a branch name;
+# with no further operand the target is the CURRENT branch (never main here).
+allow "branch -u main (main is -u's VALUE, not a branch operand)" "$W" \
+    "git branch -u main"
+# -C's target is the NEW branch (last positional); the old one is a read-only
+# copy SOURCE.
+allow "branch -C main <new> (main is the SOURCE, not the target)" "$W" \
+    "git branch -C main feat2"
+
+echo "== HIMMEL-3565 round-3 CR (B1): move SOURCE is a target too — <old> is deleted, not just read =="
+# Copy's source is read-only (residual 2's -C row above stays allow), but
+# move DELETES the source ref (refs/heads/<old> goes away, and if <old> was
+# checked out elsewhere its HEAD repoints) — that is a write, not a read.
+deny "branch -M main <new> (main is the MOVE SOURCE, uppercase)" "$W" \
+    "git branch -M main renamed"
+deny "branch -M master <new> (master is the MOVE SOURCE)" "$W" \
+    "git branch -M master renamed"
+deny "branch --move --force main <new> (long form, main is the SOURCE)" "$W" \
+    "git branch --move --force main renamed"
+# Bare -m (no force) is a real rename too — git only needs -f when <new>
+# already exists — so it was wrongly excluded from br_danger entirely; now
+# in the same danger bucket as -M.
+deny "branch -m main <new>, no force (main is the MOVE SOURCE)" "$W" \
+    "git branch -m main renamed"
+
+echo "== HIMMEL-3565 round-3 CR (B2): -u's value hides inside a bundled short cluster =="
+# The exact -u/-uVALUE forms above are matched, but a cluster like -fu bundles
+# -u with an unrelated boolean flag in one token; -u still consumes the NEXT
+# token as its mandatory value (never a branch-name operand), and the real
+# target is main, the operand after it.
+deny "branch -fu <upstream> main (u bundled with -f)" "$W" \
+    "git branch -fu origin/feat/x main"
+deny "branch -qu <upstream> main (u bundled with -q)" "$W" \
+    "git branch -qu origin/feat/x main"
+deny "branch -vu <upstream> main (u bundled with -v)" "$W" \
+    "git branch -vu origin/feat/x main"
+
+echo "== HIMMEL-3565 residual 4 (documented, not fixed): branch -D main is inert, not modelled =="
+# git itself refuses to delete the branch checked out in another worktree, so
+# this is inert in the exact scenario this arm defends. See the ponytail
+# comment beside the branch arm in block-write-into-main-checkout.sh. Pinned
+# here so a change to that invariant is caught rather than silently drifting.
+allow "branch -D main, no -C (git itself refuses; not modelled)" "$W" "git branch -D main"
 
 echo "== DENY: unparseable input fails CLOSED in direct-exec mode (adversarial review S6) =="
 for raw in '' 'not json' '[]' '{}' '{"tool_name":"Bash"}' '{"tool_name":"Bash","tool_input":{}}' \

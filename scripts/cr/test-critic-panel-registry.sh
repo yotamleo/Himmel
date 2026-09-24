@@ -144,6 +144,29 @@ check "T4: default registry dispatched codex"           "$(grep -c 'slug=codex '
 check "T4: default registry pinned codex to gpt-6-sol"  "$(grep -c 'model=gpt-6-sol' "$LOG4")" "1"
 check "T4: default registry did NOT pin the retired id" "$(grep -c 'model=gpt-6-astra' "$LOG4")" "0"
 
+# ---------------------------------------------------------------------------
+# T5 — HIMMEL-3059 S3: an unset CRITICS_LOCAL_JSON checks the himmelctl cache
+# dir first (a read-only install prefix can't carry an in-tree overlay), and
+# an explicit CRITICS_LOCAL_JSON still overrides both.
+# ---------------------------------------------------------------------------
+printf '%s' '{"panel":[{"slug":"cachecrit","model":"m/cache","provider":"test","tier":"free"}]}' > "$tmp/t5-cache-local.json"
+CACHEHOME="$tmp/t5-cache-home"; mkdir -p "$CACHEHOME"
+cp "$tmp/t5-cache-local.json" "$CACHEHOME/critics.local.json"
+LOG5="$tmp/t5.log"; : > "$LOG5"
+env -u CRITICS_JSON -u CRITICS_LOCAL_JSON -u CR_PROFILE -u CRITIC_PANEL_TIERS \
+    HIMMELCTL_CACHE_DIR="$CACHEHOME" \
+    PANEL_TEST_LOG="$LOG5" CRITICS_BASE_JSON="$tmp/t2-base.json" \
+    CRITIC_FIRST_PASS="$STUB" bash "$PANEL" >/dev/null 2>&1 <<< "$DIFF"
+check "T5: cache-dir critics.local.json is dispatched" "$(grep -c 'slug=cachecrit ' "$LOG5")" "1"
+
+LOG5b="$tmp/t5b.log"; : > "$LOG5b"
+env -u CRITICS_JSON -u CR_PROFILE -u CRITIC_PANEL_TIERS \
+    HIMMELCTL_CACHE_DIR="$CACHEHOME" \
+    PANEL_TEST_LOG="$LOG5b" CRITICS_BASE_JSON="$tmp/t2-base.json" CRITICS_LOCAL_JSON="$tmp/t3-local.json" \
+    CRITIC_FIRST_PASS="$STUB" bash "$PANEL" >/dev/null 2>&1 <<< "$DIFF"
+check "T5b: explicit CRITICS_LOCAL_JSON overrides the cache dir" "$(grep -c 'slug=other ' "$LOG5b")" "1"
+check "T5b: cache-dir overlay not used when explicit is set"    "$(grep -c 'slug=cachecrit ' "$LOG5b")" "0"
+
 if [ "$fails" -eq 0 ]; then
     echo "ALL PASS"
 else

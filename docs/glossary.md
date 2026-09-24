@@ -9,6 +9,7 @@ definition, because a term defined in two places drifts.
 
 | Term | Meaning |
 |---|---|
+| **CR** | Code review — the pre-PR review gate and everything named for it: the CR marker, the CR ledger, the critic panel, `/pr-check` (operator ruling, 2026-09-24). CodeRabbit is one best-effort CI reviewer inside that gate (HIMMEL-3360) and is always spelled out, never abbreviated CR. |
 | **Console** | The operator's chief of staff: a persistent, operator-facing session that owns the shift. It holds the queue lock on its own document, the GO authority and the nonce mint. It dispatches legs, watches the fleet, acts on rulings and merges on GO, and does no implementation itself. `/console new` starts one. |
 | **Judge** | A clean session, headed or headless, spawned for one question, sometimes on a deliberately thin brief. **Advisory: it rules, the console acts.** Several may run in parallel on one question with different scopes. Two shapes — see [Judge: call and session](#judge-call-and-session). |
 | **Consolidator** | Combines several judges' outputs into one reconciled answer, so the console does not absorb N judgments. A lexicon term only: nothing in the repo implements it yet. |

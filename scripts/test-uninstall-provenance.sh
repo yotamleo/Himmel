@@ -124,6 +124,32 @@ esac
 QMD_STUB_EOF
 chmod 755 "$FAKE_QMD"
 
+# fake crontab stub (HIMMEL-3525 S18): `-l` prints CRONTAB_STATE_FILE (a
+# per-case scratch table; missing/empty means "no crontab for tester", the
+# same message real crontab gives an unset table -- both _provid_job and
+# uninstall.sh's [3/8] cron rewrite classify that string as ABSENT/no-op, never
+# a read failure). `-` reads a replacement table from stdin and overwrites the
+# same file, so the [3/8] `crontab -` rewrite is observable afterwards without
+# ever touching the operator's real crontab.
+FAKE_CRONTAB="$SUITE_TMP/bin/crontab"
+cat > "$FAKE_CRONTAB" <<'CRONTAB_STUB_EOF'
+#!/usr/bin/env bash
+set -u
+case "${1:-}" in
+    -l)
+        if [ -z "${CRONTAB_STATE_FILE:-}" ] || [ ! -f "$CRONTAB_STATE_FILE" ]; then
+            echo "no crontab for tester" >&2
+            exit 1
+        fi
+        cat "$CRONTAB_STATE_FILE" ;;
+    -)
+        [ -n "${CRONTAB_STATE_FILE:-}" ] || exit 1
+        cat > "$CRONTAB_STATE_FILE" ;;
+    *) exit 2 ;;
+esac
+CRONTAB_STUB_EOF
+chmod 755 "$FAKE_CRONTAB"
+
 # new_case <name> -- fresh scratch HOME/cwd/provenance dir + fresh plugin and
 # marketplace stub state for one case. Sets the CASE_* globals the rest of
 # the case (and run_uninstall) uses.
@@ -145,6 +171,10 @@ new_case() {
   # inherits a stale dir from an earlier case in the same suite run.
   unset CASE_QMD_FORK_DIR CASE_BUN_INSTALL CASE_QMD_ORDER_CHECK_FORK_DIR CASE_QMD_ORDER_CHECK_SYMLINK
   unset CASE_QMD_COLLECTION_PATH
+  # A case that wants a fake crontab table sets this itself, right after
+  # calling new_case -- unset here so a case that does NOT set it never
+  # inherits a stale file from an earlier case (default: no crontab).
+  unset CASE_CRONTAB_FILE
 }
 
 # run_uninstall <uninstall.sh args...> -- the real uninstall.sh, confined to
@@ -164,6 +194,7 @@ run_uninstall() {
     QMD_STUB_SHOW_PATH="${CASE_QMD_COLLECTION_PATH:-}" \
     QMD_ORDER_CHECK_FORK_DIR="${CASE_QMD_ORDER_CHECK_FORK_DIR:-}" \
     QMD_ORDER_CHECK_SYMLINK="${CASE_QMD_ORDER_CHECK_SYMLINK:-}" \
+    CRONTAB_STATE_FILE="${CASE_CRONTAB_FILE:-$CASE_DIR/no-crontab}" \
     HIMMEL_PROVENANCE_DIR="$HIMMEL_PROVENANCE_DIR" \
     CLAUDE_CALL_LOG="$CASE_CLAUDE_LOG" STUB_PLUGINS_JSON="$CASE_PLUGINS_JSON" \
     STUB_MARKETPLACES_JSON="$CASE_MARKETPLACES_JSON" \
@@ -1129,6 +1160,53 @@ for sub in repointed control; do
   fi
 done
 unset mkt_tok31 plug_tok31 rc31 out31
+
+echo "==== RED32 (HIMMEL-3525 S18): a cron line edited after install survives --purge-state ===="
+# Install recorded the LIVE crontab line's identity token (marker-suffixed
+# line, design §3.4); the user then hand-edited that line (same marker,
+# different schedule). At base (a816d911) ledger_job_markers emits every
+# recorded marker unconditionally with no identity check, so the edited line
+# is stripped anyway (see the RED-at-base excerpt in the PR body). The
+# verdict now re-reads the live crontab, finds a token himmel never
+# recorded, and keeps the line. The control leaves the line exactly where
+# install left it: it is removed. A duplicated marker (two lines ending in
+# the same marker) is never resolved to one at random: kept,
+# identity-unreadable.
+tok32=$(printf 'job\n0 3 * * * run.sh # HIMMEL-Qmd-Reindex' | _prov_sha256)
+for sub in edited control duplicated; do
+  new_case "red32-$sub"
+  ( prov_begin --writer cadence-arm -- "seed-red32-$sub" >/dev/null
+    prov_record register job - --unit HIMMEL-Qmd-Reindex --scope user --class code \
+      --writer cadence-arm --field 'scheduler="cron"' --field preexisted=false \
+      --post-text "$tok32" --field identity_v=1 >/dev/null
+    prov_end ok >/dev/null )
+  CASE_CRONTAB_FILE="$CASE_DIR/crontab.txt"
+  case "$sub" in
+    edited)     printf '0 4 * * * run.sh # HIMMEL-Qmd-Reindex\n' > "$CASE_CRONTAB_FILE" ;;
+    control)    printf '0 3 * * * run.sh # HIMMEL-Qmd-Reindex\n' > "$CASE_CRONTAB_FILE" ;;
+    duplicated) printf '0 3 * * * run.sh # HIMMEL-Qmd-Reindex\n0 5 * * * other.sh # HIMMEL-Qmd-Reindex\n' > "$CASE_CRONTAB_FILE" ;;
+  esac
+  out32=$(run_uninstall --yes --skip-plugins --skip-hooks --skip-settings); rc32=$?
+  check "RED32 $sub: uninstall exit status" "$rc32" "0"
+  case "$sub" in
+    edited)
+      check "RED32 $sub: kept cron line (user-modified)" \
+        "$(printf '%s\n' "$out32" | grep -c 'kept cron line HIMMEL-Qmd-Reindex (user-modified)')" "1"
+      check "RED32 $sub: the edited line survives in the crontab" \
+        "$(cat "$CASE_CRONTAB_FILE")" "0 4 * * * run.sh # HIMMEL-Qmd-Reindex" ;;
+    control)
+      check "RED32 $sub: removed cron job reported" \
+        "$(printf '%s\n' "$out32" | grep -c 'removed cron job: HIMMEL-Qmd-Reindex')" "1"
+      check "RED32 $sub: the line is gone from the crontab" \
+        "$(cat "$CASE_CRONTAB_FILE")" "" ;;
+    duplicated)
+      check "RED32 $sub: kept cron line (identity-unreadable)" \
+        "$(printf '%s\n' "$out32" | grep -c 'kept cron line HIMMEL-Qmd-Reindex (identity-unreadable)')" "1"
+      check "RED32 $sub: both duplicated lines survive" \
+        "$(wc -l < "$CASE_CRONTAB_FILE" | tr -d ' ')" "2" ;;
+  esac
+done
+unset tok32 rc32 out32
 
 echo "==== REAL-LEDGER TRIPWIRE ===="
 REAL_LEDGER_AFTER=$(real_ledger_state)
