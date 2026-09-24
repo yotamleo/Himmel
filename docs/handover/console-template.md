@@ -343,8 +343,11 @@ per decision point, not one per thought.
 
 A leg reports `READY <pr> <head> GREEN` plus its code-review status line. The
 console verifies independently — all check-runs success at that exact head,
-zero unresolved review threads, attestation trailers in the first commit — and
-only then runs `console-kit/go.sh <pr> <head>` — that write is the ACT of
+zero unresolved review threads, attestation trailers in the first commit —
+via `console-kit/ready-check.sh <pr> <full-40-hex-head-sha>` (HIMMEL-3163),
+which mechanizes that checklist and prints `READY-CHECK PASS|FAIL`; it does
+not read the three-dot diff, which stays your own judgement call. Only then
+run `console-kit/go.sh <pr> <head>` — that write is the ACT of
 granting the GO (HIMMEL-3142: `gh pr merge` itself is gated on that file for
 a console-spawned leg, not merely on hearing from you); answering `GO` over
 SendMessage is a notification to the leg, not the mechanism. The leg merges;

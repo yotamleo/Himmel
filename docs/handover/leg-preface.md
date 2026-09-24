@@ -246,8 +246,9 @@ directories, goes to the classifier by design.
   `git commit --amend` — it is hard-blocked; the recovery is the stuck
   playbook.
 - Push → PR → review → `/pr-check` (run at the exact head you will `READY`) →
-  CI watched in the **foreground** to green → `READY <pr> <full head> GREEN`
-  to the console.
+  one `scripts/check-ci.sh <pr> --max-wait <sec>` call, whose exit code
+  decides — not repeated `gh pr checks`/`gh run list|view` reads in model
+  turns — → `READY <pr> <full head> GREEN` to the console.
 - On an agreed review finding, **sweep the whole class** across every site
   before the next round and report the other sites, not just the cited line. A
   review round spent enumerating instances of a class you already understood is
