@@ -324,7 +324,7 @@ pacman -Syu --noconfirm --needed git jq nodejs npm python sudo cronie
 # modes get this for free from the ubuntu_new golden image, so the
 # container needs its own install for uninstall step [4/8] (plugin
 # teardown) to run instead of halting on `claude not found`.
-npm install -g --silent @anthropic-ai/claude-code
+npm install -g --silent --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code
 useradd -m -d "$GHOME" builder
 echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
 mkdir -p /build/pkg
