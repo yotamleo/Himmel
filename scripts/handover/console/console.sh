@@ -208,20 +208,24 @@ do_arm() {
     # from inside one) -- a leg's own profile/launcher env stays live in its
     # shell for its whole session (see console_context_leg_env_unset_names),
     # and headed-arm.sh would otherwise resolve its ${HEADED_ARM_*:-default}
-    # fallbacks and leg-profile vars from that leaked env. Strip the whole
-    # canonical set before it ever runs, so a fresh console always arms clean
-    # regardless of what launched the process running this script.
-    local -a leg_env_unset=()
+    # fallbacks and leg-profile vars from that leaked env. Scrub the whole
+    # canonical set from THIS process's own environment before the launch
+    # lines below run, so a fresh console always arms clean regardless of
+    # what launched the process running this script -- do_arm is always the
+    # last thing its caller does (end of cmd_new / cmd_next, script exits
+    # right after), so nothing downstream in this process needs them back.
+    local -a leg_env_names=()
     local leg_env_name
     for leg_env_name in $(console_context_leg_env_unset_names); do
-        leg_env_unset+=(-u "$leg_env_name")
+        leg_env_names+=("$leg_env_name")
     done
+    unset "${leg_env_names[@]}"
     if [ "${CONSOLE_ARM_FOREGROUND:-0}" = "1" ]; then
-        env "${leg_env_unset[@]}" bash "$arm" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model"
+        bash "$arm" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model"
     elif command -v setsid >/dev/null 2>&1; then
-        setsid nohup env "${leg_env_unset[@]}" bash "$arm" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model" >/dev/null 2>&1 &
+        setsid nohup bash "$arm" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model" >/dev/null 2>&1 &
     else
-        nohup env "${leg_env_unset[@]}" bash "$arm" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model" >/dev/null 2>&1 &
+        nohup bash "$arm" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model" >/dev/null 2>&1 &
     fi
     echo "armed: name=$session doc=$doc signal=$fill_signal deadline=$deadline_epoch log=$log"
     echo "arm-log: $log"

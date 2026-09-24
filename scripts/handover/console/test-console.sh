@@ -1566,6 +1566,16 @@ exec "$REPO_REAL/scripts/handover/headed-arm.sh" --dry-run "\$@"
 STUB
 chmod +x "$tmp/stub-arm-66.sh"
 
+# headed-arm.sh's own presence check for $KONSOLE runs even under --dry-run
+# (only the actual launch is skipped) -- a CI runner has no real konsole, so
+# this needs the same KONSOLE_CMD stub test-headed-arm.sh already uses,
+# never invoked here (dry-run never reaches the launch), only present.
+cat > "$tmp/konsole-66" <<'KONSOLE_STUB'
+#!/usr/bin/env bash
+exit 0
+KONSOLE_STUB
+chmod +x "$tmp/konsole-66"
+
 out66b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
     LEG_PROFILE_SETTINGS=/leaked-66/settings.json LEG_PROFILE_PREFACE=/leaked-66/preface.md \
     LEG_PROFILE_MCP_CONFIG=/leaked-66/mcp.json LEG_CLAUDE_BIN=/leaked-66/claude \
@@ -1578,6 +1588,7 @@ out66b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PR
     HEADED_ARM_LAUNCHER_ENV="CLAUDEX_LANE_OK=1 LEG_PROFILE_SETTINGS=/leaked-66/settings.json" \
     HEADED_ARM_UNAME=Darwin \
     CONSOLE_CONTEXT=1m \
+    KONSOLE_CMD="$tmp/konsole-66" \
     CONSOLE_HEADED_ARM="$tmp/stub-arm-66.sh" CONSOLE_ARM_FOREGROUND=1 CONSOLE_WORK_DIR="$tmp/work66" \
     bash "$C" next --bucket cleanenv66 --arm --deadline-min 0 ) 2>&1 )"
 rc66b=$?
