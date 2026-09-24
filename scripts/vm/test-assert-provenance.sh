@@ -253,8 +253,9 @@ cli_world() {  # <official-at-A: 1|0>
         '{"kind":"marketplace","op":"register","unit":"claude-plugins-official","preexisted":true}' \
         '{"kind":"marketplace","op":"register","unit":"obsidian-skills","preexisted":false}' \
         '{"kind":"marketplace","op":"register","unit":"obsidian-skills","preexisted":true}' \
-        '{"kind":"plugin","op":"register","unit":"codex@openai-codex","preexisted":false}' \
-        '{"kind":"plugin","op":"register","unit":"context7@claude-plugins-official","preexisted":true}' \
+        '{"kind":"plugin","op":"register","unit":"codex@openai-codex","preexisted":false,"cli_scope":"user"}' \
+        '{"kind":"plugin","op":"register","unit":"context7@claude-plugins-official","preexisted":false,"cli_scope":"project","project_path":"/p"}' \
+        '{"kind":"plugin","op":"register","unit":"context7@claude-plugins-official","preexisted":true,"cli_scope":"user"}' \
         '{"op":"install-end","status":"ok"}' >"$LB/ledger-B.jsonl"
     both "A B C" d "$PL"; both "A B C" d "$MK"
     if [ "$1" = 1 ]; then
@@ -269,7 +270,8 @@ cli_world() {  # <official-at-A: 1|0>
     both "B C" f "$PL/.last_inuse_sweep" s
     both "B C" f "$PL/known_marketplaces.json" k; both "B C" f "$PL/installed_plugins.json" i
     echo '{"claude-plugins-official":{}}' >"$PL/known_marketplaces.json"
-    echo '{"version":2,"plugins":{"context7@claude-plugins-official":[]}}' >"$PL/installed_plugins.json"
+    # context7: himmel added a project-scope install over the operator's user-scope one
+    echo '{"version":2,"plugins":{"context7@claude-plugins-official":[{"scope":"user"}]}}' >"$PL/installed_plugins.json"
 }
 cli_world 1
 run_assert core 0
@@ -299,9 +301,14 @@ has "cli neg: the official clone is residue when it was not registered at A" 'CH
 # the registries must not still name what himmel registered.
 cli_world 1
 echo '{"claude-plugins-official":{},"obsidian-skills":{}}' >"$PL/known_marketplaces.json"
-echo '{"version":2,"plugins":{"codex@openai-codex":[]}}' >"$PL/installed_plugins.json"
+echo '{"version":2,"plugins":{"codex@openai-codex":[{"scope":"user"}],"context7@claude-plugins-official":[{"scope":"user"},{"scope":"project","projectPath":"/p"}]}}' >"$PL/installed_plugins.json"
 run_assert core 0
-has "cli neg: a registry still naming himmel's marketplace and plugin fails" 'CHECK semantic too-little FAIL cli-registries-clean — left: obsidian-skills codex@openai-codex'
+has "cli neg: a registry still naming himmel's marketplace and plugins fails" 'CHECK semantic too-little FAIL cli-registries-clean — left: obsidian-skills codex@openai-codex context7@claude-plugins-official\(project\)'
+# a project-scope install of the same plugin for ANOTHER project is not ours.
+cli_world 1
+echo '{"version":2,"plugins":{"context7@claude-plugins-official":[{"scope":"user"},{"scope":"project","projectPath":"/other"}]}}' >"$PL/installed_plugins.json"
+run_assert core 0
+has "cli: another project's install of a plugin himmel added is not ours" 'CHECK semantic too-little PASS cli-registries-clean '
 
 # ---- 6f. HIMMEL-3541 class 4: ~/.claude.json at C equals A outside the keys
 # the Claude Code CLI writes on its own start (uninstall runs the CLI).
@@ -318,10 +325,10 @@ has "claude.json: only CLI-owned keys differ from A -> PASS" 'CHECK identity ide
 # shellcheck disable=SC2016  # $p is a jq --arg, bound in cj_world
 cj_world '.projects[$p] = {}'
 run_assert core 0
-has "claude.json neg: a left-over projects entry fails" 'CHECK identity identity FAIL claude-json-restored '
+has "claude.json neg: a left-over projects entry fails, naming it" 'CHECK identity identity FAIL claude-json-restored — .* at: projects\..*/proj$'
 cj_world '.theme = "light"'
 run_assert core 0
-has "claude.json neg: a changed user key fails" 'CHECK identity identity FAIL claude-json-restored '
+has "claude.json neg: a changed user key fails, naming it" 'CHECK identity identity FAIL claude-json-restored — .* at: theme$'
 
 # ---- 6g. HIMMEL-3541 class 5: a directory new at B is recorded when a ledger
 # row's path lies under it (its writer's mkdir -p); one with none is not.

@@ -68,6 +68,17 @@ led_units() {
 # Claude Code CLI re-fetches such a clone when install-plugins.sh's
 # "Registering marketplaces" step runs `claude plugin marketplace add` for it,
 # so its clone is the CLI's refresh of the operator's own marketplace.
+# json_delta <A copy> <C file> [keys to ignore, JSON array]: the first leaf
+# paths (an empty container counts as a leaf) whose values differ, so a FAIL
+# names what changed instead of only two shas.
+json_delta() {
+    jq -rn --slurpfile a "$1" --slurpfile c "$2" --argjson k "${3:-[]}" '
+        ($k | map([.])) as $d | ($a[0] | delpaths($d)) as $A | ($c[0] | delpaths($d)) as $C
+        | def leaves: paths((type != "object" and type != "array") or length == 0);
+          [($A | leaves), ($C | leaves)] | unique
+        | map(select(. as $q | ($A | getpath($q)) != ($C | getpath($q))))
+        | .[:6] | map(map(tostring) | join(".")) | join(", ")' 2>/dev/null
+}
 MKT_PRE_A=" "
 while IFS=$'\t' read -r m pre; do
     case "$m" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
@@ -94,7 +105,7 @@ while IFS= read -r p; do
                 '($k | map([.])) as $d | ($a[0] | delpaths($d)) == ($c[0] | delpaths($d))' >/dev/null 2>&1; then
             check identity identity PASS claude-json-restored "equal to A outside the CLI's own keys"
         else
-            check identity identity FAIL claude-json-restored "differs from A outside the CLI's own keys (sha A=$(sha_of A "$p" | cut -c1-12) C=$(sha_of C "$p" | cut -c1-12))"
+            check identity identity FAIL claude-json-restored "differs from A outside the CLI's own keys at: $(json_delta "$ST/claude.json" "$p" "$CLI_KEYS")"
         fi
         continue
     fi
@@ -109,7 +120,12 @@ while IFS= read -r p; do
     if [ -z "$mc" ]; then
         check identity too-much FAIL "seeded:$(rel "$p")" "removed (present at A)"
     elif [ "$(sha_of A "$p")" != "$(sha_of C "$p")" ]; then
-        check identity identity FAIL "seeded:$(rel "$p")" "content changed (sha A=$(sha_of A "$p" | cut -c1-12) C=$(sha_of C "$p" | cut -c1-12))"
+        delta=""
+        case "$p" in
+            "$H/.claude/settings.json") delta=" at: $(json_delta "$ST/settings.json" "$p")" ;;
+            "$H/proj/.claude/settings.json") delta=" at: $(json_delta "$ST/proj-settings.json" "$p")" ;;
+        esac
+        check identity identity FAIL "seeded:$(rel "$p")" "content changed (sha A=$(sha_of A "$p" | cut -c1-12) C=$(sha_of C "$p" | cut -c1-12))$delta"
     elif [ "$ma" != "$mc" ]; then
         check identity identity FAIL "seeded:$(rel "$p")" "type/mode/target changed ($(printf '%s' "$ma" | tr '\t' ' ') -> $(printf '%s' "$mc" | tr '\t' ' '))"
     else
@@ -353,9 +369,19 @@ reg_left=""
 while IFS=$'\t' read -r m pre; do
     [ "$pre" = false ] && jq -e --arg m "$m" 'has($m)' "$PL/known_marketplaces.json" >/dev/null 2>&1 && reg_left="$reg_left$m "
 done < <(led_units marketplace)
-while IFS=$'\t' read -r u pre; do
-    [ "$pre" = false ] && jq -e --arg u "$u" '(.plugins // {}) | has($u)' "$PL/installed_plugins.json" >/dev/null 2>&1 && reg_left="$reg_left$u "
-done < <(led_units plugin)
+# installed_plugins.json keeps one entry per install scope, so a plugin is
+# checked per (scope, project): himmel's project-scope install of a plugin the
+# operator already had at user scope leaves the user entry, legitimately.
+if [ -f "$L" ] && [ -f "$PL/installed_plugins.json" ]; then
+    while IFS= read -r u; do reg_left="$reg_left$u "; done < <(jq -rs --slurpfile ip "$PL/installed_plugins.json" '
+        (($ip[0].plugins // {}) | if type == "object" then . else {} end) as $P
+        | [.[] | select(.kind == "plugin" and .op == "register" and (.unit // "") != "")]
+        | group_by([.unit, (.cli_scope // ""), (.project_path // "")]) | .[] | .[0]
+        | select(.preexisted == false) | . as $r | ($r.cli_scope // "") as $s
+        | select(($P | has($r.unit)) and ($s == "" or ([$P[$r.unit][]?
+            | select(.scope == $s and ($s != "project" or (.projectPath // "") == ($r.project_path // "")))] | length > 0)))
+        | $r.unit + (if $s == "project" then "(project)" else "" end)' "$L" 2>/dev/null)
+fi
 if [ -n "$reg_left" ]; then check semantic too-little FAIL cli-registries-clean "left: ${reg_left% }"
 else check semantic too-little PASS cli-registries-clean "no marketplace or plugin himmel registered"; fi
 
