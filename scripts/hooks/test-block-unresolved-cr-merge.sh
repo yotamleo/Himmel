@@ -99,6 +99,16 @@ case "$1 $2" in
       ci-green)   echo '[{"context":"CodeRabbit","state":"success","created_at":"2026-07-16T19:10:05Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}},{"context":"ci","state":"success","created_at":"2026-07-16T19:10:05Z","creator":{"id":1,"login":"ci","type":"Bot"}}]' ;;
       *)          echo '[{"context":"CodeRabbit","state":"success","created_at":"2026-07-16T19:10:05Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
     esac ;;
+  # HIMMEL-3578: the hook resolves this repo's nwo to bind the GO mac.
+  # GH_STUB_NWO overrides the default (o/r, matching the fixture repo's
+  # origin); repo-view-timeout/repo-view-fail simulate an unresolvable repo
+  # so the timeout-bound refusal path can be exercised.
+  "repo view")
+    case "$GH_STUB_MODE" in
+      repo-view-timeout) sleep 30 ;;
+      repo-view-fail)    exit 1 ;;
+    esac
+    printf '%s' "${GH_STUB_NWO:-o/r}" ;;
   *) echo '{}' ;;
 esac
 EOF
@@ -203,10 +213,11 @@ GOROOT="$TMP/handover_root"
 mkdir -p "$GOROOT/.locks/go"
 # HIMMEL-3543: go_gate verifies an HMAC mac= line, so a valid GO needs a key
 # (scratch HOME, above) and the mac go.sh would write. go_mac_42 signs the
-# fixture's pr=42/head=abc123 with that scratch key.
+# fixture's pr=42/head=abc123/nwo=o/r (HIMMEL-3578: the mac binds the repo,
+# and the fixture repo's origin resolves to o/r) with that scratch key.
 mkdir -p "$HOME/.config/himmel"
 ( umask 077; printf '%064d\n' 3543 > "$HOME/.config/himmel/go-hmac.key" )
-GO_MAC_42="$(bash -c '. "$1"; go_mac 42 abc123' _ "$SCRIPT_DIR/../lib/go-gate.sh")"
+GO_MAC_42="$(bash -c '. "$1"; go_mac 42 abc123 o/r' _ "$SCRIPT_DIR/../lib/go-gate.sh")"
 [ "${#GO_MAC_42}" -eq 64 ] || { fail=$((fail+1)); echo "FAIL setup: could not compute the scratch GO mac"; }
 
 # leg + no GO file at all -> refused (the PR #798 shape this ticket exists to close)
@@ -267,6 +278,123 @@ grep -q "42.abc123" "$TMP/err-leg-no-go-blocks" || { echo "FAIL leg-no-go reason
 grep -qi "no console GO" "$TMP/err-leg-stale-go-blocks" || { echo "FAIL leg-stale-go reason missing"; fail=$((fail+1)); }
 grep -qi "must pin" "$TMP/err-leg-valid-go-no-pin-blocks" || { echo "FAIL leg-valid-go-no-pin reason missing"; fail=$((fail+1)); }
 grep -qi "does not match" "$TMP/err-leg-valid-go-wrong-pin-blocks" || { echo "FAIL leg-valid-go-wrong-pin reason missing"; fail=$((fail+1)); }
+
+# ── HIMMEL-3578 (3): the mac now binds the repo. A GO minted for THIS repo
+# (o/r, the fixture's mac) must be refused when the merge command itself
+# names a DIFFERENT repo via --repo/-R — the console's own redirect on this
+# ticket named this exact shape (GO(repo A) meets `gh pr merge -R B`) as a
+# required case, since a leg could otherwise point --repo at a repo it
+# controls and reuse a GO minted for the console's real repo.
+printf 'pr=42\nhead=abc123\nby=test\nat=now\nmac=%s\n' "$GO_MAC_42" > "$GOROOT/.locks/go/42.abc123"
+HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean t leg-cross-repo-go-blocks 2 Bash "gh pr merge 42 --squash --match-head-commit abc123 --repo other/repo"
+grep -qi "mac" "$TMP/err-leg-cross-repo-go-blocks" || { echo "FAIL leg-cross-repo-go-blocks reason missing"; fail=$((fail+1)); }
+
+# ── HIMMEL-3578 (3): a v1-tagged mac (himmel-go-v1|<pr>|<sha>, no nwo bound
+# — how go.sh signed a GO before this ticket) must be refused now that
+# go_mac signs the v2 domain string (himmel-go-v2|<nwo>|<pr>|<sha>). This is
+# the fail-closed side of the domain-tag bump: every outstanding v1 GO is
+# auto-invalidated, never silently accepted as still valid.
+V1_MAC="$(printf 'himmel-go-v1|42|abc123' | openssl dgst -sha256 -mac HMAC -macopt "hexkey:$(cat "$HOME/.config/himmel/go-hmac.key")" | awk '{print $NF}')"
+printf 'pr=42\nhead=abc123\nby=test\nat=now\nmac=%s\n' "$V1_MAC" > "$GOROOT/.locks/go/42.abc123"
+HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean t leg-v1-mac-blocks 2 Bash "gh pr merge 42 --squash --match-head-commit abc123"
+grep -qi "mac" "$TMP/err-leg-v1-mac-blocks" || { echo "FAIL leg-v1-mac-blocks reason missing"; fail=$((fail+1)); }
+rm -f "$GOROOT/.locks/go/42.abc123"
+
+# ── HIMMEL-3578: this hook's `gh repo view` call (when no --repo is on the
+# merge command) must be time-bounded — the console's redirect requires a
+# hang to read as a refusal, never as an allow, since this hook runs on a
+# budget. GH_STUB_MODE=repo-view-timeout sleeps 30s in the stub; the hook's
+# own `timeout 5` must kill it well before that and refuse.
+printf 'pr=42\nhead=abc123\nby=test\nat=now\nmac=%s\n' "$GO_MAC_42" > "$GOROOT/.locks/go/42.abc123"
+GO_TIMEOUT_START=$(date +%s)
+HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=repo-view-timeout t leg-nwo-timeout-blocks 2 Bash "gh pr merge 42 --squash --match-head-commit abc123"
+GO_TIMEOUT_ELAPSED=$(( $(date +%s) - GO_TIMEOUT_START ))
+if [ "$GO_TIMEOUT_ELAPSED" -ge 15 ]; then
+    fail=$((fail+1)); echo "FAIL leg-nwo-timeout-blocks took ${GO_TIMEOUT_ELAPSED}s — the hook's own gh-repo-view timeout did not bound the stub's 30s sleep"
+fi
+grep -qi "cannot resolve this repo" "$TMP/err-leg-nwo-timeout-blocks" || { echo "FAIL leg-nwo-timeout-blocks reason missing"; fail=$((fail+1)); }
+rm -f "$GOROOT/.locks/go/42.abc123"
+
+# ── HIMMEL-3573 (2): declare -F go_mac must be required directly, not only
+# go_gate — a go-gate.sh that defines console_leg + a STUB go_gate (always
+# allows) but never defines go_mac would otherwise pass the old
+# `declare -F go_gate` check and let the stub's rc=0 through untouched.
+NOGOMAC_GOGATE="$TMP/go-gate-no-go-mac.sh"
+cat > "$NOGOMAC_GOGATE" <<'EOF'
+#!/usr/bin/env bash
+console_leg() { return 0; }
+go_gate() { echo "stub allow — go_mac never defined"; return 0; }
+EOF
+NOGOMAC_ROOT="$TMP/no-go-mac-hook"
+mkdir -p "$NOGOMAC_ROOT/scripts/hooks" "$NOGOMAC_ROOT/scripts/lib"
+cp "$HOOK" "$NOGOMAC_ROOT/scripts/hooks/block-unresolved-cr-merge.sh"
+cp "$SCRIPT_DIR/../lib/cr-merge-gate.sh" "$NOGOMAC_ROOT/scripts/lib/cr-merge-gate.sh"
+cp "$SCRIPT_DIR/../lib/ci-green-gate.sh" "$NOGOMAC_ROOT/scripts/lib/ci-green-gate.sh"
+cp "$SCRIPT_DIR/../lib/handover-path.sh" "$NOGOMAC_ROOT/scripts/lib/handover-path.sh"
+cp "$NOGOMAC_GOGATE" "$NOGOMAC_ROOT/scripts/lib/go-gate.sh"
+NOGOMAC_PAYLOAD="$TMP/no-go-mac-payload.json"
+payload Bash "gh pr merge 42 --squash --match-head-commit abc123" > "$NOGOMAC_PAYLOAD"
+NOGOMAC_OUT="$TMP/no-go-mac-out"; NOGOMAC_ERR="$TMP/no-go-mac-err"
+HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_LOG="$TMP/calls-no-go-mac.log" \
+    bash "$NOGOMAC_ROOT/scripts/hooks/block-unresolved-cr-merge.sh" < "$NOGOMAC_PAYLOAD" > "$NOGOMAC_OUT" 2>"$NOGOMAC_ERR"
+nogomac_rc=$?
+if [ "$nogomac_rc" -eq 2 ] && grep -qi "go_gate is not defined" "$NOGOMAC_ERR"; then
+    pass=$((pass+1)); echo "ok   go-gate-stub-without-go-mac-refuses"
+else
+    fail=$((fail+1)); echo "FAIL go-gate-stub-without-go-mac-refuses rc=$nogomac_rc (want 2, 'go_gate is not defined' on stderr) err=$(cat "$NOGOMAC_ERR")"
+fi
+
+# ── HIMMEL-3573 (1): RED control — the pre-fix hook (base 20162e84, before
+# this ticket) resolved go_root with a plain `handover_root` call, which
+# reads only the live HANDOVER_DIR shell var — never the anchor's own .env.
+# A leg whose launching shell carries no HANDOVER_DIR (the common shape:
+# the console configured it via .env, not export) falls back to the Mode A
+# inline stub root and never finds the console's real GO, even though one
+# genuinely exists. Prove it: build a scratch "anchor" (a directory with its
+# own .env naming the real root) and run the SAME valid-GO fixture against
+# the pre-fix hook (false refusal, rc=2) and the shipped hook (finds it via
+# go_resolve_root, rc=0).
+RESOLVE_ROOT_ANCHOR="$TMP/resolve-root-anchor"
+mkdir -p "$RESOLVE_ROOT_ANCHOR/scripts/hooks" "$RESOLVE_ROOT_ANCHOR/scripts/lib"
+cp "$SCRIPT_DIR/../lib/cr-merge-gate.sh" "$RESOLVE_ROOT_ANCHOR/scripts/lib/cr-merge-gate.sh"
+cp "$SCRIPT_DIR/../lib/ci-green-gate.sh" "$RESOLVE_ROOT_ANCHOR/scripts/lib/ci-green-gate.sh"
+cp "$SCRIPT_DIR/../lib/handover-path.sh" "$RESOLVE_ROOT_ANCHOR/scripts/lib/handover-path.sh"
+cp "$SCRIPT_DIR/../lib/go-gate.sh" "$RESOLVE_ROOT_ANCHOR/scripts/lib/go-gate.sh"
+cp "$SCRIPT_DIR/../lib/load-dotenv.sh" "$RESOLVE_ROOT_ANCHOR/scripts/lib/load-dotenv.sh"
+TRUE_ROOT="$TMP/true-handover-root"
+mkdir -p "$TRUE_ROOT/.locks/go"
+printf 'HANDOVER_DIR=%s\n' "$TRUE_ROOT" > "$RESOLVE_ROOT_ANCHOR/.env"
+printf 'pr=42\nhead=abc123\nby=test\nat=now\nmac=%s\n' "$GO_MAC_42" > "$TRUE_ROOT/.locks/go/42.abc123"
+RESOLVE_ROOT_PAYLOAD="$TMP/resolve-root-payload.json"
+payload Bash "gh pr merge 42 --squash --match-head-commit abc123" > "$RESOLVE_ROOT_PAYLOAD"
+
+cp "$SCRIPT_DIR/fixtures/red-control/block-unresolved-cr-merge.pre-himmel-3573.sh" \
+    "$RESOLVE_ROOT_ANCHOR/scripts/hooks/block-unresolved-cr-merge.sh"
+RESOLVE_ROOT_PRE_OUT="$TMP/resolve-root-pre-out"; RESOLVE_ROOT_PRE_ERR="$TMP/resolve-root-pre-err"
+( unset HANDOVER_DIR; cd "$RESOLVE_ROOT_ANCHOR" && \
+    HIMMEL_CONSOLE_LEG=1 GH_STUB_MODE=clean GH_STUB_LOG="$TMP/calls-resolve-root-pre.log" \
+    bash scripts/hooks/block-unresolved-cr-merge.sh < "$RESOLVE_ROOT_PAYLOAD" \
+    > "$RESOLVE_ROOT_PRE_OUT" 2>"$RESOLVE_ROOT_PRE_ERR" )
+resolve_root_pre_rc=$?
+if [ "$resolve_root_pre_rc" -eq 2 ]; then
+    pass=$((pass+1)); echo "ok   red-control-resolve-root-pre-fix-false-refuses"
+else
+    fail=$((fail+1)); echo "FAIL red-control-resolve-root-pre-fix-false-refuses rc=$resolve_root_pre_rc (want 2) err=$(cat "$RESOLVE_ROOT_PRE_ERR")"
+fi
+
+cp "$HOOK" "$RESOLVE_ROOT_ANCHOR/scripts/hooks/block-unresolved-cr-merge.sh"
+RESOLVE_ROOT_POST_OUT="$TMP/resolve-root-post-out"; RESOLVE_ROOT_POST_ERR="$TMP/resolve-root-post-err"
+( unset HANDOVER_DIR; cd "$RESOLVE_ROOT_ANCHOR" && \
+    HIMMEL_CONSOLE_LEG=1 GH_STUB_MODE=clean GH_STUB_LOG="$TMP/calls-resolve-root-post.log" \
+    bash scripts/hooks/block-unresolved-cr-merge.sh < "$RESOLVE_ROOT_PAYLOAD" \
+    > "$RESOLVE_ROOT_POST_OUT" 2>"$RESOLVE_ROOT_POST_ERR" )
+resolve_root_post_rc=$?
+if [ "$resolve_root_post_rc" -eq 0 ]; then
+    pass=$((pass+1)); echo "ok   red-control-resolve-root-post-fix-allows"
+else
+    fail=$((fail+1)); echo "FAIL red-control-resolve-root-post-fix-allows rc=$resolve_root_post_rc (want 0) err=$(cat "$RESOLVE_ROOT_POST_ERR")"
+fi
+rm -f "$TRUE_ROOT/.locks/go/42.abc123"
 
 # ── HIMMEL-3142 contract item 6: RED control — the pre-fix hook (base
 # 6ac483e4, before this ticket) never consulted .locks/go/ at all, so a
