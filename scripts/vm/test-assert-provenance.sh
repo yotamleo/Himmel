@@ -325,10 +325,10 @@ has "claude.json: only CLI-owned keys differ from A -> PASS" 'CHECK identity ide
 # shellcheck disable=SC2016  # $p is a jq --arg, bound in cj_world
 cj_world '.projects[$p] = {}'
 run_assert core 0
-has "claude.json neg: a left-over projects entry fails, naming it" 'CHECK identity identity FAIL claude-json-restored — .* at: projects\..*/proj$'
+has "claude.json neg: a left-over projects entry fails, naming it" 'CHECK identity identity FAIL claude-json-restored — .* at: projects\..*/proj=null->\{\}$'
 cj_world '.theme = "light"'
 run_assert core 0
-has "claude.json neg: a changed user key fails, naming it" 'CHECK identity identity FAIL claude-json-restored — .* at: theme$'
+has "claude.json neg: a changed user key fails, naming it" 'CHECK identity identity FAIL claude-json-restored — .* at: theme="dark"->"light"$'
 
 # ---- 6g. HIMMEL-3541 class 5: a directory new at B is recorded when a ledger
 # row's path lies under it (its writer's mkdir -p); one with none is not.

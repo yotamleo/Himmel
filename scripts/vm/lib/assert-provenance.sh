@@ -69,15 +69,20 @@ led_units() {
 # "Registering marketplaces" step runs `claude plugin marketplace add` for it,
 # so its clone is the CLI's refresh of the operator's own marketplace.
 # json_delta <A copy> <C file> [keys to ignore, JSON array]: the first leaf
-# paths (an empty container counts as a leaf) whose values differ, so a FAIL
-# names what changed instead of only two shas.
+# paths (an empty container counts as a leaf) whose values differ, each as
+# path=A->C, so a FAIL names what changed instead of only two shas; when no
+# value differs, the top-level key order of both.
 json_delta() {
     jq -rn --slurpfile a "$1" --slurpfile c "$2" --argjson k "${3:-[]}" '
         ($k | map([.])) as $d | ($a[0] | delpaths($d)) as $A | ($c[0] | delpaths($d)) as $C
         | def leaves: paths((type != "object" and type != "array") or length == 0);
           [($A | leaves), ($C | leaves)] | unique
         | map(select(. as $q | ($A | getpath($q)) != ($C | getpath($q))))
-        | .[:6] | map(map(tostring) | join(".")) | join(", ")' 2>/dev/null
+        | .[:6] | map(. as $q | ($q | map(tostring) | join(".")) + "=" + ($A | getpath($q) | tojson | .[:40])
+            + "->" + ($C | getpath($q) | tojson | .[:40]))
+        | if length > 0 then join(", ")
+          else "no value differs; key order A=" + ($a[0] | keys_unsorted | join(",")) + " C=" + ($c[0] | keys_unsorted | join(","))
+          end' 2>/dev/null
 }
 MKT_PRE_A=" "
 while IFS=$'\t' read -r m pre; do
