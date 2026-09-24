@@ -1533,3 +1533,18 @@ each capture site individually.
   known-LF file must read 0. A 100%-match count needs a negative control
   exactly as a zero needs a positive one, and corroborating evidence that
   contradicts a headline count is signal, not noise to explain away.
+
+## A fresh worktree has no `node_modules` outside `scripts/jira`
+
+`scripts/clean-garden.sh` (and `_new-worktree.sh`) installs only the Jira
+CLI's deps into a new worktree. Every other node package a suite depends on
+(`scripts/bitbucket`, `scripts/ci-orchestrator`,
+`marketplace/plugins/obsidian-triage/tools`, vitest under `scripts/jira`)
+starts empty, so its suites SKIP, or FAIL with a verdict that looks
+pre-existing. It happened three times in one shift (HIMMEL-3553 tracks the
+structural fix).
+
+**What to do:** before calling a SKIP or FAIL pre-existing, check that the
+owning package has a `node_modules` directory. If it does not, run `npm ci`
+in that package (`--ignore-scripts` where a postinstall downloads browsers)
+and re-run the suite.
