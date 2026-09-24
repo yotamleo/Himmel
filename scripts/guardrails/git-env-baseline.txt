@@ -1,12 +1,14 @@
 JS:scripts/cr/claude-floor.mjs:817b330749b6
 JS:scripts/hooks/guardrail-block.mjs:bdfbb5ff224a
 JS:scripts/hooks/hook-integrity.js:b6d35d58d46e
+JS:scripts/lanes/plugin-profiles.mjs:66efb5d248c9
 JS:scripts/lanes/resolve.mjs:640792ee80d6
 JS:scripts/lanes/verify-return.mjs:178ac11f2ff0
 JS:scripts/lanes/verify-return.mjs:3b1ccbdbe5ca
 JS:scripts/lanes/verify-return.mjs:7e4e294c8331
 JS:scripts/lanes/verify-return.mjs:94872fe33864
 JS:scripts/lanes/verify-return.mjs:e3c1f964dc20
+SHELL:scripts/cr/anchor-handoff.sh
 SHELL:scripts/cr/base-resolver.sh
 SHELL:scripts/cr/claude-floor-review.sh
 SHELL:scripts/cr/clear-cr-marker.sh
