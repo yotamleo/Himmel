@@ -28,7 +28,6 @@ const MINI = {
 // widening a rule must fail registry load before any settings reach a child.
 const LEG_PROFILES = ['lane-impl', 'leg-impl', 'lane-review', 'lane-content', 'console-relay'];
 const GATE_RULES = [
-  'Bash(bash scripts/handover/merge-on-green.sh:*)',
   'Bash(bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh":*)',
   'Bash(bash scripts/handover/queue-lock.sh:*)',
   'Bash(bash scripts/handover/console-kit/inbox-send.sh:*)',
@@ -153,6 +152,9 @@ const BAD_GATE_RULES = [
   ['test push wildcard absorbs hook-skipping options', 'Bash(git push -u origin test/*)'],
   ['leg-written GO', 'Bash(bash scripts/handover/console-kit/go.sh:*)'],
   ['unlisted script', 'Bash(bash scripts/uninstall.sh:*)'],
+  // HIMMEL-3548: the relative merge-on-green rule was retired — only the
+  // anchored literal is admitted now.
+  ['retired relative merge-on-green rule', 'Bash(bash scripts/handover/merge-on-green.sh:*)'],
   // HIMMEL-3491: the anchor literal is an EXACT-STRING exception, not a
   // general $VAR admission — a different var or a different path under the
   // anchor still falls through to the '$' ban.

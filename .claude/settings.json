@@ -58,8 +58,6 @@
       "Bash(bash scripts/himmel-doctor.sh:*)",
       "Bash(bash scripts/check-plugin-drift.sh:*)",
       "Bash(bash scripts/handover/queue-lock.sh:*)",
-      "Bash(bash scripts/handover/merge-on-green.sh)",
-      "Bash(bash scripts/handover/merge-on-green.sh --jira-transition)",
       "Bash(bash \"$HIMMEL_REPO/scripts/handover/merge-on-green.sh\":*)",
       "Bash(bash scripts/handover/wrap-subtree-check.sh:*)",
       "Bash(bash scripts/handover/arm-resume.sh:*)",

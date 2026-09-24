@@ -25,7 +25,7 @@ const ID_RE = /^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$/;
 // HIMMEL-2959: positive rule shapes, not a generic Bash allowlist. In a
 // quiet-run rule the label AND directory are literal; a wildcard before the
 // suite basename can absorb a different executed program plus a fake tail.
-const GATE_SCRIPT_RE = /^Bash\(bash scripts\/(?:handover\/(?:merge-on-green|queue-lock)|handover\/console-kit\/inbox-send|cr\/(?:write-verdicts|clear-cr-marker|panel-first-pass|docs-audit-panel|ledger-append|impacted-suites|orphan-check|review-round)|check-ci)\.sh:\*\)$/;
+const GATE_SCRIPT_RE = /^Bash\(bash scripts\/(?:handover\/queue-lock|handover\/console-kit\/inbox-send|cr\/(?:write-verdicts|clear-cr-marker|panel-first-pass|docs-audit-panel|ledger-append|impacted-suites|orphan-check|review-round)|check-ci)\.sh:\*\)$/;
 // HIMMEL-3338: the /pr-check external-critic steps that take no arguments (or
 // exactly `--diff`) are exact literals — no `:*` tail, so nothing can be
 // appended to them. HIMMEL-3359 adds step 0's himmel-lane entry
@@ -40,11 +40,10 @@ const GATE_SUITE_RE = /^Bash\((?:SUITE_LOCK_WAIT=60 )?bash scripts\/quiet-run\.s
 // rule only — never a general $VAR admission — so every other rule containing
 // `$` (including a different var or a different path under the anchor) still
 // falls through to the ban.
-// ponytail: kept alongside the pre-existing relative rule
-// (`Bash(bash scripts/handover/merge-on-green.sh:*)`) rather than replacing
-// it, until Claude Code's `$VAR` permission-matcher semantics are confirmed
-// against literal typed command text (docs/source citation or a
-// non-billed measurement) — HIMMEL-3491 follow-up.
+// HIMMEL-3548: the pre-existing relative rule
+// (`Bash(bash scripts/handover/merge-on-green.sh:*)`) was retired now that
+// Claude Code's `$VAR` permission-matcher semantics against literal typed
+// command text are confirmed — this anchor literal is the only admitted form.
 const GATE_ANCHOR_LITERAL = 'Bash(bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh":*)';
 const LEG_PROFILES = new Set(['lane-impl', 'leg-impl', 'lane-review', 'lane-content', 'console-relay']);
 
@@ -442,9 +441,8 @@ function validatedAnchorPath(anchor, purpose) {
 }
 
 // The one exact absolute literal for the PRIMARY checkout's merge-on-green.sh.
-// It widens nothing: the relative rule already admits merge-on-green.sh, and
-// the GO gate inside it (exit 17 without a GO file) stays the only authority
-// on whether a merge runs.
+// It widens nothing: the GO gate inside merge-on-green.sh (exit 17 without a
+// GO file) stays the only authority on whether a merge runs.
 export function anchorMergeRule(anchor) {
   const path = validatedAnchorPath(anchor, 'merge');
   return path ? `Bash(bash ${path}/scripts/handover/merge-on-green.sh:*)` : null;

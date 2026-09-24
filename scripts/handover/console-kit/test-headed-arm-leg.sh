@@ -1031,9 +1031,10 @@ node --input-type=module - "$d17/HIMMEL-3333-leg.leg-settings.json" <<'NODE' || 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 const settings = JSON.parse(readFileSync(process.argv[2], 'utf8'));
-assert.ok(settings.permissions?.allow.includes('Bash(bash scripts/handover/merge-on-green.sh:*)'));
-// HIMMEL-3491: the anchored entry literal is seeded alongside the relative one.
+// HIMMEL-3491/HIMMEL-3548: only the anchored entry literal is seeded now —
+// the relative rule was retired.
 assert.ok(settings.permissions?.allow.includes('Bash(bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh":*)'));
+assert.ok(!settings.permissions?.allow.includes('Bash(bash scripts/handover/merge-on-green.sh:*)'));
 NODE
 check "full launch --profile: seeded settings carry gate permissions" "$rc" "0"
 
@@ -1315,7 +1316,7 @@ cat > "$composed/profiles.mjs" <<'PROFILE_EOF'
 switch (process.argv[3]) {
   case '--mcp-servers': console.log('["qmd"]'); break;
   case '--mcp-config': console.log('{"mcpServers":{"qmd":{"type":"http","url":"http://localhost:8181/mcp"}}}'); break;
-  default: console.log('{"enabledPlugins":{},"permissions":{"allow":["Bash(bash scripts/handover/merge-on-green.sh:*)"]}}');
+  default: console.log('{"enabledPlugins":{},"permissions":{"allow":["Bash(bash \\"$HIMMEL_REPO/scripts/handover/merge-on-green.sh\\":*)"]}}');
 }
 PROFILE_EOF
 chmod 755 "$composed/headed" "$composed/claude-codex"
@@ -1341,7 +1342,7 @@ assert.deepStrictEqual(fs.readFileSync(`${dir}/args`, 'utf8').trimEnd().split('\
   '--model', 'gpt-6-sol', '--autocompact', '200000', '-n', 'HIMMEL-composed', 'load some/doc.md and continue',
 ]);
 const settings = JSON.parse(fs.readFileSync(`${dir}/HIMMEL-composed.leg-settings.json`, 'utf8'));
-assert.ok(settings.permissions.allow.includes('Bash(bash scripts/handover/merge-on-green.sh:*)'));
+assert.ok(settings.permissions.allow.includes('Bash(bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh":*)'));
 // HIMMEL-3285: HANDOVER_DIR is exported suite-wide (line ~105), so this
 // non-relay launch also seeds the .locks deny alongside EnterWorktree.
 assert.deepStrictEqual(settings.permissions.deny, [

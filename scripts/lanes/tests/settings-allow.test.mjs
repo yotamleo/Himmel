@@ -34,6 +34,11 @@ const EXACT_LITERALS = [
   'bash scripts/cr/codex-adv-kickoff.sh',
   'bash scripts/cr/codex-adv-harvest.sh',
   'bash scripts/cr/cr-scores.sh',
+];
+
+// HIMMEL-3548: the relative merge-on-green rules were retired — only the
+// anchored spelling (ANCHOR_LITERALS below) is pre-approved now.
+const RETIRED_LITERALS = [
   'bash scripts/handover/merge-on-green.sh',
   'bash scripts/handover/merge-on-green.sh --jira-transition',
 ];
@@ -176,6 +181,12 @@ const SANCTIONED = [
 for (const command of SANCTIONED) {
   test(`a project allow rule still matches: ${command}`, () => {
     assert.ok(matching(ALLOW, command).length > 0, `no rule matches ${command}`);
+  });
+}
+
+for (const command of RETIRED_LITERALS) {
+  test(`the retired relative merge-on-green rule matches no rule: ${command}`, () => {
+    assert.deepEqual(matching(LEG_ALLOW, command), []);
   });
 }
 
