@@ -1545,6 +1545,9 @@ pre-existing. It happened three times in one shift (HIMMEL-3553 tracks the
 structural fix).
 
 **What to do:** before calling a SKIP or FAIL pre-existing, check that the
-owning package has a `node_modules` directory. If it does not, run `npm ci`
-in that package (`--ignore-scripts` where a postinstall downloads browsers)
-and re-run the suite.
+suite's test runner is installed in the owning package (e.g.
+`node_modules/.bin/vitest`), not just that `node_modules` exists:
+`scripts/jira` has a `node_modules` from the `--omit=dev` install, but no
+vitest. If the runner is missing, run `npm ci` in that package
+(`--ignore-scripts` where a postinstall downloads browsers) and re-run the
+suite.
