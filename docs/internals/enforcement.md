@@ -1442,7 +1442,7 @@ Bash/PowerShell payload whose command is missing or not a string.
 git command is AIMED at — for a write run from a LINKED worktree's own cwd
 (no `-C`/`--git-dir` pointed elsewhere), that is the worktree's OWN root, a
 legitimate feature checkout, so the ordinary verdict allows. But `config` /
-`remote` writes, `branch -u|--set-upstream-to|-f|--force`, and `update-ref` /
+`remote` writes, `branch -u|--set-upstream-to|--unset-upstream|-f|--force`, and `update-ref` /
 `symbolic-ref` on `refs/heads/main|master` land in the worktree's SHARED
 `$GIT_COMMON_DIR`, which the PRIMARY checkout also reads — so a leg could
 repoint `branch.main.remote/merge` or `remote.origin.url` (poisoning the
