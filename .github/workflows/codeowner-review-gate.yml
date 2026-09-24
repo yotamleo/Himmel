@@ -34,11 +34,12 @@ permissions:
   contents: read
   pull-requests: read
 
-# One run per PR: a newer event supersedes a stale one, which re-reads live API
-# state anyway, so the latest completed run is always the authoritative check.
+# HIMMEL-3588: no cancel-in-progress. A cancelled run still leaves its
+# CANCELLED context in the PR's statusCheckRollup, which blocks the ruleset's
+# merge evaluation even when the latest run is green. The job is cheap, so
+# grouped runs queue and each one runs to completion instead.
 concurrency:
   group: codeowner-review-gate-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
 
 jobs:
   gate:

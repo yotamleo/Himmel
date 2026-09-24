@@ -369,6 +369,10 @@ wf_violations() {
   # may be gated on the fetch having "found" a script.
   grep -qE 'HTTP 404|default_branch|DEFAULT_BRANCH|BASE_REF|bootstrap|present=|steps\.fetch\.outputs' "$s" && echo "has a 404/bootstrap exemption branch"
   grep -qE '^    name: codeowner-review-gate$' "$s" || echo "job name is not codeowner-review-gate"
+  # HIMMEL-3588: cancel-in-progress leaves CANCELLED contexts in the PR's
+  # statusCheckRollup that block the ruleset even when the latest run is
+  # green — this gate must let every queued run complete.
+  grep -qE '^[[:space:]]*cancel-in-progress:[[:space:]]*true' "$s" && echo "has cancel-in-progress: true"
   return 0
 }
 
@@ -426,6 +430,7 @@ mutate "a wrong job name"            "job name"            's/^    name: codeown
 mutate "a missing review trigger"    "pull_request_review" 's/^  pull_request_review:/  issue_comment:/'
 mutate "a dropped edited trigger"    "pull_request types"  '/ready_for_review/s/, edited\]$/]/'
 mutate "a 404 bootstrap branch"      "404/bootstrap"       's|^    steps:|    steps:\n      - run: grep -q "HTTP 404" err|'
+mutate "cancel-in-progress restored" "cancel-in-progress"  's/^jobs:/concurrency:\n  group: codeowner-review-gate\n  cancel-in-progress: true\njobs:/'
 # shellcheck disable=SC2016  # the literal $BASE_REF text must reach sed
 mutate "a default-branch exemption" "404/bootstrap"       's|^    steps:|    steps:\n      - run: test "$BASE_REF" = "$DEFAULT_BRANCH"|'
 mutate "a step gated on the fetch"   "404/bootstrap"       's|^    steps:|    steps:\n      - if: steps.fetch.outputs.present == '"'"'true'"'"'\n        run: true|'
