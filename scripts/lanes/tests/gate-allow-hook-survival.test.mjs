@@ -18,13 +18,21 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { createRequire } from 'node:module';
+
+// HIMMEL-1992: never spawn a bare "bash" — on Windows that resolves through
+// PATH to the WSL launcher before Git Bash (a 600s hang or a silent
+// wrong-shell run). Use this tree's own resolver, same convention as
+// scripts/lanes/profile-context-probe.mjs.
+const { resolveBash } = createRequire(import.meta.url)('../../hooks/run-hook-with-bash.js');
+const BASH_BIN = resolveBash() || 'bash';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const HOOK = join(REPO_ROOT, 'scripts', 'hooks', 'guard-pr-check-literal.sh');
 
 function runHook(command, { env = {} } = {}) {
   const payload = JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd: REPO_ROOT });
-  const { status, stderr } = spawnSync('bash', [HOOK], {
+  const { status, stderr } = spawnSync(BASH_BIN, [HOOK], {
     input: payload,
     cwd: REPO_ROOT,
     env: { ...process.env, ...env },
