@@ -734,6 +734,46 @@ CMD126=$'X=1\nsed -i s/a/b/ .claude/settings.json; jq \'.foo\' .claude/settings.
 assert_rc "126 newline-in-segment write still denies (HIMMEL-3465)" 2 \
     "$(bash_rc_of "$PRIMARY" "$CMD126")"
 
+# 127-131 (HIMMEL-3499): named residuals from HIMMEL-3468's PR #1146 — extract
+# and checkout tools that clobber a live .claude/ without going through the
+# cp/mv/install/rsync/ln/dd/tee verb list or naming settings.json in the text.
+# Each RED against 6cba9613 (the HIMMEL-3468 merge base for this ticket).
+assert_rc "127 git checkout <ref> -- .claude from primary denies (probe 1)" 2 \
+    "$(bash_rc_of "$PRIMARY" "git checkout origin/x -- .claude")"
+assert_rc "128 tar -x -C .claude from primary denies (probe 2)" 2 \
+    "$(bash_rc_of "$PRIMARY" "tar -xf a.tar -C .claude")"
+assert_rc "129 unzip -d .claude from primary denies (probe 3)" 2 \
+    "$(bash_rc_of "$PRIMARY" "unzip -o a.zip -d .claude")"
+assert_rc "130 tar -C \$HOME/.claude from a non-repo cwd denies (probe 4)" 2 \
+    "$(bash_rc_of "$SANDBOX" "tar -xf a.tar -C \$HOME/.claude" HOME="$FAKEHOME")"
+assert_rc "131 git restore --source=<ref> -- .claude from primary denies (scope companion to probe 1)" 2 \
+    "$(bash_rc_of "$PRIMARY" "git restore --source=origin/x -- .claude")"
+
+# 132-135: ordinary worktree git/extract use stays ALLOW. 132 has no .claude
+# mention at all (an everyday branch checkout); 133-135 target a WORKTREE'S
+# OWN .claude — a bare relative mention with no cd/-C/.. and no primary/$HOME
+# prefix, same exemption every other verb already gets.
+assert_rc "132 git checkout -b <branch> with no .claude mention allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "git checkout -b some-branch")"
+assert_rc "133 git checkout HEAD -- .claude from a worktree (own dir) allows" 0 \
+    "$(bash_rc_of "$WT2" "git checkout HEAD -- .claude")"
+assert_rc "134 unzip -d .claude from a worktree (own dir) allows" 0 \
+    "$(bash_rc_of "$WT2" "unzip -o a.zip -d .claude")"
+assert_rc "135 git restore --source=HEAD -- .claude from a worktree (own dir) allows" 0 \
+    "$(bash_rc_of "$WT2" "git restore --source=HEAD -- .claude")"
+
+# 136: accepted false deny, documented (HIMMEL-3499, same shape as the
+# HIMMEL-3468 cd/pushd precedent). tar's OWN directory flag is `-C`, the same
+# spelling changes_directory() already treats as "the target may have moved,
+# void the worktree-relative exemption" for `git -C`/`env -C`/`make -C`. That
+# blunt rule cannot distinguish tar's `-C .claude` (which NAMES its own
+# destination, not an unrelated cwd shift) from a genuine directory jump, so
+# it denies this worktree's own extraction too. Accepted: matches the
+# project's stated preference (fail closed, prefer false positive) and needs
+# no new parsing to fix.
+assert_rc "136 tar -x -C .claude from a worktree (own dir) denies (accepted false deny)" 2 \
+    "$(bash_rc_of "$WT2" "tar -xf a.tar -C .claude")"
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true

@@ -515,8 +515,8 @@ mentions_dot_claude_dir_dest() {
     [ -n "$out" ]
 }
 
-# has_write_verb_or_target_flag CMD_LC — a copy/move/link-shaped verb, or a
-# `-t`/`--target-directory` flag (rule 2's verb list).
+# has_write_verb_or_target_flag CMD_LC — a copy/move/link/extract/checkout-
+# shaped verb, or a `-t`/`--target-directory` flag (rule 2's verb list).
 #
 # The word boundary on both sides is the COMPLEMENT of a word character, not
 # a list of shell metacharacters (HIMMEL-3468): an enumerated class missed
@@ -524,6 +524,20 @@ mentions_dot_claude_dir_dest() {
 # bypass. Any non-word character before the verb now counts, at the cost of
 # over-matching a word that merely ends a token (`-cp`, `x.tee`) — which only
 # denies when a `.claude` destination is named too, i.e. fail-closed.
+#
+# tar/unzip/checkout/restore (HIMMEL-3499): the same blunt verb-name list,
+# widened to the extract and checkout tools that clobber a directory without
+# naming settings.json in the text — `git checkout <ref> -- .claude`,
+# `tar -x -C .claude`, `unzip -d .claude`. This is the SAME shape as the
+# existing cp/mv/install/rsync/ln/dd/tee list (an allowlist of known
+# destructive verb spellings), not the metacharacter-boundary enumeration
+# HIMMEL-3468 ruled against — so it stays in scope for the "no more parsing"
+# decision. tar's own directory flag happens to be spelled `-C`, which
+# changes_directory() already treats as a directory-move signal for
+# `git -C`/`env -C`/`make -C`; that rule cannot tell tar's self-targeting
+# `-C .claude` apart from an unrelated cwd shift, so it also denies a
+# worktree's own `tar -x -C .claude` — an accepted, documented false deny
+# (test 136), the same shape as the cd/pushd precedent above.
 has_write_verb_or_target_flag() {
     local out
     # -t/--target-directory is a flag of the copy/move-shaped verbs below
@@ -532,7 +546,7 @@ has_write_verb_or_target_flag() {
     # (`ls -t` sorts by time; `ls -t ~/.claude/…` false-denied, HIMMEL-3465).
     # A verb match already returns 0 below, so gating -t on that same verb
     # list adds no case the verb check doesn't already cover.
-    out=$(printf '%s' "$1" | grep -E '(^|[^a-z0-9_])(cp|mv|install|rsync|ln|dd|tee)([^a-z0-9_]|$)') || true
+    out=$(printf '%s' "$1" | grep -E '(^|[^a-z0-9_])(cp|mv|install|rsync|ln|dd|tee|tar|unzip|checkout|restore)([^a-z0-9_]|$)') || true
     [ -n "$out" ] && return 0
     return 1
 }
@@ -542,9 +556,19 @@ has_write_verb_or_target_flag() {
 # list, or a `-C <dir>` / `--chdir` word (`git -C`, `make -C`, `env -C`),
 # which moves the target the same way. `-C` is matched on the case-preserved
 # text CMD_N, so a lowercase `-c` (`bash -c`) is not one.
-# ponytail: a relative `find … -exec` and a tool whose directory flag has
-# another name (`tar --directory`, `unzip -d`) are not matched — the
-# documented residuals.
+#
+# tar/unzip naming a `.claude` destination (`tar -C .claude`, `tar --directory
+# .claude`, `unzip -d .claude`) no longer need THIS function to be caught at
+# all (HIMMEL-3499): has_write_verb_or_target_flag() now matches the bare
+# `tar`/`unzip` word regardless of which directory flag it uses, so rule 2
+# (mentions_dot_claude_dir_dest + has_write_verb_or_target_flag) denies them
+# directly. tar's `-C` spelling happens to ALSO match this function's own
+# `-C` case, which additionally voids the worktree-relative exemption for a
+# worktree's own `tar -C .claude` — an accepted, documented false deny (test
+# 136) — but that is a side effect of the shared `-C` spelling, not something
+# this function needed to grow to close the residual.
+# ponytail: a relative `find … -exec` naming `.claude` as its target is still
+# not matched by either mechanism — the remaining documented residual.
 changes_directory() {
     local out
     out=$(printf '%s' "$1" | grep -E '(^|[^a-z0-9_])(cd|pushd|popd)([^a-z0-9_]|$)') || true
