@@ -134,7 +134,11 @@ compute_leg_burn_line() {
 }
 
 burn_line=$(compute_leg_burn_line)
-if printf '%s\n' "$body" | grep -q '^leg-burn:'; then
+# pipefail-ok: no -q here on purpose (HIMMEL-3572 known-findings
+# [grep-q-pipe-under-pipefail]) — grep reads the whole (small) body instead of
+# exiting early, so the printf producer never takes a SIGPIPE.
+existing_burn_line=$(printf '%s\n' "$body" | grep '^leg-burn:' || true)
+if [ -n "$existing_burn_line" ]; then
     body=$(printf '%s\n' "$body" | awk -v repl="$burn_line" '{ if ($0 ~ /^leg-burn:/) print repl; else print }')
 else
     body="${body}
