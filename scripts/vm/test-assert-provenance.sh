@@ -186,6 +186,17 @@ mkdir -p "$UD"; echo unit >"$UD/kept.service"; echo new >"$UD/himmel-qmd.service
 run_assert core 0
 has "a unit new since A is left behind" 'CHECK removal too-little FAIL user-units-removed .*himmel-qmd.service'
 
+# ---- 6b. HIMMEL-3541: the standalone uninstall bundle and provenance-backups/
+# are himmel's own, but --purge-state-only removals (uninstall.sh keeps both by
+# design on a plain uninstall) -- a plain run must not flag them as residue.
+UB="$H/.himmel/uninstall" PB="$H/.himmel/provenance-backups"
+fresh
+inv C d "$UB"; inv C f "$UB/bundle.json" bj
+inv C d "$PB"; inv C f "$PB/provenance.jsonl.bak" bak
+run_assert core 0
+hasnt "plain: the uninstall bundle is not residue" 'CHECK residue [a-z-]+ FAIL [a-z]+:~/\.himmel/uninstall'
+hasnt "plain: provenance-backups is not residue" 'CHECK residue [a-z-]+ FAIL [a-z]+:~/\.himmel/provenance-backups'
+
 # ---- 7. cadence-crontab-armed-at-B (profile all only).
 fresh
 printf '17 3 * * * /bin/true # seed\n' >"$LB/seed-state/crontab.txt"; cp "$LB/seed-state/crontab.txt" "$FAKE_CRON"

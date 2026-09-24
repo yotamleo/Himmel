@@ -232,10 +232,12 @@ if [ "$PROFILE" = all ]; then
 fi
 
 # ==================================================== 7. residue (C vs A)
-# The 3330 allowlist: caches install may fill and uninstall may keep. The ledger
-# itself is allowed too, except after --purge-state.
+# The 3330 allowlist: caches install may fill and uninstall may keep. The
+# ledger, the standalone uninstall bundle (S13) and provenance-backups/ are
+# allowed too, except after --purge-state, which is the step that removes all
+# three (HIMMEL-3541: a plain run must not flag them as leftover residue).
 allow="^($H/\\.npm/_cacache|$H/\\.npm/_logs|$H/\\.cache/node-gyp|$H/\\.bun/install/cache|$H/\\.claude/plugins/cache|$H/\\.cache/qmd"
-[ "$PURGE" = 1 ] || allow="$allow|$H/\\.himmel/provenance(\\.jsonl)?"
+[ "$PURGE" = 1 ] || allow="$allow|$H/\\.himmel/provenance(\\.jsonl)?|$H/\\.himmel/uninstall|$H/\\.himmel/provenance-backups"
 allow="$allow)(/|\$)"
 # paths <a> <b> <mode>: new = in b not a; gone = in a not b; changed = regular
 # file in both with a different sha. Directories count only when new/gone.
