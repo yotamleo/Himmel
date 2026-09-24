@@ -1567,11 +1567,18 @@ settings.json, a hook-wiring change (the "three places" rule in
 PR — the operator no longer hand-edits `.claude/settings.json` inside each
 leg's worktree for every hook-wiring change.
 
-**The Bash/PowerShell arm is textual and blunt (HIMMEL-1525, HIMMEL-3468).**
-It does not parse commands. It fires when the command text names
-`settings.json`/`settings.local.json` (rule 1, any verb) or names a `.claude`
-directory together with a copy-shaped verb (`cp`/`mv`/`install`/`rsync`/`ln`/
-`dd`/`tee`) or `-t`/`--target-directory` (rule 2). It then denies when the
+**The Bash/PowerShell arm is textual and blunt (HIMMEL-1525, HIMMEL-3468,
+HIMMEL-3499, HIMMEL-3555).** It does not parse commands. It fires when the
+command text names `settings.json`/`settings.local.json` (rule 1, any verb)
+or names a `.claude` directory together with a copy/extract/checkout-shaped
+verb (`cp`/`mv`/`install`/`rsync`/`ln`/`dd`/`tee`/`tar`/`gtar`/`bsdtar`/
+`unzip`/`checkout`/`restore`) or `-t`/`--target-directory` (rule 2). A
+`.claude/worktrees/<name>` mention (every linked worktree's own container
+path) is stripped before this match, so an ordinary cross-worktree
+`-C <other-worktree>` reference does not count; tar additionally excludes
+its own CREATE/LIST modes, and `checkout`/`restore` additionally require a
+`git` word somewhere in the text (both are common ordinary words/filenames
+otherwise). It then denies when the
 mention is live: the cwd is a primary checkout or is in no repo at all; the
 text names the primary root or `$HOME`'s `.claude` (`<home>/.claude`,
 `$HOME/.claude`, `${HOME}/.claude`, `~/.claude`, `~user/.claude`, with or
@@ -1608,19 +1615,37 @@ worktree-settings mention; any `..` beside a worktree-settings mention
 (`cp ../notes.txt .claude/settings.json`); any `$'` beside a `settings` or
 `claude` substring, even for the worktree's own copy; a `cat >> other.md` whose heredoc
 prose names `settings.json` (the hook does not parse where the bytes land);
-and a read of the file piped or redirected onward.
+a read of the file piped or redirected onward; and a worktree's own
+`tar -x -C .claude` extraction (HIMMEL-3499) — tar's `-C` flag shares its
+spelling with the `cd`/`git -C` directory-move signal, which cannot tell
+tar's self-targeting `-C .claude` apart from an unrelated cwd shift.
 
 **Known residuals** — the hook matches text, so it misses a write whose text
 does not name the file or its directory in a form above:
 
 - a command that names neither `settings.json` nor a `.claude` directory
-  but writes one anyway: `tar -C … -x`, `unzip -d`,
-  `git checkout <ref> -- .claude`, or a directory copy whose source holds
-  the file (HIMMEL-3499);
+  but writes one anyway: a directory copy whose source holds the file.
+  (`tar -C … -x`, `unzip -d` and `git checkout <ref> -- .claude` — when they
+  DO name `.claude` in the text, as in the HIMMEL-3499 probes — are now
+  caught: `tar`/`gtar`/`bsdtar`/`unzip`/`checkout`/`restore` are recognized
+  verbs, gated by tar's own create/list-mode and by `checkout`/`restore`
+  needing a `git` word somewhere in the text — HIMMEL-3499, HIMMEL-3555.);
+- an extraction tool other than tar/unzip: `python -m zipfile`,
+  `python3 -m tarfile`, `cpio`, `7z` (HIMMEL-3555 — the fix stayed scoped to
+  the named probes' tools rather than enumerating every archive utility);
 - a directory change by another spelling: `find … -exec`, or a directory
-  flag with another name (`tar --directory`);
+  flag with another name (`tar --directory` now IS caught, since the verb
+  match no longer depends on which directory flag it uses — only
+  `find … -exec` remains open here);
+- a `.claude` mention spelled with a shell glob the hook's own trailing
+  boundary does not accept (`.claude*`, `.clau?e`) — the shell has not
+  expanded it (this is static command TEXT, not a runtime-built name, unlike
+  the next bullet), but the boundary character class stops at the glob
+  metacharacter (HIMMEL-3555);
 - a name built at run time: variables (including `${var@E}` escape
-  expansion), `$(…)` and backtick substitution, `printf %b`, and globs;
+  expansion), `$(…)` and backtick substitution, `printf %b`, and an
+  EXPANDED glob (the shell resolves it before the hook ever sees the
+  literal text);
 - an ANSI-C word that escapes the `settings` or `claude` letters themselves
   (`$'\x73ettings.json'`);
 - symlinks;
