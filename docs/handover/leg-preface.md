@@ -252,8 +252,11 @@ directories, goes to the classifier by design.
   30 minutes with no console reply, send one nudge and then wrap.
 - **Closing the ticket at merge (HIMMEL-3271).** The merge is
   `bash <anchor>/scripts/handover/merge-on-green.sh`, where `<anchor>` is the
-  primary checkout's absolute path written out — what `printenv HIMMEL_REPO`
-  prints, never your worktree (HIMMEL-3491: the entry runs from the anchor,
+  primary checkout's absolute path written out — the directory holding the
+  `.git` that `git rev-parse --path-format=absolute --git-common-dir` prints
+  from your worktree, which is what your allow rule was built from (not
+  `printenv HIMMEL_REPO`, which can name a worktree), never your worktree
+  (HIMMEL-3491: the entry runs from the anchor,
   not branch-controlled bytes). Type it as ONE bare command: no `$HIMMEL_REPO`,
   no quotes, no redirect, no `cd`, no `&&`. Your leg settings carry that exact
   literal as an allow rule (HIMMEL-3567); any other spelling falls to the
