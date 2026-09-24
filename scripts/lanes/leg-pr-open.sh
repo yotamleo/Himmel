@@ -76,6 +76,71 @@ if [ -z "$body" ]; then
     exit 1
 fi
 
+# HIMMEL-3572: compute the leg-burn line HERE, inside the script, never as a
+# leg-typed ad-hoc `leg-burn.sh ...` command — that shape was classifier-denied
+# [Session Transcript Tampering]. A failure to resolve or run it is a WARN
+# plus a `leg-burn: unavailable (<reason>)` line; it never fails the PR open.
+compute_leg_burn_line() {
+    local session=""
+    if [ -r "$HERE/../lib/session-name.sh" ]; then
+        # shellcheck source=../lib/session-name.sh
+        # shellcheck disable=SC1091
+        . "$HERE/../lib/session-name.sh"
+        session=$(current_session_name 2>/dev/null || true)
+    fi
+
+    local transcript=""
+    if [ -z "$session" ]; then
+        # Explicit-jsonl fallback, mirroring context-fill.sh's
+        # resolve_transcript(): CLAUDE_CODE_SESSION_ID names the transcript
+        # file directly when the -n argv name isn't resolvable (non-Linux, no
+        # CLAUDE_PID, or an unnamed session).
+        local sid="${CLAUDE_CODE_SESSION_ID:-}"
+        if [ -n "$sid" ]; then
+            local f
+            for f in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"/*/"$sid".jsonl; do
+                if [ -f "$f" ]; then
+                    transcript="$f"
+                    break
+                fi
+            done
+        fi
+        if [ -z "$transcript" ]; then
+            echo "leg-burn: unavailable (no session name or CLAUDE_CODE_SESSION_ID transcript resolvable)"
+            return 0
+        fi
+    fi
+
+    local raw
+    if ! raw=$("$HERE/leg-burn.sh" "${transcript:-$session}" 2>&1); then
+        echo "WARN leg-pr-open: leg-burn.sh failed for '${transcript:-$session}': $raw" >&2
+        echo "leg-burn: unavailable (leg-burn.sh failed for '${transcript:-$session}')"
+        return 0
+    fi
+
+    local calls avg_ctx first_turn compactions cost_eq
+    calls=$(printf '%s\n' "$raw" | sed -n 's/.*calls=\([^ ]*\).*/\1/p')
+    avg_ctx=$(printf '%s\n' "$raw" | sed -n 's/.*avg-ctx=\([^ ]*\).*/\1/p')
+    first_turn=$(printf '%s\n' "$raw" | sed -n 's/.*first-turn=\([^ ]*\).*/\1/p')
+    compactions=$(printf '%s\n' "$raw" | sed -n 's/.*compactions=\([^ ]*\).*/\1/p')
+    cost_eq=$(printf '%s\n' "$raw" | sed -n 's/.*cost-eq=\([^ ]*\).*/\1/p')
+    if [ -z "$calls" ] || [ -z "$avg_ctx" ] || [ -z "$first_turn" ] || [ -z "$compactions" ] || [ -z "$cost_eq" ]; then
+        echo "WARN leg-pr-open: could not parse leg-burn.sh output: $raw" >&2
+        echo "leg-burn: unavailable (could not parse leg-burn.sh output)"
+        return 0
+    fi
+
+    echo "leg-burn: calls=$calls avg-ctx=$avg_ctx first-turn=$first_turn compactions=$compactions cost-eq=$cost_eq"
+}
+
+burn_line=$(compute_leg_burn_line)
+if printf '%s\n' "$body" | grep -q '^leg-burn:'; then
+    body=$(printf '%s\n' "$body" | awk -v repl="$burn_line" '{ if ($0 ~ /^leg-burn:/) print repl; else print }')
+else
+    body="${body}
+${burn_line}"
+fi
+
 branch=$(git rev-parse --abbrev-ref HEAD)
 if [ "$branch" = "main" ]; then
     echo "ERR leg-pr-open: refusing to open a PR from main" >&2

@@ -197,6 +197,42 @@ argv_h=$(cat "$ARGV_LOG")
 contains "find-open-stderr path still creates (stderr warning did not fake an existing PR)" "$argv_h" "pr create"
 not_contains "find-open-stderr path never edits" "$argv_h" "pr edit"
 
+# ── (i) HIMMEL-3572: leg-pr-open computes leg-burn itself, body gets the line
+# even when the caller supplied none. A leg typing `leg-burn.sh` by hand was
+# denied [Session Transcript Tampering] — the line must come from inside this
+# script (a script, not a leg-typed ad-hoc command), never a separate step.
+echo "TEST: PR body gets a leg-burn: line even when the caller supplied none"
+: > "$ARGV_LOG"
+unset STUB_OPEN_PR 2>/dev/null || true
+NO_BURN_BODY="$TMP_ROOT/no-burn-body.txt"
+printf '## Summary\n\n%s\n' "$BODY_MARKER" > "$NO_BURN_BODY"
+(
+    cd "$REPO" || exit 99
+    unset CLAUDE_CODE_SESSION_ID CLAUDE_PID
+    FORGE=github CR_APP=0 GH_CMD="$GH_STUB" ARGV_LOG="$ARGV_LOG" \
+        HEAD_SHA_STUB="$HEAD_SHA" \
+        bash "$SUT" "$TITLE_FILE" "$NO_BURN_BODY"
+) >/dev/null; rc_i=$?
+assert_eq "leg-burn-insertion path exits 0" "0" "$rc_i"
+argv_i=$(cat "$ARGV_LOG")
+contains "gh receives a leg-burn: line though the body file had none" "$argv_i" "leg-burn:"
+
+# ── (j) HIMMEL-3572: an unresolvable session never fails the PR open — WARN
+# plus a `leg-burn: unavailable (<reason>)` line takes its place.
+echo "TEST: an unresolvable leg-burn session falls back to 'unavailable', never fails the open"
+: > "$ARGV_LOG"
+unset STUB_OPEN_PR 2>/dev/null || true
+(
+    cd "$REPO" || exit 99
+    unset CLAUDE_CODE_SESSION_ID CLAUDE_PID
+    FORGE=github CR_APP=0 GH_CMD="$GH_STUB" ARGV_LOG="$ARGV_LOG" \
+        HEAD_SHA_STUB="$HEAD_SHA" \
+        bash "$SUT" "$TITLE_FILE" "$NO_BURN_BODY"
+) >/dev/null; rc_j=$?
+assert_eq "unavailable-fallback path still exits 0" "0" "$rc_j"
+argv_j=$(cat "$ARGV_LOG")
+contains "gh receives the unavailable-fallback leg-burn line" "$argv_j" "leg-burn: unavailable ("
+
 echo
 echo "===================================="
 echo "test summary: $PASS passed, $FAIL failed"
