@@ -7,10 +7,14 @@
 # with --dangerously-skip-permissions (that would turn off ALL guards), so the
 # chain never merges.
 #
-# This is the narrow, self-gating merge path the operator authorizes via ONE
-# specific standing allow-rule — `Bash(bash scripts/handover/merge-on-green.sh:*)`
-# — never a raw `gh pr merge` (still classifier-blocked) and never a permission
-# widening. It merges ONLY on: opt-in (ARMAUTOMERGE=1) AND a PRIVATE github repo
+# This is the narrow, self-gating merge path the operator authorizes via a
+# specific standing allow-rule. Legs are told to invoke the anchored spelling,
+# `Bash(bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh":*)` (HIMMEL-3491)
+# — a relative `Bash(bash scripts/handover/merge-on-green.sh:*)` rule is also
+# still present (HIMMEL-3548 tracks retiring it), and now hands off to the
+# anchor's own copy on a relative entry (HIMMEL-3437) — never a raw
+# `gh pr merge` (still classifier-blocked) and never a permission widening.
+# It merges ONLY on: opt-in (ARMAUTOMERGE=1) AND a PRIVATE github repo
 # — or, HIMMEL-2869, the ONE configured public origin, live-verified under
 # branch protection with required status checks — AND the PR targets that repo's
 # DEFAULT branch (HIMMEL-1080, coderabbit public
@@ -88,6 +92,9 @@
 #   0   merged (including a confirmed remote merge where gh itself exited
 #       non-zero afterwards, and regardless of the post-merge prune outcome),
 #       or --dry-run passed, or no PR — nothing to merge
+#   2   a relative-entry copy that is not the anchor's handed off and was
+#       refused (anchor-handoff.sh, HIMMEL-3437): HIMMEL_REPO unset/empty, or
+#       the anchor carries no scripts/handover/merge-on-green.sh
 #   10  not opted in (ARMAUTOMERGE unset/false) — refused
 #   11  required tool missing (gh / git)
 #   12  not a private github repo (public or undeterminable), or the PR's base
@@ -184,11 +191,22 @@
 # script is the only branch-controllable byte left. HIMMEL_REPO is a registered
 # chokepoint seam (scripts/chokepoints.json), so a per-call `HIMMEL_REPO=. bash …`
 # re-pointing it at the branch is denied.
-# ponytail: the ENTRY script is still an OPEN path — legs are told to run
-# `bash scripts/handover/merge-on-green.sh` from their own worktree (leg-preface.md,
-# the gateAllow rule), so a branch that rewrites this file controls the gate.
-# Invoking it as `bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh"` is
-# HIMMEL-3491.
+# Legs are told to invoke the anchored spelling,
+# `bash "$HIMMEL_REPO/scripts/handover/merge-on-green.sh"` (HIMMEL-3491, proven
+# on #1201), which never runs a branch's own copy. The relative entry
+# (`bash scripts/handover/merge-on-green.sh`, still pre-approved — HIMMEL-3548
+# tracks retiring the rule) now hands off to the anchor's own copy on a
+# relative invocation too (HIMMEL-3437), the same one-hop, fail-closed pattern
+# scripts/cr/anchor-handoff.sh uses for the scripts/cr/ gate writers.
+# ponytail: that hand-off is DEFENCE IN DEPTH, not a closure. Unlike
+# scripts/cr/, where guard-pr-check-literal.sh byte-compares the entry script
+# and anchor-handoff.sh against the anchor before allowing a relative run
+# (HIMMEL-3495), the guard's TARGETS do not cover scripts/handover/ — a branch
+# can still defeat this hand-off by deleting the one `.` line that sources it,
+# and the relative literal still runs the (now hand-off-less) branch copy.
+# Closing that needs extending guard-pr-check-literal's TARGETS to
+# scripts/handover/, a scripts/hooks/ edit out of this leg's scope
+# (HIMMEL-3437 follow-up).
 # HIMMEL_REPO is the anchor the rest of the harness already trusts
 # (himmel-doctor.sh, luna-upgrade-all.sh, ...), set at install time by
 # setup.sh/adopt.sh, never by a branch under review; a missing or unreadable
@@ -199,6 +217,9 @@
 set -uo pipefail
 # NOT set -e: this script inspects sub-call exit codes (check-ci, gh) explicitly
 # and must fail CLOSED with its own codes, never abort mid-gate.
+# HIMMEL-3437: a relative-entry copy that is not the anchor's hands off to it
+# (the same one-hop, fail-closed pattern scripts/cr/anchor-handoff.sh uses).
+. "$(dirname "${BASH_SOURCE[0]}")/../cr/anchor-handoff.sh" || exit 2
 
 GH="gh"
 # The ONE public repo armed auto-merge may target (HIMMEL-2869). Deliberately a
