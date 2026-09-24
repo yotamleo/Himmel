@@ -32,7 +32,7 @@
 #
 # Exit codes:
 #   0  signaled (prune ran, skipped, or reported "in use" - all non-fatal)
-#   1  gh/git/queue-lock plumbing failure
+#   1  gh/git/queue-lock plumbing failure, or the TERM signal itself failed
 #   2  usage (missing/unreadable doc)
 #   3  refused - the queue lock is not free
 #   4  refused - the doc's last marker-bullet is not WRAPPED
@@ -119,7 +119,10 @@ if [ "$match_count" -ne 1 ]; then
     exit 5
 fi
 
-"$KILL" -TERM "$matched"
+if ! "$KILL" -TERM "$matched"; then
+    echo "close-wrapped-leg: failed to send TERM to pid $matched" >&2
+    exit 1
+fi
 echo "close-wrapped-leg: sent TERM to pid $matched (leg $(leg_label "$DOC"))"
 
 worktrees=$(grep -oE "/[^\` ]*/\.claude/worktrees/[^\`) ]+" "$DOC" | sort -u)

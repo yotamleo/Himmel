@@ -21,6 +21,7 @@
 #  11. clean.sh output contains "in use"                    -> rc 0 (non-fatal)
 #  12. clean.sh fails for another reason                    -> rc 1
 #  13. gh pr view itself fails (auth/connectivity)           -> rc 1, clean.sh NOT called
+#  14. the TERM signal itself fails                          -> rc 1, no pruning attempted
 #
 # Platform guard: Linux bash 3.2+ (depends on /proc via claude-sessions.sh).
 set -uo pipefail
@@ -67,6 +68,9 @@ KILL_STUB="$W/bin/kill"
 cat > "$KILL_STUB" <<'STUB'
 #!/usr/bin/env bash
 echo "kill $*" >> "$CALLS_LOG"
+if [ "${CWL_KILL_FAIL:-0}" = "1" ]; then
+    exit 1
+fi
 exit 0
 STUB
 chmod +x "$KILL_STUB"
@@ -128,11 +132,11 @@ run() { # run <doc> - runs the script under test with every stub wired
     CALLS_LOG="$CALLS" PATH="$W/bin:$PATH" CLAUDE_SESSIONS_PROC="$W/proc" \
         GH_BIN="$GH_STUB" KILL_BIN="$KILL_STUB" CLEAN_SH_BIN="$CLEAN_STUB" \
         CWL_PR_STATE="${CWL_PR_STATE:-MERGED}" CWL_CLEAN_MODE="${CWL_CLEAN_MODE:-ok}" \
-        CWL_PR_VIEW_FAIL="${CWL_PR_VIEW_FAIL:-0}" \
+        CWL_PR_VIEW_FAIL="${CWL_PR_VIEW_FAIL:-0}" CWL_KILL_FAIL="${CWL_KILL_FAIL:-0}" \
         bash "$SCRIPT" "$@"
 }
 reset_calls() { : > "$CALLS"; }
-unset CWL_PR_STATE CWL_CLEAN_MODE CWL_PR_VIEW_FAIL
+unset CWL_PR_STATE CWL_CLEAN_MODE CWL_PR_VIEW_FAIL CWL_KILL_FAIL
 
 # --- 1. usage ----------------------------------------------------------------
 reset_calls
@@ -241,6 +245,14 @@ rc=0; out=$(CWL_PR_VIEW_FAIL="1" run "$DOC" 2>&1) || rc=$?
 check "pr-view-fail: rc 1" "$rc" "1"
 not_contains "pr-view-fail: clean.sh not called" "$(cat "$CALLS")" "clean.sh"
 contains "pr-view-fail: names the reason" "$out" "gh pr view"
+
+# --- 14. the TERM signal itself fails ---------------------------------------------
+mkdoc "- 10:00 WRAPPED - done"
+reset_calls
+rc=0; out=$(CWL_KILL_FAIL="1" run "$DOC" 2>&1) || rc=$?
+check "kill-fail: rc 1" "$rc" "1"
+not_contains "kill-fail: clean.sh not called" "$(cat "$CALLS")" "clean.sh"
+not_contains "kill-fail: never claims it sent TERM" "$out" "sent TERM"
 
 echo "----"
 if [ "$fails" -eq 0 ]; then
