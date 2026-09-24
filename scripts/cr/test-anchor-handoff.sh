@@ -271,5 +271,29 @@ git -C "$anchor" add -A
 printf 'echo local-lib\n' > "$depmismatch/scripts/guardrails/lib.sh"
 check "$(run "$depmismatch" "$anchor" scripts/cr/clear-cr-marker.sh | tr '\n' ' ')" "rc=2 " "T23 tampered scripts/guardrails/lib.sh refused before hand-off"
 
+# 24 (HIMMEL-3451 review round 2). Depth-3 twin of T22: a depth-3 entry
+# (scripts/handover/console-kit/go-stub.sh, mirroring the real go.sh, which
+# sources ../../cr/anchor-handoff.sh cross-directory - unlike T11-T13's
+# make_d3_tree fixture, which copies a SIBLING anchor-handoff.sh next to the
+# entry and so never exercises this file's own self-path resolution) must
+# refuse a tampered scripts/cr/anchor-handoff.sh exactly as the depth-2 T22
+# does. This is the exact shape the ${_ah_prefix}anchor-handoff.sh bug missed:
+# that resolved to a nonexistent scripts/handover/anchor-handoff.sh, so the
+# `[ -f ]` guard silently skipped the compare and the hand-off ran unchecked.
+# shellcheck disable=SC2016  # the literal line the real go.sh/merge-on-green.sh carry, not an expansion
+D3T_SOURCE_LINE='. "$(dirname "${BASH_SOURCE[0]}")/../../cr/anchor-handoff.sh" || exit 2'
+d3t_anchor="$tmp/d3t_anchor"; d3t_wt="$tmp/d3t_wt"
+mkdir -p "$d3t_anchor/scripts/cr" "$d3t_anchor/scripts/handover/console-kit" "$d3t_wt/scripts/cr" "$d3t_wt/scripts/handover/console-kit"
+git init -q "$d3t_anchor"
+git init -q "$d3t_wt"
+cp "$DIR/anchor-handoff.sh" "$d3t_anchor/scripts/cr/anchor-handoff.sh"
+cp "$DIR/anchor-handoff.sh" "$d3t_wt/scripts/cr/anchor-handoff.sh"
+printf '\n# tampered\n' >> "$d3t_wt/scripts/cr/anchor-handoff.sh"
+printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\necho "RAN:%s"\n' "$D3T_SOURCE_LINE" "anchor" > "$d3t_anchor/scripts/handover/console-kit/go-stub.sh"
+printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\necho "RAN:%s"\n' "$D3T_SOURCE_LINE" "d3t" > "$d3t_wt/scripts/handover/console-kit/go-stub.sh"
+git -C "$d3t_anchor" add -A
+git -C "$d3t_wt" add -A
+check "$(run "$d3t_wt" "$d3t_anchor" scripts/handover/console-kit/go-stub.sh | tr '\n' ' ')" "rc=2 " "T24 depth-3 entry refuses a tampered scripts/cr/anchor-handoff.sh (the real go.sh/merge-on-green.sh shape)"
+
 echo "anchor-handoff: $pass passed, $([ "$fail" = 0 ] && echo 0 || echo some) failed"
 exit "$fail"

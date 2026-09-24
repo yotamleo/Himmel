@@ -164,12 +164,21 @@ case "$_ah_self" in
         # bytes with no hand-off at all. A HIMMEL_REPO that is not a git repo
         # at all is left to the existing "anchor carries no $_ah_rel" refusal
         # further down, so only a GENUINE (but wrong) worktree is caught here.
+        # This defends against an HONEST linked worktree only - whoever
+        # controls HIMMEL_REPO and the tree's .git can still point it at a
+        # tree that IS its own primary checkout; that residual is the same
+        # "whoever sets HIMMEL_REPO picks the anchor" class already documented
+        # in this file's header, not something this check can close.
         _ah_anchor_common=""
         if [ -d "$_ah_anchor" ]; then
             _ah_anchor_common="$(cd "$_ah_anchor" && env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
         fi
         if [ -n "$_ah_anchor_common" ] && ! [ "$_ah_anchor_common" -ef "$_ah_anchor/.git" ]; then
             echo "$_ah_name: HIMMEL_REPO ($_ah_anchor) is not the anchor's own checkout - its git-common-dir ($_ah_anchor_common) is not $_ah_anchor/.git, so it is a linked worktree, not the primary anchor - refusing" >&2
+            exit 2
+        fi
+        if [ -z "$_ah_anchor_common" ] && [ -e "$_ah_anchor/.git" ]; then
+            echo "$_ah_name: HIMMEL_REPO ($_ah_anchor) has a .git entry but its git-common-dir could not be resolved - refusing rather than assume it is the primary anchor" >&2
             exit 2
         fi
         unset _ah_anchor_common
@@ -240,17 +249,47 @@ case "$_ah_self" in
             # differing copy of shared trust code sitting in the worktree.
             # Only checked when THIS tree carries the file - a fixture or a
             # tree that never had it is not "tampered", just incomplete.
-            for _ah_dep in "${_ah_prefix}anchor-handoff.sh" scripts/guardrails/lib.sh scripts/lib/load-dotenv.sh; do
+            #
+            # This file's OWN root-relative path is NOT "${_ah_prefix}anchor-handoff.sh"
+            # (HIMMEL-3451 review round 2): $_ah_prefix is the ENTRY script's
+            # prefix (e.g. scripts/handover/ or scripts/handover/console-kit/),
+            # but this file always physically lives at scripts/cr/anchor-handoff.sh
+            # regardless of who sources it. Using the entry's prefix resolved
+            # to a nonexistent scripts/handover/anchor-handoff.sh for the two
+            # handover entries, so `[ -f "$_ah_dep_local" ]` was false and the
+            # compare silently never ran for them - proven by probe: a
+            # tampered helper was refused via clear-cr-marker.sh (depth 2) but
+            # handed off unchecked via go.sh (depth 3). Resolve this file's
+            # own path from BASH_SOURCE[0] instead, which always points at
+            # THIS file however it was sourced.
+            # git rev-parse --show-prefix, not a pwd/string-subtraction of
+            # $_ah_root (HIMMEL-3437 F1, same reason $_ah_prefix above uses
+            # it): `pwd` is logical and symlink-preserving, `--show-toplevel`
+            # is physical, and a symlinked worktree makes the two diverge -
+            # a string-subtraction against $_ah_root then leaves this empty
+            # and wrongly refuses hand-off through a symlinked path (T14).
+            _ah_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+            if _ah_self_prefix="$(cd "$_ah_self_dir" && env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR git rev-parse --show-prefix 2>/dev/null)"; then
+                _ah_self_rel="${_ah_self_prefix}$(basename "${BASH_SOURCE[0]}")"
+            else
+                _ah_self_rel=""
+            fi
+            unset _ah_self_prefix
+            if [ -z "$_ah_self_rel" ]; then
+                echo "$_ah_name: cannot resolve this file's own root-relative path under $_ah_root - refusing rather than skip the self-compare" >&2
+                exit 2
+            fi
+            for _ah_dep in "$_ah_self_rel" scripts/guardrails/lib.sh scripts/lib/load-dotenv.sh; do
                 _ah_dep_local="$_ah_root/$_ah_dep"
                 _ah_dep_anchor="$_ah_anchor/$_ah_dep"
                 if [ -f "$_ah_dep_local" ]; then
                     if [ ! -f "$_ah_dep_anchor" ] || ! cmp -s "$_ah_dep_local" "$_ah_dep_anchor"; then
-                        echo "$_ah_name: this tree's $_ah_dep differs from the anchor's ($_ah_anchor) - refusing to hand off on a tampered dependency" >&2
+                        echo "$_ah_name: this tree's $_ah_dep differs from the anchor's ($_ah_anchor) - refusing to hand off; run the anchored \"<himmel_dir>/$_ah_rel\" spelling instead" >&2
                         exit 2
                     fi
                 fi
             done
-            unset _ah_dep _ah_dep_local _ah_dep_anchor
+            unset _ah_dep _ah_dep_local _ah_dep_anchor _ah_self_dir _ah_self_rel
             export CR_ANCHOR_HANDED_OFF=1
             echo "$_ah_name: entered through a non-anchor copy ($_ah_root) - handing off to the anchor's copy ($_ah_anchor/$_ah_rel)" >&2
             exec bash "$_ah_anchor/$_ah_rel" "$@"
