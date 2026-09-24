@@ -411,6 +411,31 @@ case "$sha" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][
   *) fail "19 himmel marketplace post.sha not hex: $sha" ;;
 esac
 
+# ── Case 20: HIMMEL-3541 — a same-round project-then-user install must not ──
+#    mark the user-scope registration pre-existing off the project scope's own
+#    residue (the shared plugin cache dir, or an unscoped installed_plugins.json
+#    lookup). END STATE: a plugin fresh at both scopes reads preexisted=false at
+#    BOTH; a genuinely operator-owned user-scope plugin (control) still reads true.
+fresh_env dualscope
+out=$(run_install --scope project); rc=$?
+assert_eq "20 project install rc" 0 "$rc"
+assert_eq "20 project himmel-ops preexisted" false "$(field "$(row plugin himmel-ops@himmel)" .preexisted)"
+out=$(run_install --scope user); rc=$?
+assert_eq "20 user install rc" 0 "$rc"
+assert_eq "20 user himmel-ops preexisted (fresh, same round as project)" false \
+    "$(field "$(row plugin himmel-ops@himmel | tail -n 1)" .preexisted)"
+
+fresh_env dualscope-control
+seed_operator_state "$HOME/.claude"   # user scope already declares context7, before either install
+out=$(run_install --scope project); rc=$?
+assert_eq "20c project install rc" 0 "$rc"
+out=$(run_install --scope user); rc=$?
+assert_eq "20c user install rc" 0 "$rc"
+assert_eq "20c user context7 preexisted (genuinely operator-owned, control)" true \
+    "$(field "$(row plugin context7@claude-plugins-official | tail -n 1)" .preexisted)"
+assert_eq "20c user himmel-ops preexisted (fresh, unaffected by the control plugin)" false \
+    "$(field "$(row plugin himmel-ops@himmel | tail -n 1)" .preexisted)"
+
 if [ "$(real_ledger_sha)" = "$REAL_LEDGER_BEFORE" ]; then
     pass "18 the real ~/.himmel ledger is untouched by this suite"
 else

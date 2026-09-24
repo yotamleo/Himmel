@@ -396,6 +396,58 @@ check "S17 prov_read_owned: control plugin included" "$(grep -c "$(printf 'plugi
 prov_read_cleanup
 rm -f "$mktfile" "$pfile"
 
+# ── HIMMEL-3541: dual-scope register rows fold SEPARATELY, not collapsed ────
+# install-plugins.sh runs project-scope then user-scope in the same round; each
+# writes its OWN register row for the same plugin id. Before the fix, group_key
+# ignored scope, so both rows folded into ONE unit whose .path came from the
+# FIRST row but whose .fields (cli_scope/project_path, feeding the live-identity
+# token) came from the LAST -- an internally inconsistent record that only ever
+# touched one scope's settings file at apply time. Each scope must fold, verdict
+# and apply on its OWN path.
+reset
+mkdir -p "$HOME/.claude/plugins"
+pfile2="$HOME/.claude/plugins/installed_plugins.json"
+projdir="$w/proj-A"
+mkdir -p "$projdir/.claude"
+printf '{}\n' > "$projdir/.claude/settings.json"
+printf '{"version":2,"plugins":{"himmel-ops@himmel":[{"scope":"project","projectPath":"%s"},{"scope":"user"}]}}' "$projdir" > "$pfile2"
+proj_json=$(jq -nc --arg p "$projdir" '{unit:"himmel-ops@himmel", fields:{cli_scope:"project", project_path:$p, marketplace:"himmel"}}')
+user_json=$(jq -nc '{unit:"himmel-ops@himmel", fields:{cli_scope:"user", project_path:"", marketplace:"himmel"}}')
+proj_tok=$(_provid_plugin "$proj_json")
+user_tok=$(_provid_plugin "$user_json")
+prov_begin --iid DS1 --writer t
+prov_record register plugin "$projdir/.claude/settings.json" --unit himmel-ops@himmel --scope project --class code \
+    --field preexisted=false --field cli_scope='"project"' --field marketplace='"himmel"' --field project_path="\"$projdir\"" \
+    --post-text "$proj_tok" --field identity_v=1
+prov_record register plugin "$HOME/.claude/settings.json" --unit himmel-ops@himmel --scope user --class code \
+    --field preexisted=false --field cli_scope='"user"' --field marketplace='"himmel"' --field 'project_path=""' \
+    --post-text "$user_tok" --field identity_v=1
+prov_end ok
+prov_read_load
+units=$(prov_read_units --kind plugin | jq -c 'select(.unit=="himmel-ops@himmel")')
+check "dual-scope: folds into TWO separate units" "$(printf '%s\n' "$units" | wc -l | tr -d ' ')" "2"
+uproj=$(printf '%s\n' "$units" | jq -c 'select(.fields.cli_scope=="project")')
+uuser=$(printf '%s\n' "$units" | jq -c 'select(.fields.cli_scope=="user")')
+check "dual-scope: project unit keeps its own path" "$(field "$uproj" .path)" "$projdir/.claude/settings.json"
+check "dual-scope: user unit keeps its own path" "$(field "$uuser" .path)" "$HOME/.claude/settings.json"
+check "dual-scope: project unit verdicts remove ours" "$(prov_read_verdict "$uproj")" "remove ours"
+check "dual-scope: user unit verdicts remove ours" "$(prov_read_verdict "$uuser")" "remove ours"
+prov_read_cleanup
+
+# control: legacy rows with NO .scope field at all still fold together exactly
+# as before -- the new key component defaults both to "" and does not split them.
+reset
+prov_begin --iid LEG1 --writer t
+{
+    printf '%s\n' '{"t":"2026-09-21T00:00:00Z","iid":"LEG1","op":"register","kind":"plugin","path":"'"$w"'/legacy.json","unit":"legacy-plugin@shop","class":"code","preexisted":false,"post":{"sha":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}}'
+    printf '%s\n' '{"t":"2026-09-21T00:00:01Z","iid":"LEG1","op":"register","kind":"plugin","path":"'"$w"'/legacy.json","unit":"legacy-plugin@shop","class":"code","preexisted":false,"post":{"sha":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}}'
+} >> "$ledger"
+prov_end ok
+prov_read_load
+check "legacy scope-less rows still fold into ONE unit" \
+    "$(prov_read_units --kind plugin | jq -c 'select(.unit=="legacy-plugin@shop")' | wc -l | tr -d ' ')" "1"
+prov_read_cleanup
+
 # ── kind tool -> class-keep; class state -> skip ───────────────────────────
 
 reset

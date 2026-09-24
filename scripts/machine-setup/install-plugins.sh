@@ -222,12 +222,15 @@ settings_declares() {   # <section> <key> — key present in this scope's settin
   # shellcheck disable=SC2016  # $a/$b are jq variables (--arg), not shell expansions
   json_declares "$PROV_SETTINGS_FILE" '(.[$a] // {}) | has($b)' "$1" "$2"
 }
-plugin_preexisted() {   # <spec> — the scope's enabledPlugins, or (user scope) the plugin's cache dir / install record
+plugin_preexisted() {   # <spec> — the scope's enabledPlugins, or (user scope) THIS scope's own install record
   settings_declares enabledPlugins "$1" && return 0
   [[ "$SCOPE" == user ]] || return 1
-  [[ -d "$PROV_CFG_DIR/plugins/cache/${1##*@}/${1%@*}" ]] && return 0
-  # shellcheck disable=SC2016  # $a/$b are jq variables (--arg), not shell expansions
-  json_declares "$PROV_CFG_DIR/plugins/installed_plugins.json" '(.plugins // {}) | has($a)' "$1"
+  # HIMMEL-3541: scope-filtered, mirroring _provid_plugin's own query
+  # (provenance-identity.sh) — a same-round project-scope install must not
+  # make the user-scope pre-check see ITS OWN registration as pre-existing.
+  # shellcheck disable=SC2016  # $a is a jq variable (--arg), not a shell expansion
+  json_declares "$PROV_CFG_DIR/plugins/installed_plugins.json" \
+    '(.plugins[$a] // []) | any(.scope == "user")' "$1"
 }
 marketplace_preexisted() {   # <name> — this scope's settings, or the CLI's user-level registry (a marketplace is global)
   settings_declares extraKnownMarketplaces "$1" && return 0
