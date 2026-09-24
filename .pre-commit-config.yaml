@@ -351,6 +351,15 @@ repos:
         always_run: true
         stages: [pre-commit]
 
+      - id: git-env-scrub
+        name: gate unscrubbed GIT_* env on trust-path git calls
+        # HIMMEL-3570
+        language: system
+        entry: bash scripts/guardrails/check-git-env-scrub.sh --staged
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+
       - id: graph-artifact-branch
         name: block graphify-out/ commits off the /graph-publish flow
         # HIMMEL-2167

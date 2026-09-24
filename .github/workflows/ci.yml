@@ -70,6 +70,18 @@ jobs:
           persist-credentials: false
       - run: bash scripts/guardrails/leak-classes.sh --tree
 
+  # Trust-path git subprocess calls must scrub GIT_DIR/GIT_WORK_TREE/
+  # GIT_COMMON_DIR/GIT_INDEX_FILE before invoking git — an attacker-set value
+  # otherwise steers which repo/worktree/index the call answers about
+  # (HIMMEL-3570; already caught twice as real bugs, PR 1212 and PR 1217).
+  git-env-scrub:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: bash scripts/guardrails/check-git-env-scrub.sh --tree
+
   # Commit-message governance (HIMMEL-594/1483): every non-exempt commit in the
   # PR range must be conventional and ticket-traceable. Reuses the local
   # commit-msg gate (scripts/hooks/check-commit-msg.sh) over the range so CI and
