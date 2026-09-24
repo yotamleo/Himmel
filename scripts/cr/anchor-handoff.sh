@@ -69,6 +69,17 @@ case "$_ah_self" in
         _ah_dir="$(cd "$(dirname "$_ah_self")" && pwd)"
         _ah_anchor="${HIMMEL_REPO:-}"
         _ah_root="$(cd "$_ah_dir" && git rev-parse --show-toplevel 2>/dev/null)"
+        _ah_prefix=""
+        if [ -n "$_ah_root" ]; then
+            # show-prefix is the path from the repo's toplevel down to cwd,
+            # computed by git itself - correct regardless of any
+            # logical/physical divergence between `pwd` (used for _ah_dir
+            # above) and git's own (physical) toplevel, unlike the old
+            # string-subtraction this replaced (HIMMEL-3437 F1: a symlinked
+            # worktree path made that subtraction a no-op, leaving _ah_rel
+            # absolute instead of relative and breaking the hand-off).
+            _ah_prefix="$(cd "$_ah_dir" && git rev-parse --show-prefix 2>/dev/null)"
+        fi
         if [ -z "$_ah_root" ] && [ -n "$_ah_anchor" ]; then
             # No git metadata under $_ah_dir (a non-repo test fixture, not a
             # real worktree). The self-anchor case still needs no genuine
@@ -77,9 +88,18 @@ case "$_ah_self" in
             # hand-off is not needed either way (matches the pre-HIMMEL-3437
             # depth-2 resolver, which never validated its guessed root was a
             # real repo top). A cross-tree hand-off still requires git, so a
-            # non-git wt still fails closed below.
+            # non-git wt still fails closed below. A `.git` entry anywhere
+            # between here and a matched ancestor means git rev-parse failed
+            # for some OTHER reason (a corrupted/misdirected worktree, not a
+            # genuine non-git tree) - stop instead of treating that as a
+            # self-anchor match (HIMMEL-3437 F2: without this check, a
+            # worktree nested under the anchor with its own broken .git ran
+            # its own bytes unchecked instead of failing closed).
             _ah_walk="$_ah_dir"
             while :; do
+                if [ -e "$_ah_walk/.git" ]; then
+                    break
+                fi
                 if [ "$_ah_walk" -ef "$_ah_anchor" ]; then
                     _ah_root="$_ah_anchor"
                     break
@@ -94,7 +114,7 @@ case "$_ah_self" in
             echo "$_ah_name: cannot resolve this copy's own repo root (git rev-parse --show-toplevel failed under $_ah_dir) - refusing to let it decide" >&2
             exit 2
         fi
-        _ah_rel="${_ah_dir#"$_ah_root"/}/$_ah_name"
+        _ah_rel="${_ah_prefix}$_ah_name"
         if [ -z "$_ah_anchor" ]; then
             echo "$_ah_name: HIMMEL_REPO is unset or empty - refusing to let this relative-entry copy ($_ah_root) decide; export it non-empty (adopt/setup wires it into settings.json env), or run the anchored \"<himmel_dir>/$_ah_rel\" spelling" >&2
             exit 2
@@ -112,7 +132,7 @@ case "$_ah_self" in
             echo "$_ah_name: entered through a non-anchor copy ($_ah_root) - handing off to the anchor's copy ($_ah_anchor/$_ah_rel)" >&2
             exec bash "$_ah_anchor/$_ah_rel" "$@"
         fi
-        unset _ah_name _ah_dir _ah_root _ah_rel _ah_anchor
+        unset _ah_name _ah_dir _ah_root _ah_rel _ah_anchor _ah_prefix
         ;;
 esac
 unset _ah_self

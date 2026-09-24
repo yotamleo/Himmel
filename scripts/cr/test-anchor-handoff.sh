@@ -137,5 +137,29 @@ check "$(run "$d3_wt" "$d3_anchor" "$d3_wt/scripts/handover/console-kit/go-stub.
 # 13. Relative entry three levels deep with HIMMEL_REPO unset fails closed.
 check "$(run "$d3_wt" - scripts/handover/console-kit/go-stub.sh | tr '\n' ' ')" "rc=2 " "T13 depth-3 unset HIMMEL_REPO exits 2"
 
+# 14 (HIMMEL-3437 F1). A worktree reached through a SYMLINKED path must still
+# hand off. `_ah_dir` is built from plain `pwd` (logical, symlink-preserving)
+# while `_ah_root` comes from `git rev-parse --show-toplevel` (physical,
+# symlink-resolved) — when the entry cwd is a symlink these diverge, and the
+# old string-subtraction (`${_ah_dir#"$_ah_root"/}`) left `_ah_rel` absolute
+# instead of relative, breaking the hand-off.
+real_wt="$tmp/real_wt"; link_wt="$tmp/link_wt"
+make_tree "$real_wt" branch
+ln -s "$real_wt" "$link_wt"
+check "$(run "$link_wt" "$anchor" scripts/cr/clear-cr-marker.sh | tr '\n' ' ')" "RAN:anchor rc=0 " "T14 symlinked worktree still hands off (F1)"
+
+# 15 (HIMMEL-3437 F2). A worktree nested INSIDE the anchor's own directory
+# tree, whose own .git is corrupted (git rev-parse fails for a bad reason,
+# not because it's a genuine non-git fixture), must fail closed rather than
+# have the no-git walk-up fallback find the anchor as an ancestor and treat
+# itself as already-the-anchor — that would run this copy's own (possibly
+# tampered) bytes unchecked.
+nested="$anchor/.claude/worktrees/nested_corrupt"
+mkdir -p "$nested/scripts/cr"
+cp "$DIR/anchor-handoff.sh" "$nested/scripts/cr/anchor-handoff.sh"
+printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\necho "RAN:corrupted"\n' "$SOURCE_LINE" > "$nested/scripts/cr/clear-cr-marker.sh"
+echo "gitdir: /nonexistent/path" > "$nested/.git"
+check "$(run "$nested" "$anchor" scripts/cr/clear-cr-marker.sh | tr '\n' ' ')" "rc=2 " "T15 corrupted nested worktree fails closed instead of self-anchoring (F2)"
+
 echo "anchor-handoff: $pass passed, $([ "$fail" = 0 ] && echo 0 || echo some) failed"
 exit "$fail"
