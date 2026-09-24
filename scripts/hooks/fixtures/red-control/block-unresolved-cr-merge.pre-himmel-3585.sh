@@ -289,36 +289,7 @@ if [ "$is_leg" -eq 1 ]; then
         # shellcheck disable=SC1091
         # shellcheck source=../lib/timeout-bin.sh
         . "$SCRIPT_DIR/../lib/timeout-bin.sh"
-        if [ -n "${_TIMEOUT_BIN:-}" ]; then
-            go_nwo=$("$_TIMEOUT_BIN" 5 gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null) || go_nwo=""
-        else
-            # HIMMEL-3585: neither `timeout` nor `gtimeout` is on PATH, so the
-            # bound above is unavailable — a bare `gh repo view` here would run
-            # UNBOUNDED and a hang would fail this fail-closed hook OPEN via
-            # Claude Code's own hook timeout instead of reading as a refusal.
-            # Bash-native bound: background `gh`, poll for up to 5s, then
-            # kill it and treat that exactly like a timeout (empty go_nwo).
-            _gh_out="$(mktemp)" 2>/dev/null || _gh_out=""
-            if [ -z "$_gh_out" ]; then
-                go_nwo=""
-            else
-                gh repo view --json nameWithOwner --jq .nameWithOwner >"$_gh_out" 2>/dev/null &
-                _gh_pid=$!
-                _gh_waited=0
-                while [ "$_gh_waited" -lt 5 ] && kill -0 "$_gh_pid" 2>/dev/null; do
-                    sleep 1
-                    _gh_waited=$((_gh_waited + 1))
-                done
-                if kill -0 "$_gh_pid" 2>/dev/null; then
-                    kill -9 "$_gh_pid" 2>/dev/null
-                    go_nwo=""
-                else
-                    go_nwo="$(cat "$_gh_out" 2>/dev/null)"
-                fi
-                wait "$_gh_pid" 2>/dev/null
-                rm -f "$_gh_out"
-            fi
-        fi
+        go_nwo=$(${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" 5} gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null) || go_nwo=""
     fi
     if [ -z "$go_nwo" ]; then
         echo "block-unresolved-cr-merge: cannot resolve this repo's owner/name for PR #$go_num — refusing (GATE INTEGRITY: the GO mac binds the repo). Pass --repo <owner>/<name>, or run from a checkout gh can resolve." >&2

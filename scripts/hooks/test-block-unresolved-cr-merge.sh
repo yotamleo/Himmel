@@ -315,6 +315,77 @@ fi
 grep -qi "cannot resolve this repo" "$TMP/err-leg-nwo-timeout-blocks" || { echo "FAIL leg-nwo-timeout-blocks reason missing"; fail=$((fail+1)); }
 rm -f "$GOROOT/.locks/go/42.abc123"
 
+# ── HIMMEL-3585: the case above still has a REAL `timeout`/`gtimeout` on
+# PATH. Strip both (shadow them with a stub whose `--version` fails, so
+# timeout-bin.sh's resolver finds neither and leaves `_TIMEOUT_BIN` empty —
+# the exact host shape the ticket is about) and prove the hook still bounds
+# a hanging `gh repo view`, not just the GNU-timeout-present path.
+NOTB_BIN="$TMP/bin-no-timeout"
+mkdir -p "$NOTB_BIN"
+for _fake in timeout gtimeout; do
+    printf '#!/usr/bin/env bash\nexit 1\n' > "$NOTB_BIN/$_fake"
+    chmod +x "$NOTB_BIN/$_fake"
+done
+# Shadowing only: $NOTB_BIN is prepended, but the real gh stub (already
+# earlier on $PATH) and every other tool the hook needs stay reachable.
+NOTB_PATH="$NOTB_BIN:$PATH"
+REAL_TIMEOUT="$(command -v timeout || command -v gtimeout)"
+[ -n "$REAL_TIMEOUT" ] || { echo "FATAL: no real timeout/gtimeout on the test runner's own PATH"; exit 1; }
+
+printf 'pr=42\nhead=abc123\nby=test\nat=now\nmac=%s\n' "$GO_MAC_42" > "$GOROOT/.locks/go/42.abc123"
+
+# RED — the pre-fix hook (base eb898803, before this ticket) with no working
+# timeout/gtimeout on PATH: `${_TIMEOUT_BIN:+...}` expands to nothing and the
+# stub's 30s sleep runs UNBOUNDED. Bound the MEASUREMENT itself at 8s with the
+# test runner's own real timeout (kept off $NOTB_PATH, so it cannot mask the
+# bug it is only here to cap) so the suite need not wait the full 30s to show
+# this — rc=124 means our measurement killed it, i.e. the base hook was still
+# running past 8s, proving the hang is real.
+RED_NOTB_ROOT="$TMP/no-timeout-red"
+mkdir -p "$RED_NOTB_ROOT/scripts/hooks" "$RED_NOTB_ROOT/scripts/lib"
+cp "$SCRIPT_DIR/../lib/cr-merge-gate.sh" "$RED_NOTB_ROOT/scripts/lib/cr-merge-gate.sh"
+cp "$SCRIPT_DIR/../lib/ci-green-gate.sh" "$RED_NOTB_ROOT/scripts/lib/ci-green-gate.sh"
+cp "$SCRIPT_DIR/../lib/handover-path.sh" "$RED_NOTB_ROOT/scripts/lib/handover-path.sh"
+cp "$SCRIPT_DIR/../lib/go-gate.sh" "$RED_NOTB_ROOT/scripts/lib/go-gate.sh"
+cp "$SCRIPT_DIR/../lib/timeout-bin.sh" "$RED_NOTB_ROOT/scripts/lib/timeout-bin.sh"
+cp "$SCRIPT_DIR/fixtures/red-control/block-unresolved-cr-merge.pre-himmel-3585.sh" \
+    "$RED_NOTB_ROOT/scripts/hooks/block-unresolved-cr-merge.sh"
+RED_NOTB_PAYLOAD="$TMP/no-timeout-red-payload.json"
+payload Bash "gh pr merge 42 --squash --match-head-commit abc123" > "$RED_NOTB_PAYLOAD"
+RED_NOTB_OUT="$TMP/no-timeout-red-out"; RED_NOTB_ERR="$TMP/no-timeout-red-err"
+PATH="$NOTB_PATH" HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" \
+    GH_STUB_MODE=repo-view-timeout GH_STUB_LOG="$TMP/calls-no-timeout-red.log" \
+    "$REAL_TIMEOUT" 8 bash "$RED_NOTB_ROOT/scripts/hooks/block-unresolved-cr-merge.sh" \
+    < "$RED_NOTB_PAYLOAD" > "$RED_NOTB_OUT" 2>"$RED_NOTB_ERR"
+red_notb_rc=$?
+if [ "$red_notb_rc" -eq 124 ]; then
+    pass=$((pass+1)); echo "ok   red-control-no-timeout-bin-hangs (base hook ran unbounded past 8s with no timeout/gtimeout on PATH, as expected pre-fix)"
+else
+    fail=$((fail+1)); echo "FAIL red-control-no-timeout-bin-hangs rc=$red_notb_rc (want 124 -- expected the pre-HIMMEL-3585 hook to hang unbounded)"
+fi
+
+# GREEN — the shipped hook, same no-timeout PATH, same 30s-hanging gh stub:
+# must still refuse, and well within the stub's 30s (its own bash-native
+# poll-and-kill bound is 5s).
+GREEN_NOTB_START=$(date +%s)
+PATH="$NOTB_PATH" HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=repo-view-timeout \
+    t leg-no-timeout-bin-hang-blocks 2 Bash "gh pr merge 42 --squash --match-head-commit abc123"
+GREEN_NOTB_ELAPSED=$(( $(date +%s) - GREEN_NOTB_START ))
+if [ "$GREEN_NOTB_ELAPSED" -ge 15 ]; then
+    fail=$((fail+1)); echo "FAIL leg-no-timeout-bin-hang-blocks took ${GREEN_NOTB_ELAPSED}s — the bash-native bound did not cap the hang without a timeout binary"
+fi
+grep -qi "cannot resolve this repo" "$TMP/err-leg-no-timeout-bin-hang-blocks" || { echo "FAIL leg-no-timeout-bin-hang-blocks reason missing"; fail=$((fail+1)); }
+rm -f "$GOROOT/.locks/go/42.abc123"
+
+# Positive control: same no-timeout PATH, but gh answers immediately (no
+# hang) — a legitimate merge must still be ALLOWED. Proves the bash-native
+# fallback only bounds a genuine hang and does not itself block the normal
+# case when no timeout/gtimeout is installed.
+printf 'pr=42\nhead=abc123\nby=test\nat=now\nmac=%s\n' "$GO_MAC_42" > "$GOROOT/.locks/go/42.abc123"
+PATH="$NOTB_PATH" HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean \
+    t leg-no-timeout-bin-clean-allows 0 Bash "gh pr merge 42 --squash --match-head-commit abc123"
+rm -f "$GOROOT/.locks/go/42.abc123"
+
 # ── HIMMEL-3573 (2): declare -F go_mac must be required directly, not only
 # go_gate — a go-gate.sh that defines console_leg + a STUB go_gate (always
 # allows) but never defines go_mac would otherwise pass the old
