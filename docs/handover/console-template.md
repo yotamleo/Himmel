@@ -366,8 +366,11 @@ To cut a pre-release tag yourself (HIMMEL-3572), run
 first to see the plan) — it creates the tag through the GitHub API, never
 `git tag`, so it needs no operator `!` step. It refuses unless `<sha>` is an
 ancestor of `origin/main`, every check-run at `<sha>` is green, the tag
-doesn't already exist, and `<version>` is the next `v0.3.0-pre.N` in
-sequence (or carries `--version-override <reason>`).
+doesn't already exist, and `<version>` is the next `N` in sequence for its
+own `v<X>.<Y>.<Z>-pre.` series — the series is derived from `<version>`
+itself, not hardcoded to any one release line, so `v0.3.0-pre.9` and a future
+`v0.4.0-pre.1` are each checked against their own prior tags — (or carries
+`--version-override <reason>`).
 
 ## Wrapping a leg
 
